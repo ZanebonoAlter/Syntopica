@@ -853,7 +853,7 @@ git commit -m "test: add comprehensive tests for 3-phase tag cleanup"
 在文件第一行之前插入：
 
 ```markdown
-> ⚠️ **已废弃**: 此文档描述的"深层树修剪"流程已被 [三级清理策略](architecture/tag-cleanup-redesign.md) 取代。保留供参考。
+> ⚠️ **已废弃**: 此文档描述的"深层树修剪"流程已被 [三级清理策略](../design/tag-cleanup-redesign.md) 取代。保留供参考。
 
 ```
 

@@ -2,7 +2,7 @@
 
 # 开发指南
 
-本地开发、构建、测试和提交前检查的完整参考。如果你是首次参与，请先阅读 [Getting Started](../guides/getting-started.md) 完成环境搭建。
+本地开发、构建、测试和提交前检查的完整参考。如果你是首次参与，请先阅读 [Getting Started](../getting-started.md) 完成环境搭建。
 
 ## 本地开发环境搭建
 
@@ -74,7 +74,7 @@ docker compose -f docker-compose.sqlite.yml up --build
 
 本地开发无需任何配置文件或 `.env` 文件即可启动——后端和前端均有开箱即用的默认值。
 
-后端配置文件位于 `backend-go/configs/config.yaml`，通过 Viper 加载，环境变量可覆盖文件值。详见 [Configuration](../guides/configuration.md)。
+后端配置文件位于 `backend-go/configs/config.yaml`，通过 Viper 加载，环境变量可覆盖文件值。详见 [Configuration](configuration.md)。
 
 AI 相关设置（LLM、Firecrawl、Digest）通过 Web UI 的设置页面配置，存储在数据库中，无需手动编辑配置文件。
 
@@ -287,12 +287,11 @@ go test ./...                 # 全量测试
 
 如果改动涉及功能、接口或结构变化，需同步更新对应文档：
 
-- `docs/architecture/frontend.md`
-- `docs/architecture/backend-go.md`
-- `docs/architecture/data-flow.md`
-- `docs/guides/content-processing.md`
-- `docs/operations/database.md`
-- `docs/database/DATABASE_FIELDS.md`
+- `docs/reference/architecture/frontend.md`
+- `docs/reference/architecture/backend.md`
+- `docs/reference/architecture/data-flow.md`
+- `docs/reference/content-processing.md`
+- `docs/reference/database/DATABASE_FIELDS.md`
 
 ## Branch 规范与 PR 流程
 
@@ -319,8 +318,8 @@ go test ./...                 # 全量测试
 
 ## 相关文档
 
-- [Getting Started](../guides/getting-started.md) — 环境搭建与首次运行
-- [Configuration](../guides/configuration.md) — 环境变量、配置文件、AI 设置
-- [Architecture Overview](../architecture/overview.md) — 系统架构、组件关系、数据流
-- [Troubleshooting](troubleshooting.md) — 常见问题排查
-- [Database Fields](../database/DATABASE_FIELDS.md) — 数据库字段详细说明
+- [Getting Started](../getting-started.md) — 环境搭建与首次运行
+- [Configuration](configuration.md) — 环境变量、配置文件、AI 设置
+- [Architecture Overview](architecture/overview.md) — 系统架构、组件关系、数据流
+- [Troubleshooting](../operations/troubleshooting.md) — 常见问题排查
+- [Database Fields](database/DATABASE_FIELDS.md) — 数据库字段详细说明

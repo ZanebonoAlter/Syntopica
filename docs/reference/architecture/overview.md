@@ -220,13 +220,13 @@ my-robot/
 
 ## 相关文档
 
-- [后端架构](backend-go.md)：Go 后端分层、目录结构、数据模型、业务链路详解
-- [后端运行时](backend-runtime.md)：启动顺序、调度器管理、路由面、优雅退出
+- [后端架构](backend.md)：Go 后端分层、目录结构、数据模型、业务链路详解
+- [后端运行时](runtime.md)：启动顺序、调度器管理、路由面、优雅退出
 - [前端架构](frontend.md)：Nuxt 4 分层、feature 组织、数据映射规则、设计系统
 - [前端组件分工](frontend-components.md)：各 feature 组件职责与交互关系
 - [数据流](data-flow.md)：主链路、前端状态职责、定时任务链路
 - [链路追踪](tracing.md)：OpenTelemetry 集成、埋点分层、查询 API
-- [开发指南](../operations/development.md)：构建、测试、验证命令
-- [内容增强](../guides/content-processing.md)：Firecrawl + AI 内容补全流程
-- [主题图谱](../guides/topic-graph.md)：图谱构建与分析
+- [开发指南](../development.md)：构建、测试、验证命令
+- [内容增强](../content-processing.md)：Firecrawl + AI 内容补全流程
+- [主题图谱](../api/topic-graph.md)：图谱构建与分析
 - [API 文档](../api/_index.md)：按领域拆分的 REST API 参考

@@ -139,26 +139,26 @@ ZanebonoRssReader/
 ## 📚 文档
 
 ### 架构
-- [项目总览](docs/architecture/overview.md) — 架构与运行关系
-- [前端架构](docs/architecture/frontend.md) — Nuxt 4 前端结构
-- [后端架构](docs/architecture/backend-go.md) — Go 后端结构
-- [数据流](docs/architecture/data-flow.md) — 数据流转与处理流程
+- [项目总览](docs/reference/architecture/overview.md) — 架构与运行关系
+- [前端架构](docs/reference/architecture/frontend.md) — Nuxt 4 前端结构
+- [后端架构](docs/reference/architecture/backend.md) — Go 后端结构
+- [数据流](docs/reference/architecture/data-flow.md) — 数据流转与处理流程
 
 ### 操作指南
-- [快速上手](docs/guides/getting-started.md) — 环境搭建与首次运行
-- [配置说明](docs/guides/configuration.md) — 环境变量与配置项
-- [开发指南](docs/operations/development.md) — 本地开发、构建、测试
-- [测试指南](docs/guides/testing.md) — 测试框架与运行方式
-- [部署指南](docs/guides/deployment.md) — 容器化部署与生产配置
+- [快速上手](docs/getting-started.md) — 环境搭建与首次运行
+- [配置说明](docs/reference/configuration.md) — 环境变量与配置项
+- [开发指南](docs/reference/development.md) — 本地开发、构建、测试
+- [测试指南](docs/reference/testing.md) — 测试框架与运行方式
+- [部署指南](docs/reference/deployment.md) — 容器化部署与生产配置
 
 ### 功能说明
-- [内容处理](docs/guides/content-processing.md) — Firecrawl 与 AI 增强流程
-- [主题图谱](docs/guides/topic-graph.md) — 主题图谱功能说明
-- [阅读偏好](docs/guides/reading-preferences.md) — 偏好追踪与排序
+- [内容处理](docs/reference/content-processing.md) — Firecrawl 与 AI 增强流程
+- [主题图谱](docs/v1.2-tag-intelligence/user-guide/topic-graph.md) — 主题图谱功能说明
+- [阅读偏好](docs/reference/reading-preferences.md) — 偏好追踪与排序
 
 ### API
-- [API 参考](docs/api/reference.md) — 后端 API 接口文档
-- [主题图谱 API](docs/api/topic-graph.md) — 主题图谱接口说明
+- [API 参考](docs/reference/api/_index.md) — 后端 API 接口文档
+- [主题图谱 API](docs/reference/api/topic-graph.md) — 主题图谱接口说明
 
 ## 🤝 贡献
 

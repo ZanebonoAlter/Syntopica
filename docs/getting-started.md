@@ -71,7 +71,7 @@ docker compose up --build -d
 - **backend**: Go API 服务器端口 5000
 - **front**: Nuxt SSR 服务器端口 3000
 
-端口映射和其他 Docker 设置可通过 `.env` 文件自定义 — 详见 [配置指南](configuration.md)。
+端口映射和其他 Docker 设置可通过 `.env` 文件自定义 — 详见 [配置指南](reference/configuration.md)。
 
 ## 首次使用
 
@@ -124,6 +124,6 @@ pnpm config set registry https://registry.npmmirror.com
 
 ## 下一步
 
-- **[配置指南](configuration.md)** — 完整的环境变量列表、配置文件选项和数据库存储的 AI 设置。
-- **[开发指南](../operations/development.md)** — 构建命令、测试命令、编码规范和提交检查清单。
-- **[架构概览](../architecture/overview.md)** — 系统设计、组件关系、数据流和后台调度器详情。
+- **[配置指南](reference/configuration.md)** — 完整的环境变量列表、配置文件选项和数据库存储的 AI 设置。
+- **[开发指南](reference/development.md)** — 构建命令、测试命令、编码规范和提交检查清单。
+- **[架构概览](reference/architecture/overview.md)** — 系统设计、组件关系、数据流和后台调度器详情。

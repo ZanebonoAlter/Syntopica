@@ -16,5 +16,4 @@
 | [firecrawl.md](firecrawl.md) | Firecrawl 全文抓取 | `/api/firecrawl` |
 | [reading.md](reading.md) | 阅读行为、用户偏好 | `/api/reading-behavior`, `/api/user-preferences` |
 | [topic-graph.md](topic-graph.md) | 主题图谱、主题分析、标签管理、Embedding、叙事摘要、板块概念 | `/api/topic-graph`, `/api/topic-tags`, `/api/embedding`, `/api/narratives`, `/api/narratives/boards`, `/api/narratives/board-concepts`, `/api/narratives/unclassified` |
-| [digest.md](digest.md) | Digest 日报/周报 | `/api/digest` |
 | [traces.md](traces.md) | 链路追踪 | `/api/traces` |
