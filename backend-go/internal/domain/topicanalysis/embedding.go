@@ -609,6 +609,12 @@ func migrateTagRelations(tx *gorm.DB, sourceTagID, targetTagID uint) error {
 		if err != nil {
 			return fmt.Errorf("cycle check parent relation %d: %w", rel.ID, err)
 		}
+		if !hasCycle {
+			hasCycle, err = wouldCreateCycle(tx, childID, targetTagID)
+			if err != nil {
+				return fmt.Errorf("reverse cycle check parent relation %d: %w", rel.ID, err)
+			}
+		}
 		if hasCycle {
 			logging.Warnf("skipping parent relation %d→%d: would create cycle with target %d", rel.ParentID, childID, targetTagID)
 			if err := tx.Delete(&rel).Error; err != nil {
@@ -653,6 +659,12 @@ func migrateTagRelations(tx *gorm.DB, sourceTagID, targetTagID uint) error {
 		hasCycle, err := wouldCreateCycle(tx, parentID, targetTagID)
 		if err != nil {
 			return fmt.Errorf("cycle check child relation %d: %w", rel.ID, err)
+		}
+		if !hasCycle {
+			hasCycle, err = wouldCreateCycle(tx, targetTagID, parentID)
+			if err != nil {
+				return fmt.Errorf("reverse cycle check child relation %d: %w", rel.ID, err)
+			}
 		}
 		if hasCycle {
 			logging.Warnf("skipping child relation %d→%d: would create cycle with target %d", parentID, rel.ChildID, targetTagID)

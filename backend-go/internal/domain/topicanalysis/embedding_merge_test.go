@@ -115,3 +115,52 @@ func TestMigrateTagRelations_MigratesToAbstractTarget(t *testing.T) {
 	db.Model(&models.TopicTagRelation{}).Where("parent_id = ? AND child_id = ?", source.ID, child.ID).Count(&count)
 	assert.Equal(t, int64(0), count)
 }
+
+func TestMigrateTagRelations_RejectsInverseCycle(t *testing.T) {
+	db := setupMergeTestDB(t)
+
+	grandparent := models.TopicTag{Slug: "gp", Label: "Grandparent", Kind: "event", Category: "event", Source: "abstract", Status: "active"}
+	parent := models.TopicTag{Slug: "p", Label: "Parent", Kind: "event", Category: "event", Source: "abstract", Status: "active"}
+	child := models.TopicTag{Slug: "c", Label: "Child", Kind: "event", Category: "event", Source: "abstract", Status: "active"}
+
+	require.NoError(t, db.Create(&grandparent).Error)
+	require.NoError(t, db.Create(&parent).Error)
+	require.NoError(t, db.Create(&child).Error)
+
+	require.NoError(t, db.Create(&models.TopicTagRelation{ParentID: grandparent.ID, ChildID: parent.ID, RelationType: "abstract"}).Error)
+	require.NoError(t, db.Create(&models.TopicTagRelation{ParentID: parent.ID, ChildID: child.ID, RelationType: "abstract"}).Error)
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		return migrateTagRelations(tx, child.ID, grandparent.ID)
+	})
+	require.NoError(t, err)
+
+	assertAbstractRelationExists(t, db, grandparent.ID, parent.ID)
+
+	assertAbstractRelationMissing(t, db, grandparent.ID, child.ID)
+
+	assertAbstractRelationMissing(t, db, parent.ID, grandparent.ID)
+}
+
+func TestMigrateTagRelations_ChildRoleMigration(t *testing.T) {
+	db := setupMergeTestDB(t)
+
+	grandparent := models.TopicTag{Slug: "gp", Label: "Grandparent", Kind: "event", Category: "event", Source: "abstract", Status: "active"}
+	parent := models.TopicTag{Slug: "p", Label: "Parent", Kind: "event", Category: "event", Source: "abstract", Status: "active"}
+	target := models.TopicTag{Slug: "t", Label: "Target", Kind: "event", Category: "event", Source: "abstract", Status: "active"}
+
+	require.NoError(t, db.Create(&grandparent).Error)
+	require.NoError(t, db.Create(&parent).Error)
+	require.NoError(t, db.Create(&target).Error)
+
+	require.NoError(t, db.Create(&models.TopicTagRelation{ParentID: grandparent.ID, ChildID: parent.ID, RelationType: "abstract"}).Error)
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		return migrateTagRelations(tx, parent.ID, target.ID)
+	})
+	require.NoError(t, err)
+
+	assertAbstractRelationExists(t, db, grandparent.ID, target.ID)
+
+	assertAbstractRelationMissing(t, db, grandparent.ID, parent.ID)
+}
