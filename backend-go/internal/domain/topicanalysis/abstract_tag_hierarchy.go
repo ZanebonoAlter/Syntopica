@@ -265,6 +265,26 @@ func linkAbstractParentChild(childID, parentID uint) error {
 		if err := tx.Where("child_id = ? AND relation_type = ?", childID, "abstract").Find(&existingParents).Error; err != nil {
 			return fmt.Errorf("check existing parents for child %d: %w", childID, err)
 		}
+
+		// Multi-parent prevention: if child already has an active abstract parent,
+		// check that the new parent covers a meaningfully different article set.
+		for _, old := range existingParents {
+			if old.ParentID == parentID {
+				continue
+			}
+			var oldParentTag models.TopicTag
+			if tx.First(&oldParentTag, old.ParentID).Error == nil && oldParentTag.Status == "active" {
+				articleSets, collectErr := collectArticleIDsForTags(tx, []uint{old.ParentID, parentID})
+				if collectErr == nil {
+					jaccard := jaccardSimilarity(articleSets[old.ParentID], articleSets[parentID])
+					if jaccard > 0.3 {
+						return fmt.Errorf("multi-parent prevention: new parent %d (%q) overlaps (Jaccard=%.2f) with existing parent %d (%q), rejecting",
+							parentID, parent.Label, jaccard, old.ParentID, oldParentTag.Label)
+					}
+				}
+			}
+		}
+
 		for _, old := range existingParents {
 			if old.ParentID == parentID {
 				continue

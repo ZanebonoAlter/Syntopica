@@ -107,7 +107,7 @@ export const useApiStore = defineStore('api', () => {
         lastUpdated: feed.last_updated || new Date().toISOString(),
         articleCount: feed.article_count || 0,
         unreadCount: feed.unread_count || 0,
-        maxArticles: feed.max_articles || 100,
+        maxArticles: feed.max_articles ?? 100,
         refreshInterval: feed.refresh_interval || 60,
         refreshStatus: feed.refresh_status || 'idle',
         refreshError: feed.refresh_error,
@@ -117,6 +117,7 @@ export const useApiStore = defineStore('api', () => {
         completionOnRefresh: feed.completion_on_refresh,
         maxCompletionRetries: feed.max_completion_retries,
         firecrawlEnabled: feed.firecrawl_enabled,
+        taggingEnabled: feed.tagging_enabled,
       }))
 
       feeds.value = mappedFeeds
@@ -185,6 +186,7 @@ export const useApiStore = defineStore('api', () => {
       completion_on_refresh?: boolean
       max_completion_retries?: number
       firecrawl_enabled?: boolean
+      tagging_enabled?: boolean
     }
   ) {
     loading.value = true

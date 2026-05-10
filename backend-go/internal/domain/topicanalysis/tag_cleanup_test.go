@@ -32,6 +32,11 @@ func setupTagCleanupTestDB(t *testing.T) *gorm.DB {
 		&models.TopicTag{},
 		&models.TopicTagRelation{},
 		&models.ArticleTopicTag{},
+		&models.TopicTagEmbedding{},
+		&models.Feed{},
+		&models.Article{},
+		&models.EmbeddingConfig{},
+		&models.MergeReembeddingQueue{},
 	); err != nil {
 		t.Fatalf("migrate test tables: %v", err)
 	}
@@ -329,4 +334,159 @@ func TestCleanupMultiParentConflicts_RemovesRedundantAncestorParentWithoutLLM(t 
 
 	assertAbstractRelationExists(t, db, directParent.ID, child.ID)
 	assertAbstractRelationMissing(t, db, root.ID, child.ID)
+}
+
+func TestCleanupWhitespaceDuplicateTags_MergesVariantPair(t *testing.T) {
+	db := setupTagCleanupTestDB(t)
+
+	feed := models.Feed{Title: "Test Feed", URL: "https://example.com/ws"}
+	db.Create(&feed)
+
+	// Create two tags with same label but different whitespace
+	tag1 := models.TopicTag{
+		Slug: "deepseek首轮融资", Label: "DeepSeek首轮融资",
+		Category: "event", Source: "llm", Status: "active",
+	}
+	tag2 := models.TopicTag{
+		Slug: "deepseek 首轮融资", Label: "DeepSeek 首轮融资",
+		Category: "event", Source: "llm", Status: "active",
+	}
+	db.Create(&tag1)
+	db.Create(&tag2)
+
+	// tag1 has more articles (survivor), tag2 has fewer (merged)
+	for i := 0; i < 3; i++ {
+		article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("Art %d", i)}
+		db.Create(&article)
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag1.ID, Source: "llm"})
+	}
+	article := models.Article{FeedID: feed.ID, Title: "Shared"}
+	db.Create(&article)
+	db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag1.ID, Source: "llm"})
+	db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag2.ID, Source: "llm"})
+
+	merged, err := CleanupWhitespaceDuplicateTags()
+	if err != nil {
+		t.Fatalf("CleanupWhitespaceDuplicateTags error: %v", err)
+	}
+	if merged != 1 {
+		t.Fatalf("merged = %d, want 1", merged)
+	}
+
+	// Verify tag2 is now merged
+	var result models.TopicTag
+	db.First(&result, tag2.ID)
+	if result.Status != "merged" {
+		t.Fatalf("tag2 status = %q, want 'merged'", result.Status)
+	}
+
+	// Verify tag1 is still active
+	var result2 models.TopicTag
+	db.First(&result2, tag1.ID)
+	if result2.Status != "active" {
+		t.Fatalf("tag1 status = %q, want 'active'", result2.Status)
+	}
+}
+
+func TestCleanupWhitespaceDuplicateTags_NoDuplicates(t *testing.T) {
+	db := setupTagCleanupTestDB(t)
+
+	tag1 := models.TopicTag{Slug: "ai-industry", Label: "AI Industry", Category: "keyword", Status: "active"}
+	tag2 := models.TopicTag{Slug: "semiconductor", Label: "Semiconductor", Category: "keyword", Status: "active"}
+	db.Create(&tag1)
+	db.Create(&tag2)
+
+	merged, err := CleanupWhitespaceDuplicateTags()
+	if err != nil {
+		t.Fatalf("CleanupWhitespaceDuplicateTags error: %v", err)
+	}
+	if merged != 0 {
+		t.Fatalf("merged = %d, want 0", merged)
+	}
+}
+
+func TestCleanupDegenerateAbstractTrees_FlattensDeepChain(t *testing.T) {
+	db := setupTagCleanupTestDB(t)
+
+	// Create a 4-level chain: A -> B -> C -> D -> 3 leaves
+	// leaf/depth at B: 3/3 = 1.0 < 1.5 => should flatten B
+	a := models.TopicTag{Slug: "a", Label: "A", Category: "keyword", Source: "abstract", Status: "active"}
+	b := models.TopicTag{Slug: "b", Label: "B", Category: "keyword", Source: "abstract", Status: "active"}
+	c := models.TopicTag{Slug: "c", Label: "C", Category: "keyword", Source: "abstract", Status: "active"}
+	d := models.TopicTag{Slug: "d", Label: "D", Category: "keyword", Source: "abstract", Status: "active"}
+	db.Create(&a)
+	db.Create(&b)
+	db.Create(&c)
+	db.Create(&d)
+
+	leaf1 := models.TopicTag{Slug: "l1", Label: "Leaf1", Category: "keyword", Status: "active"}
+	leaf2 := models.TopicTag{Slug: "l2", Label: "Leaf2", Category: "keyword", Status: "active"}
+	leaf3 := models.TopicTag{Slug: "l3", Label: "Leaf3", Category: "keyword", Status: "active"}
+	db.Create(&leaf1)
+	db.Create(&leaf2)
+	db.Create(&leaf3)
+
+	// D -> leaves
+	db.Create(&models.TopicTagRelation{ParentID: d.ID, ChildID: leaf1.ID, RelationType: "abstract"})
+	db.Create(&models.TopicTagRelation{ParentID: d.ID, ChildID: leaf2.ID, RelationType: "abstract"})
+	db.Create(&models.TopicTagRelation{ParentID: d.ID, ChildID: leaf3.ID, RelationType: "abstract"})
+
+	// C -> D, B -> C, A -> B
+	db.Create(&models.TopicTagRelation{ParentID: c.ID, ChildID: d.ID, RelationType: "abstract"})
+	db.Create(&models.TopicTagRelation{ParentID: b.ID, ChildID: c.ID, RelationType: "abstract"})
+	db.Create(&models.TopicTagRelation{ParentID: a.ID, ChildID: b.ID, RelationType: "abstract"})
+
+	flattened, err := CleanupDegenerateAbstractTrees()
+	if err != nil {
+		t.Fatalf("CleanupDegenerateAbstractTrees error: %v", err)
+	}
+	if flattened < 1 {
+		t.Fatalf("flattened = %d, want >= 1", flattened)
+	}
+}
+
+func TestCleanupDegenerateAbstractTrees_HealthyTree(t *testing.T) {
+	db := setupTagCleanupTestDB(t)
+
+	// 2-level chain with 8 leaves: ratio = 8/2 = 4.0 >= 1.5 => should NOT flatten
+	root := models.TopicTag{Slug: "root", Label: "Root", Category: "keyword", Source: "abstract", Status: "active"}
+	child := models.TopicTag{Slug: "child", Label: "Child", Category: "keyword", Source: "abstract", Status: "active"}
+	db.Create(&root)
+	db.Create(&child)
+	db.Create(&models.TopicTagRelation{ParentID: root.ID, ChildID: child.ID, RelationType: "abstract"})
+
+	for i := 0; i < 8; i++ {
+		leaf := models.TopicTag{Slug: fmt.Sprintf("leaf%d", i), Label: fmt.Sprintf("Leaf%d", i), Category: "keyword", Status: "active"}
+		db.Create(&leaf)
+		db.Create(&models.TopicTagRelation{ParentID: child.ID, ChildID: leaf.ID, RelationType: "abstract"})
+	}
+
+	flattened, err := CleanupDegenerateAbstractTrees()
+	if err != nil {
+		t.Fatalf("CleanupDegenerateAbstractTrees error: %v", err)
+	}
+	if flattened != 0 {
+		t.Fatalf("flattened = %d, want 0 (healthy tree should not be flattened)", flattened)
+	}
+}
+
+func TestNormalizeSlugForComparison(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"deepseek首轮融资", "deepseek首轮融资"},
+		{"deepseek 首轮融资", "deepseek首轮融资"},
+		{"foo bar", "foobar"},
+		{"foo   bar", "foobar"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := normalizeSlugForComparison(tt.input)
+			if result != tt.expected {
+				t.Errorf("normalizeSlugForComparison(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
 }

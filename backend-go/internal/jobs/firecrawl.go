@@ -245,17 +245,19 @@ func (s *FirecrawlScheduler) runCrawlCycle(batchID string) {
 		}
 		database.DB.Model(&art).Updates(updates)
 
-		if err := topicextraction.NewTagJobQueue(database.DB).Enqueue(topicextraction.TagJobRequest{
-			ArticleID:    art.ID,
-			FeedName:     feed.Title,
-			CategoryName: topicextraction.FeedCategoryName(feed),
-			ForceRetag:   true,
-			Reason:       "firecrawl_completed",
-		}); err != nil {
-			failed++
-			_ = s.queue.MarkFailed(job, err.Error(), time.Minute)
-			logging.Warnf("[Firecrawl] Failed to enqueue retag for article %d after crawl: %v", art.ID, err)
-			continue
+		if feed.TaggingEnabled {
+			if err := topicextraction.NewTagJobQueue(database.DB).Enqueue(topicextraction.TagJobRequest{
+				ArticleID:    art.ID,
+				FeedName:     feed.Title,
+				CategoryName: topicextraction.FeedCategoryName(feed),
+				ForceRetag:   true,
+				Reason:       "firecrawl_completed",
+			}); err != nil {
+				failed++
+				_ = s.queue.MarkFailed(job, err.Error(), time.Minute)
+				logging.Warnf("[Firecrawl] Failed to enqueue retag for article %d after crawl: %v", art.ID, err)
+				continue
+			}
 		}
 
 		if err := s.queue.MarkCompleted(job.ID); err != nil {

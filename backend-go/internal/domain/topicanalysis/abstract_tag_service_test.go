@@ -737,6 +737,78 @@ func TestLinkAbstractParentChildRejectsDepthBeyondLimit(t *testing.T) {
 	assertAbstractRelationMissing(t, db, level4.ID, childRoot.ID)
 }
 
+func TestLinkAbstractParentChild_RejectsOverlappingParents(t *testing.T) {
+	db := setupAbstractTagServiceTestDB(t)
+
+	feed := models.Feed{Title: "Test Feed", URL: "https://example.com/mp"}
+	db.Create(&feed)
+
+	// Create existing parent and child already linked
+	existingParent := models.TopicTag{Slug: "ex-parent", Label: "Existing Parent", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
+	newParent := models.TopicTag{Slug: "new-parent", Label: "New Parent", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
+	child := models.TopicTag{Slug: "mp-child", Label: "Child", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
+	db.Create(&existingParent)
+	db.Create(&newParent)
+	db.Create(&child)
+
+	db.Create(&models.TopicTagRelation{ParentID: existingParent.ID, ChildID: child.ID, RelationType: "abstract"})
+
+	// Both parents share the same articles (high overlap)
+	for i := 0; i < 5; i++ {
+		article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("Shared %d", i)}
+		db.Create(&article)
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: existingParent.ID, Source: "llm"})
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: newParent.ID, Source: "llm"})
+	}
+
+	err := linkAbstractParentChild(child.ID, newParent.ID)
+	if err == nil {
+		t.Fatal("expected multi-parent rejection error")
+	}
+	if !strings.Contains(err.Error(), "multi-parent prevention") {
+		t.Fatalf("expected 'multi-parent prevention' error, got %v", err)
+	}
+
+	// Verfiy child still has old parent
+	assertAbstractRelationExists(t, db, existingParent.ID, child.ID)
+}
+
+func TestLinkAbstractParentChild_AcceptsNonOverlappingParents(t *testing.T) {
+	db := setupAbstractTagServiceTestDB(t)
+
+	feed := models.Feed{Title: "Test Feed", URL: "https://example.com/mp2"}
+	db.Create(&feed)
+
+	existingParent := models.TopicTag{Slug: "ex-parent2", Label: "Existing Parent 2", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
+	newParent := models.TopicTag{Slug: "new-parent2", Label: "New Parent 2", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
+	child := models.TopicTag{Slug: "mp-child2", Label: "Child 2", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
+	db.Create(&existingParent)
+	db.Create(&newParent)
+	db.Create(&child)
+
+	db.Create(&models.TopicTagRelation{ParentID: existingParent.ID, ChildID: child.ID, RelationType: "abstract"})
+
+	// Parents have completely separate article sets
+	for i := 0; i < 3; i++ {
+		article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("EP %d", i)}
+		db.Create(&article)
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: existingParent.ID, Source: "llm"})
+	}
+	for i := 0; i < 3; i++ {
+		article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("NP %d", i)}
+		db.Create(&article)
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: newParent.ID, Source: "llm"})
+	}
+
+	err := linkAbstractParentChild(child.ID, newParent.ID)
+	if err != nil {
+		t.Fatalf("expected success for non-overlapping parents, got: %v", err)
+	}
+
+	// Verfiy child is now under new parent
+	assertAbstractRelationExists(t, db, newParent.ID, child.ID)
+}
+
 func TestGetAbstractSubtreeDepthStopsAtCycles(t *testing.T) {
 	db := setupAbstractTagServiceTestDB(t)
 
@@ -894,5 +966,230 @@ func TestCollectOrganizeMergeSources(t *testing.T) {
 	}
 	if !sourceIDs[1] || !sourceIDs[3] {
 		t.Fatalf("expected source IDs 1 and 3, got %v", sourceIDs)
+	}
+}
+
+func TestValidateAbstractCreation_SingleChild(t *testing.T) {
+	db := setupAbstractTagServiceTestDB(t)
+
+	child := models.TopicTag{Slug: "child1", Label: "Child 1", Category: "keyword", Status: "active"}
+	if err := db.Create(&child).Error; err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	err := validateAbstractCreation(db, []*models.TopicTag{&child})
+	if err == nil {
+		t.Fatal("expected error for single child, got nil")
+	}
+	if !strings.Contains(err.Error(), "insufficient children") {
+		t.Fatalf("expected 'insufficient children' error, got: %v", err)
+	}
+}
+
+func TestValidateAbstractCreation_HighOverlap(t *testing.T) {
+	db := setupAbstractTagServiceTestDB(t)
+
+	tag1 := models.TopicTag{Slug: "tag1", Label: "Tag 1", Category: "keyword", Status: "active"}
+	tag2 := models.TopicTag{Slug: "tag2", Label: "Tag 2", Category: "keyword", Status: "active"}
+	db.Create(&tag1)
+	db.Create(&tag2)
+
+	feed := models.Feed{Title: "Test Feed", URL: "https://example.com/1"}
+	db.Create(&feed)
+
+	// Create 10 articles, all shared between both tags (100% overlap, Jaccard = 1.0)
+	for i := 0; i < 10; i++ {
+		article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("Article %d", i)}
+		db.Create(&article)
+
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag1.ID, Source: "llm"})
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag2.ID, Source: "llm"})
+	}
+
+	err := validateAbstractCreation(db, []*models.TopicTag{&tag1, &tag2})
+	if err == nil {
+		t.Fatal("expected error for high overlap, got nil")
+	}
+	if !strings.Contains(err.Error(), "share too many articles") {
+		t.Fatalf("expected 'share too many articles' error, got: %v", err)
+	}
+}
+
+func TestValidateAbstractCreation_Acceptable(t *testing.T) {
+	db := setupAbstractTagServiceTestDB(t)
+
+	tag1 := models.TopicTag{Slug: "tag1", Label: "Tag 1", Category: "keyword", Status: "active"}
+	tag2 := models.TopicTag{Slug: "tag2", Label: "Tag 2", Category: "keyword", Status: "active"}
+	tag3 := models.TopicTag{Slug: "tag3", Label: "Tag 3", Category: "keyword", Status: "active"}
+	db.Create(&tag1)
+	db.Create(&tag2)
+	db.Create(&tag3)
+
+	feed := models.Feed{Title: "Test Feed", URL: "https://example.com/2"}
+	db.Create(&feed)
+
+	// Tag1: articles 1-3, Tag2: articles 4-6, Tag3: articles 7-9 (0% overlap)
+	for i := 1; i <= 3; i++ {
+		article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("Article %d", i)}
+		db.Create(&article)
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag1.ID, Source: "llm"})
+	}
+	for i := 4; i <= 6; i++ {
+		article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("Article %d", i)}
+		db.Create(&article)
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag2.ID, Source: "llm"})
+	}
+	for i := 7; i <= 9; i++ {
+		article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("Article %d", i)}
+		db.Create(&article)
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag3.ID, Source: "llm"})
+	}
+
+	err := validateAbstractCreation(db, []*models.TopicTag{&tag1, &tag2, &tag3})
+	if err != nil {
+		t.Fatalf("expected no error for acceptable abstract, got: %v", err)
+	}
+}
+
+func TestValidateAbstractCreation_MixedOverlap(t *testing.T) {
+	db := setupAbstractTagServiceTestDB(t)
+
+	tag1 := models.TopicTag{Slug: "tag1", Label: "Tag 1", Category: "keyword", Status: "active"}
+	tag2 := models.TopicTag{Slug: "tag2", Label: "Tag 2", Category: "keyword", Status: "active"}
+	db.Create(&tag1)
+	db.Create(&tag2)
+
+	feed := models.Feed{Title: "Test Feed", URL: "https://example.com/3"}
+	db.Create(&feed)
+
+	// Create 10 articles: 8 shared (overlap), 2 unique to each
+	for i := 0; i < 8; i++ {
+		article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("Shared %d", i)}
+		db.Create(&article)
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag1.ID, Source: "llm"})
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag2.ID, Source: "llm"})
+	}
+	// These extra articles make tag1: 10 total, tag2: 10 total
+	// Intersection: 8, union: 12, Jaccard: 0.67 -> below 0.7 threshold
+	for i := 0; i < 2; i++ {
+		article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("Unique T1 %d", i)}
+		db.Create(&article)
+		db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag1.ID, Source: "llm"})
+
+		article2 := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("Unique T2 %d", i)}
+		db.Create(&article2)
+		db.Create(&models.ArticleTopicTag{ArticleID: article2.ID, TopicTagID: tag2.ID, Source: "llm"})
+	}
+
+	// Jaccard = 8/(8+2+2) = 8/12 = 0.67 < 0.7, should pass
+	err := validateAbstractCreation(db, []*models.TopicTag{&tag1, &tag2})
+	if err != nil {
+		t.Fatalf("expected no error for mixed overlap (Jaccard=0.67), got: %v", err)
+	}
+}
+
+func TestValidateAbstractCreation_DegenerateTree(t *testing.T) {
+	db := setupAbstractTagServiceTestDB(t)
+
+	// Create a 3-level chain: root -> mid -> leaf (1 leaf, depth=2→ratio=0.5)
+	root := models.TopicTag{Slug: "root", Label: "Root", Category: "keyword", Source: "abstract", Status: "active"}
+	mid := models.TopicTag{Slug: "mid", Label: "Mid", Category: "keyword", Source: "abstract", Status: "active"}
+	leaf := models.TopicTag{Slug: "leaf", Label: "Leaf", Category: "keyword", Source: "llm", Status: "active"}
+	db.Create(&root)
+	db.Create(&mid)
+	db.Create(&leaf)
+
+	// mid -> leaf
+	db.Create(&models.TopicTagRelation{ParentID: mid.ID, ChildID: leaf.ID, RelationType: "abstract"})
+	// root -> mid
+	db.Create(&models.TopicTagRelation{ParentID: root.ID, ChildID: mid.ID, RelationType: "abstract"})
+
+	feed := models.Feed{Title: "Test", URL: "https://example.com/4"}
+	db.Create(&feed)
+	article := models.Article{FeedID: feed.ID, Title: "Article"}
+	db.Create(&article)
+	db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: leaf.ID, Source: "llm"})
+
+	// mid is the child candidate, with subtree: 1 leaf at depth=1 (mid→leaf)
+	// ratio = 1 leaf / (1 depth + 1 for new abstract) = 1/2 = 0.5 < 1.5
+	err := validateAbstractCreation(db, []*models.TopicTag{&mid})
+	// Should fail due to insufficient children (only 1)
+	if err == nil {
+		t.Fatal("expected error for single child (ratio irrelevant, fails count check first)")
+	}
+}
+
+func TestValidateAbstractCreation_HealthyTree(t *testing.T) {
+	db := setupAbstractTagServiceTestDB(t)
+
+	// 3 child tags, each with 2 leaf tags = 6 leaves total
+	tag1 := models.TopicTag{Slug: "tag1", Label: "Tag 1", Category: "keyword", Status: "active"}
+	tag2 := models.TopicTag{Slug: "tag2", Label: "Tag 2", Category: "keyword", Status: "active"}
+	tag3 := models.TopicTag{Slug: "tag3", Label: "Tag 3", Category: "keyword", Status: "active"}
+	db.Create(&tag1)
+	db.Create(&tag2)
+	db.Create(&tag3)
+
+	leaf1a := models.TopicTag{Slug: "l1a", Label: "Leaf 1a", Category: "keyword", Status: "active"}
+	leaf1b := models.TopicTag{Slug: "l1b", Label: "Leaf 1b", Category: "keyword", Status: "active"}
+	leaf2a := models.TopicTag{Slug: "l2a", Label: "Leaf 2a", Category: "keyword", Status: "active"}
+	leaf2b := models.TopicTag{Slug: "l2b", Label: "Leaf 2b", Category: "keyword", Status: "active"}
+	leaf3a := models.TopicTag{Slug: "l3a", Label: "Leaf 3a", Category: "keyword", Status: "active"}
+	leaf3b := models.TopicTag{Slug: "l3b", Label: "Leaf 3b", Category: "keyword", Status: "active"}
+	db.Create(&leaf1a)
+	db.Create(&leaf1b)
+	db.Create(&leaf2a)
+	db.Create(&leaf2b)
+	db.Create(&leaf3a)
+	db.Create(&leaf3b)
+
+	// tag1 -> leaf1a, leaf1b
+	db.Create(&models.TopicTagRelation{ParentID: tag1.ID, ChildID: leaf1a.ID, RelationType: "abstract"})
+	db.Create(&models.TopicTagRelation{ParentID: tag1.ID, ChildID: leaf1b.ID, RelationType: "abstract"})
+	// tag2 -> leaf2a, leaf2b
+	db.Create(&models.TopicTagRelation{ParentID: tag2.ID, ChildID: leaf2a.ID, RelationType: "abstract"})
+	db.Create(&models.TopicTagRelation{ParentID: tag2.ID, ChildID: leaf2b.ID, RelationType: "abstract"})
+	// tag3 -> leaf3a, leaf3b
+	db.Create(&models.TopicTagRelation{ParentID: tag3.ID, ChildID: leaf3a.ID, RelationType: "abstract"})
+	db.Create(&models.TopicTagRelation{ParentID: tag3.ID, ChildID: leaf3b.ID, RelationType: "abstract"})
+
+	feed := models.Feed{Title: "Test", URL: "https://example.com/5"}
+	db.Create(&feed)
+	for _, leaf := range []*models.TopicTag{&leaf1a, &leaf1b, &leaf2a, &leaf2b, &leaf3a, &leaf3b} {
+		for i := 0; i < 3; i++ {
+			article := models.Article{FeedID: feed.ID, Title: fmt.Sprintf("Art-%s-%d", leaf.Slug, i)}
+			db.Create(&article)
+			db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: leaf.ID, Source: "llm"})
+		}
+	}
+
+	// ratio = 6 leaves / (1 depth max + 1 for new abstract) = 6/2 = 3.0 >= 1.5, should pass
+	err := validateAbstractCreation(db, []*models.TopicTag{&tag1, &tag2, &tag3})
+	if err != nil {
+		t.Fatalf("expected no error for healthy tree, got: %v", err)
+	}
+}
+
+func TestJaccardSimilarity(t *testing.T) {
+	tests := []struct {
+		name     string
+		setA     map[uint]bool
+		setB     map[uint]bool
+		expected float64
+	}{
+		{"both empty", map[uint]bool{}, map[uint]bool{}, 0},
+		{"one empty", map[uint]bool{1: true, 2: true}, map[uint]bool{}, 0},
+		{"no overlap", map[uint]bool{1: true, 2: true}, map[uint]bool{3: true, 4: true}, 0},
+		{"full overlap", map[uint]bool{1: true, 2: true}, map[uint]bool{1: true, 2: true}, 1.0},
+		{"partial overlap", map[uint]bool{1: true, 2: true, 3: true}, map[uint]bool{1: true, 2: true, 4: true}, 0.5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := jaccardSimilarity(tt.setA, tt.setB)
+			if result != tt.expected {
+				t.Errorf("jaccardSimilarity() = %.4f, want %.4f", result, tt.expected)
+			}
+		})
 	}
 }

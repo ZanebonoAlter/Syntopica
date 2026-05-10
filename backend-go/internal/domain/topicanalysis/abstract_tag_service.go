@@ -207,6 +207,23 @@ func processAbstractJudgment(ctx context.Context, candidates []TagCandidate, jud
 		abstractChildSet[ch] = true
 	}
 
+	// Pre-validate candidate children for information gain (only for new abstracts, not reuse)
+	if abstractTag == nil {
+		var candidateChildren []*models.TopicTag
+		for _, candidate := range candidates {
+			if candidate.Tag == nil {
+				continue
+			}
+			if abstractChildSet[candidate.Tag.Label] {
+				candidateChildren = append(candidateChildren, candidate.Tag)
+			}
+		}
+		if validateErr := validateAbstractCreation(database.DB, candidateChildren); validateErr != nil {
+			logging.Infof("Abstract tag creation rejected for %q: %v", abstractName, validateErr)
+			return nil, nil
+		}
+	}
+
 	var createdNewAbstract bool
 	var abstractChildren []*models.TopicTag
 
@@ -424,4 +441,167 @@ func buildCandidateSummary(candidates []TagCandidate) []string {
 		}
 	}
 	return summaries
+}
+
+// collectArticleIDsForTags batch-fetches article IDs associated with the given tag IDs.
+// Returns a map from tag ID to a set of article IDs.
+func collectArticleIDsForTags(db *gorm.DB, tagIDs []uint) (map[uint]map[uint]bool, error) {
+	if len(tagIDs) == 0 {
+		return make(map[uint]map[uint]bool), nil
+	}
+
+	var rows []struct {
+		TopicTagID uint `gorm:"column:topic_tag_id"`
+		ArticleID  uint `gorm:"column:article_id"`
+	}
+	if err := db.Model(&models.ArticleTopicTag{}).
+		Where("topic_tag_id IN ?", tagIDs).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("collect article IDs for tags: %w", err)
+	}
+
+	result := make(map[uint]map[uint]bool, len(tagIDs))
+	for _, tagID := range tagIDs {
+		result[tagID] = make(map[uint]bool)
+	}
+	for _, row := range rows {
+		result[row.TopicTagID][row.ArticleID] = true
+	}
+	return result, nil
+}
+
+// jaccardSimilarity computes the Jaccard similarity coefficient between two article ID sets.
+// Jaccard = |intersection| / |union|. Returns 0 if both sets are empty.
+func jaccardSimilarity(setA, setB map[uint]bool) float64 {
+	if len(setA) == 0 && len(setB) == 0 {
+		return 0
+	}
+
+	intersection := 0
+	for id := range setA {
+		if setB[id] {
+			intersection++
+		}
+	}
+
+	union := len(setA) + len(setB) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
+// computeLeafToDepthRatio calculates the leaf-to-depth ratio that would result if the
+// given candidate children were placed under a new abstract tag.
+// Returns the ratio and an error.
+func computeLeafToDepthRatio(tx *gorm.DB, childIDs []uint) (float64, error) {
+	if len(childIDs) == 0 {
+		return 0, nil
+	}
+
+	totalLeaves := 0
+	maxDepth := 0
+
+	for _, childID := range childIDs {
+		leaves, depth := countLeavesAndDepth(tx, childID, 0)
+		totalLeaves += leaves
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+	}
+
+	// The new abstract adds one level of depth
+	treeDepth := maxDepth + 1
+	if treeDepth == 0 {
+		return float64(totalLeaves), nil
+	}
+	return float64(totalLeaves) / float64(treeDepth), nil
+}
+
+// countLeavesAndDepth recursively counts leaf tags and max depth in a subtree.
+func countLeavesAndDepth(tx *gorm.DB, tagID uint, currentDepth int) (leaves int, maxDepth int) {
+	visited := make(map[uint]bool)
+	return countLeavesAndDepthVisited(tx, tagID, currentDepth, visited)
+}
+
+func countLeavesAndDepthVisited(tx *gorm.DB, tagID uint, currentDepth int, visited map[uint]bool) (leaves int, maxDepth int) {
+	if visited[tagID] {
+		return 0, currentDepth
+	}
+	visited[tagID] = true
+
+	var childIDs []uint
+	tx.Model(&models.TopicTagRelation{}).
+		Where("parent_id = ? AND relation_type = ?", tagID, "abstract").
+		Pluck("child_id", &childIDs)
+
+	if len(childIDs) == 0 {
+		return 1, currentDepth
+	}
+
+	totalLeaves := 0
+	deepest := currentDepth
+	for _, childID := range childIDs {
+		l, d := countLeavesAndDepthVisited(tx, childID, currentDepth+1, visited)
+		totalLeaves += l
+		if d > deepest {
+			deepest = d
+		}
+	}
+	return totalLeaves, deepest
+}
+
+const (
+	minAbstractChildren = 2
+	maxPairwiseJaccard  = 0.7
+	minLeafDepthRatio   = 1.5
+)
+
+// validateAbstractCreation checks whether creating a new abstract tag for the given
+// candidate children meets information gain thresholds. Returns nil if acceptable,
+// or an error describing why creation should be rejected.
+func validateAbstractCreation(tx *gorm.DB, children []*models.TopicTag) error {
+	if len(children) < minAbstractChildren {
+		return fmt.Errorf("insufficient children: need at least %d, got %d", minAbstractChildren, len(children))
+	}
+
+	// Collect article IDs for all candidate children
+	tagIDs := make([]uint, len(children))
+	for i, child := range children {
+		tagIDs[i] = child.ID
+	}
+
+	articleSets, err := collectArticleIDsForTags(tx, tagIDs)
+	if err != nil {
+		return fmt.Errorf("collect article IDs: %w", err)
+	}
+
+	// Check max pairwise Jaccard similarity
+	for i := 0; i < len(children); i++ {
+		for j := i + 1; j < len(children); j++ {
+			jaccard := jaccardSimilarity(articleSets[children[i].ID], articleSets[children[j].ID])
+			if jaccard > maxPairwiseJaccard {
+				return fmt.Errorf("children %q (id=%d) and %q (id=%d) share too many articles (Jaccard=%.2f > %.2f), suggest merge instead",
+					children[i].Label, children[i].ID,
+					children[j].Label, children[j].ID,
+					jaccard, maxPairwiseJaccard)
+			}
+		}
+	}
+
+	// Check leaf-to-depth ratio
+	childIDs := make([]uint, len(children))
+	for i, child := range children {
+		childIDs[i] = child.ID
+	}
+	ratio, err := computeLeafToDepthRatio(tx, childIDs)
+	if err != nil {
+		return fmt.Errorf("compute leaf-to-depth ratio: %w", err)
+	}
+	if ratio < minLeafDepthRatio {
+		return fmt.Errorf("degenerate tree: leaf-to-depth ratio %.2f < %.2f for %d children",
+			ratio, minLeafDepthRatio, len(children))
+	}
+
+	return nil
 }

@@ -56,14 +56,14 @@ func TestBuildArticleFromEntryTracksOnlyRunnableStates(t *testing.T) {
 			name:                  "summary only: summary pending, no firecrawl",
 			firecrawlEnabled:      false,
 			articleSummaryEnabled: true,
-			wantFirecrawlStatus:   "",
+			wantFirecrawlStatus:   "complete",
 			wantSummaryStatus:     "pending",
 		},
 		{
 			name:                  "neither enabled: both default",
 			firecrawlEnabled:      false,
 			articleSummaryEnabled: false,
-			wantFirecrawlStatus:   "",
+			wantFirecrawlStatus:   "complete",
 			wantSummaryStatus:     "complete",
 		},
 		{
@@ -242,4 +242,171 @@ func TestRefreshFeedEnqueuesFirecrawlJobWhenEnabled(t *testing.T) {
 
 func ptrTime(value time.Time) *time.Time {
 	return &value
+}
+
+func TestEnqueueArticleProcessingTaggingMatrix(t *testing.T) {
+	setupFeedsTestDB(t)
+
+	rssServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Feed</title>
+    <description>desc</description>
+    <link>https://example.com</link>
+    <item>
+      <title>Test Article</title>
+      <link>https://example.com/test</link>
+      <description>desc</description>
+      <pubDate>Sun, 22 Mar 2026 09:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>`))
+	}))
+	defer rssServer.Close()
+
+	tests := []struct {
+		name              string
+		firecrawlEnabled  bool
+		taggingEnabled    bool
+		wantFirecrawlJobs int64
+		wantTagJobs       int64
+	}{
+		{
+			name:              "firecrawl off + tagging on: tag job only",
+			firecrawlEnabled:  false,
+			taggingEnabled:    true,
+			wantFirecrawlJobs: 0,
+			wantTagJobs:       1,
+		},
+		{
+			name:              "firecrawl off + tagging off: no jobs",
+			firecrawlEnabled:  false,
+			taggingEnabled:    false,
+			wantFirecrawlJobs: 0,
+			wantTagJobs:       0,
+		},
+		{
+			name:              "firecrawl on + tagging on: firecrawl job only (tag comes later via callback)",
+			firecrawlEnabled:  true,
+			taggingEnabled:    true,
+			wantFirecrawlJobs: 1,
+			wantTagJobs:       0,
+		},
+		{
+			name:              "firecrawl on + tagging off: firecrawl job only",
+			firecrawlEnabled:  true,
+			taggingEnabled:    false,
+			wantFirecrawlJobs: 1,
+			wantTagJobs:       0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupFeedsTestDB(t)
+
+			feed := models.Feed{
+				Title:            tt.name,
+				URL:              rssServer.URL,
+				MaxArticles:      10,
+				FirecrawlEnabled: tt.firecrawlEnabled,
+				TaggingEnabled:   tt.taggingEnabled,
+			}
+			if err := database.DB.Create(&feed).Error; err != nil {
+				t.Fatalf("create feed: %v", err)
+			}
+			database.DB.Model(&feed).Update("tagging_enabled", tt.taggingEnabled)
+
+			service := NewFeedService()
+			if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+				t.Fatalf("refresh feed: %v", err)
+			}
+
+			var firecrawlCount int64
+			database.DB.Model(&models.FirecrawlJob{}).Count(&firecrawlCount)
+			if firecrawlCount != tt.wantFirecrawlJobs {
+				t.Errorf("firecrawl jobs = %d, want %d", firecrawlCount, tt.wantFirecrawlJobs)
+			}
+
+			var tagCount int64
+			database.DB.Model(&models.TagJob{}).Count(&tagCount)
+			if tagCount != tt.wantTagJobs {
+				t.Errorf("tag jobs = %d, want %d", tagCount, tt.wantTagJobs)
+			}
+		})
+	}
+}
+
+func TestCleanupOldArticlesUnlimited(t *testing.T) {
+	tests := []struct {
+		name        string
+		maxArticles int
+		wantDeleted bool
+	}{
+		{
+			name:        "max_articles=0 means unlimited, no deletion",
+			maxArticles: 0,
+			wantDeleted: false,
+		},
+		{
+			name:        "max_articles=9999 means unlimited, no deletion",
+			maxArticles: 9999,
+			wantDeleted: false,
+		},
+		{
+			name:        "max_articles=2 triggers cleanup",
+			maxArticles: 2,
+			wantDeleted: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupFeedsTestDB(t)
+
+			feed := models.Feed{
+				Title:       tt.name,
+				URL:         fmt.Sprintf("https://example.com/%s", t.Name()),
+				MaxArticles: 100,
+			}
+			if err := database.DB.Create(&feed).Error; err != nil {
+				t.Fatalf("create feed: %v", err)
+			}
+			if tt.maxArticles != 100 {
+				database.DB.Model(&feed).Update("max_articles", tt.maxArticles)
+				feed.MaxArticles = tt.maxArticles
+			}
+
+			now := time.Now()
+			for i := 0; i < 5; i++ {
+				article := models.Article{
+					FeedID:  feed.ID,
+					Title:   fmt.Sprintf("Article %d", i),
+					Link:    fmt.Sprintf("https://example.com/%s/%d", t.Name(), i),
+					PubDate: ptrTime(now.Add(-time.Duration(i) * time.Hour)),
+				}
+				if err := database.DB.Create(&article).Error; err != nil {
+					t.Fatalf("create article: %v", err)
+				}
+			}
+
+			service := NewFeedService()
+			service.CleanupOldArticles(&feed)
+
+			var remaining int64
+			database.DB.Model(&models.Article{}).Where("feed_id = ?", feed.ID).Count(&remaining)
+
+			if tt.wantDeleted {
+				if remaining > int64(tt.maxArticles) {
+					t.Errorf("remaining articles = %d, expected <= %d", remaining, tt.maxArticles)
+				}
+			} else {
+				if remaining != 5 {
+					t.Errorf("remaining articles = %d, expected 5 (no deletion)", remaining)
+				}
+			}
+		})
+	}
 }

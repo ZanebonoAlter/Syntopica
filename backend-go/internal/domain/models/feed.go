@@ -24,6 +24,7 @@ type Feed struct {
 	CompletionOnRefresh   bool       `gorm:"default:true" json:"completion_on_refresh"`
 	MaxCompletionRetries  int        `gorm:"default:3" json:"max_completion_retries"`
 	FirecrawlEnabled      bool       `gorm:"default:false" json:"firecrawl_enabled"`
+	TaggingEnabled        bool       `gorm:"default:true" json:"tagging_enabled"`
 	Articles              []Article  `gorm:"foreignKey:FeedID;constraint:OnDelete:CASCADE" json:"articles,omitempty"`
 	Category              *Category  `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
 }
@@ -58,6 +59,7 @@ func (f *Feed) ToDict(stats *FeedStats) map[string]interface{} {
 		"completion_on_refresh":   f.CompletionOnRefresh,
 		"max_completion_retries":  f.MaxCompletionRetries,
 		"firecrawl_enabled":       f.FirecrawlEnabled,
+		"tagging_enabled":         f.TaggingEnabled,
 	}
 
 	if stats != nil {

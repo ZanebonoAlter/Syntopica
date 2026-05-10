@@ -315,19 +315,48 @@ func GetArticleTags(articleID uint) ([]topictypes.TopicTag, error) {
 		return nil, err
 	}
 
+	tagIDs := make([]uint, 0, len(links))
+	for _, link := range links {
+		if link.TopicTag != nil {
+			tagIDs = append(tagIDs, link.TopicTagID)
+		}
+	}
+
+	articleCounts := make(map[uint]int)
+	if len(tagIDs) > 0 {
+		type countRow struct {
+			TopicTagID uint
+			Count      int
+		}
+		var rows []countRow
+		if err := database.DB.Model(&models.ArticleTopicTag{}).
+			Select("topic_tag_id, COUNT(*) as count").
+			Where("topic_tag_id IN ?", tagIDs).
+			Group("topic_tag_id").
+			Scan(&rows).Error; err != nil {
+			logging.Warnf("GetArticleTags: failed to batch-fetch article counts: %v", err)
+		}
+		for _, row := range rows {
+			articleCounts[row.TopicTagID] = row.Count
+		}
+	}
+
 	result := make([]topictypes.TopicTag, 0, len(links))
 	for _, link := range links {
 		if link.TopicTag == nil {
 			continue
 		}
 		result = append(result, topictypes.TopicTag{
-			Label:       link.TopicTag.Label,
-			Slug:        link.TopicTag.Slug,
-			Category:    link.TopicTag.Category,
-			Icon:        link.TopicTag.Icon,
-			Aliases:     parseAliasesFromJSON(link.TopicTag.Aliases),
-			Score:       link.Score,
-			Description: link.TopicTag.Description,
+			ID:           link.TopicTag.ID,
+			Label:        link.TopicTag.Label,
+			Slug:         link.TopicTag.Slug,
+			Category:     link.TopicTag.Category,
+			Icon:         link.TopicTag.Icon,
+			Aliases:      parseAliasesFromJSON(link.TopicTag.Aliases),
+			Score:        link.Score,
+			Description:  link.TopicTag.Description,
+			IsWatched:    link.TopicTag.IsWatched,
+			ArticleCount: articleCounts[link.TopicTagID],
 		})
 	}
 

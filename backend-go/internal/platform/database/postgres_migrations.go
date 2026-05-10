@@ -463,5 +463,66 @@ func postgresMigrations() []Migration {
 				return nil
 			},
 		},
+		{
+			Version:     "20260510_0001",
+			Description: "Add tagging_enabled column to feeds for per-feed tagging control.",
+			Up: func(db *gorm.DB) error {
+				if err := db.Exec("ALTER TABLE feeds ADD COLUMN IF NOT EXISTS tagging_enabled BOOLEAN NOT NULL DEFAULT true").Error; err != nil {
+					return fmt.Errorf("add tagging_enabled to feeds: %w", err)
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260510_0002",
+			Description: "Create hierarchy_config table for tag hierarchy template configuration.",
+			Up: func(db *gorm.DB) error {
+				if err := db.AutoMigrate(&models.HierarchyConfig{}, &models.HierarchyConfigVersion{}); err != nil {
+					return fmt.Errorf("auto-migrate hierarchy_config tables: %w", err)
+				}
+				var count int64
+				if err := db.Model(&models.HierarchyConfig{}).Count(&count).Error; err != nil {
+					return fmt.Errorf("check hierarchy_config count: %w", err)
+				}
+				if count == 0 {
+					if err := db.Create(&models.HierarchyConfig{
+						Templates: models.HierarchyTemplatesJSON{},
+						Version:   1,
+					}).Error; err != nil {
+						return fmt.Errorf("seed hierarchy_config: %w", err)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260510_0003",
+			Description: "Create hierarchy_pending_changes table for template violation tracking.",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					`CREATE TABLE IF NOT EXISTS hierarchy_pending_changes (
+						id SERIAL PRIMARY KEY,
+						tag_id INTEGER NOT NULL REFERENCES topic_tags(id) ON DELETE CASCADE,
+						tag_label VARCHAR(160) NOT NULL,
+						change_type VARCHAR(50) NOT NULL,
+						current_parent_id INTEGER REFERENCES topic_tags(id) ON DELETE SET NULL,
+						current_parent_label VARCHAR(160) DEFAULT '',
+						reason TEXT DEFAULT '',
+						status VARCHAR(20) NOT NULL DEFAULT 'pending',
+						created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+						resolved_at TIMESTAMP
+					)`,
+					"CREATE INDEX IF NOT EXISTS idx_hierarchy_pending_changes_status ON hierarchy_pending_changes(status)",
+					"CREATE INDEX IF NOT EXISTS idx_hierarchy_pending_changes_tag_id ON hierarchy_pending_changes(tag_id)",
+					"CREATE INDEX IF NOT EXISTS idx_hierarchy_pending_changes_type_status ON hierarchy_pending_changes(change_type, status)",
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("hierarchy_pending_changes migration: %w", err)
+					}
+				}
+				return nil
+			},
+		},
 	}
 }

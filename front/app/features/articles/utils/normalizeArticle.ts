@@ -6,6 +6,7 @@ function normalizeArticleTags(tags: any[] | undefined): ArticleTag[] {
   return tags
     .filter(tag => tag && typeof tag.slug === 'string' && typeof tag.label === 'string')
     .map(tag => ({
+      id: typeof tag.id === 'number' ? tag.id : undefined,
       slug: tag.slug,
       label: tag.label,
       category: tag.category || 'keyword',
@@ -17,6 +18,7 @@ function normalizeArticleTags(tags: any[] | undefined): ArticleTag[] {
         : typeof tag.articleCount === 'number'
           ? tag.articleCount
           : undefined,
+      isWatched: typeof tag.is_watched === 'boolean' ? tag.is_watched : undefined,
     }))
 }
 

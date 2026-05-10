@@ -156,6 +156,7 @@ func SetupRoutes(r *gin.Engine) {
 		topicanalysisdomain.RegisterWatchedTagsRoutes(api)
 		topicanalysisdomain.RegisterTagMergePreviewRoutes(api)
 		topicanalysisdomain.RegisterAbstractTagRoutes(api)
+		topicanalysisdomain.RegisterHierarchyRoutes(api.Group("/hierarchy"))
 
 		narrativedomain.RegisterNarrativeRoutes(api)
 

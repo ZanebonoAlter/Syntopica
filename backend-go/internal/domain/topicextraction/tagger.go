@@ -384,6 +384,12 @@ func findOrCreateTag(ctx context.Context, tag topictypes.TopicTag, source string
 		go ensureTagEmbedding(es, newTag.ID)
 	}
 
+	go func() {
+		if _, err := topicanalysis.PlaceTagInHierarchy(context.Background(), &newTag); err != nil {
+			logging.Warnf("Failed to place tag %d in hierarchy: %v", newTag.ID, err)
+		}
+	}()
+
 	GetTagCache().Set(slug, category, &newTag)
 	return &newTag, nil
 }

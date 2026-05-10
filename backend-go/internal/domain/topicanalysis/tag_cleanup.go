@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"time"
 
 	"my-robot-backend/internal/domain/models"
@@ -537,4 +538,301 @@ func promoteSingleChild(parentID, childID uint) error {
 		return tx.Model(&models.TopicTag{}).Where("id = ?", parentID).
 			Updates(map[string]interface{}{"status": "inactive"}).Error
 	})
+}
+
+// normalizeSlugForComparison strips all whitespace from a slug for dedup comparison.
+var whitespacePattern = regexp.MustCompile(`\s+`)
+
+func normalizeSlugForComparison(slug string) string {
+	return whitespacePattern.ReplaceAllString(slug, "")
+}
+
+// CleanupWhitespaceDuplicateTags finds active tags whose slugs differ only in whitespace
+// and merges them, keeping the tag with more article associations.
+func CleanupWhitespaceDuplicateTags() (int, error) {
+	var tags []models.TopicTag
+	if err := database.DB.Where("status = ?", "active").Find(&tags).Error; err != nil {
+		return 0, fmt.Errorf("load active tags: %w", err)
+	}
+
+	// Group by category + normalized slug (spaces stripped)
+	type groupKey struct {
+		Category      string
+		NormalizedSlug string
+	}
+	groups := make(map[groupKey][]*models.TopicTag)
+	for i := range tags {
+		key := groupKey{
+			Category:       tags[i].Category,
+			NormalizedSlug: normalizeSlugForComparison(tags[i].Slug),
+		}
+		groups[key] = append(groups[key], &tags[i])
+	}
+
+	merged := 0
+	for key, group := range groups {
+		if len(group) < 2 {
+			continue
+		}
+
+		// Find the tag with most articles to keep as survivor
+		articleCounts := countArticlesByTag(tagPtrsToIDs(group), "")
+		var survivor *models.TopicTag
+		maxCount := -1
+		for _, tag := range group {
+			count := articleCounts[tag.ID]
+			if count > maxCount {
+				maxCount = count
+				survivor = tag
+			}
+		}
+		if survivor == nil {
+			continue
+		}
+
+		for _, tag := range group {
+			if tag.ID == survivor.ID {
+				continue
+			}
+			if err := MergeTags(tag.ID, survivor.ID); err != nil {
+				logging.Warnf("CleanupWhitespaceDuplicateTags: failed to merge tag %d (%q) into %d (%q): %v",
+					tag.ID, tag.Label, survivor.ID, survivor.Label, err)
+				continue
+			}
+			merged++
+			logging.Infof("CleanupWhitespaceDuplicateTags: merged whitespace-variant %d (%q, slug=%q) into %d (%q, slug=%q) [category=%s]",
+				tag.ID, tag.Label, tag.Slug, survivor.ID, survivor.Label, survivor.Slug, key.Category)
+		}
+	}
+
+	logging.Infof("CleanupWhitespaceDuplicateTags: merged %d whitespace-variant duplicates", merged)
+	return merged, nil
+}
+
+func tagPtrsToIDs(tags []*models.TopicTag) []uint {
+	ids := make([]uint, len(tags))
+	for i, t := range tags {
+		ids[i] = t.ID
+	}
+	return ids
+}
+
+// CleanupDegenerateAbstractTrees walks abstract tag chains, computes leaf-to-depth ratio,
+// and flattens degenerate chains by promoting children to the nearest ancestor with
+// a healthy ratio (>= 1.5). Intermediate nodes in degenerate chains are deactivated.
+func CleanupDegenerateAbstractTrees() (int, error) {
+	// Find root abstract tags (active abstract with no active abstract parent)
+	var rootIDs []uint
+	database.DB.Raw(`
+		SELECT t.id FROM topic_tags t
+		WHERE t.source = 'abstract' AND t.status = 'active'
+		AND NOT EXISTS (
+			SELECT 1 FROM topic_tag_relations r
+			JOIN topic_tags p ON p.id = r.parent_id
+			WHERE r.child_id = t.id AND r.relation_type = 'abstract'
+			AND p.status = 'active'
+		)
+	`).Pluck("id", &rootIDs)
+
+	flattened := 0
+	for _, rootID := range rootIDs {
+		count, err := flattenDegenerateAbstractSubtree(database.DB, rootID, 0)
+		if err != nil {
+			logging.Warnf("CleanupDegenerateAbstractTrees: error on root %d: %v", rootID, err)
+			continue
+		}
+		flattened += count
+	}
+
+	logging.Infof("CleanupDegenerateAbstractTrees: flattened %d degenerate nodes", flattened)
+	return flattened, nil
+}
+
+// flattenDegenerateAbstractSubtree recurses through an abstract tree.
+// If the leaf-to-depth ratio for the subtree rooted at tagID is < 1.5,
+// it flattens intermediate nodes by promoting their children upward.
+// Returns the count of nodes deactivated.
+func flattenDegenerateAbstractSubtree(db *gorm.DB, tagID uint, depth int) (int, error) {
+	var childIDs []uint
+	db.Model(&models.TopicTagRelation{}).
+		Where("parent_id = ? AND relation_type = ?", tagID, "abstract").
+		Pluck("child_id", &childIDs)
+
+	if len(childIDs) == 0 {
+		// Leaf node: count as 1 leaf at current depth
+		return 0, nil
+	}
+
+	// Recursively process children first (bottom-up flattening)
+	flattened := 0
+	for _, childID := range childIDs {
+		count, err := flattenDegenerateAbstractSubtree(db, childID, depth+1)
+		if err != nil {
+			return flattened, err
+		}
+		flattened += count
+	}
+
+	// Check if this subtree is degenerate (using local subtree depth)
+	var leafIDs []uint
+	var maxLeafDepth int
+	collectLeaves(db, tagID, 0, &leafIDs, &maxLeafDepth)
+	totalDepth := maxLeafDepth
+	if totalDepth < 1 {
+		totalDepth = 1
+	}
+	ratio := float64(len(leafIDs)) / float64(totalDepth)
+
+	if ratio < 1.5 && depth > 0 {
+		// This node is intermediate and creates a degenerate chain
+		// Promote its children to its parent(s)
+		flattened += flattenDegenerateNode(db, tagID, childIDs)
+	}
+
+	return flattened, nil
+}
+
+// collectLeaves finds all leaf tags in the subtree and the max depth.
+func collectLeaves(db *gorm.DB, tagID uint, currentDepth int, leafIDs *[]uint, maxDepth *int) int {
+	visited := make(map[uint]bool)
+	return collectLeavesVisited(db, tagID, currentDepth, leafIDs, maxDepth, visited)
+}
+
+func collectLeavesVisited(db *gorm.DB, tagID uint, currentDepth int, leafIDs *[]uint, maxDepth *int, visited map[uint]bool) int {
+	if visited[tagID] {
+		return currentDepth
+	}
+	visited[tagID] = true
+
+	var childIDs []uint
+	db.Model(&models.TopicTagRelation{}).
+		Where("parent_id = ? AND relation_type = ?", tagID, "abstract").
+		Pluck("child_id", &childIDs)
+
+	if currentDepth > *maxDepth {
+		*maxDepth = currentDepth
+	}
+
+	if len(childIDs) == 0 {
+		*leafIDs = append(*leafIDs, tagID)
+		return currentDepth
+	}
+
+	deepestChild := currentDepth
+	for _, childID := range childIDs {
+		d := collectLeavesVisited(db, childID, currentDepth+1, leafIDs, maxDepth, visited)
+		if d > deepestChild {
+			deepestChild = d
+		}
+	}
+	return deepestChild
+}
+
+// flattenDegenerateNode promotes children of a degenerate intermediate node to its
+// parent(s) and deactivates the intermediate node. Returns the count (1 if successful).
+func flattenDegenerateNode(db *gorm.DB, tagID uint, childIDs []uint) int {
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var parentIDs []uint
+		tx.Model(&models.TopicTagRelation{}).
+			Where("child_id = ? AND relation_type = ?", tagID, "abstract").
+			Pluck("parent_id", &parentIDs)
+
+		// Link each child to each grandparent
+		for _, childID := range childIDs {
+			for _, parentID := range parentIDs {
+				var count int64
+				tx.Model(&models.TopicTagRelation{}).
+					Where("parent_id = ? AND child_id = ? AND relation_type = ?",
+						parentID, childID, "abstract").
+					Count(&count)
+				if count > 0 {
+					continue
+				}
+				if wouldCycle, err := wouldCreateCycle(tx, parentID, childID); err != nil || wouldCycle {
+					continue
+				}
+				if err := tx.Create(&models.TopicTagRelation{
+					ParentID:     parentID,
+					ChildID:      childID,
+					RelationType: "abstract",
+				}).Error; err != nil {
+					return fmt.Errorf("link grandparent %d to child %d: %w", parentID, childID, err)
+				}
+			}
+		}
+
+		// Remove old relations for this node
+		tx.Where("parent_id = ? AND relation_type = ?", tagID, "abstract").Delete(&models.TopicTagRelation{})
+		tx.Where("child_id = ? AND relation_type = ?", tagID, "abstract").Delete(&models.TopicTagRelation{})
+
+		// Deactivate the node
+		tx.Where("topic_tag_id = ?", tagID).Delete(&models.TopicTagEmbedding{})
+		if err := tx.Model(&models.TopicTag{}).Where("id = ?", tagID).
+			Updates(map[string]interface{}{"status": "inactive"}).Error; err != nil {
+			return fmt.Errorf("deactivate tag %d: %w", tagID, err)
+		}
+
+		logging.Infof("CleanupDegenerateAbstractTrees: flattened node %d, promoted %d children", tagID, len(childIDs))
+		return nil
+	})
+
+	if err != nil {
+		logging.Warnf("CleanupDegenerateAbstractTrees: failed to flatten node %d: %v", tagID, err)
+		return 0
+	}
+	return 1
+}
+
+type TemplateViolationResult struct {
+	DepthExceeded int `json:"depth_exceeded"`
+	CrossCategory int `json:"cross_category"`
+	PendingAdded  int `json:"pending_added"`
+}
+
+func CleanupTemplateViolations() (*TemplateViolationResult, error) {
+	result := &TemplateViolationResult{}
+
+	var relations []models.TopicTagRelation
+	if err := database.DB.Where("relation_type = 'abstract'").
+		Preload("Parent").Preload("Child").Find(&relations).Error; err != nil {
+		return nil, fmt.Errorf("load relations: %w", err)
+	}
+
+	for _, r := range relations {
+		if r.Parent == nil || r.Child == nil {
+			continue
+		}
+
+		tmpl := GetHierarchyManager().GetTemplate(r.Parent.Category, "")
+		if tmpl == nil {
+			continue
+		}
+
+		childLevel := GetTagLevel(r.Child)
+		if childLevel > tmpl.MaxLevel {
+			result.DepthExceeded++
+			createPendingChange(r.ChildID, r.Child.Label, "depth_exceeded", &r.ParentID, r.Parent.Label,
+				fmt.Sprintf("Depth %d exceeds max %d for template %s", childLevel, tmpl.MaxLevel, tmpl.TemplateKey()))
+		}
+
+		if r.Parent.Category != r.Child.Category {
+			result.CrossCategory++
+			createPendingChange(r.ChildID, r.Child.Label, "cross_category", &r.ParentID, r.Parent.Label,
+				fmt.Sprintf("Parent category %s != child category %s", r.Parent.Category, r.Child.Category))
+		}
+	}
+
+	result.PendingAdded = result.DepthExceeded + result.CrossCategory
+	return result, nil
+}
+
+func createPendingChange(tagID uint, label, changeType string, parentID *uint, parentLabel, reason string) {
+	change := models.HierarchyPendingChange{
+		TagID: tagID, TagLabel: label, ChangeType: changeType,
+		CurrentParentID: parentID, CurrentParentLabel: parentLabel,
+		Reason: reason, Status: "pending",
+	}
+	if err := database.DB.Create(&change).Error; err != nil {
+		logging.Warnf("Failed to create pending change for tag %d (%s): %v", tagID, changeType, err)
+	}
 }

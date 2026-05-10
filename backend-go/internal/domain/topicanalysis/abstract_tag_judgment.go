@@ -47,6 +47,7 @@ func callLLMForTagJudgment(ctx context.Context, candidates []TagCandidate, newLa
 	hasHighSim := shouldAllowMergeJudgment(candidates)
 	maxCandidateDepth := computeMaxCandidateDepth(candidates)
 	prompt := buildTagJudgmentPrompt(candidates, newLabel, category, narrativeContext, hasHighSim, maxCandidateDepth)
+	prompt = injectHierarchyContext(prompt, category)
 
 	req := airouter.ChatRequest{
 		Capability: airouter.CapabilityTopicTagging,
@@ -536,6 +537,34 @@ Respond with JSON now.`, rules, tagList, newLabel, category, categoryRules)
 	return prompt
 }
 
+func injectHierarchyContext(prompt string, category string) string {
+	mgr := GetHierarchyManager()
+	if mgr == nil {
+		return prompt
+	}
+	tmpl := mgr.GetTemplate(category, "")
+	if tmpl == nil {
+		return prompt
+	}
+
+	var sb strings.Builder
+	sb.WriteString(prompt)
+	sb.WriteString(fmt.Sprintf("\n\n=== HIERARCHY LEVEL GUIDANCE ===\n"))
+	sb.WriteString(fmt.Sprintf("Template: %s (%d levels)\n", tmpl.TemplateKey(), tmpl.MaxLevel))
+	sb.WriteString("Level definitions:\n")
+	for _, l := range tmpl.Levels {
+		sb.WriteString(fmt.Sprintf("  L%d: %s — %s", l.Level, l.Name, l.Description))
+		if l.IsLeaf {
+			sb.WriteString(" (LEAF)")
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString(fmt.Sprintf("\nWhen creating abstracts, ensure the abstract name fits the appropriate level's semantics.\n"))
+	sb.WriteString(fmt.Sprintf("Abstract tags should be L2 or L1 level. Newly created child tags default to L%d (leaf).\n", tmpl.GetLeafLevel()))
+
+	return sb.String()
+}
+
 func findSimilarExistingAbstract(ctx context.Context, name, desc, category string, candidates []TagCandidate) *models.TopicTag {
 	es := NewEmbeddingService()
 	thresholds := es.GetThresholds()
@@ -949,6 +978,8 @@ func batchJudgeAbstractRelationships(ctx context.Context, tagA *models.TopicTag,
 返回 JSON: {"judgments": [{"index": 候选编号, "action": "merge"|"parent_A"|"parent_B"|"skip", "target": "A"|"<候选编号>"|"", "reason": "简要说明"}]}`,
 		tagA.Label, formatTagPromptContext(tagA), formatChildLabels(childrenA),
 		strings.Join(entries, "\n"))
+
+	prompt = injectHierarchyContext(prompt, tagA.Category)
 
 	router := airouter.NewRouter()
 	req := airouter.ChatRequest{
@@ -1387,6 +1418,21 @@ func reparentOrLinkAbstractChild(ctx context.Context, childID, newParentID uint)
 		parentAncestryDepth := getTagDepthFromRootDB(tx, newParentID)
 		if childSubtreeDepth+parentAncestryDepth+1 > maxHierarchyDepth {
 			return fmt.Errorf("depth limit: placing subtree(depth=%d) under parent(ancestry=%d) would exceed max depth %d", childSubtreeDepth, parentAncestryDepth, maxHierarchyDepth)
+		}
+
+		var targetTag, candidateTag models.TopicTag
+		if err := tx.First(&targetTag, newParentID).Error; err != nil {
+			return fmt.Errorf("load target tag %d: %w", newParentID, err)
+		}
+		if err := tx.First(&candidateTag, childID).Error; err != nil {
+			return fmt.Errorf("load candidate tag %d: %w", childID, err)
+		}
+		targetLevel := GetTagLevel(&targetTag)
+		candidateLevel := GetTagLevel(&candidateTag)
+		if targetLevel != candidateLevel {
+			logging.Infof("Adopt narrower: skip tag %d (L%d) adopting %d (L%d) — cross-level",
+				targetTag.ID, targetLevel, candidateTag.ID, candidateLevel)
+			return fmt.Errorf("cross-level skip: target L%d != candidate L%d", targetLevel, candidateLevel)
 		}
 
 		relation := models.TopicTagRelation{

@@ -44,7 +44,11 @@ type TagHierarchyCleanupRunSummary struct {
 	MultiParentFixed       int    `json:"multi_parent_fixed"`
 	EmptyAbstracts         int    `json:"empty_abstracts"`
 	SingleChildAbstracts   int    `json:"single_child_abstracts"`
-	AdoptNarrowerProcessed int    `json:"adopt_narrower_processed"`
+	WhitespaceDupsMerged   int    `json:"whitespace_dups_merged"`
+	DegenerateTreesFlattened   int  `json:"degenerate_trees_flattened"`
+	TemplateDepthViolations    int  `json:"template_depth_violations"`
+	TemplateCrossCategory      int  `json:"template_cross_category"`
+	AdoptNarrowerProcessed     int  `json:"adopt_narrower_processed"`
 	AbstractUpdateProcessed int   `json:"abstract_update_processed"`
 	TreesReviewed          int    `json:"trees_reviewed"`
 	MergesApplied          int    `json:"merges_applied"`
@@ -194,7 +198,7 @@ func (s *TagHierarchyCleanupScheduler) initSchedulerTask() {
 			nextRun = now.Add(s.checkInterval)
 		}
 		updates := map[string]interface{}{
-			"description":         "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, hierarchy pruning, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill",
+			"description":         "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, hierarchy pruning, whitespace-dup, degenerate-tree, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill",
 			"check_interval":      int(s.checkInterval.Seconds()),
 			"next_execution_time": &nextRun,
 		}
@@ -207,7 +211,7 @@ func (s *TagHierarchyCleanupScheduler) initSchedulerTask() {
 
 	task = models.SchedulerTask{
 		Name:              "tag_hierarchy_cleanup",
-		Description:       "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, hierarchy pruning, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill",
+		Description:       "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, hierarchy pruning, whitespace-dup, degenerate-tree, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill",
 		CheckInterval:     int(s.checkInterval.Seconds()),
 		Status:            "idle",
 		NextExecutionTime: &nextRun,
@@ -363,6 +367,36 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	summary.SingleChildAbstracts = singleChild
 	logging.Infof("Phase 3: promoted %d children from single-child abstract parents", singleChild)
 
+	// Phase 3.5: Whitespace-variant duplicate cleanup
+	whitespaceDups, err := topicanalysis.CleanupWhitespaceDuplicateTags()
+	if err != nil {
+		logging.Errorf("Phase 3.5 whitespace duplicate cleanup failed: %v", err)
+		summary.Errors++
+	}
+	summary.WhitespaceDupsMerged = whitespaceDups
+	logging.Infof("Phase 3.5: merged %d whitespace-variant duplicates", whitespaceDups)
+
+	// Phase 3.6: Degenerate abstract tree flattening
+	degenerateFlattened, err := topicanalysis.CleanupDegenerateAbstractTrees()
+	if err != nil {
+		logging.Errorf("Phase 3.6 degenerate tree flattening failed: %v", err)
+		summary.Errors++
+	}
+	summary.DegenerateTreesFlattened = degenerateFlattened
+	logging.Infof("Phase 3.6: flattened %d degenerate abstract nodes", degenerateFlattened)
+
+	// Phase 3d: Template depth compliance check
+	v, err := topicanalysis.CleanupTemplateViolations()
+	if err != nil {
+		logging.Errorf("Phase 3d template violation check failed: %v", err)
+		summary.Errors++
+	} else {
+		summary.TemplateDepthViolations = v.DepthExceeded
+		summary.TemplateCrossCategory = v.CrossCategory
+		logging.Infof("Phase 3d: found %d depth-exceeded, %d cross-category violations, %d pending added",
+			v.DepthExceeded, v.CrossCategory, v.PendingAdded)
+	}
+
 	// Phase 4: Adopt narrower queue processing (before tree review)
 	phaseStart = time.Now()
 	var adopted int
@@ -397,13 +431,44 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	}
 	logging.Infof("Phase 5 completed in %v (processed %d)", time.Since(phaseStart), updated)
 
-	// Phase 6: Tree review
+	// Phase 6: Template-aligned tree review
 	phaseStart = time.Now()
 	for _, category := range []string{"event", "keyword", "person"} {
 		if budget.IsTimedOut() {
 			logging.Infoln("Phase 6: budget timed out, skipping remaining categories")
 			break
 		}
+
+		tmpl := topicanalysis.GetHierarchyManager().GetTemplate(category, "")
+		if tmpl == nil {
+			logging.Warnf("Phase 6: no template for category %s, skipping", category)
+			continue
+		}
+
+		forest, forestErr := topicanalysis.BuildTagForest(category, 0)
+		if forestErr != nil {
+			logging.Warnf("Phase 6: failed to build forest for %s: %v", category, forestErr)
+			continue
+		}
+		if len(forest) == 0 {
+			continue
+		}
+
+		alignmentIssues := topicanalysis.Phase6_CheckLevelAlignment(forest, tmpl)
+		if len(alignmentIssues) > 0 {
+			logging.Infof("Phase 6 (%s): found %d level alignment issues", category, len(alignmentIssues))
+			for _, issue := range alignmentIssues {
+				logging.Warnf("Phase 6 alignment: %s", issue)
+			}
+		}
+
+		l1Deduped, _ := topicanalysis.Phase6_DedupL1(ctx, tmpl)
+		l2Deduped, _ := topicanalysis.Phase6_DedupL2(ctx, tmpl)
+		auditIssues, _ := topicanalysis.Phase6_SampleAuditLeaves(ctx, tmpl)
+
+		logging.Infof("Phase 6 (%s): alignment=%d issues, L1 dedup=%d, L2 dedup=%d, leaf audit=%d issues",
+			category, len(alignmentIssues), l1Deduped, l2Deduped, auditIssues)
+
 		reviewResult, reviewErr := topicanalysis.ReviewHierarchyTrees(category, 7, budget)
 		if reviewErr != nil {
 			logging.Errorf("Phase 6 tree review failed for %s: %v", category, reviewErr)
@@ -445,8 +510,8 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	summary.LLMCallsTotal = budgetStats.TotalConsumed
 	summary.LLMBudgetTotal = budgetStats.TotalBudget
 	summary.TimedOut = budgetStats.TimedOut
-	summary.Reason = fmt.Sprintf("zombie=%d, zero_article=%d, low_quality_single=%d, stale_zero_score=%d, flat_merges=%d, orphaned_rels=%d, multi_parent=%d, empty_abstracts=%d, single_child_abstracts=%d, adopt_narrower=%d, abstract_update=%d, trees_reviewed=%d, merges=%d, moves=%d, groups_created=%d, groups_reused=%d, desc_backfilled=%d",
-		summary.ZombieDeactivated, summary.ZeroArticleTagsDeactivated, summary.LowQualitySingleArticleRemoved, summary.StaleZeroScoreDeactivated, summary.FlatMergesApplied, summary.OrphanedRelations, summary.MultiParentFixed, summary.EmptyAbstracts, summary.SingleChildAbstracts, summary.AdoptNarrowerProcessed, summary.AbstractUpdateProcessed, summary.TreesReviewed, summary.MergesApplied, summary.MovesApplied, summary.GroupsCreated, summary.GroupsReused, summary.DescriptionBackfilled)
+	summary.Reason = fmt.Sprintf("zombie=%d, zero_article=%d, low_quality_single=%d, stale_zero_score=%d, flat_merges=%d, orphaned_rels=%d, multi_parent=%d, empty_abstracts=%d, single_child_abstracts=%d, whitespace_dups=%d, degenerate_flattened=%d, adopt_narrower=%d, abstract_update=%d, trees_reviewed=%d, merges=%d, moves=%d, groups_created=%d, groups_reused=%d, desc_backfilled=%d",
+		summary.ZombieDeactivated, summary.ZeroArticleTagsDeactivated, summary.LowQualitySingleArticleRemoved, summary.StaleZeroScoreDeactivated, summary.FlatMergesApplied, summary.OrphanedRelations, summary.MultiParentFixed, summary.EmptyAbstracts, summary.SingleChildAbstracts, summary.WhitespaceDupsMerged, summary.DegenerateTreesFlattened, summary.AdoptNarrowerProcessed, summary.AbstractUpdateProcessed, summary.TreesReviewed, summary.MergesApplied, summary.MovesApplied, summary.GroupsCreated, summary.GroupsReused, summary.DescriptionBackfilled)
 
 	logging.Infof("Tag cleanup cycle completed: %s", summary.Reason)
 
@@ -504,7 +569,7 @@ func (s *TagHierarchyCleanupScheduler) updateSchedulerStatus(status, lastError s
 
 	task = models.SchedulerTask{
 		Name:              "tag_hierarchy_cleanup",
-		Description:       "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, hierarchy pruning, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill",
+		Description:       "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, hierarchy pruning, whitespace-dup, degenerate-tree, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill",
 		CheckInterval:     int(s.checkInterval.Seconds()),
 		Status:            status,
 		LastError:         lastError,

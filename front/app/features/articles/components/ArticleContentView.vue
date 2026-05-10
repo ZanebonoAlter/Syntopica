@@ -15,6 +15,7 @@ import {
 } from '~/utils/articleContentSource'
 import { useTagWebSocket } from '~/features/articles/composables/useTagWebSocket'
 import type { ArticleTag } from '~/types/article'
+import { useWatchedTagsApi } from '~/api/watchedTags'
 import {
   getFirecrawlStatusMeta,
   getStatusToneClasses,
@@ -50,6 +51,7 @@ const feedsStore = useFeedsStore()
 const { isAIEnabled } = useAI()
 const { $dayjs } = useNuxtApp()
 const articlesApi = useArticlesApi()
+const watchedTagsApi = useWatchedTagsApi()
 const { crawlArticle } = useFirecrawlApi()
 const { getCompletionStatus, completeArticle } = useContentCompletion()
 const { onResult: onTagResult, onError: onTagError, watchArticle, clearWatch } = useTagWebSocket()
@@ -64,6 +66,7 @@ const manualSummaryLoading = ref(false)
 const manualTaggingLoading = ref(false)
 const manualActionError = ref<string | null>(null)
 const taggingError = ref<string | null>(null)
+const watchPendingIds = ref(new Set<number>())
 
 const feed = computed(() => {
   const article = props.article
@@ -263,6 +266,33 @@ async function handleManualTagging() {
   }
 }
 
+async function handleTagWatchToggle(payload: { id: number; slug: string }) {
+  if (!props.article?.tags) return
+  if (watchPendingIds.value.has(payload.id)) return
+
+  const tag = props.article.tags.find(t => t.id === payload.id)
+  if (!tag) return
+
+  const previousWatched = tag.isWatched
+  const newWatched = !previousWatched
+
+  tag.isWatched = newWatched
+  watchPendingIds.value.add(payload.id)
+
+  try {
+    const response = newWatched
+      ? await watchedTagsApi.watchTag(payload.id)
+      : await watchedTagsApi.unwatchTag(payload.id)
+    if (!response.success) {
+      throw new Error(response.error || '操作失败')
+    }
+  } catch {
+    tag.isWatched = previousWatched
+  } finally {
+    watchPendingIds.value.delete(payload.id)
+  }
+}
+
 onTagResult((articleId: number, tags: ArticleTag[]) => {
   if (!props.article || String(articleId) !== props.article.id) return
 
@@ -400,11 +430,14 @@ const displayContent = computed(() => {
     return ''
   }
 
+  let content: string
   if (activeContentSource.value === 'firecrawl') {
-    return renderMarkdown(resolvedContent)
+    content = renderMarkdown(resolvedContent)
+  } else {
+    content = resolvedContent
   }
 
-  return resolvedContent
+  return content.replace(/<img[^>]*src=["']Base64-Image-Removed["'][^>]*\/?>/gi, '')
 })
 
 const showDescription = computed(() => {
@@ -554,6 +587,8 @@ import '~/components/article/ArticleContent.css'
           :highlighted-slugs="highlightedTagSlugs"
           compact
           :show-article-count="false"
+          show-watch
+          @watch-toggle="handleTagWatchToggle"
         />
         <div class="summary-surface">
           <div class="markdown-body markdown-summary" v-html="renderedStoredSummary" />
@@ -577,6 +612,8 @@ import '~/components/article/ArticleContent.css'
           :tags="article.tags"
           :highlighted-slugs="highlightedTagSlugs"
           compact
+          show-watch
+          @watch-toggle="handleTagWatchToggle"
         />
         <span v-if="manualTaggingLoading" class="inline-flex items-center gap-1 text-xs text-ink-medium">
           <Icon icon="mdi:loading" width="14" height="14" class="animate-spin" />
@@ -758,6 +795,8 @@ import '~/components/article/ArticleContent.css'
             :highlighted-slugs="highlightedTagSlugs"
             compact
             :show-article-count="false"
+            show-watch
+            @watch-toggle="handleTagWatchToggle"
           />
           <div class="summary-surface">
           <div class="markdown-body markdown-summary" v-html="renderedStoredSummary" />
@@ -781,6 +820,8 @@ import '~/components/article/ArticleContent.css'
             :tags="article.tags"
             :highlighted-slugs="highlightedTagSlugs"
             compact
+            show-watch
+            @watch-toggle="handleTagWatchToggle"
           />
           <span v-if="manualTaggingLoading" class="inline-flex items-center gap-1 text-xs text-ink-medium">
             <Icon icon="mdi:loading" width="14" height="14" class="animate-spin" />

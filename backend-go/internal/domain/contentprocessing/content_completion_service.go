@@ -195,14 +195,16 @@ func (s *ContentCompletionService) CompleteArticleWithMetadata(ctx context.Conte
 		return fmt.Errorf("failed to save article: %w", err)
 	}
 
-	if err := topicextraction.NewTagJobQueue(database.DB).Enqueue(topicextraction.TagJobRequest{
-		ArticleID:    article.ID,
-		FeedName:     feed.Title,
-		CategoryName: topicextraction.FeedCategoryName(feed),
-		ForceRetag:   false,
-		Reason:       "summary_completed",
-	}); err != nil {
-		return fmt.Errorf("enqueue retag job after completion: %w", err)
+	if feed.TaggingEnabled {
+		if err := topicextraction.NewTagJobQueue(database.DB).Enqueue(topicextraction.TagJobRequest{
+			ArticleID:    article.ID,
+			FeedName:     feed.Title,
+			CategoryName: topicextraction.FeedCategoryName(feed),
+			ForceRetag:   false,
+			Reason:       "summary_completed",
+		}); err != nil {
+			return fmt.Errorf("enqueue retag job after completion: %w", err)
+		}
 	}
 
 	return nil

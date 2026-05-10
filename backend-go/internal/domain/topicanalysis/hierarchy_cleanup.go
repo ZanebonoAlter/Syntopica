@@ -1228,3 +1228,87 @@ func abs(x int) int {
 	}
 	return x
 }
+
+func Phase6_CheckLevelAlignment(forest []*TreeNode, tmpl *CategoryHierarchyTemplate) []string {
+	var issues []string
+	for _, root := range forest {
+		checkNodeLevelAlignment(root, tmpl, &issues)
+	}
+	return issues
+}
+
+func checkNodeLevelAlignment(node *TreeNode, tmpl *CategoryHierarchyTemplate, issues *[]string) {
+	depth := node.Depth
+	if depth+1 > tmpl.MaxLevel {
+		*issues = append(*issues, fmt.Sprintf("tag %d(%s) depth %d exceeds max %d",
+			node.Tag.ID, node.Tag.Label, depth+1, tmpl.MaxLevel))
+	}
+	for _, child := range node.Children {
+		checkNodeLevelAlignment(child, tmpl, issues)
+	}
+}
+
+func Phase6_DedupL1(ctx context.Context, tmpl *CategoryHierarchyTemplate) (int, error) {
+	l1Tags, err := loadExistingL1Tags(tmpl.Category, tmpl)
+	if err != nil {
+		return 0, fmt.Errorf("load L1 tags: %w", err)
+	}
+	merged := 0
+	for _, tag := range l1Tags {
+		if tag.Status != "active" {
+			continue
+		}
+		dedupL1(ctx, tag)
+		var count int64
+		database.DB.Model(&models.TopicTag{}).Where("id = ? AND status = 'active'", tag.ID).Count(&count)
+		if count == 0 {
+			merged++
+		}
+	}
+	return merged, nil
+}
+
+func Phase6_DedupL2(ctx context.Context, tmpl *CategoryHierarchyTemplate) (int, error) {
+	var l2Tags []models.TopicTag
+	if err := database.DB.Where("category = ? AND source = ? AND status = 'active'", tmpl.Category, "abstract").Find(&l2Tags).Error; err != nil {
+		return 0, fmt.Errorf("load L2 tags: %w", err)
+	}
+	merged := 0
+	for i := range l2Tags {
+		depth := getTagDepthFromRoot(l2Tags[i].ID)
+		if depth == 1 {
+			dedupL2(ctx, &l2Tags[i])
+			var count int64
+			database.DB.Model(&models.TopicTag{}).Where("id = ? AND status = 'active'", l2Tags[i].ID).Count(&count)
+			if count == 0 {
+				merged++
+			}
+		}
+	}
+	return merged, nil
+}
+
+func Phase6_SampleAuditLeaves(ctx context.Context, tmpl *CategoryHierarchyTemplate) (int, error) {
+	leafLevel := tmpl.GetLeafLevel()
+	var leafTags []models.TopicTag
+	if err := database.DB.Where("category = ? AND status = 'active'", tmpl.Category).Find(&leafTags).Error; err != nil {
+		return 0, fmt.Errorf("load leaf tags: %w", err)
+	}
+
+	issues := 0
+	for _, tag := range leafTags {
+		depth := getTagDepthFromRoot(tag.ID)
+		level := ResolveLevelFromDepth(tag.Category, depth)
+		if level == leafLevel {
+			var parentRel models.TopicTagRelation
+			if err := database.DB.Where("child_id = ? AND relation_type = 'abstract'", tag.ID).
+				Preload("Parent").First(&parentRel).Error; err != nil {
+				continue
+			}
+			if parentRel.Parent != nil && parentRel.Parent.Category != tag.Category {
+				issues++
+			}
+		}
+	}
+	return issues, nil
+}

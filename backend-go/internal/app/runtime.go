@@ -90,6 +90,13 @@ func StartRuntime() *Runtime {
 
 	resetStaleStates()
 
+	// Initialize hierarchy template manager
+	if err := topicanalysis.GetHierarchyManager().LoadFromDB(); err != nil {
+		logging.Warnf("Failed to load hierarchy templates: %v", err)
+	} else {
+		logging.Infoln("Hierarchy template manager initialized successfully")
+	}
+
 	// Start the tag queue worker for async article tagging
 	if err := topicextraction.GetTagQueue().Start(); err != nil {
 		logging.Warnf("Failed to start tag queue: %v", err)

@@ -26,6 +26,7 @@ type CreateFeedRequest struct {
 	CompletionOnRefresh   bool   `json:"completion_on_refresh"`
 	MaxCompletionRetries  int    `json:"max_completion_retries"`
 	FirecrawlEnabled      bool   `json:"firecrawl_enabled"`
+	TaggingEnabled        bool   `json:"tagging_enabled"`
 }
 
 type UpdateFeedRequest struct {
@@ -41,6 +42,7 @@ type UpdateFeedRequest struct {
 	CompletionOnRefresh   *bool  `json:"completion_on_refresh"`
 	MaxCompletionRetries  *int   `json:"max_completion_retries"`
 	FirecrawlEnabled      *bool  `json:"firecrawl_enabled"`
+	TaggingEnabled        *bool  `json:"tagging_enabled"`
 }
 
 func GetFeeds(c *gin.Context) {
@@ -221,6 +223,7 @@ func CreateFeed(c *gin.Context) {
 		CompletionOnRefresh:   req.CompletionOnRefresh,
 		MaxCompletionRetries:  req.MaxCompletionRetries,
 		FirecrawlEnabled:      req.FirecrawlEnabled,
+		TaggingEnabled:        req.TaggingEnabled,
 		LastUpdated:           &now,
 	}
 
@@ -329,7 +332,7 @@ func UpdateFeed(c *gin.Context) {
 	if req.Color != "" {
 		updates["color"] = req.Color
 	}
-	if req.MaxArticles > 0 {
+	if _, exists := bodyMap["max_articles"]; exists {
 		updates["max_articles"] = req.MaxArticles
 	}
 	if req.RefreshInterval >= 0 {
@@ -347,6 +350,9 @@ func UpdateFeed(c *gin.Context) {
 	if _, exists := bodyMap["firecrawl_enabled"]; exists && req.FirecrawlEnabled != nil {
 		updates["firecrawl_enabled"] = *req.FirecrawlEnabled
 	}
+	if _, exists := bodyMap["tagging_enabled"]; exists && req.TaggingEnabled != nil {
+		updates["tagging_enabled"] = *req.TaggingEnabled
+	}
 
 	if err := database.DB.Model(&feed).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -357,7 +363,7 @@ func UpdateFeed(c *gin.Context) {
 	}
 
 	// Trigger cleanup if MaxArticles was updated
-	if req.MaxArticles > 0 {
+	if _, exists := bodyMap["max_articles"]; exists {
 		database.DB.First(&feed, feed.ID)
 		feed.MaxArticles = req.MaxArticles
 		NewFeedService().CleanupOldArticles(&feed)

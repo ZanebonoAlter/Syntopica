@@ -26,6 +26,7 @@ export interface RssFeed {
   completionOnRefresh?: boolean
   maxCompletionRetries?: number
   firecrawlEnabled?: boolean
+  taggingEnabled?: boolean
 }
 
 /**
@@ -60,6 +61,7 @@ export interface UpdateFeedData {
   completion_on_refresh?: boolean
   max_completion_retries?: number
   firecrawl_enabled?: boolean
+  tagging_enabled?: boolean
 }
 
 /**

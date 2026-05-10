@@ -29,6 +29,7 @@ export interface Article {
 }
 
 export interface ArticleTag {
+  id?: number
   slug: string
   label: string
   category: string
@@ -36,6 +37,7 @@ export interface ArticleTag {
   icon?: string
   score?: number
   articleCount?: number
+  isWatched?: boolean
 }
 
 export interface ArticleFilters {

@@ -121,5 +121,7 @@ func autoMigrateModels(db *gorm.DB) error {
 		&models.NarrativeSummary{},
 		&models.NarrativeBoard{},
 		&models.AbstractTagUpdateQueue{},
+		&models.HierarchyConfig{},
+		&models.HierarchyConfigVersion{},
 	)
 }

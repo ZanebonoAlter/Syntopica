@@ -111,7 +111,7 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 		}
 
 		articlesAdded++
-		if articlesAdded >= feed.MaxArticles {
+		if feed.MaxArticles > 0 && articlesAdded >= feed.MaxArticles {
 			break
 		}
 	}
@@ -126,8 +126,12 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 }
 
 func (s *FeedService) enqueueArticleProcessing(feed models.Feed, article models.Article) error {
-	if shouldDelayArticleTagging(feed) {
+	if feed.FirecrawlEnabled {
 		return contentprocessing.NewFirecrawlJobQueue(database.DB).Enqueue(article)
+	}
+
+	if !feed.TaggingEnabled {
+		return nil
 	}
 
 	return topicextraction.NewTagJobQueue(database.DB).Enqueue(topicextraction.TagJobRequest{
@@ -148,8 +152,8 @@ func (s *FeedService) updateFeedError(feed *models.Feed, err error) {
 
 func (s *FeedService) CleanupOldArticles(feed *models.Feed) {
 	maxArticles := feed.MaxArticles
-	if maxArticles <= 0 {
-		maxArticles = 100
+	if maxArticles <= 0 || maxArticles >= 9999 {
+		return
 	}
 
 	var articleCount int64
@@ -233,8 +237,4 @@ func (s *FeedService) buildArticleFromEntry(feed models.Feed, entry ParsedEntry)
 	}
 
 	return article
-}
-
-func shouldDelayArticleTagging(feed models.Feed) bool {
-	return feed.FirecrawlEnabled
 }

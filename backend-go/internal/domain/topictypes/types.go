@@ -30,6 +30,8 @@ type TopicTag struct {
 	ChildSlugs   []string `json:"child_slugs,omitempty"` // Slugs of child tags (only for abstract tags)
 	QualityScore float64  `json:"quality_score,omitempty"`
 	IsLowQuality bool     `json:"is_low_quality,omitempty"`
+	IsWatched    bool     `json:"is_watched,omitempty"`
+	ArticleCount int      `json:"article_count,omitempty"`
 }
 
 type AggregatedTopicTag struct {

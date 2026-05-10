@@ -6,9 +6,11 @@ import (
 )
 
 var punctuationPattern = regexp.MustCompile(`[^\p{L}\p{N}\s]+`)
+var spacePattern = regexp.MustCompile(`\s+`)
 
 func Slugify(value string) string {
 	clean := strings.ToLower(strings.TrimSpace(value))
+	clean = spacePattern.ReplaceAllString(clean, " ")
 	clean = punctuationPattern.ReplaceAllString(clean, "-")
 	clean = strings.Trim(clean, "-")
 	return clean
