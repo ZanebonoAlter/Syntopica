@@ -580,6 +580,12 @@ func MergeTags(sourceTagID, targetTagID uint) error {
 // migrateTagRelations migrates all topic_tag_relations involving sourceTagID to targetTagID.
 // Handles both parent and child roles, deduplicates, and removes self-references.
 func migrateTagRelations(tx *gorm.DB, sourceTagID, targetTagID uint) error {
+	var targetTag models.TopicTag
+	if err := tx.First(&targetTag, targetTagID).Error; err != nil {
+		return fmt.Errorf("load target tag: %w", err)
+	}
+	isAbstractTarget := targetTag.Kind == "abstract" || targetTag.Source == "abstract"
+
 	// Source as parent: relations where parent_id = source
 	var parentRelations []models.TopicTagRelation
 	if err := tx.Where("parent_id = ?", sourceTagID).Find(&parentRelations).Error; err != nil {
@@ -590,6 +596,23 @@ func migrateTagRelations(tx *gorm.DB, sourceTagID, targetTagID uint) error {
 		if childID == targetTagID {
 			if err := tx.Delete(&rel).Error; err != nil {
 				return fmt.Errorf("delete self-referencing parent relation %d: %w", rel.ID, err)
+			}
+			continue
+		}
+		if !isAbstractTarget {
+			if err := tx.Delete(&rel).Error; err != nil {
+				return fmt.Errorf("delete non-transferable parent relation %d: %w", rel.ID, err)
+			}
+			continue
+		}
+		hasCycle, err := wouldCreateCycle(tx, targetTagID, childID)
+		if err != nil {
+			return fmt.Errorf("cycle check parent relation %d: %w", rel.ID, err)
+		}
+		if hasCycle {
+			logging.Warnf("skipping parent relation %d→%d: would create cycle with target %d", rel.ParentID, childID, targetTagID)
+			if err := tx.Delete(&rel).Error; err != nil {
+				return fmt.Errorf("delete cyclic parent relation %d: %w", rel.ID, err)
 			}
 			continue
 		}
@@ -618,6 +641,23 @@ func migrateTagRelations(tx *gorm.DB, sourceTagID, targetTagID uint) error {
 		if parentID == targetTagID {
 			if err := tx.Delete(&rel).Error; err != nil {
 				return fmt.Errorf("delete self-referencing child relation %d: %w", rel.ID, err)
+			}
+			continue
+		}
+		if !isAbstractTarget {
+			if err := tx.Delete(&rel).Error; err != nil {
+				return fmt.Errorf("delete non-transferable child relation %d: %w", rel.ID, err)
+			}
+			continue
+		}
+		hasCycle, err := wouldCreateCycle(tx, parentID, targetTagID)
+		if err != nil {
+			return fmt.Errorf("cycle check child relation %d: %w", rel.ID, err)
+		}
+		if hasCycle {
+			logging.Warnf("skipping child relation %d→%d: would create cycle with target %d", parentID, rel.ChildID, targetTagID)
+			if err := tx.Delete(&rel).Error; err != nil {
+				return fmt.Errorf("delete cyclic child relation %d: %w", rel.ID, err)
 			}
 			continue
 		}
