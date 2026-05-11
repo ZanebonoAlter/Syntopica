@@ -194,8 +194,8 @@ python test_firecrawl_integration.py
 推荐的推送前验证序列：
 
 ```bash
-cd backend-go && go test ./... && go build ./...
-cd front && pnpm exec nuxi typecheck && pnpm test:unit && pnpm build
+cd backend-go && golangci-lint run ./... && go vet ./... && go test ./... && go build ./...
+cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm test:unit && pnpm build
 ```
 
 ## 测试文件结构

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -51,8 +50,8 @@ func TestAutoRefreshCompleteMessageJSON(t *testing.T) {
 }
 
 func TestAutoRefreshCompleteBroadcastSource(t *testing.T) {
-	sourcePath := filepath.Join("auto_refresh.go")
-	content, err := os.ReadFile(sourcePath)
+	sourcePath := "auto_refresh.go"
+	content, err := os.ReadFile(sourcePath) //nolint:gosec
 	if err != nil {
 		t.Fatalf("read %s: %v", sourcePath, err)
 	}
@@ -148,5 +147,3 @@ func TestAutoRefreshTriggerNowUpdatesSchedulerTaskAndFeedState(t *testing.T) {
 		t.Fatalf("refresh status = %q, want refreshing", refreshedFeed.RefreshStatus)
 	}
 }
-
-

@@ -3,6 +3,7 @@ package datamigrate
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -238,6 +239,9 @@ func toInt64(v any) (int64, bool) {
 	case int64:
 		return typed, true
 	case uint:
+		if typed > uint(math.MaxInt64) {
+			return 0, false
+		}
 		return int64(typed), true
 	case float64:
 		return int64(typed), true

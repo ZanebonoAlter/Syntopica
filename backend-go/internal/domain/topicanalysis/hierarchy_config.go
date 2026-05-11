@@ -187,12 +187,12 @@ func (m *HierarchyTemplateManager) Reload() error {
 }
 
 type ConfigImpact struct {
-	TotalTags         int                       `json:"total_tags"`
-	DepthExceeded     int                       `json:"depth_exceeded"`
-	LevelMismatch     int                       `json:"level_mismatch"`
-	CrossCategory     int                       `json:"cross_category"`
-	NewLeafViolations int                       `json:"new_leaf_violations"`
-	Details           []ConfigImpactDetail      `json:"details,omitempty"`
+	TotalTags         int                  `json:"total_tags"`
+	DepthExceeded     int                  `json:"depth_exceeded"`
+	LevelMismatch     int                  `json:"level_mismatch"`
+	CrossCategory     int                  `json:"cross_category"`
+	NewLeafViolations int                  `json:"new_leaf_violations"`
+	Details           []ConfigImpactDetail `json:"details,omitempty"`
 }
 
 type ConfigImpactDetail struct {

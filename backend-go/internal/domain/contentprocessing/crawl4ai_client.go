@@ -71,7 +71,7 @@ func (c *Crawl4AIClient) CrawlURL(url string, onlyMainContent bool) (*CrawlRespo
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -104,7 +104,7 @@ func (c *Crawl4AIClient) HealthCheck() error {
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health check failed with status %d", resp.StatusCode)

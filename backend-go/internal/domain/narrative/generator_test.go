@@ -1,6 +1,7 @@
 package narrative
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -189,7 +190,7 @@ func TestBuildNarrativePrompt_WithPrevious(t *testing.T) {
 }
 
 func TestGenerateNarratives_EmptyInput(t *testing.T) {
-	result, err := GenerateNarratives(nil, nil, nil)
+	result, err := GenerateNarratives(context.TODO(), nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -326,4 +327,3 @@ func TestValidateNarrativeOutputs_ClearsParentIDsWhenNoPrev(t *testing.T) {
 		t.Errorf("parent_ids should be cleared when no prev narratives, got %v", result[0].ParentIDs)
 	}
 }
-

@@ -606,12 +606,13 @@ func serializeNodeForReview(sb *strings.Builder, node *TreeNode, prefix string, 
 	sb.WriteString("\n")
 
 	for i, child := range node.Children {
-		newPrefix := prefix
-		if prefix == "" {
+		var newPrefix string
+		switch {
+		case prefix == "":
 			newPrefix = "  "
-		} else if isLast {
+		case isLast:
 			newPrefix = prefix + "    "
-		} else {
+		default:
 			newPrefix = prefix + "│   "
 		}
 		serializeNodeForReview(sb, child, newPrefix, i == len(node.Children)-1, visited)
@@ -1006,12 +1007,7 @@ func validateAndCreateReviewAbstract(abs treeReviewAbstract, tagMap map[uint]*Tr
 		}
 	}
 
-	treeCleanupAbs := treeCleanupAbstract{
-		Name:        abs.Name,
-		Description: abs.Description,
-		ChildrenIDs: abs.ChildrenIDs,
-		Reason:      abs.Reason,
-	}
+	treeCleanupAbs := treeCleanupAbstract(abs)
 	return true, createAbstractTagDirectly(treeCleanupAbs, tagMap, category)
 }
 
@@ -1212,21 +1208,6 @@ func createAbstractTagDirectly(abstract treeCleanupAbstract, tagMap map[uint]*Tr
 	}
 
 	return nil
-}
-
-// isDirectParentChild checks if two nodes are direct parent and child
-func isDirectParentChild(a, b *TreeNode) bool {
-	if a.Parent == b || b.Parent == a {
-		return true
-	}
-	return false
-}
-
-func abs(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
 }
 
 func Phase6_CheckLevelAlignment(forest []*TreeNode, tmpl *CategoryHierarchyTemplate) []string {

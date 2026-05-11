@@ -32,35 +32,35 @@ type TagHierarchyCleanupScheduler struct {
 
 // TagHierarchyCleanupRunSummary records the results of a cleanup run
 type TagHierarchyCleanupRunSummary struct {
-	TriggerSource          string `json:"trigger_source"`
-	StartedAt              string `json:"started_at"`
-	FinishedAt             string `json:"finished_at"`
-	ZombieDeactivated               int    `json:"zombie_deactivated"`
-	ZeroArticleTagsDeactivated      int    `json:"zero_article_tags_deactivated"`
-	LowQualitySingleArticleRemoved  int    `json:"low_quality_single_article_removed"`
-	StaleZeroScoreDeactivated       int    `json:"stale_zero_score_deactivated"`
-	FlatMergesApplied               int    `json:"flat_merges_applied"`
-	OrphanedRelations      int    `json:"orphaned_relations"`
-	MultiParentFixed       int    `json:"multi_parent_fixed"`
-	EmptyAbstracts         int    `json:"empty_abstracts"`
-	SingleChildAbstracts   int    `json:"single_child_abstracts"`
-	WhitespaceDupsMerged   int    `json:"whitespace_dups_merged"`
-	DegenerateTreesFlattened   int  `json:"degenerate_trees_flattened"`
-	TemplateDepthViolations    int  `json:"template_depth_violations"`
-	TemplateCrossCategory      int  `json:"template_cross_category"`
-	AdoptNarrowerProcessed     int  `json:"adopt_narrower_processed"`
-	AbstractUpdateProcessed int   `json:"abstract_update_processed"`
-	TreesReviewed          int    `json:"trees_reviewed"`
-	MergesApplied          int    `json:"merges_applied"`
-	MovesApplied           int    `json:"moves_applied"`
-	GroupsCreated          int    `json:"tree_groups_created"`
-	GroupsReused           int    `json:"tree_groups_reused"`
-	DescriptionBackfilled  int    `json:"description_backfilled"`
-	LLMCallsTotal          int    `json:"llm_calls_total"`
-	LLMBudgetTotal         int    `json:"llm_budget_total"`
-	TimedOut               bool   `json:"timed_out"`
-	Errors                 int    `json:"errors"`
-	Reason                 string `json:"reason"`
+	TriggerSource                  string `json:"trigger_source"`
+	StartedAt                      string `json:"started_at"`
+	FinishedAt                     string `json:"finished_at"`
+	ZombieDeactivated              int    `json:"zombie_deactivated"`
+	ZeroArticleTagsDeactivated     int    `json:"zero_article_tags_deactivated"`
+	LowQualitySingleArticleRemoved int    `json:"low_quality_single_article_removed"`
+	StaleZeroScoreDeactivated      int    `json:"stale_zero_score_deactivated"`
+	FlatMergesApplied              int    `json:"flat_merges_applied"`
+	OrphanedRelations              int    `json:"orphaned_relations"`
+	MultiParentFixed               int    `json:"multi_parent_fixed"`
+	EmptyAbstracts                 int    `json:"empty_abstracts"`
+	SingleChildAbstracts           int    `json:"single_child_abstracts"`
+	WhitespaceDupsMerged           int    `json:"whitespace_dups_merged"`
+	DegenerateTreesFlattened       int    `json:"degenerate_trees_flattened"`
+	TemplateDepthViolations        int    `json:"template_depth_violations"`
+	TemplateCrossCategory          int    `json:"template_cross_category"`
+	AdoptNarrowerProcessed         int    `json:"adopt_narrower_processed"`
+	AbstractUpdateProcessed        int    `json:"abstract_update_processed"`
+	TreesReviewed                  int    `json:"trees_reviewed"`
+	MergesApplied                  int    `json:"merges_applied"`
+	MovesApplied                   int    `json:"moves_applied"`
+	GroupsCreated                  int    `json:"tree_groups_created"`
+	GroupsReused                   int    `json:"tree_groups_reused"`
+	DescriptionBackfilled          int    `json:"description_backfilled"`
+	LLMCallsTotal                  int    `json:"llm_calls_total"`
+	LLMBudgetTotal                 int    `json:"llm_budget_total"`
+	TimedOut                       bool   `json:"timed_out"`
+	Errors                         int    `json:"errors"`
+	Reason                         string `json:"reason"`
 }
 
 // NewTagHierarchyCleanupScheduler creates a new scheduler
@@ -553,10 +553,11 @@ func (s *TagHierarchyCleanupScheduler) updateSchedulerStatus(status, lastError s
 
 		if startTime != nil {
 			updates["total_executions"] = task.TotalExecutions + 1
-			if status == "success" || status == "success_with_errors" {
+			switch status {
+			case "success", "success_with_errors":
 				updates["successful_executions"] = task.SuccessfulExecutions + 1
 				updates["consecutive_failures"] = 0
-			} else if status == "failed" {
+			case "failed":
 				updates["failed_executions"] = task.FailedExecutions + 1
 				updates["consecutive_failures"] = task.ConsecutiveFailures + 1
 				updates["last_error_time"] = &now
@@ -581,9 +582,10 @@ func (s *TagHierarchyCleanupScheduler) updateSchedulerStatus(status, lastError s
 		task.LastExecutionDuration = &duration
 		task.LastExecutionResult = resultJSON
 		task.TotalExecutions = 1
-		if status == "success" || status == "success_with_errors" {
+		switch status {
+		case "success", "success_with_errors":
 			task.SuccessfulExecutions = 1
-		} else if status == "failed" {
+		case "failed":
 			task.FailedExecutions = 1
 			task.ConsecutiveFailures = 1
 			task.LastErrorTime = &now

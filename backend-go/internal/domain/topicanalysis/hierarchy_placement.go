@@ -223,7 +223,7 @@ func createL2TagForChild(ctx context.Context, childTag *models.TopicTag, tmpl *C
 
 	var newTag models.TopicTag
 	if err := database.DB.First(&newTag, parentID).Error; err == nil {
-		go dedupL2(context.Background(), &newTag)
+		go dedupL2(context.Background(), &newTag) //nolint:gosec
 	}
 
 	return parentID, parentLabel, nil
@@ -242,7 +242,7 @@ func createL1ForL2Tag(ctx context.Context, l2Tag *models.TopicTag, existingL1s [
 
 	var newTag models.TopicTag
 	if err := database.DB.First(&newTag, parentID).Error; err == nil {
-		go dedupL1(context.Background(), &newTag)
+		go dedupL1(context.Background(), &newTag) //nolint:gosec
 	}
 
 	return parentID, parentLabel, nil
@@ -273,7 +273,7 @@ func createAbstractTag(ctx context.Context, label, description, category string,
 		}
 	}
 
-	go func() {
+	go func() { //nolint:gosec
 		es := NewEmbeddingService()
 		bgCtx := context.Background()
 		_, err := es.GenerateEmbedding(bgCtx, &tag, EmbeddingTypeIdentity)

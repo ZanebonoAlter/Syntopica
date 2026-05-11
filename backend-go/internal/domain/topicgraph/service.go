@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/domain/topictypes"
@@ -59,7 +60,7 @@ func BuildTopicDetail(kind string, slug string, anchor time.Time, categoryID, fe
 		topic = models.TopicTag{
 			ID:       0,
 			Slug:     slug,
-			Label:    strings.ReplaceAll(strings.Title(strings.ReplaceAll(slug, "-", " ")), "Ai", "AI"),
+			Label:    toTitle(slug),
 			Category: models.TagCategoryKeyword,
 		}
 	}
@@ -884,4 +885,15 @@ func enrichAbstractTags(db *gorm.DB, tagMaps ...map[string]*topictypes.TopicTag)
 		tag.IsAbstract = true
 		tag.ChildSlugs = childSlugs
 	}
+}
+
+func toTitle(s string) string {
+	s = strings.ReplaceAll(s, "-", " ")
+	if len(s) == 0 {
+		return s
+	}
+	r := []rune(strings.ToLower(s))
+	r[0] = unicode.ToUpper(r[0])
+	result := string(r)
+	return strings.ReplaceAll(result, "Ai", "AI")
 }

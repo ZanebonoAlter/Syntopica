@@ -91,7 +91,8 @@ func GetArticles(c *gin.Context) {
 			return
 		}
 		if len(watchedIDs) > 0 {
-			expandedTagIDs = append(watchedIDs, children...)
+			expandedTagIDs = append(expandedTagIDs, watchedIDs...)
+			expandedTagIDs = append(expandedTagIDs, children...)
 			childTagIDs = children
 			usingWatchedTags = true
 		}
@@ -102,7 +103,8 @@ func GetArticles(c *gin.Context) {
 			return
 		}
 		if len(parsedIDs) > 0 {
-			expandedTagIDs = append(parsedIDs, children...)
+			expandedTagIDs = append(expandedTagIDs, parsedIDs...)
+			expandedTagIDs = append(expandedTagIDs, children...)
 			childTagIDs = children
 			usingWatchedTags = true
 		}
@@ -119,13 +121,16 @@ func GetArticles(c *gin.Context) {
 
 	// Select fields — vary by watched tags mode and sort
 	articleCols := "articles.id, articles.feed_id, articles.title, articles.description, articles.content, articles.link, articles.image_url, articles.pub_date, articles.author, articles.read, articles.favorite, articles.summary_status, articles.summary_generated_at, articles.summary_processing_started_at, articles.completion_attempts, articles.completion_error, articles.ai_content_summary, articles.firecrawl_status, articles.firecrawl_error, articles.firecrawl_content, articles.firecrawl_crawled_at, articles.created_at"
-	if usingWatchedTags && sortBy == "relevance" {
-		query = query.
-			Select(articleCols+", feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count, (SELECT COALESCE(SUM(CASE WHEN att2.topic_tag_id IN ? THEN 2.0 ELSE 1.0 END), 0) FROM article_topic_tags att2 WHERE att2.article_id = articles.id AND att2.topic_tag_id IN ?) AS relevance_score", childTagIDs, expandedTagIDs).
-			Group("articles.id, feeds.category_id")
-	} else if usingWatchedTags {
-		query = query.
-			Select("DISTINCT articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
+	if usingWatchedTags {
+		switch sortBy {
+		case "relevance":
+			query = query.
+				Select(articleCols+", feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count, (SELECT COALESCE(SUM(CASE WHEN att2.topic_tag_id IN ? THEN 2.0 ELSE 1.0 END), 0) FROM article_topic_tags att2 WHERE att2.article_id = articles.id AND att2.topic_tag_id IN ?) AS relevance_score", childTagIDs, expandedTagIDs).
+				Group("articles.id, feeds.category_id")
+		default:
+			query = query.
+				Select("DISTINCT articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
+		}
 	} else {
 		query = query.
 			Select("articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
@@ -152,7 +157,7 @@ func GetArticles(c *gin.Context) {
 	}
 
 	if search != "" {
-		if database.DB.Dialector.Name() == "postgres" {
+		if database.DB.Name() == "postgres" {
 			query = query.Where("articles.search_vector @@ plainto_tsquery('simple', ?)", search)
 		} else {
 			searchTerm := "%" + search + "%"
@@ -196,7 +201,7 @@ func GetArticles(c *gin.Context) {
 			countQuery = countQuery.Where("articles.favorite = ?", favorite == "true")
 		}
 		if search != "" {
-			if database.DB.Dialector.Name() == "postgres" {
+			if database.DB.Name() == "postgres" {
 				countQuery = countQuery.Where("articles.search_vector @@ plainto_tsquery('simple', ?)", search)
 			} else {
 				searchTerm := "%" + search + "%"
@@ -497,13 +502,14 @@ func BulkUpdateArticles(c *gin.Context) {
 
 	query := database.DB.Model(&models.Article{})
 
-	if len(req.IDs) > 0 {
+	switch {
+	case len(req.IDs) > 0:
 		query = query.Where("id IN ?", req.IDs)
-	} else if req.FeedID != nil {
+	case req.FeedID != nil:
 		query = query.Where("feed_id = ?", *req.FeedID)
-	} else if req.CategoryID != nil {
+	case req.CategoryID != nil:
 		query = query.Where("feed_id IN (SELECT id FROM feeds WHERE category_id = ?)", *req.CategoryID)
-	} else if req.Uncategorized != nil && *req.Uncategorized {
+	case req.Uncategorized != nil && *req.Uncategorized:
 		query = query.Where("feed_id IN (SELECT id FROM feeds WHERE category_id IS NULL)")
 	}
 

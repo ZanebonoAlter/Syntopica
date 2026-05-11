@@ -105,12 +105,12 @@ func MarshalLinks(links []OtelLink) string {
 
 func UnmarshalAttributes(data string) []OtelAttribute {
 	var attrs []OtelAttribute
-	json.Unmarshal([]byte(data), &attrs)
+	_ = json.Unmarshal([]byte(data), &attrs)
 	return attrs
 }
 
 func UnmarshalEvents(data string) []OtelEvent {
 	var events []OtelEvent
-	json.Unmarshal([]byte(data), &events)
+	_ = json.Unmarshal([]byte(data), &events)
 	return events
 }

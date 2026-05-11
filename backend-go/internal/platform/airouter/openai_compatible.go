@@ -17,16 +17,6 @@ import (
 
 var thinkTagRe = regexp.MustCompile(`(?s)<think\s*>.*?</think\s*>`)
 
-const debugBodyMaxRunes = 3000
-
-func truncateDebugBody(s string) string {
-	runes := []rune(s)
-	if len(runes) > debugBodyMaxRunes {
-		return string(runes[:debugBodyMaxRunes]) + "...(truncated)"
-	}
-	return s
-}
-
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -158,7 +148,7 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, provider models.AIPro
 	if err != nil {
 		return "", &ProviderError{Message: err.Error(), Code: "network_error", Retryable: true}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -257,7 +247,7 @@ func (c *openAICompatibleClient) Embed(ctx context.Context, provider models.AIPr
 	if err != nil {
 		return nil, &ProviderError{Message: err.Error(), Code: "network_error", Retryable: true}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {

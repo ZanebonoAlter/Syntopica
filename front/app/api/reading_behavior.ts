@@ -7,8 +7,8 @@ import type {
 } from '~/types'
 
 export function useReadingBehaviorApi() {
-  async function trackBehavior(event: ReadingBehaviorEvent): Promise<ApiResponse<any>> {
-    return apiClient.post<any>('/reading-behavior/track', event)
+  async function trackBehavior(event: ReadingBehaviorEvent): Promise<ApiResponse<void>> {
+    return apiClient.post<void>('/reading-behavior/track', event)
   }
 
   async function trackBehaviorBatch(events: ReadingBehaviorEvent[]): Promise<ApiResponse<void>> {

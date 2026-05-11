@@ -10,12 +10,22 @@ export interface WatchedTag {
   childSlugs: string[]
 }
 
+interface WatchedTagPayload {
+  id: number
+  slug: string
+  label: string
+  category: string
+  watched_at: string | null
+  is_abstract: boolean
+  child_slugs: string[]
+}
+
 export function useWatchedTagsApi() {
   return {
     async listWatchedTags() {
-      const res = await apiClient.get<any>('/topic-tags/watched')
+      const res = await apiClient.get<WatchedTagPayload[]>('/topic-tags/watched')
       if (!res.success) return res
-      const data = (res.data || []).map((t: any) => ({
+      const data = (res.data || []).map((t: WatchedTagPayload) => ({
         id: t.id,
         slug: t.slug,
         label: t.label,
@@ -24,7 +34,7 @@ export function useWatchedTagsApi() {
         isAbstract: t.is_abstract || false,
         childSlugs: t.child_slugs || [],
       }))
-      return { ...res, data } as any
+      return { ...res, data } as { success: true; data: WatchedTag[]; message?: string }
     },
     async watchTag(tagId: number) {
       return apiClient.post(`/topic-tags/${tagId}/watch`, {})

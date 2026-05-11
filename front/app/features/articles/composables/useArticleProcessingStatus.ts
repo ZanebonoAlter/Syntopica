@@ -17,7 +17,7 @@ function toPlainText(input?: string): string {
     .replace(/`([^`]*)`/g, '$1')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/[#>*_~\-]+/g, ' ')
+    .replace(/[#>*_~-]+/g, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()

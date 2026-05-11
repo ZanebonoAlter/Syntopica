@@ -326,16 +326,17 @@ func (s *AutoRefreshScheduler) TriggerNow() map[string]interface{} {
 	}
 
 	message := "手动扫描完成，没有 feed 到点。"
-	if summary.TriggeredFeeds > 0 {
+	switch {
+	case summary.TriggeredFeeds > 0:
 		message = fmt.Sprintf("手动扫描完成，已触发 %d 个 feed 刷新。", summary.TriggeredFeeds)
 		if summary.StaleResetFeeds > 0 {
 			message += fmt.Sprintf(" 重置了 %d 个卡住的 feed。", summary.StaleResetFeeds)
 		}
-	} else if summary.AlreadyRefreshingFeeds > 0 {
+	case summary.AlreadyRefreshingFeeds > 0:
 		message = "手动扫描完成，但到点的 feed 已在刷新中。"
-	} else if summary.ScannedFeeds == 0 {
+	case summary.ScannedFeeds == 0:
 		message = "当前没有开启自动刷新的 feed。"
-	} else if summary.StaleResetFeeds > 0 {
+	case summary.StaleResetFeeds > 0:
 		message = fmt.Sprintf("手动扫描完成，重置了 %d 个卡住的 feed。", summary.StaleResetFeeds)
 	}
 
@@ -521,17 +522,4 @@ func (s *AutoRefreshScheduler) updateSchedulerStatus(status, lastError string, s
 		}
 	}
 	database.DB.Create(&task)
-}
-
-func parseAutoRefreshRunSummary(task models.SchedulerTask) *AutoRefreshRunSummary {
-	if task.LastExecutionResult == "" {
-		return nil
-	}
-
-	var summary AutoRefreshRunSummary
-	if err := json.Unmarshal([]byte(task.LastExecutionResult), &summary); err != nil {
-		return nil
-	}
-
-	return &summary
 }

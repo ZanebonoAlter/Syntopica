@@ -5,7 +5,7 @@ import LayoutAppSidebar from '~/features/shell/components/AppSidebarShell.vue'
 import LayoutArticleListPanel from '~/features/shell/components/ArticleListPanelShell.vue'
 import { useArticlesApi } from '~/api/articles'
 import ArticleContent from '~/features/articles/components/ArticleContentView.vue'
-import { normalizeArticle } from '../../articles/utils/normalizeArticle'
+import { normalizeArticle, type ArticlePayload } from '../../articles/utils/normalizeArticle'
 import { useGlobalAutoRefresh } from '~/features/feeds/composables/useAutoRefresh'
 import { useArticlePagination } from '~/features/articles/composables/useArticlePagination'
 import { SIDEBAR_DEFAULT_WIDTH, MAX_POLLING_TIME, REFRESH_POLLING_INTERVAL } from '~/utils/constants'
@@ -139,7 +139,7 @@ async function hydrateSelectedArticle(article: any) {
   try {
     const response = await articlesApi.getArticle(Number(article.id))
     if (response.success && response.data && selectedArticle.value?.id === article.id) {
-      selectedArticle.value = normalizeArticle(response.data)
+      selectedArticle.value = normalizeArticle(response.data as unknown as ArticlePayload)
     }
   } catch (error) {
     console.error('Failed to load article detail:', error)

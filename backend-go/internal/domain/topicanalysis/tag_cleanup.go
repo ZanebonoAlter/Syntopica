@@ -521,9 +521,9 @@ func promoteSingleChild(parentID, childID uint) error {
 				Count(&existing)
 			if existing == 0 {
 				if err := tx.Create(&models.TopicTagRelation{
-					ParentID:       gpID,
-					ChildID:        childID,
-					RelationType:   "abstract",
+					ParentID:        gpID,
+					ChildID:         childID,
+					RelationType:    "abstract",
 					SimilarityScore: 0,
 				}).Error; err != nil {
 					return fmt.Errorf("link grandparent %d to child %d: %w", gpID, childID, err)
@@ -557,7 +557,7 @@ func CleanupWhitespaceDuplicateTags() (int, error) {
 
 	// Group by category + normalized slug (spaces stripped)
 	type groupKey struct {
-		Category      string
+		Category       string
 		NormalizedSlug string
 	}
 	groups := make(map[groupKey][]*models.TopicTag)

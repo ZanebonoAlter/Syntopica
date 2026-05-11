@@ -1,5 +1,4 @@
 import { useAIAdminApi } from '~/api'
-import { getApiBaseUrl } from '~/utils/api'
 
 interface ApiResponse<T> {
   success: boolean
@@ -32,16 +31,16 @@ function createDefaultSettings(): AISettingsState {
   }
 }
 
-function normalizeSettings(payload: any): AISettingsState {
+function normalizeSettings(payload: Record<string, unknown> | null | undefined): AISettingsState {
   return {
-    baseURL: payload?.base_url || '',
-    model: payload?.model || '',
-    providerId: typeof payload?.provider_id === 'number' ? payload.provider_id : null,
-    providerName: payload?.provider_name || '',
-    routeName: payload?.route_name || '',
+    baseURL: (payload?.base_url as string) || '',
+    model: (payload?.model as string) || '',
+    providerId: typeof payload?.provider_id === 'number' ? (payload.provider_id as number) : null,
+    providerName: (payload?.provider_name as string) || '',
+    routeName: (payload?.route_name as string) || '',
     summaryEnabled: Boolean(payload?.provider_id || payload?.base_url),
     apiKeyConfigured: Boolean(payload?.api_key_configured),
-    timeRange: typeof payload?.time_range === 'number' ? payload.time_range : 180,
+    timeRange: typeof payload?.time_range === 'number' ? (payload.time_range as number) : 180,
   }
 }
 

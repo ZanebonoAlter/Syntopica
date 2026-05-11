@@ -89,6 +89,7 @@ AI 相关设置（LLM、Firecrawl、Digest）通过 Web UI 的设置页面配置
 | `pnpm build` | 生产构建 |
 | `pnpm generate` | 静态站点生成 |
 | `pnpm preview` | 预览生产构建 |
+| `pnpm lint` | ESLint 代码检查 |
 | `pnpm exec nuxi typecheck` | TypeScript 类型检查 |
 | `pnpm test:unit` | 运行 Vitest 单元测试 |
 | `pnpm test:e2e` | 运行 Playwright E2E 测试 |
@@ -114,6 +115,8 @@ pnpm test:unit -- app/utils/articleContentSource.test.ts -t "prefers firecrawl"
 | `go run cmd/server/main.go` | 启动后端服务 |
 | `go build ./...` | 编译所有包 |
 | `go test ./...` | 运行所有 Go 测试 |
+| `go vet ./...` | Go 官方静态检查 |
+| `golangci-lint run ./...` | 综合静态分析（staticcheck, revive, gosec 等） |
 
 运行单个包的测试：
 
@@ -170,18 +173,20 @@ python test_firecrawl_integration.py
 
 ## 代码风格
 
-本项目没有配置 ESLint、Prettier 或 Biome 等格式化工具。代码风格通过以下方式维持：
+本项目已配置 ESLint 代码检查工具。代码风格通过以下方式维持：
 
 ### 前端
 
 - TypeScript 全覆盖，新增代码使用 `<script setup lang="ts">`
+- ESLint 配置：`front/eslint.config.js`（flat config + typescript-eslint）
 - 大部分前端文件不使用分号——保持与周围代码一致的风格
 - 源码必须保持 UTF-8 编码
-- 质量门禁：`pnpm exec nuxi typecheck` 和 `pnpm build`
+- 质量门禁：`pnpm lint && pnpm exec nuxi typecheck && pnpm build`
 
 ### 后端
 
 - 使用 `gofmt` 格式化 Go 代码
+- 静态分析：`golangci-lint run ./...`（配置：`backend-go/.golangci.yml`）
 - 导入分组：标准库 → 空行 → 第三方库 → 空行 → 本地包
 - JSON 字段使用 `snake_case` struct tag
 - 导出符号使用 `PascalCase`，私有符号使用 `lowerCamelCase`
@@ -268,9 +273,10 @@ python test_firecrawl_integration.py
 至少执行以下其中一项：
 
 ```bash
-pnpm build                    # 生产构建
-pnpm exec nuxi typecheck      # TypeScript 类型检查
-pnpm test:unit                # 单元测试
+pnpm lint                      # ESLint 检查
+pnpm build                     # 生产构建
+pnpm exec nuxi typecheck       # TypeScript 类型检查
+pnpm test:unit                 # 单元测试
 ```
 
 ### 后端改动
@@ -278,9 +284,11 @@ pnpm test:unit                # 单元测试
 至少执行以下其中一项：
 
 ```bash
-go build ./...                # 编译检查
+golangci-lint run ./...        # 综合静态分析
+go vet ./...                   # Go 官方静态检查
+go build ./...                 # 编译检查
 go test ./internal/domain/feeds -v   # 针对范围的单元测试
-go test ./...                 # 全量测试
+go test ./...                  # 全量测试
 ```
 
 ### 文档改动
@@ -314,7 +322,7 @@ go test ./...                 # 全量测试
 - PowerShell 写文件时要显式保持 UTF-8
 - 如果构建报 Vue/Vite 编码错误，先检查文件编码，不要先怀疑业务逻辑
 - 后端 handler 应返回 `gin.H{"success": bool, "data"|"error"|"message": ...}` 格式
-- 不要添加新的 linter、formatter 或其他工具，除非明确要求
+- 不要添加新的 linter、formatter 或其他工具，除非明确要求（已配置 golangci-lint 和 ESLint）
 
 ## 相关文档
 

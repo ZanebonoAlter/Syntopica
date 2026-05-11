@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"regexp"
@@ -162,7 +163,7 @@ func migrateTags(dryRun bool, generateEmbeddings bool) (*migrationResult, error)
 				result.embeddings++
 			} else {
 				// Generate embedding
-				identityEmb, err := embeddingSvc.GenerateEmbedding(nil, &tag, topicanalysis.EmbeddingTypeIdentity)
+				identityEmb, err := embeddingSvc.GenerateEmbedding(context.TODO(), &tag, topicanalysis.EmbeddingTypeIdentity)
 				if err != nil {
 					logging.Infof("WARNING: Failed to generate identity embedding for tag %d: %v", tag.ID, err)
 				} else {
@@ -173,7 +174,7 @@ func migrateTags(dryRun bool, generateEmbeddings bool) (*migrationResult, error)
 						result.embeddings++
 					}
 				}
-				semanticEmb, semErr := embeddingSvc.GenerateEmbedding(nil, &tag, topicanalysis.EmbeddingTypeSemantic)
+				semanticEmb, semErr := embeddingSvc.GenerateEmbedding(context.TODO(), &tag, topicanalysis.EmbeddingTypeSemantic)
 				if semErr != nil {
 					logging.Infof("WARNING: Failed to generate semantic embedding for tag %d: %v", tag.ID, semErr)
 				} else {

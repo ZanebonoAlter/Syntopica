@@ -13,7 +13,7 @@ func bootstrapPostgresSchema(db *gorm.DB) error {
 		return fmt.Errorf("auto migrate postgres schema: %w", err)
 	}
 
-	if db.Dialector.Name() == "postgres" {
+	if db.Name() == "postgres" {
 		for _, statement := range postgresColumnAdjustmentStatements() {
 			if err := db.Exec(statement).Error; err != nil {
 				return fmt.Errorf("apply postgres column adjustment %q: %w", statement, err)
@@ -39,7 +39,6 @@ func bootstrapPostgresSchema(db *gorm.DB) error {
 func postgresColumnAdjustmentStatements() []string {
 	return []string{
 		"ALTER TABLE feeds ALTER COLUMN icon TYPE VARCHAR(1000)",
-
 	}
 }
 

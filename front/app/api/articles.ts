@@ -1,7 +1,7 @@
 import { apiClient } from './client'
 import type {
   ApiResponse,
-  PaginatedApiResponse,
+  PaginatedData,
   Article,
   ArticleFilters,
   UpdateArticleData,
@@ -9,9 +9,9 @@ import type {
 } from '~/types'
 
 export function useArticlesApi() {
-  async function getArticles(filters: ArticleFilters = {}): Promise<PaginatedApiResponse<Article>> {
+  async function getArticles(filters: ArticleFilters = {}): Promise<ApiResponse<PaginatedData<Article>>> {
     const query = apiClient.buildQueryParams(filters)
-    return apiClient.get<Article[]>(`/articles${query ? `?${query}` : ''}`) as any
+    return apiClient.get<PaginatedData<Article>>(`/articles${query ? `?${query}` : ''}`)
   }
 
   async function getArticle(id: number): Promise<ApiResponse<Article>> {

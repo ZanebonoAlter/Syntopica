@@ -33,7 +33,7 @@ func resetStaleStates() {
 	result := database.DB.Model(&models.SchedulerTask{}).
 		Where("status = ?", "running").
 		Updates(map[string]interface{}{
-			"status":  "idle",
+			"status":     "idle",
 			"last_error": "reset on startup: previous process terminated unexpectedly",
 		})
 	resetCount += int(result.RowsAffected)

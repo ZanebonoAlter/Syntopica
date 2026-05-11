@@ -1,10 +1,10 @@
 package topicextraction
 
 import (
-	"strings"
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
+	"strings"
 )
 
 // BackfillMissingDescriptions finds active tags without descriptions and generates

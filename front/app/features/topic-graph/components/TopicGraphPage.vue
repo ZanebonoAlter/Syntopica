@@ -16,7 +16,7 @@ import type { Article } from '~/types'
 import type { TimelineDigest, TimelineDigestSelection, PendingArticle, TimelineAggregationGroup, TimelineAggregationMode, TimelineAggregationArticle } from '~/types/timeline'
 import ArticleContentView from '~/features/articles/components/ArticleContentView.vue'
 import { useApiStore } from '~/stores/api'
-import { normalizeArticle } from '../../articles/utils/normalizeArticle'
+import { normalizeArticle, type ArticlePayload } from '../../articles/utils/normalizeArticle'
 import FeedCategoryFilter from '~/features/topic-graph/components/FeedCategoryFilter.vue'
 import TopicGraphCanvas from '~/features/topic-graph/components/TopicGraphCanvas.client.vue'
 import TopicGraphFooterPanels from '~/features/topic-graph/components/TopicGraphFooterPanels.vue'
@@ -1114,7 +1114,7 @@ async function openArticlePreview(articleId: number) {
       return
     }
 
-    selectedPreviewArticle.value = normalizeArticle(response.data)
+    selectedPreviewArticle.value = normalizeArticle(response.data as unknown as ArticlePayload)
 
     if (detail.value?.summaries) {
       const ids = detail.value.summaries.flatMap(summary => summary.articles.map(article => article.id))
@@ -1122,7 +1122,7 @@ async function openArticlePreview(articleId: number) {
       const articleResponses = await Promise.all(uniqueIds.slice(0, 12).map(id => articlesApi.getArticle(id)))
       previewArticles.value = articleResponses
         .filter(item => item.success && item.data)
-        .map(item => normalizeArticle(item.data))
+        .map(item => normalizeArticle(item.data as unknown as ArticlePayload))
     }
   } catch (error) {
     console.error('Failed to open article preview:', error)

@@ -50,7 +50,7 @@ func (p *RSSParser) ParseFeedURL(feedURL string) (*ParsedFeed, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch feed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("feed returned HTTP %d", resp.StatusCode)
@@ -79,13 +79,14 @@ func sanitizeUTF8(data []byte) []byte {
 	valid := make([]byte, 0, len(data))
 	for i := 0; i < len(data); {
 		_, size := utf8.DecodeRune(data[i:])
-		if size == 1 && data[i] < 0x80 {
+		switch {
+		case size == 1 && data[i] < 0x80:
 			valid = append(valid, data[i])
 			i++
-		} else if size == 1 {
+		case size == 1:
 			valid = append(valid, replacement...)
 			i++
-		} else {
+		default:
 			valid = append(valid, data[i:i+size]...)
 			i += size
 		}
@@ -173,15 +174,12 @@ func extractAuthor(item *gofeed.Item) string {
 }
 
 func extractFeedTags(item *gofeed.Item) []string {
-	tags := make([]string, 0)
-	for _, tag := range item.Categories {
-		tags = append(tags, tag)
-	}
+	tags := append([]string{}, item.Categories...)
 	return tags
 }
 
 func extractItemImage(item *gofeed.Item) string {
-	if item.Enclosures != nil && len(item.Enclosures) > 0 {
+	if len(item.Enclosures) > 0 {
 		for _, enc := range item.Enclosures {
 			if strings.HasPrefix(enc.Type, "image/") {
 				return enc.URL

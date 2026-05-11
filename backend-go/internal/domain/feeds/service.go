@@ -26,7 +26,7 @@ func NewFeedService() *FeedService {
 }
 
 func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) {
-	ctx, span := otel.Tracer("rss-reader-backend").Start(ctx, "FeedService.RefreshFeed")
+	_, span := otel.Tracer("rss-reader-backend").Start(ctx, "FeedService.RefreshFeed")
 	defer span.End()
 	defer func() {
 		if err != nil {
@@ -65,11 +65,12 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 	}
 
 	if feed.Icon == "" || feed.Icon == "rss" || feed.Icon == "mdi:rss" {
-		if parsed.Image != "" {
+		switch {
+		case parsed.Image != "":
 			feed.Icon = parsed.Image
-		} else if firstArticleImage != "" {
+		case firstArticleImage != "":
 			feed.Icon = firstArticleImage
-		} else {
+		default:
 			feed.Icon = s.rssParser.FetchFaviconURL(feed.URL)
 		}
 	}
@@ -178,7 +179,7 @@ func (s *FeedService) CleanupOldArticles(feed *models.Feed) {
 		Order("pub_date DESC").
 		Find(&allArticles)
 
-	keepIDs := make([]uint, 0)
+	var keepIDs []uint
 	candidates := make([]uint, 0)
 
 	for _, a := range allArticles {
@@ -195,8 +196,6 @@ func (s *FeedService) CleanupOldArticles(feed *models.Feed) {
 	if len(candidates) > 0 {
 		toDelete := candidates
 		if remaining > 0 && len(candidates) > remaining {
-			keepFromCandidates := candidates[:remaining]
-			keepIDs = append(keepIDs, keepFromCandidates...)
 			toDelete = candidates[remaining:]
 		}
 		if len(toDelete) > 0 {

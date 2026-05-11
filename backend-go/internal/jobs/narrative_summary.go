@@ -312,10 +312,11 @@ func (s *NarrativeSummaryScheduler) updateSchedulerStatus(status, lastError stri
 
 		if startTime != nil {
 			updates["total_executions"] = task.TotalExecutions + 1
-			if status == "success" {
+			switch status {
+			case "success":
 				updates["successful_executions"] = task.SuccessfulExecutions + 1
 				updates["consecutive_failures"] = 0
-			} else if status == "failed" {
+			case "failed":
 				updates["failed_executions"] = task.FailedExecutions + 1
 				updates["consecutive_failures"] = task.ConsecutiveFailures + 1
 				updates["last_error_time"] = &now
@@ -340,9 +341,10 @@ func (s *NarrativeSummaryScheduler) updateSchedulerStatus(status, lastError stri
 		task.LastExecutionDuration = &duration
 		task.LastExecutionResult = resultJSON
 		task.TotalExecutions = 1
-		if status == "success" {
+		switch status {
+		case "success":
 			task.SuccessfulExecutions = 1
-		} else if status == "failed" {
+		case "failed":
 			task.FailedExecutions = 1
 			task.ConsecutiveFailures = 1
 			task.LastErrorTime = &now

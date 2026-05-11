@@ -14,25 +14,25 @@ import (
 func buildL2MatchPrompt(tag *models.TopicTag, candidates []TagCandidate) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf(`You are placing a leaf tag "%s" (category: %s) into a hierarchy under an L2 parent.
+	fmt.Fprintf(&sb, `You are placing a leaf tag "%s" (category: %s) into a hierarchy under an L2 parent.
 
 The L2 level represents the main entity/subject the leaf tag belongs to.
-`, tag.Label, tag.Category))
+`, tag.Label, tag.Category)
 
 	sb.WriteString("=== L2 CANDIDATE PARENT TAGS ===\n")
 	for i, c := range candidates {
-		sb.WriteString(fmt.Sprintf("%d. %s (similarity: %.4f, description: %s)\n",
-			i+1, c.Tag.Label, c.Similarity, truncateDesc(c.Tag.Description, 200)))
+		fmt.Fprintf(&sb, "%d. %s (similarity: %.4f, description: %s)\n",
+			i+1, c.Tag.Label, c.Similarity, truncateDesc(c.Tag.Description, 200))
 	}
 
-	sb.WriteString(fmt.Sprintf(`
+	fmt.Fprintf(&sb, `
 === DECISION RULES ===
 - Choose the SINGLE best L2 parent from the candidates, OR indicate "create_new" if no candidate is suitable
 - The L2 should be the entity/company/product/organization the leaf tag belongs to
 - Similarity >= %.2f: strong signal for match
 - Similarity < %.2f: weak signal, prefer create_new unless the semantic match is obvious
 - Return JSON: {"action": "select"|"create_new", "target": "<candidate_name_or_empty>", "reason": "<brief>"}
-`, PlacementL2HighThreshold, PlacementL2LowThreshold))
+`, PlacementL2HighThreshold, PlacementL2LowThreshold)
 
 	return sb.String()
 }
@@ -40,15 +40,15 @@ The L2 level represents the main entity/subject the leaf tag belongs to.
 func buildL1MatchPrompt(l2Tag *models.TopicTag, candidates []TagCandidate, existingL1s []*models.TopicTag) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf(`You are placing an L2 tag "%s" (category: %s) under an L1 event type / category.
+	fmt.Fprintf(&sb, `You are placing an L2 tag "%s" (category: %s) under an L1 event type / category.
 
 The L1 level represents the highest-level categorization (e.g., "产品发布", "融资并购", "政策法规").
-`, l2Tag.Label, l2Tag.Category))
+`, l2Tag.Label, l2Tag.Category)
 
 	if len(existingL1s) > 0 {
 		sb.WriteString("\n=== EXISTING L1 TYPES (for reference) ===\n")
 		for i, l1 := range existingL1s {
-			sb.WriteString(fmt.Sprintf("%d. %s (description: %s)\n", i+1, l1.Label, truncateDesc(l1.Description, 100)))
+			fmt.Fprintf(&sb, "%d. %s (description: %s)\n", i+1, l1.Label, truncateDesc(l1.Description, 100))
 		}
 		sb.WriteString("Prefer reusing an existing L1 type if semantically appropriate.\n")
 	}
@@ -56,19 +56,19 @@ The L1 level represents the highest-level categorization (e.g., "产品发布", 
 	if len(candidates) > 0 {
 		sb.WriteString("\n=== L1 CANDIDATE PARENT TAGS (embedding matches) ===\n")
 		for i, c := range candidates {
-			sb.WriteString(fmt.Sprintf("%d. %s (similarity: %.4f, description: %s)\n",
-				i+1, c.Tag.Label, c.Similarity, truncateDesc(c.Tag.Description, 200)))
+			fmt.Fprintf(&sb, "%d. %s (similarity: %.4f, description: %s)\n",
+				i+1, c.Tag.Label, c.Similarity, truncateDesc(c.Tag.Description, 200))
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf(`
+	fmt.Fprintf(&sb, `
 === DECISION RULES ===
 - If an existing L1 type fits: return {"action": "select_existing", "target": "<type_name>", "reason": "..."}
 - If a candidate is suitable: return {"action": "select", "target": "<candidate_name>", "reason": "..."}
 - If a new type is needed: return {"action": "create_new", "target": "", "new_name": "<suggested_name>", "new_description": "<brief>", "reason": "..."}
 - Similarity >= %.2f: strong, prefer select
 - Similarity < %.2f: weak, prefer create_new
-`, PlacementL1HighThreshold, PlacementL1LowThreshold))
+`, PlacementL1HighThreshold, PlacementL1LowThreshold)
 
 	return sb.String()
 }
@@ -100,7 +100,7 @@ func buildL1CreationPrompt(l2Tag *models.TopicTag, existingL1s []*models.TopicTa
 	if len(existingL1s) > 0 {
 		existingList.WriteString("\nExisting L1 types (use as few-shot reference, prefer reusing if semantically appropriate):\n")
 		for i, l1 := range existingL1s {
-			existingList.WriteString(fmt.Sprintf("%d. %s\n", i+1, l1.Label))
+			fmt.Fprintf(&existingList, "%d. %s\n", i+1, l1.Label)
 		}
 	}
 
@@ -128,7 +128,7 @@ func buildL1DedupPrompt(tag1 *models.TopicTag, tag2 *models.TopicTag) string {
 Tag 1: "%s" (description: %s)
 Tag 2: "%s" (description: %s)
 
-Return JSON: {"should_merge": true|false, "merged_name": "<preferred_name>", "reason": "<brief>"}`, 
+Return JSON: {"should_merge": true|false, "merged_name": "<preferred_name>", "reason": "<brief>"}`,
 		tag1.Label, truncateDesc(tag1.Description, 200),
 		tag2.Label, truncateDesc(tag2.Description, 200))
 }

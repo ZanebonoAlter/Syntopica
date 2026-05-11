@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	defaultEmbeddingThreshold  float64 = 0.7
-	defaultHotspotThreshold    int     = 3
-	unclassifiedTriggerCount   int     = 5
+	defaultEmbeddingThreshold float64 = 0.7
+	defaultHotspotThreshold   int     = 3
+	unclassifiedTriggerCount  int     = 5
 )
 
 type ConceptMatchResult struct {
@@ -57,7 +57,7 @@ func GenerateTagEmbedding(ctx context.Context, tag TagInput) ([]float64, error) 
 	result, err := router.Embed(ctx, airouter.EmbeddingRequest{
 		Input: []string{text},
 		Metadata: map[string]any{
-			"tag_id":   tag.ID,
+			"tag_id":    tag.ID,
 			"tag_label": tag.Label,
 			"operation": "narrative_tag_matching",
 		},
@@ -211,16 +211,16 @@ func BuildBoardFromMatchedTags(conceptID uint, conceptName string, matchedTags [
 	}
 
 	board := &models.NarrativeBoard{
-		PeriodDate:     startOfDay,
-		Name:           conceptName,
-		Description:    "",
-		ScopeType:      scopeType,
+		PeriodDate:      startOfDay,
+		Name:            conceptName,
+		Description:     "",
+		ScopeType:       scopeType,
 		ScopeCategoryID: categoryID,
-		EventTagIDs:    string(eventIDsJSON),
-		AbstractTagIDs: string(abstractIDsJSON),
-		PrevBoardIDs:   string(prevIDsJSON),
-		BoardConceptID: &conceptID,
-		IsSystem:       false,
+		EventTagIDs:     string(eventIDsJSON),
+		AbstractTagIDs:  string(abstractIDsJSON),
+		PrevBoardIDs:    string(prevIDsJSON),
+		BoardConceptID:  &conceptID,
+		IsSystem:        false,
 	}
 
 	if err := database.DB.Create(board).Error; err != nil {

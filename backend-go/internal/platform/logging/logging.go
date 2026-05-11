@@ -72,7 +72,7 @@ func Errorln(args ...any) {
 }
 
 func Fatalf(format string, args ...any) {
-	errorLogger.Output(2, fmt.Sprintf("[FATAL] "+format, args...))
+	errorLogger.Output(2, fmt.Sprintf("[FATAL] "+format, args...)) //nolint:errcheck,gosec
 	os.Exit(1)
 }
 
@@ -95,11 +95,11 @@ func isErrorLine(line string) bool {
 }
 
 func writef(logger *log.Logger, format string, args ...any) {
-	logger.Output(3, fmt.Sprintf(format, args...))
+	logger.Output(3, fmt.Sprintf(format, args...)) //nolint:errcheck,gosec
 }
 
 func writeln(logger *log.Logger, message string) {
-	logger.Output(3, message)
+	logger.Output(3, message) //nolint:errcheck,gosec
 }
 
 func infoOutput() io.Writer {

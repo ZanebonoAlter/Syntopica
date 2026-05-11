@@ -1,9 +1,12 @@
 package jobs
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"my-robot-backend/internal/platform/logging"
 )
 
 type CleanupBudgetStats struct {
@@ -30,7 +33,15 @@ func NewCleanupBudget(totalBudget int, timeout time.Duration) *CleanupBudget {
 		phaseQuota: make(map[string]int),
 		phaseUsed:  make(map[string]int),
 	}
-	b.totalBudget.Store(int32(totalBudget))
+	if totalBudget > math.MaxInt32 || totalBudget < math.MinInt32 {
+		logging.Warnf("cleanup budget %d out of int32 range, clamping", totalBudget)
+		if totalBudget > math.MaxInt32 {
+			totalBudget = math.MaxInt32
+		} else {
+			totalBudget = math.MinInt32
+		}
+	}
+	b.totalBudget.Store(int32(totalBudget)) //nolint:gosec
 	return b
 }
 

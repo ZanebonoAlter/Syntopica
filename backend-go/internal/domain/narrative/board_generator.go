@@ -15,11 +15,11 @@ import (
 )
 
 type BoardPartition struct {
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	EventTagIDs   []uint `json:"event_tag_ids"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	EventTagIDs    []uint `json:"event_tag_ids"`
 	AbstractTagIDs []uint `json:"abstract_tag_ids"`
-	PrevBoardIDs  []uint `json:"prev_board_ids"`
+	PrevBoardIDs   []uint `json:"prev_board_ids"`
 }
 
 const boardPartitionSystemPrompt = `你是一名专业的新闻叙事看板分析师。你的任务是将当天的事件标签和抽象标签分组到叙事看板（board）中。
@@ -50,9 +50,9 @@ func buildBoardPartitionPrompt(
 
 	sb.WriteString("## 今日事件标签\n\n")
 	for _, t := range events {
-		sb.WriteString(fmt.Sprintf("- [EventTagID:%d] %s (文章数:%d", t.ID, t.Label, t.ArticleCount))
+		fmt.Fprintf(&sb, "- [EventTagID:%d] %s (文章数:%d", t.ID, t.Label, t.ArticleCount)
 		if t.Description != "" {
-			sb.WriteString(fmt.Sprintf(", 描述:%s", t.Description))
+			fmt.Fprintf(&sb, ", 描述:%s", t.Description)
 		}
 		sb.WriteString(")\n")
 	}
@@ -66,15 +66,15 @@ func buildBoardPartitionPrompt(
 	if len(prevBoards) > 0 {
 		sb.WriteString("\n## 昨日看板（供延续参考）\n\n")
 		for _, b := range prevBoards {
-			sb.WriteString(fmt.Sprintf("- [PrevBoardID:%d] %s: %s\n", b.ID, b.Name, b.Description))
+			fmt.Fprintf(&sb, "- [PrevBoardID:%d] %s: %s\n", b.ID, b.Name, b.Description)
 		}
 	}
 
 	if len(prevNarratives) > 0 {
 		sb.WriteString("\n## 昨日看板中的叙事（供上下文参考）\n\n")
 		for _, n := range prevNarratives {
-			sb.WriteString(fmt.Sprintf("- [叙事ID:%d, 看板ID:%d] %s (状态:%s)\n  摘要: %s\n",
-				n.ID, n.BoardID, n.Title, n.Status, n.Summary))
+			fmt.Fprintf(&sb, "- [叙事ID:%d, 看板ID:%d] %s (状态:%s)\n  摘要: %s\n",
+				n.ID, n.BoardID, n.Title, n.Status, n.Summary)
 		}
 	}
 
@@ -152,11 +152,11 @@ func parseBoardPartitionResponse(content string, validEventIDs map[uint]bool, va
 		}
 
 		valid = append(valid, BoardPartition{
-			Name:          b.Name,
-			Description:   b.Description,
-			EventTagIDs:   filteredEventIDs,
+			Name:           b.Name,
+			Description:    b.Description,
+			EventTagIDs:    filteredEventIDs,
 			AbstractTagIDs: filteredAbstractIDs,
-			PrevBoardIDs:  filteredPrevBoardIDs,
+			PrevBoardIDs:   filteredPrevBoardIDs,
 		})
 	}
 
@@ -219,11 +219,11 @@ func GenerateBoardsForCategory(ctx context.Context, date time.Time, categoryID u
 					Items: &airouter.SchemaProperty{
 						Type: "object",
 						Properties: map[string]airouter.SchemaProperty{
-							"name":            {Type: "string", Description: "看板名称，不超过20字"},
-							"description":     {Type: "string", Description: "看板描述，50-100字"},
-							"event_tag_ids":   {Type: "array", Items: &airouter.SchemaProperty{Type: "integer"}, Description: "分配到此看板的事件标签ID"},
+							"name":             {Type: "string", Description: "看板名称，不超过20字"},
+							"description":      {Type: "string", Description: "看板描述，50-100字"},
+							"event_tag_ids":    {Type: "array", Items: &airouter.SchemaProperty{Type: "integer"}, Description: "分配到此看板的事件标签ID"},
 							"abstract_tag_ids": {Type: "array", Items: &airouter.SchemaProperty{Type: "integer"}, Description: "分配到此看板的抽象标签ID"},
-							"prev_board_ids":  {Type: "array", Items: &airouter.SchemaProperty{Type: "integer"}, Description: "延续的昨日看板ID"},
+							"prev_board_ids":   {Type: "array", Items: &airouter.SchemaProperty{Type: "integer"}, Description: "延续的昨日看板ID"},
 						},
 						Required: []string{"name", "description", "event_tag_ids", "abstract_tag_ids", "prev_board_ids"},
 					},
@@ -232,11 +232,11 @@ func GenerateBoardsForCategory(ctx context.Context, date time.Time, categoryID u
 			Required: []string{"boards"},
 		},
 		Metadata: map[string]any{
-			"operation":    "board_partition",
-			"category_id":  categoryID,
-			"event_count":  len(events),
-			"tree_count":   len(abstractTrees),
-			"prev_boards":  len(prevBoards),
+			"operation":   "board_partition",
+			"category_id": categoryID,
+			"event_count": len(events),
+			"tree_count":  len(abstractTrees),
+			"prev_boards": len(prevBoards),
 		},
 	})
 	if err != nil {
@@ -312,12 +312,12 @@ func collectAbstractTagIDsFromNode(node AbstractTreeNode, idSet map[uint]bool) {
 
 func writeTreeNode(sb *strings.Builder, prefix string, node AbstractTreeNode, depth int) {
 	indent := strings.Repeat("  ", depth)
-	sb.WriteString(fmt.Sprintf("%s%s: %s (分类:%s, 文章数:%d", prefix, indent, node.Label, node.Category, node.ArticleCount))
+	fmt.Fprintf(sb, "%s%s: %s (分类:%s, 文章数:%d", prefix, indent, node.Label, node.Category, node.ArticleCount)
 	if node.IsAbstract {
 		sb.WriteString(", 抽象标签")
 	}
 	if node.Description != "" {
-		sb.WriteString(fmt.Sprintf(", 描述:%s", node.Description))
+		fmt.Fprintf(sb, ", 描述:%s", node.Description)
 	}
 	sb.WriteString(")\n")
 

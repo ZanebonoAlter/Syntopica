@@ -2,10 +2,8 @@ package topicanalysis
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/airouter"
 	"my-robot-backend/internal/platform/database"
 	"strings"
 	"testing"
@@ -14,32 +12,6 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
-
-type mockChatFn func(ctx context.Context, req airouter.ChatRequest) (*airouter.ChatResult, error)
-
-type mockRouter struct {
-	chatFn mockChatFn
-}
-
-func (m *mockRouter) Chat(ctx context.Context, req airouter.ChatRequest) (*airouter.ChatResult, error) {
-	if m.chatFn != nil {
-		return m.chatFn(ctx, req)
-	}
-	return nil, fmt.Errorf("mock chat not configured")
-}
-
-func (m *mockRouter) ResolvePrimaryProvider(capability airouter.Capability) (*models.AIProvider, *models.AIRoute, error) {
-	return nil, nil, nil
-}
-
-func (m *mockRouter) Embed(ctx context.Context, req airouter.EmbeddingRequest, capability airouter.Capability) (*airouter.EmbeddingResult, error) {
-	return nil, fmt.Errorf("mock embed not configured")
-}
-
-func mockAbstractNameResult(name string) *airouter.ChatResult {
-	b, _ := json.Marshal(map[string]string{"abstract_name": name, "reason": "test"})
-	return &airouter.ChatResult{Content: string(b)}
-}
 
 func TestExtractAbstractTagSuccess(t *testing.T) {
 	if testing.Short() {

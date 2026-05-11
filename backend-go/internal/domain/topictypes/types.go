@@ -48,9 +48,9 @@ type AggregatedTopicTag struct {
 
 // ExtractedTag is the raw output from AI extraction
 type ExtractedTag struct {
-	Label      string   `json:"label"`
-	Category   string   `json:"category"`   // event, person, keyword
-	Confidence float64  `json:"confidence"` // 0-1 confidence score
+	Label       string   `json:"label"`
+	Category    string   `json:"category"`   // event, person, keyword
+	Confidence  float64  `json:"confidence"` // 0-1 confidence score
 	Aliases     []string `json:"aliases,omitempty"`
 	Evidence    string   `json:"evidence,omitempty"`
 	Description string   `json:"description,omitempty"`

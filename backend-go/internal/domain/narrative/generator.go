@@ -110,18 +110,18 @@ func buildNarrativePrompt(tags []TagInput, prev []PreviousNarrative) string {
 
 	sb.WriteString("## 今日话题标签数据\n\n")
 	for _, t := range tags {
-		sb.WriteString(fmt.Sprintf("- [ID:%d] %s (分类:%s, 文章数:%d", t.ID, t.Label, t.Category, t.ArticleCount))
+		fmt.Fprintf(&sb, "- [ID:%d] %s (分类:%s, 文章数:%d", t.ID, t.Label, t.Category, t.ArticleCount)
 		if t.IsAbstract {
 			sb.WriteString(", 抽象标签")
 		}
 		if t.ParentLabel != "" {
-			sb.WriteString(fmt.Sprintf(", 归属:%s", t.ParentLabel))
+			fmt.Fprintf(&sb, ", 归属:%s", t.ParentLabel)
 		}
 		if t.IsWatched {
 			sb.WriteString(", 关注")
 		}
 		if t.Description != "" {
-			sb.WriteString(fmt.Sprintf(", 描述:%s", t.Description))
+			fmt.Fprintf(&sb, ", 描述:%s", t.Description)
 		}
 		sb.WriteString(")\n")
 	}
@@ -129,8 +129,8 @@ func buildNarrativePrompt(tags []TagInput, prev []PreviousNarrative) string {
 	if len(prev) > 0 {
 		sb.WriteString("\n## 昨日叙事线索（供延续/对比参考）\n\n")
 		for _, p := range prev {
-			sb.WriteString(fmt.Sprintf("- [ID:%d] %s (状态:%s, 第%d代)\n  摘要: %s\n",
-				p.ID, p.Title, p.Status, p.Generation, p.Summary))
+			fmt.Fprintf(&sb, "- [ID:%d] %s (状态:%s, 第%d代)\n  摘要: %s\n",
+				p.ID, p.Title, p.Status, p.Generation, p.Summary)
 		}
 	}
 

@@ -1,7 +1,7 @@
 package models
 
 import (
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // only used for slug generation
 	"encoding/hex"
 	"time"
 )
@@ -32,6 +32,6 @@ func (c *Category) ToDict() map[string]interface{} {
 }
 
 func GenerateSlug(name string) string {
-	hash := md5.Sum([]byte(name))
+	hash := md5.Sum([]byte(name)) //nolint:gosec // only used for slug generation
 	return hex.EncodeToString(hash[:])[:8]
 }

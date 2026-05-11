@@ -193,7 +193,8 @@ func collectUnclassifiedTags(since, until time.Time) ([]TagInput, error) {
 		Limit(10)
 	topQ.Find(&topTags)
 
-	tags := append(watchedTags, topTags...)
+	tags := watchedTags
+	tags = append(tags, topTags...)
 	if len(tags) == 0 {
 		return nil, nil
 	}
@@ -237,16 +238,16 @@ func collectUnclassifiedTags(since, until time.Time) ([]TagInput, error) {
 }
 
 type CategoryNarrativeBrief struct {
-	ID          uint      `json:"id"`
-	Title       string    `json:"title"`
-	Summary     string    `json:"summary"`
+	ID          uint       `json:"id"`
+	Title       string     `json:"title"`
+	Summary     string     `json:"summary"`
 	RelatedTags []TagBrief `json:"related_tags"`
 }
 
 type CategoryInput struct {
-	CategoryID   uint                    `json:"category_id"`
-	CategoryName string                  `json:"category_name"`
-	CategoryIcon string                  `json:"category_icon"`
+	CategoryID   uint                     `json:"category_id"`
+	CategoryName string                   `json:"category_name"`
+	CategoryIcon string                   `json:"category_icon"`
 	Narratives   []CategoryNarrativeBrief `json:"narratives"`
 }
 
@@ -363,8 +364,8 @@ func CollectCategoryNarrativeSummaries(date time.Time) ([]CategoryInput, error) 
 	}
 
 	type catWithCount struct {
-		CategoryID  uint
-		Narratives  []models.NarrativeSummary
+		CategoryID   uint
+		Narratives   []models.NarrativeSummary
 		ArticleCount int
 	}
 
@@ -374,7 +375,7 @@ func CollectCategoryNarrativeSummaries(date time.Time) ([]CategoryInput, error) 
 		for _, n := range ns {
 			var ids []interface{}
 			if n.RelatedArticleIDs != "" {
-				json.Unmarshal([]byte(n.RelatedArticleIDs), &ids)
+				_ = json.Unmarshal([]byte(n.RelatedArticleIDs), &ids)
 			}
 			totalArticles += len(ids)
 		}
@@ -427,7 +428,7 @@ func CollectCategoryNarrativeSummaries(date time.Time) ([]CategoryInput, error) 
 		for _, n := range b.Narratives {
 			var tagIDs []uint
 			if n.RelatedTagIDs != "" {
-				json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
+				_ = json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
 			}
 			for _, id := range tagIDs {
 				tagIDSet[id] = true
@@ -459,7 +460,7 @@ func CollectCategoryNarrativeSummaries(date time.Time) ([]CategoryInput, error) 
 		for _, n := range b.Narratives {
 			var tagIDs []uint
 			if n.RelatedTagIDs != "" {
-				json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
+				_ = json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
 			}
 			relatedTags := make([]TagBrief, 0, len(tagIDs))
 			for _, tid := range tagIDs {

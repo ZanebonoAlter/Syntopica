@@ -82,9 +82,9 @@ func (s *NarrativeService) RegenerateAndSaveForCategory(date time.Time, category
 }
 
 type ScopeSaveOpts struct {
-	ScopeType   string
-	CategoryID  *uint
-	Label       string
+	ScopeType  string
+	CategoryID *uint
+	Label      string
 }
 
 func (s *NarrativeService) GenerateAndSave(date time.Time) (int, error) {
@@ -189,7 +189,7 @@ func (s *NarrativeService) GenerateAndSaveGlobal(ctx context.Context, date time.
 
 		var prevBoardIDs []uint
 		if board.PrevBoardIDs != "" {
-			json.Unmarshal([]byte(board.PrevBoardIDs), &prevBoardIDs)
+			_ = json.Unmarshal([]byte(board.PrevBoardIDs), &prevBoardIDs)
 		}
 
 		var prevNarrs []PreviousNarrative
@@ -378,7 +378,11 @@ func (s *NarrativeService) GenerateAndSaveForCategory(date time.Time, categoryID
 		}
 	}
 
-	go TriggerUnclassifiedSuggestionIfNeeded(matcherCtx)
+	go func() {
+		if _, err := TriggerUnclassifiedSuggestionIfNeeded(matcherCtx); err != nil {
+			logging.Warnf("TriggerUnclassifiedSuggestionIfNeeded failed: %v", err)
+		}
+	}()
 
 	if len(allBoards) == 0 {
 		logging.Infof("narrative: no boards created for category %d on %s", categoryID, date.Format("2006-01-02"))
@@ -398,7 +402,7 @@ func (s *NarrativeService) GenerateAndSaveForCategory(date time.Time, categoryID
 
 		var prevBoardIDs []uint
 		if board.PrevBoardIDs != "" {
-			json.Unmarshal([]byte(board.PrevBoardIDs), &prevBoardIDs)
+			_ = json.Unmarshal([]byte(board.PrevBoardIDs), &prevBoardIDs)
 		}
 
 		var prevNarrs []PreviousNarrative
@@ -517,11 +521,11 @@ func (s *NarrativeService) runFeedbackFromTodayNarratives(date time.Time) {
 	for _, n := range todayNarratives {
 		var tagIDs []uint
 		if n.RelatedTagIDs != "" {
-			json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
+			_ = json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
 		}
 		var parentIDs []uint
 		if n.ParentIDs != "" {
-			json.Unmarshal([]byte(n.ParentIDs), &parentIDs)
+			_ = json.Unmarshal([]byte(n.ParentIDs), &parentIDs)
 		}
 		feedbackOutputs = append(feedbackOutputs, NarrativeOutput{
 			Title:         n.Title,
@@ -583,63 +587,6 @@ func (s *NarrativeService) GenerateAndSaveForAllCategories(date time.Time) (int,
 	return totalSaved, nil
 }
 
-func saveNarratives(outputs []NarrativeOutput, date time.Time, scopeOpts *ScopeSaveOpts) (int, error) {
-	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
-
-	records := make([]models.NarrativeSummary, 0, len(outputs))
-	for _, out := range outputs {
-		parentIDsJSON, _ := json.Marshal(out.ParentIDs)
-		tagIDsJSON, _ := json.Marshal(out.RelatedTagIDs)
-
-		articleIDs := resolveArticleIDs(out.RelatedTagIDs, date)
-		articleIDsJSON, _ := json.Marshal(articleIDs)
-
-		generation := resolveGeneration(out, date)
-		if scopeOpts == nil {
-			generation = resolveGlobalGeneration(date)
-		}
-
-		status := out.Status
-		if status == "" {
-			status = models.NarrativeStatusEmerging
-		}
-
-		record := models.NarrativeSummary{
-			Title:             out.Title,
-			Summary:           out.Summary,
-			Status:            status,
-			Period:            "daily",
-			PeriodDate:        startOfDay,
-			Generation:        generation,
-			ParentIDs:         string(parentIDsJSON),
-			RelatedTagIDs:     string(tagIDsJSON),
-			RelatedArticleIDs: string(articleIDsJSON),
-			Source:            "ai",
-			ScopeType:         models.NarrativeScopeTypeGlobal,
-		}
-		if scopeOpts != nil {
-			record.ScopeType = scopeOpts.ScopeType
-			record.ScopeCategoryID = scopeOpts.CategoryID
-			record.ScopeLabel = scopeOpts.Label
-		}
-		records = append(records, record)
-	}
-
-	if err := database.DB.CreateInBatches(records, 20).Error; err != nil {
-		logging.Warnf("narrative: failed to batch save narratives: %v", err)
-		saved := 0
-		for _, record := range records {
-			if err := database.DB.Create(&record).Error; err != nil {
-				logging.Warnf("narrative: failed to save '%s': %v", record.Title, err)
-				continue
-			}
-			saved++
-		}
-		return saved, nil
-	}
-	return len(records), nil
-}
-
 func resolveGeneration(out NarrativeOutput, date time.Time) int {
 	if len(out.ParentIDs) == 0 {
 		return 0
@@ -696,91 +643,6 @@ func resolveArticleIDs(tagIDs []uint, date time.Time) []uint64 {
 	}
 
 	return articleIDs
-}
-
-func markEndedNarratives(date time.Time, currentOutputs []NarrativeOutput, prev []PreviousNarrative) {
-	if len(prev) == 0 {
-		return
-	}
-
-	referencedParentIDs := make(map[uint64]bool)
-	for _, out := range currentOutputs {
-		for _, pid := range out.ParentIDs {
-			referencedParentIDs[uint64(pid)] = true
-		}
-	}
-
-	var endedIDs []uint64
-	for _, p := range prev {
-		if !referencedParentIDs[p.ID] && p.Status != models.NarrativeStatusEnding {
-			endedIDs = append(endedIDs, p.ID)
-		}
-	}
-
-	if len(endedIDs) == 0 {
-		return
-	}
-
-	result := database.DB.Model(&models.NarrativeSummary{}).
-		Where("id IN ? AND status != ?", endedIDs, models.NarrativeStatusEnding).
-		Update("status", models.NarrativeStatusEnding)
-
-	logging.Infof("narrative: marked %d previous narratives as ending", result.RowsAffected)
-}
-
-func markEndedGlobalNarratives(date time.Time, currentOutputs []NarrativeOutput, prevGlobal []PreviousNarrative) {
-	if len(prevGlobal) == 0 {
-		return
-	}
-
-	currentTagIDs := make(map[uint]bool)
-	for _, out := range currentOutputs {
-		for _, tid := range out.RelatedTagIDs {
-			currentTagIDs[tid] = true
-		}
-	}
-
-	yesterday := date.AddDate(0, 0, -1)
-	startOfYesterday := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 0, 0, 0, 0, yesterday.Location())
-	endOfYesterday := startOfYesterday.Add(24 * time.Hour)
-
-	var prevNarratives []models.NarrativeSummary
-	database.DB.Where("scope_type = ? AND period = ? AND period_date >= ? AND period_date < ?",
-		models.NarrativeScopeTypeGlobal, "daily", startOfYesterday, endOfYesterday).
-		Find(&prevNarratives)
-
-	var endedIDs []uint64
-	for _, prev := range prevNarratives {
-		if prev.Status == models.NarrativeStatusEnding {
-			continue
-		}
-		var prevTagIDs []uint
-		if prev.RelatedTagIDs != "" {
-			json.Unmarshal([]byte(prev.RelatedTagIDs), &prevTagIDs)
-		}
-
-		hasIntersection := false
-		for _, tid := range prevTagIDs {
-			if currentTagIDs[tid] {
-				hasIntersection = true
-				break
-			}
-		}
-
-		if !hasIntersection {
-			endedIDs = append(endedIDs, uint64(prev.ID))
-		}
-	}
-
-	if len(endedIDs) == 0 {
-		return
-	}
-
-	result := database.DB.Model(&models.NarrativeSummary{}).
-		Where("id IN ? AND status != ?", endedIDs, models.NarrativeStatusEnding).
-		Update("status", models.NarrativeStatusEnding)
-
-	logging.Infof("narrative: marked %d previous global narratives as ending", result.RowsAffected)
 }
 
 type NarrativeListItem struct {
@@ -1159,7 +1021,7 @@ func (s *NarrativeService) GetBoardTimeline(startDate, endDate time.Time, scopeT
 			for _, b := range bs {
 				var prevBoardIDs []uint
 				if b.PrevBoardIDs != "" {
-					json.Unmarshal([]byte(b.PrevBoardIDs), &prevBoardIDs)
+					_ = json.Unmarshal([]byte(b.PrevBoardIDs), &prevBoardIDs)
 				}
 				if prevBoardIDs == nil {
 					prevBoardIDs = []uint{}
@@ -1377,7 +1239,7 @@ func walkHistoryDepth(id uint64, history *[]models.NarrativeSummary, visited map
 
 	var parentIDs []uint64
 	if narrative.ParentIDs != "" {
-		json.Unmarshal([]byte(narrative.ParentIDs), &parentIDs)
+		_ = json.Unmarshal([]byte(narrative.ParentIDs), &parentIDs)
 	}
 
 	for _, pid := range parentIDs {
@@ -1396,7 +1258,7 @@ func toListItems(narratives []models.NarrativeSummary) []NarrativeListItem {
 	for _, n := range narratives {
 		var tagIDs []uint
 		if n.RelatedTagIDs != "" {
-			json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
+			_ = json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
 		}
 		for _, id := range tagIDs {
 			tagIDSet[id] = true
@@ -1420,7 +1282,7 @@ func toListItems(narratives []models.NarrativeSummary) []NarrativeListItem {
 	for _, n := range narratives {
 		var parentIDs []uint64
 		if n.ParentIDs != "" {
-			json.Unmarshal([]byte(n.ParentIDs), &parentIDs)
+			_ = json.Unmarshal([]byte(n.ParentIDs), &parentIDs)
 		}
 		for _, pid := range parentIDs {
 			childMap[pid] = append(childMap[pid], n.ID)
@@ -1431,12 +1293,12 @@ func toListItems(narratives []models.NarrativeSummary) []NarrativeListItem {
 	for _, n := range narratives {
 		var parentIDs []uint64
 		if n.ParentIDs != "" {
-			json.Unmarshal([]byte(n.ParentIDs), &parentIDs)
+			_ = json.Unmarshal([]byte(n.ParentIDs), &parentIDs)
 		}
 
 		var tagIDs []uint
 		if n.RelatedTagIDs != "" {
-			json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
+			_ = json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
 		}
 
 		tagBriefs := make([]TagBrief, 0, len(tagIDs))

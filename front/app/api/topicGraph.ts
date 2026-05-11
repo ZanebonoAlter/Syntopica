@@ -12,7 +12,7 @@ export interface AnalysisStatusResponse {
   status: 'pending' | 'processing' | 'completed' | 'failed'
   progress: number
   error: string | null
-  result: any | null
+  result: Record<string, unknown> | null
 }
 
 export interface RebuildAnalysisRequest {
@@ -207,7 +207,7 @@ export interface TopicAnalysisStatusRecord {
   status: AnalysisStatusResponse['status'] | 'missing' | 'ready'
   progress: number
   error: string | null
-  result: any | null
+  result: Record<string, unknown> | null
 }
 
 export interface GetTopicArticlesParams {

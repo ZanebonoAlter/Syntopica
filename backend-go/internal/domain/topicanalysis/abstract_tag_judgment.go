@@ -39,9 +39,6 @@ type tagJudgmentAbstract struct {
 
 const mergeMinSimilarity = 0.85
 
-// maxBatchJudgeSize limits candidates per LLM call to keep prompts manageable.
-const maxBatchJudgeSize = 10
-
 func callLLMForTagJudgment(ctx context.Context, candidates []TagCandidate, newLabel string, category string, narrativeContext string, caller string) (*tagJudgment, error) {
 	router := airouter.NewRouter()
 	hasHighSim := shouldAllowMergeJudgment(candidates)
@@ -549,18 +546,18 @@ func injectHierarchyContext(prompt string, category string) string {
 
 	var sb strings.Builder
 	sb.WriteString(prompt)
-	sb.WriteString(fmt.Sprintf("\n\n=== HIERARCHY LEVEL GUIDANCE ===\n"))
-	sb.WriteString(fmt.Sprintf("Template: %s (%d levels)\n", tmpl.TemplateKey(), tmpl.MaxLevel))
+	sb.WriteString("\n\n=== HIERARCHY LEVEL GUIDANCE ===\n")
+	fmt.Fprintf(&sb, "Template: %s (%d levels)\n", tmpl.TemplateKey(), tmpl.MaxLevel)
 	sb.WriteString("Level definitions:\n")
 	for _, l := range tmpl.Levels {
-		sb.WriteString(fmt.Sprintf("  L%d: %s — %s", l.Level, l.Name, l.Description))
+		fmt.Fprintf(&sb, "  L%d: %s — %s", l.Level, l.Name, l.Description)
 		if l.IsLeaf {
 			sb.WriteString(" (LEAF)")
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString(fmt.Sprintf("\nWhen creating abstracts, ensure the abstract name fits the appropriate level's semantics.\n"))
-	sb.WriteString(fmt.Sprintf("Abstract tags should be L2 or L1 level. Newly created child tags default to L%d (leaf).\n", tmpl.GetLeafLevel()))
+	sb.WriteString("\nWhen creating abstracts, ensure the abstract name fits the appropriate level's semantics.\n")
+	fmt.Fprintf(&sb, "Abstract tags should be L2 or L1 level. Newly created child tags default to L%d (leaf).\n", tmpl.GetLeafLevel())
 
 	return sb.String()
 }
@@ -682,67 +679,6 @@ func findSimilarExistingAbstract(ctx context.Context, name, desc, category strin
 	return nil
 }
 
-func aiJudgeNarrowerConcept(ctx context.Context, parentTag *models.TopicTag, candidateTag *models.TopicTag) (bool, error) {
-	parentChildren := loadAbstractChildLabels(parentTag.ID, 5)
-	candidateChildren := loadAbstractChildLabels(candidateTag.ID, 5)
-
-	router := airouter.NewRouter()
-	prompt := fmt.Sprintf(`判断候选标签是否是目标标签的更窄（更具体）概念，应该作为其子标签。
-
-目标标签（潜在的父标签）: %q (%s)
-目标标签的子标签: %s
-
-候选标签（潜在的子标签）: %q (%s)
-候选标签的子标签: %s
-
-规则:
-- 如果候选标签描述的是目标标签范围内的一个具体方面、子集或特定场景，则它是更窄概念
-- 如果两者是同一层级或候选更宽泛，返回 false
-- 如果候选的子标签与目标的子标签高度重叠，说明是同一概念，返回 false
-
-返回 JSON: {"narrower": true/false, "reason": "简要说明"}`,
-		parentTag.Label, formatTagPromptContext(parentTag), formatChildLabels(parentChildren),
-		candidateTag.Label, formatTagPromptContext(candidateTag), formatChildLabels(candidateChildren))
-
-	req := airouter.ChatRequest{
-		Capability: airouter.CapabilityTopicTagging,
-		Messages: []airouter.Message{
-			{Role: "system", Content: "You are a tag taxonomy assistant. Respond only with valid JSON."},
-			{Role: "user", Content: prompt},
-		},
-		JSONMode: true,
-		JSONSchema: &airouter.JSONSchema{
-			Type: "object",
-			Properties: map[string]airouter.SchemaProperty{
-				"narrower": {Type: "boolean", Description: "候选标签是否是目标标签的更窄概念"},
-				"reason":   {Type: "string", Description: "判断理由"},
-			},
-			Required: []string{"narrower", "reason"},
-		},
-		Temperature: func() *float64 { f := 0.2; return &f }(),
-		Metadata: map[string]any{
-			"operation":     "adopt_narrower_abstract",
-			"parent_tag":    parentTag.ID,
-			"candidate_tag": candidateTag.ID,
-		},
-	}
-
-	result, err := router.Chat(ctx, req)
-	if err != nil {
-		return false, fmt.Errorf("LLM call failed: %w", err)
-	}
-
-	var parsed struct {
-		Narrower bool   `json:"narrower"`
-		Reason   string `json:"reason"`
-	}
-	if err := json.Unmarshal([]byte(result.Content), &parsed); err != nil {
-		return false, fmt.Errorf("parse LLM response: %w", err)
-	}
-
-	return parsed.Narrower, nil
-}
-
 func batchJudgeNarrowerConcepts(ctx context.Context, parentTag *models.TopicTag, candidates []TagCandidate) ([]uint, error) {
 	if len(candidates) == 0 {
 		return nil, nil
@@ -821,74 +757,6 @@ func batchJudgeNarrowerConcepts(ctx context.Context, parentTag *models.TopicTag,
 		}
 	}
 	return ids, nil
-}
-
-func aiJudgeBestParent(ctx context.Context, childTag *models.TopicTag, parents []parentWithInfo) (int, error) {
-	var parentDescs []string
-	for i, p := range parents {
-		children := loadAbstractChildLabels(p.Parent.ID, 5)
-		desc := fmt.Sprintf("父标签 %d: %q (%s, 子标签: %s)", i+1, p.Parent.Label, formatTagPromptContext(p.Parent), formatChildLabels(children))
-		parentDescs = append(parentDescs, desc)
-	}
-
-	childDesc := fmt.Sprintf("子标签: %q (%s)", childTag.Label, formatTagPromptContext(childTag))
-
-	router := airouter.NewRouter()
-	prompt := fmt.Sprintf(`一个标签目前被多个抽象父标签收养，请判断哪个父标签是最合适的归属。
-
-%s
-
-%s
-
-规则:
-- 选择最能概括子标签概念的父标签
-- 如果多个父标签都合适，选择子标签范围更具体的那个（更紧密的归属）
-- 如果父标签之间有层级关系，选择最直接（最窄）的父标签
-
-返回 JSON: {"best_index": 父标签编号(从1开始), "reason": "简要说明"}`,
-		childDesc, strings.Join(parentDescs, "\n"))
-
-	req := airouter.ChatRequest{
-		Capability: airouter.CapabilityTopicTagging,
-		Messages: []airouter.Message{
-			{Role: "system", Content: "You are a tag taxonomy assistant. Respond only with valid JSON."},
-			{Role: "user", Content: prompt},
-		},
-		JSONMode: true,
-		JSONSchema: &airouter.JSONSchema{
-			Type: "object",
-			Properties: map[string]airouter.SchemaProperty{
-				"best_index": {Type: "integer", Description: "最合适父标签的编号（从1开始）"},
-				"reason":     {Type: "string", Description: "选择理由"},
-			},
-			Required: []string{"best_index", "reason"},
-		},
-		Temperature: func() *float64 { f := 0.2; return &f }(),
-		Metadata: map[string]any{
-			"operation": "resolve_multi_parent",
-			"child_tag": childTag.ID,
-		},
-	}
-
-	result, err := router.Chat(ctx, req)
-	if err != nil {
-		return 0, fmt.Errorf("LLM call failed: %w", err)
-	}
-
-	var parsed struct {
-		BestIndex int    `json:"best_index"`
-		Reason    string `json:"reason"`
-	}
-	if err := json.Unmarshal([]byte(result.Content), &parsed); err != nil {
-		return 0, fmt.Errorf("parse LLM response: %w", err)
-	}
-
-	idx := parsed.BestIndex - 1
-	if idx < 0 || idx >= len(parents) {
-		return 0, fmt.Errorf("LLM returned invalid best_index %d (parents count: %d)", parsed.BestIndex, len(parents))
-	}
-
-	return idx, nil
 }
 
 type abstractRelationJudgment struct {
@@ -1067,163 +935,6 @@ func batchJudgeAbstractRelationships(ctx context.Context, tagA *models.TopicTag,
 		})
 	}
 	return results, nil
-}
-
-func judgeAbstractRelationship(ctx context.Context, tag1ID, tag2ID uint) (*abstractRelationJudgment, error) {
-	var tag1, tag2 models.TopicTag
-	if err := database.DB.First(&tag1, tag1ID).Error; err != nil {
-		return nil, fmt.Errorf("load tag %d: %w", tag1ID, err)
-	}
-	if err := database.DB.First(&tag2, tag2ID).Error; err != nil {
-		return nil, fmt.Errorf("load tag %d: %w", tag2ID, err)
-	}
-
-	children1 := loadAbstractChildLabels(tag1ID, 8)
-	children2 := loadAbstractChildLabels(tag2ID, 8)
-
-	router := airouter.NewRouter()
-	prompt := fmt.Sprintf(`Given two abstract topic tags, determine their relationship.
-
-Tag A: %q (%s)
-Tag A's children: %s
-
-Tag B: %q (%s)
-Tag B's children: %s
-
-Choose one action:
-- "merge": They describe the exact same concept (synonyms, translations, different wording for the same idea). Specify which to keep in "target".
-- "parent_A": Tag A is the broader/more general concept, Tag B is a specific sub-concept of A.
-- "parent_B": Tag B is the broader/more general concept, Tag A is a specific sub-concept of B.
-- "skip": They look similar but should NOT be related (different domains, different regions, unrelated topics).
-
-Respond with JSON: {"action": "merge"|"parent_A"|"parent_B"|"skip", "target": "A"|"B", "reason": "brief explanation"}
-
-Rules:
-- Use the children tags to understand what each abstract tag actually covers
-- "merge" ONLY when they are truly the same concept — not just related or overlapping
-- "skip" when children tags show they cover completely different domains or regions
-- For parent/child, the parent should be the more general/broader concept
-- If they are equally broad but related, prefer "skip" over forcing a relationship`,
-		tag1.Label, formatTagPromptContext(&tag1), formatChildLabels(children1),
-		tag2.Label, formatTagPromptContext(&tag2), formatChildLabels(children2))
-
-	req := airouter.ChatRequest{
-		Capability: airouter.CapabilityTopicTagging,
-		Messages: []airouter.Message{
-			{Role: "system", Content: "You are a tag taxonomy assistant. Respond only with valid JSON."},
-			{Role: "user", Content: prompt},
-		},
-		JSONMode: true,
-		JSONSchema: &airouter.JSONSchema{
-			Type: "object",
-			Properties: map[string]airouter.SchemaProperty{
-				"action": {Type: "string", Description: "merge, parent_A, parent_B, 或 skip"},
-				"target": {Type: "string", Description: "A 或 B，merge 时保留的标签；其他动作时也需要填写"},
-				"reason": {Type: "string", Description: "判断理由"},
-			},
-			Required: []string{"action", "target", "reason"},
-		},
-		Temperature: func() *float64 { f := 0.2; return &f }(),
-		Metadata: map[string]any{
-			"operation": "judge_abstract_relationship",
-			"tag_a":     tag1ID,
-			"tag_b":     tag2ID,
-		},
-	}
-
-	result, err := router.Chat(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("LLM call failed: %w", err)
-	}
-
-	var parsed abstractRelationJudgment
-	if err := json.Unmarshal([]byte(jsonutil.SanitizeLLMJSON(result.Content)), &parsed); err != nil {
-		return nil, fmt.Errorf("parse LLM response: %w", err)
-	}
-	if err := normalizeAbstractRelationJudgment(&parsed); err != nil {
-		return nil, err
-	}
-
-	return &parsed, nil
-}
-
-func aiJudgeAlternativePlacement(ctx context.Context, tagID uint, suggestedParentID uint) (uint, string, error) {
-	if database.DB == nil {
-		return 0, "", fmt.Errorf("database not initialized")
-	}
-
-	var tag models.TopicTag
-	if err := database.DB.First(&tag, tagID).Error; err != nil {
-		return 0, "", err
-	}
-
-	var suggestedParent models.TopicTag
-	if err := database.DB.First(&suggestedParent, suggestedParentID).Error; err != nil {
-		return 0, "", err
-	}
-
-	siblings := loadAbstractChildLabels(suggestedParentID, 8)
-	tagChildren := loadAbstractChildLabels(tagID, 5)
-
-	router := airouter.NewRouter()
-	prompt := fmt.Sprintf(`一个抽象标签即将被放置到层级树中，但目标位置会导致层级过深（超过%d层）。
-请判断该标签最合适的归属。
-
-待放置标签: %q (%s)
-待放置标签路径: %s
-该标签的子标签: %s
-
-原定父标签: %q (%s)
-原定父标签路径: %s
-原定父标签的子标签: %s
-
-规则:
-- 不要创建新的深层级
-- 优先选择合并到已有标签，或放置到更浅的层级
-- 如果该标签与原定父标签的某个子标签概念重叠，返回该子标签ID
-
-返回 JSON: {"target_id": 目标标签ID或0表示不放置, "reason": "简要说明"}`,
-		maxHierarchyDepth,
-		tag.Label, formatTagPromptContext(&tag), loadTagPathString(tagID, 6), formatChildLabels(tagChildren),
-		suggestedParent.Label, formatTagPromptContext(&suggestedParent), loadTagPathString(suggestedParentID, 6), formatChildLabels(siblings))
-
-	req := airouter.ChatRequest{
-		Capability: airouter.CapabilityTopicTagging,
-		Messages: []airouter.Message{
-			{Role: "system", Content: "You are a tag taxonomy assistant. Respond only with valid JSON."},
-			{Role: "user", Content: prompt},
-		},
-		JSONMode: true,
-		JSONSchema: &airouter.JSONSchema{
-			Type: "object",
-			Properties: map[string]airouter.SchemaProperty{
-				"target_id": {Type: "integer", Description: "目标标签ID，0表示不放置"},
-				"reason":    {Type: "string", Description: "判断理由"},
-			},
-			Required: []string{"target_id", "reason"},
-		},
-		Temperature: func() *float64 { f := 0.2; return &f }(),
-		Metadata: map[string]any{
-			"operation":        "depth_limit_alternative",
-			"tag_id":           tagID,
-			"suggested_parent": suggestedParentID,
-		},
-	}
-
-	result, err := router.Chat(ctx, req)
-	if err != nil {
-		return 0, "", fmt.Errorf("LLM call failed: %w", err)
-	}
-
-	var parsed struct {
-		TargetID uint   `json:"target_id"`
-		Reason   string `json:"reason"`
-	}
-	if err := json.Unmarshal([]byte(result.Content), &parsed); err != nil {
-		return 0, "", fmt.Errorf("parse response: %w", err)
-	}
-
-	return parsed.TargetID, parsed.Reason, nil
 }
 
 func judgeCrossLayerDuplicate(ctx context.Context, sourceID uint, candidateID uint) (bool, string, error) {

@@ -22,12 +22,9 @@ var errInsufficientAbstractChildren = errors.New("abstract tag needs enough chil
 
 var (
 	findSimilarExistingAbstractFn       = findSimilarExistingAbstract
-	aiJudgeNarrowerConceptFn            = aiJudgeNarrowerConcept
 	batchJudgeNarrowerConceptsFn        = batchJudgeNarrowerConcepts
-	aiJudgeBestParentFn                 = aiJudgeBestParent
 	findCrossLayerDuplicateCandidatesFn = findCrossLayerDuplicateCandidates
 	judgeCrossLayerDuplicateFn          = judgeCrossLayerDuplicate
-	aiJudgeAlternativePlacementFn       = aiJudgeAlternativePlacement
 	mergeTagsFn                         = MergeTags
 	callTreeReviewLLMFn                 = callTreeReviewLLM
 )

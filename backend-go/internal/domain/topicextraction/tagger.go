@@ -3,7 +3,6 @@ package topicextraction
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -16,8 +15,6 @@ import (
 	"my-robot-backend/internal/platform/jsonutil"
 	"my-robot-backend/internal/platform/logging"
 )
-
-var errTopicAIUnavailable = errors.New("topic AI unavailable")
 
 type batchJudgmentContextKey struct{}
 
@@ -53,8 +50,6 @@ func getBatchJudgment(ctx context.Context, label string) *topicanalysis.TagExtra
 	}
 	return results[label]
 }
-
-
 
 // legacyExtractTopics is the old heuristic-based extraction (for fallback)
 func legacyExtractTopics(input topictypes.ExtractionInput) []topictypes.TopicTag {
@@ -263,10 +258,10 @@ func findOrCreateTag(ctx context.Context, tag topictypes.TopicTag, source string
 						}
 					}
 
-				if !result.HasAbstract() {
-					GetTagCache().Set(slug, category, existing)
-					return existing, nil
-				}
+					if !result.HasAbstract() {
+						GetTagCache().Set(slug, category, existing)
+						return existing, nil
+					}
 				}
 
 				if result.HasAbstract() {
@@ -305,7 +300,7 @@ func findOrCreateTag(ctx context.Context, tag topictypes.TopicTag, source string
 						if coTagErr != nil {
 							logging.Warnf("abstract co-tag expansion failed for abstract %d: %v", result.Abstract.Tag.ID, coTagErr)
 						} else if len(coTagCandidates) > 0 {
-							go func(abstractTagID uint, abstractLabel string, expanded []topicanalysis.TagCandidate) {
+							go func(abstractTagID uint, abstractLabel string, expanded []topicanalysis.TagCandidate) { //nolint:gosec
 								abstractCandidates := topicanalysis.MergeCandidateLists(nil, expanded)
 								judgmentResult, err := topicanalysis.ExtractAbstractTag(context.Background(), abstractCandidates, abstractLabel, "event", topicanalysis.WithCaller("abstract_co_tag_expansion"))
 								if err != nil || judgmentResult == nil || !judgmentResult.HasAction() {
@@ -384,7 +379,7 @@ func findOrCreateTag(ctx context.Context, tag topictypes.TopicTag, source string
 		go ensureTagEmbedding(es, newTag.ID)
 	}
 
-	go func() {
+	go func() { //nolint:gosec
 		if _, err := topicanalysis.PlaceTagInHierarchy(context.Background(), &newTag); err != nil {
 			logging.Warnf("Failed to place tag %d in hierarchy: %v", newTag.ID, err)
 		}
@@ -562,132 +557,6 @@ Respond with JSON: {"description": "your answer"}`, label, category, articleCont
 	qs := getEmbeddingQueueService()
 	if err := qs.Enqueue(tagID); err != nil {
 		logging.Warnf("Failed to enqueue re-embedding after description update for tag %d: %v", tagID, err)
-	}
-}
-
-func generatePersonTagDescription(tagID uint, label, articleContext string) {
-	defer func() {
-		if r := recover(); r != nil {
-			logging.Warnf("generatePersonTagDescription panic for tag %d: %v", tagID, r)
-		}
-	}()
-
-	// Person tags only need identity context, truncate to reduce noise
-	runes := []rune(articleContext)
-	if len(runes) > 400 {
-		articleContext = string(runes[:400])
-	}
-
-	router := airouter.NewRouter()
-
-	prompt := fmt.Sprintf(`Given this person tag and article context, generate a description and extract structured attributes.
-
-Tag: %q
-Category: person
-Context from article: %s
-
-Description requirements:
-- Must be in Chinese (中文)
-- Objective, factual statement about WHO this person IS, not what they said or did in this specific article
-- Keep under 500 characters
-- Focus on: identity, position, affiliation
-
-Structured attributes to extract:
-- country: nationality or primary country of activity (中文, e.g. "美国", "中国")
-- organization: primary organization or institution (中文)
-- role: primary position or title (中文, e.g. "财政部长", "CEO")
-- domains: areas of expertise or influence, as array of strings (中文, e.g. ["经济政策", "金融监管"])
-
-Respond with JSON: {"description": "your answer", "person_attrs": {"country": "...", "organization": "...", "role": "...", "domains": [...]}}`, label, articleContext)
-
-	req := airouter.ChatRequest{
-		Capability: airouter.CapabilityTopicTagging,
-		Messages: []airouter.Message{
-			{Role: "system", Content: "你是一个标签分类助手，只输出合法JSON。"},
-			{Role: "user", Content: prompt},
-		},
-		JSONMode: true,
-		JSONSchema: &airouter.JSONSchema{
-			Type: "object",
-			Properties: map[string]airouter.SchemaProperty{
-				"description": {Type: "string", Description: "人物标签的中文客观描述"},
-				"person_attrs": {
-					Type: "object",
-					Properties: map[string]airouter.SchemaProperty{
-						"country":      {Type: "string", Description: "国籍或主要活动国家"},
-						"organization": {Type: "string", Description: "主要组织或机构"},
-						"role":         {Type: "string", Description: "主要职务或头衔"},
-						"domains":      {Type: "array", Items: &airouter.SchemaProperty{Type: "string"}, Description: "专业领域"},
-					},
-				},
-			},
-			Required: []string{"description", "person_attrs"},
-		},
-		Temperature: func() *float64 { f := 0.3; return &f }(),
-		Metadata: map[string]any{
-			"operation": "tag_description_person",
-			"tag_id":    tagID,
-			"tag_label": label,
-		},
-	}
-
-	const maxRetries = 4
-	var desc string
-	var metadataMap map[string]any
-	var success bool
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		result, err := router.Chat(context.Background(), req)
-		if err != nil {
-			logging.Warnf("Person description LLM call failed for tag %d (attempt %d/%d): %v", tagID, attempt, maxRetries, err)
-			continue
-		}
-
-		var parsed struct {
-			Description string `json:"description"`
-			PersonAttrs struct {
-				Country      string   `json:"country"`
-				Organization string   `json:"organization"`
-				Role         string   `json:"role"`
-				Domains      []string `json:"domains"`
-			} `json:"person_attrs"`
-		}
-		if err := json.Unmarshal([]byte(result.Content), &parsed); err != nil || parsed.Description == "" {
-			logging.Warnf("Failed to parse person description for tag %d (attempt %d/%d)", tagID, attempt, maxRetries)
-			continue
-		}
-
-		desc = parsed.Description
-		metadataMap = map[string]any{
-			"country":      parsed.PersonAttrs.Country,
-			"organization": parsed.PersonAttrs.Organization,
-			"role":         parsed.PersonAttrs.Role,
-			"domains":      parsed.PersonAttrs.Domains,
-		}
-		success = true
-		break
-	}
-
-	if !success {
-		logging.Warnf("Failed to generate person description for tag %d after %d attempts", tagID, maxRetries)
-		return
-	}
-
-	if len([]rune(desc)) > 500 {
-		desc = string([]rune(desc)[:500])
-	}
-
-	if err := database.DB.Model(&models.TopicTag{}).Where("id = ?", tagID).Updates(map[string]any{
-		"description": desc,
-		"metadata":    models.MetadataMap(metadataMap),
-	}).Error; err != nil {
-		logging.Warnf("Failed to save description+metadata for person tag %d: %v", tagID, err)
-		return
-	}
-
-	qs := getEmbeddingQueueService()
-	if err := qs.Enqueue(tagID); err != nil {
-		logging.Warnf("Failed to enqueue re-embedding after person description update for tag %d: %v", tagID, err)
 	}
 }
 
@@ -907,16 +776,6 @@ func dedupeTagsWithCategory(items []topictypes.TopicTag) []topictypes.TopicTag {
 	})
 
 	return result
-}
-
-// sortTagsByScore sorts tags by score descending
-func sortTagsByScore(tags []topictypes.TopicTag) {
-	sort.SliceStable(tags, func(i, j int) bool {
-		if tags[i].Score == tags[j].Score {
-			return tags[i].Label < tags[j].Label
-		}
-		return tags[i].Score > tags[j].Score
-	})
 }
 
 func tagDescriptionForCategory(desc, category string) string {

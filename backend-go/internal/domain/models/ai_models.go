@@ -63,20 +63,20 @@ type AISettings struct {
 }
 
 type AIProvider struct {
-	ID              uint      `gorm:"primaryKey" json:"id"`
-	Name            string    `gorm:"size:100;unique;not null;index" json:"name"`
-	ProviderType    string    `gorm:"size:50;not null;default:openai_compatible;index" json:"provider_type"`
-	BaseURL         string    `gorm:"size:500;not null" json:"base_url"`
-	APIKey          string    `gorm:"type:text;not null" json:"api_key"`
-	Model           string    `gorm:"size:100;not null" json:"model"`
-	Enabled         bool      `gorm:"not null;default:true;index" json:"enabled"`
-	TimeoutSeconds  int       `gorm:"not null;default:120" json:"timeout_seconds"`
-	MaxTokens       *int      `json:"max_tokens,omitempty"`
-	Temperature     *float64  `json:"temperature,omitempty"`
-	EnableThinking  bool      `gorm:"not null;default:false" json:"enable_thinking"`
-	Metadata        string    `gorm:"type:text" json:"metadata"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	Name           string    `gorm:"size:100;unique;not null;index" json:"name"`
+	ProviderType   string    `gorm:"size:50;not null;default:openai_compatible;index" json:"provider_type"`
+	BaseURL        string    `gorm:"size:500;not null" json:"base_url"`
+	APIKey         string    `gorm:"type:text;not null" json:"api_key"`
+	Model          string    `gorm:"size:100;not null" json:"model"`
+	Enabled        bool      `gorm:"not null;default:true;index" json:"enabled"`
+	TimeoutSeconds int       `gorm:"not null;default:120" json:"timeout_seconds"`
+	MaxTokens      *int      `json:"max_tokens,omitempty"`
+	Temperature    *float64  `json:"temperature,omitempty"`
+	EnableThinking bool      `gorm:"not null;default:false" json:"enable_thinking"`
+	Metadata       string    `gorm:"type:text" json:"metadata"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func (AIProvider) TableName() string {
@@ -139,7 +139,7 @@ func (AICallLog) TableName() string {
 func (a *AISettings) ToDict() map[string]interface{} {
 	var valueJSON interface{}
 	if a.Value != "" {
-		json.Unmarshal([]byte(a.Value), &valueJSON)
+		_ = json.Unmarshal([]byte(a.Value), &valueJSON)
 	}
 
 	return map[string]interface{}{

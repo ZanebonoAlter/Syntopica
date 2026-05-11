@@ -243,8 +243,8 @@ func (s *EmbeddingService) TagMatch(ctx context.Context, label, category string,
 	}
 
 	if aliases != "" {
-		aliasScanFallback := database.DB.Dialector.Name() != "postgres"
-		if database.DB.Dialector.Name() == "postgres" {
+		aliasScanFallback := database.DB.Name() != "postgres"
+		if database.DB.Name() == "postgres" {
 			var aliasMatch models.TopicTag
 			aliasSQL := `category = ? AND aliases IS NOT NULL AND aliases != '' AND EXISTS (
 				SELECT 1 FROM jsonb_array_elements_text(aliases::jsonb) AS alias(value)
@@ -892,13 +892,6 @@ func splitByComma(s string) []string {
 
 func lower(s string) string {
 	return strings.ToLower(s)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func enqueueAbstractTagUpdateIfTargetIsAbstract(targetTagID uint, reason string) {

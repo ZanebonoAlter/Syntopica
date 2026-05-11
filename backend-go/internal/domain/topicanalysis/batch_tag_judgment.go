@@ -45,9 +45,9 @@ func BatchCallLLMForTagJudgment(ctx context.Context, items []BatchTagJudgmentIte
 		JSONMode:    true,
 		Temperature: func() *float64 { f := 0.3; return &f }(),
 		Metadata: map[string]any{
-			"operation":   "batch_tag_judgment",
-			"tag_count":   len(items),
-			"caller":      "batch",
+			"operation": "batch_tag_judgment",
+			"tag_count": len(items),
+			"caller":    "batch",
 		},
 	}
 
@@ -65,9 +65,9 @@ func buildBatchTagJudgmentPrompt(items []BatchTagJudgmentItem, narrativeContext 
 	sb.WriteString("For EACH new tag, decide if its candidates are the same concept (merge), related (abstract), or unrelated (none).\n\n")
 
 	for i, item := range items {
-		sb.WriteString(fmt.Sprintf("### New Tag %d: %q (category: %s)\n", i+1, item.Label, item.Category))
+		fmt.Fprintf(&sb, "### New Tag %d: %q (category: %s)\n", i+1, item.Label, item.Category)
 		if item.Description != "" {
-			sb.WriteString(fmt.Sprintf("Description: %s\n", item.Description))
+			fmt.Fprintf(&sb, "Description: %s\n", item.Description)
 		}
 		sb.WriteString("Existing candidates:\n")
 		sb.WriteString(buildCandidateList(item.Candidates))
@@ -79,7 +79,7 @@ func buildBatchTagJudgmentPrompt(items []BatchTagJudgmentItem, narrativeContext 
 	sb.WriteString("EVERY candidate for EVERY tag must appear in exactly one of the three arrays.\n")
 
 	if narrativeContext != "" {
-		sb.WriteString(fmt.Sprintf("\nAdditional context:\n%s\n", narrativeContext))
+		fmt.Fprintf(&sb, "\nAdditional context:\n%s\n", narrativeContext)
 	}
 
 	return sb.String()

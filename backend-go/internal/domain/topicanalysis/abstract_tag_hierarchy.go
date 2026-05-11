@@ -140,35 +140,6 @@ func MatchAbstractTagHierarchy(ctx context.Context, abstractTagID uint) {
 	}
 }
 
-func processAbstractRelationJudgment(ctx context.Context, abstractTagID, candidateTagID uint, judgment *abstractRelationJudgment) {
-	switch judgment.Action {
-	case "merge":
-		sourceID, targetID := abstractTagID, candidateTagID
-		if strings.EqualFold(judgment.Target, "A") {
-			sourceID, targetID = candidateTagID, abstractTagID
-		}
-		if mergeErr := MergeTags(sourceID, targetID); mergeErr != nil {
-			logging.Warnf("MatchAbstractTagHierarchy: merge failed for %d into %d: %v", sourceID, targetID, mergeErr)
-			return
-		}
-		logging.Infof("MatchAbstractTagHierarchy: merged %d into %d (AI judged, reason=%s)", sourceID, targetID, judgment.Reason)
-	case "parent_A":
-		if err := linkAbstractParentChild(candidateTagID, abstractTagID); err != nil {
-			logging.Warnf("MatchAbstractTagHierarchy: failed to link %d under %d: %v", candidateTagID, abstractTagID, err)
-			return
-		}
-		logging.Infof("MatchAbstractTagHierarchy: %d is child of %d (AI judged, reason=%s)", candidateTagID, abstractTagID, judgment.Reason)
-	case "parent_B":
-		if err := linkAbstractParentChild(abstractTagID, candidateTagID); err != nil {
-			logging.Warnf("MatchAbstractTagHierarchy: failed to link %d under %d: %v", abstractTagID, candidateTagID, err)
-			return
-		}
-		logging.Infof("MatchAbstractTagHierarchy: %d is child of %d (AI judged, reason=%s)", abstractTagID, candidateTagID, judgment.Reason)
-	case "skip":
-		logging.Infof("MatchAbstractTagHierarchy: skipped %d vs %d (AI judged, reason=%s)", abstractTagID, candidateTagID, judgment.Reason)
-	}
-}
-
 func adoptNarrowerAbstractChildren(ctx context.Context, abstractTagID uint) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -322,15 +293,6 @@ type multiParentConflict struct {
 	ChildID uint
 	Parents []parentWithInfo
 	Child   *models.TopicTag
-}
-
-type batchParentJudgment struct {
-	Decisions []parentDecision `json:"decisions"`
-}
-
-type parentDecision struct {
-	ChildID   uint `json:"child_id"`
-	BestIndex int  `json:"best_index"` // 0-based index in parents list
 }
 
 // batchResolveMultiParentConflicts resolves multiple multi-parent conflicts in a single LLM call.

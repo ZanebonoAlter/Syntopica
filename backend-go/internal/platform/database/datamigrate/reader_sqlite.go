@@ -69,7 +69,7 @@ func (r *SQLiteReader) TableColumns(ctx context.Context, table string) ([]string
 	if err != nil {
 		return nil, fmt.Errorf("read sqlite columns for %s: %w", table, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	columns := make([]string, 0)
 	for rows.Next() {
@@ -107,7 +107,7 @@ func (r *SQLiteReader) ReadRows(ctx context.Context, spec TableSpec, handle func
 	if err != nil {
 		return 0, nil, fmt.Errorf("query sqlite rows for %s: %w", spec.Name, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var count int64
 	for rows.Next() {
@@ -141,7 +141,7 @@ func (r *SQLiteReader) SampleRows(ctx context.Context, spec TableSpec, limit int
 	if err != nil {
 		return nil, fmt.Errorf("query sqlite samples for %s: %w", spec.Name, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make([]map[string]any, 0, limit)
 	for rows.Next() {

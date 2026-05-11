@@ -440,8 +440,7 @@ func (s *ContentCompletionScheduler) reschedule(intervalSeconds int) error {
 
 func (s *ContentCompletionScheduler) GetStatus() SchedulerStatusResponse {
 	var task models.SchedulerTask
-	if err := database.DB.Where("name = ?", s.taskName).First(&task).Error; err == nil {
-	}
+	database.DB.Where("name = ?", s.taskName).First(&task)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()

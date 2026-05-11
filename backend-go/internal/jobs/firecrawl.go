@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -173,7 +174,7 @@ func (s *FirecrawlScheduler) runCrawlCycle(batchID string) {
 
 	s.broadcastProgress(batchID, "processing", len(jobs), 0, 0, nil)
 
-	atomic.StoreInt32(&s.queueSize, int32(len(jobs)))
+	s.setQueueSize(len(jobs))
 	atomic.StoreInt32(&s.processingCount, 0)
 	logging.Infof("[Firecrawl] Starting sequential processing of %d jobs (concurrency=1)", len(jobs))
 
@@ -274,7 +275,7 @@ func (s *FirecrawlScheduler) runCrawlCycle(batchID string) {
 		})
 
 		// 更新队列状态
-		atomic.StoreInt32(&s.queueSize, int32(len(jobs)-completed-failed))
+		s.setQueueSize(len(jobs) - completed - failed)
 		atomic.StoreInt32(&s.processingCount, 0)
 
 		// 每次处理完一个后稍微停顿一下，避免对目标站点造成压力
@@ -289,6 +290,14 @@ func (s *FirecrawlScheduler) runCrawlCycle(batchID string) {
 
 	s.broadcastProgress(batchID, "completed", len(jobs), completed, failed, nil)
 	s.lastError = ""
+}
+
+func (s *FirecrawlScheduler) setQueueSize(n int) {
+	if n > math.MaxInt32 {
+		atomic.StoreInt32(&s.queueSize, math.MaxInt32)
+	} else {
+		atomic.StoreInt32(&s.queueSize, int32(n)) //nolint:gosec
+	}
 }
 
 func (s *FirecrawlScheduler) leaseDuration(config *contentprocessing.FirecrawlConfig) time.Duration {

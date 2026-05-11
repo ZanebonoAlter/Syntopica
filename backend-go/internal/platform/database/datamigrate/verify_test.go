@@ -139,7 +139,7 @@ func TestVerifierVerifyFailsWhenEmbeddingVectorMissing(t *testing.T) {
 			sequences:  map[string]SequenceState{"topic_tag_embeddings": {Table: "topic_tag_embeddings", Sequence: "topic_tag_embeddings_id_seq", MaxID: 1, NextValue: 2}},
 			embeddings: map[string][]EmbeddingVectorCheck{"topic_tag_embeddings": {{Table: "topic_tag_embeddings", PrimaryKey: 1, TargetVector: ""}}},
 		},
-		Now: func() time.Time { return time.Now() },
+		Now: time.Now,
 	}
 
 	_, err := verifier.Verify(context.Background(), []TableSpec{{Name: "topic_tag_embeddings", PrimaryKey: "id", SampleColumns: []string{"vector"}}})
@@ -166,7 +166,7 @@ func TestVerifierVerifyHandlesAllowedMissingTargetColumnsInSamples(t *testing.T)
 			},
 			embeddings: map[string][]EmbeddingVectorCheck{"topic_tag_embeddings": {{Table: "topic_tag_embeddings", PrimaryKey: 1, TargetVector: "[0.1,0.2]"}}},
 		},
-		Now: func() time.Time { return time.Now() },
+		Now: time.Now,
 	}
 
 	_, err := verifier.Verify(context.Background(), []TableSpec{{

@@ -33,13 +33,13 @@ func collectAllChildTagIDs(parentTagID uint) map[uint]bool {
 }
 
 type HotspotDigestCard struct {
-	ID          uint                        `json:"id"`
-	Title       string                      `json:"title"`
-	Link        string                      `json:"link"`
-	FeedName    string                      `json:"feed_name"`
-	FeedIcon    string                      `json:"feed_icon,omitempty"`
-	FeedColor   string                      `json:"feed_color,omitempty"`
-	PublishedAt string                      `json:"published_at,omitempty"`
+	ID          uint                            `json:"id"`
+	Title       string                          `json:"title"`
+	Link        string                          `json:"link"`
+	FeedName    string                          `json:"feed_name"`
+	FeedIcon    string                          `json:"feed_icon,omitempty"`
+	FeedColor   string                          `json:"feed_color,omitempty"`
+	PublishedAt string                          `json:"published_at,omitempty"`
 	Tags        []topictypes.AggregatedTopicTag `json:"tags,omitempty"`
 }
 

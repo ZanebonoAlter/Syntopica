@@ -49,7 +49,7 @@ func ImportOPML(c *gin.Context) {
 		return
 	}
 
-	if !(endsWith(file.Filename, ".opml") || endsWith(file.Filename, ".xml")) {
+	if !endsWith(file.Filename, ".opml") && !endsWith(file.Filename, ".xml") {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error":   "Invalid file format. Please upload an OPML file.",
@@ -65,7 +65,7 @@ func ImportOPML(c *gin.Context) {
 		})
 		return
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	var opml OPML
 	if err := xml.NewDecoder(src).Decode(&opml); err != nil {

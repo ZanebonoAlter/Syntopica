@@ -18,5 +18,6 @@
 ## Commands
 ```bash
 pnpm install  &&  pnpm dev  &&  pnpm build
-pnpm exec nuxi typecheck  &&  pnpm test:unit  &&  pnpm test:e2e
+pnpm lint  &&  pnpm exec nuxi typecheck
+pnpm test:unit  &&  pnpm test:e2e
 ```

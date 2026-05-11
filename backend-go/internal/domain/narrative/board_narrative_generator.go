@@ -45,22 +45,22 @@ type BoardNarrativeContext struct {
 func buildBoardNarrativePrompt(ctx BoardNarrativeContext) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("## 看板上下文\n\n"))
-	sb.WriteString(fmt.Sprintf("- 看板名称: %s\n", ctx.Board.Name))
-	sb.WriteString(fmt.Sprintf("- 看板描述: %s\n", ctx.Board.Description))
+	sb.WriteString("## 看板上下文\n\n")
+	fmt.Fprintf(&sb, "- 看板名称: %s\n", ctx.Board.Name)
+	fmt.Fprintf(&sb, "- 看板描述: %s\n", ctx.Board.Description)
 
 	if ctx.ConceptName != "" {
-		sb.WriteString(fmt.Sprintf("- 板块概念: %s\n", ctx.ConceptName))
+		fmt.Fprintf(&sb, "- 板块概念: %s\n", ctx.ConceptName)
 		if ctx.ConceptDescription != "" {
-			sb.WriteString(fmt.Sprintf("- 概念描述: %s\n", ctx.ConceptDescription))
+			fmt.Fprintf(&sb, "- 概念描述: %s\n", ctx.ConceptDescription)
 		}
 	}
 
 	sb.WriteString("\n## 看板事件标签\n\n")
 	for _, t := range ctx.EventTags {
-		sb.WriteString(fmt.Sprintf("- [ID:%d] %s (文章数:%d", t.ID, t.Label, t.ArticleCount))
+		fmt.Fprintf(&sb, "- [ID:%d] %s (文章数:%d", t.ID, t.Label, t.ArticleCount)
 		if t.Description != "" {
-			sb.WriteString(fmt.Sprintf(", 描述:%s", t.Description))
+			fmt.Fprintf(&sb, ", 描述:%s", t.Description)
 		}
 		sb.WriteString(")\n")
 	}
@@ -68,8 +68,8 @@ func buildBoardNarrativePrompt(ctx BoardNarrativeContext) string {
 	if len(ctx.PrevNarratives) > 0 {
 		sb.WriteString("\n## 昨日该看板相关叙事（供延续/对比参考）\n\n")
 		for _, p := range ctx.PrevNarratives {
-			sb.WriteString(fmt.Sprintf("- [ID:%d] %s (状态:%s, 第%d代)\n  摘要: %s\n",
-				p.ID, p.Title, p.Status, p.Generation, p.Summary))
+			fmt.Fprintf(&sb, "- [ID:%d] %s (状态:%s, 第%d代)\n  摘要: %s\n",
+				p.ID, p.Title, p.Status, p.Generation, p.Summary)
 		}
 	}
 

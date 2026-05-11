@@ -5,7 +5,7 @@
 /**
  * API 通用响应格式
  */
-export interface ApiResponse<T = any> {
+export interface ApiResponse<T = unknown> {
   success: boolean
   data?: T
   pagination?: PaginationMeta
@@ -42,7 +42,7 @@ export interface PaginatedData<T> {
 /**
  * 分页 API 响应
  */
-export interface PaginatedApiResponse<T = any> {
+export interface PaginatedApiResponse<T = unknown> {
   success: boolean
   data: T[]
   pagination: PaginationMeta

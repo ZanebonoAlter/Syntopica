@@ -45,8 +45,8 @@ export const usePreferencesStore = defineStore('preferences', () => {
       } else {
         error.value = response.error || 'Failed to fetch preferences'
       }
-    } catch (e: any) {
-      error.value = e.message
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch preferences'
     } finally {
       loading.value = false
     }
@@ -64,8 +64,8 @@ export const usePreferencesStore = defineStore('preferences', () => {
       } else {
         error.value = response.error || 'Failed to fetch stats'
       }
-    } catch (e: any) {
-      error.value = e.message
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch stats'
     } finally {
       loading.value = false
     }
@@ -81,8 +81,8 @@ export const usePreferencesStore = defineStore('preferences', () => {
       if (!response.success) {
         error.value = response.error || 'Failed to trigger update'
       }
-    } catch (e: any) {
-      error.value = e.message
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : 'Failed to trigger update'
     } finally {
       loading.value = false
     }

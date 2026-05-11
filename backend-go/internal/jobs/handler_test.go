@@ -13,14 +13,6 @@ import (
 	"my-robot-backend/internal/app/runtimeinfo"
 )
 
-type stubTriggerScheduler struct {
-	result map[string]interface{}
-}
-
-func (s stubTriggerScheduler) TriggerNow() map[string]interface{} {
-	return s.result
-}
-
 type stubManagedScheduler struct {
 	status             SchedulerStatusResponse
 	taskStatus         map[string]interface{}

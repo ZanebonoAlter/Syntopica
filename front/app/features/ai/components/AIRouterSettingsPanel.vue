@@ -153,7 +153,7 @@ async function loadData() {
       : 180
 
     embeddingThreshold.value = settingsResponse.success && settingsResponse.data?.narrative_board_embedding_threshold
-      ? parseFloat(settingsResponse.data.narrative_board_embedding_threshold)
+      ? parseFloat(String(settingsResponse.data.narrative_board_embedding_threshold))
       : 0.7
 
     hydratePrimaryProvider()

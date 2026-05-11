@@ -104,13 +104,13 @@ type AutoRefreshCompleteMessage struct {
 
 // OrganizeProgressMessage 标签整理进度消息
 type OrganizeProgressMessage struct {
-	Type             string             `json:"type"`
-	Status           string             `json:"status"`
-	TotalUnclassified int               `json:"total_unclassified"`
-	Processed         int               `json:"processed"`
-	CurrentGroup      *OrganizeGroupInfo `json:"current_group,omitempty"`
+	Type              string              `json:"type"`
+	Status            string              `json:"status"`
+	TotalUnclassified int                 `json:"total_unclassified"`
+	Processed         int                 `json:"processed"`
+	CurrentGroup      *OrganizeGroupInfo  `json:"current_group,omitempty"`
 	Groups            []OrganizeGroupInfo `json:"groups,omitempty"`
-	Category          string             `json:"category,omitempty"`
+	Category          string              `json:"category,omitempty"`
 }
 
 // OrganizeGroupInfo 单个整理分组信息
@@ -174,7 +174,7 @@ func (h *Hub) run() {
 					delete(h.clients, client)
 					close(client.send)
 					h.mu.Unlock()
-					client.conn.Close()
+					_ = client.conn.Close()
 				}
 			}
 		}
@@ -216,7 +216,7 @@ func HandleWebSocket(c *gin.Context) {
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
-		c.conn.Close()
+		_ = c.conn.Close()
 	}()
 
 	c.conn.SetReadLimit(512)
@@ -240,23 +240,14 @@ func (c *Client) readPump() {
 // writePump 向客户端写入消息
 func (c *Client) writePump() {
 	defer func() {
-		c.conn.Close()
+		_ = c.conn.Close()
 	}()
 
-	for {
-		select {
-		case message, ok := <-c.send:
-			if !ok {
-				// 通道关闭
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			c.conn.SetWriteDeadline(getDeadline())
-			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
-				logging.Warnf("WebSocket写入失败: %v", err)
-				return
-			}
+	for message := range c.send {
+		_ = c.conn.SetWriteDeadline(getDeadline())
+		if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+			logging.Warnf("WebSocket写入失败: %v", err)
+			return
 		}
 	}
 }

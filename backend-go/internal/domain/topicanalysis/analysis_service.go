@@ -1,6 +1,7 @@
 package topicanalysis
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -268,7 +269,7 @@ func (s *analysisService) buildPayloadJSON(tag models.TopicTag, analysisType str
 		AnchorDate:   anchor,
 		Summaries:    mapArticleInfos(articles),
 	}
-	result, err := s.aiService.Analyze(nil, aiParams)
+	result, err := s.aiService.Analyze(context.TODO(), aiParams)
 	if err == nil && result != nil {
 		bytes, marshalErr := json.Marshal(result)
 		if marshalErr == nil {
@@ -307,29 +308,6 @@ func (s *analysisService) fetchArticlesByTag(tagID uint64, windowStart, windowEn
 		return nil, fmt.Errorf("failed to query articles for tag: %w", err)
 	}
 	return articles, nil
-}
-
-func (s *analysisService) needsRefresh(tagID uint64, analysisType string, windowType string, anchorDate time.Time, currentArticleCount uint64) (bool, error) {
-	windowStart, windowEnd, _, err := topictypes.ResolveWindow(windowType, anchorDate)
-	if err != nil {
-		return false, err
-	}
-	articles, err := s.fetchArticlesByTag(tagID, windowStart, windowEnd)
-	if err != nil {
-		return false, err
-	}
-	latestID := maxArticleID(articles)
-	cursor, err := s.getCursor(tagID, analysisType, windowType)
-	if err != nil {
-		return false, err
-	}
-	if uint64(len(articles)) != currentArticleCount {
-		return true, nil
-	}
-	if cursor == nil {
-		return latestID > 0, nil
-	}
-	return latestID > cursor.LastArticleID, nil
 }
 
 func (s *analysisService) getCursor(tagID uint64, analysisType string, windowType string) (*models.TopicAnalysisCursor, error) {

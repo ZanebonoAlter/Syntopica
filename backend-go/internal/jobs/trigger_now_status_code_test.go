@@ -2,7 +2,6 @@ package jobs
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,8 +23,8 @@ func TestTriggerNowStatusCode(t *testing.T) {
 func assertTriggerNowStatusCodeConstant(t *testing.T, fileName string) {
 	t.Helper()
 
-	path := filepath.Join(fileName)
-	content, err := os.ReadFile(path)
+	path := fileName
+	content, err := os.ReadFile(path) //nolint:gosec
 	if err != nil {
 		t.Fatalf("read %s: %v", fileName, err)
 	}

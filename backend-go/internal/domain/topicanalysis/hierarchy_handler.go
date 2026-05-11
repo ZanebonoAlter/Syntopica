@@ -144,9 +144,9 @@ func TriggerHierarchyRebuild(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"data": gin.H{
-				"dry_run":            true,
-				"pending_count":      len(changes),
-				"pending_changes":    changes,
+				"dry_run":         true,
+				"pending_count":   len(changes),
+				"pending_changes": changes,
 			},
 		})
 		return
@@ -172,8 +172,8 @@ func TriggerHierarchyRebuild(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"total_pending":     len(changes),
-			"processed":         processed,
+			"total_pending": len(changes),
+			"processed":     processed,
 		},
 	})
 }

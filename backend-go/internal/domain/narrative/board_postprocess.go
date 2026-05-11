@@ -20,7 +20,7 @@ func fallbackNarrativeAssociation(ctx context.Context, narrative models.Narrativ
 
 	var currentParentIDs []uint
 	if narrative.ParentIDs != "" {
-		json.Unmarshal([]byte(narrative.ParentIDs), &currentParentIDs)
+		_ = json.Unmarshal([]byte(narrative.ParentIDs), &currentParentIDs)
 	}
 
 	validPrevIDs := make(map[uint64]bool, len(allPrev))
@@ -123,13 +123,13 @@ func buildFallbackPrompt(narrative models.NarrativeSummary, allPrev []PreviousNa
 	var sb strings.Builder
 
 	sb.WriteString("## 待匹配的叙事\n\n")
-	sb.WriteString(fmt.Sprintf("- 标题: %s\n  摘要: %s\n  状态: %s\n",
-		narrative.Title, narrative.Summary, narrative.Status))
+	fmt.Fprintf(&sb, "- 标题: %s\n  摘要: %s\n  状态: %s\n",
+		narrative.Title, narrative.Summary, narrative.Status)
 
 	sb.WriteString("\n## 可用的昨日叙事列表\n\n")
 	for _, p := range allPrev {
-		sb.WriteString(fmt.Sprintf("- [ID:%d] %s (状态:%s, 第%d代)\n  摘要: %s\n",
-			p.ID, p.Title, p.Status, p.Generation, p.Summary))
+		fmt.Fprintf(&sb, "- [ID:%d] %s (状态:%s, 第%d代)\n  摘要: %s\n",
+			p.ID, p.Title, p.Status, p.Generation, p.Summary)
 	}
 
 	sb.WriteString("\n请判断待匹配叙事最可能从哪些昨日叙事延续而来，返回匹配的 ID 列表。\n")
@@ -162,7 +162,7 @@ func DeriveBoardConnections() ([]BoardConnection, error) {
 	for _, n := range narratives {
 		var parentIDs []uint64
 		if n.ParentIDs != "" {
-			json.Unmarshal([]byte(n.ParentIDs), &parentIDs)
+			_ = json.Unmarshal([]byte(n.ParentIDs), &parentIDs)
 		}
 		allPrevIDs = append(allPrevIDs, parentIDs...)
 	}
@@ -187,7 +187,7 @@ func DeriveBoardConnections() ([]BoardConnection, error) {
 
 		var parentIDs []uint64
 		if n.ParentIDs != "" {
-			json.Unmarshal([]byte(n.ParentIDs), &parentIDs)
+			_ = json.Unmarshal([]byte(n.ParentIDs), &parentIDs)
 		}
 
 		for _, pid := range parentIDs {

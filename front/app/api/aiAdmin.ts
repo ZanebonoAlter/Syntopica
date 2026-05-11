@@ -2,7 +2,7 @@ import { apiClient } from './client'
 import type { ApiResponse, AIProvider, AIRoute, AIProviderUpsertRequest } from '~/types'
 
 export function useAIAdminApi() {
-  async function getSettings(): Promise<ApiResponse<any>> {
+  async function getSettings(): Promise<ApiResponse<Record<string, unknown>>> {
     return apiClient.get('/ai/settings')
   }
 

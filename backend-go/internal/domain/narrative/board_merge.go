@@ -15,11 +15,11 @@ import (
 )
 
 type CategoryBoardBrief struct {
-	BoardID    uint   `json:"board_id"`
-	Name       string `json:"name"`
-	Description string `json:"description"`
-	CategoryID uint   `json:"category_id"`
-	EventTagIDs []uint `json:"event_tag_ids"`
+	BoardID        uint   `json:"board_id"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	CategoryID     uint   `json:"category_id"`
+	EventTagIDs    []uint `json:"event_tag_ids"`
 	AbstractTagIDs []uint `json:"abstract_tag_ids"`
 }
 
@@ -44,11 +44,11 @@ func CollectAllCategoryBoards(date time.Time) ([]CategoryBoardBrief, error) {
 	for _, b := range boards {
 		var eventIDs []uint
 		if b.EventTagIDs != "" {
-			json.Unmarshal([]byte(b.EventTagIDs), &eventIDs)
+			_ = json.Unmarshal([]byte(b.EventTagIDs), &eventIDs)
 		}
 		var abstractIDs []uint
 		if b.AbstractTagIDs != "" {
-			json.Unmarshal([]byte(b.AbstractTagIDs), &abstractIDs)
+			_ = json.Unmarshal([]byte(b.AbstractTagIDs), &abstractIDs)
 		}
 
 		catID := uint(0)
@@ -57,11 +57,11 @@ func CollectAllCategoryBoards(date time.Time) ([]CategoryBoardBrief, error) {
 		}
 
 		result = append(result, CategoryBoardBrief{
-			BoardID:       b.ID,
-			Name:          b.Name,
-			Description:   b.Description,
-			CategoryID:    catID,
-			EventTagIDs:   eventIDs,
+			BoardID:        b.ID,
+			Name:           b.Name,
+			Description:    b.Description,
+			CategoryID:     catID,
+			EventTagIDs:    eventIDs,
 			AbstractTagIDs: abstractIDs,
 		})
 	}
@@ -120,8 +120,8 @@ func buildGlobalMergePrompt(boards []CategoryBoardBrief) string {
 		if catName == "" {
 			catName = fmt.Sprintf("分类%d", b.CategoryID)
 		}
-		sb.WriteString(fmt.Sprintf("### [BoardID:%d] %s (分类:%s)\n", b.BoardID, b.Name, catName))
-		sb.WriteString(fmt.Sprintf("描述: %s\n", b.Description))
+		fmt.Fprintf(&sb, "### [BoardID:%d] %s (分类:%s)\n", b.BoardID, b.Name, catName)
+		fmt.Fprintf(&sb, "描述: %s\n", b.Description)
 
 		var narrativesForBoard []models.NarrativeSummary
 		database.DB.Where("board_id = ?", b.BoardID).
@@ -131,8 +131,8 @@ func buildGlobalMergePrompt(boards []CategoryBoardBrief) string {
 		if len(narrativesForBoard) > 0 {
 			sb.WriteString("叙事:\n")
 			for _, n := range narrativesForBoard {
-				sb.WriteString(fmt.Sprintf("  - [叙事ID:%d] %s (状态:%s)\n    摘要: %s\n",
-					n.ID, n.Title, n.Status, n.Summary))
+				fmt.Fprintf(&sb, "  - [叙事ID:%d] %s (状态:%s)\n    摘要: %s\n",
+					n.ID, n.Title, n.Status, n.Summary)
 			}
 		}
 		sb.WriteString("\n")
@@ -234,7 +234,7 @@ func MergeGlobalBoards(ctx context.Context, date time.Time, boards []CategoryBoa
 			Required: []string{"merge_groups"},
 		},
 		Metadata: map[string]any{
-			"operation":  "global_board_merge",
+			"operation":   "global_board_merge",
 			"board_count": len(boards),
 		},
 	})
@@ -321,8 +321,6 @@ func MergeGlobalBoards(ctx context.Context, date time.Time, boards []CategoryBoa
 		logging.Infof("board-merge: created global board %d ('%s') from %d category boards",
 			globalBoard.ID, group.Name, len(group.MergedBoardIDs))
 	}
-
-
 
 	return nil
 }

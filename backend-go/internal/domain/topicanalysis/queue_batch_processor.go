@@ -285,7 +285,7 @@ func ProcessPendingAbstractTagUpdateTasks() (int, error) {
 			emb, err := embSvc.GenerateEmbedding(context.Background(), &e.Tag, EmbeddingTypeIdentity)
 			if err == nil {
 				emb.TopicTagID = e.Tag.ID
-				embSvc.SaveEmbedding(emb)
+				_ = embSvc.SaveEmbedding(emb)
 			}
 
 			now := time.Now()

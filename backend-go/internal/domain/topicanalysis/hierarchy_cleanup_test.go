@@ -435,39 +435,6 @@ func TestCollectAllTags(t *testing.T) {
 	}
 }
 
-func TestIsDirectParentChild(t *testing.T) {
-	parent := &TreeNode{Tag: makeTag(1, "parent"), Depth: 1}
-	child := &TreeNode{Tag: makeTag(2, "child"), Depth: 2, Parent: parent}
-	parent.Children = []*TreeNode{child}
-	sibling := &TreeNode{Tag: makeTag(3, "sibling"), Depth: 2, Parent: parent}
-	parent.Children = append(parent.Children, sibling)
-
-	if !isDirectParentChild(parent, child) {
-		t.Error("parent and child should be direct parent-child")
-	}
-	if !isDirectParentChild(child, parent) {
-		t.Error("child and parent should be direct parent-child (reversed)")
-	}
-	if isDirectParentChild(child, sibling) {
-		t.Error("siblings should NOT be direct parent-child")
-	}
-}
-
-func TestAbs(t *testing.T) {
-	tests := []struct {
-		input, expected int
-	}{
-		{5, 5},
-		{-3, 3},
-		{0, 0},
-	}
-	for _, tt := range tests {
-		if got := abs(tt.input); got != tt.expected {
-			t.Errorf("abs(%d) = %d, want %d", tt.input, got, tt.expected)
-		}
-	}
-}
-
 func TestValidateTreeReviewMove_TagNotActive(t *testing.T) {
 	node := &TreeNode{Tag: makeTagWithStatus(1, "a", "inactive"), Depth: 1}
 	tagMap := map[uint]*TreeNode{1: node}

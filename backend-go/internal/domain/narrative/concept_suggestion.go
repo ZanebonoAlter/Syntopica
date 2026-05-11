@@ -125,9 +125,9 @@ func buildConceptSuggestionPrompt(tags []models.TopicTag, existing []models.Boar
 	if len(existing) > 0 {
 		sb.WriteString("## 已有板块概念（禁止重复或高度相似）\n\n")
 		for _, c := range existing {
-			sb.WriteString(fmt.Sprintf("- %s", c.Name))
+			fmt.Fprintf(&sb, "- %s", c.Name)
 			if c.Description != "" {
-				sb.WriteString(fmt.Sprintf("：%s", c.Description))
+				fmt.Fprintf(&sb, "：%s", c.Description)
 			}
 			sb.WriteByte('\n')
 		}
@@ -136,11 +136,11 @@ func buildConceptSuggestionPrompt(tags []models.TopicTag, existing []models.Boar
 
 	sb.WriteString("## 当前活跃的抽象标签\n\n")
 	for _, t := range tags {
-		sb.WriteString(fmt.Sprintf("- [TagID:%d] %s", t.ID, t.Label))
+		fmt.Fprintf(&sb, "- [TagID:%d] %s", t.ID, t.Label)
 		if t.Description != "" {
-			sb.WriteString(fmt.Sprintf("\n  描述: %s", t.Description))
+			fmt.Fprintf(&sb, "\n  描述: %s", t.Description)
 		}
-		sb.WriteString(fmt.Sprintf("\n  分类: %s, 源数: %d\n", t.Category, t.FeedCount))
+		fmt.Fprintf(&sb, "\n  分类: %s, 源数: %d\n", t.Category, t.FeedCount)
 	}
 	sb.WriteString("\n请按上述原则为未被已有板块覆盖的标签建议新板块。不要建议与已有板块功能重复的概念。每个板块的 description 只需一句话说明覆盖范围。\n")
 	return sb.String()

@@ -1,9 +1,33 @@
-import type { Category, RssFeed, Article, BulkUpdateArticlesData } from '~/types'
+import type { Category, RssFeed, Article, BulkUpdateArticlesData, PaginatedData } from '~/types'
 import { useCategoriesApi } from '~/api/categories'
 import { useFeedsApi } from '~/api/feeds'
 import { useArticlesApi } from '~/api/articles'
 import { useOpmlApi } from '~/api/opml'
-import { normalizeArticle } from '~/features/articles/utils/normalizeArticle'
+import { normalizeArticle, type ArticlePayload } from '~/features/articles/utils/normalizeArticle'
+
+interface FeedPayload {
+  id: number
+  title: string
+  description: string
+  url: string
+  category_id?: number
+  icon?: string
+  color?: string
+  last_updated: string
+  last_refresh_at?: string
+  article_count: number
+  unread_count: number
+  max_articles: number
+  refresh_interval: number
+  refresh_status: string
+  refresh_error?: string
+  ai_summary_enabled?: boolean
+  article_summary_enabled?: boolean
+  completion_on_refresh?: boolean
+  max_completion_retries?: number
+  firecrawl_enabled?: boolean
+  tagging_enabled?: boolean
+}
 
 export const useApiStore = defineStore('api', () => {
   const loading = ref(false)
@@ -93,10 +117,10 @@ export const useApiStore = defineStore('api', () => {
     const response = await feedsApi.getFeeds(params)
 
     if (response.success && response.data) {
-      const data = response.data as any
-      const items = data.items || data
+      const data = response.data as unknown as PaginatedData<FeedPayload>
+      const items = data.items || (response.data as unknown as FeedPayload[])
 
-      const mappedFeeds = items.map((feed: any) => ({
+      const mappedFeeds = items.map((feed: FeedPayload) => ({
         id: String(feed.id),
         title: feed.title,
         description: feed.description || '',
@@ -109,7 +133,7 @@ export const useApiStore = defineStore('api', () => {
         unreadCount: feed.unread_count || 0,
         maxArticles: feed.max_articles ?? 100,
         refreshInterval: feed.refresh_interval || 60,
-        refreshStatus: feed.refresh_status || 'idle',
+        refreshStatus: feed.refresh_status as RssFeed['refreshStatus'] || 'idle',
         refreshError: feed.refresh_error,
         lastRefreshAt: feed.last_refresh_at,
         aiSummaryEnabled: feed.ai_summary_enabled !== undefined ? feed.ai_summary_enabled : true, // Default to true if not set
@@ -273,12 +297,12 @@ export const useApiStore = defineStore('api', () => {
     const response = await articlesApi.getArticles(params)
 
     if (response.success && response.data) {
-      const data = response.data as any
-      const items = data.items || data
+      const data = response.data as unknown as PaginatedData<ArticlePayload>
+      const items = data.items || (response.data as unknown as ArticlePayload[])
 
-      articles.value = items.map((article: any) => normalizeArticle(article))
+      articles.value = items.map((article: ArticlePayload) => normalizeArticle(article))
 
-      totalArticles.value = data.total || items.length
+      totalArticles.value = data.pagination?.total || items.length
     } else {
       error.value = response.error || 'Failed to fetch articles'
     }

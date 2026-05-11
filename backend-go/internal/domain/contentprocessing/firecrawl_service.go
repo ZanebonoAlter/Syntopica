@@ -59,7 +59,7 @@ func NewFirecrawlService(config *FirecrawlConfig) *FirecrawlService {
 }
 
 func (s *FirecrawlService) ScrapePage(ctx context.Context, url string) (result *ScrapeResponse, err error) {
-	ctx, span := otel.Tracer("rss-reader-backend").Start(ctx, "FirecrawlService.ScrapePage")
+	_, span := otel.Tracer("rss-reader-backend").Start(ctx, "FirecrawlService.ScrapePage")
 	defer span.End()
 	defer func() {
 		if err != nil {
@@ -97,7 +97,7 @@ func (s *FirecrawlService) ScrapePage(ctx context.Context, url string) (result *
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
@@ -105,7 +105,7 @@ func (s *FirecrawlService) ScrapePage(ctx context.Context, url string) (result *
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		err := fmt.Errorf("Firecrawl API error: %s", string(respBody))
+		err := fmt.Errorf("firecrawl API error: %s", string(respBody))
 		return nil, err
 	}
 
@@ -115,7 +115,7 @@ func (s *FirecrawlService) ScrapePage(ctx context.Context, url string) (result *
 	}
 
 	if !scrapeResp.Success {
-		err := fmt.Errorf("Firecrawl scrape failed: %s", scrapeResp.Error)
+		err := fmt.Errorf("firecrawl scrape failed: %s", scrapeResp.Error)
 		return nil, err
 	}
 

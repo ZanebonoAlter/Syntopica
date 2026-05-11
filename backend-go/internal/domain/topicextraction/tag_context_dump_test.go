@@ -105,56 +105,53 @@ func TestDumpTagContextForArticle74426(t *testing.T) {
 	sb.WriteString(sep + "\n\n")
 
 	sb.WriteString("## 1. Article 记录\n\n")
-	sb.WriteString(fmt.Sprintf("  ID:                    %d\n", article.ID))
-	sb.WriteString(fmt.Sprintf("  FeedID:                %d\n", article.FeedID))
-	sb.WriteString(fmt.Sprintf("  Title:                 %s\n", article.Title))
-	sb.WriteString(fmt.Sprintf("  Author:                %s\n", article.Author))
-	sb.WriteString(fmt.Sprintf("  Link:                  %s\n", article.Link))
-	sb.WriteString(fmt.Sprintf("  SummaryStatus:         %s\n", article.SummaryStatus))
-	sb.WriteString(fmt.Sprintf("  FirecrawlStatus:       %s\n", article.FirecrawlStatus))
-	sb.WriteString(fmt.Sprintf("  Description 长度:      %d\n", len(article.Description)))
-	sb.WriteString(fmt.Sprintf("  Content 长度:          %d\n", len(article.Content)))
-	sb.WriteString(fmt.Sprintf("  AIContentSummary 长度: %d\n", len(article.AIContentSummary)))
-	sb.WriteString(fmt.Sprintf("  FirecrawlContent 长度: %d\n", len(article.FirecrawlContent)))
-	sb.WriteString(fmt.Sprintf("\n  Description 内容:\n  %s\n  %s\n  %s\n",
-		line, padLines(article.Description, 2), line))
-	sb.WriteString(fmt.Sprintf("\n  Content 内容 (前500字符):\n  %s\n  %s\n  %s\n",
-		line, truncateAndPad(article.Content, 500, 2), line))
+	fmt.Fprintf(&sb, "  ID:                    %d\n", article.ID)
+	fmt.Fprintf(&sb, "  FeedID:                %d\n", article.FeedID)
+	fmt.Fprintf(&sb, "  Title:                 %s\n", article.Title)
+	fmt.Fprintf(&sb, "  Author:                %s\n", article.Author)
+	fmt.Fprintf(&sb, "  Link:                  %s\n", article.Link)
+	fmt.Fprintf(&sb, "  SummaryStatus:         %s\n", article.SummaryStatus)
+	fmt.Fprintf(&sb, "  FirecrawlStatus:       %s\n", article.FirecrawlStatus)
+	fmt.Fprintf(&sb, "  Description 长度:      %d\n", len(article.Description))
+	fmt.Fprintf(&sb, "  Content 长度:          %d\n", len(article.Content))
+	fmt.Fprintf(&sb, "  AIContentSummary 长度: %d\n", len(article.AIContentSummary))
+	fmt.Fprintf(&sb, "  FirecrawlContent 长度: %d\n", len(article.FirecrawlContent))
+	fmt.Fprintf(&sb, "\n  Description 内容:\n  %s\n  %s\n  %s\n",
+		line, padLines(article.Description, 2), line)
+	fmt.Fprintf(&sb, "\n  Content 内容 (前500字符):\n  %s\n  %s\n  %s\n",
+		line, truncateAndPad(article.Content, 500, 2), line)
 
 	sb.WriteString("\n## 2. Feed / Category\n\n")
-	sb.WriteString(fmt.Sprintf("  Feed ID:         %d\n", feed.ID))
-	sb.WriteString(fmt.Sprintf("  Feed Title:      %s\n", feed.Title))
-	sb.WriteString(fmt.Sprintf("  Feed CategoryID: %v\n", feed.CategoryID))
+	fmt.Fprintf(&sb, "  Feed ID:         %d\n", feed.ID)
+	fmt.Fprintf(&sb, "  Feed Title:      %s\n", feed.Title)
+	fmt.Fprintf(&sb, "  Feed CategoryID: %v\n", feed.CategoryID)
 	if feed.Category != nil {
-		sb.WriteString(fmt.Sprintf("  Category.Name:   %s\n", feed.Category.Name))
-		sb.WriteString(fmt.Sprintf("  Category.Slug:   %s\n", feed.Category.Slug))
+		fmt.Fprintf(&sb, "  Category.Name:   %s\n", feed.Category.Name)
+		fmt.Fprintf(&sb, "  Category.Slug:   %s\n", feed.Category.Slug)
 	} else {
 		sb.WriteString("  Category:        (nil — feed 未关联分类)\n")
 	}
 
 	sb.WriteString("\n## 3. Handler → Enqueue (TagJobRequest)\n\n")
-	sb.WriteString(fmt.Sprintf("  ArticleID:    %d\n", article.ID))
-	sb.WriteString(fmt.Sprintf("  FeedName:     %s\n", feedName))
-	sb.WriteString(fmt.Sprintf("  CategoryName: %q\n", categoryName))
-	sb.WriteString(fmt.Sprintf("  ForceRetag:   true\n"))
-	sb.WriteString(fmt.Sprintf("  Reason:       manual_api_trigger\n"))
-
+	fmt.Fprintf(&sb, "  ArticleID:    %d\n", article.ID)
+	fmt.Fprintf(&sb, "  FeedName:     %s\n", feedName)
+	fmt.Fprintf(&sb, "  CategoryName: %q\n", categoryName)
+	fmt.Fprintf(&sb, "  ForceRetag:   true\n")
+	fmt.Fprintf(&sb, "  Reason:       manual_api_trigger\n")
 	sb.WriteString("\n## 4. buildArticleSummary\n\n")
 	sb.WriteString("  优先级:\n")
 	sb.WriteString("    1. AIContentSummary（如有）\n")
 	sb.WriteString("    2. FirecrawlContent（如 1 为空）\n")
 	sb.WriteString("    3. Content（如 1、2 为空）\n")
 	sb.WriteString("    4. Description（如 1、2、3 为空）\n")
-	sb.WriteString(fmt.Sprintf("\n  实际命中: AIContentSummary\n"))
-	sb.WriteString(fmt.Sprintf("  Summary 长度: %d 字节 / %d rune\n", len(summary), len([]rune(summary))))
-
+	fmt.Fprintf(&sb, "\n  实际命中: AIContentSummary\n")
+	fmt.Fprintf(&sb, "  Summary 长度: %d 字节 / %d rune\n", len(summary), len([]rune(summary)))
 	sb.WriteString("\n## 5. ExtractionInput (传给 ExtractTags)\n\n")
-	sb.WriteString(fmt.Sprintf("  Title:        %s\n", input.Title))
-	sb.WriteString(fmt.Sprintf("  FeedName:     %s\n", input.FeedName))
-	sb.WriteString(fmt.Sprintf("  CategoryName: %q\n", input.CategoryName))
-	sb.WriteString(fmt.Sprintf("  ArticleID:    %d\n", *input.ArticleID))
-	sb.WriteString(fmt.Sprintf("  Summary 长度: %d\n", len(input.Summary)))
-
+	fmt.Fprintf(&sb, "  Title:        %s\n", input.Title)
+	fmt.Fprintf(&sb, "  FeedName:     %s\n", input.FeedName)
+	fmt.Fprintf(&sb, "  CategoryName: %q\n", input.CategoryName)
+	fmt.Fprintf(&sb, "  ArticleID:    %d\n", *input.ArticleID)
+	fmt.Fprintf(&sb, "  Summary 长度: %d\n", len(input.Summary))
 	sb.WriteString("\n## 6. 最终发给 LLM 的 User Prompt\n\n")
 	sb.WriteString("  " + line + "\n")
 	for _, l := range strings.Split(userPrompt, "\n") {
@@ -169,8 +166,8 @@ func TestDumpTagContextForArticle74426(t *testing.T) {
 	}
 	sb.WriteString("  " + line + "\n")
 
-	sb.WriteString(fmt.Sprintf("\n## 8. articleContext (传给 findOrCreateTag, 截断上限 800 rune)\n\n"))
-	sb.WriteString(fmt.Sprintf("  长度: %d 字符 / %d rune\n", len(articleContext), len([]rune(articleContext))))
+	fmt.Fprintf(&sb, "\n## 8. articleContext (传给 findOrCreateTag, 截断上限 800 rune)\n\n")
+	fmt.Fprintf(&sb, "  长度: %d 字符 / %d rune\n", len(articleContext), len([]rune(articleContext)))
 	sb.WriteString("  " + line + "\n")
 	for _, l := range strings.Split(truncateByRune(articleContext, 1000), "\n") {
 		sb.WriteString("  " + l + "\n")
@@ -193,17 +190,17 @@ func TestDumpTagContextForArticle74426(t *testing.T) {
 	extractor := NewTagExtractor()
 	candidates, extractErr := extractor.ExtractTags(context.Background(), input)
 	if extractErr != nil {
-		sb.WriteString(fmt.Sprintf("  ExtractTags 错误: %v\n", extractErr))
+		fmt.Fprintf(&sb, "  ExtractTags 错误: %v\n", extractErr)
 	} else {
-		sb.WriteString(fmt.Sprintf("  返回标签数: %d, Source: %s\n", len(candidates.Tags), candidates.Source))
+		fmt.Fprintf(&sb, "  返回标签数: %d, Source: %s\n", len(candidates.Tags), candidates.Source)
 		if len(candidates.Skipped) > 0 {
-			sb.WriteString(fmt.Sprintf("  Skipped: %v\n", candidates.Skipped))
+			fmt.Fprintf(&sb, "  Skipped: %v\n", candidates.Skipped)
 		}
 		if len(candidates.Errors) > 0 {
-			sb.WriteString(fmt.Sprintf("  Errors: %v\n", candidates.Errors))
+			fmt.Fprintf(&sb, "  Errors: %v\n", candidates.Errors)
 		}
 		for i, tag := range candidates.Tags {
-			sb.WriteString(fmt.Sprintf("  Tag[%d]: label=%q category=%s confidence=%.2f\n", i, tag.Label, tag.Category, tag.Score))
+			fmt.Fprintf(&sb, "  Tag[%d]: label=%q category=%s confidence=%.2f\n", i, tag.Label, tag.Category, tag.Score)
 		}
 	}
 
@@ -315,12 +312,11 @@ func TestOllamaRawResponseForTagExtraction(t *testing.T) {
 	sb.WriteString(sep + "\n\n")
 
 	sb.WriteString("## Provider Info\n\n")
-	sb.WriteString(fmt.Sprintf("  Name:      %s\n", provider.Name))
-	sb.WriteString(fmt.Sprintf("  Type:      %s\n", provider.ProviderType))
-	sb.WriteString(fmt.Sprintf("  Model:     %s\n", provider.Model))
-	sb.WriteString(fmt.Sprintf("  BaseURL:   %s\n", provider.BaseURL))
-	sb.WriteString(fmt.Sprintf("  Timeout:   %ds\n", provider.TimeoutSeconds))
-
+	fmt.Fprintf(&sb, "  Name:      %s\n", provider.Name)
+	fmt.Fprintf(&sb, "  Type:      %s\n", provider.ProviderType)
+	fmt.Fprintf(&sb, "  Model:     %s\n", provider.Model)
+	fmt.Fprintf(&sb, "  BaseURL:   %s\n", provider.BaseURL)
+	fmt.Fprintf(&sb, "  Timeout:   %ds\n", provider.TimeoutSeconds)
 	sb.WriteString("\n## Request Payload\n\n")
 	sb.WriteString("  " + strings.Repeat("-", 76) + "\n")
 	for _, l := range strings.Split(string(payloadJSON), "\n") {
@@ -329,8 +325,7 @@ func TestOllamaRawResponseForTagExtraction(t *testing.T) {
 	sb.WriteString("  " + strings.Repeat("-", 76) + "\n")
 
 	endpoint := strings.TrimRight(provider.BaseURL, "/") + "/chat/completions"
-	sb.WriteString(fmt.Sprintf("\n## Endpoint\n\n  %s\n", endpoint))
-
+	fmt.Fprintf(&sb, "\n## Endpoint\n\n  %s\n", endpoint)
 	bodyReader := bytes.NewReader(payloadJSON)
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -348,7 +343,7 @@ func TestOllamaRawResponseForTagExtraction(t *testing.T) {
 	resp, err := (&http.Client{}).Do(httpReq)
 	latency := time.Since(start)
 	if err != nil {
-		sb.WriteString(fmt.Sprintf("\n## Error\n\n  %v\n", err))
+		fmt.Fprintf(&sb, "\n## Error\n\n  %v\n", err)
 		writeDump(t, sb.String())
 		return
 	}
@@ -356,11 +351,10 @@ func TestOllamaRawResponseForTagExtraction(t *testing.T) {
 
 	responseBody, _ := io.ReadAll(resp.Body)
 
-	sb.WriteString(fmt.Sprintf("\n## Response (latency: %v)\n\n", latency))
-	sb.WriteString(fmt.Sprintf("  HTTP Status: %d %s\n", resp.StatusCode, resp.Status))
-	sb.WriteString(fmt.Sprintf("  Content-Type: %s\n", resp.Header.Get("Content-Type")))
-	sb.WriteString(fmt.Sprintf("  Body Length: %d bytes\n", len(responseBody)))
-
+	fmt.Fprintf(&sb, "\n## Response (latency: %v)\n\n", latency)
+	fmt.Fprintf(&sb, "  HTTP Status: %d %s\n", resp.StatusCode, resp.Status)
+	fmt.Fprintf(&sb, "  Content-Type: %s\n", resp.Header.Get("Content-Type"))
+	fmt.Fprintf(&sb, "  Body Length: %d bytes\n", len(responseBody))
 	sb.WriteString("\n## Response Body (Raw)\n\n")
 	sb.WriteString("  " + strings.Repeat("-", 76) + "\n")
 	rawIndent := jsonIndentOrRaw(responseBody)
@@ -390,27 +384,27 @@ func TestOllamaRawResponseForTagExtraction(t *testing.T) {
 
 	sb.WriteString("\n## Parsed Fields\n\n")
 	if parseErr != nil {
-		sb.WriteString(fmt.Sprintf("  Parse error: %v\n", parseErr))
+		fmt.Fprintf(&sb, "  Parse error: %v\n", parseErr)
 	} else {
-		sb.WriteString(fmt.Sprintf("  Model:             %s\n", parsed.Model))
-		sb.WriteString(fmt.Sprintf("  Done:              %v\n", parsed.Done))
-		sb.WriteString(fmt.Sprintf("  Choices count:     %d\n", len(parsed.Choices)))
+		fmt.Fprintf(&sb, "  Model:             %s\n", parsed.Model)
+		fmt.Fprintf(&sb, "  Done:              %v\n", parsed.Done)
+		fmt.Fprintf(&sb, "  Choices count:     %d\n", len(parsed.Choices))
 		if parsed.Duration != nil {
-			sb.WriteString(fmt.Sprintf("  Total Duration:    %.0f ns (%.2f s)\n", *parsed.Duration, float64(*parsed.Duration)/1e9))
+			fmt.Fprintf(&sb, "  Total Duration:    %.0f ns (%.2f s)\n", *parsed.Duration, float64(*parsed.Duration)/1e9)
 		}
 		if parsed.EvalCount != nil {
-			sb.WriteString(fmt.Sprintf("  Eval Count:        %d\n", *parsed.EvalCount))
+			fmt.Fprintf(&sb, "  Eval Count:        %d\n", *parsed.EvalCount)
 		}
 		if parsed.PromptEvalCount != nil {
-			sb.WriteString(fmt.Sprintf("  Prompt Eval Count: %d\n", *parsed.PromptEvalCount))
+			fmt.Fprintf(&sb, "  Prompt Eval Count: %d\n", *parsed.PromptEvalCount)
 		}
 		if parsed.Error != nil {
-			sb.WriteString(fmt.Sprintf("  Error:             %s (%s)\n", parsed.Error.Message, parsed.Error.Type))
+			fmt.Fprintf(&sb, "  Error:             %s (%s)\n", parsed.Error.Message, parsed.Error.Type)
 		}
 		for i, choice := range parsed.Choices {
-			sb.WriteString(fmt.Sprintf("\n  Choice[%d]:\n", i))
-			sb.WriteString(fmt.Sprintf("    FinishReason: %s\n", choice.FinishReason))
-			sb.WriteString(fmt.Sprintf("    Content length: %d\n", len(choice.Message.Content)))
+			fmt.Fprintf(&sb, "\n  Choice[%d]:\n", i)
+			fmt.Fprintf(&sb, "    FinishReason: %s\n", choice.FinishReason)
+			fmt.Fprintf(&sb, "    Content length: %d\n", len(choice.Message.Content))
 			sb.WriteString("    Content:\n")
 			contentIndent := jsonIndentOrRaw([]byte(choice.Message.Content))
 			for _, l := range strings.Split(contentIndent, "\n") {
@@ -423,9 +417,9 @@ func TestOllamaRawResponseForTagExtraction(t *testing.T) {
 	if len(parsed.Choices) > 0 {
 		tags, err := parseExtractedTags(parsed.Choices[0].Message.Content)
 		if err != nil {
-			sb.WriteString(fmt.Sprintf("  Parse error: %v\n", err))
+			fmt.Fprintf(&sb, "  Parse error: %v\n", err)
 		} else {
-			sb.WriteString(fmt.Sprintf("  Extracted %d tags:\n", len(tags)))
+			fmt.Fprintf(&sb, "  Extracted %d tags:\n", len(tags))
 			for i, tag := range tags {
 				sb.WriteString(fmt.Sprintf("    [%d] label=%q category=%s confidence=%.2f aliases=%v evidence=%q\n",
 					i, tag.Label, tag.Category, tag.Confidence, tag.Aliases, tag.Evidence))
@@ -485,23 +479,22 @@ func TestRealExtractTagsFlow(t *testing.T) {
 	var sb strings.Builder
 	sep := strings.Repeat("=", 80)
 	sb.WriteString(sep + "\n")
-	sb.WriteString(fmt.Sprintf(" Real ExtractTags Flow — Article %s\n", articleID))
+	fmt.Fprintf(&sb, " Real ExtractTags Flow — Article %s\n", articleID)
 	sb.WriteString(sep + "\n\n")
 
 	sb.WriteString("## Input\n\n")
-	sb.WriteString(fmt.Sprintf("  Title:   %s\n", input.Title))
-	sb.WriteString(fmt.Sprintf("  Feed:    %s\n", input.FeedName))
-	sb.WriteString(fmt.Sprintf("  Category:%s\n", input.CategoryName))
-	sb.WriteString(fmt.Sprintf("  Summary len: %d / %d runes\n", len(input.Summary), len([]rune(input.Summary))))
-	sb.WriteString(fmt.Sprintf("  Summary first 200 chars: %s\n", truncateByRune(input.Summary, 200)))
-
+	fmt.Fprintf(&sb, "  Title:   %s\n", input.Title)
+	fmt.Fprintf(&sb, "  Feed:    %s\n", input.FeedName)
+	fmt.Fprintf(&sb, "  Category:%s\n", input.CategoryName)
+	fmt.Fprintf(&sb, "  Summary len: %d / %d runes\n", len(input.Summary), len([]rune(input.Summary)))
+	fmt.Fprintf(&sb, "  Summary first 200 chars: %s\n", truncateByRune(input.Summary, 200))
 	sb.WriteString("\n## ExtractTags Result\n\n")
-	sb.WriteString(fmt.Sprintf("  Error: %v\n", err))
+	fmt.Fprintf(&sb, "  Error: %v\n", err)
 	if result != nil {
-		sb.WriteString(fmt.Sprintf("  Source: %s\n", result.Source))
-		sb.WriteString(fmt.Sprintf("  Tags count: %d\n", len(result.Tags)))
-		sb.WriteString(fmt.Sprintf("  Skipped: %v\n", result.Skipped))
-		sb.WriteString(fmt.Sprintf("  Errors: %v\n", result.Errors))
+		fmt.Fprintf(&sb, "  Source: %s\n", result.Source)
+		fmt.Fprintf(&sb, "  Tags count: %d\n", len(result.Tags))
+		fmt.Fprintf(&sb, "  Skipped: %v\n", result.Skipped)
+		fmt.Fprintf(&sb, "  Errors: %v\n", result.Errors)
 		for i, tag := range result.Tags {
 			sb.WriteString(fmt.Sprintf("  Tag[%d]: label=%q category=%s confidence=%.2f isNew=%v matchedTo=%d\n",
 				i, tag.Label, tag.Category, tag.Score, tag.IsNew, tag.MatchedTo))

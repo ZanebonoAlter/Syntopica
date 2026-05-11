@@ -34,7 +34,8 @@ func GenerateWatchedTagNarratives(date time.Time) {
 		return
 	}
 
-	allTagIDs := append(watchedIDs, childIDs...)
+	allTagIDs := watchedIDs
+	allTagIDs = append(allTagIDs, childIDs...)
 	watchedSet := make(map[uint]bool, len(watchedIDs))
 	for _, id := range watchedIDs {
 		watchedSet[id] = true

@@ -331,11 +331,11 @@ func TestSaveEmbeddingReturnsTagNotFoundWhenParentDeleted(t *testing.T) {
 	}
 
 	err := service.SaveEmbedding(&models.TopicTagEmbedding{
-		TopicTagID:   tag.ID,
+		TopicTagID:    tag.ID,
 		EmbeddingType: EmbeddingTypeIdentity,
-		Vector:       "[0.1,0.2]",
-		Model:        "test-model",
-		TextHash:     "abc123",
+		Vector:        "[0.1,0.2]",
+		Model:         "test-model",
+		TextHash:      "abc123",
 	})
 	if err == nil {
 		t.Fatal("expected missing parent tag error, got nil")
@@ -355,10 +355,10 @@ func TestSaveEmbeddingReturnsTagNotFoundWhenParentDeleted(t *testing.T) {
 
 func TestThresholdsForCategory(t *testing.T) {
 	tests := []struct {
-		name              string
-		category          string
-		wantHighSim       float64
-		wantLowSim        float64
+		name        string
+		category    string
+		wantHighSim float64
+		wantLowSim  float64
 	}{
 		{
 			name:        "keyword uses override high=0.90",

@@ -558,11 +558,12 @@ func OrganizeUnclassifiedTags(ctx context.Context, category string, _ int) (*Org
 		hasAbstractAction := result != nil && result.HasAbstract()
 		if hasMergeAction || hasAbstractAction {
 			processed++
-			if hasMergeAction && hasAbstractAction {
+			switch {
+			case hasMergeAction && hasAbstractAction:
 				action = "merge+abstract"
-			} else if hasMergeAction {
+			case hasMergeAction:
 				action = "merge"
-			} else if hasAbstractAction {
+			case hasAbstractAction:
 				action = "abstract"
 			}
 
@@ -787,16 +788,6 @@ func countArticlesByTag(tagIDs []uint, timeRange string) map[uint]int {
 		result[row.TopicTagID] = row.Cnt
 	}
 	return result
-}
-
-func candidateLabels(candidates []TagCandidate) string {
-	labels := make([]string, 0, len(candidates))
-	for _, c := range candidates {
-		if c.Tag != nil {
-			labels = append(labels, c.Tag.Label)
-		}
-	}
-	return strings.Join(labels, ", ")
 }
 
 func resolveScopeTagIDs(feedID uint, categoryID uint) (map[uint]bool, error) {

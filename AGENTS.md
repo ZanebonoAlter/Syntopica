@@ -31,18 +31,18 @@ Agent guide for coding assistants working in `D:\project\my-robot`.
 
 ## Build & Verify
 
-**Frontend** (`front/`): `pnpm install` / `pnpm dev` / `pnpm build` / `pnpm exec nuxi typecheck` / `pnpm test:unit` / `pnpm test:e2e`
+**Frontend** (`front/`): `pnpm install` / `pnpm dev` / `pnpm build` / `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit` / `pnpm test:e2e`
 
-**Backend** (`backend-go/`): `go mod tidy` / `go run cmd/server/main.go` / `go test ./...` / `go build ./...`
+**Backend** (`backend-go/`): `go mod tidy` / `go run cmd/server/main.go` / `golangci-lint run ./...` / `go vet ./...` / `go test ./...` / `go build ./...`
 
-**Pre-push check**: `cd backend-go && go test ./... && go build ./...` && `cd front && pnpm exec nuxi typecheck && pnpm test:unit && pnpm build`
+**Pre-push check**: `cd backend-go && golangci-lint run ./... && go vet ./... && go test ./... && go build ./...` && `cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm test:unit && pnpm build`
 
 ## AI Behavior Rules
 - Do not add linters, formatters, or tooling unless asked.
 - Do not assume Python backend; the product backend is Go.
 - Ignore unrelated dirty-worktree changes. Verify smallest relevant command after edits.
-- Frontend edits → `pnpm exec nuxi typecheck` / `pnpm test:unit` / `pnpm build`.
-- Backend edits → targeted `go test` first, then `go test ./...` / `go build ./...`.
+- Frontend edits → `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit` / `pnpm build`.
+- Backend edits → `golangci-lint run ./...` / targeted `go test` first, then `go test ./...` / `go build ./...`.
 - Docs-only edits: consistency check unless behavior changed.
 - Keep code changes minimal and scoped. Match existing code style.
 - 完成任务后更新维护 `./docs` 知识库。

@@ -137,7 +137,8 @@ func ScanSimilarTagPairs(limit int, scopeFeedID uint, scopeCategoryID uint) ([]T
 		var sourceLabel, sourceSlug, targetLabel, targetSlug string
 		var sourceArticles, targetArticles int
 
-		if count2 > count1 {
+		switch {
+		case count2 > count1:
 			sourceID = tag1.ID
 			sourceLabel = tag1.Label
 			sourceSlug = tag1.Slug
@@ -146,7 +147,7 @@ func ScanSimilarTagPairs(limit int, scopeFeedID uint, scopeCategoryID uint) ([]T
 			targetSlug = tag2.Slug
 			sourceArticles = int(count1)
 			targetArticles = int(count2)
-		} else if count1 > count2 {
+		case count1 > count2:
 			sourceID = tag2.ID
 			sourceLabel = tag2.Label
 			sourceSlug = tag2.Slug
@@ -155,7 +156,7 @@ func ScanSimilarTagPairs(limit int, scopeFeedID uint, scopeCategoryID uint) ([]T
 			targetSlug = tag1.Slug
 			sourceArticles = int(count2)
 			targetArticles = int(count1)
-		} else {
+		default:
 			// Equal article count: smaller ID = source (deterministic)
 			if tag1.ID < tag2.ID {
 				sourceID = tag1.ID

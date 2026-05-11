@@ -18,10 +18,10 @@ import (
 const maxResponseSnippet = 10000
 
 var defaultConcurrency = map[Capability]int{
-	CapabilityArticleCompletion:  2,
-	CapabilityTopicTagging:       3,
-	CapabilityOpenNotebook:       2,
-	CapabilityEmbedding:          5,
+	CapabilityArticleCompletion: 2,
+	CapabilityTopicTagging:      3,
+	CapabilityOpenNotebook:      2,
+	CapabilityEmbedding:         5,
 }
 
 func truncateSnippet(s string) string {
@@ -116,15 +116,6 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 			span.SetAttributes(attribute.String("baggage."+m.Key(), m.Value()))
 		}
 	}
-	var promptParts []string
-	for _, m := range req.Messages {
-		promptParts = append(promptParts, m.Content)
-	}
-	prompt := concatPrompt(promptParts)
-	if len(prompt) > 2000 {
-		prompt = prompt[:2000]
-	}
-
 	route, providers, err := r.store.LoadRouteWithProviders(req.Capability)
 	if err != nil {
 		return nil, err
@@ -255,15 +246,4 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 	}
 
 	return nil, errors.Join(attemptErrors...)
-}
-
-func concatPrompt(parts []string) string {
-	var result string
-	for i, p := range parts {
-		if i > 0 {
-			result += "\n"
-		}
-		result += p
-	}
-	return result
 }

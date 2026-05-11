@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
-	"sort"
 	"strings"
 
 	"my-robot-backend/internal/domain/topicanalysis"
@@ -14,8 +12,6 @@ import (
 	"my-robot-backend/internal/platform/airouter"
 	"my-robot-backend/internal/platform/jsonutil"
 )
-
-var errNoAIAvailable = errors.New("no AI provider available for tagging")
 
 // TagExtractor handles extracting and resolving tags from AI summaries
 type TagExtractor struct {
@@ -139,67 +135,6 @@ func (te *TagExtractor) resolveCandidate(ctx context.Context, candidate topictyp
 	}, false, nil
 }
 
-// aiJudgment asks AI to decide on ambiguous tag matches
-func (te *TagExtractor) aiJudgment(ctx context.Context, candidate topictypes.ExtractedTag, similarTags []topicanalysis.TagCandidate, input topictypes.ExtractionInput) (*topictypes.TagResolutionResponse, error) {
-	// Build context for AI decision
-	var similarInfo []topictypes.SimilarTagInfo
-	for _, t := range similarTags {
-		similarInfo = append(similarInfo, topictypes.SimilarTagInfo{
-			ID:         t.Tag.ID,
-			Label:      t.Tag.Label,
-			Category:   t.Tag.Category,
-			Aliases:    parseAliases(t.Tag.Aliases),
-			Similarity: t.Similarity,
-		})
-	}
-
-	req := topictypes.TagResolutionRequest{
-		CandidateTag:   candidate,
-		SimilarTags:    similarInfo,
-		SummaryContext: fmt.Sprintf("标题: %s\n来源: %s", input.Title, input.FeedName),
-	}
-	if input.Summary != "" {
-		req.SummaryContext += fmt.Sprintf("\n摘要: %s", truncateString(input.Summary, 500))
-	}
-
-	systemPrompt := buildResolutionSystemPrompt()
-	userPrompt := buildResolutionUserPrompt(req)
-
-	maxTokens := 200
-	temperature := 0.1
-	metadata := map[string]any{
-		"operation": "ai_judgment",
-		"candidate": candidate.Label,
-	}
-	if input.FeedName != "" {
-		metadata["feed_name"] = input.FeedName
-	}
-	if input.ArticleID != nil {
-		metadata["article_id"] = *input.ArticleID
-	}
-	if input.SummaryID != nil {
-		metadata["summary_id"] = *input.SummaryID
-	}
-
-	result, err := te.router.Chat(ctx, airouter.ChatRequest{
-		Capability: airouter.CapabilityTopicTagging,
-		Messages: []airouter.Message{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
-		},
-		Temperature: &temperature,
-		MaxTokens:   &maxTokens,
-		Metadata:    metadata,
-		JSONMode:    true,
-		JSONSchema:  tagResolutionSchema(),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("AI judgment failed: %w", err)
-	}
-
-	return parseResolutionResponse(result.Content)
-}
-
 // extractWithHeuristic falls back to rule-based extraction
 func (te *TagExtractor) extractWithHeuristic(input topictypes.ExtractionInput, originalErr error) (*ExtractionResult, error) {
 	tags := ExtractTopics(input)
@@ -285,54 +220,16 @@ func buildExtractionUserPrompt(input topictypes.ExtractionInput) string {
 请返回JSON对象格式: {"tags": [标签列表]}。`, input.Title, input.FeedName, input.CategoryName, input.Summary)
 }
 
-func buildResolutionSystemPrompt() string {
-	return `你是一个标签匹配助手，负责决定新提出的标签应该复用已有标签还是创建新标签。
-
-决策标准：
-1. 如果新标签与已有标签含义完全相同，复用已有标签
-2. 如果新标签是已有标签的别名，复用已有标签
-3. 如果标签含义明显不同，创建新标签
-4. 如果标签存在细微差异（如版本号、地区），根据上下文判断
-
-对于 event（事件）类别的标签，请特别注意：
-- 同一事件可能有完全不同的表述方式，例如"伊朗维护霍尔木兹权益"和"伊朗袭击霍尔木兹海峡船只"可能是同一事件
-- 重点比较事件的核心主体（谁）和核心行为（做了什么），而非字面文本相似度
-- 如果两个标签指向同一核心事件，即使表述差异很大，也应复用
-
-返回JSON格式：
-{"decision": "reuse|create_new", "reuse_tag_id": 123, "reason": "决策理由", "new_label": "调整后的标签名", "new_category": "event|person|keyword"}`
-}
-
-func buildResolutionUserPrompt(req topictypes.TagResolutionRequest) string {
-	var similarStr string
-	for _, t := range req.SimilarTags {
-		similarStr += fmt.Sprintf("- ID %d: \"%s\" (类别: %s, 相似度: %.2f)\n", t.ID, t.Label, t.Category, t.Similarity)
-	}
-
-	return fmt.Sprintf(`新标签候选：
-- 名称: \"%s\"
-- 类别: %s
-- 置信度: %.2f
-
-相似已有标签：
-%s
-
-上下文：
-%s
-
-请判断是否复用已有标签或创建新标签。`, req.CandidateTag.Label, req.CandidateTag.Category, req.CandidateTag.Confidence, similarStr, req.SummaryContext)
-}
-
 func parseExtractedTags(content string) ([]topictypes.ExtractedTag, error) {
 	content = jsonutil.SanitizeLLMJSON(content)
 
 	var raw []struct {
-		Label      string   `json:"label"`
-		Category   string   `json:"category"`
-		Confidence float64  `json:"confidence"`
-		Aliases    []string `json:"aliases"`
-		Evidence   string   `json:"evidence"`
-		Description string  `json:"description"`
+		Label       string   `json:"label"`
+		Category    string   `json:"category"`
+		Confidence  float64  `json:"confidence"`
+		Aliases     []string `json:"aliases"`
+		Evidence    string   `json:"evidence"`
+		Description string   `json:"description"`
 	}
 
 	if err := json.Unmarshal([]byte(content), &raw); err != nil {
@@ -370,29 +267,6 @@ func parseExtractedTags(content string) ([]topictypes.ExtractedTag, error) {
 	return result, nil
 }
 
-func parseResolutionResponse(content string) (*topictypes.TagResolutionResponse, error) {
-	content = jsonutil.SanitizeLLMJSON(content)
-
-	var resp struct {
-		Decision    string `json:"decision"`
-		ReuseTagID  uint   `json:"reuse_tag_id"`
-		Reason      string `json:"reason"`
-		NewLabel    string `json:"new_label"`
-		NewCategory string `json:"new_category"`
-	}
-	if err := json.Unmarshal([]byte(content), &resp); err != nil {
-		return nil, fmt.Errorf("failed to parse resolution: %w", err)
-	}
-
-	return &topictypes.TagResolutionResponse{
-		Decision:    resp.Decision,
-		ReuseTagID:  resp.ReuseTagID,
-		Reason:      resp.Reason,
-		NewLabel:    resp.NewLabel,
-		NewCategory: resp.NewCategory,
-	}, nil
-}
-
 func validateCategory(cat string) string {
 	cat = strings.ToLower(strings.TrimSpace(cat))
 	switch cat {
@@ -401,71 +275,6 @@ func validateCategory(cat string) string {
 	default:
 		return "keyword"
 	}
-}
-
-func parseAliases(aliases string) []string {
-	if aliases == "" {
-		return nil
-	}
-	var result []string
-	if err := json.Unmarshal([]byte(aliases), &result); err != nil {
-		// Legacy: comma-separated
-		for _, a := range strings.Split(aliases, ",") {
-			if s := strings.TrimSpace(a); s != "" {
-				result = append(result, s)
-			}
-		}
-	}
-	return result
-}
-
-func formatAliases(aliases []string) string {
-	if len(aliases) == 0 {
-		return ""
-	}
-	data, _ := json.Marshal(aliases)
-	return string(data)
-}
-
-// slugify creates a URL-safe slug from a string
-func slugifyWithPunc(value string) string {
-	// Lowercase
-	slug := strings.ToLower(value)
-
-	// Replace spaces with hyphens
-	slug = strings.ReplaceAll(slug, " ", "-")
-
-	// Remove or replace special characters
-	reg := regexp.MustCompile(`[^a-z0-9\u4e00-\u9fff\-]`)
-	slug = reg.ReplaceAllString(slug, "")
-
-	return slug
-}
-
-// dedupeTags removes duplicate tags based on slug and category
-func dedupeTags(tags []topictypes.TopicTag) []topictypes.TopicTag {
-	best := make(map[string]topictypes.TopicTag)
-	for _, t := range tags {
-		key := t.Category + ":" + t.Slug
-		current, exists := best[key]
-		if !exists || current.Score < t.Score {
-			best[key] = t
-		}
-	}
-
-	result := make([]topictypes.TopicTag, 0, len(best))
-	for _, t := range best {
-		result = append(result, t)
-	}
-
-	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].Score == result[j].Score {
-			return result[i].Label < result[j].Label
-		}
-		return result[i].Score > result[j].Score
-	})
-
-	return result
 }
 
 func tagExtractionSchema() *airouter.JSONSchema {
@@ -477,11 +286,11 @@ func tagExtractionSchema() *airouter.JSONSchema {
 				Items: &airouter.SchemaProperty{
 					Type: "object",
 					Properties: map[string]airouter.SchemaProperty{
-						"label":      {Type: "string", Description: "标签名称"},
-						"category":   {Type: "string", Description: "event, person 或 keyword"},
-						"confidence": {Type: "number", Description: "置信度 0.0-1.0，仅提取有信息量的标签，宁缺毋滥"},
-						"aliases":    {Type: "array", Items: &airouter.SchemaProperty{Type: "string"}},
-						"evidence":   {Type: "string", Description: "提取依据"},
+						"label":       {Type: "string", Description: "标签名称"},
+						"category":    {Type: "string", Description: "event, person 或 keyword"},
+						"confidence":  {Type: "number", Description: "置信度 0.0-1.0，仅提取有信息量的标签，宁缺毋滥"},
+						"aliases":     {Type: "array", Items: &airouter.SchemaProperty{Type: "string"}},
+						"evidence":    {Type: "string", Description: "提取依据"},
 						"description": {Type: "string", Description: "标签的简短描述（中文，1-2句，客观事实。仅event和keyword需要，person可留空）"},
 					},
 					Required: []string{"label", "category"},
@@ -490,26 +299,4 @@ func tagExtractionSchema() *airouter.JSONSchema {
 		},
 		Required: []string{"tags"},
 	}
-}
-
-func tagResolutionSchema() *airouter.JSONSchema {
-	return &airouter.JSONSchema{
-		Type: "object",
-		Properties: map[string]airouter.SchemaProperty{
-			"decision":     {Type: "string", Description: "reuse 或 create_new"},
-			"reuse_tag_id": {Type: "integer", Description: "复用的标签ID"},
-			"reason":       {Type: "string", Description: "决策理由"},
-			"new_label":    {Type: "string", Description: "调整后的标签名"},
-			"new_category": {Type: "string", Description: "event, person 或 keyword"},
-		},
-		Required: []string{"decision", "reason"},
-	}
-}
-
-func truncateString(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	return string(runes[:maxRunes])
 }

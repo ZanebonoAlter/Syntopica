@@ -2,7 +2,6 @@ package topicanalysis
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -268,8 +267,6 @@ func TestCleanupMultiParentConflicts_OnlyCountsSuccessfulResolutions(t *testing.
 		}
 	}
 
-	// Batch approach handles LLM failures internally (logs warning, returns 0 resolved).
-	// No aiJudgeBestParentFn mock needed — the batch function calls airouter directly.
 	resolved, errs, err := CleanupMultiParentConflicts()
 	if err != nil {
 		t.Fatalf("CleanupMultiParentConflicts returned error: %v", err)
@@ -312,14 +309,6 @@ func TestCleanupMultiParentConflicts_RemovesRedundantAncestorParentWithoutLLM(t 
 			t.Fatalf("create relation: %v", err)
 		}
 	}
-
-	originalJudge := aiJudgeBestParentFn
-	aiJudgeBestParentFn = func(ctx context.Context, childTag *models.TopicTag, parents []parentWithInfo) (int, error) {
-		return 0, errors.New("LLM should not be needed for ancestor redundancy")
-	}
-	t.Cleanup(func() {
-		aiJudgeBestParentFn = originalJudge
-	})
 
 	resolved, errs, err := CleanupMultiParentConflicts()
 	if err != nil {

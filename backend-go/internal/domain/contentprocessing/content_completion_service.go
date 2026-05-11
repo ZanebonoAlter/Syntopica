@@ -94,13 +94,13 @@ func (s *ContentCompletionService) CompleteArticle(ctx context.Context, articleI
 }
 
 func (s *ContentCompletionService) CompleteArticleWithForce(ctx context.Context, articleID uint, force bool) error {
-	ctx, span := otel.Tracer("rss-reader-backend").Start(ctx, "ContentCompletionService.CompleteArticleWithForce")
+	_, span := otel.Tracer("rss-reader-backend").Start(ctx, "ContentCompletionService.CompleteArticleWithForce")
 	defer span.End()
 	/*line backend-go/internal/domain/contentprocessing/content_completion_service.go:93:2*/ return s.CompleteArticleWithMetadata(ctx, articleID, force, nil)
 }
 
 func (s *ContentCompletionService) CompleteArticleWithMetadata(ctx context.Context, articleID uint, force bool, metadata map[string]any) (err error) {
-	ctx, span := otel.Tracer("rss-reader-backend").Start(ctx, "ContentCompletionService.CompleteArticleWithMetadata")
+	_, span := otel.Tracer("rss-reader-backend").Start(ctx, "ContentCompletionService.CompleteArticleWithMetadata")
 	defer span.End()
 	defer func() {
 		if err != nil {
@@ -516,13 +516,13 @@ func formatAISummary(summary *platformai.AISummaryResponse) string {
 	result.WriteString("# 内容整理\n\n")
 
 	if summary.OneSentence != "" {
-		result.WriteString(fmt.Sprintf("> %s\n\n", summary.OneSentence))
+		fmt.Fprintf(&result, "> %s\n\n", summary.OneSentence)
 	}
 
 	if len(summary.KeyPoints) > 0 {
 		result.WriteString("## 关键点\n\n")
 		for _, point := range summary.KeyPoints {
-			result.WriteString(fmt.Sprintf("- %s\n", point))
+			fmt.Fprintf(&result, "- %s\n", point)
 		}
 		result.WriteString("\n")
 	}
@@ -530,7 +530,7 @@ func formatAISummary(summary *platformai.AISummaryResponse) string {
 	if len(summary.Takeaways) > 0 {
 		result.WriteString("## 补充说明\n\n")
 		for i, takeaway := range summary.Takeaways {
-			result.WriteString(fmt.Sprintf("%d. %s\n", i+1, takeaway))
+			fmt.Fprintf(&result, "%d. %s\n", i+1, takeaway)
 		}
 		result.WriteString("\n")
 	}
@@ -538,7 +538,7 @@ func formatAISummary(summary *platformai.AISummaryResponse) string {
 	if len(summary.Tags) > 0 {
 		result.WriteString("## 标签\n\n")
 		for _, tag := range summary.Tags {
-			result.WriteString(fmt.Sprintf("- %s\n", tag))
+			fmt.Fprintf(&result, "- %s\n", tag)
 		}
 	}
 

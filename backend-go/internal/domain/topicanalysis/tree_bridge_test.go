@@ -8,24 +8,6 @@ import (
 	"my-robot-backend/internal/domain/models"
 )
 
-func setupTreeBridgeTestDB(t *testing.T) {
-	t.Helper()
-	setupAbstractTagServiceTestDB(t)
-}
-
-func makeTreeBridgeTag(id uint, label, slug string) *models.TopicTag {
-	return &models.TopicTag{
-		ID:        id,
-		Label:     label,
-		Slug:      slug,
-		Category:  "event",
-		Kind:      "event",
-		Source:    "abstract",
-		Status:    "active",
-		CreatedAt: time.Now(),
-	}
-}
-
 func TestCollectTreeBridgePairs_GlobalDedup(t *testing.T) {
 	db := setupAbstractTagServiceTestDB(t)
 	_ = db

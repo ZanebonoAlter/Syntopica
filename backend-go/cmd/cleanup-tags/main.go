@@ -112,8 +112,6 @@ func countLowQualityKeywordTags() (int, error) {
 	return count, nil
 }
 
-
-
 func printStats(label string, statusMap, catMap map[string]int) {
 	logging.Infof("  %s — status: %v", label, statusMap)
 	logging.Infof("  %s — active by category: %v", label, catMap)

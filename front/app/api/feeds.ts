@@ -13,7 +13,7 @@ export function useFeedsApi() {
     return apiClient.get<RssFeed[]>(`/feeds${query ? `?${query}` : ''}`)
   }
 
-  async function fetchFeed(url: string): Promise<ApiResponse<any>> {
+  async function fetchFeed(url: string): Promise<ApiResponse<Record<string, unknown>>> {
     return apiClient.post('/feeds/fetch', { url })
   }
 
