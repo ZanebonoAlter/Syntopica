@@ -1,0 +1,29 @@
+================================================================================
+ Real ExtractTags Flow — Article 74426
+================================================================================
+
+## Input
+
+  Title:   借助 Cortex Code 加速构建：全面开放，轻松应对更复杂任务 ｜ 技术趋势
+  Feed:    InfoQ - 促进软件开发领域知识与创新的传播
+  Category:技术
+  Summary len: 4382 / 2000 runes
+  Summary first 200 chars: # 借助 Cortex Code 加速构建：全面开放，轻松应对更复杂任务 ｜ 技术趋势
+
+## 导读
+
+*   **全面开放**：Snowflake 宣布 Cortex Code 在 Snowsight 中全面可用，并新增对 Windows 本地环境的 CLI 支持。
+*   **多智能体协作**：引入“智能体团队”功能，可将大型任务拆解为协同并行的子任务，由主智能体统一协调。
+*   **全新技...
+
+## ExtractTags Result
+
+  Error: <nil>
+  Source: heuristic
+  Tags count: 4
+  Skipped: []
+  Errors: [failed to parse tags: unexpected end of JSON input]
+  Tag[0]: label="Coding" category=keyword confidence=4.50 isNew=true matchedTo=0
+  Tag[1]: label="AI Agent" category=keyword confidence=3.10 isNew=true matchedTo=0
+  Tag[2]: label="InfoQ" category=keyword confidence=0.85 isNew=true matchedTo=0
+  Tag[3]: label="技术" category=keyword confidence=0.65 isNew=true matchedTo=0

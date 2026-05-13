@@ -1,6 +1,7 @@
 package database
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"gorm.io/gorm"
@@ -485,13 +486,41 @@ func postgresMigrations() []Migration {
 					return fmt.Errorf("check hierarchy_config count: %w", err)
 				}
 				if count == 0 {
+					seed := map[string]json.RawMessage{
+						"event": json.RawMessage(`{"category":"event","sub_type":"","max_level":3,"levels":[{"level":1,"name":"事件类型","description":"事件的大类，如产品发布、融资并购、政策法规","is_leaf":false,"max_children":20},{"level":2,"name":"事件主体","description":"事件关联的核心实体，如公司、产品、组织","is_leaf":false,"max_children":50},{"level":3,"name":"具体事件","description":"具体的新闻事件实例","is_leaf":true,"max_children":0}]}`),
+						"person": json.RawMessage(`{"category":"person","sub_type":"","max_level":2,"levels":[{"level":1,"name":"人物群组","description":"共享领域/角色/机构的人物群体","is_leaf":false,"max_children":30},{"level":2,"name":"具体人物","description":"具体的人名","is_leaf":true,"max_children":0}]}`),
+						"keyword": json.RawMessage(`{"category":"keyword","sub_type":"","max_level":3,"levels":[{"level":1,"name":"主题领域","description":"关键词的大领域，如AI、金融、生物技术","is_leaf":false,"max_children":20},{"level":2,"name":"主题子域","description":"细分方向，如大语言模型、新能源电池","is_leaf":false,"max_children":50},{"level":3,"name":"具体概念/术语","description":"具体的技术、产品、概念、术语","is_leaf":true,"max_children":0}]}`),
+					}
 					if err := db.Create(&models.HierarchyConfig{
-						Templates: models.HierarchyTemplatesJSON{},
+						Templates: models.HierarchyTemplatesJSON(seed),
 						Version:   1,
 					}).Error; err != nil {
 						return fmt.Errorf("seed hierarchy_config: %w", err)
 					}
 				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260512_0001",
+			Description: "Schema changes for hierarchy-concept-fence: board_concepts +category/+status/-is_active, topic_tags +concept_id.",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					"ALTER TABLE board_concepts ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'keyword'",
+					"ALTER TABLE board_concepts ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'pending'",
+					"ALTER TABLE topic_tags ADD COLUMN IF NOT EXISTS concept_id INTEGER REFERENCES board_concepts(id) ON DELETE SET NULL",
+					"CREATE INDEX IF NOT EXISTS idx_board_concepts_category ON board_concepts(category)",
+					"CREATE INDEX IF NOT EXISTS idx_board_concepts_status ON board_concepts(status)",
+					"CREATE INDEX IF NOT EXISTS idx_topic_tags_concept_id ON topic_tags(concept_id)",
+					"DROP INDEX IF EXISTS idx_board_concepts_active",
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("hierarchy-concept-fence migration: %w", err)
+					}
+				}
+				// GORM can't drop columns, so is_active stays in table but unused.
+				// The model no longer has the IsActive field, so it won't be read/written.
 				return nil
 			},
 		},
@@ -519,6 +548,22 @@ func postgresMigrations() []Migration {
 				for _, s := range stmts {
 					if err := db.Exec(s).Error; err != nil {
 						return fmt.Errorf("hierarchy_pending_changes migration: %w", err)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260513_0001",
+			Description: "Add sub_type column to topic_tags for keyword classification.",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					"ALTER TABLE topic_tags ADD COLUMN IF NOT EXISTS sub_type VARCHAR(30)",
+					"CREATE INDEX IF NOT EXISTS idx_topic_tags_sub_type ON topic_tags(sub_type)",
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("sub_type migration: %w", err)
 					}
 				}
 				return nil

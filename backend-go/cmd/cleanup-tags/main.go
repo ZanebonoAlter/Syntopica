@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicanalysis"
+	"my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/platform/config"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
@@ -163,7 +163,7 @@ func main() {
 		logging.Infof("[Phase B] Would deactivate %d low-quality keyword tags", bFound)
 	} else {
 		logging.Infoln("--- Phase A: Zero-article tags (deactivate) ---")
-		aDeact, err := topicanalysis.CleanupZeroArticleTags(allCategories)
+		aDeact, err := tagging.CleanupZeroArticleTags(allCategories)
 		if err != nil {
 			logging.Fatalf("Phase A failed: %v", err)
 		}
@@ -172,7 +172,7 @@ func main() {
 
 		fmt.Println()
 		logging.Infoln("--- Phase B: Low-quality keyword tags (quality_score < 0.15, articles <= 1) ---")
-		bDeact, err := topicanalysis.CleanupLowQualitySingleArticleTags(models.TagCategoryKeyword, 0.15)
+		bDeact, err := tagging.CleanupLowQualitySingleArticleTags(models.TagCategoryKeyword, 0.15)
 		if err != nil {
 			logging.Fatalf("Phase B failed: %v", err)
 		}

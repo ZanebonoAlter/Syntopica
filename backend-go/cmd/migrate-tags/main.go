@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicanalysis"
+	"my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/platform/config"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
@@ -120,9 +120,9 @@ func migrateTags(dryRun bool, generateEmbeddings bool) (*migrationResult, error)
 	result.total = len(tags)
 
 	// Initialize embedding service if needed
-	var embeddingSvc *topicanalysis.EmbeddingService
+	var embeddingSvc *tagging.EmbeddingService
 	if generateEmbeddings {
-		embeddingSvc = topicanalysis.NewEmbeddingService()
+		embeddingSvc = tagging.NewEmbeddingService()
 	}
 
 	for i, tag := range tags {
@@ -163,7 +163,7 @@ func migrateTags(dryRun bool, generateEmbeddings bool) (*migrationResult, error)
 				result.embeddings++
 			} else {
 				// Generate embedding
-				identityEmb, err := embeddingSvc.GenerateEmbedding(context.TODO(), &tag, topicanalysis.EmbeddingTypeIdentity)
+				identityEmb, err := embeddingSvc.GenerateEmbedding(context.TODO(), &tag, tagging.EmbeddingTypeIdentity)
 				if err != nil {
 					logging.Infof("WARNING: Failed to generate identity embedding for tag %d: %v", tag.ID, err)
 				} else {
@@ -174,7 +174,7 @@ func migrateTags(dryRun bool, generateEmbeddings bool) (*migrationResult, error)
 						result.embeddings++
 					}
 				}
-				semanticEmb, semErr := embeddingSvc.GenerateEmbedding(context.TODO(), &tag, topicanalysis.EmbeddingTypeSemantic)
+				semanticEmb, semErr := embeddingSvc.GenerateEmbedding(context.TODO(), &tag, tagging.EmbeddingTypeSemantic)
 				if semErr != nil {
 					logging.Infof("WARNING: Failed to generate semantic embedding for tag %d: %v", tag.ID, semErr)
 				} else {

@@ -60,6 +60,8 @@ type TopicTag struct {
 	IsWatched    bool        `gorm:"default:false" json:"is_watched"`                                                     // user-watched tag for feed filtering
 	WatchedAt    *time.Time  `json:"watched_at,omitempty"`                                                                // when the tag was watched
 	QualityScore float64     `gorm:"default:0" json:"quality_score"`
+	ConceptID    *uint       `gorm:"index" json:"concept_id,omitempty"`
+	SubType      string      `gorm:"size:30" json:"sub_type,omitempty"` // keyword sub-type: technology, company_business, concept
 	Metadata     MetadataMap `gorm:"type:jsonb;serializer:json;default:'{}'" json:"metadata,omitempty"`
 	CreatedAt    time.Time   `json:"created_at"`
 	UpdatedAt    time.Time   `json:"updated_at"`

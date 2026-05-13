@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topictypes"
+	"my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/platform/database"
 )
 
@@ -33,18 +33,18 @@ func collectAllChildTagIDs(parentTagID uint) map[uint]bool {
 }
 
 type HotspotDigestCard struct {
-	ID          uint                            `json:"id"`
-	Title       string                          `json:"title"`
-	Link        string                          `json:"link"`
-	FeedName    string                          `json:"feed_name"`
-	FeedIcon    string                          `json:"feed_icon,omitempty"`
-	FeedColor   string                          `json:"feed_color,omitempty"`
-	PublishedAt string                          `json:"published_at,omitempty"`
-	Tags        []topictypes.AggregatedTopicTag `json:"tags,omitempty"`
+	ID          uint                         `json:"id"`
+	Title       string                       `json:"title"`
+	Link        string                       `json:"link"`
+	FeedName    string                       `json:"feed_name"`
+	FeedIcon    string                       `json:"feed_icon,omitempty"`
+	FeedColor   string                       `json:"feed_color,omitempty"`
+	PublishedAt string                       `json:"published_at,omitempty"`
+	Tags        []tagging.AggregatedTopicTag `json:"tags,omitempty"`
 }
 
 func GetDigestsByArticleTag(tagSlug string, windowKind string, anchor time.Time, limit int, tagKind string) ([]HotspotDigestCard, error) {
-	windowStart, windowEnd, _, err := topictypes.ResolveWindow(windowKind, anchor)
+	windowStart, windowEnd, _, err := tagging.ResolveWindow(windowKind, anchor)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +92,7 @@ func GetDigestsByArticleTag(tagSlug string, windowKind string, anchor time.Time,
 		}
 
 		if article.PubDate != nil {
-			card.PublishedAt = article.PubDate.In(topictypes.TopicGraphCST).Format(time.RFC3339)
+			card.PublishedAt = article.PubDate.In(tagging.TopicGraphCST).Format(time.RFC3339)
 		}
 
 		if article.Feed.ID != 0 {

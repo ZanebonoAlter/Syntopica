@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"my-robot-backend/internal/domain/contentprocessing"
+	"my-robot-backend/internal/domain/content"
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
 )
@@ -116,7 +116,7 @@ func TestSchedulerStatusFormat(t *testing.T) {
 	}
 
 	completion := &ContentCompletionScheduler{
-		completionService: contentprocessing.NewContentCompletionService("http://localhost:11235"),
+		completionService: content.NewContentCompletionService("http://localhost:11235"),
 		checkInterval:     time.Hour,
 		taskName:          "ai_summary",
 		isRunning:         true,

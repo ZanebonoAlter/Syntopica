@@ -3,14 +3,16 @@ package app
 import (
 	"github.com/gin-gonic/gin"
 	aiadmindomain "my-robot-backend/internal/domain/aiadmin"
-	articlesdomain "my-robot-backend/internal/domain/articles"
-	categoriesdomain "my-robot-backend/internal/domain/categories"
-	contentprocessingdomain "my-robot-backend/internal/domain/contentprocessing"
-	feedsdomain "my-robot-backend/internal/domain/feeds"
+	articledomain "my-robot-backend/internal/domain/article"
+	categorydomain "my-robot-backend/internal/domain/category"
+	conceptdomain "my-robot-backend/internal/domain/concept"
+	contentdomain "my-robot-backend/internal/domain/content"
+	feeddomain "my-robot-backend/internal/domain/feed"
 	narrativedomain "my-robot-backend/internal/domain/narrative"
 	preferencesdomain "my-robot-backend/internal/domain/preferences"
-	topicanalysisdomain "my-robot-backend/internal/domain/topicanalysis"
-	topicextractiondomain "my-robot-backend/internal/domain/topicextraction"
+	topicanalysisdomain "my-robot-backend/internal/domain/tagging"
+	tagginganalysis "my-robot-backend/internal/domain/tagging/analysis"
+	taggingwatched "my-robot-backend/internal/domain/tagging/watched"
 	topicgraphdomain "my-robot-backend/internal/domain/topicgraph"
 	"my-robot-backend/internal/jobs"
 	"my-robot-backend/internal/platform/database"
@@ -52,32 +54,32 @@ func SetupRoutes(r *gin.Engine) {
 	{
 		categories := api.Group("/categories")
 		{
-			categories.GET("", categoriesdomain.GetCategories)
-			categories.POST("", categoriesdomain.CreateCategory)
-			categories.PUT("/:category_id", categoriesdomain.UpdateCategory)
-			categories.DELETE("/:category_id", categoriesdomain.DeleteCategory)
+			categories.GET("", categorydomain.GetCategories)
+			categories.POST("", categorydomain.CreateCategory)
+			categories.PUT("/:category_id", categorydomain.UpdateCategory)
+			categories.DELETE("/:category_id", categorydomain.DeleteCategory)
 		}
 
 		feeds := api.Group("/feeds")
 		{
-			feeds.GET("", feedsdomain.GetFeeds)
-			feeds.GET("/:feed_id", feedsdomain.GetFeed)
-			feeds.POST("", feedsdomain.CreateFeed)
-			feeds.PUT("/:feed_id", feedsdomain.UpdateFeed)
-			feeds.DELETE("/:feed_id", feedsdomain.DeleteFeed)
-			feeds.POST("/:feed_id/refresh", feedsdomain.RefreshFeed)
-			feeds.POST("/fetch", feedsdomain.FetchFeed)
-			feeds.POST("/refresh-all", feedsdomain.RefreshAllFeeds)
+			feeds.GET("", feeddomain.GetFeeds)
+			feeds.GET("/:feed_id", feeddomain.GetFeed)
+			feeds.POST("", feeddomain.CreateFeed)
+			feeds.PUT("/:feed_id", feeddomain.UpdateFeed)
+			feeds.DELETE("/:feed_id", feeddomain.DeleteFeed)
+			feeds.POST("/:feed_id/refresh", feeddomain.RefreshFeed)
+			feeds.POST("/fetch", feeddomain.FetchFeed)
+			feeds.POST("/refresh-all", feeddomain.RefreshAllFeeds)
 		}
 
 		articles := api.Group("/articles")
 		{
-			articles.GET("/stats", articlesdomain.GetArticlesStats)
-			articles.GET("", articlesdomain.GetArticles)
-			articles.GET("/:article_id", articlesdomain.GetArticle)
-			articles.POST("/:article_id/tags", articlesdomain.RetagArticleHandler)
-			articles.PUT("/:article_id", articlesdomain.UpdateArticle)
-			articles.PUT("/bulk-update", articlesdomain.BulkUpdateArticles)
+			articles.GET("/stats", articledomain.GetArticlesStats)
+			articles.GET("", articledomain.GetArticles)
+			articles.GET("/:article_id", articledomain.GetArticle)
+			articles.POST("/:article_id/tags", articledomain.RetagArticleHandler)
+			articles.PUT("/:article_id", articledomain.UpdateArticle)
+			articles.PUT("/bulk-update", articledomain.BulkUpdateArticles)
 		}
 
 		ai := api.Group("/ai")
@@ -94,8 +96,8 @@ func SetupRoutes(r *gin.Engine) {
 
 		opml := api.Group("")
 		{
-			opml.POST("/import-opml", feedsdomain.ImportOPML)
-			opml.GET("/export-opml", feedsdomain.ExportOPML)
+			opml.POST("/import-opml", feeddomain.ImportOPML)
+			opml.GET("/export-opml", feeddomain.ExportOPML)
 		}
 
 		schedulers := api.Group("/schedulers")
@@ -122,18 +124,18 @@ func SetupRoutes(r *gin.Engine) {
 
 		contentCompletion := api.Group("/content-completion")
 		{
-			contentCompletion.POST("/articles/:article_id/complete", contentprocessingdomain.CompleteArticleContent)
-			contentCompletion.POST("/feeds/:feed_id/complete-all", contentprocessingdomain.CompleteFeedArticles)
-			contentCompletion.GET("/articles/:article_id/status", contentprocessingdomain.GetCompletionStatus)
-			contentCompletion.GET("/overview", contentprocessingdomain.GetCompletionOverview)
+			contentCompletion.POST("/articles/:article_id/complete", contentdomain.CompleteArticleContent)
+			contentCompletion.POST("/feeds/:feed_id/complete-all", contentdomain.CompleteFeedArticles)
+			contentCompletion.GET("/articles/:article_id/status", contentdomain.GetCompletionStatus)
+			contentCompletion.GET("/overview", contentdomain.GetCompletionOverview)
 		}
 
 		firecrawl := api.Group("/firecrawl")
 		{
-			firecrawl.POST("/article/:id", contentprocessingdomain.CrawlArticle)
-			firecrawl.POST("/feed/:id/enable", contentprocessingdomain.EnableFeedFirecrawl)
-			firecrawl.GET("/status", contentprocessingdomain.GetFirecrawlStatus)
-			firecrawl.POST("/settings", contentprocessingdomain.SaveFirecrawlSettings)
+			firecrawl.POST("/article/:id", contentdomain.CrawlArticle)
+			firecrawl.POST("/feed/:id/enable", contentdomain.EnableFeedFirecrawl)
+			firecrawl.GET("/status", contentdomain.GetFirecrawlStatus)
+			firecrawl.POST("/settings", contentdomain.SaveFirecrawlSettings)
 		}
 
 		topicGraph := api.Group("/topic-graph")
@@ -145,18 +147,19 @@ func SetupRoutes(r *gin.Engine) {
 			topicGraph.GET("/tag/:slug/pending-articles", topicgraphdomain.GetPendingArticlesByTagHandler)
 			topicGraph.GET("/topic/:slug/articles", topicgraphdomain.GetTopicArticles)
 		}
-		topicanalysisdomain.RegisterAnalysisRoutes(topicGraph, topicanalysisdomain.GetAnalysisService(database.DB))
+		tagginganalysis.RegisterAnalysisRoutes(topicGraph, tagginganalysis.GetAnalysisService(database.DB))
 		topicanalysisdomain.RegisterEmbeddingConfigRoutes(api)
 		topicanalysisdomain.RegisterEmbeddingQueueRoutes(api)
 		topicanalysisdomain.RegisterMergeReembeddingQueueRoutes(api)
 		topicanalysisdomain.RegisterAbstractTagUpdateQueueRoutes(api)
 		topicanalysisdomain.RegisterAdoptNarrowerQueueRoutes(api)
-		topicextractiondomain.RegisterTagQueueRoutes(api)
+		topicanalysisdomain.RegisterTagQueueRoutes(api)
 		topicanalysisdomain.RegisterTagManagementRoutes(api)
-		topicanalysisdomain.RegisterWatchedTagsRoutes(api)
+		taggingwatched.RegisterWatchedTagsRoutes(api)
 		topicanalysisdomain.RegisterTagMergePreviewRoutes(api)
 		topicanalysisdomain.RegisterAbstractTagRoutes(api)
 		topicanalysisdomain.RegisterHierarchyRoutes(api.Group("/hierarchy"))
+		conceptdomain.RegisterConceptRoutes(api.Group("/hierarchy"))
 
 		narrativedomain.RegisterNarrativeRoutes(api)
 

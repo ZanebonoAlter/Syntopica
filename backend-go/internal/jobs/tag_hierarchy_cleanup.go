@@ -14,8 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicanalysis"
-	"my-robot-backend/internal/domain/topicextraction"
+	"my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
 	"my-robot-backend/internal/platform/tracing"
@@ -266,7 +265,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	logging.Infoln("Starting tag cleanup cycle (multi-phase)")
 
 	// Phase 1: Zombie tag cleanup (no LLM)
-	zombieCount, err := topicanalysis.CleanupZombieTags(topicanalysis.ZombieTagCriteria{
+	zombieCount, err := tagging.CleanupZombieTags(tagging.ZombieTagCriteria{
 		MinAgeDays: 7,
 		Categories: []string{"event", "keyword", "person"},
 	})
@@ -279,7 +278,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	}
 
 	// Phase 1.5: Zero-article tag cleanup (no LLM)
-	zeroArticleCount, err := topicanalysis.CleanupZeroArticleTags([]string{"event", "keyword", "person"})
+	zeroArticleCount, err := tagging.CleanupZeroArticleTags([]string{"event", "keyword", "person"})
 	if err != nil {
 		logging.Errorf("Phase 1.5 zero-article cleanup failed: %v", err)
 		summary.Errors++
@@ -289,7 +288,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	}
 
 	// Phase 1.6: Low-quality single-article keyword cleanup (no LLM)
-	lowQualityCount, err := topicanalysis.CleanupLowQualitySingleArticleTags("keyword", 0.15)
+	lowQualityCount, err := tagging.CleanupLowQualitySingleArticleTags("keyword", 0.15)
 	if err != nil {
 		logging.Errorf("Phase 1.6 low-quality keyword cleanup failed: %v", err)
 		summary.Errors++
@@ -299,7 +298,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	}
 
 	// Phase 1.7: Stale zero-score tag cleanup (no LLM)
-	staleZeroCount, err := topicanalysis.CleanupStaleZeroScoreTags(7)
+	staleZeroCount, err := tagging.CleanupStaleZeroScoreTags(7)
 	if err != nil {
 		logging.Errorf("Phase 1.7 stale zero-score cleanup failed: %v", err)
 		summary.Errors++
@@ -315,7 +314,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 			logging.Infoln("Phase 2: budget timed out, skipping remaining categories")
 			break
 		}
-		merged, mergeErrors, err := topicanalysis.ExecuteFlatMerge(ctx, category, 50)
+		merged, mergeErrors, err := tagging.ExecuteFlatMerge(ctx, category, 50)
 		if err != nil {
 			logging.Errorf("Phase 2 flat merge failed for %s: %v", category, err)
 			summary.Errors++
@@ -331,7 +330,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	logging.Infof("Phase 2 completed in %v (processed %d)", time.Since(phaseStart), summary.FlatMergesApplied)
 
 	// Phase 3: Hierarchy pruning
-	orphaned, err := topicanalysis.CleanupOrphanedRelations()
+	orphaned, err := tagging.CleanupOrphanedRelations()
 	if err != nil {
 		logging.Errorf("Phase 3 orphaned relations cleanup failed: %v", err)
 		summary.Errors++
@@ -339,7 +338,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	summary.OrphanedRelations = orphaned
 	logging.Infof("Phase 3: removed %d orphaned relations", orphaned)
 
-	resolved, resolveErrors, err := topicanalysis.CleanupMultiParentConflicts()
+	resolved, resolveErrors, err := tagging.CleanupMultiParentConflicts()
 	if err != nil {
 		logging.Errorf("Phase 3 multi-parent cleanup failed: %v", err)
 		summary.Errors++
@@ -351,7 +350,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	}
 	logging.Infof("Phase 3: resolved %d multi-parent conflicts", resolved)
 
-	emptied, err := topicanalysis.CleanupEmptyAbstractNodes()
+	emptied, err := tagging.CleanupEmptyAbstractNodes()
 	if err != nil {
 		logging.Errorf("Phase 3 empty abstract cleanup failed: %v", err)
 		summary.Errors++
@@ -359,7 +358,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	summary.EmptyAbstracts = emptied
 	logging.Infof("Phase 3: deactivated %d empty abstract tags", emptied)
 
-	singleChild, err := topicanalysis.CleanupSingleChildAbstractNodes()
+	singleChild, err := tagging.CleanupSingleChildAbstractNodes()
 	if err != nil {
 		logging.Errorf("Phase 3 single-child abstract cleanup failed: %v", err)
 		summary.Errors++
@@ -368,7 +367,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	logging.Infof("Phase 3: promoted %d children from single-child abstract parents", singleChild)
 
 	// Phase 3.5: Whitespace-variant duplicate cleanup
-	whitespaceDups, err := topicanalysis.CleanupWhitespaceDuplicateTags()
+	whitespaceDups, err := tagging.CleanupWhitespaceDuplicateTags()
 	if err != nil {
 		logging.Errorf("Phase 3.5 whitespace duplicate cleanup failed: %v", err)
 		summary.Errors++
@@ -377,7 +376,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	logging.Infof("Phase 3.5: merged %d whitespace-variant duplicates", whitespaceDups)
 
 	// Phase 3.6: Degenerate abstract tree flattening
-	degenerateFlattened, err := topicanalysis.CleanupDegenerateAbstractTrees()
+	degenerateFlattened, err := tagging.CleanupDegenerateAbstractTrees()
 	if err != nil {
 		logging.Errorf("Phase 3.6 degenerate tree flattening failed: %v", err)
 		summary.Errors++
@@ -386,7 +385,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	logging.Infof("Phase 3.6: flattened %d degenerate abstract nodes", degenerateFlattened)
 
 	// Phase 3d: Template depth compliance check
-	v, err := topicanalysis.CleanupTemplateViolations()
+	v, err := tagging.CleanupTemplateViolations()
 	if err != nil {
 		logging.Errorf("Phase 3d template violation check failed: %v", err)
 		summary.Errors++
@@ -403,7 +402,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	if budget.IsTimedOut() {
 		logging.Infoln("Phase 4: budget timed out, skipping adopt-narrower")
 	} else {
-		adopted, err = topicanalysis.ProcessPendingAdoptNarrowerTasks()
+		adopted, err = tagging.ProcessPendingAdoptNarrowerTasks()
 		if err != nil {
 			logging.Errorf("Phase 4 adopt narrower failed: %v", err)
 			summary.Errors++
@@ -420,7 +419,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	if budget.IsTimedOut() {
 		logging.Infoln("Phase 5: budget timed out, skipping abstract-tag-update")
 	} else {
-		updated, err = topicanalysis.ProcessPendingAbstractTagUpdateTasks()
+		updated, err = tagging.ProcessPendingAbstractTagUpdateTasks()
 		if err != nil {
 			logging.Errorf("Phase 5 abstract tag update failed: %v", err)
 			summary.Errors++
@@ -439,13 +438,13 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 			break
 		}
 
-		tmpl := topicanalysis.GetHierarchyManager().GetTemplate(category, "")
+		tmpl := tagging.GetHierarchyManager().GetTemplate(category, "")
 		if tmpl == nil {
 			logging.Warnf("Phase 6: no template for category %s, skipping", category)
 			continue
 		}
 
-		forest, forestErr := topicanalysis.BuildTagForest(category, 0)
+		forest, forestErr := tagging.BuildTagForest(category, 0)
 		if forestErr != nil {
 			logging.Warnf("Phase 6: failed to build forest for %s: %v", category, forestErr)
 			continue
@@ -454,7 +453,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 			continue
 		}
 
-		alignmentIssues := topicanalysis.Phase6_CheckLevelAlignment(forest, tmpl)
+		alignmentIssues := tagging.Phase6_CheckLevelAlignment(forest, tmpl)
 		if len(alignmentIssues) > 0 {
 			logging.Infof("Phase 6 (%s): found %d level alignment issues", category, len(alignmentIssues))
 			for _, issue := range alignmentIssues {
@@ -462,14 +461,14 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 			}
 		}
 
-		l1Deduped, _ := topicanalysis.Phase6_DedupL1(ctx, tmpl)
-		l2Deduped, _ := topicanalysis.Phase6_DedupL2(ctx, tmpl)
-		auditIssues, _ := topicanalysis.Phase6_SampleAuditLeaves(ctx, tmpl)
+		l1Deduped, _ := tagging.Phase6_DedupL1(ctx, tmpl)
+		l2Deduped, _ := tagging.Phase6_DedupL2(ctx, tmpl)
+		auditIssues, _ := tagging.Phase6_SampleAuditLeaves(ctx, tmpl)
 
 		logging.Infof("Phase 6 (%s): alignment=%d issues, L1 dedup=%d, L2 dedup=%d, leaf audit=%d issues",
 			category, len(alignmentIssues), l1Deduped, l2Deduped, auditIssues)
 
-		reviewResult, reviewErr := topicanalysis.ReviewHierarchyTrees(category, 7, budget)
+		reviewResult, reviewErr := tagging.ReviewHierarchyTrees(category, 7, budget)
 		if reviewErr != nil {
 			logging.Errorf("Phase 6 tree review failed for %s: %v", category, reviewErr)
 			summary.Errors++
@@ -494,7 +493,7 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	if budget.IsTimedOut() {
 		logging.Infoln("Phase 7: budget timed out, skipping description backfill")
 	} else {
-		backfilled, err = topicextraction.BackfillMissingDescriptions()
+		backfilled, err = tagging.BackfillMissingDescriptions()
 		if err != nil {
 			logging.Errorf("Phase 7 description backfill failed: %v", err)
 			summary.Errors++

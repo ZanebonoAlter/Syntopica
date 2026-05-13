@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
-	"my-robot-backend/internal/domain/feeds"
+	"my-robot-backend/internal/domain/feed"
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
@@ -20,7 +20,7 @@ import (
 type AutoRefreshScheduler struct {
 	cron           *cron.Cron
 	checkInterval  time.Duration
-	feedService    *feeds.FeedService
+	feedService    *feed.FeedService
 	refreshFeed    func(ctx context.Context, feedID uint) error
 	isRunning      bool
 	isExecuting    bool
@@ -42,7 +42,7 @@ type AutoRefreshRunSummary struct {
 const staleRefreshingTimeout = 5 * time.Minute
 
 func NewAutoRefreshScheduler(checkInterval int) *AutoRefreshScheduler {
-	feedService := feeds.NewFeedService()
+	feedService := feed.NewFeedService()
 	return &AutoRefreshScheduler{
 		cron:          cron.New(),
 		checkInterval: time.Duration(checkInterval) * time.Second,

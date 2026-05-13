@@ -13,8 +13,6 @@ import (
 var service = NewNarrativeService()
 
 func RegisterNarrativeRoutes(rg *gin.RouterGroup) {
-	registerConceptRoutes(rg)
-
 	group := rg.Group("/narratives")
 	{
 		group.GET("/timeline", getNarrativeTimeline)

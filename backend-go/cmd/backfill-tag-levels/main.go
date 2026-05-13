@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicanalysis"
+	"my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/platform/config"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
@@ -27,7 +27,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	mgr := topicanalysis.GetHierarchyManager()
+	mgr := tagging.GetHierarchyManager()
 	mgr.LoadSystemDefaults()
 
 	logging.Infof("Starting tag level backfill...")
@@ -71,7 +71,7 @@ func backfillLevelsByDepth(categoryFilter string, dryRun bool) int {
 
 	count := 0
 	for _, tag := range tags {
-		depth := topicanalysis.GetTagLevelByID(tag.ID, tag.Category)
+		depth := tagging.GetTagDepthFromRoot(tag.ID)
 
 		if !dryRun {
 			if tag.Metadata == nil {
@@ -115,10 +115,10 @@ func findInvalidRelations(categoryFilter string, dryRun bool) (int, []invalidRel
 				r.ParentID, r.Parent.Label, r.Parent.Category, r.ChildID, r.Child.Label, r.Child.Category)
 		}
 
-		tmpl := topicanalysis.GetHierarchyManager().GetTemplate(r.Parent.Category, "")
+		tmpl := tagging.GetHierarchyManager().GetTemplate(r.Parent.Category, "")
 		if tmpl != nil {
-			childDepth := topicanalysis.GetTagLevelByID(r.ChildID, r.Child.Category)
-			if childDepth > tmpl.MaxLevel {
+			childDepth := tagging.GetTagDepthFromRoot(r.ChildID)
+			if childDepth+1 > tmpl.MaxLevel {
 				invalid = append(invalid, invalidRelationInfo{
 					RelationID: r.ID, ParentID: r.ParentID, ChildID: r.ChildID,
 					Issue: "depth_exceeded",

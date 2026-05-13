@@ -7,12 +7,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"my-robot-backend/internal/domain/topictypes"
+	"my-robot-backend/internal/domain/tagging"
 )
 
 func GetTopicGraph(c *gin.Context) {
 	kind := c.Param("type")
-	anchor, err := topictypes.ParseAnchorDate(c.Query("date"))
+	anchor, err := tagging.ParseAnchorDate(c.Query("date"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
 		return
@@ -36,7 +36,7 @@ func GetTopicDetail(c *gin.Context) {
 	if kind == "" {
 		kind = "all"
 	}
-	anchor, err := topictypes.ParseAnchorDate(c.Query("date"))
+	anchor, err := tagging.ParseAnchorDate(c.Query("date"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
 		return
@@ -54,7 +54,7 @@ func GetTopicDetail(c *gin.Context) {
 // GetTopicsByCategory returns tags grouped by category (event, person, keyword)
 func GetTopicsByCategory(c *gin.Context) {
 	kind := c.DefaultQuery("type", "daily")
-	anchor, err := topictypes.ParseAnchorDate(c.Query("date"))
+	anchor, err := tagging.ParseAnchorDate(c.Query("date"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
 		return
@@ -93,7 +93,7 @@ func GetTopicArticles(c *gin.Context) {
 		}
 	}
 
-	anchor, err := topictypes.ParseAnchorDate(c.Query("date"))
+	anchor, err := tagging.ParseAnchorDate(c.Query("date"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
 		return
@@ -128,7 +128,7 @@ func GetDigestsByArticleTagHandler(c *gin.Context) {
 	if kind == "" {
 		kind = "all"
 	}
-	anchor, err := topictypes.ParseAnchorDate(c.Query("date"))
+	anchor, err := tagging.ParseAnchorDate(c.Query("date"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
 		return
@@ -198,7 +198,7 @@ func GetPendingArticlesByTagHandler(c *gin.Context) {
 	if kind == "" {
 		kind = "all"
 	}
-	anchor, err := topictypes.ParseAnchorDate(c.Query("date"))
+	anchor, err := tagging.ParseAnchorDate(c.Query("date"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
 		return

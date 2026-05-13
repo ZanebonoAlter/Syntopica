@@ -1,0 +1,237 @@
+================================================================================
+ 打 Tag 上下文完整 Dump — Article 74551 (真实数据库)
+================================================================================
+
+## 1. Article 记录
+
+  ID:                    74551
+  FeedID:                6
+  Title:                 .NET 高级开发 | 手写一个对象映射框架
+  Author:                痴者工良
+  Link:                  https://www.cnblogs.com/whuanle/p/19880904
+  SummaryStatus:         complete
+  FirecrawlStatus:       completed
+  Description 长度:      294
+  Content 长度:          294
+  AIContentSummary 长度: 13281
+  FirecrawlContent 长度: 32882
+
+  Description 内容:
+  ------------------------------------------------------------------------------
+  Maomi.Mapper 注：本项目用于教学目的，性能较差，请勿用于生产环境。 仓库地址：https://github.com/whuanle/Maomi.Mapper MaomiMapper 是一个使用表达式树构造生成对象成员映射的框架，即对象映射框架。 虽然 MaomiMapper 性能不啥样， ...
+  ------------------------------------------------------------------------------
+
+  Content 内容 (前500字符):
+  ------------------------------------------------------------------------------
+  Maomi.Mapper 注：本项目用于教学目的，性能较差，请勿用于生产环境。 仓库地址：https://github.com/whuanle/Maomi.Mapper MaomiMapper 是一个使用表达式树构造生成对象成员映射的框架，即对象映射框架。 虽然 MaomiMapper 性能不啥样， ...
+  ------------------------------------------------------------------------------
+
+## 2. Feed / Category
+
+  Feed ID:         6
+  Feed Title:      10天推荐排行 - 博客园
+  Feed CategoryID: 0xc000d030a0
+  Category.Name:   技术
+  Category.Slug:   技术
+
+## 3. Handler → Enqueue (TagJobRequest)
+
+  ArticleID:    74551
+  FeedName:     10天推荐排行 - 博客园
+  CategoryName: "技术"
+  ForceRetag:   true
+  Reason:       manual_api_trigger
+
+## 4. buildArticleSummary
+
+  优先级:
+    1. AIContentSummary（如有）
+    2. FirecrawlContent（如 1 为空）
+    3. Content（如 1、2 为空）
+    4. Description（如 1、2、3 为空）
+
+  实际命中: AIContentSummary
+  Summary 长度: 2578 字节 / 2000 rune
+
+## 5. ExtractionInput (传给 ExtractTags)
+
+  Title:        .NET 高级开发 | 手写一个对象映射框架
+  FeedName:     10天推荐排行 - 博客园
+  CategoryName: "技术"
+  ArticleID:    74551
+  Summary 长度: 2578
+
+## 6. 最终发给 LLM 的 User Prompt
+
+  ------------------------------------------------------------------------------
+  请从以下新闻摘要中提取标签：
+  
+  标题: .NET 高级开发 | 手写一个对象映射框架
+  来源: 10天推荐排行 - 博客园
+  分类: 技术
+  
+  摘要内容:
+  # .NET 高级开发 | 手写一个对象映射框架
+  
+  ## 导读
+  *   Maomi.Mapper 是一个基于表达式树的教学型对象映射框架，代码注释详细，适合研究反射、表达式树和类型转换。
+  *   项目明确标注性能较差，不适用于生产环境，但提供了与 AutoMapper 的性能对比数据。
+  *   框架支持配置映射规则、自动扫描程序集、私有字段映射、值类型互转等特性。
+  *   提供了灵活的配置方式，包括自定义转换器、忽略字段、引用保持等。
+  *   支持数组、集合以及不同类型集合之间的映射。
+  
+  ## 正文整理
+  
+  MaomiMapper 是一个使用表达式树构造生成对象成员映射的框架，即对象映射框架。
+  
+  虽然 MaomiMapper 性能不怎么样，但是代码注释也写得很齐全，适合读者研究反射、表达式树、类型转换等代码。
+  
+  ### 性能对比
+  
+  MaomiMapper 与 AutoMapper 对比：
+  
+  | Method | Mean | Error | StdDev | Gen0 | Allocated |
+  | --- | --- | --- | --- | --- | --- |
+  | ASAutoMapper | 146.30 ns | 1.759 ns | 1.645 ns | 0.0362 | 304 B |
+  | ASMaomiMapper | 817.46 ns | 6.467 ns | 6.049 ns | 0.0935 | 784 B |
+  | ASDelegate | 668.56 ns | 5.050 ns | 4.724 ns | 0.0839 | 704 B |
+  | _AutoMapper | 67.56 ns | 0.438 ns | 0.410 ns | 0.0191 | 160 B |
+  | _MaomiMapper | 242.03 ns | 0.751 ns | 0.702 ns | 0.0315 | 264 B |
+  | _Delegate | 188.64 ns | 1.251 ns | 1.109 ns | 0.0267 | 224 B |
+  
+  > AS 开头的方法表示有类型转换。
+  
+  测试使用的模型类：
+  
+  ```csharp
+  public class TestValue
+  {
+      public bool ValueA { get; set; } = true;
+      public sbyte ValueB { get; set; } = 1;
+      public byte ValueC { get; set; } = 2;
+      public short ValueD { get; set; } = 3;
+      public ushort ValueE { get; set; } = 4;
+      public int ValueF { get; set; } = 5;
+      public uint ValueG { get; set; } = 6;
+      public long ValueH { get; set; } = 7;
+      public ulong ValueI { get; set; } = 8;
+      public float ValueJ { get; set; } = 9;
+      public double ValueK { get; set; } = 10;
+      public decimal ValueL { get; set; } = 11;
+      public char ValueM { get; set; } = (Char)12;
+  }
+  public class TestB
+  {
+      public bool ValueA { get; set; } = true;
+      public sbyte ValueB { get; set; } = 1;
+      public byte ValueC { get; set; } = 2;
+      public short ValueD { get; set; } = 3;
+      public ushort ValueE { get; set; } = 4;
+      public int ValueF { get; set; } = 5;
+      public uint ValueG { get; set; } = 6;
+      public long ValueH { get; set; } = 7;
+      public ulong ValueI { get; set; } = 8;
+      public float ValueJ { get; set; } = 9;
+      public double Va
+  
+  请返回JSON数组格式的标签列表。
+  ------------------------------------------------------------------------------
+
+## 7. System Prompt
+
+  ------------------------------------------------------------------------------
+  你是一个专业的新闻分析助手，负责从新闻摘要中提取有信息量的结构化标签。
+  
+  标签分为三类：
+  1. event（事件）：完整描述的新闻事件名词短语，必须具备语义完整性
+     - 正确示例："苹果WWDC 2024发布会"、"央行禁止比特币交易"、"某景区门票涨价风波"
+     - 错误示例："3月30"（裸日期）、"禁止交易"（无主体动作）、"门票涨价"（无归属状态）、"北京中关村"（裸地名）、"AI体验活动"（泛化活动名）
+      
+  2. person（人物）：具体的个人姓名
+     - 正确示例："Sam Altman"、"Elon Musk"
+     - 错误示例："CEO"（泛称）、"发言人"（角色而非具体人）
+  
+  3. keyword（关键词）：专业术语、技术概念、产品名称、组织机构等有辨识度的实体
+     - keyword 分为三个子类型（sub_type）：
+       * technology: 技术相关，如编程语言、框架、算法、硬件、协议等
+         - 示例："Transformer架构"、"RAG检索增强生成"、"PostgreSQL"、"Kubernetes"、"GPT-4"
+       * company_business: 公司和商业相关，如企业、产品、服务、商业模式等
+         - 示例："苹果公司"、"特斯拉Model 3"、"SaaS服务"、"电商平台"
+       * concept: 学术概念、理论、方法论等抽象知识
+         - 示例："深度学习"、"区块链"、"量子计算"、"敏捷开发"
+     - 错误示例："2026"、"Q3"、"星期二"（时间词）、"公司"（泛称）、"技术"（过于宽泛）、"发展"（无具体含义）
+  
+  提取规则：
+  - 宁缺毋滥，只提取真正有信息量的标签，不需要每篇都凑数量
+  - 必须拒绝以下无意义标签：
+    * 纯年份/日期/时间词（如"2026"、"2024年"、"Q3"、"上半年"）
+    * 过于宽泛的通用词（如"技术"、"发展"、"创新"、"行业"、"未来"、"趋势"、"市场"、"影响"）
+    * 文章中未展开讨论的附带提及词
+  	- 优先提取专业术语和技术概念，而非泛化描述词
+  	- event类标签必须是语义完整的名词短语，能独立传达事件内容
+  	- 拒绝语义片段：不要把裸日期、无主体动作、无归属状态、裸地名、泛化活动名当作event，应归入keyword
+  	- 无法判断语义完整性时，优先归入keyword类别
+  	- 最多返回 5 个标签，其中 keyword 类最多 3 个
+  	- 宁少勿多：如果文章只聚焦一个话题，2-3 个标签就够了
+  	- keyword 类标签必须是具有持久辨识度的实体或术语，不接受只在一篇文章出现的临时性描述词。如果一个 keyword 只在单篇文章中有意义，不要提取它
+  	- 标签必须按优先级从高到低排序，最重要的标签放前面
+  	- 标签应该简洁、准确
+  
+  每个标签输出格式：
+  {"label": "标签名称", "category": "event|person|keyword", "sub_type": "technology|company_business|concept", "confidence": 0.0-1.0, "aliases": ["别名1"], "evidence": "提取依据", "description": "标签的简短描述（中文，1-2句，客观事实，仅event和keyword需要，person可不填）"}
+  
+  sub_type 说明：
+  - 仅当 category="keyword" 时才需要填写 sub_type，用于进一步分类keyword标签
+  - category="event" 或 "person" 时，sub_type 可留空或填 ""
+  - 如果无法确定具体子类型，默认使用 "concept"
+  
+  描述要求（仅 event 和 keyword）：
+  - 中文，1-2句话，客观事实
+  - 解释标签指代什么，不重复标签名
+  - 例如 "ChatGPT" → "OpenAI开发的大型语言模型聊天机器人"
+  - 例如 "苹果WWDC 2024" → "苹果公司于2024年6月举办的全球开发者大会"
+  - person 标签的 description 可留空，系统会后续单独生成
+  ------------------------------------------------------------------------------
+
+## 8. articleContext (传给 findOrCreateTag, 截断上限 800 rune)
+
+  长度: 1386 字符 / 824 rune
+  ------------------------------------------------------------------------------
+  .NET 高级开发 | 手写一个对象映射框架. # .NET 高级开发 | 手写一个对象映射框架
+  
+  ## 导读
+  *   Maomi.Mapper 是一个基于表达式树的教学型对象映射框架，代码注释详细，适合研究反射、表达式树和类型转换。
+  *   项目明确标注性能较差，不适用于生产环境，但提供了与 AutoMapper 的性能对比数据。
+  *   框架支持配置映射规则、自动扫描程序集、私有字段映射、值类型互转等特性。
+  *   提供了灵活的配置方式，包括自定义转换器、忽略字段、引用保持等。
+  *   支持数组、集合以及不同类型集合之间的映射。
+  
+  ## 正文整理
+  
+  MaomiMapper 是一个使用表达式树构造生成对象成员映射的框架，即对象映射框架。
+  
+  虽然 MaomiMapper 性能不怎么样，但是代码注释也写得很齐全，适合读者研究反射、表达式树、类型转换等代码。
+  
+  ### 性能对比
+  
+  MaomiMapper 与 AutoMapper 对比：
+  
+  | Method | Mean | Error | StdDev | Gen0 | Allocated |
+  | --- | --- | --- | --- | --- | --- |
+  | ASAutoMapper | 146.30 ns | 1.759 ns | 1.645 ns | 0.0362 | 304 B |
+  | ASMaomiMapper | 817.46 ns | 6.467 ns | 6.049 ns | 0.0935 | 784 B |
+  | ASDelegate | 668.56 ns | 5.050 ns | 4.724 ns | 0.0839 | 704 B |
+  | _AutoMapper | 67.56 ns | 0.438 ns | 0.410 ns | 0.0191 | 160 B |
+  | _MaomiMapper | 242.03 ns | 0.751 ns |
+  ------------------------------------------------------------------------------
+
+## 9. 当前已有标签
+
+  (无标签)
+
+## 10. 实时调用 AI 提取
+
+  返回标签数: 2, Source: heuristic
+  Errors: [failed to parse tags: unexpected end of JSON input]
+  Tag[0]: label="Coding" category=keyword confidence=1.05
+  Tag[1]: label="技术" category=keyword confidence=0.65

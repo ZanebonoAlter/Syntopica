@@ -45,29 +45,32 @@ graph TD
 
 ### 1. 订阅与文章（基础数据面）
 
-Feed 管理（`backend-go/internal/domain/feeds/`）和文章管理（`backend-go/internal/domain/articles/`）构成系统的基础数据层。Feed 刷新拉取 RSS 源、去重入库文章，后续所有增强能力（Firecrawl、内容补全、摘要、主题分析）都建立在文章记录之上。Feed 配置项（`firecrawl_enabled`、`article_summary_enabled`、`refresh_interval`）决定文章入库后的初始状态流转。
+Feed 管理（`backend-go/internal/domain/feed/`）和文章管理（`backend-go/internal/domain/article/`）构成系统的基础数据层。Feed 刷新拉取 RSS 源、去重入库文章，后续所有增强能力（Firecrawl、内容补全、摘要、主题分析）都建立在文章记录之上。Feed 配置项（`firecrawl_enabled`、`article_summary_enabled`、`refresh_interval`）决定文章入库后的初始状态流转。
 
 ### 2. AI 与内容增强
 
 两层叠加架构：
 
 - **AI Router**（`backend-go/internal/platform/airouter/`）：管理多 AI provider 和 capability route，支持 failover
-- **内容处理**（`backend-go/internal/domain/contentprocessing/`）：Firecrawl 全文抓取、AI 内容补全生成整理稿
+- **内容处理**（`backend-go/internal/domain/content/`）：Firecrawl 全文抓取、AI 内容补全生成整理稿
 
 ### 3. 主题图谱
 
-拆分为四个包，形成从标签提取到图谱展示的完整链路：
+拆分为 `tagging/` 包及其子包，形成从标签提取到图谱展示的完整链路：
 
-- `topictypes`：共享类型和窗口工具
-- `topicextraction`：从摘要/文章提取 topic tag
-- `topicanalysis`：主题分析任务与结果、embedding 向量化、标签合并、关注标签、抽象标签管理
+- `tagging`（根包）：共享类型和窗口工具、`StartAllWorkers`/`StopAllWorkers` 统一入口
+- `tagging/extraction`：从摘要/文章提取 topic tag
+- `tagging/analysis`：主题分析任务与结果、embedding 向量化、标签合并、抽象标签管理
+- `tagging/watched`：关注标签管理
 - `topicgraph`：图谱节点边、详情、相关文章查询
 
-此外，`topicanalysis` 还承担了以下高级能力：
+此外，`tagging/analysis` 还承担了以下高级能力：
 - 标签 embedding 向量化与自动合并（基于 pgvector 余弦相似度）
-- 关注标签（watched tags）管理
 - 抽象标签（abstract tags）层级体系
 - 合并后 re-embedding 队列
+
+`tagging/watched` 负责：
+- 关注标签（watched tags）管理
 
 ### 4. 叙事摘要
 
@@ -138,7 +141,7 @@ my-robot/
 │   ├── configs/              # 配置文件（config.yaml）
 │   └── internal/
 │       ├── app/              # 应用装配（router.go, runtime.go, runtimeinfo/）
-│       ├── domain/           # 业务域（12 个子包：feeds, articles, categories, contentprocessing, preferences, aiadmin, models, topictypes, topicextraction, topicanalysis, topicgraph, narrative）
+│       ├── domain/           # 业务域（feed, article, category, content, preferences, aiadmin, models, tagging/analysis/extraction/watched, topicgraph, narrative）
 │       ├── jobs/             # 调度外壳（8 类定时任务 + handler）
 │       └── platform/         # 共享基础设施（config, database, logging, middleware, ws, ai, airouter, aisettings, opennotebook, tracing）
 ├── docs/                     # 项目文档

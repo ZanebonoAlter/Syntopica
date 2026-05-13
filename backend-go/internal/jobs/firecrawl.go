@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"my-robot-backend/internal/domain/contentprocessing"
+	"my-robot-backend/internal/domain/content"
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicextraction"
+	"my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
 	"my-robot-backend/internal/platform/tracing"
@@ -32,7 +32,7 @@ type FirecrawlScheduler struct {
 	concurrency       int
 	queueSize         int32
 	processingCount   int32
-	queue             *contentprocessing.FirecrawlJobQueue
+	queue             *content.FirecrawlJobQueue
 }
 
 func NewFirecrawlScheduler() *FirecrawlScheduler {
@@ -42,7 +42,7 @@ func NewFirecrawlScheduler() *FirecrawlScheduler {
 		stopChan:      make(chan struct{}),
 		status:        "idle",
 		concurrency:   1,
-		queue:         contentprocessing.NewFirecrawlJobQueue(database.DB),
+		queue:         content.NewFirecrawlJobQueue(database.DB),
 	}
 }
 
@@ -148,7 +148,7 @@ func (s *FirecrawlScheduler) runCrawlCycle(batchID string) {
 		atomic.StoreInt32(&s.processingCount, 0)
 	}()
 
-	config, err := contentprocessing.GetFirecrawlConfig()
+	config, err := content.GetFirecrawlConfig()
 	if err != nil {
 		s.lastError = err.Error()
 		logging.Errorf("[Firecrawl] Config error: %v", err)
@@ -159,7 +159,7 @@ func (s *FirecrawlScheduler) runCrawlCycle(batchID string) {
 		return
 	}
 
-	firecrawlService := contentprocessing.NewFirecrawlService(config)
+	firecrawlService := content.NewFirecrawlService(config)
 
 	jobs, err := s.queue.Claim(50, s.leaseDuration(config))
 	if err != nil {
@@ -247,10 +247,10 @@ func (s *FirecrawlScheduler) runCrawlCycle(batchID string) {
 		database.DB.Model(&art).Updates(updates)
 
 		if feed.TaggingEnabled {
-			if err := topicextraction.NewTagJobQueue(database.DB).Enqueue(topicextraction.TagJobRequest{
+			if err := tagging.NewTagJobQueue(database.DB).Enqueue(tagging.TagJobRequest{
 				ArticleID:    art.ID,
 				FeedName:     feed.Title,
-				CategoryName: topicextraction.FeedCategoryName(feed),
+				CategoryName: tagging.FeedCategoryName(feed),
 				ForceRetag:   true,
 				Reason:       "firecrawl_completed",
 			}); err != nil {
@@ -300,7 +300,7 @@ func (s *FirecrawlScheduler) setQueueSize(n int) {
 	}
 }
 
-func (s *FirecrawlScheduler) leaseDuration(config *contentprocessing.FirecrawlConfig) time.Duration {
+func (s *FirecrawlScheduler) leaseDuration(config *content.FirecrawlConfig) time.Duration {
 	timeout := time.Duration(config.Timeout) * time.Second
 	if timeout < 5*time.Minute {
 		timeout = 5 * time.Minute

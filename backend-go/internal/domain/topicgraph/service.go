@@ -9,15 +9,15 @@ import (
 	"unicode"
 
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topictypes"
+	"my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
 
 	"gorm.io/gorm"
 )
 
-func BuildTopicGraph(kind string, anchor time.Time, categoryID, feedID *uint) (*topictypes.TopicGraphResponse, error) {
-	windowStart, windowEnd, periodLabel, err := topictypes.ResolveWindow(kind, anchor)
+func BuildTopicGraph(kind string, anchor time.Time, categoryID, feedID *uint) (*tagging.TopicGraphResponse, error) {
+	windowStart, windowEnd, periodLabel, err := tagging.ResolveWindow(kind, anchor)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ func BuildTopicGraph(kind string, anchor time.Time, categoryID, feedID *uint) (*
 		}
 	}
 
-	return &topictypes.TopicGraphResponse{
+	return &tagging.TopicGraphResponse{
 		Type:         kind,
 		AnchorDate:   windowStart.Format("2006-01-02"),
 		PeriodLabel:  periodLabel,
@@ -48,8 +48,8 @@ func BuildTopicGraph(kind string, anchor time.Time, categoryID, feedID *uint) (*
 	}, nil
 }
 
-func BuildTopicDetail(kind string, slug string, anchor time.Time, categoryID, feedID *uint) (*topictypes.TopicDetail, error) {
-	windowStart, windowEnd, _, err := topictypes.ResolveWindow(kind, anchor)
+func BuildTopicDetail(kind string, slug string, anchor time.Time, categoryID, feedID *uint) (*tagging.TopicDetail, error) {
+	windowStart, windowEnd, _, err := tagging.ResolveWindow(kind, anchor)
 	if err != nil {
 		return nil, err
 	}
@@ -81,13 +81,13 @@ func BuildTopicDetail(kind string, slug string, anchor time.Time, categoryID, fe
 		logging.Warnf("Warning: failed to get related tags: %v", err)
 	}
 
-	canonical := topictypes.TopicTag{
+	canonical := tagging.TopicTag{
 		ID:          topic.ID,
 		Label:       topic.Label,
 		Slug:        topic.Slug,
-		Category:    topictypes.NormalizeDisplayCategory(topic.Kind, topic.Category),
+		Category:    tagging.NormalizeDisplayCategory(topic.Kind, topic.Category),
 		Icon:        topic.Icon,
-		Kind:        topictypes.NormalizeTopicKind(topic.Kind, topic.Category),
+		Kind:        tagging.NormalizeTopicKind(topic.Kind, topic.Category),
 		Description: topic.Description,
 		Score:       0,
 	}
@@ -99,7 +99,7 @@ func BuildTopicDetail(kind string, slug string, anchor time.Time, categoryID, fe
 
 	related := buildRelatedTopicsFromTags(relatedTags, 8)
 
-	return &topictypes.TopicDetail{
+	return &tagging.TopicDetail{
 		Topic:         canonical,
 		Articles:      articles,
 		TotalArticles: total,
@@ -118,9 +118,9 @@ func BuildTopicDetail(kind string, slug string, anchor time.Time, categoryID, fe
 }
 
 // getTopicArticles retrieves articles associated with one or more topic tags
-func getTopicArticles(tagIDs []uint, startDate, endDate time.Time, page, pageSize int, categoryID, feedID *uint) ([]topictypes.TopicArticleCard, int64, error) {
+func getTopicArticles(tagIDs []uint, startDate, endDate time.Time, page, pageSize int, categoryID, feedID *uint) ([]tagging.TopicArticleCard, int64, error) {
 	if len(tagIDs) == 0 {
-		return []topictypes.TopicArticleCard{}, 0, nil
+		return []tagging.TopicArticleCard{}, 0, nil
 	}
 
 	var articles []models.Article
@@ -168,7 +168,7 @@ func getTopicArticles(tagIDs []uint, startDate, endDate time.Time, page, pageSiz
 		articleIDs = append(articleIDs, a.ID)
 	}
 
-	tagMap := make(map[uint][]topictypes.TopicTagSummary)
+	tagMap := make(map[uint][]tagging.TopicTagSummary)
 	if len(articleIDs) > 0 {
 		type tagRow struct {
 			ArticleID uint
@@ -187,7 +187,7 @@ func getTopicArticles(tagIDs []uint, startDate, endDate time.Time, page, pageSiz
 			return nil, 0, fmt.Errorf("failed to fetch article tags: %w", dbErr)
 		}
 		for _, r := range rows {
-			tagMap[r.ArticleID] = append(tagMap[r.ArticleID], topictypes.TopicTagSummary{
+			tagMap[r.ArticleID] = append(tagMap[r.ArticleID], tagging.TopicTagSummary{
 				Slug:     r.Slug,
 				Label:    r.Label,
 				Category: r.Category,
@@ -196,9 +196,9 @@ func getTopicArticles(tagIDs []uint, startDate, endDate time.Time, page, pageSiz
 	}
 
 	// Convert to cards
-	cards := make([]topictypes.TopicArticleCard, 0, len(articles))
+	cards := make([]tagging.TopicArticleCard, 0, len(articles))
 	for _, article := range articles {
-		card := topictypes.TopicArticleCard{
+		card := tagging.TopicArticleCard{
 			ID:       article.ID,
 			Title:    article.Title,
 			Link:     article.Link,
@@ -219,7 +219,7 @@ func getTopicArticles(tagIDs []uint, startDate, endDate time.Time, page, pageSiz
 		if t, ok := tagMap[article.ID]; ok {
 			card.Tags = t
 		} else {
-			card.Tags = []topictypes.TopicTagSummary{}
+			card.Tags = []tagging.TopicTagSummary{}
 		}
 
 		cards = append(cards, card)
@@ -229,8 +229,8 @@ func getTopicArticles(tagIDs []uint, startDate, endDate time.Time, page, pageSiz
 }
 
 // getRelatedTags retrieves tags that co-occur with the given topic
-func getRelatedTags(topicID uint, limit int) ([]topictypes.RelatedTag, error) {
-	var relatedTags []topictypes.RelatedTag
+func getRelatedTags(topicID uint, limit int) ([]tagging.RelatedTag, error) {
+	var relatedTags []tagging.RelatedTag
 
 	// Query tags that co-occur with the current topic in articles
 	// Ordered by co-occurrence count
@@ -257,17 +257,17 @@ func getRelatedTags(topicID uint, limit int) ([]topictypes.RelatedTag, error) {
 	}
 
 	for i := range relatedTags {
-		relatedTags[i].Category = topictypes.NormalizeDisplayCategory(relatedTags[i].Kind, relatedTags[i].Category)
-		relatedTags[i].Kind = topictypes.NormalizeTopicKind(relatedTags[i].Kind, relatedTags[i].Category)
+		relatedTags[i].Category = tagging.NormalizeDisplayCategory(relatedTags[i].Kind, relatedTags[i].Category)
+		relatedTags[i].Kind = tagging.NormalizeTopicKind(relatedTags[i].Kind, relatedTags[i].Category)
 	}
 
 	return relatedTags, nil
 }
 
-func buildRelatedTopicsFromTags(relatedTags []topictypes.RelatedTag, limit int) []topictypes.TopicTag {
-	result := make([]topictypes.TopicTag, 0, len(relatedTags))
+func buildRelatedTopicsFromTags(relatedTags []tagging.RelatedTag, limit int) []tagging.TopicTag {
+	result := make([]tagging.TopicTag, 0, len(relatedTags))
 	for _, rt := range relatedTags {
-		result = append(result, topictypes.TopicTag{
+		result = append(result, tagging.TopicTag{
 			ID:       rt.ID,
 			Label:    rt.Label,
 			Slug:     rt.Slug,
@@ -289,8 +289,8 @@ func buildRelatedTopicsFromTags(relatedTags []topictypes.RelatedTag, limit int) 
 }
 
 // FetchTopicArticles is the public API for fetching topic articles with pagination
-func FetchTopicArticles(slug string, kind string, anchor time.Time, page, pageSize int) ([]topictypes.TopicArticleCard, int64, error) {
-	windowStart, windowEnd, _, err := topictypes.ResolveWindow(kind, anchor)
+func FetchTopicArticles(slug string, kind string, anchor time.Time, page, pageSize int) ([]tagging.TopicArticleCard, int64, error) {
+	windowStart, windowEnd, _, err := tagging.ResolveWindow(kind, anchor)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -311,8 +311,8 @@ func FetchTopicArticles(slug string, kind string, anchor time.Time, page, pageSi
 	return getTopicArticles(ids, windowStart, windowEnd, page, pageSize, nil, nil)
 }
 
-func buildTopicHistory(kind string, slug string, anchor time.Time, categoryID, feedID *uint) ([]topictypes.TopicHistoryPoint, error) {
-	history := make([]topictypes.TopicHistoryPoint, 0, 7)
+func buildTopicHistory(kind string, slug string, anchor time.Time, categoryID, feedID *uint) ([]tagging.TopicHistoryPoint, error) {
+	history := make([]tagging.TopicHistoryPoint, 0, 7)
 	for i := 6; i >= 0; i-- {
 		var pointAnchor time.Time
 		if kind == "weekly" {
@@ -321,7 +321,7 @@ func buildTopicHistory(kind string, slug string, anchor time.Time, categoryID, f
 			pointAnchor = anchor.AddDate(0, 0, -i)
 		}
 
-		start, end, label, err := topictypes.ResolveWindow(kind, pointAnchor)
+		start, end, label, err := tagging.ResolveWindow(kind, pointAnchor)
 		if err != nil {
 			return nil, err
 		}
@@ -340,7 +340,7 @@ func buildTopicHistory(kind string, slug string, anchor time.Time, categoryID, f
 		}
 		count = len(articleSet)
 
-		history = append(history, topictypes.TopicHistoryPoint{
+		history = append(history, tagging.TopicHistoryPoint{
 			AnchorDate: start.Format("2006-01-02"),
 			Count:      count,
 			Label:      label,
@@ -366,8 +366,8 @@ func GetCategoryColor(category string) string {
 
 // BuildTopicsByCategory builds topic lists grouped by category from article tags
 // Only includes tags extracted by LLM (not heuristic feed/category names)
-func BuildTopicsByCategory(kind string, anchor time.Time, categoryID, feedID *uint) (*topictypes.TopicsByCategoryResult, error) {
-	windowStart, windowEnd, _, err := topictypes.ResolveWindow(kind, anchor)
+func BuildTopicsByCategory(kind string, anchor time.Time, categoryID, feedID *uint) (*tagging.TopicsByCategoryResult, error) {
+	windowStart, windowEnd, _, err := tagging.ResolveWindow(kind, anchor)
 	if err != nil {
 		return nil, err
 	}
@@ -395,22 +395,22 @@ func BuildTopicsByCategory(kind string, anchor time.Time, categoryID, feedID *ui
 	}
 
 	// Group tags by category and aggregate scores
-	eventScores := make(map[string]*topictypes.TopicTag)
-	personScores := make(map[string]*topictypes.TopicTag)
-	keywordScores := make(map[string]*topictypes.TopicTag)
+	eventScores := make(map[string]*tagging.TopicTag)
+	personScores := make(map[string]*tagging.TopicTag)
+	keywordScores := make(map[string]*tagging.TopicTag)
 
 	for _, at := range articleTags {
 		if at.TopicTag == nil {
 			continue
 		}
 
-		tag := topictypes.TopicTag{
+		tag := tagging.TopicTag{
 			ID:           at.TopicTag.ID,
 			Label:        at.TopicTag.Label,
 			Slug:         at.TopicTag.Slug,
-			Category:     topictypes.NormalizeDisplayCategory(at.TopicTag.Kind, at.TopicTag.Category),
+			Category:     tagging.NormalizeDisplayCategory(at.TopicTag.Kind, at.TopicTag.Category),
 			Icon:         at.TopicTag.Icon,
-			Kind:         topictypes.NormalizeTopicKind(at.TopicTag.Kind, at.TopicTag.Category),
+			Kind:         tagging.NormalizeTopicKind(at.TopicTag.Kind, at.TopicTag.Category),
 			Description:  at.TopicTag.Description,
 			Score:        at.Score,
 			QualityScore: at.TopicTag.QualityScore,
@@ -445,7 +445,7 @@ func BuildTopicsByCategory(kind string, anchor time.Time, categoryID, feedID *ui
 	enrichAbstractTags(database.DB, eventScores, personScores, keywordScores)
 	finalizeTopicTagQuality(eventScores, personScores, keywordScores)
 
-	result := &topictypes.TopicsByCategoryResult{
+	result := &tagging.TopicsByCategoryResult{
 		Events:   sortTagsByScoreMap(eventScores),
 		People:   sortTagsByScoreMap(personScores),
 		Keywords: sortTagsByScoreMap(keywordScores),
@@ -455,8 +455,8 @@ func BuildTopicsByCategory(kind string, anchor time.Time, categoryID, feedID *ui
 }
 
 // sortTagsByScoreMap converts a map of tags to a sorted slice
-func sortTagsByScoreMap(tagMap map[string]*topictypes.TopicTag) []topictypes.TopicTag {
-	result := make([]topictypes.TopicTag, 0, len(tagMap))
+func sortTagsByScoreMap(tagMap map[string]*tagging.TopicTag) []tagging.TopicTag {
+	result := make([]tagging.TopicTag, 0, len(tagMap))
 	for _, tag := range tagMap {
 		result = append(result, *tag)
 	}
@@ -474,7 +474,7 @@ func sortTagsByScoreMap(tagMap map[string]*topictypes.TopicTag) []topictypes.Top
 	return result
 }
 
-func finalizeTopicTagQuality(tagMaps ...map[string]*topictypes.TopicTag) {
+func finalizeTopicTagQuality(tagMaps ...map[string]*tagging.TopicTag) {
 	for _, tagMap := range tagMaps {
 		for _, tag := range tagMap {
 			tag.IsLowQuality = !tag.IsAbstract && tag.QualityScore < 0.3
@@ -545,11 +545,11 @@ func fetchArticleTagsData(start, end time.Time, categoryID, feedID *uint) ([]Art
 }
 
 // buildGraphPayloadFromArticles builds graph nodes and edges from article tag data
-func buildGraphPayloadFromArticles(db *gorm.DB, data []ArticleTagData) ([]topictypes.GraphNode, []topictypes.GraphEdge, []topictypes.TopicTag, int) {
-	topicNodes := map[string]*topictypes.GraphNode{}
-	feedNodes := map[string]*topictypes.GraphNode{}
-	edgeMap := map[string]*topictypes.GraphEdge{}
-	topicScores := map[string]topictypes.TopicTag{}
+func buildGraphPayloadFromArticles(db *gorm.DB, data []ArticleTagData) ([]tagging.GraphNode, []tagging.GraphEdge, []tagging.TopicTag, int) {
+	topicNodes := map[string]*tagging.GraphNode{}
+	feedNodes := map[string]*tagging.GraphNode{}
+	edgeMap := map[string]*tagging.GraphEdge{}
+	topicScores := map[string]tagging.TopicTag{}
 	articleSet := make(map[uint]bool)
 
 	for _, item := range data {
@@ -557,7 +557,7 @@ func buildGraphPayloadFromArticles(db *gorm.DB, data []ArticleTagData) ([]topict
 
 		feedNodeID := fmt.Sprintf("feed-%d", item.FeedID)
 		if _, exists := feedNodes[feedNodeID]; !exists {
-			feedNodes[feedNodeID] = &topictypes.GraphNode{
+			feedNodes[feedNodeID] = &tagging.GraphNode{
 				ID:       feedNodeID,
 				Label:    item.FeedTitle,
 				Kind:     "feed",
@@ -570,10 +570,10 @@ func buildGraphPayloadFromArticles(db *gorm.DB, data []ArticleTagData) ([]topict
 
 		topicSlug := item.TopicTag.Slug
 		topicLabel := item.TopicTag.Label
-		topicCategory := topictypes.NormalizeDisplayCategory(item.TopicTag.Kind, item.TopicTag.Category)
+		topicCategory := tagging.NormalizeDisplayCategory(item.TopicTag.Kind, item.TopicTag.Category)
 
 		if _, exists := topicNodes[topicSlug]; !exists {
-			topicNodes[topicSlug] = &topictypes.GraphNode{
+			topicNodes[topicSlug] = &tagging.GraphNode{
 				ID:           topicSlug,
 				Label:        topicLabel,
 				Slug:         topicSlug,
@@ -590,13 +590,13 @@ func buildGraphPayloadFromArticles(db *gorm.DB, data []ArticleTagData) ([]topict
 
 		merged := topicScores[topicSlug]
 		if merged.Label == "" || merged.Score < item.Score {
-			topicScores[topicSlug] = topictypes.TopicTag{
+			topicScores[topicSlug] = tagging.TopicTag{
 				ID:           item.TopicTag.ID,
 				Label:        topicLabel,
 				Slug:         topicSlug,
 				Category:     topicCategory,
 				Icon:         item.TopicTag.Icon,
-				Kind:         topictypes.NormalizeTopicKind(item.TopicTag.Kind, item.TopicTag.Category),
+				Kind:         tagging.NormalizeTopicKind(item.TopicTag.Kind, item.TopicTag.Category),
 				Score:        item.Score,
 				QualityScore: item.TopicTag.QualityScore,
 				IsLowQuality: item.TopicTag.Source != "abstract" && item.TopicTag.QualityScore < 0.3,
@@ -606,7 +606,7 @@ func buildGraphPayloadFromArticles(db *gorm.DB, data []ArticleTagData) ([]topict
 
 		edgeKey := topicSlug + "::" + feedNodeID
 		if _, exists := edgeMap[edgeKey]; !exists {
-			edgeMap[edgeKey] = &topictypes.GraphEdge{ID: edgeKey, Source: topicSlug, Target: feedNodeID, Kind: "topic_feed", Weight: 0}
+			edgeMap[edgeKey] = &tagging.GraphEdge{ID: edgeKey, Source: topicSlug, Target: feedNodeID, Kind: "topic_feed", Weight: 0}
 		}
 		edgeMap[edgeKey].Weight += item.Score
 	}
@@ -628,7 +628,7 @@ func buildGraphPayloadFromArticles(db *gorm.DB, data []ArticleTagData) ([]topict
 				}
 				edgeKey := left + "::" + right
 				if _, exists := edgeMap[edgeKey]; !exists {
-					edgeMap[edgeKey] = &topictypes.GraphEdge{ID: edgeKey, Source: left, Target: right, Kind: "topic_topic", Weight: 0}
+					edgeMap[edgeKey] = &tagging.GraphEdge{ID: edgeKey, Source: left, Target: right, Kind: "topic_topic", Weight: 0}
 				}
 				edgeMap[edgeKey].Weight += 0.5
 			}
@@ -638,7 +638,7 @@ func buildGraphPayloadFromArticles(db *gorm.DB, data []ArticleTagData) ([]topict
 	// Identify abstract tags (parent tags in topic_tag_relations)
 	findAbstractSlugs(db, topicNodes)
 
-	nodes := make([]topictypes.GraphNode, 0, len(topicNodes)+len(feedNodes))
+	nodes := make([]tagging.GraphNode, 0, len(topicNodes)+len(feedNodes))
 	for _, node := range topicNodes {
 		nodes = append(nodes, *node)
 	}
@@ -652,13 +652,13 @@ func buildGraphPayloadFromArticles(db *gorm.DB, data []ArticleTagData) ([]topict
 		return nodes[i].Weight > nodes[j].Weight
 	})
 
-	edges := make([]topictypes.GraphEdge, 0, len(edgeMap))
+	edges := make([]tagging.GraphEdge, 0, len(edgeMap))
 	for _, edge := range edgeMap {
 		edges = append(edges, *edge)
 	}
 	sort.SliceStable(edges, func(i, j int) bool { return edges[i].Weight > edges[j].Weight })
 
-	topTopics := make([]topictypes.TopicTag, 0, len(topicScores))
+	topTopics := make([]tagging.TopicTag, 0, len(topicScores))
 	for _, topic := range topicScores {
 		topic.Score = topicNodes[topic.Slug].Weight
 		topTopics = append(topTopics, topic)
@@ -677,15 +677,15 @@ func buildGraphPayloadFromArticles(db *gorm.DB, data []ArticleTagData) ([]topict
 	return nodes, edges, topTopics, len(articleSet)
 }
 
-func markTopicTagsQuality(tags []topictypes.TopicTag) {
+func markTopicTagsQuality(tags []tagging.TopicTag) {
 	for i := range tags {
 		tags[i].IsLowQuality = !tags[i].IsAbstract && tags[i].QualityScore < 0.3
 	}
 }
 
 // GetPendingArticlesByTag retrieves articles that have the given tag but are not in any digest
-func GetPendingArticlesByTag(tagSlug string, kind string, anchor time.Time) (*topictypes.PendingArticlesResponse, error) {
-	windowStart, windowEnd, _, err := topictypes.ResolveWindow(kind, anchor)
+func GetPendingArticlesByTag(tagSlug string, kind string, anchor time.Time) (*tagging.PendingArticlesResponse, error) {
+	windowStart, windowEnd, _, err := tagging.ResolveWindow(kind, anchor)
 	if err != nil {
 		return nil, err
 	}
@@ -715,16 +715,16 @@ func GetPendingArticlesByTag(tagSlug string, kind string, anchor time.Time) (*to
 		return nil, fmt.Errorf("failed to get tagged articles: %w", err)
 	}
 
-	pendingArticles := make([]topictypes.PendingArticle, 0, len(taggedArticles))
+	pendingArticles := make([]tagging.PendingArticle, 0, len(taggedArticles))
 	for _, article := range taggedArticles {
-		pa := topictypes.PendingArticle{
+		pa := tagging.PendingArticle{
 			ID:    article.ID,
 			Title: article.Title,
 			Link:  article.Link,
 		}
 
 		if article.PubDate != nil {
-			pa.PubDate = article.PubDate.In(topictypes.TopicGraphCST).Format(time.RFC3339)
+			pa.PubDate = article.PubDate.In(tagging.TopicGraphCST).Format(time.RFC3339)
 		}
 
 		if article.Feed.ID != 0 {
@@ -738,7 +738,7 @@ func GetPendingArticlesByTag(tagSlug string, kind string, anchor time.Time) (*to
 		pendingArticles = append(pendingArticles, pa)
 	}
 
-	return &topictypes.PendingArticlesResponse{
+	return &tagging.PendingArticlesResponse{
 		Articles: pendingArticles,
 		Total:    len(pendingArticles),
 	}, nil
@@ -746,7 +746,7 @@ func GetPendingArticlesByTag(tagSlug string, kind string, anchor time.Time) (*to
 
 // findAbstractSlugs queries topic_tag_relations to identify which tag slugs are abstract parents.
 // It annotates matching nodes in the topicNodes map with IsAbstract=true.
-func findAbstractSlugs(db *gorm.DB, topicNodes map[string]*topictypes.GraphNode) {
+func findAbstractSlugs(db *gorm.DB, topicNodes map[string]*tagging.GraphNode) {
 	var abstractParentIDs []uint
 	db.Model(&models.TopicTagRelation{}).
 		Select("DISTINCT parent_id").
@@ -774,7 +774,7 @@ func findAbstractSlugs(db *gorm.DB, topicNodes map[string]*topictypes.GraphNode)
 // includeAbstractParents adds abstract parent tags that have no direct source='llm'
 // article_topic_tags associations into the category maps, so enrichAbstractTags can
 // set IsAbstract=true and ChildSlugs on them.
-func includeAbstractParents(db *gorm.DB, tagMaps ...map[string]*topictypes.TopicTag) {
+func includeAbstractParents(db *gorm.DB, tagMaps ...map[string]*tagging.TopicTag) {
 	var parentIDs []uint
 	db.Model(&models.TopicTagRelation{}).
 		Where("relation_type = ?", "abstract").
@@ -792,9 +792,9 @@ func includeAbstractParents(db *gorm.DB, tagMaps ...map[string]*topictypes.Topic
 			continue
 		}
 
-		cat := topictypes.NormalizeDisplayCategory(pt.Kind, pt.Category)
+		cat := tagging.NormalizeDisplayCategory(pt.Kind, pt.Category)
 
-		var targetMap map[string]*topictypes.TopicTag
+		var targetMap map[string]*tagging.TopicTag
 		switch cat {
 		case "event":
 			if len(tagMaps) > 0 {
@@ -814,12 +814,12 @@ func includeAbstractParents(db *gorm.DB, tagMaps ...map[string]*topictypes.Topic
 		}
 
 		if _, exists := targetMap[pt.Slug]; !exists {
-			targetMap[pt.Slug] = &topictypes.TopicTag{
+			targetMap[pt.Slug] = &tagging.TopicTag{
 				ID:           pt.ID,
 				Label:        pt.Label,
 				Slug:         pt.Slug,
 				Category:     cat,
-				Kind:         topictypes.NormalizeTopicKind(pt.Kind, pt.Category),
+				Kind:         tagging.NormalizeTopicKind(pt.Kind, pt.Category),
 				Icon:         pt.Icon,
 				Description:  pt.Description,
 				Score:        0,
@@ -832,7 +832,7 @@ func includeAbstractParents(db *gorm.DB, tagMaps ...map[string]*topictypes.Topic
 
 // enrichAbstractTags queries topic_tag_relations and enriches tags in the category maps
 // with IsAbstract flag and ChildSlugs for parent tags.
-func enrichAbstractTags(db *gorm.DB, tagMaps ...map[string]*topictypes.TopicTag) {
+func enrichAbstractTags(db *gorm.DB, tagMaps ...map[string]*tagging.TopicTag) {
 	var relations []models.TopicTagRelation
 	db.Preload("Parent").Preload("Child").Find(&relations)
 	if len(relations) == 0 {
@@ -866,7 +866,7 @@ func enrichAbstractTags(db *gorm.DB, tagMaps ...map[string]*topictypes.TopicTag)
 		}
 	}
 
-	allSlugs := make(map[string]*topictypes.TopicTag)
+	allSlugs := make(map[string]*tagging.TopicTag)
 	for _, m := range tagMaps {
 		for slug, tag := range m {
 			allSlugs[slug] = tag

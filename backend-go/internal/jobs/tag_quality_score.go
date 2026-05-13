@@ -11,7 +11,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicextraction"
+	taggingextraction "my-robot-backend/internal/domain/tagging/extraction"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
 	"my-robot-backend/internal/platform/tracing"
@@ -218,7 +218,7 @@ func (s *TagQualityScoreScheduler) runComputeCycle(triggerSource string) {
 		updatedCount = 0
 	}
 
-	if err := topicextraction.ComputeAllQualityScores(); err != nil {
+	if err := taggingextraction.ComputeAllQualityScores(); err != nil {
 		summary.FinishedAt = time.Now().Format(time.RFC3339)
 		summary.Reason = err.Error()
 		s.updateSchedulerStatus("failed", err.Error(), &startTime, summary)

@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicanalysis"
+	"my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
 )
@@ -71,7 +71,7 @@ func checkNarrativeEventTagClustering(out NarrativeOutput) {
 		return
 	}
 
-	es := topicanalysis.NewEmbeddingService()
+	es := tagging.NewEmbeddingService()
 	ctx := context.Background()
 
 	pairsChecked := 0
@@ -81,10 +81,10 @@ func checkNarrativeEventTagClustering(out NarrativeOutput) {
 			idA, idB := unclusteredIDs[i], unclusteredIDs[j]
 
 			var embA, embB models.TopicTagEmbedding
-			if err := database.DB.Where("topic_tag_id = ? AND embedding_type = ?", idA, topicanalysis.EmbeddingTypeSemantic).First(&embA).Error; err != nil {
+			if err := database.DB.Where("topic_tag_id = ? AND embedding_type = ?", idA, tagging.EmbeddingTypeSemantic).First(&embA).Error; err != nil {
 				continue
 			}
-			if err := database.DB.Where("topic_tag_id = ? AND embedding_type = ?", idB, topicanalysis.EmbeddingTypeSemantic).First(&embB).Error; err != nil {
+			if err := database.DB.Where("topic_tag_id = ? AND embedding_type = ?", idB, tagging.EmbeddingTypeSemantic).First(&embB).Error; err != nil {
 				continue
 			}
 
@@ -124,13 +124,13 @@ func triggerAbstractExtractionWithContext(ctx context.Context, tagAID, tagBID ui
 		return
 	}
 
-	candidates := []topicanalysis.TagCandidate{
+	candidates := []tagging.TagCandidate{
 		{Tag: &tagA, Similarity: sim},
 		{Tag: &tagB, Similarity: sim},
 	}
 
-	result, err := topicanalysis.ExtractAbstractTag(ctx, candidates, tagA.Label, tagA.Category,
-		topicanalysis.WithNarrativeContext(narrativeContext))
+	result, err := tagging.ExtractAbstractTag(ctx, candidates, tagA.Label, tagA.Category,
+		tagging.WithNarrativeContext(narrativeContext))
 	if err != nil || result == nil || !result.HasAction() {
 		logging.Warnf("narrative-tag-feedback: tag judgment with context failed for %d+%d: %v", tagAID, tagBID, err)
 		return
@@ -145,7 +145,7 @@ func triggerAbstractExtractionWithContext(ctx context.Context, tagAID, tagBID ui
 		if sourceID == targetID {
 			return
 		}
-		if mergeErr := topicanalysis.MergeTags(sourceID, targetID); mergeErr != nil {
+		if mergeErr := tagging.MergeTags(sourceID, targetID); mergeErr != nil {
 			logging.Warnf("narrative-tag-feedback: merge of %d into %d failed: %v", sourceID, targetID, mergeErr)
 			return
 		}
@@ -153,7 +153,7 @@ func triggerAbstractExtractionWithContext(ctx context.Context, tagAID, tagBID ui
 
 		for _, child := range result.MergeChildren {
 			if child.ID != targetID {
-				if mergeErr := topicanalysis.MergeTags(child.ID, targetID); mergeErr != nil {
+				if mergeErr := tagging.MergeTags(child.ID, targetID); mergeErr != nil {
 					logging.Warnf("narrative-tag-feedback: merge child %d into %d failed: %v", child.ID, targetID, mergeErr)
 				}
 			}

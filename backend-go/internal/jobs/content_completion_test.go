@@ -7,7 +7,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
-	"my-robot-backend/internal/domain/contentprocessing"
+	"my-robot-backend/internal/domain/content"
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
 )
@@ -65,11 +65,11 @@ func TestContentCompletionSchedulerGetStatusIncludesOverviewAndCurrentArticle(t 
 	}
 
 	scheduler := &ContentCompletionScheduler{
-		completionService: contentprocessing.NewContentCompletionService("http://localhost:11235"),
+		completionService: content.NewContentCompletionService("http://localhost:11235"),
 		checkInterval:     time.Hour,
 		taskName:          "ai_summary",
 		isExecuting:       true,
-		currentArticle: &contentprocessing.ContentCompletionArticleRef{
+		currentArticle: &content.ContentCompletionArticleRef{
 			ID:     article.ID,
 			FeedID: article.FeedID,
 			Title:  article.Title,
@@ -94,7 +94,7 @@ func TestContentCompletionSchedulerGetStatusIncludesOverviewAndCurrentArticle(t 
 		t.Fatalf("pending_count = %v, want 1", overview["pending_count"])
 	}
 
-	current, ok := details["current_article"].(*contentprocessing.ContentCompletionArticleRef)
+	current, ok := details["current_article"].(*content.ContentCompletionArticleRef)
 	if !ok {
 		t.Fatalf("current article missing or invalid: %#v", details["current_article"])
 	}
@@ -160,7 +160,7 @@ func TestContentCompletionSchedulerStartRepairsLegacyTaskRows(t *testing.T) {
 		t.Fatalf("create legacy task: %v", err)
 	}
 
-	scheduler := NewContentCompletionScheduler(contentprocessing.NewContentCompletionService("http://localhost:11235"), 60)
+	scheduler := NewContentCompletionScheduler(content.NewContentCompletionService("http://localhost:11235"), 60)
 	if err := scheduler.Start(); err != nil {
 		t.Fatalf("start scheduler: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestContentCompletionSchedulerSkipsCycleWhenAlreadyRunning(t *testing.T) {
 		t.Fatalf("create scheduler task: %v", err)
 	}
 
-	scheduler := NewContentCompletionScheduler(contentprocessing.NewContentCompletionService("http://localhost:11235"), 60)
+	scheduler := NewContentCompletionScheduler(content.NewContentCompletionService("http://localhost:11235"), 60)
 	scheduler.executionMutex.Lock()
 	defer scheduler.executionMutex.Unlock()
 

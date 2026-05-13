@@ -6,6 +6,7 @@ import EmbeddingQueuePanel from '~/features/ai/components/EmbeddingQueuePanel.vu
 import TagQueuePanel from '~/features/topic-graph/components/TagQueuePanel.vue'
 import HierarchyConfigPage from '~/features/hierarchy-config/HierarchyConfigPage.vue'
 import HierarchyPendingList from '~/features/hierarchy-config/HierarchyPendingList.vue'
+import RebuildTrigger from '~/features/hierarchy-config/RebuildTrigger.vue'
 import type { RssFeed } from '~/types'
 import type { ReadingStats, UserPreference } from '~/types/reading_behavior'
 import type { SchedulerStatus, SchedulerTriggerResult } from '~/types/scheduler'
@@ -1458,6 +1459,7 @@ function formatNextRun(nextRun: string | null | undefined): string {
         <!-- Hierarchy Config Tab -->
         <div v-if="activeTab === 'hierarchy'" class="space-y-6">
           <HierarchyConfigPage />
+          <RebuildTrigger />
           <HierarchyPendingList />
         </div>
       </div>

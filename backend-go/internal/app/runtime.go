@@ -7,10 +7,9 @@ import (
 	"time"
 
 	"my-robot-backend/internal/app/runtimeinfo"
-	"my-robot-backend/internal/domain/contentprocessing"
+	"my-robot-backend/internal/domain/content"
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicanalysis"
-	"my-robot-backend/internal/domain/topicextraction"
+	"my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/jobs"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
@@ -25,6 +24,7 @@ type Runtime struct {
 	TagQualityScore        *jobs.TagQualityScoreScheduler
 	NarrativeSummary       *jobs.NarrativeSummaryScheduler
 	TagHierarchyCleanup    *jobs.TagHierarchyCleanupScheduler
+	TagHierarchyPlacement  *jobs.TagHierarchyPlacementScheduler
 }
 
 func resetStaleStates() {
@@ -90,29 +90,13 @@ func StartRuntime() *Runtime {
 
 	resetStaleStates()
 
-	// Initialize hierarchy template manager
-	if err := topicanalysis.GetHierarchyManager().LoadFromDB(); err != nil {
+	if err := tagging.GetHierarchyManager().LoadFromDB(); err != nil {
 		logging.Warnf("Failed to load hierarchy templates: %v", err)
 	} else {
 		logging.Infoln("Hierarchy template manager initialized successfully")
 	}
 
-	// Start the tag queue worker for async article tagging
-	if err := topicextraction.GetTagQueue().Start(); err != nil {
-		logging.Warnf("Failed to start tag queue: %v", err)
-	} else {
-		logging.Infoln("Tag queue started successfully")
-	}
-
-	// Start the embedding queue worker for async embedding generation
-	topicanalysis.StartEmbeddingQueueWorker()
-	logging.Infoln("Embedding queue worker started successfully")
-	topicanalysis.StartMergeReembeddingQueueWorker()
-	logging.Infoln("Merge re-embedding queue worker started successfully")
-	topicanalysis.StartAbstractTagUpdateQueueWorker()
-	logging.Infoln("Abstract tag update queue worker started successfully")
-	topicanalysis.StartAdoptNarrowerQueueWorker()
-	logging.Infoln("Adopt narrower queue worker started successfully")
+	tagging.StartAllWorkers()
 
 	runtime.AutoRefresh = jobs.NewAutoRefreshScheduler(60)
 	if err := runtime.AutoRefresh.Start(); err != nil {
@@ -140,10 +124,10 @@ func StartRuntime() *Runtime {
 	if crawlServiceURL == "" {
 		crawlServiceURL = "http://localhost:11235"
 	}
-	contentprocessing.InitContentCompletionHandler(crawlServiceURL)
+	content.InitContentCompletionHandler(crawlServiceURL)
 
 	runtime.ContentCompletion = jobs.NewContentCompletionScheduler(
-		contentprocessing.GetContentCompletionService(),
+		content.GetContentCompletionService(),
 		60,
 	)
 	if err := runtime.ContentCompletion.Start(); err != nil {
@@ -181,6 +165,13 @@ func StartRuntime() *Runtime {
 		logging.Infoln("Tag hierarchy cleanup scheduler started successfully")
 	}
 
+	runtime.TagHierarchyPlacement = jobs.NewTagHierarchyPlacementScheduler(3600)
+	if err := runtime.TagHierarchyPlacement.Start(); err != nil {
+		logging.Warnf("Failed to start tag hierarchy placement scheduler: %v", err)
+	} else {
+		logging.Infoln("Tag hierarchy placement scheduler started successfully")
+	}
+
 	runtimeinfo.AutoRefreshSchedulerInterface = runtime.AutoRefresh
 	runtimeinfo.PreferenceUpdateSchedulerInterface = runtime.PreferenceUpdate
 	runtimeinfo.ContentCompletionSchedulerInterface = runtime.ContentCompletion
@@ -188,6 +179,7 @@ func StartRuntime() *Runtime {
 	runtimeinfo.TagQualityScoreSchedulerInterface = runtime.TagQualityScore
 	runtimeinfo.NarrativeSummarySchedulerInterface = runtime.NarrativeSummary
 	runtimeinfo.TagHierarchyCleanupSchedulerInterface = runtime.TagHierarchyCleanup
+	runtimeinfo.TagHierarchyPlacementSchedulerInterface = runtime.TagHierarchyPlacement
 
 	return runtime
 }
@@ -202,20 +194,7 @@ func SetupGracefulShutdown(runtime *Runtime) {
 
 		done := make(chan struct{})
 		go func() {
-			logging.Infoln("Stopping tag queue...")
-			topicextraction.GetTagQueue().Stop()
-
-			logging.Infoln("Stopping embedding queue worker...")
-			topicanalysis.StopEmbeddingQueueWorker()
-
-			logging.Infoln("Stopping merge re-embedding queue worker...")
-			topicanalysis.StopMergeReembeddingQueueWorker()
-
-			logging.Infoln("Stopping abstract tag update queue worker...")
-			topicanalysis.StopAbstractTagUpdateQueueWorker()
-
-			logging.Infoln("Stopping adopt narrower queue worker...")
-			topicanalysis.StopAdoptNarrowerQueueWorker()
+			tagging.StopAllWorkers()
 
 			if runtime.AutoRefresh != nil {
 				logging.Infoln("Stopping auto-refresh scheduler...")
@@ -255,6 +234,11 @@ func SetupGracefulShutdown(runtime *Runtime) {
 			if runtime.TagHierarchyCleanup != nil {
 				logging.Infoln("Stopping tag hierarchy cleanup scheduler...")
 				runtime.TagHierarchyCleanup.Stop()
+			}
+
+			if runtime.TagHierarchyPlacement != nil {
+				logging.Infoln("Stopping tag hierarchy placement scheduler...")
+				runtime.TagHierarchyPlacement.Stop()
 			}
 
 			close(done)

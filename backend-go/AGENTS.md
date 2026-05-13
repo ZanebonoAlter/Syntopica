@@ -19,5 +19,5 @@
 go mod tidy  &&  go run cmd/server/main.go
 golangci-lint run ./...  &&  go vet ./...
 go test ./...  &&  go build ./...
-# Single: go test ./internal/domain/feeds -run TestName -v
+# Single: go test ./internal/domain/feed -run TestName -v
 ```

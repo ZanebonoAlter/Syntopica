@@ -49,17 +49,18 @@ backend-go/
 │   │   └── runtimeinfo/
 │   ├── domain/
 │   │   ├── aiadmin/
-│   │   ├── articles/
-│   │   ├── categories/
-│   │   ├── contentprocessing/
-│   │   ├── feeds/
+│   │   ├── article/
+│   │   ├── category/
+│   │   ├── content/
+│   │   ├── feed/
 │   │   ├── models/
 │   │   ├── narrative/
 │   │   ├── preferences/
-│   │   ├── topicanalysis/
-│   │   ├── topicextraction/
-│   │   ├── topicgraph/
-│   │   └── topictypes/
+│   │   ├── tagging/
+│   │   │   ├── analysis/
+│   │   │   ├── extraction/
+│   │   │   └── watched/
+│   │   └── topicgraph/
 │   ├── jobs/
 │   └── platform/
 │       ├── ai/
@@ -113,14 +114,15 @@ backend-go/
 业务能力按域组织，handler 和 service 主要都放在域目录里。
 
 - `aiadmin/`：AI provider 与 capability route 管理
-- `categories/`：分类 CRUD
-- `feeds/`：订阅 CRUD、刷新、OPML、RSS 解析
-- `articles/`：文章列表、详情、状态更新、统计
+- `category/`：分类 CRUD
+- `feed/`：订阅 CRUD、刷新、OPML、RSS 解析
+- `article/`：文章列表、详情、状态更新、统计
 - `preferences/`：阅读行为记录与偏好分析
-- `contentprocessing/`：内容补全、Firecrawl 配置与抓取、文章正文处理
-- `topictypes/`：主题图谱共享类型和窗口工具
-- `topicextraction/`：摘要/文章标签提取
-- `topicanalysis/`：主题分析任务与分析结果 API、embedding 向量化、标签合并、关注标签、抽象标签
+- `content/`：内容补全、Firecrawl 配置与抓取、文章正文处理
+- `tagging/`：标签系统根包，共享类型和窗口工具、`StartAllWorkers`/`StopAllWorkers` 统一入口
+  - `tagging/analysis/`：主题分析任务与分析结果 API、embedding 向量化、标签合并、抽象标签
+  - `tagging/extraction/`：摘要/文章标签提取
+  - `tagging/watched/`：关注标签管理
 - `topicgraph/`：主题图谱、主题详情、主题相关文章查询
 - `models/`：共享 GORM 模型和部分格式化 helper
 - `narrative/`：叙事摘要生成、Board 管理、BoardConcept 匹配、按日期查询、历史版本
@@ -164,7 +166,7 @@ backend-go/
 
 ### 订阅与文章
 
-`feeds` 和 `articles` 是基础数据面。
+`feed` 和 `article` 是基础数据面。
 
 - feed 刷新负责拉 RSS、去重、入库 article
 - article 记录承接后续 Firecrawl、内容补全、摘要、主题分析
@@ -175,18 +177,19 @@ backend-go/
 这部分不再只是一个"AI 摘要开关"，而是两层叠加：
 
 - `platform/airouter`：管理 provider 和 capability route
-- `domain/contentprocessing`：正文抓取、内容补全、Firecrawl 配置
+- `domain/content`：正文抓取、内容补全、Firecrawl 配置
 
 ### 主题图谱
 
-主题能力已经拆成四个包：
+主题标签能力统一在 `tagging/` 包下，按子包拆分：
 
-- `topictypes`：共享类型和窗口解析
-- `topicextraction`：从摘要/文章提取 topic tag
-- `topicanalysis`：生成并查询 topic analysis，同时承担 embedding 向量化、标签合并、关注标签、抽象标签管理
+- `tagging`（根包）：共享类型和窗口解析、`StartAllWorkers`/`StopAllWorkers` 统一入口
+- `tagging/extraction`：从摘要/文章提取 topic tag
+- `tagging/analysis`：生成并查询 topic analysis，同时承担 embedding 向量化、标签合并、抽象标签管理
+- `tagging/watched`：关注标签管理
 - `topicgraph`：返回图谱节点边、详情、相关文章、相关 digest
 
-当前 `topicanalysis` 里的抽象标签整理链路有三层保护，避免重复抽象标签和错误扁平化：
+当前 `tagging/analysis` 里的抽象标签整理链路有三层保护，避免重复抽象标签和错误扁平化：
 
 - `processAbstractJudgment` 在创建新 abstract tag 前，会先用临时 semantic embedding 做 shortlist，再让 LLM 判断是否应复用已有同概念 abstract tag
 - `MatchAbstractTagHierarchy` 会遍历多个高相似 abstract 候选；高相似时优先判断“合并还是上下位关系”，而不是默认继续嵌套
@@ -195,11 +198,12 @@ backend-go/
 依赖方向大致是：
 
 ```text
-topictypes
+tagging (根包，含 topictypes 功能)
     ↑
     ├── topicgraph
-    ├── topicanalysis (含 embedding、tag merge、watched tags、abstract tags)
-    └── topicextraction -> topicanalysis
+    ├── tagging/analysis (含 embedding、tag merge、abstract tags)
+    ├── tagging/watched (关注标签)
+    └── tagging/extraction -> tagging/analysis
 ```
 
 ### 叙事摘要
@@ -307,8 +311,8 @@ topictypes
 
 此外还有以下独立注册的路由组：
 
-- `/api/topic-tags`：关注标签、标签合并预览、抽象标签管理（由 `topicanalysis` 包注册）
-- `/api/embedding`：embedding 配置与队列管理（由 `topicanalysis` 包注册）
+- `/api/topic-tags`：关注标签、标签合并预览、抽象标签管理（由 `tagging/analysis` 包注册）
+- `/api/embedding`：embedding 配置与队列管理（由 `tagging/analysis` 包注册）
 - `/api/narratives`：叙事摘要时间线、列表、详情、历史、重新生成（由 `narrative` 包注册）
 - `/api/narratives/boards`：Board 时间线和详情
 - `/api/narratives/board-concepts`：板块概念 CRUD 和 LLM 建议（由 `narrative` 包注册）
@@ -325,7 +329,7 @@ topictypes
 链路：
 
 1. `internal/jobs/auto_refresh.go` 扫描 `refresh_interval > 0` 的 feed
-2. 到点 feed 调用 `feeds.FeedService.RefreshFeed`
+2. 到点 feed 调用 `feed.FeedService.RefreshFeed`
 3. `RefreshFeed` 通过 RSS parser 拉取源站内容并更新 feed 元信息
 4. 新 entry 去重后写入 `articles`
 5. `buildArticleFromEntry` 按 feed 配置初始化文章状态：
@@ -351,7 +355,7 @@ topictypes
    - `articles.firecrawl_status = completed`
    - `articles.summary_status = incomplete`
    - `feeds.article_summary_enabled = true`
-4. `contentprocessing.ContentCompletionService.CompleteArticle` 基于 Firecrawl 正文生成 `ai_content_summary`
+4. `content.ContentCompletionService.CompleteArticle` 基于 Firecrawl 正文生成 `ai_content_summary`
 5. 文章最终更新为完成态，并记录失败次数、错误信息、最近处理文章等状态
 6. 前端可通过 `/api/content-completion/overview` 和 `/api/content-completion/articles/:article_id/status` 看到结果
 
@@ -394,5 +398,5 @@ topictypes
 - 再看 `backend-go/cmd/server/main.go`
 - 再看 `backend-go/internal/app/router.go`
 - 再看 `backend-go/internal/app/runtime.go`
-- 再按用例追具体域：`feeds` -> `contentprocessing` -> `topic*` -> `narrative`
+- 再按用例追具体域：`feed` -> `content` -> `tagging` -> `topicgraph` -> `narrative`
 - 叙事域能力可以按以下顺序跟：`narrative/service.go` → `narrative/collector.go` → `narrative/board_creation.go` → `narrative/concept_matcher.go` → `narrative/concept_service.go`

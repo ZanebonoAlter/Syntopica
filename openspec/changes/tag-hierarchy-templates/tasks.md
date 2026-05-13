@@ -54,14 +54,14 @@
 
 ## 7. 清理调度器改造
 
-- [ ] 7.1 `tag_cleanup.go` Phase 3：新增 3d（模板深度检查）和 3e（跨分类检查）步骤
-- [ ] 7.2 `adopt_narrower_queue_handler.go` Phase 4：收养时检查目标标签与候选标签的层级是否匹配
-- [ ] 7.3 `hierarchy_cleanup.go`：重写 `ReviewHierarchyTrees` 为模板对齐审查
-- [ ] 7.4 实现 `Phase6_CheckLevelAlignment(forest, template)` — 层级对齐检查
-- [ ] 7.5 实现 `Phase6_DedupL1(template)` — L1 embedding 去重
-- [ ] 7.6 实现 `Phase6_DedupL2(template)` — L2 embedding 去重
-- [ ] 7.7 实现 `Phase6_SampleAuditLeaves(template)` — 10% L3 叶子归属 LLM 抽查
-- [ ] 7.8 `jobs/tag_hierarchy_cleanup.go`：更新调度器入口，调用新的 Phase 3/4/6 实现
+- [x] 7.1 `tag_cleanup.go` Phase 3：新增 3d（模板深度检查）和 3e（跨分类检查）步骤
+- [x] 7.2 `adopt_narrower_queue_handler.go` Phase 4：收养时检查目标标签与候选标签的层级是否匹配
+- [x] 7.3 `hierarchy_cleanup.go`：重写 `ReviewHierarchyTrees` 为模板对齐审查
+- [x] 7.4 实现 `Phase6_CheckLevelAlignment(forest, template)` — 层级对齐检查
+- [x] 7.5 实现 `Phase6_DedupL1(template)` — L1 embedding 去重
+- [x] 7.6 实现 `Phase6_DedupL2(template)` — L2 embedding 去重
+- [x] 7.7 实现 `Phase6_SampleAuditLeaves(template)` — 10% L3 叶子归属 LLM 抽查
+- [x] 7.8 `jobs/tag_hierarchy_cleanup.go`：更新调度器入口，调用新的 Phase 3/4/6 实现
 
 ## 8. 数据迁移
 
@@ -74,17 +74,17 @@
 ## 9. 前端
 
 - [x] 9.1 新建 `front/app/features/hierarchy-config/` 目录
-- [ ] 9.2 `HierarchyConfigPage.vue` — 层级配置页面（模板选择器 + 层级列表编辑 + 保存按钮）
-- [ ] 9.3 `HierarchyPendingList.vue` — 待处理标签列表（显示标签名、当前路径、问题类型、忽略/调整操作）
-- [ ] 9.4 `RebuildTrigger.vue` — rebuild 触发按钮（含 category 选择、dry_run 开关、进度展示）
+- [x] 9.2 `HierarchyConfigPage.vue` — 层级配置页面（模板选择器 + 层级列表编辑 + 保存按钮）
+- [x] 9.3 `HierarchyPendingList.vue` — 待处理标签列表（显示标签名、当前路径、问题类型、忽略/调整操作）
+- [x] 9.4 `RebuildTrigger.vue` — rebuild 触发按钮（含 category 选择、dry_run 开关、进度展示）
 - [x] 9.5 `front/app/api/hierarchyConfig.ts` — API client（getConfig, updateConfig, getPending, triggerRebuild）
-- [ ] 9.6 集成 WebSocket 收听 rebuild 进度广播
-- [ ] 9.7 在设置导航中添加"层级配置"入口
+- [x] 9.6 集成 WebSocket 收听 rebuild 进度广播
+- [x] 9.7 在设置导航中添加"层级配置"入口
 
 ## 10. 测试
 
-- [ ] 10.1 `hierarchy_template_test.go` — 测试模板加载、默认回退、层级反推
-- [ ] 10.2 `hierarchy_placement_test.go` — 测试向上聚合算法（L2 匹配、L1 匹配、边界情况）
-- [ ] 10.3 `hierarchy_config_test.go` — 测试配置保存/加载、版本递增、影响预览
-- [ ] 10.4 `hierarchy_cleanup_test.go`：更新 Phase 6 测试，覆盖模板对齐检查
-- [ ] 10.5 集成测试：完整流程（创建标签 → 聚合 → 修改配置 → 待处理 → rebuild）
+- [x] 10.1 `hierarchy_template_test.go` — 测试模板加载、默认回退、层级反推
+- [x] 10.2 `hierarchy_placement_test.go` — 测试向上聚合算法（L2 匹配、L1 匹配、边界情况）
+- [x] 10.3 `hierarchy_config_test.go` — 测试配置保存/加载、版本递增、影响预览
+- [x] 10.4 `hierarchy_cleanup_test.go`：更新 Phase 6 测试，覆盖模板对齐检查
+- [x] 10.5 集成测试：完整流程（创建标签 → 聚合 → 修改配置 → 待处理 → rebuild）

@@ -378,12 +378,6 @@ func (s *NarrativeService) GenerateAndSaveForCategory(date time.Time, categoryID
 		}
 	}
 
-	go func() {
-		if _, err := TriggerUnclassifiedSuggestionIfNeeded(matcherCtx); err != nil {
-			logging.Warnf("TriggerUnclassifiedSuggestionIfNeeded failed: %v", err)
-		}
-	}()
-
 	if len(allBoards) == 0 {
 		logging.Infof("narrative: no boards created for category %d on %s", categoryID, date.Format("2006-01-02"))
 		return 0, nil

@@ -1,7 +1,6 @@
 package narrative
 
 import (
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"

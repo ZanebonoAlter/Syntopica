@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicanalysis"
+	"my-robot-backend/internal/domain/tagging/watched"
 	"my-robot-backend/internal/platform/airouter"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/jsonutil"
@@ -25,7 +25,7 @@ type WatchedTagNarrativeOutput struct {
 // Deprecated: GenerateWatchedTagNarratives is removed from the main narrative generation flow.
 // Kept for potential future use or manual invocation.
 func GenerateWatchedTagNarratives(date time.Time) {
-	watchedIDs, childIDs, err := topicanalysis.GetWatchedTagIDsExpanded(database.DB)
+	watchedIDs, childIDs, err := watched.GetWatchedTagIDsExpanded(database.DB)
 	if err != nil {
 		logging.Warnf("watched-narrative: failed to get watched tags: %v", err)
 		return
