@@ -2,7 +2,6 @@
 import { Icon } from '@iconify/vue'
 import { ref, computed, watch } from 'vue'
 import { useNarrativeApi, type NarrativeScopeCategory, type BoardTimelineDay, type BoardNarrativeItem, type TagBrief } from '~/api/topicGraph'
-import { useBoardConceptsApi } from '~/api/boardConcepts'
 import { apiClient } from '~/api/client'
 import NarrativeBoardCanvas from './NarrativeBoardCanvas.client.vue'
 import NarrativeDetailCard from './NarrativeDetailCard.vue'
@@ -26,7 +25,6 @@ const emit = defineEmits<{
 }>()
 
 const narrativeApi = useNarrativeApi()
-const boardConceptsApi = useBoardConceptsApi()
 const timelineDaysRange = 7
 const loading = ref(false)
 const error = ref<string | null>(null)

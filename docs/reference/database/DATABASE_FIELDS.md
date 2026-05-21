@@ -1,6 +1,6 @@
 # 数据库字段说明文档
 
-本文档详细说明了 RSS Reader 项目中所有数据库表的字段用途、数据流向和工作流程。
+本文档详细说明了 RSS Reader 项目中所有数据库表（38 张）的字段用途、数据流向和工作流程。
 
 ---
 
@@ -17,6 +17,9 @@
 | `ai_routes` | AI 路由 | `models.AIRoute` |
 | `ai_route_providers` | AI 路由-供应商绑定 | `models.AIRouteProvider` |
 | `ai_call_logs` | AI 调用日志 | `models.AICallLog` |
+| `ai_summaries` | AI 批量摘要 | `models.AISummary`（已废弃） |
+| `ai_summary_feeds` | AI 摘要-Feed 关联 | `models.AISummaryFeed`（已废弃） |
+| `ai_summary_topics` | AI 摘要-主题关联 | `models.AISummaryTopic`（已废弃） |
 | `reading_behaviors` | 阅读行为 | `models.ReadingBehavior` |
 | `user_preferences` | 用户偏好 | `models.UserPreference` |
 | `topic_tags` | 主题标签 | `models.TopicTag` |
@@ -26,6 +29,12 @@
 | `topic_analysis_jobs` | 主题分析任务队列 | `topicanalysis.topicAnalysisJobRecord` |
 | `article_topic_tags` | 文章-主题关联 | `models.ArticleTopicTag` |
 | `topic_tag_relations` | 主题标签层级关系 | `models.TopicTagRelation` |
+| `hierarchy_config` | 层级模板配置 | `models.HierarchyConfig` |
+| `hierarchy_config_versions` | 层级模板版本历史 | `models.HierarchyConfigVersion` |
+| `adopt_narrower_queues` | 窄标签收养队列 | `models.AdoptNarrowerQueue` |
+| `multi_parent_resolve_queues` | 多父级消歧队列 | `models.MultiParentResolveQueue` |
+| `abstract_tag_update_queues` | 抽象标签更新队列 | `models.AbstractTagUpdateQueue` |
+| `hierarchy_pending_changes` | 层级待定变更 | `models.HierarchyPendingChange` |
 | `embedding_config` | 向量配置 | `models.EmbeddingConfig` |
 | `embedding_queues` | 向量生成队列 | `models.EmbeddingQueue` |
 | `merge_reembedding_queues` | 合并后重算向量队列 | `models.MergeReembeddingQueue` |
@@ -34,6 +43,8 @@
 | `narrative_summaries` | 叙事摘要 | `models.NarrativeSummary` |
 | `narrative_boards` | 叙事板块 | `models.NarrativeBoard` |
 | `board_concepts` | 板块概念 | `models.BoardConcept` |
+| `otel_spans` | OpenTelemetry 链路追踪 | `tracing.OtelSpan` |
+| `digest_configs` | Digest 推送配置 | （已废弃） |
 | `schema_migrations` | 迁移版本追踪 | （框架管理） |
 
 ---
@@ -87,6 +98,13 @@
 | `firecrawl_error` | TEXT | Firecrawl 抓取错误信息 | — |
 | `firecrawl_crawled_at` | TIMESTAMP | Firecrawl 抓取时间 | — |
 
+#### Feed 摘要关联字段
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `feed_summary_id` | BIGINT | 关联的 AI 批量摘要 ID（FK → `ai_summaries.id`） |
+| `feed_summary_generated_at` | TIMESTAMP | Feed 摘要生成时间 |
+
 #### 虚拟字段（计算列）
 
 | 字段名 | 用途 |
@@ -123,7 +141,7 @@
 
 | 字段名 | 类型 | 用途 | 说明 |
 |--------|------|------|------|
-| `ai_summary_enabled` | BOOLEAN DEFAULT true | 是否启用文章级 AI 总结 | 依赖 Firecrawl 先抓取完整内容 |
+| `ai_summary_enabled` | BOOLEAN DEFAULT true | 是否启用 Feed 级 AI 批量摘要 | 跨文章聚合总结 |
 | `article_summary_enabled` | BOOLEAN DEFAULT false | 是否启用文章级 AI 总结 | 依赖 Firecrawl 先抓取完整内容 |
 | `completion_on_refresh` | BOOLEAN DEFAULT true | 刷新时是否自动触发内容补全 | — |
 | `max_completion_retries` | INTEGER DEFAULT 3 | AI 总结最大重试次数 | — |
@@ -252,6 +270,52 @@
 
 ---
 
+### 6.5. AI 摘要关联表
+
+以下三张表用于存储 Feed 级 AI 批量摘要，通过 `articles.feed_summary_id` 将文章关联到摘要。
+
+#### ai_summaries（AI 批量摘要）
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `feed_id` | BIGINT | 所属 Feed ID（FK → `feeds.id`） |
+| `category_id` | BIGINT | 所属分类 ID（FK → `categories.id`） |
+| `title` | VARCHAR(200) NOT NULL | 摘要标题 |
+| `summary` | TEXT NOT NULL | 摘要正文 |
+| `key_points` | TEXT | 关键要点（JSON） |
+| `articles` | TEXT | 覆盖的文章 ID 列表（JSON 数组） |
+| `article_count` | BIGINT DEFAULT 0 | 覆盖文章数 |
+| `time_range` | BIGINT DEFAULT 180 | 时间范围（分钟） |
+| `created_at` | TIMESTAMP | 创建时间 |
+| `updated_at` | TIMESTAMP | 更新时间 |
+
+#### ai_summary_feeds（AI 摘要-Feed 关联）
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `summary_id` | BIGINT NOT NULL | 摘要 ID |
+| `feed_id` | BIGINT NOT NULL | Feed ID |
+| `feed_title` | VARCHAR(200) | Feed 标题快照 |
+| `feed_icon` | VARCHAR(1000) | Feed 图标快照 |
+| `feed_color` | VARCHAR(20) | Feed 颜色快照 |
+| `article_count` | BIGINT DEFAULT 0 | 该 Feed 覆盖文章数 |
+| `created_at` | TIMESTAMP | 创建时间 |
+
+#### ai_summary_topics（AI 摘要-主题关联）
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `summary_id` | BIGINT NOT NULL | 摘要 ID（FK → `ai_summaries.id`） |
+| `topic_tag_id` | BIGINT NOT NULL | 标签 ID（FK → `topic_tags.id`, ON DELETE CASCADE） |
+| `score` | NUMERIC DEFAULT 0 | 相关度评分 |
+| `source` | VARCHAR(20) DEFAULT 'llm' | 来源（`llm`） |
+| `created_at` | TIMESTAMP | 创建时间 |
+
+---
+
 ### 7. 主题标签相关表
 
 #### topic_tags（主题标签主表）
@@ -276,6 +340,7 @@
 | `created_at` | TIMESTAMP | 创建时间 |
 | `updated_at` | TIMESTAMP | 更新时间 |
 | `kind` | VARCHAR(20) DEFAULT 'keyword' | 已废弃，映射到 `category` |
+| `concept_id` | INTEGER | 关联板块概念 ID（FK → `board_concepts.id`） |
 
 唯一约束：`(category, slug)`
 
@@ -284,14 +349,17 @@
 | 字段名 | 类型 | 用途 |
 |--------|------|------|
 | `id` | SERIAL PK | 主键 |
-| `topic_tag_id` | INTEGER UNIQUE NOT NULL | 关联标签 ID |
+| `topic_tag_id` | INTEGER NOT NULL | 关联标签 ID |
+| `embedding_type` | VARCHAR(20) NOT NULL DEFAULT 'identity' | 嵌入类型：`identity`（标签名）、`semantic`（语义描述）、`event_keyword`（事件标签关键词） |
 | `vector` | TEXT NOT NULL | 已废弃：旧版 JSON 文本向量 |
 | `embedding` | vector(1536) | pgvector 向量列 |
 | `dimension` | INTEGER NOT NULL | 向量维度（如 1536） |
 | `model` | VARCHAR(50) NOT NULL | 生成模型名称 |
-| `text_hash` | VARCHAR(64) | 标签文本哈希，用于判断是否需重算 |
+| `text_hash` | VARCHAR(64) | 标签文本哈希，参与唯一约束，同一 tag+type 可有多行（不同 text_hash） |
 | `created_at` | TIMESTAMP | 创建时间 |
 | `updated_at` | TIMESTAMP | 更新时间 |
+
+唯一约束：`idx_topic_tag_embeddings_tag_type_hash (topic_tag_id, embedding_type, text_hash)`
 
 HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_cosine_ops)`
 
@@ -375,7 +443,102 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 
 ---
 
-### 8. 向量相关表
+### 8. 层级关系相关表
+
+层级关系子系统管理 topic_tags 之间的父子层级（abstract tag hierarchy），包含模板配置、窄标签收养、多父级消歧和抽象标签更新四类队列。
+
+#### hierarchy_config（层级模板配置）
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `templates` | JSONB DEFAULT '{}' | 层级模板定义（`HierarchyTemplatesJSON`） |
+| `version` | BIGINT NOT NULL DEFAULT 1 | 当前版本号 |
+| `updated_at` | TIMESTAMP | 更新时间 |
+
+#### hierarchy_config_versions（层级模板版本历史）
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `config_id` | BIGINT NOT NULL | 关联配置 ID（FK → `hierarchy_config.id`） |
+| `version` | BIGINT NOT NULL | 版本号 |
+| `templates` | JSONB DEFAULT '{}' | 该版本的模板快照 |
+| `change_log` | TEXT | 变更说明 |
+| `created_at` | TIMESTAMP | 创建时间 |
+
+#### adopt_narrower_queues（窄标签收养队列）
+
+当新增抽象标签时，已有的窄标签（narrower tags）需要被收养到该抽象标签下。此队列用于批量处理收养请求。
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | SERIAL PK | 主键 |
+| `abstract_tag_id` | BIGINT NOT NULL | 抽象标签 ID（FK → `topic_tags.id`, ON DELETE CASCADE） |
+| `source` | VARCHAR(50) NOT NULL | 触发来源（如 `processAbstractJudgment`） |
+| `status` | VARCHAR(20) DEFAULT 'pending' | 状态（`pending`/`processing`/`completed`/`failed`） |
+| `error_message` | TEXT | 错误信息 |
+| `retry_count` | INTEGER DEFAULT 0 | 重试次数 |
+| `created_at` | TIMESTAMP | 创建时间 |
+| `started_at` | TIMESTAMP | 开始时间 |
+| `completed_at` | TIMESTAMP | 完成时间 |
+
+唯一索引：`(abstract_tag_id)` WHERE status IN ('pending', 'processing')
+
+#### multi_parent_resolve_queues（多父级消歧队列）
+
+当标签被发现同时属于多个父抽象标签时，需要 AI 判断最佳归属。
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | SERIAL PK | 主键 |
+| `child_tag_id` | INTEGER NOT NULL | 子标签 ID（FK → `topic_tags.id`, ON DELETE CASCADE） |
+| `source` | VARCHAR(50) NOT NULL | 触发来源 |
+| `status` | VARCHAR(20) DEFAULT 'pending' | 状态（`pending`/`processing`/`completed`/`failed`） |
+| `error_message` | TEXT | 错误信息 |
+| `retry_count` | INTEGER DEFAULT 0 | 重试次数 |
+| `created_at` | TIMESTAMP NOT NULL | 创建时间 |
+| `started_at` | TIMESTAMP | 开始时间 |
+| `completed_at` | TIMESTAMP | 完成时间 |
+
+唯一索引：`(child_tag_id)` WHERE status IN ('pending', 'processing')
+
+#### abstract_tag_update_queues（抽象标签更新队列）
+
+当抽象标签的子节点发生变化（新增、移出、合并）时，需要重新计算该抽象标签的描述文本和 embedding 向量。
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `abstract_tag_id` | BIGINT NOT NULL | 抽象标签 ID（FK → `topic_tags.id`, ON DELETE CASCADE） |
+| `trigger_reason` | VARCHAR(50) NOT NULL | 触发原因（`new_child_added`/`child_moved`/`child_adopted`/`hierarchy_linked` 等） |
+| `status` | VARCHAR(20) DEFAULT 'pending' | 状态（`pending`/`processing`/`completed`/`failed`） |
+| `error_message` | TEXT | 错误信息 |
+| `retry_count` | INTEGER NOT NULL DEFAULT 0 | 重试次数 |
+| `created_at` | TIMESTAMP | 创建时间 |
+| `started_at` | TIMESTAMP | 开始时间 |
+| `completed_at` | TIMESTAMP | 完成时间 |
+
+#### hierarchy_pending_changes（层级待定变更）
+
+记录因层级模板规则检测到的待处理层级变更（如标签需要移动、合并或拆分）。
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | SERIAL PK | 主键 |
+| `tag_id` | INTEGER NOT NULL | 目标标签 ID（FK → `topic_tags.id`, ON DELETE CASCADE） |
+| `tag_label` | VARCHAR(160) NOT NULL | 目标标签名称 |
+| `change_type` | VARCHAR(50) NOT NULL | 变更类型 |
+| `current_parent_id` | INTEGER | 当前父标签 ID（FK → `topic_tags.id`, ON DELETE SET NULL） |
+| `current_parent_label` | VARCHAR(160) | 当前父标签名称 |
+| `reason` | TEXT | 变更原因 |
+| `status` | VARCHAR(20) DEFAULT 'pending' | 状态 |
+| `created_at` | TIMESTAMP NOT NULL | 创建时间 |
+| `resolved_at` | TIMESTAMP | 解决时间 |
+
+---
+
+### 9. 向量相关表
 
 #### embedding_config（向量配置）
 
@@ -428,7 +591,7 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 
 ---
 
-### 9. 任务队列表
+### 10. 任务队列表
 
 #### firecrawl_jobs（Firecrawl 抓取任务）
 
@@ -471,7 +634,7 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 
 ---
 
-### 10. narrative_summaries（叙事摘要表）
+### 11. narrative_summaries（叙事摘要表）
 
 | 字段名 | 类型 | 用途 |
 |--------|------|------|
@@ -495,7 +658,7 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 
 ---
 
-### 11. narrative_boards（叙事板块表）
+### 12. narrative_boards（叙事板块表）
 
 | 字段名 | 类型 | 用途 |
 |--------|------|------|
@@ -509,12 +672,12 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 | `event_tag_ids` | TEXT | 关联 event 标签 ID 列表（JSON 数组） |
 | `abstract_tag_ids` | TEXT | 关联抽象标签 ID 列表（JSON 数组） |
 | `prev_board_ids` | TEXT | 前日关联 Board ID 列表（JSON 数组，用于跨日延续） |
-| `abstract_tag_id` | INTEGER | 热点板关联的抽象标签 ID（索引） |
+| `abstract_tag_id` | INTEGER | 热点板关联的抽象标签 ID（索引，FK → `topic_tags.id`） |
 | `board_concept_id` | INTEGER | 概念板关联的板块概念 ID（索引，FK→board_concepts.id） |
 | `is_system` | BOOLEAN NOT NULL DEFAULT false | 是否为系统自动生成的热点板 |
 | `created_at` | TIMESTAMP | 创建时间 |
 
-### 12. board_concepts（板块概念表）
+### 13. board_concepts（板块概念表）
 
 | 字段名 | 类型 | 用途 |
 |--------|------|------|
@@ -532,7 +695,7 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 
 ---
 
-### 13. 其他表
+### 14. 其他表
 
 #### reading_behaviors（阅读行为）
 
@@ -563,72 +726,70 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 | `created_at` | TIMESTAMP | 创建时间 |
 | `updated_at` | TIMESTAMP | 更新时间 |
 
+#### otel_spans（OpenTelemetry 链路追踪）
+
+存储 GORM Span Exporter 导出的 OpenTelemetry span 数据。通过自定义 exporter 落库，支持 trace 查询和统计 API。
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `trace_id` | CHAR(32) NOT NULL | 追踪 ID |
+| `span_id` | CHAR(16) NOT NULL | Span ID |
+| `parent_span_id` | CHAR(16) DEFAULT '' | 父 Span ID |
+| `trace_state` | TEXT DEFAULT '' | W3C trace state |
+| `name` | VARCHAR(255) NOT NULL | Span 名称 |
+| `kind` | BIGINT DEFAULT 1 | Span 类型（Internal=1, Server=2, Client=3, Producer=4, Consumer=5） |
+| `status_code` | BIGINT DEFAULT 0 | 状态码（0=Unset, 1=Error, 2=OK） |
+| `status_message` | TEXT DEFAULT '' | 状态信息 |
+| `start_time_unix_nano` | BIGINT NOT NULL | 开始时间（Unix 纳秒） |
+| `end_time_unix_nano` | BIGINT NOT NULL | 结束时间（Unix 纳秒） |
+| `duration_ms` | BIGINT DEFAULT 0 | 持续时间（毫秒） |
+| `service_name` | VARCHAR(100) DEFAULT 'rss-reader-backend' | 服务名称 |
+| `service_version` | VARCHAR(50) DEFAULT '' | 服务版本 |
+| `resource_attributes` | TEXT DEFAULT '{}' | 资源属性（JSON） |
+| `scope_name` | VARCHAR(100) DEFAULT '' | Scope 名称 |
+| `scope_version` | VARCHAR(50) DEFAULT '' | Scope 版本 |
+| `attributes` | TEXT DEFAULT '{}' | Span 属性（JSON） |
+| `events` | TEXT DEFAULT '[]' | Span 事件（JSON） |
+| `links` | TEXT DEFAULT '[]' | Span 链接（JSON） |
+| `created_at` | TIMESTAMP | 创建时间 |
+
 ---
 
-## 工作流程
+### 15. 已废弃/预留表
 
-### 完整的内容处理流程
+以下表当前无 Go 代码引用，数据为空（0 行），可能为旧版功能遗留或预留功能。
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  1. Feed Refresh Scheduler（每 60 秒）                      │
-│     ↓                                                        │
-│     解析 RSS Feed                                            │
-│     ↓                                                        │
-│     创建新文章                                               │
-│     - content = RSS 原始内容                                 │
-│     - firecrawl_status = 'pending'                          │
-│     - summary_status = 'complete'（默认）                   │
-└─────────────────────────────────────────────────────────────┘
-                         ↓
-┌─────────────────────────────────────────────────────────────┐
-│  2. Firecrawl Scheduler                                     │
-│     ↓                                                        │
-│     查询条件：                                               │
-│     - firecrawl_status = 'pending'                          │
-│     - feed.firecrawl_enabled = true                         │
-│     ↓                                                        │
-│     抓取完整网页内容                                         │
-│     ↓                                                        │
-│     更新文章：                                               │
-│     - firecrawl_status = 'completed'                        │
-│     - firecrawl_content = 完整内容（Markdown）              │
-│     - summary_status = 'incomplete' ← 标记需要 AI 总结     │
-└─────────────────────────────────────────────────────────────┘
-                         ↓
-┌─────────────────────────────────────────────────────────────┐
-│  3. AI Summary Scheduler（每 60 分钟）                      │
-│     ↓                                                        │
-│     查询条件：                                               │
-│     - firecrawl_status = 'completed'                        │
-│     - summary_status = 'incomplete'                         │
-│     - feed.article_summary_enabled = true                   │
-│     ↓                                                        │
-│     读取 firecrawl_content                                   │
-│     ↓                                                        │
-│     调用 AI 生成优化总结                                     │
-│     ↓                                                        │
-│     更新文章：                                               │
-│     - ai_content_summary = AI 总结（Markdown）              │
-│     - summary_status = 'complete'                           │
-└─────────────────────────────────────────────────────────────┘
-```
+#### ai_summaries / ai_summary_feeds / ai_summary_topics
 
-### 状态流转图
+这三张表对应旧版 Feed 级 AI 批量摘要功能。字段说明见 §6.5 "AI 摘要关联表"。
 
-#### Firecrawl 状态流转
+**状态**：当前无 Go 代码引用（`ai_summaries` 等模型已不存在于 `internal/domain/models/`），数据库中可能存有旧数据。`articles.feed_summary_id` 仍然指向 `ai_summaries.id`。
 
-```
-pending → processing → completed
-                     ↘ failed
-```
+#### digest_configs（Digest 推送配置）
 
-#### Summary Status 状态流转
+预留的 Digest 日报/周报推送配置表。
 
-```
-complete（默认）→ incomplete（Firecrawl 完成后设置）→ pending → complete
-                                                               ↘ failed
-```
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `daily_enabled` | BOOLEAN DEFAULT false | 是否启用日报 |
+| `daily_time` | VARCHAR(5) DEFAULT '09:00' | 日报推送时间 |
+| `weekly_enabled` | BOOLEAN DEFAULT false | 是否启用周报 |
+| `weekly_day` | BIGINT DEFAULT 1 | 周报推送日（1=周一） |
+| `weekly_time` | VARCHAR(5) DEFAULT '09:00' | 周报推送时间 |
+| `feishu_enabled` | BOOLEAN DEFAULT false | 是否启用飞书推送 |
+| `feishu_webhook_url` | TEXT | 飞书 Webhook URL |
+| `feishu_push_summary` | BOOLEAN DEFAULT true | 飞书推送摘要 |
+| `feishu_push_details` | BOOLEAN DEFAULT false | 飞书推送详情 |
+| `obsidian_enabled` | BOOLEAN DEFAULT false | 是否启用 Obsidian 导出 |
+| `obsidian_vault_path` | TEXT | Obsidian Vault 路径 |
+| `obsidian_daily_digest` | BOOLEAN DEFAULT true | Obsidian 日报导出 |
+| `obsidian_weekly_digest` | BOOLEAN DEFAULT true | Obsidian 周报导出 |
+| `created_at` | TIMESTAMP | 创建时间 |
+| `updated_at` | TIMESTAMP | 更新时间 |
+
+**状态**：当前无 Go 代码引用，数据库中 0 行数据，标记为预留功能。
 
 ---
 
@@ -659,24 +820,6 @@ complete（默认）→ incomplete（Firecrawl 完成后设置）→ pending →
 
 ---
 
-## 配置要求
-
-### Firecrawl 功能
-
-1. 全局配置（`ai_settings` 表或 AI Provider/Route 配置）
-2. Feed 级别配置：`feed.firecrawl_enabled = true`
-
-### AI 总结功能
-
-1. 全局配置（AI Provider/Route 配置）
-2. Feed 级别配置：`feed.article_summary_enabled = true`
-
-**依赖关系**：
-- AI 总结功能依赖 Firecrawl 先抓取完整内容
-- 如果 Firecrawl 失败，AI 总结会被跳过
-
----
-
 ## 数据库索引清单
 
 ### 基线索引（迁移 `20260403_0002` 创建）
@@ -697,6 +840,7 @@ complete（默认）→ incomplete（Firecrawl 完成后设置）→ pending →
 | 索引名 | 表 | 类型 |
 |--------|------|------|
 | `idx_topic_tag_embeddings_embedding` | topic_tag_embeddings | HNSW `(embedding vector_cosine_ops)` |
+| `idx_topic_tag_embeddings_tag_type_hash` | topic_tag_embeddings | UNIQUE `(topic_tag_id, embedding_type, text_hash)` |
 
 ### 迁移补充索引
 
@@ -704,10 +848,29 @@ complete（默认）→ incomplete（Firecrawl 完成后设置）→ pending →
 |--------|------|----------|
 | `idx_topic_tags_status` | topic_tags | `20260413_0003` |
 | `idx_topic_tags_merged_into_id` | topic_tags | `20260413_0003` |
+| `idx_topic_tag_embeddings_tag_type_hash` | topic_tag_embeddings | `20260514_0001`（替代旧 `idx_topic_tag_embeddings_tag_type`） |
 
 ---
 
 ## 更新日志
+
+### 2026-05-14
+
+- 更新 `topic_tag_embeddings`：新增 `embedding_type` 字段（`identity`/`semantic`/`event_keyword`），更新 `text_hash` 描述
+- 唯一约束从 `(topic_tag_id, embedding_type)` 改为 `(topic_tag_id, embedding_type, text_hash)`，支持同一标签多行关键词嵌入
+- 新增 `event_keyword` 嵌入类型，用于事件标签关键词向量化
+- 迁移 `20260514_0001`：`idx_topic_tag_embeddings_tag_type` → `idx_topic_tag_embeddings_tag_type_hash`
+
+### 2026-05-14
+
+- 补齐缺失表覆盖：新增 §6.5 AI 摘要关联表、§8 层级关系相关表、§15 已废弃/预留表
+- 新增 `otel_spans`（§14）、`hierarchy_pending_changes`（§8）、`digest_configs`（§15）字段说明
+- 补充 `articles.feed_summary_id`、`articles.feed_summary_generated_at` 字段
+- 补充 `topic_tags.concept_id` FK 字段
+- 完整表清单扩充至 38 张（原 29 张）
+- 迁移"工作流程"、"状态流转图"、"配置要求"章节至 `DATA_LIFECYCLE.md`
+- 更新章节编号（§9 向量相关表、§10 任务队列表、§11-§13 叙事相关表、§14 其他表、§15 已废弃/预留表）
+- 修正"相关文档"交叉引用路径，新增指向 `ER_DIAGRAM.md` 和 `DATA_LIFECYCLE.md` 的链接
 
 ### 2026-05-01
 
@@ -738,7 +901,9 @@ complete（默认）→ incomplete（Firecrawl 完成后设置）→ pending →
 
 ## 相关文档
 
-- `docs/architecture/data-flow.md` - 详细工作流程说明
-- `docs/operations/database.md` - 数据库运维说明
-- `docs/operations/postgres-migration.md` - PostgreSQL 迁移手册
-- `AGENTS.md` - 项目开发指南
+- [全局实体关系图](ER_DIAGRAM.md) — 38 张表的 FK 关系图（ASCII + Mermaid）和约束矩阵
+- [数据生命周期](DATA_LIFECYCLE.md) — 6 条数据链路的状态字段流转说明
+- [数据流](../reference/architecture/data-flow.md) — 代码执行流、API 调用链、前端 store 交互
+- [数据库运维说明](../operations/database.md) — 数据库运维说明
+- [PostgreSQL 迁移手册](../operations/postgres-migration.md) — PostgreSQL 迁移手册
+- [AGENTS.md](../../AGENTS.md) — 项目开发指南

@@ -37,23 +37,42 @@ func BackfillMissingDescriptions() (int, error) {
 
 		results := batchGenerateTagDescriptions(batch)
 		for _, tag := range batch {
-			if desc, ok := results[tag.ID]; ok {
-				if desc == "" {
-					// Single-tag path already saved to DB + enqueued embedding
-					processed++
-					continue
+			result, ok := results[tag.ID]
+			if !ok {
+				continue
+			}
+			if result == nil {
+				processed++
+				continue
+			}
+			if result.Description == "" {
+				continue
+			}
+
+			if tag.Category == "event" && len(result.Keywords) > 0 {
+				if tag.Metadata == nil {
+					tag.Metadata = models.MetadataMap{}
 				}
+				tag.Metadata["event_keywords"] = result.Keywords
+				if err := database.DB.Model(&models.TopicTag{}).Where("id = ?", tag.ID).Updates(map[string]any{
+					"description": result.Description,
+					"metadata":    tag.Metadata,
+				}).Error; err != nil {
+					logging.Warnf("description backfill: failed to update event tag %d: %v", tag.ID, err)
+				} else {
+					processed++
+				}
+			} else {
 				if err := database.DB.Model(&models.TopicTag{}).Where("id = ?", tag.ID).
-					Update("description", desc).Error; err != nil {
+					Update("description", result.Description).Error; err != nil {
 					logging.Warnf("description backfill: failed to update tag %d: %v", tag.ID, err)
 				} else {
 					processed++
-					// Re-embed after description update, matching single-tag path (tagger.go:690)
-					if qs := getEmbeddingQueueService(); qs != nil {
-						if err := qs.Enqueue(tag.ID); err != nil {
-							logging.Warnf("description backfill: failed to enqueue re-embedding for tag %d: %v", tag.ID, err)
-						}
-					}
+				}
+			}
+			if qs := getEmbeddingQueueService(); qs != nil {
+				if err := qs.Enqueue(tag.ID); err != nil {
+					logging.Warnf("description backfill: failed to enqueue re-embedding for tag %d: %v", tag.ID, err)
 				}
 			}
 		}

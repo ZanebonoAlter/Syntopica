@@ -1,17 +1,32 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/viper"
-	"my-robot-backend/internal/platform/logging"
 )
 
 type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
 	CORS     CORSConfig
+	Log      LogConfig
+}
+
+type LogConfig struct {
+	Level string       `mapstructure:"level"`
+	File  LogFileConfig `mapstructure:"file"`
+}
+
+type LogFileConfig struct {
+	Enabled    bool   `mapstructure:"enabled"`
+	Path       string `mapstructure:"path"`
+	MaxSizeMB  int    `mapstructure:"max_size_mb"`
+	MaxBackups int    `mapstructure:"max_backups"`
+	MaxAgeDays int    `mapstructure:"max_age_days"`
+	Compress   bool   `mapstructure:"compress"`
 }
 
 type ServerConfig struct {
@@ -60,11 +75,19 @@ func LoadConfig(configPath string) error {
 	viper.SetDefault("cors.methods", []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
 	viper.SetDefault("cors.allow_headers", []string{"Content-Type", "Authorization"})
 
+	viper.SetDefault("log.level", "debug")
+	viper.SetDefault("log.file.enabled", true)
+	viper.SetDefault("log.file.path", "logs/app.log")
+	viper.SetDefault("log.file.max_size_mb", 50)
+	viper.SetDefault("log.file.max_backups", 30)
+	viper.SetDefault("log.file.max_age_days", 30)
+	viper.SetDefault("log.file.compress", true)
+
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return err
 		}
-		logging.Infof("Config file not found, using defaults")
+		fmt.Println("Config file not found, using defaults")
 	}
 
 	AppConfig = &Config{}

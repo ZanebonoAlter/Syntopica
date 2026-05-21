@@ -59,15 +59,19 @@ Feed 管理（`backend-go/internal/domain/feed/`）和文章管理（`backend-go
 拆分为 `tagging/` 包及其子包，形成从标签提取到图谱展示的完整链路：
 
 - `tagging`（根包）：共享类型和窗口工具、`StartAllWorkers`/`StopAllWorkers` 统一入口
-- `tagging/extraction`：从摘要/文章提取 topic tag
-- `tagging/analysis`：主题分析任务与结果、embedding 向量化、标签合并、抽象标签管理
+- `tagging/extraction`：从摘要/文章提取 Tag
+- `tagging/analysis`：主题分析任务与结果、embedding 向量化、Tag 合并（源 DELETE）、Node 管理、Sector 生成、层级清理 (7 Phase)
 - `tagging/watched`：关注标签管理
 - `topicgraph`：图谱节点边、详情、相关文章查询
 
 此外，`tagging/analysis` 还承担了以下高级能力：
-- 标签 embedding 向量化与自动合并（基于 pgvector 余弦相似度）
-- 抽象标签（abstract tags）层级体系
+- Tag embedding 向量化与自动合并（源 DELETE，不再使用 status='merged'）
+- Event 标签多行 embedding（semantic title + event_keyword 关键词行）
+- Node（抽象标签）层级体系 + Template 感知
 - 合并后 re-embedding 队列
+- Sector（板块概念）生成：auto / LLM / manual 三种模式
+- rebuild_jobs 重建任务（模板变更触发批量重放）
+- 7 Phase 层级清理（僵尸 Tag → 低质量 → 空 Node → 同 Level 去重 → Template 校验 → Sector 健康 → 聚类信号）
 
 `tagging/watched` 负责：
 - 关注标签（watched tags）管理
@@ -99,6 +103,8 @@ RSS 源
   → [可选] Firecrawl 全文抓取 → 内容补全生成 AI 整理稿
   → [可选] 主题标签提取 → 主题分析 → 图谱构建
   → [可选] 主题标签 embedding 向量化 → 自动合并相似标签 → 叙事摘要生成
+  → Event 标签延迟 embedding: 描述+关键词生成后入队 → 多行 embedding (semantic + event_keyword)
+  → 概念 bootstrap: 连通分量聚类 → 最小簇过滤 → LLM 命名概念
   → 前端 REST API 拉取 / WebSocket 推送
   → Pinia store 映射为 camelCase 前端模型
   → feature 组件消费渲染
@@ -184,8 +190,9 @@ my-robot/
 | ContentCompletion | 60 秒 | 基于 Firecrawl 正文生成 AI 整理稿 |
 | PreferenceUpdate | 1800 秒 | 更新阅读偏好分数 |
 | BlockedArticleRecovery | 3600 秒 | 恢复因 Firecrawl 配置变更等原因阻塞的文章 |
-| AutoTagMerge | 3600 秒 | 基于 embedding 相似度自动合并相似标签 |
+| AutoTagMerge | 3600 秒 | 基于 embedding 相似度自动合并相似 Tag（源 DELETE） |
 | TagQualityScore | 3600 秒 | 重算 topic_tags.quality_score |
+| TagHierarchyCleanup | 3600 秒 | 7 Phase 层级清理（僵尸→低质量→空 Node→去重→Template→Sector→聚类） |
 | NarrativeSummary | 86400 秒 | 基于活跃主题标签生成每日叙事摘要 |
 
 ## API 面概览
@@ -229,6 +236,9 @@ my-robot/
 - [前端组件分工](frontend-components.md)：各 feature 组件职责与交互关系
 - [数据流](data-flow.md)：主链路、前端状态职责、定时任务链路
 - [链路追踪](tracing.md)：OpenTelemetry 集成、埋点分层、查询 API
+- [数据库字段说明](../database/DATABASE_FIELDS.md)：38 张表完整字段字典
+- [全局实体关系图](../database/ER_DIAGRAM.md)：FK 关系图与约束矩阵
+- [数据生命周期](../database/DATA_LIFECYCLE.md)：6 条数据链路的状态字段流转
 - [开发指南](../development.md)：构建、测试、验证命令
 - [内容增强](../content-processing.md)：Firecrawl + AI 内容补全流程
 - [主题图谱](../api/topic-graph.md)：图谱构建与分析

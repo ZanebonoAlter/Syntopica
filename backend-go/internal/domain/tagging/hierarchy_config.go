@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
@@ -187,12 +188,15 @@ func (m *HierarchyTemplateManager) Reload() error {
 }
 
 type ConfigImpact struct {
-	TotalTags         int                  `json:"total_tags"`
-	DepthExceeded     int                  `json:"depth_exceeded"`
-	LevelMismatch     int                  `json:"level_mismatch"`
-	CrossCategory     int                  `json:"cross_category"`
-	NewLeafViolations int                  `json:"new_leaf_violations"`
-	Details           []ConfigImpactDetail `json:"details,omitempty"`
+	TotalTags                       int                  `json:"total_tags"`
+	AffectedTagCount                int                  `json:"affected_tag_count"`
+	EstimatedRebuildDurationSeconds int                  `json:"estimated_rebuild_duration_seconds"`
+	DepthExceeded                   int                  `json:"depth_exceeded"`
+	LevelMismatch                   int                  `json:"level_mismatch"`
+	CrossCategory                   int                  `json:"cross_category"`
+	NewLeafViolations               int                  `json:"new_leaf_violations"`
+	ViolationSummary                map[string]int       `json:"violation_summary,omitempty"`
+	Details                         []ConfigImpactDetail `json:"details,omitempty"`
 }
 
 type ConfigImpactDetail struct {
@@ -261,7 +265,28 @@ func previewConfigImpact(newTemplates *[]CategoryHierarchyTemplate) (*ConfigImpa
 		}
 	}
 
+	impact.finalize()
 	return impact, nil
+}
+
+func (i *ConfigImpact) finalize() {
+	if i.ViolationSummary == nil {
+		i.ViolationSummary = map[string]int{}
+	}
+	for _, d := range i.Details {
+		i.ViolationSummary[d.Issue]++
+	}
+
+	seen := make(map[uint]bool)
+	for _, d := range i.Details {
+		if seen[d.TagID] {
+			continue
+		}
+		seen[d.TagID] = true
+		i.AffectedTagCount++
+	}
+	estimated := time.Duration(i.AffectedTagCount) * defaultAvgPlacementTime
+	i.EstimatedRebuildDurationSeconds = int(estimated.Seconds())
 }
 
 func generatePendingChanges(impact *ConfigImpact) error {

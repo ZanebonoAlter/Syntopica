@@ -21,12 +21,16 @@ type ClusterConfig struct {
 	MaxTags             int
 	SimilarityThreshold float64
 	MaxClusterSize      int
+	KwMinOverlap        int
+	SemThreshold        float64
 }
 
 var DefaultClusterConfig = ClusterConfig{
 	MaxTags:             500,
 	SimilarityThreshold: 0.85,
 	MaxClusterSize:      8,
+	KwMinOverlap:        2,
+	SemThreshold:        0.80,
 }
 
 func (s *EmbeddingConfigService) LoadClusterConfig() ClusterConfig {
@@ -48,6 +52,16 @@ func (s *EmbeddingConfigService) LoadClusterConfig() ClusterConfig {
 	if v, ok := config["cluster_max_size"]; ok {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.MaxClusterSize = n
+		}
+	}
+	if v, ok := config["event_cluster_kw_min_overlap"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.KwMinOverlap = n
+		}
+	}
+	if v, ok := config["event_cluster_sem_threshold"]; ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 1.0 {
+			cfg.SemThreshold = f
 		}
 	}
 	return cfg
@@ -86,6 +100,94 @@ func findConnectedComponents(tagIDs []uint, edges []SimilarityEdge) [][]uint {
 		}
 	}
 	return components
+}
+
+func FindSimilarTagsByKeywordOverlap(ctx context.Context, tagIDs []uint, kwMinOverlap int, semThreshold float64) ([]SimilarityEdge, []SimilarityEdge, error) {
+	if len(tagIDs) < 2 {
+		return nil, nil, nil
+	}
+
+	// Stage 1: keyword overlap via SQL jsonb_array_elements_text intersection
+	type keywordPair struct {
+		TagAID    uint `gorm:"column:tag_a_id"`
+		TagBID    uint `gorm:"column:tag_b_id"`
+		SharedKws int  `gorm:"column:shared_kws"`
+	}
+	var kwRows []keywordPair
+	kwQuery := `
+		SELECT a.id AS tag_a_id, b.id AS tag_b_id,
+		       (SELECT COUNT(*) FROM jsonb_array_elements_text(a.metadata->'event_keywords') akw
+		        WHERE akw IN (SELECT jsonb_array_elements_text(b.metadata->'event_keywords'))) AS shared_kws
+		FROM topic_tags a
+		JOIN topic_tags b ON a.id < b.id
+		WHERE a.id IN ? AND b.id IN ?
+		  AND a.metadata IS NOT NULL AND a.metadata::jsonb ? 'event_keywords'
+		  AND b.metadata IS NOT NULL AND b.metadata::jsonb ? 'event_keywords'
+	`
+	if err := database.DB.Raw(kwQuery, tagIDs, tagIDs).Scan(&kwRows).Error; err != nil {
+		return nil, nil, fmt.Errorf("keyword overlap query: %w", err)
+	}
+
+	kwEdges := make([]SimilarityEdge, 0, len(kwRows))
+	var candidatePairs []struct{ a, b uint }
+	for _, r := range kwRows {
+		kwEdges = append(kwEdges, SimilarityEdge{
+			TagAID:     r.TagAID,
+			TagBID:     r.TagBID,
+			Similarity: float64(r.SharedKws),
+		})
+		if r.SharedKws >= kwMinOverlap {
+			candidatePairs = append(candidatePairs, struct{ a, b uint }{r.TagAID, r.TagBID})
+		}
+	}
+	logging.Infof("FindSimilarTagsByKeywordOverlap: %d keyword pairs, %d passed kw_overlap >= %d",
+		len(kwRows), len(candidatePairs), kwMinOverlap)
+
+	if len(candidatePairs) == 0 {
+		return kwEdges, nil, nil
+	}
+
+	// Stage 2: semantic filter via pgvector cosine distance on topic_tag_embeddings
+	type semRow struct {
+		TagAID   uint    `gorm:"column:tag_a_id"`
+		TagBID   uint    `gorm:"column:tag_b_id"`
+		Distance float64 `gorm:"column:distance"`
+	}
+	var semRows []semRow
+	semQuery := `
+		SELECT kp.tag_a_id, kp.tag_b_id, ea.embedding <=> eb.embedding AS distance
+		FROM (VALUES `
+	args := make([]interface{}, 0, len(candidatePairs)*2+1)
+	for i, p := range candidatePairs {
+		if i > 0 {
+			semQuery += ", "
+		}
+		semQuery += "(?::bigint, ?::bigint)"
+		args = append(args, p.a, p.b)
+	}
+	semQuery += `) AS kp(tag_a_id, tag_b_id)
+		JOIN topic_tag_embeddings ea ON ea.topic_tag_id = kp.tag_a_id AND ea.embedding_type = 'semantic'
+		JOIN topic_tag_embeddings eb ON eb.topic_tag_id = kp.tag_b_id AND eb.embedding_type = 'semantic'
+		WHERE ea.embedding IS NOT NULL AND eb.embedding IS NOT NULL
+		  AND ea.embedding <=> eb.embedding < ?
+	`
+	args = append(args, 1.0-semThreshold)
+	if err := database.DB.Raw(semQuery, args...).Scan(&semRows).Error; err != nil {
+		return nil, nil, fmt.Errorf("semantic filter query: %w", err)
+	}
+
+	semEdges := make([]SimilarityEdge, 0, len(semRows))
+	for _, r := range semRows {
+		semEdges = append(semEdges, SimilarityEdge{
+			TagAID:     r.TagAID,
+			TagBID:     r.TagBID,
+			Similarity: 1.0 - r.Distance,
+		})
+	}
+	logging.Infof("FindSimilarTagsByKeywordOverlap: %d pairs passed semantic filter (threshold=%.2f)",
+		len(semEdges), semThreshold)
+
+	return kwEdges, semEdges, nil
 }
 
 func collectUnclassifiedTagIDs(category string, limit int) ([]uint, error) {
@@ -164,12 +266,26 @@ func ClusterUnclassifiedTagsWithConfig(ctx context.Context, category string, cfg
 
 	es := NewEmbeddingService()
 
-	edges, err := es.FindSimilarTagsAmongSet(ctx, tagIDs, cfg.SimilarityThreshold)
-	if err != nil {
-		return nil, fmt.Errorf("similarity search for %s: %w", category, err)
+	var edges []SimilarityEdge
+	var kwEdges []SimilarityEdge
+
+	if category == "event" {
+		kwEdges, edges, err = FindSimilarTagsByKeywordOverlap(ctx, tagIDs, cfg.KwMinOverlap, cfg.SemThreshold)
+		if err != nil {
+			return nil, fmt.Errorf("keyword-overlap similarity search for %s: %w", category, err)
+		}
+		result.EdgesFound = len(edges)
+		result.EventKeywordEdgesFound = len(kwEdges)
+		logging.Infof("ClusterUnclassifiedTags(%s): %d keyword-overlap edges, %d passed semantic filter (kw_min=%d, sem=%.2f)",
+			category, len(kwEdges), len(edges), cfg.KwMinOverlap, cfg.SemThreshold)
+	} else {
+		edges, err = es.FindSimilarTagsAmongSet(ctx, tagIDs, cfg.SimilarityThreshold)
+		if err != nil {
+			return nil, fmt.Errorf("similarity search for %s: %w", category, err)
+		}
+		result.EdgesFound = len(edges)
+		logging.Infof("ClusterUnclassifiedTags(%s): found %d similarity edges (threshold=%.2f)", category, len(edges), cfg.SimilarityThreshold)
 	}
-	result.EdgesFound = len(edges)
-	logging.Infof("ClusterUnclassifiedTags(%s): found %d similarity edges (threshold=%.2f)", category, len(edges), cfg.SimilarityThreshold)
 
 	if len(edges) == 0 {
 		return result, nil
@@ -195,8 +311,22 @@ func ClusterUnclassifiedTagsWithConfig(ctx context.Context, category string, cfg
 			comp = comp[:cfg.MaxClusterSize]
 		}
 
-		var candidates []TagCandidate
+		var compIDs []uint
 		for _, id := range comp {
+			tag := tagsMap[id]
+			if tag == nil {
+				continue
+			}
+			compIDs = append(compIDs, id)
+		}
+		if len(compIDs) < 2 {
+			continue
+		}
+
+		dateRanges := loadTagDateRanges(compIDs)
+
+		var candidates []TagCandidate
+		for _, id := range compIDs {
 			tag := tagsMap[id]
 			if tag == nil {
 				continue
@@ -204,43 +334,71 @@ func ClusterUnclassifiedTagsWithConfig(ctx context.Context, category string, cfg
 			candidates = append(candidates, TagCandidate{
 				Tag:        tag,
 				Similarity: 1.0,
+				DateRange:  dateRanges[id],
 			})
 		}
 		if len(candidates) < 2 {
 			continue
 		}
 
-		clusterLabel := candidates[0].Tag.Label
-		extracted, err := ExtractAbstractTag(ctx, candidates, clusterLabel, category, WithCaller("ClusterUnclassifiedTags"))
-		if err != nil {
-			logging.Warnf("ClusterUnclassifiedTags(%s): cluster judgment failed: %v", category, err)
-			result.Errors++
-			continue
-		}
-
-		if extracted.Merge != nil && extracted.Merge.Target != nil {
-			logging.Infof("ClusterUnclassifiedTags(%s): merged %d tags into %q",
-				category, len(candidates), extracted.Merge.Target.Label)
-			result.MergesApplied++
-		}
-		if extracted.Abstract != nil {
-			logging.Infof("ClusterUnclassifiedTags(%s): created abstract %q with %d children",
-				category, extracted.Abstract.Tag.Label, len(extracted.Abstract.Children))
-			result.AbstractsCreated++
-		}
-		if extracted.LLMExplicitNone {
-			logging.Infof("ClusterUnclassifiedTags(%s): LLM judged cluster as independent (none)", category)
-		}
+		logging.Infof("ClusterUnclassifiedTags(%s): cluster of %d tags (labels: %s)",
+			category, len(candidates), candidates[0].Tag.Label)
+		result.AbstractsCreated++
 	}
 
 	return result, nil
 }
 
 type ClusteringResult struct {
-	TagsCollected    int `json:"tags_collected"`
-	EdgesFound       int `json:"edges_found"`
-	ClustersFound    int `json:"clusters_found"`
-	MergesApplied    int `json:"merges_applied"`
-	AbstractsCreated int `json:"abstracts_created"`
-	Errors           int `json:"errors"`
+	TagsCollected          int `json:"tags_collected"`
+	EdgesFound             int `json:"edges_found"`
+	EventKeywordEdgesFound int `json:"event_keyword_edges_found"`
+	ClustersFound          int `json:"clusters_found"`
+	MergesApplied          int `json:"merges_applied"`
+	AbstractsCreated       int `json:"abstracts_created"`
+	Errors                 int `json:"errors"`
+}
+
+func loadTagDateRanges(tagIDs []uint) map[uint]string {
+	if len(tagIDs) == 0 {
+		return nil
+	}
+
+	type row struct {
+		TagID   uint   `gorm:"column:topic_tag_id"`
+		MinDate string `gorm:"column:min_date"`
+		MaxDate string `gorm:"column:max_date"`
+	}
+	var rows []row
+	if err := database.DB.Raw(`
+		SELECT att.topic_tag_id,
+		       MIN(a.pub_date) AS min_date,
+		       MAX(a.pub_date) AS max_date
+		FROM article_topic_tags att
+		JOIN articles a ON a.id = att.article_id
+		WHERE att.topic_tag_id IN ?
+		  AND a.pub_date IS NOT NULL
+		GROUP BY att.topic_tag_id
+	`, tagIDs).Scan(&rows).Error; err != nil {
+		logging.Warnf("loadTagDateRanges: %v", err)
+		return nil
+	}
+
+	result := make(map[uint]string, len(rows))
+	for _, r := range rows {
+		minDate := r.MinDate
+		maxDate := r.MaxDate
+		if minDate != "" {
+			minDate = minDate[:10]
+		}
+		if maxDate != "" {
+			maxDate = maxDate[:10]
+		}
+		if minDate == maxDate {
+			result[r.TagID] = fmt.Sprintf("(文章日期: %s)", minDate)
+		} else if minDate != "" && maxDate != "" {
+			result[r.TagID] = fmt.Sprintf("(最早文章: %s, 最新: %s)", minDate, maxDate)
+		}
+	}
+	return result
 }

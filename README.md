@@ -126,7 +126,7 @@ go run cmd/server/main.go
 ```
 ZanebonoRssReader/
 ├── front/                    # Nuxt 4 前端（Vue 3 + TypeScript + Pinia）
-├── backend-go/               # Go + Gin 后端（GORM + SQLite）
+├── backend-go/               # Go + Gin 后端（GORM + POSTGRES ）
 ├── docs/                     # 项目文档
 ├── tests/                    # Python 集成测试
 ├── docker/                   # Docker 构建配置

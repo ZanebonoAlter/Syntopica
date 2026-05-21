@@ -169,17 +169,14 @@ func TestBuildTagEmbeddingTextWithContextTitles(t *testing.T) {
 
 	text := buildTagEmbeddingText(tag, EmbeddingTypeSemantic)
 	if strings.Contains(text, "相关报道") {
-		t.Errorf("without opts, should not contain context marker, got %q", text)
+		t.Errorf("event tag should not contain context marker, got %q", text)
 	}
 
 	text = buildTagEmbeddingText(tag, EmbeddingTypeSemantic, EmbeddingTextOptions{
 		ContextTitles: []string{"伊朗在霍尔木兹海峡的军事行动", "霍尔木兹海峡局势升级"},
 	})
-	if !strings.Contains(text, "相关报道") {
-		t.Errorf("with opts, should contain context marker, got %q", text)
-	}
-	if !strings.Contains(text, "伊朗在霍尔木兹海峡的军事行动") {
-		t.Errorf("should contain first title, got %q", text)
+	if strings.Contains(text, "相关报道") {
+		t.Errorf("event tag no longer includes article context, got %q", text)
 	}
 
 	tag.Category = "person"
@@ -421,5 +418,104 @@ func TestThresholdsForCategoryOverrideIsolation(t *testing.T) {
 	eventGot := ThresholdsForCategory("event")
 	if eventGot.HighSimilarity != 0.97 {
 		t.Errorf("event HighSimilarity should be unaffected, got %.2f", eventGot.HighSimilarity)
+	}
+}
+
+func TestGetEventKeywords(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata models.MetadataMap
+		expected []string
+	}{
+		{
+			name:     "nil metadata",
+			metadata: nil,
+			expected: nil,
+		},
+		{
+			name:     "empty metadata",
+			metadata: models.MetadataMap{},
+			expected: nil,
+		},
+		{
+			name:     "valid keywords",
+			metadata: models.MetadataMap{"event_keywords": []interface{}{"美国", "伊朗", "制裁"}},
+			expected: []string{"美国", "伊朗", "制裁"},
+		},
+		{
+			name:     "string array",
+			metadata: models.MetadataMap{"event_keywords": []string{"美国", "伊朗"}},
+			expected: []string{"美国", "伊朗"},
+		},
+		{
+			name:     "mixed types filtered",
+			metadata: models.MetadataMap{"event_keywords": []interface{}{"美国", 123, "伊朗"}},
+			expected: []string{"美国", "伊朗"},
+		},
+		{
+			name:     "wrong type",
+			metadata: models.MetadataMap{"event_keywords": "not an array"},
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tag := &models.TopicTag{Metadata: tt.metadata}
+			result := getEventKeywords(tag)
+			if len(result) != len(tt.expected) {
+				t.Fatalf("getEventKeywords() = %v (len %d), want %v (len %d)", result, len(result), tt.expected, len(tt.expected))
+			}
+			for i, kw := range result {
+				if kw != tt.expected[i] {
+					t.Errorf("keyword[%d] = %q, want %q", i, kw, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestProcessNextEventKeywordEmbeddings(t *testing.T) {
+	db := setupEmbeddingTestDB(t)
+
+	tag := models.TopicTag{
+		Label:       "特朗普访华",
+		Category:    "event",
+		Kind:        "topic",
+		Slug:        "trump-visits-china",
+		Status:      "active",
+		Description: "美国总统特朗普对中国的国事访问",
+		Metadata: models.MetadataMap{
+			"event_keywords": []interface{}{"特朗普", "中国", "访华", "中美关系"},
+		},
+	}
+	if err := db.Create(&tag).Error; err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+
+	keywords := getEventKeywords(&tag)
+	if len(keywords) != 4 {
+		t.Fatalf("expected 4 keywords, got %d: %v", len(keywords), keywords)
+	}
+
+	expectedKeywords := []string{"特朗普", "中国", "访华", "中美关系"}
+	for i, kw := range keywords {
+		if kw != expectedKeywords[i] {
+			t.Errorf("keyword[%d] = %q, want %q", i, kw, expectedKeywords[i])
+		}
+	}
+
+	for _, kw := range keywords {
+		kwHash := hashText(EmbeddingTypeEventKeyword + "\n" + kw)
+		if kwHash == "" {
+			t.Errorf("empty hash for keyword %q", kw)
+		}
+		var count int64
+		db.Model(&models.TopicTagEmbedding{}).
+			Where("topic_tag_id = ? AND embedding_type = ? AND text_hash = ?", tag.ID, EmbeddingTypeEventKeyword, kwHash).
+			Count(&count)
+		if count != 0 {
+			t.Errorf("embedding should not exist yet for keyword %q", kw)
+		}
 	}
 }

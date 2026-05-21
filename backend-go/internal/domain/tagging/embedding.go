@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	EmbeddingTypeIdentity = "identity"
-	EmbeddingTypeSemantic = "semantic"
+	EmbeddingTypeIdentity     = "identity"
+	EmbeddingTypeSemantic     = "semantic"
+	EmbeddingTypeEventKeyword = "event_keyword"
 )
 
 var (
@@ -75,6 +76,7 @@ type TagMatchResult struct {
 type TagCandidate struct {
 	Tag        *models.TopicTag
 	Similarity float64
+	DateRange  string
 }
 
 // EmbeddingService handles embedding generation and similarity matching
@@ -155,7 +157,65 @@ func (s *EmbeddingService) GenerateEmbedding(ctx context.Context, tag *models.To
 	return embedding, nil
 }
 
-// FindSimilarTags finds existing tags with similar embeddings using pgvector SQL
+func (s *EmbeddingService) GenerateEmbeddingForText(ctx context.Context, tagID uint, embeddingType string, text string) (*models.TopicTagEmbedding, error) {
+	textHash := hashText(embeddingType + "\n" + text)
+
+	req := airouter.EmbeddingRequest{
+		Input:    []string{text},
+		Metadata: map[string]any{"tag_id": tagID},
+	}
+	result, err := s.router.Embed(ctx, req, airouter.CapabilityEmbedding)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrEmbeddingFailed, err)
+	}
+
+	if len(result.Embeddings) == 0 || len(result.Embeddings[0]) == 0 {
+		return nil, ErrEmbeddingFailed
+	}
+
+	vectorJSON, err := json.Marshal(result.Embeddings[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal embedding: %w", err)
+	}
+
+	pgVecStr := floatsToPgVector(result.Embeddings[0])
+
+	embedding := &models.TopicTagEmbedding{
+		TopicTagID:    tagID,
+		EmbeddingType: embeddingType,
+		Vector:        string(vectorJSON),
+		EmbeddingVec:  pgVecStr,
+		Dimension:     result.Dimensions,
+		Model:         result.Model,
+		TextHash:      textHash,
+	}
+
+	return embedding, nil
+}
+
+func getEventKeywords(tag *models.TopicTag) []string {
+	if tag.Metadata == nil {
+		return nil
+	}
+	raw, ok := tag.Metadata["event_keywords"]
+	if !ok {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []interface{}:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	case []string:
+		return v
+	}
+	return nil
+}
+
 func (s *EmbeddingService) FindSimilarTags(ctx context.Context, tag *models.TopicTag, category string, limit int, embeddingType string) ([]TagCandidate, error) {
 	embedding, err := s.GenerateEmbedding(ctx, tag, embeddingType)
 	if err != nil {
@@ -490,80 +550,13 @@ var defaultMergeReembeddingQueueFactory = func() mergeReembeddingEnqueuer {
 
 var mergeReembeddingQueueFactory = defaultMergeReembeddingQueueFactory
 
-// MergeTags merges sourceTag into targetTag within a database transaction.
-// 1. Update all article_topic_tags from source to target (dedup conflicts)
-// 2. Set source tag status='merged', merged_into_id=target.ID
-// 3. Delete source tag's embedding (stale after merge)
-// 4. Recalculate target tag's feed_count
+// MergeTags hard-deletes sourceTag after migrating all references to targetTag.
 func MergeTags(sourceTagID, targetTagID uint) error {
 	if sourceTagID == targetTagID {
 		return fmt.Errorf("cannot merge tag into itself (id=%d)", sourceTagID)
 	}
 
-	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		// Step 1: Migrate article_topic_tags references
-		// Find all source links first
-		var sourceLinks []models.ArticleTopicTag
-		if err := tx.Where("topic_tag_id = ?", sourceTagID).Find(&sourceLinks).Error; err != nil {
-			return fmt.Errorf("find source article_topic_tags: %w", err)
-		}
-
-		for _, link := range sourceLinks {
-			// Check if target already has a link for this article
-			var existingCount int64
-			if err := tx.Model(&models.ArticleTopicTag{}).
-				Where("article_id = ? AND topic_tag_id = ?", link.ArticleID, targetTagID).
-				Count(&existingCount).Error; err != nil {
-				return fmt.Errorf("check existing article_topic_tag for article %d: %w", link.ArticleID, err)
-			}
-
-			if existingCount > 0 {
-				// Target already covers this article — delete the source link
-				if err := tx.Delete(&link).Error; err != nil {
-					return fmt.Errorf("delete duplicate article_topic_tag %d: %w", link.ID, err)
-				}
-			} else {
-				// No conflict — update the source link to point to target
-				if err := tx.Model(&link).Update("topic_tag_id", targetTagID).Error; err != nil {
-					return fmt.Errorf("update article_topic_tag %d to target: %w", link.ID, err)
-				}
-			}
-		}
-
-		// Step 3: Mark source tag as merged
-		if err := tx.Model(&models.TopicTag{}).
-			Where("id = ?", sourceTagID).
-			Updates(map[string]interface{}{
-				"status":         "merged",
-				"merged_into_id": targetTagID,
-			}).Error; err != nil {
-			return fmt.Errorf("mark source tag as merged: %w", err)
-		}
-
-		// Step 4: Migrate topic_tag_relations for abstract hierarchy
-		if err := migrateTagRelations(tx, sourceTagID, targetTagID); err != nil {
-			return fmt.Errorf("migrate tag relations: %w", err)
-		}
-
-		// Step 5: Delete source tag's embedding (stale after merge)
-		if err := tx.Where("topic_tag_id = ?", sourceTagID).Delete(&models.TopicTagEmbedding{}).Error; err != nil {
-			return fmt.Errorf("delete source tag embedding: %w", err)
-		}
-
-		// Step 6: Recalculate target tag's feed_count
-		if err := tx.Model(&models.TopicTag{}).
-			Where("id = ?", targetTagID).
-			Update("feed_count", tx.Model(&models.ArticleTopicTag{}).
-				Select("COUNT(DISTINCT a.feed_id)").
-				Joins("JOIN articles a ON a.id = article_topic_tags.article_id").
-				Where("article_topic_tags.topic_tag_id = ?", targetTagID),
-			).Error; err != nil {
-			return fmt.Errorf("recalculate target feed_count: %w", err)
-		}
-
-		return nil
-	})
-	if err != nil {
+	if err := HardMergeTags(database.DB, sourceTagID, targetTagID); err != nil {
 		return err
 	}
 
@@ -718,7 +711,7 @@ func (s *EmbeddingService) SaveEmbedding(embedding *models.TopicTagEmbedding) er
 	}
 
 	var existing models.TopicTagEmbedding
-	err := database.DB.Where("topic_tag_id = ? AND embedding_type = ?", embedding.TopicTagID, embedding.EmbeddingType).First(&existing).Error
+	err := database.DB.Where("topic_tag_id = ? AND embedding_type = ? AND text_hash = ?", embedding.TopicTagID, embedding.EmbeddingType, embedding.TextHash).First(&existing).Error
 
 	if err == nil {
 		embedding.ID = existing.ID
@@ -806,15 +799,6 @@ func buildTagEmbeddingText(tag *models.TopicTag, embeddingType string, opts ...E
 	}
 
 	text += " " + tag.Category
-
-	if embeddingType == EmbeddingTypeSemantic && tag.Category == "event" {
-		for _, o := range opts {
-			if len(o.ContextTitles) > 0 {
-				text += ". 相关报道: " + strings.Join(o.ContextTitles, "；")
-				break
-			}
-		}
-	}
 
 	return text
 }

@@ -1,115 +1,164 @@
 package logging
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
-	"strings"
 	"sync"
-)
 
-const stdlibFlags = log.LstdFlags | log.Lshortfile
+	"gopkg.in/natefinch/lumberjack.v2"
+)
 
 var (
-	mu          sync.RWMutex
-	infoWriter  io.Writer = os.Stdout
-	errorWriter io.Writer = os.Stderr
-	infoLogger            = log.New(infoWriter, "", stdlibFlags)
-	errorLogger           = log.New(errorWriter, "", stdlibFlags)
+	mu         sync.RWMutex
+	fileWriter io.Writer
 )
 
-type routeWriter struct{}
+type FileConfig struct {
+	Enabled    bool
+	Path       string
+	MaxSizeMB  int
+	MaxBackups int
+	MaxAgeDays int
+	Compress   bool
+}
+
+func Init(level string, fileCfg FileConfig) {
+	var slogLevel slog.Level
+	switch level {
+	case "debug":
+		slogLevel = slog.LevelDebug
+	case "warn":
+		slogLevel = slog.LevelWarn
+	case "error":
+		slogLevel = slog.LevelError
+	default:
+		slogLevel = slog.LevelInfo
+	}
+
+	var handlers []slog.Handler
+
+	consoleHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slogLevel,
+	})
+	handlers = append(handlers, consoleHandler)
+
+	if fileCfg.Enabled && fileCfg.Path != "" {
+		lj := &lumberjack.Logger{
+			Filename:   fileCfg.Path,
+			MaxSize:    fileCfg.MaxSizeMB,
+			MaxBackups: fileCfg.MaxBackups,
+			MaxAge:     fileCfg.MaxAgeDays,
+			Compress:   fileCfg.Compress,
+		}
+		mu.Lock()
+		fileWriter = lj
+		mu.Unlock()
+
+		fileHandler := slog.NewTextHandler(lj, &slog.HandlerOptions{
+			Level: slogLevel,
+		})
+		handlers = append(handlers, fileHandler)
+	}
+
+	handler := &fanoutHandler{handlers: handlers}
+	slog.SetDefault(slog.New(handler))
+}
+
+func Close() {
+	mu.Lock()
+	defer mu.Unlock()
+	if fileWriter != nil {
+		if closer, ok := fileWriter.(interface{ Close() }); ok {
+			closer.Close()
+		}
+		fileWriter = nil
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
+}
 
 func ConfigureStdlib() {
-	log.SetFlags(stdlibFlags)
-	log.SetOutput(routeWriter{})
 }
 
 func SetWriters(info io.Writer, err io.Writer) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if info == nil {
-		info = io.Discard
+	handlers := []slog.Handler{
+		slog.NewTextHandler(info, &slog.HandlerOptions{Level: slog.LevelDebug}),
 	}
-	if err == nil {
-		err = io.Discard
-	}
-
-	infoWriter = info
-	errorWriter = err
-	infoLogger = log.New(infoWriter, "", stdlibFlags)
-	errorLogger = log.New(errorWriter, "", stdlibFlags)
+	_ = err
+	slog.SetDefault(slog.New(&fanoutHandler{handlers: handlers}))
 }
 
 func ResetWriters() {
-	SetWriters(os.Stdout, os.Stderr)
+	slog.SetDefault(slog.New(&fanoutHandler{handlers: []slog.Handler{
+		slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}),
+	}}))
 }
 
 func Infof(format string, args ...any) {
-	writef(infoLogger, "[INFO] "+format, args...)
+	slog.Info(fmt.Sprintf(format, args...))
 }
 
 func Infoln(args ...any) {
-	writeln(infoLogger, "[INFO] "+fmt.Sprint(args...))
+	slog.Info(fmt.Sprint(args...))
 }
 
 func Warnf(format string, args ...any) {
-	writef(infoLogger, "[WARN] "+format, args...)
+	slog.Warn(fmt.Sprintf(format, args...))
 }
 
 func Warnln(args ...any) {
-	writeln(infoLogger, "[WARN] "+fmt.Sprint(args...))
+	slog.Warn(fmt.Sprint(args...))
 }
 
 func Errorf(format string, args ...any) {
-	writef(errorLogger, "[ERROR] "+format, args...)
+	slog.Error(fmt.Sprintf(format, args...))
 }
 
 func Errorln(args ...any) {
-	writeln(errorLogger, "[ERROR] "+fmt.Sprint(args...))
+	slog.Error(fmt.Sprint(args...))
 }
 
 func Fatalf(format string, args ...any) {
-	errorLogger.Output(2, fmt.Sprintf("[FATAL] "+format, args...)) //nolint:errcheck,gosec
+	slog.Error(fmt.Sprintf(format, args...))
 	os.Exit(1)
 }
 
-func (routeWriter) Write(p []byte) (int, error) {
-	line := strings.ToLower(string(p))
-	writer := infoOutput()
-	if isErrorLine(line) {
-		writer = errorOutput()
-	}
-	return writer.Write(p)
+type fanoutHandler struct {
+	handlers []slog.Handler
 }
 
-func isErrorLine(line string) bool {
-	for _, marker := range []string{"[error]", "[fatal]", "[panic]", "[warn]", "warning", "panic", "fatal", "error", "failed"} {
-		if strings.Contains(line, marker) {
+func (h *fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, hh := range h.handlers {
+		if hh.Enabled(ctx, level) {
 			return true
 		}
 	}
 	return false
 }
 
-func writef(logger *log.Logger, format string, args ...any) {
-	logger.Output(3, fmt.Sprintf(format, args...)) //nolint:errcheck,gosec
+func (h *fanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, hh := range h.handlers {
+		if err := hh.Handle(ctx, r.Clone()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func writeln(logger *log.Logger, message string) {
-	logger.Output(3, message) //nolint:errcheck,gosec
+func (h *fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newHandlers := make([]slog.Handler, len(h.handlers))
+	for i, hh := range h.handlers {
+		newHandlers[i] = hh.WithAttrs(attrs)
+	}
+	return &fanoutHandler{handlers: newHandlers}
 }
 
-func infoOutput() io.Writer {
-	mu.RLock()
-	defer mu.RUnlock()
-	return infoWriter
-}
-
-func errorOutput() io.Writer {
-	mu.RLock()
-	defer mu.RUnlock()
-	return errorWriter
+func (h *fanoutHandler) WithGroup(name string) slog.Handler {
+	newHandlers := make([]slog.Handler, len(h.handlers))
+	for i, hh := range h.handlers {
+		newHandlers[i] = hh.WithGroup(name)
+	}
+	return &fanoutHandler{handlers: newHandlers}
 }

@@ -184,16 +184,109 @@ backend-go/
 主题标签能力统一在 `tagging/` 包下，按子包拆分：
 
 - `tagging`（根包）：共享类型和窗口解析、`StartAllWorkers`/`StopAllWorkers` 统一入口
-- `tagging/extraction`：从摘要/文章提取 topic tag
-- `tagging/analysis`：生成并查询 topic analysis，同时承担 embedding 向量化、标签合并、抽象标签管理
+- `tagging/extraction`：从摘要/文章提取 Tag
+- `tagging/analysis`：生成并查询 topic analysis，同时承担 embedding 向量化、Tag 合并（源 DELETE）、Node 管理（唯一入口 PlaceTagInHierarchy，唯一出口 DELETE）、Sector 生成、层级清理 (7 Phase, template-aware)、rebuild_jobs 重建任务（batch 处理 + 限流 + 断点续传）
 - `tagging/watched`：关注标签管理
 - `topicgraph`：返回图谱节点边、详情、相关文章、相关 digest
 
-当前 `tagging/analysis` 里的抽象标签整理链路有三层保护，避免重复抽象标签和错误扁平化：
+#### 抽象标签三层保护
 
-- `processAbstractJudgment` 在创建新 abstract tag 前，会先用临时 semantic embedding 做 shortlist，再让 LLM 判断是否应复用已有同概念 abstract tag
-- `MatchAbstractTagHierarchy` 会遍历多个高相似 abstract 候选；高相似时优先判断“合并还是上下位关系”，而不是默认继续嵌套
-- 新建或复用 abstract tag 并挂上子标签后，会异步执行 `adoptNarrowerAbstractChildren`，主动把更窄的已有 abstract tag 收养进来；如果候选已经有更具体的中间父节点，则保留中间层，只补更宽的父子关系
+`ExtractAbstractTag` 链路仅在显式调用入口触发（叙事反馈 `tag_feedback`、标签聚类 `tag_clustering`、未分类标签整理 `OrganizeUnclassifiedTags`），**不在** `findOrCreateTag` 流程中。
+
+三层保护机制：
+
+- `processAbstractJudgment` 在创建新 Node 前，会先用临时 semantic embedding 做 shortlist，再让 LLM 判断是否应复用已有同概念 Node
+- `MatchAbstractTagHierarchy` 会遍历多个高相似 Node 候选；高相似时优先判断"合并还是上下位关系"，而不是默认继续嵌套
+- 新建或复用 Node 并挂上子 Tag 后，会异步执行 `adoptNarrowerAbstractChildren`，主动把更窄的已有 Node 收养进来；如果候选已经有更具体的中间父节点，则保留中间层，只补更宽的父子关系
+
+#### 标签创建流程（`findOrCreateTag`）
+
+`findOrCreateTag` 采用简化的三级匹配，不再调用 LLM 判断：
+
+1. 缓存命中 → 直接返回
+2. Embedding 三级匹配：
+   - **exact**：精确/别名匹配 → 复用已有 Tag，更新 label/source
+   - **candidates**：相似候选 → 跳过 LLM 判断，直接 fall through 到创建
+   - **no_match**：无匹配 → fall through 到创建
+3. Fallback：slug+category 精确查找，否则创建新 Tag
+
+Event Tag（`category=event`）在创建时跳过 `ensureTagEmbedding`，embedding 在描述+关键词生成后延迟入队。
+
+#### Event 标签多行 Embedding
+
+Event 标签采用多行 embedding 策略：
+
+- **Title 行**：`embedding_type='semantic'`，文本 = label + description（不含文章上下文）
+- **Keyword 行**：`embedding_type='event_keyword'`，每个关键词一行，由 LLM 从标签上下文提取 3-5 个关键实体/动作词，存储在 `metadata.event_keywords`
+
+生成时序：`findOrCreateTag` 创建 Tag → `generateTagDescription` 生成描述+关键词 → 保存到 `metadata.event_keywords` → 入队 embedding queue → 队列 worker 生成 identity + semantic + 所有 event_keyword embedding。
+
+#### Tag 合并（源 DELETE）
+
+合并相似 Tag 时采用硬删除策略，不再使用 `status='merged'` 或 `status='inactive'`：
+
+- `HardMergeTags(sourceID, targetID)` 迁移 article_topic_tags → 迁移 topic_tag_relations (children) → DELETE topic_tag_embeddings → DELETE topic_tags 源行
+- AutoTagMerge 调度器基于 pgvector 余弦相似度 > 0.97 自动触发
+
+#### Sector（板块概念）管理
+
+Sector 存储在 `board_concepts` 表，支持三种生成模式：
+
+- **auto**：unplaced Tag 数超过阈值 → LLM 提议 → 0.85 去重 → 创建 Sector
+- **LLM**：用户触发 → LLM 增量建议 (keep/add/merge/split) → diff 预览 → 确认执行
+- **manual**：用户输入 label → LLM 补全 description → protected=true
+
+新增字段：`source` ('auto'/'llm'/'manual')、`protected` (BOOLEAN)、`declining` (BOOLEAN)、`peak_tag_count` (INT)。
+
+Tag 通过 embedding 余弦相似度 ≥ 0.6 匹配到 Sector（`concept_id` 字段）。
+
+#### Node 生命周期
+
+Node 的创建和删除各只有一个路径：
+
+- **唯一入口**：`PlaceTagInHierarchy` — embedding 就绪 → MatchTagToConcept → depth 检查 → 按 template 放置
+- **唯一出口**：DELETE — 硬删除，不再使用 status='merged'/'inactive' 软状态
+
+中间过程（合并、移动、收养）都通过 `topic_tag_relations` 的增删改实现，不引入新状态字段。
+
+#### 层级清理 (7 Phase)
+
+`tag_hierarchy_cleanup` 调度器按顺序执行 7 个 Phase，受 time budget 限制：
+
+1. 僵尸 Tag：DELETE 无文章/无关系/age>7d
+2. 低质量 Tag：DELETE quality<0.15 且 article_count=1
+3. 空 Node：DELETE 无子节点 Node
+4. 同 Level 去重：同 Sector 同 Level Node 相似>0.90 → HardMergeTags
+5. Template 校验：depth/leaf 位置/children 超限 → hierarchy_pending_changes
+6. Sector 健康检查：auto 空→DELETE, LLM 衰退→declining, manual 不动
+7. 聚类信号：ClusterUnclassifiedTags 输出 anchor，不创建 Node
+
+#### 重建任务 (rebuild_jobs)
+
+模板变更时触发批量重建：
+
+- 保存新 template → DELETE 旧 Node/relations/embeddings → 创建 rebuild_job
+- 叶 Tag (source='llm'/'heuristic') 保留，concept_id 不变
+- 按 batch (默认 20) 处理，支持断点续传 (last_tag_id)
+- WebSocket 推送 `hierarchy_rebuild`，通过 `status` 表示 `processing` / `completed` / `failed`
+
+#### 概念匹配（加权平均）
+
+Event 标签匹配 Sector 时（`concept/matcher.go`）使用加权平均相似度：
+
+- Title（semantic）embedding 权重 ×2.0
+- Keyword（event_keyword）embedding 权重 ×1.0
+
+非 event 标签仍使用单 embedding 余弦相似度。
+
+#### 概念 Bootstrap 最小簇
+
+`BootstrapConcepts`（`concept/bootstrap.go`）对分类内标签进行连通分量聚类：
+
+- 总标签数 < 10 → 跳过整个分类
+- 单簇标签数 < 5（`bootstrapMinClusterSize`）→ 过滤到默认概念
+- 过滤标签按分类创建默认 Sector（event="事件"、keyword="关键词"、person="人物"），状态 `active`，自动生成 embedding
+- 有效簇（≥5 标签）由 LLM 命名后创建 `pending` 状态概念，需用户审阅激活
 
 依赖方向大致是：
 
@@ -208,21 +301,21 @@ tagging (根包，含 topictypes 功能)
 
 ### 叙事摘要
 
-叙事摘要（`narrative/`）基于活跃主题标签和抽象标签树生成每日叙事，支持双轨制 Board 创建。
+叙事摘要（`narrative/`）基于活跃 Tag 和 Node 层级树生成每日叙事，支持双轨制 Board 创建。
 
-叙事系统的核心概念是 Board（板块）和 BoardConcept（板块概念）：
+叙事系统的核心概念是 Board（板块）和 Sector（板块概念，存储在 board_concepts 表）：
 
 - **Board**（`narrative_boards` 表）：每日生成的叙事分组容器，通过 `scope_type`/`scope_category_id` 控制作用域
-- **BoardConcept**（`board_concepts` 表）：持久化的板块概念实体，跨天存在，通过 embedding 匹配接收小抽象树和未分类 event 标签
+- **Sector**（`board_concepts` 表）：持久化的板块概念实体，跨天存在，通过 embedding 匹配接收小 Node 树和未分类 event 标签。支持 auto/LLM/manual 三种生成模式
 
 #### 双轨制 Board 创建
 
 每日生成时走两条轨道：
 
-- **热点板轨道**：大抽象树（≥6 节点，阈值可配置）→ 自动创建热点 Board（`is_system=true`），支持跨日延续（`prev_board_ids`）
-- **概念板轨道**：小抽象树 + 未分类 event → embedding cosine similarity 匹配 BoardConcept → 创建概念 Board（`board_concept_id` 不为空）
+- **热点板轨道**：大 Node 树（≥6 节点，阈值可配置）→ 自动创建热点 Board（`is_system=true`），支持跨日延续（`prev_board_ids`）
+- **概念板轨道**：小 Node 树 + 未分类 event → embedding cosine similarity 匹配 Sector → 创建概念 Board（`board_concept_id` 不为空）
 
-未匹配的标签进入"未归类桶"，超过阈值时触发 LLM 建议新 BoardConcept。
+未匹配的标签进入"未归类桶"，超过阈值时触发 Sector 自动生成或 LLM 建议。
 
 #### 生成流程
 
@@ -237,10 +330,12 @@ tagging (根包，含 topictypes 功能)
 
 #### Board Concept 管理
 
-- LLM 冷启动：扫描所有 active abstract tags 建议初始概念列表
+- LLM 冷启动：扫描所有 active Node 建议初始 Sector 列表
 - 用户通过前端 `BoardConceptManager` 审阅/接受/拒绝/手动创建
+- Sector 支持三种模式：auto (自动生成)、LLM (增量建议)、manual (手动创建 protected)
 - CRUD API：`/api/narratives/board-concepts`
-- 概念 embedding 在创建/更新时自动生成
+- Sector embedding 在创建/更新时自动生成
+- Sector 健康检查：auto 空→DELETE, LLM 衰退→declining, manual 不动
 
 #### 关联叙事后处理
 

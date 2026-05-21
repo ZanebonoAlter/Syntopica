@@ -24,3 +24,13 @@ cors:
   allow_headers:
     - "Content-Type"
     - "Authorization"
+
+log:
+  level: "debug"
+  file:
+    enabled: true
+    path: "logs/app.log"
+    max_size_mb: 50
+    max_backups: 30
+    max_age_days: 30
+    compress: true

@@ -120,13 +120,13 @@ func (TopicTag) TableName() string {
 // TopicTagEmbedding stores vector embeddings for tag similarity matching
 type TopicTagEmbedding struct {
 	ID            uint      `gorm:"primaryKey" json:"id"`
-	TopicTagID    uint      `gorm:"not null;uniqueIndex:idx_topic_tag_embeddings_tag_type" json:"topic_tag_id"`
-	EmbeddingType string    `gorm:"size:20;not null;default:identity;uniqueIndex:idx_topic_tag_embeddings_tag_type" json:"embedding_type"`
+	TopicTagID    uint      `gorm:"not null;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"topic_tag_id"`
+	EmbeddingType string    `gorm:"size:20;not null;default:identity;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"embedding_type"`
 	Vector        string    `gorm:"type:text;not null" json:"vector"` // Deprecated: legacy JSON text payload. Use EmbeddingVec for pgvector.
 	EmbeddingVec  string    `gorm:"type:vector;column:embedding" json:"-"`
-	Dimension     int       `gorm:"not null" json:"dimension"`     // Vector dimension (e.g., 1536 for ada-002)
-	Model         string    `gorm:"size:50;not null" json:"model"` // Model used: "text-embedding-ada-002"
-	TextHash      string    `gorm:"size:64" json:"text_hash"`      // Hash of (label + aliases + category) for re-embedding detection
+	Dimension     int       `gorm:"not null" json:"dimension"`                                                   // Vector dimension (e.g., 1536 for ada-002)
+	Model         string    `gorm:"size:50;not null" json:"model"`                                               // Model used: "text-embedding-ada-002"
+	TextHash      string    `gorm:"size:64;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"text_hash"` // Hash of (label + aliases + category) for re-embedding detection
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 

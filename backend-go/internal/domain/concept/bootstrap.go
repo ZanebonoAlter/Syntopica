@@ -14,7 +14,14 @@ import (
 )
 
 const bootstrapMinTags = 10
+const bootstrapMinClusterSize = 5
 const neighborDistanceThreshold = 0.65
+
+var defaultConceptNames = map[string]string{
+	"event":   "事件",
+	"keyword": "关键词",
+	"person":  "人物",
+}
 
 // bootstrapTag holds a tag with its embedding for clustering.
 type bootstrapTag struct {
@@ -45,15 +52,59 @@ func BootstrapConcepts(ctx context.Context, category string) ([]models.BoardConc
 	clusters := findConnectedComponents(tags, adj)
 	logging.Infof("bootstrap: found %d clusters for category %s from %d tags", len(clusters), category, len(tags))
 
-	// Step 5 & 6: For each cluster, call LLM to name and create concept
+	// Step 4.1: Filter clusters with size < bootstrapMinClusterSize
+	var validClusters [][]bootstrapTag
+	var filteredTags []bootstrapTag
+	for _, cluster := range clusters {
+		if len(cluster) < bootstrapMinClusterSize {
+			filteredTags = append(filteredTags, cluster...)
+			continue
+		}
+		validClusters = append(validClusters, cluster)
+	}
+	logging.Infof("bootstrap: %d valid clusters, %d filtered tags for category %s",
+		len(validClusters), len(filteredTags), category)
+
+	// Step 5 & 6: For each valid cluster, call LLM to name and create concept
 	var created []models.BoardConcept
-	for i, cluster := range clusters {
+	for i, cluster := range validClusters {
 		concept, err := processCluster(ctx, category, cluster, i)
 		if err != nil {
 			logging.Warnf("bootstrap: failed to process cluster %d: %v", i, err)
 			continue
 		}
 		created = append(created, *concept)
+	}
+
+	// Step 4.2: Create default concept for filtered tags
+	if len(filteredTags) > 0 {
+		defaultName := defaultConceptNames[category]
+		if defaultName == "" {
+			defaultName = "其他"
+		}
+		desc := fmt.Sprintf("包含 %d 个未聚类的%s标签", len(filteredTags), defaultName)
+
+		concept := &models.BoardConcept{
+			Name:        defaultName,
+			Description: desc,
+			Category:    category,
+			Status:      "active",
+			ScopeType:   "global",
+			IsSystem:    false,
+		}
+
+		if err := database.DB.Create(concept).Error; err != nil {
+			logging.Warnf("bootstrap: failed to create default concept for category %s: %v", category, err)
+		} else {
+			logging.Infof("bootstrap: created default concept %d (%s) for %d filtered tags in category %s",
+				concept.ID, defaultName, len(filteredTags), category)
+
+			if err := GenerateConceptEmbedding(ctx, concept); err != nil {
+				logging.Warnf("bootstrap: failed to generate embedding for default concept %d: %v", concept.ID, err)
+			}
+
+			created = append(created, *concept)
+		}
 	}
 
 	return created, nil

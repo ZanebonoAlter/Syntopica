@@ -260,7 +260,8 @@ async function savePrimaryProvider() {
 
   const isOllama = primaryProviderForm.provider_type === 'ollama'
   if (!isOllama && !primaryProviderId.value && !primaryProviderForm.api_key) {
-    throw new Error('首次创建主模型需要填写 API Key')
+    pushMessage('error', '首次创建主模型需要填写 API Key')
+    return
   }
 
   saving.value = true
@@ -276,9 +277,6 @@ async function savePrimaryProvider() {
         throw new Error(response.error || '更新主模型失败')
       }
     } else {
-      if (!isOllama && !primaryProviderForm.api_key) {
-        throw new Error('首次创建主模型需要填写 API Key')
-      }
       const response = await aiAdminApi.createProvider(primaryProviderForm)
       if (!response.success || !response.data) {
         throw new Error(response.error || '创建主模型失败')

@@ -45,56 +45,6 @@ func setupIntegrationTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestIntegration_LoadDefaults_BuildForest_CheckAlignment(t *testing.T) {
-	db := setupIntegrationTestDB(t)
-
-	mgr := GetHierarchyManager()
-	mgr.LoadSystemDefaults()
-
-	l1 := models.TopicTag{Label: "产品发布", Slug: "product-launch", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
-	l2 := models.TopicTag{Label: "苹果发布会", Slug: "apple-event", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
-	l3 := models.TopicTag{Label: "iPhone发布", Slug: "iphone-launch", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
-	db.Create(&l1)
-	db.Create(&l2)
-	db.Create(&l3)
-	db.Create(&models.TopicTagRelation{ParentID: l1.ID, ChildID: l2.ID, RelationType: "abstract", CreatedAt: time.Now()})
-	db.Create(&models.TopicTagRelation{ParentID: l2.ID, ChildID: l3.ID, RelationType: "abstract", CreatedAt: time.Now()})
-
-	tmpl := mgr.GetTemplate("event", "")
-	if tmpl == nil {
-		t.Fatal("event template not loaded")
-	}
-	if tmpl.MaxLevel != 3 {
-		t.Fatalf("event MaxLevel = %d, want 3", tmpl.MaxLevel)
-	}
-
-	forest, err := BuildTagForest("event", 2)
-	if err != nil {
-		t.Fatalf("BuildTagForest: %v", err)
-	}
-	if len(forest) != 1 {
-		t.Fatalf("expected 1 tree, got %d", len(forest))
-	}
-
-	issues := Phase6_CheckLevelAlignment(forest, tmpl)
-	if len(issues) != 0 {
-		t.Fatalf("expected no alignment issues for valid 3-level tree, got %v", issues)
-	}
-
-	depth := calculateTreeDepth(forest[0])
-	if depth > tmpl.MaxLevel {
-		t.Errorf("tree depth %d exceeds template max %d", depth, tmpl.MaxLevel)
-	}
-
-	for _, node := range collectAllTags(forest[0]) {
-		level := node.Depth
-		if level > tmpl.MaxLevel {
-			t.Errorf("tag %s at depth %d resolved to level %d, exceeds max %d",
-				node.Tag.Label, node.Depth, level, tmpl.MaxLevel)
-		}
-	}
-}
-
 func TestIntegration_TemplateConstraintsHold(t *testing.T) {
 	db := setupIntegrationTestDB(t)
 	mgr := GetHierarchyManager()
@@ -149,39 +99,6 @@ func TestIntegration_PersonTemplate_TwoLevelTree(t *testing.T) {
 	}
 	if len(forest) != 1 {
 		t.Fatalf("expected 1 tree, got %d", len(forest))
-	}
-
-	issues := Phase6_CheckLevelAlignment(forest, tmpl)
-	if len(issues) != 0 {
-		t.Fatalf("expected no issues for 2-level person tree, got %v", issues)
-	}
-}
-
-func TestIntegration_ReviewHierarchyTreesWithMock(t *testing.T) {
-	db := setupIntegrationTestDB(t)
-
-	root := models.TopicTag{Label: "根", Slug: "int-root", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
-	child := models.TopicTag{Label: "子", Slug: "int-child", Category: "event", Kind: "event", Source: "abstract", Status: "active"}
-	db.Create(&root)
-	db.Create(&child)
-	db.Create(&models.TopicTagRelation{ParentID: root.ID, ChildID: child.ID, RelationType: "abstract", CreatedAt: time.Now()})
-
-	origLLM := callTreeReviewLLMFn
-	callTreeReviewLLMFn = func(prompt string) (*treeReviewJudgment, error) {
-		return &treeReviewJudgment{
-			Moves:        nil,
-			Merges:       nil,
-			NewAbstracts: nil,
-		}, nil
-	}
-	t.Cleanup(func() { callTreeReviewLLMFn = origLLM })
-
-	result, err := ReviewHierarchyTrees("event", 14, nil)
-	if err != nil {
-		t.Fatalf("ReviewHierarchyTrees: %v", err)
-	}
-	if result.TreesReviewed != 1 {
-		t.Fatalf("TreesReviewed = %d, want 1", result.TreesReviewed)
 	}
 }
 

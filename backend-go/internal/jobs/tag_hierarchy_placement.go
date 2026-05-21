@@ -183,18 +183,21 @@ func (s *TagHierarchyPlacementScheduler) executePlacementCycle(ctx context.Conte
 
 	logging.Infoln("Starting tag hierarchy placement cycle")
 
-	// Retry orphan placements
-	retried, err := tagging.RetryOrphanPlacements(ctx)
-	if err != nil {
-		logging.Errorf("RetryOrphanPlacements failed: %v", err)
-		summary.Errors++
-	} else {
-		summary.OrphanRetried = retried
-		logging.Infof("RetryOrphanPlacements: %d placed", retried)
-	}
+	orchestrator := tagging.NewHierarchyOrchestrationService(database.DB)
 
 	// Aggregate orphan abstracts for each category
 	for _, category := range []string{"event", "keyword", "person"} {
+		closure, err := orchestrator.RunCategoryClosureFlow(ctx, category)
+		if err != nil {
+			logging.Errorf("RunCategoryClosureFlow %s failed: %v", category, err)
+			summary.Errors++
+		} else if closure != nil {
+			summary.OrphanRetried += closure.PlacedCount
+			if closure.Bootstrapped {
+				logging.Infof("RunCategoryClosureFlow %s: sector bootstrapped", category)
+			}
+		}
+
 		aggregated, err := tagging.AggregateOrphanTags(ctx, category)
 		if err != nil {
 			logging.Errorf("AggregateOrphanTags %s failed: %v", category, err)

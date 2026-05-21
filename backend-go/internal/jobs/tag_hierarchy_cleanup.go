@@ -20,7 +20,7 @@ import (
 	"my-robot-backend/internal/platform/tracing"
 )
 
-// TagHierarchyCleanupScheduler runs a multi-phase tag cleanup cycle: zombie, zero-article, low-quality, stale-zero-score, flat merge, hierarchy pruning, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill
+// TagHierarchyCleanupScheduler runs a multi-phase tag cleanup cycle: zombie, zero-article, low-quality, stale-zero-score, flat merge, event-clustering, hierarchy pruning, whitespace-dup, degenerate-tree, description backfill
 type TagHierarchyCleanupScheduler struct {
 	cron           *cron.Cron
 	checkInterval  time.Duration
@@ -31,35 +31,22 @@ type TagHierarchyCleanupScheduler struct {
 
 // TagHierarchyCleanupRunSummary records the results of a cleanup run
 type TagHierarchyCleanupRunSummary struct {
-	TriggerSource                  string `json:"trigger_source"`
-	StartedAt                      string `json:"started_at"`
-	FinishedAt                     string `json:"finished_at"`
-	ZombieDeactivated              int    `json:"zombie_deactivated"`
-	ZeroArticleTagsDeactivated     int    `json:"zero_article_tags_deactivated"`
-	LowQualitySingleArticleRemoved int    `json:"low_quality_single_article_removed"`
-	StaleZeroScoreDeactivated      int    `json:"stale_zero_score_deactivated"`
-	FlatMergesApplied              int    `json:"flat_merges_applied"`
-	OrphanedRelations              int    `json:"orphaned_relations"`
-	MultiParentFixed               int    `json:"multi_parent_fixed"`
-	EmptyAbstracts                 int    `json:"empty_abstracts"`
-	SingleChildAbstracts           int    `json:"single_child_abstracts"`
-	WhitespaceDupsMerged           int    `json:"whitespace_dups_merged"`
-	DegenerateTreesFlattened       int    `json:"degenerate_trees_flattened"`
-	TemplateDepthViolations        int    `json:"template_depth_violations"`
-	TemplateCrossCategory          int    `json:"template_cross_category"`
-	AdoptNarrowerProcessed         int    `json:"adopt_narrower_processed"`
-	AbstractUpdateProcessed        int    `json:"abstract_update_processed"`
-	TreesReviewed                  int    `json:"trees_reviewed"`
-	MergesApplied                  int    `json:"merges_applied"`
-	MovesApplied                   int    `json:"moves_applied"`
-	GroupsCreated                  int    `json:"tree_groups_created"`
-	GroupsReused                   int    `json:"tree_groups_reused"`
-	DescriptionBackfilled          int    `json:"description_backfilled"`
-	LLMCallsTotal                  int    `json:"llm_calls_total"`
-	LLMBudgetTotal                 int    `json:"llm_budget_total"`
-	TimedOut                       bool   `json:"timed_out"`
-	Errors                         int    `json:"errors"`
-	Reason                         string `json:"reason"`
+	TriggerSource        string `json:"trigger_source"`
+	StartedAt            string `json:"started_at"`
+	FinishedAt           string `json:"finished_at"`
+	ZombieDeleted        int    `json:"zombie_deleted"`
+	LowQualityDeleted    int    `json:"low_quality_deleted"`
+	EmptyNodesDeleted    int    `json:"empty_nodes_deleted"`
+	SameLevelDeduped     int    `json:"same_level_deduped"`
+	TemplateViolations   int    `json:"template_violations"`
+	SectorsDeleted       int    `json:"sectors_deleted"`
+	SectorsDeclining     int    `json:"sectors_declining"`
+	AnchorSignals        int    `json:"anchor_signals"`
+	LLMCallsTotal        int    `json:"llm_calls_total"`
+	LLMBudgetTotal       int    `json:"llm_budget_total"`
+	TimedOut             bool   `json:"timed_out"`
+	Errors               int    `json:"errors"`
+	Reason               string `json:"reason"`
 }
 
 // NewTagHierarchyCleanupScheduler creates a new scheduler
@@ -197,7 +184,7 @@ func (s *TagHierarchyCleanupScheduler) initSchedulerTask() {
 			nextRun = now.Add(s.checkInterval)
 		}
 		updates := map[string]interface{}{
-			"description":         "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, hierarchy pruning, whitespace-dup, degenerate-tree, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill",
+			"description":         "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, event-clustering, hierarchy pruning, whitespace-dup, degenerate-tree, description backfill",
 			"check_interval":      int(s.checkInterval.Seconds()),
 			"next_execution_time": &nextRun,
 		}
@@ -210,7 +197,7 @@ func (s *TagHierarchyCleanupScheduler) initSchedulerTask() {
 
 	task = models.SchedulerTask{
 		Name:              "tag_hierarchy_cleanup",
-		Description:       "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, hierarchy pruning, whitespace-dup, degenerate-tree, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill",
+		Description:       "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, event-clustering, hierarchy pruning, whitespace-dup, degenerate-tree, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill",
 		CheckInterval:     int(s.checkInterval.Seconds()),
 		Status:            "idle",
 		NextExecutionTime: &nextRun,
@@ -260,259 +247,127 @@ func (s *TagHierarchyCleanupScheduler) runCleanupCycle(ctx context.Context, trig
 	s.updateSchedulerStatus("running", "", nil, nil)
 
 	budget := NewCleanupBudget(60, 30*time.Minute)
-	budget.SetPhaseQuota("phase6", 50)
+	categories := []string{"event", "keyword", "person"}
 
-	logging.Infoln("Starting tag cleanup cycle (multi-phase)")
+	logging.Infoln("Starting tag cleanup cycle V2 (7-phase)")
 
-	// Phase 1: Zombie tag cleanup (no LLM)
-	zombieCount, err := tagging.CleanupZombieTags(tagging.ZombieTagCriteria{
-		MinAgeDays: 7,
-		Categories: []string{"event", "keyword", "person"},
-	})
-	if err != nil {
-		logging.Errorf("Phase 1 zombie cleanup failed: %v", err)
-		summary.Errors++
-	} else {
-		summary.ZombieDeactivated = zombieCount
-		logging.Infof("Phase 1: deactivated %d zombie tags", zombieCount)
-	}
-
-	// Phase 1.5: Zero-article tag cleanup (no LLM)
-	zeroArticleCount, err := tagging.CleanupZeroArticleTags([]string{"event", "keyword", "person"})
-	if err != nil {
-		logging.Errorf("Phase 1.5 zero-article cleanup failed: %v", err)
-		summary.Errors++
-	} else {
-		summary.ZeroArticleTagsDeactivated = zeroArticleCount
-		logging.Infof("Phase 1.5: deactivated %d zero-article tags", zeroArticleCount)
-	}
-
-	// Phase 1.6: Low-quality single-article keyword cleanup (no LLM)
-	lowQualityCount, err := tagging.CleanupLowQualitySingleArticleTags("keyword", 0.15)
-	if err != nil {
-		logging.Errorf("Phase 1.6 low-quality keyword cleanup failed: %v", err)
-		summary.Errors++
-	} else {
-		summary.LowQualitySingleArticleRemoved = lowQualityCount
-		logging.Infof("Phase 1.6: deactivated %d low-quality single-article keyword tags", lowQualityCount)
-	}
-
-	// Phase 1.7: Stale zero-score tag cleanup (no LLM)
-	staleZeroCount, err := tagging.CleanupStaleZeroScoreTags(7)
-	if err != nil {
-		logging.Errorf("Phase 1.7 stale zero-score cleanup failed: %v", err)
-		summary.Errors++
-	} else {
-		summary.StaleZeroScoreDeactivated = staleZeroCount
-		logging.Infof("Phase 1.7: deactivated %d stale zero-score tags", staleZeroCount)
-	}
-
-	// Phase 2: Flat merge (LLM-assisted)
-	phaseStart := time.Now()
-	for _, category := range []string{"event", "keyword"} {
+	// Phase 1: Hard-delete zombie tags
+	for _, cat := range categories {
 		if budget.IsTimedOut() {
-			logging.Infoln("Phase 2: budget timed out, skipping remaining categories")
 			break
 		}
-		merged, mergeErrors, err := tagging.ExecuteFlatMerge(ctx, category, 50)
+		n, err := tagging.CleanupZombieTagsV2(database.DB, cat)
 		if err != nil {
-			logging.Errorf("Phase 2 flat merge failed for %s: %v", category, err)
-			summary.Errors++
-			continue
-		}
-		summary.FlatMergesApplied += merged
-		summary.Errors += len(mergeErrors)
-		for _, e := range mergeErrors {
-			logging.Warnf("Phase 2 %s: %s", category, e)
-		}
-		logging.Infof("Phase 2 (%s): %d merges applied", category, merged)
-	}
-	logging.Infof("Phase 2 completed in %v (processed %d)", time.Since(phaseStart), summary.FlatMergesApplied)
-
-	// Phase 3: Hierarchy pruning
-	orphaned, err := tagging.CleanupOrphanedRelations()
-	if err != nil {
-		logging.Errorf("Phase 3 orphaned relations cleanup failed: %v", err)
-		summary.Errors++
-	}
-	summary.OrphanedRelations = orphaned
-	logging.Infof("Phase 3: removed %d orphaned relations", orphaned)
-
-	resolved, resolveErrors, err := tagging.CleanupMultiParentConflicts()
-	if err != nil {
-		logging.Errorf("Phase 3 multi-parent cleanup failed: %v", err)
-		summary.Errors++
-	}
-	summary.MultiParentFixed = resolved
-	summary.Errors += len(resolveErrors)
-	for _, errMsg := range resolveErrors {
-		logging.Warnf("Phase 3 multi-parent: %s", errMsg)
-	}
-	logging.Infof("Phase 3: resolved %d multi-parent conflicts", resolved)
-
-	emptied, err := tagging.CleanupEmptyAbstractNodes()
-	if err != nil {
-		logging.Errorf("Phase 3 empty abstract cleanup failed: %v", err)
-		summary.Errors++
-	}
-	summary.EmptyAbstracts = emptied
-	logging.Infof("Phase 3: deactivated %d empty abstract tags", emptied)
-
-	singleChild, err := tagging.CleanupSingleChildAbstractNodes()
-	if err != nil {
-		logging.Errorf("Phase 3 single-child abstract cleanup failed: %v", err)
-		summary.Errors++
-	}
-	summary.SingleChildAbstracts = singleChild
-	logging.Infof("Phase 3: promoted %d children from single-child abstract parents", singleChild)
-
-	// Phase 3.5: Whitespace-variant duplicate cleanup
-	whitespaceDups, err := tagging.CleanupWhitespaceDuplicateTags()
-	if err != nil {
-		logging.Errorf("Phase 3.5 whitespace duplicate cleanup failed: %v", err)
-		summary.Errors++
-	}
-	summary.WhitespaceDupsMerged = whitespaceDups
-	logging.Infof("Phase 3.5: merged %d whitespace-variant duplicates", whitespaceDups)
-
-	// Phase 3.6: Degenerate abstract tree flattening
-	degenerateFlattened, err := tagging.CleanupDegenerateAbstractTrees()
-	if err != nil {
-		logging.Errorf("Phase 3.6 degenerate tree flattening failed: %v", err)
-		summary.Errors++
-	}
-	summary.DegenerateTreesFlattened = degenerateFlattened
-	logging.Infof("Phase 3.6: flattened %d degenerate abstract nodes", degenerateFlattened)
-
-	// Phase 3d: Template depth compliance check
-	v, err := tagging.CleanupTemplateViolations()
-	if err != nil {
-		logging.Errorf("Phase 3d template violation check failed: %v", err)
-		summary.Errors++
-	} else {
-		summary.TemplateDepthViolations = v.DepthExceeded
-		summary.TemplateCrossCategory = v.CrossCategory
-		logging.Infof("Phase 3d: found %d depth-exceeded, %d cross-category violations, %d pending added",
-			v.DepthExceeded, v.CrossCategory, v.PendingAdded)
-	}
-
-	// Phase 4: Adopt narrower queue processing (before tree review)
-	phaseStart = time.Now()
-	var adopted int
-	if budget.IsTimedOut() {
-		logging.Infoln("Phase 4: budget timed out, skipping adopt-narrower")
-	} else {
-		adopted, err = tagging.ProcessPendingAdoptNarrowerTasks()
-		if err != nil {
-			logging.Errorf("Phase 4 adopt narrower failed: %v", err)
+			logging.Errorf("Phase 1 zombie cleanup failed for %s: %v", cat, err)
 			summary.Errors++
 		} else {
-			summary.AdoptNarrowerProcessed = adopted
-			logging.Infof("Phase 4: processed %d adopt-narrower tasks", adopted)
+			summary.ZombieDeleted += n
+			logging.Infof("Phase 1 (%s): hard-deleted %d zombie tags", cat, n)
 		}
 	}
-	logging.Infof("Phase 4 completed in %v (processed %d)", time.Since(phaseStart), adopted)
 
-	// Phase 5: Abstract tag update queue processing (label/description refresh)
-	phaseStart = time.Now()
-	var updated int
-	if budget.IsTimedOut() {
-		logging.Infoln("Phase 5: budget timed out, skipping abstract-tag-update")
-	} else {
-		updated, err = tagging.ProcessPendingAbstractTagUpdateTasks()
-		if err != nil {
-			logging.Errorf("Phase 5 abstract tag update failed: %v", err)
-			summary.Errors++
-		} else {
-			summary.AbstractUpdateProcessed = updated
-			logging.Infof("Phase 5: processed %d abstract-tag-update tasks", updated)
-		}
-	}
-	logging.Infof("Phase 5 completed in %v (processed %d)", time.Since(phaseStart), updated)
-
-	// Phase 6: Template-aligned tree review
-	phaseStart = time.Now()
-	for _, category := range []string{"event", "keyword", "person"} {
+	// Phase 2: Hard-delete low quality tags
+	for _, cat := range categories {
 		if budget.IsTimedOut() {
-			logging.Infoln("Phase 6: budget timed out, skipping remaining categories")
 			break
 		}
-
-		tmpl := tagging.GetHierarchyManager().GetTemplate(category, "")
-		if tmpl == nil {
-			logging.Warnf("Phase 6: no template for category %s, skipping", category)
-			continue
-		}
-
-		forest, forestErr := tagging.BuildTagForest(category, 0)
-		if forestErr != nil {
-			logging.Warnf("Phase 6: failed to build forest for %s: %v", category, forestErr)
-			continue
-		}
-		if len(forest) == 0 {
-			continue
-		}
-
-		alignmentIssues := tagging.Phase6_CheckLevelAlignment(forest, tmpl)
-		if len(alignmentIssues) > 0 {
-			logging.Infof("Phase 6 (%s): found %d level alignment issues", category, len(alignmentIssues))
-			for _, issue := range alignmentIssues {
-				logging.Warnf("Phase 6 alignment: %s", issue)
-			}
-		}
-
-		l1Deduped, _ := tagging.Phase6_DedupL1(ctx, tmpl)
-		l2Deduped, _ := tagging.Phase6_DedupL2(ctx, tmpl)
-		auditIssues, _ := tagging.Phase6_SampleAuditLeaves(ctx, tmpl)
-
-		logging.Infof("Phase 6 (%s): alignment=%d issues, L1 dedup=%d, L2 dedup=%d, leaf audit=%d issues",
-			category, len(alignmentIssues), l1Deduped, l2Deduped, auditIssues)
-
-		reviewResult, reviewErr := tagging.ReviewHierarchyTrees(category, 7, budget)
-		if reviewErr != nil {
-			logging.Errorf("Phase 6 tree review failed for %s: %v", category, reviewErr)
-			summary.Errors++
-			continue
-		}
-		summary.TreesReviewed += reviewResult.TreesReviewed
-		summary.MergesApplied += reviewResult.MergesApplied
-		summary.MovesApplied += reviewResult.MovesApplied
-		summary.GroupsCreated += reviewResult.GroupsCreated
-		summary.GroupsReused += reviewResult.GroupsReused
-		summary.Errors += len(reviewResult.Errors)
-		for _, errMsg := range reviewResult.Errors {
-			logging.Warnf("Phase 6 %s: %s", category, errMsg)
-		}
-		logging.Infof("Phase 6 (%s): reviewed %d trees, %d merges, %d moves, %d groups created, %d groups reused", category, reviewResult.TreesReviewed, reviewResult.MergesApplied, reviewResult.MovesApplied, reviewResult.GroupsCreated, reviewResult.GroupsReused)
-	}
-	logging.Infof("Phase 6 completed in %v (processed %d)", time.Since(phaseStart), summary.TreesReviewed)
-
-	// Phase 7: Description backfill for tags missing descriptions
-	phaseStart = time.Now()
-	var backfilled int
-	if budget.IsTimedOut() {
-		logging.Infoln("Phase 7: budget timed out, skipping description backfill")
-	} else {
-		backfilled, err = tagging.BackfillMissingDescriptions()
+		n, err := tagging.CleanupLowQualityTagsV2(database.DB, cat)
 		if err != nil {
-			logging.Errorf("Phase 7 description backfill failed: %v", err)
+			logging.Errorf("Phase 2 low-quality cleanup failed for %s: %v", cat, err)
 			summary.Errors++
 		} else {
-			summary.DescriptionBackfilled = backfilled
-			logging.Infof("Phase 7: triggered description backfill for %d tags", backfilled)
+			summary.LowQualityDeleted += n
+			logging.Infof("Phase 2 (%s): hard-deleted %d low-quality tags", cat, n)
 		}
 	}
-	logging.Infof("Phase 7 completed in %v (processed %d)", time.Since(phaseStart), backfilled)
+
+	// Phase 3: Hard-delete empty abstract nodes
+	for _, cat := range categories {
+		if budget.IsTimedOut() {
+			break
+		}
+		n, err := tagging.CleanupEmptyNodesV2(database.DB, cat)
+		if err != nil {
+			logging.Errorf("Phase 3 empty nodes cleanup failed for %s: %v", cat, err)
+			summary.Errors++
+		} else {
+			summary.EmptyNodesDeleted += n
+			logging.Infof("Phase 3 (%s): hard-deleted %d empty nodes", cat, n)
+		}
+	}
+
+	// Phase 4: Same-level dedup
+	for _, cat := range categories {
+		if budget.IsTimedOut() {
+			break
+		}
+		n, err := tagging.CleanupSameLevelDuplicates(database.DB, cat)
+		if err != nil {
+			logging.Errorf("Phase 4 same-level dedup failed for %s: %v", cat, err)
+			summary.Errors++
+		} else {
+			summary.SameLevelDeduped += n
+			logging.Infof("Phase 4 (%s): deduped %d same-level tags", cat, n)
+		}
+	}
+
+	// Phase 5: Template compliance → pending changes
+	for _, cat := range categories {
+		if budget.IsTimedOut() {
+			break
+		}
+		n, err := tagging.CleanupTemplateViolationsV2(database.DB, cat)
+		if err != nil {
+			logging.Errorf("Phase 5 template violations failed for %s: %v", cat, err)
+			summary.Errors++
+		} else {
+			summary.TemplateViolations += n
+			logging.Infof("Phase 5 (%s): %d template violations", cat, n)
+		}
+	}
+
+	// Phase 6: Sector health check
+	for _, cat := range categories {
+		if budget.IsTimedOut() {
+			break
+		}
+		deletedAuto, markedDeclining, err := tagging.CheckSectorHealth(ctx, database.DB, cat)
+		if err != nil {
+			logging.Errorf("Phase 6 sector health failed for %s: %v", cat, err)
+			summary.Errors++
+		} else {
+			summary.SectorsDeleted += deletedAuto
+			summary.SectorsDeclining += markedDeclining
+			logging.Infof("Phase 6 (%s): deleted %d auto sectors, marked %d declining", cat, deletedAuto, markedDeclining)
+		}
+	}
+
+	// Phase 7: Generate anchor signals
+	for _, cat := range categories {
+		if budget.IsTimedOut() {
+			break
+		}
+		signals, err := tagging.GenerateAnchorSignals(ctx, database.DB, cat)
+		if err != nil {
+			logging.Errorf("Phase 7 anchor signals failed for %s: %v", cat, err)
+			summary.Errors++
+		} else {
+			summary.AnchorSignals += len(signals)
+			logging.Infof("Phase 7 (%s): %d anchor signals generated", cat, len(signals))
+		}
+	}
 
 	summary.FinishedAt = time.Now().Format(time.RFC3339)
 	budgetStats := budget.Stats()
 	summary.LLMCallsTotal = budgetStats.TotalConsumed
 	summary.LLMBudgetTotal = budgetStats.TotalBudget
 	summary.TimedOut = budgetStats.TimedOut
-	summary.Reason = fmt.Sprintf("zombie=%d, zero_article=%d, low_quality_single=%d, stale_zero_score=%d, flat_merges=%d, orphaned_rels=%d, multi_parent=%d, empty_abstracts=%d, single_child_abstracts=%d, whitespace_dups=%d, degenerate_flattened=%d, adopt_narrower=%d, abstract_update=%d, trees_reviewed=%d, merges=%d, moves=%d, groups_created=%d, groups_reused=%d, desc_backfilled=%d",
-		summary.ZombieDeactivated, summary.ZeroArticleTagsDeactivated, summary.LowQualitySingleArticleRemoved, summary.StaleZeroScoreDeactivated, summary.FlatMergesApplied, summary.OrphanedRelations, summary.MultiParentFixed, summary.EmptyAbstracts, summary.SingleChildAbstracts, summary.WhitespaceDupsMerged, summary.DegenerateTreesFlattened, summary.AdoptNarrowerProcessed, summary.AbstractUpdateProcessed, summary.TreesReviewed, summary.MergesApplied, summary.MovesApplied, summary.GroupsCreated, summary.GroupsReused, summary.DescriptionBackfilled)
+	summary.Reason = fmt.Sprintf("zombie=%d, low_quality=%d, empty_nodes=%d, deduped=%d, violations=%d, sectors_deleted=%d, sectors_declining=%d, anchors=%d",
+		summary.ZombieDeleted, summary.LowQualityDeleted, summary.EmptyNodesDeleted,
+		summary.SameLevelDeduped, summary.TemplateViolations,
+		summary.SectorsDeleted, summary.SectorsDeclining, summary.AnchorSignals)
 
-	logging.Infof("Tag cleanup cycle completed: %s", summary.Reason)
+	logging.Infof("Tag cleanup V2 cycle completed: %s", summary.Reason)
 
 	if summary.Errors > 0 {
 		s.updateSchedulerStatus("success_with_errors", "", &startTime, summary)
@@ -569,7 +424,7 @@ func (s *TagHierarchyCleanupScheduler) updateSchedulerStatus(status, lastError s
 
 	task = models.SchedulerTask{
 		Name:              "tag_hierarchy_cleanup",
-		Description:       "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, hierarchy pruning, whitespace-dup, degenerate-tree, clustering, queued multi-parent, adopt narrower, abstract update, tree review, description backfill",
+		Description:       "multi-phase tag cleanup: zombie, zero-article, low-quality, stale-zero-score, flat merge, event-clustering, hierarchy pruning, whitespace-dup, degenerate-tree, description backfill",
 		CheckInterval:     int(s.checkInterval.Seconds()),
 		Status:            status,
 		LastError:         lastError,

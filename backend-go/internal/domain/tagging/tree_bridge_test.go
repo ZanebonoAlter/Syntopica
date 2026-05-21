@@ -189,11 +189,9 @@ func TestExecuteTreeBridgePairs_MergeThenSkipParent(t *testing.T) {
 	}
 
 	var merged models.TopicTag
-	if err := db.First(&merged, tagA.ID).Error; err != nil {
-		t.Fatalf("load merged tag: %v", err)
-	}
-	if merged.Status != "merged" {
-		t.Errorf("tagA status = %q, want merged", merged.Status)
+	err = db.First(&merged, tagA.ID).Error
+	if err == nil {
+		t.Errorf("tagA should be hard-deleted but still exists (status=%q)", merged.Status)
 	}
 
 	var kept models.TopicTag

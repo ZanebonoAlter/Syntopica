@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -35,6 +34,7 @@ func setupTagCleanupTestDB(t *testing.T) *gorm.DB {
 		&models.Article{},
 		&models.EmbeddingConfig{},
 		&models.MergeReembeddingQueue{},
+		&models.HierarchyAnchorSignal{},
 	); err != nil {
 		t.Fatalf("migrate test tables: %v", err)
 	}
@@ -115,75 +115,6 @@ func TestCleanupOrphanedRelations(t *testing.T) {
 
 func TestCleanupMultiParentConflicts_Signature(t *testing.T) {
 	_ = CleanupMultiParentConflicts
-}
-
-func TestCleanupEmptyAbstractNodes_Signature(t *testing.T) {
-	_ = CleanupEmptyAbstractNodes
-}
-
-func TestCleanupEmptyAbstractNodes_DeactivatesLeafAbstractTags(t *testing.T) {
-	db := setupTagCleanupTestDB(t)
-
-	leaf := models.TopicTag{
-		Slug:      "leaf-abstract",
-		Label:     "Leaf Abstract",
-		Category:  "event",
-		Source:    "abstract",
-		Status:    "active",
-		CreatedAt: time.Now().Add(-24 * time.Hour),
-	}
-	parent := models.TopicTag{
-		Slug:      "parent-abstract",
-		Label:     "Parent Abstract",
-		Category:  "event",
-		Source:    "abstract",
-		Status:    "active",
-		CreatedAt: time.Now().Add(-24 * time.Hour),
-	}
-	child := models.TopicTag{
-		Slug:      "child-tag",
-		Label:     "Child Tag",
-		Category:  "event",
-		Source:    "llm",
-		Status:    "active",
-		CreatedAt: time.Now().Add(-24 * time.Hour),
-	}
-	for _, tag := range []*models.TopicTag{&leaf, &parent, &child} {
-		if err := db.Create(tag).Error; err != nil {
-			t.Fatalf("create tag %s: %v", tag.Label, err)
-		}
-	}
-	if err := db.Create(&models.TopicTagRelation{
-		ParentID:     parent.ID,
-		ChildID:      child.ID,
-		RelationType: "abstract",
-	}).Error; err != nil {
-		t.Fatalf("create relation: %v", err)
-	}
-
-	deactivated, err := CleanupEmptyAbstractNodes()
-	if err != nil {
-		t.Fatalf("CleanupEmptyAbstractNodes returned error: %v", err)
-	}
-	if deactivated != 1 {
-		t.Fatalf("deactivated = %d, want 1", deactivated)
-	}
-
-	var refreshedLeaf models.TopicTag
-	if err := db.First(&refreshedLeaf, leaf.ID).Error; err != nil {
-		t.Fatalf("reload leaf: %v", err)
-	}
-	if refreshedLeaf.Status != "inactive" {
-		t.Fatalf("leaf status = %q, want inactive", refreshedLeaf.Status)
-	}
-
-	var refreshedParent models.TopicTag
-	if err := db.First(&refreshedParent, parent.ID).Error; err != nil {
-		t.Fatalf("reload parent: %v", err)
-	}
-	if refreshedParent.Status != "active" {
-		t.Fatalf("parent status = %q, want active", refreshedParent.Status)
-	}
 }
 
 func TestQuoteCategories(t *testing.T) {
@@ -364,11 +295,11 @@ func TestCleanupWhitespaceDuplicateTags_MergesVariantPair(t *testing.T) {
 		t.Fatalf("merged = %d, want 1", merged)
 	}
 
-	// Verify tag2 is now merged
+	// Verify tag2 is now hard-deleted
 	var result models.TopicTag
-	db.First(&result, tag2.ID)
-	if result.Status != "merged" {
-		t.Fatalf("tag2 status = %q, want 'merged'", result.Status)
+	err = db.First(&result, tag2.ID).Error
+	if err == nil {
+		t.Fatalf("tag2 should be hard-deleted but still exists (status=%q)", result.Status)
 	}
 
 	// Verify tag1 is still active

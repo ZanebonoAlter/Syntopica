@@ -58,27 +58,8 @@ func (s *EmbeddingQueueService) Enqueue(tagID uint) error {
 		return err
 	}
 
-	var existing models.TopicTagEmbedding
-	err = s.db.Where("topic_tag_id = ? AND embedding_type = ?", tagID, EmbeddingTypeIdentity).First(&existing).Error
-	if err == nil {
-		currentHash := hashText(EmbeddingTypeIdentity + "\n" + buildTagEmbeddingText(&tag, EmbeddingTypeIdentity))
-		if existing.TextHash == currentHash {
-			var semanticExisting models.TopicTagEmbedding
-			semErr := s.db.Where("topic_tag_id = ? AND embedding_type = ?", tagID, EmbeddingTypeSemantic).First(&semanticExisting).Error
-			if semErr == nil {
-				var semOpts []EmbeddingTextOptions
-				if tag.Category == "event" {
-					titles := GetTagContextTitles(tag.ID, 5)
-					if len(titles) > 0 {
-						semOpts = append(semOpts, EmbeddingTextOptions{ContextTitles: titles})
-					}
-				}
-				semHash := hashText(EmbeddingTypeSemantic + "\n" + buildTagEmbeddingText(&tag, EmbeddingTypeSemantic, semOpts...))
-				if semanticExisting.TextHash == semHash {
-					return nil
-				}
-			}
-		}
+	if s.allEmbeddingsCurrent(&tag) {
+		return nil
 	}
 
 	task := models.EmbeddingQueue{
@@ -86,6 +67,42 @@ func (s *EmbeddingQueueService) Enqueue(tagID uint) error {
 		Status: models.EmbeddingQueueStatusPending,
 	}
 	return s.db.Create(&task).Error
+}
+
+func (s *EmbeddingQueueService) allEmbeddingsCurrent(tag *models.TopicTag) bool {
+	var identityEmb models.TopicTagEmbedding
+	if err := s.db.Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeIdentity).First(&identityEmb).Error; err != nil {
+		return false
+	}
+	identityHash := hashText(EmbeddingTypeIdentity + "\n" + buildTagEmbeddingText(tag, EmbeddingTypeIdentity))
+	if identityEmb.TextHash != identityHash {
+		return false
+	}
+
+	var semanticEmb models.TopicTagEmbedding
+	if err := s.db.Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeSemantic).First(&semanticEmb).Error; err != nil {
+		return false
+	}
+	semanticHash := hashText(EmbeddingTypeSemantic + "\n" + buildTagEmbeddingText(tag, EmbeddingTypeSemantic))
+	if semanticEmb.TextHash != semanticHash {
+		return false
+	}
+
+	if tag.Category == "event" {
+		keywords := getEventKeywords(tag)
+		for _, kw := range keywords {
+			kwHash := hashText(EmbeddingTypeEventKeyword + "\n" + kw)
+			var kwCount int64
+			s.db.Model(&models.TopicTagEmbedding{}).
+				Where("topic_tag_id = ? AND embedding_type = ? AND text_hash = ?", tag.ID, EmbeddingTypeEventKeyword, kwHash).
+				Count(&kwCount)
+			if kwCount == 0 {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // GetStatus returns a count of tasks grouped by status.
@@ -278,14 +295,7 @@ func (s *EmbeddingQueueService) processNext() {
 		return
 	}
 
-	var semOpts []EmbeddingTextOptions
-	if tag.Category == "event" {
-		titles := GetTagContextTitles(tag.ID, 5)
-		if len(titles) > 0 {
-			semOpts = append(semOpts, EmbeddingTextOptions{ContextTitles: titles})
-		}
-	}
-	semanticEmb, semErr := s.embedding.GenerateEmbedding(ctx, &tag, EmbeddingTypeSemantic, semOpts...)
+	semanticEmb, semErr := s.embedding.GenerateEmbedding(ctx, &tag, EmbeddingTypeSemantic)
 	if semErr != nil {
 		s.markFailed(task.ID, "failed to generate semantic embedding: "+semErr.Error())
 		return
@@ -294,6 +304,24 @@ func (s *EmbeddingQueueService) processNext() {
 	if err := s.embedding.SaveEmbedding(semanticEmb); err != nil {
 		s.markFailed(task.ID, "failed to save semantic embedding: "+semErr.Error())
 		return
+	}
+
+	if tag.Category == "event" {
+		s.db.Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeEventKeyword).Delete(&models.TopicTagEmbedding{})
+
+		keywords := getEventKeywords(&tag)
+		for _, kw := range keywords {
+			kwEmb, kwErr := s.embedding.GenerateEmbeddingForText(ctx, tag.ID, EmbeddingTypeEventKeyword, kw)
+			if kwErr != nil {
+				s.logger.Warn("failed to generate keyword embedding", zap.Uint("tag_id", tag.ID), zap.String("keyword", kw), zap.Error(kwErr))
+				continue
+			}
+			if err := s.embedding.SaveEmbedding(kwEmb); err != nil {
+				s.logger.Warn("failed to save keyword embedding", zap.Uint("tag_id", tag.ID), zap.String("keyword", kw), zap.Error(err))
+				continue
+			}
+		}
+		s.logger.Info("event keyword embeddings generated", zap.Uint("tag_id", tag.ID), zap.Int("keyword_count", len(keywords)))
 	}
 
 	// Mark completed

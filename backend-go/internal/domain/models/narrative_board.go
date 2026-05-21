@@ -15,6 +15,7 @@ type NarrativeBoard struct {
 	PrevBoardIDs    string    `gorm:"type:text" json:"prev_board_ids"`
 	AbstractTagID   *uint     `gorm:"index" json:"abstract_tag_id"`
 	BoardConceptID  *uint     `gorm:"index" json:"board_concept_id,omitempty"`
+	SemanticBoardID *uint     `gorm:"index:idx_narrative_boards_semantic_board_id" json:"semantic_board_id,omitempty"`
 	IsSystem        bool      `gorm:"not null;default:false" json:"is_system"`
 	CreatedAt       time.Time `json:"created_at"`
 }

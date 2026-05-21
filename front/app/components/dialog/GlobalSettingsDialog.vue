@@ -4,9 +4,6 @@ import AIRouterSettingsPanel from '~/features/ai/components/AIRouterSettingsPane
 import EmbeddingConfigPanel from '~/features/ai/components/EmbeddingConfigPanel.vue'
 import EmbeddingQueuePanel from '~/features/ai/components/EmbeddingQueuePanel.vue'
 import TagQueuePanel from '~/features/topic-graph/components/TagQueuePanel.vue'
-import HierarchyConfigPage from '~/features/hierarchy-config/HierarchyConfigPage.vue'
-import HierarchyPendingList from '~/features/hierarchy-config/HierarchyPendingList.vue'
-import RebuildTrigger from '~/features/hierarchy-config/RebuildTrigger.vue'
 import type { RssFeed } from '~/types'
 import type { ReadingStats, UserPreference } from '~/types/reading_behavior'
 import type { SchedulerStatus, SchedulerTriggerResult } from '~/types/scheduler'
@@ -37,7 +34,7 @@ const apiStore = useApiStore()
 const feedsStore = useFeedsStore()
 const preferencesStore = usePreferencesStore()
 
-const activeTab = ref<'feeds' | 'categories' | 'general' | 'queues' | 'preferences' | 'firecrawl' | 'schedulers' | 'hierarchy'>('feeds')
+const activeTab = ref<'feeds' | 'categories' | 'general' | 'queues' | 'preferences' | 'firecrawl' | 'schedulers'>('feeds')
 const collapsedCategories = ref<Record<string, boolean>>({})
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -560,13 +557,6 @@ function formatNextRun(nextRun: string | null | undefined): string {
           @click="activeTab = 'schedulers'"
         >
           定时任务
-        </button>
-        <button
-          class="px-6 py-3 text-sm font-medium transition-colors"
-          :class="activeTab === 'hierarchy' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'"
-          @click="activeTab = 'hierarchy'"
-        >
-          层级配置
         </button>
       </div>
 
@@ -1456,12 +1446,6 @@ function formatNextRun(nextRun: string | null | undefined): string {
           </div>
         </div>
 
-        <!-- Hierarchy Config Tab -->
-        <div v-if="activeTab === 'hierarchy'" class="space-y-6">
-          <HierarchyConfigPage />
-          <RebuildTrigger />
-          <HierarchyPendingList />
-        </div>
       </div>
 
       <!-- Footer -->

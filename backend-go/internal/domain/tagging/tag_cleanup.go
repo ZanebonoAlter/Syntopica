@@ -21,6 +21,7 @@ type ZombieTagCriteria struct {
 	Categories []string
 }
 
+// DEPRECATED: replaced by cleanup_v2.go
 func CleanupZombieTags(criteria ZombieTagCriteria) (int, error) {
 	result := buildZombieTagQuery(database.DB.Model(&models.TopicTag{}), criteria)
 
@@ -368,6 +369,7 @@ func CleanupMultiParentConflicts() (int, []string, error) {
 	return totalResolved, allErrors, nil
 }
 
+// DEPRECATED: replaced by cleanup_v2.go
 func deactivateTagsWithCleanup(tagIDs []uint) error {
 	if len(tagIDs) == 0 {
 		return nil
@@ -401,6 +403,7 @@ func CleanupZeroArticleTags(categories []string) (int, error) {
 	return len(ids), nil
 }
 
+// DEPRECATED: replaced by cleanup_v2.go
 func CleanupLowQualitySingleArticleTags(category string, maxScore float64) (int, error) {
 	query := database.DB.Model(&models.TopicTag{}).
 		Where("status = ? AND kind != ? AND source != ?", "active", "abstract", "abstract").
@@ -424,121 +427,7 @@ func CleanupLowQualitySingleArticleTags(category string, maxScore float64) (int,
 	return len(ids), nil
 }
 
-func CleanupStaleZeroScoreTags(ageDays int) (int, error) {
-	cutoff := time.Now().AddDate(0, 0, -ageDays)
-	query := database.DB.Model(&models.TopicTag{}).
-		Where("status = ? AND kind != ? AND source != ?", "active", "abstract", "abstract").
-		Where("quality_score < ?", 0.05).
-		Where("created_at < ?", cutoff)
 
-	var ids []uint
-	if err := query.Pluck("topic_tags.id", &ids).Error; err != nil {
-		return 0, fmt.Errorf("pluck stale zero-score tag ids: %w", err)
-	}
-	if len(ids) == 0 {
-		return 0, nil
-	}
-
-	if err := deactivateTagsWithCleanup(ids); err != nil {
-		return 0, fmt.Errorf("cleanup stale zero-score tags: %w", err)
-	}
-
-	logging.Infof("CleanupStaleZeroScoreTags: deactivated %d stale zero-score tags (age > %d days)", len(ids), ageDays)
-	return len(ids), nil
-}
-
-func CleanupEmptyAbstractNodes() (int, error) {
-	query := database.DB.Model(&models.TopicTag{}).
-		Where("source = ? AND status = ?", "abstract", "active").
-		Where("NOT EXISTS (SELECT 1 FROM topic_tag_relations r WHERE r.parent_id = topic_tags.id AND r.relation_type = ?)", "abstract")
-
-	var ids []uint
-	if err := query.Pluck("topic_tags.id", &ids).Error; err != nil {
-		return 0, fmt.Errorf("load empty abstract ids: %w", err)
-	}
-	if len(ids) == 0 {
-		return 0, nil
-	}
-
-	if err := database.DB.Model(&models.TopicTag{}).Where("id IN ?", ids).Updates(map[string]interface{}{
-		"status": "inactive",
-	}).Error; err != nil {
-		return 0, fmt.Errorf("cleanup empty abstracts: %w", err)
-	}
-
-	logging.Infof("CleanupEmptyAbstractNodes: deactivated %d empty abstract tags", len(ids))
-	return len(ids), nil
-}
-
-type singleChildRow struct {
-	ParentID uint
-	ChildID  uint
-}
-
-func CleanupSingleChildAbstractNodes() (int, error) {
-	var rows []singleChildRow
-	if err := database.DB.Raw(`
-		SELECT r.parent_id, MIN(r.child_id) AS child_id
-		FROM topic_tag_relations r
-		JOIN topic_tags p ON p.id = r.parent_id
-		WHERE r.relation_type = 'abstract'
-		  AND p.source = 'abstract'
-		  AND p.status = 'active'
-		GROUP BY r.parent_id
-		HAVING COUNT(DISTINCT r.child_id) = 1
-	`).Scan(&rows).Error; err != nil {
-		return 0, fmt.Errorf("load single-child abstract nodes: %w", err)
-	}
-	if len(rows) == 0 {
-		return 0, nil
-	}
-
-	count := 0
-	for _, row := range rows {
-		if err := promoteSingleChild(row.ParentID, row.ChildID); err != nil {
-			logging.Warnf("CleanupSingleChildAbstractNodes: failed to promote child %d for parent %d: %v",
-				row.ChildID, row.ParentID, err)
-			continue
-		}
-		count++
-	}
-
-	logging.Infof("CleanupSingleChildAbstractNodes: promoted %d children, deactivated single-child abstract parents", count)
-	return count, nil
-}
-
-func promoteSingleChild(parentID, childID uint) error {
-	return database.DB.Transaction(func(tx *gorm.DB) error {
-		var grandparentIDs []uint
-		tx.Model(&models.TopicTagRelation{}).
-			Where("relation_type = ? AND child_id = ?", "abstract", parentID).
-			Pluck("parent_id", &grandparentIDs)
-
-		for _, gpID := range grandparentIDs {
-			var existing int64
-			tx.Model(&models.TopicTagRelation{}).
-				Where("relation_type = ? AND parent_id = ? AND child_id = ?", "abstract", gpID, childID).
-				Count(&existing)
-			if existing == 0 {
-				if err := tx.Create(&models.TopicTagRelation{
-					ParentID:        gpID,
-					ChildID:         childID,
-					RelationType:    "abstract",
-					SimilarityScore: 0,
-				}).Error; err != nil {
-					return fmt.Errorf("link grandparent %d to child %d: %w", gpID, childID, err)
-				}
-			}
-		}
-
-		tx.Where("relation_type = ? AND child_id = ?", "abstract", parentID).Delete(&models.TopicTagRelation{})
-		tx.Where("relation_type = ? AND parent_id = ? AND child_id = ?", "abstract", parentID, childID).Delete(&models.TopicTagRelation{})
-
-		tx.Where("topic_tag_id = ?", parentID).Delete(&models.TopicTagEmbedding{})
-		return tx.Model(&models.TopicTag{}).Where("id = ?", parentID).
-			Updates(map[string]interface{}{"status": "inactive"}).Error
-	})
-}
 
 // normalizeSlugForComparison strips all whitespace from a slug for dedup comparison.
 var whitespacePattern = regexp.MustCompile(`\s+`)
@@ -620,6 +509,7 @@ func tagPtrsToIDs(tags []*models.TopicTag) []uint {
 // CleanupDegenerateAbstractTrees walks abstract tag chains, computes leaf-to-depth ratio,
 // and flattens degenerate chains by promoting children to the nearest ancestor with
 // a healthy ratio (>= 1.5). Intermediate nodes in degenerate chains are deactivated.
+// DEPRECATED: replaced by cleanup_v2.go
 func CleanupDegenerateAbstractTrees() (int, error) {
 	// Find root abstract tags (active abstract with no active abstract parent)
 	var rootIDs []uint

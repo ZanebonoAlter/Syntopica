@@ -95,13 +95,5 @@ func aggregateToUpperLevel(ctx context.Context, parentTag *models.TopicTag, tmpl
 		}
 	}
 
-	// If the tag has a concept, try to create a parent abstract
-	if parentTag.ConceptID != nil {
-		parentID, _, err := createAbstractAtLevel(ctx, parentTag, tmpl, &levelDef, *parentTag.ConceptID)
-		if err != nil {
-			logging.Warnf("aggregateToUpperLevel: create parent for %d failed: %v", parentTag.ID, err)
-			return
-		}
-		logging.Infof("aggregateToUpperLevel: created parent %d for %d", parentID, parentTag.ID)
-	}
+	logging.Infof("aggregateToUpperLevel: skipped node creation for orphan %d; PlaceTagInHierarchy owns node creation", parentTag.ID)
 }

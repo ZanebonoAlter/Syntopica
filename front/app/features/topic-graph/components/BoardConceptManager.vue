@@ -57,7 +57,7 @@ async function deactivateConcept(id: number) {
 async function suggestNewConcepts() {
   suggestionLoading.value = true
   error.value = ''
-  const result = await api.suggestConcepts()
+  const result = await api.suggestConcepts('event')
   if (result.success && result.data) {
     suggestions.value = result.data
   } else {

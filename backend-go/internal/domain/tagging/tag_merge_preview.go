@@ -124,11 +124,6 @@ func ScanSimilarTagPairs(limit int, scopeFeedID uint, scopeCategoryID uint) ([]T
 			continue
 		}
 
-		// Skip if either tag has been merged since the query ran
-		if tag1.Status == "merged" || tag2.Status == "merged" {
-			continue
-		}
-
 		var count1, count2 int64
 		database.DB.Model(&models.ArticleTopicTag{}).Where("topic_tag_id = ?", tag1.ID).Count(&count1)
 		database.DB.Model(&models.ArticleTopicTag{}).Where("topic_tag_id = ?", tag2.ID).Count(&count2)

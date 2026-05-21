@@ -12,19 +12,37 @@ import (
 )
 
 const (
-	anchorHighThreshold     = 0.85
-	anchorMidThreshold      = 0.70
-	placementCandidateLimit = 15
-	orphanPlacementMinAge   = 10 * time.Minute
+	anchorHighThreshold            = 0.85
+	anchorMidThreshold             = 0.70
+	placementCandidateLimit        = 15
+	orphanPlacementMinAge          = 10 * time.Minute
+	maxArticleJaccardForCreation   = 0.70
+	minLeafToDepthRatioForCreation = 1.5
 )
 
 type PlacementResult struct {
-	TagID          uint   `json:"tag_id"`
-	ParentID       *uint  `json:"parent_id,omitempty"`
-	ParentLabel    string `json:"parent_label,omitempty"`
-	CreatedParents []uint `json:"created_parents,omitempty"`
-	ConceptID      *uint  `json:"concept_id,omitempty"`
-	Action         string `json:"action"`
+	TagID            uint   `json:"tag_id"`
+	ParentID         *uint  `json:"parent_id,omitempty"`
+	ParentLabel      string `json:"parent_label,omitempty"`
+	CreatedParents   []uint `json:"created_parents,omitempty"`
+	ConceptID        *uint  `json:"concept_id,omitempty"`
+	Action           string `json:"action"`
+	BlockerReason    string `json:"blocker_reason,omitempty"`
+	DiagnosticAction string `json:"diagnostic_action,omitempty"`
+}
+
+type nodeCreationContext struct {
+	CandidateChildIDs []uint
+	MaxArticleJaccard float64
+}
+
+var createAbstractAtLevelFn = createAbstractAtLevel
+
+func markPlacementBlocker(result *PlacementResult, action, reason, diagnostic string) *PlacementResult {
+	result.Action = action
+	result.BlockerReason = reason
+	result.DiagnosticAction = diagnostic
+	return result
 }
 
 // PlaceTagInHierarchy places a leaf tag into the hierarchy.
@@ -41,7 +59,7 @@ func PlaceTagInHierarchy(ctx context.Context, tag *models.TopicTag) (*PlacementR
 		Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, "semantic").
 		Count(&embCount)
 	if embCount == 0 {
-		return &PlacementResult{TagID: tag.ID, Action: "pending_embedding"}, nil
+		return markPlacementBlocker(&PlacementResult{TagID: tag.ID}, "pending_embedding", "missing_embedding", "generate_embedding"), nil
 	}
 
 	// Check if already placed
@@ -56,27 +74,37 @@ func PlaceTagInHierarchy(ctx context.Context, tag *models.TopicTag) (*PlacementR
 	conceptMatch, err := concept.MatchTagToConcept(ctx, tag.Label, tag.Description, tag.Category, tag.ID)
 	if err != nil {
 		logging.Warnf("PlaceTagInHierarchy: concept match failed for tag %d: %v", tag.ID, err)
-		return &PlacementResult{TagID: tag.ID, Action: "concept_match_failed"}, nil
+		return markPlacementBlocker(&PlacementResult{TagID: tag.ID}, "concept_match_failed", "concept_match_failed", "inspect_concept_matching"), nil
 	}
 	if conceptMatch == nil {
 		logging.Infof("PlaceTagInHierarchy: tag %d has no matching concept, waiting for concept bootstrap", tag.ID)
-		return &PlacementResult{TagID: tag.ID, Action: "no_matching_concept"}, nil
+		return markPlacementBlocker(&PlacementResult{TagID: tag.ID}, "no_matching_concept", "no_matching_concept", "bootstrap_concept"), nil
 	}
 
 	// Determine target depth
 	tagDepth := getTagDepthFromRoot(tag.ID)
 	maxDepth := getMaxDepthForCategory(tag.Category)
 	if tagDepth >= maxDepth {
-		return &PlacementResult{TagID: tag.ID, Action: "already_at_max_depth"}, nil
+		return markPlacementBlocker(&PlacementResult{TagID: tag.ID}, "already_at_max_depth", "max_depth_reached", "review_hierarchy_template"), nil
 	}
 	targetDepth := tagDepth + 1
+
+	// Non-abstract tags must be placed at leaf-appropriate levels per template
+	if tag.Source != "abstract" {
+		for targetDepth < len(tmpl.Levels) && !tmpl.Levels[targetDepth].IsLeaf {
+			targetDepth++
+		}
+		if targetDepth >= len(tmpl.Levels) || !tmpl.Levels[targetDepth].IsLeaf {
+			return markPlacementBlocker(&PlacementResult{TagID: tag.ID}, "no_suitable_level", "no_leaf_level", "review_hierarchy_template"), nil
+		}
+	}
 
 	// Place at target depth within concept
 	return placeTagAtLevel(ctx, tag, tmpl, targetDepth, conceptMatch)
 }
 
 // placeTagAtLevel places a tag at the given depth within a concept.
-// Flow: anchor search → abstract embedding match → resolveParent → createAbstractAtLevel
+// Flow: anchor search → abstract embedding match → resolveParent
 func placeTagAtLevel(ctx context.Context, tag *models.TopicTag, tmpl *CategoryHierarchyTemplate, targetDepth int, conceptMatch *concept.ConceptMatchResult) (*PlacementResult, error) {
 	result := &PlacementResult{TagID: tag.ID, ConceptID: &conceptMatch.ConceptID}
 
@@ -143,21 +171,140 @@ func placeTagAtLevel(ctx context.Context, tag *models.TopicTag, tmpl *CategoryHi
 		return triggerUpwardAggregation(ctx, parent.ID, tmpl, targetDepth, result)
 	}
 
-	// Step 5: Create new abstract
-	parentID, parentLabel, err := createAbstractAtLevel(ctx, tag, tmpl, &levelDef, conceptMatch.ConceptID)
-	if err != nil {
-		return result, fmt.Errorf("create abstract at level %d: %w", targetDepth, err)
+	// Step 5: No matching abstract found, decide whether a guarded node can be created.
+	logging.Infof("placeTagAtLevel: tag=%d no parent at depth=%d category=%s, evaluating node creation",
+		tag.ID, targetDepth, tag.Category)
+	return decideNodeCreation(ctx, tag, tmpl, &levelDef, targetDepth, conceptMatch.ConceptID, anchors, candidates, result)
+}
+
+func decideNodeCreation(ctx context.Context, tag *models.TopicTag, tmpl *CategoryHierarchyTemplate, levelDef *AbstractionLevel, targetDepth int, conceptID uint, anchors []Anchor, candidates []TagCandidate, result *PlacementResult) (*PlacementResult, error) {
+	creationCtx := collectNodeCreationContext(ctx, tag, conceptID, anchors, candidates)
+	if reason, diagnostic := validateNodeCreationContext(creationCtx, targetDepth, len(anchors), len(candidates)); reason != "" {
+		logging.Infof("decideNodeCreation: tag=%d blocked reason=%s candidates=%d max_jaccard=%.4f",
+			tag.ID, reason, len(creationCtx.CandidateChildIDs), creationCtx.MaxArticleJaccard)
+		return markPlacementBlocker(result, "unplaced", reason, diagnostic), nil
 	}
+
+	parentID, parentLabel, err := createAbstractAtLevelFn(ctx, tag, tmpl, levelDef, conceptID)
+	if err != nil {
+		logging.Warnf("decideNodeCreation: create abstract for tag %d failed: %v", tag.ID, err)
+		return markPlacementBlocker(result, "unplaced", "node_creation_failed", "inspect_hierarchy_create"), nil
+	}
+
+	result.Action = "created_node"
 	result.ParentID = &parentID
 	result.ParentLabel = parentLabel
 	result.CreatedParents = append(result.CreatedParents, parentID)
-	result.Action = "placed_via_new_abstract"
-
-	// Trigger async embedding generation for new abstract
-	//nolint:gosec // intentional background task
-	go generateAbstractEmbedding(parentID)
-
 	return triggerUpwardAggregation(ctx, parentID, tmpl, targetDepth, result)
+}
+
+func collectNodeCreationContext(ctx context.Context, tag *models.TopicTag, conceptID uint, anchors []Anchor, candidates []TagCandidate) nodeCreationContext {
+	_ = ctx
+	childIDs := map[uint]bool{tag.ID: true}
+	anchorParentIDs := map[uint]bool{}
+	for _, anchor := range anchors {
+		anchorParentIDs[anchor.ParentID] = true
+	}
+	for _, candidate := range candidates {
+		if candidate.Tag != nil {
+			anchorParentIDs[candidate.Tag.ID] = true
+		}
+	}
+
+	if len(anchorParentIDs) > 0 {
+		parentIDs := make([]uint, 0, len(anchorParentIDs))
+		for id := range anchorParentIDs {
+			parentIDs = append(parentIDs, id)
+		}
+
+		var relations []models.TopicTagRelation
+		database.DB.Where("parent_id IN ? AND relation_type = ?", parentIDs, "abstract").Find(&relations)
+		for _, relation := range relations {
+			if relation.ChildID != tag.ID && isActiveTagInConcept(relation.ChildID, tag.Category, conceptID) {
+				childIDs[relation.ChildID] = true
+			}
+		}
+	}
+
+	ids := make([]uint, 0, len(childIDs))
+	for id := range childIDs {
+		ids = append(ids, id)
+	}
+
+	return nodeCreationContext{
+		CandidateChildIDs: ids,
+		MaxArticleJaccard: maxArticleJaccard(tag.ID, ids),
+	}
+}
+
+func validateNodeCreationContext(creationCtx nodeCreationContext, targetDepth int, anchorCount int, candidateCount int) (string, string) {
+	if anchorCount == 0 && candidateCount == 0 {
+		return "no_anchor_context", "generate_anchor_context"
+	}
+	if len(creationCtx.CandidateChildIDs) < 2 {
+		return "insufficient_siblings", "wait_for_more_siblings"
+	}
+	if creationCtx.MaxArticleJaccard > maxArticleJaccardForCreation {
+		return "low_information_gain", "review_article_overlap"
+	}
+	depth := targetDepth
+	if depth < 1 {
+		depth = 1
+	}
+	if float64(len(creationCtx.CandidateChildIDs))/float64(depth) < minLeafToDepthRatioForCreation {
+		return "low_information_gain", "wait_for_more_leaf_tags"
+	}
+	return "", ""
+}
+
+func isActiveTagInConcept(tagID uint, category string, conceptID uint) bool {
+	var tag models.TopicTag
+	if err := database.DB.Select("id", "concept_id").Where("id = ? AND category = ? AND status = ?", tagID, category, "active").First(&tag).Error; err != nil {
+		return false
+	}
+	return tag.ConceptID != nil && *tag.ConceptID == conceptID
+}
+
+func maxArticleJaccard(tagID uint, candidateIDs []uint) float64 {
+	base := articleSetForTag(tagID)
+	maxJaccard := 0.0
+	for _, candidateID := range candidateIDs {
+		if candidateID == tagID {
+			continue
+		}
+		jaccard := articleJaccard(base, articleSetForTag(candidateID))
+		if jaccard > maxJaccard {
+			maxJaccard = jaccard
+		}
+	}
+	return maxJaccard
+}
+
+func articleSetForTag(tagID uint) map[uint]bool {
+	var rows []models.ArticleTopicTag
+	database.DB.Select("article_id").Where("topic_tag_id = ?", tagID).Find(&rows)
+	set := make(map[uint]bool, len(rows))
+	for _, row := range rows {
+		set[row.ArticleID] = true
+	}
+	return set
+}
+
+func articleJaccard(left, right map[uint]bool) float64 {
+	if len(left) == 0 && len(right) == 0 {
+		return 0
+	}
+	intersection := 0
+	for id := range left {
+		if right[id] {
+			intersection++
+		}
+	}
+	union := len(left) + len(right) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
 }
 
 // Anchor represents a cotag/embedding anchor signal
@@ -174,6 +321,52 @@ func searchAnchors(ctx context.Context, tag *models.TopicTag, conceptID uint, ta
 	var anchors []Anchor
 	seen := make(map[uint]bool)
 
+	var activeSignals []models.HierarchyAnchorSignal
+	if err := database.DB.Where("category = ? AND expires_at > ?", tag.Category, time.Now()).Find(&activeSignals).Error; err == nil {
+		for _, signal := range activeSignals {
+			containsTag := false
+			for _, memberID := range signal.MemberTagIDs {
+				if memberID == tag.ID {
+					containsTag = true
+					break
+				}
+			}
+			if !containsTag {
+				continue
+			}
+
+			for _, memberID := range signal.MemberTagIDs {
+				if memberID == tag.ID {
+					continue
+				}
+
+				var rel models.TopicTagRelation
+				if err := database.DB.Where("child_id = ? AND relation_type = ?", memberID, "abstract").First(&rel).Error; err != nil {
+					continue
+				}
+				if seen[rel.ParentID] {
+					continue
+				}
+
+				var parentTag models.TopicTag
+				if err := database.DB.First(&parentTag, rel.ParentID).Error; err != nil {
+					continue
+				}
+				if parentTag.ConceptID == nil || *parentTag.ConceptID != conceptID {
+					continue
+				}
+
+				seen[rel.ParentID] = true
+				anchors = append(anchors, Anchor{
+					ParentID:    rel.ParentID,
+					ParentLabel: parentTag.Label,
+					Similarity:  0.82,
+					Source:      "anchor_signal",
+				})
+			}
+		}
+	}
+
 	// Cotag search: find tags co-occurring with this tag in articles
 	type cotagResult struct {
 		ParentID    uint
@@ -182,13 +375,12 @@ func searchAnchors(ctx context.Context, tag *models.TopicTag, conceptID uint, ta
 	}
 	var cotagParents []cotagResult
 	database.DB.Raw(`
-		SELECT DISTINCT tr.parent_id, pt.label as parent_label, at.tag_id
+		SELECT DISTINCT tr.parent_id, pt.label as parent_label, att2.topic_tag_id as tag_id
 		FROM article_topic_tags att
-		JOIN article_topic_tags att2 ON att.article_id = att2.article_id AND att2.tag_id != att.tag_id
-		JOIN topic_tag_relations tr ON tr.child_id = att2.tag_id AND tr.relation_type = 'abstract'
+		JOIN article_topic_tags att2 ON att.article_id = att2.article_id AND att2.topic_tag_id != att.topic_tag_id
+		JOIN topic_tag_relations tr ON tr.child_id = att2.topic_tag_id AND tr.relation_type = 'abstract'
 		JOIN topic_tags pt ON pt.id = tr.parent_id
-		JOIN article_topic_tags at ON at.article_id = att.article_id
-		WHERE att.tag_id = ? AND tr.parent_id IN (
+		WHERE att.topic_tag_id = ? AND tr.parent_id IN (
 			SELECT id FROM topic_tags WHERE concept_id = ? AND status = 'active'
 		)
 		LIMIT 20
@@ -213,7 +405,7 @@ func searchAnchors(ctx context.Context, tag *models.TopicTag, conceptID uint, ta
 		embCandidates, err := es.FindSimilarAbstractTags(ctx, tag.ID, tag.Category, 10)
 		if err == nil {
 			for _, c := range embCandidates {
-				if c.Tag == nil || seen[c.Tag.ID] {
+				if c.Tag == nil {
 					continue
 				}
 				// Only include tags that have a parent
@@ -231,10 +423,13 @@ func searchAnchors(ctx context.Context, tag *models.TopicTag, conceptID uint, ta
 				if err := database.DB.First(&parentTag, rel.ParentID).Error; err != nil {
 					continue
 				}
+				if seen[rel.ParentID] {
+					continue
+				}
 				if parentTag.ConceptID == nil || *parentTag.ConceptID != conceptID {
 					continue
 				}
-				seen[c.Tag.ID] = true
+				seen[rel.ParentID] = true
 				anchors = append(anchors, Anchor{
 					ParentID:    rel.ParentID,
 					ParentLabel: parentTag.Label,
@@ -429,10 +624,22 @@ func triggerUpwardAggregation(ctx context.Context, parentID uint, tmpl *Category
 
 // RetryOrphanPlacements retries placement for leaf tags without parents created > orphanPlacementMinAge ago
 func RetryOrphanPlacements(ctx context.Context) (int, error) {
+	return retryOrphanPlacements(ctx, "")
+}
+
+func RetryOrphanPlacementsForCategory(ctx context.Context, category string) (int, error) {
+	return retryOrphanPlacements(ctx, category)
+}
+
+func retryOrphanPlacements(ctx context.Context, category string) (int, error) {
 	cutoff := time.Now().Add(-orphanPlacementMinAge)
 
 	var tags []models.TopicTag
-	database.DB.Where("status = 'active' AND source IN ('llm', 'heuristic') AND created_at < ?", cutoff).
+	query := database.DB.Where("status = 'active' AND source IN ('llm', 'heuristic') AND created_at < ?", cutoff)
+	if category != "" {
+		query = query.Where("category = ?", category)
+	}
+	query.
 		Where("id NOT IN (SELECT child_id FROM topic_tag_relations WHERE relation_type = 'abstract')").
 		Limit(100).
 		Find(&tags)
@@ -444,7 +651,8 @@ func RetryOrphanPlacements(ctx context.Context) (int, error) {
 			logging.Warnf("RetryOrphanPlacements: failed for tag %d: %v", tag.ID, err)
 			continue
 		}
-		if result.Action != "pending_embedding" && result.Action != "no_matching_concept" {
+		if result.Action != "pending_embedding" && result.Action != "no_matching_concept" &&
+			result.Action != "unplaced" && result.Action != "no_suitable_level" {
 			placed++
 		}
 	}

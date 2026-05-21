@@ -123,13 +123,14 @@ func (te *TagExtractor) resolveCandidate(ctx context.Context, candidate Extracte
 		return nil, true, nil
 	}
 	return &TopicTag{
-		Label:       strings.TrimSpace(candidate.Label),
-		Slug:        slug,
-		Category:    category,
-		SubType:     validateSubType(candidate.SubType, category),
-		Aliases:     candidate.Aliases,
-		Score:       candidate.Confidence,
-		Description: strings.TrimSpace(candidate.Description),
+		Label:           strings.TrimSpace(candidate.Label),
+		Slug:            slug,
+		Category:        category,
+		SubType:         validateSubType(candidate.SubType, category),
+		Aliases:         candidate.Aliases,
+		Score:           candidate.Confidence,
+		Description:     strings.TrimSpace(candidate.Description),
+		AuxiliaryLabels: candidate.AuxiliaryLabels,
 	}, false, nil
 }
 
@@ -200,8 +201,13 @@ func buildExtractionSystemPrompt() string {
 	- 标签必须按优先级从高到低排序，最重要的标签放前面
 	- 标签应该简洁、准确
 
+辅助标签要求：
+- 每个标签必须输出 auxiliary_labels，数量 3-5 个
+- auxiliary_labels 应是具体语义锚点，如关键实体、产品、地点、动作、技术名词
+- 不要输出明显泛词，如"事件"、"情况"、"问题"、"技术"、"发展"、"行业"、"趋势"、"市场"、"影响"、"创新"、"未来"、"公司"
+
 每个标签输出格式：
-{"label": "标签名称", "category": "event|person|keyword", "sub_type": "technology|company_business|concept", "confidence": 0.0-1.0, "aliases": ["别名1"], "evidence": "提取依据", "description": "标签的简短描述（中文，1-2句，客观事实，仅event和keyword需要，person可不填）"}
+{"label": "标签名称", "category": "event|person|keyword", "sub_type": "technology|company_business|concept", "confidence": 0.0-1.0, "aliases": ["别名1"], "evidence": "提取依据", "description": "标签的简短描述（中文，1-2句，客观事实，仅event和keyword需要，person可不填）", "auxiliary_labels": ["具体语义锚点1", "具体语义锚点2", "具体语义锚点3"]}
 
 sub_type 说明：
 - 仅当 category="keyword" 时才需要填写 sub_type，用于进一步分类keyword标签
@@ -217,29 +223,36 @@ sub_type 说明：
 }
 
 func buildExtractionUserPrompt(input ExtractionInput) string {
-	return fmt.Sprintf(`请从以下新闻摘要中提取标签：
+	var b strings.Builder
+	fmt.Fprintf(&b, `请从以下新闻摘要中提取标签：
 
 标题: %s
 来源: %s
 分类: %s
-
+`, input.Title, input.FeedName, input.CategoryName)
+	if input.PubDate != "" {
+		fmt.Fprintf(&b, "发布日期: %s\n", input.PubDate)
+	}
+	fmt.Fprintf(&b, `
 摘要内容:
 %s
 
-请返回JSON对象格式: {"tags": [标签列表]}。`, input.Title, input.FeedName, input.CategoryName, input.Summary)
+请返回JSON对象格式: {"tags": [标签列表]}。`, input.Summary)
+	return b.String()
 }
 
 func parseExtractedTags(content string) ([]ExtractedTag, error) {
 	content = jsonutil.SanitizeLLMJSON(content)
 
 	var raw []struct {
-		Label       string   `json:"label"`
-		Category    string   `json:"category"`
-		SubType     string   `json:"sub_type"`
-		Confidence  float64  `json:"confidence"`
-		Aliases     []string `json:"aliases"`
-		Evidence    string   `json:"evidence"`
-		Description string   `json:"description"`
+		Label           string   `json:"label"`
+		Category        string   `json:"category"`
+		SubType         string   `json:"sub_type"`
+		Confidence      float64  `json:"confidence"`
+		Aliases         []string `json:"aliases"`
+		Evidence        string   `json:"evidence"`
+		Description     string   `json:"description"`
+		AuxiliaryLabels []string `json:"auxiliary_labels"`
 	}
 
 	if err := json.Unmarshal([]byte(content), &raw); err != nil {
@@ -259,22 +272,56 @@ func parseExtractedTags(content string) ([]ExtractedTag, error) {
 		if strings.TrimSpace(t.Label) == "" {
 			continue
 		}
+		auxiliaryLabels, err := normalizeAuxiliaryLabels(t.AuxiliaryLabels)
+		if err != nil {
+			return nil, fmt.Errorf("invalid auxiliary labels for %q: %w", t.Label, err)
+		}
 		cat := validateCategory(t.Category)
 		conf := t.Confidence
 		if conf <= 0 {
 			conf = 0.7
 		}
 		result = append(result, ExtractedTag{
-			Label:       strings.TrimSpace(t.Label),
-			Category:    cat,
-			SubType:     validateSubType(t.SubType, cat),
-			Confidence:  conf,
-			Aliases:     t.Aliases,
-			Evidence:    t.Evidence,
-			Description: strings.TrimSpace(t.Description),
+			Label:           strings.TrimSpace(t.Label),
+			Category:        cat,
+			SubType:         validateSubType(t.SubType, cat),
+			Confidence:      conf,
+			Aliases:         t.Aliases,
+			Evidence:        t.Evidence,
+			Description:     strings.TrimSpace(t.Description),
+			AuxiliaryLabels: auxiliaryLabels,
 		})
 	}
 
+	return result, nil
+}
+
+var genericAuxiliaryLabels = map[string]struct{}{
+	"事件": {}, "情况": {}, "问题": {}, "技术": {}, "发展": {}, "行业": {},
+	"趋势": {}, "市场": {}, "影响": {}, "创新": {}, "未来": {}, "公司": {},
+}
+
+func normalizeAuxiliaryLabels(labels []string) ([]string, error) {
+	result := make([]string, 0, len(labels))
+	seen := make(map[string]struct{}, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label == "" {
+			return nil, fmt.Errorf("label must not be empty")
+		}
+		if _, generic := genericAuxiliaryLabels[label]; generic {
+			return nil, fmt.Errorf("label %q is too generic", label)
+		}
+		key := strings.ToLower(label)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, label)
+	}
+	if err := validateAuxiliaryLabels(result); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -310,15 +357,16 @@ func tagExtractionSchema() *airouter.JSONSchema {
 				Items: &airouter.SchemaProperty{
 					Type: "object",
 					Properties: map[string]airouter.SchemaProperty{
-						"label":       {Type: "string", Description: "标签名称"},
-						"category":    {Type: "string", Description: "event, person 或 keyword"},
-						"sub_type":    {Type: "string", Description: "keyword子类型：technology(技术)/company_business(公司商业)/concept(概念)。仅keyword需填"},
-						"confidence":  {Type: "number", Description: "置信度 0.0-1.0，仅提取有信息量的标签，宁缺毋滥"},
-						"aliases":     {Type: "array", Items: &airouter.SchemaProperty{Type: "string"}},
-						"evidence":    {Type: "string", Description: "提取依据"},
-						"description": {Type: "string", Description: "标签的简短描述（中文，1-2句，客观事实。仅event和keyword需要，person可留空）"},
+						"label":            {Type: "string", Description: "标签名称"},
+						"category":         {Type: "string", Description: "event, person 或 keyword"},
+						"sub_type":         {Type: "string", Description: "keyword子类型：technology(技术)/company_business(公司商业)/concept(概念)。仅keyword需填"},
+						"confidence":       {Type: "number", Description: "置信度 0.0-1.0，仅提取有信息量的标签，宁缺毋滥"},
+						"aliases":          {Type: "array", Items: &airouter.SchemaProperty{Type: "string"}},
+						"evidence":         {Type: "string", Description: "提取依据"},
+						"description":      {Type: "string", Description: "标签的简短描述（中文，1-2句，客观事实。仅event和keyword需要，person可留空）"},
+						"auxiliary_labels": {Type: "array", Items: &airouter.SchemaProperty{Type: "string"}, Description: "3-5个具体语义锚点，避免泛词"},
 					},
-					Required: []string{"label", "category"},
+					Required: []string{"label", "category", "auxiliary_labels"},
 				},
 			},
 		},

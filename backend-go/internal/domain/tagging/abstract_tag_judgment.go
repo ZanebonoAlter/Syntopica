@@ -43,7 +43,7 @@ func callLLMForTagJudgment(ctx context.Context, candidates []TagCandidate, newLa
 	hasHighSim := shouldAllowMergeJudgment(candidates)
 	maxCandidateDepth := computeMaxCandidateDepth(candidates)
 	prompt := buildTagJudgmentPrompt(candidates, newLabel, category, narrativeContext, hasHighSim, maxCandidateDepth)
-	
+
 	// Get sub_type from candidates if available
 	subType := ""
 	if len(candidates) > 0 && candidates[0].Tag != nil {
@@ -355,6 +355,12 @@ func buildCandidateList(candidates []TagCandidate) string {
 				tagType = "abstract"
 			}
 			contextInfo := formatTagPromptContext(c.Tag)
+			if c.DateRange != "" {
+				if contextInfo != "" {
+					contextInfo += "; "
+				}
+				contextInfo += c.DateRange
+			}
 			if contextInfo != "" {
 				contextInfo = fmt.Sprintf(" (%s)", contextInfo)
 			}

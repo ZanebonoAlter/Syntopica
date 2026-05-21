@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/logging"
+	// "my-robot-backend/internal/platform/logging"
 )
 
 var thinkTagRe = regexp.MustCompile(`(?s)<think\s*>.*?</think\s*>`)
@@ -154,7 +154,7 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, provider models.AIPro
 	if err != nil {
 		return "", &ProviderError{Message: err.Error(), Code: "read_error", Retryable: true}
 	}
-	logging.Infof("openai: message=%s ", req.Messages)
+	// logging.Infof("openai: message=%s ", req.Messages)
 	// logging.Infof("openai_chat_raw: provider=%s model=%s status=%d body=%s", provider.Name, provider.Model, resp.StatusCode, truncateDebugBody(string(responseBody)))
 
 	var parsed struct {

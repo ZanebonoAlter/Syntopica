@@ -41,14 +41,6 @@ func WithBatchJudgments(ctx context.Context, results map[string]*TagExtractionRe
 	return context.WithValue(ctx, batchJudgmentContextKey{}, results)
 }
 
-func getBatchJudgment(ctx context.Context, label string) *TagExtractionResult {
-	results, ok := ctx.Value(batchJudgmentContextKey{}).(map[string]*TagExtractionResult)
-	if !ok {
-		return nil
-	}
-	return results[label]
-}
-
 // legacyExtractTopics is the old heuristic-based extraction (for fallback)
 func legacyExtractTopics(input ExtractionInput) []TopicTag {
 	// Use the existing extractor.go logic
@@ -119,144 +111,15 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 					if err := database.DB.Save(existing).Error; err != nil {
 						return nil, err
 					}
-					go ensureTagEmbedding(es, existing.ID)
+					if category != "event" {
+						go ensureTagEmbedding(es, existing.ID)
+					}
 					GetTagCache().Set(slug, category, existing)
 					return existing, nil
 				}
 
 			case "candidates":
-				candidates := matchResult.Candidates
-				logging.Infof("findOrCreateTag: label=%q category=%s matchType=candidates candidateCount=%d topSimilarity=%.4f", tag.Label, category, len(candidates), matchResult.Similarity)
-
-				if category == "event" {
-					existingIDs := make([]uint, 0, len(candidates))
-					for _, candidate := range candidates {
-						if candidate.Tag != nil {
-							existingIDs = append(existingIDs, candidate.Tag.ID)
-						}
-					}
-
-					coTagCandidates, coTagErr := ExpandEventCandidatesByArticleCoTags(ctx, articleID, 0, existingIDs)
-					if coTagErr != nil {
-						logging.Warnf("co-tag expansion failed for %q: %v", tag.Label, coTagErr)
-					} else if len(coTagCandidates) > 0 {
-						candidates = MergeCandidateLists(candidates, coTagCandidates)
-						logging.Infof("findOrCreateTag: label=%q expanded to %d candidates via co-tag traversal", tag.Label, len(candidates))
-					}
-				}
-
-				var result *TagExtractionResult
-				var judgmentErr error
-				if batchResult := getBatchJudgment(ctx, tag.Label); batchResult != nil {
-					result = batchResult
-					logging.Infof("findOrCreateTag: label=%q category=%s using precomputed batch judgment", tag.Label, category)
-				} else {
-					result, judgmentErr = ExtractAbstractTag(ctx, candidates, tag.Label, category, WithCaller("findOrCreateTag"))
-				}
-				if judgmentErr != nil || result == nil || !result.HasAction() {
-					if judgmentErr != nil {
-						logging.Warnf("findOrCreateTag: label=%q category=%s LLM judgment failed, skipping event_fallback: %v", tag.Label, category, judgmentErr)
-					}
-					logging.Infof("findOrCreateTag: label=%q category=%s judgment=no_action err=%v", tag.Label, category, judgmentErr)
-
-					if category == "event" && len(candidates) > 0 && candidates[0].Tag != nil && result != nil && !result.LLMExplicitNone {
-						topSim := candidates[0].Similarity
-						thresholds := ThresholdsForCategory(category)
-						if topSim >= thresholds.LowSimilarity {
-							logging.Infof("findOrCreateTag: label=%q category=%s event_fallback: reusing top candidate (sim=%.4f)", tag.Label, category, topSim)
-							existing := candidates[0].Tag
-							existing.Label = tag.Label
-							fbSlug := Slugify(tag.Label)
-							if fbSlug != "" {
-								existing.Slug = fbSlug
-							}
-							existing.Category = category
-							existing.Source = source
-							if len(tag.Aliases) > 0 {
-								aJSON, _ := json.Marshal(tag.Aliases)
-								existing.Aliases = string(aJSON)
-							}
-							if tag.Icon != "" {
-								existing.Icon = tag.Icon
-							}
-						existing.Kind = kind
-						existing.SubType = tag.SubType
-						if err := database.DB.Save(existing).Error; err != nil {
-							logging.Warnf("Failed to save event fallback tag %d: %v", existing.ID, err)
-							} else {
-								go ensureTagEmbedding(es, existing.ID)
-								GetTagCache().Set(slug, category, existing)
-								return existing, nil
-							}
-						}
-					}
-
-					break
-				}
-
-				actionType := "none"
-				if result.HasMerge() {
-					actionType = "merge"
-				}
-				logging.Infof("findOrCreateTag: label=%q category=%s judgment=%s", tag.Label, category, actionType)
-
-				if result.HasMerge() {
-					existing := result.Merge.Target
-					mergeLabel := result.Merge.Label
-					if mergeLabel == "" {
-						mergeLabel = tag.Label
-					}
-					mergeLabelSlug := Slugify(mergeLabel)
-					existingSlug := Slugify(existing.Label)
-
-					if len(result.MergeChildren) == 0 && mergeLabelSlug != existingSlug {
-						logging.Warnf("findOrCreateTag: skipping bogus merge — no children and label %q differs from existing %q (id=%d)", mergeLabel, existing.Label, existing.ID)
-						result.Merge = nil
-						result.LLMExplicitNone = true
-					}
-				}
-
-				if result.HasMerge() {
-					existing := result.Merge.Target
-					if result.Merge.Label != "" {
-						existing.Label = result.Merge.Label
-					} else {
-						existing.Label = tag.Label
-					}
-					mergeSlug := Slugify(existing.Label)
-					if mergeSlug != "" {
-						existing.Slug = mergeSlug
-					}
-					existing.Category = category
-					existing.Source = source
-					if len(tag.Aliases) > 0 {
-						aJSON, _ := json.Marshal(tag.Aliases)
-						existing.Aliases = string(aJSON)
-					}
-					if tag.Icon != "" {
-						existing.Icon = tag.Icon
-					}
-					existing.Kind = kind
-					existing.SubType = tag.SubType
-					if err := database.DB.Save(existing).Error; err != nil {
-						logging.Warnf("Failed to save merged tag %d: %v", existing.ID, err)
-						break
-					}
-					go ensureTagEmbedding(es, existing.ID)
-
-					for _, child := range result.MergeChildren {
-						if child.ID != existing.ID {
-							if mergeErr := MergeTags(child.ID, existing.ID); mergeErr != nil {
-								logging.Warnf("Failed to merge child tag %d into %d: %v", child.ID, existing.ID, mergeErr)
-							}
-						}
-					}
-
-					GetTagCache().Set(slug, category, existing)
-					return existing, nil
-				}
-
-				logging.Infof("findOrCreateTag: label=%q category=%s matchType=no_match creating new tag", tag.Label, category)
+				logging.Infof("findOrCreateTag: label=%q category=%s matchType=candidates candidateCount=%d — skipping LLM judgment, falling through to create", tag.Label, category, len(matchResult.Candidates))
 
 			case "no_match":
 				logging.Infof("findOrCreateTag: label=%q category=%s matchType=no_match", tag.Label, category)
@@ -289,7 +152,7 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 			return nil, err
 		}
 		// Backfill embedding if missing (fallback path)
-		if es != nil {
+		if es != nil && category != "event" {
 			go ensureTagEmbedding(es, dbTag.ID)
 		}
 		GetTagCache().Set(slug, category, &dbTag)
@@ -314,8 +177,12 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 		return nil, err
 	}
 
-	if es != nil {
+	if es != nil && category != "event" {
 		go ensureTagEmbedding(es, newTag.ID)
+	}
+
+	if category == "event" {
+		go generateTagDescription(newTag.ID, tag.Label, category, articleContext) //nolint:gosec
 	}
 
 	go func() { //nolint:gosec
@@ -338,8 +205,44 @@ func generateTagDescription(tagID uint, label, category, articleContext string) 
 		}
 	}()
 
+	isEvent := category == models.TagCategoryEvent
+
 	router := airouter.NewRouter()
-	prompt := fmt.Sprintf(`Generate a concise description (1-2 sentences) for this tag.
+
+	var prompt string
+	var jsonSchema *airouter.JSONSchema
+
+	if isEvent {
+		prompt = fmt.Sprintf(`Generate a concise description (1-2 sentences) for this event tag.
+Tag: %q
+Category: %s
+Context from article: %s
+
+Description requirements:
+- Must be in Chinese (中文)
+- Objective, factual statement — no subjective opinions or qualifiers
+- Must explain what the event is about, including key entities and actions
+- Keep under 500 characters
+- Examples:
+  * Tag "苹果WWDC 2024" → "苹果公司于2024年6月举办的全球开发者大会，发布了Apple Intelligence等多项更新"
+  * Tag "伊朗袭击以色列" → "2024年4月伊朗对以色列发动的大规模导弹和无人机袭击，系两国直接军事冲突的标志性事件"
+
+Also extract 3-5 keywords: key entity names, locations, and action words that define this event.
+- Keywords should be concise nouns or verbs (e.g., "美国", "伊朗", "袭击", "制裁", "核协议")
+- Avoid generic words (e.g., "事件", "情况", "问题")
+
+Respond with JSON: {"description": "your answer", "keywords": ["keyword1", "keyword2", ...]}`, label, category, articleContext)
+
+		jsonSchema = &airouter.JSONSchema{
+			Type: "object",
+			Properties: map[string]airouter.SchemaProperty{
+				"description": {Type: "string", Description: "事件标签的中文客观描述，不超过500字符"},
+				"keywords":    {Type: "array", Items: &airouter.SchemaProperty{Type: "string", Description: "3-5个关键实体/动作词"}, Description: "事件关键词列表"},
+			},
+			Required: []string{"description", "keywords"},
+		}
+	} else {
+		prompt = fmt.Sprintf(`Generate a concise description (1-2 sentences) for this tag.
 Tag: %q
 Category: %s
 Context from article: %s
@@ -356,20 +259,23 @@ Description requirements:
 
 Respond with JSON: {"description": "your answer"}`, label, category, articleContext)
 
+		jsonSchema = &airouter.JSONSchema{
+			Type: "object",
+			Properties: map[string]airouter.SchemaProperty{
+				"description": {Type: "string", Description: "标签的中文客观描述，不超过500字符"},
+			},
+			Required: []string{"description"},
+		}
+	}
+
 	req := airouter.ChatRequest{
 		Capability: airouter.CapabilityTopicTagging,
 		Messages: []airouter.Message{
 			{Role: "system", Content: "你是一个标签分类助手，只输出合法JSON。"},
 			{Role: "user", Content: prompt},
 		},
-		JSONMode: true,
-		JSONSchema: &airouter.JSONSchema{
-			Type: "object",
-			Properties: map[string]airouter.SchemaProperty{
-				"description": {Type: "string", Description: "标签的中文客观描述，不超过500字符"},
-			},
-			Required: []string{"description"},
-		},
+		JSONMode:    true,
+		JSONSchema:  jsonSchema,
 		Temperature: func() *float64 { f := 0.3; return &f }(),
 		Metadata: map[string]any{
 			"operation": "tag_description",
@@ -381,6 +287,7 @@ Respond with JSON: {"description": "your answer"}`, label, category, articleCont
 
 	const maxRetries = 3
 	var desc string
+	var keywords []string
 	var success bool
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -390,15 +297,28 @@ Respond with JSON: {"description": "your answer"}`, label, category, articleCont
 			continue
 		}
 
-		var parsed struct {
-			Description string `json:"description"`
-		}
-		if err := json.Unmarshal([]byte(result.Content), &parsed); err != nil || parsed.Description == "" {
-			logging.Warnf("Failed to parse description for tag %d (attempt %d/%d)", tagID, attempt, maxRetries)
-			continue
+		if isEvent {
+			var parsed struct {
+				Description string   `json:"description"`
+				Keywords    []string `json:"keywords"`
+			}
+			if err := json.Unmarshal([]byte(result.Content), &parsed); err != nil || parsed.Description == "" {
+				logging.Warnf("Failed to parse description for event tag %d (attempt %d/%d)", tagID, attempt, maxRetries)
+				continue
+			}
+			desc = parsed.Description
+			keywords = parsed.Keywords
+		} else {
+			var parsed struct {
+				Description string `json:"description"`
+			}
+			if err := json.Unmarshal([]byte(result.Content), &parsed); err != nil || parsed.Description == "" {
+				logging.Warnf("Failed to parse description for tag %d (attempt %d/%d)", tagID, attempt, maxRetries)
+				continue
+			}
+			desc = parsed.Description
 		}
 
-		desc = parsed.Description
 		success = true
 		break
 	}
@@ -412,20 +332,46 @@ Respond with JSON: {"description": "your answer"}`, label, category, articleCont
 		desc = string([]rune(desc)[:500])
 	}
 
-	if err := database.DB.Model(&models.TopicTag{}).Where("id = ?", tagID).Update("description", desc).Error; err != nil {
-		logging.Warnf("Failed to save description for tag %d: %v", tagID, err)
-		return
+	if isEvent && len(keywords) > 0 {
+		var existing models.TopicTag
+		if err := database.DB.Select("metadata").Where("id = ?", tagID).First(&existing).Error; err != nil {
+			logging.Warnf("Failed to load existing metadata for event tag %d: %v", tagID, err)
+			return
+		}
+		if existing.Metadata == nil {
+			existing.Metadata = models.MetadataMap{}
+		}
+		existing.Metadata["event_keywords"] = keywords
+		if err := database.DB.Model(&models.TopicTag{}).Where("id = ?", tagID).Updates(map[string]any{
+			"description": desc,
+			"metadata":    existing.Metadata,
+		}).Error; err != nil {
+			logging.Warnf("Failed to save description+keywords for event tag %d: %v", tagID, err)
+			return
+		}
+		logging.Infof("Generated description + %d keywords for event tag %d (%s): %v", len(keywords), tagID, label, keywords)
+	} else {
+		if err := database.DB.Model(&models.TopicTag{}).Where("id = ?", tagID).Update("description", desc).Error; err != nil {
+			logging.Warnf("Failed to save description for tag %d: %v", tagID, err)
+			return
+		}
 	}
 
-	qs := getEmbeddingQueueService()
-	if err := qs.Enqueue(tagID); err != nil {
-		logging.Warnf("Failed to enqueue re-embedding after description update for tag %d: %v", tagID, err)
+	if qs := getEmbeddingQueueService(); qs != nil {
+		if err := qs.Enqueue(tagID); err != nil {
+			logging.Warnf("Failed to enqueue re-embedding after description update for tag %d: %v", tagID, err)
+		}
 	}
 }
 
+type batchDescResult struct {
+	Description string
+	Keywords    []string
+}
+
 // batchGenerateTagDescriptions generates descriptions for multiple tags in a single LLM call.
-// Returns a map of tagID -> description.
-func batchGenerateTagDescriptions(tags []models.TopicTag) map[uint]string {
+// Returns a map of tagID -> batchDescResult (keywords populated for event tags).
+func batchGenerateTagDescriptions(tags []models.TopicTag) map[uint]*batchDescResult {
 	if len(tags) == 0 {
 		return nil
 	}
@@ -435,8 +381,7 @@ func batchGenerateTagDescriptions(tags []models.TopicTag) map[uint]string {
 			return nil
 		}
 		generateTagDescription(tags[0].ID, tags[0].Label, tags[0].Category, articleContext)
-		// Return non-nil map so caller knows it was processed
-		return map[uint]string{tags[0].ID: ""} // empty string = already saved by generateTagDescription
+		return map[uint]*batchDescResult{tags[0].ID: {}} // empty = already saved by generateTagDescription
 	}
 
 	type tagContext struct {
@@ -473,9 +418,10 @@ func batchGenerateTagDescriptions(tags []models.TopicTag) map[uint]string {
 - person 类标签说明人物身份
 - event 类标签说明事件经过
 - keyword 类标签说明概念领域
+- 对 event 类标签，额外提取 3-5 个关键词（实体名、地名、动作词），避免泛泛的词如"事件""情况"
 
-返回 JSON: {"descriptions": [{"id": 标签ID, "description": "描述内容"}, ...]}`,
-		string(itemsJSON))
+返回 JSON: {"descriptions": [{"id": 标签ID, "description": "描述内容", "keywords": ["关键词1", ...]}, ...]}
+非 event 类标签的 keywords 字段留空数组 []`, string(itemsJSON))
 
 	router := airouter.NewRouter()
 	req := airouter.ChatRequest{
@@ -495,6 +441,11 @@ func batchGenerateTagDescriptions(tags []models.TopicTag) map[uint]string {
 						Properties: map[string]airouter.SchemaProperty{
 							"id":          {Type: "integer"},
 							"description": {Type: "string"},
+							"keywords": {
+								Type:        "array",
+								Items:       &airouter.SchemaProperty{Type: "string"},
+								Description: "event 标签的关键词列表，非 event 标签为空数组",
+							},
 						},
 						Required: []string{"id", "description"},
 					},
@@ -527,8 +478,9 @@ func batchGenerateTagDescriptions(tags []models.TopicTag) map[uint]string {
 	content := jsonutil.SanitizeLLMJSON(result.Content)
 	var parsed struct {
 		Descriptions []struct {
-			ID          uint   `json:"id"`
-			Description string `json:"description"`
+			ID          uint     `json:"id"`
+			Description string   `json:"description"`
+			Keywords    []string `json:"keywords"`
 		} `json:"descriptions"`
 	}
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
@@ -536,7 +488,7 @@ func batchGenerateTagDescriptions(tags []models.TopicTag) map[uint]string {
 		return nil
 	}
 
-	results := make(map[uint]string)
+	results := make(map[uint]*batchDescResult)
 	validIDs := make(map[uint]bool, len(items))
 	for _, item := range items {
 		validIDs[item.ID] = true
@@ -547,7 +499,10 @@ func batchGenerateTagDescriptions(tags []models.TopicTag) map[uint]string {
 			if len([]rune(desc)) > 500 {
 				desc = string([]rune(desc)[:500])
 			}
-			results[d.ID] = desc
+			results[d.ID] = &batchDescResult{
+				Description: desc,
+				Keywords:    d.Keywords,
+			}
 		}
 	}
 	return results

@@ -569,5 +569,214 @@ func postgresMigrations() []Migration {
 				return nil
 			},
 		},
+		{
+			Version:     "20260514_0001",
+			Description: "Change topic_tag_embeddings unique index to (topic_tag_id, embedding_type, text_hash) for event-keyword-embedding support.",
+			Up: func(db *gorm.DB) error {
+				if err := db.Exec("DROP INDEX IF EXISTS idx_topic_tag_embeddings_tag_type").Error; err != nil {
+					return fmt.Errorf("drop old idx_topic_tag_embeddings_tag_type: %w", err)
+				}
+				if err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topic_tag_embeddings_tag_type_hash ON topic_tag_embeddings(topic_tag_id, embedding_type, text_hash)").Error; err != nil {
+					return fmt.Errorf("create idx_topic_tag_embeddings_tag_type_hash: %w", err)
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260514_0002",
+			Description: "Seed event clustering config keys into embedding_config.",
+			Up: func(db *gorm.DB) error {
+				defaults := []models.EmbeddingConfig{
+					{Key: "event_cluster_kw_min_overlap", Value: "2", Description: "Minimum shared keyword count for Stage 1 event tag keyword-overlap clustering"},
+					{Key: "event_cluster_sem_threshold", Value: "0.80", Description: "Minimum semantic cosine similarity for Stage 2 event tag clustering filter"},
+				}
+				for _, d := range defaults {
+					var existing models.EmbeddingConfig
+					if err := db.Where("key = ?", d.Key).First(&existing).Error; err != nil {
+						if err := db.Create(&d).Error; err != nil {
+							logging.Warnf("Warning: failed to seed embedding_config key %s: %v", d.Key, err)
+						}
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260516_0001",
+			Description: "Create rebuild_jobs table for hierarchy rebuild tracking",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					`CREATE TABLE IF NOT EXISTS rebuild_jobs (
+						id SERIAL PRIMARY KEY,
+						category TEXT NOT NULL,
+						trigger TEXT NOT NULL,
+						status TEXT NOT NULL DEFAULT 'pending',
+						total_tags INT DEFAULT 0,
+						processed_tags INT DEFAULT 0,
+						failed_tags INT DEFAULT 0,
+						estimated_end TIMESTAMP,
+						started_at TIMESTAMP,
+						completed_at TIMESTAMP,
+						last_tag_id INT DEFAULT 0,
+						config_snapshot JSONB,
+						error_detail TEXT,
+						created_at TIMESTAMP DEFAULT NOW()
+					)`,
+					"CREATE INDEX IF NOT EXISTS idx_rebuild_jobs_category_status ON rebuild_jobs(category, status)",
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("rebuild_jobs migration: %w", err)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260516_0002",
+			Description: "Add source, protected, declining, peak_tag_count to board_concepts",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					"ALTER TABLE board_concepts ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'auto'",
+					"ALTER TABLE board_concepts ADD COLUMN IF NOT EXISTS protected BOOLEAN NOT NULL DEFAULT false",
+					"ALTER TABLE board_concepts ADD COLUMN IF NOT EXISTS declining BOOLEAN NOT NULL DEFAULT false",
+					"ALTER TABLE board_concepts ADD COLUMN IF NOT EXISTS peak_tag_count INT NOT NULL DEFAULT 0",
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("board_concepts columns migration: %w", err)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260516_0003",
+			Description: "Add index on topic_tags concept_id for abstract source queries",
+			Up: func(db *gorm.DB) error {
+				if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_topic_tags_source_concept ON topic_tags (source, concept_id) WHERE concept_id IS NOT NULL").Error; err != nil {
+					return fmt.Errorf("create idx_topic_tags_source_concept: %w", err)
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260519_0001",
+			Description: "Create hierarchy_anchor_signals table for temporary placement anchor context.",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					`CREATE TABLE IF NOT EXISTS hierarchy_anchor_signals (
+						id SERIAL PRIMARY KEY,
+						category VARCHAR(20) NOT NULL,
+						center_tag_id INTEGER NOT NULL REFERENCES topic_tags(id) ON DELETE CASCADE,
+						member_tag_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+						expires_at TIMESTAMP NOT NULL,
+						created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+						updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+					)`,
+					"CREATE INDEX IF NOT EXISTS idx_hierarchy_anchor_signals_category ON hierarchy_anchor_signals(category)",
+					"CREATE INDEX IF NOT EXISTS idx_hierarchy_anchor_signals_center_tag_id ON hierarchy_anchor_signals(center_tag_id)",
+					"CREATE INDEX IF NOT EXISTS idx_hierarchy_anchor_signals_expires_at ON hierarchy_anchor_signals(expires_at)",
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("hierarchy_anchor_signals migration: %w", err)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260521_0001",
+			Description: "Create semantic label board schema alongside legacy board concept hierarchy artifacts.",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					`CREATE TABLE IF NOT EXISTS semantic_labels (
+						id SERIAL PRIMARY KEY,
+						label VARCHAR(160) NOT NULL,
+						slug VARCHAR(160) NOT NULL,
+						embedding vector(1536),
+						label_type VARCHAR(20) NOT NULL,
+						aliases JSONB NOT NULL DEFAULT '[]'::jsonb,
+						ref_count INTEGER NOT NULL DEFAULT 0,
+						description TEXT,
+						display_order INTEGER NOT NULL DEFAULT 0,
+						source VARCHAR(50) NOT NULL DEFAULT 'llm_extract',
+						status VARCHAR(20) NOT NULL DEFAULT 'active',
+						protected BOOLEAN NOT NULL DEFAULT false,
+						created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+						updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+						CHECK (label_type IN ('auxiliary', 'board'))
+					)`,
+					"CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_labels_slug ON semantic_labels(slug)",
+					"CREATE INDEX IF NOT EXISTS idx_semantic_labels_label_type ON semantic_labels(label_type)",
+					"CREATE INDEX IF NOT EXISTS idx_semantic_labels_status ON semantic_labels(status)",
+					"CREATE INDEX IF NOT EXISTS idx_semantic_labels_embedding ON semantic_labels USING hnsw (embedding vector_cosine_ops)",
+					`CREATE TABLE IF NOT EXISTS topic_tag_semantic_labels (
+						topic_tag_id INTEGER NOT NULL REFERENCES topic_tags(id) ON DELETE CASCADE,
+						semantic_label_id INTEGER NOT NULL REFERENCES semantic_labels(id) ON DELETE CASCADE,
+						PRIMARY KEY (topic_tag_id, semantic_label_id)
+					)`,
+					"CREATE INDEX IF NOT EXISTS idx_topic_tag_semantic_labels_topic_tag_id ON topic_tag_semantic_labels(topic_tag_id)",
+					"CREATE INDEX IF NOT EXISTS idx_topic_tag_semantic_labels_semantic_label_id ON topic_tag_semantic_labels(semantic_label_id)",
+					`CREATE TABLE IF NOT EXISTS topic_tag_board_labels (
+						topic_tag_id INTEGER NOT NULL REFERENCES topic_tags(id) ON DELETE CASCADE,
+						semantic_board_id INTEGER NOT NULL REFERENCES semantic_labels(id) ON DELETE CASCADE,
+						score DOUBLE PRECISION NOT NULL DEFAULT 0,
+						match_reason TEXT,
+						created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+						updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+						PRIMARY KEY (topic_tag_id, semantic_board_id)
+					)`,
+					"CREATE INDEX IF NOT EXISTS idx_topic_tag_board_labels_topic_tag_id ON topic_tag_board_labels(topic_tag_id)",
+					"CREATE INDEX IF NOT EXISTS idx_topic_tag_board_labels_semantic_board_id ON topic_tag_board_labels(semantic_board_id)",
+					`CREATE TABLE IF NOT EXISTS board_composition (
+						board_id INTEGER NOT NULL REFERENCES semantic_labels(id) ON DELETE CASCADE,
+						auxiliary_label_id INTEGER NOT NULL REFERENCES semantic_labels(id) ON DELETE CASCADE,
+						PRIMARY KEY (board_id, auxiliary_label_id)
+					)`,
+					"CREATE INDEX IF NOT EXISTS idx_board_composition_board_id ON board_composition(board_id)",
+					"CREATE INDEX IF NOT EXISTS idx_board_composition_auxiliary_label_id ON board_composition(auxiliary_label_id)",
+					"ALTER TABLE narrative_boards ADD COLUMN IF NOT EXISTS semantic_board_id INTEGER REFERENCES semantic_labels(id) ON DELETE SET NULL",
+					"CREATE INDEX IF NOT EXISTS idx_narrative_boards_semantic_board_id ON narrative_boards(semantic_board_id)",
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("semantic label board system migration: %w", err)
+					}
+				}
+
+				settingsDefaults := []struct {
+					Key, Value, Description string
+				}{
+					{"semantic_board_match_sim_threshold", "0.6", "Minimum auxiliary label similarity counted as a SemanticBoard match"},
+					{"semantic_board_match_direct_hit_rate", "0.5", "Minimum direct auxiliary label hit rate for a SemanticBoard match"},
+					{"semantic_board_match_direct_max_sim", "0.8", "Maximum similarity threshold for direct SemanticBoard matching"},
+					{"semantic_board_match_weight_sim", "0.6", "Similarity weight used in weighted SemanticBoard matching"},
+					{"semantic_board_match_weight_density", "0.4", "Density weight used in weighted SemanticBoard matching"},
+					{"semantic_board_match_weighted_threshold", "0.6", "Minimum weighted score for assigning a topic tag to a SemanticBoard"},
+					{"semantic_board_match_max_boards", "3", "Maximum SemanticBoard matches retained for each topic tag"},
+					{"semantic_board_upgrade_ref_count_threshold", "5", "Minimum reference count before suggesting a new SemanticBoard"},
+					{"semantic_board_upgrade_cluster_distance_threshold", "0.7", "Cluster distance threshold for SemanticBoard upgrade suggestions"},
+					{"semantic_board_upgrade_cotag_window_days", "30", "Co-tag analysis window in days for SemanticBoard upgrade suggestions"},
+					{"semantic_board_upgrade_cotag_top_n", "20", "Maximum co-tag candidates considered for SemanticBoard upgrade suggestions"},
+					{"semantic_board_upgrade_cotag_dedupe_sim_threshold", "0.85", "Similarity threshold for deduplicating co-tag upgrade candidates"},
+					{"semantic_board_upgrade_cotag_hard_limit", "15", "Hard limit for co-tag upgrade candidates"},
+				}
+				for _, d := range settingsDefaults {
+					var existing models.AISettings
+					if err := db.Where("key = ?", d.Key).First(&existing).Error; err != nil {
+						if err := db.Create(&models.AISettings{
+							Key:         d.Key,
+							Value:       d.Value,
+							Description: d.Description,
+						}).Error; err != nil {
+							logging.Warnf("Warning: failed to seed ai_settings key %s: %v", d.Key, err)
+						}
+					}
+				}
+				return nil
+			},
+		},
 	}
 }

@@ -1,5 +1,7 @@
 # 数据流
 
+> **互补阅读**：[数据生命周期](../database/DATA_LIFECYCLE.md) 从数据状态字段变迁角度描述同样的核心链路——哪些表被写入、状态字段怎么流转、数据产出依赖。本文档侧重代码执行流。
+
 ## 主链路
 
 ```text
@@ -179,10 +181,13 @@ DigestListView
 - Digest 日报 / 周报生成
 - 阅读偏好聚合任务
 - 阻塞文章恢复
-- 标签自动合并
+- 标签自动合并（源 DELETE，不再用 status='merged'）
 - 标签质量分数重算
-- 叙事摘要生成（双轨制：热点板 + 概念板匹配）
+- 叙事摘要生成（双轨制：热点板 + Sector 匹配）
 - 叙事后处理（Board 连接派生、标签反馈、空 Board 清理）
+- 层级清理（7 Phase: 僵尸 Tag → 低质量 → 空 Node → 同 Level 去重 → Template 校验 → Sector 健康 → 聚类信号）
+- Sector 生成（auto/LLM/manual 三模式）
+- 重建任务（模板变更触发 rebuild_jobs）
 - 关注标签叙事维度总结
 
 ### scheduler 状态回传
@@ -254,11 +259,72 @@ NarrativeSummaryScheduler 触发
 ### Board Concept 管理
 
 ```text
-BoardConceptManager
-  → suggestConcepts() → LLM 扫描 abstract tags → 返回建议列表
-  → 用户审阅 → createConcept() → 生成 embedding → 保存
+BoardConceptManager → SectorGenerationService
+  → auto 模式: unplaced Tag > 阈值 → LLM 提议 → 0.85 去重 → 创建 Sector + embedding
+  → LLM 模式:  用户触发 → LLM 增量建议 (keep/add/merge/split) → diff 预览 → 确认执行
+  → manual 模式: 用户输入 label → LLM 补全 description → 创建 Sector + protected
   → 日常: MatchTagToConcept 使用 embedding cosine similarity 匹配
-  → 未归类桶 > 5 → 自动触发 suggestConcepts
+    → event 标签: 加权平均 (title×2.0 + keyword×1.0)
+    → 其他标签: 单 embedding 余弦相似度
+  → Sector 健康检查: auto 空→DELETE, LLM 衰退→declining, manual 不动
+```
+
+### 概念 Bootstrap 流程
+
+```text
+BootstrapConcepts(category)
+  → 加载分类内 active 标签 + semantic embedding
+  → 总标签 < 10 → 跳过
+  → buildNeighborGraph → findConnectedComponents (pgvector distance < 0.65)
+  → 过滤: 簇 < 5 标签 → 归入默认概念
+  → 有效簇: LLM 命名 → 创建 pending 概念 → 用户审阅激活
+  → 默认概念: 按分类命名 (event="事件", keyword="关键词", person="人物") → active + 生成 embedding
+```
+
+### 层级清理流程
+
+```text
+TagHierarchyCleanup 调度器 (3600s, time budget 限制)
+  Phase 1: 僵尸 Tag — DELETE 无文章/无关系/age>7d
+  Phase 2: 低质量 Tag — DELETE quality<0.15 且 article_count=1
+  Phase 3: 空 Node — DELETE 无子节点 Node (source='abstract')
+  Phase 4: 同 Level 去重 — 同 Sector 同 Level Node 相似>0.90 → HardMergeTags
+  Phase 5: Template 校验 — depth/leaf 位置/children 超限 → hierarchy_pending_changes
+  Phase 6: Sector 健康检查 — auto 空→DELETE, LLM 衰退→declining, manual 不动
+  Phase 7: 聚类信号 — GenerateAnchorSignals 持久化 hierarchy_anchor_signals，供 PlaceTagInHierarchy 消费
+```
+
+### 标签层级闭环状态机
+
+```text
+/tags 页面
+  → GET /api/hierarchy/closure-status?category=event
+  → 展示 active_sector_count / unplaced_tag_count / pending_change_count / active_rebuild_job / blocker_counts
+  → no_active_sector 且 unplaced 超阈值: orchestration bootstrap 触发 AutoGenerateSectors
+  → 有 Sector: PlaceTagInHierarchy 尝试链接现有 Node 或创建合格 Node
+  → 无法放置: 返回 blocker reason，closure status 聚合展示
+  → PendingChange 审批: 按 change_type 执行明确 relation 操作，缺 payload 标记 failed
+```
+
+已知限制：`HierarchyPendingChange` 当前没有独立 payload 字段，因此 `move` / `reparent` / `create` / `delete` 类型无法安全执行，只能返回 failed + reason。后续若要支持这些类型，需要先扩展可审计 payload，再接入明确执行器。
+
+### 重建任务流程
+
+```text
+模板变更触发:
+  → preview: POST /api/hierarchy/config/preview 只返回 impact，不保存、不删除、不创建 rebuild_job
+  → apply: PUT /api/hierarchy/config with apply=true 保存新 template 到 hierarchy_config
+  → DELETE 旧 Node (source='abstract') + relations + embeddings
+  → 叶 Tag (source='llm'/'heuristic') 保留, concept_id 不变
+  → 创建 rebuild_job (status='pending')
+
+RebuildService 执行:
+  → SELECT Tags WHERE id > last_tag_id LIMIT batch_size (默认 20)
+  → PlaceTagInHierarchy 逐个处理
+  → 更新 processed_tags / last_tag_id / estimated_end
+  → batch 间 sleep (默认 1s) 限流
+  → WebSocket 推送 hierarchy_rebuild (status=processing/completed/failed)
+  → 断点续传: 启动时检测 status='running' → 设为 paused
 ```
 
 ### 叙事面板数据流

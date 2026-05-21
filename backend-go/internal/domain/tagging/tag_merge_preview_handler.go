@@ -118,14 +118,6 @@ func MergeTagsWithCustomNameHandler(c *gin.Context) {
 			return fmt.Errorf("target tag not found: %w", err)
 		}
 
-		if source.Status == "merged" {
-			return fmt.Errorf("source tag is already merged")
-		}
-		if target.Status == "merged" {
-			return fmt.Errorf("target tag is already merged")
-		}
-
-		// Rename target if new_name differs from current label
 		if newName != target.Label {
 			newSlug := Slugify(newName)
 

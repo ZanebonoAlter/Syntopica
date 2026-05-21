@@ -12,6 +12,10 @@ type BoardConcept struct {
 	ScopeCategoryID *uint     `json:"scope_category_id"`
 	IsSystem        bool      `gorm:"not null;default:false" json:"is_system"`
 	Status          string    `gorm:"size:20;not null;default:pending;index" json:"status"`
+	Source          string    `gorm:"size:20;not null;default:auto" json:"source"`
+	Protected       bool      `gorm:"not null;default:false" json:"protected"`
+	Declining       bool      `gorm:"not null;default:false" json:"declining"`
+	PeakTagCount    int       `gorm:"not null;default:0" json:"peak_tag_count"`
 	DisplayOrder    int       `gorm:"not null;default:0" json:"display_order"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`

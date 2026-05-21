@@ -25,7 +25,6 @@ import TopicGraphSidebar from '~/features/topic-graph/components/TopicGraphSideb
 import TopicTimeline from '~/features/topic-graph/components/TopicTimeline.vue'
 import NarrativePanel from '~/features/topic-graph/components/NarrativePanel.vue'
 import BoardConceptManager from '~/features/topic-graph/components/BoardConceptManager.vue'
-import TagHierarchy from '~/features/topic-graph/components/TagHierarchy.vue'
 import { buildDisplayedTopicGraph, collectRelatedTopicSlugs } from '~/features/topic-graph/utils/buildDisplayedTopicGraph'
 import { buildTopicGraphViewModel } from '~/features/topic-graph/utils/buildTopicGraphViewModel'
 import { normalizeTopicCategory } from '~/features/topic-graph/utils/normalizeTopicCategory'
@@ -158,7 +157,7 @@ watch(timelineOpen, (open) => {
 })
 
 // Active view tab state (graph / hierarchy)
-const activeTab = ref<'graph' | 'hierarchy' | 'narrative'>('graph')
+const activeTab = ref<'graph' | 'narrative'>('graph')
 
 const viewModel = computed(() => graphPayload.value
   ? buildTopicGraphViewModel(graphPayload.value)
@@ -713,6 +712,8 @@ async function handleTagSelect(slug: string, category: TopicCategory) {
 
   // Also load topic detail for the sidebar
   void loadTopicDetail(slug)
+
+  timelineOpen.value = true
 }
 
 async function loadHotspotDigests(tagSlug: string, kind?: TopicCategory) {
@@ -1076,6 +1077,8 @@ function handleNodeClick(node: { slug?: string; kind: string; category?: TopicCa
   void loadAggregatedArticles(node.slug)
 
   void loadTopicDetail(node.slug)
+
+  timelineOpen.value = true
 }
 
 function handleKeywordHighlight(keywordSlug: string | null) {
@@ -1260,15 +1263,6 @@ await loadGraph()
                   >
                     <Icon icon="mdi:graph-outline" width="14" />
                     <span>图谱</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="th-tab-btn"
-                    :class="{ 'th-tab-btn--active': activeTab === 'hierarchy' }"
-                    @click="activeTab = 'hierarchy'"
-                  >
-                    <Icon icon="mdi:file-tree-outline" width="14" />
-                    <span>标签层级</span>
                   </button>
                   <button
                     type="button"
@@ -1461,18 +1455,6 @@ await loadGraph()
                 </section>
 
                 <TopicGraphFooterPanels :detail="detail" />
-                </template>
-
-                <!-- Hierarchy view -->
-                <template v-else-if="activeTab === 'hierarchy'">
-                  <article class="rounded-[30px] p-4 md:p-5 border border-[rgba(255,255,255,0.08)] bg-[rgba(11,18,24,0.4)] backdrop-blur-xl">
-                    <TagHierarchy
-                      :feed-id="selectedFilterFeedId"
-                      :category-id="selectedFilterCategoryId"
-                      :anchor-date="selectedDate"
-                      @select-tag="handleTagSelect"
-                    />
-                  </article>
                 </template>
 
                 <!-- Narrative view -->

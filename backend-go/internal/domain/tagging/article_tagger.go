@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"time"
 
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
@@ -73,6 +74,7 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 		FeedName:     feedName,
 		CategoryName: categoryName,
 		ArticleID:    &article.ID,
+		PubDate:      formatPubDate(article.PubDate),
 	}
 
 	// Use the extraction system
@@ -102,8 +104,12 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 
 	// Build article context for description generation
 	articleContext := ""
+	pubDateStr := formatPubDate(article.PubDate)
+	if pubDateStr != "" {
+		articleContext = "[日期: " + pubDateStr + "] "
+	}
 	if article.Title != "" {
-		articleContext = article.Title
+		articleContext += article.Title
 	}
 	articleSummary := buildArticleSummary(*article)
 	if articleSummary != "" {
@@ -210,6 +216,11 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 			continue
 		}
 		seenTagIDs[dbTag.ID] = struct{}{}
+		if len(tag.AuxiliaryLabels) > 0 {
+			if err := NewAuxiliaryLabelService(database.DB, nil).AttachAuxiliaryLabels(ctx, dbTag.ID, tag.AuxiliaryLabels); err != nil {
+				logging.Warnf("attach auxiliary labels failed for tag %d: %v", dbTag.ID, err)
+			}
+		}
 
 		link := models.ArticleTopicTag{
 			ArticleID:  article.ID,
@@ -503,4 +514,11 @@ func parseAliasesFromJSON(aliases string) []string {
 		return nil
 	}
 	return result
+}
+
+func formatPubDate(pubDate *time.Time) string {
+	if pubDate == nil {
+		return ""
+	}
+	return pubDate.Format("2006-01-02")
 }

@@ -98,6 +98,8 @@ func StartRuntime() *Runtime {
 
 	tagging.StartAllWorkers()
 
+	tagging.GetRebuildService().RecoverIncompleteJobs()
+
 	runtime.AutoRefresh = jobs.NewAutoRefreshScheduler(60)
 	if err := runtime.AutoRefresh.Start(); err != nil {
 		logging.Warnf("Failed to start auto-refresh scheduler: %v", err)

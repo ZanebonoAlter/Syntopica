@@ -26,10 +26,6 @@ func WatchTag(db *gorm.DB, tagID uint) (*models.TopicTag, error) {
 	if err := db.First(&tag, tagID).Error; err != nil {
 		return nil, err
 	}
-	if tag.Status == "merged" {
-		return nil, fmt.Errorf("tag %d is merged and cannot be watched", tagID)
-	}
-
 	now := time.Now()
 	tag.IsWatched = true
 	tag.WatchedAt = &now

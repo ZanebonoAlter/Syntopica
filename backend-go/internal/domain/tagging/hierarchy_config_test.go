@@ -3,6 +3,7 @@ package tagging
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -206,6 +207,51 @@ func TestPreviewConfigImpact(t *testing.T) {
 	}
 	if impact.DepthExceeded != 1 {
 		t.Errorf("expected 1 depth exceeded (tag at depth 3+1=4 > 3), got %d", impact.DepthExceeded)
+	}
+}
+
+func TestHierarchyConfigHandlerSeparatesPreviewAndApply(t *testing.T) {
+	content, err := os.ReadFile("hierarchy_handler.go")
+	if err != nil {
+		t.Fatalf("read hierarchy_handler.go: %v", err)
+	}
+	source := string(content)
+
+	body := extractSourceBetween(t, source, "func UpdateHierarchyConfig", "func PreviewHierarchyConfig")
+	if strings.Contains(body, "TriggerTemplateRebuild") || strings.Contains(body, "SaveConfig") {
+		t.Fatal("UpdateHierarchyConfig should route preview/apply instead of directly saving or rebuilding")
+	}
+	for _, marker := range []string{
+		"PreviewHierarchyConfig",
+		"previewConfigImpact",
+		"applyHierarchyConfig",
+		"preview_only",
+		"RegisterHierarchyRoutes",
+		`POST("/config/preview"`,
+	} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("expected hierarchy config handler source to contain %s", marker)
+		}
+	}
+
+	applyBody := extractSourceBetween(t, source, "func applyHierarchyConfig", "func GetHierarchyPending")
+	for _, marker := range []string{"changedTemplateCategories", "hasActiveRebuildJob", "SaveConfig", "TriggerTemplateRebuild", "ExecuteJob"} {
+		if !strings.Contains(applyBody, marker) {
+			t.Fatalf("expected applyHierarchyConfig to contain %s", marker)
+		}
+	}
+}
+
+func TestConfigImpactIncludesRebuildEstimateAndViolationSummary(t *testing.T) {
+	content, err := os.ReadFile("hierarchy_config.go")
+	if err != nil {
+		t.Fatalf("read hierarchy_config.go: %v", err)
+	}
+	source := string(content)
+	for _, marker := range []string{"AffectedTagCount", "EstimatedRebuildDurationSeconds", "ViolationSummary"} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("expected ConfigImpact to contain %s", marker)
+		}
 	}
 }
 

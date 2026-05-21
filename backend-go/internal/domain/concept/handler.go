@@ -20,6 +20,7 @@ func RegisterConceptRoutes(router *gin.RouterGroup) {
 		group.POST("", createConceptHandler)
 		group.PUT("/:id", updateConceptHandler)
 		group.DELETE("/:id", deactivateConceptHandler)
+		group.POST("/suggest", suggestConceptsHandler)
 		group.POST("/:id/confirm", confirmConceptHandler)
 		group.POST("/bootstrap", bootstrapConceptsHandler)
 	}
@@ -191,4 +192,34 @@ func bootstrapConceptsHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": concepts})
+}
+
+type suggestRequest struct {
+	Category string `json:"category"`
+}
+
+func suggestConceptsHandler(c *gin.Context) {
+	var req suggestRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid request body"})
+		return
+	}
+	if req.Category == "" {
+		req.Category = "event"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	suggestions, err := SuggestConcepts(ctx, req.Category)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	if suggestions == nil {
+		suggestions = []Suggestion{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": suggestions})
 }

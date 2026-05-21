@@ -45,6 +45,7 @@ export interface ArticleFilters {
   per_page?: number
   feed_id?: number
   category_id?: number
+  concept_id?: number
   uncategorized?: boolean
   read?: boolean
   favorite?: boolean

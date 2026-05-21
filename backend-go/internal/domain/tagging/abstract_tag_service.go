@@ -25,7 +25,6 @@ var (
 	findCrossLayerDuplicateCandidatesFn = findCrossLayerDuplicateCandidates
 	judgeCrossLayerDuplicateFn          = judgeCrossLayerDuplicate
 	mergeTagsFn                         = MergeTags
-	callTreeReviewLLMFn                 = callTreeReviewLLM
 )
 
 type TagExtractionResult struct {

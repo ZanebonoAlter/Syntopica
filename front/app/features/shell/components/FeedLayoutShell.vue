@@ -157,16 +157,28 @@ function handleArticleClick(article: any) {
   }
 }
 
-function handleArticleFavorite(articleId: string) {
+async function handleArticleFavorite(articleId: string) {
   const article = articles.value.find(a => a.id === articleId)
   const newFavorite = !article?.favorite
-  if (article) {
-    updateArticle(articleId, { favorite: newFavorite })
+  try {
+    const response = await articlesApi.updateArticle(Number(articleId), { favorite: newFavorite })
+    if (response.success) {
+      if (article) {
+        updateArticle(articleId, { favorite: newFavorite })
+      }
+      if (selectedArticle.value?.id === articleId) {
+        selectedArticle.value = { ...selectedArticle.value, favorite: newFavorite }
+      }
+    } else {
+      refreshMessage.value = response.error || '操作失败'
+      refreshMessageType.value = 'error'
+      showRefreshMessage.value = true
+    }
+  } catch {
+    refreshMessage.value = '操作失败'
+    refreshMessageType.value = 'error'
+    showRefreshMessage.value = true
   }
-  if (selectedArticle.value?.id === articleId) {
-    selectedArticle.value = { ...selectedArticle.value, favorite: newFavorite }
-  }
-  void articlesApi.updateArticle(Number(articleId), { favorite: newFavorite })
 }
 
 function handleArticleUpdate(articleId: string, updates: Partial<any>) {
@@ -380,19 +392,26 @@ async function handleRefresh() {
 }
 
 async function handleMarkAllRead() {
+  let response: any
   if (selectedFeed.value) {
-    await apiStore.markAllAsRead({ feedId: selectedFeed.value })
+    response = await apiStore.markAllAsRead({ feedId: selectedFeed.value })
   } else if (selectedCategory.value) {
     if (selectedCategory.value === 'uncategorized') {
-      await apiStore.markAllAsRead({ uncategorized: true })
+      response = await apiStore.markAllAsRead({ uncategorized: true })
     } else {
       const categoryId = parseInt(selectedCategory.value)
       if (categoryId > 0) {
-        await apiStore.markAllAsRead({ categoryId })
+        response = await apiStore.markAllAsRead({ categoryId })
       }
     }
   } else {
-    await apiStore.markAllAsRead()
+    response = await apiStore.markAllAsRead()
+  }
+  if (response && !response.success) {
+    refreshMessage.value = response.error || '标记已读失败'
+    refreshMessageType.value = 'error'
+    showRefreshMessage.value = true
+    return
   }
   await fetchGlobalUnreadCount()
 }
@@ -407,7 +426,9 @@ async function handleExportOpml() {
     a.click()
     window.URL.revokeObjectURL(url)
   } catch (error) {
-    console.error('导出失败:', error)
+    refreshMessage.value = '导出失败'
+    refreshMessageType.value = 'error'
+    showRefreshMessage.value = true
   }
 }
 
@@ -449,6 +470,7 @@ import '~/components/FeedLayout.css'
       @add-feed="showAddFeedDialog = true"
       @add-category="showAddCategoryDialog = true"
       @import-opml="showImportDialog = true"
+      @export-opml="handleExportOpml"
       @settings="showGlobalSettings = true"
       @close-refresh-message="showRefreshMessage = false"
     />
