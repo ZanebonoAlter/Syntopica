@@ -25,10 +25,10 @@
 
 `tag_hierarchy_cleanup` 的 `last_run_summary` 现在主要看这几个字段：
 - `zombie_deactivated`: 这一轮停用了多少长期没用的标签
-- `flat_merges_applied`: 合并了多少明显重复的抽象标签
+- `flat_merges_applied`: 合并了多少明显重复的标签
 - `orphaned_relations`: 删掉了多少失效的层级关系
 - `multi_parent_fixed`: 修好了多少“一个标签挂了多个父标签”的问题
-- `empty_abstracts`: 停用了多少已经没有子标签的抽象标签
+- `empty_abstracts`: 已废弃
 
 ### GET /api/schedulers/status
 

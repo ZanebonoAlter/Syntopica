@@ -111,7 +111,7 @@ async function loadTimelineArticles(boardId: number) {
   }
 }
 
-function handleAddBoard(data: { label: string; description: string; display_order: number; protected: boolean }) {
+function handleAddBoard(data: { label: string; description: string; display_order: number; protected: boolean; auxiliary_labels?: number[] }) {
   sbApi.createBoard(data).then((res) => {
     if (res.success) {
       showAddDialog.value = false
@@ -180,7 +180,7 @@ async function handleExecuteUpgrade(suggestion: UpgradeSuggestion) {
 }
 
 async function handleTriggerBackfill() {
-  const res = await sbApi.triggerBackfill({ mode: 'full' })
+  const res = await sbApi.triggerBackfill({ mode: 'all' })
   if (res.success && res.data) {
     backfillTask.value = res.data
     startBackfillPolling(res.data.id)

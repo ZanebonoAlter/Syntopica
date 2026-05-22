@@ -219,7 +219,7 @@ backend-go/
 ├── internal/domain/topicextraction/extractor_test.go
 ├── internal/domain/topicgraph/handler_test.go
 ├── internal/domain/topicanalysis/analysis_queue_test.go
-├── internal/domain/topicanalysis/abstract_tag_service_test.go
+├── internal/domain/topicanalysis/auxiliary_label_service_test.go
 ├── internal/domain/topicanalysis/embedding_test.go
 ├── internal/domain/topicanalysis/merge_tags_reembedding_test.go
 ├── internal/domain/topicanalysis/merge_reembedding_queue_test.go

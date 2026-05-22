@@ -183,11 +183,10 @@ DigestListView
 - 阻塞文章恢复
 - 标签自动合并（源 DELETE，不再用 status='merged'）
 - 标签质量分数重算
-- 叙事摘要生成（双轨制：热点板 + Sector 匹配）
+- 叙事摘要生成（SemanticBoard 派生）
 - 叙事后处理（Board 连接派生、标签反馈、空 Board 清理）
-- 层级清理（7 Phase: 僵尸 Tag → 低质量 → 空 Node → 同 Level 去重 → Template 校验 → Sector 健康 → 聚类信号）
-- Sector 生成（auto/LLM/manual 三模式）
-- 重建任务（模板变更触发 rebuild_jobs）
+- 辅助标签入库（随 tag extraction 同步）
+- SemanticBoard 匹配（随 tag 入库后触发）
 - 关注标签叙事维度总结
 
 ### scheduler 状态回传
@@ -241,90 +240,54 @@ auto_summary scheduler
 ```text
 NarrativeSummaryScheduler 触发
   → GenerateAndSave(date)
-    → GenerateAndSaveForAllCategories
-      → 逐分类双轨生成:
-        Pass 1: CollectAbstractTreeInputs
-          → 大树(≥6) → 热点板 (is_system=true)
-          → 小树 → MatchTagToConcept → 概念板或未归类
-        Pass 2: CollectUnclassifiedEventTags
-          → MatchTagToConcept → 概念板或未归类
-    → GenerateAndSaveGlobal
-      → CollectTagInputs → MatchTagToConcept → 概念板
+    → CollectSemanticBoardNarrativeInputs
+      → 读取 active SemanticBoard (label_type='board', status='active')
+      → 按 date + scope + semantic_board_id 收集 event tags (from topic_tag_board_labels)
+    → 对每个有事件的 SemanticBoard:
+      → INSERT INTO narrative_boards (semantic_board_id, event_tag_ids, ...)
+      → prev_board_ids 按 semantic_board_id + scope + 前一日匹配
+    → GenerateAndSaveGlobal (全局 scope)
     → runFallbackAssociations (关联前日叙事)
     → DeriveBoardConnections (派生 Board 连接)
     → runFeedbackFromTodayNarratives (反馈标签)
     → cleanEmptyBoards (清理空 Board)
 ```
 
-### Board Concept 管理
+### SemanticBoard 管理
 
 ```text
-BoardConceptManager → SectorGenerationService
-  → auto 模式: unplaced Tag > 阈值 → LLM 提议 → 0.85 去重 → 创建 Sector + embedding
-  → LLM 模式:  用户触发 → LLM 增量建议 (keep/add/merge/split) → diff 预览 → 确认执行
-  → manual 模式: 用户输入 label → LLM 补全 description → 创建 Sector + protected
-  → 日常: MatchTagToConcept 使用 embedding cosine similarity 匹配
-    → event 标签: 加权平均 (title×2.0 + keyword×1.0)
-    → 其他标签: 单 embedding 余弦相似度
-  → Sector 健康检查: auto 空→DELETE, LLM 衰退→declining, manual 不动
+SemanticBoard 管理面板
+  → 辅助标签入库: L1 slug匹配 → L2 embedding合并 → L3 新建
+  → SemanticBoard 匹配: 三规则挂载 → 写入 topic_tag_board_labels
+  → 升级建议: 手动触发 → 预聚类 → LLM建议 → 用户确认
+  → 辅助标签治理: 禁用、alias合并、composition移除
+  → 回填: all/unassigned/board 三种模式
 ```
 
-### 概念 Bootstrap 流程
+### 辅助标签与 SemanticBoard 数据流
 
 ```text
-BootstrapConcepts(category)
-  → 加载分类内 active 标签 + semantic embedding
-  → 总标签 < 10 → 跳过
-  → buildNeighborGraph → findConnectedComponents (pgvector distance < 0.65)
-  → 过滤: 簇 < 5 标签 → 归入默认概念
-  → 有效簇: LLM 命名 → 创建 pending 概念 → 用户审阅激活
-  → 默认概念: 按分类命名 (event="事件", keyword="关键词", person="人物") → active + 生成 embedding
-```
+辅助标签入库:
+  tagging/extraction → LLM 提取 tag + 3-5 个辅助标签
+  → auxiliary_label_service.go
+    → L1: slug/alias 精确匹配 → 复用 (ref_count++)
+    → L2: embedding ≥ 0.95 合并 → 小方加入 aliases (ref_count++)
+    → L3: 无匹配 → 新建 semantic_label(label_type=auxiliary) + 生成 embedding
+  → topic_tag_semantic_labels 记录关联
 
-### 层级清理流程
+SemanticBoard 匹配:
+  semantic_board_matching.go
+  → 读取 tag 辅助标签 + active Board composition
+  → 直接命中 / 命中率 / max_sim / 加权综合
+  → 写入 topic_tag_board_labels (最多 3 个 Board)
 
-```text
-TagHierarchyCleanup 调度器 (3600s, time budget 限制)
-  Phase 1: 僵尸 Tag — DELETE 无文章/无关系/age>7d
-  Phase 2: 低质量 Tag — DELETE quality<0.15 且 article_count=1
-  Phase 3: 空 Node — DELETE 无子节点 Node (source='abstract')
-  Phase 4: 同 Level 去重 — 同 Sector 同 Level Node 相似>0.90 → HardMergeTags
-  Phase 5: Template 校验 — depth/leaf 位置/children 超限 → hierarchy_pending_changes
-  Phase 6: Sector 健康检查 — auto 空→DELETE, LLM 衰退→declining, manual 不动
-  Phase 7: 聚类信号 — GenerateAnchorSignals 持久化 hierarchy_anchor_signals，供 PlaceTagInHierarchy 消费
-```
-
-### 标签层级闭环状态机
-
-```text
-/tags 页面
-  → GET /api/hierarchy/closure-status?category=event
-  → 展示 active_sector_count / unplaced_tag_count / pending_change_count / active_rebuild_job / blocker_counts
-  → no_active_sector 且 unplaced 超阈值: orchestration bootstrap 触发 AutoGenerateSectors
-  → 有 Sector: PlaceTagInHierarchy 尝试链接现有 Node 或创建合格 Node
-  → 无法放置: 返回 blocker reason，closure status 聚合展示
-  → PendingChange 审批: 按 change_type 执行明确 relation 操作，缺 payload 标记 failed
-```
-
-已知限制：`HierarchyPendingChange` 当前没有独立 payload 字段，因此 `move` / `reparent` / `create` / `delete` 类型无法安全执行，只能返回 failed + reason。后续若要支持这些类型，需要先扩展可审计 payload，再接入明确执行器。
-
-### 重建任务流程
-
-```text
-模板变更触发:
-  → preview: POST /api/hierarchy/config/preview 只返回 impact，不保存、不删除、不创建 rebuild_job
-  → apply: PUT /api/hierarchy/config with apply=true 保存新 template 到 hierarchy_config
-  → DELETE 旧 Node (source='abstract') + relations + embeddings
-  → 叶 Tag (source='llm'/'heuristic') 保留, concept_id 不变
-  → 创建 rebuild_job (status='pending')
-
-RebuildService 执行:
-  → SELECT Tags WHERE id > last_tag_id LIMIT batch_size (默认 20)
-  → PlaceTagInHierarchy 逐个处理
-  → 更新 processed_tags / last_tag_id / estimated_end
-  → batch 间 sleep (默认 1s) 限流
-  → WebSocket 推送 hierarchy_rebuild (status=processing/completed/failed)
-  → 断点续传: 启动时检测 status='running' → 设为 paused
+升级建议:
+  用户触发 POST /api/semantic-boards/upgrade-suggest
+  → 预聚类 + co-tag 上下文 + LLM 判断
+  → 返回 create_new / merge_into_existing / skip
+  → 用户确认 POST /api/semantic-boards/upgrade-execute
+  → 创建/更新 SemanticBoard + board_composition
+  → 可触发回填
 ```
 
 ### 叙事面板数据流
@@ -336,6 +299,15 @@ NarrativePanel
   → loadNarratives(date) → GET /api/narratives?date=...
   → switchScope('category') → loadScopes → 展示 board_count
   → triggerGeneration() → POST /api/narratives/regenerate
+
+SemanticBoardPanel
+  → loadBoards() → GET /api/semantic-boards
+  → viewBoard(id) → GET /api/semantic-boards/:id
+  → viewComposition(id) → GET /api/semantic-boards/:id/composition
+  → viewUpgradeCandidates() → GET /api/semantic-boards/upgrade-candidates
+  → upgradeSuggest() → POST /api/semantic-boards/upgrade-suggest
+  → upgradeExecute() → POST /api/semantic-boards/upgrade-execute
+  → backfill() → POST /api/semantic-boards/backfill
 ```
 
 ## 约束

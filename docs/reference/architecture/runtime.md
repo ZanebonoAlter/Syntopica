@@ -107,7 +107,7 @@
 - `/api/topic-graph`：图谱、topic 详情、按分类聚合、topic 相关文章、相关 digest、pending 文章
 - `/api/topic-graph/analysis`：topic analysis 查询、状态、重建
 - `/api/embedding`：embedding 配置与队列管理
-- `/api/topic-tags`：关注标签、标签合并预览、抽象标签管理
+- `/api/topic-tags`：关注标签、标签合并预览
 - `/api/narratives`：叙事摘要列表、详情、历史
 
 ### Scheduler API

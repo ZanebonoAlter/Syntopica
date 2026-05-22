@@ -67,7 +67,7 @@ Feed 管理（`backend-go/internal/domain/feed/`）和文章管理（`backend-go
 此外，`tagging/analysis` 还承担了以下高级能力：
 - Tag embedding 向量化与自动合并（源 DELETE，不再使用 status='merged'）
 - Event 标签多行 embedding（semantic title + event_keyword 关键词行）
-- Node（抽象标签）层级体系 + Template 感知
+- SemanticBoard 匹配与升级建议
 - 合并后 re-embedding 队列
 - Sector（板块概念）生成：auto / LLM / manual 三种模式
 - rebuild_jobs 重建任务（模板变更触发批量重放）
@@ -214,7 +214,7 @@ my-robot/
 | `/api/topic-graph` | 主题图谱、分析、相关文章 |
 | `/api/topic-graph/analysis` | 主题分析、embedding 配置、标签管理 |
 | `/api/embedding` | Embedding 配置与队列管理 |
-| `/api/topic-tags` | 关注标签、标签合并预览、抽象标签管理 |
+| `/api/topic-tags` | 关注标签、标签合并预览 |
 | `/api/narratives` | 叙事摘要查询与历史 |
 | `/api/traces` | 链路追踪查询与统计 |
 | `/ws` | WebSocket 实时推送 |
@@ -236,7 +236,7 @@ my-robot/
 - [前端组件分工](frontend-components.md)：各 feature 组件职责与交互关系
 - [数据流](data-flow.md)：主链路、前端状态职责、定时任务链路
 - [链路追踪](tracing.md)：OpenTelemetry 集成、埋点分层、查询 API
-- [数据库字段说明](../database/DATABASE_FIELDS.md)：38 张表完整字段字典
+- [数据库字段说明](../database/DATABASE_FIELDS.md)：35 张表完整字段字典
 - [全局实体关系图](../database/ER_DIAGRAM.md)：FK 关系图与约束矩阵
 - [数据生命周期](../database/DATA_LIFECYCLE.md)：6 条数据链路的状态字段流转
 - [开发指南](../development.md)：构建、测试、验证命令

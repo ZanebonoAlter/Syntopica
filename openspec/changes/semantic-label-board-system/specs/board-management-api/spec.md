@@ -45,7 +45,7 @@
 系统 SHALL 提供手动触发回填的 API 端点，支持 all、unassigned、board 三种模式，并提供进度查询。
 
 #### Scenario: 触发回填
-- **WHEN** 用户调用 POST /api/boards/backfill
+- **WHEN** 用户调用 POST /api/semantic-boards/backfill
 - **THEN** 系统 SHALL 将待回填的 tag 入队，返回任务 ID
 
 #### Scenario: 查询回填进度
@@ -56,11 +56,11 @@
 系统 SHALL 提供读取和修改匹配参数的 API，参数存储在 ai_settings 表中。
 
 #### Scenario: 读取参数
-- **WHEN** 用户请求 GET /api/boards/matching-config
+- **WHEN** 用户请求 GET /api/semantic-boards/matching-config
 - **THEN** 系统 SHALL 返回当前 semantic_board_match_sim_threshold, semantic_board_match_direct_hit_rate, semantic_board_match_direct_max_sim, semantic_board_match_weight_sim, semantic_board_match_weight_density, semantic_board_match_weighted_threshold, semantic_board_match_max_boards
 
 #### Scenario: 修改参数
-- **WHEN** 用户通过 PUT /api/boards/matching-config 修改 semantic_board_match_sim_threshold 为 0.7
+- **WHEN** 用户通过 PUT /api/semantic-boards/matching-config 修改 semantic_board_match_sim_threshold 为 0.7
 - **THEN** 系统 SHALL 更新 ai_settings 中的对应配置，后续匹配使用新值
 
 ### Requirement: 标签关联的辅助标签和板块查询
@@ -84,3 +84,25 @@
 #### Scenario: 移除 board 构成标签
 - **WHEN** 用户从 SemanticBoard 中移除辅助标签
 - **THEN** 系统 SHALL 删除对应 board_composition 记录，且不自动回填历史 tag-board 归属
+
+### Requirement: 辅助标签推荐 API
+系统 SHALL 提供基于 embedding 相似度的辅助标签推荐 API，用于手动创建或编辑 SemanticBoard 时填充 board_composition。API SHALL 接受 label（必选）和 description（可选），生成 board embedding 后与全量 active 辅助标签的 embedding 计算余弦相似度，按相似度从高到低排序返回，不设阈值。API SHALL 支持分页（page/page_size）和搜索过滤（排除已在 board_composition 中的标签）。
+
+#### Scenario: 创建时推荐辅助标签
+- **WHEN** 用户调用 GET /api/semantic-boards/suggest-auxiliaries?label=量子计算
+- **THEN** 系统 SHALL 生成 "量子计算" 的 embedding，与所有 active 辅助标签计算相似度，按相似度降序返回分页列表，包含 id、label、ref_count、aliases、similarity
+
+#### Scenario: 编辑时推荐辅助标签
+- **WHEN** 用户调用 GET /api/semantic-boards/:id/suggest-auxiliaries
+- **THEN** 系统 SHALL 使用已有 board 的 label+description 生成 embedding，返回推荐列表，排除已在 board_composition 中的辅助标签
+
+#### Scenario: 搜索过滤
+- **WHEN** 用户调用 GET /api/semantic-boards/suggest-auxiliaries?label=AI&search=图像
+- **THEN** 系统 SHALL 先按搜索词过滤辅助标签（label/slug 模糊匹配），再计算相似度排序
+
+### Requirement: Board composition 添加 API
+系统 SHALL 提供向 SemanticBoard 的 board_composition 中添加辅助标签的 API。
+
+#### Scenario: 添加单个辅助标签
+- **WHEN** 用户调用 POST /api/semantic-boards/:id/composition，body 含 auxiliary_label_id
+- **THEN** 系统 SHALL 验证辅助标签存在且 active，写入 board_composition 记录（幂等），且不自动回填历史 tag-board 归属

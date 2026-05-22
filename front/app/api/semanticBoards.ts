@@ -100,6 +100,17 @@ export interface MatchingConfig {
   semantic_board_match_max_boards: number
 }
 
+export interface SuggestedAuxiliaryLabel extends AuxiliaryLabelItem {
+  similarity: number
+}
+
+export interface SuggestAuxiliariesResponse {
+  items: SuggestedAuxiliaryLabel[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export function useSemanticBoardsApi() {
   async function getBoards(params?: { search?: string; status?: string }): Promise<ApiResponse<{ items: SemanticBoard[]; total: number }>> {
     const query = apiClient.buildQueryParams(params)
@@ -176,6 +187,31 @@ export function useSemanticBoardsApi() {
     return apiClient.put('/semantic-boards/matching-config', data)
   }
 
+  async function suggestAuxiliaries(params: {
+    label: string
+    description?: string
+    search?: string
+    exclude_board_id?: number
+    page?: number
+    page_size?: number
+  }): Promise<ApiResponse<SuggestAuxiliariesResponse>> {
+    const query = apiClient.buildQueryParams(params)
+    return apiClient.get(`/semantic-boards/suggest-auxiliaries${query ? `?${query}` : ''}`)
+  }
+
+  async function suggestAuxiliariesForBoard(boardId: number, params?: {
+    search?: string
+    page?: number
+    page_size?: number
+  }): Promise<ApiResponse<SuggestAuxiliariesResponse>> {
+    const query = apiClient.buildQueryParams(params)
+    return apiClient.get(`/semantic-boards/${boardId}/suggest-auxiliaries${query ? `?${query}` : ''}`)
+  }
+
+  async function addComposition(boardId: number, auxiliaryLabelId: number): Promise<ApiResponse<{ board_id: number; auxiliary_label_id: number }>> {
+    return apiClient.post(`/semantic-boards/${boardId}/composition`, { auxiliary_label_id: auxiliaryLabelId })
+  }
+
   return {
     getBoards,
     getBoard,
@@ -184,9 +220,12 @@ export function useSemanticBoardsApi() {
     deleteBoard,
     getComposition,
     removeFromComposition,
+    addComposition,
     getUpgradeCandidates,
     suggestUpgrade,
     executeUpgrade,
+    suggestAuxiliaries,
+    suggestAuxiliariesForBoard,
     triggerBackfill,
     getBackfillStatus,
     getMatchingConfig,

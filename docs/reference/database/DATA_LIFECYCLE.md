@@ -93,15 +93,17 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 
 ## 主题标签生命周期
 
-从 LLM 提取到建立层级关系的完整链路。统一术语：**Tag** = 叶标签 (source='llm'/'heuristic')，**Node** = 抽象标签 (source='abstract')，**Sector** = 板块概念 (board_concepts 表)。
+从 LLM 提取标签到 SemanticBoard 匹配的完整链路。统一术语：**Tag** = 事件/关键词/人物标签 (source='llm'/'heuristic')，**Auxiliary Label** = 辅助标签 (semantic_labels.label_type='auxiliary')，**SemanticBoard** = 语义板块 (semantic_labels.label_type='board')。
 
 ```
 ┌─ LLM 标签提取 ───────────────────────────────────────────────────────────┐
 │  来源: tag_jobs 处理 (article_lifecycle 触发)                            │
 │                                                                          │
-│  LLM → 候选标签列表 (label + category)                                  │
+│  LLM → 候选标签列表 (label + category) + 3-5 个辅助标签               │
 │                                                                          │
 │  INSERT INTO ai_call_logs (capability='tag_extraction', ...)            │
+│  → INSERT/UPDATE topic_tags (tag 入库)                                  │
+│  → 辅助标签同步入库（见下方入库流程）                                    │
 └─────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─ Embedding 去重 + 入库 ──────────────────────────────────────────────────┐
@@ -118,6 +120,14 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 │  INSERT INTO topic_tag_embeddings (topic_tag_id, embedding,             │
 │                                     dimension, model, text_hash)         │
 │  INSERT INTO article_topic_tags (article_id, topic_tag_id, score)       │
+│                                                                          │
+│  --- 辅助标签入库 ---                                                    │
+│  对每个 tag 的辅助标签，按三级匹配入库：                                │
+│  L1: slug/alias 精确匹配 → 复用已有 auxiliary label (ref_count++)       │
+│  L2: embedding ≥ 0.95 合并 → 小方 label 加入大方 aliases (ref_count++) │
+│  L3: 无匹配 → 新建 semantic_label(label_type=auxiliary) + 生成 embedding│
+│  写入 topic_tag_semantic_labels (tag → auxiliary label 关联)            │
+│  禁用标签 (status=disabled) 不参与 L1/L2 匹配                           │
 └─────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─ Tag 合并（源 DELETE）───────────────────────────────────────────────────┐
@@ -125,7 +135,6 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 │                                                                          │
 │  pgvector 余弦相似度 > 0.97 的标签对:                                    │
 │  → 迁移 article_topic_tags (source → target)                             │
-│  → 迁移 topic_tag_relations (source children → target)                   │
 │  → DELETE topic_tag_embeddings WHERE source                              │
 │  → DELETE topic_tags WHERE id = source                                   │
 │                                                                          │
@@ -133,68 +142,37 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 │  → INSERT INTO merge_reembedding_queues (重算目标 Tag embedding)         │
 └─────────────────────────────────────────────────────────────────────────┘
                               ↓
-┌─ Tag 归属 Sector ────────────────────────────────────────────────────────┐
-│  Tag embedding 就绪后，计算与该 category 下所有活跃 Sector 的余弦相似度 │
-│  · 最高相似度 ≥ 0.6 (可配置) → UPDATE topic_tags SET concept_id = <Sector>│
-│  · 低于阈值 → concept_id = NULL (unplaced)                              │
+┌─ SemanticBoard 匹配 ──────────────────────────────────────────────────────┐
+│  读取 tag 的辅助标签和 active SemanticBoard composition                  │
 │                                                                          │
-│  Sector 生成模式:                                                         │
-│  · auto:  unplaced Tag 数 > auto_sector_threshold (默认 15) → LLM 提议  │
-│  · LLM:   用户触发 → LLM 增量建议 (keep/add/merge/split) → 预览确认    │
-│  · manual: 用户输入 label → LLM 补全 description → protected=true       │
+│  · 直接命中: tag 的辅助标签 ∈ board 构成标签 → 直接挂载                 │
+│  · 命中率 > 50% → 直接挂载                                              │
+│  · max_sim ≥ 0.8 → 直接挂载                                              │
+│  · 加权综合: 0.6×max_sim + 0.4×hit_rate ≥ 阈值 → 挂载                  │
 │                                                                          │
-│  board_concepts 新增字段: source ('auto'/'llm'/'manual'), protected,    │
-│                          declining, peak_tag_count                       │
+│  默认最多 3 个 board，按匹配分排序                                       │
+│  写入 topic_tag_board_labels (topic_tag_id, semantic_board_id, score,    │
+│    match_reason)                                                          │
+│                                                                          │
+│  匹配参数从 ai_settings 读取: semantic_board_match_*                     │
+│  冷启动无 SemanticBoard 时：不匹配，不报错                               │
 └─────────────────────────────────────────────────────────────────────────┘
                               ↓
-┌─ 质量评分 ───────────────────────────────────────────────────────────────┐
-│  TagQualityScore 调度器 (3600s)                                          │
+┌─ SemanticBoard 升级建议（手动触发）───────────────────────────────────────┐
+│  用户手动触发，收集 ref_count ≥ 语义配置阈值的候选辅助标签            │
 │                                                                          │
-│  UPDATE topic_tags SET quality_score = <基于 article_count /             │
-│         feed_count / hierarchy_depth 的综合评分>                         │
-│                                                                          │
-│  低质量 Tag (quality_score ≈ 0) → 清理 Phase 2 可能被删除               │
+│  1. 预聚类：embedding 余弦距离 < 0.7 的候选分为簇                        │
+│  2. 补充上下文：每个簇补充 co-tag 事件（30天窗口、top 20、去重>0.85）  │
+│  3. LLM 判断：每个簇 → create_new / merge_into_existing / skip          │
+│  4. 用户确认后：创建新 SemanticBoard 或更新已有 board_composition       │
+│  5. 可触发回填重算 topic_tag_board_labels                               │
 └─────────────────────────────────────────────────────────────────────────┘
                               ↓
-┌─ 层级放置 ───────────────────────────────────────────────────────────────┐
-│  唯一入口: PlaceTagInHierarchy                                            │
-│  embedding 就绪 → MatchTagToConcept → depth 检查 → 按 template 放置      │
-│  唯一出口: DELETE (硬删除，无 merged/inactive 软状态)                      │
-│                                                                          │
-│  → Node 判定 (LLM + hierarchy_config templates)                          │
-│  → INSERT INTO topic_tag_relations (parent_id, child_id,                │
-│                                      relation_type='abstract')           │
-│                                                                          │
-│  → adopt_narrower_queues:     status: pending → processing → completed   │
-│    (收养窄 Tag 到新建 Node)                                              │
-│  → multi_parent_resolve_queues: status: pending → processing → completed │
-│    (AI 判断多父级消歧)                                                   │
-│  → abstract_tag_update_queues: status: pending → processing → completed  │
-│    (子节点变化后刷新 Node 描述和 embedding)                               │
-│                                                                          │
-│  重建任务 (rebuild_jobs):                                                 │
-│  → 模板变更时: DELETE 旧 Node/relations → 创建 rebuild_job              │
-│  → rebuild_jobs.status: pending → running → completed / paused / failed  │
-│  → 按 batch (默认 20) 处理，支持断点续传 (last_tag_id)                  │
-│  → WebSocket 推送 hierarchy_rebuild (processing/completed/failed)        │
-│                                                                          │
-│  话题: topic_tags.status: active (无 merged/inactive 状态)               │
-│        topic_tag_relations — 持续增量更新                                │
-└─────────────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─ 清理机制 (7 Phase) ─────────────────────────────────────────────────────┐
-│  tag_hierarchy_cleanup 调度器，按顺序执行，受 time budget 限制:          │
-│                                                                          │
-│  Phase 1 — 僵尸 Tag: DELETE 无文章/无关系/age>7d 的 Tag + embeddings    │
-│  Phase 2 — 低质量 Tag: DELETE quality<0.15 且 article_count=1 的 Tag    │
-│  Phase 3 — 空 Node:     DELETE 无子节点的 Node (source='abstract')      │
-│  Phase 4 — 同 Level 去重: 同 Sector 同 Level Node 相似>0.90 → 合并删除 │
-│  Phase 5 — Template 校验: 检测 depth/leaf 位置/children 超限 →          │
-│            INSERT INTO hierarchy_pending_changes (status='pending')      │
-│  Phase 6 — Sector 健康检查: auto 空→DELETE, LLM 衰退→declining,        │
-│            manual 不动                                                   │
-│  Phase 7 — 聚类: ClusterUnclassifiedTags 输出 anchor 信号，不创建 Node │
-│            信号作为 PlaceTagInHierarchy 的上下文输入                     │
+┌─ 回填队列 ───────────────────────────────────────────────────────────────┐
+│  支持 all / unassigned / board 三种回填模式                              │
+│  异步逐个执行 Board 匹配并重写 topic_tag_board_labels                   │
+│  已有归属会被新匹配结果覆盖（幂等）                                     │
+│  回填进度和失败记录可查询                                               │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -253,37 +231,30 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 ┌─ 输入收集 ───────────────────────────────────────────────────────────────┐
 │  NarrativeSummary 调度器 (86400s)                                        │
 │                                                                          │
-│  SELECT topic_tags WHERE quality_score > 0 AND status='active'          │
-│  → 活跃标签列表                                                          │
-│                                                                          │
 │  SELECT article_topic_tags + articles WHERE pub_date within window      │
 │  → 标签-文章关联                                                         │
 │                                                                          │
-│  SELECT topic_tag_relations WHERE relation_type='abstract'              │
-│  → 抽象标签层级树                                                        │
+│  SELECT semantic_labels WHERE label_type='board' AND status='active'    │
+│  → 全局共享 SemanticBoard                                                │
 └─────────────────────────────────────────────────────────────────────────┘
                               ↓
-┌─ 双轨匹配 → Board 生成 ──────────────────────────────────────────────────┐
+┌─ SemanticBoard → NarrativeBoard 生成 ────────────────────────────────────┐
 │  分类维度: global / feed_category                                        │
 │                                                                          │
-│  Pass 1: CollectAbstractTreeInputs                                       │
-│    · 节点数 ≥ narrative_board_hotspot_threshold (6) → 热点板            │
-│      INSERT INTO narrative_boards (is_system=true, abstract_tag_id,     │
-│             abstract_tag_ids, event_tag_ids, period_date, scope_type)   │
+│  CollectSemanticBoardNarrativeInputs                                     │
+│    · 按 date + scope + semantic_board_id 收集 active event tags          │
+│    · 数据源为 topic_tag_board_labels 持久化匹配结果                      │
+│    · category scope 通过 articles → feeds.category_id 限定文章范围       │
 │                                                                          │
-│    · 节点数 < 6 → MatchTagToConcept                                      │
-│      pgvector cosine similarity vs board_concepts.embedding             │
-│      匹配阈值: narrative_board_embedding_threshold (0.7)                │
+│  对每个有事件的 SemanticBoard:                                           │
+│    · INSERT INTO narrative_boards (semantic_board_id, event_tag_ids,     │
+│             period_date, scope_type, scope_category_id, scope_label)     │
+│    · prev_board_ids 按 semantic_board_id + scope + 前一日匹配            │
+│    · 同一 event tag 可出现在多个 NarrativeBoard，用于多视角叙事          │
 │                                                                          │
-│      · 匹配成功 → INSERT INTO narrative_boards (board_concept_id, ...)  │
-│      · 匹配失败 → 归入未归类桶                                           │
-│                                                                          │
-│  Pass 2: CollectUnclassifiedEventTags                                    │
-│    · 未归类的 event 标签 → MatchTagToConcept → 概念板或保持未归类       │
+│  无 SemanticBoard 或无匹配 event tags 时生成 0 个 NarrativeBoard，不报错│
 │                                                                          │
 │  后处理:                                                                  │
-│  → runFallbackAssociations: 关联前日叙事 →                               │
-│    UPDATE narrative_boards SET prev_board_ids = <前日 Board IDs>        │
 │  → DeriveBoardConnections: 派生 Board 间关系                            │
 │  → runFeedbackFromTodayNarratives: 回写标签质量反馈                     │
 │  → cleanEmptyBoards: 删除无 tag 的 Board                                │
@@ -324,17 +295,19 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 ### 主题标签相关
 
 1. 全局配置：AI Provider/Route（`tag_extraction` capability）
-2. `embedding_config` 表必须配置 embedding 模型和阈值
-3. 可选：`embedding_config.narrative_board_embedding_threshold` 和 `narrative_board_hotspot_threshold`
-4. `hierarchy_config` 表配置 HierarchyTemplate（Level 定义、max_children、is_leaf）
-5. `rebuild_jobs` 表支持模板变更后的批量重建
+2. `embedding_config` 表必须配置 embedding 模型
+3. `ai_settings` 中的 `semantic_board_match_*` 控制 tag → SemanticBoard 匹配
+4. `ai_settings` 中的 `semantic_board_upgrade_*` 控制升级建议
+5. `topic_tag_semantic_labels` 记录 tag → auxiliary label
+6. `topic_tag_board_labels` 记录 tag → SemanticBoard，用于叙事板输入
 
 ### 叙事摘要
 
-1. 需要至少 6 个活跃 Tag 在同一个 Node 下才能生成热点板
-2. 需要 `board_concepts` 表中有活跃 Sector 才能做概念匹配
+1. 需要 active SemanticBoard（`semantic_labels.label_type='board'`）且当日有匹配 event tags 才会生成 NarrativeBoard
+2. 冷启动无 SemanticBoard 或无匹配 event tags 时生成 0 个 NarrativeBoard，不报错
 3. `NarrativeSummaryScheduler` 调度器需启用（86400s 间隔）
-4. Sector 支持三种生成模式：auto / LLM / manual
+4. NarrativeBoard 是每日/scope 实例，长期语义资产是 SemanticBoard
+5. Board 叙事上下文来自 SemanticBoard 的 label 和 description
 
 ---
 
@@ -369,9 +342,16 @@ digest_configs (推送配置)
 
 ## 更新日志
 
+### 2026-05-22
+
+- 语义标签/板块体系重构：移除层级放置、Sector 归属、质量评分、7 Phase 清理
+- 新增辅助标签入库（L1/L2/L3）、SemanticBoard 匹配、升级建议、回填队列
+- 叙事生成改为 SemanticBoard 派生，移除 abstract tree 和 board_concepts 路径
+- 冷启动允许无 board，同一事件可出现在多个 NarrativeBoard
+
 ### 2026-05-16
 
-- 统一术语：Tag (叶标签) / Node (抽象标签) / Sector (板块概念)
+- 统一术语：Tag (叶标签) / Auxiliary Label (辅助标签) / SemanticBoard (语义板块)
 - 合并逻辑改为源 DELETE，移除 status='merged'/'inactive'
 - 新增 Sector 生成模式 (auto/LLM/manual) 和归属流程
 - 新增 rebuild_jobs 重建任务生命周期
@@ -387,6 +367,6 @@ digest_configs (推送配置)
 ## 相关文档
 
 - [代码执行流](../architecture/data-flow.md) — 函数调用链、API 调用、前端 store 交互（"代码怎么跑的"）
-- [数据库字段说明](DATABASE_FIELDS.md) — 38 张表的完整字段字典
+- [数据库字段说明](DATABASE_FIELDS.md) — 35 张表的完整字段字典
 - [全局实体关系图](ER_DIAGRAM.md) — FK 关系图与约束矩阵
 - [项目架构总览](../architecture/overview.md) — 系统架构全局视角

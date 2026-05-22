@@ -10,14 +10,14 @@ RSS Reader 数据库全景概览。
 | FK 约束数 | **35** |
 | 业务域 | **6**（Core、Topic Tags、AI Summaries、Narrative、Hierarchy、AI Infrastructure） |
 | 枢纽表 | `topic_tags`（12 条入边，10 张表引用） |
-| 向量表 | `topic_tag_embeddings`、`board_concepts`（pgvector） |
+| 向量表 | `topic_tag_embeddings`、`semantic_labels`（pgvector） |
 | 预留表 | 4 张（`ai_summaries` 系 + `digest_configs`） |
 
 ## 文档导航
 
 | 文档 | 描述 |
 |------|------|
-| [DATABASE_FIELDS.md](DATABASE_FIELDS.md) | 38 张表的完整字段字典，含类型、约束、用途说明 |
+| [DATABASE_FIELDS.md](DATABASE_FIELDS.md) | 35 张表的完整字段字典，含类型、约束、用途说明 |
 | [ER_DIAGRAM.md](ER_DIAGRAM.md) | 全局实体关系图（ASCII 全局概览 + 6 域 Mermaid ER 图 + FK 引用矩阵） |
 | [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md) | 6 条数据链路的状态字段流转（4 条核心 + 2 条预留） |
 

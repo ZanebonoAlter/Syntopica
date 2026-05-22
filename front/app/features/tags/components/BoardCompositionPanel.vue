@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { Icon } from '@iconify/vue'
-import type { AuxiliaryLabelItem } from '~/api/semanticBoards'
+import { useSemanticBoardsApi, type AuxiliaryLabelItem } from '~/api/semanticBoards'
+import AuxiliaryLabelPicker from './AuxiliaryLabelPicker.vue'
 
 const props = defineProps<{
   boardId: number
@@ -13,9 +15,35 @@ const emit = defineEmits<{
   refresh: []
 }>()
 
+const api = useSemanticBoardsApi()
+const showPicker = ref(false)
+const pendingIds = ref<number[]>([])
+const adding = ref(false)
+
 function handleRemove(id: number, label: string) {
   if (!confirm(`从板块中移除辅助标签 "${label}"？\n注意：不会自动回填历史数据。`)) return
   emit('remove', id)
+}
+
+async function handleConfirmAdd() {
+  if (pendingIds.value.length === 0) {
+    showPicker.value = false
+    return
+  }
+  adding.value = true
+  try {
+    for (const id of pendingIds.value) {
+      const res = await api.addComposition(props.boardId, id)
+      if (!res.success) {
+        console.error('Failed to add composition:', res.error)
+      }
+    }
+    showPicker.value = false
+    pendingIds.value = []
+    emit('refresh')
+  } finally {
+    adding.value = false
+  }
 }
 </script>
 
@@ -25,15 +53,37 @@ function handleRemove(id: number, label: string) {
       <Icon icon="mdi:puzzle-outline" width="15" class="text-white/50" />
       <span class="bcp-title">构成标签</span>
       <span class="bcp-count">{{ labels.length }}</span>
+      <div class="bcp-spacer" />
+      <button type="button" class="bcp-add-btn" @click="showPicker = !showPicker">
+        <Icon :icon="showPicker ? 'mdi:close' : 'mdi:plus'" width="14" />
+        {{ showPicker ? '取消' : '添加' }}
+      </button>
+    </div>
+
+    <!-- Add auxiliary picker -->
+    <div v-if="showPicker" class="bcp-picker">
+      <AuxiliaryLabelPicker
+        mode="edit"
+        :board-id="boardId"
+        :selected-ids="pendingIds"
+        @update:selected-ids="pendingIds = $event"
+      />
+      <div v-if="pendingIds.length > 0" class="bcp-confirm">
+        <button type="button" class="bcp-confirm-btn" :disabled="adding" @click="handleConfirmAdd">
+          <Icon icon="mdi:check" width="14" />
+          {{ adding ? '添加中...' : `确认添加 ${pendingIds.length} 个标签` }}
+        </button>
+      </div>
     </div>
 
     <div v-if="loading" class="bcp-loading">
       <div v-for="i in 3" :key="i" class="bcp-skeleton-chip" />
     </div>
 
-    <div v-else-if="labels.length === 0" class="bcp-empty">
+    <div v-else-if="labels.length === 0 && !showPicker" class="bcp-empty">
       <Icon icon="mdi:tag-off-outline" width="20" class="text-white/15" />
       <span>暂无构成标签</span>
+      <button type="button" class="bcp-empty-add" @click="showPicker = true">点击添加</button>
     </div>
 
     <div v-else class="bcp-chips">
@@ -89,6 +139,67 @@ function handleRemove(id: number, label: string) {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.bcp-spacer {
+  flex: 1;
+}
+
+.bcp-add-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid rgba(99, 179, 237, 0.2);
+  background: rgba(99, 179, 237, 0.06);
+  color: rgba(147, 197, 253, 0.7);
+  font-size: 0.68rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.bcp-add-btn:hover {
+  background: rgba(99, 179, 237, 0.12);
+  border-color: rgba(99, 179, 237, 0.35);
+  color: rgba(147, 197, 253, 0.9);
+}
+
+.bcp-picker {
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.bcp-confirm {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 0.4rem;
+}
+
+.bcp-confirm-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.8rem;
+  border-radius: 8px;
+  border: 1px solid rgba(240, 138, 75, 0.35);
+  background: rgba(240, 138, 75, 0.1);
+  color: rgba(255, 220, 200, 0.85);
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.bcp-confirm-btn:hover:not(:disabled) {
+  background: rgba(240, 138, 75, 0.18);
+  border-color: rgba(240, 138, 75, 0.5);
+}
+
+.bcp-confirm-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .bcp-loading {
   display: flex;
   flex-wrap: wrap;
@@ -115,6 +226,22 @@ function handleRemove(id: number, label: string) {
   padding: 1rem 0;
   color: rgba(255, 255, 255, 0.25);
   font-size: 0.75rem;
+}
+
+.bcp-empty-add {
+  font-size: 0.68rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid rgba(99, 179, 237, 0.2);
+  background: none;
+  color: rgba(147, 197, 253, 0.6);
+  cursor: pointer;
+  transition: all 0.1s;
+}
+
+.bcp-empty-add:hover {
+  background: rgba(99, 179, 237, 0.08);
+  color: rgba(147, 197, 253, 0.9);
 }
 
 .bcp-chips {

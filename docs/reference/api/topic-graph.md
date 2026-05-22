@@ -191,7 +191,7 @@ POST 请求还支持 JSON body 传入 `windowType` 和 `anchorDate`。
 | GET | `/api/topic-tags/merge-preview` | 扫描相似标签对 |
 | GET | `/api/topic-tags/hierarchy` | 获取标签层级树 |
 | POST | `/api/topic-tags/organize` | 异步整理未分类标签 |
-| PUT | `/api/topic-tags/:tag_id/abstract-name` | 重命名抽象标签 |
+| PUT | `/api/topic-tags/:tag_id/abstract-name` | 已废弃 |
 | POST | `/api/topic-tags/:tag_id/detach` | 从抽象父标签分离子标签 |
 | POST | `/api/topic-tags/:tag_id/reassign` | 将标签移到新父标签 |
 | GET | `/api/topic-tags/watched` | 列出关注标签 |
@@ -256,11 +256,11 @@ POST 请求还支持 JSON body 传入 `windowType` 和 `anchorDate`。
 |------|------|------|
 | `category` | string | 可选。指定时只整理该分类；不指定时按每个标签自身分类查找相似候选 |
 
-整理流程会先用 embedding 查找同分类相似标签，过滤当前标签自身和低相似度候选，再交给 LLM 判断是否合并或创建抽象父标签。LLM 判定为 merge 时会调用标签合并流程落库；判定为 abstract 时会创建抽象标签关系。
+整理流程会先用 embedding 查找同分类相似标签，过滤当前标签自身和低相似度候选，再交给 LLM 判断是否合并。LLM 判定为 merge 时会调用标签合并流程落库。
 
 ### PUT /api/topic-tags/:tag_id/abstract-name
 
-重命名抽象标签：
+已废弃（抽象标签功能已移除）。
 
 ```json
 { "new_name": "新名称" }
@@ -286,7 +286,7 @@ POST 请求还支持 JSON body 传入 `windowType` 和 `anchorDate`。
 
 ### GET /api/topic-tags/watched
 
-列出所有关注标签，含抽象标签元数据。
+列出所有关注标签。
 
 ### POST /api/topic-tags/:tag_id/watch
 
@@ -370,12 +370,8 @@ POST 请求还支持 JSON body 传入 `windowType` 和 `anchorDate`。
 | GET | `/api/narratives/:id/history` | 叙事历史链 |
 | GET | `/api/narratives/boards/timeline` | Board 时间线 |
 | GET | `/api/narratives/boards/:id` | Board 详情 |
-| GET | `/api/narratives/board-concepts` | 板块概念列表 |
-| POST | `/api/narratives/board-concepts` | 创建板块概念 |
-| PUT | `/api/narratives/board-concepts/:id` | 更新板块概念 |
-| DELETE | `/api/narratives/board-concepts/:id` | 停用板块概念 |
-| POST | `/api/narratives/board-concepts/suggest` | LLM 建议板块概念 |
-| GET | `/api/narratives/unclassified` | 未分类标签桶 |
+| GET | `/api/narratives/boards/timeline` | Board 时间线 |
+| GET | `/api/narratives/boards/:id` | Board 详情 |
 
 ### GET /api/narratives/timeline
 
@@ -470,82 +466,8 @@ POST 请求还支持 JSON body 传入 `windowType` 和 `anchorDate`。
 | `scope_type` | string | `global` / `feed_category` |
 | `category_id` | uint | 分类 ID |
 
-返回按日期分组的 Board 列表时间线。每个 Board 包含 `id`、`name`、`description`、`board_concept_id`、`is_system` 等字段。
+返回按日期分组的 Board 列表时间线。每个 Board 包含 `id`、`name`、`description`、`semantic_board_id`、`is_system` 等字段。
 
 ### GET /api/narratives/boards/:id
 
 返回 Board 详情，包含关联的叙事列表。
-
-### GET /api/narratives/board-concepts
-
-返回所有活跃的板块概念列表。
-
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": 1,
-      "name": "AI 前沿",
-      "description": "人工智能领域最新研究与应用",
-      "scope_type": "global",
-      "scope_category_id": null,
-      "is_system": false,
-      "is_active": true,
-      "display_order": 0
-    }
-  ]
-}
-```
-
-### POST /api/narratives/board-concepts
-
-请求体：
-
-```json
-{
-  "name": "AI 前沿",
-  "description": "人工智能领域最新研究与应用",
-  "scope_type": "global",
-  "scope_category_id": null
-}
-```
-
-创建后自动生成 embedding。返回创建的概念对象。
-
-### PUT /api/narratives/board-concepts/:id
-
-请求体：
-
-```json
-{
-  "name": "新名称",
-  "description": "新描述"
-}
-```
-
-更新后自动重新生成 embedding。
-
-### DELETE /api/narratives/board-concepts/:id
-
-软删除（设置 `is_active=false`）。
-
-### POST /api/narratives/board-concepts/suggest
-
-LLM 扫描所有活跃抽象标签，建议初始板块概念列表。
-
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "name": "编程工具",
-      "description": "开发者工具、IDE、框架更新"
-    }
-  ]
-}
-```
-
-### GET /api/narratives/unclassified
-
-返回当前未匹配到任何概念板的标签列表（未归类桶）。

@@ -15,5 +15,6 @@
 | [content-completion.md](content-completion.md) | 文章内容补全 | `/api/content-completion` |
 | [firecrawl.md](firecrawl.md) | Firecrawl 全文抓取 | `/api/firecrawl` |
 | [reading.md](reading.md) | 阅读行为、用户偏好 | `/api/reading-behavior`, `/api/user-preferences` |
-| [topic-graph.md](topic-graph.md) | 主题图谱、主题分析、标签管理、Embedding、叙事摘要、板块概念 | `/api/topic-graph`, `/api/topic-tags`, `/api/embedding`, `/api/narratives`, `/api/narratives/boards`, `/api/narratives/board-concepts`, `/api/narratives/unclassified` |
+| [topic-graph.md](topic-graph.md) | 主题图谱、主题分析、标签管理、Embedding | `/api/topic-graph`, `/api/topic-tags`, `/api/embedding` |
+| [semantic-boards.md](semantic-boards.md) | SemanticBoard、辅助标签、升级建议、匹配回填 | `/api/semantic-boards`, `/api/auxiliary-labels`, `/api/tags/:id/semantic-boards` |
 | [traces.md](traces.md) | 链路追踪 | `/api/traces` |

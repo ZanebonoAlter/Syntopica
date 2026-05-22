@@ -202,12 +202,12 @@ Topic Graph 是独立页面，不走主阅读页三栏壳。
 - 支持按标签反查相关 digest
 - 支持底部 AI analysis 面板与历史面板
 - 支持文章预览，且复用 `ArticleContentView`
-- 支持标签层级视图和抽象标签浏览
+- 支持标签管理（关注、合并）
 - 支持标签质量评分和低质量标签过滤
 - 支持叙事面板，查看每日叙事摘要和 Board 时间线
 - 支持叙事分类版块切换，按分类查看 Board 列表
 - 支持板块概念管理（创建/编辑/停用/LLM 建议）
-- 支持 Board 可视化画布（NarrativeBoardCanvas），区分概念板和热点板
+- 支持 Board 可视化画布（NarrativeBoardCanvas），基于 SemanticBoard 关联渲染
 
 ### 数据链路特点
 
@@ -241,6 +241,6 @@ Topic Graph 是独立页面，不走主阅读页三栏壳。
 - AI Provider 和路由管理通过 `/api/ai/providers` 和 `/api/ai/routes` 端点管理
 - 叙事面板支持 global/category 双 scope 切换，分类模式下展示 board 数量
 - `BoardConceptManager.vue` 支持手动创建和 LLM 建议两种概念创建方式
-- `NarrativeBoardCanvas.client.vue` 通过 `board_concept_id` 区分概念板和热点板渲染样式
+- `NarrativeBoardCanvas.client.vue` 通过 `semantic_board_id` 关联 SemanticBoard 渲染叙事板
 - 叙事重新生成改为 `POST /api/narratives/regenerate`（JSON body），替代旧的 DELETE + trigger 模式
 - 板块概念 API 客户端在 `front/app/api/boardConcepts.ts`

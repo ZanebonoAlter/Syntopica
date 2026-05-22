@@ -1,6 +1,6 @@
 # 数据库字段说明文档
 
-本文档详细说明了 RSS Reader 项目中所有数据库表（38 张）的字段用途、数据流向和工作流程。
+本文档详细说明了 RSS Reader 项目中所有数据库表（35 张）的字段用途、数据流向和工作流程。
 
 ---
 
@@ -28,21 +28,17 @@
 | `topic_analysis_cursors` | 主题分析游标 | `models.TopicAnalysisCursor` |
 | `topic_analysis_jobs` | 主题分析任务队列 | `topicanalysis.topicAnalysisJobRecord` |
 | `article_topic_tags` | 文章-主题关联 | `models.ArticleTopicTag` |
-| `topic_tag_relations` | 主题标签层级关系 | `models.TopicTagRelation` |
-| `hierarchy_config` | 层级模板配置 | `models.HierarchyConfig` |
-| `hierarchy_config_versions` | 层级模板版本历史 | `models.HierarchyConfigVersion` |
-| `adopt_narrower_queues` | 窄标签收养队列 | `models.AdoptNarrowerQueue` |
-| `multi_parent_resolve_queues` | 多父级消歧队列 | `models.MultiParentResolveQueue` |
-| `abstract_tag_update_queues` | 抽象标签更新队列 | `models.AbstractTagUpdateQueue` |
-| `hierarchy_pending_changes` | 层级待定变更 | `models.HierarchyPendingChange` |
 | `embedding_config` | 向量配置 | `models.EmbeddingConfig` |
 | `embedding_queues` | 向量生成队列 | `models.EmbeddingQueue` |
 | `merge_reembedding_queues` | 合并后重算向量队列 | `models.MergeReembeddingQueue` |
+| `semantic_labels` | 语义标签（辅助标签+SemanticBoard 统一表） | `models.SemanticLabel` |
+| `topic_tag_semantic_labels` | tag-辅助标签关联 | `models.TopicTagSemanticLabel` |
+| `topic_tag_board_labels` | tag-SemanticBoard 匹配结果 | `models.TopicTagBoardLabel` |
+| `board_composition` | board 构成 | `models.BoardComposition` |
 | `firecrawl_jobs` | Firecrawl 抓取任务 | `models.FirecrawlJob` |
 | `tag_jobs` | 标签任务 | `models.TagJob` |
 | `narrative_summaries` | 叙事摘要 | `models.NarrativeSummary` |
 | `narrative_boards` | 叙事板块 | `models.NarrativeBoard` |
-| `board_concepts` | 板块概念 | `models.BoardConcept` |
 | `otel_spans` | OpenTelemetry 链路追踪 | `tracing.OtelSpan` |
 | `digest_configs` | Digest 推送配置 | （已废弃） |
 | `schema_migrations` | 迁移版本追踪 | （框架管理） |
@@ -340,9 +336,15 @@
 | `created_at` | TIMESTAMP | 创建时间 |
 | `updated_at` | TIMESTAMP | 更新时间 |
 | `kind` | VARCHAR(20) DEFAULT 'keyword' | 已废弃，映射到 `category` |
-| `concept_id` | INTEGER | 关联板块概念 ID（FK → `board_concepts.id`） |
+| `concept_id` | INTEGER | 已废弃，不再使用 |
 
 唯一约束：`(category, slug)`
+
+唯一约束（topic_tag_semantic_labels）：`(topic_tag_id, semantic_label_id)`
+
+唯一约束（topic_tag_board_labels）：`(topic_tag_id, semantic_board_id)`
+
+唯一约束（board_composition）：`(board_id, auxiliary_label_id)`
 
 #### topic_tag_embeddings（主题标签向量）
 
@@ -414,19 +416,6 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 | `started_at` | TIMESTAMP | 开始时间 |
 | `completed_at` | TIMESTAMP | 完成时间 |
 
-#### topic_tag_relations（主题标签层级关系）
-
-| 字段名 | 类型 | 用途 |
-|--------|------|------|
-| `id` | SERIAL PK | 主键 |
-| `parent_id` | INTEGER NOT NULL REFERENCES topic_tags(id) | 父标签 ID |
-| `child_id` | INTEGER NOT NULL REFERENCES topic_tags(id) | 子标签 ID |
-| `relation_type` | VARCHAR(20) DEFAULT 'abstract' | 关系类型（`abstract`/`synonym`/`related`） |
-| `similarity_score` | FLOAT | 相似度评分 |
-| `created_at` | TIMESTAMP | 创建时间 |
-
-唯一约束：`(parent_id, child_id)`
-
 #### article_topic_tags（文章-主题关联）
 
 | 字段名 | 类型 | 用途 |
@@ -443,98 +432,11 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 
 ---
 
-### 8. 层级关系相关表
+### 8. 语义标签相关表（已废弃：层级关系相关表）
 
-层级关系子系统管理 topic_tags 之间的父子层级（abstract tag hierarchy），包含模板配置、窄标签收养、多父级消歧和抽象标签更新四类队列。
+> 旧版层级体系（hierarchy_config、adopt_narrower_queues、multi_parent_resolve_queues、abstract_tag_update_queues、hierarchy_pending_changes）已在语义标签/板块体系重构中移除。相关功能由 semantic_labels 的 label_type=auxiliary/board 和 topic_tag_semantic_labels 替代。
 
-#### hierarchy_config（层级模板配置）
-
-| 字段名 | 类型 | 用途 |
-|--------|------|------|
-| `id` | BIGSERIAL PK | 主键 |
-| `templates` | JSONB DEFAULT '{}' | 层级模板定义（`HierarchyTemplatesJSON`） |
-| `version` | BIGINT NOT NULL DEFAULT 1 | 当前版本号 |
-| `updated_at` | TIMESTAMP | 更新时间 |
-
-#### hierarchy_config_versions（层级模板版本历史）
-
-| 字段名 | 类型 | 用途 |
-|--------|------|------|
-| `id` | BIGSERIAL PK | 主键 |
-| `config_id` | BIGINT NOT NULL | 关联配置 ID（FK → `hierarchy_config.id`） |
-| `version` | BIGINT NOT NULL | 版本号 |
-| `templates` | JSONB DEFAULT '{}' | 该版本的模板快照 |
-| `change_log` | TEXT | 变更说明 |
-| `created_at` | TIMESTAMP | 创建时间 |
-
-#### adopt_narrower_queues（窄标签收养队列）
-
-当新增抽象标签时，已有的窄标签（narrower tags）需要被收养到该抽象标签下。此队列用于批量处理收养请求。
-
-| 字段名 | 类型 | 用途 |
-|--------|------|------|
-| `id` | SERIAL PK | 主键 |
-| `abstract_tag_id` | BIGINT NOT NULL | 抽象标签 ID（FK → `topic_tags.id`, ON DELETE CASCADE） |
-| `source` | VARCHAR(50) NOT NULL | 触发来源（如 `processAbstractJudgment`） |
-| `status` | VARCHAR(20) DEFAULT 'pending' | 状态（`pending`/`processing`/`completed`/`failed`） |
-| `error_message` | TEXT | 错误信息 |
-| `retry_count` | INTEGER DEFAULT 0 | 重试次数 |
-| `created_at` | TIMESTAMP | 创建时间 |
-| `started_at` | TIMESTAMP | 开始时间 |
-| `completed_at` | TIMESTAMP | 完成时间 |
-
-唯一索引：`(abstract_tag_id)` WHERE status IN ('pending', 'processing')
-
-#### multi_parent_resolve_queues（多父级消歧队列）
-
-当标签被发现同时属于多个父抽象标签时，需要 AI 判断最佳归属。
-
-| 字段名 | 类型 | 用途 |
-|--------|------|------|
-| `id` | SERIAL PK | 主键 |
-| `child_tag_id` | INTEGER NOT NULL | 子标签 ID（FK → `topic_tags.id`, ON DELETE CASCADE） |
-| `source` | VARCHAR(50) NOT NULL | 触发来源 |
-| `status` | VARCHAR(20) DEFAULT 'pending' | 状态（`pending`/`processing`/`completed`/`failed`） |
-| `error_message` | TEXT | 错误信息 |
-| `retry_count` | INTEGER DEFAULT 0 | 重试次数 |
-| `created_at` | TIMESTAMP NOT NULL | 创建时间 |
-| `started_at` | TIMESTAMP | 开始时间 |
-| `completed_at` | TIMESTAMP | 完成时间 |
-
-唯一索引：`(child_tag_id)` WHERE status IN ('pending', 'processing')
-
-#### abstract_tag_update_queues（抽象标签更新队列）
-
-当抽象标签的子节点发生变化（新增、移出、合并）时，需要重新计算该抽象标签的描述文本和 embedding 向量。
-
-| 字段名 | 类型 | 用途 |
-|--------|------|------|
-| `id` | BIGSERIAL PK | 主键 |
-| `abstract_tag_id` | BIGINT NOT NULL | 抽象标签 ID（FK → `topic_tags.id`, ON DELETE CASCADE） |
-| `trigger_reason` | VARCHAR(50) NOT NULL | 触发原因（`new_child_added`/`child_moved`/`child_adopted`/`hierarchy_linked` 等） |
-| `status` | VARCHAR(20) DEFAULT 'pending' | 状态（`pending`/`processing`/`completed`/`failed`） |
-| `error_message` | TEXT | 错误信息 |
-| `retry_count` | INTEGER NOT NULL DEFAULT 0 | 重试次数 |
-| `created_at` | TIMESTAMP | 创建时间 |
-| `started_at` | TIMESTAMP | 开始时间 |
-| `completed_at` | TIMESTAMP | 完成时间 |
-
-#### hierarchy_pending_changes（层级待定变更）
-
-记录因层级模板规则检测到的待处理层级变更（如标签需要移动、合并或拆分）。
-
-| 字段名 | 类型 | 用途 |
-|--------|------|------|
-| `id` | SERIAL PK | 主键 |
-| `tag_id` | INTEGER NOT NULL | 目标标签 ID（FK → `topic_tags.id`, ON DELETE CASCADE） |
-| `tag_label` | VARCHAR(160) NOT NULL | 目标标签名称 |
-| `change_type` | VARCHAR(50) NOT NULL | 变更类型 |
-| `current_parent_id` | INTEGER | 当前父标签 ID（FK → `topic_tags.id`, ON DELETE SET NULL） |
-| `current_parent_label` | VARCHAR(160) | 当前父标签名称 |
-| `reason` | TEXT | 变更原因 |
-| `status` | VARCHAR(20) DEFAULT 'pending' | 状态 |
-| `created_at` | TIMESTAMP NOT NULL | 创建时间 |
-| `resolved_at` | TIMESTAMP | 解决时间 |
+---
 
 ---
 
@@ -559,8 +461,8 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 | `low_similarity_threshold` | `0.78` | 低相似度阈值，自动创建新标签 |
 | `embedding_model` | （空） | 覆盖 embedding 模型名 |
 | `embedding_dimension` | `1536` | 向量维度 |
-| `narrative_board_embedding_threshold` | `0.7` | 板块概念 embedding 匹配阈值 |
-| `narrative_board_hotspot_threshold` | `6` | 热点板抽象树节点数阈值 |
+| `narrative_board_embedding_threshold` | `0.7` | 板块概念 embedding 匹配阈值（已废弃，由 semantic_board_match_* 替代） |
+| `narrative_board_hotspot_threshold` | `6` | 热点板抽象树节点数阈值（已废弃） |
 
 #### embedding_queues（向量生成队列）
 
@@ -670,28 +572,69 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 | `scope_category_id` | INTEGER | 分类 ID（索引 idx_narrative_boards_scope） |
 | `scope_label` | VARCHAR(100) | 分类名称 |
 | `event_tag_ids` | TEXT | 关联 event 标签 ID 列表（JSON 数组） |
-| `abstract_tag_ids` | TEXT | 关联抽象标签 ID 列表（JSON 数组） |
 | `prev_board_ids` | TEXT | 前日关联 Board ID 列表（JSON 数组，用于跨日延续） |
-| `abstract_tag_id` | INTEGER | 热点板关联的抽象标签 ID（索引，FK → `topic_tags.id`） |
-| `board_concept_id` | INTEGER | 概念板关联的板块概念 ID（索引，FK→board_concepts.id） |
-| `is_system` | BOOLEAN NOT NULL DEFAULT false | 是否为系统自动生成的热点板 |
+| `semantic_board_id` | INTEGER | 关联的 SemanticBoard ID（索引，FK → `semantic_labels.id`） |
+| `is_system` | BOOLEAN NOT NULL DEFAULT false | 是否为系统自动生成 |
 | `created_at` | TIMESTAMP | 创建时间 |
 
-### 13. board_concepts（板块概念表）
+### 13. 语义标签相关表
+
+#### semantic_labels（语义标签统一表）
+
+辅助标签和 SemanticBoard 共存于同一张表，通过 `label_type` 字段区分。
 
 | 字段名 | 类型 | 用途 |
 |--------|------|------|
 | `id` | SERIAL PK | 主键 |
-| `name` | VARCHAR(300) NOT NULL | 概念名称 |
-| `description` | TEXT | 概念描述 |
-| `embedding` | vector(1536) | pgvector 语义向量，用于 embedding 匹配 |
-| `scope_type` | VARCHAR(20) NOT NULL DEFAULT 'global' | 作用域类型（global / feed_category） |
-| `scope_category_id` | INTEGER | 分类 ID |
-| `is_system` | BOOLEAN NOT NULL DEFAULT false | 是否为系统概念 |
-| `is_active` | BOOLEAN NOT NULL DEFAULT true | 是否启用（索引） |
-| `display_order` | INTEGER NOT NULL DEFAULT 0 | 显示排序 |
+| `label` | VARCHAR(160) NOT NULL | 展示名称 |
+| `slug` | VARCHAR(120) NOT NULL | 稳定标识 |
+| `embedding` | vector(1536) | pgvector 语义向量 |
+| `label_type` | VARCHAR(20) NOT NULL | 类型：`auxiliary`（辅助标签）/ `board`（SemanticBoard） |
+| `aliases` | JSONB DEFAULT '[]' | 别名列表 |
+| `ref_count` | INTEGER DEFAULT 0 | 引用计数（辅助标签被 tag 引用次数） |
+| `description` | TEXT | 描述 |
+| `display_order` | INTEGER DEFAULT 0 | 显示排序 |
+| `source` | VARCHAR(20) DEFAULT 'llm_extract' | 来源：`llm_extract`（LLM 提取）/ `llm_suggest`（LLM 建议升级）/ `manual`（手动创建） |
+| `status` | VARCHAR(20) DEFAULT 'active' | 状态：`active` / `disabled` |
+| `protected` | BOOLEAN DEFAULT false | 是否受保护（不可自动删除） |
 | `created_at` | TIMESTAMP | 创建时间 |
 | `updated_at` | TIMESTAMP | 更新时间 |
+
+唯一约束：`(label_type, slug)`
+
+#### topic_tag_semantic_labels（tag-辅助标签关联）
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `topic_tag_id` | BIGINT NOT NULL | 关联 tag ID（FK → `topic_tags.id`） |
+| `semantic_label_id` | BIGINT NOT NULL | 关联辅助标签 ID（FK → `semantic_labels.id`） |
+
+唯一约束：`(topic_tag_id, semantic_label_id)`
+
+#### topic_tag_board_labels（tag-SemanticBoard 匹配结果）
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `topic_tag_id` | BIGINT NOT NULL | 关联 tag ID（FK → `topic_tags.id`） |
+| `semantic_board_id` | BIGINT NOT NULL | 关联 SemanticBoard ID（FK → `semantic_labels.id`） |
+| `score` | FLOAT NOT NULL | 匹配分数 |
+| `match_reason` | VARCHAR(20) | 匹配原因：`direct_hit` / `hit_rate` / `max_sim` / `weighted` |
+| `created_at` | TIMESTAMP | 创建时间 |
+| `updated_at` | TIMESTAMP | 更新时间 |
+
+唯一约束：`(topic_tag_id, semantic_board_id)`
+
+#### board_composition（board 构成）
+
+| 字段名 | 类型 | 用途 |
+|--------|------|------|
+| `id` | BIGSERIAL PK | 主键 |
+| `board_id` | BIGINT NOT NULL | 关联 board ID（FK → `semantic_labels.id`，label_type=board） |
+| `auxiliary_label_id` | BIGINT NOT NULL | 关联辅助标签 ID（FK → `semantic_labels.id`，label_type=auxiliary） |
+
+唯一约束：`(board_id, auxiliary_label_id)`
 
 ---
 
@@ -854,6 +797,14 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 
 ## 更新日志
 
+### 2026-05-22
+
+- 语义标签/板块体系重构：移除 hierarchy、board_concepts、topic_tag_relations 相关表定义
+- 新增 semantic_labels、topic_tag_semantic_labels、topic_tag_board_labels、board_composition 四张表
+- narrative_boards 新增 semantic_board_id 字段，移除 abstract_tag_id 和 board_concept_id
+- topic_tags.concept_id 标记为已废弃
+- embedding_config 新增 semantic_board_match_* 和 semantic_board_upgrade_* 配置
+
 ### 2026-05-14
 
 - 更新 `topic_tag_embeddings`：新增 `embedding_type` 字段（`identity`/`semantic`/`event_keyword`），更新 `text_hash` 描述
@@ -901,7 +852,7 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 
 ## 相关文档
 
-- [全局实体关系图](ER_DIAGRAM.md) — 38 张表的 FK 关系图（ASCII + Mermaid）和约束矩阵
+- [全局实体关系图](ER_DIAGRAM.md) — 35 张表的 FK 关系图（ASCII + Mermaid）和约束矩阵
 - [数据生命周期](DATA_LIFECYCLE.md) — 6 条数据链路的状态字段流转说明
 - [数据流](../reference/architecture/data-flow.md) — 代码执行流、API 调用链、前端 store 交互
 - [数据库运维说明](../operations/database.md) — 数据库运维说明

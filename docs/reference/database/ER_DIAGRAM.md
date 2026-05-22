@@ -1,6 +1,6 @@
 # 全局实体关系图
 
-本文档提供 RSS Reader 数据库的全局实体关系图，覆盖 38 张表、35 条 FK 约束，按 6 个业务域组织。
+本文档提供 RSS Reader 数据库的全局实体关系图，覆盖 35 张表、30 条 FK 约束，按 5 个业务域组织。
 
 > 域级 ER 图使用 Mermaid `erDiagram` 语法，渲染依赖 GitHub/VSCode Mermaid 插件。全局概览图使用纯 ASCII 作为 fallback。
 
@@ -12,70 +12,59 @@
 ┌─────────────────┐       ┌─────────────────────┐
 │     Core        │       │    Topic Tags        │
 │  ┌───────────┐  │  FK   │  ┌─────────────────┐ │
-│  │ categories│──┼───────┼─→│   topic_tags     │ │  ← 12 incoming FKs (hub)
+│  │ categories│──┼───────┼─→│   topic_tags     │ │  ← 10 incoming FKs (hub)
 │  ├───────────┤  │       │  ├─────────────────┤ │
 │  │   feeds   │  │       │  │ topic_tag_       │ │
 │  ├───────────┤  │       │  │   embeddings     │ │
 │  │ articles  │  │       │  ├─────────────────┤ │
-│  ├───────────┤  │       │  │ topic_tag_       │ │
-│  │ reading_  │  │       │  │   relations (★)  │─┼───┐
-│  │  behaviors│  │       │  ├─────────────────┤ │   │
-│  ├───────────┤  │       │  │ article_topic_   │ │   │
-│  │ user_     │  │       │  │   tags           │ │   │
-│  │ preferences│ │       │  ├─────────────────┤ │   │
-│  ├───────────┤  │       │  │ embedding_queues │ │   │
-│  │ firecrawl_│  │       │  ├─────────────────┤ │   │
-│  │   jobs    │  │       │  │ merge_reembedding│ │   │
-│  ├───────────┤  │       │  │   _queues        │ │   │
-│  │ tag_jobs  │  │       │  ├─────────────────┤ │   │
-│  ├───────────┤  │       │  │ topic_tag_       │ │   │
-│  │ schema_   │  │       │  │   analyses       │ │   │
-│  │ migrations│  │       │  ├─────────────────┤ │   │
-│  └───────────┘  │       │  │ topic_analysis_  │ │   │
-└─────────────────┘       │  │   cursors        │ │   │
-                          │  ├─────────────────┤ │   │
-                          │  │ topic_analysis_  │ │   │
-                          │  │   jobs           │ │   │
-                          │  └─────────────────┘ │   │
-                          └─────────────────────┘   │
-                                     ↑               │
-                                     │ self-ref      │ FK (hierarchy)
-┌─────────────────┐       ┌─────────────────────┐   │
-│  AI Summaries   │       │    Hierarchy         │   │
-│  ┌───────────┐  │       │  ┌─────────────────┐ │   │
-│  │ai_summaries│ │  FK   │  │ hierarchy_config│ │   │
-│  ├───────────┤  │───→───│  ├─────────────────┤ │   │
-│  │ai_summary_ │ │ topic │  │ hierarchy_config│ │   │
-│  │  feeds     │ │ tags  │  │   _versions     │ │   │
-│  ├───────────┤  │       │  ├─────────────────┤ │   │
-│  │ai_summary_ │ │       │  │ adopt_narrower_ │←┼───┘
-│  │  topics    │─┼───→───┼──│   queues        │ │
-│  └───────────┘  │       │  ├─────────────────┤ │
-└─────────────────┘       │  │ multi_parent_   │ │
-                          │  │   resolve_queues│ │
-┌─────────────────┐       │  ├─────────────────┤ │
-│   Narrative      │       │  │ abstract_tag_   │ │
-│  ┌───────────┐  │  FK   │  │   update_queues │ │
-│  │ narrative_ │──┼───→───┼──│                 │ │
-│  │  boards    │  │ topic │  ├─────────────────┤ │
-│  ├───────────┤  │ tags  │  │ hierarchy_      │ │
-│  │ narrative_ │  │       │  │   pending_      │ │
-│  │ summaries  │  │       │  │   changes       │ │
-│  ├───────────┤  │       │  └─────────────────┘ │
-│  │ board_    │  │       └─────────────────────┘
-│  │ concepts  │  │
-│  └───────────┘  │
-└─────────────────┘
+│  ├───────────┤  │       │  │ article_topic_   │ │
+│  │ reading_  │  │       │  │   tags           │ │
+│  │  behaviors│  │       │  ├─────────────────┤ │
+│  ├───────────┤  │       │  │ embedding_queues │ │
+│  │ user_     │  │       │  ├─────────────────┤ │
+│  │ preferences│ │       │  │ merge_reembedding│ │
+│  ├───────────┤  │       │  │   _queues        │ │
+│  │ firecrawl_│  │       │  ├─────────────────┤ │
+│  │   jobs    │  │       │  │ topic_tag_       │ │
+│  ├───────────┤  │       │  │   analyses       │ │
+│  │ tag_jobs  │  │       │  ├─────────────────┤ │
+│  ├───────────┤  │       │  │ topic_analysis_  │ │
+│  │ schema_   │  │       │  │   cursors        │ │
+│  │ migrations│  │       │  ├─────────────────┤ │
+│  └───────────┘  │       │  │ topic_analysis_  │ │
+└─────────────────┘       │  │   jobs           │ │
+                          │  ├─────────────────┤ │
+                          │  │ topic_tag_       │ │
+                          │  │   semantic_       │ │
+                          │  │   labels         │ │
+                          │  ├─────────────────┤ │
+                          │  │ topic_tag_board_ │ │
+                          │  │   labels         │ │
+                          │  └─────────────────┘ │
+                          └─────────────────────┘
+
+┌─────────────────┐       ┌─────────────────────┐       ┌─────────────────┐
+│  AI Summaries   │       │  Semantic Label     │  FK   │   Narrative     │
+│  ┌───────────┐  │  FK   │  ┌─────────────────┐ │───────┼─→│ narrative_     │
+│  │ai_summaries│ │───→───┼──│ semantic_labels  │ │       │  │  boards        │
+│  ├───────────┤  │ topic │  ├─────────────────┤ │       │  ├───────────────┤ │
+│  │ai_summary_ │ │  tags │  │ board_           │ │       │  │ narrative_     │
+│  │  feeds     │ │       │  │   composition    │ │       │  │  summaries    │
+│  ├───────────┤  │       │  └────────┬──────────┘ │       │  └───────────────┘ │
+│  │ai_summary_ │ │       └───────────┼────────────┘       └─────────────────┘
+│  │  topics    │─┼───→───┼───────────┘
+│  └───────────┘  │       │
+└─────────────────┘       │
 
 ┌─────────────────┐
 │ AI Infrastructure│
 │  ┌───────────┐  │
 │  │ai_providers│ │
 │  ├───────────┤  │
-│  │ ai_routes │  │
+│  │ ai_routes │ │
 │  ├───────────┤  │
 │  │ai_route_  │  │
-│  │ providers │  │
+│  │ providers │ │
 │  ├───────────┤  │
 │  │ai_call_   │  │
 │  │  logs     │  │
@@ -85,15 +74,15 @@
 │  │scheduler_ │  │
 │  │  tasks    │  │
 │  ├───────────┤  │
-│  │otel_spans │  │
+│  │otel_spans │ │
 │  └───────────┘  │
 └─────────────────┘
 ```
 
 - 实线箭头 → 表示 FK 引用（源域引用目标域的表）
-- `topic_tags` 是数据库枢纽，有 12 条入边（10 张表引用）
-- `topic_tag_relations` 通过 `parent_id` 和 `child_id` 双线自引用 `topic_tags`
-- 虚线边界表示域内的队列表与主表之间的逻辑归属
+- `semantic_labels` 是语义标签中心表，辅助标签和 SemanticBoard 共存于此表
+- `topic_tags` 通过 `topic_tag_semantic_labels` 和 `topic_tag_board_labels` 两张桥接表与 `semantic_labels` 关联
+- `narrative_boards` 通过 `semantic_board_id` 直接引用 `semantic_labels`
 
 ---
 
@@ -170,8 +159,6 @@ erDiagram
 ```mermaid
 erDiagram
     topic_tags ||--o{ topic_tag_embeddings : "topic_tag_id"
-    topic_tags ||--o{ topic_tag_relations : "parent_id"
-    topic_tags ||--o{ topic_tag_relations : "child_id"
     topic_tags ||--o{ article_topic_tags : "topic_tag_id"
     topic_tags ||--o{ embedding_queues : "tag_id"
     topic_tags ||--o{ merge_reembedding_queues : "source_tag_id"
@@ -179,7 +166,8 @@ erDiagram
     topic_tags ||--o{ topic_tag_analyses : "topic_tag_id"
     topic_tags ||--o{ topic_analysis_cursors : "topic_tag_id"
     topic_tags ||--o{ topic_analysis_jobs : "topic_tag_id"
-    topic_tags ||--o{ topic_tags : "merged_into_id"
+    topic_tags ||--o{ topic_tag_semantic_labels : "topic_tag_id"
+    topic_tags ||--o{ topic_tag_board_labels : "topic_tag_id"
     articles ||--o{ article_topic_tags : "article_id"
 
     topic_tags {
@@ -188,7 +176,6 @@ erDiagram
         VARCHAR label
         VARCHAR category
         VARCHAR status
-        INTEGER merged_into_id FK
     }
     topic_tag_embeddings {
         SERIAL id PK
@@ -196,13 +183,6 @@ erDiagram
         vector embedding
         INTEGER dimension
         VARCHAR model
-    }
-    topic_tag_relations {
-        SERIAL id PK
-        INTEGER parent_id FK
-        INTEGER child_id FK
-        VARCHAR relation_type
-        FLOAT similarity_score
     }
     article_topic_tags {
         SERIAL id PK
@@ -236,6 +216,61 @@ erDiagram
         VARCHAR id PK
         BIGINT topic_tag_id FK
         VARCHAR status
+    }
+    topic_tag_semantic_labels {
+        BIGSERIAL id PK
+        BIGINT topic_tag_id FK
+        BIGINT semantic_label_id FK
+    }
+    topic_tag_board_labels {
+        BIGSERIAL id PK
+        BIGINT topic_tag_id FK
+        BIGINT semantic_board_id FK
+        FLOAT score
+        VARCHAR match_reason
+    }
+```
+
+### Semantic Label（语义标签面）
+
+```mermaid
+erDiagram
+    semantic_labels ||--o{ topic_tag_semantic_labels : "auxiliary label side"
+    semantic_labels ||--o{ topic_tag_board_labels : "board side"
+    semantic_labels ||--o{ board_composition : "board side"
+    topic_tags ||--o{ topic_tag_semantic_labels : "tag side"
+    topic_tags ||--o{ topic_tag_board_labels : "tag side"
+
+    semantic_labels {
+        SERIAL id PK
+        VARCHAR label
+        VARCHAR slug
+        vector embedding
+        VARCHAR label_type "auxiliary|board"
+        JSONB aliases
+        INTEGER ref_count
+        TEXT description
+        INTEGER display_order
+        VARCHAR source
+        VARCHAR status
+        BOOLEAN protected
+    }
+    topic_tag_semantic_labels {
+        BIGSERIAL id PK
+        BIGINT topic_tag_id FK
+        BIGINT semantic_label_id FK
+    }
+    topic_tag_board_labels {
+        BIGSERIAL id PK
+        BIGINT topic_tag_id FK
+        BIGINT semantic_board_id FK
+        FLOAT score
+        VARCHAR match_reason
+    }
+    board_composition {
+        BIGSERIAL id PK
+        BIGINT board_id FK
+        BIGINT auxiliary_label_id FK
     }
 ```
 
@@ -276,9 +311,7 @@ erDiagram
 
 ```mermaid
 erDiagram
-    topic_tags ||--o{ narrative_boards : "abstract_tag_id"
-    board_concepts ||--o{ narrative_boards : "board_concept_id"
-    topic_tags ||--o{ board_concepts : "concept_id"
+    semantic_labels ||--o{ narrative_boards : "semantic_board_id"
     narrative_boards ||--o{ narrative_summaries : "board_id"
 
     narrative_boards {
@@ -286,9 +319,7 @@ erDiagram
         VARCHAR name
         TEXT description
         TEXT event_tag_ids "JSON array"
-        TEXT abstract_tag_ids "JSON array"
-        INTEGER abstract_tag_id FK
-        INTEGER board_concept_id FK
+        INTEGER semantic_board_id FK
         BOOLEAN is_system
     }
     narrative_summaries {
@@ -300,64 +331,6 @@ erDiagram
         INTEGER board_id FK
         TEXT related_tag_ids "JSON array"
         TEXT related_article_ids "JSON array"
-    }
-    board_concepts {
-        SERIAL id PK
-        VARCHAR name
-        TEXT description
-        vector embedding
-        BOOLEAN is_active
-    }
-```
-
-### Hierarchy（层级关系面）
-
-```mermaid
-erDiagram
-    topic_tags ||--o{ adopt_narrower_queues : "abstract_tag_id"
-    topic_tags ||--o{ multi_parent_resolve_queues : "child_tag_id"
-    topic_tags ||--o{ abstract_tag_update_queues : "abstract_tag_id"
-    topic_tags ||--o{ hierarchy_pending_changes : "tag_id"
-    topic_tags ||--o{ hierarchy_pending_changes : "current_parent_id"
-
-    hierarchy_config ||--o{ hierarchy_config_versions : "config_id"
-
-    hierarchy_config {
-        BIGSERIAL id PK
-        JSONB templates
-        BIGINT version
-    }
-    hierarchy_config_versions {
-        BIGSERIAL id PK
-        BIGINT config_id FK
-        BIGINT version
-        JSONB templates
-        TEXT change_log
-    }
-    adopt_narrower_queues {
-        SERIAL id PK
-        BIGINT abstract_tag_id FK
-        VARCHAR source
-        VARCHAR status
-    }
-    multi_parent_resolve_queues {
-        SERIAL id PK
-        INTEGER child_tag_id FK
-        VARCHAR source
-        VARCHAR status
-    }
-    abstract_tag_update_queues {
-        BIGSERIAL id PK
-        BIGINT abstract_tag_id FK
-        VARCHAR trigger_reason
-        VARCHAR status
-    }
-    hierarchy_pending_changes {
-        SERIAL id PK
-        INTEGER tag_id FK
-        VARCHAR change_type
-        INTEGER current_parent_id FK
-        VARCHAR status
     }
 ```
 
@@ -434,12 +407,7 @@ erDiagram
 | `ai_summary_topics` | `topic_tag_id` | `topic_tags` | `id` | `fk_ai_summary_topics_topic_tag` |
 | `article_topic_tags` | `article_id` | `articles` | `id` | `fk_article_topic_tags_article` |
 | `article_topic_tags` | `topic_tag_id` | `topic_tags` | `id` | `fk_article_topic_tags_topic_tag` |
-| `topic_tags` | `merged_into_id` | `topic_tags` | `id` | `fk_topic_tags_merged_into` |
-| `topic_tags` | `concept_id` | `board_concepts` | `id` | `topic_tags_concept_id_fkey` |
 | `topic_tag_embeddings` | `topic_tag_id` | `topic_tags` | `id` | `fk_topic_tags_embedding` |
-| `topic_tag_relations` | `parent_id` | `topic_tags` | `id` | `topic_tag_relations_parent_id_fkey` |
-| `topic_tag_relations` | `child_id` | `topic_tags` | `id` | `topic_tag_relations_child_id_fkey` |
-| `topic_analysis_jobs` | `topic_tag_id` | `topic_tags` | `id` | (FK inferred) |
 | `ai_route_providers` | `route_id` | `ai_routes` | `id` | `fk_ai_routes_route_providers` |
 | `ai_route_providers` | `provider_id` | `ai_providers` | `id` | `fk_ai_route_providers_provider` |
 | `reading_behaviors` | `article_id` | `articles` | `id` | `fk_reading_behaviors_article` |
@@ -451,14 +419,14 @@ erDiagram
 | `embedding_queues` | `tag_id` | `topic_tags` | `id` | `embedding_queue_tag_id_fkey` |
 | `merge_reembedding_queues` | `source_tag_id` | `topic_tags` | `id` | `merge_reembedding_queues_source_tag_id_fkey` |
 | `merge_reembedding_queues` | `target_tag_id` | `topic_tags` | `id` | `merge_reembedding_queues_target_tag_id_fkey` |
-| `adopt_narrower_queues` | `abstract_tag_id` | `topic_tags` | `id` | `fk_adopt_narrower_queues_abstract_tag` |
-| `multi_parent_resolve_queues` | `child_tag_id` | `topic_tags` | `id` | `fk_mprq_child_tag` |
-| `abstract_tag_update_queues` | `abstract_tag_id` | `topic_tags` | `id` | `fk_abstract_tag_update_queues_abstract_tag` |
-| `hierarchy_pending_changes` | `tag_id` | `topic_tags` | `id` | `hierarchy_pending_changes_tag_id_fkey` |
-| `hierarchy_pending_changes` | `current_parent_id` | `topic_tags` | `id` | `hierarchy_pending_changes_current_parent_id_fkey` |
-| `narrative_boards` | `abstract_tag_id` | `topic_tags` | `id` | `narrative_boards_abstract_tag_id_fkey` |
-| `narrative_boards` | `board_concept_id` | `board_concepts` | `id` | `narrative_boards_board_concept_id_fkey` |
 | `narrative_summaries` | `board_id` | `narrative_boards` | `id` | `fk_narrative_summaries_board` |
+| `narrative_boards` | `semantic_board_id` | `semantic_labels` | `id` | `fk_narrative_boards_semantic_board` |
+| `topic_tag_semantic_labels` | `topic_tag_id` | `topic_tags` | `id` | `fk_tag_semantic_label_tag` |
+| `topic_tag_semantic_labels` | `semantic_label_id` | `semantic_labels` | `id` | `fk_tag_semantic_label_label` |
+| `topic_tag_board_labels` | `topic_tag_id` | `topic_tags` | `id` | `fk_tag_board_label_tag` |
+| `topic_tag_board_labels` | `semantic_board_id` | `semantic_labels` | `id` | `fk_tag_board_label_board` |
+| `board_composition` | `board_id` | `semantic_labels` | `id` | `fk_board_comp_board` |
+| `board_composition` | `auxiliary_label_id` | `semantic_labels` | `id` | `fk_board_comp_aux` |
 
 ---
 
@@ -470,11 +438,13 @@ erDiagram
 - **`ai_summary_topics`**：连接 `ai_summaries` ↔ `topic_tags`
 - **`ai_summary_feeds`**：连接 `ai_summaries` ↔ `feeds`（含快照字段）
 - **`ai_route_providers`**：连接 `ai_routes` ↔ `ai_providers`，附带优先级
+- **`topic_tag_semantic_labels`**：连接 `topic_tags` ↔ `semantic_labels`（auxiliary），tag 与辅助标签多对多
+- **`topic_tag_board_labels`**：连接 `topic_tags` ↔ `semantic_labels`（board），tag 与 SemanticBoard 多对多，含 score 和 match_reason
+- **`board_composition`**：连接 `semantic_labels`（board）↔ `semantic_labels`（auxiliary），SemanticBoard 的构成标签
 
 ### 自引用（Self-Referential FK）
 
-- **`topic_tags.merged_into_id`** → `topic_tags.id`：标签合并后指向目标标签
-- **`topic_tag_relations.parent_id` / `child_id`** → `topic_tags.id`：层级父子关系
+- **`semantic_labels`**：辅助标签和 SemanticBoard 共存于同一张表，通过 `label_type` 区分
 
 ### 反规范化（Denormalized）
 
@@ -486,7 +456,6 @@ erDiagram
 以下字段使用 JSON 数组存储关联 ID，不通过 FK 约束保证完整性：
 
 - **`narrative_boards.event_tag_ids`** → `topic_tags.id`：关联的 event 标签
-- **`narrative_boards.abstract_tag_ids`** → `topic_tags.id`：关联的抽象标签
 - **`narrative_boards.prev_board_ids`** → `narrative_boards.id`：前日关联 Board
 - **`narrative_summaries.parent_ids`** → `narrative_summaries.id`：父叙事
 - **`narrative_summaries.related_tag_ids`** → `topic_tags.id`：关联标签
@@ -497,6 +466,14 @@ erDiagram
 
 ## 更新日志
 
+### 2026-05-22
+
+- 语义标签/板块体系重构：移除 Hierarchy 域、board_concepts、topic_tag_relations
+- 新增 Semantic Label 域（semantic_labels, topic_tag_semantic_labels, topic_tag_board_labels, board_composition）
+- narrative_boards 新增 semantic_board_id，移除 abstract_tag_id 和 board_concept_id
+- FK 引用矩阵更新
+- 表数从 38 更新为 35
+
 ### 2026-05-14
 
 - 初始版本：全局 ASCII 概览图、6 个业务域 Mermaid ER 图、35 行 FK 引用矩阵、关系模式说明
@@ -505,7 +482,7 @@ erDiagram
 
 ## 相关文档
 
-- [数据库字段说明](DATABASE_FIELDS.md) — 38 张表的完整字段字典
-- [数据生命周期](DATA_LIFECYCLE.md) — 6 条数据链路的状态字段流转
+- [数据库字段说明](DATABASE_FIELDS.md) — 35 张表的完整字段字典
+- [数据生命周期](DATA_LIFECYCLE.md) — 数据链路的状态字段流转
 - [项目架构总览](../architecture/overview.md) — 系统架构全局视角
 - [数据流](../architecture/data-flow.md) — 代码执行流和 API 调用链

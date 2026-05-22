@@ -34,7 +34,7 @@
 | `search` | string | - | 标题或描述模糊搜索 |
 | `start_date` | string | - | `YYYY-MM-DD` |
 | `end_date` | string | - | `YYYY-MM-DD` |
-| `watched_tag_ids` | string | - | 逗号分隔的标签 ID，自动展开抽象标签子标签 |
+| `watched_tag_ids` | string | - | 逗号分隔的标签 ID |
 | `sort_by` | string | - | `relevance`（仅 watched_tag_ids 模式下有效） |
 
 按发布日期降序，含 `tag_count`。使用 `watched_tag_ids` 时支持 `sort_by=relevance` 按标签相关度排序。
