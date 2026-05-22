@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
-import { computed } from 'vue'
+
 import type { NarrativeItem, BoardNarrativeItem } from '~/api/topicGraph'
 
 interface NarrativeTag {
@@ -15,16 +15,9 @@ interface Props {
   narrative: NarrativeItem | BoardNarrativeItem
   expanded: boolean
   statusStyle: Record<string, { label: string; dot: string; ring: string; bg: string; border: string }>
-  abstractTagIds?: Set<number>
 }
 
 const props = defineProps<Props>()
-
-const isAbstract = computed(() => 'source' in props.narrative && props.narrative.source === 'abstract')
-
-function isAbstractTag(id: number): boolean {
-  return props.abstractTagIds?.has(id) ?? false
-}
 
 const emit = defineEmits<{
   'select-tag': [tag: NarrativeTag]
@@ -34,10 +27,9 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="narrative-detail" :class="{ 'narrative-detail--abstract': isAbstract }">
+  <div class="narrative-detail">
     <div class="narrative-detail__head">
       <h4 class="narrative-detail__title">{{ narrative.title }}</h4>
-      <span v-if="isAbstract" class="narrative-detail__abstract-label">抽象标签</span>
       <span
         class="narrative-detail__status"
         :style="{
@@ -74,7 +66,7 @@ const emit = defineEmits<{
         :key="tag.id"
         type="button"
         class="narrative-detail__tag"
-        :class="{ 'narrative-detail__tag--abstract': isAbstractTag(tag.id) }"
+        
         @click="emit('select-tag', tag)"
       >
         {{ tag.label }}
@@ -198,17 +190,6 @@ const emit = defineEmits<{
   background: rgba(240, 138, 75, 0.1);
 }
 
-.narrative-detail__tag--abstract {
-  border-color: rgba(192, 132, 252, 0.25);
-  color: rgba(210, 180, 252, 0.75);
-}
-
-.narrative-detail__tag--abstract:hover {
-  border-color: rgba(192, 132, 252, 0.5);
-  color: rgba(230, 200, 255, 0.95);
-  background: rgba(192, 132, 252, 0.12);
-}
-
 .narrative-detail__meta {
   display: flex;
   align-items: center;
@@ -216,42 +197,6 @@ const emit = defineEmits<{
   margin-top: 0.6rem;
   font-size: 0.7rem;
   color: rgba(255, 255, 255, 0.35);
-}
-
-.narrative-detail--abstract {
-  border-style: dashed;
-  border-color: rgba(192, 132, 252, 0.25);
-  background: linear-gradient(180deg, rgba(30, 22, 45, 0.96), rgba(18, 14, 30, 0.98));
-}
-
-.narrative-detail--abstract .narrative-detail__title {
-  color: rgba(210, 180, 252, 0.88);
-}
-
-.narrative-detail--abstract .narrative-detail__text {
-  color: rgba(180, 170, 210, 0.72);
-}
-
-.narrative-detail--abstract .narrative-detail__tag {
-  border-color: rgba(192, 132, 252, 0.2);
-  color: rgba(210, 180, 252, 0.7);
-}
-
-.narrative-detail--abstract .narrative-detail__tag:hover {
-  border-color: rgba(192, 132, 252, 0.45);
-  color: rgba(230, 200, 255, 0.95);
-  background: rgba(192, 132, 252, 0.1);
-}
-
-.narrative-detail__abstract-label {
-  flex-shrink: 0;
-  padding: 0.12rem 0.4rem;
-  border-radius: 999px;
-  border: 1px dashed rgba(192, 132, 252, 0.35);
-  background: rgba(192, 132, 252, 0.08);
-  color: rgba(192, 132, 252, 0.7);
-  font-size: 0.62rem;
-  letter-spacing: 0.04em;
 }
 
 .narrative-detail__meta-item {

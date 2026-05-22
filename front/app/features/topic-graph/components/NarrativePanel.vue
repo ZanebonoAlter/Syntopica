@@ -72,7 +72,6 @@ interface ExpandedBoardTags {
   boardId: number
   boardName: string
   eventTags: TagBrief[]
-  abstractTags: TagBrief[]
 }
 
 const expandedBoardsTags = computed(() => {
@@ -84,7 +83,6 @@ const expandedBoardsTags = computed(() => {
           boardId: board.id,
           boardName: board.name,
           eventTags: board.event_tags ?? [],
-          abstractTags: board.abstract_tags ?? [],
         })
       }
     }
@@ -119,29 +117,7 @@ const activeCategoryName = computed(() => {
   return cat?.category_name ?? ''
 })
 
-const abstractTagIds = computed(() => {
-  const ids = new Set<number>()
-  for (const day of boardTimelineDays.value) {
-    for (const board of day.boards ?? []) {
-      if (board.abstract_tag_id !== null) ids.add(board.abstract_tag_id)
-    }
-  }
-  return ids
-})
-
 function handleDetailTagSelect(tag: NarrativeTag) {
-  if (abstractTagIds.value.has(tag.id)) {
-    const next = new Set(expandedBoardIds.value)
-    for (const day of boardTimelineDays.value) {
-      for (const board of day.boards ?? []) {
-        if (board.abstract_tag_id === tag.id && !next.has(board.id)) {
-          next.add(board.id)
-        }
-      }
-    }
-    expandedBoardIds.value = next
-    return
-  }
   emit('select-tag', tag)
 }
 
@@ -397,7 +373,7 @@ watch(() => props.date, () => {
               :narrative="selectedNarrative"
               :expanded="expandedIds.has(selectedNarrative.id)"
               :status-style="statusStyle"
-              :abstract-tag-ids="abstractTagIds"
+              :abstract-tag-ids="new Set()"
               @select-tag="handleDetailTagSelect"
               @toggle-expand="toggleExpand(selectedNarrative.id)"
               @close="selectedId = null"
@@ -413,7 +389,7 @@ watch(() => props.date, () => {
           >
             <div class="board-tags-group__header">
               <span class="board-tags-group__name">{{ bt.boardName }}</span>
-              <span class="board-tags-group__count">{{ bt.eventTags.length + bt.abstractTags.length }} 个标签</span>
+              <span class="board-tags-group__count">{{ bt.eventTags.length }} 个标签</span>
             </div>
             <div class="board-tags-group__chips">
               <button
@@ -431,16 +407,7 @@ watch(() => props.date, () => {
                 <span class="board-tag-chip__dot" />
                 <span class="board-tag-chip__label">{{ tag.label }}</span>
               </button>
-              <button
-                v-for="tag in bt.abstractTags"
-                :key="`a-${tag.id}`"
-                type="button"
-                class="board-tag-chip board-tag-chip--abstract"
-                @click="onBoardTagClick(tag)"
-              >
-                <Icon icon="mdi:folder-outline" width="10" class="board-tag-chip__icon" />
-                <span class="board-tag-chip__label">{{ tag.label }}</span>
-              </button>
+
             </div>
           </div>
         </div>
