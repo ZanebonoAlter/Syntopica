@@ -1,5 +1,4 @@
-<!-- generated-by: gsd-doc-writer -->
-
+![icon](front/public/favicon.png)
 # Syntopica
 
 *Where feeds become topics*
