@@ -12,8 +12,11 @@ func TestSemanticLabelModelShape(t *testing.T) {
 	}
 
 	typ := reflect.TypeOf(SemanticLabel{})
-	mustHaveGORMTag(t, typ, "Embedding", "type:vector(1536)")
+	mustHaveGORMTag(t, typ, "Embedding", "type:vector(2048)")
 	mustHaveGORMTag(t, typ, "Embedding", "column:embedding")
+	mustHaveGORMTag(t, typ, "MergeEmbedding", "type:vector(2048)")
+	mustHaveGORMTag(t, typ, "MergeEmbedding", "column:merge_embedding")
+	mustHaveFieldType(t, typ, "MergeEmbedding", reflect.TypeOf((*string)(nil)))
 	mustHaveGORMTag(t, typ, "Aliases", "type:jsonb")
 	mustHaveGORMTag(t, typ, "Aliases", "serializer:json")
 	mustHaveGORMTag(t, typ, "Slug", "uniqueIndex:idx_semantic_labels_slug")
@@ -57,5 +60,16 @@ func mustHaveGORMTag(t *testing.T, typ reflect.Type, fieldName string, want stri
 	}
 	if tag := field.Tag.Get("gorm"); !strings.Contains(tag, want) {
 		t.Fatalf("%s.%s gorm tag = %q, want it to contain %q", typ.Name(), fieldName, tag, want)
+	}
+}
+
+func mustHaveFieldType(t *testing.T, typ reflect.Type, fieldName string, want reflect.Type) {
+	t.Helper()
+	field, ok := typ.FieldByName(fieldName)
+	if !ok {
+		t.Fatalf("%s.%s field not found", typ.Name(), fieldName)
+	}
+	if field.Type != want {
+		t.Fatalf("%s.%s type = %v, want %v", typ.Name(), fieldName, field.Type, want)
 	}
 }

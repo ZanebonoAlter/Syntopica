@@ -71,6 +71,7 @@ const allBoardNarratives = computed(() => {
 interface ExpandedBoardTags {
   boardId: number
   boardName: string
+  semanticBoardId?: number
   eventTags: TagBrief[]
 }
 
@@ -82,6 +83,7 @@ const expandedBoardsTags = computed(() => {
         result.push({
           boardId: board.id,
           boardName: board.name,
+          semanticBoardId: board.semantic_board_id,
           eventTags: board.event_tags ?? [],
         })
       }
@@ -373,7 +375,6 @@ watch(() => props.date, () => {
               :narrative="selectedNarrative"
               :expanded="expandedIds.has(selectedNarrative.id)"
               :status-style="statusStyle"
-              :abstract-tag-ids="new Set()"
               @select-tag="handleDetailTagSelect"
               @toggle-expand="toggleExpand(selectedNarrative.id)"
               @close="selectedId = null"
@@ -389,6 +390,10 @@ watch(() => props.date, () => {
           >
             <div class="board-tags-group__header">
               <span class="board-tags-group__name">{{ bt.boardName }}</span>
+              <span v-if="bt.semanticBoardId" class="board-tags-group__source">
+                <Icon icon="mdi:puzzle-outline" width="11" />
+                语义板块 #{{ bt.semanticBoardId }}
+              </span>
               <span class="board-tags-group__count">{{ bt.eventTags.length }} 个标签</span>
             </div>
             <div class="board-tags-group__chips">
@@ -569,6 +574,18 @@ watch(() => props.date, () => {
   color: rgba(186, 206, 226, 0.45);
 }
 
+.board-tags-group__source {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.65rem;
+  color: rgba(240, 138, 75, 0.7);
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  background: rgba(240, 138, 75, 0.08);
+  border: 1px solid rgba(240, 138, 75, 0.15);
+}
+
 .board-tags-group__chips {
   display: flex;
   flex-wrap: wrap;
@@ -593,10 +610,6 @@ watch(() => props.date, () => {
   background: var(--bg, rgba(255,255,255,0.12));
   border-color: var(--dot, rgba(255,255,255,0.3));
   transform: translateY(-1px);
-}
-
-.board-tag-chip--abstract {
-  border-style: dashed;
 }
 
 .board-tag-chip__dot {

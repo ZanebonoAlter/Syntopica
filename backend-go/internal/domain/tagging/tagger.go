@@ -14,8 +14,6 @@ import (
 	"my-robot-backend/internal/platform/logging"
 )
 
-type batchJudgmentContextKey struct{}
-
 var (
 	embeddingService          *EmbeddingService
 	embeddingServiceOnce      sync.Once
@@ -35,10 +33,6 @@ func getEmbeddingQueueService() *EmbeddingQueueService {
 		embeddingQueueService = NewEmbeddingQueueService(nil)
 	})
 	return embeddingQueueService
-}
-
-func WithBatchJudgments(ctx context.Context, results map[string]*TagExtractionResult) context.Context {
-	return context.WithValue(ctx, batchJudgmentContextKey{}, results)
 }
 
 // legacyExtractTopics is the old heuristic-based extraction (for fallback)
@@ -107,7 +101,6 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 						existing.Aliases = string(aJSON)
 					}
 					existing.Kind = kind
-					existing.SubType = tag.SubType
 					if err := database.DB.Save(existing).Error; err != nil {
 						return nil, err
 					}
@@ -147,7 +140,6 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 			dbTag.Aliases = string(aJSON)
 		}
 		dbTag.Kind = kind
-		dbTag.SubType = tag.SubType
 		if err := database.DB.Save(&dbTag).Error; err != nil {
 			return nil, err
 		}
@@ -165,7 +157,6 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 		Slug:        slug,
 		Label:       tag.Label,
 		Category:    category,
-		SubType:     tag.SubType,
 		Kind:        kind,
 		Icon:        tag.Icon,
 		Aliases:     string(aliasesJSON),
@@ -184,12 +175,6 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 	if category == "event" {
 		go generateTagDescription(newTag.ID, tag.Label, category, articleContext) //nolint:gosec
 	}
-
-	go func() { //nolint:gosec
-		if _, err := PlaceTagInHierarchy(context.Background(), &newTag); err != nil {
-			logging.Warnf("Failed to place tag %d in hierarchy: %v", newTag.ID, err)
-		}
-	}()
 
 	GetTagCache().Set(slug, category, &newTag)
 	return &newTag, nil

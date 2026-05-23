@@ -3,6 +3,7 @@ package feed
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
+	"my-robot-backend/internal/platform/logging"
 )
 
 type CreateFeedRequest struct {
@@ -551,8 +553,30 @@ func RefreshAllFeeds(c *gin.Context) {
 func refreshAllFeedsWorker(feedIDs []uint) {
 	feedService := NewFeedService()
 	for _, id := range feedIDs {
-		if err := feedService.RefreshFeed(context.Background(), id); err != nil {
-			continue
-		}
+		func(feedID uint) {
+			defer func() {
+				if r := recover(); r != nil {
+					logging.Errorf("[refresh-all] PANIC refreshing feed %d: %v", feedID, r)
+					resetFeedStatus(feedID, fmt.Sprintf("panic: %v", r))
+				}
+			}()
+
+			if err := feedService.RefreshFeed(context.Background(), feedID); err != nil {
+				logging.Errorf("[refresh-all] Error refreshing feed %d: %v", feedID, err)
+				// RefreshFeed may not have updated status for some error paths (e.g. feed not found, Save failure)
+				resetFeedStatus(feedID, err.Error())
+			}
+		}(id)
 	}
+}
+
+// resetFeedStatus sets a feed to "error" status, but only if it's still in "refreshing" state.
+// This avoids overwriting a concurrent status change (e.g. from auto-refresh completing it).
+func resetFeedStatus(feedID uint, errMsg string) {
+	now := time.Now().In(time.FixedZone("CST", 8*3600))
+	database.DB.Model(&models.Feed{}).Where("id = ? AND refresh_status = ?", feedID, "refreshing").Updates(map[string]interface{}{
+		"refresh_status": "error",
+		"refresh_error":  errMsg,
+		"last_refresh_at": &now,
+	})
 }

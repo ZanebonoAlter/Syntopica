@@ -1,1 +1,0 @@
-遵循 `AGENTS.md` 的规则。代码探索优先使用 code-review-graph MCP 工具 (`query_graph`, `semantic_search_nodes`, `get_impact_radius`)。

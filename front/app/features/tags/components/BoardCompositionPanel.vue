@@ -19,6 +19,7 @@ const api = useSemanticBoardsApi()
 const showPicker = ref(false)
 const pendingIds = ref<number[]>([])
 const adding = ref(false)
+const notice = ref('')
 
 function handleRemove(id: number, label: string) {
   if (!confirm(`从板块中移除辅助标签 "${label}"？\n注意：不会自动回填历史数据。`)) return
@@ -40,6 +41,7 @@ async function handleConfirmAdd() {
     }
     showPicker.value = false
     pendingIds.value = []
+    notice.value = '已添加构成标签。历史标签归属不会自动回填，可手动触发 board 回填。'
     emit('refresh')
   } finally {
     adding.value = false
@@ -58,6 +60,11 @@ async function handleConfirmAdd() {
         <Icon :icon="showPicker ? 'mdi:close' : 'mdi:plus'" width="14" />
         {{ showPicker ? '取消' : '添加' }}
       </button>
+    </div>
+
+    <div v-if="notice" class="bcp-notice">
+      <Icon icon="mdi:information-outline" width="14" />
+      <span>{{ notice }}</span>
     </div>
 
     <!-- Add auxiliary picker -->
@@ -161,6 +168,19 @@ async function handleConfirmAdd() {
   background: rgba(99, 179, 237, 0.12);
   border-color: rgba(99, 179, 237, 0.35);
   color: rgba(147, 197, 253, 0.9);
+}
+
+.bcp-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid rgba(99, 179, 237, 0.16);
+  background: rgba(99, 179, 237, 0.06);
+  color: rgba(191, 219, 254, 0.78);
+  font-size: 0.68rem;
+  line-height: 1.5;
 }
 
 .bcp-picker {

@@ -41,6 +41,21 @@
 - **WHEN** 用户通过 API 确认 create_new 或 merge_into_existing 建议
 - **THEN** 系统 SHALL 写入 SemanticBoard 和 board_composition，并返回执行结果
 
+### Requirement: 升级建议面板支持逐项处理和重新生成
+前端 SHALL 在升级建议面板中支持逐项处理 LLM 建议。用户确认某个 create_new 或 merge_into_existing 建议成功后，面板 SHALL 保持打开，并将该建议从待处理列表移除或标记为已处理，不得自动关闭整轮建议面板。前端 SHALL 提供重新生成升级建议的操作入口，允许用户在已有建议列表存在时重新调用升级建议 API 并替换当前建议列表。
+
+#### Scenario: 确认单个建议后继续处理剩余建议
+- **WHEN** 面板中存在多个升级建议，用户确认其中一个 create_new 或 merge_into_existing 建议且 API 返回成功
+- **THEN** 面板 SHALL 继续保持打开，并保留剩余未处理建议供用户继续确认
+
+#### Scenario: 重新生成升级建议
+- **WHEN** 面板中已经存在升级建议，用户点击重新生成
+- **THEN** 前端 SHALL 重新调用 POST /api/semantic-boards/upgrade-suggest，并用新的建议结果替换当前建议列表
+
+#### Scenario: 处理完成后提示回填
+- **WHEN** 用户确认执行至少一个升级建议
+- **THEN** 前端 SHOULD 提示用户可手动触发匹配回填，使历史 tag-board 归属按最新 board composition 生效
+
 ### Requirement: 回填触发 API
 系统 SHALL 提供手动触发回填的 API 端点，支持 all、unassigned、board 三种模式，并提供进度查询。
 
@@ -86,11 +101,11 @@
 - **THEN** 系统 SHALL 删除对应 board_composition 记录，且不自动回填历史 tag-board 归属
 
 ### Requirement: 辅助标签推荐 API
-系统 SHALL 提供基于 embedding 相似度的辅助标签推荐 API，用于手动创建或编辑 SemanticBoard 时填充 board_composition。API SHALL 接受 label（必选）和 description（可选），生成 board embedding 后与全量 active 辅助标签的 embedding 计算余弦相似度，按相似度从高到低排序返回，不设阈值。API SHALL 支持分页（page/page_size）和搜索过滤（排除已在 board_composition 中的标签）。
+系统 SHALL 提供基于 embedding 相似度的辅助标签推荐 API，用于手动创建或编辑 SemanticBoard 时人工填充 board_composition。API SHALL 接受 label（必选）和 description（可选），生成 board label + description embedding 后与全量 active 辅助标签的 storage embedding（semantic_labels.embedding）计算余弦相似度，按相似度从高到低排序返回，不设阈值。推荐结果 SHALL 仅供用户选择，不自动写入 board_composition，也不参与自动 tag-board 匹配规则。API SHALL 支持分页（page/page_size）和搜索过滤（排除已在 board_composition 中的标签）。
 
 #### Scenario: 创建时推荐辅助标签
 - **WHEN** 用户调用 GET /api/semantic-boards/suggest-auxiliaries?label=量子计算
-- **THEN** 系统 SHALL 生成 "量子计算" 的 embedding，与所有 active 辅助标签计算相似度，按相似度降序返回分页列表，包含 id、label、ref_count、aliases、similarity
+- **THEN** 系统 SHALL 生成 "量子计算" 的 board 查询 embedding，与所有 active 辅助标签的 storage embedding 计算相似度，按相似度降序返回分页列表，包含 id、label、ref_count、aliases、similarity
 
 #### Scenario: 编辑时推荐辅助标签
 - **WHEN** 用户调用 GET /api/semantic-boards/:id/suggest-auxiliaries
@@ -106,3 +121,7 @@
 #### Scenario: 添加单个辅助标签
 - **WHEN** 用户调用 POST /api/semantic-boards/:id/composition，body 含 auxiliary_label_id
 - **THEN** 系统 SHALL 验证辅助标签存在且 active，写入 board_composition 记录（幂等），且不自动回填历史 tag-board 归属
+
+#### Scenario: 添加后需要用户手动回填
+- **WHEN** 用户向 SemanticBoard 添加辅助标签
+- **THEN** 系统 SHALL NOT 自动启动回填；前端 SHOULD 提示用户可手动触发 board 模式回填使历史 tag-board 归属生效

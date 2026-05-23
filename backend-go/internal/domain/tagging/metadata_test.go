@@ -3,6 +3,7 @@ package tagging
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -110,12 +111,17 @@ func TestLimitArticleTagsKeepsTopFiveInOrder(t *testing.T) {
 	}
 }
 
-func TestTagArticleStoresOnlyTopFiveTags(t *testing.T) {
+func TestTagArticleStoresOnlyTopKeywordTags(t *testing.T) {
 	setupTopicExtractionTestDB(t)
 
 	aiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"[{\"label\":\"Tag 0\",\"category\":\"keyword\",\"confidence\":1.0},{\"label\":\"Tag 1\",\"category\":\"keyword\",\"confidence\":0.99},{\"label\":\"Tag 2\",\"category\":\"keyword\",\"confidence\":0.98},{\"label\":\"Tag 3\",\"category\":\"keyword\",\"confidence\":0.97},{\"label\":\"Tag 4\",\"category\":\"keyword\",\"confidence\":0.96},{\"label\":\"Tag 5\",\"category\":\"keyword\",\"confidence\":0.95},{\"label\":\"Tag 6\",\"category\":\"keyword\",\"confidence\":0.94},{\"label\":\"Tag 7\",\"category\":\"keyword\",\"confidence\":0.93},{\"label\":\"Tag 8\",\"category\":\"keyword\",\"confidence\":0.92},{\"label\":\"Tag 9\",\"category\":\"keyword\",\"confidence\":0.91}]"}}]}`))
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "只负责从新闻摘要中提取 event 和 person") {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"tags\":[]}"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"[{\"label\":\"Tag 0\",\"category\":\"keyword\",\"description\":\"测试标签0\"},{\"label\":\"Tag 1\",\"category\":\"keyword\",\"description\":\"测试标签1\"},{\"label\":\"Tag 2\",\"category\":\"keyword\",\"description\":\"测试标签2\"},{\"label\":\"Tag 3\",\"category\":\"keyword\",\"description\":\"测试标签3\"},{\"label\":\"Tag 4\",\"category\":\"keyword\",\"description\":\"测试标签4\"},{\"label\":\"Tag 5\",\"category\":\"keyword\",\"description\":\"测试标签5\"},{\"label\":\"Tag 6\",\"category\":\"keyword\",\"description\":\"测试标签6\"},{\"label\":\"Tag 7\",\"category\":\"keyword\",\"description\":\"测试标签7\"},{\"label\":\"Tag 8\",\"category\":\"keyword\",\"description\":\"测试标签8\"},{\"label\":\"Tag 9\",\"category\":\"keyword\",\"description\":\"测试标签9\"}]"}}]}`))
 	}))
 	defer aiServer.Close()
 
@@ -154,8 +160,8 @@ func TestTagArticleStoresOnlyTopFiveTags(t *testing.T) {
 	if err := database.DB.Where("article_id = ?", article.ID).Find(&links).Error; err != nil {
 		t.Fatalf("load article tags: %v", err)
 	}
-	if len(links) != 5 {
-		t.Fatalf("article tag count = %d, want 5", len(links))
+	if len(links) != 3 {
+		t.Fatalf("article tag count = %d, want 3", len(links))
 	}
 
 	var savedTags []models.TopicTag
@@ -166,10 +172,10 @@ func TestTagArticleStoresOnlyTopFiveTags(t *testing.T) {
 		Find(&savedTags).Error; err != nil {
 		t.Fatalf("load saved tags: %v", err)
 	}
-	if len(savedTags) != 5 {
-		t.Fatalf("saved tag count = %d, want 5", len(savedTags))
+	if len(savedTags) != 3 {
+		t.Fatalf("saved tag count = %d, want 3", len(savedTags))
 	}
-	if savedTags[0].Label != "Tag 0" || savedTags[4].Label != "Tag 4" {
-		t.Fatalf("saved tag order = %q ... %q, want Tag 0 ... Tag 4", savedTags[0].Label, savedTags[4].Label)
+	if savedTags[0].Label != "Tag 0" || savedTags[2].Label != "Tag 2" {
+		t.Fatalf("saved tag order = %q ... %q, want Tag 0 ... Tag 2", savedTags[0].Label, savedTags[2].Label)
 	}
 }

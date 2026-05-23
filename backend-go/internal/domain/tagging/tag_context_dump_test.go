@@ -158,9 +158,16 @@ func TestDumpTagContextForArticle74426(t *testing.T) {
 	}
 	sb.WriteString("  " + line + "\n")
 
-	sb.WriteString("\n## 7. System Prompt\n\n")
+	sb.WriteString("\n## 7. Event/Person System Prompt\n\n")
 	sb.WriteString("  " + line + "\n")
-	for _, l := range strings.Split(buildExtractionSystemPrompt(), "\n") {
+	for _, l := range strings.Split(buildEventPersonPrompt(), "\n") {
+		sb.WriteString("  " + l + "\n")
+	}
+	sb.WriteString("  " + line + "\n")
+
+	sb.WriteString("\n## 7b. Keyword System Prompt\n\n")
+	sb.WriteString("  " + line + "\n")
+	for _, l := range strings.Split(buildKeywordPrompt(), "\n") {
 		sb.WriteString("  " + l + "\n")
 	}
 	sb.WriteString("  " + line + "\n")
@@ -199,7 +206,7 @@ func TestDumpTagContextForArticle74426(t *testing.T) {
 			fmt.Fprintf(&sb, "  Errors: %v\n", candidates.Errors)
 		}
 		for i, tag := range candidates.Tags {
-			fmt.Fprintf(&sb, "  Tag[%d]: label=%q category=%s confidence=%.2f\n", i, tag.Label, tag.Category, tag.Score)
+			fmt.Fprintf(&sb, "  Tag[%d]: label=%q category=%s score=%.2f\n", i, tag.Label, tag.Category, tag.Score)
 		}
 	}
 
@@ -281,7 +288,7 @@ func TestOllamaRawResponseForTagExtraction(t *testing.T) {
 	}
 
 	summary := buildArticleSummary(article)
-	systemPrompt := buildExtractionSystemPrompt()
+	systemPrompt := buildEventPersonPrompt()
 	userPrompt := buildExtractionUserPrompt(ExtractionInput{
 		Title:        article.Title,
 		Summary:      summary,
@@ -289,7 +296,7 @@ func TestOllamaRawResponseForTagExtraction(t *testing.T) {
 		CategoryName: FeedCategoryName(feed),
 	})
 
-	schema := tagExtractionSchema()
+	schema := eventPersonExtractionSchema()
 	temperature := 0.2
 	maxTokens := 1024
 
@@ -412,16 +419,19 @@ func TestOllamaRawResponseForTagExtraction(t *testing.T) {
 		}
 	}
 
-	sb.WriteString("\n## After parseExtractedTags\n\n")
+	sb.WriteString("\n## After branch parsers\n\n")
 	if len(parsed.Choices) > 0 {
-		tags, err := parseExtractedTags(parsed.Choices[0].Message.Content)
+		tags, err := parseEventPersonTags(parsed.Choices[0].Message.Content)
+		if err != nil {
+			tags, err = parseKeywordTags(parsed.Choices[0].Message.Content)
+		}
 		if err != nil {
 			fmt.Fprintf(&sb, "  Parse error: %v\n", err)
 		} else {
 			fmt.Fprintf(&sb, "  Extracted %d tags:\n", len(tags))
 			for i, tag := range tags {
-				sb.WriteString(fmt.Sprintf("    [%d] label=%q category=%s confidence=%.2f aliases=%v evidence=%q\n",
-					i, tag.Label, tag.Category, tag.Confidence, tag.Aliases, tag.Evidence))
+				sb.WriteString(fmt.Sprintf("    [%d] label=%q category=%s aliases=%v\n",
+					i, tag.Label, tag.Category, tag.Aliases))
 			}
 		}
 	}
@@ -495,7 +505,7 @@ func TestRealExtractTagsFlow(t *testing.T) {
 		fmt.Fprintf(&sb, "  Skipped: %v\n", result.Skipped)
 		fmt.Fprintf(&sb, "  Errors: %v\n", result.Errors)
 		for i, tag := range result.Tags {
-			sb.WriteString(fmt.Sprintf("  Tag[%d]: label=%q category=%s confidence=%.2f isNew=%v matchedTo=%d\n",
+			sb.WriteString(fmt.Sprintf("  Tag[%d]: label=%q category=%s score=%.2f isNew=%v matchedTo=%d\n",
 				i, tag.Label, tag.Category, tag.Score, tag.IsNew, tag.MatchedTo))
 		}
 	} else {

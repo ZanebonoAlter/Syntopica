@@ -9,6 +9,29 @@ Agent guide for coding assistants working in `D:\project\my-robot`.
 - Crawl service: `http://localhost:11235`. AI config managed via web UI, no config files.
 - 和用户沟通使用中文，开发环境 Windows。
 
+## 开发环境 (Development Environment)
+
+| 项目 | 说明 |
+|------|------|
+| OS | **Windows**（WSL2 `bash` 可用，但路径使用 Windows 格式如 `D:/project/...`）|
+| 数据库 | **Docker**：`docker compose up -d postgres` 启动 PostgreSQL（pgvector），默认端口 `5432`，用户/密码/库名均为 `postgres`。数据持久化在 `./data/` 下。`docker compose down` 停止。|
+| Python | **uv**：需要 Python 脚本/工具时使用 `uv`（如 `uv run script.py`、`uv add package`）。Python 集成测试位于 `tests/workflow/`、`tests/firecrawl/`。|
+| Node.js | `pnpm`（要求 corepack 启用）。详见 `front/AGENTS.md`。|
+| Go | 直接使用系统 Go 工具链。详见 `backend-go/AGENTS.md`。|
+
+**快速开始本地开发：**
+
+```bash
+# 1. 启动数据库（Docker）
+docker compose up -d postgres
+
+# 2. 启动后端（backend-go/）
+cd backend-go && go run cmd/server/main.go
+
+# 3. 启动前端（新终端，front/）
+cd front && pnpm dev
+```
+
 ## Reference Docs (authoritative source)
 - **Architecture**: `docs/reference/architecture/`
 - **API**: `docs/reference/api/`

@@ -17,8 +17,7 @@
 
 - 应用壳入口：`front/app/app.vue`
 - 主阅读页：`front/app/pages/index.vue`
-- Digest 总览：`front/app/pages/digest/index.vue`
-- Digest 单视图：`front/app/pages/digest/[id].vue`
+- 标签管理：`front/app/pages/tags.vue`
 - Topic Graph：`front/app/pages/topics.vue`
 
 `app.vue` 只做一件事：启动时调用 `apiStore.initialize()`，先拉分类、订阅源和文章，再渲染页面。
@@ -51,6 +50,8 @@ front/
 - `features/digest`：日报、周报、详情页、配置抽屉
 - `features/feeds`：自动刷新和刷新轮询
 - `features/preferences`：阅读行为埋点与偏好相关逻辑
+- `features/tags`：标签管理、标签合并、标签质量评分
+- `features/hierarchy-config`：层级配置管理
 - `features/topic-graph`：主题图谱、热点标签、话题详情、analysis、timeline、标签层级（TagHierarchy）、标签合并预览、叙事面板
 
 这套结构已经替代旧的“业务都堆在 `components/`”的方式。新功能优先进入 `features/*`。

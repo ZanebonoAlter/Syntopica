@@ -13,10 +13,6 @@ func StartAllWorkers() {
 	logging.Infoln("Embedding queue worker started successfully")
 	StartMergeReembeddingQueueWorker()
 	logging.Infoln("Merge re-embedding queue worker started successfully")
-	StartAbstractTagUpdateQueueWorker()
-	logging.Infoln("Abstract tag update queue worker started successfully")
-	StartAdoptNarrowerQueueWorker()
-	logging.Infoln("Adopt narrower queue worker started successfully")
 }
 
 func StopAllWorkers() {
@@ -28,10 +24,4 @@ func StopAllWorkers() {
 
 	logging.Infoln("Stopping merge re-embedding queue worker...")
 	StopMergeReembeddingQueueWorker()
-
-	logging.Infoln("Stopping abstract tag update queue worker...")
-	StopAbstractTagUpdateQueueWorker()
-
-	logging.Infoln("Stopping adopt narrower queue worker...")
-	StopAdoptNarrowerQueueWorker()
 }

@@ -65,6 +65,8 @@ func GetArticles(c *gin.Context) {
 	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "20"))
 	feedID, _ := strconv.Atoi(c.Query("feed_id"))
 	categoryID, _ := strconv.Atoi(c.Query("category_id"))
+	conceptID, _ := strconv.Atoi(c.Query("concept_id"))
+	auxiliaryLabelID, _ := strconv.Atoi(c.Query("auxiliary_label_id"))
 	uncategorized := c.Query("uncategorized") == "true"
 	read := c.Query("read")
 	favorite := c.Query("favorite")
@@ -74,7 +76,6 @@ func GetArticles(c *gin.Context) {
 	watchedTagIDsStr := c.Query("watched_tag_ids")
 	watchedTagsMode := c.Query("watched_tags") == "true"
 	sortBy := c.Query("sort_by")
-	conceptID, _ := strconv.Atoi(c.Query("concept_id"))
 
 	maxPerPage := 100
 	if perPage <= 0 || perPage > maxPerPage {
@@ -120,11 +121,6 @@ func GetArticles(c *gin.Context) {
 		query = query.Joins("JOIN article_topic_tags att ON att.article_id = articles.id AND att.topic_tag_id IN ?", expandedTagIDs)
 	}
 
-	if conceptID > 0 {
-		query = query.Joins("JOIN article_topic_tags att_concept ON att_concept.article_id = articles.id").
-			Joins("JOIN topic_tags tt_concept ON tt_concept.id = att_concept.topic_tag_id AND tt_concept.concept_id = ?", conceptID)
-	}
-
 	// Select fields — vary by watched tags mode and sort
 	articleCols := "articles.id, articles.feed_id, articles.title, articles.description, articles.content, articles.link, articles.image_url, articles.pub_date, articles.author, articles.read, articles.favorite, articles.summary_status, articles.summary_generated_at, articles.summary_processing_started_at, articles.completion_attempts, articles.completion_error, articles.ai_content_summary, articles.firecrawl_status, articles.firecrawl_error, articles.firecrawl_content, articles.firecrawl_crawled_at, articles.created_at"
 	if usingWatchedTags {
@@ -137,12 +133,14 @@ func GetArticles(c *gin.Context) {
 			query = query.
 				Select("DISTINCT articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
 		}
-	} else if conceptID > 0 {
-		query = query.
-			Select("DISTINCT articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
 	} else {
-		query = query.
-			Select("articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
+		if conceptID > 0 || auxiliaryLabelID > 0 {
+			query = query.
+				Select("DISTINCT articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
+		} else {
+			query = query.
+				Select("articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
+		}
 	}
 
 	if feedID > 0 {
@@ -151,6 +149,16 @@ func GetArticles(c *gin.Context) {
 
 	if categoryID > 0 {
 		query = query.Where("feeds.category_id = ?", categoryID)
+	}
+
+	if conceptID > 0 {
+		query = query.Joins("JOIN article_topic_tags att_concept ON att_concept.article_id = articles.id"+
+			" JOIN topic_tag_board_labels ttbl ON ttbl.topic_tag_id = att_concept.topic_tag_id AND ttbl.semantic_board_id = ?", conceptID)
+	}
+
+	if auxiliaryLabelID > 0 {
+		query = query.Joins("JOIN article_topic_tags att_aux ON att_aux.article_id = articles.id"+
+			" JOIN topic_tag_semantic_labels ttsl_filter ON ttsl_filter.topic_tag_id = att_aux.topic_tag_id AND ttsl_filter.semantic_label_id = ?", auxiliaryLabelID)
 	}
 
 	if uncategorized {
@@ -203,6 +211,12 @@ func GetArticles(c *gin.Context) {
 		if uncategorized {
 			countQuery = countQuery.Joins("JOIN feeds ON articles.feed_id = feeds.id").Where("feeds.category_id IS NULL")
 		}
+		if conceptID > 0 {
+			countQuery = countQuery.Joins("JOIN article_topic_tags att_concept ON att_concept.article_id = articles.id JOIN topic_tag_board_labels ttbl ON ttbl.topic_tag_id = att_concept.topic_tag_id AND ttbl.semantic_board_id = ?", conceptID)
+		}
+		if auxiliaryLabelID > 0 {
+			countQuery = countQuery.Joins("JOIN article_topic_tags att_aux ON att_aux.article_id = articles.id JOIN topic_tag_semantic_labels ttsl_filter ON ttsl_filter.topic_tag_id = att_aux.topic_tag_id AND ttsl_filter.semantic_label_id = ?", auxiliaryLabelID)
+		}
 		if read == "true" || read == "false" {
 			countQuery = countQuery.Where("articles.read = ?", read == "true")
 		}
@@ -224,33 +238,24 @@ func GetArticles(c *gin.Context) {
 			countQuery = countQuery.Where("DATE(articles.pub_date) <= ?", endDate)
 		}
 		countQuery.Select("COUNT(DISTINCT articles.id)").Scan(&total)
-	} else if conceptID > 0 {
-		countQuery := database.DB.Table("articles").
-			Joins("JOIN article_topic_tags att_concept ON att_concept.article_id = articles.id").
-			Joins("JOIN topic_tags tt_concept ON tt_concept.id = att_concept.topic_tag_id AND tt_concept.concept_id = ?", conceptID)
-		if feedID > 0 {
-			countQuery = countQuery.Where("articles.feed_id = ?", feedID)
-		}
-		if read == "true" || read == "false" {
-			countQuery = countQuery.Where("articles.read = ?", read == "true")
-		}
-		if search != "" {
-			if database.DB.Name() == "postgres" {
-				countQuery = countQuery.Where("articles.search_vector @@ plainto_tsquery('simple', ?)", search)
-			} else {
-				searchTerm := "%" + search + "%"
-				countQuery = countQuery.Where("articles.title LIKE ? OR articles.description LIKE ?", searchTerm, searchTerm)
-			}
-		}
-		if startDate != "" {
-			countQuery = countQuery.Where("DATE(articles.pub_date) >= ?", startDate)
-		}
-		if endDate != "" {
-			countQuery = countQuery.Where("DATE(articles.pub_date) <= ?", endDate)
-		}
-		countQuery.Select("COUNT(DISTINCT articles.id)").Scan(&total)
 	} else {
-		query.Count(&total)
+		if conceptID > 0 || auxiliaryLabelID > 0 {
+			cq := database.DB.Model(&models.Article{}).
+				Select("COUNT(DISTINCT articles.id)")
+			if conceptID > 0 {
+				cq = cq.
+					Joins("JOIN article_topic_tags att_concept ON att_concept.article_id = articles.id").
+					Joins("JOIN topic_tag_board_labels ttbl ON ttbl.topic_tag_id = att_concept.topic_tag_id AND ttbl.semantic_board_id = ?", conceptID)
+			}
+			if auxiliaryLabelID > 0 {
+				cq = cq.
+					Joins("JOIN article_topic_tags att_aux ON att_aux.article_id = articles.id").
+					Joins("JOIN topic_tag_semantic_labels ttsl_filter ON ttsl_filter.topic_tag_id = att_aux.topic_tag_id AND ttsl_filter.semantic_label_id = ?", auxiliaryLabelID)
+			}
+			cq.Scan(&total)
+		} else {
+			query.Count(&total)
+		}
 	}
 
 	var articles []models.Article

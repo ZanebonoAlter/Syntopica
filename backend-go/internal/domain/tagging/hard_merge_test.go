@@ -129,7 +129,7 @@ func TestHardMergeTags_ArticleMigration_Dedup(t *testing.T) {
 	assert.Len(t, links, 1, "duplicate link should be removed, not doubled")
 }
 
-func TestHardMergeTags_RelationsMigration(t *testing.T) {
+func TestHardMergeTags_RelationsNotMigrated(t *testing.T) {
 	db := setupHardMergeTestDB(t)
 	source := seedTag(t, db, "source-rel", "abstract")
 	target := seedTag(t, db, "target-rel", "abstract")
@@ -148,11 +148,11 @@ func TestHardMergeTags_RelationsMigration(t *testing.T) {
 
 	var parentRels []models.TopicTagRelation
 	require.NoError(t, db.Where("parent_id = ? AND child_id = ?", target.ID, child.ID).Find(&parentRels).Error)
-	assert.Len(t, parentRels, 1, "source-as-parent relation should move to target")
+	assert.Len(t, parentRels, 0, "hierarchy migration is deprecated, no relations moved")
 
 	var childRels []models.TopicTagRelation
 	require.NoError(t, db.Where("parent_id = ? AND child_id = ?", parent.ID, target.ID).Find(&childRels).Error)
-	assert.Len(t, childRels, 1, "source-as-child relation should move to target")
+	assert.Len(t, childRels, 0, "hierarchy migration is deprecated, no relations moved")
 }
 
 func TestHardMergeTags_SourceDeleted(t *testing.T) {

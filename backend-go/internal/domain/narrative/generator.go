@@ -111,9 +111,6 @@ func buildNarrativePrompt(tags []TagInput, prev []PreviousNarrative) string {
 	sb.WriteString("## 今日话题标签数据\n\n")
 	for _, t := range tags {
 		fmt.Fprintf(&sb, "- [ID:%d] %s (分类:%s, 文章数:%d", t.ID, t.Label, t.Category, t.ArticleCount)
-		if t.IsAbstract {
-			sb.WriteString(", 抽象标签")
-		}
 		if t.ParentLabel != "" {
 			fmt.Fprintf(&sb, ", 归属:%s", t.ParentLabel)
 		}

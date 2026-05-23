@@ -11,10 +11,7 @@ type NarrativeBoard struct {
 	ScopeCategoryID *uint     `gorm:"index:idx_narrative_boards_scope" json:"scope_category_id"`
 	ScopeLabel      string    `gorm:"size:100" json:"scope_label"`
 	EventTagIDs     string    `gorm:"type:text" json:"event_tag_ids"`
-	AbstractTagIDs  string    `gorm:"type:text" json:"abstract_tag_ids"`
 	PrevBoardIDs    string    `gorm:"type:text" json:"prev_board_ids"`
-	AbstractTagID   *uint     `gorm:"index" json:"abstract_tag_id"`
-	BoardConceptID  *uint     `gorm:"index" json:"board_concept_id,omitempty"`
 	SemanticBoardID *uint     `gorm:"index:idx_narrative_boards_semantic_board_id" json:"semantic_board_id,omitempty"`
 	IsSystem        bool      `gorm:"not null;default:false" json:"is_system"`
 	CreatedAt       time.Time `json:"created_at"`

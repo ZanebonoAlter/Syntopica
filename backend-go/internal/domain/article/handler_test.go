@@ -237,46 +237,4 @@ func TestRetagArticleWithExistingLeasedJob(t *testing.T) {
 	require.True(t, updated.ForceRetag)
 }
 
-func TestGetArticlesFiltersByConceptID(t *testing.T) {
-	setupArticlesHandlerTestDB(t)
-	gin.SetMode(gin.TestMode)
-
-	category := models.Category{Name: "Tech", Slug: "tech", Color: "#3b6b87", Icon: "mdi:laptop"}
-	require.NoError(t, database.DB.Create(&category).Error)
-
-	feed := models.Feed{Title: "Tech Blog", URL: "https://example.com/tech", CategoryID: &category.ID}
-	require.NoError(t, database.DB.Create(&feed).Error)
-
-	article1 := models.Article{FeedID: feed.ID, Title: "Article with sector tag", Link: "https://example.com/a1", PubDate: ptrTime(time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))}
-	article2 := models.Article{FeedID: feed.ID, Title: "Article without sector tag", Link: "https://example.com/a2", PubDate: ptrTime(time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC))}
-	require.NoError(t, database.DB.Create(&article1).Error)
-	require.NoError(t, database.DB.Create(&article2).Error)
-
-	tag1 := models.TopicTag{Label: "Go", Slug: "go", Category: models.TagCategoryKeyword, Kind: "keyword", ConceptID: ptrUint(10)}
-	tag2 := models.TopicTag{Label: "Rust", Slug: "rust", Category: models.TagCategoryKeyword, Kind: "keyword", ConceptID: nil}
-	require.NoError(t, database.DB.Create(&tag1).Error)
-	require.NoError(t, database.DB.Create(&tag2).Error)
-
-	require.NoError(t, database.DB.Create(&models.ArticleTopicTag{ArticleID: article1.ID, TopicTagID: tag1.ID, Score: 0.9, Source: "llm"}).Error)
-	require.NoError(t, database.DB.Create(&models.ArticleTopicTag{ArticleID: article2.ID, TopicTagID: tag2.ID, Score: 0.8, Source: "llm"}).Error)
-
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/articles?concept_id=10", http.NoBody)
-
-	GetArticles(ctx)
-
-	require.Equal(t, http.StatusOK, recorder.Code)
-
-	var body struct {
-		Success bool                     `json:"success"`
-		Data    []map[string]interface{} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
-	require.True(t, body.Success)
-	require.Len(t, body.Data, 1)
-	require.Equal(t, "Article with sector tag", body.Data[0]["title"])
-}
-
-func ptrUint(v uint) *uint { return &v }
 func ptrTime(t time.Time) *time.Time { return &t }

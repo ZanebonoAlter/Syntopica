@@ -37,7 +37,7 @@ func setupSemanticBoardHandlerRouter(t *testing.T) (*gorm.DB, *gin.Engine) {
 	database.DB = db
 	require.NoError(t, db.AutoMigrate(&models.Feed{}, &models.Article{}, &models.TopicTag{}, &models.TopicTagEmbedding{}, &models.ArticleTopicTag{}, &models.SemanticLabel{}, &models.TopicTagSemanticLabel{}, &models.TopicTagBoardLabel{}, &models.BoardComposition{}, &models.AISettings{}))
 
-	semanticBoardLabelEmbedder = func(ctx context.Context, label string) (string, []float64, error) {
+	semanticBoardLabelEmbedder = func(ctx context.Context, input string, mode auxiliaryLabelEmbeddingMode) (string, []float64, error) {
 		return floatsToPgVector([]float64{1, 0, 0}), []float64{1, 0, 0}, nil
 	}
 	semanticBoardUpgradeLLMFactory = func() semanticBoardUpgradeLLM {
@@ -100,10 +100,20 @@ func TestSemanticBoardHandlerSuggestAuxiliaries(t *testing.T) {
 	require.Equal(t, http.StatusOK, excludeResp.Code)
 	var excludeBody map[string]any
 	require.NoError(t, json.Unmarshal(excludeResp.Body.Bytes(), &excludeBody))
-	excludeItems := excludeBody["data"].(map[string]any)["items"].([]any)
+	excludeData := excludeBody["data"].(map[string]any)
+	excludeItems := excludeData["items"].([]any)
+	require.Equal(t, float64(2), excludeData["total"], "excluded auxiliary should be removed before pagination")
 	for _, item := range excludeItems {
 		require.NotEqual(t, float64(1), item.(map[string]any)["id"], "excluded auxiliary should not appear")
 	}
+
+	excludePagedResp := performJSON(t, router, http.MethodGet, fmt.Sprintf("/api/semantic-boards/suggest-auxiliaries?label=AI&exclude_board_id=%d&page=1&page_size=1", board.ID), nil)
+	require.Equal(t, http.StatusOK, excludePagedResp.Code)
+	var excludePagedBody map[string]any
+	require.NoError(t, json.Unmarshal(excludePagedResp.Body.Bytes(), &excludePagedBody))
+	excludePagedData := excludePagedBody["data"].(map[string]any)
+	require.Equal(t, float64(2), excludePagedData["total"], "exclude_board_id should apply before pagination")
+	require.Len(t, excludePagedData["items"].([]any), 1)
 }
 
 func TestSemanticBoardHandlerSuggestAuxiliariesForBoard(t *testing.T) {

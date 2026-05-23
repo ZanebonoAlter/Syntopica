@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: semantic_labels 统一数据模型
-系统 SHALL 使用 `semantic_labels` 表统一存储辅助标签和 SemanticBoard。表 SHALL 包含以下字段：id, label, slug, embedding (vector), label_type ("auxiliary"|"board"), aliases (jsonb), ref_count, description, display_order, source, status, protected, created_at, updated_at。SemanticBoard SHALL 是全局共享的长期语义板块，不按 tag category 或 feed category 分表。
+系统 SHALL 使用 `semantic_labels` 表统一存储辅助标签和 SemanticBoard。表 SHALL 包含以下字段：id, label, slug, embedding (vector, storage embedding), merge_embedding (vector, label-only merge embedding), label_type ("auxiliary"|"board"), aliases (jsonb), ref_count, description, display_order, source, status, protected, created_at, updated_at。SemanticBoard SHALL 是全局共享的长期语义板块，不按 tag category 或 feed category 分表。
 
 #### Scenario: 辅助标签写入
 - **WHEN** 新辅助标签 "量子计算" 入库（L3 新建）
-- **THEN** 创建 semantic_labels 记录，label_type="auxiliary", source="llm_extract", status="active"
+- **THEN** 创建 semantic_labels 记录，label_type="auxiliary", source="llm_extract", status="active"，merge_embedding 由 label 生成，embedding 由 label + description 生成
 
 #### Scenario: 板块创建
 - **WHEN** LLM 从辅助标签簇中生成新板块 "AI与机器学习"
@@ -46,6 +46,17 @@
 #### Scenario: 新 tag 关联辅助标签
 - **WHEN** tag 关联到 semantic_label "AI"（当前 ref_count=10）
 - **THEN** ref_count 更新为 11
+
+### Requirement: 辅助标签双 embedding 字段用途隔离
+系统 SHALL 使用 merge_embedding 执行辅助标签 L2 merge 判断，使用 embedding 执行 SemanticBoard 推荐、Tag-Board 匹配、升级聚类和回填。系统 SHALL NOT 使用 storage embedding 做 L2 merge 判断，也 SHALL NOT 使用 merge_embedding 做 board 匹配。
+
+#### Scenario: L2 merge 使用 merge_embedding
+- **WHEN** 新辅助标签 "AI绘图" 与已有辅助标签比较是否 merge
+- **THEN** 系统 SHALL 使用双方的 merge_embedding 计算 cosine similarity
+
+#### Scenario: Board 匹配使用 storage embedding
+- **WHEN** 系统计算 tag 辅助标签与 SemanticBoard composition 的间接匹配
+- **THEN** 系统 SHALL 使用 semantic_labels.embedding（storage embedding）计算相似度
 
 ### Requirement: 删除旧概念和层级字段
 系统 SHALL 删除旧 `board_concepts` 表、`topic_tags.concept_id` 字段，以及层级体系相关表/字段。系统 SHALL 不提供旧数据自动迁移。

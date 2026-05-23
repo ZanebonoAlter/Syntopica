@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { ApiResponse } from '~/types'
+import type { ApiResponse, PaginatedData } from '~/types'
 
 export interface AuxiliaryLabel {
   id: number
@@ -14,10 +14,32 @@ export interface AuxiliaryLabel {
   protected: boolean
 }
 
+export interface AuxiliaryLabelClusterItem {
+  id: number
+  label: string
+  slug: string
+  ref_count: number
+}
+
+export interface AuxiliaryLabelCluster {
+  labels: AuxiliaryLabelClusterItem[]
+  size: number
+  label: string
+}
+
+export interface AuxiliaryLabelClustersResponse {
+  clusters: AuxiliaryLabelCluster[]
+  unclustered_count: number
+}
+
 export function useAuxiliaryLabelsApi() {
-  async function getLabels(params?: { search?: string; status?: string }): Promise<ApiResponse<{ items: AuxiliaryLabel[]; total: number }>> {
+  async function getLabels(params?: { search?: string; status?: string; page?: number; per_page?: number }): Promise<ApiResponse<PaginatedData<AuxiliaryLabel>>> {
     const query = apiClient.buildQueryParams(params)
     return apiClient.get(`/auxiliary-labels${query ? `?${query}` : ''}`)
+  }
+
+  async function getClusters(): Promise<ApiResponse<AuxiliaryLabelClustersResponse>> {
+    return apiClient.get('/auxiliary-labels/clusters')
   }
 
   async function disableLabel(id: number): Promise<ApiResponse<{ id: number }>> {
@@ -30,6 +52,7 @@ export function useAuxiliaryLabelsApi() {
 
   return {
     getLabels,
+    getClusters,
     disableLabel,
     mergeAlias,
   }

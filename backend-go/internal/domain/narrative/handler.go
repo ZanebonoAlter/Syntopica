@@ -30,15 +30,6 @@ func RegisterNarrativeRoutes(rg *gin.RouterGroup) {
 		boardGroup.GET("/:id", getBoardDetail)
 	}
 
-	sectorGroup := rg.Group("/narratives/board-concepts")
-	{
-		sectorGroup.GET("", listSectorsHandler)
-		sectorGroup.POST("", createSectorHandler)
-		sectorGroup.PUT("/:id", updateSectorHandler)
-		sectorGroup.DELETE("/:id", deleteSectorHandler)
-		sectorGroup.POST("/regenerate", regenerateSectorsHandler)
-		sectorGroup.POST("/regenerate/confirm", confirmRegenerateSectorsHandler)
-	}
 }
 
 func parseScopeParams(c *gin.Context) (scopeType string, categoryID *uint) {

@@ -90,9 +90,15 @@
 
 ### D10: 板块升级必须用户手动触发并确认执行
 
-**决策**：系统只在用户手动触发时运行 LLM 升级建议，返回 create_new / merge_into_existing / skip 建议；只有用户确认后才写入 SemanticBoard、board_composition，并触发回填。
+**决策**：系统只在用户手动触发时运行 LLM 升级建议，返回 create_new / merge_into_existing / skip 建议；只有用户确认后才写入 SemanticBoard、board_composition，并允许用户手动触发回填。新辅助标签不会自动升级为板块；如果用户希望把辅助标签纳入已有板块，可通过 board composition 的辅助标签推荐和手动添加流程完成。
 
 **理由**：SemanticBoard 是长期语义资产，自动生成过多低质量板块会污染后续匹配。手动确认把 LLM 作为建议器，而非最终写入者。
+
+### D10a: 升级建议确认是逐项处理，不关闭整轮建议
+
+**决策**：升级建议面板中的 create_new / merge_into_existing 建议 SHALL 支持逐项确认。确认单个建议成功后，面板保持打开，并将该建议标记为已处理或从待处理列表移除；用户可继续处理剩余建议。面板 SHALL 提供重新生成建议入口，允许用户在候选池或判断结果变化后重新调用 LLM 建议。
+
+**理由**：一次升级建议通常包含多个候选簇。确认一个建议后立即关闭弹窗会打断批量治理流程，也会让用户误以为本轮建议已全部处理完成。重新生成入口让用户在已处理部分建议、手动调整 composition 或候选池变化后，可以获得新的建议集合。
 
 ### D11: 冷启动允许短期无 board
 
@@ -124,6 +130,57 @@
 
 **理由**：避免与现有 `narrative_board_embedding_threshold` 等旧配置混淆，也便于后续删除旧配置。
 
+### D16: Keyword 标签直接进入辅助标签池
+
+**决策**：category=keyword 的 tag 不再生成 3-5 个辅助标签，而是将 tag 自身（label + description）直接作为辅助标签入库。event/person 标签仍按原方式生成 3-5 个辅助标签。
+
+**理由**：keyword 标签（如 "OpenAI"、"PostgreSQL"、"Transformer架构"）本身就是语义锚点，不需要再生成辅助标签来"解释"它们。当前 keyword 的辅助标签中第一个往往就是 tag 本身，造成冗余。keyword 已有 tagger.go 生成的 description（有文章上下文支撑，质量更高），直接复用即可。
+
+**备选方案**：keyword 也生成辅助标签 — 被否决，因为浪费 LLM 输出 token，且辅助标签的 description 质量不如 tag 自身的 description。
+
+### D17: 辅助标签 embedding 分离为 merge-embedding 和 storage-embedding
+
+**决策**：辅助标签入库时使用两种 embedding：(1) `merge_embedding`：仅用 label 文本生成，用于 L2 ≥0.95 merge 判断；(2) `embedding`：用 label + description 生成，作为 storage embedding 存储到数据库并用于后续 board 推荐、匹配、升级聚类和回填。
+
+**理由**：短文本 embedding 用于 merge 判断更稳定（不受 description 差异影响）；长文本（label+description）embedding 用于匹配区分度更高，能显著降低跨域误判（如 "Claude Code" ↔ "伊朗" 的余弦相似度）。L1 精确匹配不需要 embedding，L2 用 `merge_embedding` 判断，L3 新建时同时写入 `merge_embedding` 和 storage `embedding`，确保后续新标签仍能与既有标签做 label-only merge 比较。
+
+### D18: 辅助标签 description 增强 embedding 语义
+
+**决策**：辅助标签入库时写入 description 字段，storage-embedding 的输入为 label + ": " + description。
+
+**理由**：当前 embedding 输入仅用 2-3 token 的短标签名，在 Qwen3-Embedding:4b 等小模型中区分度严重不足（跨域相似度 0.65+）。增加 description 后输入变为 20-30 token，embedding 被锚定到正确的语义子空间，预期跨域相似度降至 0.3-0.45，远低于当前 SimThreshold=0.72。
+
+来源规则：
+- keyword tag 直入：复用 tag 已有的 description（由 tagger.go 生成）
+- event/person 的辅助标签：LLM 提取时为每个辅助标签附带简短 description
+
+### D20: Tag 提取拆分为 event/person 和 keyword 双调用
+
+**决策**：`extractCandidates` 从单个 LLM 调用拆分为两个独立调用：
+1. `extractEventPersonCandidates`：提取 event/person 标签，schema 强制 `auxiliary_labels` 为 required
+2. `extractKeywordCandidates`：提取 keyword 标签，schema 只含 `label` + `description` + `aliases`，不含 `auxiliary_labels`
+
+两个调用可并行发起，但不是 fail-fast：任一分支失败不得取消另一个分支。每个分支独立执行最多 3 次重试，最后合并成功分支的结果，并把失败分支错误写入 `ExtractionResult.Errors`。
+
+合并规则：
+- 合并后最多保留 5 个 tag，keyword 最多 3 个
+- 同 slug 跨分类重复时，按 person > event > keyword 保留更具体分类
+- event/person 分支全败时不生成 event/person tag，不用 heuristic 猜事件
+- keyword 分支全败时可使用 heuristic keyword 作为展示兜底，但 heuristic keyword 缺少同次 LLM description，默认不进入辅助标签池
+- 两个分支均失败时，沿用现有整体 heuristic fallback
+
+metadata operation 拆分为 `tag_extraction_event_person` 和 `tag_extraction_keyword`，便于在 ai_call_logs / tracing 中单独观察失败率、耗时和成本。
+
+**理由**：统一 schema 中 `auxiliary_labels` 对 event/person 必填、对 keyword 无意义，LLM 经常忽略或全不输出，导致 `parseExtractedTags` 对整个 batch fail-fast。拆分后每个 schema 语义单一，LLM 遵从率显著提高。keyword 的 description 是 required 字段，直接作为直入池的 embedding 输入，不再被 event 标签的 auxiliary_labels 缺失连带丢弃。
+
+**影响**：每篇文章 LLM 调用从 1 次变为 2 次（可并行），token 成本增加约 30-50%，但重试失败率大幅降低，净成本可接受。`article_tagger.go` 下游入库逻辑保持不变，但 `ExtractTags` 需要表达 partial success，避免把“keyword 成功、event 失败”误报为整体成功或整体失败。
+
+### D19: 辅助标签推荐只服务人工 composition 管理
+
+**决策**：`suggest-auxiliaries` 仅用于用户手动创建或编辑 SemanticBoard 时推荐 board_composition 候选。推荐可使用 board label + description embedding 与辅助标签 storage embedding 排序，但推荐结果不直接写入、不参与自动 tag-board 匹配规则。
+
+**理由**：人工推荐需要“相似候选排序”帮助用户快速选标签；自动匹配仍应保持 D3 的辅助标签交集/命中率规则，避免重新退回 tag embedding ↔ board embedding 的直接匹配模型。
+
 ## Risks / Trade-offs
 
 - **[辅助标签质量]** LLM 生成的辅助标签质量直接决定下游匹配准确性 → 通过 prompt 工程、3-5 个数量限制、禁用/alias 合并/composition 移除修正能力控制质量
@@ -132,3 +189,5 @@
 - **[冷启动周期]** 新系统需要积累足够辅助标签才能触发首次升级 → 冷启动允许短期无 board，阈值设为 ref_count≥5，预计 50+ 篇文章后即可触发
 - **[回填成本]** 手动回填可能需要处理大量历史 tag → 异步队列 + 批量处理
 - **[重复事件展示]** 同一事件可能出现在多个 board → 默认最多 3 个归属，UI 需把重复解释为多视角而非数据重复
+- **[description 跨域区分度]** description 增强后跨域相似度的实际降幅需要实测验证 → 如果降幅不足（仍 >0.5），可配合提高 SimThreshold 或升级 embedding 模型
+- **[embedding 分离复杂度]** `merge_embedding` 和 storage `embedding` 分离增加入库逻辑和迁移复杂度 → L1 不需要 embedding、L2 用 `merge_embedding`、L3 生成两种 embedding，匹配/推荐/聚类统一使用 storage `embedding`

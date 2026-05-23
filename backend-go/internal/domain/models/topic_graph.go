@@ -60,8 +60,6 @@ type TopicTag struct {
 	IsWatched    bool        `gorm:"default:false" json:"is_watched"`                                                     // user-watched tag for feed filtering
 	WatchedAt    *time.Time  `json:"watched_at,omitempty"`                                                                // when the tag was watched
 	QualityScore float64     `gorm:"default:0" json:"quality_score"`
-	ConceptID    *uint       `gorm:"index" json:"concept_id,omitempty"`
-	SubType      string      `gorm:"size:30" json:"sub_type,omitempty"` // keyword sub-type: technology, company_business, concept
 	Metadata     MetadataMap `gorm:"type:jsonb;serializer:json;default:'{}'" json:"metadata,omitempty"`
 	CreatedAt    time.Time   `json:"created_at"`
 	UpdatedAt    time.Time   `json:"updated_at"`
@@ -124,7 +122,7 @@ type TopicTagEmbedding struct {
 	EmbeddingType string    `gorm:"size:20;not null;default:identity;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"embedding_type"`
 	Vector        string    `gorm:"type:text;not null" json:"vector"` // Deprecated: legacy JSON text payload. Use EmbeddingVec for pgvector.
 	EmbeddingVec  string    `gorm:"type:vector;column:embedding" json:"-"`
-	Dimension     int       `gorm:"not null" json:"dimension"`                                                   // Vector dimension (e.g., 1536 for ada-002)
+	Dimension     int       `gorm:"not null" json:"dimension"`                                                   // Vector dimension (e.g., 2048 for text-embedding-3-large)
 	Model         string    `gorm:"size:50;not null" json:"model"`                                               // Model used: "text-embedding-ada-002"
 	TextHash      string    `gorm:"size:64;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"text_hash"` // Hash of (label + aliases + category) for re-embedding detection
 	CreatedAt     time.Time `json:"created_at"`

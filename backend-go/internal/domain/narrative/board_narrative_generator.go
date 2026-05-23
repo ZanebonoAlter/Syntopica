@@ -13,7 +13,7 @@ import (
 	"my-robot-backend/internal/platform/logging"
 )
 
-const boardNarrativeSystemPrompt = `你是一名专业的新闻叙事分析师。你收到了一个叙事看板（board）的上下文信息，包括看板描述、该看板下的事件标签、抽象标签参考叙事，以及前一天该看板相关叙事的延续信息。
+const boardNarrativeSystemPrompt = `你是一名专业的新闻叙事分析师。你收到了一个叙事看板（board）的上下文信息，包括 SemanticBoard 标签和描述、该看板下的事件标签，以及前一天该看板相关叙事的延续信息。
 
 你的任务是基于这个看板的上下文，生成叙事线索。每条叙事应该：
 1. 有一个简洁有力的标题（中文，不超过30字，必须是带判断的短句，不能是纯名词）
@@ -38,6 +38,8 @@ type BoardNarrativeContext struct {
 	Board              models.NarrativeBoard
 	EventTags          []TagInput
 	PrevNarratives     []PreviousNarrative
+	SemanticBoardLabel string
+	SemanticBoardDesc  string
 	ConceptName        string
 	ConceptDescription string
 }
@@ -46,8 +48,17 @@ func buildBoardNarrativePrompt(ctx BoardNarrativeContext) string {
 	var sb strings.Builder
 
 	sb.WriteString("## 看板上下文\n\n")
-	fmt.Fprintf(&sb, "- 看板名称: %s\n", ctx.Board.Name)
-	fmt.Fprintf(&sb, "- 看板描述: %s\n", ctx.Board.Description)
+	boardName := ctx.Board.Name
+	if ctx.SemanticBoardLabel != "" {
+		boardName = ctx.SemanticBoardLabel
+	}
+	boardDescription := ctx.Board.Description
+	if ctx.SemanticBoardDesc != "" {
+		boardDescription = ctx.SemanticBoardDesc
+	}
+
+	fmt.Fprintf(&sb, "- SemanticBoard: %s\n", boardName)
+	fmt.Fprintf(&sb, "- SemanticBoard 描述: %s\n", boardDescription)
 
 	if ctx.ConceptName != "" {
 		fmt.Fprintf(&sb, "- 板块概念: %s\n", ctx.ConceptName)
@@ -154,11 +165,12 @@ func SaveNarrativesForBoard(outputs []NarrativeOutput, board models.NarrativeBoa
 
 	boardID := board.ID
 	catID := categoryID
+	scopeOpts := &ScopeSaveOpts{ScopeType: models.NarrativeScopeTypeFeedCategory, CategoryID: &catID}
 	records := make([]models.NarrativeSummary, 0, len(outputs))
 	for _, out := range outputs {
 		parentIDsJSON, _ := json.Marshal(out.ParentIDs)
 		tagIDsJSON, _ := json.Marshal(out.RelatedTagIDs)
-		articleIDs := resolveArticleIDs(out.RelatedTagIDs, date)
+		articleIDs := resolveArticleIDsForScope(out.RelatedTagIDs, date, scopeOpts)
 		articleIDsJSON, _ := json.Marshal(articleIDs)
 
 		generation := resolveGeneration(out, date)
@@ -216,7 +228,7 @@ func saveNarrativesWithBoard(outputs []NarrativeOutput, board models.NarrativeBo
 	for _, out := range outputs {
 		parentIDsJSON, _ := json.Marshal(out.ParentIDs)
 		tagIDsJSON, _ := json.Marshal(out.RelatedTagIDs)
-		articleIDs := resolveArticleIDs(out.RelatedTagIDs, date)
+		articleIDs := resolveArticleIDsForScope(out.RelatedTagIDs, date, scopeOpts)
 		articleIDsJSON, _ := json.Marshal(articleIDs)
 
 		generation := 0

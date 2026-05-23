@@ -5,7 +5,6 @@ import (
 	aiadmindomain "my-robot-backend/internal/domain/aiadmin"
 	articledomain "my-robot-backend/internal/domain/article"
 	categorydomain "my-robot-backend/internal/domain/category"
-	conceptdomain "my-robot-backend/internal/domain/concept"
 	contentdomain "my-robot-backend/internal/domain/content"
 	feeddomain "my-robot-backend/internal/domain/feed"
 	narrativedomain "my-robot-backend/internal/domain/narrative"
@@ -151,15 +150,11 @@ func SetupRoutes(r *gin.Engine) {
 		topicanalysisdomain.RegisterEmbeddingConfigRoutes(api)
 		topicanalysisdomain.RegisterEmbeddingQueueRoutes(api)
 		topicanalysisdomain.RegisterMergeReembeddingQueueRoutes(api)
-		topicanalysisdomain.RegisterAbstractTagUpdateQueueRoutes(api)
-		topicanalysisdomain.RegisterAdoptNarrowerQueueRoutes(api)
 		topicanalysisdomain.RegisterTagQueueRoutes(api)
 		topicanalysisdomain.RegisterTagManagementRoutes(api)
 		taggingwatched.RegisterWatchedTagsRoutes(api)
 		topicanalysisdomain.RegisterTagMergePreviewRoutes(api)
-		topicanalysisdomain.RegisterAbstractTagRoutes(api)
-		topicanalysisdomain.RegisterHierarchyRoutes(api.Group("/hierarchy"))
-		conceptdomain.RegisterConceptRoutes(api.Group("/hierarchy"))
+		topicanalysisdomain.RegisterSemanticBoardRoutes(api)
 
 		narrativedomain.RegisterNarrativeRoutes(api)
 

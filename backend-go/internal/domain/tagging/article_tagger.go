@@ -124,86 +124,7 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 	}
 
 	dedupedTags := dedupeTagsWithCategory(tags)
-	es := getEmbeddingService()
 
-	var needsJudgment []BatchTagJudgmentItem
-	precomputed := make(map[string]*TagExtractionResult)
-
-	for _, tag := range dedupedTags {
-		slug := Slugify(tag.Label)
-		category := NormalizeDisplayCategory(tag.Kind, tag.Category)
-
-		if cached, ok := GetTagCache().Get(slug, category); ok {
-			logging.Infof("tagArticle batch: label=%q category=%s cache=hit", tag.Label, category)
-			precomputed[tag.Label] = &TagExtractionResult{
-				Merge: &MergeResult{Target: cached, Label: tag.Label},
-			}
-			continue
-		}
-
-		if es == nil {
-			continue
-		}
-
-		aliases := tag.Aliases
-		if len(aliases) == 0 {
-			aliases = []string{}
-		}
-		aliasesJSON, _ := json.Marshal(aliases)
-
-		matchResult, err := es.TagMatch(context.Background(), tag.Label, category, string(aliasesJSON))
-		if err != nil {
-			logging.Warnf("tagArticle batch: TagMatch failed for %q: %v", tag.Label, err)
-			continue
-		}
-
-		switch matchResult.MatchType {
-		case "exact":
-			if matchResult.ExistingTag != nil {
-				precomputed[tag.Label] = &TagExtractionResult{
-					Merge: &MergeResult{Target: matchResult.ExistingTag, Label: tag.Label},
-				}
-			}
-		case "candidates":
-			candidates := matchResult.Candidates
-			if category == "event" && article.ID > 0 {
-				existingIDs := make([]uint, 0, len(candidates))
-				for _, c := range candidates {
-					if c.Tag != nil {
-						existingIDs = append(existingIDs, c.Tag.ID)
-					}
-				}
-				coTagCandidates, coTagErr := ExpandEventCandidatesByArticleCoTags(context.Background(), article.ID, 0, existingIDs)
-				if coTagErr != nil {
-					logging.Warnf("tagArticle batch: co-tag expansion failed for %q: %v", tag.Label, coTagErr)
-				} else if len(coTagCandidates) > 0 {
-					candidates = MergeCandidateLists(candidates, coTagCandidates)
-				}
-			}
-			needsJudgment = append(needsJudgment, BatchTagJudgmentItem{
-				Label:       tag.Label,
-				Category:    category,
-				Description: tag.Description,
-				Candidates:  candidates,
-			})
-		case "no_match":
-			continue
-		}
-	}
-
-	if len(needsJudgment) > 0 {
-		logging.Infof("tagArticle batch: judging %d tags in single LLM call", len(needsJudgment))
-		batchResult, err := BatchCallLLMForTagJudgment(context.Background(), needsJudgment, articleContext)
-		if err != nil {
-			logging.Warnf("tagArticle batch: batch judgment failed: %v, falling back to individual", err)
-		} else {
-			for label, result := range batchResult.Results {
-				precomputed[label] = result
-			}
-		}
-	}
-
-	ctx = WithBatchJudgments(ctx, precomputed)
 	seenTagIDs := make(map[uint]struct{})
 	for _, tag := range dedupedTags {
 		dbTag, err := findOrCreateTag(ctx, tag, source, articleContext, article.ID)
@@ -222,6 +143,13 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 			}
 		}
 
+		if dbTag.Category == "keyword" && strings.TrimSpace(tag.Description) != "" {
+			keywordLabel := []AuxiliaryLabel{{Label: tag.Label, Description: tag.Description}}
+			if err := NewAuxiliaryLabelService(database.DB, nil).AttachAuxiliaryLabels(ctx, dbTag.ID, keywordLabel); err != nil {
+				logging.Warnf("keyword direct-to-pool failed for tag %d: %v", dbTag.ID, err)
+			}
+		}
+
 		link := models.ArticleTopicTag{
 			ArticleID:  article.ID,
 			TopicTagID: dbTag.ID,
@@ -229,6 +157,10 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 			Source:     source,
 		}
 		if err := database.DB.Create(&link).Error; err != nil {
+			if isArticleDeletedRace(err, article.ID) {
+				logging.Infof("Article %d was deleted during tagging, skipping remaining tags", article.ID)
+				return nil
+			}
 			return err
 		}
 
@@ -503,6 +435,21 @@ func cleanupOrphanedTags(tagIDs []uint) {
 	} else {
 		logging.Infof("Cleaned up %d orphaned topic tags", len(orphanIDs))
 	}
+}
+
+// isArticleDeletedRace checks if a DB error is a foreign key violation caused by
+// the article being concurrently deleted (race with CleanupOldArticles during feed refresh).
+// When the article no longer exists, its tags are moot — skip gracefully.
+func isArticleDeletedRace(err error, articleID uint) bool {
+	if !strings.Contains(err.Error(), "fk_article_topic_tags_article") {
+		return false
+	}
+	// Double-check the article is actually gone (not some other FK issue)
+	var count int64
+	if dbErr := database.DB.Model(&models.Article{}).Where("id = ?", articleID).Count(&count).Error; dbErr != nil {
+		return false
+	}
+	return count == 0
 }
 
 func parseAliasesFromJSON(aliases string) []string {

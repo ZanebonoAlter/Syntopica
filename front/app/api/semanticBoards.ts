@@ -98,6 +98,12 @@ export interface MatchingConfig {
   semantic_board_match_weight_density: number
   semantic_board_match_weighted_threshold: number
   semantic_board_match_max_boards: number
+  semantic_board_upgrade_ref_count_threshold: number
+  semantic_board_upgrade_cluster_distance_threshold: number
+  semantic_board_upgrade_cotag_window_days: number
+  semantic_board_upgrade_cotag_top_n: number
+  semantic_board_upgrade_cotag_dedupe_sim_threshold: number
+  semantic_board_upgrade_cotag_hard_limit: number
 }
 
 export interface SuggestedAuxiliaryLabel extends AuxiliaryLabelItem {

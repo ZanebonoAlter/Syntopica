@@ -291,7 +291,6 @@ export const useAIAnalysisStore = defineStore('aiAnalysis', () => {
       metadata: {
         analysisTime: (meta.analysisTime || apiResult.analysis_time || 'N/A') as string,
         modelVersion: (meta.modelVersion || apiResult.model_version || 'N/A') as string,
-        confidence: (meta.confidence || apiResult.confidence || 0.85) as number,
       },
     }
 

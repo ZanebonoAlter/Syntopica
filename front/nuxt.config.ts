@@ -4,6 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   devtools: { enabled: true },
+  ignore: ['app/_deprecated/**'],
   runtimeConfig: {
     apiInternalBase: process.env.API_INTERNAL_BASE || 'http://localhost:5000/api',
     public: {

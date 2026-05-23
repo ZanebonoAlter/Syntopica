@@ -2,9 +2,12 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useSemanticBoardsApi, type SemanticBoard, type AuxiliaryLabelItem, type UpgradeCandidate, type UpgradeCluster, type UpgradeSuggestion, type BackfillTask, type MatchingConfig } from '~/api/semanticBoards'
-import { useAuxiliaryLabelsApi, type AuxiliaryLabel } from '~/api/auxiliaryLabels'
+import { useAuxiliaryLabelsApi, type AuxiliaryLabel, type AuxiliaryLabelCluster } from '~/api/auxiliaryLabels'
 import { useArticlesApi } from '~/api/articles'
+import { normalizeArticle } from '~/features/articles/utils/normalizeArticle'
 import type { Article } from '~/types'
+import type { ArticlePayload } from '~/features/articles/utils/normalizeArticle'
+import ArticleContentView from '~/features/articles/components/ArticleContentView.vue'
 import SemanticBoardList from './SemanticBoardList.vue'
 import AddSemanticBoardDialog from './AddSemanticBoardDialog.vue'
 import BoardCompositionPanel from './BoardCompositionPanel.vue'
@@ -26,15 +29,21 @@ const compositionLabels = ref<AuxiliaryLabelItem[]>([])
 const compositionLoading = ref(false)
 
 const auxiliaryLabels = ref<AuxiliaryLabel[]>([])
+const auxClusters = ref<AuxiliaryLabelCluster[]>([])
+const auxUnclusteredCount = ref(0)
 const auxLoading = ref(false)
 const auxSearchQuery = ref('')
 const auxStatusFilter = ref('')
+const auxPage = ref(1)
+const auxPagination = ref<{ page: number; pages: number; total: number } | null>(null)
+const auxPerPage = 50
 
 const upgradeCandidates = ref<UpgradeCandidate[]>([])
 const upgradeClusters = ref<UpgradeCluster[]>([])
 const upgradeSuggestions = ref<UpgradeSuggestion[]>([])
 const upgradeLoading = ref(false)
 const upgradeSuggesting = ref(false)
+const upgradeBackfillNotice = ref(false)
 
 const backfillTask = ref<BackfillTask | null>(null)
 let backfillPollTimer: ReturnType<typeof setInterval> | null = null
@@ -48,7 +57,15 @@ const showMatchingConfigDialog = ref(false)
 
 const timelineArticles = ref<Article[]>([])
 const timelineLoading = ref(false)
+const timelinePage = ref(1)
+const timelineHasMore = ref(false)
+const timelinePerPage = 50
+const activeFilterLabelId = ref<number | null>(null)
 const timelineVisible = computed(() => selectedBoardId.value !== null)
+
+const selectedPreviewArticle = ref<Article | null>(null)
+const previewArticles = ref<Article[]>([])
+const loadingPreviewArticle = ref(false)
 
 async function loadBoards() {
   boardsLoading.value = true
@@ -75,19 +92,40 @@ async function loadComposition(boardId: number) {
 
 async function loadAuxiliaryLabels() {
   auxLoading.value = true
-  const res = await auxApi.getLabels({ search: auxSearchQuery.value || undefined, status: auxStatusFilter.value || undefined })
+  const res = await auxApi.getLabels({ search: auxSearchQuery.value || undefined, status: auxStatusFilter.value || undefined, page: auxPage.value, per_page: auxPerPage })
   if (res.success && res.data) {
     auxiliaryLabels.value = res.data.items
+    if (res.pagination) {
+      auxPagination.value = { page: res.pagination.page, pages: res.pagination.pages, total: res.pagination.total }
+    } else {
+      auxPagination.value = null
+    }
   } else {
     auxiliaryLabels.value = []
+    auxPagination.value = null
   }
   auxLoading.value = false
 }
 
+async function loadClusters() {
+  const res = await auxApi.getClusters()
+  if (res.success && res.data) {
+    auxClusters.value = res.data.clusters
+    auxUnclusteredCount.value = res.data.unclustered_count
+  }
+}
+
+function handleUpdatePage(page: number) {
+  auxPage.value = page
+  void loadAuxiliaryLabels()
+}
+
 function handleSelectBoard(id: number | null) {
   selectedBoardId.value = id
+  activeFilterLabelId.value = null
   if (id !== null) {
     void loadComposition(id)
+    timelinePage.value = 1
     void loadTimelineArticles(id)
   } else {
     compositionLabels.value = []
@@ -95,19 +133,99 @@ function handleSelectBoard(id: number | null) {
   }
 }
 
-async function loadTimelineArticles(boardId: number) {
+async function loadTimelineArticles(boardId: number, append = false) {
   timelineLoading.value = true
   try {
-    const res = await articlesApi.getArticles({ concept_id: boardId, per_page: 50, sort_by: 'date' })
+    const page = append ? timelinePage.value + 1 : 1
+    const params: Record<string, unknown> = { concept_id: boardId, page, per_page: timelinePerPage, sort_by: 'date' }
+    if (activeFilterLabelId.value !== null) {
+      params.auxiliary_label_id = activeFilterLabelId.value
+    }
+    const res = await articlesApi.getArticles(params)
     if (res.success && res.data) {
-      timelineArticles.value = (res.data.items || []) as Article[]
+      const rawData = res.data as unknown as { items: ArticlePayload[] }
+      const rawArticles = (rawData.items || res.data as unknown as ArticlePayload[]) as ArticlePayload[]
+      const newArticles = rawArticles.map(a => normalizeArticle(a))
+      if (append) {
+        timelineArticles.value.push(...newArticles)
+        timelinePage.value = page
+      } else {
+        timelineArticles.value = newArticles
+        timelinePage.value = 1
+      }
+      const total = res.pagination?.total ?? 0
+      timelineHasMore.value = timelineArticles.value.length < total
     } else {
-      timelineArticles.value = []
+      if (!append) timelineArticles.value = []
     }
   } catch {
-    timelineArticles.value = []
+    if (!append) timelineArticles.value = []
   } finally {
     timelineLoading.value = false
+  }
+}
+
+function handleLoadMore() {
+  if (selectedBoardId.value !== null && !timelineLoading.value) {
+    void loadTimelineArticles(selectedBoardId.value, true)
+  }
+}
+
+async function openArticlePreview(articleId: number) {
+  loadingPreviewArticle.value = true
+  try {
+    const response = await articlesApi.getArticle(articleId)
+    if (!response.success || !response.data) return
+    selectedPreviewArticle.value = normalizeArticle(response.data as unknown as ArticlePayload)
+    previewArticles.value = timelineArticles.value
+  } catch (error) {
+    console.error('Failed to open article preview:', error)
+  } finally {
+    loadingPreviewArticle.value = false
+  }
+}
+
+function closeArticlePreview() {
+  selectedPreviewArticle.value = null
+}
+
+async function handleArticleFavorite(articleId: string) {
+  const currentFavorite = selectedPreviewArticle.value?.id === articleId
+    ? selectedPreviewArticle.value.favorite
+    : previewArticles.value.find(a => a.id === articleId)?.favorite
+
+  const response = await articlesApi.updateArticle(Number(articleId), { favorite: !currentFavorite })
+  if (!response.success) return
+
+  const target = previewArticles.value.find(article => article.id === articleId)
+  if (target) {
+    target.favorite = !target.favorite
+  }
+
+  if (selectedPreviewArticle.value?.id === articleId) {
+    selectedPreviewArticle.value = {
+      ...selectedPreviewArticle.value,
+      favorite: !selectedPreviewArticle.value.favorite,
+    }
+  }
+}
+
+function handleArticleUpdate(articleId: string, updates: Partial<Article>) {
+  const target = previewArticles.value.find(article => article.id === articleId)
+  if (target) {
+    Object.assign(target, updates)
+  }
+
+  if (selectedPreviewArticle.value?.id === articleId) {
+    Object.assign(selectedPreviewArticle.value, updates)
+  }
+}
+
+function handleFilterLabel(labelId: number | null) {
+  activeFilterLabelId.value = labelId
+  timelinePage.value = 1
+  if (selectedBoardId.value !== null) {
+    void loadTimelineArticles(selectedBoardId.value)
   }
 }
 
@@ -147,6 +265,7 @@ function handleRemoveComposition(auxiliaryLabelId: number) {
 async function handleUpgradeSuggest() {
   upgradeLoading.value = true
   showUpgradeDialog.value = true
+  upgradeBackfillNotice.value = false
   const res = await sbApi.getUpgradeCandidates()
   if (res.success && res.data) {
     upgradeCandidates.value = res.data.candidates
@@ -157,6 +276,7 @@ async function handleUpgradeSuggest() {
 
 async function handleSuggestUpgrade() {
   upgradeSuggesting.value = true
+  upgradeBackfillNotice.value = false
   const res = await sbApi.suggestUpgrade()
   if (res.success && res.data) {
     upgradeSuggestions.value = res.data.suggestions
@@ -174,8 +294,9 @@ async function handleExecuteUpgrade(suggestion: UpgradeSuggestion) {
     auxiliary_label_ids: suggestion.auxiliary_label_ids,
   })
   if (res.success) {
+    upgradeSuggestions.value = upgradeSuggestions.value.filter(item => item !== suggestion)
+    upgradeBackfillNotice.value = true
     void loadBoards()
-    showUpgradeDialog.value = false
   }
 }
 
@@ -226,12 +347,13 @@ function handleMergeAuxLabel(sourceId: number, targetId: number) {
   auxApi.mergeAlias(sourceId, targetId).then(() => void loadAuxiliaryLabels())
 }
 
-watch(auxSearchQuery, () => { void loadAuxiliaryLabels() })
-watch(auxStatusFilter, () => { void loadAuxiliaryLabels() })
+watch(auxSearchQuery, () => { auxPage.value = 1; void loadAuxiliaryLabels() })
+watch(auxStatusFilter, () => { auxPage.value = 1; void loadAuxiliaryLabels() })
 
 onMounted(() => {
   void loadBoards()
   void loadAuxiliaryLabels()
+  void loadClusters()
 })
 
 onUnmounted(() => {
@@ -295,7 +417,29 @@ onUnmounted(() => {
               <span v-if="timelineArticles.length" class="tags-timeline-count">{{ timelineArticles.length }} 篇</span>
             </div>
 
-            <div v-if="timelineLoading" class="tags-timeline-loading">
+            <!-- Filter chips -->
+            <div v-if="compositionLabels.length > 0" class="tags-filter-chips">
+              <button
+                type="button"
+                class="tags-filter-chip"
+                :class="{ 'tags-filter-chip--active': activeFilterLabelId === null }"
+                @click="handleFilterLabel(null)"
+              >
+                全部
+              </button>
+              <button
+                v-for="label in compositionLabels"
+                :key="label.id"
+                type="button"
+                class="tags-filter-chip"
+                :class="{ 'tags-filter-chip--active': activeFilterLabelId === label.id }"
+                @click="handleFilterLabel(label.id)"
+              >
+                {{ label.label }}
+              </button>
+            </div>
+
+            <div v-if="timelineLoading && timelineArticles.length === 0" class="tags-timeline-loading">
               <div v-for="i in 3" :key="i" class="th-skeleton" />
             </div>
 
@@ -309,35 +453,46 @@ onUnmounted(() => {
                 v-for="article in timelineArticles"
                 :key="article.id"
                 class="tags-timeline-item"
+                @click="openArticlePreview(Number(article.id))"
               >
                 <div class="tags-timeline-item-date">
-                  {{ new Date(article.pubDate).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) }}
+                  {{ new Date(article.pubDate).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}
                 </div>
                 <div class="tags-timeline-item-content">
-                  <a
-                    :href="article.link"
-                    target="_blank"
-                    class="tags-timeline-item-title"
-                    rel="noopener noreferrer"
-                  >{{ article.title }}</a>
+                  <span class="tags-timeline-item-title">{{ article.title }}</span>
                   <span class="tags-timeline-item-feed">{{ article.feedId }}</span>
                 </div>
               </div>
             </div>
+            <button
+              v-if="timelineHasMore"
+              type="button"
+              class="tags-timeline-more"
+              :disabled="timelineLoading"
+              @click="handleLoadMore"
+            >
+              <template v-if="timelineLoading">加载中...</template>
+              <template v-else>加载更多</template>
+            </button>
           </div>
         </div>
 
         <div v-else>
           <AuxiliaryLabelPool
             :labels="auxiliaryLabels"
+            :clusters="auxClusters"
+            :unclustered-count="auxUnclusteredCount"
             :loading="auxLoading"
             :search-query="auxSearchQuery"
             :status-filter="auxStatusFilter"
+            :pagination="auxPagination"
             @update:search-query="auxSearchQuery = $event"
             @update:status-filter="auxStatusFilter = $event"
+            @update:page="handleUpdatePage"
             @disable="handleDisableAuxLabel"
             @merge="handleMergeAuxLabel"
             @refresh="loadAuxiliaryLabels"
+            @select-cluster="() => {}"
           />
         </div>
       </main>
@@ -363,6 +518,7 @@ onUnmounted(() => {
       :suggestions="upgradeSuggestions"
       :loading="upgradeLoading"
       :suggesting="upgradeSuggesting"
+      :backfill-notice="upgradeBackfillNotice"
       @suggest="handleSuggestUpgrade"
       @execute="handleExecuteUpgrade"
       @cancel="showUpgradeDialog = false"
@@ -376,6 +532,39 @@ onUnmounted(() => {
       @save="handleSaveMatchingConfig"
       @cancel="showMatchingConfigDialog = false"
     />
+
+    <Teleport to="body">
+      <div
+        v-if="selectedPreviewArticle"
+        class="tags-article-modal"
+        @click.self="closeArticlePreview"
+      >
+        <div class="tags-article-modal__panel">
+          <header class="tags-article-modal__header">
+            <p class="truncate text-sm text-ink-medium">
+              {{ loadingPreviewArticle ? '正在准备文章预览...' : '文章预览' }}
+            </p>
+            <button
+              class="btn-ghost min-h-11 min-w-11 px-0"
+              type="button"
+              aria-label="关闭文章弹窗"
+              @click="closeArticlePreview"
+            >
+              <Icon icon="mdi:close" width="18" />
+            </button>
+          </header>
+          <div class="tags-article-modal__body">
+            <ArticleContentView
+              :article="selectedPreviewArticle"
+              :articles="previewArticles"
+              @navigate="selectedPreviewArticle = $event"
+              @favorite="handleArticleFavorite"
+              @article-update="handleArticleUpdate"
+            />
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -553,6 +742,7 @@ onUnmounted(() => {
   gap: 0.75rem;
   padding: 0.5rem 0.65rem;
   border-radius: 8px;
+  cursor: pointer;
   transition: background 0.12s ease;
 }
 
@@ -578,7 +768,6 @@ onUnmounted(() => {
 .tags-timeline-item-title {
   font-size: 0.8rem;
   color: rgba(255, 255, 255, 0.7);
-  text-decoration: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -595,5 +784,105 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tags-timeline-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: none;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.tags-timeline-more:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tags-timeline-more:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tags-timeline-loading-more {
+  margin-top: 0.5rem;
+}
+
+.tags-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.tags-filter-chip {
+  padding: 0.2rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: none;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.tags-filter-chip:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tags-filter-chip--active {
+  border-color: rgba(240, 138, 75, 0.45);
+  color: rgba(255, 220, 200, 0.85);
+  background: rgba(240, 138, 75, 0.1);
+}
+
+.tags-article-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  background: rgba(8, 12, 18, 0.7);
+  padding: 1rem;
+  backdrop-filter: blur(10px);
+}
+
+.tags-article-modal__panel {
+  display: flex;
+  height: calc(100vh - 2rem);
+  width: min(1500px, 100%);
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 1.75rem;
+  background: rgba(255, 252, 248, 0.98);
+  box-shadow: 0 30px 100px rgba(0, 0, 0, 0.28);
+}
+
+.tags-article-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid rgba(20, 33, 44, 0.08);
+  padding: 1rem 1.25rem;
+}
+
+.tags-article-modal__body {
+  min-height: 0;
+  flex: 1;
 }
 </style>

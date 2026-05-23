@@ -14,27 +14,31 @@ type ExtractionInput struct {
 
 // TopicTag represents a tag extracted from AI summaries
 // Used for API responses and internal processing
+type AuxiliaryLabel struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
 type TopicTag struct {
-	ID              uint     `json:"id,omitempty"`
-	Label           string   `json:"label"`
-	Slug            string   `json:"slug"`
-	Category        string   `json:"category"`              // event, person, keyword
-	Icon            string   `json:"icon,omitempty"`        // Iconify icon id
-	Aliases         []string `json:"aliases,omitempty"`     // Alternative names
-	Description     string   `json:"description,omitempty"` // LLM-generated tag description
-	AuxiliaryLabels []string `json:"auxiliary_labels,omitempty"`
-	Score           float64  `json:"score"`
-	IsNew           bool     `json:"is_new,omitempty"`      // True if newly created
-	MatchedTo       uint     `json:"matched_to,omitempty"`  // ID of existing tag if matched
-	Kind            string   `json:"kind,omitempty"`        // Legacy: maps to Category for backward compat
-	FeedCount       int      `json:"feed_count,omitempty"`  // Distinct feed count referencing this tag
-	IsAbstract      bool     `json:"is_abstract,omitempty"` // True if this is an abstract (parent) tag
-	ChildSlugs      []string `json:"child_slugs,omitempty"` // Slugs of child tags (only for abstract tags)
-	QualityScore    float64  `json:"quality_score,omitempty"`
-	IsLowQuality    bool     `json:"is_low_quality,omitempty"`
-	IsWatched       bool     `json:"is_watched,omitempty"`
-	ArticleCount    int      `json:"article_count,omitempty"`
-	SubType         string   `json:"sub_type,omitempty"` // keyword sub-type: technology, company_business, concept
+	ID              uint             `json:"id,omitempty"`
+	Label           string           `json:"label"`
+	Slug            string           `json:"slug"`
+	Category        string           `json:"category"`              // event, person, keyword
+	Icon            string           `json:"icon,omitempty"`        // Iconify icon id
+	Aliases         []string         `json:"aliases,omitempty"`     // Alternative names
+	Description     string           `json:"description,omitempty"` // LLM-generated tag description
+	AuxiliaryLabels []AuxiliaryLabel `json:"auxiliary_labels,omitempty"`
+	Score           float64          `json:"score"`
+	IsNew           bool             `json:"is_new,omitempty"`      // True if newly created
+	MatchedTo       uint             `json:"matched_to,omitempty"`  // ID of existing tag if matched
+	Kind            string           `json:"kind,omitempty"`        // Legacy: maps to Category for backward compat
+	FeedCount       int              `json:"feed_count,omitempty"`  // Distinct feed count referencing this tag
+	IsAbstract      bool             `json:"is_abstract,omitempty"` // True if this is an abstract (parent) tag
+	ChildSlugs      []string         `json:"child_slugs,omitempty"` // Slugs of child tags (only for abstract tags)
+	QualityScore    float64          `json:"quality_score,omitempty"`
+	IsLowQuality    bool             `json:"is_low_quality,omitempty"`
+	IsWatched       bool             `json:"is_watched,omitempty"`
+	ArticleCount    int              `json:"article_count,omitempty"`
 }
 
 type AggregatedTopicTag struct {
@@ -51,14 +55,11 @@ type AggregatedTopicTag struct {
 
 // ExtractedTag is the raw output from AI extraction
 type ExtractedTag struct {
-	Label           string   `json:"label"`
-	Category        string   `json:"category"`   // event, person, keyword
-	SubType         string   `json:"sub_type"`   // keyword sub-type: technology, company_business, concept
-	Confidence      float64  `json:"confidence"` // 0-1 confidence score
-	Aliases         []string `json:"aliases,omitempty"`
-	Evidence        string   `json:"evidence,omitempty"`
-	Description     string   `json:"description,omitempty"`
-	AuxiliaryLabels []string `json:"auxiliary_labels,omitempty"`
+	Label           string           `json:"label"`
+	Category        string           `json:"category"` // event, person, keyword
+	Aliases         []string         `json:"aliases,omitempty"`
+	Description     string           `json:"description,omitempty"`
+	AuxiliaryLabels []AuxiliaryLabel `json:"auxiliary_labels,omitempty"`
 }
 
 // TagResolutionRequest is sent to AI for ambiguous tag matching

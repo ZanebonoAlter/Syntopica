@@ -214,5 +214,4 @@ func DeriveBoardConnections() ([]BoardConnection, error) {
 }
 
 func FeedbackNarrativesToTagsWithBoard(outputs []NarrativeOutput) {
-	feedbackNarrativesToTags(outputs)
 }

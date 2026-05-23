@@ -138,8 +138,8 @@ func TestParseNarrativeResponse_MissingStatus(t *testing.T) {
 
 func TestBuildNarrativePrompt_NoPrevious(t *testing.T) {
 	tags := []TagInput{
-		{ID: 1, Label: "AI", Category: "keyword", ArticleCount: 5, IsAbstract: false, Source: "llm"},
-		{ID: 2, Label: "芯片", Category: "keyword", Description: "半导体行业", ArticleCount: 3, IsAbstract: true, Source: "abstract"},
+		{ID: 1, Label: "AI", Category: "keyword", ArticleCount: 5, Source: "llm"},
+		{ID: 2, Label: "芯片", Category: "keyword", Description: "半导体行业", ArticleCount: 3, Source: "abstract"},
 	}
 
 	prompt := buildNarrativePrompt(tags, nil)
@@ -153,8 +153,8 @@ func TestBuildNarrativePrompt_NoPrevious(t *testing.T) {
 	if !strings.Contains(prompt, "[ID:2] 芯片") {
 		t.Error("prompt missing tag ID:2 芯片")
 	}
-	if !strings.Contains(prompt, "抽象标签") {
-		t.Error("prompt missing '抽象标签' for IsAbstract=true tag")
+	if !strings.Contains(prompt, "描述:半导体行业") {
+		t.Error("prompt should include description for tag with description field")
 	}
 	if !strings.Contains(prompt, "描述:半导体行业") {
 		t.Error("prompt missing tag description")

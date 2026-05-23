@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	appbootstrap "my-robot-backend/internal/app"
+	taggingdomain "my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/platform/airouter"
 	"my-robot-backend/internal/platform/config"
 	"my-robot-backend/internal/platform/database"
@@ -43,6 +44,10 @@ func main() {
 	if err := airouter.EnsureLegacySummaryConfigMigrated(); err != nil {
 		logging.Warnf("Failed to migrate legacy AI summary config: %v", err)
 	}
+
+	// Ensure semantic_labels.embedding vector dimension matches the embedder model.
+	// Runs once at startup on the global DB (not inside any transaction) to avoid DDL lock contention.
+	taggingdomain.EnsureVectorDimensionOnce(context.Background())
 
 	traceCfg := tracing.DefaultConfig()
 	tp, err := tracing.InitTracerProvider(database.DB, traceCfg)

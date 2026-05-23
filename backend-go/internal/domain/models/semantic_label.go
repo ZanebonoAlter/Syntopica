@@ -3,20 +3,21 @@ package models
 import "time"
 
 type SemanticLabel struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	Label        string    `gorm:"size:160;not null" json:"label"`
-	Slug         string    `gorm:"size:160;not null;uniqueIndex:idx_semantic_labels_slug" json:"slug"`
-	Embedding    *string   `gorm:"type:vector(1536);column:embedding" json:"-"`
-	LabelType    string    `gorm:"size:20;not null;index:idx_semantic_labels_label_type" json:"label_type"`
-	Aliases      []string  `gorm:"type:jsonb;serializer:json;default:'[]'" json:"aliases"`
-	RefCount     int       `gorm:"not null;default:0" json:"ref_count"`
-	Description  string    `gorm:"type:text" json:"description"`
-	DisplayOrder int       `gorm:"not null;default:0" json:"display_order"`
-	Source       string    `gorm:"size:50;not null;default:llm_extract" json:"source"`
-	Status       string    `gorm:"size:20;not null;default:active;index:idx_semantic_labels_status" json:"status"`
-	Protected    bool      `gorm:"not null;default:false" json:"protected"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	Label          string    `gorm:"size:160;not null" json:"label"`
+	Slug           string    `gorm:"size:160;not null;uniqueIndex:idx_semantic_labels_slug" json:"slug"`
+	Embedding      *string   `gorm:"type:vector(2048);column:embedding" json:"-"`
+	MergeEmbedding *string   `gorm:"type:vector(2048);column:merge_embedding" json:"-"`
+	LabelType      string    `gorm:"size:20;not null;index:idx_semantic_labels_label_type" json:"label_type"`
+	Aliases        []string  `gorm:"type:jsonb;serializer:json;default:'[]'" json:"aliases"`
+	RefCount       int       `gorm:"not null;default:0" json:"ref_count"`
+	Description    string    `gorm:"type:text" json:"description"`
+	DisplayOrder   int       `gorm:"not null;default:0" json:"display_order"`
+	Source         string    `gorm:"size:50;not null;default:llm_extract" json:"source"`
+	Status         string    `gorm:"size:20;not null;default:active;index:idx_semantic_labels_status" json:"status"`
+	Protected      bool      `gorm:"not null;default:false" json:"protected"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func (SemanticLabel) TableName() string {

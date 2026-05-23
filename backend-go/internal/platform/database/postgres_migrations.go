@@ -1,7 +1,6 @@
 package database
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"gorm.io/gorm"
@@ -35,7 +34,7 @@ func postgresMigrations() []Migration {
 			Version:     "20260403_0003",
 			Description: "Staged groundwork for the later pgvector cutover: add the embedding vector column while runtime still reads the legacy JSON vector field.",
 			Up: func(db *gorm.DB) error {
-				if err := db.Exec("ALTER TABLE topic_tag_embeddings ADD COLUMN IF NOT EXISTS embedding vector(1536)").Error; err != nil {
+				if err := db.Exec("ALTER TABLE topic_tag_embeddings ADD COLUMN IF NOT EXISTS embedding vector(2048)").Error; err != nil {
 					return fmt.Errorf("add topic_tag_embeddings.embedding column: %w", err)
 				}
 				return nil
@@ -63,7 +62,7 @@ func postgresMigrations() []Migration {
 					{Key: "high_similarity_threshold", Value: "0.97", Description: "Auto-reuse existing tag if similarity >= this value"},
 					{Key: "low_similarity_threshold", Value: "0.78", Description: "Auto-create new tag if similarity < this value"},
 					{Key: "embedding_model", Value: "", Description: "Override embedding model name (empty = read from provider)"},
-					{Key: "embedding_dimension", Value: "1536", Description: "Embedding vector dimension"},
+					{Key: "embedding_dimension", Value: "2048", Description: "Embedding vector dimension"},
 				}
 				for _, d := range defaults {
 					var existing models.EmbeddingConfig
@@ -422,7 +421,7 @@ func postgresMigrations() []Migration {
 						id SERIAL PRIMARY KEY,
 						name VARCHAR(300) NOT NULL,
 						description TEXT,
-						embedding vector(1536),
+						embedding vector(2048),
 						scope_type VARCHAR(20) NOT NULL DEFAULT 'global',
 						scope_category_id INTEGER,
 						is_system BOOLEAN NOT NULL DEFAULT false,
@@ -478,24 +477,25 @@ func postgresMigrations() []Migration {
 			Version:     "20260510_0002",
 			Description: "Create hierarchy_config table for tag hierarchy template configuration.",
 			Up: func(db *gorm.DB) error {
-				if err := db.AutoMigrate(&models.HierarchyConfig{}, &models.HierarchyConfigVersion{}); err != nil {
-					return fmt.Errorf("auto-migrate hierarchy_config tables: %w", err)
+				stmts := []string{
+					`CREATE TABLE IF NOT EXISTS hierarchy_configs (
+						id SERIAL PRIMARY KEY,
+						templates JSONB NOT NULL DEFAULT '{}',
+						version INTEGER NOT NULL DEFAULT 1,
+						created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+						updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+					)`,
+					`CREATE TABLE IF NOT EXISTS hierarchy_config_versions (
+						id SERIAL PRIMARY KEY,
+						config_id INTEGER REFERENCES hierarchy_configs(id),
+						templates JSONB NOT NULL,
+						version INTEGER NOT NULL,
+						created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+					)`,
 				}
-				var count int64
-				if err := db.Model(&models.HierarchyConfig{}).Count(&count).Error; err != nil {
-					return fmt.Errorf("check hierarchy_config count: %w", err)
-				}
-				if count == 0 {
-					seed := map[string]json.RawMessage{
-						"event": json.RawMessage(`{"category":"event","sub_type":"","max_level":3,"levels":[{"level":1,"name":"事件类型","description":"事件的大类，如产品发布、融资并购、政策法规","is_leaf":false,"max_children":20},{"level":2,"name":"事件主体","description":"事件关联的核心实体，如公司、产品、组织","is_leaf":false,"max_children":50},{"level":3,"name":"具体事件","description":"具体的新闻事件实例","is_leaf":true,"max_children":0}]}`),
-						"person": json.RawMessage(`{"category":"person","sub_type":"","max_level":2,"levels":[{"level":1,"name":"人物群组","description":"共享领域/角色/机构的人物群体","is_leaf":false,"max_children":30},{"level":2,"name":"具体人物","description":"具体的人名","is_leaf":true,"max_children":0}]}`),
-						"keyword": json.RawMessage(`{"category":"keyword","sub_type":"","max_level":3,"levels":[{"level":1,"name":"主题领域","description":"关键词的大领域，如AI、金融、生物技术","is_leaf":false,"max_children":20},{"level":2,"name":"主题子域","description":"细分方向，如大语言模型、新能源电池","is_leaf":false,"max_children":50},{"level":3,"name":"具体概念/术语","description":"具体的技术、产品、概念、术语","is_leaf":true,"max_children":0}]}`),
-					}
-					if err := db.Create(&models.HierarchyConfig{
-						Templates: models.HierarchyTemplatesJSON(seed),
-						Version:   1,
-					}).Error; err != nil {
-						return fmt.Errorf("seed hierarchy_config: %w", err)
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("hierarchy_config migration: %w", err)
 					}
 				}
 				return nil
@@ -695,7 +695,8 @@ func postgresMigrations() []Migration {
 						id SERIAL PRIMARY KEY,
 						label VARCHAR(160) NOT NULL,
 						slug VARCHAR(160) NOT NULL,
-						embedding vector(1536),
+						embedding vector(2048),
+						merge_embedding vector(2048),
 						label_type VARCHAR(20) NOT NULL,
 						aliases JSONB NOT NULL DEFAULT '[]'::jsonb,
 						ref_count INTEGER NOT NULL DEFAULT 0,
@@ -711,7 +712,6 @@ func postgresMigrations() []Migration {
 					"CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_labels_slug ON semantic_labels(slug)",
 					"CREATE INDEX IF NOT EXISTS idx_semantic_labels_label_type ON semantic_labels(label_type)",
 					"CREATE INDEX IF NOT EXISTS idx_semantic_labels_status ON semantic_labels(status)",
-					"CREATE INDEX IF NOT EXISTS idx_semantic_labels_embedding ON semantic_labels USING hnsw (embedding vector_cosine_ops)",
 					`CREATE TABLE IF NOT EXISTS topic_tag_semantic_labels (
 						topic_tag_id INTEGER NOT NULL REFERENCES topic_tags(id) ON DELETE CASCADE,
 						semantic_label_id INTEGER NOT NULL REFERENCES semantic_labels(id) ON DELETE CASCADE,
@@ -757,7 +757,7 @@ func postgresMigrations() []Migration {
 					{"semantic_board_match_weighted_threshold", "0.6", "Minimum weighted score for assigning a topic tag to a SemanticBoard"},
 					{"semantic_board_match_max_boards", "3", "Maximum SemanticBoard matches retained for each topic tag"},
 					{"semantic_board_upgrade_ref_count_threshold", "5", "Minimum reference count before suggesting a new SemanticBoard"},
-					{"semantic_board_upgrade_cluster_distance_threshold", "0.7", "Cluster distance threshold for SemanticBoard upgrade suggestions"},
+					{"semantic_board_upgrade_cluster_distance_threshold", "0.35", "Cluster distance threshold for SemanticBoard upgrade suggestions (cosine distance; lower = stricter clustering, prevents unrelated candidates from being absorbed into existing boards)"},
 					{"semantic_board_upgrade_cotag_window_days", "30", "Co-tag analysis window in days for SemanticBoard upgrade suggestions"},
 					{"semantic_board_upgrade_cotag_top_n", "20", "Maximum co-tag candidates considered for SemanticBoard upgrade suggestions"},
 					{"semantic_board_upgrade_cotag_dedupe_sim_threshold", "0.85", "Similarity threshold for deduplicating co-tag upgrade candidates"},
@@ -773,6 +773,80 @@ func postgresMigrations() []Migration {
 						}).Error; err != nil {
 							logging.Warnf("Warning: failed to seed ai_settings key %s: %v", d.Key, err)
 						}
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260522_0001",
+			Description: "Drop legacy board_concepts and hierarchy system tables/columns replaced by semantic label board system.",
+			Up: func(db *gorm.DB) error {
+				columnDrops := []string{
+					"ALTER TABLE topic_tags DROP COLUMN IF EXISTS concept_id CASCADE",
+					"ALTER TABLE narrative_boards DROP COLUMN IF EXISTS abstract_tag_id CASCADE",
+					"ALTER TABLE narrative_boards DROP COLUMN IF EXISTS board_concept_id CASCADE",
+					"ALTER TABLE narrative_boards DROP COLUMN IF EXISTS is_system",
+					"ALTER TABLE narrative_boards DROP COLUMN IF EXISTS abstract_tag_ids",
+				}
+				for _, s := range columnDrops {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("drop column: %w", err)
+					}
+				}
+				tableDrops := []string{
+					"DROP TABLE IF EXISTS board_concepts CASCADE",
+					"DROP TABLE IF EXISTS hierarchy_configs CASCADE",
+					"DROP TABLE IF EXISTS hierarchy_config_versions CASCADE",
+					"DROP TABLE IF EXISTS hierarchy_pending_changes CASCADE",
+					"DROP TABLE IF EXISTS hierarchy_anchor_signals CASCADE",
+					"DROP TABLE IF EXISTS rebuild_jobs CASCADE",
+					"DROP TABLE IF EXISTS abstract_tag_update_queues CASCADE",
+					"DROP TABLE IF EXISTS adopt_narrower_queues CASCADE",
+				}
+				for _, s := range tableDrops {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("drop table: %w", err)
+					}
+				}
+				deprecatedSettings := []string{
+					"narrative_board_embedding_threshold",
+					"narrative_board_hotspot_threshold",
+				}
+				for _, key := range deprecatedSettings {
+					if err := db.Exec("DELETE FROM ai_settings WHERE key = ?", key).Error; err != nil {
+						logging.Warnf("Warning: failed to delete deprecated ai_settings key %s: %v", key, err)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260522_0002",
+			Description: "Add semantic label merge embedding column and index for label-only auxiliary label merge checks.",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					"ALTER TABLE semantic_labels ADD COLUMN IF NOT EXISTS merge_embedding vector(2048)",
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("add semantic label merge embedding: %w", err)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260523_0001",
+			Description: "Drop topic_tags sub_type column after removing keyword subtype contract.",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					"DROP INDEX IF EXISTS idx_topic_tags_sub_type",
+					"ALTER TABLE topic_tags DROP COLUMN IF EXISTS sub_type",
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("drop topic_tags sub_type: %w", err)
 					}
 				}
 				return nil

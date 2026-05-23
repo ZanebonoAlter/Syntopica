@@ -10,73 +10,63 @@ import (
 	"my-robot-backend/internal/platform/logging"
 )
 
-func createBoardFromAbstractTree(tree AbstractTreeNode, date time.Time, categoryID uint) (*models.NarrativeBoard, error) {
-	eventTagIDs := collectBoardEventTagIDs(tree)
-	if len(eventTagIDs) == 0 {
+func createBoardFromSemanticBoard(input SemanticBoardNarrativeInput, date time.Time, scopeOpts ScopeSaveOpts) (*models.NarrativeBoard, error) {
+	if len(input.EventTags) == 0 {
 		return nil, nil
 	}
 
-	abstractTagID := tree.ID
-	prevBoardIDs := matchPreviousBoard(abstractTagID, date, categoryID)
-
 	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+	eventTagIDs := make([]uint, 0, len(input.EventTags))
+	for _, tag := range input.EventTags {
+		eventTagIDs = append(eventTagIDs, tag.ID)
+	}
 
 	eventIDsJSON, _ := json.Marshal(eventTagIDs)
-	abstractIDsJSON, _ := json.Marshal([]uint{abstractTagID})
-	prevIDsJSON, _ := json.Marshal(prevBoardIDs)
+	prevIDsJSON, _ := json.Marshal(input.PrevBoardIDs)
+	semanticBoardID := input.Board.ID
 
 	board := &models.NarrativeBoard{
 		PeriodDate:      startOfDay,
-		Name:            tree.Label,
-		Description:     tree.Description,
-		ScopeType:       models.NarrativeScopeTypeFeedCategory,
-		ScopeCategoryID: &categoryID,
+		Name:            input.Board.Label,
+		Description:     input.Board.Description,
+		ScopeType:       scopeOpts.ScopeType,
+		ScopeCategoryID: scopeOpts.CategoryID,
+		ScopeLabel:      scopeOpts.Label,
 		EventTagIDs:     string(eventIDsJSON),
-		AbstractTagIDs:  string(abstractIDsJSON),
 		PrevBoardIDs:    string(prevIDsJSON),
-		AbstractTagID:   &abstractTagID,
+		SemanticBoardID: &semanticBoardID,
 		IsSystem:        true,
 	}
 
 	if err := database.DB.Create(board).Error; err != nil {
-		return nil, fmt.Errorf("save board from abstract tree %d: %w", tree.ID, err)
+		return nil, fmt.Errorf("save narrative board from semantic board %d: %w", input.Board.ID, err)
 	}
 
-	logging.Infof("board-creation: created board %d (%s) from abstract tree %d with %d event tags",
-		board.ID, board.Name, tree.ID, len(eventTagIDs))
+	logging.Infof("board-creation: created narrative board %d from semantic board %d with %d event tags",
+		board.ID, input.Board.ID, len(eventTagIDs))
 	return board, nil
 }
 
-func collectBoardEventTagIDs(tree AbstractTreeNode) []uint {
-	var eventIDs []uint
-	collectEventIDs(tree, &eventIDs)
-	return eventIDs
-}
-
-func collectEventIDs(node AbstractTreeNode, ids *[]uint) {
-	if node.Category == "event" {
-		*ids = append(*ids, node.ID)
-	}
-	for _, child := range node.Children {
-		collectEventIDs(child, ids)
-	}
-}
-
-func matchPreviousBoard(abstractTagID uint, date time.Time, categoryID uint) []uint {
+func matchPreviousSemanticBoard(semanticBoardID uint, date time.Time, scopeType string, categoryID *uint) []uint {
 	yesterday := date.AddDate(0, 0, -1)
 	startOfYesterday := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 0, 0, 0, 0, yesterday.Location())
 	endOfYesterday := startOfYesterday.Add(24 * time.Hour)
 
-	var boards []models.NarrativeBoard
-	database.DB.Where("abstract_tag_id = ? AND period_date >= ? AND period_date < ? AND scope_category_id = ?",
-		abstractTagID, startOfYesterday, endOfYesterday, categoryID).
-		Find(&boards)
+	query := database.DB.Where("semantic_board_id = ? AND scope_type = ? AND period_date >= ? AND period_date < ?",
+		semanticBoardID, scopeType, startOfYesterday, endOfYesterday)
+	if categoryID != nil {
+		query = query.Where("scope_category_id = ?", *categoryID)
+	} else {
+		query = query.Where("scope_category_id IS NULL")
+	}
 
+	var boards []models.NarrativeBoard
+	query.Order("id ASC").Find(&boards)
 	if len(boards) == 0 {
 		return nil
 	}
 
-	var ids []uint
+	ids := make([]uint, 0, len(boards))
 	for _, b := range boards {
 		ids = append(ids, b.ID)
 	}

@@ -45,10 +45,6 @@ func HardMergeTags(db *gorm.DB, sourceID, targetID uint) error {
 			}
 		}
 
-		if err := migrateTagRelations(tx, sourceID, targetID); err != nil {
-			return fmt.Errorf("migrate tag relations: %w", err)
-		}
-
 		if err := tx.Where("topic_tag_id = ?", sourceID).Delete(&models.TopicTagEmbedding{}).Error; err != nil {
 			return fmt.Errorf("delete source tag embeddings: %w", err)
 		}

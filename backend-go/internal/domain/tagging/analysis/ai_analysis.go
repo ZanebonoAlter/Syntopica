@@ -337,8 +337,14 @@ func (s *AIAnalysisService) buildPrompt(params AnalysisParams) (string, error) {
 
 	lines := make([]string, 0, len(params.Summaries))
 	for idx, summary := range params.Summaries {
-		title := tagging.TruncateStr(strings.TrimSpace(summary.Title), 120)
-		content := tagging.TruncateStr(strings.TrimSpace(summary.Summary), 300)
+		title := strings.TrimSpace(summary.Title)
+		if len([]rune(title)) > 120 {
+			title = string([]rune(title)[:120])
+		}
+		content := strings.TrimSpace(summary.Summary)
+		if len([]rune(content)) > 300 {
+			content = string([]rune(content)[:300])
+		}
 		line := fmt.Sprintf("%d. [%s] %s\n%s", idx+1, summary.CreatedAt, title, content)
 		lines = append(lines, line)
 	}

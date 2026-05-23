@@ -419,6 +419,7 @@ export interface BoardItem {
   abstract_tag_slug: string
   board_concept_id: number | null
   concept_name: string
+  semantic_board_id?: number
   is_system: boolean
   created_at: string
   event_tags: TagBrief[]

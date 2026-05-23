@@ -9,6 +9,7 @@ const props = defineProps<{
   suggestions: UpgradeSuggestion[]
   loading: boolean
   suggesting: boolean
+  backfillNotice: boolean
 }>()
 
 const emit = defineEmits<{
@@ -59,8 +60,12 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
 
         <div v-else-if="suggestions.length === 0" class="usp-empty">
           <p v-if="candidates.length === 0">暂无满足条件的升级候选</p>
+          <div v-if="backfillNotice" class="usp-notice">
+            <Icon icon="mdi:information-outline" width="14" />
+            <span>已执行升级建议。历史标签归属不会自动回填，可手动触发匹配回填让新构成生效。</span>
+          </div>
           <button
-            v-else
+            v-if="candidates.length > 0"
             type="button"
             class="usp-suggest-btn"
             :disabled="suggesting"
@@ -73,6 +78,25 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
         </div>
 
         <div v-else class="usp-list">
+          <div class="usp-toolbar">
+            <span class="usp-toolbar-text">待处理建议 {{ suggestions.length }} 个</span>
+            <button
+              type="button"
+              class="usp-suggest-btn usp-suggest-btn--small"
+              :disabled="suggesting"
+              @click="emit('suggest')"
+            >
+              <Icon v-if="suggesting" icon="mdi:loading" width="13" class="animate-spin" />
+              <Icon v-else icon="mdi:refresh" width="13" />
+              {{ suggesting ? '重新分析中...' : '重新生成建议' }}
+            </button>
+          </div>
+
+          <div v-if="backfillNotice" class="usp-notice">
+            <Icon icon="mdi:information-outline" width="14" />
+            <span>已执行升级建议。历史标签归属不会自动回填，可手动触发匹配回填让新构成生效。</span>
+          </div>
+
           <div
             v-for="(s, i) in suggestions"
             :key="i"
@@ -216,10 +240,40 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
   cursor: not-allowed;
 }
 
+.usp-suggest-btn--small {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.72rem;
+}
+
 .usp-list {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+}
+
+.usp-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.usp-toolbar-text {
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.usp-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(96, 165, 250, 0.2);
+  background: rgba(96, 165, 250, 0.08);
+  color: rgba(191, 219, 254, 0.85);
+  font-size: 0.72rem;
+  line-height: 1.5;
 }
 
 .usp-item {

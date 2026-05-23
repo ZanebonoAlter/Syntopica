@@ -158,6 +158,7 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 	auxiliary := rg.Group("/auxiliary-labels")
 	{
 		auxiliary.GET("", handler.listAuxiliaryLabels)
+		auxiliary.GET("/clusters", handler.clusterAuxiliaryLabels)
 		auxiliary.POST("/merge-alias", handler.mergeAuxiliaryAlias)
 		auxiliary.POST("/:id/disable", handler.disableAuxiliaryLabel)
 	}
@@ -207,7 +208,7 @@ func (h *semanticBoardHandler) createSemanticBoard(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, fmt.Errorf("label is required"))
 		return
 	}
-	pgVector, _, err := semanticBoardLabelEmbedder(c.Request.Context(), label)
+	pgVector, _, err := semanticBoardLabelEmbedder(c.Request.Context(), label, auxiliaryLabelEmbeddingModeStorage)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, err)
 		return
@@ -255,7 +256,7 @@ func (h *semanticBoardHandler) updateSemanticBoard(c *gin.Context) {
 		return
 	}
 	if label := strings.TrimSpace(req.Label); label != "" && label != board.Label {
-		pgVector, _, err := semanticBoardLabelEmbedder(c.Request.Context(), label)
+		pgVector, _, err := semanticBoardLabelEmbedder(c.Request.Context(), label, auxiliaryLabelEmbeddingModeStorage)
 		if err != nil {
 			respondError(c, http.StatusInternalServerError, err)
 			return
@@ -336,23 +337,195 @@ func (h *semanticBoardHandler) removeBoardComposition(c *gin.Context) {
 }
 
 func (h *semanticBoardHandler) listAuxiliaryLabels(c *gin.Context) {
-	query := h.db.WithContext(c.Request.Context()).Where("label_type = ?", "auxiliary")
+	query := h.db.WithContext(c.Request.Context()).Model(&models.SemanticLabel{}).Where("label_type = ?", "auxiliary")
 	if status := strings.TrimSpace(c.Query("status")); status != "" {
 		query = query.Where("status = ?", status)
 	}
 	if search := strings.TrimSpace(c.Query("search")); search != "" {
 		query = query.Where("LOWER(label) LIKE ? OR LOWER(slug) LIKE ?", "%"+strings.ToLower(search)+"%", "%"+strings.ToLower(Slugify(search))+"%")
 	}
-	var labels []models.SemanticLabel
-	if err := query.Order("ref_count DESC, id ASC").Find(&labels).Error; err != nil {
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "50"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 200 {
+		perPage = 50
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
 		respondError(c, http.StatusInternalServerError, err)
 		return
 	}
+
+	var labels []models.SemanticLabel
+	offset := (page - 1) * perPage
+	if err := query.Order("ref_count DESC, id ASC").Offset(offset).Limit(perPage).Find(&labels).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
 	items := make([]semanticBoardAuxiliaryDTO, 0, len(labels))
 	for _, label := range labels {
 		items = append(items, auxiliaryToDTO(label))
 	}
-	respondOK(c, gin.H{"items": items, "total": len(items)})
+
+	pages := int(total) / perPage
+	if int(total)%perPage > 0 {
+		pages++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"items": items,
+			"total": total,
+		},
+		"pagination": gin.H{
+			"page":     page,
+			"per_page": perPage,
+			"total":    total,
+			"pages":    pages,
+		},
+	})
+}
+
+type auxiliaryLabelClusterDTO struct {
+	ID       uint   `json:"id"`
+	Label    string `json:"label"`
+	Slug     string `json:"slug"`
+	RefCount int    `json:"ref_count"`
+}
+
+type labelClusterDTO struct {
+	Labels []auxiliaryLabelClusterDTO `json:"labels"`
+	Size   int                        `json:"size"`
+	Label  string                     `json:"label"`
+}
+
+func (h *semanticBoardHandler) clusterAuxiliaryLabels(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	type embeddingRow struct {
+		ID        uint    `gorm:"column:id"`
+		Label     string  `gorm:"column:label"`
+		Slug      string  `gorm:"column:slug"`
+		RefCount  int     `gorm:"column:ref_count"`
+		Embedding *string `gorm:"column:embedding"`
+	}
+
+	var rows []embeddingRow
+	if err := h.db.WithContext(ctx).
+		Model(&models.SemanticLabel{}).
+		Where("label_type = ? AND status = ? AND embedding IS NOT NULL", "auxiliary", "active").
+		Select("id, label, slug, ref_count, embedding").
+		Order("ref_count DESC, id ASC").
+		Find(&rows).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	if len(rows) < 2 {
+		respondOK(c, gin.H{"clusters": []labelClusterDTO{}, "unclustered_count": len(rows)})
+		return
+	}
+
+	type pairRow struct {
+		ID1      uint    `gorm:"column:id1"`
+		ID2      uint    `gorm:"column:id2"`
+		Distance float64 `gorm:"column:distance"`
+	}
+	var pairs []pairRow
+	pairSQL := `
+		SELECT a.id AS id1, b.id AS id2, a.embedding <=> b.embedding AS distance
+		FROM semantic_labels a
+		JOIN semantic_labels b ON a.id < b.id
+		WHERE a.label_type = 'auxiliary' AND a.status = 'active' AND a.embedding IS NOT NULL
+		  AND b.label_type = 'auxiliary' AND b.status = 'active' AND b.embedding IS NOT NULL
+		  AND a.embedding <=> b.embedding < 0.2
+	`
+	if err := h.db.WithContext(ctx).Raw(pairSQL).Scan(&pairs).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	adj := make(map[uint][]uint)
+	for _, p := range pairs {
+		adj[p.ID1] = append(adj[p.ID1], p.ID2)
+		adj[p.ID2] = append(adj[p.ID2], p.ID1)
+	}
+
+	visited := make(map[uint]bool)
+	labelMap := make(map[uint]embeddingRow, len(rows))
+	for _, r := range rows {
+		labelMap[r.ID] = r
+	}
+
+	var clusters []labelClusterDTO
+	for _, r := range rows {
+		if visited[r.ID] {
+			continue
+		}
+		comp := []uint{}
+		queue := []uint{r.ID}
+		visited[r.ID] = true
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			comp = append(comp, cur)
+			for _, nb := range adj[cur] {
+				if !visited[nb] {
+					visited[nb] = true
+					queue = append(queue, nb)
+				}
+			}
+		}
+		if len(comp) < 2 {
+			continue
+		}
+
+		members := make([]auxiliaryLabelClusterDTO, 0, len(comp))
+		representative := ""
+		maxRef := -1
+		for _, id := range comp {
+			if r, ok := labelMap[id]; ok {
+				members = append(members, auxiliaryLabelClusterDTO{
+					ID:       r.ID,
+					Label:    r.Label,
+					Slug:     r.Slug,
+					RefCount: r.RefCount,
+				})
+				if r.RefCount > maxRef {
+					maxRef = r.RefCount
+					representative = r.Label
+				}
+			}
+		}
+		clusters = append(clusters, labelClusterDTO{
+			Labels: members,
+			Size:   len(members),
+			Label:  representative,
+		})
+	}
+
+	sort.Slice(clusters, func(i, j int) bool {
+		return clusters[i].Size > clusters[j].Size
+	})
+
+	if len(clusters) > 50 {
+		clusters = clusters[:50]
+	}
+
+	unclusteredCount := 0
+	for _, r := range rows {
+		if !visited[r.ID] {
+			unclusteredCount++
+		}
+	}
+
+	respondOK(c, gin.H{"clusters": clusters, "unclustered_count": unclusteredCount})
 }
 
 func (h *semanticBoardHandler) disableAuxiliaryLabel(c *gin.Context) {
@@ -382,7 +555,7 @@ func (h *semanticBoardHandler) mergeAuxiliaryAlias(c *gin.Context) {
 
 func (h *semanticBoardHandler) getUpgradeCandidates(c *gin.Context) {
 	service := NewSemanticBoardUpgradeService(h.db, nil)
-	config := service.loadUpgradeConfig(c.Request.Context())
+	config := service.LoadUpgradeConfig(c.Request.Context())
 	candidates, err := service.collectCandidates(c.Request.Context(), config)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, err)
@@ -412,13 +585,7 @@ func (h *semanticBoardHandler) executeUpgrade(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, fmt.Errorf("invalid request body"))
 		return
 	}
-	result, err := NewSemanticBoardUpgradeService(h.db, nil).ConfirmSuggestion(c.Request.Context(), ConfirmSemanticBoardUpgradeRequest{
-		Decision:          req.Decision,
-		BoardLabel:        req.BoardLabel,
-		Description:       req.Description,
-		AuxiliaryLabelIDs: req.AuxiliaryLabelIDs,
-		TargetBoardID:     req.TargetBoardID,
-	})
+	result, err := NewSemanticBoardUpgradeService(h.db, nil).ConfirmSuggestion(c.Request.Context(), ConfirmSemanticBoardUpgradeRequest(req))
 	if err != nil {
 		respondError(c, http.StatusBadRequest, err)
 		return
@@ -451,7 +618,7 @@ func (h *semanticBoardHandler) getBackfillJob(c *gin.Context) {
 }
 
 func (h *semanticBoardHandler) getMatchingConfig(c *gin.Context) {
-	respondOK(c, semanticBoardMatchConfigToMap(NewSemanticBoardMatchingService(h.db).loadConfig(c.Request.Context())))
+	respondOK(c, h.getAllConfigs(c))
 }
 
 func (h *semanticBoardHandler) updateMatchingConfig(c *gin.Context) {
@@ -461,7 +628,7 @@ func (h *semanticBoardHandler) updateMatchingConfig(c *gin.Context) {
 		return
 	}
 	for key, raw := range body {
-		if !isSemanticBoardMatchConfigKey(key) {
+		if !isSemanticBoardConfigKey(key) {
 			respondError(c, http.StatusBadRequest, fmt.Errorf("unsupported config key %q", key))
 			return
 		}
@@ -470,7 +637,7 @@ func (h *semanticBoardHandler) updateMatchingConfig(c *gin.Context) {
 			respondError(c, http.StatusBadRequest, fmt.Errorf("config value for %s is required", key))
 			return
 		}
-		if err := validateSemanticBoardMatchConfigValue(key, value); err != nil {
+		if err := validateSemanticBoardConfigValue(key, value); err != nil {
 			respondError(c, http.StatusBadRequest, err)
 			return
 		}
@@ -480,7 +647,7 @@ func (h *semanticBoardHandler) updateMatchingConfig(c *gin.Context) {
 			return
 		}
 	}
-	respondOK(c, semanticBoardMatchConfigToMap(NewSemanticBoardMatchingService(h.db).loadConfig(c.Request.Context())))
+	respondOK(c, h.getAllConfigs(c))
 }
 
 func (h *semanticBoardHandler) getTagAuxiliaryLabels(c *gin.Context) {
@@ -661,7 +828,7 @@ func upgradeClustersToDTO(clusters []SemanticBoardUpgradeCluster) []semanticBoar
 func suggestionsToDTO(suggestions []SemanticBoardUpgradeSuggestion) []semanticBoardUpgradeSuggestionDTO {
 	items := make([]semanticBoardUpgradeSuggestionDTO, 0, len(suggestions))
 	for _, suggestion := range suggestions {
-		items = append(items, semanticBoardUpgradeSuggestionDTO{Decision: suggestion.Decision, BoardLabel: suggestion.BoardLabel, Description: suggestion.Description, AuxiliaryLabelIDs: suggestion.AuxiliaryLabelIDs, TargetBoardID: suggestion.TargetBoardID, Reason: suggestion.Reason})
+		items = append(items, semanticBoardUpgradeSuggestionDTO(suggestion))
 	}
 	return items
 }
@@ -689,28 +856,44 @@ func semanticBoardUpgradeConfigToMap(config SemanticBoardUpgradeConfig) gin.H {
 	}
 }
 
-func isSemanticBoardMatchConfigKey(key string) bool {
+func (h *semanticBoardHandler) getAllConfigs(c *gin.Context) gin.H {
+	matchConfig := semanticBoardMatchConfigToMap(NewSemanticBoardMatchingService(h.db).loadConfig(c.Request.Context()))
+	upgradeConfig := semanticBoardUpgradeConfigToMap(NewSemanticBoardUpgradeService(h.db, nil).LoadUpgradeConfig(c.Request.Context()))
+	merged := make(gin.H, len(matchConfig)+len(upgradeConfig))
+	for k, v := range matchConfig {
+		merged[k] = v
+	}
+	for k, v := range upgradeConfig {
+		merged[k] = v
+	}
+	return merged
+}
+
+func isSemanticBoardConfigKey(key string) bool {
 	switch key {
-	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards":
+	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards",
+		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit":
 		return true
 	default:
 		return false
 	}
 }
 
-func validateSemanticBoardMatchConfigValue(key string, value string) error {
-	if key == "semantic_board_match_max_boards" {
+func validateSemanticBoardConfigValue(key string, value string) error {
+	switch key {
+	case "semantic_board_match_max_boards", "semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_hard_limit":
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed <= 0 {
 			return fmt.Errorf("%s must be a positive integer", key)
 		}
 		return nil
+	default:
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || parsed < 0 || parsed > 1 {
+			return fmt.Errorf("%s must be a number between 0 and 1", key)
+		}
+		return nil
 	}
-	parsed, err := strconv.ParseFloat(value, 64)
-	if err != nil || parsed < 0 || parsed > 1 {
-		return fmt.Errorf("%s must be a number between 0 and 1", key)
-	}
-	return nil
 }
 
 func (h *semanticBoardHandler) suggestAuxiliaries(c *gin.Context) {
@@ -727,24 +910,24 @@ func (h *semanticBoardHandler) suggestAuxiliaries(c *gin.Context) {
 
 	page, pageSize := parsePaginationParams(c)
 
-	_, queryVector, err := semanticBoardLabelEmbedder(c.Request.Context(), queryText)
+	_, queryVector, err := semanticBoardLabelEmbedder(c.Request.Context(), queryText, auxiliaryLabelEmbeddingModeStorage)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	results, err := h.computeAuxiliarySuggestions(c.Request.Context(), queryVector, c.Query("search"), 0, page, pageSize)
-	if err != nil {
-		respondError(c, http.StatusInternalServerError, err)
-		return
-	}
-
-	// Apply optional exclude_board_id filter
+	excludeBoardID := uint(0)
 	if excludeStr := strings.TrimSpace(c.Query("exclude_board_id")); excludeStr != "" {
 		excludeID, parseErr := strconv.ParseUint(excludeStr, 10, 64)
 		if parseErr == nil && excludeID > 0 {
-			results = h.filterExcludedBoardComposition(c.Request.Context(), results, uint(excludeID))
+			excludeBoardID = uint(excludeID)
 		}
+	}
+
+	results, err := h.computeAuxiliarySuggestions(c.Request.Context(), queryVector, c.Query("search"), excludeBoardID, page, pageSize)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
 	}
 
 	respondOK(c, results)
@@ -769,7 +952,7 @@ func (h *semanticBoardHandler) suggestAuxiliariesForBoard(c *gin.Context) {
 
 	page, pageSize := parsePaginationParams(c)
 
-	_, queryVector, err := semanticBoardLabelEmbedder(c.Request.Context(), queryText)
+	_, queryVector, err := semanticBoardLabelEmbedder(c.Request.Context(), queryText, auxiliaryLabelEmbeddingModeStorage)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, err)
 		return
@@ -820,7 +1003,7 @@ func (h *semanticBoardHandler) addBoardComposition(c *gin.Context) {
 }
 
 type scoredAuxiliary struct {
-	label     models.SemanticLabel
+	label      models.SemanticLabel
 	similarity float64
 }
 
@@ -888,33 +1071,6 @@ func (h *semanticBoardHandler) computeAuxiliarySuggestions(ctx context.Context, 
 	}
 
 	return &suggestAuxiliariesResponse{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
-}
-
-func (h *semanticBoardHandler) filterExcludedBoardComposition(ctx context.Context, resp *suggestAuxiliariesResponse, boardID uint) *suggestAuxiliariesResponse {
-	var ids []uint
-	for _, item := range resp.Items {
-		ids = append(ids, item.ID)
-	}
-	if len(ids) == 0 {
-		return resp
-	}
-	var excluded []uint
-	h.db.WithContext(ctx).Model(&models.BoardComposition{}).
-		Where("board_id = ? AND auxiliary_label_id IN ?", boardID, ids).
-		Pluck("auxiliary_label_id", &excluded)
-	excludedSet := make(map[uint]struct{}, len(excluded))
-	for _, id := range excluded {
-		excludedSet[id] = struct{}{}
-	}
-	filtered := make([]suggestedAuxiliaryDTO, 0, len(resp.Items))
-	for _, item := range resp.Items {
-		if _, ok := excludedSet[item.ID]; !ok {
-			filtered = append(filtered, item)
-		}
-	}
-	resp.Items = filtered
-	resp.Total = len(filtered)
-	return resp
 }
 
 func parsePaginationParams(c *gin.Context) (page, pageSize int) {

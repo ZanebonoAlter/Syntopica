@@ -53,8 +53,6 @@ func (s *NarrativeService) DeleteByDate(date time.Time, scopeType string, catego
 }
 
 func (s *NarrativeService) RegenerateAndSave(date time.Time) (int, error) {
-	ClearUnclassifiedBucket()
-
 	deleted, err := s.DeleteByDate(date, "", nil)
 	if err != nil {
 		return 0, err
@@ -65,8 +63,6 @@ func (s *NarrativeService) RegenerateAndSave(date time.Time) (int, error) {
 }
 
 func (s *NarrativeService) RegenerateAndSaveForCategory(date time.Time, categoryID uint) (int, error) {
-	ClearUnclassifiedBucket()
-
 	deleted, err := s.DeleteByDate(date, models.NarrativeScopeTypeFeedCategory, &categoryID)
 	if err != nil {
 		return 0, err
@@ -123,347 +119,104 @@ func (s *NarrativeService) GenerateAndSave(date time.Time) (int, error) {
 }
 
 func (s *NarrativeService) GenerateAndSaveGlobal(ctx context.Context, date time.Time) (int, error) {
-	tagInputs, err := CollectTagInputs(date)
-	if err != nil {
-		return 0, fmt.Errorf("collect global tag inputs: %w", err)
+	scopeOpts := ScopeSaveOpts{
+		ScopeType:  models.NarrativeScopeTypeGlobal,
+		CategoryID: nil,
+		Label:      "",
 	}
-
-	if len(tagInputs) == 0 {
-		return 0, nil
-	}
-
-	var globalBoards []models.NarrativeBoard
-
-	matchingTagsByConcept := make(map[uint][]TagInput)
-	for _, tag := range tagInputs {
-		conceptMatch, mErr := MatchTagToConcept(ctx, TagInput{
-			ID:          tag.ID,
-			Label:       tag.Label,
-			Description: tag.Description,
-		})
-		if mErr != nil {
-			logging.Warnf("narrative: global match tag %d failed: %v", tag.ID, mErr)
-			AddToUnclassifiedBucket(tag)
-			continue
-		}
-		if conceptMatch != nil {
-			matchingTagsByConcept[conceptMatch.ConceptID] = append(matchingTagsByConcept[conceptMatch.ConceptID], tag)
-		} else {
-			AddToUnclassifiedBucket(tag)
-		}
-	}
-
-	for conceptID, tags := range matchingTagsByConcept {
-		if len(tags) == 0 {
-			continue
-		}
-
-		var concept models.BoardConcept
-		if err := database.DB.Where("id = ?", conceptID).First(&concept).Error; err != nil {
-			logging.Warnf("narrative: global concept %d not found", conceptID)
-			for _, t := range tags {
-				AddToUnclassifiedBucket(t)
-			}
-			continue
-		}
-
-		board, bErr := BuildBoardFromMatchedTags(conceptID, concept.Name, tags, date, nil)
-		if bErr != nil {
-			logging.Warnf("narrative: global create concept board failed for concept %d: %v", conceptID, bErr)
-			continue
-		}
-		if board != nil {
-			globalBoards = append(globalBoards, *board)
-		}
-	}
-
-	totalSaved := 0
-	for _, board := range globalBoards {
-		eventTags, lErr := LoadBoardEventTags(board)
-		if lErr != nil {
-			continue
-		}
-		if len(eventTags) == 0 {
-			continue
-		}
-
-		var prevBoardIDs []uint
-		if board.PrevBoardIDs != "" {
-			_ = json.Unmarshal([]byte(board.PrevBoardIDs), &prevBoardIDs)
-		}
-
-		var prevNarrs []PreviousNarrative
-		if len(prevBoardIDs) > 0 {
-			var prevSummaries []models.NarrativeSummary
-			database.DB.Where("board_id IN ?", prevBoardIDs).Order("id ASC").Find(&prevSummaries)
-			for _, ps := range prevSummaries {
-				prevNarrs = append(prevNarrs, PreviousNarrative{
-					ID:         uint64(ps.ID),
-					Title:      ps.Title,
-					Summary:    ps.Summary,
-					Status:     ps.Status,
-					Generation: ps.Generation,
-				})
-			}
-		}
-
-		boardCtx := BoardNarrativeContext{
-			Board:          board,
-			EventTags:      eventTags,
-			PrevNarratives: prevNarrs,
-		}
-
-		if board.BoardConceptID != nil {
-			var concept models.BoardConcept
-			if err := database.DB.Where("id = ?", *board.BoardConceptID).First(&concept).Error; err == nil {
-				boardCtx.ConceptName = concept.Name
-				boardCtx.ConceptDescription = concept.Description
-			}
-		}
-
-		outputs, gErr := GenerateNarrativesForBoard(ctx, boardCtx)
-		if gErr != nil {
-			continue
-		}
-
-		scopeOpts := &ScopeSaveOpts{
-			ScopeType:  models.NarrativeScopeTypeGlobal,
-			CategoryID: nil,
-			Label:      "",
-		}
-		saved, sErr := saveNarrativesWithBoard(outputs, board, date, scopeOpts)
-		if sErr != nil {
-			continue
-		}
-		totalSaved += saved
-	}
-
-	logging.Infof("narrative: global generation saved %d narratives across %d concept boards",
-		totalSaved, len(globalBoards))
-	return totalSaved, nil
+	return s.generateAndSaveSemanticBoardScope(ctx, date, scopeOpts)
 }
 
 func (s *NarrativeService) GenerateAndSaveForCategory(date time.Time, categoryID uint, categoryLabel string) (int, error) {
-	abstractTrees, err := CollectAbstractTreeInputsByCategory(date, categoryID)
-	if err != nil {
-		return 0, fmt.Errorf("collect abstract trees for category %d: %w", categoryID, err)
-	}
-
-	events, err := CollectUnclassifiedEventTagsByCategory(date, categoryID)
-	if err != nil {
-		return 0, fmt.Errorf("collect event tags for category %d: %w", categoryID, err)
-	}
-
-	if len(abstractTrees) == 0 && len(events) == 0 {
-		logging.Infof("narrative: no abstract trees or event tags for category %d on %s, skipping", categoryID, date.Format("2006-01-02"))
-		return 0, nil
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
-	hotspotThreshold := getHotspotThreshold()
-
-	var hotspotTrees []AbstractTreeNode
-	var matchingTrees []AbstractTreeNode
-
-	for _, tree := range abstractTrees {
-		nodeCount := CountTreeNodes(tree)
-		if nodeCount >= hotspotThreshold {
-			hotspotTrees = append(hotspotTrees, tree)
-		} else {
-			matchingTrees = append(matchingTrees, tree)
-		}
+	scopeOpts := ScopeSaveOpts{
+		ScopeType:  models.NarrativeScopeTypeFeedCategory,
+		CategoryID: &categoryID,
+		Label:      categoryLabel,
+	}
+	saved, err := s.generateAndSaveSemanticBoardScope(ctx, date, scopeOpts)
+	if err != nil {
+		return 0, fmt.Errorf("generate semantic boards for category %d: %w", categoryID, err)
 	}
 
-	var allBoards []models.NarrativeBoard
+	logging.Infof("narrative: saved %d semantic-board narratives for category %d (%s) on %s",
+		saved, categoryID, categoryLabel, date.Format("2006-01-02"))
+	cleanEmptyBoards(date, &categoryID)
+	return saved, nil
+}
 
-	for _, tree := range hotspotTrees {
-		board, bErr := createBoardFromAbstractTree(tree, date, categoryID)
-		if bErr != nil {
-			logging.Warnf("narrative: failed to create hotspot board from abstract tree %d: %v", tree.ID, bErr)
-			continue
-		}
-		if board != nil {
-			allBoards = append(allBoards, *board)
-		}
+func (s *NarrativeService) generateAndSaveSemanticBoardScope(ctx context.Context, date time.Time, scopeOpts ScopeSaveOpts) (int, error) {
+	inputs, err := CollectSemanticBoardNarrativeInputs(date, scopeOpts.ScopeType, scopeOpts.CategoryID)
+	if err != nil {
+		return 0, err
 	}
-
-	matchingTagsByConcept := make(map[uint][]TagInput)
-	var unclassifiedForBucket []TagInput
-
-	matcherCtx, matcherCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer matcherCancel()
-
-	for _, tree := range matchingTrees {
-		conceptMatch, mErr := MatchTagToConcept(matcherCtx, TagInput{
-			ID:          tree.ID,
-			Label:       tree.Label,
-			Description: tree.Description,
-		})
-		if mErr != nil {
-			logging.Warnf("narrative: match small tree %d to concept failed: %v", tree.ID, mErr)
-			board, bErr := createBoardFromAbstractTree(tree, date, categoryID)
-			if bErr == nil && board != nil {
-				allBoards = append(allBoards, *board)
-			}
-			continue
-		}
-		if conceptMatch != nil {
-			childTags := collectAllEventTags(tree)
-			matchingTagsByConcept[conceptMatch.ConceptID] = append(matchingTagsByConcept[conceptMatch.ConceptID], childTags...)
-			logging.Infof("narrative: small tree %s (%d) matched to concept %s (sim=%.3f)",
-				tree.Label, tree.ID, conceptMatch.Name, conceptMatch.Similarity)
-		} else {
-			board, bErr := createBoardFromAbstractTree(tree, date, categoryID)
-			if bErr == nil && board != nil {
-				allBoards = append(allBoards, *board)
-				logging.Infof("narrative: small tree %s (%d) no concept match, created standalone board %d",
-					tree.Label, tree.ID, board.ID)
-			} else {
-				childTags := collectAllEventTags(tree)
-				for _, t := range childTags {
-					AddToUnclassifiedBucket(t)
-				}
-			}
-		}
-	}
-
-	for _, tag := range events {
-		conceptMatch, mErr := MatchTagToConcept(matcherCtx, TagInput{
-			ID:          tag.ID,
-			Label:       tag.Label,
-			Description: tag.Description,
-		})
-		if mErr != nil {
-			logging.Warnf("narrative: match event tag %d to concept failed: %v", tag.ID, mErr)
-			unclassifiedForBucket = append(unclassifiedForBucket, tag)
-			continue
-		}
-		if conceptMatch != nil {
-			matchingTagsByConcept[conceptMatch.ConceptID] = append(matchingTagsByConcept[conceptMatch.ConceptID], tag)
-		} else {
-			unclassifiedForBucket = append(unclassifiedForBucket, tag)
-		}
-	}
-
-	for _, tag := range unclassifiedForBucket {
-		AddToUnclassifiedBucket(tag)
-	}
-
-	for conceptID, tags := range matchingTagsByConcept {
-		if len(tags) == 0 {
-			continue
-		}
-
-		var concept models.BoardConcept
-		if err := database.DB.Where("id = ?", conceptID).First(&concept).Error; err != nil {
-			logging.Warnf("narrative: concept %d not found, skipping %d tags", conceptID, len(tags))
-			for _, t := range tags {
-				AddToUnclassifiedBucket(t)
-			}
-			continue
-		}
-
-		board, bErr := BuildBoardFromMatchedTags(conceptID, concept.Name, tags, date, &categoryID)
-		if bErr != nil {
-			logging.Warnf("narrative: failed to create concept board for concept %d: %v", conceptID, bErr)
-			for _, t := range tags {
-				AddToUnclassifiedBucket(t)
-			}
-			continue
-		}
-		if board != nil {
-			allBoards = append(allBoards, *board)
-		}
-	}
-
-	if len(allBoards) == 0 {
-		logging.Infof("narrative: no boards created for category %d on %s", categoryID, date.Format("2006-01-02"))
+	if len(inputs) == 0 {
+		logging.Infof("narrative: no semantic board event tags for %s (scope=%s, category=%v)", date.Format("2006-01-02"), scopeOpts.ScopeType, scopeOpts.CategoryID)
 		return 0, nil
 	}
 
 	totalSaved := 0
-	for _, board := range allBoards {
-		eventTags, lErr := LoadBoardEventTags(board)
-		if lErr != nil {
-			logging.Warnf("narrative: failed to load event tags for board %d: %v", board.ID, lErr)
+	for _, input := range inputs {
+		board, bErr := createBoardFromSemanticBoard(input, date, scopeOpts)
+		if bErr != nil {
+			logging.Warnf("narrative: failed to create narrative board from semantic board %d: %v", input.Board.ID, bErr)
 			continue
 		}
-		if len(eventTags) == 0 {
-			continue
-		}
-
-		var prevBoardIDs []uint
-		if board.PrevBoardIDs != "" {
-			_ = json.Unmarshal([]byte(board.PrevBoardIDs), &prevBoardIDs)
-		}
-
-		var prevNarrs []PreviousNarrative
-		if len(prevBoardIDs) > 0 {
-			var prevSummaries []models.NarrativeSummary
-			database.DB.Where("board_id IN ?", prevBoardIDs).Order("id ASC").Find(&prevSummaries)
-			for _, ps := range prevSummaries {
-				prevNarrs = append(prevNarrs, PreviousNarrative{
-					ID:         uint64(ps.ID),
-					Title:      ps.Title,
-					Summary:    ps.Summary,
-					Status:     ps.Status,
-					Generation: ps.Generation,
-				})
+		if board != nil {
+			eventTags := input.EventTags
+			if len(eventTags) == 0 {
+				continue
 			}
-		}
 
-		boardCtx := BoardNarrativeContext{
-			Board:          board,
-			EventTags:      eventTags,
-			PrevNarratives: prevNarrs,
-		}
-
-		if board.BoardConceptID != nil {
-			var concept models.BoardConcept
-			if err := database.DB.Where("id = ?", *board.BoardConceptID).First(&concept).Error; err == nil {
-				boardCtx.ConceptName = concept.Name
-				boardCtx.ConceptDescription = concept.Description
+			prevNarrs := collectPreviousNarrativesForBoards(input.PrevBoardIDs)
+			boardCtx := BoardNarrativeContext{
+				Board:              *board,
+				EventTags:          eventTags,
+				PrevNarratives:     prevNarrs,
+				SemanticBoardLabel: input.Board.Label,
+				SemanticBoardDesc:  input.Board.Description,
 			}
-		}
 
-		outputs, gErr := GenerateNarrativesForBoard(ctx, boardCtx)
-		if gErr != nil {
-			logging.Warnf("narrative: failed to generate narratives for board %d: %v", board.ID, gErr)
-			continue
-		}
+			outputs, gErr := GenerateNarrativesForBoard(ctx, boardCtx)
+			if gErr != nil {
+				logging.Warnf("narrative: failed to generate narratives for board %d: %v", board.ID, gErr)
+				continue
+			}
 
-		saved, sErr := SaveNarrativesForBoard(outputs, board, date, categoryID)
-		if sErr != nil {
-			logging.Warnf("narrative: failed to save narratives for board %d: %v", board.ID, sErr)
-			continue
+			saved, sErr := saveNarrativesWithBoard(outputs, *board, date, &scopeOpts)
+			if sErr != nil {
+				logging.Warnf("narrative: failed to save narratives for board %d: %v", board.ID, sErr)
+				continue
+			}
+			totalSaved += saved
 		}
-		totalSaved += saved
 	}
 
-	logging.Infof("narrative: saved %d narratives across %d boards for category %d (%s) on %s (hotspot=%d, concept=%d)",
-		totalSaved, len(allBoards), categoryID, categoryLabel, date.Format("2006-01-02"),
-		len(hotspotTrees), len(matchingTrees))
-
-	cleanEmptyBoards(date, &categoryID)
-
+	logging.Infof("narrative: saved %d narratives across %d semantic boards for %s (scope=%s, category=%v)",
+		totalSaved, len(inputs), date.Format("2006-01-02"), scopeOpts.ScopeType, scopeOpts.CategoryID)
 	return totalSaved, nil
 }
 
-func collectAllEventTags(tree AbstractTreeNode) []TagInput {
-	var result []TagInput
-	if tree.Category == "event" {
-		result = append(result, TagInput{
-			ID:          tree.ID,
-			Label:       tree.Label,
-			Description: tree.Description,
+func collectPreviousNarrativesForBoards(prevBoardIDs []uint) []PreviousNarrative {
+	if len(prevBoardIDs) == 0 {
+		return nil
+	}
+
+	var prevSummaries []models.NarrativeSummary
+	database.DB.Where("board_id IN ?", prevBoardIDs).Order("id ASC").Find(&prevSummaries)
+	prevNarrs := make([]PreviousNarrative, 0, len(prevSummaries))
+	for _, ps := range prevSummaries {
+		prevNarrs = append(prevNarrs, PreviousNarrative{
+			ID:         uint64(ps.ID),
+			Title:      ps.Title,
+			Summary:    ps.Summary,
+			Status:     ps.Status,
+			Generation: ps.Generation,
 		})
 	}
-	for _, child := range tree.Children {
-		result = append(result, collectAllEventTags(child)...)
-	}
-	return result
+	return prevNarrs
 }
 
 func (s *NarrativeService) runFallbackAssociations(ctx context.Context, date time.Time, allPrev []PreviousNarrative) {
@@ -619,7 +372,7 @@ func resolveGlobalGeneration(date time.Time) int {
 	return maxGen + 1
 }
 
-func resolveArticleIDs(tagIDs []uint, date time.Time) []uint64 {
+func resolveArticleIDsForScope(tagIDs []uint, date time.Time, scopeOpts *ScopeSaveOpts) []uint64 {
 	if len(tagIDs) == 0 {
 		return nil
 	}
@@ -628,11 +381,16 @@ func resolveArticleIDs(tagIDs []uint, date time.Time) []uint64 {
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
 	var articleIDs []uint64
-	if err := database.DB.Model(&models.ArticleTopicTag{}).
+	query := database.DB.Model(&models.ArticleTopicTag{}).
 		Select("DISTINCT article_topic_tags.article_id").
 		Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
-		Where("article_topic_tags.topic_tag_id IN ? AND articles.pub_date >= ? AND articles.pub_date < ?", tagIDs, startOfDay, endOfDay).
-		Pluck("article_topic_tags.article_id", &articleIDs).Error; err != nil {
+		Where("article_topic_tags.topic_tag_id IN ? AND articles.pub_date >= ? AND articles.pub_date < ?", tagIDs, startOfDay, endOfDay)
+
+	if scopeOpts != nil && scopeOpts.ScopeType == models.NarrativeScopeTypeFeedCategory && scopeOpts.CategoryID != nil {
+		query = query.Joins("JOIN feeds ON feeds.id = articles.feed_id").Where("feeds.category_id = ?", *scopeOpts.CategoryID)
+	}
+
+	if err := query.Pluck("article_topic_tags.article_id", &articleIDs).Error; err != nil {
 		logging.Warnf("narrative: resolveArticleIDs failed: %v", err)
 	}
 
@@ -715,14 +473,9 @@ type BoardSummaryItem struct {
 	ScopeCategoryID *uint               `json:"scope_category_id,omitempty"`
 	Narratives      []NarrativeListItem `json:"narratives"`
 	PrevBoardIDs    []uint              `json:"prev_board_ids"`
-	AbstractTagID   *uint               `json:"abstract_tag_id,omitempty"`
-	AbstractTagSlug string              `json:"abstract_tag_slug,omitempty"`
-	BoardConceptID  *uint               `json:"board_concept_id,omitempty"`
-	ConceptName     string              `json:"concept_name,omitempty"`
 	IsSystem        bool                `json:"is_system"`
 	CreatedAt       string              `json:"created_at"`
 	EventTags       []TagBrief          `json:"event_tags"`
-	AbstractTags    []TagBrief          `json:"abstract_tags"`
 }
 
 type BoardTimelineDay struct {
@@ -731,10 +484,9 @@ type BoardTimelineDay struct {
 }
 
 type BoardDetailResponse struct {
-	Board        models.NarrativeBoard `json:"board"`
-	Narratives   []NarrativeListItem   `json:"narratives"`
-	EventTags    []TagBrief            `json:"event_tags"`
-	AbstractTags []TagBrief            `json:"abstract_tags"`
+	Board      models.NarrativeBoard `json:"board"`
+	Narratives []NarrativeListItem   `json:"narratives"`
+	EventTags  []TagBrief            `json:"event_tags"`
 }
 
 func (s *NarrativeService) GetTimeline(anchorDate time.Time, days int, scopeType string, categoryID *uint) ([]TimelineDay, error) {
@@ -969,44 +721,6 @@ func (s *NarrativeService) GetBoardTimeline(startDate, endDate time.Time, scopeT
 		grouped[key] = append(grouped[key], b)
 	}
 
-	abstractTagIDs := make(map[uint]bool)
-	for _, b := range boards {
-		if b.AbstractTagID != nil {
-			abstractTagIDs[*b.AbstractTagID] = true
-		}
-	}
-	abstractTagMap := make(map[uint]models.TopicTag)
-	if len(abstractTagIDs) > 0 {
-		tagIDs := make([]uint, 0, len(abstractTagIDs))
-		for id := range abstractTagIDs {
-			tagIDs = append(tagIDs, id)
-		}
-		var tags []models.TopicTag
-		database.DB.Where("id IN ?", tagIDs).Find(&tags)
-		for _, t := range tags {
-			abstractTagMap[t.ID] = t
-		}
-	}
-
-	conceptIDs := make(map[uint]bool)
-	for _, b := range boards {
-		if b.BoardConceptID != nil {
-			conceptIDs[*b.BoardConceptID] = true
-		}
-	}
-	conceptMap := make(map[uint]models.BoardConcept)
-	if len(conceptIDs) > 0 {
-		cIDs := make([]uint, 0, len(conceptIDs))
-		for id := range conceptIDs {
-			cIDs = append(cIDs, id)
-		}
-		var concepts []models.BoardConcept
-		database.DB.Where("id IN ?", cIDs).Find(&concepts)
-		for _, c := range concepts {
-			conceptMap[c.ID] = c
-		}
-	}
-
 	var result []BoardTimelineDay
 	for d := startDate; d.Before(endDate); d = d.AddDate(0, 0, 1) {
 		key := d.Format("2006-01-02")
@@ -1026,13 +740,6 @@ func (s *NarrativeService) GetBoardTimeline(startDate, endDate time.Time, scopeT
 					boardNarItems = []NarrativeListItem{}
 				}
 
-				conceptName := ""
-				if b.BoardConceptID != nil {
-					if c, ok := conceptMap[*b.BoardConceptID]; ok {
-						conceptName = c.Name
-					}
-				}
-
 				day.Boards = append(day.Boards, BoardSummaryItem{
 					ID:              b.ID,
 					Name:            b.Name,
@@ -1043,21 +750,9 @@ func (s *NarrativeService) GetBoardTimeline(startDate, endDate time.Time, scopeT
 					ScopeCategoryID: b.ScopeCategoryID,
 					Narratives:      boardNarItems,
 					PrevBoardIDs:    prevBoardIDs,
-					AbstractTagID:   b.AbstractTagID,
-					BoardConceptID:  b.BoardConceptID,
-					ConceptName:     conceptName,
 					IsSystem:        b.IsSystem,
-					AbstractTagSlug: func() string {
-						if b.AbstractTagID != nil {
-							if tag, ok := abstractTagMap[*b.AbstractTagID]; ok {
-								return tag.Slug
-							}
-						}
-						return ""
-					}(),
-					CreatedAt:    b.CreatedAt.Format("2006-01-02T15:04:05Z"),
-					EventTags:    resolveTagIDsToBriefs(b.EventTagIDs),
-					AbstractTags: resolveTagIDsToBriefs(b.AbstractTagIDs),
+					CreatedAt:       b.CreatedAt.Format("2006-01-02T15:04:05Z"),
+					EventTags:       resolveTagIDsToBriefs(b.EventTagIDs),
 				})
 			}
 		}
@@ -1081,10 +776,9 @@ func (s *NarrativeService) GetBoardDetail(boardID uint) (*BoardDetailResponse, e
 	}
 
 	return &BoardDetailResponse{
-		Board:        board,
-		Narratives:   toListItems(narratives),
-		EventTags:    resolveTagIDsToBriefs(board.EventTagIDs),
-		AbstractTags: resolveTagIDsToBriefs(board.AbstractTagIDs),
+		Board:      board,
+		Narratives: toListItems(narratives),
+		EventTags:  resolveTagIDsToBriefs(board.EventTagIDs),
 	}, nil
 }
 

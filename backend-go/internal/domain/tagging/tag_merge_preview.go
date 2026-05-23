@@ -30,8 +30,6 @@ type CandidateArticle struct {
 }
 
 // ScanSimilarTagPairs finds tag pairs with high embedding similarity without merging.
-// It reuses the same pgvector cross-join logic from tag_hierarchy_cleanup.go (Phase 2: flat merge)
-// but returns candidates sorted by similarity descending instead of auto-executing merges.
 func ScanSimilarTagPairs(limit int, scopeFeedID uint, scopeCategoryID uint) ([]TagMergeCandidate, error) {
 	if limit <= 0 {
 		limit = 50

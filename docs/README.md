@@ -22,7 +22,6 @@ RSS Reader 全部文档入口。
 | [reference/architecture/backend.md](reference/architecture/backend.md) | 后端分层、目录结构、数据模型 |
 | [reference/architecture/runtime.md](reference/architecture/runtime.md) | 启动顺序、调度器、优雅退出 |
 | [reference/architecture/frontend.md](reference/architecture/frontend.md) | Nuxt 4 分层、feature 组织 |
-| [reference/architecture/frontend-components.md](reference/architecture/frontend-components.md) | 组件职责与交互 |
 | [reference/architecture/data-flow.md](reference/architecture/data-flow.md) | 主链路、前端状态、定时任务链路 |
 | [reference/architecture/tracing.md](reference/architecture/tracing.md) | OpenTelemetry 集成 |
 
@@ -51,9 +50,19 @@ RSS Reader 全部文档入口。
 | [reference/configuration.md](reference/configuration.md) | 配置项说明 |
 | [reference/deployment.md](reference/deployment.md) | 部署方式 |
 | [reference/testing.md](reference/testing.md) | 测试指南 |
-| [reference/content-processing.md](reference/content-processing.md) | Firecrawl + AI 内容补全 |
-| [reference/reading-preferences.md](reference/reading-preferences.md) | 阅读偏好机制 |
-| [reference/frontend-features.md](reference/frontend-features.md) | 前端功能说明 |
+
+---
+
+## 用户手册（User Guide）
+
+| 文档 | 说明 |
+|------|------|
+| [userguide/reading.md](userguide/reading.md) | 阅读功能（布局、文章阅读、阅读偏好） |
+| [userguide/feeds-and-categories.md](userguide/feeds-and-categories.md) | 订阅源与分类管理 |
+| [userguide/ai-features.md](userguide/ai-features.md) | AI 总结与 Provider 管理 |
+| [userguide/topic-graph.md](userguide/topic-graph.md) | Topic Graph 主题图谱 |
+| [userguide/tags.md](userguide/tags.md) | 文章标签 |
+| [userguide/narrative.md](userguide/narrative.md) | 叙事面板 |
 
 ---
 

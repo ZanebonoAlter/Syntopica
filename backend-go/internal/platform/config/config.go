@@ -16,7 +16,7 @@ type Config struct {
 }
 
 type LogConfig struct {
-	Level string       `mapstructure:"level"`
+	Level string        `mapstructure:"level"`
 	File  LogFileConfig `mapstructure:"file"`
 }
 
