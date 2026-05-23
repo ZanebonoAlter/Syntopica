@@ -1,4 +1,5 @@
-![icon](front/public/favicon.png)
+<p align="center"><img src="front/public/favicon.png" width="360" alt="icon"></p>
+
 # Syntopica
 
 *Where feeds become topics*
@@ -72,8 +73,8 @@
 ### 主题图谱
 - **图谱可视化**：日/周双视图，事件/人物/关键词三类节点与关联边，支持权重计算与时间窗口切换
 ![主题图谱](img/image-topic.png)
-- **AI 主题分析**：按标签类型（事件/人物/关键词）生成 AI 分析，含时间线、人物画像、关键词云等（已废弃，用新的板块内容代替，仅保留时间线，用于探索发现使用）
-![category](img/image-category.png)
+- **特别关注标签**：按标签类型（事件/人物/关键词）支持特别关注，后续可直接筛选仅包含该标签的文章
+![category](img/1.3-feather/article_preview.png)
 
 
 ![主题图谱文章](img/image-topic-article.png)
