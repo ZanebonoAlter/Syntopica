@@ -138,18 +138,12 @@
 
 ### Docker Compose（推荐）
 
-咳咳，pg这个版本的我还没改
-```bash
-cp .env.example .env
-docker compose -f docker-compose.yml up --build
-```
+得用pg的版本，不要用sqlite的，那个归档用
 
 - 前端默认地址：`http://localhost:3000`
 - 后端默认地址：`http://localhost:5000`
-- SQLite 文件默认落在仓库根目录 `data/rss_reader.db`
+- postgres的存储文件位置默认在./data下,
 - 如需自定义端口或代理，在 `.env` 中配置 `FRONT_PORT`、`BACKEND_PORT`、`GOPROXY`、`NPM_CONFIG_REGISTRY` 等
-
-如需 PostgreSQL（支持 pgvector 向量搜索），先启动数据库：
 
 ```bash
 docker compose up -d
