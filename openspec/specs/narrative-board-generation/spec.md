@@ -1,71 +1,51 @@
 ## Purpose
 
-Backend generation logic for NarrativeBoard structures — how abstract tag trees and misc events are mapped to Boards, how narratives are generated within Boards, and how prev-day matching works.
+每日 NarrativeBoard 的生成逻辑：从 SemanticBoard 派生、收集归属 event tags、续接前日 board、生成叙事。
 
 ## Requirements
 
-### Requirement: Abstract tree deterministically maps to a Board
-The system SHALL classify each active abstract tree by its node count against a configurable threshold N (default=6). Trees with node count ≥ N SHALL each create a standalone "daily hotspot" NarrativeBoard (see `daily-hotspot-board` spec). Trees with node count < N SHALL be routed to embedding-based Board Concept matching (see `tag-to-board-matching` spec).
+### Requirement: SemanticBoard 派生每日 NarrativeBoard
+系统 SHALL 从全局共享的 SemanticBoard 派生每日 NarrativeBoard。生成时，系统 SHALL 在指定日期和 scope 范围内收集归属于该 SemanticBoard 的 active event tags，并为每个有事件的 SemanticBoard 创建对应 NarrativeBoard。
 
-#### Scenario: Large tree creates hotspot board
-- **WHEN** on 2026-05-01, abstract tree "AI 行业动态" has 20 child event tags active
-- **THEN** a NarrativeBoard is created with name="AI 行业动态", is_system=true, without a board_concept_id
+#### Scenario: 分类范围生成每日板
+- **WHEN** feed category #5 在 2026-05-21 有 4 个 event tags 归属于 SemanticBoard "AI与机器学习"
+- **THEN** 系统 SHALL 创建一个 scope_type="feed_category"、scope_category_id=5、semantic_board_id 指向该 SemanticBoard 的 NarrativeBoard
 
-#### Scenario: Small tree routed to matching
-- **WHEN** on 2026-05-01, abstract tree "LangGraph 教程" has 3 child event tags active
-- **THEN** no Board is created from this tree alone; instead the root tag's embedding is matched against board_concepts
+#### Scenario: 全局范围生成每日板
+- **WHEN** 全局范围在 2026-05-21 有 event tags 归属于 SemanticBoard "能源安全"
+- **THEN** 系统 SHALL 创建一个 scope_type="global" 的 NarrativeBoard
 
-### Requirement: Misc events partitioned into Board Concepts
-The system SHALL collect event tags not belonging to any abstract tree and match them to Board Concepts via embedding cosine similarity. Tags that match a concept above the configurable threshold SHALL be assigned to that concept's daily NarrativeBoard. Tags below the threshold SHALL be placed in the "unclassified" bucket.
+### Requirement: 取消 abstract tree 热点板路径
+系统 SHALL NOT 通过 abstract tag tree、topic_tag_relations 或 abstract_tag_id 创建热点 NarrativeBoard。所有每日 NarrativeBoard SHALL 由 SemanticBoard 派生。
 
-#### Scenario: Misc events matched to concept
-- **WHEN** 3 unclassified event tags are matched to board_concept "AI 工具实践" above threshold
-- **THEN** a single NarrativeBoard linked to that concept is created containing all 3 events
+#### Scenario: 无 abstract tree 输入
+- **WHEN** NarrativeBoard 生成运行
+- **THEN** 系统 SHALL 不读取 topic_tag_relations 来构建热点板
 
-#### Scenario: Misc events fall below threshold
-- **WHEN** 2 unclassified event tags have no concept match above threshold
-- **THEN** the tags are collected in the unclassified bucket and shown in UI
+### Requirement: 冷启动无 SemanticBoard 时不生成 NarrativeBoard
+系统 SHALL 允许冷启动阶段没有 SemanticBoard。没有 active SemanticBoard 或没有匹配 event tags 时，系统 SHALL 不生成对应 NarrativeBoard，且不报错。
 
-#### Scenario: Zero unclassified events
-- **WHEN** all event tags belong to abstract trees
-- **THEN** no unclassified bucket is created
+#### Scenario: 没有 SemanticBoard
+- **WHEN** 系统没有 label_type="board" 且 narrative 生成运行
+- **THEN** 系统 SHALL 返回 0 个新 NarrativeBoard，并保持 tag/auxiliary label 积累流程正常
 
-### Requirement: Board narrative generation bound to concept
-For each Board (hotspot or concept-matched), the system SHALL invoke LLM to generate narratives. The Board's `name` and `description` from the concept (or abstract tag for hotspots) SHALL be provided as context to LLM.
+### Requirement: 多板块归属允许事件重复展示
+如果一个 event tag 通过 topic_tag_board_labels 归属于多个 SemanticBoard，系统 SHALL 允许该 event tag 及其文章出现在多个 NarrativeBoard 中。
 
-#### Scenario: Concept Board narrative generation
-- **WHEN** Board linked to concept "AI 工具实践" has 6 matched event tags
-- **THEN** LLM receives concept name and description as context, generating 1-N narratives
+#### Scenario: 同一事件进入多个每日板
+- **WHEN** event tag "霍尔木兹海峡" 同时归属于 SemanticBoard "地缘政治" 和 "能源安全"
+- **THEN** 当日 narrative 生成 SHALL 允许该 event tag 出现在两个 NarrativeBoard 的 event_tag_ids 中
 
-#### Scenario: Hotspot Board narrative generation
-- **WHEN** Board "AI 行业动态" (hotspot) has 20 event tags
-- **THEN** LLM receives the abstract tag's label and description as context, plus the full tree structure
+### Requirement: NarrativeBoard 通过 semantic_board_id 续接
+系统 SHALL 在 `narrative_boards` 中使用 `semantic_board_id` 关联 SemanticBoard，并按 semantic_board_id + scope + 前一日日期匹配 prev_board_ids。
 
-### Requirement: Prev board matching for concept boards
-Concept-linked Boards SHALL match yesterday's Boards by `board_concept_id`. Hotspot Boards SHALL match by `abstract_tag_id` (existing logic preserved).
+#### Scenario: 同一 SemanticBoard 连续两日续接
+- **WHEN** 2026-05-20 和 2026-05-21 都生成了 semantic_board_id=42、scope_type="global" 的 NarrativeBoard
+- **THEN** 2026-05-21 的 NarrativeBoard.prev_board_ids SHALL 包含 2026-05-20 的对应 board id
 
-#### Scenario: Same concept on consecutive days
-- **WHEN** today has Board with board_concept_id=5, and yesterday has Board with board_concept_id=5 and id=30
-- **THEN** today's Board.prev_board_ids includes 30
+### Requirement: Board 叙事上下文来自 SemanticBoard
+系统 SHALL 使用 SemanticBoard 的 label 和 description 作为 NarrativeBoard 叙事生成的 board context，不再使用 abstract tag 或 board_concepts 作为上下文。
 
-#### Scenario: First day for a concept
-- **WHEN** today is the first day a concept has matched tags
-- **THEN** Board.prev_board_ids is empty
-
-### Requirement: All narratives belong to a Board
-Every NarrativeSummary generated SHALL have a non-null `board_id`. There SHALL be no narratives created without Board affiliation. The `narrative_boards` table SHALL include `board_concept_id` (nullable, populated for concept-matched boards).
-
-#### Scenario: Hotspot narrative saved with board_id
-- **WHEN** LLM generates a narrative for hotspot Board "AI 行业动态" (id=10)
-- **THEN** the NarrativeSummary record has board_id=10, and the Board's board_concept_id is NULL
-
-#### Scenario: Concept narrative saved with board_id
-- **WHEN** LLM generates a narrative for concept Board (id=20, board_concept_id=5)
-- **THEN** the NarrativeSummary record has board_id=20, and the Board's board_concept_id=5
-
-### Requirement: Remove abstract card narratives
-The system SHALL NOT generate `source="abstract"` narratives. Board metadata (name, description) replaces the abstract card concept.
-
-#### Scenario: No abstract cards generated
-- **WHEN** Boards are created for an abstract tree
-- **THEN** no separate NarrativeSummary with source="abstract" is inserted
+#### Scenario: 生成 board narrative prompt
+- **WHEN** 为 SemanticBoard "AI与机器学习" 派生的 NarrativeBoard 生成摘要
+- **THEN** LLM prompt SHALL 包含 SemanticBoard label、description 和当日 event tags
