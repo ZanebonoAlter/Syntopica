@@ -1,7 +1,17 @@
 import { apiClient } from './client'
 import type { ApiResponse, CreateCategoryData, UpdateCategoryData, Category } from '~/types'
 
-export function normalizeCategory(cat: any): Category {
+interface CategoryPayload {
+  id: number
+  name: string
+  slug: string
+  icon: string
+  color: string
+  description: string
+  feed_count: number
+}
+
+export function normalizeCategory(cat: CategoryPayload): Category {
   return {
     id: String(cat.id),
     name: cat.name || '',
@@ -15,30 +25,30 @@ export function normalizeCategory(cat: any): Category {
 
 export function useCategoriesApi() {
   async function getCategories(): Promise<ApiResponse<Category[]>> {
-    const response = await apiClient.get<any[]>('/categories')
+    const response = await apiClient.get<CategoryPayload[]>('/categories')
     if (response.success && response.data) {
       return {
         ...response,
         data: response.data.map(normalizeCategory),
       }
     }
-    return response as ApiResponse<Category[]>
+    return response as unknown as ApiResponse<Category[]>
   }
 
   async function createCategory(data: CreateCategoryData): Promise<ApiResponse<Category>> {
-    const response = await apiClient.post<any>('/categories', data)
+    const response = await apiClient.post<CategoryPayload>('/categories', data)
     if (response.success && response.data) {
       return { ...response, data: normalizeCategory(response.data) }
     }
-    return response as ApiResponse<Category>
+    return response as unknown as ApiResponse<Category>
   }
 
   async function updateCategory(id: number, data: UpdateCategoryData): Promise<ApiResponse<Category>> {
-    const response = await apiClient.put<any>(`/categories/${id}`, data)
+    const response = await apiClient.put<CategoryPayload>(`/categories/${id}`, data)
     if (response.success && response.data) {
       return { ...response, data: normalizeCategory(response.data) }
     }
-    return response as ApiResponse<Category>
+    return response as unknown as ApiResponse<Category>
   }
 
   async function deleteCategory(id: number): Promise<ApiResponse<void>> {

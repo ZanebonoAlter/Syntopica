@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
-	"my-robot-backend/internal/domain/feeds"
+	"my-robot-backend/internal/domain/feed"
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
@@ -20,7 +20,7 @@ import (
 type AutoRefreshScheduler struct {
 	cron           *cron.Cron
 	checkInterval  time.Duration
-	feedService    *feeds.FeedService
+	feedService    *feed.FeedService
 	refreshFeed    func(ctx context.Context, feedID uint) error
 	isRunning      bool
 	isExecuting    bool
@@ -42,7 +42,7 @@ type AutoRefreshRunSummary struct {
 const staleRefreshingTimeout = 5 * time.Minute
 
 func NewAutoRefreshScheduler(checkInterval int) *AutoRefreshScheduler {
-	feedService := feeds.NewFeedService()
+	feedService := feed.NewFeedService()
 	return &AutoRefreshScheduler{
 		cron:          cron.New(),
 		checkInterval: time.Duration(checkInterval) * time.Second,
@@ -326,16 +326,17 @@ func (s *AutoRefreshScheduler) TriggerNow() map[string]interface{} {
 	}
 
 	message := "手动扫描完成，没有 feed 到点。"
-	if summary.TriggeredFeeds > 0 {
+	switch {
+	case summary.TriggeredFeeds > 0:
 		message = fmt.Sprintf("手动扫描完成，已触发 %d 个 feed 刷新。", summary.TriggeredFeeds)
 		if summary.StaleResetFeeds > 0 {
 			message += fmt.Sprintf(" 重置了 %d 个卡住的 feed。", summary.StaleResetFeeds)
 		}
-	} else if summary.AlreadyRefreshingFeeds > 0 {
+	case summary.AlreadyRefreshingFeeds > 0:
 		message = "手动扫描完成，但到点的 feed 已在刷新中。"
-	} else if summary.ScannedFeeds == 0 {
+	case summary.ScannedFeeds == 0:
 		message = "当前没有开启自动刷新的 feed。"
-	} else if summary.StaleResetFeeds > 0 {
+	case summary.StaleResetFeeds > 0:
 		message = fmt.Sprintf("手动扫描完成，重置了 %d 个卡住的 feed。", summary.StaleResetFeeds)
 	}
 
@@ -355,6 +356,10 @@ func (s *AutoRefreshScheduler) initSchedulerTask() {
 	nextRun := now.Add(s.checkInterval)
 
 	if err := database.DB.Where("name = ?", "auto_refresh").First(&task).Error; err == nil {
+		if task.CheckInterval > 0 {
+			s.checkInterval = time.Duration(task.CheckInterval) * time.Second
+			nextRun = now.Add(s.checkInterval)
+		}
 		updates := map[string]interface{}{
 			"description":         "Auto-refresh RSS feeds",
 			"check_interval":      int(s.checkInterval.Seconds()),
@@ -517,17 +522,4 @@ func (s *AutoRefreshScheduler) updateSchedulerStatus(status, lastError string, s
 		}
 	}
 	database.DB.Create(&task)
-}
-
-func parseAutoRefreshRunSummary(task models.SchedulerTask) *AutoRefreshRunSummary {
-	if task.LastExecutionResult == "" {
-		return nil
-	}
-
-	var summary AutoRefreshRunSummary
-	if err := json.Unmarshal([]byte(task.LastExecutionResult), &summary); err != nil {
-		return nil
-	}
-
-	return &summary
 }

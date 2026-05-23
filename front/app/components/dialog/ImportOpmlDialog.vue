@@ -52,8 +52,8 @@ async function handleImport() {
 
   if (response.success) {
     importResult.value = {
-      feeds: response.data?.feeds_added || 0,
-      categories: response.data?.categories_added || 0
+      feeds: (response.data?.feeds_added as number) || 0,
+      categories: (response.data?.categories_added as number) || 0
     }
 
     // Show success for 2 seconds before closing

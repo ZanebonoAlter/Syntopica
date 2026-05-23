@@ -302,6 +302,10 @@
   box-shadow: 0 16px 28px rgba(26, 26, 26, 0.1);
 }
 
+img[src*="Base64-Image-Removed"] {
+  display: none !important;
+}
+
 .markdown-body table {
   width: 100%;
   margin: 1.4rem 0;

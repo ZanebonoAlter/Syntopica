@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
-import type { NarrativeItem } from '~/api/topicGraph'
+
+import type { NarrativeItem, BoardNarrativeItem } from '~/api/topicGraph'
 
 interface NarrativeTag {
   id: number
@@ -11,7 +12,7 @@ interface NarrativeTag {
 }
 
 interface Props {
-  narrative: NarrativeItem
+  narrative: NarrativeItem | BoardNarrativeItem
   expanded: boolean
   statusStyle: Record<string, { label: string; dot: string; ring: string; bg: string; border: string }>
 }
@@ -65,6 +66,7 @@ const emit = defineEmits<{
         :key="tag.id"
         type="button"
         class="narrative-detail__tag"
+        
         @click="emit('select-tag', tag)"
       >
         {{ tag.label }}

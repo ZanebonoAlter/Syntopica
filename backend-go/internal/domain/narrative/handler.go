@@ -23,6 +23,13 @@ func RegisterNarrativeRoutes(rg *gin.RouterGroup) {
 		group.GET("/:id", getNarrative)
 		group.GET("/:id/history", getNarrativeHistory)
 	}
+
+	boardGroup := rg.Group("/narratives/boards")
+	{
+		boardGroup.GET("/timeline", getBoardTimeline)
+		boardGroup.GET("/:id", getBoardDetail)
+	}
+
 }
 
 func parseScopeParams(c *gin.Context) (scopeType string, categoryID *uint) {
@@ -42,7 +49,7 @@ func getNarrativeTimeline(c *gin.Context) {
 	var date time.Time
 	if dateStr != "" {
 		var err error
-		date, err = time.Parse("2006-01-02", dateStr)
+		date, err = time.ParseInLocation("2006-01-02", dateStr, time.Local)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid date format, use YYYY-MM-DD"})
 			return
@@ -69,11 +76,29 @@ func getNarrativeTimeline(c *gin.Context) {
 }
 
 func getNarratives(c *gin.Context) {
+	boardIDStr := c.Query("board_id")
+	if boardIDStr != "" {
+		boardID, err := strconv.ParseUint(boardIDStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid board_id"})
+			return
+		}
+
+		narratives, err := service.GetByBoardID(uint(boardID))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": narratives})
+		return
+	}
+
 	dateStr := c.Query("date")
 	var date time.Time
 	if dateStr != "" {
 		var err error
-		date, err = time.Parse("2006-01-02", dateStr)
+		date, err = time.ParseInLocation("2006-01-02", dateStr, time.Local)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid date format, use YYYY-MM-DD"})
 			return
@@ -98,7 +123,7 @@ func deleteNarratives(c *gin.Context) {
 	var date time.Time
 	if dateStr != "" {
 		var err error
-		date, err = time.Parse("2006-01-02", dateStr)
+		date, err = time.ParseInLocation("2006-01-02", dateStr, time.Local)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid date format, use YYYY-MM-DD"})
 			return
@@ -123,7 +148,7 @@ func getNarrativeScopes(c *gin.Context) {
 	var date time.Time
 	if dateStr != "" {
 		var err error
-		date, err = time.Parse("2006-01-02", dateStr)
+		date, err = time.ParseInLocation("2006-01-02", dateStr, time.Local)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid date format, use YYYY-MM-DD"})
 			return
@@ -132,7 +157,13 @@ func getNarrativeScopes(c *gin.Context) {
 		date = time.Now()
 	}
 
-	scopes, err := service.GetScopes(date)
+	daysStr := c.DefaultQuery("days", "7")
+	days := 7
+	if d, err := strconv.Atoi(daysStr); err == nil && d > 0 {
+		days = d
+	}
+
+	scopes, err := service.GetScopes(date, days)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
@@ -189,7 +220,7 @@ func regenerateNarratives(c *gin.Context) {
 	var date time.Time
 	if req.Date != "" {
 		var err error
-		date, err = time.Parse("2006-01-02", req.Date)
+		date, err = time.ParseInLocation("2006-01-02", req.Date, time.Local)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid date format, use YYYY-MM-DD"})
 			return
@@ -213,4 +244,55 @@ func regenerateNarratives(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"saved": saved}})
+}
+
+func getBoardTimeline(c *gin.Context) {
+	dateStr := c.Query("date")
+	var anchorDate time.Time
+	if dateStr != "" {
+		var err error
+		anchorDate, err = time.ParseInLocation("2006-01-02", dateStr, time.Local)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid date format, use YYYY-MM-DD"})
+			return
+		}
+	} else {
+		anchorDate = time.Now()
+	}
+
+	daysStr := c.DefaultQuery("days", "7")
+	days := 7
+	if d, err := strconv.Atoi(daysStr); err == nil && d > 0 {
+		days = d
+	}
+
+	scopeType, categoryID := parseScopeParams(c)
+
+	startOfAnchor := time.Date(anchorDate.Year(), anchorDate.Month(), anchorDate.Day(), 0, 0, 0, 0, time.Local)
+	rangeStart := startOfAnchor.AddDate(0, 0, -(days - 1))
+	rangeEnd := startOfAnchor.Add(24 * time.Hour)
+
+	timeline, err := service.GetBoardTimeline(rangeStart, rangeEnd, scopeType, categoryID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": timeline})
+}
+
+func getBoardDetail(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid board id"})
+		return
+	}
+
+	detail, err := service.GetBoardDetail(uint(id))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "board not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": detail})
 }

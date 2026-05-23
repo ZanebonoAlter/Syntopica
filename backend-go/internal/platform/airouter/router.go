@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	otelCodes "go.opentelemetry.io/otel/codes"
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
@@ -16,10 +18,10 @@ import (
 const maxResponseSnippet = 10000
 
 var defaultConcurrency = map[Capability]int{
-	CapabilityArticleCompletion:  2,
-	CapabilityTopicTagging:       3,
-	CapabilityOpenNotebook:       2,
-	CapabilityEmbedding:          5,
+	CapabilityArticleCompletion: 2,
+	CapabilityTopicTagging:      3,
+	CapabilityOpenNotebook:      2,
+	CapabilityEmbedding:         5,
 }
 
 func truncateSnippet(s string) string {
@@ -105,15 +107,15 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 			span.RecordError(err)
 		}
 	}()
-	/*line backend-go/internal/platform/airouter/router.go:47:2*/ var promptParts []string
-	for _, m := range req.Messages {
-		promptParts = append(promptParts, m.Content)
+	span.SetAttributes(attribute.String("ai.capability", string(req.Capability)))
+	if op, _ := req.Metadata["operation"].(string); op != "" {
+		span.SetAttributes(attribute.String("ai.operation", op))
 	}
-	prompt := concatPrompt(promptParts)
-	if len(prompt) > 2000 {
-		prompt = prompt[:2000]
+	if b := baggage.FromContext(ctx); b.Len() > 0 {
+		for _, m := range b.Members() {
+			span.SetAttributes(attribute.String("baggage."+m.Key(), m.Value()))
+		}
 	}
-
 	route, providers, err := r.store.LoadRouteWithProviders(req.Capability)
 	if err != nil {
 		return nil, err
@@ -137,7 +139,7 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 		content, callErr := client.Chat(ctx, provider, req)
 		latencyMs := int(time.Since(start).Milliseconds())
 		if callErr == nil {
-			r.store.LogCall(&models.AICallLog{
+			r.store.LogCall(ctx, &models.AICallLog{
 				Capability:      string(req.Capability),
 				RouteName:       route.Name,
 				ProviderName:    provider.Name,
@@ -158,7 +160,7 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 				code = providerErr.Code
 			}
 		}
-		r.store.LogCall(&models.AICallLog{
+		r.store.LogCall(ctx, &models.AICallLog{
 			Capability:      string(req.Capability),
 			RouteName:       route.Name,
 			ProviderName:    provider.Name,
@@ -183,6 +185,10 @@ func (r *Router) ResolvePrimaryProvider(capability Capability) (*models.AIProvid
 }
 
 func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Capability) (result *EmbeddingResult, err error) {
+	_, span := otel.Tracer("rss-reader-backend").Start(ctx, "Router.Embed")
+	defer span.End()
+	span.SetAttributes(attribute.String("ai.capability", string(capability)))
+
 	route, providers, err := r.store.LoadRouteWithProviders(capability)
 	if err != nil {
 		return nil, err
@@ -206,7 +212,7 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 		res, callErr := client.Embed(ctx, provider, req)
 		latencyMs := int(time.Since(start).Milliseconds())
 		if callErr == nil {
-			r.store.LogCall(&models.AICallLog{
+			r.store.LogCall(ctx, &models.AICallLog{
 				Capability:   string(capability),
 				RouteName:    route.Name,
 				ProviderName: provider.Name,
@@ -225,7 +231,7 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 				code = providerErr.Code
 			}
 		}
-		r.store.LogCall(&models.AICallLog{
+		r.store.LogCall(ctx, &models.AICallLog{
 			Capability:   string(capability),
 			RouteName:    route.Name,
 			ProviderName: provider.Name,
@@ -240,15 +246,4 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 	}
 
 	return nil, errors.Join(attemptErrors...)
-}
-
-func concatPrompt(parts []string) string {
-	var result string
-	for i, p := range parts {
-		if i > 0 {
-			result += "\n"
-		}
-		result += p
-	}
-	return result
 }

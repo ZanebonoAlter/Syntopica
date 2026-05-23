@@ -191,7 +191,6 @@ export interface KeywordAnalysis {
 export interface AIAnalysisMetadata {
   analysisTime: string
   modelVersion: string
-  confidence: number
 }
 
 /**

@@ -1,7 +1,6 @@
 package datamigrate
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -93,14 +92,5 @@ func DefaultTableSpecs() []TableSpec {
 		{Name: "tag_jobs", PrimaryKey: "id", SampleColumns: []string{"article_id", "status", "attempt_count"}},
 
 		{Name: "topic_analysis_jobs", Optional: true},
-	}
-}
-
-func normalizeMode(value string) (Mode, error) {
-	switch Mode(value) {
-	case ModeDryRun, ModeExecute, ModeVerifyOnly:
-		return Mode(value), nil
-	default:
-		return "", fmt.Errorf("unknown mode %q", value)
 	}
 }

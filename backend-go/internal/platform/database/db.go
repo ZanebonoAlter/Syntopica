@@ -14,8 +14,6 @@ var DB *gorm.DB
 var openPostgres = connectPostgres
 var runDatabaseMigrations = RunMigrations
 
-const defaultDatabaseDriver = "postgres"
-
 func InitDB(cfg *config.Config) error {
 	cstZone := time.FixedZone("CST", 8*3600)
 	gormCfg := &gorm.Config{

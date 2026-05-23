@@ -143,9 +143,10 @@ func fixTruncatedJSONArray(content string) string {
 
 	openBrackets := 0
 	for _, c := range truncated {
-		if c == '[' {
+		switch c {
+		case '[':
 			openBrackets++
-		} else if c == ']' {
+		case ']':
 			openBrackets--
 		}
 	}

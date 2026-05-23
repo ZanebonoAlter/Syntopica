@@ -35,6 +35,7 @@ const feedsStore = useFeedsStore()
 const preferencesStore = usePreferencesStore()
 
 const activeTab = ref<'feeds' | 'categories' | 'general' | 'queues' | 'preferences' | 'firecrawl' | 'schedulers'>('feeds')
+const collapsedCategories = ref<Record<string, boolean>>({})
 const loading = ref(false)
 const error = ref<string | null>(null)
 const success = ref<string | null>(null)
@@ -104,12 +105,12 @@ const maxArticlesOptions = [
   { label: '200 篇', value: 200 },
   { label: '500 篇', value: 500 },
   { label: '1000 篇', value: 1000 },
-  { label: '无限制', value: 9999 },
+  { label: '无限制', value: 0 },
 ]
 
 async function updateFeedSetting(
   feedId: string,
-  setting: 'refresh_interval' | 'max_articles' | 'ai_summary_enabled',
+  setting: 'refresh_interval' | 'max_articles' | 'ai_summary_enabled' | 'tagging_enabled' | 'firecrawl_enabled' | 'completion_on_refresh',
   value: number | boolean
 ) {
   loading.value = true
@@ -146,7 +147,7 @@ function formatInterval(minutes: number): string {
 }
 
 function formatMaxArticles(count: number): string {
-  if (count >= 9999) return '无限制'
+  if (count <= 0 || count >= 9999) return '无限制'
   const option = maxArticlesOptions.find(opt => opt.value === count)
   return option?.label || `${count} 篇`
 }
@@ -587,13 +588,17 @@ function formatNextRun(nextRun: string | null | undefined): string {
             :key="categoryName"
             class="space-y-3"
           >
-            <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
+            <h3
+              class="text-sm font-semibold text-gray-700 flex items-center gap-2 cursor-pointer hover:text-gray-900 select-none"
+              @click="collapsedCategories[categoryName] = !collapsedCategories[categoryName]"
+            >
+              <Icon :icon="collapsedCategories[categoryName] ? 'mdi:chevron-right' : 'mdi:chevron-down'" width="16" height="16" />
               <Icon icon="mdi:folder" width="16" height="16" />
               {{ categoryName }}
               <span class="text-xs font-normal text-gray-400">({{ feeds.length }})</span>
             </h3>
 
-            <div class="space-y-2">
+            <div v-show="!collapsedCategories[categoryName]" class="space-y-2">
               <div
                 v-for="feed in feeds"
                 :key="feed.id"
@@ -676,22 +681,57 @@ function formatNextRun(nextRun: string | null | undefined): string {
                       </div>
                     </div>
 
-                    <!-- AI Summary Toggle -->
-                    <div class="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
-                      <div class="flex items-center gap-2">
-                        <Icon icon="mdi:brain" width="16" height="16" class="text-ink-500" />
-                        <span class="text-xs font-medium text-gray-700">AI 总结</span>
+                    <div class="space-y-2 mt-3 pt-3 border-t border-gray-100">
+                      <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                          <Icon icon="mdi:web" width="14" height="14" class="text-blue-500" />
+                          <span class="text-xs font-medium text-gray-700">Firecrawl</span>
+                        </div>
+                        <button
+                          class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
+                          :class="feed.firecrawlEnabled ? 'bg-blue-500' : 'bg-gray-300'"
+                          @click="updateFeedSetting(feed.id, 'firecrawl_enabled', !feed.firecrawlEnabled)"
+                        >
+                          <span
+                            class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform"
+                            :class="feed.firecrawlEnabled ? 'translate-x-5' : 'translate-x-1'"
+                          />
+                        </button>
                       </div>
-                      <button
-                        class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
-                        :class="feed.aiSummaryEnabled !== false ? 'bg-ink-600' : 'bg-gray-300'"
-                        @click="updateFeedSetting(feed.id, 'ai_summary_enabled', !(feed.aiSummaryEnabled !== false))"
-                      >
-                        <span
-                          class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform"
-                          :class="feed.aiSummaryEnabled !== false ? 'translate-x-5' : 'translate-x-1'"
-                        />
-                      </button>
+
+                      <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                          <Icon icon="mdi:tag-multiple" width="14" height="14" class="text-amber-500" />
+                          <span class="text-xs font-medium text-gray-700">打标签</span>
+                        </div>
+                        <button
+                          class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
+                          :class="feed.taggingEnabled !== false ? 'bg-amber-500' : 'bg-gray-300'"
+                          @click="updateFeedSetting(feed.id, 'tagging_enabled', !(feed.taggingEnabled !== false))"
+                        >
+                          <span
+                            class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform"
+                            :class="feed.taggingEnabled !== false ? 'translate-x-5' : 'translate-x-1'"
+                          />
+                        </button>
+                      </div>
+
+                      <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                          <Icon icon="mdi:text-box-plus" width="14" height="14" class="text-green-500" />
+                          <span class="text-xs font-medium text-gray-700">内容补全</span>
+                        </div>
+                        <button
+                          class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
+                          :class="feed.completionOnRefresh !== false ? 'bg-green-500' : 'bg-gray-300'"
+                          @click="updateFeedSetting(feed.id, 'completion_on_refresh', !(feed.completionOnRefresh !== false))"
+                        >
+                          <span
+                            class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform"
+                            :class="feed.completionOnRefresh !== false ? 'translate-x-5' : 'translate-x-1'"
+                          />
+                        </button>
+                      </div>
                     </div>
 
                     <!-- Current Settings Summary -->
@@ -702,7 +742,7 @@ function formatNextRun(nextRun: string | null | undefined): string {
                       </span>
                       <span class="text-gray-500">
                         <Icon icon="mdi:file-document-multiple" width="12" height="12" class="inline-block mr-1" />
-                        {{ formatMaxArticles(feed.maxArticles || 100) }}
+                        {{ formatMaxArticles(feed.maxArticles ?? 100) }}
                       </span>
                       <span class="text-gray-500">
                         <Icon icon="mdi:article" width="12" height="12" class="inline-block mr-1" />
@@ -1405,6 +1445,7 @@ function formatNextRun(nextRun: string | null | undefined): string {
             </div>
           </div>
         </div>
+
       </div>
 
       <!-- Footer -->

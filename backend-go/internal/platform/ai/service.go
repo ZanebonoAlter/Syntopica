@@ -148,10 +148,6 @@ func (s *AIService) PrepareArticleContent(title, content string) string {
 	return fmt.Sprintf("Title: %s\n\nSource content in Markdown:\n%s", title, content)
 }
 
-func (s *AIService) parseSummaryResponse(responseText string) *AISummaryResponse {
-	return ParseSummaryMarkdown(responseText)
-}
-
 func ParseSummaryMarkdown(responseText string) *AISummaryResponse {
 	summary := &AISummaryResponse{
 		KeyPoints: make([]string, 0),
@@ -212,7 +208,7 @@ func (s *AIService) callOpenAI(req openAIRequest) (*openAIResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

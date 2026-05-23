@@ -12,7 +12,7 @@ export interface AnalysisStatusResponse {
   status: 'pending' | 'processing' | 'completed' | 'failed'
   progress: number
   error: string | null
-  result: any | null
+  result: Record<string, unknown> | null
 }
 
 export interface RebuildAnalysisRequest {
@@ -207,7 +207,7 @@ export interface TopicAnalysisStatusRecord {
   status: AnalysisStatusResponse['status'] | 'missing' | 'ready'
   progress: number
   error: string | null
-  result: any | null
+  result: Record<string, unknown> | null
 }
 
 export interface GetTopicArticlesParams {
@@ -316,11 +316,12 @@ export function useTopicGraphApi() {
       }))
     },
 
-    async getDigestsByArticleTag(slug: string, type?: TopicGraphType, date?: string, limit?: number) {
+    async getDigestsByArticleTag(slug: string, type?: TopicGraphType, date?: string, limit?: number, kind?: TopicCategory) {
       return apiClient.get<HotspotDigestsResponse>(withQuery(`/topic-graph/tag/${slug}/digests`, {
         type,
         date,
         limit: limit ? String(limit) : undefined,
+        kind,
       }))
     },
 
@@ -389,7 +390,7 @@ export interface NarrativeScopeCategory {
   category_name: string
   category_icon: string
   category_color: string
-  narrative_count: number
+  board_count: number
   last_generated_at: string
 }
 
@@ -397,6 +398,45 @@ export interface NarrativeScopesResponse {
   date: string
   global_count: number
   categories: NarrativeScopeCategory[]
+}
+
+export interface BoardNarrativeItem extends NarrativeItem {
+  source: 'llm' | 'abstract'
+  board_id: number
+}
+
+export interface BoardItem {
+  id: number
+  name: string
+  description: string
+  scope_type: string
+  scope_category_id: number | null
+  narrative_count: number
+  aggregate_status: 'emerging' | 'continuing' | 'splitting' | 'merging' | 'ending'
+  narratives: BoardNarrativeItem[]
+  prev_board_ids: number[]
+  abstract_tag_id: number | null
+  abstract_tag_slug: string
+  board_concept_id: number | null
+  concept_name: string
+  semantic_board_id?: number
+  is_system: boolean
+  created_at: string
+  event_tags: TagBrief[]
+  abstract_tags: TagBrief[]
+}
+
+export interface TagBrief {
+  id: number
+  slug: string
+  label: string
+  category: string
+  kind?: string
+}
+
+export interface BoardTimelineDay {
+  date: string
+  boards: BoardItem[]
 }
 
 export function useNarrativeApi() {
@@ -433,9 +473,9 @@ export function useNarrativeApi() {
     )
   }
 
-  const getNarrativeScopes = async (date: string) => {
+  const getNarrativeScopes = async (date: string, days = 7) => {
     return apiClient.get<NarrativeScopesResponse>(
-      `/narratives/scopes?date=${date}`
+      `/narratives/scopes?date=${date}&days=${days}`
     )
   }
 
@@ -450,5 +490,20 @@ export function useNarrativeApi() {
     )
   }
 
-  return { getNarratives, getNarrativeTimeline, getNarrativeHistory, deleteNarratives, getNarrativeScopes, regenerateNarratives }
+  const getBoardTimeline = async (date: string, days = 7, scopeType?: string, categoryId?: number) => {
+    const params: Record<string, string | undefined> = { date, days: String(days) }
+    if (scopeType) params.scope_type = scopeType
+    if (categoryId !== undefined) params.category_id = String(categoryId)
+    return apiClient.get<BoardTimelineDay[]>(
+      withQuery('/narratives/boards/timeline', params)
+    )
+  }
+
+  const getBoardDetail = async (id: number) => {
+    return apiClient.get<BoardItem>(
+      `/narratives/boards/${id}`
+    )
+  }
+
+  return { getNarratives, getNarrativeTimeline, getNarrativeHistory, deleteNarratives, getNarrativeScopes, regenerateNarratives, getBoardTimeline, getBoardDetail }
 }

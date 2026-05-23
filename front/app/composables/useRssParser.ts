@@ -2,7 +2,6 @@ import type { RssFeed, Article, FeedResponse } from '~/types'
 import { cleanHtml, extractFirstImage, getCategoryColor } from '~/utils/text'
 
 export function useRssParser() {
-  const config = useRuntimeConfig()
   const loading = ref(false)
   const error = ref<string | null>(null)
 

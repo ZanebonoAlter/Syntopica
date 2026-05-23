@@ -222,3 +222,11 @@ await apiStore.updateFeed(id, {
 3. props 转 ref 后要考虑同步，不然表单状态会错。
 4. `v-model` 默认值别偷懒，用 `??`。
 5. Windows 下重写含中文文件时，要把编码当成高风险项处理。
+
+6. **后端过滤与计数是两个独立问题。** 添加 JOIN 过滤时， 会因重复行膨胀，必须用  分开处理。
+7. **归一化函数不能漏。** 后端返回 snake_case ()，前端用 camelCase ()，中间层  必须过一遍，不然  就是 Invalid Date。
+8. **低质量 embedding 模型的阈值陷阱。** Qwen3-Embedding:4b 对完全不相关的概念（"Anthropic" vs "伊朗"）产生的余弦相似度可达 0.65，远高于直觉预期。默认  会导致大量跨域误匹配。需要实际测量后把阈值提到 0.72+，或者在 UI 标注推荐区间。
+
+6. **后端过滤与计数是两个独立问题。** 添加 JOIN 过滤时，COUNT(*) 会因重复行膨胀，必须用 COUNT(DISTINCT id) 分开处理。
+7. **归一化函数不能漏。** 后端返回 snake_case (pub_date)，前端用 camelCase (pubDate)，中间层 normalizeArticle 必须过一遍，不然 new Date(undefined) 就是 Invalid Date。
+8. **低质量 embedding 模型的阈值陷阱。** Qwen3-Embedding:4b 对完全不相关的概念（Anthropic vs 伊朗）产生的余弦相似度可达 0.65，远高于直觉预期。默认 SimThreshold=0.6 会导致大量跨域误匹配。需要实际测量后把阈值提到 0.72+，或者在 UI 标注推荐区间。

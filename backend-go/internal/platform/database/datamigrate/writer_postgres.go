@@ -314,7 +314,7 @@ func (w *PostgresWriter) SampleRows(ctx context.Context, spec TableSpec, limit i
 	if err != nil {
 		return nil, fmt.Errorf("query postgres samples for %s: %w", spec.Name, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make([]map[string]any, 0, limit)
 	for rows.Next() {
@@ -368,7 +368,7 @@ func (w *PostgresWriter) LoadEmbeddingChecks(ctx context.Context, spec TableSpec
 	if err != nil {
 		return nil, fmt.Errorf("query embedding checks for %s: %w", spec.Name, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	checks := make([]EmbeddingVectorCheck, 0, limit)
 	for rows.Next() {

@@ -1,11 +1,13 @@
 package airouter
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"my-robot-backend/internal/domain/models"
@@ -231,9 +233,12 @@ func (s *Store) ensureDefaultRoute(capability Capability, providerID uint) error
 	return s.db.Model(&existing).Update("enabled", true).Error
 }
 
-func (s *Store) LogCall(logEntry *models.AICallLog) {
+func (s *Store) LogCall(ctx context.Context, logEntry *models.AICallLog) {
 	if logEntry == nil || s.db == nil {
 		return
+	}
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.HasTraceID() {
+		logEntry.TraceID = spanCtx.TraceID().String()
 	}
 	_ = s.db.Create(logEntry).Error
 }

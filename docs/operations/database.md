@@ -263,4 +263,4 @@ go run cmd/migrate-db/main.go         # SQLite → PostgreSQL 数据迁移
 
 - 当前项目以 Go 后端为主
 - 文档以当前 checkout 里的真实数据库逻辑为准
-- 所有表的详细字段说明见 [DATABASE_FIELDS.md](../database/DATABASE_FIELDS.md)
+- 所有表的详细字段说明见 [DATABASE_FIELDS.md](../reference/database/DATABASE_FIELDS.md)

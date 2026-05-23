@@ -9,8 +9,6 @@ import (
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
-
-	"gorm.io/gorm"
 )
 
 type TagInput struct {
@@ -19,20 +17,9 @@ type TagInput struct {
 	Category     string `json:"category"`
 	Description  string `json:"description"`
 	ArticleCount int    `json:"article_count"`
-	IsAbstract   bool   `json:"is_abstract"`
 	Source       string `json:"source"`
 	ParentLabel  string `json:"parent_label,omitempty"`
 	IsWatched    bool   `json:"is_watched,omitempty"`
-}
-
-type AbstractTreeNode struct {
-	ID           uint               `json:"id"`
-	Label        string             `json:"label"`
-	Category     string             `json:"category"`
-	Description  string             `json:"description"`
-	ArticleCount int                `json:"article_count"`
-	IsAbstract   bool               `json:"is_abstract"`
-	Children     []AbstractTreeNode `json:"children,omitempty"`
 }
 
 type PreviousNarrative struct {
@@ -43,210 +30,119 @@ type PreviousNarrative struct {
 	Generation int    `json:"generation"`
 }
 
-func CollectTagInputs(date time.Time) ([]TagInput, error) {
+type SemanticBoardNarrativeInput struct {
+	Board        models.SemanticLabel
+	EventTags    []TagInput
+	PrevBoardIDs []uint
+}
+
+func CollectSemanticBoardNarrativeInputs(date time.Time, scopeType string, categoryID *uint) ([]SemanticBoardNarrativeInput, error) {
 	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	var inputs []TagInput
-
-	abstractTreeTags, err := collectAbstractTreeTags(startOfDay, endOfDay)
-	if err != nil {
-		return nil, fmt.Errorf("collect abstract tree tags: %w", err)
+	var boards []models.SemanticLabel
+	if err := database.DB.Where("label_type = ? AND status = ?", "board", "active").
+		Order("display_order ASC, id ASC").
+		Find(&boards).Error; err != nil {
+		return nil, fmt.Errorf("collect active semantic boards: %w", err)
 	}
-	inputs = append(inputs, abstractTreeTags...)
-
-	unclassifiedTags, err := collectUnclassifiedTags(startOfDay, endOfDay)
-	if err != nil {
-		return nil, fmt.Errorf("collect unclassified tags: %w", err)
-	}
-	inputs = append(inputs, unclassifiedTags...)
-
-	return inputs, nil
-}
-
-func collectAbstractTreeTags(since, until time.Time) ([]TagInput, error) {
-	type relationRow struct {
-		ParentID uint
-		ChildID  uint
-	}
-	var relations []relationRow
-	database.DB.Model(&models.TopicTagRelation{}).
-		Where("relation_type = ?", "abstract").
-		Select("parent_id, child_id").
-		Scan(&relations)
-
-	if len(relations) == 0 {
+	if len(boards) == 0 {
 		return nil, nil
 	}
 
-	tagIDSet := make(map[uint]bool)
-	parentOf := make(map[uint]uint)
-	for _, r := range relations {
-		tagIDSet[r.ParentID] = true
-		tagIDSet[r.ChildID] = true
-		parentOf[r.ChildID] = r.ParentID
+	boardIDs := make([]uint, 0, len(boards))
+	boardByID := make(map[uint]models.SemanticLabel, len(boards))
+	for _, board := range boards {
+		boardIDs = append(boardIDs, board.ID)
+		boardByID[board.ID] = board
 	}
 
-	allIDs := make([]uint, 0, len(tagIDSet))
-	for id := range tagIDSet {
-		allIDs = append(allIDs, id)
+	type tagRow struct {
+		SemanticBoardID uint
+		ID              uint
+		Label           string
+		Category        string
+		Description     string
+		Source          string
+		ArticleCount    int
 	}
 
-	var tags []models.TopicTag
-	database.DB.Where("id IN ? AND status = ?", allIDs, "active").Find(&tags)
-	if len(tags) == 0 {
-		return nil, nil
-	}
-
-	tagMap := make(map[uint]models.TopicTag, len(tags))
-	for _, t := range tags {
-		tagMap[t.ID] = t
-	}
-
-	tagIDs := make([]uint, len(tags))
-	for i, t := range tags {
-		tagIDs[i] = t.ID
-	}
-
-	type countRow struct {
-		TopicTagID uint `json:"topic_tag_id"`
-		Cnt        int  `json:"cnt"`
-	}
-	var counts []countRow
-	database.DB.Model(&models.ArticleTopicTag{}).
-		Select("article_topic_tags.topic_tag_id, COUNT(DISTINCT article_topic_tags.article_id) as cnt").
+	query := database.DB.Model(&models.TopicTag{}).
+		Select(`topic_tag_board_labels.semantic_board_id AS semantic_board_id,
+			topic_tags.id AS id,
+			topic_tags.label AS label,
+			topic_tags.category AS category,
+			topic_tags.description AS description,
+			topic_tags.source AS source,
+			COUNT(DISTINCT articles.id) AS article_count`).
+		Joins("JOIN topic_tag_board_labels ON topic_tag_board_labels.topic_tag_id = topic_tags.id").
+		Joins("JOIN article_topic_tags ON article_topic_tags.topic_tag_id = topic_tags.id").
 		Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
-		Where("article_topic_tags.topic_tag_id IN ? AND articles.pub_date >= ? AND articles.pub_date < ?", tagIDs, since, until).
-		Group("article_topic_tags.topic_tag_id").
-		Scan(&counts)
+		Where("topic_tag_board_labels.semantic_board_id IN ?", boardIDs).
+		Where("topic_tags.status = ? AND topic_tags.category = ?", "active", models.TagCategoryEvent).
+		Where("articles.pub_date >= ? AND articles.pub_date < ?", startOfDay, endOfDay)
 
-	countMap := make(map[uint]int, len(counts))
-	for _, c := range counts {
-		countMap[c.TopicTagID] = c.Cnt
+	if scopeType == models.NarrativeScopeTypeFeedCategory {
+		if categoryID == nil {
+			return nil, nil
+		}
+		query = query.Joins("JOIN feeds ON feeds.id = articles.feed_id").Where("feeds.category_id = ?", *categoryID)
 	}
 
-	var inputs []TagInput
-	for _, tag := range tags {
-		parentLabel := ""
-		if pid, ok := parentOf[tag.ID]; ok {
-			if p, found := tagMap[pid]; found {
-				parentLabel = p.Label
-			}
-		}
+	var rows []tagRow
+	if err := query.Group(`topic_tag_board_labels.semantic_board_id,
+			topic_tags.id,
+			topic_tags.label,
+			topic_tags.category,
+			topic_tags.description,
+			topic_tags.source`).
+		Order("topic_tag_board_labels.semantic_board_id ASC, article_count DESC, topic_tags.id ASC").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("collect semantic board event tags: %w", err)
+	}
 
-		inputs = append(inputs, TagInput{
-			ID:           tag.ID,
-			Label:        tag.Label,
-			Category:     tag.Category,
-			Description:  tag.Description,
-			ArticleCount: countMap[tag.ID],
-			IsAbstract:   tag.Source == "abstract",
-			Source:       tag.Source,
-			ParentLabel:  parentLabel,
+	eventsByBoard := make(map[uint][]TagInput)
+	for _, row := range rows {
+		if _, ok := boardByID[row.SemanticBoardID]; !ok {
+			continue
+		}
+		eventsByBoard[row.SemanticBoardID] = append(eventsByBoard[row.SemanticBoardID], TagInput{
+			ID:           row.ID,
+			Label:        row.Label,
+			Category:     row.Category,
+			Description:  row.Description,
+			ArticleCount: row.ArticleCount,
+			Source:       row.Source,
 		})
 	}
-	return inputs, nil
-}
 
-func collectUnclassifiedTags(since, until time.Time) ([]TagInput, error) {
-	var allRelated []uint
-	database.DB.Model(&models.TopicTagRelation{}).
-		Where("relation_type = ?", "abstract").
-		Pluck("parent_id", &allRelated)
-	var childIDs []uint
-	database.DB.Model(&models.TopicTagRelation{}).
-		Where("relation_type = ?", "abstract").
-		Pluck("child_id", &childIDs)
-	allRelated = append(allRelated, childIDs...)
-	relatedSet := make(map[uint]bool, len(allRelated))
-	for _, id := range allRelated {
-		relatedSet[id] = true
-	}
-
-	activeSubquery := database.DB.Model(&models.ArticleTopicTag{}).
-		Select("DISTINCT article_topic_tags.topic_tag_id").
-		Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
-		Where("articles.pub_date >= ? AND articles.pub_date < ?", since, until)
-
-	baseQuery := database.DB.Model(&models.TopicTag{}).
-		Where("status = ? AND source != ?", "active", "abstract").
-		Where("id IN (?)", activeSubquery)
-
-	if len(relatedSet) > 0 {
-		excl := make([]uint, 0, len(relatedSet))
-		for id := range relatedSet {
-			excl = append(excl, id)
+	inputs := make([]SemanticBoardNarrativeInput, 0, len(eventsByBoard))
+	for _, board := range boards {
+		eventTags := eventsByBoard[board.ID]
+		if len(eventTags) == 0 {
+			continue
 		}
-		baseQuery = baseQuery.Where("id NOT IN ?", excl)
-	}
-
-	var watchedTags []models.TopicTag
-	watchedQ := baseQuery.Session(&gorm.Session{}).
-		Where("is_watched = ?", true).
-		Order("quality_score DESC, feed_count DESC")
-	watchedQ.Find(&watchedTags)
-
-	var topTags []models.TopicTag
-	topQ := baseQuery.Session(&gorm.Session{}).
-		Where("is_watched = ?", false).
-		Order("quality_score DESC, feed_count DESC").
-		Limit(10)
-	topQ.Find(&topTags)
-
-	tags := append(watchedTags, topTags...)
-	if len(tags) == 0 {
-		return nil, nil
-	}
-
-	tagIDs := make([]uint, len(tags))
-	for i, t := range tags {
-		tagIDs[i] = t.ID
-	}
-
-	type countRow struct {
-		TopicTagID uint `json:"topic_tag_id"`
-		Cnt        int  `json:"cnt"`
-	}
-	var counts []countRow
-	database.DB.Model(&models.ArticleTopicTag{}).
-		Select("article_topic_tags.topic_tag_id, COUNT(DISTINCT article_topic_tags.article_id) as cnt").
-		Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
-		Where("article_topic_tags.topic_tag_id IN ? AND articles.pub_date >= ? AND articles.pub_date < ?", tagIDs, since, until).
-		Group("article_topic_tags.topic_tag_id").
-		Scan(&counts)
-
-	countMap := make(map[uint]int, len(counts))
-	for _, c := range counts {
-		countMap[c.TopicTagID] = c.Cnt
-	}
-
-	var inputs []TagInput
-	for _, tag := range tags {
-		inputs = append(inputs, TagInput{
-			ID:           tag.ID,
-			Label:        tag.Label,
-			Category:     tag.Category,
-			Description:  tag.Description,
-			ArticleCount: countMap[tag.ID],
-			IsAbstract:   false,
-			Source:       tag.Source,
-			IsWatched:    tag.IsWatched,
+		inputs = append(inputs, SemanticBoardNarrativeInput{
+			Board:        board,
+			EventTags:    eventTags,
+			PrevBoardIDs: matchPreviousSemanticBoard(board.ID, date, scopeType, categoryID),
 		})
 	}
+
 	return inputs, nil
 }
 
 type CategoryNarrativeBrief struct {
-	ID          uint      `json:"id"`
-	Title       string    `json:"title"`
-	Summary     string    `json:"summary"`
+	ID          uint       `json:"id"`
+	Title       string     `json:"title"`
+	Summary     string     `json:"summary"`
 	RelatedTags []TagBrief `json:"related_tags"`
 }
 
 type CategoryInput struct {
-	CategoryID   uint                    `json:"category_id"`
-	CategoryName string                  `json:"category_name"`
-	CategoryIcon string                  `json:"category_icon"`
+	CategoryID   uint                     `json:"category_id"`
+	CategoryName string                   `json:"category_name"`
+	CategoryIcon string                   `json:"category_icon"`
 	Narratives   []CategoryNarrativeBrief `json:"narratives"`
 }
 
@@ -363,8 +259,8 @@ func CollectCategoryNarrativeSummaries(date time.Time) ([]CategoryInput, error) 
 	}
 
 	type catWithCount struct {
-		CategoryID  uint
-		Narratives  []models.NarrativeSummary
+		CategoryID   uint
+		Narratives   []models.NarrativeSummary
 		ArticleCount int
 	}
 
@@ -374,7 +270,7 @@ func CollectCategoryNarrativeSummaries(date time.Time) ([]CategoryInput, error) 
 		for _, n := range ns {
 			var ids []interface{}
 			if n.RelatedArticleIDs != "" {
-				json.Unmarshal([]byte(n.RelatedArticleIDs), &ids)
+				_ = json.Unmarshal([]byte(n.RelatedArticleIDs), &ids)
 			}
 			totalArticles += len(ids)
 		}
@@ -427,7 +323,7 @@ func CollectCategoryNarrativeSummaries(date time.Time) ([]CategoryInput, error) 
 		for _, n := range b.Narratives {
 			var tagIDs []uint
 			if n.RelatedTagIDs != "" {
-				json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
+				_ = json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
 			}
 			for _, id := range tagIDs {
 				tagIDSet[id] = true
@@ -459,7 +355,7 @@ func CollectCategoryNarrativeSummaries(date time.Time) ([]CategoryInput, error) 
 		for _, n := range b.Narratives {
 			var tagIDs []uint
 			if n.RelatedTagIDs != "" {
-				json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
+				_ = json.Unmarshal([]byte(n.RelatedTagIDs), &tagIDs)
 			}
 			relatedTags := make([]TagBrief, 0, len(tagIDs))
 			for _, tid := range tagIDs {
@@ -488,222 +384,4 @@ func CollectCategoryNarrativeSummaries(date time.Time) ([]CategoryInput, error) 
 		len(result), total, date.Format("2006-01-02"))
 
 	return result, nil
-}
-
-func CollectAbstractTreeInputsByCategory(date time.Time, categoryID uint) ([]AbstractTreeNode, error) {
-	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
-	endOfDay := startOfDay.Add(24 * time.Hour)
-
-	var feedIDs []uint
-	if err := database.DB.Model(&models.Feed{}).
-		Where("category_id = ?", categoryID).
-		Pluck("id", &feedIDs).Error; err != nil || len(feedIDs) == 0 {
-		return nil, nil
-	}
-
-	var tagIDs []uint
-	database.DB.Model(&models.ArticleTopicTag{}).
-		Select("DISTINCT article_topic_tags.topic_tag_id").
-		Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
-		Where("articles.feed_id IN ? AND articles.pub_date >= ? AND articles.pub_date < ?", feedIDs, startOfDay, endOfDay).
-		Pluck("article_topic_tags.topic_tag_id", &tagIDs)
-
-	if len(tagIDs) == 0 {
-		return nil, nil
-	}
-
-	var relations []models.TopicTagRelation
-	database.DB.Where("relation_type = ? AND (parent_id IN ? OR child_id IN ?)",
-		"abstract", tagIDs, tagIDs).Find(&relations)
-
-	if len(relations) == 0 {
-		return nil, nil
-	}
-
-	allIDs := make(map[uint]bool)
-	parentOf := make(map[uint]uint)
-	childrenOf := make(map[uint][]uint)
-	for _, r := range relations {
-		allIDs[r.ParentID] = true
-		allIDs[r.ChildID] = true
-		parentOf[r.ChildID] = r.ParentID
-		childrenOf[r.ParentID] = append(childrenOf[r.ParentID], r.ChildID)
-	}
-
-	var allTagIDs []uint
-	for id := range allIDs {
-		allTagIDs = append(allTagIDs, id)
-	}
-
-	var tags []models.TopicTag
-	database.DB.Where("id IN ? AND status = ?", allTagIDs, "active").Find(&tags)
-	tagMap := make(map[uint]models.TopicTag, len(tags))
-	for _, t := range tags {
-		tagMap[t.ID] = t
-	}
-
-	type countRow struct {
-		TopicTagID uint `json:"topic_tag_id"`
-		Cnt        int  `json:"cnt"`
-	}
-	var counts []countRow
-	database.DB.Model(&models.ArticleTopicTag{}).
-		Select("article_topic_tags.topic_tag_id, COUNT(DISTINCT article_topic_tags.article_id) as cnt").
-		Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
-		Where("article_topic_tags.topic_tag_id IN ? AND articles.feed_id IN ? AND articles.pub_date >= ? AND articles.pub_date < ?",
-			allTagIDs, feedIDs, startOfDay, endOfDay).
-		Group("article_topic_tags.topic_tag_id").
-		Scan(&counts)
-
-	countMap := make(map[uint]int, len(counts))
-	for _, c := range counts {
-		countMap[c.TopicTagID] = c.Cnt
-	}
-
-	visited := make(map[uint]bool)
-	var roots []uint
-	for id := range allIDs {
-		if _, hasParent := parentOf[id]; !hasParent {
-			roots = append(roots, id)
-		}
-	}
-
-	var result []AbstractTreeNode
-	for _, rootID := range roots {
-		if visited[rootID] {
-			continue
-		}
-		tree := buildTree(rootID, tagMap, countMap, childrenOf, visited)
-		if tree != nil {
-			result = append(result, *tree)
-		}
-	}
-
-	return result, nil
-}
-
-func buildTree(id uint, tagMap map[uint]models.TopicTag, countMap map[uint]int, childrenOf map[uint][]uint, visited map[uint]bool) *AbstractTreeNode {
-	if visited[id] {
-		return nil
-	}
-	visited[id] = true
-
-	tag, ok := tagMap[id]
-	if !ok {
-		return nil
-	}
-
-	node := &AbstractTreeNode{
-		ID:           tag.ID,
-		Label:        tag.Label,
-		Category:     tag.Category,
-		Description:  tag.Description,
-		ArticleCount: countMap[tag.ID],
-		IsAbstract:   tag.Source == "abstract",
-	}
-
-	for _, childID := range childrenOf[id] {
-		child := buildTree(childID, tagMap, countMap, childrenOf, visited)
-		if child != nil {
-			node.Children = append(node.Children, *child)
-		}
-	}
-
-	return node
-}
-
-func CollectUnclassifiedEventTagsByCategory(date time.Time, categoryID uint) ([]TagInput, error) {
-	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
-	endOfDay := startOfDay.Add(24 * time.Hour)
-
-	var feedIDs []uint
-	if err := database.DB.Model(&models.Feed{}).
-		Where("category_id = ?", categoryID).
-		Pluck("id", &feedIDs).Error; err != nil || len(feedIDs) == 0 {
-		return nil, nil
-	}
-
-	var tagIDs []uint
-	database.DB.Model(&models.ArticleTopicTag{}).
-		Select("DISTINCT article_topic_tags.topic_tag_id").
-		Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
-		Where("articles.feed_id IN ? AND articles.pub_date >= ? AND articles.pub_date < ?", feedIDs, startOfDay, endOfDay).
-		Pluck("article_topic_tags.topic_tag_id", &tagIDs)
-
-	if len(tagIDs) == 0 {
-		return nil, nil
-	}
-
-	var relatedIDs []uint
-	database.DB.Model(&models.TopicTagRelation{}).
-		Where("relation_type = ? AND (parent_id IN ? OR child_id IN ?)", "abstract", tagIDs, tagIDs).
-		Pluck("parent_id", &relatedIDs)
-	var childIDs []uint
-	database.DB.Model(&models.TopicTagRelation{}).
-		Where("relation_type = ? AND (parent_id IN ? OR child_id IN ?)", "abstract", tagIDs, tagIDs).
-		Pluck("child_id", &childIDs)
-	relatedIDs = append(relatedIDs, childIDs...)
-	relatedSet := make(map[uint]bool, len(relatedIDs))
-	for _, id := range relatedIDs {
-		relatedSet[id] = true
-	}
-
-	var tags []models.TopicTag
-	database.DB.Where("id IN ? AND status = ? AND category = ? AND source != ?",
-		tagIDs, "active", "event", "abstract").
-		Order("quality_score DESC, feed_count DESC").
-		Limit(50).
-		Find(&tags)
-
-	if len(tags) == 0 {
-		return nil, nil
-	}
-
-	var filtered []models.TopicTag
-	for _, t := range tags {
-		if !relatedSet[t.ID] {
-			filtered = append(filtered, t)
-		}
-	}
-	tags = filtered
-
-	if len(tags) == 0 {
-		return nil, nil
-	}
-
-	tagIDs = make([]uint, len(tags))
-	for i, t := range tags {
-		tagIDs[i] = t.ID
-	}
-
-	type countRow struct {
-		TopicTagID uint `json:"topic_tag_id"`
-		Cnt        int  `json:"cnt"`
-	}
-	var counts []countRow
-	database.DB.Model(&models.ArticleTopicTag{}).
-		Select("article_topic_tags.topic_tag_id, COUNT(DISTINCT article_topic_tags.article_id) as cnt").
-		Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
-		Where("article_topic_tags.topic_tag_id IN ? AND articles.feed_id IN ? AND articles.pub_date >= ? AND articles.pub_date < ?",
-			tagIDs, feedIDs, startOfDay, endOfDay).
-		Group("article_topic_tags.topic_tag_id").
-		Scan(&counts)
-
-	countMap := make(map[uint]int, len(counts))
-	for _, c := range counts {
-		countMap[c.TopicTagID] = c.Cnt
-	}
-
-	var inputs []TagInput
-	for _, tag := range tags {
-		inputs = append(inputs, TagInput{
-			ID:           tag.ID,
-			Label:        tag.Label,
-			Category:     tag.Category,
-			Description:  tag.Description,
-			ArticleCount: countMap[tag.ID],
-			Source:       tag.Source,
-		})
-	}
-	return inputs, nil
 }

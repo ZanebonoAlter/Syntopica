@@ -20,11 +20,11 @@ pnpm exec nuxi typecheck
 
 ## 架构文档
 
-- 前端架构：`docs/architecture/frontend.md`
-- 组件分工：`docs/architecture/frontend-components.md`
-- 功能说明：`docs/guides/frontend-features.md`
-- 数据流：`docs/architecture/data-flow.md`
-- 开发流程：`docs/operations/development.md`
+- 前端架构：`docs/reference/architecture/frontend.md`
+- 组件分工：`docs/reference/architecture/frontend-components.md`
+- 功能说明：`docs/reference/frontend-features.md`
+- 数据流：`docs/reference/architecture/data-flow.md`
+- 开发流程：`docs/reference/development.md`
 
 ## 当前目录原则
 

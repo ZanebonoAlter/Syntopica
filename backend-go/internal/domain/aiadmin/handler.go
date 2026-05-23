@@ -1,14 +1,17 @@
 package aiadmin
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/airouter"
 	"my-robot-backend/internal/platform/database"
+	"my-robot-backend/internal/platform/logging"
 )
 
 type UpsertProviderRequest struct {
@@ -251,4 +254,90 @@ func UpdateRoute(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "route updated"})
+}
+
+func GetSettings(c *gin.Context) {
+	primary, _, err := airouter.NewRouter().ResolvePrimaryProvider(airouter.CapabilityArticleCompletion)
+	if err != nil {
+		logging.Warnf("ai-settings: resolve primary provider failed: %v", err)
+	}
+
+	data := gin.H{}
+
+	if primary != nil {
+		data["provider_id"] = primary.ID
+		data["provider_name"] = primary.Name
+		data["base_url"] = primary.BaseURL
+		data["model"] = primary.Model
+		data["api_key_configured"] = strings.TrimSpace(primary.APIKey) != ""
+	}
+
+	var summarySetting models.AISettings
+	if err := database.DB.Where("key = ?", "summary_config").First(&summarySetting).Error; err == nil {
+		var cfg map[string]interface{}
+		if json.Unmarshal([]byte(summarySetting.Value), &cfg) == nil {
+			if tr, ok := cfg["time_range"]; ok {
+				if trNum, ok := tr.(float64); ok {
+					data["time_range"] = int(trNum)
+				}
+			}
+		}
+	}
+
+	var settings []models.AISettings
+	database.DB.Order("key ASC").Find(&settings)
+	for _, s := range settings {
+		if s.Key == "summary_config" || s.Key == "firecrawl_config" {
+			continue
+		}
+		data[s.Key] = s.Value
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
+}
+
+type SaveSettingsRequest struct {
+	NarrativeBoardEmbeddingThreshold *float64 `json:"narrative_board_embedding_threshold"`
+}
+
+func SaveSettings(c *gin.Context) {
+	var req SaveSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	if req.NarrativeBoardEmbeddingThreshold != nil {
+		val := *req.NarrativeBoardEmbeddingThreshold
+		if val < 0.1 || val > 1.0 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "narrative_board_embedding_threshold must be between 0.1 and 1.0"})
+			return
+		}
+		if err := upsertAISetting("narrative_board_embedding_threshold", strconv.FormatFloat(val, 'f', -1, 64), "板块概念匹配的 embedding 相似度阈值"); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+func upsertAISetting(key, value, description string) error {
+	var existing models.AISettings
+	err := database.DB.Where("key = ?", key).First(&existing).Error
+	if err == nil {
+		existing.Value = value
+		if description != "" {
+			existing.Description = description
+		}
+		return database.DB.Save(&existing).Error
+	}
+	if err == gorm.ErrRecordNotFound {
+		return database.DB.Create(&models.AISettings{
+			Key:         key,
+			Value:       value,
+			Description: description,
+		}).Error
+	}
+	return err
 }

@@ -12,6 +12,10 @@ const props = defineProps<{
   feedId?: string | null
   categoryId?: string | null
   anchorDate?: string
+  selectable?: boolean
+  category?: string
+  sectorId?: number | null
+  hideCategoryTabs?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -24,8 +28,10 @@ const watchedTagsApi = useWatchedTagsApi()
 const nodes = ref<TagHierarchyNode[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
-const selectedCategory = ref<string>('')
+const selectedCategory = ref<string>(props.category ?? '')
 const showUnclassified = ref(false)
+const unplacedTags = ref<TagHierarchyNode[]>([])
+const showUnplaced = ref(false)
 const searchQuery = ref('')
 const initialTimeRange = props.anchorDate ? `custom:${props.anchorDate}:${props.anchorDate}` : ''
 const timeRange = ref<string>(initialTimeRange)
@@ -138,17 +144,37 @@ async function loadHierarchy() {
   error.value = null
   try {
     const apiCategory = selectedCategory.value || undefined
+    const conceptId = props.sectorId ?? undefined
     const response = await abstractTagApi.fetchHierarchy(
       apiCategory,
       props.feedId || undefined,
       props.categoryId || undefined,
       showUnclassified.value,
       timeRange.value || undefined,
+      conceptId,
     )
     if (response.success && response.data) {
-      nodes.value = response.data.nodes
+      nodes.value = response.data.nodes ?? []
     } else {
       error.value = response.error || '加载层级数据失败'
+    }
+    const unplacedRes = await abstractTagApi.fetchHierarchy(
+      apiCategory,
+      props.feedId || undefined,
+      props.categoryId || undefined,
+      true,
+      timeRange.value || undefined,
+    )
+    if (unplacedRes.success && unplacedRes.data) {
+      const placedIds = new Set<number>()
+      function collectPlaced(list: TagHierarchyNode[]) {
+        for (const node of list) {
+          placedIds.add(node.id)
+          collectPlaced(node.children)
+        }
+      }
+      collectPlaced(nodes.value)
+      unplacedTags.value = (unplacedRes.data.nodes ?? []).filter(n => !placedIds.has(n.id))
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : '加载失败'
@@ -314,6 +340,7 @@ function handleUpdateEditingValue(val: string) {
 }
 
 function handleSelectNode(node: TagHierarchyNode) {
+  if (props.selectable === false) return
   emit('select-tag', node.slug, normalizeHierarchyCategory(node.category))
 }
 
@@ -358,10 +385,26 @@ watch(() => [props.feedId, props.categoryId] as const, () => {
   void loadHierarchy()
 })
 
+watch(() => props.category, (newCat) => {
+  if (props.hideCategoryTabs) {
+    if (newCat !== selectedCategory.value) {
+      selectedCategory.value = newCat ?? ''
+      void loadHierarchy()
+    }
+  } else if (newCat !== undefined && newCat !== selectedCategory.value) {
+    selectedCategory.value = newCat
+    void loadHierarchy()
+  }
+})
+
 watch(timeRange, (newVal) => {
   if (!newVal.startsWith('custom:')) {
     showCustomRange.value = false
   }
+  void loadHierarchy()
+})
+
+watch(() => props.sectorId, () => {
   void loadHierarchy()
 })
 </script>
@@ -379,15 +422,6 @@ watch(timeRange, (newVal) => {
         </div>
       </div>
       <div class="flex items-center gap-2 flex-shrink-0">
-        <button
-          type="button"
-          class="th-category-btn"
-          :class="{ 'th-category-btn--active': showUnclassified }"
-          @click="showUnclassified = !showUnclassified; void loadHierarchy()"
-        >
-          <Icon icon="mdi:label-off-outline" width="12" class="mr-1" />
-          未分类
-        </button>
         <button
           type="button"
           class="th-category-btn th-organize-btn"
@@ -410,7 +444,7 @@ watch(timeRange, (newVal) => {
 
     <!-- Category tabs + search -->
     <div class="flex items-center gap-2 mb-3">
-      <div class="flex gap-1.5 flex-shrink-0">
+      <div v-if="!hideCategoryTabs" class="flex gap-1.5 flex-shrink-0">
         <button
           type="button"
           class="th-category-btn"
@@ -513,6 +547,13 @@ watch(timeRange, (newVal) => {
     </div>
 
     <!-- Empty -->
+    <div v-else-if="sortedNodes.length === 0 && props.sectorId" class="th-empty">
+      <Icon icon="mdi:filter-variant-remove" width="32" class="text-white/20" />
+      <p>该板块暂无标签</p>
+      <p class="text-xs text-white/30 mt-1">此板块下没有匹配的标签层级关系</p>
+    </div>
+
+    <!-- Empty: no data -->
     <div v-else-if="sortedNodes.length === 0" class="th-empty">
       <Icon icon="mdi:file-tree-outline" width="32" class="text-white/20" />
       <p>暂无标签层级关系</p>
@@ -538,6 +579,38 @@ watch(timeRange, (newVal) => {
         @update:editing-value="handleUpdateEditingValue"
         @toggle-watch="toggleWatch"
       />
+    </div>
+
+    <!-- Unplaced tags section -->
+    <div v-if="unplacedTags.length > 0" class="th-unplaced-section">
+      <button
+        type="button"
+        class="th-unplaced-toggle"
+        @click="showUnplaced = !showUnplaced"
+      >
+        <Icon :icon="showUnplaced ? 'mdi:chevron-down' : 'mdi:chevron-right'" width="16" />
+        <span class="th-unplaced-label">未归属</span>
+        <span class="th-unplaced-count">{{ unplacedTags.length }} 个标签</span>
+      </button>
+      <div v-if="showUnplaced" class="th-unplaced-list">
+        <TagHierarchyRow
+          v-for="tag in unplacedTags"
+          :key="tag.id"
+          :node="tag"
+          :depth="1"
+          :editing-id="editingNodeId"
+          :saving="saving"
+          :watched-tag-ids="watchedTagIds"
+          @start-edit="startEdit"
+          @cancel-edit="cancelEdit"
+          @confirm-edit="void confirmEdit()"
+          @detach="requestDetach"
+          @reassign="requestReassign"
+          @select="handleSelectNode"
+          @update:editing-value="handleUpdateEditingValue"
+          @toggle-watch="toggleWatch"
+        />
+      </div>
     </div>
 
     <!-- Detach confirm dialog -->
@@ -804,4 +877,28 @@ watch(timeRange, (newVal) => {
   font-size: 0.65rem;
   color: rgba(255, 255, 255, 0.3);
 }
+
+.th-unplaced-section {
+  margin-top: 1rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+  padding-top: 0.5rem;
+}
+.th-unplaced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.th-unplaced-toggle:hover { background: rgba(255, 255, 255, 0.04); }
+.th-unplaced-label { font-weight: 500; color: rgba(255, 255, 255, 0.7); }
+.th-unplaced-count { font-size: 0.75rem; }
+.th-unplaced-list { padding-left: 0.5rem; }
 </style>

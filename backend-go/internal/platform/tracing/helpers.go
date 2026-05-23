@@ -26,7 +26,7 @@ func GoWithTrace(ctx context.Context, name string, fn func(ctx context.Context))
 
 	parentTraceID := spanCtx.TraceID().String()
 
-	go func() {
+	go func() { //nolint:gosec // deliberate: new root span linked via parent_trace_id
 		ctx, span := Tracer("async").Start(
 			context.Background(),
 			name,

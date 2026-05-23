@@ -178,6 +178,11 @@ const navigateTo = useNuxtApp().$router ? (path: string) => useNuxtApp().$router
         <span v-if="!sidebarCollapsed" class="flex-1 text-left font-medium">主题图谱</span>
       </button>
 
+      <button class="sidebar-item" @click="navigateTo('/tags')">
+        <Icon icon="mdi:tag-multiple" width="20" height="20" class="text-ink-600" />
+        <span v-if="!sidebarCollapsed" class="flex-1 text-left font-medium">标签管理</span>
+      </button>
+
       <div v-if="!sidebarCollapsed" class="divider" />
 
       <div v-if="!sidebarCollapsed" class="watched-tags-section">

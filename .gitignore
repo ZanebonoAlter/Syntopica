@@ -33,3 +33,5 @@ front/node_modules/
 .gitnexus
 # Added by code-review-graph
 .code-review-graph/
+# Log files
+logs/

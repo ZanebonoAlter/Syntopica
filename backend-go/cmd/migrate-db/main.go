@@ -44,7 +44,7 @@ func main() {
 	if err != nil {
 		logging.Fatalf("Failed to open databases: %v", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	if modePreparesTargetBeforeResolvingSpecs(options.Mode) {
 		if err := prepareTargetSchema(ctx, targetDB); err != nil {
@@ -148,13 +148,13 @@ func openDatabases(options *cliOptions) (*gorm.DB, *datamigrate.SQLiteReader, *d
 
 	targetDB, err := openTargetPostgres(postgresDSN)
 	if err != nil {
-		reader.Close()
+		_ = reader.Close()
 		return nil, nil, nil, err
 	}
 
 	writer, err := datamigrate.NewPostgresWriter(targetDB)
 	if err != nil {
-		reader.Close()
+		_ = reader.Close()
 		return nil, nil, nil, err
 	}
 

@@ -1,6 +1,6 @@
-import type { Article, ArticleFilters } from '~/types'
+import type { Article, ArticleFilters, PaginatedData } from '~/types'
 import { useArticlesApi } from '~/api/articles'
-import { normalizeArticle } from '../utils/normalizeArticle'
+import { normalizeArticle, type ArticlePayload } from '../utils/normalizeArticle'
 
 export interface PaginationState {
   articles: Article[]
@@ -62,7 +62,9 @@ export function useArticlePagination(options: UseArticlePaginationOptions = {}) 
     const response = await articlesApi.getArticles(params)
 
     if (response.success && response.data) {
-      const newArticles = (response.data as Article[]).map(normalizeArticle)
+      const rawData = response.data as unknown as PaginatedData<ArticlePayload>
+      const rawArticles = (rawData.items || (response.data as unknown as ArticlePayload[])) as ArticlePayload[]
+      const newArticles = rawArticles.map(normalizeArticle)
 
       if (state.page === 1) {
         state.articles = newArticles

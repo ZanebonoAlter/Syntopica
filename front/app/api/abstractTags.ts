@@ -41,20 +41,21 @@ function mapNode(raw: RawTagHierarchyNode): TagHierarchyNode {
 
 export function useAbstractTagApi() {
   return {
-    async fetchHierarchy(category?: string, feedId?: string, categoryId?: string, unclassified?: boolean, timeRange?: string): Promise<ApiResponse<TagHierarchyResponse>> {
+    async fetchHierarchy(category?: string, feedId?: string, categoryId?: string, unclassified?: boolean, timeRange?: string, conceptId?: number): Promise<ApiResponse<TagHierarchyResponse>> {
       const params = new URLSearchParams()
       if (category) params.set('category', category)
       if (feedId) params.set('feed_id', feedId)
       if (categoryId) params.set('category_id', categoryId)
       if (unclassified) params.set('unclassified', 'true')
       if (timeRange) params.set('time_range', timeRange)
+      if (conceptId) params.set('concept_id', String(conceptId))
       const query = params.toString() ? `?${params.toString()}` : ''
       const response = await apiClient.get<RawHierarchyResponse>(`/topic-tags/hierarchy${query}`)
       if (response.success && response.data) {
         return {
           ...response,
           data: {
-            nodes: response.data.nodes.map(mapNode),
+            nodes: (response.data.nodes ?? []).map(mapNode),
             total: response.data.total,
           },
         } as ApiResponse<TagHierarchyResponse>

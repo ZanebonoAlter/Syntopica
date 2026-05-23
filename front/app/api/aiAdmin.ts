@@ -2,7 +2,7 @@ import { apiClient } from './client'
 import type { ApiResponse, AIProvider, AIRoute, AIProviderUpsertRequest } from '~/types'
 
 export function useAIAdminApi() {
-  async function getSettings(): Promise<ApiResponse<any>> {
+  async function getSettings(): Promise<ApiResponse<Record<string, unknown>>> {
     return apiClient.get('/ai/settings')
   }
 
@@ -10,6 +10,7 @@ export function useAIAdminApi() {
     base_url?: string
     api_key: string
     model?: string
+    narrative_board_embedding_threshold?: number
   }): Promise<ApiResponse<void>> {
     return apiClient.post('/ai/settings', data)
   }

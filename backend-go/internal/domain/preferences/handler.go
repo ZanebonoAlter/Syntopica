@@ -9,6 +9,7 @@ import (
 	"my-robot-backend/internal/app/runtimeinfo"
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
+	"my-robot-backend/internal/platform/logging"
 )
 
 type TrackBehaviorRequest struct {
@@ -202,13 +203,14 @@ func GetUserPreferences(c *gin.Context) {
 	var preferences []models.UserPreference
 	query := database.DB.Model(&models.UserPreference{})
 
-	if preferenceType == "feed" {
+	switch preferenceType {
+	case "feed":
 		query = query.Joins("JOIN feeds ON feeds.id = user_preferences.feed_id").
 			Where("user_preferences.feed_id IS NOT NULL")
-	} else if preferenceType == "category" {
+	case "category":
 		query = query.Joins("JOIN categories ON categories.id = user_preferences.category_id").
 			Where("user_preferences.category_id IS NOT NULL")
-	} else {
+	default:
 		query = query.Where(`
 			(user_preferences.feed_id IS NOT NULL AND EXISTS (
 				SELECT 1 FROM feeds WHERE feeds.id = user_preferences.feed_id
@@ -272,7 +274,9 @@ func TriggerPreferenceUpdate(c *gin.Context) {
 
 	go func() {
 		service := NewPreferenceService(database.DB)
-		service.UpdateAllPreferences()
+		if err := service.UpdateAllPreferences(); err != nil {
+			logging.Warnf("UpdateAllPreferences failed: %v", err)
+		}
 	}()
 
 	c.JSON(http.StatusOK, gin.H{

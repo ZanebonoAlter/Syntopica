@@ -12,7 +12,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 	"gorm.io/gorm"
-	"my-robot-backend/internal/domain/contentprocessing"
+	"my-robot-backend/internal/domain/content"
 	"my-robot-backend/internal/domain/models"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
@@ -21,13 +21,13 @@ import (
 
 type ContentCompletionScheduler struct {
 	cron              *cron.Cron
-	completionService *contentprocessing.ContentCompletionService
+	completionService *content.ContentCompletionService
 	checkInterval     time.Duration
 	taskName          string
 	isRunning         bool
 	isExecuting       bool
-	currentArticle    *contentprocessing.ContentCompletionArticleRef
-	lastProcessed     *contentprocessing.ContentCompletionArticleRef
+	currentArticle    *content.ContentCompletionArticleRef
+	lastProcessed     *content.ContentCompletionArticleRef
 	lastError         string
 	lastExecutionTime *time.Time
 	lastRunSummary    *ContentCompletionRunSummary
@@ -36,17 +36,17 @@ type ContentCompletionScheduler struct {
 }
 
 type ContentCompletionRunSummary struct {
-	StartedAt              string                                         `json:"started_at"`
-	FinishedAt             string                                         `json:"finished_at"`
-	CompletedCount         int                                            `json:"completed_count"`
-	FailedCount            int                                            `json:"failed_count"`
-	BlockedCount           int                                            `json:"blocked_count"`
-	StaleProcessingCount   int                                            `json:"stale_processing_count"`
-	LiveProcessingCount    int                                            `json:"live_processing_count"`
-	CurrentArticle         *contentprocessing.ContentCompletionArticleRef `json:"current_article,omitempty"`
-	LastProcessed          *contentprocessing.ContentCompletionArticleRef `json:"last_processed,omitempty"`
-	StaleProcessingArticle *contentprocessing.ContentCompletionArticleRef `json:"stale_processing_article,omitempty"`
-	ErrorSamples           []ContentCompletionErrorSample                 `json:"error_samples,omitempty"`
+	StartedAt              string                               `json:"started_at"`
+	FinishedAt             string                               `json:"finished_at"`
+	CompletedCount         int                                  `json:"completed_count"`
+	FailedCount            int                                  `json:"failed_count"`
+	BlockedCount           int                                  `json:"blocked_count"`
+	StaleProcessingCount   int                                  `json:"stale_processing_count"`
+	LiveProcessingCount    int                                  `json:"live_processing_count"`
+	CurrentArticle         *content.ContentCompletionArticleRef `json:"current_article,omitempty"`
+	LastProcessed          *content.ContentCompletionArticleRef `json:"last_processed,omitempty"`
+	StaleProcessingArticle *content.ContentCompletionArticleRef `json:"stale_processing_article,omitempty"`
+	ErrorSamples           []ContentCompletionErrorSample       `json:"error_samples,omitempty"`
 }
 
 type ContentCompletionErrorSample struct {
@@ -55,7 +55,7 @@ type ContentCompletionErrorSample struct {
 	Category  string `json:"category"`
 }
 
-func NewContentCompletionScheduler(completionService *contentprocessing.ContentCompletionService, checkIntervalMinutes int) *ContentCompletionScheduler {
+func NewContentCompletionScheduler(completionService *content.ContentCompletionService, checkIntervalMinutes int) *ContentCompletionScheduler {
 	taskName := "ai_summary"
 
 	scheduler := &ContentCompletionScheduler{
@@ -243,7 +243,7 @@ func (s *ContentCompletionScheduler) runCompletionCycle(triggerSource, runID str
 	errors := make([]error, 0)
 	for _, article := range articles {
 		s.mu.Lock()
-		s.currentArticle = contentprocessing.ToArticleRef(article)
+		s.currentArticle = content.ToArticleRef(article)
 		runSummary.CurrentArticle = s.currentArticle
 		s.mu.Unlock()
 
@@ -263,7 +263,7 @@ func (s *ContentCompletionScheduler) runCompletionCycle(triggerSource, runID str
 			appendRunError(runSummary, article.ID, err.Error(), classifyCompletionError(err.Error()))
 			s.mu.Lock()
 			s.lastError = err.Error()
-			s.lastProcessed = contentprocessing.ToArticleRef(article)
+			s.lastProcessed = content.ToArticleRef(article)
 			runSummary.LastProcessed = s.lastProcessed
 			s.mu.Unlock()
 			continue
@@ -272,7 +272,7 @@ func (s *ContentCompletionScheduler) runCompletionCycle(triggerSource, runID str
 		completedIDs = append(completedIDs, article.ID)
 		runSummary.CompletedCount++
 		s.mu.Lock()
-		s.lastProcessed = contentprocessing.ToArticleRef(article)
+		s.lastProcessed = content.ToArticleRef(article)
 		runSummary.LastProcessed = s.lastProcessed
 		s.mu.Unlock()
 	}
@@ -440,8 +440,7 @@ func (s *ContentCompletionScheduler) reschedule(intervalSeconds int) error {
 
 func (s *ContentCompletionScheduler) GetStatus() SchedulerStatusResponse {
 	var task models.SchedulerTask
-	if err := database.DB.Where("name = ?", s.taskName).First(&task).Error; err == nil {
-	}
+	database.DB.Where("name = ?", s.taskName).First(&task)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()

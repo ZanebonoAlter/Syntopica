@@ -11,7 +11,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicextraction"
+	taggingextraction "my-robot-backend/internal/domain/tagging/extraction"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
 	"my-robot-backend/internal/platform/tracing"
@@ -158,6 +158,10 @@ func (s *TagQualityScoreScheduler) initSchedulerTask() {
 	nextRun := now.Add(s.checkInterval)
 
 	if err := database.DB.Where("name = ?", "tag_quality_score").First(&task).Error; err == nil {
+		if task.CheckInterval > 0 {
+			s.checkInterval = time.Duration(task.CheckInterval) * time.Second
+			nextRun = now.Add(s.checkInterval)
+		}
 		updates := map[string]interface{}{
 			"description":         "Recompute persistent quality scores for topic tags",
 			"check_interval":      int(s.checkInterval.Seconds()),
@@ -214,7 +218,7 @@ func (s *TagQualityScoreScheduler) runComputeCycle(triggerSource string) {
 		updatedCount = 0
 	}
 
-	if err := topicextraction.ComputeAllQualityScores(); err != nil {
+	if err := taggingextraction.ComputeAllQualityScores(); err != nil {
 		summary.FinishedAt = time.Now().Format(time.RFC3339)
 		summary.Reason = err.Error()
 		s.updateSchedulerStatus("failed", err.Error(), &startTime, summary)
@@ -258,10 +262,11 @@ func (s *TagQualityScoreScheduler) updateSchedulerStatus(status, lastError strin
 
 		if startTime != nil {
 			updates["total_executions"] = task.TotalExecutions + 1
-			if status == "success" {
+			switch status {
+			case "success":
 				updates["successful_executions"] = task.SuccessfulExecutions + 1
 				updates["consecutive_failures"] = 0
-			} else if status == "failed" {
+			case "failed":
 				updates["failed_executions"] = task.FailedExecutions + 1
 				updates["consecutive_failures"] = task.ConsecutiveFailures + 1
 				updates["last_error_time"] = &now
@@ -286,9 +291,10 @@ func (s *TagQualityScoreScheduler) updateSchedulerStatus(status, lastError strin
 		task.LastExecutionDuration = &duration
 		task.LastExecutionResult = resultJSON
 		task.TotalExecutions = 1
-		if status == "success" {
+		switch status {
+		case "success":
 			task.SuccessfulExecutions = 1
-		} else if status == "failed" {
+		case "failed":
 			task.FailedExecutions = 1
 			task.ConsecutiveFailures = 1
 			task.LastErrorTime = &now

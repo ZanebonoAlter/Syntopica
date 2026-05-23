@@ -24,6 +24,7 @@ const emit = defineEmits<{
 
 const editingValue = ref('')
 const expanded = ref(true)
+const clickTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 
 function getCategoryIcon(category: string): string {
   switch (category) {
@@ -33,7 +34,19 @@ function getCategoryIcon(category: string): string {
   }
 }
 
-function handleStartEdit(node: TagHierarchyNode) {
+function handleLabelClick(node: TagHierarchyNode) {
+  if (clickTimer.value) return
+  clickTimer.value = setTimeout(() => {
+    clickTimer.value = null
+    emit('select', node)
+  }, 250)
+}
+
+function handleLabelDblClick(node: TagHierarchyNode) {
+  if (clickTimer.value) {
+    clearTimeout(clickTimer.value)
+    clickTimer.value = null
+  }
   editingValue.value = node.label
   emit('start-edit', node)
 }
@@ -49,10 +62,6 @@ function handleDetach(node: TagHierarchyNode) {
 
 function handleReassign(node: TagHierarchyNode) {
   emit('reassign', node)
-}
-
-function handleSelect(node: TagHierarchyNode) {
-  emit('select', node)
 }
 
 function handleChildStartEdit(node: TagHierarchyNode) { emit('start-edit', node) }
@@ -135,8 +144,8 @@ function handleToggleWatch(e: Event) {
         v-else
         type="button"
         class="th-label"
-        @click="handleSelect(node)"
-        @dblclick="handleStartEdit(node)"
+        @click="handleLabelClick(node)"
+        @dblclick="handleLabelDblClick(node)"
       >
         {{ node.label }}
       </button>

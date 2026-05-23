@@ -97,14 +97,6 @@ func schedulerDescriptors() []schedulerDescriptor {
 				return runtimeinfo.NarrativeSummarySchedulerInterface
 			},
 		},
-		{
-			Name:        "tag_hierarchy_cleanup",
-			DisplayName: "Tag Hierarchy Cleanup",
-			Description: "Auto-cleanup deep tag hierarchies by merging duplicates and creating abstract tags",
-			Get: func() interface{} {
-				return runtimeinfo.TagHierarchyCleanupSchedulerInterface
-			},
-		},
 	}
 }
 

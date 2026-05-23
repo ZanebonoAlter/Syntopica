@@ -15,6 +15,7 @@ import {
 } from '~/utils/articleContentSource'
 import { useTagWebSocket } from '~/features/articles/composables/useTagWebSocket'
 import type { ArticleTag } from '~/types/article'
+import { useWatchedTagsApi } from '~/api/watchedTags'
 import {
   getFirecrawlStatusMeta,
   getStatusToneClasses,
@@ -50,6 +51,7 @@ const feedsStore = useFeedsStore()
 const { isAIEnabled } = useAI()
 const { $dayjs } = useNuxtApp()
 const articlesApi = useArticlesApi()
+const watchedTagsApi = useWatchedTagsApi()
 const { crawlArticle } = useFirecrawlApi()
 const { getCompletionStatus, completeArticle } = useContentCompletion()
 const { onResult: onTagResult, onError: onTagError, watchArticle, clearWatch } = useTagWebSocket()
@@ -64,6 +66,11 @@ const manualSummaryLoading = ref(false)
 const manualTaggingLoading = ref(false)
 const manualActionError = ref<string | null>(null)
 const taggingError = ref<string | null>(null)
+const watchPendingIds = ref(new Set<number>())
+const scrollProgress = ref(0)
+const scrollTop = ref(0)
+const fullscreenContentContainer = ref<HTMLElement>()
+const showBackTop = computed(() => scrollTop.value > 300)
 
 const feed = computed(() => {
   const article = props.article
@@ -92,6 +99,20 @@ useScrollDepthTracker(contentContainer, (depth) => {
     trackEvent('scroll', depth, readingTime.value)
   }
 })
+
+function onContentScroll(e: Event) {
+  const el = e.target as HTMLElement
+  scrollTop.value = el.scrollTop
+  const maxScroll = el.scrollHeight - el.clientHeight
+  scrollProgress.value = maxScroll > 0 ? Math.round((el.scrollTop / maxScroll) * 100) : 0
+}
+
+function scrollToTop() {
+  const container = isFullscreen.value
+    ? fullscreenContentContainer.value
+    : contentContainer.value
+  container?.scrollTo({ top: 0, behavior: 'smooth' })
+}
 
 const mergedArticle = computed<Article | null>(() => {
   if (!props.article) return null
@@ -263,6 +284,33 @@ async function handleManualTagging() {
   }
 }
 
+async function handleTagWatchToggle(payload: { id: number; slug: string }) {
+  if (!props.article?.tags) return
+  if (watchPendingIds.value.has(payload.id)) return
+
+  const tag = props.article.tags.find(t => t.id === payload.id)
+  if (!tag) return
+
+  const previousWatched = tag.isWatched
+  const newWatched = !previousWatched
+
+  tag.isWatched = newWatched
+  watchPendingIds.value.add(payload.id)
+
+  try {
+    const response = newWatched
+      ? await watchedTagsApi.watchTag(payload.id)
+      : await watchedTagsApi.unwatchTag(payload.id)
+    if (!response.success) {
+      throw new Error(response.error || '操作失败')
+    }
+  } catch {
+    tag.isWatched = previousWatched
+  } finally {
+    watchPendingIds.value.delete(payload.id)
+  }
+}
+
 onTagResult((articleId: number, tags: ArticleTag[]) => {
   if (!props.article || String(articleId) !== props.article.id) return
 
@@ -292,11 +340,19 @@ watch(() => props.article?.id, (newId, oldId) => {
   manualFirecrawlLoading.value = false
   manualSummaryLoading.value = false
   manualTaggingLoading.value = false
+  lastScrollDepth = 0
+  scrollProgress.value = 0
+  scrollTop.value = 0
   clearWatch()
   selectedContentSource.value = getArticleContentSources({
     firecrawlContent: props.article?.firecrawlContent,
     content: props.article?.content,
   }).defaultSource ?? 'firecrawl'
+
+  nextTick(() => {
+    contentContainer.value?.scrollTo({ top: 0 })
+    fullscreenContentContainer.value?.scrollTo({ top: 0 })
+  })
 
   if (newId) {
     void loadCompletionStatus(newId)
@@ -400,11 +456,14 @@ const displayContent = computed(() => {
     return ''
   }
 
+  let content: string
   if (activeContentSource.value === 'firecrawl') {
-    return renderMarkdown(resolvedContent)
+    content = renderMarkdown(resolvedContent)
+  } else {
+    content = resolvedContent
   }
 
-  return resolvedContent
+  return content.replace(/<img[^>]*src=["']Base64-Image-Removed["'][^>]*\/?>/gi, '')
 })
 
 const showDescription = computed(() => {
@@ -441,7 +500,7 @@ import '~/components/article/ArticleContent.css'
     </div>
   </div>
 
-  <div v-else-if="!isFullscreen" class="article-content h-full flex flex-col">
+  <div v-else-if="!isFullscreen" class="article-content h-full flex flex-col relative">
     <header class="article-header">
       <div class="header-left">
         <div v-if="feed" class="feed-badge">
@@ -480,7 +539,11 @@ import '~/components/article/ArticleContent.css'
       </div>
     </header>
 
-    <div v-if="viewMode === 'preview'" ref="contentContainer" class="preview-mode flex-1 overflow-y-auto">
+    <div v-if="viewMode === 'preview'" class="reading-progress-bar">
+      <div class="reading-progress-bar__fill" :style="{ width: `${scrollProgress}%` }" />
+    </div>
+
+    <div v-if="viewMode === 'preview'" ref="contentContainer" class="preview-mode flex-1 overflow-y-auto" @scroll="onContentScroll">
       <div v-if="showProcessingPanel && mergedArticle && firecrawlMeta && summaryMeta" class="mb-6 rounded-2xl border border-ink-200 bg-white/80 p-4 shadow-subtle">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div class="flex flex-wrap items-center gap-2">
@@ -554,6 +617,8 @@ import '~/components/article/ArticleContent.css'
           :highlighted-slugs="highlightedTagSlugs"
           compact
           :show-article-count="false"
+          show-watch
+          @watch-toggle="handleTagWatchToggle"
         />
         <div class="summary-surface">
           <div class="markdown-body markdown-summary" v-html="renderedStoredSummary" />
@@ -577,6 +642,8 @@ import '~/components/article/ArticleContent.css'
           :tags="article.tags"
           :highlighted-slugs="highlightedTagSlugs"
           compact
+          show-watch
+          @watch-toggle="handleTagWatchToggle"
         />
         <span v-if="manualTaggingLoading" class="inline-flex items-center gap-1 text-xs text-ink-medium">
           <Icon icon="mdi:loading" width="14" height="14" class="animate-spin" />
@@ -639,6 +706,15 @@ import '~/components/article/ArticleContent.css'
         </div>
       </div>
     </div>
+
+    <button
+      v-if="viewMode === 'preview'"
+      class="back-to-top-btn"
+      :class="{ 'back-to-top-btn--visible': showBackTop }"
+      @click="scrollToTop"
+    >
+      <Icon icon="mdi:chevron-up" width="20" height="20" />
+    </button>
   </div>
 
   <Teleport v-else to="body">
@@ -684,7 +760,11 @@ import '~/components/article/ArticleContent.css'
         </div>
       </header>
 
-      <div v-if="viewMode === 'preview'" class="preview-mode flex-1 overflow-y-auto">
+      <div v-if="viewMode === 'preview'" class="reading-progress-bar">
+        <div class="reading-progress-bar__fill" :style="{ width: `${scrollProgress}%` }" />
+      </div>
+
+      <div v-if="viewMode === 'preview'" ref="fullscreenContentContainer" class="preview-mode flex-1 overflow-y-auto" @scroll="onContentScroll">
         <div v-if="showProcessingPanel && mergedArticle && firecrawlMeta && summaryMeta" class="mb-6 rounded-2xl border border-ink-200 bg-white/80 p-4 shadow-subtle">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="flex flex-wrap items-center gap-2">
@@ -758,6 +838,8 @@ import '~/components/article/ArticleContent.css'
             :highlighted-slugs="highlightedTagSlugs"
             compact
             :show-article-count="false"
+            show-watch
+            @watch-toggle="handleTagWatchToggle"
           />
           <div class="summary-surface">
           <div class="markdown-body markdown-summary" v-html="renderedStoredSummary" />
@@ -781,6 +863,8 @@ import '~/components/article/ArticleContent.css'
             :tags="article.tags"
             :highlighted-slugs="highlightedTagSlugs"
             compact
+            show-watch
+            @watch-toggle="handleTagWatchToggle"
           />
           <span v-if="manualTaggingLoading" class="inline-flex items-center gap-1 text-xs text-ink-medium">
             <Icon icon="mdi:loading" width="14" height="14" class="animate-spin" />
@@ -843,6 +927,15 @@ import '~/components/article/ArticleContent.css'
           </div>
         </div>
       </div>
+
+      <button
+        v-if="viewMode === 'preview'"
+        class="back-to-top-btn"
+        :class="{ 'back-to-top-btn--visible': showBackTop }"
+        @click="scrollToTop"
+      >
+        <Icon icon="mdi:chevron-up" width="20" height="20" />
+      </button>
     </div>
   </Teleport>
 </template>
@@ -863,6 +956,52 @@ import '~/components/article/ArticleContent.css'
 
 .fullscreen-article .iframe-mode {
   flex: 1;
+}
+
+.reading-progress-bar {
+  height: 2px;
+  background: rgba(26, 26, 26, 0.06);
+  flex-shrink: 0;
+}
+
+.reading-progress-bar__fill {
+  height: 100%;
+  background: var(--color-ink-500);
+  transition: width 0.15s ease-out;
+  border-radius: 0 1px 1px 0;
+}
+
+.back-to-top-btn {
+  position: absolute;
+  bottom: 24px;
+  right: 24px;
+  width: 40px;
+  height: 40px;
+  border-radius: 0.75rem;
+  background: var(--color-ink-500);
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-medium);
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease, background-color 0.2s ease;
+  z-index: 10;
+}
+
+.back-to-top-btn:hover {
+  background: var(--color-ink-600);
+  box-shadow: var(--shadow-strong);
+}
+
+.back-to-top-btn--visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
 }
 </style>
 

@@ -29,6 +29,7 @@ export interface Article {
 }
 
 export interface ArticleTag {
+  id?: number
   slug: string
   label: string
   category: string
@@ -36,6 +37,7 @@ export interface ArticleTag {
   icon?: string
   score?: number
   articleCount?: number
+  isWatched?: boolean
 }
 
 export interface ArticleFilters {
@@ -43,6 +45,7 @@ export interface ArticleFilters {
   per_page?: number
   feed_id?: number
   category_id?: number
+  concept_id?: number
   uncategorized?: boolean
   read?: boolean
   favorite?: boolean

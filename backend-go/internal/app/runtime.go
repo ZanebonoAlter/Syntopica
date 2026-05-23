@@ -7,10 +7,9 @@ import (
 	"time"
 
 	"my-robot-backend/internal/app/runtimeinfo"
-	"my-robot-backend/internal/domain/contentprocessing"
+	"my-robot-backend/internal/domain/content"
 	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/topicanalysis"
-	"my-robot-backend/internal/domain/topicextraction"
+	"my-robot-backend/internal/domain/tagging"
 	"my-robot-backend/internal/jobs"
 	"my-robot-backend/internal/platform/database"
 	"my-robot-backend/internal/platform/logging"
@@ -24,7 +23,6 @@ type Runtime struct {
 	BlockedArticleRecovery *jobs.BlockedArticleRecoveryScheduler
 	TagQualityScore        *jobs.TagQualityScoreScheduler
 	NarrativeSummary       *jobs.NarrativeSummaryScheduler
-	TagHierarchyCleanup    *jobs.TagHierarchyCleanupScheduler
 }
 
 func resetStaleStates() {
@@ -33,7 +31,7 @@ func resetStaleStates() {
 	result := database.DB.Model(&models.SchedulerTask{}).
 		Where("status = ?", "running").
 		Updates(map[string]interface{}{
-			"status":  "idle",
+			"status":     "idle",
 			"last_error": "reset on startup: previous process terminated unexpectedly",
 		})
 	resetCount += int(result.RowsAffected)
@@ -90,22 +88,7 @@ func StartRuntime() *Runtime {
 
 	resetStaleStates()
 
-	// Start the tag queue worker for async article tagging
-	if err := topicextraction.GetTagQueue().Start(); err != nil {
-		logging.Warnf("Failed to start tag queue: %v", err)
-	} else {
-		logging.Infoln("Tag queue started successfully")
-	}
-
-	// Start the embedding queue worker for async embedding generation
-	topicanalysis.StartEmbeddingQueueWorker()
-	logging.Infoln("Embedding queue worker started successfully")
-	topicanalysis.StartMergeReembeddingQueueWorker()
-	logging.Infoln("Merge re-embedding queue worker started successfully")
-	topicanalysis.StartAbstractTagUpdateQueueWorker()
-	logging.Infoln("Abstract tag update queue worker started successfully")
-	topicanalysis.StartAdoptNarrowerQueueWorker()
-	logging.Infoln("Adopt narrower queue worker started successfully")
+	tagging.StartAllWorkers()
 
 	runtime.AutoRefresh = jobs.NewAutoRefreshScheduler(60)
 	if err := runtime.AutoRefresh.Start(); err != nil {
@@ -133,10 +116,10 @@ func StartRuntime() *Runtime {
 	if crawlServiceURL == "" {
 		crawlServiceURL = "http://localhost:11235"
 	}
-	contentprocessing.InitContentCompletionHandler(crawlServiceURL)
+	content.InitContentCompletionHandler(crawlServiceURL)
 
 	runtime.ContentCompletion = jobs.NewContentCompletionScheduler(
-		contentprocessing.GetContentCompletionService(),
+		content.GetContentCompletionService(),
 		60,
 	)
 	if err := runtime.ContentCompletion.Start(); err != nil {
@@ -167,20 +150,12 @@ func StartRuntime() *Runtime {
 		logging.Infoln("Narrative summary scheduler started successfully")
 	}
 
-	runtime.TagHierarchyCleanup = jobs.NewTagHierarchyCleanupScheduler(86400)
-	if err := runtime.TagHierarchyCleanup.Start(); err != nil {
-		logging.Warnf("Failed to start tag hierarchy cleanup scheduler: %v", err)
-	} else {
-		logging.Infoln("Tag hierarchy cleanup scheduler started successfully")
-	}
-
 	runtimeinfo.AutoRefreshSchedulerInterface = runtime.AutoRefresh
 	runtimeinfo.PreferenceUpdateSchedulerInterface = runtime.PreferenceUpdate
 	runtimeinfo.ContentCompletionSchedulerInterface = runtime.ContentCompletion
 	runtimeinfo.FirecrawlSchedulerInterface = runtime.Firecrawl
 	runtimeinfo.TagQualityScoreSchedulerInterface = runtime.TagQualityScore
 	runtimeinfo.NarrativeSummarySchedulerInterface = runtime.NarrativeSummary
-	runtimeinfo.TagHierarchyCleanupSchedulerInterface = runtime.TagHierarchyCleanup
 
 	return runtime
 }
@@ -195,20 +170,7 @@ func SetupGracefulShutdown(runtime *Runtime) {
 
 		done := make(chan struct{})
 		go func() {
-			logging.Infoln("Stopping tag queue...")
-			topicextraction.GetTagQueue().Stop()
-
-			logging.Infoln("Stopping embedding queue worker...")
-			topicanalysis.StopEmbeddingQueueWorker()
-
-			logging.Infoln("Stopping merge re-embedding queue worker...")
-			topicanalysis.StopMergeReembeddingQueueWorker()
-
-			logging.Infoln("Stopping abstract tag update queue worker...")
-			topicanalysis.StopAbstractTagUpdateQueueWorker()
-
-			logging.Infoln("Stopping adopt narrower queue worker...")
-			topicanalysis.StopAdoptNarrowerQueueWorker()
+			tagging.StopAllWorkers()
 
 			if runtime.AutoRefresh != nil {
 				logging.Infoln("Stopping auto-refresh scheduler...")
@@ -243,11 +205,6 @@ func SetupGracefulShutdown(runtime *Runtime) {
 			if runtime.NarrativeSummary != nil {
 				logging.Infoln("Stopping narrative summary scheduler...")
 				runtime.NarrativeSummary.Stop()
-			}
-
-			if runtime.TagHierarchyCleanup != nil {
-				logging.Infoln("Stopping tag hierarchy cleanup scheduler...")
-				runtime.TagHierarchyCleanup.Stop()
 			}
 
 			close(done)

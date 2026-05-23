@@ -104,6 +104,10 @@ func autoMigrateModels(db *gorm.DB) error {
 		&models.Feed{},
 		&models.Article{},
 		&models.TopicTag{},
+		&models.SemanticLabel{},
+		&models.TopicTagSemanticLabel{},
+		&models.TopicTagBoardLabel{},
+		&models.BoardComposition{},
 		&models.TopicTagEmbedding{},
 		&models.TopicTagAnalysis{},
 		&models.TopicAnalysisCursor{},
@@ -119,6 +123,6 @@ func autoMigrateModels(db *gorm.DB) error {
 		&models.FirecrawlJob{},
 		&models.TagJob{},
 		&models.NarrativeSummary{},
-		&models.AbstractTagUpdateQueue{},
+		&models.NarrativeBoard{},
 	)
 }

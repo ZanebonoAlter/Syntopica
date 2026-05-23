@@ -16,7 +16,7 @@ import type { Article } from '~/types'
 import type { TimelineDigest, TimelineDigestSelection, PendingArticle, TimelineAggregationGroup, TimelineAggregationMode, TimelineAggregationArticle } from '~/types/timeline'
 import ArticleContentView from '~/features/articles/components/ArticleContentView.vue'
 import { useApiStore } from '~/stores/api'
-import { normalizeArticle } from '../../articles/utils/normalizeArticle'
+import { normalizeArticle, type ArticlePayload } from '../../articles/utils/normalizeArticle'
 import FeedCategoryFilter from '~/features/topic-graph/components/FeedCategoryFilter.vue'
 import TopicGraphCanvas from '~/features/topic-graph/components/TopicGraphCanvas.client.vue'
 import TopicGraphFooterPanels from '~/features/topic-graph/components/TopicGraphFooterPanels.vue'
@@ -24,7 +24,7 @@ import TopicGraphHeader from '~/features/topic-graph/components/TopicGraphHeader
 import TopicGraphSidebar from '~/features/topic-graph/components/TopicGraphSidebar.vue'
 import TopicTimeline from '~/features/topic-graph/components/TopicTimeline.vue'
 import NarrativePanel from '~/features/topic-graph/components/NarrativePanel.vue'
-import TagHierarchy from '~/features/topic-graph/components/TagHierarchy.vue'
+import BoardConceptManager from '~/features/topic-graph/components/BoardConceptManager.vue'
 import { buildDisplayedTopicGraph, collectRelatedTopicSlugs } from '~/features/topic-graph/utils/buildDisplayedTopicGraph'
 import { buildTopicGraphViewModel } from '~/features/topic-graph/utils/buildTopicGraphViewModel'
 import { normalizeTopicCategory } from '~/features/topic-graph/utils/normalizeTopicCategory'
@@ -147,6 +147,7 @@ const selectedChildTagSlug = ref<string | null>(null)
 
 // Timeline floating panel state
 const timelineOpen = ref(false)
+const showConceptManager = ref(false)
 
 watch(timelineOpen, (open) => {
   if (!open) {
@@ -156,7 +157,7 @@ watch(timelineOpen, (open) => {
 })
 
 // Active view tab state (graph / hierarchy)
-const activeTab = ref<'graph' | 'hierarchy' | 'narrative'>('graph')
+const activeTab = ref<'graph' | 'narrative'>('graph')
 
 const viewModel = computed(() => graphPayload.value
   ? buildTopicGraphViewModel(graphPayload.value)
@@ -614,7 +615,7 @@ async function loadGraph() {
         category: selectedCategory.value || 'keyword',
       }
       void loadTopicDetail(selectedTopicSlug.value)
-      void loadHotspotDigests(selectedTopicSlug.value)
+      void loadHotspotDigests(selectedTopicSlug.value, selectedCategory.value || undefined)
       void loadPendingArticles(selectedTopicSlug.value)
     } else {
       detail.value = null
@@ -700,7 +701,7 @@ async function handleTagSelect(slug: string, category: TopicCategory) {
     await loadAbstractTagDigests(childSlugs)
   } else {
     // Load digests for this tag (reverse trace: tag -> articles -> digests)
-    await loadHotspotDigests(slug)
+    await loadHotspotDigests(slug, category)
   }
 
   // Load pending articles for this tag
@@ -711,16 +712,19 @@ async function handleTagSelect(slug: string, category: TopicCategory) {
 
   // Also load topic detail for the sidebar
   void loadTopicDetail(slug)
+
+  timelineOpen.value = true
 }
 
-async function loadHotspotDigests(tagSlug: string) {
+async function loadHotspotDigests(tagSlug: string, kind?: TopicCategory) {
   loadingHotspotDigests.value = true
   try {
     const response = await topicGraphApi.getDigestsByArticleTag(
       tagSlug,
       undefined,
       undefined,
-      20
+      20,
+      kind,
     )
     if (response.success && response.data) {
       hotspotDigests.value = response.data.digests || []
@@ -776,7 +780,7 @@ async function handleChildTagSelect(childSlug: string, childLabel: string) {
   }
 
   // Load digests for the child tag (not the abstract parent)
-  await loadHotspotDigests(childSlug)
+  await loadHotspotDigests(childSlug, selectedHotspotTag.value.category)
 
   // Open timeline panel if not already open
   if (!timelineOpen.value) {
@@ -830,7 +834,7 @@ async function handleAbstractTagSelect(abstractSlug: string) {
   if (childSlugs.length > 0) {
     await loadAbstractTagDigests(childSlugs)
   } else {
-    await loadHotspotDigests(abstractSlug)
+    await loadHotspotDigests(abstractSlug, selectedHotspotTag.value.category)
   }
 
   // Open timeline panel if not already open
@@ -1064,7 +1068,7 @@ function handleNodeClick(node: { slug?: string; kind: string; category?: TopicCa
   selectedPendingNode.value = false
 
   // Load digests for this node (similar to handleTagSelect)
-  void loadHotspotDigests(node.slug)
+  void loadHotspotDigests(node.slug, node.category)
 
   // Load pending articles for this node
   void loadPendingArticles(node.slug)
@@ -1073,6 +1077,8 @@ function handleNodeClick(node: { slug?: string; kind: string; category?: TopicCa
   void loadAggregatedArticles(node.slug)
 
   void loadTopicDetail(node.slug)
+
+  timelineOpen.value = true
 }
 
 function handleKeywordHighlight(keywordSlug: string | null) {
@@ -1111,7 +1117,7 @@ async function openArticlePreview(articleId: number) {
       return
     }
 
-    selectedPreviewArticle.value = normalizeArticle(response.data)
+    selectedPreviewArticle.value = normalizeArticle(response.data as unknown as ArticlePayload)
 
     if (detail.value?.summaries) {
       const ids = detail.value.summaries.flatMap(summary => summary.articles.map(article => article.id))
@@ -1119,7 +1125,7 @@ async function openArticlePreview(articleId: number) {
       const articleResponses = await Promise.all(uniqueIds.slice(0, 12).map(id => articlesApi.getArticle(id)))
       previewArticles.value = articleResponses
         .filter(item => item.success && item.data)
-        .map(item => normalizeArticle(item.data))
+        .map(item => normalizeArticle(item.data as unknown as ArticlePayload))
     }
   } catch (error) {
     console.error('Failed to open article preview:', error)
@@ -1257,15 +1263,6 @@ await loadGraph()
                   >
                     <Icon icon="mdi:graph-outline" width="14" />
                     <span>图谱</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="th-tab-btn"
-                    :class="{ 'th-tab-btn--active': activeTab === 'hierarchy' }"
-                    @click="activeTab = 'hierarchy'"
-                  >
-                    <Icon icon="mdi:file-tree-outline" width="14" />
-                    <span>标签层级</span>
                   </button>
                   <button
                     type="button"
@@ -1460,21 +1457,19 @@ await loadGraph()
                 <TopicGraphFooterPanels :detail="detail" />
                 </template>
 
-                <!-- Hierarchy view -->
-                <template v-else-if="activeTab === 'hierarchy'">
-                  <article class="rounded-[30px] p-4 md:p-5 border border-[rgba(255,255,255,0.08)] bg-[rgba(11,18,24,0.4)] backdrop-blur-xl">
-                    <TagHierarchy
-                      :feed-id="selectedFilterFeedId"
-                      :category-id="selectedFilterCategoryId"
-                      :anchor-date="selectedDate"
-                      @select-tag="handleTagSelect"
-                    />
-                  </article>
-                </template>
-
                 <!-- Narrative view -->
                 <template v-else-if="activeTab === 'narrative'">
                   <article class="rounded-[30px] p-4 md:p-5 border border-[rgba(255,255,255,0.08)] bg-[rgba(11,18,24,0.4)] backdrop-blur-xl">
+                    <div class="flex items-center justify-between mb-4">
+                      <h3 class="text-base font-medium text-[rgba(255,233,220,0.88)]">叙事板块</h3>
+                      <button
+                        class="px-3 py-1.5 rounded-lg border border-[rgba(255,255,255,0.1)] bg-[rgba(255,255,255,0.04)] text-xs text-[rgba(255,233,220,0.6)] hover:bg-[rgba(255,255,255,0.08)] hover:text-[rgba(255,233,220,0.88)] transition-colors"
+                        @click="showConceptManager = !showConceptManager"
+                      >
+                        板块概念
+                      </button>
+                    </div>
+                    <BoardConceptManager v-if="showConceptManager" class="mb-4" />
                     <NarrativePanel
                       :date="selectedDate"
                       @select-tag="handleNarrativeTagSelect"

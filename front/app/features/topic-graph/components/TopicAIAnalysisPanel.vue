@@ -248,10 +248,6 @@ watch(
             <Icon icon="mdi:chip" width="14" />
             <span>模型版本: {{ result.metadata.modelVersion }}</span>
           </div>
-          <div class="metadata-item">
-            <Icon icon="mdi:check-decagram" width="14" />
-            <span>置信度: {{ (result.metadata.confidence * 100).toFixed(1) }}%</span>
-          </div>
           <div v-if="formattedLastUpdated" class="metadata-item">
             <Icon icon="mdi:calendar" width="14" />
             <span>更新于: {{ formattedLastUpdated }}</span>

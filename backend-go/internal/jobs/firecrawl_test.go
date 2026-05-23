@@ -2,7 +2,6 @@ package jobs
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -23,8 +22,8 @@ func TestFirecrawlTriggerNowRejectsWhenAlreadyExecuting(t *testing.T) {
 }
 
 func TestFirecrawlTriggerNowBatchID(t *testing.T) {
-	sourcePath := filepath.Join("firecrawl.go")
-	content, err := os.ReadFile(sourcePath)
+	sourcePath := "firecrawl.go"
+	content, err := os.ReadFile(sourcePath) //nolint:gosec
 	if err != nil {
 		t.Fatalf("read %s: %v", sourcePath, err)
 	}
@@ -50,8 +49,8 @@ func TestFirecrawlTriggerNowBatchID(t *testing.T) {
 }
 
 func TestFirecrawlRunCrawlCycleUsesInjectedBatchID(t *testing.T) {
-	sourcePath := filepath.Join("firecrawl.go")
-	content, err := os.ReadFile(sourcePath)
+	sourcePath := "firecrawl.go"
+	content, err := os.ReadFile(sourcePath) //nolint:gosec
 	if err != nil {
 		t.Fatalf("read %s: %v", sourcePath, err)
 	}

@@ -136,18 +136,19 @@ func (h *TraceHandler) SearchTraces(c *gin.Context) {
 	var traces interface{}
 	var err error
 
-	if status == "error" {
+	switch {
+	case status == "error":
 		traces, err = QueryErrorTraces(h.db, limit)
-	} else if operation != "" {
+	case operation != "":
 		traces, err = QueryTracesByOperation(h.db, operation, limit)
-	} else if minDurationStr != "" {
+	case minDurationStr != "":
 		minDuration, parseErr := strconv.ParseInt(minDurationStr, 10, 64)
 		if parseErr != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid min_duration_ms"})
 			return
 		}
 		traces, err = QuerySlowTraces(h.db, minDuration, limit)
-	} else {
+	default:
 		traces, err = QueryRecentTraces(h.db, limit)
 	}
 

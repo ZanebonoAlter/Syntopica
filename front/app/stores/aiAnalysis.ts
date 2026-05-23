@@ -6,6 +6,14 @@ import type {
   TopicInfo,
   TopicCategoryType,
   TopicAnalysisState,
+  EventTimelineItem,
+  RelatedEntity,
+  PersonProfile,
+  PersonAppearance,
+  TrendPoint,
+  RelatedTopic,
+  CoOccurrence,
+  ContextExample,
 } from '~/types/ai'
 
 /**
@@ -276,37 +284,37 @@ export const useAIAnalysisStore = defineStore('aiAnalysis', () => {
   /**
    * Transform API result to frontend format
    */
-  function transformAnalysisResult(type: TopicCategoryType, data: any): AIAnalysisResult {
+  function transformAnalysisResult(type: TopicCategoryType, apiResult: Record<string, unknown>): AIAnalysisResult {
+    const meta = (apiResult.metadata || {}) as Record<string, unknown>
     const result: AIAnalysisResult = {
       type,
       metadata: {
-        analysisTime: data.metadata?.analysisTime || data.analysis_time || 'N/A',
-        modelVersion: data.metadata?.modelVersion || data.model_version || 'N/A',
-        confidence: data.metadata?.confidence || data.confidence || 0.85,
+        analysisTime: (meta.analysisTime || apiResult.analysis_time || 'N/A') as string,
+        modelVersion: (meta.modelVersion || apiResult.model_version || 'N/A') as string,
       },
     }
 
     if (type === 'event') {
       result.eventAnalysis = {
-        timeline: data.timeline || [],
-        keyMoments: data.keyMoments || data.key_moments || [],
-        relatedEntities: data.relatedEntities || data.related_entities || [],
-        summary: data.summary || '',
+        timeline: (apiResult.timeline || []) as EventTimelineItem[],
+        keyMoments: (apiResult.keyMoments || apiResult.key_moments || []) as string[],
+        relatedEntities: (apiResult.relatedEntities || apiResult.related_entities || []) as RelatedEntity[],
+        summary: (apiResult.summary || '') as string,
       }
     } else if (type === 'person') {
       result.personAnalysis = {
-        profile: data.profile || { name: '', role: '', background: '' },
-        appearances: data.appearances || [],
-        trend: data.trend || [],
-        summary: data.summary || '',
+        profile: (apiResult.profile || { name: '', role: '', background: '' }) as PersonProfile,
+        appearances: (apiResult.appearances || []) as PersonAppearance[],
+        trend: (apiResult.trend || []) as TrendPoint[],
+        summary: (apiResult.summary || '') as string,
       }
     } else if (type === 'keyword') {
       result.keywordAnalysis = {
-        trendData: data.trendData || data.trend_data || [],
-        relatedTopics: data.relatedTopics || data.related_topics || [],
-        coOccurrence: data.coOccurrence || data.co_occurrence || [],
-        contextExamples: data.contextExamples || data.context_examples || [],
-        summary: data.summary || '',
+        trendData: (apiResult.trendData || apiResult.trend_data || []) as TrendPoint[],
+        relatedTopics: (apiResult.relatedTopics || apiResult.related_topics || []) as RelatedTopic[],
+        coOccurrence: (apiResult.coOccurrence || apiResult.co_occurrence || []) as CoOccurrence[],
+        contextExamples: (apiResult.contextExamples || apiResult.context_examples || []) as ContextExample[],
+        summary: (apiResult.summary || '') as string,
       }
     }
 

@@ -165,7 +165,7 @@ func (s *NarrativeSummaryScheduler) TriggerNowWithDate(dateStr string) map[strin
 
 	targetDate := time.Now()
 	if dateStr != "" {
-		parsed, err := time.Parse("2006-01-02", dateStr)
+		parsed, err := time.ParseInLocation("2006-01-02", dateStr, time.Local)
 		if err != nil {
 			s.executionMutex.Unlock()
 			return map[string]interface{}{
@@ -206,6 +206,10 @@ func (s *NarrativeSummaryScheduler) initSchedulerTask() {
 	nextRun := now.Add(s.checkInterval)
 
 	if err := database.DB.Where("name = ?", "narrative_summary").First(&task).Error; err == nil {
+		if task.CheckInterval > 0 {
+			s.checkInterval = time.Duration(task.CheckInterval) * time.Second
+			nextRun = now.Add(s.checkInterval)
+		}
 		updates := map[string]interface{}{
 			"description":         "Generate daily narrative summaries from active topic tags",
 			"check_interval":      int(s.checkInterval.Seconds()),
@@ -245,7 +249,7 @@ func (s *NarrativeSummaryScheduler) runNarrativeCycleFromCron() {
 			}
 		}()
 
-		s.runNarrativeCycle("scheduled", time.Now())
+		s.runNarrativeCycle("scheduled", time.Now().In(time.Local))
 	})
 }
 
@@ -270,8 +274,6 @@ func (s *NarrativeSummaryScheduler) runNarrativeCycle(triggerSource string, targ
 		s.updateSchedulerStatus("failed", err.Error(), &startTime, summary)
 		return
 	}
-
-	go narrative.GenerateWatchedTagNarratives(targetDate)
 
 	summary.FinishedAt = time.Now().Format(time.RFC3339)
 	summary.SavedCount = savedCount
@@ -310,10 +312,11 @@ func (s *NarrativeSummaryScheduler) updateSchedulerStatus(status, lastError stri
 
 		if startTime != nil {
 			updates["total_executions"] = task.TotalExecutions + 1
-			if status == "success" {
+			switch status {
+			case "success":
 				updates["successful_executions"] = task.SuccessfulExecutions + 1
 				updates["consecutive_failures"] = 0
-			} else if status == "failed" {
+			case "failed":
 				updates["failed_executions"] = task.FailedExecutions + 1
 				updates["consecutive_failures"] = task.ConsecutiveFailures + 1
 				updates["last_error_time"] = &now
@@ -338,9 +341,10 @@ func (s *NarrativeSummaryScheduler) updateSchedulerStatus(status, lastError stri
 		task.LastExecutionDuration = &duration
 		task.LastExecutionResult = resultJSON
 		task.TotalExecutions = 1
-		if status == "success" {
+		switch status {
+		case "success":
 			task.SuccessfulExecutions = 1
-		} else if status == "failed" {
+		case "failed":
 			task.FailedExecutions = 1
 			task.ConsecutiveFailures = 1
 			task.LastErrorTime = &now

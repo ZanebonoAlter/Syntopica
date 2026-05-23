@@ -49,7 +49,7 @@ func sqrt(x float64) float64 {
 	// Newton's method for sqrt
 	z := x
 	for i := 0; i < 100; i++ {
-		z = z - (z*z-x)/(2*z)
+		z -= (z*z - x) / (2 * z)
 		if z*z-x < 1e-10 && -(z*z-x) < 1e-10 {
 			break
 		}

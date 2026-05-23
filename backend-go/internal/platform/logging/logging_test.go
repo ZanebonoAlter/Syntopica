@@ -2,65 +2,72 @@ package logging
 
 import (
 	"bytes"
-	"log"
+	"os"
 	"strings"
 	"testing"
 )
 
-func TestInfoAndWarnWriteToInfoWriter(t *testing.T) {
-	var infoBuf bytes.Buffer
-	var errBuf bytes.Buffer
-	SetWriters(&infoBuf, &errBuf)
+func TestInfoAndWarnOutput(t *testing.T) {
+	var buf bytes.Buffer
+	SetWriters(&buf, &buf)
 	defer ResetWriters()
 
 	Infof("server starting on %s", ":5000")
 	Warnln("config fallback enabled")
 
-	infoOut := infoBuf.String()
-	if !strings.Contains(infoOut, "[INFO] server starting on :5000") {
-		t.Fatalf("expected info output, got %q", infoOut)
+	out := buf.String()
+	if !strings.Contains(out, "server starting on :5000") {
+		t.Fatalf("expected info output, got %q", out)
 	}
-	if !strings.Contains(infoOut, "[WARN] config fallback enabled") {
-		t.Fatalf("expected warn output in info writer, got %q", infoOut)
+	if !strings.Contains(out, "config fallback enabled") {
+		t.Fatalf("expected warn output, got %q", out)
 	}
-	if errBuf.Len() != 0 {
-		t.Fatalf("expected empty error writer, got %q", errBuf.String())
+	if !strings.Contains(out, "level=INFO") {
+		t.Fatalf("expected INFO level, got %q", out)
+	}
+	if !strings.Contains(out, "level=WARN") {
+		t.Fatalf("expected WARN level, got %q", out)
 	}
 }
 
-func TestErrorWritesToErrorWriter(t *testing.T) {
-	var infoBuf bytes.Buffer
-	var errBuf bytes.Buffer
-	SetWriters(&infoBuf, &errBuf)
+func TestErrorOutput(t *testing.T) {
+	var buf bytes.Buffer
+	SetWriters(&buf, &buf)
 	defer ResetWriters()
 
 	Errorf("failed to start server: %v", "boom")
 
-	if infoBuf.Len() != 0 {
-		t.Fatalf("expected empty info writer, got %q", infoBuf.String())
+	out := buf.String()
+	if !strings.Contains(out, "failed to start server: boom") {
+		t.Fatalf("expected error output, got %q", out)
 	}
-	if !strings.Contains(errBuf.String(), "[ERROR] failed to start server: boom") {
-		t.Fatalf("expected error output, got %q", errBuf.String())
+	if !strings.Contains(out, "level=ERROR") {
+		t.Fatalf("expected ERROR level, got %q", out)
 	}
 }
 
-func TestConfigureStdlibRoutesWarningsAndInfo(t *testing.T) {
-	var infoBuf bytes.Buffer
-	var errBuf bytes.Buffer
-	SetWriters(&infoBuf, &errBuf)
-	defer func() {
-		ResetWriters()
-		ConfigureStdlib()
-	}()
+func TestInitWithFileRotation(t *testing.T) {
+	logPath := os.TempDir() + string(os.PathSeparator) + "test-logging-" + t.Name() + ".log"
+	defer os.Remove(logPath)
 
-	ConfigureStdlib()
-	log.Printf("Server starting on %s", ":5000")
-	log.Printf("Warning: failed to load config: %v", "missing")
+	Init("debug", FileConfig{
+		Enabled:    true,
+		Path:       logPath,
+		MaxSizeMB:  1,
+		MaxBackups: 3,
+		MaxAgeDays: 7,
+		Compress:   false,
+	})
 
-	if !strings.Contains(infoBuf.String(), "Server starting on :5000") {
-		t.Fatalf("expected stdlib info output, got %q", infoBuf.String())
+	Infof("hello file logging")
+
+	Close()
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("failed to read log file: %v", err)
 	}
-	if !strings.Contains(errBuf.String(), "Warning: failed to load config: missing") {
-		t.Fatalf("expected stdlib warning output, got %q", errBuf.String())
+	if !strings.Contains(string(data), "hello file logging") {
+		t.Fatalf("expected log in file, got %q", string(data))
 	}
 }

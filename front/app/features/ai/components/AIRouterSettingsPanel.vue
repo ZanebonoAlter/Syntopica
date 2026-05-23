@@ -50,6 +50,8 @@ const newProviderForm = reactive<AIProviderUpsertRequest>({
 const showNewProviderForm = ref(false)
 const showPrimaryApiKey = ref(false)
 const showNewProviderApiKey = ref(false)
+const embeddingThreshold = ref(0.7)
+const savingThreshold = ref(false)
 const { loadSettings: reloadAISettings } = useAI()
 const editingProviderId = ref<number | null>(null)
 const draggingProviderId = ref<number | null>(null)
@@ -149,6 +151,10 @@ async function loadData() {
     primaryProviderForm.time_range = settingsResponse.success && typeof settingsResponse.data?.time_range === 'number'
       ? settingsResponse.data.time_range
       : 180
+
+    embeddingThreshold.value = settingsResponse.success && settingsResponse.data?.narrative_board_embedding_threshold
+      ? parseFloat(String(settingsResponse.data.narrative_board_embedding_threshold))
+      : 0.7
 
     hydratePrimaryProvider()
     hydrateRouteSelections()
@@ -254,7 +260,8 @@ async function savePrimaryProvider() {
 
   const isOllama = primaryProviderForm.provider_type === 'ollama'
   if (!isOllama && !primaryProviderId.value && !primaryProviderForm.api_key) {
-    throw new Error('首次创建主模型需要填写 API Key')
+    pushMessage('error', '首次创建主模型需要填写 API Key')
+    return
   }
 
   saving.value = true
@@ -270,9 +277,6 @@ async function savePrimaryProvider() {
         throw new Error(response.error || '更新主模型失败')
       }
     } else {
-      if (!isOllama && !primaryProviderForm.api_key) {
-        throw new Error('首次创建主模型需要填写 API Key')
-      }
       const response = await aiAdminApi.createProvider(primaryProviderForm)
       if (!response.success || !response.data) {
         throw new Error(response.error || '创建主模型失败')
@@ -471,6 +475,24 @@ async function saveRoutes() {
     pushMessage('error', err instanceof Error ? err.message : '保存路由失败')
   } finally {
     saving.value = false
+  }
+}
+
+async function saveThreshold() {
+  savingThreshold.value = true
+  try {
+    const aiAdminApi = useAIAdminApi()
+    const response = await aiAdminApi.saveSettings({
+      narrative_board_embedding_threshold: embeddingThreshold.value,
+    } as any)
+    if (!response.success) {
+      throw new Error(response.error || '保存阈值失败')
+    }
+    pushMessage('success', '匹配阈值已保存')
+  } catch (err) {
+    pushMessage('error', err instanceof Error ? err.message : '保存阈值失败')
+  } finally {
+    savingThreshold.value = false
   }
 }
 
@@ -876,6 +898,47 @@ onMounted(() => {
                 先在上方创建 provider
               </span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 4: Embedding Threshold -->
+      <div class="rounded-xl border border-gray-200 bg-white overflow-hidden">
+        <div class="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-violet-700 flex items-center justify-center shadow-sm">
+              <Icon icon="mdi:tune-variant" width="16" height="16" class="text-white" />
+            </div>
+            <div>
+              <h3 class="text-sm font-semibold text-gray-900">板块匹配阈值</h3>
+              <p class="text-[11px] text-gray-500">Embedding 相似度阈值，越低标签越容易匹配到板块</p>
+            </div>
+          </div>
+          <button
+            class="px-3 py-1.5 text-xs font-medium text-white bg-violet-600 rounded-lg hover:bg-violet-700 transition-colors disabled:opacity-50"
+            :disabled="savingThreshold"
+            @click="saveThreshold"
+          >
+            <Icon v-if="savingThreshold" icon="mdi:loading" width="12" height="12" class="animate-spin inline-block mr-1" />
+            保存
+          </button>
+        </div>
+        <div class="p-5">
+          <div class="flex items-center gap-4">
+            <input
+              v-model.number="embeddingThreshold"
+              type="range"
+              min="0.1"
+              max="0.95"
+              step="0.05"
+              class="flex-1 h-2 rounded-lg appearance-none cursor-pointer"
+              :style="{ background: `linear-gradient(to right, #8b5cf6 0%, #8b5cf6 ${(embeddingThreshold - 0.1) / 0.85 * 100}%, #e5e7eb ${(embeddingThreshold - 0.1) / 0.85 * 100}%, #e5e7eb 100%)` }"
+            >
+            <span class="text-base font-bold text-violet-700 w-12 text-right tabular-nums">{{ embeddingThreshold.toFixed(2) }}</span>
+          </div>
+          <div class="flex justify-between mt-1">
+            <span class="text-[10px] text-gray-400">0.10 宽松</span>
+            <span class="text-[10px] text-gray-400">0.95 严格</span>
           </div>
         </div>
       </div>

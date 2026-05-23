@@ -10,6 +10,7 @@ interface Props {
   grouped?: boolean
   maxVisible?: number
   showArticleCount?: boolean
+  showWatch?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -19,7 +20,12 @@ const props = withDefaults(defineProps<Props>(), {
   grouped: false,
   maxVisible: 6,
   showArticleCount: true,
+  showWatch: false,
 })
+
+const emit = defineEmits<{
+  watchToggle: [payload: { id: number; slug: string }]
+}>()
 
 const categoryMeta: Record<string, { icon: string; label: string }> = {
   event: { icon: 'mdi:calendar-star', label: '事件' },
@@ -56,6 +62,11 @@ function formatCount(tag: ArticleTag) {
   if (!props.showArticleCount || !tag.articleCount || tag.articleCount < 2) return ''
   return `${tag.articleCount}`
 }
+
+function handleWatchClick(tag: ArticleTag) {
+  if (tag.id == null) return
+  emit('watchToggle', { id: tag.id, slug: tag.slug })
+}
 </script>
 
 <template>
@@ -70,6 +81,14 @@ function formatCount(tag: ArticleTag) {
       <Icon :icon="resolveIcon(tag)" width="12" />
       <span>{{ tag.label }}</span>
       <span v-if="formatCount(tag)" class="article-tag__count">{{ formatCount(tag) }}</span>
+      <button
+        v-if="showWatch && tag.id != null"
+        class="article-tag__watch"
+        :title="tag.isWatched ? '取消关注' : '关注标签'"
+        @click.stop="handleWatchClick(tag)"
+      >
+        <Icon :icon="tag.isWatched ? 'mdi:heart' : 'mdi:heart-outline'" width="13" />
+      </button>
     </span>
 
     <span v-if="hiddenCount" class="article-tag article-tag--more">+{{ hiddenCount }}</span>
@@ -128,6 +147,25 @@ function formatCount(tag: ArticleTag) {
   border-left: 1px solid currentColor;
   padding-left: 0.35rem;
   opacity: 0.75;
+}
+
+.article-tag__watch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  margin-left: -0.1rem;
+  color: inherit;
+  opacity: 0.75;
+  transition: opacity 0.15s;
+}
+
+.article-tag__watch:hover {
+  opacity: 1;
+  color: #c12f2f;
 }
 
 .article-tag--more {
