@@ -7,7 +7,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
-	"my-robot-backend/internal/platform/config"
+	"syntopica-backend/internal/platform/config"
 )
 
 func connectPostgres(cfg *config.Config, gormCfg *gorm.Config) (*gorm.DB, error) {

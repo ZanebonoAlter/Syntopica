@@ -11,7 +11,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"gorm.io/gorm"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/logging"
 )
 
 func InitTracerProvider(db *gorm.DB, cfg Config) (*sdktrace.TracerProvider, error) {
@@ -23,7 +23,7 @@ func InitTracerProvider(db *gorm.DB, cfg Config) (*sdktrace.TracerProvider, erro
 	res, err := sdkresource.New(
 		context.Background(),
 		sdkresource.WithAttributes(
-			semconv.ServiceNameKey.String("rss-reader-backend"),
+			semconv.ServiceNameKey.String(ServiceName),
 			semconv.ServiceVersionKey.String("1.0.0"),
 		),
 	)

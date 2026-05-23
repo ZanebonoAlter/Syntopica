@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/logging"
 )
 
 type PreferenceService struct {

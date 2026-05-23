@@ -1,6 +1,6 @@
 # 数据生命周期
 
-本文档从数据状态字段变迁角度描述 RSS Reader 的核心数据链路。与 `architecture/data-flow.md` 的分工：
+本文档从数据状态字段变迁角度描述 Syntopica 的核心数据链路。与 `architecture/data-flow.md` 的分工：
 
 ```
 data-flow.md       = "代码怎么跑的"（函数调用链、API 调用、前端 store 交互）

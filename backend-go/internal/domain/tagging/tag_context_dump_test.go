@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/airouter"
-	"my-robot-backend/internal/platform/config"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/config"
+	"syntopica-backend/internal/platform/database"
 )
 
 func TestDumpTagContextForArticle74426(t *testing.T) {

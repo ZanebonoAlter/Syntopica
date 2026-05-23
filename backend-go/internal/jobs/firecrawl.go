@@ -10,13 +10,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"my-robot-backend/internal/domain/content"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/tagging"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
-	"my-robot-backend/internal/platform/tracing"
-	"my-robot-backend/internal/platform/ws"
+	"syntopica-backend/internal/domain/content"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/tagging"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/tracing"
+	"syntopica-backend/internal/platform/ws"
 )
 
 type FirecrawlScheduler struct {

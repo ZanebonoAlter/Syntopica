@@ -12,9 +12,9 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/airouter"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
 )
 
 func setupTopicExtractionTestDB(t *testing.T) {

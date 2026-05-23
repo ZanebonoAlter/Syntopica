@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/logging"
 )
 
 var upgrader = websocket.Upgrader{

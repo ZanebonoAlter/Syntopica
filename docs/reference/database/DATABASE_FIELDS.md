@@ -1,6 +1,6 @@
 # 数据库字段说明文档
 
-本文档详细说明了 RSS Reader 项目中所有数据库表（35 张）的字段用途、数据流向和工作流程。
+本文档详细说明了 Syntopica 项目中所有数据库表（35 张）的字段用途、数据流向和工作流程。
 
 ---
 
@@ -687,7 +687,7 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 | `start_time_unix_nano` | BIGINT NOT NULL | 开始时间（Unix 纳秒） |
 | `end_time_unix_nano` | BIGINT NOT NULL | 结束时间（Unix 纳秒） |
 | `duration_ms` | BIGINT DEFAULT 0 | 持续时间（毫秒） |
-| `service_name` | VARCHAR(100) DEFAULT 'rss-reader-backend' | 服务名称 |
+| `service_name` | VARCHAR(100) DEFAULT 'syntopica' | 服务名称 |
 | `service_version` | VARCHAR(50) DEFAULT '' | 服务版本 |
 | `resource_attributes` | TEXT DEFAULT '{}' | 资源属性（JSON） |
 | `scope_name` | VARCHAR(100) DEFAULT '' | Scope 名称 |

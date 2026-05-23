@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/config"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/config"
 )
 
 func TestInitDBConnectsToPostgres(t *testing.T) {

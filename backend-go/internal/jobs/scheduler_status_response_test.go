@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"my-robot-backend/internal/domain/content"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/domain/content"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
 )
 
 func TestSchedulerStatusResponseDefinition(t *testing.T) {

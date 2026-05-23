@@ -5,10 +5,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/tagging"
-	"my-robot-backend/internal/platform/aisettings"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/tagging"
+	"syntopica-backend/internal/platform/aisettings"
+	"syntopica-backend/internal/platform/database"
 )
 
 type SaveFirecrawlSettingsRequest struct {

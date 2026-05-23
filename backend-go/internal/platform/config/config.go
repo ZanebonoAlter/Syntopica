@@ -66,7 +66,7 @@ func LoadConfig(configPath string) error {
 	viper.SetDefault("server.port", "5000")
 	viper.SetDefault("server.mode", "debug")
 	viper.SetDefault("database.driver", "postgres")
-	viper.SetDefault("database.dsn", "host=127.0.0.1 user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable TimeZone=Asia/Shanghai")
+	viper.SetDefault("database.dsn", "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai")
 	viper.SetDefault("database.postgres.max_idle_conns", 5)
 	viper.SetDefault("database.postgres.max_open_conns", 25)
 	viper.SetDefault("database.postgres.conn_max_lifetime_minutes", 60)

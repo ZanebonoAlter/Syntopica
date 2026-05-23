@@ -10,10 +10,11 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
-	"my-robot-backend/internal/platform/ws"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/tracing"
+	"syntopica-backend/internal/platform/ws"
 )
 
 const drainTimeout = 10 * time.Second
@@ -264,7 +265,7 @@ func (q *TagQueue) processJob(ctx context.Context, job models.TagJob) {
 		}
 	}()
 
-	ctx, span := otel.Tracer("rss-reader-backend").Start(ctx, "workflow.article_tagging")
+	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "workflow.article_tagging")
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("workflow.name", "article_tagging"),

@@ -1,6 +1,6 @@
 package content
 
-import "my-robot-backend/internal/platform/aisettings"
+import "syntopica-backend/internal/platform/aisettings"
 
 func GetFirecrawlConfig() (*FirecrawlConfig, error) {
 	settingsData, _, err := aisettings.LoadFirecrawlConfig()

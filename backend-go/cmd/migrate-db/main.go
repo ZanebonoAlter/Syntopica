@@ -13,10 +13,10 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"my-robot-backend/internal/platform/config"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/database/datamigrate"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/config"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/database/datamigrate"
+	"syntopica-backend/internal/platform/logging"
 )
 
 type cliOptions struct {

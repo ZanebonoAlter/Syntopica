@@ -12,11 +12,11 @@ import (
 
 	"github.com/robfig/cron/v3"
 	"gorm.io/gorm"
-	"my-robot-backend/internal/domain/content"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
-	"my-robot-backend/internal/platform/tracing"
+	"syntopica-backend/internal/domain/content"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/tracing"
 )
 
 type ContentCompletionScheduler struct {

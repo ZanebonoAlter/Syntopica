@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"my-robot-backend/internal/platform/config"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/config"
+	"syntopica-backend/internal/platform/logging"
 )
 
 var DB *gorm.DB

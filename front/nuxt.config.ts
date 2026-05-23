@@ -19,4 +19,12 @@ export default defineNuxtConfig({
   },
   css: ['~/assets/css/main.css'],
   modules: ['motion-v/nuxt', '@pinia/nuxt'],
+  app: {
+    head: {
+      title: 'Syntopica',
+      link: [
+        { rel: 'icon', type: 'image/png', href: '/favicon.png' },
+      ],
+    },
+  },
 })

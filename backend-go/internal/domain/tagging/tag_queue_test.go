@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"my-robot-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/models"
 )
 
 func TestConcurrentSemaphoreBehavior(t *testing.T) {

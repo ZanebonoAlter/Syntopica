@@ -1,6 +1,6 @@
 # 项目文档 Wiki
 
-RSS Reader 全部文档入口。
+Syntopica 全部文档入口。
 
 ---
 

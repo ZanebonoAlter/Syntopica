@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"my-robot-backend/internal/app/runtimeinfo"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/app/runtimeinfo"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
 )
 
 type UpdateSchedulerIntervalRequest struct {

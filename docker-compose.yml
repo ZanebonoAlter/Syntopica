@@ -1,12 +1,12 @@
 services:
   postgres:
     image: pgvector/pgvector:pg18-trixie
-    container_name: zanebono-rssreader-pgvector
+    container_name: syntopica-postgres
     restart: unless-stopped
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-rss_reader}
+      POSTGRES_DB: ${POSTGRES_DB:-syntopica}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       TZ: ${TZ:-Asia/Shanghai}
@@ -17,7 +17,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-rss_reader}
+        - pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-syntopica}
       interval: 10s
       timeout: 5s
       retries: 10

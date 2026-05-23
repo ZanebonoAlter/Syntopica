@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/airouter"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
 )
 
 const boardNarrativeSystemPrompt = `你是一名专业的新闻叙事分析师。你收到了一个叙事看板（board）的上下文信息，包括 SemanticBoard 标签和描述、该看板下的事件标签，以及前一天该看板相关叙事的延续信息。

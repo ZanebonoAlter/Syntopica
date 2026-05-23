@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/logging"
 )
 
 type CleanupBudgetStats struct {

@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/aisettings"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/aisettings"
 )
 
 func TestEnsureLegacySummaryConfigMigratedCreatesDefaultProviderAndRoutes(t *testing.T) {

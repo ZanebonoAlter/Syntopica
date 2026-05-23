@@ -8,11 +8,12 @@ import (
 	"go.opentelemetry.io/otel"
 	otelCodes "go.opentelemetry.io/otel/codes"
 	"gorm.io/gorm"
-	"my-robot-backend/internal/domain/content"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/tagging"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/content"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/tagging"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/tracing"
 )
 
 type FeedService struct {
@@ -26,7 +27,7 @@ func NewFeedService() *FeedService {
 }
 
 func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) {
-	_, span := otel.Tracer("rss-reader-backend").Start(ctx, "FeedService.RefreshFeed")
+	_, span := otel.Tracer(tracing.ServiceName).Start(ctx, "FeedService.RefreshFeed")
 	defer span.End()
 	defer func() {
 		if err != nil {

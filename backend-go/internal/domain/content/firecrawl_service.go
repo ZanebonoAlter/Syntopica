@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"syntopica-backend/internal/platform/tracing"
 )
 
 type FirecrawlConfig struct {
@@ -59,7 +61,7 @@ func NewFirecrawlService(config *FirecrawlConfig) *FirecrawlService {
 }
 
 func (s *FirecrawlService) ScrapePage(ctx context.Context, url string) (result *ScrapeResponse, err error) {
-	_, span := otel.Tracer("rss-reader-backend").Start(ctx, "FirecrawlService.ScrapePage")
+	_, span := otel.Tracer(tracing.ServiceName).Start(ctx, "FirecrawlService.ScrapePage")
 	defer span.End()
 	defer func() {
 		if err != nil {

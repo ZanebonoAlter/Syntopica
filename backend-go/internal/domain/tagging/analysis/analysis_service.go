@@ -13,9 +13,9 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/tagging"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/tagging"
+	"syntopica-backend/internal/platform/logging"
 )
 
 const (

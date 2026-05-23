@@ -13,8 +13,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"my-robot-backend/internal/domain/tagging"
-	"my-robot-backend/internal/platform/airouter"
+	"syntopica-backend/internal/domain/tagging"
+	"syntopica-backend/internal/platform/airouter"
 )
 
 type AIAnalyzer interface {

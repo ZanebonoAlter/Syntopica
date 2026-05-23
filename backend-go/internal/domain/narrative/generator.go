@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"my-robot-backend/internal/platform/airouter"
-	"my-robot-backend/internal/platform/jsonutil"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/jsonutil"
+	"syntopica-backend/internal/platform/logging"
 )
 
 type NarrativeOutput struct {

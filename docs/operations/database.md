@@ -6,7 +6,7 @@
 
 | 驱动 | 用途 | 默认连接 |
 |------|------|----------|
-| `postgres` | 生产/开发使用，支持 pgvector 向量检索 | `host=postgres user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable TimeZone=Asia/Shanghai` |
+| `postgres` | 生产/开发使用，支持 pgvector 向量检索 | `host=postgres user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai` |
 
 ## 初始化方式
 

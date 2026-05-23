@@ -1,15 +1,18 @@
 <!-- generated-by: gsd-doc-writer -->
 
-# RSS Reader
+# Syntopica
+
+*Where feeds become topics*
 
 基于 Go + Nuxt 4 的个人 RSS 阅读器，三栏阅读界面，支持 AI 智能增强与主题图谱。
 
-你知道的，我一直想追踪一些事件的蛛丝马迹，比如事件之间的关联、事件的时间线发展（比如伊朗战争）
-互联网没有记忆，很多事情会随着时间沉淀在互联网的大海深处，打捞非常困难
-但是对于我们现在来说，使用AI去重、整理、打标签、梳理事件链路是一件相对来说有意义、并且有可行性的事情
-让垃圾信息见ai去吧！你只需要看结果（ps.此情况只针对广告较多但是还是有真金白银的rss）
+- 我一直想追踪一些事件的蛛丝马迹，比如事件之间的关联、事件的时间线发展（比如伊朗战争）
+- 但是互联网没有记忆，很多事情会随着时间沉淀在互联网的大海深处，打捞非常困难
+- 对于我们现在来说，这个时候本地AI的作用就出来了——————
+- 让垃圾信息见ai去吧！你只需要看你关心的东西
+- ps 因为产品快速迭代，每次更新可能会break changes（字面意思会爆炸）
 
-![主界面截图](img/image-main.png)
+![主界面截图](img/1.3-feather/main-title.png)
 
 ## 🎯 语义标签板块（v1.3）
 
@@ -70,10 +73,8 @@
 ### 主题图谱
 - **图谱可视化**：日/周双视图，事件/人物/关键词三类节点与关联边，支持权重计算与时间窗口切换
 ![主题图谱](img/image-topic.png)
-- **AI 主题分析**：按标签类型（事件/人物/关键词）生成 AI 分析，含时间线、人物画像、关键词云等
+- **AI 主题分析**：按标签类型（事件/人物/关键词）生成 AI 分析，含时间线、人物画像、关键词云等（已废弃，用新的板块内容代替，仅保留时间线，用于探索发现使用）
 ![category](img/image-category.png)
-- **叙事线追踪**：主题演变状态（新出现/持续/分裂/合并/结束）与时间线回溯
-![story](img/image-story.png)
 
 
 ![主题图谱文章](img/image-topic-article.png)
@@ -105,7 +106,7 @@
 - **AI Provider 路由**：多模型管理，按能力（总结/正文补全/主题提取/嵌入）分配不同 Provider，支持主备与拖拽排序
 ![router](img/image-router.png)
 - **Firecrawl 服务**：配置 API 地址、Key、抓取模式、超时与内容长度限制
-![fircrawl](img/image-fircrawl.png)
+![fircrawl](img/image-firecrawl.png)
 - **调度器监控**：查看 AI 总结、Feed 刷新等定时任务状态，支持手动触发与间隔调整
 ![fircrawl](img/image-scheduler.png)
 - **队列管理**：实时监控标签打标队列、Embedding 队列的任务状态与失败重试
@@ -138,18 +139,12 @@
 
 ### Docker Compose（推荐）
 
-咳咳，pg这个版本的我还没改
-```bash
-cp .env.example .env
-docker compose -f docker-compose.yml up --build
-```
+得用pg的版本，不要用sqlite的，那个归档用
 
 - 前端默认地址：`http://localhost:3000`
 - 后端默认地址：`http://localhost:5000`
-- SQLite 文件默认落在仓库根目录 `data/rss_reader.db`
+- postgres的存储文件位置默认在./data下,
 - 如需自定义端口或代理，在 `.env` 中配置 `FRONT_PORT`、`BACKEND_PORT`、`GOPROXY`、`NPM_CONFIG_REGISTRY` 等
-
-如需 PostgreSQL（支持 pgvector 向量搜索），先启动数据库：
 
 ```bash
 docker compose up -d
@@ -178,7 +173,7 @@ go run cmd/server/main.go
 ## 📂 项目结构
 
 ```
-ZanebonoRssReader/
+Syntopica/
 ├── front/                    # Nuxt 4 前端（Vue 3 + TypeScript + Pinia）
 ├── backend-go/               # Go + Gin 后端（GORM + POSTGRES ）
 ├── docs/                     # 项目文档

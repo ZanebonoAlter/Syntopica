@@ -37,9 +37,9 @@ import '~/components/layout/AppHeader.css'
         </button>
         <div class="logo">
           <div class="logo-icon">
-            <Icon icon="mdi:rss" class="text-white" width="20" height="20" />
+            <img src="/favicon.png" alt="Syntopica" width="32" height="32" />
           </div>
-          <span class="logo-text">RSS Reader</span>
+          <span class="logo-text">Syntopica</span>
         </div>
       </div>
     </div>

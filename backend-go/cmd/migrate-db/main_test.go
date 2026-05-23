@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"my-robot-backend/internal/platform/database/datamigrate"
+	"syntopica-backend/internal/platform/database/datamigrate"
 )
 
 func TestModeNeedsTargetPreparation(t *testing.T) {

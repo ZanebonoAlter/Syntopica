@@ -3,7 +3,7 @@
 
 ## 系统概述
 
-RSS Reader 是一个个人部署的 RSS 阅读器，采用前后端分离的单体架构。Go 后端（Gin + GORM + PostgreSQL + pgvector）负责 RSS 订阅拉取、文章持久化、AI 内容增强（Firecrawl 全文抓取、AI 整理稿生成）、主题图谱分析、叙事摘要生成和阅读偏好追踪。Nuxt 4 前端（Vue 3 + Pinia + Tailwind CSS v4）以 FeedBro 风格三栏布局呈现订阅、文章和正文，同时提供主题图谱页面。前后端通过 REST API 和 WebSocket 通信，系统面向单用户部署，不含认证体系。
+Syntopica 是一个个人部署的 RSS 阅读器，采用前后端分离的单体架构。Go 后端（Gin + GORM + PostgreSQL + pgvector）负责 RSS 订阅拉取、文章持久化、AI 内容增强（Firecrawl 全文抓取、AI 整理稿生成）、主题图谱分析、叙事摘要生成和阅读偏好追踪。Nuxt 4 前端（Vue 3 + Pinia + Tailwind CSS v4）以 FeedBro 风格三栏布局呈现订阅、文章和正文，同时提供主题图谱页面。前后端通过 REST API 和 WebSocket 通信，系统面向单用户部署，不含认证体系。
 
 > **注意：SQLite 版本已归档到 `sqlite` 独立分支，主分支不再维护 SQLite 支持。如需使用 SQLite 版本请切换到 `sqlite` 分支。**
 
@@ -29,7 +29,7 @@ graph TD
     Browser["浏览器<br/>Nuxt 4 前端 :3000"]
     API["Go 后端 API<br/>Gin :5000"]
     WS["WebSocket Hub<br/>/ws"]
-    PostgreSQL["PostgreSQL + pgvector<br/>rss_reader"]
+    PostgreSQL["PostgreSQL + pgvector<br/>syntopica"]
 ```
 
 ### Mermaid 图例 / 读图说明

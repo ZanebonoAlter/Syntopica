@@ -7,11 +7,11 @@ import (
 	"regexp"
 	"strings"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/tagging"
-	"my-robot-backend/internal/platform/config"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/tagging"
+	"syntopica-backend/internal/platform/config"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
 )
 
 // Event keywords for classification

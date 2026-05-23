@@ -26,7 +26,7 @@ docker compose up -d
 容器启动后：
 
 - PostgreSQL 监听 `localhost:5432`（可通过 `POSTGRES_PORT` 环境变量覆盖）
-- 默认数据库名 `rss_reader`，用户 `postgres`，密码 `postgres`
+- 默认数据库名 `syntopica`，用户 `postgres`，密码 `postgres`
 - 首次初始化时自动执行 `docker/postgres/init/01-enable-pgvector.sql`，启用 pgvector 扩展
 - 数据持久化在 `./data` 目录
 
@@ -40,7 +40,7 @@ docker compose ps
 也可手动连接确认：
 
 ```bash
-docker exec -it zanebono-rssreader-pgvector psql -U postgres -d rss_reader -c "SELECT extname FROM pg_extension WHERE extname = 'vector';"
+docker exec -it syntopica-postgres psql -U postgres -d syntopica -c "SELECT extname FROM pg_extension WHERE extname = 'vector';"
 ```
 
 ## 第二步：配置后端连接
@@ -50,14 +50,14 @@ docker exec -it zanebono-rssreader-pgvector psql -U postgres -d rss_reader -c "S
 ```yaml
 database:
   driver: "postgres"
-  dsn: "host=127.0.0.1 user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+  dsn: "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"
 ```
 
 或通过环境变量覆盖（不修改配置文件）：
 
 ```bash
 export DATABASE_DRIVER=postgres
-export DATABASE_DSN="host=127.0.0.1 user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+export DATABASE_DSN="host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"
 ```
 
 ## 第三步：启动后端，自动建表
@@ -109,7 +109,7 @@ cd backend-go
 go run cmd/migrate-db/main.go \
   --mode dry-run \
   --sqlite-path ./rss_reader.db \
-  --postgres-dsn "host=127.0.0.1 user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable"
+  --postgres-dsn "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable"
 ```
 
 输出示例：
@@ -133,7 +133,7 @@ go run cmd/migrate-db/main.go \
   --mode execute \
   --force \
   --sqlite-path ./rss_reader.db \
-  --postgres-dsn "host=127.0.0.1 user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable"
+  --postgres-dsn "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable"
 ```
 
 `--force` 标志是必需的，因为执行模式会先清空目标表再导入。
@@ -155,7 +155,7 @@ go run cmd/migrate-db/main.go \
 go run cmd/migrate-db/main.go \
   --mode verify-only \
   --sqlite-path ./rss_reader.db \
-  --postgres-dsn "host=127.0.0.1 user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable"
+  --postgres-dsn "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable"
 ```
 
 验证内容：
@@ -247,4 +247,4 @@ docker compose down
 - **pgvector 版本**：容器镜像为 `pgvector/pgvector:pg18-trixie`，基于 PostgreSQL 18
 - **连接池**：PostgreSQL 连接池参数可在 `config.yaml` 中配置（`max_idle_conns`、`max_open_conns`、`conn_max_lifetime_minutes`、`conn_max_idle_time_minutes`）
 - **环境变量优先**：`DATABASE_DRIVER` 和 `DATABASE_DSN` 环境变量会覆盖配置文件
-- **容器名称**：docker-compose 中 PostgreSQL 容器名为 `zanebono-rssreader-pgvector`
+- **容器名称**：docker-compose 中 PostgreSQL 容器名为 `syntopica-postgres`

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"my-robot-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/models"
 )
 
 type tagCacheEntry struct {

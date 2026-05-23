@@ -240,12 +240,12 @@ func (h *TraceHandler) ExportTraceOTLP(c *gin.Context) {
 			{
 				"resource": map[string]interface{}{
 					"attributes": []map[string]interface{}{
-						{"key": "service.name", "value": map[string]interface{}{"stringValue": "rss-reader-backend"}},
+						{"key": "service.name", "value": map[string]interface{}{"stringValue": ServiceName}},
 					},
 				},
 				"scopeSpans": []map[string]interface{}{
 					{
-						"scope": map[string]interface{}{"name": "rss-reader-backend"},
+						"scope": map[string]interface{}{"name": ServiceName},
 						"spans": otlpSpans,
 					},
 				},

@@ -11,8 +11,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	otelCodes "go.opentelemetry.io/otel/codes"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/tracing"
 )
 
 const maxResponseSnippet = 10000
@@ -99,7 +100,7 @@ func (r *Router) releaseSem(sem chan struct{}) {
 }
 
 func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult, err error) {
-	ctx, span := otel.Tracer("rss-reader-backend").Start(ctx, "Router.Chat")
+	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "Router.Chat")
 	defer span.End()
 	defer func() {
 		if err != nil {
@@ -185,7 +186,7 @@ func (r *Router) ResolvePrimaryProvider(capability Capability) (*models.AIProvid
 }
 
 func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Capability) (result *EmbeddingResult, err error) {
-	_, span := otel.Tracer("rss-reader-backend").Start(ctx, "Router.Embed")
+	_, span := otel.Tracer(tracing.ServiceName).Start(ctx, "Router.Embed")
 	defer span.End()
 	span.SetAttributes(attribute.String("ai.capability", string(capability)))
 

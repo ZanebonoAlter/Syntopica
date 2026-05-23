@@ -6,7 +6,7 @@
 
 ```json
 {
-  "name": "RSS Reader API (Go)",
+  "name": "Syntopica API",
   "version": "1.0.0",
   "endpoints": { ... }
 }

@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"my-robot-backend/internal/domain/tagging"
+	"syntopica-backend/internal/domain/tagging"
 )
 
 type AnalysisHandler struct {

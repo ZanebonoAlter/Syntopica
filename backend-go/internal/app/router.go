@@ -2,27 +2,27 @@ package app
 
 import (
 	"github.com/gin-gonic/gin"
-	aiadmindomain "my-robot-backend/internal/domain/aiadmin"
-	articledomain "my-robot-backend/internal/domain/article"
-	categorydomain "my-robot-backend/internal/domain/category"
-	contentdomain "my-robot-backend/internal/domain/content"
-	feeddomain "my-robot-backend/internal/domain/feed"
-	narrativedomain "my-robot-backend/internal/domain/narrative"
-	preferencesdomain "my-robot-backend/internal/domain/preferences"
-	topicanalysisdomain "my-robot-backend/internal/domain/tagging"
-	tagginganalysis "my-robot-backend/internal/domain/tagging/analysis"
-	taggingwatched "my-robot-backend/internal/domain/tagging/watched"
-	topicgraphdomain "my-robot-backend/internal/domain/topicgraph"
-	"my-robot-backend/internal/jobs"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/tracing"
-	"my-robot-backend/internal/platform/ws"
+	aiadmindomain "syntopica-backend/internal/domain/aiadmin"
+	articledomain "syntopica-backend/internal/domain/article"
+	categorydomain "syntopica-backend/internal/domain/category"
+	contentdomain "syntopica-backend/internal/domain/content"
+	feeddomain "syntopica-backend/internal/domain/feed"
+	narrativedomain "syntopica-backend/internal/domain/narrative"
+	preferencesdomain "syntopica-backend/internal/domain/preferences"
+	topicanalysisdomain "syntopica-backend/internal/domain/tagging"
+	tagginganalysis "syntopica-backend/internal/domain/tagging/analysis"
+	taggingwatched "syntopica-backend/internal/domain/tagging/watched"
+	topicgraphdomain "syntopica-backend/internal/domain/topicgraph"
+	"syntopica-backend/internal/jobs"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/tracing"
+	"syntopica-backend/internal/platform/ws"
 )
 
 func SetupRoutes(r *gin.Engine) {
 	r.GET("/", func(c *gin.Context) {
 		c.JSON(200, gin.H{
-			"name":    "RSS Reader API (Go)",
+			"name":    "Syntopica API",
 			"version": "1.0.0",
 			"endpoints": gin.H{
 				"categories": "/api/categories",
