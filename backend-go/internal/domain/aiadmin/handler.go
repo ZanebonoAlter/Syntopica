@@ -8,10 +8,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/airouter"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
 )
 
 type UpsertProviderRequest struct {

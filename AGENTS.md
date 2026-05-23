@@ -1,9 +1,9 @@
 # AGENTS.md
 
-Agent guide for coding assistants working in `D:\project\my-robot`.
+Agent guide for coding assistants working in `Syntopica` (`D:\project\my-robot`).
 
 ## Project Snapshot
-- RSS Reader: Nuxt 4 frontend + Go backend (Gin/GORM), single-user, no auth.
+- Syntopica: Nuxt 4 frontend + Go backend (Gin/GORM), single-user, no auth.
 - Frontend API: `http://localhost:5000/api`; WebSocket: `ws://localhost:5000/ws`.
 - PostgreSQL + pgvector for persistence; Redis optional for job queues.
 - Crawl service: `http://localhost:11235`. AI config managed via web UI, no config files.

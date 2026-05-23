@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"my-robot-backend/internal/app/runtimeinfo"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/app/runtimeinfo"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
 )
 
 func TestTagQualityScoreSchedulerManualTriggerLifecycle(t *testing.T) {

@@ -12,7 +12,7 @@ data/
 testsworkflow/.venv/
 backend-go/main.exe
 backend-go/*.exe
-backend-go/rss_reader.db
+backend-go/syntopica.db
 backend-go/rss-server
 backend-go/rss-server.exe
 backend-go/server.exe
@@ -20,8 +20,8 @@ backend-go/bin/fresh.exe
 backend-go/bin/server.exe
 backend-go/bin/server.exe~
 backend-go/bin/test.exe
-backend-go/cmd/server/rss_reader.db
-backend-go/rss_reader_backup.db
+backend-go/cmd/server/syntopica.db
+backend-go/syntopica_backup.db
 data/*.db
 data/*.db-shm
 data/*.db-wal

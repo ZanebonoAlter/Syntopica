@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"gorm.io/gorm"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
 )
 
 const summaryConfigKey = "summary_config"

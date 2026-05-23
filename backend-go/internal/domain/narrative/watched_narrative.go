@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/tagging/watched"
-	"my-robot-backend/internal/platform/airouter"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/jsonutil"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/tagging/watched"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/jsonutil"
+	"syntopica-backend/internal/platform/logging"
 )
 
 type WatchedTagNarrativeOutput struct {

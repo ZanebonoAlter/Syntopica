@@ -4,7 +4,7 @@ server:
 
 database:
   driver: "postgres"
-  dsn: "host=127.0.0.1 user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+  dsn: "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"
   postgres:
     max_idle_conns: 5
     max_open_conns: 25

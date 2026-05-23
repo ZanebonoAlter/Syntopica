@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"

@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
-	"my-robot-backend/internal/app/runtimeinfo"
+	"syntopica-backend/internal/app/runtimeinfo"
 )
 
 type stubPreferenceScheduler struct {

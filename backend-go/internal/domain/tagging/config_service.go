@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strconv"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
 )
 
 // EmbeddingConfigService manages embedding configuration stored in the database

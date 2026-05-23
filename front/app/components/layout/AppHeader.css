@@ -47,12 +47,9 @@
 .logo-icon {
   width: 2.25rem;
   height: 2.25rem;
-  border-radius: 0.5rem;
-  background: linear-gradient(135deg, #3b6b87 0%, #25465c 100%);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 8px rgba(59, 107, 135, 0.25);
 }
 
 .logo-text {

@@ -1,9 +1,9 @@
 package main
 
 import (
-	"my-robot-backend/internal/platform/config"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/config"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
 )
 
 func main() {

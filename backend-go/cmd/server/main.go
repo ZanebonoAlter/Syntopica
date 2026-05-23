@@ -7,14 +7,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
-	appbootstrap "my-robot-backend/internal/app"
-	taggingdomain "my-robot-backend/internal/domain/tagging"
-	"my-robot-backend/internal/platform/airouter"
-	"my-robot-backend/internal/platform/config"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
-	"my-robot-backend/internal/platform/middleware"
-	"my-robot-backend/internal/platform/tracing"
+	appbootstrap "syntopica-backend/internal/app"
+	taggingdomain "syntopica-backend/internal/domain/tagging"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/config"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/middleware"
+	"syntopica-backend/internal/platform/tracing"
 )
 
 func main() {
@@ -68,7 +68,7 @@ func main() {
 	}
 
 	r := gin.Default()
-	r.Use(otelgin.Middleware("rss-reader-backend"))
+	r.Use(otelgin.Middleware(tracing.ServiceName))
 	if config.AppConfig != nil {
 		r.Use(middleware.CORS(config.AppConfig))
 	}

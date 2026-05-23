@@ -5,7 +5,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/logging"
 )
 
 func TraceSchedulerTick(schedulerName, trigger string, fn func(ctx context.Context)) {

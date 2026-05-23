@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"my-robot-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/models"
 )
 
 func TestTagCacheSetGet(t *testing.T) {

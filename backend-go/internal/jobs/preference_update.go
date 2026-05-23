@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"my-robot-backend/internal/domain/preferences"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
-	"my-robot-backend/internal/platform/tracing"
+	"syntopica-backend/internal/domain/preferences"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/tracing"
 )
 
 type PreferenceUpdateScheduler struct {

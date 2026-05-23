@@ -1,6 +1,8 @@
 <!-- generated-by: gsd-doc-writer -->
 
-# RSS Reader
+# Syntopica
+
+*Where feeds become topics*
 
 基于 Go + Nuxt 4 的个人 RSS 阅读器，三栏阅读界面，支持 AI 智能增强与主题图谱。
 
@@ -10,7 +12,7 @@
 - 让垃圾信息见ai去吧！你只需要看你关心的东西
 - ps 因为产品快速迭代，每次更新可能会break changes（字面意思会爆炸）
 
-![主界面截图](img/image-main.png)
+![主界面截图](img/1.3-feather/main-title.png)
 
 ## 🎯 语义标签板块（v1.3）
 
@@ -171,7 +173,7 @@ go run cmd/server/main.go
 ## 📂 项目结构
 
 ```
-ZanebonoRssReader/
+Syntopica/
 ├── front/                    # Nuxt 4 前端（Vue 3 + TypeScript + Pinia）
 ├── backend-go/               # Go + Gin 后端（GORM + POSTGRES ）
 ├── docs/                     # 项目文档

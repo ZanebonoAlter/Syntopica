@@ -1,6 +1,6 @@
 # 全局实体关系图
 
-本文档提供 RSS Reader 数据库的全局实体关系图，覆盖 35 张表、30 条 FK 约束，按 5 个业务域组织。
+本文档提供 Syntopica 数据库的全局实体关系图，覆盖 35 张表、30 条 FK 约束，按 5 个业务域组织。
 
 > 域级 ER 图使用 Mermaid `erDiagram` 语法，渲染依赖 GitHub/VSCode Mermaid 插件。全局概览图使用纯 ASCII 作为 fallback。
 

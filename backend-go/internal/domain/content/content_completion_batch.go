@@ -2,8 +2,8 @@ package content
 
 import (
 	"context"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
 )
 
 func (s *ContentCompletionService) AutoCompleteCompletePendingArticles(limit int) ([]uint, []error) {

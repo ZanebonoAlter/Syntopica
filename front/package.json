@@ -1,5 +1,5 @@
 {
-  "name": "front",
+  "name": "@syntopica/web",
   "type": "module",
   "private": true,
   "scripts": {

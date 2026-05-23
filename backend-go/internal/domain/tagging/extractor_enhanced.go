@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"my-robot-backend/internal/platform/airouter"
-	"my-robot-backend/internal/platform/jsonutil"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/jsonutil"
 	"strings"
 )
 

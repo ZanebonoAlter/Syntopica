@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"my-robot-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/models"
 )
 
 // WatchedTagInfo extends TopicTag with abstract-tag metadata for the API response.

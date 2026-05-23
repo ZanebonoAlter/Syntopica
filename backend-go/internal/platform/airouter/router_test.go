@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"my-robot-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/models"
 )
 
 type fakeProviderClient struct {

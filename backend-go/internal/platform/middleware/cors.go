@@ -2,7 +2,7 @@ package middleware
 
 import (
 	"github.com/gin-gonic/gin"
-	"my-robot-backend/internal/platform/config"
+	"syntopica-backend/internal/platform/config"
 )
 
 func CORS(cfg *config.Config) gin.HandlerFunc {

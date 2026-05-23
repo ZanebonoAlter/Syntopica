@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"strings"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/airouter"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/jsonutil"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/jsonutil"
+	"syntopica-backend/internal/platform/logging"
 )
 
 func fallbackNarrativeAssociation(ctx context.Context, narrative models.NarrativeSummary, allPrev []PreviousNarrative) ([]uint, error) {

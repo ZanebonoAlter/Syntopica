@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"gorm.io/gorm"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/logging"
 )
 
 type SQLiteSpanExporter struct {
@@ -200,7 +200,7 @@ func getServiceName(res *resource.Resource) string {
 			return attr.Value.AsString()
 		}
 	}
-	return "rss-reader-backend"
+	return ServiceName
 }
 
 func getServiceVersion(res *resource.Resource) string {

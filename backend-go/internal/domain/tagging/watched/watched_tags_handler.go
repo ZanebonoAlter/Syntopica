@@ -6,7 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/database"
 )
 
 // ListWatchedTagsHandler returns all watched tags with abstract-tag metadata.

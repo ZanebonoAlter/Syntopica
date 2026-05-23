@@ -363,7 +363,7 @@ watch(() => props.article, (newArticle) => {
   if (!newArticle) return
 
   useHead({
-    title: `${newArticle.title} - RSS Reader`,
+    title: `${newArticle.title} - Syntopica`,
     meta: [
       { name: 'description', content: newArticle.description },
     ],
@@ -494,7 +494,9 @@ import '~/components/article/ArticleContent.css'
 <template>
   <div v-if="!article" class="h-full flex items-center justify-center bg-white">
     <div class="text-center">
-      <Icon icon="mdi:file-document-outline" width="64" height="64" class="mx-auto mb-4 text-gray-300" />
+      <div>
+        <img src="/favicon.png" alt="Syntopica" width="360" height="360" class="mx-auto mb-4" />
+      </div>
       <h3 class="mb-2 text-xl font-semibold text-gray-700">选择一篇文章开始阅读</h3>
       <p class="text-gray-500">点击左侧文章列表查看内容</p>
     </div>

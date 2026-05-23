@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"sort"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/config"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/config"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
 )
 
 const maxEdges = 4

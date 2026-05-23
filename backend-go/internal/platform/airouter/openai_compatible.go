@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"my-robot-backend/internal/domain/models"
-	// "my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	// "syntopica-backend/internal/platform/logging"
 )
 
 var thinkTagRe = regexp.MustCompile(`(?s)<think\s*>.*?</think\s*>`)

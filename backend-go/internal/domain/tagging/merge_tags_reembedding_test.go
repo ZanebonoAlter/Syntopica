@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"my-robot-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/models"
 )
 
 func TestMergeTagsEnqueuesReembeddingAfterSuccess(t *testing.T) {

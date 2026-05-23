@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"my-robot-backend/internal/platform/jsonutil"
+	"syntopica-backend/internal/platform/jsonutil"
 )
 
 func TestParseNarrativeResponse_ValidWrappedJSON(t *testing.T) {

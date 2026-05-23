@@ -15,7 +15,7 @@
 - 确认容器健康：`docker compose logs postgres`
 - 检查 `backend-go/configs/config.yaml` 中的 `database.dsn` 配置
 - 检查 `DATABASE_DRIVER` 和 `DATABASE_DSN` 环境变量是否覆盖了配置文件
-- 手动测试连接：`docker exec -it zanebono-rssreader-pgvector psql -U postgres -d rss_reader -c "SELECT 1"`
+- 手动测试连接：`docker exec -it syntopica-postgres psql -U postgres -d syntopica -c "SELECT 1"`
 
 ### 迁移失败
 

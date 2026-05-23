@@ -28,7 +28,7 @@ cd my-robot
 
 ```bash
 docker run -d --name rss-postgres -p 5432:5432 \
-  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=rss_reader \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=syntopica \
   pgvector/pgvector:pg18-trixie
 ```
 

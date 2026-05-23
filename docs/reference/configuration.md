@@ -1,6 +1,6 @@
 # 配置指南
 
-RSS Reader 使用分层配置系统：后端 YAML 配置文件、覆盖文件值的环境变量，以及 Nuxt 运行时配置。AI 相关设置（LLM、Firecrawl、Digest）存储在数据库中，通过 Web UI 配置。
+Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值的环境变量，以及 Nuxt 运行时配置。AI 相关设置（LLM、Firecrawl、Digest）存储在数据库中，通过 Web UI 配置。
 
 ## 环境变量
 
@@ -13,7 +13,7 @@ RSS Reader 使用分层配置系统：后端 YAML 配置文件、覆盖文件值
 | `SERVER_PORT` | 否 | `"5000"` | 后端 HTTP 监听端口 |
 | `SERVER_MODE` | 否 | `"debug"` | Gin 模式：`"debug"`、`"release"` 或 `"test"` |
 | `DATABASE_DRIVER` | 否 | `"postgres"` | 数据库驱动，主分支仅支持 `"postgres"` |
-| `DATABASE_DSN` | 否 | `"host=127.0.0.1 user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | PostgreSQL 连接字符串 |
+| `DATABASE_DSN` | 否 | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | PostgreSQL 连接字符串 |
 | `CORS_ORIGINS` | 否 | `"http://localhost:3000,http://localhost:3000"` | 逗号分隔的允许 CORS 来源列表 |
 | `CRAWL_SERVICE_URL` | 否 | `"http://localhost:11235"` | 抓取/内容补全服务 URL |
 | `REDIS_URL` | 否 | *(空)* | Topic 分析任务队列的 Redis URL。设置后使用 Redis 作为持久后端；否则回退到内存队列 |
@@ -47,7 +47,7 @@ RSS Reader 使用分层配置系统：后端 YAML 配置文件、覆盖文件值
 |---|---|---|---|
 | `FRONT_PORT` | 否 | `"3000"` | 前端容器映射到宿主机的端口 |
 | `BACKEND_PORT` | 否 | `"5000"` | 后端容器映射到宿主机的端口 |
-| `POSTGRES_DB` | 否 | `"rss_reader"` | PostgreSQL 数据库名 |
+| `POSTGRES_DB` | 否 | `"syntopica"` | PostgreSQL 数据库名 |
 | `POSTGRES_USER` | 否 | `"postgres"` | PostgreSQL 用户名 |
 | `POSTGRES_PASSWORD` | 否 | `"postgres"` | PostgreSQL 密码 |
 | `POSTGRES_PORT` | 否 | `"5432"` | PostgreSQL 容器映射到宿主机的端口 |
@@ -69,7 +69,7 @@ server:
 
 database:
   driver: "postgres"
-  dsn: "host=127.0.0.1 user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+  dsn: "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"
   postgres:
     max_idle_conns: 5
     max_open_conns: 25
@@ -100,7 +100,7 @@ database:
 | Server port | `"5000"` | `viper.SetDefault` in `config.go` |
 | Server mode | `"debug"` | `viper.SetDefault` in `config.go` |
 | Database driver | `"postgres"` | `viper.SetDefault` in `config.go` |
-| Database DSN | `"host=127.0.0.1 user=postgres password=postgres dbname=rss_reader port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | `viper.SetDefault` in `config.go` |
+| Database DSN | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | `viper.SetDefault` in `config.go` |
 | Postgres max idle conns | `5` | `viper.SetDefault` in `config.go` |
 | Postgres max open conns | `25` | `viper.SetDefault` in `config.go` |
 | Postgres conn max lifetime | `60` min | `viper.SetDefault` in `config.go` |
@@ -136,7 +136,7 @@ database:
 - 需要本地运行 PostgreSQL + pgvector，可通过 Docker 启动：
 
 ```bash
-docker run -d --name rss-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=rss_reader pgvector/pgvector:pg18-trixie
+docker run -d --name rss-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=syntopica pgvector/pgvector:pg18-trixie
 ```
 
 ### Docker（PostgreSQL + pgvector）— 推荐方式

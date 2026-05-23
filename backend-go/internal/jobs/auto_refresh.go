@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
-	"my-robot-backend/internal/domain/feed"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
-	"my-robot-backend/internal/platform/tracing"
-	"my-robot-backend/internal/platform/ws"
+	"syntopica-backend/internal/domain/feed"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/tracing"
+	"syntopica-backend/internal/platform/ws"
 )
 
 type AutoRefreshScheduler struct {

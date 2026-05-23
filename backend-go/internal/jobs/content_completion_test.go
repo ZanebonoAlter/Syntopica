@@ -7,9 +7,9 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
-	"my-robot-backend/internal/domain/content"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/domain/content"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
 )
 
 func setupSchedulersTestDB(t *testing.T) {

@@ -9,11 +9,12 @@ import (
 	"go.opentelemetry.io/otel"
 	otelCodes "go.opentelemetry.io/otel/codes"
 	"gorm.io/gorm"
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/domain/tagging"
-	platformai "my-robot-backend/internal/platform/ai"
-	"my-robot-backend/internal/platform/airouter"
-	"my-robot-backend/internal/platform/database"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/tagging"
+	platformai "syntopica-backend/internal/platform/ai"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/tracing"
 )
 
 type ContentCompletionService struct {
@@ -88,19 +89,19 @@ func (s *ContentCompletionService) IsContentIncomplete(article *models.Article) 
 }
 
 func (s *ContentCompletionService) CompleteArticle(ctx context.Context, articleID uint) error {
-	ctx, span := otel.Tracer("rss-reader-backend").Start(ctx, "ContentCompletionService.CompleteArticle")
+	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "ContentCompletionService.CompleteArticle")
 	defer span.End()
 	/*line backend-go/internal/domain/contentprocessing/content_completion_service.go:89:2*/ return s.CompleteArticleWithMetadata(ctx, articleID, false, nil)
 }
 
 func (s *ContentCompletionService) CompleteArticleWithForce(ctx context.Context, articleID uint, force bool) error {
-	_, span := otel.Tracer("rss-reader-backend").Start(ctx, "ContentCompletionService.CompleteArticleWithForce")
+	_, span := otel.Tracer(tracing.ServiceName).Start(ctx, "ContentCompletionService.CompleteArticleWithForce")
 	defer span.End()
 	/*line backend-go/internal/domain/contentprocessing/content_completion_service.go:93:2*/ return s.CompleteArticleWithMetadata(ctx, articleID, force, nil)
 }
 
 func (s *ContentCompletionService) CompleteArticleWithMetadata(ctx context.Context, articleID uint, force bool, metadata map[string]any) (err error) {
-	_, span := otel.Tracer("rss-reader-backend").Start(ctx, "ContentCompletionService.CompleteArticleWithMetadata")
+	_, span := otel.Tracer(tracing.ServiceName).Start(ctx, "ContentCompletionService.CompleteArticleWithMetadata")
 	defer span.End()
 	defer func() {
 		if err != nil {

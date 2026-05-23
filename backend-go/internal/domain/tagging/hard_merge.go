@@ -3,8 +3,8 @@ package tagging
 import (
 	"fmt"
 
-	"my-robot-backend/internal/domain/models"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/logging"
 
 	"gorm.io/gorm"
 )

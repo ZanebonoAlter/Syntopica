@@ -8,6 +8,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const ServiceName = "syntopica"
+
 type OtelSpan struct {
 	ID                 uint   `gorm:"primaryKey;autoIncrement"`
 	TraceID            string `gorm:"type:char(32);not null;index:idx_otel_spans_trace_id"`
@@ -21,7 +23,7 @@ type OtelSpan struct {
 	StartTimeUnixNano  int64  `gorm:"not null;index:idx_otel_spans_start_time"`
 	EndTimeUnixNano    int64  `gorm:"not null"`
 	DurationMs         int64  `gorm:"default:0"`
-	ServiceName        string `gorm:"type:varchar(100);default:'rss-reader-backend'"`
+	ServiceName        string `gorm:"type:varchar(100);default:'syntopica'"`
 	ServiceVersion     string `gorm:"type:varchar(50);default:''"`
 	ResourceAttributes string `gorm:"type:text;default:'{}'"`
 	ScopeName          string `gorm:"type:varchar(100);default:''"`

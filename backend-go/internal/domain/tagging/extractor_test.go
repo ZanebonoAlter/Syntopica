@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"my-robot-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/airouter"
 
 	"github.com/stretchr/testify/require"
 )

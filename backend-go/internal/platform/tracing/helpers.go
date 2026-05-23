@@ -6,7 +6,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"my-robot-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/logging"
 )
 
 func Tracer(name string) trace.Tracer {

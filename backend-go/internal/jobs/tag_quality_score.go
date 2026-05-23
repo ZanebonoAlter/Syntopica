@@ -10,11 +10,11 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"my-robot-backend/internal/domain/models"
-	taggingextraction "my-robot-backend/internal/domain/tagging/extraction"
-	"my-robot-backend/internal/platform/database"
-	"my-robot-backend/internal/platform/logging"
-	"my-robot-backend/internal/platform/tracing"
+	"syntopica-backend/internal/domain/models"
+	taggingextraction "syntopica-backend/internal/domain/tagging/extraction"
+	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/tracing"
 )
 
 type TagQualityScoreScheduler struct {

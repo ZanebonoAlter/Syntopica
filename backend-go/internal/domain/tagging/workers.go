@@ -1,6 +1,6 @@
 package tagging
 
-import "my-robot-backend/internal/platform/logging"
+import "syntopica-backend/internal/platform/logging"
 
 func StartAllWorkers() {
 	if err := GetTagQueue().Start(); err != nil {

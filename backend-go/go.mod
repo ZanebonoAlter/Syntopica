@@ -1,4 +1,4 @@
-module my-robot-backend
+module syntopica-backend
 
 go 1.25.0
 
