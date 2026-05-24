@@ -1,4 +1,4 @@
-<p align="center"><img src="front/public/favicon.png" width="48" alt="icon"></p>
+<p align="center"><img src="front/public/favicon.png" width="360" alt="icon"></p>
 
 # Syntopica
 
