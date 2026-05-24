@@ -41,7 +41,7 @@ ask_yn() {
     case "$yn" in
       [Yy]|[Yy][Ee][Ss]) return 0 ;;
       [Nn]|[Nn][Oo]) return 1 ;;
-      *) warn "Please enter Y or n" ;;
+      *) warn "请输入 Y 或 n" ;;
     esac
   done
 }
@@ -76,10 +76,10 @@ FIRECRAWL_API_URL=""
 FIRECRAWL_API_KEY=""
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHASE 1: Core Startup
+# 阶段 1：核心启动
 # ════════════════════════════════════════════════════════════════════════════
 phase1() {
-  step "Phase 1: Core Startup"
+  step "阶段 1：核心启动"
 
   check_docker
 
@@ -93,42 +93,42 @@ phase1() {
 }
 
 check_docker() {
-  info "Checking Docker..."
+  info "检查 Docker..."
   if ! command -v docker &>/dev/null; then
-    fail "Docker is not installed. Please install Docker Desktop first.\n  https://www.docker.com/products/docker-desktop/"
+    fail "Docker 未安装。请先安装 Docker Desktop。\n  https://www.docker.com/products/docker-desktop/"
   fi
 
   if ! docker compose version &>/dev/null 2>&1; then
     if ! docker-compose version &>/dev/null 2>&1; then
-      fail "docker compose plugin not found. Please update Docker Desktop or install docker-compose."
+      fail "docker compose 插件未找到。请更新 Docker Desktop 或安装 docker-compose。"
     fi
     DOCKER_COMPOSE="docker-compose"
   else
     DOCKER_COMPOSE="docker compose"
   fi
-  ok "Docker and $DOCKER_COMPOSE available"
+  ok "Docker 和 $DOCKER_COMPOSE 可用"
 }
 
 collect_config() {
-  step "Configuration"
-  echo "Press Enter to accept defaults.\n"
+  step "配置"
+  echo "按 Enter 接受默认值。\n"
 
-  ask "Port" "$PORT"; PORT="$answer"
-  ask "PostgreSQL port" "$POSTGRES_PORT"; POSTGRES_PORT="$answer"
-  ask "PostgreSQL database" "$POSTGRES_DB"; POSTGRES_DB="$answer"
-  ask "PostgreSQL user" "$POSTGRES_USER"; POSTGRES_USER="$answer"
-  ask "PostgreSQL password" "$POSTGRES_PASSWORD"; POSTGRES_PASSWORD="$answer"
-  ask "Timezone" "$TZ"; TZ="$answer"
+  ask "服务端口" "$PORT"; PORT="$answer"
+  ask "PostgreSQL 端口" "$POSTGRES_PORT"; POSTGRES_PORT="$answer"
+  ask "PostgreSQL 数据库名" "$POSTGRES_DB"; POSTGRES_DB="$answer"
+  ask "PostgreSQL 用户名" "$POSTGRES_USER"; POSTGRES_USER="$answer"
+  ask "PostgreSQL 密码" "$POSTGRES_PASSWORD"; POSTGRES_PASSWORD="$answer"
+  ask "时区" "$TZ"; TZ="$answer"
 }
 
 merge_env() {
-  step "Generating .env"
+  step "生成 .env"
 
   local env_file="$SCRIPT_DIR/.env"
   local example_file="$SCRIPT_DIR/.env.example"
 
   if [ ! -f "$example_file" ]; then
-    warn ".env.example not found, creating minimal .env"
+    warn ".env.example 未找到，创建最小 .env"
     cat > "$env_file" <<EOF
 PORT=$PORT
 POSTGRES_DB=$POSTGRES_DB
@@ -137,7 +137,7 @@ POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 POSTGRES_PORT=$POSTGRES_PORT
 TZ=$TZ
 EOF
-    ok ".env created"
+    ok ".env 已创建"
     return
   fi
 
@@ -165,23 +165,23 @@ EOF
   done
 
   mv "$env_file.tmp" "$env_file"
-  ok ".env updated (existing values preserved)"
+  ok ".env 已更新（已有值已保留）"
 }
 
 start_services() {
-  step "Starting services"
+  step "启动服务"
 
-  info "Running $DOCKER_COMPOSE up -d..."
-  $DOCKER_COMPOSE up -d 2>&1 || fail "Failed to start Docker services"
+  info "运行 $DOCKER_COMPOSE up -d..."
+  $DOCKER_COMPOSE up -d 2>&1 || fail "Docker 服务启动失败"
 
-  ok "Docker services started"
+  ok "Docker 服务已启动"
 }
 
 wait_healthy() {
-  step "Waiting for services to become healthy"
+  step "等待服务就绪"
 
-  # Wait for postgres
-  info "Waiting for PostgreSQL..."
+  # 等待 PostgreSQL
+  info "等待 PostgreSQL..."
   local retries=30
   while [ $retries -gt 0 ]; do
     if $DOCKER_COMPOSE exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" &>/dev/null; then
@@ -191,12 +191,12 @@ wait_healthy() {
     sleep 2
   done
   if [ $retries -eq 0 ]; then
-    fail "PostgreSQL did not become healthy in time"
+    fail "PostgreSQL 未能在规定时间内就绪"
   fi
-  ok "PostgreSQL is ready"
+  ok "PostgreSQL 已就绪"
 
-  # Wait for backend health
-  info "Waiting for backend /health..."
+  # 等待后端健康检查
+  info "等待后端 /health..."
   retries=60
   local code
   while [ $retries -gt 0 ]; do
@@ -208,16 +208,16 @@ wait_healthy() {
     sleep 3
   done
   if [ $retries -eq 0 ]; then
-    fail "Backend /health did not return 200 in time (last HTTP status: $code)"
+    fail "后端 /health 未返回 200（最后状态码: $code）"
   fi
-  ok "Backend is healthy"
+  ok "后端服务健康"
 }
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHASE 2: Optional Setup
+# 阶段 2：可选配置
 # ════════════════════════════════════════════════════════════════════════════
 phase2() {
-  step "Phase 2: Optional Setup"
+  step "阶段 2：可选配置"
 
   detect_ip
   ask_ai_mode
@@ -228,7 +228,7 @@ phase2() {
   ask_firecrawl_mode
 }
 
-# 5.3 IP auto-detection
+# 5.3 IP 自动检测
 detect_ip() {
   local os
   os="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -250,64 +250,64 @@ detect_ip() {
 
   if [ -z "$AI_IP" ]; then
     AI_IP="localhost"
-    warn "Could not auto-detect host IP, using localhost (may not work from Docker)"
+    warn "无法自动检测本机 IP，使用 localhost（Docker 内可能无法访问）"
   else
-    info "Detected host IP: $AI_IP"
+    info "检测到本机 IP: $AI_IP"
   fi
 }
 
-# 5.2 AI mode selection
+# 5.2 AI 模式选择
 ask_ai_mode() {
-  step "AI Model Setup"
-  echo "How do you want to connect to AI models?"
+  step "AI 模型配置"
+  echo "如何连接 AI 模型？"
   echo ""
   echo "  1) Ollama"
-  echo "  2) llama.cpp (local server)"
-  echo "  3) Remote API (OpenAI-compatible)"
-  echo "  4) Skip AI setup for now"
+  echo "  2) llama.cpp（本地服务）"
+  echo "  3) 远程 API（OpenAI 兼容）"
+  echo "  4) 暂时跳过"
   echo ""
 
   local choice
   while true; do
-    ask "Choose [1-4]" "4"
+    ask "请选择 [1-4]" "4"
     choice="$answer"
     case "$choice" in
       1) AI_MODE="ollama"; setup_ollama; break ;;
       2) AI_MODE="llamacpp"; setup_llamacpp; break ;;
       3) AI_MODE="remote"; setup_remote; break ;;
-      4) AI_MODE="skip"; info "AI setup skipped"; break ;;
-      *) warn "Enter 1, 2, 3, or 4" ;;
+      4) AI_MODE="skip"; info "已跳过 AI 配置"; break ;;
+      *) warn "请输入 1、2、3 或 4" ;;
     esac
   done
 }
 
-# 5.4 Ollama configuration
+# 5.4 Ollama 配置
 setup_ollama() {
   AI_PROVIDER_TYPE="ollama"
   TEXT_PORT="11434"
   EMBED_PORT="11434"
 
-  ask "AI service IP address" "$AI_IP"; AI_IP="$answer"
-  ask "Ollama port" "$TEXT_PORT"; TEXT_PORT="$answer"
+  ask "AI 服务 IP 地址" "$AI_IP"; AI_IP="$answer"
+  ask "Ollama 端口" "$TEXT_PORT"; TEXT_PORT="$answer"
   EMBED_PORT="$TEXT_PORT"
 
   AI_BASE_URL="http://${AI_IP}:${TEXT_PORT}/v1"
   EMBED_BASE_URL="$AI_BASE_URL"
 
-  ask "Text model name" "qwen3:8b"; TEXT_MODEL="$answer"
-  ask "Embed model name" "nomic-embed-text"; EMBED_MODEL="$answer"
+  ask "文本模型名称" "qwen3:8b"; TEXT_MODEL="$answer"
+  ask "嵌入模型名称" "nomic-embed-text"; EMBED_MODEL="$answer"
   AI_API_KEY=""
 }
 
-# 5.5 llama.cpp configuration
+# 5.5 llama.cpp 配置
 setup_llamacpp() {
   AI_PROVIDER_TYPE="openai_compatible"
   TEXT_PORT="8080"
   EMBED_PORT="8081"
 
-  ask "AI service IP address" "$AI_IP"; AI_IP="$answer"
-  ask "Text server port" "$TEXT_PORT"; TEXT_PORT="$answer"
-  ask "Embed server port" "$EMBED_PORT"; EMBED_PORT="$answer"
+  ask "AI 服务 IP 地址" "$AI_IP"; AI_IP="$answer"
+  ask "文本服务端口" "$TEXT_PORT"; TEXT_PORT="$answer"
+  ask "嵌入服务端口" "$EMBED_PORT"; EMBED_PORT="$answer"
 
   AI_BASE_URL="http://${AI_IP}:${TEXT_PORT}/v1"
   EMBED_BASE_URL="http://${AI_IP}:${EMBED_PORT}/v1"
@@ -317,28 +317,28 @@ setup_llamacpp() {
   AI_API_KEY="sk-local"
 }
 
-# 5.6 Remote API configuration
+# 5.6 远程 API 配置
 setup_remote() {
   AI_PROVIDER_TYPE="openai_compatible"
 
-  ask "API base URL" "https://api.openai.com/v1"; AI_BASE_URL="$answer"
+  ask "API 地址" "https://api.openai.com/v1"; AI_BASE_URL="$answer"
   EMBED_BASE_URL="$AI_BASE_URL"
-  ask "API key"; AI_API_KEY="$answer"
-  ask "Text model name" "gpt-4o-mini"; TEXT_MODEL="$answer"
-  ask "Embed model name" "text-embedding-3-small"; EMBED_MODEL="$answer"
+  ask "API 密钥"; AI_API_KEY="$answer"
+  ask "文本模型名称" "gpt-4o-mini"; TEXT_MODEL="$answer"
+  ask "嵌入模型名称" "text-embedding-3-small"; EMBED_MODEL="$answer"
 }
 
-# 5.7 AI health detection
+# 5.7 AI 健康检测
 health_check_ai() {
-  step "AI Health Check"
+  step "AI 健康检查"
 
   if [ "$AI_MODE" = "remote" ]; then
-    info "Remote API selected, skipping health check"
+    info "远程 API 模式，跳过健康检查"
     return
   fi
 
   local health_url="http://${AI_IP}:${TEXT_PORT}/v1/chat/completions"
-  info "Testing AI service at ${AI_IP}:${TEXT_PORT}..."
+  info "测试 AI 服务 ${AI_IP}:${TEXT_PORT}..."
 
   local retries=3
   while [ $retries -gt 0 ]; do
@@ -353,80 +353,80 @@ health_check_ai() {
     code=$(echo "$response" | tail -1)
 
     if [ "$code" = "200" ]; then
-      ok "AI service is reachable and responding"
+      ok "AI 服务连接正常"
       return
     fi
 
     retries=$((retries - 1))
     if [ $retries -gt 0 ]; then
-      warn "AI service not responding (HTTP $code). Retrying in 5s... ($retries left)"
+      warn "AI 服务未响应 (HTTP $code)，${retries} 次重试剩余..."
       sleep 5
     fi
   done
 
-  warn "Could not reach AI service at $health_url"
-  if ! ask_yn "Continue anyway? (you can configure AI later in Web UI)" "Y"; then
+  warn "无法连接 AI 服务: $health_url"
+  if ! ask_yn "是否继续？（可稍后在 Web UI 中配置）" "Y"; then
     AI_MODE="skip"
-    info "AI setup will be skipped, seed data not written"
+    info "已跳过 AI 配置，种子数据不会写入"
   fi
 }
 
-# 5.8 Firecrawl mode
+# 5.8 Firecrawl 模式
 ask_firecrawl_mode() {
-  step "Firecrawl Setup"
-  echo "How do you want to handle full-text crawling?"
+  step "Firecrawl 配置"
+  echo "如何处理全文爬取？"
   echo ""
-  echo "  1) Self-deploy Firecrawl (docker-compose.firecrawl.yml)"
-  echo "  2) Cloud API (use Firecrawl cloud service)"
-  echo "  3) Skip Firecrawl setup"
+  echo "  1) 自部署 Firecrawl (docker-compose.firecrawl.yml)"
+  echo "  2) 云端 API（使用 Firecrawl 云服务）"
+  echo "  3) 跳过 Firecrawl 配置"
   echo ""
 
   local choice
   while true; do
-    ask "Choose [1-3]" "3"
+    ask "请选择 [1-3]" "3"
     choice="$answer"
     case "$choice" in
       1) FIRECRAWL_MODE="self"; setup_firecrawl_self; break ;;
       2) FIRECRAWL_MODE="cloud"; setup_firecrawl_cloud; break ;;
-      3) FIRECRAWL_MODE="skip"; info "Firecrawl setup skipped"; break ;;
-      *) warn "Enter 1, 2, or 3" ;;
+      3) FIRECRAWL_MODE="skip"; info "已跳过 Firecrawl 配置"; break ;;
+      *) warn "请输入 1、2 或 3" ;;
     esac
   done
 }
 
 setup_firecrawl_self() {
   if [ -f "$SCRIPT_DIR/docker-compose.firecrawl.yml" ]; then
-    info "Starting Firecrawl services..."
+    info "启动 Firecrawl 服务..."
     if $DOCKER_COMPOSE -f docker-compose.firecrawl.yml up -d 2>&1; then
-      ok "Firecrawl started"
+      ok "Firecrawl 已启动"
     else
-      warn "Firecrawl startup failed"
-      warn "You can start it manually: docker compose -f docker-compose.firecrawl.yml up -d"
+      warn "Firecrawl 启动失败"
+      warn "可手动启动: docker compose -f docker-compose.firecrawl.yml up -d"
     fi
     FIRECRAWL_API_URL="http://firecrawl:3002"
   else
-    warn "docker-compose.firecrawl.yml not found"
-    warn "You may need to create it first. See docs/reference/deployment.md"
+    warn "docker-compose.firecrawl.yml 未找到"
+    warn "请先创建该文件，参见 docs/reference/deployment.md"
     FIRECRAWL_API_URL="http://firecrawl:3002"
   fi
 }
 
 setup_firecrawl_cloud() {
-  ask "Firecrawl cloud API URL" "https://api.firecrawl.dev/v1"; FIRECRAWL_API_URL="$answer"
-  ask "Firecrawl API key"; FIRECRAWL_API_KEY="$answer"
-  ok "Firecrawl cloud configured"
+  ask "Firecrawl 云端 API 地址" "https://api.firecrawl.dev/v1"; FIRECRAWL_API_URL="$answer"
+  ask "Firecrawl API 密钥"; FIRECRAWL_API_KEY="$answer"
+  ok "Firecrawl 云端已配置"
 }
 
 # ════════════════════════════════════════════════════════════════════════════
-# PHASE 3: Confirmation & Execution
+# 阶段 3：确认与执行
 # ════════════════════════════════════════════════════════════════════════════
 phase3() {
-  step "Phase 3: Confirmation"
+  step "阶段 3：确认"
 
   print_summary
 
-  if ! ask_yn "Proceed with setup?" "Y"; then
-    info "Setup cancelled. You can re-run init.sh anytime."
+  if ! ask_yn "确认执行？" "Y"; then
+    info "已取消。可随时重新运行 init.sh。"
     exit 0
   fi
 
@@ -435,65 +435,65 @@ phase3() {
   print_final
 }
 
-# 5.9 Print deployment summary
+# 5.9 部署摘要
 print_summary() {
   echo ""
   separator
-  printf "${BOLD}          Deployment Summary${NC}\n"
+  printf "${BOLD}          部署摘要${NC}\n"
   separator
 
-  printf "\n${BOLD}Services:${NC}\n"
+  printf "\n${BOLD}服务:${NC}\n"
   printf "  %-20s %s\n" "PostgreSQL" "localhost:${POSTGRES_PORT}"
   printf "  %-20s %s\n" "Syntopica" "http://localhost:${PORT}"
 
   if [ "$AI_MODE" = "ollama" ]; then
     printf "\n${BOLD}AI (Ollama):${NC}\n"
-    printf "  %-20s %s\n" "Endpoint" "http://${AI_IP}:${TEXT_PORT}"
-    printf "  %-20s %s\n" "Text model" "$TEXT_MODEL"
-    printf "  %-20s %s\n" "Embed model" "$EMBED_MODEL"
+    printf "  %-20s %s\n" "端点" "http://${AI_IP}:${TEXT_PORT}"
+    printf "  %-20s %s\n" "文本模型" "$TEXT_MODEL"
+    printf "  %-20s %s\n" "嵌入模型" "$EMBED_MODEL"
   elif [ "$AI_MODE" = "llamacpp" ]; then
     printf "\n${BOLD}AI (llama.cpp):${NC}\n"
-    printf "  %-20s %s\n" "Text endpoint" "http://${AI_IP}:${TEXT_PORT}"
-    printf "  %-20s %s\n" "Embed endpoint" "http://${AI_IP}:${EMBED_PORT}"
-    printf "  %-20s %s\n" "Model" "loaded-model (placeholder)"
+    printf "  %-20s %s\n" "文本端点" "http://${AI_IP}:${TEXT_PORT}"
+    printf "  %-20s %s\n" "嵌入端点" "http://${AI_IP}:${EMBED_PORT}"
+    printf "  %-20s %s\n" "模型" "loaded-model（占位符）"
   elif [ "$AI_MODE" = "remote" ]; then
-    printf "\n${BOLD}AI (Remote):${NC}\n"
-    printf "  %-20s %s\n" "Endpoint" "$AI_BASE_URL"
-    printf "  %-20s %s\n" "Text model" "$TEXT_MODEL"
-    printf "  %-20s %s\n" "Embed model" "$EMBED_MODEL"
+    printf "\n${BOLD}AI (远程 API):${NC}\n"
+    printf "  %-20s %s\n" "端点" "$AI_BASE_URL"
+    printf "  %-20s %s\n" "文本模型" "$TEXT_MODEL"
+    printf "  %-20s %s\n" "嵌入模型" "$EMBED_MODEL"
   else
-    printf "\n${BOLD}AI:${NC} skipped\n"
+    printf "\n${BOLD}AI:${NC} 已跳过\n"
   fi
 
   if [ "$FIRECRAWL_MODE" = "self" ]; then
-    printf "\n${BOLD}Firecrawl:${NC} self-hosted\n"
+    printf "\n${BOLD}Firecrawl:${NC} 自部署\n"
   elif [ "$FIRECRAWL_MODE" = "cloud" ]; then
-    printf "\n${BOLD}Firecrawl:${NC} cloud ($FIRECRAWL_API_URL)\n"
+    printf "\n${BOLD}Firecrawl:${NC} 云端 ($FIRECRAWL_API_URL)\n"
   else
-    printf "\n${BOLD}Firecrawl:${NC} skipped\n"
+    printf "\n${BOLD}Firecrawl:${NC} 已跳过\n"
   fi
 
   echo ""
   separator
 }
 
-# 5.10 Seed data write
+# 5.10 种子数据写入
 seed_data() {
-  step "Writing Seed Data"
+  step "写入种子数据"
 
   local api_base="http://localhost:${PORT}/api"
   local code
 
   if [ "$AI_MODE" = "skip" ]; then
-    info "AI setup was skipped, skipping seed data"
+    info "AI 配置已跳过，跳过种子数据写入"
   else
     local text_api_key="$AI_API_KEY"
     if [ "$AI_PROVIDER_TYPE" = "ollama" ]; then
       text_api_key=""
     fi
 
-    # Create text provider
-    info "Creating AI provider for text tasks..."
+    # 创建文本 Provider
+    info "创建文本 AI Provider..."
     local text_provider_name="local-llm"
     if [ "$AI_MODE" = "remote" ]; then
       text_provider_name="remote-llm"
@@ -510,13 +510,13 @@ seed_data() {
         \"enabled\": true
       }")
     if [ "$code" = "200" ] || [ "$code" = "201" ]; then
-      ok "Text provider created: $text_provider_name ($TEXT_MODEL)"
+      ok "文本 Provider 已创建: $text_provider_name ($TEXT_MODEL)"
     else
-      warn "Failed to create text provider (HTTP $code). You can configure it in the web UI."
+      warn "文本 Provider 创建失败 (HTTP $code)，可稍后在 Web UI 中配置"
     fi
 
-    # Create embed provider
-    info "Creating AI provider for embedding..."
+    # 创建嵌入 Provider
+    info "创建嵌入 AI Provider..."
     local embed_provider_name="local-embedding"
     if [ "$AI_MODE" = "remote" ]; then
       embed_provider_name="remote-embedding"
@@ -533,26 +533,28 @@ seed_data() {
         \"enabled\": true
       }")
     if [ "$code" = "200" ] || [ "$code" = "201" ]; then
-      ok "Embed provider created: $embed_provider_name ($EMBED_MODEL)"
+      ok "嵌入 Provider 已创建: $embed_provider_name ($EMBED_MODEL)"
     else
-      warn "Failed to create embed provider (HTTP $code). You can configure it in the web UI."
+      warn "嵌入 Provider 创建失败 (HTTP $code)，可稍后在 Web UI 中配置"
     fi
 
-    # Get provider IDs and bind routes
-    info "Binding AI routes..."
+    # 获取 Provider ID 并绑定路由
+    info "绑定 AI 路由..."
     local providers_json
-    providers_json=$(curl -sS "$api_base/ai/providers" 2>/dev/null || echo "[]")
+    providers_json=$(curl -sS "$api_base/ai/providers" 2>/dev/null || echo '{"data":[]}')
 
+    # 从 data 数组中按 name 提取 id
+    # 每个对象包含 "id":N,"name":"xxx"，按 name 匹配后取 id
     local text_provider_id embed_provider_id
-    text_provider_id=$(echo "$providers_json" | grep -o '"id":[0-9]*' | head -1 | cut -d':' -f2 || echo "")
-    embed_provider_id=$(echo "$providers_json" | grep -o '"id":[0-9]*' | tail -1 | cut -d':' -f2 || echo "")
+    text_provider_id=$(echo "$providers_json" | grep -o '"id":[0-9]*,"name":"[^"]*"' | grep -E '"(local-llm|remote-llm)"' | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*' || echo "")
+    embed_provider_id=$(echo "$providers_json" | grep -o '"id":[0-9]*,"name":"[^"]*"' | grep -E '"(local-embedding|remote-embedding)"' | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*' || echo "")
 
     if [ -n "$text_provider_id" ]; then
       for route in article_completion topic_tagging open_notebook; do
         code=$(curl_silent -X PUT "$api_base/ai/routes/$route" \
           -H "Content-Type: application/json" \
           -d "{\"name\":\"default\",\"enabled\":true,\"provider_ids\":[${text_provider_id}]}")
-        [ "$code" = "200" ] && ok "Route bound: $route" || warn "Failed to bind $route route"
+        [ "$code" = "200" ] && ok "路由已绑定: $route" || warn "路由绑定失败: $route"
       done
     fi
 
@@ -560,13 +562,13 @@ seed_data() {
       code=$(curl_silent -X PUT "$api_base/ai/routes/embedding" \
         -H "Content-Type: application/json" \
         -d "{\"name\":\"default\",\"enabled\":true,\"provider_ids\":[${embed_provider_id}]}")
-      [ "$code" = "200" ] && ok "Route bound: embedding" || warn "Failed to bind embedding route"
+      [ "$code" = "200" ] && ok "路由已绑定: embedding" || warn "路由绑定失败: embedding"
     fi
   fi
 
-  # Firecrawl config
+  # Firecrawl 配置
   if [ "$FIRECRAWL_MODE" != "skip" ]; then
-    info "Writing Firecrawl settings..."
+    info "写入 Firecrawl 配置..."
     code=$(curl_silent -X POST "$api_base/firecrawl/settings" \
       -H "Content-Type: application/json" \
       -d "{
@@ -577,37 +579,37 @@ seed_data() {
         \"timeout\": 30,
         \"max_content_length\": 500000
       }")
-    [ "$code" = "200" ] && ok "Firecrawl settings saved" || warn "Failed to save Firecrawl settings"
+    [ "$code" = "200" ] && ok "Firecrawl 配置已保存" || warn "Firecrawl 配置保存失败"
   fi
 }
 
-# 5.11 Final output
+# 5.11 最终输出
 print_final() {
   echo ""
   separator
-  printf "${GREEN}${BOLD}          Setup Complete!${NC}\n"
+  printf "${GREEN}${BOLD}          安装完成！${NC}\n"
   separator
 
   echo ""
-  printf "${BOLD}Access URLs:${NC}\n"
+  printf "${BOLD}访问地址:${NC}\n"
   printf "  ${CYAN}Syntopica:${NC} http://localhost:${PORT}\n"
 
   if [ "$AI_MODE" != "skip" ]; then
-    printf "\n${BOLD}AI Connection:${NC}\n"
+    printf "\n${BOLD}AI 连接:${NC}\n"
     if [ "$AI_MODE" = "ollama" ]; then
-      printf "  ${CYAN}Type:${NC}     Ollama\n"
-      printf "  ${CYAN}Endpoint:${NC} http://${AI_IP}:${TEXT_PORT}\n"
-      printf "  ${CYAN}Text:${NC}     ${TEXT_MODEL}\n"
-      printf "  ${CYAN}Embed:${NC}    ${EMBED_MODEL}\n"
+      printf "  ${CYAN}类型:${NC}     Ollama\n"
+      printf "  ${CYAN}端点:${NC} http://${AI_IP}:${TEXT_PORT}\n"
+      printf "  ${CYAN}文本:${NC}     ${TEXT_MODEL}\n"
+      printf "  ${CYAN}嵌入:${NC}    ${EMBED_MODEL}\n"
     elif [ "$AI_MODE" = "llamacpp" ]; then
-      printf "  ${CYAN}Type:${NC}     llama.cpp\n"
-      printf "  ${CYAN}Text:${NC}     http://${AI_IP}:${TEXT_PORT}\n"
-      printf "  ${CYAN}Embed:${NC}    http://${AI_IP}:${EMBED_PORT}\n"
+      printf "  ${CYAN}类型:${NC}     llama.cpp\n"
+      printf "  ${CYAN}文本:${NC}     http://${AI_IP}:${TEXT_PORT}\n"
+      printf "  ${CYAN}嵌入:${NC}    http://${AI_IP}:${EMBED_PORT}\n"
     elif [ "$AI_MODE" = "remote" ]; then
-      printf "  ${CYAN}Type:${NC}     Remote API\n"
-      printf "  ${CYAN}Endpoint:${NC} ${AI_BASE_URL}\n"
-      printf "  ${CYAN}Text:${NC}     ${TEXT_MODEL}\n"
-      printf "  ${CYAN}Embed:${NC}    ${EMBED_MODEL}\n"
+      printf "  ${CYAN}类型:${NC}     远程 API\n"
+      printf "  ${CYAN}端点:${NC} ${AI_BASE_URL}\n"
+      printf "  ${CYAN}文本:${NC}     ${TEXT_MODEL}\n"
+      printf "  ${CYAN}嵌入:${NC}    ${EMBED_MODEL}\n"
     fi
   fi
 
@@ -616,30 +618,30 @@ print_final() {
   fi
 
   echo ""
-  printf "${BOLD}Quick Reference:${NC}\n"
-  echo "  Start services:     $DOCKER_COMPOSE up -d"
-  echo "  Stop services:      $DOCKER_COMPOSE down"
-  echo "  View logs:          $DOCKER_COMPOSE logs -f"
-  echo "  Re-run setup:       bash init.sh"
+  printf "${BOLD}常用命令:${NC}\n"
+  echo "  启动服务:     $DOCKER_COMPOSE up -d"
+  echo "  停止服务:     $DOCKER_COMPOSE down"
+  echo "  查看日志:     $DOCKER_COMPOSE logs -f"
+  echo "  重新配置:     bash init.sh"
   echo ""
 
   if [ "$AI_MODE" = "ollama" ]; then
-    printf "${YELLOW}Note:${NC} Ensure Ollama is running with: ${BOLD}ollama serve${NC}\n"
+    printf "${YELLOW}提示:${NC} 使用前请确保 Ollama 已启动: ${BOLD}ollama serve${NC}\n"
   elif [ "$AI_MODE" = "llamacpp" ]; then
-    printf "${YELLOW}Note:${NC} Start llama.cpp servers ${BOLD}before${NC} using AI features.\n"
+    printf "${YELLOW}提示:${NC} 使用 AI 功能前请先启动 llama.cpp 服务。\n"
   fi
 
   separator
-  printf "${DIM}Configuration saved to .env${NC}\n"
+  printf "${DIM}配置已保存到 .env${NC}\n"
 }
 
 # ════════════════════════════════════════════════════════════════════════════
-# Main
+# 主流程
 # ════════════════════════════════════════════════════════════════════════════
 main() {
   echo ""
   printf "${BOLD}${CYAN}╔══════════════════════════════════════════════╗${NC}\n"
-  printf "${BOLD}${CYAN}║          Syntopica Setup Wizard              ║${NC}\n"
+  printf "${BOLD}${CYAN}║          Syntopica 安装向导                  ║${NC}\n"
   printf "${BOLD}${CYAN}╚══════════════════════════════════════════════╝${NC}\n"
   echo ""
 

@@ -14,7 +14,7 @@ const dirtyKeys = ref<Set<string>>(new Set())
 const configLabels: Record<string, { label: string; hint: string; unit?: string }> = {
   high_similarity_threshold: { label: '高相似度阈值', hint: '标签自动复用的最低相似度，高于此值直接复用', unit: '0.0-1.0' },
   low_similarity_threshold: { label: '低相似度阈值', hint: '低于此值创建新标签，中间地带也创建新标签', unit: '0.0-1.0' },
-  embedding_dimension: { label: 'Embedding 维度', hint: '向量维度，需与模型匹配（如 ada-002=1536, 3-small=1536）', unit: '' },
+  embedding_dimension: { label: 'Embedding 维度', hint: '实际维度由模型自动决定，此值仅供参考（如 nomic-embed=768, 3-small=1536）', unit: '' },
 }
 
 function getLabel(key: string): string {

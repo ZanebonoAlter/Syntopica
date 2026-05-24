@@ -62,7 +62,7 @@ func postgresMigrations() []Migration {
 					{Key: "high_similarity_threshold", Value: "0.97", Description: "Auto-reuse existing tag if similarity >= this value"},
 					{Key: "low_similarity_threshold", Value: "0.78", Description: "Auto-create new tag if similarity < this value"},
 					{Key: "embedding_model", Value: "", Description: "Override embedding model name (empty = read from provider)"},
-					{Key: "embedding_dimension", Value: "4096", Description: "Embedding vector dimension"},
+					{Key: "embedding_dimension", Value: "1024", Description: "Embedding vector dimension"},
 				}
 				for _, d := range defaults {
 					var existing models.EmbeddingConfig

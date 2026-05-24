@@ -228,6 +228,7 @@ cd backend-go && go mod tidy && go run cmd/server/main.go  # http://localhost:50
    ollama pull nomic-embed-text   # 嵌入模型
    ```
 3. 启动服务：`ollama serve`
+4. 因为ollama对json的支持不是强制的，可能导致效果一般，所以不太建议用ollama
 
 ### llama.cpp
 
@@ -239,11 +240,11 @@ cd backend-go && go mod tidy && go run cmd/server/main.go  # http://localhost:50
 2. 下载模型文件（见下方推荐表），来源：[ModelScope](https://modelscope.cn) / [HuggingFace](https://huggingface.co)
 3. 启动文本服务：
    ```bash
-   llama-server -m models/qwen3-8b-q4_0.gguf --port 8080 --host 0.0.0.0 -ngl 99
+   ./llama-server -m model/Qwen3.5-9B-UD-Q6_K_XL.gguf -c 49152 -ngl 999 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on --port 8080 --host 0.0.0.0 --jinja --reasoning-format deepseek --chat-template-kwargs '{\"enable_thinking\":false}' -np 2 > $null 2>&1
    ```
 4. 启动嵌入服务（新终端）：
    ```bash
-   llama-server -m models/qwen3-embedding-0.6b-q8_0.gguf --port 8081 --host 0.0.0.0 --embedding -ngl 99
+   ./llama-server -m model/Qwen3-Embedding-4B-Q6_K.gguf -c 8192 --embeddings --host 0.0.0.0 --pooling mean --port 8081 -ngl 0 > $null 2>&1
    ```
    > `-ngl 99` 表示全部层卸载到 GPU，无 GPU 时去掉此参数。
 
