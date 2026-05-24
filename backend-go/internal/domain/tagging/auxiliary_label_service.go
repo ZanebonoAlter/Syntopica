@@ -253,7 +253,24 @@ func (s *AuxiliaryLabelService) RemoveBoardComposition(ctx context.Context, boar
 	if err := s.db.WithContext(ctx).Where("id = ? AND label_type = ?", auxiliaryLabelID, "auxiliary").First(&auxiliary).Error; err != nil {
 		return err
 	}
-	return s.db.WithContext(ctx).Where("board_id = ? AND auxiliary_label_id = ?", boardID, auxiliaryLabelID).Delete(&models.BoardComposition{}).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("board_id = ? AND auxiliary_label_id = ?", boardID, auxiliaryLabelID).
+			Delete(&models.BoardComposition{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(
+			`DELETE FROM topic_tag_board_labels
+			 WHERE semantic_board_id = ?
+			 AND EXISTS (
+			   SELECT 1 FROM topic_tag_semantic_labels
+			   WHERE topic_tag_semantic_labels.topic_tag_id = topic_tag_board_labels.topic_tag_id
+			   AND topic_tag_semantic_labels.semantic_label_id = ?
+			 )`, boardID, auxiliaryLabelID,
+		).Error; err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *AuxiliaryLabelService) loadActiveAuxiliaryLabels(ctx context.Context) ([]models.SemanticLabel, error) {

@@ -23,6 +23,7 @@ type Runtime struct {
 	BlockedArticleRecovery *jobs.BlockedArticleRecoveryScheduler
 	TagQualityScore        *jobs.TagQualityScoreScheduler
 	NarrativeSummary       *jobs.NarrativeSummaryScheduler
+	LogCleanup             *jobs.LogCleanupScheduler
 }
 
 func resetStaleStates() {
@@ -112,11 +113,7 @@ func StartRuntime() *Runtime {
 		logging.Infoln("Firecrawl scheduler started successfully")
 	}
 
-	crawlServiceURL := os.Getenv("CRAWL_SERVICE_URL")
-	if crawlServiceURL == "" {
-		crawlServiceURL = "http://localhost:11235"
-	}
-	content.InitContentCompletionHandler(crawlServiceURL)
+	content.InitContentCompletionHandler()
 
 	runtime.ContentCompletion = jobs.NewContentCompletionScheduler(
 		content.GetContentCompletionService(),
@@ -150,12 +147,20 @@ func StartRuntime() *Runtime {
 		logging.Infoln("Narrative summary scheduler started successfully")
 	}
 
+	runtime.LogCleanup = jobs.NewLogCleanupScheduler(86400)
+	if err := runtime.LogCleanup.Start(); err != nil {
+		logging.Warnf("Failed to start log cleanup scheduler: %v", err)
+	} else {
+		logging.Infoln("Log cleanup scheduler started successfully")
+	}
+
 	runtimeinfo.AutoRefreshSchedulerInterface = runtime.AutoRefresh
 	runtimeinfo.PreferenceUpdateSchedulerInterface = runtime.PreferenceUpdate
 	runtimeinfo.ContentCompletionSchedulerInterface = runtime.ContentCompletion
 	runtimeinfo.FirecrawlSchedulerInterface = runtime.Firecrawl
 	runtimeinfo.TagQualityScoreSchedulerInterface = runtime.TagQualityScore
 	runtimeinfo.NarrativeSummarySchedulerInterface = runtime.NarrativeSummary
+	runtimeinfo.LogCleanupSchedulerInterface = runtime.LogCleanup
 
 	return runtime
 }
@@ -205,6 +210,11 @@ func SetupGracefulShutdown(runtime *Runtime) {
 			if runtime.NarrativeSummary != nil {
 				logging.Infoln("Stopping narrative summary scheduler...")
 				runtime.NarrativeSummary.Stop()
+			}
+
+			if runtime.LogCleanup != nil {
+				logging.Infoln("Stopping log cleanup scheduler...")
+				runtime.LogCleanup.Stop()
 			}
 
 			close(done)

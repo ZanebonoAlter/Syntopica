@@ -22,3 +22,27 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    networks:
+      - syntopica-net
+
+  syntopica:
+    image: zanebonoalter/syntopica:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syntopica
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${PORT:-5000}:5000"
+    environment:
+      DATABASE_DSN: host=postgres user=${POSTGRES_USER:-postgres} password=${POSTGRES_PASSWORD:-postgres} dbname=${POSTGRES_DB:-syntopica} port=5432 sslmode=disable
+      SERVER_MODE: release
+    networks:
+      - syntopica-net
+
+networks:
+  syntopica-net:
+    name: syntopica-net

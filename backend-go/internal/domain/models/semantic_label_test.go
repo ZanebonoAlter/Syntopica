@@ -12,9 +12,9 @@ func TestSemanticLabelModelShape(t *testing.T) {
 	}
 
 	typ := reflect.TypeOf(SemanticLabel{})
-	mustHaveGORMTag(t, typ, "Embedding", "type:vector(2048)")
+	mustHaveGORMTag(t, typ, "Embedding", "type:vector(4096)")
 	mustHaveGORMTag(t, typ, "Embedding", "column:embedding")
-	mustHaveGORMTag(t, typ, "MergeEmbedding", "type:vector(2048)")
+	mustHaveGORMTag(t, typ, "MergeEmbedding", "type:vector(4096)")
 	mustHaveGORMTag(t, typ, "MergeEmbedding", "column:merge_embedding")
 	mustHaveFieldType(t, typ, "MergeEmbedding", reflect.TypeOf((*string)(nil)))
 	mustHaveGORMTag(t, typ, "Aliases", "type:jsonb")

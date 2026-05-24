@@ -163,8 +163,7 @@ my-robot/
 │   └── firecrawl/            # Firecrawl 集成检查
 ├── docker/                   # Docker 相关配置
 │   └── postgres/             # PostgreSQL 迁移支持
-├── data/                     # 运行时数据（PostgreSQL 数据持久化，旧 SQLite 文件残留）
-├── docker-compose.sqlite.yml # Docker Compose 主配置（SQLite 模式，前后端双容器）
+├── data/                     # PostgreSQL 数据持久化
 ├── docker-compose.yml        # Docker Compose PostgreSQL 服务（pgvector 扩展）
 ├── .env.example              # 环境变量模板
 ├── AGENTS.md                 # 代理协作规则

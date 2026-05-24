@@ -20,24 +20,6 @@ import (
 )
 
 func SetupRoutes(r *gin.Engine) {
-	r.GET("/", func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"name":    "Syntopica API",
-			"version": "1.0.0",
-			"endpoints": gin.H{
-				"categories": "/api/categories",
-				"feeds":      "/api/feeds",
-				"articles":   "/api/articles",
-				"ai":         "/api/ai",
-				"opml": gin.H{
-					"import": "POST /api/import-opml",
-					"export": "GET /api/export-opml",
-				},
-				"schedulers": "/api/schedulers",
-			},
-		})
-	})
-
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"status":   "healthy",

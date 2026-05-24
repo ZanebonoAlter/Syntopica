@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **my-robot** (15062 symbols, 25172 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **Syntopica** (14159 symbols, 22565 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -24,10 +24,10 @@ This project is indexed by GitNexus as **my-robot** (15062 symbols, 25172 relati
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/my-robot/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/my-robot/clusters` | All functional areas |
-| `gitnexus://repo/my-robot/processes` | All execution flows |
-| `gitnexus://repo/my-robot/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/Syntopica/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/Syntopica/clusters` | All functional areas |
+| `gitnexus://repo/Syntopica/processes` | All execution flows |
+| `gitnexus://repo/Syntopica/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

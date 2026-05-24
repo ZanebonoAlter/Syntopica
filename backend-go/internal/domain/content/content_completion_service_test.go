@@ -65,7 +65,7 @@ func TestCompleteArticleWithForceUsesAIRouterRoute(t *testing.T) {
 		t.Fatalf("create article: %v", err)
 	}
 
-	service := NewContentCompletionService("http://localhost:11235")
+	service := NewContentCompletionService()
 	if err := service.CompleteArticleWithForce(context.Background(), article.ID, false); err != nil {
 		t.Fatalf("complete article: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestGetOverviewCountsQueueState(t *testing.T) {
 		t.Fatalf("create articles: %v", err)
 	}
 
-	service := NewContentCompletionService("http://localhost:11235")
+	service := NewContentCompletionService()
 	overview, err := service.GetOverview()
 	if err != nil {
 		t.Fatalf("get overview: %v", err)
@@ -212,7 +212,7 @@ func TestCompleteArticleWithForceRetriesUntilMaxAndLogsMetadata(t *testing.T) {
 		t.Fatalf("create article: %v", err)
 	}
 
-	service := NewContentCompletionService("http://localhost:11235")
+	service := NewContentCompletionService()
 	if err := service.CompleteArticleWithForce(context.Background(), article.ID, false); err == nil {
 		t.Fatal("expected first attempt to fail")
 	}
@@ -295,7 +295,7 @@ func TestCompleteArticleWithForceSkipsFreshPendingAndReclaimsStalePending(t *tes
 		t.Fatalf("create stale article: %v", err)
 	}
 
-	service := NewContentCompletionService("http://localhost:11235")
+	service := NewContentCompletionService()
 	if err := service.CompleteArticleWithForce(context.Background(), fresh.ID, false); err != nil {
 		t.Fatalf("fresh pending should be skipped without error: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestCompleteArticleWithMetadataAddsSchedulerRunIDToCallLogs(t *testing.T) {
 		t.Fatalf("create article: %v", err)
 	}
 
-	service := NewContentCompletionService("http://localhost:11235")
+	service := NewContentCompletionService()
 	if err := service.CompleteArticleWithMetadata(context.Background(), article.ID, false, map[string]any{
 		"scheduler_run_id": "run-123",
 		"trigger_source":   "scheduler",
@@ -424,7 +424,7 @@ func TestCompleteArticleEnqueuesRetagJobAfterSuccessfulCompletion(t *testing.T) 
 		t.Fatalf("create article: %v", err)
 	}
 
-	service := NewContentCompletionService("http://localhost:11235")
+	service := NewContentCompletionService()
 	if err := service.CompleteArticle(context.Background(), article.ID); err != nil {
 		t.Fatalf("complete article: %v", err)
 	}

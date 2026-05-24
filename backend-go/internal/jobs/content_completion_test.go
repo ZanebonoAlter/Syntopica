@@ -65,7 +65,7 @@ func TestContentCompletionSchedulerGetStatusIncludesOverviewAndCurrentArticle(t 
 	}
 
 	scheduler := &ContentCompletionScheduler{
-		completionService: content.NewContentCompletionService("http://localhost:11235"),
+		completionService: content.NewContentCompletionService(),
 		checkInterval:     time.Hour,
 		taskName:          "ai_summary",
 		isExecuting:       true,
@@ -160,7 +160,7 @@ func TestContentCompletionSchedulerStartRepairsLegacyTaskRows(t *testing.T) {
 		t.Fatalf("create legacy task: %v", err)
 	}
 
-	scheduler := NewContentCompletionScheduler(content.NewContentCompletionService("http://localhost:11235"), 60)
+	scheduler := NewContentCompletionScheduler(content.NewContentCompletionService(), 60)
 	if err := scheduler.Start(); err != nil {
 		t.Fatalf("start scheduler: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestContentCompletionSchedulerSkipsCycleWhenAlreadyRunning(t *testing.T) {
 		t.Fatalf("create scheduler task: %v", err)
 	}
 
-	scheduler := NewContentCompletionScheduler(content.NewContentCompletionService("http://localhost:11235"), 60)
+	scheduler := NewContentCompletionScheduler(content.NewContentCompletionService(), 60)
 	scheduler.executionMutex.Lock()
 	defer scheduler.executionMutex.Unlock()
 

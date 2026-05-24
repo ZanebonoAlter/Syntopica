@@ -2,7 +2,6 @@ package tracing
 
 import (
 	"context"
-	_ "encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -16,10 +15,9 @@ import (
 )
 
 type SQLiteSpanExporter struct {
-	db     *gorm.DB
-	cfg    Config
-	mu     sync.Mutex
-	stopCh chan struct{}
+	db *gorm.DB
+	cfg Config
+	mu  sync.Mutex
 }
 
 func NewSQLiteSpanExporter(db *gorm.DB, cfg Config) (*SQLiteSpanExporter, error) {
@@ -28,12 +26,9 @@ func NewSQLiteSpanExporter(db *gorm.DB, cfg Config) (*SQLiteSpanExporter, error)
 	}
 
 	exporter := &SQLiteSpanExporter{
-		db:     db,
-		cfg:    cfg,
-		stopCh: make(chan struct{}),
+		db:  db,
+		cfg: cfg,
 	}
-
-	go exporter.cleanupLoop()
 
 	return exporter, nil
 }
@@ -53,7 +48,6 @@ func (e *SQLiteSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.R
 }
 
 func (e *SQLiteSpanExporter) Shutdown(ctx context.Context) error {
-	close(e.stopCh)
 	return nil
 }
 
@@ -119,32 +113,6 @@ func (e *SQLiteSpanExporter) batchInsert(records []OtelSpan) error {
 		}
 		return nil
 	})
-}
-
-func (e *SQLiteSpanExporter) cleanupLoop() {
-	ticker := time.NewTicker(24 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-e.stopCh:
-			return
-		case <-ticker.C:
-			e.cleanExpiredSpans()
-		}
-	}
-}
-
-func (e *SQLiteSpanExporter) cleanExpiredSpans() {
-	cutoff := time.Now().AddDate(0, 0, -e.cfg.RetentionDays)
-	result := e.db.Where("created_at < ?", cutoff).Delete(&OtelSpan{})
-	if result.Error != nil {
-		logging.Infof("[tracing] failed to clean expired spans: %v", result.Error)
-		return
-	}
-	if result.RowsAffected > 0 {
-		logging.Infof("[tracing] cleaned up %d expired spans (retention: %d days)", result.RowsAffected, e.cfg.RetentionDays)
-	}
 }
 
 func convertSDKAttributes(attrs []attribute.KeyValue) []OtelAttribute {

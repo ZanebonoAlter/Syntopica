@@ -32,21 +32,21 @@ func postgresMigrations() []Migration {
 		},
 		{
 			Version:     "20260403_0003",
-			Description: "Staged groundwork for the later pgvector cutover: add the embedding vector column while runtime still reads the legacy JSON vector field.",
+			Description: "Ensure topic_tag_embeddings.embedding column exists as vector(4096).",
 			Up: func(db *gorm.DB) error {
-				if err := db.Exec("ALTER TABLE topic_tag_embeddings ADD COLUMN IF NOT EXISTS embedding vector(2048)").Error; err != nil {
+				if err := db.Exec("ALTER TABLE topic_tag_embeddings ADD COLUMN IF NOT EXISTS embedding vector(4096)").Error; err != nil {
 					return fmt.Errorf("add topic_tag_embeddings.embedding column: %w", err)
+				}
+				if err := db.Exec("ALTER TABLE topic_tag_embeddings ALTER COLUMN embedding TYPE vector(4096)").Error; err != nil {
+					return fmt.Errorf("set topic_tag_embeddings.embedding dimensions: %w", err)
 				}
 				return nil
 			},
 		},
 		{
 			Version:     "20260413_0001",
-			Description: "Add HNSW index on topic_tag_embeddings.embedding for fast cosine similarity search.",
+			Description: "HNSW index skipped — embedding dimensions exceed HNSW 2000-dim limit; sequential scan is sufficient for this workload.",
 			Up: func(db *gorm.DB) error {
-				if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_topic_tag_embeddings_embedding ON topic_tag_embeddings USING hnsw (embedding vector_cosine_ops)").Error; err != nil {
-					return fmt.Errorf("create hnsw index on topic_tag_embeddings.embedding: %w", err)
-				}
 				return nil
 			},
 		},
@@ -62,7 +62,7 @@ func postgresMigrations() []Migration {
 					{Key: "high_similarity_threshold", Value: "0.97", Description: "Auto-reuse existing tag if similarity >= this value"},
 					{Key: "low_similarity_threshold", Value: "0.78", Description: "Auto-create new tag if similarity < this value"},
 					{Key: "embedding_model", Value: "", Description: "Override embedding model name (empty = read from provider)"},
-					{Key: "embedding_dimension", Value: "2048", Description: "Embedding vector dimension"},
+					{Key: "embedding_dimension", Value: "4096", Description: "Embedding vector dimension"},
 				}
 				for _, d := range defaults {
 					var existing models.EmbeddingConfig
@@ -421,7 +421,7 @@ func postgresMigrations() []Migration {
 						id SERIAL PRIMARY KEY,
 						name VARCHAR(300) NOT NULL,
 						description TEXT,
-						embedding vector(2048),
+						embedding vector(4096),
 						scope_type VARCHAR(20) NOT NULL DEFAULT 'global',
 						scope_category_id INTEGER,
 						is_system BOOLEAN NOT NULL DEFAULT false,
@@ -695,8 +695,8 @@ func postgresMigrations() []Migration {
 						id SERIAL PRIMARY KEY,
 						label VARCHAR(160) NOT NULL,
 						slug VARCHAR(160) NOT NULL,
-						embedding vector(2048),
-						merge_embedding vector(2048),
+						embedding vector(4096),
+						merge_embedding vector(4096),
 						label_type VARCHAR(20) NOT NULL,
 						aliases JSONB NOT NULL DEFAULT '[]'::jsonb,
 						ref_count INTEGER NOT NULL DEFAULT 0,
@@ -826,7 +826,7 @@ func postgresMigrations() []Migration {
 			Description: "Add semantic label merge embedding column and index for label-only auxiliary label merge checks.",
 			Up: func(db *gorm.DB) error {
 				stmts := []string{
-					"ALTER TABLE semantic_labels ADD COLUMN IF NOT EXISTS merge_embedding vector(2048)",
+					"ALTER TABLE semantic_labels ADD COLUMN IF NOT EXISTS merge_embedding vector(4096)",
 				}
 				for _, s := range stmts {
 					if err := db.Exec(s).Error; err != nil {

@@ -6,8 +6,8 @@ type SemanticLabel struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	Label          string    `gorm:"size:160;not null" json:"label"`
 	Slug           string    `gorm:"size:160;not null;uniqueIndex:idx_semantic_labels_slug" json:"slug"`
-	Embedding      *string   `gorm:"type:vector(2048);column:embedding" json:"-"`
-	MergeEmbedding *string   `gorm:"type:vector(2048);column:merge_embedding" json:"-"`
+	Embedding      *string   `gorm:"type:vector(4096);column:embedding" json:"-"`
+	MergeEmbedding *string   `gorm:"type:vector(4096);column:merge_embedding" json:"-"`
 	LabelType      string    `gorm:"size:20;not null;index:idx_semantic_labels_label_type" json:"label_type"`
 	Aliases        []string  `gorm:"type:jsonb;serializer:json;default:'[]'" json:"aliases"`
 	RefCount       int       `gorm:"not null;default:0" json:"ref_count"`

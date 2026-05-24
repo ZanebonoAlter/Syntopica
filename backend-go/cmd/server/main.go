@@ -74,6 +74,7 @@ func main() {
 	}
 	r.Use(gin.Recovery())
 
+	appbootstrap.SetupStaticFiles(r)
 	appbootstrap.SetupRoutes(r)
 	runtime := appbootstrap.StartRuntime()
 	appbootstrap.SetupGracefulShutdown(runtime)

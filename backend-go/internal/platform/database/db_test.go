@@ -112,8 +112,8 @@ func TestSemanticLabelBoardSystemMigrationDocumentsSchemaCutover(t *testing.T) {
 
 	mustContainAll(t, joined,
 		"CREATE TABLE IF NOT EXISTS semantic_labels",
-		"embedding vector(2048)",
-		"merge_embedding vector(2048)",
+		"embedding vector(4096)",
+		"merge_embedding vector(4096)",
 		"label_type VARCHAR(20) NOT NULL",
 		"aliases JSONB NOT NULL DEFAULT '[]'::jsonb",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_labels_slug",
@@ -141,7 +141,7 @@ func TestSemanticLabelBoardSystemMigrationDocumentsSchemaCutover(t *testing.T) {
 		`{"semantic_board_upgrade_cotag_hard_limit", "15"`,
 	)
 	mustContainAll(t, joined,
-		"ALTER TABLE semantic_labels ADD COLUMN IF NOT EXISTS merge_embedding vector(2048)",
+		"ALTER TABLE semantic_labels ADD COLUMN IF NOT EXISTS merge_embedding vector(4096)",
 		"ALTER TABLE topic_tags DROP COLUMN IF EXISTS concept_id",
 		"DROP TABLE IF EXISTS board_concepts CASCADE",
 		"DROP TABLE IF EXISTS hierarchy_configs CASCADE",

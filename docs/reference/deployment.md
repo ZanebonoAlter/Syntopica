@@ -6,11 +6,77 @@ Syntopica 为单用户自托管部署设计。主要部署方式是 Docker Compo
 
 | 目标 | 配置文件 | 说明 |
 |--------|-------------|-------|
-| Docker Compose（PostgreSQL + pgvector） | `docker-compose.yml` | **默认/推荐方式**，PostgreSQL 内置 pgvector 扩展支持向量检索，包含前后端 + 数据库三个服务。 |
+| Docker Compose（基础服务） | `docker-compose.yml` | **默认/推荐方式**。PostgreSQL + pgvector + 前后端三容器。 |
+| Docker Compose（Firecrawl） | `docker-compose.firecrawl.yml` | **可选**。Firecrawl 全文抓取服务，需配合基础服务使用。 |
 
 没有 PaaS 专用配置（Vercel、Netlify、Fly.io 等）。应用程序设计为通过 Docker Compose 在单机上运行。
 
 > **注意：SQLite 版本已归档到独立的 `sqlite` 分支，主分支仅支持 PostgreSQL 数据库。**
+
+### init.sh 一键部署
+
+项目提供 `init.sh` 脚本，自动完成从环境检查到服务启动的全流程：
+
+```
+init.sh 部署流程
+├── Phase 1: 基础服务
+│   ├── 检查 Docker / Docker Compose 可用性
+│   ├── 交互收集端口、密码（全默认值）
+│   ├── 从 .env.example 生成 .env（不覆盖已有值）
+│   ├── docker compose up -d
+│   └── 轮询等待 postgres healthy + backend /health 200
+├── Phase 2: AI 服务（可选）
+│   ├── llama.cpp — 自动下载预编译二进制
+│   ├── Ollama — 检测已有安装
+│   ├── 远程 API — OpenAI 兼容云端服务
+│   └── GPU 检测 + VRAM 推荐模型
+├── Phase 2: Firecrawl（可选）
+│   ├── 自部署 — docker-compose.firecrawl.yml
+│   ├── 云 API — Firecrawl 云服务
+│   └── 跳过
+└── Phase 3: 确认与种子数据
+    ├── 打印部署摘要
+    ├── 下载模型文件（如选择了本地 AI）
+    ├── 检测 AI 服务可达性
+    └── 写入 Provider / 路由 / Firecrawl 配置
+```
+
+使用方式：
+
+```bash
+bash init.sh
+```
+
+### Docker Compose 拓扑
+
+```
+docker-compose.yml                    docker-compose.firecrawl.yml（可选）
+┌─────────────────────────────┐      ┌──────────────────────────────────┐
+│  postgres (:5432)           │      │  firecrawl (:3002)               │
+│  ├─ pgvector 扩展           │      │  ├─ API + Worker                 │
+│  └─ data/ 持久化            │      │  ├─ firecrawl-redis              │
+│                             │      │  └─ firecrawl-playwright         │
+│  backend (:5000)            │      └──────────────────────────────────┘
+│  ├─ Go API 服务器           │
+│  └─ 依赖 postgres healthy   │           │
+│                             │           │ syntopica-net（外部网络）
+│  front (:3000)              │           │
+│  ├─ Nuxt SSR               │◄──────────┘
+│  └─ 代理 → backend:5000    │
+└─────────────────────────────┘
+```
+
+两个 Compose 文件通过 `syntopica-net` 外部网络互联。Firecrawl 容器启动后，后端通过 `http://firecrawl:3002` 访问全文抓取服务。
+
+### 可选组件
+
+| 组件 | 说明 | 何时需要 |
+|------|------|---------|
+| Firecrawl（自部署） | 全文抓取服务，将 RSS 摘要补全为完整正文 | 需要 Firecrawl 全文抓取且不想使用云服务时 |
+| Firecrawl（云 API） | 使用 Firecrawl 官方云服务 | 需要全文抓取但不想自部署时 |
+| llama.cpp | 本地 LLM 推理，运行 GGUF 模型 | 无远程 AI API、需要完全本地化部署时 |
+| Ollama | 本地 LLM 推理，已有模型管理 | 已安装 Ollama 或偏好其模型管理时 |
+| Redis | 持久化任务队列后端 | Topic 分析任务需要持久化队列时 |
 
 ## 构建流水线
 
@@ -28,17 +94,29 @@ Syntopica 为单用户自托管部署设计。主要部署方式是 Docker Compo
 1. `build` 阶段：`node:22-alpine` — 通过 corepack 安装 pnpm，运行 `pnpm install --frozen-lockfile`，然后 `pnpm build`。
 2. 最终阶段：`node:22-alpine` — 从构建阶段复制 `.output/`，运行 `node .output/server/index.mjs`。
 
-### Docker Compose（PostgreSQL + pgvector）— 快速部署
+### Docker Compose 快速部署
 
 ```bash
+# 启动基础服务（PostgreSQL + 前后端）
 docker compose up --build -d
+
+# 可选：启动 Firecrawl 全文抓取服务
+docker compose -f docker-compose.firecrawl.yml up -d
 ```
 
-启动三个服务：
+启动三个核心服务：
 
 - **postgres**: PostgreSQL（pgvector:pg18-trixie）端口 5432，带健康检查（`pg_isready`）。数据持久化在 `./data/` 目录。初始化脚本 `docker/postgres/init/01-enable-pgvector.sql` 在首次启动时执行 `CREATE EXTENSION IF NOT EXISTS vector`。
 - **backend**: Go API 服务器端口 5000，内部连接 postgres 服务。
 - **front**: Nuxt SSR 服务器内部端口 3000，通过 `${FRONT_PORT:-3000}` 映射到宿主机。内部通过 `http://backend:5000/api` 代理 API 请求。
+
+可选的 Firecrawl 服务（通过 `docker-compose.firecrawl.yml`）：
+
+- **firecrawl**: Firecrawl API + Worker，端口 3002，提供全文抓取能力。
+- **firecrawl-redis**: Firecrawl 内部 Redis，用于任务队列。
+- **firecrawl-playwright**: Playwright 浏览器实例，用于 JavaScript 渲染页面抓取。
+
+两个 Compose 文件共享 `syntopica-net` 外部网络，Firecrawl 容器可通过 `http://firecrawl:3002` 被后端访问。
 
 启动后：
 - 前端：`http://localhost:3000`
@@ -129,7 +207,9 @@ cat backup.sql | docker exec -i syntopica-postgres psql -U postgres syntopica
 
 ## 监控
 
-后端内置了 OpenTelemetry 分布式追踪，使用自定义的 GORM Span Exporter（`SQLiteSpanExporter`，历史命名）。追踪数据写入 PostgreSQL 的 `otel_spans` 表。
+后端内置了 OpenTelemetry 分布式追踪，使用自定义的 GORM Span Exporter。追踪数据写入 PostgreSQL 的 `otel_spans` 表。
+
+> **命名说明**：代码中该导出器名为 `SQLiteSpanExporter`，这是从早期 SQLite 版本遗留下来的历史命名，实际功能是将 span 数据写入 PostgreSQL，与 SQLite 无关。保留此命名仅避免不必要的破坏性重命名。
 
 主要追踪配置：
 - **库**：`go.opentelemetry.io/otel`，全局应用 `otelgin` HTTP 中间件到所有路由

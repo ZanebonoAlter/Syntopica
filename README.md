@@ -1,4 +1,4 @@
-<!-- generated-by: gsd-doc-writer -->
+<p align="center"><img src="front/public/favicon.png" width="48" alt="icon"></p>
 
 # Syntopica
 
@@ -73,8 +73,8 @@
 ### 主题图谱
 - **图谱可视化**：日/周双视图，事件/人物/关键词三类节点与关联边，支持权重计算与时间窗口切换
 ![主题图谱](img/image-topic.png)
-- **AI 主题分析**：按标签类型（事件/人物/关键词）生成 AI 分析，含时间线、人物画像、关键词云等（已废弃，用新的板块内容代替，仅保留时间线，用于探索发现使用）
-![category](img/image-category.png)
+- **特别关注标签**：按标签类型（事件/人物/关键词）支持特别关注，后续可直接筛选仅包含该标签的文章
+![category](img/1.3-feather/article_preview.png)
 
 
 ![主题图谱文章](img/image-topic-article.png)
@@ -132,57 +132,160 @@
 
 ### 前置条件
 
-- [Node.js](https://nodejs.org/) >= 18
-- [pnpm](https://pnpm.io/) >= 10
-- [Go](https://go.dev/) >= 1.25
-- [Docker](https://www.docker.com/)（可选，用于容器化部署）
+- [Docker](https://www.docker.com/) + Docker Compose
 
-### Docker Compose（推荐）
+### 一键部署（推荐）
 
-得用pg的版本，不要用sqlite的，那个归档用
-
-- 前端默认地址：`http://localhost:3000`
-- 后端默认地址：`http://localhost:5000`
-- postgres的存储文件位置默认在./data下,
-- 如需自定义端口或代理，在 `.env` 中配置 `FRONT_PORT`、`BACKEND_PORT`、`GOPROXY`、`NPM_CONFIG_REGISTRY` 等
+使用 `init.sh` 脚本自动完成环境初始化、容器启动和 AI 服务配置：
 
 ```bash
-docker compose up -d
+- bash init.sh
+- init.ps1 
 ```
 
-### 前端
+脚本会引导完成以下步骤：
 
-```bash
-cd front
-pnpm install
-pnpm dev
-```
+1. **基础服务** — 检查 Docker，收集端口/密码配置，启动 PostgreSQL + Syntopica 容器
+2. **AI 服务**（可选）— 配置 AI 连接信息（安装和模型下载参见下方「AI 模型配置指南」）：
+   - **Ollama** — 连接本地 Ollama 实例
+   - **llama.cpp** — 连接本地 llama.cpp 服务
+   - **远程 API** — 使用 OpenAI 兼容的云端 API（如 OpenAI、DeepSeek）
+   - **跳过** — 之后通过 Web UI 手动配置
+3. **Firecrawl**（可选）— 全文抓取服务：
+   - **自部署** — 通过 `docker-compose.firecrawl.yml` 启动本地 Firecrawl 实例
+   - **云 API** — 使用 Firecrawl 云服务
+   - **跳过** — RSS 摘要模式，不抓取全文
 
-前端开发服务器默认运行在 `http://localhost:3000`。
+### 手动构建与部署
 
-### 后端
+**1. 交叉编译后端二进制（Linux amd64）**
 
 ```bash
 cd backend-go
-go mod tidy
-go run cmd/server/main.go
+$env:CGO_ENABLED="0"; $env:GOOS="linux"; $env:GOARCH="amd64"; go build -o syntopica ./cmd/server
 ```
 
-后端默认运行在 `http://localhost:5000`。
+**2. 构建 Docker 镜像并推送**
+
+```bash
+docker build -t zanebonoalter/syntopica:latest .
+docker push zanebonoalter/syntopica:latest
+```
+
+> 镜像构建时会自动编译前端（`pnpm generate`），最终镜像为单容器：Go 后端同时 serve API 和前端静态文件，端口 5000。
+
+**3. 启动服务**
+
+```bash
+# 启动核心服务（PostgreSQL + Syntopica）
+docker compose up -d
+
+# 可选：启动 Firecrawl 全文抓取服务
+docker compose -f docker-compose.firecrawl.yml up -d
+# 可选：启动 RssHub 服务 获取rss源
+docker compose -f docker-compose.rsshub.yml up -d
+```
+
+- 访问地址：`http://localhost:5000`
+- PostgreSQL 数据持久化在 `./data/` 目录
+- 自定义端口/密码：在 `.env` 中配置 `BACKEND_PORT`、`POSTGRES_PASSWORD` 等
+
+### 本地开发
+
+```bash
+# 1. 启动 PostgreSQL（需要 Docker，仅启动数据库）
+docker compose -f docker-compose.pg.yml up -d
+
+# 2. 前端
+cd front && pnpm install && pnpm dev    # http://localhost:3000
+
+# 3. 后端（需先启动 PostgreSQL）
+cd backend-go && go mod tidy && go run cmd/server/main.go  # http://localhost:5000
+```
+
+### 配套服务
+
+以下服务均为可选，无需在本地开发阶段提前启动，所有配置均可通过 Web UI 完成。
+
+| 服务 | 本地开发选项 |
+|------|-------------|
+| **Firecrawl**（全文抓取） | 不启动 → RSS 摘要模式（够用）；或 `docker compose -f docker-compose.firecrawl.yml up -d` 自部署；或配置云 API |
+| **LLM**（AI 增强） | 推荐 [llama.cpp](https://github.com/ggml-org/llama.cpp) 本地推理（OpenAI 兼容 API）；或 Ollama；或远程 API（OpenAI / DeepSeek 等）；或不配先用，Web UI 里配 |
+| **RSSHub**（RSS 源代理） | 可选，`docker compose -f docker-compose.rsshub.yml up -d`，默认 `http://localhost:1200`。在 Feed 添加页面填入 RSSHub 实例地址即可使用 |
+
+启动后端后访问 `http://localhost:5000` → 设置 → AI Provider 中配置 LLM 端点。例如 llama.cpp 默认地址为 `http://localhost:8080/v1`，选好模型即可使用。
+
+## 🧠 AI 模型配置指南
+
+`init.sh` / `init.ps1` 仅配置 AI 连接信息（IP、端口、模型名），不下载二进制或模型文件。安装和模型下载请参考以下指南。
+
+### Ollama
+
+1. 安装：[ollama.com](https://ollama.com)
+2. 拉取模型：
+   ```bash
+   ollama pull qwen3:8b           # 文本模型
+   ollama pull nomic-embed-text   # 嵌入模型
+   ```
+3. 启动服务：`ollama serve`
+
+### llama.cpp
+
+1. 下载预编译二进制：[GitHub Releases](https://github.com/ggml-org/llama.cpp/releases)
+   - Windows + NVIDIA GPU：`llama-*-bin-win-cuda-*.zip`
+   - Windows CPU：`llama-*-bin-win-*.zip`
+   - macOS：`llama-*-bin-macos-*.zip`
+   - Linux：`llama-*-bin-linux-*.zip`
+2. 下载模型文件（见下方推荐表），来源：[ModelScope](https://modelscope.cn) / [HuggingFace](https://huggingface.co)
+3. 启动文本服务：
+   ```bash
+   llama-server -m models/qwen3-8b-q4_0.gguf --port 8080 --host 0.0.0.0 -ngl 99
+   ```
+4. 启动嵌入服务（新终端）：
+   ```bash
+   llama-server -m models/qwen3-embedding-0.6b-q8_0.gguf --port 8081 --host 0.0.0.0 --embedding -ngl 99
+   ```
+   > `-ngl 99` 表示全部层卸载到 GPU，无 GPU 时去掉此参数。
+
+### VRAM 推荐模型表
+
+| GPU VRAM | 推荐文本模型 | 推荐嵌入模型 |
+|----------|-------------|-------------|
+| 无 GPU | Qwen3-4B-Q4 (2.5GB) CPU | Qwen3-Emb-0.6B (0.4GB) |
+| 4 GB | Qwen3-4B-Q4 (2.5GB) | Qwen3-Emb-0.6B (0.4GB) |
+| 6 GB | Qwen3-8B-Q4 (4.9GB) | Qwen3-Emb-0.6B (0.4GB) |
+| **8 GB** | **Qwen3-8B-Q4_K_M (4.9GB) ★** | **Qwen3-Emb-4B (3.2GB)** |
+| **12 GB** | **Qwen3.5-9B-Q6 (8.0GB) ★** | **Qwen3-Emb-4B (3.2GB)** |
+| 16 GB | Qwen3-14B-Q4 (9.0GB) | Qwen3-Emb-4B (3.2GB) |
+| 24 GB+ | Qwen3-32B-Q4 (18GB) | Qwen3-Emb-4B (3.2GB) |
+
+> 实际占用受 KV cache 和 context length 影响，以上为模型文件大小。
+
+### Docker 网络说明
+
+当 Syntopica 后端运行在 Docker 容器内时，AI 服务运行在宿主机上。后端需要通过**宿主机 IP**（而非 `localhost`）访问 AI 服务。`init.sh` 会自动检测本机 IP 并作为默认值。
+
+手动配置时请使用宿主机局域网 IP（如 `192.168.x.x`）：
+- Ollama：`http://192.168.1.100:11434/v1`
+- llama.cpp 文本：`http://192.168.1.100:8080/v1`
+- llama.cpp 嵌入：`http://192.168.1.100:8081/v1`
 
 ## 📂 项目结构
 
 ```
 Syntopica/
-├── front/                    # Nuxt 4 前端（Vue 3 + TypeScript + Pinia）
-├── backend-go/               # Go + Gin 后端（GORM + POSTGRES ）
-├── docs/                     # 项目文档
-├── tests/                    # Python 集成测试
-├── docker/                   # Docker 构建配置
-├── img/                      # 截图和图片资源
-├── data/                     # SQLite 数据库文件（运行时生成）
-├── docker-compose.sqlite.yml # Docker Compose（SQLite 模式）
-└── docker-compose.yml        # Docker Compose（PostgreSQL + pgvector）
+├── front/                              # Nuxt 4 前端（Vue 3 + TypeScript + Pinia）
+├── backend-go/                         # Go + Gin 后端（GORM + PostgreSQL）
+├── docs/                               # 项目文档
+├── tests/                              # Python 集成测试
+├── docker/                             # Docker 构建配置
+├── img/                                # 截图和图片资源
+├── data/                               # PostgreSQL 数据持久化（运行时生成）
+├── init.sh                             # 一键部署初始化脚本
+├── docker-compose.yml                  # Docker Compose（PostgreSQL + 前后端）
+├── docker-compose.pg.yml               # Docker Compose（仅 PostgreSQL，本地开发用）
+├── docker-compose.firecrawl.yml        # Docker Compose（Firecrawl 全文抓取，可选）
+└── docker-compose.rsshub.yml           # Docker Compose（RSSHub + Redis + Browserless，可选）
 ```
 
 ## 📚 文档
