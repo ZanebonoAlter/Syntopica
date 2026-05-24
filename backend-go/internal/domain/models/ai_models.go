@@ -129,7 +129,7 @@ type AICallLog struct {
 	RequestMeta     string    `gorm:"type:text" json:"request_meta"`
 	ResponseSnippet string    `gorm:"type:text" json:"response_snippet"`
 	TraceID         string    `gorm:"size:64" json:"trace_id,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	CreatedAt       time.Time `gorm:"index:idx_ai_call_logs_created_at" json:"created_at"`
 }
 
 func (AICallLog) TableName() string {

@@ -18,9 +18,8 @@ import (
 )
 
 type ContentCompletionService struct {
-	crawlClient *Crawl4AIClient
-	aiService   *platformai.AIService
-	router      *airouter.Router
+	aiService *platformai.AIService
+	router    *airouter.Router
 }
 
 type ContentCompletionArticleRef struct {
@@ -55,20 +54,15 @@ const (
 	contentCompletionClockSkewGracePeriod = 2 * time.Minute
 )
 
-func NewContentCompletionService(crawlBaseURL string) *ContentCompletionService {
+func NewContentCompletionService() *ContentCompletionService {
 	return &ContentCompletionService{
-		crawlClient: NewCrawl4AIClient(crawlBaseURL),
-		aiService:   platformai.NewAIService("", "", ""),
-		router:      airouter.NewRouter(),
+		aiService: platformai.NewAIService("", "", ""),
+		router:    airouter.NewRouter(),
 	}
 }
 
 func (s *ContentCompletionService) SetAICredentials(baseURL, apiKey, model string) {
 	s.aiService = platformai.NewAIService(baseURL, apiKey, model)
-}
-
-func (s *ContentCompletionService) SetCrawlAPIToken(token string) {
-	s.crawlClient.SetAPIToken(token)
 }
 
 func (s *ContentCompletionService) IsContentIncomplete(article *models.Article) bool {

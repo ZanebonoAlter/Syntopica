@@ -116,7 +116,7 @@ func TestSchedulerStatusFormat(t *testing.T) {
 	}
 
 	completion := &ContentCompletionScheduler{
-		completionService: content.NewContentCompletionService("http://localhost:11235"),
+		completionService: content.NewContentCompletionService(),
 		checkInterval:     time.Hour,
 		taskName:          "ai_summary",
 		isRunning:         true,

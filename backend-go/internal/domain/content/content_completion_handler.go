@@ -13,8 +13,8 @@ import (
 
 var completionService *ContentCompletionService
 
-func InitContentCompletionHandler(crawlBaseURL string) {
-	completionService = NewContentCompletionService(crawlBaseURL)
+func InitContentCompletionHandler() {
+	completionService = NewContentCompletionService()
 	loadCompletionAISettings()
 }
 
@@ -32,12 +32,6 @@ func loadCompletionAISettings() {
 func SetCompletionAICredentials(baseURL, apiKey, model string) {
 	if completionService != nil {
 		completionService.SetAICredentials(baseURL, apiKey, model)
-	}
-}
-
-func SetCompletionCrawlAPIToken(token string) {
-	if completionService != nil {
-		completionService.SetCrawlAPIToken(token)
 	}
 }
 

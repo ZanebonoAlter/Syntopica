@@ -14,7 +14,7 @@ Agent guide for coding assistants working in `Syntopica` (`D:\project\my-robot`)
 | 项目 | 说明 |
 |------|------|
 | OS | **Windows**（WSL2 `bash` 可用，但路径使用 Windows 格式如 `D:/project/...`）|
-| 数据库 | **Docker**：`docker compose up -d postgres` 启动 PostgreSQL（pgvector），默认端口 `5432`，用户/密码/库名均为 `postgres`。数据持久化在 `./data/` 下。`docker compose down` 停止。|
+| 数据库 | **Docker**：`docker compose -f docker-compose.pg.yml up -d` 启动 PostgreSQL（pgvector），默认端口 `5432`，用户/密码/库名均为 `postgres`。数据持久化在 `./data/` 下。`docker compose -f docker-compose.pg.yml down` 停止。|
 | Python | **uv**：需要 Python 脚本/工具时使用 `uv`（如 `uv run script.py`、`uv add package`）。Python 集成测试位于 `tests/workflow/`、`tests/firecrawl/`。|
 | Node.js | `pnpm`（要求 corepack 启用）。详见 `front/AGENTS.md`。|
 | Go | 直接使用系统 Go 工具链。详见 `backend-go/AGENTS.md`。|
@@ -23,7 +23,7 @@ Agent guide for coding assistants working in `Syntopica` (`D:\project\my-robot`)
 
 ```bash
 # 1. 启动数据库（Docker）
-docker compose up -d postgres
+docker compose -f docker-compose.pg.yml up -d
 
 # 2. 启动后端（backend-go/）
 cd backend-go && go run cmd/server/main.go
@@ -82,7 +82,7 @@ Use `agent-browser`: `open <url>` → `snapshot -i` → `click @eX` / `fill @eX 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **my-robot** (15062 symbols, 25172 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **Syntopica** (14159 symbols, 22565 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -105,10 +105,10 @@ This project is indexed by GitNexus as **my-robot** (15062 symbols, 25172 relati
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/my-robot/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/my-robot/clusters` | All functional areas |
-| `gitnexus://repo/my-robot/processes` | All execution flows |
-| `gitnexus://repo/my-robot/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/Syntopica/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/Syntopica/clusters` | All functional areas |
+| `gitnexus://repo/Syntopica/processes` | All execution flows |
+| `gitnexus://repo/Syntopica/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

@@ -37,7 +37,7 @@ func TestCompleteFeedArticlesRetriesFailedArticlesWhenTriggeredManually(t *testi
 	}))
 	defer aiServer.Close()
 
-	completionService = NewContentCompletionService("http://localhost:11235")
+	completionService = NewContentCompletionService()
 	completionService.SetAICredentials(aiServer.URL, "token", "test-model")
 
 	feed := models.Feed{

@@ -22,7 +22,7 @@ Every `Router.Chat` and `Router.Embed` span SHALL include the following attribut
 - **THEN** the span still has `ai.capability` set and does not panic
 
 ### Requirement: AICallLog records trace context
-The `AICallLog` model SHALL include a `TraceID` field of type `string` (NULLABLE), and when writing a log entry, the system SHALL populate it from the current span context's trace ID.
+The `AICallLog` model SHALL include a `TraceID` field of type `string` (NULLABLE), and when writing a log entry, the system SHALL populate it from the current span context's trace ID. The `AICallLog` model SHALL also have a btree index on `created_at` for efficient retention-based cleanup.
 
 #### Scenario: Successful LLM call records trace_id
 - **WHEN** `Router.Chat` successfully calls an LLM provider within an active trace
@@ -31,6 +31,10 @@ The `AICallLog` model SHALL include a `TraceID` field of type `string` (NULLABLE
 #### Scenario: Failed LLM call still records trace_id
 - **WHEN** `Router.Chat` fails on all provider attempts within an active trace
 - **THEN** the `AICallLog` row for each failed attempt has `trace_id` set
+
+#### Scenario: created_at index supports cleanup
+- **WHEN** a DELETE query filters on `ai_call_logs.created_at`
+- **THEN** the database uses the btree index on `created_at` (no sequential scan)
 
 ### Requirement: Context propagated through key tag-processing call chains
 The following function call chains SHALL pass `context.Context` from entry point to LLM invocation:

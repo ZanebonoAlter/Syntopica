@@ -16,7 +16,7 @@
 
 测试使用标准 `testing` 包和 `github.com/stretchr/testify` 断言。每个测试文件以 `*_test.go` 形式与源码放在一起。多数测试通过 `gorm.Open(sqlite.Open("file:...?mode=memory&cache=shared"))` 创建内存 SQLite 数据库，并自动迁移所需模型，因此不需要外部数据库。
 
-> 注意：单元测试使用内存 SQLite（通过 `glebarez/sqlite` 驱动）进行隔离，而生产环境使用 PostgreSQL。
+> **说明**：单元测试使用内存 SQLite（通过 `glebarez/sqlite` 驱动）纯粹是为了测试隔离——无需启动外部数据库即可快速运行。生产环境**仅使用 PostgreSQL**，代码中不包含 SQLite 生产的任何路径。
 
 ### 前端单元（Vitest）
 

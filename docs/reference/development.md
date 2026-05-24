@@ -63,13 +63,6 @@ docker compose up -d
 
 这会启动一个 pgvector 容器，端口和数据目录可在 `.env` 中配置。
 
-#### SQLite 模式（已归档，仅供参考）
-
-```bash
-cp .env.example .env
-docker compose -f docker-compose.sqlite.yml up --build
-```
-
 ### 配置说明
 
 本地开发无需任何配置文件或 `.env` 文件即可启动——后端和前端均有开箱即用的默认值。

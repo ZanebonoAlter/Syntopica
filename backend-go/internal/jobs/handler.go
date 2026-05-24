@@ -97,6 +97,14 @@ func schedulerDescriptors() []schedulerDescriptor {
 				return runtimeinfo.NarrativeSummarySchedulerInterface
 			},
 		},
+		{
+			Name:        "log_cleanup",
+			DisplayName: "Log Cleanup",
+			Description: "Clean up expired ai_call_logs and otel_spans rows",
+			Get: func() interface{} {
+				return runtimeinfo.LogCleanupSchedulerInterface
+			},
+		},
 	}
 }
 
