@@ -139,8 +139,8 @@
 使用 `init.sh` 脚本自动完成环境初始化、容器启动和 AI 服务配置：
 
 ```bash
-- bash init.sh
-- init.ps1 
+- bash init.sh  （linux用这个）
+- init.ps1   （windows用这个）
 ```
 
 脚本会引导完成以下步骤：
