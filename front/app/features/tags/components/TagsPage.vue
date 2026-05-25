@@ -54,6 +54,7 @@ let backfillPollTimer: ReturnType<typeof setInterval> | null = null
 const matchingConfig = ref<MatchingConfig | null>(null)
 const matchingConfigLoading = ref(false)
 
+const contentTab = ref<'composition' | 'narratives' | 'articles'>('composition')
 const showAddDialog = ref(false)
 const showUpgradeDialog = ref(false)
 const showMatchingConfigDialog = ref(false)
@@ -133,6 +134,7 @@ function handleSelectBoard(id: number | null) {
   filterFeedId.value = null
   startDate.value = ''
   endDate.value = ''
+  contentTab.value = 'composition'
   if (id !== null) {
     void loadComposition(id)
     timelinePage.value = 1
@@ -436,7 +438,24 @@ onUnmounted(() => {
       <!-- Right panel -->
       <main class="tags-content">
         <div v-if="selectedBoardId !== null">
+          <!-- Content tabs -->
+          <div class="tags-content-tabs">
+            <button type="button" class="tags-content-tab" :class="{ 'tags-content-tab--active': contentTab === 'composition' }" @click="contentTab = 'composition'">
+              <Icon icon="mdi:view-dashboard-outline" width="14" />
+              板块内容
+            </button>
+            <button type="button" class="tags-content-tab" :class="{ 'tags-content-tab--active': contentTab === 'narratives' }" @click="contentTab = 'narratives'">
+              <Icon icon="mdi:timeline-text-outline" width="14" />
+              叙事
+            </button>
+            <button type="button" class="tags-content-tab" :class="{ 'tags-content-tab--active': contentTab === 'articles' }" @click="contentTab = 'articles'">
+              <Icon icon="mdi:newspaper-variant-outline" width="14" />
+              文章
+            </button>
+          </div>
+
           <BoardCompositionPanel
+            v-if="contentTab === 'composition'"
             :board-id="selectedBoardId"
             :labels="compositionLabels"
             :loading="compositionLoading"
@@ -445,10 +464,10 @@ onUnmounted(() => {
           />
 
           <!-- Board Narrative Timeline -->
-          <BoardNarrativeTimeline v-if="selectedBoardId" :board-id="selectedBoardId" />
+          <BoardNarrativeTimeline v-if="contentTab === 'narratives'" :board-id="selectedBoardId" />
 
           <!-- Article timeline -->
-          <div class="tags-timeline">
+          <div v-if="contentTab === 'articles'" class="tags-timeline">
             <div class="tags-timeline-header">
               <Icon icon="mdi:timeline-clock-outline" width="15" class="text-[rgba(240,138,75,0.8)]" />
               <span class="tags-timeline-title">相关文章</span>
@@ -714,6 +733,50 @@ onUnmounted(() => {
   min-width: 0;
   padding: 1.25rem 1.5rem 3.5rem;
   overflow-y: auto;
+}
+
+.tags-content-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 0 0.75rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tags-content-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  border: none;
+  border-radius: 8px 8px 0 0;
+  background: none;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  position: relative;
+}
+
+.tags-content-tab:hover {
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tags-content-tab--active {
+  color: rgba(255, 220, 200, 0.85);
+  background: rgba(240, 138, 75, 0.08);
+}
+
+.tags-content-tab--active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(240, 138, 75, 0.6);
+  border-radius: 1px;
 }
 
 .tags-bottombar {
