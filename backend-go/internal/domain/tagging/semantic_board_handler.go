@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -155,6 +156,7 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		boards.PUT("/:id", handler.updateSemanticBoard)
 		boards.DELETE("/:id", handler.deleteSemanticBoard)
 		boards.GET("/:id/suggest-auxiliaries", handler.suggestAuxiliariesForBoard)
+		boards.GET("/:id/articles", handler.getBoardArticles)
 		boards.GET("/:id/composition", handler.getBoardComposition)
 		boards.POST("/:id/composition", handler.addBoardComposition)
 		boards.DELETE("/:id/composition/:auxiliary_label_id", handler.removeBoardComposition)
@@ -302,6 +304,190 @@ func (h *semanticBoardHandler) deleteSemanticBoard(c *gin.Context) {
 		return
 	}
 	respondOK(c, gin.H{"id": id})
+}
+
+type boardArticleTagDTO struct {
+	ID          uint    `json:"id"`
+	Label       string  `json:"label"`
+	Category    string  `json:"category"`
+	MatchReason string  `json:"match_reason"`
+	Score       float64 `json:"score"`
+}
+
+func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
+	boardID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 20
+	}
+
+	feedID, _ := strconv.Atoi(c.Query("feed_id"))
+	auxiliaryLabelID, _ := strconv.Atoi(c.Query("auxiliary_label_id"))
+	startDate := strings.TrimSpace(c.Query("start_date"))
+	endDate := strings.TrimSpace(c.Query("end_date"))
+
+	ctx := c.Request.Context()
+
+	// Step 1: Get tag IDs belonging to this board
+	var boardTagIDs []uint
+	if err := h.db.WithContext(ctx).Model(&models.TopicTagBoardLabel{}).
+		Select("topic_tag_id").
+		Where("semantic_board_id = ?", boardID).
+		Pluck("topic_tag_id", &boardTagIDs).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if len(boardTagIDs) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data":    []any{},
+			"pagination": gin.H{"page": page, "per_page": perPage, "total": 0, "pages": 0},
+		})
+		return
+	}
+
+	// Step 2: Query articles
+	query := h.db.WithContext(ctx).Table("articles").
+		Select("DISTINCT articles.*, feeds.title AS feed_name").
+		Joins("JOIN article_topic_tags att ON att.article_id = articles.id AND att.topic_tag_id IN ?", boardTagIDs).
+		Joins("JOIN feeds ON feeds.id = articles.feed_id")
+
+	if feedID > 0 {
+		query = query.Where("articles.feed_id = ?", feedID)
+	}
+	if startDate != "" {
+		query = query.Where("DATE(articles.pub_date) >= ?", startDate)
+	}
+	if endDate != "" {
+		// end_date is inclusive: include the full day
+		t, err := time.Parse("2006-01-02", endDate)
+		if err == nil {
+			nextDay := t.AddDate(0, 0, 1).Format("2006-01-02")
+			query = query.Where("DATE(articles.pub_date) < ?", nextDay)
+		}
+	}
+	if auxiliaryLabelID > 0 {
+		query = query.Where("articles.id IN (SELECT att_aux.article_id FROM article_topic_tags att_aux WHERE att_aux.topic_tag_id IN (SELECT topic_tag_id FROM topic_tag_semantic_labels WHERE semantic_label_id = ?))", auxiliaryLabelID)
+	}
+
+	// Count
+	var total int64
+	countQuery := h.db.WithContext(ctx).Table("articles").
+		Joins("JOIN article_topic_tags att ON att.article_id = articles.id AND att.topic_tag_id IN ?", boardTagIDs)
+	if feedID > 0 {
+		countQuery = countQuery.Where("articles.feed_id = ?", feedID)
+	}
+	if startDate != "" {
+		countQuery = countQuery.Where("DATE(articles.pub_date) >= ?", startDate)
+	}
+	if endDate != "" {
+		t, err := time.Parse("2006-01-02", endDate)
+		if err == nil {
+			nextDay := t.AddDate(0, 0, 1).Format("2006-01-02")
+			countQuery = countQuery.Where("DATE(articles.pub_date) < ?", nextDay)
+		}
+	}
+	if auxiliaryLabelID > 0 {
+		countQuery = countQuery.Where("articles.id IN (SELECT att_aux.article_id FROM article_topic_tags att_aux WHERE att_aux.topic_tag_id IN (SELECT topic_tag_id FROM topic_tag_semantic_labels WHERE semantic_label_id = ?))", auxiliaryLabelID)
+	}
+	countQuery.Select("COUNT(DISTINCT articles.id)").Scan(&total)
+
+	// Fetch page
+	offset := (page - 1) * perPage
+	query = query.Order("articles.pub_date DESC").Offset(offset).Limit(perPage)
+
+	type articleRow struct {
+		models.Article
+		FeedName string `gorm:"column:feed_name"`
+	}
+	var articles []articleRow
+	if err := query.Scan(&articles).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	if len(articles) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data":    []any{},
+			"pagination": gin.H{"page": page, "per_page": perPage, "total": total, "pages": 0},
+		})
+		return
+	}
+
+	// Step 3: Batch query filtered_tags for current page articles
+	articleIDs := make([]uint, len(articles))
+	for i, a := range articles {
+		articleIDs[i] = a.ID
+	}
+
+	type filteredTagRow struct {
+		ArticleID   uint    `gorm:"column:article_id"`
+		ID          uint    `gorm:"column:id"`
+		Label       string  `gorm:"column:label"`
+		Category    string  `gorm:"column:category"`
+		MatchReason string  `gorm:"column:match_reason"`
+		Score       float64 `gorm:"column:score"`
+	}
+	var tagRows []filteredTagRow
+	if err := h.db.WithContext(ctx).Table("article_topic_tags att").
+		Select("att.article_id, tt.id, tt.label, tt.category, tbl.match_reason, tbl.score").
+		Joins("JOIN topic_tags tt ON tt.id = att.topic_tag_id").
+		Joins("JOIN topic_tag_board_labels tbl ON tbl.topic_tag_id = tt.id AND tbl.semantic_board_id = ?", boardID).
+		Where("att.article_id IN ?", articleIDs).
+		Where("tt.status = ?", "active").
+		Find(&tagRows).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// Group by article_id
+	tagMap := make(map[uint][]boardArticleTagDTO)
+	for _, tr := range tagRows {
+		tagMap[tr.ArticleID] = append(tagMap[tr.ArticleID], boardArticleTagDTO{
+			ID:          tr.ID,
+			Label:       tr.Label,
+			Category:    tr.Category,
+			MatchReason: tr.MatchReason,
+			Score:       tr.Score,
+		})
+	}
+
+	// Step 4: Assemble response
+	data := make([]gin.H, len(articles))
+	for i, a := range articles {
+		articleData := a.Article.ToDict()
+		articleData["feed_name"] = a.FeedName
+		articleData["filtered_tags"] = tagMap[a.ID]
+		if articleData["filtered_tags"] == nil {
+			articleData["filtered_tags"] = []boardArticleTagDTO{}
+		}
+		data[i] = articleData
+	}
+
+	pages := int(total) / perPage
+	if int(total)%perPage > 0 {
+		pages++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    data,
+		"pagination": gin.H{
+			"page":     page,
+			"per_page": perPage,
+			"total":    total,
+			"pages":    pages,
+		},
+	})
 }
 
 func (h *semanticBoardHandler) getBoardComposition(c *gin.Context) {

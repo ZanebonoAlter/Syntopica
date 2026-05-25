@@ -121,6 +121,25 @@ export interface SuggestAuxiliariesResponse {
   page_size: number
 }
 
+export interface BoardArticleTag {
+  id: number
+  label: string
+  category: string
+  match_reason: string
+  score: number
+}
+
+export interface BoardArticle {
+  id: number
+  title: string
+  url: string
+  pub_date: string
+  feed_id: number
+  feed_name: string
+  filtered_tags: BoardArticleTag[]
+  [key: string]: unknown
+}
+
 export function useSemanticBoardsApi() {
   async function getBoards(params?: { search?: string; status?: string }): Promise<ApiResponse<{ items: SemanticBoard[]; total: number }>> {
     const query = apiClient.buildQueryParams(params)
@@ -209,6 +228,11 @@ export function useSemanticBoardsApi() {
     return apiClient.get(`/semantic-boards/suggest-auxiliaries${query ? `?${query}` : ''}`)
   }
 
+  async function getBoardArticles(id: number, params?: Record<string, unknown>): Promise<ApiResponse<BoardArticle[]>> {
+    const query = params ? apiClient.buildQueryParams(params) : ''
+    return apiClient.get(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
+  }
+
   async function suggestAuxiliariesForBoard(boardId: number, params?: {
     search?: string
     page?: number
@@ -236,6 +260,7 @@ export function useSemanticBoardsApi() {
     executeUpgrade,
     suggestAuxiliaries,
     suggestAuxiliariesForBoard,
+    getBoardArticles,
     triggerBackfill,
     getBackfillStatus,
     getMatchingConfig,
