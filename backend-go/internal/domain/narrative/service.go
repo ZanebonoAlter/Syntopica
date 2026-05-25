@@ -84,19 +84,62 @@ type ScopeSaveOpts struct {
 }
 
 func (s *NarrativeService) GenerateAndSave(date time.Time) (int, error) {
-	catSaved, err := s.GenerateAndSaveForAllCategories(date)
-	if err != nil {
-		logging.Warnf("narrative: category generation had errors: %v", err)
-	}
+	return s.GenerateAndSaveForAllBoards(date)
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+func (s *NarrativeService) GenerateAndSaveForAllBoards(date time.Time) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	saved, gErr := s.GenerateAndSaveGlobal(ctx, date)
-	if gErr != nil {
-		logging.Warnf("narrative: global generation failed: %v", gErr)
+	input, err := CollectSemanticBoardNarrativeInputs(date)
+	if err != nil {
+		return 0, fmt.Errorf("collect semantic board inputs: %w", err)
+	}
+	if len(input) == 0 {
+		logging.Infof("narrative: no semantic board event tags for %s", date.Format("2006-01-02"))
+		return 0, nil
 	}
 
+	totalSaved := 0
+	for _, inp := range input {
+		scopeOpts := ScopeSaveOpts{ScopeType: models.NarrativeScopeTypeBoard}
+		board, bErr := createBoardFromSemanticBoard(inp, date, scopeOpts)
+		if bErr != nil {
+			logging.Warnf("narrative: failed to create narrative board from semantic board %d: %v", inp.Board.ID, bErr)
+			continue
+		}
+		if board == nil {
+			continue
+		}
+		eventTags := inp.EventTags
+		if len(eventTags) == 0 {
+			continue
+		}
+
+		prevNarrs := collectPreviousNarrativesForBoards(inp.PrevBoardIDs)
+		boardCtx := BoardNarrativeContext{
+			Board:              *board,
+			EventTags:          eventTags,
+			PrevNarratives:     prevNarrs,
+			SemanticBoardLabel: inp.Board.Label,
+			SemanticBoardDesc:  inp.Board.Description,
+		}
+
+		outputs, gErr := GenerateNarrativesForBoard(ctx, boardCtx)
+		if gErr != nil {
+			logging.Warnf("narrative: failed to generate narratives for board %d: %v", board.ID, gErr)
+			continue
+		}
+
+		saved, sErr := saveNarrativesWithBoard(outputs, *board, date, &scopeOpts)
+		if sErr != nil {
+			logging.Warnf("narrative: failed to save narratives for board %d: %v", board.ID, sErr)
+			continue
+		}
+		totalSaved += saved
+	}
+
+	// Post-generation steps
 	allPrev, pErr := CollectPreviousNarratives(date, "", nil)
 	if pErr != nil {
 		logging.Warnf("narrative: failed to collect previous narratives for fallback: %v", pErr)
@@ -112,12 +155,12 @@ func (s *NarrativeService) GenerateAndSave(date time.Time) (int, error) {
 
 	cleanEmptyBoards(date, nil)
 
-	totalSaved := catSaved + saved
-	logging.Infof("narrative: GenerateAndSave complete — %d narratives saved for %s",
+	logging.Infof("narrative: GenerateAndSaveForAllBoards complete — %d narratives saved for %s",
 		totalSaved, date.Format("2006-01-02"))
 	return totalSaved, nil
 }
 
+// Deprecated: Use GenerateAndSaveForAllBoards instead. Kept for rollback safety.
 func (s *NarrativeService) GenerateAndSaveGlobal(ctx context.Context, date time.Time) (int, error) {
 	scopeOpts := ScopeSaveOpts{
 		ScopeType:  models.NarrativeScopeTypeGlobal,
@@ -127,6 +170,7 @@ func (s *NarrativeService) GenerateAndSaveGlobal(ctx context.Context, date time.
 	return s.generateAndSaveSemanticBoardScope(ctx, date, scopeOpts)
 }
 
+// Deprecated: Use GenerateAndSaveForAllBoards instead. Kept for rollback safety.
 func (s *NarrativeService) GenerateAndSaveForCategory(date time.Time, categoryID uint, categoryLabel string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
@@ -147,8 +191,9 @@ func (s *NarrativeService) GenerateAndSaveForCategory(date time.Time, categoryID
 	return saved, nil
 }
 
+// Deprecated: Use GenerateAndSaveForAllBoards instead. Kept for rollback safety.
 func (s *NarrativeService) generateAndSaveSemanticBoardScope(ctx context.Context, date time.Time, scopeOpts ScopeSaveOpts) (int, error) {
-	inputs, err := CollectSemanticBoardNarrativeInputs(date, scopeOpts.ScopeType, scopeOpts.CategoryID)
+	inputs, err := CollectSemanticBoardNarrativeInputs(date)
 	if err != nil {
 		return 0, err
 	}
@@ -310,6 +355,7 @@ func cleanEmptyBoards(date time.Time, categoryID *uint) {
 	}
 }
 
+// Deprecated: Use GenerateAndSaveForAllBoards instead. Kept for rollback safety.
 func (s *NarrativeService) GenerateAndSaveForAllCategories(date time.Time) (int, error) {
 	categories, err := CollectActiveCategories(date)
 	if err != nil {

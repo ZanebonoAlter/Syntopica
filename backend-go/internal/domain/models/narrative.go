@@ -36,4 +36,5 @@ const (
 
 	NarrativeScopeTypeGlobal       = "global"
 	NarrativeScopeTypeFeedCategory = "feed_category"
+	NarrativeScopeTypeBoard        = "board"
 )
