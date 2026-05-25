@@ -74,12 +74,29 @@
 - [x] 8.3 `TopicGraphPage.vue`: 移除与叙事相关的 ref/函数（expandedBoardIds、unclassifiedTags 等仅被 NarrativePanel 使用的状态）
 - [x] 8.4 验证：`pnpm lint` + `pnpm exec nuxi typecheck` + `pnpm build`
 
-## 9. 集成验证
+## 9. TagsPage 内容 Tab 切换
 
-- [ ] 9.1 端到端：文章 → tag 提取 → 辅助标签 → board 匹配（验证 max_sim 双因子约束生效）
-- [ ] 9.2 端到端：手动触发升级建议 → 确认执行 → 面板展示 label 而非 #id
-- [ ] 9.3 端到端：选中 board → 叙事时间线展示 → 点击叙事展开文章 → 文章带 filtered_tags
-- [ ] 9.4 端到端：Feed/时间筛选 board 文章列表
-- [ ] 9.5 端到端：叙事生成 → 单 board 单日单叙事板（不按 category 拆分）→ /tags 页面查看
-- [ ] 9.6 验证：`go build ./...` && `go test ./...` && `golangci-lint run ./...`
-- [ ] 9.7 验证：`pnpm lint` && `pnpm exec nuxi typecheck` && `pnpm build`
+- [ ] 11.1 `TagsPage.vue`: 新增 `contentTab` ref（`'composition' | 'narratives' | 'articles'`），默认 `'composition'`，选中 board 时显示 Tab 栏（板块内容 / 叙事 / 文章），按 tab 切换显示对应面板
+- [ ] 11.2 BoardCompositionPanel、BoardNarrativeTimeline、文章时间线各区域用 `v-if="contentTab === 'xxx'"` 控制显隐
+- [ ] 11.3 Tab 栏样式：简洁横向 tab，和页面整体暗色风格一致，选中态用 accent 色
+- [ ] 11.4 验证：`pnpm lint` + `vue-tsc --noEmit`
+
+## 10. 整理叙事功能（按板块/日期触发）
+
+- [x] 10.1 `service.go`: 新增 `GenerateAndSaveForBoard(semanticBoardID uint, date time.Time) (int, error)`，只收集指定 board 的 input，生成单板叙事
+- [x] 10.2 `narrative_handler.go`: 新增 `POST /api/narratives/boards/generate` endpoint，参数 `{ date: string, board_id?: number }`，board_id 为空时生成全部
+- [x] 10.3 `front/app/api/semanticBoards.ts`: 新增 `triggerNarrativeGeneration(params)` 方法
+- [x] 10.4 `SemanticBoardList.vue`: 在“匹配参数”按钮下新增“整理叙事”按钮
+- [x] 10.5 新增 `NarrativeGenerateDialog.vue`：日期选择器 + 板块下拉（可选全部），确认触发
+- [x] 10.6 `TagsPage.vue`: 集成 NarrativeGenerateDialog，绑定按钮事件
+- [x] 10.7 验证：`go build ./...` + `pnpm lint` + `vue-tsc --noEmit`
+
+## 11. 集成验证
+
+- [ ] 11.1 端到端：文章 → tag 提取 → 辅助标签 → board 匹配（验证 max_sim 双因子约束生效）
+- [ ] 11.2 端到端：手动触发升级建议 → 确认执行 → 面板展示 label 而非 #id
+- [ ] 11.3 端到端：选中 board → 叙事时间线展示 → 点击叙事展开文章 → 文章带 filtered_tags
+- [ ] 11.4 端到端：Feed/时间筛选 board 文章列表
+- [ ] 11.5 端到端：叙事生成 → 单 board 单日单叙事板（不按 category 拆分）→ /tags 页面查看
+- [ ] 11.6 验证：`go build ./...` && `go test ./...` && `golangci-lint run ./...`
+- [ ] 11.7 验证：`pnpm lint` && `pnpm exec nuxi typecheck` && `pnpm build`
