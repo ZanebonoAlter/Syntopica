@@ -268,6 +268,10 @@ export function useSemanticBoardsApi() {
     return apiClient.post(`/semantic-boards/${boardId}/composition`, { auxiliary_label_id: auxiliaryLabelId })
   }
 
+  async function triggerNarrativeGeneration(params: { date: string; board_id?: number }) {
+    return apiClient.post<{ success: boolean; data: { saved: number } }>('/narratives/boards/generate', params)
+  }
+
   return {
     getBoards,
     getBoard,
@@ -288,5 +292,6 @@ export function useSemanticBoardsApi() {
     getBackfillStatus,
     getMatchingConfig,
     updateMatchingConfig,
+    triggerNarrativeGeneration,
   }
 }

@@ -17,6 +17,7 @@ import AuxiliaryLabelPool from './AuxiliaryLabelPool.vue'
 import UpgradeSuggestionPanel from './UpgradeSuggestionPanel.vue'
 import BackfillProgress from './BackfillProgress.vue'
 import MatchingConfigDialog from './MatchingConfigDialog.vue'
+import NarrativeGenerateDialog from './NarrativeGenerateDialog.vue'
 
 const sbApi = useSemanticBoardsApi()
 const auxApi = useAuxiliaryLabelsApi()
@@ -58,6 +59,7 @@ const contentTab = ref<'composition' | 'narratives' | 'articles'>('composition')
 const showAddDialog = ref(false)
 const showUpgradeDialog = ref(false)
 const showMatchingConfigDialog = ref(false)
+const showGenerateDialog = ref(false)
 
 const timelineArticles = ref<BoardArticle[]>([])
 const timelineLoading = ref(false)
@@ -431,6 +433,7 @@ onUnmounted(() => {
           @upgrade="handleUpgradeSuggest"
           @backfill="handleTriggerBackfill"
           @config="handleOpenMatchingConfig"
+          @generate="showGenerateDialog = true"
           @delete="handleDeleteBoard"
         />
       </aside>
@@ -607,6 +610,13 @@ onUnmounted(() => {
       :loading="matchingConfigLoading"
       @save="handleSaveMatchingConfig"
       @cancel="showMatchingConfigDialog = false"
+    />
+
+    <!-- Narrative Generate Dialog -->
+    <NarrativeGenerateDialog
+      :visible="showGenerateDialog"
+      :boards="boards"
+      @cancel="showGenerateDialog = false"
     />
 
     <Teleport to="body">

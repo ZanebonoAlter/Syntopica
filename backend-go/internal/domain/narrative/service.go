@@ -87,6 +87,81 @@ func (s *NarrativeService) GenerateAndSave(date time.Time) (int, error) {
 	return s.GenerateAndSaveForAllBoards(date)
 }
 
+func (s *NarrativeService) GenerateAndSaveForBoard(semanticBoardID uint, date time.Time) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Collect all board inputs
+	allInputs, err := CollectSemanticBoardNarrativeInputs(date)
+	if err != nil {
+		return 0, fmt.Errorf("collect semantic board inputs: %w", err)
+	}
+
+	// Filter to target board
+	var targetInput *SemanticBoardNarrativeInput
+	for i := range allInputs {
+		if allInputs[i].Board.ID == semanticBoardID {
+			targetInput = &allInputs[i]
+			break
+		}
+	}
+	if targetInput == nil {
+		return 0, fmt.Errorf("semantic board %d not found or has no event tags for %s", semanticBoardID, date.Format("2006-01-02"))
+	}
+
+	scopeOpts := ScopeSaveOpts{ScopeType: models.NarrativeScopeTypeBoard}
+	board, bErr := createBoardFromSemanticBoard(*targetInput, date, scopeOpts)
+	if bErr != nil {
+		return 0, fmt.Errorf("create narrative board: %w", bErr)
+	}
+	if board == nil {
+		return 0, nil
+	}
+
+	eventTags := targetInput.EventTags
+	if len(eventTags) == 0 {
+		return 0, nil
+	}
+
+	prevNarrs := collectPreviousNarrativesForBoards(targetInput.PrevBoardIDs)
+	boardCtx := BoardNarrativeContext{
+		Board:              *board,
+		EventTags:          eventTags,
+		PrevNarratives:     prevNarrs,
+		SemanticBoardLabel: targetInput.Board.Label,
+		SemanticBoardDesc:  targetInput.Board.Description,
+	}
+
+	outputs, gErr := GenerateNarrativesForBoard(ctx, boardCtx)
+	if gErr != nil {
+		return 0, fmt.Errorf("generate narratives: %w", gErr)
+	}
+
+	saved, sErr := saveNarrativesWithBoard(outputs, *board, date, &scopeOpts)
+	if sErr != nil {
+		return 0, fmt.Errorf("save narratives: %w", sErr)
+	}
+
+	logging.Infof("narrative: GenerateAndSaveForBoard complete — %d narratives saved for board %d on %s",
+		saved, semanticBoardID, date.Format("2006-01-02"))
+	return saved, nil
+}
+
+func (s *NarrativeService) RegenerateAndSaveForBoard(semanticBoardID uint, date time.Time) (int, error) {
+	// Delete existing narratives for this board on this date
+	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+	endOfDay := startOfDay.Add(24 * time.Hour)
+
+	var boards []models.NarrativeBoard
+	database.DB.Where("semantic_board_id = ? AND period_date >= ? AND period_date < ?", semanticBoardID, startOfDay, endOfDay).Find(&boards)
+	for _, nb := range boards {
+		database.DB.Where("board_id = ?", nb.ID).Delete(&models.NarrativeSummary{})
+		database.DB.Delete(&nb)
+	}
+
+	return s.GenerateAndSaveForBoard(semanticBoardID, date)
+}
+
 func (s *NarrativeService) GenerateAndSaveForAllBoards(date time.Time) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()

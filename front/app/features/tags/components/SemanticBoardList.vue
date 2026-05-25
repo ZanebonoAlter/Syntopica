@@ -15,6 +15,7 @@ const emit = defineEmits<{
   upgrade: []
   backfill: []
   config: []
+  generate: []
   delete: [id: number]
 }>()
 
@@ -107,6 +108,10 @@ function sourceTitle(source: string): string {
       <button type="button" class="sb-action-btn sb-action-btn--ghost" @click="emit('config')">
         <Icon icon="mdi:tune" width="14" />
         匹配参数
+      </button>
+      <button type="button" class="sb-action-btn sb-action-btn--ghost" @click="emit('generate')">
+        <Icon icon="mdi:auto-fix" width="14" />
+        整理叙事
       </button>
     </div>
   </div>
