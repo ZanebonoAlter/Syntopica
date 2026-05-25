@@ -436,15 +436,21 @@ func TestCreateBoardFromSemanticBoard_WritesSemanticScopeAndPrev(t *testing.T) {
 	if err := db.Create(&previous).Error; err != nil {
 		t.Fatalf("create previous board: %v", err)
 	}
-	// These should NOT match: different date, different semantic board, or old scope types
+	// These should NOT match: different date or different semantic board
 	ignored := []models.NarrativeBoard{
 		{PeriodDate: twoDaysAgo, Name: board.Label, ScopeType: models.NarrativeScopeTypeBoard, SemanticBoardID: &board.ID},
 		{PeriodDate: yesterday, Name: otherBoard.Label, ScopeType: models.NarrativeScopeTypeBoard, SemanticBoardID: &otherBoard.ID},
+	}
+	// These SHOULD also match: same semantic_board_id, same date, any scope type (continuation across scope types)
+	oldScope := []models.NarrativeBoard{
 		{PeriodDate: yesterday, Name: board.Label, ScopeType: models.NarrativeScopeTypeGlobal, SemanticBoardID: &board.ID},
 		{PeriodDate: yesterday, Name: board.Label, ScopeType: models.NarrativeScopeTypeFeedCategory, ScopeCategoryID: ptrUint(5), SemanticBoardID: &board.ID},
 	}
 	if err := db.Create(&ignored).Error; err != nil {
 		t.Fatalf("create ignored previous boards: %v", err)
+	}
+	if err := db.Create(&oldScope).Error; err != nil {
+		t.Fatalf("create old scope boards: %v", err)
 	}
 
 	prevIDs := matchPreviousSemanticBoard(board.ID, date)
@@ -477,8 +483,19 @@ func TestCreateBoardFromSemanticBoard_WritesSemanticScopeAndPrev(t *testing.T) {
 	if err := json.Unmarshal([]byte(created.PrevBoardIDs), &createdPrevIDs); err != nil {
 		t.Fatalf("unmarshal prev ids: %v", err)
 	}
-	if len(createdPrevIDs) != 1 || createdPrevIDs[0] != previous.ID {
-		t.Fatalf("expected prev board id %d, got %v", previous.ID, createdPrevIDs)
+	// Expect 3 prev IDs: the board-scoped one + 2 old scope ones (global + feed_category)
+	expectedPrevIDs := []uint{previous.ID, oldScope[0].ID, oldScope[1].ID}
+	if len(createdPrevIDs) != len(expectedPrevIDs) {
+		t.Fatalf("expected %d prev board ids, got %d: %v", len(expectedPrevIDs), len(createdPrevIDs), createdPrevIDs)
+	}
+	prevSet := make(map[uint]bool)
+	for _, id := range createdPrevIDs {
+		prevSet[id] = true
+	}
+	for _, id := range expectedPrevIDs {
+		if !prevSet[id] {
+			t.Fatalf("expected prev board id %d to be in %v", id, createdPrevIDs)
+		}
 	}
 }
 
