@@ -104,8 +104,13 @@ type semanticBoardUpgradeSuggestionDTO struct {
 	BoardLabel        string                       `json:"board_label"`
 	Description       string                       `json:"description"`
 	AuxiliaryLabelIDs []uint                       `json:"auxiliary_label_ids"`
-	TargetBoardID     *uint                        `json:"target_board_id,omitempty"`
-	Reason            string                       `json:"reason"`
+	AuxiliaryLabels   []struct {
+		ID    uint   `json:"id"`
+		Label string `json:"label"`
+	} `json:"auxiliary_labels"`
+	TargetBoardID     *uint   `json:"target_board_id,omitempty"`
+	TargetBoardLabel  string  `json:"target_board_label,omitempty"`
+	Reason            string  `json:"reason"`
 }
 
 type semanticBoardUpgradeCandidateDTO struct {
@@ -576,7 +581,7 @@ func (h *semanticBoardHandler) suggestUpgrades(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, err)
 		return
 	}
-	respondOK(c, gin.H{"suggestions": suggestionsToDTO(suggestions)})
+	respondOK(c, gin.H{"suggestions": h.suggestionsToDTO(c.Request.Context(), suggestions)})
 }
 
 func (h *semanticBoardHandler) executeUpgrade(c *gin.Context) {
@@ -825,10 +830,71 @@ func upgradeClustersToDTO(clusters []SemanticBoardUpgradeCluster) []semanticBoar
 	return items
 }
 
-func suggestionsToDTO(suggestions []SemanticBoardUpgradeSuggestion) []semanticBoardUpgradeSuggestionDTO {
+func (h *semanticBoardHandler) suggestionsToDTO(ctx context.Context, suggestions []SemanticBoardUpgradeSuggestion) []semanticBoardUpgradeSuggestionDTO {
+	// Collect unique IDs for batch lookup
+	labelIDSet := make(map[uint]struct{})
+	boardIDSet := make(map[uint]struct{})
+	for _, s := range suggestions {
+		for _, id := range s.AuxiliaryLabelIDs {
+			labelIDSet[id] = struct{}{}
+		}
+		if s.TargetBoardID != nil {
+			boardIDSet[*s.TargetBoardID] = struct{}{}
+		}
+	}
+
+	// Batch lookup auxiliary labels
+	labelNames := make(map[uint]string)
+	if len(labelIDSet) > 0 {
+		ids := make([]uint, 0, len(labelIDSet))
+		for id := range labelIDSet {
+			ids = append(ids, id)
+		}
+		var labels []models.SemanticLabel
+		if err := h.db.WithContext(ctx).Where("id IN ?", ids).Select("id, label").Find(&labels).Error; err == nil {
+			for _, l := range labels {
+				labelNames[l.ID] = l.Label
+			}
+		}
+	}
+
+	// Batch lookup board labels
+	boardNames := make(map[uint]string)
+	if len(boardIDSet) > 0 {
+		ids := make([]uint, 0, len(boardIDSet))
+		for id := range boardIDSet {
+			ids = append(ids, id)
+		}
+		var labels []models.SemanticLabel
+		if err := h.db.WithContext(ctx).Where("id IN ? AND label_type = ?", ids, "board").Select("id, label").Find(&labels).Error; err == nil {
+			for _, l := range labels {
+				boardNames[l.ID] = l.Label
+			}
+		}
+	}
+
 	items := make([]semanticBoardUpgradeSuggestionDTO, 0, len(suggestions))
-	for _, suggestion := range suggestions {
-		items = append(items, semanticBoardUpgradeSuggestionDTO(suggestion))
+	for _, s := range suggestions {
+		dto := semanticBoardUpgradeSuggestionDTO{
+			Decision:          s.Decision,
+			BoardLabel:        s.BoardLabel,
+			Description:       s.Description,
+			AuxiliaryLabelIDs: s.AuxiliaryLabelIDs,
+			TargetBoardID:     s.TargetBoardID,
+			Reason:            s.Reason,
+		}
+		for _, id := range s.AuxiliaryLabelIDs {
+			dto.AuxiliaryLabels = append(dto.AuxiliaryLabels, struct {
+				ID    uint   `json:"id"`
+				Label string `json:"label"`
+			}{ID: id, Label: labelNames[id]})
+		}
+		if s.TargetBoardID != nil {
+			if name, ok := boardNames[*s.TargetBoardID]; ok {
+				dto.TargetBoardLabel = name
+			}
+		}
+		items = append(items, dto)
 	}
 	return items
 }
@@ -837,7 +903,9 @@ func semanticBoardMatchConfigToMap(config SemanticBoardMatchConfig) gin.H {
 	return gin.H{
 		"semantic_board_match_sim_threshold":      config.SimThreshold,
 		"semantic_board_match_direct_hit_rate":    config.DirectHitRate,
-		"semantic_board_match_direct_max_sim":     config.DirectMaxSim,
+		"semantic_board_match_direct_max_sim":           config.DirectMaxSim,
+		"semantic_board_match_direct_max_sim_min_hits":   config.DirectMaxSimMinHits,
+		"semantic_board_match_direct_max_sim_min_hit_rate": config.DirectMaxSimMinHitRate,
 		"semantic_board_match_weight_sim":         config.WeightSim,
 		"semantic_board_match_weight_density":     config.WeightDensity,
 		"semantic_board_match_weighted_threshold": config.WeightedThreshold,
@@ -871,7 +939,7 @@ func (h *semanticBoardHandler) getAllConfigs(c *gin.Context) gin.H {
 
 func isSemanticBoardConfigKey(key string) bool {
 	switch key {
-	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards",
+	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards",
 		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit":
 		return true
 	default:
@@ -881,7 +949,7 @@ func isSemanticBoardConfigKey(key string) bool {
 
 func validateSemanticBoardConfigValue(key string, value string) error {
 	switch key {
-	case "semantic_board_match_max_boards", "semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_hard_limit":
+	case "semantic_board_match_max_boards", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_hard_limit":
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed <= 0 {
 			return fmt.Errorf("%s must be a positive integer", key)

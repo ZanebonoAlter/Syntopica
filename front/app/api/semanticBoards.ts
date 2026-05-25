@@ -71,6 +71,8 @@ export interface UpgradeSuggestion {
   description?: string
   target_board_id?: number
   auxiliary_label_ids: number[]
+  auxiliary_labels: { id: number; label: string }[]
+  target_board_label?: string
   reason: string
 }
 
@@ -94,6 +96,8 @@ export interface MatchingConfig {
   semantic_board_match_sim_threshold: number
   semantic_board_match_direct_hit_rate: number
   semantic_board_match_direct_max_sim: number
+  semantic_board_match_direct_max_sim_min_hits: number
+  semantic_board_match_direct_max_sim_min_hit_rate: number
   semantic_board_match_weight_sim: number
   semantic_board_match_weight_density: number
   semantic_board_match_weighted_threshold: number
