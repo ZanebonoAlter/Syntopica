@@ -3,6 +3,7 @@ package tagging
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 
@@ -25,13 +26,15 @@ func NewSemanticBoardMatchingService(db *gorm.DB) *SemanticBoardMatchingService 
 }
 
 type SemanticBoardMatchConfig struct {
-	SimThreshold      float64
-	DirectHitRate     float64
-	DirectMaxSim      float64
-	WeightSim         float64
-	WeightDensity     float64
-	WeightedThreshold float64
-	MaxBoards         int
+	SimThreshold           float64
+	DirectHitRate          float64
+	DirectMaxSim           float64
+	DirectMaxSimMinHits    int
+	DirectMaxSimMinHitRate float64
+	WeightSim              float64
+	WeightDensity          float64
+	WeightedThreshold      float64
+	MaxBoards              int
 }
 
 type SemanticBoardMatchResult struct {
@@ -137,11 +140,13 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		weighted := config.WeightSim*maxSimilarity + config.WeightDensity*hitRate
 		score := 0.0
 		matchReason := ""
+		hits := int(math.Round(hitRate * float64(len(tagAuxiliaries))))
+		minHits := min(config.DirectMaxSimMinHits, len(tagAuxiliaries))
 		switch {
 		case hitRate > config.DirectHitRate:
 			score = hitRate
 			matchReason = "hit_rate"
-		case maxSimilarity >= config.DirectMaxSim:
+		case maxSimilarity >= config.DirectMaxSim && hits >= minHits && hitRate >= config.DirectMaxSimMinHitRate:
 			score = maxSimilarity
 			matchReason = "max_sim"
 		case weighted >= config.WeightedThreshold:
@@ -226,13 +231,15 @@ func (s *SemanticBoardMatchingService) replaceTopicTagBoardLabels(ctx context.Co
 
 func (s *SemanticBoardMatchingService) loadConfig(ctx context.Context) SemanticBoardMatchConfig {
 	config := SemanticBoardMatchConfig{
-		SimThreshold:      0.72,
-		DirectHitRate:     0.5,
-		DirectMaxSim:      0.8,
-		WeightSim:         0.6,
-		WeightDensity:     0.4,
-		WeightedThreshold: 0.6,
-		MaxBoards:         3,
+		SimThreshold:           0.72,
+		DirectHitRate:          0.5,
+		DirectMaxSim:           0.8,
+		DirectMaxSimMinHits:    2,
+		DirectMaxSimMinHitRate: 0.3,
+		WeightSim:              0.6,
+		WeightDensity:          0.4,
+		WeightedThreshold:      0.6,
+		MaxBoards:              3,
 	}
 
 	var settings []models.AISettings
@@ -240,6 +247,8 @@ func (s *SemanticBoardMatchingService) loadConfig(ctx context.Context) SemanticB
 		"semantic_board_match_sim_threshold",
 		"semantic_board_match_direct_hit_rate",
 		"semantic_board_match_direct_max_sim",
+		"semantic_board_match_direct_max_sim_min_hits",
+		"semantic_board_match_direct_max_sim_min_hit_rate",
 		"semantic_board_match_weight_sim",
 		"semantic_board_match_weight_density",
 		"semantic_board_match_weighted_threshold",
@@ -255,6 +264,10 @@ func (s *SemanticBoardMatchingService) loadConfig(ctx context.Context) SemanticB
 			config.DirectHitRate = parseSemanticBoardMatchFloat(setting.Value, config.DirectHitRate)
 		case "semantic_board_match_direct_max_sim":
 			config.DirectMaxSim = parseSemanticBoardMatchFloat(setting.Value, config.DirectMaxSim)
+		case "semantic_board_match_direct_max_sim_min_hits":
+			config.DirectMaxSimMinHits = parseSemanticBoardMatchInt(setting.Value, config.DirectMaxSimMinHits)
+		case "semantic_board_match_direct_max_sim_min_hit_rate":
+			config.DirectMaxSimMinHitRate = parseSemanticBoardMatchFloat(setting.Value, config.DirectMaxSimMinHitRate)
 		case "semantic_board_match_weight_sim":
 			config.WeightSim = parseSemanticBoardMatchFloat(setting.Value, config.WeightSim)
 		case "semantic_board_match_weight_density":

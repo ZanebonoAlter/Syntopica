@@ -61,6 +61,16 @@ function handleSave() {
               <input v-model.number="form.semantic_board_match_direct_max_sim" type="number" step="0.01" min="0" max="1" class="mc-input" />
             </label>
             <label class="mc-field">
+              <span class="mc-label">max_sim 最小命中数</span>
+              <span class="mc-hint">max_sim 规则要求至少几个辅助标签命中。默认 2，防止单个标签偶然高相似度导致误匹配</span>
+              <input v-model.number="form.semantic_board_match_direct_max_sim_min_hits" type="number" step="1" min="1" max="5" class="mc-input" />
+            </label>
+            <label class="mc-field">
+              <span class="mc-label">max_sim 最小命中率</span>
+              <span class="mc-hint">max_sim 规则要求命中率至少多少。默认 0.3，确保有足够密度的匹配才走直接挂载</span>
+              <input v-model.number="form.semantic_board_match_direct_max_sim_min_hit_rate" type="number" step="0.05" min="0" max="1" class="mc-input" />
+            </label>
+            <label class="mc-field">
               <span class="mc-label">相似度权重</span>
               <span class="mc-hint">加权公式中向量相似度的占比，与密度权重搭配使用，建议和为 1</span>
               <input v-model.number="form.semantic_board_match_weight_sim" type="number" step="0.01" min="0" max="1" class="mc-input" />

@@ -53,6 +53,8 @@ func TestSemanticBoardMatchingDirectHit(t *testing.T) {
 func TestSemanticBoardMatchingThreeRules(t *testing.T) {
 	db := setupSemanticBoardMatchingTestDB(t)
 	require.NoError(t, db.Create(&models.AISettings{Key: "semantic_board_match_sim_threshold", Value: "0.6"}).Error)
+	require.NoError(t, db.Create(&models.AISettings{Key: "semantic_board_match_direct_max_sim_min_hits", Value: "1"}).Error)
+	require.NoError(t, db.Create(&models.AISettings{Key: "semantic_board_match_direct_max_sim_min_hit_rate", Value: "0"}).Error)
 	tag := createMatchTag(t, db, "model-release")
 	tagAuxA := createMatchLabel(t, db, "OpenAI", "openai", "auxiliary", "active", []float64{1, 0, 0})
 	tagAuxB := createMatchLabel(t, db, "Release", "release", "auxiliary", "active", []float64{0, 1, 0})
@@ -169,8 +171,162 @@ func TestSemanticBoardMatchingIgnoresDisabledLabels(t *testing.T) {
 	require.Empty(t, results)
 }
 
+func TestEvaluateSemanticBoardMatches_MaxSimDualFactor(t *testing.T) {
+	defaultConfig := func() SemanticBoardMatchConfig {
+		return SemanticBoardMatchConfig{
+			SimThreshold:           0.72,
+			DirectHitRate:          0.5,
+			DirectMaxSim:           0.8,
+			DirectMaxSimMinHits:    2,
+			DirectMaxSimMinHitRate: 0.3,
+			WeightSim:              0.6,
+			WeightDensity:          0.4,
+			WeightedThreshold:      0.6,
+			MaxBoards:              3,
+		}
+	}
+
+	t.Run("N=1 keyword hits enough sim high should match", func(t *testing.T) {
+		// N=1: minHits = min(2, 1) = 1, rate >= 0.3, sim >= 0.8
+		// Use high DirectHitRate so it falls through to max_sim
+		config := defaultConfig()
+		config.DirectHitRate = 1.0 // ensure hit_rate doesn't trigger
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "tech", Slug: "tech", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+		}
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		require.Len(t, results, 1)
+		require.Equal(t, uint(100), results[0].SemanticBoardID)
+		require.Equal(t, "max_sim", results[0].MatchReason)
+	})
+
+	t.Run("N=2 both auxiliaries match should pass", func(t *testing.T) {
+		config := defaultConfig()
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "tech", Slug: "tech", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+			{ID: 2, Label: "media", Slug: "media", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0, 1, 0}))},
+		}
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+			{BoardID: 100, AuxiliaryLabelID: 11, Embedding: ptrStr(floatsToPgVector([]float64{0, 1, 0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// Both hit => hitRate = 1.0 > 0.5, should match as hit_rate
+		require.Len(t, results, 1)
+		require.Equal(t, "hit_rate", results[0].MatchReason)
+	})
+
+	t.Run("N=5 hits=1 insufficient should not match max_sim", func(t *testing.T) {
+		// 5 tag auxiliaries, only 1 has high sim with board. hits=1, minHits=min(2,5)=2 => fail
+		config := defaultConfig()
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "a1", Slug: "a1", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+			{ID: 2, Label: "a2", Slug: "a2", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0, 1, 0}))},
+			{ID: 3, Label: "a3", Slug: "a3", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0, 0, 1}))},
+			{ID: 4, Label: "a4", Slug: "a4", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0.5, 0.5, 0.7071067811865476}))},
+			{ID: 5, Label: "a5", Slug: "a5", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0.5773502691896258, 0.5773502691896258, 0.5773502691896258}))},
+		}
+		// Board has one auxiliary very close to tag a1, but the other 4 tag auxiliaries
+		// will have low sim with the board auxiliary
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{0.99, 0.1, 0.0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// maxSim ~0.994 >= 0.8, but hits=1 < minHits=2 => should NOT match as max_sim
+		// hitRate = 1/5 = 0.2, not > 0.5 => no hit_rate
+		// weighted = 0.6*0.994 + 0.4*0.2 = 0.676 >= 0.6 => might match as weighted
+		for _, r := range results {
+			if r.SemanticBoardID == 100 {
+				require.NotEqual(t, "max_sim", r.MatchReason, "should not match as max_sim with only 1 hit out of 5")
+			}
+		}
+	})
+
+	t.Run("N=5 hits=2 rate=0.2 insufficient rate should not match max_sim", func(t *testing.T) {
+		// 5 tag auxiliaries, 2 hit threshold. rate=0.4/5=0.08... wait, need precise control.
+		// Actually hitRate = hits/tagAuxiliaryCount. We need hits=2, rate=0.2.
+		// That would mean tagAuxiliaryCount = 10 with 2 hits, or we set rate directly.
+		// Since hitRate is computed as float64(hits)/float64(len(tagAuxiliaries)),
+		// for 5 auxiliaries and 2 hits, rate = 0.4. We need rate < 0.3.
+		// With 5 auxiliaries, to get rate < 0.3 we need hits <= 1 (rate=0.2).
+		// So let's test: N=10, hits=2, rate=0.2, sim high
+		config := defaultConfig()
+		// Create 10 tag auxiliaries, only 2 close to board auxiliary
+		tagAuxiliaries := make([]models.SemanticLabel, 10)
+		for i := 0; i < 10; i++ {
+			vec := []float64{0, 0, 1} // orthogonal to board
+			if i < 2 {
+				vec = []float64{1, 0, 0} // close to board
+			}
+			tagAuxiliaries[i] = models.SemanticLabel{
+				ID: uint(i + 1), Label: fmt.Sprintf("a%d", i), Slug: fmt.Sprintf("a%d", i),
+				LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector(vec)),
+			}
+		}
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// maxSim = 1.0 >= 0.8, hits=2 >= minHits=2, BUT rate=0.2 < 0.3
+		// => should NOT match as max_sim
+		for _, r := range results {
+			if r.SemanticBoardID == 100 {
+				require.NotEqual(t, "max_sim", r.MatchReason, "should not match as max_sim with rate 0.2 < 0.3")
+			}
+		}
+	})
+
+	t.Run("N=5 hits=2 rate=0.4 sim high should match max_sim", func(t *testing.T) {
+		config := defaultConfig()
+		config.DirectHitRate = 1.0 // ensure hit_rate doesn't trigger
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "a1", Slug: "a1", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+			{ID: 2, Label: "a2", Slug: "a2", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0, 1, 0}))},
+			{ID: 3, Label: "a3", Slug: "a3", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0, 0, 1}))},
+			{ID: 4, Label: "a4", Slug: "a4", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0.5, 0.5, 0.7071067811865476}))},
+			{ID: 5, Label: "a5", Slug: "a5", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0.5773502691896258, 0.5773502691896258, 0.5773502691896258}))},
+		}
+		// Board has two auxiliaries: one close to a1, one close to a2
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{0.95, 0.31224989991992, 0}))},
+			{BoardID: 100, AuxiliaryLabelID: 11, Embedding: ptrStr(floatsToPgVector([]float64{0, 0.95, 0.31224989991992}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// rate=0.4, DirectHitRate=1.0 => not hit_rate
+		// maxSim=0.95 >= 0.8, hits=2 >= minHits=2, rate=0.4 >= 0.3 => max_sim
+		found := false
+		for _, r := range results {
+			if r.SemanticBoardID == 100 {
+				require.Equal(t, "max_sim", r.MatchReason)
+				found = true
+			}
+		}
+		require.True(t, found, "expected board 100 to be matched")
+	})
+}
+
+func ptrStr(s string) *string {
+	return &s
+}
+
 func createMatchTag(t *testing.T, db *gorm.DB, slug string) models.TopicTag {
-	t.Helper()
 	tag := models.TopicTag{Label: slug, Slug: slug, Category: "event", Status: "active"}
 	require.NoError(t, db.Create(&tag).Error)
 	return tag
