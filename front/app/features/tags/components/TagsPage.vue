@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
-import { useSemanticBoardsApi, type SemanticBoard, type AuxiliaryLabelItem, type UpgradeCandidate, type UpgradeCluster, type UpgradeSuggestion, type BackfillTask, type MatchingConfig } from '~/api/semanticBoards'
+import { useSemanticBoardsApi, type SemanticBoard, type AuxiliaryLabelItem, type UpgradeCandidate, type UpgradeCluster, type UpgradeSuggestion, type BackfillTask, type MatchingConfig, type BoardArticle, type BoardArticleTag } from '~/api/semanticBoards'
 import { useAuxiliaryLabelsApi, type AuxiliaryLabel, type AuxiliaryLabelCluster } from '~/api/auxiliaryLabels'
 import { useArticlesApi } from '~/api/articles'
 import { normalizeArticle } from '~/features/articles/utils/normalizeArticle'
 import type { Article } from '~/types'
 import type { ArticlePayload } from '~/features/articles/utils/normalizeArticle'
 import ArticleContentView from '~/features/articles/components/ArticleContentView.vue'
+import { useFeedsStore } from '~/stores/feeds'
 import SemanticBoardList from './SemanticBoardList.vue'
 import AddSemanticBoardDialog from './AddSemanticBoardDialog.vue'
 import BoardCompositionPanel from './BoardCompositionPanel.vue'
+import BoardNarrativeTimeline from './BoardNarrativeTimeline.vue'
 import AuxiliaryLabelPool from './AuxiliaryLabelPool.vue'
 import UpgradeSuggestionPanel from './UpgradeSuggestionPanel.vue'
 import BackfillProgress from './BackfillProgress.vue'
@@ -19,6 +21,7 @@ import MatchingConfigDialog from './MatchingConfigDialog.vue'
 const sbApi = useSemanticBoardsApi()
 const auxApi = useAuxiliaryLabelsApi()
 const articlesApi = useArticlesApi()
+const feedsStore = useFeedsStore()
 
 const boards = ref<SemanticBoard[]>([])
 const selectedBoardId = ref<number | null>(null)
@@ -55,12 +58,16 @@ const showAddDialog = ref(false)
 const showUpgradeDialog = ref(false)
 const showMatchingConfigDialog = ref(false)
 
-const timelineArticles = ref<Article[]>([])
+const timelineArticles = ref<BoardArticle[]>([])
 const timelineLoading = ref(false)
 const timelinePage = ref(1)
 const timelineHasMore = ref(false)
 const timelinePerPage = 50
 const activeFilterLabelId = ref<number | null>(null)
+const filterFeedId = ref<number | null>(null)
+const startDate = ref<string>('')
+const endDate = ref<string>('')
+const feedOptions = computed(() => feedsStore.feeds)
 const timelineVisible = computed(() => selectedBoardId.value !== null)
 
 const selectedPreviewArticle = ref<Article | null>(null)
@@ -123,6 +130,9 @@ function handleUpdatePage(page: number) {
 function handleSelectBoard(id: number | null) {
   selectedBoardId.value = id
   activeFilterLabelId.value = null
+  filterFeedId.value = null
+  startDate.value = ''
+  endDate.value = ''
   if (id !== null) {
     void loadComposition(id)
     timelinePage.value = 1
@@ -137,15 +147,22 @@ async function loadTimelineArticles(boardId: number, append = false) {
   timelineLoading.value = true
   try {
     const page = append ? timelinePage.value + 1 : 1
-    const params: Record<string, unknown> = { concept_id: boardId, page, per_page: timelinePerPage, sort_by: 'date' }
+    const params: Record<string, unknown> = { page, per_page: timelinePerPage }
     if (activeFilterLabelId.value !== null) {
       params.auxiliary_label_id = activeFilterLabelId.value
     }
-    const res = await articlesApi.getArticles(params)
+    if (filterFeedId.value) {
+      params.feed_id = filterFeedId.value
+    }
+    if (startDate.value) {
+      params.start_date = startDate.value
+    }
+    if (endDate.value) {
+      params.end_date = endDate.value
+    }
+    const res = await sbApi.getBoardArticles(boardId, params)
     if (res.success && res.data) {
-      const rawData = res.data as unknown as { items: ArticlePayload[] }
-      const rawArticles = (rawData.items || res.data as unknown as ArticlePayload[]) as ArticlePayload[]
-      const newArticles = rawArticles.map(a => normalizeArticle(a))
+      const newArticles = res.data
       if (append) {
         timelineArticles.value.push(...newArticles)
         timelinePage.value = page
@@ -177,7 +194,7 @@ async function openArticlePreview(articleId: number) {
     const response = await articlesApi.getArticle(articleId)
     if (!response.success || !response.data) return
     selectedPreviewArticle.value = normalizeArticle(response.data as unknown as ArticlePayload)
-    previewArticles.value = timelineArticles.value
+    previewArticles.value = []
   } catch (error) {
     console.error('Failed to open article preview:', error)
   } finally {
@@ -227,6 +244,24 @@ function handleFilterLabel(labelId: number | null) {
   if (selectedBoardId.value !== null) {
     void loadTimelineArticles(selectedBoardId.value)
   }
+}
+
+function handleFilterChange() {
+  timelinePage.value = 1
+  if (selectedBoardId.value !== null) {
+    void loadTimelineArticles(selectedBoardId.value)
+  }
+}
+
+function matchInfoTooltip(tag: BoardArticleTag): string {
+  const reasonMap: Record<string, string> = {
+    direct_hit: '直接命中',
+    hit_rate: '命中率',
+    max_sim: '相似度',
+    weighted: '综合',
+  }
+  const reason = reasonMap[tag.match_reason] || tag.match_reason
+  return `${reason} · ${tag.score.toFixed(2)}`
 }
 
 function handleAddBoard(data: { label: string; description: string; display_order: number; protected: boolean; auxiliary_labels?: number[] }) {
@@ -409,6 +444,9 @@ onUnmounted(() => {
             @refresh="() => loadComposition(selectedBoardId!)"
           />
 
+          <!-- Board Narrative Timeline -->
+          <BoardNarrativeTimeline v-if="selectedBoardId" :board-id="selectedBoardId" />
+
           <!-- Article timeline -->
           <div class="tags-timeline">
             <div class="tags-timeline-header">
@@ -418,8 +456,9 @@ onUnmounted(() => {
             </div>
 
             <!-- Filter chips -->
-            <div v-if="compositionLabels.length > 0" class="tags-filter-chips">
+            <div v-if="compositionLabels.length > 0 || selectedBoardId !== null" class="tags-filter-chips">
               <button
+                v-if="compositionLabels.length > 0"
                 type="button"
                 class="tags-filter-chip"
                 :class="{ 'tags-filter-chip--active': activeFilterLabelId === null }"
@@ -437,6 +476,12 @@ onUnmounted(() => {
               >
                 {{ label.label }}
               </button>
+              <select v-model="filterFeedId" class="tags-filter-select" @change="handleFilterChange()">
+                <option :value="null">全部来源</option>
+                <option v-for="feed in feedOptions" :key="feed.id" :value="Number(feed.id)">{{ feed.title }}</option>
+              </select>
+              <input type="date" v-model="startDate" class="tags-filter-date" @change="handleFilterChange()" />
+              <input type="date" v-model="endDate" class="tags-filter-date" @change="handleFilterChange()" />
             </div>
 
             <div v-if="timelineLoading && timelineArticles.length === 0" class="tags-timeline-loading">
@@ -453,14 +498,26 @@ onUnmounted(() => {
                 v-for="article in timelineArticles"
                 :key="article.id"
                 class="tags-timeline-item"
-                @click="openArticlePreview(Number(article.id))"
+                @click="openArticlePreview(article.id)"
               >
-                <div class="tags-timeline-item-date">
-                  {{ new Date(article.pubDate).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}
+                <div class="tags-timeline-item-meta">
+                  <span class="tags-timeline-item-date">
+                    {{ new Date(article.pub_date).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}
+                  </span>
+                  <span v-if="article.feed_name" class="tags-timeline-item-feed-name">{{ article.feed_name }}</span>
                 </div>
                 <div class="tags-timeline-item-content">
                   <span class="tags-timeline-item-title">{{ article.title }}</span>
-                  <span class="tags-timeline-item-feed">{{ article.feedId }}</span>
+                  <div v-if="article.filtered_tags?.length" class="tags-timeline-item-tags">
+                    <span
+                      v-for="tag in article.filtered_tags"
+                      :key="tag.id"
+                      class="tags-timeline-tag-chip"
+                      :title="matchInfoTooltip(tag)"
+                    >
+                      {{ tag.label }}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -739,7 +796,8 @@ onUnmounted(() => {
 
 .tags-timeline-item {
   display: flex;
-  gap: 0.75rem;
+  flex-direction: column;
+  gap: 0.25rem;
   padding: 0.5rem 0.65rem;
   border-radius: 8px;
   cursor: pointer;
@@ -750,12 +808,24 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.tags-timeline-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .tags-timeline-item-date {
   font-size: 0.65rem;
   color: rgba(255, 255, 255, 0.3);
   white-space: nowrap;
-  padding-top: 0.15rem;
-  min-width: 2.5rem;
+}
+
+.tags-timeline-item-feed-name {
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tags-timeline-item-content {
@@ -778,12 +848,68 @@ onUnmounted(() => {
   color: rgba(255, 220, 200, 0.9);
 }
 
-.tags-timeline-item-feed {
+.tags-timeline-item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.15rem;
+}
+
+.tags-timeline-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.4rem;
   font-size: 0.62rem;
-  color: rgba(255, 255, 255, 0.25);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.5);
+  cursor: default;
+  transition: background 0.12s ease;
+}
+
+.tags-timeline-tag-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.tags-filter-select {
+  padding: 0.2rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.tags-filter-select:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.tags-filter-select option {
+  background: #1a1f2a;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.tags-filter-date {
+  padding: 0.2rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.tags-filter-date:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.tags-filter-date::-webkit-calendar-picker-indicator {
+  filter: invert(0.5);
 }
 
 .tags-timeline-more {
