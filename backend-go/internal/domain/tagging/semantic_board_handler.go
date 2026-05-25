@@ -157,6 +157,7 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		boards.DELETE("/:id", handler.deleteSemanticBoard)
 		boards.GET("/:id/suggest-auxiliaries", handler.suggestAuxiliariesForBoard)
 		boards.GET("/:id/articles", handler.getBoardArticles)
+		boards.GET("/:id/narratives", handler.getBoardNarratives)
 		boards.GET("/:id/composition", handler.getBoardComposition)
 		boards.POST("/:id/composition", handler.addBoardComposition)
 		boards.DELETE("/:id/composition/:auxiliary_label_id", handler.removeBoardComposition)
@@ -488,6 +489,148 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 			"pages":    pages,
 		},
 	})
+}
+
+type boardNarrativeTagDTO struct {
+	ID    uint   `json:"id"`
+	Label string `json:"label"`
+}
+
+type boardNarrativeDTO struct {
+	ID               uint64              `json:"id"`
+	Title            string              `json:"title"`
+	Summary          string              `json:"summary"`
+	Status           string              `json:"status"`
+	RelatedTags      []boardNarrativeTagDTO `json:"related_tags"`
+	RelatedArticleIDs []uint64            `json:"related_article_ids"`
+	ScopeType        string              `json:"scope_type"`
+	ArticleCount     int                 `json:"article_count"`
+	PeriodDate       string              `json:"period_date"`
+}
+
+func (h *semanticBoardHandler) getBoardNarratives(c *gin.Context) {
+	boardID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "7"))
+	if days < 1 {
+		days = 7
+	}
+
+	ctx := c.Request.Context()
+	now := time.Now()
+	startDate := now.AddDate(0, 0, -days)
+	endDate := now.AddDate(0, 0, 1)
+
+	// Step 1: Query narrative_boards
+	var narrativeBoards []models.NarrativeBoard
+	if err := h.db.WithContext(ctx).
+		Where("semantic_board_id = ? AND period_date >= ? AND period_date < ?", boardID, startDate, endDate).
+		Order("period_date DESC").
+		Find(&narrativeBoards).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if len(narrativeBoards) == 0 {
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": []any{}})
+		return
+	}
+
+	narrativeBoardIDs := make([]uint, len(narrativeBoards))
+	for i, nb := range narrativeBoards {
+		narrativeBoardIDs[i] = nb.ID
+	}
+
+	// Step 2: Query narrative_summaries
+	var summaries []models.NarrativeSummary
+	if err := h.db.WithContext(ctx).
+		Where("board_id IN ?", narrativeBoardIDs).
+		Order("period_date DESC, id DESC").
+		Find(&summaries).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if len(summaries) == 0 {
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": []any{}})
+		return
+	}
+
+	// Step 3: Collect all unique tag IDs and batch query
+	tagIDSet := make(map[uint]struct{})
+	for _, s := range summaries {
+		if s.RelatedTagIDs != "" {
+			var ids []uint
+			if err := json.Unmarshal([]byte(s.RelatedTagIDs), &ids); err == nil {
+				for _, id := range ids {
+					tagIDSet[id] = struct{}{}
+				}
+			}
+		}
+	}
+
+	tagMap := make(map[uint]string)
+	if len(tagIDSet) > 0 {
+		allTagIDs := make([]uint, 0, len(tagIDSet))
+		for id := range tagIDSet {
+			allTagIDs = append(allTagIDs, id)
+		}
+		type tagBrief struct {
+			ID    uint   `gorm:"column:id"`
+			Label string `gorm:"column:label"`
+		}
+		var tags []tagBrief
+		if err := h.db.WithContext(ctx).Table("topic_tags").
+			Select("id, label").
+			Where("id IN ?", allTagIDs).
+			Find(&tags).Error; err == nil {
+			for _, t := range tags {
+				tagMap[t.ID] = t.Label
+			}
+		}
+	}
+
+	// Step 4: Assemble response
+	data := make([]boardNarrativeDTO, 0, len(summaries))
+	for _, s := range summaries {
+		var relatedTags []boardNarrativeTagDTO
+		if s.RelatedTagIDs != "" {
+			var tagIDs []uint
+			if err := json.Unmarshal([]byte(s.RelatedTagIDs), &tagIDs); err == nil {
+				for _, tid := range tagIDs {
+					if label, ok := tagMap[tid]; ok {
+						relatedTags = append(relatedTags, boardNarrativeTagDTO{ID: tid, Label: label})
+					}
+				}
+			}
+		}
+		if relatedTags == nil {
+			relatedTags = []boardNarrativeTagDTO{}
+		}
+
+		var articleIDs []uint64
+		if s.RelatedArticleIDs != "" {
+			json.Unmarshal([]byte(s.RelatedArticleIDs), &articleIDs)
+		}
+		if articleIDs == nil {
+			articleIDs = []uint64{}
+		}
+
+		data = append(data, boardNarrativeDTO{
+			ID:               s.ID,
+			Title:            s.Title,
+			Summary:          s.Summary,
+			Status:           s.Status,
+			RelatedTags:      relatedTags,
+			RelatedArticleIDs: articleIDs,
+			ScopeType:        s.ScopeType,
+			ArticleCount:     len(articleIDs),
+			PeriodDate:       s.PeriodDate.Format("2006-01-02"),
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }
 
 func (h *semanticBoardHandler) getBoardComposition(c *gin.Context) {

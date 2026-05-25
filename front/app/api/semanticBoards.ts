@@ -140,6 +140,23 @@ export interface BoardArticle {
   [key: string]: unknown
 }
 
+export interface BoardNarrativeTag {
+  id: number
+  label: string
+}
+
+export interface BoardNarrative {
+  id: number
+  title: string
+  summary: string
+  status: string
+  related_tags: BoardNarrativeTag[]
+  related_article_ids: number[]
+  scope_type: string
+  article_count: number
+  period_date: string
+}
+
 export function useSemanticBoardsApi() {
   async function getBoards(params?: { search?: string; status?: string }): Promise<ApiResponse<{ items: SemanticBoard[]; total: number }>> {
     const query = apiClient.buildQueryParams(params)
@@ -233,6 +250,11 @@ export function useSemanticBoardsApi() {
     return apiClient.get(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
   }
 
+  async function getBoardNarratives(id: number, params?: { days?: number }): Promise<ApiResponse<BoardNarrative[]>> {
+    const query = params ? apiClient.buildQueryParams(params) : ''
+    return apiClient.get(`/semantic-boards/${id}/narratives${query ? `?${query}` : ''}`)
+  }
+
   async function suggestAuxiliariesForBoard(boardId: number, params?: {
     search?: string
     page?: number
@@ -261,6 +283,7 @@ export function useSemanticBoardsApi() {
     suggestAuxiliaries,
     suggestAuxiliariesForBoard,
     getBoardArticles,
+    getBoardNarratives,
     triggerBackfill,
     getBackfillStatus,
     getMatchingConfig,
