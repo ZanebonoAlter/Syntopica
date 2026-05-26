@@ -10,17 +10,15 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"syntopica-backend/internal/domain/daily_report"
 	"syntopica-backend/internal/domain/models"
-	"syntopica-backend/internal/domain/narrative"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/tracing"
+	"syntopica-backend/internal/platform/ws"
 )
 
-// NarrativeSummaryScheduler is the legacy narrative generation scheduler.
-// Deprecated: Use DailyReportScheduler (daily_report.go) instead. This scheduler is retained
-// for backward compatibility during the transition to the new daily report system.
-type NarrativeSummaryScheduler struct {
+type DailyReportScheduler struct {
 	cron           *cron.Cron
 	checkInterval  time.Duration
 	isRunning      bool
@@ -28,49 +26,48 @@ type NarrativeSummaryScheduler struct {
 	isExecuting    bool
 }
 
-type NarrativeSummaryRunSummary struct {
+type DailyReportRunSummary struct {
 	TriggerSource string `json:"trigger_source"`
 	StartedAt     string `json:"started_at"`
 	FinishedAt    string `json:"finished_at"`
-	SavedCount    int    `json:"saved_count"`
+	ReportCount   int    `json:"report_count"`
 	Reason        string `json:"reason"`
 }
 
-func NewNarrativeSummaryScheduler(checkInterval int) *NarrativeSummaryScheduler {
-	return &NarrativeSummaryScheduler{
+func NewDailyReportScheduler(checkInterval int) *DailyReportScheduler {
+	return &DailyReportScheduler{
 		cron:          cron.New(),
 		checkInterval: time.Duration(checkInterval) * time.Second,
 	}
 }
 
-func (s *NarrativeSummaryScheduler) Start() error {
+func (s *DailyReportScheduler) Start() error {
 	if s.isRunning {
-		return fmt.Errorf("narrative-summary scheduler already running")
+		return fmt.Errorf("daily-report scheduler already running")
 	}
 
 	s.initSchedulerTask()
 	scheduleExpr := fmt.Sprintf("@every %ds", int64(s.checkInterval.Seconds()))
-	if _, err := s.cron.AddFunc(scheduleExpr, s.runNarrativeCycleFromCron); err != nil {
-		return fmt.Errorf("failed to schedule narrative-summary: %w", err)
+	if _, err := s.cron.AddFunc(scheduleExpr, s.runFromCron); err != nil {
+		return fmt.Errorf("failed to schedule daily-report: %w", err)
 	}
 
 	s.cron.Start()
 	s.isRunning = true
-	logging.Infof("Narrative-summary scheduler started with interval: %v", s.checkInterval)
+	logging.Infof("Daily-report scheduler started with interval: %v", s.checkInterval)
 	return nil
 }
 
-func (s *NarrativeSummaryScheduler) Stop() {
+func (s *DailyReportScheduler) Stop() {
 	if !s.isRunning {
 		return
 	}
-
 	s.cron.Stop()
 	s.isRunning = false
-	logging.Infoln("Narrative-summary scheduler stopped")
+	logging.Infoln("Daily-report scheduler stopped")
 }
 
-func (s *NarrativeSummaryScheduler) UpdateInterval(interval int) error {
+func (s *DailyReportScheduler) UpdateInterval(interval int) error {
 	if interval <= 0 {
 		return fmt.Errorf("interval must be positive")
 	}
@@ -88,7 +85,7 @@ func (s *NarrativeSummaryScheduler) UpdateInterval(interval int) error {
 	}
 
 	var task models.SchedulerTask
-	if err := database.DB.Where("name = ?", "narrative_summary").First(&task).Error; err == nil {
+	if err := database.DB.Where("name = ?", "daily_report").First(&task).Error; err == nil {
 		nextRun := time.Now().Add(s.checkInterval)
 		database.DB.Model(&task).Updates(map[string]interface{}{
 			"check_interval":      interval,
@@ -99,9 +96,9 @@ func (s *NarrativeSummaryScheduler) UpdateInterval(interval int) error {
 	return nil
 }
 
-func (s *NarrativeSummaryScheduler) ResetStats() error {
+func (s *DailyReportScheduler) ResetStats() error {
 	var task models.SchedulerTask
-	if err := database.DB.Where("name = ?", "narrative_summary").First(&task).Error; err != nil {
+	if err := database.DB.Where("name = ?", "daily_report").First(&task).Error; err != nil {
 		return err
 	}
 
@@ -123,13 +120,13 @@ func (s *NarrativeSummaryScheduler) ResetStats() error {
 	return database.DB.Model(&task).Updates(updates).Error
 }
 
-func (s *NarrativeSummaryScheduler) TriggerNow() map[string]interface{} {
+func (s *DailyReportScheduler) TriggerNow() map[string]interface{} {
 	if !s.executionMutex.TryLock() {
 		return map[string]interface{}{
 			"accepted":    false,
 			"started":     false,
 			"reason":      "already_running",
-			"message":     "叙事摘要正在执行中，请稍后再试。",
+			"message":     "日报生成正在执行中，请稍后再试。",
 			"status_code": http.StatusConflict,
 		}
 	}
@@ -140,28 +137,28 @@ func (s *NarrativeSummaryScheduler) TriggerNow() map[string]interface{} {
 		defer func() {
 			s.isExecuting = false
 			if r := recover(); r != nil {
-				logging.Errorf("PANIC in manual narrative-summary trigger: %v", r)
+				logging.Errorf("PANIC in manual daily-report trigger: %v", r)
 				s.updateSchedulerStatus("idle", fmt.Sprintf("Panic: %v", r), nil, nil)
 			}
 		}()
-		s.runNarrativeCycle("manual", time.Now())
+		s.runCycle("manual", time.Now().In(time.Local))
 	}()
 
 	return map[string]interface{}{
 		"accepted": true,
 		"started":  true,
 		"reason":   "manual_run_started",
-		"message":  "叙事摘要生成已经开始运行。",
+		"message":  "日报生成已经开始运行。",
 	}
 }
 
-func (s *NarrativeSummaryScheduler) TriggerNowWithDate(dateStr string) map[string]interface{} {
+func (s *DailyReportScheduler) TriggerNowWithDate(dateStr string) map[string]interface{} {
 	if !s.executionMutex.TryLock() {
 		return map[string]interface{}{
 			"accepted":    false,
 			"started":     false,
 			"reason":      "already_running",
-			"message":     "叙事摘要正在执行中，请稍后再试。",
+			"message":     "日报生成正在执行中，请稍后再试。",
 			"status_code": http.StatusConflict,
 		}
 	}
@@ -188,33 +185,33 @@ func (s *NarrativeSummaryScheduler) TriggerNowWithDate(dateStr string) map[strin
 		defer func() {
 			s.isExecuting = false
 			if r := recover(); r != nil {
-				logging.Errorf("PANIC in manual narrative-summary trigger: %v", r)
+				logging.Errorf("PANIC in manual daily-report trigger: %v", r)
 				s.updateSchedulerStatus("idle", fmt.Sprintf("Panic: %v", r), nil, nil)
 			}
 		}()
-		s.runNarrativeCycle("manual", targetDate)
+		s.runCycle("manual", targetDate)
 	}()
 
 	return map[string]interface{}{
 		"accepted": true,
 		"started":  true,
 		"reason":   "manual_run_started",
-		"message":  fmt.Sprintf("叙事摘要生成已经开始运行（目标日期: %s）。", targetDate.Format("2006-01-02")),
+		"message":  fmt.Sprintf("日报生成已经开始运行（目标日期: %s）。", targetDate.Format("2006-01-02")),
 	}
 }
 
-func (s *NarrativeSummaryScheduler) initSchedulerTask() {
+func (s *DailyReportScheduler) initSchedulerTask() {
 	var task models.SchedulerTask
 	now := time.Now()
 	nextRun := now.Add(s.checkInterval)
 
-	if err := database.DB.Where("name = ?", "narrative_summary").First(&task).Error; err == nil {
+	if err := database.DB.Where("name = ?", "daily_report").First(&task).Error; err == nil {
 		if task.CheckInterval > 0 {
 			s.checkInterval = time.Duration(task.CheckInterval) * time.Second
 			nextRun = now.Add(s.checkInterval)
 		}
 		updates := map[string]interface{}{
-			"description":         "Generate daily narrative summaries from active topic tags",
+			"description":         "Generate daily reports for all active semantic boards",
 			"check_interval":      int(s.checkInterval.Seconds()),
 			"next_execution_time": &nextRun,
 		}
@@ -226,8 +223,8 @@ func (s *NarrativeSummaryScheduler) initSchedulerTask() {
 	}
 
 	task = models.SchedulerTask{
-		Name:              "narrative_summary",
-		Description:       "Generate daily narrative summaries from active topic tags",
+		Name:              "daily_report",
+		Description:       "Generate daily reports for all active semantic boards",
 		CheckInterval:     int(s.checkInterval.Seconds()),
 		Status:            "idle",
 		NextExecutionTime: &nextRun,
@@ -235,11 +232,11 @@ func (s *NarrativeSummaryScheduler) initSchedulerTask() {
 	database.DB.Create(&task)
 }
 
-func (s *NarrativeSummaryScheduler) runNarrativeCycleFromCron() {
-	tracing.TraceSchedulerTick("narrative_summary", "cron", func(ctx context.Context) {
+func (s *DailyReportScheduler) runFromCron() {
+	tracing.TraceSchedulerTick("daily_report", "cron", func(ctx context.Context) {
 		_ = ctx
 		if !s.executionMutex.TryLock() {
-			logging.Infoln("Narrative summary generation already in progress, skipping this cycle")
+			logging.Infoln("Daily report generation already in progress, skipping this cycle")
 			return
 		}
 		s.isExecuting = true
@@ -247,32 +244,27 @@ func (s *NarrativeSummaryScheduler) runNarrativeCycleFromCron() {
 			s.executionMutex.Unlock()
 			s.isExecuting = false
 			if r := recover(); r != nil {
-				logging.Errorf("PANIC in runNarrativeCycleFromCron: %v", r)
+				logging.Errorf("PANIC in runFromCron: %v", r)
 				s.updateSchedulerStatus("idle", fmt.Sprintf("Panic: %v", r), nil, nil)
 			}
 		}()
 
-		s.runNarrativeCycle("scheduled", time.Now().In(time.Local))
+		s.runCycle("scheduled", time.Now().In(time.Local))
 	})
 }
 
-// runNarrativeCycle executes a single narrative generation cycle.
-// Deprecated: The new DailyReportScheduler in daily_report.go replaces this functionality.
-func (s *NarrativeSummaryScheduler) runNarrativeCycle(triggerSource string, targetDate time.Time) {
+func (s *DailyReportScheduler) runCycle(triggerSource string, targetDate time.Time) {
 	startTime := time.Now()
-	summary := &NarrativeSummaryRunSummary{
+	summary := &DailyReportRunSummary{
 		TriggerSource: triggerSource,
 		StartedAt:     startTime.Format(time.RFC3339),
 	}
 	s.updateSchedulerStatus("running", "", nil, nil)
 
-	var savedCount int
-	var err error
-	if triggerSource == "manual" {
-		savedCount, err = narrative.NewNarrativeService().RegenerateAndSave(targetDate)
-	} else {
-		savedCount, err = narrative.NewNarrativeService().GenerateAndSave(targetDate)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	boardIDs, err := daily_report.CollectBoardIDsForDate(targetDate)
 	if err != nil {
 		summary.FinishedAt = time.Now().Format(time.RFC3339)
 		summary.Reason = err.Error()
@@ -280,13 +272,41 @@ func (s *NarrativeSummaryScheduler) runNarrativeCycle(triggerSource string, targ
 		return
 	}
 
+	reportCount := 0
+	for _, boardID := range boardIDs {
+		report, sections, genErr := daily_report.GenerateDailyReport(ctx, boardID, targetDate)
+		if genErr != nil {
+			logging.Warnf("daily-report: generate failed for board %d: %v", boardID, genErr)
+			continue
+		}
+		if report == nil {
+			continue
+		}
+
+		if saveErr := daily_report.SaveReport(report, sections); saveErr != nil {
+			logging.Warnf("daily-report: save failed for board %d: %v", boardID, saveErr)
+			continue
+		}
+		reportCount++
+	}
+
+	// Broadcast completion
+	msg := map[string]interface{}{
+		"type":        "daily_report_complete",
+		"report_count": reportCount,
+		"date":        targetDate.Format("2006-01-02"),
+		"timestamp":   time.Now().Format(time.RFC3339),
+	}
+	data, _ := json.Marshal(msg)
+	ws.GetHub().BroadcastRaw(data)
+
 	summary.FinishedAt = time.Now().Format(time.RFC3339)
-	summary.SavedCount = savedCount
-	summary.Reason = "narrative summaries generated"
+	summary.ReportCount = reportCount
+	summary.Reason = "daily reports generated"
 	s.updateSchedulerStatus("success", "", &startTime, summary)
 }
 
-func (s *NarrativeSummaryScheduler) updateSchedulerStatus(status, lastError string, startTime *time.Time, summary *NarrativeSummaryRunSummary) {
+func (s *DailyReportScheduler) updateSchedulerStatus(status, lastError string, startTime *time.Time, summary *DailyReportRunSummary) {
 	now := time.Now()
 	nextExecution := now.Add(s.checkInterval)
 	resultJSON := ""
@@ -309,7 +329,7 @@ func (s *NarrativeSummaryScheduler) updateSchedulerStatus(status, lastError stri
 	}
 
 	var task models.SchedulerTask
-	if err := database.DB.Where("name = ?", "narrative_summary").First(&task).Error; err == nil {
+	if err := database.DB.Where("name = ?", "daily_report").First(&task).Error; err == nil {
 		updates["total_executions"] = task.TotalExecutions
 		updates["successful_executions"] = task.SuccessfulExecutions
 		updates["failed_executions"] = task.FailedExecutions
@@ -333,8 +353,8 @@ func (s *NarrativeSummaryScheduler) updateSchedulerStatus(status, lastError stri
 	}
 
 	task = models.SchedulerTask{
-		Name:              "narrative_summary",
-		Description:       "Generate daily narrative summaries from active topic tags",
+		Name:              "daily_report",
+		Description:       "Generate daily reports for all active semantic boards",
 		CheckInterval:     int(s.checkInterval.Seconds()),
 		Status:            status,
 		LastError:         lastError,
@@ -358,7 +378,7 @@ func (s *NarrativeSummaryScheduler) updateSchedulerStatus(status, lastError stri
 	database.DB.Create(&task)
 }
 
-func (s *NarrativeSummaryScheduler) GetStatus() SchedulerStatusResponse {
+func (s *DailyReportScheduler) GetStatus() SchedulerStatusResponse {
 	entries := s.cron.Entries()
 	var nextRun int64
 	if len(entries) > 0 {
@@ -366,10 +386,10 @@ func (s *NarrativeSummaryScheduler) GetStatus() SchedulerStatusResponse {
 	}
 
 	var task models.SchedulerTask
-	err := database.DB.Where("name = ?", "narrative_summary").First(&task).Error
+	err := database.DB.Where("name = ?", "daily_report").First(&task).Error
 
 	status := SchedulerStatusResponse{
-		Name: "Narrative Summary",
+		Name: "Daily Report",
 		Status: func() string {
 			if s.isExecuting {
 				return "running"
@@ -388,3 +408,4 @@ func (s *NarrativeSummaryScheduler) GetStatus() SchedulerStatusResponse {
 	}
 	return status
 }
+

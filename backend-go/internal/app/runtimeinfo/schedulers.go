@@ -7,3 +7,4 @@ var FirecrawlSchedulerInterface interface{}
 var TagQualityScoreSchedulerInterface interface{}
 var NarrativeSummarySchedulerInterface interface{}
 var LogCleanupSchedulerInterface interface{}
+var DailyReportSchedulerInterface interface{}

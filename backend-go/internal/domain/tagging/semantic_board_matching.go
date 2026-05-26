@@ -31,6 +31,8 @@ type SemanticBoardMatchConfig struct {
 	DirectMaxSim           float64
 	DirectMaxSimMinHits    int
 	DirectMaxSimMinHitRate float64
+	MinEffectiveSample     int
+	HitRateSimBlend        float64
 	WeightSim              float64
 	WeightDensity          float64
 	WeightedThreshold      float64
@@ -136,15 +138,15 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 			continue
 		}
 
-		hitRate, maxSimilarity := scoreSemanticBoardSimilarity(tagVectors, boardVectors, len(tagAuxiliaries), config.SimThreshold)
+		hitRate, maxSimilarity := scoreSemanticBoardSimilarity(tagVectors, boardVectors, len(tagAuxiliaries), config.SimThreshold, config.MinEffectiveSample)
 		weighted := config.WeightSim*maxSimilarity + config.WeightDensity*hitRate
 		score := 0.0
 		matchReason := ""
-		hits := int(math.Round(hitRate * float64(len(tagAuxiliaries))))
+		hits := int(math.Round(hitRate * float64(max(len(tagAuxiliaries), config.MinEffectiveSample))))
 		minHits := min(config.DirectMaxSimMinHits, len(tagAuxiliaries))
 		switch {
 		case hitRate > config.DirectHitRate:
-			score = hitRate
+			score = config.HitRateSimBlend*maxSimilarity + (1-config.HitRateSimBlend)*hitRate
 			matchReason = "hit_rate"
 		case maxSimilarity >= config.DirectMaxSim && hits >= minHits && hitRate >= config.DirectMaxSimMinHitRate:
 			score = maxSimilarity
@@ -190,7 +192,7 @@ func parseBoardAuxiliaryVectors(auxiliaries []boardAuxiliaryLabel) [][]float64 {
 	return vectors
 }
 
-func scoreSemanticBoardSimilarity(tagVectors [][]float64, boardVectors [][]float64, tagAuxiliaryCount int, threshold float64) (float64, float64) {
+func scoreSemanticBoardSimilarity(tagVectors [][]float64, boardVectors [][]float64, tagAuxiliaryCount int, threshold float64, minEffectiveSample int) (float64, float64) {
 	hits := 0
 	maxSimilarity := 0.0
 	for _, tagVector := range tagVectors {
@@ -211,7 +213,8 @@ func scoreSemanticBoardSimilarity(tagVectors [][]float64, boardVectors [][]float
 			hits++
 		}
 	}
-	return float64(hits) / float64(tagAuxiliaryCount), maxSimilarity
+	effectiveDenominator := math.Max(float64(tagAuxiliaryCount), float64(minEffectiveSample))
+	return float64(hits) / effectiveDenominator, maxSimilarity
 }
 
 func (s *SemanticBoardMatchingService) replaceTopicTagBoardLabels(ctx context.Context, topicTagID uint, matches []SemanticBoardMatchResult) error {
@@ -236,6 +239,8 @@ func (s *SemanticBoardMatchingService) loadConfig(ctx context.Context) SemanticB
 		DirectMaxSim:           0.8,
 		DirectMaxSimMinHits:    2,
 		DirectMaxSimMinHitRate: 0.3,
+		MinEffectiveSample:     3,
+		HitRateSimBlend:        0.7,
 		WeightSim:              0.6,
 		WeightDensity:          0.4,
 		WeightedThreshold:      0.6,
@@ -249,6 +254,8 @@ func (s *SemanticBoardMatchingService) loadConfig(ctx context.Context) SemanticB
 		"semantic_board_match_direct_max_sim",
 		"semantic_board_match_direct_max_sim_min_hits",
 		"semantic_board_match_direct_max_sim_min_hit_rate",
+		"semantic_board_match_min_effective_sample",
+		"semantic_board_match_hit_rate_sim_blend",
 		"semantic_board_match_weight_sim",
 		"semantic_board_match_weight_density",
 		"semantic_board_match_weighted_threshold",
@@ -268,6 +275,10 @@ func (s *SemanticBoardMatchingService) loadConfig(ctx context.Context) SemanticB
 			config.DirectMaxSimMinHits = parseSemanticBoardMatchInt(setting.Value, config.DirectMaxSimMinHits)
 		case "semantic_board_match_direct_max_sim_min_hit_rate":
 			config.DirectMaxSimMinHitRate = parseSemanticBoardMatchFloat(setting.Value, config.DirectMaxSimMinHitRate)
+		case "semantic_board_match_min_effective_sample":
+			config.MinEffectiveSample = parseSemanticBoardMatchInt(setting.Value, config.MinEffectiveSample)
+		case "semantic_board_match_hit_rate_sim_blend":
+			config.HitRateSimBlend = parseSemanticBoardMatchFloat(setting.Value, config.HitRateSimBlend)
 		case "semantic_board_match_weight_sim":
 			config.WeightSim = parseSemanticBoardMatchFloat(setting.Value, config.WeightSim)
 		case "semantic_board_match_weight_density":

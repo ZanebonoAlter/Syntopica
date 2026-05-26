@@ -55,6 +55,7 @@ func TestSemanticBoardMatchingThreeRules(t *testing.T) {
 	require.NoError(t, db.Create(&models.AISettings{Key: "semantic_board_match_sim_threshold", Value: "0.6"}).Error)
 	require.NoError(t, db.Create(&models.AISettings{Key: "semantic_board_match_direct_max_sim_min_hits", Value: "1"}).Error)
 	require.NoError(t, db.Create(&models.AISettings{Key: "semantic_board_match_direct_max_sim_min_hit_rate", Value: "0"}).Error)
+	require.NoError(t, db.Create(&models.AISettings{Key: "semantic_board_match_min_effective_sample", Value: "1"}).Error)
 	tag := createMatchTag(t, db, "model-release")
 	tagAuxA := createMatchLabel(t, db, "OpenAI", "openai", "auxiliary", "active", []float64{1, 0, 0})
 	tagAuxB := createMatchLabel(t, db, "Release", "release", "auxiliary", "active", []float64{0, 1, 0})
@@ -75,7 +76,11 @@ func TestSemanticBoardMatchingThreeRules(t *testing.T) {
 		byBoard[result.SemanticBoardID] = result
 	}
 	require.Equal(t, "hit_rate", byBoard[hitRateBoard.ID].MatchReason)
-	require.Equal(t, 1.0, byBoard[hitRateBoard.ID].Score)
+	// hit_rate score is blended: 0.7*maxSim + 0.3*adjustedHitRate
+	// hit-rate board auxiliaries are {0.7,0.5,0.51} and {0.5,0.7,0.51}; tag auxiliaries are {1,0,0} and {0,1,0}
+	// maxSim = max(cos_sim pairs) = 0.7, adjustedHitRate = 2/max(2,1) = 1.0
+	// score = 0.7*0.7 + 0.3*1.0 = 0.79
+	require.InDelta(t, 0.79, byBoard[hitRateBoard.ID].Score, 0.01)
 	require.Equal(t, "max_sim", byBoard[maxSimBoard.ID].MatchReason)
 	require.InDelta(t, 1.0, byBoard[maxSimBoard.ID].Score, 0.0001)
 	require.Equal(t, "weighted", byBoard[weightedBoard.ID].MatchReason)
@@ -86,6 +91,7 @@ func TestSemanticBoardMatchingMaxBoardsTruncation(t *testing.T) {
 	db := setupSemanticBoardMatchingTestDB(t)
 	require.NoError(t, db.Create(&models.AISettings{Key: "semantic_board_match_direct_hit_rate", Value: "1"}).Error)
 	require.NoError(t, db.Create(&models.AISettings{Key: "semantic_board_match_max_boards", Value: "2"}).Error)
+	require.NoError(t, db.Create(&models.AISettings{Key: "semantic_board_match_min_effective_sample", Value: "1"}).Error)
 	tag := createMatchTag(t, db, "ranked-boards")
 	tagAux := createMatchLabel(t, db, "GPU", "gpu", "auxiliary", "active", []float64{1, 0, 0})
 	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: tagAux.ID}).Error)
@@ -179,6 +185,8 @@ func TestEvaluateSemanticBoardMatches_MaxSimDualFactor(t *testing.T) {
 			DirectMaxSim:           0.8,
 			DirectMaxSimMinHits:    2,
 			DirectMaxSimMinHitRate: 0.3,
+			MinEffectiveSample:     3,
+			HitRateSimBlend:        0.7,
 			WeightSim:              0.6,
 			WeightDensity:          0.4,
 			WeightedThreshold:      0.6,
@@ -351,4 +359,194 @@ func createMatchBoardWithAuxiliaries(t *testing.T, db *gorm.DB, slug string, vec
 		require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxiliary.ID}).Error)
 	}
 	return board
+}
+
+func TestEvaluateSemanticBoardMatches_EffectiveSampleAndBlend(t *testing.T) {
+	defaultConfig := func() SemanticBoardMatchConfig {
+		return SemanticBoardMatchConfig{
+			SimThreshold:           0.72,
+			DirectHitRate:          0.5,
+			DirectMaxSim:           0.8,
+			DirectMaxSimMinHits:    2,
+			DirectMaxSimMinHitRate: 0.3,
+			MinEffectiveSample:     3,
+			HitRateSimBlend:        0.7,
+			WeightSim:              0.6,
+			WeightDensity:          0.4,
+			WeightedThreshold:      0.6,
+			MaxBoards:              3,
+		}
+	}
+
+	t.Run("1-aux tag: adjustedHitRate=1/3=0.333 does not pass hit_rate gate", func(t *testing.T) {
+		config := defaultConfig()
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "openai", Slug: "openai", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+		}
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// adjustedHitRate = 1/max(1,3) = 0.333, not > 0.5 => no hit_rate
+		// maxSim = 1.0 >= 0.8, hits=1 >= min(2,1)=1, adjustedHitRate=0.333 >= 0.3 => max_sim
+		require.Len(t, results, 1)
+		require.Equal(t, "max_sim", results[0].MatchReason)
+		require.InDelta(t, 1.0, results[0].Score, 0.0001)
+	})
+
+	t.Run("1-aux tag: weak similarity falls to weighted and may be filtered", func(t *testing.T) {
+		config := defaultConfig()
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "openai", Slug: "openai", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0.8, 0.6, 0}))},
+		}
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// cosSim = 0.8, adjustedHitRate = 1/3 = 0.333
+		// hit_rate: 0.333 not > 0.5 => no
+		// max_sim: sim=0.8 >= 0.8, hits=1 >= min(2,1)=1, adjustedHitRate=0.333 >= 0.3 => max_sim!
+		require.Len(t, results, 1)
+		require.Equal(t, "max_sim", results[0].MatchReason)
+	})
+
+	t.Run("1-aux tag: moderate similarity falls to weighted and passes threshold", func(t *testing.T) {
+		config := defaultConfig()
+		config.DirectMaxSim = 0.9 // raise max_sim threshold so it falls through
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "openai", Slug: "openai", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0.85, 0.527, 0}))},
+		}
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// cosSim ≈ 0.85, adjustedHitRate = 1/3 = 0.333
+		// hit_rate: 0.333 not > 0.5 => no
+		// max_sim: sim=0.85 < 0.9 => no
+		// weighted: 0.6*0.85 + 0.4*0.333 = 0.51 + 0.133 = 0.643 >= 0.6 => yes
+		require.Len(t, results, 1)
+		require.Equal(t, "weighted", results[0].MatchReason)
+		require.InDelta(t, 0.643, results[0].Score, 0.01)
+	})
+
+	t.Run("2-aux tag: both hit gives adjustedHitRate=2/3=0.667, score is blended", func(t *testing.T) {
+		config := defaultConfig()
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "openai", Slug: "openai", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+			{ID: 2, Label: "gpt", Slug: "gpt", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0.9, 0.435889894354067, 0}))},
+		}
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// adjustedHitRate = 2/max(2,3) = 2/3 = 0.667 > 0.5 => hit_rate
+		// maxSim = 1.0, score = 0.7*1.0 + 0.3*0.667 = 0.9
+		require.Len(t, results, 1)
+		require.Equal(t, "hit_rate", results[0].MatchReason)
+		require.InDelta(t, 0.9, results[0].Score, 0.01)
+	})
+
+	t.Run("3-aux tag: unchanged behavior since N >= minEffectiveSample", func(t *testing.T) {
+		config := defaultConfig()
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "a", Slug: "a", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+			{ID: 2, Label: "b", Slug: "b", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0, 1, 0}))},
+			{ID: 3, Label: "c", Slug: "c", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0, 0, 1}))},
+		}
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// adjustedHitRate = 1/3 = 0.333, not > 0.5 => no hit_rate
+		// maxSim = 1.0 >= 0.8, hits=1 >= min(2,3)=2? No, 1 < 2 => no max_sim
+		// weighted = 0.6*1.0 + 0.4*0.333 = 0.733 >= 0.6 => weighted
+		require.Len(t, results, 1)
+		require.Equal(t, "weighted", results[0].MatchReason)
+		require.InDelta(t, 0.733, results[0].Score, 0.01)
+	})
+
+	t.Run("5-aux tag: 3 hits hit_rate blended score", func(t *testing.T) {
+		config := defaultConfig()
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "a", Slug: "a", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+			{ID: 2, Label: "b", Slug: "b", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0, 1, 0}))},
+			{ID: 3, Label: "c", Slug: "c", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0.85, 0.527, 0}))},
+			{ID: 4, Label: "d", Slug: "d", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0, 0, 1}))},
+			{ID: 5, Label: "e", Slug: "e", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{0.5, 0.5, 0.707}))},
+		}
+		// Board has auxiliaries close to tag a, b, c
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+			{BoardID: 100, AuxiliaryLabelID: 11, Embedding: ptrStr(floatsToPgVector([]float64{0, 1, 0}))},
+			{BoardID: 100, AuxiliaryLabelID: 12, Embedding: ptrStr(floatsToPgVector([]float64{0.85, 0.527, 0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// 3 out of 5 hit sim_threshold=0.72, adjustedHitRate = 3/5 = 0.6 > 0.5 => hit_rate
+		// maxSim = 1.0, score = 0.7*1.0 + 0.3*0.6 = 0.88
+		require.Len(t, results, 1)
+		require.Equal(t, "hit_rate", results[0].MatchReason)
+		require.InDelta(t, 0.88, results[0].Score, 0.01)
+	})
+
+	t.Run("hit_rate_sim_blend=1.0 recovers old pure maxSim score", func(t *testing.T) {
+		config := defaultConfig()
+		config.HitRateSimBlend = 1.0
+		config.MinEffectiveSample = 1 // disable sample penalty
+		tagAuxiliaries := []models.SemanticLabel{
+			{ID: 1, Label: "a", Slug: "a", LabelType: "auxiliary", Status: "active",
+				Embedding: ptrStr(floatsToPgVector([]float64{1, 0, 0}))},
+		}
+		boardAuxiliaries := []boardAuxiliaryLabel{
+			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(floatsToPgVector([]float64{0.85, 0.527, 0}))},
+		}
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config)
+		// adjustedHitRate = 1/1 = 1.0 > 0.5 => hit_rate
+		// score = 1.0*maxSim + 0.0*1.0 = maxSim
+		require.Len(t, results, 1)
+		require.Equal(t, "hit_rate", results[0].MatchReason)
+		require.InDelta(t, results[0].Score, 0.85, 0.01)
+	})
+}
+
+func TestScoreSemanticBoardSimilarity_EffectiveDenominator(t *testing.T) {
+	tagVectors := [][]float64{{1, 0, 0}}
+	boardVectors := [][]float64{{1, 0, 0}}
+
+	t.Run("1 aux, minEffectiveSample=3 => hitRate=1/3", func(t *testing.T) {
+		hitRate, maxSim := scoreSemanticBoardSimilarity(tagVectors, boardVectors, 1, 0.72, 3)
+		require.InDelta(t, 1.0/3.0, hitRate, 0.0001)
+		require.InDelta(t, 1.0, maxSim, 0.0001)
+	})
+
+	t.Run("1 aux, minEffectiveSample=1 => hitRate=1/1", func(t *testing.T) {
+		hitRate, maxSim := scoreSemanticBoardSimilarity(tagVectors, boardVectors, 1, 0.72, 1)
+		require.InDelta(t, 1.0, hitRate, 0.0001)
+		require.InDelta(t, 1.0, maxSim, 0.0001)
+	})
+
+	t.Run("5 aux, minEffectiveSample=3 => hitRate=3/5", func(t *testing.T) {
+		vectors5 := [][]float64{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 0}, {0, 1, 0}}
+		hitRate, _ := scoreSemanticBoardSimilarity(vectors5, boardVectors, 5, 0.72, 3)
+		// 4 out of 5 match [1,0,0] with sim >= 0.72 (exact matches for indices 0,3; perpendicular for 1,4; opposite for 2)
+		// cos(1,0,0 with 1,0,0) = 1.0 >= 0.72 ✓
+		// cos(0,1,0 with 1,0,0) = 0.0 < 0.72 ✗
+		// cos(0,0,1 with 1,0,0) = 0.0 < 0.72 ✗
+		// cos(1,0,0 with 1,0,0) = 1.0 >= 0.72 ✓
+		// cos(0,1,0 with 1,0,0) = 0.0 < 0.72 ✗
+		// hits=2, hitRate = 2/5 = 0.4
+		require.InDelta(t, 0.4, hitRate, 0.0001)
+	})
 }

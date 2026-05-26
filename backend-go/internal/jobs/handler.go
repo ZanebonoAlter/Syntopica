@@ -105,6 +105,14 @@ func schedulerDescriptors() []schedulerDescriptor {
 				return runtimeinfo.LogCleanupSchedulerInterface
 			},
 		},
+		{
+			Name:        "daily_report",
+			DisplayName: "Daily Report",
+			Description: "Generate daily reports for all active semantic boards",
+			Get: func() interface{} {
+				return runtimeinfo.DailyReportSchedulerInterface
+			},
+		},
 	}
 }
 

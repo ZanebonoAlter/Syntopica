@@ -12,12 +12,12 @@ import { useFeedsStore } from '~/stores/feeds'
 import SemanticBoardList from './SemanticBoardList.vue'
 import AddSemanticBoardDialog from './AddSemanticBoardDialog.vue'
 import BoardCompositionPanel from './BoardCompositionPanel.vue'
-import BoardNarrativeTimeline from './BoardNarrativeTimeline.vue'
 import AuxiliaryLabelPool from './AuxiliaryLabelPool.vue'
 import UpgradeSuggestionPanel from './UpgradeSuggestionPanel.vue'
 import BackfillProgress from './BackfillProgress.vue'
 import MatchingConfigDialog from './MatchingConfigDialog.vue'
 import NarrativeGenerateDialog from './NarrativeGenerateDialog.vue'
+import BoardDailyReportTimeline from './BoardDailyReportTimeline.vue'
 
 const sbApi = useSemanticBoardsApi()
 const auxApi = useAuxiliaryLabelsApi()
@@ -55,7 +55,7 @@ let backfillPollTimer: ReturnType<typeof setInterval> | null = null
 const matchingConfig = ref<MatchingConfig | null>(null)
 const matchingConfigLoading = ref(false)
 
-const contentTab = ref<'composition' | 'narratives' | 'articles'>('composition')
+const contentTab = ref<'composition' | 'daily-reports' | 'articles'>('composition')
 const showAddDialog = ref(false)
 const showUpgradeDialog = ref(false)
 const showMatchingConfigDialog = ref(false)
@@ -257,15 +257,29 @@ function handleFilterChange() {
   }
 }
 
-function matchInfoTooltip(tag: BoardArticleTag): string {
-  const reasonMap: Record<string, string> = {
+function matchReasonColor(reason: string): string {
+  const colors: Record<string, string> = {
+    direct_hit: '#22c55e',
+    hit_rate: '#3b82f6',
+    max_sim: '#f59e0b',
+    weighted: '#94a3b8',
+  }
+  return colors[reason] || '#94a3b8'
+}
+
+function matchInfoLabel(tag: BoardArticleTag): string {
+  const labels: Record<string, string> = {
     direct_hit: '直接命中',
     hit_rate: '命中率',
     max_sim: '相似度',
     weighted: '综合',
   }
-  const reason = reasonMap[tag.match_reason] || tag.match_reason
-  return `${reason} · ${tag.score.toFixed(2)}`
+  return `${labels[tag.match_reason] || tag.match_reason} ${tag.score.toFixed(2)}`
+}
+
+function strongestMatch(tags: BoardArticleTag[]): BoardArticleTag | null {
+  if (!tags?.length) return null
+  return tags.reduce((best, t) => t.score > best.score ? t : best, tags[0])
 }
 
 function handleAddBoard(data: { label: string; description: string; display_order: number; protected: boolean; auxiliary_labels?: number[] }) {
@@ -447,9 +461,9 @@ onUnmounted(() => {
               <Icon icon="mdi:view-dashboard-outline" width="14" />
               板块内容
             </button>
-            <button type="button" class="tags-content-tab" :class="{ 'tags-content-tab--active': contentTab === 'narratives' }" @click="contentTab = 'narratives'">
-              <Icon icon="mdi:timeline-text-outline" width="14" />
-              叙事
+            <button type="button" class="tags-content-tab" :class="{ 'tags-content-tab--active': contentTab === 'daily-reports' }" @click="contentTab = 'daily-reports'">
+              <Icon icon="mdi:file-document-outline" width="14" />
+              日报
             </button>
             <button type="button" class="tags-content-tab" :class="{ 'tags-content-tab--active': contentTab === 'articles' }" @click="contentTab = 'articles'">
               <Icon icon="mdi:newspaper-variant-outline" width="14" />
@@ -466,8 +480,7 @@ onUnmounted(() => {
             @refresh="() => loadComposition(selectedBoardId!)"
           />
 
-          <!-- Board Narrative Timeline -->
-          <BoardNarrativeTimeline v-if="contentTab === 'narratives'" :board-id="selectedBoardId" />
+          <BoardDailyReportTimeline v-if="contentTab === 'daily-reports'" :board-id="selectedBoardId" />
 
           <!-- Article timeline -->
           <div v-if="contentTab === 'articles'" class="tags-timeline">
@@ -528,18 +541,28 @@ onUnmounted(() => {
                   </span>
                   <span v-if="article.feed_name" class="tags-timeline-item-feed-name">{{ article.feed_name }}</span>
                 </div>
-                <div class="tags-timeline-item-content">
-                  <span class="tags-timeline-item-title">{{ article.title }}</span>
-                  <div v-if="article.filtered_tags?.length" class="tags-timeline-item-tags">
-                    <span
-                      v-for="tag in article.filtered_tags"
-                      :key="tag.id"
-                      class="tags-timeline-tag-chip"
-                      :title="matchInfoTooltip(tag)"
-                    >
-                      {{ tag.label }}
-                    </span>
+                <div class="tags-timeline-item-body">
+                  <div class="tags-timeline-item-content">
+                    <span class="tags-timeline-item-title">{{ article.title }}</span>
+                    <div v-if="article.filtered_tags?.length" class="tags-timeline-item-tags">
+                      <span
+                        v-for="tag in article.filtered_tags"
+                        :key="tag.id"
+                        class="tags-timeline-tag-chip"
+                        :style="{ borderColor: matchReasonColor(tag.match_reason) }"
+                        :title="matchInfoLabel(tag)"
+                      >
+                        {{ tag.label }} {{ tag.score.toFixed(2) }}
+                      </span>
+                    </div>
                   </div>
+                  <span
+                    v-if="strongestMatch(article.filtered_tags)"
+                    class="tags-timeline-item-match-info"
+                    :style="{ color: matchReasonColor(strongestMatch(article.filtered_tags)!.match_reason) }"
+                  >
+                    {{ matchInfoLabel(strongestMatch(article.filtered_tags)!) }}
+                  </span>
                 </div>
               </div>
             </div>
@@ -908,6 +931,12 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.tags-timeline-item-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
 .tags-timeline-item-title {
   font-size: 0.8rem;
   color: rgba(255, 255, 255, 0.7);
@@ -934,6 +963,7 @@ onUnmounted(() => {
   padding: 0.1rem 0.4rem;
   font-size: 0.62rem;
   border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.5);
   cursor: default;
@@ -942,6 +972,15 @@ onUnmounted(() => {
 
 .tags-timeline-tag-chip:hover {
   background: rgba(255, 255, 255, 0.1);
+}
+
+.tags-timeline-item-match-info {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 500;
+  white-space: nowrap;
+  margin-left: auto;
+  padding-left: 0.5rem;
 }
 
 .tags-filter-select {

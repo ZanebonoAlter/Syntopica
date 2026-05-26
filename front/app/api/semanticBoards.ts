@@ -98,6 +98,8 @@ export interface MatchingConfig {
   semantic_board_match_direct_max_sim: number
   semantic_board_match_direct_max_sim_min_hits: number
   semantic_board_match_direct_max_sim_min_hit_rate: number
+  semantic_board_match_min_effective_sample: number
+  semantic_board_match_hit_rate_sim_blend: number
   semantic_board_match_weight_sim: number
   semantic_board_match_weight_density: number
   semantic_board_match_weighted_threshold: number

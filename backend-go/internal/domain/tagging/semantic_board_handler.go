@@ -1235,6 +1235,8 @@ func semanticBoardMatchConfigToMap(config SemanticBoardMatchConfig) gin.H {
 		"semantic_board_match_direct_max_sim":           config.DirectMaxSim,
 		"semantic_board_match_direct_max_sim_min_hits":   config.DirectMaxSimMinHits,
 		"semantic_board_match_direct_max_sim_min_hit_rate": config.DirectMaxSimMinHitRate,
+		"semantic_board_match_min_effective_sample":     config.MinEffectiveSample,
+		"semantic_board_match_hit_rate_sim_blend":       config.HitRateSimBlend,
 		"semantic_board_match_weight_sim":         config.WeightSim,
 		"semantic_board_match_weight_density":     config.WeightDensity,
 		"semantic_board_match_weighted_threshold": config.WeightedThreshold,
@@ -1268,7 +1270,7 @@ func (h *semanticBoardHandler) getAllConfigs(c *gin.Context) gin.H {
 
 func isSemanticBoardConfigKey(key string) bool {
 	switch key {
-	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards",
+	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards",
 		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit":
 		return true
 	default:
@@ -1278,7 +1280,7 @@ func isSemanticBoardConfigKey(key string) bool {
 
 func validateSemanticBoardConfigValue(key string, value string) error {
 	switch key {
-	case "semantic_board_match_max_boards", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_hard_limit":
+	case "semantic_board_match_max_boards", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_min_effective_sample", "semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_hard_limit":
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed <= 0 {
 			return fmt.Errorf("%s must be a positive integer", key)

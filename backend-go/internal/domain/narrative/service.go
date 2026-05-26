@@ -52,6 +52,7 @@ func (s *NarrativeService) DeleteByDate(date time.Time, scopeType string, catego
 	return int(result.RowsAffected), nil
 }
 
+// Deprecated: Use daily_report.GenerateDailyReport instead.
 func (s *NarrativeService) RegenerateAndSave(date time.Time) (int, error) {
 	deleted, err := s.DeleteByDate(date, "", nil)
 	if err != nil {
@@ -62,6 +63,7 @@ func (s *NarrativeService) RegenerateAndSave(date time.Time) (int, error) {
 	return s.GenerateAndSave(date)
 }
 
+// Deprecated: Use daily_report.GenerateDailyReport instead.
 func (s *NarrativeService) RegenerateAndSaveForCategory(date time.Time, categoryID uint) (int, error) {
 	deleted, err := s.DeleteByDate(date, models.NarrativeScopeTypeFeedCategory, &categoryID)
 	if err != nil {
@@ -83,10 +85,12 @@ type ScopeSaveOpts struct {
 	Label      string
 }
 
+// Deprecated: Use daily_report.GenerateDailyReport instead.
 func (s *NarrativeService) GenerateAndSave(date time.Time) (int, error) {
 	return s.GenerateAndSaveForAllBoards(date)
 }
 
+// Deprecated: Use daily_report.GenerateDailyReport instead.
 func (s *NarrativeService) GenerateAndSaveForBoard(semanticBoardID uint, date time.Time) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -147,6 +151,7 @@ func (s *NarrativeService) GenerateAndSaveForBoard(semanticBoardID uint, date ti
 	return saved, nil
 }
 
+// Deprecated: Use daily_report.GenerateDailyReport instead.
 func (s *NarrativeService) RegenerateAndSaveForBoard(semanticBoardID uint, date time.Time) (int, error) {
 	// Delete existing narratives for this board on this date
 	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
@@ -162,6 +167,7 @@ func (s *NarrativeService) RegenerateAndSaveForBoard(semanticBoardID uint, date 
 	return s.GenerateAndSaveForBoard(semanticBoardID, date)
 }
 
+// Deprecated: Use daily_report.GenerateDailyReport instead.
 func (s *NarrativeService) GenerateAndSaveForAllBoards(date time.Time) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -235,7 +241,7 @@ func (s *NarrativeService) GenerateAndSaveForAllBoards(date time.Time) (int, err
 	return totalSaved, nil
 }
 
-// Deprecated: Use GenerateAndSaveForAllBoards instead. Kept for rollback safety.
+// Deprecated: Use daily_report.GenerateDailyReport instead. Kept for rollback safety.
 func (s *NarrativeService) GenerateAndSaveGlobal(ctx context.Context, date time.Time) (int, error) {
 	scopeOpts := ScopeSaveOpts{
 		ScopeType:  models.NarrativeScopeTypeGlobal,
@@ -245,7 +251,7 @@ func (s *NarrativeService) GenerateAndSaveGlobal(ctx context.Context, date time.
 	return s.generateAndSaveSemanticBoardScope(ctx, date, scopeOpts)
 }
 
-// Deprecated: Use GenerateAndSaveForAllBoards instead. Kept for rollback safety.
+// Deprecated: Use daily_report.GenerateDailyReport instead. Kept for rollback safety.
 func (s *NarrativeService) GenerateAndSaveForCategory(date time.Time, categoryID uint, categoryLabel string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
@@ -266,7 +272,7 @@ func (s *NarrativeService) GenerateAndSaveForCategory(date time.Time, categoryID
 	return saved, nil
 }
 
-// Deprecated: Use GenerateAndSaveForAllBoards instead. Kept for rollback safety.
+// Deprecated: Use daily_report.GenerateDailyReport instead. Kept for rollback safety.
 func (s *NarrativeService) generateAndSaveSemanticBoardScope(ctx context.Context, date time.Time, scopeOpts ScopeSaveOpts) (int, error) {
 	inputs, err := CollectSemanticBoardNarrativeInputs(date)
 	if err != nil {
@@ -430,7 +436,7 @@ func cleanEmptyBoards(date time.Time, categoryID *uint) {
 	}
 }
 
-// Deprecated: Use GenerateAndSaveForAllBoards instead. Kept for rollback safety.
+// Deprecated: Use daily_report.GenerateDailyReport instead. Kept for rollback safety.
 func (s *NarrativeService) GenerateAndSaveForAllCategories(date time.Time) (int, error) {
 	categories, err := CollectActiveCategories(date)
 	if err != nil {

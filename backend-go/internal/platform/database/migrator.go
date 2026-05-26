@@ -124,5 +124,6 @@ func autoMigrateModels(db *gorm.DB) error {
 		&models.TagJob{},
 		&models.NarrativeSummary{},
 		&models.NarrativeBoard{},
+
 	)
 }

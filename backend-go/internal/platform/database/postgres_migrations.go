@@ -754,6 +754,8 @@ func postgresMigrations() []Migration {
 					{"semantic_board_match_direct_max_sim", "0.8", "Maximum similarity threshold for direct SemanticBoard matching"},
 					{"semantic_board_match_direct_max_sim_min_hits", "2", "Minimum number of auxiliary label hits required for max_sim matching rule"},
 					{"semantic_board_match_direct_max_sim_min_hit_rate", "0.3", "Minimum auxiliary label hit rate required for max_sim matching rule"},
+					{"semantic_board_match_min_effective_sample", "3", "Minimum denominator for hit rate calculation to prevent inflated scores from low auxiliary label counts"},
+					{"semantic_board_match_hit_rate_sim_blend", "0.7", "Weight of maxSimilarity in hit_rate rule score (score = α×maxSim + (1-α)×hitRate)"},
 					{"semantic_board_match_weight_sim", "0.6", "Similarity weight used in weighted SemanticBoard matching"},
 					{"semantic_board_match_weight_density", "0.4", "Density weight used in weighted SemanticBoard matching"},
 					{"semantic_board_match_weighted_threshold", "0.6", "Minimum weighted score for assigning a topic tag to a SemanticBoard"},
@@ -849,6 +851,50 @@ func postgresMigrations() []Migration {
 				for _, s := range stmts {
 					if err := db.Exec(s).Error; err != nil {
 						return fmt.Errorf("drop topic_tags sub_type: %w", err)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version:     "20260526_0001",
+			Description: "Create board_daily_reports and daily_report_sections tables for the daily report feature.",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					`CREATE TABLE IF NOT EXISTS board_daily_reports (
+						id SERIAL PRIMARY KEY,
+						semantic_board_id INTEGER NOT NULL,
+						period_date DATE NOT NULL,
+						title TEXT NOT NULL DEFAULT '',
+						summary TEXT NOT NULL DEFAULT '',
+						highlights JSONB,
+						dynamics TEXT,
+						article_count INTEGER NOT NULL DEFAULT 0,
+						event_tag_count INTEGER NOT NULL DEFAULT 0,
+						cluster_count INTEGER NOT NULL DEFAULT 0,
+						status VARCHAR(20) NOT NULL DEFAULT 'generating',
+						raw_clusters JSONB,
+						prev_report_id INTEGER,
+						generation_prompt_version VARCHAR(20),
+						created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+						updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+					)`,
+					`CREATE INDEX IF NOT EXISTS idx_board_daily_reports_semantic_board_id ON board_daily_reports(semantic_board_id)`,
+					`CREATE TABLE IF NOT EXISTS daily_report_sections (
+						id SERIAL PRIMARY KEY,
+						report_id INTEGER NOT NULL REFERENCES board_daily_reports(id) ON DELETE CASCADE,
+						cluster_index INTEGER NOT NULL DEFAULT 0,
+						cluster_label VARCHAR(200) NOT NULL DEFAULT '',
+						cluster_tag_ids JSONB,
+						threads JSONB,
+						article_count INTEGER NOT NULL DEFAULT 0,
+						created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+					)`,
+					`CREATE INDEX IF NOT EXISTS idx_daily_report_sections_report_id ON daily_report_sections(report_id)`,
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("create daily report tables: %w", err)
 					}
 				}
 				return nil
