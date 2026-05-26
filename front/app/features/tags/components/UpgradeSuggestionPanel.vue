@@ -108,12 +108,18 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
                 {{ decisionLabel(s.decision) }}
               </span>
               <span v-if="s.board_label" class="usp-item-board">{{ s.board_label }}</span>
+              <span v-else-if="s.target_board_label" class="usp-item-board">{{ s.target_board_label }}</span>
               <span v-else-if="s.target_board_id" class="usp-item-board">板块 #{{ s.target_board_id }}</span>
             </div>
             <p v-if="s.description" class="usp-item-desc">{{ s.description }}</p>
             <p class="usp-item-reason">{{ s.reason }}</p>
             <div class="usp-item-tags">
-              <span v-for="id in s.auxiliary_label_ids" :key="id" class="usp-item-tag">标签 #{{ id }}</span>
+              <template v-if="s.auxiliary_labels && s.auxiliary_labels.length > 0">
+                <span v-for="al in s.auxiliary_labels" :key="al.id" class="usp-item-tag">{{ al.label || ('标签 #' + al.id) }}</span>
+              </template>
+              <template v-else>
+                <span v-for="id in s.auxiliary_label_ids" :key="id" class="usp-item-tag">标签 #{{ id }}</span>
+              </template>
             </div>
             <div v-if="s.decision !== 'skip'" class="usp-item-actions">
               <button

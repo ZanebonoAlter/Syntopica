@@ -28,6 +28,7 @@ func RegisterNarrativeRoutes(rg *gin.RouterGroup) {
 	{
 		boardGroup.GET("/timeline", getBoardTimeline)
 		boardGroup.GET("/:id", getBoardDetail)
+		boardGroup.POST("/generate", triggerGenerate)
 	}
 
 }
@@ -295,4 +296,35 @@ func getBoardDetail(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": detail})
+}
+
+func triggerGenerate(c *gin.Context) {
+	var req struct {
+		Date    string `json:"date" binding:"required"` // YYYY-MM-DD
+		BoardID *uint  `json:"board_id"`               // nil = all boards
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "date is required (YYYY-MM-DD)"})
+		return
+	}
+
+	date, err := time.ParseInLocation("2006-01-02", req.Date, time.Local)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid date format, use YYYY-MM-DD"})
+		return
+	}
+
+	var saved int
+	if req.BoardID != nil {
+		saved, err = service.RegenerateAndSaveForBoard(*req.BoardID, date)
+	} else {
+		saved, err = service.RegenerateAndSave(date)
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"saved": saved}})
 }

@@ -41,14 +41,14 @@
 
 感觉板块内容少、不相关？打开构成标签面板，LLM 按相似度推荐更多相关小标签，你自己勾选哪些要加进来，板块覆盖范围随手调。
 
-![管理构成标签](img/1.3-feather/change_exist_board.png)
-![板块详情](img/1.3-feather/board_info.png)
+![管理构成标签](img/1.3.1-bugfix/tag_may_like.png)
+![板块详情](img/1.3.1-bugfix/article_match_detail.png)
 
 ### 4. 每日叙事简报
 
 每个板块每天自动生成一份叙事报告。不是冷冰冰的摘要堆砌，而是连贯的叙述——"这个板块今天发生了什么，有什么趋势"。
 
-![每日简报](img/1.3-feather/daily_story-tmp.png)
+![每日简报](img/1.3.1-bugfix/daily_report.png)
 
 ### 🤔 和其他 RSS 阅读器有什么不同？
 

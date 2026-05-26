@@ -331,7 +331,7 @@ func TestCollectSemanticBoardNarrativeInputs_ColdStartNoBoard(t *testing.T) {
 	tag := seedNarrativeEventTag(t, db, "霍尔木兹海峡", "hormuz")
 	seedNarrativeArticleForTag(t, db, tag.ID, nil, date)
 
-	inputs, err := CollectSemanticBoardNarrativeInputs(date, models.NarrativeScopeTypeGlobal, nil)
+	inputs, err := CollectSemanticBoardNarrativeInputs(date)
 	if err != nil {
 		t.Fatalf("CollectSemanticBoardNarrativeInputs: %v", err)
 	}
@@ -340,33 +340,30 @@ func TestCollectSemanticBoardNarrativeInputs_ColdStartNoBoard(t *testing.T) {
 	}
 }
 
-func TestCollectSemanticBoardNarrativeInputs_CategoryScope(t *testing.T) {
+func TestCollectSemanticBoardNarrativeInputs_CrossCategoryMerge(t *testing.T) {
 	db := setupServiceTestDB(t)
 	date := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
 	catA := uint(5)
 	catB := uint(6)
 	seedCategory(t, db, catA, "Tech")
 	seedCategory(t, db, catB, "Energy")
-	board := seedSemanticBoard(t, db, "AI与机器学习", "ai-board")
-	tagA := seedNarrativeEventTag(t, db, "OpenAI", "openai-event")
-	tagB := seedNarrativeEventTag(t, db, "油价上涨", "oil-price")
+	board := seedSemanticBoard(t, db, "能源安全", "energy-security")
+	tagA := seedNarrativeEventTag(t, db, "霍尔木兹海峡", "hormuz")
+	tagB := seedNarrativeEventTag(t, db, "油轮保险", "tanker-insurance")
 	seedNarrativeArticleForTag(t, db, tagA.ID, &catA, date)
 	seedNarrativeArticleForTag(t, db, tagB.ID, &catB, date)
 	seedTagBoardLabel(t, db, tagA.ID, board.ID)
 	seedTagBoardLabel(t, db, tagB.ID, board.ID)
 
-	inputs, err := CollectSemanticBoardNarrativeInputs(date, models.NarrativeScopeTypeFeedCategory, &catA)
+	inputs, err := CollectSemanticBoardNarrativeInputs(date)
 	if err != nil {
 		t.Fatalf("CollectSemanticBoardNarrativeInputs: %v", err)
 	}
 	if len(inputs) != 1 {
 		t.Fatalf("expected 1 semantic board input, got %d", len(inputs))
 	}
-	if inputs[0].Board.ID != board.ID {
-		t.Fatalf("expected board %d, got %d", board.ID, inputs[0].Board.ID)
-	}
-	if len(inputs[0].EventTags) != 1 || inputs[0].EventTags[0].ID != tagA.ID {
-		t.Fatalf("expected only category tag %d, got %+v", tagA.ID, inputs[0].EventTags)
+	if len(inputs[0].EventTags) != 2 {
+		t.Fatalf("expected both cross-category event tags, got %+v", inputs[0].EventTags)
 	}
 }
 
@@ -385,7 +382,7 @@ func TestCollectSemanticBoardNarrativeInputs_GlobalScope(t *testing.T) {
 	seedTagBoardLabel(t, db, tagA.ID, board.ID)
 	seedTagBoardLabel(t, db, tagB.ID, board.ID)
 
-	inputs, err := CollectSemanticBoardNarrativeInputs(date, models.NarrativeScopeTypeGlobal, nil)
+	inputs, err := CollectSemanticBoardNarrativeInputs(date)
 	if err != nil {
 		t.Fatalf("CollectSemanticBoardNarrativeInputs: %v", err)
 	}
@@ -407,7 +404,7 @@ func TestCollectSemanticBoardNarrativeInputs_AllowsDuplicateEventTagAcrossBoards
 	seedTagBoardLabel(t, db, tag.ID, geopolitics.ID)
 	seedTagBoardLabel(t, db, tag.ID, energy.ID)
 
-	inputs, err := CollectSemanticBoardNarrativeInputs(date, models.NarrativeScopeTypeGlobal, nil)
+	inputs, err := CollectSemanticBoardNarrativeInputs(date)
 	if err != nil {
 		t.Fatalf("CollectSemanticBoardNarrativeInputs: %v", err)
 	}
@@ -424,48 +421,55 @@ func TestCollectSemanticBoardNarrativeInputs_AllowsDuplicateEventTagAcrossBoards
 func TestCreateBoardFromSemanticBoard_WritesSemanticScopeAndPrev(t *testing.T) {
 	db := setupServiceTestDB(t)
 	date := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
-	catID := uint(5)
 	board := seedSemanticBoard(t, db, "AI与机器学习", "ai-board")
 	otherBoard := seedSemanticBoard(t, db, "能源安全", "energy-board")
 	tag := seedNarrativeEventTag(t, db, "OpenAI", "openai-event")
 	yesterday := date.AddDate(0, 0, -1)
 	twoDaysAgo := date.AddDate(0, 0, -2)
+	// Previous board from yesterday with scope=board should match
 	previous := models.NarrativeBoard{
 		PeriodDate:      yesterday,
 		Name:            board.Label,
-		ScopeType:       models.NarrativeScopeTypeFeedCategory,
-		ScopeCategoryID: &catID,
+		ScopeType:       models.NarrativeScopeTypeBoard,
 		SemanticBoardID: &board.ID,
 	}
 	if err := db.Create(&previous).Error; err != nil {
 		t.Fatalf("create previous board: %v", err)
 	}
+	// These should NOT match: different date or different semantic board
 	ignored := []models.NarrativeBoard{
-		{PeriodDate: twoDaysAgo, Name: board.Label, ScopeType: models.NarrativeScopeTypeFeedCategory, ScopeCategoryID: &catID, SemanticBoardID: &board.ID},
+		{PeriodDate: twoDaysAgo, Name: board.Label, ScopeType: models.NarrativeScopeTypeBoard, SemanticBoardID: &board.ID},
+		{PeriodDate: yesterday, Name: otherBoard.Label, ScopeType: models.NarrativeScopeTypeBoard, SemanticBoardID: &otherBoard.ID},
+	}
+	// These SHOULD also match: same semantic_board_id, same date, any scope type (continuation across scope types)
+	oldScope := []models.NarrativeBoard{
 		{PeriodDate: yesterday, Name: board.Label, ScopeType: models.NarrativeScopeTypeGlobal, SemanticBoardID: &board.ID},
-		{PeriodDate: yesterday, Name: otherBoard.Label, ScopeType: models.NarrativeScopeTypeFeedCategory, ScopeCategoryID: &catID, SemanticBoardID: &otherBoard.ID},
+		{PeriodDate: yesterday, Name: board.Label, ScopeType: models.NarrativeScopeTypeFeedCategory, ScopeCategoryID: ptrUint(5), SemanticBoardID: &board.ID},
 	}
 	if err := db.Create(&ignored).Error; err != nil {
 		t.Fatalf("create ignored previous boards: %v", err)
 	}
+	if err := db.Create(&oldScope).Error; err != nil {
+		t.Fatalf("create old scope boards: %v", err)
+	}
 
-	prevIDs := matchPreviousSemanticBoard(board.ID, date, models.NarrativeScopeTypeFeedCategory, &catID)
+	prevIDs := matchPreviousSemanticBoard(board.ID, date)
 	created, err := createBoardFromSemanticBoard(SemanticBoardNarrativeInput{
 		Board:        board,
 		EventTags:    []TagInput{{ID: tag.ID, Label: tag.Label}},
 		PrevBoardIDs: prevIDs,
-	}, date, ScopeSaveOpts{ScopeType: models.NarrativeScopeTypeFeedCategory, CategoryID: &catID, Label: "Tech"})
+	}, date, ScopeSaveOpts{ScopeType: models.NarrativeScopeTypeBoard})
 	if err != nil {
 		t.Fatalf("createBoardFromSemanticBoard: %v", err)
 	}
 	if created.SemanticBoardID == nil || *created.SemanticBoardID != board.ID {
 		t.Fatalf("expected semantic_board_id %d, got %v", board.ID, created.SemanticBoardID)
 	}
-	if created.ScopeType != models.NarrativeScopeTypeFeedCategory || created.ScopeCategoryID == nil || *created.ScopeCategoryID != catID {
-		t.Fatalf("unexpected scope: type=%s category=%v", created.ScopeType, created.ScopeCategoryID)
+	if created.ScopeType != models.NarrativeScopeTypeBoard {
+		t.Fatalf("unexpected scope: type=%s", created.ScopeType)
 	}
-	if created.ScopeLabel != "Tech" {
-		t.Fatalf("expected scope label Tech, got %q", created.ScopeLabel)
+	if created.ScopeCategoryID != nil {
+		t.Fatalf("expected nil scope_category_id for board scope, got %v", created.ScopeCategoryID)
 	}
 	var eventIDs []uint
 	if err := json.Unmarshal([]byte(created.EventTagIDs), &eventIDs); err != nil {
@@ -479,43 +483,51 @@ func TestCreateBoardFromSemanticBoard_WritesSemanticScopeAndPrev(t *testing.T) {
 	if err := json.Unmarshal([]byte(created.PrevBoardIDs), &createdPrevIDs); err != nil {
 		t.Fatalf("unmarshal prev ids: %v", err)
 	}
-	if len(createdPrevIDs) != 1 || createdPrevIDs[0] != previous.ID {
-		t.Fatalf("expected prev board id %d, got %v", previous.ID, createdPrevIDs)
+	// Expect 3 prev IDs: the board-scoped one + 2 old scope ones (global + feed_category)
+	expectedPrevIDs := []uint{previous.ID, oldScope[0].ID, oldScope[1].ID}
+	if len(createdPrevIDs) != len(expectedPrevIDs) {
+		t.Fatalf("expected %d prev board ids, got %d: %v", len(expectedPrevIDs), len(createdPrevIDs), createdPrevIDs)
+	}
+	prevSet := make(map[uint]bool)
+	for _, id := range createdPrevIDs {
+		prevSet[id] = true
+	}
+	for _, id := range expectedPrevIDs {
+		if !prevSet[id] {
+			t.Fatalf("expected prev board id %d to be in %v", id, createdPrevIDs)
+		}
 	}
 }
 
-func TestCreateBoardFromSemanticBoard_MatchesPreviousGlobalScope(t *testing.T) {
+func TestCreateBoardFromSemanticBoard_ColdStartNoPrevious(t *testing.T) {
 	db := setupServiceTestDB(t)
 	date := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
-	catID := uint(5)
 	board := seedSemanticBoard(t, db, "能源安全", "energy-security")
 	tag := seedNarrativeEventTag(t, db, "霍尔木兹海峡", "hormuz")
-	yesterday := date.AddDate(0, 0, -1)
-	previous := models.NarrativeBoard{PeriodDate: yesterday, Name: board.Label, ScopeType: models.NarrativeScopeTypeGlobal, SemanticBoardID: &board.ID}
-	ignored := models.NarrativeBoard{PeriodDate: yesterday, Name: board.Label, ScopeType: models.NarrativeScopeTypeFeedCategory, ScopeCategoryID: &catID, SemanticBoardID: &board.ID}
-	if err := db.Create(&previous).Error; err != nil {
-		t.Fatalf("create previous global board: %v", err)
-	}
-	if err := db.Create(&ignored).Error; err != nil {
-		t.Fatalf("create ignored category board: %v", err)
+
+	prevIDs := matchPreviousSemanticBoard(board.ID, date)
+	if len(prevIDs) != 0 {
+		t.Fatalf("expected no prev board IDs on cold start, got %v", prevIDs)
 	}
 
-	prevIDs := matchPreviousSemanticBoard(board.ID, date, models.NarrativeScopeTypeGlobal, nil)
 	created, err := createBoardFromSemanticBoard(SemanticBoardNarrativeInput{
 		Board:        board,
 		EventTags:    []TagInput{{ID: tag.ID, Label: tag.Label}},
 		PrevBoardIDs: prevIDs,
-	}, date, ScopeSaveOpts{ScopeType: models.NarrativeScopeTypeGlobal, Label: "Global"})
+	}, date, ScopeSaveOpts{ScopeType: models.NarrativeScopeTypeBoard})
 	if err != nil {
 		t.Fatalf("createBoardFromSemanticBoard: %v", err)
+	}
+	if created == nil {
+		t.Fatal("expected non-nil board")
 	}
 
 	var createdPrevIDs []uint
 	if err := json.Unmarshal([]byte(created.PrevBoardIDs), &createdPrevIDs); err != nil {
 		t.Fatalf("unmarshal prev ids: %v", err)
 	}
-	if len(createdPrevIDs) != 1 || createdPrevIDs[0] != previous.ID {
-		t.Fatalf("expected global prev board id %d, got %v", previous.ID, createdPrevIDs)
+	if len(createdPrevIDs) != 0 {
+		t.Fatalf("expected empty prev board IDs on cold start, got %v", createdPrevIDs)
 	}
 }
 
@@ -642,5 +654,175 @@ func seedTagBoardLabel(t *testing.T, db *gorm.DB, topicTagID uint, boardID uint)
 	t.Helper()
 	if err := db.Create(&models.TopicTagBoardLabel{TopicTagID: topicTagID, SemanticBoardID: boardID, Score: 1, MatchReason: "test"}).Error; err != nil {
 		t.Fatalf("seed tag board label: %v", err)
+	}
+}
+
+func ptrUint(v uint) *uint { return &v }
+
+func TestMatchPreviousSemanticBoard_MatchesAnyScope(t *testing.T) {
+	db := setupServiceTestDB(t)
+	date := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
+	board := seedSemanticBoard(t, db, "能源安全", "energy-security")
+	yesterday := date.AddDate(0, 0, -1)
+	catID := uint(5)
+
+	// Create previous boards with different scope types - all should match now
+	prevBoard := models.NarrativeBoard{PeriodDate: yesterday, Name: board.Label, ScopeType: models.NarrativeScopeTypeBoard, SemanticBoardID: &board.ID}
+	prevGlobal := models.NarrativeBoard{PeriodDate: yesterday, Name: board.Label, ScopeType: models.NarrativeScopeTypeGlobal, SemanticBoardID: &board.ID}
+	prevCategory := models.NarrativeBoard{PeriodDate: yesterday, Name: board.Label, ScopeType: models.NarrativeScopeTypeFeedCategory, ScopeCategoryID: &catID, SemanticBoardID: &board.ID}
+	if err := db.Create(&prevBoard).Error; err != nil {
+		t.Fatalf("create prev board: %v", err)
+	}
+	if err := db.Create(&prevGlobal).Error; err != nil {
+		t.Fatalf("create prev global board: %v", err)
+	}
+	if err := db.Create(&prevCategory).Error; err != nil {
+		t.Fatalf("create prev category board: %v", err)
+	}
+
+	prevIDs := matchPreviousSemanticBoard(board.ID, date)
+	if len(prevIDs) != 3 {
+		t.Fatalf("expected 3 prev board IDs (any scope), got %d: %v", len(prevIDs), prevIDs)
+	}
+}
+
+func TestSaveNarrativesWithBoard_BoardScope(t *testing.T) {
+	db := setupServiceTestDB(t)
+	date := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
+	catA := uint(5)
+	catB := uint(6)
+	seedCategory(t, db, catA, "Tech")
+	seedCategory(t, db, catB, "Energy")
+	tag := seedNarrativeEventTag(t, db, "OpenAI", "openai-event")
+	articleA := seedNarrativeArticleForTag(t, db, tag.ID, &catA, date)
+	articleB := seedNarrativeArticleForTag(t, db, tag.ID, &catB, date)
+	board := models.NarrativeBoard{
+		PeriodDate:  date,
+		Name:        "AI与机器学习",
+		ScopeType:   models.NarrativeScopeTypeBoard,
+		EventTagIDs: fmt.Sprintf("[%d]", tag.ID),
+	}
+	if err := db.Create(&board).Error; err != nil {
+		t.Fatalf("create board: %v", err)
+	}
+
+	saved, err := saveNarrativesWithBoard([]NarrativeOutput{{
+		Title:         "AI叙事",
+		Summary:       "AI 摘要",
+		Status:        models.NarrativeStatusEmerging,
+		RelatedTagIDs: []uint{tag.ID},
+	}}, board, date, &ScopeSaveOpts{ScopeType: models.NarrativeScopeTypeBoard})
+	if err != nil {
+		t.Fatalf("saveNarrativesWithBoard: %v", err)
+	}
+	if saved != 1 {
+		t.Fatalf("expected saved=1, got %d", saved)
+	}
+
+	var summary models.NarrativeSummary
+	if err := db.First(&summary).Error; err != nil {
+		t.Fatalf("load summary: %v", err)
+	}
+	// Board scope should not filter by category, so all articles are included
+	var articleIDs []uint64
+	if err := json.Unmarshal([]byte(summary.RelatedArticleIDs), &articleIDs); err != nil {
+		t.Fatalf("unmarshal article ids: %v", err)
+	}
+	if len(articleIDs) != 2 {
+		t.Fatalf("expected 2 articles (no category filter for board scope), got %v", articleIDs)
+	}
+	expectedIDs := map[uint64]bool{uint64(articleA.ID): true, uint64(articleB.ID): true}
+	for _, id := range articleIDs {
+		if !expectedIDs[id] {
+			t.Fatalf("unexpected article id %d in %v", id, articleIDs)
+		}
+	}
+	if summary.ScopeType != models.NarrativeScopeTypeBoard {
+		t.Fatalf("expected scope_type=board, got %s", summary.ScopeType)
+	}
+	if summary.ScopeCategoryID != nil {
+		t.Fatalf("expected nil scope_category_id for board scope, got %v", summary.ScopeCategoryID)
+	}
+	// Board scope uses resolveGeneration (not resolveGlobalGeneration)
+	if summary.Generation != 0 {
+		t.Fatalf("expected generation=0 (no parent IDs), got %d", summary.Generation)
+	}
+}
+
+func TestSingleBoardSingleDaySingleNarrative(t *testing.T) {
+	db := setupServiceTestDB(t)
+	date := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
+	board := seedSemanticBoard(t, db, "AI与机器学习", "ai-board")
+	tag := seedNarrativeEventTag(t, db, "OpenAI", "openai-event")
+	seedNarrativeArticleForTag(t, db, tag.ID, nil, date)
+	seedTagBoardLabel(t, db, tag.ID, board.ID)
+
+	input, err := CollectSemanticBoardNarrativeInputs(date)
+	if err != nil {
+		t.Fatalf("CollectSemanticBoardNarrativeInputs: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("expected 1 input, got %d", len(input))
+	}
+
+	scopeOpts := ScopeSaveOpts{ScopeType: models.NarrativeScopeTypeBoard}
+	nb, err := createBoardFromSemanticBoard(input[0], date, scopeOpts)
+	if err != nil {
+		t.Fatalf("createBoardFromSemanticBoard: %v", err)
+	}
+	if nb == nil {
+		t.Fatal("expected non-nil board")
+	}
+	if nb.ScopeType != models.NarrativeScopeTypeBoard {
+		t.Fatalf("expected scope_type=board, got %s", nb.ScopeType)
+	}
+}
+
+func TestContinuation_MatchesBySemanticBoardID(t *testing.T) {
+	db := setupServiceTestDB(t)
+	date := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
+	yesterday := date.AddDate(0, 0, -1)
+	board := seedSemanticBoard(t, db, "能源安全", "energy-security")
+
+	// Create a previous NarrativeBoard with old scope type - should still match
+	prevBoard := models.NarrativeBoard{
+		PeriodDate:      yesterday,
+		Name:            board.Label,
+		ScopeType:       models.NarrativeScopeTypeGlobal,
+		SemanticBoardID: &board.ID,
+	}
+	if err := db.Create(&prevBoard).Error; err != nil {
+		t.Fatalf("create prev board: %v", err)
+	}
+
+	prevIDs := matchPreviousSemanticBoard(board.ID, date)
+	if len(prevIDs) != 1 {
+		t.Fatalf("expected 1 prev board ID, got %d", len(prevIDs))
+	}
+	if prevIDs[0] != prevBoard.ID {
+		t.Fatalf("expected prev board id %d, got %d", prevBoard.ID, prevIDs[0])
+	}
+}
+
+func TestContinuation_IgnoresDifferentSemanticBoard(t *testing.T) {
+	db := setupServiceTestDB(t)
+	date := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
+	yesterday := date.AddDate(0, 0, -1)
+	board := seedSemanticBoard(t, db, "能源安全", "energy-security")
+	otherBoard := seedSemanticBoard(t, db, "AI与机器学习", "ai-board")
+
+	prevOther := models.NarrativeBoard{
+		PeriodDate:      yesterday,
+		Name:            otherBoard.Label,
+		ScopeType:       models.NarrativeScopeTypeBoard,
+		SemanticBoardID: &otherBoard.ID,
+	}
+	if err := db.Create(&prevOther).Error; err != nil {
+		t.Fatalf("create prev other board: %v", err)
+	}
+
+	prevIDs := matchPreviousSemanticBoard(board.ID, date)
+	if len(prevIDs) != 0 {
+		t.Fatalf("expected 0 prev board IDs (different semantic board), got %d", len(prevIDs))
 	}
 }

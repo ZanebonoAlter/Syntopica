@@ -47,18 +47,13 @@ func createBoardFromSemanticBoard(input SemanticBoardNarrativeInput, date time.T
 	return board, nil
 }
 
-func matchPreviousSemanticBoard(semanticBoardID uint, date time.Time, scopeType string, categoryID *uint) []uint {
+func matchPreviousSemanticBoard(semanticBoardID uint, date time.Time) []uint {
 	yesterday := date.AddDate(0, 0, -1)
 	startOfYesterday := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 0, 0, 0, 0, yesterday.Location())
 	endOfYesterday := startOfYesterday.Add(24 * time.Hour)
 
-	query := database.DB.Where("semantic_board_id = ? AND scope_type = ? AND period_date >= ? AND period_date < ?",
-		semanticBoardID, scopeType, startOfYesterday, endOfYesterday)
-	if categoryID != nil {
-		query = query.Where("scope_category_id = ?", *categoryID)
-	} else {
-		query = query.Where("scope_category_id IS NULL")
-	}
+	query := database.DB.Where("semantic_board_id = ? AND period_date >= ? AND period_date < ?",
+		semanticBoardID, startOfYesterday, endOfYesterday)
 
 	var boards []models.NarrativeBoard
 	query.Order("id ASC").Find(&boards)

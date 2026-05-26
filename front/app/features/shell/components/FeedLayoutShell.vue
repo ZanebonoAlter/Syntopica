@@ -123,10 +123,16 @@ async function loadArticles() {
 }
 
 onMounted(async () => {
-  await fetchFeeds()
-  await loadArticles()
-  await fetchGlobalUnreadCount()
-  await loadWatchedTags()
+  // Wave 1: no dependencies between these two
+  await Promise.allSettled([
+    fetchFeeds(),
+    loadWatchedTags(),
+  ])
+  // Wave 2: may depend on feeds list
+  await Promise.allSettled([
+    loadArticles(),
+    fetchGlobalUnreadCount(),
+  ])
 })
 
 onUnmounted(() => {

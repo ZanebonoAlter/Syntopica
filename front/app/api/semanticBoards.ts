@@ -71,6 +71,8 @@ export interface UpgradeSuggestion {
   description?: string
   target_board_id?: number
   auxiliary_label_ids: number[]
+  auxiliary_labels: { id: number; label: string }[]
+  target_board_label?: string
   reason: string
 }
 
@@ -94,6 +96,10 @@ export interface MatchingConfig {
   semantic_board_match_sim_threshold: number
   semantic_board_match_direct_hit_rate: number
   semantic_board_match_direct_max_sim: number
+  semantic_board_match_direct_max_sim_min_hits: number
+  semantic_board_match_direct_max_sim_min_hit_rate: number
+  semantic_board_match_min_effective_sample: number
+  semantic_board_match_hit_rate_sim_blend: number
   semantic_board_match_weight_sim: number
   semantic_board_match_weight_density: number
   semantic_board_match_weighted_threshold: number
@@ -115,6 +121,87 @@ export interface SuggestAuxiliariesResponse {
   total: number
   page: number
   page_size: number
+}
+
+export interface BoardArticleTag {
+  id: number
+  label: string
+  category: string
+  match_reason: string
+  score: number
+}
+
+export interface MatchDetailConfig {
+  sim_threshold: number
+  hit_rate_sim_blend: number
+  min_effective_sample: number
+  direct_hit_rate: number
+  direct_max_sim: number
+  direct_max_sim_min_hits: number
+  direct_max_sim_min_hit_rate: number
+  direct_hit_min_overlap: number
+  weight_sim: number
+  weight_density: number
+  weighted_threshold: number
+}
+
+export interface DirectHitAuxiliary {
+  tag_auxiliary_id: number
+  tag_label: string
+  board_auxiliary_id: number
+  board_label: string
+}
+
+export interface MatchDetailPair {
+  tag_auxiliary_id: number
+  tag_auxiliary_label: string
+  board_auxiliary_id: number
+  board_auxiliary_label: string
+  similarity: number
+  is_hit: boolean
+}
+
+export interface MatchDetailResponse {
+  topic_tag_id: number
+  topic_tag_label: string
+  semantic_board_id: number
+  match_reason: string
+  score: number
+  config: MatchDetailConfig
+  direct_hit_auxiliaries: DirectHitAuxiliary[]
+  tag_auxiliary_count: number
+  hits: number
+  hit_rate: number
+  max_similarity: number
+  pairs: MatchDetailPair[]
+}
+
+export interface BoardArticle {
+  id: number
+  title: string
+  url: string
+  pub_date: string
+  feed_id: number
+  feed_name: string
+  filtered_tags: BoardArticleTag[]
+  [key: string]: unknown
+}
+
+export interface BoardNarrativeTag {
+  id: number
+  label: string
+}
+
+export interface BoardNarrative {
+  id: number
+  title: string
+  summary: string
+  status: string
+  related_tags: BoardNarrativeTag[]
+  related_article_ids: number[]
+  scope_type: string
+  article_count: number
+  period_date: string
 }
 
 export function useSemanticBoardsApi() {
@@ -205,6 +292,20 @@ export function useSemanticBoardsApi() {
     return apiClient.get(`/semantic-boards/suggest-auxiliaries${query ? `?${query}` : ''}`)
   }
 
+  async function getBoardArticles(id: number, params?: Record<string, unknown>): Promise<ApiResponse<BoardArticle[]>> {
+    const query = params ? apiClient.buildQueryParams(params) : ''
+    return apiClient.get(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
+  }
+
+  async function getMatchDetail(boardId: number, tagId: number): Promise<ApiResponse<MatchDetailResponse>> {
+    return apiClient.get(`/semantic-boards/${boardId}/match-detail/${tagId}`)
+  }
+
+  async function getBoardNarratives(id: number, params?: { days?: number }): Promise<ApiResponse<BoardNarrative[]>> {
+    const query = params ? apiClient.buildQueryParams(params) : ''
+    return apiClient.get(`/semantic-boards/${id}/narratives${query ? `?${query}` : ''}`)
+  }
+
   async function suggestAuxiliariesForBoard(boardId: number, params?: {
     search?: string
     page?: number
@@ -216,6 +317,10 @@ export function useSemanticBoardsApi() {
 
   async function addComposition(boardId: number, auxiliaryLabelId: number): Promise<ApiResponse<{ board_id: number; auxiliary_label_id: number }>> {
     return apiClient.post(`/semantic-boards/${boardId}/composition`, { auxiliary_label_id: auxiliaryLabelId })
+  }
+
+  async function triggerNarrativeGeneration(params: { date: string; board_id?: number }) {
+    return apiClient.post<{ success: boolean; data: { saved: number } }>('/narratives/boards/generate', params)
   }
 
   return {
@@ -232,9 +337,13 @@ export function useSemanticBoardsApi() {
     executeUpgrade,
     suggestAuxiliaries,
     suggestAuxiliariesForBoard,
+    getBoardArticles,
+    getMatchDetail,
+    getBoardNarratives,
     triggerBackfill,
     getBackfillStatus,
     getMatchingConfig,
     updateMatchingConfig,
+    triggerNarrativeGeneration,
   }
 }

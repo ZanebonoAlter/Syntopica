@@ -201,8 +201,18 @@ func (s *FeedService) CleanupOldArticles(feed *models.Feed) {
 		}
 		if len(toDelete) > 0 {
 			logging.Infof("[cleanup] feed %d: deleting %d articles, IDs=%v", feed.ID, len(toDelete), toDelete)
+
+			// Collect affected tag IDs before deleting articles (article_topic_tags cascade with article)
+			var affectedTagIDs []uint
+			database.DB.Model(&models.ArticleTopicTag{}).
+				Where("article_id IN ?", toDelete).
+				Pluck("topic_tag_id", &affectedTagIDs)
+
 			database.DB.Where("article_id IN (SELECT id FROM articles WHERE feed_id = ? AND id IN ?)", feed.ID, toDelete).Delete(&models.ReadingBehavior{})
 			database.DB.Where("feed_id = ? AND id IN ?", feed.ID, toDelete).Delete(&models.Article{})
+
+			// Clean up TopicTags that became orphaned after article deletion
+			tagging.CleanupOrphanedTags(affectedTagIDs)
 		} else {
 			logging.Infof("[cleanup] feed %d: no articles to delete", feed.ID)
 		}

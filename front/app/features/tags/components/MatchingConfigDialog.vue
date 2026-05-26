@@ -61,6 +61,26 @@ function handleSave() {
               <input v-model.number="form.semantic_board_match_direct_max_sim" type="number" step="0.01" min="0" max="1" class="mc-input" />
             </label>
             <label class="mc-field">
+              <span class="mc-label">max_sim 最小命中数</span>
+              <span class="mc-hint">max_sim 规则要求至少几个辅助标签命中。默认 2，防止单个标签偶然高相似度导致误匹配</span>
+              <input v-model.number="form.semantic_board_match_direct_max_sim_min_hits" type="number" step="1" min="1" max="5" class="mc-input" />
+            </label>
+            <label class="mc-field">
+              <span class="mc-label">max_sim 最小命中率</span>
+              <span class="mc-hint">max_sim 规则要求命中率至少多少。默认 0.3，确保有足够密度的匹配才走直接挂载</span>
+              <input v-model.number="form.semantic_board_match_direct_max_sim_min_hit_rate" type="number" step="0.05" min="0" max="1" class="mc-input" />
+            </label>
+            <label class="mc-field">
+              <span class="mc-label">命中率分母下限</span>
+              <span class="mc-hint">辅助标签数少于此值时，命中率按此值做分母。默认 3，防止只有 1 个标签时命中率虚高为 100%</span>
+              <input v-model.number="form.semantic_board_match_min_effective_sample" type="number" step="1" min="1" max="10" class="mc-input" />
+            </label>
+            <label class="mc-field">
+              <span class="mc-label">命中率分数混合权重</span>
+              <span class="mc-hint">hit_rate 规则的分数中最大相似度占多少。默认 0.7，即 score = 0.7×相似度 + 0.3×命中率。1.0 表示纯用相似度</span>
+              <input v-model.number="form.semantic_board_match_hit_rate_sim_blend" type="number" step="0.05" min="0" max="1" class="mc-input" />
+            </label>
+            <label class="mc-field">
               <span class="mc-label">相似度权重</span>
               <span class="mc-hint">加权公式中向量相似度的占比，与密度权重搭配使用，建议和为 1</span>
               <input v-model.number="form.semantic_board_match_weight_sim" type="number" step="0.01" min="0" max="1" class="mc-input" />

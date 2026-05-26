@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -552,15 +553,21 @@ func RefreshAllFeeds(c *gin.Context) {
 
 func refreshAllFeedsWorker(feedIDs []uint) {
 	feedService := NewFeedService()
+	sem := make(chan struct{}, 3)
+	var wg sync.WaitGroup
+
 	for _, id := range feedIDs {
-		func(feedID uint) {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(feedID uint) {
+			defer wg.Done()
+			defer func() { <-sem }()
 			defer func() {
 				if r := recover(); r != nil {
 					logging.Errorf("[refresh-all] PANIC refreshing feed %d: %v", feedID, r)
 					resetFeedStatus(feedID, fmt.Sprintf("panic: %v", r))
 				}
 			}()
-
 			if err := feedService.RefreshFeed(context.Background(), feedID); err != nil {
 				logging.Errorf("[refresh-all] Error refreshing feed %d: %v", feedID, err)
 				// RefreshFeed may not have updated status for some error paths (e.g. feed not found, Save failure)
@@ -568,6 +575,7 @@ func refreshAllFeedsWorker(feedIDs []uint) {
 			}
 		}(id)
 	}
+	wg.Wait()
 }
 
 // resetFeedStatus sets a feed to "error" status, but only if it's still in "refreshing" state.

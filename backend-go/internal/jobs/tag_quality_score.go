@@ -26,11 +26,12 @@ type TagQualityScoreScheduler struct {
 }
 
 type TagQualityScoreRunSummary struct {
-	TriggerSource string `json:"trigger_source"`
-	StartedAt     string `json:"started_at"`
-	FinishedAt    string `json:"finished_at"`
-	UpdatedCount  int    `json:"updated_count"`
-	Reason        string `json:"reason"`
+	TriggerSource         string `json:"trigger_source"`
+	StartedAt             string `json:"started_at"`
+	FinishedAt            string `json:"finished_at"`
+	UpdatedCount          int    `json:"updated_count"`
+	OrphanAuxDeleted      int64  `json:"orphan_aux_deleted"`
+	Reason                string `json:"reason"`
 }
 
 func NewTagQualityScoreScheduler(checkInterval int) *TagQualityScoreScheduler {
@@ -223,6 +224,29 @@ func (s *TagQualityScoreScheduler) runComputeCycle(triggerSource string) {
 		summary.Reason = err.Error()
 		s.updateSchedulerStatus("failed", err.Error(), &startTime, summary)
 		return
+	}
+
+	// Reconcile: fix ref_count for auxiliary labels
+	if result := database.DB.Exec(`
+		UPDATE semantic_labels
+		SET ref_count = (
+			SELECT COUNT(*) FROM topic_tag_semantic_labels
+			WHERE semantic_label_id = semantic_labels.id
+		)
+		WHERE label_type = 'auxiliary'`); result.Error != nil {
+		logging.Warnf("TagQualityScore: failed to reconcile auxiliary label ref_count: %v", result.Error)
+	}
+
+	// Reconcile: remove orphan auxiliary labels (ref_count=0, not protected, older than 7 days)
+	cutoff := time.Now().AddDate(0, 0, -1)
+	if result := database.DB.Where(
+		"label_type = ? AND ref_count = 0 AND protected = false AND status = ? AND created_at < ?",
+		"auxiliary", "active", cutoff,
+	).Delete(&models.SemanticLabel{}); result.Error != nil {
+		logging.Warnf("TagQualityScore: failed to clean orphan auxiliary labels: %v", result.Error)
+	} else if result.RowsAffected > 0 {
+		summary.OrphanAuxDeleted = result.RowsAffected
+		logging.Infof("TagQualityScore: cleaned up %d orphan auxiliary labels", result.RowsAffected)
 	}
 
 	summary.FinishedAt = time.Now().Format(time.RFC3339)

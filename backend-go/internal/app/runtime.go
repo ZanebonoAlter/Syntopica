@@ -23,6 +23,7 @@ type Runtime struct {
 	BlockedArticleRecovery *jobs.BlockedArticleRecoveryScheduler
 	TagQualityScore        *jobs.TagQualityScoreScheduler
 	NarrativeSummary       *jobs.NarrativeSummaryScheduler
+	DailyReport            *jobs.DailyReportScheduler
 	LogCleanup             *jobs.LogCleanupScheduler
 }
 
@@ -154,6 +155,13 @@ func StartRuntime() *Runtime {
 		logging.Infoln("Log cleanup scheduler started successfully")
 	}
 
+	runtime.DailyReport = jobs.NewDailyReportScheduler(86400)
+	if err := runtime.DailyReport.Start(); err != nil {
+		logging.Warnf("Failed to start daily report scheduler: %v", err)
+	} else {
+		logging.Infoln("Daily report scheduler started successfully")
+	}
+
 	runtimeinfo.AutoRefreshSchedulerInterface = runtime.AutoRefresh
 	runtimeinfo.PreferenceUpdateSchedulerInterface = runtime.PreferenceUpdate
 	runtimeinfo.ContentCompletionSchedulerInterface = runtime.ContentCompletion
@@ -161,6 +169,7 @@ func StartRuntime() *Runtime {
 	runtimeinfo.TagQualityScoreSchedulerInterface = runtime.TagQualityScore
 	runtimeinfo.NarrativeSummarySchedulerInterface = runtime.NarrativeSummary
 	runtimeinfo.LogCleanupSchedulerInterface = runtime.LogCleanup
+	runtimeinfo.DailyReportSchedulerInterface = runtime.DailyReport
 
 	return runtime
 }
@@ -215,6 +224,11 @@ func SetupGracefulShutdown(runtime *Runtime) {
 			if runtime.LogCleanup != nil {
 				logging.Infoln("Stopping log cleanup scheduler...")
 				runtime.LogCleanup.Stop()
+			}
+
+			if runtime.DailyReport != nil {
+				logging.Infoln("Stopping daily report scheduler...")
+				runtime.DailyReport.Stop()
 			}
 
 			close(done)

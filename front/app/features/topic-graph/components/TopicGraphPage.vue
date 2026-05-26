@@ -23,8 +23,7 @@ import TopicGraphFooterPanels from '~/features/topic-graph/components/TopicGraph
 import TopicGraphHeader from '~/features/topic-graph/components/TopicGraphHeader.vue'
 import TopicGraphSidebar from '~/features/topic-graph/components/TopicGraphSidebar.vue'
 import TopicTimeline from '~/features/topic-graph/components/TopicTimeline.vue'
-import NarrativePanel from '~/features/topic-graph/components/NarrativePanel.vue'
-import BoardConceptManager from '~/features/topic-graph/components/BoardConceptManager.vue'
+
 import { buildDisplayedTopicGraph, collectRelatedTopicSlugs } from '~/features/topic-graph/utils/buildDisplayedTopicGraph'
 import { buildTopicGraphViewModel } from '~/features/topic-graph/utils/buildTopicGraphViewModel'
 import { normalizeTopicCategory } from '~/features/topic-graph/utils/normalizeTopicCategory'
@@ -147,17 +146,12 @@ const selectedChildTagSlug = ref<string | null>(null)
 
 // Timeline floating panel state
 const timelineOpen = ref(false)
-const showConceptManager = ref(false)
-
 watch(timelineOpen, (open) => {
   if (!open) {
     resetTimelinePanelPosition()
     isDragging.value = false
   }
 })
-
-// Active view tab state (graph / hierarchy)
-const activeTab = ref<'graph' | 'narrative'>('graph')
 
 const viewModel = computed(() => graphPayload.value
   ? buildTopicGraphViewModel(graphPayload.value)
@@ -805,11 +799,6 @@ async function handleChildTagSelect(childSlug: string, childLabel: string) {
   selectedPendingNode.value = false
 }
 
-function handleNarrativeTagSelect(tag: { id: number; slug: string; label: string; category: string; kind?: string }) {
-  const category = normalizeTopicCategory(tag.category as TopicCategory, tag.kind as TopicKind | undefined)
-  handleTagSelect(tag.slug, category)
-}
-
 async function handleAbstractTagSelect(abstractSlug: string) {
   selectedChildTagSlug.value = null
 
@@ -1253,33 +1242,12 @@ await loadGraph()
                 />
 
 
-                <!-- View tabs -->
-                <div class="mt-4 flex gap-1.5">
-                  <button
-                    type="button"
-                    class="th-tab-btn"
-                    :class="{ 'th-tab-btn--active': activeTab === 'graph' }"
-                    @click="activeTab = 'graph'"
-                  >
-                    <Icon icon="mdi:graph-outline" width="14" />
-                    <span>图谱</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="th-tab-btn"
-                    :class="{ 'th-tab-btn--active': activeTab === 'narrative' }"
-                    @click="activeTab = 'narrative'"
-                  >
-                    <Icon icon="mdi:book-open-page-variant-outline" width="14" />
-                    <span>叙事</span>
-                  </button>
-                </div>
+
 
               </aside>
 
               <div class="space-y-4">
-                <!-- Graph view (default) -->
-                <template v-if="activeTab === 'graph'">
+                <!-- Graph view -->
                 <TopicGraphCanvas
                   :nodes="displayedGraph.nodes"
                   :edges="displayedGraph.edges"
@@ -1455,27 +1423,6 @@ await loadGraph()
                 </section>
 
                 <TopicGraphFooterPanels :detail="detail" />
-                </template>
-
-                <!-- Narrative view -->
-                <template v-else-if="activeTab === 'narrative'">
-                  <article class="rounded-[30px] p-4 md:p-5 border border-[rgba(255,255,255,0.08)] bg-[rgba(11,18,24,0.4)] backdrop-blur-xl">
-                    <div class="flex items-center justify-between mb-4">
-                      <h3 class="text-base font-medium text-[rgba(255,233,220,0.88)]">叙事板块</h3>
-                      <button
-                        class="px-3 py-1.5 rounded-lg border border-[rgba(255,255,255,0.1)] bg-[rgba(255,255,255,0.04)] text-xs text-[rgba(255,233,220,0.6)] hover:bg-[rgba(255,255,255,0.08)] hover:text-[rgba(255,233,220,0.88)] transition-colors"
-                        @click="showConceptManager = !showConceptManager"
-                      >
-                        板块概念
-                      </button>
-                    </div>
-                    <BoardConceptManager v-if="showConceptManager" class="mb-4" />
-                    <NarrativePanel
-                      :date="selectedDate"
-                      @select-tag="handleNarrativeTagSelect"
-                    />
-                  </article>
-                </template>
               </div>
             </div>
           </article>

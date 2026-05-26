@@ -21,3 +21,9 @@ pnpm install  &&  pnpm dev  &&  pnpm build
 pnpm lint  &&  pnpm exec nuxi typecheck
 pnpm test:unit  &&  pnpm test:e2e
 ```
+
+> **⚠️ WSL 注意**：`pnpm lint` 可在 WSL 跑；`pnpm exec nuxi typecheck` 和 `pnpm build` 因缺少 Linux native binding 必须在 Windows cmd 中执行：
+> ```bash
+> cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm exec nuxi typecheck"
+> cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm build"
+> ```

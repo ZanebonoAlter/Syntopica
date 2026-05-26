@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
-import { useSemanticBoardsApi, type SemanticBoard, type AuxiliaryLabelItem, type UpgradeCandidate, type UpgradeCluster, type UpgradeSuggestion, type BackfillTask, type MatchingConfig } from '~/api/semanticBoards'
+import { useSemanticBoardsApi, type SemanticBoard, type AuxiliaryLabelItem, type UpgradeCandidate, type UpgradeCluster, type UpgradeSuggestion, type BackfillTask, type MatchingConfig, type BoardArticle, type BoardArticleTag } from '~/api/semanticBoards'
 import { useAuxiliaryLabelsApi, type AuxiliaryLabel, type AuxiliaryLabelCluster } from '~/api/auxiliaryLabels'
 import { useArticlesApi } from '~/api/articles'
 import { normalizeArticle } from '~/features/articles/utils/normalizeArticle'
 import type { Article } from '~/types'
 import type { ArticlePayload } from '~/features/articles/utils/normalizeArticle'
 import ArticleContentView from '~/features/articles/components/ArticleContentView.vue'
+import { useFeedsStore } from '~/stores/feeds'
 import SemanticBoardList from './SemanticBoardList.vue'
 import AddSemanticBoardDialog from './AddSemanticBoardDialog.vue'
 import BoardCompositionPanel from './BoardCompositionPanel.vue'
@@ -15,10 +16,14 @@ import AuxiliaryLabelPool from './AuxiliaryLabelPool.vue'
 import UpgradeSuggestionPanel from './UpgradeSuggestionPanel.vue'
 import BackfillProgress from './BackfillProgress.vue'
 import MatchingConfigDialog from './MatchingConfigDialog.vue'
+import NarrativeGenerateDialog from './NarrativeGenerateDialog.vue'
+import BoardDailyReportTimeline from './BoardDailyReportTimeline.vue'
+import MatchDetailPanel from './MatchDetailPanel.vue'
 
 const sbApi = useSemanticBoardsApi()
 const auxApi = useAuxiliaryLabelsApi()
 const articlesApi = useArticlesApi()
+const feedsStore = useFeedsStore()
 
 const boards = ref<SemanticBoard[]>([])
 const selectedBoardId = ref<number | null>(null)
@@ -51,17 +56,24 @@ let backfillPollTimer: ReturnType<typeof setInterval> | null = null
 const matchingConfig = ref<MatchingConfig | null>(null)
 const matchingConfigLoading = ref(false)
 
+const contentTab = ref<'composition' | 'daily-reports' | 'articles'>('composition')
 const showAddDialog = ref(false)
 const showUpgradeDialog = ref(false)
 const showMatchingConfigDialog = ref(false)
+const showGenerateDialog = ref(false)
 
-const timelineArticles = ref<Article[]>([])
+const timelineArticles = ref<BoardArticle[]>([])
 const timelineLoading = ref(false)
 const timelinePage = ref(1)
 const timelineHasMore = ref(false)
 const timelinePerPage = 50
 const activeFilterLabelId = ref<number | null>(null)
+const filterFeedId = ref<number | null>(null)
+const startDate = ref<string>('')
+const endDate = ref<string>('')
+const feedOptions = computed(() => feedsStore.feeds)
 const timelineVisible = computed(() => selectedBoardId.value !== null)
+const selectedTagForDetail = ref<BoardArticleTag | null>(null)
 
 const selectedPreviewArticle = ref<Article | null>(null)
 const previewArticles = ref<Article[]>([])
@@ -122,7 +134,12 @@ function handleUpdatePage(page: number) {
 
 function handleSelectBoard(id: number | null) {
   selectedBoardId.value = id
+  selectedTagForDetail.value = null
   activeFilterLabelId.value = null
+  filterFeedId.value = null
+  startDate.value = ''
+  endDate.value = ''
+  contentTab.value = 'composition'
   if (id !== null) {
     void loadComposition(id)
     timelinePage.value = 1
@@ -137,15 +154,22 @@ async function loadTimelineArticles(boardId: number, append = false) {
   timelineLoading.value = true
   try {
     const page = append ? timelinePage.value + 1 : 1
-    const params: Record<string, unknown> = { concept_id: boardId, page, per_page: timelinePerPage, sort_by: 'date' }
+    const params: Record<string, unknown> = { page, per_page: timelinePerPage }
     if (activeFilterLabelId.value !== null) {
       params.auxiliary_label_id = activeFilterLabelId.value
     }
-    const res = await articlesApi.getArticles(params)
+    if (filterFeedId.value) {
+      params.feed_id = filterFeedId.value
+    }
+    if (startDate.value) {
+      params.start_date = startDate.value
+    }
+    if (endDate.value) {
+      params.end_date = endDate.value
+    }
+    const res = await sbApi.getBoardArticles(boardId, params)
     if (res.success && res.data) {
-      const rawData = res.data as unknown as { items: ArticlePayload[] }
-      const rawArticles = (rawData.items || res.data as unknown as ArticlePayload[]) as ArticlePayload[]
-      const newArticles = rawArticles.map(a => normalizeArticle(a))
+      const newArticles = res.data
       if (append) {
         timelineArticles.value.push(...newArticles)
         timelinePage.value = page
@@ -177,7 +201,7 @@ async function openArticlePreview(articleId: number) {
     const response = await articlesApi.getArticle(articleId)
     if (!response.success || !response.data) return
     selectedPreviewArticle.value = normalizeArticle(response.data as unknown as ArticlePayload)
-    previewArticles.value = timelineArticles.value
+    previewArticles.value = []
   } catch (error) {
     console.error('Failed to open article preview:', error)
   } finally {
@@ -223,10 +247,54 @@ function handleArticleUpdate(articleId: string, updates: Partial<Article>) {
 
 function handleFilterLabel(labelId: number | null) {
   activeFilterLabelId.value = labelId
+  selectedTagForDetail.value = null
   timelinePage.value = 1
   if (selectedBoardId.value !== null) {
     void loadTimelineArticles(selectedBoardId.value)
   }
+}
+
+function handleFilterChange() {
+  selectedTagForDetail.value = null
+  timelinePage.value = 1
+  if (selectedBoardId.value !== null) {
+    void loadTimelineArticles(selectedBoardId.value)
+  }
+}
+
+function toggleMatchDetail(tag: BoardArticleTag) {
+  selectedTagForDetail.value = selectedTagForDetail.value?.id === tag.id ? null : tag
+}
+
+function isSelectedDetailTag(tag: BoardArticleTag): boolean {
+  return selectedTagForDetail.value?.id === tag.id
+}
+
+function matchReasonColor(reason: string): string {
+  const colors: Record<string, string> = {
+    direct_hit: '#22c55e',
+    hit_rate: '#3b82f6',
+    max_sim: '#f59e0b',
+    weighted: '#94a3b8',
+  }
+  return colors[reason] || '#94a3b8'
+}
+
+function matchInfoLabel(tag: BoardArticleTag): string {
+  const labels: Record<string, string> = {
+    direct_hit: '直接命中',
+    hit_rate: '命中率',
+    max_sim: '相似度',
+    weighted: '综合',
+  }
+  return `${labels[tag.match_reason] || tag.match_reason} ${tag.score.toFixed(2)}`
+}
+
+function strongestMatch(tags: BoardArticleTag[]): BoardArticleTag | null {
+  if (!tags?.length) return null
+  const [first, ...rest] = tags
+  if (!first) return null
+  return rest.reduce((best, t) => t.score > best.score ? t : best, first)
 }
 
 function handleAddBoard(data: { label: string; description: string; display_order: number; protected: boolean; auxiliary_labels?: number[] }) {
@@ -394,6 +462,7 @@ onUnmounted(() => {
           @upgrade="handleUpgradeSuggest"
           @backfill="handleTriggerBackfill"
           @config="handleOpenMatchingConfig"
+          @generate="showGenerateDialog = true"
           @delete="handleDeleteBoard"
         />
       </aside>
@@ -401,7 +470,24 @@ onUnmounted(() => {
       <!-- Right panel -->
       <main class="tags-content">
         <div v-if="selectedBoardId !== null">
+          <!-- Content tabs -->
+          <div class="tags-content-tabs">
+            <button type="button" class="tags-content-tab" :class="{ 'tags-content-tab--active': contentTab === 'composition' }" @click="contentTab = 'composition'">
+              <Icon icon="mdi:view-dashboard-outline" width="14" />
+              板块内容
+            </button>
+            <button type="button" class="tags-content-tab" :class="{ 'tags-content-tab--active': contentTab === 'daily-reports' }" @click="contentTab = 'daily-reports'">
+              <Icon icon="mdi:file-document-outline" width="14" />
+              日报
+            </button>
+            <button type="button" class="tags-content-tab" :class="{ 'tags-content-tab--active': contentTab === 'articles' }" @click="contentTab = 'articles'">
+              <Icon icon="mdi:newspaper-variant-outline" width="14" />
+              文章
+            </button>
+          </div>
+
           <BoardCompositionPanel
+            v-if="contentTab === 'composition'"
             :board-id="selectedBoardId"
             :labels="compositionLabels"
             :loading="compositionLoading"
@@ -409,17 +495,21 @@ onUnmounted(() => {
             @refresh="() => loadComposition(selectedBoardId!)"
           />
 
+          <BoardDailyReportTimeline v-if="contentTab === 'daily-reports'" :board-id="selectedBoardId" />
+
           <!-- Article timeline -->
-          <div class="tags-timeline">
-            <div class="tags-timeline-header">
+          <div v-if="contentTab === 'articles'" class="tags-articles-layout">
+            <div class="tags-timeline">
+              <div class="tags-timeline-header">
               <Icon icon="mdi:timeline-clock-outline" width="15" class="text-[rgba(240,138,75,0.8)]" />
               <span class="tags-timeline-title">相关文章</span>
               <span v-if="timelineArticles.length" class="tags-timeline-count">{{ timelineArticles.length }} 篇</span>
             </div>
 
             <!-- Filter chips -->
-            <div v-if="compositionLabels.length > 0" class="tags-filter-chips">
+            <div v-if="compositionLabels.length > 0 || selectedBoardId !== null" class="tags-filter-chips">
               <button
+                v-if="compositionLabels.length > 0"
                 type="button"
                 class="tags-filter-chip"
                 :class="{ 'tags-filter-chip--active': activeFilterLabelId === null }"
@@ -437,6 +527,12 @@ onUnmounted(() => {
               >
                 {{ label.label }}
               </button>
+              <select v-model="filterFeedId" class="tags-filter-select" @change="handleFilterChange()">
+                <option :value="null">全部来源</option>
+                <option v-for="feed in feedOptions" :key="feed.id" :value="Number(feed.id)">{{ feed.title }}</option>
+              </select>
+              <input type="date" v-model="startDate" class="tags-filter-date" @change="handleFilterChange()" />
+              <input type="date" v-model="endDate" class="tags-filter-date" @change="handleFilterChange()" />
             </div>
 
             <div v-if="timelineLoading && timelineArticles.length === 0" class="tags-timeline-loading">
@@ -453,27 +549,62 @@ onUnmounted(() => {
                 v-for="article in timelineArticles"
                 :key="article.id"
                 class="tags-timeline-item"
-                @click="openArticlePreview(Number(article.id))"
+                @click="openArticlePreview(article.id)"
               >
-                <div class="tags-timeline-item-date">
-                  {{ new Date(article.pubDate).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}
+                <div class="tags-timeline-item-meta">
+                  <span class="tags-timeline-item-date">
+                    {{ new Date(article.pub_date).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}
+                  </span>
+                  <span v-if="article.feed_name" class="tags-timeline-item-feed-name">{{ article.feed_name }}</span>
                 </div>
-                <div class="tags-timeline-item-content">
-                  <span class="tags-timeline-item-title">{{ article.title }}</span>
-                  <span class="tags-timeline-item-feed">{{ article.feedId }}</span>
+                <div class="tags-timeline-item-body">
+                  <div class="tags-timeline-item-content">
+                    <span class="tags-timeline-item-title">{{ article.title }}</span>
+                    <div v-if="article.filtered_tags?.length" class="tags-timeline-item-tags">
+                      <button
+                        v-for="tag in article.filtered_tags"
+                        :key="tag.id"
+                        type="button"
+                        class="tags-timeline-tag-chip"
+                        :class="{ 'tags-timeline-tag-chip--selected': isSelectedDetailTag(tag) }"
+                        :style="{ borderColor: matchReasonColor(tag.match_reason) }"
+                        :title="matchInfoLabel(tag)"
+                        @click.stop="toggleMatchDetail(tag)"
+                      >
+                        {{ tag.label }} {{ tag.score.toFixed(2) }}
+                      </button>
+                    </div>
+                  </div>
+                  <span
+                    v-if="strongestMatch(article.filtered_tags)"
+                    class="tags-timeline-item-match-info"
+                    :style="{ color: matchReasonColor(strongestMatch(article.filtered_tags)!.match_reason) }"
+                  >
+                    {{ matchInfoLabel(strongestMatch(article.filtered_tags)!) }}
+                  </span>
                 </div>
               </div>
             </div>
-            <button
-              v-if="timelineHasMore"
-              type="button"
-              class="tags-timeline-more"
-              :disabled="timelineLoading"
-              @click="handleLoadMore"
-            >
-              <template v-if="timelineLoading">加载中...</template>
-              <template v-else>加载更多</template>
-            </button>
+              <button
+                v-if="timelineHasMore"
+                type="button"
+                class="tags-timeline-more"
+                :disabled="timelineLoading"
+                @click="handleLoadMore"
+              >
+                <template v-if="timelineLoading">加载中...</template>
+                <template v-else>加载更多</template>
+              </button>
+            </div>
+            <Transition name="match-detail-panel">
+              <MatchDetailPanel
+                v-if="selectedTagForDetail && selectedBoardId !== null"
+                :board-id="selectedBoardId"
+                :tag="selectedTagForDetail"
+                class="tags-match-detail-panel"
+                @close="selectedTagForDetail = null"
+              />
+            </Transition>
           </div>
         </div>
 
@@ -531,6 +662,13 @@ onUnmounted(() => {
       :loading="matchingConfigLoading"
       @save="handleSaveMatchingConfig"
       @cancel="showMatchingConfigDialog = false"
+    />
+
+    <!-- Narrative Generate Dialog -->
+    <NarrativeGenerateDialog
+      :visible="showGenerateDialog"
+      :boards="boards"
+      @cancel="showGenerateDialog = false"
     />
 
     <Teleport to="body">
@@ -659,6 +797,50 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
+.tags-content-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 0 0.75rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tags-content-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  border: none;
+  border-radius: 8px 8px 0 0;
+  background: none;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  position: relative;
+}
+
+.tags-content-tab:hover {
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tags-content-tab--active {
+  color: rgba(255, 220, 200, 0.85);
+  background: rgba(240, 138, 75, 0.08);
+}
+
+.tags-content-tab--active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(240, 138, 75, 0.6);
+  border-radius: 1px;
+}
+
 .tags-bottombar {
   position: fixed;
   bottom: 0;
@@ -676,10 +858,31 @@ onUnmounted(() => {
   transition: all 0.2s ease;
 }
 
+.tags-articles-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.tags-articles-layout .tags-timeline {
+  flex: 1;
+  min-width: 0;
+}
+
+.tags-match-detail-panel {
+  width: 320px;
+  flex-shrink: 0;
+}
+
 .tags-timeline {
   margin-top: 2rem;
   padding-top: 1.5rem;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tags-articles-layout .tags-timeline {
+  margin-top: 0;
 }
 
 .tags-timeline-header {
@@ -739,7 +942,8 @@ onUnmounted(() => {
 
 .tags-timeline-item {
   display: flex;
-  gap: 0.75rem;
+  flex-direction: column;
+  gap: 0.25rem;
   padding: 0.5rem 0.65rem;
   border-radius: 8px;
   cursor: pointer;
@@ -750,12 +954,24 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.tags-timeline-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .tags-timeline-item-date {
   font-size: 0.65rem;
   color: rgba(255, 255, 255, 0.3);
   white-space: nowrap;
-  padding-top: 0.15rem;
-  min-width: 2.5rem;
+}
+
+.tags-timeline-item-feed-name {
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tags-timeline-item-content {
@@ -763,6 +979,12 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 0.2rem;
   min-width: 0;
+}
+
+.tags-timeline-item-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
 }
 
 .tags-timeline-item-title {
@@ -778,12 +1000,95 @@ onUnmounted(() => {
   color: rgba(255, 220, 200, 0.9);
 }
 
-.tags-timeline-item-feed {
+.tags-timeline-item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.15rem;
+}
+
+.tags-timeline-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.4rem;
   font-size: 0.62rem;
-  color: rgba(255, 255, 255, 0.25);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-family: inherit;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.tags-timeline-tag-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.tags-timeline-tag-chip--selected {
+  box-shadow: 0 0 0 2px rgba(240, 138, 75, 0.35);
+  background: rgba(240, 138, 75, 0.12);
+}
+
+.match-detail-panel-enter-active,
+.match-detail-panel-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.match-detail-panel-enter-from,
+.match-detail-panel-leave-to {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
+.tags-timeline-item-match-info {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 500;
   white-space: nowrap;
+  margin-left: auto;
+  padding-left: 0.5rem;
+}
+
+.tags-filter-select {
+  padding: 0.2rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.tags-filter-select:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.tags-filter-select option {
+  background: #1a1f2a;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.tags-filter-date {
+  padding: 0.2rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.tags-filter-date:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.tags-filter-date::-webkit-calendar-picker-indicator {
+  filter: invert(0.5);
 }
 
 .tags-timeline-more {
