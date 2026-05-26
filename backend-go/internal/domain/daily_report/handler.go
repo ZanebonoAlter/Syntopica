@@ -3,6 +3,7 @@ package daily_report
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/ws"
 )
@@ -72,26 +75,31 @@ func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 	ctx, cancel := timeoutCtx(10 * time.Minute)
 	defer cancel()
 
-	broadcastProgress(jobID, "processing", boardID, 0, 0)
+	boardName := dailyReportBoardName(boardID)
+	broadcastProgress(jobID, "generating", boardID, boardName, 0, "0/1")
 
 	report, sections, err := GenerateDailyReport(ctx, boardID, date)
 	if err != nil {
 		logging.Errorf("daily-report: generate failed for board %d: %v", boardID, err)
-		broadcastProgress(jobID, "failed", boardID, 0, 0)
+		broadcastProgress(jobID, "failed", boardID, boardName, 0, "1/1")
+		broadcastDone(jobID, 0, 1)
 		return
 	}
 	if report == nil {
-		broadcastProgress(jobID, "completed", boardID, 0, 0)
+		broadcastProgress(jobID, "completed", boardID, boardName, 0, "1/1")
+		broadcastDone(jobID, 0, 1)
 		return
 	}
 
 	if err := SaveReport(report, sections); err != nil {
 		logging.Errorf("daily-report: save failed for board %d: %v", boardID, err)
-		broadcastProgress(jobID, "failed", boardID, 0, 0)
+		broadcastProgress(jobID, "failed", boardID, boardName, 0, "1/1")
+		broadcastDone(jobID, 0, 1)
 		return
 	}
 
-	broadcastProgress(jobID, "completed", boardID, report.ID, len(sections))
+	broadcastProgress(jobID, "completed", boardID, boardName, 1, "1/1")
+	broadcastDone(jobID, 1, 1)
 }
 
 func generateAllBoards(date time.Time, jobID string) {
@@ -101,37 +109,43 @@ func generateAllBoards(date time.Time, jobID string) {
 	boardIDs, err := CollectBoardIDsForDate(date)
 	if err != nil {
 		logging.Errorf("daily-report: collect boards failed: %v", err)
-		broadcastProgress(jobID, "failed", 0, 0, 0)
+		broadcastProgress(jobID, "failed", 0, "All boards", 0, "0/0")
+		broadcastDone(jobID, 0, 0)
 		return
 	}
 
-	if len(boardIDs) == 0 {
-		broadcastProgress(jobID, "completed", 0, 0, 0)
+	totalBoards := len(boardIDs)
+	if totalBoards == 0 {
+		broadcastDone(jobID, 0, 0)
 		return
 	}
 
-	completed := 0
-	for _, boardID := range boardIDs {
-		broadcastProgress(jobID, "processing", boardID, 0, completed)
+	savedCount := 0
+	for idx, boardID := range boardIDs {
+		boardName := dailyReportBoardName(boardID)
+		broadcastProgress(jobID, "generating", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx, totalBoards))
 
 		report, sections, genErr := GenerateDailyReport(ctx, boardID, date)
 		if genErr != nil {
 			logging.Warnf("daily-report: generate failed for board %d: %v", boardID, genErr)
+			broadcastProgress(jobID, "failed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
 			continue
 		}
 		if report == nil {
-			completed++
+			broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
 			continue
 		}
 
 		if saveErr := SaveReport(report, sections); saveErr != nil {
 			logging.Warnf("daily-report: save failed for board %d: %v", boardID, saveErr)
+			broadcastProgress(jobID, "failed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
 			continue
 		}
-		completed++
+		savedCount++
+		broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
 	}
 
-	broadcastProgress(jobID, "completed", 0, 0, completed)
+	broadcastDone(jobID, savedCount, totalBoards)
 }
 
 // listBoardDailyReports handles GET /api/semantic-boards/:id/daily-reports
@@ -158,7 +172,7 @@ func listBoardDailyReports(c *gin.Context) {
 		reports = []ReportListItem{}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": reports})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"reports": reports}})
 }
 
 // getDailyReport handles GET /api/daily-reports/:id
@@ -175,22 +189,54 @@ func getDailyReport(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": report})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"report": report}})
 }
 
 // broadcastProgress sends a WebSocket progress message.
-func broadcastProgress(jobID string, status string, boardID uint, reportID uint, completed int) {
-	msg := map[string]interface{}{
-		"type":     "daily_report_progress",
-		"job_id":   jobID,
-		"status":   status,
-		"board_id": boardID,
-		"report_id": reportID,
-		"completed": completed,
-		"timestamp": time.Now().Format(time.RFC3339),
-	}
+func broadcastProgress(jobID string, status string, boardID uint, boardName string, saved int, progress string) {
+	msg := buildProgressMessage(jobID, status, boardID, boardName, saved, progress)
 	data, _ := json.Marshal(msg)
 	ws.GetHub().BroadcastRaw(data)
+}
+
+func broadcastDone(jobID string, totalSaved int, totalBoards int) {
+	msg := buildDoneMessage(jobID, totalSaved, totalBoards)
+	data, _ := json.Marshal(msg)
+	ws.GetHub().BroadcastRaw(data)
+}
+
+func buildProgressMessage(jobID string, status string, boardID uint, boardName string, saved int, progress string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":       "daily_report_progress",
+		"job_id":     jobID,
+		"status":     status,
+		"board_id":   boardID,
+		"board_name": boardName,
+		"saved":      saved,
+		"progress":   progress,
+		"timestamp":  time.Now().Format(time.RFC3339),
+	}
+}
+
+func buildDoneMessage(jobID string, totalSaved int, totalBoards int) map[string]interface{} {
+	return map[string]interface{}{
+		"type":         "daily_report_done",
+		"job_id":       jobID,
+		"total_saved":  totalSaved,
+		"total_boards": totalBoards,
+		"timestamp":    time.Now().Format(time.RFC3339),
+	}
+}
+
+func dailyReportBoardName(boardID uint) string {
+	if boardID == 0 {
+		return "All boards"
+	}
+	var board models.SemanticLabel
+	if err := database.DB.Select("label").Where("id = ?", boardID).First(&board).Error; err != nil {
+		return fmt.Sprintf("Board #%d", boardID)
+	}
+	return board.Label
 }
 
 func timeoutCtx(d time.Duration) (context.Context, context.CancelFunc) {

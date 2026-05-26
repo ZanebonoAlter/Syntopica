@@ -174,7 +174,76 @@
 - [x] 15.6 补充/更新单元测试：覆盖 1-aux 标签 hitRate=0.333 不过门槛、1-aux 标签退到 max_sim/weighted、2-aux 标签 hit_rate 混合打分、multi-aux (≥3) 行为不变、混合打分公式精度
 - [x] 15.7 `MatchingConfigDialog.vue`: 前端匹配参数表单新增两个配置项展示和编辑（minEffectiveSample 数字输入、hitRateSimBlend 滑块 0-1）
 - [x] 15.8 验证：`go test ./internal/domain/tagging/ -run TestEvaluateSemanticBoardMatches -v` + `go build ./...`
-- [ ] 15.9 全量重算：调用匹配 API 重算所有现有 tag 的板块归属，验证 score 分布改善
+- [x] 15.9 全量重算：调用匹配 API 重算所有现有 tag 的板块归属，验证 score 分布改善
+
+## 16. 匹配详情 API — 按需实时计算 (D19)
+
+- [x] 16.1 `semantic_board_matching.go`: 新增 `loadBoardAuxiliariesByBoardID(ctx, boardID)` 方法，复用 `loadBoardAuxiliaries` 的查询结构但加 `WHERE board_composition.board_id = ?` 过滤，返回 `[]boardAuxiliaryLabel`
+- [x] 16.2 `semantic_board_matching.go`: 新增 `computeMatchDetail` 函数，展开 `scoreSemanticBoardSimilarity` 内层循环，对每个 tag 辅助标签找到最佳匹配的 board 辅助标签，返回结构体包含 `hits`、`hitRate`、`maxSimilarity`、`pairs[]`（每对 tag_aux↔board_aux 的 similarity + is_hit + 标签名称）
+- [x] 16.3 `semantic_board_handler.go`: 新增 `getTagMatchDetail` handler，路由 `GET /semantic-boards/:id/match-detail/:tagId`。逻辑：调用 `loadTagAuxiliaries` + `loadBoardAuxiliariesByBoardID` → 检查 direct_hit → 调用 `computeMatchDetail` → 从 `topic_tag_board_labels` 读取存储的 score/match_reason → 调用 `loadConfig` 获取当前参数 → 组装返回 DTO
+- [x] 16.4 定义返回 DTO 结构：`matchDetailResponse` 包含 `topic_tag_id/label`、`semantic_board_id`、`match_reason`（存储值）、`score`（存储值）、`config`（当前参数）、`direct_hit_auxiliaries[]`、`tag_auxiliary_count`、`hits`、`hit_rate`、`max_similarity`、`pairs[]`
+- [x] 16.5 在 `RegisterSemanticBoardRoutes` 注册新路由（当前项目由 `backend-go/internal/domain/tagging/semantic_board_handler.go` 统一注册 semantic-board 子路由）
+- [x] 16.6 按用户验收口径跳过过时 sqlite handler 测试，补充纯单元测试覆盖 direct_hit DTO、pairs、聚合指标、空输入
+- [x] 16.7 验证：`go test ./internal/domain/tagging/ -run 'TestComputeMatchDetail|TestDirectHitAuxiliary' -v` + `go build ./...`
+
+## 17. 匹配详情前端面板 (D20)
+
+- [x] 17.1 安装 KaTeX：`pnpm add katex` + `pnpm add -D @types/katex`
+- [x] 17.2 新增 `front/app/components/KaTeXRender.vue`：接收 `latex: string` + `display?: boolean` props，用 `katex.renderToString` 渲染，`v-html` 输出。带 `katex/dist/katex.min.css` import
+- [x] 17.3 新增 `front/app/api/semanticBoards.ts`: `getMatchDetail(boardId, tagId)` 方法和 `MatchDetailResponse` / `MatchDetailConfig` / `MatchDetailPair` / `DirectHitAuxiliary` 类型
+- [x] 17.4 新增 `front/app/features/tags/components/MatchDetailPanel.vue` 组件：
+  - Props: `boardId: number`、`tag: BoardArticleTag | null`（null 时隐藏）
+  - 点击 tag 变化时调用 `getMatchDetail(boardId, tag.id)`，loading 状态展示 skeleton
+  - 渲染匹配公式（根据 match_reason 选择 LaTeX 字符串 + 代入具体数值，用 KaTeXRender 展示）
+  - 渲染辅助标签逐对匹配明细表（pairs 数组）
+  - 渲染可折叠的配置参数区域
+  - direct_hit 场景：展示精确匹配的辅助标签列表，无公式
+  - 关闭按钮 emit `close` 事件
+- [x] 17.5 公式渲染逻辑：为四种 match_reason 分别生成 LaTeX 字符串，代入 response 中的实际数值。例如 hit_rate: `\text{score} = ${alpha} \times ${maxSim} + ${(1-alpha)} \times ${hitRate} = ${score}`
+- [x] 17.6 `TagsPage.vue` 布局改造：
+  - 新增 `selectedTagForDetail: BoardArticleTag | null` ref
+  - 文章 tab 区域改为 flex row：左侧文章列表 `flex: 1`，右侧 `MatchDetailPanel` 条件渲染（`v-if="selectedTagForDetail"`），`width: 320px; flex-shrink: 0`
+  - tag chip 点击事件：`selectedTagForDetail === tag ? null : tag` 切换
+  - 选中的 chip 加 `ring` 高亮样式
+  - CSS transition 在面板容器上加 `transition: width 0.2s`
+- [x] 17.7 MatchDetailPanel 关闭按钮 → emit close → `selectedTagForDetail = null` → 面板收起
+- [x] 17.8 验证：`pnpm lint` + `pnpm exec nuxi typecheck` + `pnpm build`
+
+## 18. 日报生成进度与日期修复（post-investigation）
+
+详见：`daily-report-generate-stuck-investigation.md`。
+
+- [x] 18.1 后端手动生成 WS 协议对齐：`daily_report_progress` 字段补齐 `board_name/saved/progress`，状态使用前端可识别值，并在单板/全板终态广播 `daily_report_done`
+- [x] 18.2 日报查询 API 返回结构对齐前端：列表返回 `{ reports: [...] }`，详情返回 `{ report: ... }`（或同步调整前端类型与组件，保持一致）
+- [x] 18.3 修复 `period_date` 日期偏移：请求日期 `2026-05-26` 必须持久化/查询为 `2026-05-26`
+- [x] 18.4 日志可读性修复：慢 SQL 日志截断/脱敏超长 vector 字面量；WebSocket 正常 close 1000 不再打 WARN
+- [x] 18.5 验证：覆盖 daily_report handler/repository 关键行为测试；运行相关 Go 测试、前端 lint/typecheck；手工或脚本验证示例 payload（本环境缺少 Go 工具链且前端 typecheck 缺少 native binding，详见实现总结）
+
+## 19. Bug 修复：日报 summary UTF-8 截断导致保存失败
+
+**根因**：`generator.go:478` 的 `summary = summary[:200]` 按字节截断中文 UTF-8 字符串，可能在多字节字符中间截断，产生无效 UTF-8 序列（如 `0xEF 0xBC 0x27`），导致 PostgreSQL 拒绝 INSERT（`SQLSTATE 22021: invalid byte sequence for encoding "UTF8"`），整条日报保存失败。
+
+- [x] 19.1 修复 `generator.go:478`：字节截断改为 rune 安全截断
+- [x] 19.2 验证：`go test ./internal/domain/daily_report/ -v` + `go build ./...`
+
+## 20. 标签清理机制 (tag-cleanup)
+
+**根因**：当前没有专门的定时任务来清理辅助标签（auxiliary labels）。标签清理是零散的、被动触发的：
+- `cleanupOrphanedTags` 仅在 `RetagArticle`（Force 模式）时触发，不是定时执行的
+- `CleanupOldArticles` 删文章后不清理孤儿 TopicTag，也不触发 `cleanupOrphanedTags`
+- `semantic_labels.ref_count` 只在 `AttachAuxiliaryLabels` 中 +1，没有对应的 -1 逻辑（级联删除不会触发），导致 ref_count 只增不减
+- 孤儿辅助标签（无 TopicTag 关联）永远不会被清理
+
+**方案**：两步走 — 堵漏 + 定期对账
+1. 堵漏：`CleanupOldArticles` 删文章后立即调用 `CleanupOrphanedTags` 清理孤儿 tag
+2. 对账：挂在 `tag_quality_score`（每小时）下，重算 ref_count + 清理孤儿辅助标签
+
+- [x] 20.1 `article_tagger.go`: 导出 `cleanupOrphanedTags` → `CleanupOrphanedTags`
+- [x] 20.2 `feed/service.go`: `CleanupOldArticles` 删文章前收集 affected tag IDs，删文章后调用 `tagging.CleanupOrphanedTags`
+- [x] 20.3 `jobs/tag_quality_score.go`: `runComputeCycle` 末尾增加两步：
+  - (a) 重算 ref_count：`UPDATE semantic_labels SET ref_count = (SELECT COUNT(*) FROM topic_tag_semantic_labels WHERE semantic_label_id = semantic_labels.id) WHERE label_type = 'auxiliary'`
+  - (b) 清理孤儿辅助标签：删除 `label_type='auxiliary' AND ref_count=0 AND protected=false AND status='active' AND created_at < 1天前`
+- [x] 20.4 验证：`go test ./internal/domain/feed/ ./internal/jobs/ -v` + `go build ./...` ✅
 
 ## 14. 集成验证
 

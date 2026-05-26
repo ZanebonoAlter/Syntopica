@@ -15,6 +15,9 @@
 - WebSocket: `backend-go/internal/platform/ws/hub.go` (`Hub`, `BroadcastRaw`), 前端 composable 模式 (`useTagWebSocket.ts`, `useWebSocketRebuild.ts`)
 - 定时任务: `backend-go/internal/jobs/` (`scheduler_tasks` 表, `narrative_summary` 任务)
 - 日报新模块: `backend-go/internal/domain/daily_report/` (新建)
+- 匹配详情 API (按需计算): `backend-go/internal/domain/tagging/semantic_board_handler.go` (`getTagMatchDetail`)
+- 匹配详情面板: `front/app/features/tags/components/MatchDetailPanel.vue`
+- KaTeX 渲染: `front/app/components/KaTeXRender.vue`
 - 前端板块页: `front/app/features/tags/components/TagsPage.vue`
 - 升级建议面板: `front/app/features/tags/components/UpgradeSuggestionPanel.vue`
 - 叙事面板: `front/app/features/topic-graph/components/NarrativePanel.vue`
@@ -42,6 +45,7 @@
 - 不做叙事内容的编辑/修正能力（后续迭代）
 - 不重写 feed 刷新的核心逻辑（只改并发调度）
 - 不改变匹配算法本身（只增强展示）
+- 不存储匹配中间过程数据（按需实时计算，见 D19）
 - 不迁移旧 NarrativeBoard/NarrativeSummary 的历史数据（保留只读）
 - 日报系统不做跨板块关联分析（后续迭代）
 
@@ -285,9 +289,185 @@ daily_report_sections:
 
 **理由**: 已有调度框架成熟稳定，无需新建。任务名可改为 `daily_report` 或保持 `narrative_summary` 向后兼容。
 
+### D19: 匹配详情按需实时计算（方案 B）
+
+**决策**: 新增 `GET /api/semantic-boards/:id/match-detail/:tagId` 端点，用户点击 tag chip 时按需实时计算并返回辅助标签逐对匹配明细。不修改匹配流程、不修改表结构、不存储中间数据。
+
+**理由**: 方案 A（存储 JSON 到 `topic_tag_board_labels.match_detail`）虽然查询快，但需要改匹配核心流程、加列、重算历史数据。方案 B 零侵入：纯新增 endpoint，复用已有基础设施（`loadTagAuxiliaries`、`CosineSimilarity`、`parsePgVector`），历史数据天然兼容。单次计算量极小（5×8=40 次 cosine，< 1ms），按需触发不影响性能。
+
+**数据流**:
+```
+用户点击 tag chip
+  → GET /api/semantic-boards/:id/match-detail/:tagId
+  → loadTagAuxiliaries(tagId)          // 复用已有方法
+  → loadBoardAuxiliariesByBoardID(id)  // 新增：按 boardID 过滤
+  → 检查 direct_hit (ID 交集)
+  → 计算所有 tag_aux × board_aux 的 cosine 矩阵
+  → 从 topic_tag_board_labels 读取存储的 score + match_reason
+  → loadConfig() 读取当前配置参数
+  → 返回完整匹配明细
+```
+
+**返回结构**:
+```jsonc
+{
+  // 已有信息（从 topic_tag_board_labels 读取）
+  "topic_tag_id": 42,
+  "topic_tag_label": "人工智能监管政策",
+  "semantic_board_id": 7,
+  "match_reason": "hit_rate",     // 存储的匹配方式
+  "score": 0.845,                 // 存储的得分
+
+  // 当前配置参数（从 ai_settings 读取）
+  "config": {
+    "sim_threshold": 0.72,
+    "hit_rate_sim_blend": 0.7,
+    "min_effective_sample": 3,
+    "direct_hit_rate": 0.5,
+    "direct_max_sim": 0.8,
+    "direct_max_sim_min_hits": 2,
+    "direct_max_sim_min_hit_rate": 0.3,
+    "weight_sim": 0.6,
+    "weight_density": 0.4,
+    "weighted_threshold": 0.6
+  },
+
+  // 直接命中详情（match_reason=direct_hit 时非空）
+  "direct_hit_auxiliaries": [
+    {"tag_auxiliary_id": 101, "tag_label": "AI安全监管", "board_auxiliary_id": 101, "board_label": "AI安全监管"}
+  ],
+
+  // 聚合指标（非 direct_hit 时有值）
+  "tag_auxiliary_count": 3,
+  "hits": 2,
+  "hit_rate": 0.67,           // 调整后 hitRate = hits / max(N, s)
+  "max_similarity": 0.92,
+
+  // 逐对匹配明细（非 direct_hit 时有值）
+  "pairs": [
+    {
+      "tag_auxiliary_id": 101, "tag_auxiliary_label": "AI安全监管",
+      "board_auxiliary_id": 205, "board_auxiliary_label": "AI安全",
+      "similarity": 0.92, "is_hit": true
+    },
+    {
+      "tag_auxiliary_id": 102, "tag_auxiliary_label": "数据隐私合规",
+      "board_auxiliary_id": 208, "board_auxiliary_label": "数据治理",
+      "similarity": 0.85, "is_hit": true
+    },
+    {
+      "tag_auxiliary_id": 103, "tag_auxiliary_label": "芯片出口管制",
+      "board_auxiliary_id": 205, "board_auxiliary_label": "AI安全",
+      "similarity": 0.41, "is_hit": false
+    }
+  ]
+}
+```
+
+**后端新增**:
+- `loadBoardAuxiliariesByBoardID(ctx, boardID)` — 在现有 `loadBoardAuxiliaries` 基础上加 `WHERE board_id = ?` 过滤
+- `computeMatchDetail(tagAuxiliaries, boardAuxiliaries, tagAuxiliaryIDs, config)` — 展开 `scoreSemanticBoardSimilarity` 的内层循环，保留每对 cosine 分数和最佳匹配关系
+- `getTagMatchDetail` handler — 注册路由 `GET /semantic-boards/:id/match-detail/:tagId`
+
+**复用的现有函数**: `loadTagAuxiliaries`、`CosineSimilarity`、`parsePgVector`、`loadConfig`、`hasDirectSemanticBoardHit`
+
+### D20: 匹配详情面板 + KaTeX 公式展示
+
+**决策**: 前端文章列表改为左右分栏布局。点击 tag chip 时右侧推入 `MatchDetailPanel.vue`（固定 320px），展示匹配公式（KaTeX 渲染）+ 辅助标签逐对匹配明细 + 配置参数。
+
+**布局变化**:
+```
+原来（文章 tab）:
+┌─────────────────────────────────────────┐
+│ tags-content (单栏)                       │
+│ ┌───────────────────────────────────────┐│
+│ │ 文章列表 (100%)                        ││
+│ └───────────────────────────────────────┘│
+└─────────────────────────────────────────┘
+
+改为:
+┌─────────────────────────────────────────┐
+│ tags-content                              │
+│ ┌──────────────────────┬────────────────┐│
+│ │ 文章列表 (flex:1)     │ MatchDetail    ││
+│ │                      │ (320px, 条件)  ││
+│ │  点击 chip →          │                ││
+│ │  chip 高亮 + ring     │ 公式 + 明细     ││
+│ └──────────────────────┴────────────────┘│
+└─────────────────────────────────────────┘
+```
+
+**交互**:
+- 点击 tag chip → chip 加 ring 高亮 + 右侧面板推入 + 调用 match-detail API
+- 点击另一个 chip → 切换到新 tag
+- 点击同一 chip 或关闭按钮 → 收起面板，列表恢复全宽
+- CSS transition 实现推入/收起动画
+
+**KaTeX 集成**: 安装 `katex` 包，封装 `KaTeXRender.vue` 通用组件（接收 LaTeX 字符串，用 `katex.renderToString` 渲染 HTML）。
+
+**四种匹配方式的公式展示**:
+
+| 匹配方式 | LaTeX 公式 | 展示策略 |
+|---------|-----------|----------|
+| `direct_hit` | 无公式 | 展示精确匹配的辅助标签列表，文字说明「辅助标签精确匹配」 |
+| `hit_rate` | `\text{score} = \alpha \cdot S_{\max} + (1 - \alpha) \cdot R` | 公式 + 代入具体值 + 计算过程 |
+| `max_sim` | `\text{score} = S_{\max}` | 公式 + 条件约束说明（Smax≥0.8 ∧ hits≥2 ∧ R≥0.3） |
+| `weighted` | `\text{score} = w_{\text{sim}} \cdot S_{\max} + w_{\text{density}} \cdot R` | 公式 + 代入具体值 |
+
+其中二级公式（hit_rate 和 weighted 共用）:
+```latex
+R = \frac{\text{hits}}{\max(N,\, s)},\quad S_{\max} = \max_{i,j} \cos(\mathbf{v}_i^{\text{tag}},\, \mathbf{v}_j^{\text{board}})
+```
+
+实际展示时替换参数为具体数值：
+```
+score = 0.7 × 0.92 + 0.3 × 0.67 = 0.644 + 0.201 = 0.845
+```
+
+**面板结构（hit_rate 为例）**:
+```
+┌─────────────────────────────┐
+│ ✕ 关闭                       │
+├─────────────────────────────┤
+│ 📌 人工智能监管政策           │  ← tag label
+│ hit_rate · score = 0.85     │  ← match_reason + score
+├─────────────────────────────┤
+│ ── 匹配公式 ──               │
+│                             │
+│ score = α·Smax + (1−α)·R    │  ← KaTeX display mode
+│       = 0.7×0.92+0.3×0.67   │
+│       = 0.845               │
+│                             │
+│ R = hits/max(N,s)           │
+│   = 2/max(3,3) = 0.67      │
+│ Smax = maxcos(vᵢ,vⱼ) = 0.92 │
+├─────────────────────────────┤
+│ ── 辅助标签命中 ──            │
+│                             │
+│ ✅ AI安全监管  → AI安全  0.92 │
+│ ✅ 数据隐私合规→ 数据治理 0.85│
+│ ❌ 芯片出口管制→ AI安全  0.41│
+│                             │
+│ threshold=0.72  hits=2/3    │
+├─────────────────────────────┤
+│ ▶ 参数 (折叠)               │
+│   α=0.7  s=3  θ=0.72  ...  │
+└─────────────────────────────┘
+```
+
+**理由**: 用户需要理解「为什么这个事件标签被分到了这个板块」。「直接命中」的真实含义是某几个辅助标签精确匹配，而「命中率」的背后是 N 个辅助标签中有 M 个找到了相似对应物——这个信息用公式 + 逐对明细才能传达清楚。右侧固定面板不遮挡列表，用户可以边看文章列表边查匹配详情。
+
+**备选方案**:
+1. 浮动 Popover — 不挤占列表空间，但可能遮挡内容，且放不下公式+明细
+2. 全屏 Modal — 空间充足但打断浏览节奏
+3. 底部 Drawer — 移动端友好但挤占文章列表纵向空间
+
+否决原因：固定右侧面板在桌面端（本系统仅桌面使用）体验最好，空间利用合理，不打断浏览流程。
+
 ## Risks (新增)
 
 - **[Refresh 并发安全]** 多个 goroutine 同时写 feed 状态 → 每个 goroutine 只操作自己的 feed_id，通过 WHERE feed_id=? 限定，无竞争
 - **[LLM 分组不稳定]** LLM 分组结果可能因 temperature 或模型版本变化 → 使用 temperature=0.1 + 固定 JSON schema 约束；分组结果存入 raw_clusters 便于调试
 - **[日报 token 成本]** 活跃日 93 个 tag 的板块可能消耗较多 token → 去重+摘要压缩后预估 30K tokens/board，在可接受范围
 - **[旧叙事数据]** 旧的 NarrativeBoard/NarrativeSummary 数据保留但不再更新 → 前端迁移到新 API 后旧数据不可见，无需迁移
+- **[匹配详情 vs 存储分数一致性]** 按需实时计算的中间值（hitRate/maxSim）可能因配置参数变化而与存储的 score 不一致 → 面板展示时以存储的 score/match_reason 为准，实时计算只用于辅助标签对明细和公式代入值的展示。若配置变更后存在显著不一致，用户可通过全量重算（15.9）刷新存储值

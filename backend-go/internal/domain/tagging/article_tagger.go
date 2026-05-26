@@ -57,7 +57,7 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 			return err
 		}
 
-		cleanupOrphanedTags(oldTagIDs)
+		CleanupOrphanedTags(oldTagIDs)
 	}
 
 	// Skip if already tagged
@@ -412,7 +412,7 @@ func GetArticlesByTag(slug, category string, limit int) ([]models.Article, error
 	return articles, err
 }
 
-func cleanupOrphanedTags(tagIDs []uint) {
+func CleanupOrphanedTags(tagIDs []uint) {
 	if len(tagIDs) == 0 {
 		return
 	}

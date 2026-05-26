@@ -109,9 +109,9 @@ type semanticBoardUpgradeSuggestionDTO struct {
 		ID    uint   `json:"id"`
 		Label string `json:"label"`
 	} `json:"auxiliary_labels"`
-	TargetBoardID     *uint   `json:"target_board_id,omitempty"`
-	TargetBoardLabel  string  `json:"target_board_label,omitempty"`
-	Reason            string  `json:"reason"`
+	TargetBoardID    *uint  `json:"target_board_id,omitempty"`
+	TargetBoardLabel string `json:"target_board_label,omitempty"`
+	Reason           string `json:"reason"`
 }
 
 type semanticBoardUpgradeCandidateDTO struct {
@@ -157,6 +157,7 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		boards.DELETE("/:id", handler.deleteSemanticBoard)
 		boards.GET("/:id/suggest-auxiliaries", handler.suggestAuxiliariesForBoard)
 		boards.GET("/:id/articles", handler.getBoardArticles)
+		boards.GET("/:id/match-detail/:tagId", handler.getTagMatchDetail)
 		boards.GET("/:id/narratives", handler.getBoardNarratives)
 		boards.GET("/:id/composition", handler.getBoardComposition)
 		boards.POST("/:id/composition", handler.addBoardComposition)
@@ -315,6 +316,51 @@ type boardArticleTagDTO struct {
 	Score       float64 `json:"score"`
 }
 
+type matchDetailConfigDTO struct {
+	SimThreshold           float64 `json:"sim_threshold"`
+	HitRateSimBlend        float64 `json:"hit_rate_sim_blend"`
+	MinEffectiveSample     int     `json:"min_effective_sample"`
+	DirectHitRate          float64 `json:"direct_hit_rate"`
+	DirectMaxSim           float64 `json:"direct_max_sim"`
+	DirectMaxSimMinHits    int     `json:"direct_max_sim_min_hits"`
+	DirectMaxSimMinHitRate float64 `json:"direct_max_sim_min_hit_rate"`
+	WeightSim              float64 `json:"weight_sim"`
+	WeightDensity          float64 `json:"weight_density"`
+	WeightedThreshold      float64 `json:"weighted_threshold"`
+	DirectHitMinOverlap    int     `json:"direct_hit_min_overlap"`
+}
+
+type directHitAuxiliaryDTO struct {
+	TagAuxiliaryID   uint   `json:"tag_auxiliary_id"`
+	TagLabel         string `json:"tag_label"`
+	BoardAuxiliaryID uint   `json:"board_auxiliary_id"`
+	BoardLabel       string `json:"board_label"`
+}
+
+type matchDetailPairDTO struct {
+	TagAuxiliaryID      uint    `json:"tag_auxiliary_id"`
+	TagAuxiliaryLabel   string  `json:"tag_auxiliary_label"`
+	BoardAuxiliaryID    uint    `json:"board_auxiliary_id"`
+	BoardAuxiliaryLabel string  `json:"board_auxiliary_label"`
+	Similarity          float64 `json:"similarity"`
+	IsHit               bool    `json:"is_hit"`
+}
+
+type matchDetailResponse struct {
+	TopicTagID           uint                    `json:"topic_tag_id"`
+	TopicTagLabel        string                  `json:"topic_tag_label"`
+	SemanticBoardID      uint                    `json:"semantic_board_id"`
+	MatchReason          string                  `json:"match_reason"`
+	Score                float64                 `json:"score"`
+	Config               matchDetailConfigDTO    `json:"config"`
+	DirectHitAuxiliaries []directHitAuxiliaryDTO `json:"direct_hit_auxiliaries"`
+	TagAuxiliaryCount    int                     `json:"tag_auxiliary_count"`
+	Hits                 int                     `json:"hits"`
+	HitRate              float64                 `json:"hit_rate"`
+	MaxSimilarity        float64                 `json:"max_similarity"`
+	Pairs                []matchDetailPairDTO    `json:"pairs"`
+}
+
 func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 	boardID, ok := parseUintParam(c, "id")
 	if !ok {
@@ -348,8 +394,8 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 	}
 	if len(boardTagIDs) == 0 {
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"data":    []any{},
+			"success":    true,
+			"data":       []any{},
 			"pagination": gin.H{"page": page, "per_page": perPage, "total": 0, "pages": 0},
 		})
 		return
@@ -417,8 +463,8 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 
 	if len(articles) == 0 {
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"data":    []any{},
+			"success":    true,
+			"data":       []any{},
 			"pagination": gin.H{"page": page, "per_page": perPage, "total": total, "pages": 0},
 		})
 		return
@@ -491,21 +537,135 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 	})
 }
 
+func (h *semanticBoardHandler) getTagMatchDetail(c *gin.Context) {
+	boardID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	tagID, ok := parseUintParam(c, "tagId")
+	if !ok {
+		return
+	}
+
+	ctx := c.Request.Context()
+	var stored models.TopicTagBoardLabel
+	if err := h.db.WithContext(ctx).
+		Where("semantic_board_id = ? AND topic_tag_id = ?", boardID, tagID).
+		First(&stored).Error; err != nil {
+		respondError(c, http.StatusNotFound, fmt.Errorf("match detail not found"))
+		return
+	}
+
+	var tag models.TopicTag
+	if err := h.db.WithContext(ctx).First(&tag, tagID).Error; err != nil {
+		respondError(c, http.StatusNotFound, fmt.Errorf("topic tag not found"))
+		return
+	}
+
+	matcher := NewSemanticBoardMatchingService(h.db)
+	tagAuxiliaries, err := matcher.loadTagAuxiliaries(ctx, tagID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	boardAuxiliaries, err := matcher.loadBoardAuxiliariesByBoardID(ctx, boardID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	config := matcher.loadConfig(ctx)
+	directHits := buildDirectHitAuxiliaryDTOs(tagAuxiliaries, boardAuxiliaries)
+	detail := computeMatchDetail(tagAuxiliaries, boardAuxiliaries, config)
+	pairs := matchDetailPairsToDTOs(detail.Pairs)
+	hits := detail.Hits
+	hitRate := detail.HitRate
+	maxSimilarity := detail.MaxSimilarity
+
+	respondOK(c, matchDetailResponse{
+		TopicTagID:           tag.ID,
+		TopicTagLabel:        tag.Label,
+		SemanticBoardID:      boardID,
+		MatchReason:          stored.MatchReason,
+		Score:                stored.Score,
+		Config:               matchDetailConfigToDTO(config),
+		DirectHitAuxiliaries: directHits,
+		TagAuxiliaryCount:    len(tagAuxiliaries),
+		Hits:                 hits,
+		HitRate:              hitRate,
+		MaxSimilarity:        maxSimilarity,
+		Pairs:                pairs,
+	})
+}
+
+func buildDirectHitAuxiliaryDTOs(tagAuxiliaries []models.SemanticLabel, boardAuxiliaries []boardAuxiliaryLabel) []directHitAuxiliaryDTO {
+	byID := make(map[uint]models.SemanticLabel, len(tagAuxiliaries))
+	for _, tagAuxiliary := range tagAuxiliaries {
+		byID[tagAuxiliary.ID] = tagAuxiliary
+	}
+
+	directHits := []directHitAuxiliaryDTO{}
+	for _, boardAuxiliary := range boardAuxiliaries {
+		tagAuxiliary, ok := byID[boardAuxiliary.AuxiliaryLabelID]
+		if !ok {
+			continue
+		}
+		directHits = append(directHits, directHitAuxiliaryDTO{
+			TagAuxiliaryID:   tagAuxiliary.ID,
+			TagLabel:         tagAuxiliary.Label,
+			BoardAuxiliaryID: boardAuxiliary.AuxiliaryLabelID,
+			BoardLabel:       boardAuxiliary.Label,
+		})
+	}
+	return directHits
+}
+
+func matchDetailPairsToDTOs(pairs []matchDetailPair) []matchDetailPairDTO {
+	dtos := make([]matchDetailPairDTO, 0, len(pairs))
+	for _, pair := range pairs {
+		dtos = append(dtos, matchDetailPairDTO{
+			TagAuxiliaryID:      pair.TagAuxiliaryID,
+			TagAuxiliaryLabel:   pair.TagAuxiliaryLabel,
+			BoardAuxiliaryID:    pair.BoardAuxiliaryID,
+			BoardAuxiliaryLabel: pair.BoardAuxiliaryLabel,
+			Similarity:          pair.Similarity,
+			IsHit:               pair.IsHit,
+		})
+	}
+	return dtos
+}
+
+func matchDetailConfigToDTO(config SemanticBoardMatchConfig) matchDetailConfigDTO {
+	return matchDetailConfigDTO{
+		SimThreshold:           config.SimThreshold,
+		HitRateSimBlend:        config.HitRateSimBlend,
+		MinEffectiveSample:     config.MinEffectiveSample,
+		DirectHitRate:          config.DirectHitRate,
+		DirectMaxSim:           config.DirectMaxSim,
+		DirectMaxSimMinHits:    config.DirectMaxSimMinHits,
+		DirectMaxSimMinHitRate: config.DirectMaxSimMinHitRate,
+		WeightSim:              config.WeightSim,
+		WeightDensity:          config.WeightDensity,
+		WeightedThreshold:      config.WeightedThreshold,
+		DirectHitMinOverlap:    config.DirectHitMinOverlap,
+	}
+}
+
 type boardNarrativeTagDTO struct {
 	ID    uint   `json:"id"`
 	Label string `json:"label"`
 }
 
 type boardNarrativeDTO struct {
-	ID               uint64              `json:"id"`
-	Title            string              `json:"title"`
-	Summary          string              `json:"summary"`
-	Status           string              `json:"status"`
-	RelatedTags      []boardNarrativeTagDTO `json:"related_tags"`
-	RelatedArticleIDs []uint64            `json:"related_article_ids"`
-	ScopeType        string              `json:"scope_type"`
-	ArticleCount     int                 `json:"article_count"`
-	PeriodDate       string              `json:"period_date"`
+	ID                uint64                 `json:"id"`
+	Title             string                 `json:"title"`
+	Summary           string                 `json:"summary"`
+	Status            string                 `json:"status"`
+	RelatedTags       []boardNarrativeTagDTO `json:"related_tags"`
+	RelatedArticleIDs []uint64               `json:"related_article_ids"`
+	ScopeType         string                 `json:"scope_type"`
+	ArticleCount      int                    `json:"article_count"`
+	PeriodDate        string                 `json:"period_date"`
 }
 
 func (h *semanticBoardHandler) getBoardNarratives(c *gin.Context) {
@@ -618,15 +778,15 @@ func (h *semanticBoardHandler) getBoardNarratives(c *gin.Context) {
 		}
 
 		data = append(data, boardNarrativeDTO{
-			ID:               s.ID,
-			Title:            s.Title,
-			Summary:          s.Summary,
-			Status:           s.Status,
-			RelatedTags:      relatedTags,
+			ID:                s.ID,
+			Title:             s.Title,
+			Summary:           s.Summary,
+			Status:            s.Status,
+			RelatedTags:       relatedTags,
 			RelatedArticleIDs: articleIDs,
-			ScopeType:        s.ScopeType,
-			ArticleCount:     len(articleIDs),
-			PeriodDate:       s.PeriodDate.Format("2006-01-02"),
+			ScopeType:         s.ScopeType,
+			ArticleCount:      len(articleIDs),
+			PeriodDate:        s.PeriodDate.Format("2006-01-02"),
 		})
 	}
 
@@ -1230,17 +1390,18 @@ func (h *semanticBoardHandler) suggestionsToDTO(ctx context.Context, suggestions
 
 func semanticBoardMatchConfigToMap(config SemanticBoardMatchConfig) gin.H {
 	return gin.H{
-		"semantic_board_match_sim_threshold":      config.SimThreshold,
-		"semantic_board_match_direct_hit_rate":    config.DirectHitRate,
-		"semantic_board_match_direct_max_sim":           config.DirectMaxSim,
-		"semantic_board_match_direct_max_sim_min_hits":   config.DirectMaxSimMinHits,
+		"semantic_board_match_sim_threshold":               config.SimThreshold,
+		"semantic_board_match_direct_hit_rate":             config.DirectHitRate,
+		"semantic_board_match_direct_max_sim":              config.DirectMaxSim,
+		"semantic_board_match_direct_max_sim_min_hits":     config.DirectMaxSimMinHits,
 		"semantic_board_match_direct_max_sim_min_hit_rate": config.DirectMaxSimMinHitRate,
-		"semantic_board_match_min_effective_sample":     config.MinEffectiveSample,
-		"semantic_board_match_hit_rate_sim_blend":       config.HitRateSimBlend,
-		"semantic_board_match_weight_sim":         config.WeightSim,
-		"semantic_board_match_weight_density":     config.WeightDensity,
-		"semantic_board_match_weighted_threshold": config.WeightedThreshold,
-		"semantic_board_match_max_boards":         config.MaxBoards,
+		"semantic_board_match_min_effective_sample":        config.MinEffectiveSample,
+		"semantic_board_match_hit_rate_sim_blend":          config.HitRateSimBlend,
+		"semantic_board_match_weight_sim":                  config.WeightSim,
+		"semantic_board_match_weight_density":              config.WeightDensity,
+		"semantic_board_match_weighted_threshold":          config.WeightedThreshold,
+		"semantic_board_match_max_boards":                  config.MaxBoards,
+		"semantic_board_match_direct_hit_min_overlap":       config.DirectHitMinOverlap,
 	}
 }
 
@@ -1270,7 +1431,7 @@ func (h *semanticBoardHandler) getAllConfigs(c *gin.Context) gin.H {
 
 func isSemanticBoardConfigKey(key string) bool {
 	switch key {
-	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards",
+	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards", "semantic_board_match_direct_hit_min_overlap",
 		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit":
 		return true
 	default:
@@ -1280,7 +1441,7 @@ func isSemanticBoardConfigKey(key string) bool {
 
 func validateSemanticBoardConfigValue(key string, value string) error {
 	switch key {
-	case "semantic_board_match_max_boards", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_min_effective_sample", "semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_hard_limit":
+	case "semantic_board_match_max_boards", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_min_effective_sample", "semantic_board_match_direct_hit_min_overlap", "semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_hard_limit":
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed <= 0 {
 			return fmt.Errorf("%s must be a positive integer", key)

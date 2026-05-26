@@ -131,6 +131,51 @@ export interface BoardArticleTag {
   score: number
 }
 
+export interface MatchDetailConfig {
+  sim_threshold: number
+  hit_rate_sim_blend: number
+  min_effective_sample: number
+  direct_hit_rate: number
+  direct_max_sim: number
+  direct_max_sim_min_hits: number
+  direct_max_sim_min_hit_rate: number
+  direct_hit_min_overlap: number
+  weight_sim: number
+  weight_density: number
+  weighted_threshold: number
+}
+
+export interface DirectHitAuxiliary {
+  tag_auxiliary_id: number
+  tag_label: string
+  board_auxiliary_id: number
+  board_label: string
+}
+
+export interface MatchDetailPair {
+  tag_auxiliary_id: number
+  tag_auxiliary_label: string
+  board_auxiliary_id: number
+  board_auxiliary_label: string
+  similarity: number
+  is_hit: boolean
+}
+
+export interface MatchDetailResponse {
+  topic_tag_id: number
+  topic_tag_label: string
+  semantic_board_id: number
+  match_reason: string
+  score: number
+  config: MatchDetailConfig
+  direct_hit_auxiliaries: DirectHitAuxiliary[]
+  tag_auxiliary_count: number
+  hits: number
+  hit_rate: number
+  max_similarity: number
+  pairs: MatchDetailPair[]
+}
+
 export interface BoardArticle {
   id: number
   title: string
@@ -252,6 +297,10 @@ export function useSemanticBoardsApi() {
     return apiClient.get(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
   }
 
+  async function getMatchDetail(boardId: number, tagId: number): Promise<ApiResponse<MatchDetailResponse>> {
+    return apiClient.get(`/semantic-boards/${boardId}/match-detail/${tagId}`)
+  }
+
   async function getBoardNarratives(id: number, params?: { days?: number }): Promise<ApiResponse<BoardNarrative[]>> {
     const query = params ? apiClient.buildQueryParams(params) : ''
     return apiClient.get(`/semantic-boards/${id}/narratives${query ? `?${query}` : ''}`)
@@ -289,6 +338,7 @@ export function useSemanticBoardsApi() {
     suggestAuxiliaries,
     suggestAuxiliariesForBoard,
     getBoardArticles,
+    getMatchDetail,
     getBoardNarratives,
     triggerBackfill,
     getBackfillStatus,

@@ -14,13 +14,13 @@ import (
 // SaveReport saves a daily report and its sections, replacing any existing
 // report for the same board and date.
 func SaveReport(report *BoardDailyReport, sections []DailyReportSection) error {
+	report.PeriodDate = normalizeReportDate(report.PeriodDate)
 	return database.DB.Transaction(func(tx *gorm.DB) error {
 		// Upsert report: find existing by (semantic_board_id, period_date)
 		var existing BoardDailyReport
-		err := tx.Where("semantic_board_id = ? AND period_date >= ? AND period_date < ?",
+		err := tx.Where("semantic_board_id = ? AND period_date = ?",
 			report.SemanticBoardID,
-			report.PeriodDate,
-			report.PeriodDate.Add(24*time.Hour)).
+			report.PeriodDate.Format("2006-01-02")).
 			First(&existing).Error
 
 		if err == nil {
@@ -70,12 +70,11 @@ func SaveReport(report *BoardDailyReport, sections []DailyReportSection) error {
 
 // GetReport retrieves a single daily report with its sections.
 func GetReport(boardID uint, date time.Time) (*BoardDailyReport, error) {
-	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
-	endOfDay := startOfDay.Add(24 * time.Hour)
+	reportDate := normalizeReportDate(date)
 
 	var report BoardDailyReport
-	err := database.DB.Where("semantic_board_id = ? AND period_date >= ? AND period_date < ?",
-		boardID, startOfDay, endOfDay).
+	err := database.DB.Where("semantic_board_id = ? AND period_date = ?",
+		boardID, reportDate.Format("2006-01-02")).
 		Preload("Sections", func(db *gorm.DB) *gorm.DB {
 			return db.Order("cluster_index ASC")
 		}).
@@ -102,16 +101,16 @@ func GetReportByID(id uint) (*BoardDailyReport, error) {
 
 // ReportListItem is a summary view for list endpoints.
 type ReportListItem struct {
-	ID              uint       `json:"id"`
-	SemanticBoardID uint       `json:"semantic_board_id"`
-	PeriodDate      string     `json:"period_date"`
-	Title           string     `json:"title"`
-	Summary         string     `json:"summary"`
-	ArticleCount    int        `json:"article_count"`
-	EventTagCount   int        `json:"event_tag_count"`
-	ClusterCount    int        `json:"cluster_count"`
-	Status          string     `json:"status"`
-	CreatedAt       time.Time  `json:"created_at"`
+	ID              uint      `json:"id"`
+	SemanticBoardID uint      `json:"semantic_board_id"`
+	PeriodDate      string    `json:"period_date"`
+	Title           string    `json:"title"`
+	Summary         string    `json:"summary"`
+	ArticleCount    int       `json:"article_count"`
+	EventTagCount   int       `json:"event_tag_count"`
+	ClusterCount    int       `json:"cluster_count"`
+	Status          string    `json:"status"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // ListReports returns recent reports for a board.
@@ -123,14 +122,13 @@ func ListReports(boardID uint, days int) ([]ReportListItem, error) {
 		days = 30
 	}
 
-	now := time.Now()
-	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	rangeStart := startOfToday.AddDate(0, 0, -(days - 1))
-	rangeEnd := startOfToday.Add(24 * time.Hour)
+	now := normalizeReportDate(time.Now())
+	rangeStart := now.AddDate(0, 0, -(days - 1))
+	rangeEnd := now.AddDate(0, 0, 1)
 
 	var reports []BoardDailyReport
 	err := database.DB.Where("semantic_board_id = ? AND period_date >= ? AND period_date < ?",
-		boardID, rangeStart, rangeEnd).
+		boardID, rangeStart.Format("2006-01-02"), rangeEnd.Format("2006-01-02")).
 		Order("period_date DESC").
 		Find(&reports).Error
 	if err != nil {
@@ -164,14 +162,13 @@ func ListReportsForAllBoards(days int) ([]BoardDailyReport, error) {
 		days = 30
 	}
 
-	now := time.Now()
-	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	rangeStart := startOfToday.AddDate(0, 0, -(days - 1))
-	rangeEnd := startOfToday.Add(24 * time.Hour)
+	now := normalizeReportDate(time.Now())
+	rangeStart := now.AddDate(0, 0, -(days - 1))
+	rangeEnd := now.AddDate(0, 0, 1)
 
 	var reports []BoardDailyReport
 	err := database.DB.Where("period_date >= ? AND period_date < ?",
-		rangeStart, rangeEnd).
+		rangeStart.Format("2006-01-02"), rangeEnd.Format("2006-01-02")).
 		Order("period_date DESC, semantic_board_id ASC").
 		Preload("Sections", func(db *gorm.DB) *gorm.DB {
 			return db.Order("cluster_index ASC")
@@ -188,6 +185,10 @@ func ListReportsForAllBoards(days int) ([]BoardDailyReport, error) {
 func SetReportStatus(id uint, status string) error {
 	return database.DB.Model(&BoardDailyReport{}).Where("id = ?", id).
 		Update("status", status).Error
+}
+
+func normalizeReportDate(date time.Time) time.Time {
+	return time.Date(date.Year(), date.Month(), date.Day(), 12, 0, 0, 0, time.UTC)
 }
 
 // collectBoardIDsForDate returns all board IDs that have active event tags on a date.
@@ -217,4 +218,3 @@ func CollectBoardIDsForDate(date time.Time) ([]uint, error) {
 	}
 	return ids, nil
 }
-

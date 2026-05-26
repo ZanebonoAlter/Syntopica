@@ -32,14 +32,23 @@ export function useDailyReportProgress() {
 
         if (msg.type === 'daily_report_progress') {
           if (!jobId.value) jobId.value = msg.job_id
+          const rawStatus = msg.status === 'processing' ? 'generating' : msg.status
+          const status: BoardProgress['status'] = ['waiting', 'generating', 'completed', 'failed'].includes(rawStatus) ? rawStatus : 'generating'
+          const boardId = Number(msg.board_id ?? 0)
+          const progressText = msg.progress ?? ''
           const bp: BoardProgress = {
-            board_id: msg.board_id,
-            board_name: msg.board_name,
-            status: msg.status,
+            board_id: boardId,
+            board_name: msg.board_name ?? `#${boardId}`,
+            status,
             saved: msg.saved ?? 0,
-            progress: msg.progress ?? '',
+            progress: progressText,
           }
-          progress.value.set(msg.board_id, bp)
+          progress.value.set(boardId, bp)
+          if (status === 'completed' && progressText === '1/1') {
+            done.value = true
+            totalSaved.value = bp.saved
+            totalBoards.value = 1
+          }
           // Trigger reactivity
           progress.value = new Map(progress.value)
         }

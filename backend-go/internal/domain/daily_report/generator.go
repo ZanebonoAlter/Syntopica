@@ -359,7 +359,7 @@ func parseThreadsResponse(content string, tags []TagInput) ([]Thread, error) {
 
 // GenerateDailyReport is the main pipeline that generates a daily report for a board.
 func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*BoardDailyReport, []DailyReportSection, error) {
-	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+	startOfDay := normalizeReportDate(date)
 
 	// Step 1: Collect board event tags
 	tags, articleCounts, err := collectBoardTags(boardID, date)
@@ -472,10 +472,10 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 		title = hr.data[0].Title
 	}
 
-	// Summary: use dynamics text (truncated)
+	// Summary: use dynamics text (truncated by rune to avoid breaking multi-byte UTF-8)
 	summary := dynamics
-	if len(summary) > 200 {
-		summary = summary[:200]
+	if len([]rune(summary)) > 200 {
+		summary = string([]rune(summary)[:200])
 	}
 
 	clustersJSON, _ := json.Marshal(clusters)
@@ -660,7 +660,7 @@ func collectBoardTags(boardID uint, date time.Time) ([]TagInput, [][]uint, error
 func findPreviousReport(boardID uint, date time.Time) *BoardDailyReport {
 	var report BoardDailyReport
 	err := database.DB.Where("semantic_board_id = ? AND period_date < ? AND status = ?",
-		boardID, date, "completed").
+		boardID, normalizeReportDate(date).Format("2006-01-02"), "completed").
 		Order("period_date DESC").
 		Preload("Sections").
 		First(&report).Error

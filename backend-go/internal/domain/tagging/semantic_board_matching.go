@@ -37,6 +37,7 @@ type SemanticBoardMatchConfig struct {
 	WeightDensity          float64
 	WeightedThreshold      float64
 	MaxBoards              int
+	DirectHitMinOverlap    int
 }
 
 type SemanticBoardMatchResult struct {
@@ -48,6 +49,7 @@ type SemanticBoardMatchResult struct {
 type boardAuxiliaryLabel struct {
 	BoardID          uint
 	AuxiliaryLabelID uint
+	Label            string
 	Embedding        *string
 }
 
@@ -97,9 +99,21 @@ func (s *SemanticBoardMatchingService) loadBoardAuxiliaries(ctx context.Context)
 	var labels []boardAuxiliaryLabel
 	err := s.db.WithContext(ctx).
 		Table("board_composition").
-		Select("board_composition.board_id, board_composition.auxiliary_label_id, auxiliary.embedding").
+		Select("board_composition.board_id, board_composition.auxiliary_label_id, auxiliary.label, auxiliary.embedding").
 		Joins("JOIN semantic_labels AS board ON board.id = board_composition.board_id AND board.label_type = ? AND board.status = ?", "board", "active").
 		Joins("JOIN semantic_labels AS auxiliary ON auxiliary.id = board_composition.auxiliary_label_id AND auxiliary.label_type = ? AND auxiliary.status = ?", "auxiliary", "active").
+		Scan(&labels).Error
+	return labels, err
+}
+
+func (s *SemanticBoardMatchingService) loadBoardAuxiliariesByBoardID(ctx context.Context, boardID uint) ([]boardAuxiliaryLabel, error) {
+	var labels []boardAuxiliaryLabel
+	err := s.db.WithContext(ctx).
+		Table("board_composition").
+		Select("board_composition.board_id, board_composition.auxiliary_label_id, auxiliary.label, auxiliary.embedding").
+		Joins("JOIN semantic_labels AS board ON board.id = board_composition.board_id AND board.label_type = ? AND board.status = ?", "board", "active").
+		Joins("JOIN semantic_labels AS auxiliary ON auxiliary.id = board_composition.auxiliary_label_id AND auxiliary.label_type = ? AND auxiliary.status = ?", "auxiliary", "active").
+		Where("board_composition.board_id = ?", boardID).
 		Scan(&labels).Error
 	return labels, err
 }
@@ -125,7 +139,8 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 
 	matches := make([]SemanticBoardMatchResult, 0, len(grouped))
 	for boardID, auxiliaries := range grouped {
-		if hasDirectSemanticBoardHit(tagAuxiliaryIDs, auxiliaries) {
+		overlapCount := countDirectSemanticBoardHits(tagAuxiliaryIDs, auxiliaries)
+		if overlapCount >= config.DirectHitMinOverlap {
 			matches = append(matches, SemanticBoardMatchResult{SemanticBoardID: boardID, Score: 1.0, MatchReason: "direct_hit"})
 			continue
 		}
@@ -169,13 +184,107 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 	return matches
 }
 
-func hasDirectSemanticBoardHit(tagAuxiliaryIDs map[uint]struct{}, boardAuxiliaries []boardAuxiliaryLabel) bool {
-	for _, auxiliary := range boardAuxiliaries {
-		if _, ok := tagAuxiliaryIDs[auxiliary.AuxiliaryLabelID]; ok {
-			return true
+type matchDetailPair struct {
+	TagAuxiliaryID      uint
+	TagAuxiliaryLabel   string
+	BoardAuxiliaryID    uint
+	BoardAuxiliaryLabel string
+	Similarity          float64
+	IsHit               bool
+}
+
+type computedMatchDetail struct {
+	Hits          int
+	HitRate       float64
+	MaxSimilarity float64
+	Pairs         []matchDetailPair
+}
+
+func computeMatchDetail(tagAuxiliaries []models.SemanticLabel, boardAuxiliaries []boardAuxiliaryLabel, config SemanticBoardMatchConfig) computedMatchDetail {
+	detail := computedMatchDetail{Pairs: []matchDetailPair{}}
+	if len(tagAuxiliaries) == 0 || len(boardAuxiliaries) == 0 {
+		return detail
+	}
+
+	boardVectors := make([]struct {
+		label  boardAuxiliaryLabel
+		vector []float64
+	}, 0, len(boardAuxiliaries))
+	for _, boardAuxiliary := range boardAuxiliaries {
+		if boardAuxiliary.Embedding == nil {
+			continue
+		}
+		vector, err := parsePgVector(*boardAuxiliary.Embedding)
+		if err == nil {
+			boardVectors = append(boardVectors, struct {
+				label  boardAuxiliaryLabel
+				vector []float64
+			}{label: boardAuxiliary, vector: vector})
 		}
 	}
-	return false
+	if len(boardVectors) == 0 {
+		return detail
+	}
+
+	for _, tagAuxiliary := range tagAuxiliaries {
+		if tagAuxiliary.Embedding == nil {
+			continue
+		}
+		tagVector, err := parsePgVector(*tagAuxiliary.Embedding)
+		if err != nil {
+			continue
+		}
+
+		bestSimilarity := -1.0
+		var bestBoard boardAuxiliaryLabel
+		for _, boardVector := range boardVectors {
+			similarity, err := airouter.CosineSimilarity(tagVector, boardVector.vector)
+			if err != nil {
+				continue
+			}
+			if similarity > bestSimilarity {
+				bestSimilarity = similarity
+				bestBoard = boardVector.label
+			}
+			if similarity > detail.MaxSimilarity {
+				detail.MaxSimilarity = similarity
+			}
+		}
+		if bestSimilarity < 0 {
+			continue
+		}
+
+		isHit := bestSimilarity >= config.SimThreshold
+		if isHit {
+			detail.Hits++
+		}
+		detail.Pairs = append(detail.Pairs, matchDetailPair{
+			TagAuxiliaryID:      tagAuxiliary.ID,
+			TagAuxiliaryLabel:   tagAuxiliary.Label,
+			BoardAuxiliaryID:    bestBoard.AuxiliaryLabelID,
+			BoardAuxiliaryLabel: bestBoard.Label,
+			Similarity:          bestSimilarity,
+			IsHit:               isHit,
+		})
+	}
+
+	if len(tagAuxiliaries) > 0 {
+		denominator := math.Max(float64(len(tagAuxiliaries)), float64(config.MinEffectiveSample))
+		if denominator > 0 {
+			detail.HitRate = float64(detail.Hits) / denominator
+		}
+	}
+	return detail
+}
+
+func countDirectSemanticBoardHits(tagAuxiliaryIDs map[uint]struct{}, boardAuxiliaries []boardAuxiliaryLabel) int {
+	count := 0
+	for _, auxiliary := range boardAuxiliaries {
+		if _, ok := tagAuxiliaryIDs[auxiliary.AuxiliaryLabelID]; ok {
+			count++
+		}
+	}
+	return count
 }
 
 func parseBoardAuxiliaryVectors(auxiliaries []boardAuxiliaryLabel) [][]float64 {
@@ -245,6 +354,7 @@ func (s *SemanticBoardMatchingService) loadConfig(ctx context.Context) SemanticB
 		WeightDensity:          0.4,
 		WeightedThreshold:      0.6,
 		MaxBoards:              3,
+		DirectHitMinOverlap:    2,
 	}
 
 	var settings []models.AISettings
@@ -260,6 +370,7 @@ func (s *SemanticBoardMatchingService) loadConfig(ctx context.Context) SemanticB
 		"semantic_board_match_weight_density",
 		"semantic_board_match_weighted_threshold",
 		"semantic_board_match_max_boards",
+		"semantic_board_match_direct_hit_min_overlap",
 	}).Find(&settings).Error; err != nil {
 		return config
 	}
@@ -287,6 +398,8 @@ func (s *SemanticBoardMatchingService) loadConfig(ctx context.Context) SemanticB
 			config.WeightedThreshold = parseSemanticBoardMatchFloat(setting.Value, config.WeightedThreshold)
 		case "semantic_board_match_max_boards":
 			config.MaxBoards = parseSemanticBoardMatchInt(setting.Value, config.MaxBoards)
+		case "semantic_board_match_direct_hit_min_overlap":
+			config.DirectHitMinOverlap = parseSemanticBoardMatchInt(setting.Value, config.DirectHitMinOverlap)
 		}
 	}
 	return config

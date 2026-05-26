@@ -343,6 +343,10 @@ Response `data`：
   "semantic_board_match_sim_threshold": 0.6,
   "semantic_board_match_direct_hit_rate": 0.5,
   "semantic_board_match_direct_max_sim": 0.8,
+  "semantic_board_match_direct_max_sim_min_hits": 2,
+  "semantic_board_match_direct_max_sim_min_hit_rate": 0.3,
+  "semantic_board_match_min_effective_sample": 3,
+  "semantic_board_match_hit_rate_sim_blend": 0.7,
   "semantic_board_match_weight_sim": 0.6,
   "semantic_board_match_weight_density": 0.4,
   "semantic_board_match_weighted_threshold": 0.6,
@@ -364,6 +368,53 @@ Request：
 ```
 
 Response `data`：返回更新后的完整配置。
+
+## 匹配详情
+
+### GET `/semantic-boards/:id/match-detail/:tagId`
+
+按需实时计算某个 topic tag 与指定 SemanticBoard 的匹配明细。该接口不会修改匹配结果；`match_reason` 和 `score` 以 `topic_tag_board_labels` 中已存储值为准，`config` 和 `pairs` 用当前配置实时计算，便于解释“为什么这个 tag 属于这个板块”。
+
+Response `data`：
+
+```json
+{
+  "topic_tag_id": 42,
+  "topic_tag_label": "人工智能监管政策",
+  "semantic_board_id": 7,
+  "match_reason": "hit_rate",
+  "score": 0.845,
+  "config": {
+    "sim_threshold": 0.72,
+    "hit_rate_sim_blend": 0.7,
+    "min_effective_sample": 3,
+    "direct_hit_rate": 0.5,
+    "direct_max_sim": 0.8,
+    "direct_max_sim_min_hits": 2,
+    "direct_max_sim_min_hit_rate": 0.3,
+    "weight_sim": 0.6,
+    "weight_density": 0.4,
+    "weighted_threshold": 0.6
+  },
+  "direct_hit_auxiliaries": [],
+  "tag_auxiliary_count": 3,
+  "hits": 2,
+  "hit_rate": 0.6667,
+  "max_similarity": 0.92,
+  "pairs": [
+    {
+      "tag_auxiliary_id": 101,
+      "tag_auxiliary_label": "AI安全监管",
+      "board_auxiliary_id": 205,
+      "board_auxiliary_label": "AI安全",
+      "similarity": 0.92,
+      "is_hit": true
+    }
+  ]
+}
+```
+
+`direct_hit` 场景下，`direct_hit_auxiliaries` 会列出精确命中的辅助标签对，`pairs` 可为空。
 
 ## Tag 关联查询
 

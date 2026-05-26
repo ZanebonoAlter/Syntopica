@@ -132,6 +132,7 @@ func TestSemanticLabelBoardSystemMigrationDocumentsSchemaCutover(t *testing.T) {
 		`{"semantic_board_match_weight_sim", "0.6"`,
 		`{"semantic_board_match_weight_density", "0.4"`,
 		`{"semantic_board_match_weighted_threshold", "0.6"`,
+		`{"semantic_board_match_direct_hit_min_overlap", "2"`,
 		`{"semantic_board_match_max_boards", "3"`,
 		`{"semantic_board_upgrade_ref_count_threshold", "5"`,
 		`{"semantic_board_upgrade_cluster_distance_threshold", "0.35"`,

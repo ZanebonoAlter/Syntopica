@@ -5,15 +5,16 @@
 ## Requirements
 
 ### Requirement: SemanticBoard 派生每日 NarrativeBoard
-系统 SHALL 从全局共享的 SemanticBoard 派生每日 NarrativeBoard。生成时，系统 SHALL 在指定日期和 scope 范围内收集归属于该 SemanticBoard 的 active event tags，并为每个有事件的 SemanticBoard 创建对应 NarrativeBoard。
+系统 SHALL 从全局共享的 SemanticBoard 派生每日 NarrativeBoard。生成时，系统 SHALL 收集归属于该 SemanticBoard 的所有 active event tags（不区分 feed category），并为每个有事件的 SemanticBoard 创建一份 NarrativeBoard（scope_type="board"）。
 
-#### Scenario: 分类范围生成每日板
-- **WHEN** feed category #5 在 2026-05-21 有 4 个 event tags 归属于 SemanticBoard "AI与机器学习"
-- **THEN** 系统 SHALL 创建一个 scope_type="feed_category"、scope_category_id=5、semantic_board_id 指向该 SemanticBoard 的 NarrativeBoard
+#### Scenario: 单 board 单日单叙事板
+- **WHEN** SemanticBoard "AI与机器学习" 在 2026-05-21 有来自科技和财经两个 category 的 8 个 event tags
+- **THEN** 系统 SHALL 创建一个 scope_type="board"、semantic_board_id 指向该 SemanticBoard 的 NarrativeBoard，event_tag_ids 包含全部 8 个 event tags
+- **NOTE** `CollectSemanticBoardNarrativeInputs` 需移除 scopeType/categoryID 参数，不再按 feed category 过滤 event tags；`matchPreviousSemanticBoard` 仅按 semantic_board_id + 前一日日期匹配续接，不再按 scope + category 过滤
 
-#### Scenario: 全局范围生成每日板
-- **WHEN** 全局范围在 2026-05-21 有 event tags 归属于 SemanticBoard "能源安全"
-- **THEN** 系统 SHALL 创建一个 scope_type="global" 的 NarrativeBoard
+#### Scenario: 多个 board 各自生成叙事板
+- **WHEN** SemanticBoard "AI与机器学习" 有 8 个 event tags，SemanticBoard "能源安全" 有 3 个 event tags
+- **THEN** 系统 SHALL 为每个 SemanticBoard 各创建一份 NarrativeBoard
 
 ### Requirement: 取消 abstract tree 热点板路径
 系统 SHALL NOT 通过 abstract tag tree、topic_tag_relations 或 abstract_tag_id 创建热点 NarrativeBoard。所有每日 NarrativeBoard SHALL 由 SemanticBoard 派生。
@@ -37,10 +38,10 @@
 - **THEN** 当日 narrative 生成 SHALL 允许该 event tag 出现在两个 NarrativeBoard 的 event_tag_ids 中
 
 ### Requirement: NarrativeBoard 通过 semantic_board_id 续接
-系统 SHALL 在 `narrative_boards` 中使用 `semantic_board_id` 关联 SemanticBoard，并按 semantic_board_id + scope + 前一日日期匹配 prev_board_ids。
+系统 SHALL 在 `narrative_boards` 中使用 `semantic_board_id` 关联 SemanticBoard，并按 semantic_board_id + 前一日日期匹配 prev_board_ids，不再按 scope + category 区分续接。
 
 #### Scenario: 同一 SemanticBoard 连续两日续接
-- **WHEN** 2026-05-20 和 2026-05-21 都生成了 semantic_board_id=42、scope_type="global" 的 NarrativeBoard
+- **WHEN** 2026-05-20 和 2026-05-21 都生成了 semantic_board_id=42 的 NarrativeBoard
 - **THEN** 2026-05-21 的 NarrativeBoard.prev_board_ids SHALL 包含 2026-05-20 的对应 board id
 
 ### Requirement: Board 叙事上下文来自 SemanticBoard

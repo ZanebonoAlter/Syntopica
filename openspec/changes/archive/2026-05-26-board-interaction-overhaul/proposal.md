@@ -22,6 +22,7 @@
 - `board-narrative-timeline`: 板块叙事时间线 API + 前端组件，取消 scope 分类，叙事以"小文章卡片"形式嵌入板块详情页
 - `refresh-parallelization`: 后端 refresh-all 并发化 + 前端 onMounted 并行化
 - `match-score-visualization`: tag chip 带颜色和分数的文章行右侧匹配信息展示
+- `match-detail-ondemand`: 匹配详情按需实时计算 API + 右侧面板展示辅助标签逐对匹配明细 + KaTeX 公式渲染
 - `daily-report-system`: 日报生成流水线（去重→分组→并行生成→组装），新数据模型，异步 WebSocket 进度推送，替代旧叙事系统
 
 ### Modified Capabilities
@@ -34,7 +35,7 @@
 ## Impact
 
 - **后端**: `semantic_board_matching.go` 匹配规则改造；`semantic_board_handler.go` 新增 2 个路由 + DTO 增强；`service.go` + `board_narrative_generator.go` 叙事生成逻辑取消 scope；`narrative_board_generator.go` 叙事板创建逻辑调整；`feed/handler.go` refreshAllFeedsWorker 并发改造；`FeedLayoutShell.vue` onMounted 并行化；新增 `daily_report` 包（generator.go, cluster.go, models.go, handler.go）；narrative handler 改异步；`narrative_summary` scheduler_task 复用
-- **前端**: `TagsPage.vue` 集成 BoardDailyReportTimeline + 文章列表改造 + Tab 切换（板块内容/日报/文章）；新增 `BoardDailyReportTimeline.vue` 组件替代 BoardNarrativeTimeline；`UpgradeSuggestionPanel.vue` #id→label；`TopicGraphPage.vue` 删除叙事 tab 和 NarrativePanel 引用；`FeedLayoutShell.vue` onMounted Promise.all；`TagsPage.vue` 文章行匹配信息展示；新增 `useDailyReportProgress.ts` composable；`NarrativeGenerateDialog.vue` 改为触发日报生成并显示进度板
+- **前端**: `TagsPage.vue` 集成 BoardDailyReportTimeline + 文章列表改造 + Tab 切换（板块内容/日报/文章）；新增 `BoardDailyReportTimeline.vue` 组件替代 BoardNarrativeTimeline；`UpgradeSuggestionPanel.vue` #id→label；`TopicGraphPage.vue` 删除叙事 tab 和 NarrativePanel 引用；`FeedLayoutShell.vue` onMounted Promise.all；`TagsPage.vue` 文章行匹配信息展示；新增 `useDailyReportProgress.ts` composable；`NarrativeGenerateDialog.vue` 改为触发日报生成并显示进度板；新增 `MatchDetailPanel.vue` 匹配详情面板（含 KaTeX 公式）和 `KaTeXRender.vue` 通用组件
 - **数据模型**: `SemanticBoardMatchConfig` 新增 2 个配置项；`NarrativeBoard.scope_type` 语义变更（统一为 board 维度）；旧 scope 数据需兼容处理；新增 `board_daily_reports` + `daily_report_sections` 表；废弃 `narrative_boards` + `narrative_summaries` 表的写入（旧数据保留只读）
-- **API**: 新增 `GET /semantic-boards/:id/articles`、`GET /semantic-boards/:id/narratives`（旧叙事数据只读）；升级建议响应格式变更（非破坏性新增字段）；新增 `POST /api/daily-reports/generate`、`GET /api/semantic-boards/:id/daily-reports`、`GET /api/daily-reports/:id`；新增 WS 消息类型 `daily_report_progress`/`daily_report_done`
+- **API**: 新增 `GET /semantic-boards/:id/articles`、`GET /semantic-boards/:id/narratives`（旧叙事数据只读）；升级建议响应格式变更（非破坏性新增字段）；新增 `POST /api/daily-reports/generate`、`GET /api/semantic-boards/:id/daily-reports`、`GET /api/daily-reports/:id`；新增 WS 消息类型 `daily_report_progress`/`daily_report_done`；新增 `GET /semantic-boards/:id/match-detail/:tagId` 按需匹配详情
 - **删除**: /topics 页面叙事 tab、NarrativePanel.vue、相关 scope 切换逻辑
