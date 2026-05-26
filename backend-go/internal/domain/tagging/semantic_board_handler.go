@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -104,8 +105,13 @@ type semanticBoardUpgradeSuggestionDTO struct {
 	BoardLabel        string                       `json:"board_label"`
 	Description       string                       `json:"description"`
 	AuxiliaryLabelIDs []uint                       `json:"auxiliary_label_ids"`
-	TargetBoardID     *uint                        `json:"target_board_id,omitempty"`
-	Reason            string                       `json:"reason"`
+	AuxiliaryLabels   []struct {
+		ID    uint   `json:"id"`
+		Label string `json:"label"`
+	} `json:"auxiliary_labels"`
+	TargetBoardID    *uint  `json:"target_board_id,omitempty"`
+	TargetBoardLabel string `json:"target_board_label,omitempty"`
+	Reason           string `json:"reason"`
 }
 
 type semanticBoardUpgradeCandidateDTO struct {
@@ -150,6 +156,9 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		boards.PUT("/:id", handler.updateSemanticBoard)
 		boards.DELETE("/:id", handler.deleteSemanticBoard)
 		boards.GET("/:id/suggest-auxiliaries", handler.suggestAuxiliariesForBoard)
+		boards.GET("/:id/articles", handler.getBoardArticles)
+		boards.GET("/:id/match-detail/:tagId", handler.getTagMatchDetail)
+		boards.GET("/:id/narratives", handler.getBoardNarratives)
 		boards.GET("/:id/composition", handler.getBoardComposition)
 		boards.POST("/:id/composition", handler.addBoardComposition)
 		boards.DELETE("/:id/composition/:auxiliary_label_id", handler.removeBoardComposition)
@@ -297,6 +306,491 @@ func (h *semanticBoardHandler) deleteSemanticBoard(c *gin.Context) {
 		return
 	}
 	respondOK(c, gin.H{"id": id})
+}
+
+type boardArticleTagDTO struct {
+	ID          uint    `json:"id"`
+	Label       string  `json:"label"`
+	Category    string  `json:"category"`
+	MatchReason string  `json:"match_reason"`
+	Score       float64 `json:"score"`
+}
+
+type matchDetailConfigDTO struct {
+	SimThreshold           float64 `json:"sim_threshold"`
+	HitRateSimBlend        float64 `json:"hit_rate_sim_blend"`
+	MinEffectiveSample     int     `json:"min_effective_sample"`
+	DirectHitRate          float64 `json:"direct_hit_rate"`
+	DirectMaxSim           float64 `json:"direct_max_sim"`
+	DirectMaxSimMinHits    int     `json:"direct_max_sim_min_hits"`
+	DirectMaxSimMinHitRate float64 `json:"direct_max_sim_min_hit_rate"`
+	WeightSim              float64 `json:"weight_sim"`
+	WeightDensity          float64 `json:"weight_density"`
+	WeightedThreshold      float64 `json:"weighted_threshold"`
+	DirectHitMinOverlap    int     `json:"direct_hit_min_overlap"`
+}
+
+type directHitAuxiliaryDTO struct {
+	TagAuxiliaryID   uint   `json:"tag_auxiliary_id"`
+	TagLabel         string `json:"tag_label"`
+	BoardAuxiliaryID uint   `json:"board_auxiliary_id"`
+	BoardLabel       string `json:"board_label"`
+}
+
+type matchDetailPairDTO struct {
+	TagAuxiliaryID      uint    `json:"tag_auxiliary_id"`
+	TagAuxiliaryLabel   string  `json:"tag_auxiliary_label"`
+	BoardAuxiliaryID    uint    `json:"board_auxiliary_id"`
+	BoardAuxiliaryLabel string  `json:"board_auxiliary_label"`
+	Similarity          float64 `json:"similarity"`
+	IsHit               bool    `json:"is_hit"`
+}
+
+type matchDetailResponse struct {
+	TopicTagID           uint                    `json:"topic_tag_id"`
+	TopicTagLabel        string                  `json:"topic_tag_label"`
+	SemanticBoardID      uint                    `json:"semantic_board_id"`
+	MatchReason          string                  `json:"match_reason"`
+	Score                float64                 `json:"score"`
+	Config               matchDetailConfigDTO    `json:"config"`
+	DirectHitAuxiliaries []directHitAuxiliaryDTO `json:"direct_hit_auxiliaries"`
+	TagAuxiliaryCount    int                     `json:"tag_auxiliary_count"`
+	Hits                 int                     `json:"hits"`
+	HitRate              float64                 `json:"hit_rate"`
+	MaxSimilarity        float64                 `json:"max_similarity"`
+	Pairs                []matchDetailPairDTO    `json:"pairs"`
+}
+
+func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
+	boardID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 20
+	}
+
+	feedID, _ := strconv.Atoi(c.Query("feed_id"))
+	auxiliaryLabelID, _ := strconv.Atoi(c.Query("auxiliary_label_id"))
+	startDate := strings.TrimSpace(c.Query("start_date"))
+	endDate := strings.TrimSpace(c.Query("end_date"))
+
+	ctx := c.Request.Context()
+
+	// Step 1: Get tag IDs belonging to this board
+	var boardTagIDs []uint
+	if err := h.db.WithContext(ctx).Model(&models.TopicTagBoardLabel{}).
+		Select("topic_tag_id").
+		Where("semantic_board_id = ?", boardID).
+		Pluck("topic_tag_id", &boardTagIDs).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if len(boardTagIDs) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success":    true,
+			"data":       []any{},
+			"pagination": gin.H{"page": page, "per_page": perPage, "total": 0, "pages": 0},
+		})
+		return
+	}
+
+	// Step 2: Query articles
+	query := h.db.WithContext(ctx).Table("articles").
+		Select("DISTINCT articles.*, feeds.title AS feed_name").
+		Joins("JOIN article_topic_tags att ON att.article_id = articles.id AND att.topic_tag_id IN ?", boardTagIDs).
+		Joins("JOIN feeds ON feeds.id = articles.feed_id")
+
+	if feedID > 0 {
+		query = query.Where("articles.feed_id = ?", feedID)
+	}
+	if startDate != "" {
+		query = query.Where("DATE(articles.pub_date) >= ?", startDate)
+	}
+	if endDate != "" {
+		// end_date is inclusive: include the full day
+		t, err := time.Parse("2006-01-02", endDate)
+		if err == nil {
+			nextDay := t.AddDate(0, 0, 1).Format("2006-01-02")
+			query = query.Where("DATE(articles.pub_date) < ?", nextDay)
+		}
+	}
+	if auxiliaryLabelID > 0 {
+		query = query.Where("articles.id IN (SELECT att_aux.article_id FROM article_topic_tags att_aux WHERE att_aux.topic_tag_id IN (SELECT topic_tag_id FROM topic_tag_semantic_labels WHERE semantic_label_id = ?))", auxiliaryLabelID)
+	}
+
+	// Count
+	var total int64
+	countQuery := h.db.WithContext(ctx).Table("articles").
+		Joins("JOIN article_topic_tags att ON att.article_id = articles.id AND att.topic_tag_id IN ?", boardTagIDs)
+	if feedID > 0 {
+		countQuery = countQuery.Where("articles.feed_id = ?", feedID)
+	}
+	if startDate != "" {
+		countQuery = countQuery.Where("DATE(articles.pub_date) >= ?", startDate)
+	}
+	if endDate != "" {
+		t, err := time.Parse("2006-01-02", endDate)
+		if err == nil {
+			nextDay := t.AddDate(0, 0, 1).Format("2006-01-02")
+			countQuery = countQuery.Where("DATE(articles.pub_date) < ?", nextDay)
+		}
+	}
+	if auxiliaryLabelID > 0 {
+		countQuery = countQuery.Where("articles.id IN (SELECT att_aux.article_id FROM article_topic_tags att_aux WHERE att_aux.topic_tag_id IN (SELECT topic_tag_id FROM topic_tag_semantic_labels WHERE semantic_label_id = ?))", auxiliaryLabelID)
+	}
+	countQuery.Select("COUNT(DISTINCT articles.id)").Scan(&total)
+
+	// Fetch page
+	offset := (page - 1) * perPage
+	query = query.Order("articles.pub_date DESC").Offset(offset).Limit(perPage)
+
+	type articleRow struct {
+		models.Article
+		FeedName string `gorm:"column:feed_name"`
+	}
+	var articles []articleRow
+	if err := query.Scan(&articles).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	if len(articles) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success":    true,
+			"data":       []any{},
+			"pagination": gin.H{"page": page, "per_page": perPage, "total": total, "pages": 0},
+		})
+		return
+	}
+
+	// Step 3: Batch query filtered_tags for current page articles
+	articleIDs := make([]uint, len(articles))
+	for i, a := range articles {
+		articleIDs[i] = a.ID
+	}
+
+	type filteredTagRow struct {
+		ArticleID   uint    `gorm:"column:article_id"`
+		ID          uint    `gorm:"column:id"`
+		Label       string  `gorm:"column:label"`
+		Category    string  `gorm:"column:category"`
+		MatchReason string  `gorm:"column:match_reason"`
+		Score       float64 `gorm:"column:score"`
+	}
+	var tagRows []filteredTagRow
+	if err := h.db.WithContext(ctx).Table("article_topic_tags att").
+		Select("att.article_id, tt.id, tt.label, tt.category, tbl.match_reason, tbl.score").
+		Joins("JOIN topic_tags tt ON tt.id = att.topic_tag_id").
+		Joins("JOIN topic_tag_board_labels tbl ON tbl.topic_tag_id = tt.id AND tbl.semantic_board_id = ?", boardID).
+		Where("att.article_id IN ?", articleIDs).
+		Where("tt.status = ?", "active").
+		Find(&tagRows).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// Group by article_id
+	tagMap := make(map[uint][]boardArticleTagDTO)
+	for _, tr := range tagRows {
+		tagMap[tr.ArticleID] = append(tagMap[tr.ArticleID], boardArticleTagDTO{
+			ID:          tr.ID,
+			Label:       tr.Label,
+			Category:    tr.Category,
+			MatchReason: tr.MatchReason,
+			Score:       tr.Score,
+		})
+	}
+
+	// Step 4: Assemble response
+	data := make([]gin.H, len(articles))
+	for i, a := range articles {
+		articleData := a.Article.ToDict()
+		articleData["feed_name"] = a.FeedName
+		articleData["filtered_tags"] = tagMap[a.ID]
+		if articleData["filtered_tags"] == nil {
+			articleData["filtered_tags"] = []boardArticleTagDTO{}
+		}
+		data[i] = articleData
+	}
+
+	pages := int(total) / perPage
+	if int(total)%perPage > 0 {
+		pages++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    data,
+		"pagination": gin.H{
+			"page":     page,
+			"per_page": perPage,
+			"total":    total,
+			"pages":    pages,
+		},
+	})
+}
+
+func (h *semanticBoardHandler) getTagMatchDetail(c *gin.Context) {
+	boardID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	tagID, ok := parseUintParam(c, "tagId")
+	if !ok {
+		return
+	}
+
+	ctx := c.Request.Context()
+	var stored models.TopicTagBoardLabel
+	if err := h.db.WithContext(ctx).
+		Where("semantic_board_id = ? AND topic_tag_id = ?", boardID, tagID).
+		First(&stored).Error; err != nil {
+		respondError(c, http.StatusNotFound, fmt.Errorf("match detail not found"))
+		return
+	}
+
+	var tag models.TopicTag
+	if err := h.db.WithContext(ctx).First(&tag, tagID).Error; err != nil {
+		respondError(c, http.StatusNotFound, fmt.Errorf("topic tag not found"))
+		return
+	}
+
+	matcher := NewSemanticBoardMatchingService(h.db)
+	tagAuxiliaries, err := matcher.loadTagAuxiliaries(ctx, tagID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	boardAuxiliaries, err := matcher.loadBoardAuxiliariesByBoardID(ctx, boardID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	config := matcher.loadConfig(ctx)
+	directHits := buildDirectHitAuxiliaryDTOs(tagAuxiliaries, boardAuxiliaries)
+	detail := computeMatchDetail(tagAuxiliaries, boardAuxiliaries, config)
+	pairs := matchDetailPairsToDTOs(detail.Pairs)
+	hits := detail.Hits
+	hitRate := detail.HitRate
+	maxSimilarity := detail.MaxSimilarity
+
+	respondOK(c, matchDetailResponse{
+		TopicTagID:           tag.ID,
+		TopicTagLabel:        tag.Label,
+		SemanticBoardID:      boardID,
+		MatchReason:          stored.MatchReason,
+		Score:                stored.Score,
+		Config:               matchDetailConfigToDTO(config),
+		DirectHitAuxiliaries: directHits,
+		TagAuxiliaryCount:    len(tagAuxiliaries),
+		Hits:                 hits,
+		HitRate:              hitRate,
+		MaxSimilarity:        maxSimilarity,
+		Pairs:                pairs,
+	})
+}
+
+func buildDirectHitAuxiliaryDTOs(tagAuxiliaries []models.SemanticLabel, boardAuxiliaries []boardAuxiliaryLabel) []directHitAuxiliaryDTO {
+	byID := make(map[uint]models.SemanticLabel, len(tagAuxiliaries))
+	for _, tagAuxiliary := range tagAuxiliaries {
+		byID[tagAuxiliary.ID] = tagAuxiliary
+	}
+
+	directHits := []directHitAuxiliaryDTO{}
+	for _, boardAuxiliary := range boardAuxiliaries {
+		tagAuxiliary, ok := byID[boardAuxiliary.AuxiliaryLabelID]
+		if !ok {
+			continue
+		}
+		directHits = append(directHits, directHitAuxiliaryDTO{
+			TagAuxiliaryID:   tagAuxiliary.ID,
+			TagLabel:         tagAuxiliary.Label,
+			BoardAuxiliaryID: boardAuxiliary.AuxiliaryLabelID,
+			BoardLabel:       boardAuxiliary.Label,
+		})
+	}
+	return directHits
+}
+
+func matchDetailPairsToDTOs(pairs []matchDetailPair) []matchDetailPairDTO {
+	dtos := make([]matchDetailPairDTO, 0, len(pairs))
+	for _, pair := range pairs {
+		dtos = append(dtos, matchDetailPairDTO{
+			TagAuxiliaryID:      pair.TagAuxiliaryID,
+			TagAuxiliaryLabel:   pair.TagAuxiliaryLabel,
+			BoardAuxiliaryID:    pair.BoardAuxiliaryID,
+			BoardAuxiliaryLabel: pair.BoardAuxiliaryLabel,
+			Similarity:          pair.Similarity,
+			IsHit:               pair.IsHit,
+		})
+	}
+	return dtos
+}
+
+func matchDetailConfigToDTO(config SemanticBoardMatchConfig) matchDetailConfigDTO {
+	return matchDetailConfigDTO{
+		SimThreshold:           config.SimThreshold,
+		HitRateSimBlend:        config.HitRateSimBlend,
+		MinEffectiveSample:     config.MinEffectiveSample,
+		DirectHitRate:          config.DirectHitRate,
+		DirectMaxSim:           config.DirectMaxSim,
+		DirectMaxSimMinHits:    config.DirectMaxSimMinHits,
+		DirectMaxSimMinHitRate: config.DirectMaxSimMinHitRate,
+		WeightSim:              config.WeightSim,
+		WeightDensity:          config.WeightDensity,
+		WeightedThreshold:      config.WeightedThreshold,
+		DirectHitMinOverlap:    config.DirectHitMinOverlap,
+	}
+}
+
+type boardNarrativeTagDTO struct {
+	ID    uint   `json:"id"`
+	Label string `json:"label"`
+}
+
+type boardNarrativeDTO struct {
+	ID                uint64                 `json:"id"`
+	Title             string                 `json:"title"`
+	Summary           string                 `json:"summary"`
+	Status            string                 `json:"status"`
+	RelatedTags       []boardNarrativeTagDTO `json:"related_tags"`
+	RelatedArticleIDs []uint64               `json:"related_article_ids"`
+	ScopeType         string                 `json:"scope_type"`
+	ArticleCount      int                    `json:"article_count"`
+	PeriodDate        string                 `json:"period_date"`
+}
+
+func (h *semanticBoardHandler) getBoardNarratives(c *gin.Context) {
+	boardID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "7"))
+	if days < 1 {
+		days = 7
+	}
+
+	ctx := c.Request.Context()
+	now := time.Now()
+	startDate := now.AddDate(0, 0, -days)
+	endDate := now.AddDate(0, 0, 1)
+
+	// Step 1: Query narrative_boards
+	var narrativeBoards []models.NarrativeBoard
+	if err := h.db.WithContext(ctx).
+		Where("semantic_board_id = ? AND period_date >= ? AND period_date < ?", boardID, startDate, endDate).
+		Order("period_date DESC").
+		Find(&narrativeBoards).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if len(narrativeBoards) == 0 {
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": []any{}})
+		return
+	}
+
+	narrativeBoardIDs := make([]uint, len(narrativeBoards))
+	for i, nb := range narrativeBoards {
+		narrativeBoardIDs[i] = nb.ID
+	}
+
+	// Step 2: Query narrative_summaries
+	var summaries []models.NarrativeSummary
+	if err := h.db.WithContext(ctx).
+		Where("board_id IN ?", narrativeBoardIDs).
+		Order("period_date DESC, id DESC").
+		Find(&summaries).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if len(summaries) == 0 {
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": []any{}})
+		return
+	}
+
+	// Step 3: Collect all unique tag IDs and batch query
+	tagIDSet := make(map[uint]struct{})
+	for _, s := range summaries {
+		if s.RelatedTagIDs != "" {
+			var ids []uint
+			if err := json.Unmarshal([]byte(s.RelatedTagIDs), &ids); err == nil {
+				for _, id := range ids {
+					tagIDSet[id] = struct{}{}
+				}
+			}
+		}
+	}
+
+	tagMap := make(map[uint]string)
+	if len(tagIDSet) > 0 {
+		allTagIDs := make([]uint, 0, len(tagIDSet))
+		for id := range tagIDSet {
+			allTagIDs = append(allTagIDs, id)
+		}
+		type tagBrief struct {
+			ID    uint   `gorm:"column:id"`
+			Label string `gorm:"column:label"`
+		}
+		var tags []tagBrief
+		if err := h.db.WithContext(ctx).Table("topic_tags").
+			Select("id, label").
+			Where("id IN ?", allTagIDs).
+			Find(&tags).Error; err == nil {
+			for _, t := range tags {
+				tagMap[t.ID] = t.Label
+			}
+		}
+	}
+
+	// Step 4: Assemble response
+	data := make([]boardNarrativeDTO, 0, len(summaries))
+	for _, s := range summaries {
+		var relatedTags []boardNarrativeTagDTO
+		if s.RelatedTagIDs != "" {
+			var tagIDs []uint
+			if err := json.Unmarshal([]byte(s.RelatedTagIDs), &tagIDs); err == nil {
+				for _, tid := range tagIDs {
+					if label, ok := tagMap[tid]; ok {
+						relatedTags = append(relatedTags, boardNarrativeTagDTO{ID: tid, Label: label})
+					}
+				}
+			}
+		}
+		if relatedTags == nil {
+			relatedTags = []boardNarrativeTagDTO{}
+		}
+
+		var articleIDs []uint64
+		if s.RelatedArticleIDs != "" {
+			json.Unmarshal([]byte(s.RelatedArticleIDs), &articleIDs)
+		}
+		if articleIDs == nil {
+			articleIDs = []uint64{}
+		}
+
+		data = append(data, boardNarrativeDTO{
+			ID:                s.ID,
+			Title:             s.Title,
+			Summary:           s.Summary,
+			Status:            s.Status,
+			RelatedTags:       relatedTags,
+			RelatedArticleIDs: articleIDs,
+			ScopeType:         s.ScopeType,
+			ArticleCount:      len(articleIDs),
+			PeriodDate:        s.PeriodDate.Format("2006-01-02"),
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }
 
 func (h *semanticBoardHandler) getBoardComposition(c *gin.Context) {
@@ -576,7 +1070,7 @@ func (h *semanticBoardHandler) suggestUpgrades(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, err)
 		return
 	}
-	respondOK(c, gin.H{"suggestions": suggestionsToDTO(suggestions)})
+	respondOK(c, gin.H{"suggestions": h.suggestionsToDTO(c.Request.Context(), suggestions)})
 }
 
 func (h *semanticBoardHandler) executeUpgrade(c *gin.Context) {
@@ -825,23 +1319,89 @@ func upgradeClustersToDTO(clusters []SemanticBoardUpgradeCluster) []semanticBoar
 	return items
 }
 
-func suggestionsToDTO(suggestions []SemanticBoardUpgradeSuggestion) []semanticBoardUpgradeSuggestionDTO {
+func (h *semanticBoardHandler) suggestionsToDTO(ctx context.Context, suggestions []SemanticBoardUpgradeSuggestion) []semanticBoardUpgradeSuggestionDTO {
+	// Collect unique IDs for batch lookup
+	labelIDSet := make(map[uint]struct{})
+	boardIDSet := make(map[uint]struct{})
+	for _, s := range suggestions {
+		for _, id := range s.AuxiliaryLabelIDs {
+			labelIDSet[id] = struct{}{}
+		}
+		if s.TargetBoardID != nil {
+			boardIDSet[*s.TargetBoardID] = struct{}{}
+		}
+	}
+
+	// Batch lookup auxiliary labels
+	labelNames := make(map[uint]string)
+	if len(labelIDSet) > 0 {
+		ids := make([]uint, 0, len(labelIDSet))
+		for id := range labelIDSet {
+			ids = append(ids, id)
+		}
+		var labels []models.SemanticLabel
+		if err := h.db.WithContext(ctx).Where("id IN ?", ids).Select("id, label").Find(&labels).Error; err == nil {
+			for _, l := range labels {
+				labelNames[l.ID] = l.Label
+			}
+		}
+	}
+
+	// Batch lookup board labels
+	boardNames := make(map[uint]string)
+	if len(boardIDSet) > 0 {
+		ids := make([]uint, 0, len(boardIDSet))
+		for id := range boardIDSet {
+			ids = append(ids, id)
+		}
+		var labels []models.SemanticLabel
+		if err := h.db.WithContext(ctx).Where("id IN ? AND label_type = ?", ids, "board").Select("id, label").Find(&labels).Error; err == nil {
+			for _, l := range labels {
+				boardNames[l.ID] = l.Label
+			}
+		}
+	}
+
 	items := make([]semanticBoardUpgradeSuggestionDTO, 0, len(suggestions))
-	for _, suggestion := range suggestions {
-		items = append(items, semanticBoardUpgradeSuggestionDTO(suggestion))
+	for _, s := range suggestions {
+		dto := semanticBoardUpgradeSuggestionDTO{
+			Decision:          s.Decision,
+			BoardLabel:        s.BoardLabel,
+			Description:       s.Description,
+			AuxiliaryLabelIDs: s.AuxiliaryLabelIDs,
+			TargetBoardID:     s.TargetBoardID,
+			Reason:            s.Reason,
+		}
+		for _, id := range s.AuxiliaryLabelIDs {
+			dto.AuxiliaryLabels = append(dto.AuxiliaryLabels, struct {
+				ID    uint   `json:"id"`
+				Label string `json:"label"`
+			}{ID: id, Label: labelNames[id]})
+		}
+		if s.TargetBoardID != nil {
+			if name, ok := boardNames[*s.TargetBoardID]; ok {
+				dto.TargetBoardLabel = name
+			}
+		}
+		items = append(items, dto)
 	}
 	return items
 }
 
 func semanticBoardMatchConfigToMap(config SemanticBoardMatchConfig) gin.H {
 	return gin.H{
-		"semantic_board_match_sim_threshold":      config.SimThreshold,
-		"semantic_board_match_direct_hit_rate":    config.DirectHitRate,
-		"semantic_board_match_direct_max_sim":     config.DirectMaxSim,
-		"semantic_board_match_weight_sim":         config.WeightSim,
-		"semantic_board_match_weight_density":     config.WeightDensity,
-		"semantic_board_match_weighted_threshold": config.WeightedThreshold,
-		"semantic_board_match_max_boards":         config.MaxBoards,
+		"semantic_board_match_sim_threshold":               config.SimThreshold,
+		"semantic_board_match_direct_hit_rate":             config.DirectHitRate,
+		"semantic_board_match_direct_max_sim":              config.DirectMaxSim,
+		"semantic_board_match_direct_max_sim_min_hits":     config.DirectMaxSimMinHits,
+		"semantic_board_match_direct_max_sim_min_hit_rate": config.DirectMaxSimMinHitRate,
+		"semantic_board_match_min_effective_sample":        config.MinEffectiveSample,
+		"semantic_board_match_hit_rate_sim_blend":          config.HitRateSimBlend,
+		"semantic_board_match_weight_sim":                  config.WeightSim,
+		"semantic_board_match_weight_density":              config.WeightDensity,
+		"semantic_board_match_weighted_threshold":          config.WeightedThreshold,
+		"semantic_board_match_max_boards":                  config.MaxBoards,
+		"semantic_board_match_direct_hit_min_overlap":       config.DirectHitMinOverlap,
 	}
 }
 
@@ -871,7 +1431,7 @@ func (h *semanticBoardHandler) getAllConfigs(c *gin.Context) gin.H {
 
 func isSemanticBoardConfigKey(key string) bool {
 	switch key {
-	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards",
+	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards", "semantic_board_match_direct_hit_min_overlap",
 		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit":
 		return true
 	default:
@@ -881,7 +1441,7 @@ func isSemanticBoardConfigKey(key string) bool {
 
 func validateSemanticBoardConfigValue(key string, value string) error {
 	switch key {
-	case "semantic_board_match_max_boards", "semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_hard_limit":
+	case "semantic_board_match_max_boards", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_min_effective_sample", "semantic_board_match_direct_hit_min_overlap", "semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_hard_limit":
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed <= 0 {
 			return fmt.Errorf("%s must be a positive integer", key)

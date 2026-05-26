@@ -156,6 +156,7 @@ func GenerateNarrativesForBoard(ctx context.Context, boardCtx BoardNarrativeCont
 	return outputs, nil
 }
 
+// Deprecated: Use saveNarrativesWithBoard instead. Kept for rollback safety.
 func SaveNarrativesForBoard(outputs []NarrativeOutput, board models.NarrativeBoard, date time.Time, categoryID uint) (int, error) {
 	if len(outputs) == 0 {
 		return 0, nil

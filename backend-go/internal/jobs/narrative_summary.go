@@ -17,6 +17,9 @@ import (
 	"syntopica-backend/internal/platform/tracing"
 )
 
+// NarrativeSummaryScheduler is the legacy narrative generation scheduler.
+// Deprecated: Use DailyReportScheduler (daily_report.go) instead. This scheduler is retained
+// for backward compatibility during the transition to the new daily report system.
 type NarrativeSummaryScheduler struct {
 	cron           *cron.Cron
 	checkInterval  time.Duration
@@ -253,6 +256,8 @@ func (s *NarrativeSummaryScheduler) runNarrativeCycleFromCron() {
 	})
 }
 
+// runNarrativeCycle executes a single narrative generation cycle.
+// Deprecated: The new DailyReportScheduler in daily_report.go replaces this functionality.
 func (s *NarrativeSummaryScheduler) runNarrativeCycle(triggerSource string, targetDate time.Time) {
 	startTime := time.Now()
 	summary := &NarrativeSummaryRunSummary{

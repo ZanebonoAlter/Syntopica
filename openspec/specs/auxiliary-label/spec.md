@@ -5,7 +5,7 @@
 ## Requirements
 
 ### Requirement: LLM 提取 tag 时同时生成辅助标签（event/person）
-系统 SHALL 在 LLM 提取 event/person 标签时，为每个 tag 同时生成 3-5 个带 description 的辅助标签（auxiliary label），作为 tag 的语义锚点。辅助标签 SHALL 与 event/person tag 在同一个 event/person 提取调用中输出，不再为辅助标签发起额外 LLM 调用。keyword 标签不生成辅助标签，而是直接进入辅助标签池（见"Keyword 标签直接入辅助池"需求）。
+系统 SHALL 在 LLM 提取 event/person 标签时，为每个 tag 同时生成 3-5 个带 description 的辅助标签（auxiliary label），作为 tag 的语义锚点。辅助标签 SHALL 与 event/person tag 在同一个 event/person 提取调用中输出，不再为辅助标签发起额外 LLM 调用。keyword 标签不生成辅助标签，而是直接进入辅助标签池（见"Keyword 标签直接入辅助池"需求）。辅助标签必须与事件核心主体直接相关，是理解事件不可或缺的要素；文章中仅为背景提及、一笔带过的人物或国家不应作为辅助标签。
 
 #### Scenario: event 标签提取含辅助标签
 - **WHEN** 一篇文章被处理，LLM 提取到 event tag "伊朗袭击以色列"
@@ -14,6 +14,10 @@
 #### Scenario: 辅助标签数量约束（event/person）
 - **WHEN** LLM 提取的 event/person 标签结果中某个 tag 的辅助标签数量为 0 或超过 5
 - **THEN** 系统 SHALL 拒绝该结果，返回错误
+
+#### Scenario: 背景提及人物不作为辅助标签
+- **WHEN** 事件为"日菲加强安保合作旨在牵制中国"，文中一笔带过提到"特朗普对此表示关注"
+- **THEN** "特朗普" SHALL NOT 被提取为该事件的辅助标签，因为移除特朗普后事件描述仍然成立
 
 ### Requirement: Tag 提取拆分为 event/person 与 keyword 双分支调用
 系统 SHALL 将 tag 提取拆分为 event/person 分支和 keyword 分支两个独立 LLM 调用。event/person 分支 SHALL 只输出 event/person 标签，并要求每个 tag 携带 3-5 个辅助标签；keyword 分支 SHALL 只输出 keyword 标签，并要求每个 tag 携带 description，不输出 auxiliary_labels。

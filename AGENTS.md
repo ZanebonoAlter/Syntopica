@@ -64,8 +64,17 @@ cd front && pnpm dev
 - Do not add linters, formatters, or tooling unless asked.
 - Do not assume Python backend; the product backend is Go.
 - Ignore unrelated dirty-worktree changes. Verify smallest relevant command after edits.
-- Frontend edits → `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit` / `pnpm build`.
-- Backend edits → `golangci-lint run ./...` / targeted `go test` first, then `go test ./...` / `go build ./...`.
+- **测试只跑本次修改影响的包**，不要跑全量 `go test ./...`。例如改了 `daily_report` 和 `ws`，就只跑 `go test ./internal/domain/daily_report ./internal/platform/ws`。
+- **前端 pnpm 编译类命令（typecheck / build）必须通过 Windows cmd 执行**，WSL 环境缺少 native binding（如 `@oxc-parser/binding-linux-x64-gnu`）会失败。lint 可在 WSL 跑。示例：
+  ```bash
+  # lint — WSL 可用
+  cd front && pnpm lint
+  # typecheck / build — 必须用 cmd
+  cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm exec nuxi typecheck"
+  cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm build"
+  ```
+- Frontend edits → `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit` / `pnpm build`。
+- Backend edits → `golangci-lint run ./...` / targeted `go test` first, then `go test ./...` / `go build ./...`。
 - Docs-only edits: consistency check unless behavior changed.
 - Keep code changes minimal and scoped. Match existing code style.
 - 完成任务后更新维护 `./docs` 知识库。

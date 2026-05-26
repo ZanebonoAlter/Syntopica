@@ -7,6 +7,7 @@ import (
 	categorydomain "syntopica-backend/internal/domain/category"
 	contentdomain "syntopica-backend/internal/domain/content"
 	feeddomain "syntopica-backend/internal/domain/feed"
+	dailyreportdomain "syntopica-backend/internal/domain/daily_report"
 	narrativedomain "syntopica-backend/internal/domain/narrative"
 	preferencesdomain "syntopica-backend/internal/domain/preferences"
 	topicanalysisdomain "syntopica-backend/internal/domain/tagging"
@@ -139,6 +140,8 @@ func SetupRoutes(r *gin.Engine) {
 		topicanalysisdomain.RegisterSemanticBoardRoutes(api)
 
 		narrativedomain.RegisterNarrativeRoutes(api)
+
+		dailyreportdomain.RegisterDailyReportRoutes(api)
 
 		traceHandler := tracing.NewTraceHandler(database.DB)
 		traces := api.Group("/traces")

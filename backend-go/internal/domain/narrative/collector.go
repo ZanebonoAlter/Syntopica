@@ -36,7 +36,7 @@ type SemanticBoardNarrativeInput struct {
 	PrevBoardIDs []uint
 }
 
-func CollectSemanticBoardNarrativeInputs(date time.Time, scopeType string, categoryID *uint) ([]SemanticBoardNarrativeInput, error) {
+func CollectSemanticBoardNarrativeInputs(date time.Time) ([]SemanticBoardNarrativeInput, error) {
 	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
@@ -82,13 +82,6 @@ func CollectSemanticBoardNarrativeInputs(date time.Time, scopeType string, categ
 		Where("topic_tags.status = ? AND topic_tags.category = ?", "active", models.TagCategoryEvent).
 		Where("articles.pub_date >= ? AND articles.pub_date < ?", startOfDay, endOfDay)
 
-	if scopeType == models.NarrativeScopeTypeFeedCategory {
-		if categoryID == nil {
-			return nil, nil
-		}
-		query = query.Joins("JOIN feeds ON feeds.id = articles.feed_id").Where("feeds.category_id = ?", *categoryID)
-	}
-
 	var rows []tagRow
 	if err := query.Group(`topic_tag_board_labels.semantic_board_id,
 			topic_tags.id,
@@ -125,7 +118,7 @@ func CollectSemanticBoardNarrativeInputs(date time.Time, scopeType string, categ
 		inputs = append(inputs, SemanticBoardNarrativeInput{
 			Board:        board,
 			EventTags:    eventTags,
-			PrevBoardIDs: matchPreviousSemanticBoard(board.ID, date, scopeType, categoryID),
+			PrevBoardIDs: matchPreviousSemanticBoard(board.ID, date),
 		})
 	}
 

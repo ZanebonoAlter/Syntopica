@@ -17,4 +17,5 @@
 | [reading.md](reading.md) | 阅读行为、用户偏好 | `/api/reading-behavior`, `/api/user-preferences` |
 | [topic-graph.md](topic-graph.md) | 主题图谱、主题分析、标签管理、Embedding | `/api/topic-graph`, `/api/topic-tags`, `/api/embedding` |
 | [semantic-boards.md](semantic-boards.md) | SemanticBoard、辅助标签、升级建议、匹配回填 | `/api/semantic-boards`, `/api/auxiliary-labels`, `/api/tags/:id/semantic-boards` |
+| [daily-reports.md](daily-reports.md) | 板块日报生成、列表、详情、WebSocket 进度 | `/api/daily-reports`, `/api/semantic-boards/:id/daily-reports` |
 | [traces.md](traces.md) | 链路追踪 | `/api/traces` |

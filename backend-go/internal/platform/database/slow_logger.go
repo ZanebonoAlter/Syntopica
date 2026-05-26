@@ -37,6 +37,8 @@ func findCaller() string {
 	return ""
 }
 
+const maxLoggedSQLLength = 2000
+
 type SlowLogger struct {
 	slowThreshold time.Duration
 }
@@ -69,6 +71,7 @@ func (l *SlowLogger) Trace(_ context.Context, begin time.Time, fc func() (sql st
 			return
 		}
 		sql, rows := fc()
+		sql = sanitizeSlowSQL(sql)
 		caller := findCaller()
 		if caller != "" {
 			logging.Errorf("[SQL] %.3fms | rows=%d | err=%v | caller=%s | %s", float64(elapsed.Microseconds())/1000.0, rows, err, caller, sql)
@@ -80,9 +83,17 @@ func (l *SlowLogger) Trace(_ context.Context, begin time.Time, fc func() (sql st
 
 	if l.slowThreshold > 0 && elapsed > l.slowThreshold {
 		sql, rows := fc()
+		sql = sanitizeSlowSQL(sql)
 		logging.Warnf("[SLOW SQL] %.3fms > %v | rows=%d | %s", float64(elapsed.Microseconds())/1000.0, l.slowThreshold, rows, sql)
 		return
 	}
 
 	_ = fmt.Sprintf("%.3fms", float64(elapsed.Microseconds())/1000.0)
+}
+
+func sanitizeSlowSQL(sql string) string {
+	if len(sql) > maxLoggedSQLLength {
+		return sql[:maxLoggedSQLLength] + "... [truncated]"
+	}
+	return sql
 }
