@@ -283,6 +283,12 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 		return nil, nil, nil
 	}
 
+	// Build tag→articleIDs map (before dedup/filter changes the tag slice)
+	tagArticleMap := make(map[uint][]uint, len(tags))
+	for i, t := range tags {
+		tagArticleMap[t.ID] = articleCounts[i]
+	}
+
 	// Step 2: Deduplicate
 	tags = DeduplicateTags(tags, articleCounts)
 
@@ -403,6 +409,8 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 	var sections []DailyReportSection
 	for i, cluster := range clusters {
 		threads := threadsByCluster[i]
+		// Populate related article IDs
+		populateThreadArticles(threads, tagArticleMap)
 		clusterTags := filterTagsByIDs(tags, cluster.TagIDs)
 		clusterArticleCount := 0
 		for _, t := range clusterTags {
@@ -511,6 +519,23 @@ func countTagOverlap(a, b []uint) int {
 		}
 	}
 	return count
+}
+
+// populateThreadArticles fills RelatedArticleIDs for each thread based on tag→article mapping.
+func populateThreadArticles(threads []Thread, tagArticleMap map[uint][]uint) {
+	for i := range threads {
+		seen := make(map[uint]bool)
+		var articleIDs []uint
+		for _, tagID := range threads[i].TagIDs {
+			for _, artID := range tagArticleMap[tagID] {
+				if !seen[artID] {
+					seen[artID] = true
+					articleIDs = append(articleIDs, artID)
+				}
+			}
+		}
+		threads[i].RelatedArticleIDs = articleIDs
+	}
 }
 
 // ---------------------------------------------------------------------------

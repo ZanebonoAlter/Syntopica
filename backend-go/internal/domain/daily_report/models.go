@@ -117,10 +117,11 @@ type Highlight struct {
 
 // Thread represents a narrative thread within a cluster section.
 type Thread struct {
-	Title        string  `json:"title"`
-	Summary      string  `json:"summary"`
-	Status       string  `json:"status"` // emerging, continuing, splitting, merging, ending
-	TagIDs       []uint  `json:"tag_ids"`
-	Confidence   float64 `json:"confidence"`
-	PrevThreadID *uint   `json:"prev_thread_id,omitempty"`
+	Title             string  `json:"title"`
+	Summary           string  `json:"summary"`
+	Status            string  `json:"status"` // emerging, continuing, splitting, merging, ending
+	TagIDs            []uint  `json:"tag_ids"`
+	Confidence        float64 `json:"confidence"`
+	PrevThreadID      *uint   `json:"prev_thread_id,omitempty"`
+	RelatedArticleIDs []uint  `json:"related_article_ids,omitempty"`
 }
