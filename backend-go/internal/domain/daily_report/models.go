@@ -90,12 +90,14 @@ func (j *JSON) UnmarshalJSON(data []byte) error {
 
 // TagInput mirrors narrative.TagInput for use in the daily report pipeline.
 type TagInput struct {
-	ID           uint   `json:"id"`
-	Label        string `json:"label"`
-	Category     string `json:"category"`
-	Description  string `json:"description"`
-	ArticleCount int    `json:"article_count"`
-	Source       string `json:"source"`
+	ID           uint    `json:"id"`
+	Label        string  `json:"label"`
+	Category     string  `json:"category"`
+	Description  string  `json:"description"`
+	ArticleCount int     `json:"article_count"`
+	Source       string  `json:"source"`
+	MatchReason  string  `json:"match_reason"`
+	Score        float64 `json:"score"`
 }
 
 // ClusterGroup represents a group of tags clustered by the LLM.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"syntopica-backend/internal/domain/models"
+	"syntopica-backend/internal/domain/tagging"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/jsonutil"
@@ -597,12 +598,14 @@ func collectBoardTags(boardID uint, date time.Time) ([]TagInput, [][]uint, error
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
 	type tagRow struct {
-		ID           uint   `json:"id"`
-		Label        string `json:"label"`
-		Category     string `json:"category"`
-		Description  string `json:"description"`
-		Source       string `json:"source"`
-		ArticleCount int    `json:"article_count"`
+		ID           uint    `json:"id"`
+		Label        string  `json:"label"`
+		Category     string  `json:"category"`
+		Description  string  `json:"description"`
+		Source       string  `json:"source"`
+		MatchReason  string  `json:"match_reason"`
+		Score        float64 `json:"score"`
+		ArticleCount int     `json:"article_count"`
 	}
 
 	var rows []tagRow
@@ -612,14 +615,17 @@ func collectBoardTags(boardID uint, date time.Time) ([]TagInput, [][]uint, error
 			topic_tags.category AS category,
 			topic_tags.description AS description,
 			topic_tags.source AS source,
+			topic_tag_board_labels.match_reason AS match_reason,
+			topic_tag_board_labels.score AS score,
 			COUNT(DISTINCT articles.id) AS article_count`).
 		Joins("JOIN topic_tag_board_labels ON topic_tag_board_labels.topic_tag_id = topic_tags.id").
 		Joins("JOIN article_topic_tags ON article_topic_tags.topic_tag_id = topic_tags.id").
 		Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
 		Where("topic_tag_board_labels.semantic_board_id = ?", boardID).
+		Where("NOT COALESCE(topic_tag_board_labels.direction_mismatch, false)").
 		Where("topic_tags.status = ? AND topic_tags.category = ?", "active", models.TagCategoryEvent).
 		Where("articles.pub_date >= ? AND articles.pub_date < ?", startOfDay, endOfDay).
-		Group("topic_tags.id, topic_tags.label, topic_tags.category, topic_tags.description, topic_tags.source").
+		Group("topic_tags.id, topic_tags.label, topic_tags.category, topic_tags.description, topic_tags.source, topic_tag_board_labels.match_reason, topic_tag_board_labels.score").
 		Order("article_count DESC, topic_tags.id ASC").
 		Scan(&rows).Error
 	if err != nil {
@@ -640,6 +646,8 @@ func collectBoardTags(boardID uint, date time.Time) ([]TagInput, [][]uint, error
 			Description:  row.Description,
 			ArticleCount: row.ArticleCount,
 			Source:       row.Source,
+			MatchReason:  row.MatchReason,
+			Score:        row.Score,
 		})
 
 		// Get article IDs for this tag on this date
@@ -651,6 +659,64 @@ func collectBoardTags(boardID uint, date time.Time) ([]TagInput, [][]uint, error
 				row.ID, startOfDay, endOfDay).
 			Pluck("article_topic_tags.article_id", &artIDs)
 		articleIDSets = append(articleIDSets, artIDs)
+	}
+
+	// Fallback: find event tags with auxiliaries but no board labels, compute matches
+	var unmatchedTagIDs []uint
+	database.DB.Model(&models.TopicTag{}).
+		Select("DISTINCT topic_tags.id").
+		Joins("JOIN article_topic_tags ON article_topic_tags.topic_tag_id = topic_tags.id").
+		Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
+		Joins("JOIN topic_tag_semantic_labels ON topic_tag_semantic_labels.topic_tag_id = topic_tags.id").
+		Where("topic_tags.status = ? AND topic_tags.category = ?", "active", models.TagCategoryEvent).
+		Where("articles.pub_date >= ? AND articles.pub_date < ?", startOfDay, endOfDay).
+		Where("NOT EXISTS (SELECT 1 FROM topic_tag_board_labels WHERE topic_tag_board_labels.topic_tag_id = topic_tags.id)").
+		Limit(50).
+		Pluck("topic_tags.id", &unmatchedTagIDs)
+
+	if len(unmatchedTagIDs) > 0 {
+		logging.Infof("[daily-report] fallback: found %d unmatched event tags for board %d, computing matches", len(unmatchedTagIDs), boardID)
+		matcher := tagging.NewSemanticBoardMatchingService(database.DB)
+		for _, tid := range unmatchedTagIDs {
+			matches, matchErr := matcher.MatchTopicTag(context.Background(), tid)
+			if matchErr != nil {
+				logging.Warnf("[daily-report] fallback match failed for tag %d: %v", tid, matchErr)
+				continue
+			}
+			var boardMatch *tagging.SemanticBoardMatchResult
+			for i := range matches {
+				if matches[i].SemanticBoardID == boardID && !matches[i].DirectionMismatch {
+					boardMatch = &matches[i]
+					break
+				}
+			}
+			if boardMatch == nil {
+				continue
+			}
+
+			var t models.TopicTag
+			if err := database.DB.First(&t, tid).Error; err != nil {
+				continue
+			}
+			var artIDs []uint
+			database.DB.Model(&models.ArticleTopicTag{}).
+				Select("DISTINCT article_topic_tags.article_id").
+				Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
+				Where("article_topic_tags.topic_tag_id = ? AND articles.pub_date >= ? AND articles.pub_date < ?", tid, startOfDay, endOfDay).
+				Pluck("article_topic_tags.article_id", &artIDs)
+
+			tags = append(tags, TagInput{
+				ID:           t.ID,
+				Label:        t.Label,
+				Category:     t.Category,
+				Description:  t.Description,
+				Source:       t.Source,
+				ArticleCount: len(artIDs),
+				MatchReason:  boardMatch.MatchReason,
+				Score:        boardMatch.Score,
+			})
+			articleIDSets = append(articleIDSets, artIDs)
+		}
 	}
 
 	return tags, articleIDSets, nil
