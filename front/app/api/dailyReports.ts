@@ -23,6 +23,8 @@ export interface DailyReportSection {
   cluster_tag_ids: number[]
   threads: DailyReportThread[]
   article_count: number
+  best_tier: number
+  avg_score: number
 }
 
 export interface DailyReport {
