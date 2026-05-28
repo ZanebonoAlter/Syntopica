@@ -23,6 +23,7 @@ export default defineNuxtConfig({
       title: 'Syntopica',
       link: [
         { rel: 'icon', type: 'image/png', href: '/favicon.png' },
+        { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500;600;700&display=swap' },
       ],
     },
   },

@@ -17,8 +17,9 @@ import (
 )
 
 type SemanticBoardUpgradeService struct {
-	db  *gorm.DB
-	llm semanticBoardUpgradeLLM
+	db      *gorm.DB
+	llm     semanticBoardUpgradeLLM
+	embedder auxiliaryLabelEmbedder
 }
 
 type semanticBoardUpgradeLLM interface {
@@ -97,11 +98,11 @@ type semanticBoardContext struct {
 	Embedding        []float64
 }
 
-func NewSemanticBoardUpgradeService(db *gorm.DB, llm semanticBoardUpgradeLLM) *SemanticBoardUpgradeService {
+func NewSemanticBoardUpgradeService(db *gorm.DB, llm semanticBoardUpgradeLLM, embedder auxiliaryLabelEmbedder) *SemanticBoardUpgradeService {
 	if db == nil {
 		db = database.DB
 	}
-	return &SemanticBoardUpgradeService{db: db, llm: llm}
+	return &SemanticBoardUpgradeService{db: db, llm: llm, embedder: embedder}
 }
 
 func (s *SemanticBoardUpgradeService) GenerateSuggestions(ctx context.Context) ([]SemanticBoardUpgradeSuggestion, error) {
@@ -164,6 +165,17 @@ func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req
 				Description: req.Description,
 				Source:      "llm_suggest",
 				Status:      "active",
+			}
+			if s.embedder != nil {
+				input := label
+				if desc := strings.TrimSpace(req.Description); desc != "" {
+					input = label + ". " + desc
+				}
+				pgVector, _, embedErr := s.embedder(ctx, input, auxiliaryLabelEmbeddingModeStorage)
+				if embedErr != nil {
+					return fmt.Errorf("generate board embedding: %w", embedErr)
+				}
+				board.Embedding = &pgVector
 			}
 			if err := tx.Create(&board).Error; err != nil {
 				return err

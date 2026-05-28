@@ -211,7 +211,7 @@ func (s *SemanticBoardBackfillService) collectBoardModeTopicTagIDs(ctx context.C
 	}
 	config := NewSemanticBoardMatchingService(s.db).loadConfig(ctx)
 	for topicTagID, auxiliaries := range tagAuxiliaries {
-		matches := evaluateSemanticBoardMatches(auxiliaries, boardAuxiliaries, config)
+		matches := evaluateSemanticBoardMatches(auxiliaries, boardAuxiliaries, config, nil, nil)
 		if len(matches) > 0 {
 			ids[topicTagID] = struct{}{}
 		}

@@ -129,6 +129,8 @@ export interface BoardArticleTag {
   category: string
   match_reason: string
   score: number
+  downgraded: boolean
+  direction_mismatch: boolean
 }
 
 export interface MatchDetailConfig {
@@ -140,6 +142,7 @@ export interface MatchDetailConfig {
   direct_max_sim_min_hits: number
   direct_max_sim_min_hit_rate: number
   direct_hit_min_overlap: number
+  direction_sim_threshold: number
   weight_sim: number
   weight_density: number
   weighted_threshold: number
@@ -167,6 +170,9 @@ export interface MatchDetailResponse {
   semantic_board_id: number
   match_reason: string
   score: number
+  downgraded: boolean
+  direction_sim: number | null
+  effective_min_hits: number
   config: MatchDetailConfig
   direct_hit_auxiliaries: DirectHitAuxiliary[]
   tag_auxiliary_count: number

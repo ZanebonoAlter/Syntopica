@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "codegraph",
+      "args": [
+        "serve",
+        "--mcp"
+      ],
+      "directTools": true
+    }
+  }
+}

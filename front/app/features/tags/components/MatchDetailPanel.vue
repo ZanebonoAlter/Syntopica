@@ -104,6 +104,14 @@ function pairKey(pair: MatchDetailPair): string {
   return `${pair.tag_auxiliary_id}-${pair.board_auxiliary_id}`
 }
 
+function directionCheckText(item: MatchDetailResponse): string {
+  const dirSim = item.direction_sim
+  const threshold = item.config.direction_sim_threshold
+  if (dirSim == null) return ' 方向校验跳过（无数据）'
+  if (dirSim >= threshold) return ` 方向校验✓${formatScore(dirSim)}≥${formatScore(threshold)}`
+  return ` ⚠方向不符 ${formatScore(dirSim)}<${formatScore(threshold)}`
+}
+
 interface FlowStep {
   id: string
   title: string
@@ -174,7 +182,7 @@ const flowSteps = computed<FlowStep[]>(() => {
     steps.push({
       id: 'max_sim', title: '④ 最高相似度规则',
       desc: '最像的那一对有多像？需同时满足三个条件',
-      result: `✓Smax=${formatScore(d.max_similarity)} ✓${d.hits}≥${minHits}命中 ✓R=${formatScore(d.hit_rate)} → 满足！`,
+      result: `✓Smax=${formatScore(d.max_similarity)} ✓${d.hits}≥${minHits}命中 ✓R=${formatScore(d.hit_rate)} → 满足！${d.downgraded ? ` ⚠降级匹配（原阈值${c.direct_max_sim_min_hits}，因仅有${d.tag_auxiliary_count}个辅助标签降为${d.effective_min_hits}）` : ''}${directionCheckText(d)}`,
       state: 'matched',
     })
     return steps
@@ -302,6 +310,7 @@ const flowSteps = computed<FlowStep[]>(() => {
           <div><dt>direct_max_sim（最高相似度挂载线）</dt><dd>{{ formatScore(detail.config.direct_max_sim) }}</dd></div>
           <div><dt>direct_max_sim_min_hits（最高相似度最少命中）</dt><dd>{{ detail.config.direct_max_sim_min_hits }}</dd></div>
           <div><dt>direct_max_sim_min_hit_rate（最高相似度最低命中率）</dt><dd>{{ formatScore(detail.config.direct_max_sim_min_hit_rate) }}</dd></div>
+          <div><dt>direction_sim_threshold（方向校验阈值）</dt><dd>{{ formatScore(detail.config.direction_sim_threshold) }}</dd></div>
           <div><dt>weight_sim（加权相似度比重）</dt><dd>{{ formatScore(detail.config.weight_sim) }}</dd></div>
           <div><dt>weight_density（加权命中率比重）</dt><dd>{{ formatScore(detail.config.weight_density) }}</dd></div>
           <div><dt>weighted_threshold（加权挂载线）</dt><dd>{{ formatScore(detail.config.weighted_threshold) }}</dd></div>

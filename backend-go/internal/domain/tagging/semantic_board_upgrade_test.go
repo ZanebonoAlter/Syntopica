@@ -50,7 +50,7 @@ func TestSemanticBoardUpgradeCollectsCandidates(t *testing.T) {
 	composed := createUpgradeLabel(t, db, "Composed", "composed", "auxiliary", "active", 8, []float64{0, 1, 0})
 	board := createUpgradeLabel(t, db, "Board", "board", "board", "active", 0, nil)
 	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: composed.ID}).Error)
-	service := NewSemanticBoardUpgradeService(db, nil)
+	service := NewSemanticBoardUpgradeService(db, nil, nil)
 
 	candidates, err := service.collectCandidates(context.Background(), service.LoadUpgradeConfig(context.Background()))
 
@@ -68,7 +68,7 @@ func TestSemanticBoardUpgradeClustersCandidatesWithExistingBoards(t *testing.T) 
 	boardAux := createUpgradeLabel(t, db, "AI", "ai", "auxiliary", "active", 2, []float64{1, 0, 0})
 	board := createUpgradeLabel(t, db, "AI Board", "ai-board", "board", "active", 0, nil)
 	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
-	service := NewSemanticBoardUpgradeService(db, nil)
+	service := NewSemanticBoardUpgradeService(db, nil, nil)
 	candidates := []SemanticBoardUpgradeCandidate{
 		{ID: candidateA.ID, Label: candidateA.Label, RefCount: 5, Embedding: []float64{1, 0, 0}},
 		{ID: candidateB.ID, Label: candidateB.Label, RefCount: 5, Embedding: []float64{0.95, 0.3122498999, 0}},
@@ -103,7 +103,7 @@ func TestSemanticBoardUpgradeLoadsCoTagEventContext(t *testing.T) {
 	createUpgradeArticleWithTags(t, db, seed.ID, eventA.ID, eventB.ID)
 	createUpgradeArticleWithTags(t, db, seed.ID, eventA.ID, eventSimilar.ID)
 	createUpgradeArticleWithTags(t, db, seed.ID, eventSimilar.ID, eventC.ID)
-	service := NewSemanticBoardUpgradeService(db, nil)
+	service := NewSemanticBoardUpgradeService(db, nil, nil)
 	cluster := SemanticBoardUpgradeCluster{Candidates: []SemanticBoardUpgradeCandidate{{ID: auxiliary.ID, Label: auxiliary.Label, Embedding: []float64{1, 0, 0}}}}
 
 	events, err := service.loadCoTagEventContext(context.Background(), cluster, service.LoadUpgradeConfig(context.Background()))
@@ -128,7 +128,7 @@ func TestSemanticBoardUpgradeGenerateSuggestionsUsesLLMMock(t *testing.T) {
 		{Decision: "invalid", AuxiliaryLabelIDs: []uint{auxiliaryA.ID}},
 		{Decision: SemanticBoardUpgradeDecisionCreateNew, BoardLabel: "Unknown", AuxiliaryLabelIDs: []uint{99999}},
 	}}
-	service := NewSemanticBoardUpgradeService(db, fakeLLM)
+	service := NewSemanticBoardUpgradeService(db, fakeLLM, nil)
 
 	suggestions, err := service.GenerateSuggestions(context.Background())
 
@@ -151,7 +151,7 @@ func TestSemanticBoardUpgradeGenerateSuggestionsSkipsWhenCandidateCountBelowThre
 	createUpgradeLabel(t, db, "GPT", "gpt", "auxiliary", "active", 5, []float64{0.95, 0.3122498999, 0})
 	createUpgradeLabel(t, db, "Transformer", "transformer", "auxiliary", "active", 5, []float64{0.9, 0.4358898943, 0})
 	fakeLLM := &fakeSemanticBoardUpgradeLLM{suggestions: []SemanticBoardUpgradeSuggestion{{Decision: SemanticBoardUpgradeDecisionCreateNew}}}
-	service := NewSemanticBoardUpgradeService(db, fakeLLM)
+	service := NewSemanticBoardUpgradeService(db, fakeLLM, nil)
 
 	suggestions, err := service.GenerateSuggestions(context.Background())
 
@@ -172,7 +172,7 @@ func TestSemanticBoardUpgradePromptIncludesExistingBoardContext(t *testing.T) {
 	require.NoError(t, db.Model(&models.SemanticLabel{}).Where("id = ?", board.ID).Update("description", "Artificial intelligence board").Error)
 	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
 	fakeLLM := &fakeSemanticBoardUpgradeLLM{suggestions: []SemanticBoardUpgradeSuggestion{{Decision: SemanticBoardUpgradeDecisionSkip}}}
-	service := NewSemanticBoardUpgradeService(db, fakeLLM)
+	service := NewSemanticBoardUpgradeService(db, fakeLLM, nil)
 
 	_, err := service.GenerateSuggestions(context.Background())
 
@@ -187,7 +187,7 @@ func TestSemanticBoardUpgradeConfirmCreateNew(t *testing.T) {
 	db := setupSemanticBoardUpgradeTestDB(t)
 	auxiliaryA := createUpgradeLabel(t, db, "OpenAI", "openai", "auxiliary", "active", 5, []float64{1, 0, 0})
 	auxiliaryB := createUpgradeLabel(t, db, "GPT", "gpt", "auxiliary", "active", 5, []float64{0, 1, 0})
-	service := NewSemanticBoardUpgradeService(db, nil)
+	service := NewSemanticBoardUpgradeService(db, nil, nil)
 
 	result, err := service.ConfirmSuggestion(context.Background(), ConfirmSemanticBoardUpgradeRequest{
 		Decision:          SemanticBoardUpgradeDecisionCreateNew,
@@ -218,7 +218,7 @@ func TestSemanticBoardUpgradeConfirmMergeIntoExisting(t *testing.T) {
 	auxiliaryB := createUpgradeLabel(t, db, "GPT", "gpt", "auxiliary", "active", 5, []float64{0, 1, 0})
 	board := createUpgradeLabel(t, db, "AI Board", "ai-board", "board", "active", 0, nil)
 	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxiliaryA.ID}).Error)
-	service := NewSemanticBoardUpgradeService(db, nil)
+	service := NewSemanticBoardUpgradeService(db, nil, nil)
 
 	result, err := service.ConfirmSuggestion(context.Background(), ConfirmSemanticBoardUpgradeRequest{
 		Decision:          SemanticBoardUpgradeDecisionMergeIntoExisting,

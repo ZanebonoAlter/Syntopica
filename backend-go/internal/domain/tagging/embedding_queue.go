@@ -324,6 +324,15 @@ func (s *EmbeddingQueueService) processNext() {
 		s.logger.Info("event keyword embeddings generated", zap.Uint("tag_id", tag.ID), zap.Int("keyword_count", len(keywords)))
 	}
 
+	// Auto-trigger board matching for event tags after embedding completion
+	if tag.Category == "event" {
+		if matcher := getSemanticBoardMatchingService(); matcher != nil {
+			if _, matchErr := matcher.MatchTopicTag(ctx, tag.ID); matchErr != nil {
+				s.logger.Warn("auto board match failed", zap.Uint("tag_id", tag.ID), zap.Error(matchErr))
+			}
+		}
+	}
+
 	// Mark completed
 	now := time.Now()
 	if err := s.db.Model(&models.EmbeddingQueue{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
