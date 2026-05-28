@@ -34,13 +34,15 @@ func (BoardDailyReport) TableName() string {
 
 // DailyReportSection — one section per cluster
 type DailyReportSection struct {
-	ID            uint   `gorm:"primarykey" json:"id"`
-	ReportID      uint   `gorm:"index;not null" json:"report_id"`
-	ClusterIndex  int    `json:"cluster_index"`
-	ClusterLabel  string `gorm:"size:200" json:"cluster_label"`
-	ClusterTagIDs JSON   `gorm:"type:jsonb" json:"cluster_tag_ids"`
-	Threads       JSON   `gorm:"type:jsonb" json:"threads"`
-	ArticleCount  int    `json:"article_count"`
+	ID            uint      `gorm:"primarykey" json:"id"`
+	ReportID      uint      `gorm:"index;not null" json:"report_id"`
+	ClusterIndex  int       `json:"cluster_index"`
+	ClusterLabel  string    `gorm:"size:200" json:"cluster_label"`
+	ClusterTagIDs JSON      `gorm:"type:jsonb" json:"cluster_tag_ids"`
+	Threads       JSON      `gorm:"type:jsonb" json:"threads"`
+	ArticleCount  int       `json:"article_count"`
+	BestTier      int       `gorm:"default:0" json:"best_tier"`
+	AvgScore      float64   `gorm:"default:0" json:"avg_score"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 

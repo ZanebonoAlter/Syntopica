@@ -16,7 +16,7 @@ import (
 	"syntopica-backend/internal/platform/logging"
 )
 
-const promptVersion = "1.0"
+const promptVersion = "2.0"
 
 // ---------------------------------------------------------------------------
 // LLM Call A: GenerateHighlights
@@ -131,95 +131,6 @@ func parseHighlightsResponse(content string, tags []TagInput) ([]Highlight, erro
 		result = append(result, h)
 	}
 	return result, nil
-}
-
-// ---------------------------------------------------------------------------
-// LLM Call B: GenerateDynamics
-// ---------------------------------------------------------------------------
-
-const dynamicsSystemPrompt = `你是一名专业的新闻分析师。你收到了一个看板当日的事件标签信息。
-
-你的任务是生成一段看板动态总结（dynamics），要求：
-1. 中文，200-500字
-2. 概括当日该看板下的主要动态和发展趋势
-3. 客观陈述事实，不添加主观判断
-4. 按重要性排序
-
-输出要求：
-1. 顶层 JSON 对象，只包含 dynamics 字段
-2. dynamics 是字符串
-3. 只返回合法 JSON，不要 Markdown 代码块或解释文字`
-
-// GenerateDynamics produces the dynamics text for the report.
-func GenerateDynamics(ctx context.Context, tags []TagInput, clusters []ClusterGroup) (string, error) {
-	if len(tags) == 0 {
-		return "", nil
-	}
-
-	prompt := buildDynamicsPrompt(tags, clusters)
-
-	temperature := 0.3
-	maxTokens := 2000
-	result, err := airouter.NewRouter().Chat(ctx, airouter.ChatRequest{
-		Capability: airouter.CapabilityTopicTagging,
-		Messages: []airouter.Message{
-			{Role: "system", Content: dynamicsSystemPrompt},
-			{Role: "user", Content: prompt},
-		},
-		Temperature: &temperature,
-		MaxTokens:   &maxTokens,
-		JSONMode:    true,
-		JSONSchema: &airouter.JSONSchema{
-			Type: "object",
-			Properties: map[string]airouter.SchemaProperty{
-				"dynamics": {Type: "string", Description: "看板动态总结，200-500字"},
-			},
-			Required: []string{"dynamics"},
-		},
-		Metadata: map[string]any{
-			"operation":     "daily_report_dynamics",
-			"tag_count":     len(tags),
-			"cluster_count": len(clusters),
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("dynamics AI call failed: %w", err)
-	}
-
-	logging.Infof("daily-report: dynamics LLM response length=%d", len(result.Content))
-	return parseDynamicsResponse(result.Content)
-}
-
-func buildDynamicsPrompt(tags []TagInput, clusters []ClusterGroup) string {
-	var sb strings.Builder
-	sb.WriteString("## 事件标签\n\n")
-	for _, t := range tags {
-		fmt.Fprintf(&sb, "- [ID:%d] %s (文章数:%d", t.ID, t.Label, t.ArticleCount)
-		if t.Description != "" {
-			fmt.Fprintf(&sb, ", 描述:%s", t.Description)
-		}
-		sb.WriteString(")\n")
-	}
-	if len(clusters) > 0 {
-		sb.WriteString("\n## 聚类分组\n\n")
-		for i, c := range clusters {
-			fmt.Fprintf(&sb, "- 组%d: %s (%d个标签)\n", i+1, c.GroupName, len(c.TagIDs))
-		}
-	}
-	sb.WriteString("\n请生成该看板的当日动态总结。\n")
-	return sb.String()
-}
-
-func parseDynamicsResponse(content string) (string, error) {
-	content = jsonutil.SanitizeLLMJSON(content)
-
-	var raw struct {
-		Dynamics string `json:"dynamics"`
-	}
-	if err := json.Unmarshal([]byte(content), &raw); err != nil {
-		return "", fmt.Errorf("parse dynamics JSON: %w", err)
-	}
-	return raw.Dynamics, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -390,13 +301,9 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 	// Step 4: Query yesterday's report for continuity
 	prevReport := findPreviousReport(boardID, startOfDay)
 
-	// Step 5: Generate in parallel (A + B + C×K)
+	// Step 5: Generate in parallel (A + C×K)
 	type highlightsResult struct {
 		data []Highlight
-		err  error
-	}
-	type dynamicsResult struct {
-		data string
 		err  error
 	}
 	type threadsResult struct {
@@ -406,19 +313,12 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 	}
 
 	highlightsCh := make(chan highlightsResult, 1)
-	dynamicsCh := make(chan dynamicsResult, 1)
 	threadsCh := make(chan threadsResult, len(clusters))
 
 	// Call A: Highlights
 	go func() {
 		data, err := GenerateHighlights(ctx, tags, clusters)
 		highlightsCh <- highlightsResult{data: data, err: err}
-	}()
-
-	// Call B: Dynamics
-	go func() {
-		data, err := GenerateDynamics(ctx, tags, clusters)
-		dynamicsCh <- dynamicsResult{data: data, err: err}
 	}()
 
 	// Call C×K: Threads per cluster
@@ -437,12 +337,6 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 	hr := <-highlightsCh
 	if hr.err != nil {
 		return nil, nil, fmt.Errorf("generate highlights: %w", hr.err)
-	}
-
-	// Collect dynamics
-	dr := <-dynamicsCh
-	if dr.err != nil {
-		return nil, nil, fmt.Errorf("generate dynamics: %w", dr.err)
 	}
 
 	// Collect threads
@@ -466,7 +360,6 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 
 	// Step 7: Assemble report
 	highlightsJSON, _ := json.Marshal(hr.data)
-	dynamics := dr.data
 
 	// Calculate article count
 	totalArticles := 0
@@ -480,10 +373,10 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 		title = hr.data[0].Title
 	}
 
-	// Summary: use dynamics text (truncated by rune to avoid breaking multi-byte UTF-8)
-	summary := dynamics
-	if len([]rune(summary)) > 200 {
-		summary = string([]rune(summary)[:200])
+	// Summary: use first highlight reason as summary fallback
+	summary := ""
+	if len(hr.data) > 0 {
+		summary = hr.data[0].Reason
 	}
 
 	clustersJSON, _ := json.Marshal(clusters)
@@ -494,7 +387,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 		Title:                   title,
 		Summary:                 summary,
 		Highlights:              highlightsJSON,
-		Dynamics:                dynamics,
+		Dynamics:                "",
 		ArticleCount:            totalArticles,
 		EventTagCount:           len(tags),
 		ClusterCount:            len(clusters),
@@ -519,12 +412,37 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 		tagIDsJSON, _ := json.Marshal(cluster.TagIDs)
 		threadsJSON, _ := json.Marshal(threads)
 
+		// Calculate best_tier and avg_score
+		tagIDSet := make(map[uint]bool)
+		for _, tid := range cluster.TagIDs {
+			tagIDSet[tid] = true
+		}
+		bestTier := 4 // worst possible
+		totalScore := 0.0
+		matchCount := 0
+		for _, t := range tags {
+			if tagIDSet[t.ID] {
+				tier := tagging.MatchTier(t.MatchReason, false)
+				if tier < bestTier {
+					bestTier = tier
+				}
+				totalScore += t.Score
+				matchCount++
+			}
+		}
+		avgScore := 0.0
+		if matchCount > 0 {
+			avgScore = totalScore / float64(matchCount)
+		}
+
 		sections = append(sections, DailyReportSection{
 			ClusterIndex:  i,
 			ClusterLabel:  cluster.GroupName,
 			ClusterTagIDs: tagIDsJSON,
 			Threads:       threadsJSON,
 			ArticleCount:  clusterArticleCount,
+			BestTier:      bestTier,
+			AvgScore:      avgScore,
 		})
 	}
 
