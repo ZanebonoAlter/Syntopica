@@ -2,7 +2,7 @@
 
 ## Summary
 
-日报生成管线增加质量筛选 + 聚类数限制 + 去掉 dynamics；后端新增聚类排序字段；前端改为多页报纸布局。
+日报生成管线增加质量筛选 + 聚类数限制 + 去掉 dynamics；后端新增聚类排序字段和线索文章关联；前端改为长滚动报纸布局。
 
 ## Behavior
 
@@ -43,7 +43,11 @@
 
 生成报告时后端计算并写入。前端用 `best_tier ASC, avg_score DESC` 排序聚类。
 
-### 5. 长滚动报纸布局
+### 5. 线索文章关联
+
+`Thread` 结构新增 `RelatedArticleIDs []uint` 字段。生成报告时，根据 thread 的 `tag_ids` 从 `collectBoardTags` 已收集的 tag→article 映射中查关联文章 ID，去重后写入。前端浮窗使用该字段展示文章列表。
+
+### 6. 长滚动报纸布局
 
 纸张尺寸：`min(1100px, 92vw)` × `92vh`，单页长滚动（不分页）。
 

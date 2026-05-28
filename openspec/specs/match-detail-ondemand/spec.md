@@ -15,5 +15,13 @@
 - **WHEN** tag 以 direct_hit 方式匹配 board
 - **THEN** API 返回 SHALL 包含 `direct_hit_auxiliaries`（精确匹配列表）和完整的 `pairs`（所有 tag 辅助标签与 board 最相似辅助标签的余弦相似度），以及 `hits` / `hit_rate` / `max_similarity` 聚合指标
 
+#### Scenario: max_sim 降级匹配返回 downgraded 标记
+- **WHEN** tag 以 max_sim 方式匹配 board，且 `effective_min_hits < direct_max_sim_min_hits`（即 minHits 被降级）
+- **THEN** API 返回 SHALL 包含 `downgraded: true`，以及 `effective_min_hits`（实际使用的 minHits 值）
+
+#### Scenario: 正常匹配返回 downgraded=false
+- **WHEN** tag 以任何方式匹配 board，且未触发 minHits 降级
+- **THEN** API 返回 SHALL 包含 `downgraded: false`，`effective_min_hits` 等于 `direct_max_sim_min_hits`
+
 ### Requirement: 返回当前匹配配置参数
 系统 SHALL 在匹配详情响应中返回当前生效的匹配配置参数（从 ai_settings 读取），包括 sim_threshold、direct_hit_min_overlap、direct_hit_rate、hit_rate_sim_blend、min_effective_sample、direct_max_sim、direct_max_sim_min_hits、direct_max_sim_min_hit_rate、weight_sim、weight_density、weighted_threshold。

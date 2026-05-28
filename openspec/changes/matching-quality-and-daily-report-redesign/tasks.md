@@ -39,6 +39,12 @@
 - [x] 3.5.2 `generator.go`: 生成报告时计算每个 section 的 best_tier 和 avg_score 并写入
 - [x] 3.5.3 验证：`go build ./...` + `go test ./internal/domain/daily_report/...`
 
+### 3.6 线索文章关联
+
+- [x] 3.6.1 `daily_report/models.go`: `Thread` 新增 `RelatedArticleIDs []uint` 字段
+- [x] 3.6.2 `generator.go`: 在 `collectBoardTags` 后构建 `tagArticleMap`，在组装 section 时调用 `populateThreadArticles` 填充 thread 的相关文章 ID
+- [x] 3.6.3 验证：`go build ./...` + `go test ./internal/domain/daily_report/...`
+
 ## P4: 前端日报报纸布局
 
 ### 4.1 数据适配
