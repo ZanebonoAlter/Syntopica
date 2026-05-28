@@ -221,10 +221,11 @@ async function openThreadArticles(event: MouseEvent, thread: DailyReportThread) 
   )
 
   threadPopupArticles.value = results.map((r, i) => {
+    const articleId = firstBatch[i]!
     if (r.status === 'fulfilled' && r.value.success && r.value.data) {
-      return { id: firstBatch[i], title: r.value.data.title || '(无标题)', loading: false }
+      return { id: articleId, title: r.value.data.title || '(无标题)', loading: false }
     }
-    return { id: firstBatch[i], title: `文章 #${firstBatch[i]}`, loading: false }
+    return { id: articleId, title: `文章 #${articleId}`, loading: false }
   })
   threadPopupLoading.value = false
 }
@@ -249,9 +250,11 @@ async function loadMoreThreadArticles() {
   results.forEach((r, i) => {
     const idx = start + i
     if (r.status === 'fulfilled' && r.value.success && r.value.data) {
-      threadPopupArticles.value[idx] = { id: nextBatch[i], title: r.value.data.title || '(无标题)', loading: false }
+      const articleId = nextBatch[i]!
+      threadPopupArticles.value[idx] = { id: articleId, title: r.value.data.title || '(无标题)', loading: false }
     } else {
-      threadPopupArticles.value[idx] = { id: nextBatch[i], title: `文章 #${nextBatch[i]}`, loading: false }
+      const articleId = nextBatch[i]!
+      threadPopupArticles.value[idx] = { id: articleId, title: `文章 #${articleId}`, loading: false }
     }
   })
 }
