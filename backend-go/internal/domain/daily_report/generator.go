@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -373,6 +374,12 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 
 	// Step 2: Deduplicate
 	tags = DeduplicateTags(tags, articleCounts)
+
+	// Step 2.5: Quality filter
+	tags = filterTagsByQuality(tags)
+	if len(tags) == 0 {
+		return nil, nil, nil
+	}
 
 	// Step 3: Cluster via LLM
 	clusters, err := ClusterTags(ctx, tags)
@@ -762,6 +769,40 @@ func getPrevThreadSummaries(prevReport BoardDailyReport, cluster ClusterGroup) [
 		}
 	}
 	return summaries
+}
+
+func filterTagsByQuality(tags []TagInput) []TagInput {
+	// Separate by match reason quality
+	var kept []TagInput
+	var weighted []TagInput
+	for _, t := range tags {
+		switch t.MatchReason {
+		case "direct_hit", "hit_rate", "max_sim":
+			kept = append(kept, t)
+		default: // "weighted" or unknown
+			weighted = append(weighted, t)
+		}
+	}
+
+	// If kept < 10, pull back weighted tags (保底)
+	if len(kept) < 10 {
+		kept = append(kept, weighted...)
+	}
+
+	// If kept > 30, truncate by quality (截断)
+	if len(kept) > 30 {
+		sort.SliceStable(kept, func(i, j int) bool {
+			ti := tagging.MatchTier(kept[i].MatchReason, false)
+			tj := tagging.MatchTier(kept[j].MatchReason, false)
+			if ti != tj {
+				return ti < tj
+			}
+			return kept[i].Score > kept[j].Score
+		})
+		kept = kept[:30]
+	}
+
+	return kept
 }
 
 func filterTagsByIDs(tags []TagInput, ids []uint) []TagInput {
