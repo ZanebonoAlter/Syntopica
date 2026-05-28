@@ -9,7 +9,6 @@ import type { Article } from '~/types'
 import type { ArticlePayload } from '~/features/articles/utils/normalizeArticle'
 import ArticleContentView from '~/features/articles/components/ArticleContentView.vue'
 import { useFeedsStore } from '~/stores/feeds'
-import SemanticBoardList from './SemanticBoardList.vue'
 import AddSemanticBoardDialog from './AddSemanticBoardDialog.vue'
 import BoardCompositionPanel from './BoardCompositionPanel.vue'
 import AuxiliaryLabelPool from './AuxiliaryLabelPool.vue'
@@ -61,6 +60,11 @@ const showAddDialog = ref(false)
 const showUpgradeDialog = ref(false)
 const showMatchingConfigDialog = ref(false)
 const showGenerateDialog = ref(false)
+const editingBoard = ref<SemanticBoard | null>(null)
+const editLabel = ref('')
+const editDescription = ref('')
+const editSaving = ref(false)
+const editError = ref<string | null>(null)
 
 const timelineArticles = ref<BoardArticle[]>([])
 const timelineLoading = ref(false)
@@ -71,9 +75,44 @@ const activeFilterLabelId = ref<number | null>(null)
 const filterFeedId = ref<number | null>(null)
 const startDate = ref<string>('')
 const endDate = ref<string>('')
+const showDirectionMismatch = ref(false)
 const feedOptions = computed(() => feedsStore.feeds)
 const timelineVisible = computed(() => selectedBoardId.value !== null)
 const selectedTagForDetail = ref<BoardArticleTag | null>(null)
+const timelineDisplayArticles = computed(() => timelineArticles.value.map((article) => {
+  if (showDirectionMismatch.value) return article
+  return {
+    ...article,
+    filtered_tags: (article.filtered_tags || []).filter(tag => !tag.direction_mismatch),
+  }
+}))
+
+const quickRange = ref<'today' | '3d' | '7d' | '30d' | null>('today')
+
+function getDateStr(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
+function applyQuickRange(range: 'today' | '3d' | '7d' | '30d') {
+  quickRange.value = range
+  const now = new Date()
+  endDate.value = getDateStr(now)
+  const start = new Date()
+  if (range === '3d') {
+    start.setDate(start.getDate() - 2)
+  } else if (range === '7d') {
+    start.setDate(start.getDate() - 6)
+  } else if (range === '30d') {
+    start.setDate(start.getDate() - 29)
+  }
+  startDate.value = getDateStr(start)
+  handleFilterChange()
+}
+
+function handleDateInputChange() {
+  quickRange.value = null
+  handleFilterChange()
+}
 
 const selectedPreviewArticle = ref<Article | null>(null)
 const previewArticles = ref<Article[]>([])
@@ -137,9 +176,11 @@ function handleSelectBoard(id: number | null) {
   selectedTagForDetail.value = null
   activeFilterLabelId.value = null
   filterFeedId.value = null
-  startDate.value = ''
-  endDate.value = ''
-  contentTab.value = 'composition'
+  quickRange.value = 'today'
+  const now = new Date()
+  startDate.value = getDateStr(now)
+  endDate.value = getDateStr(now)
+  contentTab.value = 'articles'
   if (id !== null) {
     void loadComposition(id)
     timelinePage.value = 1
@@ -167,6 +208,9 @@ async function loadTimelineArticles(boardId: number, append = false) {
     if (endDate.value) {
       params.end_date = endDate.value
     }
+    if (showDirectionMismatch.value) {
+      params.show_direction_mismatch = true
+    }
     const res = await sbApi.getBoardArticles(boardId, params)
     if (res.success && res.data) {
       const newArticles = res.data
@@ -192,6 +236,22 @@ async function loadTimelineArticles(boardId: number, append = false) {
 function handleLoadMore() {
   if (selectedBoardId.value !== null && !timelineLoading.value) {
     void loadTimelineArticles(selectedBoardId.value, true)
+  }
+}
+
+function sourceIcon(source: string): string {
+  switch (source) {
+    case 'manual': return 'mdi:lock'
+    case 'llm_extract': return 'mdi:robot'
+    default: return 'mdi:lightning-bolt'
+  }
+}
+
+function sourceTitle(source: string): string {
+  switch (source) {
+    case 'manual': return '手动创建'
+    case 'llm_extract': return 'LLM 生成'
+    default: return '自动生成'
   }
 }
 
@@ -270,14 +330,15 @@ function isSelectedDetailTag(tag: BoardArticleTag): boolean {
   return selectedTagForDetail.value?.id === tag.id
 }
 
-function matchReasonColor(reason: string): string {
+function matchReasonColor(reason: string, downgraded?: boolean): string {
   const colors: Record<string, string> = {
     direct_hit: '#22c55e',
     hit_rate: '#3b82f6',
     max_sim: '#f59e0b',
     weighted: '#94a3b8',
   }
-  return colors[reason] || '#94a3b8'
+  const color = colors[reason] || '#94a3b8'
+  return downgraded ? color + '80' : color
 }
 
 function matchInfoLabel(tag: BoardArticleTag): string {
@@ -287,7 +348,7 @@ function matchInfoLabel(tag: BoardArticleTag): string {
     max_sim: '相似度',
     weighted: '综合',
   }
-  return `${labels[tag.match_reason] || tag.match_reason} ${tag.score.toFixed(2)}`
+  return `${labels[tag.match_reason] || tag.match_reason} ${tag.score.toFixed(2)}${tag.downgraded ? '↓' : ''}`
 }
 
 function strongestMatch(tags: BoardArticleTag[]): BoardArticleTag | null {
@@ -306,6 +367,45 @@ function handleAddBoard(data: { label: string; description: string; display_orde
       boardsError.value = res.error || '添加失败'
     }
   })
+}
+
+function openEditBoard(board: SemanticBoard) {
+  editingBoard.value = board
+  editLabel.value = board.label
+  editDescription.value = board.description || ''
+  editError.value = null
+}
+
+function closeEditBoard() {
+  if (editSaving.value) return
+  editingBoard.value = null
+  editLabel.value = ''
+  editDescription.value = ''
+  editError.value = null
+}
+
+async function handleSaveBoardEdit() {
+  const board = editingBoard.value
+  const label = editLabel.value.trim()
+  if (!board || !label) return
+
+  editSaving.value = true
+  editError.value = null
+  try {
+    const res = await sbApi.updateBoard(board.id, {
+      label,
+      description: editDescription.value.trim(),
+    })
+    if (res.success) {
+      await loadBoards()
+      editSaving.value = false
+      closeEditBoard()
+    } else {
+      editError.value = res.error || '保存失败'
+    }
+  } finally {
+    editSaving.value = false
+  }
 }
 
 function handleDeleteBoard(id: number) {
@@ -452,19 +552,92 @@ onUnmounted(() => {
           <Icon icon="mdi:alert-circle-outline" width="14" />
           <span>{{ boardsError }}</span>
         </div>
-        <SemanticBoardList
-          :boards="boards"
-          :selected-id="selectedBoardId"
-          :loading="boardsLoading"
-          :search-query="''"
-          @select="handleSelectBoard"
-          @add="showAddDialog = true"
-          @upgrade="handleUpgradeSuggest"
-          @backfill="handleTriggerBackfill"
-          @config="handleOpenMatchingConfig"
-          @generate="showGenerateDialog = true"
-          @delete="handleDeleteBoard"
-        />
+        <div class="sb-list">
+          <div class="sb-list-header">
+            <span class="sb-list-title">语义板块</span>
+            <span class="sb-list-count">{{ boards.length }}</span>
+          </div>
+
+          <div
+            class="sb-item"
+            :class="{ 'sb-item--active': selectedBoardId === null }"
+            @click="handleSelectBoard(null)"
+          >
+            <Icon icon="mdi:view-grid" width="14" class="sb-item-icon" />
+            <span class="sb-item-label">全部</span>
+            <span class="sb-item-badge">{{ boards.reduce((s, x) => s + x.tag_count, 0) }}</span>
+          </div>
+
+          <div v-if="boardsLoading" class="sb-loading">
+            <div v-for="i in 3" :key="i" class="sb-skeleton" />
+          </div>
+
+          <div v-else-if="boards.length === 0" class="sb-empty">
+            <Icon icon="mdi:folder-outline" width="24" class="text-white/15" />
+            <p>暂无板块</p>
+          </div>
+
+          <div v-else class="sb-items">
+            <div
+              v-for="board in boards"
+              :key="board.id"
+              class="sb-item"
+              :class="{
+                'sb-item--active': selectedBoardId === board.id,
+                'sb-item--protected': board.protected,
+              }"
+              @click="handleSelectBoard(board.id)"
+            >
+              <Icon
+                :icon="sourceIcon(board.source)"
+                width="13"
+                class="sb-source-icon"
+                :title="sourceTitle(board.source)"
+              />
+              <span class="sb-item-label">{{ board.label }}</span>
+              <span v-if="board.tag_count > 0" class="sb-item-badge">{{ board.tag_count }}</span>
+              <button
+                type="button"
+                class="sb-icon-btn sb-edit-btn"
+                title="编辑板块"
+                @click.stop="openEditBoard(board)"
+              >
+                <Icon icon="mdi:pencil" width="12" />
+              </button>
+              <button
+                type="button"
+                class="sb-icon-btn sb-delete-btn"
+                title="删除板块"
+                @click.stop="handleDeleteBoard(board.id)"
+              >
+                <Icon icon="mdi:close" width="12" />
+              </button>
+            </div>
+          </div>
+
+          <div class="sb-actions">
+            <button type="button" class="sb-action-btn sb-action-btn--primary" @click="showAddDialog = true">
+              <Icon icon="mdi:plus" width="14" />
+              添加板块
+            </button>
+            <button type="button" class="sb-action-btn sb-action-btn--secondary" @click="handleUpgradeSuggest">
+              <Icon icon="mdi:auto-fix" width="14" />
+              升级建议
+            </button>
+            <button type="button" class="sb-action-btn sb-action-btn--secondary" @click="handleTriggerBackfill">
+              <Icon icon="mdi:backup-restore" width="14" />
+              匹配回填
+            </button>
+            <button type="button" class="sb-action-btn sb-action-btn--ghost" @click="handleOpenMatchingConfig">
+              <Icon icon="mdi:tune" width="14" />
+              匹配参数
+            </button>
+            <button type="button" class="sb-action-btn sb-action-btn--ghost" @click="showGenerateDialog = true">
+              <Icon icon="mdi:auto-fix" width="14" />
+              整理叙事
+            </button>
+          </div>
+        </div>
       </aside>
 
       <!-- Right panel -->
@@ -495,7 +668,7 @@ onUnmounted(() => {
             @refresh="() => loadComposition(selectedBoardId!)"
           />
 
-          <BoardDailyReportTimeline v-if="contentTab === 'daily-reports'" :board-id="selectedBoardId" />
+          <BoardDailyReportTimeline v-if="contentTab === 'daily-reports'" :board-id="selectedBoardId" @open-article="openArticlePreview" />
 
           <!-- Article timeline -->
           <div v-if="contentTab === 'articles'" class="tags-articles-layout">
@@ -504,6 +677,10 @@ onUnmounted(() => {
               <Icon icon="mdi:timeline-clock-outline" width="15" class="text-[rgba(240,138,75,0.8)]" />
               <span class="tags-timeline-title">相关文章</span>
               <span v-if="timelineArticles.length" class="tags-timeline-count">{{ timelineArticles.length }} 篇</span>
+              <label class="tags-direction-toggle">
+                <input v-model="showDirectionMismatch" type="checkbox" @change="handleFilterChange()" />
+                显示方向不符
+              </label>
             </div>
 
             <!-- Filter chips -->
@@ -527,12 +704,29 @@ onUnmounted(() => {
               >
                 {{ label.label }}
               </button>
+              <div class="tags-quick-range">
+                <button
+                  v-for="opt in [
+                    { key: 'today', label: '今天' },
+                    { key: '3d', label: '3天' },
+                    { key: '7d', label: '7天' },
+                    { key: '30d', label: '30天' },
+                  ]"
+                  :key="opt.key"
+                  type="button"
+                  class="tags-filter-chip"
+                  :class="{ 'tags-filter-chip--active': quickRange === opt.key }"
+                  @click="applyQuickRange(opt.key as 'today' | '3d' | '7d' | '30d')"
+                >
+                  {{ opt.label }}
+                </button>
+              </div>
               <select v-model="filterFeedId" class="tags-filter-select" @change="handleFilterChange()">
                 <option :value="null">全部来源</option>
                 <option v-for="feed in feedOptions" :key="feed.id" :value="Number(feed.id)">{{ feed.title }}</option>
               </select>
-              <input type="date" v-model="startDate" class="tags-filter-date" @change="handleFilterChange()" />
-              <input type="date" v-model="endDate" class="tags-filter-date" @change="handleFilterChange()" />
+              <input type="date" v-model="startDate" class="tags-filter-date" @change="handleDateInputChange()" />
+              <input type="date" v-model="endDate" class="tags-filter-date" @change="handleDateInputChange()" />
             </div>
 
             <div v-if="timelineLoading && timelineArticles.length === 0" class="tags-timeline-loading">
@@ -546,7 +740,7 @@ onUnmounted(() => {
 
             <div v-else class="tags-timeline-list">
               <div
-                v-for="article in timelineArticles"
+                v-for="article in timelineDisplayArticles"
                 :key="article.id"
                 class="tags-timeline-item"
                 @click="openArticlePreview(article.id)"
@@ -566,12 +760,15 @@ onUnmounted(() => {
                         :key="tag.id"
                         type="button"
                         class="tags-timeline-tag-chip"
-                        :class="{ 'tags-timeline-tag-chip--selected': isSelectedDetailTag(tag) }"
-                        :style="{ borderColor: matchReasonColor(tag.match_reason) }"
+                        :class="{
+                          'tags-timeline-tag-chip--selected': isSelectedDetailTag(tag),
+                          'tags-timeline-tag-chip--direction-mismatch': tag.direction_mismatch,
+                        }"
+                        :style="{ borderColor: matchReasonColor(tag.match_reason, tag.downgraded) }"
                         :title="matchInfoLabel(tag)"
                         @click.stop="toggleMatchDetail(tag)"
                       >
-                        {{ tag.label }} {{ tag.score.toFixed(2) }}
+                        {{ tag.label }} {{ tag.score.toFixed(2) }}{{ tag.downgraded ? '↓' : '' }}{{ tag.direction_mismatch ? '⊘' : '' }}
                       </button>
                     </div>
                   </div>
@@ -640,6 +837,37 @@ onUnmounted(() => {
       @confirm="handleAddBoard"
       @cancel="showAddDialog = false"
     />
+
+    <!-- Edit Board Dialog -->
+    <Teleport to="body">
+      <div v-if="editingBoard" class="board-edit-overlay" @click.self="closeEditBoard">
+        <form class="board-edit-card" @submit.prevent="handleSaveBoardEdit">
+          <div class="board-edit-header">
+            <h3 class="board-edit-title">编辑板块</h3>
+            <button type="button" class="board-edit-close" :disabled="editSaving" @click="closeEditBoard">
+              <Icon icon="mdi:close" width="18" />
+            </button>
+          </div>
+          <div class="board-edit-body">
+            <label class="board-edit-field">
+              <span class="board-edit-label">名称 <span class="board-edit-required">*</span></span>
+              <input v-model="editLabel" type="text" class="board-edit-input" placeholder="板块名称" maxlength="100" autofocus />
+            </label>
+            <label class="board-edit-field">
+              <span class="board-edit-label">描述</span>
+              <textarea v-model="editDescription" class="board-edit-textarea" placeholder="可选描述" maxlength="500" rows="4" />
+            </label>
+            <p v-if="editError" class="board-edit-error">{{ editError }}</p>
+          </div>
+          <div class="board-edit-footer">
+            <button type="button" class="board-edit-btn board-edit-btn--ghost" :disabled="editSaving" @click="closeEditBoard">取消</button>
+            <button type="submit" class="board-edit-btn board-edit-btn--primary" :disabled="editSaving || !editLabel.trim()">
+              {{ editSaving ? '保存中...' : '保存' }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </Teleport>
 
     <!-- Upgrade Suggestion Panel -->
     <UpgradeSuggestionPanel
@@ -728,7 +956,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  max-width: 1440px;
+  max-width: min(1800px, 95vw);
   margin: 0 auto;
   padding: 0.75rem 1.5rem;
 }
@@ -764,7 +992,7 @@ onUnmounted(() => {
   display: flex;
   flex: 1;
   min-height: 0;
-  max-width: 1440px;
+  max-width: min(1800px, 95vw);
   width: 100%;
   margin: 0 auto;
 }
@@ -788,6 +1016,207 @@ onUnmounted(() => {
   background: rgba(240, 138, 75, 0.08);
   color: rgba(255, 200, 180, 0.85);
   font-size: 0.75rem;
+}
+
+.sb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sb-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.sb-list-title {
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.sb-list-count {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.3);
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sb-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  position: relative;
+}
+
+.sb-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sb-item--active {
+  background: rgba(240, 138, 75, 0.1);
+  border: 1px solid rgba(240, 138, 75, 0.2);
+}
+
+.sb-item--protected .sb-source-icon {
+  color: rgba(240, 138, 75, 0.6);
+}
+
+.sb-item-icon,
+.sb-source-icon {
+  color: rgba(255, 255, 255, 0.3);
+  flex-shrink: 0;
+}
+
+.sb-item-label {
+  flex: 1;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.75);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-item--active .sb-item-label {
+  color: rgba(255, 220, 200, 0.9);
+}
+
+.sb-item-badge {
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.35);
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.sb-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.12s ease;
+  flex-shrink: 0;
+}
+
+.sb-item:hover .sb-icon-btn {
+  opacity: 1;
+}
+
+.sb-edit-btn:hover {
+  color: rgba(147, 197, 253, 0.9);
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.sb-delete-btn:hover {
+  color: rgba(252, 165, 165, 0.9);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.sb-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sb-skeleton {
+  height: 32px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  animation: sbPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes sbPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+.sb-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 2rem 0;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 0.75rem;
+}
+
+.sb-items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sb-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.sb-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.5rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: none;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.sb-action-btn--primary {
+  color: rgba(255, 220, 200, 0.7);
+  border-color: rgba(240, 138, 75, 0.2);
+}
+
+.sb-action-btn--primary:hover {
+  background: rgba(240, 138, 75, 0.1);
+  border-color: rgba(240, 138, 75, 0.35);
+  color: rgba(255, 220, 200, 0.9);
+}
+
+.sb-action-btn--secondary {
+  color: rgba(147, 197, 253, 0.6);
+  border-color: rgba(99, 179, 237, 0.2);
+}
+
+.sb-action-btn--secondary:hover {
+  background: rgba(99, 179, 237, 0.08);
+  border-color: rgba(99, 179, 237, 0.35);
+  color: rgba(147, 197, 253, 0.9);
+}
+
+.sb-action-btn--ghost {
+  color: rgba(255, 255, 255, 0.4);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+.sb-action-btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .tags-content {
@@ -873,6 +1302,11 @@ onUnmounted(() => {
 .tags-match-detail-panel {
   width: 320px;
   flex-shrink: 0;
+  position: sticky;
+  top: 1rem;
+  align-self: flex-start;
+  max-height: calc(100vh - 6rem);
+  overflow-y: auto;
 }
 
 .tags-timeline {
@@ -904,6 +1338,20 @@ onUnmounted(() => {
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.06);
+}
+
+.tags-direction-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.38);
+  cursor: pointer;
+}
+
+.tags-direction-toggle input {
+  cursor: pointer;
 }
 
 .tags-timeline-loading {
@@ -1030,6 +1478,11 @@ onUnmounted(() => {
   background: rgba(240, 138, 75, 0.12);
 }
 
+.tags-timeline-tag-chip--direction-mismatch {
+  border-style: dashed;
+  opacity: 0.65;
+}
+
 .match-detail-panel-enter-active,
 .match-detail-panel-leave-active {
   transition: opacity 0.16s ease, transform 0.16s ease;
@@ -1122,6 +1575,14 @@ onUnmounted(() => {
   margin-top: 0.5rem;
 }
 
+.tags-quick-range {
+  display: flex;
+  gap: 0.25rem;
+  margin-right: 0.5rem;
+  padding-right: 0.5rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .tags-filter-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1152,6 +1613,154 @@ onUnmounted(() => {
   border-color: rgba(240, 138, 75, 0.45);
   color: rgba(255, 220, 200, 0.85);
   background: rgba(240, 138, 75, 0.1);
+}
+
+.board-edit-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 12, 18, 0.75);
+  backdrop-filter: blur(8px);
+}
+
+.board-edit-card {
+  width: min(480px, 90%);
+  display: flex;
+  flex-direction: column;
+  border-radius: 1.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(17, 27, 38, 0.98);
+  padding: 1.5rem;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.board-edit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.board-edit-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.board-edit-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.board-edit-close:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.board-edit-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.board-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.board-edit-label {
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.5);
+  letter-spacing: 0.02em;
+}
+
+.board-edit-required,
+.board-edit-error {
+  color: rgba(240, 138, 75, 0.8);
+}
+
+.board-edit-input,
+.board-edit-textarea {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.82rem;
+  padding: 0.55rem 0.85rem;
+  outline: none;
+  transition: border-color 0.12s ease;
+  box-sizing: border-box;
+}
+
+.board-edit-textarea {
+  resize: vertical;
+}
+
+.board-edit-input::placeholder,
+.board-edit-textarea::placeholder {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+.board-edit-input:focus,
+.board-edit-textarea:focus {
+  border-color: rgba(240, 138, 75, 0.45);
+}
+
+.board-edit-error {
+  font-size: 0.72rem;
+}
+
+.board-edit-footer {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1.25rem;
+}
+
+.board-edit-btn {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.82rem;
+  padding: 0.45rem 1.1rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.board-edit-btn--ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.board-edit-btn--primary {
+  border-color: rgba(240, 138, 75, 0.4);
+  color: rgba(255, 220, 200, 0.9);
+  background: rgba(240, 138, 75, 0.12);
+}
+
+.board-edit-btn--primary:hover:not(:disabled) {
+  background: rgba(240, 138, 75, 0.2);
+  border-color: rgba(240, 138, 75, 0.6);
+}
+
+.board-edit-btn:disabled,
+.board-edit-close:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .tags-article-modal {

@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { ref, watch, computed, onUnmounted } from 'vue'
+import { ref, watch, computed, onMounted, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
-import { useDailyReportsApi, type DailyReportListItem, type DailyReport } from '~/api/dailyReports'
+import { useFloating } from '@floating-ui/vue'
+import { autoUpdate, offset, shift, flip } from '@floating-ui/dom'
+import { useDailyReportsApi, type DailyReportListItem, type DailyReport, type DailyReportThread } from '~/api/dailyReports'
+import { useArticlesApi } from '~/api/articles'
 
 const props = defineProps<{ boardId: number }>()
 
+const emit = defineEmits<{
+  openArticle: [articleId: number]
+}>()
+
 const { getBoardDailyReports, getDailyReportDetail } = useDailyReportsApi()
+const { getArticle } = useArticlesApi()
 
 const reports = ref<DailyReportListItem[]>([])
 const days = ref(7)
@@ -14,8 +22,6 @@ const showModal = ref(false)
 const currentDayIndex = ref(-1)
 const detailCache = ref<Map<number, DailyReport>>(new Map())
 const detailLoading = ref<number | null>(null)
-const currentPage = ref(1)
-const flipDirection = ref<'left' | 'right'>('right')
 
 const selectedReport = computed(() => {
   if (currentDayIndex.value < 0 || currentDayIndex.value >= reports.value.length) return null
@@ -27,49 +33,37 @@ const selectedDetail = computed<DailyReport | null>(() => {
   return detailCache.value.get(selectedReport.value.id) ?? null
 })
 
-type NewspaperPage =
-  | { type: 'overview', highlights: any[], dynamics: string | null, sections: any[] }
-  | { type: 'content', sections: any[] }
+interface QualityZone {
+  label: string
+  tier: number
+  sections: any[]
+  columns: number
+}
 
-const PAGE1_CAPACITY = 4
-const PAGE_N_CAPACITY = 5
-
-const pages = computed<NewspaperPage[]>(() => {
+const qualityZones = computed<QualityZone[]>(() => {
   if (!selectedDetail.value) return []
-  const result: NewspaperPage[] = []
-  const detail = selectedDetail.value
-
-  const sortedSections = [...(detail.sections || [])].sort((a, b) => {
+  const sections = [...(selectedDetail.value.sections || [])].sort((a, b) => {
     if (a.best_tier !== b.best_tier) return a.best_tier - b.best_tier
     return b.avg_score - a.avg_score
   })
+  if (sections.length === 0) return []
 
-  // Page 1: overview + first N sections
-  const page1Sections = sortedSections.slice(0, PAGE1_CAPACITY)
-  result.push({
-    type: 'overview',
-    highlights: detail.highlights || [],
-    dynamics: detail.dynamics || null,
-    sections: page1Sections,
-  })
+  const zones: QualityZone[] = []
 
-  // Remaining pages
-  let idx = PAGE1_CAPACITY
-  while (idx < sortedSections.length) {
-    const end = Math.min(idx + PAGE_N_CAPACITY, sortedSections.length)
-    result.push({
-      type: 'content',
-      sections: sortedSections.slice(idx, end),
-    })
-    idx = end
-  }
+  // Tier 0-1: Core events (2 columns)
+  const core = sections.filter(s => s.best_tier <= 1)
+  if (core.length) zones.push({ label: '核心事件', tier: 1, sections: core, columns: 2 })
 
-  return result
+  // Tier 2: Related events (single column)
+  const related = sections.filter(s => s.best_tier === 2)
+  if (related.length) zones.push({ label: '相关事件', tier: 2, sections: related, columns: 1 })
+
+  // Tier 3+: Other dynamics (single column)
+  const other = sections.filter(s => s.best_tier >= 3)
+  if (other.length) zones.push({ label: '其他动态', tier: 3, sections: other, columns: 1 })
+
+  return zones
 })
-
-const totalPages = computed(() => pages.value.length)
-
-const currentPg = computed(() => pages.value[currentPage.value - 1] as NewspaperPage | undefined)
 
 const threadStatusColor: Record<string, string> = {
   emerging: 'np-status-emerging',
@@ -101,6 +95,25 @@ const reportStatusLabel: Record<string, string> = {
   failed: '失败',
 }
 
+// Thread article popup state
+const threadPopupTrigger = ref<HTMLElement>()
+const threadPopupFloating = ref<HTMLElement>()
+const threadPopupOpen = ref(false)
+const threadPopupArticles = ref<Array<{ id: number; title: string; loading: boolean }>>([])
+const threadPopupLoading = ref(false)
+let currentOpenThread: DailyReportThread | null = null
+
+const { floatingStyles: threadPopupStyles } = useFloating(threadPopupTrigger, threadPopupFloating, {
+  placement: 'right-start',
+  middleware: [offset(8), shift({ padding: 16 }), flip()],
+  whileElementsMounted: autoUpdate,
+})
+
+const hasMoreArticles = computed(() => {
+  if (!currentOpenThread) return false
+  return threadPopupArticles.value.length < (currentOpenThread.related_article_ids?.length || 0)
+})
+
 async function loadReports() {
   loading.value = true
   try {
@@ -120,7 +133,6 @@ async function openNewspaper(index: number) {
   if (!report) return
   currentDayIndex.value = index
   showModal.value = true
-  currentPage.value = 1
   if (detailCache.value.has(report.id)) return
   detailLoading.value = report.id
   try {
@@ -136,26 +148,12 @@ async function openNewspaper(index: number) {
 
 function closeNewspaper() {
   showModal.value = false
-}
-
-function nextPage() {
-  if (currentPage.value < totalPages.value) {
-    flipDirection.value = 'right'
-    currentPage.value++
-  }
-}
-
-function prevPage() {
-  if (currentPage.value > 1) {
-    flipDirection.value = 'left'
-    currentPage.value--
-  }
+  closeThreadPopup()
 }
 
 function prevDay() {
   if (currentDayIndex.value > 0) {
     currentDayIndex.value--
-    currentPage.value = 1
     loadDetailForCurrentDay()
   }
 }
@@ -163,7 +161,6 @@ function prevDay() {
 function nextDay() {
   if (currentDayIndex.value < reports.value.length - 1) {
     currentDayIndex.value++
-    currentPage.value = 1
     loadDetailForCurrentDay()
   }
 }
@@ -204,11 +201,84 @@ function truncateText(text: string, maxLen: number): string {
   return text.length > maxLen ? text.slice(0, maxLen) + '...' : text
 }
 
+async function openThreadArticles(event: MouseEvent, thread: DailyReportThread) {
+  threadPopupTrigger.value = event.currentTarget as HTMLElement
+  threadPopupOpen.value = true
+  threadPopupLoading.value = true
+  threadPopupArticles.value = []
+  currentOpenThread = thread
+
+  const ids = thread.related_article_ids || []
+  const firstBatch = ids.slice(0, 5)
+
+  if (firstBatch.length === 0) {
+    threadPopupLoading.value = false
+    return
+  }
+
+  const results = await Promise.allSettled(
+    firstBatch.map(id => getArticle(id))
+  )
+
+  threadPopupArticles.value = results.map((r, i) => {
+    if (r.status === 'fulfilled' && r.value.success && r.value.data) {
+      return { id: firstBatch[i], title: r.value.data.title || '(无标题)', loading: false }
+    }
+    return { id: firstBatch[i], title: `文章 #${firstBatch[i]}`, loading: false }
+  })
+  threadPopupLoading.value = false
+}
+
+async function loadMoreThreadArticles() {
+  if (!currentOpenThread) return
+  const ids = currentOpenThread.related_article_ids || []
+  const start = threadPopupArticles.value.length
+  const nextBatch = ids.slice(start, start + 5)
+  if (nextBatch.length === 0) return
+
+  // Add loading placeholders
+  nextBatch.forEach(id => {
+    threadPopupArticles.value.push({ id, title: '加载中...', loading: true })
+  })
+
+  const results = await Promise.allSettled(
+    nextBatch.map(id => getArticle(id))
+  )
+
+  // Replace placeholders with actual data
+  results.forEach((r, i) => {
+    const idx = start + i
+    if (r.status === 'fulfilled' && r.value.success && r.value.data) {
+      threadPopupArticles.value[idx] = { id: nextBatch[i], title: r.value.data.title || '(无标题)', loading: false }
+    } else {
+      threadPopupArticles.value[idx] = { id: nextBatch[i], title: `文章 #${nextBatch[i]}`, loading: false }
+    }
+  })
+}
+
+function closeThreadPopup() {
+  threadPopupOpen.value = false
+  threadPopupArticles.value = []
+  currentOpenThread = null
+}
+
+function handleArticleClick(articleId: number) {
+  emit('openArticle', articleId)
+  closeThreadPopup()
+}
+
+function handleThreadPopupOutsideClick(event: MouseEvent) {
+  if (threadPopupOpen.value && threadPopupTrigger.value && threadPopupFloating.value) {
+    const target = event.target as Node
+    if (!threadPopupTrigger.value.contains(target) && !threadPopupFloating.value.contains(target)) {
+      closeThreadPopup()
+    }
+  }
+}
+
 function handleKeydown(e: KeyboardEvent) {
   if (!showModal.value) return
   switch (e.key) {
-    case 'ArrowLeft': e.preventDefault(); prevPage(); break
-    case 'ArrowRight': e.preventDefault(); nextPage(); break
     case 'ArrowUp': e.preventDefault(); prevDay(); break
     case 'ArrowDown': e.preventDefault(); nextDay(); break
     case 'Escape': closeNewspaper(); break
@@ -225,8 +295,13 @@ watch(showModal, (val) => {
   }
 })
 
+onMounted(() => {
+  document.addEventListener('click', handleThreadPopupOutsideClick)
+})
+
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener('click', handleThreadPopupOutsideClick)
   document.body.style.overflow = ''
 })
 
@@ -287,16 +362,6 @@ watch(() => props.boardId, () => {
   <Teleport to="body">
     <Transition name="np-modal">
       <div v-if="showModal" class="np-overlay" @click.self="closeNewspaper">
-        <!-- Left edge button -->
-        <button
-          type="button"
-          class="np-edge-btn np-edge-left"
-          :disabled="currentPage <= 1"
-          @click="prevPage"
-        >
-          <Icon icon="mdi:chevron-left" width="28" />
-        </button>
-
         <!-- Paper panel -->
         <div class="np-paper">
           <!-- Top bar -->
@@ -322,101 +387,85 @@ watch(() => props.boardId, () => {
             <div v-if="detailLoading" class="np-loading">
               <div v-for="i in 3" :key="i" class="np-skeleton" />
             </div>
-            <Transition :name="flipDirection === 'right' ? 'np-page-right' : 'np-page-left'" mode="out-in">
-              <div :key="currentPage" class="np-page">
-                <!-- Overview page (page 1): highlights + dynamics + cluster grid -->
-                <template v-if="currentPg?.type === 'overview'">
-                  <div class="np-date-big">
-                    {{ selectedReport ? formatDateForSummary(selectedReport.period_date) : '' }}
-                  </div>
-                  <div v-if="currentPg.highlights?.length">
-                    <div class="np-section-label">今日重点</div>
-                    <div class="np-divider"></div>
-                    <div v-for="(h, i) in currentPg.highlights" :key="i" class="np-highlight">
-                      <div class="np-highlight-title">{{ h.title }}</div>
-                      <div class="np-highlight-reason">{{ h.reason }}</div>
-                    </div>
-                  </div>
-                  <template v-if="currentPg.dynamics">
-                    <div class="np-divider"></div>
-                    <div class="np-section-label">板块动态</div>
-                    <p class="np-dynamics">{{ currentPg.dynamics }}</p>
-                  </template>
-
-                  <!-- Cluster grid on overview page -->
-                  <template v-if="currentPg.sections?.length">
-                    <div class="np-divider"></div>
-                    <div class="np-cluster-grid">
-                      <div v-for="section in currentPg.sections" :key="section.cluster_index" class="np-cluster-card">
-                        <div class="np-cluster-card-header">
-                          <span class="np-cluster-card-name">{{ section.cluster_label }}</span>
-                          <span class="np-cluster-card-count">{{ section.article_count }}篇</span>
-                        </div>
-                        <div class="np-cluster-card-threads">
-                          <template v-for="(thread, ti) in section.threads?.slice(0, 3)" :key="ti">
-                            <div class="np-thread-compact">
-                              <span class="np-thread-compact-title">{{ thread.title }}</span>
-                              <span :class="['np-thread-compact-status', threadStatusColor[thread.status] || '']">{{ threadStatusLabel[thread.status] || thread.status }}</span>
-                            </div>
-                          </template>
-                        </div>
-                      </div>
-                    </div>
-                  </template>
-                </template>
-
-                <!-- Content page: hotspot + cluster grid -->
-                <template v-else-if="currentPg?.type === 'content'">
-                  <div class="np-date-big">
-                    {{ selectedReport ? formatDateForSummary(selectedReport.period_date) : '' }}
-                  </div>
-
-                  <!-- Hotspot: top section summary -->
-                  <template v-if="currentPg.sections.length > 0">
-                    <div class="np-section-label">本页热点</div>
-                    <div class="np-hotspot">
-                      <div class="np-hotspot-name">{{ currentPg.sections[0].cluster_label }}</div>
-                      <p class="np-hotspot-summary">{{ currentPg.sections[0].threads?.[0]?.summary || '' }}</p>
-                    </div>
-                  </template>
-
-                  <!-- Cluster grid -->
-                  <div class="np-cluster-grid">
-                    <div v-for="section in currentPg.sections" :key="section.cluster_index" class="np-cluster-card">
-                      <div class="np-cluster-card-header">
-                        <span class="np-cluster-card-name">{{ section.cluster_label }}</span>
-                        <span class="np-cluster-card-count">{{ section.article_count }}篇</span>
-                      </div>
-                      <div class="np-cluster-card-threads">
-                        <template v-for="(thread, ti) in section.threads?.slice(0, 3)" :key="ti">
-                          <div class="np-thread-compact">
-                            <span class="np-thread-compact-title">{{ thread.title }}</span>
-                            <span :class="['np-thread-compact-status', threadStatusColor[thread.status] || '']">{{ threadStatusLabel[thread.status] || thread.status }}</span>
-                          </div>
-                        </template>
-                      </div>
-                    </div>
-                  </div>
-                </template>
+            <div v-else-if="selectedDetail" class="np-page">
+              <!-- Header: date -->
+              <div class="np-date-big">
+                {{ selectedReport ? formatDateForSummary(selectedReport.period_date) : '' }}
               </div>
-            </Transition>
+
+              <!-- Highlights -->
+              <template v-if="selectedDetail.highlights?.length">
+                <div class="np-section-label">今日重点</div>
+                <div class="np-divider"></div>
+                <div v-for="(h, i) in selectedDetail.highlights" :key="i" class="np-highlight">
+                  <div class="np-highlight-title">{{ h.title }}</div>
+                  <div class="np-highlight-reason">{{ h.reason }}</div>
+                </div>
+              </template>
+
+              <!-- Quality zones -->
+              <template v-for="(zone, zi) in qualityZones" :key="zi">
+                <div class="np-divider"></div>
+                <div class="np-zone-header">
+                  <span class="np-zone-label">{{ zone.label }}</span>
+                  <span class="np-zone-count">{{ zone.sections.length }} 个聚类</span>
+                </div>
+                <div class="np-cluster-grid" :style="{ gridTemplateColumns: zone.columns === 2 ? 'repeat(2, 1fr)' : '1fr' }">
+                  <div v-for="section in zone.sections" :key="section.cluster_index" class="np-cluster-card">
+                    <div class="np-cluster-card-header">
+                      <span class="np-cluster-card-name">{{ section.cluster_label }}</span>
+                      <span class="np-cluster-card-count">{{ section.article_count }}篇</span>
+                    </div>
+                    <div class="np-cluster-card-threads">
+                      <div v-for="(thread, ti) in section.threads" :key="ti" class="np-thread-item" @click.stop="openThreadArticles($event, thread)">
+                        <span class="np-thread-status" :class="threadStatusColor[thread.status] || ''">
+                          {{ threadStatusLabel[thread.status] || thread.status }}
+                        </span>
+                        <div class="np-thread-body">
+                          <div class="np-thread-title">{{ thread.title }}</div>
+                          <div v-if="thread.summary" class="np-thread-summary">{{ thread.summary }}</div>
+                        </div>
+                        <Icon icon="mdi:file-document-multiple-outline" width="14" class="np-thread-articles-icon" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
           </div>
-
-          <!-- Page number -->
-          <div v-if="totalPages > 1" class="np-pagenum">{{ currentPage }} / {{ totalPages }}</div>
         </div>
-
-        <!-- Right edge button -->
-        <button
-          type="button"
-          class="np-edge-btn np-edge-right"
-          :disabled="currentPage >= totalPages"
-          @click="nextPage"
-        >
-          <Icon icon="mdi:chevron-right" width="28" />
-        </button>
       </div>
     </Transition>
+
+    <!-- Thread article popup -->
+    <div
+      v-if="threadPopupOpen"
+      ref="threadPopupFloating"
+      class="np-thread-popup"
+      :style="threadPopupStyles"
+    >
+      <div class="np-thread-popup-header">相关文章</div>
+      <div v-if="threadPopupLoading" class="np-thread-popup-loading">加载中...</div>
+      <div v-else class="np-thread-popup-list">
+        <button
+          v-for="article in threadPopupArticles"
+          :key="article.id"
+          class="np-thread-popup-item"
+          :disabled="article.loading"
+          @click.stop="handleArticleClick(article.id)"
+        >
+          <Icon icon="mdi:file-document-outline" width="14" />
+          <span>{{ article.title }}</span>
+        </button>
+        <button
+          v-if="hasMoreArticles"
+          class="np-thread-popup-more"
+          @click.stop="loadMoreThreadArticles"
+        >
+          加载更多...
+        </button>
+      </div>
+    </div>
   </Teleport>
 </template>
 
@@ -569,7 +618,6 @@ watch(() => props.boardId, () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
   background: rgba(0, 0, 0, 0.7);
 }
 
@@ -577,8 +625,8 @@ watch(() => props.boardId, () => {
   position: relative;
   display: flex;
   flex-direction: column;
-  width: min(800px, 85vw);
-  max-height: 90vh;
+  width: min(1100px, 92vw);
+  max-height: 92vh;
   border-radius: 4px;
   background: #f4eed7;
   /* Subtle noise texture via SVG data URI */
@@ -706,12 +754,6 @@ watch(() => props.boardId, () => {
   margin: 0.75rem 0;
 }
 
-.np-divider-subtle {
-  height: 0;
-  border-top: 1px dashed rgba(0, 0, 0, 0.08);
-  margin: 0.4rem 0;
-}
-
 .np-highlight {
   margin-bottom: 0.75rem;
 }
@@ -731,186 +773,38 @@ watch(() => props.boardId, () => {
   line-height: 1.65;
 }
 
-.np-dynamics {
-  font-size: 0.82rem;
-  color: rgba(0, 0, 0, 0.5);
-  line-height: 1.7;
-}
-
-.np-cluster-header {
+/* Zone header */
+.np-zone-header {
   display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin-bottom: 0.3rem;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
 }
 
-.np-cluster-label {
+.np-zone-label {
   font-family: 'Noto Serif SC', serif;
-  font-size: 0.92rem;
-  font-weight: 500;
-  color: rgba(0, 0, 0, 0.8);
+  font-size: 1rem;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.7);
 }
 
-.np-cluster-count {
-  font-size: 0.65rem;
-  color: rgba(0, 0, 0, 0.3);
-}
-
-.np-threads {
-  display: flex;
-  flex-direction: column;
-}
-
-.np-thread {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.4rem;
-  padding: 0.3rem 0;
-}
-
-.np-thread-status {
-  flex-shrink: 0;
-  font-size: 0.58rem;
-  padding: 0.08rem 0.35rem;
-  border-radius: 3px;
-  font-weight: 500;
-  line-height: 1.4;
-  margin-top: 0.05rem;
-}
-
-.np-thread-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
-}
-
-.np-thread-title {
-  font-size: 0.82rem;
-  font-weight: 500;
-  color: rgba(0, 0, 0, 0.75);
-  line-height: 1.4;
-}
-
-.np-thread-summary {
-  font-size: 0.72rem;
-  color: rgba(0, 0, 0, 0.4);
-  line-height: 1.5;
-}
-
-.np-pagenum {
-  text-align: center;
-  padding: 0.5rem;
+.np-zone-count {
   font-size: 0.7rem;
-  color: rgba(0, 0, 0, 0.25);
-  flex-shrink: 0;
-}
-
-/* Edge buttons */
-.np-edge-btn {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 80px;
-  border: none;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.5);
-  cursor: pointer;
-  transition: all 0.15s ease;
-  z-index: 201;
-}
-
-.np-edge-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.15);
-  color: rgba(255, 255, 255, 0.8);
-}
-
-.np-edge-btn:disabled {
-  opacity: 0.2;
-  cursor: not-allowed;
-}
-
-.np-edge-left {
-  left: max(1rem, calc((100vw - 800px) / 2 - 56px));
-}
-
-.np-edge-right {
-  right: max(1rem, calc((100vw - 800px) / 2 - 56px));
-}
-
-/* Modal open/close animation */
-.np-modal-enter-active {
-  transition: opacity 200ms ease-out;
-}
-.np-modal-enter-active .np-paper {
-  transition: opacity 300ms ease-out, transform 300ms ease-out;
-}
-.np-modal-leave-active {
-  transition: opacity 200ms ease-in;
-}
-.np-modal-leave-active .np-paper {
-  transition: opacity 200ms ease-in, transform 200ms ease-in;
-}
-.np-modal-enter-from {
-  opacity: 0;
-}
-.np-modal-enter-from .np-paper {
-  opacity: 0;
-  transform: scale(0.95);
-}
-.np-modal-leave-to {
-  opacity: 0;
-}
-.np-modal-leave-to .np-paper {
-  opacity: 0;
-  transform: scale(0.95);
-}
-
-/* Page flip animation */
-.np-page-right-enter-active,
-.np-page-right-leave-active,
-.np-page-left-enter-active,
-.np-page-left-leave-active {
-  transition: opacity 250ms ease-out, transform 250ms ease-out;
-  position: absolute;
-  width: 100%;
-}
-
-.np-page-right-enter-from {
-  opacity: 0;
-  transform: translateX(40px);
-}
-.np-page-right-leave-to {
-  opacity: 0;
-  transform: translateX(-40px);
-}
-.np-page-left-enter-from {
-  opacity: 0;
-  transform: translateX(-40px);
-}
-.np-page-left-leave-to {
-  opacity: 0;
-  transform: translateX(40px);
+  color: rgba(0, 0, 0, 0.3);
 }
 
 /* Cluster card grid */
 .np-cluster-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
   gap: 0.75rem;
-  margin-top: 0.75rem;
+  /* grid-template-columns set via inline style */
 }
 
 .np-cluster-card {
   background: rgba(255, 255, 255, 0.6);
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: 4px;
-  padding: 0.6rem;
+  padding: 0.75rem;
 }
 
 .np-cluster-card-header {
@@ -940,54 +834,163 @@ watch(() => props.boardId, () => {
   gap: 0.25rem;
 }
 
-.np-thread-compact {
+/* Thread item */
+.np-thread-item {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-size: 0.8rem;
-  gap: 0.3rem;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.35rem 0;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.1s ease;
 }
 
-.np-thread-compact-title {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: rgba(0, 0, 0, 0.65);
+.np-thread-item:hover {
+  background: rgba(0, 0, 0, 0.04);
 }
 
-.np-thread-compact-status {
+.np-thread-status {
   flex-shrink: 0;
   font-size: 0.58rem;
   padding: 0.08rem 0.35rem;
   border-radius: 3px;
   font-weight: 500;
   line-height: 1.4;
+  margin-top: 0.1rem;
 }
 
-/* Hotspot block */
-.np-hotspot {
-  background: rgba(255, 255, 255, 0.8);
-  border-left: 3px solid rgba(139, 69, 19, 0.6);
-  padding: 0.5rem 0.75rem;
-  margin-bottom: 0.75rem;
+.np-thread-body {
+  flex: 1;
+  min-width: 0;
 }
 
-.np-hotspot-name {
-  font-family: 'Noto Serif SC', serif;
-  font-weight: 600;
-  font-size: 0.9rem;
+.np-thread-title {
+  font-size: 0.82rem;
+  font-weight: 500;
   color: rgba(0, 0, 0, 0.75);
+  line-height: 1.4;
 }
 
-.np-hotspot-summary {
+.np-thread-summary {
+  font-size: 0.72rem;
+  color: rgba(0, 0, 0, 0.4);
+  line-height: 1.5;
+  margin-top: 0.15rem;
+}
+
+.np-thread-articles-icon {
+  flex-shrink: 0;
+  color: rgba(0, 0, 0, 0.2);
+  margin-top: 0.15rem;
+}
+
+/* Thread popup */
+.np-thread-popup {
+  z-index: 9999;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  min-width: 280px;
+  max-width: 400px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.np-thread-popup-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.5);
+  padding: 6px 10px 4px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  margin-bottom: 2px;
+}
+
+.np-thread-popup-loading {
+  padding: 12px;
+  text-align: center;
   font-size: 0.8rem;
-  color: rgba(0, 0, 0, 0.45);
-  margin-top: 0.25rem;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.np-thread-popup-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: rgba(0, 0, 0, 0.7);
+  text-align: left;
+  line-height: 1.4;
+  transition: background 0.1s ease;
+}
+
+.np-thread-popup-item:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.np-thread-popup-item:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.np-thread-popup-item svg {
+  flex-shrink: 0;
+  color: rgba(0, 0, 0, 0.3);
+  margin-top: 2px;
+}
+
+.np-thread-popup-more {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: rgba(0, 0, 0, 0.4);
+  text-align: center;
+  transition: background 0.1s ease;
+}
+
+.np-thread-popup-more:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: rgba(0, 0, 0, 0.6);
+}
+
+/* Modal open/close animation */
+.np-modal-enter-active {
+  transition: opacity 200ms ease-out;
+}
+.np-modal-enter-active .np-paper {
+  transition: opacity 300ms ease-out, transform 300ms ease-out;
+}
+.np-modal-leave-active {
+  transition: opacity 200ms ease-in;
+}
+.np-modal-leave-active .np-paper {
+  transition: opacity 200ms ease-in, transform 200ms ease-in;
+}
+.np-modal-enter-from {
+  opacity: 0;
+}
+.np-modal-enter-from .np-paper {
+  opacity: 0;
+  transform: scale(0.95);
+}
+.np-modal-leave-to {
+  opacity: 0;
+}
+.np-modal-leave-to .np-paper {
+  opacity: 0;
+  transform: scale(0.95);
 }
 
 /* Thread status colors for light paper background */
