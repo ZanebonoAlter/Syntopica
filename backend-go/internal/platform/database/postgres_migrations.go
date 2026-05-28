@@ -901,5 +901,35 @@ func postgresMigrations() []Migration {
 				return nil
 			},
 		},
+		{
+			Version:     "20260528_0001",
+			Description: "Add downgraded column to topic_tag_board_labels for max_sim threshold reduction tracking.",
+			Up: func(db *gorm.DB) error {
+				return db.Exec("ALTER TABLE topic_tag_board_labels ADD COLUMN IF NOT EXISTS downgraded BOOLEAN NOT NULL DEFAULT false").Error
+			},
+		},
+		{
+			Version:     "20260528_0002",
+			Description: "Add direction_mismatch column to topic_tag_board_labels for max_sim direction check.",
+			Up: func(db *gorm.DB) error {
+				return db.Exec("ALTER TABLE topic_tag_board_labels ADD COLUMN IF NOT EXISTS direction_mismatch BOOLEAN NOT NULL DEFAULT false").Error
+			},
+		},
+		{
+			Version:     "20260528_0003",
+			Description: "Add best_tier and avg_score columns to daily_report_sections for cluster quality sorting.",
+			Up: func(db *gorm.DB) error {
+				stmts := []string{
+					"ALTER TABLE daily_report_sections ADD COLUMN IF NOT EXISTS best_tier INTEGER NOT NULL DEFAULT 0",
+					"ALTER TABLE daily_report_sections ADD COLUMN IF NOT EXISTS avg_score DOUBLE PRECISION NOT NULL DEFAULT 0",
+				}
+				for _, s := range stmts {
+					if err := db.Exec(s).Error; err != nil {
+						return fmt.Errorf("add best_tier/avg_score to daily_report_sections: %w", err)
+					}
+				}
+				return nil
+			},
+		},
 	}
 }
