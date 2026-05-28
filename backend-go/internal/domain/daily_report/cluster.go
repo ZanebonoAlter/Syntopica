@@ -11,7 +11,8 @@ import (
 	"syntopica-backend/internal/platform/logging"
 )
 
-const clusterSystemPrompt = `你是一名专业的事件分组分析师。你的任务是将一组事件标签按"同一核心事件"进行分组。
+func buildClusterSystemPrompt(tagCount int) string {
+	base := `你是一名专业的事件分组分析师。你的任务是将一组事件标签按"同一核心事件"进行分组。
 
 分组规则：
 1. 属于同一核心事件的标签归入一组
@@ -24,6 +25,15 @@ const clusterSystemPrompt = `你是一名专业的事件分组分析师。你的
 1. 顶层 JSON 对象，只包含 groups 字段
 2. groups 是数组，每个元素包含 group_name（字符串）和 tag_ids（整数数组）
 3. 只返回合法 JSON，不要 Markdown 代码块或解释文字`
+
+	if tagCount > 25 {
+		base += "\n6. 标签数量较多，请分成 8-15 组，合并关联性强的小事件"
+	} else if tagCount > 15 {
+		base += "\n6. 请分成 6-12 组"
+	}
+
+	return base
+}
 
 // ClusterTags groups deduplicated tags into clusters using LLM.
 // Returns cluster groups with group names and member tag IDs.
@@ -50,7 +60,7 @@ func ClusterTags(ctx context.Context, tags []TagInput) ([]ClusterGroup, error) {
 	result, err := airouter.NewRouter().Chat(ctx, airouter.ChatRequest{
 		Capability: airouter.CapabilityTopicTagging,
 		Messages: []airouter.Message{
-			{Role: "system", Content: clusterSystemPrompt},
+			{Role: "system", Content: buildClusterSystemPrompt(len(tags))},
 			{Role: "user", Content: prompt},
 		},
 		Temperature: &temperature,
