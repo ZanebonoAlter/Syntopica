@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useDailyReportsApi, type ThreadLineageNode } from '~/api/dailyReports'
 
 const props = defineProps<{
@@ -89,6 +89,8 @@ watch(
   },
 )
 
+const firstNode = computed(() => chain.value[0])
+
 const isStandalone = (nodes: ThreadLineageNode[]): boolean => {
   if (nodes.length <= 1) return true
   return nodes.every(n => n.prev_thread_id === null) && nodes.length === 1
@@ -125,15 +127,15 @@ const isStandalone = (nodes: ThreadLineageNode[]): boolean => {
             <span class="lp-standalone-dot" />
             <span class="lp-standalone-label">独立线程</span>
           </div>
-          <div v-if="chain.length === 1" class="lp-node">
-            <div class="lp-node-dot" :class="dotColor[chain[0].status] || 'bg-gray-400'" />
+          <div v-if="firstNode" class="lp-node">
+            <div class="lp-node-dot" :class="dotColor[firstNode.status] || 'bg-gray-400'" />
             <div class="lp-node-content">
-              <div class="lp-node-date">{{ formatDate(chain[0].period_date) }}</div>
-              <span class="lp-node-status" :class="statusColor[chain[0].status] || ''">
-                {{ statusLabel[chain[0].status] || chain[0].status }}
+              <div class="lp-node-date">{{ formatDate(firstNode.period_date) }}</div>
+              <span class="lp-node-status" :class="statusColor[firstNode.status] || ''">
+                {{ statusLabel[firstNode.status] || firstNode.status }}
               </span>
-              <div class="lp-node-title">{{ chain[0].title }}</div>
-              <div v-if="chain[0].summary" class="lp-node-summary">{{ truncate(chain[0].summary, 80) }}</div>
+              <div class="lp-node-title">{{ firstNode.title }}</div>
+              <div v-if="firstNode.summary" class="lp-node-summary">{{ truncate(firstNode.summary, 80) }}</div>
             </div>
           </div>
         </template>
