@@ -271,16 +271,16 @@ func parseThreadsResponse(content string, tags []TagInput) ([]Thread, error) {
 // ---------------------------------------------------------------------------
 
 // GenerateDailyReport is the main pipeline that generates a daily report for a board.
-func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*BoardDailyReport, []DailyReportSection, error) {
+func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*BoardDailyReport, []DailyReportSection, [][]DailyReportThread, error) {
 	startOfDay := normalizeReportDate(date)
 
 	// Step 1: Collect board event tags
 	tags, articleCounts, err := collectBoardTags(boardID, date)
 	if err != nil {
-		return nil, nil, fmt.Errorf("collect board tags: %w", err)
+		return nil, nil, nil, fmt.Errorf("collect board tags: %w", err)
 	}
 	if len(tags) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// Build tag→articleIDs map (before dedup/filter changes the tag slice)
@@ -295,17 +295,17 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 	// Step 2.5: Quality filter
 	tags = filterTagsByQuality(tags)
 	if len(tags) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// Step 3: Cluster via LLM
 	clusters, err := ClusterTags(ctx, tags)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cluster tags: %w", err)
+		return nil, nil, nil, fmt.Errorf("cluster tags: %w", err)
 	}
 
 	// Step 4: Query yesterday's report for continuity
-	prevReport := findPreviousReport(boardID, startOfDay)
+	prevReport, prevThreads := findPreviousReport(boardID, startOfDay)
 
 	// Step 5: Generate in parallel (A + C×K)
 	type highlightsResult struct {
@@ -332,7 +332,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 		go func(idx int, c ClusterGroup) {
 			var prevSummaries []string
 			if prevReport != nil {
-				prevSummaries = getPrevThreadSummaries(*prevReport, c)
+				prevSummaries = getPrevThreadSummaries(prevThreads, c)
 			}
 			data, err := GenerateClusterThreads(ctx, c, tags, prevSummaries)
 			threadsCh <- threadsResult{clusterIdx: idx, data: data, err: err}
@@ -342,7 +342,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 	// Collect highlights
 	hr := <-highlightsCh
 	if hr.err != nil {
-		return nil, nil, fmt.Errorf("generate highlights: %w", hr.err)
+		return nil, nil, nil, fmt.Errorf("generate highlights: %w", hr.err)
 	}
 
 	// Collect threads
@@ -360,7 +360,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 	for idx, cluster := range clusters {
 		threads := threadsByCluster[idx]
 		if prevReport != nil {
-			matchPreviousThreads(threads, *prevReport, cluster)
+			matchPreviousThreads(threads, prevThreads, cluster)
 		}
 	}
 
@@ -418,7 +418,6 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 		}
 
 		tagIDsJSON, _ := json.Marshal(cluster.TagIDs)
-		threadsJSON, _ := json.Marshal(threads)
 
 		// Calculate best_tier and avg_score
 		tagIDSet := make(map[uint]bool)
@@ -447,14 +446,32 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 			ClusterIndex:  i,
 			ClusterLabel:  cluster.GroupName,
 			ClusterTagIDs: tagIDsJSON,
-			Threads:       threadsJSON,
 			ArticleCount:  clusterArticleCount,
 			BestTier:      bestTier,
 			AvgScore:      avgScore,
 		})
 	}
 
-	return report, sections, nil
+	// Build thread batches (convert []Thread → []DailyReportThread per cluster)
+	var threadBatches [][]DailyReportThread
+	for i := range clusters {
+		threads := threadsByCluster[i]
+		var batch []DailyReportThread
+		for _, th := range threads {
+			tagIDsJSON, _ := json.Marshal(th.TagIDs)
+			batch = append(batch, DailyReportThread{
+				Title:        th.Title,
+				Summary:      th.Summary,
+				Status:       th.Status,
+				TagIDs:       tagIDsJSON,
+				Confidence:   th.Confidence,
+				PrevThreadID: th.PrevThreadID,
+			})
+		}
+		threadBatches = append(threadBatches, batch)
+	}
+
+	return report, sections, threadBatches, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -463,26 +480,26 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 
 // matchPreviousThreads sets PrevThreadID on threads that match yesterday's threads.
 // Strategy:
-// 1. Tag ID intersection → continuing
-// 2. No match → emerging
-func matchPreviousThreads(threads []Thread, prevReport BoardDailyReport, cluster ClusterGroup) {
-	if len(threads) == 0 {
+// 1. Tag ID intersection → continuing, set PrevThreadID to matched thread's DB ID
+// 2. No match → emerging (no PrevThreadID)
+func matchPreviousThreads(threads []Thread, prevThreads []DailyReportThread, cluster ClusterGroup) {
+	if len(threads) == 0 || len(prevThreads) == 0 {
 		return
 	}
 
-	// Extract previous threads from sections
-	var prevThreadList []Thread
-	for _, section := range prevReport.Sections {
-		if section.Threads != nil {
-			var secThreads []Thread
-			if err := json.Unmarshal(section.Threads, &secThreads); err == nil {
-				prevThreadList = append(prevThreadList, secThreads...)
-			}
+	// Build lightweight view of previous threads for matching
+	type prevEntry struct {
+		id     uint
+		tagIDs []uint
+	}
+	var prevList []prevEntry
+	for i := range prevThreads {
+		dt := &prevThreads[i]
+		var tagIDs []uint
+		if dt.TagIDs != nil {
+			_ = json.Unmarshal(dt.TagIDs, &tagIDs)
 		}
-	}
-
-	if len(prevThreadList) == 0 {
-		return
+		prevList = append(prevList, prevEntry{id: dt.ID, tagIDs: tagIDs})
 	}
 
 	for i := range threads {
@@ -490,8 +507,8 @@ func matchPreviousThreads(threads []Thread, prevReport BoardDailyReport, cluster
 		bestMatchIdx := -1
 		bestOverlap := 0
 
-		for j, prevTh := range prevThreadList {
-			overlap := countTagOverlap(th.TagIDs, prevTh.TagIDs)
+		for j, prev := range prevList {
+			overlap := countTagOverlap(th.TagIDs, prev.tagIDs)
 			if overlap > bestOverlap {
 				bestOverlap = overlap
 				bestMatchIdx = j
@@ -499,7 +516,7 @@ func matchPreviousThreads(threads []Thread, prevReport BoardDailyReport, cluster
 		}
 
 		if bestMatchIdx >= 0 && bestOverlap > 0 {
-			// Mark as continuing — the match was found via tag overlap
+			th.PrevThreadID = &prevList[bestMatchIdx].id
 			if th.Status == "emerging" {
 				th.Status = "continuing"
 			}
@@ -672,42 +689,46 @@ func collectBoardTags(boardID uint, date time.Time) ([]TagInput, [][]uint, error
 	return tags, articleIDSets, nil
 }
 
-// findPreviousReport finds the most recent report for the board before the given date.
-func findPreviousReport(boardID uint, date time.Time) *BoardDailyReport {
+// findPreviousReport finds the most recent report for the board before the given date,
+// returning both the report and all its threads preloaded with DB IDs.
+func findPreviousReport(boardID uint, date time.Time) (*BoardDailyReport, []DailyReportThread) {
 	var report BoardDailyReport
 	err := database.DB.Where("semantic_board_id = ? AND period_date < ? AND status = ?",
 		boardID, normalizeReportDate(date).Format("2006-01-02"), "completed").
 		Order("period_date DESC").
-		Preload("Sections").
+		Preload("Sections.Threads").
 		First(&report).Error
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return &report
+
+	// Flatten all threads from all sections
+	var allThreads []DailyReportThread
+	for _, sec := range report.Sections {
+		allThreads = append(allThreads, sec.Threads...)
+	}
+	return &report, allThreads
 }
 
-// getPrevThreadSummaries extracts thread summaries from a previous report
+// getPrevThreadSummaries extracts thread summaries from previous threads
 // that are relevant to a given cluster.
-func getPrevThreadSummaries(prevReport BoardDailyReport, cluster ClusterGroup) []string {
+func getPrevThreadSummaries(prevThreads []DailyReportThread, cluster ClusterGroup) []string {
 	clusterTagSet := make(map[uint]bool, len(cluster.TagIDs))
 	for _, id := range cluster.TagIDs {
 		clusterTagSet[id] = true
 	}
 
 	var summaries []string
-	for _, section := range prevReport.Sections {
-		var threads []Thread
-		if section.Threads != nil {
-			if err := json.Unmarshal(section.Threads, &threads); err != nil {
-				continue
-			}
+	for i := range prevThreads {
+		dt := &prevThreads[i]
+		var tagIDs []uint
+		if dt.TagIDs != nil {
+			_ = json.Unmarshal(dt.TagIDs, &tagIDs)
 		}
-		for _, th := range threads {
-			for _, tagID := range th.TagIDs {
-				if clusterTagSet[tagID] {
-					summaries = append(summaries, fmt.Sprintf("%s: %s", th.Title, th.Summary))
-					break
-				}
+		for _, tagID := range tagIDs {
+			if clusterTagSet[tagID] {
+				summaries = append(summaries, fmt.Sprintf("%s: %s", dt.Title, dt.Summary))
+				break
 			}
 		}
 	}

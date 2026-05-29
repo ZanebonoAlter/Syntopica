@@ -274,7 +274,7 @@ func (s *DailyReportScheduler) runCycle(triggerSource string, targetDate time.Ti
 
 	reportCount := 0
 	for _, boardID := range boardIDs {
-		report, sections, genErr := daily_report.GenerateDailyReport(ctx, boardID, targetDate)
+		report, sections, threadBatches, genErr := daily_report.GenerateDailyReport(ctx, boardID, targetDate)
 		if genErr != nil {
 			logging.Warnf("daily-report: generate failed for board %d: %v", boardID, genErr)
 			continue
@@ -283,7 +283,7 @@ func (s *DailyReportScheduler) runCycle(triggerSource string, targetDate time.Ti
 			continue
 		}
 
-		if saveErr := daily_report.SaveReport(report, sections); saveErr != nil {
+		if saveErr := daily_report.SaveReport(report, sections, threadBatches); saveErr != nil {
 			logging.Warnf("daily-report: save failed for board %d: %v", boardID, saveErr)
 			continue
 		}
