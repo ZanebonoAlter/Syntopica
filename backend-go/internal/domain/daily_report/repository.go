@@ -13,7 +13,7 @@ import (
 
 // SaveReport saves a daily report and its sections, replacing any existing
 // report for the same board and date.
-func SaveReport(report *BoardDailyReport, sections []DailyReportSection) error {
+func SaveReport(report *BoardDailyReport, sections []DailyReportSection, threadBatches [][]DailyReportThread) error {
 	report.PeriodDate = normalizeReportDate(report.PeriodDate)
 	return database.DB.Transaction(func(tx *gorm.DB) error {
 		// Upsert report: find existing by (semantic_board_id, period_date)
@@ -41,6 +41,16 @@ func SaveReport(report *BoardDailyReport, sections []DailyReportSection) error {
 			}).Error; err != nil {
 				return fmt.Errorf("update report: %w", err)
 			}
+			// Nullify downstream prev_thread_id references before deleting old threads
+			if err := tx.Model(&DailyReportThread{}).
+				Where("prev_thread_id IN (SELECT id FROM daily_report_threads WHERE report_id = ?)", existing.ID).
+				Update("prev_thread_id", nil).Error; err != nil {
+				return fmt.Errorf("nullify downstream prev_thread_id: %w", err)
+			}
+			// Delete old threads
+			if err := tx.Where("report_id = ?", existing.ID).Delete(&DailyReportThread{}).Error; err != nil {
+				return fmt.Errorf("delete old threads: %w", err)
+			}
 			// Delete old sections
 			if err := tx.Where("report_id = ?", existing.ID).Delete(&DailyReportSection{}).Error; err != nil {
 				return fmt.Errorf("delete old sections: %w", err)
@@ -59,6 +69,15 @@ func SaveReport(report *BoardDailyReport, sections []DailyReportSection) error {
 		if len(sections) > 0 {
 			if err := tx.CreateInBatches(sections, 20).Error; err != nil {
 				return fmt.Errorf("create sections: %w", err)
+			}
+		}
+
+		// Save threads for each section (sections now have IDs after insertion)
+		for secIdx, sec := range sections {
+			if secIdx < len(threadBatches) && len(threadBatches[secIdx]) > 0 {
+				if err := SaveThreads(tx, report.ID, sec.ID, threadBatches[secIdx]); err != nil {
+					return fmt.Errorf("save threads for section %d: %w", secIdx, err)
+				}
 			}
 		}
 
@@ -89,6 +108,9 @@ func GetReport(boardID uint, date time.Time) (*BoardDailyReport, error) {
 func GetReportByID(id uint) (*BoardDailyReport, error) {
 	var report BoardDailyReport
 	err := database.DB.Where("id = ?", id).
+		Preload("Sections.Threads", func(db *gorm.DB) *gorm.DB {
+			return db.Order("id ASC")
+		}).
 		Preload("Sections", func(db *gorm.DB) *gorm.DB {
 			return db.Order("cluster_index ASC")
 		}).
@@ -217,4 +239,129 @@ func CollectBoardIDsForDate(date time.Time) ([]uint, error) {
 		ids[i] = r.SemanticBoardID
 	}
 	return ids, nil
+}
+
+// SaveThreads persists a batch of DailyReportThread rows.
+func SaveThreads(tx *gorm.DB, reportID, sectionID uint, threads []DailyReportThread) error {
+	for i := range threads {
+		threads[i].ReportID = reportID
+		threads[i].SectionID = sectionID
+	}
+	return tx.Create(&threads).Error
+}
+
+// GetThreadsBySection returns all threads for a section, ordered by id.
+func GetThreadsBySection(sectionID uint) ([]DailyReportThread, error) {
+	var threads []DailyReportThread
+	err := database.DB.Where("section_id = ?", sectionID).Order("id ASC").Find(&threads).Error
+	return threads, err
+}
+
+// GetThreadsByReport returns all threads for a report.
+func GetThreadsByReport(reportID uint) ([]DailyReportThread, error) {
+	var threads []DailyReportThread
+	err := database.DB.Where("report_id = ?", reportID).Order("section_id ASC, id ASC").Find(&threads).Error
+	return threads, err
+}
+
+// GetThreadByID returns a single thread by its primary key.
+func GetThreadByID(id uint) (*DailyReportThread, error) {
+	var thread DailyReportThread
+	err := database.DB.First(&thread, id).Error
+	if err != nil {
+		return nil, fmt.Errorf("thread %d not found: %w", id, err)
+	}
+	return &thread, nil
+}
+
+// DeleteThreadsByReport deletes all threads for a report.
+func DeleteThreadsByReport(reportID uint) error {
+	return database.DB.Where("report_id = ?", reportID).Delete(&DailyReportThread{}).Error
+}
+
+// ThreadLineageNode represents a thread in a lineage chain with its report date.
+type ThreadLineageNode struct {
+	DailyReportThread
+	PeriodDate   time.Time `json:"period_date"`
+	ClusterLabel string    `json:"cluster_label"`
+}
+
+// GetThreadLineage fetches the full lineage chain for a thread using recursive CTE.
+func GetThreadLineage(threadID uint) ([]ThreadLineageNode, error) {
+	var nodes []ThreadLineageNode
+	err := database.DB.Raw(`
+		WITH RECURSIVE ancestors AS (
+			SELECT t.id, t.report_id, t.section_id, t.title, t.summary, t.status,
+			       t.tag_ids, t.confidence, t.prev_thread_id, t.created_at,
+			       bdr.period_date, ds.cluster_label
+			FROM daily_report_threads t
+			JOIN board_daily_reports bdr ON bdr.id = t.report_id
+			JOIN daily_report_sections ds ON ds.id = t.section_id
+			WHERE t.id = ?
+
+			UNION ALL
+
+			SELECT parent.id, parent.report_id, parent.section_id, parent.title, parent.summary, parent.status,
+			       parent.tag_ids, parent.confidence, parent.prev_thread_id, parent.created_at,
+			       bdr.period_date, ds.cluster_label
+			FROM daily_report_threads parent
+			JOIN ancestors a ON a.prev_thread_id = parent.id
+			JOIN board_daily_reports bdr ON bdr.id = parent.report_id
+			JOIN daily_report_sections ds ON ds.id = parent.section_id
+		),
+		root AS (
+			SELECT * FROM ancestors ORDER BY period_date ASC LIMIT 1
+		),
+		chain AS (
+			SELECT t.id, t.report_id, t.section_id, t.title, t.summary, t.status,
+			       t.tag_ids, t.confidence, t.prev_thread_id, t.created_at,
+			       t.period_date, t.cluster_label
+			FROM root r
+			JOIN daily_report_threads t ON t.id = r.id
+			JOIN board_daily_reports bdr ON bdr.id = t.report_id
+			JOIN daily_report_sections ds ON ds.id = t.section_id
+
+			UNION ALL
+
+			SELECT child.id, child.report_id, child.section_id, child.title, child.summary, child.status,
+			       child.tag_ids, child.confidence, child.prev_thread_id, child.created_at,
+			       bdr.period_date, ds.cluster_label
+			FROM daily_report_threads child
+			JOIN chain c ON child.prev_thread_id = c.id
+			JOIN board_daily_reports bdr ON bdr.id = child.report_id
+			JOIN daily_report_sections ds ON ds.id = child.section_id
+		)
+		SELECT * FROM chain ORDER BY period_date ASC
+	`, threadID).Scan(&nodes).Error
+	if err != nil {
+		return nil, fmt.Errorf("get thread lineage: %w", err)
+	}
+	return nodes, nil
+}
+
+// GetBoardThreadTimeline fetches all threads for a board within a date range.
+func GetBoardThreadTimeline(boardID uint, days int) ([]ThreadLineageNode, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 90 {
+		days = 90
+	}
+	var nodes []ThreadLineageNode
+	err := database.DB.Raw(`
+		SELECT t.id, t.report_id, t.section_id, t.title, t.summary, t.status,
+		       t.tag_ids, t.confidence, t.prev_thread_id, t.created_at,
+		       bdr.period_date, ds.cluster_label
+		FROM daily_report_threads t
+		JOIN board_daily_reports bdr ON bdr.id = t.report_id
+		JOIN daily_report_sections ds ON ds.id = t.section_id
+		WHERE bdr.semantic_board_id = ?
+		  AND bdr.period_date >= CURRENT_DATE - ? * INTERVAL '1 day'
+		  AND bdr.status = 'completed'
+		ORDER BY t.prev_thread_id NULLS FIRST, bdr.period_date ASC, t.id ASC
+	`, boardID, days).Scan(&nodes).Error
+	if err != nil {
+		return nil, fmt.Errorf("get board thread timeline: %w", err)
+	}
+	return nodes, nil
 }
