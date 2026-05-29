@@ -69,3 +69,29 @@
 - [x] 5.1 后端：`go build ./...` + `go vet ./...` + `go test ./internal/domain/tagging/... ./internal/domain/daily_report/...`
 - [x] 5.2 前端：`pnpm lint` + `pnpm exec nuxi typecheck` + `pnpm build`
 - [ ] 5.3 端到端：调用 rematch-all → 生成日报 → 前端验证报纸布局 + 文章排序
+
+## P6: 补充修复
+
+### 6.1 文章弹窗 z-index
+
+- [x] 6.1.1 `TagsPage.vue`: `.tags-article-modal` z-index 从 80 提升到 210，确保在日报 modal（z-index 200）之上
+
+### 6.2 文章列表排序切换
+
+- [x] 6.2.1 `semantic_board_handler.go`: `getBoardArticles` 新增 `sort` 查询参数，支持 `quality`（默认）和 `time`
+- [x] 6.2.2 `semantic_board_handler.go`: `sort=time` 时 DB 排序改为 `pub_date DESC`，跳过内存质量排序
+- [x] 6.2.3 `TagsPage.vue`: 新增 `timelineSort` ref 和 `handleSortChange` 方法，传递 `sort` 参数
+- [x] 6.2.4 `TagsPage.vue`: 文章列表 header 新增 质量/时间 排序切换按钮组
+- [x] 6.2.5 验证：后端 `go build` + 前端 `pnpm lint` + `pnpm typecheck` + `pnpm build`
+
+### 6.3 匹配参数配置补全
+
+- [x] 6.3.1 `semanticBoards.ts`: `MatchingConfig` 类型新增 `semantic_board_match_direct_hit_min_overlap` 和 `semantic_board_match_direction_sim_threshold` 字段
+- [x] 6.3.2 `MatchingConfigDialog.vue`: 「标签→板块匹配」分组新增「direct_hit 最小重叠数」和「方向校准阈值」表单字段
+- [x] 6.3.3 验证：`pnpm lint` + `pnpm typecheck` + `pnpm build`
+
+### 6.4 匹配参数 UI 按规则分组 + LaTeX 公式
+
+- [x] 6.4.1 `MatchingConfigDialog.vue`: 按匹配规则链重新分组（基础→direct_hit→hit_rate→max_sim→weighted→后置→升级），每个规则块内展示对应 LaTeX 公式
+- [x] 6.4.2 参数 label 使用数学符号（θ<sub>sim</sub>、α、w<sub>sim</sub> 等）与公式对应
+- [x] 6.4.3 验证：`pnpm lint` + `pnpm typecheck` + `pnpm build`

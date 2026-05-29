@@ -49,7 +49,11 @@
 
 #### Scenario: 确认创建新 SemanticBoard
 - **WHEN** 用户确认 create_new 建议 "新能源与储能"
-- **THEN** 系统 SHALL 创建 semantic_labels(label_type="board", source="llm_suggest") 并写入对应 board_composition
+- **THEN** 系统 SHALL 调用 semanticBoardLabelEmbedder 生成 embedding（输入 `label + ". " + description`，description 为空时仅用 label），再创建 semantic_labels（label_type="board", source="llm_suggest"），embedding 一并写入
+
+#### Scenario: 创建新板块时 embedder 失败
+- **WHEN** embedder returns error during create_new confirmation
+- **THEN** confirmation fails with error, board NOT created
 
 #### Scenario: 确认合并到已有 SemanticBoard
 - **WHEN** 用户确认 merge_into_existing 到 board #42

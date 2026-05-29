@@ -38,8 +38,26 @@ match_reason 表示该 tag 被归类到当前 board 的匹配规则（direct_hit
 - **THEN** 该文章 SHALL NOT 出现在 board #5 的文章列表中
 
 ### Requirement: 分页和排序
-系统 SHALL 支持 page/per_page 分页参数，默认按 pub_date 倒序排列。返回 SHALL 包含 pagination 信息（page, per_page, total, pages）。
+系统 SHALL 支持 page/per_page 分页参数，默认按 quality 排序。返回 SHALL 包含 pagination 信息（page, per_page, total, pages）。
+
+排序 key: `(tier ASC, score DESC, publish_time DESC)`。文章有多个 tag 时取 tier 最高的作为排序依据。排序在 Go 端内存中完成。
+
+`sort` 查询参数支持两种模式：
+- `quality`（默认）：按 tier + score + pub_date 排序
+- `time`：DB 直接按 `pub_date DESC, id DESC` 排序，跳过内存质量排序
 
 #### Scenario: 分页查询
 - **WHEN** 请求 `GET /api/semantic-boards/5/articles?page=2&per_page=10`，共有 25 篇文章
 - **THEN** 系统 SHALL 返回第 11-20 篇文章，pagination.total=25，pagination.pages=3
+
+#### Scenario: 默认质量排序
+- **WHEN** 请求 `GET /api/semantic-boards/5/articles` 不指定 sort 参数
+- **THEN** 文章 SHALL 按 (tier ASC, score DESC, pub_date DESC) 排序，direct_hit 排最前，weighted 排最后
+
+#### Scenario: 时间排序模式
+- **WHEN** 请求 `GET /api/semantic-boards/5/articles?sort=time`
+- **THEN** 文章 SHALL 按 pub_date DESC 排序，不使用内存质量排序
+
+#### Scenario: 多 tag 文章取最高 tier
+- **WHEN** 文章 #101 的 filtered_tags 含 direct_hit(tier=0) 和 weighted(tier=3)
+- **THEN** 该文章按 tier=0 参与排序

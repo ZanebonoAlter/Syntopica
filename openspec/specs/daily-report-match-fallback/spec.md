@@ -22,3 +22,15 @@
 #### Scenario: 补算后 tag 仍未匹配到目标 board
 - **WHEN** 兜底补算后某个 tag 匹配到了其他 board 但不匹配目标 board
 - **THEN** 该 tag SHALL NOT 出现在目标 board 的日报中
+
+### Requirement: 日报排除 direction_mismatch 标签
+
+collectBoardTags 的主查询和 fallback 补算均排除 direction_mismatch=true 的标签。主查询添加 `AND NOT COALESCE(topic_tag_board_labels.direction_mismatch, false)` 条件。fallback 补算后过滤匹配结果时排除 direction_mismatch=true。
+
+#### Scenario: 主查询排除 direction_mismatch
+- **WHEN** tag 在 topic_tag_board_labels 中 direction_mismatch=true
+- **THEN** tag 被排除出日报主查询结果
+
+#### Scenario: fallback 排除 direction_mismatch
+- **WHEN** fallback 补算产生的匹配结果 direction_mismatch=true
+- **THEN** 该 tag 被排除出日报

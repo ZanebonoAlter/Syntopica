@@ -33,6 +33,14 @@
 - `direction_mismatch` 过滤逻辑不变（默认隐藏，`show_direction_mismatch=true` 显示）
 - 如果文章的 tag 全部是 `direction_mismatch=true` 且未开启 `show_direction_mismatch`，该文章不出现在列表中
 
+### 排序模式切换（P6 补充）
+
+`getBoardArticles` 新增 `sort` 查询参数：
+- `quality`（默认）: 上述 tier + score + pub_date 排序
+- `time`: DB 直接按 `pub_date DESC, id DESC` 排序，跳过内存质量排序
+
+前端文章列表 header 新增「质量/时间」切换按钮组。
+
 ## Test Cases
 
 - direct_hit 文章排在 hit_rate 文章前面

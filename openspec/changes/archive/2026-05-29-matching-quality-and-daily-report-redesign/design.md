@@ -46,7 +46,7 @@
 
 **实现位置**: `getBoardArticles` handler 的 Go 端内存排序。`filtered_tags` 已在内存中携带 `match_reason`/`score`/`downgraded`，在 Go 端聚合 tier 后排序比 SQL 窗口函数更清晰、更易测试。
 
-**不做**: 不添加 `?sort=time` 兼容参数（YAGNI）。
+**不做**: ~~不添加 `?sort=time` 兼容参数（YAGNI）~~。后调整为支持 `sort=time` 参数，前端增加排序切换按钮。
 
 ### D3: 日报质量筛选
 
@@ -109,3 +109,37 @@
 - **排序逻辑改变用户体验**: 文章不再是纯时间线，需要观察用户是否适应
 - **去掉 dynamics 影响历史报告兼容**: 前端需处理 Dynamics 为空的情况（已预留）
 - **Fallback 标签筛选一致性**: fallback 路径产生的标签质量可能偏低，保底机制会兜住
+
+## P6 补充决策
+
+### D7: 文章弹窗 z-index 修复
+
+**问题**: `.tags-article-modal` z-index 为 80，低于日报 `.np-overlay` 的 z-index 200。从日报中点击线索文章打开预览弹窗时，弹窗被日报遮挡。
+
+**方案**: 将 `.tags-article-modal` z-index 从 80 提升到 210，确保始终在日报弹窗之上。
+
+### D8: 文章排序切换
+
+**问题**: 原设计（D2）只支持按质量排序，但用户有时也需要按时间浏览文章。
+
+**方案**: `getBoardArticles` 新增 `sort` 查询参数：
+- `quality`（默认）: 原有 tier + score + pub_date 排序
+- `time`: DB 排序 `pub_date DESC`，跳过内存质量排序
+
+前端文章列表 header 新增「质量/时间」切换按钮组，点击切换后重新加载文章。
+
+**不做**: 不做 z-index 分层规范（仅局部修复），不做记住排序偏好。
+
+### D9: 匹配参数配置补全
+
+**问题**: 方向校准阈值 `DirectionSimThreshold` 和 direct_hit 最小重叠数 `DirectHitMinOverlap` 在后端已支持 DB 配置（`ai_settings` 表），但前端匹配参数 UI 缺少这两个字段，导致用户无法在 Web UI 中调整。
+
+**方案**: 前端 `MatchingConfig` TS 类型和 `MatchingConfigDialog.vue` 表单补全这两个配置项。后端无需改动（已有完整的 CRUD 支持）。
+
+### D10: 匹配参数 UI 按规则分组 + LaTeX 公式
+
+**问题**: 参数配置 UI 原来是扁平列表，用户难以搞清楚每个参数属于哪个匹配规则、改了会影响什么。
+
+**方案**: 将参数按匹配规则链分组（基础→①direct_hit→②hit_rate→③max_sim→④weighted→后置→升级），每组展示对应的 LaTeX 公式。参数 label 使用数学符号（θ<sub>sim</sub>、α、w<sub>sim</sub>等）与公式变量对应。
+
+复用已有 `KaTeXRender` 组件渲染公式。公式直接从 `semantic_board_matching.go` 的实际代码逻辑推导。

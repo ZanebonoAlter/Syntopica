@@ -66,8 +66,20 @@ Board 文章列表中每个 tag chip SHALL 根据 `match_reason` 字段用颜色
 - **WHEN** 调用 `matchInfoLabel({match_reason: "hit_rate", score: 0.75})`
 - **THEN** SHALL 返回 `"命中率 0.75"`
 
-### Requirement: 匹配详情面板降级说明
-`MatchDetailPanel.vue` 的匹配流程步骤 SHALL 在降级匹配时明确标注降级信息，包括原始阈值和实际使用的阈值。
+### Requirement: 默认隐藏 direction_mismatch 标签
+
+TagsPage 的 tag chip 列表默认不显示 direction_mismatch=true 的标签。提供"显示方向不符"toggle 开关。开启后显示这些标签，用虚线边框 + "⊘" 后缀标记。
+
+#### Scenario: 默认隐藏
+- **WHEN** 文章的 filtered_tags 中存在 direction_mismatch=true 的 tag
+- **THEN** chip 列表中只显示非 direction_mismatch 的标签
+
+#### Scenario: toggle 开启
+- **WHEN** 用户启用 show_direction_mismatch toggle
+- **THEN** 所有标签均显示，direction_mismatch 标签使用虚线边框 + "⊘" 后缀
+
+### Requirement: 匹配详情面板降级说明和方向校验展示
+`MatchDetailPanel.vue` 的匹配流程步骤 SHALL 在降级匹配时明确标注降级信息，包括原始阈值和实际使用的阈值。步骤 ④（max_sim）额外展示方向校验结果和 direction_sim 值。
 
 #### Scenario: 降级匹配流程步骤
 - **WHEN** tag 以 max_sim 匹配，downgraded=true，有 1 个辅助标签，direct_max_sim_min_hits=2
@@ -76,3 +88,11 @@ Board 文章列表中每个 tag chip SHALL 根据 `match_reason` 字段用颜色
 #### Scenario: 正常匹配流程步骤不变
 - **WHEN** tag 以 max_sim 匹配，downgraded=false
 - **THEN** 匹配流程步骤 SHALL 按原有方式显示，无降级提示
+
+#### Scenario: 方向校验通过
+- **WHEN** max_sim 匹配且 direction_sim >= threshold
+- **THEN** 步骤 ④ 展示 "方向校验 ✓ sim=X≥Y"
+
+#### Scenario: 方向校验未通过
+- **WHEN** max_sim 匹配且 direction_sim < threshold
+- **THEN** 步骤 ④ 展示 "⚠ 方向不符 sim=X<Y"

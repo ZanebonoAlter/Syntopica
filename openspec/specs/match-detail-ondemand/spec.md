@@ -23,5 +23,17 @@
 - **WHEN** tag 以任何方式匹配 board，且未触发 minHits 降级
 - **THEN** API 返回 SHALL 包含 `downgraded: false`，`effective_min_hits` 等于 `direct_max_sim_min_hits`
 
+### Requirement: getTagMatchDetail 返回 direction_sim
+
+getTagMatchDetail 响应新增 `direction_sim` 字段（float64 或 null）。计算方式：在 handler 层实时计算 cosine(tag identity embedding, board embedding)，**不在** `computeMatchDetail` 内部——direction_sim 是匹配后校验结果，非匹配过程的一部分。
+
+#### Scenario: direction_sim available
+- **WHEN** tag identity embedding 和 board embedding 均存在
+- **THEN** handler 加载两者 embedding，计算 cosine 值，返回 direction_sim
+
+#### Scenario: direction_sim unavailable
+- **WHEN** tag identity embedding 或 board embedding 为 NULL
+- **THEN** 响应中 direction_sim 为 null
+
 ### Requirement: 返回当前匹配配置参数
 系统 SHALL 在匹配详情响应中返回当前生效的匹配配置参数（从 ai_settings 读取），包括 sim_threshold、direct_hit_min_overlap、direct_hit_rate、hit_rate_sim_blend、min_effective_sample、direct_max_sim、direct_max_sim_min_hits、direct_max_sim_min_hit_rate、weight_sim、weight_density、weighted_threshold。
