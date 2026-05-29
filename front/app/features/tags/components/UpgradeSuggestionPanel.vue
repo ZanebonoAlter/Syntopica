@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
-import type { UpgradeCandidate, UpgradeCluster, UpgradeSuggestion } from '~/api/semanticBoards'
+import type { UpgradeCandidate, UpgradeCluster, UpgradeSuggestion, BoardAffinity } from '~/api/semanticBoards'
 
 const props = defineProps<{
   visible: boolean
@@ -17,6 +17,20 @@ const emit = defineEmits<{
   execute: [suggestion: UpgradeSuggestion]
   cancel: []
 }>()
+
+const openMergeIndex = ref<number | null>(null)
+
+function toggleMerge(index: number) {
+  openMergeIndex.value = openMergeIndex.value === index ? null : index
+}
+
+function handleMerge(s: UpgradeSuggestion, boardId: number) {
+  emit('execute', {
+    ...s,
+    decision: 'merge_into_existing' as const,
+    target_board_id: boardId,
+  })
+}
 
 function decisionLabel(d: string): string {
   switch (d) {
@@ -39,7 +53,7 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="usp-overlay" @click.self="emit('cancel')">
+    <div v-if="visible" class="usp-overlay" @click.self="emit('cancel'); openMergeIndex = null">
       <div class="usp-card">
         <div class="usp-header">
           <div>
@@ -121,6 +135,19 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
                 <span v-for="id in s.auxiliary_label_ids" :key="id" class="usp-item-tag">标签 #{{ id }}</span>
               </template>
             </div>
+            <div v-if="s.board_affinities && s.board_affinities.length > 0" class="usp-item-affinities">
+              <span class="usp-item-affinities-label">相似板块：</span>
+              <span
+                v-for="(aff, ai) in s.board_affinities"
+                :key="ai"
+                class="usp-item-affinity"
+              >
+                {{ aff.board_label }}
+                <span class="usp-item-affinity-detail">
+                  ({{ aff.matching_candidates }} candidates, avg distance {{ aff.avg_distance.toFixed(4) }})
+                </span>
+              </span>
+            </div>
             <div v-if="s.decision !== 'skip'" class="usp-item-actions">
               <button
                 type="button"
@@ -130,6 +157,30 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
                 <Icon icon="mdi:check" width="12" />
                 确认执行
               </button>
+              <template v-if="s.board_affinities && s.board_affinities.length > 0">
+                <div class="usp-merge-wrapper">
+                  <button
+                    type="button"
+                    class="usp-item-btn usp-item-btn--merge"
+                    @click="toggleMerge(i)"
+                  >
+                    <Icon icon="mdi:merge" width="12" />
+                    合并到...
+                  </button>
+                  <div v-if="openMergeIndex === i" class="usp-merge-dropdown">
+                    <button
+                      v-for="aff in s.board_affinities"
+                      :key="aff.board_id"
+                      type="button"
+                      class="usp-merge-option"
+                      @click="handleMerge(s, aff.board_id)"
+                    >
+                      {{ aff.board_label }}
+                      <span class="usp-merge-option-detail">({{ aff.matching_candidates }} matches)</span>
+                    </button>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -366,5 +417,80 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
 
 .usp-item-btn--primary:hover {
   background: rgba(52, 211, 153, 0.18);
+}
+
+.usp-item-affinities {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.usp-item-affinities-label {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.usp-item-affinity {
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  background: rgba(96, 165, 250, 0.08);
+  color: rgba(147, 197, 253, 0.8);
+}
+
+.usp-item-affinity-detail {
+  color: rgba(147, 197, 253, 0.5);
+}
+
+.usp-merge-wrapper {
+  position: relative;
+}
+
+.usp-item-btn--merge {
+  border-color: rgba(96, 165, 250, 0.3);
+  background: rgba(96, 165, 250, 0.08);
+  color: rgba(147, 197, 253, 0.9);
+}
+
+.usp-item-btn--merge:hover {
+  background: rgba(96, 165, 250, 0.16);
+}
+
+.usp-merge-dropdown {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 4px;
+  min-width: 200px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(25, 35, 50, 0.98);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+  overflow: hidden;
+}
+
+.usp-merge-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0.45rem 0.65rem;
+  border: none;
+  background: none;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.usp-merge-option:hover {
+  background: rgba(96, 165, 250, 0.12);
+}
+
+.usp-merge-option-detail {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.65rem;
 }
 </style>

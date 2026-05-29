@@ -42,12 +42,16 @@ export interface UpgradeCandidate {
   ref_count: number
 }
 
+export interface BoardAffinity {
+  board_id: number
+  board_label: string
+  matching_candidates: number
+  avg_distance: number
+}
+
 export interface UpgradeCluster {
   candidates: UpgradeCandidate[]
-  existing_board_id: number | null
-  existing_board_label: string
-  existing_board_description: string
-  existing_board_auxiliary_labels: number[]
+  board_affinities: BoardAffinity[]
 }
 
 export interface UpgradeConfig {
@@ -74,6 +78,7 @@ export interface UpgradeSuggestion {
   auxiliary_labels: { id: number; label: string }[]
   target_board_label?: string
   reason: string
+  board_affinities: BoardAffinity[]
 }
 
 export interface UpgradeSuggestResponse {
@@ -104,6 +109,8 @@ export interface MatchingConfig {
   semantic_board_match_weight_density: number
   semantic_board_match_weighted_threshold: number
   semantic_board_match_max_boards: number
+  semantic_board_match_direct_hit_min_overlap: number
+  semantic_board_match_direction_sim_threshold: number
   semantic_board_upgrade_ref_count_threshold: number
   semantic_board_upgrade_cluster_distance_threshold: number
   semantic_board_upgrade_cotag_window_days: number

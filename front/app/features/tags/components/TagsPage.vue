@@ -76,6 +76,7 @@ const filterFeedId = ref<number | null>(null)
 const startDate = ref<string>('')
 const endDate = ref<string>('')
 const showDirectionMismatch = ref(false)
+const timelineSort = ref<'quality' | 'time'>('quality')
 const feedOptions = computed(() => feedsStore.feeds)
 const timelineVisible = computed(() => selectedBoardId.value !== null)
 const selectedTagForDetail = ref<BoardArticleTag | null>(null)
@@ -211,6 +212,9 @@ async function loadTimelineArticles(boardId: number, append = false) {
     if (showDirectionMismatch.value) {
       params.show_direction_mismatch = true
     }
+    if (timelineSort.value === 'time') {
+      params.sort = 'time'
+    }
     const res = await sbApi.getBoardArticles(boardId, params)
     if (res.success && res.data) {
       const newArticles = res.data
@@ -320,6 +324,12 @@ function handleFilterChange() {
   if (selectedBoardId.value !== null) {
     void loadTimelineArticles(selectedBoardId.value)
   }
+}
+
+function handleSortChange(mode: 'quality' | 'time') {
+  if (timelineSort.value === mode) return
+  timelineSort.value = mode
+  handleFilterChange()
 }
 
 function toggleMatchDetail(tag: BoardArticleTag) {
@@ -677,6 +687,24 @@ onUnmounted(() => {
               <Icon icon="mdi:timeline-clock-outline" width="15" class="text-[rgba(240,138,75,0.8)]" />
               <span class="tags-timeline-title">相关文章</span>
               <span v-if="timelineArticles.length" class="tags-timeline-count">{{ timelineArticles.length }} 篇</span>
+              <div class="tags-sort-toggle">
+                <button
+                  type="button"
+                  class="tags-sort-btn"
+                  :class="{ 'tags-sort-btn--active': timelineSort === 'quality' }"
+                  @click="handleSortChange('quality')"
+                >
+                  <Icon icon="mdi:star-outline" width="13" /> 质量
+                </button>
+                <button
+                  type="button"
+                  class="tags-sort-btn"
+                  :class="{ 'tags-sort-btn--active': timelineSort === 'time' }"
+                  @click="handleSortChange('time')"
+                >
+                  <Icon icon="mdi:clock-outline" width="13" /> 时间
+                </button>
+              </div>
               <label class="tags-direction-toggle">
                 <input v-model="showDirectionMismatch" type="checkbox" @change="handleFilterChange()" />
                 显示方向不符
@@ -1354,6 +1382,36 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
+.tags-sort-toggle {
+  display: inline-flex;
+  gap: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tags-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.4);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tags-sort-btn--active {
+  color: rgba(240, 138, 75, 0.9);
+  background: rgba(240, 138, 75, 0.1);
+}
+
+.tags-sort-btn:hover:not(.tags-sort-btn--active) {
+  color: rgba(255, 255, 255, 0.6);
+}
+
 .tags-timeline-loading {
   display: flex;
   flex-direction: column;
@@ -1766,7 +1824,7 @@ onUnmounted(() => {
 .tags-article-modal {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: 210;
   display: flex;
   align-items: stretch;
   justify-content: center;

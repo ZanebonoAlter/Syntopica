@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
+import KaTeXRender from '~/components/KaTeXRender.vue'
 import type { MatchingConfig } from '~/api/semanticBoards'
 
 const props = defineProps<{
@@ -41,99 +42,197 @@ function handleSave() {
         <div v-if="loading" class="mc-loading">加载中...</div>
 
         <div v-else class="mc-body">
-          <p class="mc-desc">调整标签匹配和板块升级的行为参数。修改后对新处理的数据生效。</p>
+          <p class="mc-desc">匹配按优先级依次尝试：<strong>direct_hit</strong> → <strong>hit_rate</strong> → <strong>max_sim</strong> → <strong>weighted</strong>。命中即停，后续规则不再计算。</p>
 
-          <div class="mc-section-title">标签 → 板块匹配</div>
-          <div class="mc-grid">
-            <label class="mc-field">
-              <span class="mc-label">相似度阈值</span>
-              <span class="mc-hint">向量最低相似度。比如 0.72 表示只有相似度 ≥ 0.72 的候选才进入后续计算</span>
-              <input v-model.number="form.semantic_board_match_sim_threshold" type="number" step="0.01" min="0" max="1" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">直接命中率阈值</span>
-              <span class="mc-hint">标签的辅助锚点命中板块组成的比例。比如 0.5 表示超过一半命中就直接挂载</span>
-              <input v-model.number="form.semantic_board_match_direct_hit_rate" type="number" step="0.01" min="0" max="1" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">直接匹配最大相似度</span>
-              <span class="mc-hint">最高向量相似度超过此值直接挂载，跳过加权计算。比如 0.8</span>
-              <input v-model.number="form.semantic_board_match_direct_max_sim" type="number" step="0.01" min="0" max="1" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">max_sim 最小命中数</span>
-              <span class="mc-hint">max_sim 规则要求至少几个辅助标签命中。默认 2，防止单个标签偶然高相似度导致误匹配</span>
-              <input v-model.number="form.semantic_board_match_direct_max_sim_min_hits" type="number" step="1" min="1" max="5" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">max_sim 最小命中率</span>
-              <span class="mc-hint">max_sim 规则要求命中率至少多少。默认 0.3，确保有足够密度的匹配才走直接挂载</span>
-              <input v-model.number="form.semantic_board_match_direct_max_sim_min_hit_rate" type="number" step="0.05" min="0" max="1" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">命中率分母下限</span>
-              <span class="mc-hint">辅助标签数少于此值时，命中率按此值做分母。默认 3，防止只有 1 个标签时命中率虚高为 100%</span>
-              <input v-model.number="form.semantic_board_match_min_effective_sample" type="number" step="1" min="1" max="10" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">命中率分数混合权重</span>
-              <span class="mc-hint">hit_rate 规则的分数中最大相似度占多少。默认 0.7，即 score = 0.7×相似度 + 0.3×命中率。1.0 表示纯用相似度</span>
-              <input v-model.number="form.semantic_board_match_hit_rate_sim_blend" type="number" step="0.05" min="0" max="1" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">相似度权重</span>
-              <span class="mc-hint">加权公式中向量相似度的占比，与密度权重搭配使用，建议和为 1</span>
-              <input v-model.number="form.semantic_board_match_weight_sim" type="number" step="0.01" min="0" max="1" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">密度权重</span>
-              <span class="mc-hint">加权公式中命中率（密度）的占比。0.4 表示命中率占 40%</span>
-              <input v-model.number="form.semantic_board_match_weight_density" type="number" step="0.01" min="0" max="1" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">加权综合阈值</span>
-              <span class="mc-hint">加权得分 ≥ 此值才判定匹配。0.6 意味着综合分六成才算数</span>
-              <input v-model.number="form.semantic_board_match_weighted_threshold" type="number" step="0.01" min="0" max="1" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">最大归属板块数</span>
-              <span class="mc-hint">一个标签最多挂几个板块。默认 3，避免一个标签到处都是</span>
-              <input v-model.number="form.semantic_board_match_max_boards" type="number" min="1" max="10" class="mc-input" />
-            </label>
+          <!-- ===== 公共基础 ===== -->
+          <div class="mc-rule-block">
+            <div class="mc-rule-title">
+              <span class="mc-rule-badge mc-rule-badge--common">基础</span>
+              <span>公共计算层</span>
+            </div>
+            <p class="mc-rule-desc">所有规则共享的基础指标：命中率 (hitRate) 和最大相似度 (maxSim)。</p>
+            <div class="mc-formula">
+              <KaTeXRender latex="\text{hitRate} = \frac{|\{\,t_i : \max_j \cos(t_i,\, b_j) \geq \theta_{\text{sim}}\,\}|}{\max(N_{\text{tag}},\; N_{\text{eff}})}" display />
+              <KaTeXRender latex="\text{maxSim} = \max_{i,j}\;\cos(t_i,\, b_j)" display />
+            </div>
+            <div class="mc-grid">
+              <label class="mc-field">
+                <span class="mc-label">相似度阈值 θ<sub>sim</sub></span>
+                <span class="mc-hint">辅助标签向量与板块辅助标签向量的最低相似度，达标才算"命中"。0.72 意味着只有 ≥ 0.72 的 pair 计入 hitRate 的分子</span>
+                <input v-model.number="form.semantic_board_match_sim_threshold" type="number" step="0.01" min="0" max="1" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">命中率分母下限 N<sub>eff</sub></span>
+                <span class="mc-hint">标签辅助锚点数少于此值时，以此值做分母。默认 3，防止只有 1 个锚点时命中率虚高 100%</span>
+                <input v-model.number="form.semantic_board_match_min_effective_sample" type="number" step="1" min="1" max="10" class="mc-input" />
+              </label>
+            </div>
           </div>
 
-          <div class="mc-section-title">板块升级建议</div>
-          <div class="mc-grid">
-            <label class="mc-field">
-              <span class="mc-label">候选引用次数阈值</span>
-              <span class="mc-hint">辅助标签被引用多少次才够格进入升级候选。比如 5 表示至少出现在 5 个标签里</span>
-              <input v-model.number="form.semantic_board_upgrade_ref_count_threshold" type="number" min="1" max="100" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">聚类距离阈值</span>
-              <span class="mc-hint">向量余弦距离小于此值的候选归为同一簇。0.35 比较严格，"富途证券"和"老虎证券"会分开；0.7 则会合并到一起</span>
-              <input v-model.number="form.semantic_board_upgrade_cluster_distance_threshold" type="number" step="0.01" min="0" max="1" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">共现事件窗口（天）</span>
-              <span class="mc-hint">分析候选标签的关联事件时，往回看多少天。30 天适合追踪近期热点</span>
-              <input v-model.number="form.semantic_board_upgrade_cotag_window_days" type="number" min="1" max="365" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">共现事件 Top N</span>
-              <span class="mc-hint">每个簇最多取多少个关联事件作为 LLM 上下文。太多 prompt 爆炸，太少缺信息</span>
-              <input v-model.number="form.semantic_board_upgrade_cotag_top_n" type="number" min="1" max="100" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">共现去重相似度</span>
-              <span class="mc-hint">关联事件之间相似度超过此值就合并，避免"伊朗袭击"和"伊朗导弹"重复占位</span>
-              <input v-model.number="form.semantic_board_upgrade_cotag_dedupe_sim_threshold" type="number" step="0.01" min="0" max="1" class="mc-input" />
-            </label>
-            <label class="mc-field">
-              <span class="mc-label">共现事件硬上限</span>
-              <span class="mc-hint">每个簇最终送 LLM 的事件数量上限，兜底防止 prompt 过长</span>
-              <input v-model.number="form.semantic_board_upgrade_cotag_hard_limit" type="number" min="1" max="50" class="mc-input" />
-            </label>
+          <!-- ===== Rule 1: direct_hit ===== -->
+          <div class="mc-rule-block">
+            <div class="mc-rule-title">
+              <span class="mc-rule-badge mc-rule-badge--r1">①</span>
+              <span>direct_hit — 精确重叠</span>
+            </div>
+            <p class="mc-rule-desc">标签与板块的辅助锚点有精确 ID 重叠时直接挂载，score 固定 1.0，跳过向量计算。</p>
+            <div class="mc-formula">
+              <KaTeXRender latex="|\text{tag\_aux} \cap \text{board\_aux}| \geq N_{\text{overlap}} \;\Longrightarrow\; \text{matched},\;\text{score}=1" display />
+            </div>
+            <div class="mc-grid">
+              <label class="mc-field">
+                <span class="mc-label">最小重叠数 N<sub>overlap</sub></span>
+                <span class="mc-hint">至少几个辅助锚点 ID 完全一致才算命中。默认 2，防止偶然单个重叠导致误匹配</span>
+                <input v-model.number="form.semantic_board_match_direct_hit_min_overlap" type="number" step="1" min="1" max="10" class="mc-input" />
+              </label>
+            </div>
+          </div>
+
+          <!-- ===== Rule 2: hit_rate ===== -->
+          <div class="mc-rule-block">
+            <div class="mc-rule-title">
+              <span class="mc-rule-badge mc-rule-badge--r2">②</span>
+              <span>hit_rate — 命中率达标</span>
+            </div>
+            <p class="mc-rule-desc">命中率超过阈值即匹配。分数由相似度和命中率混合加权。</p>
+            <div class="mc-formula">
+              <KaTeXRender latex="\text{hitRate} > \theta_{\text{hitRate}} \;\Longrightarrow\; \text{score} = \alpha \cdot \text{maxSim} + (1-\alpha) \cdot \text{hitRate}" display />
+            </div>
+            <div class="mc-grid">
+              <label class="mc-field">
+                <span class="mc-label">命中率阈值 θ<sub>hitRate</sub></span>
+                <span class="mc-hint">超过此比例的辅助锚点命中即触发。0.5 = 过半数命中</span>
+                <input v-model.number="form.semantic_board_match_direct_hit_rate" type="number" step="0.01" min="0" max="1" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">相似度混合权重 α</span>
+                <span class="mc-hint">分数中 maxSim 的占比。0.7 = 七成看最相似锚点、三成看整体命中率。1.0 = 纯看最高相似度</span>
+                <input v-model.number="form.semantic_board_match_hit_rate_sim_blend" type="number" step="0.05" min="0" max="1" class="mc-input" />
+              </label>
+            </div>
+          </div>
+
+          <!-- ===== Rule 3: max_sim ===== -->
+          <div class="mc-rule-block">
+            <div class="mc-rule-title">
+              <span class="mc-rule-badge mc-rule-badge--r3">③</span>
+              <span>max_sim — 最高相似度达标</span>
+            </div>
+            <p class="mc-rule-desc">存在至少一个辅助锚点对相似度极高，且有一定密度保障时，直接取最高相似度作为分数。</p>
+            <div class="mc-formula">
+              <KaTeXRender latex="\text{maxSim} \geq \theta_{\text{maxSim}} \;\wedge\; \text{hits} \geq K \;\wedge\; \text{hitRate} \geq \rho \;\Longrightarrow\; \text{score} = \text{maxSim}" display />
+            </div>
+            <div class="mc-grid">
+              <label class="mc-field">
+                <span class="mc-label">最大相似度阈值 θ<sub>maxSim</sub></span>
+                <span class="mc-hint">最相似的锚点对超过此值才考虑。0.8 = 至少有一对非常相似的锚点</span>
+                <input v-model.number="form.semantic_board_match_direct_max_sim" type="number" step="0.01" min="0" max="1" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">最小命中数 K</span>
+                <span class="mc-hint">至少几个锚点命中（≥ θ<sub>sim</sub>）。默认 2，防止单个偶然高相似度导致误匹配</span>
+                <input v-model.number="form.semantic_board_match_direct_max_sim_min_hits" type="number" step="1" min="1" max="5" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">最小命中率 ρ</span>
+                <span class="mc-hint">命中率也必须达到此值。0.3 = 确保有足够密度而非孤立一个高分</span>
+                <input v-model.number="form.semantic_board_match_direct_max_sim_min_hit_rate" type="number" step="0.05" min="0" max="1" class="mc-input" />
+              </label>
+            </div>
+          </div>
+
+          <!-- ===== Rule 4: weighted ===== -->
+          <div class="mc-rule-block">
+            <div class="mc-rule-title">
+              <span class="mc-rule-badge mc-rule-badge--r4">④</span>
+              <span>weighted — 加权综合</span>
+            </div>
+            <p class="mc-rule-desc">前三个规则都没命中时，用相似度和命中率的加权综合分兜底。</p>
+            <div class="mc-formula">
+              <KaTeXRender latex="w_{\text{sim}} \cdot \text{maxSim} + w_{\text{den}} \cdot \text{hitRate} \geq \theta_w \;\Longrightarrow\; \text{score} = w_{\text{sim}} \cdot \text{maxSim} + w_{\text{den}} \cdot \text{hitRate}" display />
+            </div>
+            <div class="mc-grid">
+              <label class="mc-field">
+                <span class="mc-label">相似度权重 w<sub>sim</sub></span>
+                <span class="mc-hint">加权公式中 maxSim 的占比。与密度权重搭配，建议和为 1</span>
+                <input v-model.number="form.semantic_board_match_weight_sim" type="number" step="0.01" min="0" max="1" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">密度权重 w<sub>den</sub></span>
+                <span class="mc-hint">加权公式中 hitRate 的占比。0.4 = 命中率占 40%</span>
+                <input v-model.number="form.semantic_board_match_weight_density" type="number" step="0.01" min="0" max="1" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">综合阈值 θ<sub>w</sub></span>
+                <span class="mc-hint">加权得分 ≥ 此值才判定匹配。0.6 = 综合分六成才算数</span>
+                <input v-model.number="form.semantic_board_match_weighted_threshold" type="number" step="0.01" min="0" max="1" class="mc-input" />
+              </label>
+            </div>
+          </div>
+
+          <!-- ===== 后置: 方向校验 & 全局 ===== -->
+          <div class="mc-rule-block">
+            <div class="mc-rule-title">
+              <span class="mc-rule-badge mc-rule-badge--post">后置</span>
+              <span>方向校验 &amp; 全局限制</span>
+            </div>
+            <p class="mc-rule-desc">②③④ 规则命中后，还需通过方向校验（direct_hit 豁免）。此外限制每个标签最多挂载的板块数。</p>
+            <div class="mc-formula">
+              <KaTeXRender latex="\cos(\mathbf{e}_{\text{tag}},\;\mathbf{e}_{\text{board}}) < \theta_{\text{dir}} \;\Longrightarrow\; \text{direction\_mismatch} = \text{true}" display />
+            </div>
+            <div class="mc-grid">
+              <label class="mc-field">
+                <span class="mc-label">方向校准阈值 θ<sub>dir</sub></span>
+                <span class="mc-hint">标签与板块 embedding 余弦相似度低于此值判定方向不符。默认 0.5，越低越宽松</span>
+                <input v-model.number="form.semantic_board_match_direction_sim_threshold" type="number" step="0.01" min="0" max="1" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">最大归属板块数</span>
+                <span class="mc-hint">一个标签最多挂几个板块。默认 3，避免一个标签到处都是</span>
+                <input v-model.number="form.semantic_board_match_max_boards" type="number" min="1" max="10" class="mc-input" />
+              </label>
+            </div>
+          </div>
+
+          <!-- ===== 升级建议 ===== -->
+          <div class="mc-rule-block">
+            <div class="mc-rule-title">
+              <span class="mc-rule-badge mc-rule-badge--upgrade">升级</span>
+              <span>板块升级建议</span>
+            </div>
+            <p class="mc-rule-desc">未匹配的辅助锚点聚类后生成新板块建议。</p>
+            <div class="mc-grid">
+              <label class="mc-field">
+                <span class="mc-label">候选引用次数阈值</span>
+                <span class="mc-hint">辅助标签被引用多少次才够格进入升级候选。比如 5 = 至少出现在 5 个标签里</span>
+                <input v-model.number="form.semantic_board_upgrade_ref_count_threshold" type="number" min="1" max="100" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">聚类距离阈值</span>
+                <span class="mc-hint">向量余弦距离小于此值的候选归为同一簇。0.35 严格（"富途"和"老虎"分开），0.7 宽松</span>
+                <input v-model.number="form.semantic_board_upgrade_cluster_distance_threshold" type="number" step="0.01" min="0" max="1" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">共现事件窗口（天）</span>
+                <span class="mc-hint">分析候选标签关联事件时往回看多少天。30 天适合追踪近期热点</span>
+                <input v-model.number="form.semantic_board_upgrade_cotag_window_days" type="number" min="1" max="365" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">共现事件 Top N</span>
+                <span class="mc-hint">每个簇最多取多少个关联事件作为 LLM 上下文</span>
+                <input v-model.number="form.semantic_board_upgrade_cotag_top_n" type="number" min="1" max="100" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">共现去重相似度</span>
+                <span class="mc-hint">关联事件之间相似度超过此值就合并，避免重复占位</span>
+                <input v-model.number="form.semantic_board_upgrade_cotag_dedupe_sim_threshold" type="number" step="0.01" min="0" max="1" class="mc-input" />
+              </label>
+              <label class="mc-field">
+                <span class="mc-label">共现事件硬上限</span>
+                <span class="mc-hint">每个簇最终送 LLM 的事件数量上限，兜底防止 prompt 过长</span>
+                <input v-model.number="form.semantic_board_upgrade_cotag_hard_limit" type="number" min="1" max="50" class="mc-input" />
+              </label>
+            </div>
           </div>
         </div>
 
@@ -159,7 +258,7 @@ function handleSave() {
 }
 
 .mc-card {
-  width: min(680px, 92vw);
+  width: min(740px, 92vw);
   max-height: 85vh;
   overflow-y: auto;
   border-radius: 1.25rem;
@@ -184,27 +283,100 @@ function handleSave() {
 
 .mc-desc {
   font-size: 0.72rem;
-  color: rgba(255, 255, 255, 0.35);
-  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.4);
+  line-height: 1.6;
   margin-bottom: 0.75rem;
 }
 
-.mc-section-title {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: rgba(240, 138, 75, 0.75);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-top: 0.5rem;
-  margin-bottom: 0.6rem;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+.mc-desc strong {
+  color: rgba(255, 255, 255, 0.65);
 }
 
-.mc-hint {
-  font-size: 0.65rem;
+.mc-rule-block {
+  margin-top: 0.85rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.mc-rule-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.75);
+  margin-bottom: 0.4rem;
+}
+
+.mc-rule-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.2rem;
+  height: 1.35rem;
+  padding: 0 0.4rem;
+  border-radius: 4px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.mc-rule-badge--common {
+  background: rgba(100, 160, 255, 0.12);
+  color: rgba(130, 180, 255, 0.85);
+}
+
+.mc-rule-badge--r1 {
+  background: rgba(80, 220, 120, 0.12);
+  color: rgba(100, 230, 140, 0.85);
+}
+
+.mc-rule-badge--r2 {
+  background: rgba(240, 180, 60, 0.12);
+  color: rgba(250, 200, 80, 0.85);
+}
+
+.mc-rule-badge--r3 {
+  background: rgba(220, 120, 60, 0.12);
+  color: rgba(240, 150, 80, 0.85);
+}
+
+.mc-rule-badge--r4 {
+  background: rgba(180, 100, 220, 0.12);
+  color: rgba(200, 130, 240, 0.85);
+}
+
+.mc-rule-badge--post {
+  background: rgba(255, 80, 80, 0.12);
+  color: rgba(255, 120, 120, 0.85);
+}
+
+.mc-rule-badge--upgrade {
+  background: rgba(60, 200, 200, 0.12);
+  color: rgba(100, 220, 220, 0.85);
+}
+
+.mc-rule-desc {
+  font-size: 0.67rem;
   color: rgba(255, 255, 255, 0.3);
-  line-height: 1.4;
+  line-height: 1.5;
+  margin-bottom: 0.45rem;
+}
+
+.mc-formula {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  margin-bottom: 0.55rem;
+  overflow-x: auto;
+}
+
+.mc-formula :deep(.katex-render) {
+  font-size: 0.82rem;
 }
 
 .mc-close {
@@ -261,6 +433,12 @@ function handleSave() {
   font-size: 0.72rem;
   color: rgba(255, 255, 255, 0.5);
   letter-spacing: 0.02em;
+}
+
+.mc-hint {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.3);
+  line-height: 1.4;
 }
 
 .mc-input {

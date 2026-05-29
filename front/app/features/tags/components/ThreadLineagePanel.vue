@@ -87,6 +87,7 @@ watch(
       fetchLineage()
     }
   },
+  { immediate: true },
 )
 
 const firstNode = computed(() => chain.value[0])
