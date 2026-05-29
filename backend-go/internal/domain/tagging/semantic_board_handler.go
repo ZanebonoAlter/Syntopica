@@ -110,9 +110,10 @@ type semanticBoardUpgradeSuggestionDTO struct {
 		ID    uint   `json:"id"`
 		Label string `json:"label"`
 	} `json:"auxiliary_labels"`
-	TargetBoardID    *uint  `json:"target_board_id,omitempty"`
-	TargetBoardLabel string `json:"target_board_label,omitempty"`
-	Reason           string `json:"reason"`
+	TargetBoardID    *uint              `json:"target_board_id,omitempty"`
+	TargetBoardLabel string             `json:"target_board_label,omitempty"`
+	Reason           string             `json:"reason"`
+	BoardAffinities  []boardAffinityDTO `json:"board_affinities"`
 }
 
 type semanticBoardUpgradeCandidateDTO struct {
@@ -122,12 +123,16 @@ type semanticBoardUpgradeCandidateDTO struct {
 	RefCount int    `json:"ref_count"`
 }
 
+type boardAffinityDTO struct {
+	BoardID            uint    `json:"board_id"`
+	BoardLabel         string  `json:"board_label"`
+	MatchingCandidates int     `json:"matching_candidates"`
+	AvgDistance         float64 `json:"avg_distance"`
+}
+
 type semanticBoardUpgradeClusterDTO struct {
-	Candidates                   []semanticBoardUpgradeCandidateDTO `json:"candidates"`
-	ExistingBoardID              *uint                              `json:"existing_board_id,omitempty"`
-	ExistingBoardLabel           string                             `json:"existing_board_label"`
-	ExistingBoardDescription     string                             `json:"existing_board_description"`
-	ExistingBoardAuxiliaryLabels []string                           `json:"existing_board_auxiliary_labels"`
+	Candidates      []semanticBoardUpgradeCandidateDTO `json:"candidates"`
+	BoardAffinities []boardAffinityDTO                 `json:"board_affinities"`
 }
 
 type airouterSemanticBoardUpgradeLLM struct{}
@@ -408,6 +413,7 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 	startDate := strings.TrimSpace(c.Query("start_date"))
 	endDate := strings.TrimSpace(c.Query("end_date"))
 	showDirectionMismatch := c.Query("show_direction_mismatch") == "true"
+	sortMode := c.DefaultQuery("sort", "quality") // "quality" | "time"
 
 	ctx := c.Request.Context()
 
@@ -477,7 +483,11 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 
 	// Fetch page
 	offset := (page - 1) * perPage
-	query = query.Order("articles.id ASC").Offset(offset).Limit(perPage)
+	if sortMode == "time" {
+		query = query.Order("articles.pub_date DESC, articles.id DESC").Offset(offset).Limit(perPage)
+	} else {
+		query = query.Order("articles.id ASC").Offset(offset).Limit(perPage)
+	}
 
 	type articleRow struct {
 		models.Article
@@ -544,42 +554,45 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 	}
 
 	// Sort articles by match quality: tier ASC, score DESC, pub_date DESC
-	type articleSortKey struct {
-		BestTier  int
-		BestScore float64
-	}
-	sortKeys := make(map[uint]articleSortKey)
-	for _, ft := range tagRows {
-		t := MatchTier(ft.MatchReason, ft.Downgraded)
-		existing, ok := sortKeys[ft.ArticleID]
-		if !ok || t < existing.BestTier || (t == existing.BestTier && ft.Score > existing.BestScore) {
-			sortKeys[ft.ArticleID] = articleSortKey{BestTier: t, BestScore: ft.Score}
+	// (only when sort=quality; sort=time is already handled by DB query)
+	if sortMode != "time" {
+		type articleSortKey struct {
+			BestTier  int
+			BestScore float64
 		}
-	}
-	sort.SliceStable(articles, func(i, j int) bool {
-		ki, oki := sortKeys[articles[i].ID]
-		kj, okj := sortKeys[articles[j].ID]
-		if !oki {
+		sortKeys := make(map[uint]articleSortKey)
+		for _, ft := range tagRows {
+			t := MatchTier(ft.MatchReason, ft.Downgraded)
+			existing, ok := sortKeys[ft.ArticleID]
+			if !ok || t < existing.BestTier || (t == existing.BestTier && ft.Score > existing.BestScore) {
+				sortKeys[ft.ArticleID] = articleSortKey{BestTier: t, BestScore: ft.Score}
+			}
+		}
+		sort.SliceStable(articles, func(i, j int) bool {
+			ki, oki := sortKeys[articles[i].ID]
+			kj, okj := sortKeys[articles[j].ID]
+			if !oki {
+				return false
+			}
+			if !okj {
+				return true
+			}
+			if ki.BestTier != kj.BestTier {
+				return ki.BestTier < kj.BestTier
+			}
+			if ki.BestScore != kj.BestScore {
+				return ki.BestScore > kj.BestScore
+			}
+			pdi, pdj := articles[i].PubDate, articles[j].PubDate
+			if pdi != nil && pdj != nil {
+				return pdi.After(*pdj)
+			}
+			if pdi != nil {
+				return true
+			}
 			return false
-		}
-		if !okj {
-			return true
-		}
-		if ki.BestTier != kj.BestTier {
-			return ki.BestTier < kj.BestTier
-		}
-		if ki.BestScore != kj.BestScore {
-			return ki.BestScore > kj.BestScore
-		}
-		pdi, pdj := articles[i].PubDate, articles[j].PubDate
-		if pdi != nil && pdj != nil {
-			return pdi.After(*pdj)
-		}
-		if pdi != nil {
-			return true
-		}
-		return false
-	})
+		})
+	}
 
 	// Step 4: Assemble response
 	data := make([]gin.H, len(articles))
@@ -1173,12 +1186,12 @@ func (h *semanticBoardHandler) getUpgradeCandidates(c *gin.Context) {
 
 func (h *semanticBoardHandler) suggestUpgrades(c *gin.Context) {
 	service := NewSemanticBoardUpgradeService(h.db, semanticBoardUpgradeLLMFactory(), nil)
-	suggestions, err := service.GenerateSuggestions(c.Request.Context())
+	suggestions, clusters, err := service.GenerateSuggestions(c.Request.Context())
 	if err != nil {
 		respondError(c, http.StatusBadRequest, err)
 		return
 	}
-	respondOK(c, gin.H{"suggestions": h.suggestionsToDTO(c.Request.Context(), suggestions)})
+	respondOK(c, gin.H{"suggestions": h.suggestionsToDTO(c.Request.Context(), suggestions, clusters)})
 }
 
 func (h *semanticBoardHandler) executeUpgrade(c *gin.Context) {
@@ -1404,7 +1417,7 @@ func (airouterSemanticBoardUpgradeLLM) SuggestSemanticBoardUpgrades(ctx context.
 	result, err := airouter.NewRouter().Chat(ctx, airouter.ChatRequest{
 		Capability: airouter.CapabilityTopicTagging,
 		Messages: []airouter.Message{
-			{Role: "system", Content: "Return JSON only in this shape: {\"suggestions\":[{\"decision\":\"create_new|merge_into_existing|skip\",\"board_label\":\"\",\"description\":\"\",\"auxiliary_label_ids\":[1],\"target_board_id\":1,\"reason\":\"\"}]}"},
+			{Role: "system", Content: "Return JSON only in this shape: {\"suggestions\":[{\"decision\":\"create_new|skip\",\"board_label\":\"\",\"description\":\"\",\"auxiliary_label_ids\":[1],\"reason\":\"\"}]}"},
 			{Role: "user", Content: prompt},
 		},
 		JSONMode: true,
@@ -1419,7 +1432,6 @@ func (airouterSemanticBoardUpgradeLLM) SuggestSemanticBoardUpgrades(ctx context.
 			BoardLabel        string                       `json:"board_label"`
 			Description       string                       `json:"description"`
 			AuxiliaryLabelIDs []uint                       `json:"auxiliary_label_ids"`
-			TargetBoardID     *uint                        `json:"target_board_id"`
 			Reason            string                       `json:"reason"`
 		} `json:"suggestions"`
 	}
@@ -1428,7 +1440,7 @@ func (airouterSemanticBoardUpgradeLLM) SuggestSemanticBoardUpgrades(ctx context.
 	}
 	suggestions := make([]SemanticBoardUpgradeSuggestion, 0, len(parsed.Suggestions))
 	for _, raw := range parsed.Suggestions {
-		suggestions = append(suggestions, SemanticBoardUpgradeSuggestion{Decision: raw.Decision, BoardLabel: raw.BoardLabel, Description: raw.Description, AuxiliaryLabelIDs: raw.AuxiliaryLabelIDs, TargetBoardID: raw.TargetBoardID, Reason: raw.Reason})
+		suggestions = append(suggestions, SemanticBoardUpgradeSuggestion{Decision: raw.Decision, BoardLabel: raw.BoardLabel, Description: raw.Description, AuxiliaryLabelIDs: raw.AuxiliaryLabelIDs, Reason: raw.Reason})
 	}
 	return suggestions, nil
 }
@@ -1471,12 +1483,19 @@ func upgradeCandidatesToDTO(candidates []SemanticBoardUpgradeCandidate) []semant
 func upgradeClustersToDTO(clusters []SemanticBoardUpgradeCluster) []semanticBoardUpgradeClusterDTO {
 	items := make([]semanticBoardUpgradeClusterDTO, 0, len(clusters))
 	for _, cluster := range clusters {
-		items = append(items, semanticBoardUpgradeClusterDTO{Candidates: upgradeCandidatesToDTO(cluster.Candidates), ExistingBoardID: cluster.ExistingBoardID, ExistingBoardLabel: cluster.ExistingBoardLabel, ExistingBoardDescription: cluster.ExistingBoardDescription, ExistingBoardAuxiliaryLabels: cluster.ExistingBoardAuxiliaryLabels})
+		affDTOs := make([]boardAffinityDTO, 0, len(cluster.BoardAffinities))
+		for _, aff := range cluster.BoardAffinities {
+			affDTOs = append(affDTOs, boardAffinityDTO(aff))
+		}
+		items = append(items, semanticBoardUpgradeClusterDTO{
+			Candidates:      upgradeCandidatesToDTO(cluster.Candidates),
+			BoardAffinities: affDTOs,
+		})
 	}
 	return items
 }
 
-func (h *semanticBoardHandler) suggestionsToDTO(ctx context.Context, suggestions []SemanticBoardUpgradeSuggestion) []semanticBoardUpgradeSuggestionDTO {
+func (h *semanticBoardHandler) suggestionsToDTO(ctx context.Context, suggestions []SemanticBoardUpgradeSuggestion, clusters []SemanticBoardUpgradeCluster) []semanticBoardUpgradeSuggestionDTO {
 	// Collect unique IDs for batch lookup
 	labelIDSet := make(map[uint]struct{})
 	boardIDSet := make(map[uint]struct{})
@@ -1519,6 +1538,14 @@ func (h *semanticBoardHandler) suggestionsToDTO(ctx context.Context, suggestions
 		}
 	}
 
+	// Build candidate ID → cluster index map for board_affinities lookup
+	candidateToCluster := make(map[uint]int)
+	for i, cluster := range clusters {
+		for _, c := range cluster.Candidates {
+			candidateToCluster[c.ID] = i
+		}
+	}
+
 	items := make([]semanticBoardUpgradeSuggestionDTO, 0, len(suggestions))
 	for _, s := range suggestions {
 		dto := semanticBoardUpgradeSuggestionDTO{
@@ -1538,6 +1565,16 @@ func (h *semanticBoardHandler) suggestionsToDTO(ctx context.Context, suggestions
 		if s.TargetBoardID != nil {
 			if name, ok := boardNames[*s.TargetBoardID]; ok {
 				dto.TargetBoardLabel = name
+			}
+		}
+		// Embed board_affinities from matching cluster
+		if len(s.AuxiliaryLabelIDs) > 0 {
+			if clusterIdx, ok := candidateToCluster[s.AuxiliaryLabelIDs[0]]; ok {
+				bas := clusters[clusterIdx].BoardAffinities
+				dto.BoardAffinities = make([]boardAffinityDTO, 0, len(bas))
+				for _, ba := range bas {
+					dto.BoardAffinities = append(dto.BoardAffinities, boardAffinityDTO(ba))
+				}
 			}
 		}
 		items = append(items, dto)

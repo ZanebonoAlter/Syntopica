@@ -43,14 +43,19 @@ type SemanticBoardUpgradeCandidate struct {
 	Embedding []float64
 }
 
+type BoardAffinity struct {
+	BoardID            uint
+	BoardLabel         string
+	MatchingCandidates int
+	AvgDistance         float64
+}
+
 type SemanticBoardUpgradeCluster struct {
-	Candidates                   []SemanticBoardUpgradeCandidate
-	Centroid                     []float64
-	ExistingBoardID              *uint
-	ExistingBoardLabel           string
-	ExistingBoardDescription     string
-	ExistingBoardAuxiliaryLabels []string
-	Events                       []SemanticBoardUpgradeEventContext
+	Candidates      []SemanticBoardUpgradeCandidate
+	Centroid         []float64
+	BoardAffinities  []BoardAffinity
+	Events           []SemanticBoardUpgradeEventContext
+	origIdx          int // internal: tracks Pass 1 cluster index during reassignment
 }
 
 type SemanticBoardUpgradeEventContext struct {
@@ -105,38 +110,38 @@ func NewSemanticBoardUpgradeService(db *gorm.DB, llm semanticBoardUpgradeLLM, em
 	return &SemanticBoardUpgradeService{db: db, llm: llm, embedder: embedder}
 }
 
-func (s *SemanticBoardUpgradeService) GenerateSuggestions(ctx context.Context) ([]SemanticBoardUpgradeSuggestion, error) {
+func (s *SemanticBoardUpgradeService) GenerateSuggestions(ctx context.Context) ([]SemanticBoardUpgradeSuggestion, []SemanticBoardUpgradeCluster, error) {
 	if s.llm == nil {
-		return nil, fmt.Errorf("semantic board upgrade llm is required")
+		return nil, nil, fmt.Errorf("semantic board upgrade llm is required")
 	}
 	config := s.LoadUpgradeConfig(ctx)
 	candidates, err := s.collectCandidates(ctx, config)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(candidates) < config.RefCountThreshold {
-		return []SemanticBoardUpgradeSuggestion{}, nil
+		return []SemanticBoardUpgradeSuggestion{}, []SemanticBoardUpgradeCluster{}, nil
 	}
 	clusters, err := s.clusterCandidates(ctx, candidates, config)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for i := range clusters {
 		clusters[i].Events, err = s.loadCoTagEventContext(ctx, clusters[i], config)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	suggestions, err := s.llm.SuggestSemanticBoardUpgrades(ctx, buildSemanticBoardUpgradePrompt(clusters))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	validAuxiliaryIDs := map[uint]struct{}{}
 	for _, candidate := range candidates {
 		validAuxiliaryIDs[candidate.ID] = struct{}{}
 	}
-	return filterSemanticBoardUpgradeSuggestions(suggestions, validAuxiliaryIDs), nil
+	return filterSemanticBoardUpgradeSuggestions(suggestions, validAuxiliaryIDs), clusters, nil
 }
 
 func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req ConfirmSemanticBoardUpgradeRequest) (*ConfirmSemanticBoardUpgradeResult, error) {
@@ -240,34 +245,12 @@ func (s *SemanticBoardUpgradeService) clusterCandidates(ctx context.Context, can
 	if err != nil {
 		return nil, err
 	}
+
+	// Pass 1: Greedy initial assignment (produces initial clusters with running-mean centroids)
 	clusters := make([]SemanticBoardUpgradeCluster, 0, len(candidates))
-	boardClusterByID := map[uint]int{}
-	boardDetails := semanticBoardDetailsByID(boardContexts)
-
 	for _, candidate := range candidates {
-		if boardContext, ok := closestBoardContext(candidate, boardContexts, config.ClusterDistanceThreshold); ok {
-			clusterIndex, exists := boardClusterByID[boardContext.BoardID]
-			if !exists {
-				boardID := boardContext.BoardID
-				details := boardDetails[boardContext.BoardID]
-				clusters = append(clusters, SemanticBoardUpgradeCluster{
-					ExistingBoardID:              &boardID,
-					ExistingBoardLabel:           boardContext.BoardLabel,
-					ExistingBoardDescription:     boardContext.BoardDescription,
-					ExistingBoardAuxiliaryLabels: details,
-				})
-				clusterIndex = len(clusters) - 1
-				boardClusterByID[boardContext.BoardID] = clusterIndex
-			}
-			clusters[clusterIndex].Candidates = append(clusters[clusterIndex].Candidates, candidate)
-			continue
-		}
-
 		matched := false
 		for i := range clusters {
-			if clusters[i].ExistingBoardID != nil {
-				continue
-			}
 			if candidateFitsCluster(candidate, &clusters[i], config.ClusterDistanceThreshold) {
 				addCandidateToCluster(candidate, &clusters[i])
 				matched = true
@@ -281,6 +264,105 @@ func (s *SemanticBoardUpgradeService) clusterCandidates(ctx context.Context, can
 			})
 		}
 	}
+
+	// Pass 2: Reassign candidates to nearest stable centroid to correct greedy drift.
+	// The running-mean centroid from Pass 1 drifts as members are absorbed, causing
+	// the first cluster to over-accumulate. We recompute stable centroids from all
+	// members, then reassign each candidate to its truly nearest cluster.
+	if len(clusters) > 1 {
+		// Compute stable centroids from Pass 1 results
+		stableCentroids := make([][]float64, len(clusters))
+		for i, cl := range clusters {
+			stableCentroids[i] = computeStableCentroid(cl.Candidates)
+		}
+
+		// Reassign each candidate to nearest stable centroid
+		newClusters := make([]SemanticBoardUpgradeCluster, 0, len(clusters))
+		for _, candidate := range candidates {
+			bestIdx := -1
+			bestDist := config.ClusterDistanceThreshold + 1 // start above threshold
+			for i := range stableCentroids {
+				if len(stableCentroids[i]) == 0 {
+					continue
+				}
+				dist := semanticBoardUpgradeDistance(candidate.Embedding, stableCentroids[i])
+				if dist <= config.ClusterDistanceThreshold && dist < bestDist {
+					bestDist = dist
+					bestIdx = i
+				}
+			}
+			if bestIdx >= 0 {
+				// Find or create the target cluster in newClusters
+				found := false
+				for j := range newClusters {
+					if newClusters[j].origIdx == bestIdx {
+						newClusters[j].Candidates = append(newClusters[j].Candidates, candidate)
+						found = true
+						break
+					}
+			}
+				if !found {
+					newClusters = append(newClusters, SemanticBoardUpgradeCluster{
+						Candidates: []SemanticBoardUpgradeCandidate{candidate},
+						origIdx:    bestIdx,
+					})
+				}
+			} else {
+				// Candidate is too far from all centroids — forms its own cluster
+				newClusters = append(newClusters, SemanticBoardUpgradeCluster{
+					Candidates: []SemanticBoardUpgradeCandidate{candidate},
+					origIdx:    -1,
+				})
+			}
+		}
+
+		// Recompute final centroids
+		for i := range newClusters {
+			newClusters[i].Centroid = computeStableCentroid(newClusters[i].Candidates)
+		}
+		clusters = newClusters
+	}
+
+	// Compute board affinities for each cluster
+	if len(boardContexts) > 0 {
+		boardContextsByBoard := make(map[uint][]semanticBoardContext)
+		for _, bc := range boardContexts {
+			boardContextsByBoard[bc.BoardID] = append(boardContextsByBoard[bc.BoardID], bc)
+		}
+		for i := range clusters {
+			var affinities []BoardAffinity
+			for boardID, contexts := range boardContextsByBoard {
+				matchingCount := 0
+				totalMinDist := 0.0
+				for _, candidate := range clusters[i].Candidates {
+					minDist := -1.0
+					for _, bc := range contexts {
+						dist := semanticBoardUpgradeDistance(candidate.Embedding, bc.Embedding)
+						if minDist < 0 || dist < minDist {
+							minDist = dist
+						}
+					}
+					if minDist >= 0 && minDist <= config.ClusterDistanceThreshold {
+						matchingCount++
+						totalMinDist += minDist
+					}
+				}
+				if matchingCount > 0 {
+					affinities = append(affinities, BoardAffinity{
+						BoardID:            boardID,
+						BoardLabel:         contexts[0].BoardLabel,
+						MatchingCandidates: matchingCount,
+						AvgDistance:         totalMinDist / float64(matchingCount),
+					})
+				}
+			}
+			sort.Slice(affinities, func(a, b int) bool {
+				return affinities[a].AvgDistance < affinities[b].AvgDistance
+			})
+			clusters[i].BoardAffinities = affinities
+		}
+	}
+
 	return clusters, nil
 }
 
@@ -423,15 +505,6 @@ func (s *SemanticBoardUpgradeService) LoadUpgradeConfig(ctx context.Context) Sem
 	return config
 }
 
-func closestBoardContext(candidate SemanticBoardUpgradeCandidate, contexts []semanticBoardContext, threshold float64) (semanticBoardContext, bool) {
-	for _, context := range contexts {
-		if semanticBoardUpgradeDistance(candidate.Embedding, context.Embedding) <= threshold {
-			return context, true
-		}
-	}
-	return semanticBoardContext{}, false
-}
-
 func candidateFitsCluster(candidate SemanticBoardUpgradeCandidate, cluster *SemanticBoardUpgradeCluster, threshold float64) bool {
 	if len(cluster.Centroid) == 0 {
 		return false
@@ -442,6 +515,25 @@ func candidateFitsCluster(candidate SemanticBoardUpgradeCandidate, cluster *Sema
 func addCandidateToCluster(candidate SemanticBoardUpgradeCandidate, cluster *SemanticBoardUpgradeCluster) {
 	cluster.Candidates = append(cluster.Candidates, candidate)
 	cluster.Centroid = updateCentroid(cluster.Centroid, candidate.Embedding, len(cluster.Candidates)-1)
+}
+
+// computeStableCentroid computes the true mean of all candidate embeddings.
+func computeStableCentroid(candidates []SemanticBoardUpgradeCandidate) []float64 {
+	if len(candidates) == 0 {
+		return nil
+	}
+	dim := len(candidates[0].Embedding)
+	centroid := make([]float64, dim)
+	for _, c := range candidates {
+		for i, v := range c.Embedding {
+			centroid[i] += v
+		}
+	}
+	n := float64(len(candidates))
+	for i := range centroid {
+		centroid[i] /= n
+	}
+	return centroid
 }
 
 func updateCentroid(current []float64, newVec []float64, currentCount int) []float64 {
@@ -475,52 +567,24 @@ func isNearKeptVector(vector []float64, keptVectors [][]float64, threshold float
 	return false
 }
 
-func semanticBoardDetailsByID(contexts []semanticBoardContext) map[uint][]string {
-	details := map[uint][]string{}
-	seen := map[uint]map[string]struct{}{}
-	for _, context := range contexts {
-		if _, ok := seen[context.BoardID]; !ok {
-			seen[context.BoardID] = map[string]struct{}{}
-		}
-		label := strings.TrimSpace(context.AuxiliaryLabel)
-		if label == "" {
-			continue
-		}
-		key := strings.ToLower(label)
-		if _, exists := seen[context.BoardID][key]; exists {
-			continue
-		}
-		seen[context.BoardID][key] = struct{}{}
-		details[context.BoardID] = append(details[context.BoardID], label)
-	}
-	return details
-}
-
 func buildSemanticBoardUpgradePrompt(clusters []SemanticBoardUpgradeCluster) string {
 	var builder strings.Builder
-	builder.WriteString("你是一个语义板块分析助手。根据以下辅助标签聚类信息，判断每个簇应该：create_new（创建新板块）、merge_into_existing（合并到已有板块）、skip（跳过不处理）。\n\n")
+	builder.WriteString("你是一个语义板块分析助手。根据以下辅助标签聚类信息，判断每个簇应该：create_new（创建新板块）或 skip（跳过不处理）。\n\n")
 	builder.WriteString("判断原则：\n")
 	builder.WriteString("- 如果簇内标签语义集中、有明确主题且不存在对应板块 → create_new\n")
-	builder.WriteString("- 如果簇内标签与某个已有板块高度相关 → merge_into_existing\n")
 	builder.WriteString("- 如果簇内标签过于分散或过于泛化，不足以形成独立板块 → skip\n\n")
-	builder.WriteString("返回 JSON 格式：{\"suggestions\": [{\"decision\": \"create_new|merge_into_existing|skip\", \"board_label\": \"板块名称\", \"description\": \"板块描述\", \"auxiliary_label_ids\": [id1, id2], \"target_board_id\": null或已有板块ID, \"reason\": \"判断理由\"}]}\n\n")
+	builder.WriteString("返回 JSON 格式：{\"suggestions\": [{\"decision\": \"create_new|skip\", \"board_label\": \"板块名称\", \"description\": \"板块描述\", \"auxiliary_label_ids\": [id1, id2], \"reason\": \"判断理由\"}]}\n\n")
 	for i, cluster := range clusters {
 		fmt.Fprintf(&builder, "【簇 %d】\n", i+1)
-		if cluster.ExistingBoardID != nil {
-			fmt.Fprintf(&builder, "关联已有板块：%s（ID=%d）\n", cluster.ExistingBoardLabel, *cluster.ExistingBoardID)
-			if strings.TrimSpace(cluster.ExistingBoardDescription) != "" {
-				fmt.Fprintf(&builder, "板块描述：%s\n", cluster.ExistingBoardDescription)
-			}
-			if len(cluster.ExistingBoardAuxiliaryLabels) > 0 {
-				builder.WriteString("板块现有构成标签：\n")
-				for _, label := range cluster.ExistingBoardAuxiliaryLabels {
-					fmt.Fprintf(&builder, "  - %s\n", label)
-				}
-			}
-		}
 		builder.WriteString("候选辅助标签：\n")
 		for _, candidate := range cluster.Candidates {
 			fmt.Fprintf(&builder, "  - ID=%d: %s（引用次数=%d）\n", candidate.ID, candidate.Label, candidate.RefCount)
+		}
+		if len(cluster.BoardAffinities) > 0 {
+			builder.WriteString("相似已有板块参考：\n")
+			for _, aff := range cluster.BoardAffinities {
+				fmt.Fprintf(&builder, "  - %s（ID=%d）：%d 个候选匹配，平均距离 %.4f\n", aff.BoardLabel, aff.BoardID, aff.MatchingCandidates, aff.AvgDistance)
+			}
 		}
 		if len(cluster.Events) > 0 {
 			builder.WriteString("关联事件（近期共现）：\n")
@@ -536,7 +600,8 @@ func buildSemanticBoardUpgradePrompt(clusters []SemanticBoardUpgradeCluster) str
 func filterSemanticBoardUpgradeSuggestions(suggestions []SemanticBoardUpgradeSuggestion, validAuxiliaryIDs map[uint]struct{}) []SemanticBoardUpgradeSuggestion {
 	filtered := make([]SemanticBoardUpgradeSuggestion, 0, len(suggestions))
 	for _, suggestion := range suggestions {
-		if suggestion.Decision != SemanticBoardUpgradeDecisionCreateNew && suggestion.Decision != SemanticBoardUpgradeDecisionMergeIntoExisting && suggestion.Decision != SemanticBoardUpgradeDecisionSkip {
+		// Only accept create_new and skip; defensively reject merge_into_existing
+		if suggestion.Decision != SemanticBoardUpgradeDecisionCreateNew && suggestion.Decision != SemanticBoardUpgradeDecisionSkip {
 			continue
 		}
 		suggestion.AuxiliaryLabelIDs = filterKnownAuxiliaryIDs(uniqueUintSlice(suggestion.AuxiliaryLabelIDs), validAuxiliaryIDs)

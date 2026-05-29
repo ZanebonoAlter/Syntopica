@@ -39,7 +39,7 @@ type DailyReportSection struct {
 	ClusterIndex  int       `json:"cluster_index"`
 	ClusterLabel  string    `gorm:"size:200" json:"cluster_label"`
 	ClusterTagIDs JSON      `gorm:"type:jsonb" json:"cluster_tag_ids"`
-	Threads       JSON      `gorm:"type:jsonb" json:"threads"`
+	Threads       []DailyReportThread `gorm:"foreignKey:SectionID" json:"threads,omitempty"`
 	ArticleCount  int       `json:"article_count"`
 	BestTier      int       `gorm:"default:0" json:"best_tier"`
 	AvgScore      float64   `gorm:"default:0" json:"avg_score"`
@@ -48,6 +48,25 @@ type DailyReportSection struct {
 
 func (DailyReportSection) TableName() string {
 	return "daily_report_sections"
+}
+
+// DailyReportThread — one narrative thread, stored independently
+type DailyReportThread struct {
+	ID                uint      `gorm:"primarykey" json:"id"`
+	ReportID          uint      `gorm:"index;not null" json:"report_id"`
+	SectionID         uint      `gorm:"index;not null" json:"section_id"`
+	Title             string    `json:"title"`
+	Summary           string    `json:"summary"`
+	Status            string    `gorm:"size:20;default:emerging" json:"status"`
+	TagIDs            JSON      `gorm:"type:jsonb" json:"tag_ids"`
+	Confidence        float64   `gorm:"default:0" json:"confidence"`
+	PrevThreadID      *uint     `json:"prev_thread_id,omitempty"`
+	RelatedArticleIDs JSON      `gorm:"type:jsonb" json:"related_article_ids,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+func (DailyReportThread) TableName() string {
+	return "daily_report_threads"
 }
 
 // JSON is a custom type for GORM jsonb columns.

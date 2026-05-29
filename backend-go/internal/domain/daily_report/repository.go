@@ -290,7 +290,8 @@ type ThreadLineageNode struct {
 func GetThreadLineage(threadID uint) ([]ThreadLineageNode, error) {
 	var nodes []ThreadLineageNode
 	err := database.DB.Raw(`
-		WITH RECURSIVE ancestors AS (
+		WITH RECURSIVE chain AS (
+			-- Base: the target thread
 			SELECT t.id, t.report_id, t.section_id, t.title, t.summary, t.status,
 			       t.tag_ids, t.confidence, t.prev_thread_id, t.created_at,
 			       bdr.period_date, ds.cluster_label
@@ -301,35 +302,14 @@ func GetThreadLineage(threadID uint) ([]ThreadLineageNode, error) {
 
 			UNION ALL
 
+			-- Walk up to ancestors via prev_thread_id
 			SELECT parent.id, parent.report_id, parent.section_id, parent.title, parent.summary, parent.status,
 			       parent.tag_ids, parent.confidence, parent.prev_thread_id, parent.created_at,
 			       bdr.period_date, ds.cluster_label
 			FROM daily_report_threads parent
-			JOIN ancestors a ON a.prev_thread_id = parent.id
+			JOIN chain c ON c.prev_thread_id = parent.id
 			JOIN board_daily_reports bdr ON bdr.id = parent.report_id
 			JOIN daily_report_sections ds ON ds.id = parent.section_id
-		),
-		root AS (
-			SELECT * FROM ancestors ORDER BY period_date ASC LIMIT 1
-		),
-		chain AS (
-			SELECT t.id, t.report_id, t.section_id, t.title, t.summary, t.status,
-			       t.tag_ids, t.confidence, t.prev_thread_id, t.created_at,
-			       t.period_date, t.cluster_label
-			FROM root r
-			JOIN daily_report_threads t ON t.id = r.id
-			JOIN board_daily_reports bdr ON bdr.id = t.report_id
-			JOIN daily_report_sections ds ON ds.id = t.section_id
-
-			UNION ALL
-
-			SELECT child.id, child.report_id, child.section_id, child.title, child.summary, child.status,
-			       child.tag_ids, child.confidence, child.prev_thread_id, child.created_at,
-			       bdr.period_date, ds.cluster_label
-			FROM daily_report_threads child
-			JOIN chain c ON child.prev_thread_id = c.id
-			JOIN board_daily_reports bdr ON bdr.id = child.report_id
-			JOIN daily_report_sections ds ON ds.id = child.section_id
 		)
 		SELECT * FROM chain ORDER BY period_date ASC
 	`, threadID).Scan(&nodes).Error

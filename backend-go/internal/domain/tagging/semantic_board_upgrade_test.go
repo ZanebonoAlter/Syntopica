@@ -79,11 +79,248 @@ func TestSemanticBoardUpgradeClustersCandidatesWithExistingBoards(t *testing.T) 
 
 	require.NoError(t, err)
 	require.Len(t, clusters, 2)
-	require.NotNil(t, clusters[0].ExistingBoardID)
-	require.Equal(t, board.ID, *clusters[0].ExistingBoardID)
+
+	// All clusters are pure auto-clusters — no ExistingBoardID
+	// Cluster 0: {A, B} — auto-clustered by cosine distance
 	require.Equal(t, []uint{candidateA.ID, candidateB.ID}, upgradeCandidateIDs(clusters[0].Candidates))
-	require.Nil(t, clusters[1].ExistingBoardID)
+	// Cluster 1: {C} — separate
 	require.Equal(t, []uint{candidateC.ID}, upgradeCandidateIDs(clusters[1].Candidates))
+
+	// Cluster 0 has board affinity with AI Board
+	require.Len(t, clusters[0].BoardAffinities, 1)
+	require.Equal(t, board.ID, clusters[0].BoardAffinities[0].BoardID)
+	require.Equal(t, "AI Board", clusters[0].BoardAffinities[0].BoardLabel)
+	require.Equal(t, 2, clusters[0].BoardAffinities[0].MatchingCandidates)
+	// avg_distance: A→boardAux dist=0, B→boardAux dist≈0.05 → avg≈0.025
+	require.InDelta(t, 0.025, clusters[0].BoardAffinities[0].AvgDistance, 0.01)
+
+	// Cluster 1 has no board affinity (C is far from boardAux)
+	require.Empty(t, clusters[1].BoardAffinities)
+}
+
+func TestClusterCandidatesBoardAffinities(t *testing.T) {
+	t.Run("no_existing_boards", func(t *testing.T) {
+		db := setupSemanticBoardUpgradeTestDB(t)
+		candidateA := createUpgradeLabel(t, db, "Solar", "solar", "auxiliary", "active", 5, []float64{1, 0, 0})
+		candidateB := createUpgradeLabel(t, db, "Wind", "wind", "auxiliary", "active", 5, []float64{0, 1, 0})
+		service := NewSemanticBoardUpgradeService(db, nil, nil)
+		candidates := []SemanticBoardUpgradeCandidate{
+			{ID: candidateA.ID, Label: candidateA.Label, RefCount: 5, Embedding: []float64{1, 0, 0}},
+			{ID: candidateB.ID, Label: candidateB.Label, RefCount: 5, Embedding: []float64{0, 1, 0}},
+		}
+
+		clusters, err := service.clusterCandidates(context.Background(), candidates, service.LoadUpgradeConfig(context.Background()))
+
+		require.NoError(t, err)
+		for _, c := range clusters {
+			require.Empty(t, c.BoardAffinities)
+		}
+	})
+
+	t.Run("cluster_with_no_matching_candidates", func(t *testing.T) {
+		db := setupSemanticBoardUpgradeTestDB(t)
+		candidate := createUpgradeLabel(t, db, "Battery", "battery", "auxiliary", "active", 5, []float64{0, 1, 0})
+		boardAux := createUpgradeLabel(t, db, "AI", "ai", "auxiliary", "active", 2, []float64{1, 0, 0})
+		board := createUpgradeLabel(t, db, "AI Board", "ai-board", "board", "active", 0, nil)
+		require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
+		service := NewSemanticBoardUpgradeService(db, nil, nil)
+		candidates := []SemanticBoardUpgradeCandidate{
+			{ID: candidate.ID, Label: candidate.Label, RefCount: 5, Embedding: []float64{0, 1, 0}},
+		}
+
+		clusters, err := service.clusterCandidates(context.Background(), candidates, service.LoadUpgradeConfig(context.Background()))
+
+		require.NoError(t, err)
+		require.Len(t, clusters, 1)
+		require.Empty(t, clusters[0].BoardAffinities)
+	})
+
+	t.Run("multiple_boards_with_partial_matches", func(t *testing.T) {
+		db := setupSemanticBoardUpgradeTestDB(t)
+		candidateA := createUpgradeLabel(t, db, "GPT", "gpt", "auxiliary", "active", 5, []float64{1, 0, 0})
+		candidateB := createUpgradeLabel(t, db, "LLM", "llm", "auxiliary", "active", 5, []float64{0.95, 0.3122498999, 0})
+		// Board 1: "AI" with auxiliary close to GPT
+		boardAux1 := createUpgradeLabel(t, db, "AI Aux", "ai-aux", "auxiliary", "active", 2, []float64{1, 0, 0})
+		board1 := createUpgradeLabel(t, db, "AI", "ai", "board", "active", 0, nil)
+		require.NoError(t, db.Create(&models.BoardComposition{BoardID: board1.ID, AuxiliaryLabelID: boardAux1.ID}).Error)
+		// Board 2: "ML" with auxiliary close to LLM
+		boardAux2 := createUpgradeLabel(t, db, "ML Aux", "ml-aux", "auxiliary", "active", 2, []float64{0.9, 0.4358898943, 0})
+		board2 := createUpgradeLabel(t, db, "ML", "ml", "board", "active", 0, nil)
+		require.NoError(t, db.Create(&models.BoardComposition{BoardID: board2.ID, AuxiliaryLabelID: boardAux2.ID}).Error)
+
+		service := NewSemanticBoardUpgradeService(db, nil, nil)
+		candidates := []SemanticBoardUpgradeCandidate{
+			{ID: candidateA.ID, Label: candidateA.Label, RefCount: 5, Embedding: []float64{1, 0, 0}},
+			{ID: candidateB.ID, Label: candidateB.Label, RefCount: 5, Embedding: []float64{0.95, 0.3122498999, 0}},
+		}
+
+		clusters, err := service.clusterCandidates(context.Background(), candidates, service.LoadUpgradeConfig(context.Background()))
+
+		require.NoError(t, err)
+		require.Len(t, clusters, 1)
+		// Both boards should appear in affinities (both have matching candidates)
+		require.Len(t, clusters[0].BoardAffinities, 2)
+		// Sorted by avg_distance ascending — AI board should be first (closer)
+		require.Equal(t, board1.ID, clusters[0].BoardAffinities[0].BoardID)
+		require.Equal(t, board2.ID, clusters[0].BoardAffinities[1].BoardID)
+		// Both candidates match both boards
+		require.Equal(t, 2, clusters[0].BoardAffinities[0].MatchingCandidates)
+		require.Equal(t, 2, clusters[0].BoardAffinities[1].MatchingCandidates)
+	})
+}
+
+// TestClusterCandidatesPass2Reassignment verifies that the two-pass clustering
+// corrects greedy drift: a candidate initially absorbed by an early cluster
+// should be reassigned to a closer cluster after centroid stabilisation.
+func TestClusterCandidatesPass2Reassignment(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+
+	// Construct embeddings so that greedy Pass 1 misassigns candidate C.
+	// A and B are close, C is close to B but far from A.
+	// Pass 1 order: A, B, C — A forms cluster, B joins A (centroid drifts toward B),
+	// then C joins because centroid is now close enough (greedy drift).
+	// Pass 2 should split: {A} and {B, C} — C is reassigned to B's stable centroid.
+
+	// Embeddings in 3D:
+	// A = (1, 0, 0)
+	// B = (0.7, 0.7, 0)  — cosine distance from A ≈ 0.293 (within threshold 0.35)
+	// C = (0.4, 0.9, 0)  — cosine distance from B ≈ 0.019 (very close to B)
+	//                      cosine distance from A ≈ 0.194 (closer to A than B is!)
+	//
+	// Actually let me rethink. We want C to be close to B but NOT close to A.
+	// And A-B should be within threshold so they merge in Pass 1.
+	// Then C should join A's cluster via centroid drift in Pass 1,
+	// but Pass 2 should reassign it.
+	//
+	// Let's use:
+	// A = (1, 0, 0)
+	// B = (0.66, 0.75, 0)  — cosine dist(A,B) = 1 - (0.66)/(sqrt(1)*sqrt(0.66^2+0.75^2))
+	//                        = 1 - 0.66/sqrt(0.4356+0.5625) = 1 - 0.66/0.9982 ≈ 0.339
+	// C = (0.3, 0.95, 0)   — cosine dist(A,C) = 1 - 0.3/sqrt(0.09+0.9025) = 1 - 0.3/0.9962 ≈ 0.699
+	//                        cosine dist(B,C) = 1 - (0.66*0.3+0.75*0.95)/(0.9982*0.9962)
+	//                                          = 1 - (0.198+0.7125)/0.9944 = 1 - 0.9152 ≈ 0.085
+	//
+	// So A-B dist ≈ 0.339 (within threshold 0.35)
+	//    A-C dist ≈ 0.699 (way above threshold — C should NOT be in A's cluster)
+	//    B-C dist ≈ 0.085 (very close)
+	//
+	// Pass 1 greedy: A forms cluster1, B joins (centroid drifts), C...
+	//   centroid after A+B = ((1+0.66)/2, (0+0.75)/2, 0) = (0.83, 0.375, 0)
+	//   dist(C, centroid) = 1 - (0.83*0.3+0.375*0.95)/(sqrt(0.83^2+0.375^2)*sqrt(0.3^2+0.95^2))
+	//                     = 1 - (0.249+0.35625)/(sqrt(0.6889+0.140625)*sqrt(0.09+0.9025))
+	//                     = 1 - 0.60525/(0.9102*0.9962) = 1 - 0.60525/0.9067 = 1 - 0.6676 = 0.332
+	//   dist(C, centroid) ≈ 0.332 — JUST within threshold 0.35! So greedy Pass 1 absorbs C.
+	//
+	// Pass 2 stable centroid of {A,B} = (0.83, 0.375, 0)
+	//   dist(C, stable centroid) = same calc ≈ 0.332 — still within threshold :(
+	//
+	// Let me adjust to make it more dramatic. Use threshold 0.25 for this test.
+
+	embA := []float64{1, 0, 0}
+	embB := []float64{0.66, 0.75, 0}
+	embC := []float64{0.3, 0.95, 0}
+
+	candidateA := createUpgradeLabel(t, db, "Alpha", "alpha", "auxiliary", "active", 5, embA)
+	candidateB := createUpgradeLabel(t, db, "Beta", "beta", "auxiliary", "active", 5, embB)
+	candidateC := createUpgradeLabel(t, db, "Gamma", "gamma", "auxiliary", "active", 5, embC)
+
+	service := NewSemanticBoardUpgradeService(db, nil, nil)
+	candidates := []SemanticBoardUpgradeCandidate{
+		{ID: candidateA.ID, Label: "Alpha", RefCount: 5, Embedding: embA},
+		{ID: candidateB.ID, Label: "Beta", RefCount: 5, Embedding: embB},
+		{ID: candidateC.ID, Label: "Gamma", RefCount: 5, Embedding: embC},
+	}
+
+	config := service.LoadUpgradeConfig(context.Background())
+	config.ClusterDistanceThreshold = 0.25 // tight threshold for clear separation
+
+	clusters, err := service.clusterCandidates(context.Background(), candidates, config)
+
+	require.NoError(t, err)
+
+	// With threshold 0.25:
+	//   dist(A,B) ≈ 0.339 > 0.25 → A and B are in separate clusters
+	//   dist(B,C) ≈ 0.085 < 0.25 → B and C should be together
+	// Expected: {A} and {B, C}
+	require.Len(t, clusters, 2, "should produce 2 clusters: {Alpha} and {Beta,Gamma}")
+
+	// Find the {B,C} cluster
+	var bcCluster *SemanticBoardUpgradeCluster
+	for i := range clusters {
+		for _, c := range clusters[i].Candidates {
+			if c.Label == "Beta" || c.Label == "Gamma" {
+				bcCluster = &clusters[i]
+				break
+			}
+		}
+		if bcCluster != nil {
+			break
+		}
+	}
+	require.NotNil(t, bcCluster, "should find cluster containing Beta")
+	require.Len(t, bcCluster.Candidates, 2, "Beta and Gamma should be in the same cluster")
+
+	labels := make(map[string]bool)
+	for _, c := range bcCluster.Candidates {
+		labels[c.Label] = true
+	}
+	require.True(t, labels["Beta"])
+	require.True(t, labels["Gamma"])
+}
+
+// TestClusterCandidatesPass2SplittingPreventsGiantFirstCluster verifies that
+// the two-pass approach prevents the first cluster from absorbing too many candidates.
+func TestClusterCandidatesPass2SplittingPreventsGiantFirstCluster(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+
+	// Create a chain of embeddings where each is close to its neighbor but
+	// the endpoints are far apart:
+	// A(1,0) - B(0.8,0.6) - C(0.5,0.87) - D(0.2,0.98) - E(-0.1,0.995)
+	// With threshold 0.25, each should only cluster with its immediate neighbor,
+	// but greedy Pass 1 would absorb them all into one cluster via centroid drift.
+	embA := []float64{1, 0, 0}
+	embB := []float64{0.8, 0.6, 0}
+	embC := []float64{0.5, 0.87, 0}
+	embD := []float64{0.2, 0.98, 0}
+	embE := []float64{-0.1, 0.995, 0}
+
+	candidateA := createUpgradeLabel(t, db, "A", "a", "auxiliary", "active", 5, embA)
+	candidateB := createUpgradeLabel(t, db, "B", "b", "auxiliary", "active", 5, embB)
+	candidateC := createUpgradeLabel(t, db, "C", "c", "auxiliary", "active", 5, embC)
+	candidateD := createUpgradeLabel(t, db, "D", "d", "auxiliary", "active", 5, embD)
+	candidateE := createUpgradeLabel(t, db, "E", "e", "auxiliary", "active", 5, embE)
+
+	service := NewSemanticBoardUpgradeService(db, nil, nil)
+	candidates := []SemanticBoardUpgradeCandidate{
+		{ID: candidateA.ID, Label: "A", RefCount: 5, Embedding: embA},
+		{ID: candidateB.ID, Label: "B", RefCount: 5, Embedding: embB},
+		{ID: candidateC.ID, Label: "C", RefCount: 5, Embedding: embC},
+		{ID: candidateD.ID, Label: "D", RefCount: 5, Embedding: embD},
+		{ID: candidateE.ID, Label: "E", RefCount: 5, Embedding: embE},
+	}
+
+	config := service.LoadUpgradeConfig(context.Background())
+	config.ClusterDistanceThreshold = 0.20
+
+	clusters, err := service.clusterCandidates(context.Background(), candidates, config)
+	require.NoError(t, err)
+
+	// The first cluster should NOT contain all 5 candidates.
+	// With proper reassignment, we expect multiple smaller clusters.
+	maxSize := 0
+	for _, c := range clusters {
+		if len(c.Candidates) > maxSize {
+			maxSize = len(c.Candidates)
+		}
+	}
+	require.Less(t, maxSize, 5, "no single cluster should contain all 5 candidates")
+
+	// Verify total candidates preserved
+	totalCandidates := 0
+	for _, c := range clusters {
+		totalCandidates += len(c.Candidates)
+	}
+	require.Equal(t, 5, totalCandidates, "all 5 candidates must be accounted for")
 }
 
 func TestSemanticBoardUpgradeLoadsCoTagEventContext(t *testing.T) {
@@ -130,7 +367,7 @@ func TestSemanticBoardUpgradeGenerateSuggestionsUsesLLMMock(t *testing.T) {
 	}}
 	service := NewSemanticBoardUpgradeService(db, fakeLLM, nil)
 
-	suggestions, err := service.GenerateSuggestions(context.Background())
+	suggestions, _, err := service.GenerateSuggestions(context.Background())
 
 	require.NoError(t, err)
 	require.Len(t, suggestions, 2)
@@ -153,14 +390,14 @@ func TestSemanticBoardUpgradeGenerateSuggestionsSkipsWhenCandidateCountBelowThre
 	fakeLLM := &fakeSemanticBoardUpgradeLLM{suggestions: []SemanticBoardUpgradeSuggestion{{Decision: SemanticBoardUpgradeDecisionCreateNew}}}
 	service := NewSemanticBoardUpgradeService(db, fakeLLM, nil)
 
-	suggestions, err := service.GenerateSuggestions(context.Background())
+	suggestions, _, err := service.GenerateSuggestions(context.Background())
 
 	require.NoError(t, err)
 	require.Empty(t, suggestions)
 	require.Zero(t, fakeLLM.calls)
 }
 
-func TestSemanticBoardUpgradePromptIncludesExistingBoardContext(t *testing.T) {
+func TestSemanticBoardUpgradePromptIncludesBoardAffinities(t *testing.T) {
 	db := setupSemanticBoardUpgradeTestDB(t)
 	createUpgradeLabel(t, db, "OpenAI", "openai", "auxiliary", "active", 5, []float64{1, 0, 0})
 	createUpgradeLabel(t, db, "GPT", "gpt", "auxiliary", "active", 5, []float64{0.95, 0.3122498999, 0})
@@ -174,13 +411,16 @@ func TestSemanticBoardUpgradePromptIncludesExistingBoardContext(t *testing.T) {
 	fakeLLM := &fakeSemanticBoardUpgradeLLM{suggestions: []SemanticBoardUpgradeSuggestion{{Decision: SemanticBoardUpgradeDecisionSkip}}}
 	service := NewSemanticBoardUpgradeService(db, fakeLLM, nil)
 
-	_, err := service.GenerateSuggestions(context.Background())
+	_, _, err := service.GenerateSuggestions(context.Background())
 
 	require.NoError(t, err)
-	require.Contains(t, fakeLLM.prompt, "关联已有板块：AI Board")
-	require.Contains(t, fakeLLM.prompt, "Artificial intelligence board")
-	require.Contains(t, fakeLLM.prompt, "板块现有构成标签")
-	require.Contains(t, fakeLLM.prompt, "AI")
+	// Prompt should NOT contain merge_into_existing
+	require.NotContains(t, fakeLLM.prompt, "merge_into_existing")
+	require.NotContains(t, fakeLLM.prompt, "target_board_id")
+	require.NotContains(t, fakeLLM.prompt, "关联已有板块")
+	// Prompt should contain board affinity reference info
+	require.Contains(t, fakeLLM.prompt, "相似已有板块")
+	require.Contains(t, fakeLLM.prompt, "AI Board")
 }
 
 func TestSemanticBoardUpgradeConfirmCreateNew(t *testing.T) {

@@ -1018,5 +1018,12 @@ func postgresMigrations() []Migration {
 				return nil
 			},
 		},
+		{
+			Version:     "20260529_0004",
+			Description: "Add related_article_ids JSONB column to daily_report_threads.",
+			Up: func(db *gorm.DB) error {
+				return db.Exec(`ALTER TABLE daily_report_threads ADD COLUMN IF NOT EXISTS related_article_ids JSONB DEFAULT '[]'`).Error
+			},
+		},
 	}
 }

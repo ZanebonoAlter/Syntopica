@@ -459,13 +459,15 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*Bo
 		var batch []DailyReportThread
 		for _, th := range threads {
 			tagIDsJSON, _ := json.Marshal(th.TagIDs)
+			articleIDsJSON, _ := json.Marshal(th.RelatedArticleIDs)
 			batch = append(batch, DailyReportThread{
-				Title:        th.Title,
-				Summary:      th.Summary,
-				Status:       th.Status,
-				TagIDs:       tagIDsJSON,
-				Confidence:   th.Confidence,
-				PrevThreadID: th.PrevThreadID,
+				Title:             th.Title,
+				Summary:           th.Summary,
+				Status:            th.Status,
+				TagIDs:            tagIDsJSON,
+				Confidence:        th.Confidence,
+				PrevThreadID:      th.PrevThreadID,
+				RelatedArticleIDs: articleIDsJSON,
 			})
 		}
 		threadBatches = append(threadBatches, batch)
