@@ -5,6 +5,8 @@ import { useFloating } from '@floating-ui/vue'
 import { autoUpdate, offset, shift, flip } from '@floating-ui/dom'
 import { useDailyReportsApi, type DailyReportListItem, type DailyReport, type DailyReportThread } from '~/api/dailyReports'
 import { useArticlesApi } from '~/api/articles'
+import ThreadLineagePanel from './ThreadLineagePanel.vue'
+import BoardThreadBrowser from './BoardThreadBrowser.vue'
 
 const props = defineProps<{ boardId: number }>()
 
@@ -103,6 +105,13 @@ const threadPopupArticles = ref<Array<{ id: number; title: string; loading: bool
 const threadPopupLoading = ref(false)
 let currentOpenThread: DailyReportThread | null = null
 
+// Lineage panel state
+const lineageThreadId = ref<number | null>(null)
+const lineageVisible = ref(false)
+
+// Thread browser toggle
+const showThreadBrowser = ref(false)
+
 const { floatingStyles: threadPopupStyles } = useFloating(threadPopupTrigger, threadPopupFloating, {
   placement: 'right-start',
   middleware: [offset(8), shift({ padding: 16 }), flip()],
@@ -146,15 +155,27 @@ async function openNewspaper(index: number) {
   }
 }
 
+function openLineage(thread: DailyReportThread) {
+  lineageThreadId.value = thread.id
+  lineageVisible.value = true
+}
+
+function closeLineage() {
+  lineageVisible.value = false
+  lineageThreadId.value = null
+}
+
 function closeNewspaper() {
   showModal.value = false
   closeThreadPopup()
+  closeLineage()
 }
 
 function prevDay() {
   if (currentDayIndex.value > 0) {
     currentDayIndex.value--
     loadDetailForCurrentDay()
+    closeLineage()
   }
 }
 
@@ -162,6 +183,7 @@ function nextDay() {
   if (currentDayIndex.value < reports.value.length - 1) {
     currentDayIndex.value++
     loadDetailForCurrentDay()
+    closeLineage()
   }
 }
 
@@ -313,6 +335,7 @@ watch(() => props.boardId, () => {
   showModal.value = false
   currentDayIndex.value = -1
   detailCache.value = new Map()
+  showThreadBrowser.value = false
   loadReports()
 }, { immediate: true })
 </script>
@@ -325,8 +348,17 @@ watch(() => props.boardId, () => {
         <Icon icon="mdi:file-document-outline" width="15" class="text-white/50" />
         <span class="drt-title">板块日报</span>
         <span v-if="reports.length" class="drt-count">{{ reports.length }}</span>
+        <button type="button" class="drt-browser-toggle" @click="showThreadBrowser = !showThreadBrowser">
+          <Icon :icon="showThreadBrowser ? 'mdi:file-document-outline' : 'mdi:chart-timeline-variant'" width="14" />
+          <span>{{ showThreadBrowser ? '日报列表' : '线程总览' }}</span>
+        </button>
       </div>
 
+      <!-- Thread browser view -->
+      <BoardThreadBrowser v-if="showThreadBrowser" :board-id="boardId" />
+
+      <!-- Report list view -->
+      <template v-else>
       <div v-if="loading" class="drt-loading">
         <div v-for="i in 2" :key="i" class="drt-skeleton" />
       </div>
@@ -358,6 +390,7 @@ watch(() => props.boardId, () => {
       <div v-if="reports.length > 0" class="drt-more">
         <button type="button" class="drt-more-btn" @click="loadMore">加载更早</button>
       </div>
+      </template>
     </div>
   </div>
 
@@ -420,21 +453,27 @@ watch(() => props.boardId, () => {
                       <span class="np-cluster-card-count">{{ section.article_count }}篇</span>
                     </div>
                     <div class="np-cluster-card-threads">
-                      <div v-for="(thread, ti) in section.threads" :key="ti" class="np-thread-item" @click.stop="openThreadArticles($event, thread)">
+                      <div v-for="(thread, ti) in section.threads" :key="ti" class="np-thread-item">
                         <span class="np-thread-status" :class="threadStatusColor[thread.status] || ''">
                           {{ threadStatusLabel[thread.status] || thread.status }}
                         </span>
-                        <div class="np-thread-body">
+                        <div class="np-thread-body" @click.stop="openLineage(thread)">
                           <div class="np-thread-title">{{ thread.title }}</div>
                           <div v-if="thread.summary" class="np-thread-summary">{{ thread.summary }}</div>
                         </div>
-                        <Icon icon="mdi:file-document-multiple-outline" width="14" class="np-thread-articles-icon" />
+                        <Icon icon="mdi:file-document-multiple-outline" width="14" class="np-thread-articles-icon" @click.stop="openThreadArticles($event, thread)" />
                       </div>
                     </div>
                   </div>
                 </div>
               </template>
             </div>
+          <ThreadLineagePanel
+            v-if="lineageThreadId !== null"
+            :thread-id="lineageThreadId"
+            :visible="lineageVisible"
+            @close="closeLineage"
+          />
           </div>
         </div>
       </div>
@@ -611,6 +650,26 @@ watch(() => props.boardId, () => {
 
 .drt-more-btn:hover {
   color: rgba(255, 255, 255, 0.55);
+}
+
+.drt-browser-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: auto;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: none;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.68rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.drt-browser-toggle:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.7);
 }
 
 /* === Newspaper Modal === */
