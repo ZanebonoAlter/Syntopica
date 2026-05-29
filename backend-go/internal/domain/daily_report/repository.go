@@ -293,7 +293,7 @@ func GetThreadLineage(threadID uint) ([]ThreadLineageNode, error) {
 		WITH RECURSIVE chain AS (
 			-- Base: the target thread
 			SELECT t.id, t.report_id, t.section_id, t.title, t.summary, t.status,
-			       t.tag_ids, t.confidence, t.prev_thread_id, t.created_at,
+			       t.tag_ids, t.confidence, t.prev_thread_id, t.related_article_ids, t.created_at,
 			       bdr.period_date, ds.cluster_label
 			FROM daily_report_threads t
 			JOIN board_daily_reports bdr ON bdr.id = t.report_id
@@ -304,7 +304,7 @@ func GetThreadLineage(threadID uint) ([]ThreadLineageNode, error) {
 
 			-- Walk up to ancestors via prev_thread_id
 			SELECT parent.id, parent.report_id, parent.section_id, parent.title, parent.summary, parent.status,
-			       parent.tag_ids, parent.confidence, parent.prev_thread_id, parent.created_at,
+			       parent.tag_ids, parent.confidence, parent.prev_thread_id, parent.related_article_ids, parent.created_at,
 			       bdr.period_date, ds.cluster_label
 			FROM daily_report_threads parent
 			JOIN chain c ON c.prev_thread_id = parent.id
@@ -330,7 +330,7 @@ func GetBoardThreadTimeline(boardID uint, days int) ([]ThreadLineageNode, error)
 	var nodes []ThreadLineageNode
 	err := database.DB.Raw(`
 		SELECT t.id, t.report_id, t.section_id, t.title, t.summary, t.status,
-		       t.tag_ids, t.confidence, t.prev_thread_id, t.created_at,
+		       t.tag_ids, t.confidence, t.prev_thread_id, t.related_article_ids, t.created_at,
 		       bdr.period_date, ds.cluster_label
 		FROM daily_report_threads t
 		JOIN board_daily_reports bdr ON bdr.id = t.report_id
