@@ -2,6 +2,7 @@ package daily_report
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"syntopica-backend/internal/domain/models"
@@ -348,6 +349,156 @@ func GetBoardThreadTimeline(boardID uint, days int) ([]ThreadLineageNode, error)
 	`, boardID, days).Scan(&nodes).Error
 	if err != nil {
 		return nil, fmt.Errorf("get board thread timeline: %w", err)
+	}
+	return nodes, nil
+}
+
+// SectionTimelineNode represents a section in a timeline view.
+type SectionTimelineNode struct {
+	ID            uint      `json:"id"`
+	ReportID      uint      `json:"report_id"`
+	PeriodDate    time.Time `json:"period_date"`
+	ClusterLabel  string    `json:"cluster_label"`
+	Status        string    `json:"status"`
+	ArticleCount  int       `json:"article_count"`
+	ThreadCount   int       `json:"thread_count"`
+	PrevSectionID *uint     `json:"prev_section_id,omitempty"`
+}
+
+// GetBoardSectionTimeline fetches all sections for a board within a date range.
+func GetBoardSectionTimeline(boardID uint, days int) ([]SectionTimelineNode, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 90 {
+		days = 90
+	}
+	var nodes []SectionTimelineNode
+	err := database.DB.Raw(`
+		SELECT ds.id, ds.report_id, bdr.period_date, ds.cluster_label,
+		       COALESCE(ds.status, 'emerging') AS status,
+		       ds.article_count,
+		       (SELECT COUNT(*) FROM daily_report_threads t WHERE t.section_id = ds.id) AS thread_count,
+		       ds.prev_section_id
+		FROM daily_report_sections ds
+		JOIN board_daily_reports bdr ON bdr.id = ds.report_id
+		WHERE bdr.semantic_board_id = ?
+		  AND bdr.period_date >= CURRENT_DATE - ? * INTERVAL '1 day'
+		  AND bdr.status = 'completed'
+		ORDER BY bdr.period_date DESC, ds.id ASC
+	`, boardID, days).Scan(&nodes).Error
+	if err != nil {
+		return nil, fmt.Errorf("get board section timeline: %w", err)
+	}
+
+	// Derive ending status: if a section is not pointed to by any other section
+	// and it's not on the latest date, mark it as ending.
+	if len(nodes) > 0 {
+		latestDate := nodes[0].PeriodDate // first node is latest (DESC order)
+		pointedIDs := make(map[uint]bool)
+		for _, n := range nodes {
+			if n.PrevSectionID != nil {
+				pointedIDs[*n.PrevSectionID] = true
+			}
+		}
+		for i := range nodes {
+			if nodes[i].Status != "emerging" && nodes[i].Status != "continuing" {
+				continue
+			}
+			if !pointedIDs[nodes[i].ID] && !isSameDay(nodes[i].PeriodDate, latestDate) {
+				nodes[i].Status = "ending"
+			}
+		}
+	}
+
+	return nodes, nil
+}
+
+func isSameDay(a, b time.Time) bool {
+	return a.Year() == b.Year() && a.YearDay() == b.YearDay()
+}
+
+// GetSectionLifecycle fetches the full lifecycle chain for a section using recursive CTE.
+func GetSectionLifecycle(sectionID uint) ([]SectionTimelineNode, error) {
+	var nodes []SectionTimelineNode
+	err := database.DB.Raw(`
+		WITH RECURSIVE chain AS (
+			SELECT ds.id, ds.report_id, bdr.period_date, ds.cluster_label,
+			       COALESCE(ds.status, 'emerging') AS status,
+			       ds.article_count,
+			       (SELECT COUNT(*) FROM daily_report_threads t WHERE t.section_id = ds.id) AS thread_count,
+			       ds.prev_section_id
+			FROM daily_report_sections ds
+			JOIN board_daily_reports bdr ON bdr.id = ds.report_id
+			WHERE ds.id = ?
+
+			UNION ALL
+
+			SELECT parent.id, parent.report_id, bdr.period_date, parent.cluster_label,
+			       COALESCE(parent.status, 'emerging') AS status,
+			       parent.article_count,
+			       (SELECT COUNT(*) FROM daily_report_threads t WHERE t.section_id = parent.id) AS thread_count,
+			       parent.prev_section_id
+			FROM daily_report_sections parent
+			JOIN chain c ON c.prev_section_id = parent.id
+			JOIN board_daily_reports bdr ON bdr.id = parent.report_id
+		)
+		SELECT * FROM chain ORDER BY period_date ASC
+	`, sectionID).Scan(&nodes).Error
+	if err != nil {
+		return nil, fmt.Errorf("get section lifecycle: %w", err)
+	}
+
+	// Find descendants: sections whose prev_section_id points to any chain member
+	if len(nodes) > 0 {
+		chainIDs := make([]uint, len(nodes))
+		for i, n := range nodes {
+			chainIDs[i] = n.ID
+		}
+		var descendants []SectionTimelineNode
+		err = database.DB.Raw(`
+			WITH RECURSIVE kids AS (
+				SELECT ds.id, ds.report_id, bdr.period_date, ds.cluster_label,
+				       COALESCE(ds.status, 'emerging') AS status,
+				       ds.article_count,
+				       (SELECT COUNT(*) FROM daily_report_threads t WHERE t.section_id = ds.id) AS thread_count,
+				       ds.prev_section_id
+				FROM daily_report_sections ds
+				JOIN board_daily_reports bdr ON bdr.id = ds.report_id
+				WHERE ds.prev_section_id = ANY(?)
+
+				UNION ALL
+
+				SELECT child.id, child.report_id, bdr.period_date, child.cluster_label,
+				       COALESCE(child.status, 'emerging') AS status,
+				       child.article_count,
+				       (SELECT COUNT(*) FROM daily_report_threads t WHERE t.section_id = child.id) AS thread_count,
+				       child.prev_section_id
+				FROM daily_report_sections child
+				JOIN kids k ON k.id = child.prev_section_id
+				JOIN board_daily_reports bdr ON bdr.id = child.report_id
+			)
+			SELECT * FROM kids ORDER BY period_date ASC
+		`, chainIDs).Scan(&descendants).Error
+		if err == nil {
+			existing := make(map[uint]bool)
+			for _, n := range nodes {
+				existing[n.ID] = true
+			}
+			for _, d := range descendants {
+				if !existing[d.ID] {
+					nodes = append(nodes, d)
+					existing[d.ID] = true
+			}
+			}
+			sort.Slice(nodes, func(i, j int) bool {
+				return nodes[i].PeriodDate.Before(nodes[j].PeriodDate)
+			})
+		}
+	}
+
+	if nodes == nil {
+		nodes = []SectionTimelineNode{}
 	}
 	return nodes, nil
 }
