@@ -33,6 +33,7 @@ type SemanticBoardUpgradeConfig struct {
 	CoTagTopN                int
 	CoTagDedupeSimThreshold  float64
 	CoTagHardLimit           int
+	ClusterMethod            string
 }
 
 type SemanticBoardUpgradeCandidate struct {
@@ -246,81 +247,11 @@ func (s *SemanticBoardUpgradeService) clusterCandidates(ctx context.Context, can
 		return nil, err
 	}
 
-	// Pass 1: Greedy initial assignment (produces initial clusters with running-mean centroids)
-	clusters := make([]SemanticBoardUpgradeCluster, 0, len(candidates))
-	for _, candidate := range candidates {
-		matched := false
-		for i := range clusters {
-			if candidateFitsCluster(candidate, &clusters[i], config.ClusterDistanceThreshold) {
-				addCandidateToCluster(candidate, &clusters[i])
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			clusters = append(clusters, SemanticBoardUpgradeCluster{
-				Candidates: []SemanticBoardUpgradeCandidate{candidate},
-				Centroid:   candidate.Embedding,
-			})
-		}
-	}
-
-	// Pass 2: Reassign candidates to nearest stable centroid to correct greedy drift.
-	// The running-mean centroid from Pass 1 drifts as members are absorbed, causing
-	// the first cluster to over-accumulate. We recompute stable centroids from all
-	// members, then reassign each candidate to its truly nearest cluster.
-	if len(clusters) > 1 {
-		// Compute stable centroids from Pass 1 results
-		stableCentroids := make([][]float64, len(clusters))
-		for i, cl := range clusters {
-			stableCentroids[i] = computeStableCentroid(cl.Candidates)
-		}
-
-		// Reassign each candidate to nearest stable centroid
-		newClusters := make([]SemanticBoardUpgradeCluster, 0, len(clusters))
-		for _, candidate := range candidates {
-			bestIdx := -1
-			bestDist := config.ClusterDistanceThreshold + 1 // start above threshold
-			for i := range stableCentroids {
-				if len(stableCentroids[i]) == 0 {
-					continue
-				}
-				dist := semanticBoardUpgradeDistance(candidate.Embedding, stableCentroids[i])
-				if dist <= config.ClusterDistanceThreshold && dist < bestDist {
-					bestDist = dist
-					bestIdx = i
-				}
-			}
-			if bestIdx >= 0 {
-				// Find or create the target cluster in newClusters
-				found := false
-				for j := range newClusters {
-					if newClusters[j].origIdx == bestIdx {
-						newClusters[j].Candidates = append(newClusters[j].Candidates, candidate)
-						found = true
-						break
-					}
-			}
-				if !found {
-					newClusters = append(newClusters, SemanticBoardUpgradeCluster{
-						Candidates: []SemanticBoardUpgradeCandidate{candidate},
-						origIdx:    bestIdx,
-					})
-				}
-			} else {
-				// Candidate is too far from all centroids — forms its own cluster
-				newClusters = append(newClusters, SemanticBoardUpgradeCluster{
-					Candidates: []SemanticBoardUpgradeCandidate{candidate},
-					origIdx:    -1,
-				})
-			}
-		}
-
-		// Recompute final centroids
-		for i := range newClusters {
-			newClusters[i].Centroid = computeStableCentroid(newClusters[i].Candidates)
-		}
-		clusters = newClusters
+	var clusters []SemanticBoardUpgradeCluster
+	if config.ClusterMethod == "average_link" {
+		clusters = clusterAverageLink(candidates, config.ClusterDistanceThreshold)
+	} else {
+		clusters = clusterCentroid(candidates, config.ClusterDistanceThreshold)
 	}
 
 	// Compute board affinities for each cluster
@@ -474,6 +405,7 @@ func (s *SemanticBoardUpgradeService) LoadUpgradeConfig(ctx context.Context) Sem
 		CoTagTopN:                20,
 		CoTagDedupeSimThreshold:  0.85,
 		CoTagHardLimit:           15,
+		ClusterMethod:            "average_link",
 	}
 	var settings []models.AISettings
 	if err := s.db.WithContext(ctx).Where("key IN ?", []string{
@@ -483,6 +415,7 @@ func (s *SemanticBoardUpgradeService) LoadUpgradeConfig(ctx context.Context) Sem
 		"semantic_board_upgrade_cotag_top_n",
 		"semantic_board_upgrade_cotag_dedupe_sim_threshold",
 		"semantic_board_upgrade_cotag_hard_limit",
+		"semantic_board_upgrade_cluster_method",
 	}).Find(&settings).Error; err != nil {
 		return config
 	}
@@ -500,9 +433,129 @@ func (s *SemanticBoardUpgradeService) LoadUpgradeConfig(ctx context.Context) Sem
 			config.CoTagDedupeSimThreshold = parseSemanticBoardUpgradeFloat(setting.Value, config.CoTagDedupeSimThreshold)
 		case "semantic_board_upgrade_cotag_hard_limit":
 			config.CoTagHardLimit = parseSemanticBoardUpgradeInt(setting.Value, config.CoTagHardLimit)
+		case "semantic_board_upgrade_cluster_method":
+			if v := strings.TrimSpace(setting.Value); v == "average_link" || v == "centroid" {
+				config.ClusterMethod = v
+			}
 		}
 	}
 	return config
+}
+
+func clusterCentroid(candidates []SemanticBoardUpgradeCandidate, threshold float64) []SemanticBoardUpgradeCluster {
+	// Pass 1: Greedy initial assignment (produces initial clusters with running-mean centroids)
+	clusters := make([]SemanticBoardUpgradeCluster, 0, len(candidates))
+	for _, candidate := range candidates {
+		matched := false
+		for i := range clusters {
+			if candidateFitsCluster(candidate, &clusters[i], threshold) {
+				addCandidateToCluster(candidate, &clusters[i])
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			clusters = append(clusters, SemanticBoardUpgradeCluster{
+				Candidates: []SemanticBoardUpgradeCandidate{candidate},
+				Centroid:   candidate.Embedding,
+			})
+		}
+	}
+
+	// Pass 2: Reassign candidates to nearest stable centroid to correct greedy drift.
+	if len(clusters) > 1 {
+		stableCentroids := make([][]float64, len(clusters))
+		for i, cl := range clusters {
+			stableCentroids[i] = computeStableCentroid(cl.Candidates)
+		}
+
+		newClusters := make([]SemanticBoardUpgradeCluster, 0, len(clusters))
+		for _, candidate := range candidates {
+			bestIdx := -1
+			bestDist := threshold + 1
+			for i := range stableCentroids {
+				if len(stableCentroids[i]) == 0 {
+					continue
+				}
+				dist := semanticBoardUpgradeDistance(candidate.Embedding, stableCentroids[i])
+				if dist <= threshold && dist < bestDist {
+					bestDist = dist
+					bestIdx = i
+				}
+			}
+			if bestIdx >= 0 {
+				found := false
+				for j := range newClusters {
+					if newClusters[j].origIdx == bestIdx {
+						newClusters[j].Candidates = append(newClusters[j].Candidates, candidate)
+						found = true
+						break
+					}
+			}
+				if !found {
+					newClusters = append(newClusters, SemanticBoardUpgradeCluster{
+						Candidates: []SemanticBoardUpgradeCandidate{candidate},
+						origIdx:    bestIdx,
+					})
+				}
+			} else {
+				newClusters = append(newClusters, SemanticBoardUpgradeCluster{
+					Candidates: []SemanticBoardUpgradeCandidate{candidate},
+					origIdx:    -1,
+				})
+			}
+		}
+
+		for i := range newClusters {
+			newClusters[i].Centroid = computeStableCentroid(newClusters[i].Candidates)
+		}
+		clusters = newClusters
+	}
+	return clusters
+}
+
+func clusterAverageLink(candidates []SemanticBoardUpgradeCandidate, threshold float64) []SemanticBoardUpgradeCluster {
+	clusters := make([]SemanticBoardUpgradeCluster, 0, len(candidates))
+	for _, candidate := range candidates {
+		bestIdx := -1
+		bestAvgDist := threshold + 1
+		for i := range clusters {
+			fits, avgDist := candidateFitsClusterAverageLink(candidate, &clusters[i], threshold)
+			if fits && avgDist < bestAvgDist {
+				bestAvgDist = avgDist
+				bestIdx = i
+			}
+		}
+		if bestIdx >= 0 {
+			clusters[bestIdx].Candidates = append(clusters[bestIdx].Candidates, candidate)
+		} else {
+			clusters = append(clusters, SemanticBoardUpgradeCluster{
+				Candidates: []SemanticBoardUpgradeCandidate{candidate},
+			})
+		}
+	}
+	// Compute centroids for each cluster (for display/DTO, not used in clustering)
+	for i := range clusters {
+		clusters[i].Centroid = computeStableCentroid(clusters[i].Candidates)
+	}
+	return clusters
+}
+
+func candidateFitsClusterAverageLink(candidate SemanticBoardUpgradeCandidate, cluster *SemanticBoardUpgradeCluster, threshold float64) (bool, float64) {
+	if len(cluster.Candidates) == 0 {
+		return false, 1
+	}
+	totalDist := 0.0
+	hasConnected := false
+	for _, member := range cluster.Candidates {
+		dist := semanticBoardUpgradeDistance(candidate.Embedding, member.Embedding)
+		totalDist += dist
+		if dist <= threshold {
+			hasConnected = true
+		}
+	}
+	avgDist := totalDist / float64(len(cluster.Candidates))
+	return hasConnected && avgDist <= threshold, avgDist
 }
 
 func candidateFitsCluster(candidate SemanticBoardUpgradeCandidate, cluster *SemanticBoardUpgradeCluster, threshold float64) bool {

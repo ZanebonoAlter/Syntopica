@@ -247,10 +247,10 @@ Tag 入库后，`semantic_board_matching.go` 执行 Tag → SemanticBoard 匹配
 `semantic_board_upgrade.go` 实现两阶段升级：
 
 1. 收集 ref_count ≥ 阈值的候选辅助标签
-2. embedding 预聚类（cosine 距离 < 0.7）
+2. embedding 预聚类（average-link greedy，默认 cosine 距离阈值 0.35；可通过 `cluster_method` 配置切换回 centroid 模式）
 3. 每簇补充 co-tag 事件上下文
-4. LLM 判断：create_new / merge_into_existing / skip
-5. 用户确认执行
+4. LLM 判断：create_new / skip
+5. 用户确认执行（支持前端 merge_into_existing 操作）
 
 #### 回填队列
 

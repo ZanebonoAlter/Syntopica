@@ -797,6 +797,10 @@ HNSW 索引：`idx_topic_tag_embeddings_embedding USING hnsw (embedding vector_c
 
 ## 更新日志
 
+### 2026-05-30
+
+- ai_settings 新增 `semantic_board_upgrade_cluster_method` 配置（`average_link` / `centroid`，默认 `average_link`）
+
 ### 2026-05-22
 
 - 语义标签/板块体系重构：移除 hierarchy、board_concepts、topic_tag_relations 相关表定义

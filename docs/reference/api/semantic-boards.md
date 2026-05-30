@@ -217,7 +217,8 @@ Response `data`：
   ],
   "config": {
     "semantic_board_upgrade_ref_count_threshold": 5,
-    "semantic_board_upgrade_cluster_distance_threshold": 0.7,
+    "semantic_board_upgrade_cluster_distance_threshold": 0.35,
+    "semantic_board_upgrade_cluster_method": "average_link",
     "semantic_board_upgrade_cotag_window_days": 30,
     "semantic_board_upgrade_cotag_top_n": 20,
     "semantic_board_upgrade_cotag_dedupe_sim_threshold": 0.85,

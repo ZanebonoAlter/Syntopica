@@ -117,6 +117,7 @@ export interface MatchingConfig {
   semantic_board_upgrade_cotag_top_n: number
   semantic_board_upgrade_cotag_dedupe_sim_threshold: number
   semantic_board_upgrade_cotag_hard_limit: number
+  semantic_board_upgrade_cluster_method: string
 }
 
 export interface SuggestedAuxiliaryLabel extends AuxiliaryLabelItem {

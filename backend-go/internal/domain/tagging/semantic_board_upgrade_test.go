@@ -233,6 +233,7 @@ func TestClusterCandidatesPass2Reassignment(t *testing.T) {
 
 	config := service.LoadUpgradeConfig(context.Background())
 	config.ClusterDistanceThreshold = 0.25 // tight threshold for clear separation
+	config.ClusterMethod = "centroid"
 
 	clusters, err := service.clusterCandidates(context.Background(), candidates, config)
 
@@ -301,6 +302,7 @@ func TestClusterCandidatesPass2SplittingPreventsGiantFirstCluster(t *testing.T) 
 
 	config := service.LoadUpgradeConfig(context.Background())
 	config.ClusterDistanceThreshold = 0.20
+	config.ClusterMethod = "centroid"
 
 	clusters, err := service.clusterCandidates(context.Background(), candidates, config)
 	require.NoError(t, err)
@@ -321,6 +323,118 @@ func TestClusterCandidatesPass2SplittingPreventsGiantFirstCluster(t *testing.T) 
 		totalCandidates += len(c.Candidates)
 	}
 	require.Equal(t, 5, totalCandidates, "all 5 candidates must be accounted for")
+}
+
+func TestClusterCandidatesAverageLinkBasic(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	candidateA := createUpgradeLabel(t, db, "OpenAI", "openai", "auxiliary", "active", 5, []float64{1, 0, 0})
+	candidateB := createUpgradeLabel(t, db, "GPT", "gpt", "auxiliary", "active", 5, []float64{0.95, 0.3122498999, 0})
+	candidateC := createUpgradeLabel(t, db, "Battery", "battery", "auxiliary", "active", 5, []float64{0, 1, 0})
+	service := NewSemanticBoardUpgradeService(db, nil, nil)
+	candidates := []SemanticBoardUpgradeCandidate{
+		{ID: candidateA.ID, Label: "OpenAI", RefCount: 5, Embedding: []float64{1, 0, 0}},
+		{ID: candidateB.ID, Label: "GPT", RefCount: 5, Embedding: []float64{0.95, 0.3122498999, 0}},
+		{ID: candidateC.ID, Label: "Battery", RefCount: 5, Embedding: []float64{0, 1, 0}},
+	}
+	config := service.LoadUpgradeConfig(context.Background())
+	config.ClusterMethod = "average_link"
+
+	clusters, err := service.clusterCandidates(context.Background(), candidates, config)
+	require.NoError(t, err)
+	require.Len(t, clusters, 2)
+
+	// Find {A,B} cluster
+	var abCluster *SemanticBoardUpgradeCluster
+	for i := range clusters {
+		for _, c := range clusters[i].Candidates {
+			if c.ID == candidateA.ID {
+				abCluster = &clusters[i]
+				break
+			}
+		}
+	}
+	require.NotNil(t, abCluster)
+	require.Len(t, abCluster.Candidates, 2)
+	abIDs := upgradeCandidateIDs(abCluster.Candidates)
+	require.Contains(t, abIDs, candidateA.ID)
+	require.Contains(t, abIDs, candidateB.ID)
+
+	// Verify C is alone
+	var cCluster *SemanticBoardUpgradeCluster
+	for i := range clusters {
+		for _, c := range clusters[i].Candidates {
+			if c.ID == candidateC.ID {
+				cCluster = &clusters[i]
+				break
+			}
+		}
+	}
+	require.NotNil(t, cCluster)
+	require.Len(t, cCluster.Candidates, 1)
+}
+
+func TestClusterCandidatesAverageLinkNoGiantCluster(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	// Chain of 5 embeddings: each close to neighbor, endpoints far apart
+	embA := []float64{1, 0, 0}
+	embB := []float64{0.8, 0.6, 0}
+	embC := []float64{0.5, 0.87, 0}
+	embD := []float64{0.2, 0.98, 0}
+	embE := []float64{-0.1, 0.995, 0}
+
+	candidateA := createUpgradeLabel(t, db, "A", "a", "auxiliary", "active", 5, embA)
+	candidateB := createUpgradeLabel(t, db, "B", "b", "auxiliary", "active", 5, embB)
+	candidateC := createUpgradeLabel(t, db, "C", "c", "auxiliary", "active", 5, embC)
+	candidateD := createUpgradeLabel(t, db, "D", "d", "auxiliary", "active", 5, embD)
+	candidateE := createUpgradeLabel(t, db, "E", "e", "auxiliary", "active", 5, embE)
+
+	service := NewSemanticBoardUpgradeService(db, nil, nil)
+	candidates := []SemanticBoardUpgradeCandidate{
+		{ID: candidateA.ID, Label: "A", RefCount: 5, Embedding: embA},
+		{ID: candidateB.ID, Label: "B", RefCount: 5, Embedding: embB},
+		{ID: candidateC.ID, Label: "C", RefCount: 5, Embedding: embC},
+		{ID: candidateD.ID, Label: "D", RefCount: 5, Embedding: embD},
+		{ID: candidateE.ID, Label: "E", RefCount: 5, Embedding: embE},
+	}
+	config := service.LoadUpgradeConfig(context.Background())
+	config.ClusterMethod = "average_link"
+	config.ClusterDistanceThreshold = 0.20
+
+	clusters, err := service.clusterCandidates(context.Background(), candidates, config)
+	require.NoError(t, err)
+
+	maxSize := 0
+	for _, c := range clusters {
+		if len(c.Candidates) > maxSize {
+			maxSize = len(c.Candidates)
+		}
+	}
+	require.Less(t, maxSize, 5, "no single cluster should contain all 5 candidates")
+
+	totalCandidates := 0
+	for _, c := range clusters {
+		totalCandidates += len(c.Candidates)
+	}
+	require.Equal(t, 5, totalCandidates)
+}
+
+func TestClusterCandidatesCentroidFallback(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	candidateA := createUpgradeLabel(t, db, "OpenAI", "openai", "auxiliary", "active", 5, []float64{1, 0, 0})
+	candidateB := createUpgradeLabel(t, db, "GPT", "gpt", "auxiliary", "active", 5, []float64{0.95, 0.3122498999, 0})
+	candidateC := createUpgradeLabel(t, db, "Battery", "battery", "auxiliary", "active", 5, []float64{0, 1, 0})
+	service := NewSemanticBoardUpgradeService(db, nil, nil)
+	candidates := []SemanticBoardUpgradeCandidate{
+		{ID: candidateA.ID, Label: "OpenAI", RefCount: 5, Embedding: []float64{1, 0, 0}},
+		{ID: candidateB.ID, Label: "GPT", RefCount: 5, Embedding: []float64{0.95, 0.3122498999, 0}},
+		{ID: candidateC.ID, Label: "Battery", RefCount: 5, Embedding: []float64{0, 1, 0}},
+	}
+	config := service.LoadUpgradeConfig(context.Background())
+	config.ClusterMethod = "centroid"
+
+	clusters, err := service.clusterCandidates(context.Background(), candidates, config)
+	require.NoError(t, err)
+	require.Len(t, clusters, 2)
 }
 
 func TestSemanticBoardUpgradeLoadsCoTagEventContext(t *testing.T) {

@@ -6,13 +6,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// First-batch Postgres bootstrap keeps the current payload shape intact while
-// stabilizing the database cutover, and JSON-ish payload_json / metadata fields remain TEXT for now.
+// bootstrapPostgresSchema runs baseline adjustments for the first-time Postgres setup.
+// GORM AutoMigrate handles table/column creation automatically on every startup,
+// so this only handles adjustments that AutoMigrate cannot do (column type changes, indexes, FK cascades).
 func bootstrapPostgresSchema(db *gorm.DB) error {
-	if err := autoMigrateModels(db); err != nil {
-		return fmt.Errorf("auto migrate postgres schema: %w", err)
-	}
-
 	if db.Name() == "postgres" {
 		for _, statement := range postgresColumnAdjustmentStatements() {
 			if err := db.Exec(statement).Error; err != nil {

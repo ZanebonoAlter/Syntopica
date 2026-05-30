@@ -15,6 +15,56 @@ type Migration struct {
 	Up          func(db *gorm.DB) error
 }
 
+// extraModels holds domain-specific models registered via RegisterModels.
+// This avoids circular imports — domain packages (e.g. daily_report) register
+// their models via init(), and migrator picks them up during startup.
+var extraModels []any
+
+// RegisterModels registers additional GORM models for AutoMigrate.
+// Call from domain package init() functions.
+func RegisterModels(models ...any) {
+	extraModels = append(extraModels, models...)
+}
+
+// RunAutoMigrate syncs all model tables via GORM AutoMigrate.
+// Runs on every startup — adds missing tables/columns, never drops or alters existing ones.
+func RunAutoMigrate(db *gorm.DB) error {
+	allModels := []any{
+		&models.Category{},
+		&models.Feed{},
+		&models.Article{},
+		&models.TopicTag{},
+		&models.SemanticLabel{},
+		&models.TopicTagSemanticLabel{},
+		&models.TopicTagBoardLabel{},
+		&models.BoardComposition{},
+		&models.TopicTagEmbedding{},
+		&models.TopicTagAnalysis{},
+		&models.TopicAnalysisCursor{},
+		&models.ArticleTopicTag{},
+		&models.TopicTagRelation{},
+		&models.SchedulerTask{},
+		&models.AISettings{},
+		&models.EmbeddingConfig{},
+		&models.EmbeddingQueue{},
+		&models.MergeReembeddingQueue{},
+		&models.AIProvider{},
+		&models.AIRoute{},
+		&models.AIRouteProvider{},
+		&models.AICallLog{},
+		&models.ReadingBehavior{},
+		&models.UserPreference{},
+		&models.FirecrawlJob{},
+		&models.TagJob{},
+		&models.NarrativeSummary{},
+		&models.NarrativeBoard{},
+	}
+	allModels = append(allModels, extraModels...)
+	return db.AutoMigrate(allModels...)
+}
+
+// RunMigrations executes versioned migrations for operations that GORM AutoMigrate
+// cannot handle: extensions, indexes, triggers, data migrations, column drops.
 func RunMigrations(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("database connection is required")
@@ -92,38 +142,7 @@ func loadAppliedMigrationVersions(db *gorm.DB) (map[string]bool, error) {
 	return applied, nil
 }
 
-// autoMigrateModels uses GORM AutoMigrate to sync all model tables.
-// CAVEAT: This only runs inside bootstrap migration 20260403_0002 (first-time setup).
-// For any column additions AFTER the initial bootstrap, you MUST add a versioned
-// migration in postgres_migrations.go — AutoMigrate will NOT be re-run on an
-// existing database, so new fields will silently be missing until a migration adds them.
-// (This was the old SQLite-era approach; PostgreSQL relies on explicit migrations.)
+// Deprecated: use RunAutoMigrate instead.
 func autoMigrateModels(db *gorm.DB) error {
-	return db.AutoMigrate(
-		&models.Category{},
-		&models.Feed{},
-		&models.Article{},
-		&models.TopicTag{},
-		&models.SemanticLabel{},
-		&models.TopicTagSemanticLabel{},
-		&models.TopicTagBoardLabel{},
-		&models.BoardComposition{},
-		&models.TopicTagEmbedding{},
-		&models.TopicTagAnalysis{},
-		&models.TopicAnalysisCursor{},
-		&models.ArticleTopicTag{},
-		&models.SchedulerTask{},
-		&models.AISettings{},
-		&models.AIProvider{},
-		&models.AIRoute{},
-		&models.AIRouteProvider{},
-		&models.AICallLog{},
-		&models.ReadingBehavior{},
-		&models.UserPreference{},
-		&models.FirecrawlJob{},
-		&models.TagJob{},
-		&models.NarrativeSummary{},
-		&models.NarrativeBoard{},
-
-	)
+	return RunAutoMigrate(db)
 }

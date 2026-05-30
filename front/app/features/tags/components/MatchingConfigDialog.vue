@@ -232,6 +232,14 @@ function handleSave() {
                 <span class="mc-hint">每个簇最终送 LLM 的事件数量上限，兜底防止 prompt 过长</span>
                 <input v-model.number="form.semantic_board_upgrade_cotag_hard_limit" type="number" min="1" max="50" class="mc-input" />
               </label>
+              <label class="mc-field">
+                <span class="mc-label">聚类算法</span>
+                <span class="mc-hint">average_link: 候选需与簇内真实成员 pairwise 接近（推荐，消除枢纽效应）；centroid: 质心阈值聚类（旧算法，仅回退用）</span>
+                <select v-model="form.semantic_board_upgrade_cluster_method" class="mc-input">
+                  <option value="average_link">average_link（推荐）</option>
+                  <option value="centroid">centroid（旧算法）</option>
+                </select>
+              </label>
             </div>
           </div>
         </div>
