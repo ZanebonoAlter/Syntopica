@@ -1,0 +1,56 @@
+{
+  "workflow": {
+    "phases": {
+      "brainstorm": "pending",
+      "plan": "pending",
+      "execute": "active",
+      "verify": "pending",
+      "review": "pending",
+      "finish": "pending"
+    },
+    "currentPhase": "execute",
+    "artifacts": {
+      "brainstorm": null,
+      "plan": null,
+      "execute": null,
+      "verify": null,
+      "review": null,
+      "finish": null
+    },
+    "prompted": {
+      "brainstorm": false,
+      "plan": false,
+      "execute": false,
+      "verify": false,
+      "review": false,
+      "finish": false
+    }
+  },
+  "tdd": {
+    "phase": "refactor",
+    "testFiles": [
+      "D:/project/my-robot/backend-go/internal/domain/models/semantic_label_test.go",
+      "D:/project/my-robot/backend-go/internal/platform/database/db_test.go"
+    ],
+    "sourceFiles": [
+      "D:/project/my-robot/backend-go/internal/domain/models/semantic_label.go",
+      "D:/project/my-robot/backend-go/internal/platform/database/postgres_migrations.go",
+      "D:/project/my-robot/backend-go/internal/domain/models/topic_graph.go",
+      "D:/project/my-robot/backend-go/internal/domain/tagging/auxiliary_label_service.go",
+      "D:\\project\\my-robot\\backend-go\\internal\\domain\\tagging\\auxiliary_label_service.go",
+      "D:\\project\\my-robot\\backend-go\\cmd\\server\\main.go",
+      "D:/project/my-robot/backend-go/internal/domain/tagging/semantic_board_handler.go",
+      "D:/project/my-robot/backend-go/internal/domain/feed/handler.go"
+    ],
+    "redVerificationPending": false
+  },
+  "debug": {
+    "active": false,
+    "investigated": true,
+    "fixAttempts": 0
+  },
+  "verification": {
+    "verified": false,
+    "verificationWaived": false
+  }
+}

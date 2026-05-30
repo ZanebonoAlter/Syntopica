@@ -1,0 +1,19 @@
+.feed-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.feed-icon svg {
+  display: block;
+}
+
+.feed-icon.fallback {
+  background: linear-gradient(135deg, #3b6b87 0%, #25465c 100%);
+  color: white;
+}
+
+.feed-icon.fallback span {
+  font-size: 0.875rem;
+  font-weight: 600;
+}

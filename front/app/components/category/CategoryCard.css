@@ -1,0 +1,36 @@
+.category-card {
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.category-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(26, 26, 26, 0.1);
+}
+
+.category-card .icon-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.75rem;
+  box-shadow: 0 2px 8px rgba(26, 26, 26, 0.08);
+}
+
+.category-card .feed-count {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  background-color: rgba(26, 26, 26, 0.05);
+  color: var(--color-ink-dark);
+}
+
+.category-card .description {
+  font-size: 0.875rem;
+  color: var(--color-ink-medium);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

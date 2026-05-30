@@ -1,0 +1,9 @@
+.git
+.gitignore
+node_modules/
+.nuxt/
+.output/
+dist/
+coverage/
+playwright-report/
+test-results/

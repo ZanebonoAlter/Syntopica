@@ -1,0 +1,52 @@
+version: "2"
+
+linters:
+  enable:
+    - staticcheck
+    - revive
+    - gosec
+    - errcheck
+    - gocritic
+    - unused
+    - govet
+    - ineffassign
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+
+    errcheck:
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (*github.com/gin-gonic/gin.Context).JSON
+
+run:
+  tests: false
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+        - staticcheck
+        - gocritic
+        - govet
+        - revive
+        - unused
+        - ineffassign
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    rules:
+      - path: _test\.go
+        formatters:
+          - gofmt
