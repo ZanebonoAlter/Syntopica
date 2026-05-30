@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { Icon } from '@iconify/vue'
-import { useDailyReportsApi, type ThreadLineageNode } from '~/api/dailyReports'
+import { useDailyReportsApi, type SectionTimelineNode } from '~/api/dailyReports'
 
 const props = defineProps<{ boardId: number }>()
 
-const { getBoardThreadTimeline } = useDailyReportsApi()
+const { getBoardSectionTimeline } = useDailyReportsApi()
 
 const days = ref(14)
 const loading = ref(false)
-const threads = ref<ThreadLineageNode[]>([])
-const selectedNode = ref<ThreadLineageNode | null>(null)
+const sections = ref<SectionTimelineNode[]>([])
+const selectedNode = ref<SectionTimelineNode | null>(null)
 
 // --- Date columns for the range ---
 
@@ -41,49 +41,41 @@ function formatDateShort(dateStr: string): string {
 
 interface LineageChain {
   rootId: number
-  title: string
-  nodes: ThreadLineageNode[]
+  title: string        // section 的 cluster_label
+  nodes: SectionTimelineNode[]
 }
 
-function buildChains(flatNodes: ThreadLineageNode[]): LineageChain[] {
+function buildChains(flatNodes: SectionTimelineNode[]): LineageChain[] {
   if (flatNodes.length === 0) return []
 
-  const nodeMap = new Map<number, ThreadLineageNode>()
+  const nodeMap = new Map<number, SectionTimelineNode>()
   for (const n of flatNodes) {
     nodeMap.set(n.id, n)
   }
 
   // Build parent -> children map
-  const childrenMap = new Map<number, ThreadLineageNode[]>()
+  const childrenMap = new Map<number, SectionTimelineNode[]>()
   for (const n of flatNodes) {
-    if (n.prev_thread_id != null) {
-      const list = childrenMap.get(n.prev_thread_id) || []
+    if (n.prev_section_id != null) {
+      const list = childrenMap.get(n.prev_section_id) || []
       list.push(n)
-      childrenMap.set(n.prev_thread_id, list)
+      childrenMap.set(n.prev_section_id, list)
     }
   }
 
-  // Find roots: nodes whose prev_thread_id is null OR whose prev_thread_id is not in nodeMap
+  // Find roots: nodes whose prev_section_id is null OR whose prev_section_id is not in nodeMap
   const visited = new Set<number>()
   const chains: LineageChain[] = []
-
-  // Process nodes with prev_thread_id first to find those referenced by others
-  const referencedAsPrev = new Set<number>()
-  for (const n of flatNodes) {
-    if (n.prev_thread_id != null) {
-      referencedAsPrev.add(n.prev_thread_id)
-    }
-  }
 
   // Build chains starting from roots
   for (const n of flatNodes) {
     if (visited.has(n.id)) continue
 
-    const isRoot = n.prev_thread_id == null || !nodeMap.has(n.prev_thread_id)
+    const isRoot = n.prev_section_id == null || !nodeMap.has(n.prev_section_id)
     if (!isRoot) continue
 
     // BFS/DFS from this root
-    const chainNodes: ThreadLineageNode[] = []
+    const chainNodes: SectionTimelineNode[] = []
     const queue = [n]
     while (queue.length > 0) {
       const current = queue.shift()!
@@ -99,7 +91,7 @@ function buildChains(flatNodes: ThreadLineageNode[]): LineageChain[] {
 
     chains.push({
       rootId: n.id,
-      title: chainNodes[0]!.title,
+      title: chainNodes[0]!.cluster_label,
       nodes: chainNodes,
     })
   }
@@ -110,7 +102,7 @@ function buildChains(flatNodes: ThreadLineageNode[]): LineageChain[] {
     visited.add(n.id)
     chains.push({
       rootId: n.id,
-      title: n.title,
+      title: n.cluster_label,
       nodes: [n],
     })
   }
@@ -124,23 +116,19 @@ function buildChains(flatNodes: ThreadLineageNode[]): LineageChain[] {
   return chains
 }
 
-const chains = computed(() => buildChains(threads.value))
+const chains = computed(() => buildChains(sections.value))
 
 // --- Status styling ---
 
 const statusColors: Record<string, string> = {
   emerging: 'bg-green-500',
   continuing: 'bg-blue-500',
-  splitting: 'bg-orange-500',
-  merging: 'bg-purple-500',
   ending: 'bg-gray-500',
 }
 
 const statusLabels: Record<string, string> = {
   emerging: '新兴',
   continuing: '持续',
-  splitting: '分裂',
-  merging: '合并',
   ending: '结束',
 }
 
@@ -150,7 +138,7 @@ function getColumnIndex(dateStr: string): number {
   return dateColumns.value.indexOf(dateStr)
 }
 
-function nodeStyle(node: ThreadLineageNode, colWidth: number = 36) {
+function nodeStyle(node: SectionTimelineNode, colWidth: number = 36) {
   const col = getColumnIndex(node.period_date)
   if (col < 0) return { display: 'none' }
   return {
@@ -178,7 +166,7 @@ function connectorSegments(chain: LineageChain, colWidth: number = 36): Array<{ 
   return segments
 }
 
-function selectNode(node: ThreadLineageNode) {
+function selectNode(node: SectionTimelineNode) {
   if (selectedNode.value?.id === node.id) {
     selectedNode.value = null
   } else {
@@ -192,11 +180,11 @@ async function loadData() {
   loading.value = true
   selectedNode.value = null
   try {
-    const res = await getBoardThreadTimeline(props.boardId, days.value)
+    const res = await getBoardSectionTimeline(props.boardId, days.value)
     if (res.success && res.data) {
-      threads.value = res.data.threads || []
+      sections.value = res.data.sections || []
     } else {
-      threads.value = []
+      sections.value = []
     }
   } finally {
     loading.value = false
@@ -216,7 +204,7 @@ watch(
     <div class="btb-controls">
       <div class="btb-controls-left">
         <Icon icon="mdi:source-branch" width="15" class="text-white/50" />
-        <span class="btb-controls-title">线程时间线</span>
+        <span class="btb-controls-title">话题总览</span>
       </div>
       <div class="btb-days-toggle">
         <button
@@ -239,7 +227,7 @@ watch(
     <!-- Empty -->
     <div v-else-if="chains.length === 0" class="btb-empty">
       <Icon icon="mdi:source-branch" width="28" class="text-white/15" />
-      <p>暂无线程数据</p>
+      <p>暂无话题数据</p>
     </div>
 
     <!-- Gantt chart -->
@@ -293,7 +281,7 @@ watch(
               class="btb-node"
               :class="[statusColors[node.status] || 'bg-gray-500', { selected: selectedNode?.id === node.id }]"
               :style="nodeStyle(node)"
-              :title="`${node.title} (${statusLabels[node.status] || node.status})`"
+              :title="`${node.cluster_label} (${statusLabels[node.status] || node.status})`"
               @click="selectNode(node)"
             >
               <span class="btb-node-dot"></span>
@@ -319,11 +307,11 @@ watch(
                 <Icon icon="mdi:close" width="14" />
               </button>
             </div>
-            <div class="btb-popup-title">{{ selectedNode.title }}</div>
-            <div v-if="selectedNode.summary" class="btb-popup-summary">{{ selectedNode.summary }}</div>
+            <div class="btb-popup-title">{{ selectedNode.cluster_label }}</div>
             <div class="btb-popup-meta">
               <span>{{ formatDateShort(selectedNode.period_date) }}</span>
-              <span v-if="selectedNode.cluster_label" class="btb-popup-cluster">{{ selectedNode.cluster_label }}</span>
+              <span>{{ selectedNode.article_count }} 篇</span>
+              <span>{{ selectedNode.thread_count }} 条线索</span>
             </div>
           </div>
         </div>
