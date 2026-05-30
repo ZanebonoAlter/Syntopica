@@ -136,7 +136,7 @@ func postgresMigrations() []Migration {
 			},
 		},
 		{
-			Version:     "20260430_0001_idx",
+			Version:     "20260430_0001",
 			Description: "Add indexes for narrative_boards and narrative_summaries.board_id.",
 			Up: func(db *gorm.DB) error {
 				indexes := []string{
@@ -203,7 +203,7 @@ func postgresMigrations() []Migration {
 
 		// ── Semantic label board indexes + seed ─────────────────────
 		{
-			Version:     "20260521_0001_idx",
+			Version:     "20260521_0001",
 			Description: "Add indexes and seed settings for semantic label board system.",
 			Up: func(db *gorm.DB) error {
 				indexes := []string{
@@ -325,7 +325,7 @@ func postgresMigrations() []Migration {
 
 		// ── Daily report indexes ────────────────────────────────────
 		{
-			Version:     "20260526_0001_idx",
+			Version:     "20260526_0001",
 			Description: "Add indexes for board_daily_reports.",
 			Up: func(db *gorm.DB) error {
 				indexes := []string{
@@ -343,7 +343,7 @@ func postgresMigrations() []Migration {
 
 		// ── Daily report thread indexes + data migration ────────────
 		{
-			Version:     "20260529_0001_idx",
+			Version:     "20260529_0001",
 			Description: "Add indexes for daily_report_threads.",
 			Up: func(db *gorm.DB) error {
 				indexes := []string{
