@@ -39,9 +39,9 @@
 ## 6. 聚类质量诊断与后续修正
 
 - [x] 6.1 使用真实候选数据诊断当前 `centroid + Pass2` 聚类质量：记录最大簇、单标签簇、簇内 pairwise 距离、全局均值 hub 效应、阈值扫描、候选策略对比
-- [ ] 6.2 **后端：新增 ClusterMethod 配置字段**：在 `SemanticBoardUpgradeConfig` 中添加 `ClusterMethod string`（默认 `"average_link"`）；`LoadUpgradeConfig()` 加载新 key `semantic_board_upgrade_cluster_method`；handler 侧更新 `isSemanticBoardConfigKey`（加新 key）、`validateSemanticBoardConfigValue`（只允许 `"average_link"` / `"centroid"`）、`semanticBoardUpgradeConfigToMap`（输出新 key）
-- [ ] 6.3 **后端：实现 average-link greedy 聚类**：新增 `candidateFitsClusterAverageLink()` 函数（连通性约束 + 平均距离约束），修改 `clusterCandidates()` 根据 `config.ClusterMethod` 分支调用旧 centroid 逻辑或新 average-link 逻辑；移除 Pass 2 相关代码（`computeStableCentroid` Pass 2 调用、稳定 centroid 数组、重分配循环）；移除不再需要的 `candidateFitsCluster`、`addCandidateToCluster`、`updateCentroid`（仅当 `ClusterMethod == "centroid"` 时保留旧分支）
-- [ ] 6.4 **数据库：插入新配置行**：在 `ai_settings` 中插入 `semantic_board_upgrade_cluster_method = "average_link"`（默认值），description 标注聚类算法选择
-- [ ] 6.5 **前端：MatchingConfig 接口 + 对话框**：`MatchingConfig` 接口添加 `semantic_board_upgrade_cluster_method: string`；`MatchingConfigDialog.vue` 升级建议区块添加"聚类算法"下拉（`average_link` / `centroid`），含中文说明
-- [ ] 6.6 **测试**：重写现有 centroid 聚类测试为 average-link 版本（`TestClusterCandidatesAverageLink...`），覆盖：最大簇不应超过 30 成员、单簇和多簇场景、连通性约束阻隔不相关标签、board_affinity 计算仍正确；保留 1 个 centroid 模式测试确保回退兼容
-- [ ] 6.7 **文档**：更新 `docs/reference/api/semantic-boards.md` 的配置示例（加 `cluster_method`）；更新 `docs/reference/architecture/backend.md` 聚类说明；更新 `docs/reference/database/DATABASE_FIELDS.md` 配置参数列表
+- [x] 6.2 **后端：新增 ClusterMethod 配置字段**：在 `SemanticBoardUpgradeConfig` 中添加 `ClusterMethod string`（默认 `"average_link"`）；`LoadUpgradeConfig()` 加载新 key `semantic_board_upgrade_cluster_method`；handler 侧更新 `isSemanticBoardConfigKey`（加新 key）、`validateSemanticBoardConfigValue`（只允许 `"average_link"` / `"centroid"`）、`semanticBoardUpgradeConfigToMap`（输出新 key）
+- [x] 6.3 **后端：实现 average-link greedy 聚类**：新增 `candidateFitsClusterAverageLink()` 函数（连通性约束 + 平均距离约束），修改 `clusterCandidates()` 根据 `config.ClusterMethod` 分支调用旧 centroid 逻辑或新 average-link 逻辑；移除 Pass 2 相关代码（`computeStableCentroid` Pass 2 调用、稳定 centroid 数组、重分配循环）；移除不再需要的 `candidateFitsCluster`、`addCandidateToCluster`、`updateCentroid`（仅当 `ClusterMethod == "centroid"` 时保留旧分支）
+- [x] 6.4 **数据库：插入新配置行**：在 `ai_settings` 中插入 `semantic_board_upgrade_cluster_method = "average_link"`（默认值），description 标注聚类算法选择
+- [x] 6.5 **前端：MatchingConfig 接口 + 对话框**：`MatchingConfig` 接口添加 `semantic_board_upgrade_cluster_method: string`；`MatchingConfigDialog.vue` 升级建议区块添加"聚类算法"下拉（`average_link` / `centroid`），含中文说明
+- [x] 6.6 **测试**：重写现有 centroid 聚类测试为 average-link 版本（`TestClusterCandidatesAverageLink...`），覆盖：最大簇不应超过 30 成员、单簇和多簇场景、连通性约束阻隔不相关标签、board_affinity 计算仍正确；保留 1 个 centroid 模式测试确保回退兼容
+- [x] 6.7 **文档**：更新 `docs/reference/api/semantic-boards.md` 的配置示例（加 `cluster_method`）；更新 `docs/reference/architecture/backend.md` 聚类说明；更新 `docs/reference/database/DATABASE_FIELDS.md` 配置参数列表
