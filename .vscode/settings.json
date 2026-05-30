@@ -1,4 +1,0 @@
-{
-    "nuxt.isNuxtApp": false,
-    "css.lint.unknownAtRules": "ignore"
-}
