@@ -6,6 +6,7 @@ import { autoUpdate, offset, shift, flip } from '@floating-ui/dom'
 import { useDailyReportsApi, type DailyReportListItem, type DailyReport, type DailyReportThread } from '~/api/dailyReports'
 import { useArticlesApi } from '~/api/articles'
 import SectionLifecyclePanel from './SectionLifecyclePanel.vue'
+import ThreadLineagePanel from './ThreadLineagePanel.vue'
 import BoardThreadBrowser from './BoardThreadBrowser.vue'
 
 const props = defineProps<{ boardId: number }>()
@@ -105,6 +106,10 @@ let currentOpenThread: DailyReportThread | null = null
 const lifecycleSectionId = ref<number | null>(null)
 const lifecycleVisible = ref(false)
 
+// Thread lineage panel state
+const lineageThreadId = ref<number | null>(null)
+const lineageVisible = ref(false)
+
 // Section expand state
 const expandedSections = ref<Set<number>>(new Set())
 
@@ -164,6 +169,16 @@ function closeSectionLifecycle() {
   lifecycleSectionId.value = null
 }
 
+function openThreadLineage(thread: DailyReportThread) {
+  lineageThreadId.value = thread.id
+  lineageVisible.value = true
+}
+
+function closeThreadLineage() {
+  lineageVisible.value = false
+  lineageThreadId.value = null
+}
+
 function toggleSectionExpand(clusterIndex: number) {
   const next = new Set(expandedSections.value)
   if (next.has(clusterIndex)) {
@@ -186,6 +201,7 @@ function closeNewspaper() {
   showModal.value = false
   closeThreadPopup()
   closeSectionLifecycle()
+  closeThreadLineage()
 }
 
 function prevDay() {
@@ -486,7 +502,10 @@ watch(() => props.boardId, () => {
                           <div class="np-thread-title">{{ thread.title }}</div>
                           <div v-if="thread.summary" class="np-thread-summary">{{ thread.summary }}</div>
                         </div>
-                        <Icon icon="mdi:file-document-multiple-outline" width="14" class="np-thread-articles-icon" @click.stop="openThreadArticles($event, thread)" />
+                        <div class="np-thread-actions">
+                          <Icon icon="mdi:sitemap-outline" width="14" class="np-thread-lineage-icon" title="查看线程血统" @click.stop="openThreadLineage(thread)" />
+                          <Icon icon="mdi:file-document-multiple-outline" width="14" class="np-thread-articles-icon" @click.stop="openThreadArticles($event, thread)" />
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -499,6 +518,12 @@ watch(() => props.boardId, () => {
             :visible="lifecycleVisible"
             @close="closeSectionLifecycle"
             @navigate="navigateToSectionReport"
+          />
+          <ThreadLineagePanel
+            v-if="lineageThreadId !== null"
+            :thread-id="lineageThreadId"
+            :visible="lineageVisible"
+            @close="closeThreadLineage"
           />
           </div>
         </div>
@@ -964,6 +989,23 @@ watch(() => props.boardId, () => {
   color: rgba(0, 0, 0, 0.4);
   line-height: 1.5;
   margin-top: 0.15rem;
+}
+
+.np-thread-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+}
+
+.np-thread-lineage-icon {
+  color: rgba(0, 0, 0, 0.15);
+  margin-top: 0.15rem;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.np-thread-lineage-icon:hover {
+  color: rgba(0, 0, 0, 0.5);
 }
 
 .np-thread-articles-icon {

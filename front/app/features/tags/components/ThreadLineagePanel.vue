@@ -165,16 +165,17 @@ const isStandalone = (nodes: ThreadLineageNode[]): boolean => {
 
 <style scoped>
 .lp-panel {
-  position: absolute;
+  position: fixed;
   top: 0;
   right: 0;
   width: 320px;
-  height: 100%;
+  height: 100vh;
   background: #111827;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
   flex-direction: column;
-  z-index: 10;
+  z-index: 260;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
 }
 
 .lp-header {
