@@ -9,7 +9,7 @@
 
 **BoardDailyReport 字段**：id, semantic_board_id, period_date, title, summary, highlights(JSON), dynamics(TEXT), article_count, event_tag_count, cluster_count, status(generating/done/failed), raw_clusters(JSON), prev_report_id(可为空，指向前一日日报), generation_prompt_version, created_at, updated_at。
 
-**DailyReportSection 字段**：id, report_id, cluster_index, cluster_label, cluster_tag_ids(JSON), threads(JSON), article_count, best_tier INT, avg_score FLOAT8, created_at。
+**DailyReportSection 字段**：id, report_id, cluster_index, cluster_label, cluster_tag_ids(JSON), threads(JSON), article_count, best_tier INT, avg_score FLOAT8, **status VARCHAR(20) DEFAULT 'emerging'**, **prev_section_id UINT NULL**, created_at。`status` 取值为 `emerging` 或 `continuing`，由后端通过 `cluster_tag_ids` Jaccard 相似度匹配前一天 section 推导。`prev_section_id` 指向前一天同一话题的 section。
 
 `highlights` JSON 结构：`[{title: string, reason: string, tag_ids: uint[]}]`，2-3 个重点项。
 
@@ -30,6 +30,10 @@
 #### Scenario: 日报关联昨日报告
 - **WHEN** SemanticBoard #5 在 2026-05-24 有一条已完成日报 (id=42)
 - **THEN** 2026-05-25 的日报记录 SHALL 设置 prev_report_id=42
+
+#### Scenario: Section 生成时推导 status 和 prev_section_id
+- **WHEN** 日报生成器为 2026-05-25 的某个 section 保存到数据库
+- **THEN** 系统 SHALL 在保存前通过 cluster_tag_ids Jaccard 匹配前一天 section，设置 prev_section_id 和 status（emerging/continuing）
 
 ### Requirement: 事件标签去重
 系统 SHALL 在生成日报前对收集到的事件标签进行程序化精确去重，不使用 LLM。去重 SHALL 应用两条规则：(1) 关联文章集合完全相同的标签合并为一个；(2) article_count=1 且关联同一篇文章的标签合并为一个。去重 SHALL 不改变原始标签数据，仅在生成流程中使用去重后的列表。
@@ -158,11 +162,11 @@ prompt version 升级为 "2.0"。
 - **THEN** 该聚类的所有线索 SHALL 标记为 emerging，parent_thread_id 为空
 
 ### Requirement: 日报生成编排流水线
-系统 SHALL 提供 `GenerateDailyReport(ctx, boardID, date)` 编排函数，按顺序执行：收集板内事件标签 → 质量筛选 → 去重 → LLM 分组(带组数限制) → 查询昨日日报 → 并行生成(Call A + C×K) → 连续性匹配 → 组装 BoardDailyReport + DailyReportSection(含 best_tier/avg_score) → 存储。生成 SHALL 通过 goroutine 异步执行。
+系统 SHALL 提供 `GenerateDailyReport(ctx, boardID, date)` 编排函数，按顺序执行：收集板内事件标签 → 质量筛选 → 去重 → LLM 分组(带组数限制) → 查询昨日日报 → 并行生成(Call A + C×K) → 连续性匹配 → **section 生命周期匹配（cluster_tag_ids Jaccard）** → 组装 BoardDailyReport + DailyReportSection(含 best_tier/avg_score/status/prev_section_id) → 存储。生成 SHALL 通过 goroutine 异步执行。
 
 #### Scenario: 完整流水线执行
 - **WHEN** 触发 SemanticBoard #5 在 2026-05-25 的日报生成
-- **THEN** 系统 SHALL 按序执行：收集标签(20个) → 质量筛选(过滤后15个) → 去重(剩12个) → LLM分组(4个聚类) → 查询昨日日报(id=42) → 并行生成(1+4=5个LLM调用) → 连续性匹配 → 组装存储(含best_tier/avg_score) → status="done"
+- **THEN** 系统 SHALL 按序执行：收集标签(20个) → 质量筛选(过滤后15个) → 去重(剩12个) → LLM分组(4个聚类) → 查询昨日日报(id=42) → 并行生成(1+4=5个LLM调用) → 连续性匹配 → section 生命周期匹配 → 组装存储(含best_tier/avg_score/status/prev_section_id) → status="done"
 
 #### Scenario: 生成失败
 - **WHEN** 流水线中任一步骤失败（如 LLM 调用超时）
@@ -234,7 +238,7 @@ prompt version 升级为 "2.0"。
    - 其他动态（Tier 3+）：单列
 4. 每个分区显示区头标签 + 聚类数
 
-**每个聚类卡片**：完整展示所有线索（title + summary + status tag），不截断。线索可点击→弹出相关文章浮窗。
+**每个聚类卡片**：默认折叠状态，显示聚类名称、文章数、section 级状态徽章（emerging=绿/continuing=蓝）、「N 条线索 ▸」文本。点击卡片或「N 条线索」文本 SHALL 展开显示所有线索（title + summary），线索不显示独立状态徽章。点击 section 的 header 区域（名称+状态） SHALL 打开右侧 SectionLifecyclePanel。
 
 **线索文章浮窗**：使用 `@floating-ui/vue`，展示 `related_article_ids` 对应的文章标题列表。首批加载 5 篇，支持"加载更多"。点选文章→emit `openArticle(articleId)`。
 
@@ -248,17 +252,25 @@ prompt version 升级为 "2.0"。
 - **WHEN** 用户点击某日报卡片
 - **THEN** 组件 SHALL 展开长滚动报纸布局：highlights 列表、质量分区（核心/相关/其他）
 
-#### Scenario: 叙事线索 status 颜色
-- **WHEN** 线索 status 为 emerging/continuing/splitting/merging/ending
-- **THEN** 对应颜色 SHALL 为 绿/蓝/橙/紫/灰（与旧叙事 status 色系一致）
+#### Scenario: Section 状态徽章颜色
+- **WHEN** section status 为 emerging/continuing/ending
+- **THEN** 对应颜色 SHALL 为 绿/蓝/灰
 
 #### Scenario: 核心事件双列布局
 - **WHEN** 有 3 个聚类分别属于 tier 0、tier 2、tier 3
 - **THEN** tier 0 聚类在"核心事件"双列区域，tier 2 在"相关事件"单列，tier 3 在"其他动态"单列
 
-#### Scenario: 线索完整展示
-- **WHEN** 某聚类有 5 条线索
-- **THEN** 该聚类 SHALL 完整展示全部 5 条线索的 title + summary + status
+#### Scenario: 线索默认折叠
+- **WHEN** 某聚类有 3 条线索
+- **THEN** 该聚类卡片 SHALL 默认只显示 section 状态徽章和「3 条线索 ▸」，不显示线索标题和摘要
+
+#### Scenario: 展开线索详情
+- **WHEN** 用户点击聚类卡片或「N 条线索 ▸」
+- **THEN** 卡片 SHALL 展开显示全部线索的 title + summary + 文章图标，线索不显示独立状态徽章
+
+#### Scenario: 点击 section header 打开 Lifecycle Panel
+- **WHEN** 用户点击聚类卡片的 header 区域（名称+状态）
+- **THEN** 系统 SHALL 在 viewport 右侧弹出 SectionLifecyclePanel，展示该 section 的跨天生命周期链
 
 #### Scenario: 空状态
 - **WHEN** 选中 board 但该 board 无日报

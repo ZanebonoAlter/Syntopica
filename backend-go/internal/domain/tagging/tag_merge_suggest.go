@@ -112,11 +112,22 @@ func runFullScan(ctx context.Context) {
 				continue
 			}
 
+			// Normalize direction: smaller ID always as new_tag_id to avoid A→B and B→A duplicates
+			var newID, existingID uint
+			var newLbl, existingLbl string
+			if tag.ID < c.Tag.ID {
+				newID, existingID = tag.ID, c.Tag.ID
+				newLbl, existingLbl = tag.Label, c.Tag.Label
+			} else {
+				newID, existingID = c.Tag.ID, tag.ID
+				newLbl, existingLbl = c.Tag.Label, tag.Label
+			}
+
 			suggestion := models.TagMergeSuggestion{
-				NewTagID:      tag.ID,
-				ExistingTagID: c.Tag.ID,
-				NewLabel:      tag.Label,
-				ExistingLabel: c.Tag.Label,
+				NewTagID:      newID,
+				ExistingTagID: existingID,
+				NewLabel:      newLbl,
+				ExistingLabel: existingLbl,
 				Category:      tag.Category,
 				Similarity:    c.Similarity,
 				Status:        "pending",
@@ -438,11 +449,22 @@ func RecordMergeSuggestions(newTagID uint, newLabel string, category string, can
 	}
 
 	for _, c := range candidates {
+		// Normalize direction: smaller ID always as new_tag_id
+		var nID, eID uint
+		var nLbl, eLbl string
+		if newTagID < c.Tag.ID {
+			nID, eID = newTagID, c.Tag.ID
+			nLbl, eLbl = newLabel, c.Tag.Label
+		} else {
+			nID, eID = c.Tag.ID, newTagID
+			nLbl, eLbl = c.Tag.Label, newLabel
+		}
+
 		suggestion := models.TagMergeSuggestion{
-			NewTagID:      newTagID,
-			ExistingTagID: c.Tag.ID,
-			NewLabel:      newLabel,
-			ExistingLabel: c.Tag.Label,
+			NewTagID:      nID,
+			ExistingTagID: eID,
+			NewLabel:      nLbl,
+			ExistingLabel: eLbl,
 			Category:      category,
 			Similarity:    c.Similarity,
 			Status:        "pending",

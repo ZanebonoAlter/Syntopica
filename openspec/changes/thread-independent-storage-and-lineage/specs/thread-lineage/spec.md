@@ -3,6 +3,8 @@
 ### Requirement: prev_thread_id 赋值
 `matchPreviousThreads()` 函数 SHALL 在检测到 tag-overlap 匹配时，将匹配到的上一日线程的数据库 ID 赋值给当前线程的 `PrevThreadID` 字段。函数 SHALL 接收上一日线程列表（包含 DB ID）作为参数。
 
+Thread 级别匹配目前 SHALL 继续使用 tag 交集策略。Thread embedding 匹配（使用 title+summary 文本的 embedding）为未来改进项，不在本次变更范围内。
+
 `getPrevThreadSummaries()` 函数 SHALL 改为从 `daily_report_threads` 表查询上一日线程，返回 `[]DailyReportThread`（包含 DB ID），供 `matchPreviousThreads()` 使用。
 
 `findPreviousReport()` SHALL 改为 Preload sections 的关联 threads（通过 GORM Preload 嵌套），使 `matchPreviousThreads()` 和 `getPrevThreadSummaries()` 无需额外查询即可访问上一日线程数据。

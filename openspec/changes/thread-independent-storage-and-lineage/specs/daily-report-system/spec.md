@@ -5,7 +5,7 @@
 
 **BoardDailyReport 字段**：id, semantic_board_id, period_date, title, summary, highlights(JSON), dynamics(TEXT), article_count, event_tag_count, cluster_count, status(generating/done/failed), raw_clusters(JSON), prev_report_id(可为空，指向前一日日报), generation_prompt_version, created_at, updated_at。
 
-**DailyReportSection 字段**：id, report_id, cluster_index, cluster_label, cluster_tag_ids(JSON), article_count, best_tier, avg_score, created_at。~~threads(JSON)~~ — 线程数据已迁移至 `daily_report_threads` 表，通过 `section_id` 外键关联。
+**DailyReportSection 字段**：id, report_id, cluster_index, cluster_label, cluster_tag_ids(JSON), article_count, best_tier, avg_score, embedding(vector(2560) 用于语义匹配), prev_section_id(可为空，自引用), status(VARCHAR(20) 默认 'emerging'), created_at。~~threads(JSON)~~ — 线程数据已迁移至 `daily_report_threads` 表，通过 `section_id` 外键关联。
 
 **DailyReportThread 字段**：id, report_id, section_id, title, summary, status, tag_ids(JSONB), confidence, prev_thread_id(可为空，自引用), created_at。
 
@@ -29,20 +29,55 @@
 - **WHEN** 日报生成完成
 - **THEN** 每个聚类的叙事线程 SHALL 作为独立行存储在 `daily_report_threads` 表中，通过 `section_id` 关联到对应的 section
 
-### Requirement: 叙事线索连续性匹配
-系统 SHALL 通过 tag 交集策略匹配昨日线索：如果今日聚类与昨日线索有 tag ID 交集 → 续接，status 设为 continuing/merging/splitting。匹配结果 SHALL 设置 `prev_thread_id` 指向昨日对应线程的数据库 ID。无匹配 → 标记为 emerging，prev_thread_id 为 NULL。
+### Requirement: Section embedding 语义延续匹配
+系统 SHALL 为每个 `daily_report_section` 生成 embedding 向量（基于 `cluster_label` 文本），存储在 `embedding vector(2560)` 列中。匹配 SHALL 使用 pgvector 余弦距离（`<=>` 操作符）在数据库侧完成，匹配范围为同板块下所有已存在的 section（排除当前 report 的 section）。
+
+生成流程：
+1. LLM 生成 sections 后，系统 SHALL 批量调用 Embedding API 为每个 section 的 `cluster_label` 生成 2560 维向量
+2. `SaveReport()` 存储 section 时 SHALL 同时写入 embedding
+3. 存储 SHALL 在同一事务内使用 pgvector 查询每个 section 在同板块内（排除当前 report）的最近邻 section
+4. 余弦距离 < 0.3 的最近邻 SHALL 被选为匹配，设置 `prev_section_id` 并将 status 更新为 `continuing`
+5. 无匹配 → status 保持 `emerging`，`prev_section_id` 为 NULL
+
+`matchPreviousSections()` 的原有 tag Jaccard 匹配逻辑 SHALL 被替换为上述 pgvector 匹配。`findPreviousSections()` SHALL 被废弃（不再只加载前一天的 section，改用 pgvector 全量查询）。
+
+#### Scenario: Embedding 语义匹配成功
+- **WHEN** 今日 section "国务院留神峪煤矿事故调查组公告" (embedding=E1) 存入 board #5
+- **AND** 同 board 下已有 section "山西沁源留神峪煤矿瓦斯爆炸事故" (id=45, embedding=E2)，E1<=>E2 = 0.25
+- **THEN** 今日 section SHALL 设置 prev_section_id=45, status="continuing"
+
+#### Scenario: 距离超过阈值不匹配
+- **WHEN** 今日 section "朗维尤工厂爆炸" 与同 board 下所有已有 section 的余弦距离均 ≥ 0.3
+- **THEN** 今日 section SHALL 保持 status="emerging"，prev_section_id=NULL
+
+#### Scenario: 多候选取最近邻
+- **WHEN** 今日 section 与已存在 section #45 (distance=0.25) 和 #46 (distance=0.18) 均低于阈值
+- **THEN** prev_section_id SHALL 设为 46（距离最小）
+
+#### Scenario: 跨多天匹配
+- **WHEN** 今日 section (05-31) 与 05-28 的 section #204 (distance=0.22) 匹配，中间无其他报告
+- **THEN** prev_section_id SHALL 设为 204，允许跨天跳接
+
+#### Scenario: 完全无匹配
+- **WHEN** 今日聚类 #3 与同板块所有已有 section 的余弦距离均 ≥ 0.3
+- **THEN** 该 section SHALL 保持 status="emerging"，prev_section_id 为 NULL
+
+### Requirement: Thread 级别连续性匹配（基于 tag 交集）
+Thread 级别 SHALL 继续使用现有的 tag 交集策略匹配昨日线索。如果今日线程与昨日线程有 tag ID 交集 → 续接，status 设为 continuing。匹配结果 SHALL 设置 `prev_thread_id` 指向匹配线程的数据库 ID。无匹配 → 标记为 emerging，prev_thread_id 为 NULL。
+
+Thread embedding 匹配为未来改进项，本次不实施。
 
 #### Scenario: Tag 交集匹配成功
-- **WHEN** 今日聚类 #1 含 tag IDs [10, 15, 22]，昨日线程 #42 含 tag IDs [10, 15]
-- **THEN** 今日聚类 #1 的线索 SHALL 续接昨日线程，prev_thread_id=42
+- **WHEN** 今日线程 A (tag_ids=[10,15,22]) 与昨日线程 B (id=42, tag_ids=[10,15]) 有 tag 交集 (overlap=2)
+- **THEN** matchPreviousThreads SHALL 设置线程 A 的 PrevThreadID=42
 
 #### Scenario: 多候选取最优匹配
 - **WHEN** 今日线程与昨日线程 #42(overlap=1) 和 #55(overlap=3) 均有交集
 - **THEN** prev_thread_id SHALL 设为 55（最大交集）
 
 #### Scenario: 完全无匹配
-- **WHEN** 今日聚类 #3 与昨日所有线索既无 tag 交集
-- **THEN** 该聚类的所有线索 SHALL 标记为 emerging，prev_thread_id 为 NULL
+- **WHEN** 今日线程与昨日所有线程无 tag 交集
+- **THEN** PrevThreadID SHALL 保持 NULL，status 保持 LLM 原始输出
 
 ### Requirement: 日报分段并行生成
 系统 SHALL 并行执行三类 LLM 生成调用：

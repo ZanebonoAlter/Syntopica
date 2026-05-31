@@ -49,3 +49,26 @@
 - [x] 7.3 Frontend: `pnpm lint` passes
 - [x] 7.4 Frontend: `pnpm exec nuxi typecheck` passes (via Windows cmd)
 - [x] 7.5 Frontend: `pnpm build` passes (via Windows cmd)
+
+## 8. Section Embedding 语义匹配
+
+- [ ] 8.1 添加数据库迁移：`daily_report_sections` 表增加 `embedding vector(2560)` 列。添加 HNSW 索引 (`embedding vector_cosine_ops`)。
+- [ ] 8.2 更新 `DailyReportSection` GORM 模型：增加 `Embedding` 字段（`gorm:"type:vector(2560)"`）。
+- [ ] 8.3 在 `generator.go` 的 `GenerateDailyReport()` 中，section 生成完毕后批量调用 `Router.Embed()` 为所有 section 的 `cluster_label` 生成 embedding 向量（一次批量 API 调用）。将 embedding 设置到 section 的 `Embedding` 字段。
+- [ ] 8.4 更新 `SaveReport()`：存储 section 时同时写入 embedding 字段。在同一事务内，对每个新 section 使用 pgvector `<=>` 查询同板块内（排除当前 report）的最近邻 section，如果余弦距离 < 0.3 则设置 `prev_section_id` 和 `status='continuing'`。
+- [ ] 8.5 新增 repository 函数 `MatchSectionsByEmbedding(boardID uint, reportID uint, sectionEmbeddings map[uint]string)`：在 DB 侧为当前 report 的每个 section 找最近邻。或者直接嵌入 `SaveReport()` 流程中作为一个步骤。
+- [ ] 8.6 替换 `matchPreviousSections()` 调用：在 `GenerateDailyReport()` 中移除对 `findPreviousSections()` + `matchPreviousSections()` 的调用，改为在 `SaveReport()` 事务内通过 pgvector 完成匹配。
+- [ ] 8.7 清理废弃代码：移除 `findPreviousSections()` 函数和 `matchPreviousSections()` 函数（Go 侧 tag Jaccard 匹配逻辑）。
+
+## 9. 历史数据 Embedding 回填
+
+- [ ] 9.1 新增回填函数 `BackfillSectionEmbeddings()`：查询所有 `embedding IS NULL` 的 `daily_report_sections`，按批量为每条的 `cluster_label` 调用 Embedding API，更新 `embedding` 列。
+- [ ] 9.2 回填完成后，对所有已有 embedding 的 section，按板块分组执行 pgvector 匹配，更新 `prev_section_id`（仅在 `prev_section_id IS NULL` 的记录上执行，避免覆盖已有值）。
+- [ ] 9.3 添加 CLI/API 触发入口（例如通过 handler 或命令行），允许手动触发回填。
+
+## 10. 验证
+
+- [ ] 10.1 Backend: `go build ./...` and `go vet ./...` pass
+- [ ] 10.2 Backend: targeted `go test ./internal/domain/daily_report/...` passes
+- [ ] 10.3 验证新数据：生成一次日报后，检查 section 的 `embedding` 和 `prev_section_id` 是否正确填充
+- [ ] 10.4 验证回填：运行回填后，检查历史 section 的 embedding 和 prev_section_id

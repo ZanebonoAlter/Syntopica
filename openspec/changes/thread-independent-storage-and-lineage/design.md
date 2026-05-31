@@ -1,29 +1,44 @@
 ## Context
 
-The daily report system generates narrative threads per cluster section, storing them as a JSON array in `daily_report_sections.threads`. The `Thread` struct in Go has a `PrevThreadID *uint` field, but `matchPreviousThreads()` in `generator.go` only uses tag-overlap detection to override thread status from `emerging` to `continuing` — it never assigns the previous thread's ID. Threads therefore have no cross-day identity or lineage.
+The daily report system generates narrative threads per cluster section, stored as rows in `daily_report_threads` with cross-day lineage via `prev_thread_id`. Section-level lineage uses `prev_section_id` on `daily_report_sections`.
 
-The current persistence flow in `GenerateDailyReport()`:
-1. LLM generates threads as `[]Thread` structs
-2. `matchPreviousThreads()` overrides status but ignores `PrevThreadID`
-3. Threads are marshaled to JSON and stored in `DailyReportSection.Threads` (JSONB column)
-4. `SaveReport()` saves the section with embedded threads
+### The Problem: Tag-based Matching is Broken
 
-The `BoardDailyReportTimeline.vue` frontend component renders threads inline within cluster cards in a newspaper-style modal. Each thread is an anonymous object — no ID, no lineage, no way to trace across days.
+The original `matchPreviousSections()` used `cluster_tag_ids` Jaccard similarity to link sections across days. This approach **completely fails** in practice because:
 
-Existing infrastructure: `board_daily_reports.prev_report_id` already links reports across days. Section data includes `cluster_tag_ids` JSONB for tag overlap matching. The migration system uses explicit versioned SQL migrations in `postgres_migrations.go`.
+1. **Tag IDs are ephemeral**: Each day's clustering generates brand-new tag IDs. For example, board 4393's sections have tag sets `[96329, 100448, 100791]` (05-26), `[102475]` (05-28), `[109520]` (05-31) — zero overlap across days.
+2. **Tags get deleted**: Older tags (96329, 100448, etc.) no longer exist in `topic_tags`, so even retrospective matching is impossible.
+3. **Thread tag_ids are mostly empty**: Most threads have `tag_ids=[]`, making thread-level tag matching useless too.
+
+Despite visually obvious continuity ("山西沁源留神峪煤矿瓦斯爆炸事故" on 05-26 → "国务院留神峪煤矿事故调查组公告" on 05-31), the system cannot detect any linkage.
+
+### The Solution: Embedding-based Semantic Matching
+
+Using pgvector on `daily_report_sections.embedding` (2560-dim, same model as `topic_tag_embeddings`):
+
+- Section embedding text: `cluster_label` (short, semantically dense)
+- Matching: `embedding <=> $current_embedding` cosine distance, threshold < 0.3
+- Scope: ALL sections in the same board (no time restriction)
+- Executed: DB-side in `SaveReport()` transaction
+- Backfill: Existing 315 sections get embeddings via batch job
+
+Verified on production data: distance < 0.3 correctly links "朗维尤市日资企业工厂爆炸" to "留神峪煤矿瓦斯爆炸" variants, while keeping unrelated events separate.
 
 ## Goals / Non-Goals
 
 **Goals:**
 - Give every thread a unique, persistent database identity via `daily_report_threads` table
 - Populate `prev_thread_id` during generation so threads form a linked list across days
+- **Replace tag Jaccard matching with embedding-based semantic matching for section lineage**
+- **Add `embedding vector(2560)` column to `daily_report_sections` and generate embeddings during report generation**
+- **Backfill embeddings for all existing sections**
 - Provide API endpoints for thread lineage chain retrieval and board-level thread timeline
 - Build frontend views: (A) thread lineage timeline within newspaper modal, (B) board-level Gantt-chart thread browser
 - Migrate existing JSON thread data to the new table without data loss
 
 **Non-Goals:**
 - Redesigning thread status values (emerging/continuing/splitting/merging/ending remain unchanged)
-- Implementing the embedding-based thread matching described in the existing spec (tag overlap matching is sufficient for now)
+- Thread-level embedding matching (will use title+summary embedding in future change; tag overlap remains for threads)
 - Adding thread editing/merging UI
 - Building real-time thread updates via WebSocket
 - Changing how sections or clusters are generated
@@ -52,13 +67,27 @@ Existing infrastructure: `board_daily_reports.prev_report_id` already links repo
 
 **JSON field name mapping**: Migration SQL must map the current JSON field names to the new table columns: `related_tag_ids` → `tag_ids`. The `parent_thread_id` and `related_article_ids` fields are not carried over (prev_thread_id=NULL for historical data, article associations not stored in the new table).
 
-### 3. Lineage population: assign prev_thread_id during matchPreviousThreads()
+### 3. Section lineage: embedding-based semantic matching (replacing tag Jaccard)
 
-**Decision**: Modify `matchPreviousThreads()` to receive previous threads as `[]DailyReportThread` (with DB IDs) and assign `prev_thread_id` when a tag-overlap match is found.
+**Decision**: Replace `matchPreviousSections()` tag Jaccard logic with pgvector cosine distance matching on `daily_report_sections.embedding`. Embedding text = `cluster_label`. Matching scope = all sections in the same board (not just previous report). Threshold = cosine distance < 0.3.
 
-**Rationale**: The existing matching logic (tag intersection) is already correct for detecting continuation. The only missing piece is recording *which* previous thread was matched. The function already iterates over `prevThreadList` and finds `bestMatchIdx` — we just need to pass the DB IDs along.
+**Rationale**: Tag-based matching is provably broken — tag IDs have zero cross-day overlap because daily clustering generates fresh tags, and older tags get deleted. Embedding matching directly captures semantic continuity regardless of tag identity. Verified on production data: distance < 0.3 correctly links same-event sections across days.
 
-Additionally, `findPreviousReport()` needs to Preload `"Sections.Threads"` so that the GORM-loaded `DailyReportSection.Threads` association provides the previous day's threads with their DB IDs. `getPrevThreadSummaries()` also needs updating to read from this GORM association instead of JSON unmarshaling.
+**Implementation**:
+1. Add `embedding vector(2560)` column to `daily_report_sections` (migration)
+2. After LLM section generation, batch-embed all `cluster_label` texts in one API call
+3. Store sections with embeddings in `SaveReport()`
+4. Within same transaction, use pgvector `<=>` to find nearest neighbor for each new section among all existing sections in the board (excluding current report)
+5. If distance < 0.3, set `prev_section_id` and `status='continuing'`
+6. `findPreviousSections()` and `matchPreviousSections()` in Go are replaced by a single repository function `MatchSectionsByEmbedding()`
+
+**Alternative considered**: Use existing `topic_tag_embeddings` to compute section similarity indirectly. Rejected because (a) old tags are deleted so their embeddings are gone, (b) new tags may not have embeddings yet, (c) tag embedding ≠ section semantic.
+
+### 3b. Thread lineage: keep tag-based matching (unchanged)
+
+**Decision**: Thread-level matching continues to use tag overlap via `matchPreviousThreads()`. Thread embedding is deferred to a future change.
+
+**Rationale**: Threads average 326 per report (max 4089). Embedding all threads would significantly increase API cost and storage. Section-level matching already provides the primary Gantt chart data. Thread embedding can be added incrementally later using `title + " " + summary` as embedding text.
 
 ### 4. Thread chain retrieval: recursive query vs. iterative API
 
@@ -84,7 +113,10 @@ Additionally, `findPreviousReport()` needs to Preload `"Sections.Threads"` so th
 
 - **[Risk] Migration data loss if threads JSON has unexpected shapes** → Mitigation: Migration uses `jsonb_array_elements` with error handling; column drop is in a separate migration that can be deferred. JSON field names (`related_tag_ids` not `tag_ids`) are correctly mapped in migration SQL.
 - **[Risk] Upsert invalidates downstream prev_thread_id references** → Mitigation: `SaveReport` sets `prev_thread_id=NULL` on any threads that reference the report's threads before deleting them. Report regeneration implies content has changed, so broken lineage is expected.
-- **[Risk] Thread matching quality — tag overlap may produce false lineage links** → Mitigation: This is the existing matching strategy; this change only records the match, not changes the matching algorithm. Future improvements to matching are a separate concern.
+- **[Risk] Section embedding threshold may need tuning** → Mitigation: Verified threshold 0.3 on production data (same-event sections at 0.22-0.29, unrelated events at >0.4). Can be adjusted via constant. Historical sections with no embedding will be backfilled.
+- **[Risk] Embedding API cost increase** → Mitigation: ~9 sections per report average, minimal cost. Batch API reduces HTTP overhead. Max case (47 sections) still reasonable.
+- **[Risk] Thread matching quality — tag overlap may produce false lineage links** → Mitigation: Thread embedding is planned for a future change. Current tag-based matching is a known limitation.
 - **[Risk] Board thread timeline query performance on boards with long history** → Mitigation: `days` parameter capped at 30. Indexes on `report_id`, `prev_thread_id`, and `board_daily_reports.semantic_board_id` keep queries fast.
-- **[Trade-off] Historical threads have no `prev_thread_id`** → Accepted. Backfilling lineage for historical data would require re-running the matching algorithm with DB IDs, which is complex and low value. The UI will simply show these as chain-starting nodes.
+- **[Trade-off] Historical sections will have `prev_section_id` populated after backfill** → The backfill job will embed all existing 315 sections and run the same pgvector matching, establishing lineage chains for historical data.
+- **[Trade-off] Historical threads have no `prev_thread_id`** → Accepted. Thread embedding matching is a separate future change. The UI will simply show these as chain-starting nodes.
 - **[Trade-off] Frontend Gantt chart is a custom component, not a charting library** → Accepted for now. Thread counts per board are small enough that a CSS grid/Flexbox solution works. Can upgrade to a library later if needed.

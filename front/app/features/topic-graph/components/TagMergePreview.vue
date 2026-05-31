@@ -342,14 +342,15 @@ function handleClose() {
           </div>
           <div class="flex items-center gap-2">
             <button
-              v-if="!evaluating"
               type="button"
               class="tm-btn tm-btn--accent"
-              :disabled="groups.length === 0 || scanning"
-              @click="triggerEvaluate"
+              :class="{ 'tm-btn--loading': evaluating }"
+              :disabled="evaluating || groups.length === 0 || scanning"
+              @click="evaluating ? cancelEvaluate() : triggerEvaluate()"
             >
-              <Icon icon="mdi:robot-outline" width="16" />
-              <span>AI 评估</span>
+              <Icon v-if="evaluating" icon="mdi:loading" width="16" class="animate-spin" />
+              <Icon v-else icon="mdi:robot-outline" width="16" />
+              <span>{{ evaluating ? '评估中...' : 'AI 评估' }}</span>
             </button>
             <button
               v-if="!scanning"
@@ -391,16 +392,16 @@ function handleClose() {
         </div>
 
         <!-- Evaluate progress -->
-        <div v-if="evaluating && evalProgress" class="tm-progress">
+        <div v-if="evaluating" class="tm-progress">
           <div class="tm-progress__bar">
             <div
               class="tm-progress__fill"
-              :style="{ width: `${evalProgress.total_groups ? (evalProgress.completed / evalProgress.total_groups * 100) : 0}%` }"
+              :style="{ width: `${evalProgress?.total_groups ? (evalProgress.completed / evalProgress.total_groups * 100) : 0}%` }"
             />
           </div>
           <div class="tm-progress__info">
-            <span>{{ evalProgress.completed }}/{{ evalProgress.total_groups }} 组</span>
-            <span v-if="evalProgress.current_target">正在评估「{{ evalProgress.current_target }}」</span>
+            <span>{{ evalProgress ? `${evalProgress.completed}/${evalProgress.total_groups} 组` : '正在启动...' }}</span>
+            <span v-if="evalProgress?.current_target">正在评估「{{ evalProgress.current_target }}」</span>
           </div>
           <button type="button" class="tm-btn tm-btn--sm" @click="cancelEvaluate">
             <Icon icon="mdi:close" width="14" />

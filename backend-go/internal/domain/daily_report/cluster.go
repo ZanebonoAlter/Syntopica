@@ -56,7 +56,7 @@ func ClusterTags(ctx context.Context, tags []TagInput) ([]ClusterGroup, error) {
 	prompt := buildClusterPrompt(tags)
 
 	temperature := 0.1
-	maxTokens := 4000
+	maxTokens := 8192
 	result, err := airouter.NewRouter().Chat(ctx, airouter.ChatRequest{
 		Capability: airouter.CapabilityTopicTagging,
 		Messages: []airouter.Message{
