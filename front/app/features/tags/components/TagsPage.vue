@@ -17,6 +17,8 @@ import BackfillProgress from './BackfillProgress.vue'
 import MatchingConfigDialog from './MatchingConfigDialog.vue'
 import NarrativeGenerateDialog from './NarrativeGenerateDialog.vue'
 import BoardDailyReportTimeline from './BoardDailyReportTimeline.vue'
+import TagMergePreview from '~/features/topic-graph/components/TagMergePreview.vue'
+import type { MergeSummary } from '~/types/tagMerge'
 import MatchDetailPanel from './MatchDetailPanel.vue'
 
 const sbApi = useSemanticBoardsApi()
@@ -60,6 +62,7 @@ const showAddDialog = ref(false)
 const showUpgradeDialog = ref(false)
 const showMatchingConfigDialog = ref(false)
 const showGenerateDialog = ref(false)
+const showMergePreview = ref(false)
 const editingBoard = ref<SemanticBoard | null>(null)
 const editLabel = ref('')
 const editDescription = ref('')
@@ -517,6 +520,11 @@ async function handleSaveMatchingConfig(data: Partial<MatchingConfig>) {
   }
 }
 
+function handleMergeComplete(summary: MergeSummary) {
+  void loadAuxiliaryLabels()
+  void loadBoards()
+}
+
 function handleDisableAuxLabel(id: number) {
   auxApi.disableLabel(id).then(() => void loadAuxiliaryLabels())
 }
@@ -637,6 +645,10 @@ onUnmounted(() => {
             <button type="button" class="sb-action-btn sb-action-btn--secondary" @click="handleTriggerBackfill">
               <Icon icon="mdi:backup-restore" width="14" />
               匹配回填
+            </button>
+            <button type="button" class="sb-action-btn sb-action-btn--ghost" @click="showMergePreview = true">
+              <Icon icon="mdi:call-merge" width="14" />
+              标签合并
             </button>
             <button type="button" class="sb-action-btn sb-action-btn--ghost" @click="handleOpenMatchingConfig">
               <Icon icon="mdi:tune" width="14" />
@@ -925,6 +937,13 @@ onUnmounted(() => {
       :visible="showGenerateDialog"
       :boards="boards"
       @cancel="showGenerateDialog = false"
+    />
+
+    <!-- Tag Merge Preview -->
+    <TagMergePreview
+      :visible="showMergePreview"
+      @close="showMergePreview = false"
+      @merged="handleMergeComplete"
     />
 
     <Teleport to="body">

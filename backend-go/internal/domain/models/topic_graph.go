@@ -136,6 +136,22 @@ func (TopicTagEmbedding) TableName() string {
 	return "topic_tag_embeddings"
 }
 
+// TagMergeSuggestion records a pair of similar tags proposed for manual merging.
+type TagMergeSuggestion struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	NewTagID      uint      `gorm:"not null;uniqueIndex:idx_tag_merge_suggestion_pair" json:"new_tag_id"`
+	ExistingTagID uint      `gorm:"not null;uniqueIndex:idx_tag_merge_suggestion_pair" json:"existing_tag_id"`
+	NewLabel      string    `gorm:"size:160;not null" json:"new_label"`
+	ExistingLabel string    `gorm:"size:160;not null" json:"existing_label"`
+	Category      string    `gorm:"size:20;not null" json:"category"`
+	Similarity    float64   `gorm:"not null;index:idx_tag_merge_suggestion_status_sim" json:"similarity"`
+	Status        string    `gorm:"size:20;not null;default:pending;index:idx_tag_merge_suggestion_status_sim" json:"status"` // pending, merged, dismissed
+	Source        string    `gorm:"size:20;not null;default:incremental" json:"source"`                                       // incremental, full_scan
+	LLMVerdict    string    `gorm:"type:text" json:"llm_verdict"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 // ArticleTopicTag represents the many-to-many relationship between articles and tags
 // This allows individual articles to be tagged for more granular topic tracking
 type ArticleTopicTag struct {

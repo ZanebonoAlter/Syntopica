@@ -49,6 +49,15 @@ func HardMergeTags(db *gorm.DB, sourceID, targetID uint) error {
 			return fmt.Errorf("delete source tag embeddings: %w", err)
 		}
 
+		// Clean up queue records that reference the source tag before deletion
+		// to avoid foreign key constraint violations.
+		if err := tx.Where("tag_id = ?", sourceID).Delete(&models.EmbeddingQueue{}).Error; err != nil {
+			return fmt.Errorf("delete source tag embedding queue entries: %w", err)
+		}
+		if err := tx.Where("source_tag_id = ? OR target_tag_id = ?", sourceID, sourceID).Delete(&models.MergeReembeddingQueue{}).Error; err != nil {
+			return fmt.Errorf("delete source tag merge re-embedding queue entries: %w", err)
+		}
+
 		if err := tx.Delete(&models.TopicTag{}, sourceID).Error; err != nil {
 			return fmt.Errorf("delete source tag %d: %w", sourceID, err)
 		}

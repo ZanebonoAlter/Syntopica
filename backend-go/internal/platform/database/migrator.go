@@ -42,6 +42,7 @@ func RunAutoMigrate(db *gorm.DB) error {
 		&models.TopicTagAnalysis{},
 		&models.TopicAnalysisCursor{},
 		&models.ArticleTopicTag{},
+		&models.TagMergeSuggestion{},
 		&models.TopicTagRelation{},
 		&models.SchedulerTask{},
 		&models.AISettings{},

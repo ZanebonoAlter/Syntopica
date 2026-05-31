@@ -1,54 +1,13 @@
 import { apiClient } from './client'
+import { getApiOrigin } from '~/utils/api'
 import type { ApiResponse } from '~/types'
-import type { TagMergeCandidate, MergePreviewResponse, MergeWithCustomNameRequest, MergeWithCustomNameResult, ArticleTitlePreview } from '~/types/tagMerge'
-
-interface RawArticleTitle {
-  article_id: number
-  title: string
-  link: string
-}
-
-interface RawMergeCandidate {
-  source_tag_id: number
-  source_label: string
-  source_slug: string
-  target_tag_id: number
-  target_label: string
-  target_slug: string
-  category: string
-  similarity: number
-  source_articles: number
-  target_articles: number
-  source_article_list?: RawArticleTitle[]
-  target_article_list?: RawArticleTitle[]
-}
+import type { MergeWithCustomNameRequest, MergeWithCustomNameResult, ScanProgress, EvaluateProgress, MergeGroupResponse } from '~/types/tagMerge'
 
 interface RawMergeResult {
   source_id: number
   target_id: number
   new_label: string
   merged_at?: string
-}
-
-function mapArticle(a: RawArticleTitle): ArticleTitlePreview {
-  return { articleId: a.article_id, title: a.title, link: a.link }
-}
-
-function mapCandidate(c: RawMergeCandidate): TagMergeCandidate {
-  return {
-    sourceTagId: c.source_tag_id,
-    sourceLabel: c.source_label,
-    sourceSlug: c.source_slug,
-    targetTagId: c.target_tag_id,
-    targetLabel: c.target_label,
-    targetSlug: c.target_slug,
-    category: c.category,
-    similarity: c.similarity,
-    sourceArticles: c.source_articles,
-    targetArticles: c.target_articles,
-    sourceArticleTitles: c.source_article_list?.map(mapArticle),
-    targetArticleTitles: c.target_article_list?.map(mapArticle),
-  }
 }
 
 function mapMergeResult(r: RawMergeResult): MergeWithCustomNameResult {
@@ -62,25 +21,15 @@ function mapMergeResult(r: RawMergeResult): MergeWithCustomNameResult {
 
 export function useTagMergePreviewApi() {
   return {
-    async scanMergePreview(params?: { limit?: number; includeArticles?: boolean; categoryId?: string; feedId?: string }) {
+    async loadMergeGroups(params?: { limit?: number; categoryId?: string; feedId?: string }) {
       const queryParams = apiClient.buildQueryParams({
         limit: params?.limit ? String(params.limit) : undefined,
-        include_articles: params?.includeArticles ? 'true' : undefined,
         category_id: params?.categoryId ?? undefined,
         feed_id: params?.feedId ?? undefined,
       })
       const endpoint = queryParams ? `/topic-tags/merge-preview?${queryParams}` : '/topic-tags/merge-preview'
-      const response = await apiClient.get<{ candidates: RawMergeCandidate[]; total: number }>(endpoint)
-      if (response.success && response.data) {
-        return {
-          ...response,
-          data: {
-            candidates: response.data.candidates.map(mapCandidate),
-            total: response.data.total,
-          } satisfies MergePreviewResponse,
-        } as ApiResponse<MergePreviewResponse>
-      }
-      return response as unknown as ApiResponse<MergePreviewResponse>
+      const response = await apiClient.get<MergeGroupResponse>(endpoint)
+      return response as ApiResponse<MergeGroupResponse>
     },
 
     async mergeTagsWithCustomName(request: MergeWithCustomNameRequest) {
@@ -93,6 +42,54 @@ export function useTagMergePreviewApi() {
         return { ...response, data: mapMergeResult(response.data) } as unknown as ApiResponse<MergeWithCustomNameResult>
       }
       return response as unknown as ApiResponse<MergeWithCustomNameResult>
+    },
+
+    async triggerFullScan() {
+      return apiClient.post<{ message: string }>('/topic-tags/merge-preview/scan', {})
+    },
+
+    createScanEventSource(onProgress: (progress: ScanProgress) => void): EventSource {
+      const origin = getApiOrigin()
+      const es = new EventSource(`${origin}/api/topic-tags/merge-preview/scan/stream`)
+      es.onmessage = (e) => {
+        onProgress(JSON.parse(e.data))
+      }
+      return es
+    },
+
+    async dismissSuggestion(newTagId: number, existingTagId: number) {
+      return apiClient.post('/topic-tags/merge-preview/dismiss', {
+        new_tag_id: newTagId,
+        existing_tag_id: existingTagId,
+      })
+    },
+
+    // --- LLM Evaluate ---
+
+    async triggerEvaluate() {
+      return apiClient.post<{ message: string }>('/topic-tags/merge-preview/evaluate', {})
+    },
+
+    createEvaluateEventSource(onProgress: (progress: EvaluateProgress) => void): EventSource {
+      const origin = getApiOrigin()
+      const es = new EventSource(`${origin}/api/topic-tags/merge-preview/evaluate/stream`)
+      es.onmessage = (e) => {
+        onProgress(JSON.parse(e.data))
+      }
+      return es
+    },
+
+    async addToGroup(targetTagId: number, newTagId: number) {
+      return apiClient.post('/topic-tags/merge-preview/add-to-group', {
+        target_tag_id: targetTagId,
+        new_tag_id: newTagId,
+      })
+    },
+
+    async searchTags(query: string) {
+      return apiClient.get<Array<{ id: number; label: string; slug: string; category: string; feed_count: number }>>(
+        `/topic-tags/search?q=${encodeURIComponent(query)}&limit=20`,
+      )
     },
   }
 }

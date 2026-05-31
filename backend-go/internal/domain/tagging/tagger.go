@@ -73,6 +73,8 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 	}
 	aliasesJSON, _ := json.Marshal(aliases)
 
+	var savedCandidates []TagCandidate
+
 	// Try embedding-based three-level matching
 	es := getEmbeddingService()
 	if es != nil {
@@ -113,6 +115,7 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 
 			case "candidates":
 				logging.Infof("findOrCreateTag: label=%q category=%s matchType=candidates candidateCount=%d — skipping LLM judgment, falling through to create", tag.Label, category, len(matchResult.Candidates))
+				savedCandidates = matchResult.Candidates
 
 			case "no_match":
 				logging.Infof("findOrCreateTag: label=%q category=%s matchType=no_match", tag.Label, category)
@@ -166,6 +169,10 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 	}
 	if err := database.DB.Create(&newTag).Error; err != nil {
 		return nil, err
+	}
+
+	if len(savedCandidates) > 0 {
+		RecordMergeSuggestions(newTag.ID, tag.Label, category, savedCandidates)
 	}
 
 	if es != nil && category != "event" {
