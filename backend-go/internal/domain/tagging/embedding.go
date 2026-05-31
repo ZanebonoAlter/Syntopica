@@ -31,7 +31,7 @@ var (
 
 // EmbeddingMatchThresholds defines similarity thresholds for tag matching
 type EmbeddingMatchThresholds struct {
-	// High similarity - auto-reuse existing tag
+	// High similarity - include as candidate (no longer auto-reuse)
 	HighSimilarity float64
 	// Low similarity - auto-create new tag
 	LowSimilarity float64
@@ -48,12 +48,7 @@ var DefaultThresholds = EmbeddingMatchThresholds{
 // CategoryThresholdOverrides defines per-category threshold adjustments.
 // Keys are category names; the corresponding HighSimilarity overrides the default
 // when TagMatch processes a tag of that category.
-var CategoryThresholdOverrides = map[string]EmbeddingMatchThresholds{
-	"keyword": {
-		HighSimilarity: 0.90,
-		LowSimilarity:  0.78,
-	},
-}
+var CategoryThresholdOverrides = map[string]EmbeddingMatchThresholds{}
 
 // ThresholdsForCategory returns the effective thresholds for a given category,
 // falling back to DefaultThresholds when no override is configured.
@@ -373,11 +368,11 @@ func (s *EmbeddingService) TagMatch(ctx context.Context, label, category string,
 
 	if validCandidates[0].Similarity >= thresholds.HighSimilarity {
 		top := validCandidates[0]
-		logging.Infof("TagMatch: label=%q category=%s result=exact reason=high_similarity existingID=%d existingLabel=%q similarity=%.4f", label, category, top.Tag.ID, top.Tag.Label, top.Similarity)
+		logging.Infof("TagMatch: label=%q category=%s result=candidates reason=high_similarity_downgraded existingID=%d existingLabel=%q similarity=%.4f", label, category, top.Tag.ID, top.Tag.Label, top.Similarity)
 		return &TagMatchResult{
-			MatchType:   "exact",
-			ExistingTag: top.Tag,
-			Similarity:  top.Similarity,
+			MatchType:  "candidates",
+			Similarity: top.Similarity,
+			Candidates: validCandidates,
 		}, nil
 	}
 
@@ -511,6 +506,12 @@ func (s *EmbeddingService) SaveEmbedding(embedding *models.TopicTagEmbedding) er
 		}
 		return fmt.Errorf("load topic tag %d: %w", embedding.TopicTagID, err)
 	}
+
+	// Clean up stale embeddings: same tag + type but different text_hash
+	database.DB.Where(
+		"topic_tag_id = ? AND embedding_type = ? AND text_hash != ?",
+		embedding.TopicTagID, embedding.EmbeddingType, embedding.TextHash,
+	).Delete(&models.TopicTagEmbedding{})
 
 	var existing models.TopicTagEmbedding
 	err := database.DB.Where("topic_tag_id = ? AND embedding_type = ? AND text_hash = ?", embedding.TopicTagID, embedding.EmbeddingType, embedding.TextHash).First(&existing).Error
