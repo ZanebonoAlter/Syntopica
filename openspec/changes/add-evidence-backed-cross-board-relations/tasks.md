@@ -35,6 +35,7 @@
 - [x] 6.1 在版块增强 composable 增加关系任务轮询、列表/详情、confirm/dismiss/re-resolve 状态，并复用 board view epoch 守卫；验收：`useBoardRelations` 测试覆盖切版块迟到响应、重复提交、202/409、失败和空态。
 - [x] 6.2 在 observation 和 research question 上增加“发现关联”动作，并实现关系建议列表/详情面板，分区展示 mapping、支持证据、反证、gap 和生命周期；验收：`BoardRelationPanel` 组件测试覆盖加载态、空态、错误态、空 dismiss 理由、超长文本和操作反馈。
 - [ ] 6.3 用真实 Chrome 走通“从 observation 发起→轮询完成→查看外部证据→确认→生成下一份简报看到独立跨版块字段”的主链路；验收：按 `ui-verify` skill 使用 opencli 留存命令/结果，页面切换后无旧版块状态串台。
+  - **豁免留痕（2026-09-04，用户批准归档）**：opencli 前端主链路未执行。当日完成替代验证——修复博查结构解析 bug（web_search.go `data.result`→`data.webPages.value`）与 run 状态写库 bug（relation_discovery.go []byte→string）后，以真实后端 + 真实博查 + 真实数据库跑通完整后端链路：POST relations/discover 202 → scout plan/extract（博查真实搜索结果）→ resolve 保守解析 → verify 反证搜索 + 盲验 → relation #1 落库（unresolved/common_driver，3 支持证据 + 2 反证真实 URL）→ run 终态 partial + tool_calls=8 审计 → GET relations API 返回数据。前端组件层已有 35 例单测覆盖（BoardRelationPanel 17 + useBoardRelations 18）。opencli 端到端留待后续 change/日常使用验证。
 
 ## 7. 自动发现纵向切片
 
@@ -48,6 +49,7 @@
 - [x] 8.2 使用 PostgreSQL testcontainer 实现迁移、部分唯一索引、并发幂等、事务回滚、状态过滤与过期测试，repository 禁用 SQLite；验收：`cd backend-go && go test ./internal/dataenrichment/repository` 退出 0。
 - [x] 8.3 完成 handler/service 影响包回归和前端 composable/组件测试；验收：`cd backend-go && go test ./internal/dataenrichment/...` 退出 0，Windows cmd 下 `pnpm test:unit` 全部通过。
 - [ ] 8.4 用真实博查与真实数据库完成 `test-cases.md` 三组跨域效果核对，记录 source 可追溯率、候选 resolved/unresolved/rejected 分布、引用核对率、重复率和调用预算；验收：把量化结果与“达标/上游瓶颈/需调整预期”结论回填 `test-cases.md`。
+  - **豁免留痕（2026-09-04，用户批准归档）**：仅完成一组真实数据（日本新闻板块 o2 观察，run #3）：scout 4 条查询全部返回真实结果、extract 产出 ≥2 候选、引用可追溯率 100%（证据均带真实 URL+检索时间戳）、resolve 保守 no_match→unresolved、verify 完成率 1/2（候选2 撞 900s run 超时诚实降级 partial）、tool_calls=8 全部落库可审计。三组跨域量化回填未完成，留待后续 change 或日常使用积累。
 
 ## 9. 文档
 

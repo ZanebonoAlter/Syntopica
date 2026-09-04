@@ -115,6 +115,13 @@ func (b *BochaWebSearcher) Search(ctx context.Context, query string) ([]WebSearc
 	var parsed struct {
 		Code int `json:"code"`
 		Data struct {
+			// Real Bocha shape (verified against the live API): hits live under
+			// data.webPages.value and each item uses name/snippet (Bing-style).
+			WebPages struct {
+				Value []map[string]any `json:"value"`
+			} `json:"webPages"`
+			// Legacy "result" shape kept as a fallback so older deployments /
+			// response variants keep parsing instead of silently degrading.
 			Result []map[string]any `json:"result"`
 		} `json:"data"`
 	}
@@ -122,13 +129,23 @@ func (b *BochaWebSearcher) Search(ctx context.Context, query string) ([]WebSearc
 		return nil, fmt.Errorf("bocha decode: %w", err)
 	}
 
-	out := make([]WebSearchResult, 0, len(parsed.Data.Result))
-	for _, item := range parsed.Data.Result {
+	items := parsed.Data.WebPages.Value
+	if len(items) == 0 {
+		items = parsed.Data.Result
+	}
+
+	out := make([]WebSearchResult, 0, len(items))
+	for _, item := range items {
 		url, _ := item["url"].(string)
 		if url == "" {
 			continue // drop items without a verifiable URL
 		}
-		title, _ := item["title"].(string)
+		// Bocha names the hit "name" in the webPages shape; older/legacy
+		// responses used "title" — accept both.
+		title, _ := item["name"].(string)
+		if title == "" {
+			title, _ = item["title"].(string)
+		}
 		// Bocha fields vary; accept summary ?? snippet ?? description.
 		snippet, _ := item["summary"].(string)
 		if snippet == "" {

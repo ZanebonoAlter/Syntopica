@@ -34,6 +34,15 @@ type RelationDiscoveryInput struct {
 	TriggerKind string // manual | auto
 }
 
+// runToolCall is the per-run external call audit trail persisted onto the run
+// row (web_search calls from scout + verifier counter-searches).
+type runToolCall struct {
+	Ref     string `json:"ref"`
+	Tool    string `json:"tool"`
+	Query   string `json:"query"`
+	Results int    `json:"result_count"`
+}
+
 // RelationDiscoveryOutput summarizes one run.
 type RelationDiscoveryOutput struct {
 	RunID            uint                             `json:"run_id"`
@@ -42,6 +51,10 @@ type RelationDiscoveryOutput struct {
 	RelationsSkipped int                              `json:"relations_skipped"` // cooldown / idempotent no-ops
 	Gaps             []relationEvidenceGap            `json:"gaps"`
 	Relations        []*repository.CrossBoardRelation `json:"relations"`
+
+	// toolCalls is unexported on purpose: it feeds the run-row audit snapshot
+	// (cross_board_relation_runs.tool_calls), not the API payload.
+	toolCalls []runToolCall
 }
 
 // relationRunBudgetSnapshot is frozen into the run row for audit/replay.
@@ -136,12 +149,10 @@ func (o *OrchestratorService) RunRelationDiscovery(ctx context.Context, in Relat
 	out := &RelationDiscoveryOutput{RunID: run.ID, Status: repository.RelationRunStatusRunning, Gaps: []relationEvidenceGap{}}
 	finish := func(status string) *RelationDiscoveryOutput {
 		gapsJSON, _ := json.Marshal(out.Gaps)
-		toolCallsJSON := []byte("[]")
-		_ = gapsJSON
-		_ = toolCallsJSON
+		toolCallsJSON, _ := json.Marshal(out.toolCalls)
 		if err := o.repo.DB().Model(&repository.CrossBoardRelationRun{}).Where("id = ?", run.ID).
 			Updates(map[string]any{
-				"status": status, "gaps": gapsJSON, "updated_at": time.Now(),
+				"status": status, "gaps": string(gapsJSON), "tool_calls": string(toolCallsJSON), "updated_at": time.Now(),
 			}).Error; err != nil {
 			logging.Warnf("relation discovery run %d: persist gaps: %v", run.ID, err)
 		}
@@ -157,6 +168,9 @@ func (o *OrchestratorService) RunRelationDiscovery(ctx context.Context, in Relat
 		return finish(repository.RelationRunStatusFailed), nil
 	}
 	out.Gaps = append(out.Gaps, scout.Gaps...)
+	for _, s := range scout.Searches {
+		out.toolCalls = append(out.toolCalls, runToolCall{Ref: s.Ref, Tool: "web_search", Query: s.Query, Results: len(s.Results)})
+	}
 	if len(scout.Candidates) == 0 {
 		return finish(repository.RelationRunStatusSucceeded), nil
 	}
@@ -239,6 +253,9 @@ func (o *OrchestratorService) processRelationCandidate(ctx context.Context, in p
 		InternalBrief: internalBrief,
 	}, cfg.MaxSearchesPerRun)
 	out.Gaps = append(out.Gaps, vGaps...)
+	for _, cs := range counterSearches {
+		out.toolCalls = append(out.toolCalls, runToolCall{Ref: cs.Ref, Tool: "web_search", Query: cs.Query, Results: len(cs.Results)})
+	}
 	if verdict == nil {
 		out.Gaps = append(out.Gaps, relationEvidenceGap{Reason: "verify_unavailable", Detail: cand.TargetConcept})
 		return
