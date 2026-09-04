@@ -74,10 +74,10 @@
 | 唯一目标解析成功 | `backend-go/internal/dataenrichment/service/relation_resolver_unit_test.go` |
 | 多个候选无法消歧 | `backend-go/internal/dataenrichment/service/relation_resolver_unit_test.go` |
 | 外部概念尚无内部目标 | `backend-go/internal/dataenrichment/service/relation_resolver_unit_test.go` |
-| 支持证据和反证共同进入验证 | `backend-go/internal/dataenrichment/service/relation_verifier_test.go` |
-| 共同驱动而非直接因果 | `backend-go/internal/dataenrichment/service/relation_verifier_test.go` |
-| 证据不足 | `backend-go/internal/dataenrichment/service/relation_verifier_test.go` |
-| 关系被反证 | `backend-go/internal/dataenrichment/service/relation_verifier_test.go` |
+| 支持证据和反证共同进入验证 | `backend-go/internal/dataenrichment/service/relation_discovery_pipeline_test.go` |
+| 共同驱动而非直接因果 | `backend-go/internal/dataenrichment/service/relation_discovery_pipeline_test.go` |
+| 证据不足 | `backend-go/internal/dataenrichment/service/relation_discovery_pipeline_test.go` |
+| 关系被反证 | `backend-go/internal/dataenrichment/service/relation_discovery_pipeline_test.go` |
 | 引用可在原文中核对 | `backend-go/internal/dataenrichment/service/relation_evidence_test.go` |
 | 模型输出不存在的引用 | `backend-go/internal/dataenrichment/service/relation_evidence_test.go` |
 | 博查不可用 | `backend-go/internal/dataenrichment/service/relation_evidence_test.go` |

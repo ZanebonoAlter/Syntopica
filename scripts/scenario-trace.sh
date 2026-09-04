@@ -136,6 +136,10 @@ for i in $(seq 0 $((total - 1))); do
 		row_title="$(trim "${body%%|*}")"
 		if [ "$row_title" = "$title" ]; then
 			file_cell="$(trim "${body#*|}")"
+			# markdown 单元格常用反引号包裹代码路径，剥掉再校验（宽容解析，
+			# spec 约定的是仓库根相对路径本身，不限制 markdown 包裹）
+			file_cell="${file_cell//\`/}"
+			file_cell="$(trim "$file_cell")"
 			break
 		fi
 	done <<< "$map_rows"
