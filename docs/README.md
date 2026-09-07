@@ -52,9 +52,8 @@ Syntopica 全部文档入口。
 
 | 文档 | 说明 |
 | ------ | ------ |
-| [reference/database/_index.md](reference/database/_index.md) | 数据库全景概览（38 表 / 35 FK / 6 业务域）+ 文档导航 |
-| [reference/database/ER_DIAGRAM.md](reference/database/ER_DIAGRAM.md) | 全局实体关系图 + 6 域 Mermaid ER 图 + FK 引用矩阵 |
-| [reference/database/DATABASE_FIELDS.md](reference/database/DATABASE_FIELDS.md) | 35 张表完整字段字典（类型 / 约束 / 用途） |
+| [reference/database/_index.md](reference/database/_index.md) | 数据库域文档导航 + 58 张表清单（按域分组归属速查） |
+| [reference/database/tables/_conventions.md](reference/database/tables/_conventions.md) | 全局约定：FK 真相、6 条真实 DB FK、索引与约束总览、FK 引用矩阵 |
 | [reference/database/DATA_LIFECYCLE.md](reference/database/DATA_LIFECYCLE.md) | 6 条数据链路的状态字段流转 |
 
 ### 开发规范

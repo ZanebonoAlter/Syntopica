@@ -1,230 +1,223 @@
-# 数据库文档索引
+# 数据库文档索引（`docs/reference/database/`）
 
-Syntopica 数据库全景概览与索引/约束权威清单。
+> **真相源 = 代码**（GORM struct + `postgres_migrations.go`），本目录是投影。全局事实（FK 真相 / 向量维度 / 唯一与 CHECK / FK 引用矩阵）唯一权威在 [`tables/_conventions.md`](tables/_conventions.md)。
 
-> **真相源 = 代码**：GORM struct gorm tag（`internal/models/*.go`、`internal/dataenrichment/repository/models.go`、`internal/topicgraph/repository/daily_report_models.go`、`internal/platform/tracing/model.go`）+ 迁移 DDL（`internal/platform/database/postgres_migrations.go`）+ 运行时建索引代码。本页据此重写。
->
-> **迁移执行器能力**（`internal/platform/database/migrator.go`）：`Migration` 结构体除 `Version/Description/Up` 外，支持 `RunOutsideTx`（事务外执行，为 `CREATE INDEX CONCURRENTLY` 解锁）、`Down`（声明性占位，nil = 不可逆）；长锁 DDL（`ALTER TYPE`/`ADD CONSTRAINT UNIQUE`）用 `withLockTimeout` 守卫防大表无限阻塞。编写规范见 [`standard/backend/code-style.md`](../standard/backend/code-style.md)「迁移编写规范」。
+## 域文档导航
 
----
+| 域文档 | 覆盖 | flow 域对照 |
+| ------ | ------ | ------ |
+| [tables/content.md](tables/content.md) | 内容域 | content-enrichment |
+| [tables/scheduling-config.md](tables/scheduling-config.md) | 调度与配置域 | scheduler |
+| [tables/ai-routing.md](tables/ai-routing.md) | AI 路由域 | ai-summary |
+| [tables/topic-tags.md](tables/topic-tags.md) | 主题标签域 | topic-graph |
+| [tables/semantic-labels.md](tables/semantic-labels.md) | 语义标签 / 板块域 | semantic-board |
+| [tables/embeddings.md](tables/embeddings.md) | 向量域 | topic-graph |
+| [tables/job-queues.md](tables/job-queues.md) | 任务队列域 | content-enrichment |
+| [tables/daily-report-watch.md](tables/daily-report-watch.md) | 日报 / 持久话题 / Watch 域 | daily-report |
+| [tables/data-enrichment.md](tables/data-enrichment.md) | 数据增强域 | data-enrichment |
+| [tables/preference-discovery.md](tables/preference-discovery.md) | 用户行为与偏好发现域 | discovery |
+| [tables/tracing.md](tables/tracing.md) | 链路追踪域 | — |
+| [tables/deprecated-framework.md](tables/deprecated-framework.md) | 已废弃 / 预留 / 框架表 | — |
 
-## 概览
+另：[DATA_LIFECYCLE.md](DATA_LIFECYCLE.md)（数据状态字段流转，独立于域文档）。
 
-| 指标 | 值 | 说明 |
-| ------ | ----- | ------ |
-| 真实业务表数 | **47** | 34 Core + 5 DataEnrichment + 7 TopicGraph 日报域 + 1 Tracing（见下方清单，不含 `schema_migrations`） |
-| DB 级 FK 约束 | **1** | 仅 `topic_tags_merged_into_id_fkey`（ON DELETE CASCADE，迁移 `20260601_0001` 重建）。GORM 关闭了外键迁移（`DisableForeignKeyConstraintWhenMigrating: true`），且该迁移主动 drop 了历史上的全部 `fk_*`。其余表间关系均为 **GORM 逻辑关联，DB 层不强制**。 |
-| CHECK 约束 | **3** | `chk_board_persistent_topics_status` / `chk_board_persistent_topics_source` / `chk_board_topic_watches_status`（见下） |
-| 业务域 | **7** | Core 文章流、Topic Tags 图谱、Semantic Labels/Board、AI Infrastructure、Narrative 叙事、Daily Report 日报域、DataEnrichment 数据增强 |
-| 枢纽表 | `topic_tags` | 被多表引用（`article_topic_tags` / `topic_tag_embeddings` / `topic_tag_semantic_labels` / `topic_tag_board_labels` / `topic_tag_analyses` / `topic_tag_relations` / `embedding_queues` / `merge_reembedding_queues` 等） |
-| 向量表（pgvector） | `topic_tag_embeddings`(固定 vector(4096))、`semantic_labels`(embedding + merge_embedding)、`daily_report_sections`、`daily_report_threads`、`board_persistent_topics`、`preference_vectors`、`route_embeddings` | 维度运行时决定，HNSW 索引仅在维度 ≤ 2000 时创建（`preference_vectors`/`route_embeddings` 同维不强制 HNSW，粗筛走顺序扫描） |
-| 全文搜索 | `articles.search_vector` | GIN 索引 + 触发器 `articles_search_vector_trigger` |
-| 向量缓存（非 pgvector） | `ai_embedding_cache.embedding` | bytea 二进制（float32 小端，`models/embedding_codec.go` 编解码，~10KB/2560维，仅字节回读不做相似度检索）。jsonb→bytea 由启动时 pre-migrate 非破坏转换（optimize-pg-storage，须先于 AutoMigrate 避免 GORM ALTER 报 cannot cast） |
-| 预留/已废弃表 | 4 | `ai_summaries` / `ai_summary_feeds` / `ai_summary_topics` / `topic_analysis_jobs` / `digest_configs`：无对应 model、无 Go 代码引用 |
+## 完整表清单（52 业务 + 5 废弃 + 1 框架，按域分组 = 归属速查表；2026-09-02 cross_board 两表此前漏录，本次补齐）
 
----
+#### 内容 → [`tables/content.md`](tables/content.md)（flow: `content-enrichment`）
 
-## 真实表清单（43 张，按代码权威对齐）
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `categories` | 分类 | `models.Category` |
+| `feeds` | 订阅源 | `models.Feed` |
+| `articles` | 文章 | `models.Article` |
 
-**Core（`migrator.go` allModels，33 张）**：
-`categories` `feeds` `articles` `topic_tags` `semantic_labels` `topic_tag_semantic_labels` `topic_tag_board_labels` `board_composition` `board_upgrade_suggestions` `topic_tag_embeddings` `topic_tag_analyses` `topic_analysis_cursors` `article_topic_tags` `tag_merge_suggestions` `topic_tag_relations` `scheduler_tasks` `ai_settings` `embedding_config` `embedding_queues` `merge_reembedding_queues` `ai_providers` `ai_routes` `ai_route_providers` `ai_call_logs` `reading_behaviors` `firecrawl_jobs` `tag_jobs` `narrative_summaries` `narrative_boards` `preference_vectors` `rsshub_routes` `route_embeddings` `feed_recommendations` `route_param_options`
+#### 调度 → [`tables/scheduling-config.md`](tables/scheduling-config.md)（flow: `scheduler`）
 
-> 旧 `user_preferences` 表已删除（preference-vector-feed-discovery，偏好转向向量画像，迁移 `20260725_0001` DROP）。
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `scheduler_tasks` | 调度任务状态 | `models.SchedulerTask` |
+| `ai_settings` | AI 配置（键值对） | `models.AISettings` |
 
-**DataEnrichment（RegisterModels，5 张）**：
-`board_data_sources` `topic_lifeline_context` `topic_enrichment_result` `topic_enrichment_review` `stock_debate_result`
+#### AI 路由 → [`tables/ai-routing.md`](tables/ai-routing.md)（flow: `ai-summary`）
 
-**TopicGraph 日报域（RegisterModels，7 张）**：
-`board_daily_reports` `daily_report_sections` `daily_report_threads` `daily_report_section_relations` `board_persistent_topics` `board_topic_watches` `topic_watch_hits`
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `ai_providers` | AI 供应商 | `models.AIProvider` |
+| `ai_routes` | AI 路由 | `models.AIRoute` |
+| `ai_route_providers` | AI 路由-供应商绑定 | `models.AIRouteProvider` |
+| `ai_call_logs` | AI 调用日志 | `models.AICallLog` |
+| `ai_embedding_cache` | embedding 结果缓存 | `models.AIEmbeddingCache` |
 
-**Tracing（独立 AutoMigrate，1 张）**：
-`otel_spans`
+#### 主题标签 → [`tables/topic-tags.md`](tables/topic-tags.md)（flow: `topic-graph`）
 
-> 框架表 `schema_migrations` 不计入业务表。
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `topic_tags` | 主题标签主表 | `models.TopicTag` |
+| `topic_tag_embeddings` | 主题标签向量 | `models.TopicTagEmbedding` |
+| `topic_tag_analyses` | 主题分析快照 | `models.TopicTagAnalysis` |
+| `topic_analysis_cursors` | 主题分析游标 | `models.TopicAnalysisCursor` |
+| `article_topic_tags` | 文章-主题关联 | `models.ArticleTopicTag` |
+| `topic_tag_relations` | 标签层级关系 | `models.TopicTagRelation` |
+| `tag_merge_suggestions` | 标签合并建议 | `models.TagMergeSuggestion` |
 
----
+#### 语义标签/板块 → [`tables/semantic-labels.md`](tables/semantic-labels.md)（flow: `semantic-board`）
 
-## 索引与约束清单
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `semantic_labels` | 语义标签统一表（辅助标签 + SemanticBoard） | `models.SemanticLabel` |
+| `topic_tag_semantic_labels` | tag-辅助标签关联（中间表） | `models.TopicTagSemanticLabel` |
+| `topic_tag_board_labels` | tag-SemanticBoard 匹配结果（中间表） | `models.TopicTagBoardLabel` |
+| `board_composition` | board 构成（中间表；挂载单元可为 aux 或 composite，`auxiliary_label_id` 列复用） | `models.BoardComposition` |
+| `composite_components` | 组合标签组件序列（composite→auxiliary，position 有序） | `models.CompositeComponent` |
+| `board_upgrade_suggestions` | 板块升级建议 | `models.BoardUpgradeSuggestion` |
 
-> 索引来源标注：**[gorm]**=AutoMigrate 由 gorm tag 建；**[migr]**=迁移 DDL 显式建；**[runtime]**=启动时按向量维度建。带 `UNIQUE` 为唯一索引，`PARTIAL` 为部分索引。
+#### 向量 → [`tables/embeddings.md`](tables/embeddings.md)（flow: `topic-graph`）
 
-### 文章与订阅域
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `embedding_config` | 向量配置（键值对） | `models.EmbeddingConfig` |
+| `embedding_queues` | 向量生成队列 | `models.EmbeddingQueue` |
+| `merge_reembedding_queues` | 合并后重算向量队列 | `models.MergeReembeddingQueue` |
 
-| 表 | 索引/约束 |
-| ---- | ----------- |
-| `articles` | `idx_articles_feed_id(feed_id)` [gorm]；`idx_articles_feed_pub_date(feed_id, pub_date DESC)` [migr] **复合**；`idx_articles_feed_id_title(feed_id, title)` [migr] **复合**；`idx_articles_read(read)` [migr]；`idx_articles_favorite(favorite)` [migr]；`idx_articles_search_vector` GIN [migr] + 触发器 `articles_search_vector_trigger` |
-| `feeds` | `idx_feeds_category_id(category_id)` [migr]；`idx_feeds_category_id(category_id)` [gorm]（AutoMigrate 同名） |
-| `categories` | （无业务索引） |
-| `reading_behaviors` | 单列索引各一 [gorm]：`idx_reading_behaviors_article_id`、`idx_reading_behaviors_feed_id`、`idx_reading_behaviors_category_id`、`idx_reading_behaviors_session_id`、`idx_reading_behaviors_event_type`、`idx_reading_behaviors_created_at` |
+#### 任务队列 → [`tables/job-queues.md`](tables/job-queues.md)（flow: `content-enrichment`）
 
-> **勘误**：旧文档列的复合索引 `idx_reading_behaviors_feed_created_at` **不存在**，实际是 feed_id、created_at 两个独立单列索引。
->
-> 旧 `user_preferences` 表已删除（偏好转向向量画像），其索引随表一同 DROP。
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `firecrawl_jobs` | Firecrawl 抓取任务 | `models.FirecrawlJob` |
+| `tag_jobs` | 标签任务 | `models.TagJob` |
 
-### Topic Tags 图谱域
+#### 日报/持久话题/Watch → [`tables/daily-report-watch.md`](tables/daily-report-watch.md)（flow: `daily-report`）
 
-| 表 | 索引/约束 |
-| ---- | ----------- |
-| `topic_tags` | `idx_topic_tags_category_slug(category, slug)` [gorm] **普通复合，非唯一**；`idx_topic_tags_status(status)` [gorm]；`idx_topic_tags_merged_into_id(merged_into_id)` [gorm]；**FK** `topic_tags_merged_into_id_fkey → topic_tags.id ON DELETE CASCADE` [migr]（**全库唯一真实 DB FK**） |
-| `topic_tag_embeddings` | `idx_topic_tag_embeddings_tag_type_hash(topic_tag_id, embedding_type, text_hash)` **UNIQUE** [gorm+migr]；`idx_topic_tag_embeddings_embedding` HNSW [runtime，dim≤2000]；**固定列维度 `embedding vector(4096)`**（迁移 `20260601_0001a`） |
-| `article_topic_tags` | 复合主键 `(article_id, topic_tag_id)`；单列索引 `idx_article_topic_tag_topic(topic_tag_id)` [gorm]、`idx_article_topic_tag_article(article_id)` [gorm]；`idx_article_topic_tags_article_id(article_id)` [migr] |
-| `topic_tag_relations` | `idx_tag_relation_pair(parent_id, child_id)` **UNIQUE** [gorm] |
-| `tag_merge_suggestions` | `idx_tag_merge_suggestion_pair(new_tag_id, existing_tag_id)` **UNIQUE** [gorm]；`idx_tag_merge_suggestion_status_sim(status, similarity)` [gorm] |
-| `topic_tag_analyses` | `idx_tag_analysis_date(topic_tag_id, analysis_type, window_type, anchor_date)` **UNIQUE** [gorm] |
-| `topic_analysis_cursors` | `idx_cursor_tag_type_window(topic_tag_id, analysis_type, window_type)` **UNIQUE** [gorm] |
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `board_daily_reports` | 板块日报主表 | `topicgraph.BoardDailyReport` |
+| `daily_report_sections` | 日报分区 | `topicgraph.DailyReportSection` |
+| `daily_report_threads` | 日报叙事线程 | `topicgraph.DailyReportThread` |
+| `daily_report_section_relations` | 跨日分区关系 | `topicgraph.SectionRelation` |
+| `board_persistent_topics` | 板块持久叙事话题 | `topicgraph.BoardPersistentTopic` |
+| `board_topic_watches` | 用户声明的话题 Watch 标签 | `topicgraph.BoardTopicWatch` |
+| `topic_watch_hits` | Watch 命中记录 | `topicgraph.TopicWatchHit` |
 
-> **勘误**：旧文档称 `idx_article_topic_tags_topic_article(topic_tag_id, article_id)` 复合索引 **不存在**，实际是 `idx_article_topic_tag_topic` 单列。另 `topic_tags.(category, slug)` 为普通复合索引，**不强制唯一**。
+#### 数据增强 → [`tables/data-enrichment.md`](tables/data-enrichment.md)（flow: `data-enrichment`）
 
-### Semantic Labels / Board 域
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `board_data_sources` | 板块数据源绑定 | `dataenrichment.BoardDataSource` |
+| `topic_lifeline_context` | 话题分层新闻汇总上下文（循环 A） | `dataenrichment.TopicLifelineContext` |
+| `topic_enrichment_result` | 数据增强结果快照（不可变） | `dataenrichment.TopicEnrichmentResult` |
+| `topic_enrichment_review` | 数据增强认知演进反思 | `dataenrichment.TopicEnrichmentReview` |
+| `stock_debate_result` | FinGenius 个股辩论结果 | `dataenrichment.StockDebateResult` |
+| `topic_enrichment_qa` | 报告追问记录（多轮 append-only） | `dataenrichment.TopicEnrichmentQA` |
+| `reference_roles` | 旧参考角色/方法论画像（已退役，只读兼容一版本） | `dataenrichment.ReferenceRole` |
+| `analysis_methods` | 分析方法卡库（调查链按问题选卡注入） | `dataenrichment.AnalysisMethod` |
+| `cross_board_relation_runs` | 跨板块关系生成批次 | `repository.CrossBoardRelationRun` |
+| `cross_board_relations` | 跨板块证据关系 | `repository.CrossBoardRelation` |
 
-| 表 | 索引/约束 |
-| ---- | ----------- |
-| `semantic_labels` | `idx_semantic_labels_slug(slug)` **UNIQUE 单列** [gorm+migr]；`idx_semantic_labels_label_type(label_type)` [gorm+migr]；`idx_semantic_labels_status(status)` [gorm+migr] |
-| `topic_tag_semantic_labels` | 复合主键 `(topic_tag_id, semantic_label_id)`，无 id；`idx_topic_tag_semantic_labels_topic_tag_id(topic_tag_id)` [migr]；`idx_topic_tag_semantic_labels_semantic_label_id(semantic_label_id)` [migr] |
-| `topic_tag_board_labels` | 复合主键 `(topic_tag_id, semantic_board_id)`，无 id；`idx_topic_tag_board_labels_topic_tag_id(topic_tag_id)` [migr]；`idx_topic_tag_board_labels_semantic_board_id(semantic_board_id)` [migr] |
-| `board_composition` | 复合主键 `(board_id, auxiliary_label_id)`，无 id；`idx_board_composition_board_id(board_id)` [migr]；`idx_board_composition_auxiliary_label_id(auxiliary_label_id)` [migr] |
-| `board_upgrade_suggestions` | `uq_board_upgrade_suggestions_hash(suggestion_hash)` **PARTIAL UNIQUE WHERE status='pending'** [migr]；`idx_board_upgrade_suggestions_status(status)` [gorm+migr] |
+#### 偏好/发现 → [`tables/preference-discovery.md`](tables/preference-discovery.md)（flow: `discovery`）
 
-> **勘误**：旧文档称 `semantic_labels` 唯一约束为 `(label_type, slug)` **错误**，实际是 `slug` 单列唯一。
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `preference_vectors` | 偏好向量画像（按 SemanticBoard 聚合） | `models.PreferenceVector` |
+| `rsshub_routes` | RSSHub 路由目录 | `models.RSSHubRoute` |
+| `route_embeddings` | RSSHub 路由向量 | `models.RouteEmbedding` |
+| `feed_recommendations` | 订阅源推荐卡片 | `models.FeedRecommendation` |
+| `route_param_options` | 路由参数可选值字典 | `models.RouteParamOption` |
 
-### AI Infrastructure 域
+#### 用户行为 → [`tables/preference-discovery.md`](tables/preference-discovery.md)（flow: `discovery`）
 
-| 表 | 索引/约束 |
-| ---- | ----------- |
-| `ai_call_logs` | `idx_call_logs_session(session_id)` [migr]；`idx_call_logs_op_time(operation, created_at)` **复合** [migr]；`idx_ai_call_logs_created_at(created_at)` [gorm]；单列 [gorm]：capability、success |
-| `scheduler_tasks` | 单列 [gorm]：name、status |
-| `ai_settings` | 单列 [gorm]：key |
-| `ai_providers` | 单列 [gorm]：name、provider_type、enabled |
-| `ai_routes` | `idx_ai_routes_capability_name(name, capability)` **UNIQUE 复合** [gorm]；单列 [gorm]：capability、enabled、priority |
-| `ai_route_providers` | `idx_ai_route_provider_link(route_id, provider_id)` **UNIQUE 复合** [gorm]；单列 [gorm]：priority、enabled |
-| `embedding_config` | 单列 [gorm]：key |
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `reading_behaviors` | 阅读行为 | `models.ReadingBehavior` |
 
-### 队列域
+#### 追踪 → [`tables/tracing.md`](tables/tracing.md)
 
-| 表 | 索引/约束 |
-| ---- | ----------- |
-| `firecrawl_jobs` | 单列索引各一 [gorm]：article_id、status、priority、available_at、lease_expires_at（**均为单列，非复合**） |
-| `tag_jobs` | 单列索引各一 [gorm]：article_id、status、priority、available_at、lease_expires_at（**均为单列，非复合**） |
-| `embedding_queues` | 单列 [gorm]：tag_id、status |
-| `merge_reembedding_queues` | 单列 [gorm]：source_tag_id、target_tag_id、status |
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `otel_spans` | OpenTelemetry 链路追踪 | `tracing.OtelSpan` |
 
-> **勘误**：旧文档称 `idx_firecrawl_jobs_status_available_at` / `idx_tag_jobs_status_available_at` 复合索引 **不存在**，实际是 status、available_at 等各自单列索引。状态流转与清理见 [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md#数据清理与保留策略)。
+### 废弃表（5 张，无对应 model，保留标注）
 
-### Narrative 叙事域
-
-| 表 | 索引/约束 |
-|----|-----------|
-| `narrative_summaries` | `idx_narrative_scope(scope_category_id)` [migr]；`idx_narrative_scope_period(scope_type, scope_category_id, period_date)` **复合** [migr]；`idx_narrative_summaries_board_id(board_id)` [migr]；`idx_narrative_period_date(period_date)` [gorm]；单列 [gorm]：status、board_id |
-| `narrative_boards` | `idx_narrative_boards_period(period_date)` [gorm+migr]；`idx_narrative_boards_scope(scope_category_id)` [gorm+migr]；`idx_narrative_boards_semantic_board_id(semantic_board_id)` [migr] |
-
-### 偏好向量与订阅源发现域（preference-vector-feed-discovery）
-
-| 表 | 索引/约束 |
-| ---- | ----------- |
-| `preference_vectors` | `idx_preference_vectors_board_source(board_id, source)` **UNIQUE** [gorm]（board_id 允许多 NULL，全局桶单行由 service 层 upsert 保证）；逻辑关联 `semantic_labels`(board_id)；向量列 `embedding vector`（运行时维度，无固定列维度） |
-| `rsshub_routes` | `idx_rsshub_routes_ns_path(namespace, path)` **UNIQUE** [gorm]；单列 [gorm]：`content_hash`、`status` |
-| `route_embeddings` | `idx_route_embeddings_route(route_id)` **UNIQUE** [gorm]；单列 [gorm]：`text_hash`；逻辑关联 `rsshub_routes`(route_id, OnDelete CASCADE)；向量列 `embedding vector` |
-| `feed_recommendations` | `idx_feed_recommendations_hash(recommendation_hash)` **UNIQUE** [gorm]；复合 `idx_feed_rec_status(status, score)` [gorm]；单列 [gorm]：`route_id`、`board_id`、`accepted_feed_id`；逻辑关联 `rsshub_routes`(route_id) / `semantic_labels`(board_id) / `feeds`(accepted_feed_id) |
-| `route_param_options` | `idx_route_param_option_uniq(route_id, param_name, value)` **UNIQUE** [gorm]；单列 [gorm]：`route_id`；逻辑关联 `rsshub_routes`(route_id, OnDelete CASCADE) |
-
-> `recommendation_hash = hash(route_id + board_id)`，**不含 source**，qa 与 manual_refresh 共享幂等池与 dismiss 冷却池（见 `flow/discovery.md`）。
-
-### Daily Report 日报域
-
-| 表 | 索引/约束 |
-| ---- | ----------- |
-| `board_daily_reports` | `idx_board_daily_reports_semantic_board_id(semantic_board_id)` [migr]；单列 [gorm]：semantic_board_id |
-| `daily_report_sections` | `idx_daily_report_sections_report_id(report_id)` [migr]；`idx_daily_report_sections_embedding` HNSW [runtime，dim≤2000]；单列 [gorm]：persistent_topic_id |
-| `daily_report_threads` | `idx_daily_report_threads_report_id(report_id)` [migr]；`idx_daily_report_threads_section_id(section_id)` [migr]（同名列 [gorm]） |
-| `daily_report_section_relations` | `uq_section_relations_pair(from_section_id, to_section_id, relation_type)` **UNIQUE 三列** [migr]；`idx_section_relations_from(from_section_id)` [gorm]；`idx_section_relations_to(to_section_id)` [gorm]；`idx_section_relations_type(relation_type)` [gorm+migr] |
-| `board_persistent_topics` | `idx_persistent_topics_board_status(semantic_board_id, status)` **复合** [gorm+migr]；`idx_board_persistent_topics_embedding` HNSW [runtime，dim≤2000]；**CHECK** ×2（见下） |
-| `board_topic_watches` | 单列 [gorm]：semantic_board_id；**CHECK** ×1（见下） |
-| `topic_watch_hits` | `idx_watch_section_report(watch_id, section_id, report_id)` **UNIQUE 复合** [gorm+migr] |
-
-### DataEnrichment 数据增强域
-
-| 表 | 索引/约束 |
-| ---- | ----------- |
-| `board_data_sources` | `idx_board_src(semantic_board_id, source_type)` **UNIQUE 复合** [gorm] |
-| `topic_lifeline_context` | `idx_topic_gran_period(persistent_topic_id, granularity, period)` **UNIQUE 复合** [gorm] |
-| `topic_enrichment_result` | 单列 [gorm]：persistent_topic_id |
-| `topic_enrichment_review` | 单列 [gorm]：persistent_topic_id、prev_result_id、curr_result_id |
-| `stock_debate_result` | 单列 [gorm]：topic_enrichment_result_id、persistent_topic_id |
-| `cross_board_relation_runs` | 单列 [migration 20260901_0001]：source_board_id；CHECK（source_kind/trigger_kind/status） |
-| `cross_board_relations` | `uq_cross_board_relations_open(suggestion_hash) WHERE status IN ('unresolved','proposed')` **部分唯一** [migration]；单列：source_board_id/target_board_id/run_id；CHECK（relation_type/verification_verdict/quality_grade/status） |
-
-### Tracing
-
-| 表 | 索引/约束 |
-|----|-----------|
-| `otel_spans` | 单列 [gorm]：`idx_otel_spans_trace_id`、`idx_otel_spans_name`、`idx_otel_spans_kind`、`idx_otel_spans_status`、`idx_otel_spans_start_time` |
-
----
-
-## CHECK 约束（文档历史零覆盖，现补全）
-
-| 约束名 | 表.列 | 取值 | 出处迁移 |
-| -------- | ------- | ------ | --------- |
-| `chk_board_persistent_topics_status` | `board_persistent_topics.status` | `IN ('candidate','active','archived')` | `20260619_0001` |
-| `chk_board_persistent_topics_source` | `board_persistent_topics.source` | `IN ('auto','manual')` | `20260702_0001` |
-| `chk_board_topic_watches_status` | `board_topic_watches.status` | `IN ('active','paused')` | `20260630_0001` |
-
-> 代码中另有大量**约定型枚举**（如 `embedding_queues.status`、`narrative_summaries.status`、`firecrawl_jobs.status`）**无 DB CHECK**，仅由 Go 常量约束，详见 [DATABASE_FIELDS.md](DATABASE_FIELDS.md)。
-
----
-
-## 文档导航
-
-| 文档 | 描述 |
+| 表名 | 说明 |
 | ------ | ------ |
-| [DATABASE_FIELDS.md](DATABASE_FIELDS.md) | 各表完整字段字典（含类型、约束、用途；需结合本页勘误阅读） |
-| [ER_DIAGRAM.md](ER_DIAGRAM.md) | 实体关系图（注：FK 引用矩阵多为 GORM 逻辑关联，DB 层未强制，仅 `topic_tags_merged_into_id_fkey` 真实存在） |
-| [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md) | 数据链路状态流转 + 数据清理与保留策略 |
+| `ai_summaries` | 旧版 Feed 级 AI 批量摘要（已废弃） |
+| `ai_summary_feeds` | AI 摘要-Feed 关联（已废弃） |
+| `ai_summary_topics` | AI 摘要-主题关联（已废弃） |
+| `topic_analysis_jobs` | 主题分析任务队列（已废弃，无 migrator 注册） |
+| `digest_configs` | Digest 推送配置（预留，已废弃） |
+
+### 框架表
+
+| 表名 | 说明 |
+| ------ | ------ |
+| `schema_migrations` | 迁移版本追踪（框架管理，不计入业务表） |
 
 ---
 
-## 如何阅读
-
-1. **先看本页概览与表清单**：了解数据库规模与 43 张真实表归属
-2. **本页索引/约束清单**：按表查真实索引、唯一约束、CHECK
-3. **[DATA_LIFECYCLE.md](DATA_LIFECYCLE.md)**：理解队列状态流转、清理回收机制、哪些表无自动清理
-4. **[ER_DIAGRAM.md](ER_DIAGRAM.md)**：了解表间逻辑关系（注意 FK 多为逻辑关联）
-5. **[DATABASE_FIELDS.md](DATABASE_FIELDS.md)**：按章节查阅具体字段定义
 
 ---
 
-## 相关文档
+## 全局域级概览
 
-- [项目架构总览](../architecture/overview.md) — 系统组件和子系统总览
-- [业务流程](../flow/README.md) — 链路概要设计、前后端协作（"业务怎么跑的"）
-- [数据库审计报告](../_audit/database-gaps.md) — 文档与代码差异的逐条审计
-- [开发指南](../development.md) — 构建、测试、验证命令
+```
+┌─────────────────┐       ┌─────────────────────┐
+│     Core        │       │    Topic Tags        │
+│  ┌───────────┐  │ (GORM │  ┌─────────────────┐ │  ← 逻辑引用中心 (hub)
+│  │ categories│──┼──逻辑─┼─→│   topic_tags     │ │
+│  ├───────────┤  │ 关联) │  ├─────────────────┤ │
+│  │   feeds   │  │       │  │ topic_tag_       │ │
+│  ├───────────┤  │       │  │   embeddings     │ │
+│  │ articles  │  │       │  ├─────────────────┤ │
+│  ├───────────┤  │       │  │ article_topic_   │ │
+│  │ reading_  │  │       │  │   tags           │ │
+│  │  behaviors│  │       │  ├─────────────────┤ │
+│  ├───────────┤  │       │  │ embedding_queues │ │
+│  │ user_     │  │       │  ├─────────────────┤ │
+│  │ preferences│ │       │  │ merge_reembedding│ │
+│  ├───────────┤  │       │  │   _queues        │ │
+│  │ firecrawl_│  │       │  ├─────────────────┤ │
+│  │   jobs    │  │       │  │ topic_tag_       │ │
+│  ├───────────┤  │       │  │   analyses       │ │
+│  │ tag_jobs  │  │       │  ├─────────────────┤ │
+│  └───────────┘  │       │  │ topic_analysis_  │ │
+└─────────────────┘       │  │   cursors        │ │
+                          │  ├─────────────────┤ │
+┌─────────────────┐       │  │ topic_tag_       │  ┌─────────────────┐
+│ Semantic Label  │ (GORM │  │   semantic_      │  │ Data Enrichment │
+│  ┌───────────┐  │ 逻辑) │  │   labels         │  │  board_data_    │
+│  │semantic_  │──┼───────┤  ├─────────────────┤ │  │   sources       │
+│  │  labels   │  │       │  │ topic_tag_board_ │ │  ├───────────────┤ │
+│  ├───────────┤  │       │  │   labels         │ │  │ topic_lifeline_ │ │
+│  │ board_    │  │       │  ├─────────────────┤ │  │   context       │ │
+│  │composition│  │       │  │ board_upgrade_   │ │  ├───────────────┤ │
+│  └───────────┘  │       │  │   suggestions    │ │  │ topic_enrichment│ │
+└────────┬────────┘       │  └─────────────────┘ │  │  _result/review │ │
+         │ (board)        └─────────────────────┘  ├───────────────┤ │
+         │                                           │ stock_debate_  │ │
+┌────────▼────────┐                                 │   result       │ │
+│ Daily Report /  │                                 └───────────────┘ │
+│ Persistent Topic│                                 └─────────────────┘
+│  board_daily_   │
+│   reports       │                                 ┌─────────────────┐
+│  daily_report_  │                                 │ AI Infra        │
+│   sections      │                                 │ ai_providers/   │
+│  daily_report_  │                                 │  ai_routes/     │
+│   threads       │                                 │  ai_route_      │
+│  daily_report_  │                                 │  providers/     │
+│ section_relations                                  │  ai_call_logs/  │
+│  board_persistent│                                 │  ai_settings/   │
+│   topics        │                                 │  scheduler_tasks│
+│  board_topic_   │                                 │  otel_spans     │
+│   watches       │                                 └─────────────────┘
+│  topic_watch_   │
+│   hits          │
+└─────────────────┘
+```
+
+- 实线箭头 → 表示 **GORM 逻辑引用**（源表字段指向目标表 `id`）；除 `topic_tags.merged_into_id` 外均无 DB 级 FK。
+- `semantic_labels` 是语义标签中心表，辅助标签（`label_type=auxiliary`）、SemanticBoard（`label_type=board`）与组合标签（`label_type=composite`，add-composite-labels）共存于此表。
+- `topic_tags` 通过 `topic_tag_semantic_labels` 和 `topic_tag_board_labels` 两张桥接表与 `semantic_labels` 关联。
+- `board_daily_reports` / `board_persistent_topics` / `board_topic_watches` / `board_data_sources` 均通过 `semantic_board_id` 逻辑引用 `semantic_labels`。
+- 「AI Summaries」域（`ai_summaries` 等）已废弃（无对应 model，见下文该域说明）。
 
 ---
 
-## 更新日志
-
-### 2026-07-30
-
-- 新增 `route_param_options` 表（feed-param-options）：RSSHub 路由参数可选值字典，UNIQUE(route_id,param_name,value)，`source` ∈ {`manual`,`scraped`}（拒 `llm`，LLM 不生成参数值铁律）（Core 33→34，总数 46→**47**）
-- 偏好/发现域索引节补 `route_param_options` 复合唯一索引 + 逻辑关联 `rsshub_routes`(OnDelete CASCADE)
-
-### 2026-07-25
-
-- 偏好转向量画像（preference-vector-feed-discovery）：删除 `user_preferences` 表（迁移 `20260725_0001` DROP，破坏性），新增 4 张表 `preference_vectors` / `rsshub_routes` / `route_embeddings` / `feed_recommendations`（Core 30→33，总数 43→**46**）
-- 新增「偏好向量与订阅源发现域」索引节（4 表的唯一/复合/单列索引）
-- 向量表清单补 `preference_vectors` / `route_embeddings`
-
-### 2026-07-19
-
-- 以代码（gorm tag + `postgres_migrations.go` + 运行时建索引）为真相重写全页
-- 表数由「38」更正为 **43**（Core 30 + DataEnrichment 5 + TopicGraph 7 + Tracing 1）
-- FK 数由「35」更正为 **1**（仅 `topic_tags_merged_into_id_fkey`；其余为 GORM 逻辑关联）
-- 新增「真实表清单（43 张）」与「索引与约束清单」（按表逐条）
-- 修正 §6 复合索引误报：`idx_articles_feed_*`、`idx_reading_behaviors_*`、`idx_firecrawl/tag_jobs_status_available_at`、`idx_article_topic_tag*` 实为单列
-- 补遗漏索引：semantic_labels 系列、中间表 FK 侧、narrative_*、ai_call_logs、board_upgrade_suggestions、daily_report_section_relations、board_persistent_topics、board_topic_watches、topic_watch_hits
-- 新增「CHECK 约束」节（3 个，历史零覆盖）
-
-### 2026-05-14
-
-- 初始版本：全景概览 + 文档导航
