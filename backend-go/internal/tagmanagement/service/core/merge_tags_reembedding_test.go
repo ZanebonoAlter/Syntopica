@@ -85,7 +85,6 @@ func TestMergeTagsReturnsErrorWhenReembeddingEnqueueFails(t *testing.T) {
 	db := setupMergeReembeddingTestDB(t)
 	source, target := seedMergeQueueTags(t, db)
 
-
 	originalFactory := MergeReembeddingQueueFactory
 	MergeReembeddingQueueFactory = func() mergeReembeddingEnqueuer {
 		return &failingMergeReembeddingQueue{}

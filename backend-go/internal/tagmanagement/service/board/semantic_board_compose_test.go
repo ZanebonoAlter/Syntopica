@@ -191,7 +191,7 @@ type composeAwareLLM struct {
 }
 
 func (f *composeAwareLLM) SuggestSemanticBoardUpgrades(ctx context.Context, prompt string, mode string) ([]SemanticBoardUpgradeSuggestion, error) {
-	if mode == string(SemanticBoardUpgradeDecisionCompose) {
+	if mode == "create:composite" || mode == "expand:composite" {
 		f.composeCalls++
 		f.lastComposePrompt = prompt
 		if f.composeError != nil {
@@ -224,7 +224,7 @@ func TestGenerateSuggestionsComposeRoundTrip(t *testing.T) {
 	service := NewSemanticBoardUpgradeService(db, llm, nil)
 
 	// Cold start: aux pool (2) < RefCountThreshold (5) — compose round still runs.
-	suggestions, _, err := service.GenerateSuggestions(context.Background(), "")
+	suggestions, _, err := service.GenerateSuggestions(context.Background(), UpgradeGenerateRequest{Direction: UpgradeDirectionCreate, Source: UpgradeSourceComposite})
 	require.NoError(t, err)
 	require.Len(t, suggestions, 1, "one valid compose suggestion; hallucinated ids and skip filtered")
 	require.Equal(t, SemanticBoardUpgradeDecisionCompose, suggestions[0].Decision)
@@ -246,9 +246,11 @@ func TestGenerateSuggestionsComposeLLMFailureDegrades(t *testing.T) {
 	llm := &composeAwareLLM{composeError: errors.New("bad json from llm")}
 	service := NewSemanticBoardUpgradeService(db, llm, nil)
 
-	suggestions, _, err := service.GenerateSuggestions(context.Background(), "")
-	require.NoError(t, err, "compose LLM failure must degrade, not fail the whole run")
-	require.Empty(t, suggestions)
+	// 单入口语境：手动触发的 create×composite 对 LLM 失败诚实报错（不产半成品、
+	// 不静默空列表误导用户）；定时任务的降级容错由 job 层负责（段失败仅记日志
+	// 继续兄弟段，红线 10/16 语境适配——旧「整轮混跑不崩」语义已随四格拆分退役）。
+	_, _, err := service.GenerateSuggestions(context.Background(), UpgradeGenerateRequest{Direction: UpgradeDirectionCreate, Source: UpgradeSourceComposite})
+	require.Error(t, err, "compose LLM failure must surface on the manual single-source entry")
 }
 
 func TestGenerateAndPersistComposeLifecycle(t *testing.T) {
@@ -268,7 +270,7 @@ func TestGenerateAndPersistComposeLifecycle(t *testing.T) {
 	service := NewSemanticBoardUpgradeService(db, llm, nil)
 
 	// First run → inserted pending compose row.
-	inserted, skipped, blocked, err := service.GenerateAndPersist(context.Background(), "")
+	inserted, skipped, blocked, err := service.GenerateAndPersist(context.Background(), UpgradeGenerateRequest{Direction: UpgradeDirectionCreate, Source: UpgradeSourceComposite})
 	require.NoError(t, err)
 	require.Equal(t, 1, inserted)
 	require.Equal(t, 0, skipped)
@@ -282,7 +284,7 @@ func TestGenerateAndPersistComposeLifecycle(t *testing.T) {
 	firstHash := pending[0].SuggestionHash
 
 	// Second run, same suggestion → idempotent skip (same hash already pending).
-	inserted2, skipped2, blocked2, err := service.GenerateAndPersist(context.Background(), "")
+	inserted2, skipped2, blocked2, err := service.GenerateAndPersist(context.Background(), UpgradeGenerateRequest{Direction: UpgradeDirectionCreate, Source: UpgradeSourceComposite})
 	require.NoError(t, err)
 	require.Equal(t, 0, inserted2)
 	require.Equal(t, 1, skipped2)
@@ -290,16 +292,16 @@ func TestGenerateAndPersistComposeLifecycle(t *testing.T) {
 
 	// Dismiss, then regenerate within cooldown → cooldownBlocked.
 	require.NoError(t, repo.MarkDismissed(context.Background(), pending[0].ID, "不相关"))
-	inserted3, skipped3, blocked3, err := service.GenerateAndPersist(context.Background(), "")
+	inserted3, skipped3, blocked3, err := service.GenerateAndPersist(context.Background(), UpgradeGenerateRequest{Direction: UpgradeDirectionCreate, Source: UpgradeSourceComposite})
 	require.NoError(t, err)
 	require.Equal(t, 0, inserted3)
 	require.Equal(t, 0, skipped3)
 	require.Equal(t, 1, blocked3)
 
 	// Hash stability: same component set (any order) → same hash.
-	require.Equal(t, ComputeSuggestionHash("", "compose", nil, []uint{auxA.ID, auxB.ID}), firstHash)
-	require.Equal(t, ComputeSuggestionHash("", "compose", nil, []uint{auxB.ID, auxA.ID}), firstHash)
-	require.NotEqual(t, ComputeSuggestionHash("", "compose", nil, []uint{auxA.ID}), firstHash)
+	require.Equal(t, ComputeSuggestionHash("create:composite", "compose", nil, []uint{auxA.ID, auxB.ID}), firstHash)
+	require.Equal(t, ComputeSuggestionHash("create:composite", "compose", nil, []uint{auxB.ID, auxA.ID}), firstHash)
+	require.NotEqual(t, ComputeSuggestionHash("create:composite", "compose", nil, []uint{auxA.ID}), firstHash)
 }
 
 func TestConfirmComposeSuggestion(t *testing.T) {
@@ -429,4 +431,56 @@ func TestConfirmComposeSuggestionDedupeReuse(t *testing.T) {
 	var confirmed models.BoardUpgradeSuggestion
 	require.NoError(t, db.Where("id = ?", suggestion.ID).First(&confirmed).Error)
 	require.Equal(t, "confirmed", confirmed.Status)
+}
+
+// TestFilterExistingComposeCandidates（2026-09-07 报障：确认创建过的组合重复出现在
+// 建议列表）：已存在组合的候选不再入列——create 路整体排除；expand 路已挂载目标
+// 版块的排除、未挂载的保留（挂载语义）；部分重叠（非完全一致）不受影响。
+func TestFilterExistingComposeCandidates(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	embedder := func(ctx context.Context, input string, mode auxlabel.AuxiliaryLabelEmbeddingMode) (string, []float64, error) {
+		vec := testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim)
+		return core.FloatsToPgVector(vec), vec, nil
+	}
+	service := NewSemanticBoardUpgradeService(db, nil, embedder)
+
+	auxA := createComposeAux(t, db, "组甲", "fx-a", 8)
+	auxB := createComposeAux(t, db, "组乙", "fx-b", 8)
+	auxC := createComposeAux(t, db, "组丙", "fx-c", 8)
+
+	// 既有组合 [A,B]。另建 [A,B,C] 三元组合验证部分重叠不误伤。
+	existing := models.SemanticLabel{Label: "既有组合", Slug: "fx-existing", LabelType: "composite", Status: "active", Source: "manual"}
+	require.NoError(t, db.Create(&existing).Error)
+	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existing.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
+	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existing.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
+	existingTriple := models.SemanticLabel{Label: "既有三元组合", Slug: "fx-existing-triple", LabelType: "composite", Status: "active", Source: "manual"}
+	require.NoError(t, db.Create(&existingTriple).Error)
+	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existingTriple.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
+	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existingTriple.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
+	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existingTriple.ID, ComponentLabelID: auxC.ID, Position: 3}).Error)
+
+	candidates := []ComposeCandidate{
+		{ComponentIDs: []uint{auxA.ID, auxB.ID}, Cooccurrence: 20}, // 与既有二元组合完全一致
+		{ComponentIDs: []uint{auxA.ID, auxC.ID}, Cooccurrence: 15}, // 部分重叠（非完全一致），不算重复
+	}
+
+	// create 路（targetBoardID=nil）：[A,B] 排除，[A,C] 保留。
+	got, err := service.filterExistingComposeCandidates(context.Background(), candidates, nil)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, []uint{auxA.ID, auxC.ID}, got[0].ComponentIDs)
+
+	// expand 路：组合存在但未挂载目标版块 → 保留（挂载语义，确认时复用）。
+	board := models.SemanticLabel{Label: "目标版块", Slug: "fx-board", LabelType: "board", Status: "active", Source: "manual"}
+	require.NoError(t, db.Create(&board).Error)
+	got, err = service.filterExistingComposeCandidates(context.Background(), candidates, &board.ID)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+
+	// expand 路：组合已挂载目标版块 → 排除。
+	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: existing.ID}).Error)
+	got, err = service.filterExistingComposeCandidates(context.Background(), candidates, &board.ID)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, []uint{auxA.ID, auxC.ID}, got[0].ComponentIDs)
 }

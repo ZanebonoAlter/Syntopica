@@ -270,15 +270,20 @@ func TestSemanticBoardHandlerUpgradeBackfillAndConfig(t *testing.T) {
 	tag := createHandlerTopicTag(t, db, "GPT-5", models.TagCategoryEvent)
 	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxiliary.ID}).Error)
 
+	// 旧 upgrade-candidates 端点已退役（spec REMOVED: getUpgradeCandidates，
+	// 路由未注册 → 4xx 非 200）。
 	candidates := performJSON(t, router, http.MethodGet, "/api/semantic-boards/upgrade-candidates", nil)
-	require.Equal(t, http.StatusOK, candidates.Code)
-	require.Contains(t, candidates.Body.String(), "OpenAI")
+	require.NotEqual(t, http.StatusOK, candidates.Code)
 
-	suggest := performJSON(t, router, http.MethodPost, "/api/semantic-boards/upgrade-suggest", nil)
+	// 四格参数化：缺 direction/source 的 suggest 请求被 400 拒绝（spec: suggestUpgrades API）。
+	noParam := performJSON(t, router, http.MethodPost, "/api/semantic-boards/upgrade-suggest", nil)
+	require.Equal(t, http.StatusBadRequest, noParam.Code)
+
+	// 单例簇不产建议（watch 观察池退役，spec: 升级建议生成路径单一化）。
+	suggest := performJSON(t, router, http.MethodPost, "/api/semantic-boards/upgrade-suggest?direction=create&source=aux", nil)
 	require.Equal(t, http.StatusOK, suggest.Code)
-	// §4.5: a single candidate forms a singleton cluster → observation-pool watch
-	// suggestion (no LLM adjudication), not a create_new.
-	require.Contains(t, suggest.Body.String(), "watch")
+	require.Contains(t, suggest.Body.String(), "suggestions")
+	require.NotContains(t, suggest.Body.String(), "watch")
 
 	execute := performJSON(t, router, http.MethodPost, "/api/semantic-boards/upgrade-execute", map[string]any{
 		"decision":            "create_new",

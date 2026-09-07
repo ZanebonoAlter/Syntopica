@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -70,38 +69,6 @@ func (r *BoardUpgradeSuggestionRepository) CountDismissedInCooldown(ctx context.
 	return count, err
 }
 
-// CloseWatchSuggestions confirms every pending watch suggestion whose
-// auxiliary_label_ids overlaps auxIDs (spec: watch 建议成簇自动关闭). Called
-// when a previously single-label cluster grows to ≥2 members: the single-label
-// watch is no longer needed and is closed (→ confirmed, resolved_at=now). Only
-// decision='watch' rows are touched; create_new/merge suggestions are untouched.
-// Returns the number of watch suggestions closed.
-func (r *BoardUpgradeSuggestionRepository) CloseWatchSuggestions(ctx context.Context, auxIDs []uint) (int64, error) {
-	if len(auxIDs) == 0 {
-		return 0, nil
-	}
-	// auxiliary_label_ids is jsonb; test containment per id via jsonb_build_array.
-	// OR-ing the per-id containments gives the overlap.
-	parts := make([]string, 0, len(auxIDs))
-	args := make([]interface{}, 0, len(auxIDs))
-	for _, id := range auxIDs {
-		parts = append(parts, "auxiliary_label_ids @> jsonb_build_array(?::int)")
-		args = append(args, id)
-	}
-	overlap := strings.Join(parts, " OR ")
-	res := r.db.WithContext(ctx).Model(&models.BoardUpgradeSuggestion{}).
-		Where("decision = ? AND status = ?", "watch", "pending").
-		Where("("+overlap+")", args...).
-		Updates(map[string]interface{}{
-			"status":      "confirmed",
-			"resolved_at": time.Now(),
-		})
-	if res.Error != nil {
-		return 0, res.Error
-	}
-	return res.RowsAffected, nil
-}
-
 // List returns persisted suggestions filtered by status/decision (spec: 建议查询
 // API 读持久化表). Filtering rules:
 //   - status==""   → no status filter (handler supplies the default "pending")
@@ -145,23 +112,4 @@ func (r *BoardUpgradeSuggestionRepository) MarkDismissed(ctx context.Context, id
 	return r.db.WithContext(ctx).Model(&models.BoardUpgradeSuggestion{}).
 		Where("id = ? AND status = ?", id, "pending").
 		Updates(updates).Error
-}
-
-// GCOldWatch dismisses pending watch suggestions older than gcDays that have not
-// yet formed a cluster (spec: 观察池建议自动回收). This bounds the observation
-// pool: a singleton label that never gained peers is eventually retired instead
-// of accumulating forever. gcDays is parameterized (bound as the INTERVAL
-// multiplier) to avoid SQL injection. Returns the number of rows dismissed.
-func (r *BoardUpgradeSuggestionRepository) GCOldWatch(ctx context.Context, gcDays int) (int64, error) {
-	res := r.db.WithContext(ctx).Model(&models.BoardUpgradeSuggestion{}).
-		Where("decision = ? AND status = ? AND created_at < NOW() - (? * INTERVAL '1 day')", "watch", "pending", gcDays).
-		Updates(map[string]interface{}{
-			"status":      "dismissed",
-			"resolved_at": time.Now(),
-			"resolved_by": "watch_gc",
-		})
-	if res.Error != nil {
-		return 0, res.Error
-	}
-	return res.RowsAffected, nil
 }

@@ -1,5 +1,5 @@
 import { ref, onMounted, onUnmounted } from 'vue'
-import { useSemanticBoardsApi, type UpgradeCandidate, type UpgradeCluster, type UpgradeSuggestion, type UpgradeSuggestionRow, type BackfillTask, type MatchingConfig } from '~/api/semanticBoards'
+import { useSemanticBoardsApi, type UpgradeGenerateParams, type UpgradeSuggestionRow, type BackfillTask, type MatchingConfig } from '~/api/semanticBoards'
 import { useArticlesApi } from '~/api/articles'
 import { normalizeArticle, type ArticlePayload } from '~/api/normalizers/article'
 import type { Article } from '~/types'
@@ -29,11 +29,6 @@ export function useTagsPage() {
   const loadingPreviewArticle = ref(false)
 
   // Upgrade
-  const upgradeCandidates = ref<UpgradeCandidate[]>([])
-  const upgradeClusters = ref<UpgradeCluster[]>([])
-  const upgradeSuggestions = ref<UpgradeSuggestion[]>([])
-  const upgradeLoading = ref(false)
-  const upgradeSuggesting = ref(false)
   const upgradeBackfillNotice = ref(false)
 
   // Persisted upgrade suggestions (主数据源，§6.1/6.2)
@@ -99,42 +94,9 @@ export function useTagsPage() {
   }
 
   // ---- Upgrade ----
-  async function handleUpgradeSuggest() {
-    upgradeLoading.value = true
+  /** 打开升级建议面板（旧内存探索链路已退役：候选/簇/内存建议不再预加载）。 */
+  function handleUpgradeSuggest() {
     showUpgradeDialog.value = true
-    upgradeBackfillNotice.value = false
-    const res = await sbApi.getUpgradeCandidates()
-    if (res.success && res.data) {
-      upgradeCandidates.value = res.data.candidates
-      upgradeClusters.value = res.data.clusters
-    }
-    upgradeLoading.value = false
-  }
-
-  async function handleSuggestUpgrade(mode: string) {
-    upgradeSuggesting.value = true
-    upgradeBackfillNotice.value = false
-    const res = await sbApi.suggestUpgrade(mode)
-    if (res.success && res.data) {
-      upgradeSuggestions.value = res.data.suggestions
-    }
-    upgradeSuggesting.value = false
-  }
-
-  async function handleExecuteUpgrade(suggestion: UpgradeSuggestion, index: number) {
-    if (suggestion.decision === 'skip') return
-    const res = await sbApi.executeUpgrade({
-      decision: suggestion.decision,
-      board_label: suggestion.board_label,
-      description: suggestion.description,
-      target_board_id: suggestion.target_board_id,
-      auxiliary_label_ids: suggestion.auxiliary_label_ids,
-    })
-    if (res.success) {
-      upgradeSuggestions.value.splice(index, 1)
-      upgradeBackfillNotice.value = true
-      void boardCRUD.loadBoards()
-    }
   }
 
   // ---- Persisted suggestions (主数据源，§6.1/6.2) ----
@@ -148,13 +110,16 @@ export function useTagsPage() {
     upgradePersistedLoading.value = false
   }
 
-  async function handleGenerateUpgradeSuggestions() {
+  /** 四格生成入口（方向×来源+锁定版块）：生成失败时回传错误供面板行内提示。 */
+  async function handleGenerateUpgradeSuggestions(params: UpgradeGenerateParams): Promise<{ ok: boolean; error?: string }> {
     upgradePersistedGenerating.value = true
-    const res = await sbApi.generateUpgradeSuggestions()
+    const res = await sbApi.generateUpgradeSuggestions(params)
     upgradePersistedGenerating.value = false
     if (res.success) {
       await loadPersistedSuggestions(upgradePersistedFilter.value)
+      return { ok: true }
     }
+    return { ok: false, error: res.error }
   }
 
   async function handleDismissUpgradeRow(id: number) {
@@ -315,9 +280,8 @@ export function useTagsPage() {
     handleArticleFavorite, handleArticleUpdate,
 
     // Upgrade
-    upgradeCandidates, upgradeClusters, upgradeSuggestions,
-    upgradeLoading, upgradeSuggesting, upgradeBackfillNotice,
-    handleUpgradeSuggest, handleSuggestUpgrade, handleExecuteUpgrade,
+    upgradeBackfillNotice,
+    handleUpgradeSuggest,
     upgradePersistedSuggestions, upgradePersistedLoading, upgradePersistedGenerating,
     loadPersistedSuggestions, handleGenerateUpgradeSuggestions,
     handleDismissUpgradeRow, handleConfirmUpgradeRow,

@@ -21,8 +21,12 @@ import (
 // gate (design.md D3): skip decisions are never persisted; non-skip suggestions
 // are deduplicated via the partial unique index and cooled-down via the
 // dismissed-resolved_at record.
-func (s *SemanticBoardUpgradeService) GenerateAndPersist(ctx context.Context, mode string) (inserted, skipped, cooldownBlocked int, err error) {
-	suggestions, clusters, err := s.GenerateSuggestions(ctx, mode)
+func (s *SemanticBoardUpgradeService) GenerateAndPersist(ctx context.Context, req UpgradeGenerateRequest) (inserted, skipped, cooldownBlocked int, err error) {
+	if err := req.Validate(); err != nil {
+		return 0, 0, 0, err
+	}
+	mode := req.ModeKey()
+	suggestions, _, err := s.GenerateSuggestions(ctx, req)
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -67,33 +71,7 @@ func (s *SemanticBoardUpgradeService) GenerateAndPersist(ctx context.Context, mo
 		}
 	}
 
-	// §4.5: labels that clustered (≥2) this round are no longer singletons — close
-	// any pending watch suggestions whose auxiliary_label_ids overlap them. The
-	// watch observation is resolved by the cluster forming (even if the cluster's
-	// formal suggestion was skip/cooldown-blocked, the labels still found peers).
-	clusteredAuxIDs := clusteredAuxIDs(clusters)
-	if len(clusteredAuxIDs) > 0 {
-		if _, closeErr := s.suggestionRepo.CloseWatchSuggestions(ctx, clusteredAuxIDs); closeErr != nil {
-			return inserted, skipped, cooldownBlocked, closeErr
-		}
-	}
 	return inserted, skipped, cooldownBlocked, nil
-}
-
-// clusteredAuxIDs returns the candidate auxiliary ids of every cluster with
-// ≥2 members — the labels that formed (or joined) a cluster this round and
-// whose singleton watch observations (§4.5) are therefore resolved.
-func clusteredAuxIDs(clusters []SemanticBoardUpgradeCluster) []uint {
-	var ids []uint
-	for _, c := range clusters {
-		if len(c.Candidates) < 2 {
-			continue
-		}
-		for _, cand := range c.Candidates {
-			ids = append(ids, cand.ID)
-		}
-	}
-	return UniqueUintSlice(ids)
 }
 
 // ComputeSuggestionHash returns a stable 32-hex-char fingerprint of
@@ -141,19 +119,6 @@ func (s *SemanticBoardUpgradeService) LoadDismissCooldownDays(ctx context.Contex
 	var setting models.AISettings
 	if err := s.db.WithContext(ctx).Where("key = ?", "semantic_board_upgrade_suggestion_dismiss_cooldown_days").First(&setting).Error; err != nil {
 		return defaultDays // missing/invalid → default; not worth failing the run
-	}
-	return parseSemanticBoardUpgradeInt(setting.Value, defaultDays)
-}
-
-// LoadWatchGCDays reads the watch observation GC window from ai_settings key
-// semantic_board_upgrade_watch_gc_days (default 30). Watch suggestions older
-// than this that never formed a cluster are auto-dismissed by the scheduler
-// (spec: 观察池建议自动回收). Same pattern as LoadDismissCooldownDays.
-func (s *SemanticBoardUpgradeService) LoadWatchGCDays(ctx context.Context) int {
-	const defaultDays = 30
-	var setting models.AISettings
-	if err := s.db.WithContext(ctx).Where("key = ?", "semantic_board_upgrade_watch_gc_days").First(&setting).Error; err != nil {
-		return defaultDays
 	}
 	return parseSemanticBoardUpgradeInt(setting.Value, defaultDays)
 }

@@ -115,7 +115,6 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 
 	boards := rg.Group("/semantic-boards")
 	{
-		boards.GET("/upgrade-candidates", handler.getUpgradeCandidates)
 		boards.POST("/upgrade-suggest", handler.suggestUpgrades)
 		boards.POST("/upgrade-execute", handler.executeUpgrade)
 

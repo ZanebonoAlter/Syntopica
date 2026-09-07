@@ -37,11 +37,6 @@ function mountPanel(rows: UpgradeSuggestionRow[]) {
   return mount(UpgradeSuggestionPanel, {
     props: {
       visible: true,
-      candidates: [],
-      clusters: [],
-      suggestions: [],
-      loading: false,
-      suggesting: false,
       backfillNotice: false,
       persistedSuggestions: rows,
       persistedLoading: false,
@@ -109,6 +104,7 @@ describe('UpgradeSuggestionPanel — compose 建议（add-composite-labels 6.2�
     const w = mountPanel([])
     await flushPromises()
     expect(w.find('[data-decision="compose"]').exists()).toBe(false)
-    expect(w.find('.usp-persisted-empty').text()).toContain('暂无持久化建议')
+    // 空态文案随四格入口改版（split-board-upgrade-directions）：未生成过显示引导。
+    expect(w.find('.usp-persisted-empty').text()).toContain('选择方向与来源后生成建议')
   })
 })

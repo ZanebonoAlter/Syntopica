@@ -2388,8 +2388,19 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	}
 	migrations = append(migrations, analysisMethodLegacyCopyMigration(), referenceRoleSeedRetireMigration())
 	migrations = append(migrations, crossBoardRelationMigration())
-	return append(migrations, compositeComponentsMigration())
+	migrations = append(migrations, compositeComponentsMigration())
+	migrations = append(migrations, watchMaterializedHintCleanupMigration())
+	migrations = append(migrations, watchSuggestionCleanupMigration())
+	return append(migrations, legacyDiscoverNewPendingDismissMigration())
 }
+
+// watchMaterializedHintCleanupMigration implements 20260905_0001: one-shot
+// removal of topic_watch_hits rows owned by materialized-track watches
+// (type=keyword_topic / sentence_topic). These rows violate the topic-watch
+// spec (物化轨 SHALL NOT 产生命中提示记录) — they were written because the
+// pre-fix hint evaluation fell back every non-keyword type into the label AI
+// branch. Deletion is safe: hits are a read-only overlay with no downstream
+// dependency, and label/keyword-track hits are untouched.
 
 // compositeComponentsMigration implements 20260902_0001: composite label
 // support (add-composite-labels). AutoMigrate owns composite_components table
@@ -2783,4 +2794,67 @@ func PruneUnderqualifiedCandidates(db *gorm.DB, upgradeThreshold int) (deleted i
 		return 0, err
 	}
 	return len(topicIDs), nil
+}
+
+func watchMaterializedHintCleanupMigration() Migration {
+	return Migration{
+		Version:     "20260905_0001",
+		Description: "watch-materialize-llm-adjudication: one-shot delete of hint rows illegally produced by materialized-track watches.",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_watch_hits") || !tableExists(db, "board_topic_watches") {
+				return nil // no watch tables on this deployment — nothing to clean
+			}
+			if err := db.Exec(`DELETE FROM topic_watch_hits
+				WHERE watch_id IN (
+					SELECT id FROM board_topic_watches
+					WHERE type IN ('keyword_topic', 'sentence_topic'))`).Error; err != nil {
+				return fmt.Errorf("delete materialized-watch hint rows: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// legacyDiscoverNewPendingDismissMigration one-shot dismisses pending suggestions
+// produced by the retired discover_new pipeline (split-board-upgrade-directions
+// 报障修复，2026-09-07)：旧管线语义与四格新语义不兼容，且 hash 含旧 mode 值永不
+// 被新幂等命中——150 条旧 pending 建议永久混入列表干扰判断。置 dismissed 留痕
+// （非物理删除，可事后查询回溯），幂等，二次执行 no-op。
+func legacyDiscoverNewPendingDismissMigration() Migration {
+	return Migration{
+		Version:     "20260907_0001",
+		Description: "split-board-upgrade-directions: one-shot dismiss of legacy discover_new pending suggestions (old pipeline retired, hash format incompatible).",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "board_upgrade_suggestions") {
+				return nil
+			}
+			if err := db.Exec(`UPDATE board_upgrade_suggestions
+				SET status = 'dismissed',
+					dismiss_reason = 'legacy_discover_new_cleanup',
+					resolved_at = now()
+				WHERE status = 'pending' AND mode = 'discover_new'`).Error; err != nil {
+				return fmt.Errorf("dismiss legacy discover_new pending suggestions: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// watchSuggestionCleanupMigration one-shot deletes pending watch suggestions
+// (split-board-upgrade-directions: watch 观察池退役——存量 pending watch 行
+// 清理，幂等，二次执行 no-op。高置信 merge 存量 pending 行保留可确认).
+func watchSuggestionCleanupMigration() Migration {
+	return Migration{
+		Version:     "20260905_0002",
+		Description: "split-board-upgrade-directions: one-shot delete of pending watch suggestions (observation pool retired).",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "board_upgrade_suggestions") {
+				return nil
+			}
+			if err := db.Exec(`DELETE FROM board_upgrade_suggestions WHERE decision = 'watch'`).Error; err != nil {
+				return fmt.Errorf("delete pending watch suggestions: %w", err)
+			}
+			return nil
+		},
+	}
 }

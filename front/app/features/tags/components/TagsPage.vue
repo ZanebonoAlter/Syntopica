@@ -49,8 +49,7 @@ const {
   showGenerateDialog, showMergePreview, showArticlePreview,
   selectedPreviewArticle, previewArticles, loadingPreviewArticle,
   backfillTask,
-  upgradeCandidates, upgradeClusters, upgradeSuggestions,
-  upgradeLoading, upgradeSuggesting, upgradeBackfillNotice,
+  upgradeBackfillNotice,
   upgradePersistedSuggestions, upgradePersistedLoading, upgradePersistedGenerating,
   matchingConfig, matchingConfigLoading,
   // Methods - board
@@ -65,8 +64,7 @@ const {
   loadAuxiliaryLabels, loadClusters, handleUpdatePage,
   handleDisableAuxLabel, handleMergeAuxLabel,
   // Methods - other
-  handleUpgradeSuggest, handleSuggestUpgrade, handleExecuteUpgrade,
-  loadPersistedSuggestions, handleGenerateUpgradeSuggestions,
+  handleUpgradeSuggest, loadPersistedSuggestions, handleGenerateUpgradeSuggestions,
   handleDismissUpgradeRow, handleConfirmUpgradeRow,
   handleTriggerBackfill,
   handleOpenMatchingConfig, handleSaveMatchingConfig,
@@ -332,18 +330,11 @@ onMounted(() => { void loadWatchCount() })
     />
     <UpgradeSuggestionPanel
       :visible="showUpgradeDialog"
-      :candidates="upgradeCandidates"
-      :clusters="upgradeClusters"
-      :suggestions="upgradeSuggestions"
-      :loading="upgradeLoading"
-      :suggesting="upgradeSuggesting"
       :backfill-notice="upgradeBackfillNotice"
       :persisted-suggestions="upgradePersistedSuggestions"
       :persisted-loading="upgradePersistedLoading"
       :persisted-generating="upgradePersistedGenerating"
       :boards="boards"
-      @suggest="handleSuggestUpgrade"
-      @execute="handleExecuteUpgrade"
       @load-persisted="loadPersistedSuggestions"
       @generate="handleGenerateUpgradeSuggestions"
       @dismiss-row="handleDismissUpgradeRow"

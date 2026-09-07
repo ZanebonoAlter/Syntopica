@@ -8,7 +8,6 @@ import (
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
-	tagrepo "syntopica-backend/internal/tagmanagement/repository"
 	boardsvc "syntopica-backend/internal/tagmanagement/service/board"
 )
 
@@ -53,35 +52,33 @@ func parseBoardUpgradeHHMM(s string) (int, int, error) {
 // surfaces as a non-nil JobResult carrying the error string but a nil error —
 // the scheduler loop stays healthy and sibling jobs keep running. Returns
 // inserted/skipped/cooldown/watch_gc counts for status display.
+// BoardUpgradeSuggestJob runs the two create-direction generation passes
+// ({create,aux} then {create,composite}) and nothing else (spec: 定时生成仅创建
+// 方向——版块扩充纯手动，必须选版块触发). A per-pass failure is logged only
+// and does not abort the sibling pass; the job returns a nil error so the
+// scheduler loop stays healthy (flow 红线 10). Returns inserted/skipped/cooldown
+// counts for status display.
 func BoardUpgradeSuggestJob() JobFunc {
 	return func(ctx context.Context) (*JobResult, error) {
 		startTime := time.Now()
 		db := repository.Repo.DB()
 		svc := boardsvc.NewSemanticBoardUpgradeService(db, boardsvc.NewDefaultSemanticBoardUpgradeLLM(), nil)
 
-		inserted, skipped, cooldownBlocked, err := svc.GenerateAndPersist(ctx, "discover_new")
-		if err != nil {
-			// Failure is logged only (design D4); return nil error so the scheduler
-			// does not mark the task failed and sibling jobs are unaffected.
-			logging.Errorf("board_upgrade_suggest: generation failed: %v", err)
-			return &JobResult{
-				Data: map[string]interface{}{
-					"error":       err.Error(),
-					"started_at":  startTime.Format(time.RFC3339),
-					"finished_at": time.Now().Format(time.RFC3339),
-				},
-				Summary: fmt.Sprintf("board upgrade generation failed: %v", err),
-			}, nil
+		passes := []boardsvc.UpgradeGenerateRequest{
+			{Direction: boardsvc.UpgradeDirectionCreate, Source: boardsvc.UpgradeSourceAux},
+			{Direction: boardsvc.UpgradeDirectionCreate, Source: boardsvc.UpgradeSourceComposite},
 		}
-
-		// GC stale watch suggestions (spec: 观察池建议自动回收). Failure is logged
-		// only; it does not negate the generation that already succeeded.
-		gcDays := svc.LoadWatchGCDays(ctx)
-		repo := tagrepo.NewBoardUpgradeSuggestionRepository(db)
-		gcCount, gcErr := repo.GCOldWatch(ctx, gcDays)
-		if gcErr != nil {
-			logging.Errorf("board_upgrade_suggest: watch GC failed: %v", gcErr)
-			gcCount = 0
+		var inserted, skipped, cooldownBlocked int
+		for _, pass := range passes {
+			pInserted, pSkipped, pCooldown, err := svc.GenerateAndPersist(ctx, pass)
+			if err != nil {
+				// Failure is logged only (flow 红线 10)；继续兄弟段，不标记 task failed。
+				logging.Errorf("board_upgrade_suggest: %s pass failed: %v", pass.ModeKey(), err)
+				continue
+			}
+			inserted += pInserted
+			skipped += pSkipped
+			cooldownBlocked += pCooldown
 		}
 
 		return &JobResult{
@@ -89,11 +86,10 @@ func BoardUpgradeSuggestJob() JobFunc {
 				"inserted":         inserted,
 				"skipped":          skipped,
 				"cooldown_blocked": cooldownBlocked,
-				"watch_gc":         gcCount,
 				"started_at":       startTime.Format(time.RFC3339),
 				"finished_at":      time.Now().Format(time.RFC3339),
 			},
-			Summary: fmt.Sprintf("board upgrade: inserted=%d skipped=%d cooldown=%d watch_gc=%d", inserted, skipped, cooldownBlocked, gcCount),
+			Summary: fmt.Sprintf("board upgrade: inserted=%d skipped=%d cooldown=%d", inserted, skipped, cooldownBlocked),
 		}, nil
 	}
 }

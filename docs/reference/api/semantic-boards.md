@@ -30,8 +30,7 @@
 | POST | `/composite-labels/:id/disable` | 禁用组合标签（向量置 NULL，组件与别名保留） |
 | POST | `/composite-labels/:id/enable` | 启用组合标签（重算 embedding） |
 | GET | `/composite-labels/component-options` | 组件候选推荐排序（挂载数→ref_count，带挂载版块名） |
-| GET | `/semantic-boards/upgrade-candidates` | 升级候选 + 预聚类 |
-| POST | `/semantic-boards/upgrade-suggest` | 触发 LLM 升级建议（legacy） |
+| POST | `/semantic-boards/upgrade-suggest` | 四格参数触发 LLM 升级建议（内存响应，调试用） |
 | POST | `/semantic-boards/upgrade-execute` | 执行升级建议 |
 | GET | `/semantic-boards/upgrade-suggestions` | 列持久化升级建议 |
 | POST | `/semantic-boards/upgrade-suggestions/:id/dismiss` | 忽略升级建议 |
@@ -322,41 +321,20 @@ Response `data`：
 
 ## 升级候选与建议
 
-### GET `/semantic-boards/upgrade-candidates`
-
-查看满足 `semantic_board_upgrade_ref_count_threshold` 的未升级辅助标签，以及预聚类结果。
-
-Response `data`：
-
-```json
-{
-  "candidates": [
-    { "id": 10, "label": "OpenAI", "slug": "openai", "ref_count": 8 }
-  ],
-  "clusters": [
-    {
-      "candidates": [{ "id": 10, "label": "OpenAI", "slug": "openai", "ref_count": 8 }],
-      "existing_board_id": null,
-      "existing_board_label": "",
-      "existing_board_description": "",
-      "existing_board_auxiliary_labels": []
-    }
-  ],
-  "config": {
-    "semantic_board_upgrade_ref_count_threshold": 5,
-    "semantic_board_upgrade_cluster_distance_threshold": 0.35,
-    "semantic_board_upgrade_cluster_method": "average_link",
-    "semantic_board_upgrade_cotag_window_days": 30,
-    "semantic_board_upgrade_cotag_top_n": 20,
-    "semantic_board_upgrade_cotag_dedupe_sim_threshold": 0.85,
-    "semantic_board_upgrade_cotag_hard_limit": 15
-  }
-}
-```
-
 ### POST `/semantic-boards/upgrade-suggest`
 
-触发 LLM 升级建议。用户确认前不会写入 SemanticBoard 或 board composition。
+四格参数触发 LLM 升级建议（内存响应，不落库；面板主链路走 `upgrade-suggestions/generate`）。split-board-upgrade-directions：`direction × source` 组合参数取代旧 `mode` 参数（旧参数与 `upgrade-candidates` 端点均已退役）。
+
+Query 参数：
+
+| 参数 | 说明 |
+| ------ | ------ |
+| `direction` | 必填：`create`（创建版块）/ `expand`（版块扩充） |
+| `source` | 必填：`aux`（单标签）/ `composite`（组合标签） |
+| `target_board_id` | `direction=expand` 必填（锁定单版块，本轮建议 target 恒等于它，须为活跃版块）；`create` 不得携带 |
+| `days` | 可选时间窗（仅 create×aux 生效；`0`=不过滤） |
+
+参数不合法（缺 direction/source、expand 缺 target、create 带 target、target 非活跃版块、携带旧 `mode` 参数）返回 400。
 
 Response `data`：
 
@@ -372,18 +350,15 @@ Response `data`：
     },
     {
       "decision": "merge_into_existing",
-      "target_board_id": 1,
+      "target_board_id": 42,
       "auxiliary_label_ids": [13],
-      "reason": "与现有 board 语义一致"
-    },
-    {
-      "decision": "skip",
-      "auxiliary_label_ids": [],
-      "reason": "标签语义过散"
+      "reason": "属于锁定版块「美债」"
     }
   ]
 }
 ```
+
+> skip 不返回（不落库不展示）；扩充方向的 merge/compose 建议 target 恒为锁定版块（服务端注入，LLM 输出不含目标字段）。
 
 ### POST `/semantic-boards/upgrade-execute`
 
@@ -410,7 +385,7 @@ Response `data`：
 }
 ```
 
-确认 compose 建议创建组合标签（add-composite-labels，同一事务：创建组合 + MarkConfirmed；去重命中按成功处理）：
+确认 compose 建议创建组合标签（add-composite-labels，同一事务：创建组合 + MarkConfirmed；去重命中按成功处理；split-board-upgrade-directions 起 `target_board_id` 非空时同事务内将组合挂载进目标版块——扩充方向建议，挂载失败整体回滚）：
 
 ```json
 {
@@ -479,7 +454,7 @@ Response `data`：
 
 ### POST `/semantic-boards/upgrade-suggestions/generate`
 
-手动触发一次 `discover_new` 建议生成（同步执行，与定时任务等效），用于取代 legacy `upgrade-suggest`。受冷却时间限制，冷却期内本次不写入。
+四格参数触发一轮建议生成（同步执行并落库，面板主链路）。参数与校验同 [`upgrade-suggest`](#post-semantic-boards-upgrade-suggest)（`direction` / `source` / `target_board_id` / `days`）。受冷却时间限制，冷却期内同 hash 不写入。
 
 无需请求体。Response `data`：
 

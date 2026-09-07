@@ -649,7 +649,7 @@ func (s *SemanticBoardMatchingService) LoadConfig(ctx context.Context) SemanticB
 		return *cached
 	}
 	config := SemanticBoardMatchConfig{
-		SimThreshold:           0.72,
+		SimThreshold:           0.8,
 		DirectHitRate:          0.5,
 		DirectMaxSim:           0.8,
 		DirectMaxSimMinHits:    2,

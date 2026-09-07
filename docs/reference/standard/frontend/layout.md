@@ -58,6 +58,22 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 - **WHEN** 新弹窗可由四档尺寸之一容纳
 - **THEN** 实现 MUST 复用 `<AppDialog size="...">`，不传自由 width
 
+### Requirement: 浮层组件展示合理性锚
+
+**级别**: MUST
+
+自建浮层/弹窗容器（Teleport + overlay，存量未迁 AppDialog 的组件）与新浮层代码 SHALL 在组件单测中携带「展示合理性」机械锚，防止样式重构丢失定位规则：
+
+1. **样式规则锚**：源码 `<style>` 中 overlay 规则存在（`position: fixed` + `inset: 0` + `z-index`）；
+2. **Teleport 挂载锚**：不 stub teleport 挂载时 overlay 渲染在 `document.body` 而非组件原地。
+
+模板与落地实例见 skill `ui-verify`「浮层展示锚模板」；验收四维度见《开发执行规范》§5.3。
+
+#### Scenario: 重写样式块
+
+- **WHEN** 浮层组件的 `<style>` 块被重写/精简，定位规则丢失使弹窗退化为流内 div
+- **THEN** 机械锚单测 SHALL 失败拦截（而非依赖 lint/单测都无法发现后流入用户界面）
+
 ### Requirement: major UI change 双视口验收
 
 **级别**: MUST

@@ -280,6 +280,75 @@ func filterComposeSuggestions(suggestions []SemanticBoardUpgradeSuggestion, comp
 }
 
 // loadComponentLabels resolves display labels for the candidate component ids.
+// filterExistingComposeCandidates 排除「已存在组合」候选，防止重复建议（2026-09-07
+// 报障：确认创建过的组合再次出现在建议列表）。create 路（targetBoardID=nil）：
+// 组件集与既有 active composite 完全一致的候选整体排除——组合已存在，无需再
+// 建议创建。expand 路（targetBoardID 非 nil）：上述候选中已挂载目标版块的排除
+// （挂载已完成，无操作空间）；未挂载的保留（语义退化为「挂载既有组合进目标
+// 版块」，确认时 CreateCompositeLabel 按组件去重复用）。部分重叠不算重复：
+// 既有组合 [a,b,c] 不排除候选 [a,b]（LLM 仍可裁决，确认时 L1/L2 去重兑底）。
+func (s *SemanticBoardUpgradeService) filterExistingComposeCandidates(ctx context.Context, candidates []ComposeCandidate, targetBoardID *uint) ([]ComposeCandidate, error) {
+	if len(candidates) == 0 {
+		return candidates, nil
+	}
+	var rows []struct {
+		CompositeID uint `gorm:"column:composite_id"`
+		ComponentID uint `gorm:"column:component_id"`
+	}
+	if err := s.db.WithContext(ctx).
+		Table("semantic_labels AS comp").
+		Select("cc.composite_id, cc.component_label_id AS component_id").
+		Joins("JOIN composite_components AS cc ON cc.composite_id = comp.id").
+		Where("comp.label_type = ? AND comp.status = ?", "composite", "active").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return candidates, nil
+	}
+	byComposite := make(map[uint][]uint)
+	for _, r := range rows {
+		byComposite[r.CompositeID] = append(byComposite[r.CompositeID], r.ComponentID)
+	}
+	existingKeys := make(map[string]struct{}, len(byComposite))
+	for _, ids := range byComposite {
+		existingKeys[composeComponentKey(ids)] = struct{}{}
+	}
+	mountedKeys := make(map[string]struct{})
+	if targetBoardID != nil && *targetBoardID != 0 {
+		compositeIDs := make([]uint, 0, len(byComposite))
+		for id := range byComposite {
+			compositeIDs = append(compositeIDs, id)
+		}
+		var mounted []uint
+		if err := s.db.WithContext(ctx).
+			Table("board_composition").
+			Select("auxiliary_label_id").
+			Where("board_id = ? AND auxiliary_label_id IN ?", *targetBoardID, compositeIDs).
+			Scan(&mounted).Error; err != nil {
+			return nil, err
+		}
+		for _, id := range mounted {
+			mountedKeys[composeComponentKey(byComposite[id])] = struct{}{}
+		}
+	}
+	filtered := make([]ComposeCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		key := composeComponentKey(candidate.ComponentIDs)
+		if _, exists := existingKeys[key]; exists {
+			if targetBoardID == nil {
+				continue // create 路：组合已存在，无需再建议创建
+			}
+			if _, mounted := mountedKeys[key]; mounted {
+				continue // expand 路：已挂载目标版块，无操作空间
+			}
+			// expand 路：组合存在但未挂载目标 → 保留（挂载语义，确认时复用既有组合）
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered, nil
+}
+
 func (s *SemanticBoardUpgradeService) loadComponentLabels(ctx context.Context, ids []uint) (map[uint]string, error) {
 	if len(ids) == 0 {
 		return map[uint]string{}, nil

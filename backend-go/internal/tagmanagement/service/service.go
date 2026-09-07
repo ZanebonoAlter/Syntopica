@@ -90,6 +90,7 @@ type (
 	SemanticBoardBackfillRequest       = board.SemanticBoardBackfillRequest
 	SemanticBoardBackfillService       = board.SemanticBoardBackfillService
 	SemanticBoardUpgradeService        = board.SemanticBoardUpgradeService
+	UpgradeGenerateRequest             = board.UpgradeGenerateRequest
 	SemanticBoardUpgradeCandidate      = board.SemanticBoardUpgradeCandidate
 	SemanticBoardUpgradeCluster        = board.SemanticBoardUpgradeCluster
 	SemanticBoardUpgradeConfig         = board.SemanticBoardUpgradeConfig
@@ -191,4 +192,11 @@ var (
 	ValidateActiveAuxiliaryLabels      = board.ValidateActiveAuxiliaryLabels
 	UniqueUintSlice                    = board.UniqueUintSlice
 	AuxiliaryLabelEmbeddingModeStorage = auxlabel.AuxiliaryLabelEmbeddingModeStorage
+)
+
+const (
+	UpgradeDirectionCreate = board.UpgradeDirectionCreate
+	UpgradeDirectionExpand = board.UpgradeDirectionExpand
+	UpgradeSourceAux       = board.UpgradeSourceAux
+	UpgradeSourceComposite = board.UpgradeSourceComposite
 )
