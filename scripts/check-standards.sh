@@ -171,6 +171,11 @@ echo "== E. flow 变更溯源链接（归档后校验，见《开发执行规范
 # 新流程生效日（2026-06-29）之后的 archive change 必须被 flow 文档的变更溯源表引用；
 # 历史存量免校验，避免一次性爆 FAIL。
 CUTOFF="2026-06-29"
+# 溯源宽限期（fix-doc-impact-misattribution D5）：§12 流程为“归档后补溯源”，宽限窗内
+# 的债不 block 其他 change 的归档；超期未溯源仍 FAIL（债由归档门禁催收）。
+# date 不可用（非 GNU date）时宽限检查 fail-open 跳过，保持现状催收语义。
+GRACE_DAYS=3
+GRACE_CUTOFF="$(date -d "-${GRACE_DAYS} days" +%F 2>/dev/null || true)"
 FLOW_DIR="docs/reference/flow"
 if [ -d "openspec/changes/archive" ]; then
 	for d in openspec/changes/archive/*/; do
@@ -184,6 +189,11 @@ if [ -d "openspec/changes/archive" ]; then
 		# §12.2 豁免：tasks.md「文档」节声明「无 flow 影响」的 change 不触及任何业务 flow，免溯源校验
 		if [ -f "$d/tasks.md" ] && grep -q "无 flow 影响" "$d/tasks.md" 2>/dev/null; then
 			ok "豁免溯源 $name（tasks.md 声明无 flow 影响）"
+			continue
+		fi
+		# 溯源宽限期：归档日期在 GRACE_DAYS 天内的免检（字典序比较，同 CUTOFF 手法）
+		if [ -n "$GRACE_CUTOFF" ] && [[ "$arch_date" > "$GRACE_CUTOFF" ]]; then
+			ok "宽限期内免检 $name（归档未满 ${GRACE_DAYS} 天，溯源按 §12 归档后流程补）"
 			continue
 		fi
 		if grep -rq "$name" "$FLOW_DIR"/*.md 2>/dev/null; then

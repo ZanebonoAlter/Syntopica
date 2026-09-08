@@ -124,6 +124,41 @@ for invocation in \
 		|| bad "非法参数：$invocation 未输出中文错误"
 done
 
+# E 段宽限期用例（fix-doc-impact-misattribution D5）：构造 archive fixture，
+# --change target-pass 隔离 F 段，单独观察 E 段溯源判定。
+ARCHIVE="$TMP/openspec/changes/archive"
+mkdir -p "$ARCHIVE"
+within=$(date -d '-1 day' +%F)
+overdue=$(date -d '-10 day' +%F)
+mkdir -p "$ARCHIVE/${within}-grace-legacy" \
+	"$ARCHIVE/${overdue}-traced-legacy" "$ARCHIVE/${overdue}-exempt-legacy"
+: >"$ARCHIVE/${within}-grace-legacy/tasks.md"
+: >"$ARCHIVE/${overdue}-traced-legacy/tasks.md"
+printf '%s\n' '无 flow 影响' >"$ARCHIVE/${overdue}-exempt-legacy/tasks.md"
+# traced：被 flow 文档变更溯源表引用（fixture flow 文档已含「## 变更溯源」节）
+printf '%s\n' "- [${overdue}-traced-legacy](../openspec/changes/archive/${overdue}-traced-legacy/)" \
+	>>"$TMP/docs/reference/flow/reading.md"
+
+# 阶段 1：只放不该 FAIL 的三个（宽限内/已溯源/无 flow 豁免）→ 整体应 zero
+run_capture 'E 段宽限：宽限期内未溯源不 FAIL' zero bash scripts/check-standards.sh --change target-pass
+[[ "$RUN_OUTPUT" != *"未溯源 ${within}-grace-legacy"* ]] \
+	&& ok 'E 段宽限期内 change 不输出未溯源' \
+	|| bad 'E 段宽限期内 change 被误报未溯源'
+[[ "$RUN_OUTPUT" != *"未溯源 ${overdue}-traced-legacy"* ]] \
+	&& ok 'E 段已溯源 change 不误报' \
+	|| bad 'E 段已溯源 change 被误报'
+[[ "$RUN_OUTPUT" == *'豁免溯源'*"$overdue-exempt"* ]] \
+	&& ok 'E 段无 flow 影响豁免语义保持' \
+	|| bad 'E 段无 flow 影响豁免失效'
+
+# 阶段 2：加入超期未溯源 change → 整体 nonzero 且指向该 change
+mkdir -p "$ARCHIVE/${overdue}-overdue-legacy"
+: >"$ARCHIVE/${overdue}-overdue-legacy/tasks.md"
+run_capture 'E 段宽限：超期未溯源仍 FAIL' nonzero bash scripts/check-standards.sh --change target-pass
+[[ "$RUN_OUTPUT" == *"未溯源 ${overdue}-overdue-legacy"* ]] \
+	&& ok 'E 段超期未溯源输出包含该 change 名' \
+	|| bad 'E 段超期未溯源 FAIL 缺失该 change 名'
+
 printf '\ncheck-standards smoke：通过 %d / 失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] && printf 'SMOKE OK\n'
 [ "$fail" -eq 0 ]
