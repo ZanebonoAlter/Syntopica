@@ -15,7 +15,7 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
 - 设计文档：`docs/research/harness事实库.md`
 - 写入方（全部在 `.pi/extensions/`，gitignored；入库代码快照在 `docs/research/`）：
   - `constraint-injection.ts` → `constraint.inject` / `pin.write` / `pin.read` / `mode.set`
-  - `quality-gate.ts` → `gate.check`（ok=true 采样记账：会话首条与转绿锚点必记 flip、每 5 连续成功记 1 条 sampled+n；ok=false 全量含 diag；同根因短路时未执行命令零记账）
+  - `quality-gate.ts` → `gate.check`（ok=true 采样记账：会话首条与转绿锚点必记 flip、每 5 连续成功记 1 条 sampled+n；ok=false 全量含 diag；同根因短路时未执行命令零记账）+ `edit.map`（coordinate-concurrent-changes：turn_end 增量路径 × mode.set boundChange 聚合的 change→文件归属地图，落库侧并集累计快照，取最新一条即完整集合）
   - `entry-gate.ts` → `gate.check`（cmd=entry-gate，复杂档缺 test-cases 文档提醒）
   - `tool-output-spill.ts` → `spill.write`
   - `harness-telemetry.ts` → `session.start` / `subagent.dispatch` / `subagent.complete`
@@ -35,6 +35,7 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
 | `subagent.complete` | 30 天 | `agentId`、`status`、`ms`、`tokens`、`toolUses`、`isError`（后台子线程完成回填） |
 | `spill.write` | 30 天 | `tool`、`bytes`、`path`、`ok`（大工具结果落盘记账） |
 | `pin.write` | 永久 | 见 pin_finding 写入方 |
+| `edit.map` | 30 天 | `paths`（该 change 累计编辑路径全量快照，排序去重）、`n`（=paths.length）；change 列 = 会话绑定的 change（mode.set boundChange 语义）；归属地图查询首选 `bash scripts/concurrency-status.sh [change]`（人读三段）或 `--check <change>`（exit 0 干净/2 有归属其他 active change 脏文件/3 冷启动） |
 | `policy.decision` | 30 天 | `policy`、`action`、`reasonCode`，按需 `target`/`durationMs`（见下） |
 
 `constraint.inject` 的 `reason` 枚举（实测）：`index`（未激活档的常驻索引）/ `mode-base`（档位激活后的基础注入）/ `declaration`（按 proposal 头 `constraint-domains` 声明拉 flow 约束节，**声明域=红线层注入**：payload 附 `layer`（`redline`=红线层 / `full`=提取 0 条或低于 512B 回退全节），bytes 为实际注入层级字节数）/ `keyword`（对话关键词命中，全节注入）/ `edit`（编辑路径 JIT 命中，全节注入）/ `change-file`（change 文档命中）/ `stack-conditional`（栈条件注入）。
@@ -43,7 +44,7 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
 
 - `action` 四值：`block` / `warn` / `bypass` / `fail-open`；白名单外拒绝写入。
 - `reasonCode`（kebab-case，非法归一 `unknown`）：
-  - spec-gate → `archive-check-failed`(block，target=失败检查名如 `doc-impact,trace,ui-evidence`) / `explicit-bypass`(bypass) / `acceptance-wording`(warn，检查⑤)；另在 UI 验收证据缺失时代记 `ui-design-gate` policy 的 block 事件
+  - spec-gate → `archive-check-failed`(block，target=失败检查名如 `doc-impact,trace,ui-evidence`) / `explicit-bypass`(bypass) / `acceptance-wording`(warn，检查⑤)；另在 UI 验收证据缺失时代记 `ui-design-gate` policy 的 block 事件；检查⑤'归档并发（coordinate-concurrent-changes）→ `concurrent-dirty-tree`(warn，树上存在归属其他 active change 的未 commit 文件)
   - quota-gate → `quota-low` / `quota-exhausted`(block) / `quota-query-failed`(fail-open) / `fuzzy-model-resolve`(warn，裸模型名解析风险)
   - test-scope-guard → `full-go-test`(soft=warn / hard=block)
   - ui-design-gate → `ui-impact-missing` / `ui-impact-mismatch` / `ui-design-missing`(legacy 前端迁移提醒为 warn) / `ui-prototype-missing` / `ui-approval-pending`(block) / `explicit-bypass`(bypass，UI_DESIGN_GATE_BYPASS=1) / `ui-gate-check-failed`(fail-open)；归档侧 UI 缺证据 → `ui-verification-missing`(block，由 spec-gate 检查④'代记，target=archive)。白名单共八值（与主 spec ui-design-workflow 对齐）；健康放行/requirements 档/legacy 非前端操作零记录
@@ -76,6 +77,17 @@ sqlite3 events.db "SELECT json_extract(payload,'$.policy'), json_extract(payload
 
 # 8. 策略降级时间线（fail-open/block 细节，看 reasonCode 与 target）
 sqlite3 events.db "SELECT ts, COALESCE(change,'-'), payload FROM events WHERE kind='policy.decision' AND json_extract(payload,'$.action') IN ('block','fail-open') ORDER BY id;"
+```
+
+## 附：并发态势查询（coordinate-concurrent-changes）
+
+"现在还有谁在跑 / 树上脏文件归属谁"类问题，**先跑脚本再查库**（脚本一次聚合了活跃清单、归属对照、近期验证流水三段）：
+
+```bash
+bash scripts/concurrency-status.sh <change>      # 人读三段（活跃清单/脏文件归属/近 6h gate.check）
+bash scripts/concurrency-status.sh --check <change>  # 机器可读：exit 0 干净 / 2 有归属其他 active change 脏文件 / 3 冷启动
+# 归属原始数据（脚本的底层源）：每 change 最新一条 edit.map 快照
+sqlite3 events.db "SELECT change, payload FROM events WHERE kind='edit.map' AND id IN (SELECT MAX(id) FROM events WHERE kind='edit.map' GROUP BY change);"
 ```
 
 ## 归因方法论（实战教训）

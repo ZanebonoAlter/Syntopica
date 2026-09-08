@@ -335,3 +335,18 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 
 管理员无需额外配置即可使用；以上发现参数为代码默认值，调优需改 `internal/admin/service/discovery_helpers.go` 常量。
 
+## dsh 能源研究本地预设（外部工具，非 Syntopica 应用配置）
+
+本地 dsh（DeepSeek Harness，版本前提 **0.1.2-rc.1**，Web UI `http://127.0.0.1:3080`）的「能源研究」用户预设：原油供需研究专用受限 agent（仅网页检索/抓取 + 提问 + 压缩；无 Shell、文件编辑、委派能力）。本节只描述外部工具配置，不影响 Syntopica 前后端。
+
+| 位置 | 路径 | 说明 |
+|------|------|------|
+| 仓库配置源（唯一编辑点） | `config/dsh/presets/energy-research/`（`preset.yml` + `agent.cordis.yml`） | 进 git 可追溯；改动后需手动同步到 live |
+| live 部署 | `C:/Users/Admin/.dsh/.agent-presets/energy-research/`（同两文件） | dsh 用户预设根目录，下一次 roster 读取自动发现，无需重启 |
+
+- **同步方式**：将仓库源两文件逐字节复制到 live 目录（部署时已验证 SHA256 一致：preset.yml `afa39270…`、agent.cordis.yml `a3fd3073…`）。
+- **选用**：dsh Web UI 新建会话时在预设选择器选「能源研究」（排在「标准模式」之后，`order: 20`）。预设只在会话尚未产出内容时可选；**旧会话与部署默认预设不受影响**（未改 `settings.yaml`/模型/权限/凭据）。
+- **回退**：删除 `C:/Users/Admin/.dsh/.agent-presets/energy-research/` 目录即停止向新会话提供该预设；已运行会话及其历史不会被删除/撤销，仓库源保留。
+- **能力边界（诚实声明）**：当前**未接入** EIA/JODI/STEO 等专业数据接口（无 MCP 行、无虚构端点），取材仅限网页检索/抓取；persona 已约束不编造数值、缺证据停止。工具白名单≠OS 沙箱隔离。搜索 `maxUses` 与 host `maxParallelToolCalls` 保持原样，**尚无整场 token/硬预算限制**。
+- 行为契约为 openspec change `configure-dsh-energy-research`（spec：`dsh-research-preset`）。
+

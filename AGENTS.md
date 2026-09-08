@@ -122,9 +122,9 @@ cd front && pnpm dev
 | 扩展 | 挂点 | 触发 | 软硬 | fail 策略 | 事件库记账 |
 | --- | --- | --- | --- | --- | --- |
 | constraint-injection | `before_agent_start` | 每 turn 重建 system prompt 注入块 | 软（不干预工具） | fail-open（注入失败不阻断） | constraint.inject / pin.* / mode.set |
-| quality-gate | `turn_end` | 增量路由命中后端/前端 | 软 steer 催修 | fail-open（门禁故障放行） | gate.check |
+| quality-gate | `turn_end` | 增量路由命中后端/前端；另落 `edit.map` 归属地图（增量路径 × boundChange 聚合，coordinate-concurrent-changes） | 软 steer 催修 | fail-open（门禁故障放行） | gate.check / edit.map |
 | quota-gate | Agent 派发前 | 子线程派发前查额度 | 硬 block（低额度阻断派发） | fail-open（查询失败放行） | policy.decision（quota-low/exhausted=block、quota-query-failed=fail-open、fuzzy-model-resolve=warn） |
-| spec-gate | `tool_call` | bash 命中 `openspec archive` | 硬 block（归档门禁五检查：doc-impact/standards/尾三节/scenario-trace/UI 验收证据） | `--force` / `SPEC_GATE_BYPASS=1` 逃生口留痕 | policy.decision（archive-check-failed=block、explicit-bypass=bypass、acceptance-wording=warn；UI 缺证据另记 ui-design-gate block ui-verification-missing） |
+| spec-gate | `tool_call` | bash 命中 `openspec archive` | 硬 block（归档门禁五检查：doc-impact/standards/尾三节/scenario-trace/UI 验收证据；另检查⑤'归档并发 warn 不 block：树上存在归属其他 active change 的未 commit 文件 → steer 提醒 + concurrent-dirty-tree 记账，冷启动零输出） | `--force` / `SPEC_GATE_BYPASS=1` 逃生口留痕 | policy.decision（archive-check-failed=block、explicit-bypass=bypass、acceptance-wording=warn、concurrent-dirty-tree=warn；UI 缺证据另记 ui-design-gate block ui-verification-missing） |
 | ui-design-gate | `tool_call` | implementation 档绑定 syntopica-ui schema change：Agent 派发与 edit/write 项目代码，major 原型未批准（合同 block）时拦截；当前 change 的 ui-design.md/ui-prototype/** 修复不受限 | 硬 block（legacy schema 仅 front mutation 每会话/change warn 一次） | fail-open（检查异常放行+告警+记账）；`UI_DESIGN_GATE_BYPASS=1` 显式旁路留痕 | policy.decision（ui-impact-missing/ui-impact-mismatch/ui-design-missing/ui-prototype-missing/ui-approval-pending=block、explicit-bypass=bypass、ui-gate-check-failed=fail-open；健康放行零记录） |
 | entry-gate | `turn_end` | 实现档切入后 complex 缺 test-cases 文档 | 软 steer 提醒 | fail-open | gate.check（cmd=entry-gate） |
 | test-scope-guard | `tool_call` | bash 跑全量 `go test ./...` | 软提醒（日常只跑影响包） | fail-open | policy.decision（full-go-test：soft=warn / hard=block） |

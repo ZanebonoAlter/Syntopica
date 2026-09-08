@@ -7,6 +7,7 @@
 > 基线来源：2026-07-23 归档的 topic-watchlist-observability change（归档时主 specs 遗漏同步，2026-08-24 补回）；watch-materialized-topic（2026-08-25）引入物化轨双类型。
 
 ## Requirements
+
 ### Requirement: 关注标记实体模型
 
 系统 SHALL 维护 `board_topic_watches` 表，持久化用户在某个版块下主动声明的关注。每行 SHALL 包含：`semantic_board_id`（所属版块）、`label`（话题名或关切描述）、`type`（匹配轨：`label` / `keyword` / `keyword_topic` / `sentence_topic`，默认 `label`）、`query`（可空，sentence_topic 的检索句，为空时回退使用 label）、`embedding_cache`（可空，sentence_topic 检索句的向量缓存）、`status`（`active` / `paused`）、`created_at`、`updated_at`。`status` SHALL 受 CHECK 约束为 `active` / `paused` 二态；`type` SHALL 受 CHECK 约束为上述四值。
@@ -32,11 +33,12 @@ label / keyword（提示轨）关注 SHALL 与 `board_persistent_topics`（持�
 
 - **WHEN** 尝试写入 `status='candidate'`
 - **THEN** 系统 SHALL 因 CHECK 约束拒绝
+
 ### Requirement: 关注标记 AI 命中判定
 
-日报生成流程末尾（section 持久化与 persistent_topic 归属完成之后），系统 SHALL 对该 board 下所有 `status=active` 的关注标记执行 AI 命中判定：将该期日报的全部 section 与每个关注的 label 一并提交 AI，判定哪些 section 与该关注相关。
+日报生成流程末尾（section 持久化与 persistent_topic 归属完成之后），系统 SHALL 对该 board 下所有 `status=active` 且 `type=label` 的关注标记执行 AI 命中判定：将该期日报的全部 section 与每个关注的 label 一并提交 AI，判定哪些 section 与该关注相关。`type=keyword` 的关注标记 SHALL 走纯文本匹配（零 AI），物化轨关注（`type=keyword_topic` / `type=sentence_topic`）SHALL 被跳过（既不走 AI 判定也不走文本匹配，SHALL NOT 产生命中提示记录）。
 
-判定 SHALL 走 **AI 单信号**（SHALL NOT 使用 embedding 相似度，SHALL NOT 走 persistent_topic 的 embedding+LLM 双重确认 AND-gate），因为关注是用户意图声明而非聚类产物。
+label 轨判定 SHALL 走 **AI 单信号**（SHALL NOT 使用 embedding 相似度，SHALL NOT 走 persistent_topic 的 embedding+LLM 双重确认 AND-gate），因为关注是用户意图声明而非聚类产物。
 
 判定结果 SHALL 记录到 `topic_watch_hits` 表：`watch_id` / `section_id` / `report_id` / `period_date`，并带 AI 给出的命中理由一句话。
 
@@ -52,8 +54,15 @@ label / keyword（提示轨）关注 SHALL 与 `board_persistent_topics`（持�
 
 #### Scenario: 批量单次请求
 
-- **WHEN** 同一期日报有 N 个 section、M 个 active 关注
+- **WHEN** 同一期日报有 N 个 section、M 个 active label 关注
 - **THEN** AI 命中判定 SHALL 以批量方式调用（单期日报的 section 与关注在一次或按关注分组的少量请求内完成），SHALL NOT 对每个 section 单独发起请求
+
+#### Scenario: 物化轨关注不进入判定
+
+- **GIVEN** board 下存在 `type=sentence_topic` 与 `type=keyword_topic` 的 active 关注
+- **WHEN** 日报生成完成，AI 命中判定执行
+- **THEN** 这两类关注 SHALL NOT 参与 AI 命中判定，SHALL NOT 产生任何 `topic_watch_hits` 记录
+
 ### Requirement: 关注标记与持久话题隔离
 
 命中提示记录 SHALL 保持只读叠加语义，对全部 type 成立：命中 SHALL NOT 改变任何 section 的 `persistent_topic_id`，SHALL NOT 触发任何持久话题的 `consecutive_hits` / 生命周期更新。keyword_topic / sentence_topic 物化轨 SHALL NOT 产生命中提示记录。
@@ -77,6 +86,7 @@ sentence_topic 关注专属持久话题的生命周期推进 SHALL 仅由物化 
 - **GIVEN** sentence_topic 关注拥有专属话题 T
 - **WHEN** 当期物化 section 归属 T
 - **THEN** T 的生命周期 SHALL 按持久话题既有规则推进，与普通 section 归属话题的机制一致
+
 ### Requirement: 关注标记日报顶部独立栏位
 
 日报详情页 SHALL 在正文之上、其余导航之下，提供"关注标记"独立栏位，展示该期日报被各 active 关注命中的 section。
@@ -95,6 +105,7 @@ sentence_topic 关注专属持久话题的生命周期推进 SHALL 仅由物化 
 
 - **WHEN** 某期日报无任何 active 关注命中
 - **THEN** 顶部栏位 SHALL 显示空态或隐藏，SHALL NOT 渲染空分组
+
 ### Requirement: 关注标记管理 API
 
 系统 SHALL 提供关注标记的 CRUD API（针对单用户、单 board 场景）：

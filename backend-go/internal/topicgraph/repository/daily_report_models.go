@@ -141,6 +141,18 @@ type DailyReportSection struct {
 	// l1_direct (centroid strong match), l2_llm (LLM keep/switch), l3_new
 	// (new candidate). NULL on historical sections (pre-migration).
 	LaneTier string `gorm:"size:16" json:"lane_tier,omitempty"`
+	// WatchID persists the owning materialized watch for watch_* sections
+	// (filled at materialization since watch-materialize-llm-adjudication —
+	// needed because the LLM daily title overwrites the parseable fixed
+	// name). NULL on regular sections and historical watch sections (the
+	// read path falls back to fixed-name / title parsing for those). No DB
+	// FK: deleting a watch keeps its historical sections (spec: 删除保留历史).
+	WatchID *uint `gorm:"index" json:"watch_id,omitempty"`
+	// WatchLabel carries the owning watch's name for materialized sections
+	// (lane_tier watch_keyword / watch_sentence) so the UI badge can show the
+	// tracking source next to the LLM daily title. Transient — filled on the
+	// read path, never persisted.
+	WatchLabel string `gorm:"-" json:"watch_label,omitempty"`
 	// PersistentTopic carries the nested topic brief for the daily-report
 	// detail API, so the UI can classify sections by topic status (active vs
 	// candidate). Transient — loaded via AttachTopicBriefsToReport, never

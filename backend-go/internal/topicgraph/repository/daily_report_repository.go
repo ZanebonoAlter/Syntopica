@@ -342,6 +342,9 @@ func (r *TopicGraphRepository) GetReportByID(id uint) (*BoardDailyReport, error)
 	// (active/candidate) for UI classification. Without this the frontend's
 	// qualityZones treats every assigned section as "breaking".
 	AttachTopicBriefsToReport(r.db, &report)
+	// Fill watch-name decorations on materialized sections (read-path
+	// transient; the LLM daily title hides the watch name otherwise).
+	AttachWatchLabelsToReport(r.db, &report)
 	// GORM leaves Threads nil when a section has no thread rows (legal
 	// degradation path); keep the API contract "threads is always an array"
 	// for the frontend reader.
@@ -784,6 +787,83 @@ func AttachTopicBriefsToReport(db *gorm.DB, report *BoardDailyReport) {
 		return
 	}
 	attachBriefsToSections(db, report.Sections)
+}
+
+// AttachWatchLabelsToReport fills the transient WatchLabel on each
+// materialized (watch_*) section so the UI badge can show the tracking
+// source next to the LLM daily title (watch-materialize-llm-adjudication).
+// New sections resolve via the persisted WatchID (deleted watches keep their
+// name — the lookup deliberately ignores status); historical sections
+// (WatchID NULL) fall back to fixed-name parsing (keyword track) or the
+// section title itself (sentence track was titled with the watch label
+// before LLM titles existed).
+func AttachWatchLabelsToReport(db *gorm.DB, report *BoardDailyReport) {
+	if report == nil {
+		return
+	}
+	AttachWatchLabelsToSections(db, report.Sections)
+}
+
+// AttachWatchLabelsToSections fills the transient WatchLabel in place.
+func AttachWatchLabelsToSections(db *gorm.DB, sections []DailyReportSection) {
+	anyMaterialized := false
+	idSet := make(map[uint]bool)
+	for i := range sections {
+		if !strings.HasPrefix(sections[i].LaneTier, "watch_") {
+			continue
+		}
+		anyMaterialized = true
+		if sections[i].WatchID != nil {
+			idSet[*sections[i].WatchID] = true
+		}
+	}
+	if !anyMaterialized {
+		return
+	}
+	nameByID := make(map[uint]string, len(idSet))
+	if len(idSet) > 0 {
+		ids := make([]uint, 0, len(idSet))
+		for id := range idSet {
+			ids = append(ids, id)
+		}
+		var watches []BoardTopicWatch
+		if err := db.Where("id IN ?", ids).Find(&watches).Error; err == nil {
+			for _, w := range watches {
+				nameByID[w.ID] = w.Label
+			}
+		}
+	}
+	for i := range sections {
+		s := &sections[i]
+		if !strings.HasPrefix(s.LaneTier, "watch_") {
+			continue
+		}
+		if s.WatchID != nil {
+			if n, ok := nameByID[*s.WatchID]; ok {
+				s.WatchLabel = n
+			}
+			continue
+		}
+		if s.LaneTier == "watch_keyword" {
+			if expr, ok := parseKeywordWatchSectionLabel(s.ClusterLabel); ok {
+				s.WatchLabel = expr
+			}
+		} else {
+			s.WatchLabel = s.ClusterLabel // historical sentence title = watch label
+		}
+	}
+}
+
+// parseKeywordWatchSectionLabel reverses buildKeywordWatchSectionLabel
+// (service layer): 关键字『X』相关话题 → X. ok=false when the label is not
+// the fixed-name shape (e.g. an LLM daily title — those sections carry a
+// persisted WatchID and never reach this fallback).
+func parseKeywordWatchSectionLabel(label string) (string, bool) {
+	const pre, suf = "关键字『", "』相关话题"
+	if len(label) > len(pre)+len(suf) && strings.HasPrefix(label, pre) && strings.HasSuffix(label, suf) {
+		return label[len(pre) : len(label)-len(suf)], true
+	}
+	return "", false
 }
 
 // attachBriefsToSections fills the transient PersistentTopic brief in place.

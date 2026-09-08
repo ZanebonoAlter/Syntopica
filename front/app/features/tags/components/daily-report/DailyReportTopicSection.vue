@@ -208,7 +208,7 @@ watch(() => props.focusSectionId, async (sectionId) => {
             >
               <div class="drm-section-card__head">
                 <span class="drm-section-card__badges">
-                  <SectionWatchBadge v-if="section.lane_tier?.startsWith('watch_')" :lane-tier="section.lane_tier" />
+                  <SectionWatchBadge v-if="section.lane_tier?.startsWith('watch_')" :lane-tier="section.lane_tier" :watch-label="section.watch_label" />
                   <SectionTierBadge :best-tier="section.best_tier" />
                   <SectionAnchorBadge :tier="topicAnchorTier(section.topic_match_distance, section.topic_match_confidence)" />
                 </span>

@@ -358,13 +358,17 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		appended := 0
 		var kwWatches []repository.BoardTopicWatch
 		sentenceCfg := LoadWatchSentenceConfig(repository.Repo.DB())
-		embedRouter := airouter.NewRouter()
+		// Adjudication config (watch-materialize-llm-adjudication): one shared
+		// load serves both materialized tracks; the router provides Embed for
+		// the sentence retrieval and Chat for the adjudication calls.
+		matCfg := LoadWatchMaterializeConfig(repository.Repo.DB())
+		router := airouter.NewRouter()
 		for _, w := range matWatches {
 			switch w.Type {
 			case repository.WatchTypeKeywordTopic:
 				kwWatches = append(kwWatches, w)
 			case repository.WatchTypeSentenceTopic:
-				sec, threads, sErr := MaterializeSentenceWatch(ctx, w, date, sentenceCfg, embedRouter.Embed)
+				sec, threads, sErr := MaterializeSentenceWatch(ctx, w, date, sentenceCfg, matCfg, router.Embed, router.Chat)
 				if sErr != nil {
 					logging.Warnf("daily-report: sentence materialization failed for watch %d (skipped): %v", w.ID, sErr)
 					continue
@@ -379,7 +383,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			}
 		}
 		if len(kwWatches) > 0 {
-			kwSections, kwBatches, kErr := MaterializeKeywordWatches(ctx, boardID, kwWatches, nextIdx+appended)
+			kwSections, kwBatches, kErr := MaterializeKeywordWatches(ctx, boardID, kwWatches, nextIdx+appended, matCfg, router.Chat)
 			if kErr != nil {
 				logging.Warnf("daily-report: keyword materialization failed for board %d (skipped): %v", boardID, kErr)
 			} else {
