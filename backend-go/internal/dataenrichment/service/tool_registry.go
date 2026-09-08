@@ -78,11 +78,12 @@ type Registry struct {
 	// Exploration tools (阶段2a-ii). Each is optional; when nil the tool returns
 	// a graceful error JSON. webSearcher defaults to NoopWebSearcher so the
 	// web_search tool degrades cleanly until a real backend is configured.
-	webSearcher        WebSearcher
-	boardLister        BoardLister
-	laneLister         LaneLister
-	laneDetailRenderer LaneDetailRenderer
-	pageFetcher        PageFetcher // fetch_page backend (reader readability); nil → degrade
+	webSearcher             WebSearcher
+	boardLister             BoardLister
+	laneLister              LaneLister
+	laneDetailRenderer      LaneDetailRenderer
+	pageFetcher             PageFetcher             // fetch_page backend (reader readability); nil → degrade
+	internalContextSearcher InternalContextSearcher // search_internal_context backend; nil → degrade
 }
 
 // RegistryOption configures optional exploration dependencies on a Registry.
@@ -114,6 +115,12 @@ func WithLaneDetailRenderer(ldr LaneDetailRenderer) RegistryOption {
 // When not injected, fetch_page degrades to a "not configured" error JSON.
 func WithPageFetcher(pf PageFetcher) RegistryOption {
 	return func(r *Registry) { r.pageFetcher = pf }
+}
+
+// WithInternalContextSearcher injects the compact internal-knowledge search
+// backend for search_internal_context (add-evidence-backed-cross-board-relations).
+func WithInternalContextSearcher(s InternalContextSearcher) RegistryOption {
+	return func(r *Registry) { r.internalContextSearcher = s }
 }
 
 // NewRegistry creates a tool registry with the given HTTP fetcher and any
@@ -219,6 +226,20 @@ func (r *Registry) register() {
 			"required":   []string{"url"},
 		},
 		Execute: r.executeFetchPage,
+	}
+
+	r.tools["search_internal_context"] = &Tool{
+		Name:        "search_internal_context",
+		Description: "在系统内部知识中检索相关版块/泳道(紧凑概要,无时间线),返回 {hits:[{kind,board_id,lane_id,label,status,hit_count,summary,score}]}。命中 lane 本次调查即获临时授权,随后可用 get_lane_detail 下钻。跨版块调查优先用本工具发现相关泳道。",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query":       map[string]any{"type": "string"},
+				"max_results": map[string]any{"type": "integer"},
+			},
+			"required": []string{"query"},
+		},
+		Execute: r.executeSearchInternalContext,
 	}
 }
 

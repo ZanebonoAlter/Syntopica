@@ -58,6 +58,7 @@ function formatScore(value: number | undefined, digits = 2): string {
 
 function reasonLabel(reason: string): string {
   const labels: Record<string, string> = {
+    composite_hit: '组合命中',
     direct_hit: '直接命中',
     hit_rate: '命中率',
     max_sim: '最高相似度',
@@ -68,6 +69,7 @@ function reasonLabel(reason: string): string {
 
 function reasonColor(reason: string): string {
   const colors: Record<string, string> = {
+    composite_hit: '#a855f7',
     direct_hit: '#22c55e',
     hit_rate: '#3b82f6',
     max_sim: '#f59e0b',
@@ -77,6 +79,8 @@ function reasonColor(reason: string): string {
 }
 
 function primaryFormula(item: MatchDetailResponse): string {
+  if (item.match_reason === 'composite_hit') return '\\text{score}=1.0\\ (\\text{组合交集}\\neq\\varnothing)'
+  if (item.match_reason === 'direct_hit') return `\\text{score}=f_{\\text{direct}}\\times 1=${formatScore(item.config.direct_hit_score_factor, 2)}`
   if (item.match_reason === 'hit_rate') return '\\text{score}=\\alpha\\cdot S_{\\max}+(1-\\alpha)\\cdot R'
   if (item.match_reason === 'max_sim') return '\\text{score}=S_{\\max}'
   if (item.match_reason === 'weighted') return '\\text{score}=w_{\\text{sim}}\\cdot S_{\\max}+w_{\\text{density}}\\cdot R'
@@ -122,6 +126,15 @@ interface FlowStep {
 
 const overlapCount = computed(() => detail.value?.direct_hit_auxiliaries?.length ?? 0)
 
+/** composite_hit 命中的组合链（如「美债收益率 = 美国国债 × 收益率」）。 */
+function compositeChains(item: MatchDetailResponse): string[] {
+  const hits = item.composite_hits ?? []
+  return hits.map((h) => {
+    const chain = [...h.components].sort((a, b) => a.position - b.position).map(c => c.label).join(' × ')
+    return `${h.label} = ${chain}`
+  })
+}
+
 const flowSteps = computed<FlowStep[]>(() => {
   if (!detail.value) return []
   const d = detail.value
@@ -131,12 +144,24 @@ const flowSteps = computed<FlowStep[]>(() => {
   const N = d.tag_auxiliary_count
   const steps: FlowStep[] = []
 
+  // ⓪ Composite Hit —— 最强信号，免方向校验
+  if (reason === 'composite_hit') {
+    const chains = compositeChains(d)
+    steps.push({
+      id: 'composite_hit', title: '⓪ 组合命中',
+      desc: '事件与板块挂载了同一组合标签？',
+      result: chains.length > 0 ? chains.join('；') : '组合标签交集非空 → 直接命中（免方向校验）',
+      state: 'matched',
+    })
+    return steps
+  }
+
   // ① Direct Hit
   if (reason === 'direct_hit') {
     steps.push({
       id: 'direct_hit', title: '① 精确匹配',
       desc: '事件和板块有多少个辅助标签完全相同？',
-      result: `交集 ${overlap} 个 ≥ ${c.direct_hit_min_overlap} → 直接命中！`,
+      result: `交集 ${overlap} 个 ≥ ${c.direct_hit_min_overlap} → 直接命中！（降级分数 ${formatScore(d.score)}）`,
       state: 'matched',
     })
     return steps

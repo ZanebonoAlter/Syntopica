@@ -1,0 +1,333 @@
+name: syntopica-ui
+version: 1
+description: Syntopica UI-first workflow - proposal → ui-design → specs/design → tasks (major UI needs prototype approval before implementation)
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Initial proposal document outlining the change
+    template: proposal.md
+    instruction: |
+      Create the proposal document that establishes WHY this change is needed.
+
+      Sections:
+      - **Why**: 1-2 sentences on the problem or opportunity. What problem does this solve? Why now?
+      - **What Changes**: Bullet list of changes. Be specific about new capabilities, modifications, or removals. Mark breaking changes with **BREAKING**.
+      - **Capabilities**: Identify which specs will be created or modified:
+        - **New Capabilities**: List capabilities being introduced. Each becomes a new `specs/<capability-path>/spec.md`. Use kebab-case for path segments you introduce (e.g., `user-auth` or `identity/user-auth`) and follow the project's existing spec organization.
+        - **Modified Capabilities**: List existing capabilities whose REQUIREMENTS are changing. Only include if spec-level behavior changes (not just implementation details). Each needs a delta spec file. Use the exact existing path under `openspec/specs/`. Leave empty if no requirement changes.
+      - **Impact**: Affected code, APIs, dependencies, or systems.
+
+      IMPORTANT: The Capabilities section is critical. It creates the contract between
+      proposal and specs phases. Research existing specs before filling this in.
+      Each capability listed here will need a corresponding spec file.
+
+      Every change must either declare at least one capability (new or
+      modified) or explicitly opt out of specs: `openspec validate` rejects a
+      change with zero deltas unless the change's `.openspec.yaml` sets
+      `skip_specs: true`. Use `skip_specs: true` only when no spec-level
+      behavior changes (pure refactor, tooling, docs) - specs describe
+      behavior, so if behavior does not change, no spec should change either.
+      Do not invent a requirement just to satisfy validation.
+
+      Keep it concise (1-2 pages). Focus on the "why" not the "how" -
+      implementation details belong in design.md.
+
+      This is the foundation - specs, design, and tasks all build on this.
+
+      ### Mandatory machine-readable markers (Syntopica)
+
+      The proposal MUST open with exactly one of each marker below, before
+      any `##` section (duplicate, missing, or illegal values are blocked
+      by the ui-design-gate):
+
+      ```
+      <!-- complexity: complex|simple -->
+      <!-- ui-impact: none|minor|major -->
+      ```
+
+      `complexity` (test-design intensity) and `ui-impact` (UI-design
+      intensity) are INDEPENDENT dimensions: a governance panel may be
+      simple logic but major UI; a parser rewrite may be complex logic with
+      no user-visible UI. Judge each separately.
+
+      ui-impact criteria (main signal: does this add new interface
+      structure or interaction patterns, NOT lines of code):
+      - `none`: no user-visible interface change (backend-only, tooling,
+        docs, dev-workflow changes)
+      - `minor`: adds copy, fields, or single-step actions WITHIN existing
+        page structures and interaction patterns
+      - `major`: new pages, panels, dialogs, navigation, multi-step flows,
+        or changes to information architecture / layout modes
+
+      Contradiction handling: if proposal or tasks reference front-end
+      paths or UI features while declaring `none`, or carry major UI
+      signals while declaring `minor`, the ui-design-gate reports a
+      mismatch and blocks implementation. Fix the declaration (or the
+      scope) - never silence the gate. The ui-impact declaration is the
+      primary signal; keyword scans are only a safety net.
+    requires: []
+
+  - id: ui-design
+    generates: ui-design.md
+    description: UI design contract - impact level, layout mode, prototype and approval state
+    template: ui-design.md
+    instruction: |
+      创建 UI 设计契约 ui-design.md（Syntopica UI 一等制品；布局选项权威：
+      docs/reference/standard/frontend/layout.md）。
+
+      文件头部 MUST 固定三条机器 marker（顺序任意，HTML 注释内容忍空白；
+      值非法/重复/缺失会被 ui-design-gate 阻断）：
+
+      ```
+      <!-- ui-impact: none|minor|major -->
+      <!-- ui-approval: not-required|pending|approved -->
+      <!-- ui-prototype: none|<change 内相对路径> -->
+      ```
+
+      ui-impact MUST 与 proposal 声明一致；ui-prototype 只接受 change 根内
+      相对路径（禁止绝对路径与 `..` 越界）。按影响等级缩放内容：
+
+      **none（最小 N/A 记录）**
+      - approval=`not-required`、prototype=`none`
+      - 正文仅一节 `## N/A Reason`：1-3 句不适用理由，指向 proposal 的
+        ui-impact 声明依据。不制作原型。
+
+      **minor（复用/状态契约）**
+      - 必填内容：入口与入口变更；受影响状态（loading/empty/error/success
+        中受影响的逐个交代）；复用组件与布局模式（MUST 复用既有基础组件
+        与 layout mode 枚举，不得另写自由宽度）；验收映射（组件测试 /
+        opencli / 人工验证至少其一）。
+      - approval=`not-required`；prototype 可为 `none`（不强制可视原型）。
+
+      **major（完整八节设计 + 可丢弃原型）**
+      - 必填八节（与模板同序）：User Journey / Information Architecture /
+        Interaction Contract / State Matrix / Layout Contract /
+        Component Reuse / Prototype / Acceptance。
+      - User Journey：页面入口与用户主/次任务。Information Architecture：
+        信息层级、导航与区块划分。Interaction Contract：主/次/危险操作与
+        交互流程、反馈方式。State Matrix：loading/empty/error/success
+        完整状态矩阵（含错误恢复路径）。
+      - Layout Contract：显式选择 layout mode（reader=760 / contained=1120 /
+        workspace / split，记录各栏最小宽度与溢出策略）与目标视口（桌面
+        1440×900、1920×1080；支持窄屏则另列）；dialog MUST 使用
+        sm/md/lg/xl 尺寸档（420/560/760/1040，92vw 上限）；确需自由宽度
+        MUST 写理由与目标视口。
+      - Component Reuse：映射到既有基础组件（AppPageShell / AppDialog /
+        AppButton / AppInput 等）；需要新组件时列明。
+      - Prototype：在 change 目录 `ui-prototype/` 产出静态可丢弃原型
+        （独立 HTML/静态资源，不连接真实 API、不修改产品代码、引用布局
+        token 与现有主题方向）；prototype marker 指向 change 根内相对
+        路径（如 `ui-prototype/index.html`）。
+      - 审批流：major 初始 approval=`pending`。agent 用浏览器向用户展示
+        原型，只有用户在对话中明确确认后才可改为 `approved`；任何改变
+        信息架构、主流程或布局模式的修订 MUST 重置 `pending`（颜色微调/
+        文案修正记录差异即可，不重审）。
+      - Acceptance：实现后补 opencli 主交互链路断言 + 1440×900 与
+        1920×1080 两档视觉检查证据 + 与批准原型的差异说明；重大差异需
+        重新审批。
+
+      矛盾处理：ui-design marker 与 proposal 声明不一致、major 缺原型、
+      审批 pending 或原型路径越界时，specs/design/tasks 与 apply 会被
+      门禁阻断——先修合同再继续，不要绕过。
+    requires:
+      - proposal
+
+  - id: specs
+    generates: "specs/**/*.md"
+    description: Detailed specifications for the change
+    template: spec.md
+    instruction: |
+      Create specification files that define WHAT the system should do.
+
+      A spec is a behavior contract, not an implementation plan.
+
+      Good spec content:
+      - Observable behavior users or downstream systems rely on
+      - Inputs, outputs, and error conditions
+      - External constraints (security, privacy, reliability, compatibility)
+      - Scenarios that can be tested or explicitly validated
+
+      Avoid in specs:
+      - Internal class/function names
+      - Library or framework choices
+      - Step-by-step implementation details
+      - Detailed execution plans (those belong in design.md or tasks.md)
+
+      Quick test: if the implementation can change without changing externally
+      visible behavior, it likely does not belong in the spec.
+
+      Create one spec file per capability listed in the proposal's Capabilities section.
+      `<capability-path>` is the spec directory relative to `specs/` (for example,
+      `user-auth` or `identity/user-auth`). Preserve the full path:
+      - New capabilities: use the exact path from the proposal at `specs/<capability-path>/spec.md`. Any path segment newly introduced in the proposal must be kebab-case. Follow the project's existing organization; do not add a new domain level when the project uses a flat layout.
+      - Modified capabilities: use the exact existing path from `openspec/specs/<capability-path>/` when creating the delta at `specs/<capability-path>/spec.md`. Do not move or rename the capability.
+
+      There must be at least one spec file unless the change's `.openspec.yaml`
+      sets `skip_specs: true` (no spec-level behavior change) - `openspec validate`
+      rejects a zero-delta change without that marker. If the proposal lists no
+      capabilities and `skip_specs` is not set, revisit the proposal first.
+
+      Delta operations (use ## headers):
+      - **ADDED Requirements**: New capabilities
+      - **MODIFIED Requirements**: Changed behavior - MUST include full updated content
+      - **REMOVED Requirements**: Deprecated features - MUST include **Reason** and **Migration**
+      - **RENAMED Requirements**: Name changes only - use FROM:/TO: format
+
+      Format requirements:
+      - Each requirement: `### Requirement: <name>` followed by description
+      - Use SHALL/MUST for normative requirements (avoid should/may)
+      - Each scenario: `#### Scenario: <name>` with WHEN/THEN format
+      - **CRITICAL**: Scenarios MUST use exactly 4 hashtags (`####`). Using 3 hashtags or bullets will fail silently.
+      - Every requirement MUST have at least one scenario.
+
+      New capabilities only: start the delta spec with a `## Purpose` section -
+      one or two sentences (50+ characters, or `openspec validate --strict`
+      reports it as too brief) describing what the capability is for. Archive
+      copies it into the main spec it creates; without it the new main spec is
+      left with a `TBD ... Update Purpose after archive` placeholder to fill in
+      by hand. Do NOT add `## Purpose` to a delta for an existing capability -
+      that spec already has one and the delta's is ignored. To change an
+      existing capability's Purpose - including a leftover `TBD` placeholder -
+      edit `<planningHome.root>/openspec/specs/<capability-path>/spec.md`
+      directly. `planningHome.root` comes from the `openspec instructions ...
+      --json` response. Always use it rather than a repo-relative path: it
+      resolves to the store whenever the change lives in one - whether that
+      came from `--store`, a project `store:` pointer, or a global default
+      store - and to the current repository otherwise. Do not try to work out
+      which case applies; the field already has.
+
+      MODIFIED requirements workflow:
+      1. Locate the existing requirement in `<planningHome.root>/openspec/specs/<capability-path>/spec.md` (the same store-aware root as above)
+      2. Copy the ENTIRE requirement block (from `### Requirement:` through all scenarios)
+      3. Paste under `## MODIFIED Requirements` and edit to reflect new behavior
+      4. Ensure header text matches exactly (whitespace-insensitive)
+
+      Common pitfall: Using MODIFIED with partial content loses detail at archive time.
+      If adding new concerns without changing existing behavior, use ADDED instead.
+
+      Example (a new capability, so it opens with `## Purpose`):
+      ```
+      ## Purpose
+
+      Lets users take their data out of the product in a portable format.
+
+      ## ADDED Requirements
+
+      ### Requirement: User can export data
+      The system SHALL allow users to export their data in CSV format.
+
+      #### Scenario: Successful export
+      - **WHEN** user clicks "Export" button
+      - **THEN** system downloads a CSV file with all user data
+
+      ## REMOVED Requirements
+
+      ### Requirement: Legacy export
+      **Reason**: Replaced by new export system
+      **Migration**: Use new export endpoint at /api/v2/export
+      ```
+
+      Specs should be testable - each scenario is a potential test case.
+    requires:
+      - ui-design
+
+  - id: design
+    generates: design.md
+    description: Technical design document with implementation details
+    template: design.md
+    instruction: |
+      Create the design document that explains HOW to implement the change.
+
+      When to include design.md (create only if any apply):
+      - Cross-cutting change (multiple services/modules) or new architectural pattern
+      - New external dependency or significant data model changes
+      - Security, performance, or migration complexity
+      - Ambiguity that benefits from technical decisions before coding
+
+      Sections:
+      - **Context**: Only the current state and constraints needed to explain the approach. Reference the proposal for motivation instead of restating it (e.g., "See proposal.md - Why").
+      - **Goals / Non-Goals**: What this design achieves and explicitly excludes. Don't restate the proposal's scope - add only design-level boundaries.
+      - **Decisions**: Key technical choices with rationale (why X over Y?). Include alternatives considered for each decision.
+      - **Risks / Trade-offs**: Known limitations, things that could go wrong. Format: [Risk] → Mitigation
+      - **Migration Plan**: Steps to deploy, rollback strategy (if applicable)
+      - **Open Questions**: Unknowns that can safely be answered later without
+        changing the specs, the approach, or the task breakdown. Omit if none.
+
+      Open questions are for genuinely deferrable unknowns, not decisions you
+      skipped. If a question would change the specs, the chosen approach, or
+      the task breakdown, resolve it now - ask the user instead of guessing.
+
+      Focus on architecture and approach, not line-by-line implementation.
+      The proposal covers why and what; design covers how. Reference the
+      proposal for motivation and, once written, the specs for requirements -
+      if a section would only restate them, point to them instead.
+
+      Good design docs explain the "why" behind technical decisions.
+    requires:
+      - ui-design
+
+  - id: tasks
+    generates: tasks.md
+    description: Implementation checklist with trackable tasks
+    template: tasks.md
+    instruction: |
+      Create the task list that breaks down the implementation work.
+
+      Before writing tasks, check design.md for Open Questions. If any of them
+      would change what gets built, resolve them with the user first - do not
+      bake an unstated assumption into the task list.
+
+      **IMPORTANT: Follow the template below exactly.** The apply phase parses
+      checkbox format to track progress. Tasks not using `- [ ]` won't be tracked.
+
+      Guidelines:
+      - Group related tasks under ## numbered headings
+      - Each task MUST be a checkbox: `- [ ] X.Y Task description`
+      - Tasks should be small enough to complete in one session
+      - Order tasks by dependency (what must be done first?)
+      - Each task MUST state how to verify completion (a test, command,
+        observable behavior, or delivered artifact). Put the verification in
+        that task's checkbox description. Use a separate verification task only
+        when it checks broader integration or system behavior that spans
+        multiple implementation tasks.
+
+      Example:
+      ```
+      ## 1. Setup
+
+      - [ ] 1.1 Create new module structure and verify expected files are present
+      - [ ] 1.2 Add dependencies to package.json and verify package installation succeeds
+
+      ## 2. Core Implementation
+
+      - [ ] 2.1 Implement data export function and verify the export test passes
+      - [ ] 2.2 Add CSV formatting utilities and verify unit tests cover quoting and delimiters
+      ```
+
+      Reference specs for what needs to be built, design for how to build it.
+    requires:
+      - specs
+      - design
+      - ui-design
+
+apply:
+  requires: [ tasks ]
+  tracks: tasks.md
+  instruction: |
+    Read context files, work through pending tasks, mark complete as you go.
+    Pause if you hit blockers or need clarification.
+
+    UI 设计合同前置检查（Syntopica，在生成实现计划、派发实现子线程或
+    编辑项目代码之前执行）：
+    1. 读取本 change 的 ui-design.md 三条 marker（ui-impact /
+       ui-approval / ui-prototype）与 proposal 的 ui-impact 声明。
+    2. major 且 approval=pending → 停在 requirements 档：用浏览器向用户
+       展示 ui-prototype/ 原型并请求明确确认；不要生成实现计划、不要
+       派发实现子线程、不要编辑项目代码（修改 ui-design.md 与
+       ui-prototype/** 除外）。用户明确确认后把 approval 改为 approved
+       再继续。
+    3. major 且 approval=approved 且原型文件存在 → 正常放行。
+    4. none/minor 合同齐备（marker 合法、必填内容在）→ 正常放行。
+    5. 声明缺失/非法/矛盾、major 缺原型或原型越界 → 先修合同；旧
+       spec-driven schema 的存量 change 不受此约束硬阻断（触及前端时
+       会收到一次迁移提示）。

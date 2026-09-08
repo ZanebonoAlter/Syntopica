@@ -11,6 +11,8 @@ export interface ApiResponse<T = unknown> {
   pagination?: PaginationMeta
   message?: string
   error?: string
+  /** HTTP 状态码（仅失败时由 client 填充；成功路径恒 2xx 不需要）。409 冲突等场景前端需按状态码 + data 恢复。 */
+  status?: number
 }
 
 /**

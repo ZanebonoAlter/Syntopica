@@ -25,7 +25,7 @@ func DefaultConfig() Config {
 		RetentionDays:  7,
 		BufferSize:     100,
 		FlushInterval:  5,
-		SampleRatio:    1.0,
+		SampleRatio:    0.05,
 		InstrumentGORM: true,
 		InstrumentHTTP: true,
 	}

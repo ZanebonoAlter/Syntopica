@@ -41,6 +41,9 @@ type semanticBoardRequest struct {
 	EnrichmentEnabled *bool    `json:"enrichment_enabled"`
 	WindowDays        *int     `json:"window_days"`
 	ContextLayers     []string `json:"context_layers"`
+	// RelationAutoDiscoveryEnabled — per-board auto relation discovery switch
+	// (nil = untouched; absent column on old rows reads as false).
+	RelationAutoDiscoveryEnabled *bool `json:"relation_auto_discovery_enabled"`
 }
 
 type suggestedAuxiliaryDTO struct {
@@ -75,8 +78,14 @@ type semanticBoardDTO struct {
 	Source       string   `json:"source"`
 	Status       string   `json:"status"`
 	Protected    bool     `json:"protected"`
-	CreatedAt    any      `json:"created_at"`
-	UpdatedAt    any      `json:"updated_at"`
+	// 循环 B 配置（fix-board-analysis-material：DTO 丢字段导致前端开关永远显示
+	// 关，且编辑弹窗保存会把已开开关覆盖回 false）。
+	EnrichmentEnabled            bool     `json:"enrichment_enabled"`
+	WindowDays                   int      `json:"window_days"`
+	ContextLayers                []string `json:"context_layers"`
+	RelationAutoDiscoveryEnabled bool     `json:"relation_auto_discovery_enabled"`
+	CreatedAt                    any      `json:"created_at"`
+	UpdatedAt                    any      `json:"updated_at"`
 }
 
 type semanticBoardAuxiliaryDTO struct {
@@ -106,7 +115,6 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 
 	boards := rg.Group("/semantic-boards")
 	{
-		boards.GET("/upgrade-candidates", handler.getUpgradeCandidates)
 		boards.POST("/upgrade-suggest", handler.suggestUpgrades)
 		boards.POST("/upgrade-execute", handler.executeUpgrade)
 
@@ -151,6 +159,8 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		tags.GET("/:id/auxiliary-labels", handler.getTagAuxiliaryLabels)
 		tags.GET("/:id/semantic-boards", handler.getTagSemanticBoards)
 	}
+
+	registerCompositeLabelRoutes(rg)
 }
 
 func (h *semanticBoardHandler) listSemanticBoards(c *gin.Context) {
@@ -285,6 +295,9 @@ func (h *semanticBoardHandler) updateSemanticBoard(c *gin.Context) {
 	if req.EnrichmentEnabled != nil {
 		board.EnrichmentEnabled = *req.EnrichmentEnabled
 	}
+	if req.RelationAutoDiscoveryEnabled != nil {
+		board.RelationAutoDiscoveryEnabled = *req.RelationAutoDiscoveryEnabled
+	}
 	if req.WindowDays != nil && *req.WindowDays >= 1 {
 		board.WindowDays = *req.WindowDays
 	}
@@ -338,7 +351,52 @@ func (h *semanticBoardHandler) getBoardComposition(c *gin.Context) {
 	for _, row := range rows {
 		items = append(items, auxiliaryToDTO(row))
 	}
-	respondOK(c, gin.H{"items": items, "total": len(items)})
+
+	// add-composite-labels：组合挂载条目单独返回（aux 的 auxiliary_label_id 列复用）
+	compositeMounts := make([]gin.H, 0)
+	var compositeRows []models.SemanticLabel
+	if err := h.db.WithContext(c.Request.Context()).Model(&models.SemanticLabel{}).
+		Joins("JOIN board_composition bc ON bc.auxiliary_label_id = semantic_labels.id").
+		Where("bc.board_id = ? AND semantic_labels.label_type = ?", boardID, "composite").
+		Order("semantic_labels.ref_count DESC, semantic_labels.id ASC").
+		Find(&compositeRows).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if len(compositeRows) > 0 {
+		ids := make([]uint, 0, len(compositeRows))
+		for _, r := range compositeRows {
+			ids = append(ids, r.ID)
+		}
+		var comps []models.CompositeComponent
+		if err := h.db.WithContext(c.Request.Context()).Where("composite_id IN ?", ids).Order("composite_id, position").Find(&comps).Error; err != nil {
+			respondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		var compLabels []models.SemanticLabel
+		if err := h.db.WithContext(c.Request.Context()).
+			Select("id, label").
+			Where("id IN (SELECT component_label_id FROM composite_components WHERE composite_id IN ?)", ids).
+			Find(&compLabels).Error; err != nil {
+			respondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		labelByID := make(map[uint]string, len(compLabels))
+		for _, l := range compLabels {
+			labelByID[l.ID] = l.Label
+		}
+		chainByComposite := make(map[uint][]string, len(comps))
+		for _, comp := range comps {
+			chainByComposite[comp.CompositeID] = append(chainByComposite[comp.CompositeID], labelByID[comp.ComponentLabelID])
+		}
+		for _, r := range compositeRows {
+			compositeMounts = append(compositeMounts, gin.H{
+				"id": r.ID, "label": r.Label, "slug": r.Slug, "status": r.Status,
+				"ref_count": r.RefCount, "components": chainByComposite[r.ID],
+			})
+		}
+	}
+	respondOK(c, gin.H{"items": items, "total": len(items), "composites": compositeMounts})
 }
 
 func (h *semanticBoardHandler) removeBoardComposition(c *gin.Context) {
@@ -354,6 +412,7 @@ func (h *semanticBoardHandler) removeBoardComposition(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, err)
 		return
 	}
+	service.InvalidateMatchCache()
 	respondOK(c, gin.H{"board_id": boardID, "auxiliary_label_id": auxiliaryID})
 }
 
@@ -870,7 +929,7 @@ func insertBoardComposition(tx *gorm.DB, boardID uint, auxiliaryIDs []uint) erro
 }
 
 func semanticBoardToDTO(label models.SemanticLabel, tagCount int64) semanticBoardDTO {
-	return semanticBoardDTO{ID: label.ID, Label: label.Label, Slug: label.Slug, Aliases: label.Aliases, RefCount: label.RefCount, TagCount: tagCount, Description: label.Description, DisplayOrder: label.DisplayOrder, Source: label.Source, Status: label.Status, Protected: label.Protected, CreatedAt: label.CreatedAt, UpdatedAt: label.UpdatedAt}
+	return semanticBoardDTO{ID: label.ID, Label: label.Label, Slug: label.Slug, Aliases: label.Aliases, RefCount: label.RefCount, TagCount: tagCount, Description: label.Description, DisplayOrder: label.DisplayOrder, Source: label.Source, Status: label.Status, Protected: label.Protected, EnrichmentEnabled: label.EnrichmentEnabled, WindowDays: label.WindowDays, ContextLayers: label.ContextLayers, RelationAutoDiscoveryEnabled: label.RelationAutoDiscoveryEnabled, CreatedAt: label.CreatedAt, UpdatedAt: label.UpdatedAt}
 }
 
 func auxiliaryToDTO(label models.SemanticLabel) semanticBoardAuxiliaryDTO {
@@ -1014,9 +1073,10 @@ func (h *semanticBoardHandler) addBoardComposition(c *gin.Context) {
 		return
 	}
 
+	// add-composite-labels：挂载单元可为 aux 或 composite（列名 auxiliary_label_id 复用）
 	var auxiliary models.SemanticLabel
-	if err := h.db.WithContext(c.Request.Context()).Where("id = ? AND label_type = ? AND status = ?", req.AuxiliaryLabelID, "auxiliary", "active").First(&auxiliary).Error; err != nil {
-		respondError(c, http.StatusBadRequest, fmt.Errorf("active auxiliary label not found"))
+	if err := h.db.WithContext(c.Request.Context()).Where("id = ? AND label_type IN ? AND status = ?", req.AuxiliaryLabelID, []string{"auxiliary", "composite"}, "active").First(&auxiliary).Error; err != nil {
+		respondError(c, http.StatusBadRequest, fmt.Errorf("active auxiliary or composite label not found"))
 		return
 	}
 
@@ -1025,6 +1085,8 @@ func (h *semanticBoardHandler) addBoardComposition(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	// 匹配输入缓存（auxiliaries/composites/embeddings）无 TTL，composition 变更必须失效
+	service.InvalidateMatchCache()
 	respondOK(c, gin.H{"board_id": boardID, "auxiliary_label_id": req.AuxiliaryLabelID})
 }
 

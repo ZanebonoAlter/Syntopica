@@ -62,12 +62,12 @@ describe('useSemanticBoardsApi - persisted upgrade suggestions', () => {
     expect(postMock).toHaveBeenCalledWith('/semantic-boards/upgrade-suggestions/7/dismiss', undefined)
   })
 
-  it('generateUpgradeSuggestions → POST /generate', async () => {
+  it('generateUpgradeSuggestions → POST /generate with four-grid params', async () => {
     const expected = { success: true, data: { inserted: 3, skipped: 1, cooldown_blocked: 2 } }
     postMock.mockResolvedValue(expected)
     const api = useSemanticBoardsApi()
-    const res = await api.generateUpgradeSuggestions()
-    expect(postMock).toHaveBeenCalledWith('/semantic-boards/upgrade-suggestions/generate')
+    const res = await api.generateUpgradeSuggestions({ direction: 'expand', source: 'composite', target_board_id: 42 })
+    expect(postMock).toHaveBeenCalledWith('/semantic-boards/upgrade-suggestions/generate?direction=expand&source=composite&target_board_id=42')
     expect(res).toEqual(expected)
   })
 

@@ -70,10 +70,51 @@ func TestHighlightsSystemPrompt_HasFactAnchor(t *testing.T) {
 	}
 }
 
-// TestPromptVersion_Is4 guards the prompt-hygiene version bump.
-func TestPromptVersion_Is4(t *testing.T) {
-	if promptVersion != "4.0" {
-		t.Errorf("promptVersion should be \"4.0\", got %q", promptVersion)
+// TestPromptVersion_Is5 guards the prompt version bump (5.0 = section title decouple).
+func TestPromptVersion_Is5(t *testing.T) {
+	if promptVersion != "5.0" {
+		t.Errorf("promptVersion should be \"5.0\", got %q", promptVersion)
+	}
+}
+
+// ---- section title decouple (spec: section 展示标题内容化) ----
+
+// TestThreadsSystemPrompt_RequestsSectionTitle guards Scenario 标题遵守事实锚约束:
+// the system prompt must instruct the model to author a daily section_title
+// under the fact-anchor rule and must forbid parroting the topic/group name.
+func TestThreadsSystemPrompt_RequestsSectionTitle(t *testing.T) {
+	if !strings.Contains(threadsSystemPrompt, "section_title") {
+		t.Errorf("threadsSystemPrompt should request section_title output")
+	}
+	if !strings.Contains(threadsSystemPrompt, "不得复述") {
+		t.Errorf("threadsSystemPrompt should forbid parroting topic/group names")
+	}
+}
+
+// TestParseThreadsResponse_SectionTitle covers the parser variants V1/V2/V4:
+// present title is trimmed and returned, missing/blank titles degrade to "".
+func TestParseThreadsResponse_SectionTitle(t *testing.T) {
+	tags := []repository.TagInput{{ID: 1, Label: "日本政治"}}
+
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"present title", `{"section_title":" 高市执政基础不稳 ","threads":[{"title":"党内反弹","summary":"s","tag_ids":[1],"confidence":0.9}]}`, "高市执政基础不稳"},
+		{"missing field", `{"threads":[{"title":"党内反弹","summary":"s","tag_ids":[1],"confidence":0.9}]}`, ""},
+		{"blank title", `{"section_title":"  ","threads":[]}`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, got, err := parseThreadsResponse(c.content, tags)
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			if got != c.want {
+				t.Errorf("section_title = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 

@@ -1,0 +1,910 @@
+time=2026-09-02T23:36:25.894+08:00 level=INFO msg="Database initialized successfully"
+time=2026-09-02T23:36:26.249+08:00 level=INFO msg="Skipping HNSW index on daily_report_sections.embedding: dimension 2560 > 2000 limit"
+time=2026-09-02T23:36:26.253+08:00 level=INFO msg="Skipping HNSW index on board_persistent_topics.embedding: dimension 2560 > 2000 limit"
+time=2026-09-02T23:36:26.256+08:00 level=INFO msg="Outbound proxy enabled: http://127.0.0.1:7897"
+time=2026-09-02T23:36:26.437+08:00 level=INFO msg="[tracing] TracerProvider initialized successfully"
+[GIN-debug] [WARNING] Creating an Engine instance with the Logger and Recovery middleware already attached.
+
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] GET    /icons/*filepath          --> syntopica-backend/internal/app.SetupRoutes.iconsFileHandler.func2 (6 handlers)
+[GIN-debug] GET    /health                   --> syntopica-backend/internal/app.SetupRoutes.func1 (6 handlers)
+[GIN-debug] GET    /api/tasks/status         --> syntopica-backend/internal/admin/handler.GetTasksStatus (6 handlers)
+[GIN-debug] GET    /ws                       --> syntopica-backend/internal/platform/ws.HandleWebSocket (6 handlers)
+[GIN-debug] GET    /api/categories           --> syntopica-backend/internal/reader/handler.GetCategories (7 handlers)
+[GIN-debug] POST   /api/categories           --> syntopica-backend/internal/reader/handler.CreateCategory (7 handlers)
+[GIN-debug] PUT    /api/categories/:category_id --> syntopica-backend/internal/reader/handler.UpdateCategory (7 handlers)
+[GIN-debug] DELETE /api/categories/:category_id --> syntopica-backend/internal/reader/handler.DeleteCategory (7 handlers)
+[GIN-debug] GET    /api/feeds                --> syntopica-backend/internal/reader/handler.GetFeeds (7 handlers)
+[GIN-debug] GET    /api/feeds/:feed_id       --> syntopica-backend/internal/reader/handler.GetFeed (7 handlers)
+[GIN-debug] POST   /api/feeds                --> syntopica-backend/internal/reader/handler.CreateFeed (7 handlers)
+[GIN-debug] PUT    /api/feeds/:feed_id       --> syntopica-backend/internal/reader/handler.UpdateFeed (7 handlers)
+[GIN-debug] DELETE /api/feeds/:feed_id       --> syntopica-backend/internal/reader/handler.DeleteFeed (7 handlers)
+[GIN-debug] POST   /api/feeds/:feed_id/refresh --> syntopica-backend/internal/reader/handler.RefreshFeed (7 handlers)
+[GIN-debug] POST   /api/feeds/fetch          --> syntopica-backend/internal/reader/handler.FetchFeed (7 handlers)
+[GIN-debug] POST   /api/feeds/refresh-all    --> syntopica-backend/internal/reader/handler.RefreshAllFeeds (7 handlers)
+[GIN-debug] GET    /api/articles/stats       --> syntopica-backend/internal/reader/handler.GetArticlesStats (7 handlers)
+[GIN-debug] GET    /api/articles             --> syntopica-backend/internal/reader/handler.GetArticles (7 handlers)
+[GIN-debug] GET    /api/articles/:article_id --> syntopica-backend/internal/reader/handler.GetArticle (7 handlers)
+[GIN-debug] POST   /api/articles/:article_id/tags --> syntopica-backend/internal/reader/handler.RetagArticleHandler (7 handlers)
+[GIN-debug] PUT    /api/articles/:article_id --> syntopica-backend/internal/reader/handler.UpdateArticle (7 handlers)
+[GIN-debug] PUT    /api/articles/bulk-update --> syntopica-backend/internal/reader/handler.BulkUpdateArticles (7 handlers)
+[GIN-debug] POST   /api/import-opml          --> syntopica-backend/internal/reader/handler.ImportOPML (7 handlers)
+[GIN-debug] GET    /api/export-opml          --> syntopica-backend/internal/reader/handler.ExportOPML (7 handlers)
+[GIN-debug] POST   /api/content-completion/articles/:article_id/complete --> syntopica-backend/internal/reader/handler.CompleteArticleContent (7 handlers)
+[GIN-debug] POST   /api/content-completion/feeds/:feed_id/complete-all --> syntopica-backend/internal/reader/handler.CompleteFeedArticles (7 handlers)
+[GIN-debug] GET    /api/content-completion/articles/:article_id/status --> syntopica-backend/internal/reader/handler.GetCompletionStatus (7 handlers)
+[GIN-debug] GET    /api/content-completion/overview --> syntopica-backend/internal/reader/handler.GetCompletionOverview (7 handlers)
+[GIN-debug] POST   /api/firecrawl/article/:id --> syntopica-backend/internal/reader/handler.CrawlArticle (7 handlers)
+[GIN-debug] POST   /api/firecrawl/feed/:id/enable --> syntopica-backend/internal/reader/handler.EnableFeedFirecrawl (7 handlers)
+[GIN-debug] GET    /api/firecrawl/status     --> syntopica-backend/internal/reader/handler.GetFirecrawlStatus (7 handlers)
+[GIN-debug] POST   /api/firecrawl/settings   --> syntopica-backend/internal/reader/handler.SaveFirecrawlSettings (7 handlers)
+[GIN-debug] POST   /api/daily-reports/generate --> syntopica-backend/internal/topicgraph/handler.triggerGenerateDailyReport (7 handlers)
+[GIN-debug] GET    /api/daily-reports/:id    --> syntopica-backend/internal/topicgraph/handler.getDailyReport (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/daily-reports --> syntopica-backend/internal/topicgraph/handler.listBoardDailyReports (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/section-timeline --> syntopica-backend/internal/topicgraph/handler.getBoardSectionTimeline (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/topics --> syntopica-backend/internal/topicgraph/handler.listBoardTopics (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/topic-landscape --> syntopica-backend/internal/topicgraph/handler.getBoardTopicLandscape (7 handlers)
+[GIN-debug] GET    /api/daily-reports/sections/:id/lifecycle --> syntopica-backend/internal/topicgraph/handler.getSectionLifecycle (7 handlers)
+[GIN-debug] GET    /api/daily-reports/topics/:id/lifeline --> syntopica-backend/internal/topicgraph/handler.getTopicLifeline (7 handlers)
+[GIN-debug] PATCH  /api/daily-reports/topics/:id --> syntopica-backend/internal/topicgraph/handler.updateTopic (7 handlers)
+[GIN-debug] DELETE /api/daily-reports/topics/:id --> syntopica-backend/internal/topicgraph/handler.deleteTopic (7 handlers)
+[GIN-debug] POST   /api/daily-reports/topics/:id/merge --> syntopica-backend/internal/topicgraph/handler.mergeTopic (7 handlers)
+[GIN-debug] POST   /api/daily-reports/topics/:id/split --> syntopica-backend/internal/topicgraph/handler.splitTopic (7 handlers)
+[GIN-debug] POST   /api/daily-reports/backfill-embeddings --> syntopica-backend/internal/topicgraph/handler.triggerBackfillEmbeddings (7 handlers)
+[GIN-debug] POST   /api/daily-reports/backfill-relations --> syntopica-backend/internal/topicgraph/handler.triggerBackfillRelations (7 handlers)
+[GIN-debug] POST   /api/daily-reports/backfill-topics --> syntopica-backend/internal/topicgraph/handler.triggerBackfillTopics (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/persistent-topics/manual --> syntopica-backend/internal/topicgraph/handler.createManualTopic (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/persistent-topics/compose-candidates --> syntopica-backend/internal/topicgraph/handler.composeCandidates (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/persistent-topics/embed-query --> syntopica-backend/internal/topicgraph/handler.embedQuery (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/topic-watches --> syntopica-backend/internal/topicgraph/handler.createTopicWatch (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/topic-watches --> syntopica-backend/internal/topicgraph/handler.listTopicWatches (7 handlers)
+[GIN-debug] PATCH  /api/topic-watches/:id    --> syntopica-backend/internal/topicgraph/handler.updateTopicWatch (7 handlers)
+[GIN-debug] DELETE /api/topic-watches/:id    --> syntopica-backend/internal/topicgraph/handler.deleteTopicWatch (7 handlers)
+[GIN-debug] GET    /api/daily-reports/:id/watch-hits --> syntopica-backend/internal/topicgraph/handler.getWatchHits (7 handlers)
+[GIN-debug] GET    /api/ai/providers         --> syntopica-backend/internal/admin/handler.ListProviders (7 handlers)
+[GIN-debug] POST   /api/ai/providers         --> syntopica-backend/internal/admin/handler.UpsertProvider (7 handlers)
+[GIN-debug] PUT    /api/ai/providers/:provider_id --> syntopica-backend/internal/admin/handler.UpdateProvider (7 handlers)
+[GIN-debug] DELETE /api/ai/providers/:provider_id --> syntopica-backend/internal/admin/handler.DeleteProvider (7 handlers)
+[GIN-debug] GET    /api/ai/routes            --> syntopica-backend/internal/admin/handler.ListRoutes (7 handlers)
+[GIN-debug] PUT    /api/ai/routes/:capability --> syntopica-backend/internal/admin/handler.UpdateRoute (7 handlers)
+[GIN-debug] GET    /api/ai/settings          --> syntopica-backend/internal/admin/handler.GetSettings (7 handlers)
+[GIN-debug] POST   /api/ai/settings          --> syntopica-backend/internal/admin/handler.SaveSettings (7 handlers)
+[GIN-debug] POST   /api/ai/test              --> syntopica-backend/internal/admin/handler.TestConnection (7 handlers)
+[GIN-debug] GET    /api/ai/call-logs         --> syntopica-backend/internal/admin/handler.ListCallLogs (7 handlers)
+[GIN-debug] GET    /api/ai/sessions/:session_id --> syntopica-backend/internal/admin/handler.GetSession (7 handlers)
+[GIN-debug] GET    /api/ai/health            --> syntopica-backend/internal/admin/handler.GetAIHealth (7 handlers)
+[GIN-debug] PUT    /api/ai/health/auto-start-models --> syntopica-backend/internal/admin/handler.SetAutoStartModels (7 handlers)
+[GIN-debug] POST   /api/ai/health/reprobe    --> syntopica-backend/internal/admin/handler.ReprobeAIHealth (7 handlers)
+[GIN-debug] GET    /api/schedulers/status    --> syntopica-backend/internal/admin/handler.GetSchedulersStatus (7 handlers)
+[GIN-debug] GET    /api/schedulers/:name/status --> syntopica-backend/internal/admin/handler.GetSchedulerStatus (7 handlers)
+[GIN-debug] POST   /api/schedulers/:name/trigger --> syntopica-backend/internal/admin/handler.TriggerScheduler (7 handlers)
+[GIN-debug] POST   /api/schedulers/:name/reset --> syntopica-backend/internal/admin/handler.ResetSchedulerStats (7 handlers)
+[GIN-debug] PUT    /api/schedulers/:name/interval --> syntopica-backend/internal/admin/handler.UpdateSchedulerInterval (7 handlers)
+[GIN-debug] PUT    /api/schedulers/:name/schedule-time --> syntopica-backend/internal/admin/handler.UpdateSchedulerScheduleTime (7 handlers)
+[GIN-debug] GET    /api/analysis/pause       --> syntopica-backend/internal/admin/handler.GetAnalysisPause (7 handlers)
+[GIN-debug] POST   /api/analysis/pause       --> syntopica-backend/internal/admin/handler.SetAnalysisPause (7 handlers)
+[GIN-debug] POST   /api/reading-behavior/track --> syntopica-backend/internal/admin/handler.TrackReadingBehavior (7 handlers)
+[GIN-debug] POST   /api/reading-behavior/track-batch --> syntopica-backend/internal/admin/handler.BatchTrackReadingBehavior (7 handlers)
+[GIN-debug] GET    /api/reading-behavior/stats --> syntopica-backend/internal/admin/handler.GetReadingStats (7 handlers)
+[GIN-debug] GET    /api/preference-profile   --> syntopica-backend/internal/admin/handler.GetPreferenceProfile (7 handlers)
+[GIN-debug] POST   /api/preference-profile/recompute --> syntopica-backend/internal/admin/handler.RecomputePreferenceProfile (7 handlers)
+[GIN-debug] POST   /api/discovery/catalog/sync --> syntopica-backend/internal/admin/handler.SyncCatalog (7 handlers)
+[GIN-debug] GET    /api/discovery/catalog/status --> syntopica-backend/internal/admin/handler.GetCatalogStatus (7 handlers)
+[GIN-debug] GET    /api/discovery/recommendations --> syntopica-backend/internal/admin/handler.GetRecommendations (7 handlers)
+[GIN-debug] POST   /api/discovery/recommendations/refresh --> syntopica-backend/internal/admin/handler.RefreshRecommendations (7 handlers)
+[GIN-debug] POST   /api/discovery/recommendations/:id/accept --> syntopica-backend/internal/admin/handler.AcceptRecommendation (7 handlers)
+[GIN-debug] POST   /api/discovery/recommendations/:id/dismiss --> syntopica-backend/internal/admin/handler.DismissRecommendation (7 handlers)
+[GIN-debug] POST   /api/discovery/ask        --> syntopica-backend/internal/admin/handler.Ask (7 handlers)
+[GIN-debug] GET    /api/settings/rsshub      --> syntopica-backend/internal/admin/handler.GetRSSHubSettings (7 handlers)
+[GIN-debug] POST   /api/settings/rsshub      --> syntopica-backend/internal/admin/handler.SaveRSSHubSettings (7 handlers)
+[GIN-debug] GET    /api/settings/proxy       --> syntopica-backend/internal/admin/handler.GetProxySettings (7 handlers)
+[GIN-debug] POST   /api/settings/proxy       --> syntopica-backend/internal/admin/handler.SaveProxySettings (7 handlers)
+[GIN-debug] GET    /api/settings/bocha       --> syntopica-backend/internal/admin/handler.GetBochaSettings (7 handlers)
+[GIN-debug] POST   /api/settings/bocha       --> syntopica-backend/internal/admin/handler.SaveBochaSettings (7 handlers)
+[GIN-debug] GET    /api/admin/route-param-options --> syntopica-backend/internal/admin/handler.ListRouteParamOptions (7 handlers)
+[GIN-debug] POST   /api/admin/route-param-options --> syntopica-backend/internal/admin/handler.CreateRouteParamOption (7 handlers)
+[GIN-debug] PUT    /api/admin/route-param-options/:id --> syntopica-backend/internal/admin/handler.UpdateRouteParamOption (7 handlers)
+[GIN-debug] DELETE /api/admin/route-param-options/:id --> syntopica-backend/internal/admin/handler.DeleteRouteParamOption (7 handlers)
+[GIN-debug] GET    /api/embedding/queue/status --> syntopica-backend/internal/tagmanagement/handler.GetEmbeddingQueueStatus (7 handlers)
+[GIN-debug] GET    /api/embedding/queue/tasks --> syntopica-backend/internal/tagmanagement/handler.GetEmbeddingQueueTasks (7 handlers)
+[GIN-debug] POST   /api/embedding/queue/retry --> syntopica-backend/internal/tagmanagement/handler.RetryEmbeddingQueueFailed (7 handlers)
+[GIN-debug] POST   /api/embedding/queue/person-metadata/backfill --> syntopica-backend/internal/tagmanagement/handler.BackfillPersonMetadataHandler (7 handlers)
+[GIN-debug] GET    /api/embedding/merge-reembedding/status --> syntopica-backend/internal/tagmanagement/handler.GetMergeReembeddingQueueStatus (7 handlers)
+[GIN-debug] GET    /api/embedding/merge-reembedding/tasks --> syntopica-backend/internal/tagmanagement/handler.GetMergeReembeddingQueueTasks (7 handlers)
+[GIN-debug] POST   /api/embedding/merge-reembedding/retry --> syntopica-backend/internal/tagmanagement/handler.RetryMergeReembeddingQueueFailed (7 handlers)
+[GIN-debug] GET    /api/tag-queue/status     --> syntopica-backend/internal/tagmanagement/handler.GetTagQueueStatus (7 handlers)
+[GIN-debug] GET    /api/tag-queue/tasks      --> syntopica-backend/internal/tagmanagement/handler.GetTagQueueTasks (7 handlers)
+[GIN-debug] POST   /api/tag-queue/retry      --> syntopica-backend/internal/tagmanagement/handler.RetryTagQueueFailed (7 handlers)
+[GIN-debug] POST   /api/tag-queue/retag-today --> syntopica-backend/internal/tagmanagement/handler.RetagTodayArticles (7 handlers)
+[GIN-debug] GET    /api/topic-tags/search    --> syntopica-backend/internal/tagmanagement/handler.SearchTagsHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge     --> syntopica-backend/internal/tagmanagement/handler.MergeTagsHandler (7 handlers)
+[GIN-debug] GET    /api/topic-tags/watched   --> syntopica-backend/internal/tagmanagement/handler.ListWatchedTagsHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/:tag_id/watch --> syntopica-backend/internal/tagmanagement/handler.WatchTagHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/:tag_id/unwatch --> syntopica-backend/internal/tagmanagement/handler.UnwatchTagHandler (7 handlers)
+[GIN-debug] GET    /api/topic-tags/merge-preview --> syntopica-backend/internal/tagmanagement/handler.ScanMergePreviewHandler (7 handlers)
+[GIN-debug] GET    /api/topic-tags/merge-preview/status --> syntopica-backend/internal/tagmanagement/handler.MergePreviewStatusHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge-with-name --> syntopica-backend/internal/tagmanagement/handler.MergeTagsWithCustomNameHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge-preview/dismiss --> syntopica-backend/internal/tagmanagement/handler.DismissSuggestionHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge-preview/scan --> syntopica-backend/internal/tagmanagement/handler.TriggerScanHandler (7 handlers)
+[GIN-debug] GET    /api/topic-tags/merge-preview/scan/stream --> syntopica-backend/internal/tagmanagement/handler.ScanStreamHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge-preview/evaluate --> syntopica-backend/internal/tagmanagement/handler.TriggerEvaluateHandler (7 handlers)
+[GIN-debug] GET    /api/topic-tags/merge-preview/evaluate/stream --> syntopica-backend/internal/tagmanagement/handler.EvaluateStreamHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge-preview/add-to-group --> syntopica-backend/internal/tagmanagement/handler.AddToGroupHandler (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/upgrade-candidates --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getUpgradeCandidates-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/upgrade-suggest --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).suggestUpgrades-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/upgrade-execute --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).executeUpgrade-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/upgrade-suggestions --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).listUpgradeSuggestions-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/upgrade-suggestions/:id/dismiss --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).dismissUpgradeSuggestion-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/upgrade-suggestions/generate --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).generateUpgradeSuggestions-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/backfill --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).enqueueBackfill-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/backfill/:id --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getBackfillJob-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/backfill-embeddings --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).backfillBoardEmbeddings-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/rematch-all --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).rematchAll-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/matching-config --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getMatchingConfig-fm (7 handlers)
+[GIN-debug] PUT    /api/semantic-boards/matching-config --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).updateMatchingConfig-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/suggest-auxiliaries --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).suggestAuxiliaries-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards      --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).listSemanticBoards-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards      --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).createSemanticBoard-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id  --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getSemanticBoard-fm (7 handlers)
+[GIN-debug] PUT    /api/semantic-boards/:id  --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).updateSemanticBoard-fm (7 handlers)
+[GIN-debug] DELETE /api/semantic-boards/:id  --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).deleteSemanticBoard-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/suggest-auxiliaries --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).suggestAuxiliariesForBoard-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/articles --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getBoardArticles-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/match-detail/:tagId --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getTagMatchDetail-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/composition --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getBoardComposition-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/composition --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).addBoardComposition-fm (7 handlers)
+[GIN-debug] DELETE /api/semantic-boards/:id/composition/:auxiliary_label_id --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).removeBoardComposition-fm (7 handlers)
+[GIN-debug] GET    /api/auxiliary-labels     --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).listAuxiliaryLabels-fm (7 handlers)
+[GIN-debug] GET    /api/auxiliary-labels/clusters --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).clusterAuxiliaryLabels-fm (7 handlers)
+[GIN-debug] POST   /api/auxiliary-labels/merge-alias --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).mergeAuxiliaryAlias-fm (7 handlers)
+[GIN-debug] POST   /api/auxiliary-labels/gc  --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).gcAuxiliaryLabels-fm (7 handlers)
+[GIN-debug] POST   /api/auxiliary-labels/:id/disable --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).disableAuxiliaryLabel-fm (7 handlers)
+[GIN-debug] GET    /api/tags/:id/auxiliary-labels --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getTagAuxiliaryLabels-fm (7 handlers)
+[GIN-debug] GET    /api/tags/:id/semantic-boards --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getTagSemanticBoards-fm (7 handlers)
+[GIN-debug] GET    /api/enrichment/analysis-status --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getAnalysisStatus-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/contexts --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listContexts-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/contexts/:granularity/:period --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getContext-fm (7 handlers)
+[GIN-debug] PUT    /api/persistent-topics/:topicId/enrichment/contexts/:granularity/:period --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).updateContext-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/contexts/:granularity/regenerate --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).regenerateContext-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/results --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listResults-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/results/:id --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getResult-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/results/trigger --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).triggerEnrichment-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/results/:id/debates --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).triggerDebate-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/results/:id/debates --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listDebates-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/results/:id/qa --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).askQA-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/results/:id/qa --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listQA-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/qa/:id/sediment --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).sedimentQA-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/reviews --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listReviews-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/reviews --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).createReview-fm (7 handlers)
+[GIN-debug] PUT    /api/persistent-topics/:topicId/enrichment/reviews/:id --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).updateReviewDeviation-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/reviews/:id/apply --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).applyReview-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/trigger --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).triggerBoardEnrichment-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/investigations/trigger --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).triggerBoardInvestigation-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/enrichment/analysis/results --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listBoardResults-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/enrichment/analysis/results/:rid --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getBoardResult-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/relations/discover --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).triggerRelationDiscovery-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/enrichment/analysis/relations --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listBoardRelations-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/enrichment/analysis/relations/:rid --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getBoardRelation-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/relations/:rid/confirm --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).confirmBoardRelation-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/relations/:rid/dismiss --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).dismissBoardRelation-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/relations/:rid/re-resolve --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).reResolveBoardRelation-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/results/:rid/qa --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).askBoardQA-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/enrichment/analysis/results/:rid/qa --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listBoardQA-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/results/:rid/qa/:qid/sediment --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).sedimentBoardQA-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/data-sources --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listDataSources-fm (7 handlers)
+[GIN-debug] PUT    /api/semantic-boards/:id/data-sources --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).upsertDataSource-fm (7 handlers)
+[GIN-debug] DELETE /api/semantic-boards/:id/data-sources/:sourceType --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).deleteDataSource-fm (7 handlers)
+[GIN-debug] GET    /api/analysis-methods     --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listAnalysisMethods-fm (7 handlers)
+[GIN-debug] POST   /api/analysis-methods     --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).createAnalysisMethod-fm (7 handlers)
+[GIN-debug] GET    /api/analysis-methods/:id --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getAnalysisMethod-fm (7 handlers)
+[GIN-debug] PUT    /api/analysis-methods/:id --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).updateAnalysisMethod-fm (7 handlers)
+[GIN-debug] PUT    /api/analysis-methods/:id/enable --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).setAnalysisMethodEnabled-fm (7 handlers)
+[GIN-debug] DELETE /api/analysis-methods/:id --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).deleteAnalysisMethod-fm (7 handlers)
+[GIN-debug] GET    /api/reference-roles      --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listReferenceRoles-fm (7 handlers)
+[GIN-debug] POST   /api/reference-roles      --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).createReferenceRole-fm (7 handlers)
+[GIN-debug] GET    /api/reference-roles/:id  --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getReferenceRole-fm (7 handlers)
+[GIN-debug] PUT    /api/reference-roles/:id  --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).updateReferenceRole-fm (7 handlers)
+[GIN-debug] DELETE /api/reference-roles/:id  --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).deleteReferenceRole-fm (7 handlers)
+[GIN-debug] GET    /api/traces               --> syntopica-backend/internal/platform/tracing.(*TraceHandler).GetTraceByTraceID-fm (7 handlers)
+[GIN-debug] GET    /api/traces/recent        --> syntopica-backend/internal/platform/tracing.(*TraceHandler).GetRecentTraces-fm (7 handlers)
+[GIN-debug] GET    /api/traces/search        --> syntopica-backend/internal/platform/tracing.(*TraceHandler).SearchTraces-fm (7 handlers)
+[GIN-debug] GET    /api/traces/stats         --> syntopica-backend/internal/platform/tracing.(*TraceHandler).GetTraceStats-fm (7 handlers)
+[GIN-debug] GET    /api/traces/:trace_id/timeline --> syntopica-backend/internal/platform/tracing.(*TraceHandler).GetTraceTimeline-fm (7 handlers)
+[GIN-debug] GET    /api/traces/:trace_id/otlp --> syntopica-backend/internal/platform/tracing.(*TraceHandler).ExportTraceOTLP-fm (7 handlers)
+time=2026-09-02T23:36:26.481+08:00 level=INFO msg="Tag queue started successfully"
+time=2026-09-02T23:36:26.482+08:00 level=INFO msg="Tag queue started successfully"
+time=2026-09-02T23:36:26.488+08:00 level=INFO msg="Embedding queue worker started successfully"
+time=2026-09-02T23:36:26.490+08:00 level=INFO msg="Merge re-embedding queue worker started successfully"
+time=2026-09-02T23:36:26.497+08:00 level=INFO msg="Aux Label Cleanup scheduler started (interval: 1h0m0s, startupDelay: 10m0s)"
+time=2026-09-02T23:36:26.505+08:00 level=INFO msg="Blocked Article Recovery scheduler started (interval: 1h0m0s, startupDelay: 0s)"
+time=2026-09-02T23:36:26.509+08:00 level=INFO msg="Preference Profile Update scheduler started (interval: 1h0m0s, startupDelay: 0s)"
+time=2026-09-02T23:36:26.523+08:00 level=INFO msg="RSSHub Catalog Sync scheduler started (interval: 24h0m0s, startupDelay: 0s)"
+time=2026-09-02T23:36:26.528+08:00 level=INFO msg="Tag Quality Score scheduler started (interval: 1h0m0s, startupDelay: 0s)"
+time=2026-09-02T23:36:26.533+08:00 level=INFO msg="Content Completion scheduler started (interval: 1m0s, startupDelay: 0s)"
+time=2026-09-02T23:36:26.538+08:00 level=INFO msg="Daily Report scheduler started (wall-clock mode)"
+time=2026-09-02T23:36:26.556+08:00 level=INFO msg="Board Upgrade Suggest scheduler started (wall-clock mode)"
+time=2026-09-02T23:36:26.561+08:00 level=INFO msg="Log Cleanup scheduler started (interval: 24h0m0s, startupDelay: 5m0s)"
+time=2026-09-02T23:36:26.566+08:00 level=INFO msg="Auto Refresh scheduler started (interval: 1m0s, startupDelay: 0s)"
+time=2026-09-02T23:36:26.570+08:00 level=INFO msg="Cross-Board Relation Expire scheduler started (interval: 1h0m0s, startupDelay: 30m0s)"
+time=2026-09-02T23:36:26.577+08:00 level=INFO msg="Firecrawl Crawler scheduler started (interval: 5m0s, startupDelay: 0s)"
+time=2026-09-02T23:36:26.582+08:00 level=INFO msg="Lifeline Monthly Refresh scheduler started (wall-clock mode)"
+time=2026-09-02T23:36:26.589+08:00 level=INFO msg="Lifeline Yearly Refresh scheduler started (wall-clock mode)"
+time=2026-09-02T23:36:26.590+08:00 level=INFO msg="Server starting on :5000"
+time=2026-09-02T23:36:26.590+08:00 level=INFO msg="Environment: debug"
+[GIN-debug] [WARNING] You trusted all proxies, this is NOT safe. We recommend you to set a value.
+Please check https://github.com/gin-gonic/gin/blob/master/docs/doc.md#dont-trust-all-proxies for details.
+[GIN-debug] Listening and serving HTTP on :5000
+time=2026-09-02T23:36:38.280+08:00 level=INFO msg="WebSocket客户端已连接，当前连接数: 1"
+[GIN] 2026/09/02 - 23:36:38 | 200 |       0s |             ::1 | GET      "/ws"
+time=2026-09-02T23:37:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:37:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:37:26.571+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:37:26.602+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:38:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:38:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:38:26.576+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:38:26.630+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:39:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:39:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:39:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:39:26.645+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:40:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:40:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:40:26.572+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:40:26.591+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:41:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:41:26.562+08:00 level=INFO msg="[tracing] scheduler \"Log Cleanup\" tick: tracing not recording"
+time=2026-09-02T23:41:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:41:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-02T23:41:26.598+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-02T23:41:26.616+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:41:26.702+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:41:27.737+08:00 level=WARN msg="[SLOW SQL] 1025.047ms > 200ms | rows=48105 | DELETE FROM otel_spans WHERE start_time_unix_nano < 1787758886562063100"
+time=2026-09-02T23:41:27.753+08:00 level=INFO msg="Log Cleanup: ai_call_logs=2001, otel_spans=48105, ai_embedding_cache=0, embedding_queues=583"
+time=2026-09-02T23:42:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:42:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:42:26.573+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:42:26.597+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:43:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:43:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:43:26.567+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:43:26.569+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:44:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:44:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:44:26.570+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:44:26.609+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:45:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:45:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:45:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:45:26.580+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:46:26.498+08:00 level=INFO msg="[tracing] scheduler \"Aux Label Cleanup\" tick: tracing not recording"
+time=2026-09-02T23:46:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:46:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:46:26.569+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:46:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-02T23:46:26.598+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-02T23:46:26.709+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:46:26.859+08:00 level=WARN msg="[SLOW SQL] 361.134ms > 200ms | rows=0 | SELECT * FROM \"semantic_labels\" WHERE (label_type = 'auxiliary' AND status = 'active' AND protected = false) AND created_at < '2026-09-01 23:46:26.498' AND id NOT IN (SELECT DISTINCT semantic_label_id FROM topic_tag_semantic_labels) AND id NOT IN (SELECT DISTINCT auxiliary_label_id FROM board_composition)"
+time=2026-09-02T23:46:26.859+08:00 level=INFO msg="Aux Label Cleanup: disabled 0 labels"
+time=2026-09-02T23:47:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:47:26.570+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:47:26.642+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:48:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:48:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:48:26.573+08:00 level=INFO msg="Auto Refresh: triggered 1 feeds (scanned=23, due=1, stale_reset=0)"
+time=2026-09-02T23:48:26.635+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:48:27.024+08:00 level=INFO msg="[cleanup] feed 1: max=100, active=100"
+time=2026-09-02T23:48:27.025+08:00 level=INFO msg="[cleanup] feed 1: skip, active article count within limit"
+time=2026-09-02T23:49:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:49:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:49:26.573+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:49:26.658+08:00 level=INFO msg="Auto Refresh: triggered 17 feeds (scanned=23, due=17, stale_reset=0)"
+time=2026-09-02T23:49:26.786+08:00 level=INFO msg="[cleanup] feed 12: max=100, active=100"
+time=2026-09-02T23:49:26.787+08:00 level=INFO msg="[cleanup] feed 12: skip, active article count within limit"
+time=2026-09-02T23:49:26.874+08:00 level=INFO msg="[cleanup] feed 6: max=100, active=31"
+time=2026-09-02T23:49:26.875+08:00 level=INFO msg="[cleanup] feed 6: skip, active article count within limit"
+time=2026-09-02T23:49:26.875+08:00 level=ERROR msg="Error refreshing feed 16: feed returned HTTP 503"
+time=2026-09-02T23:49:26.889+08:00 level=ERROR msg="Error refreshing feed 20: failed to parse feed: Failed to detect feed type"
+time=2026-09-02T23:49:26.917+08:00 level=INFO msg="[cleanup] feed 3: max=100, active=100"
+time=2026-09-02T23:49:26.917+08:00 level=INFO msg="[cleanup] feed 3: skip, active article count within limit"
+time=2026-09-02T23:49:27.187+08:00 level=INFO msg="[cleanup] feed 9: max=100, active=25"
+time=2026-09-02T23:49:27.187+08:00 level=INFO msg="[cleanup] feed 9: skip, active article count within limit"
+time=2026-09-02T23:49:27.428+08:00 level=INFO msg="[cleanup] feed 2: max=100, active=14"
+time=2026-09-02T23:49:27.429+08:00 level=INFO msg="[cleanup] feed 2: skip, active article count within limit"
+time=2026-09-02T23:49:27.453+08:00 level=INFO msg="[cleanup] feed 27: max=100, active=19"
+time=2026-09-02T23:49:27.453+08:00 level=INFO msg="[cleanup] feed 27: skip, active article count within limit"
+time=2026-09-02T23:49:27.615+08:00 level=INFO msg="[cleanup] feed 11: max=100, active=100"
+time=2026-09-02T23:49:27.615+08:00 level=INFO msg="[cleanup] feed 11: skip, active article count within limit"
+time=2026-09-02T23:49:27.667+08:00 level=INFO msg="icon: candidate \"http://0.0.0.0:8080/favicon.ico\" download failed for feed 21: icon download returned HTTP 502"
+time=2026-09-02T23:49:27.672+08:00 level=INFO msg="[cleanup] feed 21: max=100, active=100"
+time=2026-09-02T23:49:27.672+08:00 level=INFO msg="[cleanup] feed 21: skip, active article count within limit"
+time=2026-09-02T23:49:27.742+08:00 level=INFO msg="[cleanup] feed 29: max=100, active=100"
+time=2026-09-02T23:49:27.742+08:00 level=INFO msg="[cleanup] feed 29: skip, active article count within limit"
+time=2026-09-02T23:49:27.857+08:00 level=INFO msg="icon: candidate \"https://paper.seebug.org/favicon.ico\" download failed for feed 23: icon download returned HTTP 404"
+time=2026-09-02T23:49:27.863+08:00 level=INFO msg="[cleanup] feed 23: max=100, active=38"
+time=2026-09-02T23:49:27.863+08:00 level=INFO msg="[cleanup] feed 23: skip, active article count within limit"
+time=2026-09-02T23:49:28.127+08:00 level=INFO msg="[cleanup] feed 28: max=100, active=101"
+time=2026-09-02T23:49:28.129+08:00 level=INFO msg="[cleanup] feed 28: keep=8 (favorite), archive candidates=93"
+time=2026-09-02T23:49:28.129+08:00 level=INFO msg="[cleanup] feed 28: archiving 1 articles, IDs=[120619]"
+time=2026-09-02T23:49:28.533+08:00 level=INFO msg="findOrCreateTag: start label=\"V2EX\" slug=\"v2ex\" category=keyword source=heuristic"
+time=2026-09-02T23:49:28.533+08:00 level=INFO msg="TagMatch: start label=\"V2EX\" slug=\"v2ex\" category=keyword threshold=0.92"
+time=2026-09-02T23:49:28.545+08:00 level=INFO msg="TagMatch: label=\"V2EX\" category=keyword result=exact reason=slug existingID=2069 existingLabel=\"V2EX\""
+time=2026-09-02T23:49:28.546+08:00 level=INFO msg="findOrCreateTag: label=\"V2EX\" category=keyword matchType=exact existingID=2069 existingLabel=\"V2EX\""
+time=2026-09-02T23:49:28.558+08:00 level=INFO msg="[cleanup] feed 15: max=100, active=100"
+time=2026-09-02T23:49:28.558+08:00 level=INFO msg="[cleanup] feed 15: skip, active article count within limit"
+time=2026-09-02T23:49:28.564+08:00 level=INFO msg="WebSocket客户端已断开，当前连接数: 0"
+time=2026-09-02T23:49:28.574+08:00 level=INFO msg="findOrCreateTag: start label=\"论坛\" slug=\"论坛\" category=keyword source=heuristic"
+time=2026-09-02T23:49:28.575+08:00 level=INFO msg="TagMatch: start label=\"论坛\" slug=\"论坛\" category=keyword threshold=0.92"
+time=2026-09-02T23:49:28.577+08:00 level=INFO msg="TagMatch: label=\"论坛\" category=keyword result=exact reason=slug existingID=2071 existingLabel=\"论坛\""
+time=2026-09-02T23:49:28.577+08:00 level=INFO msg="findOrCreateTag: label=\"论坛\" category=keyword matchType=exact existingID=2071 existingLabel=\"论坛\""
+time=2026-09-02T23:49:28.589+08:00 level=INFO msg="Successfully tagged article 122540"
+time=2026-09-02T23:49:29.020+08:00 level=INFO msg="[cleanup] feed 19: max=100, active=100"
+time=2026-09-02T23:49:29.020+08:00 level=INFO msg="[cleanup] feed 19: skip, active article count within limit"
+time=2026-09-02T23:49:30.037+08:00 level=INFO msg="[cleanup] feed 31: max=100, active=100"
+time=2026-09-02T23:49:30.038+08:00 level=INFO msg="[cleanup] feed 31: skip, active article count within limit"
+time=2026-09-02T23:49:30.397+08:00 level=INFO msg="[cleanup] feed 24: max=100, active=124"
+time=2026-09-02T23:49:30.411+08:00 level=INFO msg="[cleanup] feed 24: keep=2 (favorite), archive candidates=122"
+time=2026-09-02T23:49:30.411+08:00 level=INFO msg="[cleanup] feed 24: archiving 24 articles, IDs=[122564 122375 122376 122377 122378 122379 122380 122381 122382 122383 122384 122385 122386 122387 122388 122389 122324 122325 122326 122327 122328 122329 122504 122330]"
+time=2026-09-02T23:49:30.696+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.696+08:00 level=INFO msg="TagMatch: start label=\"新闻\" slug=\"新闻\" category=keyword threshold=0.92"
+time=2026-09-02T23:49:30.699+08:00 level=INFO msg="TagMatch: label=\"新闻\" category=keyword result=exact reason=slug existingID=3 existingLabel=\"新闻\""
+time=2026-09-02T23:49:30.699+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" category=keyword matchType=exact existingID=3 existingLabel=\"新闻\""
+time=2026-09-02T23:49:30.699+08:00 level=INFO msg="findOrCreateTag: start label=\"Gemini 3.8\" slug=\"gemini 3-8\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.699+08:00 level=INFO msg="TagMatch: start label=\"Gemini 3.8\" slug=\"gemini 3-8\" category=keyword threshold=0.92"
+time=2026-09-02T23:49:30.703+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.703+08:00 level=INFO msg="TagMatch: start label=\"新闻\" slug=\"新闻\" category=keyword threshold=0.92"
+time=2026-09-02T23:49:30.705+08:00 level=INFO msg="TagMatch: label=\"新闻\" category=keyword result=exact reason=slug existingID=3 existingLabel=\"新闻\""
+time=2026-09-02T23:49:30.705+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" category=keyword matchType=exact existingID=3 existingLabel=\"新闻\""
+time=2026-09-02T23:49:30.736+08:00 level=INFO msg="Successfully tagged article 122542"
+time=2026-09-02T23:49:30.739+08:00 level=INFO msg="Successfully tagged article 122543"
+time=2026-09-02T23:49:30.771+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.771+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:30.777+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.777+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:30.779+08:00 level=INFO msg="Successfully tagged article 122544"
+time=2026-09-02T23:49:30.795+08:00 level=INFO msg="Successfully tagged article 122545"
+time=2026-09-02T23:49:30.816+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.816+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:30.826+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.828+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:30.829+08:00 level=INFO msg="Successfully tagged article 122546"
+time=2026-09-02T23:49:30.836+08:00 level=INFO msg="Successfully tagged article 122547"
+time=2026-09-02T23:49:30.885+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.885+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:30.894+08:00 level=INFO msg="Successfully tagged article 122548"
+time=2026-09-02T23:49:30.896+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.896+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:30.905+08:00 level=INFO msg="Successfully tagged article 122549"
+time=2026-09-02T23:49:30.926+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.927+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:30.962+08:00 level=INFO msg="Successfully tagged article 122550"
+time=2026-09-02T23:49:30.977+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:30.977+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:30.989+08:00 level=INFO msg="Successfully tagged article 122551"
+time=2026-09-02T23:49:31.038+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.038+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.049+08:00 level=INFO msg="Successfully tagged article 122553"
+time=2026-09-02T23:49:31.084+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.084+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.086+08:00 level=WARN msg="[SLOW SQL] 548.253ms > 200ms | rows=59 | DELETE FROM \"topic_tags\" WHERE id IN (140705,140706,140707,140708,140710,140711,140712,140713,140714,140715,140716,140717,140718,140719,140720,140721,140722,140723,140724,140725,140726,140729,140730,140852,140855,140856,140857,140858,140862,140864,140865,140866,140867,140868,140870,140871,140873,140874,140875,140876,140877,140878,140879,140880,140881,140882,140883,140884,140885,140886,140887,140888,140889,140890,140891,140892,140893,140894,141223)"
+time=2026-09-02T23:49:31.086+08:00 level=INFO msg="Cleaned up 59 orphaned topic tags"
+time=2026-09-02T23:49:31.087+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.087+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.096+08:00 level=INFO msg="Successfully tagged article 122554"
+time=2026-09-02T23:49:31.126+08:00 level=INFO msg="Successfully tagged article 122552"
+time=2026-09-02T23:49:31.146+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.146+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.159+08:00 level=INFO msg="Successfully tagged article 122555"
+time=2026-09-02T23:49:31.181+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.181+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.193+08:00 level=INFO msg="Successfully tagged article 122556"
+time=2026-09-02T23:49:31.194+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.195+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.219+08:00 level=INFO msg="Successfully tagged article 122557"
+time=2026-09-02T23:49:31.234+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.234+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.247+08:00 level=INFO msg="Successfully tagged article 122558"
+time=2026-09-02T23:49:31.253+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.254+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.263+08:00 level=INFO msg="Successfully tagged article 122559"
+time=2026-09-02T23:49:31.290+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.291+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.301+08:00 level=INFO msg="Successfully tagged article 122560"
+time=2026-09-02T23:49:31.674+08:00 level=WARN msg="TagMatch: label=\"Gemini 3.8\" category=keyword similarity search failed, result=no_match err=failed to generate embedding: failed to generate embedding: qwen3-embedding: Post \"http://localhost:8081/v1/embeddings\": dial tcp [::1]:8081: connectex: No connection could be made because the target machine actively refused it."
+time=2026-09-02T23:49:31.675+08:00 level=INFO msg="findOrCreateTag: label=\"Gemini 3.8\" category=keyword matchType=no_match"
+time=2026-09-02T23:49:31.677+08:00 level=INFO msg="findOrCreateTag: label=\"Gemini 3.8\" category=keyword fallback=create_new"
+time=2026-09-02T23:49:31.698+08:00 level=INFO msg="findOrCreateTag: start label=\"Coding\" slug=\"coding\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.698+08:00 level=INFO msg="TagMatch: start label=\"Coding\" slug=\"coding\" category=keyword threshold=0.92"
+time=2026-09-02T23:49:31.701+08:00 level=INFO msg="TagMatch: label=\"Coding\" category=keyword result=exact reason=slug existingID=27 existingLabel=\"Coding\""
+time=2026-09-02T23:49:31.703+08:00 level=INFO msg="findOrCreateTag: label=\"Coding\" category=keyword matchType=exact existingID=27 existingLabel=\"Coding\""
+time=2026-09-02T23:49:31.732+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.732+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.744+08:00 level=INFO msg="Successfully tagged article 122541"
+time=2026-09-02T23:49:31.842+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.842+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.851+08:00 level=INFO msg="Successfully tagged article 122562"
+time=2026-09-02T23:49:31.901+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.902+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.908+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.908+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.914+08:00 level=INFO msg="Successfully tagged article 122563"
+time=2026-09-02T23:49:31.929+08:00 level=INFO msg="Successfully tagged article 122561"
+time=2026-09-02T23:49:31.938+08:00 level=INFO msg="findOrCreateTag: start label=\"Infra\" slug=\"infra\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.938+08:00 level=INFO msg="TagMatch: start label=\"Infra\" slug=\"infra\" category=keyword threshold=0.92"
+time=2026-09-02T23:49:31.940+08:00 level=INFO msg="TagMatch: label=\"Infra\" category=keyword result=exact reason=slug existingID=2169 existingLabel=\"Infra\""
+time=2026-09-02T23:49:31.941+08:00 level=INFO msg="findOrCreateTag: label=\"Infra\" category=keyword matchType=exact existingID=2169 existingLabel=\"Infra\""
+time=2026-09-02T23:49:31.951+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:49:31.952+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-02T23:49:31.960+08:00 level=INFO msg="Successfully tagged article 122564"
+time=2026-09-02T23:50:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:50:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:50:26.575+08:00 level=INFO msg="Auto Refresh: triggered 2 feeds (scanned=23, due=2, stale_reset=0)"
+time=2026-09-02T23:50:26.598+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:50:37.240+08:00 level=INFO msg="[cleanup] feed 17: max=100, active=100"
+time=2026-09-02T23:50:37.240+08:00 level=INFO msg="[cleanup] feed 17: skip, active article count within limit"
+time=2026-09-02T23:50:40.447+08:00 level=INFO msg="[cleanup] feed 22: max=100, active=100"
+time=2026-09-02T23:50:40.448+08:00 level=INFO msg="[cleanup] feed 22: skip, active article count within limit"
+time=2026-09-02T23:51:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:51:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:51:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-02T23:51:26.584+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-02T23:51:26.593+08:00 level=INFO msg="Auto Refresh: triggered 3 feeds (scanned=23, due=3, stale_reset=0)"
+time=2026-09-02T23:51:26.625+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:51:30.067+08:00 level=INFO msg="[cleanup] feed 33: max=100, active=100"
+time=2026-09-02T23:51:30.067+08:00 level=INFO msg="[cleanup] feed 33: skip, active article count within limit"
+time=2026-09-02T23:51:41.436+08:00 level=INFO msg="[cleanup] feed 25: max=100, active=100"
+time=2026-09-02T23:51:41.436+08:00 level=INFO msg="[cleanup] feed 25: skip, active article count within limit"
+time=2026-09-02T23:51:45.346+08:00 level=INFO msg="[cleanup] feed 26: max=100, active=103"
+time=2026-09-02T23:51:45.347+08:00 level=INFO msg="[cleanup] feed 26: keep=23 (favorite), archive candidates=80"
+time=2026-09-02T23:51:45.348+08:00 level=INFO msg="[cleanup] feed 26: archiving 3 articles, IDs=[120854 120855 120856]"
+time=2026-09-02T23:51:45.463+08:00 level=INFO msg="Cleaned up 9 orphaned topic tags"
+time=2026-09-02T23:52:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:52:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:52:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:52:26.604+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:53:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:53:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:53:26.599+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:54:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:54:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:54:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:54:26.572+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:55:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:55:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:55:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:55:26.574+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:56:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:56:26.566+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:56:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:56:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:56:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-02T23:56:26.589+08:00 level=INFO msg="[Firecrawl] Starting parallel processing of 3 jobs (concurrency=3)"
+time=2026-09-02T23:56:27.387+08:00 level=INFO msg="[Firecrawl] Parallel crawl completed: 3 completed, 0 failed out of 3 jobs in 0.81s"
+time=2026-09-02T23:56:27.396+08:00 level=INFO msg="Firecrawl Crawler: completed=3 failed=0 total=3"
+time=2026-09-02T23:56:27.554+08:00 level=INFO msg="findOrCreateTag: start label=\"Coding\" slug=\"coding\" category=keyword source=heuristic"
+time=2026-09-02T23:56:27.554+08:00 level=INFO msg="findOrCreateTag: start label=\"OpenAI\" slug=\"openai\" category=keyword source=heuristic"
+time=2026-09-02T23:56:27.554+08:00 level=INFO msg="findOrCreateTag: label=\"Coding\" slug=\"coding\" category=keyword cache=hit existingID=27"
+time=2026-09-02T23:56:27.555+08:00 level=INFO msg="TagMatch: start label=\"OpenAI\" slug=\"openai\" category=keyword threshold=0.92"
+time=2026-09-02T23:56:27.557+08:00 level=INFO msg="TagMatch: label=\"OpenAI\" category=keyword result=exact reason=slug existingID=220 existingLabel=\"OpenAI\""
+time=2026-09-02T23:56:27.558+08:00 level=INFO msg="findOrCreateTag: label=\"OpenAI\" category=keyword matchType=exact existingID=220 existingLabel=\"OpenAI\""
+time=2026-09-02T23:56:27.574+08:00 level=INFO msg="findOrCreateTag: start label=\"Anthropic\" slug=\"anthropic\" category=keyword source=heuristic"
+time=2026-09-02T23:56:27.575+08:00 level=INFO msg="TagMatch: start label=\"Anthropic\" slug=\"anthropic\" category=keyword threshold=0.92"
+time=2026-09-02T23:56:27.576+08:00 level=INFO msg="TagMatch: label=\"Anthropic\" category=keyword result=exact reason=slug existingID=4 existingLabel=\"Anthropic\""
+time=2026-09-02T23:56:27.576+08:00 level=INFO msg="findOrCreateTag: label=\"Anthropic\" category=keyword matchType=exact existingID=4 existingLabel=\"Anthropic\""
+time=2026-09-02T23:56:27.583+08:00 level=INFO msg="findOrCreateTag: start label=\"Anthropic\" slug=\"anthropic\" category=keyword source=heuristic"
+time=2026-09-02T23:56:27.584+08:00 level=INFO msg="findOrCreateTag: label=\"Anthropic\" slug=\"anthropic\" category=keyword cache=hit existingID=4"
+time=2026-09-02T23:56:27.585+08:00 level=INFO msg="findOrCreateTag: start label=\"Coding\" slug=\"coding\" category=keyword source=heuristic"
+time=2026-09-02T23:56:27.587+08:00 level=INFO msg="findOrCreateTag: start label=\"ai新闻\" slug=\"ai新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:56:27.587+08:00 level=INFO msg="findOrCreateTag: label=\"Coding\" slug=\"coding\" category=keyword cache=hit existingID=27"
+time=2026-09-02T23:56:27.587+08:00 level=INFO msg="TagMatch: start label=\"ai新闻\" slug=\"ai新闻\" category=keyword threshold=0.92"
+time=2026-09-02T23:56:27.589+08:00 level=INFO msg="findOrCreateTag: start label=\"Coding\" slug=\"coding\" category=keyword source=heuristic"
+time=2026-09-02T23:56:27.589+08:00 level=INFO msg="findOrCreateTag: label=\"Coding\" slug=\"coding\" category=keyword cache=hit existingID=27"
+time=2026-09-02T23:56:27.590+08:00 level=INFO msg="TagMatch: label=\"ai新闻\" category=keyword result=exact reason=slug existingID=32877 existingLabel=\"ai新闻\""
+time=2026-09-02T23:56:27.590+08:00 level=INFO msg="findOrCreateTag: label=\"ai新闻\" category=keyword matchType=exact existingID=32877 existingLabel=\"ai新闻\""
+time=2026-09-02T23:56:27.593+08:00 level=INFO msg="findOrCreateTag: start label=\"ai新闻\" slug=\"ai新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:56:27.593+08:00 level=INFO msg="TagMatch: start label=\"ai新闻\" slug=\"ai新闻\" category=keyword threshold=0.92"
+time=2026-09-02T23:56:27.593+08:00 level=INFO msg="TagMatch: label=\"ai新闻\" category=keyword result=exact reason=slug existingID=32877 existingLabel=\"ai新闻\""
+time=2026-09-02T23:56:27.596+08:00 level=INFO msg="findOrCreateTag: label=\"ai新闻\" category=keyword matchType=exact existingID=32877 existingLabel=\"ai新闻\""
+time=2026-09-02T23:56:27.604+08:00 level=INFO msg="findOrCreateTag: start label=\"ai新闻\" slug=\"ai新闻\" category=keyword source=heuristic"
+time=2026-09-02T23:56:27.604+08:00 level=INFO msg="findOrCreateTag: label=\"ai新闻\" slug=\"ai新闻\" category=keyword cache=hit existingID=32877"
+time=2026-09-02T23:56:27.612+08:00 level=INFO msg="Successfully tagged article 122566"
+time=2026-09-02T23:56:27.612+08:00 level=INFO msg="Successfully tagged article 122565"
+time=2026-09-02T23:56:27.614+08:00 level=INFO msg="Successfully tagged article 122567"
+time=2026-09-02T23:57:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:57:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:57:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:57:26.582+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:58:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:58:26.558+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:58:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:58:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-02T23:59:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-02T23:59:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-02T23:59:26.567+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-02T23:59:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:00:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:00:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:00:26.569+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:00:26.579+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:01:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:01:26.562+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:01:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:01:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:01:26.578+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-03T00:01:26.580+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-03T00:02:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:02:26.566+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:02:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:02:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:03:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:03:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:03:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:03:26.604+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:04:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:04:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:04:26.571+08:00 level=INFO msg="Auto Refresh: triggered 1 feeds (scanned=23, due=1, stale_reset=0)"
+time=2026-09-03T00:04:26.592+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:04:27.157+08:00 level=INFO msg="[cleanup] feed 1: max=100, active=100"
+time=2026-09-03T00:04:27.166+08:00 level=INFO msg="[cleanup] feed 1: skip, active article count within limit"
+time=2026-09-03T00:05:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:05:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:05:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:05:26.600+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:06:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:06:26.570+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:06:26.571+08:00 level=INFO msg="[tracing] scheduler \"Cross-Board Relation Expire\" tick: tracing not recording"
+time=2026-09-03T00:06:26.571+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:06:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-03T00:06:26.577+08:00 level=INFO msg="Cross-Board Relation Expire: expired 0 stale confirmed cross-board relations"
+time=2026-09-03T00:06:26.580+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-03T00:07:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:07:26.564+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:07:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:07:26.569+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:08:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:08:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:08:26.568+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:08:26.570+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:09:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:09:26.564+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:09:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:09:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:10:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:10:26.564+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:10:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:10:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:11:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:11:26.562+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:11:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:11:26.569+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:11:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-03T00:11:26.581+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-03T00:12:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:12:26.561+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:12:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:12:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:13:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:13:26.565+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:13:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:13:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:14:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:14:26.566+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:14:26.567+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:15:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:15:26.562+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:15:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:15:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:16:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:16:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:16:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:16:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-03T00:16:26.604+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-03T00:16:26.606+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:17:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:17:26.566+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:17:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:17:26.569+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:18:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:18:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:18:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:18:26.571+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:19:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:19:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:19:26.567+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:19:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:20:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:20:26.562+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:20:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:20:26.572+08:00 level=INFO msg="Auto Refresh: triggered 1 feeds (scanned=23, due=1, stale_reset=0)"
+time=2026-09-03T00:20:27.006+08:00 level=INFO msg="[cleanup] feed 1: max=100, active=100"
+time=2026-09-03T00:20:27.015+08:00 level=INFO msg="[cleanup] feed 1: skip, active article count within limit"
+time=2026-09-03T00:21:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:21:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:21:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-03T00:21:26.579+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:21:26.579+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-03T00:22:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:22:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:22:26.569+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:22:26.607+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:23:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:23:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:23:26.567+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:23:26.569+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:24:26.565+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:24:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:24:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:25:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:25:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:25:26.573+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:25:26.575+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:26:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:26:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:26:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:26:26.578+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-03T00:26:26.580+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-03T00:26:26.584+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:27:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:27:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:27:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:27:26.568+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:28:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:28:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:28:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:28:26.577+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:29:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:29:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:29:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:29:26.579+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:30:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:30:26.567+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:30:26.573+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:31:26.564+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:31:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:31:26.569+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:31:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-03T00:31:26.583+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-03T00:32:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:32:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:32:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:32:26.578+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:33:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:33:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:33:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:33:26.578+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:34:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:34:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:34:26.581+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:34:26.682+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:35:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:35:26.562+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:35:26.567+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:36:26.505+08:00 level=INFO msg="[tracing] scheduler \"Blocked Article Recovery\" tick: tracing not recording"
+time=2026-09-03T00:36:26.509+08:00 level=INFO msg="[tracing] scheduler \"Preference Profile Update\" tick: tracing not recording"
+time=2026-09-03T00:36:26.517+08:00 level=INFO msg="Blocked Article Recovery: recovered 0 articles"
+time=2026-09-03T00:36:26.529+08:00 level=INFO msg="[tracing] scheduler \"Tag Quality Score\" tick: tracing not recording"
+time=2026-09-03T00:36:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:36:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:36:26.571+08:00 level=INFO msg="Auto Refresh: triggered 1 feeds (scanned=23, due=1, stale_reset=0)"
+time=2026-09-03T00:36:26.578+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-03T00:36:26.580+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-03T00:36:26.635+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:36:27.096+08:00 level=INFO msg="[cleanup] feed 1: max=100, active=100"
+time=2026-09-03T00:36:27.097+08:00 level=INFO msg="[cleanup] feed 1: skip, active article count within limit"
+time=2026-09-03T00:36:27.464+08:00 level=WARN msg="[SLOW SQL] 857.744ms > 200ms | rows=675 | \n\t\tSELECT topic_tag_id, embedding, dimension, model\n\t\tFROM topic_tag_embeddings\n\t\tWHERE embedding_type = 'semantic' AND topic_tag_id IN (99689,98286,138254,139525,118711,132207,130361,133520,97948,137112,116456,140186,119303,60301,139390,136076,139447,129648,132009,137612,137634,97971,139842,134999,135001,136072,139449,96317,99693,132200,67,126865,47774,136716,100713,115978,139939,138257,139692,139751,134997,135121,139395,139396,136078,126368,140847,220,111991,139935,138260,114559,132005,132010,96963,4,132881,138951,139863,140496,138198,138204,132877,127020,134054,130352,130354,130358,135488,138956,138959,138202,135985,138961,135484,111813,140499,127950,127954,115984,139446,132191,130743,95011,111880,95548,99326,140287,140289,140122,114766,140089,140116,140095,140118,140113,140120,138194,140091,140096,93983,132197,139695,139702,98363,7,115019,133463,77882,131989,138262,127614,131273,139958,117170,34719,136071,119227,136724,136506,130914,139970,138837,139697,138846,137,115957,115997,122607,128382,139733,133517,137823,139969,115209,139732,136732,131985,117166,139734,29426,139937,136259,115033,139698,111981,139699,115980,136328,105733,100595,137111,96950,1775,97976,133596,38,140379,2041,97965,136726,139947,130355,138822,95962,113301,137816,1759,136331,115008,140375,115308,113756,116029,114997,115000,138430,115009,116800,108276,136518,139701,708,1771,84326,2178,8328,15651,131314,127619,115036,98362,119001,109567,133464,98360,122604,8,122606,136760,118288,136382,137615,109565,137554,114081,136262,113764,95554,98354,116033,135116,113751,100710,796,130911,133519,137102,129645,114765,115021,96966,133521,79728,122147,134786,133595,97201,97202,126370,115022,115306,122137,115975,118285,114558,127617,105726,98770,136736,133538,122138,115020,132196,140846,137815,111390,91722,136766,132198,115940,115992,98358,136714,140194,115943,118819,122144,122149,97967,138953,140501,115989,3,95966,108275,122145,133535,105617,138302,115976,139362,19389,133522,97720,140381,112041,140106,113876,... [truncated]"
+time=2026-09-03T00:36:27.586+08:00 level=INFO msg="preference recompute: boards=9 tags=675 articles=177"
+time=2026-09-03T00:36:27.587+08:00 level=INFO msg="Preference Profile Update: recomputed preference profile: boards=9 tags=675 articles=177"
+time=2026-09-03T00:37:15.095+08:00 level=WARN msg="[SLOW SQL] 5357.197ms > 200ms | rows=106161 | \n\t\tUPDATE semantic_labels\n\t\tSET ref_count = (\n\t\t\tSELECT COUNT(*) FROM topic_tag_semantic_labels\n\t\t\tWHERE semantic_label_id = semantic_labels.id\n\t\t)\n\t\tWHERE label_type = 'auxiliary'"
+time=2026-09-03T00:37:15.516+08:00 level=WARN msg="[SLOW SQL] 421.173ms > 200ms | rows=10351 | \n\t\tUPDATE topic_tags\n\t\tSET feed_count = (\n\t\t\tSELECT COUNT(DISTINCT a.feed_id)\n\t\t\tFROM article_topic_tags att\n\t\t\tJOIN articles a ON a.id = att.article_id\n\t\t\tWHERE att.topic_tag_id = topic_tags.id\n\t\t)"
+time=2026-09-03T00:37:15.583+08:00 level=INFO msg="TagQualityScore: cleaned up 10 orphan auxiliary labels"
+time=2026-09-03T00:37:15.583+08:00 level=INFO msg="Tag Quality Score: quality scores recomputed (orphan_aux_deleted=10)"
+time=2026-09-03T00:37:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:37:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:37:26.567+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:37:26.573+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:38:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:38:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:38:26.569+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:38:26.584+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:39:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:39:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:39:26.567+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:39:26.584+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:40:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:40:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:40:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:40:26.574+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:41:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:41:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:41:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:41:26.570+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:41:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-03T00:41:26.583+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-03T00:42:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:42:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:42:26.572+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:42:26.580+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:43:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:43:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:43:26.567+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:43:26.570+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:44:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:44:26.561+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:44:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:44:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:45:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:45:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:45:26.569+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:45:26.594+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:46:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:46:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:46:26.570+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:46:26.577+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-03T00:46:26.581+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-03T00:46:26.595+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:46:26.865+08:00 level=INFO msg="[tracing] scheduler \"Aux Label Cleanup\" tick: tracing not recording"
+time=2026-09-03T00:46:26.933+08:00 level=INFO msg="Aux Label Cleanup: disabled 0 labels"
+time=2026-09-03T00:47:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:47:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:47:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:47:26.568+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:48:26.534+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:48:26.567+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:48:26.568+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:48:26.571+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:49:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:49:26.567+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-03T00:49:26.572+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:50:26.533+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-03T00:50:26.560+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-03T00:50:26.566+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-03T00:50:26.639+08:00 level=INFO msg="Auto Refresh: triggered 17 feeds (scanned=23, due=17, stale_reset=0)"
+time=2026-09-03T00:50:26.662+08:00 level=INFO msg="[cleanup] feed 12: max=100, active=100"
+time=2026-09-03T00:50:26.662+08:00 level=INFO msg="[cleanup] feed 12: skip, active article count within limit"
+time=2026-09-03T00:50:26.733+08:00 level=ERROR msg="Error refreshing feed 20: failed to parse feed: Failed to detect feed type"
+time=2026-09-03T00:50:26.743+08:00 level=INFO msg="[cleanup] feed 3: max=100, active=100"
+time=2026-09-03T00:50:26.743+08:00 level=INFO msg="[cleanup] feed 3: skip, active article count within limit"
+time=2026-09-03T00:50:26.805+08:00 level=INFO msg="[cleanup] feed 6: max=100, active=31"
+time=2026-09-03T00:50:26.805+08:00 level=INFO msg="[cleanup] feed 6: skip, active article count within limit"
+time=2026-09-03T00:50:26.819+08:00 level=INFO msg="[cleanup] feed 9: max=100, active=25"
+time=2026-09-03T00:50:26.819+08:00 level=INFO msg="[cleanup] feed 9: skip, active article count within limit"
+time=2026-09-03T00:50:27.049+08:00 level=ERROR msg="Error refreshing feed 16: feed returned HTTP 503"
+time=2026-09-03T00:50:27.066+08:00 level=INFO msg="[cleanup] feed 11: max=100, active=102"
+time=2026-09-03T00:50:27.067+08:00 level=INFO msg="[cleanup] feed 11: keep=7 (favorite), archive candidates=95"
+time=2026-09-03T00:50:27.067+08:00 level=INFO msg="[cleanup] feed 11: archiving 2 articles, IDs=[119186 119187]"
+time=2026-09-03T00:50:27.153+08:00 level=INFO msg="Cleaned up 6 orphaned topic tags"
+time=2026-09-03T00:50:27.263+08:00 level=INFO msg="icon: candidate \"https://paper.seebug.org/favicon.ico\" download failed for feed 23: icon download returned HTTP 404"
+time=2026-09-03T00:50:27.265+08:00 level=INFO msg="[cleanup] feed 23: max=100, active=38"
+time=2026-09-03T00:50:27.266+08:00 level=INFO msg="[cleanup] feed 23: skip, active article count within limit"
+time=2026-09-03T00:50:27.472+08:00 level=INFO msg="[cleanup] feed 27: max=100, active=19"
+time=2026-09-03T00:50:27.472+08:00 level=INFO msg="[cleanup] feed 27: skip, active article count within limit"
+time=2026-09-03T00:50:27.518+08:00 level=INFO msg="[cleanup] feed 2: max=100, active=14"
+time=2026-09-03T00:50:27.518+08:00 level=INFO msg="[cleanup] feed 2: skip, active article count within limit"
+time=2026-09-03T00:50:27.536+08:00 level=INFO msg="icon: candidate \"http://0.0.0.0:8080/favicon.ico\" download failed for feed 21: icon download returned HTTP 502"
+time=2026-09-03T00:50:27.539+08:00 level=INFO msg="[cleanup] feed 21: max=100, active=100"
+time=2026-09-03T00:50:27.539+08:00 level=INFO msg="[cleanup] feed 21: skip, active article count within limit"
+time=2026-09-03T00:50:27.589+08:00 level=INFO msg="[cleanup] feed 29: max=100, active=101"
+time=2026-09-03T00:50:27.590+08:00 level=INFO msg="[cleanup] feed 29: keep=3 (favorite), archive candidates=98"
+time=2026-09-03T00:50:27.590+08:00 level=INFO msg="[cleanup] feed 29: archiving 1 articles, IDs=[120536]"
+time=2026-09-03T00:50:27.635+08:00 level=INFO msg="Cleaned up 3 orphaned topic tags"
+time=2026-09-03T00:50:28.170+08:00 level=INFO msg="[cleanup] feed 28: max=100, active=101"
+time=2026-09-03T00:50:28.171+08:00 level=INFO msg="[cleanup] feed 28: keep=8 (favorite), archive candidates=93"
+time=2026-09-03T00:50:28.171+08:00 level=INFO msg="[cleanup] feed 28: archiving 1 articles, IDs=[120616]"
+time=2026-09-03T00:50:28.204+08:00 level=INFO msg="Cleaned up 4 orphaned topic tags"
+time=2026-09-03T00:50:28.256+08:00 level=INFO msg="[cleanup] feed 15: max=100, active=100"
+time=2026-09-03T00:50:28.256+08:00 level=INFO msg="[cleanup] feed 15: skip, active article count within limit"
+time=2026-09-03T00:50:28.545+08:00 level=INFO msg="findOrCreateTag: start label=\"V2EX\" slug=\"v2ex\" category=keyword source=heuristic"
+time=2026-09-03T00:50:28.545+08:00 level=INFO msg="TagMatch: start label=\"V2EX\" slug=\"v2ex\" category=keyword threshold=0.92"
+time=2026-09-03T00:50:28.546+08:00 level=INFO msg="TagMatch: label=\"V2EX\" category=keyword result=exact reason=slug existingID=2069 existingLabel=\"V2EX\""
+time=2026-09-03T00:50:28.546+08:00 level=INFO msg="findOrCreateTag: label=\"V2EX\" category=keyword matchType=exact existingID=2069 existingLabel=\"V2EX\""
+time=2026-09-03T00:50:28.549+08:00 level=INFO msg="findOrCreateTag: start label=\"V2EX\" slug=\"v2ex\" category=keyword source=heuristic"
+time=2026-09-03T00:50:28.549+08:00 level=INFO msg="TagMatch: start label=\"V2EX\" slug=\"v2ex\" category=keyword threshold=0.92"
+time=2026-09-03T00:50:28.552+08:00 level=INFO msg="TagMatch: label=\"V2EX\" category=keyword result=exact reason=slug existingID=2069 existingLabel=\"V2EX\""
+time=2026-09-03T00:50:28.552+08:00 level=INFO msg="findOrCreateTag: label=\"V2EX\" category=keyword matchType=exact existingID=2069 existingLabel=\"V2EX\""
+time=2026-09-03T00:50:28.558+08:00 level=INFO msg="findOrCreateTag: start label=\"论坛\" slug=\"论坛\" category=keyword source=heuristic"
+time=2026-09-03T00:50:28.558+08:00 level=INFO msg="TagMatch: start label=\"论坛\" slug=\"论坛\" category=keyword threshold=0.92"
+time=2026-09-03T00:50:28.560+08:00 level=INFO msg="TagMatch: label=\"论坛\" category=keyword result=exact reason=slug existingID=2071 existingLabel=\"论坛\""
+time=2026-09-03T00:50:28.560+08:00 level=INFO msg="findOrCreateTag: label=\"论坛\" category=keyword matchType=exact existingID=2071 existingLabel=\"论坛\""
+time=2026-09-03T00:50:28.565+08:00 level=INFO msg="findOrCreateTag: start label=\"论坛\" slug=\"论坛\" category=keyword source=heuristic"
+time=2026-09-03T00:50:28.565+08:00 level=INFO msg="findOrCreateTag: label=\"论坛\" slug=\"论坛\" category=keyword cache=hit existingID=2071"
+time=2026-09-03T00:50:28.571+08:00 level=INFO msg="Successfully tagged article 122570"
+time=2026-09-03T00:50:28.574+08:00 level=INFO msg="Successfully tagged article 122571"
+time=2026-09-03T00:50:29.426+08:00 level=INFO msg="[cleanup] feed 19: max=100, active=100"
+time=2026-09-03T00:50:29.426+08:00 level=INFO msg="[cleanup] feed 19: skip, active article count within limit"
+time=2026-09-03T00:50:29.435+08:00 level=INFO msg="[cleanup] feed 31: max=100, active=100"
+time=2026-09-03T00:50:29.436+08:00 level=INFO msg="[cleanup] feed 31: skip, active article count within limit"
+time=2026-09-03T00:50:29.513+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:29.513+08:00 level=INFO msg="TagMatch: start label=\"新闻\" slug=\"新闻\" category=keyword threshold=0.92"
+time=2026-09-03T00:50:29.516+08:00 level=INFO msg="TagMatch: label=\"新闻\" category=keyword result=exact reason=slug existingID=3 existingLabel=\"新闻\""
+time=2026-09-03T00:50:29.519+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" category=keyword matchType=exact existingID=3 existingLabel=\"新闻\""
+time=2026-09-03T00:50:29.532+08:00 level=INFO msg="Successfully tagged article 122574"
+time=2026-09-03T00:50:29.540+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:29.540+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:29.540+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:29.540+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:29.563+08:00 level=INFO msg="Successfully tagged article 122572"
+time=2026-09-03T00:50:29.566+08:00 level=INFO msg="Successfully tagged article 122573"
+time=2026-09-03T00:50:29.613+08:00 level=INFO msg="[cleanup] feed 24: max=100, active=116"
+time=2026-09-03T00:50:29.615+08:00 level=INFO msg="[cleanup] feed 24: keep=2 (favorite), archive candidates=114"
+time=2026-09-03T00:50:29.615+08:00 level=INFO msg="[cleanup] feed 24: archiving 16 articles, IDs=[122437 122438 122439 122440 122441 122442 122443 122444 122367 122368 122369 122370 122371 122372 122373 122374]"
+time=2026-09-03T00:50:29.806+08:00 level=INFO msg="Cleaned up 53 orphaned topic tags"
+time=2026-09-03T00:50:30.525+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.525+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.527+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.527+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.536+08:00 level=INFO msg="Successfully tagged article 122577"
+time=2026-09-03T00:50:30.536+08:00 level=INFO msg="Successfully tagged article 122575"
+time=2026-09-03T00:50:30.566+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.566+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.566+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.568+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.568+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.568+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.579+08:00 level=INFO msg="Successfully tagged article 122576"
+time=2026-09-03T00:50:30.581+08:00 level=INFO msg="Successfully tagged article 122579"
+time=2026-09-03T00:50:30.586+08:00 level=INFO msg="Successfully tagged article 122578"
+time=2026-09-03T00:50:30.604+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.604+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.610+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.610+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.615+08:00 level=INFO msg="Successfully tagged article 122580"
+time=2026-09-03T00:50:30.621+08:00 level=INFO msg="Successfully tagged article 122581"
+time=2026-09-03T00:50:30.635+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.635+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.645+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.647+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.647+08:00 level=INFO msg="Successfully tagged article 122583"
+time=2026-09-03T00:50:30.655+08:00 level=INFO msg="findOrCreateTag: start label=\"Anthropic\" slug=\"anthropic\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.655+08:00 level=INFO msg="TagMatch: start label=\"Anthropic\" slug=\"anthropic\" category=keyword threshold=0.92"
+time=2026-09-03T00:50:30.655+08:00 level=INFO msg="Successfully tagged article 122582"
+time=2026-09-03T00:50:30.656+08:00 level=INFO msg="TagMatch: label=\"Anthropic\" category=keyword result=exact reason=slug existingID=4 existingLabel=\"Anthropic\""
+time=2026-09-03T00:50:30.656+08:00 level=INFO msg="findOrCreateTag: label=\"Anthropic\" category=keyword matchType=exact existingID=4 existingLabel=\"Anthropic\""
+time=2026-09-03T00:50:30.667+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.667+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.669+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.672+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.676+08:00 level=INFO msg="Successfully tagged article 122584"
+time=2026-09-03T00:50:30.683+08:00 level=INFO msg="Successfully tagged article 122585"
+time=2026-09-03T00:50:30.695+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.695+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.701+08:00 level=INFO msg="findOrCreateTag: start label=\"新闻\" slug=\"新闻\" category=keyword source=heuristic"
+time=2026-09-03T00:50:30.701+08:00 level=INFO msg="findOrCreateTag: label=\"新闻\" slug=\"新闻\" category=keyword cache=hit existingID=3"
+time=2026-09-03T00:50:30.707+08:00 level=INFO msg="Successfully tagged article 122586"
+time=2026-09-03T00:50:30.709+08:00 level=INFO msg="Successfully tagged article 122587"
+time=2026-09-03T00:51:06.845+08:00 level=INFO msg="Received signal: terminated, shutting down gracefully..."
+time=2026-09-03T00:51:06.845+08:00 level=INFO msg="Stopping tag queue..."
+time=2026-09-03T00:51:06.848+08:00 level=INFO msg="Tag queue stopped"
+time=2026-09-03T00:51:06.848+08:00 level=INFO msg="Stopping embedding queue worker..."
+time=2026-09-03T00:51:06.848+08:00 level=INFO msg="Stopping merge re-embedding queue worker..."
+time=2026-09-03T00:51:06.848+08:00 level=INFO msg="Board Upgrade Suggest scheduler stopped"
+time=2026-09-03T00:51:06.848+08:00 level=INFO msg="Stopped scheduler: board_upgrade_suggest"
+time=2026-09-03T00:51:06.848+08:00 level=INFO msg="Log Cleanup scheduler stopped"
+time=2026-09-03T00:51:06.848+08:00 level=INFO msg="Stopped scheduler: log_cleanup"
+time=2026-09-03T00:51:06.848+08:00 level=INFO msg="Auto Refresh scheduler stopped"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Stopped scheduler: auto_refresh"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Cross-Board Relation Expire scheduler stopped"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Stopped scheduler: relation_expire"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Firecrawl Crawler scheduler stopped"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Stopped scheduler: firecrawl"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Lifeline Monthly Refresh scheduler stopped"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Stopped scheduler: lifeline_monthly"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Lifeline Yearly Refresh scheduler stopped"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Stopped scheduler: lifeline_yearly"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Aux Label Cleanup scheduler stopped"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Stopped scheduler: aux_label_cleanup"
+time=2026-09-03T00:51:06.849+08:00 level=INFO msg="Blocked Article Recovery scheduler stopped"
+time=2026-09-03T00:51:06.850+08:00 level=INFO msg="Stopped scheduler: blocked_article_recovery"
+time=2026-09-03T00:51:06.850+08:00 level=INFO msg="Preference Profile Update scheduler stopped"
+time=2026-09-03T00:51:06.850+08:00 level=INFO msg="Stopped scheduler: preference_profile_update"
+time=2026-09-03T00:51:06.850+08:00 level=INFO msg="RSSHub Catalog Sync scheduler stopped"
+time=2026-09-03T00:51:06.850+08:00 level=INFO msg="Stopped scheduler: rsshub_catalog_sync"
+time=2026-09-03T00:51:06.850+08:00 level=INFO msg="Tag Quality Score scheduler stopped"
+time=2026-09-03T00:51:06.851+08:00 level=INFO msg="Stopped scheduler: tag_quality_score"
+time=2026-09-03T00:51:06.851+08:00 level=INFO msg="Content Completion scheduler stopped"
+time=2026-09-03T00:51:06.851+08:00 level=INFO msg="Stopped scheduler: content_completion"
+time=2026-09-03T00:51:06.851+08:00 level=INFO msg="Daily Report scheduler stopped"
+time=2026-09-03T00:51:06.851+08:00 level=INFO msg="Stopped scheduler: daily_report"
+time=2026-09-03T00:51:06.851+08:00 level=INFO msg="Graceful shutdown completed"

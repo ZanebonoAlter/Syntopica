@@ -32,6 +32,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 - PostgreSQL + pgvector for persistence; Redis optional for job queues.
 - 和用户沟通使用中文，开发环境 Windows, 返回的回答尽量用大白话，接地气，能让用户理解。
 - **所有改动默认走 openspec**（代码/功能/接口/数据模型必须先开 change）；豁免清单与编排见 `docs/reference/开发执行规范.md` §0.6「准入总则」
+- **UI 分档速查**（默认 schema `syntopica-ui`，make-ui-design-first-class）：新 change proposal 头声明 `<!-- ui-impact: none|minor|major -->`（与 complexity 正交）→ `ui-design.md` 必经制品（none=最小 N/A / minor=复用契约 / major=八节+`ui-prototype/` 原型）；**major 原型须用户明确批准（ui-approval: approved）才可进实现**，否则 ui-design-gate 拦截；旧 spec-driven change 不硬阻断（触及前端提醒一次迁移）。布局契约（page shell 四模式/dialog 四档/双视口验收）→ `docs/reference/standard/frontend/layout.md`
 
 ## 开发环境 (Development Environment)
 
@@ -116,8 +117,22 @@ cd front && pnpm dev
 - Frontend edits → `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit` / `pnpm build`。
 - Backend edits → `golangci-lint run ./...` / targeted `go test` first, then `go test ./...` / `go build ./...`。
 - Docs-only edits: consistency check unless behavior changed.
-- **约束注入（自动，管"知道"）**：`.pi/extensions/constraint-injection.ts` 在 `before_agent_start` 每 turn 注入约束上下文——openspec 档位/change 绑定、flow「业务约束与不变量」节按 **proposal.md 业务域声明**（头部 `<!-- constraint-domains: 域, ... -->`，域名=flow 文档 basename 如 `daily-report`；纯工具链 change 可不写，widget 提示无域声明属预期）+ 对话输入关键词命中（节级注入，只增不减保前缀缓存）、standard/flow 文档按头部 `doc-impact-applies` 标签对编辑路径 JIT 命中、`pin_finding` 工具持久化探索发现（档激活落 change 的 explore-findings.md，无档落 `docs/research/`）。配置 `.pi/constraint-injection.json`，常驻索引 `docs/reference/constraints-index.md`（旧 `doc-impact.sh context` 已退役）。
-- **pi 增量门禁（自动，管"做到"）**：`.pi/extensions/quality-gate.ts` 已挂 `turn_end`，按**会话内增量路由**触发——会话开始时的 git 脏文件进基线不触发，仅本回合新增/变化路径命中后端（`backend-go/**.go`）才跑 `golangci-lint`+`go vet`+`go build`+影响包 `go test -short`（经 `scripts/change-scope.sh` 判定，DB 集成测试 -short 下自动 skip），命中前端（`front/` 非 .md）才跑 `pnpm lint`；上回合失败未转绿的命令粘性重跑（催修，防"口头修复"漂移）。失败以 `steer` 消息喂回，agent 见到失败消息**必须修**，不得忽略。不跑前端 typecheck/build（需 cmd.exe）与完整集成测试（不带 -short 的 go test），这些仍由 agent 手动跑 + §11 归档门禁兜底。门禁分层见 `docs/reference/开发执行规范.md` §4.1。
+- **pi 扩展全景**（`.pi/extensions/`，gitignored；快照同步 `docs/research/`）：
+
+| 扩展 | 挂点 | 触发 | 软硬 | fail 策略 | 事件库记账 |
+| --- | --- | --- | --- | --- | --- |
+| constraint-injection | `before_agent_start` | 每 turn 重建 system prompt 注入块 | 软（不干预工具） | fail-open（注入失败不阻断） | constraint.inject / pin.* / mode.set |
+| quality-gate | `turn_end` | 增量路由命中后端/前端；另落 `edit.map` 归属地图（增量路径 × boundChange 聚合，coordinate-concurrent-changes） | 软 steer 催修 | fail-open（门禁故障放行） | gate.check / edit.map |
+| quota-gate | Agent 派发前 | 子线程派发前查额度 | 硬 block（低额度阻断派发） | fail-open（查询失败放行） | policy.decision（quota-low/exhausted=block、quota-query-failed=fail-open、fuzzy-model-resolve=warn） |
+| spec-gate | `tool_call` | bash 命中 `openspec archive` | 硬 block（归档门禁五检查：doc-impact/standards/尾三节/scenario-trace/UI 验收证据；另检查⑤'归档并发 warn 不 block：树上存在归属其他 active change 的未 commit 文件 → steer 提醒 + concurrent-dirty-tree 记账，冷启动零输出） | `--force` / `SPEC_GATE_BYPASS=1` 逃生口留痕 | policy.decision（archive-check-failed=block、explicit-bypass=bypass、acceptance-wording=warn、concurrent-dirty-tree=warn；UI 缺证据另记 ui-design-gate block ui-verification-missing） |
+| ui-design-gate | `tool_call` | implementation 档绑定 syntopica-ui schema change：Agent 派发与 edit/write 项目代码，major 原型未批准（合同 block）时拦截；当前 change 的 ui-design.md/ui-prototype/** 修复不受限 | 硬 block（legacy schema 仅 front mutation 每会话/change warn 一次） | fail-open（检查异常放行+告警+记账）；`UI_DESIGN_GATE_BYPASS=1` 显式旁路留痕 | policy.decision（ui-impact-missing/ui-impact-mismatch/ui-design-missing/ui-prototype-missing/ui-approval-pending=block、explicit-bypass=bypass、ui-gate-check-failed=fail-open；健康放行零记录） |
+| entry-gate | `turn_end` | 实现档切入后 complex 缺 test-cases 文档 | 软 steer 提醒 | fail-open | gate.check（cmd=entry-gate） |
+| test-scope-guard | `tool_call` | bash 跑全量 `go test ./...` | 软提醒（日常只跑影响包） | fail-open | policy.decision（full-go-test：soft=warn / hard=block） |
+| tool-output-spill | `tool_result` | 工具输出 >32KB（`.pi/harness.json`） | 落盘替换+有界预览 | fail-open（spill 失败原样通过） | spill.write |
+| harness-telemetry | `session_start`/`tool_call`/`tool_result` | 通用事实采集（不干预） | — | fail-safe（断链不伪造） | session.start / subagent.* |
+
+- **约束注入（自动，管"知道"）**：`.pi/extensions/constraint-injection.ts` 在 `before_agent_start` 每 turn 注入约束上下文——openspec 档位/change 绑定、flow「业务约束与不变量」节按 **proposal.md 业务域声明**（头部 `<!-- constraint-domains: 域, ... -->`，域名=flow 文档 basename 如 `daily-report`；纯工具链 change 可不写，widget 提示无域声明属预期；**声明域注入=红线层**——约束节内顶层列表项首个加粗红线句逐行 + 细节层取回指引，红线层提取 0 条或低于 512B 回退全节，格式见 `standard/shared/doc-authoring.md`「约束节红线句格式」）+ 对话输入关键词命中（**全节注入**，细节层通道，只增不减保前缀缓存）、standard/flow 文档按头部 `doc-impact-applies` 标签对编辑路径 JIT 命中（**全节注入**）、`pin_finding` 工具持久化探索发现（档激活落 change 的 explore-findings.md，无档落 `docs/research/`）。配置 `.pi/constraint-injection.json`，常驻索引 `docs/reference/constraints-index.md`（旧 `doc-impact.sh context` 已退役）。
+- **pi 增量门禁（自动，管"做到"）**：`.pi/extensions/quality-gate.ts` 已挂 `turn_end`，按**会话内增量路由**触发——会话开始时的 git 脏文件进基线不触发，仅本回合新增/变化路径命中后端（`backend-go/**.go`）才跑 `golangci-lint`+`go vet`+`go build`+影响包 `go test -short`（经 `scripts/change-scope.sh` 判定，DB 集成测试 -short 下自动 skip），命中前端（`front/` 非 .md）才跑 eslint（经 cmd.exe 的 Windows 原生 `--cache` 增量调用，实测 2~6s；WSL DrvFS 跑同命令 ~17 倍慢；`front/package.json` 的 `pnpm lint` 仍全量供人工/归档用）；lint 先行作短路哨兵——lint 报编译失败（typechecking error）时 vet/build/test 必红同因，跳过执行不记账，无短路时 vet/build 并行。上回合失败未转绿的命令粘性重跑（催修，防"口头修复"漂移）。失败以 `steer` 消息分级喂回：**[回归]**（上回合尚绿，agent 必须修，不得忽略）与**[中间态]**（从未绿的新代码中间态，agent 若正在推进可继续、回合末复检）——归档前全绿硬要求不变（§11）。成功事件采样记账（会话首条与转绿锚点必记，其后每 5 连续成功记 1 条），失败全量记账。不跑前端 typecheck/build（需 cmd.exe）与完整集成测试（不带 -short 的 go test），这些仍由 agent 手动跑 + §11 归档门禁兜底。门禁分层见 `docs/reference/开发执行规范.md` §4.1。
 - Keep code changes minimal and scoped. Match existing code style.
 - 完成任务后更新维护 `./docs/reference/` 知识库；openspec change 执行走 `开发执行规范.md` §0.6 标准编排流程（**apply 启动跑 `doc-impact.sh suggest`+`context`，归档前跑 `doc-impact.sh verify`+`check-standards.sh`**），归档前满足 §11 门禁，归档后按 §12 补 flow 变更溯源链接（archive 即永久家，v1.x 里程碑可选）。
 - **开工前/完工后必须汇报"部署后影响 + 需要的操作"**：每个 change 完工汇报必须包含一节明确告诉用户——(a) 部署/合并后用户可见行为会发生什么变化；(b) 需要用户手动执行的操作（如重新生成数据、清理、配置）；(c) 旧数据如何降级。避免用户打开界面才发现行为变了产生误会。涉及数据迁移、状态机变更、UI 分区变更时尤其强制。

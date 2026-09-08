@@ -1,4 +1,4 @@
-schema: spec-driven
+schema: syntopica-ui
 
 context: |
   项目：Syntopica（Nuxt 4 前端 + Go/Gin 后端，单用户，PostgreSQL+pgvector）。

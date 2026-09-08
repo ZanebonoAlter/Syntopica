@@ -171,7 +171,7 @@ span 名 SHALL 与 AICallLog.operation 对齐（`workflow.` 前缀 + operation �
 
 系统 SHALL 在 `TracerProvider` 初始化时配置 `ParentBased(TraceIDRatioBased(ratio))` 采样器：root span（无父 span，如 HTTP 入站、scheduler tick）按 `ratio` 决定是否采样；一旦 root span 被采样，其下所有子 span（DB / 出站 HTTP / 业务）SHALL 全部被采样，保证整条链路完整、不在中间断链。
 
-`SampleRatio`、`InstrumentGORM`、`InstrumentHTTP` SHALL 可从环境变量（`TRACE_SAMPLE_RATIO` 等）读取。未配置任何环境变量时，系统 SHALL 默认 `SampleRatio = 1.0`（全采）、两个 instrumentation 开关为 `true`，行为等同变更前的全量入库。
+`SampleRatio`、`InstrumentGORM`、`InstrumentHTTP` SHALL 可从环境变量（`TRACE_SAMPLE_RATIO` 等）读取。未配置任何环境变量时，系统 SHALL 默认 `SampleRatio = 0.05`（低采样，详见「Tracing sample ratio defaults low and is configurable」）、两个 instrumentation 开关为 `true`。
 
 #### Scenario: 全采下链路完整
 
@@ -183,10 +183,38 @@ span 名 SHALL 与 AICallLog.operation 对齐（`workflow.` 前缀 + operation �
 - **WHEN** `SampleRatio = 0.5`，某 HTTP 请求的 root span 被采样命中
 - **THEN** 该 root 下的所有子 span SHALL 全部记录（不在子节点层做二次丢弃）
 
-#### Scenario: 不配环境变量默认全采
+#### Scenario: 不配环境变量默认低采样
 
 - **WHEN** 未设置任何 trace 相关环境变量
-- **THEN** 系统 SHALL 以 `SampleRatio = 1.0`、`InstrumentGORM = true`、`InstrumentHTTP = true` 运行，与变更前行为一致
+- **THEN** 系统 SHALL 以 `SampleRatio = 0.05`、`InstrumentGORM = true`、`InstrumentHTTP = true` 运行；恢复全采需显式设置 `TRACE_SAMPLE_RATIO=1.0`
+
+### Requirement: Tracing sample ratio defaults low and is configurable
+
+The tracing subsystem SHALL default its span sample ratio to 0.05 (5%) instead of 1.0 (full sampling). Full sampling at ~820k spans/day keeps `otel_spans` at a steady 4.3GB under the 7-day retention and generates constant dead-tuple churn; 5% covers routine debugging while cutting daily span volume ~95%.
+
+The sample ratio SHALL be overridable by environment variable (`TRACE_SAMPLE_RATIO`, accepted range 0.0–1.0) without code changes, so an incident session can temporarily restore a higher ratio. Invalid values (unparseable, out of range) SHALL fall back to the default 0.05 with a warn log.
+
+Sampling SHALL use parent-based semantics: spans that inherit an already-sampled trace context are always recorded, so a sampled root request keeps its full downstream tree (including GORM/HTTP child spans within it).
+
+#### Scenario: Default sampling is low
+
+- **WHEN** the backend starts with no tracing-related environment variables
+- **THEN** the effective sample ratio is 0.05 and otel_spans daily insert volume drops by roughly 95% versus full sampling
+
+#### Scenario: Environment override raises sampling
+
+- **WHEN** the backend starts with `TRACE_SAMPLE_RATIO=1.0`
+- **THEN** the effective sample ratio is 1.0 (full sampling) without any code change
+
+#### Scenario: Invalid override falls back safely
+
+- **WHEN** the backend starts with `TRACE_SAMPLE_RATIO=abc` or `=2.5`
+- **THEN** the backend starts successfully with the default 0.05 ratio and logs a warn about the invalid value
+
+#### Scenario: Sampled root keeps its span tree
+
+- **WHEN** a root span is selected by the sampler and it triggers child spans (LLM call, SQL query)
+- **THEN** all descendant spans of the sampled root are recorded and linked in one trace, regardless of the 0.05 ratio
 
 ### Requirement: Service-layer methods are auto-instrumented via build-time AST weaving
 

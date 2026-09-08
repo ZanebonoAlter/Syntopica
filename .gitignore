@@ -51,3 +51,4 @@ analysis-reports/
 docs/research
 docs/experience
 artifacts
+*.dump

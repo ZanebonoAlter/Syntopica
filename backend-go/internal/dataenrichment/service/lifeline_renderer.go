@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -12,6 +13,18 @@ import (
 // Production implementation will delegate to topicgraph repository.
 type LifelineReader interface {
 	GetTopicLifeline(topicID uint) (SectionTimelineData, error)
+	// GetTopicLifelineArchive returns the lane's long-horizon background
+	// memory (month/year lifeline archive rows, newest first per granularity).
+	GetTopicLifelineArchive(topicID uint) ([]LifelineArchiveRow, error)
+}
+
+// LifelineArchiveRow is one month/year lifeline archive entry (background
+// memory) exposed to the agent-facing lane-detail rendering.
+type LifelineArchiveRow struct {
+	Granularity string
+	Period      string
+	AsOfDate    time.Time
+	Content     string
 }
 
 // ThreadTitleReader abstracts loading thread titles for a section.
@@ -173,8 +186,65 @@ func (r *LifelineRenderer) RenderLifelineForAgent(reader LifelineReader, topicID
 		}
 	}
 
+	// Render the long-horizon background memory archive (month/year
+	// lifeline rows) when the reader provides it — the agent's only path to
+	// historical context beyond the recent-section window. Budgeted so one
+	// lane detail stays prompt-friendly; missing archive is stated honestly.
+	archive := r.renderArchiveSection(reader, topicID)
+	if archive != "" {
+		lines = append(lines, "", archive)
+	}
+
 	return joinLines(lines), nil
 }
+
+// archiveRenderRunes bounds the month/year background-memory rendering inside
+// get_lane_detail (≈ one and a half month entries — history serves argument,
+// not the whole ledger).
+const archiveRenderRunes = 4000
+
+// renderArchiveSection renders the「历史背景记忆」block: month entries first
+// (newest first), then the year entry, each compressed to one line; truncated
+// at archiveRenderRunes with an explicit marker; empty/missing archive is
+// stated ("（无背景记忆归档）") instead of silently omitted.
+func (r *LifelineRenderer) renderArchiveSection(reader LifelineReader, topicID uint) string {
+	rows, err := reader.GetTopicLifelineArchive(topicID)
+	if err != nil || len(rows) == 0 {
+		return "## 历史背景记忆（月/年档案）\n（无背景记忆归档）"
+	}
+	var sb strings.Builder
+	sb.WriteString("## 历史背景记忆（月/年档案）")
+	budget := archiveRenderRunes
+	truncated := false
+	for _, row := range rows {
+		content := strings.TrimSpace(row.Content)
+		if content == "" {
+			continue
+		}
+		entry := fmt.Sprintf("### [%s %s] (as_of %s)\n%s",
+			row.Granularity, row.Period, formatDate(row.AsOfDate), compressSpaces(content))
+		if runeLen(entry) > budget {
+			// Fit what we can of this entry, then stop with the truncation marker.
+			entry = truncateRunes(entry, budget)
+			truncated = true
+			sb.WriteString("\n" + entry)
+			break
+		}
+		sb.WriteString("\n" + entry)
+		budget -= runeLen(entry)
+	}
+	if sb.Len() == len("## 历史背景记忆（月/年档案）") {
+		// All rows were blank content — treat as no usable archive.
+		return "## 历史背景记忆（月/年档案）\n（无背景记忆归档）"
+	}
+	if truncated {
+		sb.WriteString("\n[档案截断]")
+	}
+	return sb.String()
+}
+
+// runeLen counts runes (s) without allocating a slice for len()==cap cases.
+func runeLen(s string) int { return len([]rune(s)) }
 
 func formatDate(t time.Time) string {
 	if t.IsZero() {

@@ -53,3 +53,35 @@ func TestAllowDestructiveMigrationsEnvOverride(t *testing.T) {
 		})
 	}
 }
+
+func TestTracingSampleRatioDefaultsAndOverrides(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		set  bool
+		want float64
+	}{
+		{name: "defaults to 0.05 when unset", env: "", set: false, want: 0.05},
+		{name: "env override raises to full sampling", env: "1.0", set: true, want: 1.0},
+		{name: "unparseable value falls back to default", env: "abc", set: true, want: 0.05},
+		{name: "out-of-range value falls back to default", env: "2.5", set: true, want: 0.05},
+		{name: "negative value falls back to default", env: "-0.1", set: true, want: 0.05},
+		{name: "zero is a valid ratio", env: "0", set: true, want: 0.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.set {
+				t.Setenv("TRACE_SAMPLE_RATIO", tc.env)
+			}
+			viper.Reset()
+			t.Cleanup(func() {
+				viper.Reset()
+				AppConfig = nil
+			})
+
+			require.NoError(t, LoadConfig("./definitely-missing"))
+			require.NotNil(t, AppConfig)
+			require.InDelta(t, tc.want, AppConfig.Tracing.SampleRatio, 1e-9)
+		})
+	}
+}

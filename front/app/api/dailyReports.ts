@@ -135,6 +135,8 @@ export interface DailyReportSection {
   /** 分桶来源（l1_direct / l2_llm / l3_new / watch_keyword / watch_sentence）。
    *  watch_* = 关注物化板块（watch-materialized-topic）；旧数据可能为 null。 */
   lane_tier?: string | null
+  /** 物化板块归属 watch 名（读路径 transient 透出；LLM 当日标题之外的追踪源装饰）。 */
+  watch_label?: string | null
 }
 
 export interface DailyReport {

@@ -53,7 +53,7 @@ func (s *LifelineContextService) RefreshPeriod(ctx context.Context, topicID uint
 	defer span.End()
 	switch granularity {
 	case string(repository.GranularityWeek), string(repository.GranularityMonth), string(repository.GranularityYear):
-		return s.refreshArchive(ctx, topicID, granularity, period)
+		return s.refreshArchive(ctx, topicID, granularity, period, now)
 	case string(repository.GranularityAll):
 		return s.refreshRolling(ctx, topicID, now)
 	default:
@@ -160,7 +160,7 @@ func (s *LifelineContextService) HealMissing(ctx context.Context, granularity st
 		// Stable order for deterministic backfill.
 		sort.Strings(missing)
 		for _, p := range missing {
-			if err := s.refreshArchive(ctx, topicID, granularity, p); err != nil {
+			if err := s.refreshArchive(ctx, topicID, granularity, p, now); err != nil {
 				return fmt.Errorf("heal missing: topic %d %s %s: %w", topicID, granularity, p, err)
 			}
 		}
@@ -203,7 +203,7 @@ type TopicLister interface {
 
 // refreshArchive generates fresh context for an archive period (week/month/year).
 // Reads sections within the period's date range and produces a standalone summary.
-func (s *LifelineContextService) refreshArchive(ctx context.Context, topicID uint, granularity, period string) error {
+func (s *LifelineContextService) refreshArchive(ctx context.Context, topicID uint, granularity, period string, now time.Time) error {
 	from, to, err := ParsePeriodRange(period, granularity)
 	if err != nil {
 		return fmt.Errorf("refresh archive: parse period %q: %w", period, err)
@@ -223,14 +223,28 @@ func (s *LifelineContextService) refreshArchive(ctx context.Context, topicID uin
 		return fmt.Errorf("refresh archive: summarize: %w", err)
 	}
 
+	// Clamp as_of to now: a mid-period write must not claim the future period
+	// boundary (a future-dated as_of forever reads "fresh" and blinds the
+	// completeness gate; fix-board-analysis-material 7.2).
+	asOf := to
+	if asOf.After(now) {
+		asOf = now
+	}
 	return s.repo.UpsertTopicLifelineContext(ctx, &repository.TopicLifelineContext{
 		PersistentTopicID: topicID,
 		Granularity:       granularity,
 		Period:            period,
 		Content:           content,
-		AsOfDate:          to,
+		AsOfDate:          asOf,
 		Source:            "llm_assisted",
 	})
+}
+
+// SectionDates forwards the section-reader's data-bearing dates for a topic
+// (the completeness gate derives which periods are worth having from them;
+// satisfies FreshnessRefresher).
+func (s *LifelineContextService) SectionDates(ctx context.Context, topicID uint) ([]time.Time, error) {
+	return s.sectionReader.SectionDates(ctx, topicID)
 }
 
 // refreshRolling incrementally merges new sections with the old 'all' context.

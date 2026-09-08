@@ -128,10 +128,12 @@ func bochaProviderOf(key, endpoint string) service.BochaConfigProvider {
 }
 
 func TestBochaWebSearcher_ParsesResults(t *testing.T) {
-	bochaResp := `{"code":200,"data":{"result":[` +
-		`{"type":"web_page","title":"T","url":"https://x","summary":"S","site_name":"X"},` +
-		`{"type":"web_page","title":"no-url","url":"","summary":"drop me"}` +
-		`]}}`
+	// Real Bocha web-search shape (captured against the live API): hits live
+	// under data.webPages.value with name/snippet fields (Bing-style).
+	bochaResp := `{"code":200,"data":{"_type":"SearchResponse","webPages":{"value":[` +
+		`{"id":"x1","name":"日债收益率破3%","url":"https://x","snippet":"1999年来首次","siteName":"路透"},` +
+		`{"id":"x2","name":"no-url","url":"","snippet":"drop me"}` +
+		`],"totalEstimatedMatches":2}}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("want POST, got %s", r.Method)
@@ -156,9 +158,50 @@ func TestBochaWebSearcher_ParsesResults(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("want 1 result (url-less item dropped), got %d", len(results))
 	}
-	want := service.WebSearchResult{Title: "T", URL: "https://x", Snippet: "S"}
+	want := service.WebSearchResult{Title: "日债收益率破3%", URL: "https://x", Snippet: "1999年来首次"}
 	if results[0] != want {
 		t.Fatalf("result = %+v, want %+v", results[0], want)
+	}
+}
+
+// TestBochaWebSearcher_LegacyResultShape ensures the legacy flat "result"
+// response variant still parses (compat fallback) — the original implementation
+// only knew this shape, so deployments returning it must not silently degrade.
+func TestBochaWebSearcher_LegacyResultShape(t *testing.T) {
+	bochaResp := `{"code":200,"data":{"result":[{"title":"T","url":"https://x","summary":"S"}]}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(bochaResp))
+	}))
+	defer srv.Close()
+
+	ws := service.NewBochaWebSearcher(bochaProviderOf("k", srv.URL))
+	results, err := ws.Search(context.Background(), "q")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].Title != "T" || results[0].Snippet != "S" {
+		t.Fatalf("legacy shape result = %+v", results)
+	}
+}
+
+// TestBochaWebSearcher_UnknownShapeYieldsZeroResults guards the honest-empty
+// contract: a 200 response whose shape matches neither webPages.value nor
+// result must return (empty, nil) — NOT an error — so scout degrades with a
+// no_candidates gap instead of a hard failure.
+func TestBochaWebSearcher_UnknownShapeYieldsZeroResults(t *testing.T) {
+	bochaResp := `{"code":200,"data":{"_type":"SomethingElse"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(bochaResp))
+	}))
+	defer srv.Close()
+
+	ws := service.NewBochaWebSearcher(bochaProviderOf("k", srv.URL))
+	results, err := ws.Search(context.Background(), "q")
+	if err != nil {
+		t.Fatalf("Search should not error on unknown shape: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("want 0 results, got %d", len(results))
 	}
 }
 
@@ -175,8 +218,8 @@ func TestBochaWebSearcher_HttpError(t *testing.T) {
 }
 
 func TestBochaWebSearcher_SnippetFallback(t *testing.T) {
-	// item with snippet field but no summary → snippet used.
-	bochaResp := `{"code":200,"data":{"result":[{"title":"A","url":"https://a","snippet":"snip"}]}}`
+	// item with snippet field but no summary → snippet used (webPages shape).
+	bochaResp := `{"code":200,"data":{"webPages":{"value":[{"name":"A","url":"https://a","snippet":"snip"}]}}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(bochaResp))
 	}))
@@ -221,7 +264,7 @@ func TestBochaWebSearcher_DynamicRead(t *testing.T) {
 				t.Errorf("call #2 Authorization = %q, want Bearer db-key (provider not re-read)", got)
 			}
 		}
-		_, _ = w.Write([]byte(`{"code":200,"data":{"result":[]}}`))
+		_, _ = w.Write([]byte(`{"code":200,"data":{"webPages":{"value":[]}}}`))
 	}))
 	defer srv.Close()
 

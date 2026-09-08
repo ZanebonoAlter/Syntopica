@@ -203,7 +203,17 @@ func (s *SemanticBoardBackfillService) collectBoardModeTopicTagIDs(ctx context.C
 		Scan(&boardAuxiliaries).Error; err != nil {
 		return nil, err
 	}
-	if len(boardAuxiliaries) == 0 {
+	var boardComposites []BoardCompositeLabel
+	if err := s.db.WithContext(ctx).
+		Table("board_composition").
+		Select("board_composition.board_id, board_composition.auxiliary_label_id AS composite_label_id, composite.label, composite.embedding").
+		Joins("JOIN semantic_labels AS board ON board.id = board_composition.board_id AND board.label_type = ? AND board.status = ?", "board", "active").
+		Joins("JOIN semantic_labels AS composite ON composite.id = board_composition.auxiliary_label_id AND composite.label_type = ? AND composite.status = ?", "composite", "active").
+		Where("board_composition.board_id = ?", boardID).
+		Scan(&boardComposites).Error; err != nil {
+		return nil, err
+	}
+	if len(boardAuxiliaries) == 0 && len(boardComposites) == 0 {
 		return sortedSemanticBoardBackfillIDs(ids), nil
 	}
 
@@ -211,9 +221,20 @@ func (s *SemanticBoardBackfillService) collectBoardModeTopicTagIDs(ctx context.C
 	if err != nil {
 		return nil, err
 	}
+	tagComposites, err := s.loadActiveTagComposites(ctx)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make(map[uint]struct{}, len(tagAuxiliaries)+len(tagComposites))
+	for topicTagID := range tagAuxiliaries {
+		candidates[topicTagID] = struct{}{}
+	}
+	for topicTagID := range tagComposites {
+		candidates[topicTagID] = struct{}{}
+	}
 	config := NewSemanticBoardMatchingService(s.db).LoadConfig(ctx)
-	for topicTagID, auxiliaries := range tagAuxiliaries {
-		matches := evaluateSemanticBoardMatches(auxiliaries, boardAuxiliaries, config, nil, nil)
+	for topicTagID := range candidates {
+		matches := evaluateSemanticBoardMatches(tagAuxiliaries[topicTagID], boardAuxiliaries, tagComposites[topicTagID], boardComposites, config, nil, nil)
 		if len(matches) > 0 {
 			ids[topicTagID] = struct{}{}
 		}
@@ -235,6 +256,30 @@ func (s *SemanticBoardBackfillService) loadActiveTagAuxiliaries(ctx context.Cont
 		Select("topic_tag_semantic_labels.topic_tag_id, semantic_labels.id, semantic_labels.embedding").
 		Joins("JOIN topic_tags ON topic_tags.id = topic_tag_semantic_labels.topic_tag_id AND topic_tags.status = ?", "active").
 		Joins("JOIN semantic_labels ON semantic_labels.id = topic_tag_semantic_labels.semantic_label_id AND semantic_labels.label_type = ? AND semantic_labels.status = ?", "auxiliary", "active").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	grouped := make(map[uint][]models.SemanticLabel)
+	for _, row := range rows {
+		grouped[row.TopicTagID] = append(grouped[row.TopicTagID], models.SemanticLabel{ID: row.ID, Embedding: row.Embedding})
+	}
+	return grouped, nil
+}
+
+func (s *SemanticBoardBackfillService) loadActiveTagComposites(ctx context.Context) (map[uint][]models.SemanticLabel, error) {
+	type row struct {
+		TopicTagID uint
+		ID         uint
+		Embedding  *string
+	}
+
+	var rows []row
+	if err := s.db.WithContext(ctx).
+		Table("topic_tag_semantic_labels").
+		Select("topic_tag_semantic_labels.topic_tag_id, semantic_labels.id, semantic_labels.embedding").
+		Joins("JOIN topic_tags ON topic_tags.id = topic_tag_semantic_labels.topic_tag_id AND topic_tags.status = ?", "active").
+		Joins("JOIN semantic_labels ON semantic_labels.id = topic_tag_semantic_labels.semantic_label_id AND semantic_labels.label_type = ? AND semantic_labels.status = ?", "composite", "active").
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}

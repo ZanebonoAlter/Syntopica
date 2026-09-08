@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -38,6 +39,7 @@ type matchDetailConfigDTO struct {
 	WeightedThreshold      float64 `json:"weighted_threshold"`
 	DirectHitMinOverlap    int     `json:"direct_hit_min_overlap"`
 	DirectionSimThreshold  float64 `json:"direction_sim_threshold"`
+	DirectHitScoreFactor   float64 `json:"direct_hit_score_factor"`
 }
 type DirectHitAuxiliaryDTO struct {
 	TagAuxiliaryID   uint   `json:"tag_auxiliary_id"`
@@ -60,15 +62,31 @@ type matchDetailResponse struct {
 	MatchReason          string                  `json:"match_reason"`
 	Score                float64                 `json:"score"`
 	Downgraded           bool                    `json:"downgraded"`
+	DirectionMismatch    bool                    `json:"direction_mismatch"`
 	EffectiveMinHits     int                     `json:"effective_min_hits"`
 	DirectionSim         *float64                `json:"direction_sim"`
 	Config               matchDetailConfigDTO    `json:"config"`
 	DirectHitAuxiliaries []DirectHitAuxiliaryDTO `json:"direct_hit_auxiliaries"`
+	CompositeHits        []CompositeHitDTO       `json:"composite_hits"`
 	TagAuxiliaryCount    int                     `json:"tag_auxiliary_count"`
 	Hits                 int                     `json:"hits"`
 	HitRate              float64                 `json:"hit_rate"`
 	MaxSimilarity        float64                 `json:"max_similarity"`
 	Pairs                []MatchDetailPairDTO    `json:"pairs"`
+}
+
+// CompositeHitDTO describes a composite label that produced a composite_hit
+// for this tag-board pair (label + ordered component sequence).
+type CompositeHitDTO struct {
+	ID         uint                    `json:"id"`
+	Label      string                  `json:"label"`
+	Components []CompositeComponentDTO `json:"components"`
+}
+
+type CompositeComponentDTO struct {
+	ID       uint   `json:"id"`
+	Label    string `json:"label"`
+	Position int    `json:"position"`
 }
 
 func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
@@ -361,6 +379,11 @@ func (h *semanticBoardHandler) getTagMatchDetail(c *gin.Context) {
 
 	effectiveMinHits := min(config.DirectMaxSimMinHits, len(tagAuxiliaries))
 
+	var compositeHits []CompositeHitDTO
+	if stored.MatchReason == "composite_hit" {
+		compositeHits = h.loadCompositeHitDTOs(ctx, boardID, tagID)
+	}
+
 	respondOK(c, matchDetailResponse{
 		TopicTagID:           tag.ID,
 		TopicTagLabel:        tag.Label,
@@ -368,16 +391,55 @@ func (h *semanticBoardHandler) getTagMatchDetail(c *gin.Context) {
 		MatchReason:          stored.MatchReason,
 		Score:                stored.Score,
 		Downgraded:           stored.Downgraded,
+		DirectionMismatch:    stored.DirectionMismatch,
 		EffectiveMinHits:     effectiveMinHits,
 		DirectionSim:         directionSim,
 		Config:               matchDetailConfigToDTO(config),
 		DirectHitAuxiliaries: DirectHitAuxiliaries,
+		CompositeHits:        compositeHits,
 		TagAuxiliaryCount:    len(tagAuxiliaries),
 		Hits:                 hits,
 		HitRate:              hitRate,
 		MaxSimilarity:        maxSimilarity,
 		Pairs:                pairs,
 	})
+}
+
+// loadCompositeHitDTOs resolves the composite labels shared between a board's
+// mounted composites and a tag's attached composites, with their ordered
+// component sequences (spec: 匹配详情展示组合名+组件序列).
+func (h *semanticBoardHandler) loadCompositeHitDTOs(ctx context.Context, boardID uint, tagID uint) []CompositeHitDTO {
+	var composites []struct {
+		ID    uint
+		Label string
+	}
+	if err := h.db.WithContext(ctx).
+		Table("board_composition AS bc").
+		Select("DISTINCT sl.id, sl.label").
+		Joins("JOIN topic_tag_semantic_labels AS ttsl ON ttsl.semantic_label_id = bc.auxiliary_label_id AND ttsl.topic_tag_id = ?", tagID).
+		Joins("JOIN semantic_labels AS sl ON sl.id = bc.auxiliary_label_id AND sl.label_type = ? AND sl.status = ?", "composite", "active").
+		Where("bc.board_id = ?", boardID).
+		Scan(&composites).Error; err != nil {
+		return nil
+	}
+	if len(composites) == 0 {
+		return nil
+	}
+	result := make([]CompositeHitDTO, 0, len(composites))
+	for _, composite := range composites {
+		var components []CompositeComponentDTO
+		if err := h.db.WithContext(ctx).
+			Table("composite_components AS cc").
+			Select("cc.component_label_id AS id, sl.label, cc.position").
+			Joins("JOIN semantic_labels AS sl ON sl.id = cc.component_label_id").
+			Where("cc.composite_id = ?", composite.ID).
+			Order("cc.position ASC").
+			Scan(&components).Error; err != nil {
+			components = nil
+		}
+		result = append(result, CompositeHitDTO{ID: composite.ID, Label: composite.Label, Components: components})
+	}
+	return result
 }
 func BuildDirectHitAuxiliaryDTOs(tagAuxiliaries []models.SemanticLabel, boardAuxiliaries []service.BoardAuxiliaryLabel) []DirectHitAuxiliaryDTO {
 	byID := make(map[uint]models.SemanticLabel, len(tagAuxiliaries))
@@ -440,6 +502,7 @@ func matchDetailConfigToDTO(config service.SemanticBoardMatchConfig) matchDetail
 		WeightedThreshold:      config.WeightedThreshold,
 		DirectHitMinOverlap:    config.DirectHitMinOverlap,
 		DirectionSimThreshold:  config.DirectionSimThreshold,
+		DirectHitScoreFactor:   config.DirectHitScoreFactor,
 	}
 }
 func (h *semanticBoardHandler) rematchAll(c *gin.Context) {

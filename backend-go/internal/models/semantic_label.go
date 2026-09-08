@@ -13,18 +13,28 @@ type SemanticLabel struct {
 	// Vector columns are declared without a fixed dimension. The actual dimension is
 	// determined at runtime by the configured embedder (see auxlabel.EnsureVectorDimensionOnce)
 	// and may differ across deployments, so hardcoding it here would race AutoMigrate.
-	Embedding      *string  `gorm:"type:vector;column:embedding" json:"-"`
-	MergeEmbedding *string  `gorm:"type:vector;column:merge_embedding" json:"-"`
-	LabelType      string   `gorm:"size:20;index:idx_semantic_labels_label_type" json:"label_type"`
-	Aliases        []string `gorm:"type:jsonb;serializer:json;default:'[]'" json:"aliases"`
-	RefCount       int      `json:"ref_count"`
-	Description    string   `gorm:"type:text" json:"description"`
-	DisplayOrder   int      `json:"display_order"`
-	Source         string   `gorm:"size:50" json:"source"`
-	Status         string   `gorm:"size:20;index:idx_semantic_labels_status" json:"status"`
-	Protected      bool     `json:"protected"`
+	Embedding      *string `gorm:"type:vector;column:embedding" json:"-"`
+	MergeEmbedding *string `gorm:"type:vector;column:merge_embedding" json:"-"`
+	// LabelType — "auxiliary" (neutral semantic anchor), "board" (SemanticBoard),
+	// or "composite" (directed semantic unit built from ordered auxiliary
+	// components, e.g. 「美债收益率」 = 美国国债 × 收益率; add-composite-labels).
+	// Composites reuse this table plus composite_components; their embedding is
+	// LLM-generated from the composite phrase (never synthesized from component
+	// vectors) and merge_embedding stays unused.
+	LabelType    string   `gorm:"size:20;index:idx_semantic_labels_label_type" json:"label_type"`
+	Aliases      []string `gorm:"type:jsonb;serializer:json;default:'[]'" json:"aliases"`
+	RefCount     int      `json:"ref_count"`
+	Description  string   `gorm:"type:text" json:"description"`
+	DisplayOrder int      `json:"display_order"`
+	Source       string   `gorm:"size:50" json:"source"`
+	Status       string   `gorm:"size:20;index:idx_semantic_labels_status" json:"status"`
+	Protected    bool     `json:"protected"`
 	// EnrichmentEnabled — whether cycle-B enrichment is enabled for this board (default false).
 	EnrichmentEnabled bool `json:"enrichment_enabled"`
+	// RelationAutoDiscoveryEnabled — whether automatic cross-board relation
+	// discovery runs after new board briefs for this board (default false;
+	// manual discovery is always available). add-evidence-backed-cross-board-relations.
+	RelationAutoDiscoveryEnabled bool `json:"relation_auto_discovery_enabled"`
 	// WindowDays — real-time detail window for cycle-B (default 14).
 	WindowDays int `json:"window_days"`
 	// ContextLayers — which granularity layers the interpreter reads (default ["week","month","year","all"]).
@@ -91,4 +101,21 @@ type BoardComposition struct {
 
 func (BoardComposition) TableName() string {
 	return "board_composition"
+}
+
+// CompositeComponent stores the ordered auxiliary-label components of a
+// composite semantic label (add-composite-labels). PK is (CompositeID,
+// ComponentLabelID): a component appears at most once per composite; Position
+// carries the 1-based ordering. Deleting the composite label row cascades.
+type CompositeComponent struct {
+	CompositeID      uint `gorm:"primaryKey" json:"composite_id"`
+	ComponentLabelID uint `gorm:"primaryKey" json:"component_label_id"`
+	Position         int  `json:"position"`
+
+	Composite      *SemanticLabel `gorm:"foreignKey:CompositeID;constraint:OnDelete:CASCADE" json:"composite,omitempty"`
+	ComponentLabel *SemanticLabel `gorm:"foreignKey:ComponentLabelID;constraint:OnDelete:CASCADE" json:"component_label,omitempty"`
+}
+
+func (CompositeComponent) TableName() string {
+	return "composite_components"
 }

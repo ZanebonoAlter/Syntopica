@@ -151,6 +151,29 @@ BACKEND_PORT=5000
 
 AI 相关设置（LLM 凭证、Firecrawl、Digest 导出）通过 Web UI 配置并存储在数据库中 — 不通过环境变量设置。详见 [配置指南](configuration.md#数据库存储的设置ai-功能)。
 
+### PostgreSQL autovacuum 调优（docker-compose.pg.yml）
+
+`docker-compose.pg.yml` 为 postgres 服务追加了 autovacuum 调优参数（optimize-pg-storage，2026-08-28）：
+
+```yaml
+command:
+  - postgres
+  - -c
+  - autovacuum_vacuum_scale_factor=0.05        # 默认 0.2，大表触发严重滞后
+  - -c
+  - autovacuum_vacuum_insert_scale_factor=0.05 # 纯 INSERT 表（otel_spans）的触发器
+  - -c
+  - autovacuum_vacuum_insert_threshold=500
+  - -c
+  - autovacuum_vacuum_cost_limit=2000          # 默认 200 追不上写入速度
+  - -c
+  - wal_compression=on                         # 高写入库 WAL 全页镜像压缩
+```
+
+**为什么**：默认参数下高写入量表（otel_spans 日增 ~82 万行、embedding 缓存反复重写）的死元组回收严重滞后，实测 TOAST 膨胀 13 倍、库体积膨胀到 12GB；收紧触发阈值 + 提高 cost limit 后 vacuum 跟得上写入。
+
+**生效方式**：参数变更需 recreate 容器（`docker compose -f docker-compose.pg.yml up -d`，数据在 `./data` bind mount 不丢）。验证：`docker exec syntopica-postgres psql -U postgres -d syntopica -c "SHOW autovacuum_vacuum_scale_factor;"` → `0.05`。
+
 ### 破坏性迁移开关
 
 部分历史版本迁移会 `TRUNCATE` 业务表以清理与旧 schema 不兼容的数据（如 `20260706_0001`、`20260712_0001`、`20260718_0001`）。这些迁移由 `MIGRATIONS_ALLOW_DESTRUCTIVE` 环境变量控制：
@@ -208,6 +231,16 @@ docker compose -f demo/docker-compose.demo.yml up -d --build
 ```
 
 该模式会构建前后端自包含镜像，导入 `demo/seed/seed.sql`，并通过 `DEMO_READ_ONLY=1` 禁止写入、后台任务和 WebSocket。详细启动、刷新 seed 与安全注意事项见 [demo/README.md](../../demo/README.md)。
+
+## 升级注意事项（board-level-deep-analysis，2026-08-31）
+
+本批变更（版块简报/问题调查重做）升级后注意：
+
+- **自动迁移，重启后端即生效**：`20260828_0001`（result_kind/parent/question_key + 复合 FK/触发器）、`20260828_0002`（旧参考角色字节复制为 disabled legacy 方法卡）、`20260831_0001`（未编辑过的 seed 画像翻 disabled）均在启动时自动执行，仅向上无 Down；无需手动跑脚本。
+- **无需清理/重新生成旧结果**：存量版块分析自动回填 `legacy_board_analysis`，前端只读渲染并标「旧版分析」，QA/详情/列表照常；调查的父约束只在新增行上生效。旧 `topic_analysis` 行不受影响。既有 `board_investigation` 快照同样不回写；若历史调查出现“零证据但 supported/refuted/weakened”，升级后从父简报手动重跑即可生成受新一致性门保护的新快照，旧行继续作为历史记录保留。
+- **拒绝即报警**：若存在 scope/owner 混用的脏行或非法调查父行，迁移会拒绝执行（启动报错）——这是防数据损坏被掩盖，修数据后再重启。
+- **旧参考角色**：用户编辑过的 `reference_roles` 行不会被强制禁用（原样保留），但**任何行都不再注入 prompt**；写 API 一律 410，改用设置页「分析方法」（旧内容已按原文字节复制为停用的 legacy 方法卡，人工整理后启用）。
+- **慢供应商需调 provider 超时**：`data_enrichment_analysis` 若指向慢速模型（实测调查链单次 LLM 可达 6 分半），把对应 `ai_providers.timeout_seconds` 调到 600（默认 120 会拦腰截断）；设置页 AI 供应商面板改，即时生效无需重启。总 job 上限仍 30 分钟。详见 [configuration.md](configuration.md) §数据增强。
 
 ## 回滚步骤
 

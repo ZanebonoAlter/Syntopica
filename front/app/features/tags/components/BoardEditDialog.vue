@@ -7,6 +7,7 @@ const props = defineProps<{
   editLabel: string
   editDescription: string
   editEnrichmentEnabled: boolean
+  editRelationAutoDiscoveryEnabled: boolean
   editWindowDays: number
   editContextLayers: string[]
   editSaving: boolean
@@ -19,6 +20,7 @@ const emit = defineEmits<{
   'update:edit-label': [val: string]
   'update:edit-description': [val: string]
   'update:edit-enrichment-enabled': [val: boolean]
+  'update:edit-relation-auto-discovery-enabled': [val: boolean]
   'update:edit-window-days': [val: number]
   'update:edit-context-layers': [val: string[]]
 }>()
@@ -75,7 +77,19 @@ function toggleLayer(layer: string) {
             />
             <span class="enrichment-toggle-text">
               <span class="enrichment-toggle-label">开启数据增强</span>
-              <span class="enrichment-toggle-hint">关闭时「数据增强」tab 不能触发循环 B</span>
+              <span class="enrichment-toggle-hint">关闭时不能触发循环 B 分析（聚焦/板块级），可在工作台面板一键开启</span>
+            </span>
+          </label>
+
+          <label class="enrichment-toggle" :class="{ disabled: !editEnrichmentEnabled }" data-test="relation-auto-toggle-row">
+            <AppToggle
+              :model-value="editRelationAutoDiscoveryEnabled && editEnrichmentEnabled"
+              :disabled="!editEnrichmentEnabled"
+              @update:model-value="emit('update:edit-relation-auto-discovery-enabled', $event as boolean)"
+            />
+            <span class="enrichment-toggle-text">
+              <span class="enrichment-toggle-label">跨版块关系自动发现</span>
+              <span class="enrichment-toggle-hint">默认关闭。开启后每份新简报按预算自动从观察发起外部检索，只生成待裁决建议、绝不自动确认；需先开启数据增强。全局预算与冷却在服务配置管理</span>
             </span>
           </label>
 
@@ -188,6 +202,7 @@ function toggleLayer(layer: string) {
   background: var(--color-bg-hover);
 }
 
+.enrichment-toggle.disabled { opacity: 0.6; }
 .enrichment-toggle {
   display: flex;
   align-items: flex-start;

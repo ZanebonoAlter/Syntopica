@@ -3,6 +3,7 @@ package board
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 	"gorm.io/gorm"
 
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/testutil"
+	"syntopica-backend/internal/tagmanagement/service/core"
 )
 
 func TestSemanticBoardBackfillAllModeRewritesActiveTags(t *testing.T) {
@@ -192,4 +195,68 @@ func upsertMatchSetting(t *testing.T, db *gorm.DB, key, value string) {
 	require.NoError(t, db.Where("key = ?", key).
 		Assign(models.AISettings{Value: value}).
 		FirstOrCreate(&models.AISettings{Key: key}).Error)
+}
+
+// TestSemanticBoardBackfillAllModeAppliesNewRules（add-composite-labels S7）：
+// 存量 direct_hit 记录（旧语义 score=1.0）经 mode="all" 重算后按新契约改写——
+// score=direct_hit_score_factor(0.7)、方向不符记录 direction_mismatch=true；
+// 组合命中候选重算后变 composite_hit score=1.0；连续重算幂等。
+func TestSemanticBoardBackfillAllModeAppliesNewRules(t *testing.T) {
+	db := setupSemanticBoardMatchingTestDB(t)
+
+	// -- direct_hit 降级场景：tagX 与 boardX 单标签重叠（min_overlap=2），方向不符 --
+	tagX := createMatchTag(t, db, "backfill-direct")
+	auxA := createMatchLabel(t, db, "BackfillA", "bf-a", "auxiliary", "active", []float64{1, 0, 0})
+	auxB := createMatchLabel(t, db, "BackfillB", "bf-b", "auxiliary", "active", []float64{0, 1, 0})
+	boardX := createMatchLabel(t, db, "Backfill Board X", "bf-board-x", "board", "active", []float64{0, 0, 1})
+	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tagX.ID, SemanticLabelID: auxA.ID}).Error)
+	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tagX.ID, SemanticLabelID: auxB.ID}).Error)
+	require.NoError(t, db.Create(&models.BoardComposition{BoardID: boardX.ID, AuxiliaryLabelID: auxA.ID}).Error)
+	require.NoError(t, db.Create(&models.BoardComposition{BoardID: boardX.ID, AuxiliaryLabelID: auxB.ID}).Error)
+	// tag identity embedding [1,0,0] vs board embedding [0,0,1] → cosine 0 < 0.5
+	pgVector := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
+	require.NoError(t, db.Create(&models.TopicTagEmbedding{TopicTagID: tagX.ID, EmbeddingType: "identity", EmbeddingVec: pgVector, Dimension: testutil.TestEmbeddingDim, Model: "test", TextHash: fmt.Sprintf("hash-%d", tagX.ID)}).Error)
+	// 存量旧记录：旧语义 direct_hit score=1.0、无 direction_mismatch
+	require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tagX.ID, SemanticBoardID: boardX.ID, Score: 1.0, MatchReason: "direct_hit"}).Error)
+
+	// -- composite_hit 场景：tagY 与 boardY 共享组合标签 --
+	tagY := createMatchTag(t, db, "backfill-composite")
+	composite := createMatchLabel(t, db, "重算组合", "bf-comp", "composite", "active", []float64{1, 0, 0})
+	boardY := createMatchLabel(t, db, "Backfill Board Y", "bf-board-y", "board", "active", nil)
+	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tagY.ID, SemanticLabelID: composite.ID}).Error)
+	require.NoError(t, db.Create(&models.BoardComposition{BoardID: boardY.ID, AuxiliaryLabelID: composite.ID}).Error)
+	// 存量旧记录：组合标签在旧规则下不参与匹配（仅 aux 交集），先挂一条旧 direct_hit 痕迹
+	require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tagY.ID, SemanticBoardID: boardY.ID, Score: 1.0, MatchReason: "direct_hit"}).Error)
+
+	service := NewSemanticBoardBackfillService(db)
+	job, err := service.Enqueue(context.Background(), SemanticBoardBackfillRequest{Mode: SemanticBoardBackfillModeAll})
+	require.NoError(t, err)
+	job = waitForSemanticBoardBackfillJob(t, service, job.ID)
+	require.Equal(t, SemanticBoardBackfillStatusCompleted, job.Status)
+
+	// direct_hit 存量 → 降级 0.7 + 方向不符标记
+	var rowX models.TopicTagBoardLabel
+	require.NoError(t, db.Where("topic_tag_id = ?", tagX.ID).First(&rowX).Error)
+	require.Equal(t, "direct_hit", rowX.MatchReason)
+	require.InDelta(t, 0.7, rowX.Score, 0.0001)
+	require.True(t, rowX.DirectionMismatch, "direction cosine below threshold must be flagged after backfill")
+
+	// 组合候选 → composite_hit 1.0
+	var rowY models.TopicTagBoardLabel
+	require.NoError(t, db.Where("topic_tag_id = ?", tagY.ID).First(&rowY).Error)
+	require.Equal(t, "composite_hit", rowY.MatchReason)
+	require.InDelta(t, 1.0, rowY.Score, 0.0001)
+	require.False(t, rowY.DirectionMismatch)
+
+	// 幂等：重跑 mode="all" 结果稳定（无重复挂载）
+	job2, err := service.Enqueue(context.Background(), SemanticBoardBackfillRequest{Mode: SemanticBoardBackfillModeAll})
+	require.NoError(t, err)
+	job2 = waitForSemanticBoardBackfillJob(t, service, job2.ID)
+	require.Equal(t, SemanticBoardBackfillStatusCompleted, job2.Status)
+	requireTopicTagBoardIDs(t, db, tagX.ID, []uint{boardX.ID})
+	requireTopicTagBoardIDs(t, db, tagY.ID, []uint{boardY.ID})
+	var rowX2 models.TopicTagBoardLabel
+	require.NoError(t, db.Where("topic_tag_id = ?", tagX.ID).First(&rowX2).Error)
+	require.InDelta(t, 0.7, rowX2.Score, 0.0001)
+	require.True(t, rowX2.DirectionMismatch)
 }

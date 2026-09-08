@@ -2,14 +2,18 @@
 import { ref } from 'vue'
 import { useNotify } from '~/composables/useNotify'
 import { Icon } from '@iconify/vue'
-import { useSemanticBoardsApi, type AuxiliaryLabelItem } from '~/api/semanticBoards'
+import { useSemanticBoardsApi, type AuxiliaryLabelItem, type BoardCompositeMount } from '~/api/semanticBoards'
 import AuxiliaryLabelPicker from './AuxiliaryLabelPicker.vue'
 import TopicLandscapePanel from './topic-landscape/TopicLandscapePanel.vue'
+import CompositeLabelEditDialog from './CompositeLabelEditDialog.vue'
 
 const props = defineProps<{
   boardId: number
   labels: AuxiliaryLabelItem[]
   loading: boolean
+  /** 本版块挂载的组合标签（add-composite-labels：版块维度的组合管理） */
+  composites?: BoardCompositeMount[]
+  boardLabel?: string
 }>()
 
 const emit = defineEmits<{
@@ -24,10 +28,21 @@ const showPicker = ref(false)
 const pendingIds = ref<number[]>([])
 const adding = ref(false)
 const notice = ref('')
+const showCompositeDialog = ref(false)
 
 function handleRemove(id: number, label: string) {
   if (!confirm(`从板块中移除辅助标签 "${label}"？\n注意：不会自动回填历史数据。`)) return
   emit('remove', id)
+}
+
+/** 移除组合挂载（复用 composition 删除接口，auxiliary_label_id 列复用）。 */
+function handleRemoveCompositeMount(item: BoardCompositeMount) {
+  if (!confirm(`从板块中移除组合标签 "${item.label}"（${item.components.join(' × ')}）？\n注意：不会自动回填历史归属。`)) return
+  api.removeFromComposition(props.boardId, item.id).then(() => {
+    emit('refresh')
+  }).catch(() => {
+    notice.value = '移除组合挂载失败，请重试'
+  })
 }
 
 async function handleConfirmAdd() {
@@ -118,6 +133,46 @@ async function handleConfirmAdd() {
       </div>
     </div>
 
+    <!-- 组合标签（add-composite-labels：版块维度的组合挂载管理 + 创建入口） -->
+    <div class="bcp-comp-section" data-testid="board-composite-section">
+      <div class="bcp-header">
+        <Icon icon="mdi:link-variant" width="15" class="text-white/50" />
+        <span class="bcp-title">组合标签</span>
+        <span class="bcp-count">{{ composites?.length ?? 0 }}</span>
+        <div class="bcp-spacer" />
+        <button type="button" class="bcp-add-btn" data-testid="board-composite-create" @click="showCompositeDialog = true">
+          <Icon icon="mdi:plus" width="14" />
+          创建并挂载
+        </button>
+      </div>
+      <div v-if="!composites || composites.length === 0" class="bcp-comp-empty">
+        暂未挂载组合标签——组合标签是最强匹配信号（composite_hit），适合「美国国债×收益率」这类指向性主题
+      </div>
+      <div v-else class="bcp-comp-list">
+        <div
+          v-for="item in composites"
+          :key="item.id"
+          class="bcp-comp-item"
+          :class="{ 'bcp-comp-item--disabled': item.status !== 'active' }"
+          :data-testid="`board-composite-item-${item.id}`"
+        >
+          <span class="bcp-comp-name">{{ item.label }}</span>
+          <span class="bcp-comp-chain">= {{ item.components.join(' × ') }}</span>
+          <span v-if="item.ref_count > 0" class="bcp-chip-ref">{{ item.ref_count }}</span>
+          <button type="button" class="bcp-chip-remove" title="移除挂载" @click="handleRemoveCompositeMount(item)">
+            <Icon icon="mdi:close" width="10" />
+          </button>
+        </div>
+      </div>
+      <CompositeLabelEditDialog
+        :visible="showCompositeDialog"
+        :board-id="boardId"
+        :board-label="boardLabel"
+        @confirm="emit('refresh'); showCompositeDialog = false"
+        @cancel="showCompositeDialog = false"
+      />
+    </div>
+
     <!-- 视觉分隔 + 话题态势版图（design §5：构成标签管理区下方） -->
     <hr class="bcp-divider">
     <TopicLandscapePanel :board-id="boardId" @select-topic="(id) => emit('selectTopic', id)" />
@@ -135,6 +190,13 @@ async function handleConfirmAdd() {
   background: var(--color-bg-hover);
 }
 
+.bcp-comp-section { display: flex; flex-direction: column; gap: 0.5rem; padding-top: 0.6rem; border-top: 1px dashed var(--color-border-subtle); }
+.bcp-comp-empty { padding: 0.5rem 0.6rem; border-radius: 8px; background: var(--color-bg-sunken); font-size: 0.74rem; color: var(--color-text-muted); }
+.bcp-comp-list { display: flex; flex-direction: column; gap: 0.35rem; }
+.bcp-comp-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; border: 1px solid var(--color-border-subtle); border-radius: 8px; background: var(--color-bg-base); }
+.bcp-comp-item--disabled { opacity: 0.55; }
+.bcp-comp-name { font-weight: 600; font-size: 0.78rem; color: var(--color-text-primary); }
+.bcp-comp-chain { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.72rem; color: var(--color-text-secondary); }
 .bcp-header {
   display: flex;
   align-items: center;

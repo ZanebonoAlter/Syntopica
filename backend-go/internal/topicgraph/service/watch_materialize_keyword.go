@@ -77,15 +77,22 @@ func matchKeywordArticles(expr string, articles []repository.WatchScanArticle) [
 
 // MaterializeKeywordWatches appends one ephemeral section per active
 // keyword_topic watch of the board to the pending report assembly (sections /
-// threadBatches, ClusterIndex continuing after the regular clusters). Zero AI
-// calls. A watch with no matching articles yields no section (spec: 无命中不产
-// 空 section). Returns the appended count; failures of individual watches are
-// logged and skipped (design §D1: degradation, never blocking).
+// threadBatches, ClusterIndex continuing after the regular clusters). The
+// recall layer (scan + DNF match) stays zero-AI; the adjudication layer
+// (matCfg.Enabled, default on) runs one batch AI call per watch over the hit
+// articles and only aggregates the ones fitting the tracking intent —
+// adjudication failure degrades to the full recall result (design D4). A
+// watch with no matching (or no adjudicated) articles yields no section
+// (spec: 无命中不产空 section). Returns the appended count; failures of
+// individual watches are logged and skipped (design §D1: degradation, never
+// blocking).
 func MaterializeKeywordWatches(
 	ctx context.Context,
 	boardID uint,
 	watches []repository.BoardTopicWatch,
 	nextClusterIndex int,
+	matCfg WatchMaterializeConfig,
+	chat watchChatFunc,
 ) ([]repository.DailyReportSection, [][]repository.DailyReportThread, error) {
 	_, span := otel.Tracer(tracing.ServiceName).Start(ctx, "service.MaterializeKeywordWatches")
 	defer span.End()
@@ -107,7 +114,29 @@ func MaterializeKeywordWatches(
 		if len(hits) == 0 {
 			continue
 		}
-		sec, batch := buildKeywordWatchSection(w, hits, nextClusterIndex+len(sections))
+		// Adjudication layer (watch-materialize-llm-adjudication): filter the
+		// recall hits down to articles actually fitting the tracking intent.
+		kept := hits
+		var adj *watchAdjudicationResult
+		if matCfg.Enabled {
+			var aErr error
+			adj, aErr = adjudicateWatchArticles(ctx, boardID, w.ID, "关键字追踪："+w.Label, hits, matCfg, chat)
+			if aErr != nil {
+				logging.Warnf("watch-adjudicate: keyword watch %d degraded to recall result: %v", w.ID, aErr)
+				adj = nil // degrade: keep all hits, default confidence, fallback title
+			} else {
+				kept = filterAdjudicated(hits, adj)
+			}
+		}
+		if len(kept) == 0 {
+			logging.Infof("watch-adjudicate: keyword watch %d — %d hits all rejected, no section today", w.ID, len(hits))
+			continue
+		}
+		sec, batch := buildKeywordWatchSection(w, kept, nextClusterIndex+len(sections))
+		if adj != nil && adj.Title != "" {
+			sec.ClusterLabel = adj.Title // LLM same-batch title; fallback = fixed derived name
+		}
+		applyThreadConfidence(batch, adj)
 		sections = append(sections, sec)
 		batches = append(batches, batch)
 	}
@@ -118,19 +147,22 @@ func MaterializeKeywordWatches(
 	return sections, batches, nil
 }
 
-// buildKeywordWatchSection assembles the fixed-name ephemeral section for one
-// keyword_topic watch plus its mechanical threads (one per hit article).
-// Field contract (design §D1): ClusterLabel = fixed name, ClusterTagIDs =
-// empty array (articles may be tag-less — the section is article-anchored,
-// not tag-anchored), BestTier=4 / AvgScore=0 / empty quality breakdown (no
-// board-match signal exists for this section), Embedding empty, lane_tier =
-// watch_keyword, PersistentTopicID NULL (spec: keyword track never owns a
-// persistent topic).
+// buildKeywordWatchSection assembles the ephemeral section for one
+// keyword_topic watch plus its threads (one per kept article).
+// Field contract (design §D1): ClusterLabel = fixed derived name (the LLM
+// same-batch title, when adjudication produced one, overrides it at the
+// caller), ClusterTagIDs = empty array (articles may be tag-less — the
+// section is article-anchored, not tag-anchored), BestTier=4 / AvgScore=0 /
+// empty quality breakdown (no board-match signal exists for this section),
+// Embedding empty, lane_tier = watch_keyword, PersistentTopicID NULL (spec:
+// keyword track never owns a persistent topic).
 func buildKeywordWatchSection(w repository.BoardTopicWatch, hits []repository.WatchScanArticle, clusterIndex int) (repository.DailyReportSection, []repository.DailyReportThread) {
+	watchID := w.ID
 	section := repository.DailyReportSection{
 		ClusterIndex:     clusterIndex,
 		ClusterLabel:     buildKeywordWatchSectionLabel(w.Label),
 		ClusterTagIDs:    repository.JSON("[]"),
+		WatchID:          &watchID,
 		ArticleCount:     len(hits),
 		BestTier:         4,
 		AvgScore:         0,

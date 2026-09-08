@@ -42,7 +42,7 @@ func TestEvaluateSemanticBoardMatches_MaxSimDualFactor(t *testing.T) {
 		boardAuxiliaries := []BoardAuxiliaryLabel{
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{1, 0, 0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, uint(100), results[0].SemanticBoardID)
 		require.Equal(t, "max_sim", results[0].MatchReason)
@@ -60,7 +60,7 @@ func TestEvaluateSemanticBoardMatches_MaxSimDualFactor(t *testing.T) {
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{1, 0, 0}))},
 			{BoardID: 100, AuxiliaryLabelID: 11, Embedding: ptrStr(core.FloatsToPgVector([]float64{0, 1, 0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, "hit_rate", results[0].MatchReason)
 	})
@@ -82,7 +82,7 @@ func TestEvaluateSemanticBoardMatches_MaxSimDualFactor(t *testing.T) {
 		boardAuxiliaries := []BoardAuxiliaryLabel{
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.99, 0.1, 0.0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		for _, r := range results {
 			if r.SemanticBoardID == 100 {
 				require.NotEqual(t, "max_sim", r.MatchReason, "should not match as max_sim with only 1 hit out of 5")
@@ -107,7 +107,7 @@ func TestEvaluateSemanticBoardMatches_MaxSimDualFactor(t *testing.T) {
 		boardAuxiliaries := []BoardAuxiliaryLabel{
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{1, 0, 0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		for _, r := range results {
 			if r.SemanticBoardID == 100 {
 				require.NotEqual(t, "max_sim", r.MatchReason, "should not match as max_sim with rate 0.2 < 0.3")
@@ -134,7 +134,7 @@ func TestEvaluateSemanticBoardMatches_MaxSimDualFactor(t *testing.T) {
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.95, 0.31224989991992, 0}))},
 			{BoardID: 100, AuxiliaryLabelID: 11, Embedding: ptrStr(core.FloatsToPgVector([]float64{0, 0.95, 0.31224989991992}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		found := false
 		for _, r := range results {
 			if r.SemanticBoardID == 100 {
@@ -173,7 +173,7 @@ func TestEvaluateSemanticBoardMatches_EffectiveSampleAndBlend(t *testing.T) {
 		boardAuxiliaries := []BoardAuxiliaryLabel{
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{1, 0, 0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, "max_sim", results[0].MatchReason)
 		require.InDelta(t, 1.0, results[0].Score, 0.0001)
@@ -188,7 +188,7 @@ func TestEvaluateSemanticBoardMatches_EffectiveSampleAndBlend(t *testing.T) {
 		boardAuxiliaries := []BoardAuxiliaryLabel{
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{1, 0, 0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, "max_sim", results[0].MatchReason)
 	})
@@ -203,7 +203,7 @@ func TestEvaluateSemanticBoardMatches_EffectiveSampleAndBlend(t *testing.T) {
 		boardAuxiliaries := []BoardAuxiliaryLabel{
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{1, 0, 0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, "weighted", results[0].MatchReason)
 		require.InDelta(t, 0.643, results[0].Score, 0.01)
@@ -220,7 +220,7 @@ func TestEvaluateSemanticBoardMatches_EffectiveSampleAndBlend(t *testing.T) {
 		boardAuxiliaries := []BoardAuxiliaryLabel{
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{1, 0, 0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, "hit_rate", results[0].MatchReason)
 		require.InDelta(t, 0.9, results[0].Score, 0.01)
@@ -239,7 +239,7 @@ func TestEvaluateSemanticBoardMatches_EffectiveSampleAndBlend(t *testing.T) {
 		boardAuxiliaries := []BoardAuxiliaryLabel{
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{1, 0, 0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, "weighted", results[0].MatchReason)
 		require.InDelta(t, 0.733, results[0].Score, 0.01)
@@ -264,7 +264,7 @@ func TestEvaluateSemanticBoardMatches_EffectiveSampleAndBlend(t *testing.T) {
 			{BoardID: 100, AuxiliaryLabelID: 11, Embedding: ptrStr(core.FloatsToPgVector([]float64{0, 1, 0}))},
 			{BoardID: 100, AuxiliaryLabelID: 12, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.85, 0.527, 0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, "hit_rate", results[0].MatchReason)
 		require.InDelta(t, 0.88, results[0].Score, 0.01)
@@ -281,7 +281,7 @@ func TestEvaluateSemanticBoardMatches_EffectiveSampleAndBlend(t *testing.T) {
 		boardAuxiliaries := []BoardAuxiliaryLabel{
 			{BoardID: 100, AuxiliaryLabelID: 10, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.85, 0.527, 0}))},
 		}
-		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAuxiliaries, boardAuxiliaries, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, "hit_rate", results[0].MatchReason)
 		require.InDelta(t, results[0].Score, 0.85, 0.01)
@@ -338,7 +338,7 @@ func TestEvaluateSemanticBoardMatches_DirectionCheck(t *testing.T) {
 	t.Run("direction sim above threshold", func(t *testing.T) {
 		tagEmb := []float64{0.9, 0.1, 0.0}
 		boardEmbs := map[uint][]float64{10: {0.85, 0.15, 0.0}}
-		results := evaluateSemanticBoardMatches(tagAux, boardAux, config, tagEmb, boardEmbs)
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, config, tagEmb, boardEmbs)
 		require.Len(t, results, 1)
 		require.Equal(t, "max_sim", results[0].MatchReason)
 		require.False(t, results[0].DirectionMismatch)
@@ -347,21 +347,21 @@ func TestEvaluateSemanticBoardMatches_DirectionCheck(t *testing.T) {
 	t.Run("direction sim below threshold", func(t *testing.T) {
 		tagEmb := []float64{0.1, 0.9, 0.0}
 		boardEmbs := map[uint][]float64{10: {0.9, 0.1, 0.0}}
-		results := evaluateSemanticBoardMatches(tagAux, boardAux, config, tagEmb, boardEmbs)
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, config, tagEmb, boardEmbs)
 		require.Len(t, results, 1)
 		require.Equal(t, "max_sim", results[0].MatchReason)
 		require.True(t, results[0].DirectionMismatch)
 	})
 
 	t.Run("no tag embedding skips direction check", func(t *testing.T) {
-		results := evaluateSemanticBoardMatches(tagAux, boardAux, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.False(t, results[0].DirectionMismatch)
 	})
 
 	t.Run("no board embedding skips direction check", func(t *testing.T) {
 		tagEmb := []float64{0.1, 0.9, 0.0}
-		results := evaluateSemanticBoardMatches(tagAux, boardAux, config, tagEmb, nil)
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, config, tagEmb, nil)
 		require.Len(t, results, 1)
 		require.False(t, results[0].DirectionMismatch)
 	})
@@ -380,7 +380,7 @@ func TestEvaluateSemanticBoardMatches_DirectionCheck(t *testing.T) {
 		}
 		tagEmb := []float64{0.1, 0.9, 0.0}
 		boardEmbs := map[uint][]float64{10: {0.9, 0.1, 0.0}}
-		results := evaluateSemanticBoardMatches(tagAuxMulti, boardAuxMulti, hrConfig, tagEmb, boardEmbs)
+		results := evaluateSemanticBoardMatches(tagAuxMulti, boardAuxMulti, nil, nil, hrConfig, tagEmb, boardEmbs)
 		require.Len(t, results, 1)
 		require.Equal(t, "hit_rate", results[0].MatchReason)
 		require.True(t, results[0].DirectionMismatch)
@@ -393,7 +393,7 @@ func TestEvaluateSemanticBoardMatches_DirectionCheck(t *testing.T) {
 		wtConfig.WeightedThreshold = 0.01
 		tagEmb := []float64{0.1, 0.9, 0.0}
 		boardEmbs := map[uint][]float64{10: {0.9, 0.1, 0.0}}
-		results := evaluateSemanticBoardMatches(tagAux, boardAux, wtConfig, tagEmb, boardEmbs)
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, wtConfig, tagEmb, boardEmbs)
 		require.Len(t, results, 1)
 		require.Equal(t, "weighted", results[0].MatchReason)
 		require.True(t, results[0].DirectionMismatch)
@@ -424,7 +424,7 @@ func TestEvaluateSemanticBoardMatches_DowngradedMark(t *testing.T) {
 			{BoardID: 10, AuxiliaryLabelID: 100, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.85, 0.15, 0.0}))},
 		}
 
-		results := evaluateSemanticBoardMatches(tagAux1, boardAux, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAux1, boardAux, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, "max_sim", results[0].MatchReason)
 		require.True(t, results[0].Downgraded, "expected downgraded=true for N=1 tag with minHits=1 < DirectMaxSimMinHits=2")
@@ -440,7 +440,7 @@ func TestEvaluateSemanticBoardMatches_DowngradedMark(t *testing.T) {
 			{BoardID: 10, AuxiliaryLabelID: 100, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.85, 0.15, 0.0}))},
 		}
 
-		results := evaluateSemanticBoardMatches(tagAux3, boardAux, config, nil, nil)
+		results := evaluateSemanticBoardMatches(tagAux3, boardAux, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.False(t, results[0].Downgraded, "expected downgraded=false for N=3 tag")
 	})

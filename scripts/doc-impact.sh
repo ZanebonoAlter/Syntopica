@@ -5,7 +5,11 @@
 #   menu                      打印 8 个固定文档域选项菜单
 #   suggest [--base <ref>]    按 git diff 启发式预勾选 + 命中理由 + 声明注释模板
 #   verify <change-dir> [--base <ref>]  归档前对账（声明↔git diff + 反向启发式 + 文件存在性）
-#     tasks.md 可加 <!-- doc-impact-excuse: domain=理由; ... --> 豁免"疑似遗漏"误报
+#     反向启发式（疑似遗漏/声明 none 但命中）双轨输入（coordinate-concurrent-changes）：
+#     事实库存在该 change 的 edit.map 归属集合且非空 → 只扫归属集合（其他 active
+#     change 的脏文件不再干扰）；无记录/空/库不可用 → 回退全树 git diff（现状行为）。
+#     「声明了未更新」对账始终用全树（文档文件以 git 为准）。
+#     doc-impact-excuse 已退役（输入收窄后跨 change 误报源消失）；既有注释保留解析兼容不判 FAIL
 #
 # 详见 openspec/changes/docs-harness-consolidation/design.md §1。
 # WSL bash 可跑。退出码：0 过；1 有失败（仅 verify 会非零）。
@@ -32,6 +36,40 @@ changed_files() {
 	git -c core.quotepath=false diff --cached --name-only 2>/dev/null
 	# 未跟踪新文件
 	git -c core.quotepath=false ls-files --others --exclude-standard 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# 归属轨取数（coordinate-concurrent-changes）：事实库该 change 最新一条 edit.map
+#   的 paths（一行一路径）。只读连接（mode=ro）；sqlite3 缺失/库不存在/查询失败/
+#   无记录 → 空串（调用方回退全树，fail-open 语义）。
+#   注：只认最新一条快照（quality-gate 落库侧并集，取最新 = 完整集合）。
+# ---------------------------------------------------------------------------
+ownership_paths() {
+	local change_name="$1" root db
+	root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+	db="$root/.pi/harness/events.db"
+	command -v sqlite3 >/dev/null 2>&1 || return 0
+	[ -f "$db" ] || return 0
+	sqlite3 "$db" -readonly "SELECT DISTINCT json_each.value
+		FROM events AS e, json_each(e.payload, '$.paths')
+		WHERE e.kind = 'edit.map' AND e.change = '${change_name//\'/\'\'}'
+		  AND e.id = (SELECT MAX(id) FROM events
+		              WHERE kind = 'edit.map' AND change = '${change_name//\'/\'\'}')" 2>/dev/null | head -2000 || true
+}
+
+# ---------------------------------------------------------------------------
+# 黑名单（fix-doc-impact-misattribution）：工具自管文件 + 仓库级共享文档。
+# 启发式输入（verify 两轨 / suggest 全树）统一过滤——被剔除路径不触发“疑似遗漏”
+# 与“声明 none 但命中”；checkbox 显式声明的对账不受影响（以 git 全树为准）。
+# 与 lib/edit-map.ts 采集侧 isToolManagedPath 镜像（共享文档仅在消费侧剔除，
+# 保留在归属地图供并发冲突感知），smoke 同 fixture 断言两侧一致（防漂移）。
+# ---------------------------------------------------------------------------
+filter_blacklist() {
+	grep -vE \
+		-e '^openspec/changes/archive/' \
+		-e '^openspec/changes/[^/]+/\.openspec\.yaml$' \
+		-e '^(AGENTS\.md|front/AGENTS\.md|backend-go/AGENTS\.md|docs/reference/constraints-index\.md)$' \
+		|| true
 }
 
 # ---------------------------------------------------------------------------
@@ -65,7 +103,10 @@ heuristic_hit() {
 			echo "$files" | grep -E '^docs/reference/standard/'
 		;;
 	configuration)
-		echo "$files" | grep -E 'config.*\.ya?ml' ||
+		# openspec/ 前缀排除（fix-doc-impact-misattribution D3）：openspec CLI 自管
+		# 的 yaml 元数据（如 configure-*/.openspec.yaml 路径含 “configure” 字样）
+		# 不属于配置变更；真实配置文件命中面不变。
+		echo "$files" | grep -vE '^openspec/' | grep -E 'config.*\.ya?ml' ||
 			echo "$files" | grep -E 'backend-go/internal/platform/config/'
 		;;
 	deployment)
@@ -101,7 +142,7 @@ cmd_suggest() {
 	[ "${1:-}" = "--base" ] && base="${2:-HEAD}"
 	echo "文档域预勾选（--base $base）："
 	local declared="" files
-	files="$(changed_files "$base" | sort -u)"
+	files="$(changed_files "$base" | sort -u | filter_blacklist)"
 	for domain in flow api database architecture standard configuration deployment; do
 		local hit
 		hit="$(heuristic_hit "$domain" "$files")"
@@ -191,18 +232,45 @@ cmd_verify() {
 	local changed
 	changed="$(changed_files "$base" | sort -u)"
 
-	# --- 规则 4：声明 none 但启发式命中（同样吃豁免：多 change 并行时其他 change 的脏文件会误报） ---
+	# --- 双轨输入（coordinate-concurrent-changes）：反向启发式优先用 edit.map 归属集合 ---
+	# 归属轨：事实库该 change 最新一条 edit.map 的 paths（一行一路径）；无记录/空集合/
+	# sqlite3 或库不可用 → 回退全树 $changed（冷启动兼容，现状行为）。规则 2/5（声明了
+	# 未更新/路径不存在）始终用全树 $changed（文档对账以 git 为准）。
+	local heuristic_input heuristic_track="fallback"
+	heuristic_input="$(ownership_paths "$(basename "$change_dir")")"
+	if [ -n "$(printf '%s' "$heuristic_input" | grep .)" ]; then
+		heuristic_track="ownership"
+	else
+		heuristic_input="$changed"
+	fi
+	# 黑名单统一过滤（两轨同源，fix-doc-impact-misattribution）：工具自管文件与仓库级
+	# 共享文档不参与域启发式（归属轨集合可能含存量污染条目，消费侧同步兑底）。
+	heuristic_input="$(printf '%s\n' "$heuristic_input" | filter_blacklist)"
+
+	# 启发式命中按轨道分级（fix-doc-impact-misattribution D4）：归属轨=会话真实编辑
+	# （证据强）→ FAIL；回退轨=无法归属的全树视角（证据弱，他人脏文件可能误入）→
+	# 仅 stderr 提示，不判 FAIL 不改退出码。规则 1/2/5 的 FAIL 语义不变。
+	report_heuristic_hit() {
+		# $1=domain $2=失败文案
+		if [ "$heuristic_track" = "ownership" ]; then
+			add_fail "$2"
+		else
+			echo "[提示] 无法归属: $1（全树回退仅提示，归属轨无记录）" >&2
+		fi
+	}
+
+	# --- 规则 4：声明 none 但启发式命中（同样吃豁免） ---
 	if echo "$declared_domains" | grep -qw none; then
 		for domain in flow api database architecture standard configuration deployment; do
-			if [ -n "$(heuristic_hit "$domain" "$changed")" ] && ! echo "$excused_domains" | grep -qw "$domain"; then
-				add_fail "声明 none 但启发式命中 $domain（若系其他 change 脏文件误报，加 doc-impact-excuse 豁免）"
+			if [ -n "$(heuristic_hit "$domain" "$heuristic_input")" ] && ! echo "$excused_domains" | grep -qw "$domain"; then
+				report_heuristic_hit "$domain" "声明 none 但启发式命中 $domain"
 			fi
 		done
 	else
 		# --- 规则 3：反向启发式命中未声明域 ---
 		for domain in flow api database architecture standard configuration deployment; do
-			if [ -n "$(heuristic_hit "$domain" "$changed")" ] && ! echo "$declared_domains" | grep -qw "$domain" && ! echo "$excused_domains" | grep -qw "$domain"; then
-				add_fail "疑似遗漏: 改了 ${domain} 相关代码未声明 $domain"
+			if [ -n "$(heuristic_hit "$domain" "$heuristic_input")" ] && ! echo "$declared_domains" | grep -qw "$domain" && ! echo "$excused_domains" | grep -qw "$domain"; then
+				report_heuristic_hit "$domain" "疑似遗漏: 改了 ${domain} 相关代码未声明 $domain"
 			fi
 		done
 	fi
@@ -236,7 +304,7 @@ cmd_verify() {
 		echo "verify: $change_dir — $v_fail FAIL" >&2
 		exit 1
 	fi
-	echo "verify: $change_dir — 通过（声明:${declared_domains} 文件:$(printf '%s\n' "$declared_files" | grep -c .) 个）"
+	echo "verify: $change_dir — 通过（声明:${declared_domains} 文件:$(printf '%s\n' "$declared_files" | grep -c .) 个 启发式:${heuristic_track}）"
 	exit 0
 }
 

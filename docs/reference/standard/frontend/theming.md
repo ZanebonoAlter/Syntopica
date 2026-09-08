@@ -27,11 +27,14 @@ editorial / magazine（杂志感），**禁止回退到蓝紫色 SaaS 视觉**�
 
 | 场景 | 组件 |
 |------|------|
-| 对话框 | `AppDialog` |
+| 页面骨架（reader/contained/workspace/split） | `AppPageShell` |
+| 对话框（尺寸档 sm/md/lg/xl，92vw 上限） | `AppDialog`（新代码用 `size`，旧 `width` 勿用） |
 | 按钮 | `AppButton` |
 | 开关 | `AppToggle` |
 | 输入框 | `AppInput` |
 | 区块标题 | `AppSectionHeader` |
+
+页面布局模式与弹窗尺寸档的完整契约（批准基线、双视口验收、例外登记）→ [layout.md](layout.md)。
 
 ## 图标
 

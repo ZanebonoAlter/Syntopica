@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -618,6 +619,44 @@ func TestParseAnalyzeOutput_EvidenceChainWebPage(t *testing.T) {
 		}
 		if ec.Quote == "" {
 			t.Fatalf("evidence_chain[%d] must carry a direct quote", i)
+		}
+	}
+}
+
+// ── 4.8 单泳道三段 prompt 哨兵：0 作者画像 / 无 board 调查 schema / 无证据配额 ──
+
+// TestTopicPrompts_NoAuthorProfileNoBoardSchema asserts the three single-lane
+// prompt constants (interpret / agent loop / analyze) stay free of retired
+// author-profile injection and board investigation schema (task 4.8 contracts
+// ①/③), and that the analyze prompt carries no evidence type-count quota.
+func TestTopicPrompts_NoAuthorProfileNoBoardSchema(t *testing.T) {
+	analyze := fmt.Sprintf(analyzePrompt, "event_chain", "测试视角", "event_chain", "测试视角")
+	agentLoop := fmt.Sprintf(agentLoopSystemPrompt, "测试视角", "工具列表", "脉络")
+	prompts := map[string]string{
+		"analyze":    analyze,
+		"interpret":  interpretPrompt,
+		"agent_loop": agentLoop,
+	}
+
+	for name, prompt := range prompts {
+		// 契约①：旧作者画像/方法论画像全局注入已退役，任何入口不得回流。
+		for _, bad := range []string{"作者画像", "方法论画像", "reference_role", "ReferenceRole"} {
+			if strings.Contains(prompt, bad) {
+				t.Errorf("%s prompt must not inject retired author profile, found %q", name, bad)
+			}
+		}
+		// 契约③：board 调查 schema 不进单泳道 prompt。
+		for _, bad := range []string{"hypotheses", "question_key", "parent_briefing_id"} {
+			if strings.Contains(prompt, bad) {
+				t.Errorf("%s prompt must not contain board investigation schema field %q", name, bad)
+			}
+		}
+	}
+
+	// 契约②：证据类型数量配额不得回流（含任何“固定数量”变体措辞）。
+	for _, bad := range []string{"≥3 类", "至少三类", "至少 3 类", "三类证据", "3 类证据", "证据多样性"} {
+		if strings.Contains(analyze, bad) {
+			t.Errorf("analyze prompt must not carry evidence type quota %q", bad)
 		}
 	}
 }

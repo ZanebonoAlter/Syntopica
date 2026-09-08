@@ -117,9 +117,10 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		err  error
 	}
 	type threadsResult struct {
-		clusterIdx int
-		data       []repository.Thread
-		err        error
+		clusterIdx   int
+		data         []repository.Thread
+		sectionTitle string
+		err          error
 	}
 
 	highlightsCh := make(chan highlightsResult, 1)
@@ -134,8 +135,8 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	// Call C×K: Threads per cluster
 	for i, cluster := range clusters {
 		go func(idx int, c repository.ClusterGroup) {
-			data, err := GenerateClusterThreads(ctx, c, tags)
-			threadsCh <- threadsResult{clusterIdx: idx, data: data, err: err}
+			data, sectionTitle, err := GenerateClusterThreads(ctx, c, tags)
+			threadsCh <- threadsResult{clusterIdx: idx, data: data, sectionTitle: sectionTitle, err: err}
 		}(i, cluster)
 	}
 
@@ -147,9 +148,13 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 
 	// Collect threads
 	threadsByCluster := make(map[int][]repository.Thread, len(clusters))
+	sectionTitleByCluster := make(map[int]string, len(clusters))
 	for i := 0; i < len(clusters); i++ {
 		tr := <-threadsCh
 		cluster := clusters[tr.clusterIdx]
+		// The LLM-authored daily section title survives even when threads fall
+		// back to synthesis (spec fallback chain level 1 takes precedence).
+		sectionTitleByCluster[tr.clusterIdx] = tr.sectionTitle
 		if tr.err != nil {
 			logging.Warnf("daily-report: threads failed for cluster %d: %v (falling back to tag-anchored synthesis)", tr.clusterIdx, tr.err)
 			threadsByCluster[tr.clusterIdx] = synthesizeFallbackThreads(cluster, filterTagsByIDs(tags, cluster.TagIDs))
@@ -253,12 +258,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 
 		breakdownJSON := buildQualityBreakdownJSON(tags, cluster.TagIDs)
 
-		clusterLabel := cluster.GroupName
-		if cluster.MatchedTopicID != nil {
-			if label, ok := topicLabelByID[*cluster.MatchedTopicID]; ok && label != "" {
-				clusterLabel = label
-			}
-		}
+		clusterLabel := resolveClusterLabel(sectionTitleByCluster[i], threadsByCluster[i], cluster, topicLabelByID)
 		sections = append(sections, repository.DailyReportSection{
 			ClusterIndex:     i,
 			ClusterLabel:     clusterLabel,
@@ -358,13 +358,17 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		appended := 0
 		var kwWatches []repository.BoardTopicWatch
 		sentenceCfg := LoadWatchSentenceConfig(repository.Repo.DB())
-		embedRouter := airouter.NewRouter()
+		// Adjudication config (watch-materialize-llm-adjudication): one shared
+		// load serves both materialized tracks; the router provides Embed for
+		// the sentence retrieval and Chat for the adjudication calls.
+		matCfg := LoadWatchMaterializeConfig(repository.Repo.DB())
+		router := airouter.NewRouter()
 		for _, w := range matWatches {
 			switch w.Type {
 			case repository.WatchTypeKeywordTopic:
 				kwWatches = append(kwWatches, w)
 			case repository.WatchTypeSentenceTopic:
-				sec, threads, sErr := MaterializeSentenceWatch(ctx, w, date, sentenceCfg, embedRouter.Embed)
+				sec, threads, sErr := MaterializeSentenceWatch(ctx, w, date, sentenceCfg, matCfg, router.Embed, router.Chat)
 				if sErr != nil {
 					logging.Warnf("daily-report: sentence materialization failed for watch %d (skipped): %v", w.ID, sErr)
 					continue
@@ -379,7 +383,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			}
 		}
 		if len(kwWatches) > 0 {
-			kwSections, kwBatches, kErr := MaterializeKeywordWatches(ctx, boardID, kwWatches, nextIdx+appended)
+			kwSections, kwBatches, kErr := MaterializeKeywordWatches(ctx, boardID, kwWatches, nextIdx+appended, matCfg, router.Chat)
 			if kErr != nil {
 				logging.Warnf("daily-report: keyword materialization failed for board %d (skipped): %v", boardID, kErr)
 			} else {
@@ -657,6 +661,38 @@ func filterTagsByQuality(tags []repository.TagInput) []repository.TagInput {
 
 	return kept
 }
+
+// resolveClusterLabel picks the section's display title via the fallback
+// chain (spec: section 展示标题内容化): 1) LLM-authored daily section_title,
+// 2) first thread title, 3) matched topic label (legacy behavior, bottom
+// safety net), 4) the lane group name (L3 naming). The topic label is an
+// anchor/fallback signal only — never the default display title. The winner
+// is rune-truncated to the cluster_label column budget (gorm size:200).
+func resolveClusterLabel(sectionTitle string, threads []repository.Thread, cluster repository.ClusterGroup, topicLabelByID map[uint]string) string {
+	label := cluster.GroupName
+	if t := strings.TrimSpace(sectionTitle); t != "" {
+		label = t
+	} else {
+		fromThread := false
+		for _, th := range threads {
+			if t := strings.TrimSpace(th.Title); t != "" {
+				label = t
+				fromThread = true
+				break
+			}
+		}
+		if !fromThread && cluster.MatchedTopicID != nil {
+			if topicLabel, ok := topicLabelByID[*cluster.MatchedTopicID]; ok && topicLabel != "" {
+				label = topicLabel
+			}
+		}
+	}
+	if r := []rune(label); len(r) > 200 {
+		label = string(r[:200])
+	}
+	return label
+}
+
 func filterTagsByIDs(tags []repository.TagInput, ids []uint) []repository.TagInput {
 	idSet := make(map[uint]bool, len(ids))
 	for _, id := range ids {

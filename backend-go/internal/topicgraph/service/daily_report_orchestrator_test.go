@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -177,4 +178,49 @@ func TestBuildQualityBreakdownJSON_MergedSections(t *testing.T) {
 	}
 	// All four merged tag IDs are present (union, no drops).
 	assert.True(t, seenIDs[1] && seenIDs[2] && seenIDs[3] && seenIDs[4])
+}
+
+// ---- section display title decouple (spec: section 展示标题内容化) ----
+
+// TestResolveClusterLabel_FallbackChain walks the whole fallback chain
+// (spec Scenario 标题生成失败时降级兜底 + white-box branch table B1..B4):
+// LLM daily title → first thread title → matched topic label → group name.
+func TestResolveClusterLabel_FallbackChain(t *testing.T) {
+	topicID := uint(935)
+	labels := map[uint]string{topicID: "日本首相高市早苗宣布不于7月释放石油储备"}
+	cluster := repository.ClusterGroup{GroupName: "L3分组名", MatchedTopicID: &topicID}
+
+	// B1: LLM daily title wins even when a topic is matched (Scenario 命中既有话题的 section 标题反映当天内容).
+	assert.Equal(t, "高市执政基础不稳引发党内反弹担忧",
+		resolveClusterLabel("高市执政基础不稳引发党内反弹担忧", nil, cluster, labels))
+
+	// B1 with only whitespace degrades to B2 (variant V4).
+	assert.Equal(t, "首条叙事线标题",
+		resolveClusterLabel("   ", []repository.Thread{{Title: "首条叙事线标题"}}, cluster, labels))
+
+	// B2: missing section_title falls to the first non-blank thread title.
+	assert.Equal(t, "首条叙事线标题",
+		resolveClusterLabel("", []repository.Thread{{Title: "首条叙事线标题"}, {Title: "第二条"}}, cluster, labels))
+
+	// B3: empty threads + matched topic → legacy topic-label safety net (Scenario 标题生成失败时降级兜底).
+	assert.Equal(t, "日本首相高市早苗宣布不于7月释放石油储备",
+		resolveClusterLabel("", nil, cluster, labels))
+
+	// B4: no title, no threads, no topic label → group name (Scenario L3 新话题标题行为不变).
+	noTopic := repository.ClusterGroup{GroupName: "L3分组名"}
+	assert.Equal(t, "L3分组名", resolveClusterLabel("", nil, noTopic, labels))
+
+	// B4 edge: matched topic missing from the label map → group name.
+	assert.Equal(t, "L3分组名", resolveClusterLabel("", nil, cluster, map[uint]string{}))
+}
+
+// TestResolveClusterLabel_LongTitleStaysWithinColumnLimit guards variant V5:
+// the label column is gorm size:200, so a runaway LLM title must be
+// rune-truncated before persisting.
+func TestResolveClusterLabel_LongTitleStaysWithinColumnLimit(t *testing.T) {
+	long := strings.Repeat("超", 600)
+	got := resolveClusterLabel(long, nil, repository.ClusterGroup{GroupName: "g"}, nil)
+	if l := len([]rune(got)); l != 200 {
+		t.Errorf("resolved label length %d runes, want exactly 200 (column budget)", l)
+	}
 }

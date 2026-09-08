@@ -13,7 +13,6 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
-	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service/auxlabel"
 	"syntopica-backend/internal/tagmanagement/service/core"
@@ -38,11 +37,67 @@ type SemanticBoardUpgradeConfig struct {
 	CoTagDedupeSimThreshold  float64
 	CoTagHardLimit           int
 	ClusterMethod            string
-	Mode                     string
-	// MergeConfidenceMargin is the per-signature margin gate for high-confidence
-	// merge bypass (§4.3): both composition and lane top1-top2 distance gaps must
-	// be ≥ this for the LLM to be skipped. Default 0.05, ai_settings-configurable.
-	MergeConfidenceMargin float64
+	// CompositeCoTagMinCooccurrence is the minimum number of co-occurring
+	// articles (same-article aux pair/triple) for a compose candidate
+	// (ai_settings semantic_board_upgrade_composite_min_cooccurrence, default 10).
+	CompositeCoTagMinCooccurrence int
+	// ExpandSimDistance is the cosine-distance threshold for the expand
+	// direction's similarity recall path (design D3, ai_settings
+	// semantic_board_expand_sim_distance, default 0.35).
+	ExpandSimDistance float64
+	// ExpandCooccurrence is the minimum same-article co-occurrence count with
+	// the target board composition for the expand recall co-occurrence path
+	// (design D3, ai_settings semantic_board_expand_cooccurrence, default 3).
+	ExpandCooccurrence int
+}
+
+// 升级建议生成请求：方向 × 来源四格矩阵（design D1）。
+// Direction ∈ {create, expand}；Source ∈ {aux, composite}；
+// TargetBoardID 在 expand 方向必填（生成前锁定单版块），create 方向必须为 0；
+// Days 仅 create×aux 生效（候选时间窗，0 = 不过滤）。
+type UpgradeGenerateRequest struct {
+	Direction     string
+	Source        string
+	TargetBoardID uint
+	Days          int
+}
+
+const (
+	UpgradeDirectionCreate = "create"
+	UpgradeDirectionExpand = "expand"
+	UpgradeSourceAux       = "aux"
+	UpgradeSourceComposite = "composite"
+	// UpgradeBoardListLimit caps the active-board list injected into the
+	// create×aux prompt (token guard, design D2).
+	UpgradeBoardListLimit = 60
+)
+
+// ModeKey 是 suggestion_hash 的 mode 维度值（design D5：direction:source）。
+func (r UpgradeGenerateRequest) ModeKey() string {
+	return r.Direction + ":" + r.Source
+}
+
+func (r UpgradeGenerateRequest) Validate() error {
+	switch r.Direction {
+	case UpgradeDirectionCreate, UpgradeDirectionExpand:
+	default:
+		return fmt.Errorf("invalid direction %q (expect create|expand)", r.Direction)
+	}
+	switch r.Source {
+	case UpgradeSourceAux, UpgradeSourceComposite:
+	default:
+		return fmt.Errorf("invalid source %q (expect aux|composite)", r.Source)
+	}
+	if r.Direction == UpgradeDirectionExpand && r.TargetBoardID == 0 {
+		return fmt.Errorf("target_board_id is required for expand direction")
+	}
+	if r.Direction == UpgradeDirectionCreate && r.TargetBoardID != 0 {
+		return fmt.Errorf("target_board_id must not be set for create direction")
+	}
+	if r.Days < 0 {
+		return fmt.Errorf("days must be >= 0")
+	}
+	return nil
 }
 
 type SemanticBoardUpgradeCandidate struct {
@@ -53,44 +108,11 @@ type SemanticBoardUpgradeCandidate struct {
 	Embedding []float64
 }
 
-type BoardAffinity struct {
-	BoardID            uint
-	BoardLabel         string
-	BoardDescription   string
-	MatchingCandidates int
-	AvgDistance        float64
-}
-
 type SemanticBoardUpgradeCluster struct {
-	Candidates      []SemanticBoardUpgradeCandidate
-	Centroid        []float64
-	BoardAffinities []BoardAffinity
-	Shortlist       []ShortlistEntry
-	Events          []SemanticBoardUpgradeEventContext
-	origIdx         int // internal: tracks Pass 1 cluster index during reassignment
-}
-
-// ShortlistEntry is one candidate board in a cluster's shortlist, carrying the
-// per-signature distances and ranks (spec: 双签名 shortlist). CompositionDistance
-// is always set for a composition-signature board; LaneDistance is nil when the
-// board has no active topic section in the 30-day window (lane N/A → composition
-// only). RecentSections carries ≤5 recent section titles for prompt injection
-// (spec: 泳道内容证据注入).
-type ShortlistEntry struct {
-	BoardID             uint
-	BoardLabel          string
-	BoardDescription    string
-	CompositionDistance float64
-	CompositionRank     int // 1-based within composition signature; 0 if absent
-	LaneDistance        *float64
-	LaneRank            int // 1-based within lane signature; 0 if absent
-	RecentSections      []LaneBrief
-}
-
-// LaneBrief is a recent section title for a board's active topic (lane evidence).
-type LaneBrief struct {
-	SectionID    uint
-	SectionLabel string
+	Candidates []SemanticBoardUpgradeCandidate
+	Centroid   []float64
+	Events     []SemanticBoardUpgradeEventContext
+	origIdx    int // internal: tracks Pass 1 cluster index during reassignment
 }
 
 type SemanticBoardUpgradeEventContext struct {
@@ -138,15 +160,9 @@ type ConfirmSemanticBoardUpgradeRequest struct {
 type ConfirmSemanticBoardUpgradeResult struct {
 	SemanticBoardID   uint
 	AuxiliaryLabelIDs []uint
-}
-
-type semanticBoardContext struct {
-	BoardID          uint
-	BoardLabel       string
-	BoardDescription string
-	AuxiliaryLabelID uint
-	AuxiliaryLabel   string
-	Embedding        []float64
+	// CompositeLabelID is set for decision=compose confirms: the created (or
+	// dedupe-reused) composite label id.
+	CompositeLabelID *uint
 }
 
 func NewSemanticBoardUpgradeService(db *gorm.DB, llm SemanticBoardUpgradeLLM, embedder auxlabel.AuxiliaryLabelEmbedder) *SemanticBoardUpgradeService {
@@ -156,22 +172,41 @@ func NewSemanticBoardUpgradeService(db *gorm.DB, llm SemanticBoardUpgradeLLM, em
 	return &SemanticBoardUpgradeService{db: db, llm: llm, embedder: embedder, suggestionRepo: repository.NewBoardUpgradeSuggestionRepository(db)}
 }
 
-func (s *SemanticBoardUpgradeService) GenerateSuggestions(ctx context.Context, mode string) ([]SemanticBoardUpgradeSuggestion, []SemanticBoardUpgradeCluster, error) {
+func (s *SemanticBoardUpgradeService) GenerateSuggestions(ctx context.Context, req UpgradeGenerateRequest) ([]SemanticBoardUpgradeSuggestion, []SemanticBoardUpgradeCluster, error) {
 	if s.llm == nil {
 		return nil, nil, fmt.Errorf("semantic board upgrade llm is required")
 	}
+	if err := req.Validate(); err != nil {
+		return nil, nil, err
+	}
 	config := s.LoadUpgradeConfig(ctx)
-	if mode != "" {
-		config.Mode = mode
+	switch {
+	case req.Direction == UpgradeDirectionCreate && req.Source == UpgradeSourceAux:
+		return s.generateCreateAux(ctx, config, req)
+	case req.Direction == UpgradeDirectionCreate && req.Source == UpgradeSourceComposite:
+		suggestions, err := s.generateComposeSuggestions(ctx, config)
+		if err != nil {
+			return nil, nil, err
+		}
+		return suggestions, nil, nil
+	case req.Direction == UpgradeDirectionExpand:
+		return s.generateExpandSuggestions(ctx, config, req)
 	}
-	if config.Mode == "" {
-		config.Mode = "discover_new"
-	}
-	candidates, err := s.CollectCandidates(ctx, config)
+	return nil, nil, fmt.Errorf("unsupported generation request")
+}
+
+// generateCreateAux 是创建×单标签管线（design D2 瘦身版）：收集未挂载候选 →
+// 纯自聚类 → co-tag 事件上下文 → 全量活跃版块清单防重 → LLM 单决策空间 {create_new|skip}。
+// 单例簇（size=1）不产建议（watch 观察池已退役，spec: 升级建议生成路径单一化）；
+// 全部建议都经 LLM 裁决（高置信自动合成已退役，无合成旁路）；skip 不落库不返回。
+func (s *SemanticBoardUpgradeService) generateCreateAux(ctx context.Context, config SemanticBoardUpgradeConfig, req UpgradeGenerateRequest) ([]SemanticBoardUpgradeSuggestion, []SemanticBoardUpgradeCluster, error) {
+	candidates, err := s.CollectCandidates(ctx, config, req.Days)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(candidates) < config.RefCountThreshold {
+		// 冷启动：候选不足不产 create 建议（组合候选走独立入口 source=composite，
+		// 与旧单入口混跑时代的「冷启动自动补 compose 段」行为解耦）。
 		return []SemanticBoardUpgradeSuggestion{}, []SemanticBoardUpgradeCluster{}, nil
 	}
 	clusters, err := s.ClusterCandidates(ctx, candidates, config)
@@ -183,50 +218,31 @@ func (s *SemanticBoardUpgradeService) GenerateSuggestions(ctx context.Context, m
 		if err != nil {
 			return nil, nil, err
 		}
-		clusters[i].Shortlist, err = s.computeShortlist(ctx, clusters[i])
-		if err != nil {
-			return nil, nil, err
-		}
 	}
 
 	validAuxiliaryIDs := map[uint]struct{}{}
 	for _, candidate := range candidates {
 		validAuxiliaryIDs[candidate.ID] = struct{}{}
 	}
-	shortlistByAux := buildShortlistByAux(clusters)
+	boards, err := s.loadActiveBoards(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 
-	// §4.3/§4.5: partition clusters. Singleton clusters (size 1) go to the
-	// observation pool (decision=watch, no LLM). Of the rest, high-confidence
-	// dual-signature agreement synthesizes a merge (confidence=high, no LLM); the
-	// remainder are LLM-adjudicated (confidence=llm).
-	var suggestions []SemanticBoardUpgradeSuggestion
 	var llmClusters []SemanticBoardUpgradeCluster
 	for i := range clusters {
 		if len(clusters[i].Candidates) == 1 {
-			suggestions = append(suggestions, synthesizeWatchSuggestion(clusters[i]))
-			continue
-		}
-		if boardID, ok := highConfidenceMergeBoard(clusters[i].Shortlist, config.MergeConfidenceMargin); ok {
-			suggestions = append(suggestions, synthesizeHighConfidenceMerge(clusters[i], boardID))
-			continue
+			continue // 单例簇不产建议：等待未来成簇后参与（观察池退役）
 		}
 		llmClusters = append(llmClusters, clusters[i])
 	}
-
+	var suggestions []SemanticBoardUpgradeSuggestion
 	if len(llmClusters) > 0 {
-		raw, err := s.llm.SuggestSemanticBoardUpgrades(ctx, buildSemanticBoardUpgradePrompt(llmClusters, config.Mode), config.Mode)
+		raw, err := s.llm.SuggestSemanticBoardUpgrades(ctx, buildCreateAuxPrompt(llmClusters, boards), "create:aux")
 		if err != nil {
 			return nil, nil, err
 		}
-		filtered := filterSemanticBoardUpgradeSuggestions(raw, validAuxiliaryIDs)
-		for _, sug := range validateMergeTargets(filtered, shortlistByAux) {
-			// LLM 偶尔返回 merge 但缺 target_board_id（只给 board_label），落库后确认时报
-			// "target board id is required" 400。降级为 create_new（LLM 给了 board_label，
-			// 视作新建意图；target_off_shortlist 标注保留在 evidence 作审计）。
-			if sug.Decision == SemanticBoardUpgradeDecisionMergeIntoExisting && (sug.TargetBoardID == nil || *sug.TargetBoardID == 0) {
-				sug.Decision = SemanticBoardUpgradeDecisionCreateNew
-				sug.TargetBoardID = nil
-			}
+		for _, sug := range filterSemanticBoardUpgradeSuggestions(raw, validAuxiliaryIDs) {
 			if sug.Confidence == "" {
 				sug.Confidence = "llm"
 			}
@@ -234,6 +250,108 @@ func (s *SemanticBoardUpgradeService) GenerateSuggestions(ctx context.Context, m
 		}
 	}
 	return suggestions, clusters, nil
+}
+
+// activeBoardBrief is one active board for the create×aux prompt board list.
+type activeBoardBrief struct {
+	BoardID          uint
+	BoardLabel       string
+	BoardDescription string
+	Embedding        []float64
+}
+
+// loadActiveBoards returns all active boards with embeddings. Injected into
+// the create×aux prompt as the duplicate-guard board list（按簇质心相似度截
+// top-60，design D2）。
+func (s *SemanticBoardUpgradeService) loadActiveBoards(ctx context.Context) ([]activeBoardBrief, error) {
+	var labels []models.SemanticLabel
+	if err := s.db.WithContext(ctx).
+		Where("label_type = ? AND status = ? AND embedding IS NOT NULL", "board", "active").
+		Order("id ASC").
+		Find(&labels).Error; err != nil {
+		return nil, err
+	}
+	boards := make([]activeBoardBrief, 0, len(labels))
+	for _, label := range labels {
+		vector, err := auxlabel.ParsePgVector(*label.Embedding)
+		if err != nil {
+			continue
+		}
+		boards = append(boards, activeBoardBrief{BoardID: label.ID, BoardLabel: label.Label, BoardDescription: label.Description, Embedding: vector})
+	}
+	return boards, nil
+}
+
+// generateComposeSuggestions runs the compose candidate pipeline: collect
+// co-occurrence pairs/triples, adjudicate via LLM (mode "compose"), and return
+// valid compose suggestions (skip decisions are dropped here — they are never
+// persisted).
+func (s *SemanticBoardUpgradeService) generateComposeSuggestions(ctx context.Context, config SemanticBoardUpgradeConfig) ([]SemanticBoardUpgradeSuggestion, error) {
+	candidates, err := s.collectComposeCandidates(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	// 排除已存在组合（防重复建议：确认创建过的组合不再入候选）。
+	candidates, err = s.filterExistingComposeCandidates(ctx, candidates, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	componentIDs := make([]uint, 0)
+	for _, candidate := range candidates {
+		componentIDs = append(componentIDs, candidate.ComponentIDs...)
+	}
+	labels, err := s.loadComponentLabels(ctx, UniqueUintSlice(componentIDs))
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.llm.SuggestSemanticBoardUpgrades(ctx, buildComposeCandidatesPrompt(candidates, labels), "create:composite")
+	if err != nil {
+		return nil, err
+	}
+	componentUniverse := make(map[uint]struct{}, len(labels))
+	for id := range labels {
+		componentUniverse[id] = struct{}{}
+	}
+	filtered := filterComposeSuggestions(raw, componentUniverse)
+	// Enrich evidence with the candidate's co-occurrence stats for the
+	// suggestion card (spec: 共现证据——频次+窗口+代表事件标题).
+	candidateByComponents := make(map[string]ComposeCandidate, len(candidates))
+	for _, candidate := range candidates {
+		candidateByComponents[composeComponentKey(candidate.ComponentIDs)] = candidate
+	}
+	for i := range filtered {
+		if filtered[i].Confidence == "" {
+			filtered[i].Confidence = "llm"
+		}
+		filtered[i].Evidence = map[string]any{
+			"source":                        "compose",
+			"compose_window_days":           config.CoTagWindowDays,
+			"compose_representative_titles": representativeTitlesOf(candidateByComponents, filtered[i].AuxiliaryLabelIDs),
+		}
+		if candidate, ok := candidateByComponents[composeComponentKey(filtered[i].AuxiliaryLabelIDs)]; ok {
+			filtered[i].Evidence["compose_cooccurrence"] = candidate.Cooccurrence
+		}
+	}
+	return filtered, nil
+}
+
+func composeComponentKey(ids []uint) string {
+	sorted := UniqueUintSlice(ids)
+	parts := make([]string, 0, len(sorted))
+	for _, id := range sorted {
+		parts = append(parts, strconv.FormatUint(uint64(id), 10))
+	}
+	return strings.Join(parts, ",")
+}
+
+func representativeTitlesOf(candidates map[string]ComposeCandidate, ids []uint) []string {
+	if candidate, ok := candidates[composeComponentKey(ids)]; ok {
+		return candidate.RepresentativeTitles
+	}
+	return nil
 }
 
 func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req ConfirmSemanticBoardUpgradeRequest) (*ConfirmSemanticBoardUpgradeResult, error) {
@@ -299,16 +417,56 @@ func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req
 				return fmt.Errorf("active target board not found")
 			}
 			boardID = *req.TargetBoardID
+		case SemanticBoardUpgradeDecisionCompose:
+			// 组件已由上方 FilterActiveAuxiliaryLabels 软过滤为 active。同一事务内
+			// 创建组合标签（含 L1/L2 去重复用路径）；扩充方向（建议携带 target）
+			// 同一事务内将组合标签挂载进目标版块的 board_composition（spec: compose
+			// 建议确认执行——挂载失败整体回滚）；embedder 失败等任何错误回滚，
+			// 建议保持 pending。
+			if len(auxiliaryIDs) < auxlabel.CompositeMinComponents || len(auxiliaryIDs) > auxlabel.CompositeMaxComponents {
+				return fmt.Errorf("组合建议需要 %d-%d 个组件，当前 %d 个", auxlabel.CompositeMinComponents, auxlabel.CompositeMaxComponents, len(auxiliaryIDs))
+			}
+			label := strings.TrimSpace(req.BoardLabel)
+			if label == "" {
+				return fmt.Errorf("composite label is required")
+			}
+			var composeTargetBoard uint
+			if req.TargetBoardID != nil && *req.TargetBoardID != 0 {
+				// 扩充方向：目标版块须仍为活跃 board（生成后可能被禁用，spec:
+				// 目标版块被禁用后确认失败）。
+				var count int64
+				if err := tx.Model(&models.SemanticLabel{}).Where("id = ? AND label_type = ? AND status = ?", *req.TargetBoardID, "board", "active").Count(&count).Error; err != nil {
+					return err
+				}
+				if count == 0 {
+					return fmt.Errorf("active target board not found")
+				}
+				composeTargetBoard = *req.TargetBoardID
+			}
+			compositeService := auxlabel.NewCompositeLabelService(tx, s.embedder)
+			createResult, createErr := compositeService.CreateCompositeLabel(ctx, label, req.Description, auxiliaryIDs, "upgrade_suggest")
+			if createErr != nil {
+				return createErr
+			}
+			result.CompositeLabelID = &createResult.Label.ID
+			boardID = 0 // compose creates a composite label, not a board
+			if composeTargetBoard != 0 {
+				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&models.BoardComposition{BoardID: composeTargetBoard, AuxiliaryLabelID: createResult.Label.ID}).Error; err != nil {
+					return fmt.Errorf("mount composite to board %d: %w", composeTargetBoard, err)
+				}
+			}
 		default:
 			return fmt.Errorf("unsupported decision: %s", req.Decision)
 		}
 
-		rows := make([]models.BoardComposition, 0, len(auxiliaryIDs))
-		for _, auxiliaryID := range auxiliaryIDs {
-			rows = append(rows, models.BoardComposition{BoardID: boardID, AuxiliaryLabelID: auxiliaryID})
-		}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
-			return err
+		if req.Decision != SemanticBoardUpgradeDecisionCompose {
+			rows := make([]models.BoardComposition, 0, len(auxiliaryIDs))
+			for _, auxiliaryID := range auxiliaryIDs {
+				rows = append(rows, models.BoardComposition{BoardID: boardID, AuxiliaryLabelID: auxiliaryID})
+			}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
+				return err
+			}
 		}
 		// Link the confirm to a pending suggestion inside the same transaction: a
 		// board_composition write failure above already returned, and any error
@@ -318,7 +476,7 @@ func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req
 				return err
 			}
 		}
-		result = ConfirmSemanticBoardUpgradeResult{SemanticBoardID: boardID, AuxiliaryLabelIDs: auxiliaryIDs}
+		result = ConfirmSemanticBoardUpgradeResult{SemanticBoardID: boardID, AuxiliaryLabelIDs: auxiliaryIDs, CompositeLabelID: result.CompositeLabelID}
 		return nil
 	})
 	if err != nil {
@@ -328,27 +486,24 @@ func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req
 	return &result, nil
 }
 
-func (s *SemanticBoardUpgradeService) CollectCandidates(ctx context.Context, config SemanticBoardUpgradeConfig) ([]SemanticBoardUpgradeCandidate, error) {
+// CollectCandidates 收集未挂载的 active 辅助标签候选（创建×单标签路入口）。
+// days > 0 时按文章活动时间双重过滤（upgrade-candidate-time-window 契约：
+// 仅收集最近 N 天文章中出现的候选）；days = 0 不过滤。
+func (s *SemanticBoardUpgradeService) CollectCandidates(ctx context.Context, config SemanticBoardUpgradeConfig, days int) ([]SemanticBoardUpgradeCandidate, error) {
 	var labels []models.SemanticLabel
-
-	if config.Mode == "expand_existing" {
-		err := s.db.WithContext(ctx).
-			Where("label_type = ? AND status = ? AND ref_count >= ? AND embedding IS NOT NULL", "auxiliary", "active", config.RefCountThreshold).
-			Where("EXISTS (SELECT 1 FROM board_composition WHERE board_composition.auxiliary_label_id = semantic_labels.id)").
-			Order("id ASC").
-			Find(&labels).Error
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		err := s.db.WithContext(ctx).
-			Where("label_type = ? AND status = ? AND ref_count >= ? AND embedding IS NOT NULL", "auxiliary", "active", config.RefCountThreshold).
-			Where("NOT EXISTS (SELECT 1 FROM board_composition WHERE board_composition.auxiliary_label_id = semantic_labels.id)").
-			Order("id ASC").
-			Find(&labels).Error
-		if err != nil {
-			return nil, err
-		}
+	query := s.db.WithContext(ctx).
+		Where("label_type = ? AND status = ? AND ref_count >= ? AND embedding IS NOT NULL", "auxiliary", "active", config.RefCountThreshold).
+		Where("NOT EXISTS (SELECT 1 FROM board_composition WHERE board_composition.auxiliary_label_id = semantic_labels.id)")
+	if days > 0 {
+		cutoff := time.Now().AddDate(0, 0, -days)
+		query = query.Where(
+			`EXISTS (SELECT 1 FROM article_topic_tags att
+				JOIN topic_tag_semantic_labels ttsl ON ttsl.topic_tag_id = att.topic_tag_id
+				JOIN articles a ON a.id = att.article_id
+				WHERE ttsl.semantic_label_id = semantic_labels.id AND a.created_at >= ?)`, cutoff)
+	}
+	if err := query.Order("id ASC").Find(&labels).Error; err != nil {
+		return nil, err
 	}
 
 	candidates := make([]SemanticBoardUpgradeCandidate, 0, len(labels))
@@ -363,90 +518,10 @@ func (s *SemanticBoardUpgradeService) CollectCandidates(ctx context.Context, con
 }
 
 func (s *SemanticBoardUpgradeService) ClusterCandidates(ctx context.Context, candidates []SemanticBoardUpgradeCandidate, config SemanticBoardUpgradeConfig) ([]SemanticBoardUpgradeCluster, error) {
-	boardContexts, err := s.loadExistingBoardContexts(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var clusters []SemanticBoardUpgradeCluster
 	if config.ClusterMethod == "average_link" {
-		clusters = clusterAverageLink(candidates, config.ClusterDistanceThreshold)
-	} else {
-		clusters = clusterCentroid(candidates, config.ClusterDistanceThreshold)
+		return clusterAverageLink(candidates, config.ClusterDistanceThreshold), nil
 	}
-
-	// Compute board affinities for each cluster
-	if len(boardContexts) > 0 {
-		boardContextsByBoard := make(map[uint][]semanticBoardContext)
-		for _, bc := range boardContexts {
-			boardContextsByBoard[bc.BoardID] = append(boardContextsByBoard[bc.BoardID], bc)
-		}
-		for i := range clusters {
-			var affinities []BoardAffinity
-			for boardID, contexts := range boardContextsByBoard {
-				matchingCount := 0
-				totalMinDist := 0.0
-				for _, candidate := range clusters[i].Candidates {
-					minDist := -1.0
-					for _, bc := range contexts {
-						dist := semanticBoardUpgradeDistance(candidate.Embedding, bc.Embedding)
-						if minDist < 0 || dist < minDist {
-							minDist = dist
-						}
-					}
-					if minDist >= 0 && minDist <= config.ClusterDistanceThreshold {
-						matchingCount++
-						totalMinDist += minDist
-					}
-				}
-				if matchingCount > 0 {
-					affinities = append(affinities, BoardAffinity{
-						BoardID:            boardID,
-						BoardLabel:         contexts[0].BoardLabel,
-						BoardDescription:   contexts[0].BoardDescription,
-						MatchingCandidates: matchingCount,
-						AvgDistance:        totalMinDist / float64(matchingCount),
-					})
-				}
-			}
-			sort.Slice(affinities, func(a, b int) bool {
-				return affinities[a].AvgDistance < affinities[b].AvgDistance
-			})
-			clusters[i].BoardAffinities = affinities
-		}
-	}
-
-	return clusters, nil
-}
-
-func (s *SemanticBoardUpgradeService) loadExistingBoardContexts(ctx context.Context) ([]semanticBoardContext, error) {
-	var rows []struct {
-		BoardID          uint
-		BoardLabel       string
-		BoardDescription string
-		AuxiliaryLabelID uint
-		AuxiliaryLabel   string
-		Embedding        *string
-	}
-	err := s.db.WithContext(ctx).
-		Table("board_composition").
-		Select("board_composition.board_id, board.label AS board_label, board.description AS board_description, board_composition.auxiliary_label_id, auxiliary.label AS auxiliary_label, auxiliary.embedding").
-		Joins("JOIN semantic_labels AS board ON board.id = board_composition.board_id AND board.label_type = ? AND board.status = ?", "board", "active").
-		Joins("JOIN semantic_labels AS auxiliary ON auxiliary.id = board_composition.auxiliary_label_id AND auxiliary.label_type = ? AND auxiliary.status = ? AND auxiliary.embedding IS NOT NULL", "auxiliary", "active").
-		Order("board_composition.board_id ASC, board_composition.auxiliary_label_id ASC").
-		Scan(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	contexts := make([]semanticBoardContext, 0, len(rows))
-	for _, row := range rows {
-		vector, err := auxlabel.ParsePgVector(*row.Embedding)
-		if err != nil {
-			continue
-		}
-		contexts = append(contexts, semanticBoardContext{BoardID: row.BoardID, BoardLabel: row.BoardLabel, BoardDescription: row.BoardDescription, AuxiliaryLabelID: row.AuxiliaryLabelID, AuxiliaryLabel: row.AuxiliaryLabel, Embedding: vector})
-	}
-	return contexts, nil
+	return clusterCentroid(candidates, config.ClusterDistanceThreshold), nil
 }
 
 func (s *SemanticBoardUpgradeService) loadCoTagEventContext(ctx context.Context, cluster SemanticBoardUpgradeCluster, config SemanticBoardUpgradeConfig) ([]SemanticBoardUpgradeEventContext, error) {
@@ -522,13 +597,20 @@ func (s *SemanticBoardUpgradeService) loadCoTagEventContext(ctx context.Context,
 func (s *SemanticBoardUpgradeService) LoadUpgradeConfig(ctx context.Context) SemanticBoardUpgradeConfig {
 	config := SemanticBoardUpgradeConfig{
 		RefCountThreshold:        5,
-		ClusterDistanceThreshold: 0.35,
-		CoTagWindowDays:          30,
-		CoTagTopN:                20,
-		CoTagDedupeSimThreshold:  0.85,
-		CoTagHardLimit:           15,
-		ClusterMethod:            "average_link",
-		MergeConfidenceMargin:    0.05,
+		ClusterDistanceThreshold: 0.25,
+		// 调研修调（2026-09-07 报障追踪，scripts/research/candidate_freshness_probe.py）：
+		// 0.35 下人物类标签（如“默茨”）embedding 与国际政客桶均在阈值内，贪心
+		// average-link 传递混簇把干净主题簇（[选择党,基民盟]）稀释成大杂烩，LLM
+		// 全裁 skip；降至 0.25 后全部窗口下稳定产出干净小主题簇（代价：送 LLM
+		// 簇量 -15%~30%，拆掉的多为本来就被全裁 skip 的桶簇）。
+		CoTagWindowDays:               30,
+		CoTagTopN:                     20,
+		CoTagDedupeSimThreshold:       0.85,
+		CoTagHardLimit:                15,
+		ClusterMethod:                 "average_link",
+		CompositeCoTagMinCooccurrence: 10,
+		ExpandSimDistance:             0.35,
+		ExpandCooccurrence:            3,
 	}
 	var settings []models.AISettings
 	if err := s.db.WithContext(ctx).Where("key IN ?", []string{
@@ -539,7 +621,9 @@ func (s *SemanticBoardUpgradeService) LoadUpgradeConfig(ctx context.Context) Sem
 		"semantic_board_upgrade_cotag_dedupe_sim_threshold",
 		"semantic_board_upgrade_cotag_hard_limit",
 		"semantic_board_upgrade_cluster_method",
-		"semantic_board_upgrade_merge_confidence_margin",
+		"semantic_board_upgrade_composite_min_cooccurrence",
+		"semantic_board_expand_sim_distance",
+		"semantic_board_expand_cooccurrence",
 	}).Find(&settings).Error; err != nil {
 		return config
 	}
@@ -561,8 +645,12 @@ func (s *SemanticBoardUpgradeService) LoadUpgradeConfig(ctx context.Context) Sem
 			if v := strings.TrimSpace(setting.Value); v == "average_link" || v == "centroid" {
 				config.ClusterMethod = v
 			}
-		case "semantic_board_upgrade_merge_confidence_margin":
-			config.MergeConfidenceMargin = parseSemanticBoardUpgradeFloat(setting.Value, config.MergeConfidenceMargin)
+		case "semantic_board_upgrade_composite_min_cooccurrence":
+			config.CompositeCoTagMinCooccurrence = parseSemanticBoardUpgradeInt(setting.Value, config.CompositeCoTagMinCooccurrence)
+		case "semantic_board_expand_sim_distance":
+			config.ExpandSimDistance = parseSemanticBoardUpgradeFloat(setting.Value, config.ExpandSimDistance)
+		case "semantic_board_expand_cooccurrence":
+			config.ExpandCooccurrence = parseSemanticBoardUpgradeInt(setting.Value, config.ExpandCooccurrence)
 		}
 	}
 	return config
@@ -746,200 +834,38 @@ func isNearKeptVector(vector []float64, keptVectors [][]float64, threshold float
 	return false
 }
 
-// computeShortlist builds the dual-signature shortlist for a cluster (spec §4.2):
-// composition-signature top-2 (cluster.BoardAffinities, already sorted ascending)
-// unioned with lane-signature top-2 (active-topic section embeddings within 30 days),
-// deduped by board id (≤4 entries). Each entry carries the per-signature distance
-// and rank; LaneDistance is nil for a board with no active section in the window
-// (composition-only participation).
-func (s *SemanticBoardUpgradeService) computeShortlist(ctx context.Context, cluster SemanticBoardUpgradeCluster) ([]ShortlistEntry, error) {
-	comp := cluster.BoardAffinities
-	if len(comp) > 2 {
-		comp = comp[:2]
-	}
-	entries := make([]ShortlistEntry, 0, 4)
-	byID := make(map[uint]int, 4)
-	for i, aff := range comp {
-		entries = append(entries, ShortlistEntry{
-			BoardID:             aff.BoardID,
-			BoardLabel:          aff.BoardLabel,
-			BoardDescription:    aff.BoardDescription,
-			CompositionDistance: aff.AvgDistance,
-			CompositionRank:     i + 1,
-		})
-		byID[aff.BoardID] = len(entries) - 1
-	}
-	lane, err := s.loadLaneAffinities(ctx, cluster)
-	if err != nil {
-		return nil, err
-	}
-	for i, aff := range lane {
-		dist := aff.AvgDistance
-		if idx, ok := byID[aff.BoardID]; ok {
-			entries[idx].LaneDistance = &dist
-			entries[idx].LaneRank = i + 1
-		} else {
-			entries = append(entries, ShortlistEntry{
-				BoardID:          aff.BoardID,
-				BoardLabel:       aff.BoardLabel,
-				BoardDescription: aff.BoardDescription,
-				LaneDistance:     &dist,
-				LaneRank:         i + 1,
-			})
-			byID[aff.BoardID] = len(entries) - 1
-		}
-	}
-	entries = s.loadLaneBriefs(ctx, entries)
-	return entries, nil
-}
-
-// loadLaneBriefs attaches each shortlist board's ≤5 most-recent active-topic
-// section titles (ClusterLabel, last 30 days) as lane evidence for prompt
-// injection (spec §4.4). Parameterized IN (?); on query failure degrades
-// gracefully (name+description only) without aborting generation.
-func (s *SemanticBoardUpgradeService) loadLaneBriefs(ctx context.Context, entries []ShortlistEntry) []ShortlistEntry {
-	boardIDs := make([]uint, 0, len(entries))
-	for _, e := range entries {
-		boardIDs = append(boardIDs, e.BoardID)
-	}
-	if len(boardIDs) == 0 {
-		return entries
-	}
-	cutoff := time.Now().AddDate(0, 0, -30)
-	var rows []struct {
-		BoardID      uint
-		SectionID    uint
-		SectionLabel string
-	}
-	err := s.db.WithContext(ctx).Raw(`
-		SELECT r.semantic_board_id AS board_id, s.id AS section_id, s.cluster_label AS section_label
-		FROM daily_report_sections s
-		JOIN board_daily_reports r ON r.id = s.report_id
-		JOIN board_persistent_topics t ON t.id = s.persistent_topic_id
-		WHERE r.semantic_board_id IN ? AND t.status = ? AND s.cluster_label <> ''
-		  AND r.period_date >= ?
-		ORDER BY r.period_date DESC
-	`, boardIDs, "active", cutoff).Scan(&rows).Error
-	if err != nil {
-		logging.Warnf("[semantic-board-upgrade] lane briefs query failed, degrading to name+description only: %v", err)
-		return entries
-	}
-	byBoard := make(map[uint]*ShortlistEntry, len(entries))
-	for i := range entries {
-		byBoard[entries[i].BoardID] = &entries[i]
-	}
-	for _, r := range rows {
-		e := byBoard[r.BoardID]
-		if e == nil || len(e.RecentSections) >= 5 {
-			continue
-		}
-		e.RecentSections = append(e.RecentSections, LaneBrief{SectionID: r.SectionID, SectionLabel: r.SectionLabel})
-	}
-	return entries
-}
-
-// loadLaneAffinities computes the lane signature (spec §4.2 V1b): for each board,
-// the min cosine distance between the cluster centroid and that board's active
-// topic section embeddings (daily_report_sections within the last 30 days). Returns
-// the top-2 boards by ascending distance. Parameterized (? placeholders, no string
-// concatenation); boards without active sections are naturally absent (degraded to
-// composition-only in computeShortlist).
-func (s *SemanticBoardUpgradeService) loadLaneAffinities(ctx context.Context, cluster SemanticBoardUpgradeCluster) ([]BoardAffinity, error) {
-	if len(cluster.Centroid) == 0 {
-		return nil, nil
-	}
-	centroid := core.FloatsToPgVector(cluster.Centroid)
-	cutoff := time.Now().AddDate(0, 0, -30)
-	var rows []struct {
-		BoardID          uint
-		BoardLabel       string
-		BoardDescription string
-		MinDist          float64
-	}
-	err := s.db.WithContext(ctx).Raw(`
-		SELECT r.semantic_board_id AS board_id, b.label AS board_label, b.description AS board_description,
-		       MIN(s.embedding <=> ?::vector) AS min_dist
-		FROM daily_report_sections s
-		JOIN board_daily_reports r ON r.id = s.report_id
-		JOIN board_persistent_topics t ON t.id = s.persistent_topic_id
-		JOIN semantic_labels b ON b.id = r.semantic_board_id AND b.label_type = ? AND b.status = ?
-		WHERE t.status = ? AND s.embedding IS NOT NULL AND r.period_date >= ?
-		GROUP BY r.semantic_board_id, b.label, b.description
-		ORDER BY min_dist ASC
-		LIMIT 2
-	`, centroid, "board", "active", "active", cutoff).Scan(&rows).Error
-	if err != nil {
-		// Graceful degradation: the lane signature is a secondary signal. If the
-		// daily-report tables are unavailable (e.g. not yet migrated) or the query
-		// fails, fall back to composition-only shortlist rather than aborting the
-		// whole generation pass (spec: 无 active section 的版块仅参与 composition).
-		logging.Warnf("[semantic-board-upgrade] lane signature query failed, degrading to composition-only: %v", err)
-		return nil, nil
-	}
-	out := make([]BoardAffinity, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, BoardAffinity{BoardID: r.BoardID, BoardLabel: r.BoardLabel, BoardDescription: r.BoardDescription, AvgDistance: r.MinDist})
-	}
-	return out, nil
-}
-
-// BuildSemanticBoardUpgradeSystemPrompt returns the LLM system-prompt JSON schema
-// instruction, mode-aware (§4.1). Both discover_new and expand_existing now
-// expose the full decision space {create_new, merge_into_existing, skip} with
-// target_board_id (discover_new previously advertised only create_new|skip).
+// BuildSemanticBoardUpgradeSystemPrompt returns the mode-scoped single-decision-
+// space schema. Each generation round exposes exactly one decision pair to the
+// LLM（design D1/D4：单一决策空间，LLM 输出不含目标字段——target 由服务端注入）：
+// create:aux → create_new|skip；create:composite / expand:composite → compose|skip；
+// expand:aux → merge_into_existing|skip。
 func BuildSemanticBoardUpgradeSystemPrompt(mode string) string {
-	return `Return JSON only in this shape: {"suggestions":[{"decision":"create_new|merge_into_existing|skip","board_label":"","description":"","auxiliary_label_ids":[1],"target_board_id":123,"reason":""}]}`
+	switch mode {
+	case "create:composite", "expand:composite":
+		return `Return JSON only in this shape: {"suggestions":[{"decision":"compose|skip","board_label":"","description":"","auxiliary_label_ids":[1],"reason":""}]}`
+	case "expand:aux":
+		return `Return JSON only in this shape: {"suggestions":[{"decision":"merge_into_existing|skip","board_label":"","description":"","auxiliary_label_ids":[1],"reason":""}]}`
+	default: // create:aux
+		return `Return JSON only in this shape: {"suggestions":[{"decision":"create_new|skip","board_label":"","description":"","auxiliary_label_ids":[1],"reason":""}]}`
+	}
 }
 
-func buildSemanticBoardUpgradePrompt(clusters []SemanticBoardUpgradeCluster, mode string) string {
+// buildCreateAuxPrompt 渲染创建×单标签裁决 prompt：候选簇 + co-tag 事件 +
+// 全量活跃版块清单（防重复创建，按簇质心相似度截断 top-60，design D2）。
+func buildCreateAuxPrompt(clusters []SemanticBoardUpgradeCluster, boards []activeBoardBrief) string {
 	var builder strings.Builder
-	builder.WriteString("你是一个语义板块分析助手。根据以下辅助标签聚类信息，判断每个簇应该：")
+	builder.WriteString("你是一个语义板块分析助手。判断以下每个辅助标签簇是否值得升级为新板块。\n")
+	builder.WriteString("决策空间只有两种：create_new（创建新板块）或 skip（跳过不处理）。\n\n")
+	builder.WriteString("判断原则：\n")
+	builder.WriteString("- 簇内标签语义集中、有明确主题且与已有板块清单都不重复 → create_new\n")
+	builder.WriteString("- 簇的主题已被某个已有板块覆盖、或簇内标签过于分散/泛化不足以形成独立板块 → skip\n\n")
+	builder.WriteString("返回 JSON 格式：{\"suggestions\": [{\"decision\": \"create_new|skip\", \"board_label\": \"板块名称\", \"description\": \"板块描述\", \"auxiliary_label_ids\": [id1, id2], \"reason\": \"判断理由\"}]}\n\n")
 
-	if mode == "expand_existing" {
-		builder.WriteString("create_new（创建新板块）、merge_into_existing（合并到已有板块）或 skip（跳过不处理）。\n\n")
-		builder.WriteString("判断原则：\n")
-		builder.WriteString("- 如果簇内标签明确属于某个已有板块，且该板块的标签和描述与簇内容吻合 → merge_into_existing\n")
-		builder.WriteString("- 如果簇内标签语义集中、有明确主题且不存在对应板块 → create_new\n")
-		builder.WriteString("- 如果簇内标签过于分散或过于泛化，不足以形成独立板块 → skip\n\n")
-		builder.WriteString("返回 JSON 格式：{\"suggestions\": [{\"decision\": \"create_new|merge_into_existing|skip\", \"board_label\": \"板块名称\", \"description\": \"板块描述\", \"auxiliary_label_ids\": [id1, id2], \"target_board_id\": 123, \"reason\": \"判断理由\"}]}\n\n")
-	} else {
-		builder.WriteString("create_new（创建新板块）、merge_into_existing（合并到候选版块 shortlist 内某个已有板块）或 skip（跳过不处理）。\n\n")
-		builder.WriteString("判断原则：\n")
-		builder.WriteString("- 如果簇内标签语义集中、有明确主题且不存在对应板块 → create_new\n")
-		builder.WriteString("- 如果簇内标签明确属于候选版块 shortlist 中某个已有板块 → merge_into_existing（必须指定 target_board_id，且只能取自该簇 shortlist）\n")
-		builder.WriteString("- 如果簇内标签过于分散或过于泛化，不足以形成独立板块 → skip\n\n")
-		builder.WriteString("返回 JSON 格式：{\"suggestions\": [{\"decision\": \"create_new|merge_into_existing|skip\", \"board_label\": \"板块名称\", \"description\": \"板块描述\", \"auxiliary_label_ids\": [id1, id2], \"target_board_id\": 123, \"reason\": \"判断理由\"}]}\n\n")
-	}
 	for i, cluster := range clusters {
 		fmt.Fprintf(&builder, "【簇 %d】\n", i+1)
 		builder.WriteString("候选辅助标签：\n")
 		for _, candidate := range cluster.Candidates {
 			fmt.Fprintf(&builder, "  - ID=%d: %s（引用次数=%d）\n", candidate.ID, candidate.Label, candidate.RefCount)
-		}
-		if len(cluster.BoardAffinities) > 0 {
-			builder.WriteString("相似已有板块参考：\n")
-			for _, aff := range cluster.BoardAffinities {
-				fmt.Fprintf(&builder, "  - %s（ID=%d）：%d 个候选匹配，平均距离 %.4f\n", aff.BoardLabel, aff.BoardID, aff.MatchingCandidates, aff.AvgDistance)
-			}
-		}
-		if len(cluster.Shortlist) > 0 {
-			builder.WriteString("候选版块 shortlist（merge 目标 target_board_id 只能取自此处）：\n")
-			for _, e := range cluster.Shortlist {
-				line := fmt.Sprintf("  - %s（ID=%d，组成签名距离=%.4f", e.BoardLabel, e.BoardID, e.CompositionDistance)
-				if e.LaneDistance != nil {
-					line += fmt.Sprintf("，泳道签名距离=%.4f", *e.LaneDistance)
-				}
-				line += ")"
-				if e.BoardDescription != "" {
-					line += "：" + e.BoardDescription
-				}
-				builder.WriteString(line + "\n")
-				for _, s := range e.RecentSections {
-					if s.SectionLabel != "" {
-						fmt.Fprintf(&builder, "      · 近期内容：%s\n", s.SectionLabel)
-					}
-				}
-			}
 		}
 		if len(cluster.Events) > 0 {
 			builder.WriteString("关联事件（近期共现）：\n")
@@ -947,202 +873,49 @@ func buildSemanticBoardUpgradePrompt(clusters []SemanticBoardUpgradeCluster, mod
 				fmt.Fprintf(&builder, "  - %s（共现次数=%d）\n", event.Label, event.Frequency)
 			}
 		}
+		if listed := listBoardsForCluster(boards, cluster.Centroid); len(listed) > 0 {
+			builder.WriteString("已有板块清单（主题与其中某个板块重复的簇应输出 skip）：\n")
+			for _, b := range listed {
+				line := fmt.Sprintf("  - %s（ID=%d）", b.BoardLabel, b.BoardID)
+				if d := strings.TrimSpace(b.BoardDescription); d != "" {
+					line += "：" + d
+				}
+				builder.WriteString(line + "\n")
+			}
+		}
 		builder.WriteString("\n")
 	}
 	return builder.String()
 }
 
-// highConfidenceMergeBoard returns the board id to merge into when the cluster's
-// dual signatures agree with sufficient margin (spec §4.3): composition top-1 and
-// lane top-1 must be the SAME board, and BOTH per-signature margins (top1-top2
-// distance gap) must be ≥ threshold. Returns ok=false when the signatures disagree,
-// either signature lacks a top-2 (margin undefined), or any margin is below threshold.
-func highConfidenceMergeBoard(shortlist []ShortlistEntry, threshold float64) (uint, bool) {
-	var compTop1, compTop2, laneTop1, laneTop2 *ShortlistEntry
-	for i := range shortlist {
-		e := &shortlist[i]
-		switch e.CompositionRank {
-		case 1:
-			compTop1 = e
-		case 2:
-			compTop2 = e
-		}
-		switch e.LaneRank {
-		case 1:
-			laneTop1 = e
-		case 2:
-			laneTop2 = e
-		}
+// listBoardsForCluster 按版块 embedding 与簇质心的余弦距离升序截断
+// UpgradeBoardListLimit 条（design D2：token 上界 + 防重复参考的相关性排序）。
+func listBoardsForCluster(boards []activeBoardBrief, centroid []float64) []activeBoardBrief {
+	if len(boards) <= UpgradeBoardListLimit {
+		return boards
 	}
-	if compTop1 == nil || laneTop1 == nil || compTop2 == nil || laneTop2 == nil {
-		return 0, false
-	}
-	if compTop1.BoardID != laneTop1.BoardID {
-		return 0, false
-	}
-	// margin = top2.dist - top1.dist (top1 is closer; positive gap) per V1b.
-	compMargin := compTop2.CompositionDistance - compTop1.CompositionDistance
-	if laneTop1.LaneDistance == nil || laneTop2.LaneDistance == nil {
-		return 0, false
-	}
-	laneMargin := *laneTop2.LaneDistance - *laneTop1.LaneDistance
-	if compMargin < threshold || laneMargin < threshold {
-		return 0, false
-	}
-	return compTop1.BoardID, true
+	sorted := make([]activeBoardBrief, len(boards))
+	copy(sorted, boards)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return semanticBoardUpgradeDistance(sorted[i].Embedding, centroid) < semanticBoardUpgradeDistance(sorted[j].Embedding, centroid)
+	})
+	return sorted[:UpgradeBoardListLimit]
 }
 
-// synthesizeWatchSuggestion builds the decision=watch observation-pool
-// suggestion for a singleton cluster (spec §4.5): the lone label is recorded
-// for observation without LLM adjudication; when it later clusters (≥2) the
-// watch is auto-closed by GenerateAndPersist via CloseWatchSuggestions.
-func synthesizeWatchSuggestion(cluster SemanticBoardUpgradeCluster) SemanticBoardUpgradeSuggestion {
-	cand := cluster.Candidates[0]
-	return SemanticBoardUpgradeSuggestion{
-		Decision:          SemanticBoardUpgradeDecisionWatch,
-		BoardLabel:        cand.Label,
-		AuxiliaryLabelIDs: []uint{cand.ID},
-		Reason:            "单标签簇，进入观察池（不调 LLM）",
-		Confidence:        "llm",
-		Evidence: map[string]any{
-			"cluster_size": 1,
-			"candidate":    cand.Label,
-		},
-	}
-}
-
-// synthesizeHighConfidenceMerge builds the confidence=high merge suggestion for a
-// cluster whose dual signatures agreed (spec §4.3). The LLM is bypassed; evidence
-// snapshots the shortlist + margins for audit.
-func synthesizeHighConfidenceMerge(cluster SemanticBoardUpgradeCluster, boardID uint) SemanticBoardUpgradeSuggestion {
-	auxIDs := make([]uint, 0, len(cluster.Candidates))
-	for _, c := range cluster.Candidates {
-		auxIDs = append(auxIDs, c.ID)
-	}
-	var label, description string
-	compDist, laneDist := 0.0, 0.0
-	for _, e := range cluster.Shortlist {
-		if e.BoardID == boardID {
-			label = e.BoardLabel
-			description = e.BoardDescription
-			compDist = e.CompositionDistance
-			if e.LaneDistance != nil {
-				laneDist = *e.LaneDistance
-			}
-			break
-		}
-	}
-	target := boardID
-	return SemanticBoardUpgradeSuggestion{
-		Decision:          SemanticBoardUpgradeDecisionMergeIntoExisting,
-		BoardLabel:        label,
-		Description:       description,
-		AuxiliaryLabelIDs: UniqueUintSlice(auxIDs),
-		TargetBoardID:     &target,
-		Reason:            "双签名一致且 margin 达标，高置信合并（免 LLM）",
-		Confidence:        "high",
-		Evidence: map[string]any{
-			"shortlist":        shortlistEvidence(cluster.Shortlist),
-			"composition_dist": compDist,
-			"lane_dist":        laneDist,
-		},
-	}
-}
-
-// shortlistEvidence projects a shortlist into a serializable snapshot.
-func shortlistEvidence(entries []ShortlistEntry) []map[string]any {
-	out := make([]map[string]any, 0, len(entries))
-	for _, e := range entries {
-		item := map[string]any{
-			"board_id":         e.BoardID,
-			"board_label":      e.BoardLabel,
-			"composition_rank": e.CompositionRank,
-			"composition_dist": e.CompositionDistance,
-			"lane_rank":        e.LaneRank,
-		}
-		if e.LaneDistance != nil {
-			item["lane_dist"] = *e.LaneDistance
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-// buildShortlistByAux maps each candidate auxiliary id to the set of board ids
-// in its cluster's shortlist. Used by validateMergeTargets to enforce that a
-// merge target belongs to the cluster shortlist (spec §4.1).
-func buildShortlistByAux(clusters []SemanticBoardUpgradeCluster) map[uint]map[uint]struct{} {
-	m := make(map[uint]map[uint]struct{}, len(clusters))
-	for i := range clusters {
-		set := make(map[uint]struct{}, len(clusters[i].Shortlist))
-		for _, e := range clusters[i].Shortlist {
-			set[e.BoardID] = struct{}{}
-		}
-		for _, c := range clusters[i].Candidates {
-			m[c.ID] = set
-		}
-	}
-	return m
-}
-
-// validateMergeTargets drops merge_into_existing suggestions whose target_board_id
-// is absent from the corresponding cluster's shortlist (downgrade to skip, not
-// produced — spec §4.1: merge 目标必须在 shortlist 内，否则降级为 skip 不产出建议).
-// Non-merge decisions pass through unchanged.
-func validateMergeTargets(suggestions []SemanticBoardUpgradeSuggestion, shortlistByAux map[uint]map[uint]struct{}) []SemanticBoardUpgradeSuggestion {
-	out := make([]SemanticBoardUpgradeSuggestion, 0, len(suggestions))
-	for _, sug := range suggestions {
-		if sug.Decision == SemanticBoardUpgradeDecisionMergeIntoExisting && !mergeTargetInShortlist(sug, shortlistByAux) {
-			// 方案 B（诊断发现：§4.1 原"丢弃"系统性浪费 LLM 合理建议——discover_new 新簇
-			// composition 信号弱，算法 shortlist top-2 视野窄于 LLM，实测 17 条 LLM merge 全被丢）：
-			// 不丢弃、不降级 skip，保留 merge 并在 evidence 标注 target_off_shortlist，
-			// 前端可高亮"算法未覆盖"让用户重点裁决。prompt 仍引导 LLM 优先选 shortlist 内的。
-			if sug.Evidence == nil {
-				sug.Evidence = map[string]any{}
-			}
-			sug.Evidence["target_off_shortlist"] = true
-		}
-		out = append(out, sug)
-	}
-	return out
-}
-
-func mergeTargetInShortlist(sug SemanticBoardUpgradeSuggestion, shortlistByAux map[uint]map[uint]struct{}) bool {
-	if sug.TargetBoardID == nil || len(sug.AuxiliaryLabelIDs) == 0 {
-		return false
-	}
-	for _, auxID := range sug.AuxiliaryLabelIDs {
-		set, ok := shortlistByAux[auxID]
-		if !ok {
-			continue
-		}
-		if _, has := set[*sug.TargetBoardID]; has {
-			return true
-		}
-	}
-	return false
-}
-
+// filterSemanticBoardUpgradeSuggestions 过滤创建轮 LLM 输出：只保留 create_new
+// 决策（越权 merge/watch/compose 丢弃——单一决策空间纪律）且辅助标签引用全部
+// 在本轮候选集内、非空。skip 同样不返回（不落库不展示）。
 func filterSemanticBoardUpgradeSuggestions(suggestions []SemanticBoardUpgradeSuggestion, validAuxiliaryIDs map[uint]struct{}) []SemanticBoardUpgradeSuggestion {
 	filtered := make([]SemanticBoardUpgradeSuggestion, 0, len(suggestions))
 	for _, suggestion := range suggestions {
-		switch suggestion.Decision {
-		case SemanticBoardUpgradeDecisionCreateNew, SemanticBoardUpgradeDecisionSkip:
-			// Always accepted
-		case SemanticBoardUpgradeDecisionMergeIntoExisting:
-			// Accepted in both discover_new and expand_existing (§4.1 D1): the
-			// discover_new quadrant now allows merging into an existing board whose
-			// target comes from the cluster shortlist.
-		case SemanticBoardUpgradeDecisionWatch:
-			// Observation-pool suggestion for singleton clusters (§4.5); synthesized
-			// directly, never returned by the LLM, but accepted defensively here.
-		default:
+		if suggestion.Decision != SemanticBoardUpgradeDecisionCreateNew {
 			continue
 		}
-		suggestion.AuxiliaryLabelIDs = filterKnownAuxiliaryIDs(UniqueUintSlice(suggestion.AuxiliaryLabelIDs), validAuxiliaryIDs)
-		if suggestion.Decision != SemanticBoardUpgradeDecisionSkip && len(suggestion.AuxiliaryLabelIDs) == 0 {
+		ids := filterKnownAuxiliaryIDs(suggestion.AuxiliaryLabelIDs, validAuxiliaryIDs)
+		if len(ids) == 0 {
 			continue
 		}
+		suggestion.AuxiliaryLabelIDs = ids
 		filtered = append(filtered, suggestion)
 	}
 	return filtered

@@ -1,55 +1,87 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
 import { Icon } from '@iconify/vue'
-import type { UpgradeCandidate, UpgradeCluster, UpgradeSuggestion, BoardAffinity, UpgradeSuggestionRow, SemanticBoard } from '~/api/semanticBoards'
+import type { UpgradeSuggestionRow, SemanticBoard } from '~/api/semanticBoards'
 
 const props = defineProps<{
   visible: boolean
-  candidates: UpgradeCandidate[]
-  clusters: UpgradeCluster[]
-  suggestions: UpgradeSuggestion[]
-  loading: boolean
-  suggesting: boolean
   backfillNotice: boolean
-  /** 持久化建议（主数据源，GET /upgrade-suggestions）。 */
+  /** 持久化建议（唯一数据源，GET /upgrade-suggestions）。 */
   persistedSuggestions: UpgradeSuggestionRow[]
   persistedLoading: boolean
   persistedGenerating: boolean
-  /** 全量 active 板块，供 merge 建议选目标版块用。 */
+  /** 生成失败信息（入口区行内提示，空=无错误）。 */
+  generateError?: string
+  /** 全量 active 板块（扩充方向的锁定版块单选下拉数据源）。 */
   boards: SemanticBoard[]
 }>()
 
 const emit = defineEmits<{
-  suggest: [mode: string]
-  execute: [suggestion: UpgradeSuggestion, index: number]
   cancel: []
   loadPersisted: [decision: string]
-  generate: []
+  generate: [params: { direction: 'create' | 'expand'; source: 'aux' | 'composite'; target_board_id?: number; days?: number }]
   dismissRow: [id: number]
   confirmRow: [row: UpgradeSuggestionRow]
 }>()
 
-const upgradeMode = ref<'discover_new' | 'expand_existing'>('discover_new')
-const openMergeIndex = ref<number | null>(null)
-// 持久化行：当前展开「合并到...」选目标版块下拉的行 id。
-// 所有 merge 行都先选目标（不盲用 LLM/high 给的 top-1），用户在下拉里确认或改选。
-const openMergeRowId = ref<number | null>(null)
-// 下拉内的搜索关键字（按行隔离：用 openMergeRowId 对应的 row id 作为 key）。
-const mergeSearchByRow = ref<Record<number, string>>({})
+// ---- 生成入口：方向 × 来源 两步选择 + 扩充锁定版块（spec: 生成入口模式选择）----
+type GenDirection = 'create' | 'expand'
+type GenSource = 'aux' | 'composite'
+const genDirection = ref<GenDirection>('create')
+const genSource = ref<GenSource>('aux')
+const genTargetBoardId = ref<number | null>(null)
+const genDays = ref(1)
+const boardSearch = ref('')
+// 本会话是否已生成过（区分空态：「未生成过 → 引导」vs「生成过无建议 → 覆盖提示」）。
+const hasGenerated = ref(false)
+
+const dayOptions = [
+  { value: 1, label: '今天' },
+  { value: 3, label: '最近3天' },
+  { value: 7, label: '最近7天' },
+  { value: 30, label: '最近30天' },
+  { value: 0, label: '全部' },
+]
+
+const filteredBoards = computed(() => {
+  const kw = boardSearch.value.trim().toLowerCase()
+  if (!kw) return props.boards
+  return props.boards.filter((b) =>
+    b.label.toLowerCase().includes(kw)
+    || (b.aliases ?? []).some((a) => a.toLowerCase().includes(kw)))
+})
+
+// 扩充方向必须选定版块才能生成（spec: 扩充方向必须选定版块）。
+const canGenerate = computed(() =>
+  genDirection.value === 'create' || (genTargetBoardId.value != null && genTargetBoardId.value > 0))
+
+function handleGenerate() {
+  if (!canGenerate.value || props.persistedGenerating) return
+  hasGenerated.value = true
+  emit('generate', {
+    direction: genDirection.value,
+    source: genSource.value,
+    ...(genDirection.value === 'expand' && genTargetBoardId.value
+      ? { target_board_id: genTargetBoardId.value }
+      : {}),
+    ...(genDirection.value === 'create' && genSource.value === 'aux' ? { days: genDays.value } : {}),
+  })
+}
+
 // 每行勾选的辅助标签 id 集合（row.id → Set<auxId>）。默认全选；emit 时只带勾选子集。
 const selectedAuxByRow = ref<Record<number, Set<number>>>({})
 
-// ---- 持久化建议过滤（主数据源） ----
-type PersistedFilter = 'all' | 'merge_into_existing' | 'create_new' | 'watch'
+// ---- 持久化建议过滤（唯一数据源） ----
+type PersistedFilter = 'all' | 'merge_into_existing' | 'create_new' | 'compose'
 const persistedFilter = ref<PersistedFilter>('all')
 const filterTabs: { key: PersistedFilter; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'merge_into_existing', label: '合并' },
   { key: 'create_new', label: '新建' },
-  { key: 'watch', label: '观察池' },
+  { key: 'compose', label: '组合' },
 ]
 
-// all → decision=""（后端默认列表，排除 watch）；其余原样传
+// all → decision=""（后端默认列表）；其余原样传
 function decisionParam(tab: PersistedFilter): string {
   return tab === 'all' ? '' : tab
 }
@@ -58,8 +90,13 @@ watch(persistedFilter, (tab) => emit('loadPersisted', decisionParam(tab)))
 watch(() => props.visible, (v) => {
   if (v) emit('loadPersisted', decisionParam(persistedFilter.value))
 })
+// 切换方向时重置版块选择（create 不需要 target）。
+watch(genDirection, () => {
+  genTargetBoardId.value = null
+  boardSearch.value = ''
+})
 
-// ---- evidence 安全读取（§4 未全部落地，缺 key 降级不崩） ----
+// ---- evidence 安全读取（存量建议的 shortlist/泳道/共现快照，缺 key 降级不崩） ----
 function laneBriefs(row: UpgradeSuggestionRow): string[] {
   const v = row.evidence?.lane_briefs
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
@@ -85,24 +122,17 @@ function rowAuxLabels(row: UpgradeSuggestionRow): { id: number; label: string; s
 }
 
 // ---- 辅助标签勾选（不必全要，emit 时只带勾选子集）----
-// 每行维护一个「选中的 id 集合」；默认全选。persistedSuggestions 变化时：
-// 已有勾选记录的行沿用原勾选（清理掉已不存在的标签 id）；新行默认全选。
 watch(() => props.persistedSuggestions, (rows) => {
   const next: Record<number, Set<number>> = {}
   for (const row of rows) {
-    // 默认勾选所有可选辅助标签；失效标签（status≠active，建议生成后被禁用）
-    // 默认不勾、置灰展示。用户手动 toggle 的选择在 persistedSuggestions 不变时保留
-    // （此 watch 仅在列表重载时触发重置默认值）。
     next[row.id] = new Set(rowAuxLabels(row).filter((al) => !isAuxDisabled(al)).map((al) => al.id))
   }
   selectedAuxByRow.value = next
 }, { immediate: true, deep: false })
 
-// 失效标签（status 有值且非 active）：建议生成后可能被禁用，置灰且默认不勾。
 function isAuxDisabled(al: { status?: string }): boolean {
   return !!al.status && al.status !== 'active'
 }
-
 function isAuxSelected(rowId: number, auxId: number): boolean {
   return selectedAuxByRow.value[rowId]?.has(auxId) ?? true
 }
@@ -122,7 +152,6 @@ function selectedAuxCount(row: UpgradeSuggestionRow): number {
   const all = rowAuxLabels(row)
   return all.filter((al) => isAuxSelected(row.id, al.id)).length
 }
-// 当前行勾选的 auxiliary_label_ids（供 emit 用）。
 function selectedAuxIds(row: UpgradeSuggestionRow): number[] {
   return rowAuxLabels(row).filter((al) => isAuxSelected(row.id, al.id)).map((al) => al.id)
 }
@@ -131,67 +160,30 @@ function rowTargetLabel(row: UpgradeSuggestionRow): string {
   return row.target_board_id ? `板块 #${row.target_board_id}` : ''
 }
 
-// ---- merge 行选目标版块（board-upgrade spec 方案 B + 候选优先全量可搜）----
-// 所有 merge 行都先展开下拉让用户确认/改选目标，不盲用 LLM/high 给的 top-1。
-// 下拉内容：① LLM/算法候选区（evidence.shortlist，高亮置顶）；② 全量 active 板块区
-// （可搜索，去重掉已在候选区的）。
-function rowOffShortlist(row: UpgradeSuggestionRow): boolean {
-  return row.evidence?.target_off_shortlist === true
+// ---- compose 建议证据（安全读取，缺 key 降级） ----
+function composeCooccurrence(row: UpgradeSuggestionRow): number | null {
+  const v = row.evidence?.compose_cooccurrence
+  return typeof v === 'number' ? v : null
+}
+function composeWindowDays(row: UpgradeSuggestionRow): number | null {
+  const v = row.evidence?.compose_window_days
+  return typeof v === 'number' ? v : null
+}
+function composeRepresentTitles(row: UpgradeSuggestionRow): string[] {
+  const v = row.evidence?.compose_representative_titles
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 }
 
-// 某行下拉的关键字（双向绑定用）。
-function mergeSearch(rowId: number): string {
-  return mergeSearchByRow.value[rowId] ?? ''
-}
-function setMergeSearch(rowId: number, val: string): void {
-  mergeSearchByRow.value[rowId] = val
-}
-
-// 下拉里要展示的全量板块（已排除 shortlist 候选，避免重复；按关键字过滤）。
-function extraBoardsForRow(row: UpgradeSuggestionRow): SemanticBoard[] {
-  const candidateIds = new Set(
-    shortlist(row).map((s) => s.board_id).filter((id): id is number => typeof id === 'number'),
-  )
-  const kw = (mergeSearchByRow.value[row.id] ?? '').trim().toLowerCase()
-  return props.boards.filter((b) => {
-    if (candidateIds.has(b.id)) return false
-    if (!kw) return true
-    return b.label.toLowerCase().includes(kw)
-      || (b.aliases ?? []).some((a) => a.toLowerCase().includes(kw))
-  })
-}
-
-function handlePickRowTarget(row: UpgradeSuggestionRow, boardId: number) {
-  openMergeRowId.value = null
-  delete mergeSearchByRow.value[row.id]
-  // 选「合并到...」目标即按 merge_into_existing 执行：create_new 行也可借此合并到已有板块。
-  emit('confirmRow', { ...row, decision: 'merge_into_existing', target_board_id: boardId, auxiliary_label_ids: selectedAuxIds(row) })
-}
-
-// create_new 行确认：同样只带勾选的辅助标签子集。
-function handleConfirmCreateRow(row: UpgradeSuggestionRow) {
+// 确认动作（单一入口，带勾选子集；target 来自建议本身——扩充建议的锁定版块）。
+function handleConfirmRow(row: UpgradeSuggestionRow) {
   emit('confirmRow', { ...row, auxiliary_label_ids: selectedAuxIds(row) })
-}
-
-// ---- 手动合并（内存建议，保留现状，§6.3 不动） ----
-function toggleMerge(index: number) {
-  openMergeIndex.value = openMergeIndex.value === index ? null : index
-}
-
-function handleMerge(s: UpgradeSuggestion, index: number, boardId: number) {
-  emit('execute', {
-    ...s,
-    decision: 'merge_into_existing' as const,
-    target_board_id: boardId,
-  }, index)
 }
 
 function decisionLabel(d: string): string {
   switch (d) {
     case 'create_new': return '创建新板块'
     case 'merge_into_existing': return '合并到已有板块'
-    case 'watch': return '观察池'
-    case 'skip': return '跳过'
+    case 'compose': return '创建组合标签'
     default: return d
   }
 }
@@ -200,8 +192,7 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
   switch (d) {
     case 'create_new': return { border: 'var(--color-success-border, rgba(61,138,74,0.3))', bg: 'var(--color-success-bg, rgba(61,138,74,0.08))', color: 'var(--color-success)' }
     case 'merge_into_existing': return { border: 'var(--color-link-border)', bg: 'var(--color-link-subtle)', color: 'var(--color-link)' }
-    case 'watch': return { border: 'var(--color-warning-border, rgba(180,140,40,0.3))', bg: 'var(--color-warning-bg, rgba(180,140,40,0.08))', color: 'var(--color-warning, #b48c28)' }
-    case 'skip': return { border: 'var(--color-border-medium)', bg: 'var(--color-bg-sunken)', color: 'var(--color-text-muted)' }
+    case 'compose': return { border: 'var(--color-accent-border, rgba(120,80,200,0.3))', bg: 'var(--color-accent-subtle)', color: 'var(--color-accent)' }
     default: return { border: 'var(--color-border-subtle)', bg: 'var(--color-bg-hover)', color: 'var(--color-text-secondary)' }
   }
 }
@@ -209,21 +200,94 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="usp-overlay" @click.self="emit('cancel'); openMergeIndex = null">
+    <div v-if="visible" class="usp-overlay" @click.self="emit('cancel')">
       <div class="usp-card">
         <div class="usp-header">
           <div>
             <h3 class="usp-title">板块升级建议</h3>
-            <p class="usp-subtitle">
-              候选标签 {{ candidates.length }} 个 · 聚类 {{ clusters.length }} 个
-            </p>
+            <p class="usp-subtitle">创建 / 扩充分开裁决，每轮 LLM 只做一种判断</p>
           </div>
           <button type="button" class="usp-close" @click="emit('cancel')">
             <Icon icon="mdi:close" width="18" />
           </button>
         </div>
 
-        <!-- 持久化建议（主数据源，§6.1/6.2） -->
+        <!-- 生成入口：方向 → 来源 →（扩充）锁定版块（spec: 生成入口模式选择） -->
+        <section class="usp-gen" data-testid="upgrade-gen-entry">
+          <div class="usp-gen-row">
+            <div class="usp-mode-selector usp-gen-group">
+              <label class="usp-mode-option">
+                <input v-model="genDirection" type="radio" value="create" :disabled="persistedGenerating" data-testid="gen-direction-create" />
+                <span>创建版块</span>
+              </label>
+              <label class="usp-mode-option">
+                <input v-model="genDirection" type="radio" value="expand" :disabled="persistedGenerating" data-testid="gen-direction-expand" />
+                <span>版块扩充</span>
+              </label>
+            </div>
+            <div class="usp-mode-selector usp-gen-group">
+              <label class="usp-mode-option">
+                <input v-model="genSource" type="radio" value="aux" :disabled="persistedGenerating" data-testid="gen-source-aux" />
+                <span>单标签</span>
+              </label>
+              <label class="usp-mode-option">
+                <input v-model="genSource" type="radio" value="composite" :disabled="persistedGenerating" data-testid="gen-source-composite" />
+                <span>组合标签</span>
+              </label>
+            </div>
+          </div>
+          <div v-if="genDirection === 'expand'" class="usp-gen-row">
+            <div class="usp-merge-dropdown usp-merge-dropdown--search usp-gen-board-picker">
+              <input
+                class="usp-merge-search"
+                type="text"
+                placeholder="选择要扩充的版块（仅本轮目标）…"
+                :value="boardSearch"
+                data-testid="gen-board-search"
+                @input="boardSearch = ($event.target as HTMLInputElement).value"
+              >
+              <div class="usp-merge-list">
+                <button
+                  v-for="b in filteredBoards"
+                  :key="b.id"
+                  type="button"
+                  class="usp-merge-option"
+                  :class="{ 'usp-merge-option--recommended': genTargetBoardId === b.id }"
+                  :data-testid="`gen-board-option-${b.id}`"
+                  @click="genTargetBoardId = b.id"
+                >
+                  <span class="usp-merge-option-name">{{ b.label }}</span>
+                  <span v-if="genTargetBoardId === b.id" class="usp-merge-option-tag">已选</span>
+                </button>
+                <span v-if="filteredBoards.length === 0" class="usp-merge-empty">无匹配板块</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="genDirection === 'create' && genSource === 'aux'" class="usp-gen-row usp-gen-row--days">
+            <label class="usp-gen-days-label">候选时间窗</label>
+            <select v-model.number="genDays" class="usp-gen-days" :disabled="persistedGenerating" data-testid="gen-days">
+              <option v-for="o in dayOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+          </div>
+          <div class="usp-gen-row usp-gen-row--action">
+            <button
+              type="button"
+              class="usp-suggest-btn usp-suggest-btn--small"
+              :disabled="persistedGenerating || !canGenerate"
+              :title="!canGenerate ? '版块扩充需先选定一个目标版块' : undefined"
+              data-testid="gen-submit"
+              @click="handleGenerate()"
+            >
+              <Icon v-if="persistedGenerating" icon="mdi:loading" width="13" class="animate-spin" />
+              <Icon v-else icon="mdi:auto-fix" width="13" />
+              {{ persistedGenerating ? '生成中...' : '生成建议' }}
+            </button>
+            <span v-if="genDirection === 'expand' && !canGenerate" class="usp-gen-hint">请先选定要扩充的版块</span>
+            <span v-if="generateError" class="usp-gen-error" data-testid="gen-error">{{ generateError }}</span>
+          </div>
+        </section>
+
+        <!-- 持久化建议（唯一数据源） -->
         <section class="usp-persisted">
           <div class="usp-persisted-toolbar">
             <div class="usp-filter-tabs">
@@ -238,16 +302,11 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
                 {{ t.label }}
               </button>
             </div>
-            <button
-              type="button"
-              class="usp-suggest-btn usp-suggest-btn--small"
-              :disabled="persistedGenerating"
-              @click="emit('generate')"
-            >
-              <Icon v-if="persistedGenerating" icon="mdi:loading" width="13" class="animate-spin" />
-              <Icon v-else icon="mdi:auto-fix" width="13" />
-              {{ persistedGenerating ? '生成中...' : '生成建议' }}
-            </button>
+          </div>
+
+          <div v-if="backfillNotice" class="usp-notice">
+            <Icon icon="mdi:information-outline" width="14" />
+            <span>已执行升级建议。历史标签归属不会自动回填，可手动触发匹配回填让新构成生效。</span>
           </div>
 
           <div v-if="persistedLoading" class="usp-loading">
@@ -255,8 +314,9 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
             <span>加载建议...</span>
           </div>
           <div v-else-if="persistedSuggestions.length === 0" class="usp-persisted-empty">
-            <Icon icon="mdi:check-circle-outline" width="16" />
-            <span>暂无持久化建议</span>
+            <Icon :icon="hasGenerated ? 'mdi:check-circle-outline' : 'mdi:lightbulb-on-outline'" width="16" />
+            <span v-if="hasGenerated">{{ genDirection === 'expand' ? '本轮无建议——该版块可能已充分覆盖' : '本轮无建议' }}</span>
+            <span v-else>选择方向与来源后生成建议</span>
           </div>
           <div v-else class="usp-persisted-list">
             <div
@@ -273,13 +333,12 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
                   {{ decisionLabel(row.decision) }}
                 </span>
                 <span v-if="row.confidence === 'high'" class="usp-confidence-badge" data-confidence="high">高置信</span>
-                <span v-if="rowOffShortlist(row)" class="usp-confidence-badge usp-off-shortlist-badge">目标超出候选范围</span>
-                <span v-if="rowTargetLabel(row)" class="usp-item-board">{{ rowTargetLabel(row) }}</span>
+                <span v-if="rowTargetLabel(row)" class="usp-item-board" data-testid="row-target-badge">→ {{ rowTargetLabel(row) }}</span>
                 <span v-else-if="row.board_label" class="usp-item-board">{{ row.board_label }}</span>
               </div>
               <p v-if="row.description" class="usp-item-desc">{{ row.description }}</p>
               <div class="usp-aux-toolbar">
-                <span class="usp-aux-count">辅助标签 {{ selectedAuxCount(row) }}/{{ rowAuxLabels(row).length }}</span>
+                <span class="usp-aux-count">{{ row.decision === 'compose' ? '组件' : '辅助标签' }} {{ selectedAuxCount(row) }}/{{ rowAuxLabels(row).length }}</span>
                 <button type="button" class="usp-aux-toggle" @click="selectAllAux(row)">全选</button>
                 <button type="button" class="usp-aux-toggle" @click="clearAllAux(row)">清空</button>
               </div>
@@ -310,75 +369,52 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
                 <span class="usp-evidence-label">共现：</span>
                 <span v-for="(e, ei) in cotagEvents(row)" :key="'ce' + ei" class="usp-evidence-chip">{{ e }}</span>
               </div>
+              <div v-if="row.decision === 'compose' && (composeCooccurrence(row) !== null || composeRepresentTitles(row).length > 0)" class="usp-evidence" data-testid="compose-evidence">
+                <span class="usp-evidence-label">组合证据：</span>
+                <span v-if="composeCooccurrence(row) !== null" class="usp-evidence-chip" data-testid="compose-cooccurrence">
+                  共现 {{ composeCooccurrence(row) }} 篇<template v-if="composeWindowDays(row)"> / {{ composeWindowDays(row) }} 天窗口</template>
+                </span>
+                <span v-for="(title, ti) in composeRepresentTitles(row)" :key="'rt' + ti" class="usp-evidence-chip" :title="title">{{ title }}</span>
+              </div>
               <div v-if="shortlist(row).length > 0" class="usp-evidence">
                 <span class="usp-evidence-label">候选版块：</span>
                 <span v-for="(s, si) in shortlist(row)" :key="'sl' + si" class="usp-evidence-chip">{{ s.board_label || ('板块 #' + s.board_id) }}</span>
               </div>
               <div class="usp-item-actions">
-                <template v-if="row.decision === 'merge_into_existing' || row.decision === 'create_new'">
-                  <!-- merge 行与 create_new 行都可「合并到...」已有板块：候选优先（shortlist 置顶高亮）+ 全量可搜；create_new 行另保留「创建新版块」按钮 -->
-                  <div class="usp-merge-wrapper">
-                    <button
-                      type="button"
-                      class="usp-item-btn usp-item-btn--merge"
-                      :disabled="selectedAuxCount(row) === 0"
-                      :title="selectedAuxCount(row) === 0 ? '至少勾选一个辅助标签' : undefined"
-                      @click="openMergeRowId = openMergeRowId === row.id ? null : row.id"
-                    >
-                      <Icon icon="mdi:merge" width="12" />
-                      合并到...
-                    </button>
-                    <div v-if="openMergeRowId === row.id" class="usp-merge-dropdown usp-merge-dropdown--search">
-                      <input
-                        class="usp-merge-search"
-                        type="text"
-                        placeholder="搜索板块名称或别名…"
-                        :value="mergeSearch(row.id)"
-                        @input="setMergeSearch(row.id, ($event.target as HTMLInputElement).value)"
-                      >
-                      <div class="usp-merge-list">
-                        <!-- ① LLM/算法候选区（evidence.shortlist），高亮置顶 -->
-                        <template v-if="shortlist(row).length > 0">
-                          <div class="usp-merge-group-label">候选版块</div>
-                          <button
-                            v-for="s in shortlist(row)"
-                            :key="'sl-' + s.board_id"
-                            type="button"
-                            class="usp-merge-option usp-merge-option--candidate"
-                            @click="s.board_id && handlePickRowTarget(row, s.board_id)"
-                          >
-                            <span class="usp-merge-option-name">{{ s.board_label || ('板块 #' + s.board_id) }}</span>
-                            <span v-if="typeof s.composition_dist === 'number'" class="usp-merge-option-detail">comp {{ s.composition_dist.toFixed(3) }}</span>
-                          </button>
-                        </template>
-                        <!-- ② 全量板块区（去重候选，按搜索词过滤） -->
-                        <div class="usp-merge-group-label">{{ shortlist(row).length > 0 ? '其他板块' : '全部板块' }}</div>
-                        <button
-                          v-for="b in extraBoardsForRow(row)"
-                          :key="'ex-' + b.id"
-                          type="button"
-                          class="usp-merge-option"
-                          :class="{ 'usp-merge-option--recommended': row.target_board_id === b.id }"
-                          @click="handlePickRowTarget(row, b.id)"
-                        >
-                          <span class="usp-merge-option-name">{{ b.label }}</span>
-                          <span v-if="row.target_board_id === b.id" class="usp-merge-option-tag">推荐</span>
-                        </button>
-                        <span v-if="extraBoardsForRow(row).length === 0" class="usp-merge-empty">无匹配板块</span>
-                      </div>
-                    </div>
-                  </div>
-                </template>
+                <button
+                  v-if="row.decision === 'merge_into_existing'"
+                  type="button"
+                  class="usp-item-btn usp-item-btn--primary"
+                  :disabled="selectedAuxCount(row) === 0 || !row.target_board_id"
+                  :title="!row.target_board_id ? '建议缺少目标版块（历史数据）' : (selectedAuxCount(row) === 0 ? '至少勾选一个辅助标签' : ('合并进 ' + rowTargetLabel(row)))"
+                  data-testid="merge-confirm"
+                  @click="handleConfirmRow(row)"
+                >
+                  <Icon icon="mdi:check" width="12" />
+                  合并进{{ rowTargetLabel(row) ? `「${rowTargetLabel(row)}」` : '' }}
+                </button>
                 <button
                   v-if="row.decision === 'create_new'"
                   type="button"
                   class="usp-item-btn usp-item-btn--primary"
                   :disabled="selectedAuxCount(row) === 0"
                   :title="selectedAuxCount(row) === 0 ? '至少勾选一个辅助标签' : undefined"
-                  @click="handleConfirmCreateRow(row)"
+                  @click="handleConfirmRow(row)"
                 >
                   <Icon icon="mdi:check" width="12" />
                   创建新版块
+                </button>
+                <button
+                  v-if="row.decision === 'compose'"
+                  type="button"
+                  class="usp-item-btn usp-item-btn--primary"
+                  :disabled="selectedAuxCount(row) < 2"
+                  :title="selectedAuxCount(row) < 2 ? '组合标签至少需要 2 个组件' : (rowTargetLabel(row) ? '创建组合并挂载进「' + rowTargetLabel(row) + '」' : undefined)"
+                  data-testid="compose-confirm"
+                  @click="handleConfirmRow(row)"
+                >
+                  <Icon icon="mdi:check" width="12" />
+                  {{ rowTargetLabel(row) ? '创建并挂载' : '创建组合' }}
                 </button>
                 <button
                   type="button"
@@ -392,178 +428,6 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
             </div>
           </div>
         </section>
-
-        <div class="usp-divider"></div>
-        <div class="usp-manual-title">手动探索候选</div>
-
-        <div v-if="loading" class="usp-loading">
-          <Icon icon="mdi:loading" width="20" class="animate-spin text-white/30" />
-          <span>加载候选...</span>
-        </div>
-
-        <div v-else-if="suggestions.length === 0" class="usp-empty">
-          <p v-if="candidates.length === 0">暂无满足条件的升级候选</p>
-          <div v-if="backfillNotice" class="usp-notice">
-            <Icon icon="mdi:information-outline" width="14" />
-            <span>已执行升级建议。历史标签归属不会自动回填，可手动触发匹配回填让新构成生效。</span>
-          </div>
-          <div v-if="candidates.length > 0" class="usp-mode-selector">
-            <label class="usp-mode-option">
-              <input v-model="upgradeMode" type="radio" value="discover_new" />
-              <span>发现新版块</span>
-            </label>
-            <label class="usp-mode-option">
-              <input v-model="upgradeMode" type="radio" value="expand_existing" />
-              <span>扩充已有版块</span>
-            </label>
-          </div>
-          <button
-            v-if="candidates.length > 0"
-            type="button"
-            class="usp-suggest-btn"
-            :disabled="suggesting"
-            @click="emit('suggest', upgradeMode)"
-          >
-            <Icon v-if="suggesting" icon="mdi:loading" width="14" class="animate-spin" />
-            <Icon v-else icon="mdi:brain" width="14" />
-            {{ suggesting ? 'LLM 分析中...' : '获取 LLM 建议' }}
-          </button>
-        </div>
-
-        <div v-else class="usp-list">
-          <div class="usp-toolbar">
-            <span class="usp-toolbar-text">待处理建议 {{ suggestions.length }} 个</span>
-            <button
-              type="button"
-              class="usp-suggest-btn usp-suggest-btn--small"
-              :disabled="suggesting"
-              @click="emit('suggest', upgradeMode)"
-            >
-              <Icon v-if="suggesting" icon="mdi:loading" width="13" class="animate-spin" />
-              <Icon v-else icon="mdi:refresh" width="13" />
-              {{ suggesting ? '重新分析中...' : '重新生成建议' }}
-            </button>
-          </div>
-
-          <div v-if="backfillNotice" class="usp-notice">
-            <Icon icon="mdi:information-outline" width="14" />
-            <span>已执行升级建议。历史标签归属不会自动回填，可手动触发匹配回填让新构成生效。</span>
-          </div>
-
-          <div
-            v-for="(s, i) in suggestions"
-            :key="i"
-            class="usp-item"
-            :style="{ borderColor: decisionStyle(s.decision).border, background: decisionStyle(s.decision).bg }"
-          >
-            <div class="usp-item-header">
-              <span class="usp-item-decision" :style="{ color: decisionStyle(s.decision).color }">
-                {{ decisionLabel(s.decision) }}
-              </span>
-              <span v-if="s.board_label" class="usp-item-board">{{ s.board_label }}</span>
-              <span v-else-if="s.target_board_label" class="usp-item-board">{{ s.target_board_label }}</span>
-              <span v-else-if="s.target_board_id" class="usp-item-board">板块 #{{ s.target_board_id }}</span>
-            </div>
-            <p v-if="s.description" class="usp-item-desc">{{ s.description }}</p>
-            <p class="usp-item-reason">{{ s.reason }}</p>
-            <div class="usp-item-tags">
-              <template v-if="s.auxiliary_labels && s.auxiliary_labels.length > 0">
-                <span v-for="al in s.auxiliary_labels" :key="al.id" class="usp-item-tag">{{ al.label || ('标签 #' + al.id) }}</span>
-              </template>
-              <template v-else>
-                <span v-for="id in s.auxiliary_label_ids" :key="id" class="usp-item-tag">标签 #{{ id }}</span>
-              </template>
-            </div>
-            <div v-if="s.board_affinities && s.board_affinities.length > 0" class="usp-item-affinities">
-              <span class="usp-item-affinities-label">相似板块：</span>
-              <span
-                v-for="(aff, ai) in s.board_affinities"
-                :key="ai"
-                class="usp-item-affinity"
-              >
-                {{ aff.board_label }}
-                <span class="usp-item-affinity-detail">
-                  ({{ aff.matching_candidates }} candidates, avg distance {{ aff.avg_distance.toFixed(4) }})
-                </span>
-              </span>
-            </div>
-            <div class="usp-item-actions">
-              <!-- skip 类型的建议也支持手动操作：创建新板块或合并到已有板块 -->
-              <template v-if="s.decision === 'skip'">
-                <button
-                  type="button"
-                  class="usp-item-btn usp-item-btn--primary"
-                  @click="emit('execute', {
-                    ...s,
-                    decision: 'create_new' as const,
-                    board_label: s.board_label || (s.auxiliary_labels && s.auxiliary_labels.length > 0 ? s.auxiliary_labels[0]!.label : undefined),
-                  }, i)"
-                >
-                  <Icon icon="mdi:plus" width="12" />
-                  改为创建
-                </button>
-                <template v-if="s.board_affinities && s.board_affinities.length > 0">
-                  <div class="usp-merge-wrapper">
-                    <button
-                      type="button"
-                      class="usp-item-btn usp-item-btn--merge"
-                      @click="toggleMerge(i)"
-                    >
-                      <Icon icon="mdi:merge" width="12" />
-                      合并到...
-                    </button>
-                    <div v-if="openMergeIndex === i" class="usp-merge-dropdown">
-                      <button
-                        v-for="aff in s.board_affinities"
-                        :key="aff.board_id"
-                        type="button"
-                        class="usp-merge-option"
-                        @click="handleMerge(s, i, aff.board_id)"
-                      >
-                        {{ aff.board_label }}
-                        <span class="usp-merge-option-detail">({{ aff.matching_candidates }} matches)</span>
-                      </button>
-                    </div>
-                  </div>
-                </template>
-              </template>
-              <template v-else>
-              <button
-                type="button"
-                class="usp-item-btn usp-item-btn--primary"
-                @click="emit('execute', s, i)"
-              >
-                <Icon icon="mdi:check" width="12" />
-                确认执行
-              </button>
-              <template v-if="s.board_affinities && s.board_affinities.length > 0">
-                <div class="usp-merge-wrapper">
-                  <button
-                    type="button"
-                    class="usp-item-btn usp-item-btn--merge"
-                    @click="toggleMerge(i)"
-                  >
-                    <Icon icon="mdi:merge" width="12" />
-                    合并到...
-                  </button>
-                  <div v-if="openMergeIndex === i" class="usp-merge-dropdown">
-                    <button
-                      v-for="aff in s.board_affinities"
-                      :key="aff.board_id"
-                      type="button"
-                      class="usp-merge-option"
-                      @click="handleMerge(s, i, aff.board_id)"
-                    >
-                      {{ aff.board_label }}
-                      <span class="usp-merge-option-detail">({{ aff.matching_candidates }} matches)</span>
-                    </button>
-                  </div>
-                </div>
-              </template>
-              </template>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   </Teleport>
@@ -1173,4 +1037,59 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
   color: var(--color-text-secondary);
   letter-spacing: 0.02em;
 }
+.usp-gen {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 0.75rem;
+  margin-bottom: 0.75rem;
+  background: var(--color-bg-sunken, rgba(255, 255, 255, 0.02));
+}
+
+.usp-gen-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.usp-gen-row--days {
+  gap: 0.5rem;
+}
+
+.usp-gen-group {
+  margin: 0;
+}
+
+.usp-gen-days-label {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.usp-gen-days {
+  background: var(--color-bg-input, rgba(255, 255, 255, 0.05));
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-medium);
+  border-radius: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.usp-gen-board-picker {
+  position: static;
+  width: 100%;
+}
+
+.usp-gen-hint {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.usp-gen-error {
+  font-size: 0.75rem;
+  color: var(--color-danger, #d95c5c);
+}
+
 </style>

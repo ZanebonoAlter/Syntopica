@@ -9,13 +9,47 @@
 #   E. flow 变更溯源链接（archive change 被某 flow 文档「变更溯源」表引用，归档后校验）
 #   H. model tag 守门（Top3 密集文件禁止 GORM tag 里的 not null，约束由显式迁移兜底）
 #
-# 用法： bash scripts/check-standards.sh
-# 退出码：0 全过；1 有失败。
+# 用法： bash scripts/check-standards.sh [--change <changeName>]
+# 退出码：0 全过；1 有失败或参数非法。
 
 set -u
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+# --change 仅收窄 F 段（active change 的 doc-impact 对账）；其余 A-E/G-H 仍全仓运行。
+# 无参保留人工全仓巡检语义。拒绝路径、未知参数及缺参，不能静默退回全仓。
+CHANGE_NAME=""
+if [ "$#" -eq 0 ]; then
+	:
+elif [ "$#" -eq 2 ] && [ "$1" = "--change" ]; then
+	CHANGE_NAME="$2"
+	if [ -z "$CHANGE_NAME" ]; then
+		echo "错误：--change 缺少 change 名称。用法：bash scripts/check-standards.sh [--change <changeName>]" >&2
+		exit 1
+	fi
+	case "$CHANGE_NAME" in
+	*/* | *\\*)
+		echo "错误：--change 只接受 change 目录名，不能包含路径分隔符。" >&2
+		exit 1
+		;;
+	esac
+	if [[ ! "$CHANGE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+		echo "错误：--change 的 change 名称非法。" >&2
+		exit 1
+	fi
+	if [ ! -d "openspec/changes/$CHANGE_NAME" ]; then
+		echo "错误：目标 change 不存在：$CHANGE_NAME" >&2
+		exit 1
+	fi
+else
+	if [ "${1:-}" = "--change" ]; then
+		echo "错误：--change 必须且只能携带一个 change 名称。用法：bash scripts/check-standards.sh [--change <changeName>]" >&2
+	else
+		echo "错误：未知参数：${1:-}。用法：bash scripts/check-standards.sh [--change <changeName>]" >&2
+	fi
+	exit 1
+fi
 
 PASS=0
 FAIL=0
@@ -137,6 +171,11 @@ echo "== E. flow 变更溯源链接（归档后校验，见《开发执行规范
 # 新流程生效日（2026-06-29）之后的 archive change 必须被 flow 文档的变更溯源表引用；
 # 历史存量免校验，避免一次性爆 FAIL。
 CUTOFF="2026-06-29"
+# 溯源宽限期（fix-doc-impact-misattribution D5）：§12 流程为“归档后补溯源”，宽限窗内
+# 的债不 block 其他 change 的归档；超期未溯源仍 FAIL（债由归档门禁催收）。
+# date 不可用（非 GNU date）时宽限检查 fail-open 跳过，保持现状催收语义。
+GRACE_DAYS=3
+GRACE_CUTOFF="$(date -d "-${GRACE_DAYS} days" +%F 2>/dev/null || true)"
 FLOW_DIR="docs/reference/flow"
 if [ -d "openspec/changes/archive" ]; then
 	for d in openspec/changes/archive/*/; do
@@ -152,6 +191,11 @@ if [ -d "openspec/changes/archive" ]; then
 			ok "豁免溯源 $name（tasks.md 声明无 flow 影响）"
 			continue
 		fi
+		# 溯源宽限期：归档日期在 GRACE_DAYS 天内的免检（字典序比较，同 CUTOFF 手法）
+		if [ -n "$GRACE_CUTOFF" ] && [[ "$arch_date" > "$GRACE_CUTOFF" ]]; then
+			ok "宽限期内免检 $name（归档未满 ${GRACE_DAYS} 天，溯源按 §12 归档后流程补）"
+			continue
+		fi
 		if grep -rq "$name" "$FLOW_DIR"/*.md 2>/dev/null; then
 			ok "已溯源 $name"
 		else
@@ -165,7 +209,12 @@ echo "== F. doc-impact 声明对账（见《开发执行规范》§11.4）=="
 # 只校验已声明 doc-impact 的 change（本 capability 首次引入于 docs-harness-consolidation，
 # 此前的 active change 无声明属正常，跳过；新 change 声明了才对账）。
 if [ -f scripts/doc-impact.sh ]; then
-	for d in openspec/changes/*/; do
+	if [ -n "$CHANGE_NAME" ]; then
+		change_dirs=("openspec/changes/$CHANGE_NAME/")
+	else
+		change_dirs=(openspec/changes/*/)
+	fi
+	for d in "${change_dirs[@]}"; do
 		[ -d "$d" ] || continue
 		name="$(basename "$d")"
 		[ "$name" = "archive" ] && continue

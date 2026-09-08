@@ -1,0 +1,3 @@
+schema: syntopica-ui
+created: 2026-09-06
+goal: 把 DATABASE_FIELDS.md 按业务域切成 ~10 个域文档（并入 ER 图域级小节），api/ 与其余文档不动

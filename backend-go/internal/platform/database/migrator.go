@@ -60,6 +60,11 @@ func RegisterModels(models ...any) {
 // RunAutoMigrate syncs all model tables via GORM AutoMigrate.
 // Runs on every startup — adds missing tables/columns, never drops or alters existing ones.
 func RunAutoMigrate(db *gorm.DB) error {
+	// Pre-AutoMigrate fixups for legacy column types GORM cannot ALTER itself
+	// (jsonb→bytea has no implicit cast; AutoMigrate would fail startup).
+	if err := preMigrateEmbeddingCacheBytea(db); err != nil {
+		return err
+	}
 	allModels := []any{
 		&models.Category{},
 		&models.Feed{},
@@ -69,6 +74,7 @@ func RunAutoMigrate(db *gorm.DB) error {
 		&models.TopicTagSemanticLabel{},
 		&models.TopicTagBoardLabel{},
 		&models.BoardComposition{},
+		&models.CompositeComponent{},
 		&models.BoardUpgradeSuggestion{},
 		&models.TopicTagEmbedding{},
 		&models.TopicTagAnalysis{},

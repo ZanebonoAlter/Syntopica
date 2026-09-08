@@ -9,6 +9,7 @@ import (
 	"math/big"
 	mrand "math/rand"
 	"strings"
+	"sync"
 
 	"go.opentelemetry.io/otel"
 	"gorm.io/gorm"
@@ -29,6 +30,15 @@ type ToolCallRecord struct {
 	Args          map[string]any `json:"args"`
 	ResultPreview string         `json:"result_preview"`
 	ResultFull    string         `json:"result_full"`
+
+	// Structured decision annotations (board-level-deep-analysis 4.4 shared
+	// investigation loop). Only the policy path (toolLoopParams.policy != nil)
+	// stamps them; legacy callers keep the exact old JSON shape (omitempty +
+	// zero values ⇒ old keys never appear).
+	Purpose       string   `json:"purpose,omitempty"`        // neutral|support|counter（agent 声明）
+	HypothesisIDs []string `json:"hypothesis_ids,omitempty"` // 声明的目标假设 id
+	Outcome       string   `json:"outcome,omitempty"`        // ok|error|blocked
+	BlockedReason string   `json:"blocked_reason,omitempty"` // Outcome=blocked 时的稳定机器码
 }
 
 // AgentLoopResult holds the output of a single agent loop run.
@@ -52,14 +62,23 @@ type EnrichmentOutput struct {
 // OrchestratorService runs the cycle-B data enrichment flow (探索判断 agent 编排).
 // See design.md §3 and spec under causal-analysis-agent.
 type OrchestratorService struct {
-	airouter          AirRouter
-	repo              *repository.Repository
-	lifelineReader    LifelineReader
-	renderer          *LifelineRenderer
-	toolRegistry      *Registry
-	boardConfigReader BoardConfigReader
-	lensSource        LensSource // 视角来源（默认 AgentLensSource，可注入外部源）
-	capability        airouter.Capability
+	airouter           AirRouter
+	repo               *repository.Repository
+	lifelineReader     LifelineReader
+	renderer           *LifelineRenderer
+	toolRegistry       *Registry
+	boardConfigReader  BoardConfigReader
+	lensSource         LensSource // 视角来源（默认 AgentLensSource，可注入外部源）
+	capability         airouter.Capability
+	freshnessRefresher FreshnessRefresher  // D9 新鲜度门（nil=禁用；wire.go 注入循环 A 服务）
+	boardResolver      BoardConfigResolver // 版块级配置解析（EnrichBoard 用；wire.go 注入）
+
+	// autoDiscoveryExec executes the auto relation-discovery batch after a
+	// brief persists (7.1). Default = detached goroutine with per-board
+	// in-flight guard; tests inject a synchronous recorder.
+	autoDiscoveryExec func(ctx context.Context, boardID, parentID uint, sources []RelationSourceRef)
+	autoMu            sync.Mutex
+	autoInFlight      map[uint]bool
 }
 
 // NewOrchestratorService creates a new orchestrator with required dependencies.
@@ -93,6 +112,17 @@ func NewOrchestratorService(
 // EnrichTopic runs the full cycle-B flow for a persistent topic.
 // Returns the immutable result snapshot and optionally a review.
 func (o *OrchestratorService) EnrichTopic(ctx context.Context, topicID uint) (*EnrichmentOutput, error) {
+	return o.enrichTopic(ctx, topicID, "")
+}
+
+// EnrichTopicLens runs the same flow with a caller-provided lens (D8 下钻入口
+// prefill_lens): the lens overrides the first proposed candidate, focusing the
+// agent loop and analyze on the drilled-down question.
+func (o *OrchestratorService) EnrichTopicLens(ctx context.Context, topicID uint, prefillLens string) (*EnrichmentOutput, error) {
+	return o.enrichTopic(ctx, topicID, prefillLens)
+}
+
+func (o *OrchestratorService) enrichTopic(ctx context.Context, topicID uint, prefillLens string) (*EnrichmentOutput, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "OrchestratorService.EnrichTopic")
 	defer span.End()
 	// 1. Generate session ID.
@@ -107,7 +137,11 @@ func (o *OrchestratorService) EnrichTopic(ctx context.Context, topicID uint) (*E
 		return nil, fmt.Errorf("enrich topic %d: enrichment not enabled for this board", topicID)
 	}
 
-	// 3. Render lifeline (14-day detail).
+	// 3. D9 freshness gate — top up this lane's stale lifelines before the
+	// analysis reads them (same gate as EnrichBoard; M4.9).
+	_ = o.ensureLaneFreshness(ctx, []uint{topicID})
+
+	// 4. Render lifeline (14-day detail).
 	lifelineText, err := o.renderer.RenderLifelineForAgent(o.lifelineReader, topicID, cfg.WindowDays)
 	if err != nil {
 		return nil, fmt.Errorf("enrich topic %d: render lifeline: %w", topicID, err)
@@ -150,6 +184,11 @@ func (o *OrchestratorService) EnrichTopic(ctx context.Context, topicID uint) (*E
 		return nil, fmt.Errorf("enrich topic %d: lens propose: %w", topicID, err)
 	}
 	selectedLens := lenses[0]
+	if prefillLens != "" {
+		// D8 prefill: drilled-down lens wins over the first proposal.
+		selectedLens = Lens{Name: prefillLens, Description: "prefill_lens（版块报告下钻）"}
+		logging.Infof("enrich topic %d: prefill_lens overrides lens proposal: %s", topicID, prefillLens)
+	}
 
 	// 8. Step 2: Agent loop per topic (selected lens focuses research).
 	// Exploration entry points (list_boards/list_lanes/get_lane_detail),
@@ -196,7 +235,7 @@ func (o *OrchestratorService) EnrichTopic(ctx context.Context, topicID uint) (*E
 	snapJSON, _ := json.Marshal(inputSnap)
 
 	result := &repository.TopicEnrichmentResult{
-		PersistentTopicID:   topicID,
+		PersistentTopicID:   repository.TopicIDPtr(topicID),
 		EvolutionAssessment: "", // vestigial column; new schema lives in Sectors
 		Sectors:             sectorsJSON,
 		ToolCalls:           toolCallsJSON,
@@ -238,7 +277,7 @@ func (o *OrchestratorService) EnrichTopic(ctx context.Context, topicID uint) (*E
 				}
 				verdictJSON, _ := json.Marshal(verdictObj)
 				review = &repository.TopicEnrichmentReview{
-					PersistentTopicID: topicID,
+					PersistentTopicID: repository.TopicIDPtr(topicID),
 					PrevResultID:      &prevResult.ID,
 					CurrResultID:      result.ID,
 					Verdict:           verdictJSON,
@@ -460,6 +499,68 @@ type toolLoopParams struct {
 	allowedTools []string // tools the loop may call (guard + dedup scope)
 	maxLoops     int      // loop cap
 	resultTopic  string   // optional: sets AgentLoopResult.Topic (enrichment sets it; QA leaves blank)
+
+	// policy (optional, board-level-deep-analysis 4.4): per-decision validation
+	// + finish discipline for the shared investigation research loop. nil =
+	// legacy behavior, byte-for-byte unchanged (regression-tested).
+	policy toolLoopPolicy
+}
+
+// toolLoopPolicy is the optional decision-policy extension point for
+// runToolLoop. It adds per-call declaration validation, finish-discipline
+// gating and call observation WITHOUT forking the loop itself — the three
+// defenses (/no_think, full results, dedup) stay shared so they cannot drift
+// between callers. policy=nil keeps legacy behavior exactly as before.
+type toolLoopPolicy interface {
+	// CheckCall validates a call_tool decision BEFORE the tool executes.
+	// Blocked verdicts carry a stable machine reason (for records/snapshots)
+	// plus agent-facing feedback (for the rewrite); Purpose/HypothesisIDs are
+	// the parsed declarations stamped onto every record of this decision.
+	CheckCall(step int, decision map[string]any) toolCallVerdict
+	// ObserveCall is invoked only after a tool actually executed — never for
+	// policy-blocked or dedup-intercepted calls (拦截不得冒充完成纪律).
+	ObserveCall(step int, toolName string, args map[string]any, resultFull, purpose string, hypothesisIDs []string)
+	// CheckFinish may reject a finish decision; the loop then continues with
+	// the corrective feedback appended to the agent-visible history.
+	CheckFinish(step int, summary string) toolFinishVerdict
+}
+
+// toolCallVerdict is the outcome of toolLoopPolicy.CheckCall.
+type toolCallVerdict struct {
+	Blocked       bool
+	BlockedReason string   // stable machine code (records/snapshots)
+	Feedback      string   // agent-facing rewrite instruction
+	Purpose       string   // parsed/validated purpose declaration
+	HypothesisIDs []string // parsed/validated target hypothesis ids
+}
+
+// toolFinishVerdict is the outcome of toolLoopPolicy.CheckFinish.
+type toolFinishVerdict struct {
+	Blocked  bool
+	Feedback string
+}
+
+// Structured ToolCallRecord.Outcome values (policy path only).
+const (
+	toolCallOutcomeOK      = "ok"
+	toolCallOutcomeError   = "error"
+	toolCallOutcomeBlocked = "blocked"
+)
+
+// toolResultErrorText extracts the "error" field from a tool result JSON
+// (registry convention: failures degrade to {"error": "..."}). Empty string
+// means the result carries no error. Shared by the loop (Outcome stamping)
+// and the investigation policy (gap classification) so both agree on what a
+// failed tool call is.
+func toolResultErrorText(resultFull string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(resultFull), &m); err != nil {
+		return ""
+	}
+	if e, ok := m["error"].(string); ok {
+		return e
+	}
+	return ""
 }
 
 // runToolLoop is the shared agent core used by both the enrichment agent loop
@@ -518,7 +619,18 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 
 		switch action {
 		case "finish":
-			result.FinalData, _ = decision["summary"].(string)
+			summary, _ := decision["summary"].(string)
+			// Decision policy: a finish that has not met the research discipline
+			// is bounced back into the loop with corrective feedback
+			// (board-level-deep-analysis 4.4). Legacy callers (policy=nil)
+			// finish as before.
+			if p.policy != nil {
+				if v := p.policy.CheckFinish(step, summary); v.Blocked {
+					historyLines = append(historyLines, fmt.Sprintf("第%d步: 宣布完成被拦: %s — 请继续按研究纪律调用工具。", step, v.Feedback))
+					continue
+				}
+			}
+			result.FinalData = summary
 			return result, nil
 
 		case "call_tool":
@@ -527,6 +639,35 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 			args, ok := argsRaw.(map[string]any)
 			if !ok {
 				args = map[string]any{}
+			}
+
+			// Decision policy (board-level-deep-analysis 4.4): consulted before
+			// guard/dedup/execute. Blocked calls are recorded with a stable
+			// machine reason + agent-facing feedback; the tool never executes
+			// and the dedup key is not consumed. Legacy callers skip entirely.
+			var polPurpose string
+			var polHypIDs []string
+			if p.policy != nil {
+				v := p.policy.CheckCall(step, decision)
+				polPurpose, polHypIDs = v.Purpose, v.HypothesisIDs
+				if v.Blocked {
+					fb, _ := json.Marshal(map[string]any{"error": "调用被拦: " + v.BlockedReason, "feedback": v.Feedback})
+					tc := ToolCallRecord{
+						Step:          step,
+						Thought:       thought + " [被拦:" + v.BlockedReason + "]",
+						Tool:          toolName,
+						Args:          args,
+						ResultPreview: string(fb),
+						ResultFull:    string(fb),
+						Purpose:       polPurpose,
+						HypothesisIDs: polHypIDs,
+						Outcome:       toolCallOutcomeBlocked,
+						BlockedReason: v.BlockedReason,
+					}
+					result.ToolCalls = append(result.ToolCalls, tc)
+					historyLines = append(historyLines, fmt.Sprintf("第%d步: 调用 %s(%s) — 被拦[%s]: %s", step, toolName, argsToJSON(args), v.BlockedReason, v.Feedback))
+					continue
+				}
 			}
 
 			// Guard: reject tools not in allowedTools.
@@ -539,6 +680,10 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 					Args:          args,
 					ResultPreview: errJSON,
 					ResultFull:    errJSON,
+				}
+				if p.policy != nil {
+					tc.Purpose, tc.HypothesisIDs = polPurpose, polHypIDs
+					tc.Outcome, tc.BlockedReason = toolCallOutcomeBlocked, "tool_not_allowed"
 				}
 				result.ToolCalls = append(result.ToolCalls, tc)
 				historyLines = append(historyLines, fmt.Sprintf("第%d步: 调用 %s(%s) — 结果: %s", step, toolName, argsToJSON(args), errJSON))
@@ -557,6 +702,10 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 					ResultPreview: errJSON,
 					ResultFull:    errJSON,
 				}
+				if p.policy != nil {
+					tc.Purpose, tc.HypothesisIDs = polPurpose, polHypIDs
+					tc.Outcome, tc.BlockedReason = toolCallOutcomeBlocked, "duplicate_call"
+				}
 				result.ToolCalls = append(result.ToolCalls, tc)
 				historyLines = append(historyLines, fmt.Sprintf("第%d步: 调用 %s(%s) — 结果: %s", step, toolName, argsToJSON(args), errJSON))
 				continue
@@ -566,7 +715,15 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 			// Execute tool.
 			toolResult, toolErr := toolRegistry.Execute(ctx, toolName, args)
 			if toolErr != nil {
-				toolResult = fmt.Sprintf(`{"error":"%s"}`, toolErr.Error())
+				// json.Marshal 保证错误文本中的引号/换行被合法转义——ResultFull
+				// 必须可解析（toolResultErrorText / outcome 判定 / investigation gap
+				// 分类都依赖这一点）。普通文本序列化结果与旧格式逐字节一致
+				// （policy=nil 旧 JSON 兼容）。
+				if b, mErr := json.Marshal(map[string]any{"error": toolErr.Error()}); mErr == nil {
+					toolResult = string(b)
+				} else {
+					toolResult = `{"error":"tool execution failed"}`
+				}
 			}
 
 			// 防御② Full result in history (no truncation for LLM).
@@ -582,6 +739,16 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 				Args:          args,
 				ResultPreview: preview,
 				ResultFull:    toolResult,
+			}
+			if p.policy != nil {
+				tc.Purpose, tc.HypothesisIDs = polPurpose, polHypIDs
+				if toolResultErrorText(toolResult) != "" {
+					tc.Outcome = toolCallOutcomeError
+				} else {
+					tc.Outcome = toolCallOutcomeOK
+				}
+				// 只有真正执行过的调用才进入纪律观察（拦截不冒充尝试）。
+				p.policy.ObserveCall(step, toolName, args, toolResult, polPurpose, polHypIDs)
 			}
 			result.ToolCalls = append(result.ToolCalls, tc)
 			historyLines = append(historyLines, fmt.Sprintf("第%d步: 调用 %s(%s) — 想法: %s — 结果: %s", step, toolName, argsToJSON(args), thought, toolResult))
@@ -689,15 +856,21 @@ type RegimeShift struct {
 	Evidence string `json:"evidence"` // 依据
 }
 
-// EvidenceChainItem is one verifiable-evidence entry. source_type ∈ news|web|page;
-// web/page entries must carry a clickable url + a direct quote (not an AI paraphrase).
+// EvidenceChainItem is one verifiable-evidence entry. source_type ∈
+// news|web|page|lane (lane = board-scope lane reference, Ref carries lane_id);
+// web/page entries must carry a clickable url + a direct quote (not an AI
+// paraphrase). Kind is the orthogonal two-level classification (quote 文段引用
+// / series 数字序列 / chart 图表; empty = legacy behaviour, board-level-deep-
+// analysis D4).
 type EvidenceChainItem struct {
-	SourceType  string `json:"source_type"`           // news|web|page
-	Ref         string `json:"ref,omitempty"`         // news 引用 id
+	SourceType  string `json:"source_type"`           // news|web|page|lane
+	Ref         string `json:"ref,omitempty"`         // news 引用 id / lane 泳道 id
 	URL         string `json:"url,omitempty"`         // web/page 可核查 URL
 	Quote       string `json:"quote,omitempty"`       // 原文摘录（非转述）
 	Institution string `json:"institution,omitempty"` // 来源机构
 	Date        string `json:"date,omitempty"`        // 日期
+	Kind        string `json:"kind,omitempty"`        // quote|series|chart（可选两级分类）
+	LaneNote    string `json:"lane_note,omitempty"`   // lane 证据的论据说明
 }
 
 // EventChainAnalysis is the body for form=event_chain.
@@ -866,6 +1039,12 @@ depth 块字段（映射结构化深度分析基因）：
 - regime_shift：范式转折判断（确实有才填，无则 null）
 - boundary：★反过度解读边界——明确写出“目前还不能下结论的边界”，不可空泛，不可省略
 - evidence_chain：可核查证据链，source_type ∈ news(分层新闻)|web(web_search 网页)|page(fetch_page 正文)；web/page 必须带 url + quote(原文摘录，非转述) + institution(来源机构) + date
+
+【证据纪律】
+evidence_chain 的质量以与研究问题的【直接相关性】为第一优先级：优先收录直接支撑或检验本视角结论的一手依据（检索用机构名 + 数据关键词组合，而非事件转述关键词），其次为可核查的二手材料，最后才是背景新闻。证据类型数量不是质量指标——不为凑类型强行加入与问题无关的历史类比、报告或数据序列；材料不足就如实减少，不注水。
+- web/page 证据必须可核查：url + quote(原文摘录，非转述) + institution(来源机构) + date，四要素缺一不可
+- 与主解释相冲突或构成反证的材料，同样收入 evidence_chain，并在 depth.boundary 里如实呈现其张力——不得因不符合主解释而丢弃或弱化
+- 确实检索不到所需材料时，在 boundary 里诚实标注缺口并降低相关结论的确定性，不要编造证据
 
 【引用格式】source_type ∈ news（来自分层新闻上下文）| web（web_search 网页结果）| page（fetch_page 正文）；news 的 ref 指向具体 id，web/page 带 url；quote 直接摘录原话/原文
 
@@ -1172,6 +1351,8 @@ func parseDepth(m map[string]any) Depth {
 				Quote:       getString(vm, "quote"),
 				Institution: getString(vm, "institution"),
 				Date:        getString(vm, "date"),
+				Kind:        normalizeEvidenceKind(getString(vm, "kind")),
+				LaneNote:    getString(vm, "lane_note"),
 			})
 		}
 	}
@@ -1251,6 +1432,12 @@ func (o *OrchestratorService) runReviewJudge(ctx context.Context, sessionID, pre
 		return nil, fmt.Errorf("review judge parse: %w", err)
 	}
 
+	return parseReviewJudgeOutput(parsed), nil
+}
+
+// parseReviewJudgeOutput maps one parsed LLM payload onto ReviewJudgeOutput.
+// Shared by the topic insight judge and the board_brief judge (task 3.5).
+func parseReviewJudgeOutput(parsed map[string]any) *ReviewJudgeOutput {
 	shouldReview, _ := parsed["should_review"].(bool)
 	reason, _ := parsed["reason"].(string)
 	affectedContext, _ := parsed["affected_context"].(string)
@@ -1264,7 +1451,7 @@ func (o *OrchestratorService) runReviewJudge(ctx context.Context, sessionID, pre
 		ConfidenceShift: parseConfidenceShift(parsed["confidence_shift"]),
 		AffectedContext: affectedContext,
 		Confidence:      confidence,
-	}, nil
+	}
 }
 
 func parseStringSlice(v any) []string {
@@ -1340,7 +1527,7 @@ func argsToJSON(args map[string]any) string {
 // external-knowledge fallback (fetch_page is added once the readability backend
 // is wired). No per-source_type conditional tools exist anymore — the A-share
 // financial tools were removed when the direction shifted to structured depth.
-var explorationToolNames = []string{"list_boards", "list_lanes", "get_lane_detail", "web_search", "fetch_page"}
+var explorationToolNames = []string{"list_boards", "list_lanes", "get_lane_detail", "web_search", "fetch_page", "search_internal_context"}
 
 // buildAgentAllowedTools returns the effective allowed-tools list for the agent
 // loop: the always-on exploration entry points + web_search, plus the board's

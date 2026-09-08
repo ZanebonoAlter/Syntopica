@@ -65,7 +65,7 @@ func TestDailyReportStepSpans_NamedAndParentedUnderGenerate(t *testing.T) {
 
 	// cluster_threads — cluster references no real tag → clusterTags empty →
 	// early-returns before airouter.NewRouter().Chat, span still recorded.
-	_, _ = GenerateClusterThreads(ctx,
+	_, _, _ = GenerateClusterThreads(ctx,
 		repository.ClusterGroup{GroupName: "g", TagIDs: []uint{999}},
 		[]repository.TagInput{{ID: 1, Label: "x"}})
 
@@ -140,7 +140,7 @@ func TestDailyReportSpans_ConcurrentClusterThreadsShareParent(t *testing.T) {
 		wg.Add(1)
 		go func(c repository.ClusterGroup) {
 			defer wg.Done()
-			_, _ = GenerateClusterThreads(ctx, c, tags)
+			_, _, _ = GenerateClusterThreads(ctx, c, tags)
 		}(cluster)
 	}
 	wg.Wait()

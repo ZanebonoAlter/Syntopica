@@ -1,7 +1,13 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { DIALOG_SIZES, type DialogSize } from './layout-contract'
+
 interface Props {
   modelValue: boolean
   title?: string
+  /** 尺寸档（新代码首选）：sm=420 / md=560 / lg=760 / xl=1040，统一受 92vw 约束（standard/frontend/layout.md） */
+  size?: DialogSize
+  /** @deprecated 存量兼容：自由宽度。新代码禁用，改用 size；仅在未传 size 时生效 */
   width?: string
   closeOnOverlay?: boolean
   closeOnEscape?: boolean
@@ -10,6 +16,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  size: undefined,
   width: '480px',
   closeOnOverlay: true,
   closeOnEscape: true,
@@ -20,6 +27,13 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
 }>()
+
+/** size 优先：注入 --dialog-w 档位变量，宽度由 .is-sized 样式 min(var, 92vw) 统一约束；
+ *  旧 width 保持原 maxWidth 行为（渲染兼容，新代码禁用） */
+const dialogStyle = computed(() => {
+  if (props.size) return { '--dialog-w': `${DIALOG_SIZES[props.size]}px` }
+  return { maxWidth: props.width }
+})
 
 function close() {
   emit('update:modelValue', false)
@@ -39,7 +53,7 @@ watch(() => props.modelValue, (v) => {
   } else {
     document.removeEventListener('keydown', onKeydown)
   }
-})
+}, { immediate: true })
 
 onUnmounted(() => {
   document.removeEventListener('keydown', onKeydown)
@@ -50,7 +64,7 @@ onUnmounted(() => {
   <Teleport to="body">
     <Transition name="dialog">
       <div v-if="modelValue" class="app-dialog-overlay" :style="{ zIndex }" @click.self="onOverlayClick">
-        <div class="app-dialog" :style="{ maxWidth: width }">
+        <div class="app-dialog" :class="{ 'is-sized': !!size }" :style="dialogStyle">
           <div v-if="title || $slots.header" class="app-dialog__header">
             <slot name="header">
               <h2 class="app-dialog__title">{{ title }}</h2>
@@ -91,6 +105,11 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   width: 90vw;
+}
+
+.app-dialog.is-sized {
+  /* 尺寸档：档位宽度与 92vw 取小（standard/frontend/layout.md）；min() 在样式表内由浏览器求值 */
+  width: min(var(--dialog-w, 560px), 92vw);
 }
 
 .app-dialog__header {

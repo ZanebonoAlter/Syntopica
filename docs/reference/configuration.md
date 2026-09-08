@@ -16,7 +16,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | `DATABASE_DSN` | 否 | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | PostgreSQL 连接字符串 |
 | `CORS_ORIGINS` | 否 | `"http://localhost:3000,http://localhost:3000"` | 逗号分隔的允许 CORS 来源列表 |
 | `MIGRATIONS_ALLOW_DESTRUCTIVE` | 否 | *(未设置)* | 仅设为 `"1"` 时启用破坏性数据库迁移（含 `TRUNCATE`/`DROP` 的历史数据清理迁移）。**生产环境绝不设置**；dev/本地开发设 `"1"` 以执行历史数据清理。见 [部署指南](deployment.md#破坏性迁移开关)。 |
-| `TRACE_SAMPLE_RATIO` | 否 | `1.0` | OTel root span 采样比例（`ParentBased(TraceIDRatioBased)`）。`1.0`=全采；`<1.0` 按比例降采样；被采 root 的所有子 span（DB/出站 HTTP/业务）完整保留。 |
+| `TRACE_SAMPLE_RATIO` | 否 | `0.05` | OTel root span 采样比例（`ParentBased(TraceIDRatioBased)`）。`1.0`=全采；`<1.0` 按比例降采样；被采 root 的所有子 span（DB/出站 HTTP/业务）完整保留。非法值（不可解析或超出 0.0–1.0）回退默认 `0.05` 并打 warn。全采样下 otel_spans 日增 ~82 万行/600MB，故默认低采样；排障时临时设 `1.0` 重启即可恢复全采。 |
 | `TRACE_INSTRUMENT_GORM` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭 GORM DB 操作自动埋点（自写 `GORMTracePlugin`）。非 `"0"` 均视为启用。 |
 | `TRACE_INSTRUMENT_HTTP` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭出站 HTTP 自动埋点（`httpclient` 工厂的 otelhttp 包装）。非 `"0"` 均视为启用。 |
 | `STORAGE_ICON_DIR` | 否 | `"data/icons"` | feed 图标本地化存储根目录（实际文件在 `feeds/` 子目录），由后端 `/icons` 静态路由对外服务 |
@@ -117,7 +117,7 @@ database:
 | CORS headers | `Content-Type, Authorization` | `viper.SetDefault` in `config.go` |
 | Tracing enabled | `true` | `tracing.DefaultConfig()` |
 | Tracing retention | `7` days | `tracing.DefaultConfig()` |
-| Tracing sample ratio | `1.0` | `tracing.DefaultConfig()` / viper `tracing.sample_ratio` |
+| Tracing sample ratio | `0.05` | `viper.SetDefault("tracing.sample_ratio")` in `config.go`（optimize-pg-storage：全采样日产 82 万 span/600MB，降为 0.05） |
 | Tracing instrument GORM | `true` | `tracing.DefaultConfig()` / viper `tracing.instrument_gorm` |
 | Tracing instrument HTTP | `true` | `tracing.DefaultConfig()` / viper `tracing.instrument_http` |
 
@@ -217,15 +217,15 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | capability | 路由建议名 | 说明 |
 |------------|-----------|------|
 | `data_enrichment_news` | `data-enrichment-news` | 循环A新闻汇总（`summarize_context`），量大可配便宜模型 |
-| `data_enrichment_analysis` | `data-enrichment-analysis` | 循环B分析认知（`interpret` / `tool_use` / `analyze` / `review_judge`） |
+| `data_enrichment_analysis` | `data-enrichment-analysis` | 循环B分析认知（`interpret` / `tool_use` / `analyze` / `review_judge`）与版块链（`board_brief` / `board_method_select` / `board_hypothesize` / `board_synthesize`；调查共享研究循环复用 `tool_use`） |
 
 两条路由均需在 `ai_routes` 表 seed 为启用状态，并绑定到 `ai_route_providers` 中的至少一个 provider。
 
-#### 2. Provider 需配 `enable_thinking=false`
+#### 2. Qwen3 / Qwythos Provider 需配 `enable_thinking=false`
 
-根据设计决策（design.md §11 决策①），`data_enrichment_news` 和 `data_enrichment_analysis` 路由指向的 provider 必须设置 `enable_thinking=false`。Qwen3 等带思考模板的模型在 thinking 模式下会烧光 token 导致 `content` 为空——当前 agent loop 的 system prompt + 低 max_tokens 设计不兼容 thinking 模式。
+根据设计决策（design.md §11 决策①），`data_enrichment_news` 和 `data_enrichment_analysis` 路由中使用 Qwen3 / Qwythos 模板的本地 provider 必须设置 `enable_thinking=false`。这类模型在 thinking 模式下可能烧光 token 并导致 `content` 为空，当前 agent loop 的 system prompt + max_tokens 预算不兼容这种隐式思考模板。其他兼容供应商按各自协议与模型配置决定，不要为了处理响应慢而一刀切修改 thinking 开关。
 
-> **注意**：此配置是 provider 级别的（`ai_providers` 表 `enable_thinking` 字段），不是 per-request 参数。domain 代码不做特殊处理，照常调用 `airouter.Router.Chat`。airouter 请求层始终透传 `chat_template_kwargs.enable_thinking = provider.EnableThinking`（参见 `openai_compatible.go:206` `buildPayload`）。
+> **注意**：此配置是 provider 级别的（`ai_providers` 表 `enable_thinking` 字段），不是 per-request 参数。domain 代码不做特殊处理，照常调用 `airouter.Router.Chat`。airouter 请求层始终透传 `chat_template_kwargs.enable_thinking = provider.EnableThinking`（参见 `openai_compatible.go` 的 `buildPayload`）。
 
 #### 3. 板块编辑需开 `enrichment_enabled=true`
 
@@ -244,6 +244,41 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 - **配 key（首选·设置界面）**：设置页「博查搜索」section（`GET/POST /api/settings/bocha`，存 `ai_settings` 表 `bocha_config`，照 Firecrawl）。界面改**即时生效、无需重启**（`BochaWebSearcher` 每次 `Search` 动态读 DB）。GET 返回脱敏 key（不回显完整值）；保存时 api_key 留空=不改、输入新值才覆盖。
 - **配 key（兜底·无界面/部署）**：`configs/config.yaml` 的 `bocha.api_key` 或环境变量 `BOCHA_API_KEY`。优先级 **界面 DB > env > config.yaml > 空**。
 - 无 key 时：`web_search`/`fetch_page` 降级，深度层仍产出但证据链弱（仅靠分层新闻 context）。
+
+#### 5. Provider 超时（`ai_providers.timeout_seconds`，慢模型必调）
+
+`data_enrichment_analysis` 路由指向的 provider 每次调用可设 HTTP 超时（`ai_providers.timeout_seconds`，DB 默认 120 秒；设置页 AI 供应商面板 / `PUT /api/ai/providers/:id` 可改）。**没有专用环境变量**，这是纯 DB 配置。
+
+- **慢供应商建议 600 秒（10 分钟）**：版块调查链（`board_hypothesize` → 共享研究循环多轮 `tool_use` → `board_synthesize`）单次 LLM 调用在慢速模型上实测可达 6 分半（glm-5.3-flash 两次 HTTP 200 均在 358-389 秒），默认 120 秒会把这类调用拦腰截断。按 2026-08-31 用户决定：慢速 `data_enrichment_analysis` 供应商建议/当前操作口径调到 600 秒。
+- **总 job 上限不变**：单次分析（简报/调查/单泳道）后台 job 硬上限 30 分钟（`analysisJobTimeout`），provider 超时只影响单次 LLM 调用，不动总预算。
+- **修改即时生效、无需重启**：airouter 每次调用经 `LoadRouteWithProviders` 现查路由与 provider（`openai_compatible.go` 按当次 `provider.TimeoutSeconds` 建 client 超时）。
+- 另：HTTP 成功但 assistant content 为空的响应会被 airouter 统一规范化为可重试失败（`error_code=empty_response`）并走 ordered fallback，不会把空文本当成功结果消费（board-level-deep-analysis 2026-08-31 修复，见 flow/ai-summary 与 standard/backend/ai-logging）。
+
+#### 6. 分析方法卡（UI 管理，无配置文件项）
+
+方法卡（`analysis_methods` 表）经设置页「分析方法」section 或 `/api/analysis-methods` CRUD 管理（创建默认停用，启停即时生效）；仅调查链按问题选中 0-2 张注入，不进简报/事实阶段。旧参考角色（`reference_roles`）已退役只读。详见 [api/dataenrichment.md](api/dataenrichment.md)。
+
+#### 6. 跨版块关系发现（add-evidence-backed-cross-board-relations，默认关闭）
+
+全局预算/门槛存 `configs/config.yaml` 的 `cross_board_rel` 段（`CrossBoardRelationConfig`，代码默认值兜底见 `config.EffectiveCrossBoardRelationConfig`）：
+
+| 键 | 默认 | 说明 |
+| ---- | ---- | ---- |
+| `auto_max_sources_per_brief` | 3 | 自动发现：每份新简报最多取几个 observation 发起发现。**-1 = 全局显式禁用**（effective 0）；未配置/0 = 用默认 3。**自动发现整体默认关闭**——板级开关不开启就永不自动跑 |
+| `max_searches_per_run` | 4 | 单次发现 run 的 web_search 调用上限（scout 2-4 query + verifier 反证共享口径按阶段分别计数） |
+| `max_fetches_per_run` | 2 | 单次 run 的 fetch_page 上限 |
+| `max_loops_per_run` | 6 | scout loop 轮数上限 |
+| `run_timeout_seconds` | 300 | 单次 run 整体超时 |
+| `resolve_threshold` | 0.62 | 目标解析 top-1 最低分（embedding cosine 或词法归一分） |
+| `resolve_margin` | 0.08 | top1-top2 最小差距——不足则 ambiguous（unresolved 不硬选） |
+| `dismiss_cooldown_days` | 14 | 被驳回关系的同 suggestion_hash 冷却期 |
+| `confirmed_ttl_hours` | 720 | confirmed 关系有效期（30 天，到期转 expired 不再注入简报） |
+| `brief_max_relations` | 3 | 单份简报最多注入几条 confirmed 关系 |
+| `brief_max_relation_runes` | 1200 | 简报注入块字符预算（超限截断并在快照记 truncated） |
+
+**板级开关**（DB，非 yaml）：`semantic_labels.relation_auto_discovery_enabled`（默认 false，板块编辑弹窗可切）。层级关系：板级开关关 → 永不自动；开关开但全局 `auto_max_sources_per_brief` ≤ 0 → 仍不自动。手动「发现关联」不受这两个开关限制（按 source 互斥 + hash 幂等防重）。
+
+博查 key 复用上文「数据增强 §4」同一配置（界面 > env > config.yaml）——跨版块发现的 Scout/Verify 检索走同一 web_search 后端；无 key 时诚实降级（gap 记录 `web_search_error`，不阻断）。
 
 ### 出站代理（`http_proxy_config`）
 
@@ -299,4 +334,19 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | 可用性校验速率 | 2 req/s | example 路径异步限流 GET 的默认速率（`CheckAvailability` 参数可覆盖） |
 
 管理员无需额外配置即可使用；以上发现参数为代码默认值，调优需改 `internal/admin/service/discovery_helpers.go` 常量。
+
+## dsh 能源研究本地预设（外部工具，非 Syntopica 应用配置）
+
+本地 dsh（DeepSeek Harness，版本前提 **0.1.2-rc.1**，Web UI `http://127.0.0.1:3080`）的「能源研究」用户预设：原油供需研究专用受限 agent（仅网页检索/抓取 + 提问 + 压缩；无 Shell、文件编辑、委派能力）。本节只描述外部工具配置，不影响 Syntopica 前后端。
+
+| 位置 | 路径 | 说明 |
+|------|------|------|
+| 仓库配置源（唯一编辑点） | `config/dsh/presets/energy-research/`（`preset.yml` + `agent.cordis.yml`） | 进 git 可追溯；改动后需手动同步到 live |
+| live 部署 | `C:/Users/Admin/.dsh/.agent-presets/energy-research/`（同两文件） | dsh 用户预设根目录，下一次 roster 读取自动发现，无需重启 |
+
+- **同步方式**：将仓库源两文件逐字节复制到 live 目录（部署时已验证 SHA256 一致：preset.yml `afa39270…`、agent.cordis.yml `a3fd3073…`）。
+- **选用**：dsh Web UI 新建会话时在预设选择器选「能源研究」（排在「标准模式」之后，`order: 20`）。预设只在会话尚未产出内容时可选；**旧会话与部署默认预设不受影响**（未改 `settings.yaml`/模型/权限/凭据）。
+- **回退**：删除 `C:/Users/Admin/.dsh/.agent-presets/energy-research/` 目录即停止向新会话提供该预设；已运行会话及其历史不会被删除/撤销，仓库源保留。
+- **能力边界（诚实声明）**：当前**未接入** EIA/JODI/STEO 等专业数据接口（无 MCP 行、无虚构端点），取材仅限网页检索/抓取；persona 已约束不编造数值、缺证据停止。工具白名单≠OS 沙箱隔离。搜索 `maxUses` 与 host `maxParallelToolCalls` 保持原样，**尚无整场 token/硬预算限制**。
+- 行为契约为 openspec change `configure-dsh-energy-research`（spec：`dsh-research-preset`）。
 

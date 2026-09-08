@@ -19,11 +19,18 @@ import (
 
 var testCap = airouter.Capability("data_enrichment_analysis")
 
+// setupOrchDBSeq uniquifies shared-cache memory DB names across -count re-runs.
+var setupOrchDBSeq int64
+
 // ── Test helpers ────────────────────────────────────────────────────────────
 
 func setupOrchTestDB(t *testing.T) *repository.Repository {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
+	// Unique suffix: shared-cache memory DBs keyed only by t.Name() collide
+	// across -count>1 re-runs (same name → same DB → UNIQUE constraint on
+	// re-seeded fixture rows).
+	setupOrchDBSeq++
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s-%d?mode=memory&cache=shared", t.Name(), setupOrchDBSeq)), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -95,6 +102,10 @@ func (m *orchMockLifelineReader) GetTopicLifeline(topicID uint) (service.Section
 		return service.SectionTimelineData{}, m.err
 	}
 	return m.data, nil
+}
+
+func (m *orchMockLifelineReader) GetTopicLifelineArchive(topicID uint) ([]service.LifelineArchiveRow, error) {
+	return nil, nil
 }
 
 func mustParseTime(s string) time.Time {
@@ -338,7 +349,7 @@ func TestEnrichTopicE2E_FullFlow(t *testing.T) {
 	if result == nil {
 		t.Fatal("result should not be nil")
 	}
-	if result.PersistentTopicID != 1 {
+	if repository.TopicIDMatches(result.PersistentTopicID, 1) == false {
 		t.Fatalf("topic ID: want 1, got %d", result.PersistentTopicID)
 	}
 	// EvolutionAssessment is now vestigial (empty) — new schema lives in Sectors.
@@ -454,7 +465,7 @@ func TestEnrichTopic_ReviewJudgeOnSecondRun(t *testing.T) {
 	// Pre-populate a previous result (new-format sectors with form field) to
 	// trigger review judge.
 	prevResult := &repository.TopicEnrichmentResult{
-		PersistentTopicID:   1,
+		PersistentTopicID:   repository.TopicIDPtr(1),
 		EvolutionAssessment: "",
 		Sectors:             json.RawMessage(`{"form":"event_chain","lens":"L","analysis":{"insight_layer":[{"title":"油价将回落","cert":"medium"}]}}`),
 		SessionID:           "data_enrichment_1_prev0001",
@@ -564,7 +575,7 @@ func TestEnrichTopic_ReviewJudgeFalseSkips(t *testing.T) {
 	repo := setupOrchTestDB(t)
 
 	prevResult := &repository.TopicEnrichmentResult{
-		PersistentTopicID: 2,
+		PersistentTopicID: repository.TopicIDPtr(2),
 		Sectors:           json.RawMessage(`{"form":"event_chain","lens":"L","analysis":{}}`),
 		SessionID:         "data_enrichment_2_prev0001",
 	}
@@ -735,7 +746,7 @@ func TestEnrichTopic_ReviewDoesNotWriteToTable1(t *testing.T) {
 	repo := setupOrchTestDB(t)
 
 	prevResult := &repository.TopicEnrichmentResult{
-		PersistentTopicID: 1,
+		PersistentTopicID: repository.TopicIDPtr(1),
 		Sectors:           json.RawMessage(`{"form":"event_chain","lens":"L","analysis":{}}`),
 		SessionID:         "prev",
 	}
@@ -787,7 +798,10 @@ func TestRandomHex_NonEmptyCorrectLength(t *testing.T) {
 		if len(got) != n {
 			t.Fatalf("randomHex(%d): len=%d, want %d", n, len(got), n)
 		}
-		if n > 0 && got == strings.Repeat("0", n) {
+		// All-zeros only meaningful for longer strings: each char is one of 16
+		// hex digits, so n=1 has a legitimate 1/16 chance of "0" (pre-existing
+		// flake). At n>=8 the odds are ~4e-10 — effectively impossible.
+		if n >= 8 && got == strings.Repeat("0", n) {
 			t.Fatalf("randomHex(%d): got all zeros (extremely unlikely)", n)
 		}
 	}
@@ -1011,7 +1025,7 @@ func TestEnrichTopic_InterpretIncludesContextLayers(t *testing.T) {
 	}
 
 	review := &repository.TopicEnrichmentReview{
-		PersistentTopicID: 1,
+		PersistentTopicID: repository.TopicIDPtr(1),
 		CurrResultID:      999,
 		DeviationSummary:  "上次因X误判黄金跌",
 		Applied:           true,
@@ -1386,7 +1400,7 @@ func TestRunReviewJudge_NewFindingsOverturned(t *testing.T) {
 	repo := setupOrchTestDB(t)
 
 	prevResult := &repository.TopicEnrichmentResult{
-		PersistentTopicID: 1,
+		PersistentTopicID: repository.TopicIDPtr(1),
 		Sectors:           json.RawMessage(`{"form":"event_chain","lens":"L","analysis":{"insight_layer":[{"title":"油价将回落","cert":"medium"}]}}`),
 		SessionID:         "data_enrichment_1_prev_pc",
 	}
@@ -1472,7 +1486,7 @@ func TestEnrichTopic_SkipReviewOnOldFormatPrev(t *testing.T) {
 
 	// Seed prev result with OLD-format sectors (bare array, no form field).
 	prevResult := &repository.TopicEnrichmentResult{
-		PersistentTopicID: 3,
+		PersistentTopicID: repository.TopicIDPtr(3),
 		Sectors:           json.RawMessage(`[{"sector":"能源","direction":"up"}]`),
 		SessionID:         "data_enrichment_3_prev_old",
 	}

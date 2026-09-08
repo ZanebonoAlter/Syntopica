@@ -12,6 +12,10 @@ type BoardEnrichmentConfig struct {
 	WindowDays        int      `json:"window_days"`        // default 14
 	ContextLayers     []string `json:"context_layers"`     // default ["week","month","year","all"]
 	AllowedTools      []string `json:"allowed_tools"`      // tools permitted for this board (from board_data_sources)
+	// RelationAutoDiscoveryEnabled — per-board switch for automatic relation
+	// discovery after new briefs (default false; manual trigger is always
+	// available). add-evidence-backed-cross-board-relations.
+	RelationAutoDiscoveryEnabled bool `json:"relation_auto_discovery_enabled"`
 }
 
 // BoardConfigReader looks up a board's enrichment configuration from a topic ID.
@@ -29,6 +33,9 @@ func DefaultBoardConfig() *BoardEnrichmentConfig {
 		EnrichmentEnabled: false,
 		WindowDays:        14,
 		ContextLayers:     []string{"week", "month", "year", "all"},
+		// RelationAutoDiscoveryEnabled defaults to false: automatic discovery
+		// is opt-in per board (spec: 自动发现默认关闭).
+		RelationAutoDiscoveryEnabled: false,
 	}
 }
 

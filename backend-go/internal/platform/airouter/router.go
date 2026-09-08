@@ -78,6 +78,16 @@ func encodeTokenUsage(u *TokenUsage) string {
 	return string(b)
 }
 
+// isEmptyChatResponse reports whether a transport-successful provider call
+// carries no usable assistant content: a nil response or blank content
+// (whitespace-only counts as blank). Router.Chat normalizes such results into
+// a retryable ProviderError{Code:"empty_response"} so the ordered-fallback
+// chain treats them like any other provider failure — observed in production
+// as glm board_synthesize returning HTTP 200 with empty assistant content.
+func isEmptyChatResponse(resp *ChatResponse) bool {
+	return resp == nil || strings.TrimSpace(resp.Content) == ""
+}
+
 type Router struct {
 	store   *Store
 	clients map[string]ProviderClient
@@ -189,6 +199,17 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 		start := time.Now()
 		chatResp, callErr := client.Chat(ctx, provider, req)
 		latencyMs := int(time.Since(start).Milliseconds())
+		if callErr == nil && isEmptyChatResponse(chatResp) {
+			// Provider boundary normalization: HTTP success with no usable
+			// assistant content is a retryable provider failure, not a success.
+			// Applies to every provider type uniformly (no per-client special
+			// casing) and flows into the existing failure log / fallback path.
+			callErr = &ProviderError{
+				Code:      "empty_response",
+				Retryable: true,
+				Message:   "provider returned empty response content",
+			}
+		}
 		if callErr == nil {
 			r.store.LogCall(ctx, &models.AICallLog{
 				Operation:       req.Operation,
@@ -254,16 +275,12 @@ func (r *Router) saveEmbeddingCache(req EmbeddingRequest, model string, res *Emb
 	if !embeddingCacheable(req.Operation) {
 		return
 	}
-	payload, err := json.Marshal(res.Embeddings)
-	if err != nil {
-		logging.Warnf("airouter: embedding cache marshal failed: %v", err)
-		return
-	}
+	payload := models.EncodeEmbeddingVectors(res.Embeddings)
 	rec := &models.AIEmbeddingCache{
 		CacheKey:     embeddingCacheKey(model, req.Input),
 		Model:        model,
 		Operation:    req.Operation,
-		Embedding:    string(payload),
+		Embedding:    payload,
 		Dimensions:   res.Dimensions,
 		InputPreview: truncateRunes(strings.Join(req.Input, " "), maxCachePreviewRunes),
 		CreatedAt:    time.Now(),
@@ -358,8 +375,8 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 		// A broken cache (e.g. table missing) must never block real calls.
 		logging.Warnf("airouter: embedding cache lookup failed (key=%s): %v", cacheKey, lookupErr)
 	} else if cached != nil {
-		var vectors [][]float64
-		if err := json.Unmarshal([]byte(cached.Embedding), &vectors); err != nil {
+		vectors, err := models.DecodeEmbeddingVectors(cached.Embedding)
+		if err != nil {
 			logging.Warnf("airouter: embedding cache decode failed (key=%s): %v", cacheKey, err)
 		} else {
 			hitMeta := map[string]any{}

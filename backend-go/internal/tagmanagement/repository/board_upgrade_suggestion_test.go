@@ -11,51 +11,6 @@ import (
 	"syntopica-backend/internal/platform/testutil"
 )
 
-// TestBoardUpgradeSuggestionCloseWatchSuggestions verifies that when an aux
-// label that was under single-label watch joins a cluster (≥2), the
-// corresponding watch suggestion is closed (→ confirmed) while non-watch
-// suggestions are untouched (spec: watch 建议成簇自动关闭).
-//
-// §3.5: CloseWatchSuggestions([5,6]) closes watch rows overlapping [5,6].
-func TestBoardUpgradeSuggestionCloseWatchSuggestions(t *testing.T) {
-	db := testutil.SetupTestDB(t)
-	repo := NewBoardUpgradeSuggestionRepository(db)
-
-	// watch over [5] — closed because 5 is in the closing set.
-	require.NoError(t, db.Create(&models.BoardUpgradeSuggestion{
-		BatchID: "w1", Mode: "discover_new", Decision: "watch",
-		BoardLabel: "Watch 5", AuxiliaryLabelIDs: []uint{5},
-		Status: "pending", SuggestionHash: "watch-5",
-	}).Error)
-	// watch over [6,7] — closed because 6 is in the closing set.
-	require.NoError(t, db.Create(&models.BoardUpgradeSuggestion{
-		BatchID: "w2", Mode: "discover_new", Decision: "watch",
-		BoardLabel: "Watch 6,7", AuxiliaryLabelIDs: []uint{6, 7},
-		Status: "pending", SuggestionHash: "watch-67",
-	}).Error)
-	// create_new pending over [5] — must NOT be touched (only watch closes).
-	require.NoError(t, db.Create(&models.BoardUpgradeSuggestion{
-		BatchID: "c", Mode: "discover_new", Decision: "create_new",
-		BoardLabel: "Create 5", AuxiliaryLabelIDs: []uint{5},
-		Status: "pending", SuggestionHash: "create-5",
-	}).Error)
-
-	closed, err := repo.CloseWatchSuggestions(context.Background(), []uint{5, 6})
-	require.NoError(t, err)
-	require.Equal(t, int64(2), closed, "both watch suggestions overlapping [5,6] must close")
-
-	var w1, w2 models.BoardUpgradeSuggestion
-	require.NoError(t, db.Where("suggestion_hash = ?", "watch-5").First(&w1).Error)
-	require.NoError(t, db.Where("suggestion_hash = ?", "watch-67").First(&w2).Error)
-	require.Equal(t, "confirmed", w1.Status, "watch [5] must be confirmed")
-	require.Equal(t, "confirmed", w2.Status, "watch [6,7] must be confirmed")
-	require.NotNil(t, w1.ResolvedAt)
-
-	var c models.BoardUpgradeSuggestion
-	require.NoError(t, db.Where("suggestion_hash = ?", "create-5").First(&c).Error)
-	require.Equal(t, "pending", c.Status, "non-watch suggestions must be untouched")
-}
-
 // TestBoardUpgradeSuggestionCountDismissedInCooldown verifies the cooldown
 // rule for dismissed suggestions (spec: dismissed 冷却期): a suggestion
 // dismissed within the cooldown window blocks re-generation; one past the
@@ -236,48 +191,4 @@ func TestBoardUpgradeSuggestionMarkDismissed(t *testing.T) {
 
 	// double-dismiss on an already-resolved row is a no-op (no error, no change)
 	require.NoError(t, repo.MarkDismissed(context.Background(), sug.ID, "again"))
-}
-
-// TestBoardUpgradeSuggestionGCOldWatch verifies the observation-pool GC (spec:
-// 观察池建议自动回收): watch suggestions older than gcDays are dismissed;
-// younger watch and non-watch pending are untouched.
-//
-// §5.5.
-func TestBoardUpgradeSuggestionGCOldWatch(t *testing.T) {
-	db := testutil.SetupTestDB(t)
-	repo := NewBoardUpgradeSuggestionRepository(db)
-	now := time.Now()
-
-	old := now.AddDate(0, 0, -40)
-	// watch 40 days old → GC'd
-	require.NoError(t, db.Create(&models.BoardUpgradeSuggestion{
-		BatchID: "g", Mode: "discover_new", Decision: "watch",
-		BoardLabel: "Old Watch", AuxiliaryLabelIDs: []uint{11},
-		Confidence: "llm", Status: "pending", SuggestionHash: "g-old", CreatedAt: old,
-	}).Error)
-	// watch 10 days old → kept (within 30-day gc window)
-	require.NoError(t, db.Create(&models.BoardUpgradeSuggestion{
-		BatchID: "g", Mode: "discover_new", Decision: "watch",
-		BoardLabel: "Young Watch", AuxiliaryLabelIDs: []uint{12},
-		Confidence: "llm", Status: "pending", SuggestionHash: "g-young", CreatedAt: now.AddDate(0, 0, -10),
-	}).Error)
-	// create_new 40 days old pending → NOT GC'd (only watch)
-	require.NoError(t, db.Create(&models.BoardUpgradeSuggestion{
-		BatchID: "g", Mode: "discover_new", Decision: "create_new",
-		BoardLabel: "Old Create", AuxiliaryLabelIDs: []uint{13},
-		Confidence: "llm", Status: "pending", SuggestionHash: "g-cn", CreatedAt: old,
-	}).Error)
-
-	gc, err := repo.GCOldWatch(context.Background(), 30)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), gc, "only the old watch is GC'd")
-
-	var oldRow, youngRow, cnRow models.BoardUpgradeSuggestion
-	require.NoError(t, db.Where("suggestion_hash = ?", "g-old").First(&oldRow).Error)
-	require.NoError(t, db.Where("suggestion_hash = ?", "g-young").First(&youngRow).Error)
-	require.NoError(t, db.Where("suggestion_hash = ?", "g-cn").First(&cnRow).Error)
-	require.Equal(t, "dismissed", oldRow.Status, "old watch dismissed by GC")
-	require.NotNil(t, oldRow.ResolvedAt)
-	require.Equal(t, "pending", youngRow.Status, "young watch kept")
-	require.Equal(t, "pending", cnRow.Status, "non-watch pending untouched")
 }

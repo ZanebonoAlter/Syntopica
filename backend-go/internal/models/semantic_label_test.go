@@ -42,6 +42,30 @@ func TestSemanticLabelAssociationModelShapes(t *testing.T) {
 	mustHaveGORMTag(t, reflect.TypeOf(BoardComposition{}), "AuxiliaryLabelID", "primaryKey")
 }
 
+func TestCompositeComponentModelShape(t *testing.T) {
+	if got := (CompositeComponent{}).TableName(); got != "composite_components" {
+		t.Fatalf("CompositeComponent table = %q, want composite_components", got)
+	}
+
+	typ := reflect.TypeOf(CompositeComponent{})
+	mustHaveGORMTag(t, typ, "CompositeID", "primaryKey")
+	mustHaveGORMTag(t, typ, "ComponentLabelID", "primaryKey")
+	mustHaveFieldType(t, typ, "Position", reflect.TypeOf(int(0)))
+	mustHaveGORMTag(t, typ, "Composite", "foreignKey:CompositeID")
+	mustHaveGORMTag(t, typ, "Composite", "constraint:OnDelete:CASCADE")
+	mustHaveGORMTag(t, typ, "ComponentLabel", "foreignKey:ComponentLabelID")
+	mustHaveGORMTag(t, typ, "ComponentLabel", "constraint:OnDelete:CASCADE")
+}
+
+// LabelType "composite" is a plain string column value (no enum CHECK blocks
+// it); the model-level contract is documented on SemanticLabel.LabelType.
+func TestSemanticLabelLabelTypeCompositeValue(t *testing.T) {
+	label := SemanticLabel{Label: "美债收益率", LabelType: "composite"}
+	if label.LabelType != "composite" {
+		t.Fatalf("LabelType = %q, want composite", label.LabelType)
+	}
+}
+
 func mustHaveGORMTag(t *testing.T, typ reflect.Type, fieldName string, want string) {
 	t.Helper()
 	field, ok := typ.FieldByName(fieldName)

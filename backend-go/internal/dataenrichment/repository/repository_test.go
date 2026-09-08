@@ -363,7 +363,7 @@ func TestTopicEnrichmentResult_CreateAndList(t *testing.T) {
 	ctx := context.Background()
 
 	r1 := &repository.TopicEnrichmentResult{
-		PersistentTopicID:   1,
+		PersistentTopicID:   repository.TopicIDPtr(1),
 		EvolutionAssessment: "first assessment",
 		SessionID:           "session-1",
 	}
@@ -372,7 +372,7 @@ func TestTopicEnrichmentResult_CreateAndList(t *testing.T) {
 	}
 
 	r2 := &repository.TopicEnrichmentResult{
-		PersistentTopicID:   1,
+		PersistentTopicID:   repository.TopicIDPtr(1),
 		EvolutionAssessment: "second assessment",
 		SessionID:           "session-2",
 	}
@@ -397,8 +397,8 @@ func TestTopicEnrichmentResult_GetLatest(t *testing.T) {
 	setupRepoTestDB(t)
 	ctx := context.Background()
 
-	r1 := &repository.TopicEnrichmentResult{PersistentTopicID: 1, EvolutionAssessment: "first"}
-	r2 := &repository.TopicEnrichmentResult{PersistentTopicID: 1, EvolutionAssessment: "latest"}
+	r1 := &repository.TopicEnrichmentResult{PersistentTopicID: repository.TopicIDPtr(1), EvolutionAssessment: "first"}
+	r2 := &repository.TopicEnrichmentResult{PersistentTopicID: repository.TopicIDPtr(1), EvolutionAssessment: "latest"}
 	_ = repository.Repo.CreateTopicEnrichmentResult(ctx, r1)
 	_ = repository.Repo.CreateTopicEnrichmentResult(ctx, r2)
 
@@ -415,8 +415,8 @@ func TestTopicEnrichmentResult_GetPrevLatest(t *testing.T) {
 	setupRepoTestDB(t)
 	ctx := context.Background()
 
-	r1 := &repository.TopicEnrichmentResult{PersistentTopicID: 1, EvolutionAssessment: "prev"}
-	r2 := &repository.TopicEnrichmentResult{PersistentTopicID: 1, EvolutionAssessment: "curr"}
+	r1 := &repository.TopicEnrichmentResult{PersistentTopicID: repository.TopicIDPtr(1), EvolutionAssessment: "prev"}
+	r2 := &repository.TopicEnrichmentResult{PersistentTopicID: repository.TopicIDPtr(1), EvolutionAssessment: "curr"}
 	_ = repository.Repo.CreateTopicEnrichmentResult(ctx, r1)
 	_ = repository.Repo.CreateTopicEnrichmentResult(ctx, r2)
 
@@ -433,7 +433,7 @@ func TestTopicEnrichmentResult_GetByID(t *testing.T) {
 	setupRepoTestDB(t)
 	ctx := context.Background()
 
-	r := &repository.TopicEnrichmentResult{PersistentTopicID: 1, EvolutionAssessment: "test"}
+	r := &repository.TopicEnrichmentResult{PersistentTopicID: repository.TopicIDPtr(1), EvolutionAssessment: "test"}
 	_ = repository.Repo.CreateTopicEnrichmentResult(ctx, r)
 
 	got, err := repository.Repo.GetTopicEnrichmentResultByID(ctx, r.ID)
@@ -452,7 +452,7 @@ func TestTopicEnrichmentReview_CreateAndList(t *testing.T) {
 	ctx := context.Background()
 
 	rv := &repository.TopicEnrichmentReview{
-		PersistentTopicID: 1,
+		PersistentTopicID: repository.TopicIDPtr(1),
 		CurrResultID:      10,
 		DeviationSummary:  "核心判断反转",
 		Source:            "llm_assisted",
@@ -479,10 +479,10 @@ func TestTopicEnrichmentReview_ApplyAndListApplied(t *testing.T) {
 
 	// Create two reviews, one applied, one not
 	rv1 := &repository.TopicEnrichmentReview{
-		PersistentTopicID: 1, CurrResultID: 1, DeviationSummary: "applied", Applied: true,
+		PersistentTopicID: repository.TopicIDPtr(1), CurrResultID: 1, DeviationSummary: "applied", Applied: true,
 	}
 	rv2 := &repository.TopicEnrichmentReview{
-		PersistentTopicID: 1, CurrResultID: 2, DeviationSummary: "not applied", Applied: false,
+		PersistentTopicID: repository.TopicIDPtr(1), CurrResultID: 2, DeviationSummary: "not applied", Applied: false,
 	}
 	_ = repository.Repo.CreateTopicEnrichmentReview(ctx, rv1)
 	_ = repository.Repo.CreateTopicEnrichmentReview(ctx, rv2)
@@ -504,7 +504,7 @@ func TestTopicEnrichmentReview_UpdateFields(t *testing.T) {
 	ctx := context.Background()
 
 	rv := &repository.TopicEnrichmentReview{
-		PersistentTopicID: 1, CurrResultID: 1, DeviationSummary: "original summary",
+		PersistentTopicID: repository.TopicIDPtr(1), CurrResultID: 1, DeviationSummary: "original summary",
 	}
 	_ = repository.Repo.CreateTopicEnrichmentReview(ctx, rv)
 
@@ -634,7 +634,7 @@ func TestMarkQASedimented(t *testing.T) {
 
 	// Seed a result + a qa row under it.
 	result := &repository.TopicEnrichmentResult{
-		PersistentTopicID: 1,
+		PersistentTopicID: repository.TopicIDPtr(1),
 		SessionID:         "data_enrichment_1_seed",
 	}
 	if err := repository.Repo.CreateTopicEnrichmentResult(ctx, result); err != nil {
@@ -675,5 +675,130 @@ func TestMarkQASedimented(t *testing.T) {
 	afterJSON, _ := json.Marshal(resultAfter)
 	if string(beforeJSON) != string(afterJSON) {
 		t.Fatalf("result table must be immutable across sediment:\nbefore=%s\nafter =%s", beforeJSON, afterJSON)
+	}
+}
+
+// ── board-scope queries + reference roles (board-level-deep-analysis) ──────
+
+func TestBoardEnrichmentResults_ScopeFiltering(t *testing.T) {
+	setupRepoTestDB(t)
+	ctx := context.Background()
+
+	// One topic-scope row and two board-scope rows for board 5.
+	topicRow := &repository.TopicEnrichmentResult{PersistentTopicID: repository.TopicIDPtr(1), AnalysisScope: "topic", SessionID: "s-topic"}
+	boardRow1 := &repository.TopicEnrichmentResult{SemanticBoardID: repository.TopicIDPtr(5), AnalysisScope: "board", SessionID: "s-board-1"}
+	boardRow2 := &repository.TopicEnrichmentResult{SemanticBoardID: repository.TopicIDPtr(5), AnalysisScope: "board", SessionID: "s-board-2"}
+	if err := repository.Repo.CreateTopicEnrichmentResult(ctx, topicRow); err != nil {
+		t.Fatalf("create topic row: %v", err)
+	}
+	if err := repository.Repo.CreateTopicEnrichmentResult(ctx, boardRow1); err != nil {
+		t.Fatalf("create board row 1: %v", err)
+	}
+	if err := repository.Repo.CreateTopicEnrichmentResult(ctx, boardRow2); err != nil {
+		t.Fatalf("create board row 2: %v", err)
+	}
+
+	// Board list excludes the topic-scope row (M6.3 side).
+	list, err := repository.Repo.ListBoardEnrichmentResults(ctx, 5)
+	if err != nil {
+		t.Fatalf("list board results: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("board list length: want 2, got %d", len(list))
+	}
+	// Newest first.
+	if list[0].SessionID != "s-board-2" || list[1].SessionID != "s-board-1" {
+		t.Fatalf("board list order wrong: %s, %s", list[0].SessionID, list[1].SessionID)
+	}
+
+	// Topic list excludes the board rows (regression).
+	topicList, err := repository.Repo.ListTopicEnrichmentResultsByTopic(ctx, 1)
+	if err != nil {
+		t.Fatalf("list topic results: %v", err)
+	}
+	if len(topicList) != 1 {
+		t.Fatalf("topic list length: want 1, got %d", len(topicList))
+	}
+
+	// Latest + prev-latest for review judge.
+	latest, err := repository.Repo.GetLatestBoardEnrichmentResult(ctx, 5)
+	if err != nil {
+		t.Fatalf("get latest board result: %v", err)
+	}
+	if latest.SessionID != "s-board-2" {
+		t.Fatalf("latest board result: want s-board-2, got %s", latest.SessionID)
+	}
+	prev, err := repository.Repo.GetPrevLatestBoardEnrichmentResult(ctx, 5, latest.ID)
+	if err != nil {
+		t.Fatalf("get prev board result: %v", err)
+	}
+	if prev.SessionID != "s-board-1" {
+		t.Fatalf("prev board result: want s-board-1, got %s", prev.SessionID)
+	}
+
+	// Other board sees nothing.
+	if _, err := repository.Repo.GetLatestBoardEnrichmentResult(ctx, 99); err == nil {
+		t.Fatalf("expected error for empty board, got nil")
+	}
+}
+
+func TestReferenceRole_CRUD(t *testing.T) {
+	setupRepoTestDB(t)
+	ctx := context.Background()
+
+	// Create.
+	r1 := &repository.ReferenceRole{Name: "inside-america", Title: "内部看美国·方法论画像", Content: "辩论流水线：钢人先行…", Enabled: true}
+	if err := repository.Repo.CreateReferenceRole(ctx, r1); err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	r2 := &repository.ReferenceRole{Name: "plain", Title: "朴素分析", Content: "直接了当", Enabled: false}
+	if err := repository.Repo.CreateReferenceRole(ctx, r2); err != nil {
+		t.Fatalf("create role 2: %v", err)
+	}
+
+	// Enabled-only listing (injection source, M7 ordering).
+	enabled, err := repository.Repo.ListEnabledReferenceRoles(ctx)
+	if err != nil {
+		t.Fatalf("list enabled: %v", err)
+	}
+	if len(enabled) != 1 || enabled[0].Name != "inside-america" {
+		t.Fatalf("enabled roles: want 1 inside-america, got %+v", enabled)
+	}
+
+	// Update (disable the first).
+	r1.Enabled = false
+	if err := repository.Repo.UpdateReferenceRole(ctx, r1); err != nil {
+		t.Fatalf("update role: %v", err)
+	}
+	enabled, err = repository.Repo.ListEnabledReferenceRoles(ctx)
+	if err != nil {
+		t.Fatalf("list enabled after update: %v", err)
+	}
+	if len(enabled) != 0 {
+		t.Fatalf("enabled after disable: want 0, got %d", len(enabled))
+	}
+
+	// Full listing still returns both, updated_at DESC.
+	all, err := repository.Repo.ListReferenceRoles(ctx)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all roles: want 2, got %d", len(all))
+	}
+
+	// Get by ID + delete.
+	got, err := repository.Repo.GetReferenceRoleByID(ctx, r2.ID)
+	if err != nil {
+		t.Fatalf("get role: %v", err)
+	}
+	if got.Name != "plain" {
+		t.Fatalf("get role name: want plain, got %s", got.Name)
+	}
+	if err := repository.Repo.DeleteReferenceRole(ctx, r2.ID); err != nil {
+		t.Fatalf("delete role: %v", err)
+	}
+	if _, err := repository.Repo.GetReferenceRoleByID(ctx, r2.ID); err == nil {
+		t.Fatalf("expected error after delete, got nil")
 	}
 }

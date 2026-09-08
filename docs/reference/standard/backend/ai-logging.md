@@ -54,6 +54,8 @@ doc-impact-applies: backend-go/internal/platform/airouter/, backend-go/internal/
 - **AND NOT** 只存 capability + 响应摘要、不存 prompt（这是历史最大缺口）
 - **AND NOT** `operation` 留空或填无意义值（如 `"chat"`）
 
+> **空响应按失败记录（empty_response）**：provider 边界（`Router.Chat`，`isEmptyChatResponse`）把「HTTP 成功但 assistant content 为空/纯空白或响应为 nil」统一规范化为可重试 `ProviderError{Code:"empty_response"}`，走既有失败日志（记 `error_code=empty_response`，不先记 success）+ attemptErrors 聚合 + ordered fallback——真实事故：glm-5.3-flash `board_synthesize` 两次 HTTP 200 但 content=""，旧逻辑 `callErr==nil` 即记 success 直接消费空文本，导致下游 parser 报 empty text 且不 fallback（board-level-deep-analysis 2026-08-31 修复）。
+
 ### Requirement: 编排类调用必须带 session_id（串联同一次编排）
 
 **级别**: MUST
@@ -110,9 +112,17 @@ agent loop 里的**工具调用**（非 LLM 调用）SHALL 留痕，至少记：
 | 话题关注评估 | `topic_watch.evaluate` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
 | 循环A-新闻汇总 | `data_enrichment.summarize_context` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
 | 循环B-解读员 | `data_enrichment.interpret` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
-| 循环B-查询员每轮 | `data_enrichment.tool_use` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
+| 循环B-查询员每轮 | `data_enrichment.tool_use` | ✅ | ✅ | ✅ | ✅ | 已补齐（board-level-deep-analysis 4.4 起版块调查共享研究循环复用同 operation，走调查 session） |
 | 循环B-分析员 | `data_enrichment.analyze` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
-| 循环B-review对比 | `data_enrichment.review_judge` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
+| 循环B-review对比（topic 洞察 + 版块简报 + 同父同题调查） | `data_enrichment.review_judge` | ✅ | ✅ | ✅ | ✅ | 已补齐（board brief 按 kind、investigation 按 parent+question_key 分链复用同 operation 与各自 session） |
+| 循环B-版块简报 | `data_enrichment.board_brief` | ✅ | ✅ | ✅ | ✅ | 已接入（board-level-deep-analysis：默认触发仅此一次 LLM，无工具循环） |
+| 循环B-调查方法选择 | `data_enrichment.board_method_select` | ✅ | ✅ | ✅ | ✅ | 已接入（board-level-deep-analysis 4.1/4.3：按问题+父简报元数据选 0-2 张方法卡，不读正文；坏 JSON 降级 0 张不重试） |
+| 循环B-调查假设生成 | `data_enrichment.board_hypothesize` | ✅ | ✅ | ✅ | ✅ | 已接入（board-level-deep-analysis 4.1/4.3：2-4 竞争假设+必含零假设，不预选赢家；方法正文只进此调用） |
+| 循环B-调查最终综合 | `data_enrichment.board_synthesize` | ✅ | ✅ | ✅ | ✅ | 已接入（board-level-deep-analysis 4.5/4.6：研究结果→五态假设评估+有限结论+可核查证据链；坏 JSON 重试一次仍败则不落库，绝不机械编造调查结论） |
+| 循环B-关系侦察计划 | `data_enrichment.relation_scout_plan` | ✅ | ✅ | ✅ | ✅ | 已接入（add-evidence-backed-cross-board-relations：source→检索 query 计划，两步程序化 scout 第一步，无工具循环） |
+| 循环B-关系候选提取 | `data_enrichment.relation_scout_extract` | ✅ | ✅ | ✅ | ✅ | 已接入（同上第二步：web_search 结果→候选概念+证据引用，无自评分透传） |
+| 循环B-关系盲验计划 | `data_enrichment.relation_verify_plan` | ✅ | ✅ | ✅ | ✅ | 已接入（独立 session 盲验第一步：生成反证检索 query） |
+| 循环B-关系盲验裁决 | `data_enrichment.relation_verify_judge` | ✅ | ✅ | ✅ | ✅ | 已接入（盲验第二步：四竞争解释 H1因果/H2共同驱动/H3相关/H0无关，不预选赢家；输入不含 scout 自评分） |
 | 个股辩论-结果提炼 | `data_enrichment.debate_distill` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
 | 报告追问-查询员每轮 | `data_enrichment.qa_tool_use` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
 | 订阅源发现-推荐精排 | `discovery.recommendation_rerank` | ✅ | ✅ | ✅ | N/A | 已接入（手动刷新/问答共用，capability `feed_discovery`） |
@@ -124,6 +134,8 @@ agent loop 里的**工具调用**（非 LLM 调用）SHALL 留痕，至少记：
 **数据增强 SessionID 规则**：
 
 - 循环B（`data_enrichment.interpret` / `tool_use` / `analyze` / `review_judge`）同一次增强内所有 LLM 调用共享 `data_enrichment_{topic_id}_{uuid8}`
+- 版块链（`data_enrichment.board_brief` / `data_enrichment.review_judge`（3.5 起：第二份简报的同 kind 对比）/ legacy `board_interpret` 等）同一次版块触发内共享 `data_enrichment_board_{board_id}_{uuid8}`
+- 版块调查链（`data_enrichment.board_method_select` / `data_enrichment.board_hypothesize` / research loop 复用 `data_enrichment.tool_use` / `data_enrichment.board_synthesize` / 同父同题重跑时的 `data_enrichment.review_judge`）同一次调查内共享同一 session，前缀沿用 `data_enrichment_board_{board_id}_{uuid8}`；由调查编排入口（`InvestigateBoardQuestion`）生成并传播
 - 循环A（`data_enrichment.summarize_context`）一次汇总共享 `lifeline_context_{topic_id}_{granularity}_{uuid8}`
 - 个股辩论提炼（`data_enrichment.debate_distill`）共享 `data_enrichment_debate_{topic_id}_{result_id}`
 - 报告追问（`data_enrichment.qa_tool_use`）每次询问唯一，共享 `data_enrichment_qa_{result_id}_{uuid8}`（基于 result 而非 topic，同一报告多轮追问各自独立 session）
@@ -133,7 +145,7 @@ agent loop 里的**工具调用**（非 LLM 调用）SHALL 留痕，至少记：
 | Capability | 归属的 Operation |
 | --- | --- |
 | `data_enrichment_news` | `data_enrichment.summarize_context`（循环A 纯新闻汇总） |
-| `data_enrichment_analysis` | `data_enrichment.interpret`（解读员，含形态判断+视角候选）/ `data_enrichment.tool_use`（查询员每轮）/ `data_enrichment.analyze`（分析员，分层见解）/ `data_enrichment.review_judge`（兑现度复盘）/ `data_enrichment.debate_distill`（FinGenius 提炼）/ `data_enrichment.qa_tool_use`（报告追问每轮，复用工具循环） |
+| `data_enrichment_analysis` | `data_enrichment.interpret`（解读员，含形态判断+视角候选）/ `data_enrichment.tool_use`（查询员每轮，含版块调查共享研究循环）/ `data_enrichment.analyze`（分析员，分层见解）/ `data_enrichment.review_judge`（认知更新复盘：topic 洞察 + board_brief 按 kind + board_investigation 按 parent/question_key 分链共用）/ `data_enrichment.board_brief`（版块简报，默认版块触发）/ `data_enrichment.board_method_select`（调查方法卡选择）/ `data_enrichment.board_hypothesize`（调查竞争假设生成）/ `data_enrichment.board_synthesize`（调查最终综合）/ `data_enrichment.debate_distill`（FinGenius 提炼）/ `data_enrichment.qa_tool_use`（报告追问每轮，复用工具循环）/ `data_enrichment.board_interpret`（v1 版块命题生成，写路径已退役，仅函数保留） |
 
 **订阅源发现 Capability 映射**（preference-vector-feed-discovery）：
 
@@ -157,4 +169,5 @@ agent loop 里的**工具调用**（非 LLM 调用）SHALL 留痕，至少记：
 
 基于 `backend-go/internal/platform/airouter/router.go`（`Chat`:102 / `Embed`:188）、`backend-go/internal/models/ai_models.go`（`AICallLog`:122）现状调研，
 以及 2026-07-04 关于"日报 AI 调用 prompts 看不见 / agent 编排记录缺口"的评审讨论；
-2026-07-07 补 `data_enrichment.debate_distill`（FinGenius 辩论结果提炼）及 Capability 映射表。
+2026-07-07 补 `data_enrichment.debate_distill`（FinGenius 辩论结果提炼）及 Capability 映射表；
+2026-08-31 补版块简报/调查链 4 个 operation、版块 session 规则与 `empty_response` 空响应失败边界（board-level-deep-analysis）。

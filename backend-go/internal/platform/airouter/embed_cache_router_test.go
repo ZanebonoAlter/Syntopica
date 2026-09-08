@@ -25,7 +25,7 @@ func (c *countingEmbedClient) Chat(_ context.Context, _ models.AIProvider, _ Cha
 func (c *countingEmbedClient) Embed(_ context.Context, provider models.AIProvider, _ EmbeddingRequest) (*EmbeddingResult, error) {
 	c.embedCalls.Add(1)
 	if c.vectors == nil {
-		c.vectors = [][]float64{{0.1, 0.2}}
+		c.vectors = [][]float64{{0.5, 0.25}}
 	}
 	return &EmbeddingResult{Embeddings: c.vectors, Model: provider.Model, Dimensions: len(c.vectors[0]), Provider: provider.Name}, nil
 }

@@ -22,11 +22,13 @@ func setupAuxiliaryLabelTestDB(t *testing.T) *gorm.DB {
 
 type recordingAuxiliaryEmbedder struct {
 	calls   []string
+	modes   []AuxiliaryLabelEmbeddingMode
 	vectors map[string][]float64
 }
 
 func (e *recordingAuxiliaryEmbedder) embed(ctx context.Context, input string, mode AuxiliaryLabelEmbeddingMode) (string, []float64, error) {
 	e.calls = append(e.calls, input)
+	e.modes = append(e.modes, mode)
 	if e.vectors != nil {
 		if vec, ok := e.vectors[input]; ok {
 			padded := testutil.PadVector(vec, testutil.TestEmbeddingDim)

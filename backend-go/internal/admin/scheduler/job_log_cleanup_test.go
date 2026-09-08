@@ -38,8 +38,8 @@ func TestLogCleanupJobRetention(t *testing.T) {
 	// ai_embedding_cache retention is 14 days (hits land within a day of
 	// write; 90d was pure disk waste at ~30KB/row).
 	cacheSeed := []models.AIEmbeddingCache{
-		{CacheKey: "stale", Model: "m", Operation: "tagmanagement.embedding", Embedding: "[]", CreatedAt: time.Now().AddDate(0, 0, -15)}, // expired → deleted
-		{CacheKey: "fresh", Model: "m", Operation: "tagmanagement.embedding", Embedding: "[]", CreatedAt: recent},                        // recent → kept
+		{CacheKey: "stale", Model: "m", Operation: "tagmanagement.embedding", Embedding: []byte("[]"), CreatedAt: time.Now().AddDate(0, 0, -15)}, // expired → deleted
+		{CacheKey: "fresh", Model: "m", Operation: "tagmanagement.embedding", Embedding: []byte("[]"), CreatedAt: recent},                        // recent → kept
 	}
 	for i := range cacheSeed {
 		require.NoError(t, db.Create(&cacheSeed[i]).Error)

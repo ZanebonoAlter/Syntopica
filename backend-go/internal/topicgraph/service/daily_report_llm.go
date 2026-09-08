@@ -13,7 +13,7 @@ import (
 	"syntopica-backend/internal/topicgraph/repository"
 )
 
-const promptVersion = "4.0"
+const promptVersion = "5.0"
 
 // ---------------------------------------------------------------------------
 // LLM Call A: GenerateHighlights
@@ -140,28 +140,29 @@ func parseHighlightsResponse(content string, tags []repository.TagInput) ([]repo
 
 const threadsSystemPrompt = `你是一名专业的新闻叙事分析师。你收到了一个事件聚类分组及其标签信息。
 
-你的任务是识别该聚类中的叙事线索（threads），每条线索应该：
-1. 有一个简洁有力的标题（中文，不超过30字，必须是带判断的短句）
-2. 有一段客观的摘要（中文，100-200字）
-3. 关联到相关的标签ID
-4. 给出置信度分数（0-1）
+你的任务是识别该聚类中的叙事线索（threads），并为该板块拟定一个展示标题 section_title，要求：
+1. section_title 一句话概括该聚类当日实际内容（中文，不超过30字）；必须基于所列标签事实，遵守与 threads 相同的事实锚约束（禁编造事件/数字/情绪/因果）；不得复述聚类名或既有话题名，应反映当日内容本身；无法概括时可返回空字符串
+2. 每条线索有一个简洁有力的标题（中文，不超过30字，必须是带判断的短句）
+3. 有一段客观的摘要（中文，100-200字）
+4. 关联到相关的标签ID
+5. 给出置信度分数（0-1）
 
 事实锚约束：title / summary 必须仅基于所列标签（label / description / 代表文章）中的事实。禁止编造未在标签中出现的：具体事件、具体数字（涨跌幅 / 金额 / 连板数 / 百分比 / 跌停涨停）、市场情绪判断（恐慌 / 狂热 / 崩盘 / 抛售）、因果推断（“引发”“导致”“因此”）。若所列标签信息不足以支撑某条叙事，宁可不写（返回空 threads），也不要补全。
 
 输出要求：
-1. 顶层 JSON 对象，只包含 threads 字段
-2. threads 是数组；没有时返回 {"threads":[]}
-3. 每个元素包含 title、summary、tag_ids、confidence 字段
+1. 顶层 JSON 对象，只包含 section_title 和 threads 字段
+2. section_title 是字符串（可为空串）；threads 是数组，没有时返回 {"section_title":"", "threads":[]}
+3. 每个 threads 元素包含 title、summary、tag_ids、confidence 字段
 4. 只返回合法 JSON，不要 Markdown 代码块或解释文字`
 
 // GenerateClusterThreads produces threads for a single cluster.
-func GenerateClusterThreads(ctx context.Context, cluster repository.ClusterGroup, tags []repository.TagInput) ([]repository.Thread, error) {
+func GenerateClusterThreads(ctx context.Context, cluster repository.ClusterGroup, tags []repository.TagInput) ([]repository.Thread, string, error) {
 	ctx, span := tracing.Tracer(tracing.ServiceName).Start(ctx, "workflow.daily_report.cluster_threads")
 	defer span.End()
 
 	clusterTags := filterTagsByIDs(tags, cluster.TagIDs)
 	if len(clusterTags) == 0 {
-		return nil, nil
+		return nil, "", nil
 	}
 
 	prompt := buildThreadsPrompt(cluster, clusterTags)
@@ -182,6 +183,7 @@ func GenerateClusterThreads(ctx context.Context, cluster repository.ClusterGroup
 		JSONSchema: &airouter.JSONSchema{
 			Type: "object",
 			Properties: map[string]airouter.SchemaProperty{
+				"section_title": {Type: "string", Description: "一句话概括该聚类当日实际内容；须基于所列标签事实，禁止编造；不得复述聚类名或既有话题名"},
 				"threads": {
 					Type: "array",
 					Items: &airouter.SchemaProperty{
@@ -205,7 +207,7 @@ func GenerateClusterThreads(ctx context.Context, cluster repository.ClusterGroup
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("threads AI call failed for cluster %s: %w", cluster.GroupName, err)
+		return nil, "", fmt.Errorf("threads AI call failed for cluster %s: %w", cluster.GroupName, err)
 	}
 
 	logging.Infof("daily-report: threads LLM response for cluster '%s' length=%d", cluster.GroupName, len(result.Content))
@@ -264,15 +266,17 @@ func buildThreadsPrompt(cluster repository.ClusterGroup, tags []repository.TagIn
 	sb.WriteString("\n请识别该聚类中的叙事线索。\n")
 	return sb.String()
 }
-func parseThreadsResponse(content string, tags []repository.TagInput) ([]repository.Thread, error) {
+func parseThreadsResponse(content string, tags []repository.TagInput) ([]repository.Thread, string, error) {
 	content = jsonutil.SanitizeLLMJSON(content)
 
 	var raw struct {
-		Threads []repository.Thread `json:"threads"`
+		SectionTitle string              `json:"section_title"`
+		Threads      []repository.Thread `json:"threads"`
 	}
 	if err := json.Unmarshal([]byte(content), &raw); err != nil {
-		return nil, fmt.Errorf("parse threads JSON: %w", err)
+		return nil, "", fmt.Errorf("parse threads JSON: %w", err)
 	}
+	sectionTitle := strings.TrimSpace(raw.SectionTitle)
 
 	validTagIDs := make(map[uint]bool, len(tags))
 	for _, t := range tags {
@@ -293,7 +297,7 @@ func parseThreadsResponse(content string, tags []repository.TagInput) ([]reposit
 		th.TagIDs = validIDs
 		result = append(result, th)
 	}
-	return result, nil
+	return result, sectionTitle, nil
 }
 
 type llmMergePair struct {

@@ -53,10 +53,14 @@ class ApiClient {
       const data = await response.json()
 
       if (!response.ok) {
+        // 保留后端错误体的 data（如 409 冲突携带的当前任务身份 job_id/job_kind）
+        // 与 HTTP 状态码——调用方靠它们区分"恢复轮询"与"真失败"，不得丢弃。
         return {
           success: false,
           error: data.error || data.message || '请求失败',
           message: data.message,
+          status: response.status,
+          data: data.data,
         }
       }
 

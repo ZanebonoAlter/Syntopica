@@ -37,12 +37,15 @@ pnpm test:unit  &&  pnpm test:e2e
 - 数字 ID 在 API 边界转 `string`；`snake_case → camelCase` 只在 store/API 层，模板里不出现
 - HTTP 走 `ApiClient`（`app/api/client.ts`）；返回 `{ success, data, error, message }`
 - 双主题：三层 Token（Primitive → Semantic → Component），`data-theme="editorial|dark"`，`useTheme()`；组件只引用 Layer 2；editorial/magazine 风格不回退 SaaS
-- 统一组件：`AppDialog` / `AppButton` / `AppToggle` / `AppInput` / `AppSectionHeader`
+- **布局契约**：新页面/重构必须用 `<AppPageShell mode="reader|contained|workspace|split">`（760/1120/全宽/主从栏），不自写 max-width；弹窗用 `<AppDialog size="sm|md|lg|xl">`（420/560/760/1040，92vw 上限），新代码禁自由 width；major UI 双视口验收（1440×900/1920×1080）
+- **UI 影响声明**（syntopica-ui schema）：新 change proposal 头声明 `<!-- ui-impact: none|minor|major -->`，`ui-design.md` 为必经制品；major 原型未经用户批准（ui-approval: approved）不得进实现（ui-design-gate 拦截）。详见根 AGENTS.md「UI 分档速查」与《开发执行规范》§3.1
+- 统一组件：`AppDialog` / `AppButton` / `AppToggle` / `AppInput` / `AppSectionHeader` / `AppPageShell`
 - **UI 图标本地化**：`<Icon icon="mdi:*">` 运行时零联网——启动时 `app/plugins/iconify-local.ts` 注册本地子集 `app/assets/iconify-subset.json`；**新增图标后必须 `pnpm generate:icons` 并提交产物**（一致性单测 `iconify-subset.test.ts` 会拦漏）
 - 大组件超 500 行 / ~15KB 拆分
 
 → 组件/API/Store/事件流/通知/Feature 共享：`docs/reference/standard/frontend/code-style.md`
 → 双主题与设计系统：`docs/reference/standard/frontend/theming.md`
+→ 布局契约（page shell/dialog 尺寸档/双视口验收）：`docs/reference/standard/frontend/layout.md`
 
 ## 目录归属速查
 

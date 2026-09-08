@@ -154,13 +154,16 @@ func (AICallLog) TableName() string {
 
 // AIEmbeddingCache persists embedding results keyed by (model, input_hash) so
 // repeated identical embedding requests skip the provider HTTP call entirely.
-// The vector payload is stored as JSON, not pgvector: the hit path only needs
-// byte-roundtrip, never similarity search (that is topic_tag_embeddings' job).
+// The vector payload is stored as a little-endian float32 byte stream (bytea;
+// see airouter/embedding_codec.go), not jsonb text and not pgvector: the hit
+// path only needs byte-roundtrip, never similarity search (that is
+// topic_tag_embeddings' job). Binary storage costs ~10KB per 2560-dim row
+// versus ~31.5KB as jsonb floating point text.
 type AIEmbeddingCache struct {
 	CacheKey     string    `gorm:"primaryKey;size:64" json:"cache_key"`
 	Model        string    `gorm:"size:100;index" json:"model"`
 	Operation    string    `gorm:"type:varchar(80)" json:"operation"`
-	Embedding    string    `gorm:"type:jsonb" json:"embedding"`
+	Embedding    []byte    `gorm:"type:bytea" json:"embedding"`
 	Dimensions   int       `json:"dimensions"`
 	InputPreview string    `gorm:"size:200" json:"input_preview"`
 	CreatedAt    time.Time `gorm:"index" json:"created_at"`

@@ -12,6 +12,13 @@ import (
 	"syntopica-backend/internal/tagmanagement/service/merge"
 )
 
+// InvalidateMatchCache invalidates the semantic-board match cache (board
+// auxiliaries/composites/embeddings). Handlers that write board_composition
+// directly must call this — the caches have no TTL.
+func InvalidateMatchCache() {
+	board.InvalidateMatchCache()
+}
+
 // ============================================================================
 // Type aliases from core/ (merged tagging + embedding)
 // ============================================================================
@@ -83,6 +90,7 @@ type (
 	SemanticBoardBackfillRequest       = board.SemanticBoardBackfillRequest
 	SemanticBoardBackfillService       = board.SemanticBoardBackfillService
 	SemanticBoardUpgradeService        = board.SemanticBoardUpgradeService
+	UpgradeGenerateRequest             = board.UpgradeGenerateRequest
 	SemanticBoardUpgradeCandidate      = board.SemanticBoardUpgradeCandidate
 	SemanticBoardUpgradeCluster        = board.SemanticBoardUpgradeCluster
 	SemanticBoardUpgradeConfig         = board.SemanticBoardUpgradeConfig
@@ -129,6 +137,15 @@ type (
 	AuxiliaryLabelService       = auxlabel.AuxiliaryLabelService
 	AuxiliaryLabelEmbeddingMode = auxlabel.AuxiliaryLabelEmbeddingMode
 	AuxiliaryLabelEmbedder      = auxlabel.AuxiliaryLabelEmbedder
+
+	// Composite label lifecycle (add-composite-labels).
+	CompositeLabelService      = auxlabel.CompositeLabelService
+	CompositeLabelCreateResult = auxlabel.CompositeLabelCreateResult
+	CompositeCreateOutcome     = auxlabel.CompositeCreateOutcome
+	CompositeLabelView         = auxlabel.CompositeLabelView
+	CompositeComponentView     = auxlabel.CompositeComponentView
+	ComponentOptionView        = auxlabel.ComponentOptionView
+	MountedBoardRef            = auxlabel.MountedBoardRef
 )
 
 const (
@@ -138,7 +155,15 @@ const (
 	AuxLabelGCModeDisable     = auxlabel.AuxLabelGCModeDisable
 	AuxLabelGCModeDelete      = auxlabel.AuxLabelGCModeDelete
 	AuxLabelGCModeRecalculate = auxlabel.AuxLabelGCModeRecalculate
+
+	CompositeMinComponents   = auxlabel.CompositeMinComponents
+	CompositeMaxComponents   = auxlabel.CompositeMaxComponents
+	CompositeOutcomeCreated  = auxlabel.CompositeOutcomeCreated
+	CompositeOutcomeReusedL1 = auxlabel.CompositeOutcomeReusedL1
+	CompositeOutcomeAliasL2  = auxlabel.CompositeOutcomeAliasL2
 )
+
+var NewCompositeLabelService = auxlabel.NewCompositeLabelService
 
 // ============================================================================
 // Function re-exports from merge/
@@ -167,4 +192,11 @@ var (
 	ValidateActiveAuxiliaryLabels      = board.ValidateActiveAuxiliaryLabels
 	UniqueUintSlice                    = board.UniqueUintSlice
 	AuxiliaryLabelEmbeddingModeStorage = auxlabel.AuxiliaryLabelEmbeddingModeStorage
+)
+
+const (
+	UpgradeDirectionCreate = board.UpgradeDirectionCreate
+	UpgradeDirectionExpand = board.UpgradeDirectionExpand
+	UpgradeSourceAux       = board.UpgradeSourceAux
+	UpgradeSourceComposite = board.UpgradeSourceComposite
 )

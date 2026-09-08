@@ -55,4 +55,4 @@
 ## 关联
 
 - 可观测性三系列的业务设计 → [daily-report.md](../../flow/daily-report.md) §可观测性
-- 验证这些交互（opencli 按需验证 / kimi 视图验证）→ `.agents/skills/ui-verify/`、[ui-navigation.md](../../architecture/ui-navigation.md)
+- 验证这些交互（opencli 按需验证 / 视觉子代理验证；major UI 对照已批准 ui-design.md 基线 + 双视口）→ `.agents/skills/ui-verify/`、[ui-navigation.md](../../architecture/ui-navigation.md)、[layout.md](layout.md)

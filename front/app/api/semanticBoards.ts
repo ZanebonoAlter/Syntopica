@@ -15,6 +15,8 @@ export interface SemanticBoard {
   protected: boolean
   /** 循环 B 增强开关（板块级，默认 false）。 */
   enrichment_enabled: boolean
+  /** 跨版块关系自动发现开关（add-evidence-backed-cross-board-relations；旧数据缺省 false）。 */
+  relation_auto_discovery_enabled?: boolean
   /** 循环 B 实时详情窗口（默认 14）。 */
   window_days: number
   /** 解读员读取的上下文层（默认 week/month/year/all）。 */
@@ -36,59 +38,30 @@ export interface AuxiliaryLabelItem {
   protected: boolean
 }
 
-export interface BoardCompositionResponse {
-  items: AuxiliaryLabelItem[]
-  total: number
-}
-
-export interface UpgradeCandidate {
+/** 版块挂载的组合标签条目（add-composite-labels：composition 列复用）。 */
+export interface BoardCompositeMount {
   id: number
   label: string
   slug: string
+  status: string
   ref_count: number
+  components: string[]
 }
 
-export interface BoardAffinity {
-  board_id: number
-  board_label: string
-  matching_candidates: number
-  avg_distance: number
+export interface BoardCompositionResponse {
+  items: AuxiliaryLabelItem[]
+  composites?: BoardCompositeMount[]
+  total: number
 }
 
-export interface UpgradeCluster {
-  candidates: UpgradeCandidate[]
-  board_affinities: BoardAffinity[]
-}
-
-export interface UpgradeConfig {
-  semantic_board_upgrade_ref_count_threshold: number
-  semantic_board_upgrade_cluster_distance_threshold: number
-  semantic_board_upgrade_cotag_window_days: number
-  semantic_board_upgrade_cotag_top_n: number
-  semantic_board_upgrade_cotag_dedupe_sim_threshold: number
-  semantic_board_upgrade_cotag_hard_limit: number
-}
-
-export interface UpgradeCandidatesResponse {
-  candidates: UpgradeCandidate[]
-  clusters: UpgradeCluster[]
-  config: UpgradeConfig
-}
-
-export interface UpgradeSuggestion {
-  decision: 'create_new' | 'merge_into_existing' | 'skip'
-  board_label?: string
-  description?: string
+/** 四格生成参数（split-board-upgrade-directions）：方向 × 来源 + 扩充锁定版块 + 时间窗。 */
+export interface UpgradeGenerateParams {
+  direction: 'create' | 'expand'
+  source: 'aux' | 'composite'
+  /** direction=expand 必填：生成前锁定单版块，本轮建议 target 恒等于它。 */
   target_board_id?: number
-  auxiliary_label_ids: number[]
-  auxiliary_labels: { id: number; label: string }[]
-  target_board_label?: string
-  reason: string
-  board_affinities: BoardAffinity[]
-}
-
-export interface UpgradeSuggestResponse {
-  suggestions: UpgradeSuggestion[]
+  /** 仅 create×aux 生效（候选时间窗；0=不过滤）。 */
+  days?: number
 }
 
 /** 持久化建议行（GET /upgrade-suggestions）。字段对齐后端 boardUpgradeSuggestionRowDTO。 */
@@ -189,6 +162,7 @@ export interface MatchDetailConfig {
   direct_max_sim_min_hit_rate: number
   direct_hit_min_overlap: number
   direction_sim_threshold: number
+  direct_hit_score_factor?: number
   weight_sim: number
   weight_density: number
   weighted_threshold: number
@@ -210,6 +184,19 @@ export interface MatchDetailPair {
   is_hit: boolean
 }
 
+export interface CompositeHitComponent {
+  id: number
+  label: string
+  position: number
+}
+
+/** composite_hit 命中的组合标签（label + 有序组件序列）。 */
+export interface CompositeHit {
+  id: number
+  label: string
+  components: CompositeHitComponent[]
+}
+
 export interface MatchDetailResponse {
   topic_tag_id: number
   topic_tag_label: string
@@ -217,10 +204,12 @@ export interface MatchDetailResponse {
   match_reason: string
   score: number
   downgraded: boolean
+  direction_mismatch?: boolean
   direction_sim: number | null
   effective_min_hits: number
   config: MatchDetailConfig
   direct_hit_auxiliaries: DirectHitAuxiliary[]
+  composite_hits?: CompositeHit[]
   tag_auxiliary_count: number
   hits: number
   hit_rate: number
@@ -306,6 +295,7 @@ export function useSemanticBoardsApi() {
     protected?: boolean
     status?: string
     enrichment_enabled?: boolean
+    relation_auto_discovery_enabled?: boolean
     window_days?: number
     context_layers?: string[]
   }): Promise<ApiResponse<{ id: number }>> {
@@ -330,24 +320,21 @@ export function useSemanticBoardsApi() {
     return apiClient.delete(`/semantic-boards/${boardId}/composition/${auxiliaryLabelId}`)
   }
 
-  async function getUpgradeCandidates(): Promise<ApiResponse<UpgradeCandidatesResponse>> {
-    return apiClient.get('/semantic-boards/upgrade-candidates')
-  }
-
-  async function suggestUpgrade(mode?: string): Promise<ApiResponse<UpgradeSuggestResponse>> {
-    const query = mode ? `?mode=${mode}` : ''
-    return apiClient.post(`/semantic-boards/upgrade-suggest${query}`)
+  /** 四格建议生成（内存响应，调试用；面板主链路走 generateUpgradeSuggestions）。 */
+  async function suggestUpgrade(params: UpgradeGenerateParams): Promise<ApiResponse<{ suggestions: UpgradeSuggestionRow[] }>> {
+    const query = apiClient.buildQueryParams(params as unknown as Record<string, string | number | undefined>)
+    return apiClient.post(`/semantic-boards/upgrade-suggest${query ? `?${query}` : ''}`)
   }
 
   async function executeUpgrade(data: {
-    decision: 'create_new' | 'merge_into_existing'
+    decision: 'create_new' | 'merge_into_existing' | 'compose'
     board_label?: string
     description?: string
     target_board_id?: number
     auxiliary_label_ids: number[]
     /** 携带持久化建议 id：后端在同一事务内置为 confirmed（spec: confirm 联动）。 */
     suggestion_id?: number
-  }): Promise<ApiResponse<{ semantic_board_id: number; auxiliary_label_ids: number[] }>> {
+  }): Promise<ApiResponse<{ semantic_board_id: number; auxiliary_label_ids: number[]; composite_label_id?: number }>> {
     return apiClient.post('/semantic-boards/upgrade-execute', data)
   }
 
@@ -362,9 +349,10 @@ export function useSemanticBoardsApi() {
     return apiClient.post(`/semantic-boards/upgrade-suggestions/${id}/dismiss`, reason ? { reason } : undefined)
   }
 
-  /** 同步执行一轮 discover_new 生成入表，返回新增/跳过/冷却拦截计数。 */
-  async function generateUpgradeSuggestions(): Promise<ApiResponse<GenerateSuggestionsResponse>> {
-    return apiClient.post('/semantic-boards/upgrade-suggestions/generate')
+  /** 同步执行一轮四格生成入表（持久化主链路），返回新增/跳过/冷却拦截计数。 */
+  async function generateUpgradeSuggestions(params: UpgradeGenerateParams): Promise<ApiResponse<GenerateSuggestionsResponse>> {
+    const query = apiClient.buildQueryParams(params as unknown as Record<string, string | number | undefined>)
+    return apiClient.post(`/semantic-boards/upgrade-suggestions/generate${query ? `?${query}` : ''}`)
   }
 
   async function triggerBackfill(data: { mode: string; board_id?: number }): Promise<ApiResponse<BackfillTask>> {
@@ -426,7 +414,6 @@ return {
     getTopicLandscape,
     removeFromComposition,
     addComposition,
-    getUpgradeCandidates,
     suggestUpgrade,
     executeUpgrade,
     getUpgradeSuggestions,

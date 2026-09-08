@@ -77,6 +77,8 @@ cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm test:unit topicAnchor 2>&1"
 
 ## E2E 测试（Playwright）
 
+> UI 验收分流：组件单测验证逻辑，major UI change 的双层验收（opencli 交互断言 + 1440×900/1920×1080 双视口视觉检查）不沉淀为 Playwright 回归——见 [`layout.md`](layout.md)「major UI change 双视口验收」与《开发执行规范》§5.3。
+
 - 配置文件：`front/playwright.config.ts`
 - spec 文件放 `front/tests/e2e/*.spec.ts`
 - 在 `http://localhost:3000` 自动启动 Nuxt 开发服务器后跑浏览器测试

@@ -80,8 +80,10 @@ func GenerateAndSaveReport(ctx context.Context, boardID uint, date time.Time) (*
 // instead of hitting the real AI provider pipeline.
 type watchChatFunc func(ctx context.Context, req airouter.ChatRequest) (*airouter.ChatResult, error)
 
-// EvaluateWatchHits evaluates every active watch against all sections of a
-// newly-saved daily report via a single batch AI call. Detected matches are
+// EvaluateWatchHits evaluates every active hint-track watch (label: batch
+// AI; keyword: pure text) against all sections of a newly-saved daily
+// report. Materialized tracks (keyword_topic / sentence_topic) are skipped —
+// they own sections and SHALL NOT produce hint hits. Detected matches are
 // written as TopicWatchHit rows. This function SHALL NOT change any section's
 // persistent_topic_id or any topic's consecutive_hits. On failure it returns
 // an error that the caller SHOULD swallow (log.Warnf + continue).
@@ -95,10 +97,12 @@ func EvaluateWatchHits(ctx context.Context, boardID uint, report *repository.Boa
 // It accepts a chat function so tests can inject a mock instead of hitting
 // the real AI provider.
 //
-// Dual-track (watch-keyword-and-quickadd): active watches are split by type —
-// label watches keep the existing batch-AI single-shot path unchanged;
-// keyword watches are matched by pure text (matchKeywordSections, zero AI).
-// Hits from both tracks merge into one batch upsert.
+// Tri-track split (watch-materialize-llm-adjudication): active watches split
+// by type — label watches keep the batch-AI single-shot path; keyword watches
+// are matched by pure text (matchKeywordSections, zero AI); materialized
+// tracks (keyword_topic / sentence_topic) are skipped entirely: they own
+// their daily sections and per spec SHALL NOT produce hint hits. Hits from
+// label+keyword tracks merge into one batch upsert.
 func evaluateWatchHitsWithChat(
 	ctx context.Context,
 	boardID uint,
@@ -119,10 +123,17 @@ func evaluateWatchHitsWithChat(
 
 	var labelWatches, keywordWatches []repository.BoardTopicWatch
 	for _, w := range watches {
-		if w.Type == repository.WatchTypeKeyword {
+		switch w.Type {
+		case repository.WatchTypeKeyword:
 			keywordWatches = append(keywordWatches, w)
-		} else {
-			labelWatches = append(labelWatches, w) // historical rows: type='label'
+		case repository.WatchTypeLabel:
+			labelWatches = append(labelWatches, w)
+		default:
+			// Materialized tracks (keyword_topic / sentence_topic) own their
+			// own sections — spec: 物化轨 SHALL NOT 产生命中提示记录. Skipping
+			// them entirely also avoids wasted AI calls on watches that already
+			// surface their content as sections.
+			continue
 		}
 	}
 

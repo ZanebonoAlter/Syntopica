@@ -3,6 +3,23 @@ services:
     image: pgvector/pgvector:pg18-trixie
     container_name: syntopica-postgres
     restart: unless-stopped
+    # autovacuum tuning (optimize-pg-storage): tighten vacuum triggers for the
+    # high-churn tables (otel_spans ~820k inserts+deletes/day; embedding cache
+    # churn) and raise cost limit so vacuum keeps up with write volume.
+    # Defaults were 0.2 scale factor / cost_limit 200 — dead tuples piled up for
+    # days and TOAST bloat multiplied storage 13x. Needs container recreate.
+    command:
+      - postgres
+      - -c
+      - autovacuum_vacuum_scale_factor=0.05
+      - -c
+      - autovacuum_vacuum_insert_scale_factor=0.05
+      - -c
+      - autovacuum_vacuum_insert_threshold=500
+      - -c
+      - autovacuum_vacuum_cost_limit=2000
+      - -c
+      - wal_compression=on
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     environment:

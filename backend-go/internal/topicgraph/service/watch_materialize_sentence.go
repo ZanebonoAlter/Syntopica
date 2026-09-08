@@ -194,16 +194,21 @@ func updateWatchCacheSafe(watchID uint, pgVec string) error {
 func strPtrHelper(s string) *string { return &s }
 
 // MaterializeSentenceWatch produces the sentence-track section for one watch:
-// retrieval → tag resolution → day's article union → section + threads,
-// owned by the watch's dedicated persistent topic (created at first
-// materialization). Returns nil sections when nothing hit (legal: no section
-// that day). Any failure returns an error the orchestrator logs-and-skips.
+// retrieval → tag resolution → day's article union → LLM adjudication →
+// section + threads, owned by the watch's dedicated persistent topic (created
+// at first materialization). The adjudication layer (matCfg.Enabled, default
+// on) filters the union down to articles fitting the retrieval sentence's
+// intent; failure degrades to the full union (design D4). Returns nil
+// sections when nothing hit (or everything was rejected) — legal: no section
+// that day. Any failure returns an error the orchestrator logs-and-skips.
 func MaterializeSentenceWatch(
 	ctx context.Context,
 	w repository.BoardTopicWatch,
 	date time.Time,
 	cfg WatchSentenceConfig,
+	matCfg WatchMaterializeConfig,
 	embed embedFunc,
+	chat watchChatFunc,
 ) (*repository.DailyReportSection, []repository.DailyReportThread, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "service.MaterializeSentenceWatch")
 	defer span.End()
@@ -252,6 +257,26 @@ func MaterializeSentenceWatch(
 		return nil, nil, nil
 	}
 
+	// Adjudication layer (watch-materialize-llm-adjudication): filter the
+	// tag-union down to articles actually fitting the sentence's intent —
+	// the union itself never expressed the sentence's qualifiers.
+	kept := articles
+	var adj *watchAdjudicationResult
+	if matCfg.Enabled {
+		var aErr error
+		adj, aErr = adjudicateWatchArticles(ctx, w.SemanticBoardID, w.ID, "一句话追踪："+watchQuerySentence(w), articles, matCfg, chat)
+		if aErr != nil {
+			logging.Warnf("watch-adjudicate: sentence watch %d degraded to recall result: %v", w.ID, aErr)
+			adj = nil // degrade: keep the full union, default confidence, fallback title
+		} else {
+			kept = filterAdjudicated(articles, adj)
+		}
+	}
+	if len(kept) == 0 {
+		logging.Infof("watch-adjudicate: sentence watch %d — %d candidates all rejected, no section today", w.ID, len(articles))
+		return nil, nil, nil // no fitting article — no section, no topic creation
+	}
+
 	// Dedicated topic: create at first materialization, reuse forever after
 	// (design D4). Embedding+Centroid = query vector — Centroid is the lane
 	// anchor, so it MUST be written alongside Embedding.
@@ -268,10 +293,12 @@ func MaterializeSentenceWatch(
 		}
 	}
 
+	watchID := w.ID
 	section := &repository.DailyReportSection{
 		ClusterLabel:      w.Label,
+		WatchID:           &watchID,
 		ClusterTagIDs:     mustMarshalUintArray(tagIDs),
-		ArticleCount:      len(articles),
+		ArticleCount:      len(kept),
 		BestTier:          4,
 		AvgScore:          0,
 		QualityBreakdown:  repository.JSON("{}"),
@@ -283,23 +310,27 @@ func MaterializeSentenceWatch(
 		TopicMatchConfidence: "manual",
 		TopicMatchDistance:   0,
 	}
+	if adj != nil && adj.Title != "" {
+		section.ClusterLabel = adj.Title // LLM same-batch title; fallback = watch label
+	}
 	// Snapshot field: the topic is active by construction.
 	active := repository.TopicStatusActive
 	section.TopicStatusAtReport = &active
 
-	threads := make([]repository.DailyReportThread, 0, len(articles))
-	for _, a := range articles {
+	threads := make([]repository.DailyReportThread, 0, len(kept))
+	for _, a := range kept {
 		threads = append(threads, repository.DailyReportThread{
 			Title:             a.Title,
 			Summary:           truncateRunes(a.Summary, keywordWatchSummaryRunes),
 			TagIDs:            mustMarshalUintArray(parseWatchTagIDs(a.TagIDs)),
-			Confidence:        1.0,
+			Confidence:        1.0, // default; overridden by the adjudication verdict below
 			RelatedArticleIDs: mustMarshalUintArray([]uint{a.ID}),
 		})
 	}
+	applyThreadConfidence(threads, adj)
 
-	logging.Infof("watch-materialize: watch %d section '%s' — %d labels → %d tags → %d articles (topic %d)",
-		w.ID, w.Label, len(labels), len(tagIDs), len(articles), *topicID)
+	logging.Infof("watch-materialize: watch %d section '%s' — %d labels → %d tags → %d articles (%d kept, topic %d)",
+		w.ID, section.ClusterLabel, len(labels), len(tagIDs), len(articles), len(kept), *topicID)
 	return section, threads, nil
 }
 

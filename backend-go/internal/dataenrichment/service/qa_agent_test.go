@@ -27,7 +27,7 @@ const qaEventChainSectors = `{
 func seedQAResult(t *testing.T, repo *repository.Repository) uint {
 	t.Helper()
 	r := &repository.TopicEnrichmentResult{
-		PersistentTopicID: 1,
+		PersistentTopicID: repository.TopicIDPtr(1),
 		Sectors:           json.RawMessage(qaEventChainSectors),
 		SessionID:         "data_enrichment_1_seed",
 	}

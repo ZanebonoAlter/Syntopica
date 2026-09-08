@@ -10,13 +10,32 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	CORS     CORSConfig
-	Log      LogConfig
-	Tracing  TracingConfig
-	Storage  StorageConfig
-	Bocha    BochaConfig
+	Server        ServerConfig
+	Database      DatabaseConfig
+	CORS          CORSConfig
+	Log           LogConfig
+	Tracing       TracingConfig
+	Storage       StorageConfig
+	Bocha         BochaConfig
+	CrossBoardRel CrossBoardRelationConfig
+}
+
+// CrossBoardRelationConfig holds the global budget and thresholds for
+// cross-board relation discovery (add-evidence-backed-cross-board-relations).
+// Per-board on/off is stored on semantic_labels.relation_auto_discovery_enabled;
+// these values govern every run.
+type CrossBoardRelationConfig struct {
+	AutoMaxSourcesPerBrief int     `mapstructure:"auto_max_sources_per_brief"` // auto trigger: sources per new brief (-1 = disabled; unset/0 = default)
+	MaxSearchesPerRun      int     `mapstructure:"max_searches_per_run"`       // web_search calls per run
+	MaxFetchesPerRun       int     `mapstructure:"max_fetches_per_run"`        // fetch_page calls per run
+	MaxLoopsPerRun         int     `mapstructure:"max_loops_per_run"`          // scout loop ceiling
+	RunTimeoutSeconds      int     `mapstructure:"run_timeout_seconds"`        // whole-run timeout
+	ResolveThreshold       float64 `mapstructure:"resolve_threshold"`          // top-1 minimum score
+	ResolveMargin          float64 `mapstructure:"resolve_margin"`             // required top1-top2 gap
+	DismissCooldownDays    int     `mapstructure:"dismiss_cooldown_days"`      // same-hash re-suggest block
+	ConfirmedTTLHours      int     `mapstructure:"confirmed_ttl_hours"`        // confirm expiry horizon
+	BriefMaxRelations      int     `mapstructure:"brief_max_relations"`        // brief injection count budget
+	BriefMaxRelationRunes  int     `mapstructure:"brief_max_relation_runes"`   // brief injection char budget
 }
 
 type LogConfig struct {
@@ -115,7 +134,7 @@ func LoadConfig(configPath string) error {
 	viper.SetDefault("log.file.max_age_days", 30)
 	viper.SetDefault("log.file.compress", true)
 
-	viper.SetDefault("tracing.sample_ratio", 1.0)
+	viper.SetDefault("tracing.sample_ratio", 0.05)
 	viper.SetDefault("tracing.instrument_gorm", true)
 	viper.SetDefault("tracing.instrument_http", true)
 
@@ -123,6 +142,19 @@ func LoadConfig(configPath string) error {
 
 	viper.SetDefault("bocha.api_key", "")
 	viper.SetDefault("bocha.endpoint", "https://api.bochaai.com/v1/web-search")
+
+	// Cross-board relation discovery budgets (add-evidence-backed-cross-board-relations).
+	viper.SetDefault("cross_board_rel.auto_max_sources_per_brief", 3)
+	viper.SetDefault("cross_board_rel.max_searches_per_run", 4)
+	viper.SetDefault("cross_board_rel.max_fetches_per_run", 2)
+	viper.SetDefault("cross_board_rel.max_loops_per_run", 6)
+	viper.SetDefault("cross_board_rel.run_timeout_seconds", 300)
+	viper.SetDefault("cross_board_rel.resolve_threshold", 0.62)
+	viper.SetDefault("cross_board_rel.resolve_margin", 0.08)
+	viper.SetDefault("cross_board_rel.dismiss_cooldown_days", 14)
+	viper.SetDefault("cross_board_rel.confirmed_ttl_hours", 720)
+	viper.SetDefault("cross_board_rel.brief_max_relations", 3)
+	viper.SetDefault("cross_board_rel.brief_max_relation_runes", 1200)
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
@@ -171,10 +203,15 @@ func applyEnvOverrides(cfg *Config) {
 	// Defaults to false: production never sets this, refusing destructive migrations.
 	cfg.Database.AllowDestructiveMigrations = os.Getenv("MIGRATIONS_ALLOW_DESTRUCTIVE") == "1"
 
-	// Tracing (defaults via viper SetDefault above; env overrides when set)
+	// Tracing (defaults via viper SetDefault above; env overrides when set).
+	// Invalid or out-of-range values fall back to the default with a warning:
+	// full sampling kept otel_spans at a steady ~4.3GB (820k spans/day), so the
+	// safe fallback is the low default, never the caller's bad value.
 	if v := strings.TrimSpace(os.Getenv("TRACE_SAMPLE_RATIO")); v != "" {
-		if r, err := strconv.ParseFloat(v, 64); err == nil {
+		if r, err := strconv.ParseFloat(v, 64); err == nil && r >= 0.0 && r <= 1.0 {
 			cfg.Tracing.SampleRatio = r
+		} else {
+			fmt.Printf("Config: invalid TRACE_SAMPLE_RATIO %q (want 0.0-1.0), keeping default %.2f\n", v, cfg.Tracing.SampleRatio)
 		}
 	}
 	if v := os.Getenv("TRACE_INSTRUMENT_GORM"); v != "" {
@@ -194,6 +231,73 @@ func applyEnvOverrides(cfg *Config) {
 	if v := strings.TrimSpace(os.Getenv("BOCHA_ENDPOINT")); v != "" {
 		cfg.Bocha.Endpoint = v
 	}
+}
+
+// defaultCrossBoardRelationConfig mirrors the viper defaults above; used when
+// AppConfig has not been loaded (tests, wiring order) so discovery budgets are
+// never zero-valued by accident.
+func defaultCrossBoardRelationConfig() CrossBoardRelationConfig {
+	return CrossBoardRelationConfig{
+		AutoMaxSourcesPerBrief: 3,
+		MaxSearchesPerRun:      4,
+		MaxFetchesPerRun:       2,
+		MaxLoopsPerRun:         6,
+		RunTimeoutSeconds:      300,
+		ResolveThreshold:       0.62,
+		ResolveMargin:          0.08,
+		DismissCooldownDays:    14,
+		ConfirmedTTLHours:      720,
+		BriefMaxRelations:      3,
+		BriefMaxRelationRunes:  1200,
+	}
+}
+
+// EffectiveCrossBoardRelationConfig returns the loaded config, falling back to
+// defaults for zero fields (config not loaded / partial yaml).
+func EffectiveCrossBoardRelationConfig() CrossBoardRelationConfig {
+	def := defaultCrossBoardRelationConfig()
+	if AppConfig == nil {
+		return def
+	}
+	got := AppConfig.CrossBoardRel
+	// Auto budget: negative = explicit global disable (effective 0);
+	// zero = unset → default. Keeps "预算为零跳过" expressible.
+	if got.AutoMaxSourcesPerBrief < 0 {
+		got.AutoMaxSourcesPerBrief = 0
+	} else if got.AutoMaxSourcesPerBrief == 0 {
+		got.AutoMaxSourcesPerBrief = def.AutoMaxSourcesPerBrief
+	}
+	if got.MaxSearchesPerRun <= 0 {
+		got.MaxSearchesPerRun = def.MaxSearchesPerRun
+	}
+	if got.MaxFetchesPerRun <= 0 {
+		got.MaxFetchesPerRun = def.MaxFetchesPerRun
+	}
+	if got.MaxLoopsPerRun <= 0 {
+		got.MaxLoopsPerRun = def.MaxLoopsPerRun
+	}
+	if got.RunTimeoutSeconds <= 0 {
+		got.RunTimeoutSeconds = def.RunTimeoutSeconds
+	}
+	if got.ResolveThreshold <= 0 || got.ResolveThreshold >= 1 {
+		got.ResolveThreshold = def.ResolveThreshold
+	}
+	if got.ResolveMargin <= 0 || got.ResolveMargin >= 1 {
+		got.ResolveMargin = def.ResolveMargin
+	}
+	if got.DismissCooldownDays <= 0 {
+		got.DismissCooldownDays = def.DismissCooldownDays
+	}
+	if got.ConfirmedTTLHours <= 0 {
+		got.ConfirmedTTLHours = def.ConfirmedTTLHours
+	}
+	if got.BriefMaxRelations <= 0 {
+		got.BriefMaxRelations = def.BriefMaxRelations
+	}
+	if got.BriefMaxRelationRunes <= 0 {
+		got.BriefMaxRelationRunes = def.BriefMaxRelationRunes
+	}
+	return got
 }
 
 func splitCommaSeparated(value string) []string {

@@ -1,9 +1,14 @@
 package dataenrichment
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/database"
 )
 
@@ -37,4 +42,52 @@ func TestInitEnablesRegisterRoutes(t *testing.T) {
 		}
 	}()
 	RegisterRoutes(g.Group("/api"))
+}
+
+// TestInitWiresBoardConfigResolver is a regression test for a production 500:
+// POST /api/semantic-boards/:id/enrichment/analysis/trigger returned
+// "enrich board %d: board config resolver not wired" because EnrichBoard's
+// config-gate resolver is attached via a post-construction setter
+// (SetBoardConfigResolver) that Init never called. Unit tests passed because
+// they construct the orchestrator themselves and wire the resolver manually.
+//
+// Contract: Init MUST wire the board config resolver so EnrichBoard's first
+// gate (enrichment_enabled) actually runs. With a seeded board that has
+// enrichment disabled, the trigger must return the business error
+// "enrichment not enabled for this board" — never "not wired".
+func TestInitWiresBoardConfigResolver(t *testing.T) {
+	setupDataEnrichmentTestDB(t)
+
+	// Seed a board with enrichment disabled: the gate must reject it with the
+	// business error, which proves the resolver was actually consulted.
+	board := models.SemanticLabel{
+		Label: "wire-test-board", Slug: "wire-test-board",
+		LabelType: "board", Status: "active", Source: "manual",
+	}
+	if err := database.DB.Create(&board).Error; err != nil {
+		t.Fatalf("seed board: %v", err)
+	}
+
+	Init(database.DB)
+
+	gin.SetMode(gin.TestMode)
+	g := gin.New()
+	RegisterRoutes(g.Group("/api"))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/api/semantic-boards/%d/enrichment/analysis/trigger", board.ID), nil)
+	g.ServeHTTP(w, req)
+
+	if strings.Contains(w.Body.String(), "not wired") {
+		t.Fatalf("board config resolver not wired after Init (regression: Init "+
+			"must call orchestrator.SetBoardConfigResolver): %s", w.Body.String())
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (board-not-enabled business error); body: %s",
+			w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "enrichment not enabled") {
+		t.Fatalf("expected enrichment-not-enabled business error, got: %s", w.Body.String())
+	}
 }

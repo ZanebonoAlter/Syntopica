@@ -236,7 +236,7 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 
 | 调度器 | 间隔 | 清理对象与条件 |
 | ------ | ---- | -------------- |
-| `log_cleanup` | 86400s（每日，启动延迟5min） | `DELETE FROM ai_call_logs WHERE created_at < now()-7天`；`DELETE FROM otel_spans WHERE start_time_unix_nano < now()-7天`。**保留 7 天**。另：`DELETE FROM ai_embedding_cache WHERE created_at < now()-14天`（embedding 结果缓存，仅白名单 operation 落行）；`DELETE FROM embedding_queues WHERE status='completed' AND created_at < now()-30天`（已完成队列行，保留 30 天）。 |
+| `log_cleanup` | 86400s（每日，启动延迟5min） | `DELETE FROM ai_call_logs WHERE created_at < now()-7天`；`DELETE FROM otel_spans WHERE start_time_unix_nano < now()-7天`。**保留 7 天**。另：`DELETE FROM ai_embedding_cache WHERE created_at < now()-14天`（embedding 结果缓存，仅白名单 operation 落行；存储格式为 bytea 二进制 float32 小端字节流，~10KB/条，见 `models/embedding_codec.go`——optimize-pg-storage：原 jsonb 文本形式 ~31.5KB/条，2026-08-28 起 pre-migrate 非破坏转换）；`DELETE FROM embedding_queues WHERE status='completed' AND created_at < now()-30天`（已完成队列行，保留 30 天）。 |
 | `aux_label_cleanup` | 3600s（每时，启动延迟10min） | 软禁用「无活跃引用」的辅助标签：`semantic_labels` 中 `label_type='auxiliary' AND status='active' AND protected=false AND created_at < now()-1天` 且无 `topic_tag_semantic_labels` 引用且不在 `board_composition` 中 → `status='disabled'`（并删其 board_composition 行）。**不硬删**，模式为 disable、宽限1天。 |
 | `blocked_article_recovery` | 3600s（每时） | 恢复卡在 `articles.firecrawl_status IN ('waiting_for_firecrawl','blocked')` 且其 `feed.firecrawl_enabled=true` 的文章 → 置回 `pending` 重试。另含 STAT-05 告警（阻塞数>50 时 WARN）。 |
 | `preference_update` | 1800s（每30min） | 聚合 `reading_behaviors`→`user_preferences`；并运行孤儿清理：修复/删除 category_id 指向已删分类的 reading_behaviors，删除 feed_id 指向已删源的 reading_behaviors 与 user_preferences。**仅孤儿清理，无时间型 TTL**。 |
@@ -282,6 +282,12 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 - 基础数据：`articles` / `topic_tags` / `topic_tag_embeddings` / `semantic_labels` / `ai_call_logs`（仅 tag 合并会硬删被合并源）
 
 ---
+
+### 跨版块关系（add-evidence-backed-cross-board-relations）
+
+- `cross_board_relation_runs`：**append-only 审计**，不清理不修改（可追溯要求；体量随发现频率线性、单用户场景可控）。
+- `cross_board_relations`：生命周期行。`confirmed` 行到期由 `relation_expire` 定时任务（每小时）批量转 `expired`（读取路径也即时判过期，双保险）；`dismissed` 永久保留（同 `suggestion_hash` 冷却期默认 14 天内拦截重生，期满允许新 run 再提出）；`unresolved`/`proposed` 无 TTL，等用户裁决或 re-resolve。部分唯一索引保证 open 态幂等，终态行不删除。
+- 证据 JSONB（`evidence`/`counterevidence`）与 run 留痕共同满足「每条关系可重建」的追溯要求。
 
 ## 配置要求
 
@@ -371,13 +377,13 @@ digest_configs (推送配置)
 ### 2026-05-14
 
 - 初始版本：4 条核心生命周期链 + 配置要求 + 2 条预留功能说明
-- 从 `DATABASE_FIELDS.md` 迁移"工作流程"、"状态流转图"、"配置要求"三节内容
+- 从原 `DATABASE_FIELDS.md`（已按域切分为 `tables/` 域文档）迁移"工作流程"、"状态流转图"、"配置要求"三节内容
 
 ---
 
 ## 相关文档
 
 - [业务流程](../flow/README.md) — 链路概要设计、函数调用链、前后端协作（"业务怎么跑的"）
-- [数据库字段说明](DATABASE_FIELDS.md) — 35 张表的完整字段字典
-- [全局实体关系图](ER_DIAGRAM.md) — FK 关系图与约束矩阵
+- [数据库域文档索引](_index.md) — 52 张业务表按域分档的字段字典与 ER 图
+- [全局约定](tables/_conventions.md) — FK 真相 / 索引与约束总览 / FK 引用矩阵
 - [项目架构总览](../architecture/overview.md) — 系统架构全局视角

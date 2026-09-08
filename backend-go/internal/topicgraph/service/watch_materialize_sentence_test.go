@@ -37,9 +37,9 @@ func TestWatchQuerySentence(t *testing.T) {
 
 func TestEnsureWatchQueryVec_CachedVectorWins(t *testing.T) {
 	w := repository.BoardTopicWatch{
-		ID:              1,
-		Label:           "L",
-		EmbeddingCache:  strPtrHelper(repository.FloatsToPgVector([]float64{0.5, 0.5})),
+		ID:             1,
+		Label:          "L",
+		EmbeddingCache: strPtrHelper(repository.FloatsToPgVector([]float64{0.5, 0.5})),
 	}
 	called := false
 	embed := func(ctx context.Context, req airouter.EmbeddingRequest, cap airouter.Capability) (*airouter.EmbeddingResult, error) {

@@ -3,6 +3,7 @@ package dataenrichment
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -114,6 +115,66 @@ func NewDBLifelineReader(db *gorm.DB) service.LifelineReader {
 
 type dbLifelineReader struct {
 	db *gorm.DB
+}
+
+// GetTopicLifelineArchive returns the lane's month/year background memory
+// from topic_lifeline_context: latest 2 month rows + latest 1 year row,
+// newest first within each granularity (matches the agent archive rendering
+// budget in lifeline_renderer).
+func (r *dbLifelineReader) GetTopicLifelineArchive(topicID uint) ([]service.LifelineArchiveRow, error) {
+	type archiveRow struct {
+		Granularity string    `gorm:"column:granularity"`
+		Period      string    `gorm:"column:period"`
+		AsOfDate    time.Time `gorm:"column:as_of_date"`
+		Content     string    `gorm:"column:content"`
+	}
+	var rows []archiveRow
+	if err := r.db.Raw(`
+		SELECT granularity, period, as_of_date, content
+		FROM topic_lifeline_context
+		WHERE persistent_topic_id = ? AND granularity IN ('month', 'year')
+		ORDER BY granularity ASC, period DESC
+	`, topicID).Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("query lifeline archive: %w", err)
+	}
+	out := make([]service.LifelineArchiveRow, 0, len(rows))
+	monthTaken, yearTaken := 0, 0
+	for _, rw := range rows {
+		var take int
+		switch rw.Granularity {
+		case "month":
+			take = 2
+		case "year":
+			take = 1
+		default:
+			continue
+		}
+		if rw.Granularity == "month" {
+			if monthTaken >= take {
+				continue
+			}
+			monthTaken++
+		} else {
+			if yearTaken >= take {
+				continue
+			}
+			yearTaken++
+		}
+		out = append(out, service.LifelineArchiveRow{
+			Granularity: rw.Granularity,
+			Period:      rw.Period,
+			AsOfDate:    rw.AsOfDate,
+			Content:     rw.Content,
+		})
+	}
+	// Month entries first (recent substance), year entry as long-horizon tail.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Granularity != out[j].Granularity {
+			return out[i].Granularity == "month"
+		}
+		return out[i].Period > out[j].Period
+	})
+	return out, nil
 }
 
 func (r *dbLifelineReader) GetTopicLifeline(topicID uint) (service.SectionTimelineData, error) {

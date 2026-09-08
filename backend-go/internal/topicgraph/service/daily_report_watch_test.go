@@ -284,6 +284,54 @@ func TestEvaluateWatchHits_PausedWatchesSkipped(t *testing.T) {
 	assert.Zero(t, count, "paused watch must not produce hits")
 }
 
+// materialized-track watches (keyword_topic / sentence_topic) are skipped
+// entirely: zero AI calls, zero text matches, zero hint rows — while a
+// coexisting label watch still goes through the AI path normally.
+func TestEvaluateWatchHits_MaterializedTracksSkipped(t *testing.T) {
+	db := watchTestDB(t)
+	original := repository.Repo
+	repository.Repo = repository.NewTopicGraphRepository(db)
+	t.Cleanup(func() { repository.Repo = original })
+
+	report, sec := seedWatchReportSectionThread(t, db, 1, "DeepSeek Harness 源码解析", "")
+
+	ktWatch := repository.BoardTopicWatch{
+		SemanticBoardID: 1,
+		Label:           "harness",
+		Type:            repository.WatchTypeKeywordTopic,
+		Status:          repository.WatchStatusActive,
+	}
+	require.NoError(t, db.Create(&ktWatch).Error)
+	stWatch := repository.BoardTopicWatch{
+		SemanticBoardID: 1,
+		Label:           "美伊形势对市场影响",
+		Type:            repository.WatchTypeSentenceTopic,
+		Status:          repository.WatchStatusActive,
+	}
+	require.NoError(t, db.Create(&stWatch).Error)
+	labelWatch := repository.BoardTopicWatch{
+		SemanticBoardID: 1,
+		Label:           "AI Agent",
+		Type:            repository.WatchTypeLabel,
+		Status:          repository.WatchStatusActive,
+	}
+	require.NoError(t, db.Create(&labelWatch).Error)
+
+	chat := &countingChat{}
+	err := evaluateWatchHitsWithChat(context.Background(), 1, report, []repository.DailyReportSection{*sec}, chat.f)
+	require.NoError(t, err)
+	assert.Equal(t, 1, chat.calls, "only the label watch reaches the AI path")
+
+	for _, w := range []repository.BoardTopicWatch{ktWatch, stWatch} {
+		var count int64
+		db.Model(&repository.TopicWatchHit{}).Where("watch_id = ?", w.ID).Count(&count)
+		assert.Zero(t, count, "materialized watch %s must produce no hint rows", w.Type)
+	}
+	var labelCount int64
+	db.Model(&repository.TopicWatchHit{}).Where("watch_id = ?", labelWatch.ID).Count(&labelCount)
+	assert.Zero(t, labelCount, "countingChat returns empty hits — label watch stays at zero rows, but its AI call DID happen")
+}
+
 // instant match hits historical sections within the window and is idempotent
 // with the daily-report-time evaluation (same unique key → one row).
 func TestMatchKeywordInstant_HitsAndDedup(t *testing.T) {

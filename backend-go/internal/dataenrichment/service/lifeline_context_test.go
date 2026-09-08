@@ -149,13 +149,15 @@ func TestRefreshWeek_ReadsCurrentWeekSections(t *testing.T) {
 		t.Fatalf("RefreshWeek: %v", err)
 	}
 
-	// Verify: context was upserted with as_of_date = end of week (Jul 13)
+	// Verify: as_of clamped to now (Jul 6) — the write happened mid-period;
+	// a future-dated as_of (Jul 13 boundary) would blind the freshness gate
+	// (fix-board-analysis-material 7.2).
 	ctx, err := repository.Repo.GetTopicLifelineContext(context.Background(), topicID, string(repository.GranularityWeek), service.FormatWeek(now))
 	if err != nil {
 		t.Fatalf("get context: %v", err)
 	}
-	if ctx.AsOfDate.Format("2006-01-02") != "2026-07-13" {
-		t.Fatalf("expected as_of_date 2026-07-13, got %s", ctx.AsOfDate.Format("2006-01-02"))
+	if ctx.AsOfDate.Format("2006-01-02") != "2026-07-06" {
+		t.Fatalf("expected clamped as_of_date 2026-07-06, got %s", ctx.AsOfDate.Format("2006-01-02"))
 	}
 	if ctx.Content == "" {
 		t.Fatal("expected non-empty content")

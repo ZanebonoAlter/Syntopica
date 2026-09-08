@@ -2,7 +2,6 @@ package airouter
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -31,7 +30,7 @@ func TestSaveEmbeddingCacheUpsertIdempotent(t *testing.T) {
 		CacheKey:     "key-1",
 		Model:        "m1",
 		Operation:    "test.op",
-		Embedding:    `[[0.1,0.2]]`,
+		Embedding:    []byte("payload-a"),
 		Dimensions:   2,
 		InputPreview: "hello",
 		CreatedAt:    time.Now(),
@@ -43,7 +42,7 @@ func TestSaveEmbeddingCacheUpsertIdempotent(t *testing.T) {
 		CacheKey:     "key-1",
 		Model:        "m1",
 		Operation:    "test.op",
-		Embedding:    `[[0.3,0.4]]`,
+		Embedding:    []byte("payload-b"),
 		Dimensions:   2,
 		InputPreview: "hello",
 		CreatedAt:    time.Now(),
@@ -57,7 +56,7 @@ func TestSaveEmbeddingCacheUpsertIdempotent(t *testing.T) {
 	// The first write wins: DO NOTHING must not overwrite the stored payload.
 	var stored models.AIEmbeddingCache
 	require.NoError(t, db.First(&stored, "cache_key = ?", "key-1").Error)
-	require.Equal(t, `[[0.1,0.2]]`, stored.Embedding)
+	require.Equal(t, []byte("payload-a"), stored.Embedding)
 }
 
 func TestLookupEmbeddingCacheMissReturnsNil(t *testing.T) {
@@ -76,7 +75,7 @@ func TestLookupEmbeddingCacheRoundTrip(t *testing.T) {
 	require.NoError(t, store.SaveEmbeddingCache(context.Background(), &models.AIEmbeddingCache{
 		CacheKey:   "key-rt",
 		Model:      "m1",
-		Embedding:  `[[0.5,0.6]]`,
+		Embedding:  models.EncodeEmbeddingVectors([][]float64{{0.5, 0.75}}),
 		Dimensions: 2,
 		CreatedAt:  time.Now(),
 	}))
@@ -85,7 +84,7 @@ func TestLookupEmbeddingCacheRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rec)
 	require.Equal(t, "m1", rec.Model)
-	var vectors [][]float64
-	require.NoError(t, json.Unmarshal([]byte(rec.Embedding), &vectors))
-	require.Equal(t, [][]float64{{0.5, 0.6}}, vectors)
+	vectors, err := models.DecodeEmbeddingVectors(rec.Embedding)
+	require.NoError(t, err)
+	require.Equal(t, [][]float64{{0.5, 0.75}}, vectors)
 }

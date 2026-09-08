@@ -221,8 +221,8 @@ my-robot/
 - [业务流程](../flow/README.md)：主链路、前端状态职责、定时任务链路、叙事数据流
 - [详细设计地图](map.md)：业务域 → 流程文档 → 架构骨架 / 代码入口
 - [链路追踪](tracing.md)：OpenTelemetry 集成、埋点分层、查询 API
-- [数据库字段说明](../database/DATABASE_FIELDS.md)：35 张表完整字段字典
-- [全局实体关系图](../database/ER_DIAGRAM.md)：FK 关系图与约束矩阵
+- [数据库文档](../database/_index.md)：域文档导航 + 56 张表清单（字段字典与 ER 图按域拆分在 `tables/`）
+- [数据库全局约定](../database/tables/_conventions.md)：FK 真相、6 条真实 DB FK、索引与约束总览、FK 引用矩阵
 - [数据生命周期](../database/DATA_LIFECYCLE.md)：6 条数据链路的状态字段流转
 - [开发指南](../development.md)：构建、测试、验证命令
 - [内容增强](../flow/content-enrichment.md)：Firecrawl + AI 内容补全流程

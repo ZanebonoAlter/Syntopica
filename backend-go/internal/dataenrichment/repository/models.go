@@ -1,10 +1,15 @@
 package repository
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"time"
+
+	"gorm.io/gorm"
 
 	"syntopica-backend/internal/platform/database"
 )
@@ -85,11 +90,25 @@ type TopicLifelineContext struct {
 
 func (TopicLifelineContext) TableName() string { return "topic_lifeline_context" }
 
+const (
+	ResultKindTopicAnalysis       = "topic_analysis"
+	ResultKindBoardBrief          = "board_brief"
+	ResultKindBoardInvestigation  = "board_investigation"
+	ResultKindLegacyBoardAnalysis = "legacy_board_analysis"
+)
+
 // TopicEnrichmentResult is an immutable snapshot of one enhancement run.
 // Table: topic_enrichment_result
+// analysis_scope: "topic" (single-lane, PersistentTopicID set) or "board"
+// (board-level, SemanticBoardID set, PersistentTopicID NULL).
 type TopicEnrichmentResult struct {
 	ID                  uint            `gorm:"primarykey" json:"id"`
-	PersistentTopicID   uint            `gorm:"not null;index" json:"persistent_topic_id"`
+	PersistentTopicID   *uint           `gorm:"index" json:"persistent_topic_id"`
+	SemanticBoardID     *uint           `gorm:"index" json:"semantic_board_id"`
+	AnalysisScope       string          `gorm:"size:12;not null;default:'topic'" json:"analysis_scope"`
+	ResultKind          string          `gorm:"size:32;not null;default:'topic_analysis'" json:"result_kind"`
+	ParentResultID      *uint           `json:"parent_result_id"`
+	QuestionKey         *string         `gorm:"size:64" json:"question_key"`
 	EvolutionAssessment string          `gorm:"type:text" json:"evolution_assessment"`
 	Sectors             json.RawMessage `gorm:"type:jsonb" json:"sectors"`
 	CausalChain         string          `gorm:"type:text" json:"causal_chain"`
@@ -101,11 +120,58 @@ type TopicEnrichmentResult struct {
 
 func (TopicEnrichmentResult) TableName() string { return "topic_enrichment_result" }
 
+// ComputeQuestionKey normalizes display-equivalent questions by trimming and
+// folding consecutive Unicode whitespace to one ASCII space, then returns the
+// full lowercase SHA-256 hex digest. The original question remains in sectors.
+func ComputeQuestionKey(question string) string {
+	normalized := strings.Join(strings.Fields(question), " ")
+	digest := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(digest[:])
+}
+
+// IsValidQuestionKey reports whether key is a full lowercase SHA-256 hex digest.
+func IsValidQuestionKey(key string) bool {
+	if len(key) != sha256.Size*2 || key != strings.ToLower(key) {
+		return false
+	}
+	_, err := hex.DecodeString(key)
+	return err == nil
+}
+
+// EffectiveResultKind keeps in-memory historical fixtures readable before the
+// explicit migration backfill has populated result_kind.
+func EffectiveResultKind(result *TopicEnrichmentResult) string {
+	if result.ResultKind != "" {
+		return result.ResultKind
+	}
+	if result.AnalysisScope == "board" || result.SemanticBoardID != nil {
+		return ResultKindLegacyBoardAnalysis
+	}
+	return ResultKindTopicAnalysis
+}
+
+// TopicIDMatches reports whether an enrichment row belongs to the given topic.
+// Board-scoped rows (nil topic id) never match a topic id.
+func TopicIDMatches(pid *uint, topicID uint) bool { return pid != nil && *pid == topicID }
+
+// BoardIDMatches reports whether an enrichment row belongs to the given board.
+// Topic-scoped rows (nil board id) never match a board id.
+func BoardIDMatches(bid *uint, boardID uint) bool { return bid != nil && *bid == boardID }
+
+// TopicIDPtr returns a pointer to id — convenience for constructing topic-
+// scoped enrichment rows (PersistentTopicID is nullable for board-scope rows).
+func TopicIDPtr(id uint) *uint { return &id }
+
+// BoardIDPtr returns a pointer to id (board-scope rows).
+func BoardIDPtr(id uint) *uint { return &id }
+
 // TopicEnrichmentReview records a comparison between two result snapshots.
 // Table: topic_enrichment_review
+// Board-level reviews carry SemanticBoardID and leave PersistentTopicID NULL.
 type TopicEnrichmentReview struct {
 	ID                uint            `gorm:"primarykey" json:"id"`
-	PersistentTopicID uint            `gorm:"not null;index" json:"persistent_topic_id"`
+	PersistentTopicID *uint           `gorm:"index" json:"persistent_topic_id"`
+	SemanticBoardID   *uint           `gorm:"index" json:"semantic_board_id"`
 	PrevResultID      *uint           `gorm:"index" json:"prev_result_id"`
 	CurrResultID      uint            `gorm:"not null;index" json:"curr_result_id"`
 	Verdict           json.RawMessage `gorm:"type:jsonb" json:"verdict"`
@@ -167,6 +233,80 @@ type TopicEnrichmentQA struct {
 
 func (TopicEnrichmentQA) TableName() string { return "topic_enrichment_qa" }
 
+// ReferenceRole is a reusable methodology profile injected into the analysis
+// prompt as an appendix (design D5: 方法非事实 — roles shape HOW the agent
+// analyzes, never inject facts/evidence).
+// Table: reference_roles
+// Added by board-level-deep-analysis.
+type ReferenceRole struct {
+	ID      uint   `gorm:"primarykey" json:"id"`
+	Name    string `gorm:"size:120;uniqueIndex;not null" json:"name"`
+	Title   string `gorm:"size:200" json:"title"`
+	Content string `gorm:"type:text;not null" json:"content"`
+	// No gorm default tag: a default tag makes GORM skip zero-value (false)
+	// fields on INSERT, silently flipping Enabled=false creations to the DB
+	// default. Handlers set Enabled explicitly (true when omitted).
+	Enabled   bool      `gorm:"not null" json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (ReferenceRole) TableName() string { return "reference_roles" }
+
+// AnalysisMethodSelectionMeta declares when a method is suitable, when it must
+// not be selected, which evidence it needs, and its known failure modes. The
+// concrete type keeps JSONB payloads validated and avoids unstructured maps.
+type AnalysisMethodSelectionMeta struct {
+	ApplicableWhen   []string `json:"applicable_when"`
+	AvoidWhen        []string `json:"avoid_when"`
+	RequiredEvidence []string `json:"required_evidence"`
+	FailureModes     []string `json:"failure_modes"`
+}
+
+func (m *AnalysisMethodSelectionMeta) normalize() {
+	if m.ApplicableWhen == nil {
+		m.ApplicableWhen = []string{}
+	}
+	if m.AvoidWhen == nil {
+		m.AvoidWhen = []string{}
+	}
+	if m.RequiredEvidence == nil {
+		m.RequiredEvidence = []string{}
+	}
+	if m.FailureModes == nil {
+		m.FailureModes = []string{}
+	}
+}
+
+// AnalysisMethod is a globally managed process/checklist card. It is never
+// injected globally: future investigation selection loads summaries first and
+// full Content only for explicitly selected IDs.
+type AnalysisMethod struct {
+	ID            uint                        `gorm:"primarykey" json:"id"`
+	Name          string                      `gorm:"size:120;uniqueIndex;not null" json:"name"`
+	Title         string                      `gorm:"size:200" json:"title"`
+	Summary       string                      `gorm:"type:text" json:"summary"`
+	SelectionMeta AnalysisMethodSelectionMeta `gorm:"type:jsonb;serializer:json;not null;default:'{}'" json:"selection_meta"`
+	Content       string                      `gorm:"type:text;not null" json:"content"`
+	Enabled       bool                        `gorm:"not null" json:"enabled"`
+	Legacy        bool                        `gorm:"not null;default:false" json:"legacy"`
+	DeletedAt     gorm.DeletedAt              `gorm:"index" json:"deleted_at,omitempty"`
+	CreatedAt     time.Time                   `json:"created_at"`
+	UpdatedAt     time.Time                   `json:"updated_at"`
+}
+
+func (AnalysisMethod) TableName() string { return "analysis_methods" }
+
+func (m *AnalysisMethod) BeforeSave(_ *gorm.DB) error {
+	m.SelectionMeta.normalize()
+	return nil
+}
+
+func (m *AnalysisMethod) AfterFind(_ *gorm.DB) error {
+	m.SelectionMeta.normalize()
+	return nil
+}
+
 func init() {
 	database.RegisterModels(
 		&BoardDataSource{},
@@ -175,5 +315,9 @@ func init() {
 		&TopicEnrichmentReview{},
 		&StockDebateResult{},
 		&TopicEnrichmentQA{},
+		&ReferenceRole{},
+		&AnalysisMethod{},
+		&CrossBoardRelationRun{},
+		&CrossBoardRelation{},
 	)
 }

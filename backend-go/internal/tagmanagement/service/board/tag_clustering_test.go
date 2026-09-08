@@ -74,5 +74,3 @@ func TestFindSimilarTagsByKeywordOverlap_NoEventKeywords(t *testing.T) {
 		t.Fatalf("expected 0 semantic edges for tags without event_keywords, got %d", len(semEdges))
 	}
 }
-
-

@@ -120,19 +120,60 @@ export interface ResultDetailRow {
 	created_at: string;
 }
 
-/** POST .../results/trigger 的响应。 */
-export interface TriggerEnrichmentResponse {
-	result: {
-		id: number;
-		evolution_assessment: string;
-		/** 字段名不变；内容为 AnalyzeOutput（按 form 多态）。 */
-		sectors: AnalyzeOutput | null;
-		causal_chain: string | null;
-		tool_calls_count: number;
-		session_id: string;
-		created_at: string;
-	};
-	review_generated: boolean;
+/** POST .../results/trigger 的异步响应（fix-board-analysis-material：
+ * 触发立即返回，分析后台跑，轮询 getAnalysisStatus 拿结果）。 */
+export interface TriggerStartedResponse {
+	status: "started";
+	scope: "board" | "topic" | string;
+	target_id: number;
+	/** 唯一任务身份（board-level-deep-analysis 5.x：202 返回，供按 job_id 精确轮询）。 */
+	job_id?: string;
+	/** 任务种类：board_brief | board_investigation | topic_analysis。 */
+	job_kind?: AnalysisJobKind | string;
+	/** 仅 409 冲突体的 data 里出现（当前任务仍在跑）。 */
+	running?: boolean;
+}
+
+/** 结果种类（repository.EffectiveResultKind）：board 档三选一。 */
+export type ResultKind =
+	| "board_brief"
+	| "board_investigation"
+	| "legacy_board_analysis"
+	| string;
+
+/** 异步任务种类（handler.AnalysisJobKind 常量）。 */
+export type AnalysisJobKind =
+	| "board_brief"
+	| "board_investigation"
+	| "topic_analysis"
+	| string;
+
+/** GET /enrichment/analysis-status?job_id= 的响应（handler.AnalysisStatus 镜像）。 */
+export interface AnalysisJobStatus {
+	job_id: string;
+	job_kind: AnalysisJobKind;
+	scope: "board" | "topic" | string;
+	target_id: number;
+	running: boolean;
+	started_at?: string;
+	finished?: boolean;
+	error?: string;
+	result_id?: number;
+}
+
+/** GET /enrichment/analysis-status 的响应（scope=board|topic，当前/最近任务；
+ * 无任务时后端返 idle 骨架，无 job_id/job_kind）。 */
+export interface AnalysisStatusRow {
+	scope: "board" | "topic";
+	target_id: number;
+	running: boolean;
+	/** 任务身份：存在历史/在跑任务时才有（重进恢复用它转按 job_id 精确轮询）。 */
+	job_id?: string;
+	job_kind?: AnalysisJobKind;
+	started_at?: string;
+	finished?: boolean;
+	error?: string;
+	result_id?: number;
 }
 
 // ── Table 3: topic_enrichment_review ────────────────────────────────────────
@@ -271,15 +312,19 @@ export interface RegimeShift {
 	[key: string]: unknown;
 }
 
-/** 可核查证据链条目：news=分层新闻 / web=web_search 网页 / page=fetch_page 正文。web/page 带 url+quote+institution+date。 */
+/** 可核查证据链条目：news=分层新闻 / web=web_search 网页 / page=fetch_page 正文 / lane=板块内泳道。web/page 带 url+quote+institution+date；lane 带 ref=lane_id。 */
 export interface EvidenceChainItem {
-	source_type: "news" | "web" | "page" | string;
+	source_type: "news" | "web" | "page" | "lane" | string;
 	ref?: string;
 	url?: string;
 	/** 原文摘录（非 AI 转述）。 */
 	quote?: string;
 	institution?: string;
 	date?: string;
+	/** 可选两级分类：quote=原文摘录 / series=数据序列 / chart=图表。 */
+	kind?: string;
+	/** lane 证据的论据说明（该泳道贡献了什么）。 */
+	lane_note?: string;
 	[key: string]: unknown;
 }
 
@@ -296,6 +341,260 @@ export interface AnalyzeDepth {
 	/** 反过度解读边界：明确"目前还不能下结论"的范围（后端校验非空）。 */
 	boundary: string;
 	evidence_chain: EvidenceChainItem[];
+	[key: string]: unknown;
+}
+
+// ── Board-level analysis（board-level-deep-analysis D8：scope=board 五字段）──
+
+/** board_interpret 候选命题：钩子（近期真实异常）升维成结构命题。 */
+export interface BoardCandidate {
+	thesis: string;
+	hook: string;
+	angle: string;
+	[key: string]: unknown;
+}
+
+/** 论证层（层级递进机制层的一层：表层现象逐层向下挖到结构性根因）。 */
+export interface BoardArgumentLayer {
+	layer: string;
+	deep_logic: string;
+	basis: string;
+	[key: string]: unknown;
+}
+
+/** 论文式论证骨架：intro 定调 → layers 层级递进 → boundary 边界 → conclusion 收束。 */
+export interface BoardArgument {
+	intro: string;
+	layers: BoardArgumentLayer[];
+	boundary: string;
+	conclusion: { cert: string; judgment: string; [key: string]: unknown };
+	[key: string]: unknown;
+}
+
+/** 版块档 sectors：{scope, thesis, candidates, argument, depth, lane_refs} + interpret 元信息。 */
+export interface BoardSectors {
+	scope: "board";
+	/** board=正常结构分析 / sparse=素材不足诚实降级。 */
+	form: "board" | "sparse" | string;
+	thesis: string;
+	angle?: string;
+	candidates: BoardCandidate[];
+	chosen_index: number;
+	reason?: string;
+	/** 论证骨架（sparse 档可能缺席，前端降级渲染）。 */
+	argument?: BoardArgument;
+	/** 深度层（旧结果无此字段则降级不渲染）。 */
+	depth?: AnalyzeDepth;
+	lane_refs: Array<{ lane_id: number; note?: string; board_id?: number; [key: string]: unknown }>;
+	/** interpret 元信息：degraded=LLM 不可用机械降级 / all_sparse=全部泳道素材不足。 */
+	interpret_meta?: {
+		degraded?: boolean;
+		degraded_why?: string;
+		all_sparse?: boolean;
+		[key: string]: unknown;
+	};
+	[key: string]: unknown;
+}
+
+// ── Board brief（board-level-deep-analysis 5.x：result_kind=board_brief 的 sectors）──
+
+/** 泳道关系类型枚举（D3）：同期发生不等于因果，possible_causal 置信最多 medium。 */
+export type BoardRelationType =
+	| "common_driver"
+	| "possible_causal"
+	| "divergent"
+	| "context_only"
+	| "unclear"
+	| string;
+
+/** 关键观察：内部新闻记忆读数，非外部核查事实；basis 指向泳道素材。 */
+export interface BoardBriefObservation {
+	id: string;
+	/** 针对的活跃泳道（幽灵 lane 已被后端 sanitizeEvidenceChain 清理）。 */
+	lane_id: number;
+	statement: string;
+	/** 依据说明（新闻记忆读数来源）。 */
+	basis: string;
+	/** 截止日期 YYYY-MM-DD。 */
+	as_of_date: string;
+	[key: string]: unknown;
+}
+
+/** 跨泳道关系：≥2 条活跃 lane + 类型 + 解释 + 置信 + 观察依据（o-id 引用）。 */
+export interface BoardBriefRelationship {
+	lane_ids: number[];
+	type: BoardRelationType;
+	explanation: string;
+	confidence: "low" | "medium" | "high" | string;
+	/** 引用的 observation id 列表（悬空引用已被后端剔除）。 */
+	evidence_refs: string[];
+	[key: string]: unknown;
+}
+
+/**
+ * 已确认跨版块关系（服务端机械装配，LLM 不生成；add-evidence-backed-cross-board-relations 5.3）。
+ * direction: outgoing=本版块是 source / incoming=本版块是 target。
+ */
+export interface BoardBriefCrossRelation {
+	relation_id: number;
+	other_board_id: number;
+	direction: "outgoing" | "incoming" | string;
+	relation_type: string;
+	claim: string;
+	quality_grade: "high" | "medium" | "low" | "none" | string;
+	confirmed_at?: string;
+	expires_at?: string;
+	evidence_url?: string;
+	evidence_quote?: string;
+	[key: string]: unknown;
+}
+
+/** 未知项：问题 + 为什么不确定 + 需要什么证据。 */
+export interface BoardBriefUncertainty {
+	question: string;
+	why_uncertain: string;
+	needed_evidence: string;
+	[key: string]: unknown;
+}
+
+/** 研究问题候选（0-4）：具体、可被证据支持或削弱；空数组是正常态非失败。 */
+export interface BoardBriefQuestion {
+	id: string;
+	question: string;
+	rationale: string;
+	related_lane_ids: number[];
+	[key: string]: unknown;
+}
+
+/** 简报 sectors（D3 schema）：无 thesis、无固定机制层、无历史类比要求。 */
+export interface BoardBriefSectors {
+	scope: "board";
+	result_kind: "board_brief" | string;
+	/** 1-3 句人话概览。 */
+	summary: string;
+	observations: BoardBriefObservation[];
+	relationships: BoardBriefRelationship[];
+	uncertainties: BoardBriefUncertainty[];
+	research_questions: BoardBriefQuestion[];
+	lane_refs: Array<{ lane_id: number; note?: string; board_id?: number; [key: string]: unknown }>;
+	/** 已确认跨版块关系（机械字段，旧简报缺失时降级为空）。 */
+	cross_board_relations?: BoardBriefCrossRelation[];
+	/** 机械降级（LLM 失败后只产观察不造关系）时为 true。 */
+	degraded?: boolean;
+	degraded_why?: string;
+	/** 全部泳道素材稀薄：observations/relationships/questions 均为空。 */
+	all_sparse?: boolean;
+	retry_reason?: string;
+	review_digest?: string;
+	[key: string]: unknown;
+}
+
+// ── Board investigation（board-level-deep-analysis 5.6：result_kind=board_investigation 的 sectors）──
+
+/** 调查问题（D5）：generated=简报候选问题（文本以父简报为准）/ custom=用户自填。 */
+export interface BoardInvestigationQuestion {
+	/** 显示用 id（generated 取简报候选 id；custom 可空）。 */
+	id?: string;
+	text: string;
+	source: "generated" | "custom" | string;
+	[key: string]: unknown;
+}
+
+/** 假设终评五态（D4）：supported|plausible|insufficient|weakened|refuted，允许 H0 最可信、允许全 insufficient。 */
+export type InvestigationAssessment =
+	| "supported"
+	| "plausible"
+	| "insufficient"
+	| "weakened"
+	| "refuted"
+	| string;
+
+/** 置信三档（与 conclusion.confidence 共用）。 */
+export type InvestigationConfidence = "low" | "medium" | "high" | string;
+
+/** 最终竞争假设（含评估）：derived_from 追溯初始假设 id；support/counter 是证据 id 引用。 */
+export interface BoardInvestigationHypothesis {
+	id: string;
+	label: string;
+	/** 零假设（H0）："变化之间没有可下结论的关联"。 */
+	is_null?: boolean;
+	derived_from?: string[];
+	assessment: InvestigationAssessment;
+	confidence: InvestigationConfidence;
+	scope?: string;
+	support_evidence: string[];
+	counter_evidence: string[];
+	/** 诚实缺口（非 null，空数组是正常态）。 */
+	gaps: string[];
+	[key: string]: unknown;
+}
+
+/** 有界终局结论（D4）：summary/confidence/scope/boundary 四字段，无固定机制层配额。 */
+export interface BoardInvestigationConclusion {
+	summary: string;
+	confidence: InvestigationConfidence;
+	scope?: string;
+	boundary?: string;
+	[key: string]: unknown;
+}
+
+/** 调查证据条目（显式极性 supports/counters 携假设 id）；web/page 带 url+quote+institution+date，lane 的 ref=泳道编号（字符串）。 */
+export interface BoardInvestigationEvidence {
+	id: string;
+	source_type: "news" | "web" | "page" | "lane" | string;
+	ref?: string;
+	url?: string;
+	/** 原文逐字摘录（非 AI 转述）。 */
+	quote?: string;
+	institution?: string;
+	date?: string;
+	/** 可选两级分类：quote=原文摘录 / series=数据序列 / chart=图表。 */
+	kind?: string;
+	/** lane 证据的论据说明（该泳道贡献了什么）。 */
+	lane_note?: string;
+	supports?: string[];
+	counters?: string[];
+	[key: string]: unknown;
+}
+
+/** 注入方法卡留痕（机械写入，绝不采信 LLM 输出）：id+title+content_hash。 */
+export interface BoardInvestigationMethodRef {
+	id: number;
+	title?: string;
+	content_hash?: string;
+	[key: string]: unknown;
+}
+
+/** 调查 sectors（D4 终局 schema）：question + hypotheses + conclusion + evidence_chain + lane_refs。 */
+export interface BoardInvestigationSectors {
+	scope: "board";
+	result_kind: "board_investigation" | string;
+	parent_briefing_id: number;
+	question: BoardInvestigationQuestion;
+	hypotheses: BoardInvestigationHypothesis[];
+	conclusion: BoardInvestigationConclusion;
+	evidence_chain: BoardInvestigationEvidence[];
+	lane_refs: Array<{ lane_id: number; note?: string; board_id?: number; [key: string]: unknown }>;
+	method_refs?: BoardInvestigationMethodRef[];
+	retry_reason?: string;
+	[key: string]: unknown;
+}
+
+/** 版块档 result 行（列表/详情同构，后端 serializeBoardResult）。
+ * 5.x 起新增 result_kind / parent_result_id / question_key（board 档三 kind：
+ * board_brief / board_investigation / legacy_board_analysis）；旧行由后端
+ * EffectiveResultKind 兜底为 legacy，前端按 kind 分派视图。 */
+export interface BoardAnalysisResultRow {
+	id: number;
+	analysis_scope: "board";
+	result_kind?: ResultKind;
+	parent_result_id?: number | null;
+	question_key?: string | null;
+	sectors: BoardSectors | BoardBriefSectors | BoardInvestigationSectors | null;
+	tool_calls?: unknown;
+	input_snapshot?: unknown;
+	session_id?: string;
+	created_at?: string;
 	[key: string]: unknown;
 }
 
@@ -462,6 +761,89 @@ export interface UpsertDataSourceBody {
 	enabled?: boolean;
 }
 
+/** POST .../analysis/investigations/trigger 的 body（5.x）。
+ * briefing_result_id 必填；question_id 非空 → generated（文本以父简报为准），
+ * 否则 question 文本 → custom。二者全空后端 400。 */
+/** POST .../relations/discover 的 body（source 文本永远不出现在客户端——服务端从父简报重取）。 */
+export interface RelationDiscoverBody {
+	briefing_result_id: number;
+	source_kind: "observation" | "question" | string;
+	source_key: string;
+}
+
+/** 关系证据（RelationEvidence 镜像）。 */
+export interface BoardRelationEvidence {
+	ref?: string;
+	tool?: string;
+	url?: string;
+	title?: string;
+	quote?: string;
+	institution?: string;
+	date?: string;
+	use?: "support" | "counter" | string;
+	verified?: boolean;
+	[key: string]: unknown;
+}
+
+/** 跨版块关系行（serializeCrossBoardRelation 镜像；status 生命周期
+ * unresolved/proposed/confirmed/dismissed/expired）。 */
+export interface BoardRelationRow {
+	id: number;
+	run_id?: number | null;
+	source_board_id: number;
+	target_board_id?: number | null;
+	target_lane_id?: number | null;
+	target_concept?: string | null;
+	relation_type: string;
+	claim: string;
+	mechanism?: string | null;
+	verification_verdict: "supported" | "contested" | "insufficient" | "rejected" | string;
+	quality_grade: "high" | "medium" | "low" | "none" | string;
+	evidence?: BoardRelationEvidence[];
+	counterevidence?: BoardRelationEvidence[];
+	status: "unresolved" | "proposed" | "confirmed" | "dismissed" | "expired" | string;
+	suggestion_hash?: string;
+	evidence_version?: string;
+	expires_at?: string | null;
+	confirmed_at?: string | null;
+	dismissed_at?: string | null;
+	expired_at?: string | null;
+	dismiss_reason?: string | null;
+	created_at?: string;
+	updated_at?: string;
+}
+
+/** 关系详情：行 + 映射快照 / gap / run 审计。 */
+export interface BoardRelationDetail extends BoardRelationRow {
+	mapping_snapshot?: unknown;
+	gaps?: unknown;
+	run?: {
+		id: number;
+		status: string;
+		trigger_kind: string;
+		source_kind: string;
+		source_key: string;
+		budget_snapshot?: unknown;
+		gaps?: unknown;
+		error?: string;
+		created_at?: string;
+	} | null;
+}
+
+/** re-resolve 响应（RelationReResolveOutput 镜像）。 */
+export interface RelationReResolveResult {
+	relation_id?: number;
+	new_status?: string;
+	outcome?: string;
+	[key: string]: unknown;
+}
+
+export interface TriggerInvestigationBody {
+	briefing_result_id: number;
+	question_id?: string;
+	question?: string;
+}
+
 /** POST .../results/:id/qa 的响应（对齐后端 service.QAAnswer）。 */
 export interface AskQAResponse {
 	answer: string;
@@ -540,9 +922,144 @@ export function useBoardEnrichmentApi() {
 
 	async function triggerEnrichment(
 		topicId: number,
-	): Promise<ApiResponse<TriggerEnrichmentResponse>> {
+		/** D8 下钻：版块报告 lane 引用点击后预填视角（可选）。 */
+		prefillLens?: string,
+	): Promise<ApiResponse<TriggerStartedResponse>> {
 		return apiClient.post(
 			`/persistent-topics/${topicId}/enrichment/results/trigger`,
+			prefillLens ? { prefill_lens: prefillLens } : undefined,
+		);
+	}
+
+	// ── Board-level analysis（board-level-deep-analysis D8 + 5.x）───────
+	/** 触发版块简报（原「分析板块」，5.3 起后端默认产 board_brief）。
+	 * 202 → data {status,job_id,job_kind:'board_brief',scope,target_id}；
+	 * 409 → success=false 但 data 携当前在跑任务身份（按其 job_id 恢复轮询）。 */
+	async function triggerBoardAnalysis(
+		boardId: number,
+	): Promise<ApiResponse<TriggerStartedResponse>> {
+		return apiClient.post(
+			`/semantic-boards/${boardId}/enrichment/analysis/trigger`,
+		);
+	}
+
+	/** 按唯一 job_id 精确查一个任务（含已完成；未知 job_id → 404）。 */
+	async function getAnalysisStatusByJobId(
+		jobId: string,
+	): Promise<ApiResponse<AnalysisJobStatus>> {
+		return apiClient.get(`/enrichment/analysis-status?job_id=${encodeURIComponent(jobId)}`);
+	}
+
+	/** 按 scope+id 查当前/最近任务（重进恢复入口；无任务 = idle 骨架）。 */
+	async function getAnalysisStatus(
+		scope: "board" | "topic",
+		id: number,
+	): Promise<ApiResponse<AnalysisStatusRow>> {
+		return apiClient.get(`/enrichment/analysis-status?scope=${scope}&id=${id}`);
+	}
+
+	/** 触发问题调查（board_investigation）。generated 问题传 question_id
+	 * （文本以父简报为准）；custom 问题传 question 文本。
+	 * 5.4/5.5 切片只定义契约供组件 emit 复用，不自动调用（5.6/5.7 接线）。 */
+	async function triggerBoardInvestigation(
+		boardId: number,
+		payload: TriggerInvestigationBody,
+	): Promise<ApiResponse<TriggerStartedResponse>> {
+		return apiClient.post(
+			`/semantic-boards/${boardId}/enrichment/analysis/investigations/trigger`,
+		payload,
+		);
+	}
+
+	// ── 跨版块关系发现（add-evidence-backed-cross-board-relations 4.x/6.x）──
+
+	/** 从简报观察/研究问题手动发现跨版块关系。
+	 * 202 → data {status,job_id,job_kind:'relation_discovery',scope:'relation',target_id}；
+	 * 409 → success=false 但 data 携当前在跑任务身份（按其 job_id 恢复轮询）。 */
+	async function triggerRelationDiscovery(
+		boardId: number,
+		payload: RelationDiscoverBody,
+	): Promise<ApiResponse<TriggerStartedResponse>> {
+		return apiClient.post(
+			`/semantic-boards/${boardId}/enrichment/analysis/relations/discover`,
+			payload,
+		);
+	}
+
+	/** 关系列表（双侧匹配；status 逗号分隔过滤 unresolved/proposed/confirmed/dismissed/expired）。 */
+	async function listBoardRelations(
+		boardId: number,
+		status?: string,
+		limit?: number,
+	): Promise<ApiResponse<BoardRelationRow[]>> {
+		const params = new URLSearchParams();
+		if (status) params.set("status", status);
+		if (limit) params.set("limit", String(limit));
+		const qs = params.toString() ? `?${params.toString()}` : "";
+		return apiClient.get(
+			`/semantic-boards/${boardId}/enrichment/analysis/relations${qs}`,
+		);
+	}
+
+	/** 关系详情（列表字段 + mapping_snapshot / gaps / run 审计链接）。 */
+	async function getBoardRelation(
+		boardId: number,
+		relationId: number,
+	): Promise<ApiResponse<BoardRelationDetail>> {
+		return apiClient.get(
+			`/semantic-boards/${boardId}/enrichment/analysis/relations/${relationId}`,
+		);
+	}
+
+	/** 确认 proposed 关系（TTL 内生效；非 proposed → 409）。 */
+	async function confirmBoardRelation(
+		boardId: number,
+		relationId: number,
+	): Promise<ApiResponse<BoardRelationRow>> {
+		return apiClient.post(
+			`/semantic-boards/${boardId}/enrichment/analysis/relations/${relationId}/confirm`,
+		);
+	}
+
+	/** 驳回 proposed/unresolved 关系（reason 必填；进入冷却）。 */
+	async function dismissBoardRelation(
+		boardId: number,
+		relationId: number,
+		reason: string,
+	): Promise<ApiResponse<BoardRelationRow>> {
+		return apiClient.post(
+			`/semantic-boards/${boardId}/enrichment/analysis/relations/${relationId}/dismiss`,
+			{ reason },
+		);
+	}
+
+	/** 重解析 unresolved 关系（目标板块可能已出现）。 */
+	async function reResolveBoardRelation(
+		boardId: number,
+		relationId: number,
+	): Promise<ApiResponse<RelationReResolveResult>> {
+		return apiClient.post(
+			`/semantic-boards/${boardId}/enrichment/analysis/relations/${relationId}/re-resolve`,
+		);
+	}
+
+	async function listBoardAnalysisResults(
+		boardId: number,
+		/** 可选 kind 过滤：board_brief | board_investigation | legacy_board_analysis；缺省 = 全部。 */
+		kind?: "board_brief" | "board_investigation" | "legacy_board_analysis",
+	): Promise<ApiResponse<BoardAnalysisResultRow[]>> {
+		const qs = kind ? `?kind=${kind}` : "";
+		return apiClient.get(
+			`/semantic-boards/${boardId}/enrichment/analysis/results${qs}`,
+		);
+	}
+
+	async function getBoardAnalysisResult(
+		boardId: number,
+		id: number,
+	): Promise<ApiResponse<BoardAnalysisResultRow>> {
+		return apiClient.get(
+			`/semantic-boards/${boardId}/enrichment/analysis/results/${id}`,
 		);
 	}
 
@@ -659,6 +1176,42 @@ export function useBoardEnrichmentApi() {
 		);
 	}
 
+	// ── Board QA（board-level-deep-analysis 6.2：版块报告追问，design D5）─────
+	// QA 按 result id 工作：三种 board kind（brief/investigation/legacy）均可
+	// 追问——“只读”指 result 行不可变，QA 是独立 append-only 行，走 board 路由。
+	/** 问一轮（版块档）：POST /semantic-boards/:id/enrichment/analysis/results/:rid/qa。 */
+	async function askBoardQA(
+		boardId: number,
+		resultId: number,
+		question: string,
+	): Promise<ApiResponse<AskQAResponse>> {
+		return apiClient.post(
+			`/semantic-boards/${boardId}/enrichment/analysis/results/${resultId}/qa`,
+			{ question },
+		);
+	}
+
+	/** 多轮历史（版块档）：GET 同路径 → TopicEnrichmentQA[]（oldest first）。 */
+	async function listBoardQA(
+		boardId: number,
+		resultId: number,
+	): Promise<ApiResponse<TopicEnrichmentQA[]>> {
+		return apiClient.get(
+			`/semantic-boards/${boardId}/enrichment/analysis/results/${resultId}/qa`,
+		);
+	}
+
+	/** 沉淀一轮（版块档）：POST .../results/:rid/qa/:qid/sediment（sediment 路由按 result 定位）。 */
+	async function sedimentBoardQA(
+		boardId: number,
+		resultId: number,
+		qaId: number,
+	): Promise<ApiResponse<TopicEnrichmentQA>> {
+		return apiClient.post(
+			`/semantic-boards/${boardId}/enrichment/analysis/results/${resultId}/qa/${qaId}/sediment`,
+		);
+	}
+
 	return {
 		listContexts,
 		getContext,
@@ -667,6 +1220,19 @@ export function useBoardEnrichmentApi() {
 		listResults,
 		getResult,
 		triggerEnrichment,
+		// board-level analysis (board-level-deep-analysis)
+		triggerBoardAnalysis,
+		getAnalysisStatus,
+		getAnalysisStatusByJobId,
+		triggerBoardInvestigation,
+		triggerRelationDiscovery,
+		listBoardRelations,
+		getBoardRelation,
+		confirmBoardRelation,
+		dismissBoardRelation,
+		reResolveBoardRelation,
+		listBoardAnalysisResults,
+		getBoardAnalysisResult,
 		listReviews,
 		createReview,
 		updateReviewDeviation,
@@ -680,5 +1246,9 @@ export function useBoardEnrichmentApi() {
 		askQA,
 		listQA,
 		sedimentQA,
+		// board qa (board-level-deep-analysis 6.2)
+		askBoardQA,
+		listBoardQA,
+		sedimentBoardQA,
 	};
 }

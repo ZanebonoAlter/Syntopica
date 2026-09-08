@@ -1,6 +1,6 @@
 # 话题数据增强 Data Enrichment
 
-> 涵盖话题维度的生命周期上下文（lifeline_context）、增强结果（enrichment_result）、复盘评审（enrichment_review）、个股多空辩论（stock_debate），以及板块维度的数据源绑定（board_data_source）。
+> 涵盖话题维度的生命周期上下文（lifeline_context）、增强结果（enrichment_result）、复盘评审（enrichment_review）、个股多空辩论（stock_debate），板块维度的数据源绑定（board_data_source）与简报/调查分析（board_brief / board_investigation），以及全局分析方法卡库（analysis_methods，旧 reference_roles 只读兼容）。
 >
 > 通用约定（响应信封、错误格式）见 [_conventions.md](_conventions.md)。
 
@@ -12,7 +12,7 @@
 | POST | `/api/persistent-topics/:topicId/enrichment/contexts/:granularity/regenerate` | 重新生成某粒度上下文 |
 | GET | `/api/persistent-topics/:topicId/enrichment/results` | 列出话题的增强结果（精简摘要） |
 | GET | `/api/persistent-topics/:topicId/enrichment/results/:id` | 取单条增强结果（完整详情） |
-| POST | `/api/persistent-topics/:topicId/enrichment/results/trigger` | 手动触发该话题的增强计算 |
+| POST | `/api/persistent-topics/:topicId/enrichment/results/trigger` | 触发该话题的增强计算（异步，202 job 信封） |
 | POST | `/api/persistent-topics/:topicId/enrichment/results/:id/debates` | 触发指定结果的多空辩论 |
 | GET | `/api/persistent-topics/:topicId/enrichment/results/:id/debates` | 列出指定结果的辩论历史 |
 | POST | `/api/persistent-topics/:topicId/enrichment/results/:id/qa` | 对指定结果发起一轮报告追问 |
@@ -25,6 +25,25 @@
 | GET | `/api/semantic-boards/:id/data-sources` | 列出板块绑定的数据源 |
 | PUT | `/api/semantic-boards/:id/data-sources` | 新增/更新（upsert）板块数据源绑定 |
 | DELETE | `/api/semantic-boards/:id/data-sources/:sourceType` | 删除指定类型的数据源绑定 |
+| POST | `/api/semantic-boards/:id/enrichment/analysis/trigger` | 触发版块简报（202 job 信封） |
+| POST | `/api/semantic-boards/:id/enrichment/analysis/investigations/trigger` | 对父简报某问题触发深入调查（202） |
+| GET | `/api/semantic-boards/:id/enrichment/analysis/results` | 版块档历史列表（可选 `?kind=` 过滤） |
+| GET | `/api/semantic-boards/:id/enrichment/analysis/results/:rid` | 单份版块档 result 详情 |
+| POST | `/api/semantic-boards/:id/enrichment/analysis/results/:rid/qa` | 对板块档 result（三 kind 均可）发起追问 |
+| GET | `/api/semantic-boards/:id/enrichment/analysis/results/:rid/qa` | 列出板块档 result 的追问历史 |
+| POST | `/api/semantic-boards/:id/enrichment/analysis/results/:rid/qa/:qid/sediment` | 沉淀板块档某轮追问 |
+| GET | `/api/enrichment/analysis-status` | 异步分析任务状态轮询（board + topic 两个 scope） |
+| POST | `/api/semantic-boards/:id/enrichment/analysis/relations/discover` | 从简报观察/研究问题触发跨版块关系发现（202 job 信封） |
+| GET | `/api/semantic-boards/:id/enrichment/analysis/relations` | 跨版块关系列表（双侧匹配；`?status=` 逗号分隔过滤） |
+| GET | `/api/semantic-boards/:id/enrichment/analysis/relations/:rid` | 关系详情（含 mapping_snapshot/gaps/run 审计） |
+| POST | `/api/semantic-boards/:id/enrichment/analysis/relations/:rid/confirm` | 确认 proposed 关系（TTL 内生效） |
+| POST | `/api/semantic-boards/:id/enrichment/analysis/relations/:rid/dismiss` | 驳回 proposed/unresolved 关系（reason 必填，进冷却） |
+| POST | `/api/semantic-boards/:id/enrichment/analysis/relations/:rid/re-resolve` | 重解析 unresolved 关系目标 |
+| GET / POST | `/api/analysis-methods` | 方法卡列表 / 创建 |
+| GET / PUT / DELETE | `/api/analysis-methods/:id` | 方法卡详情 / 局部更新 / 软删除 |
+| PUT | `/api/analysis-methods/:id/enable` | 方法卡启停 |
+| GET | `/api/reference-roles`、`/api/reference-roles/:id` | 旧参考角色只读兼容（一版本） |
+| POST / PUT / DELETE | `/api/reference-roles*` | 已退役，一律 410 |
 
 > **路径参数命名**：本模块话题维度统一用 `:topicId`（驼峰，区别于其它模块常用的 `:topic_id` 下划线风格）；板块维度用 `:id`，与 board CRUD 一致。`:granularity` 取值固定为 `week` / `month` / `year` / `all`。
 
@@ -151,29 +170,24 @@
 
 ### POST /api/persistent-topics/:topicId/enrichment/results/trigger
 
-手动触发该话题的增强计算（cycle-B）。触发前会校验所属板块是否启用增强（`enrichment_enabled`），未启用返回 `400`。
+触发该话题的增强计算（cycle-B，含可选 `{prefill_lens}` 下钻预填，见文末）。触发前会校验所属板块是否启用增强（`enrichment_enabled`），未启用返回 `400`。**异步**：立即返回 `202` job 信封，分析在后台跑完落库；同 topic 已有任务在跑返回 `409`（`data` 携当前任务身份）。
 
-**响应示例**
+**响应示例（202）**
 
 ```json
 {
   "success": true,
   "data": {
-    "result": {
-      "id": 102,
-      "evolution_assessment": "……",
-      "sectors": [...],
-      "causal_chain": "……",
-      "tool_calls_count": 6,
-      "session_id": "sess_def456",
-      "created_at": "2026-07-07T11:00:00Z"
-    },
-    "review_generated": true
+    "status": "started",
+    "job_id": "a1b2c3d4e5f6a7b8c9d4e5f6",
+    "job_kind": "topic_analysis",
+    "scope": "topic",
+    "target_id": 101
   }
 }
 ```
 
-增强失败返回 `500`。
+之后轮询 `GET /api/enrichment/analysis-status?job_id=`（见下）拿 `running/finished/error/result_id`。增强启动失败返回 `500`。
 
 ### POST /api/persistent-topics/:topicId/enrichment/results/:id/debates
 
@@ -368,3 +382,187 @@
 ```json
 { "success": true, "data": { "deleted": true } }
 ```
+
+
+## 板块简报与问题调查 Board Analysis（board-level-deep-analysis）
+
+> 默认触发产**版块简报**（`result_kind=board_brief`：单次 LLM，纯事实观察/关系/不确定项/可选题）；用户对简报中某问题显式触发**深入调查**（`result_kind=board_investigation`：方法卡→多假设含 H0→共享研究循环→五态综合）。存量旧论文式分析回填为 `legacy_board_analysis` 只读兼容。链路与约束见 [flow/data-enrichment.md](../flow/data-enrichment.md) §版块级简报与问题调查。
+
+### POST /api/semantic-boards/:id/enrichment/analysis/trigger
+
+触发版块简报。需板块开启 `enrichment_enabled`（未启用返回 `400`，含中文提示）；装配前自动跑 month/year 补全门（失败降级不阻塞）。**异步**：`202` job 信封，`job_kind=board_brief`；同板块任一 job（简报或调查）在跑时返回 `409`，`data` 携当前任务身份（前端据此恢复轮询）。
+
+**响应示例（202）**
+
+```json
+{
+  "success": true,
+  "data": {
+    "status": "started",
+    "job_id": "a1b2c3d4e5f6a7b8c9d4e5f6",
+    "job_kind": "board_brief",
+    "scope": "board",
+    "target_id": 9
+  }
+}
+```
+
+**响应示例（409，同板块在跑）**
+
+```json
+{
+  "success": false,
+  "error": "board analysis already running",
+  "data": { "job_id": "0f1e2d3c4b5a69788796a5b4", "job_kind": "board_investigation", "scope": "board", "target_id": 9, "running": true, "started_at": "2026-08-31T09:00:00Z", "finished": false }
+}
+```
+
+### POST /api/semantic-boards/:id/enrichment/analysis/investigations/trigger
+
+对父简报某问题触发深入调查。**同步预检**（trim/枚举/父存在/同板块/kind=board_brief）失败返回 `400`/`404` 且 0 后台调用；合法则 `202`（`job_kind=board_investigation`，独立 `job_id`）后台调 `InvestigateBoardQuestion`。同板块互斥与 409 同上。
+
+**请求体**
+
+```json
+{ "briefing_result_id": 205, "question_id": "q1" }
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `briefing_result_id` | 是 | 父简报 result ID（uint）；不存在/不属于本板块 → `404`；kind 非 board_brief → `400` |
+| `question_id` | 否（二选一） | 父简报 `research_questions` 候选 id（`source=generated`，文本以父简报为准；解析不出文本 → `400`） |
+| `question` | 否（二选一） | 用户自填问题（`source=custom`）；与 `question_id` 同时传时 `question_id` 优先 |
+
+两者都缺 → `400`。`question_key` 由服务端按规范化问题文本（trim+空白折叠）SHA-256 计算，generated/custom 同算法；同父同题重跑允许（多行 append-only）。
+
+### 跨版块关系发现（add-evidence-backed-cross-board-relations）
+
+**POST /api/semantic-boards/:id/enrichment/analysis/relations/discover**
+
+从父简报的观察/研究问题出发触发发现。同步预检：父简报存在且属本板块（否则 404）、kind=board_brief（否则 400）、`source_kind` ∈ `observation|question` 且 `source_key` 在父简报对应列表中（否则 400）——**source 文本永远不出现在客户端，服务端从父简报 sectors 重取**。合法 → `202`（`job_kind=relation_discovery`，`scope=relation`）；同 source 重复触发 → `409` 且 data 携当前任务身份（按其 job_id 恢复轮询）。
+
+```json
+// 请求
+{ "briefing_result_id": 205, "source_kind": "observation", "source_key": "o1" }
+// 202
+{ "success": true, "data": { "status": "started", "job_id": "rel_...", "job_kind": "relation_discovery", "scope": "relation", "target_id": 9 } }
+```
+
+**关系生命周期五态**：`unresolved`（目标未解析/证据不足，可 re-resolve / dismiss）→ `proposed`（resolved+supported 待裁决，可 confirm / dismiss）→ `confirmed`（用户确认，TTL 内被简报消费；过期转 `expired`）；`dismissed`（驳回，同 hash 进 `dismiss_cooldown_days` 冷却）。confirm 仅 proposed 可调（否则 409，事务内重验目标版块存在）；dismiss 仅 proposed/unresolved 可调（reason 必填）；re-resolve 仅 unresolved 可调（否则 409）。列表按 status 过滤（非法值 400），匹配该版块的任一侧（source/target）；详情附 `mapping_snapshot`、`gaps`、`run`（发现轨迹审计：trigger_kind、budget_snapshot、error）。
+
+**简报消费字段**：confirmed 未过期关系由服务端机械装配进新简报 `sectors.cross_board_relations[]`（`{relation_id, other_board_id, direction: outgoing|incoming, relation_type, claim, quality_grade, confirmed_at, expires_at, evidence_url, evidence_quote}`），LLM 不生成该字段、简报生成不联网；旧简报缺字段读取降级为空。
+
+### GET /api/semantic-boards/:id/enrichment/analysis/results
+
+版块档历史列表（scope=board，最新在前）。可选 `?kind=` 过滤：`board_brief` / `board_investigation` / `legacy_board_analysis`；缺省返回全部版块档；非法 kind → `400`。行结构同详情（`serializeBoardResult`）。
+
+### GET /api/semantic-boards/:id/enrichment/analysis/results/:rid
+
+单份版块档 result 详情。请求不属于该板块的 rid、或行 `analysis_scope` ≠ board（脏 scope 行）→ `404`，不泄漏存在性。
+
+**响应示例**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": 206,
+    "analysis_scope": "board",
+    "result_kind": "board_investigation",
+    "parent_result_id": 205,
+    "question_key": "6a1b2c3d4e5f...（64-hex SHA-256）",
+    "sectors": { "scope": "board", "result_kind": "board_investigation", "question": { "id": "q1", "text": "...", "source": "generated" }, "hypotheses": [...], "conclusion": {...}, "evidence_chain": [...], "lane_refs": [...], "method_refs": [...] },
+    "tool_calls": [...],
+    "input_snapshot": {...},
+    "session_id": "data_enrichment_board_9_ab12cd34",
+    "created_at": "2026-08-31T09:12:00Z"
+  }
+}
+```
+
+> `sectors` 按 `result_kind` 多态：`board_brief` 载 `{summary, observations, relationships, uncertainties, research_questions, lane_refs, degraded?, retry_reason?}`；`board_investigation` 载 `{question, hypotheses[](五态 assessment+支持/反证/gaps), conclusion, evidence_chain, lane_refs, method_refs, retry_reason?}`；`legacy_board_analysis` 原样透传 v1 五字段 `{thesis, candidates, argument, depth, lane_refs}`。
+
+### 板块档报告追问 QA（三 kind 均可）
+
+`POST /api/semantic-boards/:id/enrichment/analysis/results/:rid/qa`（发起一轮，body `{question}`）、`GET .../results/:rid/qa`（多轮历史，最旧优先）、`POST .../results/:rid/qa/:qid/sediment`（沉淀仅翻 `sedimented` flag）——与话题档 QA 同机制（result 不可变、每轮 append 一行 `topic_enrichment_qa`）；简报/调查/legacy 三种 board kind 均可追问。所有权校验：result 必须属于路径板块且 `analysis_scope=board`，sediment 额外校验 qa 行属于该 rid；跨板块/跨 result/scope 不符/不存在统一 `404`。追问内部走 Operation `data_enrichment.qa_tool_use`。
+
+### GET /api/enrichment/analysis-status
+
+异步分析任务状态轮询（board + topic 两个 scope 共用，无前缀）。两种查询方式：
+
+| 查询参数 | 行为 |
+|------|------|
+| `?job_id=` | 精确查一个 job（含已完成的）；未知 job_id → `404` |
+| `?scope=board\|topic&id=` | 当前/最近任务（重进恢复）；无任务返回 idle 骨架 `{scope, target_id, running:false, finished:false}`（进程重启后同此） |
+
+**响应示例（运行中）**
+
+```json
+{
+  "success": true,
+  "data": {
+    "job_id": "a1b2c3d4e5f6a7b8c9d4e5f6",
+    "job_kind": "board_brief",
+    "scope": "board",
+    "target_id": 9,
+    "running": true,
+    "started_at": "2026-08-31T09:00:00Z",
+    "finished": false
+  }
+}
+```
+
+`job_kind` 枚举：`topic_analysis` / `board_brief` / `board_investigation`。完成后 `finished=true` 且带 `result_id`；失败带 `error`。单次后台上限 30 分钟；内存 job 表，进程重启即空闲态。
+
+## 分析方法卡 Analysis Methods（方法库，board-level-deep-analysis）
+
+> 全局方法卡库（`analysis_methods` 表）：声明适用/禁用/证据/失败模式边界，仅在调查链按问题选中 0-2 张注入（经清洗）；简报/事实阶段永不注入。创建默认 `disabled`；`legacy=true` 项为旧参考角色迁移（需人工整理后启用）。设置页「分析方法」section 即此 API。
+
+### GET /api/analysis-methods
+
+方法卡列表（当前返回完整卡，含 `content`；设置页无需再逐条请求详情）。**响应示例**
+
+```json
+{
+  "success": true,
+  "data": [
+    { "id": 1, "name": "inside-america", "title": "内部看美国·方法论画像（v2）", "summary": "...", "selection_meta": { "applicable_when": [...], "avoid_when": [...], "required_evidence": [...], "failure_modes": [...] }, "content": "...", "enabled": false, "legacy": true, "created_at": "2026-08-28T00:00:00Z", "updated_at": "2026-08-28T00:00:00Z" }
+  ]
+}
+```
+
+### POST /api/analysis-methods
+
+创建方法卡。body：`{ "name": "...", "title"?: "...", "summary"?: "...", "selection_meta"?: {...四数组}, "content": "...", "enabled"?: false }`——`name` + `content` 必填（缺 → `400`）；重名 → `409`；默认 `enabled=false`。
+
+### GET /api/analysis-methods/:id
+
+单条详情（含 `content` 正文）；不存在或已软删除 → `404`。
+
+### PUT /api/analysis-methods/:id
+
+局部更新（`name`/`title`/`summary`/`selection_meta`/`content`/`enabled` 任意子集）；传空 `name`/`content` → `400`；改名为已存在名 → `409`。
+
+### PUT /api/analysis-methods/:id/enable
+
+启停。body `{ "enabled": true }` 必填（缺 → `400`）；即时生效（后端每次调查现查 enabled 卡）。
+
+### DELETE /api/analysis-methods/:id
+
+软删除（`deleted_at`）；响应 `{ "deleted": <id> }`。历史调查的 `method_refs`（含 content_hash）仍可追溯。
+
+## 参考角色 Reference Roles（旧，只读兼容一版本）
+
+> 旧方法论画像库（`reference_roles` 表）已退役：所有 prompt 不再注入。GET 保留一版本供迁移查看；写 API 一律 `410`，指向 `/analysis-methods`（旧角色已由迁移按原文字节复制为 disabled legacy 方法卡）。设置页旧面板已下架。
+
+### GET /api/reference-roles、GET /api/reference-roles/:id
+
+旧角色列表/详情，只读；不存在 → `404`。
+
+### POST / PUT / DELETE /api/reference-roles*
+
+一律 `410 Gone`：`reference roles are read-only; use /analysis-methods`。
+
+## 单泳道 trigger 扩展：prefill_lens
+
+`POST /api/persistent-topics/:topicId/enrichment/results/trigger` 可选 body `{ "prefill_lens": "..." }`——版块简报观察/关系/研究问题/lane 引用与调查证据下钻时预填视角，后端 `EnrichTopicLens` 用它覆盖默认 lens 候选（candidates[0]）；空/缺省走原逻辑。预填写入可编辑输入框、允许修改、不自动触发。

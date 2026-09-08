@@ -37,13 +37,13 @@ func setupDebateTestDB(t *testing.T) *repository.Repository {
 // ── Mock FinGeniusClient ────────────────────────────────────────────────────
 
 type mockFinGeniusClient struct {
-	submitFn    func(ctx context.Context, symbols []service.DebateSymbol) ([]service.DebateTask, error)
-	getTaskFn   func(ctx context.Context, taskID string) (*service.DebateTaskResult, error)
-	pollTaskFn  func(ctx context.Context, taskID string) (*service.DebateTaskResult, error)
-	healthFn    func(ctx context.Context) error
+	submitFn   func(ctx context.Context, symbols []service.DebateSymbol) ([]service.DebateTask, error)
+	getTaskFn  func(ctx context.Context, taskID string) (*service.DebateTaskResult, error)
+	pollTaskFn func(ctx context.Context, taskID string) (*service.DebateTaskResult, error)
+	healthFn   func(ctx context.Context) error
 
-	pollCalls   map[string]int
-	mu          sync.Mutex
+	pollCalls map[string]int
+	mu        sync.Mutex
 }
 
 func newMockFinGeniusClient() *mockFinGeniusClient {
@@ -386,8 +386,8 @@ func TestRunDebate_Concurrency(t *testing.T) {
 			TaskID: taskID,
 			Status: "done",
 			Result: &service.DebateResultData{
-				Research:   map[string]any{"a": "b"},
-				Battle:     map[string]any{"c": "d"},
+				Research:    map[string]any{"a": "b"},
+				Battle:      map[string]any{"c": "d"},
 				HTMLContent: "<html>x</html>",
 			},
 		}, nil

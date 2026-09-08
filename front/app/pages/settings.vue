@@ -8,6 +8,7 @@ import SettingsSectionQueues from '~/features/settings/components/SettingsSectio
 import SettingsSectionPreferences from '~/features/settings/components/SettingsSectionPreferences.vue'
 import SettingsSectionFirecrawl from '~/features/settings/components/SettingsSectionFirecrawl.vue'
 import SettingsSectionBocha from '~/features/settings/components/SettingsSectionBocha.vue'
+import SettingsSectionAnalysisMethods from '~/features/settings/components/SettingsSectionAnalysisMethods.vue'
 import SettingsSectionRsshub from '~/features/settings/components/SettingsSectionRsshub.vue'
 import SettingsSectionProxy from '~/features/settings/components/SettingsSectionProxy.vue'
 import SettingsSectionSchedulers from '~/features/settings/components/SettingsSectionSchedulers.vue'
@@ -23,6 +24,7 @@ const sectionComponents: Record<SectionKey, any> = {
   'preferences': SettingsSectionPreferences,
   'firecrawl': SettingsSectionFirecrawl,
   'bocha': SettingsSectionBocha,
+  'analysis-methods': SettingsSectionAnalysisMethods,
   'rsshub': SettingsSectionRsshub,
   'proxy': SettingsSectionProxy,
   'schedulers': SettingsSectionSchedulers,

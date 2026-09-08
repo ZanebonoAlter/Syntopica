@@ -15,6 +15,7 @@ export type SectionKey =
   | 'preferences'
   | 'firecrawl'
   | 'bocha'
+  | 'analysis-methods'
   | 'rsshub'
   | 'proxy'
   | 'schedulers'
@@ -35,6 +36,7 @@ const sections: SectionMeta[] = [
   { key: 'preferences', label: '兴趣画像', description: '按版块查看兴趣标签与权重，驱动订阅源推荐', icon: 'mdi:account-heart-outline' },
   { key: 'firecrawl', label: 'Firecrawl', description: 'Firecrawl 服务配置与抓取参数', icon: 'mdi:spider' },
   { key: 'bocha', label: '博查搜索', description: '数据增强联网检索的博查 web 搜索配置', icon: 'mdi:magnify' },
+  { key: 'analysis-methods', label: '分析方法', description: '全局方法卡库（适用/禁用/证据/失败模式），仅按调查问题适配选择', icon: 'mdi:book-open-outline' },
   { key: 'rsshub', label: 'RSSHub', description: '订阅源发现的 RSSHub 实例地址', icon: 'mdi:radio-tower' },
   { key: 'proxy', label: '出站代理', description: 'feed 抓取等所有外部请求的全局代理', icon: 'mdi:lan-connect' },
   { key: 'schedulers', label: '定时任务', description: '定时任务状态与手动触发', icon: 'mdi:clock-outline' },

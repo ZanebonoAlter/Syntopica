@@ -142,3 +142,23 @@ func YearlyLifelineJob(svc *service.LifelineContextService, lister ActiveTopicLi
 		}, nil
 	}
 }
+
+// RelationExpireJob batch-marks confirmed cross-board relations whose
+// expires_at has passed as expired (add-evidence-backed-cross-board-relations
+// 4.3). Read paths already treat stale rows as expired — this only persists
+// the state; failures are logged and never fail the scheduler round.
+func RelationExpireJob(repo *repository.Repository) scheduler.JobFunc {
+	return func(ctx context.Context) (*scheduler.JobResult, error) {
+		n, err := repo.ExpireConfirmedRelations(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("relation expire: %w", err)
+		}
+		return &scheduler.JobResult{
+			Data: map[string]interface{}{
+				"expired":     n,
+				"finished_at": time.Now().Format(time.RFC3339),
+			},
+			Summary: fmt.Sprintf("expired %d stale confirmed cross-board relations", n),
+		}, nil
+	}
+}

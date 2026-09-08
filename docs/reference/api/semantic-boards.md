@@ -25,8 +25,12 @@
 | POST | `/auxiliary-labels/merge-alias` | 合并辅助标签为 alias |
 | POST | `/auxiliary-labels/gc` | 辅助标签垃圾回收 |
 | POST | `/auxiliary-labels/:id/disable` | 禁用辅助标签 |
-| GET | `/semantic-boards/upgrade-candidates` | 升级候选 + 预聚类 |
-| POST | `/semantic-boards/upgrade-suggest` | 触发 LLM 升级建议（legacy） |
+| GET | `/composite-labels` | 查询组合标签（?status=active/disabled） |
+| POST | `/composite-labels` | 手动创建组合标签（source=manual，触发两级去重） |
+| POST | `/composite-labels/:id/disable` | 禁用组合标签（向量置 NULL，组件与别名保留） |
+| POST | `/composite-labels/:id/enable` | 启用组合标签（重算 embedding） |
+| GET | `/composite-labels/component-options` | 组件候选推荐排序（挂载数→ref_count，带挂载版块名） |
+| POST | `/semantic-boards/upgrade-suggest` | 四格参数触发 LLM 升级建议（内存响应，调试用） |
 | POST | `/semantic-boards/upgrade-execute` | 执行升级建议 |
 | GET | `/semantic-boards/upgrade-suggestions` | 列持久化升级建议 |
 | POST | `/semantic-boards/upgrade-suggestions/:id/dismiss` | 忽略升级建议 |
@@ -120,9 +124,14 @@ Request：
   "description": "更新后的描述",
   "display_order": 10,
   "protected": true,
-  "status": "active"
+  "status": "active",
+  "enrichment_enabled": true,
+  "window_days": 14,
+  "relation_auto_discovery_enabled": false
 }
 ```
+
+可选字段（add-evidence-backed-cross-board-relations 起）：`enrichment_enabled`（数据增强总开关）、`window_days`、`context_layers`、`relation_auto_discovery_enabled`（跨版块关系自动发现板级开关，**默认 false**；开启后每份新简报按全局预算自动从观察发起发现，只生成待裁决建议、绝不自动确认）。字段缺省 = 不修改原值（nil 语义）。GET 列表/详情与 Board DTO 同步返回 `relation_auto_discovery_enabled`（旧数据缺省 false）。
 
 Response `data`：
 
@@ -312,41 +321,20 @@ Response `data`：
 
 ## 升级候选与建议
 
-### GET `/semantic-boards/upgrade-candidates`
-
-查看满足 `semantic_board_upgrade_ref_count_threshold` 的未升级辅助标签，以及预聚类结果。
-
-Response `data`：
-
-```json
-{
-  "candidates": [
-    { "id": 10, "label": "OpenAI", "slug": "openai", "ref_count": 8 }
-  ],
-  "clusters": [
-    {
-      "candidates": [{ "id": 10, "label": "OpenAI", "slug": "openai", "ref_count": 8 }],
-      "existing_board_id": null,
-      "existing_board_label": "",
-      "existing_board_description": "",
-      "existing_board_auxiliary_labels": []
-    }
-  ],
-  "config": {
-    "semantic_board_upgrade_ref_count_threshold": 5,
-    "semantic_board_upgrade_cluster_distance_threshold": 0.35,
-    "semantic_board_upgrade_cluster_method": "average_link",
-    "semantic_board_upgrade_cotag_window_days": 30,
-    "semantic_board_upgrade_cotag_top_n": 20,
-    "semantic_board_upgrade_cotag_dedupe_sim_threshold": 0.85,
-    "semantic_board_upgrade_cotag_hard_limit": 15
-  }
-}
-```
-
 ### POST `/semantic-boards/upgrade-suggest`
 
-触发 LLM 升级建议。用户确认前不会写入 SemanticBoard 或 board composition。
+四格参数触发 LLM 升级建议（内存响应，不落库；面板主链路走 `upgrade-suggestions/generate`）。split-board-upgrade-directions：`direction × source` 组合参数取代旧 `mode` 参数（旧参数与 `upgrade-candidates` 端点均已退役）。
+
+Query 参数：
+
+| 参数 | 说明 |
+| ------ | ------ |
+| `direction` | 必填：`create`（创建版块）/ `expand`（版块扩充） |
+| `source` | 必填：`aux`（单标签）/ `composite`（组合标签） |
+| `target_board_id` | `direction=expand` 必填（锁定单版块，本轮建议 target 恒等于它，须为活跃版块）；`create` 不得携带 |
+| `days` | 可选时间窗（仅 create×aux 生效；`0`=不过滤） |
+
+参数不合法（缺 direction/source、expand 缺 target、create 带 target、target 非活跃版块、携带旧 `mode` 参数）返回 400。
 
 Response `data`：
 
@@ -362,18 +350,15 @@ Response `data`：
     },
     {
       "decision": "merge_into_existing",
-      "target_board_id": 1,
+      "target_board_id": 42,
       "auxiliary_label_ids": [13],
-      "reason": "与现有 board 语义一致"
-    },
-    {
-      "decision": "skip",
-      "auxiliary_label_ids": [],
-      "reason": "标签语义过散"
+      "reason": "属于锁定版块「美债」"
     }
   ]
 }
 ```
+
+> skip 不返回（不落库不展示）；扩充方向的 merge/compose 建议 target 恒为锁定版块（服务端注入，LLM 输出不含目标字段）。
 
 ### POST `/semantic-boards/upgrade-execute`
 
@@ -400,7 +385,19 @@ Response `data`：
 }
 ```
 
-Response `data`：
+确认 compose 建议创建组合标签（add-composite-labels，同一事务：创建组合 + MarkConfirmed；去重命中按成功处理；split-board-upgrade-directions 起 `target_board_id` 非空时同事务内将组合挂载进目标版块——扩充方向建议，挂载失败整体回滚）：
+
+```json
+{
+  "decision": "compose",
+  "board_label": "美债收益率",
+  "description": "美国国债与收益率的组合",
+  "auxiliary_label_ids": [10, 11],
+  "suggestion_id": 42
+}
+```
+
+Response `data`（compose 时额外返回 `composite_label_id`）：
 
 ```json
 { "semantic_board_id": 1, "auxiliary_label_ids": [10, 11, 12] }
@@ -413,7 +410,7 @@ Response `data`：
 Query：
 
 - `status` 可选，默认 `pending`。
-- `decision` 可选；不传时默认排除观测池（`watch`），传 `watch` 仅返回观测池，传其它值则精确匹配该 decision。
+- `decision` 可选；不传时默认排除观测池（`watch`），传 `watch` 仅返回观测池，传 `compose` 仅返回组合建议，传其它值则精确匹配该 decision。compose 建议的 `evidence` 携带共现证据（`compose_cooccurrence` / `compose_window_days` / `compose_representative_titles`）。
 
 Response `data`：
 
@@ -457,7 +454,7 @@ Response `data`：
 
 ### POST `/semantic-boards/upgrade-suggestions/generate`
 
-手动触发一次 `discover_new` 建议生成（同步执行，与定时任务等效），用于取代 legacy `upgrade-suggest`。受冷却时间限制，冷却期内本次不写入。
+四格参数触发一轮建议生成（同步执行并落库，面板主链路）。参数与校验同 [`upgrade-suggest`](#post-semantic-boards-upgrade-suggest)（`direction` / `source` / `target_board_id` / `days`）。受冷却时间限制，冷却期内同 hash 不写入。
 
 无需请求体。Response `data`：
 
@@ -831,3 +828,90 @@ Response `data`：
 - `DELETE /topic-watches/:id` 会通过外键级联清理其 `topic_watch_hits`。sentence_topic 删除需携带查询参数 `confirm_archive_topic=true`：后端先软归档其专属持久话题（UpdateTopic status=archived，历史物化 section 保留且归属不变），再删关注行；未确认返回 400（错误信息含话题名）。keyword_topic 直接删除，历史物化板块保留。
 - 日报列表响应的每个 report 额外带 `active_watch_summaries`：`[{ watch_id, label, type }]`。它由一次批量关联查询回填，按 watch 去重，仅含 active watch；列表用于在时间线记录下预告最多两个 `# keyword` / `✦ label` 命中，余项由前端显示 `+N`。
 - `GET /daily-reports/:id/watch-hits` 仅返回该期 active watch 的命中记录，并额外含 `watch_label`、`watch_type`；label 的 `reason` 是 AI 理由，keyword 的 `reason` 是机械文本「含关键字『…』」。暂停或删除关注后重新读取不得返回其历史命中。
+
+## 组合标签（add-composite-labels）
+
+组合标签是 `semantic_labels.label_type="composite"` 的行（指向性主题，如「美债收益率」= 美国国债×收益率），由 2-5 个有序 active 辅助标签组成，参与 tag→board 匹配（composite_hit 最强信号）。
+
+### GET `/composite-labels`
+
+查询组合标签列表（组件序列按 position 排序）。
+
+Query：
+
+- `status` 可选；`active` / `disabled`，不传返回全部。
+
+Response `data`：
+
+```json
+{
+  "items": [
+    {
+      "id": 9, "label": "美债收益率", "slug": "mei-zhai-shou-yi-lu",
+      "description": "美国国债与收益率的组合", "source": "manual",
+      "status": "active", "ref_count": 1, "aliases": [],
+      "created_at": "2026-09-02T...",
+      "components": [
+        { "label_id": 10, "label": "美国国债", "position": 1 },
+        { "label_id": 11, "label": "收益率", "position": 2 }
+      ]
+    }
+  ],
+  "total": 1
+}
+```
+
+### POST `/composite-labels`
+
+手动创建组合标签（source=manual）。创建前 LLM 对「label. description」短语生成 embedding（失败整体不落库），再过两级去重：L1 组件 ID 集合与既有组合（含 disabled）一致 → 复用（ref_count++）；L2 组合 embedding ≥ `composite_label_dedupe_sim`（默认 0.95）→ 只加 alias。去重命中不报错，`outcome` 字段区分。
+
+Request：
+
+```json
+{ "label": "美债收益率", "description": "美国国债与收益率的组合", "component_label_ids": [10, 11] }
+```
+
+约束：组件必须为 active 辅助标签，2-5 个不同 ID（组件数与类型不符返回 400）。
+
+Response `data`：
+
+```json
+{
+  "id": 9, "label": "美债收益率", "outcome": "created",
+  "message": "组合标签已创建"
+}
+```
+
+`outcome`：`created`（新建）/ `reused_l1`（组件集合同既有组合完全一致，复用既有组合 ref_count+1）/ `alias_l2`（语义高度相似，作为别名并入既有组合）。
+
+### POST `/composite-labels/:id/disable`
+
+禁用组合标签：向量置 NULL（匹配输入即失效），行本体、组件与别名保留。重新计算匹配后该组合不再产出 composite_hit。
+
+### POST `/composite-labels/:id/enable`
+
+启用组合标签：重算 embedding（生成失败返回 400，行保持 disabled）。
+
+### GET `/composite-labels/component-options`
+
+手动创建对话框的组件候选（design D7 推荐交互）。返回 active 辅助标签，按推荐度排序：被 active 版块挂载者优先（挂载数多者在前，disabled 版块挂载不计）→ ref_count → label；每个候选携带挂载版块名列表，供前端展示「挂 N 版块」推荐信号。前端默认用本列表，用户搜索时降级全量模糊检索（`/auxiliary-labels?search=`）。
+
+Query：
+
+- `limit` 可选，默认 50，上限 200。
+
+Response `data`：
+
+```json
+{
+  "items": [
+    {
+      "id": 10, "label": "美国国债", "ref_count": 3, "board_count": 2,
+      "mounted_boards": [
+        { "id": 1, "label": "宏观版块" },
+        { "id": 2, "label": "债券版块" }
+      ]
+    }
+  ]
+}
+```

@@ -1,5 +1,5 @@
 import { ref, nextTick } from 'vue'
-import { useSemanticBoardsApi, type SemanticBoard, type AuxiliaryLabelItem } from '~/api/semanticBoards'
+import { useSemanticBoardsApi, type SemanticBoard, type AuxiliaryLabelItem, type BoardCompositeMount } from '~/api/semanticBoards'
 
 export function useBoardCRUD() {
   const sbApi = useSemanticBoardsApi()
@@ -10,12 +10,14 @@ export function useBoardCRUD() {
   const boardsError = ref<string | null>(null)
 
   const compositionLabels = ref<AuxiliaryLabelItem[]>([])
+  const compositionComposites = ref<BoardCompositeMount[]>([])
   const compositionLoading = ref(false)
 
   const editingBoard = ref<SemanticBoard | null>(null)
   const editLabel = ref('')
   const editDescription = ref('')
   const editEnrichmentEnabled = ref(false)
+const editRelationAutoDiscoveryEnabled = ref(false)
   const editWindowDays = ref(14)
   const editContextLayers = ref<string[]>(['week', 'month', 'year', 'all'])
   const editSaving = ref(false)
@@ -42,8 +44,10 @@ export function useBoardCRUD() {
     const res = await sbApi.getComposition(boardId)
     if (res.success && res.data) {
       compositionLabels.value = res.data.items
+      compositionComposites.value = res.data.composites ?? []
     } else {
       compositionLabels.value = []
+      compositionComposites.value = []
     }
     compositionLoading.value = false
   }
@@ -54,6 +58,7 @@ export function useBoardCRUD() {
       void loadComposition(id)
     } else {
       compositionLabels.value = []
+      compositionComposites.value = []
     }
   }
 
@@ -63,6 +68,7 @@ export function useBoardCRUD() {
     editDescription.value = board.description || ''
     editEnrichmentEnabled.value = board.enrichment_enabled ?? false
     editWindowDays.value = board.window_days ?? 14
+    editRelationAutoDiscoveryEnabled.value = board.relation_auto_discovery_enabled ?? false
     editContextLayers.value = Array.isArray(board.context_layers) && board.context_layers.length > 0
       ? [...board.context_layers]
       : [...DEFAULT_CONTEXT_LAYERS]
@@ -92,6 +98,7 @@ export function useBoardCRUD() {
         description: editDescription.value.trim(),
         enrichment_enabled: editEnrichmentEnabled.value,
         window_days: editWindowDays.value,
+        relation_auto_discovery_enabled: editRelationAutoDiscoveryEnabled.value,
         context_layers: [...editContextLayers.value],
       })
       if (res.success) {
@@ -156,9 +163,9 @@ export function useBoardCRUD() {
 
   return {
     boards, selectedBoardId, boardsLoading, boardsError,
-    compositionLabels, compositionLoading,
+    compositionLabels, compositionComposites, compositionLoading,
     editingBoard, editLabel, editDescription,
-    editEnrichmentEnabled, editWindowDays, editContextLayers,
+    editEnrichmentEnabled, editRelationAutoDiscoveryEnabled, editWindowDays, editContextLayers,
     editSaving, editError,
     showAddDialog,
     loadBoards, loadComposition, handleSelectBoard,

@@ -10,11 +10,17 @@ import (
 
 // mockLifelineReader implements service.LifelineReader.
 type mockLifelineReader struct {
-	data service.SectionTimelineData
+	data    service.SectionTimelineData
+	archive []service.LifelineArchiveRow
+	archErr error
 }
 
 func (m *mockLifelineReader) GetTopicLifeline(topicID uint) (service.SectionTimelineData, error) {
 	return m.data, nil
+}
+
+func (m *mockLifelineReader) GetTopicLifelineArchive(topicID uint) ([]service.LifelineArchiveRow, error) {
+	return m.archive, m.archErr
 }
 
 func TestRenderLifelineForAgent_ContainsTopicBody(t *testing.T) {
@@ -225,5 +231,71 @@ func TestRenderLifelineForAgent_EmptySections(t *testing.T) {
 	}
 	if !strings.Contains(output, "话题本体") {
 		t.Fatal("even empty sections should render topic body")
+	}
+}
+
+// ── 历史背景记忆档案段（fix-board-analysis-material tasks 2.2 / M3）──────────
+
+func TestRenderLifelineForAgent_ArchiveRendered(t *testing.T) {
+	renderer := service.NewLifelineRenderer()
+	reader := &mockLifelineReader{
+		data: service.SectionTimelineData{Topic: service.TopicBrief{ID: 1, Label: "lane"}},
+		archive: []service.LifelineArchiveRow{
+			{Granularity: "month", Period: "2026-08", AsOfDate: time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC), Content: "8月主线：制裁升级，海峡风险上升。"},
+			{Granularity: "month", Period: "2026-07", AsOfDate: time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC), Content: "7月主线：谈判拉锯。"},
+			{Granularity: "year", Period: "2026", AsOfDate: time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC), Content: "年度背景：美伊长期对抗结构。"},
+		},
+	}
+	output, err := renderer.RenderLifelineForAgent(reader, 1, 14)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		"## 历史背景记忆（月/年档案）",
+		"### [month 2026-08] (as_of 2026-08-26)",
+		"制裁升级",
+		"### [month 2026-07]",
+		"### [year 2026]",
+		"年度背景",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("archive render missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "[档案截断]") {
+		t.Fatal("small archive must not be truncated")
+	}
+}
+
+func TestRenderLifelineForAgent_ArchiveTruncationBudget(t *testing.T) {
+	renderer := service.NewLifelineRenderer()
+	reader := &mockLifelineReader{
+		data: service.SectionTimelineData{Topic: service.TopicBrief{ID: 1, Label: "lane"}},
+		archive: []service.LifelineArchiveRow{
+			{Granularity: "month", Period: "2026-08", AsOfDate: time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC),
+				Content: strings.Repeat("八月事实段落。", 1500)}, // ≈9000 runes > 4000 budget
+		},
+	}
+	output, err := renderer.RenderLifelineForAgent(reader, 1, 14)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(output, "[档案截断]") {
+		t.Fatal("oversized archive must carry truncation marker")
+	}
+}
+
+func TestRenderLifelineForAgent_ArchiveMissingStated(t *testing.T) {
+	renderer := service.NewLifelineRenderer()
+	reader := &mockLifelineReader{
+		data:    service.SectionTimelineData{Topic: service.TopicBrief{ID: 1, Label: "lane"}},
+		archive: nil,
+	}
+	output, err := renderer.RenderLifelineForAgent(reader, 1, 14)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(output, "## 历史背景记忆（月/年档案）") || !strings.Contains(output, "（无背景记忆归档）") {
+		t.Fatalf("missing archive must be stated honestly, got:\n%s", output)
 	}
 }

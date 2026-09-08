@@ -48,3 +48,9 @@ storage:
 bocha:
   api_key: ""        # 在此填入博查 key，或设环境变量 BOCHA_API_KEY
   endpoint: "https://api.bochaai.com/v1/web-search"
+
+# 跨版块关系发现全局预算（add-evidence-backed-cross-board-relations）
+cross_board_rel:
+  # 单次 run 总超时。scout plan/extract + resolve + verify 两步都是 LLM 调用，
+  # glm-5.3-flash 单步可达 150s+，默认 300s 会在 verify 阶段撞墙 → 900s。
+  run_timeout_seconds: 900
