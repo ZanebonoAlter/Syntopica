@@ -1,3 +1,11 @@
+# branding Specification
+
+## Purpose
+
+Syntopica 品牌一致性契约：产品名、仓库名、模块名、Docker 命名在所有触点统一。
+
+## Requirements
+
 ### Requirement: Brand identity
 Syntopica SHALL have consistent brand identity across all touchpoints including product name, repo name, module names, and Docker naming.
 

@@ -46,6 +46,16 @@ CardGroup SHALL 管理所有 PinCard 的创建、布局和批量动画。
 - `staggerEntrance(intervalSec)` / `staggerExit(intervalSec)`：批量入场/退场动画
 - `highlightSet(ids)` / `dimAll()` / `resetAll()`：高亮控制
 
+#### Scenario: 构建与访问卡片
+
+- **WHEN** `buildCards(sections, relations, dateRange)` 被调用
+- **THEN** CardGroup SHALL 调用布局算法创建所有 PinCard，并可通过 `getCardById(sectionId)` / `cards` 访问
+
+#### Scenario: 批量动画与高亮
+
+- **WHEN** 数据加载完成或聚焦切换
+- **THEN** CardGroup SHALL 通过 `staggerEntrance`/`staggerExit` 编排批量入场/退场动画，通过 `highlightSet(ids)`/`dimAll()`/`resetAll()` 控制高亮
+
 ### Requirement: PinCard 卡片
 
 PinCard SHALL 表示单个话题卡片，包含 paper + pin + text + CSS2D tooltip。
@@ -85,6 +95,12 @@ RedString SHALL 表示两个话题之间的关系连线，使用 CatmullRomCurve
 - `draw(progress)`：drawProgress 0→1 逐渐出现
 - `highlight() / dim() / reset()`：线宽增大 + 发光 / 退入背景 / 恢复正常
 
+#### Scenario: 绘制与高亮
+
+- **WHEN** BFS 生命线展开需要呈现红线
+- **THEN** `draw(progress)` SHALL 按 drawProgress 0→1 逐渐出现（CatmullRomCurve3 with 2 points，直线）
+- **AND** `highlight()` SHALL 增大线宽 + 发光，`dim()` SHALL 退入背景，`reset()` SHALL 恢复正常
+
 ### Requirement: FogSystem 迷雾
 
 FogSystem SHALL 根据天数设置迷雾密度，提供动画过渡。
@@ -92,6 +108,12 @@ FogSystem SHALL 根据天数设置迷雾密度，提供动画过渡。
 - `setDensityForDays(days)`：7→0.08, 14→0.05, 30→0.03, 60→0.02
 - `animateToDensity(density, durationSec)`：GSAP 过渡
 - `disable()` / `enable(days)`：完整生命周期模式控制
+
+#### Scenario: 按天数设置迷雾密度
+
+- **WHEN** `setDensityForDays(days)` 被调用
+- **THEN** 迷雾密度 SHALL 按天数映射设置（7→0.08, 14→0.05, 30→0.03, 60→0.02）
+- **AND** `animateToDensity(density, durationSec)` SHALL 以 GSAP 过渡动画到目标密度；`disable()`/`enable(days)` SHALL 服务完整生命周期模式
 
 ### Requirement: 布局算法
 
@@ -103,6 +125,12 @@ FogSystem SHALL 根据天数设置迷雾密度，提供动画过渡。
 4. Z = random(-0.15, 0.15)
 5. 每张卡片 rotation.z = random(-3°, 3°)
 
+#### Scenario: 日期列 × 行排列
+
+- **WHEN** buildCards 为卡片布局
+- **THEN** 系统 SHALL 提取唯一日期排序，dateX = indexOf(date) × COL_W (3.0)
+- **AND** 同一日期内 SHALL 按 article_count 降序分配 row × ROW_H (2.2)，Z = random(-0.15, 0.15)，rotation.z = random(-3°, 3°)
+
 ### Requirement: 后处理管线
 
 后处理 SHALL 使用 EffectComposer 管线：RenderPass → BloomEffect → VignetteEffect → FilmGrainPass。
@@ -110,6 +138,12 @@ FogSystem SHALL 根据天数设置迷雾密度，提供动画过渡。
 - BloomEffect：intensity 0.6, luminanceThreshold 0.8, luminanceSmoothing 0.3（只让红线 emissive red 发光）
 - VignetteEffect：darkness 0.5（暗角聚焦）
 - FilmGrainPass：intensity 0.04（轻微胶片颗粒，优先使用 three/examples 的 FilmPass）
+
+#### Scenario: 后处理链路
+
+- **WHEN** 每帧渲染
+- **THEN** EffectComposer SHALL 依次执行 RenderPass → BloomEffect → VignetteEffect → FilmGrainPass
+- **AND** Bloom 参数 SHALL 为 intensity 0.6 / luminanceThreshold 0.8 / luminanceSmoothing 0.3（只让红线 emissive red 发光）
 
 ### Requirement: 样式常量（基础）
 
@@ -124,13 +158,30 @@ FogSystem SHALL 根据天数设置迷雾密度，提供动画过渡。
 - SELECTION_LIGHT：红色 PointLight，聚焦卡片时移到其上方 (x, y+2, z+1) + intensity 1.0
 - CARD_WIDTH=2.0, CARD_HEIGHT=1.4, CARD_DEPTH=0.05, PIN_RADIUS=0.08, COL_W=3.0, ROW_H=2.2
 
+#### Scenario: 常量统一生效
+
+- **WHEN** 场景、卡片、红线、光照构建
+- **THEN** 系统 SHALL 使用本节统一常量（色板 CARD_PAPER/PIN_COLOR/STRING_COLOR、BG/FOG #0a0f14、STATUS_COLORS 五态着色、FOLLOW_LIGHT/SELECTION_LIGHT 行为、卡片尺寸与 COL_W/ROW_H 栅格）
+
 ### Requirement: 核心性能约束
+
+系统 SHALL 满足以下核心性能约束：
 
 - 单板块卡片数 <30 时帧率 ≥55fps (默认 7 天)
 - 单板块卡片数 <100 时帧率 ≥30fps (60 天)
 - dispose() 必须清理所有 geometry、material、texture
 - 卡片创建后位置固定（不跑物理模拟），只有 hover 时 Z 轴微动
 - 红线是直线（CatmullRomCurve3 with 2 points），不做贝塞尔弯曲
+
+#### Scenario: 帧率预算
+
+- **WHEN** 默认 7 天窗口（单板块卡片数 <30）
+- **THEN** 帧率 SHALL ≥55fps；60 天窗口（卡片数 <100）帧率 SHALL ≥30fps
+
+#### Scenario: 静态卡片与资源清理
+
+- **WHEN** 卡片创建后与 dispose() 调用
+- **THEN** 卡片位置 SHALL 固定（不跑物理模拟，仅 hover 时 Z 轴微动），红线 SHALL 保持直线，dispose() SHALL 清理所有 geometry、material、texture
 
 ### Requirement: TopicWallScene 环境层扩展
 
@@ -253,6 +304,11 @@ dust:           { count: 150, color: '#ffe9c8', size: 0.06 }
 lighting:       { ..., hemiSky: '#3a2a1a', hemiGround: '#0a0f14', hemiIntensity: 0.55 }
 ```
 
+#### Scenario: STYLE 环境层键值
+
+- **WHEN** 环境层（SetDressing/AmbientEnv/DustParticles/光照）构建
+- **THEN** 系统 SHALL 从 STYLE 读取 desk/wall/lamp/dossier/directionalFog/dust 及 lighting.hemi* 键值（如 lamp.offset {x:2.8, z:5.2}、directionalFog density 1.2/range 12、dust count 150）
+
 ### Requirement: Lighting 光照调整
 
 光照配置 SHALL 做如下变更：
@@ -264,9 +320,20 @@ lighting:       { ..., hemiSky: '#3a2a1a', hemiGround: '#0a0f14', hemiIntensity:
 | 跟随灯 | 色调微暖 #fff0d0, 其余不变 |
 | 选中灯 | 不变 |
 
+#### Scenario: 光照配置生效
+
+- **WHEN** 场景初始化光照
+- **THEN** 环境光 SHALL 为 HemisphereLight(hemiSky, hemiGround, hemiIntensity)
+- **AND** 主聚光 SHALL 为暖色（位置=台灯灯罩，target=今天列卡片中心，angle 0.5，penumbra 0.6）；跟随灯 SHALL 微暖 #fff0d0；选中灯 SHALL 保持不变
+
 ### Requirement: Scene Construction 调整
 
 主软木墙 z SHALL 从 -0.16 移至 STYLE.wall.backZ (-0.6)（卡片更多浮出厚度）。软木墙材质 SHALL 注入方向雾。
+
+#### Scenario: 主软木墙后退
+
+- **WHEN** 场景构建主软木墙
+- **THEN** 主墙 z SHALL 为 STYLE.wall.backZ (-0.6)（卡片更多浮出厚度），其材质 SHALL 注入方向雾
 
 ### Requirement: 性能约束
 
@@ -278,3 +345,15 @@ lighting:       { ..., hemiSky: '#3a2a1a', hemiGround: '#0a0f14', hemiIntensity:
 - dispose() 必须清理 env map、SetDressing 全部 geometry/material/texture、dust geometry/material
 - 方向雾 uFogOriginX 在每次 loadBoardData 后更新
 - 既有 perf 预算不变：7 天 < 30 卡片 ≥ 55fps；环境层增量不破坏该预算
+
+#### Scenario: 环境层性能预算
+
+- **WHEN** 环境层启用后渲染
+- **THEN** 几何 draw call 增量 SHALL ≤12，方向雾注入 SHALL 仅增加常数级 ALU（不新增 pass），PMREMGenerator SHALL 仅在 constructor 一次性生成
+- **AND** 既有预算 SHALL 保持：7 天 < 30 卡片 ≥ 55fps
+
+#### Scenario: 环境层资源与雾原点
+
+- **WHEN** dispose() 与 loadBoardData 执行
+- **THEN** dispose() SHALL 清理 env map、SetDressing 全部 geometry/material/texture、dust geometry/material
+- **AND** 方向雾 uFogOriginX SHALL 在每次 loadBoardData 后更新

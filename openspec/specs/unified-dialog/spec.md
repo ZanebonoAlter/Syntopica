@@ -1,3 +1,25 @@
+# unified-dialog Specification
+
+## Purpose
+
+统一对话框外壳组件 `AppDialog`：Teleport 到 body，overlay + 关闭行为 + 动画，Layer 2 语义 token 自动适配主题。布局契约权威源在 `standard/frontend/layout.md`（dialog 四档），本 spec 固化组件级行为。
+
+## Requirements
+
+### Requirement: 统一对话框外壳 AppDialog
+
+新弹窗 SHALL 复用统一外壳 `AppDialog`，尺寸经 `size` 属性四档选择，SHALL 受可视区宽度约束（92vw 上限），SHALL NOT 传自由 width。
+
+#### Scenario: 新弹窗使用四档尺寸
+
+- **WHEN** 需要新增一个弹窗
+- **THEN** 实现 MUST 复用 `<AppDialog size="...">` 四档之一，不传自由 width（与 `standard/frontend/layout.md` dialog 契约一致）
+
+#### Scenario: 主题自动适配
+
+- **WHEN** 在 editorial/dark 任一主题下打开 AppDialog
+- **THEN** overlay 与内容 SHALL 经 Layer 2 语义 token 自动适配当前主题
+
 ## Capability
 
 统一对话框外壳组件。Teleport 到 body，overlay + 关闭行为 + 动画，通过 Layer 2 语义 token 自动适配主题。替代现有四套 dialog pattern。

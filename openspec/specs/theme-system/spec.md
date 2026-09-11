@@ -1,3 +1,9 @@
+# theme-system Specification
+
+## Purpose
+
+三层 CSS 变量 token 架构和双主题切换系统（editorial ↔ dark）：Primitive token 定义原始色值，Semantic token 跟主题走，Component token 由复杂组件按需定义；`useTheme()` composable 管理主题状态。权威源在 [`standard/frontend/theming.md`](../../../docs/reference/standard/frontend/theming.md)，本 spec 固化浏览器回归级行为契约。
+
 ## Capability
 
 三层 CSS 变量 token 架构和双主题切换系统。Primitive token 定义原始色值，Semantic token 跟主题走，Component token 由复杂组件按需定义。`useTheme()` composable 管理主题状态。
@@ -185,7 +191,7 @@ onUnmounted(() => {
 - `localStorage` key: `'syntopica-theme'`
 - Nuxt SSR 兼容：使用 `useHead({ htmlAttrs })` 设置 html 属性，避免 FOUC
 
-## Browser Regression Requirements
+## Requirements
 
 ### Requirement: Global theme ownership
 

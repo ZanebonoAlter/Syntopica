@@ -1,3 +1,25 @@
+# settings-workspace Specification
+
+## Purpose
+
+独立设置工作区，替代超长 `GlobalSettingsDialog`：领域导航组织设置模块，支持 URL 定位、主从编辑、长列表治理和响应式布局。设计细节见下方 Capability 节与 `front/app/features/settings/` 实现。
+
+## Requirements
+
+### Requirement: 独立设置工作区承载全局设置
+
+全局设置 SHALL 由独立工作区（`SettingsWorkspace`）承载，按领域导航分区组织（订阅源/AI 与 embedding/主题与无障碍等），SHALL NOT 回退为单一超长全局对话框。
+
+#### Scenario: 设置入口进入工作区
+
+- **WHEN** 用户从入口打开设置
+- **THEN** 进入独立设置工作区，按领域导航分区展示设置模块（非全局弹窗）
+
+#### Scenario: URL 定位设置分区
+
+- **WHEN** 设置工作区处于某领域分区
+- **THEN** 该状态 SHALL 可通过 URL 定位（刷新/分享后还原到同一分区）
+
 ## Capability
 
 独立设置工作区，替代超长 `GlobalSettingsDialog`。工作区通过领域导航组织设置模块，支持 URL 定位、主从编辑、长列表治理和响应式布局。

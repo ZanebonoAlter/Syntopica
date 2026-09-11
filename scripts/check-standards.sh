@@ -8,6 +8,8 @@
 #   D. 防孤立引用（每个 standard/*.md 被至少一处 AGENTS.md / README 引用）
 #   E. flow 变更溯源链接（archive change 被某 flow 文档「变更溯源」表引用，归档后校验）
 #   H. model tag 守门（Top3 密集文件禁止 GORM tag 里的 not null，约束由显式迁移兜底）
+#   I. 主 spec 结构校验（openspec validate --specs 全量零失败，fix-legacy-spec-format 引入；
+#      存量格式债清零后作为真护栏：sync 写坏主 spec 会被归档门禁 ② block）
 #
 # 用法： bash scripts/check-standards.sh [--change <changeName>]
 # 退出码：0 全过；1 有失败或参数非法。
@@ -272,6 +274,23 @@ for f in $MODEL_TAG_FILES; do
 		ok "$(basename "$f") 无 not null（约束已收敛到显式迁移）"
 	fi
 done
+
+echo ""
+echo "== I. 主 spec 结构校验（openspec validate --specs）=="
+# fix-legacy-spec-format：存量 13 个格式债清零后，本段拦增量——任何 spec 缺
+# Purpose/Requirements 节或 Requirement 缺 Scenario 都会在此 FAIL（归档门禁 ②
+# 挂本脚本，新坏主 spec 在归档时被 block）。openspec CLI 不可用按 fail 处理。
+if ! command -v openspec >/dev/null 2>&1; then
+	fail "openspec CLI 不可用（I 段无法校验）"
+else
+	spec_fail_items="$(openspec validate --specs 2>/dev/null | grep -c "^✗" || true)"
+	spec_total="$(openspec validate --specs 2>/dev/null | grep -cE "^(✓|✗)" || true)"
+	if [ "$spec_fail_items" -eq 0 ] && [ "$spec_total" -gt 0 ]; then
+		ok "openspec/specs 全部 ${spec_total} 个 capability validate 通过"
+	else
+		fail "openspec validate --specs 有 ${spec_fail_items} 个失败（共 ${spec_total} 项；逐个 openspec validate <cap> --type spec 定位）"
+	fi
+fi
 
 echo ""
 echo "=============================="
