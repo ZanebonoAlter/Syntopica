@@ -88,26 +88,3 @@ describe('useSemanticBoardsApi - persisted upgrade suggestions', () => {
     })
   })
 })
-
-describe('useSemanticBoardsApi - topic landscape', () => {
-  beforeEach(() => {
-    getMock.mockReset()
-    vi.restoreAllMocks()
-  })
-
-  it('getTopicLandscape: no days → GET without query', async () => {
-    const expected = { success: true, data: { topics: [], vitality: { days: 30, article_count: 0, section_count: 0, active_topic_count: 0, feed_active: null, trend: [] } } }
-    getMock.mockResolvedValue(expected)
-    const api = useSemanticBoardsApi()
-    const res = await api.getTopicLandscape(12)
-    expect(getMock).toHaveBeenCalledWith('/semantic-boards/12/topic-landscape')
-    expect(res).toEqual(expected)
-  })
-
-  it('getTopicLandscape: with days → GET ?days=N', async () => {
-    getMock.mockResolvedValue({ success: true, data: { topics: [], vitality: { days: 30, article_count: 0, section_count: 0, active_topic_count: 0, feed_active: null, trend: [] } } })
-    const api = useSemanticBoardsApi()
-    await api.getTopicLandscape(12, 30)
-    expect(getMock).toHaveBeenCalledWith('/semantic-boards/12/topic-landscape?days=30')
-  })
-})

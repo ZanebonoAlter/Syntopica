@@ -38,9 +38,10 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 	// and orphans) with section counts, for the management UI.
 	api.GET("/semantic-boards/:id/topics", listBoardTopics)
 
-	// GET /api/semantic-boards/:id/topic-landscape — topic stance overview
-	// (identity-track derived) + mini-lifeline + board vitality. Read-only.
-	api.GET("/semantic-boards/:id/topic-landscape", getBoardTopicLandscape)
+	// GET /api/semantic-boards/:id/lane-dynamics — 泳道动态聚合端点
+	// (overview-lane-dynamics design D4): lanes + timeline + candidates +
+	// has_reports in one shot. Read-only.
+	api.GET("/semantic-boards/:id/lane-dynamics", getBoardLaneDynamics)
 
 	// GET /api/daily-reports/sections/:id/lifecycle
 	api.GET("/daily-reports/sections/:id/lifecycle", getSectionLifecycle)
@@ -314,27 +315,6 @@ func listBoardTopics(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"topics": items}})
-}
-
-// getBoardTopicLandscape handles GET /api/semantic-boards/:id/topic-landscape.
-// Returns the topic-landscape view: per-topic stance (derived from the
-// identity track) + mini-lifeline + board vitality. Read-only — it neither
-// reads nor writes the similarity track (daily_report_section_relations /
-// matching / assignment). ?days= is clamped to {7,14,30,90} (default 30).
-func getBoardTopicLandscape(c *gin.Context) {
-	boardID, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid board id"})
-		return
-	}
-	days := repository.ClampTopicLandscapeDays(c.Query("days"))
-	resp, err := repository.Repo.GetBoardTopicLandscape(uint(boardID), days)
-	if err != nil {
-		logging.Errorf("get board topic landscape: board=%d: %v", boardID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "failed to get topic landscape"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": resp})
 }
 
 // getSectionLifecycle handles GET /api/daily-reports/sections/:id/lifecycle

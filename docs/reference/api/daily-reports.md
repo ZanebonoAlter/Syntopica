@@ -13,7 +13,7 @@
 | GET | `/semantic-boards/:id/daily-reports` | 查询板块日报列表 |
 | GET | `/semantic-boards/:id/section-timeline` | 板块 section 时间线 |
 | GET | `/semantic-boards/:id/topics` | 列出板块全部持久话题（含归档/孤儿）+ section 计数 |
-| GET | `/semantic-boards/:id/topic-landscape` | 板块话题态势版图（持久话题 identity 轨只读聚合） |
+| GET | `/semantic-boards/:id/lane-dynamics?days=14` | 板块泳道动态聚合（活跃泳道卡+发展时间线+候选栏，单请求） |
 | GET | `/daily-reports/sections/:id/lifecycle` | section 连通分量生命周期 |
 | GET | `/daily-reports/topics/:id/lifeline` | 持久话题全量 section |
 | PATCH | `/daily-reports/topics/:id` | 更新话题标题/状态 |
@@ -205,66 +205,58 @@ Response `data`：
 
 `color` 由话题 id 稳定哈希得到；`can_activate` 表示 candidate 是否已达激活门禁。
 
-## GET `/semantic-boards/:id/topic-landscape?days=30`
+## GET `/semantic-boards/:id/lane-dynamics?days=14`
 
-板块话题态势版图：持久话题 identity 轨只读聚合，供「板块内容」tab 首屏态势总览（分区卡片墙 + mini-lifeline + 活力顶栏）。
+板块泳道动态聚合：「板块内容」tab 首屏泳道动态视图的单请求数据源（活跃泳道卡 + 滚动态势 + 发展时间线 + 候选栏）。取代已退役的 topic-landscape 端点。
 
 **参数：**
 
 - `id`：semantic_board_id。
-- `days`：lifeline 窗口天数，允许 `7 / 14 / 30 / 90`，缺省 30；非法值 clamp 到最近合法值（`days=0` 视为默认 30）。活跃判定窗口与 `days` 无关，固定 N=7 天（包级常量 `topicLandscapeActiveWindowDays`）。
+- `days`：时间线与统计窗口天数，默认 14；非正值或非法值回落 14。窗口锚定该板块最新一份已完成日报的 `period_date`（`[anchor-(days-1), anchor]` 双端闭区间，非 now()——避免日报未跑时窗口漂移）。
 
-态势**全部基于 identity 轨字段派生**（`status` / `hit_count` / `consecutive_hits` / `last_seen_date` / `is_vacuum`），**禁用 similarity 轨五态**（匈牙利二分法 section 级配对，长跨度不可靠）。`stance` 枚举（主态势互斥，按序匹配第一个命中）：
-
-| stance | 图标 | 派生规则 |
-| ------ | ---- | -------- |
-| `emerging` | 🌱 | `status='candidate' AND 1 <= hit_count < upgrade_threshold` |
-| `pending` | 🔴 | `status='candidate' AND hit_count >= upgrade_threshold`（`can_activate=true`） |
-| `active` | 🟢 | `status='active' AND consecutive_hits > 0 AND days_since(last_seen_date) <= 7` |
-| `stalled` | ⏸️ | `status='active' AND (consecutive_hits = 0 OR days_since(last_seen_date) > 7)` |
-| `archived` | ⬛ | `status='archived'` |
-
-`is_vacuum=true` 为与主态势正交的叠加标记（🌀强吸引，附 `vacuum_strong` 数值），可叠加在活跃/停滞上。可见口径：保留 `hit_count>=1` 全部（含 emerging 新苗头），仅剔 `hit=0` 纯 orphan——与话题管理 UI 的 `FilterVisibleTopics` 口径故意不同。
+**泳道集合与排序**：`lanes` = 该板块 active 泳道 ∪ watch 关联泳道（`board_topic_watches.persistent_topic_id` 非空且 watch active），按窗口内锚定 section 数降序；近窗口无 section 的 active（沉寂）不返回；candidate 不进 `lanes`（只在 `candidates`）。
 
 Response `data`：
 
 ```json
 {
-  "topics": [
+  "window_days": 14,
+  "has_reports": true,
+  "lanes": [
     {
-      "id": 12,
+      "topic_id": 12,
       "label": "芯片战",
-      "status": "active",
-      "source": "auto",
-      "stance": "active",
-      "is_vacuum": false,
-      "vacuum_strong": 0,
-      "hit_count": 47,
-      "consecutive_hits": 22,
-      "first_seen_date": "2026-05-01",
-      "last_seen_date": "2026-06-22",
-      "days_since_last": 0,
-      "can_activate": false,
-      "lifeline": [
-        { "date": "2026-06-01", "section_count": 2 },
-        { "date": "2026-06-02", "section_count": 0 }
+      "watch_linked": true,
+      "section_count_14d": 9,
+      "snapshot": {
+        "summary": "近两周围绕出口管制升级与国产替代进展交替演进……",
+        "as_of": "2026-09-09"
+      },
+      "timeline": [
+        {
+          "date": "2026-09-08",
+          "sections": [
+            {
+              "section_id": 341,
+              "label": "新规生效首日影响",
+              "events": ["厂商A暂停部分订单", "替代供应商订单量抬升"],
+              "folded_count": 0
+            }
+          ]
+        }
       ]
     }
   ],
-  "vitality": {
-    "days": 30,
-    "article_count": 142,
-    "section_count": 38,
-    "active_topic_count": 6,
-    "feed_active": null,
-    "trend": [3, 1, 2, 5, 7, 6, 4, 3]
-  }
+  "candidates": [
+    { "topic_id": 55, "label": "稀土出口博弈", "last_seen_date": "2026-09-08", "recent_hint": "稀土出口博弈：管制清单扩容传闻" }
+  ]
 }
 ```
 
-- `lifeline` 为近 N 日按天聚合（identity 轨），空日补 `section_count=0` 保证日期轴连续（`generate_series` LEFT JOIN）；`trend` 为近 N 日每日 section 数（活力顶栏缩略折线用）。
-- `topics=[]` 表示板块无任何持久话题（含未达 `upgrade_threshold` 的 observing candidate，对前端隐藏）；`vitality.trend=[]` 表示窗口内无日报。
-- `feed_active` MVP 可空（跨域 feed 查询，后续补）。
+- `snapshot`：滚动 14 天态势句（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）；`null` 表示暂无快照（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染。
+- `timeline[].sections[].events`：该 section 的 thread 标题，最多前 5 条；`folded_count` 为被截断数量（恒输出，0 也带）。`timeline` 按日期倒序（最新日在最前）。
+- `candidates`：达可见门槛（`FilterVisibleTopics`）的 candidate + 最新 section 标题 `recent_hint`；只读提示，转正走话题管理入口。
+- `has_reports: false` 表示板块无任何日报（前端空态引导生成日报）。
 
 ## GET `/semantic-boards/:id/daily-reports?days=7`
 

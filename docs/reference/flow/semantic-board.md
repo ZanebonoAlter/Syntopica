@@ -194,30 +194,15 @@ SemanticBoard 管理面板
 
 前端治理 UI（`features/tags/components/`）：`AuxiliaryLabelPool.vue`（辅助标签池）、`AuxiliaryLabelPicker.vue`（选择器）、`BoardCompositionPanel.vue`（版块 composition 管理）、`composables/useAuxiliaryLabels.ts`。
 
-### 话题态势版图（board-topic-landscape）
+### 泳道动态（board-lane-dynamics，取代已退役的话题态势版图）
 
-版块内容 tab 首屏（`BoardCompositionPanel` 构成标签管理区下方）的态势总览，回答「版块里各持久话题处在什么阶段」——分区卡片墙 + 活力顶栏 + 话题节奏总览气泡图，卡片 click 跳话题总览 tab 深挖。接口契约见 `docs/reference/api/daily-reports.md` §`GET /semantic-boards/:id/topic-landscape`。
+版块内容 tab 首屏（`BoardCompositionPanel` 构成标签管理区下方）的泳道动态视图，回答「每条关注/追踪的泳道近 14 天发生了什么」——每条泳道一张卡：泳道名 + watch 角标（追踪中）+ 滚动 14 天态势句（一句话，随每日日报异步结算）+ 发展时间线（日期→事件 thread 标题，后端显式携带对应关系，前端不推断）+ 单日超限折叠；点卡片跳「话题总览」tab 聚焦该话题（focus 视图）。底部候选栏只读列出达门槛 candidate（名字+最近动向），转正走话题管理入口。空态两分支：无日报→引导生成（WS 进度，完成后自动刷新）；有日报无活跃泳道→文案提示。接口契约见 `docs/reference/api/daily-reports.md` §`GET /semantic-boards/:id/lane-dynamics`。
 
-可视化自 `revamp-landscape-charts` 起统一为 ECharts（option 构建见 `chart-options.ts`）：
+- **展示范围**：active ∪ watch 关联泳道（`board_topic_watches.persistent_topic_id`），按窗口内 section 数降序；沉寂（近窗口无 section）不展示；candidate 只进候选栏。
+- **态势结算**（日结算异步，见 `flow/daily-report.md` §泳道态势结算）：每日日报生成后为活跃泳道滚动重算 ≤100 字态势句（输入=窗口内「日期+节标题+前3线索」，LLM），存 `topic_lane_snapshots`（每泳道一行覆盖更新）；失败不阻塞日报，下个日报日自愈；快照缺失时卡片「待结算」降级、时间线照常。
+- **代码入口**：后端 `backend-go/internal/topicgraph/repository/lane_snapshot_repository.go`（聚合 `GetBoardLaneDynamics` + 结算侧查询）、`service/lane_snapshot.go`（结算管线，operation=`daily_report.lane_snapshot`）、`handler/lane_dynamics_handler.go`；前端 `front/app/features/tags/components/lane-dynamics/`（`LaneDynamicsPanel.vue` / `LaneDynamicsCard.vue`，挂载于 `BoardCompositionPanel.vue`）；API client `front/app/api/laneDynamics.ts`。
 
-- **话题节奏总览气泡图**（`TopicRhythmChart.vue`）：一张图聚合全部话题近 N 日命中节奏，成为节奏信息的主载体——x=日期、y=话题（按态势分组序 + hit_count 排序）、气泡大小∝当日命中数、颜色=态势（legend 可过滤，archived 默认隐藏）、y 轴 dataZoom 滚轮/滑块缩放，点击气泡跳「话题总览」聚焦该话题。
-- **话题卡片节奏图**（`MiniLifelineChart.vue`）：`active`/`stalled`/`pending`/`archived` 卡片内嵌 ECharts 迷你柱状图（柱高=当日命中数，空日 0 高占位保持日期轴连续，hover tooltip 显示「日期：N 节」）；`emerging`（新冒头）卡片命中 1-2 次信息量低，**不再渲染节奏图**，节奏信息由总览气泡图承载。
-- **活力顶栏**（`VitalityBar.vue`）：近 N 日 section 数折线由手写 SVG polyline 改为 ECharts 面积图（轻量坐标轴 + tooltip），指标数字行不变。
-
-- **核心约束**：态势只读 identity 轨字段派生（`status` / `hit_count` / `consecutive_hits` / `last_seen_date` / `is_vacuum`），**禁用 similarity 轨**（匈牙利二分法 section↔section 五态长跨度不可靠）。
-- **态势派生**（主态势互斥，按序匹配第一个命中；N=7 天，包级常量 `topicLandscapeActiveWindowDays`）：
-
-| 态势 | 图标 | 派生规则 |
-| ---- | ---- | -------- |
-| emerging | 🌱 | `status='candidate' AND 1 <= hit_count < upgrade_threshold`（hit=0 纯 orphan 不展示） |
-| pending | 🔴 | `status='candidate' AND hit_count >= upgrade_threshold`（即 `CanActivate=true`） |
-| active | 🟢 | `status='active' AND consecutive_hits > 0 AND days_since(last_seen_date) <= N` |
-| stalled | ⏸️ | `status='active' AND (consecutive_hits = 0 OR days_since(last_seen_date) > N)` |
-| archived | ⬛ | `status='archived'` |
-
-  🌀 强吸引（`is_vacuum=true`）为与主态势正交的叠加标记，可叠加在活跃/停滞上（卡片角标附 `vacuum_strong` 数值）。
-- **可见口径**：保留 `hit_count>=1` 全部（含 emerging 新苗头），仅剔 `hit=0` 纯 orphan——与话题管理 UI 的 `FilterVisibleTopics` 口径故意不同。
-- **代码入口**：后端 `backend-go/internal/topicgraph/repository/topic_landscape_repository.go`（`GetBoardTopicLandscape` / `deriveTopicStance` / `filterLandscapeVisible`）、handler `getBoardTopicLandscape`（`backend-go/internal/topicgraph/handler/daily_report_handler.go`，`RegisterDailyReportRoutes` 同组）；前端 `front/app/features/tags/components/topic-landscape/`（`TopicLandscapePanel.vue` / `VitalityBar.vue` / `StanceCardWall.vue` / `TopicStanceCard.vue` / `TopicRhythmChart.vue` / `MiniLifelineChart.vue` / `useEcharts.ts` / `chart-options.ts`，挂载于 `BoardCompositionPanel.vue`）。
+> 退役说明：原话题态势版图（分区卡片墙/活力顶栏/节奏气泡图/mini-lifeline/stance 五态派生）随 overview-lane-dynamics 整体移除（2026-09-10）；stance 派生与 ECharts 图表不再存在，历史设计见归档 change `2026-08-01-board-topic-landscape`。
 
 > 变更溯源见本文件 [§变更溯源](#变更溯源)。
 
@@ -339,6 +324,7 @@ handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembed
 | 2026-08-24 | restore-gorm-default-tags | 修复 a0b03bdc tag 剥离回归：TopicTag/TagMergeSuggestion.Status 恢复 default tag（GORM 零值显式 INSERT 病根）、SemanticLabel.ContextLayers 改 BeforeCreate 填默认（tag 语法不可表达 JSON 数组默认值）、迁移 constrain helper 尊重 notNull 参数（架空 bug）——版块/标签默认状态行为恢复 | [`openspec/changes/archive/2026-08-24-restore-gorm-default-tags`](../../../openspec/changes/archive/2026-08-24-restore-gorm-default-tags) |
 | 2026-08-24 | retire-narrative-legacy | 叙事面板死路由 GET /semantic-boards/:id/narratives 下线；「板块」×29 修正为「版块」；叙事面板节改版块治理面板（NarrativePanel 已死块删除） | [`openspec/changes/archive/2026-08-24-retire-narrative-legacy`](../../../openspec/changes/archive/2026-08-24-retire-narrative-legacy) |
 | 2026-08-01 | board-topic-landscape | 版块内容 tab 首屏「话题态势版图」：identity 轨态势派生（🌱emerging/🔴pending/🟢active/⏸️stalled/⬛archived + 🌀强吸引叠加）+ 分区卡片墙 + mini-lifeline + 活力顶栏；新增 `GET /semantic-boards/:id/topic-landscape` 聚合接口；禁 similarity 轨五态，可见口径保留 hit≥1（含 emerging 新苗头） | [`openspec/changes/archive/2026-08-01-board-topic-landscape`](../../../openspec/changes/archive/2026-08-01-board-topic-landscape) |
+| 2026-09-10 | overview-lane-dynamics | 版块内容首屏「话题态势版图」退役，「泳道动态」接管：active∪watch 泳道卡（滚动14天态势句+发展时间线）+ 候选栏；新端点 `GET /semantic-boards/:id/lane-dynamics`；日报后异步结算 `topic_lane_snapshots`（详见 daily-report.md §泳道态势结算） | [`openspec/changes/overview-lane-dynamics`](../../../openspec/changes/overview-lane-dynamics) |
 | 2026-07-23 | board-discovery-expansion | 升级建议持久化生命周期 + 双签名算法 + 观察池 watch + 定时 06:30 生成；`board_upgrade_suggestions` 表（suggestion_hash 幂等）；dismiss 冷却期 + watch GC；旧 upgrade-suggest 保留兼容期 | [`openspec/changes/archive/2026-07-23-board-discovery-expansion`](../../../openspec/changes/archive/2026-07-23-board-discovery-expansion) |
 | 2026-05-29 | matching-quality-and-daily-report-redesign | hit_rate/weighted 加方向校验；文章按匹配质量排序；日报展示精简 | [`openspec/changes/archive/2026-05-29-matching-quality-and-daily-report-redesign`](../../../openspec/changes/archive/2026-05-29-matching-quality-and-daily-report-redesign) |
 | 2026-05-29 | board-direction-check-and-board-editing | max_sim 方向性校验（direction_mismatch）；版块 embedding 生成 + 一次性 backfill；前端版块编辑 | [`openspec/changes/archive/2026-05-29-board-direction-check-and-board-editing`](../../../openspec/changes/archive/2026-05-29-board-direction-check-and-board-editing) |
@@ -346,3 +332,4 @@ handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembed
 | 2026-05-10 | narrative-concept-boards | `board_concepts` 表，版块从「每日重建」变为跨日持久概念实体；LLM 扫描 + embedding 匹配的版块概念自动建议 | [`openspec/changes/archive/2026-05-10-narrative-concept-boards`](../../../openspec/changes/archive/2026-05-10-narrative-concept-boards) |
 | 2026-09-04 | constraint-declaration-redline | 约束节红线句格式化：本域「业务约束与不变量」节每条约束改写为首行加粗自含红线句 + 细节跟后（语义不变），declaration 注入降为红线层（上线后实测 bytes 降约 60%），细节层经关键词/JIT 全节注入按需补全；本域为格式改写，无业务行为变更 | [`openspec/changes/archive/2026-09-04-constraint-declaration-redline`](../../../openspec/changes/archive/2026-09-04-constraint-declaration-redline) |
 | 2026-09-05 | add-evidence-backed-cross-board-relations | 跨版块关系发现与版块语义归属正交：目标解析只引用现有版块（约束 13），不自动创建/合并/修改版块、不做 board×board 全量扫描、不强制映射；confirmed 关系只注入简报背景字段不改版块成员 | [`openspec/changes/archive/2026-09-05-add-evidence-backed-cross-board-relations`](../../../openspec/changes/archive/2026-09-05-add-evidence-backed-cross-board-relations) |
+| 2026-09-11 | overview-lane-dynamics | 版块内容 tab 首屏「泳道动态」视图（泳道卡：滚动 14 天态势句 + 逐日发展时间线 + watch 角标 + 候选栏），取代话题态势版图（整体退役）；新端点 `GET /semantic-boards/:id/lane-dynamics` 单请求聚合；态势句随日报异步滚动结算（见 daily-report.md） | [`openspec/changes/archive/2026-09-11-overview-lane-dynamics`](../../../openspec/changes/archive/2026-09-11-overview-lane-dynamics) |

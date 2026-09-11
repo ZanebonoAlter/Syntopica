@@ -12,19 +12,6 @@ import (
 	"syntopica-backend/internal/platform/logging"
 )
 
-// topicLandscapeActiveWindowDays is N — the active-stance freshness window
-// for the topic-landscape view. A topic is "active" when it was last seen
-// within this many calendar days; otherwise it decays to "stalled". Kept as
-// a package-level constant (not an ai_settings key) so the landscape view
-// ships without a DB migration; promote to config if tuning is needed later.
-const topicLandscapeActiveWindowDays = 7
-
-// topicLandscapeDefaultDays is the default lifeline/vitality window (in days)
-// for the topic-landscape view when the client omits ?days= or passes a
-// non-positive value. Allowed windows are {7,14,30,90}; see
-// ClampTopicLandscapeDays.
-const topicLandscapeDefaultDays = 30
-
 // PersistentTopicConfig holds the runtime-tunable parameters that govern
 // assignment, lifecycle and backfill. Loaded from ai_settings with the
 // defaults baked into the migration seed.

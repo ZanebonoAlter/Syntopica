@@ -228,49 +228,6 @@ export interface BoardArticle {
   [key: string]: unknown
 }
 
-// ── 话题态势版图（identity 轨，design §3 契约） ────────────────────────────
-/** 持久话题主态势标签（后端派生，前端不重复算）。 */
-export type TopicStance = 'emerging' | 'pending' | 'active' | 'stalled' | 'archived'
-
-/** mini-lifeline 单日格点（后端 generate_series 补空日，保证日期轴连续）。 */
-export interface LifelinePoint {
-  date: string
-  section_count: number
-}
-
-/** 话题态势版图单行（对齐 GET /topic-landscape 响应 topics[]）。 */
-export interface TopicLandscapeTopic {
-  id: number
-  label: string
-  status: string
-  source: string
-  stance: TopicStance
-  is_vacuum: boolean
-  vacuum_strong: number
-  hit_count: number
-  consecutive_hits: number
-  first_seen_date: string
-  last_seen_date: string
-  days_since_last: number
-  can_activate: boolean
-  lifeline: LifelinePoint[]
-}
-
-/** 活力顶栏指标（design §3 vitality）。feed_active MVP 可空。 */
-export interface Vitality {
-  days: number
-  article_count: number
-  section_count: number
-  active_topic_count: number
-  feed_active: number | null
-  trend: number[]
-}
-
-/** GET /topic-landscape 响应 data。 */
-export interface TopicLandscapeResponse {
-  topics: TopicLandscapeTopic[]
-  vitality: Vitality
-}
 
 export function useSemanticBoardsApi() {
   async function getBoards(params?: { search?: string; status?: string }): Promise<ApiResponse<{ items: SemanticBoard[]; total: number }>> {
@@ -308,12 +265,6 @@ export function useSemanticBoardsApi() {
 
   async function getComposition(id: number): Promise<ApiResponse<BoardCompositionResponse>> {
     return apiClient.get(`/semantic-boards/${id}/composition`)
-  }
-
-  /** 话题态势版图（identity 轨，只读）：GET /semantic-boards/:id/topic-landscape?days=N。 */
-  async function getTopicLandscape(boardId: number, days?: number): Promise<ApiResponse<TopicLandscapeResponse>> {
-    const query = days ? apiClient.buildQueryParams({ days }) : ''
-    return apiClient.get(`/semantic-boards/${boardId}/topic-landscape${query ? `?${query}` : ''}`)
   }
 
   async function removeFromComposition(boardId: number, auxiliaryLabelId: number): Promise<ApiResponse<{ board_id: number; auxiliary_label_id: number }>> {
@@ -411,7 +362,6 @@ return {
     updateBoard,
     deleteBoard,
     getComposition,
-    getTopicLandscape,
     removeFromComposition,
     addComposition,
     suggestUpgrade,

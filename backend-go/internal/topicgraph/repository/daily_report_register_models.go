@@ -14,6 +14,7 @@ func init() {
 		&BoardPersistentTopic{},
 		&BoardTopicWatch{},
 		&TopicWatchHit{},
+		&TopicLaneSnapshot{},
 	)
 	tagging.RegisterVectorDimEnsurer(ensureSectionEmbeddingDimension)
 	tagging.RegisterVectorDimEnsurer(ensurePersistentTopicEmbeddingDimension)

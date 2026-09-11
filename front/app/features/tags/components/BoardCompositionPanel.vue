@@ -4,7 +4,7 @@ import { useNotify } from '~/composables/useNotify'
 import { Icon } from '@iconify/vue'
 import { useSemanticBoardsApi, type AuxiliaryLabelItem, type BoardCompositeMount } from '~/api/semanticBoards'
 import AuxiliaryLabelPicker from './AuxiliaryLabelPicker.vue'
-import TopicLandscapePanel from './topic-landscape/TopicLandscapePanel.vue'
+import LaneDynamicsPanel from './lane-dynamics/LaneDynamicsPanel.vue'
 import CompositeLabelEditDialog from './CompositeLabelEditDialog.vue'
 
 const props = defineProps<{
@@ -173,9 +173,9 @@ async function handleConfirmAdd() {
       />
     </div>
 
-    <!-- 视觉分隔 + 话题态势版图（design §5：构成标签管理区下方） -->
+    <!-- 视觉分隔 + 泳道动态（design §5：构成标签管理区下方；tasks 3.5 挂载点） -->
     <hr class="bcp-divider">
-    <TopicLandscapePanel :board-id="boardId" @select-topic="(id) => emit('selectTopic', id)" />
+    <LaneDynamicsPanel :board-id="boardId" @select-topic="(id) => emit('selectTopic', id)" />
   </div>
 </template>
 

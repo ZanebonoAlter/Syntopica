@@ -2391,7 +2391,8 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, compositeComponentsMigration())
 	migrations = append(migrations, watchMaterializedHintCleanupMigration())
 	migrations = append(migrations, watchSuggestionCleanupMigration())
-	return append(migrations, legacyDiscoverNewPendingDismissMigration())
+	migrations = append(migrations, legacyDiscoverNewPendingDismissMigration())
+	return append(migrations, laneSnapshotFKMigration())
 }
 
 // watchMaterializedHintCleanupMigration implements 20260905_0001: one-shot
@@ -2834,6 +2835,55 @@ func legacyDiscoverNewPendingDismissMigration() Migration {
 					resolved_at = now()
 				WHERE status = 'pending' AND mode = 'discover_new'`).Error; err != nil {
 				return fmt.Errorf("dismiss legacy discover_new pending suggestions: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// laneSnapshotFKMigration implements 20260910_0001: add the FK
+// topic_lane_snapshots.persistent_topic_id → board_persistent_topics(id)
+// ON DELETE CASCADE (overview-lane-dynamics design D2). AutoMigrate creates
+// the table + unique index but runs with DisableForeignKeyConstraintWhenMigrating,
+// so the FK lives here (same policy as fk_topic_watch_hits_watch / 20260825_0001).
+// Hard-deleting a topic removes its snapshot — the snapshot is a pure derived
+// cache, orphan rows are meaningless. Idempotent; skips when either table is
+// absent (topicgraph-less deployments).
+func laneSnapshotFKMigration() Migration {
+	return Migration{
+		Version:     "20260910_0001",
+		Description: "overview-lane-dynamics: FK topic_lane_snapshots.persistent_topic_id → board_persistent_topics ON DELETE CASCADE.",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_lane_snapshots") || !tableExists(db, "board_persistent_topics") {
+				return nil
+			}
+			// Orphan cleanup BEFORE the ADD CONSTRAINT (it validates existing rows;
+			// a stray orphan would fail the whole migration). The table ships new
+			// in this deploy so orphans cannot pre-exist — the guard is defensive,
+			// mirroring the watch-hit FK policy.
+			if err := db.Exec(`DELETE FROM topic_lane_snapshots
+				WHERE persistent_topic_id NOT IN (SELECT id FROM board_persistent_topics)`).Error; err != nil {
+				return fmt.Errorf("delete orphan lane snapshots: %w", err)
+			}
+			// FK (constraint DDL takes AccessExclusiveLock — guard with lock timeout).
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				if err := tx.Exec(`DO $$ BEGIN
+					IF NOT EXISTS (
+						SELECT 1 FROM information_schema.table_constraints
+						WHERE constraint_name = 'fk_topic_lane_snapshots_topic'
+							  AND table_name = 'topic_lane_snapshots'
+					) THEN
+						ALTER TABLE topic_lane_snapshots
+							ADD CONSTRAINT fk_topic_lane_snapshots_topic
+							FOREIGN KEY (persistent_topic_id) REFERENCES board_persistent_topics(id)
+							ON DELETE CASCADE;
+					END IF;
+				END $$`).Error; err != nil {
+					return fmt.Errorf("add fk_topic_lane_snapshots_topic: %w", err)
+				}
+				return nil
+			}); err != nil {
+				return err
 			}
 			return nil
 		},

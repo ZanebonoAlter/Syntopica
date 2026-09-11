@@ -198,6 +198,7 @@ erDiagram
     board_persistent_topics ||--o{ topic_enrichment_result : "persistent_topic_id"
     board_persistent_topics ||--o{ topic_enrichment_review : "persistent_topic_id"
     board_persistent_topics ||--o{ topic_lifeline_context : "persistent_topic_id"
+    board_persistent_topics ||--|| topic_lane_snapshots : "persistent_topic_id (UNIQUE, OnDelete:CASCADE)" %% 每泳道一行滚动14天态势
     board_topic_watches ||--o{ topic_watch_hits : "watch_id (OnDelete:CASCADE)" %% 真实DB FK
     daily_report_sections ||--o{ daily_report_section_relations : "from_section_id"
     daily_report_sections ||--o{ daily_report_section_relations : "to_section_id"
@@ -237,6 +238,11 @@ erDiagram
     topic_enrichment_review {
     }
     topic_lifeline_context {
+    }
+    topic_lane_snapshots {
+        SERIAL id PK
+        VARCHAR rolling_summary "≤100字态势句"
+        DATE as_of_date "汇总截止=最新报告期"
     }
     topic_watch_hits {
         SERIAL id PK

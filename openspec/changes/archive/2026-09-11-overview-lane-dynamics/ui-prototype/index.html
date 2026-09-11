@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>泳道动态 · 原型（可丢弃）</title>
+<style>
+  /* main.css token 副本（原型用，实现时以 main.css 为准） */
+  :root {
+    --bg-base: #fafaf8; --bg-elevated: #f5f5f4; --bg-sunken: #e7e5e4;
+    --text-primary: #1a1a1a; --text-secondary: #5a5a5a; --text-muted: #8a8a8a;
+    --border-subtle: rgba(26,26,26,.08); --border-medium: rgba(26,26,26,.15);
+    --info: #3d7a8a; --success: #3d8a4a; --warning: #c4883c;
+    --slate-700: #334155;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Source Han Serif SC", Georgia, serif; background: var(--bg-base); color: var(--text-primary); padding: 32px 40px; }
+  .demo-label { font-family: system-ui, sans-serif; font-size: 12px; color: var(--text-muted); letter-spacing: .1em; margin: 28px 0 10px; text-transform: uppercase; }
+
+  /* ── 区头 ── */
+  .lane-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 18px; }
+  .lane-title { font-size: 20px; font-weight: 700; }
+  .lane-window { font-family: system-ui, sans-serif; font-size: 12px; color: var(--text-muted); }
+
+  /* ── 卡片网格 ── */
+  .lane-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
+  .lane-card { background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px 18px; cursor: pointer; transition: box-shadow .15s, border-color .15s; display: flex; flex-direction: column; max-height: 420px; }
+  .lane-card:hover { border-color: var(--border-medium); box-shadow: 0 2px 12px rgba(26,26,26,.08); }
+  .card-top { display: flex; align-items: center; gap: 8px; }
+  .card-name { font-size: 16px; font-weight: 700; }
+  .watch-badge { font-family: system-ui, sans-serif; font-size: 11px; color: var(--info); border: 1px solid var(--info); border-radius: 4px; padding: 1px 6px; }
+  .card-count { margin-left: auto; font-family: system-ui, sans-serif; font-size: 11px; color: var(--text-muted); }
+  .card-stance { font-size: 14px; line-height: 1.7; margin: 10px 0 4px; color: var(--text-primary); }
+  .stance-asof { font-family: system-ui, sans-serif; font-size: 11px; color: var(--text-muted); margin-bottom: 10px; }
+  .stance-pending { font-family: system-ui, sans-serif; font-size: 12px; color: var(--text-muted); background: var(--bg-sunken); border-radius: 6px; padding: 8px 10px; margin: 10px 0; text-align: center; }
+
+  /* ── 发展时间线 ── */
+  .tl { border-left: 2px solid var(--border-subtle); margin-left: 4px; padding-left: 16px; overflow-y: auto; flex: 1; }
+  .tl-day { position: relative; margin-bottom: 12px; }
+  .tl-day::before { content: ""; position: absolute; left: -21px; top: 5px; width: 8px; height: 8px; border-radius: 50%; background: var(--bg-base); border: 2px solid var(--border-medium); }
+  .tl-date { font-family: system-ui, sans-serif; font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+  .tl-section { font-size: 13px; font-weight: 600; color: var(--slate-700); margin-bottom: 2px; }
+  .tl-event { font-size: 12.5px; color: var(--text-secondary); line-height: 1.6; padding-left: 10px; position: relative; }
+  .tl-event::before { content: "·"; position: absolute; left: 0; color: var(--text-muted); }
+  .tl-more { font-family: system-ui, sans-serif; font-size: 11px; color: var(--info); margin-top: 3px; cursor: pointer; }
+
+  /* ── 候选栏 ── */
+  .cand-bar { margin-top: 20px; border-top: 1px dashed var(--border-medium); padding-top: 12px; }
+  .cand-title { font-family: system-ui, sans-serif; font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+  .cand-row { display: flex; align-items: baseline; gap: 10px; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
+  .cand-row:hover { background: var(--bg-elevated); }
+  .cand-name { font-size: 13.5px; font-weight: 600; }
+  .cand-hint { font-size: 12.5px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cand-date { margin-left: auto; font-family: system-ui, sans-serif; font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+
+  /* ── 空态 ── */
+  .empty-box { background: var(--bg-elevated); border: 1px dashed var(--border-medium); border-radius: 10px; padding: 48px 24px; text-align: center; }
+  .empty-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+  .empty-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 18px; }
+  .empty-btn { font-family: system-ui, sans-serif; font-size: 13px; background: var(--text-primary); color: var(--bg-base); border: none; border-radius: 6px; padding: 8px 22px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div class="demo-label">① 正常态：泳道动态区（workspace · 卡片网格 + 候选栏）</div>
+
+<div class="lane-header">
+  <span class="lane-title">泳道动态</span>
+  <span class="lane-window">近14天 · 随每日日报结算</span>
+</div>
+
+<div class="lane-grid">
+
+  <!-- 卡1：watch 角标卡 -->
+  <div class="lane-card">
+    <div class="card-top">
+      <span class="card-name">美联储利率路径</span>
+      <span class="watch-badge">追踪中</span>
+      <span class="card-count">14天 · 12 section</span>
+    </div>
+    <div class="card-stance">近两周围绕「9月是否降息25bp」反复拉锯，非农与CPI数据交替主导预期，市场定价已从纠结转向偏向降息，但幅度分歧未收敛。</div>
+    <div class="stance-asof">汇总截止 9/9</div>
+    <div class="tl">
+      <div class="tl-day">
+        <div class="tl-date">09-08</div>
+        <div class="tl-section">8月非农不及预期，降息预期升温</div>
+        <div class="tl-event">非农新增14.2万低于预期，9月降息25bp概率升至七成</div>
+        <div class="tl-event">「萨姆规则」触发衰退讨论，但鲍威尔此前表态偏稳</div>
+      </div>
+      <div class="tl-day">
+        <div class="tl-date">09-05</div>
+        <div class="tl-section">ADP数据平淡，市场观望非农</div>
+        <div class="tl-event">ADP新增9.9万符合预期，美债收益率窄幅震荡</div>
+      </div>
+      <div class="tl-day">
+        <div class="tl-date">09-02</div>
+        <div class="tl-section">制造业PMI连续收缩</div>
+        <div class="tl-event">ISM制造业PMI 47.2，价格指数回落</div>
+        <div class="tl-more">还有 4 条较早事件</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 卡2：普通活跃卡 -->
+  <div class="lane-card">
+    <div class="card-top">
+      <span class="card-name">美国大选与政策</span>
+      <span class="card-count">14天 · 7 section</span>
+    </div>
+    <div class="card-stance">辩论后选情焦点从政策细节转向候选人状态评估，摇摆民调微幅波动，市场开始为选举结果对财政与关税路径的影响定价。</div>
+    <div class="stance-asof">汇总截止 9/9</div>
+    <div class="tl">
+      <div class="tl-day">
+        <div class="tl-date">09-07</div>
+        <div class="tl-section">首场辩论后的市场反应</div>
+        <div class="tl-event">博彩市场胜率小幅波动，美元指数当日走强</div>
+      </div>
+      <div class="tl-day">
+        <div class="tl-date">09-03</div>
+        <div class="tl-section">关税主张的通胀影响讨论</div>
+        <div class="tl-event">经济学家测算全面关税或推升核心CPI约1个百分点</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 卡3：待结算降级卡 -->
+  <div class="lane-card">
+    <div class="card-top">
+      <span class="card-name">日元套息交易逆转</span>
+      <span class="card-count">14天 · 5 section</span>
+    </div>
+    <div class="stance-pending">态势待结算 · 下个日报日后生成（时间线照常展示）</div>
+    <div class="tl">
+      <div class="tl-day">
+        <div class="tl-date">09-06</div>
+        <div class="tl-section">日银官员放鹰，套息平仓再起</div>
+        <div class="tl-event">日元升破146，套息交易平仓压力重现</div>
+      </div>
+      <div class="tl-day">
+        <div class="tl-date">09-01</div>
+        <div class="tl-section">8月波动回顾与仓位修复</div>
+        <div class="tl-event">对冲基金日元空头仓位已回落至波动前水平</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 卡4：长时间线折叠卡 -->
+  <div class="lane-card">
+    <div class="card-top">
+      <span class="card-name">AI 芯片与算力竞赛</span>
+      <span class="watch-badge">追踪中</span>
+      <span class="card-count">14天 · 15 section</span>
+    </div>
+    <div class="card-stance">两周内硬件迭代与订单信号密集：新一代推理芯片发布叠加云厂商资本开支上修，算力军备竞赛叙事强化，电力约束开始进入讨论。</div>
+    <div class="stance-asof">汇总截止 9/9</div>
+    <div class="tl">
+      <div class="tl-day">
+        <div class="tl-date">09-09</div>
+        <div class="tl-section">云厂商上调资本开支指引</div>
+        <div class="tl-event">三大云厂商相继上调2025年AI基建开支</div>
+        <div class="tl-event">供应链确认HBM订单排期至明年下半年</div>
+        <div class="tl-more">还有 2 条</div>
+      </div>
+      <div class="tl-day">
+        <div class="tl-date">09-05</div>
+        <div class="tl-section">新推理芯片发布与能效比提升</div>
+        <div class="tl-event">单token推理成本再降一个数量级的路线图公布</div>
+        <div class="tl-more">还有 3 条</div>
+      </div>
+      <div class="tl-day">
+        <div class="tl-date">09-02</div>
+        <div class="tl-section">数据中心电力约束讨论升温</div>
+        <div class="tl-event">多个州数据中心用电审批排队引关注</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- 候选栏 -->
+<div class="cand-bar">
+  <div class="cand-title">候选泳道 · 达到激活门槛，值得注意</div>
+  <div class="cand-row">
+    <span class="cand-name">中东局势与油价</span>
+    <span class="cand-hint">最新：停火谈判再现僵局，布伦特原油周内涨3%</span>
+    <span class="cand-date">9/8</span>
+  </div>
+  <div class="cand-row">
+    <span class="cand-name">欧盟对华电动车关税</span>
+    <span class="cand-hint">最新：成员国投票分歧公开化，最终裁定推迟</span>
+    <span class="cand-date">9/6</span>
+  </div>
+</div>
+
+<div class="demo-label">② 空态：板块无日报（引导生成，进度反馈后自动刷新）</div>
+<div class="empty-box">
+  <div class="empty-title">该板块还没有日报</div>
+  <div class="empty-desc">泳道动态基于每日日报结算——生成第一份日报后，这里会出现各条泳道最近发生的事。</div>
+  <button class="empty-btn">生成日报</button>
+</div>
+
+</body>
+</html>

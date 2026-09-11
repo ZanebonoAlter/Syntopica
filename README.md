@@ -27,6 +27,10 @@ Syntopica 想回答的不是“今天又有多少篇新文章”，而是：
 <p align="center">
   <img src="img/1.4.0/overview.png" width="100%" alt="Syntopica 阅读工作台">
 </p>
+<p align="center">
+  <img src="img/board-overview.png" width="100%" alt="Syntopica 版块总览">
+</p>
+
 
 ## 为什么做 Syntopica
 

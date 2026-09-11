@@ -165,6 +165,7 @@
 | `topic_watch_hits` | `report_id` | `board_daily_reports` | `id` | 无 OnDelete |
 | `board_data_sources` | `semantic_board_id` | `semantic_labels` | `id` | 无 OnDelete |
 | `topic_lifeline_context` | `persistent_topic_id` | `board_persistent_topics` | `id` | 无 OnDelete |
+| `topic_lane_snapshots` | `persistent_topic_id` | `board_persistent_topics` | `id` | UNIQUE + ON DELETE CASCADE（migration `20260910_0001`，每泳道一行滚动覆盖） |
 | `topic_enrichment_result` | `persistent_topic_id` | `board_persistent_topics` | `id` | 无 OnDelete |
 | `topic_enrichment_review` | `persistent_topic_id` | `board_persistent_topics` | `id` | 无 OnDelete |
 | `topic_enrichment_review` | `curr_result_id` | `topic_enrichment_result` | `id` | 无 OnDelete |

@@ -73,6 +73,11 @@ func GenerateAndSaveReport(ctx context.Context, boardID uint, date time.Time) (*
 			boardID, report.ID, watchErr)
 	}
 
+	// Lane snapshot settlement (overview-lane-dynamics design D1): detached
+	// goroutine, fully recovered — settlement failure/panic SHALL NOT affect
+	// the report (spec red line); retried naturally next report day.
+	spawnLaneSnapshotSettlement(boardID)
+
 	return report, nil
 }
 
