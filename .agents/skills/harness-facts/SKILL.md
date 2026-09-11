@@ -46,9 +46,10 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
 - `reasonCode`（kebab-case，非法归一 `unknown`）：
   - spec-gate → `archive-check-failed`(block，target=失败检查名如 `doc-impact,trace,ui-evidence`) / `explicit-bypass`(bypass) / `acceptance-wording`(warn，检查⑤)；另在 UI 验收证据缺失时代记 `ui-design-gate` policy 的 block 事件；检查⑤'归档并发（coordinate-concurrent-changes）→ `concurrent-dirty-tree`(warn，树上存在归属其他 active change 的未 commit 文件)
   - quota-gate → `quota-low` / `quota-exhausted`(block) / `quota-query-failed`(fail-open) / `fuzzy-model-resolve`(warn，裸模型名解析风险)
+  - quality-gate（harden-gate-interop-health，唯一例外场景）→ `interop-down`(fail-open，turn_end 门禁前 cmd.exe interop 健康探测失败 → 本轮 cmd 链路门禁整体短路；被跳过命令零 gate.check 不双写；探测健康本身零记录)
   - test-scope-guard → `full-go-test`(soft=warn / hard=block)
   - ui-design-gate → `ui-impact-missing` / `ui-impact-mismatch` / `ui-design-missing`(legacy 前端迁移提醒为 warn) / `ui-prototype-missing` / `ui-approval-pending`(block) / `explicit-bypass`(bypass，UI_DESIGN_GATE_BYPASS=1) / `ui-gate-check-failed`(fail-open)；归档侧 UI 缺证据 → `ui-verification-missing`(block，由 spec-gate 检查④'代记，target=archive)。白名单共八值（与主 spec ui-design-workflow 对齐）；健康放行/requirements 档/legacy 非前端操作零记录
-- 低噪声约束：普通成功放行/未命中/健康额度**零记录**；quality-gate/entry-gate 继续只用 `gate.check`，同一裁决不双写。`target` 仅 change/provider 等短摘要（截断 120 字符），禁止命令、密钥、响应正文。记账失败仅旁路（fail-loud console.error + 返回 false），绝不改变原门禁裁决。
+- 低噪声约束：普通成功放行/未命中/健康额度**零记录**；quality-gate/entry-gate 继续只用 `gate.check`，同一裁决不双写（quality-gate 的 interop 探测短路例外，见上 interop-down）。`target` 仅 change/provider 等短摘要（截断 120 字符），禁止命令、密钥、响应正文。记账失败仅旁路（fail-loud console.error + 返回 false），绝不改变原门禁裁决。gate.check 新增环境故障分支（harden-gate-interop-health）：diag 命中 WSL interop 特征（`lib/failure-classify.ts isInteropFailure`：UtilAcceptVsock / `<N>WSL (… - ) ERROR` 行首前缀并集锚定）的失败不进粘性重跑、steer 归因环境而非 [回归]/[中间态]；cmd 链路命令失败提示带（wsl环境）标注
 
 ## 查询配方
 

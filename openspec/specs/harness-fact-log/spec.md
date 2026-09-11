@@ -63,9 +63,9 @@ harness 层事实账本：以 `.pi/harness/events.db`（单表 append-only SQLit
 
 ### Requirement: 策略显著裁决统一记账
 
-spec-gate、quota-gate、test-scope-guard SHALL 将显著裁决追加为 `policy.decision` 事件。payload MUST 含 `policy`、`action`、`reasonCode`：`policy` 限定为稳定扩展标识，`action` 限定为 `block | warn | bypass | fail-open`，`reasonCode` MUST 是稳定、非空、kebab-case 的有界代码；按需附加的 `target` MUST 是不含密钥、完整命令和远端响应正文的有界摘要，`durationMs` 若存在 MUST 为非负数。事件的 change 列 SHALL 优先绑定裁决明确指向的 change，否则使用当前可检测的活跃 change，无法确定时为 null。
+spec-gate、quota-gate、test-scope-guard SHALL 将显著裁决追加为 `policy.decision` 事件；quality-gate 的 interop 探测短路 SHALL 作为其唯一的 policy.decision 场景追加（action=fail-open，reasonCode=interop-down）。payload MUST 含 `policy`、`action`、`reasonCode`：`policy` 限定为稳定扩展标识，`action` 限定为 `block | warn | bypass | fail-open`，`reasonCode` MUST 是稳定、非空、kebab-case 的有界代码；按需附加的 `target` MUST 是不含密钥、完整命令和远端响应正文的有界摘要，`durationMs` 若存在 MUST 为非负数。事件的 change 列 SHALL 优先绑定裁决明确指向的 change，否则使用当前可检测的活跃 change，无法确定时为 null。
 
-普通成功放行 MUST NOT 写 `policy.decision`；quality-gate 与 entry-gate 继续使用 `gate.check`，MUST NOT 为同一裁决重复写 `policy.decision`。记账失败 MUST NOT 改变原策略的放行、提醒、阻断或 fail-open 结果。
+普通成功放行 MUST NOT 写 `policy.decision`；quality-gate 其余裁决与 entry-gate 继续使用 `gate.check`，同一裁决 MUST NOT 双写（interop 短路记 policy.decision 后，被跳过的门禁命令 MUST NOT 再逐条记 gate.check）。记账失败 MUST NOT 改变原策略的放行、提醒、阻断或 fail-open 结果。
 
 #### Scenario: spec-gate 阻断归档被记录
 
@@ -87,16 +87,20 @@ spec-gate、quota-gate、test-scope-guard SHALL 将显著裁决追加为 `policy
 - **WHEN** test-scope-guard 在 soft 模式提醒一次、在 hard 模式阻断一次非归档语境的全量测试
 - **THEN** 分别追加 action=warn 与 action=block、reasonCode=full-go-test 的 policy.decision
 
+#### Scenario: interop 探测短路被记账且不双写
+
+- **WHEN** quality-gate 的 interop 健康探测失败导致本轮 cmd 链路门禁整体短路
+- **THEN** 追加一条 policy=quality-gate、action=fail-open、reasonCode=interop-down 的 policy.decision，且本轮被跳过的门禁命令不再产生任何 gate.check 事件
+
 #### Scenario: 正常放行零记录
 
-- **WHEN** spec-gate 的归档检查全部通过、quota-gate 判定额度充足，或命令未命中 test-scope-guard
-- **THEN** 不产生 policy.decision 事件
+- **WHEN** spec-gate 的归档检查全部通过、quota-gate 判定额度充足、命令未命中 test-scope-guard，或 interop 探测健康后门禁正常执行
+- **THEN** 不产生 policy.decision 事件（探测健康本身零记录）
 
 #### Scenario: 记账故障不改变裁决
 
 - **WHEN** events.db 不可写且策略本应阻断、提醒、豁免或 fail-open
 - **THEN** 策略仍执行原裁决，记账仅走既有 fail-loud/fail-safe 错误路径
-
 ### Requirement: 注入与 pin 记账（constraint-injection 自报）
 
 constraint-injection SHALL 在实现档注入 explore-findings.md 时，按 `## `（二级标题）解析 pin 标题并自报 `pin.read` 事件（payload 含 title、change、doc 路径、是否 digest 模式）；同一会话内同一标题 MUST 只记一次（会话内去重，session_start 重置）。pin_finding 成功写入 md 后 SHALL 自报 `pin.write`（payload 含 title、topic/change、落盘路径；失败调用不记账）。research 语境（无激活档位）写盘时 MUST 在标题行后追加 `<!-- pin:<8hex> -->` 锚点作为持久身份。每次注入送达时 SHALL 按 `{path, mode, reason, bytes}` 自报 `constraint.inject`——注入原因（档位绑定/关键词/规则）是排查"为何未注入"的数据源。
