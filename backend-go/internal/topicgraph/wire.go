@@ -23,3 +23,12 @@ var (
 	SaveReport             = service.SaveReport
 	GenerateAndSaveReport  = service.GenerateAndSaveReport
 )
+
+// Daily report rebuild window (offline-catchup D6). Re-exported so the admin
+// scheduler shares the exact predicate and wording the HTTP handler uses
+// (the handler imports service/ directly — it cannot import this package, which
+// imports handler/).
+var (
+	IsDateOutsideRebuildWindow    = service.IsDateOutsideRebuildWindow
+	RebuildWindowRejectionMessage = service.RebuildWindowRejectionMessage
+)

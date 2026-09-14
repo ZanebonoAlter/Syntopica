@@ -143,6 +143,8 @@ POST /api/daily-reports/backfill-topics       重建持久话题
 
 可按 board 限定（body 传 `board_id`）或全量回填，与自动生成一样走 topicgraph service、幂等重建。
 
+> **自动补档（offline-catchup）**：手动 backfill 之外，`DailyReportJob` 每晚生成完当天报告后会自动补齐保留窗口内的缺档日期（tag 队列空为前置、窗口内逐日只补缺、队列未清顺延次日；超窗日期拒绝重建，见业务约束 19/20）——停机错过的日期无需人工逐日重建。
+
 ### 后端：泳道态势结算（lane-snapshot，日报尾部异步）
 
 `GenerateAndSaveReport` 成功后（EvaluateWatchHits 之后）起 detached goroutine 逐板块结算（overview-lane-dynamics）：为该板块活跃泳道（active，按 `last_seen_date` 降序 clamp 20，超出记日志）串行重算「滚动 14 天态势句」——素材=该泳道近 14 个报告日（窗口锚定 `MAX(period_date)`，非 now()）的「日期｜节标题｜前3条 thread 标题」，LLM 单次调用（operation=`daily_report.lane_snapshot`，≤100 字中文、只基于所列事实不预测），upsert 进 `topic_lane_snapshots`（每泳道一行，`rolling_summary` + `as_of_date`=最新报告期）。松耦合红线：单泳道 60s timeout、panic/失败全吞只记日志、绝不影响日报主流程，下个日报日自愈；同日重跑日报覆盖重建后再结算（幂等）。窗口口径与「板块内容」tab 泳道动态视图的时间线同窗（详见 `flow/semantic-board.md` §泳道动态）。
@@ -218,6 +220,8 @@ CRUD：POST/GET /api/semantic-boards/:id/topic-watches、PATCH/DELETE /api/topic
 16. **`watch_` 前缀物化 section 必须排除出自动建题、关系计算与提示轨扫描**：物化板块以 `lane_tier` 前缀 `watch_` 为唯一判据——`watch_keyword` section（PersistentTopicID=NULL）SHALL 被自动归属/建题逻辑排除（防被 L3 收编成 candidate）；`watch_sentence` section 正常参与话题生命周期推进（consecutive_hits/hit_count/last_seen 与普通 section 同机制），但其话题**不进质心刷新 touched 集**（锚点语义 = 用户检索句意图，质心保持种子向量）。全部 `watch_*` section SHALL 被排除出关系计算（相似度边 + 身份边）与提示轨扫描（keyword 提示 SQL 过滤 + label 提示构建过滤）；物化轨关注（keyword_topic/sentence_topic）SHALL NOT 产生 `topic_watch_hits`。物化 section 无 embedding（落库走 Omit 路径写 NULL）。report 级聚合计数（article_count/event_tag_count/cluster_count）保持常规聚类口径不因物化重算；section 自身 `article_count` 如实。
 17. **section 展示标题必须由当天实际内容派生，不得默认复述所挂话题 label**
 18. **物化轨 LLM 裁决必须分层降级且只影响板块内容（watch-materialize-llm-adjudication）**：召回层（keyword DNF / sentence 向量检索）保持零 AI 不变；裁决层为每 watch 单次批量调用（标准=意图重心+实质因果链，字面关键词重复不算贴合、直接因果波及算贴合），候选上限 `watch_materialize_candidate_limit`（默认 40，超限按 id 截断 Warn）。裁决只影响物化板块内容：过滤文章、thread `confidence` 承载裁决置信度（默认 1.0）、`cluster_label` 取 LLM 当日标题（事实锚，不得编造）兑底 watch 名——不得改归属、不得推进生命周期、不得回刷历史板块。裁决失败（调用/解析/全幻觉）必须降级回退召回全量并 Warn，不得阻断日报；全剔不产空板块（sentence 话题自然衰减）；开关关闭时回退纯机械/向量聚合零 AI。：`daily_report_sections.cluster_label` SHALL 由当天实际内容派生——threads LLM 响应顶层 `section_title`（遵守事实锚与「不得复述聚类名/话题名」约束）为首选，SHALL NOT 默认取所挂话题 label 作展示标题（旧「标题冻结在话题创建时的事件名」是钉子户现象根源，2026-08 board 2128 实证）。兜底链固定：LLM 当日标题 → 首条 thread 标题 → 话题 label（命中时）→ 分组名，各级 Trim 后非空才胜出，超长按 200 runes 截断（列 size:200）。话题归属字段（persistent_topic_id / lane_tier / topic_match_*）与标题来源正交；历史 section 不回刷，前端时间线靠 persistent_topic_id 串联跨天演进。
+19. **缺档日报必须在本窗口内自动补档，只补缺不重建已有，队列未清则顺延不丢**：`DailyReportJob` 生成完当天报告后 SHALL 自动补档——前置条件为 tag 处理队列已清空（`tag_jobs` 无 `pending`/`leased`）；满足才在窗口 `[today-N, today)`（N=`tag_edge_retention_days`，默认 7，**不含今天**）内逐日 × 活跃板块检查 `(board, period_date)` 报告存在性，缺失才走既有 `GenerateAndSaveReport` 重建（幂等 upsert，只补缺、不重算已存在报告以免每晚烧 LLM）；队列未清空则本轮 SHALL 跳过补档、次日 21:00 再试，缺档在窗口内不因顺延丢失。窗口与标签边回收同键同口径，语义绑定：**边在 = 候选可信 = 可重建**。
+20. **超窗日期必须拒绝重建，generate API 与 TriggerNowWithDate 同口径（防空报告覆盖好报告）**：`POST /api/daily-reports/generate` 与调度器 `TriggerNowWithDate` 对 `date < today - N*24h`（N=`tag_edge_retention_days`，默认 7；恰好等于下界放行）SHALL 拒绝执行——API 返回 4xx、调度器 `accepted=false`，错误消息明示「标签边已按 N 天窗口回收、超窗日期候选不全，拒绝重建」。原因：同日重建是**整份覆盖**语义（约束 1），超窗日期边已回收、候选必然不全，重建只会用空报告覆盖既有好报告；窗口内日期的手动重建 SHALL 不受影响。
 
 ## 代码入口
 

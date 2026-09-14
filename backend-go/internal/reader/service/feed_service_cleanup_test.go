@@ -11,9 +11,11 @@ import (
 )
 
 // setupCleanupTestDB extends setupFeedsTestDB with the ReadingBehavior table
-// (archive cleanup deletes behavior rows), a search_vector column
-// (sqlite has none by default — the archive UPDATE nulls it on Postgres), and
-// the tagmanagement repository global (CleanupOrphanedTags reads it).
+// (archive cleanup deletes behavior rows), a search_vector column (sqlite has
+// none by default — the archive UPDATE nulls it on Postgres), and the
+// tagmanagement repository global. Archiving no longer removes tag edges or
+// runs CleanupOrphanedTags (orphan cleanup moved to the time-window EdgeGC),
+// but the global stays initialized for tagging-backed code paths.
 func setupCleanupTestDB(t *testing.T) {
 	t.Helper()
 	setupFeedsTestDB(t)
@@ -231,8 +233,9 @@ func TestCleanupOldArticlesClearsDerivedData(t *testing.T) {
 		t.Fatalf("create victim: %v", err)
 	}
 
-	// A tag referenced only by the victim (orphan after cleanup) and one also
-	// referenced by the keep article (must survive).
+	// One tag referenced only by the victim and one also referenced by the keep
+	// article. Archiving keeps both edges and both tags — orphan cleanup is the
+	// time-window EdgeGC's job now, not the archiving path's.
 	orphanTag := models.TopicTag{Label: "orphan-tag", Status: "active"}
 	sharedTag := models.TopicTag{Label: "shared-tag", Status: "active"}
 	if err := database.DB.Create(&orphanTag).Error; err != nil {
@@ -265,13 +268,14 @@ func TestCleanupOldArticlesClearsDerivedData(t *testing.T) {
 
 	service.CleanupOldArticles(&feed)
 
-	// Victim archived, edges/behaviors gone, search_vector nulled.
+	// Victim archived, behaviors gone, search_vector nulled — but its tag edges
+	// survive (late tagging tasks may even have added more).
 	var victimEdges int64
 	if err := database.DB.Model(&models.ArticleTopicTag{}).Where("article_id = ?", victim.ID).Count(&victimEdges).Error; err != nil {
 		t.Fatalf("count victim edges: %v", err)
 	}
-	if victimEdges != 0 {
-		t.Fatalf("victim edges = %d, want 0", victimEdges)
+	if victimEdges != 2 {
+		t.Fatalf("victim edges = %d, want 2 (archiving must not delete tag edges)", victimEdges)
 	}
 	var victimBehaviors int64
 	if err := database.DB.Model(&models.ReadingBehavior{}).Where("article_id = ?", victim.ID).Count(&victimBehaviors).Error; err != nil {
@@ -314,13 +318,14 @@ func TestCleanupOldArticlesClearsDerivedData(t *testing.T) {
 		t.Fatalf("keep behaviors = %d, want 1", keepBehaviors)
 	}
 
-	// Orphaned tag removed by CleanupOrphanedTags; shared tag survives.
+	// The victim-only tag survives: it still has an edge left, so it is not an
+	// orphan, and only the time-window GC would ever reclaim it.
 	var orphanCount int64
 	if err := database.DB.Model(&models.TopicTag{}).Where("id = ?", orphanTag.ID).Count(&orphanCount).Error; err != nil {
-		t.Fatalf("count orphan tag: %v", err)
+		t.Fatalf("count victim-only tag: %v", err)
 	}
-	if orphanCount != 0 {
-		t.Fatalf("orphan tag still exists after cleanup")
+	if orphanCount != 1 {
+		t.Fatalf("victim-only tag count = %d, want 1 (archiving must not clean orphans)", orphanCount)
 	}
 	var sharedCount int64
 	if err := database.DB.Model(&models.TopicTag{}).Where("id = ?", sharedTag.ID).Count(&sharedCount).Error; err != nil {

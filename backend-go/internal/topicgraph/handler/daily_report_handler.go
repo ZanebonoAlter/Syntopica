@@ -16,6 +16,7 @@ import (
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/ws"
+	tagging "syntopica-backend/internal/tagmanagement"
 	"syntopica-backend/internal/topicgraph/repository"
 	"syntopica-backend/internal/topicgraph/service"
 )
@@ -108,6 +109,21 @@ func triggerGenerateDailyReport(c *gin.Context) {
 		date = parsed
 	} else {
 		date = time.Now()
+	}
+
+	// Rebuild window guard (offline-catchup design D6): a date older than the
+	// tag edge retention window has had its edges reclaimed, so its candidate set
+	// is incomplete — rebuilding would overwrite a possibly good existing report
+	// with an empty one (same-day rebuild is a full replace). Shares the
+	// predicate + wording with the scheduler's TriggerNowWithDate.
+	retentionDays := tagging.LoadTagEdgeRetentionDays(repository.Repo.DB())
+	if service.IsDateOutsideRebuildWindow(date, time.Now(), retentionDays) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   service.RebuildWindowRejectionMessage(retentionDays),
+			"reason":  "out_of_retention_window",
+		})
+		return
 	}
 
 	jobID := uuid.New().String()

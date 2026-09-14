@@ -2,15 +2,24 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+
+	"syntopica-backend/internal/admin/repository"
+	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/aihealth"
 	"syntopica-backend/internal/platform/analysispause"
+	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/testutil"
+	tagging "syntopica-backend/internal/tagmanagement"
+	taggingrepo "syntopica-backend/internal/tagmanagement/repository"
 )
 
 // useHealthySnapshot installs a ready+healthy aihealth snapshot so IsPaused()
@@ -74,6 +83,79 @@ func TestPauseAware_SkipsWhenModelUnhealthy(t *testing.T) {
 	require.EqualValues(t, 0, atomic.LoadInt32(&called), "real job must NOT run when models are unhealthy")
 	require.NotNil(t, result)
 	require.True(t, strings.Contains(result.Summary, "model_unhealthy"), "summary should flag the health reason")
+}
+
+// TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused pins the maintenance-class
+// contract for aux_label_cleanup (offline-catchup step 6 / design D9 of
+// pause-analysis): tag edge GC is data hygiene, not analysis, so it MUST NOT sit
+// behind the PauseAware gate — otherwise a long AI outage would let the edge
+// table grow without bound exactly when nobody is watching.
+//
+// The assertion is structural + behavioral: runtime registers AuxLabelCleanupJob
+// bare (no PauseAware wrapper), so the raw job still reclaims edges while paused,
+// whereas the wrapped form used by analysis-class jobs is skipped.
+func TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:pause-auxgc-%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
+	require.NoError(t, err)
+
+	prevAdminRepo := repository.Repo
+	prevTaggingRepo := taggingrepo.Repo
+	prevDatabase := database.DB
+	repository.InitRepository(db)
+	tagging.InitRepository(db)
+	// analysispause.SetPaused persists through the platform database global.
+	database.DB = db
+	t.Cleanup(func() {
+		repository.Repo = prevAdminRepo
+		taggingrepo.Repo = prevTaggingRepo
+		database.DB = prevDatabase
+	})
+
+	require.NoError(t, db.AutoMigrate(
+		&models.Feed{},
+		&models.Article{},
+		&models.TopicTag{},
+		&models.ArticleTopicTag{},
+		&models.SemanticLabel{},
+		&models.TopicTagSemanticLabel{},
+		&models.BoardComposition{},
+		&models.AISettings{},
+	))
+
+	// An edge past the default 7-day window: the GC step must delete it.
+	pubDate := time.Now().AddDate(0, 0, -8)
+	feed := models.Feed{Title: "pause-auxgc", URL: "https://example.com/pause-auxgc"}
+	require.NoError(t, db.Create(&feed).Error)
+	article := models.Article{FeedID: feed.ID, Title: "expired", Link: "https://example.com/pause-auxgc/a", PubDate: &pubDate}
+	require.NoError(t, db.Create(&article).Error)
+	tag := models.TopicTag{Slug: "pause-auxgc", Label: "pause-auxgc", Category: models.TagCategoryEvent, Status: "active"}
+	require.NoError(t, db.Create(&tag).Error)
+	require.NoError(t, db.Create(&models.ArticleTopicTag{
+		ArticleID:  article.ID,
+		TopicTagID: tag.ID,
+		Source:     "llm",
+		CreatedAt:  time.Now().AddDate(0, 0, -8),
+	}).Error)
+
+	require.NoError(t, analysispause.SetPaused(true))
+	t.Cleanup(func() { _ = analysispause.SetPaused(false) })
+
+	// Analysis-class composition (what runtime does NOT do for this job): skipped.
+	skipped, err := PauseAware(AuxLabelCleanupJob)(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "paused", skipped.Data["skipped"], "PauseAware must gate analysis-class jobs")
+
+	// Maintenance-class composition (how runtime actually registers it): runs.
+	result, err := AuxLabelCleanupJob(context.Background())
+	require.NoError(t, err, "edge GC must keep running while analysis is paused")
+	require.NotNil(t, result)
+	require.NotContains(t, result.Data, "edge_gc_error")
+	require.EqualValues(t, 1, result.Data["edge_deleted_count"], "expired edge reclaimed during pause")
+	require.Contains(t, result.Summary, "reclaimed 1 tag edges")
+
+	var remaining int64
+	require.NoError(t, db.Model(&models.ArticleTopicTag{}).Where("topic_tag_id = ?", tag.ID).Count(&remaining).Error)
+	require.EqualValues(t, 0, remaining)
 }
 
 // TestPauseAware_RunsWhenNotPaused verifies the pass-through path: with the

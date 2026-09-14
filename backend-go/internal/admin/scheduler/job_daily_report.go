@@ -7,11 +7,26 @@ import (
 	"net/http"
 	"time"
 
+	repository "syntopica-backend/internal/admin/repository"
+	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/ws"
+	tagging "syntopica-backend/internal/tagmanagement"
 	daily_report "syntopica-backend/internal/topicgraph"
+	topicgraphrepo "syntopica-backend/internal/topicgraph/repository"
 )
+
+// generateAndSaveReport is the daily report generation entry point used by both
+// the main pass and the backfill scan. A package-level variable so tests can
+// substitute a stub: the real implementation drives the whole LLM pipeline.
+var generateAndSaveReport = daily_report.GenerateAndSaveReport
+
+// backfillScanTimeout bounds the backfill pass on its own budget. The main pass
+// owns the job's 30-minute context for today's reports; a shared budget would
+// leave the backfill of up to retentionDays × boards reports with whatever is
+// left (usually nothing), silently failing every generation.
+const backfillScanTimeout = 30 * time.Minute
 
 // NextDailyReportTime computes the next wall-clock time for the daily report.
 // It reads the configured HH:MM from AISettings (default "21:00") and returns
@@ -53,12 +68,15 @@ func DailyReportJob(targetDate ...time.Time) JobFunc {
 			return nil, fmt.Errorf("failed to collect board IDs: %w", err)
 		}
 
+		// baseCtx survives the main-pass timeout so the backfill gets its own
+		// budget instead of whatever the main pass left (< design D5).
+		baseCtx := ctx
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 		defer cancel()
 
 		reportCount := 0
 		for _, boardID := range boardIDs {
-			report, genErr := daily_report.GenerateAndSaveReport(ctx, boardID, date)
+			report, genErr := generateAndSaveReport(ctx, boardID, date)
 			if genErr != nil {
 				logging.Warnf("daily-report: generate/save failed for board %d: %v", boardID, genErr)
 				continue
@@ -79,16 +97,125 @@ func DailyReportJob(targetDate ...time.Time) JobFunc {
 		data, _ := json.Marshal(msg)
 		ws.GetHub().BroadcastRaw(data)
 
+		resultData := map[string]interface{}{
+			"report_count":   reportCount,
+			"trigger_source": "scheduled",
+			"started_at":     startTime.Format(time.RFC3339),
+			"finished_at":    time.Now().Format(time.RFC3339),
+		}
+		summary := fmt.Sprintf("generated %d reports for %s", reportCount, date.Format("2006-01-02"))
+
+		// Backfill is a scheduled-only follow-up: a manual TriggerNowWithDate is a
+		// deliberate single-date rebuild, not a sweep (design D5).
+		backfilled := 0
+		if len(targetDate) == 0 {
+			count, backfillData := backfillMissingReports(baseCtx, date)
+			backfilled = count
+			for key, value := range backfillData {
+				resultData[key] = value
+			}
+			summary = fmt.Sprintf("%s (backfilled %d)", summary, backfilled)
+		}
+		// Set last so the scheduled merge above cannot be overwritten by it.
+		resultData["backfilled_count"] = backfilled
+
 		return &JobResult{
-			Data: map[string]interface{}{
-				"report_count":   reportCount,
-				"trigger_source": "scheduled",
-				"started_at":     startTime.Format(time.RFC3339),
-				"finished_at":    time.Now().Format(time.RFC3339),
-			},
-			Summary: fmt.Sprintf("generated %d reports for %s", reportCount, date.Format("2006-01-02")),
+			Data:    resultData,
+			Summary: summary,
 		}, nil
 	}
+}
+
+// backfillMissingReports rebuilds the reports missing inside the retention
+// window (offline-catchup design D5).
+//
+// Precondition: the tagging queue must be drained. While tag_jobs still holds
+// pending/leased rows the resumed drain has not attached the missing edges yet,
+// so a backfill now would write reports with incomplete candidates. Skipping
+// the whole pass costs at most one day — the missing days are still inside the
+// window and the next run retries (顺延不丢).
+//
+// The scan covers [today-retentionDays, today-1] inclusive: today is already
+// produced by the main pass, and the window is the same
+// tag_edge_retention_days key the edge GC uses, so "an edge exists" and
+// "the day is rebuildable" can never drift apart.
+func backfillMissingReports(ctx context.Context, today time.Time) (int, map[string]interface{}) {
+	data := map[string]interface{}{}
+
+	pending, leased, err := countUnfinishedTagJobs()
+	if err != nil {
+		logging.Warnf("daily-report: backfill queue check failed: %v; skipping backfill this round", err)
+		data["backfill_skipped_reason"] = "tag_queue_check_failed"
+		return 0, data
+	}
+	if pending+leased > 0 {
+		logging.Warnf("daily-report: backfill deferred — tagging queue not drained (pending=%d leased=%d); retrying next run",
+			pending, leased)
+		data["backfill_skipped_reason"] = "tag_queue_not_empty"
+		data["backfill_pending_jobs"] = pending
+		data["backfill_leased_jobs"] = leased
+		return 0, data
+	}
+
+	retentionDays := tagging.LoadTagEdgeRetentionDays(repository.Repo.DB())
+
+	ctx, cancel := context.WithTimeout(ctx, backfillScanTimeout)
+	defer cancel()
+
+	backfilled := 0
+	start := today.AddDate(0, 0, -retentionDays)
+	end := today.AddDate(0, 0, -1)
+	for day := start; !day.After(end); day = day.AddDate(0, 0, 1) {
+		boardIDs, collectErr := daily_report.CollectBoardIDsForDate(day)
+		if collectErr != nil {
+			logging.Warnf("daily-report: backfill board collection failed for %s: %v", day.Format("2006-01-02"), collectErr)
+			continue
+		}
+		for _, boardID := range boardIDs {
+			exists, existsErr := topicgraphrepo.Repo.ReportExistsForBoardDate(boardID, day)
+			if existsErr != nil {
+				logging.Warnf("daily-report: backfill existence check failed for board %d on %s: %v",
+					boardID, day.Format("2006-01-02"), existsErr)
+				continue
+			}
+			if exists {
+				continue // 只补缺不重建已有：重生成是整条 LLM 流水线且会覆盖既有报告
+			}
+			report, genErr := generateAndSaveReport(ctx, boardID, day)
+			if genErr != nil {
+				logging.Warnf("daily-report: backfill failed for board %d on %s: %v",
+					boardID, day.Format("2006-01-02"), genErr)
+				continue // 单板块失败不阻塞兄弟板块
+			}
+			if report == nil {
+				continue
+			}
+			backfilled++
+		}
+	}
+
+	data["backfilled_count"] = backfilled
+	data["backfill_window_start"] = start.Format("2006-01-02")
+	data["backfill_window_end"] = end.Format("2006-01-02")
+	return backfilled, data
+}
+
+// countUnfinishedTagJobs counts the tag_jobs rows still awaiting processing:
+// pending (queued) and leased (in flight). Any of them means the drain has not
+// completed yet.
+func countUnfinishedTagJobs() (pending, leased int64, err error) {
+	db := repository.Repo.DB()
+	if err := db.Model(&models.TagJob{}).
+		Where("status = ?", models.JobStatusPending).
+		Count(&pending).Error; err != nil {
+		return 0, 0, fmt.Errorf("count pending tag jobs: %w", err)
+	}
+	if err := db.Model(&models.TagJob{}).
+		Where("status = ?", models.JobStatusLeased).
+		Count(&leased).Error; err != nil {
+		return 0, 0, fmt.Errorf("count leased tag jobs: %w", err)
+	}
+	return pending, leased, nil
 }
 
 // DailyReportSchedulerWrapper wraps BaseScheduler to add TriggerNowWithDate.
@@ -133,6 +260,22 @@ func (d *DailyReportSchedulerWrapper) TriggerNowWithDate(dateStr string) map[str
 			}
 		}
 		targetDate = parsed
+
+		// Rebuild window guard (design D6): a date older than the retention
+		// window has had its edges reclaimed, so rebuilding it would write an
+		// empty-candidate report over a possibly good existing one. Same
+		// predicate + wording as POST /api/daily-reports/generate.
+		retentionDays := tagging.LoadTagEdgeRetentionDays(repository.Repo.DB())
+		if daily_report.IsDateOutsideRebuildWindow(targetDate, time.Now(), retentionDays) {
+			d.ClearExecuting()
+			return map[string]interface{}{
+				"accepted":    false,
+				"started":     false,
+				"reason":      "out_of_retention_window",
+				"message":     daily_report.RebuildWindowRejectionMessage(retentionDays),
+				"status_code": http.StatusBadRequest,
+			}
+		}
 	}
 
 	go func() {

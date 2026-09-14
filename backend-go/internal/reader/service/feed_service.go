@@ -193,15 +193,10 @@ func (s *FeedService) CleanupOldArticles(feed *models.Feed) {
 		if len(toArchive) > 0 {
 			logging.Infof("[cleanup] feed %d: archiving %d articles, IDs=%v", feed.ID, len(toArchive), toArchive)
 
-			// Collect affected tag IDs before removing edges (orphan cleanup).
-			var affectedTagIDs []uint
-			repository.Repo.DB().Model(&models.ArticleTopicTag{}).
-				Where("article_id IN ?", toArchive).
-				Pluck("topic_tag_id", &affectedTagIDs)
-
-			// Derived data goes away; the row and its text fields stay.
+			// Behaviors go away; the row, its text fields and its
+			// article_topic_tags edges stay (edges are reclaimed by the
+			// time-window GC, not by archiving).
 			repository.Repo.DB().Where("article_id IN ?", toArchive).Delete(&models.ReadingBehavior{})
-			repository.Repo.DB().Where("article_id IN ?", toArchive).Delete(&models.ArticleTopicTag{})
 
 			// Archive the rows. search_vector is Postgres-only (tsvector) —
 			// sqlite test DBs lack the column, so guard the NULL assignment.
@@ -210,9 +205,6 @@ func (s *FeedService) CleanupOldArticles(feed *models.Feed) {
 				updates["search_vector"] = nil
 			}
 			repository.Repo.DB().Model(&models.Article{}).Where("id IN ?", toArchive).Updates(updates)
-
-			// Clean up TopicTags that became orphaned after edge removal
-			tagging.CleanupOrphanedTags(affectedTagIDs)
 		} else {
 			logging.Infof("[cleanup] feed %d: no articles to archive", feed.ID)
 		}

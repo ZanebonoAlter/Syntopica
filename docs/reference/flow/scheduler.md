@@ -21,19 +21,23 @@ Scheduler 解决「集中调度周期性后台任务」的问题。Syntopica 有
 | 注册名 | 中文名 | 触发 | 说明 |
 | ------ | ------ | ------ | ------ |
 | `log_cleanup` | 日志清理 | 86400s（启动延迟 5min） | 清理过期 `ai_call_logs` 与 `otel_spans` |
-| `aux_label_cleanup` | 辅助标签清理 | 3600s（启动延迟 10min） | 清理无活跃 topic_tag 引用的辅助标签 |
+| `aux_label_cleanup` | 辅助标签清理 | 3600s（启动延迟 10min） | 先按 `tag_edge_retention_days`（默认 7 天）回收超窗 `article_topic_tags` 边 + `CleanupOrphanedTags` 收孤儿，再清理无活跃 topic_tag 引用的辅助标签 |
 | `blocked_article_recovery` | 阻塞文章恢复 | 3600s | 恢复卡在 blocked 状态的文章 |
 | `preference_profile_update` | 偏好向量画像重算 | 3600s | 以 `reading_behaviors` 为权重源，按 SemanticBoard 聚合偏好向量（纯向量算术，零 LLM）；见 `flow/discovery.md` |
 | `rsshub_catalog_sync` | RSSHub 路由目录同步 | 每日 | 拉取自建 RSSHub 实例 `/api/namespace`，content_hash diff 入库 + 参数标记 + 增量可用性校验 + 新路由 embedding；见 `flow/discovery.md` |
 | `tag_quality_score` | 标签质量分重算 | 3600s | 重算 topic tags 的持久化质量分；并对账辅助标签 ref_count 与 topic tags 反规范化 feed_count（打标路径不增量维护，靠此周期重算） |
 | `auto_refresh` | Feed 自动刷新 | 60s | 刷新 `refresh_interval>0` 的 RSS feed，并种入后续链路状态位 |
 | `content_completion` | 内容补全（别名 `ai_summary`） | 60s | 补全文章内容 + 生成文章级整理稿；持久化任务名/别名均为 `ai_summary` |
-| `daily_report` | 日报生成 | 每日定时（TriggerNowWithDate 包装） | 为所有活跃版块生成日报（见 `flow/daily-report.md`） |
+| `daily_report` | 日报生成 | 每日定时（TriggerNowWithDate 包装） | 为所有活跃版块生成日报，生成完当天后自动补档保留窗口内缺档日期（队列空前置、只补缺、顺延次日，超窗日期重建被拒；见 `flow/daily-report.md`） |
 | `board_upgrade_suggest` | 版块升级建议 | 每日 06:30 固定点（松耦合） | discover_new 生成 + watch 观察池 GC，失败仅记日志 |
 | `firecrawl` | Firecrawl 全文抓取 | 300s | 自动抓取文章全文 |
 | `lifeline_weekly` | 生命线周度刷新 | 每周一 03:00（循环 A） | 刷新所有活跃话题的周度新闻汇总（含历史回填，见 `flow/data-enrichment.md`） |
 | `lifeline_monthly` | 生命线月度刷新 | 每月1号 03:30（循环 A） | 月度新闻汇总（含历史回填） |
 | `lifeline_yearly` | 生命线年度刷新 | 每年1月1号 04:00（循环 A） | 年度新闻汇总（含历史回填） |
+
+> **offline-catchup 之后两个 job 的口径变化**：
+> - **`aux_label_cleanup` 两步走**：① 标签边时间窗 GC——读 `ai_settings.tag_edge_retention_days`（缺失/非数字/≤0 回退默认 7 并 warn），删除 `created_at < now()-N*24h` 的 `article_topic_tags` 边（恰好等于下界不删），随后对受影响 topic tag 复用 `CleanupOrphanedTags` 收孤儿；② 原有 aux label GC（无活跃 topic_tag 引用则 disable）。**孤儿回收职责整体从归档路径移交到此**（归档不再删边，见 `flow/reading.md` 约束 6）。属维护类，不受 `analysis_paused` 门禁约束。
+> - **`daily_report` 自动补档**：生成完当天报告后，若 tag 队列无 pending/leased，则对窗口 `[today-N, today)`（N=`tag_edge_retention_days`，默认 7，不含今天）逐日 × 活跃板块检查 `(board, period_date)`，缺失才 `GenerateAndSaveReport` 重建（幂等 upsert，只补缺不重算已有）；队列未清则本轮跳过、次日 21:00 再试（缺档不丢）。`POST /api/daily-reports/generate` 与 `TriggerNowWithDate` 对 `date < today-N*24h` 一律拒绝（4xx / accepted=false，防空报告覆盖好报告）。
 
 > **已废弃 / 非调度器（旧清单误列，已删除）**：① 旧的独立 `auto_summary` 调度器 —— 已被 `content_completion`（兼容别名 `ai_summary`）取代；② 叙事摘要生成 / 叙事后处理 / 关注标签叙事维度总结 —— narrative 生成管线已废弃，生成能力并入日报（`daily_report`），watch 走日报的 `EvaluateWatchHits`，均非独立调度器；③ 标签自动合并 —— 改走 `merge-preview` 的 scan/evaluate SSE API（见 `flow/semantic-board.md`），非调度任务；④ SemanticBoard 匹配 —— tag 入库时同步触发（`semantic_board_matching.go`），非调度任务。
 
@@ -95,7 +99,7 @@ auto_refresh scheduler
 4. **单 job 失败默认标 task failed，松耦合 job 须吞 error 仅记日志、不阻塞同轮兄弟 job**：单个 job 执行失败默认标记 task failed；但**松耦合 job（如 board_upgrade_suggest、preference_profile_update、rsshub_catalog_sync）刻意吞掉 error 返回 nil**，仅记日志，不阻塞同轮兄弟 job（design D4）。`rsshub_catalog_sync` 实例不可达时仅记日志保留旧目录，推荐继续用存量目录。
 5. **auto_refresh 只扫描 refresh_interval > 0 的 feed，触发后先标 refresh_status=refreshing 再异步刷新**：只扫描 `refresh_interval > 0` 的 feed；触发后先标 `feed.refresh_status=refreshing` 防止重复触发，再异步 `RefreshFeed`。
 6. **auto_refresh 刷新文章时必须按 feed 开关预埋 firecrawl_status / summary_status 初始状态位**：`auto_refresh` 刷新文章时必须按 feed 开关（`firecrawl_enabled` / `article_summary_enabled`）种入 `firecrawl_status` / `summary_status` 初始位，否则后续 Firecrawl / 内容补全链路会漏处理。
-7. **analysis_paused 总闸开启时分析类 job 与 tag worker 池一律跳过不 lease（优雅停），auto_refresh 与维护类不受影响**：全局 `analysis_paused` 标志（存 `ai_settings`，重启保持）开启时，所有分析类调度 job（`content_completion` / `firecrawl` / `daily_report` / `board_upgrade_suggest` / `lifeline_weekly/monthly/yearly` / `tag_quality_score`）在 tick 自检直接返回 `skipped: analysis paused`、不 lease；tag worker 池（`TagQueue` / `EmbeddingQueue` / `MergeReembedding`）不消费队列。`auto_refresh`（入库）与维护类（`log_cleanup` / `aux_label_cleanup` / `blocked_article_recovery` / `rsshub_catalog_sync` / `preference_profile_update`）不受影响。优雅停：在跑批次跑完，不强杀。与 per-feed 的 `tagging_enabled`（分闸）共存——总闸关时分闸无效。开关经 `GET/POST /api/analysis/pause` 控制，前端顶部栏二态开关（`mdi:pause`↔`mdi:play`）+ favicon 暂停态 ⏸ 角标。
+7. **analysis_paused 总闸开启时分析类 job 与 tag worker 池一律跳过不 lease（优雅停），auto_refresh 与维护类不受影响**：全局 `analysis_paused` 标志（存 `ai_settings`，重启保持）开启时，所有分析类调度 job（`content_completion` / `firecrawl` / `daily_report` / `board_upgrade_suggest` / `lifeline_weekly/monthly/yearly` / `tag_quality_score`）在 tick 自检直接返回 `skipped: analysis paused`、不 lease；tag worker 池（`TagQueue` / `EmbeddingQueue` / `MergeReembedding`）不消费队列。`auto_refresh`（入库）与维护类（`log_cleanup` / `aux_label_cleanup`（含标签边时间窗回收 `tag_edge_retention_days`，同属维护类不受暂停门禁）/ `blocked_article_recovery` / `rsshub_catalog_sync` / `preference_profile_update`）不受影响。优雅停：在跑批次跑完，不强杀。与 per-feed 的 `tagging_enabled`（分闸）共存——总闸关时分闸无效。开关经 `GET/POST /api/analysis/pause` 控制，前端顶部栏二态开关（`mdi:pause`↔`mdi:play`）+ favicon 暂停态 ⏸ 角标。
 
     **健康门维度（ai-model-health-gate）**：暂停判定含健康门——`有效暂停 = 用户暂停 || NOT 健康`。健康由 `aihealth` 启动探活决定（宽松判定：≥1 embedding 路由主 provider 通 **且** ≥1 llm 路由主 provider 通）；启动竞态期快照未就绪 → healthy=false → 有效暂停、分析不 lease，探活完成后自动恢复。**用户开关/按钮/favicon/API 的 `analysis_paused` 仍只反映用户意图**（`UserPaused()`），不受健康影响；前端在「意图运行但 !健康」时顶部 banner 提示（见 §代码入口）。
 

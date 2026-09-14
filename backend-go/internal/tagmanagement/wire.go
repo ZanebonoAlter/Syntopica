@@ -44,6 +44,8 @@ type (
 	SemanticBoardMatchResult = service.SemanticBoardMatchResult
 	AuxLabelGCMode           = service.AuxLabelGCMode
 	AuxLabelGCRequest        = service.AuxLabelGCRequest
+	EdgeGCRequest            = service.EdgeGCRequest
+	EdgeGCResult             = service.EdgeGCResult
 )
 
 const (
@@ -51,6 +53,9 @@ const (
 	AuxLabelGCModeDisable     = service.AuxLabelGCModeDisable
 	AuxLabelGCModeDelete      = service.AuxLabelGCModeDelete
 	AuxLabelGCModeRecalculate = service.AuxLabelGCModeRecalculate
+
+	DefaultTagEdgeRetentionDays = service.DefaultTagEdgeRetentionDays
+	TagEdgeRetentionDaysKey     = service.TagEdgeRetentionDaysKey
 )
 
 // ============================================================================
@@ -71,6 +76,11 @@ var (
 	NormalizeDisplayCategory  = service.NormalizeDisplayCategory
 	RegisterVectorDimEnsurer  = service.RegisterVectorDimEnsurer
 	EnsureVectorDimensionOnce = service.EnsureVectorDimensionOnce
+)
+
+var (
+	EdgeGC                   = service.EdgeGC
+	LoadTagEdgeRetentionDays = service.LoadTagEdgeRetentionDays
 )
 
 var (

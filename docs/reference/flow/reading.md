@@ -116,8 +116,9 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
    - `TagQueue.Start()` 首次启动失败不阻塞应用，后台按 30 秒间隔重试最多 10 次。
 4. **Feed 图标必须按 auto/custom/fallback 状态机管理并本地落盘 data/icons/feeds/，不用文章封面、下载失败不影响 refresh**：`icon_source` ∈ `auto`（系统抓取，可刷新覆盖）/ `custom`（用户设定，RefreshFeed 不碰）/ `fallback`（占位，可刷新重算）。重算走候选管线（RSS image → 首页 HTML link → favicon.ico 猜测），**后端下载落盘 `data/icons/feeds/`、DB 存 `/icons/...` 同源路径**；不用文章封面图当 feed icon；icon 下载失败不影响 refresh 成功状态。删除 feed 时清理其 icon 文件（失败不阻断）。favicon 探测以 RSS channel link（站点首页）为基准，不用 feed URL（聚合器域名）或 Google s2 等第三方服务。
 5. **mdi:* 图标必须全部来自构建产物本地子集 iconify-subset.json，运行时零联网，新增图标须重新生成子集**：`mdi:*` 图标全部来自构建产物 `app/assets/iconify-subset.json`（`pnpm generate:icons` 生成并纳 git），运行时不访问 iconify API；源码新增图标名必须是子集的超集（一致性单测强制）。
-6. **文章超限必须归档降级而非物理删除，favorite 永不归档，归档行永久保留（article-archive-instead-of-delete）**：`CleanupOldArticles` 对超出 `max_articles` 的最旧非 favorite 文章执行**归档降级**（`archived=true`），不物理删除——行与全部文本字段永久保留（日报线索按 ID 反查依赖此语义）；归档同时清除衍生数据（`article_topic_tags` 边 + 孤儿 tag 清理、`reading_behaviors`、`search_vector` 置 NULL）。不变量：
+6. **文章超限必须归档降级而非物理删除，favorite 永不归档，归档行永久保留（article-archive-instead-of-delete）**：`CleanupOldArticles` 对超出 `max_articles` 的最旧非 favorite 文章执行**归档降级**（`archived=true`），不物理删除——行与全部文本字段永久保留（日报线索按 ID 反查依赖此语义）；归档清除的衍生数据仅限 `reading_behaviors` 删除与 `search_vector` 置 NULL，**MUST NOT 删除 `article_topic_tags` 标签边**（offline-catchup 起归档降为纯生命周期标志，删边与孤儿清理职责整体移交时间窗 GC）。不变量：
    - 活跃窗口计数与归档候选集**仅统计 `archived=false`**（归档行不得侵蚀窗口，否则每次刷新会误归档新文章）；
+   - **标签边保留窗从边创建时刻（打标落库时刻）起算**：迟到打标任务为已归档文章挂的边与普通边同窗保留，到期由 `aux_label_cleanup` 维护任务按 `tag_edge_retention_days`（默认 7 天）统一回收——不因归档即时消失、也不按归档位过滤；聚合消费方（日报候选、cotag 窗口、升级建议）继续按各自时间窗界定范围，不筛 `archived`（窗口口径见 `flow/scheduler.md`，日报补档消费见 `flow/daily-report.md`）。
    - RSS 去重（title dedupe）**含归档文章**（防老条目重复入库）；
    - reader 列表/全局统计/feed 统计默认过滤 `archived=false`，`GET /api/articles?archived=true` 显式查归档集；按文章 ID 的详情查询豁免过滤。
    - `max_articles=0` 或 `9999` 仍为无限制；favorite 永不归档。
