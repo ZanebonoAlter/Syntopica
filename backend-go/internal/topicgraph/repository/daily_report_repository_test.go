@@ -158,9 +158,25 @@ func seedTestBoard(t *testing.T, db *gorm.DB) uint {
 
 func seedTestReport(t *testing.T, db *gorm.DB, boardID uint, date time.Time) uint {
 	t.Helper()
+	// The (semantic_board_id, period_date) unique index (offline-catchup H2)
+	// makes repeat calls with the same board+day illegal. Tests that want
+	// several reports on "the same day" only care about the section rows, so
+	// nudge the day forward until the slot is free. String equality matches
+	// SaveReport's own lookup (the PG column is a DATE).
+	day := NormalizeReportDate(date)
+	for {
+		var taken int64
+		require.NoError(t, db.Model(&BoardDailyReport{}).
+			Where("semantic_board_id = ? AND period_date = ?", boardID, day.Format("2006-01-02")).
+			Count(&taken).Error)
+		if taken == 0 {
+			break
+		}
+		day = day.AddDate(0, 0, 1)
+	}
 	report := BoardDailyReport{
 		SemanticBoardID: boardID,
-		PeriodDate:      NormalizeReportDate(date),
+		PeriodDate:      day,
 		Title:           "Test Report",
 		Summary:         "Test Summary",
 		Status:          "completed",

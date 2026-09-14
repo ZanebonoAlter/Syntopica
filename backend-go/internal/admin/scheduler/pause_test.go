@@ -122,11 +122,12 @@ func TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused(t *testing.T) {
 		&models.AISettings{},
 	))
 
-	// An edge past the default 7-day window: the GC step must delete it.
+	// An edge past the default 7-day window on an ARCHIVED article: the GC
+	// step must delete it (M5-B: only archived articles' edges are reclaimed).
 	pubDate := time.Now().AddDate(0, 0, -8)
 	feed := models.Feed{Title: "pause-auxgc", URL: "https://example.com/pause-auxgc"}
 	require.NoError(t, db.Create(&feed).Error)
-	article := models.Article{FeedID: feed.ID, Title: "expired", Link: "https://example.com/pause-auxgc/a", PubDate: &pubDate}
+	article := models.Article{FeedID: feed.ID, Title: "expired", Link: "https://example.com/pause-auxgc/a", PubDate: &pubDate, Archived: true}
 	require.NoError(t, db.Create(&article).Error)
 	tag := models.TopicTag{Slug: "pause-auxgc", Label: "pause-auxgc", Category: models.TagCategoryEvent, Status: "active"}
 	require.NoError(t, db.Create(&tag).Error)

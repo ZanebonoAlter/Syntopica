@@ -36,8 +36,8 @@ Scheduler 解决「集中调度周期性后台任务」的问题。Syntopica 有
 | `lifeline_yearly` | 生命线年度刷新 | 每年1月1号 04:00（循环 A） | 年度新闻汇总（含历史回填） |
 
 > **offline-catchup 之后两个 job 的口径变化**：
-> - **`aux_label_cleanup` 两步走**：① 标签边时间窗 GC——读 `ai_settings.tag_edge_retention_days`（缺失/非数字/≤0 回退默认 7 并 warn），删除 `created_at < now()-N*24h` 的 `article_topic_tags` 边（恰好等于下界不删），随后对受影响 topic tag 复用 `CleanupOrphanedTags` 收孤儿；② 原有 aux label GC（无活跃 topic_tag 引用则 disable）。**孤儿回收职责整体从归档路径移交到此**（归档不再删边，见 `flow/reading.md` 约束 6）。属维护类，不受 `analysis_paused` 门禁约束。
-> - **`daily_report` 自动补档**：生成完当天报告后，若 tag 队列无 pending/leased，则对窗口 `[today-N, today)`（N=`tag_edge_retention_days`，默认 7，不含今天）逐日 × 活跃板块检查 `(board, period_date)`，缺失才 `GenerateAndSaveReport` 重建（幂等 upsert，只补缺不重算已有）；队列未清则本轮跳过、次日 21:00 再试（缺档不丢）。`POST /api/daily-reports/generate` 与 `TriggerNowWithDate` 对 `date < today-N*24h` 一律拒绝（4xx / accepted=false，防空报告覆盖好报告）。
+> - **`aux_label_cleanup` 两步走**：① 标签边时间窗 GC——读 `ai_settings.tag_edge_retention_days`（缺失/非数字/≤0 回退默认 7 并 warn），删除 `created_at` 早于保留窗口下界日（本地日历天零点 − N 天，日历天口径，与重建守卫/补档扫描同口径）的 `article_topic_tags` 边（仅归档文章；下界日当天全天保留），随后对受影响 topic tag 复用 `CleanupOrphanedTags` 收孤儿；② 原有 aux label GC（无活跃 topic_tag 引用则 disable）。**孤儿回收职责整体从归档路径移交到此**（归档不再删边，见 `flow/reading.md` 约束 6）。属维护类，不受 `analysis_paused` 门禁约束。
+> - **`daily_report` 自动补档**：生成完当天报告后，若 tag 队列无 pending/leased，则对窗口 `[today-N, today)`（N=`tag_edge_retention_days`，默认 7，不含今天）逐日 × 活跃板块检查 `(board, period_date)`，缺失才 `GenerateAndSaveReport` 重建（幂等 upsert，只补缺不重算已有）；队列未清则本轮跳过、次日 21:00 再试（缺档不丢）。`POST /api/daily-reports/generate` 与 `TriggerNowWithDate` 对 `date` 早于保留窗口下界日（本地日历天零点 − N 天，与边 GC 同口径）一律拒绝（4xx / accepted=false，防空报告覆盖好报告）。
 
 > **已废弃 / 非调度器（旧清单误列，已删除）**：① 旧的独立 `auto_summary` 调度器 —— 已被 `content_completion`（兼容别名 `ai_summary`）取代；② 叙事摘要生成 / 叙事后处理 / 关注标签叙事维度总结 —— narrative 生成管线已废弃，生成能力并入日报（`daily_report`），watch 走日报的 `EvaluateWatchHits`，均非独立调度器；③ 标签自动合并 —— 改走 `merge-preview` 的 scan/evaluate SSE API（见 `flow/semantic-board.md`），非调度任务；④ SemanticBoard 匹配 —— tag 入库时同步触发（`semantic_board_matching.go`），非调度任务。
 

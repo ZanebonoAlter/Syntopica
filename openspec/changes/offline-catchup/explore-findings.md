@@ -15,10 +15,18 @@ openspec change offline-catchup（停机恢复补全）已验证的代码锚点�
 
 **共享配置契约**（三处同口径：EdgeGC 窗口 / 补档扫描窗 / 守卫下界）：键 `tag_edge_retention_days`，默认 7，缺失/非法/≤0 回退默认+warn。建议 tagmanagement 导出 `LoadTagEdgeRetentionDays(db) int` 类 helper 供 tagmanagement/admin/scheduler/topicgraph/handler 三方调用（tagmanagement 不 import admin，用 db 直查 models.AISettings）。
 
-**边界口径**（test-cases.md 已定）：删边条件 `created_at < now()-N*24h`（恰好 N 天不删）；守卫 `date < today-N*24h` 拒绝（date==下界放行）；补档扫描 (today-N, today) 不含今天；队列 pending/leased 任一存在即跳过补档顺延。
+**边界口径**（test-cases.md 已定）：删边条件 `created_at < 本地当天零点 − N 天`（日历天口径，D=today-N 当天全保留）；守卫 `date < today−N 天（日历天）` 拒绝（date==下界放行）；补档扫描 (today-N, today) 不含今天；队列 pending/leased 任一存在即跳过补档顺延；failed 不阻断只计数告警。
 
 **测试 harness**：reader/service 与 tagmanagement service 层测试用 SQLite（`setupCleanupTestDB` 模式：setupFeedsTestDB + tagging.InitRepository + AutoMigrate 补表）；scheduler job 测试先例 `job_firecrawl_test.go`/`pause_test.go`；handler 用 httptest。既有测试 `TestCleanupOldArticlesClearsDerivedData`（feed_service_cleanup_test.go:219）断言旧契约需反转（见 test-cases.md 继承与调整表）。
 
 **并发态势**：本次目标文件全部干净；脏文件属其他 5 个 active change（ai-health-heartbeat-reprobe / improve-discovery-recommendations / expand-upgrade-days-window 等），不碰。
 
 <!-- pinned 2026-09-14T01:47:23Z -->
+
+## M5-B: EdgeGC 仅回收已归档文章的边
+
+review M5-B（用户拍板）落地：`backend-go/internal/tagmanagement/service/core/edge_gc.go` 新增包级 const `archivedArticleEdgePredicate = "article_id IN (SELECT id FROM articles WHERE archived = ?)"`，在 EdgeGC 的**两处**谓词同时挂 `.Where(..., true)`——受影响 tag 的 Pluck（原 L96-101）与 Delete（原 L107）。语义：未归档文章的边永不回收，归档后才进入 N 天倒计时（活跃文章在分析面，阅读页标签角标/过滤直接消费边）。`countOrphanedTags`/`CleanupOrphanedTags` 谓词不动（全部边不论归档位），故存活的自归档外边会保住 tag。测试侧 `edge_gc_test.go` 新增 `seedArchivedArticle` 助手（seedArticle + Update archived=true），删除类用例文章全部改已归档；新增 `TestEdgeGCKeepsEdgesOfUnarchivedArticles`（含已归档对照边，证明 GC 真跑了）与 `TestEdgeGCUnarchivedEdgesDoNotAffectSharedTag`（混合边，AffectedTags/OrphanedTags 计数不被未归档边污染，tag 存活）。变异验证：把 const 改成 `"1 = ?"` 时两条新用例全 FAIL（断言有效）。连带 fixture 调整：`internal/admin/scheduler/pause_test.go` 的 `TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused` 文章补 `Archived: true`（否则新契约下 edge_deleted_count 期望 1 实得 0）。
+
+**引用**：backend-go/internal/tagmanagement/service/core/edge_gc.go:archivedArticleEdgePredicate、backend-go/internal/tagmanagement/service/core/edge_gc.go:EdgeGC、backend-go/internal/tagmanagement/service/core/edge_gc_test.go:TestEdgeGCKeepsEdgesOfUnarchivedArticles、backend-go/internal/tagmanagement/service/core/edge_gc_test.go:seedArchivedArticle、backend-go/internal/admin/scheduler/pause_test.go:TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused
+
+<!-- pinned 2026-09-14T15:39:50Z -->

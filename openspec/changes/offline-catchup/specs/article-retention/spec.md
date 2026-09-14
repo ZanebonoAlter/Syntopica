@@ -19,13 +19,19 @@
 
 ### Requirement: 标签边时间窗回收
 
-系统 SHALL 按可配置的保留窗口（`ai_settings` 键 `tag_edge_retention_days`，默认 7 天，缺失/非法/非正值回退默认并记 warn）回收 `article_topic_tags`：周期性删除 `created_at` 早于 `now()-窗口` 的边，随后对受影响的 topic tag 复用既有 `CleanupOrphanedTags` 清理孤儿。窗口从边创建时刻（打标落库时刻）起算。回收 SHALL 由既有维护类调度任务承载（随 aux label 清理任务执行），SHALL NOT 依赖 AI 健康（不受分析暂停门禁约束）。标签聚合消费方（日报候选、cotag 窗口、升级建议）继续按各自时间窗界定范围，不按归档位过滤。
+系统 SHALL 按可配置的保留窗口（`ai_settings` 键 `tag_edge_retention_days`，默认 7 天，缺失/非法/非正值回退默认并记 warn）回收 `article_topic_tags`：周期性删除 `created_at` 早于「当天（本地时区）零点减窗口天数」的边（日历天口径，与日报补档扫描、重建守卫同键同口径，防边界日击穿），随后对受影响的 topic tag 复用既有 `CleanupOrphanedTags` 清理孤儿。回收范围 SHALL 限于**已归档文章**的边（删边与受影响 tag 收集的谓词同时要求 `article_id IN (SELECT id FROM articles WHERE archived = true)`）：未归档文章的边 MUST NOT 被回收，归档后才进入窗口倒计时——活跃文章仍在分析面上，其标签是活数据（阅读页标签角标/过滤直接消费边）。窗口从边创建时刻（打标落库时刻）起算。回收 SHALL 由既有维护类调度任务承载（随 aux label 清理任务执行），SHALL NOT 依赖 AI 健康（不受分析暂停门禁约束）。标签聚合消费方（日报候选、cotag 窗口、升级建议）继续按各自时间窗界定范围，不按归档位过滤。
 
 #### Scenario: 超窗边被回收
 
-- **GIVEN** 某标签边 created_at 为 8 天前，保留窗口 7 天
+- **GIVEN** 已归档文章的标签边 created_at 为 8 天前，保留窗口 7 天
 - **WHEN** 回收任务执行
 - **THEN** 该边被删除，若其 topic tag 因此无任何剩余边则被孤儿清理回收
+
+#### Scenario: 未归档文章的超窗边保留
+
+- **GIVEN** 未归档文章的标签边 created_at 为 8 天前，保留窗口 7 天
+- **WHEN** 回收任务执行
+- **THEN** 该边保留，且仅靠该边存活的 topic tag 不被孤儿清理回收（归档后才进入窗口倒计时）
 
 #### Scenario: 窗口内边保留供补档消费
 

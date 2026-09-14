@@ -142,11 +142,18 @@ func DailyReportJob(targetDate ...time.Time) JobFunc {
 func backfillMissingReports(ctx context.Context, today time.Time) (int, map[string]interface{}) {
 	data := map[string]interface{}{}
 
-	pending, leased, err := countUnfinishedTagJobs()
+	pending, leased, failed, err := countUnfinishedTagJobs()
 	if err != nil {
 		logging.Warnf("daily-report: backfill queue check failed: %v; skipping backfill this round", err)
 		data["backfill_skipped_reason"] = "tag_queue_check_failed"
 		return 0, data
+	}
+	// failed jobs do NOT block the backfill (a permanently failing article must
+	// not freeze the catch-up forever), but their edges are missing, so the
+	// candidate set may be incomplete — report the count and say so.
+	data["backfill_failed_jobs"] = failed
+	if failed > 0 {
+		logging.Warnf("daily-report: %d tag job(s) failed; their articles may lack edges, so this backfill round's candidates may be incomplete", failed)
 	}
 	if pending+leased > 0 {
 		logging.Warnf("daily-report: backfill deferred — tagging queue not drained (pending=%d leased=%d); retrying next run",
@@ -166,6 +173,15 @@ func backfillMissingReports(ctx context.Context, today time.Time) (int, map[stri
 	start := today.AddDate(0, 0, -retentionDays)
 	end := today.AddDate(0, 0, -1)
 	for day := start; !day.After(end); day = day.AddDate(0, 0, 1) {
+		// Budget guard: the scan shares the job context, and each day can cost
+		// several LLM pipeline runs. Once the budget is gone there is no point
+		// starting another day — defer the rest to the next run (顺延不丢).
+		if ctx.Err() != nil {
+			remainingDays := int(end.Sub(day).Hours()/24) + 1
+			logging.Warnf("daily-report: backfill budget exhausted after %s; %d day(s) remaining deferred to the next run",
+				day.Format("2006-01-02"), remainingDays)
+			break
+		}
 		boardIDs, collectErr := daily_report.CollectBoardIDsForDate(day)
 		if collectErr != nil {
 			logging.Warnf("daily-report: backfill board collection failed for %s: %v", day.Format("2006-01-02"), collectErr)
@@ -200,22 +216,28 @@ func backfillMissingReports(ctx context.Context, today time.Time) (int, map[stri
 	return backfilled, data
 }
 
-// countUnfinishedTagJobs counts the tag_jobs rows still awaiting processing:
-// pending (queued) and leased (in flight). Any of them means the drain has not
-// completed yet.
-func countUnfinishedTagJobs() (pending, leased int64, err error) {
+// countUnfinishedTagJobs counts the tag_jobs rows awaiting processing: pending
+// (queued) and leased (in flight), plus failed (terminally broken). Any
+// pending/leased row means the drain has not completed yet; failed is reported
+// separately because it never drains and must not block the catch-up.
+func countUnfinishedTagJobs() (pending, leased, failed int64, err error) {
 	db := repository.Repo.DB()
 	if err := db.Model(&models.TagJob{}).
 		Where("status = ?", models.JobStatusPending).
 		Count(&pending).Error; err != nil {
-		return 0, 0, fmt.Errorf("count pending tag jobs: %w", err)
+		return 0, 0, 0, fmt.Errorf("count pending tag jobs: %w", err)
 	}
 	if err := db.Model(&models.TagJob{}).
 		Where("status = ?", models.JobStatusLeased).
 		Count(&leased).Error; err != nil {
-		return 0, 0, fmt.Errorf("count leased tag jobs: %w", err)
+		return 0, 0, 0, fmt.Errorf("count leased tag jobs: %w", err)
 	}
-	return pending, leased, nil
+	if err := db.Model(&models.TagJob{}).
+		Where("status = ?", models.JobStatusFailed).
+		Count(&failed).Error; err != nil {
+		return 0, 0, 0, fmt.Errorf("count failed tag jobs: %w", err)
+	}
+	return pending, leased, failed, nil
 }
 
 // DailyReportSchedulerWrapper wraps BaseScheduler to add TriggerNowWithDate.

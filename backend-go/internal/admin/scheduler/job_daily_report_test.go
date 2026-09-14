@@ -276,6 +276,50 @@ func TestDailyReportJobBackfillSkipsExistingReports(t *testing.T) {
 	}
 }
 
+// H2: the (semantic_board_id, period_date) unique index rejects a second row
+// for the same board and day — the DB-level backstop behind SaveReport's
+// find-then-create upsert now that the backfill scan is a second writer.
+func TestBoardDailyReportUniqueIndexRejectsDuplicateBoardDate(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	day := midnightLocal(time.Now())
+
+	seedExistingReport(t, db, 42, day, "first")
+
+	err := db.Create(&topicgraphrepo.BoardDailyReport{
+		SemanticBoardID: 42,
+		PeriodDate:      topicgraphrepo.NormalizeReportDate(day),
+		Title:           "duplicate",
+		Status:          "completed",
+	}).Error
+	require.Error(t, err, "a second report for the same (board, day) must be rejected")
+}
+
+// M1: failed tag jobs are surfaced in JobResult but never block the backfill
+// (their articles may simply have no edges yet — a permanently failing job must
+// not freeze the catch-up forever).
+func TestDailyReportJobBackfillReportsFailedJobsWithoutBlocking(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+
+	gapDay := today.AddDate(0, 0, -2)
+	seedReportBoardsForDate(t, db, gapDay, 9)
+	require.NoError(t, db.Create(&models.TagJob{
+		ArticleID:   1,
+		Status:      string(models.JobStatusFailed),
+		AvailableAt: time.Now(),
+	}).Error)
+
+	stub := stubDailyReportGeneration(t, db)
+
+	result, err := DailyReportJob()(context.Background())
+	require.NoError(t, err)
+
+	require.EqualValues(t, 1, result.Data["backfill_failed_jobs"])
+	require.NotContains(t, result.Data, "backfill_skipped_reason", "failed jobs must not defer the backfill")
+	require.EqualValues(t, 1, result.Data["backfilled_count"])
+	require.Len(t, stub.snapshot(), 1, "the missing gap day is still rebuilt")
+}
+
 // Scenario「调度器指定日期触发同口径」+ 边界「date == 下界放行」: the scheduler's
 // TriggerNowWithDate uses the same window (and wording) as the HTTP handler, and
 // the boundary day itself stays rebuildable.

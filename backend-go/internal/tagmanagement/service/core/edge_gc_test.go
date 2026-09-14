@@ -55,6 +55,19 @@ func seedEdgeGCEdge(t *testing.T, db *gorm.DB, articleID, tagID uint, createdAt 
 	return edge
 }
 
+// seedArchivedArticle creates an article that has aged out of its feed's
+// active window. Edge GC only reclaims edges of archived articles (review
+// M5-B), so every deletion case needs the article archived.
+func seedArchivedArticle(t *testing.T, db *gorm.DB, feedID uint) models.Article {
+	t.Helper()
+	article := seedArticle(t, db, feedID)
+	require.NoError(t, db.Model(&models.Article{}).
+		Where("id = ?", article.ID).
+		Update("archived", true).Error, "archive article")
+	article.Archived = true
+	return article
+}
+
 func countEdgeGCEdges(t *testing.T, db *gorm.DB, tagID uint) int64 {
 	t.Helper()
 	var count int64
@@ -69,13 +82,19 @@ func countEdgeGCTags(t *testing.T, db *gorm.DB, tagID uint) int64 {
 	return count
 }
 
-// Scenario: 超窗边被回收 — the expired edge goes away and the tag left without
-// any edge is reclaimed by CleanupOrphanedTags.
+// startOfDayEdgeGC is the local-midnight anchor the edge GC cutoff is built
+// from (calendar-day window, review H1).
+func startOfDayEdgeGC(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+// Scenario: 超窗边被回收 — the expired edge of an ARCHIVED article goes away and
+// the tag left without any edge is reclaimed by CleanupOrphanedTags.
 func TestEdgeGCRemovesExpiredEdgesAndOrphanTags(t *testing.T) {
 	db := setupEdgeGCTestDB(t)
 	now := time.Now()
 	feed := seedFeed(t, db)
-	article := seedArticle(t, db, feed.ID)
+	article := seedArchivedArticle(t, db, feed.ID)
 	orphanTag := seedTag(t, db, "edge-gc-orphan", "llm")
 	seedEdgeGCEdge(t, db, article.ID, orphanTag.ID, now.Add(-8*24*time.Hour))
 
@@ -86,7 +105,7 @@ func TestEdgeGCRemovesExpiredEdgesAndOrphanTags(t *testing.T) {
 	assert.Equal(t, 1, result.AffectedTags)
 	assert.Equal(t, 1, result.OrphanedTags)
 	assert.Equal(t, 7, result.RetentionDays)
-	assert.Equal(t, now.Add(-7*24*time.Hour), result.Cutoff)
+	assert.Equal(t, startOfDayEdgeGC(now).AddDate(0, 0, -7), result.Cutoff, "cutoff is local midnight of today minus N days")
 	assert.EqualValues(t, 0, countEdgeGCEdges(t, db, orphanTag.ID))
 	assert.EqualValues(t, 0, countEdgeGCTags(t, db, orphanTag.ID), "orphan tag must be reclaimed")
 }
@@ -99,8 +118,8 @@ func TestEdgeGCKeepsTagWithRemainingEdge(t *testing.T) {
 	feed := seedFeed(t, db)
 	// One edge per (article, tag) pair — the unique index forbids duplicates,
 	// so extra edges for the same tag come from extra articles.
-	oldArticle := seedArticle(t, db, feed.ID)
-	freshArticle := seedArticle(t, db, feed.ID)
+	oldArticle := seedArchivedArticle(t, db, feed.ID)
+	freshArticle := seedArchivedArticle(t, db, feed.ID)
 
 	orphanTag := seedTag(t, db, "edge-gc-doomed", "llm")
 	survivorTag := seedTag(t, db, "edge-gc-survivor", "llm")
@@ -123,8 +142,9 @@ func TestEdgeGCKeepsTagWithRemainingEdge(t *testing.T) {
 	assert.Equal(t, keptEdge.ID, remaining.ID)
 }
 
-// Scenario: 窗口内边保留供补档消费 + boundary: created_at == now-7d survives
-// (strictly-less-than delete), created_at == now-7d-1ms is deleted, 8d is gone.
+// Scenario: 窗口内边保留供补档消费 + calendar-day boundary (review H1): the whole
+// lower-bound day D = today-7d survives (any clock time on D), while D-1 is
+// deleted — same window the rebuild guard and the backfill scan use.
 func TestEdgeGCWindowBoundaryKeepsInWindowEdges(t *testing.T) {
 	db := setupEdgeGCTestDB(t)
 	now := time.Now()
@@ -133,20 +153,23 @@ func TestEdgeGCWindowBoundaryKeepsInWindowEdges(t *testing.T) {
 	otherTag := seedTag(t, db, "edge-gc-anchor", "llm")
 
 	// Distinct articles: one edge per (article, tag) pair.
-	cutoff := now.Add(-7 * 24 * time.Hour)
-	exact := seedEdgeGCEdge(t, db, seedArticle(t, db, feed.ID).ID, tag.ID, cutoff)
-	justOutside := seedEdgeGCEdge(t, db, seedArticle(t, db, feed.ID).ID, tag.ID, cutoff.Add(-time.Millisecond))
-	wellOutside := seedEdgeGCEdge(t, db, seedArticle(t, db, feed.ID).ID, tag.ID, now.Add(-8*24*time.Hour))
-	fresh := seedEdgeGCEdge(t, db, seedArticle(t, db, feed.ID).ID, tag.ID, now.Add(-24*time.Hour))
+	// cutoff = 00:00 of day D (D = today-7d); the window is [cutoff, now].
+	// Every article is archived, which is the precondition for reclaiming.
+	cutoff := startOfDayEdgeGC(now).AddDate(0, 0, -7)
+	inWindowEarly := seedEdgeGCEdge(t, db, seedArchivedArticle(t, db, feed.ID).ID, tag.ID, cutoff.Add(time.Hour))
+	inWindowSameClock := seedEdgeGCEdge(t, db, seedArchivedArticle(t, db, feed.ID).ID, tag.ID, now.AddDate(0, 0, -7))
+	outOfWindowLate := seedEdgeGCEdge(t, db, seedArchivedArticle(t, db, feed.ID).ID, tag.ID, cutoff.Add(-time.Millisecond))
+	outOfWindowSameClock := seedEdgeGCEdge(t, db, seedArchivedArticle(t, db, feed.ID).ID, tag.ID, now.Add(-8*24*time.Hour))
+	fresh := seedEdgeGCEdge(t, db, seedArchivedArticle(t, db, feed.ID).ID, tag.ID, now.Add(-24*time.Hour))
 	// Keep a second tag so the tag itself is not reclaimed and the edge set
 	// stays inspectable.
-	seedEdgeGCEdge(t, db, seedArticle(t, db, feed.ID).ID, otherTag.ID, now.Add(-8*24*time.Hour))
+	seedEdgeGCEdge(t, db, seedArchivedArticle(t, db, feed.ID).ID, otherTag.ID, now.Add(-8*24*time.Hour))
 
 	result, err := EdgeGC(context.Background(), EdgeGCRequest{RetentionDays: 7, Now: now})
 	require.NoError(t, err)
 
-	// justOutside + wellOutside + the anchor tag's expired edge.
-	assert.EqualValues(t, 3, result.DeletedEdges, "only the strictly-older edges go")
+	// outOfWindowLate + outOfWindowSameClock + the anchor tag's expired edge.
+	assert.EqualValues(t, 3, result.DeletedEdges, "only edges before the lower-bound day go")
 	assert.EqualValues(t, 0, countEdgeGCEdges(t, db, otherTag.ID))
 
 	var survivors []uint
@@ -154,9 +177,10 @@ func TestEdgeGCWindowBoundaryKeepsInWindowEdges(t *testing.T) {
 		Where("topic_tag_id = ?", tag.ID).
 		Order("id ASC").
 		Pluck("id", &survivors).Error)
-	assert.Equal(t, []uint{exact.ID, fresh.ID}, survivors)
-	assert.NotContains(t, survivors, justOutside.ID)
-	assert.NotContains(t, survivors, wellOutside.ID)
+	assert.Equal(t, []uint{inWindowEarly.ID, inWindowSameClock.ID, fresh.ID}, survivors,
+		"every edge created on day D or later must survive")
+	assert.NotContains(t, survivors, outOfWindowLate.ID)
+	assert.NotContains(t, survivors, outOfWindowSameClock.ID)
 }
 
 // Scenario: 配置非法回退默认 — missing / non-numeric / empty / 0 / negative all
@@ -187,11 +211,11 @@ func TestEdgeGCLoadTagEdgeRetentionDaysFallback(t *testing.T) {
 
 			assert.Equal(t, tc.want, LoadTagEdgeRetentionDays(db))
 
-			// The fallback must not stop the pass: an edge past the effective
-			// window still dies.
+			// The fallback must not stop the pass: an edge of an archived article
+			// past the effective window still dies.
 			now := time.Now()
 			feed := seedFeed(t, db)
-			article := seedArticle(t, db, feed.ID)
+			article := seedArchivedArticle(t, db, feed.ID)
 			tag := seedTag(t, db, "edge-gc-cfg-"+tc.name, "llm")
 			seedEdgeGCEdge(t, db, article.ID, tag.ID, now.Add(-time.Duration(tc.want+1)*24*time.Hour))
 
@@ -210,7 +234,7 @@ func TestEdgeGCIdempotentSecondRunDeletesNothing(t *testing.T) {
 	db := setupEdgeGCTestDB(t)
 	now := time.Now()
 	feed := seedFeed(t, db)
-	article := seedArticle(t, db, feed.ID)
+	article := seedArchivedArticle(t, db, feed.ID)
 	doomed := seedTag(t, db, "edge-gc-idem-doomed", "llm")
 	keeper := seedTag(t, db, "edge-gc-idem-keeper", "llm")
 	seedEdgeGCEdge(t, db, article.ID, doomed.ID, now.Add(-30*24*time.Hour))
@@ -234,4 +258,69 @@ func TestEdgeGCIdempotentSecondRunDeletesNothing(t *testing.T) {
 
 func strPtrEdgeGC(s string) *string {
 	return &s
+}
+
+// Scenario: 未归档文章的超窗边保留 (review M5-B) — the M5-B scope change. An edge
+// past the window survives while its article is still unarchived, and the tag
+// hanging only off that edge is not reclaimable either. The archived control
+// tag proves the pass really ran (its expired edge dies) rather than no-oping.
+func TestEdgeGCKeepsEdgesOfUnarchivedArticles(t *testing.T) {
+	db := setupEdgeGCTestDB(t)
+	now := time.Now()
+	feed := seedFeed(t, db)
+
+	// Live article: expired edge, but never archived → kept.
+	liveArticle := seedArticle(t, db, feed.ID)
+	liveTag := seedTag(t, db, "edge-gc-live", "llm")
+	liveEdge := seedEdgeGCEdge(t, db, liveArticle.ID, liveTag.ID, now.Add(-8*24*time.Hour))
+
+	// Archived control: same age, same window → reclaimed.
+	archivedArticle := seedArchivedArticle(t, db, feed.ID)
+	archivedTag := seedTag(t, db, "edge-gc-archived-control", "llm")
+	seedEdgeGCEdge(t, db, archivedArticle.ID, archivedTag.ID, now.Add(-8*24*time.Hour))
+
+	result, err := EdgeGC(context.Background(), EdgeGCRequest{RetentionDays: 7, Now: now})
+	require.NoError(t, err)
+
+	assert.Equal(t, 7, result.RetentionDays)
+	assert.EqualValues(t, 1, result.DeletedEdges, "only the archived article's expired edge goes")
+	assert.Equal(t, 1, result.AffectedTags)
+	assert.Equal(t, 1, result.OrphanedTags)
+
+	assert.EqualValues(t, 1, countEdgeGCEdges(t, db, liveTag.ID), "unarchived article's edge must survive the window")
+	assert.EqualValues(t, 1, countEdgeGCTags(t, db, liveTag.ID), "tag kept alive by a surviving unarchived edge must not be reclaimed")
+
+	var remaining models.ArticleTopicTag
+	require.NoError(t, db.Where("topic_tag_id = ?", liveTag.ID).First(&remaining).Error)
+	assert.Equal(t, liveEdge.ID, remaining.ID)
+
+	assert.EqualValues(t, 0, countEdgeGCEdges(t, db, archivedTag.ID))
+	assert.EqualValues(t, 0, countEdgeGCTags(t, db, archivedTag.ID))
+}
+
+// M5-B applies to the tag collection step as well: an edge whose article is
+// unarchived must not be reported (or treated) as affected even when another
+// archived article shares the tag — the tag is only "affected" when a live
+// edge of its own is actually removed.
+func TestEdgeGCUnarchivedEdgesDoNotAffectSharedTag(t *testing.T) {
+	db := setupEdgeGCTestDB(t)
+	now := time.Now()
+	feed := seedFeed(t, db)
+	sharedTag := seedTag(t, db, "edge-gc-shared", "llm")
+
+	// Expired edges only, on one archived and one unarchived article.
+	seedEdgeGCEdge(t, db, seedArchivedArticle(t, db, feed.ID).ID, sharedTag.ID, now.Add(-10*24*time.Hour))
+	liveEdge := seedEdgeGCEdge(t, db, seedArticle(t, db, feed.ID).ID, sharedTag.ID, now.Add(-9*24*time.Hour))
+
+	result, err := EdgeGC(context.Background(), EdgeGCRequest{RetentionDays: 7, Now: now})
+	require.NoError(t, err)
+
+	assert.EqualValues(t, 1, result.DeletedEdges)
+	assert.Equal(t, 1, result.AffectedTags)
+	assert.Equal(t, 0, result.OrphanedTags, "the surviving unarchived edge keeps the tag alive")
+	assert.EqualValues(t, 1, countEdgeGCTags(t, db, sharedTag.ID))
+
+	var remaining models.ArticleTopicTag
+	require.NoError(t, db.Where("topic_tag_id = ?", sharedTag.ID).First(&remaining).Error)
+	assert.Equal(t, liveEdge.ID, remaining.ID)
 }

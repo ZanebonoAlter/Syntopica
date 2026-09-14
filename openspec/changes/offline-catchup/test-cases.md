@@ -1,6 +1,6 @@
 # Test Cases: offline-catchup
 
-> 复杂档白盒+故事测试用例文档。测试单元 = Requirement 的用户故事，本表由 specs 12 个 Scenario 串成完整故事；spec Scenario 只是断言片段，交付账本在故事层。
+> 复杂档白盒+故事测试用例文档。测试单元 = Requirement 的用户故事，本表由 specs 13 个 Scenario 串成完整故事；spec Scenario 只是断言片段，交付账本在故事层。
 
 ## 主链路故事
 
@@ -13,15 +13,16 @@
 | 1 | 文章超限归档 | article-retention/MODIFIED「衍生数据清除」 | behaviors 删、search_vector NULL、**article_topic_tags 边保留**（含迟到打标挂的边） | service (SQLite) | `internal/reader/service/feed_service_cleanup_test.go`（改造既有） |
 | 2 | 归档文章搜索不可见 | 同上「归档文章不被全文搜索命中」 | 不出现在搜索结果（语义不变，防回归） | service (SQLite) | 同上 |
 | 3 | 边满 7 天被 GC 回收 | article-retention/ADDED「超窗边被回收」 | 边删除；tag 无剩余边则被孤儿清理回收，有剩余边则保留 | service (SQLite) | `internal/tagmanagement/service/core/edge_gc_test.go`（新建） |
-| 4 | 恢复后 drain 挂的边在窗内不删 | 同上「窗口内边保留供补档消费」 | 窗内边保留，日报候选可匹配 | service (SQLite) | 同上 |
-| 5 | 配置缺失/非法回退默认 | 同上「配置非法回退默认」 | 回退 7 + warn，不拒绝执行 | 纯函数单测 | `internal/tagmanagement/service/core/edge_gc_test.go`（config reader 部分） |
-| 6 | AI 暂停时 GC 照常跑 | 同上「回收不受分析暂停影响」 | 维护类 job 不经 PauseAware 门禁 | 结构+job 单测 | `internal/admin/scheduler/pause_test.go` 模式断言（aux_label_cleanup 不在跳过清单） |
-| 7 | 队列清空后次日自动补档 | daily-report/ADDED「停机缺档次日自动补齐」 | 窗口内缺失 (board,date) 逐个重建，零人工 | job 单测 (SQLite) | `internal/admin/scheduler/job_daily_report_test.go`（新建） |
-| 8 | 队列未清空顺延 | 同上「队列未清空顺延」 | 当天报告照常，补档跳过，次日再试 | job 单测 (SQLite) | 同上 |
-| 9 | 已有报告不重建 | 同上「只补缺不重建已有」 | (board,date) 存在则跳过 | job 单测 (SQLite) | 同上 |
-| 10 | 超窗日期 API 拒绝 | daily-report/ADDED「超窗日期拒绝重建」 | POST generate 返回 4xx，错误消息含窗口说明；既有报告不被覆盖 | handler 单测 (httptest) | `internal/topicgraph/handler/daily_report_handler_test.go`（新建或并入既有） |
-| 11 | 窗口内日期正常重建 | 同上「窗口内日期正常重建」 | 照常异步触发 | handler 单测 (httptest) | 同上 |
-| 12 | 调度器指定日期同口径 | 同上「调度器指定日期触发同口径」 | TriggerNowWithDate 超窗 accepted=false，与 API 口径一致 | job 单测 | `internal/admin/scheduler/job_daily_report_test.go` |
+| 4 | 未归档文章的超窗边不被回收 | 同上「未归档文章的超窗边保留」 | 边保留；同 tag 仅靠未归档边存活则不被孤儿清理回收（归档后才开始倒计时） | service (SQLite) | 同上 |
+| 5 | 恢复后 drain 挂的边在窗内不删 | 同上「窗口内边保留供补档消费」 | 窗内边保留，日报候选可匹配 | service (SQLite) | 同上 |
+| 6 | 配置缺失/非法回退默认 | 同上「配置非法回退默认」 | 回退 7 + warn，不拒绝执行 | 纯函数单测 | `internal/tagmanagement/service/core/edge_gc_test.go`（config reader 部分） |
+| 7 | AI 暂停时 GC 照常跑 | 同上「回收不受分析暂停影响」 | 维护类 job 不经 PauseAware 门禁 | 结构+job 单测 | `internal/admin/scheduler/pause_test.go` 模式断言（aux_label_cleanup 不在跳过清单；fixture 文章需已归档，M5-B） |
+| 8 | 队列清空后次日自动补档 | daily-report/ADDED「停机缺档次日自动补齐」 | 窗口内缺失 (board,date) 逐个重建，零人工 | job 单测 (SQLite) | `internal/admin/scheduler/job_daily_report_test.go`（新建） |
+| 9 | 队列未清空顺延 | 同上「队列未清空顺延」 | 当天报告照常，补档跳过，次日再试 | job 单测 (SQLite) | 同上 |
+| 10 | 已有报告不重建 | 同上「只补缺不重建已有」 | (board,date) 存在则跳过 | job 单测 (SQLite) | 同上 |
+| 11 | 超窗日期 API 拒绝 | daily-report/ADDED「超窗日期拒绝重建」 | POST generate 返回 4xx，错误消息含窗口说明；既有报告不被覆盖 | handler 单测 (httptest) | `internal/topicgraph/handler/daily_report_handler_test.go`（新建或并入既有） |
+| 12 | 窗口内日期正常重建 | 同上「窗口内日期正常重建」 | 照常异步触发 | handler 单测 (httptest) | 同上 |
+| 13 | 调度器指定日期同口径 | 同上「调度器指定日期触发同口径」 | TriggerNowWithDate 超窗 accepted=false，与 API 口径一致 | job 单测 | `internal/admin/scheduler/job_daily_report_test.go` |
 
 ## 继承与调整（⓪ 改契约了吗——article-retention 有 MODIFIED Requirement）
 
@@ -43,8 +44,8 @@
 | 前置 | 队列 leased → 补档 | 同 pending，跳过（leased 也是未完成积压） | job_daily_report_test |
 | 前置 | 队列空 → 补档 | 执行扫描 | job_daily_report_test |
 | 前置 | tag 有剩余边 / 无剩余边（GC 后） | 有 → tag 保留；无 → 孤儿清理回收 | edge_gc_test |
-| 时间窗口 | 边恰好 created_at = now()-7d | **保留**（删除条件 `created_at < 下界`，等号不删）；与守卫「date==下界放行」同口径 | edge_gc_test 边界值 |
-| 时间窗口 | 边 created_at = now()-7d-1ms | 删除 | edge_gc_test 边界值 |
+| 时间窗口 | 边 created_at ∈ 下界日 D 当天（D = today-7d）任意时刻：00:00+1h / now-7d 整 | **保留**（下界 = D 当天本地零点，删除条件 `created_at < 下界`，D 当天全保留）；与守卫「date==下界放行」同口径 | edge_gc_test 边界值 |
+| 时间窗口 | 边 created_at ∈ 下界日前一日 D-1 当天：00:00-1ms / now-8d 整 | 删除（早于下界日零点） | edge_gc_test 边界值 |
 | 时间窗口 | 补档扫描窗口 | (today-retentionDays, today) 左闭右开——**不含今天**（今天由主流程生成） | job_daily_report_test |
 | 时间窗口 | 守卫 date = today-7d | 放行（"早于下界"才拒绝） | handler/TriggerNowWithDate 测试 |
 | 时间窗口 | 守卫 date = today-8d | 拒绝 4xx / accepted=false | 同上 |
@@ -57,14 +58,15 @@
 
 ## 白盒附加节（复杂档）
 
-### 边 GC 状态矩阵（边 × tag 四格）
+### 边 GC 状态矩阵（边 × 文章归档位 × tag 四格）
 
 | 边状态 | tag 有剩余边 | tag 无剩余边 |
 | --- | --- | --- |
 | 边 ∈ 窗内 | 不删，tag 保留 | n/a（边在即有边） |
-| 边 ∈ 窗外 | 删边，tag 保留 | 删边 + CleanupOrphanedTags 回收 tag |
+| 边 ∈ 窗外（文章已归档） | 删边，tag 保留 | 删边 + CleanupOrphanedTags 回收 tag |
+| 边 ∈ 窗外（文章未归档，M5-B） | 不删，tag 保留 | n/a（边保留即存在，tag 不被孤儿清理） |
 
-边界值：created_at ∈ {now()-7d+1s, now()-7d, now()-7d-1ms, now()-8d}；批量删除含多 tag 混合状态（部分孤儿部分存活）。
+边界值（日历天口径，review H1）：created_at ∈ {D 当天 00:00+1h, D 当天 now-7d 整, D-1 当天 00:00-1ms, D-1 当天 now-8d 整}（D = today-7d 本地零点）；批量删除含多 tag 混合状态（部分孤儿部分存活）。归档位维度（review M5-B，用户拍板）：删边与受影响 tag pluck 谓词同时要求 `article_id IN (SELECT id FROM articles WHERE archived = true)`——同一 tag 上「已归档超窗边被删 + 未归档超窗边保留」的混合集合以未归档边存活为准，tag 不被回收。
 
 ### 补档前置状态机（队列 × 报告六格）
 
@@ -77,7 +79,7 @@
 
 ### 守卫判定
 
-`date < NormalizeReportDate(today) - retentionDays*24h` → 拒绝。两入口（handler / TriggerNowWithDate）共用同一判定函数，错误消息同文案。
+`date < NormalizeReportDate(today).AddDate(0, 0, -retentionDays)`（本地日历天下界）→ 拒绝。两入口（handler / TriggerNowWithDate）共用同一判定函数，错误消息同文案；边 GC 用同一日历天口径（本地零点 − N 天）。
 
 ## 效果核对（⑤d 真库量化）
 
@@ -97,6 +99,7 @@
 | 衍生数据清除（边保留） | backend-go/internal/reader/service/feed_service_cleanup_test.go |
 | 归档文章不被全文搜索命中 | backend-go/internal/reader/service/feed_service_cleanup_test.go |
 | 超窗边被回收 | backend-go/internal/tagmanagement/service/core/edge_gc_test.go |
+| 未归档文章的超窗边保留 | backend-go/internal/tagmanagement/service/core/edge_gc_test.go |
 | 窗口内边保留供补档消费 | backend-go/internal/tagmanagement/service/core/edge_gc_test.go |
 | 配置非法回退默认 | backend-go/internal/tagmanagement/service/core/edge_gc_test.go |
 | 回收不受分析暂停影响 | backend-go/internal/admin/scheduler/pause_test.go（扩展断言） |

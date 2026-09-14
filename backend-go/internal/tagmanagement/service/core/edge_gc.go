@@ -32,8 +32,8 @@ type EdgeGCRequest struct {
 	// LoadTagEdgeRetentionDays, which already handles the fallback).
 	RetentionDays int
 	// Now overrides the clock used to compute the cutoff. Tests set it so the
-	// "created_at exactly at the cutoff" case is deterministic; the zero value
-	// means time.Now().
+	// "lower bound day D = today-N" case is deterministic; the zero value means
+	// time.Now(). Only its calendar day matters (plus its location).
 	Now time.Time
 }
 
@@ -49,10 +49,26 @@ type EdgeGCResult struct {
 // EdgeGC reclaims article_topic_tags edges older than the retention window and
 // then removes the topic tags left without any edge (tag edge time-window GC,
 // design D3). Deletion is strictly older-than: an edge whose created_at equals
-// the cutoff (now - RetentionDays*24h) is kept.
+// the cutoff is kept.
+//
+// The cutoff is a CALENDAR-DAY lower bound, not a rolling now-24h instant
+// (review H1): local midnight of today minus RetentionDays. The rebuild guard
+// (IsDateOutsideRebuildWindow) and the backfill scan use the same calendar-day
+// window; with a rolling cutoff the boundary day D = today-N lost its morning
+// edges while the guard still allowed D to be rebuilt, wiping a good report
+// with an empty one. With the midnight bound every edge created on day D
+// survives (design D2: one key, one window).
 //
 // Archiving no longer deletes edges (design D4); this pass is the single owner
 // of edge removal and therefore of orphan tag cleanup.
+//
+// Scope (review M5-B, user decision): only edges of ARCHIVED articles are
+// reclaimed. Both the affected-tag pluck and the delete carry the archived
+// subquery, so an unarchived article's edges are kept forever and only start
+// their N-day countdown once the article is archived. Rationale: an active
+// article is still on the analysis surface — its tags are live data consumed
+// directly by the reader (tag badges, tag filtering) — while archiving means
+// leaving that surface, which is what opens the reclaim window.
 func EdgeGC(ctx context.Context, req EdgeGCRequest) (EdgeGCResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -68,17 +84,20 @@ func EdgeGC(ctx context.Context, req EdgeGCRequest) (EdgeGCResult, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	cutoff := now.Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	cutoff := startOfToday.AddDate(0, 0, -retentionDays)
 
 	result := EdgeGCResult{RetentionDays: retentionDays, Cutoff: cutoff}
 
 	db := repository.Repo.DB().WithContext(ctx)
 
 	// Collect the affected tags before deleting: once the edges are gone there
-	// is no way back to their topic_tag_id.
+	// is no way back to their topic_tag_id. Same predicate as the delete below
+	// (window AND archived article) so the reported tags match the removed edges.
 	var affectedTagIDs []uint
 	if err := db.Model(&models.ArticleTopicTag{}).
 		Where("created_at < ?", cutoff).
+		Where(archivedArticleEdgePredicate, true).
 		Distinct().
 		Pluck("topic_tag_id", &affectedTagIDs).Error; err != nil {
 		return result, fmt.Errorf("collect expired tag edges: %w", err)
@@ -88,7 +107,9 @@ func EdgeGC(ctx context.Context, req EdgeGCRequest) (EdgeGCResult, error) {
 		return result, nil
 	}
 
-	deleted := db.Where("created_at < ?", cutoff).Delete(&models.ArticleTopicTag{})
+	deleted := db.Where("created_at < ?", cutoff).
+		Where(archivedArticleEdgePredicate, true).
+		Delete(&models.ArticleTopicTag{})
 	if deleted.Error != nil {
 		return result, fmt.Errorf("delete expired tag edges: %w", deleted.Error)
 	}
@@ -102,6 +123,14 @@ func EdgeGC(ctx context.Context, req EdgeGCRequest) (EdgeGCResult, error) {
 
 	return result, nil
 }
+
+// archivedArticleEdgePredicate restricts an article_topic_tags predicate to
+// edges whose article is archived (review M5-B, user decision). Edges of
+// unarchived articles are never reclaimed: the article is still on the
+// analysis surface, so its tags remain live data for the reader. The bound
+// parameter is the archived flag (true) — plain SQL scalar binding, matching
+// the repo's `... IN (SELECT ...)` subquery style.
+const archivedArticleEdgePredicate = "article_id IN (SELECT id FROM articles WHERE archived = ?)"
 
 // countOrphanedTags counts the tags in tagIDs that have no remaining edge. It
 // mirrors the predicate inside CleanupOrphanedTags (which deletes but does not

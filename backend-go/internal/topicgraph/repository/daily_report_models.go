@@ -12,10 +12,16 @@ import (
 )
 
 // BoardDailyReport — one report per board per day
+//
+// The (semantic_board_id, period_date) unique index is the DB-level guarantee
+// behind SaveReport's find-then-create upsert: once the backfill scan adds a
+// second writer, two concurrent generations for the same (board, day) would
+// otherwise insert duplicate reports (flow/daily-report 红线 1). A conflicting
+// insert now fails loudly and the caller logs/continues (offline-catchup H2).
 type BoardDailyReport struct {
 	ID                      uint      `gorm:"primarykey" json:"id"`
-	SemanticBoardID         uint      `gorm:"index;not null" json:"semantic_board_id"`
-	PeriodDate              time.Time `gorm:"type:date;not null" json:"period_date"`
+	SemanticBoardID         uint      `gorm:"index;uniqueIndex:idx_board_daily_reports_board_period,priority:1;not null" json:"semantic_board_id"`
+	PeriodDate              time.Time `gorm:"type:date;not null;uniqueIndex:idx_board_daily_reports_board_period,priority:2" json:"period_date"`
 	Title                   string    `json:"title"`
 	Summary                 string    `json:"summary"`
 	Highlights              JSON      `gorm:"type:jsonb" json:"highlights"`

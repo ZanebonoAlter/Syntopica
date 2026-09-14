@@ -62,7 +62,7 @@ WebSocket 进度消息：
 }
 ```
 
-**重建窗口守卫（offline-catchup）**：`date` 早于标签边保留窗口下界（`ai_settings.tag_edge_retention_days`，默认 7 天，即 `date < today - N*24h`）时返回 **4xx**，错误消息说明「标签边已按 N 天窗口回收、超窗日期候选不全，拒绝重建」——防止超窗日期的空报告覆盖既有好报告（同日重建是整份覆盖语义，见 `flow/daily-report.md` 业务约束 20）。窗口内日期（含恰好等于下界）不受影响，照常异步触发。窗口口径与 `aux_label_cleanup` 的边 GC、日报自动补档扫描同键同口径。
+**重建窗口守卫（offline-catchup）**：`date` 早于标签边保留窗口下界（`ai_settings.tag_edge_retention_days`，默认 7 天，即 `date` 早于保留窗口下界日（本地日历天零点 − N 天））时返回 **4xx**，错误消息说明「标签边已按 N 天窗口回收、超窗日期候选不全，拒绝重建」——防止超窗日期的空报告覆盖既有好报告（同日重建是整份覆盖语义，见 `flow/daily-report.md` 业务约束 20）。窗口内日期（含恰好等于下界）不受影响，照常异步触发。窗口口径与 `aux_label_cleanup` 的边 GC、日报自动补档扫描同键同口径。
 
 ## GET `/semantic-boards/:id/section-timeline?days=30`
 
