@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -170,6 +171,100 @@ func TestHealthGate_ProbeUnhealthy_PauseAwareSkips(t *testing.T) {
 	require.Contains(t, result.Summary, "skipped")
 	require.Contains(t, result.Summary, "model_unhealthy", "summary should flag the health reason")
 	require.Equal(t, "paused", result.Data["skipped"])
+}
+
+// TestHealthGate_HeartbeatDegrade_PauseAwareSkips is the heartbeat-degrade
+// compose proof (change ai-health-heartbeat-reprobe): a healthy snapshot
+// whose providers die mid-session (real connection refused after the mock
+// servers shut down) stays healthy through ONE failing probe (debounce),
+// degrades on the second, and only then does the pause gate close and
+// PauseAware skip. This mirrors the 常驻 topology: PC powers off mid-run.
+func TestHealthGate_HeartbeatDegrade_PauseAwareSkips(t *testing.T) {
+	resetHealthForTest(t)
+	db := testutil.SetupTestDB(t)
+	store := airouter.NewStore(db)
+
+	require.False(t, analysispause.UserPaused())
+
+	// Two live mock servers establish a healthy snapshot.
+	seedEnabledRoute(t, store, string(airouter.CapabilityEmbedding), "emb-test", mockProviderServer(t).URL, "embedding")
+	seedEnabledRoute(t, store, string(airouter.CapabilitySummary), "llm-test", mockProviderServer(t).URL, "llm")
+
+	aihealth.RunStartupProbe(context.Background(), store, false)
+	require.True(t, aihealth.Healthy(), "baseline: both mock providers reachable")
+	require.False(t, analysispause.IsPaused())
+
+	// Kill both endpoints: connection refused from here on (真实秒拒型失败).
+	killProviders(t, store)
+
+	// Failure #1: debounce window keeps the overall verdict healthy.
+	aihealth.RunStartupProbe(context.Background(), store, false)
+	require.True(t, aihealth.Healthy(), "first failing probe must stay inside the debounce window")
+	require.False(t, analysispause.IsPaused(), "pause gate must stay open during the debounce window")
+
+	// Failure #2: degrades -> gate closes -> PauseAware skips.
+	aihealth.RunStartupProbe(context.Background(), store, false)
+	require.False(t, aihealth.Healthy(), "second consecutive failing probe must degrade")
+	require.True(t, analysispause.IsPaused())
+	require.Equal(t, "model_unhealthy", analysispause.PauseReason())
+
+	var ran int32
+	result, err := scheduler.PauseAware(func(ctx context.Context) (*scheduler.JobResult, error) {
+		atomic.AddInt32(&ran, 1)
+		return &scheduler.JobResult{Summary: "real job ran"}, nil
+	})(context.Background())
+
+	require.NoError(t, err)
+	require.EqualValues(t, 0, atomic.LoadInt32(&ran), "job must NOT run after heartbeat degrade")
+	require.Contains(t, result.Summary, "model_unhealthy")
+	require.Equal(t, "paused", result.Data["skipped"])
+}
+
+// killProviders shuts down every enabled provider endpoint by pointing its
+// base_url at a guaranteed-dead port (server started then closed), so the next
+// real probe fails fast with connection refused — the actual failure shape of
+// a powered-off AI host.
+func killProviders(t *testing.T, store *airouter.Store) {
+	t.Helper()
+	dead := closedProviderURL(t)
+	providers, err := store.ListProviders()
+	require.NoError(t, err)
+	for _, p := range providers {
+		p.BaseURL = dead
+		require.NoError(t, store.UpsertProvider(&p))
+	}
+}
+
+// TestHealthGate_SlowProviderWithinTimeout_Healthy pins the busy-tolerance
+// compose proof: a provider whose /models answers slowly (but well within its
+// probe timeout) counts as reachable, NOT as a failure — the debounce logic
+// never even sees it. 慢而活着的服务器不计失败（忙容忍由 provider 超时提供）.
+func TestHealthGate_SlowProviderWithinTimeout_Healthy(t *testing.T) {
+	resetHealthForTest(t)
+	db := testutil.SetupTestDB(t)
+	store := airouter.NewStore(db)
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(300 * time.Millisecond) // slow but alive; probe timeout defaults to 15s
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"test-model"}]}`))
+	}))
+	t.Cleanup(slow.Close)
+
+	seedEnabledRoute(t, store, string(airouter.CapabilityEmbedding), "emb-slow", slow.URL, "embedding")
+	seedEnabledRoute(t, store, string(airouter.CapabilitySummary), "llm-slow", slow.URL, "llm")
+
+	// Two consecutive probes against the slow-but-alive endpoints: both must
+	// count as successes (no failures, no degrade) — even back-to-back.
+	aihealth.RunStartupProbe(context.Background(), store, false)
+	require.True(t, aihealth.Healthy(), "slow-but-alive provider within timeout counts as reachable")
+	require.False(t, analysispause.IsPaused())
+	aihealth.RunStartupProbe(context.Background(), store, false)
+	require.True(t, aihealth.Healthy(), "repeated slow-but-alive probes must never degrade")
 }
 
 // TestHealthGate_EmbeddingUp_LLMDown_NotHealthy pins the lenient-health

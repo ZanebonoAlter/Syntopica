@@ -103,7 +103,7 @@ auto_refresh scheduler
 
     **健康门维度（ai-model-health-gate）**：暂停判定含健康门——`有效暂停 = 用户暂停 || NOT 健康`。健康由 `aihealth` 启动探活决定（宽松判定：≥1 embedding 路由主 provider 通 **且** ≥1 llm 路由主 provider 通）；启动竞态期快照未就绪 → healthy=false → 有效暂停、分析不 lease，探活完成后自动恢复。**用户开关/按钮/favicon/API 的 `analysis_paused` 仍只反映用户意图**（`UserPaused()`），不受健康影响；前端在「意图运行但 !健康」时顶部 banner 提示（见 §代码入口）。
 
-    **自愈（ai-health-reprobe）**：快照 NOT 健康时，后台定时重探器（`aihealth.StartPeriodicReprobe`，默认 60s 间隔）周期性重探直至自愈（复用启动探测全流程：自动拉起/45s 轮询/10min 冷却/全局互斥），健康后停手；`POST /api/ai/health/reprobe` 可手动异步触发一次重探（in-flight 时返回 skipped，不排队不并发），前端设置页「AI 健康状态」卡片与未就绪 banner 均有「重新检测」入口。**代理污染防线**：全局出站代理（httpclient）对回环地址（localhost/127.x/::1）一律直连，本地 llama-server 探测/推理不被代理 502 拦截。
+    **心跳与自愈（ai-health-reprobe）**：后台心跳器（`aihealth.StartPeriodicReprobe`，默认 60s 间隔）**无论快照健康与否均持续探测**（复用启动探测全流程：自动拉起/45s 轮询/10min 冷却/全局互斥）：NOT 健康时持续重探直至自愈；healthy 态探测发现端点失联时**连续 2 次失败才降级**（去抖，秒拒型最坏 ≈2×间隔；探测超时沿用 provider 自身 `timeout_seconds`，慢而活着的服务器在超时内应答不计失败，忙容忍由 provider 超时提供），降级即关健康门暂停分析，单次探通即恢复；心跳失败走既有拉起链路（受冷却约束）。`POST /api/ai/health/reprobe` 可手动异步触发一次重探（in-flight 时返回 skipped，不排队不并发），前端设置页「AI 健康状态」卡片与未就绪 banner 均有「重新检测」入口。**代理污染防线**：全局出站代理（httpclient）对回环地址（localhost/127.x/::1）一律直连，本地 llama-server 探测/推理不被代理 502 拦截。
 
 ## 代码入口
 

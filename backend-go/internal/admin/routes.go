@@ -61,7 +61,28 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		discovery.POST("/recommendations/refresh", RefreshRecommendations)
 		discovery.POST("/recommendations/:id/accept", AcceptRecommendation)
 		discovery.POST("/recommendations/:id/dismiss", DismissRecommendation)
+		// 生命周期用户动作（4.4 / D5）：长期排除与恢复资格。
+		discovery.POST("/recommendations/:id/exclude", ExcludeRecommendation)
+		discovery.POST("/recommendations/:id/restore", RestoreRecommendation)
 		discovery.POST("/ask", Ask)
+		// 手动查询 run 详情（improve-discovery-recommendations，design D2/D9）
+		discovery.GET("/runs/:id", GetDiscoveryRun)
+		// 兴趣记录列表（improve-discovery-recommendations High 1 修复，design D9）
+		discovery.GET("/interests", GetInterests)
+
+		// 候选源库（improve-discovery-recommendations，design D9）
+		discovery.GET("/candidates", ListCandidates)
+		discovery.POST("/candidates", CreateCandidate)
+		discovery.GET("/candidates/:id", GetCandidate)
+		discovery.PATCH("/candidates/:id", UpdateCandidate)
+		// 可用性检查（3.3，design D7）：:id 同名子路由与 import/* 静态段并存（静态优先）。
+		discovery.POST("/candidates/:id/check", CheckCandidate)
+		// 私网访问授权确认（Medium 7，design D9/C5）：private_pending → private_allowed。
+		discovery.POST("/candidates/:id/access-confirm", ConfirmCandidateAccess)
+		// 目录导入导出（3.2，design D8）：export 与 :id 同段静态路由优先于参数路由。
+		discovery.GET("/candidates/export", ExportCandidates)
+		discovery.POST("/candidates/import/preview", PreviewCatalogImport)
+		discovery.POST("/candidates/import/confirm", ConfirmCatalogImport)
 	}
 
 	settings := rg.Group("/settings")

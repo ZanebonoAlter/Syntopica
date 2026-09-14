@@ -63,6 +63,13 @@ func (p *RSSParser) ParseFeedURL(feedURL string) (*ParsedFeed, error) {
 		return nil, fmt.Errorf("failed to read feed body: %w", err)
 	}
 
+	return ParseFeedBody(body)
+}
+
+// ParseFeedBody 解析已获取的 feed 响应体（RSS/Atom）为 ParsedFeed，不发起网络请求。
+// 与 ParseFeedURL 的解析段语义逐字一致（UTF-8 清洗 → gofeed → 统一结构）：解析失败
+// 即「不是可解析的 RSS/Atom」，共享建源服务据此拒绝非 feed 响应（design D7/D9）。
+func ParseFeedBody(body []byte) (*ParsedFeed, error) {
 	cleaned := sanitizeUTF8(body)
 
 	fp := gofeed.NewParser()
@@ -71,7 +78,7 @@ func (p *RSSParser) ParseFeedURL(feedURL string) (*ParsedFeed, error) {
 		return nil, fmt.Errorf("failed to parse feed: %w", err)
 	}
 
-	return p.convertGofeedToParsed(feed), nil
+	return new(RSSParser).convertGofeedToParsed(feed), nil
 }
 
 func sanitizeUTF8(data []byte) []byte {

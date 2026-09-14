@@ -16,12 +16,18 @@ import (
 	"syntopica-backend/internal/platform/logging"
 )
 
-// ── discovery handler（preference-vector-feed-discovery）──
-// catalog / recommendation / ask 端点。
+// ── discovery handler（preference-vector-feed-discovery + improve-discovery-recommendations）──
+// catalog / recommendation / ask（run 化）/ run 详情 端点。
 
 // newRecommendationService 构造推荐 service（注入 airouter 供精排/问答；未配置 route 时降级）。
 func newRecommendationService() *service.RecommendationService {
 	return service.NewRecommendationService(repository.Repo.DB(), airouter.NewRouter(), nil)
+}
+
+// newDiscoveryRunService 构造 run 编排 service（4.1：ask/refresh 走 run 原子发布）。
+// 变量而非函数：handler 测试可替换以注入慢/provider-失败的 router（async-run-fix 回归）。
+var newDiscoveryRunService = func() *service.DiscoveryRunService {
+	return service.NewDiscoveryRunService(repository.Repo.DB(), airouter.NewRouter(), nil)
 }
 
 // ── catalog ──
@@ -59,8 +65,19 @@ func GetCatalogStatus(c *gin.Context) {
 // ── recommendation ──
 
 // GetRecommendations GET /api/discovery/recommendations?status=pending — 推荐卡片列表。
+// ?scope=history → 历史聚合视图（4.4 / design D5：accepted/expired/snoozed/excluded，
+// 字段名对齐前端 HistoryPayload）。scope 优先于 status。
 func GetRecommendations(c *gin.Context) {
 	svc := newRecommendationService()
+	if c.Query("scope") == "history" {
+		entries, err := svc.GetRecommendationHistory(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": entries})
+		return
+	}
 	status := c.DefaultQuery("status", "pending")
 	cards, err := svc.GetRecommendations(c.Request.Context(), status)
 	if err != nil {
@@ -70,15 +87,36 @@ func GetRecommendations(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": cards})
 }
 
-// RefreshRecommendations POST /api/discovery/recommendations/refresh — 换一批（粗筛+精排+幂等落库）。
+// RefreshRecommendations POST /api/discovery/recommendations/refresh — 换一批。
+//
+// 异步契约（E2E async-run-fix，同 ask）：受理即返回 {run_id, status}，粗筛/严格
+// 精排/原子发布在后台推进，前端经 GET /discovery/runs/:id 轮询终态。旧同步契约
+// 会被 apiClient 超时掐断请求 ctx → run 半途 failed（实证 74s）。
+// 兼容：data 保留 summary 计数字段（全 0）——旧前端读 candidates/inserted 不报错，
+// 但「本轮是否产出」以 run 终态/推荐列表为准（前端待按 run_id 轮询，不在本次范围）。
 func RefreshRecommendations(c *gin.Context) {
-	svc := newRecommendationService()
-	summary, err := svc.RefreshRecommendations(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+	svc := newDiscoveryRunService()
+	run, reused, err := svc.EnsureRefreshRun(c.Request.Context())
+	if err != nil || run == nil {
+		errMsg := "refresh run unavailable"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": errMsg})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": summary})
+	if !reused {
+		// 已有 running refresh run 时 reused=true：复用该轮，不重复执行（design D2）。
+		svc.StartRefreshInBackground(run)
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"run_id":           run.ID,
+		"status":           run.Status,
+		"candidates":       0,
+		"inserted":         0,
+		"skipped":          0,
+		"cooldown_blocked": 0,
+	}})
 }
 
 // acceptRequest 接受推荐的请求体。
@@ -105,7 +143,9 @@ func AcceptRecommendation(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": feed, "message": "feed created"})
 }
 
-// DismissRecommendation POST /api/discovery/recommendations/:id/dismiss — 拒绝（冷却）。
+// DismissRecommendation POST /api/discovery/recommendations/:id/dismiss —「暂时不看」
+// （4.4 语义升级：写 candidate_preferences.snoozed_until = now+snooze_days，返回实际
+// 到期时刻供前端展示；相关 pending 卡由列表过滤退出默认列表，不改推荐行状态）。
 func DismissRecommendation(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -113,32 +153,140 @@ func DismissRecommendation(c *gin.Context) {
 		return
 	}
 	svc := newRecommendationService()
-	if err := svc.DismissRecommendation(c.Request.Context(), uint(id)); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+	until, err := svc.SnoozeRecommendation(c.Request.Context(), uint(id))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "dismissed"})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"snoozed_until": until}, "message": "snoozed"})
 }
 
-// askRequest 问答请求体。
+// ExcludeRecommendation POST /api/discovery/recommendations/:id/exclude — 长期排除
+// （4.4 / D5：写 candidate_preferences.excluded_at；跨 qa/refresh 全局生效，候选
+// enabled 开关不得解除排除）。
+func ExcludeRecommendation(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid id"})
+		return
+	}
+	svc := newRecommendationService()
+	if err := svc.ExcludeRecommendation(c.Request.Context(), uint(id)); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "excluded"})
+}
+
+// RestoreRecommendation POST /api/discovery/recommendations/:id/restore — 恢复
+// （4.4 / R5「恢复不是订阅」：清 excluded_at/snoozed_until，仅恢复推荐资格，
+// 不建订阅、不生成新卡）。
+func RestoreRecommendation(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid id"})
+		return
+	}
+	svc := newRecommendationService()
+	if err := svc.RestoreRecommendation(c.Request.Context(), uint(id)); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "restored"})
+}
+
+// askRequest 问答请求体。request_key 可选：客户端幂等键（并发重复提交/失败重试
+// 复用同一 run，design D2）；空则服务端生成。
 type askRequest struct {
-	Question string `json:"question" binding:"required"`
+	Question   string `json:"question" binding:"required"`
+	RequestKey string `json:"request_key"`
 }
 
-// Ask POST /api/discovery/ask — 问答式即时推荐 + 种子写入。
+// Ask POST /api/discovery/ask — 发起手动查询，返回 {run_id, status}（design D2/D9 新契约：
+// 前端轮询 GET /discovery/runs/:id 取结果，不再直接返回卡片）。
+//
+// 异步契约（E2E async-run-fix）：受理（ensure run）同步秒回，执行阶段进后台 goroutine——
+// 本地网关慢时同步跑完整链要 74s，被前端 apiClient 超时掐断请求 ctx 后 run 半途 failed
+// （error_code=embedding err=...context canceled）。后台执行必须脱离请求 ctx。
+// run 终态可能是 failed（error_code 可定位：configuration/embedding/recall/rerank/publish/
+// internal）——受理成功即 200，失败语义由 run 状态承载（S1 查询失败后恢复）。
 func Ask(c *gin.Context) {
 	var req askRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "question is required"})
 		return
 	}
-	svc := newRecommendationService()
-	cards, err := svc.Ask(c.Request.Context(), req.Question)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+	if strings.TrimSpace(req.Question) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "question is required"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": cards})
+	svc := newDiscoveryRunService()
+	run, execute, err := svc.EnsureAskRun(c.Request.Context(), req.Question, req.RequestKey)
+	if err != nil || run == nil {
+		// 受理阶段失败（DB 写入失败等）；空 question 已在上面 400 拦截。
+		errMsg := "failed to start discovery run"
+		if err != nil {
+			errMsg = err.Error()
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": errMsg})
+		return
+	}
+	if execute {
+		// 同 request_key 已有 running/succeeded 的 run 时 execute=false：复用旧 run，不重跑。
+		svc.StartAskInBackground(run, req.Question)
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"run_id":     run.ID,
+		"status":     run.Status,
+		"error_code": run.ErrorCode,
+	}})
+}
+
+// GetDiscoveryRun GET /api/discovery/runs/:id — run 详情（前端 getRun 的
+// DiscoveryRun 形状：id/kind/query/status/started_at/finished_at/items，
+// items 含 candidate_id/name/description/reason/recall_origins/availability）。
+func GetDiscoveryRun(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid id"})
+		return
+	}
+	svc := newDiscoveryRunService()
+	view, err := svc.GetRun(c.Request.Context(), uint(id))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": view})
+}
+
+// GetInterests GET /api/discovery/interests — 逐条问答兴趣记录（不合成平均画像）。
+// 分页：page（默认 1）、page_size（默认 30、上限 100），created_at 降序；
+// 响应 data 为数组（前端 getInterests 直接 map），分页元信息放顶层 pagination
+// （沿用 reader 列表 handler 的惯例）。
+func GetInterests(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", strconv.Itoa(service.InterestListDefaultPageSize)))
+	svc := newDiscoveryRunService()
+	result, err := svc.ListInterestEntries(c.Request.Context(), service.InterestListQuery{Page: page, PageSize: pageSize})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	pages := int(result.Total) / result.Size
+	if result.Size > 0 && int(result.Total)%result.Size > 0 {
+		pages++
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    result.Items,
+		"pagination": gin.H{
+			"page":     result.Page,
+			"per_page": result.Size,
+			"total":    result.Total,
+			"pages":    pages,
+		},
+	})
 }
 
 // ── rsshub settings（design E）──

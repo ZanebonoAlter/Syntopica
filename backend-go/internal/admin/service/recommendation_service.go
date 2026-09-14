@@ -2,10 +2,10 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -14,14 +14,20 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/safefetch"
 	"syntopica-backend/internal/platform/tracing"
+	readersvc "syntopica-backend/internal/reader/service"
 )
 
 // ── 订阅源推荐（design D5/D6，feed-discovery spec）──
 //
-// 两段式：pgvector 粗筛（route_embeddings <=> preference_vectors）→ LLM 精排。
-// recommendation_hash = route_id+board_id（不含 source）：qa 与 manual_refresh 共享幂等池与 dismiss 冷却池。
-// 排除规则（D5/B）：broken / 已 accepted 的 route / dismissed 冷却期内的 route / usable_directly 且 feeds.url 已存在。
+// 粗筛（pgvector route_embeddings <=> preference_vectors）保留在本文件，供
+// DiscoveryRunService 的召回批次器复用；精排/落库自 4.1 起改走 run 原子发布路径
+// （discovery_run_service.go：严格精排 + 单短事务发布，不再全候选落库）。
+// recommendation_hash = route_id+board_id（不含 source）：qa 与 manual_refresh
+// 共享幂等池。排除规则（D5/B）：broken / 已 accepted 的 route /
+// candidate_preferences 冷却或长期排除（跨 source 权威，4.4 起取代旧 dismiss hash 池）/
+// usable_directly 且 feeds.url 已存在。
 
 // RecommendationSource 枚举 feed_recommendations.source。
 const (
@@ -29,15 +35,18 @@ const (
 	RecommendationSourceQA            = "qa"
 )
 
-// RecommendationService 实现推荐生成、状态机与问答。
+// RecommendationService 实现推荐列表查询、状态机与订阅；生成编排在
+// DiscoveryRunService（4.1 起 ask/refresh 都走 run 原子发布）。
 type RecommendationService struct {
 	db        *gorm.DB
-	router    *airouter.Router // 精排 LLM + 问答 embedding；nil 时精排直出粗筛、问答不可用
+	router    *airouter.Router // 传递给 run 编排（精排 LLM + 问答 embedding）
 	prefSvc   *PreferenceProfileService
 	paramOpts *RouteParamOptionService // 路由参数可选值字典（注入 recommendation 响应）
+	svcMu     sync.Mutex               // 保护 runSvc 惰性构造（Medium 6：并发首调不双重构造/竞争）
+	runSvc    *DiscoveryRunService     // 惰性构造，避免与 NewDiscoveryRunService 循环建
 }
 
-// NewRecommendationService 构造。prefSvc 为 nil 时内部按需创建（用于问答种子写入）。
+// NewRecommendationService 构造。prefSvc 为 nil 时内部按需创建。
 func NewRecommendationService(db *gorm.DB, router *airouter.Router, prefSvc *PreferenceProfileService) *RecommendationService {
 	if prefSvc == nil {
 		prefSvc = NewPreferenceProfileService(db)
@@ -45,24 +54,45 @@ func NewRecommendationService(db *gorm.DB, router *airouter.Router, prefSvc *Pre
 	return &RecommendationService{db: db, router: router, prefSvc: prefSvc, paramOpts: NewRouteParamOptionService(db)}
 }
 
-// RefreshSummary 描述一轮推荐刷新的产出。
-type RefreshSummary struct {
-	Candidates      int `json:"candidates"`
-	Inserted        int `json:"inserted"`
-	Skipped         int `json:"skipped"`          // hash 已 pending
-	CooldownBlocked int `json:"cooldown_blocked"` // dismiss 冷却期内
+// runService 惰性返回 run 编排服务（首调构造）。并发正确性靠「锁内 check-and-set」：
+// 构造、赋值（发布）、读取全在同一把 mu 临界区内完成，不存在双重构造，也不存在
+// 「半初始化对象逃逸」（NewDiscoveryRunService 返回前已完全构造，指针只在锁内发布）。
+// 注意：此处**不能**改成 lock-free 的 double-checked（先无锁读 s.runSvc 再进锁）——
+// 普通指针字段的无锁读与锁内写本身即数据竞争，要 DCL 必须把 runSvc 换成
+// atomic.Pointer；当前调用只在 ask/refresh 等重路径，锁开销可忽略，保持互斥最简。
+func (s *RecommendationService) runService() *DiscoveryRunService {
+	s.svcMu.Lock()
+	defer s.svcMu.Unlock()
+	if s.runSvc == nil {
+		s.runSvc = NewDiscoveryRunService(s.db, s.router, s.prefSvc)
+	}
+	return s.runSvc
 }
 
-// RefreshRecommendations 手动刷新（粗筛 + 精排 + 幂等落库），source=manual_refresh。
+// RefreshSummary 描述一轮推荐刷新的产出。
+type RefreshSummary struct {
+	RunID           uint `json:"run_id"` // 4.1：本轮 run 账本行（前端轮询 run 详情用）
+	Candidates      int  `json:"candidates"`
+	Inserted        int  `json:"inserted"`
+	Skipped         int  `json:"skipped"`          // hash 已 pending（本轮更新而非新建）
+	CooldownBlocked int  `json:"cooldown_blocked"` // dismiss 冷却期内
+}
+
+// RefreshRecommendations 手动刷新：一次刷新 = 一个 run（粗筛 → 分批严格精排 → 原子发布）。
 func (s *RecommendationService) RefreshRecommendations(ctx context.Context) (*RefreshSummary, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "RecommendationService.RefreshRecommendations")
 	defer span.End()
-	return s.generateAndPersist(ctx, RecommendationSourceManualRefresh, nil)
+	return s.runService().Refresh(ctx)
 }
 
-// candidateRow 粗筛候选。
+// candidateRow 粗筛候选（统一候选身份：原生 rss 与 rsshub 共用）。
+// CandidateID 是精排协议 id / 跨路去重 / 幂等 hash 的身份（feed_candidates.id）；
+// RouteID 仅 rsshub 候选有值（原生 rss 为 0，其订阅地址在 Example/FeedURL）。
+// Kind 用于资格过滤分流：rsshub 看 route status，原生看 candidate_availability。
 type candidateRow struct {
+	CandidateID        uint
 	RouteID            uint
+	Kind               string
 	Namespace          string
 	Path               string
 	Name               string
@@ -75,255 +105,10 @@ type candidateRow struct {
 	Distance           float64
 }
 
-// generateAndPersist 粗筛 → 精排 → 幂等落库。qaVec 非 nil 时用问答向量替代 preference_vectors 粗筛。
-func (s *RecommendationService) generateAndPersist(ctx context.Context, source string, qaVec []float64) (*RefreshSummary, error) {
-	topN := RecommendationTopNDefault
-	cooldownDays := DismissCooldownDaysDefault
-
-	candidates, err := s.coarseFilter(ctx, topN, cooldownDays, qaVec)
-	if err != nil {
-		return nil, fmt.Errorf("coarse filter: %w", err)
-	}
-	// usable_directly 额外按 feeds.url 去重（D5/B）。
-	candidates = s.filterByFeedsURL(ctx, candidates)
-
-	summary := &RefreshSummary{Candidates: len(candidates)}
-	if len(candidates) == 0 {
-		return summary, nil
-	}
-
-	// 精排：router 非 nil 走 LLM；否则直出（score = 1-distance，reason 空）。
-	ranked := s.rerank(ctx, candidates)
-
-	now := time.Now()
-	for _, rc := range ranked {
-		hash := ComputeRecommendationHash(rc.RouteID, rc.BoardID)
-		// dismiss 冷却（跨 source，按 hash）。
-		blocked, err := s.countDismissedInCooldown(ctx, hash, cooldownDays)
-		if err != nil {
-			return summary, err
-		}
-		if blocked > 0 {
-			summary.CooldownBlocked++
-			continue
-		}
-		inserted, err := s.insertPending(ctx, models.FeedRecommendation{
-			RouteID:            rc.RouteID,
-			BoardID:            rc.BoardID,
-			Source:             source,
-			Score:              rc.Score,
-			LLMReason:          rc.Reason,
-			Status:             "pending",
-			RecommendationHash: hash,
-		}, now)
-		if err != nil {
-			return summary, err
-		}
-		if inserted {
-			summary.Inserted++
-		} else {
-			summary.Skipped++
-		}
-	}
-	logging.Infof("recommendation refresh(%s): candidates=%d inserted=%d skipped=%d cooldown=%d",
-		source, summary.Candidates, summary.Inserted, summary.Skipped, summary.CooldownBlocked)
-	return summary, nil
-}
-
-// coarseFilter pgvector 粗筛：每版块偏好向量 top-N，排除 broken/accepted/dismissed-cooldown。
-// qaVec 非 nil 时仅用该向量（问答即时推荐，单全局桶）。
-func (s *RecommendationService) coarseFilter(ctx context.Context, topN, cooldownDays int, qaVec []float64) ([]candidateRow, error) {
-	if qaVec != nil {
-		return s.coarseFilterByVector(ctx, qaVec, topN, cooldownDays)
-	}
-	// 取所有 preference_vectors（behavior+seed），每条做一次 top-N。
-	type pvRow struct {
-		BoardID      *uint
-		EmbeddingVec string
-		Dimension    int
-	}
-	var pvs []pvRow
-	if err := s.db.WithContext(ctx).
-		Raw(`SELECT board_id, embedding AS embedding_vec, dimension FROM preference_vectors WHERE source IN ('behavior','seed')`).
-		Scan(&pvs).Error; err != nil {
-		return nil, err
-	}
-	var all []candidateRow
-	seen := make(map[uint]struct{})
-	for _, pv := range pvs {
-		vec, err := parsePgVector(pv.EmbeddingVec)
-		if err != nil || len(vec) == 0 {
-			continue
-		}
-		rows, err := s.coarseFilterByVectorBoard(ctx, vec, pv.Dimension, pv.BoardID, topN, cooldownDays)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range rows {
-			if _, ok := seen[r.RouteID]; ok {
-				continue
-			}
-			seen[r.RouteID] = struct{}{}
-			all = append(all, r)
-		}
-	}
-	return all, nil
-}
-
-// coarseFilterByVector 对单个问答向量粗筛（board_id=NULL，全局桶）。
-func (s *RecommendationService) coarseFilterByVector(ctx context.Context, vec []float64, topN, cooldownDays int) ([]candidateRow, error) {
-	return s.coarseFilterByVectorBoard(ctx, vec, len(vec), nil, topN, cooldownDays)
-}
-
-// coarseFilterByVectorBoard 对单向量 + 指定 board 粗筛（pgvector <=>）。
-func (s *RecommendationService) coarseFilterByVectorBoard(
-	ctx context.Context, vec []float64, dim int, boardID *uint, topN, cooldownDays int,
-) ([]candidateRow, error) {
-	vecStr := floatsToPgVector(vec)
-	q := `
-		SELECT r.id AS route_id, r.namespace, r.path, r.name, r.description, r.example,
-		       r.usable_directly, r.requires_parameters, r.parameters,
-		       (e.embedding <=> ?::vector) AS distance
-		FROM route_embeddings e
-		JOIN rsshub_routes r ON r.id = e.route_id
-		WHERE e.dimension = ?
-		  AND r.status NOT IN ('broken','gone')
-		  AND r.id NOT IN (SELECT route_id FROM feed_recommendations WHERE status = 'accepted')
-		  AND r.id NOT IN (
-		    SELECT route_id FROM feed_recommendations
-		    WHERE status = 'dismissed' AND dismissed_at IS NOT NULL
-		      AND dismissed_at > NOW() - make_interval(days => ?)
-		  )
-		ORDER BY e.embedding <=> ?::vector
-		LIMIT ?`
-	type row struct {
-		RouteID            uint
-		Namespace          string
-		Path               string
-		Name               string
-		Description        string
-		Example            string
-		UsableDirectly     bool
-		RequiresParameters bool
-		Parameters         string
-		Distance           float64
-	}
-	var rows []row
-	if err := s.db.WithContext(ctx).Raw(q, vecStr, dim, cooldownDays, vecStr, topN).Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-	out := make([]candidateRow, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, candidateRow{
-			RouteID: r.RouteID, Namespace: r.Namespace, Path: r.Path, Name: r.Name,
-			Description: r.Description, Example: r.Example,
-			UsableDirectly: r.UsableDirectly, RequiresParameters: r.RequiresParameters,
-			Parameters: r.Parameters, BoardID: boardID, Distance: r.Distance,
-		})
-	}
-	return out, nil
-}
-
-// filterByFeedsURL 对 usable_directly 候选按 feeds.url 去重（D5/B）。
-func (s *RecommendationService) filterByFeedsURL(ctx context.Context, cs []candidateRow) []candidateRow {
-	if len(cs) == 0 {
-		return cs
-	}
-	// 预取所有 feeds.url 集合。
-	var urls []string
-	s.db.WithContext(ctx).Model(&models.Feed{}).Pluck("url", &urls)
-	urlSet := make(map[string]struct{}, len(urls))
-	for _, u := range urls {
-		urlSet[u] = struct{}{}
-	}
-	out := cs[:0]
-	baseURL := resolveRSSHubBaseURL(s.db)
-	for _, c := range cs {
-		if c.UsableDirectly {
-			expected := baseURL + c.Example
-			if _, ok := urlSet[expected]; ok {
-				continue
-			}
-		}
-		out = append(out, c)
-	}
-	return out
-}
-
-// rankedCandidate 精排后结果。
-type rankedCandidate struct {
-	candidateRow
-	Score  float64
-	Reason string
-}
-
-// rerank LLM 精排；router 为 nil 时直出粗筛（score=1-distance）。
-func (s *RecommendationService) rerank(ctx context.Context, cs []candidateRow) []rankedCandidate {
-	out := make([]rankedCandidate, 0, len(cs))
-	if s.router == nil {
-		for _, c := range cs {
-			out = append(out, rankedCandidate{candidateRow: c, Score: 1 - c.Distance})
-		}
-		return out
-	}
-	// LLM 精排：构造候选摘要，请求保留子集 + 理由（失败则降级直出）。
-	prompt := buildRerankPrompt(cs)
-	chatResp, err := s.router.Chat(ctx, airouter.ChatRequest{
-		Capability: airouter.CapabilityFeedDiscovery,
-		Messages:   []airouter.Message{{Role: "user", Content: prompt}},
-		Operation:  "discovery.recommendation_rerank",
-	})
-	if err != nil || chatResp == nil || chatResp.Content == "" {
-		for _, c := range cs {
-			out = append(out, rankedCandidate{candidateRow: c, Score: 1 - c.Distance})
-		}
-		return out
-	}
-	reasons := parseRerankResponse(chatResp.Content, cs)
-	for _, c := range cs {
-		reason := reasons[c.RouteID]
-		out = append(out, rankedCandidate{candidateRow: c, Score: 1 - c.Distance, Reason: reason})
-	}
-	return out
-}
-
-// insertPending 幂等插入 pending 行：复用同 hash 现有行（dismissed 冷却过期重推→回 pending），
-// 同 hash 已 pending → 不重复；无现有行 → 新建。避免 recommendation_hash UNIQUE 冲突（H1）。
-func (s *RecommendationService) insertPending(ctx context.Context, rec models.FeedRecommendation, now time.Time) (bool, error) {
-	var existing models.FeedRecommendation
-	err := s.db.WithContext(ctx).Where("recommendation_hash = ?", rec.RecommendationHash).First(&existing).Error
-	if err == nil {
-		if existing.Status == "pending" {
-			return false, nil // 同 hash 已 pending：幂等不重复
-		}
-		// dismissed（冷却过期重推）或异常残留 → 复用行回 pending，清 dismiss/accept 痕迹。
-		existing.Source = rec.Source
-		existing.Score = rec.Score
-		existing.LLMReason = rec.LLMReason
-		existing.BoardID = rec.BoardID
-		existing.Status = "pending"
-		existing.DismissedAt = nil
-		existing.AcceptedFeedID = nil
-		existing.UpdatedAt = now
-		return true, s.db.WithContext(ctx).Save(&existing).Error
-	}
-	if !isNotFound(err) {
-		return false, err
-	}
-	rec.CreatedAt = now
-	rec.UpdatedAt = now
-	return true, s.db.WithContext(ctx).Create(&rec).Error
-}
-
-// countDismissedInCooldown 统计 hash 在冷却期内的 dismiss 数（跨 source）。
-func (s *RecommendationService) countDismissedInCooldown(ctx context.Context, hash string, days int) (int64, error) {
-	var c int64
-	err := s.db.WithContext(ctx).Model(&models.FeedRecommendation{}).
-		Where("recommendation_hash = ? AND status = 'dismissed' AND dismissed_at IS NOT NULL AND dismissed_at > NOW() - make_interval(days => ?)",
-			hash, days).
-		Count(&c).Error
-	return c, err
-}
+// （4.3 起：旧 route_embeddings 粗筛（coarseFilterByVector/coarseFilterByVectorBoard）
+// 已由 discovery_recall.go 的 searchCandidates（candidate_embeddings × feed_candidates）
+// 取代并删除；route_embeddings 仅作迁移输入/回滚资料，不再参与新召回。已订阅
+// feeds.url 去重也已内联进 searchCandidates 的资格过滤 SQL（先于 top-N 截断）。）
 
 // RecommendationCard 是推荐卡片视图（含路由元数据）。
 type RecommendationCard struct {
@@ -342,7 +127,10 @@ type RecommendationCard struct {
 	ParamOptions map[string][]ParamOption `json:"param_options"`
 }
 
-// GetRecommendations 返回推荐卡片列表（默认 pending）。
+// GetRecommendations 返回推荐卡片列表（默认 pending）。pending 列表只返回未到期
+// （expires_at 为空或 now < expires_at，D5 到期判据 now >= expires_at 排他）且未被
+// candidate_preferences 冷却/长期排除的卡；到期卡自动转入历史视图，**不写
+// dismissed_at**（自动过期 ≠ 拒绝）。
 func (s *RecommendationService) GetRecommendations(ctx context.Context, status string) ([]RecommendationCard, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "RecommendationService.GetRecommendations")
 	defer span.End()
@@ -350,11 +138,19 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, status s
 		status = "pending"
 	}
 	var recs []models.FeedRecommendation
-	err := s.db.WithContext(ctx).
+	q := s.db.WithContext(ctx).
 		Preload("Route").Preload("Board").
-		Where("status = ?", status).
-		Order("created_at DESC").
-		Find(&recs).Error
+		Where("status = ?", status)
+	if status == "pending" {
+		now := time.Now()
+		q = q.Where("(expires_at IS NULL OR expires_at > ?)", now).
+			Where(`NOT EXISTS (
+				SELECT 1 FROM candidate_preferences cp
+				WHERE cp.candidate_id = feed_recommendations.candidate_id
+				  AND (cp.excluded_at IS NOT NULL
+				       OR (cp.snoozed_until IS NOT NULL AND cp.snoozed_until > ?)))`, now)
+	}
+	err := q.Order("created_at DESC").Find(&recs).Error
 	if err != nil {
 		return nil, err
 	}
@@ -408,8 +204,12 @@ func (s *RecommendationService) attachParamOptions(ctx context.Context, cards []
 	}
 }
 
-// AcceptRecommendation 接受推荐：usable_directly 直订；requires_parameters 填参拼 URL 订阅。
-// 订阅成功后标记 accepted 并记录 feed_id。
+// AcceptRecommendation 接受推荐：原生 RSS 用候选规范化地址，RSSHub 填参拼最终地址；
+// 两者都经共享建源服务（design D9）安全验证（私网/loopback/云元数据默认拒绝、重定向
+// 逐跳校验、仅可解析 RSS/Atom 才算过），验证通过后在**同一短事务**内建/复用 Feed 并
+// 标记 accepted + accepted_feed_id。验证失败不建源、不标 accepted，输入保留可重试；
+// 重复接受同有效地址复用同一 Feed（幂等，不产生重复订阅）。RSSHub 最终 URL 同样受
+// 500 rune 上限约束，超长就地拒绝。
 func (s *RecommendationService) AcceptRecommendation(ctx context.Context, id uint, categoryID *uint, params map[string]string) (*models.Feed, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "RecommendationService.AcceptRecommendation")
 	defer span.End()
@@ -417,164 +217,128 @@ func (s *RecommendationService) AcceptRecommendation(ctx context.Context, id uin
 	if err := s.db.WithContext(ctx).Preload("Route").First(&rec, id).Error; err != nil {
 		return nil, err
 	}
+	// 幂等：已接受的推荐直接返回既有订阅，不重复验证/建源/标记。
+	if rec.Status == "accepted" {
+		if rec.AcceptedFeedID == nil {
+			return nil, fmt.Errorf("recommendation %d accepted without feed", id)
+		}
+		var feed models.Feed
+		if err := s.db.WithContext(ctx).First(&feed, *rec.AcceptedFeedID).Error; err != nil {
+			return nil, fmt.Errorf("recommendation %d accepted feed unavailable: %w", id, err)
+		}
+		return &feed, nil
+	}
 	if rec.Status != "pending" {
 		return nil, fmt.Errorf("recommendation %d not pending (status=%s)", id, rec.Status)
 	}
+
+	rawURL, title, accessScope, err := s.resolveAcceptTarget(ctx, &rec, params)
+	if err != nil {
+		return nil, err
+	}
+
+	feedSvc := readersvc.NewFeedCreateService(s.db)
+	// 私网授权接线（Medium 7）：private_allowed 候选只放行其端点解析到的 IP（/32 或 /128），
+	// 不是全局关闭 SSRF；safefetch 仍逐跳重解析并校验。
+	fetchOpts := safefetch.Options{}
+	if accessScope == "private_allowed" {
+		ips, aerr := allowedIPsForEndpoint(ctx, rawURL)
+		if aerr != nil {
+			return nil, fmt.Errorf("resolve private endpoint for accept: %w", aerr)
+		}
+		fetchOpts.AllowedIPs = ips
+	}
+	normalized, err := feedSvc.VerifySubscriptionURLWithOptions(ctx, rawURL, fetchOpts)
+	if err != nil {
+		return nil, err // 验证失败：不建源、不标 accepted（可重试）
+	}
+
+	var feed *models.Feed
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		f, _, txErr := feedSvc.CreateOrReuseFeed(tx, normalized, readersvc.FeedCreateOptions{
+			Title: title, CategoryID: categoryID,
+		})
+		if txErr != nil {
+			return fmt.Errorf("create feed: %w", txErr)
+		}
+		updated, txErr := markRecommendationAccepted(tx, rec.ID, f.ID)
+		if txErr != nil {
+			return txErr
+		}
+		if !updated {
+			// 并发 accept 已抢先标记（WHERE status='pending' 影响行数 0）——幂等返回其已关联 feed，
+			// 不重复标 accepted、不报错（Medium 11）。
+			var fresh models.FeedRecommendation
+			if err := tx.First(&fresh, rec.ID).Error; err != nil {
+				return err
+			}
+			if fresh.Status != "accepted" || fresh.AcceptedFeedID == nil {
+				return fmt.Errorf("recommendation %d concurrent accept left no accepted feed", rec.ID)
+			}
+			var existing models.Feed
+			if err := tx.First(&existing, *fresh.AcceptedFeedID).Error; err != nil {
+				return fmt.Errorf("recommendation %d accepted feed unavailable: %w", rec.ID, err)
+			}
+			feed = &existing
+			return nil
+		}
+		feed = f
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return feed, nil
+}
+
+// resolveAcceptTarget 解析订阅目标地址、展示标题与候选授权范围：候选 kind=rss 用候选
+// 规范化 feed_url；kind=rsshub 用 route + 填参按既有 buildFeedURL 拼装（参数可选值字典
+// 优先由既有入参规则决定，此处不另起一套）；最终地址长度上限交由共享建源服务统一把关。
+func (s *RecommendationService) resolveAcceptTarget(ctx context.Context, rec *models.FeedRecommendation, params map[string]string) (string, string, string, error) {
+	candID, err := s.resolveRecommendationCandidate(ctx, rec)
+	if err != nil {
+		return "", "", "", err
+	}
+	var cand models.FeedCandidate
+	if err := s.db.WithContext(ctx).First(&cand, candID).Error; err != nil {
+		return "", "", "", fmt.Errorf("load candidate %d: %w", candID, err)
+	}
+	if cand.Kind == "rss" {
+		if cand.FeedURL == nil || strings.TrimSpace(*cand.FeedURL) == "" {
+			return "", "", "", fmt.Errorf("candidate %d has no feed url", candID)
+		}
+		return *cand.FeedURL, EffectiveMetadata(cand.ManualMetadata, "", "", "", "").Name, cand.AccessScope, nil
+	}
 	if rec.Route == nil {
-		return nil, fmt.Errorf("recommendation %d has no route", id)
+		return "", "", "", fmt.Errorf("recommendation %d has no route", rec.ID)
 	}
 	feedURL := buildFeedURL(rec.Route, params, resolveRSSHubBaseURL(s.db))
 	if feedURL == "" {
-		return nil, fmt.Errorf("cannot resolve feed url for route %s", rec.Route.Path)
+		return "", "", "", fmt.Errorf("cannot resolve feed url for route %s", rec.Route.Path)
 	}
-	// URL 已存在 → 复用既有 feed。
-	var existing models.Feed
-	if err := s.db.WithContext(ctx).Where("url = ?", feedURL).First(&existing).Error; err == nil {
-		if err := s.markAccepted(ctx, &rec, existing.ID); err != nil {
-			return nil, err
-		}
-		return &existing, nil
-	}
-	now := time.Now()
-	feed := models.Feed{
-		Title: firstNonEmpty(rec.Route.Name, "Untitled Feed"),
-		URL:   feedURL, CategoryID: categoryID,
-		Icon: "mdi:rss", IconSource: "fallback", Color: "#8b5cf6",
-		MaxArticles: 100, RefreshInterval: 60, LastUpdated: &now,
-	}
-	if err := s.db.WithContext(ctx).Create(&feed).Error; err != nil {
-		return nil, fmt.Errorf("create feed: %w", err)
-	}
-	if err := s.markAccepted(ctx, &rec, feed.ID); err != nil {
-		return nil, err
-	}
-	return &feed, nil
+	return feedURL, rec.Route.Name, cand.AccessScope, nil
 }
 
-// markAccepted 标记推荐 accepted 并关联 feed_id。
-func (s *RecommendationService) markAccepted(ctx context.Context, rec *models.FeedRecommendation, feedID uint) error {
-	now := time.Now()
-	rec.Status = "accepted"
-	rec.AcceptedFeedID = &feedID
-	rec.UpdatedAt = now
-	return s.db.WithContext(ctx).Save(rec).Error
-}
-
-// DismissRecommendation 拒绝推荐，进入冷却期。
-func (s *RecommendationService) DismissRecommendation(ctx context.Context, id uint) error {
-	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "RecommendationService.DismissRecommendation")
-	defer span.End()
-	now := time.Now()
-	return s.db.WithContext(ctx).Model(&models.FeedRecommendation{}).
-		Where("id = ? AND status = ?", id, "pending").
-		Updates(map[string]any{"status": "dismissed", "dismissed_at": now, "updated_at": now}).Error
-}
-
-// Ask 问答式即时推荐：embedding → 粗筛 → 精排 → 落库(source=qa) + 种子写入。
-func (s *RecommendationService) Ask(ctx context.Context, question string) ([]RecommendationCard, error) {
-	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "RecommendationService.Ask")
-	defer span.End()
-	if s.router == nil {
-		return nil, fmt.Errorf("ask requires airouter (embedding route not configured)")
-	}
-	result, err := s.router.Embed(ctx, airouter.EmbeddingRequest{
-		Input: []string{question}, Operation: "discovery.ask",
-	}, airouter.CapabilityEmbedding)
-	if err != nil {
-		return nil, fmt.Errorf("embed question: %w", err)
-	}
-	if len(result.Embeddings) == 0 {
-		return nil, fmt.Errorf("empty embedding for question")
-	}
-	qaVec := result.Embeddings[0]
-
-	// 即时粗筛 + 精排（不入库，仅返回）。
-	candidates, err := s.coarseFilterByVector(ctx, qaVec, RecommendationTopNDefault, DismissCooldownDaysDefault)
-	if err != nil {
-		return nil, err
-	}
-	candidates = s.filterByFeedsURL(ctx, candidates)
-	ranked := s.rerank(ctx, candidates)
-
-	// 落库 source=qa（幂等 + 冷却）。
-	now := time.Now()
-	for _, rc := range ranked {
-		hash := ComputeRecommendationHash(rc.RouteID, nil)
-		blocked, _ := s.countDismissedInCooldown(ctx, hash, DismissCooldownDaysDefault)
-		if blocked > 0 {
-			continue
-		}
-		_, _ = s.insertPending(ctx, models.FeedRecommendation{
-			RouteID: rc.RouteID, BoardID: nil, Source: RecommendationSourceQA,
-			Score: rc.Score, LLMReason: rc.Reason, Status: "pending",
-			RecommendationHash: hash,
-		}, now)
-	}
-
-	// 种子写入：问题向量匹配板块落 seed 行（D7）。
-	boardVecs, _ := s.loadBoardVectors(ctx)
-	_ = s.prefSvc.WriteSeed(ctx, qaVec, result.Dimensions, result.Model, boardVecs)
-
-	// 返回即时卡片。
-	return s.cardsFromRanked(ctx, ranked)
-}
-
-// loadBoardVectors 取各版块向量（SemanticLabel.Embedding）。
-func (s *RecommendationService) loadBoardVectors(ctx context.Context) (map[uint][]float64, error) {
-	type row struct {
-		ID        uint
-		Embedding *string
-	}
-	var rows []row
-	if err := s.db.WithContext(ctx).Raw(`SELECT id, embedding FROM semantic_labels WHERE embedding IS NOT NULL`).Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-	out := make(map[uint][]float64)
-	for _, r := range rows {
-		if r.Embedding == nil {
-			continue
-		}
-		v, err := parsePgVector(*r.Embedding)
-		if err != nil || len(v) == 0 {
-			continue
-		}
-		out[r.ID] = v
-	}
-	return out, nil
-}
-
-// cardsFromRanked 把精排结果转成卡片视图。
-func (s *RecommendationService) cardsFromRanked(ctx context.Context, ranked []rankedCandidate) ([]RecommendationCard, error) {
-	if len(ranked) == 0 {
-		return []RecommendationCard{}, nil
-	}
-	ids := make([]uint, 0, len(ranked))
-	for _, r := range ranked {
-		ids = append(ids, r.RouteID)
-	}
-	var routes []models.RSSHubRoute
-	s.db.WithContext(ctx).Where("id IN ?", ids).Find(&routes)
-	byID := make(map[uint]models.RSSHubRoute, len(routes))
-	for _, r := range routes {
-		byID[r.ID] = r
-	}
-	cards := make([]RecommendationCard, 0, len(ranked))
-	for _, r := range ranked {
-		rt := byID[r.RouteID]
-		cards = append(cards, RecommendationCard{
-			RouteNamespace: rt.Namespace, RoutePath: rt.Path, RouteName: rt.Name,
-			RouteExample: rt.Example, UsableDirectly: rt.UsableDirectly,
-			RequiresParameters: rt.RequiresParameters, Parameters: rt.Parameters, RouteStatus: rt.Status,
-			FeedRecommendation: models.FeedRecommendation{
-				RouteID: r.RouteID, Source: RecommendationSourceQA, Score: r.Score,
-				LLMReason: r.Reason, Status: "pending",
-				RecommendationHash: ComputeRecommendationHash(r.RouteID, nil),
-			},
+// markRecommendationAccepted 在给定事务内标记推荐 accepted 并关联 feed_id；只更新
+// status='pending' 的行（Medium 11：并发 accept 只有一个赢家，不覆盖别人的 accepted_feed_id）。
+// 返回 updated=false 表示影响行数 0（已被并发 accept 抢先或已非 pending），调用方据 fresh
+// 行幂等复用既有 feed。只更新必要三列而非 Save：避免覆盖迁移/并发写入的其它字段。
+func markRecommendationAccepted(tx *gorm.DB, recID, feedID uint) (bool, error) {
+	res := tx.Model(&models.FeedRecommendation{}).
+		Where("id = ? AND status = ?", recID, "pending").
+		Updates(map[string]any{
+			"status": "accepted", "accepted_feed_id": feedID, "updated_at": time.Now(),
 		})
+	if res.Error != nil {
+		return false, res.Error
 	}
-	s.attachParamOptions(ctx, cards)
-	return cards, nil
+	return res.RowsAffected > 0, nil
 }
+
+// （旧的 DismissRecommendation（写 status=dismissed + 30 天 hash 冷却池）已于 4.4
+// 退役：暂时不看/长期排除/恢复统一走 recommendation_lifecycle.go 的
+// SnoozeRecommendation / ExcludeRecommendation / RestoreRecommendation，
+// 写 candidate_preferences 权威，pending 行状态不变。）
 
 // buildFeedURL 拼接受订阅的 feed URL。
 // usable_directly：baseURL + example（或 namespace+path）；requires_parameters：用 params 填 path 参数。
@@ -619,53 +383,4 @@ func stripOptionalParams(url string) string {
 		out = append(out, seg)
 	}
 	return strings.Join(out, "/")
-}
-
-// buildRerankPrompt 构造 LLM 精排 prompt。
-func buildRerankPrompt(cs []candidateRow) string {
-	var b strings.Builder
-	b.WriteString("以下是候选 RSS 订阅源，请从中挑选最值得推荐的，并为每条写一句中文推荐理由（引用路由 name/description）。\n")
-	b.WriteString("返回 JSON 数组，每项 {\"route_id\": 数字, \"reason\": \"理由\"}。不要返回未挑选的路由。\n\n")
-	for _, c := range cs {
-		fmt.Fprintf(&b, "- route_id=%d | %s/%s | %s | %s\n", c.RouteID, c.Namespace, c.Path, c.Name, truncate(c.Description, 100))
-	}
-	return b.String()
-}
-
-// parseRerankResponse 解析 LLM 精排响应 → map[routeID]reason。
-func parseRerankResponse(content string, cs []candidateRow) map[uint]string {
-	out := map[uint]string{}
-	// 提取首个 JSON 数组。
-	start := strings.Index(content, "[")
-	end := strings.LastIndex(content, "]")
-	if start < 0 || end <= start {
-		return out
-	}
-	var items []struct {
-		RouteID uint   `json:"route_id"`
-		Reason  string `json:"reason"`
-	}
-	if err := json.Unmarshal([]byte(content[start:end+1]), &items); err != nil {
-		return out
-	}
-	for _, it := range items {
-		if it.Reason != "" {
-			out[it.RouteID] = it.Reason
-		}
-	}
-	return out
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }

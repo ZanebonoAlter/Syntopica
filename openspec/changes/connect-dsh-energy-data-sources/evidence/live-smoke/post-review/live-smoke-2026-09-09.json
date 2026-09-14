@@ -1,0 +1,183 @@
+{
+ "exact_command": [
+  "uv",
+  "run",
+  "--frozen",
+  "--no-sync",
+  "--project",
+  "D:/project/Syntopica/tools/energy-mcp",
+  "python",
+  "D:/project/Syntopica/tools/energy-mcp/server.py"
+ ],
+ "cwd": "D:/project/Syntopica/tools/energy-mcp",
+ "server": "energy_data",
+ "protocol": "2025-11-25",
+ "tools_listed": [
+  "eia_wpsr_table1",
+  "jodi_oil_primary"
+ ],
+ "eia_stocks": {
+  "source": "EIA Weekly Petroleum Status Report Table 1 (US only, weekly)",
+  "url": "https://ir.eia.gov/secure/wpsr/table1.csv?Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9pci5laWEuZ292L3NlY3VyZS93cHNyLyoiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3ODkwNTE4MDB9LCJEYXRlR3JlYXRlclRoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc4ODM1OTQwMH19fV19&Signature=x8gx1fQ5uibXaAXawKc3dBhOqNq1q0TYK9H1xi-mX0F6AGNnJiRHLX-8TAc4kMdRz58qJUBFWvw-XZEwDOiZnjkO-v815YlEnPB9niD4Ts16p3HlgHbkVUWhGPMfI2jmmnVItg0N3RY-EI-oy-3fr3EcjZud~1EEmNUXtpFGRHeNxMBBSxfL5xoEtCkwzcZXb3rUW~Pst1cw9TO3~n0PHcC37C3zrfkhXIRW~BQtMIEvq3Iolp1-Vo88eh-QYQOGhwErMkouzLv-ny7j4LWB9gbQnX5n-k71At1rOD1r0FCuz7FcF-5ROfb2oirpwRPhKMj2zCviHXIJdPeoO8D6UQ&Key-Pair-Id=K3GSKAQMJCVHSE",
+  "retrieved_at": "2026-09-09T03:00:34.247838+00:00",
+  "last_modified": "2026-09-02T13:49:33+00:00",
+  "source_sha256": "f19e0a9d44cb7e2594a2fee1c2a7fc429b2e9d79c4471bbaab18297202f2402a",
+  "from_cache": false,
+  "observations": [
+   {
+    "geo": "US",
+    "product": "Crude Oil",
+    "flow": "crude_stocks_total_incl_spr",
+    "label": "Crude Oil",
+    "frequency": "weekly",
+    "unit": "MMbbl",
+    "period": "2026-08-28",
+    "value": 711.064,
+    "raw_value": "711.064",
+    "prior_period": "2026-08-21",
+    "prior_value": 718.636,
+    "prior_raw_value": "718.636",
+    "source_row": 2
+   },
+   {
+    "geo": "US",
+    "product": "Crude Oil",
+    "flow": "crude_stocks_commercial",
+    "label": "Commercial (Excluding SPR)",
+    "frequency": "weekly",
+    "unit": "MMbbl",
+    "period": "2026-08-28",
+    "value": 424.46,
+    "raw_value": "424.460",
+    "prior_period": "2026-08-21",
+    "prior_value": 428.91,
+    "prior_raw_value": "428.910",
+    "source_row": 3
+   },
+   {
+    "geo": "US",
+    "product": "Crude Oil",
+    "flow": "crude_stocks_spr",
+    "label": "Strategic Petroleum Reserve (SPR)",
+    "frequency": "weekly",
+    "unit": "MMbbl",
+    "period": "2026-08-28",
+    "value": 286.604,
+    "raw_value": "286.604",
+    "prior_period": "2026-08-21",
+    "prior_value": 289.726,
+    "prior_raw_value": "289.726",
+    "source_row": 4
+   }
+  ]
+ },
+ "eia_supply": {
+  "source": "EIA Weekly Petroleum Status Report Table 1 (US only, weekly)",
+  "url": "https://ir.eia.gov/secure/wpsr/table1.csv?Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9pci5laWEuZ292L3NlY3VyZS93cHNyLyoiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3ODkwNTE4MDB9LCJEYXRlR3JlYXRlclRoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc4ODM1OTQwMH19fV19&Signature=x8gx1fQ5uibXaAXawKc3dBhOqNq1q0TYK9H1xi-mX0F6AGNnJiRHLX-8TAc4kMdRz58qJUBFWvw-XZEwDOiZnjkO-v815YlEnPB9niD4Ts16p3HlgHbkVUWhGPMfI2jmmnVItg0N3RY-EI-oy-3fr3EcjZud~1EEmNUXtpFGRHeNxMBBSxfL5xoEtCkwzcZXb3rUW~Pst1cw9TO3~n0PHcC37C3zrfkhXIRW~BQtMIEvq3Iolp1-Vo88eh-QYQOGhwErMkouzLv-ny7j4LWB9gbQnX5n-k71At1rOD1r0FCuz7FcF-5ROfb2oirpwRPhKMj2zCviHXIJdPeoO8D6UQ&Key-Pair-Id=K3GSKAQMJCVHSE",
+  "retrieved_at": "2026-09-09T03:00:34.247838+00:00",
+  "last_modified": "2026-09-02T13:49:33+00:00",
+  "source_sha256": "f19e0a9d44cb7e2594a2fee1c2a7fc429b2e9d79c4471bbaab18297202f2402a",
+  "from_cache": true,
+  "observations": [
+   {
+    "geo": "US",
+    "product": "Crude Oil",
+    "flow": "crude_production",
+    "label": "Domestic Production",
+    "frequency": "weekly",
+    "unit": "Mb/d",
+    "period": "2026-08-28",
+    "value": 13862.0,
+    "raw_value": "13,862",
+    "prior_period": "2026-08-21",
+    "prior_value": 13843.0,
+    "prior_raw_value": "13,843",
+    "source_row": 22
+   },
+   {
+    "geo": "US",
+    "product": "Crude Oil",
+    "flow": "crude_imports",
+    "label": "Imports",
+    "frequency": "weekly",
+    "unit": "Mb/d",
+    "period": "2026-08-28",
+    "value": 6770.0,
+    "raw_value": "6,770",
+    "prior_period": "2026-08-21",
+    "prior_value": 6158.0,
+    "prior_raw_value": "6,158",
+    "source_row": 29
+   },
+   {
+    "geo": "US",
+    "product": "Crude Oil",
+    "flow": "crude_exports",
+    "label": "Exports",
+    "frequency": "weekly",
+    "unit": "Mb/d",
+    "period": "2026-08-28",
+    "value": 4483.0,
+    "raw_value": "4,483",
+    "prior_period": "2026-08-21",
+    "prior_value": 3792.0,
+    "prior_raw_value": "3,792",
+    "source_row": 33
+   }
+  ]
+ },
+ "jodi_production_latest": {
+  "source": "JODI Oil Primary World Database (annual CSV snapshot)",
+  "url": "https://www.jodidata.org/_resources/files/downloads/oil-data/annual-csv/primary/primaryyear2026.csv",
+  "retrieved_at": "2026-09-09T03:01:14.572126+00:00",
+  "last_modified": "2026-08-20T10:13:41+00:00",
+  "source_sha256": "f2424580adb02f113232f09cc6ac35429951e291f8cc977912b9798acb856fb2",
+  "from_cache": false,
+  "year_used": 2026,
+  "year_strategy": "latest month of current-year file",
+  "no_data": false,
+  "observations": [
+   {
+    "geo": "US",
+    "product": "CRUDEOIL",
+    "flow": "INDPROD",
+    "period": "2026-06",
+    "frequency": "monthly",
+    "unit": "KBD",
+    "value": 13818.0,
+    "raw_value": "13818.0000",
+    "source_row": 109464,
+    "assessment_code": "1"
+   }
+  ]
+ },
+ "jodi_closing_stocks_latest": {
+  "source": "JODI Oil Primary World Database (annual CSV snapshot)",
+  "url": "https://www.jodidata.org/_resources/files/downloads/oil-data/annual-csv/primary/primaryyear2026.csv",
+  "retrieved_at": "2026-09-09T03:01:14.572126+00:00",
+  "last_modified": "2026-08-20T10:13:41+00:00",
+  "source_sha256": "f2424580adb02f113232f09cc6ac35429951e291f8cc977912b9798acb856fb2",
+  "from_cache": true,
+  "year_used": 2026,
+  "year_strategy": "latest month of current-year file",
+  "no_data": false,
+  "observations": [
+   {
+    "geo": "US",
+    "product": "CRUDEOIL",
+    "flow": "CLOSTLV",
+    "period": "2026-06",
+    "frequency": "monthly",
+    "unit": "KBBL",
+    "value": 668715.0,
+    "raw_value": "668715.0000",
+    "source_row": 109453,
+    "assessment_code": "1"
+   }
+  ]
+ },
+ "error_case": {
+  "isError": true,
+  "message": "Error executing tool jodi_oil_primary: [INVALID_ARGUMENT] geo must be exactly two uppercase letters (ISO-like code), got 'usa'"
+ }
+}

@@ -32,4 +32,4 @@
 
 ## 6. review 修复
 
-- [ ] 6.1 修复 review 发现：H1 EdgeGC 滚动窗→日历天口径（代码+测试+spec/design/test-cases/文档同步）；H2 board_daily_reports 补 (board, period_date) 唯一索引（模型 tag，存量重复风险附去重 SQL）；M1 failed 计数入 Data；M3 存在性查询改 Count；M4 补档循环 ctx 短路。M5（reader 标签过滤受边回收影响）拉用户决策，不在本任务。验证：影响包全绿 + lint 零 issue + 文档口径 grep 零残留。
+- [x] 6.1 修复 review 发现：H1 EdgeGC 滚动窗→日历天口径（代码+测试+spec/design/test-cases/文档同步）；H2 board_daily_reports 补 (board, period_date) 唯一索引（模型 tag，存量重复风险附去重 SQL）；M1 failed 计数入 Data；M3 存在性查询改 Count；M4 补档循环 ctx 短路。M5（reader 标签过滤受边回收影响）拉用户决策，不在本任务。验证：影响包全绿 + lint 零 issue + 文档口径 grep 零残留。

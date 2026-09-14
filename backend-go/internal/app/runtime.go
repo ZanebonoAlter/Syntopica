@@ -160,6 +160,11 @@ func StartRuntime() *Runtime {
 			"同步 RSSHub 路由目录"),
 	}))
 
+	// improve-discovery-recommendations 4.6：发现 v2 后台任务（可用性检查 / 向量回补 /
+	// 运行维护）。开关 ai_settings.discovery_v2 默认启用；关闭时不注册这三个任务
+	// （回滚边界：只停后台任务，ask/refresh 推荐主链与已发布推荐不受影响）。
+	registerDiscoveryV2Jobs(registry, admin.DiscoveryV2Enabled(database.DB))
+
 	registry.Register("tag_quality_score", scheduler.New(scheduler.Config{
 		Name:        "Tag Quality Score",
 		Description: "Recompute persistent quality scores for topic tags",
@@ -298,6 +303,54 @@ func StartRuntime() *Runtime {
 	registry.StartAll()
 
 	return &Runtime{Registry: registry}
+}
+
+// registerDiscoveryV2Jobs 注册发现 v2 的三个后台任务（improve-discovery-recommendations 4.6,
+// design D9 / 迁移计划 5-6）：
+//
+//   - candidate_availability_check 候选实际端点的周期可用性检查——维护类（纯 HTTP 检查），
+//     不包 PauseAware（design D9：纯 HTTP 检查不受分析暂停影响）；
+//   - candidate_embedding_backfill 候选有效介绍向量增量回补——分析类，包 PauseAware
+//     （embedding 属分析工作，总闸/模型未就绪时优雅停）；
+//   - discovery_run_maintenance 僵尸 run 清理——维护类（只改本库状态，不算分析）。
+//
+// enabled=false（ai_settings.discovery_v2）时一个都不注册：停后台任务与检查端点属回滚
+// 手段；ask/refresh 推荐主链不经此开关（引擎已整体切 v2，无旧引擎可回落）。
+func registerDiscoveryV2Jobs(registry *admin.SchedulerRegistry, enabled bool) {
+	if !enabled {
+		logging.Infof("ai_settings.discovery_v2 disabled: skipping discovery v2 background schedulers")
+		return
+	}
+
+	registry.Register("candidate_availability_check", scheduler.New(scheduler.Config{
+		Name:         "Candidate Availability Check",
+		Description:  "周期检查候选实际端点可用性（维护类，不受分析暂停影响）",
+		Interval:     3600 * time.Second,
+		StartupDelay: 5 * time.Minute,
+		Job:          admin.CandidateAvailabilityCheckJob,
+		Persistence: admin.NewTaskPersistence("candidate_availability_check",
+			"周期检查候选实际端点可用性"),
+	}))
+
+	registry.Register("candidate_embedding_backfill", scheduler.New(scheduler.Config{
+		Name:         "Candidate Embedding Backfill",
+		Description:  "候选有效介绍向量增量回补（分析类，遵守 analysis_paused）",
+		Interval:     3600 * time.Second,
+		StartupDelay: 5 * time.Minute,
+		Job:          scheduler.PauseAware(admin.CandidateEmbeddingBackfillJob),
+		Persistence: admin.NewTaskPersistence("candidate_embedding_backfill",
+			"候选有效介绍向量增量回补"),
+	}))
+
+	registry.Register("discovery_run_maintenance", scheduler.New(scheduler.Config{
+		Name:         "Discovery Run Maintenance",
+		Description:  "把卡死 running 超过 1 小时的发现运行置 failed（维护类）",
+		Interval:     3600 * time.Second,
+		StartupDelay: 5 * time.Minute,
+		Job:          admin.DiscoveryRunMaintenanceJob,
+		Persistence: admin.NewTaskPersistence("discovery_run_maintenance",
+			"清理僵尸发现运行"),
+	}))
 }
 
 func SetupGracefulShutdown(runtime *Runtime) {

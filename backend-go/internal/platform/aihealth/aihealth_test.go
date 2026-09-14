@@ -70,6 +70,10 @@ func resetSnapshot() {
 	snapshotMu.Lock()
 	current = &Snapshot{}
 	snapshotMu.Unlock()
+	// Degrade-debounce streak is per-test too: a leftover streak from a
+	// previous test would make its first failing probe degrade immediately
+	// (or hold a debounce window the test does not expect).
+	failStreak = 0
 	// Launch bookkeeping is per-test too: provider IDs restart at 1 in every
 	// test's fresh SQLite DB, so a leftover cooldown entry would suppress the
 	// next test's launch.

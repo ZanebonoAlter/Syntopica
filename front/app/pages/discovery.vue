@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
-import { DiscoveryPanel } from '~/features/discovery/public'
+import AppPageShell from '~/components/ui/AppPageShell.vue'
+import { DiscoveryWorkspace } from '~/features/discovery/public'
 </script>
 
 <template>
@@ -18,9 +19,13 @@ import { DiscoveryPanel } from '~/features/discovery/public'
       </div>
     </div>
 
-    <main class="discovery-main">
-      <DiscoveryPanel />
-    </main>
+    <!-- 布局契约（ui-design Layout Contract）：contained 最大 1120px 居中，不自写 max-width -->
+    <div class="discovery-main">
+      <AppPageShell mode="contained" as="div">
+        <p class="discovery-lede">先收藏来源到候选库，再按需订阅——入库不等于订阅。</p>
+        <DiscoveryWorkspace />
+      </AppPageShell>
+    </div>
   </div>
 </template>
 
@@ -73,12 +78,18 @@ import { DiscoveryPanel } from '~/features/discovery/public'
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 24px 28px;
+  padding: 24px 0 48px;
+}
+
+.discovery-lede {
+  margin: 0 0 20px;
+  font-size: 13px;
+  color: var(--color-text-muted);
 }
 
 @media (max-width: 768px) {
   .discovery-main {
-    padding: 16px;
+    padding: 16px 0 32px;
   }
 }
 </style>

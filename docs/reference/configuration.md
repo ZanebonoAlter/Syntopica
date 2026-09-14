@@ -338,16 +338,18 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 
 ## dsh 能源研究本地预设（外部工具，非 Syntopica 应用配置）
 
-本地 dsh（DeepSeek Harness，版本前提 **0.1.2-rc.1**，Web UI `http://127.0.0.1:3080`）的「能源研究」用户预设：原油供需研究专用受限 agent（仅网页检索/抓取 + 提问 + 压缩；无 Shell、文件编辑、委派能力）。本节只描述外部工具配置，不影响 Syntopica 前后端。
+本地 dsh（DeepSeek Harness，版本前提 **0.1.2-rc.1**，Web UI `http://127.0.0.1:3080`）的「能源研究」用户预设：原油供需研究专用受限 agent——工具面 = 网页检索/抓取 + 提问 + 压缩 + **单个只读 MCP 服务器 `energy_data`（EIA WPSR 周报 + JODI Oil Primary 月度，见 `tools/energy-mcp/README.md`）**；无 Shell、文件编辑、委派能力。本节只描述外部工具配置，不影响 Syntopica 前后端。
 
 | 位置 | 路径 | 说明 |
 |------|------|------|
 | 仓库配置源（唯一编辑点） | `config/dsh/presets/energy-research/`（`preset.yml` + `agent.cordis.yml`） | 进 git 可追溯；改动后需手动同步到 live |
 | live 部署 | `C:/Users/Admin/.dsh/.agent-presets/energy-research/`（同两文件） | dsh 用户预设根目录，下一次 roster 读取自动发现，无需重启 |
 
-- **同步方式**：将仓库源两文件逐字节复制到 live 目录（部署时已验证 SHA256 一致：preset.yml `afa39270…`、agent.cordis.yml `a3fd3073…`）。
-- **选用**：dsh Web UI 新建会话时在预设选择器选「能源研究」（排在「标准模式」之后，`order: 20`）。预设只在会话尚未产出内容时可选；**旧会话与部署默认预设不受影响**（未改 `settings.yaml`/模型/权限/凭据）。
-- **回退**：删除 `C:/Users/Admin/.dsh/.agent-presets/energy-research/` 目录即停止向新会话提供该预设；已运行会话及其历史不会被删除/撤销，仓库源保留。
-- **能力边界（诚实声明）**：当前**未接入** EIA/JODI/STEO 等专业数据接口（无 MCP 行、无虚构端点），取材仅限网页检索/抓取；persona 已约束不编造数值、缺证据停止。工具白名单≠OS 沙箱隔离。搜索 `maxUses` 与 host `maxParallelToolCalls` 保持原样，**尚无整场 token/硬预算限制**。
-- 行为契约为 openspec change `configure-dsh-energy-research`（spec：`dsh-research-preset`）。
+- **同步方式**：将仓库源两文件逐字节复制到 live 目录；仓库源与 live 的 `diff` 输出须为零（逐字一致）。
+- **选用**：dsh Web UI 新建会话时在预设选择器选「能源研究」（排在「标准模式」之后，`order: 20`）。预设只在会话尚未产出内容时可选；**旧会话与部署默认预设（standard）不受影响**（未改 `settings.yaml`/模型/权限/凭据）。
+- **依赖同步（新会话生效前提）**：dsh 启动命令带 `uv --frozen --no-sync`，会话建立零安装等待——但改过 `tools/energy-mcp/pyproject.toml` 后必须先手动跑一次 `uv sync --frozen`（Windows cmd：`cd /d D:\project\Syntopica\tools\energy-mcp && uv sync --frozen`），否则新会话里服务器启动失败（preset 配 `failOnStartupError: true`，会中止预设应用并报错）。
+- **工具与口径速查**（详见 `tools/energy-mcp/README.md`）：`mcp__energy_data__eia_wpsr_table1`（美国周度：库存 MMbbl / 供需 Mb/d）与 `mcp__energy_data__jodi_oil_primary`（各经济体月度，KBD/KBBL，不换算）；缺值映射 null 不转 0；`assessment_code` 原样透传（官方语义未核实）；`TIME_PERIOD` 是数据期非发布期，`last_modified` 仅为 HTTP 头未经证实；无 API key。
+- **故障与回退**：删除 live 目录两配置文件中 `tool-energy-data`（mcp-client）行（或还原仓库 `config/dsh/presets/energy-research/` 改动前副本，旧版保存在 openspec change evidence `preset-backup/`）即恢复旧工具面，已运行会话不受影响；也可整目录删除停止提供该预设。
+- **能力边界（诚实声明）**：专业数据仅 EIA/JODI 两个只读源已接入；**STEO 及其他专业接口仍未接入**，persona 已约束不假装查询过。工具白名单≠OS 沙箱隔离。搜索 `maxUses` 与 host `maxParallelToolCalls` 保持原样，**尚无整场 token/硬预算限制**。
+- 行为契约为 openspec change `configure-dsh-energy-research`（spec：`dsh-research-preset`）与 `connect-dsh-energy-data-sources`（spec：`dsh-energy-mcp-tools`，energy_data 服务器行为契约）。
 

@@ -91,7 +91,12 @@ type RouteEmbedding struct {
 func (RouteEmbedding) TableName() string { return "route_embeddings" }
 
 // FeedRecommendation 是订阅源推荐卡片。
-// recommendation_hash = route_id+board_id（不含 source），qa/manual_refresh 共享幂等池与 dismiss 冷却池（D5/D6）。
+// recommendation_hash 以候选稳定身份和展示桶为基础（不含 source），qa/manual_refresh
+// 共享同一幂等池与 dismiss 冷却池（D5/D6）。pending 唯一性由 PG 部分唯一索引
+// idx_feed_recommendations_hash_pending（WHERE status='pending'，由 migrator 的
+// PG-only 迁移步骤创建/维护）保证，历史行允许同 hash 多条；模型 tag 只保留普通
+// 查询索引 idx_feed_recommendations_hash_lookup（旧全表唯一索引由迁移 DROP，
+// 故刻意改名避免同名冲突）。
 type FeedRecommendation struct {
 	ID                 uint       `gorm:"primaryKey" json:"id"`
 	RouteID            uint       `gorm:"index;index:idx_feed_rec_status" json:"route_id"`
@@ -99,10 +104,13 @@ type FeedRecommendation struct {
 	Source             string     `gorm:"size:20" json:"source"` // manual_refresh | qa
 	Score              float64    `gorm:"index:idx_feed_rec_status" json:"score"`
 	LLMReason          string     `gorm:"type:text" json:"llm_reason"`
-	Status             string     `gorm:"size:20;index:idx_feed_rec_status;default:'pending'" json:"status"` // pending | accepted | dismissed
+	Status             string     `gorm:"size:20;index:idx_feed_rec_status;default:'pending'" json:"status"` // pending | accepted | dismissed | legacy（迁移历史行）
 	AcceptedFeedID     *uint      `gorm:"index" json:"accepted_feed_id,omitempty"`
-	RecommendationHash string     `gorm:"size:64;uniqueIndex:idx_feed_recommendations_hash" json:"recommendation_hash"`
+	RecommendationHash string     `gorm:"size:64;index:idx_feed_recommendations_hash_lookup" json:"recommendation_hash"`
 	DismissedAt        *time.Time `json:"dismissed_at,omitempty"`
+	CandidateID        *uint      `gorm:"index" json:"candidate_id,omitempty"` // D2 统一候选引用（迁移回填；不挂 FK 强约束）
+	LastSelectedAt     *time.Time `json:"last_selected_at,omitempty"`          // D5 最近一次成功入选时刻（再入选刷新）
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`                // D5 到期时刻（now >= expires_at 即退出默认列表）
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 

@@ -10,6 +10,7 @@ import (
 	"syntopica-backend/internal/admin/handler"
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/admin/scheduler"
+	"syntopica-backend/internal/admin/service"
 )
 
 // ============================================================================
@@ -94,7 +95,11 @@ var (
 	RefreshRecommendations = handler.RefreshRecommendations
 	AcceptRecommendation   = handler.AcceptRecommendation
 	DismissRecommendation  = handler.DismissRecommendation
+	ExcludeRecommendation  = handler.ExcludeRecommendation
+	RestoreRecommendation  = handler.RestoreRecommendation
 	Ask                    = handler.Ask
+	GetDiscoveryRun        = handler.GetDiscoveryRun
+	GetInterests           = handler.GetInterests
 	GetRSSHubSettings      = handler.GetRSSHubSettings
 	SaveRSSHubSettings     = handler.SaveRSSHubSettings
 	GetProxySettings       = handler.GetProxySettings
@@ -109,6 +114,22 @@ var (
 	CreateRouteParamOption = handler.CreateRouteParamOption
 	UpdateRouteParamOption = handler.UpdateRouteParamOption
 	DeleteRouteParamOption = handler.DeleteRouteParamOption
+)
+
+// Candidate catalog handlers (improve-discovery-recommendations)
+var (
+	ListCandidates   = handler.ListCandidates
+	CreateCandidate  = handler.CreateCandidate
+	GetCandidate     = handler.GetCandidate
+	UpdateCandidate  = handler.UpdateCandidate
+	ExportCandidates = handler.ExportCandidates
+	// 可用性检查（3.3，design D7）
+	CheckCandidate = handler.CheckCandidate
+	// 私网访问授权确认（Medium 7，design D9）
+	ConfirmCandidateAccess = handler.ConfirmCandidateAccess
+	// 目录导入导出（3.2，design D8）
+	PreviewCatalogImport = handler.PreviewCatalogImport
+	ConfirmCatalogImport = handler.ConfirmCatalogImport
 )
 
 // ============================================================================
@@ -153,4 +174,14 @@ var (
 	BoardUpgradeSuggestJob     = scheduler.BoardUpgradeSuggestJob
 	FirecrawlJob               = scheduler.FirecrawlJob
 	FirecrawlStatusEnricher    = scheduler.FirecrawlStatusEnricher
+
+	// improve-discovery-recommendations 4.6：发现 v2 三个后台任务
+	// （检查=维护类、回补=分析类由 runtime 包 PauseAware、运行维护=维护类）。
+	CandidateAvailabilityCheckJob = scheduler.CandidateAvailabilityCheckJob
+	CandidateEmbeddingBackfillJob = scheduler.CandidateEmbeddingBackfillJob
+	DiscoveryRunMaintenanceJob    = scheduler.DiscoveryRunMaintenanceJob
 )
+
+// improve-discovery-recommendations 4.6：discovery_v2 开关读取（runtime 决定是否
+// 注册三个后台任务；服务入口用同一读取函数拒绝已关闭的检查/回补调用）。
+var DiscoveryV2Enabled = service.LoadDiscoveryV2Enabled

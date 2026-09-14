@@ -25,12 +25,15 @@ const (
 
 // D7/A 种子合并与冷启动默认值（均可由 ai_settings 覆盖，见 service）。
 const (
-	SeedMergeAlphaDefault      = 0.4 // new_vec = normalize(α×incoming + (1−α)×existing)
-	SeedMatchThresholdDefault  = 0.5 // 问答 embedding 与板块向量匹配阈值
-	MinTagsPerBoardDefault     = 3   // 桶内不同标签数 < 此值则退全局桶
-	DismissCooldownDaysDefault = 30  // 推荐 dismiss 冷却期
-	RecommendationTopNDefault  = 8   // 每版块粗筛 top-N
+	SeedMergeAlphaDefault     = 0.4 // new_vec = normalize(α×incoming + (1−α)×existing)
+	SeedMatchThresholdDefault = 0.5 // 问答 embedding 与板块向量匹配阈值
+	MinTagsPerBoardDefault    = 3   // 桶内不同标签数 < 此值则退全局桶
+	RecommendationTopNDefault = 8   // 每版块粗筛 top-N
 )
+
+// （4.4 起：旧「推荐 dismiss 冷却 30 天 hash 池」退役，冷却权威改为
+// candidate_preferences.snoozed_until（默认 30 天 = SnoozeDaysDefault）；
+// feed_recommendations.dismissed_at 历史行只读。）
 
 // parsePgVector 解析 pgvector 文本格式 "[1,2,3]" → []float64（内联，避免跨包依赖）。
 func parsePgVector(s string) ([]float64, error) {
@@ -121,6 +124,18 @@ func ComputeRecommendationHash(routeID uint, boardID *uint) string {
 		board = strconv.FormatUint(uint64(*boardID), 10)
 	}
 	raw := strconv.FormatUint(uint64(routeID), 10) + "|" + board
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])[:32]
+}
+
+// ComputeCandidateRecommendationHash 返回原生 rss 候选（无 route_id）的推荐幂等指纹：
+// 带 "cand:" 命名空间前缀，与 route 哈希（纯数字前缀）不可能碰撞；不含 source。
+func ComputeCandidateRecommendationHash(candidateID uint, boardID *uint) string {
+	board := "0"
+	if boardID != nil {
+		board = strconv.FormatUint(uint64(*boardID), 10)
+	}
+	raw := "cand:" + strconv.FormatUint(uint64(candidateID), 10) + "|" + board
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])[:32]
 }

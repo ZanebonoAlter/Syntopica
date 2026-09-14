@@ -2,7 +2,10 @@
 // at backend startup and keeps an in-memory snapshot that the analysis pause
 // gate (and later the health API) reads to decide whether the model layer is
 // ready. Optionally it can fire-and-forget a provider's start_command to bring
-// a local model process up before re-probing.
+// a local model process up before re-probing. A background heartbeat timer
+// (StartPeriodicReprobe) keeps probing regardless of the snapshot state, so a
+// mid-session provider death (e.g. the AI host powering off) degrades the
+// snapshot after degradeFailures consecutive failures.
 package aihealth
 
 import (
@@ -46,11 +49,23 @@ const (
 	probePollInterval = 2 * time.Second
 )
 
-// reprobeInterval is the period of the background health reprobe timer
-// (StartPeriodicReprobe). While the snapshot is not healthy, the timer keeps
-// re-probing until it self-heals; once healthy the timer idles. Package-level
-// so tests can shrink it.
+// reprobeInterval is the period of the background health heartbeat timer
+// (StartPeriodicReprobe). The heartbeat re-probes unconditionally — healthy
+// state included — so provider death is detected within a couple of ticks and
+// recovery needs a single successful probe. Package-level so tests can shrink
+// it.
 var reprobeInterval = 60 * time.Second
+
+// degradeFailures is how many consecutive unhealthy probe verdicts it takes to
+// degrade a healthy snapshot to not healthy (debounce). Fast-refused failures
+// (host powered off, latency ≈0) each count one heartbeat, so the worst-case
+// degrade delay is ≈ degradeFailures × reprobeInterval. Timeout-shaped
+// failures are already stretched by the per-provider probe timeout
+// (provider.timeout_seconds, see airouter.TestConnection): a slow-but-alive
+// server answers /models within its own call timeout and never counts as a
+// failure, so no extra busy-tolerance window is needed on top. Package-level
+// so tests can shrink it.
+var degradeFailures = 2
 
 var (
 	snapshotMu sync.RWMutex
@@ -73,6 +88,12 @@ var (
 
 	launchMu     sync.Mutex
 	lastLaunchAt = map[uint]time.Time{}
+
+	// failStreak counts consecutive unhealthy probe verdicts observed while
+	// the snapshot was healthy on entry — it is the degrade debounce. Guarded
+	// by probeMu (only mutated inside runProbeLocked). Reset by resetSnapshot
+	// so tests never inherit a previous test's streak.
+	failStreak int
 
 	// listRoutesMaxRetries / listRoutesRetryInterval tune the retry loop around
 	// store.ListRoutes in RunStartupProbe. They are package-level so tests can
@@ -110,6 +131,39 @@ func setSnapshot(s Snapshot) {
 	snapshotMu.Lock()
 	defer snapshotMu.Unlock()
 	current = &s
+}
+
+// applyProbeVerdict writes the freshly computed probe verdict into the
+// snapshot with degrade debounce: a healthy verdict always lands (streak
+// resets), while an unhealthy verdict only degrades the snapshot after
+// degradeFailures consecutive failures. Within the debounce window the
+// snapshot keeps its previous overall Healthy=true verdict but still updates
+// CheckedAt and the per-route details, so the health API shows the fresh
+// (partially unreachable) details while the pause gate stays open. A snapshot
+// that was already not healthy (or not yet ready) lands not-healthy directly —
+// the debounce only protects the healthy→not-healthy transition. The caller
+// MUST hold probeMu.
+func applyProbeVerdict(healthy bool, checkedAt time.Time, entries []RouteHealth, autoStart bool) {
+	prev := GetSnapshot()
+	next := Snapshot{
+		Healthy:   healthy,
+		CheckedAt: &checkedAt,
+		Routes:    entries,
+		AutoStart: autoStart,
+	}
+	switch {
+	case healthy:
+		failStreak = 0
+	case prev.CheckedAt != nil && prev.Healthy:
+		failStreak++
+		if failStreak < degradeFailures {
+			next.Healthy = true
+		}
+	default:
+		// Not-ready startup race or already not-healthy: no debounce meaning.
+		failStreak = 0
+	}
+	setSnapshot(next)
 }
 
 // listRoutesWithRetry calls store.ListRoutes with a bounded retry/backoff so a
@@ -218,11 +272,14 @@ func TryStartProbe(ctx context.Context, store *airouter.Store, autoStart bool) b
 	return true
 }
 
-// StartPeriodicReprobe runs the background self-heal timer: while the health
-// snapshot is not healthy it re-probes at reprobeInterval until the snapshot
-// turns healthy, then idles. autoStartFn is re-evaluated on every tick so a
-// mid-run change of the auto_start_models switch takes effect without restart.
-// The timer stops when ctx is cancelled (backend shutdown).
+// StartPeriodicReprobe runs the background heartbeat timer: it re-probes at
+// reprobeInterval unconditionally — healthy state included. The heartbeat is
+// what detects a mid-session provider death (e.g. the AI host powering off):
+// after degradeFailures consecutive failed probes the snapshot degrades to
+// not healthy and the analysis pause gate closes; a single successful probe
+// restores healthy. autoStartFn is re-evaluated on every tick so a mid-run
+// change of the auto_start_models switch takes effect without restart. The
+// timer stops when ctx is cancelled (backend shutdown).
 func StartPeriodicReprobe(ctx context.Context, store *airouter.Store, autoStartFn func() bool) {
 	ticker := time.NewTicker(reprobeInterval)
 	defer ticker.Stop()
@@ -231,9 +288,6 @@ func StartPeriodicReprobe(ctx context.Context, store *airouter.Store, autoStartF
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if Healthy() {
-				continue
-			}
 			TryStartProbe(ctx, store, autoStartFn())
 		}
 	}
@@ -335,12 +389,7 @@ func runProbeLocked(ctx context.Context, store *airouter.Store, autoStart bool) 
 	healthy := hasReachableCapability(entries, embeddingCap) &&
 		hasReachableCapabilityOtherThan(entries, embeddingCap)
 
-	setSnapshot(Snapshot{
-		Healthy:   healthy,
-		CheckedAt: &now,
-		Routes:    entries,
-		AutoStart: autoStart,
-	})
+	applyProbeVerdict(healthy, now, entries, autoStart)
 }
 
 func hasReachableCapability(entries []RouteHealth, want string) bool {

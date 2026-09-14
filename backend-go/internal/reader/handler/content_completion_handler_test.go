@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -20,10 +21,18 @@ import (
 func setupHandlersTestDB(t *testing.T) {
 	t.Helper()
 
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	// 每个测试（含 -count>1 的每一轮）独占一个内存库。固定 DSN "file::memory:?cache=shared"
+	// 是进程内共享库，多个测试/多轮共用同一份数据，第二轮起会撞上上一轮残留行
+	// （feeds.url / ai_providers.name UNIQUE 冲突）。
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:content_completion_handler_%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+	t.Cleanup(func() {
+		if sqlDB, dbErr := db.DB(); dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
 
 	database.DB = db
 	repository.InitRepository(database.DB)

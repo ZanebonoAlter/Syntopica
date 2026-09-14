@@ -332,7 +332,7 @@ Query 参数：
 | `direction` | 必填：`create`（创建版块）/ `expand`（版块扩充） |
 | `source` | 必填：`aux`（单标签）/ `composite`（组合标签） |
 | `target_board_id` | `direction=expand` 必填（锁定单版块，本轮建议 target 恒等于它，须为活跃版块）；`create` 不得携带 |
-| `days` | 可选时间窗（仅 create×aux 生效；`0`=不过滤） |
+| `days` | 可选时间窗（`0`=不过滤）：create×aux 按文章活动过滤候选；expand 相似路要求近 days 天文章引用、共现/compose 路窗口取 days 与 CoTagWindowDays 更严者；create×composite 携带但忽略 |
 
 参数不合法（缺 direction/source、expand 缺 target、create 带 target、target 非活跃版块、携带旧 `mode` 参数）返回 400。
 

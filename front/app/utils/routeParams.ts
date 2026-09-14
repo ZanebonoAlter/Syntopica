@@ -9,6 +9,9 @@
 /** RSSHub 官方文档基址默认值（feed-param-options D4；服务端配置不可达时兜底）。 */
 export const DEFAULT_RSSHUB_DOC_BASE = 'https://docs.rsshub.app'
 
+/** RSSHub 实例基址默认值（后端 DefaultRSSHubBaseURL 同值；settings 拉取失败时兜底）。 */
+export const DEFAULT_RSSHUB_BASE_URL = 'https://rsshub.app'
+
 export interface RouteParamSpec {
   name: string
   required: boolean
@@ -141,6 +144,53 @@ export function parseParameterOptions(raw: string): Record<string, Array<{ value
     }
   }
   return out
+}
+
+/**
+ * 去掉 URL 模板中的可选参数段与正则约束残留（后端 stripOptionalParams 同规则）：
+ * `:param?` 整段（连同前导 /）丢弃；`{regex}` 片段丢弃。
+ */
+export function stripOptionalParams(url: string): string {
+  let u = url
+  while (u.includes('{')) {
+    const i = u.indexOf('{')
+    const j = u.indexOf('}')
+    if (j < i) break
+    u = u.slice(0, i) + u.slice(j + 1)
+  }
+  const out: string[] = []
+  for (const seg of u.split('/')) {
+    if (seg.startsWith(':') && seg.endsWith('?')) continue
+    out.push(seg)
+  }
+  return out.join('/')
+}
+
+/**
+ * 由路由模板 + 参数构建最终 RSSHub 实例订阅地址（后端 recommendation_service.buildFeedURL
+ * 同规则）：usable_directly 优先 example；需参数路由把 `:param` 填入实际值（未提供的可选
+ * 参数段丢弃），仍有未填必填参数时返回空串（调用方就地报错，不发请求）。
+ */
+export function buildRSSHubFeedUrl(opts: {
+  baseUrl: string
+  namespace: string
+  path: string
+  parameters: Record<string, string>
+  example?: string
+  usableDirectly?: boolean
+}): string {
+  const base = (opts.baseUrl || DEFAULT_RSSHUB_BASE_URL).replace(/\/+$/, '')
+  if (opts.usableDirectly) {
+    return opts.example ? base + opts.example : `${base}/${opts.namespace}${opts.path}`
+  }
+  let u = `/${opts.namespace}${opts.path}`
+  for (const [name, val] of Object.entries(opts.parameters)) {
+    if (!val) continue
+    // split/join 替换避免 replace 的 $ 特殊语义；值做 path 编码与后端 url.PathEscape 对齐
+    u = u.split(`:${name}`).join(encodeURIComponent(val))
+  }
+  u = stripOptionalParams(u)
+  return u.includes(':') ? '' : base + u
 }
 
 /**

@@ -20,7 +20,8 @@ func TestRecommendationCardParamOptionsPopulated(t *testing.T) {
 	require.NoError(t, db.Create(&models.RouteParamOption{RouteID: r1, ParamName: "category", Value: "world", Label: "国际", Source: "manual"}).Error)
 	require.NoError(t, db.Create(&models.RouteParamOption{RouteID: r1, ParamName: "category", Value: "cn", Label: "国内", Source: "manual"}).Error)
 
-	svc := NewRecommendationService(db, nil, nil)
+	router, _ := newSelectAllMockRouter(t, db)
+	svc := NewRecommendationService(db, router, nil)
 	_, err := svc.RefreshRecommendations(context.Background())
 	require.NoError(t, err)
 
@@ -52,7 +53,8 @@ func TestRecommendationCardParamOptionsEmptyMapWhenNoDictionary(t *testing.T) {
 	_, _, r3 := setupRecFixture(t, db)
 	// 不给任何路由录字典。
 
-	svc := NewRecommendationService(db, nil, nil)
+	router, _ := newSelectAllMockRouter(t, db)
+	svc := NewRecommendationService(db, router, nil)
 	_, err := svc.RefreshRecommendations(context.Background())
 	require.NoError(t, err)
 

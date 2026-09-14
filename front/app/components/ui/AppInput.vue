@@ -8,6 +8,9 @@ interface Props {
   step?: string | number
   min?: string | number
   max?: string | number
+  maxlength?: string | number
+  /** 直传内部 input 的 id（label[for] 关联用；attrs 落点在 wrapper div，无法用于关联） */
+  inputId?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -32,6 +35,7 @@ function onInput(event: Event) {
 <template>
   <div class="app-input-wrapper">
     <input
+      :id="inputId"
       :type="type"
       :value="modelValue"
       :placeholder="placeholder"
@@ -39,6 +43,7 @@ function onInput(event: Event) {
       :step="step"
       :min="min"
       :max="max"
+      :maxlength="maxlength"
       class="app-input"
       :class="{ 'is-error': error }"
       @input="onInput"

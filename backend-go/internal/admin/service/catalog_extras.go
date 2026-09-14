@@ -20,6 +20,12 @@ import (
 
 // ── 路由目录可用性校验（D4）+ 路由向量生成（spec 路由向量）──
 //
+// 路由向量（route_embeddings）自 4.3 起是遗留输入/回滚资料：新召回走
+// candidate_embeddings × feed_candidates（discovery_recall.go:32），route_embeddings
+// 没有消费方。3.4 据此不做无消费方的重嵌：EmbedPendingRoutes 保持现状（只补
+// 「无向量」路由，不因 hash 变化重嵌）——内容变化的向量回补由候选侧
+// CandidateEmbeddingService 按有效介绍指纹节流完成。
+//
 // 可用性校验：对带 example 的路由异步限流 GET，标记 ok/broken；无 example 保持 unknown。
 // 校验是后台异步、不阻塞同步主流程（design D4）。本实现为同步批量版（job 内顺序执行 + 限流），
 // 满足 spec「不阻塞同步主流程」——sync 与 check 分属不同方法，handler 可分别触发。
@@ -80,6 +86,11 @@ func (s *CatalogSyncService) CheckAvailability(ctx context.Context, ratePerSec i
 // EmbedPendingRoutes 为尚无 embedding 的路由生成向量（D4 路由向量）。
 // 文本取 namespace + name + description 摘要；向量维度/模型来自 airouter 返回。
 // router 为 nil 时跳过（外网/embedding route 未配置时不阻塞）。
+//
+// 遗留兼容（3.4 判定）：route_embeddings 已无消费方（召回改用 candidate_embeddings），
+// 本方法只为旧数据/回滚资料保留，因此刻意不处理 text_hash 变化（不做无消费方的重嵌）；
+// 目录同步也不依赖它——新路由的候选资料由 feed_candidates 承载，向量回补由
+// CandidateEmbeddingService.DirtyCandidateEmbeddings 按指纹增量完成。
 func (s *CatalogSyncService) EmbedPendingRoutes(ctx context.Context, router *airouter.Router) (int, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "CatalogSyncService.EmbedPendingRoutes")
 	defer span.End()

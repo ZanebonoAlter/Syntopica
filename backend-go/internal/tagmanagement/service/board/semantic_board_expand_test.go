@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -17,6 +18,108 @@ import (
 var expandDeterministicEmbedder = func(ctx context.Context, input string, mode auxlabel.AuxiliaryLabelEmbeddingMode) (string, []float64, error) {
 	vec := testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim)
 	return core.FloatsToPgVector(vec), vec, nil
+}
+
+// expandCandidateIDs 把候选列表转成 ID 集合（断言用）。
+func expandCandidateIDs(candidates []expandAuxCandidate) map[uint]bool {
+	ids := map[uint]bool{}
+	for _, c := range candidates {
+		ids[c.ID] = true
+	}
+	return ids
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 时间窗（expand-upgrade-days-window，spec: 扩充候选的时间窗过滤）
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestRecallExpandAuxCandidatesDaysSimFilter(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	// 版块无构成标签：隔离相似路（共现路因构成为空跳过）。
+	board := createUpgradeLabel(t, db, "美债W", "us-treasury-w", "board", "active", 0, []float64{1, 0, 0})
+	// 相似达标 + 1 天前有文章引用：days=7 / days=0 均保留。
+	recent := createUpgradeLabel(t, db, "近期活跃W", "recent-sim-w", "auxiliary", "active", 8, []float64{0.9, 0.4358898943, 0})
+	recentTag := createComposeEventTag(t, db, "recent-event-w", recent.ID)
+	createComposeArticles(t, db, 1, 24*time.Hour, recentTag.ID)
+	// 相似达标 + 全部文章在 8 天前：days=7 剔除、days=0 保留（现状）。
+	stale := createUpgradeLabel(t, db, "陈旧相似W", "stale-sim-w", "auxiliary", "active", 8, []float64{0.9, 0.4358898943, 0})
+	staleTag := createComposeEventTag(t, db, "stale-event-w", stale.ID)
+	createComposeArticles(t, db, 1, 8*24*time.Hour, staleTag.ID)
+
+	svc := NewSemanticBoardUpgradeService(db, nil, nil)
+	profile, err := svc.loadBoardExpandProfile(context.Background(), board.ID)
+	require.NoError(t, err)
+	config := svc.LoadUpgradeConfig(context.Background())
+
+	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), config, profile, 0)
+	require.NoError(t, err)
+	ids := expandCandidateIDs(candidates)
+	require.True(t, ids[recent.ID], "days=0：近期活跃标签召回")
+	require.True(t, ids[stale.ID], "days=0：不过滤等于现状，陈旧相似标签保留")
+
+	candidates, _, err = svc.recallExpandAuxCandidates(context.Background(), config, profile, 7)
+	require.NoError(t, err)
+	ids = expandCandidateIDs(candidates)
+	require.True(t, ids[recent.ID], "days=7：窗口内有文章引用保留")
+	require.False(t, ids[stale.ID], "days=7：相似达标但窗口内无文章引用剔除")
+}
+
+func TestRecallExpandAuxCandidatesDaysCooccurWindow(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	board := createUpgradeLabel(t, db, "美债CW", "us-treasury-cw", "board", "active", 0, []float64{1, 0, 0})
+	// 构成标签正交向量：不进相似路，隔离共现路。
+	boardAux := createUpgradeLabel(t, db, "美国国债CW", "us-treasury-aux-cw", "auxiliary", "active", 2, []float64{0, 1, 0})
+	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
+	// 共现 aux：2 篇 1 天前 + 3 篇 5 天前（ExpandCooccurrence 默认阈值 3）。
+	coAux := createUpgradeLabel(t, db, "国债期货CW", "treasury-futures-cw", "auxiliary", "active", 6, []float64{0, 1, 0})
+	tag := createComposeEventTag(t, db, "cw-event", boardAux.ID, coAux.ID)
+	createComposeArticles(t, db, 2, 24*time.Hour, tag.ID)
+	createComposeArticles(t, db, 3, 5*24*time.Hour, tag.ID)
+
+	svc := NewSemanticBoardUpgradeService(db, nil, nil)
+	profile, err := svc.loadBoardExpandProfile(context.Background(), board.ID)
+	require.NoError(t, err)
+	config := svc.LoadUpgradeConfig(context.Background())
+	require.Equal(t, 30, config.CoTagWindowDays, "前置：全局窗口 30 天")
+	require.Equal(t, 3, config.ExpandCooccurrence, "前置：共现阈值 3")
+
+	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), config, profile, 0)
+	require.NoError(t, err)
+	require.True(t, expandCandidateIDs(candidates)[coAux.ID], "days=0：30 天窗口共现 5 达标召回")
+
+	candidates, _, err = svc.recallExpandAuxCandidates(context.Background(), config, profile, 3)
+	require.NoError(t, err)
+	require.False(t, expandCandidateIDs(candidates)[coAux.ID], "days=3：窗口收紧至更严者后仅计 2 篇共现不足剔除")
+}
+
+func TestGenerateExpandComposeDaysWindow(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	board := createUpgradeLabel(t, db, "美债DW", "us-treasury-dw", "board", "active", 0, []float64{1, 0, 0})
+	boardAux := createUpgradeLabel(t, db, "美国国债DW", "us-treasury-aux-dw", "auxiliary", "active", 8, []float64{1, 0, 0})
+	yieldAux := createUpgradeLabel(t, db, "收益率DW", "yield-dw", "auxiliary", "active", 6, []float64{0.9, 0.4358898943, 0})
+	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
+	// 共现对 11 篇全部在 5 天前（CompositeCoTagMinCooccurrence 默认 10）：
+	// 30 天窗口达标、3 天窗口不够。
+	tag := createComposeEventTag(t, db, "dw-event", boardAux.ID, yieldAux.ID)
+	createComposeArticles(t, db, 11, 5*24*time.Hour, tag.ID)
+
+	fakeLLM := &composeAwareLLM{composeSuggestions: []SemanticBoardUpgradeSuggestion{
+		{Decision: SemanticBoardUpgradeDecisionCompose, BoardLabel: "美债收益率DW", AuxiliaryLabelIDs: []uint{boardAux.ID, yieldAux.ID}},
+	}}
+	svc := NewSemanticBoardUpgradeService(db, fakeLLM, nil)
+	profile, err := svc.loadBoardExpandProfile(context.Background(), board.ID)
+	require.NoError(t, err)
+	config := svc.LoadUpgradeConfig(context.Background())
+
+	suggestions, err := svc.generateExpandCompose(context.Background(), config, profile, 0)
+	require.NoError(t, err)
+	require.Len(t, suggestions, 1, "days=0：30 天窗口组合对共现 11 达标送裁出建议")
+
+	callsBefore := fakeLLM.composeCalls
+	suggestions, err = svc.generateExpandCompose(context.Background(), config, profile, 3)
+	require.NoError(t, err)
+	require.Empty(t, suggestions, "days=3：窗口收紧后组合对共现不足召回为空")
+	require.Equal(t, callsBefore, fakeLLM.composeCalls, "无候选不送 LLM")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,7 +152,7 @@ func TestRecallExpandAuxCandidatesSimAndCooccur(t *testing.T) {
 	require.NoError(t, err)
 	config := svc.LoadUpgradeConfig(context.Background())
 
-	candidates, validIDs, err := svc.recallExpandAuxCandidates(context.Background(), config, profile)
+	candidates, validIDs, err := svc.recallExpandAuxCandidates(context.Background(), config, profile, 0)
 	require.NoError(t, err)
 
 	ids := map[uint]bool{}
@@ -73,7 +176,7 @@ func TestRecallExpandAuxCandidatesEmpty(t *testing.T) {
 	svc := NewSemanticBoardUpgradeService(db, nil, nil)
 	profile, err := svc.loadBoardExpandProfile(context.Background(), board.ID)
 	require.NoError(t, err)
-	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), svc.LoadUpgradeConfig(context.Background()), profile)
+	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), svc.LoadUpgradeConfig(context.Background()), profile, 0)
 	require.NoError(t, err)
 	require.Empty(t, candidates, "召回为空是正常结果非错误")
 }
@@ -86,7 +189,7 @@ func TestRecallExpandAuxCandidatesDisabledExcluded(t *testing.T) {
 	svc := NewSemanticBoardUpgradeService(db, nil, nil)
 	profile, err := svc.loadBoardExpandProfile(context.Background(), board.ID)
 	require.NoError(t, err)
-	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), svc.LoadUpgradeConfig(context.Background()), profile)
+	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), svc.LoadUpgradeConfig(context.Background()), profile, 0)
 	require.NoError(t, err)
 	for _, c := range candidates {
 		require.NotEqual(t, disabled.ID, c.ID, "disabled aux 不召回")

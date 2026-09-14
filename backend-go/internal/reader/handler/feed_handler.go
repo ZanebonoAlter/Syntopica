@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -194,6 +195,9 @@ func GetFeed(c *gin.Context) {
 	})
 }
 
+// CreateFeed POST /api/feeds — 建源统一走共享建源服务（design D9）：地址规范化 →
+// 有界安全抓取 + RSS 解析验证 → 短事务按规范化 URL 去重/建源。handler 只做参数
+// 解析与错误映射；验证失败不建源（400），地址已存在返回 409（复用既有 Feed）。
 func CreateFeed(c *gin.Context) {
 	var req CreateFeedRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -204,20 +208,10 @@ func CreateFeed(c *gin.Context) {
 		return
 	}
 
-	var existing models.Feed
-	if err := repository.Repo.DB().Where("url = ?", req.URL).First(&existing).Error; err == nil {
-		c.JSON(http.StatusConflict, gin.H{
-			"success": false,
-			"error":   "Feed with this URL already exists",
-		})
-		return
-	}
-
-	now := time.Now()
-	feed := models.Feed{
+	svc := service.NewFeedCreateService(repository.Repo.DB())
+	feed, created, err := svc.CreateFeedWithVerification(c.Request.Context(), req.URL, service.FeedCreateOptions{
 		Title:                 req.Title,
 		Description:           req.Description,
-		URL:                   req.URL,
 		CategoryID:            req.CategoryID,
 		Icon:                  req.Icon,
 		Color:                 req.Color,
@@ -228,32 +222,22 @@ func CreateFeed(c *gin.Context) {
 		MaxCompletionRetries:  req.MaxCompletionRetries,
 		FirecrawlEnabled:      req.FirecrawlEnabled,
 		TaggingEnabled:        req.TaggingEnabled,
-		LastUpdated:           &now,
-	}
-
-	if feed.Title == "" {
-		feed.Title = "Untitled Feed"
-	}
-	if feed.Icon == "" {
-		feed.Icon = "mdi:rss"
-		feed.IconSource = "fallback"
-	} else {
-		feed.IconSource = "custom"
-	}
-	if feed.Color == "" {
-		feed.Color = "#8b5cf6"
-	}
-	if feed.MaxArticles == 0 {
-		feed.MaxArticles = 100
-	}
-	if feed.RefreshInterval == 0 {
-		feed.RefreshInterval = 60
-	}
-
-	if err := repository.Repo.DB().Create(&feed).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+	})
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, service.ErrInvalidFeedURL) || errors.Is(err, service.ErrFeedVerification) {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{
 			"success": false,
 			"error":   err.Error(),
+		})
+		return
+	}
+	if !created {
+		c.JSON(http.StatusConflict, gin.H{
+			"success": false,
+			"error":   "Feed with this URL already exists",
 		})
 		return
 	}

@@ -1,0 +1,459 @@
+time=2026-09-14T23:40:17.347+08:00 level=INFO msg="Database initialized successfully"
+time=2026-09-14T23:40:17.484+08:00 level=INFO msg="Skipping HNSW index on daily_report_sections.embedding: dimension 2560 > 2000 limit"
+time=2026-09-14T23:40:17.485+08:00 level=INFO msg="Skipping HNSW index on board_persistent_topics.embedding: dimension 2560 > 2000 limit"
+time=2026-09-14T23:40:17.486+08:00 level=INFO msg="Outbound proxy enabled: http://127.0.0.1:7897"
+time=2026-09-14T23:40:17.560+08:00 level=INFO msg="[tracing] TracerProvider initialized successfully"
+[GIN-debug] [WARNING] Creating an Engine instance with the Logger and Recovery middleware already attached.
+
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] GET    /icons/*filepath          --> syntopica-backend/internal/app.SetupRoutes.iconsFileHandler.func2 (6 handlers)
+[GIN-debug] GET    /health                   --> syntopica-backend/internal/app.SetupRoutes.func1 (6 handlers)
+[GIN-debug] GET    /api/tasks/status         --> syntopica-backend/internal/admin/handler.GetTasksStatus (6 handlers)
+[GIN-debug] GET    /ws                       --> syntopica-backend/internal/platform/ws.HandleWebSocket (6 handlers)
+[GIN-debug] GET    /api/categories           --> syntopica-backend/internal/reader/handler.GetCategories (7 handlers)
+[GIN-debug] POST   /api/categories           --> syntopica-backend/internal/reader/handler.CreateCategory (7 handlers)
+[GIN-debug] PUT    /api/categories/:category_id --> syntopica-backend/internal/reader/handler.UpdateCategory (7 handlers)
+[GIN-debug] DELETE /api/categories/:category_id --> syntopica-backend/internal/reader/handler.DeleteCategory (7 handlers)
+[GIN-debug] GET    /api/feeds                --> syntopica-backend/internal/reader/handler.GetFeeds (7 handlers)
+[GIN-debug] GET    /api/feeds/:feed_id       --> syntopica-backend/internal/reader/handler.GetFeed (7 handlers)
+[GIN-debug] POST   /api/feeds                --> syntopica-backend/internal/reader/handler.CreateFeed (7 handlers)
+[GIN-debug] PUT    /api/feeds/:feed_id       --> syntopica-backend/internal/reader/handler.UpdateFeed (7 handlers)
+[GIN-debug] DELETE /api/feeds/:feed_id       --> syntopica-backend/internal/reader/handler.DeleteFeed (7 handlers)
+[GIN-debug] POST   /api/feeds/:feed_id/refresh --> syntopica-backend/internal/reader/handler.RefreshFeed (7 handlers)
+[GIN-debug] POST   /api/feeds/fetch          --> syntopica-backend/internal/reader/handler.FetchFeed (7 handlers)
+[GIN-debug] POST   /api/feeds/refresh-all    --> syntopica-backend/internal/reader/handler.RefreshAllFeeds (7 handlers)
+[GIN-debug] GET    /api/articles/stats       --> syntopica-backend/internal/reader/handler.GetArticlesStats (7 handlers)
+[GIN-debug] GET    /api/articles             --> syntopica-backend/internal/reader/handler.GetArticles (7 handlers)
+[GIN-debug] GET    /api/articles/:article_id --> syntopica-backend/internal/reader/handler.GetArticle (7 handlers)
+[GIN-debug] POST   /api/articles/:article_id/tags --> syntopica-backend/internal/reader/handler.RetagArticleHandler (7 handlers)
+[GIN-debug] PUT    /api/articles/:article_id --> syntopica-backend/internal/reader/handler.UpdateArticle (7 handlers)
+[GIN-debug] PUT    /api/articles/bulk-update --> syntopica-backend/internal/reader/handler.BulkUpdateArticles (7 handlers)
+[GIN-debug] POST   /api/import-opml          --> syntopica-backend/internal/reader/handler.ImportOPML (7 handlers)
+[GIN-debug] GET    /api/export-opml          --> syntopica-backend/internal/reader/handler.ExportOPML (7 handlers)
+[GIN-debug] POST   /api/content-completion/articles/:article_id/complete --> syntopica-backend/internal/reader/handler.CompleteArticleContent (7 handlers)
+[GIN-debug] POST   /api/content-completion/feeds/:feed_id/complete-all --> syntopica-backend/internal/reader/handler.CompleteFeedArticles (7 handlers)
+[GIN-debug] GET    /api/content-completion/articles/:article_id/status --> syntopica-backend/internal/reader/handler.GetCompletionStatus (7 handlers)
+[GIN-debug] GET    /api/content-completion/overview --> syntopica-backend/internal/reader/handler.GetCompletionOverview (7 handlers)
+[GIN-debug] POST   /api/firecrawl/article/:id --> syntopica-backend/internal/reader/handler.CrawlArticle (7 handlers)
+[GIN-debug] POST   /api/firecrawl/feed/:id/enable --> syntopica-backend/internal/reader/handler.EnableFeedFirecrawl (7 handlers)
+[GIN-debug] GET    /api/firecrawl/status     --> syntopica-backend/internal/reader/handler.GetFirecrawlStatus (7 handlers)
+[GIN-debug] POST   /api/firecrawl/settings   --> syntopica-backend/internal/reader/handler.SaveFirecrawlSettings (7 handlers)
+[GIN-debug] POST   /api/daily-reports/generate --> syntopica-backend/internal/topicgraph/handler.triggerGenerateDailyReport (7 handlers)
+[GIN-debug] GET    /api/daily-reports/:id    --> syntopica-backend/internal/topicgraph/handler.getDailyReport (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/daily-reports --> syntopica-backend/internal/topicgraph/handler.listBoardDailyReports (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/section-timeline --> syntopica-backend/internal/topicgraph/handler.getBoardSectionTimeline (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/topics --> syntopica-backend/internal/topicgraph/handler.listBoardTopics (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/lane-dynamics --> syntopica-backend/internal/topicgraph/handler.getBoardLaneDynamics (7 handlers)
+[GIN-debug] GET    /api/daily-reports/sections/:id/lifecycle --> syntopica-backend/internal/topicgraph/handler.getSectionLifecycle (7 handlers)
+[GIN-debug] GET    /api/daily-reports/topics/:id/lifeline --> syntopica-backend/internal/topicgraph/handler.getTopicLifeline (7 handlers)
+[GIN-debug] PATCH  /api/daily-reports/topics/:id --> syntopica-backend/internal/topicgraph/handler.updateTopic (7 handlers)
+[GIN-debug] DELETE /api/daily-reports/topics/:id --> syntopica-backend/internal/topicgraph/handler.deleteTopic (7 handlers)
+[GIN-debug] POST   /api/daily-reports/topics/:id/merge --> syntopica-backend/internal/topicgraph/handler.mergeTopic (7 handlers)
+[GIN-debug] POST   /api/daily-reports/topics/:id/split --> syntopica-backend/internal/topicgraph/handler.splitTopic (7 handlers)
+[GIN-debug] POST   /api/daily-reports/backfill-embeddings --> syntopica-backend/internal/topicgraph/handler.triggerBackfillEmbeddings (7 handlers)
+[GIN-debug] POST   /api/daily-reports/backfill-relations --> syntopica-backend/internal/topicgraph/handler.triggerBackfillRelations (7 handlers)
+[GIN-debug] POST   /api/daily-reports/backfill-topics --> syntopica-backend/internal/topicgraph/handler.triggerBackfillTopics (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/persistent-topics/manual --> syntopica-backend/internal/topicgraph/handler.createManualTopic (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/persistent-topics/compose-candidates --> syntopica-backend/internal/topicgraph/handler.composeCandidates (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/persistent-topics/embed-query --> syntopica-backend/internal/topicgraph/handler.embedQuery (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/topic-watches --> syntopica-backend/internal/topicgraph/handler.createTopicWatch (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/topic-watches --> syntopica-backend/internal/topicgraph/handler.listTopicWatches (7 handlers)
+[GIN-debug] PATCH  /api/topic-watches/:id    --> syntopica-backend/internal/topicgraph/handler.updateTopicWatch (7 handlers)
+[GIN-debug] DELETE /api/topic-watches/:id    --> syntopica-backend/internal/topicgraph/handler.deleteTopicWatch (7 handlers)
+[GIN-debug] GET    /api/daily-reports/:id/watch-hits --> syntopica-backend/internal/topicgraph/handler.getWatchHits (7 handlers)
+[GIN-debug] GET    /api/ai/providers         --> syntopica-backend/internal/admin/handler.ListProviders (7 handlers)
+[GIN-debug] POST   /api/ai/providers         --> syntopica-backend/internal/admin/handler.UpsertProvider (7 handlers)
+[GIN-debug] PUT    /api/ai/providers/:provider_id --> syntopica-backend/internal/admin/handler.UpdateProvider (7 handlers)
+[GIN-debug] DELETE /api/ai/providers/:provider_id --> syntopica-backend/internal/admin/handler.DeleteProvider (7 handlers)
+[GIN-debug] GET    /api/ai/routes            --> syntopica-backend/internal/admin/handler.ListRoutes (7 handlers)
+[GIN-debug] PUT    /api/ai/routes/:capability --> syntopica-backend/internal/admin/handler.UpdateRoute (7 handlers)
+[GIN-debug] GET    /api/ai/settings          --> syntopica-backend/internal/admin/handler.GetSettings (7 handlers)
+[GIN-debug] POST   /api/ai/settings          --> syntopica-backend/internal/admin/handler.SaveSettings (7 handlers)
+[GIN-debug] POST   /api/ai/test              --> syntopica-backend/internal/admin/handler.TestConnection (7 handlers)
+[GIN-debug] GET    /api/ai/call-logs         --> syntopica-backend/internal/admin/handler.ListCallLogs (7 handlers)
+[GIN-debug] GET    /api/ai/sessions/:session_id --> syntopica-backend/internal/admin/handler.GetSession (7 handlers)
+[GIN-debug] GET    /api/ai/health            --> syntopica-backend/internal/admin/handler.GetAIHealth (7 handlers)
+[GIN-debug] PUT    /api/ai/health/auto-start-models --> syntopica-backend/internal/admin/handler.SetAutoStartModels (7 handlers)
+[GIN-debug] POST   /api/ai/health/reprobe    --> syntopica-backend/internal/admin/handler.ReprobeAIHealth (7 handlers)
+[GIN-debug] GET    /api/schedulers/status    --> syntopica-backend/internal/admin/handler.GetSchedulersStatus (7 handlers)
+[GIN-debug] GET    /api/schedulers/:name/status --> syntopica-backend/internal/admin/handler.GetSchedulerStatus (7 handlers)
+[GIN-debug] POST   /api/schedulers/:name/trigger --> syntopica-backend/internal/admin/handler.TriggerScheduler (7 handlers)
+[GIN-debug] POST   /api/schedulers/:name/reset --> syntopica-backend/internal/admin/handler.ResetSchedulerStats (7 handlers)
+[GIN-debug] PUT    /api/schedulers/:name/interval --> syntopica-backend/internal/admin/handler.UpdateSchedulerInterval (7 handlers)
+[GIN-debug] PUT    /api/schedulers/:name/schedule-time --> syntopica-backend/internal/admin/handler.UpdateSchedulerScheduleTime (7 handlers)
+[GIN-debug] GET    /api/analysis/pause       --> syntopica-backend/internal/admin/handler.GetAnalysisPause (7 handlers)
+[GIN-debug] POST   /api/analysis/pause       --> syntopica-backend/internal/admin/handler.SetAnalysisPause (7 handlers)
+[GIN-debug] POST   /api/reading-behavior/track --> syntopica-backend/internal/admin/handler.TrackReadingBehavior (7 handlers)
+[GIN-debug] POST   /api/reading-behavior/track-batch --> syntopica-backend/internal/admin/handler.BatchTrackReadingBehavior (7 handlers)
+[GIN-debug] GET    /api/reading-behavior/stats --> syntopica-backend/internal/admin/handler.GetReadingStats (7 handlers)
+[GIN-debug] GET    /api/preference-profile   --> syntopica-backend/internal/admin/handler.GetPreferenceProfile (7 handlers)
+[GIN-debug] POST   /api/preference-profile/recompute --> syntopica-backend/internal/admin/handler.RecomputePreferenceProfile (7 handlers)
+[GIN-debug] POST   /api/discovery/catalog/sync --> syntopica-backend/internal/admin/handler.SyncCatalog (7 handlers)
+[GIN-debug] GET    /api/discovery/catalog/status --> syntopica-backend/internal/admin/handler.GetCatalogStatus (7 handlers)
+[GIN-debug] GET    /api/discovery/recommendations --> syntopica-backend/internal/admin/handler.GetRecommendations (7 handlers)
+[GIN-debug] POST   /api/discovery/recommendations/refresh --> syntopica-backend/internal/admin/handler.RefreshRecommendations (7 handlers)
+[GIN-debug] POST   /api/discovery/recommendations/:id/accept --> syntopica-backend/internal/admin/handler.AcceptRecommendation (7 handlers)
+[GIN-debug] POST   /api/discovery/recommendations/:id/dismiss --> syntopica-backend/internal/admin/handler.DismissRecommendation (7 handlers)
+[GIN-debug] POST   /api/discovery/recommendations/:id/exclude --> syntopica-backend/internal/admin/handler.ExcludeRecommendation (7 handlers)
+[GIN-debug] POST   /api/discovery/recommendations/:id/restore --> syntopica-backend/internal/admin/handler.RestoreRecommendation (7 handlers)
+[GIN-debug] POST   /api/discovery/ask        --> syntopica-backend/internal/admin/handler.Ask (7 handlers)
+[GIN-debug] GET    /api/discovery/runs/:id   --> syntopica-backend/internal/admin/handler.GetDiscoveryRun (7 handlers)
+[GIN-debug] GET    /api/discovery/interests  --> syntopica-backend/internal/admin/handler.GetInterests (7 handlers)
+[GIN-debug] GET    /api/discovery/candidates --> syntopica-backend/internal/admin/handler.ListCandidates (7 handlers)
+[GIN-debug] POST   /api/discovery/candidates --> syntopica-backend/internal/admin/handler.CreateCandidate (7 handlers)
+[GIN-debug] GET    /api/discovery/candidates/:id --> syntopica-backend/internal/admin/handler.GetCandidate (7 handlers)
+[GIN-debug] PATCH  /api/discovery/candidates/:id --> syntopica-backend/internal/admin/handler.UpdateCandidate (7 handlers)
+[GIN-debug] POST   /api/discovery/candidates/:id/check --> syntopica-backend/internal/admin/handler.CheckCandidate (7 handlers)
+[GIN-debug] POST   /api/discovery/candidates/:id/access-confirm --> syntopica-backend/internal/admin/handler.ConfirmCandidateAccess (7 handlers)
+[GIN-debug] GET    /api/discovery/candidates/export --> syntopica-backend/internal/admin/handler.ExportCandidates (7 handlers)
+[GIN-debug] POST   /api/discovery/candidates/import/preview --> syntopica-backend/internal/admin/handler.PreviewCatalogImport (7 handlers)
+[GIN-debug] POST   /api/discovery/candidates/import/confirm --> syntopica-backend/internal/admin/handler.ConfirmCatalogImport (7 handlers)
+[GIN-debug] GET    /api/settings/rsshub      --> syntopica-backend/internal/admin/handler.GetRSSHubSettings (7 handlers)
+[GIN-debug] POST   /api/settings/rsshub      --> syntopica-backend/internal/admin/handler.SaveRSSHubSettings (7 handlers)
+[GIN-debug] GET    /api/settings/proxy       --> syntopica-backend/internal/admin/handler.GetProxySettings (7 handlers)
+[GIN-debug] POST   /api/settings/proxy       --> syntopica-backend/internal/admin/handler.SaveProxySettings (7 handlers)
+[GIN-debug] GET    /api/settings/bocha       --> syntopica-backend/internal/admin/handler.GetBochaSettings (7 handlers)
+[GIN-debug] POST   /api/settings/bocha       --> syntopica-backend/internal/admin/handler.SaveBochaSettings (7 handlers)
+[GIN-debug] GET    /api/admin/route-param-options --> syntopica-backend/internal/admin/handler.ListRouteParamOptions (7 handlers)
+[GIN-debug] POST   /api/admin/route-param-options --> syntopica-backend/internal/admin/handler.CreateRouteParamOption (7 handlers)
+[GIN-debug] PUT    /api/admin/route-param-options/:id --> syntopica-backend/internal/admin/handler.UpdateRouteParamOption (7 handlers)
+[GIN-debug] DELETE /api/admin/route-param-options/:id --> syntopica-backend/internal/admin/handler.DeleteRouteParamOption (7 handlers)
+[GIN-debug] GET    /api/embedding/queue/status --> syntopica-backend/internal/tagmanagement/handler.GetEmbeddingQueueStatus (7 handlers)
+[GIN-debug] GET    /api/embedding/queue/tasks --> syntopica-backend/internal/tagmanagement/handler.GetEmbeddingQueueTasks (7 handlers)
+[GIN-debug] POST   /api/embedding/queue/retry --> syntopica-backend/internal/tagmanagement/handler.RetryEmbeddingQueueFailed (7 handlers)
+[GIN-debug] POST   /api/embedding/queue/person-metadata/backfill --> syntopica-backend/internal/tagmanagement/handler.BackfillPersonMetadataHandler (7 handlers)
+[GIN-debug] GET    /api/embedding/merge-reembedding/status --> syntopica-backend/internal/tagmanagement/handler.GetMergeReembeddingQueueStatus (7 handlers)
+[GIN-debug] GET    /api/embedding/merge-reembedding/tasks --> syntopica-backend/internal/tagmanagement/handler.GetMergeReembeddingQueueTasks (7 handlers)
+[GIN-debug] POST   /api/embedding/merge-reembedding/retry --> syntopica-backend/internal/tagmanagement/handler.RetryMergeReembeddingQueueFailed (7 handlers)
+[GIN-debug] GET    /api/tag-queue/status     --> syntopica-backend/internal/tagmanagement/handler.GetTagQueueStatus (7 handlers)
+[GIN-debug] GET    /api/tag-queue/tasks      --> syntopica-backend/internal/tagmanagement/handler.GetTagQueueTasks (7 handlers)
+[GIN-debug] POST   /api/tag-queue/retry      --> syntopica-backend/internal/tagmanagement/handler.RetryTagQueueFailed (7 handlers)
+[GIN-debug] POST   /api/tag-queue/retag-today --> syntopica-backend/internal/tagmanagement/handler.RetagTodayArticles (7 handlers)
+[GIN-debug] GET    /api/topic-tags/search    --> syntopica-backend/internal/tagmanagement/handler.SearchTagsHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge     --> syntopica-backend/internal/tagmanagement/handler.MergeTagsHandler (7 handlers)
+[GIN-debug] GET    /api/topic-tags/watched   --> syntopica-backend/internal/tagmanagement/handler.ListWatchedTagsHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/:tag_id/watch --> syntopica-backend/internal/tagmanagement/handler.WatchTagHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/:tag_id/unwatch --> syntopica-backend/internal/tagmanagement/handler.UnwatchTagHandler (7 handlers)
+[GIN-debug] GET    /api/topic-tags/merge-preview --> syntopica-backend/internal/tagmanagement/handler.ScanMergePreviewHandler (7 handlers)
+[GIN-debug] GET    /api/topic-tags/merge-preview/status --> syntopica-backend/internal/tagmanagement/handler.MergePreviewStatusHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge-with-name --> syntopica-backend/internal/tagmanagement/handler.MergeTagsWithCustomNameHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge-preview/dismiss --> syntopica-backend/internal/tagmanagement/handler.DismissSuggestionHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge-preview/scan --> syntopica-backend/internal/tagmanagement/handler.TriggerScanHandler (7 handlers)
+[GIN-debug] GET    /api/topic-tags/merge-preview/scan/stream --> syntopica-backend/internal/tagmanagement/handler.ScanStreamHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge-preview/evaluate --> syntopica-backend/internal/tagmanagement/handler.TriggerEvaluateHandler (7 handlers)
+[GIN-debug] GET    /api/topic-tags/merge-preview/evaluate/stream --> syntopica-backend/internal/tagmanagement/handler.EvaluateStreamHandler (7 handlers)
+[GIN-debug] POST   /api/topic-tags/merge-preview/add-to-group --> syntopica-backend/internal/tagmanagement/handler.AddToGroupHandler (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/upgrade-suggest --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).suggestUpgrades-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/upgrade-execute --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).executeUpgrade-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/upgrade-suggestions --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).listUpgradeSuggestions-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/upgrade-suggestions/:id/dismiss --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).dismissUpgradeSuggestion-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/upgrade-suggestions/generate --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).generateUpgradeSuggestions-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/backfill --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).enqueueBackfill-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/backfill/:id --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getBackfillJob-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/backfill-embeddings --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).backfillBoardEmbeddings-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/rematch-all --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).rematchAll-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/matching-config --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getMatchingConfig-fm (7 handlers)
+[GIN-debug] PUT    /api/semantic-boards/matching-config --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).updateMatchingConfig-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/suggest-auxiliaries --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).suggestAuxiliaries-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards      --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).listSemanticBoards-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards      --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).createSemanticBoard-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id  --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getSemanticBoard-fm (7 handlers)
+[GIN-debug] PUT    /api/semantic-boards/:id  --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).updateSemanticBoard-fm (7 handlers)
+[GIN-debug] DELETE /api/semantic-boards/:id  --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).deleteSemanticBoard-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/suggest-auxiliaries --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).suggestAuxiliariesForBoard-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/articles --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getBoardArticles-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/match-detail/:tagId --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getTagMatchDetail-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/composition --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getBoardComposition-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/composition --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).addBoardComposition-fm (7 handlers)
+[GIN-debug] DELETE /api/semantic-boards/:id/composition/:auxiliary_label_id --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).removeBoardComposition-fm (7 handlers)
+[GIN-debug] GET    /api/auxiliary-labels     --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).listAuxiliaryLabels-fm (7 handlers)
+[GIN-debug] GET    /api/auxiliary-labels/clusters --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).clusterAuxiliaryLabels-fm (7 handlers)
+[GIN-debug] POST   /api/auxiliary-labels/merge-alias --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).mergeAuxiliaryAlias-fm (7 handlers)
+[GIN-debug] POST   /api/auxiliary-labels/gc  --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).gcAuxiliaryLabels-fm (7 handlers)
+[GIN-debug] POST   /api/auxiliary-labels/:id/disable --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).disableAuxiliaryLabel-fm (7 handlers)
+[GIN-debug] GET    /api/tags/:id/auxiliary-labels --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getTagAuxiliaryLabels-fm (7 handlers)
+[GIN-debug] GET    /api/tags/:id/semantic-boards --> syntopica-backend/internal/tagmanagement/handler.(*semanticBoardHandler).getTagSemanticBoards-fm (7 handlers)
+[GIN-debug] GET    /api/composite-labels     --> syntopica-backend/internal/tagmanagement/handler.(*compositeLabelHandler).listCompositeLabels-fm (7 handlers)
+[GIN-debug] GET    /api/composite-labels/component-options --> syntopica-backend/internal/tagmanagement/handler.(*compositeLabelHandler).listComponentOptions-fm (7 handlers)
+[GIN-debug] POST   /api/composite-labels     --> syntopica-backend/internal/tagmanagement/handler.(*compositeLabelHandler).createCompositeLabel-fm (7 handlers)
+[GIN-debug] POST   /api/composite-labels/:id/disable --> syntopica-backend/internal/tagmanagement/handler.(*compositeLabelHandler).disableCompositeLabel-fm (7 handlers)
+[GIN-debug] POST   /api/composite-labels/:id/enable --> syntopica-backend/internal/tagmanagement/handler.(*compositeLabelHandler).enableCompositeLabel-fm (7 handlers)
+[GIN-debug] GET    /api/enrichment/analysis-status --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getAnalysisStatus-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/contexts --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listContexts-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/contexts/:granularity/:period --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getContext-fm (7 handlers)
+[GIN-debug] PUT    /api/persistent-topics/:topicId/enrichment/contexts/:granularity/:period --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).updateContext-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/contexts/:granularity/regenerate --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).regenerateContext-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/results --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listResults-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/results/:id --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getResult-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/results/trigger --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).triggerEnrichment-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/results/:id/debates --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).triggerDebate-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/results/:id/debates --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listDebates-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/results/:id/qa --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).askQA-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/results/:id/qa --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listQA-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/qa/:id/sediment --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).sedimentQA-fm (7 handlers)
+[GIN-debug] GET    /api/persistent-topics/:topicId/enrichment/reviews --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listReviews-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/reviews --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).createReview-fm (7 handlers)
+[GIN-debug] PUT    /api/persistent-topics/:topicId/enrichment/reviews/:id --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).updateReviewDeviation-fm (7 handlers)
+[GIN-debug] POST   /api/persistent-topics/:topicId/enrichment/reviews/:id/apply --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).applyReview-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/trigger --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).triggerBoardEnrichment-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/investigations/trigger --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).triggerBoardInvestigation-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/enrichment/analysis/results --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listBoardResults-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/enrichment/analysis/results/:rid --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getBoardResult-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/relations/discover --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).triggerRelationDiscovery-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/enrichment/analysis/relations --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listBoardRelations-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/enrichment/analysis/relations/:rid --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getBoardRelation-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/relations/:rid/confirm --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).confirmBoardRelation-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/relations/:rid/dismiss --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).dismissBoardRelation-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/relations/:rid/re-resolve --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).reResolveBoardRelation-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/results/:rid/qa --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).askBoardQA-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/enrichment/analysis/results/:rid/qa --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listBoardQA-fm (7 handlers)
+[GIN-debug] POST   /api/semantic-boards/:id/enrichment/analysis/results/:rid/qa/:qid/sediment --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).sedimentBoardQA-fm (7 handlers)
+[GIN-debug] GET    /api/semantic-boards/:id/data-sources --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listDataSources-fm (7 handlers)
+[GIN-debug] PUT    /api/semantic-boards/:id/data-sources --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).upsertDataSource-fm (7 handlers)
+[GIN-debug] DELETE /api/semantic-boards/:id/data-sources/:sourceType --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).deleteDataSource-fm (7 handlers)
+[GIN-debug] GET    /api/analysis-methods     --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listAnalysisMethods-fm (7 handlers)
+[GIN-debug] POST   /api/analysis-methods     --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).createAnalysisMethod-fm (7 handlers)
+[GIN-debug] GET    /api/analysis-methods/:id --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getAnalysisMethod-fm (7 handlers)
+[GIN-debug] PUT    /api/analysis-methods/:id --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).updateAnalysisMethod-fm (7 handlers)
+[GIN-debug] PUT    /api/analysis-methods/:id/enable --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).setAnalysisMethodEnabled-fm (7 handlers)
+[GIN-debug] DELETE /api/analysis-methods/:id --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).deleteAnalysisMethod-fm (7 handlers)
+[GIN-debug] GET    /api/reference-roles      --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).listReferenceRoles-fm (7 handlers)
+[GIN-debug] POST   /api/reference-roles      --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).createReferenceRole-fm (7 handlers)
+[GIN-debug] GET    /api/reference-roles/:id  --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).getReferenceRole-fm (7 handlers)
+[GIN-debug] PUT    /api/reference-roles/:id  --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).updateReferenceRole-fm (7 handlers)
+[GIN-debug] DELETE /api/reference-roles/:id  --> syntopica-backend/internal/dataenrichment/handler.(*EnrichmentHandler).deleteReferenceRole-fm (7 handlers)
+[GIN-debug] GET    /api/traces               --> syntopica-backend/internal/platform/tracing.(*TraceHandler).GetTraceByTraceID-fm (7 handlers)
+[GIN-debug] GET    /api/traces/recent        --> syntopica-backend/internal/platform/tracing.(*TraceHandler).GetRecentTraces-fm (7 handlers)
+[GIN-debug] GET    /api/traces/search        --> syntopica-backend/internal/platform/tracing.(*TraceHandler).SearchTraces-fm (7 handlers)
+[GIN-debug] GET    /api/traces/stats         --> syntopica-backend/internal/platform/tracing.(*TraceHandler).GetTraceStats-fm (7 handlers)
+[GIN-debug] GET    /api/traces/:trace_id/timeline --> syntopica-backend/internal/platform/tracing.(*TraceHandler).GetTraceTimeline-fm (7 handlers)
+[GIN-debug] GET    /api/traces/:trace_id/otlp --> syntopica-backend/internal/platform/tracing.(*TraceHandler).ExportTraceOTLP-fm (7 handlers)
+time=2026-09-14T23:40:17.587+08:00 level=INFO msg="Tag queue started successfully"
+time=2026-09-14T23:40:17.587+08:00 level=INFO msg="Tag queue started successfully"
+time=2026-09-14T23:40:17.590+08:00 level=INFO msg="Embedding queue worker started successfully"
+time=2026-09-14T23:40:17.591+08:00 level=INFO msg="Merge re-embedding queue worker started successfully"
+time=2026-09-14T23:40:17.597+08:00 level=INFO msg="Blocked Article Recovery scheduler started (interval: 1h0m0s, startupDelay: 0s)"
+time=2026-09-14T23:40:17.602+08:00 level=INFO msg="Discovery Run Maintenance scheduler started (interval: 1h0m0s, startupDelay: 5m0s)"
+time=2026-09-14T23:40:17.606+08:00 level=INFO msg="Tag Quality Score scheduler started (interval: 1h0m0s, startupDelay: 0s)"
+time=2026-09-14T23:40:17.610+08:00 level=INFO msg="Daily Report scheduler started (wall-clock mode)"
+time=2026-09-14T23:40:17.634+08:00 level=INFO msg="Firecrawl Crawler scheduler started (interval: 5m0s, startupDelay: 0s)"
+time=2026-09-14T23:40:17.639+08:00 level=INFO msg="Preference Profile Update scheduler started (interval: 1h0m0s, startupDelay: 0s)"
+time=2026-09-14T23:40:17.644+08:00 level=INFO msg="RSSHub Catalog Sync scheduler started (interval: 24h0m0s, startupDelay: 0s)"
+time=2026-09-14T23:40:17.649+08:00 level=INFO msg="Lifeline Monthly Refresh scheduler started (wall-clock mode)"
+time=2026-09-14T23:40:17.652+08:00 level=INFO msg="Lifeline Yearly Refresh scheduler started (wall-clock mode)"
+time=2026-09-14T23:40:17.658+08:00 level=INFO msg="Aux Label Cleanup scheduler started (interval: 1h0m0s, startupDelay: 10m0s)"
+time=2026-09-14T23:40:17.662+08:00 level=INFO msg="Candidate Availability Check scheduler started (interval: 1h0m0s, startupDelay: 5m0s)"
+time=2026-09-14T23:40:17.666+08:00 level=INFO msg="Candidate Embedding Backfill scheduler started (interval: 1h0m0s, startupDelay: 5m0s)"
+time=2026-09-14T23:40:17.670+08:00 level=INFO msg="Auto Refresh scheduler started (interval: 1m0s, startupDelay: 0s)"
+time=2026-09-14T23:40:17.674+08:00 level=INFO msg="Content Completion scheduler started (interval: 1m0s, startupDelay: 0s)"
+time=2026-09-14T23:40:17.688+08:00 level=INFO msg="Cross-Board Relation Expire scheduler started (interval: 1h0m0s, startupDelay: 30m0s)"
+time=2026-09-14T23:40:17.694+08:00 level=INFO msg="Board Upgrade Suggest scheduler started (wall-clock mode)"
+time=2026-09-14T23:40:17.700+08:00 level=INFO msg="Log Cleanup scheduler started (interval: 24h0m0s, startupDelay: 5m0s)"
+time=2026-09-14T23:40:17.700+08:00 level=INFO msg="Server starting on :5000"
+time=2026-09-14T23:40:17.700+08:00 level=INFO msg="Environment: debug"
+[GIN-debug] [WARNING] You trusted all proxies, this is NOT safe. We recommend you to set a value.
+Please check https://github.com/gin-gonic/gin/blob/master/docs/doc.md#dont-trust-all-proxies for details.
+[GIN-debug] Listening and serving HTTP on :5000
+[GIN] 2026/09/14 - 23:40:18 | 200 |   4.98ms |             ::1 | GET      "/api/categories"
+[GIN] 2026/09/14 - 23:40:18 | 200 |  16.85ms |             ::1 | GET      "/api/feeds?per_page=10000"
+[GIN] 2026/09/14 - 23:40:18 | 200 |       0s |             ::1 | GET      "/ws"
+time=2026-09-14T23:40:18.157+08:00 level=INFO msg="WebSocket客户端已连接，当前连接数: 1"
+[GIN] 2026/09/14 - 23:40:18 | 200 |  17.02ms |             ::1 | GET      "/api/semantic-boards"
+[GIN] 2026/09/14 - 23:40:18 | 200 | 244.02ms |             ::1 | GET      "/api/auxiliary-labels?page=1&per_page=50"
+time=2026-09-14T23:40:21.566+08:00 level=WARN msg="[SLOW SQL] 3407.564ms > 200ms | rows=5820 | SELECT id, label, slug, ref_count, embedding FROM \"semantic_labels\" WHERE label_type = 'auxiliary' AND status = 'active' AND embedding IS NOT NULL ORDER BY ref_count DESC, id ASC"
+[GIN] 2026/09/14 - 23:40:24 | 200 |     6.4s |             ::1 | GET      "/api/auxiliary-labels/clusters"
+time=2026-09-14T23:41:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:41:17.672+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:41:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:41:17.880+08:00 level=INFO msg="WebSocket客户端已断开，当前连接数: 0"
+time=2026-09-14T23:41:17.976+08:00 level=INFO msg="Content Completion: no pending content to complete"
+[GIN] 2026/09/14 - 23:41:18 | 200 |   3.28ms |             ::1 | GET      "/api/categories"
+[GIN] 2026/09/14 - 23:41:18 | 200 |   26.1ms |             ::1 | GET      "/api/feeds?per_page=10000"
+time=2026-09-14T23:41:18.158+08:00 level=INFO msg="WebSocket客户端已连接，当前连接数: 1"
+[GIN] 2026/09/14 - 23:41:18 | 200 |  518.9µs |             ::1 | GET      "/ws"
+[GIN] 2026/09/14 - 23:41:18 | 200 |   1.56ms |             ::1 | GET      "/api/auxiliary-labels/clusters"
+[GIN] 2026/09/14 - 23:41:18 | 200 |  15.07ms |             ::1 | GET      "/api/semantic-boards"
+time=2026-09-14T23:41:18.632+08:00 level=WARN msg="[SLOW SQL] 421.230ms > 200ms | rows=50 | SELECT * FROM \"semantic_labels\" WHERE label_type = 'auxiliary' ORDER BY ref_count DESC, id ASC LIMIT 50"
+[GIN] 2026/09/14 - 23:41:18 | 200 | 473.34ms |             ::1 | GET      "/api/auxiliary-labels?page=1&per_page=50"
+[GIN] 2026/09/14 - 23:41:52 | 200 |       0s |             ::1 | GET      "/health"
+[GIN] 2026/09/14 - 23:42:01 | 200 |   1.08ms |             ::1 | GET      "/api/categories"
+[GIN] 2026/09/14 - 23:42:01 | 200 |  13.21ms |             ::1 | GET      "/api/feeds?per_page=10000"
+[GIN] 2026/09/14 - 23:42:01 | 200 |   1.57ms |             ::1 | GET      "/api/settings/rsshub"
+[GIN] 2026/09/14 - 23:42:01 | 200 |   6.35ms |             ::1 | GET      "/api/discovery/recommendations?status=pending"
+[GIN] 2026/09/14 - 23:42:01 | 200 |  13.15ms |             ::1 | GET      "/api/discovery/catalog/status"
+[GIN] 2026/09/14 - 23:42:10 | 200 |  26.59ms |             ::1 | GET      "/api/categories"
+[GIN] 2026/09/14 - 23:42:10 | 200 |  45.44ms |             ::1 | GET      "/api/feeds?per_page=10000"
+[GIN] 2026/09/14 - 23:42:10 | 200 |  13.55ms |             ::1 | GET      "/api/discovery/recommendations?status=pending"
+[GIN] 2026/09/14 - 23:42:10 | 200 |  14.59ms |             ::1 | GET      "/api/settings/rsshub"
+[GIN] 2026/09/14 - 23:42:10 | 200 |  19.89ms |             ::1 | GET      "/api/discovery/catalog/status"
+time=2026-09-14T23:42:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:42:17.673+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:42:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:42:17.849+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:42:17.891+08:00 level=INFO msg="WebSocket客户端已断开，当前连接数: 0"
+[GIN] 2026/09/14 - 23:42:18 | 200 |   2.31ms |             ::1 | GET      "/api/categories"
+[GIN] 2026/09/14 - 23:42:18 | 200 |  32.76ms |             ::1 | GET      "/api/feeds?per_page=10000"
+[GIN] 2026/09/14 - 23:42:18 | 200 |       0s |             ::1 | GET      "/ws"
+time=2026-09-14T23:42:18.166+08:00 level=INFO msg="WebSocket客户端已连接，当前连接数: 1"
+[GIN] 2026/09/14 - 23:42:18 | 200 |   1.61ms |             ::1 | GET      "/api/auxiliary-labels/clusters"
+[GIN] 2026/09/14 - 23:42:18 | 200 |  11.48ms |             ::1 | GET      "/api/semantic-boards"
+time=2026-09-14T23:42:18.553+08:00 level=WARN msg="[SLOW SQL] 343.481ms > 200ms | rows=50 | SELECT * FROM \"semantic_labels\" WHERE label_type = 'auxiliary' ORDER BY ref_count DESC, id ASC LIMIT 50"
+[GIN] 2026/09/14 - 23:42:18 | 200 | 385.79ms |             ::1 | GET      "/api/auxiliary-labels?page=1&per_page=50"
+time=2026-09-14T23:43:10.188+08:00 level=ERROR msg="discovery_run: run 3 (kind=ask) failed: error_code=embedding err=qwen3-embedding: Post \"http://localhost:8081/v1/embeddings\": context canceled"
+time=2026-09-14T23:43:10.188+08:00 level=ERROR msg="discovery_run_service: failRun 3: context canceled"
+[GIN] 2026/09/14 - 23:43:10 | 200 |  25.21ms |             ::1 | POST     "/api/discovery/ask"
+[GIN] 2026/09/14 - 23:43:10 | 200 |   3.97ms |             ::1 | GET      "/api/categories"
+[GIN] 2026/09/14 - 23:43:10 | 200 |  11.05ms |             ::1 | GET      "/api/feeds?per_page=10000"
+[GIN] 2026/09/14 - 23:43:10 | 200 |   1.09ms |             ::1 | GET      "/api/settings/rsshub"
+[GIN] 2026/09/14 - 23:43:10 | 200 |   2.73ms |             ::1 | GET      "/api/discovery/recommendations?status=pending"
+[GIN] 2026/09/14 - 23:43:10 | 200 |   8.96ms |             ::1 | GET      "/api/discovery/catalog/status"
+time=2026-09-14T23:43:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:43:17.672+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:43:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:43:17.717+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:43:17.881+08:00 level=INFO msg="WebSocket客户端已断开，当前连接数: 0"
+[GIN] 2026/09/14 - 23:43:18 | 200 |   8.61ms |             ::1 | GET      "/api/feeds?per_page=10000"
+[GIN] 2026/09/14 - 23:43:18 | 200 |   9.47ms |             ::1 | GET      "/api/categories"
+time=2026-09-14T23:43:18.123+08:00 level=INFO msg="WebSocket客户端已连接，当前连接数: 1"
+[GIN] 2026/09/14 - 23:43:18 | 200 |       0s |             ::1 | GET      "/ws"
+[GIN] 2026/09/14 - 23:43:18 | 200 |   1.08ms |             ::1 | GET      "/api/auxiliary-labels/clusters"
+[GIN] 2026/09/14 - 23:43:18 | 200 |  16.44ms |             ::1 | GET      "/api/semantic-boards"
+time=2026-09-14T23:43:18.343+08:00 level=WARN msg="[SLOW SQL] 213.976ms > 200ms | rows=50 | SELECT * FROM \"semantic_labels\" WHERE label_type = 'auxiliary' ORDER BY ref_count DESC, id ASC LIMIT 50"
+[GIN] 2026/09/14 - 23:43:18 | 200 | 218.79ms |             ::1 | GET      "/api/auxiliary-labels?page=1&per_page=50"
+time=2026-09-14T23:43:34.000+08:00 level=INFO msg="WebSocket客户端已断开，当前连接数: 0"
+[GIN] 2026/09/14 - 23:43:34 | 200 |   2.14ms |             ::1 | GET      "/api/categories"
+[GIN] 2026/09/14 - 23:43:34 | 200 |  13.27ms |             ::1 | GET      "/api/feeds?per_page=10000"
+[GIN] 2026/09/14 - 23:43:34 | 200 |   1.63ms |             ::1 | GET      "/api/discovery/recommendations?status=pending"
+[GIN] 2026/09/14 - 23:43:34 | 200 |   2.15ms |             ::1 | GET      "/api/settings/rsshub"
+[GIN] 2026/09/14 - 23:43:34 | 200 |   5.33ms |             ::1 | GET      "/api/discovery/catalog/status"
+[GIN] 2026/09/14 - 23:43:34 | 200 |   1.06ms |             ::1 | GET      "/api/categories"
+[GIN] 2026/09/14 - 23:43:34 | 200 |   9.71ms |             ::1 | GET      "/api/feeds?per_page=10000"
+[GIN] 2026/09/14 - 23:43:34 | 200 |  521.4µs |             ::1 | GET      "/ws"
+time=2026-09-14T23:43:34.522+08:00 level=INFO msg="WebSocket客户端已连接，当前连接数: 1"
+[GIN] 2026/09/14 - 23:43:34 | 200 |   1.26ms |             ::1 | GET      "/api/auxiliary-labels/clusters"
+[GIN] 2026/09/14 - 23:43:34 | 200 |   5.63ms |             ::1 | GET      "/api/semantic-boards"
+[GIN] 2026/09/14 - 23:43:34 | 200 | 124.45ms |             ::1 | GET      "/api/auxiliary-labels?page=1&per_page=50"
+time=2026-09-14T23:44:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:44:17.672+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:44:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:44:17.714+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:45:17.603+08:00 level=INFO msg="[tracing] scheduler \"Discovery Run Maintenance\" tick: tracing not recording"
+time=2026-09-14T23:45:17.604+08:00 level=INFO msg="Discovery Run Maintenance: discovery run maintenance: stale running runs marked failed=0"
+time=2026-09-14T23:45:17.634+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-14T23:45:17.644+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-14T23:45:17.663+08:00 level=INFO msg="[tracing] scheduler \"Candidate Availability Check\" tick: tracing not recording"
+time=2026-09-14T23:45:17.667+08:00 level=INFO msg="[tracing] scheduler \"Candidate Embedding Backfill\" tick: tracing not recording"
+time=2026-09-14T23:45:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:45:17.673+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:45:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:45:17.807+08:00 level=INFO msg="Log Cleanup: ai_call_logs=754, otel_spans=1289, ai_embedding_cache=0, embedding_queues=0"
+time=2026-09-14T23:45:17.835+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:45:23.236+08:00 level=INFO msg="Candidate Embedding Backfill: candidate embedding backfill: generated=20 stale=0 failed=0 no_text=0"
+time=2026-09-14T23:46:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:46:17.672+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:46:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:46:17.721+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:46:33.696+08:00 level=INFO msg="Candidate Availability Check: candidate availability: due=50 checked=50 failed=0"
+time=2026-09-14T23:47:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:47:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:47:17.680+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:47:17.739+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:48:17.671+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:48:17.672+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:48:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:48:17.727+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:49:17.671+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:49:17.673+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:49:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:49:17.751+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:50:17.634+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-14T23:50:17.640+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-14T23:50:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:50:17.672+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:50:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:50:17.959+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:50:18.058+08:00 level=WARN msg="[SLOW SQL] 400.044ms > 200ms | rows=0 | SELECT * FROM \"semantic_labels\" WHERE (label_type = 'auxiliary' AND status = 'active' AND protected = false) AND created_at < '2026-09-13 23:50:17.658' AND id NOT IN (SELECT DISTINCT semantic_label_id FROM topic_tag_semantic_labels) AND id NOT IN (SELECT DISTINCT auxiliary_label_id FROM board_composition)"
+time=2026-09-14T23:50:18.059+08:00 level=WARN msg="tag_edge_retention_days: \"tag_edge_retention_days\" unavailable (record not found); using default 7"
+time=2026-09-14T23:50:18.065+08:00 level=INFO msg="Aux Label Cleanup: disabled 0 labels, reclaimed 0 tag edges (0 orphaned tags)"
+time=2026-09-14T23:51:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:51:17.671+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:51:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:51:17.721+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:52:17.671+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:52:17.672+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:52:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:52:17.744+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:53:17.671+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:53:17.672+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:53:17.674+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:53:17.761+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:54:17.671+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:54:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:54:17.677+08:00 level=INFO msg="Auto Refresh: triggered 1 feeds (scanned=23, due=1, stale_reset=0)"
+time=2026-09-14T23:54:17.765+08:00 level=INFO msg="Content Completion: no pending content to complete"
+time=2026-09-14T23:54:22.775+08:00 level=ERROR msg="Error refreshing feed 1: feed returned HTTP 502"
+time=2026-09-14T23:55:17.634+08:00 level=INFO msg="[tracing] scheduler \"Firecrawl Crawler\" tick: tracing not recording"
+time=2026-09-14T23:55:17.638+08:00 level=INFO msg="Firecrawl Crawler: no jobs to process"
+time=2026-09-14T23:55:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:55:17.672+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:55:17.676+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:55:17.732+08:00 level=INFO msg="Content Completion: no pending content to complete"
+[GIN] 2026/09/14 - 23:55:51 | 200 |   4.74ms |             ::1 | GET      "/api/semantic-boards/1974/topic-watches"
+[GIN] 2026/09/14 - 23:55:51 | 200 |  50.02ms |             ::1 | GET      "/api/semantic-boards/1974/composition"
+[GIN] 2026/09/14 - 23:55:51 | 200 |  56.43ms |             ::1 | GET      "/api/semantic-boards/1974/articles?page=1&per_page=50&start_date=2026-09-14&end_date=2026-09-14"
+[GIN] 2026/09/14 - 23:55:51 | 200 | 207.86ms |             ::1 | GET      "/api/semantic-boards/1974/lane-dynamics?days=14"
+[GIN] 2026/09/14 - 23:56:04 | 204 |  517.7µs |             ::1 | OPTIONS  "/api/semantic-boards/1974/daily-reports?days=7"
+[GIN] 2026/09/14 - 23:56:04 | 200 |  10.05ms |             ::1 | GET      "/api/semantic-boards/1974/daily-reports?days=7"
+[GIN] 2026/09/14 - 23:56:04 | 204 |       0s |             ::1 | OPTIONS  "/api/daily-reports/778"
+[GIN] 2026/09/14 - 23:56:04 | 200 |  39.16ms |             ::1 | GET      "/api/daily-reports/778"
+[GIN] 2026/09/14 - 23:56:04 | 204 |       0s |             ::1 | OPTIONS  "/api/daily-reports/topics/5/lifeline"
+[GIN] 2026/09/14 - 23:56:04 | 200 |  29.47ms |             ::1 | GET      "/api/daily-reports/topics/5/lifeline"
+[GIN] 2026/09/14 - 23:56:05 | 204 |       0s |             ::1 | OPTIONS  "/api/daily-reports/778/watch-hits"
+[GIN] 2026/09/14 - 23:56:05 | 200 |   1.03ms |             ::1 | GET      "/api/daily-reports/778/watch-hits"
+[GIN] 2026/09/14 - 23:56:14 | 204 |       0s |             ::1 | OPTIONS  "/api/daily-reports/topics/1204/lifeline"
+[GIN] 2026/09/14 - 23:56:14 | 200 |  17.48ms |             ::1 | GET      "/api/daily-reports/topics/1204/lifeline"
+time=2026-09-14T23:56:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:56:17.672+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:56:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:56:17.714+08:00 level=INFO msg="Content Completion: no pending content to complete"
+[GIN] 2026/09/14 - 23:56:18 | 204 |       0s |             ::1 | OPTIONS  "/api/daily-reports/topics/9/lifeline"
+[GIN] 2026/09/14 - 23:56:18 | 200 |   5.27ms |             ::1 | GET      "/api/daily-reports/topics/9/lifeline"
+[GIN] 2026/09/14 - 23:56:21 | 204 |       0s |             ::1 | OPTIONS  "/api/daily-reports/topics/1205/lifeline"
+[GIN] 2026/09/14 - 23:56:21 | 200 |    5.8ms |             ::1 | GET      "/api/daily-reports/topics/1205/lifeline"
+[GIN] 2026/09/14 - 23:56:28 | 204 |       0s |             ::1 | OPTIONS  "/api/articles/127983"
+[GIN] 2026/09/14 - 23:56:28 | 204 |       0s |             ::1 | OPTIONS  "/api/articles/128003"
+[GIN] 2026/09/14 - 23:56:28 | 204 |       0s |             ::1 | OPTIONS  "/api/articles/128125"
+[GIN] 2026/09/14 - 23:56:28 | 200 |   9.33ms |             ::1 | GET      "/api/articles/127983"
+[GIN] 2026/09/14 - 23:56:28 | 200 |   7.64ms |             ::1 | GET      "/api/articles/128125"
+[GIN] 2026/09/14 - 23:56:28 | 200 |  11.48ms |             ::1 | GET      "/api/articles/128003"
+[GIN] 2026/09/14 - 23:56:35 | 204 |       0s |             ::1 | OPTIONS  "/api/articles/128090"
+[GIN] 2026/09/14 - 23:56:35 | 204 |       0s |             ::1 | OPTIONS  "/api/articles/128263"
+[GIN] 2026/09/14 - 23:56:35 | 200 |   2.64ms |             ::1 | GET      "/api/articles/128090"
+[GIN] 2026/09/14 - 23:56:35 | 200 |   5.32ms |             ::1 | GET      "/api/articles/128263"
+[GIN] 2026/09/14 - 23:56:42 | 204 |       0s |             ::1 | OPTIONS  "/api/articles/128117"
+[GIN] 2026/09/14 - 23:56:42 | 200 |   3.63ms |             ::1 | GET      "/api/articles/128117"
+[GIN] 2026/09/14 - 23:56:56 | 204 |       0s |             ::1 | OPTIONS  "/api/articles/127891"
+[GIN] 2026/09/14 - 23:56:56 | 204 |       0s |             ::1 | OPTIONS  "/api/articles/128002"
+[GIN] 2026/09/14 - 23:56:56 | 204 |       0s |             ::1 | OPTIONS  "/api/articles/128013"
+[GIN] 2026/09/14 - 23:56:56 | 200 |    5.9ms |             ::1 | GET      "/api/articles/127891"
+[GIN] 2026/09/14 - 23:56:56 | 200 |   9.55ms |             ::1 | GET      "/api/articles/128002"
+[GIN] 2026/09/14 - 23:56:56 | 200 |   4.54ms |             ::1 | GET      "/api/articles/128013"
+time=2026-09-14T23:57:17.670+08:00 level=INFO msg="[tracing] scheduler \"Auto Refresh\" tick: tracing not recording"
+time=2026-09-14T23:57:17.675+08:00 level=INFO msg="[tracing] scheduler \"Content Completion\" tick: tracing not recording"
+time=2026-09-14T23:57:17.681+08:00 level=INFO msg="Auto Refresh: triggered 0 feeds (scanned=23, due=0, stale_reset=0)"
+time=2026-09-14T23:57:17.720+08:00 level=INFO msg="Content Completion: no pending content to complete"
+[GIN] 2026/09/14 - 23:57:35 | 204 |  513.4µs |             ::1 | OPTIONS  "/api/semantic-boards/1980/composition"
+[GIN] 2026/09/14 - 23:57:35 | 204 |       0s |             ::1 | OPTIONS  "/api/semantic-boards/1980/articles?page=1&per_page=50&start_date=2026-09-14&end_date=2026-09-14"
+[GIN] 2026/09/14 - 23:57:35 | 204 |       0s |             ::1 | OPTIONS  "/api/semantic-boards/1980/topic-watches"
+[GIN] 2026/09/14 - 23:57:35 | 204 |       0s |             ::1 | OPTIONS  "/api/semantic-boards/1980/daily-reports?days=7"
+[GIN] 2026/09/14 - 23:57:35 | 200 |   2.65ms |             ::1 | GET      "/api/semantic-boards/1980/topic-watches"
+[GIN] 2026/09/14 - 23:57:35 | 200 |   3.26ms |             ::1 | GET      "/api/semantic-boards/1980/daily-reports?days=7"
+[GIN] 2026/09/14 - 23:57:35 | 204 |       0s |             ::1 | OPTIONS  "/api/daily-reports/779"
+[GIN] 2026/09/14 - 23:57:35 | 200 |  36.23ms |             ::1 | GET      "/api/daily-reports/779"
+[GIN] 2026/09/14 - 23:57:35 | 204 |       0s |             ::1 | OPTIONS  "/api/daily-reports/topics/93/lifeline"
+[GIN] 2026/09/14 - 23:57:35 | 200 |  78.09ms |             ::1 | GET      "/api/semantic-boards/1980/composition"
+[GIN] 2026/09/14 - 23:57:35 | 200 |  17.65ms |             ::1 | GET      "/api/daily-reports/topics/93/lifeline"
+[GIN] 2026/09/14 - 23:57:35 | 200 |  95.43ms |             ::1 | GET      "/api/semantic-boards/1980/articles?page=1&per_page=50&start_date=2026-09-14&end_date=2026-09-14"

@@ -54,7 +54,9 @@ type SemanticBoardUpgradeConfig struct {
 // 升级建议生成请求：方向 × 来源四格矩阵（design D1）。
 // Direction ∈ {create, expand}；Source ∈ {aux, composite}；
 // TargetBoardID 在 expand 方向必填（生成前锁定单版块），create 方向必须为 0；
-// Days 仅 create×aux 生效（候选时间窗，0 = 不过滤）。
+// Days 时间窗：create×aux 与 expand 各路生效（create×aux 按文章活动过滤候选；
+// expand 相似路近期活跃过滤 + 共现/compose 路窗口收紧）；create×composite 忽略；
+// 0 = 不过滤（spec: upgrade-candidate-time-window / board-upgrade-expand）。
 type UpgradeGenerateRequest struct {
 	Direction     string
 	Source        string
