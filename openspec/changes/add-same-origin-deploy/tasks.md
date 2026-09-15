@@ -6,7 +6,8 @@
 ## 2. 同源反代制品
 
 - [x] 2.1 新增 `deploy/same-origin/Caddyfile`：`:80` 单入口（`admin off` + `auto_https off`），四条后端路径反代到 `127.0.0.1:5100` —— `/api/*`、`/ws` 与 `/ws/*`、`/icons/*`、`/health`；其余路径 `root * /srv/www` + `try_files {path} /index.html` + `file_server`。不引入额外模块或外部文件。验证：`caddy validate` → `Valid configuration`（已跑，见 5.1）
-- [x] 2.2 新增 `deploy/same-origin/docker-compose.yml`：`caddy:2-alpine` + `network_mode: host` + 挂载 `Caddyfile` 与 `www`（只读）+ 命名卷 `/data`、`/config`；**不含** `ports:`（host 网络下写了 compose 直接报错）。验证：见 5.2- [x] 2.3 新增 `deploy/same-origin/README.md`：前置条件 → PC 构建（含构建期注入）→ 打包拷贝 → 起容器 → 浏览器验收 → 排障表（漏注入的现场特征 / `ports:` 混写报错 / 80 端口占用 / 后端未起返回 502）→ 回滚。验证：README 内含路径的命令与 2.1/2.2 实际路径一致
+- [x] 2.2 新增 `deploy/same-origin/docker-compose.yml`：`caddy:2-alpine` + `network_mode: host` + 挂载 `Caddyfile` 与 `www`（只读）+ 命名卷 `/data`、`/config`；**不含** `ports:`（host 网络下写了 compose 直接报错）。验证：见 5.2- [x] 2.3 新增 `deploy/same-origin/README.md`：先选模式（dev 反代 / 静态产物）→ 各自完整步骤 → 验收 → 排障表 → 切模式/回滚。验证：README 内含路径的命令与 2.1/2.2/2.4 实际路径一致
+- [x] 2.4 新增 `deploy/same-origin/Caddyfile.dev` + compose 模式切换：`${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro` —— 供「Pi 上跑 `pnpm dev`、不做静态构建」的现场使用（前端路径反代到 `127.0.0.1:3000`，含 Vite HMR 的 WS）。验证：`docker compose config` 两种模式分别解析到 `Caddyfile` / `Caddyfile.dev`（见 5.10）
 
 ## 3. 测试
 
@@ -35,6 +36,7 @@
 - [x] 5.7 规范自检：`bash scripts/check-standards.sh --change add-same-origin-deploy` → 143 通过 / 0 失败
 - [ ] 5.8 Pi 端到端（人工，**需用户执行**）：浏览器访问 `http://<pi-ip>/` 列表页有数据，Network 面板请求全部发往 `http://<pi-ip>/api/...`
 - [x] 5.9 环境受限留痕：`docker build --target front-build` **未执行** —— 本机两个镜像源均拉不到 `node:22-alpine`（`image-mirror.r2.daocloud.vip` EOF / `dockerproxy.net` 亦失败）。用户侧若需完整验证：`docker build --target front-build -t syntopica-front-probe .`
+- [x] 5.10 dev 变体路由语义（本机已实测）：假 dev server（`caddy file-server --listen 127.0.0.1:3000`）+ 假后端（`--listen 127.0.0.1:5100`）+ 原版 `Caddyfile.dev` + `-p 18081:80`，实测 `/` 200 返回 dev 壳、`/_nuxt/app.js` 200 来自 dev、`/api/categories` 200 后端 JSON、`/health` 200 后端 JSON、`/icons/feeds/42.png` 200 `image/png`、`/ws` 404 且不含 dev 壳；`CADDYFILE=./Caddyfile.dev docker compose config` 解析到 `deploy/same-origin/Caddyfile.dev`
 
 | Scenario | 测试文件 |
 |---|---|
@@ -44,5 +46,6 @@
 | 后端路径全量转发 | 人工：本机已实测（见 5.1②）路由与内容类型；Pi 上复核 `curl -sI http://<pi-ip>/icons/feeds/<id>.png` 返回 `image/*`、`curl -s http://<pi-ip>/api/categories` 返回分类 JSON、`curl -s http://<pi-ip>/health` 返回后端健康 JSON |
 | WebSocket 同源转发 | 人工：本机已实测 `/ws` 路由归属（见 5.1②）；Pi 上浏览器 console 执行 `new WebSocket('ws://<pi-ip>/ws')` 触发 open 事件 |
 | SPA 深层路由兜底 | 人工：本机已实测 `/tags` 与 `/settings/anything` 返回 200 SPA 壳（见 5.1②）；Pi 上复核 `curl -sI http://<pi-ip>/tags` 返回 200 |
+| dev 模式前端反代 | 人工：本机已实测（见 5.10）路由与串道判据；Pi 上以 `CADDYFILE=./Caddyfile.dev` 起容器 + `pnpm dev` 后复核 `curl -sI http://<pi-ip>/_nuxt/` 与 `curl -s http://<pi-ip>/api/categories` |
 | 部署步骤可复现 | 人工：按 `deploy/same-origin/README.md` 逐步操作至浏览器可用 |
 | 文档与实际部署形态一致 | 人工：`grep -rn 'front/Dockerfile\|NUXT_PUBLIC_API_ORIGIN' docs/reference/` 零命中；`docker-compose.yml` 服务清单为 `postgres` + `syntopica` |

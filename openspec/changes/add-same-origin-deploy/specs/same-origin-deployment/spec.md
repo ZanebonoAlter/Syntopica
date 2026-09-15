@@ -29,7 +29,7 @@
 
 ### Requirement: 同源反代部署制品
 
-仓库 SHALL 在 `deploy/same-origin/` 提供可直接使用的同源反代部署制品（`Caddyfile` + `docker-compose.yml` + `README.md`），供**后端已在既有方式下运行、不重建镜像**的场景使用。反代入口 SHALL 将后端四条路径转发到 `127.0.0.1:5100`：`/api/*`、`/ws`（含 `/ws/*`）、`/icons/*`、`/health`；其余路径 SHALL 由前端静态产物提供并以 `index.html` 兜底。Caddyfile SHALL NOT 依赖额外模块或外部文件。
+仓库 SHALL 在 `deploy/same-origin/` 提供可直接使用的同源反代部署制品（`Caddyfile` + `Caddyfile.dev` + `docker-compose.yml` + `README.md`），供**后端已在既有方式下运行、不重建镜像**的场景使用。反代入口 SHALL 将后端四条路径转发到 `127.0.0.1:5100`：`/api/*`、`/ws`（含 `/ws/*`）、`/icons/*`、`/health`。其余路径的提供方 SHALL 可按模式选择且由 compose 变量切换：静态产物（`index.html` 兜 SPA 路由）或 Pi 上 `127.0.0.1:3000` 的 dev server。两份 Caddyfile SHALL NOT 依赖额外模块或外部文件。
 
 #### Scenario: 后端路径全量转发
 
@@ -43,8 +43,13 @@
 
 #### Scenario: SPA 深层路由兜底
 
-- **WHEN** 浏览器直接访问同源入口的非文件路径（如刷新 `/tags`）
+- **WHEN** 以静态模式部署时浏览器直接访问同源入口的非文件路径（如刷新 `/tags`）
 - **THEN** 返回前端 `index.html`（HTTP 200）而非 404，由客户端路由接管
+
+#### Scenario: dev 模式前端反代
+
+- **WHEN** 以 `CADDYFILE=./Caddyfile.dev` 起容器、且 Pi 上有 dev server 监听 `127.0.0.1:3000`
+- **THEN** 前端路径（含 `/_nuxt/` 资源）由 dev server 提供、`/` 返回其 HTML，同时四条后端路径仍由后端提供；两类响应互不串道（后端响应不含前端 HTML，前端路径不被后端接管）
 
 ### Requirement: 同源部署路径与边界文档化
 

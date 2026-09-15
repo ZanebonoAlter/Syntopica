@@ -18,7 +18,10 @@ services:
     # 轻量反代，给个上限兜底（Pi 上内存紧张）
     mem_limit: 128m
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 选哪个 Caddyfile：静态产物（默认）或 dev 模式（反代 :3000 的 Nuxt dev server）
+      #   静态：docker compose -f deploy/same-origin/docker-compose.yml up -d
+      #   dev ：CADDYFILE=./Caddyfile.dev docker compose -f deploy/same-origin/docker-compose.yml up -d
+      - ${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro
       # 前端静态产物：PC 上 pnpm generate 后把 .output/public 的内容放进这里
       - ./www:/srv/www:ro
       - caddy-data:/data

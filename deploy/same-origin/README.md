@@ -1,48 +1,95 @@
 # 同源反代部署（Caddy）
 
-浏览器只面对**一个 origin**——前端静态产物与后端 API / WebSocket / 图标由同一个入口提供。
+浏览器只面对**一个 origin**——前端与后端 API / WebSocket / 图标由同一个入口提供。
 
-适用于**浏览器与后端不同机**的常驻部署：本文件按树莓派 5 写，任意 Linux 主机同样适用。
+适用于**浏览器与后端不同机**的部署：本文件按树莓派 5 写，任意 Linux 主机同样适用。
+
+## 先选模式
+
+| 模式 | 前端跑什么 | 要不要构建 | 适用 |
+|---|---|---|---|
+| **A. dev 反代** | Pi 上的 `pnpm dev`（`:3000`） | **不用** | 日常开发 / 试用；改代码即生效，有 HMR |
+| **B. 静态产物** | `pnpm generate` 出的 `.output/public` | 要（PC 或 Pi 上都行） | 常驻 / 对外；省一个常驻 Node 进程 |
+
+两种模式的 Caddyfile 都是现成的，用 `CADDYFILE` 切换，其余步骤一样。
 
 ## 为什么用这个形态
 
 | | 直连形态（默认） | 同源形态（本目录） |
 |---|---|---|
-| 前端 `apiBase` | `http://localhost:5100/api`（代码默认值） | `/api`（构建期注入） |
-| 适用场景 | 浏览器与后端**同一台机器**（Windows 本地开发） | 浏览器在**另一台机器**（PC 看树莓派） |
+| 前端 `apiBase` | `http://localhost:5100/api`（代码默认值） | `/api`（相对） |
+| 适用场景 | 浏览器与后端**同一台机器** | 浏览器在**另一台机器**（PC 看树莓派） |
 | 后端 CORS 白名单 | 必须逐个列出前端 origin | 不参与（不存在跨域） |
-| 换设备 / 换网段 | 改 `CORS_ORIGINS` + 重新构建前端 | 什么都不用改 |
+| 换设备 / 换网段 | 改 `CORS_ORIGINS` + 重配前端 | 什么都不用改 |
 
 直连形态下浏览器把 `localhost` 解释成**浏览器自己那台机器**，所以搬到 Pi 上必然连不上（`ERR_CONNECTION_REFUSED`）；把地址改成 Pi 的 IP 之后又会撞后端 CORS 白名单（响应缺少 `Access-Control-Allow-Origin`）。同源形态一次消掉这两个必配项。
 
 ## 前置条件
 
 - **Pi**：Linux + Docker（`docker --version`）
-- **端口**：宿主 80 空闲 —— `ss -ltnp | grep ':80'`
-- **后端已跑**：监听 `127.0.0.1:5100` —— `curl -s http://127.0.0.1:5100/health` 有 JSON 响应
-- **PC**：Node + pnpm（只用来构建前端；Pi 上不需要 Node 工具链）
-- Pi 上有本仓库副本（下文按 `~/syntopica` 写）
+- **端口**：宿主 80 空闲 —— `ss -ltnp | grep ':80'`（换端口见「换端口」节）
+- **后端已在跑**：监听 `127.0.0.1:5100` —— `curl -s http://127.0.0.1:5100/health` 有 JSON 响应
+- Pi 上有本仓库（下文按 `~/syntopica` 写）
 
-## 1. PC：构建前端静态产物
+---
+
+## 模式 A：dev 反代（零构建，推荐先试）
+
+前端仍是你现在跑的 `pnpm dev`，Caddy 只负责把它和后端拼成一个 origin。
+
+```bash
+# 1. Pi：前端带相对 base 重启（dev 在启动时读环境变量，必须重启才生效）
+cd ~/syntopica/front
+NUXT_PUBLIC_API_BASE=/api pnpm dev
+
+# 2. Pi：另开一个终端，起 Caddy 走 dev 变体
+cd ~/syntopica
+CADDYFILE=./Caddyfile.dev docker compose -f deploy/same-origin/docker-compose.yml up -d
+```
+
+然后浏览器开 **`http://<pi-ip>/`**（不是 `:3000`）。
+
+- `pnpm dev` 的 `devServer.host` 已是 `0.0.0.0`，Caddy 走 host 网络访问 `127.0.0.1:3000`，不冲突。
+- Vite HMR 的 WebSocket 也经 Caddy 转发（`reverse_proxy` 透明处理 upgrade），热更新照常。
+- 这个模式下 Caddy 几乎不占资源，但它**不会**让 dev server 变快——dev 模式本身吃内存、无压缩。
+
+---
+
+## 模式 B：静态产物
+
+### 1. 构建（PC 或 Pi 上都行）
 
 > ⚠️ **必须带 `NUXT_PUBLIC_API_BASE=/api`。**
-> 静态 SPA 的 `runtimeConfig.public` 在**构建时内联**进产物 —— 部署之后再设这个名字的环境变量**没有任何作用**。这是本形态最容易踩的坑。
+> 静态 SPA 的 `runtimeConfig.public` 在**构建时内联**进产物 —— 部署之后再设这个名字的环境变量**没有任何作用**。这是本模式最容易踩的坑。
 
-Windows 上用 PowerShell 或 cmd（不要在 WSL 里跑，缺 native binding）：
+在 Pi 上（依赖已装好，ARM 上慢一点，一次性）：
+
+```bash
+cd ~/syntopica/front
+NUXT_PUBLIC_API_BASE=/api pnpm generate
+ls .output/public/index.html
+```
+
+在 PC 上（PowerShell，快）：
 
 ```powershell
 cd D:\project\Syntopica\front
 $env:NUXT_PUBLIC_API_BASE = '/api'
 pnpm generate
+# 自检：应当零输出，有输出说明注入没生效
+Get-ChildItem -Recurse .\.output\public -File | Select-String -SimpleMatch 'localhost:5100'
 ```
 
-自检（**应当零输出**，有输出说明注入没生效）：
+### 2. 把产物放到 `www/`
 
-```powershell
-Get-ChildItem -Recurse .\.output\public -File | Select-String -SimpleMatch 'localhost:5100' | Select-Object -First 5
+Pi 上构建的（无拷贝）：
+
+```bash
+cd ~/syntopica/deploy/same-origin
+mkdir -p www && cp -r ../../front/.output/public/. www/
 ```
 
-## 2. 打包并拷到 Pi
+PC 上构建的：
 
 ```powershell
 cd D:\project\Syntopica\front
@@ -50,33 +97,36 @@ tar -czf $env:TEMP\syntopica-web.tgz -C .output\public .
 scp $env:TEMP\syntopica-web.tgz pi@<pi-ip>:~/
 ```
 
-## 3. Pi：解包并起入口容器
-
 ```bash
+# Pi 上解包
 cd ~/syntopica/deploy/same-origin
-mkdir -p www
-tar -xzf ~/syntopica-web.tgz -C www
+mkdir -p www && tar -xzf ~/syntopica-web.tgz -C www
 ls www/index.html                      # 必须存在
-
-docker compose -f docker-compose.yml up -d
-docker compose -f docker-compose.yml ps
 ```
 
-## 4. 验收
-
-Pi 上（`<pi-ip>` 换成实际地址）：
+### 3. 起入口容器
 
 ```bash
-curl -sI http://127.0.0.1/                     | head -1   # HTTP/1.1 200 —— 静态页
-curl -sI http://127.0.0.1/tags                 | head -1   # HTTP/1.1 200 —— 深层路由兜底
+cd ~/syntopica
+docker compose -f deploy/same-origin/docker-compose.yml up -d
+docker compose -f deploy/same-origin/docker-compose.yml ps
+```
+
+---
+
+## 验收（两种模式通用）
+
+```bash
+curl -sI http://127.0.0.1/                     | head -1   # HTTP/1.1 200 —— 入口可达
+curl -sI http://127.0.0.1/tags                 | head -1   # HTTP/1.1 200 —— 深层路由不 404
 curl -s  http://127.0.0.1/api/categories       | head -c 200   # 分类 JSON
-curl -sI http://127.0.0.1/icons/feeds/42.png   | grep -i content-type   # image/png（id 换成真实存在的）
 curl -s  http://127.0.0.1/health                           # 后端健康 JSON
+curl -sI http://127.0.0.1/icons/feeds/42.png   | grep -i content-type   # image/png（id 换成真实存在的）
 ```
 
 PC 浏览器：
 
-1. 打开 `http://<pi-ip>/`（**注意不带 `:3000`**）→ 列表页有数据
+1. 打开 `http://<pi-ip>/` → 列表页有数据
 2. DevTools → Network：请求全部发往 `http://<pi-ip>/api/...`，无跨域、无 CORS 预检
 3. Console：`new WebSocket('ws://<pi-ip>/ws')` → 触发 `open` 事件
 
@@ -84,25 +134,42 @@ PC 浏览器：
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 页面能开但列表空；Console 里请求发往 `localhost:5100` | 构建时没带 `NUXT_PUBLIC_API_BASE=/api` | 回第 1 步重新构建（可先 `rm -rf front/.output`） |
+| 页面能开但列表空；Console 里请求发往 `localhost:5100` | 前端没带 `NUXT_PUBLIC_API_BASE=/api` | 模式 A：带变量重启 dev；模式 B：重新构建 |
 | `docker compose up` 报 `conflicting options: port publishing and the container type network mode` | 同时写了 `ports:` 与 `network_mode: host` | 删掉 `ports:` |
-| 根路径 404 或目录列表 | `www/` 空或挂载路径不对 | `ls deploy/same-origin/www/index.html` |
-| API 返回 502 | 后端没在 5100 上跑 | `curl -s http://127.0.0.1:5100/health`，先把后端起来 |
-| 图标破图（响应体是 HTML） | `/icons/*` 没转发 | 核对 `Caddyfile` 的 `@backend` path 列表 |
-| 事件流连不上、反复重连 | `/ws` 没转发 | `curl -sI http://127.0.0.1/ws` 应返回后端响应而非 HTML 兜底页 |
-| 容器起不来，`bind: address already in use` | 宿主 80 被占 | `ss -ltnp \| grep ':80'`；或把 `Caddyfile` 的 `:80` 改成别的端口 |
-| 换了产物浏览器还是旧的 | 浏览器缓存 | 硬刷新 `Ctrl+Shift+R` |
+| 根路径 404 或目录列表（模式 B） | `www/` 空或挂载路径不对 | `ls deploy/same-origin/www/index.html` |
+| 根路径返回 502（模式 A） | dev server 没在 `:3000` 上跑 | 先起 `pnpm dev` |
+| API 返回 502 | 后端没在 5100 上跑 | `curl -s http://127.0.0.1:5100/health` |
+| 图标破图（响应体是 HTML） | `/icons/*` 没转发 | 核对 Caddyfile 的 `@backend` path 列表 |
+| 事件流连不上、反复重连 | `/ws` 没转发 | `curl -sI http://127.0.0.1/ws` 应返回后端响应而非前端页面 |
+| 容器起不来，`bind: address already in use` | 宿主 80 被占 | `ss -ltnp \| grep ':80'`；或按「换端口」改 |
+| 改了产物浏览器还是旧的 | 浏览器缓存 | 硬刷新 `Ctrl+Shift+R` |
 
-## 回滚
+### 换端口
+
+改对应 Caddyfile 里的 `:80` 为其他端口（host 网络下直接绑宿主端口）：
 
 ```bash
-docker compose -f docker-compose.yml down
+sed -i 's/^:80 {/:8080 {/' deploy/same-origin/Caddyfile      # 或 Caddyfile.dev
+docker compose -f deploy/same-origin/docker-compose.yml up -d
 ```
 
-回到旧的 dev 形态需要**两个**环境变量（缺一个就是另一种报错）：Pi 上的前端设 `NUXT_PUBLIC_API_BASE=http://<pi-ip>:5100/api`，后端设 `CORS_ORIGINS=http://<pi-ip>:3000`。
+## 切模式 / 回滚
+
+```bash
+# 从 dev 切到静态：先在 www/ 准备产物，再重建容器（不加 CADDYFILE 即默认静态）
+docker compose -f deploy/same-origin/docker-compose.yml up -d --force-recreate
+
+# 从静态切回 dev
+CADDYFILE=./Caddyfile.dev docker compose -f deploy/same-origin/docker-compose.yml up -d --force-recreate
+
+# 完全撤掉同源入口（回到直连形态）
+docker compose -f deploy/same-origin/docker-compose.yml down
+```
+
+撤掉后回到直连形态需要**两个**环境变量（缺一个就是另一种报错）：前端 `NUXT_PUBLIC_API_BASE=http://<pi-ip>:5100/api`，后端 `CORS_ORIGINS=http://<pi-ip>:3000`。
 
 ## 相关
 
-- 两种形态的适用边界与失败症状：`docs/reference/deployment.md`
+- 三种前端形态的适用边界与失败症状：`docs/reference/deployment.md`
 - `NUXT_PUBLIC_API_BASE` 的构建期语义：`docs/reference/configuration.md`
 - 为什么不用 Nitro `devProxy` / Vite `server.proxy` 做同源：`openspec/changes/fix-wsl-dev-networking/design.md` D2（WS upgrade 过不去，已实测否决）

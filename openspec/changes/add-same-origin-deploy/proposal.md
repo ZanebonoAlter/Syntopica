@@ -26,8 +26,8 @@
 ## What Changes
 
 - **修单镜像同源路径**（一行 bug）：`Dockerfile` 前端构建阶段加 `ARG NUXT_PUBLIC_API_BASE=/api` + `ENV` 后 `pnpm generate`——镜像内产物改走相对 base，浏览器从任意主机访问 `:5100` 都同源；保留 `--build-arg` 覆盖能力。
-- 新增 `deploy/same-origin/` 同源反代部署制品（Caddy，非 nginx）：`Caddyfile` + `docker-compose.yml` + `README.md`。单入口提供前端静态产物，`/api/*`、`/ws`、`/icons/*`、`/health` 反代到后端 `127.0.0.1:5100`；适用于后端已在既有方式下运行、不重建镜像的场景。
-- 前端以静态 SPA 形态部署（`pnpm generate`），**构建期**注入 `NUXT_PUBLIC_API_BASE=/api`：浏览器只看到一个 origin，跨域请求与 CORS 白名单彻底不参与。
+- 新增 `deploy/same-origin/` 同源反代部署制品（Caddy，非 nginx）：`Caddyfile` + `Caddyfile.dev` + `docker-compose.yml` + `README.md`，由 `CADDYFILE` 变量在两种前端提供方式间切换——**dev 反代**（前端仍是 Pi 上的 `pnpm dev`，零构建，供日常开发/试用）与**静态产物**（`pnpm generate`，供常驻）。两者都反代 `/api/*`、`/ws`、`/icons/*`、`/health` 到后端 `127.0.0.1:5100`；适用于后端已在既有方式下运行、不重建镜像的场景。
+- 前端以静态 SPA 形态部署（`pnpm generate`），**构建期**注入 `NUXT_PUBLIC_API_BASE=/api`（dev 反代模式则在**启动时**给同名变量，无需构建）：浏览器只看到一个 origin，跨域请求与 CORS 白名单彻底不参与。
 - `docs/reference/deployment.md`：修正前端服务描述（删幽灵 `front` 容器 / `front/Dockerfile` / 架构图旧拓扑，改为实际形态）、新增「前端服务的三种形态」与「同源反代部署（Caddy）」小节；`docs/reference/configuration.md` 的 `NUXT_PUBLIC_API_BASE` 与 `CORS_ORIGINS` 条目补语义差异、Docker 变量表去掉失效的 `FRONT_PORT`/`BACKEND_PORT`。**注**：「多机 / 远程访问（浏览器与后端不同机）」小节由 `fix-wsl-dev-networking` 交付（其 spec 有对应 Requirement），本 change 只引用不重复声明。
 
 ## Impact

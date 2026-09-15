@@ -161,20 +161,21 @@ AI 相关设置（LLM 凭证、Firecrawl、Digest 导出）通过 Web UI 配置�
 | 形态 | 做法 | 适用 | 跨域配置 |
 |---|---|---|---|
 | **同源（单镜像，默认）** | `docker compose up --build -d` → 访问 `http://<host>:5100/` | 常规自托管 | 不需要 |
-| **同源（反代）** | 见下节 | 后端已在裸跑、不想重建镜像 | 不需要 |
+| **同源（反代）** | 见下节（前端跑 dev 或静态产物皆可） | 后端已在裸跑、不想重建镜像 | 不需要 |
 | **dev 直连** | `cd front && pnpm dev` → 访问 `http://<host>:3000` | 本地开发（有 HMR） | 浏览器与后端同机时不需要 |
 
 ### 同源反代部署（Caddy）
 
-后端已在既有方式下运行（裸二进制 / `go run` / 单独容器）时，用一个 Caddy 入口把前端静态产物与后端拼成同一个 origin —— 两个环境变量都不用配：
+后端已在既有方式下运行（裸二进制 / `go run` / 单独容器）时，用一个 Caddy 入口把前端与后端拼成同一个 origin —— 两个环境变量都不用配。制品在 [`deploy/same-origin/`](../../deploy/same-origin/README.md)，两种模式：
 
-```bash
-# 1. PC 上构建（必须带相对 base；静态产物的 runtimeConfig 在构建期内联，事后设环境变量无效）
-cd front && NUXT_PUBLIC_API_BASE=/api pnpm generate
-# 2. 打包拷到目标机，解包进 deploy/same-origin/www/
-# 3. 起入口（Caddy 在 :80，把 /api、/ws、/icons、/health 反代到 127.0.0.1:5100）
-docker compose -f deploy/same-origin/docker-compose.yml up -d
-```
+| 模式 | 前端跑什么 | 要不要构建 | 起入口的命令 |
+|---|---|---|---|
+| **dev 反代** | Pi 上 `pnpm dev`（`:3000`） | 不用 | `NUXT_PUBLIC_API_BASE=/api pnpm dev` + `CADDYFILE=./Caddyfile.dev docker compose -f deploy/same-origin/docker-compose.yml up -d` |
+| **静态产物** | `pnpm generate` 出的 `.output/public` | 要（PC 或 Pi 都行） | `docker compose -f deploy/same-origin/docker-compose.yml up -d` |
+
+两种模式都把 `/api`、`/ws`、`/icons`、`/health` 反代到 `127.0.0.1:5100`，其余路径要么由静态产物提供（`index.html` 兜 SPA 路由）、要么反代给 dev server（含 Vite HMR 的 WebSocket）——浏览器始终只面对一个 origin。
+
+> 静态模式下 `NUXT_PUBLIC_API_BASE=/api` **必须在构建期**给（静态 SPA 的 `runtimeConfig.public` 构建期内联，部署后再设环境变量无效）；dev 模式则是**启动时**读，带变量重启 dev server 即可。
 
 完整步骤与排障表见 [`deploy/same-origin/README.md`](../../deploy/same-origin/README.md)。
 
