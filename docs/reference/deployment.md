@@ -6,7 +6,7 @@ Syntopica 为单用户自托管部署设计。主要部署方式是 Docker Compo
 
 | 目标 | 配置文件 | 说明 |
 |--------|-------------|-------|
-| Docker Compose（基础服务） | `docker-compose.yml` | **默认/推荐方式**。PostgreSQL + pgvector + 前后端三容器。 |
+| Docker Compose（基础服务） | `docker-compose.yml` | **默认/推荐方式**。PostgreSQL + pgvector + 应用（Go 后端，内含同源托管的前端静态产物）两容器。 |
 | Docker Compose（Firecrawl） | `docker-compose.firecrawl.yml` | **可选**。Firecrawl 全文抓取服务，需配合基础服务使用。 |
 
 没有 PaaS 专用配置（Vercel、Netlify、Fly.io 等）。应用程序设计为通过 Docker Compose 在单机上运行。
@@ -56,14 +56,12 @@ docker-compose.yml                    docker-compose.firecrawl.yml（可选）
 │  ├─ pgvector 扩展           │      │  ├─ API + Worker                 │
 │  └─ data/ 持久化            │      │  ├─ firecrawl-redis              │
 │                             │      │  └─ firecrawl-playwright         │
-│  backend (:5000 容器内)    │      └──────────────────────────────────┘
+│  syntopica (:5000 容器内)   │      └──────────────────────────────────┘
 │  ├─ Go API 服务器           │
-│  └─ 依赖 postgres healthy   │           │
-│                             │           │ syntopica-net（外部网络）
-│  front (:3000)              │           │
-│  ├─ Nuxt SSR               │◄──────────┘
-│  └─ 浏览器直连宿主 5100    │
-└─────────────────────────────┘
+│  ├─ 前端静态产物（同源页面）│           │
+│  └─ 依赖 postgres healthy   │           │ syntopica-net（外部网络）
+└─────────────────────────────┘◄──────────┘
+  宿主 ${PORT:-5100} → 浏览器访问 http://<host>:5100/
 ```
 
 两个 Compose 文件通过 `syntopica-net` 外部网络互联。Firecrawl 容器启动后，后端通过 `http://firecrawl:3002` 访问全文抓取服务。
@@ -84,31 +82,30 @@ docker-compose.yml                    docker-compose.firecrawl.yml（可选）
 
 ### 容器构建过程
 
-两个 Dockerfile 都使用多阶段构建：
+单一 `Dockerfile`（仓库根）多阶段构建出**一个**前后端合一的镜像：
 
-**后端**（`backend-go/Dockerfile`）：
-1. `build` 阶段：`golang:1.25-alpine` — 下载 Go 模块，编译 `cmd/server` 为静态二进制文件（`CGO_ENABLED=0`）。
-2. 最终阶段：`alpine:3.22` — 复制二进制文件和 `configs/` 目录，以非 root 用户 `appuser`（UID 10001）运行。
+1. `front-build` 阶段（`node:22-alpine`）：corepack 装 pnpm → `pnpm install --frozen-lockfile` → 以 `NUXT_PUBLIC_API_BASE=/api`（可用 `--build-arg` 覆盖）运行 `pnpm generate`，产出静态 SPA 到 `.output/public`。
+2. 运行阶段（`alpine:3.22`）：拷入**本地预先编译**的 Go 二进制（`ARG BINARY_PATH`，默认 `./backend-go/syntopica`）、`backend-go/configs/`，以及上阶段的静态产物到 `/app/frontend/`。以非 root 用户 `appuser`（UID 10001）运行，默认 `SERVER_PORT=5000`。
 
-**前端**（`front/Dockerfile`）：
-1. `build` 阶段：`node:22-alpine` — 通过 corepack 安装 pnpm，运行 `pnpm install --frozen-lockfile`，然后 `pnpm build`。
-2. 最终阶段：`node:22-alpine` — 从构建阶段复制 `.output/`，运行 `node .output/server/index.mjs`。
+运行时后端通过 `internal/app/static.go` 直接托管 `/app/frontend/`（含 SPA 兜底），因此**浏览器与 API 天然同源**：前端不需要单独容器，也不产生跨域请求。
+
+> 构建前需要先在本地编好二进制（运行阶段是 alpine，必须静态链接）：
+> `cd backend-go && CGO_ENABLED=0 go build -o syntopica ./cmd/server`
 
 ### Docker Compose 快速部署
 
 ```bash
-# 启动基础服务（PostgreSQL + 前后端）
+# 启动基础服务（PostgreSQL + 应用）
 docker compose up --build -d
 
 # 可选：启动 Firecrawl 全文抓取服务
 docker compose -f docker-compose.firecrawl.yml up -d
 ```
 
-启动三个核心服务：
+启动两个核心服务：
 
 - **postgres**: PostgreSQL（pgvector:pg18-trixie）端口 5432，带健康检查（`pg_isready`）。数据持久化在 `./data/` 目录。初始化脚本 `docker/postgres/init/01-enable-pgvector.sql` 在首次启动时执行 `CREATE EXTENSION IF NOT EXISTS vector`。
-- **backend**: Go API 服务器（容器内 5000，宿主映射默认 `${PORT:-5100}`），内部连接 postgres 服务。
-- **front**: Nuxt 服务器内部端口 3000，通过 `${FRONT_PORT:-3000}` 映射到宿主机。浏览器直连宿主映射的后端 API（默认 `http://localhost:5100/api`）。
+- **syntopica**: 应用容器（容器内 5000，宿主映射默认 `${PORT:-5100}`），内部连接 postgres 服务。**同一个端口同时提供 API、WebSocket、feed 图标与前端静态页面** —— 浏览器访问 `http://<host>:5100/` 即可，无需另起前端服务。
 
 可选的 Firecrawl 服务（通过 `docker-compose.firecrawl.yml`）：
 
@@ -119,8 +116,10 @@ docker compose -f docker-compose.firecrawl.yml up -d
 两个 Compose 文件共享 `syntopica-net` 外部网络，Firecrawl 容器可通过 `http://firecrawl:3002` 被后端访问。
 
 启动后：
-- 前端：`http://localhost:3000`
-- 后端 API：`http://localhost:5100/api`（宿主映射默认 5100；`.env` 显式设置过 `PORT`/`BACKEND_PORT` 的用户不受影响）
+- 应用（前端页面 + API + WebSocket + feed 图标）：`http://localhost:5100`（宿主映射默认 5100；`.env` 显式设置过 `PORT` 的用户不受影响）
+- API 基址：`http://localhost:5100/api`
+
+> 前端不需要单独起服务：同一个端口就是页面入口。浏览器与后端不同机时的两种做法见「前端服务的三种形态」。
 
 ## 环境设置
 
@@ -131,11 +130,16 @@ docker compose -f docker-compose.firecrawl.yml up -d
 `.env.example` 文件包含基础变量：
 
 ```bash
-FRONT_PORT=3000
-BACKEND_PORT=5100
+PORT=5100              # 宿主映射的应用端口（容器内固定 5000）
+POSTGRES_DB=syntopica
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_PORT=5432
 ```
 
 所有值都有默认值 — 应用程序可以零配置启动。唯一会导致启动失败的场景是数据库 DSN 无效或不可达。
+
+> 旧版 `.env` 里的 `FRONT_PORT` / `BACKEND_PORT` 已不再被任何 compose 文件读取（前端不再有独立容器、后端端口改用 `PORT`），留着无害但会误导。
 
 ### 生产环境注意事项
 
@@ -144,12 +148,57 @@ BACKEND_PORT=5100
 | 变量 | 重要原因 |
 |---|---|
 | `SERVER_MODE` | Docker Compose 中设置为 `"release"` 以抑制 Gin 调试输出。Docker 外默认为 `"debug"`。 |
-| `CORS_ORIGINS` | 必须包含用户访问前端时的来源（如 `http://your-host:3000`）。 |
 | `POSTGRES_PASSWORD` | 使用 PostgreSQL compose 时，应从默认的 `"postgres"` 修改。 |
-| `NUXT_PUBLIC_API_ORIGIN` | 必须匹配外部可达的后端 URL。 |
-| `NUXT_PUBLIC_API_BASE` | 必须匹配外部可达的 API URL。 |
+| `CORS_ORIGINS` | 仅「浏览器与后端**不同 origin**」时需要（见「多机 / 远程访问」）；同源部署下不参与。 |
+| `NUXT_PUBLIC_API_BASE` | 同上 —— 静态产物在**构建期**内联该值，跨 origin 部署时必须是浏览器可达的地址。 |
 
 AI 相关设置（LLM 凭证、Firecrawl、Digest 导出）通过 Web UI 配置并存储在数据库中 — 不通过环境变量设置。详见 [配置指南](configuration.md#数据库存储的设置ai-功能)。
+
+### 前端服务的三种形态
+
+前端**不是**独立容器 —— `docker-compose.yml` 只有 `postgres` 与 `syntopica` 两个服务，前端产物由后端同源托管。按场景三选一：
+
+| 形态 | 做法 | 适用 | 跨域配置 |
+|---|---|---|---|
+| **同源（单镜像，默认）** | `docker compose up --build -d` → 访问 `http://<host>:5100/` | 常规自托管 | 不需要 |
+| **同源（反代）** | 见下节 | 后端已在裸跑、不想重建镜像 | 不需要 |
+| **dev 直连** | `cd front && pnpm dev` → 访问 `http://<host>:3000` | 本地开发（有 HMR） | 浏览器与后端同机时不需要 |
+
+### 同源反代部署（Caddy）
+
+后端已在既有方式下运行（裸二进制 / `go run` / 单独容器）时，用一个 Caddy 入口把前端静态产物与后端拼成同一个 origin —— 两个环境变量都不用配：
+
+```bash
+# 1. PC 上构建（必须带相对 base；静态产物的 runtimeConfig 在构建期内联，事后设环境变量无效）
+cd front && NUXT_PUBLIC_API_BASE=/api pnpm generate
+# 2. 打包拷到目标机，解包进 deploy/same-origin/www/
+# 3. 起入口（Caddy 在 :80，把 /api、/ws、/icons、/health 反代到 127.0.0.1:5100）
+docker compose -f deploy/same-origin/docker-compose.yml up -d
+```
+
+完整步骤与排障表见 [`deploy/same-origin/README.md`](../../deploy/same-origin/README.md)。
+
+> 为何不用 Nitro `devProxy` / Vite `server.proxy` 做同源：两条路径都已实测否决（`proxyRequest` 不处理 WebSocket upgrade；Nuxt middlewareMode 下 Vite 不接 upgrade 事件），见 `openspec/changes/fix-wsl-dev-networking/design.md` D2 与该 change 的 evidence。
+
+### 多机 / 远程访问（浏览器与后端不同机）
+
+**症状**：页面能打开但列表全空，Console 报 `ERR_CONNECTION_REFUSED`（请求打到 `localhost:5100`）；或把地址改成后端 IP 后变成 CORS 被拦。
+
+**根因**：`localhost` 是**浏览器所在那台机器**的环回地址，不是后端主机。前端 `apiBase` 默认 `http://localhost:5100/api`（`front/nuxt.config.ts`）、后端 CORS 白名单默认只认 `http://localhost:3000`（`backend-go/internal/platform/config/config.go`） —— 两个默认值都只在「浏览器与后端同机」时成立。
+
+**用环境变量补救**（不改代码；两处都要配，少一个就换一种报错）：
+
+| 位置 | 变量 | 值 |
+|---|---|---|
+| 后端 | `CORS_ORIGINS` | 逐个列出浏览器地址栏里的 origin，如 `http://10.11.12.55:3000,http://localhost:3000` |
+| 前端 | `NUXT_PUBLIC_API_BASE` | 浏览器可达的绝对地址，如 `http://10.11.12.55:5100/api` |
+
+- `CORS_ORIGINS` 是**精确匹配**（`middleware/cors.go` 逐条比对，无通配回退），地址栏换个端口或主机名就要跟着加。
+- `NUXT_PUBLIC_API_BASE` 在 **dev 模式启动时**读取，改完要重启 dev server；**静态产物则必须在构建期给**（见上节）。
+- 一个变量修好三样东西：API、WebSocket（`ws://<host>:5100/ws`）、feed 图标（`http://<host>:5100/icons/...`） —— 它们共用同一个 origin 解析（`front/app/utils/api.ts`）。
+- 验算：`curl -D - -o /dev/null -H "Origin: http://<前端地址>" http://<后端地址>:5100/api/categories | grep -i access-control` → 应出现 `Access-Control-Allow-Origin`。
+
+**推荐做法**：把主机地址写死进环境变量很脆（换网段、加设备、手机访问都要重配）。浏览器与后端不同机的常驻部署优先用**同源**（单镜像或反代），两个变量都不用配。
 
 ### PostgreSQL autovacuum 调优（docker-compose.pg.yml）
 

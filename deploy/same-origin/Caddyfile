@@ -1,0 +1,40 @@
+# Syntopica 同源反代部署入口（树莓派 5 / 任意 Linux 主机）
+#
+# 单入口：前端静态产物 + 后端四条路径，浏览器只面对一个 origin。
+# 同源 → 后端 CORS 白名单不参与，前端也不必在构建时写死主机地址。
+#
+# 启动：docker compose -f deploy/same-origin/docker-compose.yml up -d
+# 自检：docker run --rm -v "$PWD/deploy/same-origin/Caddyfile:/etc/caddy/Caddyfile:ro" \
+#         caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+#
+# 换端口：把下面的 :80 改成 :8080 之类（host 网络下直接绑宿主端口）
+{
+	admin off
+	# 局域网 IP 访问、没有域名 → 关掉自动 HTTPS。
+	# 将来有公网域名时删掉这一行即可，Caddy 会自动申请并续期证书。
+	auto_https off
+}
+
+:80 {
+	# 静态资产压缩（Nuxt 产物是 JS/CSS 文本，收益明显）
+	encode gzip
+
+	# ── 后端：四条路径全部转发到本机 5100 ──
+	#   /api/*    REST API
+	#   /ws       WebSocket 事件流（useEventStream / useTagWebSocket）
+	#   /icons/*  feed 图标（后端静态文件服务，前端用页面 origin 拼 URL）
+	#   /health   后端健康检查
+	# WebSocket 的 upgrade 由 reverse_proxy 透明处理，不需要额外指令。
+	@backend path /api /api/* /ws /ws/* /icons /icons/* /health
+	handle @backend {
+		reverse_proxy 127.0.0.1:5100
+	}
+
+	# ── 前端：静态 SPA ──
+	# try_files 兜底到 index.html，否则刷新深层路由（/tags、/settings）会 404
+	handle {
+		root * /srv/www
+		try_files {path} /index.html
+		file_server
+	}
+}

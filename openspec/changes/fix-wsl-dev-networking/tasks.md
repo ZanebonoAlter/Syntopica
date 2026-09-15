@@ -18,6 +18,8 @@
 
 - [x] 4.1 `AGENTS.md`（Project Snapshot 的前端 API/WS 地址、开发环境节 no_proxy 约定）、`docs/reference/development.md`、`docs/reference/configuration.md`（端口默认值、`NUXT_PUBLIC_API_BASE`/`SYNTOPICA_DEV_BACKEND`/no_proxy 条目）、`docs/reference/deployment.md`（宿主端口默认 5100、访问口径）。验证：`rg -n "localhost:5000" AGENTS.md docs/reference/` 仅剩兼容/历史说明语境
 - [x] 4.2 `docs/reference/api/_conventions.md`、`docs/reference/architecture/overview.md`、`docs/reference/architecture/frontend.md` 的 API base 示例与网络描述；`.agents/skills/ui-verify/references/network-and-navigation.md` 实测表改写为新拓扑（同源 `/api`+`/ws`、后端 5100、powershell 中转等旧土办法标注退役）。验证：`rg -n ":5000" docs/reference .agents/skills/ui-verify` 残留逐条确认归属（兼容说明/历史归档除外）
+- [x] 4.3 `docs/reference/deployment.md`：新增「多机 / 远程访问（浏览器与后端不同机）」小节 —— 两个必配项（`NUXT_PUBLIC_API_BASE` 指向浏览器可达地址、`CORS_ORIGINS` 逐个列出浏览器地址栏 origin）+ `localhost` 根因 + 两类失败症状（`ERR_CONNECTION_REFUSED` / 缺 `Access-Control-Allow-Origin`）+ 指向同源反代部署（`deploy/same-origin/`）作为免配置形态；同时清掉生产注意事项表里代码中已不存在的 `NUXT_PUBLIC_API_ORIGIN` 行
+- [x] 4.4 `docs/reference/configuration.md` 的 `CORS_ORIGINS` 条目：补「必须与浏览器地址栏 origin 精确匹配、无通配回退」语义 + 指向 deployment.md 的多机小节
 
 ## 5. 测试
 
@@ -34,11 +36,13 @@
 
 | Scenario | 测试文件 |
 |---|---|
-| 开发直跑默认端口 | 人工：evidence/（后端 5100 启动 + /health 探测 200） |
+| 开发直跑默认端口 | 人工：evidence/dev-verification.md（后端 5100 启动 + /health 探测 200） |
 | Docker 默认宿主映射 | 人工：docker-compose.yml 端口行 grep（5100:5000） |
 | 显式端口配置兼容 | backend-go/internal/platform/config/config_test.go |
-| 前端默认直连（API/WS/icons 同 origin 5100） | front/app/utils/api.test.ts + front/app/components/feed/FeedIcon.test.ts + 人工：evidence/（ws://:5100/ws open） |
-| 显式地址覆盖 | front/app/utils/api.test.ts（custom absolute base 用例） |
-| 相对 base 同源解析 | front/app/utils/api.test.ts（relative base 用例） |
-| WSL 可达前端 dev server | 人工：evidence/（WSL v4 探测 :3000 200） |
-| 文档口径一致 | 人工：验证节 grep 检查 |
+| 默认直连 | front/app/utils/api.test.ts front/app/components/feed/FeedIcon.test.ts |
+| 显式地址覆盖 | front/app/utils/api.test.ts |
+| 相对 base 同源解析 | front/app/utils/api.test.ts |
+| WSL 可达前端 dev server | 人工：evidence/front-3000.log（WSL v4 探测 :3000 返回 200） |
+| 文档口径一致 | 人工：验证节 grep 检查（dev 口径无同源代理残留） |
+| 多机访问口径与症状齐备 | 人工：`grep -n '多机' docs/reference/deployment.md` 命中且小节含两个必配项、`localhost` 根因、两类症状与同源反代指引 |
+| 幽灵环境变量零残留 | 人工：`grep -rn 'NUXT_PUBLIC_API_ORIGIN' docs/reference/` 零命中 |

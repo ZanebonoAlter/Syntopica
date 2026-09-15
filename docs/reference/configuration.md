@@ -14,7 +14,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | `SERVER_MODE` | 否 | `"debug"` | Gin 模式：`"debug"`、`"release"` 或 `"test"` |
 | `DATABASE_DRIVER` | 否 | `"postgres"` | 数据库驱动，主分支仅支持 `"postgres"` |
 | `DATABASE_DSN` | 否 | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | PostgreSQL 连接字符串 |
-| `CORS_ORIGINS` | 否 | `"http://localhost:3000,http://localhost:3000"` | 逗号分隔的允许 CORS 来源列表 |
+| `CORS_ORIGINS` | 否 | `"http://localhost:3000,http://localhost:3000"` | 逗号分隔的允许 CORS 来源列表（首尾空白会被裁剪）。**精确匹配**（`middleware/cors.go` 逐条比对，无通配回退）：跨 origin 部署时须逐个列出浏览器地址栏里的 origin；同源部署（前端由后端同源托管或反代提供）下不参与。见[部署指南](deployment.md)「多机 / 远程访问」节。 |
 | `MIGRATIONS_ALLOW_DESTRUCTIVE` | 否 | *(未设置)* | 仅设为 `"1"` 时启用破坏性数据库迁移（含 `TRUNCATE`/`DROP` 的历史数据清理迁移）。**生产环境绝不设置**；dev/本地开发设 `"1"` 以执行历史数据清理。见 [部署指南](deployment.md#破坏性迁移开关)。 |
 | `TRACE_SAMPLE_RATIO` | 否 | `0.05` | OTel root span 采样比例（`ParentBased(TraceIDRatioBased)`）。`1.0`=全采；`<1.0` 按比例降采样；被采 root 的所有子 span（DB/出站 HTTP/业务）完整保留。非法值（不可解析或超出 0.0–1.0）回退默认 `0.05` 并打 warn。全采样下 otel_spans 日增 ~82 万行/600MB，故默认低采样；排障时临时设 `1.0` 重启即可恢复全采。 |
 | `TRACE_INSTRUMENT_GORM` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭 GORM DB 操作自动埋点（自写 `GORMTracePlugin`）。非 `"0"` 均视为启用。 |
@@ -29,7 +29,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `NUXT_PUBLIC_API_BASE` | 否 | `"http://localhost:5100/api"` | 暴露给浏览器的 API 基础 URL（绝对直连，后端 CORS 放行）；可设相对路径（如 `/api`）走同源反代部署 |
+| `NUXT_PUBLIC_API_BASE` | 否 | `"http://localhost:5100/api"` | 暴露给浏览器的 API 基础 URL。语义随运行形态不同：**dev 模式启动时读取**（改完要重启 dev server）；**静态产物**（`pnpm generate` / 镜像构建）在**构建期内联**，部署后再设同名环境变量无效。绝对地址用于「浏览器直连后端」（后端 CORS 白名单须放行前端 origin）；相对路径 `/api` 用于同源部署（前端由后端同源托管或反代提供，无跨域）。见[部署指南](deployment.md)「前端服务的三种形态」节。 |
 
 ### Docker Compose
 
@@ -37,8 +37,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `FRONT_PORT` | 否 | `"3000"` | 前端容器映射到宿主机的端口 |
-| `BACKEND_PORT` | 否 | `"5100"` | 后端容器映射到宿主机的端口 |
+| `PORT` | 否 | `"5100"` | 应用容器（前端页面 + API + WebSocket + 图标同源）映射到宿主机的端口；demo 栈默认 `5080` |
 | `POSTGRES_DB` | 否 | `"syntopica"` | PostgreSQL 数据库名 |
 | `POSTGRES_USER` | 否 | `"postgres"` | PostgreSQL 用户名 |
 | `POSTGRES_PASSWORD` | 否 | `"postgres"` | PostgreSQL 密码 |
@@ -47,6 +46,8 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | `GOPROXY` | 否 | *(空)* | 后端构建时的 Go 模块代理 |
 | `GOSUMDB` | 否 | *(空)* | 后端构建时的 Go 校验数据库 |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 否 | *(空)* | 代理设置，传递到构建上下文 |
+
+> 旧版 `.env` 里可能残留 `FRONT_PORT` / `BACKEND_PORT`：两者**已不被任何 compose 文件读取**（前端不再有独立容器，后端端口改用 `PORT`），留着无害但会被误认为生效。
 
 ### Docker Compose（Firecrawl）
 
@@ -147,15 +148,14 @@ docker run -d --name rss-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e 
 docker compose up -d
 ```
 
-启动三个服务：
+启动两个服务：
 
 - **postgres**: PostgreSQL（pgvector:pg18-trixie）端口 5432，数据通过 `./data/` 目录持久化。
-- **backend**: Go API 服务器（容器内 5000，宿主映射默认 `${PORT:-5100}`），内部连接 postgres 服务。
-- **front**: Nuxt 服务器内部端口 3000，通过 `${FRONT_PORT:-3000}` 映射到宿主机。浏览器直连宿主映射的后端 API（默认 `http://localhost:5100/api`）。
+- **syntopica**: 应用容器（容器内 5000，宿主映射默认 `${PORT:-5100}`），内部连接 postgres 服务，并同源托管前端静态产物。
 
 启动后：
-- 前端：`http://localhost:3000`
-- 后端 API：`http://localhost:5100/api`
+- 应用（前端页面 + API + WebSocket + 图标）：`http://localhost:5100`
+- API 基址：`http://localhost:5100/api`
 
 ## 数据库存储的设置（AI 功能）
 

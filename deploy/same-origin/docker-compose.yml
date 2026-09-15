@@ -1,0 +1,35 @@
+# Syntopica 同源反代部署（树莓派 5 / 任意 Linux 主机）
+#
+# 用法（在 Pi 上，仓库根目录执行）：
+#   docker compose -f deploy/same-origin/docker-compose.yml up -d
+#
+# 用 host 网络的理由：
+#   - 容器直连 Pi 上监听 127.0.0.1:5100 的后端 —— 后端无论是裸二进制、go run
+#     还是容器映射端口，都是同一个地址，本文件不必知道后端怎么起的
+#   - :80 直接绑宿主端口，省掉 ports 映射；也避开 Linux Docker 没有
+#     host.docker.internal 别名的坑
+#   ⚠️ host 网络下不能写端口映射（ports），写了 compose 会直接报错
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: syntopica-caddy
+    restart: unless-stopped
+    network_mode: host
+    # 轻量反代，给个上限兜底（Pi 上内存紧张）
+    mem_limit: 128m
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 前端静态产物：PC 上 pnpm generate 后把 .output/public 的内容放进这里
+      - ./www:/srv/www:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  caddy-data:
+  caddy-config:

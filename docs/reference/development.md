@@ -176,7 +176,7 @@ python test_firecrawl_integration.py
 
 - 后端：运行 `go run cmd/server/main.go` 前设置 `SERVER_PORT`（或改 `configs/config.yaml`）。
 - 前端：后端非默认端口时设 `NUXT_PUBLIC_API_BASE` 指向实际后端地址。
-- Docker：在 `.env` 中设置 `FRONT_PORT` 和 `BACKEND_PORT`。
+- Docker：在 `.env` 中设置 `PORT`（宿主映射的应用端口，容器内固定 5000）。旧版 `.env` 里的 `FRONT_PORT` / `BACKEND_PORT` 已不再被读取。
 
 #### 后端启动失败（数据库错误）
 

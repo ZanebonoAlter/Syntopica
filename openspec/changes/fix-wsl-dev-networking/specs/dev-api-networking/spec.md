@@ -52,4 +52,16 @@
 
 #### Scenario: 文档口径一致
 - **WHEN** 开发者查阅 AGENTS.md / docs/reference/development.md / configuration.md / deployment.md
-- **THEN** 端口与访问方式表述均为：后端默认 5100、前端 dev server 绑 0.0.0.0、直连后端 origin，无残留"前端同源代理 / 5000 端口"的过时指引
+- **THEN** dev 模式的口径为「后端默认 5100、前端 dev server 绑 0.0.0.0、绝对 base 直连后端 origin」，无残留「dev 走同源代理 / 5000 端口」的过时指引（同源反代是独立的**部署**形态，见 `deploy/same-origin/`，不属 dev 口径）
+
+### Requirement: 多机访问口径文档化
+
+`docs/reference/deployment.md` SHALL 记录「浏览器与后端不同机」时的必配项与失效症状：`NUXT_PUBLIC_API_BASE` 必须为**浏览器**可达的地址（默认 `http://localhost:5100/api` 里的 `localhost` 指浏览器所在主机，不是后端主机），`CORS_ORIGINS` 必须逐个包含浏览器地址栏中的 origin（精确匹配，无通配回退）；文档 SHALL 给出该形态的两类失败症状（`ERR_CONNECTION_REFUSED` / 响应缺 `Access-Control-Allow-Origin`）并指向同源反代部署作为免配置形态。文档 SHALL NOT 残留代码中已不存在的环境变量名。
+
+#### Scenario: 多机访问口径与症状齐备
+- **WHEN** 开发者查阅 `docs/reference/deployment.md`
+- **THEN** 存在多机访问小节，含两个必配项、`localhost` 根因说明、两类失败症状与同源反代指引
+
+#### Scenario: 幽灵环境变量零残留
+- **WHEN** 对 `docs/reference/` 执行 `grep -rn 'NUXT_PUBLIC_API_ORIGIN'`
+- **THEN** 零命中（该变量在代码中已不存在，仅历史归档文档保留）
