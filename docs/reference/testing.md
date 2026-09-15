@@ -29,7 +29,7 @@ pnpm test:e2e:ui                                                   # Playwright 
 
 ### Python 集成测试（在 `tests/workflow/` 目录执行）
 
-需后端运行在 `localhost:5000`：
+需后端运行在 `localhost:5100`（WSL 侧探测加 `--noproxy '*'` 或设 `no_proxy=localhost,127.0.0.1,::1`，防系统代理劫持）：
 
 ```bash
 uv venv

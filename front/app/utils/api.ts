@@ -1,6 +1,5 @@
 type BrowserLocationLike = {
   origin: string
-  port: string
 }
 
 function getBrowserLocation(): BrowserLocationLike | null {
@@ -13,32 +12,19 @@ function getConfigApiBase(): string {
   return config.public.apiBase as string
 }
 
-function isDev(): boolean {
-  const location = getBrowserLocation()
-  if (!location) return true
-  return location.port === '3000'
+/**
+ * API base 解析规则（契约见 openspec spec `dev-api-networking`）：
+ * - 绝对 http(s) base（默认 `http://localhost:5100/api`，或显式 `NUXT_PUBLIC_API_BASE`）
+ *   原样生效——浏览器/WSL 工具直连后端（后端 CORS 白名单放行前端 origin）；
+ * - 相对 base（如 `/api`）同源解析——供未来同源反代部署使用。
+ */
+export function getApiBaseUrl(): string {
+  return getConfigApiBase()
 }
 
-function resolveApiBase(): string {
-  const base = getConfigApiBase()
-  if (base.startsWith('http')) return base
-  if (isDev()) return 'http://localhost:5000/api'
-  return base
-}
-
-function resolveApiOrigin(): string {
+/** API origin：绝对 base 取其 origin；相对 base 取页面 origin（WS/资源 URL 拼接用）。 */
+export function getApiOrigin(): string {
   const base = getConfigApiBase()
   if (base.startsWith('http')) return new URL(base).origin
-  if (isDev()) return 'http://localhost:5000'
-  return getBrowserLocation()?.origin ?? 'http://localhost:5000'
-}
-
-export function getApiBaseUrl(): string {
-  if (import.meta.server) return 'http://localhost:5000/api'
-  return resolveApiBase()
-}
-
-export function getApiOrigin(): string {
-  if (import.meta.server) return 'http://localhost:5000'
-  return resolveApiOrigin()
+  return getBrowserLocation()?.origin ?? ''
 }

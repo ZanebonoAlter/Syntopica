@@ -27,7 +27,7 @@ Syntopica 是一个个人部署的 RSS 阅读器，采用前后端分离的单�
 ```mermaid
 graph TD
     Browser["浏览器<br/>Nuxt 4 前端 :3000"]
-    API["Go 后端 API<br/>Gin :5000"]
+    API["Go 后端 API<br/>Gin :5100"]
     WS["WebSocket Hub<br/>/ws"]
     PostgreSQL["PostgreSQL + pgvector<br/>syntopica"]
 ```
@@ -210,7 +210,7 @@ my-robot/
 - **PostgreSQL 模式**（`docker-compose.yml`，默认）：前后端 + PostgreSQL + pgvector 三容器，数据库通过 `pgdata` volume 持久化，支持向量检索
 - **SQLite 模式**：已归档到 `sqlite` 分支，使用 `docker-compose.sqlite.yml` 部署，主分支不再维护
 
-默认端口：前端 `http://localhost:3000`，后端 `http://localhost:5000`。开发模式下前端默认运行在 `http://localhost:3000`。
+默认端口：前端 `http://localhost:3000`（dev server 绑 0.0.0.0，Windows/WSL 均可达），后端 `http://localhost:5100`（前端绝对直连，后端 CORS 放行）。
 
 ## 相关文档
 

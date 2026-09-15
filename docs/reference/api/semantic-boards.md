@@ -1,6 +1,6 @@
 # SemanticBoard 与辅助标签 API
 
-基础地址：`http://localhost:5000/api`
+基础地址：`http://localhost:5100/api`（开发模式亦可用同源代理 `http://localhost:3000/api`）
 
 通用响应：成功为 `{"success": true, "data": ...}`；失败为 `{"success": false, "error": "..."}`。
 

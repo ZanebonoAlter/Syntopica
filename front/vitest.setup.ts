@@ -10,11 +10,11 @@ globalThis.useState = function useState<T = any>(key: string, init?: () => T) {
 }
 
 // Nuxt's useRuntimeConfig returns runtime config
+// apiBase 默认与 nuxt.config.ts 一致（后端 5100 绝对直连）；需要相对 base 的用例在各自文件里覆盖。
 globalThis.useRuntimeConfig = function useRuntimeConfig() {
   return {
     public: {
-      apiBase: 'http://localhost:5000',
-      wsUrl: 'ws://localhost:5000',
+      apiBase: 'http://localhost:5100/api',
     },
     app: { baseURL: '/' },
   }

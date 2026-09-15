@@ -10,7 +10,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `SERVER_PORT` | 否 | `"5000"` | 后端 HTTP 监听端口 |
+| `SERVER_PORT` | 否 | `"5100"` | 后端 HTTP 监听端口（避开 Windows 5000 端口 WSD/svchost 保留段冲突） |
 | `SERVER_MODE` | 否 | `"debug"` | Gin 模式：`"debug"`、`"release"` 或 `"test"` |
 | `DATABASE_DRIVER` | 否 | `"postgres"` | 数据库驱动，主分支仅支持 `"postgres"` |
 | `DATABASE_DSN` | 否 | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | PostgreSQL 连接字符串 |
@@ -29,9 +29,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `API_INTERNAL_BASE` | 否 | `"http://localhost:5000/api"` | 服务端 API 基础 URL（SSR 时使用） |
-| `NUXT_PUBLIC_API_ORIGIN` | 否 | `"http://localhost:5000"` | 暴露给浏览器的公共 API 源 |
-| `NUXT_PUBLIC_API_BASE` | 否 | `"http://localhost:5000/api"` | 暴露给浏览器的公共 API 基础 URL |
+| `NUXT_PUBLIC_API_BASE` | 否 | `"http://localhost:5100/api"` | 暴露给浏览器的 API 基础 URL（绝对直连，后端 CORS 放行）；可设相对路径（如 `/api`）走同源反代部署 |
 
 ### Docker Compose
 
@@ -40,7 +38,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
 | `FRONT_PORT` | 否 | `"3000"` | 前端容器映射到宿主机的端口 |
-| `BACKEND_PORT` | 否 | `"5000"` | 后端容器映射到宿主机的端口 |
+| `BACKEND_PORT` | 否 | `"5100"` | 后端容器映射到宿主机的端口 |
 | `POSTGRES_DB` | 否 | `"syntopica"` | PostgreSQL 数据库名 |
 | `POSTGRES_USER` | 否 | `"postgres"` | PostgreSQL 用户名 |
 | `POSTGRES_PASSWORD` | 否 | `"postgres"` | PostgreSQL 密码 |
@@ -71,7 +69,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 ```yaml
 server:
-  port: "5000"
+  port: "5100"
   mode: "debug"           # debug | release | test
 
 database:
@@ -104,7 +102,7 @@ database:
 
 | 设置 | 默认值 | 来源 |
 |---|---|---|
-| Server port | `"5000"` | `viper.SetDefault` in `config.go` |
+| Server port | `"5100"` | `viper.SetDefault` in `config.go` |
 | Server mode | `"debug"` | `viper.SetDefault` in `config.go` |
 | Database driver | `"postgres"` | `viper.SetDefault` in `config.go` |
 | Database DSN | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | `viper.SetDefault` in `config.go` |
@@ -125,9 +123,8 @@ database:
 
 | 设置 | 默认值 | 来源 |
 |---|---|---|
-| API internal base | `"http://localhost:5000/api"` | `nuxt.config.ts` |
-| Public API origin | `"http://localhost:5000"` | `nuxt.config.ts` |
-| Public API base | `"http://localhost:5000/api"` | `nuxt.config.ts` |
+| Public API base | `"http://localhost:5100/api"` | `nuxt.config.ts` |
+| dev server host | `"0.0.0.0"` | `nuxt.config.ts`（修 Windows 下 localhost 只绑 ::1 的问题） |
 
 ## 各环境覆盖
 
@@ -135,8 +132,8 @@ database:
 
 本地开发时默认值开箱即用：
 
-- 后端运行在 `http://localhost:5000`，使用 PostgreSQL 数据库。
-- 前端开发服务器（`pnpm dev`）运行在 `http://localhost:3000`。
+- 后端运行在 `http://localhost:5100`，使用 PostgreSQL 数据库。
+- 前端开发服务器（`pnpm dev`，绑 0.0.0.0）运行在 `http://localhost:3000`，API/WS 直连后端 5100。
 - 无需配置文件或 `.env` 文件。
 - 需要本地运行 PostgreSQL + pgvector，可通过 Docker 启动：
 
@@ -153,12 +150,12 @@ docker compose up -d
 启动三个服务：
 
 - **postgres**: PostgreSQL（pgvector:pg18-trixie）端口 5432，数据通过 `./data/` 目录持久化。
-- **backend**: Go API 服务器端口 5000，内部连接 postgres 服务。
-- **front**: Nuxt SSR 服务器内部端口 3000，通过 `${FRONT_PORT:-3000}` 映射到宿主机。内部通过 `http://backend:5000/api` 代理 API 请求。
+- **backend**: Go API 服务器（容器内 5000，宿主映射默认 `${PORT:-5100}`），内部连接 postgres 服务。
+- **front**: Nuxt 服务器内部端口 3000，通过 `${FRONT_PORT:-3000}` 映射到宿主机。浏览器直连宿主映射的后端 API（默认 `http://localhost:5100/api`）。
 
 启动后：
 - 前端：`http://localhost:3000`
-- 后端 API：`http://localhost:5000/api`
+- 后端 API：`http://localhost:5100/api`
 
 ## 数据库存储的设置（AI 功能）
 

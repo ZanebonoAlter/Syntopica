@@ -18,14 +18,14 @@ describe('FeedIcon', () => {
     expect(wrapper.find('img').attributes('src')).toBe('https://example.com/favicon.ico')
   })
 
-  it('renders an <img> with the backend origin for a same-origin relative path', () => {
-    // Backend-served local icon: /icons/feeds/<id>.<ext> (dev origin is
-    // http://localhost:5000 via getApiOrigin, prod is same-origin).
+  it('renders an <img> with the backend origin for a relative path', () => {
+    // Backend-served local icon: /icons/feeds/<id>.<ext> (default apiBase is
+    // absolute http://localhost:5100/api, so origin is the backend).
     const wrapper = mount(FeedIcon, {
       props: { icon: '/icons/feeds/42.png' },
     })
     expect(wrapper.find('img').exists()).toBe(true)
-    expect(wrapper.find('img').attributes('src')).toBe('http://localhost:5000/icons/feeds/42.png')
+    expect(wrapper.find('img').attributes('src')).toBe('http://localhost:5100/icons/feeds/42.png')
   })
 
   it('falls back to the Iconify placeholder when a local path image fails to load', async () => {

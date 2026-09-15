@@ -25,6 +25,18 @@ func TestLoadConfigAppliesEnvironmentOverrides(t *testing.T) {
 	require.Equal(t, []string{"http://localhost:3301", "http://127.0.0.1:3301"}, AppConfig.CORS.Origins)
 }
 
+func TestServerPortDefaultsTo5100(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(func() {
+		viper.Reset()
+		AppConfig = nil
+	})
+
+	require.NoError(t, LoadConfig("./definitely-missing"))
+	require.NotNil(t, AppConfig)
+	require.Equal(t, "5100", AppConfig.Server.Port)
+}
+
 func TestAllowDestructiveMigrationsEnvOverride(t *testing.T) {
 	cases := []struct {
 		name string

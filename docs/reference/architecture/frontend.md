@@ -374,8 +374,8 @@ surgical 边界：不改相机坐标系/布局算法/交互/BFS/红线/全局迷
 ## 运行与环境
 
 - 前端开发端口：`http://localhost:3000`
-- 后端 API：`http://localhost:5000/api`
-- 全局实时事件：`ws://localhost:5000/ws`（通过 `useEventStream()` 统一管理）
+- 后端 API：`http://localhost:5100/api`（前端绝对直连，后端 CORS 白名单放行前端 origin）
+- 全局实时事件：`ws://localhost:5100/ws`（通过 `useEventStream()` 统一管理）
 - 专用 SSE 端点：tag merge preview scan/evaluate 等
 
 ## 相关文档

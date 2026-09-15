@@ -28,7 +28,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 ## Project Snapshot
 
 - Syntopica: Nuxt 4 frontend + Go backend (Gin/GORM), single-user, no auth.
-- Frontend API: `http://localhost:5000/api`; WebSocket: `ws://localhost:5000/ws`.
+- 后端 API 默认端口 `5100`（`http://localhost:5100/api`，避开 Windows 5000 端口 svchost/WSD 保留段冲突）；前端 dev server 绑 `0.0.0.0`（默认 localhost 在 Windows 只绑 ::1 v6 环回，WSL 够不着）。
 - PostgreSQL + pgvector for persistence; Redis optional for job queues.
 - 和用户沟通使用中文，开发环境 Windows, 返回的回答尽量用大白话，接地气，能让用户理解。
 - **所有改动默认走 openspec**（代码/功能/接口/数据模型必须先开 change）；豁免清单与编排见 `docs/reference/开发执行规范.md` §0.6「准入总则」
@@ -38,7 +38,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 
 | 项目 | 说明 |
 | ------ | ------ |
-| OS | **Windows**（WSL2 `bash` 可用，但路径使用 Windows 格式如 `D:/project/...`） |
+| OS | **Windows**（WSL2 `bash` 可用，但路径使用 Windows 格式如 `D:/project/...`）。WSL 侧 curl 探测 localhost 时注意代理污染：设 `no_proxy=localhost,127.0.0.1,::1` 或用 `curl --noproxy '*'` |
 | 数据库 | **Docker**：`docker compose -f docker-compose.pg.yml up -d` 启动 PostgreSQL（pgvector），默认端口 `5432`，用户/密码为 `postgres`，库名为 `syntopica`（对应 `docker-compose.pg.yml` 的 `POSTGRES_DB` 默认值）。数据持久化在 `./data/` 下。`docker compose -f docker-compose.pg.yml down` 停止。 |
 | Python | **uv**：需要 Python 脚本/工具时使用 `uv`（如 `uv run script.py`、`uv add package`）。Python 集成测试位于 `tests/workflow/`、`tests/firecrawl/`。 |
 | Node.js | `pnpm`（要求 corepack 启用）。详见 `front/AGENTS.md`。 |

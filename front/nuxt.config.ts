@@ -5,10 +5,17 @@ export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   ssr: false,
   devtools: { enabled: true },
+  // 显式绑 0.0.0.0：默认 localhost 在 Windows 上解析为 ::1 只绑 v6 环回，
+  // WSL mirrored v4 (127.0.0.1) 够不着（v6-only 监听问题，契约见 openspec spec dev-api-networking）
+  devServer: {
+    host: '0.0.0.0',
+  },
   ignore: ['app/_deprecated/**'],
   runtimeConfig: {
     public: {
-      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:5000/api',
+      // 后端默认 5100（避开 Windows 5000 端口 WSD/svchost 保留段冲突）。
+      // 绝对直连 + 后端 CORS 白名单是既有已验证拓扑；跨域/远程后端用 NUXT_PUBLIC_API_BASE 覆盖。
+      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:5100/api',
     },
   },
   vite: {

@@ -57,3 +57,30 @@
 **引用**：backend-go/internal/admin/service/catalog_sync_service.go:SyncAll、backend-go/internal/admin/service/catalog_sync_service.go:syncRouteCandidate、backend-go/internal/admin/service/catalog_sync_service.go:contentHash、backend-go/internal/admin/service/catalog_sync_service.go:flattenNamespace、backend-go/internal/admin/service/catalog_extras.go:EmbedPendingRoutes、backend-go/internal/admin/service/catalog_sync_service_test.go
 
 <!-- pinned 2026-09-13T16:58:11Z -->
+
+## WSL↔前后端连不通的根因与转发方案评估
+
+## 拓扑与根因（2026-09-14 实测）
+
+- 运行拓扑：前后端都跑 **Windows**（Nuxt dev = node.exe :3000；Go 后端 = go run 临时 main.exe :5000）；pi agent 与工具（curl/ctx/uv/opencli）在 WSL2（mirrored 模式，内核 5.15.167.4 偏老）。
+- **根因①端口 5000 被 svchost（WSD 系统服务，PID 4576）占 0.0.0.0:5000 v4**：Go 后端实际有效监听只剩 [::]:5000。WSL→127.0.0.1:5000 命中 svchost 死 socket → 超时（半开）；WSL→[::1]:5000 → ECONNREFUSED（v6 镜像不通）。Windows 浏览器 localhost 解析 ::1 所以用户无感。ui-verify/references/network-and-navigation.md 2026-09-03 已记录同现象（"后端重启后仅监听 IPv6、v4 半开"，当时约定 powershell.exe 中转 / opencli 同源 fetch）。
+- **根因②WSL shell 代理污染**：curl 走 http://127.0.0.1:7897（Clash，Windows 侧经 mirrored 进来），对 localhost:5000 返回超时/502，探测结论被污染；.bashrc/.profile 未见 proxy 导出（来源待查，可能是 /etc/environment 或 Windows 注入）。
+- **根因③（另一层）cmd.exe interop vsock 间歇故障**：events.db 2026-09-12 两条 policy.decision interop-down（fail-open）、2026-09-14 gate.check `go build` diag 含 `UtilAcceptVsock:251: accept4 failed 110`。进程互操作层问题，TCP 代理救不了；缓解 = 升级 WSL / `wsl --shutdown` 重启 VM。
+- 实测通道稳定性：WSL→Windows **:3000 稳定可达**（Node fetch 14ms 200）；:5000 两个栈都不通。
+
+## 前端→后端连接链路事实
+
+- `front/nuxt.config.ts`：ssr:false（纯 SPA，后端请求全从浏览器发出，Node 进程本身不调后端）；runtimeConfig.public.apiBase 默认 `http://localhost:5000/api`（`NUXT_PUBLIC_API_BASE` 可覆盖）；**无 devProxy / routeRules**。
+- `front/app/utils/api.ts`：`getApiBaseUrl()`——base 以 http 开头→原样用；否则 **isDev()（浏览器端口 3000）强制回退 `http://localhost:5000/api`**；非 dev 用相对路径（同源生产形态已预留）。`getApiOrigin()` 同构逻辑，供 WS。
+- WS：`front/app/composables/useEventStream.ts` 单例，`getApiOrigin().replace(/^http/,'ws') + '/ws'` → 浏览器直连 `ws://localhost:5000/ws`；另有 features/articles/composables/useTagWebSocket.ts。
+- 后端：`cmd/server/main.go` `r.Run(":5000")`（config.Server.Port），CORS 白名单可配（CORS_ORIGINS）。生产 Docker：compose 映射 `${PORT:-5000}:5000`，**deployment.md "front 内部代理 API" 说法无代码实现**（front/server 只有 fetch-feed.post.ts，非反代）。
+- e2e：playwright baseURL localhost:3000。
+
+## 方案评估
+
+- A 根治=后端默认端口挪出 Windows 保留段（5000 是 WSD 重灾区；换 5100 等）——最便宜且同时治浏览器/dev/prod。
+- B 用户提议的"前端 Node 转发"推荐落成 **Nitro devProxy**（nuxt.config.ts `devProxy: {'/api': {target,changeOrigin}, '/ws': {target, ws:true}}`）+ apiBase 改相对 `/api`：需同步改 utils/api.ts isDev 强制回退分支；浏览器与 WSL 工具全部收敛到 :3000 单通道（已证稳定），dev 与"front 为入口"的目标拓扑对齐，CORS 在 dev 消失；后续可用 nitro routeRules 平移到生产。
+- C 卫生：WSL shell 设 no_proxy=localhost,127.0.0.1,::1。
+- 顺序建议 A+B 一起开 change（同触 front/nuxt.config.ts、utils/api.ts、后端 config 默认值、docs/configuration.md、deployment.md、AGENTS.md 端口口径）。
+
+<!-- pinned 2026-09-15T13:50:55Z -->

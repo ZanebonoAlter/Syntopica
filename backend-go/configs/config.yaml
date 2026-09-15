@@ -1,5 +1,6 @@
 server:
-  port: "5000"
+  # 5100：避开 Windows 5000 端口 WSD/svchost 保留段冲突（WSL v4 半开连接问题）
+  port: "5100"
   mode: "debug"
 
 database:

@@ -56,13 +56,13 @@ docker-compose.yml                    docker-compose.firecrawl.yml（可选）
 │  ├─ pgvector 扩展           │      │  ├─ API + Worker                 │
 │  └─ data/ 持久化            │      │  ├─ firecrawl-redis              │
 │                             │      │  └─ firecrawl-playwright         │
-│  backend (:5000)            │      └──────────────────────────────────┘
+│  backend (:5000 容器内)    │      └──────────────────────────────────┘
 │  ├─ Go API 服务器           │
 │  └─ 依赖 postgres healthy   │           │
 │                             │           │ syntopica-net（外部网络）
 │  front (:3000)              │           │
 │  ├─ Nuxt SSR               │◄──────────┘
-│  └─ 代理 → backend:5000    │
+│  └─ 浏览器直连宿主 5100    │
 └─────────────────────────────┘
 ```
 
@@ -107,8 +107,8 @@ docker compose -f docker-compose.firecrawl.yml up -d
 启动三个核心服务：
 
 - **postgres**: PostgreSQL（pgvector:pg18-trixie）端口 5432，带健康检查（`pg_isready`）。数据持久化在 `./data/` 目录。初始化脚本 `docker/postgres/init/01-enable-pgvector.sql` 在首次启动时执行 `CREATE EXTENSION IF NOT EXISTS vector`。
-- **backend**: Go API 服务器端口 5000，内部连接 postgres 服务。
-- **front**: Nuxt SSR 服务器内部端口 3000，通过 `${FRONT_PORT:-3000}` 映射到宿主机。内部通过 `http://backend:5000/api` 代理 API 请求。
+- **backend**: Go API 服务器（容器内 5000，宿主映射默认 `${PORT:-5100}`），内部连接 postgres 服务。
+- **front**: Nuxt 服务器内部端口 3000，通过 `${FRONT_PORT:-3000}` 映射到宿主机。浏览器直连宿主映射的后端 API（默认 `http://localhost:5100/api`）。
 
 可选的 Firecrawl 服务（通过 `docker-compose.firecrawl.yml`）：
 
@@ -120,7 +120,7 @@ docker compose -f docker-compose.firecrawl.yml up -d
 
 启动后：
 - 前端：`http://localhost:3000`
-- 后端 API：`http://localhost:5000/api`
+- 后端 API：`http://localhost:5100/api`（宿主映射默认 5100；`.env` 显式设置过 `PORT`/`BACKEND_PORT` 的用户不受影响）
 
 ## 环境设置
 
@@ -132,7 +132,7 @@ docker compose -f docker-compose.firecrawl.yml up -d
 
 ```bash
 FRONT_PORT=3000
-BACKEND_PORT=5000
+BACKEND_PORT=5100
 ```
 
 所有值都有默认值 — 应用程序可以零配置启动。唯一会导致启动失败的场景是数据库 DSN 无效或不可达。

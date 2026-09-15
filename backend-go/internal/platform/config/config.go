@@ -114,7 +114,7 @@ func LoadConfig(configPath string) error {
 	viper.AddConfigPath("./configs")
 
 	// Set defaults
-	viper.SetDefault("server.port", "5000")
+	viper.SetDefault("server.port", "5100")
 	viper.SetDefault("server.mode", "debug")
 	viper.SetDefault("database.driver", "postgres")
 	viper.SetDefault("database.dsn", "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai")

@@ -41,7 +41,7 @@ go mod tidy
 go run cmd/server/main.go
 ```
 
-后端默认运行在 `http://localhost:5000`，首次启动会自动连接 PostgreSQL 数据库并执行版本化迁移。
+后端默认运行在 `http://localhost:5100`（避开 Windows 5000 端口的 WSD/svchost 保留段冲突），首次启动会自动连接 PostgreSQL 数据库并执行版本化迁移。
 
 开发时日志现在按级别分流：常规运行日志和 warning 走 `stdout`，error / fatal / panic 走 `stderr`。如果你在 PowerShell、Docker 或 systemd 里单独收集错误输出，可以直接利用这条分流。
 
@@ -55,7 +55,7 @@ pnpm dev
 
 前端开发服务器运行在 `http://localhost:3000`。
 
-1. **验证联调** — 打开 `http://localhost:3000`，确认前端能连接到 `http://localhost:5000/api`。
+1. **验证联调** — 打开 `http://localhost:3000`，确认页面正常且 Network 面板中 API 请求直连 `http://localhost:5100/api`、WebSocket 连 `ws://localhost:5100/ws`。
 
 ### 首次使用
 
@@ -158,7 +158,7 @@ pytest test_schedulers.py::TestAutoRefreshScheduler::test_name -v
 pytest --cov=. --cov-report=html
 ```
 
-> **注意**：Python 集成测试需要 Go 后端运行在 `localhost:5000`。
+> **注意**：Python 集成测试需要 Go 后端可达（默认 `http://localhost:5100`；WSL 侧探测建议加 `no_proxy=localhost,127.0.0.1,::1` 防代理劫持）。
 
 ### Firecrawl 集成检查（在 `tests/firecrawl/` 目录执行）
 
@@ -172,10 +172,10 @@ python test_firecrawl_integration.py
 
 #### 端口已被占用
 
-如果 `http://localhost:5000` 或 `http://localhost:3000` 被占用，通过环境变量设置端口：
+如果 `http://localhost:5100` 或 `http://localhost:3000` 被占用，通过环境变量设置端口：
 
-- 后端：运行 `go run cmd/server/main.go` 前设置 `SERVER_PORT`。
-- 前端：如果后端运行在非默认端口，设置 `NUXT_PUBLIC_API_BASE` 环境变量。
+- 后端：运行 `go run cmd/server/main.go` 前设置 `SERVER_PORT`（或改 `configs/config.yaml`）。
+- 前端：后端非默认端口时设 `NUXT_PUBLIC_API_BASE` 指向实际后端地址。
 - Docker：在 `.env` 中设置 `FRONT_PORT` 和 `BACKEND_PORT`。
 
 #### 后端启动失败（数据库错误）
@@ -188,7 +188,7 @@ docker ps | grep rss-postgres
 
 #### 前端无法连接后端
 
-确保后端在 `http://localhost:5000` 运行。前端 API 基础 URL 默认为 `http://localhost:5000/api`，如有需要可通过 `NUXT_PUBLIC_API_BASE` 环境变量覆盖。
+前端 API 基础 URL 默认 `http://localhost:5100/api`（绝对直连，后端 CORS 白名单放行前端 origin）。排查顺序：后端是否在 5100 监听（`curl --noproxy '*' http://localhost:5100/health`）→ 是否被系统代理劫持（设 `no_proxy=localhost,127.0.0.1,::1`）→ 需要跨域/远程后端时用 `NUXT_PUBLIC_API_BASE` 覆盖。
 
 #### Go 模块下载失败（中国地区）
 
