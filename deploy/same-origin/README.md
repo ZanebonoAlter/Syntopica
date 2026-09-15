@@ -49,6 +49,8 @@ CADDYFILE=./Caddyfile.dev docker compose -f deploy/same-origin/docker-compose.ym
 
 然后浏览器开 **`http://<pi-ip>/`**（不是 `:3000`）。
 
+> ⚠️ **副作用（预期行为，不是坏了）**：设了 `/api` 之后，直连 `http://<pi-ip>:3000` 会变成 404（页面能开，但 `/api/*` 打到 dev server 上没人代理）。同源入口只有 `:80` 一个，把旧书签换掉即可。想两边都能用就回到直连形态（前端 `NUXT_PUBLIC_API_BASE=http://<pi-ip>:5100/api` + 后端 `CORS_ORIGINS`）。
+
 - `pnpm dev` 的 `devServer.host` 已是 `0.0.0.0`，Caddy 走 host 网络访问 `127.0.0.1:3000`，不冲突。
 - Vite HMR 的 WebSocket 也经 Caddy 转发（`reverse_proxy` 透明处理 upgrade），热更新照常。
 - 这个模式下 Caddy 几乎不占资源，但它**不会**让 dev server 变快——dev 模式本身吃内存、无压缩。
@@ -135,6 +137,7 @@ PC 浏览器：
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 页面能开但列表空；Console 里请求发往 `localhost:5100` | 前端没带 `NUXT_PUBLIC_API_BASE=/api` | 模式 A：带变量重启 dev；模式 B：重新构建 |
+| 直连 `:3000` 时 `/api/*` 报 404 | 预期行为：带 `/api` 运行时前端只认同源入口 | 改用 `http://<pi-ip>/`（见模式 A 的副作用说明） |
 | `docker compose up` 报 `conflicting options: port publishing and the container type network mode` | 同时写了 `ports:` 与 `network_mode: host` | 删掉 `ports:` |
 | 根路径 404 或目录列表（模式 B） | `www/` 空或挂载路径不对 | `ls deploy/same-origin/www/index.html` |
 | 根路径返回 502（模式 A） | dev server 没在 `:3000` 上跑 | 先起 `pnpm dev` |
