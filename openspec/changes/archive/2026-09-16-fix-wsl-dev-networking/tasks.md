@@ -15,6 +15,7 @@
 ## 4. 文档
 
 <!-- doc-impact: api, architecture, configuration, deployment -->
+<!-- flow-impact: none —— 无 flow 影响（本 change 只动开发期网络拓扑默认值与配置/架构类文档，不触及 docs/reference/flow/ 下任何业务 flow，§12.2 豁免） -->
 
 - [x] 4.1 `AGENTS.md`（Project Snapshot 的前端 API/WS 地址、开发环境节 no_proxy 约定）、`docs/reference/development.md`、`docs/reference/configuration.md`（端口默认值、`NUXT_PUBLIC_API_BASE`/`SYNTOPICA_DEV_BACKEND`/no_proxy 条目）、`docs/reference/deployment.md`（宿主端口默认 5100、访问口径）。验证：`rg -n "localhost:5000" AGENTS.md docs/reference/` 仅剩兼容/历史说明语境
 - [x] 4.2 `docs/reference/api/_conventions.md`、`docs/reference/architecture/overview.md`、`docs/reference/architecture/frontend.md` 的 API base 示例与网络描述；`.agents/skills/ui-verify/references/network-and-navigation.md` 实测表改写为新拓扑（同源 `/api`+`/ws`、后端 5100、powershell 中转等旧土办法标注退役）。验证：`rg -n ":5000" docs/reference .agents/skills/ui-verify` 残留逐条确认归属（兼容说明/历史归档除外）
