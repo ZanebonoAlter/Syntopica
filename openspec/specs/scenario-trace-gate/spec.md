@@ -7,7 +7,7 @@
 
 ### Requirement: Scenario→测试映射对账脚本
 
-系统 SHALL 提供 `scripts/scenario-trace.sh <change-dir>`（change-dir 形如 `openspec/changes/<name>`），对单个 openspec change 做归档前对账：只做静态判定，不执行任何测试或编译命令。对账范围为 change delta specs（`<change-dir>/specs/**/*.md`）中 ADDED / MODIFIED / RENAMED Requirements 节下的全部 `#### Scenario:` 标题；REMOVED Requirements 节下的 Scenario 不计入（删除的场景不再需要测试保障）。脚本 SHALL 在 WSL bash 环境可运行，退出码 0=通过、1=有失败，失败输出为中文并逐条列出原因。
+系统 SHALL 提供 `scripts/scenario-trace.sh <change-dir>`（change-dir 形如 `openspec/changes/<name>`），对单个 openspec change 做归档前对账：只做静态判定，不执行任何测试或编译命令。对账范围为 change delta specs（`<change-dir>/specs/**/*.md`）中 ADDED / MODIFIED / RENAMED Requirements 节下的全部 `#### Scenario:` 标题；REMOVED Requirements 节下的 Scenario 不计入（删除的场景不再需要测试保障）。脚本 SHALL 在 POSIX bash 环境（Linux / macOS / WSL）可运行，退出码 0=通过、1=有失败，失败输出为中文并逐条列出原因。
 
 #### Scenario: 映射齐全通过
 

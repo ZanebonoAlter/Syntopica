@@ -1,9 +1,4 @@
-# change-scope-gate Specification
-
-## Purpose
-TBD - created by archiving change add-change-scope. Update Purpose after archive.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 改动范围→验证命令判定（change-scope 脚本）
 
@@ -107,12 +102,3 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 
 - **WHEN** 前一回合后端编译失败（steer 回喂），本回合 agent 修复该 `.go` 文件
 - **THEN** 该文件相对快照有新变化，后端门禁重新执行；若本回合未触碰前端，前端门禁继续跳过
-
-### Requirement: 规则文本与判定命令一致
-
-AGENTS.md「测试只跑本次修改影响的包」段落及 `docs/reference/开发执行规范.md` 相应段落 SHALL 指向 `bash scripts/change-scope.sh` 作为权威判定方式，替代纯文字描述的自觉执行。
-
-#### Scenario: 文档指向脚本
-
-- **WHEN** 开发者/agent 需确定本次改动应跑哪些测试
-- **THEN** AGENTS.md 与开发执行规范的相关段落可检索到 `scripts/change-scope.sh` 命令引用

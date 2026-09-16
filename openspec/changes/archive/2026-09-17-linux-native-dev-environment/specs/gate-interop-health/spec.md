@@ -1,10 +1,4 @@
-# gate-interop-health Specification
-
-## Purpose
-
-quality-gate 增量门禁对 cmd.exe interop 链路（WSL 调 Windows Go 工具链 / pnpm）的健康防护：环境故障时短路整轮 cmd 链路门禁并显式区分"环境烂"与"代码烂"，防止假回归 steer 与粘性重跑放大。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: interop 探测与门禁短路
 
