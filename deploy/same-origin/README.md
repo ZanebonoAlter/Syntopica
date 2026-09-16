@@ -1,8 +1,13 @@
-# 同源反代部署（Caddy）
+# 同源反代部署（Caddy / nginx）
 
 浏览器只面对**一个 origin**——前端与后端 API / WebSocket / 图标由同一个入口提供。
 
-适用于**浏览器与后端不同机**的部署：本文件按树莓派 5 写，任意 Linux 主机同样适用。
+适用于**浏览器与后端不同机**的部署：本文件按树莓派 5 写，任意 Linux 主机同样适用。两种入口任选其一：
+
+| 入口 | 制品 | 何时选它 |
+|---|---|---|
+| **Caddy（Docker）** | `Caddyfile` / `Caddyfile.dev` + `docker-compose.yml` | 宿主有 Docker 且能拉 `caddy:2-alpine` 镜像 |
+| **nginx（系统包）** | `nginx.conf` / `nginx.static.conf` + `install-nginx.sh` | 拉不到 Docker Hub（实测 Pi 上 `registry-1.docker.io` 超时）或不想养容器 |
 
 ## 先选模式
 
@@ -11,7 +16,7 @@
 | **A. dev 反代** | Pi 上的 `pnpm dev`（`:3000`） | **不用** | 日常开发 / 试用；改代码即生效，有 HMR |
 | **B. 静态产物** | `pnpm generate` 出的 `.output/public` | 要（PC 或 Pi 上都行） | 常驻 / 对外；省一个常驻 Node 进程 |
 
-两种模式的 Caddyfile 都是现成的，用 `CADDYFILE` 切换，其余步骤一样。
+两种模式的 Caddyfile / nginx conf 都是现成的，用 `CADDYFILE`（Caddy）或 `install-nginx.sh` 的参数（nginx）切换，其余步骤一样。
 
 ## 为什么用这个形态
 
@@ -26,7 +31,7 @@
 
 ## 前置条件
 
-- **Pi**：Linux + Docker（`docker --version`）
+- **入口**：Caddy 路线要 Linux + Docker（`docker --version`）；nginx 路线用系统包（见下节）
 - **端口**：宿主 80 空闲 —— `ss -ltnp | grep ':80'`（换端口见「换端口」节）
 - **后端已在跑**：监听 `127.0.0.1:5100` —— `curl -s http://127.0.0.1:5100/health` 有 JSON 响应
 - Pi 上有本仓库（下文按 `~/syntopica` 写）
@@ -116,6 +121,21 @@ docker compose -f deploy/same-origin/docker-compose.yml ps
 
 ---
 
+## nginx 变体（系统包，零 Docker）
+
+Docker Hub 拉不到时（实测 Pi 上 `registry-1.docker.io` i/o timeout）用系统 nginx，行为与 Caddy 两条模式一一对应：
+
+| 模式 | 模板 | 安装 | 前端 |
+|---|---|---|---|
+| **A. dev 反代** | `nginx.conf` | `sudo bash deploy/same-origin/install-nginx.sh dev` | `cd front && NUXT_PUBLIC_API_BASE=/api pnpm dev --host` |
+| **B. 静态产物** | `nginx.static.conf` | 先 `NUXT_PUBLIC_API_BASE=/api pnpm generate` + 产物铺到 `/srv/www`，再 `sudo bash deploy/same-origin/install-nginx.sh static` | 不需要常驻进程 |
+
+安装脚本做四件事（幂等、可重复跑）：写 `/etc/nginx/conf.d/syntopica.conf`（旧文件先备份）→ 移除 `/etc/nginx/sites-enabled/default` **软链**（它同样声明 `default_server`，留着 `nginx -t` 直接报 `a duplicate default server`）→ `nginx -t` 校验（失败自动回滚旧配置）→ `systemctl enable + reload`。
+
+转发规则与 Caddyfile 等价：`/api` `/icons` `/health` → `127.0.0.1:5100`；`/ws` 与 `/_nuxt/`（Vite HMR）带 `Upgrade` 头分别到 5100 / 3000；其余到 dev server（模式 A）或静态产物 + SPA 兜底（模式 B）。`$connection_upgrade` 用 `map` 产出，非 WS 请求取 `close`——直接写死 `"upgrade"` 会拖住 keepalive。
+
+**实机验证**（2026-09-16，Pi 5 / nginx 1.26.3 / 模式 A）：`/`、`/health`、`/api/categories`、`/icons/feeds/2.ico` 全 200；`/ws` → **`101 Switching Protocols`**；HMR 的 `/_nuxt/` 升级 → `101`；浏览器 369 个请求全部同源（无一条打 `:5100`），订阅源页 11 个 `<img>` 图标 0 破图。
+
 ## 验收（两种模式通用）
 
 ```bash
@@ -142,31 +162,43 @@ PC 浏览器：
 | 根路径 404 或目录列表（模式 B） | `www/` 空或挂载路径不对 | `ls deploy/same-origin/www/index.html` |
 | 根路径返回 502（模式 A） | dev server 没在 `:3000` 上跑 | 先起 `pnpm dev` |
 | API 返回 502 | 后端没在 5100 上跑 | `curl -s http://127.0.0.1:5100/health` |
-| 图标破图（响应体是 HTML） | `/icons/*` 没转发 | 核对 Caddyfile 的 `@backend` path 列表 |
+| 图标破图（响应体是 HTML） | `/icons/*` 没转发 | 核对 Caddyfile 的 `@backend` path 列表 / nginx 的 `location ~ ^/(api\|icons\|health)(/\|$)` |
+| nginx `-t` 报 `a duplicate default server for 0.0.0.0:80` | Debian 默认站点（`sites-enabled/default`）仍在，它也声明 `default_server` | `sudo rm -f /etc/nginx/sites-enabled/default`（安装脚本已自动处理） |
+| nginx 装好后页面能开但列表空、Console 报 CORS | 前端还是绝对 base（没带 `/api` 重启） | 带变量重启 dev，或重新 `pnpm generate` |
 | 事件流连不上、反复重连 | `/ws` 没转发 | `curl -sI http://127.0.0.1/ws` 应返回后端响应而非前端页面 |
 | 容器起不来，`bind: address already in use` | 宿主 80 被占 | `ss -ltnp \| grep ':80'`；或按「换端口」改 |
 | 改了产物浏览器还是旧的 | 浏览器缓存 | 硬刷新 `Ctrl+Shift+R` |
 
 ### 换端口
 
-改对应 Caddyfile 里的 `:80` 为其他端口（host 网络下直接绑宿主端口）：
+Caddy：改对应 Caddyfile 里的 `:80` 为其他端口（host 网络下直接绑宿主端口）：
 
 ```bash
 sed -i 's/^:80 {/:8080 {/' deploy/same-origin/Caddyfile      # 或 Caddyfile.dev
 docker compose -f deploy/same-origin/docker-compose.yml up -d
 ```
 
+nginx：改 `deploy/same-origin/nginx*.conf` 里的两条 `listen`（`:80` 与 `[::]:80`），再重跑 `sudo bash deploy/same-origin/install-nginx.sh <变体>`。
+
 ## 切模式 / 回滚
 
 ```bash
-# 从 dev 切到静态：先在 www/ 准备产物，再重建容器（不加 CADDYFILE 即默认静态）
+# Caddy — 从 dev 切到静态：先在 www/ 准备产物，再重建容器（不加 CADDYFILE 即默认静态）
 docker compose -f deploy/same-origin/docker-compose.yml up -d --force-recreate
 
-# 从静态切回 dev
+# Caddy — 从静态切回 dev
 CADDYFILE=./Caddyfile.dev docker compose -f deploy/same-origin/docker-compose.yml up -d --force-recreate
 
-# 完全撤掉同源入口（回到直连形态）
+# Caddy — 完全撤掉同源入口（回到直连形态）
 docker compose -f deploy/same-origin/docker-compose.yml down
+
+# nginx — 切换变体（dev ↔ static）
+sudo bash deploy/same-origin/install-nginx.sh static
+
+# nginx — 撤掉入口：删配置 + 恢复 Debian 默认站点 + reload
+sudo rm -f /etc/nginx/conf.d/syntopica.conf
+sudo ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 撤掉后回到直连形态需要**两个**环境变量（缺一个就是另一种报错）：前端 `NUXT_PUBLIC_API_BASE=http://<pi-ip>:5100/api`，后端 `CORS_ORIGINS=http://<pi-ip>:3000`。
@@ -176,3 +208,4 @@ docker compose -f deploy/same-origin/docker-compose.yml down
 - 三种前端形态的适用边界与失败症状：`docs/reference/deployment.md`
 - `NUXT_PUBLIC_API_BASE` 的构建期语义：`docs/reference/configuration.md`
 - 为什么不用 Nitro `devProxy` / Vite `server.proxy` 做同源：`openspec/changes/fix-wsl-dev-networking/design.md` D2（WS upgrade 过不去，已实测否决）
+- nginx 变体的安装/切换/回滚命令：本文件「nginx 变体」与「切模式 / 回滚」两节
