@@ -36,7 +36,8 @@ export default defineNuxtConfig({
       },
       link: [
         { key: 'app-favicon', rel: 'icon', type: 'image/png', href: '/favicon.png' },
-        { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500;600;700&display=swap' },
+        // Noto Serif SC 由 @fontsource 自托管（spa-loading-ux）：同源分片加载，
+        // 弱网/离线不再被 fonts.googleapis.com 渲染阻塞
       ],
       script: [
         {

@@ -46,6 +46,7 @@ pnpm test:unit  &&  pnpm test:e2e
 → 组件/API/Store/事件流/通知/Feature 共享：`docs/reference/standard/frontend/code-style.md`
 → 双主题与设计系统：`docs/reference/standard/frontend/theming.md`
 → 布局契约（page shell/dialog 尺寸档/双视口验收）：`docs/reference/standard/frontend/layout.md`
+→ SPA 加载体验（首屏模板/字体自托管/错误兑底）：`docs/reference/standard/frontend/loading-experience.md`
 
 ## 目录归属速查
 

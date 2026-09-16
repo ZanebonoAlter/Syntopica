@@ -11,6 +11,7 @@
 | 双主题 / 设计系统 / Token 架构 | `frontend/theming.md` |
 | 页面布局模式 / 弹窗尺寸档 / 双视口验收 | `frontend/layout.md` |
 | 交互友好性 / 可观测性展示分层（状态标记左对齐、状态说明不伪装动作） | `frontend/interaction-conventions.md` |
+| SPA 加载体验（首屏模板/字体自托管/路由进度条/错误兑底） | `frontend/loading-experience.md` |
 | Lint 工具配置（ESLint / golangci-lint） | `frontend/lint.md` / `backend/lint.md` |
 | 测试框架、运行方式、编写约定 | `frontend/testing.md` / `backend/testing.md` |
 | 后端包结构 / domain 白名单 | `backend/package-layout.md` |
