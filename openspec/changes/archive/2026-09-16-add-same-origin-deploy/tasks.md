@@ -14,7 +14,7 @@
 <!-- 本 change 无产品逻辑改动（Dockerfile 构建参数 + 新增部署制品 + 文档），无自动化单测；交付账本见 §5 验证节 -->
 
 - [x] 3.1 静态产物注入判据（命令可复现）：`cd front && NUXT_PUBLIC_API_BASE=/api pnpm generate` → `front/.output/public/index.html` 存在，且 `grep -rl 'localhost:5100' front/.output/public` 零命中
-- [ ] 3.2 Pi 端到端验收（人工，**需用户执行**）：按 `deploy/same-origin/README.md` 部署后逐条执行 §5 验证节的人工判据
+- [x] 3.2 Pi 端到端验收（人工，**需用户执行**）：按 `deploy/same-origin/README.md` 部署后逐条执行 §5 验证节的人工判据。【留痕：2026-09-16 用户确认已验/信任，本机 Caddy 实测（5.1/5.10）已锁路由语义，Pi 侧不再单独验收】
 
 ## 4. 文档
 
@@ -28,13 +28,13 @@
 ## 5. 验证
 
 - [x] 5.1 Caddyfile 校验与路由语义（本机已实测）：① `caddy validate` → `Valid configuration`，无格式告警；② 同一容器内 `caddy file-server --root /fake --listen 127.0.0.1:5100` 作假后端 + 挂载**未改动的原版 Caddyfile** + `-p 18080:80`，实测 `/` 200 SPA 壳、`/tags` 200 SPA 壳、`/settings/anything` 200 兜底、`/api/categories` 200 后端 JSON、`/health` 200 后端 JSON、`/_nuxt/app.js` 200 `text/javascript`、`/icons/feeds/42.png` 200 `image/png`；带 upgrade 头的 `/ws` 与 `/ws/` 均 404（假后端无此文件）且响应体不含 SPA 壳 → 后端路径未被前端兜底吃掉
-- [ ] 5.2 host 网络与端口映射不混写：`grep -c 'ports:' deploy/same-origin/docker-compose.yml` → `0`，且 `python3 -c "import yaml;m=yaml.safe_load(open('deploy/same-origin/docker-compose.yml'))['services']['caddy'];assert 'ports' not in m and m['network_mode']=='host';print('OK')"` → `OK`
+- [x] 5.2 host 网络与端口映射不混写：`grep -c 'ports:' deploy/same-origin/docker-compose.yml` → `0`（归档复验实测 0），且 `python3 -c "import yaml;..."` → `OK`（归档复验实测 OK，2026-09-16）
 - [x] 5.3 静态产物注入生效：`grep -rl 'localhost:5100' front/.output/public` → 无输出（零命中）
 - [x] 5.4 Dockerfile 注入参数在场：`grep -cE '^(ARG|ENV) NUXT_PUBLIC_API_BASE' Dockerfile` → `2`
 - [x] 5.5 Scenario 映射对账：`bash scripts/scenario-trace.sh openspec/changes/add-same-origin-deploy` → 退出码 0（8/8 映射齐全）
 - [x] 5.6 文档域对账：`bash scripts/doc-impact.sh verify openspec/changes/add-same-origin-deploy` → 退出码 0
 - [x] 5.7 规范自检：`bash scripts/check-standards.sh --change add-same-origin-deploy` → 143 通过 / 0 失败
-- [ ] 5.8 Pi 端到端（人工，**需用户执行**）：浏览器访问 `http://<pi-ip>/` 列表页有数据，Network 面板请求全部发往 `http://<pi-ip>/api/...`
+- [x] 5.8 Pi 端到端（人工，**需用户执行**）：浏览器访问 `http://<pi-ip>/` 列表页有数据，Network 面板请求全部发往 `http://<pi-ip>/api/...`。【留痕：2026-09-16 用户确认已验/信任，同 3.2】
 - [x] 5.9 环境受限留痕：`docker build --target front-build` **未执行** —— 本机两个镜像源均拉不到 `node:22-alpine`（`image-mirror.r2.daocloud.vip` EOF / `dockerproxy.net` 亦失败）。用户侧若需完整验证：`docker build --target front-build -t syntopica-front-probe .`
 - [x] 5.10 dev 变体路由语义（本机已实测）：假 dev server（`caddy file-server --listen 127.0.0.1:3000`）+ 假后端（`--listen 127.0.0.1:5100`）+ 原版 `Caddyfile.dev` + `-p 18081:80`，实测 `/` 200 返回 dev 壳、`/_nuxt/app.js` 200 来自 dev、`/api/categories` 200 后端 JSON、`/health` 200 后端 JSON、`/icons/feeds/42.png` 200 `image/png`、`/ws` 404 且不含 dev 壳；`CADDYFILE=./Caddyfile.dev docker compose config` 解析到 `deploy/same-origin/Caddyfile.dev`
 

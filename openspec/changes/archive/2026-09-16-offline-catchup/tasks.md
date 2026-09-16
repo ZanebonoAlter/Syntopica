@@ -15,7 +15,7 @@
 ## 3. 测试
 
 - [x] 3.1 白盒表驱动单测：边 GC 边界（恰好窗口边界内/外、批量删除、孤儿有/无剩余边）；补档前置状态机（队列 pending→跳过、leased→跳过、空→执行）；守卫边界（today-window / today-window±1 天）。验证：`go test ./internal/tagmanagement/... ./internal/admin/scheduler ./internal/admin/handler -run 'EdgeGC|Backfill|RetentionGuard|CleanupOldArticles' -v` 全 PASS。
-- [ ] 3.2 真实效果人工核对：本地停 AI 数日（或模拟）→ 恢复 drain → 次日 21:00 观察缺档自动补齐；手动请求超窗日期确认 4xx。验证：人工记录时间线回填 test-cases.md 效果核对节。
+- [x] 3.2 真实效果人工核对：本地停 AI 数日（或模拟）→ 恢复 drain → 次日 21:00 观察缺档自动补齐；手动请求超窗日期确认 4xx。验证：人工记录时间线回填 test-cases.md 效果核对节。【留痕：2026-09-16 用户确认已验/信任自动化覆盖（job 单测锁补档/顺延/不重建、handler 单测锁 4xx 守卫），停机数日观察不再单独留时间线，直接归档】
 
 ## 4. 文档
 
@@ -29,6 +29,22 @@
 - [x] 5.2 `cd backend-go && golangci-lint run ./...` → 0 issues。
 - [x] 5.3 `cd backend-go && go vet ./... && go build ./...` → 均退出码 0。
 - [x] 5.4 `grep -n "CleanupOrphanedTags" backend-go/internal/reader/service/feed_service.go` → 零命中（归档不再删边的机械锚；孤儿清理移交 GC job）。
+
+| Scenario | 测试文件 |
+|---|---|
+| 衍生数据清除 | backend-go/internal/reader/service/feed_service_cleanup_test.go |
+| 归档文章不被全文搜索命中 | backend-go/internal/reader/service/feed_service_cleanup_test.go |
+| 超窗边被回收 | backend-go/internal/tagmanagement/service/core/edge_gc_test.go |
+| 未归档文章的超窗边保留 | backend-go/internal/tagmanagement/service/core/edge_gc_test.go |
+| 窗口内边保留供补档消费 | backend-go/internal/tagmanagement/service/core/edge_gc_test.go |
+| 配置非法回退默认 | backend-go/internal/tagmanagement/service/core/edge_gc_test.go |
+| 回收不受分析暂停影响 | backend-go/internal/admin/scheduler/pause_test.go |
+| 停机缺档次日自动补齐 | backend-go/internal/admin/scheduler/job_daily_report_test.go |
+| 队列未清空顺延 | backend-go/internal/admin/scheduler/job_daily_report_test.go |
+| 只补缺不重建已有 | backend-go/internal/admin/scheduler/job_daily_report_test.go |
+| 超窗日期拒绝重建 | backend-go/internal/topicgraph/handler/daily_report_handler_test.go |
+| 窗口内日期正常重建 | backend-go/internal/topicgraph/handler/daily_report_handler_test.go |
+| 调度器指定日期触发同口径 | backend-go/internal/admin/scheduler/job_daily_report_test.go |
 
 ## 6. review 修复
 

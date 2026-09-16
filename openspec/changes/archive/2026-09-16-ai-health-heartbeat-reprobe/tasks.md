@@ -13,7 +13,7 @@
 ## 3. 测试
 
 - [x] 3.1 白盒状态机表驱动单测（aihealth）：降级计数边界（第 1 次失败不降级、第 2 次降级、成功清零重计）、跨触发源累计（心跳×TryStartProbe + 手动×RunStartupProbe 共享 streak）、not-ready 首探 fail 不走去抖、去抖窗内明细照实更新、in-flight 互斥/拉起冷却/ctx 取消回归（既有用例保持绿）。验证：`go test ./internal/platform/aihealth -run 'Heartbeat|Degrade|Reprobe' -v` 全 PASS（12 用例）。落点：`heartbeat_degrade_test.go`（新）+ `reprobe_test.go`（旧 StopsWhenHealthy 拆为 SelfHeals/HeartbeatContinuesWhenHealthy）。
-- [ ] 3.2 真实效果人工核对：本地起后端 + 本地模型停止（或改 base_url 指向不监听端口），观察 ≤2 个心跳周期内 `/schedulers/status` 的 `ai_healthy` 翻 false、分析任务停租约；恢复端点后 ≤60s 翻 true。验证：人工记录时间线（test-cases.md 效果核对节留痕）。
+- [x] 3.2 真实效果人工核对：本地起后端 + 本地模型停止（或改 base_url 指向不监听端口），观察 ≤2 个心跳周期内 `/schedulers/status` 的 `ai_healthy` 翻 false、分析任务停租约；恢复端点后 ≤60s 翻 true。验证：人工记录时间线（test-cases.md 效果核对节留痕）。【留痕：2026-09-16 用户确认已验/信任自动化覆盖（单测+testcontainer compose 已锁降级/恢复行为），不单独留观察时间线，直接归档】
 
 ## 4. 文档
 
@@ -27,3 +27,19 @@
 - [x] 5.2 `cd backend-go && golangci-lint run ./...` → 0 issues（全仓）。
 - [x] 5.3 `cd backend-go && go vet ./... && go build ./...` → 均退出码 0。
 - [x] 5.4 `grep -rn "if Healthy() { continue }" backend-go/internal/platform/aihealth/` → 零命中（心跳无条件化的机械锚）。
+
+| Scenario | 测试文件 |
+|---|---|
+| 启动时探测每条路由主 provider | backend-go/internal/platform/aihealth/aihealth_test.go |
+| 仅探主 provider 不探 fallback | backend-go/internal/platform/aihealth/aihealth_test.go |
+| 无 provider 的路由跳过 | backend-go/internal/platform/aihealth/aihealth_test.go |
+| ListRoutes 瞬态失败时重试 | backend-go/internal/platform/aihealth/aihealth_test.go |
+| 快照健康后仍按心跳周期复检且可降级 | backend-go/internal/platform/aihealth/reprobe_test.go backend-go/internal/platform/aihealth/heartbeat_degrade_test.go |
+| 快照不健康时定时复检直至自愈 | backend-go/internal/platform/aihealth/reprobe_test.go |
+| 健康态心跳持续探测 | backend-go/internal/platform/aihealth/reprobe_test.go |
+| 端点秒拒连续两次即降级 | backend-go/internal/platform/aihealth/heartbeat_degrade_test.go backend-go/internal/platform/analysispause/health_gate_compose_test.go |
+| 忙服务器不被误降级 | backend-go/internal/platform/analysispause/health_gate_compose_test.go |
+| 降级后自动恢复 | backend-go/internal/platform/aihealth/heartbeat_degrade_test.go backend-go/internal/platform/analysispause/health_gate_compose_test.go |
+| 慢加载模型加载完成后自动自愈 | backend-go/internal/platform/aihealth/reprobe_test.go |
+| 探测 in-flight 时定时触发被跳过 | backend-go/internal/platform/aihealth/reprobe_test.go |
+| 心跳失败触发拉起且遵守冷却 | backend-go/internal/platform/aihealth/aihealth_launch_guard_test.go |
