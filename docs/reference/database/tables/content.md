@@ -14,7 +14,7 @@
 | `title` | VARCHAR(500) | NOT NULL | 文章标题 |
 | `description` | TEXT | — | 文章描述（参与全文检索，权重 B） |
 | `content` | TEXT | — | RSS 原始内容（HTML 片段） |
-| `link` | VARCHAR(1000) | — | 文章链接 |
+| `link` | VARCHAR(1000) | index `idx_articles_link`；部分唯一索引 `uq_articles_feed_link`（迁移 `20260917_0001`） | 文章链接。**入库判重键 = `(feed_id, link)`**（标题不参与判重），唯一部分索引 `WHERE link <> ''` 兜底并发刷新（空 link 行不受约束）；跨 feed 复用打标与存量归并都依赖 `idx_articles_link` |
 | `image_url` | VARCHAR(1000) | — | 封面图 |
 | `pub_date` | TIMESTAMP | — | 发布时间 |
 | `author` | VARCHAR(200) | — | 作者 |
@@ -42,6 +42,8 @@
 > ⚠️ 旧文档曾列 `feed_summary_id` / `feed_summary_generated_at`：**代码 `Article` struct 无此字段**，已删除，请勿引用。
 
 **复合索引（迁移 `20260417_0001`）**：`idx_articles_feed_pub_date(feed_id, pub_date DESC)`、`idx_articles_feed_id_title(feed_id, title)`。
+
+**去重相关索引（迁移 `20260917_0001`）**：`idx_articles_link(link)`（普通索引，服务跨 feed 打标复用查询与存量归并）+ `uq_articles_feed_link(feed_id, link) WHERE link <> ''`（部分唯一索引，同 feed 同 link 只能有一行——并发刷新双方的 `Create` 冲突被刷新路径 `continue` 吞掉，空 link 行豁免）。
 
 ### 1.2 feeds（订阅源表）
 

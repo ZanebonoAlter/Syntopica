@@ -572,15 +572,20 @@ func TestRefreshFeedUpdatesChangedEntryAndClearsDerivedState(t *testing.T) {
 		t.Fatalf("create tag link: %v", err)
 	}
 	if err := database.DB.Model(&models.Article{}).Where("id = ?", article.ID).Updates(map[string]interface{}{
-		"firecrawl_status":   "completed",
-		"firecrawl_content":  "<p>old crawled body</p>",
-		"summary_status":     "complete",
-		"ai_content_summary": "旧摘要",
+		"firecrawl_status":    "completed",
+		"firecrawl_content":   "<p>old crawled body</p>",
+		"summary_status":      "complete",
+		"ai_content_summary":  "旧摘要",
 		"completion_attempts": 3,
 		"completion_error":    "old error",
 		"content_form":        "mono",
 	}).Error; err != nil {
 		t.Fatalf("simulate processed state: %v", err)
+	}
+	// tag_count is read-only on the model (`gorm:"->"`), so seed it directly:
+	// the refresh that drops the tag below must also drop this counter.
+	if err := database.DB.Exec("UPDATE articles SET tag_count = 1 WHERE id = ?", article.ID).Error; err != nil {
+		t.Fatalf("seed tag_count: %v", err)
 	}
 
 	body = rssItemBody("Rolling", "rolled headline", "https://example.com/rolling/1", "rolled desc")
@@ -625,6 +630,14 @@ func TestRefreshFeedUpdatesChangedEntryAndClearsDerivedState(t *testing.T) {
 	database.DB.Model(&models.TopicTag{}).Where("id = ?", tag.ID).Count(&orphanCount)
 	if orphanCount != 0 {
 		t.Fatalf("orphaned topic tag must be cleaned up")
+	}
+
+	// The denormalised counter follows the dropped edges (same contract the
+	// merge migration and the cross-feed reuse path maintain).
+	var tagCount int64
+	database.DB.Model(&models.Article{}).Where("id = ?", article.ID).Pluck("tag_count", &tagCount)
+	if tagCount != 0 {
+		t.Fatalf("articles.tag_count = %d after dropping stale tags, want 0", tagCount)
 	}
 
 	var jobCount int64

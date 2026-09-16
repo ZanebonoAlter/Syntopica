@@ -44,6 +44,7 @@
 | `idx_articles_favorite` | articles | `(favorite)` |
 | `idx_articles_feed_pub_date` | articles | `(feed_id, pub_date DESC)` |
 | `idx_articles_feed_id_title` | articles | `(feed_id, title)` |
+| `idx_articles_link` | articles | `(link)`（迁移 `20260917_0001`，跨 feed 打标复用 + 存量归并） |
 | `idx_article_topic_tags_article_id` | article_topic_tags | `(article_id)` |
 | `idx_feeds_category_id` | feeds | `(category_id)` |
 
@@ -61,6 +62,7 @@
 | -------- | ------ | ------ |
 | `uq_section_relations_pair` | daily_report_section_relations | UNIQUE `(from_section_id, to_section_id, relation_type)` |
 | `uq_board_upgrade_suggestions_hash` | board_upgrade_suggestions | 部分唯一 `(suggestion_hash) WHERE status='pending'` |
+| `uq_articles_feed_link` | articles | 部分唯一 `(feed_id, link) WHERE link <> ''`（迁移 `20260917_0001`，入库判重键；空 link 行豁免） |
 
 ### CHECK 约束（迁移添加，DB 层强制）
 
@@ -206,7 +208,7 @@
 
 - **`ai_call_logs`**：存储 `route_name` 和 `provider_name`（冗余）以保留调用时的上下文快照，即使后续路由/供应商被修改或删除。
 - **`board_upgrade_suggestions.auxiliary_label_ids`**（JSONB `[]uint`）：逻辑指向 `semantic_labels.id`（auxiliary），不保证完整性。
-- **`daily_report_threads.tag_ids` / `related_article_ids`**（JSONB）：逻辑指向 `topic_tags.id` / `articles.id`，无 FK。
+- **`daily_report_threads.tag_ids` / `related_article_ids`**（JSONB）：逻辑指向 `topic_tags.id` / `articles.id`，无 FK。其中 `related_article_ids` 的**完整性由写方维护**：任何删除 `articles` 行的路径 MUST 在同一事务内、删行前先改指保留条（去重归并）或剔除引用（删源级联等），维护器 `internal/platform/articlerefs`；数组保序、去重（首个为准）、空引用写 `[]`，MUST NOT 写 JSON `null` 标量（`jsonb_array_elements_text` 遇 null 抛 SQLSTATE 22023，会让整条查询静默失败）。存量悬空由迁移 `20260917_0002` 一次性修复（规范化非数组值 + 分批剪除悬空 id，幂等）；日报 job 每日以只读探针记录悬空计数。语义与约束见 `flow/daily-report.md` 约束 21。
 
 ### JSON-stored ID Lists（无 FK 约束的关系）
 

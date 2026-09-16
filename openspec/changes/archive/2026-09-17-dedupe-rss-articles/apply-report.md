@@ -63,3 +63,25 @@
 - 迁移代码未处理 jsonb 悬挂引用（见上）——未来在其它库部署时会留下同类悬挂（消费端仍容错）。
 - migration 4.6（失败注入回滚）未单独测试：事务原子性由既有 `RunMigrationsList` 基础设施测试覆盖（`outside_tx_test.go`），迁移本身默认事务内执行。
 - 生产 `articles` 表 12 万行建索引为事务内普通索引（非 CONCURRENTLY），单用户产品可接受。
+
+## 归档前复核（2026-09-17 01:1x，主线程）
+
+归档门禁复跑与三处补齐：
+
+1. **代码修复（fixup）**：`refreshExistingArticle` 删除旧 `article_topic_tags` 后补 `tag_count` 重算（raw SQL，与 reuse 路径、归并迁移同一契约）。原实现会让迁移刚重算过的 `tag_count` 在同 link 内容变化的刷新后立刻陈旧——`verification.sql` ③ 的「tag_count 与实际标签数一致」断言即被自己打破。测试 `TestRefreshFeedUpdatesChangedEntryAndClearsDerivedState` 增加 `tag_count` 归零断言（种 1 再验证刷新后归 0）。
+2. **tasks.md 门禁结构补齐**：补 `## 5. 测试` / `## 6. 文档` / `## 7. 验证` 尾三节；Scenario→测试文件映射表从「拟定」改为真实路径（12/12 自动映射，`scenario-trace.sh` 退出码 0）；验证节补实测命令与期望。
+3. **活文档同步**：`flow/content-enrichment.md`（新增「feed 刷新入库判重与快讯更新语义」链节 + 业务约束红线 #11）、`flow/topic-graph.md`（业务约束红线 #8：跨 feed 打标复用）、`database/tables/content.md`、`database/tables/_conventions.md`、`database/DATA_LIFECYCLE.md`（入库框补判重/upsert 分支）。
+
+复跑结果（本机 Linux，PG 走 testcontainer）：
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 影响包测试 | `go test ./internal/reader/service/... ./internal/tagmanagement/service/core/...` | ✅ 13.1s / 12.5s |
+| PG 迁移测试 | `TESTCONTAINERS_RYUK_DISABLED=true go test ./internal/platform/database/...` | ✅ 35.9s |
+| 定向用例 | `go test -run 'TestDedupe\|TestRefreshFeed\|TestTagArticle\|TestRetag' -v`（三包） | ✅ 18 用例全 PASS |
+| lint / vet / build | `golangci-lint run`（三包）+ `go vet`（三包）+ `go build ./...` | ✅ 0 issues / 无输出 / 成功 |
+| 真实库核对 | `verification.sql` ①②④⑤ | ✅ 同 feed 重复组 0、跨 feed 126（预期）、两索引在、悬挂 job 0 |
+
+**真实库 ③ 目前 1 行不一致**（`articles.id=125717`，archived 行 `tag_count=1` 无标签）：来源是 `EdgeGC`（归档文章边的时间窗回收）删边不维护 `tag_count`——既有路径、非本 change 引入，读路径按子查询重算，不影响展示。
+
+**未改但已知的边界**：`linkSet` 含归档行，历史归档链接若重新出现在 feed 中会走「更新 + 重走处理链」（`archived` 标记保持 true）。实测未见（归档行早已滚出 RSS 窗口）；如需收紧可给 linkSet 查询加 `archived = false`（此时重复插入会被唯一索引吞掉，语义等价）。

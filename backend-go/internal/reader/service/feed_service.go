@@ -211,6 +211,16 @@ func (s *FeedService) refreshExistingArticle(feed models.Feed, entry ParsedEntry
 	}
 	tagging.CleanupOrphanedTags(oldTagIDs)
 
+	// The counter must follow the edges just dropped (the merge migration and
+	// the cross-feed reuse path both maintain it; the read path only recomputes
+	// it for some endpoints). Raw SQL on purpose: the model marks tag_count as
+	// read-only (`gorm:"->"`), so GORM's Update() would silently skip it.
+	if err := repository.Repo.DB().Exec(
+		"UPDATE articles SET tag_count = (SELECT COUNT(*) FROM article_topic_tags WHERE article_id = ?) WHERE id = ?",
+		existing.ID, existing.ID).Error; err != nil {
+		logging.Warnf("Error recomputing tag_count for refreshed article %d: %v", existing.ID, err)
+	}
+
 	if err := s.enqueueArticleProcessing(feed, existing); err != nil {
 		logging.Errorf("Error enqueueing processing for refreshed article %d (feed %d): %v", existing.ID, feed.ID, err)
 	}

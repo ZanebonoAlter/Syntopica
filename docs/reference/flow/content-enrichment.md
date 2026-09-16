@@ -48,6 +48,28 @@ Feed refresh
 
 一句话：内容处理链路的核心对象始终是 `articles` 表，Firecrawl 与内容补全都在给 article 补字段；**不是**通过单独队列表驱动，而是通过 article 上的状态字段进入后续 scheduler 扫描范围。
 
+### feed 刷新入库判重与快讯更新语义（dedupe-rss-articles）
+
+入库唯一性由 **link** 决定，标题不参与判重（快讯源会在同一 URL 下滚动改标题）：
+
+```text
+RefreshFeed
+  -> linkSet = 本 feed 全部 articles.link（含归档行）
+  -> 条目 link 未命中 → INSERT 新行 + enqueueArticleProcessing
+  -> 条目 link 已命中 → refreshExistingArticle
+       ├─ title 与 description 均未变 → 直接跳过（零处理链成本）
+       └─ 任一变化（快讯 upsert）→ UPDATE 内容字段
+            + 状态按 buildArticleFromEntry 同款规则重置
+              (firecrawl 开 → pending；摘要开 → incomplete；都关 → complete)
+            + 清衍生字段（firecrawl_content / ai_content_summary / completion_* / content_form）
+            + 删旧 article_topic_tags（含孤儿子标签清理）+ tag_count 重算
+            + enqueueArticleProcessing 重走链
+```
+
+- 重打标不内联调用 AI：靠链条完成事件（`article_created` / `firecrawl_completed` / `summary_completed`）按既有 `tag_jobs` 路径接力，此时旧标签已清、`existingCount=0`，正常走 AI 打标。
+- 数据库唯一部分索引 `uq_articles_feed_link ON articles(feed_id, link) WHERE link != ''` 兜底并发刷新：冲突的 `Create` 报错被 `continue` 吞掉，不影响刷新整体成功；空 link 行不受约束。
+- 跨 feed 的同 link 副本**不归并存储**（feed 视图语义不变），但打标结果复用（见 `flow/topic-graph.md`）。
+
 ### Firecrawl / 内容补全状态查询
 
 ```mermaid
@@ -101,11 +123,12 @@ article 级状态：`firecrawl_status`（`pending`/`processing`/`completed`/`fai
 8. **补全成功且 feed.tagging_enabled=true 时必须 enqueue tag_jobs 以整理稿重新打标签**：补全成功且 `feed.tagging_enabled=true` 时，enqueue `tag_jobs`（reason=`summary_completed`）重新打标签（整理稿是更优的打标签输入）。
 9. **内容补全调度器规范名为 content_completion、兼容旧别名 ai_summary，均非 ai_summaries 表的 feed 聚合摘要**：对外规范名为 `content_completion`，仍接受旧别名 `ai_summary`；它**不是** `ai_summaries` 表里的 feed 聚合摘要。
 10. **整理稿首行形态注释必须剥离后入库：标记值存 articles.content_form，正文不得残留注释，解析失败降级 mono**：摘要 system prompt（`GetSystemPrompt("zh")`）要求模型在首行输出形态判定 HTML 注释 `<!-- form: mono|aggregate -->`（异构栏目合集 = aggregate，单主题多章节也算 mono）。入库前 `parseContentFormMark` 解析并剥离该注释行：标记值存 `articles.content_form`，剥离后正文存 `ai_content_summary`（摘要正文**不得**残留注释）；解析失败（模型未输出/非法值）时 `content_form` 落空、原文照存，下游打标降级走 mono 路径。`force` 重生成时同步清空 `content_form` 防旧值残留。存量文章（change 合并前）`content_form` 为空，不回填。
+11. **同一 feed 内文章按 link 唯一（标题不参与判重），同 link 快讯更新只能 upsert 既有行、内容未变时不得触发任何处理链**：入库唯一性键 = `(feed_id, link)`，由 DB 唯一部分索引 `uq_articles_feed_link`（`WHERE link != ''`）兜底并发刷新；标题**不参与判重**（快讯源在同一 URL 下滚动改标题）。link 已命中的条目**不得插入新行**——`title` 与 `description` 均未变→直接跳过（不打标/不抓取/不生成摘要）；任一变化→ UPDATE 原地更新内容字段 + 按 `buildArticleFromEntry` 同款规则重置状态 + 清衍生字段 + 删旧标签（含 `tag_count` 重算）+ 经 `enqueueArticleProcessing` 重走链，重打标靠链条完成事件接力、不在刷新路径内联调 AI。跨 feed 同 link 各留一份（不跨 feed 归并存储），打标结果复用见 [`flow/topic-graph.md`](topic-graph.md)。
 
 ## 代码入口
 
 - **后端 reader 域（正文抓取）**：`backend-go/internal/reader/service/crawler.go`（`Crawler` 接口 + 中立 `ScrapeResult`）、`readability_crawler.go`（进程内主力）、`fallback_crawler.go`（降级链）、`firecrawl_service.go`（Firecrawl 兜底）、`backend-go/internal/reader/handler/`（content_completion_handler、firecrawl handler）。
-- **后端 reader 域（内容补全）**：`backend-go/internal/reader/service/content_completion_service.go`（`CompleteArticle` / `CompleteArticleWithForce` / `claimArticleForCompletion` / `ListReadyArticles` / `GetOverview`）、`backend-go/internal/reader/service/content_form.go`（`parseContentFormMark` 形态标记解析/剥离）、`backend-go/internal/reader/service/feed_service.go`（refresh 写入初始状态位）、`backend-go/internal/reader/routes.go`（`/content-completion/*`、`/firecrawl/*`）。
+- **后端 reader 域（内容补全）**：`backend-go/internal/reader/service/content_completion_service.go`（`CompleteArticle` / `CompleteArticleWithForce` / `claimArticleForCompletion` / `ListReadyArticles` / `GetOverview`）、`backend-go/internal/reader/service/content_form.go`（`parseContentFormMark` 形态标记解析/剥离）、`backend-go/internal/reader/service/feed_service.go`（refresh 写入初始状态位、`RefreshFeed` 的 linkSet 判重与 `refreshExistingArticle` 快讯 upsert）、`backend-go/internal/reader/routes.go`（`/content-completion/*`、`/firecrawl/*`）。
 - **后端调度（admin 域）**：`backend-go/internal/admin/scheduler/job_firecrawl.go`、`job_content_completion.go`、`job_blocked_article_recovery.go`。
 - **平台层**：`backend-go/internal/platform/airouter/`（补全走 `CapabilitySummary` 路由，失败回退 fallback AIService）、`backend-go/internal/platform/ws/`（进度广播）、`backend-go/internal/tagmanagement/`（补全后 enqueue tag job）。
 - **前端**：`front/app/features/articles/components/ArticleContentView.vue`、`front/app/features/articles/composables/useContentCompletion.ts`、`front/app/features/shell/components/FeedLayoutShell.vue`（feed 开关编辑）、`front/app/utils/articleContentSource.ts`（内容来源切换）、`front/app/api/`。
@@ -120,3 +143,4 @@ article 级状态：`firecrawl_status`（`pending`/`processing`/`completed`/`fai
 | 2026-08-20 | aggregate-article-tagging | 摘要调用附带内容形态判定：首行 `<!-- form: mono\|aggregate -->` 解析后存 `articles.content_form`，为下游打标分流提供依据；force 重生成同步清空 | [`archive/2026-08-22-aggregate-article-tagging`](../../../openspec/changes/archive/2026-08-22-aggregate-article-tagging) |
 | 2026-08-21 | nightly-throughput-embedding-cache-parallel-crawl | firecrawl 队列串行→固定 3 worker 并行（jobs channel 分发、atomic 计数、每 worker 500ms 礼貌限速）；租约/退避/terminal 降级语义不变；夜间窗口 avg_wait 3.8h→分钟级 | [`openspec/changes/archive/2026-08-21-nightly-throughput-embedding-cache-parallel-crawl`](../../../openspec/changes/archive/2026-08-21-nightly-throughput-embedding-cache-parallel-crawl) |
 | 2026-09-04 | constraint-declaration-redline | 约束节红线句格式化：本域「业务约束与不变量」节每条约束改写为首行加粗自含红线句 + 细节跟后（语义不变），declaration 注入降为红线层（上线后实测 bytes 降约 60%），细节层经关键词/JIT 全节注入按需补全；本域为格式改写，无业务行为变更 | [`openspec/changes/archive/2026-09-04-constraint-declaration-redline`](../../../openspec/changes/archive/2026-09-04-constraint-declaration-redline) |
+| 2026-09-17 | dedupe-rss-articles | RSS 入库判重键 `(feed_id, title)` → `(feed_id, link)`（标题不参与判重）+ 同 link 快讯 upsert（内容未变跳过、变化则更新内容、重置处理链、删旧标签并重算 tag_count）+ 存量 409 组重复同事务归并迁移与 `uq_articles_feed_link` 唯一部分索引 | [`archive/2026-09-17-dedupe-rss-articles`](../../../openspec/changes/archive/2026-09-17-dedupe-rss-articles) |

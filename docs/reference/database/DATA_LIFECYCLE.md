@@ -18,6 +18,8 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 │  feeds → articles                                                        │
 │  INSERT INTO articles (feed_id, title, content, firecrawl_status, ...)  │
 │  articles.firecrawl_status = 'pending'                                  │
+│  判重: (feed_id, link) 唯一，同 link 命中改走快讯 upsert                │
+│  （内容未实质变化则跳过；变化则 UPDATE + 重置处理链）                   │
 │  articles.summary_status   = 'complete' (默认)                           │
 └─────────────────────────────────────────────────────────────────────────┘
                               ↓
