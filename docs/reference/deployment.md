@@ -158,6 +158,8 @@ AI 相关设置（LLM 凭证、Firecrawl、Digest 导出）通过 Web UI 配置�
 
 前端**不是**独立容器 —— `docker-compose.yml` 只有 `postgres` 与 `syntopica` 两个服务，前端产物由后端同源托管。按场景三选一：
 
+> 静态产物体积说明：前端含 Noto Serif SC 自托管字体分片（`@fontsource`，约 490 个 woff2 小分片，`_nuxt/` 下按 unicode-range 按需加载，单页实际只拉用到的分片，几 KB～百 KB 级）——首屏零外域请求（弱网/离线友好），代价是镜像/静态目录磁盘占用增加；维护约定见 [loading-experience.md](standard/frontend/loading-experience.md)。
+
 | 形态 | 做法 | 适用 | 跨域配置 |
 |---|---|---|---|
 | **同源（单镜像，默认）** | `docker compose up --build -d` → 访问 `http://<host>:5100/` | 常规自托管 | 不需要 |
@@ -271,6 +273,26 @@ docker exec syntopica-postgres pg_dump -U postgres syntopica > backup.sql
 ```bash
 cat backup.sql | docker exec -i syntopica-postgres psql -U postgres syntopica
 ```
+
+### feed 图标目录（运行时资产，`data/icons/`）
+
+`backend-go/data/icons/`（图标文件在 `feeds/` 子目录，`storage.icon_dir` 相对进程 cwd 解析，默认即 `backend-go/data/icons/`）是**运行时资产，两个备份渠道都不携带它**：
+
+- `.gitignore` 的 `data/` 规则把它排除在 git 之外（不会进仓库、不会进镜像）；
+- DB dump 只含 `feeds.icon = /icons/feeds/<id>.<ext>` 这个**路径字符串**，不含文件本身。
+
+因此换机、恢复 dump、清理 `data/` 目录之后，会出现「DB 说图标已本地化、磁盘一个文件都没有」→ `/icons/feeds/*` 全线 404（2026-09 生产实测 203 请求全 404）。处置方式（三选一，推荐第 1 或第 2）：
+
+1. **同步文件（立即恢复，无外网抓取）**：`rsync -a <旧机>/backend-go/data/icons/ <新机>/backend-go/data/icons/`
+2. **等自愈（无需操作）**：`heal-missing-feed-icons`（2026-09-16）起 auto + `/icons/` 路径会先校验磁盘文件，缺失即重跑抓取管线重新落盘；等 feed 下一次刷新即可（刷新周期即 `refresh_interval`，默认 60 分钟）
+3. **手动触发单个 feed 重抓**：
+
+   ```bash
+   curl -X POST http://<host>:5100/api/feeds/<id>/refresh
+   curl -s -o /dev/null -w '%{http_code}\n' http://<host>:5100/icons/feeds/<id>.<ext>   # 期望 200
+   ```
+
+确实抓不到 favicon 的源会收敛为 `mdi:rss` + `icon_source=fallback`（前端显示 RSS 占位图标）；文件缺失且重抓失败时**不会**继续指向悬空路径。迁移检查清单里请把 `data/icons/` 与数据库备份并列——它是「和 DB 有隐式引用关系、但不在 DB 里」的那一类资产。
 
 ## 公开只读 Demo
 

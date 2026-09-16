@@ -3,6 +3,8 @@ package service
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"syntopica-backend/internal/models"
@@ -121,6 +123,19 @@ func resolveTestService(t *testing.T) *FeedService {
 	return svc
 }
 
+// storeIconFile writes a local icon file into the service's store so tests can
+// exercise the "local /icons/ path with a file still on disk" branch.
+func storeIconFile(t *testing.T, svc *FeedService, fileName string) {
+	t.Helper()
+	feedDir := filepath.Join(svc.iconStore.dir, "feeds")
+	if err := os.MkdirAll(feedDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(feedDir, fileName), pngBytes, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
 // TestResolveFeedIcon_CustomFrozen locks in: custom icons are never touched by
 // the recompute pipeline, even when a download would succeed.
 func TestResolveFeedIcon_CustomFrozen(t *testing.T) {
@@ -211,19 +226,58 @@ func TestResolveFeedIcon_AllCandidatesFailKeepsFallback(t *testing.T) {
 }
 
 // TestResolveFeedIcon_AutoLocalIconSkipsPipeline: an auto source whose icon is
-// already a local /icons/ path must skip the whole pipeline (no download, no
-// homepage probe) — a good downloaded icon survives transient remote failures
-// instead of being downgraded to fallback.
+// already a local /icons/ path AND whose file is still on disk must skip the
+// whole pipeline (no download, no homepage probe) — a good downloaded icon
+// survives transient remote failures instead of being downgraded to fallback.
 func TestResolveFeedIcon_AutoLocalIconSkipsPipeline(t *testing.T) {
 	// No test servers wired: if the pipeline ran at all it would hit the real
 	// network and fail, returning a fallback result — the test then fails on ok.
 	svc := resolveTestService(t)
+	storeIconFile(t, svc, "206.png")
+
 	icon, source, ok := svc.resolveFeedIcon(206, "/icons/feeds/206.png", "auto", "https://example.com/rss.png", "https://example.com")
 	if ok {
-		t.Fatalf("ok = true, want false (auto + local icon must be frozen)")
+		t.Fatalf("ok = true, want false (auto + present local icon must be frozen)")
 	}
 	if icon != "" || source != "" {
 		t.Errorf("auto + local icon must be untouched, got icon=%q source=%q", icon, source)
+	}
+}
+
+// TestResolveFeedIcon_AutoLocalIconMissingFileHeals locks in the self-healing
+// path for this change: the DB claims the icon is localized but the file is
+// gone (runtime dir wiped / DB restored from a dump), so the pipeline must run
+// again and re-download instead of serving a permanent 404.
+func TestResolveFeedIcon_AutoLocalIconMissingFileHeals(t *testing.T) {
+	iconsURL, _ := iconTestServers(t)
+	svc := resolveTestService(t)
+
+	icon, source, ok := svc.resolveFeedIcon(208, "/icons/feeds/208.ico", "auto", iconsURL+"/img/rss.png", "")
+	if !ok {
+		t.Fatalf("ok = false, want true (missing local file must re-run the pipeline)")
+	}
+	if source != "auto" || icon != "/icons/feeds/208.png" {
+		t.Errorf("got icon=%q source=%q, want /icons/feeds/208.png auto", icon, source)
+	}
+	if !svc.iconStore.LocalIconExists(icon) {
+		t.Errorf("re-downloaded icon file %q not found on disk", icon)
+	}
+}
+
+// TestResolveFeedIcon_AutoLocalIconMissingFileAllCandidatesFail: a dangling
+// local path whose re-download fails must converge to the fallback placeholder
+// (never keep pointing at the missing file).
+func TestResolveFeedIcon_AutoLocalIconMissingFileAllCandidatesFail(t *testing.T) {
+	iconsURL, _ := iconTestServers(t)
+	svc := resolveTestService(t)
+
+	// siteLink = icons server: homepage 404s and its /favicon.ico guess too.
+	icon, source, ok := svc.resolveFeedIcon(209, "/icons/feeds/209.png", "auto", iconsURL+"/missing.png", iconsURL)
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if source != "fallback" || icon != "mdi:rss" {
+		t.Errorf("got icon=%q source=%q, want mdi:rss fallback", icon, source)
 	}
 }
 

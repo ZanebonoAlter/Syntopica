@@ -241,14 +241,28 @@ func (s *FeedService) buildArticleFromEntry(feed models.Feed, entry ParsedEntry)
 	return article
 }
 
+// localIconPresent reports whether the local icon file backing a DB-stored
+// "/icons/..." path is still on disk. An unwired store (partial construction)
+// keeps the legacy freeze semantics rather than risking a nil dereference in
+// the download pipeline.
+func (s *FeedService) localIconPresent(localIconPath string) bool {
+	if s.iconStore == nil {
+		return true
+	}
+	return s.iconStore.LocalIconExists(localIconPath)
+}
+
 // resolveFeedIcon applies the icon source state machine and the candidate
 // download pipeline to decide whether and how to recompute a feed's icon.
 //
 // Skip rules:
 //   - custom (or any non-empty non-auto/fallback source) → frozen, never touched;
-//   - auto + icon already a local /icons/ path → frozen (a good downloaded icon
-//     must not be clobbered by a transient remote failure: no download, no
-//     homepage probe);
+//   - auto + icon already a local /icons/ path **whose file still exists on
+//     disk** → frozen (a good downloaded icon must not be clobbered by a
+//     transient remote failure: no download, no homepage probe);
+//   - auto + local /icons/ path whose file is gone (icon dir wiped, or the DB
+//     was restored from a dump without the runtime files) → the pipeline runs
+//     again to heal the dangling path;
 //   - auto + still-remote icon (legacy unlocalized data) → pipeline runs to
 //     complete localization;
 //   - fallback / empty (legacy rows) → pipeline runs.
@@ -262,13 +276,13 @@ func (s *FeedService) buildArticleFromEntry(feed models.Feed, entry ParsedEntry)
 // the refresh.
 //
 // Returns (icon, iconSource, ok): ok=false means the icon must be left
-// untouched (custom, or auto with an already-localized icon).
+// untouched (custom, or auto with a still-present localized icon).
 func (s *FeedService) resolveFeedIcon(feedID uint, currentIcon, currentSource, parsedImage, siteLink string) (icon, source string, ok bool) {
 	if currentSource != "auto" && currentSource != "fallback" && currentSource != "" {
 		return "", "", false // custom (or unknown): do not touch
 	}
-	if currentSource == "auto" && strings.HasPrefix(currentIcon, "/icons/") {
-		return "", "", false // auto + already-localized: skip the whole pipeline
+	if currentSource == "auto" && strings.HasPrefix(currentIcon, "/icons/") && s.localIconPresent(currentIcon) {
+		return "", "", false // auto + already-localized (file on disk): skip the whole pipeline
 	}
 	if parsedImage != "" {
 		if local, err := s.iconStore.SaveFeedIcon(feedID, parsedImage); err == nil {
@@ -278,6 +292,8 @@ func (s *FeedService) resolveFeedIcon(feedID uint, currentIcon, currentSource, p
 		}
 	}
 	// RSS image absent or failed: probe the site homepage once, then guess.
+	// Reached both by fallback/legacy rows and by auto rows whose local file is
+	// missing (self-healing the dangling /icons/ path).
 	for _, candidate := range s.rssParser.ProbeFaviconCandidates(siteLink) {
 		if candidate == "" {
 			continue

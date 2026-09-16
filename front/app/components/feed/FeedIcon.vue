@@ -31,6 +31,19 @@ const imgSrc = computed(() => {
   return isLocalPath.value ? `${getApiOrigin()}${props.icon}` : props.icon
 })
 
+// Only a real iconify name may reach <Icon>. A local path (/icons/feeds/2.ico),
+// a remote image URL, a data: URL or a legacy placeholder like 'rss' is not a
+// resolvable iconify name: passing it through renders an empty <svg> — a blank
+// gap instead of the placeholder. Iconify name syntax is `<prefix>:<name>` with
+// lowercase alphanumeric-hyphen segments (mdi:rss, simple-icons:nuxtdotjs).
+const ICONIFY_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*:[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+const iconifyName = computed(() =>
+  props.icon && ICONIFY_NAME_RE.test(props.icon) ? props.icon : '',
+)
+
+const placeholderIcon = computed(() => iconifyName.value || 'mdi:rss')
+
 const iconSize = computed(() => props.size || 20)
 
 // Reset the failure flag when the icon prop changes (e.g. feed switched).
@@ -51,7 +64,7 @@ watch(() => props.icon, () => {
   >
   <Icon
     v-else
-    :icon="icon || 'mdi:rss'"
+    :icon="placeholderIcon"
     :width="iconSize"
     :height="iconSize"
     :style="{ color }"

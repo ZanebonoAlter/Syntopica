@@ -87,6 +87,9 @@ ArticleListPanel → ArticleContentView
 
 ```text
 RefreshFeed（icon_source ∈ {auto, fallback} 才重算；custom 不碰）
+  → auto + icon 已是 /icons/ 路径：先校验磁盘文件仍在（heal-missing-feed-icons）
+    文件在 → 整个管线跳过（冻结，好图标不被远程临时故障覆盖）
+    文件丢失（目录被清/Dump 恢复 DB 未带图标）→ 视为未本地化，重跑管线自愈
   → 候选管线：RSS <image> → 站点首页 HTML <link rel="icon">（仅 image 缺失时请求）
     → {host}/favicon.ico 猜测
   → 逐候选后端下载验证（10s 超时 / 256KB 上限 / 图片 Content-Type 校验，失败顺延）
@@ -96,7 +99,8 @@ RefreshFeed（icon_source ∈ {auto, fallback} 才重算；custom 不碰）
 
 前端 FeedIcon.vue 三类值：iconify id → <Icon>（本地子集，零联网）；
   http(s) 远程 URL（存量）→ <img> 直连；/ 开头同源路径 → getApiOrigin() 拼后端源渲染 <img>；
-  <img> onerror 降级 mdi:rss
+  <img> onerror 降级 mdi:rss（降级分支只接受合法 iconify 名，图片路径/URL 不得当图标名传给 <Icon>——
+  非法名会渲染成空 <svg>，即空白）
 ```
 
 UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local.ts` 将 `app/assets/iconify-subset.json`（源码扫描生成的子集，162 个图标）注册进 `@iconify/vue`，运行时不请求 api.iconify.design；新增图标需 `pnpm generate:icons` 重新生成并提交产物。
@@ -114,7 +118,7 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
    - **按 `content_form` 分流（aggregate-article-tagging）**：`tagArticle` 编排层读 `articles.content_form`——`aggregate`（聚合型文章，由摘要链路形态标记产生，见 [content-enrichment.md](content-enrichment.md) 约束 #10）走切片 map-reduce 路径：纯代码按 `## ` 栏目切片（跳导读、短栏目向后合并、超长按 `###` 细分、上限 8 片，无 `##` 结构回落 mono）→ 每片 1 次融合 prompt LLM 调用（event/person/keyword 三分类合一，每片上限 4 标签，单片失败重试 3 次后跳过不阻断）→ 跨片 `Slugify` 去重（保留首栏目出现者）→ 文章级上限 15、score 按片位置分层（首片 0.9/中间 0.7/尾片 0.5）；`mono` 与空值走原双分支提取路径，输入截断 4000 runes、文章级上限 6、score 一律 0.7。两条路径共用同一入库链（`findOrCreateTag` → aux labels → `createArticleTopicTagLink` → event 标签 enqueue embedding）。
    - **提取容错（aggregate-tagging-resilience）**：JSON 解析入口（`parseRawTagObjects`，经 `jsonutil.SanitizeLLMJSON`）对尾逗号做无损修复；单标签校验失败降级不连坐——event/person 的 aux labels 校验失败时丢 aux 保标签（记 warning），融合路径 keyword 缺 description 跳过该标签（记 warning），mono 双分支同步降级；JSON 整体解析失败仍重试 3 次。聚合路径全部片处理完后标签数为 0（全片失败或全部空产出）时回落 mono 双分支提取（含 heuristic 兜底），聚合文章不以 0 标签结束。
    - `TagQueue.Start()` 首次启动失败不阻塞应用，后台按 30 秒间隔重试最多 10 次。
-4. **Feed 图标必须按 auto/custom/fallback 状态机管理并本地落盘 data/icons/feeds/，不用文章封面、下载失败不影响 refresh**：`icon_source` ∈ `auto`（系统抓取，可刷新覆盖）/ `custom`（用户设定，RefreshFeed 不碰）/ `fallback`（占位，可刷新重算）。重算走候选管线（RSS image → 首页 HTML link → favicon.ico 猜测），**后端下载落盘 `data/icons/feeds/`、DB 存 `/icons/...` 同源路径**；不用文章封面图当 feed icon；icon 下载失败不影响 refresh 成功状态。删除 feed 时清理其 icon 文件（失败不阻断）。favicon 探测以 RSS channel link（站点首页）为基准，不用 feed URL（聚合器域名）或 Google s2 等第三方服务。
+4. **Feed 图标必须按 auto/custom/fallback 状态机管理并本地落盘 data/icons/feeds/，不用文章封面、下载失败不影响 refresh**：`icon_source` ∈ `auto`（系统抓取，可刷新覆盖）/ `custom`（用户设定，RefreshFeed 不碰）/ `fallback`（占位，可刷新重算）。重算走候选管线（RSS image → 首页 HTML link → favicon.ico 猜测），**后端下载落盘 `data/icons/feeds/`、DB 存 `/icons/...` 同源路径**；不用文章封面图当 feed icon；icon 下载失败不影响 refresh 成功状态。删除 feed 时清理其 icon 文件（失败不阻断）。favicon 探测以 RSS channel link（站点首页）为基准，不用 feed URL（聚合器域名）或 Google s2 等第三方服务。**DB 的 `/icons/...` 路径不等于文件一定在**：auto + 本地路径的冻结判据 MUST 含磁盘文件存在性校验（`IconStore.LocalIconExists`，仅 `fs.ErrNotExist` 算缺失），文件丢失时 MUST 重跑管线自愈——否则仅恢复 DB（dump/换机）会留下永久 404。前端 `<img>` onerror 降级 MUST 渲染合法 iconify 占位符（图片路径/URL 不得当图标名传给 `<Icon>`，非法名渲染成空白）。
 5. **mdi:* 图标必须全部来自构建产物本地子集 iconify-subset.json，运行时零联网，新增图标须重新生成子集**：`mdi:*` 图标全部来自构建产物 `app/assets/iconify-subset.json`（`pnpm generate:icons` 生成并纳 git），运行时不访问 iconify API；源码新增图标名必须是子集的超集（一致性单测强制）。
 6. **文章超限必须归档降级而非物理删除，favorite 永不归档，归档行永久保留（article-archive-instead-of-delete）**：`CleanupOldArticles` 对超出 `max_articles` 的最旧非 favorite 文章执行**归档降级**（`archived=true`），不物理删除——行与全部文本字段永久保留（日报线索按 ID 反查依赖此语义）；归档清除的衍生数据仅限 `reading_behaviors` 删除与 `search_vector` 置 NULL，**MUST NOT 删除 `article_topic_tags` 标签边**（offline-catchup 起归档降为纯生命周期标志，删边与孤儿清理职责整体移交时间窗 GC）。不变量：
    - 活跃窗口计数与归档候选集**仅统计 `archived=false`**（归档行不得侵蚀窗口，否则每次刷新会误归档新文章）；
@@ -145,3 +149,4 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 | 2026-08-22 | aggregate-tagging-resilience | 提取链路容错：JSON 尾逗号无损修复（jsonutil）；单标签 aux/description 校验失败降级保留不再整片报废（mono+聚合同步）；聚合零产出回落 mono 双分支（含 heuristic 兜底）；修复后实测 event 存活（派早报 0→15 标签含 5 event、周刊首栏目 0.9 落地） | [`archive/2026-08-22-aggregate-tagging-resilience`](../../../openspec/changes/archive/2026-08-22-aggregate-tagging-resilience) |
 | 2026-08-01 | localize-icons | Feed 图标从「存远程 URL 前端直连」改为「后端下载落盘 `data/icons/feeds/` + DB 存 `/icons/...` 同源路径」；favicon 探测增强（首页 HTML `<link rel="icon">` 解析 + `/favicon.ico` 猜测 + 下载验证）；UI 图标（mdi）改本地子集注册、运行时零联网 | [`openspec/changes/archive/2026-08-01-localize-icons`](../../../openspec/changes/archive/2026-08-01-localize-icons) |
 | 2026-09-04 | constraint-declaration-redline | 约束节红线句格式化：本域「业务约束与不变量」节每条约束改写为首行加粗自含红线句 + 细节跟后（语义不变），declaration 注入降为红线层（上线后实测 bytes 降约 60%），细节层经关键词/JIT 全节注入按需补全；本域为格式改写，无业务行为变更 | [`openspec/changes/archive/2026-09-04-constraint-declaration-redline`](../../../openspec/changes/archive/2026-09-04-constraint-declaration-redline) |
+| 2026-09-16 | heal-missing-feed-icons | 图标状态机加磁盘校验自愈：auto + `/icons/` 路径冻结前 `os.Stat` 本地文件（仅 `fs.ErrNotExist` 算缺失），文件丢失即重跑管线重抓（修复生产 20 个 feed 图标全 404——DB 从 dump 恢复、图标目录 `data/icons/` 未随行）；前端 `<img>` 降级只在合法 iconify 名时沿用 icon，否则强制 `mdi:rss`（原实现把图片路径当图标名传给 `<Icon>` → 空白而非占位） | [`openspec/changes/archive/2026-09-16-heal-missing-feed-icons`](../../../openspec/changes/archive/2026-09-16-heal-missing-feed-icons) |

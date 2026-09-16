@@ -43,7 +43,7 @@ const emit = defineEmits<{
         <span class="text-sm">退出全屏</span>
       </button>
       <div v-if="feed" class="feed-badge">
-        <Icon :icon="feed.icon || 'mdi:rss'" :style="{ color: feed.color }" width="16" height="16" />
+        <FeedIcon :icon="feed.icon" :color="feed.color" :size="16" />
         <span class="text-sm font-medium" :style="{ color: feed.color }">{{ feed.title }}</span>
       </div>
       <span class="article-title">{{ articleTitle }}</span>
