@@ -1,0 +1,181 @@
+{
+	"modes": {
+		"requirements": {
+			"label": "需求/设计（requirements）",
+			"commands": [
+				"/opsx-explore",
+				"/opsx-new",
+				"/opsx-propose",
+				"/opsx-continue",
+				"/skill:openspec-explore",
+				"/skill:openspec-new-change",
+				"/skill:openspec-propose",
+				"/skill:openspec-continue-change"
+			],
+			"baseDocs": [
+				"docs/reference/constraints-index.md"
+			]
+		},
+		"implementation": {
+			"label": "实现/评审（implementation）",
+			"commands": [
+				"/opsx-apply",
+				"/opsx-verify",
+				"/opsx-archive",
+				"/skill:openspec-apply-change",
+				"/skill:openspec-verify-change",
+				"/skill:openspec-archive-change"
+			],
+			"baseDocs": [
+				"docs/reference/constraints-index.md"
+			]
+		}
+	},
+	"skillSignals": {
+		"requirements": [
+			"openspec-explore",
+			"openspec-new-change",
+			"openspec-propose",
+			"openspec-continue-change"
+		],
+		"implementation": [
+			"openspec-apply-change",
+			"openspec-verify-change",
+			"openspec-archive-change"
+		]
+	},
+	"indexDoc": "docs/reference/constraints-index.md",
+	"budgetBytes": 32768,
+	"keywordDocs": [
+		{
+			"doc": "docs/reference/flow/semantic-board.md",
+			"section": "业务约束与不变量",
+			"keywords": [
+				"版块",
+				"板块",
+				"看板",
+				"标签"
+			]
+		},
+		{
+			"doc": "docs/reference/flow/topic-graph.md",
+			"section": "业务约束与不变量",
+			"keywords": [
+				"话题",
+				"图谱",
+				"关系图"
+			]
+		},
+		{
+			"doc": "docs/reference/flow/daily-report.md",
+			"section": "业务约束与不变量",
+			"keywords": [
+				"日报",
+				"每日报告",
+				"每日推送"
+			]
+		},
+		{
+			"doc": "docs/reference/flow/content-enrichment.md",
+			"section": "业务约束与不变量",
+			"keywords": [
+				"抓取",
+				"爬虫",
+				"crawler",
+				"firecrawl",
+				"内容补全",
+				"content_completion",
+				"正文",
+				"内容增强",
+				"回填"
+			]
+		},
+		{
+			"doc": "docs/reference/flow/data-enrichment.md",
+			"section": "业务约束与不变量",
+			"keywords": [
+				"数据增强",
+				"认知闭环",
+				"dataenrichment",
+				"数据富化",
+				"增强项"
+			]
+		},
+		{
+			"doc": "docs/reference/flow/ai-summary.md",
+			"section": "业务约束与不变量",
+			"keywords": [
+				"airouter",
+				"提示词"
+			]
+		},
+		{
+			"doc": "docs/reference/flow/discovery.md",
+			"section": "业务约束与不变量",
+			"keywords": [
+				"偏好",
+				"画像",
+				"订阅源",
+				"信息源",
+				"订阅发现",
+				"discovery",
+				"RSS",
+				"rss"
+			]
+		},
+		{
+			"doc": "docs/reference/flow/reading.md",
+			"section": "业务约束与不变量",
+			"keywords": [
+				"阅读页",
+				"阅读体验",
+				"阅读流",
+				"稍后读",
+				"reading",
+				"文章列表"
+			]
+		},
+		{
+			"doc": "docs/reference/flow/scheduler.md",
+			"section": "业务约束与不变量",
+			"keywords": [
+				"定时",
+				"调度",
+				"scheduler",
+				"cron",
+				"任务队列",
+				"定时任务",
+				"job"
+			]
+		}
+	],
+	"stackSignals": {
+		"frontend": [
+			"front/",
+			".vue",
+			"nuxt",
+			"Nuxt",
+			"pinia",
+			"Pinia",
+			"tailwind",
+			"组件",
+			"页面",
+			"前端"
+		],
+		"backend": [
+			"backend-go/",
+			"internal/",
+			".go",
+			"gorm",
+			"GORM",
+			"gin",
+			"Gin",
+			"后端",
+			"handler"
+		]
+	},
+	"findingsFile": "explore-findings.md",
+	"findingsDigestThreshold": 6144,
+	"recentInputWindow": 5,
+	"digestDocThreshold": 6144
+}

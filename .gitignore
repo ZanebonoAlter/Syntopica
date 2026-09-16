@@ -46,8 +46,19 @@ tests
 research/readability-spike/readability-spike.exe
 backend-go/verify-cluster-prompt
 analysis-reports/
-# harness 事实库本机运行数据（.pi/ 已被 /.* 忽略，此处显式自文档化）
+# harness 扩展源码入库（.pi/ 本被 /.* 忽略；仅放行插件源码与配置，
+# 运行数据/日志/本机技能副本仍排除——避免把 events.db、spill、日志提交进仓）
+!.pi/
+!.pi/extensions/
+!.pi/extensions/**
+!.pi/constraint-injection.json
+!.pi/harness.json
+# 排除项（顺序在下、后匹配胜出）：事实库 DB + spill + 本机技能/提示词副本 + smoke 构建产物
 .pi/harness/
+.pi/prompts/
+.pi/skills/
+.pi/extensions/tests/.*.cjs
+nohup.out
 docs/research
 docs/experience
 artifacts
