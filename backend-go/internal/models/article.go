@@ -11,7 +11,7 @@ type Article struct {
 	Title       string     `gorm:"size:500;not null" json:"title"`
 	Description string     `gorm:"type:text" json:"description"`
 	Content     string     `gorm:"type:text" json:"content"`
-	Link        string     `gorm:"size:1000" json:"link"`
+	Link        string     `gorm:"size:1000;index" json:"link"`
 	ImageURL    string     `gorm:"size:1000" json:"image_url"`
 	PubDate     *time.Time `json:"pub_date"`
 	Author      string     `gorm:"size:200" json:"author"`

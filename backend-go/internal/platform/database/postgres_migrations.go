@@ -2392,7 +2392,184 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, watchMaterializedHintCleanupMigration())
 	migrations = append(migrations, watchSuggestionCleanupMigration())
 	migrations = append(migrations, legacyDiscoverNewPendingDismissMigration())
+	migrations = append(migrations, dedupeRSSArticlesMigration())
 	return append(migrations, laneSnapshotFKMigration())
+}
+
+// dedupeRSSArticlesMigration implements 20260917_0001 (dedupe-rss-articles D4):
+// one-shot merge of articles duplicated inside one feed (same feed_id + link).
+// Historically the refresh path deduped on (feed_id, title) only, so live-news
+// feeds that roll the title under a stable URL and concurrent refreshes left
+// 2..5 rows per article; every copy was tagged separately (duplicate AI calls
+// and duplicate tagging records).
+//
+// Per group the most complete row is kept — active before archived (an
+// archived keeper would silently drop the article out of the live window),
+// then tagged / crawled / summarised, then engagement — and ties go to the
+// lowest id (earliest). Tag links move to the keeper (conflicts are dropped,
+// the (article_id, topic_tag_id) unique index survives either way), reading
+// behaviours are re-pointed, queued jobs are re-pointed or dropped, copies are
+// deleted, and the keeper's denormalised tag_count is recomputed. The unique
+// partial index on (feed_id, link) is created in the same transaction so
+// "merge succeeded" and "constraint enforced" stay atomic.
+//
+// Irreversible: the deleted copies are not recoverable. Rows with an empty link
+// are never touched (they cannot be deduped) and are excluded from the unique
+// index.
+func dedupeRSSArticlesMigration() Migration {
+	return Migration{
+		Version:     "20260917_0001",
+		Description: "dedupe-rss-articles: merge articles duplicated per (feed_id, link), rewire tags/behaviors/jobs, add unique (feed_id, link) index.",
+		Up: func(db *gorm.DB) error {
+			// Plain link index: serves the merge below and the runtime cross-feed
+			// tag-reuse lookup (same name as the GORM model tag).
+			if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_articles_link ON articles(link)").Error; err != nil {
+				return fmt.Errorf("create articles.link index: %w", err)
+			}
+
+			var groups []struct {
+				FeedID uint
+				Link   string
+			}
+			if err := db.Raw(`
+				SELECT feed_id, link FROM articles
+				WHERE link <> ''
+				GROUP BY feed_id, link
+				HAVING COUNT(*) > 1`).Scan(&groups).Error; err != nil {
+				return fmt.Errorf("find duplicate article groups: %w", err)
+			}
+			for _, g := range groups {
+				if err := mergeDuplicateArticleGroup(db, g.FeedID, g.Link); err != nil {
+					return err
+				}
+			}
+			if len(groups) > 0 {
+				logging.Infof("dedupe-rss-articles: merged %d duplicate article groups", len(groups))
+			}
+
+			if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_articles_feed_link
+				ON articles(feed_id, link) WHERE link <> ''`).Error; err != nil {
+				return fmt.Errorf("create unique (feed_id, link) index: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// mergeDuplicateArticleGroup collapses one (feed_id, link) group to a single
+// surviving article row. No-op for groups that shrank below 2 rows.
+func mergeDuplicateArticleGroup(db *gorm.DB, feedID uint, link string) error {
+	var rows []struct {
+		ID               uint
+		Archived         bool
+		Favorite         bool
+		Read             bool
+		FirecrawlContent string
+		AIContentSummary string
+		HasTags          bool
+		HasBehavior      bool
+	}
+	// has_tags / has_behavior come from EXISTS rather than the denormalised
+	// tag_count column so a stale counter can never steer the keeper choice.
+	if err := db.Raw(`
+		SELECT a.id, a.archived, a.favorite, a."read",
+		       COALESCE(a.firecrawl_content, '') AS firecrawl_content,
+		       COALESCE(a.ai_content_summary, '') AS ai_content_summary,
+		       EXISTS(SELECT 1 FROM article_topic_tags t WHERE t.article_id = a.id) AS has_tags,
+		       EXISTS(SELECT 1 FROM reading_behaviors b WHERE b.article_id = a.id) AS has_behavior
+		FROM articles a
+		WHERE a.feed_id = ? AND a.link = ?
+		ORDER BY a.id`, feedID, link).Scan(&rows).Error; err != nil {
+		return fmt.Errorf("load duplicate group (feed=%d link=%s): %w", feedID, link, err)
+	}
+	if len(rows) < 2 {
+		return nil
+	}
+
+	score := func(i int) int {
+		r := rows[i]
+		s := 0
+		if !r.Archived {
+			s += 1000
+		}
+		if r.HasTags {
+			s += 100
+		}
+		if r.FirecrawlContent != "" {
+			s += 10
+		}
+		if r.AIContentSummary != "" {
+			s += 10
+		}
+		if r.Favorite || r.Read || r.HasBehavior {
+			s++
+		}
+		return s
+	}
+
+	best := 0
+	for i := 1; i < len(rows); i++ {
+		if score(i) > score(best) {
+			best = i
+		}
+	}
+	keeper := rows[best].ID
+
+	for _, r := range rows {
+		if r.ID == keeper {
+			continue
+		}
+		// Move the copy's tag links the keeper does not already carry; the
+		// remaining (conflicting) rows are dropped below so the unique index
+		// on (article_id, topic_tag_id) is never violated.
+		if err := db.Exec(`
+			UPDATE article_topic_tags t SET article_id = ?
+			WHERE t.article_id = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM article_topic_tags k
+				WHERE k.article_id = ? AND k.topic_tag_id = t.topic_tag_id)`,
+			keeper, r.ID, keeper).Error; err != nil {
+			return fmt.Errorf("rewire tag links from article %d to %d: %w", r.ID, keeper, err)
+		}
+		if err := db.Exec(`DELETE FROM article_topic_tags WHERE article_id = ?`, r.ID).Error; err != nil {
+			return fmt.Errorf("drop conflicting tag links of article %d: %w", r.ID, err)
+		}
+
+		// Reading behaviours are real events: re-point them (and their
+		// denormalised feed id) so the surviving article keeps the history.
+		if err := db.Exec(`UPDATE reading_behaviors SET article_id = ?, feed_id = ? WHERE article_id = ?`,
+			keeper, feedID, r.ID).Error; err != nil {
+			return fmt.Errorf("re-point reading behaviors of article %d: %w", r.ID, err)
+		}
+
+		// Queued work for a row about to disappear is dropped when finished
+		// and re-pointed when still pending, so no job points at a dead id.
+		for _, job := range []struct{ table string }{
+			{"tag_jobs"}, {"firecrawl_jobs"},
+		} {
+			if !tableExists(db, job.table) {
+				continue
+			}
+			if err := db.Exec("DELETE FROM "+job.table+" WHERE article_id = ? AND status IN ('completed','failed')", r.ID).Error; err != nil {
+				return fmt.Errorf("drop finished %s rows of article %d: %w", job.table, r.ID, err)
+			}
+			if err := db.Exec("UPDATE "+job.table+" SET article_id = ? WHERE article_id = ?", keeper, r.ID).Error; err != nil {
+				return fmt.Errorf("re-point %s rows of article %d: %w", job.table, r.ID, err)
+			}
+		}
+
+		if err := db.Exec(`DELETE FROM articles WHERE id = ?`, r.ID).Error; err != nil {
+			return fmt.Errorf("delete duplicate article %d: %w", r.ID, err)
+		}
+	}
+
+	// The survivor's counter must match the edges it actually holds.
+	if err := db.Exec(`UPDATE articles SET tag_count =
+		(SELECT COUNT(*) FROM article_topic_tags WHERE article_id = ?) WHERE id = ?`,
+		keeper, keeper).Error; err != nil {
+		return fmt.Errorf("recompute tag_count for article %d: %w", keeper, err)
+	}
+	return nil
 }
 
 // watchMaterializedHintCleanupMigration implements 20260905_0001: one-shot

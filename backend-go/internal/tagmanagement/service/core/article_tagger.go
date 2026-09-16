@@ -18,6 +18,17 @@ import (
 
 const maxArticleTags = 6
 
+// tagSourceReuse marks article_topic_tags rows copied from a sibling copy of
+// the same article (same link, another feed) instead of extracted by the AI
+// (dedupe-rss-articles D3).
+const tagSourceReuse = "reuse"
+
+// reuseTagsFromSiblingArticle copies article_topic_tags rows from a sibling
+// copy of the article (same link under another feed) onto this article with
+// source="reuse". Returns true when at least one tag link was copied, meaning
+// the AI extraction can be skipped entirely. Articles without a link never
+// participate — an empty link would match every other empty-link row.
+
 // tagExtractorFactory builds the extractor used by tagArticle. Overridden in
 // tests to inject a fake router.
 var tagExtractorFactory = NewTagExtractor
@@ -70,6 +81,22 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 		}
 
 		CleanupOrphanedTags(oldTagIDs)
+	}
+
+	// Cross-feed reuse (dedupe-rss-articles D3): a sibling copy of this
+	// article (same link under another feed) already carries the tagging
+	// result — copy the tag links instead of calling the AI again. Runs
+	// before the already-tagged skip so a partially-tagged copy also gets
+	// topped up from its sibling (existing links are never duplicated, and
+	// the top-up stops at maxArticleTags).
+	// Force retag never reuses (an explicit re-extraction was requested).
+	if !options.Force {
+		reused, err := reuseTagsFromSiblingArticle(article)
+		if err != nil {
+			logging.Warnf("cross-feed tag reuse failed for article %d, falling back to AI extraction: %v", article.ID, err)
+		} else if reused {
+			return nil
+		}
 	}
 
 	// Skip if already tagged
@@ -231,6 +258,81 @@ func createArticleTopicTagLink(link *models.ArticleTopicTag) (bool, error) {
 		return tx.Create(link).Error
 	})
 	return articleExists, err
+}
+
+func reuseTagsFromSiblingArticle(article *models.Article) (bool, error) {
+	if strings.TrimSpace(article.Link) == "" {
+		return false, nil
+	}
+
+	// Highest-scored sibling tags first: a partially tagged copy is topped up
+	// only to the per-article cap (same maxArticleTags the AI path applies in
+	// limitArticleTags), so the cap is spent on the best-scored tags.
+	var siblingLinks []models.ArticleTopicTag
+	if err := repository.Repo.DB().
+		Where("article_id != ? AND article_id IN (SELECT id FROM articles WHERE link = ?)", article.ID, article.Link).
+		Order("score DESC, topic_tag_id ASC").
+		Find(&siblingLinks).Error; err != nil {
+		return false, err
+	}
+	if len(siblingLinks) == 0 {
+		return false, nil
+	}
+
+	ownTagIDs := make(map[uint]struct{})
+	var ownIDs []uint
+	if err := repository.Repo.DB().Model(&models.ArticleTopicTag{}).
+		Where("article_id = ?", article.ID).
+		Pluck("topic_tag_id", &ownIDs).Error; err != nil {
+		return false, err
+	}
+	for _, id := range ownIDs {
+		ownTagIDs[id] = struct{}{}
+	}
+
+	// Already at the cap: nothing to top up. Returning false lets the caller's
+	// already-tagged guard keep the AI path away as well.
+	if len(ownTagIDs) >= maxArticleTags {
+		return false, nil
+	}
+
+	copied := false
+	for _, link := range siblingLinks {
+		if _, dup := ownTagIDs[link.TopicTagID]; dup {
+			// Already present on this article: skip (unique index
+			// idx_article_topic_tags_link would reject a duplicate anyway).
+			continue
+		}
+		if len(ownTagIDs) >= maxArticleTags {
+			break
+		}
+		ownTagIDs[link.TopicTagID] = struct{}{}
+		newLink := models.ArticleTopicTag{
+			ArticleID:  article.ID,
+			TopicTagID: link.TopicTagID,
+			Score:      link.Score,
+			Source:     tagSourceReuse,
+		}
+		articleExists, err := createArticleTopicTagLink(&newLink)
+		if err != nil {
+			return copied, err
+		}
+		if !articleExists {
+			return copied, nil
+		}
+		copied = true
+	}
+
+	if copied {
+		// Keep the counter in sync with the edges just written (the read path
+		// recomputes tag_count via subquery, but the column is still part of the
+		// row contract). Raw SQL on purpose: the model marks tag_count as
+		// read-only (`gorm:"->"`), so GORM's Update() would silently skip it.
+		repository.Repo.DB().Exec(
+			"UPDATE articles SET tag_count = (SELECT COUNT(*) FROM article_topic_tags WHERE article_id = ?) WHERE id = ?",
+			article.ID, article.ID)
+	}
+	return copied, nil
 }
 
 func limitArticleTags(tags []TopicTag) []TopicTag {

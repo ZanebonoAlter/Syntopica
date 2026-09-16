@@ -13,6 +13,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/reader/repository"
+	tagRepo "syntopica-backend/internal/tagmanagement/repository"
 )
 
 func setupFeedsTestDB(t *testing.T) {
@@ -25,6 +26,9 @@ func setupFeedsTestDB(t *testing.T) {
 
 	database.DB = db
 	repository.InitRepository(database.DB)
+	// tagmanagement shares the same sqlite DB: refreshExistingArticle's orphan
+	// cleanup goes through the tagmanagement repository global.
+	tagRepo.InitRepository(database.DB)
 	if err := database.DB.AutoMigrate(&models.Feed{}, &models.Article{}, &models.TopicTag{}, &models.ArticleTopicTag{}, &models.FirecrawlJob{}, &models.TagJob{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
@@ -364,6 +368,319 @@ func TestCleanupOldArticlesUnlimited(t *testing.T) {
 				if active != 5 {
 					t.Errorf("active articles = %d, expected 5 (no archiving)", active)
 				}
+			}
+		})
+	}
+}
+
+// rssItemBody renders a one-item RSS payload (dedupe-rss-articles tests).
+func rssItemBody(channelTitle, itemTitle, itemLink, itemDesc string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>%s</title>
+    <description>Feed for tests</description>
+    <link>https://example.com</link>
+    <item>
+      <title>%s</title>
+      <link>%s</link>
+      <description>%s</description>
+      <pubDate>Sun, 22 Mar 2026 09:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>`, channelTitle, itemTitle, itemLink, itemDesc)
+}
+
+// startSwitchableRSSServer serves the RSS payload currently referenced by
+// *body, letting a test flip the feed content between refreshes (live-news
+// rolling-update scenarios).
+func startSwitchableRSSServer(t *testing.T, body *string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		_, _ = w.Write([]byte(*body))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func newDedupeTestService(t *testing.T) *FeedService {
+	t.Helper()
+	service := NewFeedService()
+	service.iconStore = NewIconStore(t.TempDir())
+	return service
+}
+
+// TestRefreshFeedDedupesByLinkWithinFeed covers spec scenario "快讯同 link 改标题
+// 不产生新文章": a live-news feed rolling the title under one URL must not
+// produce a second article row — the stored row is refreshed instead.
+func TestRefreshFeedDedupesByLinkWithinFeed(t *testing.T) {
+	setupFeedsTestDB(t)
+
+	body := rssItemBody("Live Feed", "headline v1", "https://example.com/live/1", "desc v1")
+	server := startSwitchableRSSServer(t, &body)
+
+	feed := models.Feed{Title: "Live Feed", URL: server.URL, MaxArticles: 10, TaggingEnabled: true}
+	if err := database.DB.Create(&feed).Error; err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+
+	service := newDedupeTestService(t)
+	if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	// Live-news roll: same link, new headline + description.
+	body = rssItemBody("Live Feed", "headline v2 (rolling update)", "https://example.com/live/1", "desc v2")
+	if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+
+	var articles []models.Article
+	if err := database.DB.Where("feed_id = ?", feed.ID).Find(&articles).Error; err != nil {
+		t.Fatalf("load articles: %v", err)
+	}
+	if len(articles) != 1 {
+		t.Fatalf("article rows = %d, want 1 (same-link entry must not re-insert)", len(articles))
+	}
+	if articles[0].Title != "headline v2 (rolling update)" {
+		t.Fatalf("stored title = %q, want refreshed %q", articles[0].Title, "headline v2 (rolling update)")
+	}
+	if articles[0].Description != "desc v2" {
+		t.Fatalf("stored description = %q, want %q", articles[0].Description, "desc v2")
+	}
+}
+
+// TestRefreshFeedKeepsCrossFeedCopies covers spec scenario "跨 feed 同 link 各自
+// 保留": the same link syndicated by two feeds keeps one row per feed.
+func TestRefreshFeedKeepsCrossFeedCopies(t *testing.T) {
+	setupFeedsTestDB(t)
+
+	body := rssItemBody("Shared", "same story", "https://example.com/shared/1", "shared desc")
+	serverA := startSwitchableRSSServer(t, &body)
+	serverB := startSwitchableRSSServer(t, &body)
+
+	feedA := models.Feed{Title: "Feed A", URL: serverA.URL, MaxArticles: 10, TaggingEnabled: true}
+	feedB := models.Feed{Title: "Feed B", URL: serverB.URL, MaxArticles: 10, TaggingEnabled: true}
+	if err := database.DB.Create(&feedA).Error; err != nil {
+		t.Fatalf("create feed A: %v", err)
+	}
+	if err := database.DB.Create(&feedB).Error; err != nil {
+		t.Fatalf("create feed B: %v", err)
+	}
+
+	service := newDedupeTestService(t)
+	if err := service.RefreshFeed(context.Background(), feedA.ID); err != nil {
+		t.Fatalf("refresh feed A: %v", err)
+	}
+	if err := service.RefreshFeed(context.Background(), feedB.ID); err != nil {
+		t.Fatalf("refresh feed B: %v", err)
+	}
+
+	var countA, countB int64
+	database.DB.Model(&models.Article{}).Where("feed_id = ? AND link = ?", feedA.ID, "https://example.com/shared/1").Count(&countA)
+	database.DB.Model(&models.Article{}).Where("feed_id = ? AND link = ?", feedB.ID, "https://example.com/shared/1").Count(&countB)
+	if countA != 1 || countB != 1 {
+		t.Fatalf("copies: feed A = %d, feed B = %d, want 1 and 1 (cross-feed copies preserved)", countA, countB)
+	}
+}
+
+// TestRefreshFeedSkipsUnchangedEntry covers spec scenario "内容未实质变化时跳过":
+// an entry whose title+description are both unchanged triggers no update and
+// no extra processing-chain enqueue.
+func TestRefreshFeedSkipsUnchangedEntry(t *testing.T) {
+	setupFeedsTestDB(t)
+
+	body := rssItemBody("Stable", "stable headline", "https://example.com/stable/1", "stable desc")
+	server := startSwitchableRSSServer(t, &body)
+
+	feed := models.Feed{Title: "Stable", URL: server.URL, MaxArticles: 10, FirecrawlEnabled: true}
+	if err := database.DB.Create(&feed).Error; err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+
+	service := newDedupeTestService(t)
+	if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	var article models.Article
+	if err := database.DB.First(&article).Where("link = ?", "https://example.com/stable/1").Error; err != nil {
+		t.Fatalf("load article: %v", err)
+	}
+	// Mark the row as if the chain had fully run.
+	markProcessed := func() {
+		if err := database.DB.Model(&models.Article{}).Where("id = ?", article.ID).Updates(map[string]interface{}{
+			"firecrawl_status": "completed",
+			"firecrawl_content": "<p>crawled body</p>",
+		}).Error; err != nil {
+			t.Fatalf("mark processed: %v", err)
+		}
+	}
+	markProcessed()
+
+	if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+
+	var reloaded models.Article
+	if err := database.DB.First(&reloaded, article.ID).Error; err != nil {
+		t.Fatalf("reload article: %v", err)
+	}
+	if reloaded.FirecrawlContent != "<p>crawled body</p>" || reloaded.FirecrawlStatus != "completed" {
+		t.Fatalf("unchanged entry must not reset chain state: content=%q status=%q", reloaded.FirecrawlContent, reloaded.FirecrawlStatus)
+	}
+
+	var jobCount int64
+	database.DB.Model(&models.FirecrawlJob{}).Where("article_id = ?", article.ID).Count(&jobCount)
+	if jobCount != 1 {
+		t.Fatalf("firecrawl jobs = %d, want 1 (unchanged entry must not re-enqueue)", jobCount)
+	}
+}
+
+// TestRefreshFeedUpdatesChangedEntryAndClearsDerivedState covers spec scenario
+// "内容实质变化时更新并重走处理链": content fields update, chain state resets
+// like a fresh insert, derived fields clear, stale tags drop, processing
+// re-enqueues.
+func TestRefreshFeedUpdatesChangedEntryAndClearsDerivedState(t *testing.T) {
+	setupFeedsTestDB(t)
+
+	body := rssItemBody("Rolling", "original headline", "https://example.com/rolling/1", "original desc")
+	server := startSwitchableRSSServer(t, &body)
+
+	feed := models.Feed{Title: "Rolling", URL: server.URL, MaxArticles: 10, FirecrawlEnabled: true, ArticleSummaryEnabled: true}
+	if err := database.DB.Create(&feed).Error; err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+
+	service := newDedupeTestService(t)
+	if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	var article models.Article
+	if err := database.DB.First(&article).Where("link = ?", "https://example.com/rolling/1").Error; err != nil {
+		t.Fatalf("load article: %v", err)
+	}
+
+	// Simulate a fully processed article: crawl body, AI summary, stale tags.
+	tag := models.TopicTag{Label: "旧话题", Slug: "stale-topic", Category: "keyword", Status: "active"}
+	if err := database.DB.Create(&tag).Error; err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+	if err := database.DB.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag.ID, Score: 0.9, Source: "llm"}).Error; err != nil {
+		t.Fatalf("create tag link: %v", err)
+	}
+	if err := database.DB.Model(&models.Article{}).Where("id = ?", article.ID).Updates(map[string]interface{}{
+		"firecrawl_status":   "completed",
+		"firecrawl_content":  "<p>old crawled body</p>",
+		"summary_status":     "complete",
+		"ai_content_summary": "旧摘要",
+		"completion_attempts": 3,
+		"completion_error":    "old error",
+		"content_form":        "mono",
+	}).Error; err != nil {
+		t.Fatalf("simulate processed state: %v", err)
+	}
+
+	body = rssItemBody("Rolling", "rolled headline", "https://example.com/rolling/1", "rolled desc")
+	// First-round crawl job is done (worker consumed it): the refresh must
+	// enqueue a fresh one (the queue itself dedupes while a job is still
+	// pending, which is also fine — here we assert the completed case).
+	if err := database.DB.Model(&models.FirecrawlJob{}).
+		Where("article_id = ?", article.ID).
+		Update("status", string(models.JobStatusCompleted)).Error; err != nil {
+		t.Fatalf("complete first job: %v", err)
+	}
+	if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+
+	var reloaded models.Article
+	if err := database.DB.First(&reloaded, article.ID).Error; err != nil {
+		t.Fatalf("reload article: %v", err)
+	}
+	if reloaded.Title != "rolled headline" || reloaded.Description != "rolled desc" {
+		t.Fatalf("content not refreshed: title=%q desc=%q", reloaded.Title, reloaded.Description)
+	}
+	if reloaded.FirecrawlStatus != "pending" {
+		t.Fatalf("firecrawl_status = %q, want pending (reset like fresh insert)", reloaded.FirecrawlStatus)
+	}
+	if reloaded.SummaryStatus != "incomplete" {
+		t.Fatalf("summary_status = %q, want incomplete (reset like fresh insert)", reloaded.SummaryStatus)
+	}
+	if reloaded.FirecrawlContent != "" || reloaded.AIContentSummary != "" {
+		t.Fatalf("derived fields must clear: crawl=%q summary=%q", reloaded.FirecrawlContent, reloaded.AIContentSummary)
+	}
+	if reloaded.CompletionAttempts != 0 || reloaded.CompletionError != "" || reloaded.ContentForm != "" {
+		t.Fatalf("completion bookkeeping must clear: attempts=%d err=%q form=%q", reloaded.CompletionAttempts, reloaded.CompletionError, reloaded.ContentForm)
+	}
+
+	var tagLinks int64
+	database.DB.Model(&models.ArticleTopicTag{}).Where("article_id = ?", article.ID).Count(&tagLinks)
+	if tagLinks != 0 {
+		t.Fatalf("stale tag links = %d, want 0", tagLinks)
+	}
+	var orphanCount int64
+	database.DB.Model(&models.TopicTag{}).Where("id = ?", tag.ID).Count(&orphanCount)
+	if orphanCount != 0 {
+		t.Fatalf("orphaned topic tag must be cleaned up")
+	}
+
+	var jobCount int64
+	database.DB.Model(&models.FirecrawlJob{}).Where("article_id = ? AND status = ?", article.ID, models.JobStatusPending).Count(&jobCount)
+	if jobCount != 1 {
+		t.Fatalf("pending firecrawl jobs = %d, want 1 (refresh must re-enqueue processing)", jobCount)
+	}
+}
+
+// TestRefreshExistingArticleStatusMatrix drives refreshExistingArticle across
+// the four feed switch combinations and asserts the reset matches the
+// buildArticleFromEntry state machine (spec scenario "内容实质变化时更新并重走
+// 处理链", matrix variant).
+func TestRefreshExistingArticleStatusMatrix(t *testing.T) {
+	cases := []struct {
+		name               string
+		firecrawl, summary bool
+		wantFirecrawl      string
+		wantSummary        string
+	}{
+		{"firecrawl+summary", true, true, "pending", "incomplete"},
+		{"firecrawl only", true, false, "pending", "complete"},
+		{"summary only", false, true, "completed", "pending"},
+		{"neither", false, false, "completed", "complete"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setupFeedsTestDB(t)
+
+			feed := models.Feed{Title: "Matrix", URL: "https://example.com/matrix", FirecrawlEnabled: tc.firecrawl, ArticleSummaryEnabled: tc.summary}
+			if err := database.DB.Create(&feed).Error; err != nil {
+				t.Fatalf("create feed: %v", err)
+			}
+			article := models.Article{
+				FeedID: feed.ID, Title: "v1", Description: "v1", Link: "https://example.com/matrix/1",
+				FirecrawlStatus: "completed", SummaryStatus: "complete",
+			}
+			if err := database.DB.Create(&article).Error; err != nil {
+				t.Fatalf("create article: %v", err)
+			}
+
+			service := newDedupeTestService(t)
+			entry := ParsedEntry{Title: "v2", Description: "v2", Link: article.Link}
+			if err := service.refreshExistingArticle(feed, entry); err != nil {
+				t.Fatalf("refreshExistingArticle: %v", err)
+			}
+
+			var reloaded models.Article
+			if err := database.DB.First(&reloaded, article.ID).Error; err != nil {
+				t.Fatalf("reload article: %v", err)
+			}
+			if reloaded.FirecrawlStatus != tc.wantFirecrawl {
+				t.Fatalf("firecrawl_status = %q, want %q", reloaded.FirecrawlStatus, tc.wantFirecrawl)
+			}
+			if reloaded.SummaryStatus != tc.wantSummary {
+				t.Fatalf("summary_status = %q, want %q", reloaded.SummaryStatus, tc.wantSummary)
 			}
 		})
 	}

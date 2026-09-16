@@ -64,13 +64,13 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 		feed.IconSource = newSource
 	}
 
-	var existingTitles []string
+	var existingLinks []string
 	repository.Repo.DB().Model(&models.Article{}).
 		Where("feed_id = ?", feed.ID).
-		Pluck("title", &existingTitles)
-	titleSet := make(map[string]bool, len(existingTitles))
-	for _, t := range existingTitles {
-		titleSet[t] = true
+		Pluck("link", &existingLinks)
+	linkSet := make(map[string]bool, len(existingLinks))
+	for _, l := range existingLinks {
+		linkSet[l] = true
 	}
 
 	articlesAdded := 0
@@ -79,7 +79,15 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 			continue
 		}
 
-		if titleSet[entry.Title] {
+		if linkSet[entry.Link] {
+			// Same link already stored in this feed: apply the update
+			// semantics (dedupe-rss-articles D2) — skip when content is
+			// unchanged, refresh the stored row when it actually changed.
+			// Titles no longer participate in dedupe (live-news feeds roll
+			// titles under one URL).
+			if err := s.refreshExistingArticle(feed, entry); err != nil {
+				logging.Warnf("Error refreshing existing article for link %s (feed %d): %v", entry.Link, feed.ID, err)
+			}
 			continue
 		}
 
@@ -91,10 +99,12 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 		}
 
 		if err := repository.Repo.DB().Create(&article).Error; err != nil {
+			// Unique-index conflicts from a concurrent refresh of the same feed
+			// land here and are swallowed on purpose (dedupe-rss-articles D5).
 			continue
 		}
 
-		titleSet[entry.Title] = true
+		linkSet[entry.Link] = true
 
 		if err := s.enqueueArticleProcessing(feed, article); err != nil {
 			logging.Errorf("Error enqueueing processing for article %d (feed %d): %v", article.ID, feed.ID, err)
@@ -130,6 +140,81 @@ func (s *FeedService) enqueueArticleProcessing(feed models.Feed, article models.
 		CategoryName: tagging.FeedCategoryName(feed),
 		Reason:       "article_created",
 	})
+}
+
+// refreshExistingArticle applies the update semantics for an RSS entry whose
+// link already exists in the feed (dedupe-rss-articles D2):
+//
+//   - title+description unchanged → no-op (zero processing-chain cost);
+//   - either changed → UPDATE content fields, reset the processing-chain
+//     state exactly like a fresh insert (buildArticleFromEntry rules), clear
+//     derived fields (crawl body / AI summary / completion bookkeeping), drop
+//     stale topic tags, and re-enqueue processing. Retagging then rides the
+//     existing completion-event path (tag_jobs reasons firecrawl_completed /
+//     summary_completed / article_created) instead of calling the AI inline.
+func (s *FeedService) refreshExistingArticle(feed models.Feed, entry ParsedEntry) error {
+	var existing models.Article
+	if err := repository.Repo.DB().
+		Where("feed_id = ? AND link = ?", feed.ID, entry.Link).
+		Order("id ASC").
+		First(&existing).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// Deleted inside the refresh window; let the next refresh re-insert.
+			return nil
+		}
+		return err
+	}
+
+	if existing.Title == entry.Title && existing.Description == entry.Description {
+		return nil
+	}
+
+	fresh := s.buildArticleFromEntry(feed, entry)
+	updates := map[string]interface{}{
+		"title":                         fresh.Title,
+		"description":                   fresh.Description,
+		"content":                       fresh.Content,
+		"image_url":                     fresh.ImageURL,
+		"author":                        fresh.Author,
+		"summary_status":                fresh.SummaryStatus,
+		"summary_generated_at":          nil,
+		"summary_processing_started_at": nil,
+		"completion_attempts":           0,
+		"completion_error":              "",
+		"content_form":                  "",
+		"ai_content_summary":            "",
+		"firecrawl_status":              fresh.FirecrawlStatus,
+		"firecrawl_error":               "",
+		"firecrawl_content":             "",
+		"firecrawl_crawled_at":          nil,
+	}
+	if fresh.PubDate != nil {
+		updates["pub_date"] = fresh.PubDate
+	}
+	if err := repository.Repo.DB().Model(&models.Article{}).
+		Where("id = ?", existing.ID).
+		Updates(updates).Error; err != nil {
+		return err
+	}
+
+	// Stale tags describe the old content: drop them (retag re-creates any
+	// still-relevant tags once the refreshed chain completes).
+	var oldTagIDs []uint
+	if err := repository.Repo.DB().Model(&models.ArticleTopicTag{}).
+		Where("article_id = ?", existing.ID).
+		Pluck("topic_tag_id", &oldTagIDs).Error; err != nil {
+		return err
+	}
+	if err := repository.Repo.DB().Where("article_id = ?", existing.ID).
+		Delete(&models.ArticleTopicTag{}).Error; err != nil {
+		return err
+	}
+	tagging.CleanupOrphanedTags(oldTagIDs)
+
+	if err := s.enqueueArticleProcessing(feed, existing); err != nil {
+		logging.Errorf("Error enqueueing processing for refreshed article %d (feed %d): %v", existing.ID, feed.ID, err)
+	}
+	return nil
 }
 
 func (s *FeedService) updateFeedError(feed *models.Feed, err error) {
