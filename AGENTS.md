@@ -61,6 +61,15 @@ cd backend-go && go run cmd/server/main.go
 cd front && pnpm dev
 ```
 
+或用一条命令把后端 + 前端都起来（**自动注入 `NUXT_PUBLIC_API_BASE` / `CORS_ORIGINS`**，并在装了同源入口时选相对 base）：
+
+```bash
+bash scripts/start-dev.sh              # 已在跑的不动；加 --restart 先停再起
+bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
+```
+
+> 为什么要有这个脚本：两个变量都是非持久化的进程环境变量，漏一个就换一种报错（2026-09-16 因重启漏 `CORS_ORIGINS` 导致一次全站不可访问）。
+
 ## Reference Docs (authoritative source)
 
 - **Code Standards**: `docs/reference/standard/` — 代码规范/项目约束/lint/测试配置的**唯一权威源**（前后端分文件夹）

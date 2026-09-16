@@ -55,6 +55,8 @@ pnpm dev
 
 前端开发服务器运行在 `http://localhost:3000`。
 
+> **一把梭（推荐）**：`bash scripts/start-dev.sh`（仓库根目录跑）把后端 + 前端一起起来，并**自动注入这两个容易漏的变量**——同源反代模式下注入前端 `NUXT_PUBLIC_API_BASE=/api`，同时给后端带上包含本机全部网段 IP 的 `CORS_ORIGINS`；已装的同源入口时还会把入口地址列出来。`--restart` 先停再起、`stop` 停掉、`status` 看端口/PID/健康/入口。两个变量漏一个就换一种报错（前端报 `ERR_CONNECTION_REFUSED` 或 CORS 拦），详见 [部署指南](deployment.md)「多机 / 远程访问」。
+
 1. **验证联调** — 打开 `http://localhost:3000`，确认页面正常且 Network 面板中 API 请求直连 `http://localhost:5100/api`、WebSocket 连 `ws://localhost:5100/ws`。
 
 ### 首次使用
@@ -177,6 +179,7 @@ python test_firecrawl_integration.py
 - 后端：运行 `go run cmd/server/main.go` 前设置 `SERVER_PORT`（或改 `configs/config.yaml`）。
 - 前端：后端非默认端口时设 `NUXT_PUBLIC_API_BASE` 指向实际后端地址。
 - Docker：在 `.env` 中设置 `PORT`（宿主映射的应用端口，容器内固定 5000）。旧版 `.env` 里的 `FRONT_PORT` / `BACKEND_PORT` 已不再被读取。
+- 想知道是谁占着：`bash scripts/start-dev.sh status`（列端口/PID/健康），`bash scripts/start-dev.sh --restart` 直接接管重起。
 
 #### 后端启动失败（数据库错误）
 
