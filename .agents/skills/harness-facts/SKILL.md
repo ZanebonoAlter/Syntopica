@@ -28,9 +28,9 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
 | kind | 保留期 | payload 关键字段 |
 | --- | --- | --- |
 | `session.start` | 90 天 | `reason`(new/reload/resume/fork)、`cwd`、`prev`(前一 session 文件) |
-| `constraint.inject` | 30 天 | `path`、`mode`(full/section)、`reason`、`bytes` |
+| `constraint.inject` | 30 天 | `path`、`mode`(full/section)、`reason`、`bytes`；混合通道下**送达时记账**（稳定层快照变化时 / 动态层消息发出时 / compact 快照重发时），稳态不重复记；`degraded`（预算降级标记）、`source:compact-resend`（compact 重发快照）按需携带 |
 | `gate.check` | 30 天 | `cmd`、`phase`(turn_end)、`ok`、`ms`、`diag` |
-| `mode.set` | 30 天 | `mode`、`boundChange` |
+| `mode.set` | 30 天 | `mode`、`boundChange`、`source`（`command` / `skill` / `edit-dir` / `recover` / `inherit` / `fallback`——**所有绑定变化路径均记账，隐性绑定不存在**） |
 | `subagent.dispatch` | 30 天 | `type`、`model`、`desc`、`ms`、`tokens`、`status`、`agentId`、`isError` |
 | `subagent.complete` | 30 天 | `agentId`、`status`、`ms`、`tokens`、`toolUses`、`isError`（后台子线程完成回填） |
 | `spill.write` | 30 天 | `tool`、`bytes`、`path`、`ok`（大工具结果落盘记账） |
@@ -38,7 +38,9 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
 | `edit.map` | 30 天 | `paths`（该 change 累计编辑路径全量快照，排序去重）、`n`（=paths.length）；change 列 = 会话绑定的 change（mode.set boundChange 语义）；归属地图查询首选 `bash scripts/concurrency-status.sh [change]`（人读三段）或 `--check <change>`（exit 0 干净/2 有归属其他 active change 脏文件/3 冷启动） |
 | `policy.decision` | 30 天 | `policy`、`action`、`reasonCode`，按需 `target`/`durationMs`（见下） |
 
-`constraint.inject` 的 `reason` 枚举（实测）：`index`（未激活档的常驻索引）/ `mode-base`（档位激活后的基础注入）/ `declaration`（按 proposal 头 `constraint-domains` 声明拉 flow 约束节，**声明域=红线层注入**：payload 附 `layer`（`redline`=红线层 / `full`=提取 0 条或低于 512B 回退全节），bytes 为实际注入层级字节数）/ `keyword`（对话关键词命中，全节注入）/ `edit`（编辑路径 JIT 命中，全节注入）/ `change-file`（change 文档命中）/ `stack-conditional`（栈条件注入）。
+`constraint.inject` 的 `reason` 枚举（实测）：`index`（未激活档的常驻索引）/ `mode-base`（档位激活后的基础注入）/ `declaration`（按 proposal 头 `constraint-domains` 声明拉 flow 约束节，**声明域=红线层注入**：payload 附 `layer`（`redline`=红线层 / `full`=提取 0 条或低于 512B 回退全节），bytes 为实际注入层级字节数）/ `keyword`（对话关键词命中，全节注入；**域限定**：仅声明域∪栈相关∪索引内的命中生效）/ `edit`（编辑路径 JIT 命中，全节注入）/ `change-file`（change 文档命中）/ `stack-conditional`（栈条件注入）。
+
+**混合注入通道（harden-constraint-injection-channel，2026-09-16）**：注入分两层——**稳定层**（system prompt：索引 + mode-base + 声明域红线层，档位生命周期内字节恒定）/ **动态层**（追加消息：keyword/jit/change-file 增量，指纹 diff 驱动、稳态零投递）。因此事实库中 `constraint.inject` **不再每 turn 重复**：同一会话同一 path 仅在首次送达或内容变化时记一条。查询「某会话注入了什么」时按 `ts` 排序读全量即可；频次骤降属预期（旧行为每 turn 全量重复记）。
 
 `policy.decision` 的稳定枚举（查询契约，smoke 精确断言，漂移即 bug）：
 
@@ -96,7 +98,7 @@ sqlite3 events.db "SELECT change, payload FROM events WHERE kind='edit.map' AND 
 **事件的 `change` 字段 = 写入那一刻绑定的档位**，不是"这个 session 主做哪个 change"。踩坑三件套：
 
 1. **同一 session 交替做多个 change**：gate.check / inject 会按当时档位分散落在不同 change 名下，账目"看着错"其实没错。
-2. **reload 清零档位后重绑**：`session.start(reason=reload)` 后重新触发 apply 时，档位可能绑回**上一个 change**（不是当前在做的），此后注入全记在旧 change 头上——恰是 constraint-injection-tier-b 要修的 resume 恢复问题的现场证据形态。
+2. **reload 清零档位后重绑**：`session.start(reason=reload)` 后重新触发 apply 时，档位可能绑回**上一个 change**（不是当前在做的），此后注入全记在旧 change 头上。**2026-09-16 起所有恢复/兜底路径均记 `mode.set` 并带 `source`**（command/skill/edit-dir/recover/inherit/fallback）——若发现某绑定变化无对应 mode.set，即为 bug（隐性绑定）。
 3. **注入内容看 reason 就懂来源**：`declaration` = 机械按 proposal 头 `constraint-domains` 声明拉节（红线层，`layer` 字段标记层级），与"当时正在实现什么"无关；`keyword`/`edit` 命中 = 全节注入（细节层通道）。
 
 排查顺序：① 全局账目定异常（如某 change 名下 0 条 inject 但同期别处有 declaration）→ ② 涉事 session 分钟桶看交织 → ③ session.start 锚点定位 reload/重绑时点 → ④ 对照归档 proposal 头部声明收口。

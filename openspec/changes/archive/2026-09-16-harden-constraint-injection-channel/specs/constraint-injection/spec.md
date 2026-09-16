@@ -1,9 +1,11 @@
-# constraint-injection Specification
+# constraint-injection Delta
 
-## Purpose
-TBD - created by archiving change port-constraint-injection. Update Purpose after archive.
+## RENAMED Requirements
 
-## Requirements
+- FROM: `### Requirement: 每 turn system prompt 强制注入`
+- TO: `### Requirement: 混合注入通道（稳定层 system prompt + 动态层 steer 消息）`
+
+## MODIFIED Requirements
 
 ### Requirement: 档位识别与 change 绑定
 
