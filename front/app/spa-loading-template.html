@@ -1,0 +1,155 @@
+<!--
+  SPA 首屏加载模板（spa-loading-ux change 建立；loading-progress-tips change 增强）
+  - 渲染时机：HTML 解析即显示，JS bundle 挂载完成后被 Nuxt 应用替换
+  - 自包含：内联 CSS + 内联主题判定，不依赖任何外部资源（bundle/字体/图标均未加载）
+  - 主题：内联复制主题令牌色值（editorial/dark 双套），与 app/assets/css/main.css 同源；
+    改主题令牌时须同步此处色值（维护约定见 docs/reference/standard/frontend/）
+  - 进度条与短句：与 app/composables/useFakeProgress.ts 同款拟真曲线与短句清单的
+    内联副本——本模板在 bundle 加载前运行，不能 import 任何模块，只能复制；
+    改动爬升参数或短句清单时 MUST 两处同步（维护约定见 loading-experience.md）
+-->
+<style>
+  :root {
+    --spa-bg: #faf7f2;             /* --raw-stone-50 / editorial --color-bg-base */
+    --spa-text: #5a5a5a;           /* editorial --color-text-secondary */
+    --spa-accent: #d94a4a;         /* --raw-red-500 / editorial --color-accent */
+    --spa-track: rgba(90, 90, 90, 0.2);   /* text-secondary 20% */
+  }
+  [data-theme="dark"] {
+    --spa-bg: #080c12;             /* dark --color-bg-base */
+    --spa-text: rgba(255, 255, 255, 0.6); /* dark --color-text-secondary */
+    --spa-accent: rgba(240, 138, 75, 0.85); /* dark --color-accent */
+    --spa-track: rgba(255, 255, 255, 0.12);
+  }
+  .spa-loading {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--spa-bg);
+    /* 与 app.vue 初始化 loading 态视觉同构：全屏居中 + 转圈 + 进度 + 短句 */
+    color: var(--spa-text);
+    font-family: "Noto Serif SC", Georgia, "Songti SC", serif;
+    z-index: 2147483647;
+  }
+  .spa-loading__inner { text-align: center; }
+  .spa-loading__spinner {
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 16px;
+    border-radius: 50%;
+    border: 3px solid var(--spa-accent);
+    border-right-color: transparent;
+    animation: spa-spin 0.9s linear infinite;
+  }
+  .spa-loading__text {
+    margin: 0;
+    font-size: 14px;
+    letter-spacing: 0.05em;
+  }
+  .spa-loading__progress {
+    width: min(280px, 60vw);
+    height: 4px;
+    margin: 16px auto 0;
+    border-radius: 9999px;
+    background: var(--spa-track);
+    overflow: hidden;
+  }
+  .spa-loading__bar {
+    height: 100%;
+    width: 0%;
+    border-radius: 9999px;
+    background: var(--spa-accent);
+    transition: width 200ms ease-out;
+  }
+  .spa-loading__percent {
+    margin: 8px 0 0;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  @keyframes spa-spin {
+    to { transform: rotate(360deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spa-loading__spinner { animation-duration: 2.4s; }
+    .spa-loading__bar { transition: none; }
+  }
+</style>
+<script>
+  // 主题判定与 app.vue head 内联脚本同逻辑：仅 editorial/dark 合法，异常回退 editorial
+  ;(function () {
+    try {
+      var t = localStorage.getItem('syntopica-theme')
+      document.documentElement.setAttribute(
+        'data-theme',
+        t === 'editorial' || t === 'dark' ? t : 'editorial'
+      )
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'editorial')
+    }
+  })()
+  // 拟真进度（useFakeProgress.ts 内联副本，参数同步维护）：
+  // ease-out 爬升至 90% 天花板停滞，不谎报完成；挂载后被 Nuxt 应用整体替换，无需收尾
+  ;(function () {
+    var tips = [
+      '正在唤醒语义向量…',
+      '从互联网的深海捕捞新鲜文章…',
+      'RSS 小火车排队进站中…',
+      '正在把时间线熨得平平整整…',
+      '知识正在入栏，请勿投喂…',
+      '拼装万物的并置宇宙…',
+      '教标签们各司其职…',
+      '模型干饭中，吃得很好…',
+      '抚平向量空间的邻里关系…',
+      '阅览室掸灰中，灰尘略多…',
+      '给每个话题安放一朵云…',
+      '进度条很努力了，别催它…'
+    ]
+    function pick(exclude) {
+      if (tips.length < 2) return tips[0] || ''
+      var next = tips[Math.floor(Math.random() * tips.length)]
+      for (var i = 0; i < tips.length && next === exclude; i++) {
+        next = tips[Math.floor(Math.random() * tips.length)]
+      }
+      return next
+    }
+    var onReady = function () {
+      var bar = document.querySelector('.spa-loading__bar')
+      var percent = document.querySelector('.spa-loading__percent')
+      var text = document.querySelector('.spa-loading__text')
+      if (!bar || !percent || !text) return
+      var p = 0
+      text.textContent = pick()
+      setInterval(function () {
+        p = Math.min(90, Math.round((p + (90 - p) * 0.06) * 10) / 10)
+        bar.style.width = p + '%'
+        percent.textContent = Math.round(p) + '%'
+      }, 120)
+      setInterval(function () {
+        text.textContent = pick(text.textContent)
+      }, 4000)
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', onReady)
+    } else {
+      onReady()
+    }
+  })()
+</script>
+<div class="spa-loading" aria-label="正在加载" role="status">
+  <div class="spa-loading__inner">
+    <div class="spa-loading__spinner"></div>
+    <p class="spa-loading__text" aria-live="polite">正在加载</p>
+    <div
+      class="spa-loading__progress"
+      role="progressbar"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-valuenow="0"
+    >
+      <div class="spa-loading__bar"></div>
+    </div>
+    <p class="spa-loading__percent">0%</p>
+  </div>
+</div>
