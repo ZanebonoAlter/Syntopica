@@ -12,7 +12,7 @@
 #   3. 映射的测试文件按仓库根相对路径逐一做存在性校验；单元格以「人工」开头视为
 #      合法映射（留痕，不做文件校验）；多路径以空白或逗号分隔
 #
-# 退出码：0 通过；1 有失败（中文输出逐条列原因）。WSL bash 可跑。
+# 退出码：0 通过；1 有失败（中文输出逐条列原因）。POSIX bash（Linux / macOS / WSL）可跑。
 # 格式约定详见 openspec/specs/scenario-trace-gate/spec.md（随 change 归档同步）。
 set -u
 

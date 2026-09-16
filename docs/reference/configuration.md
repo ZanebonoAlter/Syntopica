@@ -10,7 +10,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `SERVER_PORT` | 否 | `"5100"` | 后端 HTTP 监听端口（避开 Windows 5000 端口 WSD/svchost 保留段冲突） |
+| `SERVER_PORT` | 否 | `"5100"` | 后端 HTTP 监听端口（避开 Windows 5000 端口 WSD/svchost 保留段冲突；该冲突为 Windows 特有，其他平台沿用同一默认值以保持跨平台统一） |
 | `SERVER_MODE` | 否 | `"debug"` | Gin 模式：`"debug"`、`"release"` 或 `"test"` |
 | `DATABASE_DRIVER` | 否 | `"postgres"` | 数据库驱动，主分支仅支持 `"postgres"` |
 | `DATABASE_DSN` | 否 | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | PostgreSQL 连接字符串 |

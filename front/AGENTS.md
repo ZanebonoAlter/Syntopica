@@ -12,10 +12,12 @@ pnpm lint  &&  pnpm exec nuxi typecheck
 pnpm test:unit  &&  pnpm test:e2e
 ```
 
-> **⚠️ WSL 注意**：`pnpm lint` 可在 WSL 跑；`pnpm exec nuxi typecheck` 和 `pnpm build` 因缺少 Linux native binding 必须在 Windows cmd 中执行：
+> **⚠️ 平台注意**：`front/node_modules` 按当前宿主平台安装。**Linux / macOS（含树莓派）直接在本机跑全部命令**；Windows + WSL 宿主下 `pnpm exec nuxi typecheck` / `pnpm build` 因 WSL 侧缺 Linux native binding 必须经 Windows cmd，`pnpm lint` 可在 WSL 跑：
 > ```bash
+> # Linux / macOS：直接跑
+> pnpm lint && pnpm exec nuxi typecheck && pnpm build
+> # Windows + WSL：前两类经 cmd
 > cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm exec nuxi typecheck"
-> cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm build"
 > ```
 > 提交前检查全流程见 `docs/reference/standard/shared/commit-pr.md`。
 

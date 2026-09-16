@@ -210,7 +210,7 @@ my-robot/
 - **PostgreSQL 模式**（`docker-compose.yml`，默认）：前后端 + PostgreSQL + pgvector 三容器，数据库通过 `pgdata` volume 持久化，支持向量检索
 - **SQLite 模式**：已归档到 `sqlite` 分支，使用 `docker-compose.sqlite.yml` 部署，主分支不再维护
 
-默认端口：前端 `http://localhost:3000`（dev server 绑 0.0.0.0，Windows/WSL 均可达），后端 `http://localhost:5100`（前端绝对直连，后端 CORS 放行）。
+默认端口：前端 `http://localhost:3000`（dev server 绑 0.0.0.0，本机与局域网均可达），后端 `http://localhost:5100`（前端绝对直连，后端 CORS 放行）。
 
 ## 相关文档
 

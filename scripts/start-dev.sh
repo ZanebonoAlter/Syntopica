@@ -24,7 +24,7 @@
 #   NUXT_PUBLIC_API_BASE=/api CORS_ORIGINS=http://192.168.1.9:3000 bash scripts/start-dev.sh --restart front
 #
 # 日志：后端 → backend-go/nohup.out，前端 → front/nohup.out（`tail -f` 看即可）
-# 需要：Linux / WSL bash（Windows 原生按 docs/reference/development.md 的三步手动起）
+# 需要：Linux / macOS / WSL bash（Windows 原生按 docs/reference/development.md 的三步手动起）
 
 set -uo pipefail
 

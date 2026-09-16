@@ -12,7 +12,7 @@
 #     doc-impact-excuse 已退役（输入收窄后跨 change 误报源消失）；既有注释保留解析兼容不判 FAIL
 #
 # 详见 openspec/changes/docs-harness-consolidation/design.md §1。
-# WSL bash 可跑。退出码：0 过；1 有失败（仅 verify 会非零）。
+# POSIX bash（Linux / macOS / WSL）可跑。退出码：0 过；1 有失败（仅 verify 会非零）。
 
 set -u
 
@@ -30,7 +30,7 @@ changed_files() {
 	local base="${1:-HEAD}"
 	# 已跟踪：git diff（含未 stage 的工作区改动 + 已 stage）
 	# core.quotepath=false 让中文路径原样输出（否则 git 八进制转义，verify 比对失败）
-	# core.checkStat=minimal：WSL DrvFS(/mnt/*) 上完整 stat 极慢（29s→2s），
+	# core.checkStat=minimal：在慢速网络挂载（WSL DrvFS /mnt/*）上完整 stat 极慢（29s→2s），
 	# 对启发式门禁而言 mtime+size 粒度足够
 	git -c core.checkStat=minimal -c core.quotepath=false diff --name-only "$base" 2>/dev/null
 	git -c core.quotepath=false diff --cached --name-only 2>/dev/null
@@ -77,7 +77,7 @@ filter_blacklist() {
 #   $1 = 域 key；$2 = 预先算好的改动文件列表（换行分隔）。命中则 echo 命中的
 #   文件路径（可能多个），否则空。
 #   ⚠ 调用方必须预计算文件列表传入——曾在函数内每次重跑 changed_files，
-#   verify/suggest 的 7 域循环导致 7+ 次全量 git 扫描（DrvFS 上每次 ~30s）。
+#   verify/suggest 的 7 域循环导致 7+ 次全量 git 扫描（慢速挂载上每次 ~30s）。
 # ---------------------------------------------------------------------------
 heuristic_hit() {
 	local domain="$1" files="$2"

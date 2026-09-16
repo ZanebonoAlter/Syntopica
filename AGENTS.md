@@ -17,7 +17,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 | subagent-driven-development / dispatching-parallel-agents | §0.6 六步 + 下方「子线程派发参考」模型表 |
 | test-driven-development | 开发执行规范 §2（用例先行：specs Scenario 即用例+复杂档白盒用例，以 §2 表述为准） |
 | verification-before-completion | quality-gate 自动门禁 + §11 归档门禁 |
-| using-git-worktrees | 不用——主仓库直改（Windows 路径 + Docker DB） |
+| using-git-worktrees | 不用——主仓库直改（Docker DB 在宿主机） |
 | finishing-a-development-branch | §11/§12 归档即家，无 feature branch 流程 |
 
 - 保留互补的 superpowers skill：`systematic-debugging`、`requesting-code-review`、`receiving-code-review`（§0.6 review 纪律已引用后者）。
@@ -28,9 +28,9 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 ## Project Snapshot
 
 - Syntopica: Nuxt 4 frontend + Go backend (Gin/GORM), single-user, no auth.
-- 后端 API 默认端口 `5100`（`http://localhost:5100/api`，避开 Windows 5000 端口 svchost/WSD 保留段冲突）；前端 dev server 绑 `0.0.0.0`（默认 localhost 在 Windows 只绑 ::1 v6 环回，WSL 够不着）。
+- 后端 API 默认端口 `5100`（`http://localhost:5100/api`，避开 Windows 5000 端口 svchost/WSD 保留段冲突——该冲突为 Windows 特有，默认值跨平台统一）；前端 dev server 绑 `0.0.0.0`（默认 localhost 在 Windows 只绑 ::1 v6 环回，IPv4 环回与跨主机够不着）。
 - PostgreSQL + pgvector for persistence; Redis optional for job queues.
-- 和用户沟通使用中文，开发环境 Windows, 返回的回答尽量用大白话，接地气，能让用户理解。
+- 和用户沟通使用中文，开发环境 **Linux（树莓派 arm64 / Debian 13）**，返回的回答尽量用大白话，接地气，能让用户理解。
 - **所有改动默认走 openspec**（代码/功能/接口/数据模型必须先开 change）；豁免清单与编排见 `docs/reference/开发执行规范.md` §0.6「准入总则」
 - **UI 分档速查**（默认 schema `syntopica-ui`，make-ui-design-first-class）：新 change proposal 头声明 `<!-- ui-impact: none|minor|major -->`（与 complexity 正交）→ `ui-design.md` 必经制品（none=最小 N/A / minor=复用契约 / major=八节+`ui-prototype/` 原型）；**major 原型须用户明确批准（ui-approval: approved）才可进实现**，否则 ui-design-gate 拦截；旧 spec-driven change 不硬阻断（触及前端提醒一次迁移）。布局契约（page shell 四模式/dialog 四档/双视口验收）→ `docs/reference/standard/frontend/layout.md`
 
@@ -38,7 +38,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 
 | 项目 | 说明 |
 | ------ | ------ |
-| OS | **Windows**（WSL2 `bash` 可用，但路径使用 Windows 格式如 `D:/project/...`）。WSL 侧 curl 探测 localhost 时注意代理污染：设 `no_proxy=localhost,127.0.0.1,::1` 或用 `curl --noproxy '*'` |
+| OS | **Linux（树莓派 arm64 / Debian 13）**，仓库路径 `~/software/Syntopica`。工具链全为本机原生：Go 1.27、golangci-lint 2.13、node 26 / pnpm 12（`front/node_modules` 是 linux-arm64 平台包），故前端 typecheck/build/test:unit 直接在本机跑。WSL 开发机的历史痕迹保留在 `docs/experience/wsl-node-error.md`（事实存档，不改写）。存在系统代理时 curl 探测 localhost 需绕过：设 `no_proxy=localhost,127.0.0.1,::1` 或用 `curl --noproxy '*'` |
 | 数据库 | **Docker**：`docker compose -f docker-compose.pg.yml up -d` 启动 PostgreSQL（pgvector），默认端口 `5432`，用户/密码为 `postgres`，库名为 `syntopica`（对应 `docker-compose.pg.yml` 的 `POSTGRES_DB` 默认值）。数据持久化在 `./data/` 下。`docker compose -f docker-compose.pg.yml down` 停止。 |
 | Python | **uv**：需要 Python 脚本/工具时使用 `uv`（如 `uv run script.py`、`uv add package`）。Python 集成测试位于 `tests/workflow/`、`tests/firecrawl/`。 |
 | Node.js | `pnpm`（要求 corepack 启用）。详见 `front/AGENTS.md`。 |
@@ -112,26 +112,25 @@ bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 - Ignore unrelated dirty-worktree changes. Verify smallest relevant command after edits.
 - git提交使用 zanebonoalter <380207345@qq.com>
 - **测试只跑本次修改影响的包**，不要跑全量 `go test ./...`。影响包用 `bash scripts/change-scope.sh` 机械判定（路径→命令映射，未命中会提示无法判定）。例如改了 `daily_report` 和 `ws`，就只跑 `go test ./internal/domain/daily_report ./internal/platform/ws`。
-- **前端 pnpm 编译/测试类命令（typecheck / build / test:unit）必须通过 Windows cmd 执行**，WSL 环境缺少 native binding（typecheck 如 `@oxc-parser/binding-linux-x64-gnu`；test:unit 经 Vite→rollup 缺 `@rollup/rollup-linux-x64-gnu`）会失败。lint 可在 WSL 跑。权威定义见 [`standard/frontend/testing.md`](docs/reference/standard/frontend/testing.md) §跨平台运行 + §常见陷阱。示例：
+- **前端 pnpm 编译/测试类命令（typecheck / build / test:unit）：按宿主平台决定执行方式**。Linux/macOS 宿主本机直跑（`front/node_modules` 按当前平台安装，含 `@rollup/rollup-linux-arm64-gnu`、`@oxc-parser/binding-linux-arm64-gnu` 等）；**Windows + WSL 宿主**下这三类命令必须经 Windows cmd 执行（WSL 侧 `node_modules` 是 Windows 侧装的，缺 Linux native binding），lint 可在 WSL 跑。权威定义见 [`standard/frontend/testing.md`](docs/reference/standard/frontend/testing.md) §跨平台运行 + §常见陷阱。示例（当前 Linux 宿主）：
 
   ```bash
-  # lint — WSL 可用
-  cd front && pnpm lint
-  # typecheck / build / test:unit — 必须用 cmd
-  cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm exec nuxi typecheck"
-  cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm build"
-  cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm test:unit 2>&1"
+  cd front && pnpm lint          # 全平台可用
+  cd front && pnpm exec nuxi typecheck
+  cd front && pnpm build
+  cd front && pnpm test:unit
+  # Windows + WSL 宿主改为经 cmd：cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm exec nuxi typecheck"
   ```
 
 - Frontend edits → `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit` / `pnpm build`。
 - Backend edits → `golangci-lint run ./...` / targeted `go test` first, then `go test ./...` / `go build ./...`。
 - Docs-only edits: consistency check unless behavior changed.
-- **pi 扩展全景**（`.pi/extensions/`，gitignored；快照同步 `docs/research/`）：
+- **pi 扩展全景**（`.pi/extensions/`，**源码已入库**——`.gitignore` 的 `/.*` 排除后单独放行 `.pi/extensions/**` 与 `.pi/constraint-injection.json`）：
 
 | 扩展 | 挂点 | 触发 | 软硬 | fail 策略 | 事件库记账 |
 | --- | --- | --- | --- | --- | --- |
 | constraint-injection | `before_agent_start`（稳定层）+ `input`/`tool_execution_start`/`session_compact`（动态层） | 混合通道注入：稳定层 system prompt（档位生命周期内字节恒定）/ 动态层 steer 消息（指纹 diff，稳态零投递） | 软（不干预工具） | fail-open（注入失败不阻断） | constraint.inject / pin.* / mode.set（含 source） |
-| quality-gate | `turn_end` | 增量路由命中后端/前端，门禁前 cmd.exe interop 健康探测，vsock 故障整轮短路（harden-gate-interop-health）；另落 `edit.map` 归属地图（增量路径 × boundChange 聚合，coordinate-concurrent-changes） | 软 steer 催修（cmd 链路失败标（wsl环境），环境故障不计粘性） | fail-open（门禁故障放行） | gate.check / edit.map / policy.decision(interop-down) |
+| quality-gate | `turn_end` | 执行链路平台判定（`cmd.exe` 可达性）→ windows 模式：interop 健康探测，vsock 故障整轮短路（harden-gate-interop-health）；native 模式：本机工具链直接执行、不探测；另落 `edit.map` 归属地图（增量路径 × boundChange 聚合，coordinate-concurrent-changes） | 软 steer 催修（windows 链路失败标（wsl环境），native 标本机；环境故障不计粘性） | fail-open（门禁故障放行） | gate.check / edit.map / policy.decision(interop-down) |
 | quota-gate | Agent 派发前 | 子线程派发前查额度 | 硬 block（低额度阻断派发） | fail-open（查询失败放行） | policy.decision（quota-low/exhausted=block、quota-query-failed=fail-open、fuzzy-model-resolve=warn） |
 | spec-gate | `tool_call` | bash 命中 `openspec archive` | 硬 block（归档门禁五检查：doc-impact/standards/尾三节/scenario-trace/UI 验收证据；另检查⑤'归档并发 warn 不 block：树上存在归属其他 active change 的未 commit 文件 → steer 提醒 + concurrent-dirty-tree 记账，冷启动零输出） | `--force` / `SPEC_GATE_BYPASS=1` 逃生口留痕 | policy.decision（archive-check-failed=block、explicit-bypass=bypass、acceptance-wording=warn、concurrent-dirty-tree=warn；UI 缺证据另记 ui-design-gate block ui-verification-missing） |
 | ui-design-gate | `tool_call` | implementation 档绑定 syntopica-ui schema change：Agent 派发与 edit/write 项目代码，major 原型未批准（合同 block）时拦截；当前 change 的 ui-design.md/ui-prototype/** 修复不受限 | 硬 block（legacy schema 仅 front mutation 每会话/change warn 一次） | fail-open（检查异常放行+告警+记账）；`UI_DESIGN_GATE_BYPASS=1` 显式旁路留痕 | policy.decision（ui-impact-missing/ui-impact-mismatch/ui-design-missing/ui-prototype-missing/ui-approval-pending=block、explicit-bypass=bypass、ui-gate-check-failed=fail-open；健康放行零记录） |
@@ -143,7 +142,7 @@ bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 - **约束注入（自动，管"知道"）**：`.pi/extensions/constraint-injection.ts` 按**混合通道**注入约束上下文（harden-constraint-injection-channel）——**稳定层**（system prompt：索引 + mode-base + 声明域红线层；快照 key=mode|绑定 change，档位生命周期内**字节恒定** → system prompt 不变则其后 history 前缀缓存不失效）；**动态层**（追加消息：关键词命中全节 / JIT 命中全节 / change 级文件（explore-findings、词汇表）/ 稳定层差异；指纹 diff 驱动，稳态零投递；turn 中途 JIT 命中经 `sendMessage(deliverAs:"steer", triggerTurn:false)` 即时送达；`session_compact` 后重发一次快照补偿压缩）。配置 `channel:"legacy"` 可回退旧的每 turn 全量进 system prompt。
   - **档位/绑定**：`input` 命令 / skill 路径 / 写 change 目录兜底均可激活；**绑定修正条件化**（read 永不抢绑、当前绑定健康时不抢绑、仅未绑定/绑定 change 消失时兜底）且**同 turn 锁定**；**所有绑定变化均记 `mode.set` 并带 `source`**（command/skill/edit-dir/recover/inherit/fallback），隐性绑定不存在——治多 change 并行注入污染（2026-09-16 事实库取证：隐性绑定 / 一毫秒 4 连绑）。
   - **flow「业务约束与不变量」节**按 **proposal.md 业务域声明**（头部 `<!-- constraint-domains: 域, ... -->`，域名=flow 文档 basename 如 `daily-report`；纯工具链 change 可不写，widget 提示无域声明属预期；**声明域注入=红线层**——约束节内顶层列表项首个加粗红线句逐行 + 细节层取回指引，红线层提取 0 条或低于 512B 回退全节，格式见 `standard/shared/doc-authoring.md`「约束节红线句格式」）+ 对话输入关键词命中（**域限定**：仅声明域∪栈相关∪索引内的命中生效，跨域词不再误拉无关域全节）+ standard/flow 文档按头部 `doc-impact-applies` 标签对编辑路径 JIT 命中、`pin_finding` 工具持久化探索发现（档激活落 change 的 explore-findings.md，无档落 `docs/research/`）。配置 `.pi/constraint-injection.json`，常驻索引 `docs/reference/constraints-index.md`（旧 `doc-impact.sh context` 已退役）。
-- **pi 增量门禁（自动，管"做到"）**：`.pi/extensions/quality-gate.ts` 已挂 `turn_end`，按**会话内增量路由**触发——会话开始时的 git 脏文件进基线不触发，仅本回合新增/变化路径命中后端（`backend-go/**.go`）才跑 `golangci-lint`+`go vet`+`go build`+影响包 `go test -short`（经 `scripts/change-scope.sh` 判定，DB 集成测试 -short 下自动 skip），命中前端（`front/` 非 .md）才跑 eslint（经 cmd.exe 的 Windows 原生 `--cache` 增量调用，实测 2~6s；WSL DrvFS 跑同命令 ~17 倍慢；`front/package.json` 的 `pnpm lint` 仍全量供人工/归档用）；lint 先行作短路哨兵——lint 报编译失败（typechecking error）时 vet/build/test 必红同因，跳过执行不记账，无短路时 vet/build 并行。上回合失败未转绿的命令粘性重跑（催修，防"口头修复"漂移）。失败以 `steer` 消息分级喂回：**[回归]**（上回合尚绿，agent 必须修，不得忽略）与**[中间态]**（从未绿的新代码中间态，agent 若正在推进可继续、回合末复检）——归档前全绿硬要求不变（§11）。成功事件采样记账（会话首条与转绿锚点必记，其后每 5 连续成功记 1 条），失败全量记账。不跑前端 typecheck/build（需 cmd.exe）与完整集成测试（不带 -short 的 go test），这些仍由 agent 手动跑 + §11 归档门禁兜底。门禁分层见 `docs/reference/开发执行规范.md` §4.1。
+- **pi 增量门禁（自动，管"做到"）**：`.pi/extensions/quality-gate.ts` 已挂 `turn_end`，按**会话内增量路由**触发——会话开始时的 git 脏文件进基线不触发，仅本回合新增/变化路径命中后端（`backend-go/**.go`）才跑 `golangci-lint`+`go vet`+`go build`+影响包 `go test -short`（经 `scripts/change-scope.sh` 判定，DB 集成测试 -short 下自动 skip），命中前端（`front/` 非 .md）才跑 eslint（带 `--cache` 增量；windows 模式经 cmd.exe 调 Windows 原生（实测 2~6s，WSL DrvFS 跑同命令 ~17 倍慢），native 模式本机直接跑；`front/package.json` 的 `pnpm lint` 仍全量供人工/归档用）；lint 先行作短路哨兵——lint 报编译失败（typechecking error）时 vet/build/test 必红同因，跳过执行不记账，无短路时 vet/build 并行。**执行链路按宿主平台分流**（linux-native-dev-environment）：`cmd.exe` 不可达（Linux/macOS）走 native 模式（本机 PATH 的 go/golangci-lint/pnpm，工作目录经 `ExecOptions.cwd` 传入），可达则维持 windows 模式（cmd.exe interop，vsock 故障时整轮短路 + 记账）；平台身份会话内稳定。上回合失败未转绿的命令粘性重跑（催修，防"口头修复"漂移）。失败以 `steer` 消息分级喂回：**[回归]**（上回合尚绿，agent 必须修，不得忽略）与**[中间态]**（从未绿的新代码中间态，agent 若正在推进可继续、回合末复检）——归档前全绿硬要求不变（§11）。成功事件采样记账（会话首条与转绿锚点必记，其后每 5 连续成功记 1 条），失败全量记账。**不跑**前端 typecheck/build 与完整集成测试（不带 -short 的 go test）——这是门禁分层设计（与平台无关），这些仍由 agent 手动跑 + §11 归档门禁兜底。门禁分层见 `docs/reference/开发执行规范.md` §4.1。
 - Keep code changes minimal and scoped. Match existing code style.
 - 完成任务后更新维护 `./docs/reference/` 知识库；openspec change 执行走 `开发执行规范.md` §0.6 标准编排流程（**apply 启动跑 `doc-impact.sh suggest`+`context`，归档前跑 `doc-impact.sh verify`+`check-standards.sh`**），归档前满足 §11 门禁，归档后按 §12 补 flow 变更溯源链接（archive 即永久家，v1.x 里程碑可选）。
 - **开工前/完工后必须汇报"部署后影响 + 需要的操作"**：每个 change 完工汇报必须包含一节明确告诉用户——(a) 部署/合并后用户可见行为会发生什么变化；(b) 需要用户手动执行的操作（如重新生成数据、清理、配置）；(c) 旧数据如何降级。避免用户打开界面才发现行为变了产生误会。涉及数据迁移、状态机变更、UI 分区变更时尤其强制。
@@ -162,7 +161,7 @@ bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 
 ## context-mode — 上下文路由（简版）
 
-context-mode 提供 11 个 `ctx_*` 工具，把大块输出（日志/grep/JSON）沙箱化、索引进 FTS5，避免灌爆上下文窗口。**与本文件其他规则冲突时，项目规范优先**（前端编译走 Windows cmd、测试只跑影响包、中文沟通等不变）。
+context-mode 提供 11 个 `ctx_*` 工具，把大块输出（日志/grep/JSON）沙箱化、索引进 FTS5，避免灌爆上下文窗口。**与本文件其他规则冲突时，项目规范优先**（前端编译按宿主平台执行、测试只跑影响包、中文沟通等不变）。
 
 - **Shell 输出 >20 行**：用 `ctx_batch_execute`（多命令一次跑 + 自动索引）或 `ctx_execute`；bash 只留给 git/mv/ls/install 等小输出命令。
 - **读文件**：为了编辑 → 正常 read；为了分析/总结 → `ctx_execute_file`。

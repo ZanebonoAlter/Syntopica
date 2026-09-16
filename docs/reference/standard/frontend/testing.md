@@ -50,21 +50,25 @@ pnpm test:unit -- app/utils/articleContentSource.test.ts  # 单文件
 pnpm test:unit -- app/utils/articleContentSource.test.ts -t "prefers firecrawl"  # 按名称
 ```
 
-### 跨平台运行（WSL 必须切 Windows cmd）
+### 跨平台运行（按宿主平台决定执行方式）
 
 > 与 `typecheck` / `build` 同源问题，本节为权威定义；`AGENTS.md` 只留红线速查。
 
-**WSL bash 下 `pnpm test:unit` 跑不起来**：vitest 经 Vite → rollup，依赖原生 binding（`@rollup/rollup-linux-x64-gnu`），但本仓库 `node_modules` 是 Windows 侧 `pnpm install` 的，只装了 win32 平台包，Linux 平台的 optional 包被裁掉。报错形如：`Cannot find module '@rollup/rollup-linux-x64-gnu'`。
+**`front/node_modules` 是按安装时的宿主平台装的**，能跑什么命令取决于它：
 
-**正确做法**：vitest 一律走 Windows cmd（lint 可继续在 WSL 跑）：
+- **Linux / macOS（含树莓派）**：`pnpm install` 装的是本平台包（如 `@rollup/rollup-linux-arm64-gnu`、`@oxc-parser/binding-linux-arm64-gnu`），`lint` / `typecheck` / `build` / `test:unit` 全部直接在本机跑。
+- **Windows + WSL**：`node_modules` 由 Windows 侧 `pnpm install` 生成，只含 win32 平台包；WSL bash 下跑 `test:unit` / `typecheck` / `build` 会因缺 Linux native binding 失败，报错形如 `Cannot find module '@rollup/rollup-linux-x64-gnu'`。此时这些命令必须经 Windows cmd（`lint` 仍可在 WSL 跑）。
 
 ```bash
-# test:unit — 必须用 cmd（同 typecheck / build）
+# Linux / macOS：直接跑
+cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm build && pnpm test:unit
+
+# Windows + WSL：typecheck/build/test:unit 经 cmd（lint 可在 WSL）
 cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm test:unit 2>&1"
 cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm test:unit topicAnchor 2>&1"  # 按名筛选
 ```
 
-> 不要为了“在 WSL 跑通”去 `pnpm add -D @rollup/rollup-linux-x64-gnu` —— 会污染 `package.json` / `pnpm-lock.yaml`，引入与具体 change 无关的脏改动。
+> 不要在 WSL 侧补装 Linux 平台包来“跑通”（如 `pnpm add -D @rollup/rollup-linux-x64-gnu`）—— 会污染 `package.json` / `pnpm-lock.yaml`，引入与具体 change 无关的脏改动。要在哪个平台跑，就在那里 `pnpm install`。
 
 ### 常见陷阱
 

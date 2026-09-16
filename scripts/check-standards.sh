@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-standards.sh — L1 代码规范结构验收（归档前随《开发执行规范》§11.4 运行）
 #
-# 纯静态校验，不触发编译。WSL bash 可跑。检查维度：
+# 纯静态校验，不触发编译。POSIX bash（Linux / macOS / WSL）可跑。检查维度：
 #   A. 文档完整性（standard/ flow/ architecture/map.md 关键文件存在）
 #   B. 后端结构（golangci 配置、domain 白名单、三层包结构）
 #   C. 前端结构（ESLint 配置、Token 三层、双主题）

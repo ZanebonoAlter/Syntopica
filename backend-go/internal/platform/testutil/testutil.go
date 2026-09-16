@@ -24,6 +24,12 @@ import (
 // environment variable that could redirect it at the developer's docker-compose
 // Postgres (which is the production database). An earlier revision connected to
 // the production database and truncated it — that path no longer exists.
+//
+// Container cleanup is delegated entirely to the Testcontainers Ryuk sidecar
+// (this package intentionally never calls TerminateContainer). If the Ryuk image
+// cannot be pulled — default `testcontainers/ryuk:<version>` — the container is
+// created but never reclaimed, and the test still passes: the leak is silent.
+// Image list, symptoms and cleanup: docs/reference/standard/backend/testing.md
 
 const (
 	// pgImage is the throwaway container image. Same image as production

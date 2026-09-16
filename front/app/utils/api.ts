@@ -15,7 +15,7 @@ function getConfigApiBase(): string {
 /**
  * API base 解析规则（契约见 openspec spec `dev-api-networking`）：
  * - 绝对 http(s) base（默认 `http://localhost:5100/api`，或显式 `NUXT_PUBLIC_API_BASE`）
- *   原样生效——浏览器/WSL 工具直连后端（后端 CORS 白名单放行前端 origin）；
+ *   原样生效——浏览器/本机工具直连后端（后端 CORS 白名单放行前端 origin）；
  * - 相对 base（如 `/api`）同源解析——供未来同源反代部署使用。
  */
 export function getApiBaseUrl(): string {

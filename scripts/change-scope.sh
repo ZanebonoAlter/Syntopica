@@ -18,12 +18,12 @@
 #   skeleton  backend-go/internal/{app,models}/** 或 backend-go/cmd/**
 #             → go build ./... + go vet ./...（不自动 test）
 #   依赖       backend-go/go.mod|go.sum → 提示全量 go test ./...（不自动执行）
-#   frontend  front/**（非 .md）→ pnpm lint（唯一 WSL 安全）；typecheck/test:unit/build 需 cmd.exe
+#   frontend  front/**（非 .md）→ pnpm lint（POSIX bash 可跑）；typecheck/test:unit/build 按平台标注执行前置
 #   非代码    docs/ *.md scripts/ .pi/ openspec/ → 无测试命令
 #   未命中    其他路径 → 「无法判定，请手动选择」，绝不猜测（codegraph affected 误报教训）
 #
 # 与 doc-impact.sh 的关系：文件收集逻辑复制不共享（各自独立演进，~15 行重叠不值当抽库）。
-# WSL bash 可跑。退出码恒 0（判定器不评判改动好坏）。
+# POSIX bash（Linux / macOS / WSL）可跑。退出码恒 0（判定器不评判改动好坏）。
 
 set -u
 
@@ -54,7 +54,7 @@ done
 
 # ---------------------------------------------------------------------------
 # 改动文件集合（复制自 doc-impact.sh changed_files，DrvFS/quotepath 处理同源）
-#   core.checkStat=minimal：WSL DrvFS(/mnt/*) 上完整 stat 极慢（29s→2s）
+#   core.checkStat=minimal：在慢速网络挂载（WSL DrvFS /mnt/*）上完整 stat 极慢（29s→2s）
 #   core.quotepath=false：中文路径原样输出
 # ---------------------------------------------------------------------------
 collect_changed_files() {
@@ -156,7 +156,7 @@ done
 }
 [ "$SEEN_FRONTEND" = 1 ] && add_target "pnpm lint" "frontend"
 [ "$SEEN_DEPMOD" = 1 ] && add_notice "依赖变更（go.mod/go.sum）：建议全量 go test ./...（不自动执行）"
-[ "$SEEN_FRONTEND" = 1 ] && add_notice "前端 typecheck/test:unit/build 需 Windows cmd 执行（WSL 缺 native binding）"
+[ "$SEEN_FRONTEND" = 1 ] && add_notice "前端 typecheck/test:unit/build 的执行前置按平台而异：Windows 经 cmd.exe，Linux/macOS 本机直跑（均不属本条门禁范围，留给人工与归档门禁）"
 
 # ---------------------------------------------------------------------------
 # 输出

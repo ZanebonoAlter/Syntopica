@@ -1,7 +1,7 @@
 # 前端 Lint 配置（ESLint）
 
 > **权威源**：本文件是前端静态检查配置的唯一权威。门禁命令见《开发执行规范》§5.1。
-> Lint 可在 WSL 跑；typecheck/build 必须走 Windows cmd（见 `shared/commit-pr.md`）。
+> Lint 在所有平台可用；typecheck/build 在 Windows + WSL 宿主必须走 Windows cmd（见 `shared/commit-pr.md` 跨平台节）。
 
 ## 配置文件
 

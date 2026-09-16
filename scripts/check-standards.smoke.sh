@@ -81,6 +81,29 @@ for model in ai_models.go topic_graph.go semantic_label.go; do
 	: >"$TMP/backend-go/internal/models/$model"
 done
 
+# I 段专用最小主 spec fixture：openspec validate --specs 需「≥1 项且零失败」才判通过
+# （0 项 = 没校验到任何东西 = FAIL，防假绿）。fixture 早先只有 openspec/changes，
+# 故 I 段引入后本 smoke 必失败——非被测逻辑问题，是 fixture 缺位。
+mkdir -p "$TMP/openspec/specs/fixture-cap"
+cat >"$TMP/openspec/specs/fixture-cap/spec.md" <<'SPEC'
+# fixture-cap Specification
+
+## Purpose
+
+Fixture capability exercising check-standards I section inside this smoke.
+
+## Requirements
+
+### Requirement: fixture requirement
+
+The fixture SHALL validate with zero failures.
+
+#### Scenario: fixture scenario
+
+- **WHEN** the smoke runs
+- **THEN** this spec validates
+SPEC
+
 # F 段专用可控替身：以 change basename 决定 verify 成败。
 cat >"$TMP/scripts/doc-impact.sh" <<'EOF'
 #!/usr/bin/env bash

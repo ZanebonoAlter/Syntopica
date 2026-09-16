@@ -185,7 +185,7 @@ AI 相关设置（LLM 凭证、Firecrawl、Digest 导出）通过 Web UI 配置�
 
 完整步骤与排障表见 [`deploy/same-origin/README.md`](../../deploy/same-origin/README.md)。
 
-> 为何不用 Nitro `devProxy` / Vite `server.proxy` 做同源：两条路径都已实测否决（`proxyRequest` 不处理 WebSocket upgrade；Nuxt middlewareMode 下 Vite 不接 upgrade 事件），见 `openspec/changes/fix-wsl-dev-networking/design.md` D2 与该 change 的 evidence。
+> 为何不用 Nitro `devProxy` / Vite `server.proxy` 做同源：两条路径都已实测否决（`proxyRequest` 不处理 WebSocket upgrade；Nuxt middlewareMode 下 Vite 不接 upgrade 事件），见 `openspec/changes/archive/2026-09-16-fix-wsl-dev-networking/design.md` D2 与该 change 的 evidence。
 
 ### 多机 / 远程访问（浏览器与后端不同机）
 

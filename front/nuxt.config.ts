@@ -5,8 +5,8 @@ export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   ssr: false,
   devtools: { enabled: true },
-  // 显式绑 0.0.0.0：默认 localhost 在 Windows 上解析为 ::1 只绑 v6 环回，
-  // WSL mirrored v4 (127.0.0.1) 够不着（v6-only 监听问题，契约见 openspec spec dev-api-networking）
+  // 显式绑 0.0.0.0：默认 localhost 在 Windows 上解析为 ::1 只绑 v6 环回，IPv4 环回与
+  // 跨主机（局域网/虚拟网段）均够不着（v6-only 监听问题，契约见 openspec spec dev-api-networking）
   devServer: {
     host: '0.0.0.0',
   },

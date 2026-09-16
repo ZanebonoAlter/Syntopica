@@ -5,7 +5,8 @@
  * 1. 监听 turn_end 而非 tool_result：每回合跑一次，避免 agent 批量 edit 触发 N 次门禁
  * 2. 不跑 go test：影响包无法自动判定（codegraph affected 实测误报），全量 go test ./... 100s+Docker+flaky；
  *    测试靠 agent 按 AGENTS.md 手动跑 + §11 归档门禁兜底
- * 3. 前端只跑 pnpm lint：唯一 WSL/bash 安全的前端门禁；typecheck/test:unit/build 需 cmd.exe，bash 脆弱
+ * 3. 前端只跑 pnpm lint：门禁分层设计——typecheck/test:unit/build 留给 agent 手动执行与归档门禁
+ *    兜底，与执行平台无关（linux-native-dev-environment 明确：MUST NOT 因平台能力变化扩大门禁范围）
  * 4. 软提示不硬阻断：deliverAs:"steer" 把失败喂回 agent 上下文，让它自己修；不 return block/isError，避免长任务卡死
  * 5. 纯文档/纯对话回合零成本放行（git diff 无 .go/.ts 改动即跳过）
  *
@@ -32,10 +33,17 @@
  *     本轮 cmd 链路门禁整体短路（fail-open）+ policy.decision(interop-down)，零
  *     gate.check 假失败；diag 特征命中（UtilAcceptVsock / <N>WSL ERROR 前缀）的失败
  *     不进粘性、归因环境；cmd 链路命令失败提示标（wsl环境）。
+ * 13. 执行链路平台分流（linux-native-dev-environment，2026-09）：第 12 条的防护以
+ *     「宿主确有 cmd.exe」为前提，该前提在 Linux/macOS 宿主上不成立——那里 cmd.exe
+ *     不可达，探测恒失败会让门禁每轮整体短路（静默失效）。故探测前置平台判定：
+ *     `cmdExeReachable()` 为假即 native 模式（本机 go/golangci-lint/pnpm + cwd 参数
+ *     执行，不探测、不短路、不标 wsl环境）；为真则维持第 12 条既有 cmd.exe 链路语义
+ *     （每轮健康探测，因为 vsock 健康状态是逐回合的）。平台身份会话内缓存
+ *     （session_start 重置），不逐回合重判——平台不会逐回合变，interop 健康会。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { statSync } from "node:fs";
-import { join } from "node:path";
+import { statSync, accessSync, constants } from "node:fs";
+import { join, delimiter } from "node:path";
 import { logEvent } from "./lib/harness-log";
 import { detectActiveChange } from "./lib/active-change";
 import { syncEditMap, resetEditMapState } from "./lib/edit-map";
@@ -59,6 +67,35 @@ const INTEROP_PROBE_TIMEOUT_MS = 2_000;
 // 文件变化，记账会把他人改动误归到本会话绑定的 change 头上（会话间 mtime
 // 串扰，第五误归因通道）；纯编辑工具的快照变化与本次调用强相关。
 const EDIT_TOOLS = new Set(["edit", "write", "apply_patch"]);
+
+// 执行链路平台模式（linux-native-dev-environment D3）：null = 本会话未判定。判定结果在
+// 会话内稳定复用——native 下不再探测（无跨系统链路可坏），windows 下仍需每回合健康探测
+// （vsock 健康是逐回合属性）。修正条件化：只在 null 时判定，不在回合中途反复切换。
+let execPlatform: "native" | "windows" | null = null;
+
+/**
+ * cmd.exe 是否可达（平台身份判定的唯一依据）。
+ *
+ * 为何不用「探测调用失败」来判定：`pi.exec` 底层 spawn 的 ENOENT 被 execCommand 的
+ * catch 统一转成 `{code:1, stdout:"", stderr:""}`（dist/core/exec.js），与「cmd.exe 存在
+ * 但返回非零」在返回值上无法区分。故先做 PATH 可达性检查：Windows 恒真（System32 必备），
+ * WSL 经 appendWindowsPath 通常为真（保持既有 interop 语义），Linux/macOS 原生环境为假。
+ */
+function cmdExeReachable(): boolean {
+	if (process.platform === "win32") return true;
+	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+		if (!dir) continue;
+		for (const name of ["cmd.exe", "cmd"]) {
+			try {
+				accessSync(join(dir, name), constants.X_OK);
+				return true;
+			} catch {
+				/* 该目录下没有，继续找 */
+			}
+		}
+	}
+	return false;
+}
 
 /* 模块级会话状态（session_start 重置；ESM 模块缓存可能跨会话残留，显式清零） */
 // git 脏文件快照（tracked diff + untracked 的 {mtime,size}）；null = 待初始化
@@ -101,6 +138,7 @@ export default function (pi: ExtensionAPI) {
 		stickyFailures = new Set();
 		gateOkStates = new Map();
 		eslintCacheOff = false;
+		execPlatform = null; // 平台判定随会话边界重判（spec：判定在会话内稳定）
 		resetEditMapState(); // edit.map 归属累计随会话边界清零（跨 session 并集由库内 base 续接）
 		// 基线初始化：会话开始时的 git 脏文件（含上个会话残留）全部进基线不触发
 		try {
@@ -135,6 +173,7 @@ export default function (pi: ExtensionAPI) {
 		stickyFailures = new Set();
 		gateOkStates = new Map();
 		eslintCacheOff = false;
+		execPlatform = null;
 		ownerSessionId = null;
 		resetEditMapState();
 	});
@@ -161,8 +200,8 @@ export default function (pi: ExtensionAPI) {
 				{ signal: ctx.signal, timeout: 10_000 },
 			);
 			files = `${changed.stdout}\n${untracked.stdout}`;
-			// 用 git 仓库根而非 process.cwd()：扩展进程的 cwd 可能不在 /mnt 下（如 /root/...），
-			// winPath 会原样返回 WSL 路径，cmd.exe cd 不认 → "系统找不到指定的路径"。
+			// 用 git 仓库根而非 process.cwd()：扩展进程的 cwd 可能不在仓库树下（如 /root/...），
+			// winPath 会原样返回非 /mnt 路径，cmd.exe cd 不认 → "系统找不到指定的路径"。
 			const toplevel = await pi.exec("git", ["rev-parse", "--show-toplevel"], {
 				signal: ctx.signal,
 				timeout: 10_000,
@@ -207,28 +246,38 @@ export default function (pi: ExtensionAPI) {
 		const isFrontend = trigFrontend || stickyFrontend;
 		if (!isBackend && !isFrontend) return; // 纯文档改动/无变化放行（跳过侧零记账）
 
-		// 3.5 interop 健康探测（harden-gate-interop-health）：本轮需执行 cmd 链路门禁
-		//     （后端三件套+域测试 / pnpm lint 共享同一 vsock 通道）前探测一次，失败则
-		//     整体短路（fail-open）。探测超时/exit≠0/抛异常同路径；故障期重试无意义
-		//     （design Non-Goals），恢复交给人（wsl --shutdown）。edit.map（step 2.5）已
-		//     在探测前记账，归属地图不受短路影响。
+		// 3.5 执行链路判定 + interop 健康探测（harden-gate-interop-health 语义在
+		//     linux-native-dev-environment 下扩展为三态）：
+		//       native  —— cmd.exe 不可达 → 本机工具链执行（不探测、不短路）
+		//       windows —— cmd.exe 可达且探测健康 → 既有 cmd.exe interop 链路
+		//       down    —— cmd.exe 可达但探测失败 → 整体短路（fail-open，既有语义）
+		//     平台判定只在 execPlatform 为 null 时做一次（会话内稳定）；windows 下探测
+		//     仍需每回合执行（vsock 健康是逐回合属性）。探测超时/exit≠0/抛异常同走
+		//     down；故障期重试无意义（design Non-Goals），恢复交给人。edit.map
+		//     （step 2.5）已在探测前记账，归属地图不受短路影响。
 		const sessionId = ctx.sessionManager?.getSessionId?.();
 		const probeT0 = Date.now();
+		if (execPlatform === null) {
+			execPlatform = cmdExeReachable() ? "windows" : "native";
+		}
 		let interopDown = false;
-		try {
-			const probe = await pi.exec("cmd.exe", ["/C", "echo ok"], {
-				signal: ctx.signal,
-				timeout: INTEROP_PROBE_TIMEOUT_MS,
-			});
-			interopDown = probe.code !== 0;
-		} catch {
-			interopDown = true; // 超时/异常同 fail-open（spec：探测调用异常也 fail-open）
+		if (execPlatform === "windows") {
+			try {
+				const probe = await pi.exec("cmd.exe", ["/C", "echo ok"], {
+					signal: ctx.signal,
+					timeout: INTEROP_PROBE_TIMEOUT_MS,
+				});
+				interopDown = probe.code !== 0;
+			} catch {
+				interopDown = true; // 超时/异常同 fail-open（spec：探测调用异常也 fail-open）
+			}
 		}
 		if (interopDown) {
 			// 短路记账（spec：interop 探测短路被记账且不双写）：一条 policy.decision
 			// （统一 helper：reasonCode 白名单归一、durationMs 非有限正数自动省略、
 			// change 不传 = 自动检测活跃 change）；被跳过的门禁命令零 gate.check
 			// （否则账本退回连环假失败老问题）。记账旁路化（helper 内 fail-loud）。
+			// 此分支只在 windows 模式可达（native 不探测）。
 			if (sessionId) {
 				logPolicyDecision(repoRoot, {
 					sessionId,
@@ -249,7 +298,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// 4. 跑快门禁（全部 <5s，WSL/bash 安全）
+		// 4. 跑快门禁（单条命令量级秒级；命令集与执行平台正交，仅链路不同）
 		const failures: string[] = [];
 		// 环境故障提示段（harden-gate-interop-health：diag 特征命中的失败单独归因，
 		// 不混入门禁失败列表——避免 agent 误当代码问题去修）
@@ -260,24 +309,28 @@ export default function (pi: ExtensionAPI) {
 		// 无 sessionId 时跳过记账，sticky/采样状态照走（与既有语义一致；
 		// sessionId 已在 step 3.5 探测前取得）。
 		let boundChange: string | null | undefined;
+		// 链路标注（linux-native-dev-environment spec：标注 MUST 与实际执行方式一致）：
+		// windows 模式标跨系统链路（wsl环境），native 模式标本机原生——不得张冠李戴。
+		const linkTag = execPlatform === "windows" ? " (wsl环境)" : " (本机)";
 		const gateLog = (cmd: string, code: number, ms: number, output: string) => {
 			const ok = code === 0;
 			const d = stepGateOk(gateOkStates.get(cmd) ?? initGateOkState(), ok);
 			gateOkStates.set(cmd, d.next);
-			// 当前 gateLog 覆盖的命令（后端三件套/域测试/pnpm lint）全部经 cmd.exe
-			// interop 执行，失败行统一标（wsl环境）链路标注（spec：不弱化真实失败的
-			// 修复义务——真实失败仍走粘性+分级）。
+			// 当前 gateLog 覆盖的命令按模式经 cmd.exe interop（windows）或本机 PATH（native）
+			// 执行，失败行按实际链路标注（windows 标（wsl环境）；native 标本机）。
+			// spec：不弱化真实失败的修复义务——真实失败仍走粘性+分级。
 			if (ok) stickyFailures.delete(cmd);
-			else if (isInteropFailure(output)) {
+			else if (execPlatform === "windows" && isInteropFailure(output)) {
 				// 环境故障（spec：不进粘性、不按 [回归]/[中间态] 分级）：探测通过但命令
 				// 执行中途 interop 挂的兜底；gate.check 照记全量失败（diag 含特征可考古）。
+				// 仅 windows 模式参与判定：native 无跨系统链路，同名字符串不得触发环境归因。
 				envFailures.push(
-					`[${cmd} (wsl环境)] exit ${code}：输出含 WSL interop 故障特征（UtilAcceptVsock），判定为环境故障而非代码问题；不计入粘性重跑，恢复后自动续跑`,
+					`[${cmd}${linkTag}] exit ${code}：输出含 WSL interop 故障特征（UtilAcceptVsock），判定为环境故障而非代码问题；不计入粘性重跑，恢复后自动续跑`,
 				);
 			} else {
 				stickyFailures.add(cmd);
 				failures.push(
-					`${d.failPrefix}[${cmd} (wsl环境)] exit ${code}\n${tail(output, 30)}`,
+					`${d.failPrefix}[${cmd}${linkTag}] exit ${code}\n${tail(output, 30)}`,
 				);
 			}
 			if (!sessionId || !d.log) return;
@@ -301,32 +354,48 @@ export default function (pi: ExtensionAPI) {
 		};
 
 		if (isBackend) {
-			// 后端 Go 工具链在 Windows（D:\tool\Go\bin\go.exe = go1.25.6）；WSL 仅有 Go 1.18，
-			// 其 go.mod 解析器不认 `go 1.25.0`（Go 1.21+ 三段式合法格式）→ 假阳性。
-			// 故后端门禁必须走 cmd.exe 调 Windows Go（与前端 cmd.exe 规范一致，见 AGENTS.md）。
-			// 路径用正斜杠且不加引号：cmd.exe /C 对反斜杠+引号组合会触发引号吞噬（见
-			// windows-scripting-pitfalls skill 铁律 #4），实测 `cd /d "D:\\..." && go build` 报
-			// "文件名、目录名或卷标语法不正确"。项目根无空格，正斜杠裸路径最稳。
+			// 后端门禁双模式（linux-native-dev-environment D2）：
+			//   native  —— 本机 PATH 的 go / golangci-lint，工作目录经 ExecOptions.cwd 指定
+			//              （不依赖 shell cd，也不做 Windows 路径转换）
+			//   windows —— cmd.exe interop 调 Windows 工具链（WSL 侧 Go 版本与 go.mod 不匹配
+			//              的历史原因，行为原样保留）。路径用正斜杠且不加引号：cmd.exe /C 对
+			//              反斜杠+引号组合会触发引号吞噬（见 windows-scripting-pitfalls skill
+			//              铁律 #4），实测 `cd /d "D:\\..." && go build` 报
+			//              "文件名、目录名或卷标语法不正确"。项目根无空格，正斜杠裸路径最稳。
+			const isNative = execPlatform === "native";
+			const backendDir = join(repoRoot, "backend-go");
 			const backendWin = `${winPath(repoRoot)}/backend-go`;
-			// 用 Windows 绝对路径，不依赖 PATH——pi extension 的 Node.js 进程在 WSL PATH 下
-			// 找 cmd.exe，但 cmd.exe 继承的环境可能不含 %USERPROFILE%\go\bin 等用户 PATH 条目。
+			// native 走 PATH；windows 用 Windows 绝对路径，不依赖 PATH——pi extension 的
+			// Node.js 进程在 WSL PATH 下找 cmd.exe，但 cmd.exe 继承的环境可能不含
+			// %USERPROFILE%\go\bin 等用户 PATH 条目。
 			// Windows Go: D:\tool\Go\bin\go.exe (go1.25.6)
 			// Windows golangci-lint: C:\Users\Admin\go\bin\golangci-lint.exe (v2.12.2)
-			const goExe = "D:\\tool\\Go\\bin\\go.exe";
-			const linterExe = "C:\\Users\\Admin\\go\\bin\\golangci-lint.exe";
+			const goExe = isNative ? "go" : "D:\\tool\\Go\\bin\\go.exe";
+			const linterExe = isNative
+				? "golangci-lint"
+				: "C:\\Users\\Admin\\go\\bin\\golangci-lint.exe";
 			// D2：lint 先行作短路哨兵——typechecking error 即编译失败，vet/build/test
 			// 必然同因失败，跳过执行（未执行零记账）；否则 vet/build 并行。
 			// domain tests 保持串行（总预算 5min 语义 + 并发峰值保守，design D2 修订）。
-			const runWin = async (cmdline: string) => {
+			const runBackend = async (cmdline: string) => {
 				const t0 = Date.now();
-				const r = await pi.exec(
-					"cmd.exe",
-					["/C", `cd /d ${backendWin} && ${cmdline}`],
-					{ signal: ctx.signal, timeout: 120_000 },
-				);
+				const r = isNative
+					? await pi.exec("bash", ["-c", cmdline], {
+							cwd: backendDir,
+							signal: ctx.signal,
+							timeout: 120_000,
+						})
+					: await pi.exec("cmd.exe", ["/C", `cd /d ${backendWin} && ${cmdline}`], {
+							signal: ctx.signal,
+							timeout: 120_000,
+						});
 				return { code: r.code, ms: Date.now() - t0, out: `${r.stdout}\n${r.stderr}` };
 			};
-			const lint = await runWin(`${linterExe} run ./...`);
+			// --allow-parallel-runners（linux-native-dev-environment）：开发机可能同时有多个
+			// 会话/手动跑 lint（并发 change 共享工作树），golangci-lint 默认对同机实例加文件锁，
+			// 后到者报 `parallel golangci-lint is running` exit 3——那是环境冲突不是代码回归，
+			// 被 [回归] 分级会诱导 agent 去修不存在的代码问题（2026-09-16 实测踩中）。
+			const lint = await runBackend(`${linterExe} run --allow-parallel-runners ./...`);
 			gateLog("golangci-lint", lint.code, lint.ms, lint.out);
 			if (lint.code !== 0 && isCompileFailure(lint.out)) {
 				// 同根因短路：本回合仅 lint 一条事件（spec scenario「同根因短路未执行不记账」）
@@ -337,7 +406,7 @@ export default function (pi: ExtensionAPI) {
 				];
 				const rs = await Promise.all(
 					rest.map(([label, cmdline]) =>
-						runWin(cmdline).then((r) => ({ label, ...r })),
+						runBackend(cmdline).then((r) => ({ label, ...r })),
 					),
 				);
 				for (const { label, code, ms, out } of rs) gateLog(label, code, ms, out);
@@ -367,7 +436,7 @@ export default function (pi: ExtensionAPI) {
 								);
 								continue;
 							}
-							const r = await runWin(t.cmd);
+							const r = await runBackend(t.cmd);
 							gateLog(t.cmd, r.code, r.ms, r.out);
 						}
 					}
@@ -378,22 +447,30 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (isFrontend) {
-			// D1：门禁走 Windows 侧 eslint --cache（增量；实测 WSL DrvFS I/O 慢 ~17 倍：
-			// 热缓存 WSL 35s vs Windows 2.1s，eslint 计算本身只占零头）；
-			// front/package.json 的 pnpm lint 保持全量（人工/归档语义，WSL 可跑）。
+			// D1：门禁走 eslint --cache（增量；windows 分支经 cmd.exe 跑 Windows 侧——
+			// 实测 WSL DrvFS I/O 慢 ~17 倍：热缓存 WSL 35s vs Windows 2.1s，eslint 计算本身
+			// 只占零头；native 分支本机直接跑，无 DrvFS 开销）。
+			// front/package.json 的 pnpm lint 保持全量（人工/归档语义）。
 			// eslint.config.* 本会话变过后缓存不可信，去 cache 全量兑底。
 			const cacheArgs = eslintCacheOff
 				? ""
 				: " --cache --cache-location node_modules/.cache/eslint/.eslintcache";
 			const t0 = Date.now();
-			const r = await pi.exec(
-				"cmd.exe",
-				[
-					"/C",
-					`cd /d ${winPath(repoRoot)}/front && pnpm exec eslint .${cacheArgs}`,
-				],
-				{ signal: ctx.signal, timeout: 120_000 },
-			);
+			const r =
+				execPlatform === "native"
+					? await pi.exec("bash", ["-c", `pnpm exec eslint .${cacheArgs}`], {
+							cwd: join(repoRoot, "front"),
+							signal: ctx.signal,
+							timeout: 120_000,
+						})
+					: await pi.exec(
+							"cmd.exe",
+							[
+								"/C",
+								`cd /d ${winPath(repoRoot)}/front && pnpm exec eslint .${cacheArgs}`,
+							],
+							{ signal: ctx.signal, timeout: 120_000 },
+						);
 			gateLog("pnpm lint", r.code, Date.now() - t0, `${r.stdout}\n${r.stderr}`);
 		}
 
@@ -407,7 +484,8 @@ export default function (pi: ExtensionAPI) {
 				{ deliverAs: "steer", triggerTurn: true },
 			);
 		}
-		// 5.5 环境故障 → 单独软提示（不与门禁失败混排；agent 不应据此修代码）
+		// 5.5 环境故障 → 单独软提示（不与门禁失败混排；agent 不应据此修代码）。
+		// 仅 windows 模式能填充 envFailures（native 无跨系统链路，见 gateLog 的条件）。
 		if (envFailures.length > 0) {
 			pi.sendMessage(
 				{

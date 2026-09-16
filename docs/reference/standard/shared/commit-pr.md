@@ -8,7 +8,7 @@
 ### 前端改动
 
 ```bash
-pnpm lint                      # ESLint（WSL 可跑）
+pnpm lint                      # ESLint（全平台可用）
 pnpm build                     # 生产构建
 pnpm exec nuxi typecheck       # TypeScript 类型检查
 pnpm test:unit                 # 单元测试
@@ -32,9 +32,12 @@ go test ./...                  # 全量测试
 - `docs/reference/flow/*.md`
 - `docs/reference/database/*.md`
 
-## ⚠️ WSL / Windows cmd 注意
+## ⚠️ 跨平台执行注意
 
-前端 `pnpm lint` 可在 WSL 跑；但 **typecheck / build 必须通过 Windows cmd 执行**（WSL 缺少 Linux native binding，如 `@oxc-parser/binding-linux-x64-gnu` 会失败）：
+前端 `node_modules` 按宿主平台安装，执行方式随之不同：
+
+- **Linux / macOS（含树莓派）**：本机直接跑上表全部命令。
+- **Windows + WSL**：`pnpm lint` 可在 WSL 跑；**typecheck / build / test:unit 必须经 Windows cmd**（WSL 缺 Linux native binding，如 `@oxc-parser/binding-linux-x64-gnu` 会失败）：
 
 ```bash
 cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm exec nuxi typecheck"

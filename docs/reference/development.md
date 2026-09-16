@@ -78,6 +78,33 @@ docker compose up -d
 
 这会启动一个 pgvector 容器，端口和数据目录可在 `.env` 中配置。
 
+#### Docker 镜像来源与可达性（中国大陆网络）
+
+Docker Hub（`registry-1.docker.io`）在国内常不可达，而本仓库的 compose 与集成测试都按**原始镜像名**引用镜像（如 `pgvector/pgvector:pg18-trixie`）。因此**可达性在开发主机层面解决，不写进仓库**：仓库内不得出现加速站域名，也不得改写镜像名——否则换机/CI 即失效。
+
+**做法**：给 Docker 守护进程配镜像加速来源（多列几个按序回退）：
+
+```bash
+# /etc/docker/daemon.json（不存在则新建）
+{
+  "registry-mirrors": [
+    "https://docker.1ms.run",
+    "https://docker.m.daocloud.io",
+    "https://docker.1panel.live"
+  ]
+}
+sudo systemctl restart docker
+# 验证：docker info | grep -A5 'Registry Mirrors'
+```
+
+> ⚠️ **上面的域名是示例，不保证长期有效**（国内加速站开关频繁）。配前先自行验证当前可达性：`docker pull <域名>/library/hello-world` 能成功即可用；失效则换其他来源或走备选路径②。**不要把域名复制进仓库代码/配置文件**——仓库只按原始镜像名引用镜像。
+
+配好后 `docker pull pgvector/pgvector:pg18-trixie` 等原始镜像名可直接拉取，`docker compose` 与 testcontainers 均无需任何改动。
+
+**备选路径**（加速站失效时）：① 换用其他已实测可达的加速站；② 给 Docker 配 HTTP 代理（`/etc/systemd/system/docker.service.d/http-proxy.conf` 里的 `HTTP_PROXY`/`HTTPS_PROXY`）；③ 应急：带前缀拉取后重打 tag（`docker pull <mirror>/xxx && docker tag <mirror>/xxx xxx`），仅救急、不作长期方案。
+
+> 集成测试必需的镜像清单，以及「镜像缺失导致容器泄漏」的识别与清理，见 [testing.md](testing.md) 集成测试节。
+
 ### 配置说明
 
 本地开发无需任何配置文件或 `.env` 文件即可启动——后端和前端均有开箱即用的默认值。
@@ -160,7 +187,7 @@ pytest test_schedulers.py::TestAutoRefreshScheduler::test_name -v
 pytest --cov=. --cov-report=html
 ```
 
-> **注意**：Python 集成测试需要 Go 后端可达（默认 `http://localhost:5100`；WSL 侧探测建议加 `no_proxy=localhost,127.0.0.1,::1` 防代理劫持）。
+> **注意**：Python 集成测试需要 Go 后端可达（默认 `http://localhost:5100`；存在系统代理时探测需绕过：设 `no_proxy=localhost,127.0.0.1,::1`）。
 
 ### Firecrawl 集成检查（在 `tests/firecrawl/` 目录执行）
 

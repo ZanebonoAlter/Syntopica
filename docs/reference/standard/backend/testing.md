@@ -193,6 +193,36 @@ SQLite 内存测试每次新建**空库**，迁移在有数据时的行为（回
 
 **判定法**：这个功能的效果是否依赖测试断言之外的"数据/环境/模型行为"？是 → 绿灯后必须做真实数据核对 + 效果评估，不能直接交付。
 
+## 集成测试必需的 Docker 镜像
+
+集成测试靠 testcontainers-go 自建隔离环境，因此本机必须能拉到下面两个镜像（均按**原始镜像名**引用，靠开发主机的 `registry-mirrors` 解决可达性，见 [development.md](../../development.md) Docker 镜像来源节）：
+
+| 镜像 | 用途 | 来源常量 |
+| --- | --- | --- |
+| `pgvector/pgvector:pg18-trixie` | 测试用 PostgreSQL（与生产 `docker-compose.pg.yml` 同镜像，保证 pgvector 行为一致） | `internal/platform/testutil/testutil.go` 的 `pgImage` |
+| `testcontainers/ryuk:0.13.0` | Ryuk sidecar——容器回收器（testcontainers-go v0.42.0 的 `ReaperDefaultImage`） | testcontainers-go 内部常量 |
+
+### ⚠️ Ryuk 镜像缺失会泄露容器
+
+`testutil.go` 的容器清理**完全委托 Ryuk**（代码显式不调 `TerminateContainer`）。若 Ryuk 镜像拉不下来，testcontainers 会先建好 pgvector 容器、再在启动 Ryuk 时失败返回——**已建的容器无人回收**。
+
+**症状与判定**：
+
+```bash
+docker ps -aq | wc -l          # 跑几轮集成测试后只增不减
+docker ps -a --filter name=ryuk # 无输出（sidecar 根本没起来）= 命中本節
+```
+
+**清理**：只删随机名测试容器，**不要**动 compose 管理的生产库与数据目录：
+
+```bash
+docker ps -a --format '{{.Names}}' | grep -v '^syntopica-postgres$' | xargs -r docker rm -f
+```
+
+> `syntopica-postgres` 是 `docker-compose.pg.yml` 的持久化容器（数据在 `./data/`），MUST NOT 被当泄漏物删除。
+
+**修复**：补齐 `testcontainers/ryuk:0.13.0` 后，再跑一次集成测试，运行前后 `docker ps -aq | wc -l` 应回到同一数字。
+
 ## 运行
 
 ```bash

@@ -15,7 +15,7 @@
 #      | Scenario | 测试文件 | 表逐行提取（Scenario→测试文件反向索引）
 #
 # 退出码：0 正常（哪怕段2/段3为空也如实输出「无」）；1 capability 在主 specs 与 archive 均不存在。
-# WSL bash 可跑。不执行任何测试、不改任何文件。
+# POSIX bash（Linux / macOS / WSL）可跑。不执行任何测试、不改任何文件。
 set -u
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
