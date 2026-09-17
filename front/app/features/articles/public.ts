@@ -8,4 +8,6 @@
 
 export { default as ArticleContentView } from './components/ArticleContentView.vue'
 export { default as ArticleCardView } from './components/ArticleCardView.vue'
+export { default as RowStatusPopover } from './components/RowStatusPopover.vue'
 export { useArticlePagination } from './composables/useArticlePagination'
+export { getArticlePipelineState, getPipelineStateMeta, type PipelineState } from './composables/useArticleProcessingStatus'

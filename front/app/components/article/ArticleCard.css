@@ -47,8 +47,10 @@
   box-shadow: inset 2px 0 0 var(--color-accent);
 }
 
-.article-row.article-row-read {
-  opacity: 0.55;
+/* v5 修订（用户实测已读行不可读）：不再整行 opacity——浮层是行的子元素，整行降透明会把
+   处理详情浮层（含实心底）一起淡化，下层文字穿透浮层（透字根因）；改为仅标题降色 */
+.article-row.article-row-read .row-title {
+  color: var(--color-text-secondary);
 }
 
 .article-row .row-main {

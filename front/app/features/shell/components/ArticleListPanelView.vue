@@ -35,19 +35,17 @@ const emit = defineEmits<{
   dateFilterClear: []
 }>()
 
-const apiStore = useApiStore()
 const feedsStore = useFeedsStore()
 
-const showDateFilter = ref(false)
-const localStartDate = ref(props.startDate)
-const localEndDate = ref(props.endDate)
-const selectedQuickDate = ref<number | null>(null)
-const feedStatusExpanded = ref(true)
+/** 行式布局固定行高（design D1）：标题 2 行 + meta，实测校准值 */
+const ROW_HEIGHT = 100
+
 const listContainerRef = ref<HTMLElement | null>(null)
+const panelHeaderRef = ref<HTMLElement | null>(null)
 
 const { list, containerProps, wrapperProps } = useVirtualList(
   toRef(() => props.articles),
-  { itemHeight: 120, overscan: 5 }
+  { itemHeight: ROW_HEIGHT, overscan: 5 }
 )
 
 function onContainerScroll(event: Event) {
@@ -102,46 +100,84 @@ const panelTitle = computed(() => {
   return '全部文章'
 })
 
+// ---------- 头部浮层（日期面板 / 订阅状态 popover） ----------
+const showDateFilter = ref(false)
+const localStartDate = ref(props.startDate)
+const localEndDate = ref(props.endDate)
+const selectedQuickDate = ref<number | null>(null)
+const feedPopOpen = ref(false)
+
+const dateFilterActive = computed(() => Boolean(localStartDate.value || localEndDate.value || selectedQuickDate.value))
+
+const dateFilterLabel = computed(() => {
+  if (selectedQuickDate.value) return `${selectedQuickDate.value}天内`
+  if (localStartDate.value && localEndDate.value) return `${localStartDate.value} ~ ${localEndDate.value}`
+  return localStartDate.value || localEndDate.value || ''
+})
+
+function toggleFeedPop() {
+  feedPopOpen.value = !feedPopOpen.value
+  if (feedPopOpen.value) showDateFilter.value = false
+}
+
+function toggleDatePanel() {
+  showDateFilter.value = !showDateFilter.value
+  if (showDateFilter.value) feedPopOpen.value = false
+}
+
+function onDocMouseDown(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  // 点击面板内部或头部按钮不关（按钮自身 toggle；面板内交互保持）
+  if (panelHeaderRef.value?.contains(target)) return
+  showDateFilter.value = false
+  feedPopOpen.value = false
+}
+
+watch([showDateFilter, feedPopOpen], ([a, b]) => {
+  if (a || b) {
+    document.addEventListener('mousedown', onDocMouseDown)
+  } else {
+    document.removeEventListener('mousedown', onDocMouseDown)
+  }
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onDocMouseDown)
+})
+
 const feedStatusItems = computed(() => {
   if (!currentFeed.value) return []
 
+  const refresh = currentFeed.value.refreshStatus
   return [
     {
       label: '刷新',
-      value: currentFeed.value.refreshStatus === 'refreshing'
+      value: refresh === 'refreshing'
         ? '进行中'
-        : currentFeed.value.refreshStatus === 'success'
+        : refresh === 'success'
           ? '正常'
-          : currentFeed.value.refreshStatus === 'error'
+          : refresh === 'error'
             ? '失败'
             : '空闲',
-      tone: currentFeed.value.refreshStatus === 'error'
-        ? 'rose'
-        : currentFeed.value.refreshStatus === 'success'
-          ? 'emerald'
-          : currentFeed.value.refreshStatus === 'refreshing'
-            ? 'sky'
-            : 'stone',
-      icon: currentFeed.value.refreshStatus === 'refreshing' ? 'mdi:loading' : 'mdi:refresh',
-      spinning: currentFeed.value.refreshStatus === 'refreshing',
+      tone: refresh === 'error' ? 'danger' : refresh === 'success' ? 'success' : refresh === 'refreshing' ? 'info' : 'neutral',
+      spinning: refresh === 'refreshing',
     },
     {
       label: '总结',
       value: currentFeed.value.articleSummaryEnabled ? '开启' : '关闭',
-      tone: currentFeed.value.articleSummaryEnabled ? 'emerald' : 'stone',
-      icon: 'mdi:brain',
+      tone: currentFeed.value.articleSummaryEnabled ? 'success' : 'neutral',
       spinning: false,
     },
     {
       label: '抓取',
       value: currentFeed.value.firecrawlEnabled ? '开启' : '关闭',
-      tone: currentFeed.value.firecrawlEnabled ? 'sky' : 'stone',
-      icon: 'mdi:spider-web',
+      tone: currentFeed.value.firecrawlEnabled ? 'info' : 'neutral',
       spinning: false,
     },
   ]
 })
 
+// ---------- 日期筛选 ----------
 function applyQuickDateFilter(days: number) {
   if (selectedQuickDate.value === days) {
     selectedQuickDate.value = null
@@ -160,6 +196,7 @@ function applyQuickDateFilter(days: number) {
 }
 
 function applyCustomDateFilter() {
+  showDateFilter.value = false
   emit('dateFilterChange', localStartDate.value, localEndDate.value)
 }
 
@@ -171,6 +208,7 @@ function clearDateFilter() {
   emit('dateFilterClear')
 }
 
+// ---------- 行交互 ----------
 function handleArticleClick(article: Article) {
   emit('articleClick', article)
 }
@@ -179,69 +217,59 @@ function handleFavorite(id: string) {
   emit('articleFavorite', id)
 }
 
-function statusToneClasses(tone: string) {
-  if (tone === 'rose') return 'border-rose-200 bg-rose-50 text-rose-700'
-  if (tone === 'emerald') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (tone === 'sky') return 'border-sky-200 bg-sky-50 text-sky-700'
-  return 'border-stone-200 bg-stone-100 text-stone-700'
-}
-
 import '~/components/layout/ArticleListPanel.css'
 </script>
 
 <template>
   <div class="article-list-panel">
-    <div class="panel-header">
-      <div class="header-content">
-        <h2 class="header-title">{{ panelTitle }}</h2>
-        <span class="article-count">{{ props.total }}</span>
-      </div>
-    </div>
+    <div ref="panelHeaderRef" class="panel-header">
+      <h2 class="header-title">{{ panelTitle }}</h2>
+      <span class="article-count">{{ props.total }}</span>
 
-    <div v-if="currentFeed" class="mx-4 mt-4">
-      <button
-        v-if="!feedStatusExpanded"
-        class="flex items-center gap-2 rounded-full border border-[var(--color-border-subtle)] bg-[var(--color-bg-hover)] px-3 py-1.5 shadow-[var(--shadow-subtle)] transition-colors hover:bg-[var(--color-bg-active)]"
-        @click="feedStatusExpanded = true"
-      >
-        <Icon icon="mdi:information-slab-circle" width="18" height="18" style="color: var(--color-text-muted)" />
-      </button>
-      <div v-else class="rounded-2xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-hover)] p-3 shadow-[var(--shadow-subtle)]">
-        <div class="flex flex-wrap items-center gap-2">
-          <button @click="feedStatusExpanded = false">
-            <Icon icon="mdi:chevron-up" width="16" height="16" style="color: var(--color-text-muted)" />
-          </button>
-          <span class="mr-1 text-sm font-semibold" style="color: var(--color-text-primary)">订阅源状态</span>
-          <div v-for="item in feedStatusItems" :key="item.label" class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold" :class="statusToneClasses(item.tone)">
-            <Icon :icon="item.icon" width="14" height="14" :class="{ 'animate-spin': item.spinning }" />
-            <span>{{ item.label }}</span>
-            <span>{{ item.value }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="filter-bar">
-      <div class="filter-left">
-        <button class="filter-toggle-btn" :class="{ active: showDateFilter || localStartDate || localEndDate || selectedQuickDate }" @click="showDateFilter = !showDateFilter">
-          <Icon :icon="showDateFilter ? 'mdi:chevron-up' : 'mdi:chevron-down'" width="14" height="14" class="toggle-icon" />
-          <Icon icon="mdi:calendar-filter" width="14" height="14" />
-          <span>日期筛选</span>
+      <span v-if="dateFilterActive" class="filter-chip">
+        <span class="filter-chip-text">{{ dateFilterLabel }}</span>
+        <button class="filter-chip-clear" aria-label="清除日期筛选" @click="clearDateFilter">
+          <Icon icon="mdi:close" width="11" height="11" />
         </button>
-      </div>
-    </div>
+      </span>
 
-    <div v-if="showDateFilter" class="date-filter-panel">
-      <div class="quick-options-row">
-        <span class="row-label">快速选择：</span>
+      <span class="header-spacer"></span>
+
+      <button
+        v-if="currentFeed"
+        class="header-icon-btn"
+        :class="{ on: feedPopOpen }"
+        aria-label="订阅源状态"
+        title="订阅源状态"
+        @click="toggleFeedPop"
+      >
+        <Icon icon="mdi:information-slab-circle" width="16" height="16" />
+      </button>
+      <button
+        class="header-icon-btn"
+        :class="{ on: showDateFilter }"
+        aria-label="日期筛选"
+        title="日期筛选"
+        @click="toggleDatePanel"
+      >
+        <Icon icon="mdi:calendar-filter" width="16" height="16" />
+      </button>
+
+      <!-- 日期筛选下拉面板（absolute 于 header，覆盖下方行） -->
+      <div v-if="showDateFilter" class="head-pop date-pop">
+        <div class="hp-section-label">快速选择</div>
         <div class="quick-options">
-          <button v-for="option in quickDateOptions" :key="option.days" class="quick-option-btn" :class="{ active: selectedQuickDate === option.days }" @click="applyQuickDateFilter(option.days)">
+          <button
+            v-for="option in quickDateOptions"
+            :key="option.days"
+            class="quick-option-btn"
+            :class="{ active: selectedQuickDate === option.days }"
+            @click="applyQuickDateFilter(option.days)"
+          >
             {{ option.label }}
           </button>
         </div>
-      </div>
 
-      <div class="custom-date-row-vertical">
         <div class="date-input-row">
           <span class="row-label">开始日期</span>
           <input v-model="localStartDate" type="date" class="date-input" @change="selectedQuickDate = null" />
@@ -250,11 +278,27 @@ import '~/components/layout/ArticleListPanel.css'
           <span class="row-label">结束日期</span>
           <input v-model="localEndDate" type="date" class="date-input" @change="selectedQuickDate = null" />
         </div>
+
+        <div class="panel-actions">
+          <AppButton variant="secondary" size="sm" @click="clearDateFilter">清除筛选</AppButton>
+          <AppButton variant="primary" size="sm" @click="applyCustomDateFilter">应用筛选</AppButton>
+        </div>
       </div>
 
-      <div class="panel-actions">
-        <AppButton variant="secondary" size="sm" @click="clearDateFilter">清除筛选</AppButton>
-        <AppButton variant="primary" size="sm" @click="applyCustomDateFilter">应用筛选</AppButton>
+      <!-- 订阅源状态 popover（只读） -->
+      <div v-if="feedPopOpen && currentFeed" class="head-pop feed-pop">
+        <div class="hp-section-label">订阅源状态（只读）</div>
+        <div v-for="item in feedStatusItems" :key="item.label" class="feed-line">
+          <span
+            v-if="item.spinning"
+            class="feed-dot feed-dot-spin"
+            role="status"
+          ></span>
+          <span v-else class="feed-dot" :class="`feed-dot-${item.tone}`"></span>
+          <span class="feed-key">{{ item.label }}</span>
+          <span class="feed-value" :class="`feed-value-${item.tone}`">{{ item.value }}</span>
+        </div>
+        <div class="feed-hint">改开关请前往 设置 → 订阅源管理</div>
       </div>
     </div>
 
@@ -273,6 +317,7 @@ import '~/components/layout/ArticleListPanel.css'
               <ArticleCard
                 :article="article"
                 :selected="props.selectedArticle?.id === article.id"
+                :show-feed-title="!currentFeed"
                 compact
                 @click="handleArticleClick"
                 @favorite="handleFavorite"
@@ -330,6 +375,7 @@ import '~/components/layout/ArticleListPanel.css'
 
 .virtual-item {
   padding: 0 0.5rem;
+  position: relative;
 }
 
 .loading-more {
