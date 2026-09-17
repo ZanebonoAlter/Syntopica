@@ -1602,6 +1602,8 @@ type ExtCtx = {
 		/** session header：fork/子线程凭证（parentSession = 父会话文件路径）——
 		 *  per-session-constraint-binding 用它判定「父子关系可证」才继承 */
 		getHeader?: () => { parentSession?: string } | null;
+		/** 会话文件绝对路径——header 未落盘时经 `forks/` 路径兜底解父 id */
+		getSessionFile?: () => string | undefined | null;
 	};
 };
 
