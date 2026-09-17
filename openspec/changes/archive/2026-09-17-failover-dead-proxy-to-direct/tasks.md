@@ -31,7 +31,7 @@
 
 - [x] `docs/reference/configuration.md` 出站代理节：修正「保存即时生效」表述（改为真实语义：atomic URL 所有已构造 client 即时生效）+ 补熔断降级与恢复语义、错误分类边界
 - [x] `docs/reference/flow/scheduler.md`「代理污染防线」节：补充代理不可达熔断直连回退（60s 窗口 + 单飞试探）一段
-- [ ] 归档后按 §12.2 在对应 flow 文档补「变更溯源」链接（archive 后补，属归档收尾 commit）
+- [x] 归档后按 §12.2 在对应 flow 文档补「变更溯源」链接（archive 后补，属归档收尾 commit）
 
 ## 6. 验证
 
