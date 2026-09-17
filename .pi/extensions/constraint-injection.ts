@@ -6,6 +6,19 @@
  * 配置文件：.pi/constraint-injection.json（命令表/关键词表/JIT 路径信号/栈信号）。
  *
  * 职责：
+ * 0. **会话作用域状态（per-session-constraint-binding）**：档位/绑定 change/turn 绑定锁/
+ *    输入窗/JIT 与关键词命中集/pin 去重集/稳定层快照与指纹全部按 `sessionId` 隔离
+ *    （`sessionStates`）——一个 pi 进程可同时有多会话（多窗口 + pi-subagents 子线程共用
+ *    模块实例），隔离前它们共享同一套全局变量，导致「他会话刚绑定 = 本会话注入归属」
+ *    （2026-09-17 事实库取证：会话 A 的注入在另一会话 mode.set 6 秒后漂移到 dedupe-
+ *    rss-articles 并带上其声明域）。不变量：
+ *    - 注入归属 / 稳定层快照 / 命中集只由**本会话**状态决定；
+ *    - 本会话无状态时，仅当父子关系可证（session header 的 `parentSession`，即 fork /
+ *      pi-subagents 子线程）才显式继承父会话（记 `mode.set source=inherit`），
+ *     否则视为未绑定（仅索引）；**MUST NOT 借用任意他会话的状态**；
+ *    - 会话边界事件（new/resume/fork/reload）只重置**本会话**条目；
+ *    - 会话条目有界（上限 + LRU 淘汰），无 `sessionId` 的 stub 语境落单一兜底槽。
+ *    回归面：`.pi/extensions/tests/constraint-injection.smoke.cjs` 第 19 组。
  * 1. input 事件：识别阶段命令，设置会话内 mode flag（需求/设计 vs 实现/评审）
  * 2. before_agent_start 事件：约束注入按**混合通道**送达（harden-constraint-injection-channel）：
  *    - **稳定层**（system prompt，本 handler 返回 systemPrompt）：索引 + mode-base + 声明域
@@ -113,6 +126,9 @@ interface ConstraintConfig {
 	vocabularyFile?: string;
 	// 最近 N 条用户输入参与关键词/栈命中（默认 5）
 	recentInputWindow?: number;
+	// 会话状态条目上限（默认 32）：仅用于长跑进程内存有界（LRU 淘汰最久未用会话条目），
+	// 不影响注入语义（会话数未超限时行为与上限无关）；非法值（非数字/0/负数）回退默认。
+	sessionStateLimit?: number;
 	// 二级注入阈值（字节，默认 6144）：超过且有「## 硬规则速览」小节 → 仅注速览+全文目录
 	digestDocThreshold?: number;
 	// 节级注入最小字节下限（默认 512）：提取的节内容低于此值视为文档编辑中间态残缺节，
@@ -137,17 +153,225 @@ const DEFAULT_BUDGET_BYTES = 32768;
 // research 库（无档位语境的 pin 落点；规则出处：openspec/specs/research-retention）
 const RESEARCH_DIR = "docs/research";
 
-// 会话内状态（extension rebind 时重置）
-let currentMode: Mode | null = null;
-// 设置档位时绑定的活跃 change 名；绑定的 change 归档/删除后档位自动回落 null（防粘性常驻）
-let modeBoundChange: string | null = null;
-// 最近 N 条用户输入（ring buffer），与 change 文本合并后做关键词/栈命中
-let recentInputs: string[] = [];
-// JIT 命中集合（会话内只增不减）：write/edit 路径命中 jitDocs.pathSignals 即入列
-let jitDocHits: Map<string, DocEntry> = new Map();
-// 关键词命中集合（会话内只增不减，@Syntopica）：命中源含滚动输入窗，词条滚出窗口
-// 不移除——注入块缩水会让 system prompt 字节变化 → 全部历史前缀缓存报废
-let keywordDocHits: Map<string, DocEntry> = new Map();
+/* ---------- 会话作用域状态（per-session-constraint-binding） ---------- */
+// 为什么按会话隔离：pi 一个进程里可同时存在多个会话（多窗口 + pi-subagents 子线程共用同一
+// 模块实例）。这些状态曾是模块级全局，于是「谁最后绑定」决定所有人注入谁的约束——2026-09-17
+// 事实库取证：会话 01a0aaf4 无自身 mode.set，注入归属却在另一会话绑定 6 秒后漂移到
+// dedupe-rss-articles 并带上其声明的域。不变式（spec「会话作用域状态隔离」）：
+//   ① 注入归属 / 稳定层快照 / 命中集只由本会话状态决定，他会话绑定变化不得影响本会话；
+//   ② 会话无自身状态时，只有能证明父子关系（session header 的 parentSession）才继承父会话，
+//      否则视为未绑定；MUST NOT 借用任意他会话的状态。
+// 无 sessionId 的非真实会话语境（烟测 stub）落单一兜底槽，行为与隔离前等价。
+type ChannelState = {
+	/** 稳定层快照（D2）：key=`mode|boundChange`，档位生命周期内冻结字节；内容差异走动态层 */
+	stableSnapshot: { key: string; block: string; items: PlanItem[] } | null;
+	/** 动态层已投递指纹（D3）：itemKey → contentHash；指纹未变则零投递 */
+	sentFingerprint: Map<string, string>;
+	/** compaction 后待重发快照（D4）：session_compact 置位，下一注入时机重发并重置指纹 */
+	pendingSnapshot: boolean;
+};
+type SessionState = {
+	sessionId: string;
+	/** 本会话档位（requirements / implementation），未激活为 null */
+	mode: Mode | null;
+	/** 设置档位时绑定的活跃 change 名；绑定 change 归档/删除后回落 null（防粘性常驻） */
+	boundChange: string | null;
+	/** turn 绑定锁定（D5）：before_agent_start 重置；turn 内首个生效绑定后置位，同 turn 不再切换 */
+	turnBindLocked: boolean;
+	/** 最近 N 条用户输入（ring buffer），与 change 文本合并后做关键词/栈命中 */
+	recentInputs: string[];
+	/** JIT 命中集合（会话内只增不减）：write/edit 路径命中 doc-impact-applies 标签即入列 */
+	jitDocHits: Map<string, DocEntry>;
+	/** 关键词命中集合（会话内只增不减，@Syntopica）：命中源含滚动输入窗，词条滚出窗口
+	 *  不移除——注入块缩水会让 system prompt 字节变化 → 全部历史前缀缓存报废 */
+	keywordDocHits: Map<string, DocEntry>;
+	/** pin.read 会话内去重（design D5）：实现档每回合重建注入块，不去重会重复计数 */
+	pinReadSeen: Set<string>;
+	channel: ChannelState;
+	/** LRU 淘汰时间戳（多会话长跑进程不得无界增长） */
+	lastUsedAt: number;
+};
+/** 无 sessionId 的语境（烟测 stub / 非真实会话）共用的兜底槽 */
+const FALLBACK_SESSION_KEY = "__no-session__";
+/** 会话条目上限默认值（超限淘汰最久未用者）；cfg.sessionStateLimit 可覆盖 */
+const DEFAULT_SESSION_STATE_LIMIT = 32;
+
+/** 解析会话条目上限：cfg 合法正整数覆盖值否则默认（缺 cfg / 非数字 / 0 / 负数 / NaN 均回退默认）。
+ *  上限只影响内存有界，MUST NOT 影响注入语义——调小只会在会话数超限时提前淘汰旧条目。 */
+function resolveSessionStateLimit(cfg?: ConstraintConfig | null): number {
+	const v = cfg?.sessionStateLimit;
+	return typeof v === "number" && Number.isFinite(v) && v >= 1
+		? Math.floor(v)
+		: DEFAULT_SESSION_STATE_LIMIT;
+}
+const sessionStates = new Map<string, SessionState>();
+
+function newSessionState(sessionId: string): SessionState {
+	return {
+		sessionId,
+		mode: null,
+		boundChange: null,
+		turnBindLocked: false,
+		recentInputs: [],
+		jitDocHits: new Map(),
+		keywordDocHits: new Map(),
+		pinReadSeen: new Set(),
+		channel: { stableSnapshot: null, sentFingerprint: new Map(), pendingSnapshot: false },
+		lastUsedAt: Date.now(),
+	};
+}
+
+/** 会话 key：无 sessionId（烟测 stub / 非真实会话）落兜底槽 */
+function sessionKey(ctx: ExtCtx | undefined): string {
+	const sid = ctx?.sessionManager?.getSessionId?.();
+	return sid ? sid : FALLBACK_SESSION_KEY;
+}
+
+/** 有界回收：超上限淘汰最久未用条目（淘汰不做额外副作用）。limit 由 resolveSessionStateLimit 得出 */
+function evictSessionStates(limit: number): void {
+	while (sessionStates.size > limit) {
+		let oldestKey: string | null = null;
+		let oldestAt = Number.POSITIVE_INFINITY;
+		for (const [key, st] of sessionStates) {
+			if (st.lastUsedAt < oldestAt) {
+				oldestAt = st.lastUsedAt;
+				oldestKey = key;
+			}
+		}
+		if (oldestKey === null) return;
+		sessionStates.delete(oldestKey);
+	}
+}
+
+/** 会话状态唯一读写入口：缺失即建 + 刷新 LRU 时间戳。cfg 仅用于解析条目上限（可省/可为 null） */
+function stateFor(ctx: ExtCtx | undefined, cfg?: ConstraintConfig | null): SessionState {
+	const key = sessionKey(ctx);
+	let st = sessionStates.get(key);
+	if (!st) {
+		st = newSessionState(key);
+		sessionStates.set(key, st);
+		evictSessionStates(resolveSessionStateLimit(cfg));
+	}
+	st.lastUsedAt = Date.now();
+	return st;
+}
+
+/** 真实 sessionId（兜底槽 → undefined）：记账用，避免把 stub 会话写进事实库 */
+function realSessionId(state: SessionState): string | undefined {
+	return state.sessionId === FALLBACK_SESSION_KEY ? undefined : state.sessionId;
+}
+
+/** 烟测观测面（session 作用域状态有界性）：当前存活会话 key 列表，按 LRU 时间戳排序
+ *  （旧→新）。仅供测试断言，不参与注入逻辑。 */
+export function sessionStateKeysForTest(): string[] {
+	return [...sessionStates.values()]
+		.sort((a, b) => a.lastUsedAt - b.lastUsedAt)
+		.map((s) => s.sessionId);
+}
+
+/** 烟测观测面：会话条目上限默认值（cfg 覆盖生效值见 resolveSessionStateLimit） */
+export const SESSION_STATE_LIMIT_FOR_TEST = DEFAULT_SESSION_STATE_LIMIT;
+/** 烟测观测面：上限解析（非法值回退默认） */
+export const resolveSessionStateLimitForTest = resolveSessionStateLimit;
+
+/** `<ts>_<sessionId>.jsonl` → sessionId。会话文件（父会话文件路径、fork 子会话文件）都用
+ *  这个形状：时间戳与 id 之间只有一个下划线，id 自身含连字符。 */
+function sessionIdFromSessionFile(file: string | undefined | null): string | null {
+	if (!file) return null;
+	const stem = String(file).split(/[\\/]/).pop()?.replace(/\.jsonl$/, "") ?? "";
+	const sep = stem.indexOf("_");
+	return sep >= 0 ? stem.slice(sep + 1) : null;
+}
+
+/** fork 子会话文件路径 → 父会话 id：子会话文件位于 `<父会话目录>/forks/<ts>_<子会话id>.jsonl`，
+ *  而父会话目录名就是 `<ts>_<父会话id>` → 从「forks 的上一级目录名」解出父 id。
+ *  非 fork 会话（文件不在 forks/ 下）→ null（不可证，不继承）。 */
+function parentSessionIdFromForkFile(file: string | undefined | null): string | null {
+	if (!file) return null;
+	const segs = String(file).split(/[\\/]/);
+	const forksIdx = segs.lastIndexOf("forks");
+	if (forksIdx < 1) return null;
+	const parentDir = segs[forksIdx - 1] ?? "";
+	const sep = parentDir.indexOf("_");
+	return sep >= 0 ? parentDir.slice(sep + 1) : null;
+}
+
+/** 父会话 id（「父子关系可证」的唯一依据）。两条来源，按可信度排序：
+ *  ① session header 的 `parentSession`（父会话**文件绝对路径**，fork 子会话必带，实测 2026-09-17）；
+ *  ② `getSessionFile()` 的路径兜底——header 未落盘/契约变化时，fork 子会话仍可从
+ *     `<父会话目录>/forks/` 反解父 id。
+ *  两条都拿不到 → null（不可证 → 不继承，保持失败方向安全：未激活只注索引）。 */
+function parentSessionId(ctx: ExtCtx | undefined): string | null {
+	const fromHeader = sessionIdFromSessionFile(
+		ctx?.sessionManager?.getHeader?.()?.parentSession,
+	);
+	if (fromHeader) return fromHeader;
+	return parentSessionIdFromForkFile(ctx?.sessionManager?.getSessionFile?.());
+}
+
+/** fork / 子线程继承（**同进程**内存路径）：**父会话有状态才继承**（否则不借他会话）。
+ *  含快照与指纹——子会话的对话是父会话的拷贝，父会话已投递过的动态层条目不该重发。
+ *  ⚠ 真实链路极少命中：pi-subagents 子线程跑在**独立 node 进程**（2026-09-17 实测
+ *  `pi-subagents/src/runs/background/subagent-runner.ts`），父子不共享模块实例 → 子进程的
+ *  sessionStates 是新空 Map。跨进程场景由 inheritFromParentHistory 兜底。 */
+function inheritFromParent(state: SessionState, ctx: ExtCtx | undefined): boolean {
+	const pid = parentSessionId(ctx);
+	if (!pid) return false;
+	const parent = sessionStates.get(pid);
+	if (!parent) return false;
+	state.mode = parent.mode;
+	state.boundChange = parent.boundChange;
+	state.turnBindLocked = parent.turnBindLocked;
+	state.recentInputs = [...parent.recentInputs];
+	state.jitDocHits = new Map(parent.jitDocHits);
+	state.keywordDocHits = new Map(parent.keywordDocHits);
+	state.pinReadSeen = new Set(parent.pinReadSeen);
+	state.channel = {
+		stableSnapshot: parent.channel.stableSnapshot
+			? { ...parent.channel.stableSnapshot, items: [...parent.channel.stableSnapshot.items] }
+			: null,
+		sentFingerprint: new Map(parent.channel.sentFingerprint),
+		pendingSnapshot: parent.channel.pendingSnapshot,
+	};
+	return true;
+}
+
+/** 跨进程继承回退（**真实链路主路径**）：父会话的内存态在另一个进程里拿不到，但父会话的
+ *  `mode.set` 历史在共享事实库里 → 按父会话 id 取父会话最近一条**可恢复**记录，只采纳
+ *  `mode` + `boundChange`（命中集/快照/输入窗是父进程内存态，拿不到就不编造，宁可少注入）。
+ *  复用 recoverMode：同 id 单段 + 绑定 change 目录存在性校验（父会话绑定已归档 → 未激活）。
+ *  父 id 不可证、无记录、异常 → false（保持未激活，**绝不**借用任意他会话状态）。 */
+function inheritFromParentHistory(state: SessionState, ctx: ExtCtx | undefined): boolean {
+	const pid = parentSessionId(ctx);
+	if (!pid || !ctx?.cwd) return false;
+	let rec: { mode: Mode; boundChange: string | null } | null = null;
+	try {
+		rec = recoverMode(ctx.cwd, pid);
+	} catch (e) {
+		console.error(
+			`[constraint-injection] inherit from parent history failed: ${(e as Error).message}`,
+		);
+		return false;
+	}
+	if (!rec) return false;
+	state.mode = rec.mode;
+	state.boundChange = rec.boundChange;
+	return true;
+}
+
+/** 会话边界重置（session_start 的 new/resume/fork/reload）：**只清本会话条目**，
+ *  他会话状态 MUST NOT 被清零（隔离前是清零全局，等于替所有会话重置）。 */
+function resetSessionState(state: SessionState): void {
+	state.mode = null;
+	state.boundChange = null;
+	state.turnBindLocked = false;
+	state.recentInputs = [];
+	state.jitDocHits = new Map();
+	state.keywordDocHits = new Map();
+	state.pinReadSeen = new Set();
+	state.channel = { stableSnapshot: null, sentFingerprint: new Map(), pendingSnapshot: false };
+}
+
 let configCache: { config: ConstraintConfig; mtime: number } | null = null;
 // doc-impact-applies 标签扫描缓存（design D3）：文档相对路径 → mtime + 解析结果（无标签为 null）
 const appliesTagCache = new Map<
@@ -158,31 +382,9 @@ const appliesTagCache = new Map<
 let flowDomainsCache: { mtime: number; names: string[] } | null = null;
 // 关键词匹配器预编译缓存（ASCII 词边界正则；按 config 实例 WeakMap，热更新自然失效）
 const matcherCache = new WeakMap<ConstraintConfig, Map<string, RegExp | null>>();
-// pin.read 会话内去重（design D5）：实现档每回合重建注入块，不去重会重复计数；session_start 重置
-const pinReadSeen = new Set<string>();
-
-/* ---------- 混合通道状态（harden-constraint-injection-channel D2~D5） ---------- */
-
-/** 稳定层快照（D2）：key=`mode|boundChange`，档位生命周期内冻结字节；内容差异走动态层 */
-let stableSnapshot: {
-	key: string;
-	block: string;
-	items: PlanItem[];
-} | null = null;
-/** 动态层已投递指纹（D3）：itemKey → contentHash；指纹未变则零投递 */
-let sentFingerprint = new Map<string, string>();
-/** compaction 后待重发快照（D4）：session_compact 置位，下一注入时机重发并重置指纹 */
-let pendingSnapshot = false;
-/** turn 绑定锁定（D5）：before_agent_start 重置；turn 内首个生效绑定后置位，同 turn 不再切换 */
-let turnBindLocked = false;
-
-/** 会话边界重置混合通道状态（session_start / channel 切换时） */
-function resetChannelState(): void {
-	stableSnapshot = null;
-	sentFingerprint = new Map();
-	pendingSnapshot = false;
-	turnBindLocked = false;
-}
+/* 混合通道状态（harden-constraint-injection-channel D2~D5）与 pin.read 去重集：
+ * per-session-constraint-binding 起收进 SessionState.channel / SessionState.pinReadSeen，
+ * 不再有模块级全局（旧 resetChannelState 由 resetSessionState 取代）。 */
 
 /* ---------- 配置加载（按 mtime 热更新） ---------- */
 
@@ -336,20 +538,24 @@ function keywordMatchers(
 	return m;
 }
 
-/* 关键词命中 → 写入粘性集合（Map 保持首次命中顺序，只增不减）。
+/* 关键词命中 → 写入本会话粘性集合（Map 保持首次命中顺序，只增不减）。
    命中源仅限对话输入（见 planInjection），ASCII 词整词匹配。 */
-function matchKeywordDocs(text: string, config: ConstraintConfig): void {
+function matchKeywordDocs(
+	text: string,
+	config: ConstraintConfig,
+	state: SessionState,
+): void {
 	if (!text) return;
 	const matchers = keywordMatchers(config);
 	for (const entry of config.keywordDocs) {
-		if (keywordDocHits.has(entry.doc)) continue;
+		if (state.keywordDocHits.has(entry.doc)) continue;
 		if (
 			entry.keywords.some((k) => {
 				const re = matchers.get(k);
 				return re ? re.test(text) : text.includes(k);
 			})
 		) {
-			keywordDocHits.set(entry.doc, { doc: entry.doc, section: entry.section });
+			state.keywordDocHits.set(entry.doc, { doc: entry.doc, section: entry.section });
 		}
 	}
 }
@@ -751,10 +957,11 @@ interface InjectionPlan {
 function planInjection(
 	cwd: string,
 	config: ConstraintConfig,
-	mode: Mode | null,
-	boundChangeName: string | null,
+	state: SessionState,
 	fallbackChange: { name: string; dir: string } | null,
 ): InjectionPlan {
+	const mode = state.mode;
+	const boundChangeName = state.boundChange;
 	const docList: string[] = [];
 	const docEntries: InjectedDocEntry[] = [];
 	const pinReads: PinReadEntry[] = [];
@@ -778,11 +985,11 @@ function planInjection(
 	// change 文本仅保留给 detectStacks 栈判定，栈信号为路径类词无误伤面）
 	const changeText =
 		mode && analysisChange ? readChangeText(analysisChange) : "";
-	const matchText = mode ? recentInputs.join("\n") : "";
+	const matchText = mode ? state.recentInputs.join("\n") : "";
 	const stacks = mode
-		? detectStacks(`${changeText}\n${recentInputs.join("\n")}`, config)
+		? detectStacks(`${changeText}\n${state.recentInputs.join("\n")}`, config)
 		: { backend: false, frontend: false };
-	if (mode) matchKeywordDocs(matchText, config); // 命中写粘性集合（只增不减）
+	if (mode) matchKeywordDocs(matchText, config, state); // 命中写本会话粘性集合（只增不减）
 
 	// 业务域声明（design D2 主层）：档位激活 + 有分析源 change → 解析 proposal 头部
 	// constraint-domains 标记；声明域注入对应 flow 约束节。每回合从文件重解析（proposal
@@ -856,7 +1063,7 @@ function planInjection(
 					.map((cd) => cd.doc)
 			: []),
 	]);
-	for (const e of filterKeywordDocs(keywordDocHits.values(), allowedKeywordDocs)) {
+	for (const e of filterKeywordDocs(state.keywordDocHits.values(), allowedKeywordDocs)) {
 		// 关键词命中声明的域 → 以全节形态（细节层）投递，替代声明项（红线层是全集子集，
 		// 避免同文档双重注入）。稳定层快照仍保留激活时刻的红线层条目（冻结语义）。
 		const dup = ordered.findIndex((o) => o.doc === e.doc && o.reason === "declaration");
@@ -873,7 +1080,7 @@ function planInjection(
 			if (same >= 0) ordered[same] = { doc: e.doc, section: e.section, reason: "keyword" };
 		}
 	}
-	for (const e of jitDocHits.values()) {
+	for (const e of state.jitDocHits.values()) {
 		if (!seen.has(e.doc)) {
 			seen.add(e.doc);
 			ordered.push({ doc: e.doc, section: e.section, reason: "jit-path" });
@@ -1390,7 +1597,12 @@ export function splitPlanItems(items: PlanItem[]): {
 /** extension ctx 的最小需求面（便于测试与子调用） */
 type ExtCtx = {
 	cwd: string;
-	sessionManager?: { getSessionId?: () => string | undefined };
+	sessionManager?: {
+		getSessionId?: () => string | undefined;
+		/** session header：fork/子线程凭证（parentSession = 父会话文件路径）——
+		 *  per-session-constraint-binding 用它判定「父子关系可证」才继承 */
+		getHeader?: () => { parentSession?: string } | null;
+	};
 };
 
 /** PlanItem → 记账条目（D6：bytes 取降级后正文） */
@@ -1490,18 +1702,21 @@ function deliverDynamic(
 	pi: ExtensionAPI,
 	ctx: ExtCtx,
 	cfg: ConstraintConfig,
-	sessionId: string | undefined,
+	state: SessionState,
 	changeName: string | null,
 	items: DynamicItem[],
 	label: string,
 	force = false,
 ): number {
-	const { increments, fingerprint } = computeDynamicDiff(items, sentFingerprint);
+	const { increments, fingerprint } = computeDynamicDiff(
+		items,
+		state.channel.sentFingerprint,
+	);
 	if (!increments.length && !force) return 0;
 	const payloadItems = increments.length ? increments : items;
 	const rendered = renderDynamicMessage(payloadItems, label);
 	if (!rendered) return 0;
-	sentFingerprint = fingerprint;
+	state.channel.sentFingerprint = fingerprint;
 	pi.sendMessage(
 		{
 			customType: "constraint-injection",
@@ -1512,7 +1727,7 @@ function deliverDynamic(
 	);
 	logConstraintInjects(
 		ctx,
-		sessionId,
+		realSessionId(state),
 		changeName,
 		payloadItems.map((it) => ({
 			path: it.key,
@@ -1534,28 +1749,42 @@ export default function (pi: ExtensionAPI) {
 	//    extension，但 ESM 模块缓存可能让模块级状态跨会话残留（JIT 命中/关键词命中/
 	//    档位/输入窗泄漏进下一个 research 会话）→ 显式清零。
 	//    ⚠ reason "startup" 必须跳过（@bugfix）：pi-subagents 派发子线程时
-	//    createAgentSession 默认也发 session_start{reason:"startup"}到同一共享模块
-	//    实例——不过滤会把主会话档位/JIT/命中清零（实测：apply 中派子线程后主线程
-	//    注入掉回未激活）。冷启动时模块状态本就为空，重置本就冗余；子线程继承
-	//    主会话档位是期望行为（快照注入能带上完整约束块）。
+	//    createAgentSession 默认也发 session_start{reason:"startup"}——不过滤会把主会话
+	//    档位/JIT/命中清零（实测：apply 中派子线程后主线程注入掉回未激活）。子线程
+	//    拿到完整约束块是期望行为（快照注入能带上档位基座块与声明域）。
+	//    ⚠ 2026-09-17 实测修正：子线程是**独立 node 进程**（pi-subagents/subagent-runner.ts），
+	//    父子不共享模块实例 —— “不重置”只保住了主会话，子线程**拿不到**父会话内存态；
+	//    因此子线程走显式继承（内存路径 → 事实库回退，见 inheritFromParent[History]）。
 	pi.on("session_start", async (event, ctx) => {
 		const reason = (event as { reason?: string }).reason ?? "";
+		// cfg 仅用于解析会话条目上限（拿不到就退回默认，不影响注入语义）
+		const state = stateFor(ctx, ctx?.cwd ? loadConfig(ctx.cwd) : null);
 		// startup 双面孔（真实链路实测 6.5）：① pi 进程冷启动恢复会话——quit 重启后
-		// reason 是 startup 而非 resume；② pi-subagents 派发子线程——共用模块实例。
-		// 区分锹点 = 档位是否已非空（冷启动模块状态本就为空，子线程派发时主会话档位
-		// 非空）。→ 档位为空时按同 sessionId 第 1 段恢复（MUST NOT 全局兜底：全新会话
-		// 不得继承其他会话的档位）；非空则保持不动（@bugfix 语义不变，不清零）。
+		// reason 是 startup 而非 resume；② pi-subagents 派发子线程 / pi /fork——独立进程、
+		// 各自 sessionId，session header（或 forks/ 路径）带 parentSession。
+		// per-session-constraint-binding：本会话条目为空时按「父子可证 → 继承父会话（内存 →
+		// 事实库）→ 否则按同 sessionId 第 1 段恢复 → 都没有则保持未激活」处理；
+		// MUST NOT 借用他会话的状态（隔离前的 bug：全局值被他会话改写后本会话被动继承）。
 		if (reason === "startup") {
-			if (currentMode === null && ctx?.cwd) {
-				const sessionId = ctx.sessionManager?.getSessionId?.();
+			if (state.mode === null) {
+				// 子线程/fork 继承：内存路径（同进程）→ 事实库回退（跨进程，真实链路主路径）
+				const inherited =
+					inheritFromParent(state, ctx) || inheritFromParentHistory(state, ctx);
+				if (inherited) {
+					if (state.mode) {
+						logModeSet(ctx.cwd, realSessionId(state), state.mode, state.boundChange, "inherit");
+					}
+					return;
+				}
+				const sessionId = realSessionId(state);
 				const rows = sessionId
 					? queryBySession(ctx.cwd, sessionId, ["mode.set"])
 					: [];
 				if (rows.length) {
 					const rec = recoverFromRow(ctx.cwd, rows[rows.length - 1]);
 					if (rec) {
-						currentMode = rec.mode;
-						modeBoundChange = rec.boundChange;
+						state.mode = rec.mode;
+						state.boundChange = rec.boundChange;
 						// 恢复路径显式记账（D6）：隐性绑定不存在；source=recover
 						logModeSet(ctx.cwd, sessionId, rec.mode, rec.boundChange, "recover");
 					}
@@ -1564,14 +1793,20 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		if (!["new", "resume", "fork", "reload"].includes(reason)) return;
-		currentMode = null;
-		modeBoundChange = null;
-		recentInputs = [];
-		jitDocHits = new Map();
-		keywordDocHits = new Map();
-		pinReadSeen.clear();
-		// 会话边界重置混合通道状态（D2~D4）：快照/指纹/待重发不得跨会话泄漏
-		resetChannelState();
+		// 会话边界重置**只清本会话条目**（他会话的档位/命中集 MUST NOT 被清零——
+		// 隔离前这里清的是全局，等于替所有会话重置）。
+		resetSessionState(state);
+		// fork：父子可证 → 继承父会话（同一份对话继续干同一件事）；不可证 → 未激活。
+		// （旧行为是 fork 一律清零，靠全局值偶然继承，与「无隐性绑定」相悖。）
+		// 继承两条路：内存（同进程）→ 事实库回退（跨进程，真实链路主路径）。
+		if (reason === "fork") {
+			const inherited =
+				inheritFromParent(state, ctx) || inheritFromParentHistory(state, ctx);
+			if (inherited && state.mode) {
+				logModeSet(ctx.cwd, realSessionId(state), state.mode, state.boundChange, "inherit");
+			}
+			return;
+		}
 		// resume/reload 档位恢复（fix-mode-recovery-cross-session：仅同 sessionId 单段）：
 		// resume = /resume 切换目标会话（id 即目标会话 id，必中），reload = 同会话扩展
 		// 重载（id 不变，必中）；无本会话记录不恢复（不继承他窗口档位）。粘性命中集合
@@ -1579,11 +1814,11 @@ export default function (pi: ExtensionAPI) {
 		// 节每回合重解析照常注入、JIT 改代码即重新命中，且避免恢复出与「只增不减」历史
 		// 不一致的半状态）。new/fork 维持清零语义（不恢复）。
 		if ((reason === "resume" || reason === "reload") && ctx?.cwd) {
-			const sessionId = ctx.sessionManager?.getSessionId?.();
-			const rec = recoverMode(ctx.cwd, sessionId);
+			const sessionId = realSessionId(state);
+			const rec = sessionId ? recoverMode(ctx.cwd, sessionId) : null;
 			if (rec) {
-				currentMode = rec.mode;
-				modeBoundChange = rec.boundChange;
+				state.mode = rec.mode;
+				state.boundChange = rec.boundChange;
 				// 恢复路径显式记账（D6）：source=recover
 				logModeSet(ctx.cwd, sessionId, rec.mode, rec.boundChange, "recover");
 			}
@@ -1593,21 +1828,24 @@ export default function (pi: ExtensionAPI) {
 	pi.on("input", async (event, ctx) => {
 		const cfg = loadConfig(ctx.cwd);
 		if (!cfg) return;
-		// 最近 N 条用户输入入窗（无论是否命令），参与关键词/栈命中
+		const state = stateFor(ctx, cfg);
+		// 最近 N 条用户输入入窗（无论是否命令），参与关键词/栈命中（入窗限本会话）
 		const text = event.text.trim();
 		if (text) {
-			recentInputs.push(text.length > 500 ? text.slice(0, 500) : text);
+			state.recentInputs.push(text.length > 500 ? text.slice(0, 500) : text);
 			const max = cfg.recentInputWindow ?? 5;
-			if (recentInputs.length > max) recentInputs = recentInputs.slice(-max);
+			if (state.recentInputs.length > max) {
+				state.recentInputs = state.recentInputs.slice(-max);
+			}
 		}
 		const mode = matchCommand(event.text, cfg);
 		if (mode) {
-			currentMode = mode;
+			state.mode = mode;
 			// 档位绑定：仅明确提及（命令参数/输入文本）
 			// mtime 兜底仅 implementation 档（/opsx-apply 无参语境）；requirements 档
 			// （explore/propose）是新想法语境，兜底会绑到无关 change，explore 内容错位
 			const mentioned = detectMentionedChange(ctx.cwd, event.text)?.name ?? null;
-			modeBoundChange =
+			state.boundChange =
 				mentioned ??
 				(mode === "implementation"
 					? (detectActiveChange(ctx.cwd)?.name ?? null)
@@ -1615,12 +1853,12 @@ export default function (pi: ExtensionAPI) {
 			// mode.set 记账（tier-b D5 触发点①：input 命令命中；source=command）
 			logModeSet(
 				ctx.cwd,
-				ctx.sessionManager?.getSessionId?.(),
+				realSessionId(state),
 				mode,
-				modeBoundChange,
+				state.boundChange,
 				"command",
 			);
-			turnBindLocked = true;
+			state.turnBindLocked = true;
 		}
 	});
 
@@ -1638,66 +1876,68 @@ export default function (pi: ExtensionAPI) {
 		// 注意：ToolExecutionStartEvent 的参数字段是 args（不是 input）
 		const p = (event.args as { path?: string } | undefined)?.path ?? "";
 		if (!p) return;
-		const sessionId = ctx.sessionManager?.getSessionId?.();
+		const state = stateFor(ctx, cfg);
+		const sessionId = realSessionId(state);
 		const skillMode = matchSkillPath(p, cfg);
 		if (skillMode) {
-			currentMode = skillMode;
+			state.mode = skillMode;
 			// 同 input 事件：mtime 兜底仅 implementation 档（agent 读 apply/verify/archive
 			// skill 就是要干活）；requirements skill（explore/propose）仅明确提及才绑定
 			const mentioned =
-				detectMentionedChange(ctx.cwd, recentInputs.join("\n"))?.name ?? null;
-			modeBoundChange =
+				detectMentionedChange(ctx.cwd, state.recentInputs.join("\n"))?.name ?? null;
+			state.boundChange =
 				mentioned ??
 				(skillMode === "implementation"
 					? (detectActiveChange(ctx.cwd)?.name ?? null)
 					: null);
 			// mode.set 记账（tier-b D5 触发点②：skill 路径命中；source=skill）
-			logModeSet(ctx.cwd, sessionId, skillMode, modeBoundChange, "skill");
-			turnBindLocked = true;
+			logModeSet(ctx.cwd, sessionId, skillMode, state.boundChange, "skill");
+			state.turnBindLocked = true;
 			return;
 		}
 		// JIT 栈细化（design D3 单一真相源）：写/编辑路径命中文档头部 doc-impact-applies
 		// 标签的 pathSignals → 对应文档会话内追加注入。仅档激活时生效：未激活会话写代码
 		// 不追加（保「未激活=仅索引」不变量，模型按需自读）
 		let jitAdded = false;
-		if (currentMode && (event.toolName === "write" || event.toolName === "edit")) {
+		if (state.mode && (event.toolName === "write" || event.toolName === "edit")) {
 			for (const [doc, tag] of scanAppliesTags(ctx.cwd)) {
 				if (tag.signals.some((s) => p.includes(s))) {
-					if (!jitDocHits.has(doc)) {
-						jitDocHits.set(doc, { doc, section: tag.section ?? undefined });
+					if (!state.jitDocHits.has(doc)) {
+						state.jitDocHits.set(doc, { doc, section: tag.section ?? undefined });
 						jitAdded = true;
 					}
 				}
 			}
 		}
 		// 绑定修正条件化 + turn 锁定（D5，harden-constraint-injection-channel）：
-		// read 永不抢绑；当前绑定健康时不抢绑；仅未绑定/绑定 change 目录消失时兜底绑定
-		if (currentMode) {
+		// read 永不抢绑；当前绑定健康时不抢绑；仅未绑定/绑定 change 目录消失时兜底绑定。
+		// per-session-constraint-binding：判定读的是**本会话**的绑定与 turn 锁
+		// （他会话的工具调用不得锁住/改写本会话的绑定时机）。
+		if (state.mode) {
 			const bindAction = resolveBindAction({
 				tool: event.toolName,
 				path: p,
-				currentBound: modeBoundChange,
+				currentBound: state.boundChange,
 				boundExists:
-					modeBoundChange != null &&
-					existsSync(join(ctx.cwd, OPENSPEC_CHANGES_DIR, modeBoundChange)),
+					state.boundChange != null &&
+					existsSync(join(ctx.cwd, OPENSPEC_CHANGES_DIR, state.boundChange)),
 			});
-			if (shouldApplyBind(bindAction, turnBindLocked)) {
+			if (shouldApplyBind(bindAction, state.turnBindLocked)) {
 				const name = changeNameFromPath(p);
 				if (name) {
-					modeBoundChange = name;
-					turnBindLocked = true;
+					state.boundChange = name;
+					state.turnBindLocked = true;
 					// mode.set 记账（tier-b D5 触发点③：写 change 目录兜底绑定；source=edit-dir）
-					logModeSet(ctx.cwd, sessionId, currentMode, modeBoundChange, "edit-dir");
+					logModeSet(ctx.cwd, sessionId, state.mode, state.boundChange, "edit-dir");
 				}
 			}
 		}
 		// JIT 命中即时投递（D3 turn 中途通道）：新命中 → 立即算增量并经 steer 送出
-		if (jitAdded && currentMode && cfg.channel !== "legacy") {
+		if (jitAdded && state.mode && cfg.channel !== "legacy") {
 			const plan = planInjection(
 				ctx.cwd,
 				cfg,
-				currentMode,
-				modeBoundChange,
+				state,
 				detectActiveChange(ctx.cwd),
 			);
 			const { dynamic } = splitPlanItems(plan.items);
@@ -1705,7 +1945,7 @@ export default function (pi: ExtensionAPI) {
 				pi,
 				ctx,
 				cfg,
-				sessionId,
+				state,
 				plan.changeName,
 				toDynamicItems(dynamic),
 				dynamicLabelWithDegrad("📎 约束补充（JIT 命中）", plan, cfg),
@@ -1719,38 +1959,33 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, ctx) => {
 		const cfg = loadConfig(ctx.cwd);
 		if (!cfg) return;
-		// turn 起点释放绑定锁（D5：同 turn 锁定、跳 turn 再可切）
-		turnBindLocked = false;
+		const state = stateFor(ctx, cfg);
+		// turn 起点释放绑定锁（D5：同 turn 锁定、跳 turn 再可切）——只解本会话的锁
+		state.turnBindLocked = false;
 		const activeChange = detectActiveChange(ctx.cwd);
 		// 档位回落：仅当绑定的 change 已不存在（归档/删除）→ 回落未激活档；
 		// 不因其他 change 目录 mtime 更新而误掉档（多 change 并行是常态）
 		if (
-			currentMode &&
-			modeBoundChange &&
-			!existsSync(join(ctx.cwd, OPENSPEC_CHANGES_DIR, modeBoundChange))
+			state.mode &&
+			state.boundChange &&
+			!existsSync(join(ctx.cwd, OPENSPEC_CHANGES_DIR, state.boundChange))
 		) {
-			currentMode = null;
-			modeBoundChange = null;
+			state.mode = null;
+			state.boundChange = null;
 		}
-		const plan = planInjection(
-			ctx.cwd,
-			cfg,
-			currentMode,
-			modeBoundChange,
-			activeChange,
-		);
-		const sessionId = ctx.sessionManager?.getSessionId?.();
+		const plan = planInjection(ctx.cwd, cfg, state, activeChange);
+		const sessionId = realSessionId(state);
 		// mtime 兜底显式化（D6）：implementation 档无显式绑定时，将 planInjection 内部的
 		// mtime 兜底升为显式绑定并记账（source=fallback）——消除「注入挂在 X 名下、
-		// modeBoundChange 仍为空」的账实不符与静默漂移（多 change 并行污染根源之一）
+		// boundChange 仍为空」的账实不符与静默漂移（多 change 并行污染根源之一）
 		if (
-			currentMode === "implementation" &&
-			modeBoundChange === null &&
+			state.mode === "implementation" &&
+			state.boundChange === null &&
 			plan.changeName &&
 			existsSync(join(ctx.cwd, OPENSPEC_CHANGES_DIR, plan.changeName))
 		) {
-			modeBoundChange = plan.changeName;
-			logModeSet(ctx.cwd, sessionId, currentMode, modeBoundChange, "fallback");
+			state.boundChange = plan.changeName;
+			logModeSet(ctx.cwd, sessionId, state.mode, state.boundChange, "fallback");
 		}
 
 		// 状态展示（始终，让用户看到注入了什么 + 预算用量）
@@ -1770,9 +2005,9 @@ export default function (pi: ExtensionAPI) {
 			if (sessionId) {
 				logConstraintInjects(ctx, sessionId, plan.changeName, plan.docEntries);
 				for (const p of plan.pinReads) {
-					const key = `${sessionId}|${p.title}`;
-					if (pinReadSeen.has(key)) continue;
-					pinReadSeen.add(key);
+					// 去重集已按会话隔离 → key 用标题即可（不再拼 sessionId）
+					if (state.pinReadSeen.has(p.title)) continue;
+					state.pinReadSeen.add(p.title);
 					logEvent(ctx.cwd, {
 						kind: "pin.read",
 						sessionId,
@@ -1786,19 +2021,25 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// —— 混合通道（split）——
+		// 快照/指纹都在本会话的 channel 里：他会话绑定变化不会刷新本会话快照
 		const { stable, dynamic } = splitPlanItems(plan.items);
-		const key = stableSnapshotKey(currentMode, modeBoundChange);
+		const key = stableSnapshotKey(state.mode, state.boundChange);
 		// 无稳定条目但有内容时仍出 header（档位/活跃变更/域声明对模型可见）
 		const wantBlock = plan.items.length > 0;
 		let stableBlock = "";
 		let extraDynamic: PlanItem[] = [];
-		if (wantBlock && (!stableSnapshot || stableSnapshot.key !== key)) {
+		if (
+			wantBlock &&
+			(!state.channel.stableSnapshot || state.channel.stableSnapshot.key !== key)
+		) {
 			// 档位/绑定切换（快照已存在但 key 变）→ 重置动态指纹（旧 change 的命中无关）；
 			// 首次建快照（如 JIT 已在快照前投递过）不重置，避免重复投递
-			const isTransition = stableSnapshot !== null && stableSnapshot.key !== key;
+			const isTransition =
+				state.channel.stableSnapshot !== null &&
+				state.channel.stableSnapshot.key !== key;
 			stableBlock = renderStableBlock(buildStableHeader(plan, stable), stable);
-			stableSnapshot = { key, block: stableBlock, items: stable };
-			if (isTransition) sentFingerprint = new Map();
+			state.channel.stableSnapshot = { key, block: stableBlock, items: stable };
+			if (isTransition) state.channel.sentFingerprint = new Map();
 			logConstraintInjects(
 				ctx,
 				sessionId,
@@ -1808,9 +2049,11 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			// 快照冻结（字节恒定）；稳定层内容后来的变化（如 proposal 新增声明域）
 			// 作为动态层差异条目送达，不改写 system prompt（D2）
-			stableBlock = stableSnapshot ? stableSnapshot.block : "";
-			extraDynamic = stableSnapshot
-				? diffStableItems(stableSnapshot.items, stable)
+			stableBlock = state.channel.stableSnapshot
+				? state.channel.stableSnapshot.block
+				: "";
+			extraDynamic = state.channel.stableSnapshot
+				? diffStableItems(state.channel.stableSnapshot.items, stable)
 				: [];
 		}
 
@@ -1819,9 +2062,8 @@ export default function (pi: ExtensionAPI) {
 			const dynamicKeys = new Set([...dynamic, ...extraDynamic].map((it) => it.key));
 			for (const p of plan.pinReads) {
 				if (!dynamicKeys.has(p.doc)) continue;
-				const pk = `${sessionId}|${p.title}`;
-				if (pinReadSeen.has(pk)) continue;
-				pinReadSeen.add(pk);
+				if (state.pinReadSeen.has(p.title)) continue;
+				state.pinReadSeen.add(p.title);
 				logEvent(ctx.cwd, {
 					kind: "pin.read",
 					sessionId,
@@ -1834,13 +2076,13 @@ export default function (pi: ExtensionAPI) {
 		// 动态层投递：compact 后先重发快照（无视指纹），否则常规 diff 增量
 		const dynamicItems = toDynamicItems([...dynamic, ...extraDynamic]);
 		let delivered = 0;
-		if (pendingSnapshot) {
-			pendingSnapshot = false;
+		if (state.channel.pendingSnapshot) {
+			state.channel.pendingSnapshot = false;
 			delivered = deliverDynamic(
 				pi,
 				ctx,
 				cfg,
-				sessionId,
+				state,
 				plan.changeName,
 				dynamicItems,
 				"📎 约束快照（compact 后重发）",
@@ -1856,7 +2098,7 @@ export default function (pi: ExtensionAPI) {
 				pi,
 				ctx,
 				cfg,
-				sessionId,
+				state,
 				plan.changeName,
 				dynamicItems,
 				label,
@@ -1871,7 +2113,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_compact", async (_event, ctx) => {
 		const cfg = loadConfig(ctx.cwd);
 		if (!cfg || cfg.channel === "legacy") return;
-		pendingSnapshot = true;
+		// 只置本会话的待重发标记（他会话的 compact 不得触发本会话重发）
+		stateFor(ctx, cfg).channel.pendingSnapshot = true;
 	});
 
 	// 3. pin_finding 工具（探索阶段持久化关键代码发现）
@@ -1938,17 +2181,20 @@ export default function (pi: ExtensionAPI) {
 			}
 			let label: string;
 			let filePath: string;
+			const state = stateFor(ctx, cfg);
 			if (explicit) {
 				label = `${OPENSPEC_CHANGES_DIR}/${explicit.name}`;
 				filePath = join(explicit.dir, cfg.findingsFile);
 			} else {
+				// 绑定读**本会话**的 state（per-session-constraint-binding）：他会话的绑定不得
+				// 决定本会话 pin 落点（隔离前正是全局值造成的落错库）
 				const bound =
-					currentMode && modeBoundChange
-						? (changes.find((c) => c.name === modeBoundChange) ?? null)
+					state.mode && state.boundChange
+						? (changes.find((c) => c.name === state.boundChange) ?? null)
 						: null;
 				const active =
 					bound ??
-					(currentMode === "implementation"
+					(state.mode === "implementation"
 						? detectActiveChange(ctx.cwd)
 						: null);
 				if (active) {
@@ -1987,7 +2233,7 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 			// pin.write 记账（design D5）：仅成功路径；research 语境 change 列为 null
-			const sessionId = ctx.sessionManager?.getSessionId?.();
+			const sessionId = realSessionId(state);
 			if (sessionId) {
 				logEvent(ctx.cwd, {
 					kind: "pin.write",

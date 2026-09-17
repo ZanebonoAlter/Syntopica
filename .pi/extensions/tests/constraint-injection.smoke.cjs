@@ -652,6 +652,29 @@ const present = (sp, marker, heading) =>
 			db.close();
 			return rows;
 		};
+		// mode.set 全量（含 session_id，供「记在谁名下」断言）；seedModeSet 造一条父会话历史
+		// （模拟跨进程：父会话不在本进程内存，只有事实库记录）。
+		const readModeSetFull = (dir) => {
+			const { DatabaseSync } = require('node:sqlite');
+			const db = new DatabaseSync(path.join(dir, '.pi', 'harness', 'events.db'), { readOnly: true });
+			const rows = db
+				.prepare("SELECT session_id, change, payload FROM events WHERE kind='mode.set' ORDER BY id")
+				.all()
+				.map((r) => ({ ...JSON.parse(r.payload), session_id: r.session_id, change: r.change }));
+			db.close();
+			return rows;
+		};
+		const seedModeSet = (dir, sessionId, mode, boundChange, source = 'skill') => {
+			const { DatabaseSync } = require('node:sqlite');
+			const db = new DatabaseSync(path.join(dir, '.pi', 'harness', 'events.db'));
+			db.prepare("INSERT INTO events (ts, session_id, kind, change, payload) VALUES (?, ?, 'mode.set', ?, ?)").run(
+				new Date().toISOString(),
+				sessionId,
+				boundChange,
+				JSON.stringify({ mode, boundChange, source }),
+			);
+			db.close();
+		};
 		writeCfg(bigCfg, 1);
 		await emit('session_start', { reason: 'new' }, tmpCtx);
 		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, tmpCtx);
@@ -682,6 +705,12 @@ const present = (sp, marker, heading) =>
 		msRows17 = readModeSet(tmp);
 		check('行为: read / 健康绑定写其他 change 目录零抢绑（零新增记账）', msRows17.length === msBefore17);
 		for (const n of ['bind-a', 'bind-b', 'bind-c']) fs.mkdirSync(path.join(tmp, OPENSPEC_CHANGES_DIR_REL, n), { recursive: true });
+		// bind-c 带声明域（kwdom）：使 19.6 的「B 绑定生效」可观测——无声明时 requirements 档
+		// 零稳定条目 → 稳定层 header 不输出（wantBlock 门），绑定生效与否无处可断言。
+		fs.writeFileSync(
+			path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'bind-c', 'proposal.md'),
+			'# bind-c fixture\n\n<!-- constraint-domains: kwdom -->\n\n正文。\n',
+		);
 		await emit('session_start', { reason: 'new' }, tmpCtx);
 		await emit('input', { text: '/opsx-new' }, tmpCtx); // requirements 档：无 mtime 兜底 → 无绑定
 		await systemPromptOnly(tmpCtx); // turn 起点（解锁）
@@ -707,6 +736,302 @@ const present = (sp, marker, heading) =>
 		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, tmpCtx);
 		const legacySp = await systemPrompt(tmpCtx);
 		check('行为: legacy 通道全量进 system prompt（零消息投递）', legacySp.includes('### kwdom.md') && messages.length === msgCursor);
+
+		// 19. 会话作用域状态隔离（per-session-constraint-binding）
+		//     背景（2026-09-17 事实库）：绑定状态曾是模块级全局，他会话的 mode.set 会决定本会话
+		//     注入谁的约束（会话 01a0aaf4 零 mode.set，却在另一会话绑定 6 秒后拿到
+		//     dedupe-rss-articles 及其声明域）。本组用例按 spec「会话作用域状态隔离」逐条对账。
+		writeCfg(bigCfg, 3); // 回到 split 通道（上组 17.4 写成了 legacy）
+		const sessA = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-A' } };
+		const sessB = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-B' } };
+		const sessC = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-C' } };
+
+		// 19.1 两会话交叉绑定互不污染（A 绑 budget=声明 kwdom，B 绑 temp=无声明）
+		await emit('session_start', { reason: 'new' }, sessA);
+		await emit('session_start', { reason: 'new' }, sessB);
+		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, sessA);
+		const aSp1 = await systemPrompt(sessA);
+		await emit('input', { text: '/opsx-apply smoke-fixture-temp' }, sessB);
+		const bSp1 = await systemPrompt(sessB);
+		const aSp2 = await systemPromptOnly(sessA);
+		check('隔离: A 绑定不被他会话改写（仍绑 budget）', aSp2.includes('活跃变更：smoke-fixture-budget'));
+		check('隔离: A 声明域红线层在（kwdom）', aSp1.includes('### kwdom.md'));
+		check('隔离: B 注入归属为 temp（非 budget）', bSp1.includes('活跃变更：smoke-fixture-temp'));
+		check('隔离: B 不注入 A 的声明域', !bSp1.includes('### kwdom.md'));
+
+		// 19.2 他会话绑定变化不刷新本会话稳定层（字节恒定 + 零新增稳定层记账）
+		const aStableBefore = await systemPromptOnly(sessA);
+		await emit('session_start', { reason: 'new' }, sessB);
+		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, sessB); // B 改绑到 A 同一个 change
+		const aStableAfter = await systemPromptOnly(sessA);
+		check(
+			'隔离: 他会话绑定变化不改本会话稳定层字节',
+			aStableBefore === aStableAfter && aStableAfter.includes('活跃变更：smoke-fixture-budget'),
+		);
+
+		// 19.3 无自身绑定且无父子关系 → 仅索引（不借他会话）
+		await emit('session_start', { reason: 'startup' }, sessC);
+		markMessages();
+		const cSp = await systemPromptOnly(sessC);
+		check(
+			'隔离: 无自身绑定且无父子关系 → 未激活（不借他会话绑定/域）',
+			/档位：未激活/.test(cSp) &&
+				cSp.includes('活跃变更：无') &&
+				!cSp.includes('### kwdom.md') &&
+				!dynamicText().includes('kwdom'),
+		);
+
+		// 19.4 子线程显式继承父会话（parentSession 可证）+ 记账 source=inherit + 主会话不被清零
+		const childCtx = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-child',
+				getHeader: () => ({
+					parentSession:
+						'/home/x/.pi/agent/sessions/dir/2026-09-17T00-00-00-000Z_ci-smoke-A.jsonl',
+				}),
+			},
+		};
+		await emit('session_start', { reason: 'startup' }, childCtx);
+		const childSp = await systemPrompt(childCtx);
+		check(
+			'隔离: 子线程继承父会话档位与绑定',
+			/档位：实现/.test(childSp) && childSp.includes('活跃变更：smoke-fixture-budget'),
+		);
+		check('隔离: 子线程带父会话声明域红线层', childSp.includes('### kwdom.md'));
+		const inheritRows = readModeSet(tmp).filter((r) => r.source === 'inherit');
+		check(
+			'隔离: 继承显式记账 source=inherit + boundChange',
+			inheritRows.length === 1 && inheritRows[0].boundChange === 'smoke-fixture-budget',
+		);
+		const aAfterChild = await systemPromptOnly(sessA);
+		check('隔离: 子线程活动不清零主会话档位', aAfterChild.includes('活跃变更：smoke-fixture-budget'));
+
+		// 19.4c 子线程活动 MUST NOT 改写父会话命中集（spec「子线程显式继承父会话」第三条 AND）。
+		//       判别力：把 inheritFromParent 的 `new Map(parent.jitDocHits)` / `new Map(parent.keywordDocHits)`
+		//       改成浅共享（直接引用父 Map）时，子会话命中会写进父会话集合 → 本节断言变红。
+		await emit('input', { text: '大预算词相关展示调整' }, childCtx); // 子会话关键词命中（kwdom）
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'edit', args: { path: 'backend-go/internal/bigmod/service.go' } },
+			childCtx,
+		); // 子会话 JIT 命中（bigjit）
+		const childHits = await systemPrompt(childCtx);
+		check(
+			'隔离: 子会话自身命中生效（关键词 + JIT）',
+			childHits.includes('BIGKW-MARKER') && childHits.includes('### bigjit.md'),
+		);
+		markMessages();
+		const aAfterChildHits = await systemPrompt(sessA);
+		check('隔离: 子线程关键词命中不回写主会话命中集', !aAfterChildHits.includes('BIGKW-MARKER'));
+		check('隔离: 子线程 JIT 命中不回写主会话命中集', !aAfterChildHits.includes('bigjit'));
+
+		// 19.4b 父会话不可证（header 指向不存在会话）→ 不继承
+		const orphanCtx = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-orphan',
+				getHeader: () => ({ parentSession: '/x/2026-09-17T00-00-00-000Z_no-such-parent.jsonl' }),
+			},
+		};
+		await emit('session_start', { reason: 'startup' }, orphanCtx);
+		const orphanSp = await systemPrompt(orphanCtx);
+		check('隔离: 父会话不可证 → 不继承（未激活）', /档位：未激活/.test(orphanSp));
+
+		// 19.10 跨进程继承（事实库回退）：父会话**不在本进程内存**（模拟 pi-subagents
+		//       子线程 = 独立 node 进程，2026-09-17 实测），但父会话的 mode.set 历史在共享
+		//       事实库 → 子会话据 header 的 parentSession 采纳档位与绑定。
+		//       判别力：把 inheritFromParentHistory 短路（开头 return false）→ 本节3 条断言变红。
+		const xprocParent = 'ci-smoke-parent-xproc';
+		seedModeSet(tmp, xprocParent, 'implementation', 'smoke-fixture-budget');
+		const beforeXproc = readModeSetFull(tmp).length;
+		const xprocChild = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-child-xproc',
+				getHeader: () => ({
+					parentSession: `/home/x/.pi/agent/sessions/dir/2026-09-17T00-00-00-000Z_${xprocParent}.jsonl`,
+				}),
+			},
+		};
+		await emit('session_start', { reason: 'startup' }, xprocChild);
+		const xprocSp = await systemPrompt(xprocChild);
+		check(
+			'跨进程: 子线程据父会话事实库历史继承档位与绑定',
+			/档位：实现/.test(xprocSp) && xprocSp.includes('活跃变更：smoke-fixture-budget'),
+		);
+		check('跨进程: 子线程带父会话声明域红线层（kwdom）', xprocSp.includes('### kwdom.md'));
+		const xprocInheritRows = readModeSetFull(tmp)
+			.slice(beforeXproc)
+			.filter((r) => r.source === 'inherit');
+		check(
+			'跨进程: 继承显式记账 source=inherit 且记在子会话名下',
+			xprocInheritRows.length === 1 &&
+				xprocInheritRows[0].boundChange === 'smoke-fixture-budget' &&
+				xprocInheritRows[0].session_id === 'ci-smoke-child-xproc',
+		);
+
+		// 19.11 路径兜底解析：getHeader 不可用（未落盘/契约变化），但 getSessionFile() 形如
+		//       `<父会话目录>/forks/<ts>_<子会话id>.jsonl` → 从父目录名解出父 id 并继承。
+		const pathChild = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-child-path',
+				getHeader: () => null,
+				getSessionFile: () =>
+					`/home/x/.pi/agent/sessions/dir/2026-09-17T00-00-00-000Z_${xprocParent}/forks/2026-09-17T00-01-00-000Z_ci-smoke-child-path.jsonl`,
+			},
+		};
+		await emit('session_start', { reason: 'startup' }, pathChild);
+		const pathChildSp = await systemPrompt(pathChild);
+		check(
+			'跨进程: getHeader 缺失时按 fork 路径解父 id 并继承',
+			/档位：实现/.test(pathChildSp) &&
+				pathChildSp.includes('活跃变更：smoke-fixture-budget') &&
+				pathChildSp.includes('### kwdom.md'),
+		);
+
+		// 19.12 两条父子证据都无（非 fork 会话）→ 不继承（红线：不得借用任意他会话状态）
+		const noSrcChild = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-child-nosrc',
+				getHeader: () => null,
+				getSessionFile: () =>
+					'/home/x/.pi/agent/sessions/dir/2026-09-17T00-00-00-000Z_ci-smoke-child-nosrc.jsonl',
+			},
+		};
+		await emit('session_start', { reason: 'startup' }, noSrcChild);
+		check(
+			'跨进程: 无父子证据（非 fork 路径）→ 不继承（未激活）',
+			/档位：未激活/.test(await systemPromptOnly(noSrcChild)),
+		);
+
+		// 19.5 命中集按会话隔离（关键词 + JIT 各一例）
+		await emit('input', { text: '大预算词相关展示调整' }, sessA);
+		const aKw = await systemPrompt(sessA);
+		check('隔离: A 关键词命中投递全节（细节层）', aKw.includes('BIGKW-MARKER'));
+		markMessages();
+		await systemPromptOnly(sessB);
+		check('隔离: 他会话关键词命中不投递给本会话', !dynamicText().includes('BIGKW-MARKER'));
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'edit', args: { path: 'backend-go/internal/bigmod/service.go' } },
+			sessA,
+		);
+		const aJit = await systemPrompt(sessA);
+		check('隔离: A JIT 命中注入 bigjit', aJit.includes('### bigjit.md'));
+		markMessages();
+		await systemPromptOnly(sessB);
+		check('隔离: 他会话 JIT 命中不投递给本会话', !dynamicText().includes('bigjit'));
+
+		// 19.6 turn 绑定锁按会话隔离。
+		//     判别力顺序（review P2-4 修正）：必须让 **A 先持锁**、再让 B 写 change 目录。
+		//     旧顺序先在 B 上跑 before_agent_start —— turn 起点本就解 B 的锁，于是「锁是模块级全局」
+		//     的实现也会被解开，断言恒绿（不具判别力）。固定顺序：B 进 turn（解 B 锁）→ A 命令绑定
+		//     （置 A 锁）→ B 写 bind-c。全局锁实现下 B 绑不上（红）；per-session 锁下 B 正常绑定（绿）。
+		await emit('session_start', { reason: 'new' }, sessB);
+		await emit('input', { text: '/opsx-new' }, sessB); // requirements 档：无 mtime 兜底 → 无绑定
+		await systemPromptOnly(sessB); // B 的 turn 起点（解 B 的锁）
+		const msBeforeLock = readModeSet(tmp).length;
+		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, sessA); // A 命令绑定 → 置 A 的锁
+		const msAfterLock = readModeSet(tmp);
+		check(
+			'隔离: A 置锁前置成立（A 命令绑定已记账）',
+			msAfterLock.length === msBeforeLock + 1 &&
+				msAfterLock[msAfterLock.length - 1].source === 'command' &&
+				msAfterLock[msAfterLock.length - 1].boundChange === 'smoke-fixture-budget',
+		);
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'write', args: { path: 'openspec/changes/bind-c/x.md' } },
+			sessB,
+		);
+		const cBinds = readModeSet(tmp).filter((r) => r.source === 'edit-dir' && r.boundChange === 'bind-c');
+		check('隔离: turn 锁按会话独立（B 的兜底绑不被 A 的锁拦住）', cBinds.length >= 1);
+		const bBoundSp = await systemPrompt(sessB);
+		check(
+			'隔离: B 的兜底绑确实生效（注入归属 bind-c + 其声明域）',
+			bBoundSp.includes('活跃变更：bind-c') && bBoundSp.includes('### kwdom.md'),
+		);
+		const aStillBound = await systemPromptOnly(sessA);
+		check('隔离: A 在本会话内保持原绑定', aStillBound.includes('活跃变更：smoke-fixture-budget'));
+
+		// 19.7 无 sessionId 兜底槽 + 同 sessionId 多视图共享状态
+		const noSessCtx = { cwd: tmp, hasUI: false };
+		await emit('session_start', { reason: 'new' }, noSessCtx);
+		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, noSessCtx);
+		const nSp = await systemPrompt(noSessCtx);
+		check('兜底: 无 sessionId 语境自洽（单槽位）', nSp.includes('活跃变更：smoke-fixture-budget'));
+		const sessA2 = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: { getSessionId: () => 'ci-smoke-A' },
+		};
+		const a2Sp = await systemPromptOnly(sessA2);
+		check('兜底: 同 sessionId 多视图共享状态（不互相重置）', a2Sp.includes('活跃变更：smoke-fixture-budget'));
+
+		// 19.8 会话条目有界（LRU 淘汰，防长跑进程无界增长）
+		const limit = ext.SESSION_STATE_LIMIT_FOR_TEST;
+		const firstKey = ext.sessionStateKeysForTest()[0];
+		for (let i = 0; i < limit + 4; i++) {
+			await emit(
+				'session_start',
+				{ reason: 'new' },
+				{ cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => `ci-smoke-lru-${i}` } },
+			);
+		}
+		const keysAfter = ext.sessionStateKeysForTest();
+		check(
+			'隔离: 会话条目有界（不超上限 + 新会话在内）',
+			keysAfter.length <= limit && keysAfter.includes(`ci-smoke-lru-${limit + 3}`),
+		);
+		check('隔离: 最久未用条目被淘汰', !keysAfter.includes(firstKey));
+
+		// 19.9 会话条目上限可配（design D4「可配」）：cfg.sessionStateLimit 覆盖 + 非法值回退默认。
+		//      判别力：若上限写死 32，limit=1 的断言（≤1）变红；若非法值不回退（直接取 0），
+		//      建 3 个会话后 Map 会被清空、全在断言变红。
+		writeCfg({ ...bigCfg, sessionStateLimit: 1 }, 4);
+		for (const n of ['limit1-a', 'limit1-b', 'limit1-c']) {
+			await emit(
+				'session_start',
+				{ reason: 'new' },
+				{ cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => `ci-smoke-${n}` } },
+			);
+			await new Promise((r) => setTimeout(r, 3)); // 拉开毫秒级 LRU 时间戳，使「最新存活」确定
+		}
+		const keysLimit1 = ext.sessionStateKeysForTest();
+		check(
+			'隔离: cfg.sessionStateLimit=1 生效（存活条目 ≤1 且最新会话在内）',
+			keysLimit1.length === 1 && keysLimit1.includes('ci-smoke-limit1-c'),
+		);
+		writeCfg({ ...bigCfg, sessionStateLimit: 0 }, 6); // 非法值：回退默认 32
+		for (const n of ['bad-a', 'bad-b', 'bad-c']) {
+			await emit(
+				'session_start',
+				{ reason: 'new' },
+				{ cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => `ci-smoke-${n}` } },
+			);
+		}
+		const keysBad = ext.sessionStateKeysForTest();
+		check(
+			'隔离: 非法上限（0）回退默认（3 个新会话全在，未被误淘汰）',
+			['ci-smoke-bad-a', 'ci-smoke-bad-b', 'ci-smoke-bad-c'].every((k) => keysBad.includes(k)),
+		);
+		check(
+			'隔离: 上限解析回退默认（纯函数：0/负数/NaN/缺省/小数取整）',
+			ext.resolveSessionStateLimitForTest({ sessionStateLimit: 0 }) === ext.SESSION_STATE_LIMIT_FOR_TEST &&
+				ext.resolveSessionStateLimitForTest({ sessionStateLimit: -3 }) === ext.SESSION_STATE_LIMIT_FOR_TEST &&
+				ext.resolveSessionStateLimitForTest({ sessionStateLimit: Number.NaN }) === ext.SESSION_STATE_LIMIT_FOR_TEST &&
+				ext.resolveSessionStateLimitForTest(null) === ext.SESSION_STATE_LIMIT_FOR_TEST &&
+				ext.resolveSessionStateLimitForTest({ sessionStateLimit: 2.7 }) === 2,
+		);
+		writeCfg(bigCfg, 8); // 还原默认配置（不影响后续：本组已是最后一组）
 
 		let fail = 0;
 		for (const [name, ok] of checks) {
