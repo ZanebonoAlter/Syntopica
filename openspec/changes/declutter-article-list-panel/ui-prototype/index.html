@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>declutter-article-list-panel · UI 原型</title>
+<style>
+  /* ===== 语义 token：与 main.css light 主题同名同值（原型 light 态基准） ===== */
+  :root {
+    --color-bg-base: #faf7f2;
+    --color-bg-elevated: #f5f0e6;
+    --color-bg-sunken: #e8dfd1;
+    --color-bg-hover: rgba(255, 255, 255, 0.85);
+    --color-bg-active: rgba(255, 255, 255, 0.6);
+    --color-text-primary: #1a1a1a;
+    --color-text-secondary: #5a5a5a;
+    --color-text-muted: #8a8a8a;
+    --color-border-subtle: rgba(26, 26, 26, 0.08);
+    --color-border-medium: rgba(26, 26, 26, 0.15);
+    --color-accent: #d94a4a;
+    --color-accent-subtle: rgba(217, 74, 74, 0.08);
+    --color-secondary: #d4883c;
+    --color-error: #c42f3c;
+    --info: #0369a1;
+    --ok: #15803d;
+    --shadow-subtle: 0 1px 3px rgba(26, 26, 26, 0.06);
+    --shadow-medium: 0 4px 16px rgba(26, 26, 26, 0.12);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: #ece9e2; color: var(--color-text-primary);
+    padding: 28px 24px 64px;
+  }
+  .ic { width: 16px; height: 16px; fill: currentColor; flex-shrink: 0; display: block; }
+
+  /* ===== 说明页头 ===== */
+  .spec-header { max-width: 1380px; margin: 0 auto 20px; }
+  .spec-header h1 { font-size: 18px; font-weight: 700; }
+  .spec-header p { font-size: 12.5px; color: var(--color-text-secondary); margin-top: 4px; line-height: 1.6; }
+  .spec-header .kbd {
+    display:inline-block; padding:0 6px; border:1px solid var(--color-border-medium);
+    border-bottom-width:2px; border-radius:4px; font-size:11px; margin:0 1px;
+  }
+
+  .exhibit { max-width: 1380px; margin: 0 auto 36px; }
+  .exhibit-caption {
+    font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--color-text-secondary); margin-bottom: 10px;
+  }
+  .exhibit-caption b { color: var(--color-accent); }
+
+  /* ===== Exhibit A：三栏整框 ===== */
+  .frame {
+    width: 1380px; height: 840px; display: flex; flex-direction: column;
+    border: 1px solid var(--color-border-medium); border-radius: 12px;
+    overflow: hidden; box-shadow: var(--shadow-medium); background: var(--color-bg-base);
+  }
+  .app-header {
+    height: 46px; flex-shrink: 0; display: flex; align-items: center; gap: 14px;
+    padding: 0 16px; border-bottom: 1px solid var(--color-border-subtle); background: var(--color-bg-base);
+  }
+  .app-header .brand { font-weight: 800; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .app-header .logo-dot { width: 18px; height: 18px; border-radius: 5px; background: linear-gradient(135deg, #2f6f8f, #7fb5a0); }
+  .app-header .ph-ic { width: 26px; height: 26px; border-radius: 7px; background: var(--color-bg-sunken); opacity: .7; }
+  .app-header .spacer { flex: 1; }
+  .app-body { flex: 1; display: flex; min-height: 0; }
+
+  /* 侧栏（背景板，非本次战场） */
+  .sidebar {
+    width: 212px; flex-shrink: 0; background: var(--color-bg-base);
+    border-right: 1px solid var(--color-border-subtle); padding: 12px 10px; font-size: 13px;
+  }
+  .side-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; color: var(--color-text-secondary); }
+  .side-item.active { background: var(--color-accent-subtle); color: var(--color-text-primary); font-weight: 600; }
+  .side-item .n { margin-left: auto; font-size: 11px; color: var(--color-text-muted); }
+  .side-sec { font-size: 11px; color: var(--color-text-muted); padding: 14px 10px 6px; letter-spacing: .05em; }
+
+  /* ===== 中间栏：单一 surface，行式列表 ===== */
+  .panel {
+    width: 320px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0;
+    background: var(--color-bg-elevated); border-right: 1px solid var(--color-border-subtle);
+    position: relative;
+  }
+  .panel-header {
+    display: flex; align-items: center; gap: 6px; padding: 9px 10px 9px 14px;
+    border-bottom: 1px solid var(--color-border-subtle); flex-shrink: 0; position: relative; z-index: 6;
+  }
+  .panel-header h2 { font-size: 14.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .panel-header .count { font-size: 12px; color: var(--color-text-muted); font-weight: 500; margin-left: 2px; }
+  .panel-header .spacer { flex: 1; }
+
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border: none; border-radius: 7px; cursor: pointer;
+    background: transparent; color: var(--color-text-muted); transition: all .15s ease;
+  }
+  .icon-btn:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+  .icon-btn.on { background: var(--color-accent-subtle); color: var(--color-accent); }
+
+  /* 筛选激活 chip */
+  .filter-chip {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600;
+    color: var(--color-accent); background: var(--color-accent-subtle);
+    border: 1px solid rgba(217, 74, 74, .25); border-radius: 999px; padding: 2px 4px 2px 8px; white-space: nowrap;
+  }
+  .filter-chip button {
+    border: none; background: transparent; color: inherit; cursor: pointer;
+    width: 14px; height: 14px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .filter-chip button:hover { background: rgba(217, 74, 74, .18); }
+
+  /* 行 */
+  .rows { flex: 1; overflow-y: auto; min-height: 0; }
+  .row {
+    position: relative; display: flex; align-items: center; gap: 14px;
+    padding: 14px 12px 14px 16px; min-height: 100px; border-bottom: 1px solid var(--color-border-subtle);
+    cursor: pointer; transition: background .12s ease;
+  }
+  .row:hover { background: rgba(26, 26, 26, 0.03); }
+  .row.selected { background: var(--color-accent-subtle); box-shadow: inset 2px 0 0 var(--color-accent); }
+  .row.read { opacity: .55; }
+  .row-cover { /* image_url 为空 → feed 图标占位，行高不变 */ flex: 0 0 68px; width: 68px; height: 68px; border-radius: 8px; overflow: hidden; background: var(--color-bg-sunken); display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--color-text-muted); }
+  .row-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .row-cover.c1 { background: linear-gradient(135deg, #d94a4a33, #4a5d8a55); }
+  .row-cover.c2 { background: linear-gradient(135deg, #c4883c33, #3d8a4a44); }
+  .row-cover.c3 { background: linear-gradient(135deg, #3d7a8a33, #d94a4a33); }
+  .row-cover.c4 { background: linear-gradient(135deg, #4a5d8a44, #c4883c33); }
+  .row-body { flex: 1; min-width: 0; }
+  .row-title { font-size: 15px; font-weight: 600; line-height: 1.45; color: var(--color-text-primary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; padding-right: 22px; }
+  .row-meta { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 12.5px; color: var(--color-text-muted); }
+  .row-meta .grow { flex: 1; }
+  .row .star { position: absolute; top: 9px; right: 9px; color: var(--color-text-muted); }
+  .row .star.fav { color: var(--color-secondary); }
+  .m-ic { width: 15px; height: 15px; cursor: pointer; border: none; background: transparent; padding: 0; display: inline-flex; color: var(--color-text-muted); }
+  .m-ic:hover { color: var(--color-text-primary); }
+  .m-ic.tag.has { color: var(--color-text-secondary); }
+  .m-ic.err { color: var(--color-error); }
+  .m-ic.state.queued { color: var(--color-secondary); }
+  .m-ic.state.done { color: var(--color-text-muted); opacity: .5; }
+  .rp-line { display: flex; justify-content: space-between; padding: 2px 0; }
+  .rp-line .lk { color: var(--color-text-secondary); }
+  .rp-line .lv { font-weight: 600; }
+  .rp-line .lv.ok { color: var(--ok); }
+  .rp-line .lv.warn { color: var(--color-error); }
+  .rp-line .lv.pend { color: var(--color-text-muted); }
+  .rp-err { margin-top: 6px; padding: 6px 8px; background: rgba(196, 47, 60, .07); border-radius: 6px; color: var(--color-error); font-size: 11.5px; line-height: 1.5; }
+  .spin { width: 14px; height: 14px; border: 2px solid rgba(3, 105, 161, .25); border-top-color: var(--info); border-radius: 50%; animation: sp 1s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+
+  /* 就地展开浮层（⚠ 错误 / 🏷 标签共用形态）——实心底色，禁用半透明 bg-hover（透字） */
+  .row-pop {
+    position: absolute; left: 10px; right: 10px; top: calc(100% - 4px); z-index: 8;
+    background: var(--color-bg-base); border: 1px solid var(--color-border-medium);
+    border-radius: 10px; box-shadow: var(--shadow-medium); padding: 10px 12px; font-size: 12px;
+  }
+  .row-pop .rp-title { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px; }
+  .row-pop .rp-title.err { color: var(--color-error); }
+  .row-pop .rp-title.ok { color: var(--color-text-primary); }
+  .row-pop .rp-body { margin-top: 5px; color: var(--color-text-secondary); line-height: 1.55; max-height: 150px; overflow-y: auto; }
+  .row-pop .rp-hint { margin-top: 6px; font-size: 11px; color: var(--color-text-muted); }
+
+  /* 头部下拉浮层（日期面板 / 订阅 popover） */
+  .head-pop {
+    position: absolute; top: 47px; left: 10px; right: 10px; z-index: 10;
+    background: var(--color-bg-base); border: 1px solid var(--color-border-medium);
+    border-radius: 12px; box-shadow: var(--shadow-medium); padding: 12px;
+  }
+  .head-pop.right { left: auto; width: 236px; }
+  .hp-label { font-size: 10.5px; font-weight: 700; color: var(--color-text-secondary); letter-spacing: .05em; margin-bottom: 7px; }
+  .quick { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .quick button {
+    padding: 5px 11px; font-size: 11.5px; font-weight: 500; cursor: pointer;
+    background: var(--color-bg-elevated); border: 1px solid var(--color-border-subtle);
+    border-radius: 8px; color: var(--color-text-primary);
+  }
+  .quick button:hover { border-color: var(--color-border-medium); }
+  .quick button.active { background: var(--color-accent); color: #fff; border-color: transparent; }
+  .daterow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .daterow label { font-size: 11.5px; color: var(--color-text-secondary); width: 52px; flex-shrink: 0; }
+  .daterow input { flex: 1; min-width: 0; padding: 5px 8px; font-size: 12px; border: 1px solid var(--color-border-medium); border-radius: 7px; background: #fff; color: var(--color-text-primary); }
+  .panel-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+  .btn { padding: 5px 13px; font-size: 12px; font-weight: 600; border-radius: 8px; cursor: pointer; border: 1px solid var(--color-border-subtle); background: var(--color-bg-elevated); color: var(--color-text-primary); }
+  .btn:hover { background: var(--color-bg-active); }
+  .btn.primary { background: var(--color-accent); color: #fff; border-color: transparent; }
+
+  .feed-line { display: flex; align-items: center; gap: 8px; padding: 6px 2px; font-size: 12.5px; }
+  .feed-line .k { color: var(--color-text-secondary); }
+  .feed-line .v { font-weight: 600; }
+  .feed-line .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .feed-hint { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--color-border-subtle); font-size: 11px; color: var(--color-text-muted); }
+
+  /* 右侧阅读区（背景板） */
+  .reader {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: var(--color-bg-elevated); gap: 14px;
+  }
+  .reader .ring { width: 120px; height: 120px; border-radius: 50%; border: 1px dashed var(--color-border-medium); display: flex; align-items: center; justify-content: center; opacity: .75; }
+  .reader h3 { font-size: 15px; font-weight: 600; }
+  .reader p { font-size: 12.5px; color: var(--color-text-muted); }
+
+  /* ===== Exhibit B/C 样张 ===== */
+  .sample-grid { display: grid; grid-template-columns: repeat(3, 320px); gap: 18px; }
+  .sample { background: var(--color-bg-elevated); border: 1px solid var(--color-border-medium); border-radius: 10px; overflow: hidden; }
+  .sample .row { border-bottom: none; }
+  .sample-caption { font-size: 11.5px; color: var(--color-text-secondary); margin-bottom: 6px; }
+  .sample-wrap { position: relative; padding-bottom: 185px; }
+  .sample-wrap .row-pop { top: 100%; margin-top: 6px; }
+  .two-col { display: grid; grid-template-columns: 320px 300px; gap: 18px; }
+  .mini-panel { position: relative; background: var(--color-bg-elevated); border: 1px solid var(--color-border-medium); border-radius: 10px; overflow: visible; }
+  .mini-panel .panel-header { border-radius: 10px 10px 0 0; }
+</style>
+</head>
+<body>
+
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></symbol>
+  <symbol id="i-star-o" viewBox="0 0 24 24"><path d="M12 15.39 8.24 17.66l.99-4.28-3.32-2.88 4.38-.38L12 6.09l1.71 4.03 4.38.38-3.32 2.88.99 4.28M12 17.27l-4.15 2.51 1.1-4.72-3.67-3.18 4.82-.41L12 7.19l1.9 4.28 4.82.41-3.67 3.18 1.1 4.72z"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><path d="M19 19H5V8h14m-3-4v2H8V4H6v2H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-1V4m-7 13H7v-2h2m4 0h2v2h-2m4-4h-2V9h2m-4 0h2v2h-2M9 11H7V9h2"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><path d="M13 9h-2V7h2m0 10h-2v-6h2m-1-9a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M21.41 11.58l-9-9A2 2 0 0 0 11 2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 .59 1.42l9 9A2 2 0 0 0 13 22a2 2 0 0 0 1.41-.59l7-7A2 2 0 0 0 22 13a2 2 0 0 0-.59-1.42M6.5 8A1.5 1.5 0 1 1 8 6.5 1.5 1.5 0 0 1 6.5 8m3.56 9.35-2.83-2.83 6.5-6.5 2.83 2.83z"/></symbol>
+  <symbol id="i-tag-o" viewBox="0 0 24 24"><path d="M21.41 11.58l-9-9A2 2 0 0 0 11 2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 .59 1.42l9 9A2 2 0 0 0 13 22a2 2 0 0 0 1.41-.59l7-7A2 2 0 0 0 22 13a2 2 0 0 0-.59-1.42M6.5 8A1.5 1.5 0 1 1 8 6.5 1.5 1.5 0 0 1 6.5 8M13 20l-9-9V4h7l9 9m-4.5-4.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z" fill-rule="evenodd"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M13 14h-2V9h2m0 9h-2v-2h2M1 21h22L12 2 1 21z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><path d="M12 20a8 8 0 1 1 0-16 8 8 0 0 1 0 16m0-18A10 10 0 1 0 12 22A10 10 0 0 0 12 2m.5 5H11v6l5.25 3.15.75-1.23z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M12 2A10 10 0 1 0 22 12A10 10 0 0 0 12 2m-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M12 3 2 12h3v8h6v-6h2v6h6v-8h3z"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M18 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2m0 16H8v-2h10m0-4H8v-2h10m0-4H8V6h10z"/></symbol>
+</svg>
+
+<div class="spec-header">
+  <h1>declutter-article-list-panel · 中间栏行式列表改版</h1>
+  <p>可丢弃原型（ui-prototype/index.html）· light 态视觉基准，实现全走 main.css 语义 token、双主题自动适配 ·
+    <b>Exhibit A 可交互</b>：行可点选，<span class="kbd">📅</span> 日期面板、<span class="kbd">ⓘ</span> 订阅状态、行尾状态图标（<span class="kbd">⏳</span>排队琥珀 / ⟳处理中 / <span class="kbd">⚠</span>失败 / ✓完成淡灰）均可点击开「处理详情」浮层 · 单一 surface：头部与列表同底色，细线分层，无白/咖啡拼贴</p>
+</div>
+
+<!-- ============ A · 主视图 ============ -->
+<section class="exhibit">
+  <div class="exhibit-caption"><b>A · 主视图</b> — 单 feed 视图：行内省略来源名（头部已示「智源社区」，全部文章/收藏夹视图 meta 首位显示来源）· 行式列表常态（含 已读 / 排队⏳ / 处理中 / 失败⚠ / 完成淡灰✓ / 选中 / 筛选 chip）</div>
+  <div class="frame">
+    <div class="app-header">
+      <span class="logo-dot"></span><span class="brand">Syntopica</span>
+      <span class="spacer"></span>
+      <span class="ph-ic"></span><span class="ph-ic"></span><span class="ph-ic"></span><span class="ph-ic"></span>
+    </div>
+    <div class="app-body">
+      <aside class="sidebar">
+        <div class="side-item"><svg class="ic"><use href="#i-home"/></svg>全部文章<span class="n">703</span></div>
+        <div class="side-item">★ 收藏夹</div>
+        <div class="side-item">✎ 叙事工坊</div>
+        <div class="side-item">◎ 发现订阅源</div>
+        <div class="side-sec">关注标签</div>
+        <div class="side-item">♥ DeepSeek Harness</div>
+        <div class="side-item">♥ Harness</div>
+        <div class="side-sec">分类</div>
+        <div class="side-item active">📁 技术<span class="n">6</span></div>
+        <div class="side-item" style="padding-left:26px">智源社区<span class="n">376</span></div>
+        <div class="side-item" style="padding-left:26px">博客园<span class="n">128</span></div>
+        <div class="side-item">📁 新间<span class="n">11</span></div>
+      </aside>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>智源社区</h2><span class="count">376</span>
+          <span class="filter-chip" id="chip" hidden>7天内 <button title="清除筛选" onclick="clearFilter()"><svg class="ic" style="width:10px;height:10px"><use href="#i-x"/></svg></button></span>
+          <span class="spacer"></span>
+          <button class="icon-btn" id="btnCal" title="日期筛选" onclick="togglePop('datePanel','btnCal')"><svg class="ic"><use href="#i-cal"/></svg></button>
+          <button class="icon-btn" id="btnInfo" title="订阅源状态" onclick="togglePop('feedPop','btnInfo')"><svg class="ic"><use href="#i-info"/></svg></button>
+        </div>
+
+        <div class="head-pop" id="datePanel" hidden>
+          <div class="hp-label">快速选择</div>
+          <div class="quick">
+            <button>1天内</button><button class="active">7天内</button><button>30天内</button>
+          </div>
+          <div class="daterow"><label>开始日期</label><input type="date" value="2026-09-11"></div>
+          <div class="daterow"><label>结束日期</label><input type="date" value="2026-09-18"></div>
+          <div class="panel-actions">
+            <button class="btn">清除筛选</button><button class="btn primary">应用筛选</button>
+          </div>
+        </div>
+
+        <div class="head-pop right" id="feedPop" hidden>
+          <div class="hp-label">订阅源状态（只读）</div>
+          <div class="feed-line"><span class="dot" style="background:var(--ok)"></span><span class="k">刷新</span><span class="v" style="color:var(--ok)">正常</span></div>
+          <div class="feed-line"><span class="dot" style="background:var(--ok)"></span><span class="k">总结</span><span class="v">开启</span></div>
+          <div class="feed-line"><span class="dot" style="background:var(--info)"></span><span class="k">抓取</span><span class="v">开启</span></div>
+          <div class="feed-hint">改开关请前往 设置 → 订阅源管理</div>
+        </div>
+
+        <div class="rows" id="rows">
+
+          <div class="row" onclick="selectRow(this)">
+            <div class="row-cover">⚡</div>
+            <div class="row-body">
+            <svg class="ic star"><use href="#i-star-o"/></svg>
+            <div class="row-title">首发｜数千万元种子轮融资，Articuler.ai 在职场社交找到切入点</div>
+            <div class="row-meta">26分钟前 · 极客公园<span class="grow"></span>
+              <button class="m-ic state queued" title="处理状态：排队中" onclick="toggleRowPop(this,'queued')"><svg class="ic"><use href="#i-clock"/></svg></button>
+            </div>
+            </div>
+          </div>
+
+          <div class="row" onclick="selectRow(this)">
+            <div class="row-cover c2">🚀</div>
+            <div class="row-body">
+            <svg class="ic star fav"><use href="#i-star"/></svg>
+            <div class="row-title">GPT-6 倒到 99.9%，ARC AGI 考卷被迫重做！下一关考「发明」</div>
+            <div class="row-meta">2小时前 · 新智元<span class="grow"></span>
+              <button class="m-ic state done" title="处理状态：完成" onclick="toggleRowPop(this,'done')"><svg class="ic"><use href="#i-check"/></svg></button>
+            </div>
+            </div>
+          </div>
+
+          <div class="row selected" onclick="selectRow(this)">
+            <div class="row-cover c3">✨</div>
+            <div class="row-body">
+            <svg class="ic star"><use href="#i-star-o"/></svg>
+            <div class="row-title">突发，GPT-6 Sonnet 曝光了！</div>
+            <div class="row-meta">2小时前 · 新智元<span class="grow"></span>
+              <button class="m-ic state done" title="处理状态：完成" onclick="toggleRowPop(this,'done')"><svg class="ic"><use href="#i-check"/></svg></button>
+            </div>
+            </div>
+          </div>
+
+          <div class="row" onclick="selectRow(this)">
+            <div class="row-cover c4">📊</div>
+            <div class="row-body">
+            <svg class="ic star"><use href="#i-star-o"/></svg>
+            <div class="row-title">AI 都会写代码了，还要不要学传统编程？（强烈建议阅读）</div>
+            <div class="row-meta">3小时前<span class="grow"></span>
+              <button class="m-ic" title="处理状态：进行中" onclick="toggleRowPop(this,'processing')"><span class="spin"></span></button>
+            </div>
+            </div>
+          </div>
+
+          <div class="row read" onclick="selectRow(this)">
+            <div class="row-cover c1">💡</div>
+            <div class="row-body">
+            <svg class="ic star"><use href="#i-star-o"/></svg>
+            <div class="row-title">GPT-6 Sol 和 Opus 5.2 同时友测！奥特曼周末刚剧透的下一代</div>
+            <div class="row-meta">2小时前 · 量子位<span class="grow"></span>
+              <button class="m-ic state done" title="处理状态：完成" onclick="toggleRowPop(this,'done')"><svg class="ic"><use href="#i-check"/></svg></button>
+            </div>
+            </div>
+          </div>
+
+          <div class="row" onclick="selectRow(this)">
+            <div class="row-cover c2">🧪</div>
+            <div class="row-body">
+            <svg class="ic star"><use href="#i-star-o"/></svg>
+            <div class="row-title">A股「AI 末日」资本黑手被揪出，炒作焦虑成 IPO 圈钱！</div>
+            <div class="row-meta">26分钟前 · 华尔街见闻<span class="grow"></span>
+              <button class="m-ic state err" title="处理状态：失败" onclick="toggleRowPop(this,'error')"><svg class="ic"><use href="#i-alert"/></svg></button>
+            </div>
+            </div>
+          </div>
+
+          <div class="row" onclick="selectRow(this)">
+            <div class="row-cover c3">🎧</div>
+            <div class="row-body">
+            <svg class="ic star"><use href="#i-star-o"/></svg>
+            <div class="row-title">科技爱好者周刊（第 380 期）：本地优先软件的春天</div>
+            <div class="row-meta">阮一峰的网络日志 · 7小时前<span class="grow"></span>
+              <button class="m-ic state done" title="处理状态：完成" onclick="toggleRowPop(this,'done')"><svg class="ic"><use href="#i-check"/></svg></button>
+            </div>
+            </div>
+          </div>
+
+          <div class="row" onclick="selectRow(this)">
+            <div class="row-cover c4">🗂️</div>
+            <div class="row-body">
+            <svg class="ic star"><use href="#i-star-o"/></svg>
+            <div class="row-title">48 小时阅读排行：这周大家都在看什么</div>
+            <div class="row-meta">博客园 · 8小时前<span class="grow"></span>
+              <button class="m-ic state queued" title="处理状态：排队中" onclick="toggleRowPop(this,'queued')"><svg class="ic"><use href="#i-clock"/></svg></button>
+            </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <main class="reader">
+        <div class="ring"><svg class="ic" style="width:40px;height:40px;color:var(--color-text-muted)"><use href="#i-book"/></svg></div>
+        <h3>选择一篇文章开始阅读</h3>
+        <p>点击左侧文章列表查看内容</p>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- ============ B · 交互态放大 ============ -->
+<section class="exhibit">
+  <div class="exhibit-caption"><b>B · 行状态与就地浮层</b> — 放大样张（浮层为覆盖层，不改变行高、不挤动列表流）</div>
+  <div class="sample-grid">
+
+    <div>
+      <div class="sample-caption">B1 · hover — 全行微底色，无框无投影</div>
+      <div class="sample"><div class="row" style="background:rgba(26,26,26,0.03)">
+        <svg class="ic star" style="position:absolute;top:9px;right:9px"><use href="#i-star-o"/></svg>
+        <div class="row-title">突发，GPT-6 Sonnet 曝光了！</div>
+        <div class="row-meta">2小时前 · 新智元</div>
+      </div></div>
+    </div>
+
+    <div>
+      <div class="sample-caption">B2 · 选中 — accent-subtle 底 + 左侧 2px 竖条</div>
+      <div class="sample"><div class="row selected">
+        <svg class="ic star" style="position:absolute;top:9px;right:9px"><use href="#i-star-o"/></svg>
+        <div class="row-title">突发，GPT-6 Sonnet 曝光了！</div>
+        <div class="row-meta">2小时前 · 新智元</div>
+      </div></div>
+    </div>
+
+    <div>
+      <div class="sample-caption">B3 · 已读 — 整行弱化（沿用现状 opacity）</div>
+      <div class="sample"><div class="row read">
+        <svg class="ic star" style="position:absolute;top:9px;right:9px"><use href="#i-star-o"/></svg>
+        <div class="row-title">GPT-6 Sol 和 Opus 5.2 同时友测！奥特曼周末刚剧透的下一代</div>
+        <div class="row-meta">2小时前 · 量子位</div>
+      </div></div>
+    </div>
+
+    <div>
+      <div class="sample-caption">B4 · 失败行 — 红 ⚠，点开「处理详情」浮层（含错误文案）</div>
+      <div class="sample sample-wrap">
+        <div class="row">
+          <div class="row-title">A股「AI 末日」资本黑手被揪出，炒作焦虑成 IPO 圈钱！</div>
+          <div class="row-meta">26分钟前 · 华尔街见闻<span class="grow"></span>
+            <button class="m-ic state err"><svg class="ic"><use href="#i-alert"/></svg></button>
+          </div>
+          <div class="row-pop">
+            <div class="rp-title err"><svg class="ic" style="width:13px;height:13px"><use href="#i-alert"/></svg>抓取失败</div>
+            <div class="rp-body">
+              <div class="rp-line"><span class="lk">抓取</span><span class="lv warn">失败</span></div>
+              <div class="rp-line"><span class="lk">总结</span><span class="lv ok">已总结</span></div>
+              <div class="rp-line"><span class="lk">标签</span><span class="lv pend">待打标签</span></div>
+              <div class="rp-err">firecrawl 超时：目标站点 504 Gateway Timeout（重试 3 次未成功）。</div>
+            </div>
+            <div class="rp-hint">稍后将随下次刷新自动重试</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="sample-caption">B5 · 排队中 — 琥珀 ⏳，点开看全链路状态</div>
+      <div class="sample sample-wrap">
+        <div class="row">
+          <div class="row-title">首发｜数千万元种子轮融资，Articuler.ai 在职场社交找到切入点</div>
+          <div class="row-meta">26分钟前 · 极客公园<span class="grow"></span>
+            <button class="m-ic state queued"><svg class="ic"><use href="#i-clock"/></svg></button>
+          </div>
+          <div class="row-pop">
+            <div class="rp-title ok">处理详情</div>
+            <div class="rp-body">
+              <div class="rp-line"><span class="lk">抓取</span><span class="lv pend">待抓取</span></div>
+              <div class="rp-line"><span class="lk">总结</span><span class="lv pend">待总结</span></div>
+              <div class="rp-line"><span class="lk">标签</span><span class="lv pend">待打标签</span></div>
+            </div>
+            <div class="rp-hint">排队中：等待抓取/总结链路处理</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="sample-caption">B6 · 处理中 — ⟳ 转圈（info 色）；全部完成则为淡灰 ✓（几乎隐形，保留浮层入口）</div>
+      <div class="sample">
+        <div class="row">
+          <div class="row-title">AI 都会写代码了，还要不要学传统编程？（强烈建议阅读）</div>
+          <div class="row-meta">3小时前<span class="grow"></span><span class="spin"></span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ C · 头部展开态 ============ -->
+<section class="exhibit">
+  <div class="exhibit-caption"><b>C · 头部交互</b> — 📅 日期面板 与 ⓘ 订阅状态 popover（替代原订阅状态大卡与独立筛选行）</div>
+  <div class="two-col">
+
+    <div>
+      <div class="sample-caption">C1 · 📅 日期筛选下拉（激活时头部出现条件 chip，可一键清除）</div>
+      <div class="mini-panel">
+        <div class="panel-header">
+          <h2>智源社区</h2><span class="count">376</span>
+          <span class="filter-chip">7天内 <button><svg class="ic" style="width:10px;height:10px"><use href="#i-x"/></svg></button></span>
+          <span class="spacer"></span>
+          <button class="icon-btn on"><svg class="ic"><use href="#i-cal"/></svg></button>
+          <button class="icon-btn"><svg class="ic"><use href="#i-info"/></svg></button>
+        </div>
+        <div class="head-pop" style="position:static; margin:8px; border-radius:10px;">
+          <div class="hp-label">快速选择</div>
+          <div class="quick"><button>1天内</button><button class="active">7天内</button><button>30天内</button></div>
+          <div class="daterow"><label>开始日期</label><input type="date" value="2026-09-11"></div>
+          <div class="daterow"><label>结束日期</label><input type="date" value="2026-09-18"></div>
+          <div class="panel-actions"><button class="btn">清除筛选</button><button class="btn primary">应用筛选</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="sample-caption">C2 · ⓘ 订阅源状态 popover（只读，替代原常驻大卡）</div>
+      <div class="mini-panel">
+        <div class="panel-header">
+          <h2>智源社区</h2><span class="count">376</span>
+          <span class="spacer"></span>
+          <button class="icon-btn"><svg class="ic"><use href="#i-cal"/></svg></button>
+          <button class="icon-btn on"><svg class="ic"><use href="#i-info"/></svg></button>
+        </div>
+        <div class="head-pop right" style="position:static; margin:8px; width:auto; border-radius:10px;">
+          <div class="hp-label">订阅源状态（只读）</div>
+          <div class="feed-line"><span class="dot" style="background:var(--ok)"></span><span class="k">刷新</span><span class="v" style="color:var(--ok)">正常</span></div>
+          <div class="feed-line"><span class="dot" style="background:var(--ok)"></span><span class="k">总结</span><span class="v">开启</span></div>
+          <div class="feed-line"><span class="dot" style="background:var(--info)"></span><span class="k">抓取</span><span class="v">开启</span></div>
+          <div class="feed-hint">改开关请前往 设置 → 订阅源管理</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<script>
+  function selectRow(el) {
+    document.querySelectorAll('#rows .row').forEach(r => r.classList.remove('selected'));
+    el.classList.add('selected');
+  }
+  function togglePop(popId, btnId) {
+    const pop = document.getElementById(popId), btn = document.getElementById(btnId);
+    const show = pop.hidden;
+    ['datePanel', 'feedPop'].forEach(id => { document.getElementById(id).hidden = true; });
+    ['btnCal', 'btnInfo'].forEach(id => { document.getElementById(id).classList.remove('on'); });
+    if (show) { pop.hidden = false; btn.classList.add('on'); }
+  }
+  const POP_DATA = {
+    queued: {
+      lines: [['抓取', '待抓取', 'pend'], ['总结', '待总结', 'pend'], ['标签', '待打标签', 'pend']],
+      hint: '排队中：等待抓取/总结链路处理'
+    },
+    processing: {
+      lines: [['抓取', '抓取中', 'run'], ['总结', '待总结', 'pend'], ['标签', '待打标签', 'pend']],
+      hint: '完成后自动进入后续链路'
+    },
+    done: {
+      lines: [['抓取', '成功', 'ok'], ['总结', '已总结', 'ok'], ['标签', '已标记 4', 'ok']],
+      hint: '标签详情可在「叙事工坊 / 语义版块」按本文查看'
+    },
+    error: {
+      title: '抓取失败',
+      lines: [['抓取', '失败', 'warn'], ['总结', '已总结', 'ok'], ['标签', '待打标签', 'pend']],
+      err: 'firecrawl 超时：目标站点 504 Gateway Timeout（重试 3 次未成功），正文暂不可用。',
+      hint: '稍后将随下次刷新自动重试'
+    }
+  };
+  function toggleRowPop(btn, kind) {
+    event.stopPropagation();
+    const row = btn.closest('.row');
+    const open = row.querySelector('.row-pop');
+    document.querySelectorAll('#rows .row-pop').forEach(p => p.remove());
+    if (open) return;
+    const d = POP_DATA[kind];
+    const div = document.createElement('div');
+    div.className = 'row-pop';
+    const lines = d.lines.map(([k, v, c]) => `<div class="rp-line"><span class="lk">${k}</span><span class="lv ${c}">${v}</span></div>`).join('');
+    div.innerHTML = (d.title
+        ? `<div class="rp-title err"><svg class="ic" style="width:13px;height:13px"><use href="#i-alert"/></svg>${d.title}</div>`
+        : `<div class="rp-title ok">处理详情</div>`)
+      + `<div class="rp-body">${lines}${d.err ? `<div class="rp-err">${d.err}</div>` : ''}</div>`
+      + `<div class="rp-hint">${d.hint}</div>`;
+    row.appendChild(div);
+  }
+  function clearFilter() {
+    document.getElementById('chip').hidden = true;
+  }
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.row') ) {
+      document.querySelectorAll('#rows .row-pop').forEach(p => p.remove());
+    }
+    if (!e.target.closest('.panel-header') && !e.target.closest('.head-pop')) {
+      ['datePanel', 'feedPop'].forEach(id => { document.getElementById(id).hidden = true; });
+      ['btnCal', 'btnInfo'].forEach(id => { document.getElementById(id).classList.remove('on'); });
+    }
+  });
+</script>
+</body>
+</html>
