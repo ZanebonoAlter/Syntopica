@@ -6,6 +6,8 @@ import { useOnboarding } from '~/composables/useOnboarding'
 import { useSchedulerStatus } from '~/composables/useSchedulerStatus'
 import { useAnalysisPauseFavicon } from '~/composables/useAnalysisPauseFavicon'
 import { useNotify } from '~/composables/useNotify'
+import NotificationBell from '~/components/ui/NotificationBell.vue'
+import TagQueueProgressChip from './TagQueueProgressChip.vue'
 
 const { toggleTheme, isDark } = useTheme()
 const { startTour } = useOnboarding()
@@ -118,6 +120,10 @@ import '~/components/layout/AppHeader.css'
       <button class="header-btn" title="全部标为已读" @click="$emit('markAllRead')">
         <Icon icon="mdi:email-open-multiple" width="20" height="20" class="text-gray-600" />
       </button>
+      <!-- 标签队列进度芯片：铃铛左侧（任务态可见，空闲不渲染） -->
+      <TagQueueProgressChip />
+      <!-- 通知铃铛（notification-center）：全部已读与分隔线之间 -->
+      <NotificationBell />
       <div class="header-divider" />
       <button class="header-btn" title="设置" @click="$emit('settings')">
         <Icon icon="mdi:cog" width="20" height="20" class="text-gray-600" />

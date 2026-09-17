@@ -2395,7 +2395,46 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, legacyDiscoverNewPendingDismissMigration())
 	migrations = append(migrations, dedupeRSSArticlesMigration())
 	migrations = append(migrations, laneSnapshotFKMigration())
-	return append(migrations, healDanglingArticleRefsMigration())
+	migrations = append(migrations, healDanglingArticleRefsMigration())
+	return append(migrations, queueRetentionIndexMigration())
+}
+
+// queueRetentionIndexMigration implements 20260917_0003
+// (add-notification-center, log-cleanup delta): partial indexes backing the
+// extended queue-row retention DELETEs in job_log_cleanup — completed rows
+// older than 1 day, failed rows older than 30 days — across tag_jobs,
+// firecrawl_jobs and embedding_queues. Same partial-index precedent as
+// idx_embedding_queues_completed_created (20260820_0002). Idempotent.
+func queueRetentionIndexMigration() Migration {
+	type queueIdx struct {
+		table string
+		name  string
+		where string
+	}
+	indexes := []queueIdx{
+		{"tag_jobs", "idx_tag_jobs_completed_created", "status = 'completed'"},
+		{"tag_jobs", "idx_tag_jobs_failed_created", "status = 'failed'"},
+		{"firecrawl_jobs", "idx_firecrawl_jobs_completed_created", "status = 'completed'"},
+		{"firecrawl_jobs", "idx_firecrawl_jobs_failed_created", "status = 'failed'"},
+		{"embedding_queues", "idx_embedding_queues_failed_created", "status = 'failed'"},
+	}
+	return Migration{
+		Version:     "20260917_0003",
+		Description: "Add partial indexes on created_at WHERE status IN ('completed','failed') for tag_jobs/firecrawl_jobs/embedding_queues to back the extended log_cleanup queue-row retention DELETEs (completed 1d, failed 30d). Idempotent.",
+		Up: func(db *gorm.DB) error {
+			for _, idx := range indexes {
+				if !tableExists(db, idx.table) {
+					continue
+				}
+				if err := db.Exec(fmt.Sprintf(
+					`CREATE INDEX IF NOT EXISTS %s ON %s (created_at) WHERE %s`,
+					idx.name, idx.table, idx.where)).Error; err != nil {
+					return fmt.Errorf("create %s: %w", idx.name, err)
+				}
+			}
+			return nil
+		},
+	}
 }
 
 // healDanglingArticleRefsMigration implements 20260917_0002

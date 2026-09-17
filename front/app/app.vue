@@ -4,6 +4,9 @@ import { Icon } from '@iconify/vue'
 // 初始化主题系统
 useTheme()
 
+// 通知中心常驻订阅（client-only：角标对账 + WS notification 事件，不随组件卸载断开）
+useNotifications().ensureStarted()
+
 const apiStore = useApiStore()
 const loading = ref(true)
 const error = ref<string | null>(null)

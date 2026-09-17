@@ -95,6 +95,15 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		settings.POST("/bocha", SaveBochaSettings)
 	}
 
+	notifications := rg.Group("/notifications")
+	{
+		notifications.GET("", ListNotifications)
+		notifications.GET("/unread-count", GetUnreadCount)
+		notifications.POST("/:id/read", MarkNotificationRead)
+		notifications.POST("/read-all", MarkAllNotificationsRead)
+		notifications.DELETE("", ClearNotifications)
+	}
+
 	// 路由参数可选值字典 CRUD（feed-param-options）
 	routeParamOptions := rg.Group("/admin/route-param-options")
 	{

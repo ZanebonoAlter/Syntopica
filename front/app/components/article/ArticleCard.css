@@ -1,80 +1,283 @@
-.article-card {
-  transition: all 0.2s ease;
+/* 阅读页文章列表 — 行式布局（declutter-article-list-panel）
+   单一 surface、细分隔线、无卡片框；选中行 accent-subtle + 左侧竖条；
+   处理状态浮层覆盖式定位（不改变行高）。全部走 main.css 语义 token，双主题自适应。 */
+
+.article-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* 固定行高 = 虚拟列表 itemHeight（design D1 + v5 修订）：封面槽 68px + 上下留白 14px×2 +
+     标题两行(15px×1.45×2≈43.5)+meta(12.5px≈17.5)+间距 7 ≈ 67.5 → 行高 100px；
+     内容受 clamp/nowrap 约束不会溢出；不能 overflow:hidden——会裁掉覆盖式浮层 */
+  height: 100px;
+  padding: 14px 40px 14px 16px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  cursor: pointer;
+  transition: background 0.12s ease;
+  gap: 14px;
 }
 
-.article-card:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(26, 26, 26, 0.1);
-}
-
-.article-card.read {
-  opacity: 0.65;
-}
-
-.article-card.selected {
-  background: rgba(59, 107, 135, 0.12) !important;
-  border-left: 3px solid var(--color-accent);
-  box-shadow: 0 2px 12px rgba(59, 107, 135, 0.2);
-}
-
-.article-card .image-container {
-  aspect-ratio: 16 / 9;
-  width: 100%;
+/* v5 封面槽：68×68 圆角；image_url 为空或加载失败 → feed 图标占位，行高不变 */
+.article-row .row-cover {
+  flex: 0 0 68px;
+  width: 68px;
+  height: 68px;
+  border-radius: 8px;
   overflow: hidden;
-  background-color: var(--color-bg-sunken);
-}
-
-.article-card .image-container img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transition: transform 0.3s ease;
-}
-
-.article-card:hover .image-container img {
-  transform: scale(1.05);
-}
-
-.article-card .feed-icon {
+  background: var(--color-bg-sunken);
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 0.5rem;
-  flex-shrink: 0;
-}
-
-.article-card .favorite-btn {
-  flex-shrink: 0;
-  padding: 0.5rem;
-  border-radius: 0.5rem;
-  transition: all 0.2s ease;
   color: var(--color-text-muted);
 }
 
-.article-card .favorite-btn:hover {
-  background-color: rgba(212, 136, 60, 0.12);
-  color: var(--raw-amber-500);
+.article-row .row-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
-.article-card .favorite-btn.active {
-  color: var(--raw-amber-500);
+.article-row:hover {
+  background: var(--color-bg-hover);
 }
 
-.article-card .meta-tags {
+.article-row.selected {
+  background: var(--color-accent-subtle);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.article-row.article-row-read {
+  opacity: 0.55;
+}
+
+.article-row .row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.article-row .row-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--color-text-primary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.article-row .row-meta {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.75rem;
+  gap: 6px;
+  margin-top: 7px;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+  /* 单行不换行：换行会撑爆虚拟列表固定行高（design D1） */
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.article-row .row-identity {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 1;
+  color: var(--color-text-secondary);
+}
+
+.article-row .row-meta-grow {
+  flex: 1;
+  flex-shrink: 0;
+}
+
+.article-row .row-meta-grow {
+  flex: 1;
+}
+
+/* 行尾状态图标（四态：queued 琥珀 / processing 转圈 / failed 红 / done 淡灰） */
+.article-row .row-state-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+
+.article-row .row-state-icon:hover,
+.article-row .row-state-spin:hover {
+  opacity: 0.8;
+}
+
+.article-row .row-state-queued {
+  color: var(--color-warning);
+}
+
+.article-row .row-state-failed {
+  color: var(--color-error);
+}
+
+.article-row .row-state-done {
+  color: var(--color-text-muted);
+  opacity: 0.5;
+}
+
+.article-row .row-state-spin {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border: 2px solid var(--color-border-medium);
+  border-top-color: var(--color-info);
+  border-radius: 50%;
+  animation: row-state-spin 1s linear infinite;
+  cursor: pointer;
+}
+
+@keyframes row-state-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 收藏按钮（行右上角常驻） */
+.article-row .row-favorite {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 6px;
+  transition: color 0.15s ease;
+}
+
+.article-row .row-favorite:hover {
+  color: var(--color-secondary);
+}
+
+.article-row .row-favorite.active {
+  color: var(--color-secondary);
+}
+
+/* 处理详情浮层 — 实心底（禁半透明，透字）、覆盖式不参与行高 */
+.row-status-popover {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: calc(100% - 4px);
+  z-index: 8;
+  background: var(--color-bg-base);
+  border: 1px solid var(--color-border-medium);
+  border-radius: 10px;
+  box-shadow: var(--shadow-medium);
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+
+.row-status-popover.rsp-up {
+  top: auto;
+  bottom: calc(100% - 4px);
+}
+
+.row-status-popover .rsp-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.row-status-popover .rsp-title-neutral {
+  color: var(--color-text-primary);
+}
+
+.row-status-popover .rsp-title-error {
+  color: var(--color-error);
+}
+
+.row-status-popover .rsp-close {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.row-status-popover .rsp-close:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.row-status-popover .rsp-body {
+  margin-top: 5px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.row-status-popover .rsp-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.row-status-popover .rsp-label {
+  color: var(--color-text-secondary);
+}
+
+.row-status-popover .rsp-value {
+  font-weight: 600;
+}
+
+.row-status-popover .rsp-value-success {
+  color: var(--color-success);
+}
+
+.row-status-popover .rsp-value-danger {
+  color: var(--color-error);
+}
+
+.row-status-popover .rsp-value-warning {
+  color: var(--color-warning);
+}
+
+.row-status-popover .rsp-value-info {
+  color: var(--color-info);
+}
+
+.row-status-popover .rsp-value-neutral {
   color: var(--color-text-muted);
 }
 
-.article-card .category-tag {
-  padding: 0.375rem 0.625rem;
-  border-radius: 9999px;
-  background: rgba(26, 26, 26, 0.04);
+.row-status-popover .rsp-error {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--color-error) 8%, transparent);
+  border-radius: 6px;
+  color: var(--color-error);
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
-.article-card .read-badge {
+.row-status-popover .rsp-hint {
+  margin-top: 6px;
+  font-size: 11px;
   color: var(--color-text-muted);
 }

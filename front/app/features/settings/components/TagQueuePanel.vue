@@ -125,10 +125,10 @@ function formatDate(dateStr: string | null) {
   return new Date(dateStr).toLocaleString('zh-CN')
 }
 
-const progressPercent = computed(() => {
-  if (status.value.total === 0) return 0
-  return Math.round((status.value.completed / status.value.total) * 100)
-})
+/** 面板计数语义（notification-center/tag-queue-progress-chip）：活跃量=pending+leased 主展示；今日完成取 completed_today（旧后端未合入时回退显示累计 completed 并在标签注明累计） */
+const activeCount = computed(() => status.value.pending + status.value.processing)
+const hasCompletedToday = computed(() => status.value.completed_today != null)
+const completedDisplay = computed(() => hasCompletedToday.value ? status.value.completed_today : status.value.completed)
 
 const totalPages = computed(() => Math.ceil(totalTasks.value / pageSize))
 
@@ -196,40 +196,23 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Status Cards -->
-    <div class="grid grid-cols-4 gap-3">
-      <div class="rounded-lg p-3" style="background: var(--color-bg-sunken); border: 1px solid var(--color-border-subtle)">
-        <div class="text-2xl font-bold" style="color: var(--color-warning)">{{ status.pending }}</div>
-        <div class="text-xs" style="color: var(--color-text-muted)">待处理</div>
+    <!-- Status Cards（计数语义：活跃量主展示 + 今日完成；累计 total 口径停用） -->
+    <div class="grid grid-cols-3 gap-3">
+      <div class="rounded-lg p-3" style="background: var(--color-bg-sunken); border: 1px solid var(--color-border-subtle)" data-testid="queue-active-count">
+        <div class="text-2xl font-bold" style="color: var(--color-link)">{{ activeCount }}</div>
+        <div class="text-xs" style="color: var(--color-text-muted)">活跃任务（待处理+打标中）</div>
       </div>
-      <div class="rounded-lg p-3" style="background: var(--color-bg-sunken); border: 1px solid var(--color-border-subtle)">
-        <div class="text-2xl font-bold" style="color: var(--color-link)">{{ status.processing }}</div>
-        <div class="text-xs" style="color: var(--color-text-muted)">打标中</div>
+      <div class="rounded-lg p-3" style="background: var(--color-bg-sunken); border: 1px solid var(--color-border-subtle)" data-testid="queue-completed-today">
+        <div class="text-2xl font-bold" style="color: var(--color-success)">{{ completedDisplay }}</div>
+        <div class="text-xs" style="color: var(--color-text-muted)">{{ hasCompletedToday ? '今日完成' : '已完成（累计）' }}</div>
       </div>
-      <div class="rounded-lg p-3" style="background: var(--color-bg-sunken); border: 1px solid var(--color-border-subtle)">
-        <div class="text-2xl font-bold" style="color: var(--color-success)">{{ status.completed }}</div>
-        <div class="text-xs" style="color: var(--color-text-muted)">已完成</div>
-      </div>
-      <div class="rounded-lg p-3" style="background: var(--color-bg-sunken); border: 1px solid var(--color-border-subtle)">
+      <div class="rounded-lg p-3" style="background: var(--color-bg-sunken); border: 1px solid var(--color-border-subtle)" data-testid="queue-failed-count">
         <div class="text-2xl font-bold" style="color: var(--color-error)">{{ status.failed }}</div>
         <div class="text-xs" style="color: var(--color-text-muted)">失败</div>
       </div>
     </div>
 
-    <!-- Progress Bar -->
-    <div v-if="status.total > 0" class="space-y-1">
-      <div class="flex justify-between text-xs" style="color: var(--color-text-muted)">
-        <span>总体进度</span>
-        <span>{{ progressPercent }}% ({{ status.completed }}/{{ status.total }})</span>
-      </div>
-      <div class="h-2 rounded-full overflow-hidden" style="background: var(--color-border-medium)">
-        <div
-          class="h-full transition-all duration-300"
-          style="background: var(--color-accent)"
-          :style="{ width: `${progressPercent}%` }"
-        />
-      </div>
-    </div>
+    <!-- 累计进度条停用（total 累计口径不再展示；进度语义由 header 芯片承接） -->
 
     <!-- Filter -->
     <div class="flex items-center gap-2">

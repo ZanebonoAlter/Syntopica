@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="editorial">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syntopica 通知中心 + 标签队列进度芯片 — 静态原型</title>
+<style>
+  /* ===== 引用应用主题 token（main.css editorial 语义色，纯静态复刻） ===== */
+  :root {
+    --color-bg-base: #faf7f2;
+    --color-bg-elevated: #f3ede3;
+    --color-bg-hover: rgba(255, 255, 255, 0.85);
+    --color-text-primary: #1a1a1a;
+    --color-text-secondary: #5a5a5a;
+    --color-text-muted: #8a8a8a;
+    --color-text-inverted: #faf7f2;
+    --color-border-subtle: rgba(26, 26, 26, 0.08);
+    --color-border-medium: rgba(26, 26, 26, 0.15);
+    --color-border-strong: rgba(26, 26, 26, 0.25);
+    --color-accent: #d94a4a;
+    --color-success: #3d8a4a;
+    --color-warning: #c4883c;
+    --color-error: #c42f3c;
+    --color-info: #3d7a8a;
+    --color-success-subtle: rgba(61, 138, 74, 0.12);
+    --color-error-subtle: rgba(196, 47, 60, 0.12);
+    --color-warning-subtle: rgba(196, 136, 60, 0.14);
+    --color-info-subtle: rgba(61, 122, 138, 0.12);
+    --shadow-strong: 0 4px 16px rgba(26, 26, 26, 0.12);
+    --shadow-medium: 0 2px 8px rgba(26, 26, 26, 0.08);
+    --font-body: Georgia, "Times New Roman", serif;
+    --font-ui: -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--font-body);
+    background: var(--color-bg-base);
+    color: var(--color-text-primary);
+    min-height: 100vh;
+  }
+
+  /* ===== 页面示意底板 ===== */
+  .page-mock { padding: 24px; max-width: 1280px; margin: 0 auto; }
+  .demo-note {
+    font-family: var(--font-ui); font-size: 12px; color: var(--color-text-muted);
+    background: var(--color-bg-elevated); border: 1px dashed var(--color-border-medium);
+    border-radius: 6px; padding: 10px 14px; margin-bottom: 16px; line-height: 1.7;
+  }
+  .demo-note b { color: var(--color-text-secondary); }
+
+  /* ===== Header 复刻 ===== */
+  .app-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; height: 60px;
+    background: var(--color-bg-base);
+    border-bottom: 1px solid var(--color-border-medium);
+    position: sticky; top: 0; z-index: 40;
+  }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .menu-btn, .header-btn {
+    background: none; border: none; cursor: pointer; padding: 8px;
+    border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
+    color: var(--color-text-secondary); position: relative; font-family: var(--font-ui);
+  }
+  .menu-btn:hover, .header-btn:hover { background: var(--color-bg-hover); }
+  .header-btn svg, .menu-btn svg { width: 20px; height: 20px; }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon {
+    width: 32px; height: 32px; background: var(--color-accent);
+    border-radius: 6px; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-family: var(--font-ui); font-weight: 700; font-size: 15px;
+  }
+  .logo-text { font-family: var(--font-ui); font-weight: 700; font-size: 16px; letter-spacing: 0.02em; }
+  .header-right { display: flex; align-items: center; gap: 4px; }
+  .header-divider { width: 1px; height: 22px; background: var(--color-border-strong); margin: 0 6px; }
+
+  /* ===== 新增组件①：标签队列进度芯片 ===== */
+  .progress-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    height: 36px; padding: 0 12px; margin-right: 4px;
+    border: 1px solid var(--color-border-medium); border-radius: 18px;
+    background: var(--color-bg-hover); cursor: pointer;
+    font-family: var(--font-ui); font-size: 12px; color: var(--color-text-secondary);
+    transition: all .15s ease;
+  }
+  .progress-chip:hover { border-color: var(--color-border-strong); }
+  .progress-chip .chip-icon { color: var(--color-info); display: flex; }
+  .progress-chip.failed { border-color: var(--color-error); background: var(--color-error-subtle); color: var(--color-error); }
+  .progress-chip.failed .chip-icon { color: var(--color-error); }
+  .progress-chip .chip-bar {
+    width: 56px; height: 5px; background: var(--color-border-subtle);
+    border-radius: 3px; overflow: hidden;
+  }
+  .progress-chip .chip-bar > i {
+    display: block; height: 100%; background: var(--color-info); border-radius: 3px;
+  }
+  .progress-chip.failed .chip-bar > i { background: var(--color-error); }
+  .chip-spin { animation: spin 1.2s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ===== 新增组件②：铃铛 + 未读角标 ===== */
+  .bell-wrap { position: relative; }
+  .bell-badge {
+    position: absolute; top: 2px; right: 0;
+    min-width: 16px; height: 16px; padding: 0 4px;
+    background: var(--color-accent); color: #fff;
+    border-radius: 8px; font-family: var(--font-ui); font-size: 10px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px solid var(--color-bg-base);
+  }
+  .bell-badge.hidden { display: none; }
+
+  /* ===== 通知下拉面板（锚定 popover，380px） ===== */
+  .notif-panel {
+    position: absolute; top: calc(100% + 10px); right: 0;
+    width: min(380px, 92vw); max-height: 480px;
+    background: var(--color-bg-base);
+    border: 1px solid var(--color-border-medium); border-radius: 10px;
+    box-shadow: var(--shadow-strong);
+    display: flex; flex-direction: column; z-index: 50;
+    font-family: var(--font-ui);
+  }
+  .notif-panel.closed { display: none; }
+  .notif-panel::before {
+    content: ""; position: absolute; top: -6px; right: 16px;
+    width: 10px; height: 10px; background: var(--color-bg-base);
+    border-left: 1px solid var(--color-border-medium); border-top: 1px solid var(--color-border-medium);
+    transform: rotate(45deg);
+  }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--color-border-subtle);
+  }
+  .panel-head h3 { font-family: var(--font-body); font-size: 15px; font-weight: 700; }
+  .panel-head .unread-hint { font-size: 12px; color: var(--color-text-muted); margin-left: 6px; }
+  .mark-all-btn {
+    background: none; border: 1px solid var(--color-border-medium); border-radius: 6px;
+    padding: 4px 10px; font-size: 12px; color: var(--color-text-secondary); cursor: pointer;
+  }
+  .mark-all-btn:hover { border-color: var(--color-border-strong); background: var(--color-bg-hover); }
+  .notif-list { overflow-y: auto; flex: 1; }
+  .notif-item {
+    display: flex; gap: 10px; padding: 12px 16px;
+    border-bottom: 1px solid var(--color-border-subtle); cursor: pointer;
+    align-items: flex-start; position: relative;
+  }
+  .notif-item:hover { background: var(--color-bg-hover); }
+  .notif-item.unread { background: var(--color-info-subtle); }
+  .notif-item.unread::before {
+    content: ""; position: absolute; left: 6px; top: 50%; transform: translateY(-50%);
+    width: 4px; height: 4px; border-radius: 50%; background: var(--color-accent);
+  }
+  .notif-icon {
+    flex-shrink: 0; width: 28px; height: 28px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center; margin-top: 2px;
+  }
+  .notif-icon svg { width: 15px; height: 15px; }
+  .notif-icon.success { background: var(--color-success-subtle); color: var(--color-success); }
+  .notif-icon.error   { background: var(--color-error-subtle);   color: var(--color-error); }
+  .notif-icon.info    { background: var(--color-info-subtle);    color: var(--color-info); }
+  .notif-icon.warning { background: var(--color-warning-subtle); color: var(--color-warning); }
+  .notif-body { flex: 1; min-width: 0; }
+  .notif-title { font-size: 13px; font-weight: 600; color: var(--color-text-primary); line-height: 1.4; }
+  .notif-desc  { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; margin-top: 2px;
+                 display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .notif-meta  { display: flex; justify-content: space-between; margin-top: 4px; }
+  .notif-time  { font-size: 11px; color: var(--color-text-muted); }
+  .notif-link  { font-size: 11px; color: var(--color-info); }
+  .notif-item .mark-read {
+    opacity: 0; transition: opacity .15s; background: none; border: none; cursor: pointer;
+    color: var(--color-text-muted); font-size: 11px; flex-shrink: 0; padding: 2px;
+  }
+  .notif-item:hover .mark-read { opacity: 1; }
+  .panel-empty {
+    padding: 40px 16px; text-align: center; color: var(--color-text-muted); font-size: 13px;
+  }
+  .panel-empty svg { width: 32px; height: 32px; margin-bottom: 8px; opacity: .5; }
+  .panel-foot {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 16px; border-top: 1px solid var(--color-border-subtle);
+  }
+  .panel-foot button {
+    background: none; border: none; font-size: 12px; color: var(--color-text-muted);
+    cursor: pointer; padding: 4px 8px; border-radius: 4px;
+  }
+  .panel-foot button:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+  .panel-foot .danger { color: var(--color-error); }
+
+  /* ===== 状态演示区（芯片三态） ===== */
+  .states-row {
+    display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
+    padding: 20px; background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border-subtle); border-radius: 10px; margin-top: 24px;
+    font-family: var(--font-ui); font-size: 12px; color: var(--color-text-muted);
+  }
+  .states-row .label { margin-bottom: 6px; display: block; }
+</style>
+</head>
+<body>
+<div class="page-mock">
+  <div class="demo-note">
+    <b>静态原型说明：</b>header 为现有按钮序复刻（暂停分析/AI健康/刷新/全部已读/<b>新增铃铛</b>/分隔线/设置/引导/主题），
+    新增①<b>标签队列进度芯片</b>（铃铛左侧，空闲自动隐藏）②<b>通知铃铛 + 锚定面板 380px</b>。点击下方按钮可切换演示状态。纯 fixture 数据，不连真实 API。<br>
+    <b>通知白名单 = 只日报终态</b>（完成/失败，稳态每天 1~2 条）；抓取/自动刷新/单篇打标不进通知（走进度芯片/页面内展示）。
+  </div>
+
+  <!-- ===== Header ===== -->
+  <header class="app-header">
+    <div class="header-left">
+      <button class="menu-btn" title="菜单">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+      <div class="logo"><div class="logo-icon">S</div><span class="logo-text">Syntopica</span></div>
+    </div>
+
+    <div class="header-right">
+      <!-- ① 进度芯片：进行中态 -->
+      <button class="progress-chip" id="chip" title="查看标签队列详情" onclick="alert('跳转 /settings 队列区（TagQueuePanel）')">
+        <span class="chip-icon">
+          <svg class="chip-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.2-8.56"/></svg>
+        </span>
+        <span id="chip-text">分析中 3/40</span>
+        <span class="chip-bar"><i id="chip-fill" style="width: 7.5%"></i></span>
+      </button>
+
+      <!-- ② 铃铛 -->
+      <div class="bell-wrap">
+        <button class="header-btn" id="bell-btn" title="通知">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+          <span class="bell-badge" id="bell-badge">2</span>
+        </button>
+
+        <!-- 通知下拉面板 -->
+        <div class="notif-panel closed" id="notif-panel">
+          <div class="panel-head">
+            <h3>通知 <span class="unread-hint" id="unread-hint">2 条未读</span></h3>
+            <button class="mark-all-btn" onclick="markAll()">全部已读</button>
+          </div>
+          <div class="notif-list" id="notif-list">
+            <!-- fixture：未读 - 日报失败（一次任务一条汇总，不逐版面） -->
+            <div class="notif-item unread" data-type="error">
+              <div class="notif-icon error"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div>
+              <div class="notif-body">
+                <div class="notif-title">日报生成有失败 · 12 月 20 日</div>
+                <div class="notif-desc">6 个版面中 1 个失败：「AI 治理」版面模型返回超时，可手动重试。</div>
+                <div class="notif-meta"><span class="notif-time">5 分钟前</span><span class="notif-link" onclick="event.stopPropagation();alert('跳日报页')">查看 →</span></div>
+              </div>
+              <button class="mark-read" onclick="markRead(this)">标已读</button>
+            </div>
+            <!-- fixture：未读 - 日报完成（凌晨定时任务，页面没开着也能看到） -->
+            <div class="notif-item unread" data-type="success">
+              <div class="notif-icon success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></div>
+              <div class="notif-body">
+                <div class="notif-title">日报已生成 · 12 月 19 日</div>
+                <div class="notif-desc">共 6 个版面，保存 42 条条目，耗时 8 分 12 秒。</div>
+                <div class="notif-meta"><span class="notif-time">凌晨 04:12</span><span class="notif-link" onclick="event.stopPropagation();alert('跳日报详情')">查看 →</span></div>
+              </div>
+              <button class="mark-read" onclick="markRead(this)">标已读</button>
+            </div>
+            <!-- fixture：已读 - 历史 -->
+            <div class="notif-item" data-type="success">
+              <div class="notif-icon success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></div>
+              <div class="notif-body">
+                <div class="notif-title">日报已生成 · 12 月 18 日</div>
+                <div class="notif-desc">共 6 个版面，保存 39 条条目，耗时 7 分 40 秒。</div>
+                <div class="notif-meta"><span class="notif-time">昨天 21:05</span></div>
+              </div>
+              <button class="mark-read" onclick="markRead(this)">标已读</button>
+            </div>
+            <div class="notif-item" data-type="error">
+              <div class="notif-icon error"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div>
+              <div class="notif-body">
+                <div class="notif-title">日报生成有失败 · 12 月 17 日</div>
+                <div class="notif-desc">5 个版面中 2 个失败：模型额度不足，已在次日补生成。</div>
+                <div class="notif-meta"><span class="notif-time">前天 21:12</span></div>
+              </div>
+              <button class="mark-read" onclick="markRead(this)">标已读</button>
+            </div>
+          </div>
+          <div class="panel-foot">
+            <button onclick="alert('跳 /settings 队列区')">查看全部</button>
+            <button class="danger" onclick="alert('confirm 弹窗（AppDialog sm 档）：确认清空全部通知？')">清空</button>
+          </div>
+        </div>
+      </div>
+
+      <button class="header-btn" title="AI 模型健康">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <button class="header-btn" title="刷新">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      </button>
+      <button class="header-btn" title="全部标为已读">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 13V6l-10 5-10-5v7l10 5 3-1.5"/><path d="M2 6l10 5 10-5M2 13v5l3 1.5"/></svg>
+      </button>
+      <div class="header-divider"></div>
+      <button class="header-btn" title="设置">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <button class="header-btn" title="新手引导">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M16 8l-2.5 6.5L8 16l2.5-6.5L16 8z"/></svg>
+      </button>
+      <button class="header-btn" title="切换主题">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== 状态演示区 ===== -->
+  <div class="states-row">
+    <div>
+      <span class="label">进度芯片状态切换：</span>
+      <button class="mark-all-btn" onclick="chipState('running')">分析中</button>
+      <button class="mark-all-btn" onclick="chipState('failed')">有失败</button>
+      <button class="mark-all-btn" onclick="chipState('hidden')">空闲(隐藏)</button>
+    </div>
+    <div>
+      <span class="label">通知面板：</span>
+      <button class="mark-all-btn" onclick="togglePanel()">开/关面板</button>
+      <button class="mark-all-btn" onclick="emptyPanel()">空态预览</button>
+      <button class="mark-all-btn" onclick="location.reload()">重置</button>
+    </div>
+  </div>
+
+  <div class="page-mock" style="padding-top:12px; opacity:.55; text-align:center;">
+    <p style="font-size:13px; color: var(--color-text-muted);">— 页面内容区示意（不参与验收）—</p>
+  </div>
+</div>
+
+<script>
+  // 铃铛开关
+  const panel = document.getElementById('notif-panel');
+  document.getElementById('bell-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    panel.classList.toggle('closed');
+    if (!panel.classList.contains('closed')) {
+      // 已读策略：打开即计浏览，未读清零但保留条目强调
+      document.getElementById('bell-badge').classList.add('hidden');
+      document.getElementById('unread-hint').textContent = '已全部浏览';
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!panel.contains(e.target)) panel.classList.add('closed');
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') panel.classList.add('closed'); });
+
+  function markAll() {
+    document.querySelectorAll('.notif-item.unread').forEach(el => el.classList.remove('unread'));
+    document.getElementById('bell-badge').classList.add('hidden');
+    document.getElementById('unread-hint').textContent = '无未读';
+  }
+  function markRead(btn) {
+    btn.closest('.notif-item').classList.remove('unread');
+    refreshBadge();
+  }
+  function refreshBadge() {
+    const n = document.querySelectorAll('.notif-item.unread').length;
+    const b = document.getElementById('bell-badge');
+    if (n === 0) { b.classList.add('hidden'); document.getElementById('unread-hint').textContent = '无未读'; }
+    else { b.classList.remove('hidden'); b.textContent = n; document.getElementById('unread-hint').textContent = n + ' 条未读'; }
+  }
+  function togglePanel() { panel.classList.toggle('closed'); }
+  function emptyPanel() {
+    document.getElementById('notif-list').innerHTML =
+      '<div class="panel-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg>暂无通知<br><small>任务完成/失败时会出现通知</small></div>';
+  }
+
+  // 芯片三态
+  const chip = document.querySelector('.progress-chip');
+  function chipState(s) {
+    chip.style.display = s === 'hidden' ? 'none' : 'inline-flex';
+    chip.classList.toggle('failed', s === 'failed');
+    if (s === 'running') {
+      document.getElementById('chip-text').textContent = '分析中 3/40';
+      document.getElementById('chip-fill').style.width = '7.5%';
+    } else if (s === 'failed') {
+      document.getElementById('chip-text').textContent = '2 个失败';
+      document.getElementById('chip-fill').style.width = '100%';
+    }
+  }
+</script>
+</body>
+</html>

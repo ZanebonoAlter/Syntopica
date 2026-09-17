@@ -86,6 +86,12 @@
 | `firecrawl_jobs` | Firecrawl 抓取任务 | `models.FirecrawlJob` |
 | `tag_jobs` | 标签任务 | `models.TagJob` |
 
+#### 通知 → [`tables/job-queues.md`](tables/job-queues.md)（flow: `daily-report`）
+
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `notifications` | 通知信箱（白名单=日报终态；上限 500 行写入路径内淘汰） | `models.Notification` |
+
 #### 日报/持久话题/Watch → [`tables/daily-report-watch.md`](tables/daily-report-watch.md)（flow: `daily-report`）
 
 | 表名 | 说明 | 对应模型 |

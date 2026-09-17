@@ -402,3 +402,129 @@ func TestDailyReportJobSucceedsWhenDanglingRefProbeFails(t *testing.T) {
 	require.NotNil(t, result)
 	require.EqualValues(t, 1, result.Data["report_count"], "the report pass still ran to completion")
 }
+
+// ── add-notification-center 白盒 B：定时路径终态通知判定口径 ──
+//
+// notification seam（notifyDailyReportSuccess / notifyDailyReportFailedSummary）
+// 是包级变量，测试直接 stub 捕获判定结果，无需通知库。四分支：
+// 全成功 / 部分真失败 / 空版面不误报 / 全部失败。互斥不变式（至多一条）由
+// adjudicateDailyReportTerminal 单点保证，这里断言调用侧。
+
+type notifyCapture struct {
+	mu            sync.Mutex
+	successDates  []time.Time
+	successTotal  []int
+	successSaved  []int
+	failDates     []time.Time
+	failSucceeded []int
+	failFailed    []int
+}
+
+func (c *notifyCapture) stub(t *testing.T) {
+	t.Helper()
+	prevSuccess := notifyDailyReportSuccess
+	prevFailed := notifyDailyReportFailedSummary
+	notifyDailyReportSuccess = func(date time.Time, totalBoards, totalSaved int) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.successDates = append(c.successDates, date)
+		c.successTotal = append(c.successTotal, totalBoards)
+		c.successSaved = append(c.successSaved, totalSaved)
+	}
+	notifyDailyReportFailedSummary = func(date time.Time, successCount, failedCount int) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.failDates = append(c.failDates, date)
+		c.failSucceeded = append(c.failSucceeded, successCount)
+		c.failFailed = append(c.failFailed, failedCount)
+	}
+	t.Cleanup(func() {
+		notifyDailyReportSuccess = prevSuccess
+		notifyDailyReportFailedSummary = prevFailed
+	})
+}
+
+func (c *notifyCapture) successCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.successDates)
+}
+func (c *notifyCapture) failCalls() int { c.mu.Lock(); defer c.mu.Unlock(); return len(c.failDates) }
+
+// stubGenerationBehavior swaps the generation entry point for a behavior table:
+// each boardID maps to "ok" (report) / "empty" (nil, nil) / "err" (error).
+func stubGenerationBehavior(t *testing.T, behavior map[uint]string) {
+	t.Helper()
+	previous := generateAndSaveReport
+	generateAndSaveReport = func(_ context.Context, boardID uint, date time.Time) (*topicgraphrepo.BoardDailyReport, error) {
+		switch behavior[boardID] {
+		case "err":
+			return nil, fmt.Errorf("simulated LLM failure board=%d", boardID)
+		case "empty":
+			return nil, nil
+		default:
+			return &topicgraphrepo.BoardDailyReport{SemanticBoardID: boardID}, nil
+		}
+	}
+	t.Cleanup(func() { generateAndSaveReport = previous })
+}
+
+func TestDailyReportTerminalNotificationAdjudication(t *testing.T) {
+	today := midnightLocal(time.Now())
+
+	t.Run("全成功→一条完成通知", func(t *testing.T) {
+		db := setupDailyReportJobTest(t)
+		seedReportBoardsForDate(t, db, today, 11, 22)
+		stubGenerationBehavior(t, map[uint]string{11: "ok", 22: "ok"})
+		cap := &notifyCapture{}
+		cap.stub(t)
+
+		_, err := DailyReportJob(today)(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, 1, cap.successCalls(), "exactly one completion notification")
+		require.Equal(t, 0, cap.failCalls(), "mutual exclusion: no failure summary")
+	})
+
+	t.Run("部分真失败→一条失败汇总", func(t *testing.T) {
+		db := setupDailyReportJobTest(t)
+		seedReportBoardsForDate(t, db, today, 11, 22, 33)
+		stubGenerationBehavior(t, map[uint]string{11: "ok", 22: "err", 33: "ok"})
+		cap := &notifyCapture{}
+		cap.stub(t)
+
+		_, err := DailyReportJob(today)(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, 1, cap.failCalls(), "ONE failure summary, never per-board")
+		require.Equal(t, 0, cap.successCalls(), "互斥：失败时不发完成通知")
+		require.Equal(t, 2, cap.failSucceeded[0], "2 boards generated")
+		require.Equal(t, 1, cap.failFailed[0], "1 real failure")
+	})
+
+	t.Run("空版面不误报为失败", func(t *testing.T) {
+		db := setupDailyReportJobTest(t)
+		seedReportBoardsForDate(t, db, today, 11, 22)
+		stubGenerationBehavior(t, map[uint]string{11: "ok", 22: "empty"})
+		cap := &notifyCapture{}
+		cap.stub(t)
+
+		_, err := DailyReportJob(today)(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, 0, cap.failCalls(), "report==nil (当日无内容) must NOT count as failure")
+		require.Equal(t, 1, cap.successCalls(), "terminal state is a completion")
+	})
+
+	t.Run("全部失败→一条失败汇总", func(t *testing.T) {
+		db := setupDailyReportJobTest(t)
+		seedReportBoardsForDate(t, db, today, 11, 22)
+		stubGenerationBehavior(t, map[uint]string{11: "err", 22: "err"})
+		cap := &notifyCapture{}
+		cap.stub(t)
+
+		_, err := DailyReportJob(today)(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, 1, cap.failCalls(), "ONE failure summary for the run")
+		require.Equal(t, 0, cap.successCalls())
+		require.Equal(t, 0, cap.failSucceeded[0])
+		require.Equal(t, 2, cap.failFailed[0])
+	})
+}

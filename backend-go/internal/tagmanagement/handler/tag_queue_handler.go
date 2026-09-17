@@ -30,11 +30,12 @@ func getTagQueueStatusReader() *tagQueueStatusReader {
 }
 
 type tagQueueStatusCounts struct {
-	Pending    int64 `json:"pending"`
-	Processing int64 `json:"processing"`
-	Completed  int64 `json:"completed"`
-	Failed     int64 `json:"failed"`
-	Total      int64 `json:"total"`
+	Pending        int64 `json:"pending"`
+	Processing     int64 `json:"processing"`
+	Completed      int64 `json:"completed"`
+	Failed         int64 `json:"failed"`
+	Total          int64 `json:"total"`
+	CompletedToday int64 `json:"completed_today"`
 }
 
 func GetTagQueueStatus(c *gin.Context) {
@@ -70,6 +71,18 @@ func GetTagQueueStatus(c *gin.Context) {
 		}
 	}
 	counts.Total = total
+
+	// CompletedToday drives the "今日完成" display semantics (queue rows are
+	// reset daily; the cumulative completed count no longer carries meaning).
+	// Server-local day boundary, same convention as RetagTodayArticles.
+	now := time.Now()
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	if err := reader.db.Model(&models.TagJob{}).
+		Where("status = ? AND created_at >= ?", string(models.JobStatusCompleted), startOfToday).
+		Count(&counts.CompletedToday).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": counts})
 }

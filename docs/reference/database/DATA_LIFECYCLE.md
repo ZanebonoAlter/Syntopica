@@ -238,7 +238,7 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 
 | 调度器 | 间隔 | 清理对象与条件 |
 | ------ | ---- | -------------- |
-| `log_cleanup` | 86400s（每日，启动延迟5min） | `DELETE FROM ai_call_logs WHERE created_at < now()-7天`；`DELETE FROM otel_spans WHERE start_time_unix_nano < now()-7天`。**保留 7 天**。另：`DELETE FROM ai_embedding_cache WHERE created_at < now()-14天`（embedding 结果缓存，仅白名单 operation 落行；存储格式为 bytea 二进制 float32 小端字节流，~10KB/条，见 `models/embedding_codec.go`——optimize-pg-storage：原 jsonb 文本形式 ~31.5KB/条，2026-08-28 起 pre-migrate 非破坏转换）；`DELETE FROM embedding_queues WHERE status='completed' AND created_at < now()-30天`（已完成队列行，保留 30 天）。 |
+| `log_cleanup` | 86400s（每日，启动延迟5min） | `DELETE FROM ai_call_logs WHERE created_at < now()-7天`；`DELETE FROM otel_spans WHERE start_time_unix_nano < now()-7天`。**保留 7 天**。另：`DELETE FROM ai_embedding_cache WHERE created_at < now()-14天`（embedding 结果缓存，仅白名单 operation 落行；存储格式为 bytea 二进制 float32 小端字节流，~10KB/条，见 `models/embedding_codec.go`——optimize-pg-storage：原 jsonb 文本形式 ~31.5KB/条，2026-08-28 起 pre-migrate 非破坏转换）；`DELETE FROM embedding_queues WHERE status='completed' AND created_at < now()-1天`（add-notification-center：30 天收紧为 1 天，每天重置）；`DELETE FROM tag_jobs / firecrawl_jobs WHERE status='completed' AND created_at < now()-1天`（每日重置）；`DELETE FROM tag_jobs / firecrawl_jobs / embedding_queues WHERE status='failed' AND created_at < now()-30天`（failed 保留 30 天，保面板重试）。支撑索引见迁移 20260917_0003（五部分索引）+ 既有 idx_embedding_queues_completed_created。 |
 | `aux_label_cleanup` | 3600s（每时，启动延迟10min） | 软禁用「无活跃引用」的辅助标签：`semantic_labels` 中 `label_type='auxiliary' AND status='active' AND protected=false AND created_at < now()-1天` 且无 `topic_tag_semantic_labels` 引用且不在 `board_composition` 中 → `status='disabled'`（并删其 board_composition 行）。**不硬删**，模式为 disable、宽限1天。 |
 | `blocked_article_recovery` | 3600s（每时） | 恢复卡在 `articles.firecrawl_status IN ('waiting_for_firecrawl','blocked')` 且其 `feed.firecrawl_enabled=true` 的文章 → 置回 `pending` 重试。另含 STAT-05 告警（阻塞数>50 时 WARN）。 |
 | `preference_update` | 1800s（每30min） | 聚合 `reading_behaviors`→`user_preferences`；并运行孤儿清理：修复/删除 category_id 指向已删分类的 reading_behaviors，删除 feed_id 指向已删源的 reading_behaviors 与 user_preferences。**仅孤儿清理，无时间型 TTL**。 |
@@ -264,7 +264,7 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 - 状态机：`pending → leased → completed / failed`
 - Claim 时先回收过期租约（`lease_expires_at <= now`）→ pending；再把 `attempt_count >= max_attempts(默认5)` 的 pending 置为 failed；然后按 `priority DESC, available_at ASC, id ASC` 领取 → `leased` 并 `attempt_count++`。
 - 失败重试：`MarkFailed` 以退避时间重置为 `pending`（`available_at = now+backoff`）；`attempt_count` 达到 `max_attempts` 后转 `failed`。**租约到期自动回收**即自动重试。
-- **无任何行级清除**：completed/failed 行不被定时删除，无限累积。
+- **行级清除（add-notification-center 起）**：completed 行保留 1 天（每日重置）、failed 行保留 30 天，由 `log_cleanup` 每日删除（打标结果固化在 `article_tags`，队列行只是处理痕迹，删除不丢数据）。
 
 **embedding_queues / merge_reembedding_queues**（SELECT FOR UPDATE SKIP LOCKED，`core/embedding_queue.go`）：
 
@@ -276,7 +276,8 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 
 以下表当前**没有任何基于时间或状态的定时清除**，行会一直增长，需要人工/运维介入：
 
-- 队列表：`firecrawl_jobs` / `tag_jobs` 的 completed/failed 行；`merge_reembedding_queues` 全部行；`embedding_queues` 的 failed 行（completed 行 30 天后由 `log_cleanup` 清除）
+- 队列表：`merge_reembedding_queues` 全部行；`embedding_queues` 的 failed 行（30 天后由 `log_cleanup` 清除；completed 行 1 天后清除）
+- **通知：`notifications` 表不受清理，但有 500 行写入路径内上限淘汰**（淘汰最旧已读行，全未读才淘汰最旧未读，见 `internal/platform/notification/service.go`）
 - 日报：`board_daily_reports` / `daily_report_sections` / `daily_report_threads` / `daily_report_section_relations`（日报重生成仅删当日同 report 的旧分区，非 TTL 清理）
 - 持久话题与观察：`board_persistent_topics`（仅一次性迁移裁剪 candidate、状态机自驱动 candidate→active→archived，无时间型删除）、`board_topic_watches`、`topic_watch_hits`
 - 升级建议：`board_upgrade_suggestions`（仅 watch 软回收为 dismissed，不删行；confirmed/dismissed 行累积）

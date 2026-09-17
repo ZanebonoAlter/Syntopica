@@ -113,6 +113,8 @@ func RunAutoMigrate(db *gorm.DB) error {
 		&models.CandidateAvailability{},
 		&models.FirecrawlJob{},
 		&models.TagJob{},
+		// add-notification-center：通知信箱（白名单=日报终态，写入路径内 500 条上限淘汰）
+		&models.Notification{},
 	}
 	allModels = append(allModels, extraModels...)
 	if err := db.AutoMigrate(allModels...); err != nil {

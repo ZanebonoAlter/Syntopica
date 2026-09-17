@@ -15,6 +15,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/notification"
 	"syntopica-backend/internal/platform/ws"
 	tagging "syntopica-backend/internal/tagmanagement"
 	"syntopica-backend/internal/topicgraph/repository"
@@ -145,6 +146,19 @@ func triggerGenerateDailyReport(c *gin.Context) {
 	})
 }
 
+// notifyDailyReportTerminal is the single adjudication point for the
+// daily-report terminal-state notification (test-cases 白盒 B):
+// failedCount==0 → one completion notification; failedCount>0 → ONE failure
+// summary (success/failed counts in the copy), mutually exclusive with the
+// completion notification. Never more than one notification per run.
+func notifyDailyReportTerminal(date time.Time, totalBoards, successCount, failedCount int) {
+	if failedCount > 0 {
+		notification.DailyReportFailedSummary(date, successCount, failedCount)
+	} else {
+		notification.DailyReportSuccess(date, totalBoards, successCount)
+	}
+}
+
 func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 	ctx, cancel := timeoutCtx(10 * time.Minute)
 	defer cancel()
@@ -157,16 +171,21 @@ func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 		logging.Errorf("daily-report: generate/save failed for board %d: %v", boardID, err)
 		broadcastProgress(jobID, "failed", boardID, boardName, 0, "1/1")
 		broadcastDone(jobID, 0, 1)
+		// 单版面项目：失败 1 = 全部失败 → 1 条失败汇总（白盒 B3/B 边界）
+		notifyDailyReportTerminal(date, 1, 0, 1)
 		return
 	}
 	if report == nil {
 		broadcastProgress(jobID, "completed", boardID, boardName, 0, "1/1")
 		broadcastDone(jobID, 0, 1)
+		// 版面无内容不算失败：终态完成（保存 0 条）
+		notifyDailyReportTerminal(date, 1, 0, 0)
 		return
 	}
 
 	broadcastProgress(jobID, "completed", boardID, boardName, 1, "1/1")
 	broadcastDone(jobID, 1, 1)
+	notifyDailyReportTerminal(date, 1, 1, 0)
 }
 
 func generateAllBoards(date time.Time, jobID string) {
@@ -178,6 +197,8 @@ func generateAllBoards(date time.Time, jobID string) {
 		logging.Errorf("daily-report: collect boards failed: %v", err)
 		broadcastProgress(jobID, "failed", 0, "All boards", 0, "0/0")
 		broadcastDone(jobID, 0, 0)
+		// 收集阶段即失败：一次失败汇总（B3 同型，至多一条）
+		notifyDailyReportTerminal(date, 0, 0, 1)
 		return
 	}
 
@@ -188,6 +209,7 @@ func generateAllBoards(date time.Time, jobID string) {
 	}
 
 	savedCount := 0
+	failedCount := 0
 	for idx, boardID := range boardIDs {
 		boardName := dailyReportBoardName(boardID)
 		broadcastProgress(jobID, "generating", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx, totalBoards))
@@ -196,6 +218,7 @@ func generateAllBoards(date time.Time, jobID string) {
 		if genErr != nil {
 			logging.Warnf("daily-report: generate/save failed for board %d: %v", boardID, genErr)
 			broadcastProgress(jobID, "failed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+			failedCount++
 			continue
 		}
 		if report == nil {
@@ -207,6 +230,8 @@ func generateAllBoards(date time.Time, jobID string) {
 	}
 
 	broadcastDone(jobID, savedCount, totalBoards)
+	// 终态通知（白盒 B1/B2/B3）：failed==0 → 完成通知；≥1 → 一条失败汇总，互斥。
+	notifyDailyReportTerminal(date, totalBoards, savedCount, failedCount)
 }
 
 // listBoardDailyReports handles GET /api/semantic-boards/:id/daily-reports

@@ -1,12 +1,14 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { Icon } from '@iconify/vue'
 import type { Article, RssFeed } from '~/types'
+import FeedIcon from '~/components/feed/FeedIcon.vue'
+import RowStatusPopover from './RowStatusPopover.vue'
 import {
+  getArticlePipelineState,
   getFirecrawlStatusMeta,
-  getStatusToneClasses,
+  getPipelineStateMeta,
   getSummaryStatusMeta,
-  shouldShowFirecrawlStatus,
-  shouldShowSummaryStatus,
+  type PipelineLine,
 } from '~/features/articles/composables/useArticleProcessingStatus'
 
 import '~/components/article/ArticleCard.css'
@@ -15,11 +17,14 @@ interface Props {
   article: Article
   compact?: boolean
   selected?: boolean
+  /** 单 feed 视图传 false：行内省略来源名（头部已示） */
+  showFeedTitle?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   compact: false,
   selected: false,
+  showFeedTitle: true,
 })
 
 const emit = defineEmits<{
@@ -30,132 +35,144 @@ const emit = defineEmits<{
 const feedsStore = useFeedsStore()
 
 const feed = computed(() => feedsStore.feeds.find((f: RssFeed) => f.id === props.article.feedId))
-const category = computed(() => feedsStore.getCategoryBySlug(props.article.category))
-const firecrawlMeta = computed(() => getFirecrawlStatusMeta(props.article))
-const summaryMeta = computed(() => getSummaryStatusMeta(props.article))
-const showFirecrawlStatus = computed(() => shouldShowFirecrawlStatus(props.article, feed.value))
-const showSummaryStatus = computed(() => shouldShowSummaryStatus(props.article, feed.value))
-const hasError = computed(() => Boolean(props.article.firecrawlError || props.article.completionError))
-const errorHint = computed(() => props.article.completionError || props.article.firecrawlError || '')
+
+// v5 封面槽：image_url 非空渲染封面；为空或加载失败降级 feed 图标占位（行高不变）
+const coverSrc = computed(() => props.article.imageUrl || '')
+const coverFailed = ref(false)
+watch(
+  () => props.article.imageUrl,
+  () => {
+    coverFailed.value = false
+  },
+)
+
+const pipelineState = computed(() => getArticlePipelineState(props.article))
+const stateMeta = computed(() => getPipelineStateMeta(pipelineState.value))
+const popoverOpen = ref(false)
+const rootRef = ref<HTMLElement | null>(null)
+
+// 浮层互斥与点外关闭：本行浮层打开时，点击浮层/本行状态图标之外（含其他行）即关闭（spec 处理详情浮层）
+function onDocMouseDown(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  if (rootRef.value?.contains(target)) {
+    if (target.closest('.row-status-popover')) return
+    if (target.closest('.row-state-icon, .row-state-spin')) return
+    closePopover()
+    return
+  }
+  closePopover()
+}
+
+watch(popoverOpen, (open) => {
+  if (open) {
+    document.addEventListener('mousedown', onDocMouseDown)
+  } else {
+    document.removeEventListener('mousedown', onDocMouseDown)
+  }
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onDocMouseDown)
+})
+
+const popoverTitle = computed(() => {
+  if (pipelineState.value === 'failed') {
+    return props.article.firecrawlError ? '抓取失败' : '总结失败'
+  }
+  return '处理详情'
+})
+const popoverError = computed(() => {
+  if (pipelineState.value !== 'failed') return ''
+  return props.article.completionError || props.article.firecrawlError || '处理失败，原因未知'
+})
+const popoverHint = computed(() => {
+  switch (pipelineState.value) {
+    case 'queued':
+      return '排队中：等待抓取/总结链路处理'
+    case 'processing':
+      return '完成后自动进入后续链路'
+    case 'failed':
+      return '稍后将随下次刷新自动重试'
+    default:
+      return props.article.tagCount ? '标签详情可在「叙事工坊 / 语义版块」按本文查看' : ''
+  }
+})
+const popoverLines = computed<PipelineLine[]>(() => [
+  { label: '抓取', value: getFirecrawlStatusMeta(props.article).label, tone: getFirecrawlStatusMeta(props.article).tone },
+  { label: '总结', value: getSummaryStatusMeta(props.article).label, tone: getSummaryStatusMeta(props.article).tone },
+  { label: '标签', value: props.article.tagCount ? `已标记 ${props.article.tagCount}` : '待打标签', tone: props.article.tagCount ? 'success' : 'neutral' },
+])
+
+function togglePopover() {
+  popoverOpen.value = !popoverOpen.value
+}
+function closePopover() {
+  popoverOpen.value = false
+}
 </script>
 
 <template>
   <article
-    class="paper-card group article-card cursor-pointer overflow-hidden mx-2 mb-2 first:mt-2"
-    :class="{ 'opacity-60': article.read, selected }"
+    ref="rootRef"
+    class="article-row group"
+    :class="{ 'article-row-read': article.read, selected }"
     @click="emit('click', article)"
   >
-    <div
-      v-if="article.imageUrl && !compact"
-      class="aspect-video w-full overflow-hidden bg-[var(--color-bg-sunken)]"
-    >
+    <div class="row-cover">
       <img
-        :src="article.imageUrl"
-        :alt="article.title"
-        class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+        v-if="coverSrc && !coverFailed"
+        :src="coverSrc"
+        alt=""
         loading="lazy"
-      >
+        @error="coverFailed = true"
+      />
+      <FeedIcon v-else :icon="feed?.icon" :feed-id="feed?.id" :color="feed?.color" :size="26" />
     </div>
+    <div class="row-main">
+      <h3 class="row-title">{{ article.title }}</h3>
 
-    <div class="p-4">
-      <div class="flex items-start gap-3">
-        <div
-          v-if="feed && !compact"
-          class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-          :style="{ backgroundColor: `${feed.color}20` }"
+      <div class="row-meta">
+        <span class="row-time">{{ $dayjs(article.pubDate).fromNow() }}</span>
+        <span v-if="showFeedTitle && feed" class="row-identity">{{ feed.title }}</span>
+        <span v-else-if="article.author" class="row-identity">{{ article.author }}</span>
+        <span class="row-meta-grow"></span>
+        <span
+          v-if="stateMeta.spinning"
+          class="row-state-spin"
+          role="status"
+          :title="stateMeta.title"
+          @click.stop="togglePopover"
+        ></span>
+        <button
+          v-else
+          class="row-state-icon"
+          :class="`row-state-${pipelineState}`"
+          :title="stateMeta.title"
+          :aria-label="stateMeta.title"
+          @click.stop="togglePopover"
         >
-          <FeedIcon
-            :icon="feed.icon"
-            :feed-id="article.feedId"
-            :color="feed.color"
-            :size="20"
-          />
-        </div>
-
-        <div class="flex-1 min-w-0">
-          <div class="flex items-start justify-between gap-2">
-            <div class="flex-1 min-w-0">
-              <h3
-                class="font-semibold text-[var(--color-text-primary)] group-hover:text-[var(--color-text-secondary)] transition-colors line-clamp-2"
-                :class="{ 'text-sm': compact, 'text-base': !compact }"
-              >
-                {{ article.title }}
-              </h3>
-
-              <div class="mt-2 flex flex-wrap items-center gap-2">
-                <span
-                  v-if="showFirecrawlStatus"
-                  class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-medium"
-                  :class="getStatusToneClasses(firecrawlMeta.tone)"
-                >
-                  <Icon
-                    :icon="firecrawlMeta.icon"
-                    width="12"
-                    height="12"
-                    :class="{ 'animate-spin': article.firecrawlStatus === 'processing' }"
-                  />
-                  {{ firecrawlMeta.label }}
-                </span>
-                <span
-                  v-if="showSummaryStatus"
-                  class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-medium"
-                  :class="getStatusToneClasses(summaryMeta.tone)"
-                >
-                  <Icon
-                    :icon="summaryMeta.icon"
-                    width="12"
-                    height="12"
-                    :class="{ 'animate-spin': article.summaryStatus === 'pending' }"
-                  />
-                  {{ summaryMeta.label }}
-                </span>
-                <span
-                  class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-medium"
-                  :class="article.tagCount ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-stone-200 bg-stone-100 text-stone-600'"
-                >
-                  <Icon :icon="article.tagCount ? 'mdi:tag-multiple' : 'mdi:tag-off-outline'" width="12" height="12" />
-                  {{ article.tagCount ? `已标记 ${article.tagCount}` : '待打标签' }}
-                </span>
-              </div>
-
-              <div
-                v-if="hasError"
-                class="mt-2 text-xs line-clamp-1"
-                style="color: var(--color-error)"
-                :title="errorHint"
-              >
-                {{ errorHint }}
-              </div>
-            </div>
-
-            <button
-              class="flex-shrink-0 p-2 rounded-xl transition-all"
-              :style="{ color: article.favorite ? 'var(--color-accent)' : 'var(--color-text-muted)' }"
-              @click.stop="emit('favorite', article.id)"
-            >
-              <Icon
-                :icon="article.favorite ? 'mdi:star' : 'mdi:star-outline'"
-                width="18"
-                height="18"
-              />
-            </button>
-          </div>
-
-          <div class="flex flex-wrap items-center gap-2 mt-3 text-xs text-[var(--color-text-muted)]">
-            <span
-              v-if="category"
-              class="px-2.5 py-1 rounded-full"
-              :style="{ backgroundColor: `${category.color}20`, color: category.color }"
-            >
-              {{ category.name }}
-            </span>
-            <span v-if="feed" class="text-[var(--color-text-secondary)]">{{ feed.title }}</span>
-            <span>{{ $dayjs(article.pubDate).fromNow() }}</span>
-            <span v-if="article.author">{{ article.author }}</span>
-            <span v-if="article.read" class="text-[var(--color-text-muted)]">已读</span>
-          </div>
-        </div>
+          <Icon :icon="stateMeta.icon" width="15" height="15" />
+        </button>
       </div>
     </div>
+
+    <button
+      class="row-favorite"
+      :class="{ active: article.favorite }"
+      :aria-label="article.favorite ? '取消收藏' : '收藏'"
+      @click.stop="emit('favorite', article.id)"
+    >
+      <Icon :icon="article.favorite ? 'mdi:star' : 'mdi:star-outline'" width="17" height="17" />
+    </button>
+
+    <RowStatusPopover
+      v-if="popoverOpen"
+      :title="popoverTitle"
+      :title-tone="pipelineState === 'failed' ? 'error' : 'neutral'"
+      :lines="popoverLines"
+      :error="popoverError"
+      :hint="popoverHint"
+      @close="closePopover"
+    />
   </article>
 </template>

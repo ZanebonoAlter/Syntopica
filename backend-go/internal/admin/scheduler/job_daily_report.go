@@ -12,6 +12,7 @@ import (
 	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/articlerefs"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/notification"
 	"syntopica-backend/internal/platform/ws"
 	tagging "syntopica-backend/internal/tagmanagement"
 	daily_report "syntopica-backend/internal/topicgraph"
@@ -22,6 +23,28 @@ import (
 // the main pass and the backfill scan. A package-level variable so tests can
 // substitute a stub: the real implementation drives the whole LLM pipeline.
 var generateAndSaveReport = daily_report.GenerateAndSaveReport
+
+// Notification seams (add-notification-center, 白盒 B): package-level vars so
+// tests can capture adjudication calls without a notification database
+// (same seam as generateAndSaveReport).
+var (
+	notifyDailyReportSuccess       = notification.DailyReportSuccess
+	notifyDailyReportFailedSummary = notification.DailyReportFailedSummary
+)
+
+// adjudicateDailyReportTerminal is the single adjudication point for the
+// scheduled daily-report terminal-state notification (白盒 B):
+// failedCount>0 → ONE failure summary (success/failed counts in the copy);
+// failedCount==0 → one completion notification. Mutually exclusive — never
+// more than one notification per run. 成功口径 = 版面产出报告的计数；空版面
+// (report==nil) 算成功侧、不算失败（对齐 handler 路径口径：版面无内容≠失败）。
+func adjudicateDailyReportTerminal(date time.Time, totalBoards, successCount, failedCount int) {
+	if failedCount > 0 {
+		notifyDailyReportFailedSummary(date, successCount, failedCount)
+		return
+	}
+	notifyDailyReportSuccess(date, totalBoards, successCount)
+}
 
 // backfillScanTimeout bounds the backfill pass on its own budget. The main pass
 // owns the job's 30-minute context for today's reports; a shared budget would
@@ -66,6 +89,8 @@ func DailyReportJob(targetDate ...time.Time) JobFunc {
 
 		boardIDs, err := daily_report.CollectBoardIDsForDate(date)
 		if err != nil {
+			// 收集阶段即失败：一条失败汇总（fail-open，不改变作业本身的错误返回）
+			notifyDailyReportFailedSummary(date, 0, 1)
 			return nil, fmt.Errorf("failed to collect board IDs: %w", err)
 		}
 
@@ -76,14 +101,16 @@ func DailyReportJob(targetDate ...time.Time) JobFunc {
 		defer cancel()
 
 		reportCount := 0
+		failedCount := 0
 		for _, boardID := range boardIDs {
 			report, genErr := generateAndSaveReport(ctx, boardID, date)
 			if genErr != nil {
 				logging.Warnf("daily-report: generate/save failed for board %d: %v", boardID, genErr)
+				failedCount++
 				continue
 			}
 			if report == nil {
-				continue
+				continue // 当日无内容正常返回 (nil, nil)：空版面不算失败（对齐 handler 口径），计入成功侧
 			}
 			reportCount++
 		}
@@ -97,6 +124,15 @@ func DailyReportJob(targetDate ...time.Time) JobFunc {
 		}
 		data, _ := json.Marshal(msg)
 		ws.GetHub().BroadcastRaw(data)
+
+		// Terminal-state notification (add-notification-center, 白盒 B): the
+		// scheduled run is the 定时日报 users miss overnight — notify here.
+		// The backfill sweep below is deliberately silent (no per-day spam).
+		// failed 口径 = genErr != nil 的版面数（非 totalBoards-reportCount：
+		// 空版面不是失败）。失败汇总与完成通知互斥（adjudicateDailyReportTerminal）。
+		if totalBoards := len(boardIDs); totalBoards > 0 {
+			adjudicateDailyReportTerminal(date, totalBoards, reportCount, failedCount)
+		}
 
 		resultData := map[string]interface{}{
 			"report_count":   reportCount,

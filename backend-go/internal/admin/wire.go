@@ -68,6 +68,15 @@ var (
 	SetAnalysisPause = handler.SetAnalysisPause
 )
 
+// Notification handlers (add-notification-center)
+var (
+	ListNotifications        = handler.ListNotifications
+	GetUnreadCount           = handler.GetUnreadCount
+	MarkNotificationRead     = handler.MarkNotificationRead
+	MarkAllNotificationsRead = handler.MarkAllNotificationsRead
+	ClearNotifications       = handler.ClearNotifications
+)
+
 // AI call log handlers
 var (
 	ListCallLogs = handler.ListCallLogs
