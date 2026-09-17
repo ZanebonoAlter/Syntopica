@@ -31,11 +31,15 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
 
 单表 `events`：`id INTEGER PK, ts TEXT(ISO), session_id TEXT, kind TEXT, change TEXT NULL, payload TEXT(JSON)`。索引：`(session_id,id)`、`(change,id)`、`(kind,ts)`。append-only，除 TTL 清扫外不删。
 
+> 同库另有**非事件状态表**（test-debt-patrol 引入，不受 TTL 清扫、不由扩展写入）：`test_debt`（测试欠账台账：`test_id` UNIQUE / `domain` / `first_seen` / `last_seen` / `context` / `status`(open|fixed|waived) / `fixed_by` / `waived_reason` / `waived_at` / `note`）与 `patrol_shard`（巡检分片进度：`shard` PK / `last_run` / `last_ok` / `last_ms` / `last_fails` / `runs` / `total_fails`），由 `scripts/test-patrol.sh` 读写；台账查询首选 `bash scripts/test-patrol.sh --report`。
+
 | kind | 保留期 | payload 关键字段 |
 | --- | --- | --- |
 | `session.start` | 90 天 | `reason`(new/reload/resume/fork)、`cwd`、`prev`(前一 session 文件) |
+| `session.rollup` | 90 天 | 单会话效能汇总快照：`turns`/`steps`/`toolCalls`/`tokens`(五值)/`cost`/`durationSec`/`model`/`final`；harness-telemetry 在 turn_end 节流写（每 5 turn 或 token 增量>20%）+ session_start 回填 prev 终值；**同 session 取最新一条即终值**（中间快照不参与聚合，语义对齐 edit.map）；查询实例：`SELECT session_id, payload FROM events WHERE kind='session.rollup' AND id IN (SELECT MAX(id) FROM events WHERE kind='session.rollup' GROUP BY session_id)` |
 | `constraint.inject` | 30 天 | `path`、`mode`(full/section)、`reason`、`bytes`；混合通道下**送达时记账**（稳定层快照变化时 / 动态层消息发出时 / compact 快照重发时），稳态不重复记；`degraded`（预算降级标记）、`source:compact-resend`（compact 重发快照）按需携带 |
 | `gate.check` | 30 天 | `cmd`、`phase`(turn_end)、`ok`、`ms`、`diag` |
+| `patrol.check` | 30 天 | `shard`、`ok`、`ms`、`fails[]`（失败测试标识数组，全绿为空数组）；由 `scripts/test-patrol.sh` 直写（非扩展，`session_id`=PI_SESSION_ID 或 `patrol.sh`），**`change` 列恒 NULL**（巡检是仓库级活动） |
 | `mode.set` | 30 天 | `mode`、`boundChange`、`source`（`command` / `skill` / `edit-dir` / `recover` / `inherit` / `fallback`——**所有绑定变化路径均记账，隐性绑定不存在**） |
 | `subagent.dispatch` | 30 天 | `type`、`model`、`desc`、`ms`、`tokens`、`status`、`agentId`、`isError` |
 | `subagent.complete` | 30 天 | `agentId`、`status`、`ms`、`tokens`、`toolUses`、`isError`（后台子线程完成回填） |

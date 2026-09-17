@@ -1,6 +1,6 @@
 ---
 name: harness-retro
-description: Syntopica harness 失败聚类复盘指南（.pi/harness/events.db 的只读消费方）。当需要回答"最近门禁为什么老红"、"这条软提醒到底有没有用"、"改了 harness 规则有没有效果"、"哪些约束文档从没被注入过"、"失败里有多少是环境噪声"这类**从数据找改进项**的问题时用本 skill。含报告六段的解读方式、改进项产出判据（可回检指标 + 观察窗口 + 反 overfit）与基线回检流程。与 harness-facts 的分工见文末（那边管"当时为什么这样"，本 skill 管"接下来该改什么"）。
+description: Syntopica harness 失败聚类复盘指南（.pi/harness/events.db 的只读消费方）。当需要回答"最近门禁为什么老红"、"这条软提醒到底有没有用"、"改了 harness 规则有没有效果"、"哪些约束文档从没被注入过"、"失败里有多少是环境噪声"、"插件到底值不值（注入命中率/token 消耗/返工）"这类**从数据找改进项**的问题时用本 skill。含报告七段的解读方式（⑦效能看板）、改进项产出判据（可回检指标 + 观察窗口 + 反 overfit）与基线回检流程。与 harness-facts 的分工见文末（那边管"当时为什么这样"，本 skill 管"接下来该改什么"）。
 ---
 
 # harness-retro — 从事实账本产出改进项
@@ -38,7 +38,7 @@ bash scripts/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 
 退出码：`0` 报告成功（**发现大量失败也是 0**，报告不做判定）；`1` 参数或环境错误（库缺失 / 非本应用库 / 损坏）。
 
-## 六段报告怎么读
+## 七段报告怎么读
 
 **读之前先记住分母口径**：`gate.check` 成功侧是**采样记账**（会话首成功与转绿锚点各记 1 条，其后每 5 次连续成功记 1 条带 `sampled`+`n`）。所以「落库条数」不是执行次数，报告里的**还原执行次数（分母）**才是。别用 `ok=0 条数 / 总条数` 自己算——那样会系统性高估失败率。
 
@@ -50,10 +50,11 @@ bash scripts/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 | ④ 软提醒失效 | 同 `policy+reasonCode` 的 warn 计数 ≥ 阈值 | 提醒被反复无视（同一件事触发很多次仍没改） | 三选一：升级为 block（须用户确认）/ 改提示文案与触发条件 / 承认它不该是提醒 |
 | ⑤ 重复失败热点 | 同会话同命令、归一化 diag 连续重复 ≥ 阈值 | 连续同 diag 重复 = 死循环或试探式改错 | 这类会话需要更强干预（而不是再提醒一次） |
 | ⑥ 注入面健康 | 各文档注入次数/字节 + 窗口内零命中文档 | 零命中 = 死约束（索引声明了却从没被注入）；单文档字节很高 = 注入膨胀 | 死约束：清理或修触发关键词；膨胀：走红线层提取（见 `standard/shared/doc-authoring.md`） |
+| ⑦ 效能看板 | **插件 ROI**（注入负载/注入命中率/pin 复用/门禁催修时距/block 复发）+ **效率基线**（per-session/per-change 的轮次/token/成本/时长分布，`session.rollup` 终值驱动）+ **返工信号**（跨 session 编辑波次/归档重试）+ **D 测试欠账巡检**（`patrol.check` 流水频次 + `test_debt` 台账 open/fixed/waived 趋势，test-debt-patrol） | rollup 覆盖率 <50% 时 B 组标「数据积累中」（分布仅由已覆盖 session 算，不用小样本冒充）；命中率持续 0 = 注了白注；催修时距长 = block 后没及时修；波次高的文件 = 反复返工热点；**`patrol.checks` 连续多天为 0 = 巡检纪律松了**（或压根没跑），`patrol.debt_open` 持续不降 = 台账变成新漂没 | **各指标独立解读，禁止合成总分**；改一条 harness 规则前后用 `--save-baseline`/`--baseline` 对 m7.*/patrol.* 键做准 A/B；注：rollup 数据从部署起积累，历史 session 永久无此维度；无 `test_debt` 表（老库）或窗口内无 `patrol.check` 时该子组降级为「无巡检数据」不报错 |
 
 ## 改进项产出判据（硬要求）
 
-1. **必须绑定可回检指标**：每条改进项写清「哪段指标名 + 当前值 + 期望值 + 观察窗口（如未来 7 天）」。指标名取自报告或 `--json` 的 `metrics`（`gate.failures` / `harness.fail_open` / `soft.stale_groups` / `inject.zero_hit_docs` …）。落不到指标上的主观判断不算改进项。
+1. **必须绑定可回检指标**：每条改进项写清「哪段指标名 + 当前值 + 期望值 + 观察窗口（如未来 7 天）」。指标名取自报告或 `--json` 的 `metrics`（`gate.failures` / `harness.fail_open` / `soft.stale_groups` / `inject.zero_hit_docs` / `patrol.checks` / `patrol.debt_open` …）。落不到指标上的主观判断不算改进项。
 2. **单次偶发不得升格为规则**：只在一个 session 出现一次的失败，**不许**直接写成新规则；至少跨 2 个 session 或累计 ≥3 次再动规则。
 3. **改完必须回检**：`--save-baseline` → 改 → `--baseline` 对比同类指标；差值不降就说明改动无效（或问题不在那）。
 4. **反 overfit 警告**：针对单一任务、单一 diag 文本堆特例的规则会伤害泛化。优先调**口径、阈值、触发条件**，其次才是加规则；加规则前先问「这条规则对第二个场景也成立吗」。

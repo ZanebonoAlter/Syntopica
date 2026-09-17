@@ -13,7 +13,9 @@
 #
 # 只读消费：sqlite3 -readonly 打开 + PRAGMA application_id 校验（魔数 0x53594E54），
 # 不建表、不写事件、不触碰注入通道配置（报告只以命令输出形态存在）。
-# 六段报告：① 门禁失败聚类 ② 回归翻转 ③ harness 自身故障 ④ 软提醒失效 ⑤ 重复失败热点 ⑥ 注入面健康
+# 六段故障视角 + ⑦效能看板（harness-effectiveness-metrics）：① 门禁失败聚类 ② 回归翻转 ③ harness 自身故障 ④ 软提醒失效 ⑤ 重复失败热点 ⑥ 注入面健康 ⑦ 效能看板（A 插件 ROI / B 效率基线（session.rollup 驱动）/ C 返工信号；分布为 nearest-rank 分位，禁止综合总分）
+# ⑦ 另含 D 测试欠账巡检子组（test-debt-patrol）：patrol.check 流水频次 + test_debt 台账 open/fixed/waived 趋势；
+#   窗口内无 patrol.check 或库内无 test_debt 表（老库/未初始化）时降级为「无巡检数据」，不影响退出码。
 #
 # 分母口径（与 harness-fact-log 的 gate.check 采样记账协议一致）：
 #   ok=false 计 1；ok=true 无采样标记（会话首成功/转绿锚点）计 1；
@@ -218,6 +220,56 @@ fi
 # JSON 文本作为 SQL 字符串字面量传入（json_each 需要文本参数）
 CANDS_LIT="'$(printf '%s' "$CANDS_JSON" | sed "s/'/''/g")'"
 
+# 域映射（⑦段 A 组注入命中率）：docs/reference/flow/*.md 头部 doc-impact-applies 标签
+# （形如 <!-- doc-impact-applies: backend-go/internal/topicgraph/, ... | section=... -->）
+# → [{domain, prefix}]；解析失败/无标签 → 空数组，报告降级标注「域映射不可用」
+DOM_JSON="[]"
+if compgen -G "docs/reference/flow/*.md" >/dev/null; then
+	_dom_tmp="$(python3 - <<'DOMPY'
+import re, json, glob, os
+pairs = []
+for f in sorted(glob.glob('docs/reference/flow/*.md')):
+    dom = os.path.basename(f)[:-3]
+    try:
+        head = open(f, encoding='utf-8').read(4096)
+    except OSError:
+        continue
+    m = re.search(r'doc-impact-applies:\s*([^|>]+)', head)
+    if not m:
+        continue
+    for pfx in m.group(1).split(','):
+        pfx = pfx.strip()
+        if pfx:
+            pairs.append({'domain': dom, 'prefix': pfx})
+print(json.dumps(pairs, ensure_ascii=False))
+DOMPY
+	)"
+	case "$_dom_tmp" in
+	'['*']') DOM_JSON="$_dom_tmp" ;;
+	esac
+fi
+DOM_LIT="'$(printf '%s' "$DOM_JSON" | sed "s/'/''/g")'"
+
+# 测试欠账巡检（test-debt-patrol）：test_debt 表可能不存在（老库/纯净库）或列结构变动——
+# 只读 SQL 引用缺表会让整段统计报错，故先用 pragma_table_info 探列，再决定用真表还是占位常量（降级不报错）。
+PATROL_DEBT_OK=0
+_TD_COLS="$(printf '%s\n' "SELECT name FROM pragma_table_info('test_debt');" | run_sql 2>/dev/null || true)"
+if [ -n "$_TD_COLS" ]; then
+	PATROL_DEBT_OK=1
+	for _c in status first_seen last_seen; do
+		printf '%s\n' "$_TD_COLS" | grep -qx "$_c" || PATROL_DEBT_OK=0
+	done
+fi
+if [ "$PATROL_DEBT_OK" = 1 ]; then
+	PATROL_DEBT_CTE="debt_status AS (SELECT status, COUNT(*) AS n FROM test_debt GROUP BY status),
+debt_new AS (SELECT COUNT(*) AS n FROM test_debt WHERE date(first_seen) >= date('now','-${DAYS} day')),
+debt_fix AS (SELECT COUNT(*) AS n FROM test_debt WHERE status='fixed' AND date(last_seen) >= date('now','-${DAYS} day')),"
+else
+	PATROL_DEBT_CTE="debt_status AS (SELECT NULL AS status, 0 AS n WHERE 0),
+debt_new AS (SELECT 0 AS n),
+debt_fix AS (SELECT 0 AS n),"
+fi
+
 WARNINGS=""
 add_warning() { WARNINGS="${WARNINGS}${WARNINGS:+
 }$1"; }
@@ -348,7 +400,77 @@ inj AS (
 ),
 inj_doc AS (SELECT path, COUNT(*) AS n, IFNULL(SUM(CAST(bytes AS INTEGER)),0) AS b FROM inj GROUP BY 1 ORDER BY n DESC),
 inj_reason AS (SELECT reason, COUNT(*) AS n FROM inj GROUP BY 1 ORDER BY n DESC),
-zero_hit AS (SELECT je.value AS path FROM json_each(${CANDS_LIT}) AS je WHERE je.value NOT IN (SELECT path FROM inj))
+zero_hit AS (SELECT je.value AS path FROM json_each(${CANDS_LIT}) AS je WHERE je.value NOT IN (SELECT path FROM inj)),
+/* ---- ⑦效能看板（harness-effectiveness-metrics） ---- */
+/* test-debt-patrol（⑦段 D 子组）：巡检流水只读 events；台账表缺表时用占位 CTE 降级 */
+pc AS (SELECT id, ts, CASE WHEN json_valid(payload) THEN json_extract(payload,'\$.ok') END AS ok,
+    CASE WHEN json_valid(payload) THEN json_extract(payload,'\$.shard') END AS shard
+  FROM win WHERE kind='patrol.check'),
+pc_agg AS (SELECT COUNT(*) AS n, MAX(ts) AS last_ts,
+    SUM(CASE WHEN ok IN (1,'true') THEN 1 ELSE 0 END) AS ok_n,
+    SUM(CASE WHEN ok IN (0,'false') THEN 1 ELSE 0 END) AS fail_n FROM pc),
+pc_last AS (SELECT shard FROM pc ORDER BY id DESC LIMIT 1),
+${PATROL_DEBT_CTE}
+ru_raw AS (SELECT id, session_id, change, payload FROM win WHERE kind='session.rollup' AND json_valid(payload)),
+ru AS (SELECT * FROM ru_raw WHERE id IN (SELECT MAX(id) FROM ru_raw GROUP BY session_id)), -- 同 session 取最新一条即终值
+ru_t AS (SELECT session_id, COALESCE(change,'') chg,
+    CAST(json_extract(payload,'$.turns') AS INTEGER) turns,
+    CAST(json_extract(payload,'$.tokens.total') AS INTEGER) tok,
+    CAST(json_extract(payload,'$.tokens.output') AS INTEGER) tok_out,
+    CAST(json_extract(payload,'$.cost') AS REAL) cost,
+    CAST(json_extract(payload,'$.durationSec') AS INTEGER) dur
+  FROM ru),
+sess_total AS (SELECT COUNT(DISTINCT session_id) n FROM win),
+inj_raw AS (SELECT COALESCE(change,'') chg,
+    CASE WHEN json_valid(payload) THEN json_extract(payload,'$.path') END AS path,
+    CASE WHEN json_valid(payload) THEN json_extract(payload,'$.reason') END AS reason
+  FROM win WHERE kind='constraint.inject'), -- ⑦段专用：比 inj 多投影 change
+inj_sess AS (SELECT session_id, IFNULL(SUM(CAST(CASE WHEN json_valid(payload) THEN json_extract(payload,'$.bytes') END AS INTEGER)),0) b
+  FROM win WHERE kind='constraint.inject' GROUP BY 1), -- 混合通道下同 path 不重复记，直接求和（win 直取：inj CTE 无 session_id 列）
+inj_deg AS (SELECT COUNT(*) n FROM win WHERE kind='constraint.inject' AND json_valid(payload) AND json_extract(payload,'$.degraded')=1),
+pw AS (SELECT COUNT(*) n FROM win WHERE kind='pin.write'),
+prd AS (SELECT COUNT(*) n FROM win WHERE kind='pin.read'),
+gseq AS (SELECT session_id, cmd, ok, ts,
+    LEAD(ok) OVER (PARTITION BY session_id, cmd ORDER BY id) AS nok,
+    LEAD(ts)  OVER (PARTITION BY session_id, cmd ORDER BY id) AS nts
+  FROM gc),
+repair AS (SELECT (julianday(nts)-julianday(ts))*86400.0 AS sec FROM gseq WHERE ok=0 AND nok=1),
+pblock AS (SELECT COALESCE(change,'(无归属)') chg,
+    CASE WHEN json_valid(payload) THEN json_extract(payload,'$.reasonCode') END AS reason, COUNT(*) n
+  FROM win WHERE kind='policy.decision' AND json_valid(payload) AND json_extract(payload,'$.action')='block' GROUP BY 1,2), -- win 直取：p CTE 无 change 列
+dom_map AS (SELECT json_extract(je.value,'$.domain') domain, json_extract(je.value,'$.prefix') prefix FROM json_each(${DOM_LIT}) je),
+inj_dom AS (SELECT DISTINCT chg,
+    substr(path, instr(path,'flow/')+5, length(path)-instr(path,'flow/')-5-3) domain
+  FROM inj_raw WHERE reason IN ('declaration','keyword','edit') AND path LIKE '%/flow/%.md'),
+emap_flat AS (SELECT session_id, COALESCE(change,'') chg, je.value p
+  FROM win, json_each(json_extract(payload,'$.paths')) je
+  WHERE kind='edit.map' AND json_valid(payload)),
+emap_dom AS (SELECT DISTINCT e.chg, m.domain FROM emap_flat e JOIN dom_map m ON e.p LIKE (m.prefix || '%') OR e.p LIKE (m.prefix || '/%')),
+hit_chg AS (SELECT ed.chg, COUNT(DISTINCT ed.domain) edited,
+    COUNT(DISTINCT CASE WHEN idm.domain IS NOT NULL THEN ed.domain END) hit
+  FROM emap_dom ed LEFT JOIN inj_dom idm ON idm.chg=ed.chg AND idm.domain=ed.domain GROUP BY 1),
+hit_sum AS (SELECT IFNULL(SUM(hit),0) hit, IFNULL(SUM(edited),0) edited FROM hit_chg),
+wave AS (SELECT p, COUNT(DISTINCT session_id) n FROM emap_flat GROUP BY 1 HAVING n >= 3 ORDER BY n DESC, p LIMIT 10),
+arch_retry AS (SELECT chg, IFNULL(SUM(n),0) n FROM pblock WHERE reason='archive-check-failed' GROUP BY 1 ORDER BY n DESC LIMIT 8),
+sub_pairs AS (SELECT id, kind, COALESCE(NULLIF(json_extract(payload,'$.agentId'),NULL),'row'||id) aid,
+    CAST(json_extract(payload,'$.tokens') AS INTEGER) t
+  FROM win WHERE kind IN ('subagent.dispatch','subagent.complete') AND json_valid(payload)),
+sub_one AS (SELECT aid, (SELECT x.t FROM sub_pairs x WHERE x.aid=s.aid AND x.t IS NOT NULL
+      ORDER BY CASE WHEN x.kind='subagent.complete' THEN 1 ELSE 0 END DESC, x.id DESC LIMIT 1) t
+  FROM (SELECT DISTINCT aid FROM sub_pairs) s),
+sub_sum AS (SELECT IFNULL(SUM(t),0) s, COUNT(t) n FROM sub_one WHERE t IS NOT NULL),
+ru_sum AS (SELECT IFNULL(SUM(tok),0) s FROM ru_t),
+ru_chg AS (SELECT chg, SUM(tok) tok, SUM(cost) cost, SUM(turns) turns FROM ru_t WHERE chg != '' GROUP BY 1),
+top_chg AS (SELECT chg, tok, cost FROM ru_chg ORDER BY tok DESC LIMIT 5),
+/* 分位（nearest-rank：p50 行号=(n+1)/2、p75 行号=(3n+3)/4，整数除法；空集→NULL） */
+q_sturns AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT turns v FROM ru_t WHERE turns IS NOT NULL)),
+q_stok AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT tok v FROM ru_t WHERE tok IS NOT NULL)),
+q_scost AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT cost v FROM ru_t WHERE cost IS NOT NULL)),
+q_sdur AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT dur v FROM ru_t WHERE dur IS NOT NULL)),
+q_ctok AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT tok v FROM ru_chg WHERE tok IS NOT NULL)),
+q_ccost AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT cost v FROM ru_chg WHERE cost IS NOT NULL)),
+q_ib AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT b v FROM inj_sess)),
+q_rep AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT sec v FROM repair WHERE sec IS NOT NULL AND sec >= 0))
 SELECT json_object(
   'window', json_object(
     'days', ${DAYS},
@@ -397,6 +519,76 @@ SELECT json_object(
     'reasons', (SELECT json_group_array(json_object('reason', reason, 'n', n)) FROM inj_reason),
     'candidates', (SELECT COUNT(*) FROM json_each(${CANDS_LIT})),
     'zero_hit', (SELECT json_group_array(path) FROM zero_hit)
+  ),
+  'effectiveness', json_object(
+    'coverage', json_object(
+      'sessions_total', (SELECT n FROM sess_total),
+      'rollup_sessions', (SELECT COUNT(*) FROM ru),
+      'rollup_events', (SELECT COUNT(*) FROM ru_raw)
+    ),
+    'inject_load', json_object(
+      'sessions_with_inject', (SELECT COUNT(*) FROM inj_sess),
+      'per_session_bytes_p50', (SELECT v FROM q_ib WHERE rn = (n+1)/2),
+      'per_session_bytes_p75', (SELECT v FROM q_ib WHERE rn = (3*n+3)/4),
+      'degraded', (SELECT n FROM inj_deg)
+    ),
+    'domain_hit', json_object(
+      'mapping_rules', (SELECT COUNT(*) FROM dom_map),
+      'hit', (SELECT hit FROM hit_sum),
+      'edited', (SELECT edited FROM hit_sum),
+      'changes_counted', (SELECT COUNT(*) FROM hit_chg)
+    ),
+    'pin', json_object('write', (SELECT n FROM pw), 'read', (SELECT n FROM prd)),
+    'repair', json_object(
+      'median_sec', (SELECT v FROM q_rep WHERE rn = (n+1)/2),
+      'samples', (SELECT n FROM q_rep)
+    ),
+    'block_recur', json_object(
+      'items', (SELECT json_group_array(json_object('change', chg, 'reason', reason, 'n', n)) FROM (SELECT chg, reason, n FROM pblock WHERE n > 1 ORDER BY n DESC LIMIT 8))
+    ),
+    'sess_dist', json_object(
+      'n', (SELECT COUNT(*) FROM ru_t),
+      'turns_p50', (SELECT v FROM q_sturns WHERE rn = (n+1)/2),
+      'turns_p75', (SELECT v FROM q_sturns WHERE rn = (3*n+3)/4),
+      'tok_p50', (SELECT v FROM q_stok WHERE rn = (n+1)/2),
+      'tok_p75', (SELECT v FROM q_stok WHERE rn = (3*n+3)/4),
+      'cost_p50', (SELECT v FROM q_scost WHERE rn = (n+1)/2),
+      'dur_p50', (SELECT v FROM q_sdur WHERE rn = (n+1)/2)
+    ),
+    'chg_dist', json_object(
+      'n', (SELECT COUNT(*) FROM ru_chg),
+      'tok_p50', (SELECT v FROM q_ctok WHERE rn = (n+1)/2),
+      'tok_p75', (SELECT v FROM q_ctok WHERE rn = (3*n+3)/4),
+      'cost_p50', (SELECT v FROM q_ccost WHERE rn = (n+1)/2),
+      'turns_p50', (SELECT v FROM (SELECT turns v, ROW_NUMBER() OVER (ORDER BY turns) rn, COUNT(*) OVER () n FROM ru_chg WHERE turns IS NOT NULL) WHERE rn = (n+1)/2)
+    ),
+    'top_changes', (SELECT json_group_array(json_object('change', chg, 'tokens', tok, 'cost', cost)) FROM top_chg),
+    'subagent', json_object(
+      'tokens', (SELECT s FROM sub_sum),
+      'samples', (SELECT n FROM sub_sum),
+      'rollup_tokens', (SELECT s FROM ru_sum)
+    ),
+    'waves', json_object(
+      'items', (SELECT json_group_array(json_object('path', p, 'sessions', n)) FROM wave)
+    ),
+    'archive_retry', json_object(
+      'items', (SELECT json_group_array(json_object('change', chg, 'blocks', n)) FROM arch_retry)
+    ),
+    'patrol', json_object(
+      'checks', (SELECT n FROM pc_agg),
+      'ok', (SELECT IFNULL(ok_n,0) FROM pc_agg),
+      'failed', (SELECT IFNULL(fail_n,0) FROM pc_agg),
+      'last_ts', (SELECT last_ts FROM pc_agg),
+      'last_shard', (SELECT shard FROM pc_last),
+      'debt_tables', ${PATROL_DEBT_OK},
+      'debt', json_object(
+        'open', IFNULL((SELECT n FROM debt_status WHERE status='open'),0),
+        'fixed', IFNULL((SELECT n FROM debt_status WHERE status='fixed'),0),
+        'waived', IFNULL((SELECT n FROM debt_status WHERE status='waived'),0),
+        'new_in_window', (SELECT n FROM debt_new),
+        'fixed_in_window', (SELECT n FROM debt_fix)
+      )
+    )
   )
 );
 SQL
@@ -463,6 +655,7 @@ faults = st['faults']
 soft = st['soft']
 hot = st['hotspot']
 inj = st['inject']
+eff = st.get('effectiveness') or {}
 
 empty = win['rows_in_window'] == 0
 
@@ -495,6 +688,62 @@ metrics = {
     'window.bad_n_rows': win['bad_n_rows'],
 }
 
+# ⑦效能看板扁平键（m7.*；缺 effect 段时全部置 None，旧库/异常不伪造）
+def _e(path, default=None):
+    node = eff
+    for k in path.split('.'):
+        if not isinstance(node, dict):
+            return default
+        node = node.get(k, default)
+    return node
+
+
+def _pct(num, den):
+    if not den:
+        return None
+    return int((num * 200 + den) // (2 * den))
+
+
+_cov = _e('coverage') or {}
+_dom = _e('domain_hit') or {}
+metrics.update({
+    'm7.rollup_coverage_pct': _pct(_cov.get('rollup_sessions', 0), _cov.get('sessions_total', 0)),
+    'm7.rollup_sessions': _cov.get('rollup_sessions'),
+    'm7.inj_bytes_p50': _e('inject_load.per_session_bytes_p50'),
+    'm7.inj_bytes_p75': _e('inject_load.per_session_bytes_p75'),
+    'm7.inj_degraded': _e('inject_load.degraded'),
+    'm7.domain_hit_pct': _pct(_dom.get('hit', 0), _dom.get('edited', 0)),
+    'm7.pin_write': _e('pin.write'),
+    'm7.pin_read': _e('pin.read'),
+    'm7.repair_med_sec': _e('repair.median_sec'),
+    'm7.repair_samples': _e('repair.samples'),
+    'm7.block_recur_groups': len(_e('block_recur.items') or []),
+    'm7.sess_tok_p50': _e('sess_dist.tok_p50'),
+    'm7.sess_tok_p75': _e('sess_dist.tok_p75'),
+    'm7.sess_cost_p50': _e('sess_dist.cost_p50'),
+    'm7.sess_dur_p50': _e('sess_dist.dur_p50'),
+    'm7.chg_tok_p50': _e('chg_dist.tok_p50'),
+    'm7.chg_tok_p75': _e('chg_dist.tok_p75'),
+    'm7.sub_samples': _e('subagent.samples'),
+    'm7.wave_files': len(_e('waves.items') or []),
+    'm7.archive_retry_changes': len(_e('archive_retry.items') or []),
+})
+
+# ⑧/D 组：测试欠账巡检（test-debt-patrol；patrol.check 流水 + test_debt 台账，缺表/零事件时 None）
+_patrol = _e('patrol') or {}
+if _patrol:
+    _debt = _patrol.get('debt') or {}
+    metrics.update({
+        'patrol.checks': _patrol.get('checks'),
+        'patrol.ok': _patrol.get('ok'),
+        'patrol.failed': _patrol.get('failed'),
+        'patrol.debt_open': _debt.get('open') if _patrol.get('debt_tables') else None,
+        'patrol.debt_fixed': _debt.get('fixed') if _patrol.get('debt_tables') else None,
+        'patrol.debt_waived': _debt.get('waived') if _patrol.get('debt_tables') else None,
+        'patrol.debt_new_in_window': _debt.get('new_in_window') if _patrol.get('debt_tables') else None,
+        'patrol.debt_fixed_in_window': _debt.get('fixed_in_window') if _patrol.get('debt_tables') else None,
+    })
+
 doc = {
     'meta': {
         'script_version': ver,
@@ -516,6 +765,7 @@ doc = {
     'soft': soft,
     'hotspot': hot,
     'inject': inj,
+    'effectiveness': eff or None,
     'warnings': warnings,
 }
 
@@ -545,6 +795,8 @@ if base_path:
         base_metrics = base['metrics']
         if not isinstance(base_metrics, dict):
             raise ValueError('metrics 非对象')
+        if not any(k.startswith('m7.') for k in base_metrics):
+            warnings.append('基线为旧版（无 m7.* 效能键）：效能看板段差值不可比，已跳过')
         def delta(k):
             a, b = metrics.get(k), base_metrics.get(k)
             if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
@@ -652,8 +904,113 @@ else:
         out.append('   窗口内零命中文档: 未知（未找到候选索引）')
     out.append('')
 
+    # ⑦效能看板（harness-effectiveness-metrics：A 插件 ROI / B 效率基线 / C 返工信号）
+    out.append('⑦ 效能看板（插件 ROI / 效率基线 / 返工信号；分位=nearest-rank，各指标独立解读）')
+    cov_n = _cov.get('rollup_sessions') or 0
+    cov_d = _cov.get('sessions_total') or 0
+    cov_pct = _pct(cov_n, cov_d)
+    accumulating = (cov_pct is None) or cov_pct < 50
+    if cov_d:
+        out.append('   rollup 覆盖率        : %s / %s session%s'
+                   % (cov_n, cov_d,
+                      ('（%d%%）⚠ 数据积累中（<50%%，分布仅由已覆盖 session 计算）' % cov_pct) if accumulating else '（%d%%）' % cov_pct))
+    else:
+        out.append('   rollup 覆盖率        : 窗口无 session')
+
+    out.append('   A 插件 ROI')
+    il = _e('inject_load') or {}
+    p50 = il.get('per_session_bytes_p50')
+    p75 = il.get('per_session_bytes_p75')
+    out.append('     注入负载          : per-session 字节 中位 %s / P75 %s（%s session 有注入；degraded %s 条）'
+               % ('—' if p50 is None else '%d B' % p50,
+                  '—' if p75 is None else '%d B' % p75,
+                  il.get('sessions_with_inject') or 0,
+                  il.get('degraded') or 0))
+    if (_dom.get('mapping_rules') or 0) > 0:
+        dh = _pct(_dom.get('hit', 0), _dom.get('edited', 0))
+        out.append('     注入命中率        : 编辑域命中注入域 %s / %s（%s；域映射=flow 头 doc-impact-applies，%s 条规则）'
+                   % (_dom.get('hit') or 0, _dom.get('edited') or 0,
+                      '—' if dh is None else '%d%%' % dh,
+                      _dom.get('mapping_rules')))
+    else:
+        out.append('     注入命中率        : 域映射不可用（未解析到 doc-impact-applies 标签，跳过本指标）')
+    out.append('     pin 复用          : write %s 条 / read %s 条（比值 %s）'
+               % (_e('pin.write') or 0, _e('pin.read') or 0,
+                  '—' if not _e('pin.write') else '%.1f' % ((_e('pin.read') or 0) / _e('pin.write'))))
+    rep_med = _e('repair.median_sec')
+    rep_n = _e('repair.samples') or 0
+    out.append('     门禁催修时距      : 红→绿 中位 %s（n=%s）'
+               % ('—' if rep_med is None else '%.1f min' % (rep_med / 60.0), rep_n))
+    recur = _e('block_recur.items') or []
+    out.append('     block 复发        : %s 组（同 change×reasonCode >1 次）' % len(recur))
+    for it in recur[:5]:
+        out.append('       - %s / %s : %s 次' % (it['change'], it['reason'], it['n']))
+
+    out.append('   B 效率基线（session.rollup 终值驱动%s）'
+               % ('，⚠ 数据积累中' if accumulating else ''))
+    sd = _e('sess_dist') or {}
+    if (sd.get('n') or 0) > 0:
+        out.append('     per-session       : turns 中位 %s | tokens 中位 %s / P75 %s | cost 中位 %s | 时长中位 %s'
+                   % (sd.get('turns_p50'), sd.get('tok_p50'), sd.get('tok_p75'),
+                      '—' if sd.get('cost_p50') is None else '¥%.2f' % sd['cost_p50'],
+                      '—' if sd.get('dur_p50') is None else '%.1f min' % (sd['dur_p50'] / 60.0)))
+    else:
+        out.append('     per-session       : （无 rollup 终值：分布不产出，不用小样本冒充）')
+    cd = _e('chg_dist') or {}
+    if (cd.get('n') or 0) > 0:
+        out.append('     per-change        : tokens 中位 %s / P75 %s | cost 中位 %s（%s change）'
+                   % (cd.get('tok_p50'), cd.get('tok_p75'),
+                      '—' if cd.get('cost_p50') is None else '¥%.2f' % cd['cost_p50'], cd.get('n')))
+    else:
+        out.append('     per-change        : （无归属 change 的 rollup 终值）')
+    for it in (_e('top_changes') or [])[:5]:
+        out.append('       - %s : tokens %s / cost %s'
+                   % (pad((it['change'] or '')[:40], 42),
+                      it.get('tokens'), '—' if it.get('cost') is None else '¥%.2f' % it['cost']))
+    sub = _e('subagent') or {}
+    sub_tok = sub.get('tokens') or 0
+    ru_tok = sub.get('rollup_tokens') or 0
+    if (sub.get('samples') or 0) > 0 and (sub_tok + ru_tok) > 0:
+        out.append('     子线程 token 占比 : %d%%（子线程 %s / 合计 %s；非空样本 %s 条）'
+                   % (_pct(sub_tok, sub_tok + ru_tok), sub_tok, sub_tok + ru_tok, sub['samples']))
+    else:
+        out.append('     子线程 token 占比 : —（无子线程 token 样本）')
+
+    out.append('   C 返工信号')
+    waves = _e('waves.items') or []
+    out.append('     跨 session 编辑波次: %s 个文件 ≥3 session（累计快照口径：含被动携带）' % len(waves))
+    for it in waves[:8]:
+        out.append('       - %s ×%s session' % (pad((it['path'] or '')[:56], 58), it['sessions']))
+    ars = _e('archive_retry.items') or []
+    out.append('     归档重试          : %s 个 change 有归档门禁 block（spec-gate 拦截后重试）' % len(ars))
+    for it in ars[:5]:
+        out.append('       - %s : %s 次' % (pad((it['change'] or '')[:40], 42), it['blocks']))
+
+    # D 测试欠账巡检（test-debt-patrol：patrol.check 流水 + test_debt 台账；缺表/零事件降级不报错）
+    pt = _e('patrol') or {}
+    out.append('   D 测试欠账巡检（patrol.check 流水 / test_debt 台账）')
+    p_n = pt.get('checks') or 0
+    if p_n:
+        p_ok = pt.get('ok') or 0
+        p_rate = _pct(p_ok, p_n)
+        out.append('     巡检频次          : %s 次（ok %s / 失败 %s，%s）最近一次 %s%s'
+                   % (p_n, p_ok, pt.get('failed') or 0,
+                      '—' if p_rate is None else '%d%% ok' % p_rate,
+                      pt.get('last_ts') or '—',
+                      '' if not pt.get('last_shard') else '（最近分片 %s）' % pt['last_shard']))
+    else:
+        out.append('     巡检频次          : 无巡检数据（窗口内无 patrol.check 事件）')
+    if pt.get('debt_tables'):
+        pd = pt.get('debt') or {}
+        out.append('     台账欠账          : open %s / fixed %s / waived %s；窗口内新增 %s、修复 %s（口径：first_seen/last_seen 自然日）'
+                   % (pd.get('open') or 0, pd.get('fixed') or 0, pd.get('waived') or 0,
+                      pd.get('new_in_window') or 0, pd.get('fixed_in_window') or 0))
+    else:
+        out.append('     台账欠账          : 无巡检数据（test_debt 表不存在或未初始化，跳过）')
+    out.append('')
+
 if baseline_diff is not None:
-    out.append('⑦ 较基线变化（基线 %s，生成于 %s）' % (baseline_diff['path'], baseline_diff['generated_at']))
+    out.append('较基线变化（基线 %s，生成于 %s）' % (baseline_diff['path'], baseline_diff['generated_at']))
     for k, d in baseline_diff['diff'].items():
         out.append('   %-24s %s' % (k, '—' if d is None else '%+d' % d))
     out.append('')

@@ -12,6 +12,7 @@
 #   C9 不触碰注入配置 / C10 基线损坏降级
 #   D1 采样缺 n 回退缺省权重 / D2 非法 n 保守计 1 且告警 / D3 不可解析行跳过且告警
 #   D4 重复失败热点入段（累计连续重复 ≥ 阈值）/ D5 --json 可解析 / D6 参数非法拒绝 / D7 --change 注入安全
+#   H1 巡检段数字正确 / H2 JSON effectiveness.patrol 键 / H3 无表无巡检事件降级 / H4 有台账零巡检事件降级
 #
 # 用法：bash scripts/harness-retro.smoke.sh   退出码：0 全过；1 有失败
 set -u
@@ -167,10 +168,115 @@ for i in 1 2 3 4 5 6; do
 	ins "$FF" gate.check cF "{\"cmd\":\"golangci-lint\",\"phase\":\"turn_end\",\"ok\":false,\"diag\":\"internal/y.go:$i:1: File is not properly formatted (gofmt)\"}" sF
 done
 
+# ---------- fixture G：⑦效能看板（rollup 终值/覆盖率/跨域命中/催修时距/波次） ----------
+FG="$TMP/g.db"
+mk_db "$FG"
+# s-roll：两条中间快照 + 一条 final（终值只取最新：tok=5000，不累加 1000+2000+5000）
+ins "$FG" session.rollup chg-eff '{"turns":2,"steps":5,"toolCalls":8,"tokens":{"input":50,"output":20,"cacheRead":900,"cacheWrite":0,"total":1000},"cost":0.1,"durationSec":60,"model":"glm-5.3","final":false}' s-roll
+ins "$FG" session.rollup chg-eff '{"turns":4,"steps":10,"toolCalls":16,"tokens":{"input":100,"output":30,"cacheRead":1500,"cacheWrite":0,"total":2000},"cost":0.2,"durationSec":200,"model":"glm-5.3","final":false}' s-roll
+ins "$FG" session.rollup chg-eff '{"turns":7,"steps":20,"toolCalls":30,"tokens":{"input":200,"output":80,"cacheRead":4500,"cacheWrite":0,"total":5000},"cost":0.5,"durationSec":600,"model":"glm-5.3","final":true}' s-roll
+# s-n1/s-n2：无 rollup（覆盖率 1/3）；催修时距：同 (s-n1,lint) 红→绿相隔 40 分钟
+ins "$FG" gate.check chg-eff '{"cmd":"lint","ok":false,"diag":"oops"}' s-n1 "$(date -u -d '-50 min' +%Y-%m-%dT%H:%M:%S.000Z)"
+ins "$FG" gate.check chg-eff '{"cmd":"lint","ok":true,"flip":1}' s-n1 "$(date -u -d '-10 min' +%Y-%m-%dT%H:%M:%S.000Z)"
+# 跨域注入：chg-x 注入 semantic-board 域，编辑路径全落 daily-report 域（topicgraph 前缀）→ 命中率 0
+ins "$FG" constraint.inject chg-x '{"path":"docs/reference/flow/semantic-board.md","mode":"section","reason":"declaration","bytes":800}' s-n1
+ins "$FG" edit.map chg-x '{"paths":["backend-go/internal/topicgraph/model.go"],"n":1}' s-n1
+# 波次：同 change 同文件在 3 个 session 的快照 → ≥3 session
+ins "$FG" edit.map chg-w '{"paths":["backend-go/internal/topicgraph/model.go"],"n":1}' s-roll
+ins "$FG" edit.map chg-w '{"paths":["backend-go/internal/topicgraph/model.go"],"n":1}' s-n1
+ins "$FG" edit.map chg-w '{"paths":["backend-go/internal/topicgraph/model.go"],"n":1}' s-n2
+
+# ---------- fixture H：测试欠账巡检（test-debt-patrol：patrol.check 流水 + test_debt 台账） ----------
+FH="$TMP/h.db"
+mk_db "$FH"
+sqlite3 "$FH" "
+CREATE TABLE test_debt (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  test_id       TEXT UNIQUE NOT NULL,
+  domain        TEXT,
+  first_seen    TEXT NOT NULL,
+  last_seen     TEXT NOT NULL,
+  context       TEXT,
+  status        TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','fixed','waived')),
+  fixed_by      TEXT,
+  waived_reason TEXT,
+  waived_at     TEXT,
+  note          TEXT
+);
+INSERT INTO test_debt(test_id, domain, first_seen, last_seen, status) VALUES
+  ('internal/foo::TestOld',   'foo', datetime('now','-10 day'), datetime('now','-1 day'),  'open'),
+  ('internal/bar::TestNew',   'bar', datetime('now','-2 day'),  datetime('now','-2 day'),  'open'),
+  ('internal/baz::TestFix',   'baz', datetime('now','-40 day'), datetime('now','-1 day'),  'fixed'),
+  ('internal/qux::TestWaive', 'qux', datetime('now','-40 day'), datetime('now','-30 day'), 'waived');
+"
+ins "$FH" gate.check chg-p '{"cmd":"go test -short ./internal/foo/...","phase":"turn_end","ok":false,"ms":10,"diag":"FAIL internal/foo"}'
+ins "$FH" patrol.check '' '{"shard":"be-foo","ok":false,"ms":1200,"fails":["internal/foo::TestA"]}' s-patrol
+ins "$FH" patrol.check '' '{"shard":"fe-core","ok":true,"ms":900,"fails":[]}' s-patrol
+ins "$FH" patrol.check '' '{"shard":"fe-core","ok":true,"ms":800,"fails":[]}' s-patrol
+
 # ================= A. 主链路 =================
 
 run_retro --db "$FB" --days 7
 check 0 "A1 六段齐备且各带指标" "① 门禁失败聚类" "② 回归翻转" "③ harness 自身故障" "④ 软提醒失效" "⑤ 重复失败热点" "⑥ 注入面健康" "失败条数            : 4" "注入条数 / 字节" "docs/reference/flow/daily-report.md"
+
+# ---------- G. ⑦效能看板 ----------
+run_retro --db "$FG" --days 7
+check 0 "G1 七段齐备：⑦段与覆盖率降级标注" "⑦ 效能看板" "rollup 覆盖率        : 1 / 3 session（33%）⚠ 数据积累中"
+check 0 "G2 rollup 终值取最新快照不累加（tok=5000 非 8000）" "tokens 中位 5000 / P75 5000"
+check 0 "G3 跨域注入命中率=0（注入 semantic-board、编辑落 daily-report 域）" "注入命中率        : 编辑域命中注入域 0 / 6（0%；"
+check 0 "G4 催修时距 40 分钟计入中位" "门禁催修时距      : 红→绿 中位 40.0 min（n=1）"
+check 0 "G5 返工波次清单（3 session 文件）" "跨 session 编辑波次: 1 个文件 ≥3 session" "backend-go/internal/topicgraph/model.go" "×3 session"
+check 0 "G6 pin 复用零值形态" "pin 复用          : write 0 条 / read 0 条（比值 —）"
+"$RETRO" --db "$FG" --days 7 --json >"$TMP/fg.json" 2>/dev/null
+if python3 - "$TMP/fg.json" <<'FGPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d['metrics']
+assert m['m7.rollup_coverage_pct'] == 33, m['m7.rollup_coverage_pct']
+assert m['m7.sess_tok_p50'] == 5000, m['m7.sess_tok_p50']
+assert m['m7.domain_hit_pct'] == 0, m['m7.domain_hit_pct']
+assert m['m7.repair_med_sec'] is not None and 2390 <= m['m7.repair_med_sec'] <= 2410, m['m7.repair_med_sec']
+assert m['m7.wave_files'] == 1, m['m7.wave_files']
+assert d['effectiveness']['coverage']['rollup_sessions'] == 1
+assert not any('score' in k or 'total_score' in k for k in m), '发现综合分键'
+FGPY
+then
+	echo "  ✓ G7 JSON m7.* 键数值可独立复算且无综合分键"
+	pass=$((pass + 1))
+else
+	echo "  ✗ G7 JSON m7.* 键断言失败"
+	failn=$((failn + 1))
+fi
+check_absent "G8 无综合分措辞" "综合分" "综合评分"
+
+# ---------- H. 测试欠账巡检（test-debt-patrol：patrol.check 流水 + test_debt 台账） ----------
+run_retro --db "$FH" --days 7
+check 0 "H1 巡检段出现且数字正确（3 次巡检 ok 2；台账 open 2/fixed 1/waived 1；窗内新增 1 修复 1）" \
+	"D 测试欠账巡检" "3 次（ok 2 / 失败 1，67% ok）" "（最近分片 fe-core）" \
+	"open 2 / fixed 1 / waived 1；窗口内新增 1、修复 1"
+"$RETRO" --db "$FH" --days 7 --json >"$TMP/fh.json" 2>/dev/null
+if python3 - "$TMP/fh.json" <<'FHPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+p = d['effectiveness']['patrol']
+assert p['checks'] == 3 and p['ok'] == 2 and p['failed'] == 1, p
+assert p['last_shard'] == 'fe-core', p
+assert p['debt']['open'] == 2 and p['debt']['fixed'] == 1 and p['debt']['waived'] == 1, p['debt']
+assert p['debt']['new_in_window'] == 1 and p['debt']['fixed_in_window'] == 1, p['debt']
+FHPY
+then
+	echo "  ✓ H2 JSON effectiveness.patrol 键数值可独立复算"
+	pass=$((pass + 1))
+else
+	echo "  ✗ H2 JSON effectiveness.patrol 断言失败"
+	failn=$((failn + 1))
+fi
+run_retro --db "$FB" --days 7
+check 0 "H3 无 test_debt 表 + 无 patrol.check 时降级（仍 exit 0）" "D 测试欠账巡检" \
+	"无巡检数据（窗口内无 patrol.check 事件）" "test_debt 表不存在"
+sqlite3 "$FH" "DELETE FROM events WHERE kind='patrol.check';"
+run_retro --db "$FH" --days 7
+check 0 "H4 有台账但零巡检事件（降级不报错）" "无巡检数据（窗口内无 patrol.check 事件）" "open 2 / fixed 1 / waived 1"
 
 run_retro --db "$FA" --days 7
 check 0 "A2 分母按锚点与采样权重还原（6 失败 + 1 锚点 + 2×n=5 → 17）" "失败条数            : 6" "还原执行次数（分母）: 17" "失败率              : 35%" "口径                : 失败条计 1"
@@ -191,7 +297,7 @@ else
 fi
 base_sha="$(hash_of "$BASE")"
 run_retro --db "$FA" --days 7 --baseline "$BASE"
-check 0 "A3c 与基线比对（无变化差值为 0）" "⑦ 较基线变化" "gate.failures            +0"
+check 0 "A3c 与基线比对（无变化差值为 0）" "较基线变化（基线" "gate.failures            +0"
 if [ "$(hash_of "$BASE")" = "$base_sha" ]; then
 	echo "  ✓ A3d 比对不改写基线文件"
 	pass=$((pass + 1))
