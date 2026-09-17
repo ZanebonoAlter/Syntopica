@@ -67,6 +67,8 @@ export interface BulkUpdateArticlesData {
   feed_id?: number
   category_id?: number
   uncategorized?: boolean
+  /** 显式全站 scope（fix-bulk-markall-all-scope）：与 ids/feed_id/category_id/uncategorized 互斥 */
+  all?: boolean
   read?: boolean
   favorite?: boolean
 }

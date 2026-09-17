@@ -128,7 +128,7 @@ describe('useApiStore', () => {
 
     await articlesStore.markAllAsRead()
 
-    expect(bulkUpdateArticlesMock).toHaveBeenCalledWith({ read: true })
+    expect(bulkUpdateArticlesMock).toHaveBeenCalledWith({ read: true, all: true })
     expect(apiStore.feeds.map(feed => feed.unreadCount)).toEqual([0, 0])
   })
 

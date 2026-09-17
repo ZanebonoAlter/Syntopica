@@ -35,6 +35,7 @@ type BulkUpdateArticlesRequest struct {
 	FeedID        *uint  `json:"feed_id"`
 	CategoryID    *uint  `json:"category_id"`
 	Uncategorized *bool  `json:"uncategorized"`
+	All           *bool  `json:"all"`
 	Read          *bool  `json:"read"`
 	Favorite      *bool  `json:"favorite"`
 }
@@ -537,7 +538,18 @@ func BulkUpdateArticles(c *gin.Context) {
 		return
 	}
 
-	if len(req.IDs) == 0 && req.FeedID == nil && req.CategoryID == nil && (req.Uncategorized == nil || !*req.Uncategorized) {
+	// fix-bulk-markall-all-scope：all 为显式全站 scope，与其他 scope 互斥（语义冲突 → 400，不静默取优先级）
+	allScope := req.All != nil && *req.All
+	hasOtherScope := len(req.IDs) > 0 || req.FeedID != nil || req.CategoryID != nil || (req.Uncategorized != nil && *req.Uncategorized)
+	if allScope && hasOtherScope {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "all cannot be combined with other scopes",
+		})
+		return
+	}
+
+	if !allScope && len(req.IDs) == 0 && req.FeedID == nil && req.CategoryID == nil && (req.Uncategorized == nil || !*req.Uncategorized) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error":   "Must specify a scope: ids, feed_id, category_id, or uncategorized",
@@ -548,6 +560,9 @@ func BulkUpdateArticles(c *gin.Context) {
 	query := repository.Repo.DB().Model(&models.Article{})
 
 	switch {
+	case allScope:
+		// 显式 all：全站。GORM 禁止无 WHERE 的批量 UPDATE（safety），恒真条件表达“无范围限定”的显式语义
+		query = query.Where("1 = 1")
 	case len(req.IDs) > 0:
 		query = query.Where("id IN ?", req.IDs)
 	case req.FeedID != nil:

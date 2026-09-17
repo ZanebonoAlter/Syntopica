@@ -160,6 +160,10 @@ export const useArticlesStore = defineStore('articles', () => {
     })
 
     const data: import('~/types').BulkUpdateArticlesData = { read: true }
+    if (!options) {
+      // 全站标记必须显式 all（后端拒绝无 scope 请求）
+      data.all = true
+    }
     if (options?.feedId) {
       data.feed_id = Number(options.feedId)
     } else if (options?.categoryId) {
