@@ -117,6 +117,8 @@ extension SHALL 通过 `input` 事件识别阶段命令设置会话内档位（`
 
 **动态层（steer 消息，`pi.sendMessage` + `deliverAs:"steer"`）**：关键词命中全节、JIT 路径命中全节、change 级文件（explore-findings / 词汇表）、稳定层差异通知。动态层 SHALL 事件驱动发送：维护已发送内容指纹，仅当指纹变化（新命中、文件更新导致内容变化、档位切换后首轮）时发送增量消息，相同指纹零发送（MUST NOT 每 turn 重发）。消息 SHALL 标注类型与来源（customType），display 渲染 SHALL 受控（默认折叠/精简展示，不整块刷屏）。steer 消息参与 LLM 上下文；档位切换时动态层全量集合重置（新 change 的命中文档与旧 change 无关）。
 
+**指纹重置按 regime 判定**：已发送指纹 SHALL 随投递记录其 regime——投递时 `stableSnapshotKey(mode, boundChange)` 快照键。档位/绑定可在 turn 中途切换（`tool_execution_start` 的 skill 文件读取激活、change 目录编辑兜底绑定），快照重建则延迟到下一 turn 的 `before_agent_start`；延迟重建时的指纹清空 SHALL 仅在「指纹 regime ≠ 新快照 key」时发生——同 turn 内已在新 regime 下送达的 JIT 条目 MUST NOT 被延迟重建当作旧 regime 残留清空而原样重投（相同内容 + 相同 regime = 零重发，无论快照是否重建）。fork / 子线程继承时指纹及其 regime SHALL 随 channel 一并拷贝，继承方的快照重建同样按 regime 判定清空（父会话已投递且 regime 一致的条目不重发）。
+
 **compaction 补偿**：`session_compact` 事件后，extension SHALL 重发一次当前约束快照（稳定层摘要 + 动态层当前有效集合，一条消息），指纹不因重发而跳过。快照重发 SHALL 在 compact 完成后的下一次注入时机合并执行，不额外打断 turn。
 
 **关键词命中域限定**：关键词命中源 SHALL 仅含最近用户输入（滚动窗），change 产物全文 MUST NOT 触发关键词命中；命中文档范围 SHALL 限定为「当前 change 声明域 ∪ 栈检测相关文档 ∪ 索引文档」，声明域之外的跨域关键词命中 MUST NOT 触发注入（实测修复：聊 harness 机制含 "discovery" 词误拉 ~8KB discovery.md 全节）。ASCII 关键词 SHALL 按词边界整词匹配（CJK 关键词保持子串匹配）。
@@ -145,6 +147,21 @@ JIT pathSignals SHALL 复用文档既有 `doc-impact-applies` frontmatter 标签
 
 - **WHEN** 档位激活后第 3 个 turn 用户输入命中 daily-report 域关键词，第 4~10 个 turn 无新命中且已发送内容无变化
 - **THEN** 第 3 个 turn 发送一条含 daily-report 全节的 steer 消息，第 4~10 个 turn 零发送
+
+#### Scenario: turn 中途切档后同 turn 已投递内容不被延迟重建重投
+
+- **WHEN** 会话未激活档的某 turn 内，agent read requirements 类 skill 文件（`tool_execution_start` 激活档位），同 turn 随后 edit 命中某文档 `doc-impact-applies` 标签触发 JIT 即时投递（该节经 steer 消息送达，指纹以新档位 regime 记录）；下一 turn `before_agent_start` 延迟重建稳定层快照（快照 key 从未激活档变化为当前档位）
+- **THEN** 稳定层按新档位重建（mode-base 一次性变化），但动态层对该已投递节零重发（指纹 regime 与新快照 key 一致，不清空不重投）；`constraint.inject` 记账中该节在同会话代内不出现第二条同字节的 jit-path 记录
+
+#### Scenario: 绑定切换后首轮仍全量重投
+
+- **WHEN** 档位激活且已投递若干动态条目（指纹 regime 为 `<mode>|<changeX>`），turn 中途 agent 写 change Y 目录触发兜底绑定（edit-dir），下一 turn `before_agent_start` 快照 key 变为 `<mode>|<changeY>`
+- **THEN** 指纹 regime 与新快照 key 不一致 → 指纹清空、动态层全量集合按新 change 语境重投（既有设计行为保持：新 change 的命中文档与旧 change 无关）
+
+#### Scenario: fork 继承的指纹不被陈旧快照 key 重投
+
+- **WHEN** 父会话在 turn 中途切档后已 JIT 投递若干条目（指纹 regime 为新档位 key，但快照 key 尚为切档前的旧值），子会话 fork 继承父会话状态（含 channel 与指纹 regime），子会话首个 turn 快照重建（快照 key 与继承的旧快照 key 不一致）
+- **THEN** 指纹 regime 与新快照 key 一致 → 不清空、父会话已投递条目不重发（fork 语义：父会话已送达的动态层条目不重复）
 
 #### Scenario: findings 更新触发重发
 

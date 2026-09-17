@@ -167,6 +167,11 @@ type ChannelState = {
 	stableSnapshot: { key: string; block: string; items: PlanItem[] } | null;
 	/** 动态层已投递指纹（D3）：itemKey → contentHash；指纹未变则零投递 */
 	sentFingerprint: Map<string, string>;
+	/** 已投递指纹的 regime（fix-injection-transition-fingerprint-wipe）：sentFingerprint 各条目
+	 *  投递时的 stableSnapshotKey(mode, boundChange)；null = 尚无动态投递。档位/绑定可
+	 *  mid-turn 变化而快照重建延迟到下一 turn 起点——延迟重建的指纹清空只看 regime：
+	 *  regime≠新快照 key 才清空，mid-turn 切档后同 turn 已投递的内容不被误清重投。 */
+	fingerprintRegime: string | null;
 	/** compaction 后待重发快照（D4）：session_compact 置位，下一注入时机重发并重置指纹 */
 	pendingSnapshot: boolean;
 };
@@ -216,7 +221,12 @@ function newSessionState(sessionId: string): SessionState {
 		jitDocHits: new Map(),
 		keywordDocHits: new Map(),
 		pinReadSeen: new Set(),
-		channel: { stableSnapshot: null, sentFingerprint: new Map(), pendingSnapshot: false },
+		channel: {
+			stableSnapshot: null,
+			sentFingerprint: new Map(),
+			fingerprintRegime: null,
+			pendingSnapshot: false,
+		},
 		lastUsedAt: Date.now(),
 	};
 }
@@ -331,6 +341,7 @@ function inheritFromParent(state: SessionState, ctx: ExtCtx | undefined): boolea
 			? { ...parent.channel.stableSnapshot, items: [...parent.channel.stableSnapshot.items] }
 			: null,
 		sentFingerprint: new Map(parent.channel.sentFingerprint),
+		fingerprintRegime: parent.channel.fingerprintRegime,
 		pendingSnapshot: parent.channel.pendingSnapshot,
 	};
 	return true;
@@ -369,7 +380,12 @@ function resetSessionState(state: SessionState): void {
 	state.jitDocHits = new Map();
 	state.keywordDocHits = new Map();
 	state.pinReadSeen = new Set();
-	state.channel = { stableSnapshot: null, sentFingerprint: new Map(), pendingSnapshot: false };
+	state.channel = {
+		stableSnapshot: null,
+		sentFingerprint: new Map(),
+		fingerprintRegime: null,
+		pendingSnapshot: false,
+	};
 }
 
 let configCache: { config: ConstraintConfig; mtime: number } | null = null;
@@ -384,7 +400,12 @@ let flowDomainsCache: { mtime: number; names: string[] } | null = null;
 const matcherCache = new WeakMap<ConstraintConfig, Map<string, RegExp | null>>();
 /* 混合通道状态（harden-constraint-injection-channel D2~D5）与 pin.read 去重集：
  * per-session-constraint-binding 起收进 SessionState.channel / SessionState.pinReadSeen，
- * 不再有模块级全局（旧 resetChannelState 由 resetSessionState 取代）。 */
+ * 不再有模块级全局（旧 resetChannelState 由 resetSessionState 取代）。
+ * 指纹按 regime 标记（fix-injection-transition-fingerprint-wipe）：sentFingerprint 写入时
+ * 同步记投递时的 stableSnapshotKey 到 fingerprintRegime；快照重建的指纹清空仅当
+ * regime≠新快照 key——mid-turn 切档（skill 读取激活/edit-dir 绑定）与延迟快照重建之间
+ * 的窗口内已投递条目不再被误清重投（2026-09-17 取证：session 01a0ae99 事件 29644~29652，
+ * 同会话代内同节同字节重投 ~19 组，全部为 regime 未变却被无条件清空所致）。 */
 
 /* ---------- 配置加载（按 mtime 热更新） ---------- */
 
@@ -1719,6 +1740,10 @@ function deliverDynamic(
 	const rendered = renderDynamicMessage(payloadItems, label);
 	if (!rendered) return 0;
 	state.channel.sentFingerprint = fingerprint;
+	// 指纹随投递记录 regime（fix-injection-transition-fingerprint-wipe）：延迟重建的
+	// 清空判定据此区分「mid-turn 切档后同 turn 已投递（不清）」与「真实 regime 切换（清）」。
+	// force 且零增量时重写同值，无害。
+	state.channel.fingerprintRegime = stableSnapshotKey(state.mode, state.boundChange);
 	pi.sendMessage(
 		{
 			customType: "constraint-injection",
@@ -2034,14 +2059,19 @@ export default function (pi: ExtensionAPI) {
 			wantBlock &&
 			(!state.channel.stableSnapshot || state.channel.stableSnapshot.key !== key)
 		) {
-			// 档位/绑定切换（快照已存在但 key 变）→ 重置动态指纹（旧 change 的命中无关）；
-			// 首次建快照（如 JIT 已在快照前投递过）不重置，避免重复投递
+			// 档位/绑定切换（快照已存在但 key 变）→ 按指纹 regime 判定是否重置动态指纹
+			// （fix-injection-transition-fingerprint-wipe）：档位/绑定可 mid-turn 变化、快照重建
+			// 延迟到下一 turn 起点——mid-turn 切档后同 turn 已投递的条目其指纹 regime 已是新 key，
+			// MUST NOT 被当作旧 regime 残留清空而原样重投；仅真实 regime 切换（如 edit-dir 绑定
+			// 修正、档位回落）才清空全量重投。首次建快照（如 JIT 已在快照前投递过）不重置，
+			// 避免重复投递。
 			const isTransition =
 				state.channel.stableSnapshot !== null &&
 				state.channel.stableSnapshot.key !== key;
 			stableBlock = renderStableBlock(buildStableHeader(plan, stable), stable);
 			state.channel.stableSnapshot = { key, block: stableBlock, items: stable };
-			if (isTransition) state.channel.sentFingerprint = new Map();
+			if (isTransition && state.channel.fingerprintRegime !== key)
+				state.channel.sentFingerprint = new Map();
 			logConstraintInjects(
 				ctx,
 				sessionId,

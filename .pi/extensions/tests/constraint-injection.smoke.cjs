@@ -1031,7 +1031,114 @@ const present = (sp, marker, heading) =>
 				ext.resolveSessionStateLimitForTest(null) === ext.SESSION_STATE_LIMIT_FOR_TEST &&
 				ext.resolveSessionStateLimitForTest({ sessionStateLimit: 2.7 }) === 2,
 		);
-		writeCfg(bigCfg, 8); // 还原默认配置（不影响后续：本组已是最后一组）
+		writeCfg(bigCfg, 8); // 还原默认配置
+
+		// 20. 指纹按 regime 标记（fix-injection-transition-fingerprint-wipe）：
+		//     档位/绑定可 mid-turn（tool_execution_start）变化而快照重建延迟到下一 turn 起点，
+		//     延迟重建的指纹清空仅当 regime≠新快照 key —— mid-turn 切档后同 turn 已投递的
+		//     JIT 条目不被误清重投；真实 regime 切换（edit-dir 绑定）仍全量重投；fork 继承
+		//     陈旧快照 key 同理不重发。判别力：把清空条件改回无条件 isTransition → 场景 A/C 红；
+		//     把清空去掉（永不清空）→ 场景 B 红。用 requirements 档：implementation 有
+		//     mtime 兜底绑定会污染快照 key。
+		writeCfg(
+			{
+				...bigCfg,
+				skillSignals: { requirements: ['openspec-new-change'], implementation: ['openspec-apply-change'] },
+			},
+			10,
+		);
+		const sessW = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-wipe' } };
+		// 场景 A（bug 复刻）：未激活 turn 建快照 → mid-turn skill 激活 → 同 turn JIT 即时投递
+		// → 下一 turn 快照重建：稳定层重建发生，但已投递节零重投。
+		//   断言动态层一律 systemPromptOnly（不消费消息）+ dynamicText()：systemPrompt()
+		//   会消费新消息，之后 dynamicText() 恒空、断言失去判别力。
+		await emit('session_start', { reason: 'new' }, sessW);
+		const wSp1 = await systemPromptOnly(sessW); // 未激活 turn：建快照 key=none|none
+		check('regime: 未激活 turn 建快照（索引注入）', wSp1.includes('idx.md'));
+		markMessages();
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'read', args: { path: '/x/.pi/agent/skills/openspec-new-change/SKILL.md' } },
+			sessW,
+		); // mid-turn requirements 激活（快照不重建）
+		check(
+			'regime: mid-turn skill 激活记账（source=skill, requirements）',
+			readModeSet(tmp).some((r) => r.source === 'skill' && r.mode === 'requirements' && !r.boundChange),
+		);
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'edit', args: { path: 'backend-go/internal/platform/airouter/router.go' } },
+			sessW,
+		); // 同 turn JIT 命中 → 即时投递（指纹 regime=requirements|none）
+		const wJit = dynamicText();
+		markMessages();
+		check('regime: 同 turn JIT 即时投递（fixture 全文回落）', wJit.includes('FULLDOC-MARKER') && wJit.includes('STD2-FULLDOC'));
+		const wSp2 = await systemPromptOnly(sessW); // 下一 turn：延迟快照重建
+		check('regime: 下一 turn 稳定层按新档位重建（需求档 header）', /档位：需求/.test(wSp2));
+		check(
+			'regime: mid-turn 切档后同 turn 已投递内容零重投（本案修复点）',
+			!dynamicText().includes('📎') && !dynamicText().includes('FULLDOC-MARKER'),
+		);
+		markMessages();
+		await systemPromptOnly(sessW); // 隔 N turn 仍零重投
+		check('regime: 稳态零投递保持（指纹+regime 存续）', !dynamicText().includes('📎'));
+		markMessages();
+		// 场景 B（反向护栏）：真实 regime 切换（edit-dir 兜底绑定）→ 指纹清空 → 全量重投
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'edit', args: { path: 'openspec/changes/smoke-fixture-budget/proposal.md' } },
+			sessW,
+		);
+		check(
+			'regime: edit-dir 兜底绑定记账（source=edit-dir）',
+			readModeSet(tmp).some((r) => r.source === 'edit-dir' && r.boundChange === 'smoke-fixture-budget'),
+		);
+		const wSp3 = await systemPromptOnly(sessW); // 绑定切换后快照重建
+		check(
+			'regime: 绑定切换后稳定层重建（新绑定 + 声明域红线层）',
+			wSp3.includes('活跃变更：smoke-fixture-budget') && wSp3.includes('### kwdom.md'),
+		);
+		check(
+			// requirements 档不注 change 级文件（仅实现档），全量重投以粘性 JIT 条目为证
+			'regime: 真实 regime 切换仍全量重投（含已投递过的 JIT 节）',
+			dynamicText().includes('FULLDOC-MARKER') && dynamicText().includes('STD2-FULLDOC'),
+		);
+		markMessages();
+		// 场景 C（fork 变体）：父 mid-turn 切档已投递、快照未及重建（陈旧 none|none）→
+		// 子会话继承父 channel → 子首 turn 快照重建但父已投递内容不重发（fork 语义）
+		const sessP = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-wipe-parent' } };
+		await emit('session_start', { reason: 'new' }, sessP);
+		await systemPromptOnly(sessP); // 未激活快照 none|none（保持陈旧，不重建）
+		markMessages();
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'read', args: { path: '/x/.pi/agent/skills/openspec-new-change/SKILL.md' } },
+			sessP,
+		);
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'edit', args: { path: 'backend-go/internal/platform/airouter/router.go' } },
+			sessP,
+		); // 父同 turn JIT 投递（指纹 regime=requirements|none，快照仍 none|none）
+		markMessages();
+		const childW = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-wipe-child',
+				getHeader: () => ({
+					parentSession: '/home/x/.pi/agent/sessions/dir/2026-09-17T00-00-00-000Z_ci-smoke-wipe-parent.jsonl',
+				}),
+			},
+		};
+		await emit('session_start', { reason: 'startup' }, childW); // 继承父 channel（快照陈旧 + 指纹 regime=新 key）
+		const cwSp = await systemPromptOnly(childW); // 子首 turn：快照重建（key=requirements|none）
+		check('regime: fork 子会话继承父档位（需求档）', /档位：需求/.test(cwSp));
+		check(
+			'regime: fork 子会话快照重建但父已投递内容不重发（fork 语义）',
+			!dynamicText().includes('📎') && !dynamicText().includes('FULLDOC-MARKER'),
+		);
+		markMessages();
 
 		let fail = 0;
 		for (const [name, ok] of checks) {
