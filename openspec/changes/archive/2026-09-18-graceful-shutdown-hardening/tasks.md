@@ -22,8 +22,8 @@
 
 <!-- doc-impact: flow architecture -->
 - [x] `docs/reference/architecture/runtime.md`：启动顺序（9~11 步）与「优雅退出怎么做」节改写为四步关停协议（apply 留痕：改动使该文档旧描述失效，§11.1 条件 2 文档同步；§8 局部范围扩展）
-- [ ] `docs/reference/flow/scheduler.md`：变更溯源表补一行（归档后，§12.2）
-- [ ] §12.2 溯源：归档后 `flow/scheduler.md` 尾部「变更溯源」表追加 `| 2026-09-XX | graceful-shutdown-hardening | 关停协议重构：摘端口先行 + 有界 + defer 链恢复 | archive/…-graceful-shutdown-hardening |`
+- [x] `docs/reference/flow/scheduler.md`：变更溯源表补一行（归档后，§12.2 —— 已完成 2026-09-18）
+- [x] §12.2 溯源：`flow/scheduler.md` 尾部「变更溯源」表已追加 `| 2026-09-18 | graceful-shutdown-hardening | 关停协议重构：摘端口先行 + 有界 + defer 链恢复 | openspec/changes/archive/2026-09-18-graceful-shutdown-hardening |`
 
 ## 5. 测试
 
