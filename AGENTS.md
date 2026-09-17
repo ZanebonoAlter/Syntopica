@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Agent guide for coding assistants working in `Syntopica` (`D:\project\Syntopica`).
+Agent guide for coding assistants working in `Syntopica`（仓库路径 `~/software/Syntopica`）。
 
 ## 规则冲突时谁说了算（优先级宪法）
 
@@ -14,7 +14,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 | ------ | ------ |
 | brainstorming | openspec-explore（或开发执行规范 §3 脑暴） |
 | writing-plans / executing-plans | openspec proposal/design + §0.6 编排六步 |
-| subagent-driven-development / dispatching-parallel-agents | §0.6 六步 + 下方「子线程派发参考」模型表 |
+| subagent-driven-development / dispatching-parallel-agents | §0.6 六步 + §0.6「供应商与模型选择」 |
 | test-driven-development | 开发执行规范 §2（用例先行：specs Scenario 即用例+复杂档白盒用例，以 §2 表述为准） |
 | verification-before-completion | quality-gate 自动门禁 + §11 归档门禁 |
 | using-git-worktrees | 不用——主仓库直改（Docker DB 在宿主机） |
@@ -44,10 +44,6 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 | Node.js | `pnpm`（要求 corepack 启用）。详见 `front/AGENTS.md`。 |
 | Go | 直接使用系统 Go 工具链。详见 `backend-go/AGENTS.md`。 |
 
-## Headroom (Context Compression)
-
-[Headroom](https://headroom-docs.vercel.app/) 通过 MCP 集成，用于压缩大量工具输出（日志、grep、JSON 等）以节省 token。详细用法见 `/skill:headroom`。配置文件：`~/.pi/agent/mcp.json`。
-
 **快速开始本地开发：**
 
 ```bash
@@ -69,6 +65,8 @@ bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 ```
 
 > 为什么要有这个脚本：两个变量都是非持久化的进程环境变量，漏一个就换一种报错（2026-09-16 因重启漏 `CORS_ORIGINS` 导致一次全站不可访问）。
+
+**日常访问用静态托管，不用 dev server**（2026-09-17 用户决策——树莓派上 Nuxt dev 脆弱，客户端连接中断可致 `ECONNRESET` 重启循环）：构建一次 → 铺到后端同端口出页面，命令与产物约定（`backend-go/frontend/` 别手改）见 [`deployment.md`](docs/reference/deployment.md) §本地裸跑静态托管；dev server 仅 HMR 调样式临时用，用完即停。
 
 ## Reference Docs (authoritative source)
 
@@ -103,7 +101,7 @@ bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 
 **Backend** (`backend-go/`): `go mod tidy` / `go run cmd/server/main.go` / `golangci-lint run ./...` / `go vet ./...` / `go test ./...` / `go build ./...`
 
-**Pre-push check**（树莓派上跑前先停其它 pi 会话、`pnpm test:unit` 改 `pnpm test:unit -- --maxWorkers=2`，勿与 `pnpm build`／浏览器自动化并行）: `cd backend-go && golangci-lint run ./... && go vet ./... && go test ./... && go build ./...` && `cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm test:unit && pnpm build`
+**Pre-push check**（树莓派上跑前先停其它 pi 会话、`pnpm test:unit` 改 `pnpm test:unit --maxWorkers=2`，勿与 `pnpm build`／浏览器自动化并行；**参数别写成 `pnpm test:unit -- …`——`--` 会被 vitest 吞掉、filter 与 maxWorkers 一起失效并静默跑全量**）: `cd backend-go && golangci-lint run ./... && go vet ./... && go test ./... && go build ./...` && `cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm test:unit && pnpm build`
 
 ## AI Behavior Rules
 
@@ -112,63 +110,18 @@ bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 - Ignore unrelated dirty-worktree changes. Verify smallest relevant command after edits.
 - git提交使用 zanebonoalter <380207345@qq.com>
 - **测试只跑本次修改影响的包**，不要跑全量 `go test ./...`。影响包用 `bash scripts/change-scope.sh` 机械判定（路径→命令映射，未命中会提示无法判定）。例如改了 `daily_report` 和 `ws`，就只跑 `go test ./internal/domain/daily_report ./internal/platform/ws`。
-- **树莓派本机不做「顺手跑全量」**（前端 `pnpm test:unit` 全量 96 个文件、后端 `go test ./...` 同理）：4 核 + SD 卡扛不住——2026-09-17 晚实测全量前端单测（单次 10~15 分钟）叠加多 pi 会话，内存冲到 91%、zram swap 抖动 + `mmcblk0` IO backlog 20s，load 飙到 106 后系统假死重启。日常一律按范围跑受影响文件（`cd front && pnpm test:unit <受影响文件名...>`）；确需全量（归档门禁 / pre-push）时先确认无其它 pi 会话在跑重活、限制并发 `pnpm test:unit -- --maxWorkers=2`，且不与 `pnpm build`／浏览器自动化并行。
-- **前端 pnpm 编译/测试类命令（typecheck / build / test:unit）：按宿主平台决定执行方式**。Linux/macOS 宿主本机直跑（`front/node_modules` 按当前平台安装，含 `@rollup/rollup-linux-arm64-gnu`、`@oxc-parser/binding-linux-arm64-gnu` 等）；**Windows + WSL 宿主**下这三类命令必须经 Windows cmd 执行（WSL 侧 `node_modules` 是 Windows 侧装的，缺 Linux native binding），lint 可在 WSL 跑。权威定义见 [`standard/frontend/testing.md`](docs/reference/standard/frontend/testing.md) §跨平台运行 + §常见陷阱。示例（当前 Linux 宿主）：
-
-  ```bash
-  cd front && pnpm lint          # 全平台可用
-  cd front && pnpm exec nuxi typecheck
-  cd front && pnpm build
-  cd front && pnpm test:unit <受影响文件名...>   # 本机不做全量，见上条
-  # Windows + WSL 宿主改为经 cmd：cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm exec nuxi typecheck"
-  ```
-
+- **树莓派本机不做「顺手跑全量」**（前端 `pnpm test:unit` 全量 96 文件、后端 `go test ./...` 同理）：4 核 + SD 卡扛不住——2026-09-17 实测全量前端单测叠加多 pi 会话后 load 飙 106、系统假死重启。日常按范围跑受影响文件（`pnpm test:unit <文件> --maxWorkers=2`，参数不带 `--`）；确需全量（归档门禁 / pre-push）时先停其它 pi 会话、加 `--maxWorkers=2`、不与 `pnpm build`／浏览器自动化并行。事故详情见 `standard/frontend/testing.md`。
+- **测试欠账滚动巡检**：会话收尾若无高负载操作，顺手 `bash scripts/test-patrol.sh` 跑一片（最久未巡优先，前端分片自带 `--maxWorkers=2`）；归档/pre-push 前先 `bash scripts/test-patrol.sh --report` 看有无未还欠账；撞见**非本 change 引起**的红测试 → `bash scripts/test-patrol.sh --register <test_id> --context <change名>` 登记台账后继续（本 change 自己的红仍须先修）。
+- **前端 pnpm 编译/测试类命令（typecheck / build / test:unit）：按宿主平台决定执行方式**。Linux/macOS 宿主本机直跑；**Windows + WSL 宿主必须经 Windows cmd 执行**（WSL 侧 node_modules 是 Windows 侧装的，缺 Linux native binding），lint 全平台可跑。当前 Linux 宿主直接跑。权威定义与示例见 [`standard/frontend/testing.md`](docs/reference/standard/frontend/testing.md) §跨平台运行 + §常见陷阱。
 - Frontend edits → `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit <受影响文件名...>` / `pnpm build`。
 - Backend edits → `golangci-lint run ./...` / targeted `go test` first, then `go test ./...` / `go build ./...`。
 - Docs-only edits: consistency check unless behavior changed.
-- **pi 扩展全景**（`.pi/extensions/`，**源码已入库**——`.gitignore` 的 `/.*` 排除后单独放行 `.pi/extensions/**` 与 `.pi/constraint-injection.json`）：
-
-| 扩展 | 挂点 | 触发 | 软硬 | fail 策略 | 事件库记账 |
-| --- | --- | --- | --- | --- | --- |
-| constraint-injection | `before_agent_start`（稳定层）+ `input`/`tool_execution_start`/`session_compact`（动态层） | 混合通道注入：稳定层 system prompt（档位生命周期内字节恒定）/ 动态层 steer 消息（指纹 diff，稳态零投递） | 软（不干预工具） | fail-open（注入失败不阻断） | constraint.inject / pin.* / mode.set（含 source） |
-| quality-gate | `turn_end` | 执行链路平台判定（`cmd.exe` 可达性）→ windows 模式：interop 健康探测，vsock 故障整轮短路（harden-gate-interop-health）；native 模式：本机工具链直接执行、不探测；另落 `edit.map` 归属地图（增量路径 × boundChange 聚合，coordinate-concurrent-changes） | 软 steer 催修（windows 链路失败标（wsl环境），native 标本机；环境故障不计粘性） | fail-open（门禁故障放行） | gate.check / edit.map / policy.decision(interop-down) |
-| quota-gate | Agent 派发前 | 子线程派发前查额度 | 硬 block（低额度阻断派发） | fail-open（查询失败放行） | policy.decision（quota-low/exhausted=block、quota-query-failed=fail-open、fuzzy-model-resolve=warn） |
-| spec-gate | `tool_call` | bash 命中 `openspec archive` | 硬 block（归档门禁五检查：doc-impact/standards/尾三节/scenario-trace/UI 验收证据；另检查⑤'归档并发 warn 不 block：树上存在归属其他 active change 的未 commit 文件 → steer 提醒 + concurrent-dirty-tree 记账，冷启动零输出） | `--force` / `SPEC_GATE_BYPASS=1` 逃生口留痕 | policy.decision（archive-check-failed=block、explicit-bypass=bypass、acceptance-wording=warn、concurrent-dirty-tree=warn；UI 缺证据另记 ui-design-gate block ui-verification-missing） |
-| ui-design-gate | `tool_call` | implementation 档绑定 syntopica-ui schema change：Agent 派发与 edit/write 项目代码，major 原型未批准（合同 block）时拦截；当前 change 的 ui-design.md/ui-prototype/** 修复不受限 | 硬 block（legacy schema 仅 front mutation 每会话/change warn 一次） | fail-open（检查异常放行+告警+记账）；`UI_DESIGN_GATE_BYPASS=1` 显式旁路留痕 | policy.decision（ui-impact-missing/ui-impact-mismatch/ui-design-missing/ui-prototype-missing/ui-approval-pending=block、explicit-bypass=bypass、ui-gate-check-failed=fail-open；健康放行零记录） |
-| entry-gate | `turn_end` | 实现档切入后 complex 缺 test-cases 文档 | 软 steer 提醒 | fail-open | gate.check（cmd=entry-gate） |
-| test-scope-guard | `tool_call` | bash 跑全量 `go test ./...` | 软提醒（日常只跑影响包） | fail-open | policy.decision（full-go-test：soft=warn / hard=block） |
-| tool-output-spill | `tool_result` | 工具输出 >32KB（`.pi/harness.json`） | 落盘替换+有界预览 | fail-open（spill 失败原样通过） | spill.write |
-| harness-telemetry | `session_start`/`tool_call`/`tool_result` | 通用事实采集（不干预） | — | fail-safe（断链不伪造） | session.start / subagent.* |
-
-- **约束注入（自动，管"知道"）**：`.pi/extensions/constraint-injection.ts` 按**混合通道**注入约束上下文（harden-constraint-injection-channel）——**稳定层**（system prompt：索引 + mode-base + 声明域红线层；快照 key=mode|绑定 change，档位生命周期内**字节恒定** → system prompt 不变则其后 history 前缀缓存不失效）；**动态层**（追加消息：关键词命中全节 / JIT 命中全节 / change 级文件（explore-findings、词汇表）/ 稳定层差异；指纹 diff 驱动，稳态零投递；turn 中途 JIT 命中经 `sendMessage(deliverAs:"steer", triggerTurn:false)` 即时送达；`session_compact` 后重发一次快照补偿压缩）。配置 `channel:"legacy"` 可回退旧的每 turn 全量进 system prompt。
-  - **档位/绑定**：`input` 命令 / skill 路径 / 写 change 目录兜底均可激活；**绑定修正条件化**（read 永不抢绑、当前绑定健康时不抢绑、仅未绑定/绑定 change 消失时兜底）且**同 turn 锁定**；**所有绑定变化均记 `mode.set` 并带 `source`**（command/skill/edit-dir/recover/inherit/fallback），隐性绑定不存在——治多 change 并行注入污染（2026-09-16 事实库取证：隐性绑定 / 一毫秒 4 连绑）。
-  - **flow「业务约束与不变量」节**按 **proposal.md 业务域声明**（头部 `<!-- constraint-domains: 域, ... -->`，域名=flow 文档 basename 如 `daily-report`；纯工具链 change 可不写，widget 提示无域声明属预期；**声明域注入=红线层**——约束节内顶层列表项首个加粗红线句逐行 + 细节层取回指引，红线层提取 0 条或低于 512B 回退全节，格式见 `standard/shared/doc-authoring.md`「约束节红线句格式」）+ 对话输入关键词命中（**域限定**：仅声明域∪栈相关∪索引内的命中生效，跨域词不再误拉无关域全节）+ standard/flow 文档按头部 `doc-impact-applies` 标签对编辑路径 JIT 命中、`pin_finding` 工具持久化探索发现（档激活落 change 的 explore-findings.md，无档落 `docs/research/`）。配置 `.pi/constraint-injection.json`，常驻索引 `docs/reference/constraints-index.md`（旧 `doc-impact.sh context` 已退役）。
-- **pi 增量门禁（自动，管"做到"）**：`.pi/extensions/quality-gate.ts` 已挂 `turn_end`，按**会话内增量路由**触发——会话开始时的 git 脏文件进基线不触发，仅本回合新增/变化路径命中后端（`backend-go/**.go`）才跑 `golangci-lint`+`go vet`+`go build`+影响包 `go test -short`（经 `scripts/change-scope.sh` 判定，DB 集成测试 -short 下自动 skip），命中前端（`front/` 非 .md）才跑 eslint（带 `--cache` 增量；windows 模式经 cmd.exe 调 Windows 原生（实测 2~6s，WSL DrvFS 跑同命令 ~17 倍慢），native 模式本机直接跑；`front/package.json` 的 `pnpm lint` 仍全量供人工/归档用）；lint 先行作短路哨兵——lint 报编译失败（typechecking error）时 vet/build/test 必红同因，跳过执行不记账，无短路时 vet/build 并行。**执行链路按宿主平台分流**（linux-native-dev-environment）：`cmd.exe` 不可达（Linux/macOS）走 native 模式（本机 PATH 的 go/golangci-lint/pnpm，工作目录经 `ExecOptions.cwd` 传入），可达则维持 windows 模式（cmd.exe interop，vsock 故障时整轮短路 + 记账）；平台身份会话内稳定。上回合失败未转绿的命令粘性重跑（催修，防"口头修复"漂移）。失败以 `steer` 消息分级喂回：**[回归]**（上回合尚绿，agent 必须修，不得忽略）与**[中间态]**（从未绿的新代码中间态，agent 若正在推进可继续、回合末复检）——归档前全绿硬要求不变（§11）。成功事件采样记账（会话首条与转绿锚点必记，其后每 5 连续成功记 1 条），失败全量记账。**不跑**前端 typecheck/build 与完整集成测试（不带 -short 的 go test）——这是门禁分层设计（与平台无关），这些仍由 agent 手动跑 + §11 归档门禁兜底。门禁分层见 `docs/reference/开发执行规范.md` §4.1。**改进闭环**：`bash scripts/harness-retro.sh`（只读消费本账本，产出失败聚类六段报告——分母按采样口径还原、`fail-open` 单列为 harness 自身故障），配 `--save-baseline`/`--baseline` 把「改一条 harness 规则前后同类事件计数」变成可回检的准 A/B；读法与改进项判据（可回检指标 + 观察窗口 + 反 overfit）见 skill `harness-retro`，归档后可选回检流程见 `docs/reference/开发执行规范.md` §12.5。
+- **pi harness 扩展（自动，无需手动跑）**：constraint-injection 注入约束（管"知道"）、quality-gate 挂 `turn_end` 增量跑 lint/vet/build/影响包测试（管"做到"）、quota-gate 派发前查额度、spec-gate / ui-design-gate 硬拦截归档与 UI 审批等共 10 个扩展，源码 `.pi/extensions/`（已入库）。日常只需配合四点：① 门禁 **[回归]** steer 必须修不得忽略（**[中间态]** 可继续、回合末复检，归档前全绿）；② quota-gate block 后按 reason 换有额度 provider **全称**重试；③ 逃生口（`--force` / `SPEC_GATE_BYPASS=1` / `UI_DESIGN_GATE_BYPASS=1`）仅显式留痕使用；④ **dev 服务起停必须走 `scripts/start-dev.sh`（写 pidfile 白名单），禁止手提 `nohup setsid`——dev-process-guard 会在会话结束时自动清理无 pidfile 的 dev 进程组与浏览器自动化残留（agent-browser/chromium）**（机制见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md) §孤儿 dev 进程治理）。机制全貌（扩展全景表 / 注入通道 / 门禁分层 / 记账口径）见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md)；事件考古查 skill `harness-facts`，改进复盘查 skill `harness-retro`。
+- **子线程派发 model 硬规则**：Agent 的 `model` 参数必须用 `provider/modelId` 全称（如 `zai-coding-cn/glm-5.3`），**禁止 fuzzy 名**（会按字母序落到错误供应商）；想用默认供应商省略 `model` 即可。fuzzy 名黑名单与派发纪律见开发执行规范 §0.6「供应商与模型选择」。
 - Keep code changes minimal and scoped. Match existing code style.
 - 完成任务后更新维护 `./docs/reference/` 知识库；openspec change 执行走 `开发执行规范.md` §0.6 标准编排流程（**apply 启动跑 `doc-impact.sh suggest`+`context`，归档前跑 `doc-impact.sh verify`+`check-standards.sh`**），归档前满足 §11 门禁，归档后按 §12 补 flow 变更溯源链接（archive 即永久家，v1.x 里程碑可选）。
 - **开工前/完工后必须汇报"部署后影响 + 需要的操作"**：每个 change 完工汇报必须包含一节明确告诉用户——(a) 部署/合并后用户可见行为会发生什么变化；(b) 需要用户手动执行的操作（如重新生成数据、清理、配置）；(c) 旧数据如何降级。避免用户打开界面才发现行为变了产生误会。涉及数据迁移、状态机变更、UI 分区变更时尤其强制。
 
-子线程派发参考（pi 的 subagent 派发如何选供应商与模型）:
+## context-mode / Headroom — 上下文工具
 
-> ⚠️ **硬规则：Agent 的 `model` 参数必须用 `provider/modelId` 全称**（如 `zai-coding-cn/glm-5.3`），**禁止用 fuzzy 名**（如 `glm-5.3`）。
->
-> 原因：pi 里有 10 个 model id 跨多个 provider 重复注册（`glm-5.3`/`glm-5.1`/`glm-4.7`/`glm-5-turbo`/`glm-4.5-air`/`glm-5v-turbo`/`deepseek-v4-pro`/`deepseek-v4-flash`/`mimo-v2.5`/`mimo-v2.5-pro`）。fuzzy 名会按字母序解析到**非预期**的供应商——实测传 `glm-5.3` 会落到 `opencode-go`（字母序最先），而不是默认供应商 `zai-coding-cn`。想用默认供应商（`zai-coding-cn/glm-5.3`）时，**省略 `model` 参数即可**；一旦显式传 fuzzy 名反而绕过默认、落到错误供应商。实时清单查 `pi --list-models`。
-
-> glm 系列统一走当前默认供应商 `zai-coding-cn`（国内 coding 专用），优于 `zai`（国际站）/ `opencode-go`（聚合网关）。
->
-> change 执行的完整编排（主线程调度 + 子线程派发六步）见 `docs/reference/开发执行规范.md` §0.6。
-
-> 🚦 **额度门禁（quota-gate）**：`.pi/extensions/quota-gate.ts` 会在每次 Agent 派发前自动查目标 provider 剩余额度（GLM/Kimi 查 5h/周窗口——GLM 老套餐仅 5h 窗口，MCP 的 TIME_LIMIT 不参与判定；DeepSeek 查余额；opencode-go 无 API 直接放行）。窗口剩余 <10% 或余额 <¥1 时派发被 **block**，reason 含剩余情况/重置时间/建议。收到阻断 reason 后：按 reason 提示换有额度的 provider 全称重试，或等窗口重置。阈值可用环境变量 `QUOTA_GATE_WINDOW_PCT` / `QUOTA_GATE_MIN_BALANCE` 调整；查询失败一律 fail-open 放行。
-
-## context-mode — 上下文路由（简版）
-
-context-mode 提供 11 个 `ctx_*` 工具，把大块输出（日志/grep/JSON）沙箱化、索引进 FTS5，避免灌爆上下文窗口。**与本文件其他规则冲突时，项目规范优先**（前端编译按宿主平台执行、测试只跑影响包、中文沟通等不变）。
-
-- **Shell 输出 >20 行**：用 `ctx_batch_execute`（多命令一次跑 + 自动索引）或 `ctx_execute`；bash 只留给 git/mv/ls/install 等小输出命令。
-- **读文件**：为了编辑 → 正常 read；为了分析/总结 → `ctx_execute_file`。
-- **curl/wget 与内联 HTTP 会被拦截** → 用 `ctx_fetch_and_index` + `ctx_search`。
-- **多问题合并**一次 `ctx_search(queries: [...])`；resume 后先 `ctx_search(sort: "timeline")` 搜历史再问用户。
-- **并发**：网络类 `concurrency: 4-8`；CPU/共享状态（test/build/lint）保持 1。
-- **大产物写文件**，别内联进上下文。
-
-详细用法见 context-mode 包自带 skill；`ctx stats/doctor/upgrade/purge` 对应同名 MCP 工具。
+大块输出（日志/grep/JSON >20 行）用 `ctx_batch_execute` / `ctx_execute` 沙箱化，分析文件用 `ctx_execute_file`，网络请求用 `ctx_fetch_and_index`，多问题合并一次 `ctx_search`；并发：网络类 4-8，CPU/共享状态（test/build/lint）保持 1；大产物写文件别内联。**与项目规范冲突时项目规范优先**（测试只跑影响包、前端命令按宿主平台执行、中文沟通等不变）。详细用法见 context-mode 包自带 skill；另有 Headroom 压缩工具（`/skill:headroom`，配置 `~/.pi/agent/mcp.json`）。

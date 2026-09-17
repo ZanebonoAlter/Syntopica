@@ -12,6 +12,7 @@
 | 后端代码风格 / lint / 包布局 | [`standard/backend/`](standard/backend/) |
 | 前端代码风格 / 交互约定 / 测试 / 主题 | [`standard/frontend/`](standard/frontend/) |
 | 页面布局模式 / 弹窗尺寸档 / major UI 双视口验收 | [`standard/frontend/layout.md`](standard/frontend/layout.md) |
+| 执行规范（how，写对代码）之外——pi harness 扩展机制（扩展全景/注入通道/门禁分层/记账口径） | [`harness/pi-extensions.md`](harness/pi-extensions.md) |
 | 提交与 PR | [`standard/shared/commit-pr.md`](standard/shared/commit-pr.md) |
 | reference 文档新增/修订标准（目录职责、头部注释、注册点 checklist） | [`standard/shared/doc-authoring.md`](standard/shared/doc-authoring.md) |
 
