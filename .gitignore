@@ -58,6 +58,9 @@ analysis-reports/
 .pi/prompts/
 .pi/skills/
 .pi/extensions/tests/.*.cjs
+# 运行时状态：start-dev.sh 的 pidfile（.pi/run/*.pgid）与 pi-subagents 调度状态
+.pi/run/
+.pi/subagents/
 nohup.out
 docs/research
 docs/experience
