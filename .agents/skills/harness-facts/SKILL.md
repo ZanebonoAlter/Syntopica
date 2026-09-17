@@ -21,6 +21,12 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
   - `harness-telemetry.ts` → `session.start` / `subagent.dispatch` / `subagent.complete`
   - `spec-gate.ts` / `quota-gate.ts` / `test-scope-guard.ts` / `ui-design-gate.ts` → `policy.decision`（显著裁决统一记账，harden-harness-policy-and-spill 引入；普通放行零记录；ui-design-gate 为 make-ui-design-first-class 引入）
 
+## 与 harness-retro 的分工
+
+本 skill 管**事件考古与归因**（“当时为什么这样”）：schema、事件词汇、payload 字段、TTL、查询配方、归因方法论。
+
+要把账本读成**改进项**（失败聚类、软提醒是否失效、注入面健康、改规则的准 A/B 回检）用 skill `harness-retro`（`bash scripts/harness-retro.sh`）——它是本库的只读消费方，**不改写入协议、不改词汇表、不新增事件**；本 skill 给出的 schema / payload / 采样口径仍是权威。
+
 ## Schema 与事件类型
 
 单表 `events`：`id INTEGER PK, ts TEXT(ISO), session_id TEXT, kind TEXT, change TEXT NULL, payload TEXT(JSON)`。索引：`(session_id,id)`、`(change,id)`、`(kind,ts)`。append-only，除 TTL 清扫外不删。
