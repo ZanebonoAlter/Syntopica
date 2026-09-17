@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -27,28 +27,35 @@ func SetInstrumentation(enabled bool) {
 	instrumentHTTP = enabled
 }
 
-// proxyTransport is a pre-built base RoundTripper carrying the globally
-// configured outbound proxy (set via SetProxy). nil means no proxy is
-// configured — New then falls back to http.DefaultTransport (which itself
-// honours HTTP_PROXY/HTTPS_PROXY env vars via ProxyFromEnvironment). SetProxy
-// swaps this atomically; clients already built keep their transport.
-var (
-	proxyMu        sync.RWMutex
-	proxyTransport http.RoundTripper
-)
+// proxyURLValue holds the globally configured outbound proxy as a *url.URL
+// (typed nil when unset). Stored atomically and read per request by the
+// package-level failover transport, so SetProxy changes reach every client
+// built via New immediately — including long-lived service singletons built
+// at startup — without a restart.
+var proxyURLValue atomic.Value // *url.URL or (*url.URL)(nil)
+
+// currentProxyURL returns the configured proxy URL, or nil when no proxy is
+// configured (direct / env-var fallback behaviour).
+func currentProxyURL() *url.URL {
+	u, _ := proxyURLValue.Load().(*url.URL)
+	return u
+}
 
 // SetProxy configures the global outbound proxy applied to every client
 // returned by New (unless the caller overrides Transport via WithTransport).
-// An empty URL clears the proxy (restores direct / DefaultTransport behaviour).
-// Accepted schemes: http, https, socks5. Returns an error for malformed or
-// unsupported URLs so the settings API can surface bad input without mutating
-// global state.
+// An empty URL clears the proxy (restores direct behaviour with the standard
+// HTTP_PROXY/HTTPS_PROXY env fallback). Accepted schemes: http, https,
+// socks5. Returns an error for malformed or unsupported URLs so the settings
+// API can surface bad input without mutating global state.
+//
+// The change is effective immediately for already-built clients (they share
+// one failover transport that reads the URL per request); switching or
+// clearing the address also resets the proxy health breaker.
 func SetProxy(rawURL string) error {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
-		proxyMu.Lock()
-		proxyTransport = nil
-		proxyMu.Unlock()
+		proxyURLValue.Store((*url.URL)(nil))
+		packageTransport().breaker.reset()
 		return nil
 	}
 	u, err := url.Parse(rawURL)
@@ -60,31 +67,9 @@ func SetProxy(rawURL string) error {
 	default:
 		return fmt.Errorf("unsupported proxy scheme %q: only http/https/socks5 are allowed", u.Scheme)
 	}
-	base, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return fmt.Errorf("http.DefaultTransport is not *http.Transport, cannot install proxy")
-	}
-	tr := base.Clone()
-	tr.Proxy = proxyWithLoopbackBypass(u)
-	proxyMu.Lock()
-	proxyTransport = tr
-	proxyMu.Unlock()
+	proxyURLValue.Store(u)
+	packageTransport().breaker.reset()
 	return nil
-}
-
-// proxyWithLoopbackBypass returns a Proxy function that routes every request
-// through the configured proxy except loopback destinations (localhost,
-// 127.0.0.0/8, ::1, empty host), which are connected directly. Local model
-// servers (llama-server on localhost) must never be proxied: an outbound
-// proxy (e.g. Clash) typically answers 502 for local addresses, which would
-// make health probes and LLM calls fail even though the model is up.
-func proxyWithLoopbackBypass(proxyURL *url.URL) func(*http.Request) (*url.URL, error) {
-	return func(req *http.Request) (*url.URL, error) {
-		if isLoopbackHost(req.URL.Hostname()) {
-			return nil, nil
-		}
-		return proxyURL, nil
-	}
 }
 
 // isLoopbackHost reports whether host is a loopback destination: "localhost",
@@ -99,13 +84,6 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(strings.Trim(host, "[]"))
 	return ip != nil && ip.IsLoopback()
-}
-
-// currentProxyTransport returns the active proxy transport under a read lock.
-func currentProxyTransport() http.RoundTripper {
-	proxyMu.RLock()
-	defer proxyMu.RUnlock()
-	return proxyTransport
 }
 
 // Option configures the *http.Client returned by New.
@@ -132,9 +110,13 @@ func WithTransport(rt http.RoundTripper) Option {
 // New returns an *http.Client. When instrumentation is enabled, its transport
 // is wrapped with otelhttp.NewTransport so outbound calls produce
 // SpanKind=Client spans and propagate traceparent. When no Transport option is
-// supplied, the global proxy transport (SetProxy) is used if configured,
-// otherwise http.DefaultTransport. Defaults match http.Client when no options
-// are supplied and no proxy is set.
+// supplied, the package-level failover transport is used: it routes through
+// the globally configured proxy (SetProxy) with circuit-breaker failover to
+// direct when the proxy is unreachable, and honours
+// http.ProxyFromEnvironment when no proxy is configured. Because the
+// transport is shared and reads the proxy URL per request, SetProxy changes
+// affect every client built earlier as well. Defaults match http.Client when
+// no options are supplied and no proxy is set.
 func New(opts ...Option) *http.Client {
 	c := &http.Client{}
 	for _, opt := range opts {
@@ -142,11 +124,7 @@ func New(opts ...Option) *http.Client {
 	}
 	base := c.Transport
 	if base == nil {
-		if pt := currentProxyTransport(); pt != nil {
-			base = pt
-		} else {
-			base = http.DefaultTransport
-		}
+		base = packageTransport()
 	}
 	if instrumentHTTP {
 		c.Transport = otelhttp.NewTransport(base)

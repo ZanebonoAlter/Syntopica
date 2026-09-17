@@ -288,9 +288,10 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 
 - **回环地址自动直连**：即使配置了代理，目标为回环地址（`localhost` / `127.0.0.0/8` / `::1` / 空 host）的请求一律绕过代理直连（NO_PROXY 惯例）——本地托管模型（llama-server）的探测/推理不被代理 502 拦截（2026-08-19 修复，见 ai-health-reprobe）。
 
-- 保存即时生效（`httpclient.SetProxy` 运行时替换全局 transport），重启后由 `cmd/server/main.go` 从该配置注入，无需重设。
-- 与 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量的关系：本配置优先；当 `http_proxy_url` 为空时，`httpclient` 回落 `http.DefaultTransport`，仍遵循标准库 `ProxyFromEnvironment`（即环境变量作兜底）。
-- 实现入口：`internal/platform/httpclient/httpclient.go`（`SetProxy` + 包级 `proxyTransport`，Proxy 函数含回环直连 `isLoopbackHost`）；复用 `aisettings` 通用配置存储，与 RSSHub/Firecrawl 配置同机制。
+- **代理不可达熔断直连回退**（2026-09-17，见 outbound-proxy-failover）：拨代理本身失败（连接拒绝/拨号超时，如 Clash 进程退出）时，该请求立即直连重试（dial 阶段失败请求未发出，重试无副作用），并打开熔断 60 秒——窗口内所有请求直接直连零等待；到期放行单个请求试探代理（单飞，并发其余直连），代理路径通则自动接回、仍不通则续期。仅「拨代理失败」触发：代理活着但目标侧失败（502/CONNECT 拒绝/目标超时）不熔断也不直连重试（那类站点可能正是依赖代理的）。
+- **保存真正即时生效**：代理 URL 原子存储、包级 failover transport 每请求动态读取——`httpclient.SetProxy` 运行时变更（换址/清空）对**所有已构造 client**（含启动时建好的抓取/AI 单例）立即生效，无需重启；换址同时重置熔断状态（新地址按健康对待）。重启后由 `cmd/server/main.go` 从该配置注入，无需重设。
+- 与 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量的关系：本配置优先；当 `http_proxy_url` 为空时，路由回落标准库 `ProxyFromEnvironment`（即环境变量作兜底）；代理故障降级直连的重试同样保留该兑底。
+- 实现入口：`internal/platform/httpclient/`（`httpclient.go` 的 `SetProxy` 原子 URL + `failover.go` 的包级 failover transport：熔断器 3 态状态机 + `proxyDialContext` 拨号层错误打标，回环直连 `isLoopbackHost` 在路由函数内）；复用 `aisettings` 通用配置存储，与 RSSHub/Firecrawl 配置同机制。
 
 ### 订阅源发现（Feed Discovery）
 

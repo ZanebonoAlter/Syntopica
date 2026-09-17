@@ -86,7 +86,10 @@ func mustParseURL(t *testing.T, raw string) *url.URL {
 	return u
 }
 
-// TestSetProxy_AppliesToNewClients 验证 SetProxy 后 New 构造的 client 走代理。
+// TestSetProxy_AppliesToNewClients 验证 SetProxy 后路由函数按当前配置返回代理。
+// 注：New 现在返回包级 failover transport（所有 client 共享、每请求动态读 URL），
+// 断言对象从裸 *http.Transport 改为 wrapper 的 proxy 路由 transport；
+// 对已构造 client 的即时生效行为由 failover_test.go 专门覆盖。
 func TestSetProxy_AppliesToNewClients(t *testing.T) {
 	SetInstrumentation(false) // 裸 transport，方便断言 base
 	t.Cleanup(func() {
@@ -97,11 +100,11 @@ func TestSetProxy_AppliesToNewClients(t *testing.T) {
 		t.Fatalf("SetProxy: %v", err)
 	}
 	c := New()
-	tr, ok := c.Transport.(*http.Transport)
+	w, ok := c.Transport.(*failoverTransport)
 	if !ok {
-		t.Fatalf("expected *http.Transport base, got %T", c.Transport)
+		t.Fatalf("expected *failoverTransport, got %T", c.Transport)
 	}
-	got, err := tr.Proxy(&http.Request{URL: mustParseURL(t, "http://target.example.com/")})
+	got, err := w.proxy.Proxy(&http.Request{URL: mustParseURL(t, "http://target.example.com/")})
 	if err != nil {
 		t.Fatalf("Proxy() error: %v", err)
 	}
@@ -110,7 +113,11 @@ func TestSetProxy_AppliesToNewClients(t *testing.T) {
 	}
 }
 
-// TestSetProxy_EmptyClearsProxy 验证空串清除代理（恢复 DefaultTransport）。
+// TestSetProxy_EmptyClearsProxy 验证空串清除代理。注：清空后 New 不再返回
+// http.DefaultTransport 本体，而是返回同一个包级 failover transport（其路由
+// 函数回落 ProxyFromEnvironment，行为等价直连）；这里断言已构造 client 与新
+// client 共享同一实例——这是运行时改配置对既有 client 即时生效的根基，
+// 行为级断言见 failover_test.go 的 TestRuntimeClearProxyTakesEffect。
 func TestSetProxy_EmptyClearsProxy(t *testing.T) {
 	SetInstrumentation(false)
 	t.Cleanup(func() {
@@ -120,24 +127,28 @@ func TestSetProxy_EmptyClearsProxy(t *testing.T) {
 	if err := SetProxy("http://proxy.example.com:8080"); err != nil {
 		t.Fatalf("SetProxy: %v", err)
 	}
-	_ = New()
+	c1 := New()
 	if err := SetProxy(""); err != nil {
 		t.Fatalf("SetProxy empty: %v", err)
 	}
-	c := New()
-	if c.Transport != http.DefaultTransport {
-		t.Fatalf("expected http.DefaultTransport after clearing proxy, got %T", c.Transport)
+	c2 := New()
+	if c1.Transport != c2.Transport {
+		t.Fatalf("expected the shared failover transport to be reused after clearing proxy, got %T vs %T", c1.Transport, c2.Transport)
+	}
+	if currentProxyURL() != nil {
+		t.Fatal("expected proxy URL to be cleared")
 	}
 }
 
 // TestSetProxy_RejectsUnsupportedScheme 验证非法 scheme 报错且不污染全局状态。
+// 注：全局状态从 transport 实例改为原子代理 URL，断言对象同步调整。
 func TestSetProxy_RejectsUnsupportedScheme(t *testing.T) {
 	t.Cleanup(func() { SetProxy("") })
 	if err := SetProxy("ftp://proxy.example.com:21"); err == nil {
 		t.Fatal("expected error for ftp scheme, got nil")
 	}
-	if currentProxyTransport() != nil {
-		t.Fatal("global proxy transport should remain nil after rejected scheme")
+	if currentProxyURL() != nil {
+		t.Fatal("proxy URL should remain unset after rejected scheme")
 	}
 }
 
