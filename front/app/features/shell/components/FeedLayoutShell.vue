@@ -418,7 +418,9 @@ function handleEditFeed(feedId: string) {
 }
 
 async function handleDeleteCategory(categoryId: string, categoryName: string) {
-  if (confirm(`确定要删除分类 "${categoryName}" 吗？这个操作不会删除分类下的订阅源。`)) {
+  // 文案必须与后端语义一致：删除分类会连带删除其下全部订阅源及其文章
+  // （真库靠存量 FK 级联，代码显式删除，两处行为等价；见 heal-dangling-article-refs）。
+  if (confirm(`确定要删除分类 "${categoryName}" 吗？该分类下的订阅源及其文章也会一并删除，且不可撤销。`)) {
     const response = await apiStore.deleteCategory(categoryId)
     if (response.success) {
     } else {

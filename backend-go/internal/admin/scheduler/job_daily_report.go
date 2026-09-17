@@ -10,6 +10,7 @@ import (
 	repository "syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/aisettings"
+	"syntopica-backend/internal/platform/articlerefs"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/ws"
 	tagging "syntopica-backend/internal/tagmanagement"
@@ -118,6 +119,18 @@ func DailyReportJob(targetDate ...time.Time) JobFunc {
 		}
 		// Set last so the scheduled merge above cannot be overwritten by it.
 		resultData["backfilled_count"] = backfilled
+
+		// Article references dangle when a delete path runs against an already
+		// written report, or when a path nobody wired runs at all. Read-only
+		// probe: it never deletes, so an unknown deleter stays visible instead of
+		// being silently papered over (heal-dangling-article-refs D6).
+		if dangling, danglingErr := articlerefs.CountDanglingArticleRefs(repository.Repo.DB()); danglingErr != nil {
+			logging.Warnf("daily-report: dangling article ref check failed: %v", danglingErr)
+		} else if dangling > 0 {
+			logging.Warnf("daily-report: dangling article refs=%d (threads reference deleted articles; repair runs on the next startup migration)", dangling)
+		} else {
+			logging.Infof("daily-report: dangling article refs=0")
+		}
 
 		return &JobResult{
 			Data:    resultData,

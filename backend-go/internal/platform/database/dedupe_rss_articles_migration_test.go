@@ -184,3 +184,40 @@ func TestDedupeRSSArticlesMigrationEnforcesUniqueIndex(t *testing.T) {
 	require.NoError(t, db.Create(&models.Article{FeedID: feed.ID, Title: "无链接2"}).Error,
 		"empty-link rows must stay exempt from the unique index")
 }
+
+// TestDedupeRSSArticlesMigrationRewiresDailyReportRefs covers the reference
+// maintenance the merge gained (heal-dangling-article-refs D2). Before it, the
+// loser copy was deleted while daily-report threads kept citing it, which is how
+// production 线索 ended up resolving to "文章 #<id>" instead of a source.
+func TestDedupeRSSArticlesMigrationRewiresDailyReportRefs(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	up := findDedupeRSSArticlesMigration()
+	require.NotNil(t, up)
+
+	feed := models.Feed{Title: "引用源", URL: "https://example.com/dup-refs"}
+	require.NoError(t, db.Create(&feed).Error)
+	link := "https://example.com/dup-refs/story"
+	rows := seedDuplicateArticleGroup(t, db, feed.ID, link, 3)
+	bare, rich, overlapping := rows[0], rows[1], rows[2]
+
+	// rich wins the keeper score (crawled body), so the other two are doomed.
+	require.NoError(t, db.Model(&models.Article{}).Where("id = ?", rich.ID).
+		Update("firecrawl_content", "正文").Error)
+
+	seedThreadRefs(t, db, 1, fmt.Sprintf("[%d, 7001]", overlapping.ID))
+	seedThreadRefs(t, db, 2, fmt.Sprintf("[%d, %d, 7002]", bare.ID, rich.ID))
+	seedThreadRefs(t, db, 3, fmt.Sprintf("[%d]", rich.ID))
+
+	require.NoError(t, up(db))
+
+	var survivors []models.Article
+	require.NoError(t, db.Where("feed_id = ? AND link = ?", feed.ID, link).Find(&survivors).Error)
+	require.Len(t, survivors, 1)
+	require.Equal(t, rich.ID, survivors[0].ID)
+
+	require.Equal(t, fmt.Sprintf("[%d, 7001]", rich.ID), threadRefsText(t, db, 1),
+		"the doomed copy's slot now points at the keeper")
+	require.Equal(t, fmt.Sprintf("[%d, 7002]", rich.ID), threadRefsText(t, db, 2),
+		"a keeper already present in the array is deduplicated")
+	require.Equal(t, fmt.Sprintf("[%d]", rich.ID), threadRefsText(t, db, 3))
+}

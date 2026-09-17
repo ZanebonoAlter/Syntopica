@@ -73,7 +73,20 @@
 | `chk_board_topic_watches_status` | board_topic_watches | `status IN ('active','paused')` | `20260630_0001` |
 | `chk_board_topic_watches_type` | board_topic_watches | `type IN ('label','keyword')` | `20260824_0002` |
 
-### DB 级外键（全库共 6 条，权威清单）
+### DB 级外键
+
+**⚠️ 实测修正（2026-09-17，heal-dangling-article-refs）**：本仓库 `DisableForeignKeyConstraintWhenMigrating: true` 只阻止**新建** FK，**不会移除存量 FK**——真库现有 **25 条** FK（`pg_constraint` 实测），远多于下表「迁移引入」的 6 条。历史 GORM AutoMigrate 时代遗留的 FK 仍在生效，其中**两条会在删行时静默级联**，是引用完整性分析的关键事实：
+
+| 约束名 | 表.列 → 引用 | ON DELETE | 后果 |
+| -------- | ------ | ------ | ------ |
+| `fk_feeds_articles` | `articles.feed_id → feeds(id)` | CASCADE | 删 feed 行 → 其全部文章行消失（日报 `related_article_ids` 悬空的根因之一） |
+| `fk_categories_feeds` | `feeds.category_id → categories(id)` | CASCADE | 删 category 行 → 其下全部 feed 连文章一起消失（**第三条删行路径**） |
+| `fk_article_topic_tags_article` / `fk_tag_jobs_article` / `fk_firecrawl_jobs_article` | 各自 `article_id → articles(id)` | CASCADE | 文章消失时依赖行随之消失（无需手工清理） |
+| `fk_reading_behaviors_article` / `fk_reading_behaviors_feed` / `fk_user_preferences_feed` / `fk_user_preferences_category` | 各自 → `articles` / `feeds` / `categories` | **NO ACTION** | 被引用行有这些子行时删除会 **FK 报错**（删 feed 前必须先清 `reading_behaviors`，删 category 同理） |
+
+**推论（约束）**：任何删除 `articles` 行的路径都必须同事务维护按 ID 引用文章的 jsonb 数组（`daily_report_threads.related_article_ids`，维护器 `internal/platform/articlerefs`）。删行路径全量清单（2026-09-17 实测）：去重归并迁移、`DeleteFeedCascade`（删 feed）、`DeleteCategoryCascade`（删分类，两级到文章）、以及仓库删行原语。**删除实现必须显式删行、不依赖上述 FK 是否存在**（存量 FK 不进新建库，靠级联会得到环境相关的行为）；被删文章的依赖行（`article_topic_tags`/`tag_jobs`/`firecrawl_jobs`）由删除路径显式清理，孤儿 `topic_tags` 仍交 `aux_label_cleanup` 回收。语义见 `flow/daily-report.md` 约束 21。
+
+### 迁移显式引入的 FK（原有清单，仍有效）
 
 | 约束名 | 表.列 → 引用 | ON DELETE | 迁移 |
 | -------- | ------ | ------ | ------ |
@@ -84,7 +97,7 @@
 | `fk_topic_enrichment_result_parent_board` | `topic_enrichment_result(parent_result_id, semantic_board_id) → topic_enrichment_result(id, semantic_board_id)`（复合） | RESTRICT | `20260828_0001` |
 | `fk_composite_components_composite` | `composite_components.composite_id → semantic_labels(id)` | CASCADE | `20260902_0001` |
 
-> 其余所有表间关联均为 GORM 逻辑关联，**DB 层未强制**（`DisableForeignKeyConstraintWhenMigrating: true`）。
+> 其余所有表间关联均为 GORM 逻辑关联，**DB 层未强制**（`DisableForeignKeyConstraintWhenMigrating: true`）——**但请对照上方实测修正：存量遗留 FK 仍生效**，本句只描述「新关联不再靠 DB 强制」这一趋势，不能当成「没有 FK」读。
 
 ---
 

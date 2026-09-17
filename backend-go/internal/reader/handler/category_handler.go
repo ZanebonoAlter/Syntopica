@@ -201,7 +201,11 @@ func DeleteCategory(c *gin.Context) {
 		return
 	}
 
-	if err := repository.Repo.DeleteCategory(category); err != nil {
+	// Deleting a category takes its feeds and their articles with it, so the
+	// repository method owns the transaction: it drops the daily-report
+	// references of those articles before the rows go
+	// (heal-dangling-article-refs D2).
+	if err := repository.Repo.DeleteCategoryCascade(category.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error":   err.Error(),

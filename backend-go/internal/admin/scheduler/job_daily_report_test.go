@@ -14,6 +14,7 @@ import (
 
 	adminrepo "syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/articlerefs"
 	tagging "syntopica-backend/internal/tagmanagement"
 	topicgraphrepo "syntopica-backend/internal/topicgraph/repository"
 )
@@ -373,4 +374,31 @@ func TestDailyReportJobRetentionGuardMatchesHandlerWindow(t *testing.T) {
 			waitForWrapperIdle(t, wrapper)
 		})
 	}
+}
+
+// Scenario「巡检探针失败不影响 job」: the integrity probe reads
+// daily_report_threads, which does not exist in every database the job can run
+// against (this SQLite setup, or any environment whose schema lacks the table).
+// The probe is observability only, so a failing check must leave the job a
+// success — a false "dangling refs" repair trigger or a failed nightly run would
+// both be worse than a missing log line (heal-dangling-article-refs D6).
+func TestDailyReportJobSucceedsWhenDanglingRefProbeFails(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11)
+	stubDailyReportGeneration(t, db)
+
+	// The probe needs daily_report_threads and PostgreSQL's LATERAL join; this
+	// SQLite schema has neither, so the probe must fail here — and that failure is
+	// asserted directly rather than inferred, so a probe that silently degraded to
+	// (0, nil) could not let this test pass for the wrong reason.
+	require.False(t, db.Migrator().HasTable("daily_report_threads"),
+		"this test needs the probe to fail: no thread table in the SQLite schema")
+	_, probeErr := articlerefs.CountDanglingArticleRefs(db)
+	require.Error(t, probeErr, "the integrity probe must fail on the SQLite schema, not return a silent zero")
+
+	result, err := DailyReportJob()(context.Background())
+	require.NoError(t, err, "a failing integrity probe must not fail the job")
+	require.NotNil(t, result)
+	require.EqualValues(t, 1, result.Data["report_count"], "the report pass still ran to completion")
 }

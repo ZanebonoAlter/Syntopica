@@ -125,6 +125,8 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
    - **标签边保留窗从边创建时刻（打标落库时刻）起算**：迟到打标任务为已归档文章挂的边与普通边同窗保留，到期由 `aux_label_cleanup` 维护任务按 `tag_edge_retention_days`（默认 7 天）统一回收——不因归档即时消失、也不按归档位过滤；聚合消费方（日报候选、cotag 窗口、升级建议）继续按各自时间窗界定范围，不筛 `archived`（窗口口径见 `flow/scheduler.md`，日报补档消费见 `flow/daily-report.md`）。**回收范围仅限已归档文章的边（review M5-B）：未归档文章的边不回收，归档后才进入窗口倒计时**——活跃文章在分析面上，其标签是活数据，被阅读页标签角标/过滤直接消费。
    - RSS 去重（title dedupe）**含归档文章**（防老条目重复入库）；
    - reader 列表/全局统计/feed 统计默认过滤 `archived=false`，`GET /api/articles?archived=true` 显式查归档集；按文章 ID 的详情查询豁免过滤。
+   - **删订阅源 / 删分类会连带物理删除文章行**（存量 FK `fk_feeds_articles`（`articles.feed_id`）、`fk_categories_feeds`（`feeds.category_id`）均为 ON DELETE CASCADE，实测存在；但这两条 FK 只在历史库存在，代码里一律**显式删除**、不依赖级联与否）：删除路径 MUST 在同一事务内同步维护「按 ID 引用文章」的 jsonb 数组（`daily_report_threads.related_article_ids`，维护器 `internal/platform/articlerefs`，契约与迁移见 `flow/daily-report.md` 约束 21）——否则日报线索会指向已不存在的文章，前端降级显示「文章 #id」，线索追溯不到来源。
+   - **删分类的破坏性语义必须对用户可见**：删分类 = 连带删其下全部订阅源及其文章（不可撤销），前端确认文案 MUST 与之一致（`FeedLayoutShell.vue`，2026-09-17 用户决策：只改文案、保持删除语义）；有 `reading_behaviors` / `user_preferences` 子行时该删除仍会因 NO ACTION 外键失败（既有行为）。
    - `max_articles=0` 或 `9999` 仍为无限制；favorite 永不归档。
 
 ## 代码入口

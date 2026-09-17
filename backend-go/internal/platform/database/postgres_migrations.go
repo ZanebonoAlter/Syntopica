@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/articlerefs"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/textutil"
 )
@@ -2393,7 +2394,48 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, watchSuggestionCleanupMigration())
 	migrations = append(migrations, legacyDiscoverNewPendingDismissMigration())
 	migrations = append(migrations, dedupeRSSArticlesMigration())
-	return append(migrations, laneSnapshotFKMigration())
+	migrations = append(migrations, laneSnapshotFKMigration())
+	return append(migrations, healDanglingArticleRefsMigration())
+}
+
+// healDanglingArticleRefsMigration implements 20260917_0002
+// (heal-dangling-article-refs D5): one-shot repair of the article references that
+// pre-fix delete paths orphaned inside daily_report_threads.related_article_ids —
+// the loser copies removed by 20260917_0001 carried references nobody rewired,
+// which made daily-report 线索 resolve to "文章 #<id>" instead of a source.
+//
+// Two steps, in this order: normalize non-array values (JSON null scalar and SQL
+// NULL) to [] so the sweep can read every row, then prune references without a
+// live articles row. Irreversible data repair — no Down; generated-at-the-time
+// snapshot counters (board_daily_reports.article_count and friends) are
+// deliberately NOT recomputed (they are report-time snapshots, not live counts).
+// Re-running is a no-op.
+func healDanglingArticleRefsMigration() Migration {
+	return Migration{
+		Version:     "20260917_0002",
+		Description: "heal-dangling-article-refs: normalize daily_report_threads.related_article_ids (JSON null → []) and prune references to deleted articles (irreversible data repair; report snapshot counters untouched).",
+		Up: func(db *gorm.DB) error {
+			// daily_report_threads is AutoMigrated from the daily-report models, not
+			// created by a versioned migration, so a binary that never registers
+			// those models (CLI tools, narrow test packages) has no table to repair.
+			// Same guard the thread-index migration uses.
+			if !tableExists(db, "daily_report_threads") {
+				logging.Infof("heal-dangling-article-refs: daily_report_threads absent; nothing to repair")
+				return nil
+			}
+			normalized, err := articlerefs.NormalizeThreadRefs(db)
+			if err != nil {
+				return fmt.Errorf("normalize thread article refs: %w", err)
+			}
+			rows, refs, err := articlerefs.PruneDanglingRefs(db, articlerefs.DefaultBatchSize)
+			if err != nil {
+				return fmt.Errorf("prune dangling article refs: %w", err)
+			}
+			logging.Infof("heal-dangling-article-refs: normalized=%d rows_repaired=%d refs_removed=%d",
+				normalized, rows, refs)
+			return nil
+		},
+	}
 }
 
 // dedupeRSSArticlesMigration implements 20260917_0001 (dedupe-rss-articles D4):
@@ -2556,6 +2598,15 @@ func mergeDuplicateArticleGroup(db *gorm.DB, feedID uint, link string) error {
 			if err := db.Exec("UPDATE "+job.table+" SET article_id = ? WHERE article_id = ?", keeper, r.ID).Error; err != nil {
 				return fmt.Errorf("re-point %s rows of article %d: %w", job.table, r.ID, err)
 			}
+		}
+
+		// Daily-report threads reference articles by ID. Point the doomed copy's
+		// references at the keeper before the row disappears, otherwise every
+		// 线索 that cited it becomes a dead link (heal-dangling-article-refs D2).
+		// A failure aborts the whole merge: a dangling reference costs more than
+		// a rolled-back group.
+		if _, err := articlerefs.RewireArticleRefs(db, r.ID, keeper); err != nil {
+			return fmt.Errorf("rewire article refs of article %d to %d: %w", r.ID, keeper, err)
 		}
 
 		if err := db.Exec(`DELETE FROM articles WHERE id = ?`, r.ID).Error; err != nil {

@@ -70,12 +70,14 @@
 | `summary` | VARCHAR(256) | — | 线程摘要 |
 | `tag_ids` | JSONB | — | 关联标签 ID 列表 |
 | `confidence` | FLOAT | DEFAULT 0 | 置信度 |
-| `related_article_ids` | JSONB | — | 关联文章 ID 列表 |
+| `related_article_ids` | JSONB | 保序、去重（首个为准） | 关联文章 ID 列表（逻辑引用 `articles.id`，无 FK）。**写入时只允许存在的 id**：日报生成写库前过一次存在性校验；空引用写 `[]`，**不得**写 JSON `null`（`jsonb_array_elements_text` 遇 null 抛 22023）。**删除路径必须维护**：`articles` 行被删时同事务内改指保留条或剔除（详见 `flow/daily-report.md` 约束 21） |
 | `embedding` | vector | —（运行时维度） | 线程向量 |
 | `fit_distance` | FLOAT | —（`*float64`，**无 default**，刻意区分 nil 与 0.0） | 与所属分区的契合距离（nil = 无信号，0.0 = 完美契合） |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 
 > **已删列**：`status`、`prev_thread_id`（迁移 `20260603_0001`）。
+
+> **`related_article_ids` 完整性（heal-dangling-article-refs）**：该数组是「按 ID 逻辑引用文章」的唯一 jsonb 持有者（全库 jsonb 列盘点结论）。契约：保序、去重、空写 `[]`、禁 JSON `null` 标量；删除 `articles` 行的三条路径（去重归并 `mergeDuplicateArticleGroup`、删订阅源级联 `DeleteFeedCascade`/`DeleteArticlesByFeed`、未来的删行原语）MUST 在同一事务内先调 `internal/platform/articlerefs` 维护再删行；日报写入前 MUST 对全部候选 id（含 Step7.5 watch 物化 thread）做一次存在性校验。存量悬空由迁移 `20260917_0002` 一次性修复（不可逆、幂等）；生成时快照计数不回填。
 
 ### 9.4 daily_report_section_relations（跨日分区关系，多对多）
 

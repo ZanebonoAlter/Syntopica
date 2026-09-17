@@ -289,7 +289,9 @@ func MergeSimilarSections(
 		for id := range tagIDSet {
 			mergedTagIDs = append(mergedTagIDs, id)
 		}
-		mergedTagIDsJSON, _ := json.Marshal(mergedTagIDs)
+		// marshalJSONArray (not json.Marshal): a nil slice serializes to the JSON
+		// null scalar, which jsonb_array_elements_text cannot read (SQLSTATE 22023).
+		mergedTagIDsJSON := marshalJSONArray(mergedTagIDs)
 
 		// Precisely recompute avgScore from tag scores
 		totalScore := 0.0

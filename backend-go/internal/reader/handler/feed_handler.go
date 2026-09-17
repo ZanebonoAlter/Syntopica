@@ -400,15 +400,9 @@ func DeleteFeed(c *gin.Context) {
 		return
 	}
 
-	if err := repository.Repo.DB().Where("feed_id = ?", feed.ID).Delete(&models.ReadingBehavior{}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	if err := repository.Repo.DB().Delete(&feed).Error; err != nil {
+	// Feed, its articles and the daily-report references to those articles go
+	// together: the repository method owns the transaction (heal-dangling-article-refs D2).
+	if err := repository.Repo.DeleteFeedCascade(feed.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error":   err.Error(),
