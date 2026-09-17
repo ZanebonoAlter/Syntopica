@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, provide, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, provide, ref, watch } from 'vue'
+import type { Component } from 'vue'
+import type { BoardArticleTag } from '~/api/semanticBoards'
 import { Icon } from '@iconify/vue'
 import ThemeToggle from '~/components/ui/ThemeToggle.vue'
 import { useOnboarding } from '~/composables/useOnboarding'
@@ -11,19 +13,28 @@ import UpgradeSuggestionPanel from './UpgradeSuggestionPanel.vue'
 import BackfillProgress from './BackfillProgress.vue'
 import MatchingConfigDialog from './MatchingConfigDialog.vue'
 import DailyReportGenerateDialog from './DailyReportGenerateDialog.vue'
-import BoardDailyReportTimeline from './BoardDailyReportTimeline.vue'
-import BoardThreadBrowser from './BoardThreadBrowser.vue'
-import TopicDetectiveWall from './TopicDetectiveWall.client.vue'
 import TagMergePreview from './TagMergePreview.vue'
 import BoardListSidebar from './BoardListSidebar.vue'
-import BoardTimelinePanel from './BoardTimelinePanel.vue'
-import BoardEnrichmentPanel from './BoardEnrichmentPanel.vue'
 import BoardEditDialog from './BoardEditDialog.vue'
 import ArticlePreviewModal from './ArticlePreviewModal.vue'
 import WatchManagePanel from './topic-watch/WatchManagePanel.vue'
+import PanelAsyncPlaceholder from './PanelAsyncPlaceholder.vue'
 import { WATCH_PANEL_KEY } from './topic-watch/watchPanelInject'
 import { useTopicWatchesApi } from '~/api/topicWatches'
 import { useTagsPage } from '~/features/tags/composables/useTagsPage'
+
+// 非默认 tab 面板 + 侦探墙懒加载（fix-spa-nav-loading-ux D3）：
+// 降 tags 路由首包体积；默认「板块内容」面板、侧边栏与 dialog 群保持 eager。
+// delay=200：暖切 <200ms 就绪不闪占位；不设 timeout：慢设备由导航加载态兜底整体反馈。
+function lazyPanel<T extends Component>(loader: () => Promise<T>) {
+  return defineAsyncComponent({ loader, loadingComponent: PanelAsyncPlaceholder, delay: 200 })
+}
+const BoardThreadBrowser = lazyPanel(() => import('./BoardThreadBrowser.vue'))
+const BoardDailyReportTimeline = lazyPanel(() => import('./BoardDailyReportTimeline.vue'))
+const BoardTimelinePanel = lazyPanel(() => import('./BoardTimelinePanel.vue'))
+const BoardEnrichmentPanel = lazyPanel(() => import('./BoardEnrichmentPanel.vue'))
+// 侦探墙 v-if 默认 false，但原先静态 import 仍进首包，同样改按需加载
+const TopicDetectiveWall = lazyPanel(() => import('./TopicDetectiveWall.client.vue'))
 
 // 标签池视图切换（未选板块时）：辅助标签 / 组合标签
 const poolTab = ref<'aux' | 'composite'>('aux')
@@ -263,7 +274,7 @@ onMounted(() => { void loadWatchCount() })
             @date-input-change="handleDateInputChange(selectedBoardId)"
             @apply-quick-range="(range: 'today' | '3d' | '7d' | '30d') => applyQuickRange(range, selectedBoardId)"
             @open-article-preview="(id: number) => openArticlePreview(id)"
-            @toggle-match-detail="(tag) => toggleMatchDetail(tag)"
+            @toggle-match-detail="(tag: BoardArticleTag) => toggleMatchDetail(tag)"
             @update:filter-feed-id="(id: number | null) => { filterFeedId = id; handleFilterChange(selectedBoardId) }"
             @update:start-date="(v: string) => startDate = v"
             @update:end-date="(v: string) => endDate = v"

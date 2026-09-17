@@ -3,12 +3,33 @@
   - 渲染时机：HTML 解析即显示，JS bundle 挂载完成后被 Nuxt 应用替换
   - 自包含：内联 CSS + 内联主题判定，不依赖任何外部资源（bundle/字体/图标均未加载）
   - 主题：内联复制主题令牌色值（editorial/dark 双套），与 app/assets/css/main.css 同源；
-    改主题令牌时须同步此处色值（维护约定见 docs/reference/standard/frontend/）
+    改主题令牌时须三处同步（main.css 令牌 / 本模板 .spa-loading 容器变量 / 本模板 html
+    背景色，维护约定见 docs/reference/standard/frontend/）
   - 进度条与短句：与 app/composables/useFakeProgress.ts 同款拟真曲线与短句清单的
     内联副本——本模板在 bundle 加载前运行，不能 import 任何模块，只能复制；
     改动爬升参数或短句清单时 MUST 两处同步（维护约定见 loading-experience.md）
 -->
+<script>
+  // 主题判定必须先于样式块执行（fix-spa-nav-loading-ux D2）：下方 html 背景色规则
+  // 依赖 data-theme 属性已设置，浏览器可能在解析中途首绘；与 app.vue head 内联脚本
+  // 同逻辑：仅 editorial/dark 合法，异常回退 editorial
+  ;(function () {
+    try {
+      var t = localStorage.getItem('syntopica-theme')
+      document.documentElement.setAttribute(
+        'data-theme',
+        t === 'editorial' || t === 'dark' ? t : 'editorial'
+      )
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'editorial')
+    }
+  })()
+</script>
 <style>
+  /* pre-FCP 背景（fix-spa-nav-loading-ux D2）：HTML 到达后到首帧间的空窗即为主题底色，
+     不闪浏览器默认白；色值与下方 --spa-bg 同源维护 */
+  html { background: #faf7f2; }
+  html[data-theme="dark"] { background: #080c12; }
   :root {
     --spa-bg: #faf7f2;             /* --raw-stone-50 / editorial --color-bg-base */
     --spa-text: #5a5a5a;           /* editorial --color-text-secondary */
@@ -77,18 +98,6 @@
   }
 </style>
 <script>
-  // 主题判定与 app.vue head 内联脚本同逻辑：仅 editorial/dark 合法，异常回退 editorial
-  ;(function () {
-    try {
-      var t = localStorage.getItem('syntopica-theme')
-      document.documentElement.setAttribute(
-        'data-theme',
-        t === 'editorial' || t === 'dark' ? t : 'editorial'
-      )
-    } catch (e) {
-      document.documentElement.setAttribute('data-theme', 'editorial')
-    }
-  })()
   // 拟真进度（useFakeProgress.ts 内联副本，参数同步维护）：
   // ease-out 爬升至 90% 天花板停滞，不谎报完成；挂载后被 Nuxt 应用整体替换，无需收尾
   ;(function () {

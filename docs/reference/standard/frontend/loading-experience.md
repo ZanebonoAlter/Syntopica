@@ -9,9 +9,9 @@ doc-impact-applies: front/app/spa-loading-template.html, front/app/app.vue, fron
 
 | 阶段 | 实现 | 行为 |
 |------|------|------|
-| 首屏（JS 挂载前） | `app/spa-loading-template.html` | 纯静态内联 CSS/spinner + 拟真进度条/百分比 + 随机游戏风短句，Nuxt 自动注入入口 HTML；JS 挂载后被应用替换 |
+| 首屏（JS 挂载前） | `app/spa-loading-template.html` | 纯静态内联 CSS/spinner + 拟真进度条/百分比 + 随机游戏风短句，Nuxt 自动注入入口 HTML；JS 挂载后被应用替换；`<style>` 内含 `html` 级双主题背景色（主题判定脚本先于样式块执行），pre-FCP 空窗即为主题底色不闪白（fix-spa-nav-loading-ux D2） |
 | 初始化数据加载 | `app.vue` loading 分支 + `composables/useFakeProgress.ts` | 拟真进度条（爬升≤90%，完成 100% 停留 250ms 后卸载）+ 随机短句（≥4s 每 4s 轮换）；失败停推进切错误屏 |
-| 路由切换（含懒加载 chunk） | `app.vue` 的 `NuxtLoadingIndicator` | 顶部进度条，`color="var(--color-accent)"` 随主题 |
+| 路由切换（含懒加载 chunk） | `app.vue` 的 `NuxtLoadingIndicator` + `plugins/nav-loading.ts` 驱动的 `NavLoadingOverlay` | 顶部进度条（`color="var(--color-accent)"` 随主题）+ 导航超 250ms 未完成的居中轻量 spinner（`pointer-events:none`/`z-30`/`role=status`，完成/失败/被新导航取代即消失，快导航不出现；状态机锚点 `composables/useNavLoading.ts`，fix-spa-nav-loading-ux D1） |
 | chunk 失败（瞬时） | Nuxt 内建 `nuxt:chunk-reload` 插件 | 自动整页自愈 reload（10s TTL 防循环），用户无感 |
 | chunk 失败（持续）/路由 404/未捕获错误 | `app/error.vue` + `app/plugins/chunk-error-fallback.ts` | 全屏兜底页（居中/`mdi:alert-circle`/重试按钮），chunk 类提示网络问题并整页 reload，应用内错误 `clearError({ redirect: '/' })` |
 

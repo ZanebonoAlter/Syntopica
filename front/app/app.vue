@@ -56,6 +56,10 @@ onUnmounted(teardownProgress)
        颜色跟随主题 accent 令牌，双主题均可见 -->
   <NuxtLoadingIndicator :color="'var(--color-accent)'" :height="2" />
 
+  <!-- 路由切换 >250ms 未完成的居中加载反馈（fix-spa-nav-loading-ux D1）：
+       状态由 plugins/nav-loading.ts 驱动，空闲时不渲染任何内容 -->
+  <NavLoadingOverlay />
+
   <div v-if="loading" class="h-screen flex items-center justify-center">
     <div class="text-center">
       <Icon icon="mdi:loading" width="48" height="48" class="animate-spin mx-auto mb-4" style="color: var(--color-text-secondary)" />
