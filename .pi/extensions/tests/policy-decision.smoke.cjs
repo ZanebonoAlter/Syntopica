@@ -180,8 +180,12 @@ function makePi() {
 			policyRows(t4).length === 1 && policyRows(t4)[0].payload.action === 'warn' && policyRows(t4)[0].payload.reasonCode === 'full-go-test' && policyRows(t4)[0].payload.policy === 'test-scope-guard',
 		);
 		const t4b = mktmp(); tmps.push(t4b);
-		await tsgScenario(t4b, 'go test ./internal/domain/x # archive-gate');
+		const s4b = await tsgScenario(t4b, 'go test ./internal/... # archive-gate');
 		check('归档语境（显式注释）→ 零 policy.decision', policyRows(t4b).length === 0);
+		check(
+			'归档语境放行 → 附记账指引提示（test-debt-patrol）',
+			s4b.notices.length === 1 && String(s4b.notices[0]).includes('scripts/test-patrol.sh --register'),
+		);
 		const t4c = mktmp(); tmps.push(t4c);
 		await tsgScenario(t4c, 'go test ./internal/domain/x');
 		check('非全量测试命令未命中 → 零 policy.decision', policyRows(t4c).length === 0);

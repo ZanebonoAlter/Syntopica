@@ -131,9 +131,13 @@ function preExistingDb(setup) {
 		logEvent(t5, { kind: 'policy.decision', sessionId: 's1', payload: {} });     // 新鲜保留对照（30 天边界内）
 		logEvent(t5, { kind: 'edit.map', sessionId: 's1', payload: { paths: ['x.go'], n: 1 } });      // 30 天（过期对照）
 		logEvent(t5, { kind: 'edit.map', sessionId: 's1', payload: { paths: ['y.go'], n: 1 } });      // 新鲜保留对照
+		logEvent(t5, { kind: 'patrol.check', sessionId: 's1', payload: { shard: 'be-core', ok: false, ms: 1200, fails: ['internal/foo::TestA'] } }); // 30 天（过期对照）
+		logEvent(t5, { kind: 'patrol.check', sessionId: 's1', payload: { shard: 'fe-core', ok: true, ms: 900, fails: [] } });                     // 新鲜保留对照（30 天边界内）
 		const db5 = new DatabaseSync(dbOf(t5));
 		const old30 = new Date(Date.now() - 40 * 86400e3).toISOString();
 		const old90 = new Date(Date.now() - 100 * 86400e3).toISOString();
+		const old31 = new Date(Date.now() - 31 * 86400e3).toISOString();
+		const old29 = new Date(Date.now() - 29 * 86400e3).toISOString();
 		db5.prepare("UPDATE events SET ts = ? WHERE kind = 'constraint.inject'").run(old30);
 		db5.prepare("UPDATE events SET ts = ? WHERE kind = 'gate.check'").run(old30);
 		db5.prepare("UPDATE events SET ts = ? WHERE kind = 'mode.set'").run(old30);
@@ -146,12 +150,20 @@ function preExistingDb(setup) {
 		// 同样只把第一条 edit.map 篡改为过期（新鲜对照不动）
 		const staleEm = db5.prepare("SELECT id FROM events WHERE kind = 'edit.map' ORDER BY id LIMIT 1").get().id;
 		db5.prepare('UPDATE events SET ts = ? WHERE id = ?').run(old30, staleEm);
+		// test-debt-patrol TC-V04：patrol.check 30 天——首条 31 天前（越界应清）、次条 29 天前（界内应留）
+		const pcIds = db5.prepare("SELECT id FROM events WHERE kind = 'patrol.check' ORDER BY id").all().map((r) => r.id);
+		db5.prepare('UPDATE events SET ts = ? WHERE id = ?').run(old31, pcIds[0]);
+		db5.prepare('UPDATE events SET ts = ? WHERE id = ?').run(old29, pcIds[1]);
 		db5.close();
 		// 子进程冷开库：openDb 跑 TTL 清扫后查询
 		const script = `const m=${JSON.stringify(path.resolve('.hlog.cjs'))};const c=${JSON.stringify(t5)};const {DatabaseSync}=require('node:sqlite');const q=m===null?null:require(m);const rows=q.queryBySession(c,'s1');console.log(rows.map(r=>r.kind).sort().join(','))`;
 		const out = execSync(`node -e ${JSON.stringify(script)}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-		check('TTL 清扫：30 天过期行删除（含 mode.set/spill.write/subagent.complete/policy.decision/edit.map）、pin.write 永久保留', out === 'edit.map,pin.write,policy.decision');
+		check('TTL 清扫：30 天过期行删除（含 mode.set/spill.write/subagent.complete/policy.decision/edit.map）、pin.write 永久保留', out === 'edit.map,patrol.check,pin.write,policy.decision');
 		check('TTL 边界：30 天内的新鲜 policy.decision 与 edit.map 保留', out.split(',').includes('policy.decision') && out.split(',').includes('edit.map'));
+		// patrol.check 边界需计数区分「31 天前被清」与「29 天前保留」（kinds 输出看不出被清的是哪一条）
+		const scriptPc = `const m=${JSON.stringify(path.resolve('.hlog.cjs'))};const c=${JSON.stringify(t5)};const q=require(m);const r=q.queryBySession(c,'s1',['patrol.check']);console.log(r.length+':'+(r[0]?JSON.parse(r[0].payload).shard:'-'))`;
+		const outPc = execSync(`node -e ${JSON.stringify(scriptPc)}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+		check('TTL 边界（patrol.check 30 天）：31 天前被清扫、29 天前的 shard=fe-core 保留', outPc === '1:fe-core');
 
 		let fail = 0;
 		for (const [name, ok] of checks) {

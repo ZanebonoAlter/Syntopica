@@ -167,6 +167,7 @@ try {
 		const rA = await runGate(gA, 'openspec archive fake-change', tA);
 		const rowsA = policyRows(tA);
 		check('归档检查失败 → 原 block 行为不变（block:true + reason 含失败项）', rA && rA.block === true && /归档门禁未通过/.test(rA.reason));
+		check('block reason 含台账登记指引（撞见域外红 → test-patrol.sh --register）', rA && /test-patrol\.sh --register/.test(rA.reason));
 		check('block → policy=spec-gate/action=block/reasonCode=archive-check-failed 恰一条',
 			rowsA.length === 1 && rowsA[0].payload.policy === 'spec-gate' && rowsA[0].payload.action === 'block' && rowsA[0].payload.reasonCode === 'archive-check-failed');
 		check('block 事件 change 绑定被归档 change（fake-change）', rowsA[0].change === 'fake-change');

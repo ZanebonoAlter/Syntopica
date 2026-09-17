@@ -22,9 +22,9 @@ go test ./internal/reader/service -run TestName -v # 按名称运行单个测试
 ### 前端（在 `front/` 目录执行）
 
 ```bash
-pnpm test:unit                                                     # 所有单元测试
-pnpm test:unit -- app/utils/articleContentSource.test.ts           # 单个测试文件
-pnpm test:unit -- app/utils/articleContentSource.test.ts -t "prefers firecrawl"  # 按名称
+pnpm test:unit                                                     # 所有单元测试（⚠️ 树莓派本机不做全量，见 standard/frontend/testing.md 红线）
+pnpm test:unit app/utils/articleContentSource.test.ts              # 单个测试文件
+pnpm test:unit app/utils/articleContentSource.test.ts -t "prefers firecrawl"  # 按名称
 pnpm test:e2e                                                      # 所有 E2E（自动启动 dev server）
 pnpm test:e2e:ui                                                   # Playwright UI
 ```

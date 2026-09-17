@@ -7,6 +7,7 @@
  *
  * 事件类型（kind）与保留期（开库时清扫）：
  *   session.start      90 天
+ *   session.rollup     90 天（harness-effectiveness-metrics：单会话效能汇总快照，同 session 取最新一条即终值）
  *   constraint.inject  30 天
  *   pin.read           30 天
  *   gate.check         30 天
@@ -16,6 +17,7 @@
  *   subagent.complete  30 天（harness-observability-fixes D3：后台子线程完成回填）
  *   policy.decision    30 天（harden-harness-policy-and-spill：spec-gate/quota-gate/test-scope-guard 显著裁决统一记账）
  *   edit.map           30 天（coordinate-concurrent-changes：change→编辑文件归属地图，quality-gate 落库侧并集快照）
+ *   patrol.check       30 天（test-debt-patrol：测试欠账巡检分片流水，仅流水；欠账生命周期由台账表自身持久化）
  *   pin.write          永久
  *
  * 安全开库（design D2）：
@@ -89,10 +91,12 @@ const SCHEMA_VERSION = 1;
 
 export type HarnessEventKind =
 	| "session.start"
+	| "session.rollup"
 	| "constraint.inject"
 	| "pin.write"
 	| "pin.read"
 	| "gate.check"
+	| "patrol.check"
 	| "subagent.dispatch"
 	| "mode.set"
 	| "spill.write"
@@ -119,6 +123,7 @@ export interface HarnessEventRow {
 
 const RETENTION_DAYS: Partial<Record<HarnessEventKind, number>> = {
 	"session.start": 90,
+	"session.rollup": 90,
 	"constraint.inject": 30,
 	"pin.read": 30,
 	"gate.check": 30,
@@ -128,6 +133,7 @@ const RETENTION_DAYS: Partial<Record<HarnessEventKind, number>> = {
 	"subagent.complete": 30,
 	"policy.decision": 30,
 	"edit.map": 30,
+	"patrol.check": 30,
 	// pin.write 永久，不列
 };
 

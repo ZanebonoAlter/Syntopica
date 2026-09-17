@@ -7,6 +7,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '~': fileURLToPath(new URL('./app', import.meta.url)),
+      // Nuxt 的 `#imports` 是构建期虚拟模块，vitest 不走 Nuxt 管线（否则 import 直接
+      // 解析失败）。指向测试专用 stub，理由与维护点见 test/stubs/nuxt-imports.ts 头注释。
+      '#imports': fileURLToPath(new URL('./test/stubs/nuxt-imports.ts', import.meta.url)),
     },
   },
   test: {

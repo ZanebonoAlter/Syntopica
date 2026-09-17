@@ -448,6 +448,7 @@ function buildBlockReason(name: string, failures: string[]): string {
 		"- check-standards：按输出逐项修复（docs/reference/standard 结构约束）",
 		"- tasks.md 尾三节：补齐「## N. 测试」「## N. 文档」「## N. 验证」三节 + doc-impact 声明标记后重试",
 		"- scenario-trace：在 tasks.md「N. 验证」节补 | Scenario | 测试文件 | 映射表（每行一个 delta Scenario 标题 + 仓库根相对测试路径或「人工…」说明）；无 delta Scenario 的 change 直接通过",
+		"- 归档撞见非本 change 的红测试：用 `bash scripts/test-patrol.sh --register <test_id> --context <本change名>` 登记台账（或用 --report 确认已在账），在验证节记一句「已记账」后可继续——本 change 影响包内的红不适用该通道，必须修复（test-debt-patrol）",
 		"- UI 验收证据：major 需 ui-approval: approved + 原型存在 + tasks 验证节含 opencli 与 1440×900/1920×1080 证据 + ui-design.md 差异说明；minor 需验收映射；none 需 N/A 一致性",
 		"- 确认要跳过检查：命令加 --force 或设 SPEC_GATE_BYPASS=1（豁免会记 warning 留痕）",
 	].join("\n");

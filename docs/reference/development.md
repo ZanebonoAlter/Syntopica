@@ -133,13 +133,15 @@ AI 相关设置（LLM、Firecrawl、Digest）通过 Web UI 的设置页面配置
 运行单个单元测试文件：
 
 ```bash
-pnpm test:unit -- app/utils/articleContentSource.test.ts
+pnpm test:unit app/utils/articleContentSource.test.ts
 ```
+
+> 不要写成 `pnpm test:unit -- <参数>`：`--` 会被 vitest 吞掉、filter 静默失效并跑成全量（2026-09-17 实测，见 [`standard/frontend/testing.md`](standard/frontend/testing.md)）。
 
 按测试名称过滤：
 
 ```bash
-pnpm test:unit -- app/utils/articleContentSource.test.ts -t "prefers firecrawl"
+pnpm test:unit app/utils/articleContentSource.test.ts -t "prefers firecrawl"
 ```
 
 ### 后端命令（在 `backend-go/` 目录执行）
