@@ -25,7 +25,10 @@ function normalizeText(value: string | null | undefined): string {
 
 export function shouldShowArticleDescription(description: string | null | undefined, content: string | null | undefined): boolean {
   const normalizedDescription = normalizeText(description)
-  if (!normalizedDescription) return false
+  // guard 收紧（redesign-reading-pane design D5）：
+  // 近空/纯符号（normalize 后 < 4 字符）不展示；纯图片 markdown/HTML 经
+  // normalizeText 剥离后为空，已被上面的空判定覆盖，同样不渲染占位块。
+  if (!normalizedDescription || normalizedDescription.length < 4) return false
 
   const normalizedContent = normalizeText(content)
   if (!normalizedContent) return true

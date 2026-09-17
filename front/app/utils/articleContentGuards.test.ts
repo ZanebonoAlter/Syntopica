@@ -28,4 +28,33 @@ describe('shouldShowArticleDescription', () => {
       ),
     ).toBe(true)
   })
+
+  // ===== redesign-reading-pane task 4.2：guard 收紧边界用例 =====
+
+  it('hides empty description', () => {
+    expect(shouldShowArticleDescription('', '<p>body</p>')).toBe(false)
+    expect(shouldShowArticleDescription(null, '<p>body</p>')).toBe(false)
+  })
+
+  it('hides whitespace-only description (full-width space + tab)', () => {
+    expect(shouldShowArticleDescription('　	  ', '<p>body</p>')).toBe(false)
+  })
+
+  it('hides pure-image description (markdown and HTML)', () => {
+    expect(
+      shouldShowArticleDescription('![这是一张很长的图片描述文字](https://example.com/cover.png)', '<p>body</p>'),
+    ).toBe(false)
+    expect(
+      shouldShowArticleDescription('<figure><img src="https://example.com/cover.png" alt="配图"></figure>', '<p>body</p>'),
+    ).toBe(false)
+  })
+
+  it('hides near-empty or symbol-only description (normalized length < 4)', () => {
+    expect(shouldShowArticleDescription('···', '<p>body</p>')).toBe(false)
+    expect(shouldShowArticleDescription('<p>——</p>', '<p>body</p>')).toBe(false)
+  })
+
+  it('keeps a short but substantive description under duplication checks', () => {
+    expect(shouldShowArticleDescription('<p>这是一段简短但不重复的导语。</p>', '<p>body</p>')).toBe(true)
+  })
 })

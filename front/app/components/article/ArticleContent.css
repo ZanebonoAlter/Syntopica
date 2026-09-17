@@ -1,4 +1,16 @@
-﻿.article-content {
+/* =====================================================================
+   ArticleContent.css — 文章主体共享样式
+
+   作用域红线（redesign-reading-pane design D1）：
+   - `.markdown-body` 基础元素排版（p/h/ul/li/引用/表格/代码的基准字号行距）
+     被 tags 域 QAPanel / CausalAnalysisReport / BoardEnrichmentPanel 借用，
+     保持兼容不动；
+   - 阅读页新编辑版式（去卡片化、宋体标题、blockquote 轻左边线、
+     表格/图片 breakout 负边距、暖米渐变）一律限定 `.preview-mode` 前缀
+     或 `.markdown-article` / `.markdown-summary` 作用域内。
+   ===================================================================== */
+
+.article-content {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -25,11 +37,8 @@
 .feed-badge {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.375rem 0.75rem;
-  border-radius: 0.5rem;
+  gap: 0.4rem;
   flex-shrink: 0;
-  background: var(--color-accent-subtle);
 }
 
 .article-title {
@@ -70,24 +79,60 @@
   background: var(--color-accent-subtle);
 }
 
+/* ===== 阅读滚动区：暖米色纵向微渐变（无噪点纹理），reader 版式 token ===== */
 .preview-mode {
+  /* 宋体展示栈仅作用于阅读上下文（design D6），不进全局主题 */
+  --font-serif-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  /* breakout：图片/表格可略宽于阅读列（design D2），窄于 900px 归零 */
+  --breakout-extra: 200px;
   flex: 1;
   overflow-y: auto;
-  padding: 1.5rem 2rem 3rem;
-  background: var(--color-bg-base);
+  padding: 2.6rem 2rem 4.5rem;
+  background: linear-gradient(
+    180deg,
+    var(--color-bg-base) 0%,
+    var(--color-bg-elevated) 55%,
+    var(--color-bg-sunken) 100%
+  );
+}
+
+/* 阅读列：reader 语义，max 760px 居中（面板窄于 760 取可用宽） */
+.reading-col {
+  max-width: 840px;
+  margin: 0 auto;
+}
+
+/* Kicker：红色小标 + 细线（编辑签名元素） */
+.kicker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 1rem;
+}
+
+.kicker-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--color-accent);
+}
+
+.kicker-rule {
+  flex: 0 0 28px;
+  height: 1px;
+  background: var(--color-accent);
+  opacity: 0.55;
 }
 
 .article-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
-  margin: 0 auto 1.5rem;
-  width: 100%;
-  max-width: 100%;
-  padding: 0 1.5rem;
-  font-size: 0.875rem;
-  color: var(--color-text-secondary);
+  gap: 0.6rem;
+  margin-bottom: 1.4rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  letter-spacing: 0.02em;
 }
 
 .read-badge {
@@ -97,106 +142,105 @@
   color: var(--color-success);
 }
 
+/* 大标题：宋体、紧凑行距（spec：1.7–2.25rem，禁恢复通栏大标题） */
 .article-title-full {
-  width: 100%;
-  max-width: 100%;
-  padding: 0 1.5rem;
-  margin: 0 auto 1.5rem;
-  font-size: clamp(2rem, 4vw, 2.9rem);
+  /* 标题 breakout：与图片/表格同机制，比正文列宽出 --breakout-extra（用户反馈：标题不必受限在阅读列内） */
+  width: calc(100% + var(--breakout-extra));
+  margin: 0 calc(var(--breakout-extra) / -2) 1rem;
+  font-family: var(--font-serif-display);
+  font-size: clamp(1.7rem, 2.8vw, 2.25rem);
   font-weight: 700;
   color: var(--color-text-primary);
-  line-height: 1.08;
-  letter-spacing: -0.03em;
+  line-height: 1.32;
+  letter-spacing: 0.01em;
   text-wrap: balance;
 }
 
-.article-description {
-  width: 100%;
-  max-width: 100%;
-  padding: 0 1.5rem;
-  margin: 0 auto 2rem;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 1rem;
-  background: var(--color-bg-elevated);
-  font-size: 1.05rem;
-  color: var(--color-text-primary);
-  line-height: 1.8;
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 1.7rem;
 }
 
-.article-description img {
+/* 导语：宋体、次要色、细左线无边框（description 有实质内容时） */
+.lede {
+  margin: 0 0 2rem;
+  padding-left: 16px;
+  border-left: 2px solid var(--color-border-medium);
+  font-family: var(--font-serif-display);
+  font-size: 0.96rem;
+  line-height: 1.95;
+  color: var(--color-text-secondary);
+}
+
+.lede p {
+  margin: 0.3rem 0;
+}
+
+.lede img {
+  display: inline-block;
   max-width: 100%;
   height: auto;
+  margin: 0.3rem 0;
   border-radius: 0.5rem;
-  margin: 0.5rem 0;
 }
 
-.article-description a {
+.lede a {
   color: var(--color-accent);
   text-decoration: underline;
   text-decoration-thickness: 1px;
 }
 
-.article-description p {
-  margin: 0.75rem 0;
-}
-
-.article-description div {
-  margin: 0.5rem 0;
-}
-
+/* 文章封面图：阅读列宽内自适应，无重投影 */
 .article-image {
-  width: calc(100% - 3rem);
-  max-width: none;
-  margin: 0 auto 2rem;
-  border-radius: 1rem;
+  margin: 0 0 2rem;
+  border-radius: 0.75rem;
   overflow: hidden;
-  box-shadow: var(--shadow-strong);
 }
 
-.summary-surface {
-  position: relative;
-  width: calc(100% - 3rem);
-  max-width: none;
-  margin: 0 auto;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 1.25rem;
-  background: var(--color-bg-elevated);
-  box-shadow: var(--shadow-medium);
+/* AI 整理稿：小节标 + 内容，无卡框（spec：无整理稿整块不渲染） */
+.ai-block {
+  margin: 0 0 1.8rem;
 }
 
+.ai-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0.7rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--color-text-muted);
+}
+
+/* 红色短粗线：AI 整理稿 → 正文转场（杂志签名元素） */
+.section-sep {
+  width: 34px;
+  height: 3px;
+  margin: 0.4rem 0 2.2rem;
+  border: 0;
+  background: var(--color-accent);
+  opacity: 0.8;
+  border-radius: 2px;
+}
+
+/* 正文：去外框卡片，直接落在阅读列上 */
 .article-body {
-  width: calc(100% - 3rem);
-  max-width: none;
-  margin: 0 auto;
+  margin: 0;
 }
 
-.article-body .markdown-article {
-  padding: 2.5rem 3rem 3rem;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 1.25rem;
-  background: var(--color-bg-elevated);
-  box-shadow: var(--shadow-medium);
-}
-
-.article-reading {
-  width: calc(100% - 3rem);
-  max-width: none;
-  margin: 0 auto;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 1.25rem;
-  background: var(--color-bg-elevated);
-  box-shadow: var(--shadow-medium);
-}
+/* ===== markdown 渲染区 =====
+   以下 `.markdown-body` 基础排版为共享基准，tags 面板依赖，勿动；
+   阅读页覆写一律带 `.preview-mode` 前缀或 `.markdown-article`/`.markdown-summary`。 */
 
 .markdown-body {
   font-size: 1.0625rem;
   line-height: 1.9;
   color: var(--color-text-primary);
   word-break: break-word;
-}
-
-.markdown-summary {
-  padding: 1.5rem 1.6rem 1.8rem;
 }
 
 .markdown-body *:first-child {
@@ -364,6 +408,61 @@ img[src*="Base64-Image-Removed"] {
   border-top: 1px solid rgba(26, 26, 26, 0.08);
 }
 
+/* ===== 阅读页编辑版式覆写（作用域限定，D1） ===== */
+
+/* 引用块：轻左边线，去大色块（仅阅读上下文） */
+.preview-mode .markdown-body blockquote {
+  margin: 1.5rem 0;
+  padding: 0.15rem 0 0.15rem 17px;
+  border-left: 2px solid var(--color-accent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.98rem;
+}
+
+/* AI 整理稿正文：比正文小一号的次要色排版（无卡框） */
+.preview-mode .markdown-summary {
+  padding: 0;
+  font-size: 0.95rem;
+  line-height: 1.85;
+  color: var(--color-text-secondary);
+}
+
+/* 正文 h2/h3 衬线标题（spec：衬线标题同样适用于正文） */
+.preview-mode .markdown-article h2 {
+  margin: 2.4rem 0 0.9rem;
+  padding-top: 0;
+  font-family: var(--font-serif-display);
+  font-size: 1.35rem;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+}
+
+.preview-mode .markdown-article h3 {
+  margin: 1.8rem 0 0.6rem;
+  font-family: var(--font-serif-display);
+  font-size: 1.12rem;
+  letter-spacing: 0.01em;
+}
+
+/* 图片 breakout：略宽于阅读列（≤ --breakout-extra，窄面板归零） */
+.preview-mode .markdown-article img {
+  width: calc(100% + var(--breakout-extra));
+  max-width: none;
+  margin-left: calc(-1 * var(--breakout-extra) / 2);
+  margin-right: calc(-1 * var(--breakout-extra) / 2);
+}
+
+/* 表格 breakout + 容器内横向滚动（display:block 响应式表格模式） */
+.preview-mode .markdown-article table {
+  display: block;
+  width: calc(100% + var(--breakout-extra));
+  margin-left: calc(-1 * var(--breakout-extra) / 2);
+  margin-right: calc(-1 * var(--breakout-extra) / 2);
+  overflow-x: auto;
+}
+
 .empty-content {
   text-align: center;
   padding: 3rem 0;
@@ -372,7 +471,7 @@ img[src*="Base64-Image-Removed"] {
 
 /* Split component styles */
 .fullscreen-article {
-  background: var(--color-bg-elevated);
+  background: var(--color-bg-base);
 }
 .fullscreen-article .article-header {
   flex-shrink: 0;
@@ -458,33 +557,39 @@ img[src*="Base64-Image-Removed"] {
   font-size: 0.875rem;
 }
 
+/* breakout 在窄视口/窄面板归零（design D2 风险项） */
+@media (max-width: 900px) {
+  .preview-mode {
+    --breakout-extra: 0px;
+    padding: 1.6rem 1rem 3rem;
+  }
+}
+
 @media (max-width: 768px) {
   .article-header {
     padding: 0.85rem 1rem;
   }
 
-  .preview-mode {
-    padding: 1rem 0.9rem 2rem;
-  }
-
   .article-title-full {
-    font-size: 1.75rem;
+    font-size: 1.6rem;
   }
 
-  .article-description,
-  .summary-surface,
-  .article-reading {
-    border-radius: 1rem;
+  .preview-mode .markdown-body table {
+    width: 100%;
+    margin-left: 0;
+    margin-right: 0;
   }
 
-.markdown-summary {
-  padding: 1.5rem 1.6rem 1.8rem;
-}
-
+  /* 全局窄屏表格降级保留（tags 面板 <768px 同样消费，维持旧行为） */
   .markdown-body table {
     display: block;
     overflow-x: auto;
     white-space: nowrap;
   }
-}
 
+  .preview-mode .markdown-article img {
+    width: 100%;
+    margin-left: 0;
+    margin-right: 0;
+  }
+}

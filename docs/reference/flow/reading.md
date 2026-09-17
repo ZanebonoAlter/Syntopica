@@ -128,6 +128,10 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
    - **删订阅源 / 删分类会连带物理删除文章行**（存量 FK `fk_feeds_articles`（`articles.feed_id`）、`fk_categories_feeds`（`feeds.category_id`）均为 ON DELETE CASCADE，实测存在；但这两条 FK 只在历史库存在，代码里一律**显式删除**、不依赖级联与否）：删除路径 MUST 在同一事务内同步维护「按 ID 引用文章」的 jsonb 数组（`daily_report_threads.related_article_ids`，维护器 `internal/platform/articlerefs`，契约与迁移见 `flow/daily-report.md` 约束 21）——否则日报线索会指向已不存在的文章，前端降级显示「文章 #id」，线索追溯不到来源。
    - **删分类的破坏性语义必须对用户可见**：删分类 = 连带删其下全部订阅源及其文章（不可撤销），前端确认文案 MUST 与之一致（`FeedLayoutShell.vue`，2026-09-17 用户决策：只改文案、保持删除语义）；有 `reading_behaviors` / `user_preferences` 子行时该删除仍会因 NO ACTION 外键失败（既有行为）。
    - `max_articles=0` 或 `9999` 仍为无限制；favorite 永不归档。
+7. **阅读页右侧文章主体必须保持 reader 阅读列版式：列宽 ≤760px 居中、去卡片化、处理状态/手动操作不得占据正文上方（redesign-reading-pane）**：
+   - 版式契约：正文/元信息/标签/导语/AI 整理稿同列对齐（`.reading-col`，max-width 840px，面板窄于 840 取可用宽），标题与图片/表格走 breakout 略宽于列，分区靠留白+细分隔线，不得回退到边框+投影卡片堆叠；标题衬线字体栈、红色 kicker/短粗线为编辑签名元素。
+   - **CSS 作用域红线**：`ArticleContent.css` 的全局 `.markdown-body` 元素排版是 tags 域三面板（QAPanel/CausalAnalysisReport/BoardEnrichmentPanel）的共享宿主，基础排版不得改动；阅读页编辑版式覆写（引用块轻左边线、宋体 h2/h3、表格/图片 breakout 负边距）一律限定 `.preview-mode` / `.markdown-article` / `.markdown-summary` 作用域。
+   - 处理链状态只以工具栏单图标四态呈现（语义同 reading-list-panel），「处理详情」浮层与「更多操作」⋯ 菜单（手动抓取/生成总结/手动打标/内容源切换）都按 feed 能力开关显隐；description 导语只在实质内容（normalize 后 ≥4 字符且与正文不重复）时渲染。
 
 ## 代码入口
 
@@ -135,7 +139,7 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 - **后端阅读行为（admin 域）**：`backend-go/internal/admin/handler/preferences_handler.go`（仅留 reading-behavior handler）、`backend-go/internal/admin/routes.go`（`/reading-behavior/*`）；旧 `preferences_service.go` / `job_preference_update.go` / `/user-preferences/*` 已删除。
 - **后端偏好画像 / 订阅源发现（admin 域）**：`backend-go/internal/admin/service/{preference_profile_service,recommendation_service,catalog_sync_service,catalog_extras,rsshub_config}.go`、`backend-go/internal/admin/handler/{preference_profile_handler,discovery_handler}.go`、`backend-go/internal/admin/scheduler/{job_preference_profile_update,job_rsshub_catalog_sync}.go`，详见 [discovery.md](discovery.md)。
 - **打标签（tagmanagement 域）**：`backend-go/internal/tagmanagement/`（`TagQueue`、article_tagger）。
-- **前端**：`front/app/features/articles/`（列表/正文/阅读追踪）、`front/app/features/shell/`（FeedLayoutShell、导航）、`front/app/stores/`（api/feeds/articles）、`front/app/composables/useReadingTracker.ts`（阅读行为采集）。偏好画像 UI 与发现页入口见 [discovery.md](discovery.md)。图标：`front/app/components/feed/FeedIcon.vue`（三类 icon 值渲染 + 降级）、`front/app/plugins/iconify-local.ts` + `front/app/assets/iconify-subset.json`（UI 图标本地子集）、`front/scripts/generate-icon-subset.mjs`（子集生成）。
+- **前端**：`front/app/features/articles/`（列表/正文/阅读追踪；正文区组件 ArticleContentView/ArticleContentToolbar/ArticleContentPreviewPanel/ArticleStatusMenu——后者承担工具栏处理状态图标、详情浮层与 ⋯ 菜单）、`front/app/components/article/ArticleContent.css`（阅读列版式 + `.markdown-body` 共享排版）、`front/app/features/shell/`（FeedLayoutShell、导航）、`front/app/stores/`（api/feeds/articles）、`front/app/composables/useReadingTracker.ts`（阅读行为采集）、`front/app/utils/articleContentGuards.ts`（description 展示 guard）。偏好画像 UI 与发现页入口见 [discovery.md](discovery.md)。图标：`front/app/components/feed/FeedIcon.vue`（三类 icon 值渲染 + 降级）、`front/app/plugins/iconify-local.ts` + `front/app/assets/iconify-subset.json`（UI 图标本地子集）、`front/scripts/generate-icon-subset.mjs`（子集生成）。
 - 应用装配：`backend-go/internal/app/router.go`、`backend-go/internal/app/runtime.go`。
 
 ## 变更溯源
@@ -155,3 +159,4 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 | 2026-09-16 | offline-catchup | 归档不再删标签边：`CleanupOldArticles` 移除删边 + 孤儿清理段（文章行与内容字段保留语义不变），边改由时间窗回收——`aux_label_cleanup` 串接 `EdgeGC`（`tag_edge_retention_days` 默认 7 天），`article_topic_tags` 边回收/孤儿 tag 清理移交该 job | [`openspec/changes/archive/2026-09-16-offline-catchup`](../../../openspec/changes/archive/2026-09-16-offline-catchup) |
 | 2026-09-17 | heal-dangling-article-refs | 删除路径（删订阅源 / 删分类）连带删除文章时 MUST 同事务维护按 ID 引用的 jsonb 数组；显式删除不依赖遗留 FK；删分类确认文案与实现对齐 | [`openspec/changes/archive/2026-09-17-heal-dangling-article-refs`](../../../openspec/changes/archive/2026-09-17-heal-dangling-article-refs) |
 | 2026-09-17 | declutter-article-list-panel | 阅读页中间栏（文章列表面板）行式改版：单一 surface 行式列表（去卡片框/消灭白奶油拼贴）、处理状态收敛为行尾单图标四态（排队⏳/处理中⟳/失败⚠/完成淡灰✓）+「处理详情」浮层（抓取/总结/标签三行+失败错误文案）、订阅状态卡缩为头部 ⓘ popover（只读）、日期筛选并入标题栏+条件 chip、单 feed 视图行内去重来源名、虚拟列表固定行高 80px；纯前端展示层，无业务约束变更；新 spec 能力 `reading-list-panel` | [`openspec/changes/archive/2026-09-17-declutter-article-list-panel`](../../../openspec/changes/archive/2026-09-17-declutter-article-list-panel) |
+| 2026-09-17 | redesign-reading-pane | 阅读页右侧文章主体克制阅读版式重排：reader 840px 阅读列居中（760 起步、超宽屏反馈后上调）、去卡片化（留白+细分隔线分区）、宋体标题+红 kicker 编辑签名、暖米渐变背景（噪点方案试看后否决）、处理状态横幅撤除改工具栏单图标四态+详情浮层、手动操作收 ⋯ 菜单（按 feed 能力显隐）、description 导语化+guard 收紧；新 spec 能力 `reading-article-pane` | [`archive/2026-09-17-redesign-reading-pane`](../../../openspec/changes/archive/2026-09-17-redesign-reading-pane) |

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
 import type { RssFeed } from '~/types'
+import ArticleStatusMenu, { type ArticleStatusMenuProps } from './ArticleStatusMenu.vue'
 import '~/components/article/ArticleContent.css'
 
 defineOptions({ inheritAttrs: false })
@@ -14,11 +15,14 @@ interface Props {
   hasNext: boolean
   showBackButton: boolean
   showNavButtons: boolean
+  /** 状态图标 + ⋯ 菜单数据（ArticleContentView 从 useArticleContentView 直取，不经 PreviewPanel 转发，design D3） */
+  statusMenu?: ArticleStatusMenuProps | null
 }
 
 withDefaults(defineProps<Props>(), {
   showBackButton: false,
   showNavButtons: false,
+  statusMenu: null,
 })
 
 const emit = defineEmits<{
@@ -28,6 +32,10 @@ const emit = defineEmits<{
   'navigate-prev': []
   'navigate-next': []
   'open-original': []
+  'manual-firecrawl': []
+  'manual-summary': []
+  'manual-tagging': []
+  'set-content-source': [source: string]
 }>()
 </script>
 
@@ -42,9 +50,10 @@ const emit = defineEmits<{
         <Icon icon="mdi:arrow-left" width="20" height="20" />
         <span class="text-sm">退出全屏</span>
       </button>
+      <!-- feed 徽章降噪：图标保留原色，名称改次要文本色（不再用 feed.color 染字） -->
       <div v-if="feed" class="feed-badge">
         <FeedIcon :icon="feed.icon" :color="feed.color" :size="16" />
-        <span class="text-sm font-medium" :style="{ color: feed.color }">{{ feed.title }}</span>
+        <span class="text-sm font-medium text-[var(--color-text-secondary)]">{{ feed.title }}</span>
       </div>
       <span class="article-title">{{ articleTitle }}</span>
     </div>
@@ -75,6 +84,16 @@ const emit = defineEmits<{
       <button class="action-btn" title="在新窗口打开原文" @click="emit('open-original')">
         <Icon icon="mdi:external-link" width="20" height="20" />
       </button>
+
+      <!-- 处理状态图标 + ⋯ 更多操作菜单（含处理详情浮层） -->
+      <ArticleStatusMenu
+        v-if="statusMenu"
+        v-bind="statusMenu"
+        @manual-firecrawl="emit('manual-firecrawl')"
+        @manual-summary="emit('manual-summary')"
+        @manual-tagging="emit('manual-tagging')"
+        @update:active-content-source="emit('set-content-source', $event)"
+      />
     </div>
   </header>
 </template>

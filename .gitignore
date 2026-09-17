@@ -63,3 +63,6 @@ docs/research
 docs/experience
 artifacts
 *.dump
+
+# 前端静态构建产物（本地静态托管形态，pnpm generate 生成，不入库）
+backend-go/frontend/

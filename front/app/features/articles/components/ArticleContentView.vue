@@ -4,6 +4,7 @@ import type { Article } from '~/types'
 import { useNuxtApp } from '#app'
 import { useAI } from '~/composables/useAI'
 import { useArticleContentView } from '~/features/articles/composables/useArticleContentView'
+import type { ArticleStatusMenuProps } from './ArticleStatusMenu.vue'
 import ArticleContentToolbar from './ArticleContentToolbar.vue'
 import ArticleContentPreviewPanel from './ArticleContentPreviewPanel.vue'
 import ArticleIframeView from './ArticleIframeView.vue'
@@ -37,8 +38,8 @@ const {
   manualActionError, taggingError,
   scrollProgress, scrollTop, contentContainer, fullscreenContentContainer,
   showBackTop,
-  feed, hasPrev, hasNext, mergedArticle,
-  showProcessingPanel, actionBusy,
+  feed, hasPrev, hasNext, mergedArticle, currentIndex,
+  actionBusy,
   manualFirecrawlLabel, manualSummaryLabel, manualTaggingLabel,
   showContentSourceToggle, displayContent, showDescription,
   detailLines, renderedStoredSummary,
@@ -47,9 +48,24 @@ const {
   handleManualFirecrawl, handleManualSummary, handleManualTagging,
   handleTagWatchToggle, openOriginal, toggleViewMode, toggleFullscreen,
   handleIframeLoad, handleIframeError,
-  navigatePrev, navigateNext,
   readingTime, trackEvent, uploadEvents, lastScrollDepth,
 } = useArticleContentView(props)
+
+// 上一篇/下一篇：composable 里的 navigatePrev/Next 是历史空转（选中职责在 shell），
+// 此处按当前索引真实 emit('navigate')，由 FeedLayoutShell 的 handleArticleClick 接住
+function handleNavigatePrev() {
+  const list = props.articles
+  if (!hasPrev.value || !props.article || !list?.length) return
+  const prev = list[currentIndex.value - 1]
+  if (prev) emit('navigate', prev)
+}
+
+function handleNavigateNext() {
+  const list = props.articles
+  if (!hasNext.value || !props.article || !list?.length) return
+  const next = list[currentIndex.value + 1]
+  if (next) emit('navigate', next)
+}
 
 function handleFavorite() {
   if (!props.article) return
@@ -64,29 +80,36 @@ function setContentSource(source: string) {
   selectedContentSource.value = source as any
 }
 
-const previewProps = computed(() => ({
-  article: props.article,
-  mergedArticle: mergedArticle.value,
-  highlightedTagSlugs: props.highlightedTagSlugs,
-  aiEnabled: Boolean(isAIEnabled.value),
-  showProcessingPanel: Boolean(showProcessingPanel.value),
-  showFirecrawlStatus: Boolean(mergedArticle.value?.firecrawlStatus && feed.value?.firecrawlEnabled),
-  showSummaryStatus: Boolean(mergedArticle.value?.summaryStatus && feed.value?.articleSummaryEnabled),
+/** 工具栏状态/菜单数据（design D3：从 composable 直取，不经 PreviewPanel 转发） */
+const statusMenuProps = computed<ArticleStatusMenuProps>(() => ({
+  article: mergedArticle.value,
   showManualFirecrawlAction: Boolean(feed.value?.firecrawlEnabled),
   showManualSummaryAction: Boolean(feed.value?.articleSummaryEnabled),
+  showManualTaggingAction: Boolean(isAIEnabled.value),
   actionBusy: Boolean(actionBusy.value),
   manualFirecrawlLoading: Boolean(manualFirecrawlLoading.value),
   manualSummaryLoading: Boolean(manualSummaryLoading.value),
+  manualTaggingLoading: Boolean(manualTaggingLoading.value),
   manualFirecrawlLabel: manualFirecrawlLabel.value,
   manualSummaryLabel: manualSummaryLabel.value,
+  manualTaggingLabel: manualTaggingLabel.value,
   manualActionError: manualActionError.value,
+  taggingError: taggingError.value,
   detailLines: detailLines.value,
   showContentSourceToggle: Boolean(showContentSourceToggle.value),
   activeContentSource: (activeContentSource.value ?? 'original') as string,
+}))
+
+const previewProps = computed(() => ({
+  article: props.article,
+  highlightedTagSlugs: props.highlightedTagSlugs,
+  aiEnabled: Boolean(isAIEnabled.value),
+  kickerLabel: feed.value?.title ?? '',
   renderedStoredSummary: renderedStoredSummary.value,
   manualTaggingLoading: Boolean(manualTaggingLoading.value),
   manualTaggingLabel: manualTaggingLabel.value,
   taggingError: taggingError.value,
+  actionBusy: Boolean(actionBusy.value),
   showDescription: Boolean(showDescription.value),
   displayContent: displayContent.value,
   articleImageUrl: props.article?.imageUrl ?? null,
@@ -94,8 +117,6 @@ const previewProps = computed(() => ({
   articleAuthor: props.article?.author ?? null,
   articleRead: Boolean(props.article?.read),
   articleTitleFull: props.article?.title ?? '',
-  handleManualFirecrawl: handleManualFirecrawl,
-  handleManualSummary: handleManualSummary,
   handleManualTagging: handleManualTagging,
   handleTagWatchToggle: handleTagWatchToggle,
   openOriginal: openOriginal,
@@ -118,10 +139,13 @@ const previewProps = computed(() => ({
     <ArticleContentToolbar
       :feed="feed" :view-mode="viewMode" :has-prev="hasPrev" :has-next="hasNext"
       :article-title="article.title ?? ''" :article-favorite="article.favorite ?? false"
-      :show-back-button="false" :show-nav-buttons="(articles?.length ?? 0) > 1"
+      :show-back-button="false" :show-nav-buttons="hasMultipleArticles"
+      :status-menu="statusMenuProps"
       @toggle-favorite="handleFavorite" @toggle-view-mode="toggleViewMode"
-      @toggle-fullscreen="toggleFullscreen" @navigate-prev="navigatePrev"
-      @navigate-next="navigateNext" @open-original="openOriginal"
+      @toggle-fullscreen="toggleFullscreen" @navigate-prev="handleNavigatePrev"
+      @navigate-next="handleNavigateNext" @open-original="openOriginal"
+      @manual-firecrawl="handleManualFirecrawl" @manual-summary="handleManualSummary"
+      @manual-tagging="handleManualTagging" @set-content-source="setContentSource"
     />
 
     <div v-if="viewMode === 'preview'" class="reading-progress-bar">
@@ -130,8 +154,7 @@ const previewProps = computed(() => ({
 
     <div v-if="viewMode === 'preview'" ref="contentContainer"
       class="preview-mode flex-1 overflow-y-auto" @scroll="onContentScroll">
-      <ArticleContentPreviewPanel v-bind="previewProps"
-        @update:active-content-source="setContentSource" />
+      <ArticleContentPreviewPanel v-bind="previewProps" />
     </div>
 
     <ArticleIframeView v-else :src="article.link ?? null"
@@ -152,10 +175,13 @@ const previewProps = computed(() => ({
         :feed="feed"
         :article-title="article.title ?? ''" :article-favorite="article.favorite ?? false"
         :view-mode="viewMode" :has-prev="hasPrev" :has-next="hasNext"
-        :show-back-button="true" :show-nav-buttons="(articles?.length ?? 0) > 1"
+        :show-back-button="true" :show-nav-buttons="hasMultipleArticles"
+        :status-menu="statusMenuProps"
         @toggle-favorite="handleFavorite" @toggle-view-mode="toggleViewMode"
-        @toggle-fullscreen="toggleFullscreen" @navigate-prev="navigatePrev"
-        @navigate-next="navigateNext" @open-original="openOriginal"
+        @toggle-fullscreen="toggleFullscreen" @navigate-prev="handleNavigatePrev"
+        @navigate-next="handleNavigateNext" @open-original="openOriginal"
+        @manual-firecrawl="handleManualFirecrawl" @manual-summary="handleManualSummary"
+        @manual-tagging="handleManualTagging" @set-content-source="setContentSource"
       />
 
       <div v-if="viewMode === 'preview'" class="reading-progress-bar">
@@ -164,8 +190,7 @@ const previewProps = computed(() => ({
 
       <div v-if="viewMode === 'preview'" ref="fullscreenContentContainer"
         class="preview-mode flex-1 overflow-y-auto" @scroll="onContentScroll">
-        <ArticleContentPreviewPanel v-bind="previewProps"
-          @update:active-content-source="setContentSource" />
+        <ArticleContentPreviewPanel v-bind="previewProps" />
       </div>
 
       <ArticleIframeView v-else :src="article.link ?? null"
