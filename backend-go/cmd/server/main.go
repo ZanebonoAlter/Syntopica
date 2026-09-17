@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
@@ -84,7 +86,10 @@ func main() {
 		logging.Warnf("Failed to initialize tracing: %v", err)
 	} else {
 		defer func() {
-			if err := tp.Shutdown(context.Background()); err != nil {
+			// 关停时刷新遥测尾部：带 5s 超时（替换原 context.Background() 的可能无限等待）。
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := tp.Shutdown(ctx); err != nil {
 				logging.Warnf("Failed to shutdown tracer: %v", err)
 			}
 		}()
@@ -108,16 +113,21 @@ func main() {
 	// In public read-only demo mode (DEMO_READ_ONLY=1) we skip all background
 	// schedulers (RSS refresh, LLM daily reports, firecrawl crawling, etc.) so
 	// they cannot mutate the sanitized snapshot or burn non-existent AI credits.
+	// 关停信号处理总是注册：demo 模式（runtime 为 nil）也要优雅摘端口，只是跳过 Registry 步骤。
+	var runtime *appbootstrap.Runtime
 	if os.Getenv("DEMO_READ_ONLY") != "1" {
-		runtime := appbootstrap.StartRuntime()
-		appbootstrap.SetupGracefulShutdown(runtime)
+		runtime = appbootstrap.StartRuntime()
 	}
 
 	addr := fmt.Sprintf(":%s", config.AppConfig.Server.Port)
 	logging.Infof("Server starting on %s", addr)
 	logging.Infof("Environment: %s", config.AppConfig.Server.Mode)
 
-	if err := r.Run(addr); err != nil {
+	//nolint:gosec // G112：与 gin r.Run 的历史启动语义一致（本 change 只改关停协议，不动协议层超时）
+	srv := &http.Server{Addr: addr, Handler: r}
+	done := appbootstrap.SetupGracefulShutdown(runtime, srv)
+	if err := appbootstrap.RunServer(srv, done); err != nil {
+		// 端口占用等真实启动失败：保持 Fatalf（错误日志 + 非 0 退出码）行为不变。
 		logging.Fatalf("Failed to start server: %v", err)
 	}
 }

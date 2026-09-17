@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -353,21 +355,159 @@ func registerDiscoveryV2Jobs(registry *admin.SchedulerRegistry, enabled bool) {
 	}))
 }
 
-func SetupGracefulShutdown(runtime *Runtime) {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+// ---- 优雅关停（graceful-shutdown-hardening）----
+//
+// 关停协议：收到 SIGTERM/SIGINT 后按固定顺序执行四步，端口最先释放——
+//
+//	① srv.Shutdown：关 listener（端口立即释放）并排空在途请求（httpShutdownTimeout）
+//	② Registry.StopAll（registryShutdownTimeout，维持历史 30s 上限）
+//	③ stopWorkersFn 外包超时（workersShutdownTimeout），workers.go 本体零改动
+//	④ 单行耗时汇总，使关停慢的构成可被单次关停直接采集
+//
+// 任一步骤 panic/失败/超时都只记日志、不阻断后续步骤；序列结束后 close(done) 让 main
+// 正常 return，使 tracer flush / logging.Close 等 defer 真实执行（不再绕过 defer 链硬退出）。
+
+// shutdownTimings 记录四步关停各自的耗时与总耗时。
+type shutdownTimings struct {
+	HTTP     time.Duration
+	Registry time.Duration
+	Workers  time.Duration
+	Total    time.Duration
+}
+
+var (
+	// 三个关停上限是包级 var（非 const）：单测覆写成短值，避免真实 5s/30s/10s 等待。
+	httpShutdownTimeout     = 5 * time.Second
+	registryShutdownTimeout = 30 * time.Second
+	workersShutdownTimeout  = 10 * time.Second
+)
+
+var (
+	// stopWorkersFn 是工作队列停止的注入缝（D4）：真身依赖 DB 单例，单测替换为记录型 fake 即可无 DB 运行。
+	stopWorkersFn = tagging.StopAllWorkers
+	// stopRegistryFn 是调度器注册表停止的注入缝：单测据此注入同步 panic/阻塞，验证步级隔离。
+	stopRegistryFn = func(r *Runtime, timeout time.Duration) { r.Registry.StopAll(timeout) }
+	// shutdownHTTPStepFn 是 ① HTTP 摘端口步的注入缝（test-cases A2：TC-11 用缝注入 panic，
+	// 改动最小；默认实现即线上语义——httpShutdownTimeout ctx 的 srv.Shutdown）。
+	shutdownHTTPStepFn = func(srv *http.Server) error {
+		ctx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+		defer cancel()
+		return srv.Shutdown(ctx)
+	}
+	// signalChanFactory 是信号注册的注入缝：单测注入假通道，不发真实信号。
+	signalChanFactory = func() <-chan os.Signal {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+		return ch
+	}
+	// listenAndServeFn 是启动监听函数的注入缝：单测注入 http.ErrServerClosed / 自建 listener。
+	listenAndServeFn = func(srv *http.Server) error { return srv.ListenAndServe() }
+)
+
+// runShutdownStep 执行一个关停步骤并返回其耗时。
+// 每步独立 recover：panic 只记 warn 不向外传播，保证后续步骤照走；
+// 耗时用命名返回值 + defer 赋值，panic 路径同样计入。
+func runShutdownStep(name string, fn func()) (elapsed time.Duration) {
+	start := time.Now()
+	defer func() {
+		elapsed = time.Since(start)
+		if r := recover(); r != nil {
+			logging.Warnf("Shutdown step %q panicked: %v", name, r)
+		}
+	}()
+	fn()
+	return elapsed
+}
+
+// runShutdownSequence 同步执行四步关停并返回各步耗时。
+// 任一步骤 panic/失败/超时都不阻断后续步骤；汇总行固定格式且跳过步骤字段照打（值 0.0s）。
+func runShutdownSequence(rt *Runtime, srv *http.Server) shutdownTimings {
+	startedAt := time.Now()
+	var timings shutdownTimings
+
+	if srv != nil {
+		timings.HTTP = runShutdownStep("http", func() {
+			if err := shutdownHTTPStepFn(srv); err != nil {
+				// 在途请求没排完属预期路径（有界优先），记 warn 后继续，不 Fatal。
+				logging.Warnf("HTTP shutdown did not complete cleanly: %v", err)
+			}
+		})
+	}
+
+	if rt != nil && rt.Registry != nil {
+		timings.Registry = runShutdownStep("registry", func() {
+			stopRegistryFn(rt, registryShutdownTimeout)
+		})
+	}
+
+	timings.Workers = runShutdownStep("workers", func() {
+		// 同步段先捕获当前实现，避免单测还原包级 var 时与下方 goroutine 竞态。
+		fn := stopWorkersFn
+		finished := make(chan struct{})
+		go func() {
+			defer close(finished)
+			defer func() {
+				if r := recover(); r != nil {
+					logging.Warnf("Workers shutdown panicked: %v", r)
+				}
+			}()
+			fn()
+		}()
+		select {
+		case <-finished:
+		case <-time.After(workersShutdownTimeout):
+			// 超时只告警不重试：卡死的 worker 随进程退出，队列持久化保证可恢复。
+			logging.Warnf("Workers shutdown timed out after %v, continuing without retry", workersShutdownTimeout)
+		}
+	})
+
+	timings.Total = time.Since(startedAt)
+	logging.Infof("shutdown steps: http=%.1fs registry=%.1fs workers=%.1fs total=%.1fs",
+		timings.HTTP.Seconds(), timings.Registry.Seconds(), timings.Workers.Seconds(), timings.Total.Seconds())
+	return timings
+}
+
+// SetupGracefulShutdown 注册 SIGINT/SIGTERM 信号处理，并返回关停完成信号通道 done。
+// 处理 goroutine 顶层 recover 保证 done 必关闭（panic 也 fail-open，不挂死 main）。
+// done 关闭后 main 正常 return，defer 链（tracer flush / logging.Close）真实执行——
+// 不再绕过 defer 链直接终止进程。
+func SetupGracefulShutdown(rt *Runtime, srv *http.Server) <-chan struct{} {
+	done := make(chan struct{})
+	sigChan := signalChanFactory()
 
 	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("Graceful shutdown panicked: %v", r)
+			}
+		}()
+
 		sig := <-sigChan
 		logging.Infof("Received signal: %v, shutting down gracefully...", sig)
-
-		tagging.StopAllWorkers()
-
-		if runtime.Registry != nil {
-			runtime.Registry.StopAll(30 * time.Second)
-		}
-
+		runShutdownSequence(rt, srv)
 		logging.Infoln("Graceful shutdown completed")
-		os.Exit(0)
 	}()
+
+	return done
+}
+
+// RunServer 启动 HTTP 服务并等待关停完成。
+// 仅当 ListenAndServe 返回非 http.ErrServerClosed 的错误时返回该错误（main 据此 Fatalf，
+// 端口占用行为不变）；ErrServerClosed（srv.Shutdown 引发）不回报、也不解除等待——Shutdown
+// 关掉 listener 后仍在排空在途请求，若此时 main 提前 return 会跳过后续关停步骤。
+func RunServer(srv *http.Server, done <-chan struct{}) error {
+	errCh := make(chan error, 1)
+	go func() {
+		if err := listenAndServeFn(srv); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-done:
+		return nil
+	}
 }

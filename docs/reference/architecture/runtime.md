@@ -12,9 +12,9 @@
 6. 根据配置切换 Gin `debug/release` 模式
 7. 创建 `gin.Engine`，挂载 CORS 与 Recovery、otelgin 中间件
 8. `app.SetupStaticFiles(r)` + `app.SetupRoutes(r)` 注册静态资源与 HTTP / WebSocket 路由
-9. `app.StartRuntime()` 启动后台 scheduler 与内容补全服务
-10. `app.SetupGracefulShutdown(runtime)` 注册优雅退出
-11. `r.Run(:port)` 开始监听
+9. `app.StartRuntime()` 启动后台 scheduler 与内容补全服务（`DEMO_READ_ONLY=1` 时跳过，`runtime` 传 nil）
+10. `app.SetupGracefulShutdown(runtime, srv)` 注册优雅退出（所有模式都注册）
+11. `app.RunServer(srv, done)` 开始监听；收到 SIGTERM/SIGINT 并完成关停序列后 main 正常 return（不再 `os.Exit`，`tracer Shutdown` / `logging.Close` 等 defer 真实执行）
 
 所以 `cmd/server` 现在只是薄入口，真正的运行时装配已经集中在 `internal/app/`。
 
@@ -204,26 +204,16 @@
 
 ## 优雅退出怎么做
 
-`SetupGracefulShutdown(runtime)` 监听：
+`SetupGracefulShutdown(runtime, srv)` 监听 `SIGINT` / `SIGTERM`，返回 `done` channel 供 `RunServer` 等待。收到信号后按**固定四步**执行（graceful-shutdown-hardening change 重构；实现见 `backend-go/internal/app/runtime.go`）：
 
-- `SIGINT`
-- `SIGTERM`
+1. **① `srv.Shutdown`（5s 上限）**：先关 listener——**端口立即释放**（不再等进程退出），同时排空在途 HTTP 请求；超时强制关闭（有界优先）
+2. **② `Registry.StopAll(30s)`**（`runtime != nil` 时）：逐个停调度器，上限保持历史值；超时只记 warn
+3. **③ 工作队列停止（外包 10s 上限）**：`tagging.StopAllWorkers()`（tag queue / embedding / merge-reembedding 三队列）在独立 goroutine 里跑，外层 `select` + 10s 兜底；超时只告警不重试（卡死的 worker 随进程退出，队列持久化保证可恢复）。`workers.go` 本体零改动
+4. **④ 耗时汇总**：单行日志 `shutdown steps: http=…s registry=…s workers=…s total=…s`，一次关停即可看清各步构成
 
-收到信号后会按顺序停止：
+任一步 panic / 异常 / 超时都**不阻断后续步骤**（每步独立 recover，失败记 warn）；序列结束 `close(done)` → main 正常 return → defer 链（tracer flush、`logging.Close()`）真实执行。`DEMO_READ_ONLY=1`（`runtime == nil`）跳过 ② 但仍做 HTTP 摘端口与 ③；端口占用等真实启动错误仍走 `logging.Fatalf`（非 0 退出码）。
 
-- TagQueue
-- AutoRefresh
-- PreferenceProfileUpdate
-- RSSHubCatalogSync
-- ContentCompletion
-- Firecrawl
-- BlockedArticleRecovery
-- DailyReport
-- TagQualityScore
-- LogCleanup
-- AuxLabelCleanup
-
-最后等待 30 秒超时后 `os.Exit(0)`。当前没有额外的 HTTP server drain 或任务持久化恢复逻辑，所以更准确的说法是“基础优雅退出”，不是复杂的停机编排。
+关停预算：http 5s + registry 30s + workers 10s，但**端口在第一步就释放**（通常 1~2s），容器编排的 SIGTERM 宽限期与 `scripts/start-dev.sh stop` 的观察窗都只关心端口与进程存活。
 
 ## 读代码建议
 
