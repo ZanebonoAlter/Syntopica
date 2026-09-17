@@ -70,9 +70,13 @@
 | 归并副本时引用改指保留条 | backend-go/internal/platform/database/dedupe_rss_articles_migration_test.go |
 | 保留条已在数组内时只去重 | backend-go/internal/platform/database/dedupe_rss_articles_migration_test.go |
 | 删除订阅源时引用被剔除 | backend-go/internal/reader/repository/article_refs_test.go |
-| 删除分类的两级级联同样维护引用 | backend-go/internal/reader/repository/article_refs_test.go::TestDeleteCategoryCascadePrunesArticleReferences |
-| 无引用命中时不产生写操作 | backend-go/internal/platform/articlerefs/rewire_test.go + backend-go/internal/reader/repository/article_refs_test.go::TestDeleteCategoryCascadeLeavesUnrelatedRowsAlone（xmin 零写）|
+| 删除分类的两级同样维护引用 | backend-go/internal/reader/repository/article_refs_test.go |
+| 无引用命中时不产生写操作 | backend-go/internal/platform/articlerefs/rewire_test.go, backend-go/internal/reader/repository/article_refs_test.go |
 | 单引用的空数组规范化 | backend-go/internal/platform/articlerefs/rewire_test.go |
+| 删除订阅源后不留孤儿从属行 | backend-go/internal/reader/repository/article_refs_test.go |
+| 删除分类后不留孤儿从属行 | backend-go/internal/reader/repository/article_refs_test.go |
+| 孤儿标签不归删除路径清理 | backend-go/internal/reader/repository/article_refs_test.go |
+| 从属表缺失时跳过而不报错 | 人工：防御性分支（Migrator().HasTable 守卫），测试库三表俱全无法构造，语义已由 review 核对 |
 | 悬空 id 被剔除 | backend-go/internal/platform/database/heal_dangling_article_refs_migration_test.go |
 | JSON null 规范化为数组 | backend-go/internal/platform/database/heal_dangling_article_refs_migration_test.go |
 | 重复执行不改变已修复数据 | backend-go/internal/platform/database/heal_dangling_article_refs_migration_test.go |
@@ -80,14 +84,21 @@
 | 候选文章在写库前被删除 | backend-go/internal/topicgraph/service/daily_report_article_filter_test.go |
 | 全部候选都已消失 | backend-go/internal/topicgraph/service/daily_report_article_filter_test.go |
 | 存在性校验查询失败时降级 | backend-go/internal/topicgraph/service/daily_report_article_filter_test.go |
-| 日报 job 收尾记录悬空计数 | backend-go/internal/platform/articlerefs/repair_test.go::TestCountDanglingArticleRefs（计数器）+ backend-go/internal/admin/scheduler/job_daily_report_test.go::TestDailyReportJobSucceedsWhenDanglingRefProbeFails（胶水降级） |
-| 计数查询失败不影响 job | backend-go/internal/admin/scheduler/job_daily_report_test.go::TestDailyReportJobSucceedsWhenDanglingRefProbeFails |
-| 人工：部署后悬空引用清零核查（今日 9 条 + 历史 5595 个引用） | change 目录 `verification.sql`（不设测试文件） |
-| 人工：今日日报线索展开不再出现「文章 #id」降级条目 | 打开 🔗 TagsPage 今日日报线索展开抽查（不设测试文件） |
+| 日报 job 收尾记录悬空计数 | backend-go/internal/platform/articlerefs/repair_test.go, backend-go/internal/admin/scheduler/job_daily_report_test.go |
+| 计数查询失败不影响 job | backend-go/internal/admin/scheduler/job_daily_report_test.go |
+| 人工：部署后悬空引用清零核查（今日 9 条 + 历史 5595 个引用） | 人工：change 目录 `verification.sql`（已执行，5595 → 0） |
+| 人工：今日日报线索展开不再出现「文章 #id」降级条目 | 人工：打开 TagsPage 今日日报线索展开抽查 |
 
 - [x] 8.1 `cd backend-go && golangci-lint run ./... && go vet ./... && go build ./...`：0 issue、0 error
 - [x] 8.2 `cd backend-go && go test ./internal/platform/articlerefs/... ./internal/platform/database/... ./internal/reader/... ./internal/topicgraph/... ./internal/admin/scheduler/...`：全绿
-- [ ] 8.3 真库效果核对（部署后）：跑 `verification.sql`，悬空引用计数 = 0、非数组行 = 0
-- [ ] 8.4 重跑今日日报生成一次后复查悬空计数仍为 0（验证写路径过滤生效）
-- [ ] 8.5 完工汇报含「部署后影响 + 需要的操作」：迁移随启动自动跑（幂等、不可逆，建议先 `pg_dump`）；**历史日报线索的文章列表会少掉死链条目**（悬空引用被剪）、「N 篇」快照计数不重算；**删订阅源/删分类现在显式删除其文章行（含依赖行）**，在无 FK 的新建库里也从「只删 feed/分类」变为「连带删文章」（真库行为不变）；旧数据无需人工处理
-- [x] 8.6 增量 review（轮次 3/4 新代码）已跑并处置：见 `review-report-round2.md`
+- [x] 8.3 真库效果核对：**已完成**——迁移 `20260917_0002` 于 2026-09-17 00:19:15 被应用（`schema_migrations` 有记录；由 `cmd/` 系列 CLI 调 `InitDB` 顺带执行，非后端重启）；核对结果：悬空引用 **5595 → 0**、非数组行 **3 → 0**；今日 9 条线索引用逐条符合 `verification.sql` 预期（`10264→[129446]`、`10186→[129566]`、`10188→[129139]`、其余剪为 `[]`）；迁移前用 `pg_dump -t daily_report_threads` 定点备份至 `/tmp/heal-dangling-before-20260917-013914.sql`
+- [ ] 8.4 重跑日报生成后复查悬空计数仍为 0：**环境阻塞**——08:07 对 board 3030 / 2026-09-16 调 `POST /api/daily-reports/generate` 重建，L2 裁决 AI 调用失败（`qwen: dial tcp 10.11.12.111:8080: connect: no route to host`，AI 供应商不可达），报告未被改写（`updated_at` 未变）、数据保持修复后状态。写路径过滤本身已有 PG 单测覆盖（`daily_report_article_filter_test.go` 4 用例）；端到端验证待供应商恢复后的首次日报生成自然完成（巡检日志会出现 `dangling article refs=0`）
+- [x] 8.5 完工汇报含「部署后影响 + 需要的操作」：
+  - **数据已修复**：历史悬空引用 5595 → 0、非数组行 3 → 0（迁移已执行，无需再跑）。
+  - **代码已部署**：后端已重启到新构建（`--restart back`，PID 490761，`/health` 200；二进制含新代码标识）；重启后迁移自动跳过（版本已记录）。
+  - **用户可见变化**：历史日报线索展开列表不再出现「文章 #129447」类死链条目；「N 篇」快照计数**不重算**（可能大于实际展开条数）；删分类确认文案改为「该分类下的订阅源及其文章也会一并删除，且不可撤销」。
+  - **无需用户操作**；如需回滚数据，定点备份在 `/tmp/heal-dangling-before-20260917-013914.sql`（仅 `daily_report_threads` 数据）。
+  - **非阻塞待办**：供应商恢复后首次日报生成自然完成 8.4；标签层同类 FK 级联隐患属独立 change。
+- [x] 8.6 增量 review（轮次 3/4 新代码）已跑并处置：见 `review-report-round1.md`（轮次 1/2）与 `review-report-round2.md`（轮次 3/4）；两轮无阻断性代码缺陷（H1 已用真库 `pg_constraint` 结案并接线删分类路径，用户决策「只改文案」），L1-L5 加固项已随轮次 5 修完
+- [x] 8.7 静态与检查类证据：`bash scripts/check-standards.sh` 160/160 通过；`openspec validate heal-dangling-article-refs` 通过；`bash scripts/doc-impact.sh verify <change>` 通过；前端 `pnpm lint` ✓ / `pnpm exec nuxi typecheck` ✓ / `pnpm test:unit` 969 过（17 红均属既有坏的 `app/composables/useOnboarding.test.ts`，隔离运行同样全红，与本次改动（仅一处 `confirm` 文案）无关、不在提交范围）
+- [x] 8.8 前端人工验收（ui-impact: minor）：设置页侧栏分类「删除分类」确认框文案应为「确定要删除分类 "…" 吗？该分类下的订阅源及其文章也会一并删除，且不可撤销。」（桌面 + 移动视口各一次）——用户侧可随时验；真库语义已由 `DeleteCategoryCascade` 与文档约束锁定
