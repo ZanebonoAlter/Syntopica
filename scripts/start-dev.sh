@@ -12,7 +12,7 @@
 #   bash scripts/start-dev.sh                # 起后端 + 前端（已在跑的不动）
 #   bash scripts/start-dev.sh front          # 只起前端（或 back 只起后端）
 #   bash scripts/start-dev.sh --restart      # 先停再起（等同于 stop + 起）
-#   bash scripts/start-dev.sh stop           # 停掉两者
+#   bash scripts/start-dev.sh stop           # 停掉两者（stop back / stop front 只停一个）
 #   bash scripts/start-dev.sh status         # 看端口/PID/健康/入口地址
 #   bash scripts/start-dev.sh --help
 #
@@ -36,6 +36,7 @@ NGINX_CONF=/etc/nginx/conf.d/syntopica.conf
 # ── 参数解析 ────────────────────────────────────────────────────────────────
 RESTART=0
 TARGET="all"
+STOP_WHAT="all" # 「stop back / stop front」的可选第二参数：只停指定端
 for arg in "$@"; do
 	case "$arg" in
 		--restart) RESTART=1 ;;
@@ -43,7 +44,21 @@ for arg in "$@"; do
 			sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 			exit 0
 			;;
-		all | back | backend | front | web | stop | status) TARGET="$arg" ;;
+		stop) TARGET="stop" ;;
+		all | back | backend | front | web | status | selftest)
+			if [ "$TARGET" = "stop" ]; then
+				# stop 之后再跟 back/front：只停指定端；其余一律拒绝，防「stop all」静默变起服务
+				case "$arg" in
+					back | backend | front | web) STOP_WHAT="$arg" ;;
+					*)
+						echo "stop 后只能跟 back / front（收到：$arg）" >&2
+						exit 2
+						;;
+				esac
+			else
+				TARGET="$arg"
+			fi
+			;;
 		*)
 			echo "未知参数：$arg（见 --help）" >&2
 			exit 2
@@ -52,6 +67,8 @@ for arg in "$@"; do
 done
 [ "$TARGET" = "backend" ] && TARGET=back
 [ "$TARGET" = "web" ] && TARGET=front
+[ "$STOP_WHAT" = "backend" ] && STOP_WHAT=back
+[ "$STOP_WHAT" = "web" ] && STOP_WHAT=front
 
 # ── 环境与模式 ──────────────────────────────────────────────────────────────
 # 这台机器可能有多个网段（LAN / ZeroTier / Tailscale / docker 网桥），所以：
@@ -100,24 +117,88 @@ wait_http() { # wait_http <url> <尝试次数>
 	return 1
 }
 
-stop_port() { # stop_port <port> <名字>
-	local port="$1" name="$2" pids
+pidfile_path() { printf '%s/.pi/run/%s.pgid' "$REPO_ROOT" "$1"; }
+
+group_alive() { # 进程组存活探测（PGID≤1 一律判无效，防 kill -- -1 误伤全系统）
+	[ "$1" -gt 1 ] 2>/dev/null && kill -0 -- "-$1" 2>/dev/null
+}
+
+spawn_detached() { # spawn_detached <pidfile名> <workdir> <cmd...>
+	# 在 workdir 下 nohup setsid 脱离终端起服务，把会话首进程 PID（= PGID）写入
+	# .pi/run/<名>.pgid。该 pidfile 是 dev-process-guard 扩展的白名单：经本脚本
+	# 托管的服务永不判泄漏。env（CORS_ORIGINS / NUXT_PUBLIC_API_BASE）已在脚本
+	# 头部 export，子进程天然继承，与旧的内联前缀写法语义等价。
+	local name="$1" workdir="$2" pid
+	shift 2
+	mkdir -p "$REPO_ROOT/.pi/run"
+	pid="$(
+		cd "$workdir" || exit 1
+		nohup setsid "$@" >> nohup.out 2>&1 < /dev/null &
+		echo "$!"
+	)"
+	echo "$pid" > "$(pidfile_path "$name")"
+}
+
+stop_port() { # stop_port <port> <名字> <pidfile名>
+	# 清理目标 = 端口监听 PID（lsof，外部手起的服务）∪ pidfile 记录的进程组（本脚本托管）；
+	# 端口已释放但 pidfile 组仍存活（僵尸栈）也必须清。完成后删除 pidfile。
+	local port="$1" name="$2" pname="$3"
+	local pids pgid_file pgid i
 	pids="$(port_pids "$port")"
-	if [ -z "$pids" ]; then
+	pgid_file="$(pidfile_path "$pname")"
+	pgid=""
+	if [ -f "$pgid_file" ]; then
+		pgid="$(tr -d '[:space:]' <"$pgid_file")"
+		# 内容非数字 / PGID≤1 / 指向已死进程组 → 无主 pidfile，直接删除不报错
+		if ! [[ "$pgid" =~ ^[0-9]+$ ]] || ! group_alive "$pgid"; then
+			echo "  $name pidfile 无主（损坏或组已死），已清理：$pgid_file"
+			rm -f "$pgid_file"
+			pgid=""
+		fi
+	fi
+	if [ -z "$pids" ] && [ -z "$pgid" ]; then
 		echo "  $name（:$port）本来就没在跑"
 		return 0
 	fi
-	echo "  停 $name（:$port）PID: $pids"
-	# 只杀监听进程：它的父进程（pnpm / sh -c）会在子进程退出后自行结束
-	# shellcheck disable=SC2086
-	kill $pids 2>/dev/null
-	local i
+	if [ -n "$pids" ]; then
+		echo "  停 $name（:$port）PID: $pids"
+		# 只杀监听进程：它的父进程（pnpm / sh -c）会在子进程退出后自行结束
+		# shellcheck disable=SC2086
+		kill $pids 2>/dev/null
+	fi
+	if [ -n "$pgid" ]; then
+		# pidfile 进程组整组 TERM（go run 父子 / pnpm→sh→nuxt 链共享 PGID，单杀必留孤儿）
+		echo "  停 $name pidfile 进程组（PGID: $pgid）"
+		kill -- "-$pgid" 2>/dev/null
+	fi
 	for ((i = 1; i <= 10; i++)); do
-		is_up "$port" || return 0
+		if [ -z "$(port_pids "$port")" ] && { [ -z "$pgid" ] || ! group_alive "$pgid"; }; then
+			break
+		fi
 		sleep 1
 	done
-	echo "  警告：:$port 仍在监听，PID: $(port_pids "$port")（可手动 kill -9）" >&2
-	return 1
+	# TERM 10s 仍存活的托管组升级 KILL 兜底
+	if [ -n "$pgid" ] && group_alive "$pgid"; then
+		echo "  警告：$name 进程组（PGID $pgid）10s 未退出，kill -9 兜底" >&2
+		kill -9 -- "-$pgid" 2>/dev/null
+	fi
+	# 端口 PID 同样升级：后端优雅关停偏慢（Registry.StopAll 上限 30s+，端口要等
+	# os.Exit(0) 才释放），10s 观察窗内大概率未让端口——kill -9 兜底保证 restart
+	# 确定性（dev 栈无状态可丢，不依赖优雅收尾）
+	if is_up "$port"; then
+		local stubborn
+		stubborn="$(port_pids "$port")"
+		echo "  警告：$name（:$port）TERM 后仍在监听（多为优雅关停偏慢），kill -9 兜底：$stubborn" >&2
+		# shellcheck disable=SC2086
+		kill -9 $stubborn 2>/dev/null
+		sleep 1
+	fi
+	rm -f "$pgid_file"
+	if is_up "$port"; then
+		echo "  警告：:$port 仍在监听，PID: $(port_pids "$port")（可手动 kill -9）" >&2
+		return 1
+	fi
+	return 0
 }
 
 start_back() {
@@ -126,10 +207,7 @@ start_back() {
 		return 0
 	fi
 	echo "  起后端（:$BACK_PORT）→ backend-go/nohup.out"
-	(
-		cd "$REPO_ROOT/backend-go" || exit 1
-		CORS_ORIGINS="$CORS_ORIGINS" nohup setsid go run cmd/server/main.go >> nohup.out 2>&1 < /dev/null &
-	)
+	spawn_detached backend "$REPO_ROOT/backend-go" go run cmd/server/main.go
 	if wait_http "http://127.0.0.1:${BACK_PORT}/health" 30; then
 		echo "  ✓ 后端就绪（/health 200，PID: $(port_pids "$BACK_PORT")）"
 	else
@@ -145,10 +223,7 @@ start_front() {
 		return 0
 	fi
 	echo "  起前端（:$FRONT_PORT，apiBase=$NUXT_PUBLIC_API_BASE）→ front/nohup.out"
-	(
-		cd "$REPO_ROOT/front" || exit 1
-		NUXT_PUBLIC_API_BASE="$NUXT_PUBLIC_API_BASE" nohup setsid pnpm dev --host >> nohup.out 2>&1 < /dev/null &
-	)
+	spawn_detached front "$REPO_ROOT/front" pnpm dev --host
 	# Nuxt dev 冷启动在树莓派上可达 60~90s
 	if wait_http "http://127.0.0.1:${FRONT_PORT}/" 60; then
 		echo "  ✓ 前端就绪（PID: $(port_pids "$FRONT_PORT")）"
@@ -160,12 +235,25 @@ start_front() {
 
 show_status() {
 	echo "模式：$MODE（同源入口 nginx ${NGINX_CONF} $([ -f "$NGINX_CONF" ] && echo 存在 || echo 不存在)）"
-	for pair in "${BACK_PORT}:后端" "${FRONT_PORT}:前端"; do
-		local port="${pair%%:*}" name="${pair##*:}"
+	for trio in "${BACK_PORT}:后端:backend" "${FRONT_PORT}:前端:front"; do
+		local port name pname pgid_file pgid
+		IFS=: read -r port name pname <<<"$trio"
 		if is_up "$port"; then
 			echo "  $name（:$port）：LISTEN，PID $(port_pids "$port")"
 		else
 			echo "  $name（:$port）：未监听"
+		fi
+		# pidfile 托管状态（只读不删）
+		pgid_file="$(pidfile_path "$pname")"
+		if [ -f "$pgid_file" ]; then
+			pgid="$(tr -d '[:space:]' <"$pgid_file")"
+			if [[ "$pgid" =~ ^[0-9]+$ ]] && group_alive "$pgid"; then
+				echo "    pidfile 接管：PGID $pgid（组存活）"
+			else
+				echo "    pidfile 过期（组已死），已可清理"
+			fi
+		else
+			echo "    无 pidfile（非 start-dev.sh 托管或未起）"
 		fi
 	done
 	if is_up "$BACK_PORT"; then
@@ -186,12 +274,22 @@ echo "Syntopica dev 栈（模式：$MODE）"
 
 case "$TARGET" in
 	stop)
-		stop_port "$FRONT_PORT" 前端
-		stop_port "$BACK_PORT" 后端
+		if [ "$STOP_WHAT" = "all" ] || [ "$STOP_WHAT" = "front" ]; then
+			stop_port "$FRONT_PORT" 前端 front
+		fi
+		if [ "$STOP_WHAT" = "all" ] || [ "$STOP_WHAT" = "back" ]; then
+			stop_port "$BACK_PORT" 后端 backend
+		fi
 		exit 0
 		;;
 	status)
 		show_status
+		exit 0
+		;;
+	selftest)
+		# 隐藏目标：只验证 spawn_detached + pidfile 代码路径（冒烟脚本专用，不碰真实端口）
+		spawn_detached selftest "$REPO_ROOT" sleep 300
+		echo "selftest OK：$(pidfile_path selftest) 已写，PGID $(cat "$(pidfile_path selftest)")（sleep 300，由调用方清理）"
 		exit 0
 		;;
 esac
@@ -199,8 +297,8 @@ esac
 rc=0
 if [ "$RESTART" = "1" ]; then
 	echo "先停旧进程："
-	[ "$TARGET" = "all" ] || [ "$TARGET" = "front" ] && stop_port "$FRONT_PORT" 前端
-	[ "$TARGET" = "all" ] || [ "$TARGET" = "back" ] && stop_port "$BACK_PORT" 后端
+	[ "$TARGET" = "all" ] || [ "$TARGET" = "front" ] && stop_port "$FRONT_PORT" 前端 front
+	[ "$TARGET" = "all" ] || [ "$TARGET" = "back" ] && stop_port "$BACK_PORT" 后端 backend
 fi
 
 [ "$TARGET" = "all" ] || [ "$TARGET" = "back" ] && { start_back || rc=1; }
