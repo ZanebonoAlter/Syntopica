@@ -43,7 +43,7 @@
 - [x] D.1 flow 变更溯源：daily-report.md / scheduler.md「变更溯源」节补链接，验证：文档节存在链接
 - [x] D.2 API 参考：`docs/reference/api/tag-ops.md` 补 notifications API 与 status `completed_today` 字段说明，验证：grep 命中
 - [x] D.3 `docs/reference/database/` 补 notifications 表结构与三队列表保留策略说明，验证：文档存在且与实现一致
-- [ ] D.4 `bash scripts/doc-impact.sh verify add-notification-center` 对账通过（声明域：daily-report, scheduler）
+- [x] D.4 `bash scripts/doc-impact.sh verify add-notification-center` 对账通过（声明域：daily-report, scheduler）
 
 ## 8. 验证
 
@@ -51,8 +51,8 @@
 - [x] V.2 `cd backend-go && go test ./internal/admin/scheduler ./internal/admin/repository ./internal/topicgraph ./internal/<notification模块>`（影响包，-short），期望全绿
 - [x] V.3 `cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm test:unit`，期望全绿
 - [x] V.4 `cd front && pnpm build`，期望构建成功
-- [ ] V.5 opencli 主链路断言：铃铛点击→面板展开→角标清零→全部标已读→角标消失；芯片任务态可见→点击跳 /settings 队列区，期望断言全过
-- [ ] V.6 双视口视觉检查（1440×900 / 1920×1080）：面板锚定无重叠/无溢出、芯片不换行，截图留档并回写 ui-design.md Acceptance 差异说明
+- [x] V.5 opencli 主链路断言：铃铛点击→面板展开→角标清零→全部标已读→角标消失；芯片任务态可见→点击跳 /settings 队列区，期望断言全过
+- [x] V.6 双视口视觉检查（1440×900 / 1920×1080）：面板锚定无重叠/无溢出、芯片不换行，截图留档并回写 ui-design.md Acceptance 差异说明
 - [ ] V.7 人工：触发一次日报生成（或 TriggerNow），验证完成通知出现、失败场景（若有）仅一条汇总；验证次日 log_cleanup 后队列表 completed 行只剩当日
 
 ### Scenario → 测试文件映射
