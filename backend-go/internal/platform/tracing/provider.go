@@ -3,6 +3,7 @@ package tracing
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -33,7 +34,7 @@ func InitTracerProvider(db *gorm.DB, cfg Config) (*sdktrace.TracerProvider, erro
 
 	var spanProcessors []sdktrace.SpanProcessor
 	spanProcessors = append(spanProcessors, sdktrace.NewBatchSpanProcessor(exporter,
-		sdktrace.WithBatchTimeout(5),
+		sdktrace.WithBatchTimeout(5*time.Second),
 		sdktrace.WithMaxExportBatchSize(cfg.BufferSize),
 	))
 
