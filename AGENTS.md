@@ -103,7 +103,7 @@ bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 
 **Backend** (`backend-go/`): `go mod tidy` / `go run cmd/server/main.go` / `golangci-lint run ./...` / `go vet ./...` / `go test ./...` / `go build ./...`
 
-**Pre-push check**: `cd backend-go && golangci-lint run ./... && go vet ./... && go test ./... && go build ./...` && `cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm test:unit && pnpm build`
+**Pre-push check**（树莓派上跑前先停其它 pi 会话、`pnpm test:unit` 改 `pnpm test:unit -- --maxWorkers=2`，勿与 `pnpm build`／浏览器自动化并行）: `cd backend-go && golangci-lint run ./... && go vet ./... && go test ./... && go build ./...` && `cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm test:unit && pnpm build`
 
 ## AI Behavior Rules
 
@@ -112,17 +112,18 @@ bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 - Ignore unrelated dirty-worktree changes. Verify smallest relevant command after edits.
 - git提交使用 zanebonoalter <380207345@qq.com>
 - **测试只跑本次修改影响的包**，不要跑全量 `go test ./...`。影响包用 `bash scripts/change-scope.sh` 机械判定（路径→命令映射，未命中会提示无法判定）。例如改了 `daily_report` 和 `ws`，就只跑 `go test ./internal/domain/daily_report ./internal/platform/ws`。
+- **树莓派本机不做「顺手跑全量」**（前端 `pnpm test:unit` 全量 96 个文件、后端 `go test ./...` 同理）：4 核 + SD 卡扛不住——2026-09-17 晚实测全量前端单测（单次 10~15 分钟）叠加多 pi 会话，内存冲到 91%、zram swap 抖动 + `mmcblk0` IO backlog 20s，load 飙到 106 后系统假死重启。日常一律按范围跑受影响文件（`cd front && pnpm test:unit <受影响文件名...>`）；确需全量（归档门禁 / pre-push）时先确认无其它 pi 会话在跑重活、限制并发 `pnpm test:unit -- --maxWorkers=2`，且不与 `pnpm build`／浏览器自动化并行。
 - **前端 pnpm 编译/测试类命令（typecheck / build / test:unit）：按宿主平台决定执行方式**。Linux/macOS 宿主本机直跑（`front/node_modules` 按当前平台安装，含 `@rollup/rollup-linux-arm64-gnu`、`@oxc-parser/binding-linux-arm64-gnu` 等）；**Windows + WSL 宿主**下这三类命令必须经 Windows cmd 执行（WSL 侧 `node_modules` 是 Windows 侧装的，缺 Linux native binding），lint 可在 WSL 跑。权威定义见 [`standard/frontend/testing.md`](docs/reference/standard/frontend/testing.md) §跨平台运行 + §常见陷阱。示例（当前 Linux 宿主）：
 
   ```bash
   cd front && pnpm lint          # 全平台可用
   cd front && pnpm exec nuxi typecheck
   cd front && pnpm build
-  cd front && pnpm test:unit
+  cd front && pnpm test:unit <受影响文件名...>   # 本机不做全量，见上条
   # Windows + WSL 宿主改为经 cmd：cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm exec nuxi typecheck"
   ```
 
-- Frontend edits → `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit` / `pnpm build`。
+- Frontend edits → `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit <受影响文件名...>` / `pnpm build`。
 - Backend edits → `golangci-lint run ./...` / targeted `go test` first, then `go test ./...` / `go build ./...`。
 - Docs-only edits: consistency check unless behavior changed.
 - **pi 扩展全景**（`.pi/extensions/`，**源码已入库**——`.gitignore` 的 `/.*` 排除后单独放行 `.pi/extensions/**` 与 `.pi/constraint-injection.json`）：

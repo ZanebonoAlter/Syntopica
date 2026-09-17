@@ -45,10 +45,12 @@ describe('myFunction', () => {
 
 ```bash
 cd front
-pnpm test:unit                                            # 全部
+pnpm test:unit                                            # 全部（⚠️ 树莓派本机不做，见下方红线）
 pnpm test:unit -- app/utils/articleContentSource.test.ts  # 单文件
 pnpm test:unit -- app/utils/articleContentSource.test.ts -t "prefers firecrawl"  # 按名称
 ```
+
+> **树莓派（本机）不做全量测试**：`pnpm test:unit` 不带参数会跑全部 96 个测试文件——单次 10~15 分钟、4 核打满，并叠加 zram swap 抖动与 SD 卡（`mmcblk0`）IO backlog（2026-09-17 晚实测 IO backlog 20s、load 106，系统假死重启）。日常 MUST 按改动范围只跑受影响文件；确需全量（归档门禁 / pre-push）时：先停掉其它 pi 会话、加 `-- --maxWorkers=2`，且不与 `pnpm build`／浏览器自动化并行。
 
 ### 跨平台运行（按宿主平台决定执行方式）
 
@@ -60,7 +62,7 @@ pnpm test:unit -- app/utils/articleContentSource.test.ts -t "prefers firecrawl" 
 - **Windows + WSL**：`node_modules` 由 Windows 侧 `pnpm install` 生成，只含 win32 平台包；WSL bash 下跑 `test:unit` / `typecheck` / `build` 会因缺 Linux native binding 失败，报错形如 `Cannot find module '@rollup/rollup-linux-x64-gnu'`。此时这些命令必须经 Windows cmd（`lint` 仍可在 WSL 跑）。
 
 ```bash
-# Linux / macOS：直接跑
+# Linux / macOS：直接跑（test:unit 按改动范围传文件名；全量须限 worker，见上方红线）
 cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm build && pnpm test:unit
 
 # Windows + WSL：typecheck/build/test:unit 经 cmd（lint 可在 WSL）
