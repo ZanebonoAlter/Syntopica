@@ -70,6 +70,8 @@
 ## 9. 文档
 
 <!-- doc-impact: standard -->
+
+> 无 flow 影响：本 change 为测试基础设施与流程治理（巡检脚本 + 台账 + 归档记账纪律），不触及任何业务链路，故 §12.2 变更溯源豁免（不走 flow「变更溯源」表）。
 - [x] 9.1 `docs/reference/standard/backend/testing.md` — 巡检分片（后端）与台账查询章节（§运行 下新增「巡检分片」：`be-all` 42s 实测、6 片耗时、`-short -count=1` 口径、集成测试不在巡检范围的盲区声明）
 - [x] 9.2 `docs/reference/standard/frontend/testing.md` — 巡检分片（前端、`--maxWorkers=2` 红线）与台账查询章节（新增 6 片表 + 实测耗时；并修正 `pnpm test:unit -- <参数>` 坏形式、写明 `--` 吞 filter 陷阱；连带修 `docs/reference/testing.md`、`docs/reference/development.md` 同源坏形式）
 - [x] 9.3 `docs/reference/harness/pi-extensions.md` — patrol.check 事件词汇、test_debt 表、保留期（新增「测试欠账巡检（test-patrol.sh，脚本 + 事实库记账）」节）；另同步 skill `harness-facts`（事件表加 `patrol.check` 行 + 非事件状态表说明）与 skill `harness-retro`（⑦段 D 子组读法 + `patrol.*` 指标）
