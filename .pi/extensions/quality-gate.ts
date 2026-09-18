@@ -40,6 +40,15 @@
  *     执行，不探测、不短路、不标 wsl环境）；为真则维持第 12 条既有 cmd.exe 链路语义
  *     （每轮健康探测，因为 vsock 健康状态是逐回合的）。平台身份会话内缓存
  *     （session_start 重置），不逐回合重判——平台不会逐回合变，interop 健康会。
+ * 14. native 工具链探测短路（harden-gate-native-toolchain，2026-09）：第 13 条的
+ *    「native 不探测」存在盲区——pi 启动环境 PATH 缺 go/golangci-lint/pnpm 时命令
+ *    秒败并经粘性放大成连环假失败（2026-09-17 实测两会话 945 条，占 7 天窗口失败
+ *    56%）。故 native 模式补齐侧级工具链可达性探测（PATH accessSync 扫描，非 exec——
+ *    spawn ENOENT 与真实失败不可区分）：某侧不可达即整体跳过该侧（fail-open）+
+ *    边沿记账 policy.decision(toolchain-down)（进入短路态首个回合记一条，探测会话
+ *    缓存后结果恒定，每回合重记违反低噪声约束）+ steer 提示修启动环境 PATH；事后
+ *    isToolNotFound 特征兑底（探测后 PATH 内文件被删的窗口期），不进粘性不分级。
+ *    windows 模式不参与（用 Windows 绝对路径执行，不经 bash PATH 查找）。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { statSync, accessSync, constants } from "node:fs";
@@ -47,7 +56,7 @@ import { join, delimiter } from "node:path";
 import { logEvent } from "./lib/harness-log";
 import { detectActiveChange } from "./lib/active-change";
 import { syncEditMap, resetEditMapState } from "./lib/edit-map";
-import { truncateDiagGate, isInteropFailure } from "./lib/failure-classify";
+import { truncateDiagGate, isInteropFailure, isToolNotFound } from "./lib/failure-classify";
 import { logPolicyDecision } from "./lib/policy-decision";
 import { computeTriggerSet, type FileStat } from "./lib/trigger-set";
 import {
@@ -72,6 +81,41 @@ const EDIT_TOOLS = new Set(["edit", "write", "apply_patch"]);
 // 会话内稳定复用——native 下不再探测（无跨系统链路可坏），windows 下仍需每回合健康探测
 // （vsock 健康是逐回合属性）。修正条件化：只在 null 时判定，不在回合中途反复切换。
 let execPlatform: "native" | "windows" | null = null;
+// native 工具链可达性（harden-gate-native-toolchain D2/D3）：按侧缓存，null = 未探测；
+// 探测结果会话内稳定（PATH 是进程属性不会中途变），session_start/shutdown 重置。
+// backend 需 go 且 golangci-lint 双检（任一缺失整侧短路，跑一半只会制造半截信号）；
+// frontend 需 pnpm 单检。
+let nativeToolchain: { backend: boolean | null; frontend: boolean | null } = {
+	backend: null,
+	frontend: null,
+};
+// 短路边沿记账/提示状态（D5）：进入短路态的首个回合记一条 toolchain-down + 发一条
+// steer，后续回合短路不重复（探测缓存后结果恒定，重记无信息增量，违反低噪声约束）。
+let toolchainDownNotified: { backend: boolean; frontend: boolean } = {
+	backend: false,
+	frontend: false,
+};
+
+/**
+ * 指定名字的可执行文件是否在 PATH 上可达（accessSync X_OK 扫描）。
+ *
+ * 为何只用文件可达性检查而不用「探测调用失败」判定：`pi.exec` 底层 spawn 的 ENOENT
+ * 被 execCommand 的 catch 统一转成 `{code:1, stdout:"", stderr:""}`（dist/core/exec.js），
+ * 与「可执行文件存在但返回非零」在返回值上无法区分。
+ * harden-gate-native-toolchain D1：native 工具链探测复用本函数，零开销且语义无歧义。
+ */
+function exeReachable(name: string): boolean {
+	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+		if (!dir) continue;
+		try {
+			accessSync(join(dir, name), constants.X_OK);
+			return true;
+		} catch {
+			/* 该目录下没有，继续找 */
+		}
+	}
+	return false;
+}
 
 /**
  * cmd.exe 是否可达（平台身份判定的唯一依据）。
@@ -83,18 +127,7 @@ let execPlatform: "native" | "windows" | null = null;
  */
 function cmdExeReachable(): boolean {
 	if (process.platform === "win32") return true;
-	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-		if (!dir) continue;
-		for (const name of ["cmd.exe", "cmd"]) {
-			try {
-				accessSync(join(dir, name), constants.X_OK);
-				return true;
-			} catch {
-				/* 该目录下没有，继续找 */
-			}
-		}
-	}
-	return false;
+	return exeReachable("cmd.exe") || exeReachable("cmd");
 }
 
 /* 模块级会话状态（session_start 重置；ESM 模块缓存可能跨会话残留，显式清零） */
@@ -139,6 +172,8 @@ export default function (pi: ExtensionAPI) {
 		gateOkStates = new Map();
 		eslintCacheOff = false;
 		execPlatform = null; // 平台判定随会话边界重判（spec：判定在会话内稳定）
+		nativeToolchain = { backend: null, frontend: null }; // 工具链探测随会话边界重探（D3）
+		toolchainDownNotified = { backend: false, frontend: false }; // 短路边沿状态随会话边界清零（D5）
 		resetEditMapState(); // edit.map 归属累计随会话边界清零（跨 session 并集由库内 base 续接）
 		// 基线初始化：会话开始时的 git 脏文件（含上个会话残留）全部进基线不触发
 		try {
@@ -174,6 +209,8 @@ export default function (pi: ExtensionAPI) {
 		gateOkStates = new Map();
 		eslintCacheOff = false;
 		execPlatform = null;
+		nativeToolchain = { backend: null, frontend: null };
+		toolchainDownNotified = { backend: false, frontend: false };
 		ownerSessionId = null;
 		resetEditMapState();
 	});
@@ -242,8 +279,9 @@ export default function (pi: ExtensionAPI) {
 		// 粘性命令永远不是 "pnpm lint" 即后端侧；pnpm lint 即前端侧
 		const stickyBackend = [...stickyFailures].some((c) => c !== "pnpm lint");
 		const stickyFrontend = stickyFailures.has("pnpm lint");
-		const isBackend = trigBackend || stickyBackend;
-		const isFrontend = trigFrontend || stickyFrontend;
+		// 短路（step 3.6）可中途置 false，故用 let
+		let isBackend = trigBackend || stickyBackend;
+		let isFrontend = trigFrontend || stickyFrontend;
 		if (!isBackend && !isFrontend) return; // 纯文档改动/无变化放行（跳过侧零记账）
 
 		// 3.5 执行链路判定 + interop 健康探测（harden-gate-interop-health 语义在
@@ -298,11 +336,75 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		// 3.6 native 工具链可达性短路（harden-gate-native-toolchain D1/D2/D3/D5）：
+		//     PATH 缺工具链时整侧跳过（fail-open），另一侧照常；探测 accessSync 文件
+		//     可达性（非 exec，spawn ENOENT 与真实失败不可区分）；按侧缓存会话内稳定；
+		//     进入短路态的首个回合记一条 toolchain-down + 发一条 steer（边沿触发，
+		//     探测缓存后结果恒定，每回合重记违反低噪声约束）。windows 模式不参与
+		//     （Windows 绝对路径执行，不经 bash PATH 查找）。
+		if (execPlatform === "native") {
+			if (isBackend && nativeToolchain.backend === null) {
+				nativeToolchain.backend = exeReachable("go") && exeReachable("golangci-lint");
+			}
+			if (isFrontend && nativeToolchain.frontend === null) {
+				nativeToolchain.frontend = exeReachable("pnpm");
+			}
+			if (isBackend && nativeToolchain.backend === false) {
+				if (!toolchainDownNotified.backend) {
+					toolchainDownNotified.backend = true;
+					if (sessionId) {
+						logPolicyDecision(repoRoot, {
+							sessionId,
+							policy: "quality-gate",
+							action: "fail-open",
+							reasonCode: "toolchain-down",
+							target: "backend",
+						});
+					}
+					pi.sendMessage(
+						{
+							customType: "quality-gate-toolchain-down",
+							content:
+								"⚠️ 质量门禁本轮跳过（后端）：本机 PATH 缺 go / golangci-lint（非代码问题，本机链路）。请检查 pi 启动环境 PATH（工具链安装位置或启动方式，如经 systemd/桌面自启时未走 login profile），修复后重启会话恢复门禁覆盖",
+						},
+						{ deliverAs: "steer", triggerTurn: true },
+					);
+				}
+				isBackend = false;
+			}
+			if (isFrontend && nativeToolchain.frontend === false) {
+				if (!toolchainDownNotified.frontend) {
+					toolchainDownNotified.frontend = true;
+					if (sessionId) {
+						logPolicyDecision(repoRoot, {
+								sessionId,
+								policy: "quality-gate",
+								action: "fail-open",
+								reasonCode: "toolchain-down",
+								target: "frontend",
+							});
+					}
+					pi.sendMessage(
+						{
+							customType: "quality-gate-toolchain-down",
+							content:
+								"⚠️ 质量门禁本轮跳过（前端）：本机 PATH 缺 pnpm（非代码问题，本机链路）。请检查 pi 启动环境 PATH（工具链安装位置或启动方式，如经 systemd/桌面自启时未走 login profile），修复后重启会话恢复门禁覆盖",
+						},
+						{ deliverAs: "steer", triggerTurn: true },
+					);
+				}
+				isFrontend = false;
+			}
+			if (!isBackend && !isFrontend) return; // 两侧均被短路：本轮零命令零记账（零 gate.check 假失败）
+		}
+
 		// 4. 跑快门禁（单条命令量级秒级；命令集与执行平台正交，仅链路不同）
 		const failures: string[] = [];
 		// 环境故障提示段（harden-gate-interop-health：diag 特征命中的失败单独归因，
-		// 不混入门禁失败列表——避免 agent 误当代码问题去修）
-		const envFailures: string[] = [];
+		// 不混入门禁失败列表——避免 agent 误当代码问题去修）。harden-gate-native-toolchain
+		// D4：kind 分流恢复建议——interop（仅 windows）建议 wsl --shutdown；toolchain
+		//（仅 native）建议修 pi 启动环境 PATH，不得错发（spec 链路标注约束）。
+		const envFailures: { kind: "interop" | "toolchain"; text: string }[] = [];
 		// gate.check 记账（harness-quick-wins D3/D4）：ok=false 全量记 + 分级前缀；
 		// ok=true 采样记（锚点 flip / 每 N 连续成功 sampled，状态机 lib/gate-sample.ts）。
 		// change 绑定与 constraint-injection 共享 detectActiveChange（同源，lazy 一次）；
@@ -324,9 +426,19 @@ export default function (pi: ExtensionAPI) {
 				// 环境故障（spec：不进粘性、不按 [回归]/[中间态] 分级）：探测通过但命令
 				// 执行中途 interop 挂的兜底；gate.check 照记全量失败（diag 含特征可考古）。
 				// 仅 windows 模式参与判定：native 无跨系统链路，同名字符串不得触发环境归因。
-				envFailures.push(
-					`[${cmd}${linkTag}] exit ${code}：输出含 WSL interop 故障特征（UtilAcceptVsock），判定为环境故障而非代码问题；不计入粘性重跑，恢复后自动续跑`,
-				);
+				envFailures.push({
+					kind: "interop",
+					text: `[${cmd}${linkTag}] exit ${code}：输出含 WSL interop 故障特征（UtilAcceptVsock），判定为环境故障而非代码问题；不计入粘性重跑，恢复后自动续跑`,
+				});
+			} else if (execPlatform === "native" && isToolNotFound(output)) {
+				// 工具链缺失归因（harden-gate-native-toolchain D4）：探测缓存后 PATH 内文件
+				// 被删的窗口期兑底；不进粘性、不分级，gate.check 照记全量失败（diag 含特征
+				// 可考古）。仅 native 模式参与判定：windows 用 Windows 绝对路径执行不经 bash
+				// PATH 查找，同名字符串不得触发跨语义归因（与 isInteropFailure 门控对称）。
+				envFailures.push({
+					kind: "toolchain",
+					text: `[${cmd}${linkTag}] exit ${code}：输出含工具缺失特征（command not found），判定为本机工具链环境问题而非代码问题；不计入粘性重跑，修复 pi 启动环境 PATH 后重启会话恢复`,
+				});
 			} else {
 				stickyFailures.add(cmd);
 				failures.push(
@@ -484,13 +596,27 @@ export default function (pi: ExtensionAPI) {
 				{ deliverAs: "steer", triggerTurn: true },
 			);
 		}
-		// 5.5 环境故障 → 单独软提示（不与门禁失败混排；agent 不应据此修代码）。
-		// 仅 windows 模式能填充 envFailures（native 无跨系统链路，见 gateLog 的条件）。
+		// 5.5 环境故障 → 按特征分流软提示（不与门禁失败混排；agent 不应据此修代码）。
+		// interop 条目仅 windows 可产生、toolchain 条目仅 native 可产生（gateLog 门控）；
+		// 恢复建议按 kind 分流，不得错发（native 场景禁「重启 WSL」类跨系统建议）。
 		if (envFailures.length > 0) {
+			const interopItems = envFailures.filter((e) => e.kind === "interop");
+			const toolchainItems = envFailures.filter((e) => e.kind === "toolchain");
+			const parts: string[] = [];
+			if (interopItems.length > 0) {
+				parts.push(
+					`⚠️ 门禁遭遇 WSL interop 环境故障（非代码问题，不计粘性）：\n\n${interopItems.map((e) => e.text).join("\n\n")}\n\n建议：wsl --shutdown 重启 WSL 后继续；恢复后下回合门禁自动续跑`,
+				);
+			}
+			if (toolchainItems.length > 0) {
+				parts.push(
+					`⚠️ 门禁遭遇本机工具链环境问题（非代码问题，不计粘性）：\n\n${toolchainItems.map((e) => e.text).join("\n\n")}\n\n建议：检查 pi 启动环境 PATH（go/golangci-lint/pnpm 安装位置或启动方式），修复后重启会话恢复门禁覆盖`,
+				);
+			}
 			pi.sendMessage(
 				{
-					customType: "quality-gate-interop-failure",
-					content: `⚠️ 门禁遭遇 WSL interop 环境故障（非代码问题，不计粘性）：\n\n${envFailures.join("\n\n")}\n\n建议：wsl --shutdown 重启 WSL 后继续；恢复后下回合门禁自动续跑`,
+					customType: "quality-gate-env-failure",
+					content: parts.join("\n\n"),
 				},
 				{ deliverAs: "steer", triggerTurn: true },
 			);

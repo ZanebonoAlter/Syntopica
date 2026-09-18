@@ -17,7 +17,7 @@ process.on('warning', (w) => {
 	}
 });
 
-const { classifyFailure, truncateDiag, truncateDiagGate, isInteropFailure } = require('./.fcls.cjs');
+const { classifyFailure, truncateDiag, truncateDiagGate, isInteropFailure, isToolNotFound } = require('./.fcls.cjs');
 
 const checks = [];
 const check = (name, ok) => checks.push([name, ok]);
@@ -94,6 +94,24 @@ const check = (name, ok) => checks.push([name, ok]);
 	check('I7 行中非行首 WSL ERROR 不命中', isInteropFailure('log line mid text <3>WSL (1 - ) ERROR: X') === false);
 	// 边界：null/undefined 输入不抛异常（防 defensive）
 	check('I8 null/undefined 输入安全返回 false', isInteropFailure(null) === false && isInteropFailure(undefined) === false);
+}
+
+/* ---------- 段一·II：isToolNotFound（harden-gate-native-toolchain，native 工具链缺失特征） ---------- */
+{
+	// 真实样本（events.db 2026-09-17 事故实测形态）必中：bash: line 1: <exe>: command not found
+	check('T1 go 缺失样本命中', isToolNotFound('bash: line 1: go: command not found') === true);
+	check('T1b golangci-lint 缺失样本命中', isToolNotFound('bash: line 1: golangci-lint: command not found') === true);
+	// 多行输出：特征行出现在中间（命令 stderr 前有正常 stdout）仍命中
+	check('T2 多行输出中间命中', isToolNotFound('running gate...\nbash: line 1: go: command not found\ndone') === true);
+	// 反例：真实代码失败不命中（保持既有粘性/分级语义）
+	check('T3 lint 发现不命中', isToolNotFound('internal/reader/handler/opml.go:51:1: commentFormatting: put a space between `//` and comment text (gocritic)') === false);
+	check('T4 测试失败不命中', isToolNotFound('FAIL syntopica-backend/internal/admin [build failed]') === false);
+	check('T5 编译错误不命中', isToolNotFound('./foo.go:12:5: undefined: Foo') === false);
+	check('T6 空输出不命中', isToolNotFound('') === false);
+	// 边界：null/undefined 输入不抛异常（防 defensive，对齐 I8）
+	check('T7 null/undefined 输入安全返回 false', isToolNotFound(null) === false && isToolNotFound(undefined) === false);
+	// 语义划界：interop 特征不触发 toolchain 归因（两特征集正交）
+	check('T8 interop 特征不命中 toolchain 归因', isToolNotFound('<3>WSL (1751 - ) ERROR: UtilAcceptVsock:251: accept4 failed 110') === false);
 }
 
 /* ---------- 段二：telemetry 集成（成功不产出 failure） ---------- */

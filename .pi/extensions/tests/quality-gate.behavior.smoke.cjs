@@ -1,7 +1,9 @@
 // quality-gate 行为级 smoke（harden-gate-interop-health test-cases 主链路步 1-7）：
 // mock pi + ctx 驱动 quality-gate bundle 的 turn_end handler，真 tmp events.db 断言。
 // 场景 A 正常态(windows) / B 探测故障短路 / C 兜底 diag 特征(粘性豁免) / D 真实失败粘性 /
-// E native 模式正常态 / F native 失败归因与链路标注（linux-native-dev-environment 新增）。
+// E native 模式正常态 / F native 失败归因与链路标注（linux-native-dev-environment 新增）/
+// G native 工具链缺失侧级短路 / H native 工具缺失兑底归因 / I windows 不受工具链探测影响
+// （harden-gate-native-toolchain 新增）。
 // 模块级状态（sticky/snapshot/gateOkStates/execPlatform）由各场景前的 session_start 重置。
 // 由 run-harness-smoke.sh 调用（先 esbuild 产出 .qgateb.cjs）。断言失败 exit 1。
 //
@@ -27,7 +29,10 @@ const check = (name, ok) => checks.push([name, ok]);
 function mkrepo() {
 	const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'interop-smoke-'));
 	fs.mkdirSync(path.join(repo, 'backend-go'), { recursive: true });
+	fs.mkdirSync(path.join(repo, 'front', 'app'), { recursive: true });
 	fs.writeFileSync(path.join(repo, 'backend-go', 'a.go'), 'package x\n');
+	fs.writeFileSync(path.join(repo, 'backend-go', 'b.go'), 'package x\n');
+	fs.writeFileSync(path.join(repo, 'front', 'app', 'x.ts'), 'export {}\n');
 	return repo;
 }
 
@@ -36,9 +41,9 @@ const EDIT_TURN = { toolResults: [{ toolName: 'edit' }] };
 const CHAT_TURN = { toolResults: [{ toolName: 'read' }] };
 
 /** git 三件套 mock：ls-files 按 hasFile 决定是否返回 a.go；rev-parse 返回真 repo 路径 */
-const gitRouter = (repoRoot, hasFile) => (cmd, args) => {
+const gitRouter = (repoRoot, files) => (cmd, args) => {
 	if (cmd === 'git' && args[0] === 'diff') return { code: 0, stdout: '', stderr: '' };
-	if (cmd === 'git' && args[0] === 'ls-files') return { code: 0, stdout: hasFile ? 'backend-go/a.go' : '', stderr: '' };
+	if (cmd === 'git' && args[0] === 'ls-files') return { code: 0, stdout: files, stderr: '' };
 	if (cmd === 'git' && args[0] === 'rev-parse') return { code: 0, stdout: repoRoot, stderr: '' };
 	throw new Error(`unexpected git: ${cmd} ${args.join(' ')}`);
 };
@@ -61,10 +66,24 @@ const q = (repo, sql) => {
 /* 平台控制（见头部说明）：假 cmd.exe + PATH 注入 */
 const fakeWinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakewin-'));
 fs.writeFileSync(path.join(fakeWinDir, 'cmd.exe'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+// native 全工具链（harden-gate-native-toolchain）：无 cmd.exe，有 go/golangci-lint/pnpm
+const fakeNativeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakenative-'));
+for (const exe of ['go', 'golangci-lint', 'pnpm']) {
+	fs.writeFileSync(path.join(fakeNativeDir, exe), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+}
+// 仅 pnpm（后端工具链缺失变体：go/golangci-lint 不在）
+const fakePnpmOnlyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakepnpm-'));
+fs.writeFileSync(path.join(fakePnpmOnlyDir, 'pnpm'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 const REAL_PATH = process.env.PATH ?? '';
-/** windows：假 cmd.exe 目录置于 PATH 首位；native：PATH 置空（cmd.exe 不可达） */
+/** windows：假 cmd.exe 目录置于 PATH 首位；native：指向假工具链目录（无 cmd.exe）；
+ *  native-pnpm-only：仅 pnpm；windows-nogo：cmd.exe 在但 go/golangci-lint/pnpm 不在 */
 const setPlatform = (mode) => {
-	process.env.PATH = mode === 'windows' ? `${fakeWinDir}${path.delimiter}${REAL_PATH}` : '';
+	process.env.PATH =
+		mode === 'windows' ? `${fakeWinDir}${path.delimiter}${REAL_PATH}`
+		: mode === 'native' ? fakeNativeDir
+		: mode === 'native-pnpm-only' ? fakePnpmOnlyDir
+		: mode === 'windows-nogo' ? `${fakeWinDir}${path.delimiter}${fakePnpmOnlyDir}`
+		: '';
 };
 
 /** 注册扩展到 mock pi，返回 { handlers, messages, execCalls, execOpts } */
@@ -92,7 +111,7 @@ const setup = (router) => {
 		const repo = mkrepo();
 		let fileAdded = false;
 		const router = async (cmd, args) => {
-			if (cmd === 'git') return gitRouter(repo, fileAdded)(cmd, args);
+			if (cmd === 'git') return gitRouter(repo, fileAdded ? 'backend-go/a.go' : '')(cmd, args);
 			if (cmd === 'bash') return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
 			if (cmd === 'cmd.exe') {
 				const cl = args.join(' ');
@@ -118,7 +137,7 @@ const setup = (router) => {
 		const repo = mkrepo();
 		let fileAdded = false;
 		const router = async (cmd, args) => {
-			if (cmd === 'git') return gitRouter(repo, fileAdded)(cmd, args);
+			if (cmd === 'git') return gitRouter(repo, fileAdded ? 'backend-go/a.go' : '')(cmd, args);
 			if (cmd === 'cmd.exe') throw new Error('Command timed out'); // vsock 死：全部 reject
 			throw new Error(`unexpected: ${cmd}`);
 		};
@@ -147,7 +166,7 @@ const setup = (router) => {
 		let cmdCallsTurn2 = 0;
 		const VSOCK = '<3>WSL (1751 - ) ERROR: UtilAcceptVsock:251: accept4 failed 110';
 		const router = async (cmd, args) => {
-			if (cmd === 'git') return gitRouter(repo, fileAdded)(cmd, args);
+			if (cmd === 'git') return gitRouter(repo, fileAdded ? 'backend-go/a.go' : '')(cmd, args);
 			if (cmd === 'bash') return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
 			if (cmd === 'cmd.exe') {
 				if (turn === 2) cmdCallsTurn2++;
@@ -163,7 +182,7 @@ const setup = (router) => {
 		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-c'));
 		check('C1 兜底失败 gate.check 全量落库（ok=false ≥3）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0")[0].n >= 3);
 		check('C2 探测健康本身零 policy.decision', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n === 0);
-		check('C3 环境归因 steer（interop-failure 含 UtilAcceptVsock）', messages.some(({ m }) => m.customType === 'quality-gate-interop-failure' && m.content.includes('UtilAcceptVsock')));
+		check('C3 环境归因 steer（interop-failure 含 UtilAcceptVsock）', messages.some(({ m }) => m.customType === 'quality-gate-env-failure' && m.content.includes('UtilAcceptVsock')));
 		check('C4 不混入门禁失败 steer（无 [回归]/[中间态]）', !messages.some(({ m }) => m.customType === 'quality-gate-failure'));
 		turn = 2;
 		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-c')); // 纯对话：粘性豁免
@@ -178,7 +197,7 @@ const setup = (router) => {
 		let turn = 1;
 		let lintReran = 0;
 		const router = async (cmd, args) => {
-			if (cmd === 'git') return gitRouter(repo, fileAdded)(cmd, args);
+			if (cmd === 'git') return gitRouter(repo, fileAdded ? 'backend-go/a.go' : '')(cmd, args);
 			if (cmd === 'bash') return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
 			if (cmd === 'cmd.exe') {
 				const cl = args.join(' ');
@@ -211,7 +230,7 @@ const setup = (router) => {
 		let fileAdded = false;
 		const backendCmds = [];
 		const router = async (cmd, args, opts) => {
-			if (cmd === 'git') return gitRouter(repo, fileAdded)(cmd, args);
+			if (cmd === 'git') return gitRouter(repo, fileAdded ? 'backend-go/a.go' : '')(cmd, args);
 			if (cmd === 'bash') {
 				const cl = args.join(' ');
 				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
@@ -242,7 +261,7 @@ const setup = (router) => {
 		let lintReran = 0;
 		const VSOCK = '<3>WSL (1751 - ) ERROR: UtilAcceptVsock:251: accept4 failed 110';
 		const router = async (cmd, args) => {
-			if (cmd === 'git') return gitRouter(repo, fileAdded)(cmd, args);
+			if (cmd === 'git') return gitRouter(repo, fileAdded ? 'backend-go/a.go' : '')(cmd, args);
 			if (cmd === 'bash') {
 				const cl = args.join(' ');
 				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
@@ -260,12 +279,111 @@ const setup = (router) => {
 		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-f'));
 		fileAdded = true;
 		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-f'));
-		check('F1 native 下 interop 特征串不触发环境归因', !messages.some(({ m }) => m.customType === 'quality-gate-interop-failure'));
+		check('F1 native 下 interop 特征串不触发环境归因', !messages.some(({ m }) => m.customType === 'quality-gate-env-failure'));
 		check('F2 native 失败仍走分级 steer（[中间态]）', messages.some(({ m }) => m.customType === 'quality-gate-failure' && m.content.includes('[中间态]')));
 		check('F3 native 失败 steer 标本机链路、不含 wsl环境', messages.some(({ m }) => m.customType === 'quality-gate-failure' && m.content.includes('(本机)') && !m.content.includes('wsl环境')));
 		turn = 2;
 		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-f'));
 		check('F4 native 失败进粘性：纯对话 turn 重跑（既有语义）', lintReran === 1);
+	}
+
+	// ============ 场景 G：native 工具链缺失侧级短路（harden-gate-native-toolchain） ============
+	// PATH 仅含 pnpm：后端探测（go+golangci-lint 双检）不可达 → 整侧短路；前端照常。
+	{
+		setPlatform('native-pnpm-only');
+		const repo = mkrepo();
+		let files = ''; // 空基线（session_start 后再放文件，与场景 A-F 同模式）
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (cl.includes('eslint')) return { code: 0, stdout: '', stderr: '' }; // 前端 lint 全绿
+				throw new Error(`unexpected bash gate cmd: ${cl}`); // 后端命令被短路，不应到达
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages, execCalls } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-g'));
+		files = 'backend-go/a.go\nfront/app/x.ts'; // 双侧同时触发：验证前端不受后端短路影响
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-g'));
+		const polG = q(repo, "SELECT payload FROM events WHERE kind='policy.decision'");
+		check('G1 后端短路零 gate.check 假失败（仅前端 ok=true 锚点入账）',
+			q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0").length === 0 || q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0")[0].n === 0);
+		check('G1b gate.check 无后端命令记录', !q(repo, "SELECT payload FROM events WHERE kind='gate.check'").some((r) => /golangci|go (vet|build|test)/.test(r.payload)));
+		check('G2 恰一条 toolchain-down(target=backend) 边沿记账', polG.length === 1
+			&& polG[0].payload.includes('"reasonCode":"toolchain-down"')
+			&& polG[0].payload.includes('"target":"backend"'));
+		check('G3 短路 steer 提示 PATH 恢复方向、无 WSL 建议', messages.some(({ m }) => m.customType === 'quality-gate-toolchain-down'
+			&& m.content.includes('PATH') && !m.content.includes('wsl --shutdown')));
+		check('G4 后端门禁命令零执行（无 go/golangci-lint/change-scope）', !execCalls.some((c) => c.includes('golangci-lint') || /\bgo (vet|build|test)\b/.test(c) || c.includes('change-scope')));
+		check('G5 前端照常执行（pnpm eslint 跑了）', execCalls.some((c) => c.includes('eslint')));
+		files = 'backend-go/a.go\nbackend-go/b.go\nfront/app/x.ts'; // 新后端文件再触发：仍短路但不重复记
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-g'));
+		check('G6 边沿触发：第二回合短路不重复记账不发 steer', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n === 1
+			&& messages.filter(({ m }) => m.customType === 'quality-gate-toolchain-down').length === 1);
+	}
+
+	// ============ 场景 H：native 工具缺失兑底归因（探测后文件被删窗口期） ============
+	// 探测时工具链在（PATH 假工具），执行时 bash 返回 command not found：不进粘性、不分级。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		let files = '';
+		let turn = 1;
+		let gateCmdsTurn2 = 0;
+		const NOT_FOUND = 'bash: line 1: go: command not found';
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (turn === 2) gateCmdsTurn2++;
+				if (cl.includes('golangci-lint')) return { code: 127, stdout: '', stderr: 'bash: line 1: golangci-lint: command not found' };
+				return { code: 127, stdout: '', stderr: NOT_FOUND }; // vet/build
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-h'));
+		files = 'backend-go/a.go';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-h'));
+		check('H1 兑底失败 gate.check 全量落库（ok=false ≥3，diag 含特征可考古）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0")[0].n >= 3);
+		check('H2 环境归因 steer 归因工具链而非代码（含 command not found）', messages.some(({ m }) => m.customType === 'quality-gate-env-failure'
+			&& m.content.includes('command not found') && m.content.includes('非代码问题')));
+		check('H3 工具链归因文案给 PATH 建议、不给 wsl --shutdown', messages.some(({ m }) => m.customType === 'quality-gate-env-failure'
+			&& m.content.includes('PATH') && !m.content.includes('wsl --shutdown')));
+		check('H4 不混入门禁失败 steer（无 [回归]/[中间态] 分级）', !messages.some(({ m }) => m.customType === 'quality-gate-failure'));
+		check('H5 零 policy.decision（兑底路径不记 toolchain-down，探测是过的）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n === 0);
+		turn = 2;
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-h')); // 纯对话：粘性豁免
+		check('H6 粘性豁免：下 turn 纯对话零后端命令重跑', gateCmdsTurn2 === 0);
+	}
+
+	// ============ 场景 I：windows 模式不受工具链探测影响 ============
+	// cmd.exe 可达但 PATH 无 go/golangci-lint/pnpm：windows 用 Windows 绝对路径执行，
+	// 不经 bash PATH 查找，MUST 不探测不短路。
+	{
+		setPlatform('windows-nogo');
+		const repo = mkrepo();
+		let files = '';
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+			if (cmd === 'cmd.exe') {
+				const cl = args.join(' ');
+				if (cl.includes('echo ok')) return { code: 0, stdout: 'ok', stderr: '' };
+				return { code: 0, stdout: '0 issues.', stderr: '' }; // 全绿
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-i'));
+		files = 'backend-go/a.go';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-i'));
+		check('I1 windows 下 PATH 缺工具链不短路（gate.check ≥3 照常）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check'")[0].n >= 3);
+		check('I2 零 toolchain-down 记账', !q(repo, "SELECT payload FROM events WHERE kind='policy.decision'").some((r) => r.payload.includes('toolchain-down')));
+		check('I3 零环境 steer', messages.length === 0);
 	}
 
 	let fail = 0;

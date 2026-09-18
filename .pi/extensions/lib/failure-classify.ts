@@ -122,6 +122,23 @@ export function isInteropFailure(output: string): boolean {
 	return INTEROP_FAILURE_RE.test(output ?? "");
 }
 
+/** native 模式工具链缺失特征（harden-gate-native-toolchain design D4）：
+ *  bash 经 PATH 查找失败的标准文案 `bash: line 1: <exe>: command not found`
+ *  （events.db 2026-09-17 事故实测形态，单次事故 945 条假失败）。
+ *  仅 native 模式参与判定（quality-gate 侧门控）：windows 模式用 Windows 绝对路径执行，
+ *  不经 bash PATH 查找，同名字符串不得触发跨语义环境归因——与 isInteropFailure 
+ *  仅 windows 判定对称。两特征集正交（interop 特征不含 command not found，反之亦然），
+ *  错发恢复建议（如 native 场景建议重启 WSL）由调用侧文案分流防。
+ *  样本：`bash: line 1: go: command not found` */
+const TOOL_NOT_FOUND_RE = /command not found/i;
+
+/** 判定门禁命令输出是否为 native 工具链缺失（非代码问题）。
+ *  供 quality-gate gateLog 分流：命中 → 不进粘性、归因环境（工具链缺失）；
+ *  未命中 → 既有语义（真实代码失败照进粘性/分级）。 */
+export function isToolNotFound(output: string): boolean {
+	return TOOL_NOT_FOUND_RE.test(output ?? "");
+}
+
 function classifyStage(
 	started: boolean | undefined,
 	status: unknown,
