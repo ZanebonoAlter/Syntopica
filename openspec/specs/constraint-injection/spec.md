@@ -353,6 +353,8 @@ extension 的纯逻辑（档位匹配、栈判定、速览提取、节提取、�
 
 **无自身状态时的取用规则**（防跨会话借用）：会话有自身状态 → 用自身的；会话为父会话的 fork/子线程（父子关系可证）→ SHALL 显式继承父会话状态并以 `mode.set source=inherit` 记账；其余情况（无状态、无父子关系、无法确定来源）→ SHALL 视为未绑定（仅注入索引），MUST NOT 借用任意他会话的状态。按 `sessionId` 从事实库恢复档位（`resume` / `reload` / `startup`）的既有语义保持不变。
 
+**子线程检测的通道无关性**：父子关系判定 SHALL 只依据会话自身证据（会话文件 header 的 `parentSession`、fork 路径模式），MUST NOT 绑定具体派发通道——pi-subagents 独立 runner 子线程与 pi-web resourceLoader 子会话（profile 开启扩展加载后）SHALL 走同一继承链路；跨进程场景父会话内存状态不可见，继承 SHALL 经事实库回退（用父会话 id 查其最近一条可恢复 `mode.set`）完成；父子关系不可证（无 `parentSession` 且路径不可解）时 SHALL 退化为未激活，MUST NOT 借用他会话状态。跨进程继承的注入通道为全新会话首投递（子线程 system prompt 独立构建），MUST NOT 因父会话已投递过同内容而抑制投递；进程内 fork 的指纹随 channel 拷贝语义保持不变。
+
 **有界性**：会话条目 SHALL 有数量上限与最近使用淘汰（长跑进程不得无界增长）；extension rebind 时 SHALL 只重置本会话条目。无 `sessionId` 的非真实会话语境（烟测 stub）SHALL 使用单一兜底槽位，行为与隔离前等价。
 
 #### Scenario: 两会话交叉绑定互不污染
@@ -380,7 +382,12 @@ extension 的纯逻辑（档位匹配、栈判定、速览提取、节提取、�
 - **AND** 事实库出现一条该子会话的 `mode.set`，`source=inherit`、`boundChange=X`
 - **AND** 子线程活动 MUST NOT 清零或改写主会话的档位与命中集
 
-> 实现口径：跨进程时父会话的内存状态不可见，继承 SHALL 经**事实库回退**（用父会话 id 查其最近一条可恢复 `mode.set`）完成；父子关系不可证（无 `parentSession` 且路径不可解）时 SHALL 退化为未激活，MUST NOT 借用他会话状态。
+#### Scenario: 子线程显式继承父会话（pi-web 通道）
+
+- **WHEN** 主会话绑定 change X 后经 pi-web Agent 工具用带扩展 profile（`load_extensions: true`）派发子线程（独立进程、独立 sessionId、会话文件 header 带 `parentSession`）
+- **THEN** 子线程扩展加载后按同一继承链路注入带 X 的完整约束块（档位基础块 + X 声明的域）
+- **AND** 事实库出现一条该子会话的 `mode.set`，`source=inherit`、`boundChange=X`
+- **AND** 子线程活动 MUST NOT 清零或改写主会话的档位与命中集
 
 #### Scenario: 命中集按会话隔离
 
