@@ -88,6 +88,21 @@ function goToQueues() {
   color: var(--color-error);
 }
 
+/* 窄屏（mobile-viewport-stage1）：375 顶栏预算内压缩进度 chip，文本超长截断（防顶栏 flex 溢出互叠） */
+@media (max-width: 767.98px) {
+  .queue-chip {
+    max-width: 10rem;
+    min-width: 0;
+  }
+
+  .queue-chip__text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
 .queue-chip--failed .queue-chip__icon {
   color: var(--color-error);
 }

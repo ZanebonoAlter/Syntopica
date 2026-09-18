@@ -570,6 +570,25 @@ img[src*="Base64-Image-Removed"] {
     padding: 0.85rem 1rem;
   }
 
+  /* mobile-viewport-stage1：窄屏阅读态头部两行化——
+     badge(flex-shrink:0，204px) 与操作组(flex-shrink:0，315px) 在 375 下合计溢出，
+     header-left(min-width:0) 被压靖后 badge 从盒内溢出与操作组互叠；wrap 两行 + badge 文本截断修复 */
+  .article-header {
+    flex-wrap: wrap;
+    row-gap: 0.4rem;
+  }
+
+  .feed-badge {
+    max-width: 100%;
+  }
+
+  .feed-badge span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .article-title-full {
     font-size: 1.6rem;
   }

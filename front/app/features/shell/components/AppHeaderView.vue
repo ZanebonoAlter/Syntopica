@@ -157,6 +157,20 @@ import '~/components/layout/AppHeader.css'
     padding: 0 0.75rem;
   }
 
+  /* 溢出菜单层级修复：backdrop-filter 令 .app-header 自成 stacking context，
+     内部 z:60 的 .overflow-menu 被锁在本层，与 transform 虚拟列表（DOM 靠后）互叠时被盖。
+     窄屏把整个 header 提到内容面板之上（抽屉 scrim 1000 / 面板 1001 仍在其上）。 */
+  .app-header {
+    position: relative;
+    z-index: 900;
+  }
+
+  /* 375 顶栏预算：汉堡(40)+进度chip(≤160)+铃铛(40)+溢出(40)+间隙/padding≈满宽，
+     logo 及宽屏 toggleSidebar 汉堡让位（防 flex 溢出互叠——logo-container min-content 不收缩） */
+  .logo-container {
+    display: none;
+  }
+
   .drawer-menu-btn {
     display: flex;
   }

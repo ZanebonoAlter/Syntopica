@@ -17,6 +17,7 @@
 ## 4. 页面窄屏走查修复
 
 - [x] 4.1 逐页 375×667 走查修复：settings / tags / discovery / 日报页 + 主工作台 empty（FeedEmptyGuide）与初始化 error 态——修横向溢出与不可点元素（chips 加 overflow-x-auto、按钮全宽等按需）；验证：agent-browser 375×667 逐页截图存 `openspec/changes/mobile-viewport-stage1/verification/`，每页 `document.documentElement.scrollWidth <= 375`（验收：discovery/settings/tags 均 375 ✓，截图 narrow-375x667-{page}.png；tags 页无独立日报只读入口——日报在 board 详情内，生成按钮会触发任务不在验收范围，跳过留痕）
+- [x] 4.1+（验收后补遗，用户实测发现三缺陷并修复）：① 顶栏双汉堡 + logo-container(195px) 与进度 chip(204px) flex 溢出互叠——窄屏隐藏 `.logo-container`（logo+宽屏 toggleSidebar 汉堡让位）、chip 压缩 max-width:10rem+ellipsis；② 「⋯」溢出菜单被虚拟列表盖住——`.app-header` 的 backdrop-filter 自成 stacking context 锁住内部 z:60 弹层，窄屏 header 提升 z-index:900（抽屉 1000/1001 仍在其上）；③ 阅读态 feed 徽章(204px, shrink:0) 与操作组(315px, shrink:0) 合计溢出、header-left 被压慴后 badge 溢出互叠——article-header wrap 两行化 + badge 文本截断；复验：elementFromPoint 命中菜单项本体、阅读态 header 两行高 92px 无相交、截图 narrow-375x667-{list-fixed,overflow-menu,reading-fixed}.png；测试 15/15（AppHeaderView 9 + TagQueueProgressChip 6）、lint 0 error、typecheck exit 0
 
 ## 5. 视觉验收（ui-design.md Acceptance）
 
