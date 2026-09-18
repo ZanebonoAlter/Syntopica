@@ -283,17 +283,40 @@ HTTPS_PROXY=http://proxy:port
 
 PostgreSQL 数据通过 `./data/` 目录挂载持久化（`docker-compose.yml` 将 `./data/` 映射到 `/var/lib/postgresql`）。
 
-**备份**：
+**定时备份（每日自动，add-pg-key-tables-backup）**：
+
+- 脚本：`scripts/db/backup-key-tables.sh`（也可手动跑）；输出 `backups/pg-key-<timestamp>.dump`（`pg_dump -Fc` 自定义格式，单份约 580MB）
+- 范围：**排除法**——排除日志/追踪/缓存/队列等可再生表（`ai_call_logs`、`otel_spans`、`ai_embedding_cache`、`firecrawl_jobs`、`tag_jobs`、`embedding_queues`、`merge_reembedding_queues`、`notifications`、`discovery_runs`、`discovery_run_items`、`cross_board_relation_runs`、`topic_watch_hits`、`scheduler_tasks`、`reading_behaviors`、`schema_migrations`），其余表全部自动纳入；**新加日志/缓存类表须手动补进脚本内 `EXCLUDED` 清单**。已知边界：排除表的 serial 序列（如 `ai_call_logs_id_seq`）会作为空壳进档（pg_dump 18 无序列级排除），恢复无害——PG 对同名序列直接复用，AutoMigrate 建表不受影响（已实测）
+- 定时：crontab 每日 04:00（Asia/Shanghai），日志追加 `logs/db-backup.log`；同一时刻至多一个备份进程（flock）
+- 保留：仅成功备份后轮转，按档名时间戳保留最近 7 份；失败不删旧档、不留残档
+
+重装/检查 crontab 条目（幂等）：
+
+```bash
+crontab -l | grep backup-key-tables || \
+  (crontab -l 2>/dev/null; echo '0 4 * * * cd '$PWD' && bash scripts/db/backup-key-tables.sh >> logs/db-backup.log 2>&1') | crontab -
+```
+
+**手工备份（即时全量 SQL 文本，供快速肉眼检视）**：
 
 ```bash
 docker exec syntopica-postgres pg_dump -U postgres syntopica > backup.sql
 ```
 
-**恢复**：
+**恢复（`-Fc` 定时备份档）**：恢复用同一容器镜像执行（保证 pg_restore 与 dump 版本一致）：
 
 ```bash
-cat backup.sql | docker exec -i syntopica-postgres psql -U postgres syntopica
+# 1. 校验档完整性（列出目录）
+docker exec -i syntopica-postgres pg_restore -l < backups/pg-key-<timestamp>.dump > /dev/null && echo OK
+
+# 2a. 整库恢复到空库（--clean 先删后建，覆盖现有库；--if-exists 防止对象不存在报错）
+docker exec -i syntopica-postgres pg_restore -U postgres -d syntopica --clean --if-exists < backups/pg-key-<timestamp>.dump
+
+# 2b. 只恢复单表（示例：articles 及其数据）
+docker exec -i syntopica-postgres pg_restore -U postgres -d syntopica --clean --if-exists -t articles < backups/pg-key-<timestamp>.dump
 ```
+
+恢复后 `schema_migrations` 无需手工补：后端启动时 GORM AutoMigrate 会自动重跑迁移。
 
 ### feed 图标目录（运行时资产，`data/icons/`）
 
@@ -313,7 +336,7 @@ cat backup.sql | docker exec -i syntopica-postgres psql -U postgres syntopica
    curl -s -o /dev/null -w '%{http_code}\n' http://<host>:5100/icons/feeds/<id>.<ext>   # 期望 200
    ```
 
-确实抓不到 favicon 的源会收敛为 `mdi:rss` + `icon_source=fallback`（前端显示 RSS 占位图标）；文件缺失且重抓失败时**不会**继续指向悬空路径。迁移检查清单里请把 `data/icons/` 与数据库备份并列——它是「和 DB 有隐式引用关系、但不在 DB 里」的那一类资产。
+确实抓不到 favicon 的源会收敛为 `mdi:rss` + `icon_source=fallback`（前端显示 RSS 占位图标）；文件缺失且重抓失败时**不会**继续指向悬空路径。迁移检查清单里请把 `data/icons/` 与数据库备份并列——它是「和 DB 有隐式引用关系、但不在 DB 里」的那一类资产（定时备份有意不携带它，缺失时自愈机制重抓）。
 
 ## 公开只读 Demo
 
