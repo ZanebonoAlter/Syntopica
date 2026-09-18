@@ -13,7 +13,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 | 扩展 | 挂点 | 触发 | 软硬 | fail 策略 | 事件库记账 |
 | --- | --- | --- | --- | --- | --- |
 | constraint-injection | `before_agent_start`（稳定层）+ `input`/`tool_execution_start`/`session_compact`（动态层） | 混合通道注入：稳定层 system prompt（档位生命周期内字节恒定）/ 动态层 steer 消息（指纹 diff，稳态零投递） | 软（不干预工具） | fail-open（注入失败不阻断） | constraint.inject / pin.* / mode.set（含 source） |
-| quality-gate | `turn_end` | 执行链路平台判定（`cmd.exe` 可达性）→ windows 模式：interop 健康探测，vsock 故障整轮短路（harden-gate-interop-health）；native 模式：本机工具链直接执行 + 工具链可达性探测，缺失侧短路（harden-gate-native-toolchain）；另落 `edit.map` 归属地图（增量路径 × boundChange 聚合，coordinate-concurrent-changes） | 软 steer 催修（windows 链路失败标（wsl环境），native 标本机；环境故障不计粘性） | fail-open（门禁故障放行） | gate.check / edit.map / policy.decision(interop-down / toolchain-down) |
+| quality-gate | `turn_end` | 执行链路平台判定（`cmd.exe` 可达性）→ windows 模式：interop 健康探测，vsock 故障整轮短路（harden-gate-interop-health）；native 模式：本机工具链直接执行 + 工具链可达性探测，缺失侧短路（harden-gate-native-toolchain）；另落 `edit.map` 归属地图（增量路径 × boundChange 聚合，coordinate-concurrent-changes）；失败报告按指纹去重（首现全块/持续单行/≥3 回合未修标记/转绿收尾）+ 并发外部归因（会话启动基线 ∪ 归属集合三向判定，attribute-concurrent-gate-noise） | 软 steer 催修（windows 链路失败标（wsl环境），native 标本机；环境故障不计粘性；[外部] 失败不催修不进粘性） | fail-open（门禁故障放行） | gate.check / edit.map / policy.decision(interop-down / toolchain-down / foreign-breakage) |
 | quota-gate | Agent 派发前 | 子线程派发前查额度 | 硬 block（低额度阻断派发） | fail-open（查询失败放行） | policy.decision（quota-low/exhausted=block、quota-query-failed=fail-open、fuzzy-model-resolve=warn） |
 | spec-gate | `tool_call` | bash 命中 `openspec archive` | 硬 block（归档门禁五检查：doc-impact/standards/尾三节/scenario-trace/UI 验收证据；另检查⑤'归档并发 warn 不 block：树上存在归属其他 active change 的未 commit 文件 → steer 提醒 + concurrent-dirty-tree 记账，冷启动零输出） | `--force` / `SPEC_GATE_BYPASS=1` 逃生口留痕 | policy.decision（archive-check-failed=block、explicit-bypass=bypass、acceptance-wording=warn、concurrent-dirty-tree=warn；UI 缺证据另记 ui-design-gate block ui-verification-missing） |
 | ui-design-gate | `tool_call` | implementation 档绑定 syntopica-ui schema change：Agent 派发与 edit/write 项目代码，major 原型未批准（合同 block）时拦截；当前 change 的 ui-design.md/ui-prototype/** 修复不受限 | 硬 block（legacy schema 仅 front mutation 每会话/change warn 一次） | fail-open（检查异常放行+告警+记账）；`UI_DESIGN_GATE_BYPASS=1` 显式旁路留痕 | policy.decision（ui-impact-missing/ui-impact-mismatch/ui-design-missing/ui-prototype-missing/ui-approval-pending=block、explicit-bypass=bypass、ui-gate-check-failed=fail-open；健康放行零记录） |
@@ -45,6 +45,13 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 **steer 分级**：失败以 `steer` 消息分级喂回——**[回归]**（上回合尚绿，agent 必须修，不得忽略）与**[中间态]**（从未绿的新代码中间态，agent 若正在推进可继续、回合末复检）；归档前全绿硬要求不变（开发执行规范 §11）。
 
 **记账口径**：成功事件采样记账（会话首条与转绿锚点必记，其后每 5 连续成功记 1 条），失败全量记账。**不跑**前端 typecheck/build 与完整集成测试（不带 -short 的 go test）——这是门禁分层设计（与平台无关），这些仍由 agent 手动跑 + §11 归档门禁兜底（分层全貌见开发执行规范 §4.1）。
+
+**失败报告收敛与并发归因**（attribute-concurrent-gate-noise，spec `gate-failure-reporting`）：
+
+- **指纹递变**：失败以 `(cmd, truncateDiagGate 特征行)` 为指纹去重——首现/指纹变化输出完整块（分级前缀 + tail 30），同指纹持续降为单行 `⟳ …第 N 回合未变化`，连续 ≥3 回合附加「未修」标记，转绿输出一行 `✓` 收尾并清条目；状态会话内内存维护（边界清零不跨会话），**粘性重跑语义不变**（门禁不沉默，只是不重复注入同样的字节）。背景：实测 91% 的失败行是同指纹重复注入，单事故 223 连击。
+- **并发外部归因**：门禁命令全仓执行，并发共享工作树上别人的半成品会被算到本会话头上（实测 67% 的失败行在 ±30min 内另一 session 报同指纹）。判定只用可机证信号：`mine = 本会话累计触发集 ∪ 绑定 change 归属`，`foreign = 会话启动基线 ∪ 其他 change 归属`，失败输出提取路径/包锚点（`lib/failure-classify.ts` 双锚点白名单正则，`syntopica-backend` module 映射 `backend-go/`），`P≠∅ ∧ P∩mine=∅ ∧ P⊆foreign` 才降级 `[外部]`：不进粘性、不打 [回归]/[中间态]、一行提示（同指纹会话内至多一行，指纹变化重发），每命中回合记 `policy.decision(warn, foreign-breakage, target=<cmd>)`，gate.check 失败事实照记。任何混合/解析不出/信号缺失一律回现状（宁可多报不误判外部）。bash 编辑（`sed -i`/`gofmt -w`）不进 edit.map，mine 侧靠累计触发集兜底（非当回合 trigger）。
+- **与归档门禁的分工**：本机制在 `turn_end` 实时降嗓；spec-gate 检查⑤'（`concurrent-dirty-tree` warn）在归档时点检查树上归属其他 active change 的未 commit 文件——一个管会话内报告噪声，一个管归档拆 commit 收口，互补不替代。
+- suggest 侧配套（spec `doc-impact-gate`「suggest 预勾选输入口径」）：`doc-impact.sh suggest` 预勾选改归属优先（change 名三源解析：`--change` → `PI_SESSION_ID` 查最新 `mode.set.boundChange` → 空），脏文件三桶分列（本 change/其他 active change/无归属，各桶上限 20 行）不静默过滤，解析不到回退全树 diff 并显式标注，退出码恒 0。
 
 ## 子线程通道矩阵（harden-subagent-constraint-channel）
 
@@ -115,6 +122,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 ## 变更记录
 
 | 日期 | 变更 | 摘要 | 归档位置 |
+| 2026-09-18 | attribute-concurrent-gate-noise | quality-gate 失败报告按指纹去重（首现全块/持续单行/未修标记/转绿收尾）+ 并发外部归因（会话启动基线 ∪ 归属集合三向判定，[外部] 不催修不粘性，foreign-breakage 记账）；doc-impact suggest 改归属优先 + 三桶分列（change 名三源解析） | ../../../openspec/changes/attribute-concurrent-gate-noise |
 | 2026-09-18 | harden-subagent-constraint-channel | 补「子线程通道矩阵」节：pi-web/pi-subagents × 前台/后台四象限（扩展加载/约束可达/门禁行为）+ 已知限制三条；implementer 档（load_extensions:true）上线，quality-gate 子线程 turn_end 降载（bypass + child-session 记账） | ../../../openspec/changes/archive/2026-09-18-harden-subagent-constraint-channel |
 | 2026-09-18 | —（文档补记） | 补「定时任务脚本语义」节：schedule 的 `workflowScript` 是语句体语义（禁 export/import、用 `runs.run`、thinking 走 model 后缀），两套 script 语义对照 + validate 前置于 create + 改脚本需删重建 + 正文副本归 `.pi/workflows/` | —（纯文档，无 change） |
 | 2026-09-17 | dev-process-guard | 新增孤儿 dev 进程治理扩展 dev-process-guard（session_shutdown 自动清窗口内泄漏进程组 / turn_end 软提醒 / agent-browser 残留八模式判定）+ start-dev.sh pidfile 契约（.pi/run/*.pgid 白名单 + 双路 stop + KILL 升级） | ../../../openspec/changes/archive/2026-09-17-dev-process-guard |

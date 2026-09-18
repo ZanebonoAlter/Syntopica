@@ -4,7 +4,11 @@
 // E native 模式正常态 / F native 失败归因与链路标注（linux-native-dev-environment 新增）/
 // G native 工具链缺失侧级短路 / H native 工具缺失兑底归因 / I windows 不受工具链探测影响
 // （harden-gate-native-toolchain 新增）/ J 子线程 turn_end 降载 bypass（零命令+一条记账）/
-// K 主会话不受降载影响（harden-subagent-constraint-channel 新增）。
+// K 主会话不受降载影响（harden-subagent-constraint-channel 新增）/
+// L 失败指纹状态机（首现完整块→⟳单行→未修→✓转绿；粘性重跑不变）+ M 会话边界重置指纹 +
+// N 启动基线外部归因/[外部]/不进粘性/基线不覆盖 + 混合与解析不出保守回现状（⑥）+
+// O edit.map 归属外部/同指纹第 2 编辑回合不重发（C11）+ P 库不可用 fail-open（2.4）
+// （attribute-concurrent-gate-noise 新增）。
 // 模块级状态（sticky/snapshot/gateOkStates/execPlatform）由各场景前的 session_start 重置。
 // 由 run-harness-smoke.sh 调用（先 esbuild 产出 .qgateb.cjs）。断言失败 exit 1。
 //
@@ -451,6 +455,246 @@ const setup = (router) => {
 		check('K1 主会话（非 fork 路径）门禁照常执行（gate.check ≥3）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check'")[0].n >= 3);
 		check('K2 零 child-session 记账（零 policy.decision）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n === 0);
 		check('K3 零 steer', messages.length === 0);
+	}
+
+	// ============ 场景 L：失败指纹状态机（attribute-concurrent-gate-noise 4.1 ①②④ + A 组） ============
+	// 首次完整块 → 同指纹 ⟳ 单行（第 3 回合带未修）→ 转绿 ✓ 收尾；粘性重跑语义不变。
+	{
+		setPlatform('windows');
+		const repo = mkrepo();
+		let files = '';
+		let lintCalls = 0;
+		let lintGreen = false; // 第 4 回合翻绿验证转绿收尾
+		const LINT_FAIL = 'internal/x/a.go:1:1: expected declaration, found package';
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+			if (cmd === 'cmd.exe') {
+				const cl = args.join(' ');
+				if (cl.includes('echo ok')) return { code: 0, stdout: 'ok', stderr: '' };
+				if (cl.includes('golangci-lint')) {
+					lintCalls++;
+					return lintGreen
+						? { code: 0, stdout: '0 issues.', stderr: '' }
+						: { code: 1, stdout: LINT_FAIL, stderr: '' };
+				}
+				return { code: 0, stdout: '', stderr: '' }; // vet/build 全绿
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-l'));
+		files = 'backend-go/a.go';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-l'));
+		const failMsg1 = messages.find(({ m }) => m.customType === 'quality-gate-failure');
+		check('L1 ①首次失败完整块（[中间态] + exit + 输出尾部）', !!failMsg1
+			&& failMsg1.m.content.includes('[中间态]') && failMsg1.m.content.includes('exit 1')
+			&& failMsg1.m.content.includes('expected declaration'));
+		const lintAfterT1 = lintCalls;
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-l'));
+		const failMsg2 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('L2 ①同指纹第 2 回合单行（⟳ + 回合数，无输出尾部重灌）', !!failMsg2
+			&& failMsg2.m.content.includes('⟳') && failMsg2.m.content.includes('第 2 回合未变化')
+			&& failMsg2.m.content.includes(LINT_FAIL) && !failMsg2.m.content.includes('exit 1'));
+		check('L3 ④粘性在纯对话回合仍重跑（lint 重跑一次）', lintCalls === lintAfterT1 + 1);
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-l'));
+		const failMsg3 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('L4 ①连续 3 回合未变化附加「未修」', !!failMsg3
+			&& failMsg3.m.content.includes('第 3 回合未变化') && failMsg3.m.content.includes('未修'));
+		files = ''; // 转绿回合：改文件已还原（无新增触发，仅粘性重跑）
+		lintGreen = true;
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-l'));
+		const greenMsg = messages.find(({ m }) => m.customType === 'quality-gate-green');
+		check('L5 ②转绿收尾一行 ✓', !!greenMsg && greenMsg.m.content.includes('✓')
+			&& greenMsg.m.content.includes('golangci-lint') && greenMsg.m.content.includes('已转绿'));
+		const lintBeforeIdle = lintCalls;
+		const msgBeforeIdle = messages.length;
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-l'));
+		check('L6b ②b 转绿后纯对话零门禁零消息（A7 静默）', lintCalls === lintBeforeIdle && messages.length === msgBeforeIdle);
+	}
+
+	// ============ 场景 M：会话边界重置指纹（4.1 ③ + A9） ============
+	// 新会话同 diag 仍出完整块（跨会话不复用指纹）。
+	{
+		setPlatform('windows');
+		const repo = mkrepo();
+		let files = '';
+		const LINT_FAIL = 'internal/x/a.go:1:1: expected declaration, found package';
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+			if (cmd === 'cmd.exe') {
+				const cl = args.join(' ');
+				if (cl.includes('echo ok')) return { code: 0, stdout: 'ok', stderr: '' };
+				if (cl.includes('golangci-lint')) return { code: 1, stdout: LINT_FAIL, stderr: '' };
+				return { code: 0, stdout: '', stderr: '' };
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-m'));
+		files = 'backend-go/a.go';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-m'));
+		files = 'backend-go/a.go\nbackend-go/b.go';
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-m')); // 会话边界重置
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-m'));
+		const failMsg = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('M1 ③新会话同 diag 仍出完整块（不跨会话复用指纹）', !!failMsg
+			&& failMsg.m.content.includes('[中间态]') && failMsg.m.content.includes('exit 1')
+			&& !failMsg.m.content.includes('⟳'));
+	}
+
+	// ============ 场景 N：启动基线外部归因（4.1 ⑤ + C1/C9/C10 + 2.1 基线不覆盖） ============
+	// 会话启动时 y.go 已脏（别人的半成品）进基线；本会话只触发 a.go——lint 报 y.go
+	// 应判 [外部]：不进粘性、无 [回归]/[中间态]、一行提示 + foreign-breakage 记账。
+	// 第 3 编辑回合 y.go 已被物主修走（不在 git 脏集）但 lint 仍报同错误：基线不随
+	// turn_end 覆盖（2.1），仍判外部同指纹静默——若基线被覆盖，此处会退化成完整块。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'x'), { recursive: true });
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'mine'), { recursive: true });
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'x', 'y.go'), 'package x\n');
+		for (const f of ['a.go', 'c.go', 'd.go', 'e.go']) fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'mine', f), 'package x\n');
+		let files = 'backend-go/internal/x/y.go'; // session_start 时的脏集（别人改的）
+		const Y_FAIL = 'internal/x/y.go:1:1: boom';
+		let lintOut = Y_FAIL;
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (cl.includes('golangci-lint')) return { code: 1, stdout: lintOut, stderr: '' };
+				return { code: 0, stdout: '', stderr: '' }; // vet/build
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages, execCalls } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-n'));
+		files = 'backend-go/internal/x/y.go\nbackend-go/internal/mine/a.go';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-n'));
+		const foreignMsgs = messages.filter(({ m }) => m.customType === 'quality-gate-foreign');
+		check('N1 ⑤基线失败标 [外部] 一行（含路径，非本会话所致）', foreignMsgs.length === 1
+			&& foreignMsgs[0].m.content.includes('[外部]') && foreignMsgs[0].m.content.includes('golangci-lint')
+			&& foreignMsgs[0].m.content.includes('internal/x/y.go') && foreignMsgs[0].m.content.includes('非本会话所致'));
+		check('N2 ⑤无 [回归]/[中间态] 失败块（不催修本会话）', !messages.some(({ m }) => m.customType === 'quality-gate-failure'));
+		const fbRows = () => q(repo, "SELECT payload FROM events WHERE kind='policy.decision' AND payload LIKE '%foreign-breakage%'");
+		check('N3 ⑤账本一条 foreign-breakage(warn, target=golangci-lint)', fbRows().length === 1
+			&& JSON.parse(fbRows()[0].payload).action === 'warn'
+			&& JSON.parse(fbRows()[0].payload).target === 'golangci-lint');
+		check('N4 ⑤gate.check 照记失败事实（ok=false，diag 可考古）', q(repo, "SELECT payload FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0").length >= 1
+			&& q(repo, "SELECT payload FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0").some((r) => r.payload.includes(Y_FAIL)));
+		const lintCallsN = () => execCalls.filter((c) => c.includes('golangci-lint')).length;
+		const lintN1 = lintCallsN();
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-n')); // 纯对话：外部失败不进粘性不重跑
+		check('N5 ⑤C9 外部失败不进粘性：纯对话回合零重跑零新提示', lintCallsN() === lintN1
+			&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1);
+		files = 'backend-go/internal/mine/a.go\nbackend-go/internal/mine/c.go'; // y.go 已被物主修离脏集；本会话继续编辑
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-n'));
+		check('N6 2.1 基线不随 turn_end 覆盖：y.go 仍判外部同指纹静默（重命中记账照追加）', lintCallsN() === lintN1 + 1
+			&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1
+			&& !messages.some(({ m }) => m.customType === 'quality-gate-failure')
+			&& fbRows().length === 2);
+		// —— 场景 N 续：混合路径 / 解析不出 → 现状（4.1 ⑥ + C4/C5） ——
+		files = 'backend-go/internal/mine/a.go\nbackend-go/internal/mine/c.go\nbackend-go/internal/mine/d.go';
+		lintOut = 'internal/mine/a.go:1:1: e1\ninternal/x/y.go:9:9: e2'; // 混合：a.go 本会话触发过，y.go 基线
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-n'));
+		const mixedMsg = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('N7 ⑥混合路径保守按本会话失败（完整块 + 记账不升级）', !!mixedMsg
+			&& mixedMsg.m.content.includes('[中间态]') && mixedMsg.m.content.includes('e1')
+			&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1
+			&& fbRows().length === 2);
+		files = 'backend-go/internal/mine/a.go\nbackend-go/internal/mine/c.go\nbackend-go/internal/mine/d.go\nbackend-go/internal/mine/e.go';
+		lintOut = 'something went terribly wrong without any paths'; // 解析不出
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-n'));
+		check('N8 ⑥C5 解析不出保守按本会话失败', (() => {
+			const msg = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+			return !!msg && msg.m.content.includes('[中间态]')
+				&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1
+				&& fbRows().length === 2;
+		})());
+	}
+
+	// ============ 场景 O：edit.map 归属外部 + 同指纹不重发（4.1 ⑦ + C2/C11） ============
+	// 别的 change（ch-other）的 edit.map 归属 legacy.vue；本会话绑定 ch-mine（mode.set）。
+	// eslint 报 legacy.vue（front 侧相对形态）→ [外部]；第 2 编辑回合同指纹静默，
+	// 但 gate.check 与 foreign-breakage 记账照记（C11/C10）。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		fs.writeFileSync(path.join(repo, 'front', 'app', 'new.vue'), '<template/>\n');
+		fs.writeFileSync(path.join(repo, 'front', 'app', 'new2.vue'), '<template/>\n');
+		const hlog = require('./.hlog.cjs'); // 事实库种子（走真 writer，app_id/schema 合法）
+		hlog.logEvent(repo, { kind: 'mode.set', sessionId: 'smoke-o', change: 'ch-mine', payload: { mode: 'implementation', boundChange: 'ch-mine', source: 'skill' } });
+		hlog.logEvent(repo, { kind: 'edit.map', sessionId: 'seed-other', change: 'ch-mine', payload: { paths: ['backend-go/internal/mine/ok.go'], n: 1 } });
+		hlog.logEvent(repo, { kind: 'edit.map', sessionId: 'seed-other2', change: 'ch-other', payload: { paths: ['front/app/legacy.vue'], n: 1 } });
+		let files = '';
+		let eslintCalls = 0;
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (cl.includes('eslint')) {
+					eslintCalls++;
+					return { code: 1, stdout: 'app/legacy.vue\n  1:1  error  boom  no-rule', stderr: '' };
+				}
+				throw new Error(`unexpected bash gate cmd: ${cl}`);
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages, execCalls } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-o'));
+		files = 'front/app/new.vue';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-o'));
+		const foreignMsgs = messages.filter(({ m }) => m.customType === 'quality-gate-foreign');
+		check('O1 ⑦其他 change 归属识别为外部（front 相对形态前缀命中）', foreignMsgs.length === 1
+			&& foreignMsgs[0].m.content.includes('[外部]') && foreignMsgs[0].m.content.includes('app/legacy.vue')
+			&& !messages.some(({ m }) => m.customType === 'quality-gate-failure'));
+		check('O2 ⑦外部行走指纹机（pnpm lint 首现一行）', foreignMsgs.length === 1 && foreignMsgs[0].m.content.includes('pnpm lint'));
+		const fbCount = () => q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision' AND payload LIKE '%foreign-breakage%'")[0].n;
+		const gateFails = () => q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0 AND payload LIKE '%pnpm lint%'")[0].n;
+		check('O3 ⑦首现记账（1 条 foreign-breakage + 1 条 gate.check 失败）', fbCount() === 1 && gateFails() === 1);
+		const eslintT1 = execCalls.filter((c) => c.includes('eslint')).length;
+		files = 'front/app/new.vue\nfront/app/new2.vue';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-o'));
+		check('O4 ⑦C11 同指纹第 2 编辑回合不重发提示行（门禁照跑）', execCalls.filter((c) => c.includes('eslint')).length === eslintT1 + 1
+			&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1);
+		check('O5 ⑦C10/C11 记账不受抑制影响（各累计 2 条）', fbCount() === 2 && gateFails() === 2);
+	}
+
+	// ============ 场景 P：库不可用 fail-open（2.4 + C6/C7） ============
+	// events.db 损坏 → 归属查询/记账全部旁路：门禁照常执行、失败照旧进粘性重跑。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		fs.mkdirSync(path.join(repo, '.pi', 'harness'), { recursive: true });
+		fs.writeFileSync(path.join(repo, '.pi', 'harness', 'events.db'), 'this is not a sqlite database');
+		let files = '';
+		let lintCalls = 0;
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (cl.includes('golangci-lint')) {
+					lintCalls++;
+					return { code: 1, stdout: 'internal/x/a.go:1:1: bad', stderr: '' };
+				}
+				return { code: 0, stdout: '', stderr: '' };
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-p'));
+		files = 'backend-go/a.go';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-p'));
+		const failMsg = messages.find(({ m }) => m.customType === 'quality-gate-failure');
+		check('P1 2.4 库不可用门禁照常执行（失败完整块 + 分级现状）', !!failMsg
+			&& failMsg.m.content.includes('[中间态]') && failMsg.m.content.includes('exit 1'));
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-p'));
+		check('P2 2.4 失败照旧进 sticky：纯对话回合重跑', lintCalls === 2);
+		check('P3 2.4 库不可用不误判外部（路径不在基线 → C6 保守）', !messages.some(({ m }) => m.customType === 'quality-gate-foreign'));
 	}
 
 	let fail = 0;

@@ -3,7 +3,12 @@
 #
 # 把「文档要更新哪些」从回忆题变成选择题。四个子命令：
 #   menu                      打印 8 个固定文档域选项菜单
-#   suggest [--base <ref>]    按 git diff 启发式预勾选 + 命中理由 + 声明注释模板
+#   suggest [--base <ref>] [--change <name>]
+#                             归属优先预勾选（attribute-concurrent-gate-noise）：change 名三源
+#     解析（--change → PI_SESSION_ID 查事实库最新 mode.set 的 boundChange → 空）；归属轨
+#     预勾选只吃本 change 的 edit.map 归属集合，输出标注轨别；解析不到/集合空/库不可用
+#     → 回退全树 diff 并显式标注。脏文件三桶分列（本 change/其他 active change/无归属）
+#     不静默过滤，预勾选只吃「本 change」桶。只读，退出码恒 0。
 #   verify <change-dir> [--base <ref>]  归档前对账（声明↔git diff + 反向启发式 + 文件存在性）
 #     反向启发式（疑似遗漏/声明 none 但命中）双轨输入（coordinate-concurrent-changes）：
 #     事实库存在该 change 的 edit.map 归属集合且非空 → 只扫归属集合（其他 active
@@ -55,6 +60,45 @@ ownership_paths() {
 		WHERE e.kind = 'edit.map' AND e.change = '${change_name//\'/\'\'}'
 		  AND e.id = (SELECT MAX(id) FROM events
 		              WHERE kind = 'edit.map' AND change = '${change_name//\'/\'\'}')" 2>/dev/null | head -2000 || true
+}
+
+# ---------------------------------------------------------------------------
+# change 名三源解析（attribute-concurrent-gate-noise D2）：显式 --change 参数 →
+#   PI_SESSION_ID 查事实库该会话最新一条 mode.set 的 $.boundChange → 空。
+#   不用目录 mtime 启发式（detectActiveChange 曾把事件挂到无关 change 名下）。
+#   守卫同 ownership_paths（sqlite3 缺失/库不存在/查询失败 → 空，fail-open）；
+#   三源全空由调用方回退全树。
+# ---------------------------------------------------------------------------
+resolve_change_name() {
+	local explicit="$1" root db
+	[ -n "$explicit" ] && { echo "$explicit"; return 0; }
+	command -v sqlite3 >/dev/null 2>&1 || return 0
+	[ -n "${PI_SESSION_ID:-}" ] || return 0
+	root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+	db="$root/.pi/harness/events.db"
+	[ -f "$db" ] || return 0
+	sqlite3 "$db" -readonly "SELECT json_extract(payload, '$.boundChange')
+		FROM events
+		WHERE kind = 'mode.set' AND session_id = '${PI_SESSION_ID//\'/\'\'}'
+		ORDER BY id DESC LIMIT 1" 2>/dev/null | head -1 || true
+}
+
+# ---------------------------------------------------------------------------
+# 全部 change 的最新归属集合（attribute-concurrent-gate-noise）：每 change 取最新
+#   一条 edit.map（id IN max(id) GROUP BY change），展开 paths，输出
+#   「change<TAB>path」。用于 suggest 把脏文件分三桶（本 change/其他/无归属）。
+#   守卫同 ownership_paths（fail-open 返回空）；boundChange 侧不用此函数。
+# ---------------------------------------------------------------------------
+all_ownership() {
+	local root db
+	root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+	db="$root/.pi/harness/events.db"
+	command -v sqlite3 >/dev/null 2>&1 || return 0
+	[ -f "$db" ] || return 0
+	sqlite3 "$db" -readonly -separator "$(printf '\t')" "SELECT e.change, json_each.value
+		FROM events AS e, json_each(e.payload, '$.paths')
+		WHERE e.kind = 'edit.map'
+		  AND e.id IN (SELECT MAX(id) FROM events WHERE kind = 'edit.map' GROUP BY change)" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -135,14 +179,45 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# suggest：预勾选 + 命中理由 + 声明模板
+# suggest：预勾选 + 命中理由 + 声明模板（归属优先 + 三桶分列）
+#   attribute-concurrent-gate-noise：并发共享工作树下全树预勾选会把他人改动算进
+#   本 change 的文档域。改三源解析 change 名 → 归属轨（edit.map）预勾选；解析
+#   不到/集合空/库不可用回退全树并显式标注（不静默）。脏文件按归属分三桶列出
+#   供自行认领——归属轨只会少记，静默过滤会漏声明（三桶合并过滤的备选已否决）。
+#   只读（不写事实库不写 git），退出码恒 0（预勾选是建议不是门禁）。
 # ---------------------------------------------------------------------------
 cmd_suggest() {
-	local base="HEAD"
-	[ "${1:-}" = "--base" ] && base="${2:-HEAD}"
+	local base="HEAD" change_arg=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--base)
+			base="$2"
+			shift 2
+			;;
+		--change)
+			change_arg="${2:-}"
+			shift 2
+			;;
+		*) shift ;;
+		esac
+	done
 	echo "文档域预勾选（--base $base）："
-	local declared="" files
-	files="$(changed_files "$base" | sort -u | filter_blacklist)"
+
+	local change_name own_set="" all_files files
+	change_name="$(resolve_change_name "$change_arg")"
+	if [ -n "$change_name" ]; then
+		own_set="$(ownership_paths "$change_name" | filter_blacklist)"
+	fi
+	all_files="$(changed_files "$base" | sort -u | filter_blacklist)"
+	files="$all_files" # 默认回退轨：全树 diff
+	if [ -n "$(printf '%s' "$own_set" | grep .)" ]; then
+		files="$own_set" # 归属轨：预勾选只吃本 change 归属集合（经黑名单过滤）
+		echo "输入轨：归属轨（change=$change_name）"
+	else
+		echo '输入轨：回退轨：全树 diff，可能含其他会话/其他 change 的改动'
+	fi
+
+	local declared=""
 	for domain in flow api database architecture standard configuration deployment; do
 		local hit
 		hit="$(heuristic_hit "$domain" "$files")"
@@ -155,6 +230,49 @@ cmd_suggest() {
 			printf '  [ ] %-14s\n' "$domain"
 		fi
 	done
+
+	# --- 三桶分列（只读展示，不影响预勾选；sqlite3/库不可用时无归属数据，跳过） ---
+	local root="" db
+	root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""
+	db="$root/.pi/harness/events.db"
+	if [ -n "$root" ] && command -v sqlite3 >/dev/null 2>&1 && [ -f "$db" ]; then
+		# 桶输出：上限 20 行 + 「另有 N 个」（可读性上限，不改变桶语义）
+		print_bucket() {
+			local title="$1" items="$2" total
+			[ -n "$items" ] || return 0
+			total="$(printf '%s\n' "$items" | grep -c .)" || total=0
+			[ "$total" -gt 0 ] || return 0
+			echo "  $title"
+			printf '%s\n' "$items" | grep . | head -20 | sed 's/^/    /'
+			if [ "$total" -gt 20 ]; then
+				echo "    （另有 $((total - 20)) 个）"
+			fi
+		}
+		local all_rows all_owned other_owned b_mine="" b_other="" b_orphan
+		all_rows="$(all_ownership)"
+		all_owned="$(printf '%s\n' "$all_rows" | awk -F'\t' '{print $2}' | sort -u)"
+		other_owned="$(printf '%s\n' "$all_rows" | awk -F'\t' -v cn="$change_name" '$1 != cn {print $2}' | sort -u)"
+		# grep -F 的空模式匹配任意行：模式集合为空时跳过/差集退化为全量（防呆）
+		if [ -n "$own_set" ]; then
+			b_mine="$(printf '%s\n' "$all_files" | grep -Fxf <(printf '%s\n' "$own_set") || true)"
+		fi
+		if [ -n "$other_owned" ]; then
+			b_other="$(printf '%s\n' "$all_files" | grep -Fxf <(printf '%s\n' "$other_owned") || true)"
+		fi
+		if [ -n "$all_owned" ]; then
+			b_orphan="$(printf '%s\n' "$all_files" | grep -Fvx -f <(printf '%s\n' "$all_owned") || true)"
+		else
+			b_orphan="$all_files" # 库中无任何归属记录 → 全部视作无归属
+		fi
+		echo
+		echo '脏文件分桶（预勾选只吃「本 change 归属」桶；另两桶列出供自行认领，不静默过滤）：'
+		if [ -n "$change_name" ]; then
+			print_bucket "本 change 归属（$change_name）:" "$b_mine"
+		fi
+		print_bucket '归属其他 active change:' "$b_other"
+		print_bucket '无归属:' "$b_orphan"
+	fi
+
 	if [ -z "${declared// /}" ]; then
 		echo '  [x] none         — 未命中任何启发式（若是纯内部重构，声明 none 并附理由）'
 		echo
@@ -331,7 +449,7 @@ verify)
 	cmd_verify "$@"
 	;;
 "" | -h | --help | help)
-	sed -n '2,12p' "$0"
+	sed -n '2,17p' "$0"
 	echo
 	echo "用法: bash scripts/harness/doc-impact.sh <menu|suggest|verify> [...]（context 已由 constraint-injection extension 取代）"
 	;;

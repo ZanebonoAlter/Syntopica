@@ -61,10 +61,21 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { statSync, accessSync, constants } from "node:fs";
 import { join, delimiter } from "node:path";
-import { logEvent } from "./lib/harness-log";
+import { logEvent, queryBySession } from "./lib/harness-log";
 import { detectActiveChange } from "./lib/active-change";
-import { syncEditMap, resetEditMapState } from "./lib/edit-map";
-import { truncateDiagGate, isInteropFailure, isToolNotFound } from "./lib/failure-classify";
+import {
+	syncEditMap,
+	resetEditMapState,
+	parseModeSetPayload,
+	latestEditMapByChange,
+} from "./lib/edit-map";
+import {
+	truncateDiagGate,
+	isInteropFailure,
+	isToolNotFound,
+	extractFailurePaths,
+	isForeignFailure,
+} from "./lib/failure-classify";
 import { logPolicyDecision } from "./lib/policy-decision";
 import { isChildSession } from "./lib/child-session";
 import { computeTriggerSet, type FileStat } from "./lib/trigger-set";
@@ -150,6 +161,22 @@ let gateOkStates = new Map<string, GateOkState>();
 let eslintCacheOff = false;
 // 状态归属会话（防子线程 session 事件误清主会话状态；pi-subagents 共用模块实例）
 let ownerSessionId: string | null = null;
+// 会话启动基线路径集（attribute-concurrent-gate-noise D5）：session_start 以当时 git 脏
+// 文件集初始化一次，turn_end 不覆盖（现有 snapshot 仍按原语义每回合更新）——并发外部
+// 归因的 foreign 侧信号。session_start git 失败时保持空集（信号缺席 → 判定保守回现状）。
+let baselinePaths = new Set<string>();
+// 本会话累计触发路径集（D5 + 评审补丁 P1-1）：每个跑门禁的回合并入当回合 trigger，
+// 只增不减——bash 编辑（sed -i/gofmt -w/代码生成）不进 edit.map 只进当回合 trigger，
+// mine 依赖本集合，防止这类文件从下回合起掉出 mine 被误判 [外部]。
+let accumulatedTriggerPaths = new Set<string>();
+// 失败指纹状态机（D3/D4）：cmd → { diag, rounds, foreign }。diag 取 truncateDiagGate
+// （与 gate.check diag 同源同值），精确相等比较；foreign 标记失败段当前判性（外部/本
+// 会话），判性翻转视同新指纹重新完整报告。会话边界与 stickyFailures 同点位清零，
+// 不落库——重复抑制是会话内报告策略，历史事实由 gate.check 全量记账承载。
+let failureReports = new Map<
+	string,
+	{ diag: string; rounds: number; foreign: boolean }
+>();
 
 /** git 脏文件集（tracked diff + untracked）→ {mtime,size} 快照；消失文件跳过。 */
 function statGitFiles(repoRoot: string, files: string): Map<string, FileStat> {
@@ -169,6 +196,22 @@ function statGitFiles(repoRoot: string, files: string): Map<string, FileStat> {
 	return out;
 }
 
+/**
+ * 归属比对集合的侧相对形态展开（attribute-concurrent-gate-noise D6 落地配套）：
+ * golangci-lint / go vet 以 backend-go/ 为 cwd 报侧相对路径（events.db 实测
+ * internal/tagmanagement/... 形态），eslint 在 front/ 下报 front 相对路径——mine 与
+ * foreign 同等注册「repo 根相对 + 侧相对」两种形态，文件锚点才能精确命中；两侧对称
+ * 展开不改保守方向（mine 命中优先于 foreign，混合一律回现状本会话失败）。
+ */
+function expandSideForms(paths: ReadonlySet<string>): Set<string> {
+	const out = new Set(paths);
+	for (const p of paths) {
+		if (p.startsWith("backend-go/")) out.add(p.slice("backend-go/".length));
+		else if (p.startsWith("front/")) out.add(p.slice("front/".length));
+	}
+	return out;
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (event, ctx) => {
 		// ⚠ reason "startup" 跳过（与 constraint-injection 同款防御）：pi-subagents 派发
@@ -180,6 +223,9 @@ export default function (pi: ExtensionAPI) {
 		stickyFailures = new Set();
 		gateOkStates = new Map();
 		eslintCacheOff = false;
+		baselinePaths = new Set(); // 启动基线随会话边界重建（D5）
+		accumulatedTriggerPaths = new Set(); // 累计触发集随会话边界清零（D5）
+		failureReports = new Map(); // 失败指纹随会话边界清零（D3：不跨会话复用）
 		execPlatform = null; // 平台判定随会话边界重判（spec：判定在会话内稳定）
 		nativeToolchain = { backend: null, frontend: null }; // 工具链探测随会话边界重探（D3）
 		toolchainDownNotified = { backend: false, frontend: false }; // 短路边沿状态随会话边界清零（D5）
@@ -207,6 +253,9 @@ export default function (pi: ExtensionAPI) {
 		} catch {
 			/* 非 git 仓库/异常：保持 null，turn_end 时 lazy 兜底 */
 		}
+		// 启动基线一次性快照（D5）：此后 turn_end 不再覆盖；lazy 兜底路径不回填——
+		// 中途文件进「基线」会扩大外部面（信号缺席宁可保守回现状，不误判外部）。
+		baselinePaths = snapshot ? new Set(snapshot.keys()) : new Set();
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -217,6 +266,9 @@ export default function (pi: ExtensionAPI) {
 		stickyFailures = new Set();
 		gateOkStates = new Map();
 		eslintCacheOff = false;
+		baselinePaths = new Set();
+		accumulatedTriggerPaths = new Set();
+		failureReports = new Map();
 		execPlatform = null;
 		nativeToolchain = { backend: null, frontend: null };
 		toolchainDownNotified = { backend: false, frontend: false };
@@ -427,8 +479,37 @@ export default function (pi: ExtensionAPI) {
 			if (!isBackend && !isFrontend) return; // 两侧均被短路：本轮零命令零记账（零 gate.check 假失败）
 		}
 
+		// 3.7 并发外部归因预取（attribute-concurrent-gate-noise D5/D7）：mine = 本会话累计
+		//     触发集 ∪ 本 change（mode.set boundChange）归属；foreign = 会话启动基线 ∪ 其他
+		//     change 归属。gateLog 是同步回调，判定集合必须在此（门禁命令执行前）预取完成，
+		//     不得在回调内发起查询。无绑定 change / 库不可用 → 归属信号整体缺席，判定退化
+		//     为基线单信号（不扩大外部面）；任何异常吞掉（fail-open），不影响门禁既有流程。
+		for (const p of trigger) accumulatedTriggerPaths.add(p);
+		const minePaths = new Set(accumulatedTriggerPaths);
+		const foreignPaths = new Set(baselinePaths);
+		try {
+			const modeRows = sessionId
+				? queryBySession(repoRoot, sessionId, ["mode.set"])
+				: [];
+			const bound = parseModeSetPayload(modeRows[modeRows.length - 1]);
+			if (bound) {
+				for (const [change, paths] of latestEditMapByChange(repoRoot)) {
+					const target = change === bound ? minePaths : foreignPaths;
+					for (const p of paths) target.add(p);
+				}
+			}
+		} catch {
+			/* 归属信号缺席：mine/foreign 保持触发集/基线（保守方向） */
+		}
+		const mineJudge = expandSideForms(minePaths);
+		const foreignJudge = expandSideForms(foreignPaths);
+
 		// 4. 跑快门禁（单条命令量级秒级；命令集与执行平台正交，仅链路不同）
 		const failures: string[] = [];
+		// 转绿收尾行 / 外部失败行（attribute-concurrent-gate-noise D4/D7）：各自独立成段，
+		// 不与 [回归]/[中间态] 失败块混排（外部行无催修义务，转绿行是失败段闭环信号）。
+		const greenLines: string[] = [];
+		const foreignLines: string[] = [];
 		// 环境故障提示段（harden-gate-interop-health：diag 特征命中的失败单独归因，
 		// 不混入门禁失败列表——避免 agent 误当代码问题去修）。harden-gate-native-toolchain
 		// D4：kind 分流恢复建议——interop（仅 windows）建议 wsl --shutdown；toolchain
@@ -450,8 +531,16 @@ export default function (pi: ExtensionAPI) {
 			// 当前 gateLog 覆盖的命令按模式经 cmd.exe interop（windows）或本机 PATH（native）
 			// 执行，失败行按实际链路标注（windows 标（wsl环境）；native 标本机）。
 			// spec：不弱化真实失败的修复义务——真实失败仍走粘性+分级。
-			if (ok) stickyFailures.delete(cmd);
-			else if (execPlatform === "windows" && isInteropFailure(output)) {
+			if (ok) {
+				stickyFailures.delete(cmd);
+				// 转绿收尾（D4）：仅当该命令处于失败段（指纹条目存在）才发一行 ✓，随后清条目
+				//（每失败段至多一次；会话内首次跑就绿不产生空的「已转绿」，A7/A8）。
+				const rep = failureReports.get(cmd);
+				if (rep) {
+					failureReports.delete(cmd);
+					greenLines.push(`✓ [${cmd}${linkTag}] 已转绿`);
+				}
+			} else if (execPlatform === "windows" && isInteropFailure(output)) {
 				// 环境故障（spec：不进粘性、不按 [回归]/[中间态] 分级）：探测通过但命令
 				// 执行中途 interop 挂的兜底；gate.check 照记全量失败（diag 含特征可考古）。
 				// 仅 windows 模式参与判定：native 无跨系统链路，同名字符串不得触发环境归因。
@@ -469,10 +558,61 @@ export default function (pi: ExtensionAPI) {
 					text: `[${cmd}${linkTag}] exit ${code}：输出含工具缺失特征（command not found），判定为本机工具链环境问题而非代码问题；不计入粘性重跑，修复 pi 启动环境 PATH 后重启会话恢复`,
 				});
 			} else {
-				stickyFailures.add(cmd);
-				failures.push(
-					`${d.failPrefix}[${cmd}${linkTag}] exit ${code}\n${tail(output, 30)}`,
-				);
+				// 失败指纹与归属判定（D3/D4/D7）：diag 与 gate.check 记账同源（truncateDiagGate），
+				// 精确相等比较；判外部三条件 P≠∅ ∧ P∩mine=∅ ∧ P⊆foreign，任何异常/混合/
+				// 解析不出视同本会话失败（保守回现状，宁可多报不误判外部）。
+				const diag = truncateDiagGate(output);
+				const prev = failureReports.get(cmd);
+				let foreignHit = false;
+				let hitPaths: string[] = [];
+				try {
+					hitPaths = extractFailurePaths(output);
+					foreignHit = isForeignFailure({
+						paths: hitPaths,
+						mine: mineJudge,
+						foreign: foreignJudge,
+					});
+				} catch {
+					foreignHit = false; // 归因异常吞掉 → 视同本会话失败（2.4 fail-open）
+				}
+				if (foreignHit) {
+					// [外部]（D7）：不进粘性、不打分级；同指纹（diag+判性均未变）会话内至多一行，
+					// 后续回合静默、指纹变化重新输出（C11，与内部块共用指纹状态机）；每命中回合
+					// 追加一条 foreign-breakage 归因记账（gate.check 照记在下方，均不受抑制影响）。
+					if (sessionId) {
+						logPolicyDecision(repoRoot, {
+							sessionId,
+							policy: "quality-gate",
+							action: "warn",
+							reasonCode: "foreign-breakage",
+							target: cmd,
+						});
+					}
+					if (prev && prev.foreign && prev.diag === diag) {
+						prev.rounds += 1; // 同指纹：静默（账本照记；无催修义务不重提）
+					} else {
+						failureReports.set(cmd, { diag, rounds: 1, foreign: true });
+						const shown = hitPaths.slice(0, 3).join(", ");
+						const more = hitPaths.length > 3 ? ` 等 ${hitPaths.length} 个路径` : "";
+						foreignLines.push(
+							`[外部] [${cmd}${linkTag}] 失败归属其他会话/本会话启动前既有改动（${shown}${more}），非本会话所致，不计入粘性重跑`,
+						);
+					}
+				} else if (prev && !prev.foreign && prev.diag === diag) {
+					// 同指纹持续（D4）：单行摘要不重灌 30 行输出；连续 ≥3 回合附加「未修」
+					prev.rounds += 1;
+					stickyFailures.add(cmd);
+					failures.push(
+						`⟳ [${cmd}${linkTag}] 同一失败第 ${prev.rounds} 回合未变化：${diag}${prev.rounds >= 3 ? "（未修）" : ""}`,
+					);
+				} else {
+					// 首次/指纹变化/判性翻转（外部→本会话）：完整块视同首次（分级前缀 + tail 30）
+					failureReports.set(cmd, { diag, rounds: 1, foreign: false });
+					stickyFailures.add(cmd);
+					failures.push(
+						`${d.failPrefix}[${cmd}${linkTag}] exit ${code}\n${tail(output, 30)}`,
+					);
+				}
 			}
 			if (!sessionId || !d.log) return;
 			if (boundChange === undefined) {
@@ -615,12 +755,33 @@ export default function (pi: ExtensionAPI) {
 			gateLog("pnpm lint", r.code, Date.now() - t0, `${r.stdout}\n${r.stderr}`);
 		}
 
-		// 5. 失败 → 软提示（steer：本回合工具跑完后、下次 LLM 调用前注入）
+		// 5. 失败 → 软提示（steer：本回合工具跑完后、下次 LLM 调用前注入）。
+		//    报告强度递变（D4）：首次/指纹变化完整块、同指纹 ⟳ 单行（≥3 回合带未修）、
+		//    转绿 ✓ 收尾——失败块与转绿行同消息（混合回合），仅转绿时独立小消息。
 		if (failures.length > 0) {
+			const green = greenLines.length > 0 ? `\n\n${greenLines.join("\n")}` : "";
 			pi.sendMessage(
 				{
 					customType: "quality-gate-failure",
-					content: `⚠️ 增量门禁未通过（[回归]=上回合尚绿必须修复；[中间态]=新代码中间态，若正在推进可继续，回合末复检；归档前全绿硬要求不变）：\n\n${failures.join("\n\n")}`,
+					content: `⚠️ 增量门禁未通过（[回归]=上回合尚绿必须修复；[中间态]=新代码中间态，若正在推进可继续，回合末复检；归档前全绿硬要求不变）：\n\n${failures.join("\n\n")}${green}`,
+				},
+				{ deliverAs: "steer", triggerTurn: true },
+			);
+		} else if (greenLines.length > 0) {
+			pi.sendMessage(
+				{
+					customType: "quality-gate-green",
+					content: greenLines.join("\n"),
+				},
+				{ deliverAs: "steer", triggerTurn: true },
+			);
+		}
+		// 5.2 外部失败行（D7）：独立成段——无催修义务，不与 [回归]/[中间态] 混排误导。
+		if (foreignLines.length > 0) {
+			pi.sendMessage(
+				{
+					customType: "quality-gate-foreign",
+					content: `ℹ️ 门禁失败归属外部改动（非本会话所致，不计粘性，不因它重跑）：\n\n${foreignLines.join("\n\n")}`,
 				},
 				{ deliverAs: "steer", triggerTurn: true },
 			);

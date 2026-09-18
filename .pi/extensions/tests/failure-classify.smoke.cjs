@@ -17,7 +17,7 @@ process.on('warning', (w) => {
 	}
 });
 
-const { classifyFailure, truncateDiag, truncateDiagGate, isInteropFailure, isToolNotFound } = require('./.fcls.cjs');
+const { classifyFailure, truncateDiag, truncateDiagGate, isInteropFailure, isToolNotFound, extractFailurePaths, isForeignFailure } = require('./.fcls.cjs');
 
 const checks = [];
 const check = (name, ok) => checks.push([name, ok]);
@@ -112,6 +112,56 @@ const check = (name, ok) => checks.push([name, ok]);
 	check('T7 null/undefined 输入安全返回 false', isToolNotFound(null) === false && isToolNotFound(undefined) === false);
 	// 语义划界：interop 特征不触发 toolchain 归因（两特征集正交）
 	check('T8 interop 特征不命中 toolchain 归因', isToolNotFound('<3>WSL (1751 - ) ERROR: UtilAcceptVsock:251: accept4 failed 110') === false);
+}
+
+/* ---------- 段一·III：extractFailurePaths（attribute-concurrent-gate-noise，白盒用例 B1-B8） ---------- */
+{
+	// B1 golangci-lint 正斜杠文件锚点（path:LINE:COL:）
+	check('B1 正斜杠文件锚点提取', JSON.stringify(extractFailurePaths('internal/tagmanagement/service/sourcestats/sourcestats.go:63:1: unused')) === JSON.stringify(['internal/tagmanagement/service/sourcestats/sourcestats.go']));
+	// B2 Windows 反斜杠形态（实测存在）→ 归一化为 /
+	check('B2 反斜杠形态归一为 /', JSON.stringify(extractFailurePaths('internal\\admin\\wire.go:97:1: File is not properly formatted (gofmt)')) === JSON.stringify(['internal/admin/wire.go']));
+	// B3 go vet 包锚点 → 目录前缀（module 名 syntopica-backend 映射 backend-go/）
+	check('B3 go vet 包锚点转目录前缀', JSON.stringify(extractFailurePaths('# syntopica-backend/internal/topicgraph/service')) === JSON.stringify(['backend-go/internal/topicgraph/service/']));
+	// B4 go test FAIL 包锚点
+	check('B4 go test FAIL 包锚点转目录前缀', JSON.stringify(extractFailurePaths('FAIL syntopica-backend/internal/admin/service [build failed]')) === JSON.stringify(['backend-go/internal/admin/service/']));
+	// B5 eslint 绝对/相对双形态
+	check('B5 eslint 绝对/相对双形态', JSON.stringify(extractFailurePaths('/home/u/repo/front/app/x.vue\nfront/app/y.vue')) === JSON.stringify(['/home/u/repo/front/app/x.vue', 'front/app/y.vue']));
+	// B6 无路径可提取 → []（调用方保守处理）
+	check('B6 无路径输出返回空数组', extractFailurePaths('0 issues.').length === 0
+		&& extractFailurePaths('bash: line 1: go: command not found').length === 0
+		&& extractFailurePaths('').length === 0);
+	// B7 集合语义：同一路径去重为 1 项
+	const trip = 'internal/admin/wire.go:1:1: expected declaration';
+	check('B7 同一路径去重为 1 项', extractFailurePaths(`${trip}\n${trip}\n${trip}`).length === 1);
+	// B8 非代码路径原样提取（是否外部由归属集判定，提取层不做业务过滤）
+	check('B8 非代码路径原样返回', JSON.stringify(extractFailurePaths('openspec/changes/foo/tasks.md:12:1: ...')) === JSON.stringify(['openspec/changes/foo/tasks.md']));
+	// 不变量：null/undefined 输入安全返回 []（对齐 I8/T7 防御风格）
+	check('B-不变 null/undefined 输入安全返回 []', extractFailurePaths(null).length === 0 && extractFailurePaths(undefined).length === 0);
+}
+
+/* ---------- 段一·IV：isForeignFailure（attribute-concurrent-gate-noise，真值表 C1-C8） ---------- */
+{
+	const F = (paths, mine, foreign) => isForeignFailure({ paths, mine: new Set(mine), foreign: new Set(foreign) });
+	// C1 路径在本会话启动基线中 → 外部
+	check('C1 启动基线路径判外部', F(['f.go'], [], ['f.go']) === true);
+	// C2 其他 active change 归属 → 外部
+	check('C2 其他 change 归属判外部', F(['f.vue'], ['mine.go'], ['f.vue', 'other.ts']) === true);
+	// C3 本会话触发过 → 本会话失败（现状）
+	check('C3 本会话触发过不判外部', F(['f.go'], ['f.go'], ['f.go']) === false);
+	// C4 混合（a∈mine, b∈foreign）→ 本会话失败（混合即保守）
+	check('C4 混合路径保守不判外部', F(['a.go', 'b.go'], ['a.go'], ['b.go']) === false);
+	// C5 解析不出（P=∅）→ 本会话失败（不判外部）
+	check('C5 P 为空不判外部', F([], [], ['f.go']) === false);
+	// C6 未归属新脏文件（两边都不在）→ 本会话失败（宁可多报）
+	check('C6 未归属新脏文件不判外部（保守分支）', F(['c.go'], [], []) === false);
+	// C7 标志库/edit.map 不可用（foreign 仅剩会话基线）→ 单信号仍成立
+	check('C7 仅剩基线信号时仍判外部', F(['f.go'], [], ['f.go']) === true);
+	// C8 无 git / 无绑定 change（mine 仅本会话触发集）→ 外部
+	check('C8 mine 仅触发集时仍判外部', F(['f.go'], ['t1.go'], ['f.go']) === true);
+	// 包锚点按前缀匹配（design D6：目录前缀对集合成员做前缀比对）
+	check('C-前缀 包锚点命中 foreign 子文件', F(['backend-go/internal/admin/service/'], [], ['backend-go/internal/admin/service/x.go']) === true);
+	check('C-前缀 包锚点命中 mine 子文件→本会话失败', F(['backend-go/internal/admin/service/'], ['backend-go/internal/admin/service/y.go'], ['backend-go/internal/admin/service/x.go']) === false);
+	check('C-前缀 前缀不覆盖的成员不命中', F(['backend-go/internal/admin/'], [], ['backend-go/internal/other/x.go']) === false);
 }
 
 /* ---------- 段二：telemetry 集成（成功不产出 failure） ---------- */

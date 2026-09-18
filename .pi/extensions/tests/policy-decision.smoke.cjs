@@ -444,15 +444,16 @@ function makePi() {
 		}
 
 		/* ---------- 5. 隔离复核（2.4，harden-gate-interop-health 修订；harden-gate-
-		     native-toolchain / harden-subagent-constraint-channel 扩展）：quality-gate /
-		     entry-gate 只写 gate.check；quality-gate 例外 = 环境短路 fail-open（interop-down
-		     1 处 + toolchain-down backend/frontend 2 处）+ 子线程降载 bypass（child-session
-		     1 处，spec harness-fact-log「策略显著裁决统一记账」），且被短路跳过的命令零
-		     gate.check 双写 ---------- */
+		     native-toolchain / harden-subagent-constraint-channel 扩展；attribute-
+		     concurrent-gate-noise 扩展）：quality-gate / entry-gate 只写 gate.check；
+		     quality-gate 例外 = 环境短路 fail-open（interop-down 1 处 + toolchain-down
+		     backend/frontend 2 处）+ 子线程降载 bypass（child-session 1 处）+ 外部失败
+		     归因 warn（foreign-breakage 1 处，spec gate-failure-reporting「外部失败不进
+		     粘性且记 warn 归因」），且被短路跳过的命令零 gate.check 双写 ---------- */
 		const qg = fs.readFileSync(path.resolve('../quality-gate.ts'), 'utf8');
 		const eg = fs.readFileSync(path.resolve('../entry-gate.ts'), 'utf8');
-		check('quality-gate 源码 logPolicyDecision 恰四处（interop×1 + toolchain×2 + child-session bypass×1）',
-			(qg.match(/logPolicyDecision\(/g) ?? []).length === 4 &&
+		check('quality-gate 源码 logPolicyDecision 恰五处（interop×1 + toolchain×2 + child-session bypass×1 + foreign-breakage×1）',
+			(qg.match(/logPolicyDecision\(/g) ?? []).length === 5 &&
 			qg.includes('reasonCode: "interop-down"') &&
 			qg.includes('reasonCode: "toolchain-down"') &&
 			qg.includes('reasonCode: "child-session"') &&

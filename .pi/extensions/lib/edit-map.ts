@@ -25,6 +25,51 @@ import {
 	queryByChange,
 	type HarnessEventRow,
 } from "./harness-log";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+
+/* ---------- node:sqlite 只读引入（latestEditMapByChange 专用） ----------
+ *  harness-log 是唯一写入方且不导出连接/全表查询；本函数只读且不改 schema，
+ *  为不扩 harness-log 导出面（编辑辖区限制），在此用同款警告抑制模式开只读连接。
+ *  只读连接不做任何写 PRAGMA/DDL，无 schema 污染风险；表不存在/库损坏等异常
+ *  由外层 try 吞掉返回空 Map（信号缺席 → 归因退化基线单信号，不扩大外部面）。
+ *  构造器模块级缓存：latestEditMapByChange 每个 turn_end 都会调，若每次都重挂
+ *  warning 转发 listener 会逐回合叠链（N 回合 N 层闭包），缓存后只建一次。 */
+interface ReadonlyStatementLike {
+	all(...params: unknown[]): unknown[];
+}
+interface ReadonlyDbLike {
+	prepare(sql: string): ReadonlyStatementLike;
+	close(): void;
+}
+
+let cachedSqliteCtor: (new (
+	path: string,
+	opts: { readOnly: boolean },
+) => ReadonlyDbLike) | null = null;
+
+function loadSqliteReadonly(): new (
+	path: string,
+	opts: { readOnly: boolean },
+) => ReadonlyDbLike {
+	if (cachedSqliteCtor) return cachedSqliteCtor;
+	const prior = process.listeners("warning");
+	process.removeAllListeners("warning");
+	const require = createRequire(`${process.cwd()}/[edit-map]`);
+	const sqlite = require("node:sqlite") as {
+		DatabaseSync: new (path: string, opts: { readOnly: boolean }) => ReadonlyDbLike;
+	};
+	process.on("warning", (warning: Error) => {
+		if (warning.name === "ExperimentalWarning" && /sqlite/i.test(warning.message)) {
+			return;
+		}
+		for (const l of prior) {
+			if (typeof l === "function") l(warning);
+		}
+	});
+	cachedSqliteCtor = sqlite.DatabaseSync;
+	return cachedSqliteCtor;
+}
 
 /** 从一条 mode.set 行解析 boundChange；行缺失/payload 损坏/无绑定 → null（跳过不落） */
 export function parseModeSetPayload(
@@ -134,4 +179,51 @@ export function syncEditMap(
 	} catch {
 		return false; // fail-open：归属落库失败绝不影响门禁
 	}
+}
+
+/**
+ * 只读查询：全部 change 的最新 edit.map 归属快照（attribute-concurrent-gate-noise 2.3）。
+ * 每个 change 取 id 最大的一条（落库侧并集快照语义：最新一条即完整集合，与 syncEditMap
+ * 读 base 同口径）；payload.paths 剔工具自管路径后返回 change → paths。
+ * 严格旁路：库不存在/损坏/被锁/表缺失 → 空 Map（信号缺席，调用方退化基线单信号）。
+ * 只读连接不建库不写 PRAGMA：库尚未创建时（新仓库首回合）直接 ENOENT → 空 Map。
+ */
+export function latestEditMapByChange(cwd: string): Map<string, string[]> {
+	const out = new Map<string, string[]>();
+	try {
+		const DatabaseSync = loadSqliteReadonly();
+		const db = new DatabaseSync(join(cwd, ".pi/harness", "events.db"), {
+			readOnly: true,
+		});
+		try {
+			const rows = db
+				.prepare(
+					"SELECT e.change AS change, e.payload AS payload FROM events e " +
+						"WHERE e.kind = 'edit.map' AND e.change IS NOT NULL AND e.id IN " +
+						"(SELECT MAX(id) FROM events WHERE kind = 'edit.map' GROUP BY change)",
+				)
+				.all() as { change: string; payload: unknown }[];
+			for (const r of rows) {
+				if (!r.change || typeof r.payload !== "string") continue;
+				try {
+					const p = JSON.parse(r.payload) as { paths?: unknown };
+					if (!Array.isArray(p.paths)) continue;
+					out.set(
+						r.change,
+						p.paths.filter(
+							(x): x is string =>
+								typeof x === "string" && !!x && !isToolManagedPath(x),
+						),
+					);
+				} catch {
+					/* 单行 payload 损坏：跳过该 change，不影响其余 */
+				}
+			}
+		} finally {
+			db.close();
+		}
+	} catch {
+		/* 库不可用/未创建：fail-open 空 Map（不扩大外部面） */
+	}
+	return out;
 }

@@ -139,6 +139,104 @@ export function isToolNotFound(output: string): boolean {
 	return TOOL_NOT_FOUND_RE.test(output ?? "");
 }
 
+/* ---------- 并发外部归因：路径提取与归属判定（attribute-concurrent-gate-noise design D6） ----------
+ *  从门禁失败输出提取「像路径/像包」的 token，供 quality-gate 判定失败归属（mine/foreign）。
+ *  不变量：有界白名单正则，只匹配到明确形态；不做任何「猜测式」推断——
+ *  解析结果为空一律返回 []，调用方视同 P=∅ 维持现状（多报不少报，不误判外部）。 */
+
+/** 文件锚点：「像路径的 token + :行(:列)」形态（golangci-lint / go vet 编译错误行）。
+ *  token 字符集有界（非空白非冒号），必须含至少一个路径分隔符且以「.字母开头的短扩展名」
+ *  收尾——版本号形态（v0.1.0）不误判；不满足即不视为路径。 */
+const FAILURE_PATH_ANCHOR_RE = /([^\s:]+[\\/][^\s:]+?\.[A-Za-z][A-Za-z0-9]{0,11}):(\d+)(?::\d+)?/g;
+
+/** 独立路径行锚点（eslint stylish 的 bare path 行，相对/绝对双形态）：整行就是一个
+ *  带路径分隔符 + 扩展名的 token。空格/冒号拒入（散文行、go: downloading 等不命中）。 */
+const FAILURE_PATH_LINE_RE = /^[^\s:]*[\\/][^\s:]*\.[A-Za-z][A-Za-z0-9]{0,11}$/;
+
+/** 包锚点（go vet / go test）：`# <module>/<pkg>` / `FAIL <module>/<pkg> ...` */
+const GO_PKG_ANCHOR_RE = /^(?:#\s*|FAIL\s+)(\S+)(?:\s|$)/;
+
+/** Go module 名 → 仓库目录前缀映射（本仓库唯一 Go module；未登记 module 不映射 =
+ *  提取不出 = 调用方保守回现状）。包锚点转成目录前缀（尾部 /）供前缀比对。 */
+const GO_MODULE_DIR_MAP: Readonly<Record<string, string>> = {
+	"syntopica-backend": "backend-go",
+};
+
+/** 包路径 → 目录前缀；无 module 映射 / 无包路径（如 command-line-arguments）→ null。 */
+function goPkgToDirPrefix(pkg: string): string | null {
+	const slash = pkg.indexOf("/");
+	if (slash <= 0) return null;
+	const dir = GO_MODULE_DIR_MAP[pkg.slice(0, slash)];
+	if (!dir) return null;
+	return `${dir}/${pkg.slice(slash + 1)}/`;
+}
+
+/** 从门禁失败输出提取路径/包锚点集合（去重，保首次出现序；解析不出 → []）。
+ *  双锚点：文件形态（path:LINE[:COL]、eslint bare path 行）+ 包锚点（# / FAIL
+ *  <module>/<pkg> → 目录前缀）；反斜杠归一为 /（Windows 实测形态）；剥包裹括号引号。 */
+export function extractFailurePaths(output: string): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	const push = (raw: string): void => {
+		const p = raw
+			.replace(/^[(\[{"']+/, "")
+			.replace(/[)\]}"':,;]+$/, "")
+			.replace(/\\/g, "/");
+		if (!p || seen.has(p)) return;
+		seen.add(p);
+		out.push(p);
+	};
+	const text = typeof output === "string" ? output : "";
+	for (const rawLine of text.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line) continue;
+		const pkg = line.match(GO_PKG_ANCHOR_RE);
+		if (pkg) {
+			const prefix = goPkgToDirPrefix(pkg[1]);
+			if (prefix) push(prefix);
+			continue; // # / FAIL 行是包锚点行，不再按文件锚点扫
+		}
+		let matched = false;
+		for (const h of line.matchAll(FAILURE_PATH_ANCHOR_RE)) {
+			if (h[1].startsWith("//")) continue; // 协议相对 URL 形态不算路径
+			push(h[1]);
+			matched = true;
+		}
+		if (matched) continue;
+		if (FAILURE_PATH_LINE_RE.test(line)) push(line);
+	}
+	return out;
+}
+
+export interface ForeignCheckInput {
+	/** 失败输出提取出的路径/包锚点集合（extractFailurePaths 的输出） */
+	paths: readonly string[];
+	/** 本会话侧：累计触发集 ∪ 本 change 归属 */
+	mine: Iterable<string>;
+	/** 外部侧：会话启动基线 ∪ 其他 change 归属 */
+	foreign: Iterable<string>;
+}
+
+/** 归属判定（design D5 判外部充分条件）：P 非空 ∧ P∩mine=∅ ∧ P⊆foreign。
+ *  包锚点（尾部 / 的目录前缀）按前缀与集合比对：任一集合成员位于该前缀下即命中。
+ *  任何混合/缺失/非字符串路径 → false（保守回现状，宁可多报不误判外部）。 */
+export function isForeignFailure({ paths, mine, foreign }: ForeignCheckInput): boolean {
+	if (!Array.isArray(paths) || paths.length === 0) return false;
+	const mineSet = mine instanceof Set ? mine : new Set(mine);
+	const foreignSet = foreign instanceof Set ? foreign : new Set(foreign);
+	const memberOf = (p: string, s: ReadonlySet<string>): boolean => {
+		if (s.has(p)) return true;
+		if (p.endsWith("/")) {
+			for (const x of s) if (x.startsWith(p)) return true;
+		}
+		return false;
+	};
+	return (
+		paths.every((p) => typeof p === "string" && !memberOf(p, mineSet)) &&
+		paths.every((p) => typeof p === "string" && memberOf(p, foreignSet))
+	);
+}
+
 function classifyStage(
 	started: boolean | undefined,
 	status: unknown,
