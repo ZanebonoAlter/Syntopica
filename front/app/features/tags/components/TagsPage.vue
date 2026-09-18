@@ -384,7 +384,7 @@ onMounted(() => { void loadWatchCount() })
 </template>
 
 <style scoped>
-.tags-page { display: flex; flex-direction: column; height: 100vh; background: var(--color-bg-base); color: var(--color-text-primary); }
+.tags-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh; background: var(--color-bg-base); color: var(--color-text-primary); }
 .tags-topbar { position: sticky; top: 0; z-index: 30; border-bottom: 1px solid var(--color-border-subtle); background: var(--color-bg-elevated); backdrop-filter: blur(16px); }
 .tags-topbar-inner { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1.5rem; }
 .tags-back-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 1px solid var(--color-border-medium); border-radius: 8px; color: var(--color-text-muted); text-decoration: none; transition: all 0.12s ease; }
@@ -410,4 +410,12 @@ onMounted(() => { void loadWatchCount() })
 .tags-pool-tab.is-active { color: var(--color-accent); background: var(--color-accent-subtle); }
 .tags-pool-tab.is-active::after { content: ''; position: absolute; bottom: -1px; left: 0; right: 0; height: 2px; background: var(--color-accent); border-radius: 1px; }
 .tags-bottombar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 40; display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem; padding: 0.45rem 1.25rem; border-top: 1px solid var(--color-border-subtle); background: var(--color-bg-elevated); backdrop-filter: blur(12px); }
+
+/* 窄屏（<768px）：双栏纵向堆叠，tab 栏横向滚动（mobile-viewport-stage1 任务 4.1） */
+@media (max-width: 767.98px) {
+  .tags-topbar-inner { padding: 0.75rem 1rem; }
+  .tags-main { flex-direction: column; }
+  .tags-content { padding: 1rem 1rem 3.5rem; }
+  .tags-content-tabs { overflow-x: auto; }
+}
 </style>

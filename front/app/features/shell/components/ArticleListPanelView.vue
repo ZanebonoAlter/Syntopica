@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { inject } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useVirtualList } from '@vueuse/core'
 import { ArticleCardView as ArticleCard } from '~/features/articles/public'
+import { FEED_LIST_SCROLL_BRIDGE } from './feedListScrollBridge'
 import type { Article } from '~/types'
 
 interface Props {
@@ -48,6 +50,10 @@ const { list, containerProps, wrapperProps } = useVirtualList(
   { itemHeight: ROW_HEIGHT, overscan: 5 }
 )
 
+// 窄屏滚动记忆桥（任务 3.1，design.md D4）：把虚拟列表滚动容器注册给 FeedLayoutShell，
+// 供列表/阅读切换时记忆与恢复 scrollTop；宽屏无 provide 方，inject 落空即不注册
+const scrollBridge = inject(FEED_LIST_SCROLL_BRIDGE, null)
+
 function onContainerScroll(event: Event) {
   const target = event.target as HTMLElement
   if (!target) return
@@ -62,11 +68,17 @@ watch(containerProps.ref, (el) => {
   if (el) {
     el.addEventListener('scroll', onContainerScroll)
   }
+  if (scrollBridge) {
+    scrollBridge.el = el
+  }
 }, { immediate: true })
 
 onUnmounted(() => {
   if (containerProps.ref.value) {
     containerProps.ref.value.removeEventListener('scroll', onContainerScroll)
+  }
+  if (scrollBridge) {
+    scrollBridge.el = null
   }
 })
 

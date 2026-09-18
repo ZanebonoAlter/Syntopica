@@ -60,7 +60,7 @@ onUnmounted(teardownProgress)
        状态由 plugins/nav-loading.ts 驱动，空闲时不渲染任何内容 -->
   <NavLoadingOverlay />
 
-  <div v-if="loading" class="h-screen flex items-center justify-center">
+  <div v-if="loading" class="h-dvh flex items-center justify-center">
     <div class="text-center">
       <Icon icon="mdi:loading" width="48" height="48" class="animate-spin mx-auto mb-4" style="color: var(--color-text-secondary)" />
       <!-- 游戏风加载短句：随机一条，长加载约 4s 轮换；aria-live 播报首条与轮换 -->
@@ -83,12 +83,12 @@ onUnmounted(teardownProgress)
     </div>
   </div>
 
-  <div v-else-if="error" class="h-screen flex items-center justify-center">
-    <div class="text-center max-w-md">
+  <div v-else-if="error" class="h-dvh flex items-center justify-center">
+    <div class="text-center max-w-md w-full max-md:px-6 break-words">
       <Icon icon="mdi:alert-circle" width="48" height="48" class="text-[var(--color-error)] mx-auto mb-4" />
       <h2 class="text-xl font-bold mb-2" style="color: var(--color-text-primary)">加载失败</h2>
       <p class="mb-4" style="color: var(--color-text-secondary)">{{ error }}</p>
-      <AppButton variant="primary" @click="$router.go(0)">
+      <AppButton variant="primary" class="max-md:w-full" @click="$router.go(0)">
         重新加载
       </AppButton>
     </div>

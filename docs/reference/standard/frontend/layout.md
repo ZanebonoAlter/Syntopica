@@ -78,12 +78,40 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 
 **级别**: MUST
 
-声明 `ui-impact: major` 的 change 验收 SHALL 覆盖 **1440×900** 与 **1920×1080** 两档桌面视口（布局符合所选模式、contained 不超 1120px 居中、workspace 使用可用宽度、dialog 不超 92vw、无横向溢出）；产品明确支持窄屏时另加窄屏视口。验收方式见《开发执行规范》§5.3（opencli 交互断言 + 视觉子代理分流）。
+声明 `ui-impact: major` 的 change 验收 SHALL 覆盖 **1440×900** 与 **1920×1080** 两档桌面视口（布局符合所选模式、contained 不超 1120px 居中、workspace 使用可用宽度、dialog 不超 92vw、无横向溢出）；触及窄屏降级路径（主工作台/抽屉/单栏切换）的 change 另加 **375×667** 与 **390×844** 窄屏档。验收方式见《开发执行规范》§5.3（opencli 交互断言 + 视觉子代理分流）。
 
 #### Scenario: 宽屏构图验收
 
 - **WHEN** major UI change 完成实现进入验收
 - **THEN** 两档视口截图/检查证据 SHALL 记录在 tasks.md 验证节，宽屏内容被无限拉长视为阻断项（除非合同选择 workspace 并说明用途）
+
+### Requirement: 窄视口断点与宽屏零变化
+
+**级别**: MUST
+
+窄视口降级统一以 **`@media (max-width: 767.98px)`** 为断点（与 Tailwind md 对齐），JS 侧统一读 `useIsNarrowViewport()`（`front/app/composables/useMediaQuery.ts`），不得另立断点值。窄屏降级改动 SHALL 全部落在媒体块/窄屏分支内：**≥768px 视口的布局与交互零变化**是回归红线（新状态如 viewMode 不得出现在宽屏渲染路径）。
+
+#### Scenario: 断点跨越状态保持
+
+- **WHEN** 用户在窄屏阅读态把窗口放宽到 ≥768px
+- **THEN** 布局恢复宽屏三栏，当前选中文章保持；缩回窄屏时回到列表态
+
+### Requirement: 主工作台窄屏降级（抽屉 + 单栏切换）
+
+**级别**: MUST
+
+主工作台（FeedLayoutShell）窄屏下：常驻侧栏隐藏，经顶栏汉堡入口以 `AppSidebarDrawer` 抽屉呈现（宽 `min(80vw, 320px)`，遮罩/Esc/选中即关）；文章列表与内容互斥单栏（`viewMode: 'list' | 'reading'`，仅窄屏分支读取），点文章进阅读态、返回回列表态并恢复列表滚动位置（超出已加载范围先补一页，仍不足落顶）。高度单位用 `100dvh`（`@supports` 回退 `100vh`）。
+
+#### Scenario: 抽屉选中節选
+
+- **WHEN** 用户在抽屉内点选订阅源/标签
+- **THEN** 筛选生效、抽屉关闭、界面回到列表态
+
+### Requirement: 核心页面 375px 不破版基线
+
+**级别**: MUST
+
+核心页面（主工作台/发现/设置/标签/日报）在 375px 宽视口下 SHALL 无横向溢出、交互元素可达；loading/empty/error 各状态同样不破版。存量页面已存在的其他断点值（如 720px/768px 整点）不强制回改，但新代码一律用 767.98px 断点。
 
 ## 存量迁移
 
@@ -96,4 +124,6 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 | --- | --- |
 | 页面骨架 | `<AppPageShell mode="reader\|contained\|workspace\|split">` |
 | 弹窗 | `<AppDialog size="sm\|md\|lg\|xl">`（旧 `width` 勿用于新代码） |
+| 窄屏导航抽屉 | `<AppSidebarDrawer :open=".." @close="..">`（仅窄屏容器，宽 min(80vw,320px)，来源 mobile-viewport-stage1） |
+| 窄屏断点 | `useIsNarrowViewport()`（composables/useMediaQuery.ts，断点 767.98px） |
 | 按钮/输入/开关/标题 | `AppButton` / `AppInput` / `AppToggle` / `AppSectionHeader`（见 [theming.md](theming.md)） |

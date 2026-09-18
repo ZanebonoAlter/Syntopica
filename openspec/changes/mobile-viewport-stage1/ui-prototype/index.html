@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mobile-viewport-stage1 原型 — Syntopica 窄屏阶段一</title>
+<style>
+/* ============ editorial 主题 token（摘自 front/app/assets/css/main.css）============ */
+:root {
+  --color-bg-base: #faf7f2;
+  --color-bg-elevated: rgba(245, 242, 235, 0.92);
+  --color-bg-sunken: #e8e2d6;
+  --color-bg-overlay: rgba(26, 26, 26, 0.4);
+  --color-text-primary: #1a1a1a;
+  --color-text-secondary: #5a5a5a;
+  --color-text-muted: #8a8a8a;
+  --color-border-subtle: rgba(26, 26, 26, 0.08);
+  --color-border-medium: rgba(26, 26, 26, 0.15);
+  --color-accent: #d94a4a;
+  --color-accent-subtle: rgba(217, 74, 74, 0.08);
+  --shadow-medium: 0 2px 8px rgba(26, 26, 26, 0.08);
+  --shadow-strong: 0 4px 16px rgba(26, 26, 26, 0.12);
+  --font-serif: 'Noto Serif SC', Georgia, serif;
+  --font-sans: system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; }
+body {
+  font-family: var(--font-sans);
+  background: var(--color-bg-sunken);
+  color: var(--color-text-primary);
+  display: flex; gap: 40px; justify-content: center; align-items: flex-start;
+  padding: 40px 24px; min-height: 100vh; flex-wrap: wrap;
+}
+
+/* ============ 页面侧栏说明 ============ */
+.doc { max-width: 380px; }
+.doc h1 { font-family: var(--font-serif); font-size: 22px; margin-bottom: 4px; }
+.doc .sub { color: var(--color-text-muted); font-size: 13px; margin-bottom: 20px; }
+.doc ol { padding-left: 20px; font-size: 14px; line-height: 2; color: var(--color-text-secondary); }
+.doc ol b { color: var(--color-text-primary); }
+.doc .note {
+  margin-top: 20px; padding: 12px 14px; border-left: 3px solid var(--color-accent);
+  background: var(--color-bg-elevated); font-size: 13px; line-height: 1.7;
+  color: var(--color-text-secondary); border-radius: 0 8px 8px 0;
+}
+.stateswitch { display: flex; gap: 8px; margin: 16px 0 24px; flex-wrap: wrap; }
+.stateswitch button {
+  padding: 6px 14px; border-radius: 999px; border: 1px solid var(--color-border-medium);
+  background: #fff; cursor: pointer; font-size: 13px; color: var(--color-text-secondary);
+}
+.stateswitch button.on { background: var(--color-accent); color: #fff; border-color: var(--color-accent); }
+
+/* ============ 手机框 ============ */
+.phone {
+  width: 375px; height: 667px; border-radius: 36px; background: #111;
+  padding: 10px; box-shadow: var(--shadow-strong); flex-shrink: 0;
+}
+.screen {
+  position: relative; width: 100%; height: 100%; border-radius: 28px;
+  background: var(--color-bg-base); overflow: hidden; display: flex; flex-direction: column;
+}
+.notch { position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  width: 120px; height: 24px; background: #111; border-radius: 0 0 14px 14px; z-index: 60; }
+
+/* ============ 顶栏（窄屏单行）============ */
+.topbar {
+  height: 56px; display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  padding-top: 28px; /* 让出 notch */ border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-elevated); z-index: 10; flex-shrink: 0;
+}
+.iconbtn {
+  width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center;
+  justify-content: center; font-size: 17px; cursor: pointer; border: none;
+  background: transparent; color: var(--color-text-secondary);
+}
+.iconbtn:active { background: var(--color-accent-subtle); }
+.topbar .logo { font-family: var(--font-serif); font-weight: 700; font-size: 16px; letter-spacing: .5px; }
+.topbar .spacer { flex: 1; }
+.dot { position: relative; }
+.dot::after { content: ''; position: absolute; top: 7px; right: 8px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--color-accent); }
+
+/* ============ 列表态 ============ */
+.view { flex: 1; overflow: hidden; position: relative; display: flex; flex-direction: column; }
+.chips { display: flex; gap: 8px; padding: 10px 16px; overflow-x: auto; flex-shrink: 0;
+  scrollbar-width: none; }
+.chips::-webkit-scrollbar { display: none; }
+.chip { padding: 5px 14px; border-radius: 999px; font-size: 12px; white-space: nowrap;
+  border: 1px solid var(--color-border-medium); color: var(--color-text-secondary); background: #fff; }
+.chip.on { background: var(--color-accent); color: #fff; border-color: var(--color-accent); }
+.cards { flex: 1; overflow-y: auto; padding: 4px 16px 16px; }
+.card {
+  background: #fff; border: 1px solid var(--color-border-subtle); border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 10px; cursor: pointer; box-shadow: var(--shadow-medium);
+}
+.card:active { transform: scale(.985); }
+.card .feed { font-size: 11px; color: var(--color-accent); margin-bottom: 6px; }
+.card h3 { font-family: var(--font-serif); font-size: 15px; line-height: 1.45; margin-bottom: 6px; }
+.card p { font-size: 12px; color: var(--color-text-muted); line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card .meta { display: flex; gap: 10px; margin-top: 8px; font-size: 11px; color: var(--color-text-muted); }
+
+/* ============ 阅读态 ============ */
+.reading { position: absolute; inset: 0; background: var(--color-bg-base); z-index: 20;
+  display: none; flex-direction: column; }
+.reading.show { display: flex; }
+.backbar { height: 44px; display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  padding-top: 28px; border-bottom: 1px solid var(--color-border-subtle); background: var(--color-bg-elevated); }
+.backbar span { font-size: 14px; color: var(--color-text-secondary); }
+.article { flex: 1; overflow-y: auto; padding: 20px 20px 32px; }
+.article .kicker { font-size: 11px; color: var(--color-accent); margin-bottom: 8px; }
+.article h1 { font-family: var(--font-serif); font-size: 21px; line-height: 1.4; margin-bottom: 10px; }
+.article .byline { font-size: 12px; color: var(--color-text-muted); margin-bottom: 18px; padding-bottom: 14px;
+  border-bottom: 1px solid var(--color-border-subtle); }
+.article .body { font-family: var(--font-serif); font-size: 15px; line-height: 1.9; color: #333; }
+.article .body p { margin-bottom: 14px; }
+.reading .fab {
+  position: absolute; bottom: 20px; right: 16px; width: 44px; height: 44px; border-radius: 50%;
+  background: var(--color-accent); color: #fff; display: flex; align-items: center; justify-content: center;
+  font-size: 20px; box-shadow: var(--shadow-strong); border: none; cursor: pointer;
+}
+
+/* ============ 抽屉态 ============ */
+.scrim { position: absolute; inset: 0; background: var(--color-bg-overlay); z-index: 30;
+  opacity: 0; pointer-events: none; transition: opacity .26s ease-out; }
+.scrim.show { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: absolute; top: 0; bottom: 0; left: 0; width: min(80vw, 320px); z-index: 40;
+  background: var(--color-bg-elevated); transform: translateX(-100%);
+  transition: transform .26s ease-out; display: flex; flex-direction: column;
+  border-right: 1px solid var(--color-border-medium); box-shadow: var(--shadow-strong);
+  padding-top: 28px;
+}
+.drawer.show { transform: translateX(0); }
+.drawer .dhead { padding: 14px 18px 10px; font-family: var(--font-serif); font-weight: 700; font-size: 15px; }
+.drawer .sect { padding: 10px 18px 4px; font-size: 11px; letter-spacing: 1px;
+  color: var(--color-text-muted); text-transform: uppercase; }
+.drawer .item { display: flex; align-items: center; gap: 10px; padding: 10px 18px;
+  font-size: 14px; color: var(--color-text-secondary); cursor: pointer; }
+.drawer .item.on { color: var(--color-accent); background: var(--color-accent-subtle); }
+.drawer .item .cnt { margin-left: auto; font-size: 11px; color: var(--color-text-muted); }
+.drawer .dlist { flex: 1; overflow-y: auto; padding-bottom: 16px; }
+
+/* ============ 宽屏对照 ============ */
+.wide { margin-top: 28px; }
+.wide h2 { font-family: var(--font-serif); font-size: 16px; margin-bottom: 10px; }
+.wideframe { width: 380px; border-radius: 10px; border: 1px solid var(--color-border-medium);
+  background: var(--color-bg-base); overflow: hidden; box-shadow: var(--shadow-medium); }
+.wideframe .wt { height: 28px; background: var(--color-bg-elevated);
+  border-bottom: 1px solid var(--color-border-subtle); display: flex; align-items: center;
+  padding: 0 10px; gap: 6px; font-size: 9px; color: var(--color-text-muted); }
+.wideframe .wbody { display: flex; height: 200px; }
+.wf-side { width: 70px; border-right: 1px solid var(--color-border-subtle); padding: 8px 6px;
+  font-size: 8px; color: var(--color-text-muted); line-height: 2; }
+.wf-side div:first-child { color: var(--color-accent); }
+.wf-list { width: 100px; border-right: 1px solid var(--color-border-subtle); padding: 8px 6px; }
+.wf-list .wcard { height: 26px; border-radius: 5px; background: #fff; margin-bottom: 6px;
+  border: 1px solid var(--color-border-subtle); }
+.wf-main { flex: 1; padding: 10px; }
+.wf-main .line { height: 7px; border-radius: 4px; background: var(--color-bg-sunken); margin-bottom: 6px; }
+.wf-main .line.short { width: 60%; }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px;
+  background: var(--color-accent-subtle); color: var(--color-accent); margin-bottom: 6px; }
+</style>
+</head>
+<body>
+
+<div class="doc">
+  <h1>Syntopica 窄屏适配 · 阶段一原型</h1>
+  <div class="sub">375×667 手机视口 · 四个关键交互态 · editorial 主题 token</div>
+  <div class="stateswitch">
+    <button data-go="list" class="on">① 列表态</button>
+    <button data-go="drawer">② 抽屉态</button>
+    <button data-go="reading">③ 阅读态</button>
+    <button data-go="wide">④ 宽屏对照</button>
+  </div>
+  <ol>
+    <li><b>列表态</b>：默认单栏卡片流；顶栏 ☰ 开抽屉；筛选 chips 横向滚动</li>
+    <li><b>抽屉态</b>：侧栏 overlay 滑出（min(80vw,320px)）；点遮罩/选筛选项关闭</li>
+    <li><b>阅读态</b>：点任意文章卡片进入；「← 返回」回列表（滚动位置恢复）</li>
+    <li><b>宽屏对照</b>：≥768px 三栏布局零变化（回归保护）</li>
+  </ol>
+  <div class="note">
+    手机框内可直接交互：点卡片进阅读、点 ☰ 开关抽屉、点抽屉里的订阅源会选中并关抽屉。
+    顶栏高度、gutter（16px）、100dvh 等按 ui-design.md Layout Contract 落地。
+  </div>
+</div>
+
+<div class="phone"><div class="screen" id="screen">
+  <div class="notch"></div>
+
+  <!-- 顶栏 -->
+  <div class="topbar">
+    <button class="iconbtn" id="burger" title="打开抽屉">☰</button>
+    <span class="logo">Syntopica</span>
+    <span class="spacer"></span>
+    <button class="iconbtn dot" title="通知">🔔</button>
+    <button class="iconbtn" title="刷新">⟳</button>
+    <button class="iconbtn" title="更多">⋯</button>
+  </div>
+
+  <!-- 列表态 -->
+  <div class="view" id="listview">
+    <div class="chips">
+      <span class="chip on">全部</span><span class="chip">AI 前沿</span><span class="chip">能源转型</span>
+      <span class="chip">深度阅读</span><span class="chip">未读</span><span class="chip">今日</span>
+    </div>
+    <div class="cards" id="cards"></div>
+  </div>
+
+  <!-- 阅读态 -->
+  <div class="reading" id="reading">
+    <div class="backbar">
+      <button class="iconbtn" id="back">←</button><span>返回列表</span>
+    </div>
+    <div class="article">
+      <div class="kicker">AI 前沿 · 阅读 4 分钟</div>
+      <h1 id="rtitle"></h1>
+      <div class="byline">张三 · 示例订阅源 · 2 小时前</div>
+      <div class="body">
+        <p>这是阅读态的正文排版示意：衬线字体、15px、1.9 行高，左右 gutter 20px，窄屏下复用 reader 排版约束（760px 上限自动失效）。</p>
+        <p>单栏切换没有转场动画——即时切换，避免干扰滚动位置记忆。返回列表时，列表会停在离开时的位置。</p>
+        <p>右下角的悬浮按钮演示触控目标：44×44px，符合移动端可点击性基线。阶段二会全面规范化触控目标。</p>
+        <p>正文超长时纵向滚动；标题区固定在返回条下方，不随正文滚动。</p>
+      </div>
+    </div>
+    <button class="fab" title="标记已读">✓</button>
+  </div>
+
+  <!-- 抽屉 -->
+  <div class="scrim" id="scrim"></div>
+  <div class="drawer" id="drawer">
+    <div class="dhead">导航</div>
+    <div class="dlist">
+      <div class="sect">订阅源</div>
+      <div class="item on" data-src="AI 前沿周报">📰 AI 前沿周报 <span class="cnt">12</span></div>
+      <div class="item" data-src="能源观察">⚡ 能源观察 <span class="cnt">8</span></div>
+      <div class="item" data-src="深度阅读计划">📚 深度阅读计划 <span class="cnt">5</span></div>
+      <div class="sect">关注标签</div>
+      <div class="item" data-src="标签 · LLM"># LLM <span class="cnt">23</span></div>
+      <div class="item" data-src="标签 · 电网"># 电网 <span class="cnt">11</span></div>
+      <div class="sect">页面</div>
+      <div class="item" data-src="页面 · 发现">🧭 发现</div>
+      <div class="item" data-src="页面 · 日报">🗓 日报</div>
+      <div class="item" data-src="页面 · 设置">⚙️ 设置</div>
+    </div>
+  </div>
+</div></div>
+
+<!-- 宽屏对照（点击④或缩放窗口时的说明） -->
+<div class="wide" id="widepanel" style="display:none">
+  <span class="badge">≥768px 零变化</span>
+  <h2>宽屏三栏布局（现状保留）</h2>
+  <div class="wideframe">
+    <div class="wt">Syntopica　🔔　⟳　☰</div>
+    <div class="wbody">
+      <div class="wf-side"><div>订阅源 ▾</div><div>关注标签</div><div>发现</div><div>日报</div><div>设置</div></div>
+      <div class="wf-list"><div class="wcard"></div><div class="wcard"></div><div class="wcard"></div><div class="wcard"></div></div>
+      <div class="wf-main">
+        <div class="line"></div><div class="line"></div><div class="line short"></div>
+        <div class="line"></div><div class="line short"></div>
+      </div>
+    </div>
+  </div>
+  <div class="note" style="margin-top:14px">窗口跨过 768px 断点时恢复此布局，并保留当前选中文章（resize 不丢状态）。</div>
+</div>
+
+<script>
+// 虚构文章 fixture
+const articles = [
+  ['AI 前沿周报', '多智能体协作框架的工程实践：从编排到观测', '本文梳理多智能体系统的三层编排模型，讨论任务分发、上下文共享与失败恢复的工程取舍……', '2h · 未读'],
+  ['能源观察', '欧洲电网灵活性资源的市场机制演进', '从备用容量到灵活性平台，欧洲各国如何用市场信号调动分布式资源参与平衡……', '5h · 未读'],
+  ['AI 前沿周报', '小模型蒸馏的性价比拐点出现在哪里', '当 7B 蒸馏模型在特定任务上逼近教师模型，推理成本的下降曲线开始主导选型决策……', '8h'],
+  ['深度阅读计划', '知识图谱与向量检索的混合召回实践', '纯向量召回的精度瓶颈催生了结构化过滤的回归——但两者怎么组合才不互相拖累……', '昨天'],
+  ['能源观察', '工商业储能的经济账：峰谷价差、需量管理与需求响应', '拆一笔储能项目的 IRR：电价机制、负荷曲线与政策补贴三因素敏感性分析……', '昨天'],
+];
+const cards = document.getElementById('cards');
+articles.forEach(([feed, title, desc, meta], i) => {
+  const c = document.createElement('div');
+  c.className = 'card';
+  c.innerHTML = `<div class="feed">${feed}</div><h3>${title}</h3><p>${desc}</p><div class="meta"><span>${meta}</span></div>`;
+  c.onclick = () => { document.getElementById('rtitle').textContent = title; go('reading'); };
+  cards.appendChild(c);
+});
+
+const $ = id => document.getElementById(id);
+function go(state) {
+  $('reading').classList.toggle('show', state === 'reading');
+  const open = state === 'drawer';
+  $('drawer').classList.toggle('show', open);
+  $('scrim').classList.toggle('show', open);
+  $('widepanel').style.display = state === 'wide' ? '' : 'none';
+  document.querySelectorAll('.stateswitch button').forEach(b =>
+    b.classList.toggle('on', b.dataset.go === state));
+}
+document.querySelectorAll('.stateswitch button').forEach(b => b.onclick = () => go(b.dataset.go));
+$('burger').onclick = () => go($('drawer').classList.contains('show') ? 'list' : 'drawer');
+$('scrim').onclick = () => go('list');
+$('back').onclick = () => go('list');
+document.querySelectorAll('.drawer .item').forEach(it => it.onclick = () => {
+  document.querySelectorAll('.drawer .item').forEach(x => x.classList.remove('on'));
+  it.classList.add('on');
+  // 应用筛选 → 关抽屉回列表态
+  const chips = document.querySelector('.chips');
+  chips.children[0].classList.remove('on');
+  setTimeout(() => go('list'), 180);
+});
+</script>
+</body>
+</html>

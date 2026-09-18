@@ -6,6 +6,15 @@
   background: var(--color-bg-base);
 }
 
+/* 移动浏览器地址栏收放会让 100vh 高度跳动；支持动态视口单位的浏览器改用 100dvh
+   （桌面端 dvh ≡ vh，视觉零变化）。不支持 dvh 的浏览器保留上方 100vh fallback
+   （mobile-viewport-stage1 design.md D5）。 */
+@supports (height: 100dvh) {
+  .feed-layout {
+    height: 100dvh;
+  }
+}
+
 .main-content {
   flex: 1;
   display: flex;
@@ -20,4 +29,81 @@
   margin: 0.5rem 0.5rem 0.5rem 0;
   border-radius: 0.75rem;
   border: 1px solid var(--color-border-subtle);
+}
+
+/* 窄屏基础块（<768px，mobile-viewport-stage1 ui-design.md Layout Contract）。
+   宽屏（≥768px）零变化红线：窄屏规则只允许落在本块内。
+   本任务仅做容器基础（gutter 变量 + 允许各栏收缩）；侧栏抽屉化、列表/阅读
+   单栏切换由后续任务在本块内追加规则。 */
+@media (max-width: 767.98px) {
+  .feed-layout {
+    /* 窄屏 gutter：16px（宽屏 24px 契约不变；后续窄屏任务从本变量取值） */
+    --feed-gutter: 16px;
+  }
+
+  /* flex 子项默认 min-width: auto，375px 视口下会被长内容撑出横向滚动；
+     允许各栏收缩到内容宽（侧栏抽屉化前的过渡基础） */
+  .main-content > * {
+    min-width: 0;
+  }
+
+  /* 正文面板窄屏 gutter：右缘 16px（上下沿用现状节奏） */
+  .content-panel {
+    margin: 0.5rem var(--feed-gutter) 0.5rem 0;
+  }
+
+  /* ── 主工作台单栏化（任务 2.3/3.1，ui-design Interaction Contract）── */
+
+  /* 常驻侧栏窄屏隐藏：同一份 AppSidebarView 改由 AppSidebarDrawer 承载。
+     选择器限定 .main-content 下——Teleport 到 body 的抽屉内实例不受影响 */
+  .main-content .app-sidebar {
+    display: none;
+  }
+
+  /* 抽屉面板内的侧栏实例：inline width 压为面板宽；拖宽把手在抽屉内无意义 */
+  .app-sidebar-drawer__panel .app-sidebar {
+    width: 100% !important;
+  }
+  .app-sidebar-drawer__panel .resize-handle {
+    display: none;
+  }
+
+  /* 列表态/阅读态互斥单栏：默认列表态只显示列表；无订阅源时只显示空态引导 */
+  .main-content.is-narrow:not(.is-content-empty) .content-panel {
+    display: none;
+  }
+  .main-content.is-narrow.is-content-empty .article-list-panel {
+    display: none;
+  }
+  .main-content.is-narrow.is-reading .article-list-panel {
+    display: none;
+  }
+  .main-content.is-narrow.is-reading .content-panel {
+    display: block;
+    /* 阅读态正文宽 = 100% - gutter（ui-design Layout Contract「文章列表/阅读正文」行） */
+    margin: 0.5rem var(--feed-gutter) 0.5rem;
+  }
+
+  /* 阅读态返回条（进阅读态渲染，宽屏 DOM 不存在）：sticky 顶置，不被正文滚动带走 */
+  .reading-back-bar {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+    flex-shrink: 0;
+    padding: 0.6rem 1rem;
+    border: none;
+    border-bottom: 1px solid var(--color-border-subtle);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+    font-size: 0.9rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .reading-back-bar:hover {
+    background: var(--color-bg-hover);
+  }
 }

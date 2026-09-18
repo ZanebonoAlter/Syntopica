@@ -146,6 +146,21 @@ function sourceTitle(source: string): string {
   overflow-y: auto;
 }
 
+/* 窄屏（<768px）：随父容器纵向堆叠，占满宽度并限高自滚；动作按钮双列防过长（mobile-viewport-stage1 任务 4.1） */
+@media (max-width: 767.98px) {
+  .tags-sidebar {
+    width: 100%;
+    max-height: 40vh;
+    border-right: none;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .sb-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 .tags-sidebar-error {
   display: flex;
   align-items: center;
