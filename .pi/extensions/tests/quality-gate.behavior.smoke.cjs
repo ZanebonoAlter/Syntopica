@@ -3,7 +3,8 @@
 // 场景 A 正常态(windows) / B 探测故障短路 / C 兜底 diag 特征(粘性豁免) / D 真实失败粘性 /
 // E native 模式正常态 / F native 失败归因与链路标注（linux-native-dev-environment 新增）/
 // G native 工具链缺失侧级短路 / H native 工具缺失兑底归因 / I windows 不受工具链探测影响
-// （harden-gate-native-toolchain 新增）。
+// （harden-gate-native-toolchain 新增）/ J 子线程 turn_end 降载 bypass（零命令+一条记账）/
+// K 主会话不受降载影响（harden-subagent-constraint-channel 新增）。
 // 模块级状态（sticky/snapshot/gateOkStates/execPlatform）由各场景前的 session_start 重置。
 // 由 run-harness-smoke.sh 调用（先 esbuild 产出 .qgateb.cjs）。断言失败 exit 1。
 //
@@ -37,6 +38,18 @@ function mkrepo() {
 }
 
 const mkctx = (sid) => ({ signal: undefined, sessionManager: { getSessionId: () => sid } });
+/** 子线程 ctx（父子可证，harden-subagent-constraint-channel）：header parentSession 指向
+ *  父会话文件（pi-web/pi-subagents 子会话实测形态；lib/child-session 判定矩阵见
+ *  quality-gate.smoke.cjs CS 系列，此处只验 behavior）。cwd 供 bypass 记账用
+ *  （constraint-injection 同源：无 git 兑底，直接 ctx.cwd 落 .pi/harness/events.db） */
+const childCtx = (sid, cwd) => ({
+	signal: undefined,
+	cwd,
+	sessionManager: {
+		getSessionId: () => sid,
+		getHeader: () => ({ parentSession: `/home/x/.pi/agent/sessions/dir/2026-09-18T00-00-00-000Z_${sid}-parent.jsonl` }),
+	},
+});
 const EDIT_TURN = { toolResults: [{ toolName: 'edit' }] };
 const CHAT_TURN = { toolResults: [{ toolName: 'read' }] };
 
@@ -384,6 +397,60 @@ const setup = (router) => {
 		check('I1 windows 下 PATH 缺工具链不短路（gate.check ≥3 照常）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check'")[0].n >= 3);
 		check('I2 零 toolchain-down 记账', !q(repo, "SELECT payload FROM events WHERE kind='policy.decision'").some((r) => r.payload.includes('toolchain-down')));
 		check('I3 零环境 steer', messages.length === 0);
+	}
+
+	// ============ 场景 J：子线程 turn_end 降载（harden-subagent-constraint-channel D4） ============
+	// 父子关系可证（header parentSession）→ turn_end 入口整体短路：git/探测/门禁命令一个
+	// 不跑，恰一条 bypass(child-session) 记账，零 gate.check，回合正常放行（零 steer）。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		const router = async (cmd, args) => { throw new Error(`unexpected exec in child session: ${cmd} ${args.join(' ')}`); };
+		const { handlers, messages, execCalls } = setup(router);
+		await handlers['session_start']({ reason: 'startup' }, childCtx('smoke-j', repo)); // 子线程派发：startup 早退（既有语义）
+		await handlers['turn_end'](EDIT_TURN, childCtx('smoke-j', repo));
+		const polJ = q(repo, "SELECT payload FROM events WHERE kind='policy.decision'");
+		check('J1 子线程 turn_end 零 exec（git 快照/探测/门禁全不跑）', execCalls.length === 0);
+		check('J2 恰一条 policy.decision 且形状精确（quality-gate/bypass/child-session）', polJ.length === 1
+			&& JSON.stringify(JSON.parse(polJ[0].payload)) === JSON.stringify({ policy: 'quality-gate', action: 'bypass', reasonCode: 'child-session' }));
+		check('J3 零 gate.check（没跑命令零记账）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check'")[0].n === 0);
+		check('J4 回合正常放行零 steer', messages.length === 0);
+		await handlers['turn_end'](CHAT_TURN, childCtx('smoke-j', repo)); // 纯对话回合同样降载
+		check('J5 纯对话回合同样 bypass 记账（置顶于 touchedCode 早退，每回合一条）',
+			q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n === 2);
+	}
+
+	// ============ 场景 K：主会话不受降载影响（harden-subagent-constraint-channel） ============
+	// 有会话文件证据位但非 forks/ 路径、无 parentSession → 判定为假 → 门禁照常、零 bypass 记账
+	// （判定默认方向回归：防 isChildSession 误报把主会话门禁静默掉）。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		let files = '';
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				return { code: 0, stdout: '0 issues.', stderr: '' };
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		const mainCtx = (sid) => ({
+			signal: undefined,
+			cwd: repo,
+			sessionManager: {
+				getSessionId: () => sid,
+				getSessionFile: () => `/home/x/.pi/agent/sessions/dir/2026-09-18T00-00-00-000Z_${sid}.jsonl`,
+			},
+		});
+		await handlers['session_start']({ reason: 'new' }, mainCtx('smoke-k'));
+		files = 'backend-go/a.go';
+		await handlers['turn_end'](EDIT_TURN, mainCtx('smoke-k'));
+		check('K1 主会话（非 fork 路径）门禁照常执行（gate.check ≥3）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check'")[0].n >= 3);
+		check('K2 零 child-session 记账（零 policy.decision）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n === 0);
+		check('K3 零 steer', messages.length === 0);
 	}
 
 	let fail = 0;

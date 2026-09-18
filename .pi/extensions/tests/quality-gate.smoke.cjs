@@ -3,6 +3,7 @@
 // 由 run-harness-smoke.sh 调用（先 esbuild 产出 .tgset.cjs）。断言失败 exit 1。
 const { computeTriggerSet } = require('./.tgset.cjs');
 const { initGateOkState, stepGateOk, isCompileFailure, GATE_OK_SAMPLE_EVERY } = require('./.gsamp.cjs');
+const { sessionIdFromSessionFile, parentSessionIdFromForkFile, parentSessionId, isChildSession } = require('./.childsess.cjs');
 
 const checks = [];
 const check = (name, ok) => checks.push([name, ok]);
@@ -109,6 +110,45 @@ const check = (name, ok) => checks.push([name, ok]);
 	check('gofmt 错误不短路', isCompileFailure('internal\\dataenrichment\\repository\\models.go:194:1: File is not properly formatted (gofmt)') === false);
 	check('空输出不短路', isCompileFailure('') === false);
 	check('0 issues 不短路', isCompileFailure('0 issues.') === false);
+}
+
+/* ---------- isChildSession 判定矩阵（harden-subagent-constraint-channel T3/T8）----------
+ * 判定证据与 constraint-injection 父子继承同源（lib/child-session 单一真相源）：
+ * header parentSession × fork 路径 × 无 sessionId stub 槽位。quality-gate 降载短路
+ * （behavior smoke 场景 J/K）与 constraint-injection 继承（19.x）共用本判定面。 */
+{
+	const PARENT = '/home/x/.pi/agent/sessions/dir/2026-09-18T00-00-00-000Z_parent-session.jsonl';
+	const ctxOf = (sm) => ({ sessionManager: sm });
+	// 基元解析：<ts>_<id>.jsonl → id（时间戳与 id 之间唯一一个下划线，id 自身含连字符）
+	check('CS1 sessionIdFromSessionFile 解析 id（保留首个下划线后完整段）', sessionIdFromSessionFile(PARENT) === 'parent-session');
+	check('CS2 sessionIdFromSessionFile 空/无下划线 → null', sessionIdFromSessionFile(undefined) === null
+		&& sessionIdFromSessionFile('') === null && sessionIdFromSessionFile('no-underscore-here.jsonl') === null);
+	check('CS3 parentSessionIdFromForkFile 从 forks 上级目录解父 id',
+		parentSessionIdFromForkFile('/x/2026-09-18T00-00-00-000Z_dad/forks/2026-09-18T00-01-00-000Z_kid.jsonl') === 'dad');
+	check('CS4 非 fork 路径/空 → null（不可证）', parentSessionIdFromForkFile('/x/2026-09-18T00-00-00-000Z_kid.jsonl') === null
+		&& parentSessionIdFromForkFile(undefined) === null);
+	// ctx 判定矩阵
+	check('CS5 header 带 parentSession（pi-web/pi-subagents 子会话实测形态）→ 子线程',
+		isChildSession(ctxOf({ getSessionId: () => 'kid', getHeader: () => ({ parentSession: PARENT }) })) === true);
+	check('CS6 header 无 parentSession 且无会话文件 → 非子线程',
+		isChildSession(ctxOf({ getSessionId: () => 'kid', getHeader: () => ({}) })) === false);
+	check('CS7 header 返回 null → 非子线程（失败方向安全）',
+		isChildSession(ctxOf({ getHeader: () => null })) === false);
+	check('CS8 header 缺失时 fork 路径兑底 → 子线程',
+		isChildSession(ctxOf({
+			getSessionId: () => 'kid',
+			getHeader: () => null,
+			getSessionFile: () => '/x/2026-09-18T00-00-00-000Z_dad/forks/2026-09-18T00-01-00-000Z_kid.jsonl',
+		})) === true);
+	check('CS9 会话文件存在但非 forks/ 下 → 非子线程',
+		isChildSession(ctxOf({ getSessionFile: () => '/x/2026-09-18T00-00-00-000Z_kid.jsonl' })) === false);
+	check('CS10 header 与 fork 路径同证 → 取 header（证据①优先）',
+		parentSessionId(ctxOf({
+			getHeader: () => ({ parentSession: PARENT }),
+			getSessionFile: () => '/x/2026-09-18T00-00-00-000Z_dad/forks/2026-09-18T00-01-00-000Z_kid.jsonl',
+		})) === 'parent-session');
+	check('CS11 无 sessionId stub 槽位（无/空 sessionManager）→ 非子线程',
+		isChildSession({}) === false && isChildSession(undefined) === false && isChildSession(ctxOf({})) === false);
 }
 
 /* ---------- edit-map 归属地图（coordinate-concurrent-changes）---------- */

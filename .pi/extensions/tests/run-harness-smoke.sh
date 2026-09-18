@@ -40,6 +40,8 @@ npx -y esbuild ../lib/edit-map.ts --bundle --platform=node --format=cjs \
   --outfile=./.emap.cjs >/dev/null
 npx -y esbuild ../lib/gate-sample.ts --bundle --platform=node --format=cjs \
   --outfile=./.gsamp.cjs >/dev/null
+npx -y esbuild ../lib/child-session.ts --bundle --platform=node --format=cjs \
+  --outfile=./.childsess.cjs >/dev/null
 npx -y esbuild ../quality-gate.ts --bundle --platform=node --format=cjs \
   --outfile=./.qgateb.cjs >/dev/null
 npx -y esbuild ../lib/session-rollup.ts --bundle --platform=node --format=cjs \
@@ -61,5 +63,5 @@ node ui-design-gate.smoke.cjs || rc=$?
 node policy-decision.smoke.cjs || rc=$?
 node session-rollup.smoke.cjs || rc=$?
 node dev-process-guard.smoke.cjs || rc=$?
-rm -f ./.hlog.cjs ./.fcls.cjs ./.tel.cjs ./.spill.cjs ./.sgate.cjs ./.tgset.cjs ./.tcg.cjs ./.egate.cjs ./.gsamp.cjs ./.pdec.cjs ./.qgate.cjs ./.tsg.cjs ./.uig.cjs ./.uige.cjs ./.qgateb.cjs ./.emap.cjs ./.srollup.cjs ./.dps.cjs ./.dpg.cjs
+rm -f ./.hlog.cjs ./.fcls.cjs ./.tel.cjs ./.spill.cjs ./.sgate.cjs ./.tgset.cjs ./.tcg.cjs ./.egate.cjs ./.gsamp.cjs ./.childsess.cjs ./.pdec.cjs ./.qgate.cjs ./.tsg.cjs ./.uig.cjs ./.uige.cjs ./.qgateb.cjs ./.emap.cjs ./.srollup.cjs ./.dps.cjs ./.dpg.cjs
 exit $rc

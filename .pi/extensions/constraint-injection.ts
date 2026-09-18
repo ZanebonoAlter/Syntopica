@@ -89,6 +89,7 @@ import {
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { logEvent, queryBySession, type HarnessEventRow } from "./lib/harness-log";
+import { isChildSession, parentSessionId } from "./lib/child-session";
 import {
 	listChangeDirs,
 	detectActiveChange,
@@ -174,6 +175,10 @@ type ChannelState = {
 	fingerprintRegime: string | null;
 	/** compaction 后待重发快照（D4）：session_compact 置位，下一注入时机重发并重置指纹 */
 	pendingSnapshot: boolean;
+	/** 子线程 session_start 已投递稳定层（harden-subagent-constraint-channel T3-rev/D3）：
+	 *  真时 before_agent_start 冻结快照/稳定层记账且不返回 systemPrompt 块（防双投——
+	 *  消息与 system prompt 二选一，稳定层已由消息通道承载）。仅子线程置位。 */
+	childInitDelivered: boolean;
 };
 type SessionState = {
 	sessionId: string;
@@ -226,6 +231,7 @@ function newSessionState(sessionId: string): SessionState {
 			sentFingerprint: new Map(),
 			fingerprintRegime: null,
 			pendingSnapshot: false,
+			childInitDelivered: false,
 		},
 		lastUsedAt: Date.now(),
 	};
@@ -284,40 +290,23 @@ export const SESSION_STATE_LIMIT_FOR_TEST = DEFAULT_SESSION_STATE_LIMIT;
 /** 烟测观测面：上限解析（非法值回退默认） */
 export const resolveSessionStateLimitForTest = resolveSessionStateLimit;
 
-/** `<ts>_<sessionId>.jsonl` → sessionId。会话文件（父会话文件路径、fork 子会话文件）都用
- *  这个形状：时间戳与 id 之间只有一个下划线，id 自身含连字符。 */
-function sessionIdFromSessionFile(file: string | undefined | null): string | null {
-	if (!file) return null;
-	const stem = String(file).split(/[\\/]/).pop()?.replace(/\.jsonl$/, "") ?? "";
-	const sep = stem.indexOf("_");
-	return sep >= 0 ? stem.slice(sep + 1) : null;
+/** 烟测观测面（T3-rev 子线程投递通道）：指定会话的通道投递凭据（稳定层快照 key +
+ *  childInitDelivered），仅供测试断言，不参与注入逻辑；会话不存在返回 null。 */
+export function channelStateForTest(
+	sessionId: string,
+): { stableSnapshotKey: string | null; childInitDelivered: boolean } | null {
+	const st = sessionStates.get(sessionId);
+	if (!st) return null;
+	return {
+		stableSnapshotKey: st.channel.stableSnapshot?.key ?? null,
+		childInitDelivered: st.channel.childInitDelivered,
+	};
 }
 
-/** fork 子会话文件路径 → 父会话 id：子会话文件位于 `<父会话目录>/forks/<ts>_<子会话id>.jsonl`，
- *  而父会话目录名就是 `<ts>_<父会话id>` → 从「forks 的上一级目录名」解出父 id。
- *  非 fork 会话（文件不在 forks/ 下）→ null（不可证，不继承）。 */
-function parentSessionIdFromForkFile(file: string | undefined | null): string | null {
-	if (!file) return null;
-	const segs = String(file).split(/[\\/]/);
-	const forksIdx = segs.lastIndexOf("forks");
-	if (forksIdx < 1) return null;
-	const parentDir = segs[forksIdx - 1] ?? "";
-	const sep = parentDir.indexOf("_");
-	return sep >= 0 ? parentDir.slice(sep + 1) : null;
-}
-
-/** 父会话 id（「父子关系可证」的唯一依据）。两条来源，按可信度排序：
- *  ① session header 的 `parentSession`（父会话**文件绝对路径**，fork 子会话必带，实测 2026-09-17）；
- *  ② `getSessionFile()` 的路径兜底——header 未落盘/契约变化时，fork 子会话仍可从
- *     `<父会话目录>/forks/` 反解父 id。
- *  两条都拿不到 → null（不可证 → 不继承，保持失败方向安全：未激活只注索引）。 */
-function parentSessionId(ctx: ExtCtx | undefined): string | null {
-	const fromHeader = sessionIdFromSessionFile(
-		ctx?.sessionManager?.getHeader?.()?.parentSession,
-	);
-	if (fromHeader) return fromHeader;
-	return parentSessionIdFromForkFile(ctx?.sessionManager?.getSessionFile?.());
-}
+/* ---------- 父子关系判定（harden-subagent-constraint-channel T3 抽出共享）----------
+ *  sessionIdFromSessionFile / parentSessionIdFromForkFile / parentSessionId 三函数原样
+ *  移至 lib/child-session.ts（quality-gate 子线程降载同源复用，判定证据与语义不变，
+ *  见该模块头部注释）；此处经 import 的 parentSessionId 供 inheritFromParent[History] 取父 id。 */
 
 /** fork / 子线程继承（**同进程**内存路径）：**父会话有状态才继承**（否则不借他会话）。
  *  含快照与指纹——子会话的对话是父会话的拷贝，父会话已投递过的动态层条目不该重发。
@@ -343,6 +332,8 @@ function inheritFromParent(state: SessionState, ctx: ExtCtx | undefined): boolea
 		sentFingerprint: new Map(parent.channel.sentFingerprint),
 		fingerprintRegime: parent.channel.fingerprintRegime,
 		pendingSnapshot: parent.channel.pendingSnapshot,
+		// 父会话的该标记是父会话自己的投递凭据；子线程必须自行投递（session_start 末尾）
+		childInitDelivered: false,
 	};
 	return true;
 }
@@ -385,6 +376,7 @@ function resetSessionState(state: SessionState): void {
 		sentFingerprint: new Map(),
 		fingerprintRegime: null,
 		pendingSnapshot: false,
+		childInitDelivered: false,
 	};
 }
 
@@ -1768,6 +1760,47 @@ function deliverDynamic(
 	return increments.length;
 }
 
+/**
+ * 子线程稳定层投递（harden-subagent-constraint-channel T3-rev/D3 实测修订）：pi-web 托管
+ * 的子线程 SDK 没有 before_agent_start 事件（编译码词汇表零命中），稳定层 system prompt
+ * 到不了子模型；改在 session_start 末尾经 sendMessage(steer) 投递（session_start 在其
+ * 事件词汇表内，实测可达，与 compact 重发 / JIT 同款机制）。
+ * 复用 before_agent_start 混合通道的稳定层构建（splitPlanItems + buildStableHeader +
+ * renderStableBlock，key=stableSnapshotKey）；未绑定档自然只含索引（不投任何 change 文本）。
+ * 随投递记 constraint.inject(source=child-init) 并置 stableSnapshot 与 childInitDelivered
+ * ——后者令 before_agent_start 冻结快照/稳定层记账且不再返回 systemPrompt 块（防双投）。
+ * 计划为空（无任何可注入条目）跳过。主会话（父子不可证）不进入本函数。
+ */
+function deliverChildInitStable(
+	pi: ExtensionAPI,
+	ctx: ExtCtx,
+	cfg: ConstraintConfig,
+	state: SessionState,
+): void {
+	const plan = planInjection(ctx.cwd, cfg, state, detectActiveChange(ctx.cwd));
+	if (!plan.items.length) return;
+	const { stable } = splitPlanItems(plan.items);
+	const key = stableSnapshotKey(state.mode, state.boundChange);
+	const stableBlock = renderStableBlock(buildStableHeader(plan, stable), stable);
+	pi.sendMessage(
+		{
+			customType: "constraint-injection",
+			content: stableBlock,
+			display: cfg.dynamicDisplay === "full",
+		},
+		{ deliverAs: "steer", triggerTurn: false },
+	);
+	state.channel.stableSnapshot = { key, block: stableBlock, items: stable };
+	state.channel.childInitDelivered = true;
+	logConstraintInjects(
+		ctx,
+		realSessionId(state),
+		plan.changeName,
+		stable.map(itemToDocEntry),
+		"child-init",
+	);
+}
+
 /* ---------- extension 主体 ---------- */
 
 export default function (pi: ExtensionAPI) {
@@ -1801,21 +1834,29 @@ export default function (pi: ExtensionAPI) {
 					if (state.mode) {
 						logModeSet(ctx.cwd, realSessionId(state), state.mode, state.boundChange, "inherit");
 					}
-					return;
-				}
-				const sessionId = realSessionId(state);
-				const rows = sessionId
-					? queryBySession(ctx.cwd, sessionId, ["mode.set"])
-					: [];
-				if (rows.length) {
-					const rec = recoverFromRow(ctx.cwd, rows[rows.length - 1]);
-					if (rec) {
-						state.mode = rec.mode;
-						state.boundChange = rec.boundChange;
-						// 恢复路径显式记账（D6）：隐性绑定不存在；source=recover
-						logModeSet(ctx.cwd, sessionId, rec.mode, rec.boundChange, "recover");
+				} else {
+					const sessionId = realSessionId(state);
+					const rows = sessionId
+						? queryBySession(ctx.cwd, sessionId, ["mode.set"])
+						: [];
+					if (rows.length) {
+						const rec = recoverFromRow(ctx.cwd, rows[rows.length - 1]);
+						if (rec) {
+							state.mode = rec.mode;
+							state.boundChange = rec.boundChange;
+							// 恢复路径显式记账（D6）：隐性绑定不存在；source=recover
+							logModeSet(ctx.cwd, sessionId, rec.mode, rec.boundChange, "recover");
+						}
 					}
 				}
+			}
+			// 子线程稳定层投递（harden-subagent-constraint-channel T3-rev/D3）：继承/恢复逻辑
+			// 收口后、return 前执行——pi-web 子线程 SDK 无 before_agent_start，稳定层改由本
+			// 事件经 sendMessage(steer) 承载（deliverChildInitStable）；配置缺失则跳过（保持
+			// 下方 return 语义）。主会话（父子不可证）零变化。
+			if (ctx?.cwd && isChildSession(ctx)) {
+				const cfg = loadConfig(ctx.cwd);
+				if (cfg) deliverChildInitStable(pi, ctx, cfg, state);
 			}
 			return;
 		}
@@ -2055,7 +2096,14 @@ export default function (pi: ExtensionAPI) {
 		const wantBlock = plan.items.length > 0;
 		let stableBlock = "";
 		let extraDynamic: PlanItem[] = [];
-		if (
+		if (state.channel.childInitDelivered) {
+			// 子线程 session_start 已投递（harden-subagent-constraint-channel T3-rev/D3）：
+			// 稳定层由消息通道承载，本 handler MUST NOT 再返回 systemPrompt 块（防双投）；
+			// 快照/稳定层记账冻结不重复——稳定层后续内容变化照常经 extraDynamic 差异送达
+			extraDynamic = state.channel.stableSnapshot
+				? diffStableItems(state.channel.stableSnapshot.items, stable)
+				: [];
+		} else if (
 			wantBlock &&
 			(!state.channel.stableSnapshot || state.channel.stableSnapshot.key !== key)
 		) {

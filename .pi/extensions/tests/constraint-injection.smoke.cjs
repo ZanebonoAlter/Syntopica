@@ -912,6 +912,134 @@ const present = (sp, marker, heading) =>
 			/档位：未激活/.test(await systemPromptOnly(noSrcChild)),
 		);
 
+		// 19.13 pi-web 子会话继承（harden-subagent-constraint-channel T3/D3）：pi-web Agent
+		//       工具派发的实现档子线程与 pi-subagents 同形——独立 sessionId + session_start
+		//       reason=startup + header parentSession（2026-09-18 实测样本 01a0b314 转录头）。
+		//       期望：mode.set source=inherit 记在子会话名下 + 注入带父会话绑定的 change
+		//       （稳定层 header 与 constraint.inject 记账 change 列均为绑定 change）。
+		const piwebParent = 'ci-smoke-parent-piweb';
+		seedModeSet(tmp, piwebParent, 'implementation', 'bind-c');
+		const beforePiweb = readModeSetFull(tmp).length;
+		const piwebChild = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-child-piweb',
+				getHeader: () => ({
+					parentSession: `/home/x/.pi/agent/sessions/dir/2026-09-18T00-00-00-000Z_${piwebParent}.jsonl`,
+				}),
+			},
+		};
+		await emit('session_start', { reason: 'startup' }, piwebChild);
+		const piwebSp = await systemPrompt(piwebChild);
+		check(
+			'pi-web: 子会话继承父绑定（注入带绑定 change + 其声明域）',
+			/档位：实现/.test(piwebSp) && piwebSp.includes('活跃变更：bind-c（档位绑定）') && piwebSp.includes('### kwdom.md'),
+		);
+		const piwebInherit = readModeSetFull(tmp)
+			.slice(beforePiweb)
+			.filter((r) => r.source === 'inherit');
+		check(
+			'pi-web: mode.set source=inherit 记在子会话名下且带绑定 change',
+			piwebInherit.length === 1 &&
+				piwebInherit[0].session_id === 'ci-smoke-child-piweb' &&
+				piwebInherit[0].boundChange === 'bind-c',
+		);
+		{
+			const { DatabaseSync } = require('node:sqlite');
+			const piwebDb = new DatabaseSync(path.join(tmp, '.pi', 'harness', 'events.db'), { readOnly: true });
+			const injectRows = piwebDb.prepare("SELECT change FROM events WHERE kind='constraint.inject' AND session_id='ci-smoke-child-piweb'").all();
+			piwebDb.close();
+			check(
+				'pi-web: constraint.inject 记账 change 列 = 绑定 change（至少一条）',
+				injectRows.length >= 1 && injectRows.every((r) => r.change === 'bind-c'),
+			);
+		}
+
+		// 19.14 子线程 session_start 稳定层投递（harden-subagent-constraint-channel T3-rev/D3）：
+		//       pi-web 子线程 SDK 无 before_agent_start 事件 → 稳定层改在 session_start 末尾
+		//       经 sendMessage(steer) 投递（source=child-init 记账 + stableSnapshot/
+		//       childInitDelivered 置位）；随后 before_agent_start 冻结（不返回 systemPrompt
+		//       块、零重复记账）；主会话 startup 通道零变化。
+		// ① 未绑定档子线程：父会话无事实库记录 → 继承失败 → 只投索引（不投任何 change 文本）
+		const t3Parent = 'ci-smoke-parent-unbound';
+		const unboundChild = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-child-unbound',
+				getHeader: () => ({
+					parentSession: `/home/x/.pi/agent/sessions/dir/2026-09-18T00-00-00-000Z_${t3Parent}.jsonl`,
+				}),
+			},
+		};
+		const countInjects = (sessionId) => {
+			const { DatabaseSync } = require('node:sqlite');
+			const db = new DatabaseSync(path.join(tmp, '.pi', 'harness', 'events.db'), { readOnly: true });
+			const n = db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='constraint.inject' AND session_id=?").get(sessionId).n;
+			db.close();
+			return n;
+		};
+		markMessages();
+		await emit('session_start', { reason: 'startup' }, unboundChild);
+		const initMsgs = messages.slice(msgCursor);
+		check(
+			'T3-rev①: 子线程 startup 触发 sendMessage（customType + steer + 不触发 turn）',
+			initMsgs.length === 1 &&
+				initMsgs[0].msg.customType === 'constraint-injection' &&
+				initMsgs[0].opts.deliverAs === 'steer' &&
+				initMsgs[0].opts.triggerTurn === false,
+		);
+		check(
+			'T3-rev①: 内容含索引/档位块（未绑定档仅索引，无 change 文本）',
+			initMsgs[0].msg.content.includes('### idx.md') &&
+				initMsgs[0].msg.content.includes('档位：未激活') &&
+				initMsgs[0].msg.content.includes('活跃变更：无') &&
+				initMsgs[0].msg.content.includes('与 AGENTS.md 优先级宪法冲突时，以宪法为准') &&
+				!initMsgs[0].msg.content.includes('smoke-fixture'),
+		);
+		check(
+			'T3-rev①: constraint.inject 带 source=child-init（索引条目）',
+			countInjects('ci-smoke-child-unbound') === 1 &&
+				(() => {
+					const { DatabaseSync } = require('node:sqlite');
+					const db = new DatabaseSync(path.join(tmp, '.pi', 'harness', 'events.db'), { readOnly: true });
+					const rows = db.prepare("SELECT payload FROM events WHERE kind='constraint.inject' AND session_id='ci-smoke-child-unbound'").all().map((r) => JSON.parse(r.payload));
+					db.close();
+					return rows[0].source === 'child-init' && rows[0].path === 'docs/idx.md';
+				})(),
+		);
+		const t3Chan = ext.channelStateForTest('ci-smoke-child-unbound');
+		check(
+			'T3-rev①: stableSnapshot 置位（key=none|none）+ childInitDelivered 置位',
+			!!t3Chan && t3Chan.childInitDelivered === true && t3Chan.stableSnapshotKey === 'none|none',
+		);
+		// ② 同会话随后的 before_agent_start：不再追加 systemPrompt 块、零重复记账、零消息重投
+		const injectsBeforeBa = countInjects('ci-smoke-child-unbound');
+		const msgsBeforeBa = messages.length;
+		const baResult = await emit('before_agent_start', { systemPrompt: 'BASE' }, unboundChild);
+		check(
+			'T3-rev②: before_agent_start 不返回 systemPrompt 块（防双投）且零消息重投',
+			(!baResult || !baResult.systemPrompt) && messages.length === msgsBeforeBa,
+		);
+		check('T3-rev②: 零重复记账', countInjects('ci-smoke-child-unbound') === injectsBeforeBa);
+		markMessages();
+		// ③ 主会话 startup 回归：零 sendMessage；后续 before_agent_start 行为与现状一致
+		const mainCtx = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-main-t3rev' } };
+		const msgsBeforeMain = messages.length;
+		await emit('session_start', { reason: 'startup' }, mainCtx);
+		check('T3-rev③: 主会话 startup 零 sendMessage', messages.length === msgsBeforeMain);
+		const mainSp = await systemPromptOnly(mainCtx);
+		check(
+			'T3-rev③: 主会话 before_agent_start 照常返回稳定层 systemPrompt（现状回归）',
+			mainSp.startsWith('BASE') && mainSp.includes('### idx.md') && mainSp.includes('档位：未激活'),
+		);
+		const mainChan = ext.channelStateForTest('ci-smoke-main-t3rev');
+		check(
+			'T3-rev③: 主会话 childInitDelivered 恒 false',
+			!!mainChan && mainChan.childInitDelivered === false && mainChan.stableSnapshotKey === 'none|none',
+		);
+
 		// 19.5 命中集按会话隔离（关键词 + JIT 各一例）
 		await emit('input', { text: '大预算词相关展示调整' }, sessA);
 		const aKw = await systemPrompt(sessA);
@@ -1131,11 +1259,15 @@ const present = (sp, marker, heading) =>
 				}),
 			},
 		};
-		await emit('session_start', { reason: 'startup' }, childW); // 继承父 channel（快照陈旧 + 指纹 regime=新 key）
-		const cwSp = await systemPromptOnly(childW); // 子首 turn：快照重建（key=requirements|none）
-		check('regime: fork 子会话继承父档位（需求档）', /档位：需求/.test(cwSp));
+		await emit('session_start', { reason: 'startup' }, childW); // 继承父 channel（指纹 regime=新 key）
+		// T3-rev：子会话 startup 末尾即投递稳定层消息（header 块），首 turn system prompt 冻结
+		await systemPromptOnly(childW); // 子首 turn：防双投（systemPrompt 不再拼稳定层块）
 		check(
-			'regime: fork 子会话快照重建但父已投递内容不重发（fork 语义）',
+			'regime: fork 子会话继承父档位（需求档，经 session_start 消息投递）',
+			/档位：需求/.test(dynamicText()),
+		);
+		check(
+			'regime: fork 子会话父已投递内容不重发（fork 指纹继承语义保持）',
 			!dynamicText().includes('📎') && !dynamicText().includes('FULLDOC-MARKER'),
 		);
 		markMessages();

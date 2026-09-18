@@ -49,6 +49,14 @@
  *    缓存后结果恒定，每回合重记违反低噪声约束）+ steer 提示修启动环境 PATH；事后
  *    isToolNotFound 特征兑底（探测后 PATH 内文件被删的窗口期），不进粘性不分级。
  *    windows 模式不参与（用 Windows 绝对路径执行，不经 bash PATH 查找）。
+ * 15. 子线程降载（harden-subagent-constraint-channel D4，2026-09）：带扩展子线程（pi-web
+ *     implementer 档 / pi-subagents 后台）的 turn_end 会在共享工作树上与主会话叠加跑全量
+ *     门禁——N 子线程并发即 N 倍重命令（4 核树莓派红线）。turn_end 入口先做子线程判定
+ *     （lib/child-session isChildSession，与 constraint-injection 继承同源证据）：父子可证
+ *     → 本回合整体短路（git 快照/interop 探测/门禁命令一个不跑，gate.check 零记账），
+ *     显式记账 policy.decision(bypass, child-session) 一条（MUST NOT 静默），回合正常放行。
+ *     正确性：共享树的增量门禁由主会话 turn_end 承担，子线程欠账晚一轮暴露不消失；
+ *     主会话（判定为假）落到下方既有路径，逐行为不变。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { statSync, accessSync, constants } from "node:fs";
@@ -58,6 +66,7 @@ import { detectActiveChange } from "./lib/active-change";
 import { syncEditMap, resetEditMapState } from "./lib/edit-map";
 import { truncateDiagGate, isInteropFailure, isToolNotFound } from "./lib/failure-classify";
 import { logPolicyDecision } from "./lib/policy-decision";
+import { isChildSession } from "./lib/child-session";
 import { computeTriggerSet, type FileStat } from "./lib/trigger-set";
 import {
 	initGateOkState,
@@ -216,6 +225,26 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
+		// 0. 子线程降载短路（harden-subagent-constraint-channel D4）：判定与 constraint-injection
+		//    继承同源（lib/child-session，header parentSession / fork 路径）。命中即本回合整体
+		//    放行——git 快照、interop/工具链探测、lint/vet/test/eslint 一个不跑，零 gate.check
+		//    （没跑命令，与同根因短路未执行零记账同口径）；显式记账一条 bypass（MUST NOT 静默），
+		//    无 sessionId 的 stub 语境跳过记账但照常放行（与既有记账门控一致）。置顶于 touchedCode
+		//    早退之前：spec 场景对子线程每个 turn_end 无条件要求降载+记账。主会话判定为假，
+		//    落到下方既有路径逐行为不变。
+		if (isChildSession(ctx)) {
+			const childSessionId = ctx.sessionManager?.getSessionId?.();
+			if (childSessionId) {
+				logPolicyDecision(ctx.cwd, {
+					sessionId: childSessionId,
+					policy: "quality-gate",
+					action: "bypass",
+					reasonCode: "child-session",
+				});
+			}
+			return;
+		}
+
 		// 1. 本回合有代码类工具调用才触发；纯对话回合零成本跳过。
 		//    粘性失败非空时例外：即使纯对话也重跑失败命令（design D1 失败粘性）。
 		const touchedCode = (event.toolResults ?? []).some((r) =>

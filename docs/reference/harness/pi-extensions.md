@@ -46,6 +46,23 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 **记账口径**：成功事件采样记账（会话首条与转绿锚点必记，其后每 5 连续成功记 1 条），失败全量记账。**不跑**前端 typecheck/build 与完整集成测试（不带 -short 的 go test）——这是门禁分层设计（与平台无关），这些仍由 agent 手动跑 + §11 归档门禁兜底（分层全貌见开发执行规范 §4.1）。
 
+## 子线程通道矩阵（harden-subagent-constraint-channel）
+
+子线程（子代理）能否收到 harness 约束取决于派发通道与模式，实测矩阵（2026-09-18，根因证据链见 `docs/research/subagent-constraint-gap/explore-findings.md`）：
+
+| 通道 × 模式 | 扩展加载 | 约束可达 | 门禁行为 |
+| --- | --- | --- | --- |
+| pi-web Agent × 内置档（general-purpose/explore/plan） | 否（profile 写死 `loadExtensions:false`） | 否（盲区，靠派发任务文本带红线兑底） | 无（扩展不在） |
+| pi-web Agent × `implementer` 档（`.pi/agents/implementer.md`，`load_extensions: true`） | 是 | **是**（档位继承 `mode.set source=inherit` + 注入 + 事实库记账） | turn_end 降载：零重命令放行 + `policy.decision(bypass, child-session)` 记账 |
+| pi-subagents × 前台 | 默认否（agent 定义 frontmatter `extensions:` 可显式挂载） | 挂载后可达 | 挂载后同降载语义 |
+| pi-subagents × 后台（独立 runner） | 是（ambient 默认加载，`extensions: []` 可覆盖关） | 是 | 同降载语义 |
+
+已知限制（设计裁决见 change design.md D6）：
+
+1. **AGENTS.md 不自动进 pi-web 子线程**：`noContextFiles` 恒真（包硬编码）——约束注入补的是 harness 层，项目上下文仍靠派发任务文本（必读文件清单）。
+2. **内置档与前台派发是盲区**：只读探索类任务用内置 explore/plan 保持轻量属预期；前台派发须任务文本带红线（编排纪律兑底）。
+3. **pi-web 升级漂移依赖点**：profile 字段白名单（snake_case `load_extensions` 等）与扫描目录（`.pi/agents/`）；漂移表现为子线程退化无扩展（事件库三事件消失），可观测。
+
 ## 孤儿 dev 进程治理（dev-process-guard）
 
 `.pi/extensions/dev-process-guard.ts` 治理「会话起 dev 服务不杀、进程孤儿化堆积」（2026-09-17 事故取证：`docs/research/orphan-dev-processes/explore-findings.md`）：
@@ -98,5 +115,6 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 ## 变更记录
 
 | 日期 | 变更 | 摘要 | 归档位置 |
+| 2026-09-18 | harden-subagent-constraint-channel | 补「子线程通道矩阵」节：pi-web/pi-subagents × 前台/后台四象限（扩展加载/约束可达/门禁行为）+ 已知限制三条；implementer 档（load_extensions:true）上线，quality-gate 子线程 turn_end 降载（bypass + child-session 记账） | ../../../openspec/changes/archive/2026-09-18-harden-subagent-constraint-channel |
 | 2026-09-18 | —（文档补记） | 补「定时任务脚本语义」节：schedule 的 `workflowScript` 是语句体语义（禁 export/import、用 `runs.run`、thinking 走 model 后缀），两套 script 语义对照 + validate 前置于 create + 改脚本需删重建 + 正文副本归 `.pi/workflows/` | —（纯文档，无 change） |
 | 2026-09-17 | dev-process-guard | 新增孤儿 dev 进程治理扩展 dev-process-guard（session_shutdown 自动清窗口内泄漏进程组 / turn_end 软提醒 / agent-browser 残留八模式判定）+ start-dev.sh pidfile 契约（.pi/run/*.pgid 白名单 + 双路 stop + KILL 升级） | ../../../openspec/changes/archive/2026-09-17-dev-process-guard |
