@@ -58,22 +58,40 @@ export const useDiscoveryStore = defineStore('discovery', () => {
     }
   }
 
+  /**
+   * 手动刷新：POST 受理刷新 run（异步秒回）→ 轮询终态 → 按本轮产出提示并重拉列表。
+   * 后端响应里的 candidates/inserted 是异步兼容占位恒 0，不可作为产出判断依据；
+   * 「本轮是否产出」以 run 终态与精排选中数为准（async-run-fix 补齐的前端半边）。
+   * 失败/超时保留旧列表（A：保留已有结果并标明未更新，不把服务失败解释成用户不感兴趣）。
+   */
   async function refresh() {
+    if (refreshing.value) return
     refreshing.value = true
-    const res = await api.refreshRecommendations()
-    refreshing.value = false
-    if (res.success && res.data) {
-      const s = res.data
-      if (s.inserted > 0) {
-        notify.success(`换了一批新推荐（新增 ${s.inserted} 条）`)
-      } else if (s.candidates === 0) {
-        notify.warn('暂无可推荐的内容：先同步目录，或用问答告诉我你想看什么')
+    try {
+      const started = await api.refreshRecommendations()
+      if (!started.success || !started.data) {
+        notify.error(started.error || '刷新推荐失败')
+        return
+      }
+      const run = await pollRun(started.data.runId)
+      if (!run) {
+        notify.warn('刷新超时未返回结果。这轮可能仍在后台进行，稍后重进页面或再点一次刷新。')
+        return
+      }
+      if (run.status === 'failed') {
+        notify.error('这轮刷新没有完成，你的推荐列表未更新。可以稍后重试。')
+        return
+      }
+      if (run.items.length > 0) {
+        notify.success(`换了一批新推荐（本轮选出 ${run.items.length} 条）`)
       } else {
-        notify.warn('没有新的推荐了，过几天再试试')
+        // 召回依据（阅读行为/兴趣种子/版块向量）不足的诚实版文案：
+        // 不引导「同步目录」——目录有数据时同步并不解决召回为空。
+        notify.warn('这轮没有选出新推荐：推荐依据还不够（阅读记录或问答兴趣太少）。用上面的问题找一次，或平时多读一些再试。')
       }
       await loadRecommendations()
-    } else {
-      notify.error(res.error || '刷新推荐失败')
+    } finally {
+      refreshing.value = false
     }
   }
 
@@ -100,7 +118,24 @@ export const useDiscoveryStore = defineStore('discovery', () => {
   }
 
   /**
-   * 发起手动查询：POST ask 启动 run → 轮询 runs/:id 至终态（succeeded/failed/超时）。
+   * 轮询 run 至终态（succeeded/failed 返回该 run；轮询超限返回 null）。submitQuery 与
+   * refresh 共用同一节奏：间隔 2s、上限 60 次（≈2 分钟，design D2 的 run 轮询约定）；
+   * 单次轮询失败（网络抖动等）不立刻判死，计入次数上限内继续。
+   */
+  async function pollRun(runId: string): Promise<DiscoveryRun | null> {
+    for (let attempt = 1; attempt <= RUN_POLL_MAX_ATTEMPTS; attempt++) {
+      const res = await api.getRun(runId)
+      if (res.success && res.data) {
+        const run = res.data
+        if (run.status === 'succeeded' || run.status === 'failed') return run
+      }
+      if (attempt < RUN_POLL_MAX_ATTEMPTS) await sleep(RUN_POLL_INTERVAL_MS)
+    }
+    return null
+  }
+
+  /**
+   * 发起手动查询：POST ask 启动 run → 轮询至终态（succeeded/failed/超时）。
    * 执行中重复提交直接拒绝（S1 防重复）；成功后静默刷新兴趣列表（成功查询形成独立兴趣记录）。
    */
   async function submitQuery(question: string): Promise<boolean> {
@@ -118,29 +153,21 @@ export const useDiscoveryStore = defineStore('discovery', () => {
       return false
     }
     lastRunId.value = started.data.runId
-    for (let attempt = 1; attempt <= RUN_POLL_MAX_ATTEMPTS; attempt++) {
-      const res = await api.getRun(started.data.runId)
-      if (res.success && res.data) {
-        const run = res.data
-        if (run.status === 'succeeded') {
-          askRun.value = run
-          askStatus.value = 'succeeded'
-          // 成功查询形成独立兴趣记录：后台静默刷新兴趣列表（不阻塞结果展示）
-          if (interestsLoaded.value) void loadInterests()
-          return true
-        }
-        if (run.status === 'failed') {
-          askStatus.value = 'failed'
-          askError.value = '本次查询执行失败，没有产生新的推荐。'
-          return false
-        }
-        // running / 未识别状态：继续轮询
-      }
-      // 单次轮询失败（网络抖动等）不立刻判死，计入次数上限内继续
-      if (attempt < RUN_POLL_MAX_ATTEMPTS) await sleep(RUN_POLL_INTERVAL_MS)
+    const run = await pollRun(started.data.runId)
+    if (!run) {
+      askStatus.value = 'failed'
+      askError.value = '查询超时未返回结果。可以重试，或稍后在「为你推荐」手动刷新。'
+      return false
+    }
+    if (run.status === 'succeeded') {
+      askRun.value = run
+      askStatus.value = 'succeeded'
+      // 成功查询形成独立兴趣记录：后台静默刷新兴趣列表（不阻塞结果展示）
+      if (interestsLoaded.value) void loadInterests()
+      return true
     }
     askStatus.value = 'failed'
-    askError.value = '查询超时未返回结果。可以重试，或稍后在「为你推荐」手动刷新。'
+    askError.value = '本次查询执行失败，没有产生新的推荐。'
     return false
   }
 
@@ -265,6 +292,9 @@ export const useDiscoveryStore = defineStore('discovery', () => {
   const candidates = ref<DiscoveryCandidate[]>([])
   const candidatesTotal = ref(0)
   const candidatesLoading = ref(false)
+  /** 当前页码（1 起）与总页数（随每次成功加载回填，design D9 分页契约） */
+  const candidatesPage = ref(1)
+  const candidatesPages = ref(1)
   /** 请求失败信息；非 null = 错误态（不冒称空库），旧数据保留 */
   const candidatesError = ref<string | null>(null)
   /** 至少成功加载过一次（空库判定前提） */
@@ -277,11 +307,18 @@ export const useDiscoveryStore = defineStore('discovery', () => {
 
   async function loadCandidates(): Promise<boolean> {
     candidatesLoading.value = true
-    const res = await api.getCandidates({ ...candidateFilters.value })
+    const res = await api.getCandidates({ ...candidateFilters.value, page: candidatesPage.value })
     candidatesLoading.value = false
     if (res.success && res.data) {
+      // 页码越界（翻页间数据被删/筛选后变少）：当前页空但还有更早页 → 回退末页重拉一次
+      const pages = res.pagination?.pages ?? 1
+      if (res.data.length === 0 && candidatesPage.value > pages && pages >= 1) {
+        candidatesPage.value = pages
+        return loadCandidates()
+      }
       candidates.value = res.data
       candidatesTotal.value = res.pagination?.total ?? res.data.length
+      candidatesPages.value = Math.max(1, pages)
       candidatesLoaded.value = true
       candidatesError.value = null
       return true
@@ -291,13 +328,22 @@ export const useDiscoveryStore = defineStore('discovery', () => {
     return false
   }
 
+  /** 翻页：越界/同页/加载中不重复请求。 */
+  function goToCandidatesPage(page: number) {
+    if (page < 1 || page > candidatesPages.value || page === candidatesPage.value || candidatesLoading.value) return
+    candidatesPage.value = page
+    void loadCandidates()
+  }
+
   function setCandidateFilters(patch: Partial<CandidateFilters>) {
     candidateFilters.value = { ...candidateFilters.value, ...patch }
+    candidatesPage.value = 1 // 筛选变化重置页码，避免落在不存在的结果页
     void loadCandidates()
   }
 
   function clearCandidateFilters() {
     candidateFilters.value = { query: '', kind: 'all', participation: 'all' }
+    candidatesPage.value = 1
     void loadCandidates()
   }
 
@@ -445,6 +491,9 @@ export const useDiscoveryStore = defineStore('discovery', () => {
     candidatesLoading,
     candidatesError,
     candidatesLoaded,
+    candidatesPage,
+    candidatesPages,
+    goToCandidatesPage,
     candidateFilters,
     candidateFiltersActive,
     candidateSaving,

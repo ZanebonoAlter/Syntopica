@@ -97,27 +97,66 @@ describe('useDiscoveryStore', () => {
     expect(notifyErrorMock).toHaveBeenCalledWith('网络错误')
   })
 
-  it('refresh reloads cards and toasts inserted count', async () => {
+  it('refresh polls run to succeeded and reloads cards (异步契约：按 run 终态与选中数提示)', async () => {
     refreshRecommendationsMock.mockResolvedValue({
       success: true,
-      data: { candidates: 5, inserted: 2, skipped: 3, cooldownBlocked: 0 },
+      data: { runId: '9', status: 'running' },
+    })
+    getRunMock.mockResolvedValue({
+      success: true,
+      data: { id: '9', kind: 'refresh', query: '', status: 'succeeded', startedAt: '2026-09-18T00:00:00Z', finishedAt: '2026-09-18T00:01:00Z', items: [
+        { candidateId: '1', name: 'A', description: '', reason: '', recallOrigins: [], availability: 'unknown' },
+        { candidateId: '2', name: 'B', description: '', reason: '', recallOrigins: [], availability: 'unknown' },
+      ] },
     })
     getRecommendationsMock.mockResolvedValue({ success: true, data: [createCard()] })
     const store = useDiscoveryStore()
     await store.refresh()
-    expect(notifySuccessMock).toHaveBeenCalledWith('换了一批新推荐（新增 2 条）')
+    expect(getRunMock).toHaveBeenCalledWith('9')
+    expect(notifySuccessMock).toHaveBeenCalledWith('换了一批新推荐（本轮选出 2 条）')
     expect(getRecommendationsMock).toHaveBeenCalled()
+    expect(store.refreshing).toBe(false)
   })
 
-  it('refresh warns when no candidates', async () => {
+  it('refresh succeeds with zero items and explains honestly (不误导去同步目录)', async () => {
     refreshRecommendationsMock.mockResolvedValue({
       success: true,
-      data: { candidates: 0, inserted: 0, skipped: 0, cooldownBlocked: 0 },
+      data: { runId: '9', status: 'running' },
+    })
+    getRunMock.mockResolvedValue({
+      success: true,
+      data: { id: '9', kind: 'refresh', query: '', status: 'succeeded', startedAt: '2026-09-18T00:00:00Z', finishedAt: '2026-09-18T00:01:00Z', items: [] },
     })
     getRecommendationsMock.mockResolvedValue({ success: true, data: [] })
     const store = useDiscoveryStore()
     await store.refresh()
-    expect(notifyWarnMock).toHaveBeenCalled()
+    expect(notifyWarnMock).toHaveBeenCalledTimes(1)
+    expect(String(notifyWarnMock.mock.calls[0]![0])).not.toContain('同步目录')
+    expect(notifyErrorMock).not.toHaveBeenCalled()
+  })
+
+  it('refresh run failure keeps old cards and reports error (不把服务失败当不感兴趣)', async () => {
+    refreshRecommendationsMock.mockResolvedValue({
+      success: true,
+      data: { runId: '9', status: 'running' },
+    })
+    getRunMock.mockResolvedValue({
+      success: true,
+      data: { id: '9', kind: 'refresh', query: '', status: 'failed', startedAt: '2026-09-18T00:00:00Z', finishedAt: '2026-09-18T00:00:10Z', items: [] },
+    })
+    getRecommendationsMock.mockResolvedValue({ success: true, data: [createCard()] })
+    const store = useDiscoveryStore()
+    await store.refresh()
+    expect(notifyErrorMock).toHaveBeenCalledTimes(1)
+    expect(getRecommendationsMock).not.toHaveBeenCalled() // 失败不重拉，旧列表保留
+  })
+
+  it('refresh start failure toasts error without polling', async () => {
+    refreshRecommendationsMock.mockResolvedValue({ success: false, error: '刷新 run unavailable' })
+    const store = useDiscoveryStore()
+    await store.refresh()
+    expect(notifyErrorMock).toHaveBeenCalledWith('刷新 run unavailable')
+    expect(getRunMock).not.toHaveBeenCalled()
   })
 
   it('submitQuery trims question and skips blank input (S1 输入错误)', async () => {
@@ -316,8 +355,8 @@ describe('useDiscoveryStore — 候选源库（S9/S15）', () => {
     expect(store.candidatesTotal).toBe(1)
     expect(store.candidatesLoaded).toBe(true)
     expect(store.candidatesError).toBeNull()
-    // 请求带默认筛选
-    expect(getCandidatesMock).toHaveBeenCalledWith({ query: '', kind: 'all', participation: 'all' })
+    // 请求带默认筛选 + 当前页码（1 起）
+    expect(getCandidatesMock).toHaveBeenCalledWith({ query: '', kind: 'all', participation: 'all', page: 1 })
   })
 
   it('loadCandidates 失败置错误态：请求失败 ≠ 空库，不置 loaded', async () => {
@@ -335,13 +374,44 @@ describe('useDiscoveryStore — 候选源库（S9/S15）', () => {
     const store = useDiscoveryStore()
     store.setCandidateFilters({ query: '设计', kind: 'rsshub', participation: 'disabled' })
     await flushPromises()
-    // 保持语义命名交给 api 层映射（后端 wire 名见 api/discovery.test.ts）
-    expect(getCandidatesMock).toHaveBeenLastCalledWith({ query: '设计', kind: 'rsshub', participation: 'disabled' })
+    // 保持语义命名交给 api 层映射（后端 wire 名见 api/discovery.test.ts）；筛选重置页码回 1
+    expect(getCandidatesMock).toHaveBeenLastCalledWith({ query: '设计', kind: 'rsshub', participation: 'disabled', page: 1 })
     expect(store.candidateFiltersActive).toBe(true)
 
     store.clearCandidateFilters()
     await flushPromises()
     expect(store.candidateFiltersActive).toBe(false)
+  })
+
+  it('goToCandidatesPage 翻页带页码重拉；越界/同页/加载中不发请求', async () => {
+    getCandidatesMock.mockResolvedValue({
+      success: true,
+      data: [createCandidate({ id: '31' })],
+      pagination: { page: 2, pages: 4, per_page: 30, total: 103 },
+    })
+    const store = useDiscoveryStore()
+    await store.loadCandidates()
+    store.goToCandidatesPage(2)
+    await flushPromises()
+    expect(getCandidatesMock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }))
+    expect(store.candidatesPages).toBe(4)
+
+    getCandidatesMock.mockClear()
+    store.goToCandidatesPage(2) // 同页不重拉
+    store.goToCandidatesPage(99) // 越界不发
+    store.goToCandidatesPage(0)
+    expect(getCandidatesMock).not.toHaveBeenCalled()
+  })
+
+  it('翻页间数据变少导致当前页越界：自动回退末页重拉', async () => {
+    getCandidatesMock.mockResolvedValue({ success: true, data: [], pagination: { page: 3, pages: 1, per_page: 30, total: 12 } })
+    const store = useDiscoveryStore()
+    store.candidatesPage = 3 // 模拟停留在第 3 页后数据变少
+    await store.loadCandidates()
+    // 第 3 页空且总页数只剩 1 → 自动回拉末页
+    expect(getCandidatesMock).toHaveBeenCalledTimes(2)
+    expect(getCandidatesMock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1 }))
+    expect(store.candidatesPage).toBe(1)
   })
 
   it('saveCandidate 新增成功：toast 明示尚未订阅并重拉列表', async () => {

@@ -148,6 +148,12 @@ const displayName = props.item.name || '未知来源'
   line-height: 1.6;
   color: var(--color-text-secondary);
   overflow-wrap: anywhere;
+  /* 限 3 行防超长上游介绍撑爆卡片 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
 }
 
 .run-card__reason {

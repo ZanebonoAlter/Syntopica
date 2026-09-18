@@ -74,6 +74,7 @@ function rsshubDetail(over: Partial<CandidateDetail> = {}): CandidateDetail {
       namespace: 'test',
       path: '/journal/:section',
       name: 'test journal',
+      description: '上游介绍',
       example: '',
       // 目录自带 options（真实上游数据）：字典优先规则在 buildRouteParamSpecs，此处无字典走目录 options
       parameters: JSON.stringify({

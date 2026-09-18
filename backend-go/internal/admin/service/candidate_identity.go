@@ -145,10 +145,16 @@ type EffectiveMetadataValues struct {
 
 // EffectiveMetadata 计算有效展示字段：manual 中对应键存在且为非空字符串时覆盖上游值；
 // 键存在但值为空串表示回退上游（清空覆盖）；键不存在或值非字符串时同样回退上游。
+//
+// name/description 出口经 SanitizeEffectiveText 清洗（design D6「先清洗格式再截取有效
+// 说明」）：RSSHub 上游 description 是文档页 markdown 源码（表格/链接/<details>/::: tip），
+// 原文直出会在候选库、查询结果卡片呈现一大坨 URL 与格式噪音。清洗在本函数统一做，
+// 候选列表/详情与 run 详情等展示出口自动一致；对已清洗文本幂等，embedding 文本构造
+// （candidateEmbeddingSource.text）二次清洗无副作用。存储层原文保留（搜索/指纹/重嵌不受影响）。
 func EffectiveMetadata(manual models.MetadataMap, upstreamName, upstreamDescription, upstreamLanguage, upstreamRegion string) EffectiveMetadataValues {
 	return EffectiveMetadataValues{
-		Name:        effectiveValue(manual, ManualFieldName, upstreamName),
-		Description: effectiveValue(manual, ManualFieldDescription, upstreamDescription),
+		Name:        SanitizeEffectiveText(effectiveValue(manual, ManualFieldName, upstreamName)),
+		Description: SanitizeEffectiveText(effectiveValue(manual, ManualFieldDescription, upstreamDescription)),
 		Language:    effectiveValue(manual, ManualFieldLanguage, upstreamLanguage),
 		Region:      effectiveValue(manual, ManualFieldRegion, upstreamRegion),
 	}

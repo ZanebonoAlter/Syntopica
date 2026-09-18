@@ -45,11 +45,11 @@ export interface DiscoveryRecommendation {
 }
 
 /** POST /api/discovery/recommendations/refresh 的产出摘要 */
+/** POST /api/discovery/recommendations/refresh 受理响应（异步契约：产出经 GET runs/:id 轮询；
+ * 后端兼容占位的计数字段恒 0，前端不消费） */
 export interface RefreshSummary {
-  candidates: number
-  inserted: number
-  skipped: number
-  cooldownBlocked: number
+  runId: string
+  status: string
 }
 
 /** GET /api/discovery/catalog/status 的目录统计 */
@@ -121,6 +121,8 @@ export interface DiscoveryCandidate {
    * route.status === 'gone' = 上游已下架：条目保留并标明，订阅不取消但不再建议订阅（spec C2）。
    */
   route?: CandidateRouteInfo | null
+  /** 人工元数据原文（后端 manual_metadata 原样透传；编辑回填用，避免把出口清洗值固化成人工覆盖） */
+  manualMetadata?: Record<string, string>
 }
 
 /** 候选列表筛选（来源类型 / 参与推荐状态） */
@@ -225,6 +227,8 @@ export interface CandidateRouteInfo {
   namespace: string
   path: string
   name: string
+  /** 上游文档页原始 description（未经出口清洗的原文；编辑回填用，避免把清洗值固化成人工覆盖） */
+  description: string
   example: string
   /** 目录自带参数说明（原始 JSON 字符串），由 utils/routeParams 解析 */
   parameters: string

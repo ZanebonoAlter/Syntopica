@@ -105,9 +105,15 @@ export function useDiscoveryApi() {
     return { ...res, data: [] as DiscoveryRecommendation[] }
   }
 
-  /** POST /api/discovery/recommendations/refresh — 换一批（粗筛+精排+幂等落库）。 */
+  /** POST /api/discovery/recommendations/refresh — 受理刷新 run（异步契约同 ask：
+   * 秒回 run_id，粗筛/精排/发布后台推进，产出经 GET runs/:id 轮询；响应里的
+   * candidates/inserted 等计数是兼容占位恒 0，不可作为本轮产出判断依据）。 */
   async function refreshRecommendations(): Promise<ApiResponse<RefreshSummary>> {
-    return apiClient.post<RefreshSummary>('/discovery/recommendations/refresh', {})
+    const res = await apiClient.post<{ run_id: number | string, status: string }>('/discovery/recommendations/refresh', {})
+    if (res.success && res.data) {
+      return { ...res, data: { runId: String(res.data.run_id), status: res.data.status } }
+    }
+    return { success: false, error: res.error, status: res.status }
   }
 
   /** POST /api/discovery/recommendations/:id/accept — 接受（直订 / 填参验证后订阅）。 */
@@ -163,6 +169,8 @@ export function useDiscoveryApi() {
     description: string
     language: string
     region: string
+    /** 人工元数据原文（后端 manual_metadata 原样透传；编辑回填用） */
+    manual_metadata?: Record<string, string>
     /** 展示用地址；后端不直接下发时由 feed_url / route 推导（见 candidateAddress） */
     address?: string
     /** rss 条目的实际 feed 地址；rsshub 条目缺省 */
@@ -180,6 +188,7 @@ export function useDiscoveryApi() {
     namespace?: string
     path?: string
     name?: string
+    description?: string
     example?: string
     parameters?: string
     usable_directly?: boolean
@@ -194,12 +203,14 @@ export function useDiscoveryApi() {
     total?: number
   }
 
-  /** 上游路由归一：列表与详情共用，必须保留 status（gone = 上游已下架，spec C2）。 */
+  /** 上游路由归一：列表与详情共用，必须保留 status（gone = 上游已下架，spec C2）；
+   * description 保留上游原文（出口 EffectiveDescription 已清洗，编辑回填需原文）。 */
   function normalizeRoute(r: RoutePayload): CandidateRouteInfo {
     return {
       namespace: r.namespace || '',
       path: r.path || '',
       name: r.name || '',
+      description: r.description || '',
       example: r.example || '',
       parameters: r.parameters || '{}',
       usableDirectly: Boolean(r.usable_directly),
@@ -236,6 +247,7 @@ export function useDiscoveryApi() {
       availability,
       lastCheckedAt: p.last_checked_at ?? null,
       route: p.route ? normalizeRoute(p.route) : null,
+      manualMetadata: p.manual_metadata ?? undefined,
     }
   }
 

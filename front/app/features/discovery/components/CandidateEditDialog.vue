@@ -81,9 +81,14 @@ const canSubmit = computed(() => {
 })
 function resetForm() {
   const c = props.candidate ?? null
-  name.value = c?.name ?? ''
+  // 回填用原文而非出口展示值：出口 name/description 已被后端清洗（RSSHub 上游
+  // markdown 噪音），直接回填会让用户「只是打开编辑框保存」就把清洗值固化成人工
+  // 覆盖，此后上游更新不再生效。优先级：人工原文 → 上游原文 → 出口值。
+  const manualName = c?.manualMetadata?.name ?? ''
+  const manualDesc = c?.manualMetadata?.description ?? ''
+  name.value = (c?.kind === 'rsshub' ? manualName || c?.route?.name || c?.name : c?.name) ?? ''
   url.value = c?.address ?? ''
-  description.value = c?.description ?? ''
+  description.value = (c?.kind === 'rsshub' ? manualDesc || c?.route?.description || c?.description : c?.description) ?? ''
   language.value = c?.language ?? ''
   region.value = c?.region ?? ''
   participate.value = c?.recommendationEnabled ?? true

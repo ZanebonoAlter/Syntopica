@@ -203,6 +203,19 @@ function openSubscribe(c: DiscoveryCandidate) {
         <Icon icon="mdi:download-outline" width="14" height="14" />
         导出
       </AppButton>
+      <!-- RSSHub 上游目录手动同步：常驻入口（原先只在目录为空时出现，
+           导致「刷新提示先同步目录」时无处可点）；与新增/导入/导出并列。 -->
+      <AppButton
+        size="md"
+        variant="secondary"
+        :loading="store.syncingCatalog"
+        :disabled="store.syncingCatalog"
+        data-testid="library-sync-catalog-btn"
+        @click="store.syncCatalog()"
+      >
+        <Icon icon="mdi:cloud-download-outline" width="14" height="14" />
+        同步目录
+      </AppButton>
     </div>
 
     <!-- 加载态：首载无旧数据 -->
@@ -308,9 +321,39 @@ function openSubscribe(c: DiscoveryCandidate) {
       </li>
     </ul>
 
-    <p v-if="view === 'list'" class="library__caption">
+    <p v-if="view === 'list' && store.candidatesPages > 1" class="library__caption">
       停用候选只影响推荐资格，不取消已有订阅；参与推荐也不是自动订阅。
     </p>
+
+    <!-- 分页条（列表末尾；单页不显示）：上一页/页码/下一页，筛选后页码重置 -->
+    <nav
+      v-if="view === 'list' && store.candidatesPages > 1"
+      class="library__pager"
+      aria-label="候选源库分页"
+      data-testid="library-pager"
+    >
+      <AppButton
+        size="sm"
+        variant="secondary"
+        :disabled="store.candidatesPage <= 1 || store.candidatesLoading"
+        data-testid="library-pager-prev"
+        @click="store.goToCandidatesPage(store.candidatesPage - 1)"
+      >
+        上一页
+      </AppButton>
+      <span class="library__pager-info" data-testid="library-pager-info" aria-live="polite">
+        第 {{ store.candidatesPage }} / {{ store.candidatesPages }} 页 · 共 {{ store.candidatesTotal }} 条
+      </span>
+      <AppButton
+        size="sm"
+        variant="secondary"
+        :disabled="store.candidatesPage >= store.candidatesPages || store.candidatesLoading"
+        data-testid="library-pager-next"
+        @click="store.goToCandidatesPage(store.candidatesPage + 1)"
+      >
+        下一页
+      </AppButton>
+    </nav>
 
     <CandidateEditDialog
       v-model="dialogVisible"
@@ -475,6 +518,12 @@ function openSubscribe(c: DiscoveryCandidate) {
   color: var(--color-text-secondary);
   min-width: 0;
   overflow-wrap: anywhere;
+  /* 清洗后仍可能较长（RSSHub 上游介绍）：限 3 行防撑爆卡片，完整内容走编辑查看 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
 }
 
 .library__meta {
@@ -579,6 +628,20 @@ function openSubscribe(c: DiscoveryCandidate) {
   font-size: 12px;
   line-height: 1.7;
   color: var(--color-text-muted);
+}
+
+.library__pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.library__pager-info {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 窄屏（390×844 检查档）：条目单列堆叠，动作区回到顶部对齐 */

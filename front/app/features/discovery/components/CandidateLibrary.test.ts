@@ -17,6 +17,8 @@ import type { DiscoveryCandidate } from '~/types/discovery'
 const getCandidatesMock = vi.fn()
 const createCandidateMock = vi.fn()
 const updateCandidateMock = vi.fn()
+const syncCatalogMock = vi.fn()
+const getCatalogStatusMock = vi.fn()
 
 vi.mock('~/api/discovery', () => ({
   useDiscoveryApi: () => ({
@@ -25,8 +27,8 @@ vi.mock('~/api/discovery', () => ({
     acceptRecommendation: vi.fn(),
     dismissRecommendation: vi.fn(),
     ask: vi.fn(),
-    getCatalogStatus: vi.fn(),
-    syncCatalog: vi.fn(),
+    getCatalogStatus: getCatalogStatusMock,
+    syncCatalog: syncCatalogMock,
     getCandidates: getCandidatesMock,
     createCandidate: createCandidateMock,
     updateCandidate: updateCandidateMock,
@@ -70,11 +72,11 @@ function candidate(over: Partial<DiscoveryCandidate> = {}): DiscoveryCandidate {
   }
 }
 
-function okList(items: DiscoveryCandidate[]) {
+function okList(items: DiscoveryCandidate[], pages = 1, total?: number) {
   return {
     success: true,
     data: items,
-    pagination: { page: 1, pages: 1, per_page: 30, total: items.length },
+    pagination: { page: 1, pages, per_page: 30, total: total ?? items.length },
   }
 }
 
@@ -89,6 +91,9 @@ beforeEach(() => {
   getCandidatesMock.mockReset()
   createCandidateMock.mockReset()
   updateCandidateMock.mockReset()
+  syncCatalogMock.mockReset()
+  getCatalogStatusMock.mockReset()
+  getCatalogStatusMock.mockResolvedValue({ success: true, data: { total: 3097, ok: 1, broken: 0, unknown: 3096 } })
   document.body.innerHTML = ''
 })
 
@@ -256,18 +261,84 @@ describe('CandidateLibrary — 搜索与筛选', () => {
   })
 })
 
+describe('CandidateLibrary — 同步目录常驻入口', () => {
+  it('工具栏常驻「同步目录」按钮，点击触发目录同步并刷新目录状态', async () => {
+    syncCatalogMock.mockResolvedValue({ success: true, data: { Total: 3097, Inserted: 0, Updated: 3097 } })
+    getCandidatesMock.mockResolvedValue(okList([candidate()]))
+    const wrapper = mountLibrary()
+    await flushPromises()
+    const btn = wrapper.find('[data-testid="library-sync-catalog-btn"]')
+    expect(btn.exists()).toBe(true)
+    await btn.trigger('click')
+    await flushPromises()
+    expect(syncCatalogMock).toHaveBeenCalledTimes(1)
+    expect(getCatalogStatusMock).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('同步中按钮禁用防连点（syncingCatalog 期间不可再点）', async () => {
+    syncCatalogMock.mockReturnValue(new Promise(() => {})) // 同步挂起
+    getCandidatesMock.mockResolvedValue(okList([candidate()]))
+    const wrapper = mountLibrary()
+    await flushPromises()
+    const btn = wrapper.find('[data-testid="library-sync-catalog-btn"]')
+    await btn.trigger('click')
+    await flushPromises()
+    expect((btn.element as HTMLButtonElement).disabled).toBe(true)
+    wrapper.unmount()
+  })
+})
+
+describe('CandidateLibrary — 分页（3099 条候选看不全的修复）', () => {
+  it('多页列表末尾显示分页条：页码/总数，首尾页对应按钮禁用', async () => {
+    getCandidatesMock.mockResolvedValue(okList([candidate()], 4, 103))
+    const wrapper = mountLibrary()
+    await flushPromises()
+    const pager = wrapper.find('[data-testid="library-pager"]')
+    expect(pager.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="library-pager-info"]').text()).toContain('第 1 / 4 页 · 共 103 条')
+    expect((wrapper.find('[data-testid="library-pager-prev"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect((wrapper.find('[data-testid="library-pager-next"]').element as HTMLButtonElement).disabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('单页不渲染分页条', async () => {
+    getCandidatesMock.mockResolvedValue(okList([candidate()]))
+    const wrapper = mountLibrary()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="library-pager"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('点下一页带 page=2 重拉；筛选变化后页码重置回第 1 页', async () => {
+    getCandidatesMock.mockResolvedValue(okList([candidate()], 4, 103))
+    const wrapper = mountLibrary()
+    await flushPromises()
+    await wrapper.find('[data-testid="library-pager-next"]').trigger('click')
+    await flushPromises()
+    expect(getCandidatesMock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }))
+
+    // 筛选变化：页码重置回 1
+    const store = useDiscoveryStore()
+    store.setCandidateFilters({ query: '田野' })
+    await flushPromises()
+    expect(getCandidatesMock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, query: '田野' }))
+    wrapper.unmount()
+  })
+})
+
 describe('CandidateLibrary — 上游已下架（C2：route.status=gone）', () => {
   it('gone 条目显示「上游已下架」徽标，非 gone（ok/缺省）不显示', async () => {
     getCandidatesMock.mockResolvedValue(okList([
       candidate({
         id: '1',
         kind: 'rsshub',
-        route: { namespace: '/github', path: '/issue/:user/:repo', name: 'issue', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'gone' },
+        route: { namespace: '/github', path: '/issue/:user/:repo', name: 'issue', description: '上游介绍', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'gone' },
       }),
       candidate({
         id: '2',
         kind: 'rsshub',
-        route: { namespace: '/blog', path: '/:id', name: 'blog', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'ok' },
+        route: { namespace: '/blog', path: '/:id', name: 'blog', description: '上游介绍', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'ok' },
       }),
       candidate({ id: '3' }),
     ]))
@@ -285,8 +356,8 @@ describe('CandidateLibrary — 上游已下架（C2：route.status=gone）', () 
 
   it('gone 条目订阅按钮禁用并给出原因，非 gone 仍可订阅', async () => {
     getCandidatesMock.mockResolvedValue(okList([
-      candidate({ id: '1', kind: 'rsshub', route: { namespace: '/a', path: '/b', name: 'a', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'gone' } }),
-      candidate({ id: '2', kind: 'rsshub', route: { namespace: '/c', path: '/d', name: 'c', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'broken' } }),
+      candidate({ id: '1', kind: 'rsshub', route: { namespace: '/a', path: '/b', name: 'a', description: '上游介绍', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'gone' } }),
+      candidate({ id: '2', kind: 'rsshub', route: { namespace: '/c', path: '/d', name: 'c', description: '上游介绍', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'broken' } }),
     ]))
     const wrapper = mountLibrary()
     await flushPromises()
@@ -302,7 +373,7 @@ describe('CandidateLibrary — 上游已下架（C2：route.status=gone）', () 
 
   it('已订阅的 gone 条目不再出现订阅入口（订阅不被取消）', async () => {
     getCandidatesMock.mockResolvedValue(okList([
-      candidate({ id: '1', kind: 'rsshub', subscribed: true, route: { namespace: '/a', path: '/b', name: 'a', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'gone' } }),
+      candidate({ id: '1', kind: 'rsshub', subscribed: true, route: { namespace: '/a', path: '/b', name: 'a', description: '上游介绍', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'gone' } }),
     ]))
     const wrapper = mountLibrary()
     await flushPromises()

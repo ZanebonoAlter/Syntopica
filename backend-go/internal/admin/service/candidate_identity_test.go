@@ -289,4 +289,26 @@ func TestEffectiveMetadata(t *testing.T) {
 		got := EffectiveMetadata(manual, upstream[0], upstream[1], upstream[2], upstream[3])
 		require.Equal(t, upstream[0], got.Name)
 	})
+
+	// RSSHub 上游 description 是文档页 markdown 源码（表格/链接/<details>/::: tip），
+	// 原文直出会在候选库卡片呈现一大坨 URL（2026-09 用户实测）。出口统一清洗：
+	// 人工与上游都过 SanitizeEffectiveText，语言/地区原样透传。
+	t.Run("上游脏 markdown 出口清洗（链接保留文字/格式噪音去除/空白折叠）", func(t *testing.T) {
+		dirty := "::: tip\n若订阅 [行业资讯](https://www.cngold.org.cn/news-325.html) 截取参数\n:::\n| 资讯中心 | [图片新闻](https://www.cngold.org.cn/news-323.html) |\n<details> <summary>更多分类</summary>"
+		got := EffectiveMetadata(nil, "[分类](https://example.com/docs) 路由", dirty, "zh", "")
+		require.Equal(t, "分类 路由", got.Name)
+		require.Equal(t, "若订阅 行业资讯 截取参数 | 资讯中心 | 图片新闻 | 更多分类", got.Description)
+		require.Equal(t, "zh", got.Language)
+		require.Equal(t, "", got.Region)
+	})
+
+	t.Run("人工脏 markdown 同样清洗", func(t *testing.T) {
+		manual := models.MetadataMap{
+			ManualFieldName:        "**加粗名**",
+			ManualFieldDescription: "看 [官方博客](https://example.com/blog) 的更新",
+		}
+		got := EffectiveMetadata(manual, "", "", "", "")
+		require.Equal(t, "加粗名", got.Name)
+		require.Equal(t, "看 官方博客 的更新", got.Description)
+	})
 }
