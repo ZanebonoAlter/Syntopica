@@ -111,6 +111,47 @@ RSSHub 路由参数可选值字典（feed-param-options）。`source` ∈ {`manu
 
 UNIQUE(route_id, param_name, value) 复合唯一索引防同参数重复录入同一值。链路与铁律见 `flow/discovery.md` §参数可选值字典。
 
+### 11.7 discovery_runs / discovery_run_items（发现运行与产出，v2）
+
+发现 v2（improve-discovery-recommendations）：ask/refresh 全部 run 化两段执行——受理（EnsureRun 秒回 run_id）+ 执行（后台粗筛→精排→原子发布）；失败落 failed+error_code 绝不发布，精排零选择也是合法成功。
+
+| 表 | 关键字段 | 约束/索引 | 说明 |
+| -------- | ------ | ------ | ------ |
+| `discovery_runs` | `request_key` / `kind`(qa\|refresh) / `query` / `status`(running\|succeeded\|failed) / `error_code` / `started_at` / `finished_at` | `idx_discovery_runs_request_key` UNIQUE | 一次问答/刷新 = 一行；request_key 幂等，同 kind 已有 running 复用不重复执行 |
+| `discovery_run_items` | `run_id` / `candidate_id`(→feed_candidates) / `recommendation_id` / `rank` / `recall_sources`(jsonb) / `reason_snapshot`(text) | `idx_discovery_run_item_uniq` UNIQUE(run_id, candidate_id) | 本轮精排选中清单（原子发布的证据） |
+
+### 11.8 discovery_interest_entries（问答兴趣逐条独立，v2）
+
+每条问答独立一行（**不合成单条平均向量**，v1 seed 合并语义已废弃）：`query_text`(≤500 rune)、`embedding`(vector)、`dimension`/`model`、`board_id`（阈值+margin 双条件匹配真实版块，失败保持 NULL）、`status`(active\|inactive\|legacy, default active)。参与推荐的种子按 seed policy（窗口/半衰期/成熟度/预算）取前 K，超窗置 inactive。`idx_discovery_interest_run` UNIQUE 防同 run 重复写入。
+
+### 11.9 feed_candidates（候选源库，v2；入库 ≠ 订阅）
+
+统一候选目录：RSSHub 目录同步联动 + 手动原生 RSS + 导入。**与真实订阅（feeds）完全分离**，增删改/导入不触发订阅或抓取。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | SERIAL | PK | 主键（推荐协议 id / 精排身份） |
+| `stable_key` | VARCHAR(128) | UNIQUE `idx_feed_candidates_stable_key` | 跨来源稳定身份（rsshub: `rsshub:<route_id>`；rss: `rss:sha256(规范化URL)`） |
+| `kind` | VARCHAR(20) | — | `rsshub` \| `rss` |
+| `route_id` | INTEGER | index | 关联 `rsshub_routes`（rss 候选 NULL） |
+| `feed_url` | TEXT | — | 原生 RSS 地址（rsshub 候选 NULL） |
+| `canonical_key` | VARCHAR(512) | index | 规范化去重键 |
+| `manual_metadata` | JSONB | default `{}` | 人工元数据（键 name/description/language/region；**上游同步不覆盖**） |
+| `recommendation_enabled` | BOOLEAN | default true（可空区分未设置） | 推荐资格开关，与订阅状态正交 |
+| `access_scope` | VARCHAR(20) | default `'public'` | `public` \| `private_pending` \| `private_allowed`（私网显式授权） |
+| `revision` | INTEGER | default 1 | 乐观锁版本（同步/编辑 +1；回补写库前复查） |
+
+### 11.10 candidate_embeddings / candidate_availability（候选向量与可用性，v2）
+
+| 表 | 关键字段 | 约束/索引 | 说明 |
+| -------- | ------ | ------ | ------ |
+| `candidate_embeddings` | `candidate_id` / `model` / `dimension` / `text_hash` / `embedding`(vector) | `idx_candidate_embedding_uniq` UNIQUE(candidate_id, model, dimension)；`text_hash` index | 有效介绍向量：文本 = 名称/网站/分类组/说明四段清洗限长（≤500 rune）拼装，指纹 = sha256(生成器版本+文本)，变化才重嵌（20 条/批）；不同模型旧行不删除也不得参与检索 |
+| `candidate_availability` | `candidate_id` / `status`(unknown\|ok\|broken\|requires_parameters) / `next_check_at` / `last_error_code` / `last_endpoint_key` | `idx_candidate_availability_candidate` UNIQUE(candidate_id) | 实际端点可用性状态机：无记录=unknown 明示未验证不伪造时间；检查按实际配置地址发请求，单次超时不判坏 |
+
+### 11.11 candidate_preferences（推荐生命周期，v2）
+
+候选维度推荐状态（UNIQUE(candidate_id)）：accepted / expired（TTL 默认 14 天到期未入选，**≠ 拒绝**）/ snoozed（暂时不看，冷却默认 30 天）/ excluded（长期排除）/ restored；配套 `excluded_at`/`snoozed_until`/`last_selected_at` 等。状态变更只动推荐资格，**MUST NOT 取消或修改已有订阅**。链路与红线见 `flow/discovery.md` §业务约束 16-24。
+
 ---
 
 

@@ -32,10 +32,12 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/discovery/recommendations` | 推荐卡片列表（默认 `status=pending`） |
-| POST | `/api/discovery/recommendations/refresh` | 换一批（粗筛 + 精排，幂等落库） |
+| GET | `/api/discovery/recommendations` | 推荐卡片列表（默认 `status=pending`；`scope=history` 历史聚合视图） |
+| POST | `/api/discovery/recommendations/refresh` | **异步受理刷新 run**：秒回 `{run_id,status}`（占位计数字段恒 0，产出经 runs/:id 轮询） |
 | POST | `/api/discovery/recommendations/:id/accept` | 接受推荐 → 订阅落地 |
-| POST | `/api/discovery/recommendations/:id/dismiss` | 拒绝（冷却 30 天，跨 source） |
+| POST | `/api/discovery/recommendations/:id/dismiss` | 拒绝（冷却默认 30 天，跨 source） |
+| POST | `/api/discovery/recommendations/:id/restore` | 恢复长期排除（仅恢复推荐资格，不自动订阅） |
+| GET | `/api/discovery/runs/:id` | run 详情/轮询（status=running→succeeded/failed；succeeded 附 items 精排选中列表） |
 
 ### GET /api/discovery/recommendations
 
@@ -110,13 +112,46 @@
 |------|------|------|------|
 | `question` | string | 是 | 自然语言兴趣表达（如「我想看 AI 芯片相关资讯」） |
 
-返回即时推荐卡片（同 recommendations 形状，同时以 `source=qa` 落推荐表，接受/拒绝走同一状态机）。问题 embedding 同时按阈值匹配版块、以 `source=seed` 加权合并写入偏好画像（冷启动）。
+**v2 异步契约（同 refresh）**：受理秒回 `{run_id, status: "running"}`，查询 run 后台推进（embedding → 版块匹配 → 双路召回 → 精排 → 原子发布）；产出经 `GET /api/discovery/runs/:id` 轮询获取（`items` 附每条候选的 name/description/reason/recall_origins/availability），**不再直接返回推荐卡片**。成功查询形成独立兴趣记录（`discovery_interest_entries` 逐条独立，不合成平均画像）。
 
 ```json
-{ "success": true, "data": [ /* RecommendationCard[] */ ] }
+{ "success": true, "data": { "run_id": 7, "status": "running" } }
 ```
 
-> 问答推荐恒落全局桶（`board_id=null`）；种子写入按阈值落对应版块。两者独立，见 [../flow/discovery.md](../flow/discovery.md) §业务约束。
+> 问答推荐候选与刷新共享幂等池（同一发布事务）；召回无依据（无行为画像/版块向量/种子）时合法零选择，run 仍 succeeded 且 items=[]。见 [../flow/discovery.md](../flow/discovery.md) §业务约束 16-18。
+
+## 发现 v2：兴趣记录与候选源库（improve-discovery-recommendations）
+
+### 兴趣记录
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/discovery/interests` | 逐条问答兴趣列表（query_text/board_label/status/created_at） |
+
+### 候选源库（feed-candidate-catalog；入库 ≠ 订阅）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/discovery/candidates` | 分页列表（默认 30/页上限 100；`q`≤500 rune 命中 name/description/url，`kind`，`recommendation_enabled`） |
+| POST | `/api/discovery/candidates` | 手动新增（仅入库不订阅；地址字段 wire 名 `feed_url`；重复地址 409 附已有条目） |
+| GET | `/api/discovery/candidates/:id` | 单条详情（rsshub 附上游 Route 原始资料；订阅弹窗数据源） |
+| PATCH | `/api/discovery/candidates/:id` | 编辑人工字段 / 原生 RSS 地址 / 推荐启停（不触订阅） |
+| GET | `/api/discovery/candidates/export` | 导出（默认安全脱敏：私有地址与凭据不导出） |
+| POST | `/api/discovery/candidates/import/preview` | 导入预览（文件级问题 400 就地展示；revision 冲突 409 stale_preview） |
+| POST | `/api/discovery/candidates/import/confirm` | 导入确认（回传预览凭据 + 文件本体；不触发订阅） |
+
+候选响应的有效展示字段（name/description/language/region）经 `EffectiveMetadata` 计算（人工非空覆盖上游；出口统一清洗 markdown 格式噪音），另有 `subscribed`（feeds.url 精确匹配只读判断）、`availability`（unknown/ok/broken/requires_parameters，无记录=unknown 明示未验证）。上游路由消失（`route.status=gone`）仅禁止再次订阅，条目与已有订阅保留。
+
+### 目录同步
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/discovery/catalog/sync` | 同步 RSSHub 上游目录 → 候选联动（新建/关联候选；人工元数据不被覆盖） |
+| GET | `/api/discovery/catalog/status` | 目录状态（路由总数 / 各 status 计数 / 最近同步时间） |
+
+### 后台任务（ai_settings.discovery_v2 开关，fail-open）
+
+`candidate_availability_check`（周期检查候选实际端点可用性，维护类）／`candidate_embedding_backfill`（有效文本指纹增量重嵌，默认 20 条/批每小时，分析类遵守 analysis_paused）／`discovery_run_maintenance`（僵尸 run 置 failed，维护类）。开关关闭 = 三 job 良性跳过 + 检查/回补入口返 503；推荐主链不受影响。见 [../flow/discovery.md](../flow/discovery.md) §业务约束 24。
 
 ## RSSHub 实例配置
 

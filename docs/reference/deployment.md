@@ -179,9 +179,18 @@ rm -rf backend-go/frontend && cp -r front/.output/public backend-go/frontend
 bash scripts/dev/start-dev.sh back --restart   # 或手动重启 go run
 ```
 
+> **一键脚本**：以上三步封装为 `bash scripts/dev/deploy-frontend.sh`（`--no-restart` 只铺盘不重启）；前端改动收尾顺手跑（AGENTS.md §Build & Verify 已固化），勿让用户打开页面还是旧版。
+
 - 访问 `http://<pi-ip>:5100/`（API、WebSocket、feed 图标、静态页面同端口，与 Docker 部署形态一致）；代价是无 HMR，改前端代码须重新 generate + 拷贝。
 - `backend-go/frontend/` 是构建产物（不入 git 语义的部署产物），**别手改**；后端启动时该目录不存在则自动纯 API 模式（`internal/app/static.go`）。
 - dev server 仅留作需要 HMR 调样式时临时用，用完即停；注意 nginx 同源入口的 `/` 上游仍指向 :3000，dev 不在跑时走 nginx 入口会 502，直连 :5100 即可。
+
+#### 发现 v2 部署注意（improve-discovery-recommendations，2026-09-19）
+
+- **部署后可见变化**：发现页换 v2 链路（问答/刷新 run 化异步执行，前端轮询产出）；推荐数量可能减少甚至为空（精排真正筛选，零选择合法）；推荐卡片可能自动过期退出默认列表（**≠ 拒绝**）；新增「候选源库」页签（入库 ≠ 订阅）与推荐历史/恢复入口。
+- **人工操作**：无需手动数据迁移（迁移自动执行，7 新表 + 旧 seed 转 inactive 历史、旧 pending 转 legacy）；若需停后台噪声（可用性检查/向量回补/run 维护三 job），设 `ai_settings.discovery_v2 = {"enabled": false}`——只停后台任务，推荐主链不受影响。
+- **旧数据降级**：旧 `preference_vectors.source=seed` 行仅作迁移历史不参与召回；已发布旧推荐不自动删除；已订阅源与文章不受任何影响；候选向量回补 20 条/批每小时自然补齐（3099 候选首日仅部分有向量，发现召回与推荐质量随回补进度提升，非故障）。
+- **回滚**：真回滚到 v1 推荐引擎需另做 candidate_preferences → 旧路由资格投影（design 迁移计划 6），v2 开关不包含该投影；仅迁移回滚时配合 SPEC_GATE_BYPASS 类逃生口走数据库回滚脚本。
 
 ### 同源反代部署（Caddy / nginx）
 

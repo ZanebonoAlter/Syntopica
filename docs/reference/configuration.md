@@ -315,7 +315,17 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 
 需在 `ai_routes` 表 seed 为启用状态并绑定至少一个 provider。未配置时精排会失败，问答/刷新返回错误（粗筛与状态机仍可用）。
 
-#### 3. 调度间隔（可由 `/api/schedulers/:name/interval` 覆盖）
+#### 3. 发现 v2 配置（improve-discovery-recommendations，均存 `ai_settings` JSON blob）
+
+| key | 默认值 | 说明 |
+|------|--------|------|
+| `discovery_seed_policy` | 窗口 30 天 / 上限 5 条 / 半衰期 7 天 / 成熟度 20 篇 / 预算 4 / 匹配阈值 0.78 / margin 0.03 | 兴趣衰减与种子预算七参数（design D3）：窗口超时置 inactive、半衰期降份额、行为成熟度让位、参与种子预算；版块匹配阈值+margin 双条件 |
+| `discovery_lifecycle` | TTL 14 天 / 暂时不看冷却 30 天 | 推荐时效与冷却（design D5）：到期未入选自动退出默认列表（≠ 拒绝），冷却跨 source 生效 |
+| `discovery_v2` | `true`（fail-open：缺省/读取失败均按启用） | v2 后台任务开关（design 迁移计划 6）：false = 停候选可用性检查/向量回补/run 维护三 job + 检查/回补入口返 503；**不管** ask/refresh 主链、候选 CRUD/导入导出、accept 建源；真回滚旧引擎需另做投影，本开关不包含 |
+
+另有调度 interval 可覆盖：`candidate_availability_check` / `candidate_embedding_backfill` / `discovery_run_maintenance` 三 job（默认每小时，启动延迟 5 分钟；见 [flow/scheduler.md](flow/scheduler.md)）。候选向量回补单批默认 20 条（`CandidateEmbeddingBatchSizeDefault`，design D9 限批）。
+
+#### 4. 调度间隔（可由 `/api/schedulers/:name/interval` 覆盖）
 
 | 调度器 | 默认间隔 | 说明 |
 |--------|----------|------|

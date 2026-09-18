@@ -99,6 +99,8 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 
 **Frontend** (`front/`): `pnpm install` / `pnpm dev` / `pnpm build` / `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit` / `pnpm test:e2e`
 
+**前端改动收尾顺手部署（2026-09-19 用户固化为习惯）**：日常访问走静态托管（非 dev server），改完前端验证通过后跑 `bash scripts/dev/deploy-frontend.sh`（构建静态产物 → 铺 `backend-go/frontend/` → 重启后端 → 健康检查，一键完成；`--no-restart` 只铺盘不重启）——别让用户打开页面发现还是旧版。详见 [`deployment.md`](docs/reference/deployment.md) §本地裸跑静态托管。
+
 **Backend** (`backend-go/`): `go mod tidy` / `go run cmd/server/main.go` / `golangci-lint run ./...` / `go vet ./...` / `go test ./...` / `go build ./...`
 
 **Pre-push check**（树莓派上跑前先停其它 pi 会话、`pnpm test:unit` 改 `pnpm test:unit --maxWorkers=2`，勿与 `pnpm build`／浏览器自动化并行；**参数别写成 `pnpm test:unit -- …`——`--` 会被 vitest 吞掉、filter 与 maxWorkers 一起失效并静默跑全量**）: `cd backend-go && golangci-lint run ./... && go vet ./... && go test ./... && go build ./...` && `cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm test:unit && pnpm build`

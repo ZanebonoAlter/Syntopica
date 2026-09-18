@@ -24,7 +24,10 @@ Scheduler 解决「集中调度周期性后台任务」的问题。Syntopica 有
 | `aux_label_cleanup` | 辅助标签清理 | 3600s（启动延迟 10min） | 先按 `tag_edge_retention_days`（默认 7 天）回收超窗 `article_topic_tags` 边 + `CleanupOrphanedTags` 收孤儿，再清理无活跃 topic_tag 引用的辅助标签 |
 | `blocked_article_recovery` | 阻塞文章恢复 | 3600s | 恢复卡在 blocked 状态的文章 |
 | `preference_profile_update` | 偏好向量画像重算 | 3600s | 以 `reading_behaviors` 为权重源，按 SemanticBoard 聚合偏好向量（纯向量算术，零 LLM）；见 `flow/discovery.md` |
-| `rsshub_catalog_sync` | RSSHub 路由目录同步 | 每日 | 拉取自建 RSSHub 实例 `/api/namespace`，content_hash diff 入库 + 参数标记 + 增量可用性校验 + 新路由 embedding；见 `flow/discovery.md` |
+| `rsshub_catalog_sync` | RSSHub 路由目录同步 | 每日 | 拉取自建 RSSHub 实例 `/api/namespace`，content_hash diff 入库 + 参数标记 + 增量可用性校验 + 新路由 embedding；同步联动候选（人工元数据不被覆盖）；见 `flow/discovery.md` |
+| `candidate_availability_check` | 候选可用性检查 | 3600s（启动延迟 5min） | 周期检查候选实际端点可用性（按实际配置 RSSHub/自建地址发请求，unknown 不判坏、暂态给 retry-after）；维护类不受分析暂停影响；受 `ai_settings.discovery_v2` 开关控制（false=良性跳过）；见 `flow/discovery.md` 约束 22/24 |
+| `candidate_embedding_backfill` | 候选向量回补 | 3600s（启动延迟 5min） | 有效介绍文本指纹增量重嵌：清洗（去 markdown 噪音）+≤500 rune 限长拼装、指纹变化才重嵌（默认 20 条/批）、写库前复查 revision+指纹；分析类遵守 analysis_paused（PauseAware）；受 discovery_v2 开关控制 |
+| `discovery_run_maintenance` | 发现运行维护 | 3600s（启动延迟 5min） | 把卡死 running 超 1 小时的发现 run 置 failed（维护类）；受 discovery_v2 开关控制 |
 | `tag_quality_score` | 标签质量分重算 | 3600s | 重算 topic tags 的持久化质量分；并对账辅助标签 ref_count 与 topic tags 反规范化 feed_count（打标路径不增量维护，靠此周期重算） |
 | `auto_refresh` | Feed 自动刷新 | 60s | 刷新 `refresh_interval>0` 的 RSS feed，并种入后续链路状态位 |
 | `content_completion` | 内容补全（别名 `ai_summary`） | 60s | 补全文章内容 + 生成文章级整理稿；持久化任务名/别名均为 `ai_summary` |
