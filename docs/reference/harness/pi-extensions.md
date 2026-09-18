@@ -1,7 +1,7 @@
 # pi harness 扩展机制（全景 + 注入 + 门禁）
 
 <!--
-doc-impact-applies: .pi/extensions, .pi/constraint-injection.json, .pi/harness.json, scripts/harness-retro.sh, scripts/change-scope.sh
+doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json, .pi/harness.json, scripts/harness-retro.sh, scripts/change-scope.sh
 -->
 
 > **权威源**：本文件是 pi harness 扩展**机制参考**的唯一权威——扩展全景表、约束注入/质量门禁的工作原理、事件账本入口。改 harness 相关代码或排查「为什么注入了/为什么被拦」先读这里。agent 日常行为红线（[回归]必修、测试范围、平台分流）在 AGENTS.md，流程编排在《开发执行规范》§0.6，两文互引不重复。事件考古查 skill `harness-facts`，改进复盘查 skill `harness-retro`。
@@ -72,7 +72,29 @@ doc-impact-applies: .pi/extensions, .pi/constraint-injection.json, .pi/harness.j
 
 `bash scripts/harness-retro.sh`（只读消费事件账本，产出失败聚类六段报告——分母按采样口径还原、`fail-open` 单列为 harness 自身故障），配 `--save-baseline`/`--baseline` 把「改一条 harness 规则前后同类事件计数」变成可回检的准 A/B；读法与改进项判据（可回检指标 + 观察窗口 + 反 overfit）见 skill `harness-retro`，归档后可选回检流程见开发执行规范 §12.5。
 
+## 定时任务脚本语义（schedule / workflowScript）
+
+`.pi/subagents/schedules/` 的定时任务（`schedule.create`）与 `SubagentWorkflow` 工具**共用「workflow 脚本」这个词，但语义不同**——2026-09-18 凌晨两个 harness 定时任务触发即死（100~240ms 语法错误、零产出）正是踩了这个坑：
+
+| 维度 | `SubagentWorkflow.script` | `subagent.workflowScript`（schedule 用这个） |
+| --- | --- | --- |
+| 脚本形态 | **模块**：必须 `export const meta = {...}` 开头 | **语句体**：被包进 async 函数执行，`export`/`import` 一律非法，顶层可用 `return` |
+| 编排 API | `agent(prompt, opts)` / `phase()` / `parallel()` / `pipeline()` | `runs.run(key, {...})` / `runs.all([...])`；无 `agent()`、无 `phase()` |
+| 指定模型 | `model: 'provider/id'` + `effort: 'max'` | `model: 'provider/id:max'`（thinking 走 **model 后缀**；`thinking` 参数仅 `watchdog.configure` 用） |
+| 子线程类型 | `agentType: 'delegate'` | `agent: 'delegate'` |
+
+**排错提示会误导**：上述冲突统一回一句 `'import' and 'export' may only appear at the top level`，外加「If task text contains Markdown fences or backticks, use an array joined with "\n"」——后半句是泛化文案，**实测只写 `export const meta` 就能复现同一报错串**。先查 export/import，再怀疑反引号模板字面量。（任务文本仍建议用 `JSON.stringify` 生成的普通字符串而非反引号模板字面量，少一个变量。）
+
+**改脚本 = 删了重建**：schedule 动作只有 `create/list/show/history/pause/resume/run/run-due/delete`，**没有 update**（`pi-subagents/src/shared/types.ts` 的 `SUBAGENT_ACTIONS` 为准）；`show/history/pause/resume/run/delete` 的 `id` 参数要 **8 位 hex id，不是 name**（传 name 报 `Schedule '<name>' not found`）。重建会产生新 id，旧目录连同历史一起消失。
+
+**纪律**：
+
+1. `schedule.create` 前先跑 `{action:"validate", workflowScriptPath}` 过一遍脚本（离线、零成本、不派发）；
+2. 定义/历史/事件存 `.pi/subagents/schedules/<id>/`（`schedule.json` / `history.json` / `events.jsonl`）——该目录是**机器本地运行时状态，已 gitignore**，加上 `schedule` 没有 update，脚本本体没有版本控制兜底：正文另存 `.pi/workflows/<name>.js`（命名 workflow 目录，**入库**）作权威副本，`schedule.create` 也可直接用 `workflowScriptPath` 引用它省掉内联。当前两个 harness 定时任务（`harness-retro-analysis` / `harness-lifecycle-doc`）是**内联 + `.pi/workflows/` 副本**形式，两边须同步（仅允许尾换行差异），别养出两份真相；
+3. 一次性（`at`）任务跑完后 `nextRunAt` 归零（`manual_satisfied` 对非 interval 触发清空），要再跑得手动 `schedule.run` 或重建；确认已产出后应 `schedule.pause` 掉，防重复触发。
+
 ## 变更记录
 
 | 日期 | 变更 | 摘要 | 归档位置 |
+| 2026-09-18 | —（文档补记） | 补「定时任务脚本语义」节：schedule 的 `workflowScript` 是语句体语义（禁 export/import、用 `runs.run`、thinking 走 model 后缀），两套 script 语义对照 + validate 前置于 create + 改脚本需删重建 + 正文副本归 `.pi/workflows/` | —（纯文档，无 change） |
 | 2026-09-17 | dev-process-guard | 新增孤儿 dev 进程治理扩展 dev-process-guard（session_shutdown 自动清窗口内泄漏进程组 / turn_end 软提醒 / agent-browser 残留八模式判定）+ start-dev.sh pidfile 契约（.pi/run/*.pgid 白名单 + 双路 stop + KILL 升级） | ../../../openspec/changes/archive/2026-09-17-dev-process-guard |
