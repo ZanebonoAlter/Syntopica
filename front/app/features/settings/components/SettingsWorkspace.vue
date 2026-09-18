@@ -45,12 +45,10 @@ const sections: SectionMeta[] = [
 const router = useRouter()
 const route = useRoute()
 const { toggleTheme, isDark } = useTheme()
-const { isSettingsFirstRun, startSettingsTour } = useOnboarding()
+const { startSettingsTour } = useOnboarding()
 
 onMounted(() => {
-  if (isSettingsFirstRun.value) {
-    void startSettingsTour()
-  }
+  // 首访自动启动已移除（默认关闭）；手动入口见下方「重看引导」
 })
 
 const sidebarOpen = ref(false)

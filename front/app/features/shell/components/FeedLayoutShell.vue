@@ -43,7 +43,7 @@ const loading = computed(() => paginationState.loading)
 
 useGlobalAutoRefresh()
 
-const { isFirstRun, startTour } = useOnboarding()
+const { startTour } = useOnboarding()
 
 // Feed 空状态引导：无订阅源且无分类时显示
 const hasAnyFeedsOrCategories = computed(
@@ -195,10 +195,8 @@ onMounted(async () => {
     fetchGlobalUnreadCount(),
   ])
 
-  // 首次访问自动启动新手引导（侧边栏等锚点此时已在 DOM 中）
-  if (isFirstRun.value) {
-    void startTour()
-  }
+  // 首次访问自动启动已移除（默认关闭：引导遮罩会盖住全屏，干扰窄屏验收与日常使用）；
+  // 手动入口：顶栏「新手引导」按钮（AppHeaderView → useOnboarding().startTour）
 })
 
 onUnmounted(() => {

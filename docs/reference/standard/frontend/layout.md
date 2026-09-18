@@ -113,6 +113,24 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 
 核心页面（主工作台/发现/设置/标签/日报）在 375px 宽视口下 SHALL 无横向溢出、交互元素可达；loading/empty/error 各状态同样不破版。存量页面已存在的其他断点值（如 720px/768px 整点）不强制回改，但新代码一律用 767.98px 断点。
 
+### Requirement: UI 验收机械断言与标准环境
+
+**级别**: MUST
+
+UI 验收（尤其窄屏/响应式路径）的通过依据 SHALL 是**机械断言**，不得依赖执行方（模型/子线程）的视觉能力或「目测截图」：
+
+1. **弹层打开态层叠**：每个弹层（溢出菜单/通知面板/抽屉/dialog）打开后用 `elementFromPoint` 断言命中弹层本体——backdrop-filter/transform 均可创建 stacking context 导致 `z-index` 失效，仅 DOM 存在性断言测不出遮挡；
+2. **条件渲染任务态**：队列进度 chip、进度条等条件渲染元素**在场时**重走顶栏/布局断言（不能只在无任务「干净态」验收）；
+3. **逐交互状态测 scrollWidth**：列表态/阅读态/弹层打开态各自断言 `documentElement.scrollWidth <= 视口宽`，只测首屏不构成验收；
+4. **真实长内容验证**：用含连续长单词（如满屏字母/长 URL）与超宽媒体的真实文章验证断词兑底（`overflow-wrap: break-word`），不应用短标题假数据。
+
+验收环境 SHALL 用**静态发布路径**（`NUXT_PUBLIC_API_BASE=/api pnpm generate` → 铺 `backend-go/frontend/` → `:5100` 同源，见 [deployment.md](../deployment.md) §本地裸跑静态托管）：dev server 的 apiBase/HMR/首访引导均为噪声源，不作为验收依据。验收前 SHALL 关闭新手引导类全屏遮罩（项目已默认关闭首访自动启动，仅保留手动入口）。截图作为证据留档；有视觉能力的复核方 SHOULD 抽检截图，缺视觉时不构成阻断（机械断言为准）。
+
+#### Scenario: 弹层遮挡机械检出
+
+- **WHEN** 窄屏下点开「⋯」溢出菜单并用 `elementFromPoint` 探测菜单项中心
+- **THEN** 命中结果 SHALL 为菜单项本体而非内容面板元素（stacking context 遮挡在此步暴露，而非流入用户实机）
+
 ## 存量迁移
 
 - **不迁移**：存量页面的自由宽度与旧 `width` 弹窗保持现状，仅在主动重构该界面时按本契约收敛（避免大量用户可见变化混入其他 change）。

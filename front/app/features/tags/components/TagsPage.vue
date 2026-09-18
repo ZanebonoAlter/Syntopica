@@ -86,7 +86,7 @@ const {
   handleArticleFavorite, handleArticleUpdate,
 } = useTagsPage()
 
-const { isTagsFirstRun, startTagsTour } = useOnboarding()
+const { startTagsTour } = useOnboarding()
 const selectedBoardLabel = computed(() => boards.value.find(board => board.id === selectedBoardId.value)?.label)
 
 // 话题总览 tab：侦探墙全屏入口（BoardThreadBrowser @open-detective-wall 触发）
@@ -109,9 +109,7 @@ function handleLandscapeSelectTopic(topicId: number) {
 }
 
 onMounted(() => {
-  if (isTagsFirstRun.value) {
-    void startTagsTour()
-  }
+  // 首访自动启动已移除（默认关闭）；手动入口：「语义板块引导」按钮
 })
 
 // —— 版块级关注管理（watch-keyword-and-quickadd：入口 chip 常驻 tab 栏右端）——
