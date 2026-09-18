@@ -325,7 +325,7 @@ reg AS (
 famrows AS (
   SELECT CASE
     WHEN diag IS NULL OR trim(diag)='' THEN '无 diag（空失败输出）'
-    WHEN diag LIKE '%parallel golangci-lint is running%' OR diag LIKE '%text file busy%'
+    WHEN diag LIKE '%command not found%' OR diag LIKE '%parallel golangci-lint is running%' OR diag LIKE '%text file busy%'
       OR diag LIKE '%resource temporarily unavailable%' OR diag LIKE '%no space left%'
       OR diag LIKE '%vsock%' OR diag LIKE '%vet.exe: chdir%' OR diag LIKE '%exec format error%'
       THEN '并发/环境冲突（疑非代码问题）'
@@ -440,8 +440,10 @@ pblock AS (SELECT COALESCE(change,'(无归属)') chg,
   FROM win WHERE kind='policy.decision' AND json_valid(payload) AND json_extract(payload,'$.action')='block' GROUP BY 1,2), -- win 直取：p CTE 无 change 列
 dom_map AS (SELECT json_extract(je.value,'$.domain') domain, json_extract(je.value,'$.prefix') prefix FROM json_each(${DOM_LIT}) je),
 inj_dom AS (SELECT DISTINCT chg,
-    substr(path, instr(path,'flow/')+5, length(path)-instr(path,'flow/')-5-3) domain
-  FROM inj_raw WHERE reason IN ('declaration','keyword','edit') AND path LIKE '%/flow/%.md'),
+    substr(path, instr(path,'flow/')+5, length(path)-instr(path,'flow/')-4-3) domain
+  FROM inj_raw WHERE reason IN ('declaration','keyword','jit-path') AND path LIKE '%/flow/%.md'),
+inj_unk AS (SELECT COUNT(*) n FROM inj_raw -- 未识别通道显式计数（口径漂移兜底，change: harness-retro-sql-fixes）：
+  WHERE path LIKE '%/flow/%.md' AND reason NOT IN ('declaration','keyword','jit-path')), -- 差集限定 flow 文档注入范围，不按全库算（mode-base/change-file/index 不注入 flow 文档，不得误标）
 emap_flat AS (SELECT session_id, COALESCE(change,'') chg, je.value p
   FROM win, json_each(json_extract(payload,'$.paths')) je
   WHERE kind='edit.map' AND json_valid(payload)),
@@ -536,7 +538,8 @@ SELECT json_object(
       'mapping_rules', (SELECT COUNT(*) FROM dom_map),
       'hit', (SELECT hit FROM hit_sum),
       'edited', (SELECT edited FROM hit_sum),
-      'changes_counted', (SELECT COUNT(*) FROM hit_chg)
+      'changes_counted', (SELECT COUNT(*) FROM hit_chg),
+      'unrecognized_reason_rows', (SELECT n FROM inj_unk)
     ),
     'pin', json_object('write', (SELECT n FROM pw), 'read', (SELECT n FROM prd)),
     'repair', json_object(
@@ -932,6 +935,9 @@ else:
                    % (_dom.get('hit') or 0, _dom.get('edited') or 0,
                       '—' if dh is None else '%d%%' % dh,
                       _dom.get('mapping_rules')))
+        unk = _dom.get('unrecognized_reason_rows') or 0
+        out.append('     未识别通道        : %s 条（flow 文档注入的 reason 不在 declaration/keyword/jit-path 枚举内%s）'
+                   % (unk, '；⚠ 注入通道枚举已漂移，须同步报告口径（勿静默归零）' if unk else ''))
     else:
         out.append('     注入命中率        : 域映射不可用（未解析到 doc-impact-applies 标签，跳过本指标）')
     out.append('     pin 复用          : write %s 条 / read %s 条（比值 %s）'
