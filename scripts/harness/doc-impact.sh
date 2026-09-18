@@ -16,7 +16,7 @@
 
 set -u
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 # backend domain 白名单（与 check-standards.sh B 段一致，权威：standard/backend/package-layout.md）
@@ -333,7 +333,7 @@ verify)
 "" | -h | --help | help)
 	sed -n '2,12p' "$0"
 	echo
-	echo "用法: bash scripts/doc-impact.sh <menu|suggest|verify> [...]（context 已由 constraint-injection extension 取代）"
+	echo "用法: bash scripts/harness/doc-impact.sh <menu|suggest|verify> [...]（context 已由 constraint-injection extension 取代）"
 	;;
 *)
 	echo "未知子命令: $sub" >&2

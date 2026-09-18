@@ -184,7 +184,7 @@ function makePi() {
 		check('归档语境（显式注释）→ 零 policy.decision', policyRows(t4b).length === 0);
 		check(
 			'归档语境放行 → 附记账指引提示（test-debt-patrol）',
-			s4b.notices.length === 1 && String(s4b.notices[0]).includes('scripts/test-patrol.sh --register'),
+			s4b.notices.length === 1 && String(s4b.notices[0]).includes('scripts/harness/test-patrol.sh --register'),
 		);
 		const t4c = mktmp(); tmps.push(t4c);
 		await tsgScenario(t4c, 'go test ./internal/domain/x');

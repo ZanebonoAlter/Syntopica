@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# test-patrol.smoke.sh — scripts/test-patrol.sh 白盒冒烟（change: test-debt-patrol）
+# test-patrol.smoke.sh — scripts/harness/test-patrol.sh 白盒冒烟（change: test-debt-patrol）
 #
 # 覆盖 test-cases.md 的 A/B/C/V/R/F/P/X/SUR 组（92 条里的可自动判定部分；§5 的 MAN-* 长跑项不在本脚本范围）。
 # 全部用 mktemp 临时库 + fake runner（TEST_PATROL_FAKE_OUTPUT / FAKE_RC / FAKE_SLEEP）——
 # **毫秒级，绝不执行真实测试**（树莓派资源红线：不跑 pnpm test:unit 全量、不跑 go test 全量）。
 #
-# 用法：bash scripts/test-patrol.smoke.sh   → 逐条 [OK]/[FAIL]，退出码 0 = 全绿
-# 参照 scripts/check-standards.smoke.sh 的 mktemp fixture + 计数风格。
+# 用法：bash scripts/harness/test-patrol.smoke.sh   → 逐条 [OK]/[FAIL]，退出码 0 = 全绿
+# 参照 scripts/harness/check-standards.smoke.sh 的 mktemp fixture + 计数风格。
 set -u
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
-SOURCE="$REPO_ROOT/scripts/test-patrol.sh"
+SOURCE="$REPO_ROOT/scripts/harness/test-patrol.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/test-patrol-smoke.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -901,8 +901,8 @@ group_SUR() {
 	assert_has "TC-SUR01 发现语境可辨识" "$OUT" 'context=存量摸底'
 	assert_has "TC-SUR01 状态计数 open 2" "$OUT" 'open 2 / fixed 0 / waived 0'
 
-	survey="$REPO_ROOT/openspec/changes/test-debt-patrol/survey.md"
-	design="$REPO_ROOT/openspec/changes/test-debt-patrol/design.md"
+	survey="$REPO_ROOT/openspec/changes/archive/2026-09-18-test-debt-patrol/survey.md"
+	design="$REPO_ROOT/openspec/changes/archive/2026-09-18-test-debt-patrol/design.md"
 	assert_has "TC-SUR02 survey 记录存量红 2 文件 / 18 用例" "$(sed -n '1,40p' "$survey")" '2 个文件 / 18 个用例'
 	assert_has "TC-SUR02 survey 记录后端 -short 全量 42s" "$(sed -n '1,40p' "$survey")" '**42s**'
 	assert_has "TC-SUR02 design 保留后端 6 片定夺" "$(sed -n '1,80p' "$design")" '共 6 片'

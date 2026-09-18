@@ -52,7 +52,7 @@ cd ~/syntopica
 CADDYFILE=./Caddyfile.dev docker compose -f deploy/same-origin/docker-compose.yml up -d
 ```
 
-> **不想手敲 export？** `bash scripts/start-dev.sh --restart` 会按本机是否装了同源入口自动选 base（装了就用 `/api`），并把后端 `CORS_ORIGINS` 一起注入；`status` 可看当前端口/PID/健康/入口地址。
+> **不想手敲 export？** `bash scripts/dev/start-dev.sh --restart` 会按本机是否装了同源入口自动选 base（装了就用 `/api`），并把后端 `CORS_ORIGINS` 一起注入；`status` 可看当前端口/PID/健康/入口地址。
 
 然后浏览器开 **`http://<pi-ip>/`**（不是 `:3000`）。
 
@@ -129,7 +129,7 @@ Docker Hub 拉不到时（实测 Pi 上 `registry-1.docker.io` i/o timeout）用
 
 | 模式 | 模板 | 安装 | 前端 |
 |---|---|---|---|
-| **A. dev 反代** | `nginx.conf` | `sudo bash deploy/same-origin/install-nginx.sh dev` | `cd front && NUXT_PUBLIC_API_BASE=/api pnpm dev --host`（或 `bash scripts/start-dev.sh --restart front`） | 
+| **A. dev 反代** | `nginx.conf` | `sudo bash deploy/same-origin/install-nginx.sh dev` | `cd front && NUXT_PUBLIC_API_BASE=/api pnpm dev --host`（或 `bash scripts/dev/start-dev.sh --restart front`） | 
 | **B. 静态产物** | `nginx.static.conf` | 先 `NUXT_PUBLIC_API_BASE=/api pnpm generate` + 产物铺到 `/srv/www`，再 `sudo bash deploy/same-origin/install-nginx.sh static` | 不需要常驻进程 |
 
 安装脚本做四件事（幂等、可重复跑）：写 `/etc/nginx/conf.d/syntopica.conf`（旧文件先备份）→ 移除 `/etc/nginx/sites-enabled/default` **软链**（它同样声明 `default_server`，留着 `nginx -t` 直接报 `a duplicate default server`）→ `nginx -t` 校验（失败自动回滚旧配置）→ `systemctl enable + reload`。

@@ -36,7 +36,7 @@ const SOFT_NOTICE =
 	"全量 go test 属归档/pre-push 场景；日常请只跑影响包（AGENTS.md 测试范围规则）。确属归档场景请在命令尾部加 `# archive-gate` 注释。";
 /** 归档语境放行时的记账指引（test-debt-patrol：撞见非本 change 红 → 登记台账） */
 const ARCHIVE_DEBT_NOTICE =
-	"撞见非本 change 引起的红测试（本 change 影响包之外）→ 用 `bash scripts/test-patrol.sh --register <test_id> --context <change名>` 登记台账后继续归档（本 change 自身的红仍须修复）；台账汇总看 `bash scripts/test-patrol.sh --report`。";
+	"撞见非本 change 引起的红测试（本 change 影响包之外）→ 用 `bash scripts/harness/test-patrol.sh --register <test_id> --context <change名>` 登记台账后继续归档（本 change 自身的红仍须修复）；台账汇总看 `bash scripts/harness/test-patrol.sh --report`。";
 
 /** 本扩展只用到的 ExtensionContext 子集（结构兼容，便于独立类型检查，见 quota-gate GateCtx） */
 type GuardCtx = {

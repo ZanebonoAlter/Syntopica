@@ -269,7 +269,7 @@ function buildWarnMessage(
 		`[dev-process-guard] 检测到 ${leaks.length} 个泄漏类 dev 进程（cmdline 命中 dev/agent-browser 特征 + cwd 在仓库内 + 无控制终端 + 非 start-dev.sh pidfile 接管）：`,
 		...lines,
 		`其中 ${inWindow} 个启动于本会话窗口内（会话结束将被自动清理），${leaks.length - inWindow} 个为窗口外历史遗留（不自动杀，需人工确认后处置）。`,
-		`建议：接管栈用 bash scripts/start-dev.sh stop 清理；无主进程先 ps 确认再 kill -- -<pgid>；新起 dev 服务一律走 bash scripts/start-dev.sh（自动接管，会话结束自动清理）。`,
+		`建议：接管栈用 bash scripts/dev/start-dev.sh stop 清理；无主进程先 ps 确认再 kill -- -<pgid>；新起 dev 服务一律走 bash scripts/dev/start-dev.sh（自动接管，会话结束自动清理）。`,
 	].join("\n");
 }
 

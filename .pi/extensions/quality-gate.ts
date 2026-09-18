@@ -418,7 +418,7 @@ export default function (pi: ExtensionAPI) {
 				try {
 					const scope = await pi.exec(
 						"bash",
-						[`${repoRoot}/scripts/change-scope.sh`, "--json"],
+						[`${repoRoot}/scripts/harness/change-scope.sh`, "--json"],
 						{ signal: ctx.signal, timeout: 15_000 },
 					);
 					if (scope.code === 0) {

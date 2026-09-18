@@ -33,13 +33,13 @@ TBD - created by archiving change test-debt-patrol. Update Purpose after archive
 
 ### Requirement: 滚动分片巡检
 
-系统 SHALL 提供巡检脚本（`scripts/test-patrol.sh`）将全量测试拆为有界分片滚动执行：后端按 `backend-go/internal/` domain 目录分片（`go test -short`，跳过 DB 集成）；前端按测试文件组分片（`pnpm test:unit <filter...>`，**不带 `--`**——实测 `pnpm test:unit -- <filter>` 会吞掉 filter 静默跑全量，见 `standard/frontend/testing.md`；统一 `--maxWorkers=2`）。分片划分 SHALL 在脚本内静态可枚举（不依赖运行时发现），每片资源占用 SHALL 有上界。
+系统 SHALL 提供巡检脚本（`scripts/harness/test-patrol.sh`）将全量测试拆为有界分片滚动执行：后端按 `backend-go/internal/` domain 目录分片（`go test -short`，跳过 DB 集成）；前端按测试文件组分片（`pnpm test:unit <filter...>`，**不带 `--`**——实测 `pnpm test:unit -- <filter>` 会吞掉 filter 静默跑全量，见 `standard/frontend/testing.md`；统一 `--maxWorkers=2`）。分片划分 SHALL 在脚本内静态可枚举（不依赖运行时发现），每片资源占用 SHALL 有上界。
 
 巡检进度 SHALL 持久化（最近完成分片、时间、结果摘要），跨会话可续：连续巡检按「最久未巡的分片优先」推进，一轮全部完成后重新开始。支持一次跑一片（默认）与一次跑多片（显式参数）。
 
 #### Scenario: 单分片巡检落账
 
-- **WHEN** 执行 `bash scripts/test-patrol.sh`（无参数，跑一片）
+- **WHEN** 执行 `bash scripts/harness/test-patrol.sh`（无参数，跑一片）
 - **THEN** 选取最久未巡的分片执行，输出通过/失败摘要，失败测试自动登记台账，进度与时间落账
 
 #### Scenario: 资源红线——低并发执行

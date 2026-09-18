@@ -56,7 +56,7 @@ pnpm test:unit app/utils/articleContentSource.test.ts -t "prefers firecrawl"  # 
 
 ### 巡检分片（滚动全量兜底）
 
-日常不做全量，但全量红需要兜底——`scripts/test-patrol.sh` 把 100 个测试文件拆成 **6 个静态分片**按「最久未巡优先」滚动跑（前端分片内部硬约束 `--maxWorkers=2`）：
+日常不做全量，但全量红需要兜底——`scripts/harness/test-patrol.sh` 把 100 个测试文件拆成 **6 个静态分片**按「最久未巡优先」滚动跑（前端分片内部硬约束 `--maxWorkers=2`）：
 
 | 分片 | 目录组 | 文件数 | 实测耗时（2026-09-17） |
 | --- | --- | --- | --- |
@@ -68,14 +68,14 @@ pnpm test:unit app/utils/articleContentSource.test.ts -t "prefers firecrawl"  # 
 | `fe-components` | `app/components app/error.test.ts app/spa-loading-template.test.ts` | 9 | 15s |
 
 ```bash
-bash scripts/test-patrol.sh                    # 默认跑最久未巡的一片
-bash scripts/test-patrol.sh --shard fe-tags    # 指定片
-bash scripts/test-patrol.sh --report           # 台账汇总 + 分片进度
+bash scripts/harness/test-patrol.sh                    # 默认跑最久未巡的一片
+bash scripts/harness/test-patrol.sh --shard fe-tags    # 指定片
+bash scripts/harness/test-patrol.sh --report           # 台账汇总 + 分片进度
 ```
 
 - 脚本内部调用形式为 `pnpm test:unit <filter...> --maxWorkers=2`（**不带 `--`**，理由见上方红线）。手动补跑同片时照此写。
 - 分片耗时受外网超时噪声影响大（测试内真实 fetch 每次 TCP 重试 ≈130s，同一组可从 12s 到 9 分钟）；噪声源与降噪候选登记在 `openspec/changes/test-debt-patrol/survey.md` §4。
-- 失败测试入 `test_debt` 台账（供排期还债）；撞见非本 change 红 → `bash scripts/test-patrol.sh --register <test_id> --context <change名>`。
+- 失败测试入 `test_debt` 台账（供排期还债）；撞见非本 change 红 → `bash scripts/harness/test-patrol.sh --register <test_id> --context <change名>`。
 
 ### 跨平台运行（按宿主平台决定执行方式）
 

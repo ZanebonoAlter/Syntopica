@@ -26,7 +26,7 @@
 # POSIX bash（Linux 本机直跑；Windows/WSL 宿主执行策略见 standard/frontend/testing.md）。
 set -u
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ json_escape() {
 }
 
 usage_hint() {
-	printf '  用法：bash scripts/test-patrol.sh [--shard <name> | --shards <n> | --init | --report |\n'
+	printf '  用法：bash scripts/harness/test-patrol.sh [--shard <name> | --shards <n> | --init | --report |\n'
 	printf '                                      --register <id> --context <ctx> | --resolve <id> |\n'
 	printf '                                      --waive <id> --reason <text> | --help]\n'
 	printf '  可选分片（%d 片轮转 + %s）：\n' "${#SHARD_ORDER[@]}" "$SHARD_ALL"
@@ -818,18 +818,18 @@ print_help() {
 test-patrol.sh — 测试欠账滚动巡检（change: test-debt-patrol）
 
 用法：
-  bash scripts/test-patrol.sh                  默认：跑最久未巡的一片（12 片轮转，NULL 最优先）
-  bash scripts/test-patrol.sh --shard <name>   指定分片（12 轮转片 + be-all）
-  bash scripts/test-patrol.sh --shards <n>     连续跑 n 片（最久未巡优先；n 超 12 时跑满一轮）
-  bash scripts/test-patrol.sh --init           建表（test_debt / patrol_shard，幂等）
-  bash scripts/test-patrol.sh --report         台账汇总（三态计数 / domain / open 清单 / stale / 进度）
-  bash scripts/test-patrol.sh --register <test_id> --context <ctx> [--domain <d>] [--note <text>]
+  bash scripts/harness/test-patrol.sh                  默认：跑最久未巡的一片（12 片轮转，NULL 最优先）
+  bash scripts/harness/test-patrol.sh --shard <name>   指定分片（12 轮转片 + be-all）
+  bash scripts/harness/test-patrol.sh --shards <n>     连续跑 n 片（最久未巡优先；n 超 12 时跑满一轮）
+  bash scripts/harness/test-patrol.sh --init           建表（test_debt / patrol_shard，幂等）
+  bash scripts/harness/test-patrol.sh --report         台账汇总（三态计数 / domain / open 清单 / stale / 进度）
+  bash scripts/harness/test-patrol.sh --register <test_id> --context <ctx> [--domain <d>] [--note <text>]
                                                手工登记欠账（归档撞见域外红用；domain 默认 manual）
-  bash scripts/test-patrol.sh --resolve <test_id> [--by <change>]
+  bash scripts/harness/test-patrol.sh --resolve <test_id> [--by <change>]
                                                迁 fixed（终态再调为幂等 no-op + exit 0）
-  bash scripts/test-patrol.sh --waive <test_id> --reason <text>
+  bash scripts/harness/test-patrol.sh --waive <test_id> --reason <text>
                                                迁 waived（终态同 --resolve 语义）
-  bash scripts/test-patrol.sh --help           本帮助
+  bash scripts/harness/test-patrol.sh --help           本帮助
 
 退出码：0 全绿或管理子命令成功；1 跑完检出红；2 用法/环境错（含 runner 非 0 但零 FAIL 解析）
 

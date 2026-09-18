@@ -45,7 +45,7 @@ standard/
 
 ## 验收门禁
 
-本目录由 `scripts/check-standards.sh`（L1）静态校验，归档前随《开发执行规范》§11.4 归档门禁一起跑。脚本现含 A-G 段：
+本目录由 `scripts/harness/check-standards.sh`（L1）静态校验，归档前随《开发执行规范》§11.4 归档门禁一起跑。脚本现含 A-G 段：
 
 - **A** 文档完整性（standard/flow 关键文件存在 + flow 五段式结构校验）
 - **B/C** 后端 domain 白名单 + 三层包结构 / 前端 ESLint + Token 三层 + 双主题

@@ -25,13 +25,13 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
 
 本 skill 管**事件考古与归因**（“当时为什么这样”）：schema、事件词汇、payload 字段、TTL、查询配方、归因方法论。
 
-要把账本读成**改进项**（失败聚类、软提醒是否失效、注入面健康、改规则的准 A/B 回检）用 skill `harness-retro`（`bash scripts/harness-retro.sh`）——它是本库的只读消费方，**不改写入协议、不改词汇表、不新增事件**；本 skill 给出的 schema / payload / 采样口径仍是权威。
+要把账本读成**改进项**（失败聚类、软提醒是否失效、注入面健康、改规则的准 A/B 回检）用 skill `harness-retro`（`bash scripts/harness/harness-retro.sh`）——它是本库的只读消费方，**不改写入协议、不改词汇表、不新增事件**；本 skill 给出的 schema / payload / 采样口径仍是权威。
 
 ## Schema 与事件类型
 
 单表 `events`：`id INTEGER PK, ts TEXT(ISO), session_id TEXT, kind TEXT, change TEXT NULL, payload TEXT(JSON)`。索引：`(session_id,id)`、`(change,id)`、`(kind,ts)`。append-only，除 TTL 清扫外不删。
 
-> 同库另有**非事件状态表**（test-debt-patrol 引入，不受 TTL 清扫、不由扩展写入）：`test_debt`（测试欠账台账：`test_id` UNIQUE / `domain` / `first_seen` / `last_seen` / `context` / `status`(open|fixed|waived) / `fixed_by` / `waived_reason` / `waived_at` / `note`）与 `patrol_shard`（巡检分片进度：`shard` PK / `last_run` / `last_ok` / `last_ms` / `last_fails` / `runs` / `total_fails`），由 `scripts/test-patrol.sh` 读写；台账查询首选 `bash scripts/test-patrol.sh --report`。
+> 同库另有**非事件状态表**（test-debt-patrol 引入，不受 TTL 清扫、不由扩展写入）：`test_debt`（测试欠账台账：`test_id` UNIQUE / `domain` / `first_seen` / `last_seen` / `context` / `status`(open|fixed|waived) / `fixed_by` / `waived_reason` / `waived_at` / `note`）与 `patrol_shard`（巡检分片进度：`shard` PK / `last_run` / `last_ok` / `last_ms` / `last_fails` / `runs` / `total_fails`），由 `scripts/harness/test-patrol.sh` 读写；台账查询首选 `bash scripts/harness/test-patrol.sh --report`。
 
 | kind | 保留期 | payload 关键字段 |
 | --- | --- | --- |
@@ -39,13 +39,13 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
 | `session.rollup` | 90 天 | 单会话效能汇总快照：`turns`/`steps`/`toolCalls`/`tokens`(五值)/`cost`/`durationSec`/`model`/`final`；harness-telemetry 在 turn_end 节流写（每 5 turn 或 token 增量>20%）+ session_start 回填 prev 终值；**同 session 取最新一条即终值**（中间快照不参与聚合，语义对齐 edit.map）；查询实例：`SELECT session_id, payload FROM events WHERE kind='session.rollup' AND id IN (SELECT MAX(id) FROM events WHERE kind='session.rollup' GROUP BY session_id)` |
 | `constraint.inject` | 30 天 | `path`、`mode`(full/section)、`reason`、`bytes`；混合通道下**送达时记账**（稳定层快照变化时 / 动态层消息发出时 / compact 快照重发时），稳态不重复记；`degraded`（预算降级标记）、`source:compact-resend`（compact 重发快照）按需携带 |
 | `gate.check` | 30 天 | `cmd`、`phase`(turn_end)、`ok`、`ms`、`diag` |
-| `patrol.check` | 30 天 | `shard`、`ok`、`ms`、`fails[]`（失败测试标识数组，全绿为空数组）；由 `scripts/test-patrol.sh` 直写（非扩展，`session_id`=PI_SESSION_ID 或 `patrol.sh`），**`change` 列恒 NULL**（巡检是仓库级活动） |
+| `patrol.check` | 30 天 | `shard`、`ok`、`ms`、`fails[]`（失败测试标识数组，全绿为空数组）；由 `scripts/harness/test-patrol.sh` 直写（非扩展，`session_id`=PI_SESSION_ID 或 `patrol.sh`），**`change` 列恒 NULL**（巡检是仓库级活动） |
 | `mode.set` | 30 天 | `mode`、`boundChange`、`source`（`command` / `skill` / `edit-dir` / `recover` / `inherit` / `fallback`——**所有绑定变化路径均记账，隐性绑定不存在**） |
 | `subagent.dispatch` | 30 天 | `type`、`model`、`desc`、`ms`、`tokens`、`status`、`agentId`、`isError` |
 | `subagent.complete` | 30 天 | `agentId`、`status`、`ms`、`tokens`、`toolUses`、`isError`（后台子线程完成回填） |
 | `spill.write` | 30 天 | `tool`、`bytes`、`path`、`ok`（大工具结果落盘记账） |
 | `pin.write` | 永久 | 见 pin_finding 写入方 |
-| `edit.map` | 30 天 | `paths`（该 change 累计编辑路径全量快照，排序去重）、`n`（=paths.length）；change 列 = 会话绑定的 change（mode.set boundChange 语义）；归属地图查询首选 `bash scripts/concurrency-status.sh [change]`（人读三段）或 `--check <change>`（exit 0 干净/2 有归属其他 active change 脏文件/3 冷启动） |
+| `edit.map` | 30 天 | `paths`（该 change 累计编辑路径全量快照，排序去重）、`n`（=paths.length）；change 列 = 会话绑定的 change（mode.set boundChange 语义）；归属地图查询首选 `bash scripts/harness/concurrency-status.sh [change]`（人读三段）或 `--check <change>`（exit 0 干净/2 有归属其他 active change 脏文件/3 冷启动） |
 | `policy.decision` | 30 天 | `policy`、`action`、`reasonCode`，按需 `target`/`durationMs`（见下）。**唯一显式豁免**（harness-retro-sql-fixes）：dev-process-guard 孤儿 dev 进程治理事件（design D6 有意旁路，代码注释锚定）——payload 为 `decision`（`orphan-killed` / `orphan-warn`）键 + 进程摘要（`cmd`、`procs`/`offenders`、`inWindow`、`windowStartedAt` 等有界字段，cmdline 截断），**无 `action` 键，也不要求 `policy`/`reasonCode`**（豁免整个键形状而非仅 action→decision 替换：action 白名单语义是「对用户操作的裁决」，不适用于对进程组处置）；retro ③段（fail-open）/④段（warn 聚类）/催修时距按 `$.action` 过滤自然不吸入本扩展事件。除该豁免外，任何扩展写 `policy.decision` 必须遵守 `policy`/`action`/`reasonCode` 形状，词汇表与实现保持一致 |
 
 `constraint.inject` 的 `reason` 枚举（实测，2026-09-18 全库核对，共 **6 值**，与 `SELECT json_extract(payload,'$.reason'), COUNT(*) FROM events WHERE kind='constraint.inject' GROUP BY 1` 一致，无 0 条死枚举）：`index`（未激活档的常驻索引）/ `mode-base`（档位激活后的基础注入）/ `declaration`（按 proposal 头 `constraint-domains` 声明拉 flow 约束节，**声明域=红线层注入**：payload 附 `layer`（`redline`=红线层 / `full`=提取 0 条或低于 512B 回退全节），bytes 为实际注入层级字节数）/ `keyword`（对话关键词命中，全节注入；**域限定**：仅声明域∪栈相关∪索引内的命中生效）/ `jit-path`（编辑路径 JIT 命中，全节注入；**2026-08-23 起启用**，前身通道名 `edit` 已废弃——全库 0 条，已从枚举删除，旧文档若见 `edit` 即为过期表述）/ `change-file`（change 文档命中）。曾登记的 `stack-conditional`（栈条件注入）从未上线（全库 0 条），已删除。注意：**仅 `declaration`/`keyword`/`jit-path` 三通道注入 flow 文档**（harness-retro ⑦段 A2 注入命中率口径即此三者，报告对 flow 文档注入中枚举外的 reason 显式计「未识别通道 N 条」）；`mode-base`/`change-file`/`index` 不注入 flow 文档，不计入该指标与未识别计数。
@@ -97,8 +97,8 @@ sqlite3 events.db "SELECT ts, COALESCE(change,'-'), payload FROM events WHERE ki
 "现在还有谁在跑 / 树上脏文件归属谁"类问题，**先跑脚本再查库**（脚本一次聚合了活跃清单、归属对照、近期验证流水三段）：
 
 ```bash
-bash scripts/concurrency-status.sh <change>      # 人读三段（活跃清单/脏文件归属/近 6h gate.check）
-bash scripts/concurrency-status.sh --check <change>  # 机器可读：exit 0 干净 / 2 有归属其他 active change 脏文件 / 3 冷启动
+bash scripts/harness/concurrency-status.sh <change>      # 人读三段（活跃清单/脏文件归属/近 6h gate.check）
+bash scripts/harness/concurrency-status.sh --check <change>  # 机器可读：exit 0 干净 / 2 有归属其他 active change 脏文件 / 3 冷启动
 # 归属原始数据（脚本的底层源）：每 change 最新一条 edit.map 快照
 sqlite3 events.db "SELECT change, payload FROM events WHERE kind='edit.map' AND id IN (SELECT MAX(id) FROM events WHERE kind='edit.map' GROUP BY change);"
 ```

@@ -1,7 +1,7 @@
 # pi harness 扩展机制（全景 + 注入 + 门禁）
 
 <!--
-doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json, .pi/harness.json, scripts/harness-retro.sh, scripts/change-scope.sh
+doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json, .pi/harness.json, scripts/harness/harness-retro.sh, scripts/harness/change-scope.sh
 -->
 
 > **权威源**：本文件是 pi harness 扩展**机制参考**的唯一权威——扩展全景表、约束注入/质量门禁的工作原理、事件账本入口。改 harness 相关代码或排查「为什么注入了/为什么被拦」先读这里。agent 日常行为红线（[回归]必修、测试范围、平台分流）在 AGENTS.md，流程编排在《开发执行规范》§0.6，两文互引不重复。事件考古查 skill `harness-facts`，改进复盘查 skill `harness-retro`。
@@ -36,7 +36,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 ## 增量质量门禁（quality-gate，自动，管"做到"）
 
-`.pi/extensions/quality-gate.ts` 已挂 `turn_end`，按**会话内增量路由**触发——会话开始时的 git 脏文件进基线不触发，仅本回合新增/变化路径命中后端（`backend-go/**.go`）才跑 `golangci-lint`+`go vet`+`go build`+影响包 `go test -short`（经 `scripts/change-scope.sh` 判定，DB 集成测试 -short 下自动 skip），命中前端（`front/` 非 .md）才跑 eslint（带 `--cache` 增量；windows 模式经 cmd.exe 调 Windows 原生（实测 2~6s，WSL DrvFS 跑同命令 ~17 倍慢），native 模式本机直接跑；`front/package.json` 的 `pnpm lint` 仍全量供人工/归档用）；lint 先行作短路哨兵——lint 报编译失败（typechecking error）时 vet/build/test 必红同因，跳过执行不记账，无短路时 vet/build 并行。
+`.pi/extensions/quality-gate.ts` 已挂 `turn_end`，按**会话内增量路由**触发——会话开始时的 git 脏文件进基线不触发，仅本回合新增/变化路径命中后端（`backend-go/**.go`）才跑 `golangci-lint`+`go vet`+`go build`+影响包 `go test -short`（经 `scripts/harness/change-scope.sh` 判定，DB 集成测试 -short 下自动 skip），命中前端（`front/` 非 .md）才跑 eslint（带 `--cache` 增量；windows 模式经 cmd.exe 调 Windows 原生（实测 2~6s，WSL DrvFS 跑同命令 ~17 倍慢），native 模式本机直接跑；`front/package.json` 的 `pnpm lint` 仍全量供人工/归档用）；lint 先行作短路哨兵——lint 报编译失败（typechecking error）时 vet/build/test 必红同因，跳过执行不记账，无短路时 vet/build 并行。
 
 **执行链路按宿主平台分流**（linux-native-dev-environment）：`cmd.exe` 不可达（Linux/macOS）走 native 模式（本机 PATH 的 go/golangci-lint/pnpm，工作目录经 `ExecOptions.cwd` 传入），可达则维持 windows 模式（cmd.exe interop，vsock 故障时整轮短路 + 记账）；平台身份会话内稳定。上回合失败未转绿的命令粘性重跑（催修，防"口头修复"漂移）。
 
@@ -49,7 +49,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 `.pi/extensions/dev-process-guard.ts` 治理「会话起 dev 服务不杀、进程孤儿化堆积」（2026-09-17 事故取证：`docs/research/orphan-dev-processes/explore-findings.md`）：
 
 - **泄漏类判定（五条件合取）**：cmdline 命中特征（go run 后端 / go-build 编译产物 / pnpm dev / nuxt dev 系 / **agent-browser CLI 及其无头 chromium 的 user-data-dir 窄锚点**）∧ cwd 在仓库内 ∧ 无控制终端（tty_nr=0，豁免用户终端手起的服务）∧ PGID 不在 pidfile 白名单 ∧ 非自身进程组。
-- **pidfile 白名单协议**：`scripts/start-dev.sh` 起服务写 `.pi/run/{backend,front}.pgid`（setsid 会话首进程=PGID）；经脚本起的服务是合法长驻，guard 永不杀、stop 端口+pidfile 双路组清（覆盖僵尸栈：端口已释放但进程组存活）。**红线：dev 服务起停必须走 start-dev.sh，手提 nohup setsid 的会在会话结束时被自动清理**。
+- **pidfile 白名单协议**：`scripts/dev/start-dev.sh` 起服务写 `.pi/run/{backend,front}.pgid`（setsid 会话首进程=PGID）；经脚本起的服务是合法长驻，guard 永不杀、stop 端口+pidfile 双路组清（覆盖僵尸栈：端口已释放但进程组存活）。**红线：dev 服务起停必须走 start-dev.sh，手提 nohup setsid 的会在会话结束时被自动清理**。
 - **窗口归因**：session_start 记窗口起点（按 sessionId 隔离，子线程只扫自己的窗口）；session_shutdown 只自动清「窗口内」spawn；历史遗留孤儿（无法安全归因）由 turn_end 每会话一次的软提醒交人工处置，升级落地不误杀在用服务。
 - **平台与 fail 策略**：仅 Linux /proc 实现，其他平台 no-op；扫描/组杀/记账任一异常逐目标跳过，不阻断会话关闭。
 
@@ -59,18 +59,18 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 ## 测试欠账巡检（test-patrol.sh，脚本 + 事实库记账）
 
-`bash scripts/test-patrol.sh`（change: test-debt-patrol）把全量测试拆成静态分片滚动巡检，堵住「增量门禁只保局部绿、存量红无人记账」的缺口（不跑扩展，按纪律/归档流程调用）：
+`bash scripts/harness/test-patrol.sh`（change: test-debt-patrol）把全量测试拆成静态分片滚动巡检，堵住「增量门禁只保局部绿、存量红无人记账」的缺口（不跑扩展，按纪律/归档流程调用）：
 
 - **分片枚举**：12 片轮转（后端 6 片：`be-admin`/`be-dataenrichment`/`be-reader`/`be-tagmanagement`/`be-topicgraph`/`be-skeleton`；前端 6 片：`fe-tags`/`fe-discovery`/`fe-features`/`fe-core`/`fe-composables`/`fe-components`）+ `be-all`（整片，不入轮转，仅 `--shard` 显式指定）。默认跑「最久未巡优先」一片，`--shards <n>` 连跑 n 片。
 - **资源红线**：前端分片固定 `--maxWorkers=2`（且 `pnpm test:unit` 的 filter **不带 `--`**——带 `--` 会吞掉 filter 静默跑全量，见 `standard/frontend/testing.md`）；跑前查 load average >4 或检出并发 build/浏览器自动化 → 只提醒不阻断。
 - **`patrol.check` 事件**：每个分片执行完向 `.pi/harness/events.db` 的 `events` 表追加一条，payload 恰为 `{shard, ok, ms, fails[]}`，`change` 列为 NULL（巡检是仓库级活动，不属单个 change），**保留期 30 天**（与 `gate.check` 同级，登记于 `lib/harness-log.ts` 的 `RETENTION_DAYS`）。事件只记流水。
 - **`test_debt` 台账（状态数据，不走 TTL）**：同一库内的独立表，登记「非本 change 改坏、不在本次修复范围内」的红测试——`test_id`（后端 `internal/<pkg>::<TestName>` / 前端 `front/<path>::<suite > case>`，整文件级用 `::<file-level>`）、`domain`（= 分片名）、`first_seen`/`last_seen`、`context`（巡检分片名 / 归档 change 名 / 存量摸底）、`status`（`open` → `fixed`｜`waived`，终态保留不物理删除）、`fixed_by`、`waived_reason`/`waived_at`、`note`。`patrol_shard` 表存分片进度（`last_run`/`last_ok`/`last_ms`/`last_fails`/`runs`/`total_fails`）。
 - **双账不互写**：事件（TTL 30 天）与台账（持久）各司其职——事件被 TTL 清扫不影响台账记录与状态机。
-- **消费**：`--report` 看四类聚合（status 计数 / domain 计数 / open 清单按 `first_seen` 升序 / `last_seen` 超 30 天 stale 提示）+ 分片进度表；`scripts/harness-retro.sh` 报告显示窗口内巡检频次与欠账趋势。纪律（顺手跑一片、归档前看 report、域外红登记后放行）见 `AGENTS.md` 与《开发执行规范》§4.1/§11.4。
+- **消费**：`--report` 看四类聚合（status 计数 / domain 计数 / open 清单按 `first_seen` 升序 / `last_seen` 超 30 天 stale 提示）+ 分片进度表；`scripts/harness/harness-retro.sh` 报告显示窗口内巡检频次与欠账趋势。纪律（顺手跑一片、归档前看 report、域外红登记后放行）见 `AGENTS.md` 与《开发执行规范》§4.1/§11.4。
 
 ## 改进闭环（harness-retro）
 
-`bash scripts/harness-retro.sh`（只读消费事件账本，产出失败聚类六段报告——分母按采样口径还原、`fail-open` 单列为 harness 自身故障），配 `--save-baseline`/`--baseline` 把「改一条 harness 规则前后同类事件计数」变成可回检的准 A/B；读法与改进项判据（可回检指标 + 观察窗口 + 反 overfit）见 skill `harness-retro`，归档后可选回检流程见开发执行规范 §12.5。
+`bash scripts/harness/harness-retro.sh`（只读消费事件账本，产出失败聚类六段报告——分母按采样口径还原、`fail-open` 单列为 harness 自身故障），配 `--save-baseline`/`--baseline` 把「改一条 harness 规则前后同类事件计数」变成可回检的准 A/B；读法与改进项判据（可回检指标 + 观察窗口 + 反 overfit）见 skill `harness-retro`，归档后可选回检流程见开发执行规范 §12.5。
 
 ## 定时任务脚本语义（schedule / workflowScript）
 

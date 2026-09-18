@@ -213,7 +213,7 @@
 
 任一步 panic / 异常 / 超时都**不阻断后续步骤**（每步独立 recover，失败记 warn）；序列结束 `close(done)` → main 正常 return → defer 链（tracer flush、`logging.Close()`）真实执行。`DEMO_READ_ONLY=1`（`runtime == nil`）跳过 ② 但仍做 HTTP 摘端口与 ③；端口占用等真实启动错误仍走 `logging.Fatalf`（非 0 退出码）。
 
-关停预算：http 5s + registry 30s + workers 10s，但**端口在第一步就释放**（通常 1~2s），容器编排的 SIGTERM 宽限期与 `scripts/start-dev.sh stop` 的观察窗都只关心端口与进程存活。
+关停预算：http 5s + registry 30s + workers 10s，但**端口在第一步就释放**（通常 1~2s），容器编排的 SIGTERM 宽限期与 `scripts/dev/start-dev.sh stop` 的观察窗都只关心端口与进程存活。
 
 ## 读代码建议
 

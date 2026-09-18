@@ -1,7 +1,7 @@
 ## 1. 用例与实施准备
 
 - [x] 1.1 完成并审核 test-cases.md 故事、五组变体、白盒分支与旧Scenario继承表；验收：文件存在且两份spec的每个Scenario均有落点，不把待实现标成通过。
-- [x] 1.2 保存本change文件归属和并发基线，读取apply指令；验收：执行 `bash scripts/concurrency-status.sh improve-discovery-recommendations` 并记录冲突文件，后续不覆盖其他change改动。
+- [x] 1.2 保存本change文件归属和并发基线，读取apply指令；验收：执行 `bash scripts/harness/concurrency-status.sh improve-discovery-recommendations` 并记录冲突文件，后续不覆盖其他change改动。
 
 ## 2. 候选数据与迁移
 
@@ -33,7 +33,7 @@
 
 ## 6. 测试
 
-- [x] 6.1 运行 `bash scripts/change-scope.sh` 确认影响包，逐包执行测试（SQL仅隔离PG）；验收：保存精确命令和结果，无全库清理操作。
+- [x] 6.1 运行 `bash scripts/harness/change-scope.sh` 确认影响包，逐包执行测试（SQL仅隔离PG）；验收：保存精确命令和结果，无全库清理操作。
 - [ ] 6.2 按test-cases.md执行opencli完整新增→入库→确认订阅、查询→返回、导入→重试和排除→恢复故事；验收：保存步骤断言及结果，不用静态原型代替真实页面测试。
 - [ ] 6.3 对日本新闻、AI、开发工具三版块做只读候选效果对照；验收：记录基线/双路候选数量、重复率、基础路是否保留、精排零结果率及结论，无虚构数字。
 - [x] 6.4 聚焦review迁移、事务、网络权限和旧入口绕过路径，修复High问题；验收：review记录与复测命令存在。
@@ -44,7 +44,7 @@
 
 suggest在代码尚未改动时仅命中其他change的configuration；本change按计划显式声明以上域，不将其他change文件纳入本次交付。
 
-- [ ] 7.1 更新discovery/ai-summary/scheduler流程、API、数据库与架构索引；验收：`bash scripts/doc-impact.sh verify` 与 `bash scripts/check-standards.sh` 通过或明确独立环境/并发阻塞。
+- [ ] 7.1 更新discovery/ai-summary/scheduler流程、API、数据库与架构索引；验收：`bash scripts/harness/doc-impact.sh verify` 与 `bash scripts/harness/check-standards.sh` 通过或明确独立环境/并发阻塞。
 - [ ] 7.2 更新配置与部署说明（默认值、重嵌、旧历史、私网确认、回滚边界）；验收：文档列出部署后行为、人工操作和旧数据降级。
 
 ## 8. 验证

@@ -32,11 +32,11 @@ harness 层 SHALL 将"归属某 change 的会话累计编辑过的仓库文件�
 
 ### Requirement: 并发态势拉取单一入口
 
-`scripts/concurrency-status.sh` SHALL 作为并发态势的唯一拉取入口，只读查询事实库与 openspec 状态，输出三段：①活跃 change 清单（名称、绑定 session、最近活动时间）；②当前 git 脏文件 × 归属地图对照（归属本 change / 归属其他 active change / 无归属三类分列，冲突文件带标记）；③近期（默认 6 小时）gate.check 验证流水摘要（change、命令、结果、时刻）。态势数据 MUST NOT 进入 system prompt 注入通道（时变内容破坏前缀缓存），仅在 Agent 主动查询、spec-gate 检查、编排流程步骤三类挂点以命令输出形态出现。脚本 MUST 只读（不写事实库、不写 git）。
+`scripts/harness/concurrency-status.sh` SHALL 作为并发态势的唯一拉取入口，只读查询事实库与 openspec 状态，输出三段：①活跃 change 清单（名称、绑定 session、最近活动时间）；②当前 git 脏文件 × 归属地图对照（归属本 change / 归属其他 active change / 无归属三类分列，冲突文件带标记）；③近期（默认 6 小时）gate.check 验证流水摘要（change、命令、结果、时刻）。态势数据 MUST NOT 进入 system prompt 注入通道（时变内容破坏前缀缓存），仅在 Agent 主动查询、spec-gate 检查、编排流程步骤三类挂点以命令输出形态出现。脚本 MUST 只读（不写事实库、不写 git）。
 
 #### Scenario: 归档验证前拉取态势
 
-- **WHEN** Agent 在 change `foo` 归档验证前运行 `bash scripts/concurrency-status.sh foo`
+- **WHEN** Agent 在 change `foo` 归档验证前运行 `bash scripts/harness/concurrency-status.sh foo`
 - **THEN** 输出列出树上脏文件的归属（含归属其他 active change 的文件清单）与近 6 小时验证流水，Agent 据此判断是否需要先拆 commit
 
 #### Scenario: 脚本只读安全

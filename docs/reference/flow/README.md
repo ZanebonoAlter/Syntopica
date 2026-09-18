@@ -5,7 +5,7 @@
 
 ## 这层装什么（五段式）
 
-每个 `flow/<功能>.md` 固定五个二级标题（`scripts/check-standards.sh` A 段校验齐全）：
+每个 `flow/<功能>.md` 固定五个二级标题（`scripts/harness/check-standards.sh` A 段校验齐全）：
 
 1. **需求说明** — 功能给用户解决什么问题（面向使用视角）
 2. **链路设计** — mermaid 流程图 + 状态流转
@@ -76,7 +76,7 @@ flowchart LR
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
 | 2026-07-20 | docs-harness-consolidation | flow 升级五位一体活文档（需求/链路/业务约束/代码入口/溯源）；业务约束节作为注入数据源（时为 `doc-impact.sh context`，2026-08-22 起由 constraint-injection extension 接管，见 port-constraint-injection）；原 user-guide 定位由 flow「需求说明」节承接 | [archive/2026-07-20-docs-harness-consolidation](../../../openspec/changes/archive/2026-07-20-docs-harness-consolidation) |
-| 2026-08-21 | add-change-scope | 新增 `scripts/change-scope.sh` 改动范围→最小验证命令机械判定（路径三档映射，未命中不猜）；quality-gate turn_end 升级自动跑影响包 `go test -short`（DB 集成测试 -short 自动 skip）。「测试只跑影响包」从自觉规则变机械执行 | [archive/2026-08-21-add-change-scope](../../../openspec/changes/archive/2026-08-21-add-change-scope) |
+| 2026-08-21 | add-change-scope | 新增 `scripts/harness/change-scope.sh` 改动范围→最小验证命令机械判定（路径三档映射，未命中不猜）；quality-gate turn_end 升级自动跑影响包 `go test -short`（DB 集成测试 -short 自动 skip）。「测试只跑影响包」从自觉规则变机械执行 | [archive/2026-08-21-add-change-scope](../../../openspec/changes/archive/2026-08-21-add-change-scope) |
 | 2026-08-21 | amend-dev-workflow | 测试纪律改用例先行（Scenario 即黑盒用例+复杂档白盒用例，顺序解绑，bug 先复现底线不变）；调研两级落点（change research.md / `docs/research/`），experience 回归纯踩坑复盘 | [archive/2026-08-21-amend-dev-workflow](../../../openspec/changes/archive/2026-08-21-amend-dev-workflow) |
 | 2026-08-23 | port-constraint-injection | 移植 constraint-injection extension（harness 层每 turn 注入：flow「业务约束与不变量」节级注入 + standard JIT 路径命中 + 关键词命中粘性保前缀缓存 + pin_finding 两级落点）；`doc-impact.sh context` 子命令退役，9 个 flow 文档脚注数据源表述改指 extension | [archive/2026-08-23-port-constraint-injection](../../../openspec/changes/archive/2026-08-23-port-constraint-injection) |
 | 2026-08-23 | harness-facts-tier-a | harness 层事实库落地（`.pi/harness/events.db` 六类事件记账：constraint.inject / pin.write / pin.read / gate.check / subagent.dispatch / session.start），constraint-injection 注入与 pin 读写经 lib/harness-log 自报，模型零参与；flow 文档作为注入数据源的机制不变，仅新增记账维度 | [archive/2026-08-23-harness-facts-tier-a](../../../openspec/changes/archive/2026-08-23-harness-facts-tier-a) |

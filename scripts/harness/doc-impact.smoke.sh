@@ -11,7 +11,7 @@
 #   N3 归属集合仅含共享文档不触发「声明 none 但命中」（契约锁定）
 #   N4 共享文档在集合中不干扰真实命中（黑名单不误伤整集合）
 #   N5 真实配置文件命中面不变（正则收紧不误伤）
-# 用法：bash scripts/doc-impact.smoke.sh
+# 用法：bash scripts/harness/doc-impact.smoke.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TARGET="$HERE/doc-impact.sh"
@@ -33,10 +33,10 @@ new_fixture() {
 			printf '.pi/harness/\n' > .gitignore &&
 			echo base > base.txt && git add -A && git commit -qm init
 	) >/dev/null 2>&1
-	mkdir -p "$d/openspec/changes/foo" "$d/scripts" "$d/.pi/harness" "$d/backend-go/internal/reader/handler"
+	mkdir -p "$d/openspec/changes/foo" "$d/scripts/harness" "$d/.pi/harness" "$d/backend-go/internal/reader/handler"
 	# 复制被测脚本进 fixture：doc-impact.sh 开头 cd 到自身 REPO_ROOT，
 	# 必须让 REPO_ROOT=fixture 根（git/events.db/tasks.md 才是 fixture 的）
-	cp "$TARGET" "$d/scripts/doc-impact.sh"
+	cp "$TARGET" "$d/scripts/harness/doc-impact.sh"
 	# 他人 change 的 handler 脏文件（api 域启发式必命中）
 	echo x > "$d/backend-go/internal/reader/handler/foreign.go"
 	# tasks.md：声明行 + 尾三节骨架
@@ -58,7 +58,7 @@ seed_edit_map() { # $1=dir $2=change $3=payload
 	sqlite3 "$1/.pi/harness/events.db" \
 		"INSERT INTO events(ts,session_id,kind,change,payload) VALUES('2026-09-04T00:00:00Z','s1','edit.map','$2','$3');" 2>/dev/null
 }
-verify() { ( cd "$1" && bash "$1/scripts/doc-impact.sh" verify openspec/changes/foo ); } # 调用方捕获 exit
+verify() { ( cd "$1" && bash "$1/scripts/harness/doc-impact.sh" verify openspec/changes/foo ); } # 调用方捕获 exit
 
 NONE_DECL='<!-- doc-impact: none(纯内部重构) -->'
 

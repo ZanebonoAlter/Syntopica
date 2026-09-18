@@ -60,8 +60,8 @@ cd front && pnpm dev
 或用一条命令把后端 + 前端都起来（**自动注入 `NUXT_PUBLIC_API_BASE` / `CORS_ORIGINS`**，并在装了同源入口时选相对 base）：
 
 ```bash
-bash scripts/start-dev.sh              # 已在跑的不动；加 --restart 先停再起
-bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
+bash scripts/dev/start-dev.sh              # 已在跑的不动；加 --restart 先停再起
+bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 ```
 
 > 为什么要有这个脚本：两个变量都是非持久化的进程环境变量，漏一个就换一种报错（2026-09-16 因重启漏 `CORS_ORIGINS` 导致一次全站不可访问）。
@@ -76,7 +76,7 @@ bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 - **API**: `docs/reference/api/`
 - **Database**: `docs/reference/database/`
 - **Configuration**: `docs/reference/configuration.md`
-- **Harness 事实库**: `.pi/harness/events.db` — pi 扩展自动写入的事件账本（约束注入/门禁/档位/pin/派发）；事件考古与归因排查先查 skill `harness-facts`，从账本找改进项/回检规则效果查 skill `harness-retro`（`bash scripts/harness-retro.sh`）
+- **Harness 事实库**: `.pi/harness/events.db` — pi 扩展自动写入的事件账本（约束注入/门禁/档位/pin/派发）；事件考古与归因排查先查 skill `harness-facts`，从账本找改进项/回检规则效果查 skill `harness-retro`（`bash scripts/harness/harness-retro.sh`）
 - **Deployment**: `docs/reference/deployment.md`
 - **执行规范**: `docs/reference/开发执行规范.md` — 任务拆解/用例先行/门禁/归档纪律
 - Subdirectory guides: `front/AGENTS.md`, `backend-go/AGENTS.md`.
@@ -109,14 +109,14 @@ bash scripts/start-dev.sh status       # 看端口 / PID / 健康 / 入口地址
 - Do not assume Python backend; the product backend is Go.
 - Ignore unrelated dirty-worktree changes. Verify smallest relevant command after edits.
 - git提交使用 zanebonoalter <380207345@qq.com>
-- **测试只跑本次修改影响的包**，不要跑全量 `go test ./...`。影响包用 `bash scripts/change-scope.sh` 机械判定（路径→命令映射，未命中会提示无法判定）。例如改了 `daily_report` 和 `ws`，就只跑 `go test ./internal/domain/daily_report ./internal/platform/ws`。
+- **测试只跑本次修改影响的包**，不要跑全量 `go test ./...`。影响包用 `bash scripts/harness/change-scope.sh` 机械判定（路径→命令映射，未命中会提示无法判定）。例如改了 `daily_report` 和 `ws`，就只跑 `go test ./internal/domain/daily_report ./internal/platform/ws`。
 - **树莓派本机不做「顺手跑全量」**（前端 `pnpm test:unit` 全量 96 文件、后端 `go test ./...` 同理）：4 核 + SD 卡扛不住——2026-09-17 实测全量前端单测叠加多 pi 会话后 load 飙 106、系统假死重启。日常按范围跑受影响文件（`pnpm test:unit <文件> --maxWorkers=2`，参数不带 `--`）；确需全量（归档门禁 / pre-push）时先停其它 pi 会话、加 `--maxWorkers=2`、不与 `pnpm build`／浏览器自动化并行。事故详情见 `standard/frontend/testing.md`。
-- **测试欠账滚动巡检**：会话收尾若无高负载操作，顺手 `bash scripts/test-patrol.sh` 跑一片（最久未巡优先，前端分片自带 `--maxWorkers=2`）；归档/pre-push 前先 `bash scripts/test-patrol.sh --report` 看有无未还欠账；撞见**非本 change 引起**的红测试 → `bash scripts/test-patrol.sh --register <test_id> --context <change名>` 登记台账后继续（本 change 自己的红仍须先修）。
+- **测试欠账滚动巡检**：会话收尾若无高负载操作，顺手 `bash scripts/harness/test-patrol.sh` 跑一片（最久未巡优先，前端分片自带 `--maxWorkers=2`）；归档/pre-push 前先 `bash scripts/harness/test-patrol.sh --report` 看有无未还欠账；撞见**非本 change 引起**的红测试 → `bash scripts/harness/test-patrol.sh --register <test_id> --context <change名>` 登记台账后继续（本 change 自己的红仍须先修）。
 - **前端 pnpm 编译/测试类命令（typecheck / build / test:unit）：按宿主平台决定执行方式**。Linux/macOS 宿主本机直跑；**Windows + WSL 宿主必须经 Windows cmd 执行**（WSL 侧 node_modules 是 Windows 侧装的，缺 Linux native binding），lint 全平台可跑。当前 Linux 宿主直接跑。权威定义与示例见 [`standard/frontend/testing.md`](docs/reference/standard/frontend/testing.md) §跨平台运行 + §常见陷阱。
 - Frontend edits → `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit <受影响文件名...>` / `pnpm build`。
 - Backend edits → `golangci-lint run ./...` / targeted `go test` first, then `go test ./...` / `go build ./...`。
 - Docs-only edits: consistency check unless behavior changed.
-- **pi harness 扩展（自动，无需手动跑）**：constraint-injection 注入约束（管"知道"）、quality-gate 挂 `turn_end` 增量跑 lint/vet/build/影响包测试（管"做到"）、quota-gate 派发前查额度、spec-gate / ui-design-gate 硬拦截归档与 UI 审批等共 10 个扩展，源码 `.pi/extensions/`（已入库）。日常只需配合四点：① 门禁 **[回归]** steer 必须修不得忽略（**[中间态]** 可继续、回合末复检，归档前全绿）；② quota-gate block 后按 reason 换有额度 provider **全称**重试；③ 逃生口（`--force` / `SPEC_GATE_BYPASS=1` / `UI_DESIGN_GATE_BYPASS=1`）仅显式留痕使用；④ **dev 服务起停必须走 `scripts/start-dev.sh`（写 pidfile 白名单），禁止手提 `nohup setsid`——dev-process-guard 会在会话结束时自动清理无 pidfile 的 dev 进程组与浏览器自动化残留（agent-browser/chromium）**（机制见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md) §孤儿 dev 进程治理）。机制全貌（扩展全景表 / 注入通道 / 门禁分层 / 记账口径）见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md)；事件考古查 skill `harness-facts`，改进复盘查 skill `harness-retro`。
+- **pi harness 扩展（自动，无需手动跑）**：constraint-injection 注入约束（管"知道"）、quality-gate 挂 `turn_end` 增量跑 lint/vet/build/影响包测试（管"做到"）、quota-gate 派发前查额度、spec-gate / ui-design-gate 硬拦截归档与 UI 审批等共 10 个扩展，源码 `.pi/extensions/`（已入库）。日常只需配合四点：① 门禁 **[回归]** steer 必须修不得忽略（**[中间态]** 可继续、回合末复检，归档前全绿）；② quota-gate block 后按 reason 换有额度 provider **全称**重试；③ 逃生口（`--force` / `SPEC_GATE_BYPASS=1` / `UI_DESIGN_GATE_BYPASS=1`）仅显式留痕使用；④ **dev 服务起停必须走 `scripts/dev/start-dev.sh`（写 pidfile 白名单），禁止手提 `nohup setsid`——dev-process-guard 会在会话结束时自动清理无 pidfile 的 dev 进程组与浏览器自动化残留（agent-browser/chromium）**（机制见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md) §孤儿 dev 进程治理）。机制全貌（扩展全景表 / 注入通道 / 门禁分层 / 记账口径）见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md)；事件考古查 skill `harness-facts`，改进复盘查 skill `harness-retro`。
 - **子线程派发 model 硬规则**：Agent 的 `model` 参数必须用 `provider/modelId` 全称（如 `zai-coding-cn/glm-5.3`），**禁止 fuzzy 名**（会按字母序落到错误供应商）；想用默认供应商省略 `model` 即可。fuzzy 名黑名单与派发纪律见开发执行规范 §0.6「供应商与模型选择」。
 - Keep code changes minimal and scoped. Match existing code style.
 - 完成任务后更新维护 `./docs/reference/` 知识库；openspec change 执行走 `开发执行规范.md` §0.6 标准编排流程（**apply 启动跑 `doc-impact.sh suggest`+`context`，归档前跑 `doc-impact.sh verify`+`check-standards.sh`**），归档前满足 §11 门禁，归档后按 §12 补 flow 变更溯源链接（archive 即永久家，v1.x 里程碑可选）。

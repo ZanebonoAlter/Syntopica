@@ -7,7 +7,7 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 
 ### Requirement: 改动范围→验证命令判定（change-scope 脚本）
 
-系统 SHALL 提供 `scripts/change-scope.sh`，对给定 base ref（默认 `HEAD`）收集改动文件集合（committed/staged/unstaged/untracked，与 doc-impact.sh `changed_files()` 同口径），并按路径映射表输出建议执行的最小验证命令清单。脚本 SHALL 在 POSIX bash 环境（Linux / macOS / WSL）可运行且不触发任何编译命令的执行（只输出命令文本，不代替执行）。
+系统 SHALL 提供 `scripts/harness/change-scope.sh`，对给定 base ref（默认 `HEAD`）收集改动文件集合（committed/staged/unstaged/untracked，与 doc-impact.sh `changed_files()` 同口径），并按路径映射表输出建议执行的最小验证命令清单。脚本 SHALL 在 POSIX bash 环境（Linux / macOS / WSL）可运行且不触发任何编译命令的执行（只输出命令文本，不代替执行）。
 
 映射表 SHALL 按目录结构自动发现 domain 档位，无需硬编码白名单维护：
 
@@ -47,7 +47,7 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 
 ### Requirement: 机器可读输出（--json）
 
-`scripts/change-scope.sh --json` SHALL 输出合法 JSON（单行或多行均可），包含字段：
+`scripts/harness/change-scope.sh --json` SHALL 输出合法 JSON（单行或多行均可），包含字段：
 
 - `base`：实际使用的 base ref
 - `paths`：改动文件路径数组
@@ -110,9 +110,9 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 
 ### Requirement: 规则文本与判定命令一致
 
-AGENTS.md「测试只跑本次修改影响的包」段落及 `docs/reference/开发执行规范.md` 相应段落 SHALL 指向 `bash scripts/change-scope.sh` 作为权威判定方式，替代纯文字描述的自觉执行。
+AGENTS.md「测试只跑本次修改影响的包」段落及 `docs/reference/开发执行规范.md` 相应段落 SHALL 指向 `bash scripts/harness/change-scope.sh` 作为权威判定方式，替代纯文字描述的自觉执行。
 
 #### Scenario: 文档指向脚本
 
 - **WHEN** 开发者/agent 需确定本次改动应跑哪些测试
-- **THEN** AGENTS.md 与开发执行规范的相关段落可检索到 `scripts/change-scope.sh` 命令引用
+- **THEN** AGENTS.md 与开发执行规范的相关段落可检索到 `scripts/harness/change-scope.sh` 命令引用

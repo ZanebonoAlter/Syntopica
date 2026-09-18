@@ -2,7 +2,7 @@
 // 部分）+ handler 层（.dpg.cjs 经 createDevProcessGuard 工厂注入桩回放 I 节与 B 节 handler 部分）
 // + B-12 真实进程版（setsid bash trap "" TERM，Linux 本机真跑）。
 // 用例契约：openspec/changes/dev-process-guard/test-cases.md（本冒烟覆盖 §1/§2/§3/§5 共 72 条；
-// §4 SD 系列归 scripts/start-dev.smoke.sh，change 总数 82）。断言失败 exit 1。
+// §4 SD 系列归 scripts/dev/start-dev.smoke.sh，change 总数 82）。断言失败 exit 1。
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

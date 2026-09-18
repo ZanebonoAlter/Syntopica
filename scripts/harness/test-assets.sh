@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-assets.sh — capability 测试资产反向索引（test-case-design-standard 引入）
 #
-# 用法：bash scripts/test-assets.sh <capability>
+# 用法：bash scripts/harness/test-assets.sh <capability>
 #   <capability> 形如 scenario-trace-gate / case-first-testing（openspec/specs/ 下的目录名）
 #
 # 场景：新 change 改契约（MODIFIED/REMOVED Requirements）时回归走查（test-design.md 问句⓪）——
@@ -18,12 +18,12 @@
 # POSIX bash（Linux / macOS / WSL）可跑。不执行任何测试、不改任何文件。
 set -u
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 CAP="${1:-}"
 if [ -z "$CAP" ]; then
-	echo "用法: bash scripts/test-assets.sh <capability>  （如 scenario-trace-gate）"
+	echo "用法: bash scripts/harness/test-assets.sh <capability>  （如 scenario-trace-gate）"
 	exit 1
 fi
 

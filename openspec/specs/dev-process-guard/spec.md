@@ -78,7 +78,7 @@ TBD - created by archiving change dev-process-guard. Update Purpose after archiv
 
 ### Requirement: turn_end 软提醒
 
-扩展 SHALL 在 `turn_end` 检查当前存活的泄漏类进程（含窗口外历史遗留），存在时以 steer 消息**每会话至多一次**提醒：列出 pid/pgid/年龄/命令行，区分「本会话窗口内（会话结束将被自动清理）」与「历史遗留（需人工处置）」，并给出处理建议（经 `scripts/start-dev.sh` 接管或手动清理）；零泄漏时 MUST 零输出零记账。提醒事件记 `policy.decision`（decision=`orphan-warn`）。
+扩展 SHALL 在 `turn_end` 检查当前存活的泄漏类进程（含窗口外历史遗留），存在时以 steer 消息**每会话至多一次**提醒：列出 pid/pgid/年龄/命令行，区分「本会话窗口内（会话结束将被自动清理）」与「历史遗留（需人工处置）」，并给出处理建议（经 `scripts/dev/start-dev.sh` 接管或手动清理）；零泄漏时 MUST 零输出零记账。提醒事件记 `policy.decision`（decision=`orphan-warn`）。
 
 #### Scenario: 首次提醒后静默
 
@@ -92,7 +92,7 @@ TBD - created by archiving change dev-process-guard. Update Purpose after archiv
 
 ### Requirement: start-dev.sh pidfile 契约
 
-`scripts/start-dev.sh` SHALL：起后端/前端后把 setsid 会话首进程 PID（= PGID）写入 `.pi/run/backend.pgid` / `.pi/run/front.pgid`；`is_up` 跳过路径 MUST NOT 覆盖既有 pidfile；`stop`/`--restart` 的清理范围为「端口监听 PID（现有 lsof 路径）∪ pidfile 记录的进程组」，**端口未监听但 pidfile 进程组仍存活（僵尸栈）时也 MUST 执行组清理**；组清理先 TERM 后 KILL，完成后删除 pidfile；pidfile 缺失/损坏时按无主处理（删除，不报错）；`status` SHALL 显示 pidfile 接管状态。
+`scripts/dev/start-dev.sh` SHALL：起后端/前端后把 setsid 会话首进程 PID（= PGID）写入 `.pi/run/backend.pgid` / `.pi/run/front.pgid`；`is_up` 跳过路径 MUST NOT 覆盖既有 pidfile；`stop`/`--restart` 的清理范围为「端口监听 PID（现有 lsof 路径）∪ pidfile 记录的进程组」，**端口未监听但 pidfile 进程组仍存活（僵尸栈）时也 MUST 执行组清理**；组清理先 TERM 后 KILL，完成后删除 pidfile；pidfile 缺失/损坏时按无主处理（删除，不报错）；`status` SHALL 显示 pidfile 接管状态。
 
 #### Scenario: 起服务写 pidfile
 

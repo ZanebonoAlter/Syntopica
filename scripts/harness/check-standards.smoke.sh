@@ -2,8 +2,8 @@
 # check-standards.sh 参数范围冒烟：以独立最小 fixture 覆盖 F 段，绝不读取主工作区 active changes。
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE="$REPO_ROOT/scripts/check-standards.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SOURCE="$REPO_ROOT/scripts/harness/check-standards.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/check-standards-smoke.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -29,14 +29,14 @@ run_capture() {
 	RUN_OUTPUT="$output"
 }
 
-mkdir -p "$TMP/scripts" "$TMP/openspec/changes" \
+mkdir -p "$TMP/scripts/harness" "$TMP/openspec/changes" \
 	"$TMP/docs/reference/standard/frontend" \
 	"$TMP/docs/reference/standard/backend" \
 	"$TMP/docs/reference/standard/shared" \
 	"$TMP/docs/reference/flow" "$TMP/docs/reference/architecture" \
 	"$TMP/backend-go/internal/models" "$TMP/front/app/assets/css"
-cp "$SOURCE" "$TMP/scripts/check-standards.sh"
-chmod +x "$TMP/scripts/check-standards.sh"
+cp "$SOURCE" "$TMP/scripts/harness/check-standards.sh"
+chmod +x "$TMP/scripts/harness/check-standards.sh"
 
 # A/D/G 所需最小文档结构；AGENTS.md 聚合文件名，避免 fixture 受真实仓库状态影响。
 for f in \
@@ -105,7 +105,7 @@ The fixture SHALL validate with zero failures.
 SPEC
 
 # F 段专用可控替身：以 change basename 决定 verify 成败。
-cat >"$TMP/scripts/doc-impact.sh" <<'EOF'
+cat >"$TMP/scripts/harness/doc-impact.sh" <<'EOF'
 #!/usr/bin/env bash
 set -eu
 [ "${1:-}" = "verify" ] || exit 2
@@ -114,23 +114,23 @@ case "$(basename "${2:-}")" in
   *) exit 0 ;;
 esac
 EOF
-chmod +x "$TMP/scripts/doc-impact.sh"
+chmod +x "$TMP/scripts/harness/doc-impact.sh"
 for name in target-pass unrelated-fail target-fail; do
 	mkdir -p "$TMP/openspec/changes/$name"
 	printf '%s\n' '<!-- doc-impact: none(fixture) -->' >"$TMP/openspec/changes/$name/tasks.md"
 done
 
 # 无参必须仍遍历全部 active change，因此 unrelated-fail 令 F 段失败。
-run_capture '无参：全仓 F 段仍会报告无关 change 失败' nonzero bash scripts/check-standards.sh
+run_capture '无参：全仓 F 段仍会报告无关 change 失败' nonzero bash scripts/harness/check-standards.sh
 [[ "$RUN_OUTPUT" == *'doc-impact 失败 unrelated-fail'* ]] || bad '无参输出包含 unrelated-fail 的 F 段失败'
 
 # 带参数只选目标 F 段，不应被 unrelated-fail 阻断。
-run_capture '--change：目标通过时忽略无关 change F 段失败' zero bash scripts/check-standards.sh --change target-pass
+run_capture '--change：目标通过时忽略无关 change F 段失败' zero bash scripts/harness/check-standards.sh --change target-pass
 [[ "$RUN_OUTPUT" == *'doc-impact 通过 target-pass'* && "$RUN_OUTPUT" != *unrelated-fail* ]] \
 	&& ok '--change 输出仅包含目标 F 段结果' \
 	|| bad '--change F 段未严格限定到目标'
 
-run_capture '--change：目标自身 doc-impact 失败仍失败' nonzero bash scripts/check-standards.sh --change target-fail
+run_capture '--change：目标自身 doc-impact 失败仍失败' nonzero bash scripts/harness/check-standards.sh --change target-fail
 [[ "$RUN_OUTPUT" == *'doc-impact 失败 target-fail'* ]] \
 	&& ok '目标自身失败原因可见' \
 	|| bad '目标自身失败原因缺失'
@@ -141,7 +141,7 @@ for invocation in \
 	'--unknown' \
 	'--change nested/name'; do
 	# shellcheck disable=SC2086 # fixture invocation 固定，故意覆盖缺参/非法参。
-	run_capture "非法参数：$invocation 明确失败" nonzero bash scripts/check-standards.sh $invocation
+	run_capture "非法参数：$invocation 明确失败" nonzero bash scripts/harness/check-standards.sh $invocation
 	[[ "$RUN_OUTPUT" == *'错误'* || "$RUN_OUTPUT" == *'不存在'* ]] \
 		&& ok "非法参数：$invocation 输出中文错误" \
 		|| bad "非法参数：$invocation 未输出中文错误"
@@ -163,7 +163,7 @@ printf '%s\n' "- [${overdue}-traced-legacy](../openspec/changes/archive/${overdu
 	>>"$TMP/docs/reference/flow/reading.md"
 
 # 阶段 1：只放不该 FAIL 的三个（宽限内/已溯源/无 flow 豁免）→ 整体应 zero
-run_capture 'E 段宽限：宽限期内未溯源不 FAIL' zero bash scripts/check-standards.sh --change target-pass
+run_capture 'E 段宽限：宽限期内未溯源不 FAIL' zero bash scripts/harness/check-standards.sh --change target-pass
 [[ "$RUN_OUTPUT" != *"未溯源 ${within}-grace-legacy"* ]] \
 	&& ok 'E 段宽限期内 change 不输出未溯源' \
 	|| bad 'E 段宽限期内 change 被误报未溯源'
@@ -177,7 +177,7 @@ run_capture 'E 段宽限：宽限期内未溯源不 FAIL' zero bash scripts/chec
 # 阶段 2：加入超期未溯源 change → 整体 nonzero 且指向该 change
 mkdir -p "$ARCHIVE/${overdue}-overdue-legacy"
 : >"$ARCHIVE/${overdue}-overdue-legacy/tasks.md"
-run_capture 'E 段宽限：超期未溯源仍 FAIL' nonzero bash scripts/check-standards.sh --change target-pass
+run_capture 'E 段宽限：超期未溯源仍 FAIL' nonzero bash scripts/harness/check-standards.sh --change target-pass
 [[ "$RUN_OUTPUT" == *"未溯源 ${overdue}-overdue-legacy"* ]] \
 	&& ok 'E 段超期未溯源输出包含该 change 名' \
 	|| bad 'E 段超期未溯源 FAIL 缺失该 change 名'

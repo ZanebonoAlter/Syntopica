@@ -176,7 +176,7 @@ cd front && NUXT_PUBLIC_API_BASE=/api pnpm generate
 
 # 铺到后端静态目录 + 重启后端（同端口 :5100 出 API + 页面）
 rm -rf backend-go/frontend && cp -r front/.output/public backend-go/frontend
-bash scripts/start-dev.sh back --restart   # 或手动重启 go run
+bash scripts/dev/start-dev.sh back --restart   # 或手动重启 go run
 ```
 
 - 访问 `http://<pi-ip>:5100/`（API、WebSocket、feed 图标、静态页面同端口，与 Docker 部署形态一致）；代价是无 HMR，改前端代码须重新 generate + 拷贝。

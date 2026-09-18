@@ -2,7 +2,7 @@
 # scenario-trace.smoke.sh — scenario-trace.sh 的 fixture 冒烟自测（scenario-test-mapping-gate 1.1）
 #
 # 临时目录拼装 change 形状（specs/*.md + tasks.md），旁置真实被测脚本逐 case 断言
-# 退出码与关键输出。映射的「存在文件」用仓库内真实路径（scripts/doc-impact.sh 等），
+# 退出码与关键输出。映射的「存在文件」用仓库内真实路径（scripts/harness/doc-impact.sh 等），
 # 因为被测脚本按仓库根解析相对路径。
 #
 # case 清单（与 scenario-trace-gate spec 的 Scenario 对应）：
@@ -14,7 +14,7 @@
 #   ⑥ 验证节/映射表缺失 FAIL（a 无验证节 / b 无表头 / c tasks.md 不存在）
 #   ⑦ REMOVED 节 Scenario 不计入对账
 #
-# 用法：bash scripts/scenario-trace.smoke.sh   退出码：0 全过；1 有失败
+# 用法：bash scripts/harness/scenario-trace.smoke.sh   退出码：0 全过；1 有失败
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,8 +103,8 @@ cat > "$c/tasks.md" <<'TASKS'
 
 | Scenario | 测试文件 |
 | --- | --- |
-| 正常生成 | scripts/doc-impact.sh scripts/check-standards.sh |
-| 重名场景 | scripts/doc-impact.sh,scripts/change-scope.sh |
+| 正常生成 | scripts/harness/doc-impact.sh scripts/harness/check-standards.sh |
+| 重名场景 | scripts/harness/doc-impact.sh,scripts/harness/change-scope.sh |
 
 ## 3. 文档
 
@@ -142,7 +142,7 @@ cat > "$c/tasks.md" <<'TASKS'
 
 | Scenario | 测试文件 |
 | --- | --- |
-| 场景甲 | scripts/doc-impact.sh |
+| 场景甲 | scripts/harness/doc-impact.sh |
 TASKS
 run_trace "$c"
 check 1 "② 缺映射阻断（列出全部未映射标题）" "未映射" "场景乙" "场景丙"
@@ -299,7 +299,7 @@ cat > "$c/tasks.md" <<'TASKS'
 
 | Scenario | 测试文件 |
 | --- | --- |
-| 保留场景 | scripts/doc-impact.sh |
+| 保留场景 | scripts/harness/doc-impact.sh |
 TASKS
 run_trace "$c"
 check 0 "⑦ REMOVED 节 Scenario 不计入（已删场景无需映射）" "1 个 Scenario"

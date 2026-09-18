@@ -5,7 +5,7 @@ description: Syntopica harness 失败聚类复盘指南（.pi/harness/events.db 
 
 # harness-retro — 从事实账本产出改进项
 
-**一句话**：`bash scripts/harness-retro.sh` 把 `.pi/harness/events.db` 里的事件聚合成一份失败聚类报告；本 skill 讲怎么把报告读成**可回检的改进项**，而不是读成一堆数字。
+**一句话**：`bash scripts/harness/harness-retro.sh` 把 `.pi/harness/events.db` 里的事件聚合成一份失败聚类报告；本 skill 讲怎么把报告读成**可回检的改进项**，而不是读成一堆数字。
 
 前置知识（schema / payload 字段 / TTL / 采样记账协议）在 skill `harness-facts`，本 skill 不重复。
 
@@ -13,16 +13,16 @@ description: Syntopica harness 失败聚类复盘指南（.pi/harness/events.db 
 
 | 触发场景 | 跑法 |
 | --- | --- |
-| change 归档后（看这次改动有没有留下新噪声） | `bash scripts/harness-retro.sh --days 7` |
+| change 归档后（看这次改动有没有留下新噪声） | `bash scripts/harness/harness-retro.sh --days 7` |
 | 定期体检（如每周一次） | 同上；配合 `--save-baseline` 留快照 |
 | 怀疑某条软提醒 / 某条规则无效（"这事提醒了八百遍还在犯"） | `--days 7`，重点看第 ④ 段 |
 | 要改 harness 门禁或约束注入规则（准 A/B） | 改前 `--save-baseline`，改后 `--baseline`，对比同类指标 |
 | 排查"为啥最近老是红" | `--days 3`，重点看第 ①③⑤ 段 |
 
-## 用法（与 `bash scripts/harness-retro.sh --help` 一致）
+## 用法（与 `bash scripts/harness/harness-retro.sh --help` 一致）
 
 ```bash
-bash scripts/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
+bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
     [--warn-threshold N] [--json] [--save-baseline [PATH]] [--baseline [PATH]] [--help]
 ```
 

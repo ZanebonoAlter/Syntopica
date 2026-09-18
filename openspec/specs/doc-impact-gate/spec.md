@@ -7,7 +7,7 @@ TBD - created by archiving change docs-harness-consolidation. Update Purpose aft
 
 ### Requirement: 文档影响声明（apply 启动时）
 
-每个 openspec change 在 apply 启动时 SHALL 运行 `bash scripts/doc-impact.sh suggest` 获取预勾选菜单，并将确认后的文档域声明以机器可读注释写入 tasks.md「文档」节第一行：
+每个 openspec change 在 apply 启动时 SHALL 运行 `bash scripts/harness/doc-impact.sh suggest` 获取预勾选菜单，并将确认后的文档域声明以机器可读注释写入 tasks.md「文档」节第一行：
 
 ```markdown
 <!-- doc-impact: flow api configuration -->
@@ -28,7 +28,7 @@ TBD - created by archiving change docs-harness-consolidation. Update Purpose aft
 
 ### Requirement: 业务约束上下文获取（apply 前置）
 
-约束上下文 SHALL 由 `constraint-injection` extension 在 harness 层每 turn 自动注入 system prompt（见 `constraint-injection` capability），替代原 `bash scripts/doc-impact.sh context` 一次性命令。注入保持**双源**语义：
+约束上下文 SHALL 由 `constraint-injection` extension 在 harness 层每 turn 自动注入 system prompt（见 `constraint-injection` capability），替代原 `bash scripts/harness/doc-impact.sh context` 一次性命令。注入保持**双源**语义：
 
 - **业务规范（what，理解任务）**：按 change 文本/关键词命中 domain，注入相关 flow 文档**「业务约束与不变量」节**（节级提取，非全文；节尾附全文路径指引）。
 - **执行规范（how，写对代码）**：按 write/edit 路径（JIT）与 change 文本命中 standard 文档头 `doc-impact-applies` 标签，注入命中文档内容（已 spec 化文档可按 `## Requirements` 节提取，未 spec 化全文注入）。
@@ -57,12 +57,12 @@ TBD - created by archiving change docs-harness-consolidation. Update Purpose aft
 
 #### Scenario: context 子命令退役
 
-- **WHEN** 开发者执行 `bash scripts/doc-impact.sh context`
+- **WHEN** 开发者执行 `bash scripts/harness/doc-impact.sh context`
 - **THEN** 脚本提示该子命令已由 constraint-injection extension 取代（不静默失败），suggest/verify 行为不变
 
 ### Requirement: 归档前对账（verify）
 
-归档门禁 SHALL 运行 `bash scripts/doc-impact.sh verify <change-dir>` 对每个 active change 对账，以下任一条件 SHALL 判 FAIL：
+归档门禁 SHALL 运行 `bash scripts/harness/doc-impact.sh verify <change-dir>` 对每个 active change 对账，以下任一条件 SHALL 判 FAIL：
 
 - tasks.md 缺 `doc-impact` 声明注释
 - 声明的文档文件未出现在本 change 文档改动集合中
@@ -136,7 +136,7 @@ TBD - created by archiving change docs-harness-consolidation. Update Purpose aft
 
 ### Requirement: 归档命令硬门禁（spec-gate）
 
-pi 扩展 `.pi/extensions/spec-gate.ts` SHALL 拦截 bash 工具中匹配 `openspec archive` 的命令，在放行前强制执行四项检查：① `scripts/doc-impact.sh verify <change-dir>` 退出码为 0；② `scripts/check-standards.sh --change <change>` 无失败；③ 该 change 的 tasks.md 含「测试/文档/验证」尾三节及 doc-impact 标记；④ `scripts/scenario-trace.sh <change-dir>` 退出码为 0。`check-standards.sh --change <change>` SHALL 保留仓库级 A-E、G-H 标准检查，但 F 段只校验该目标 change 的 doc-impact，MUST NOT 因其他 active change 的 doc-impact 失败而失败。未传 `--change` 的手动 `check-standards.sh` SHALL 继续校验全部 active change。目标 change 不存在或自身 doc-impact 失败时，范围校验 MUST 失败并给出明确原因。任一失败 MUST block 并输出中文 reason（列失败项 + 修复指引）。豁免通道：命令显式带 `--force` 或环境变量 `SPEC_GATE_BYPASS=1`（MUST 记 warning，不得静默放行）。开关：`SPEC_GATE_ENABLE`（默认开启）。
+pi 扩展 `.pi/extensions/spec-gate.ts` SHALL 拦截 bash 工具中匹配 `openspec archive` 的命令，在放行前强制执行四项检查：① `scripts/harness/doc-impact.sh verify <change-dir>` 退出码为 0；② `scripts/harness/check-standards.sh --change <change>` 无失败；③ 该 change 的 tasks.md 含「测试/文档/验证」尾三节及 doc-impact 标记；④ `scripts/harness/scenario-trace.sh <change-dir>` 退出码为 0。`check-standards.sh --change <change>` SHALL 保留仓库级 A-E、G-H 标准检查，但 F 段只校验该目标 change 的 doc-impact，MUST NOT 因其他 active change 的 doc-impact 失败而失败。未传 `--change` 的手动 `check-standards.sh` SHALL 继续校验全部 active change。目标 change 不存在或自身 doc-impact 失败时，范围校验 MUST 失败并给出明确原因。任一失败 MUST block 并输出中文 reason（列失败项 + 修复指引）。豁免通道：命令显式带 `--force` 或环境变量 `SPEC_GATE_BYPASS=1`（MUST 记 warning，不得静默放行）。开关：`SPEC_GATE_ENABLE`（默认开启）。
 
 #### Scenario: 门禁未过时归档被拦截
 - **WHEN** agent 执行 `openspec archive <change>` 且目标 change 的 doc-impact 对账失败
@@ -155,7 +155,7 @@ pi 扩展 `.pi/extensions/spec-gate.ts` SHALL 拦截 bash 工具中匹配 `opens
 - **THEN** `check-standards.sh --change <目标change>` 返回非零，spec-gate 阻断归档并指向目标 change 的失败原因
 
 #### Scenario: 手动全仓巡检保持全量语义
-- **WHEN** 开发者不带参数执行 `bash scripts/check-standards.sh`
+- **WHEN** 开发者不带参数执行 `bash scripts/harness/check-standards.sh`
 - **THEN** F 段继续遍历全部 active change 并报告每个 change 的 doc-impact 状态
 
 #### Scenario: 归档目标不存在

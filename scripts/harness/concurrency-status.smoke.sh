@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # concurrency-status.smoke.sh — concurrency-status.sh 判定矩阵与只读安全（coordinate-concurrent-changes）
-# 用法：bash scripts/concurrency-status.smoke.sh
+# 用法：bash scripts/harness/concurrency-status.smoke.sh
 # fixture：临时 git 仓库 + 直建 events 表（脚本只读不校验魔数，绕过 logEvent 属预期）
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

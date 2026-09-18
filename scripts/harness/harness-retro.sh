@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # harness-retro.sh — harness 事实账本的失败聚类复盘报告（change: harness-retro-loop）
 #
-# 用法：bash scripts/harness-retro.sh [选项]
+# 用法：bash scripts/harness/harness-retro.sh [选项]
 #   --db PATH              目标账本（缺省 .pi/harness/events.db）
 #   --days N               统计窗口天数（缺省 7）
 #   --change NAME          只统计 change 列归属该值的事件（缺省全局）
@@ -26,7 +26,7 @@
 # 契约锚：openspec/changes/harness-retro-loop/specs/harness-retro-loop/spec.md
 set -u
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 SCRIPT_VERSION="1"
@@ -48,7 +48,7 @@ usage() {
 	cat <<'USAGE'
 harness-retro — harness 事实账本的失败聚类复盘报告（只读）
 
-用法: bash scripts/harness-retro.sh [选项]
+用法: bash scripts/harness/harness-retro.sh [选项]
 
   --db PATH               目标账本（缺省 .pi/harness/events.db）
   --days N                统计窗口天数（缺省 7；超过 30 天会提示 TTL 清扫风险）

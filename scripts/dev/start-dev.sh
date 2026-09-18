@@ -9,26 +9,26 @@
 #   2026-09-16 实际发生过一次：后端重启漏了 `export CORS_ORIGINS`，整个前端无法访问。
 #
 # 用法：
-#   bash scripts/start-dev.sh                # 起后端 + 前端（已在跑的不动）
-#   bash scripts/start-dev.sh front          # 只起前端（或 back 只起后端）
-#   bash scripts/start-dev.sh --restart      # 先停再起（等同于 stop + 起）
-#   bash scripts/start-dev.sh stop           # 停掉两者（stop back / stop front 只停一个）
-#   bash scripts/start-dev.sh status         # 看端口/PID/健康/入口地址
-#   bash scripts/start-dev.sh --help
+#   bash scripts/dev/start-dev.sh                # 起后端 + 前端（已在跑的不动）
+#   bash scripts/dev/start-dev.sh front          # 只起前端（或 back 只起后端）
+#   bash scripts/dev/start-dev.sh --restart      # 先停再起（等同于 stop + 起）
+#   bash scripts/dev/start-dev.sh stop           # 停掉两者（stop back / stop front 只停一个）
+#   bash scripts/dev/start-dev.sh status         # 看端口/PID/健康/入口地址
+#   bash scripts/dev/start-dev.sh --help
 #
 # 模式自动判定（可用环境变量覆盖）：
 #   装了同源入口（/etc/nginx/conf.d/syntopica.conf 存在）→ 前端 apiBase=「/api」，入口 http://<ip>/
 #   否则                                                → 前端 apiBase=http://<ip>:5100/api，入口 http://<ip>:3000
 #
 # 覆盖示例：
-#   NUXT_PUBLIC_API_BASE=/api CORS_ORIGINS=http://192.168.1.9:3000 bash scripts/start-dev.sh --restart front
+#   NUXT_PUBLIC_API_BASE=/api CORS_ORIGINS=http://192.168.1.9:3000 bash scripts/dev/start-dev.sh --restart front
 #
 # 日志：后端 → backend-go/nohup.out，前端 → front/nohup.out（`tail -f` 看即可）
 # 需要：Linux / macOS / WSL bash（Windows 原生按 docs/reference/development.md 的三步手动起）
 
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BACK_PORT=5100
 FRONT_PORT=3000
 NGINX_CONF=/etc/nginx/conf.d/syntopica.conf

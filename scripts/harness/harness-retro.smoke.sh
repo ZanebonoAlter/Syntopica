@@ -16,12 +16,12 @@
 #   I1 截断域名修复后 join 命中（substr 差一回归，harness-retro-sql-fixes）/ I2 jit-path 通道计入命中率 / I3 未识别通道显式计数且非 flow-doc 合法通道不误标 / I4 命中率=fixture 复算值（2/3=67%）
 #   J1 diag 含 command not found 归环境族（先于 %lint% 关键词族）/ J2 真实 lint 失败仍归 lint 族（两族并存各归各族）
 #
-# 用法：bash scripts/harness-retro.smoke.sh   退出码：0 全过；1 有失败
+# 用法：bash scripts/harness/harness-retro.smoke.sh   退出码：0 全过；1 有失败
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RETRO="$SCRIPT_DIR/harness-retro.sh"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

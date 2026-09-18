@@ -61,7 +61,7 @@
 | dsh 作用域加载确认 | 人工：**部分验证**——真实 Chrome 观察（evidence/live-smoke/dsh-ui-preset-observation-2026-09-09.md）：live preset 描述已生效、standard 无能源声明；**会话级工具目录未验**（不发 prompt 不触发模型下不可得），代码修复后挂载复验 |
 
 - `cmd.exe /C "cd /d D:\project\Syntopica\tools\energy-mcp && uv run --frozen python -m unittest discover -s tests -v"` → 0 failed（**2026-09-09 修复后**实测 100 tests OK skipped=1，详见 review-fixes.md）
-- `bash scripts/doc-impact.sh verify openspec/changes/connect-dsh-energy-data-sources` → 2026-09-09 实测：通过（声明 configuration，文件 1 个）
-- `bash scripts/check-standards.sh --change connect-dsh-energy-data-sources` → 2026-09-09 实测：通过 139 / 失败 0（含 A-D/F/G）
+- `bash scripts/harness/doc-impact.sh verify openspec/changes/connect-dsh-energy-data-sources` → 2026-09-09 实测：通过（声明 configuration，文件 1 个）
+- `bash scripts/harness/check-standards.sh --change connect-dsh-energy-data-sources` → 2026-09-09 实测：通过 139 / 失败 0（含 A-D/F/G）
 - `openspec validate connect-dsh-energy-data-sources` → 2026-09-09 实测：Change is valid
 - `diff config/dsh/presets/energy-research/agent.cordis.yml /mnt/c/Users/Admin/.dsh/.agent-presets/energy-research/agent.cordis.yml && diff config/dsh/presets/energy-research/preset.yml /mnt/c/Users/Admin/.dsh/.agent-presets/energy-research/preset.yml` → 零输出（2026-09-09 实测 IDENTICAL）

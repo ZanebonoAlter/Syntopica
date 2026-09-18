@@ -5,8 +5,8 @@
 # 与真实仓库的 .pi/run/。
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE="$REPO_ROOT/scripts/start-dev.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SOURCE="$REPO_ROOT/scripts/dev/start-dev.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/start-dev-smoke.XXXXXX")"
 
 # 现场兜底：杀掉本冒烟起过的所有假进程组（含意外路径），再删临时目录
@@ -25,12 +25,12 @@ bad() { printf '  [FAIL] %s\n' "$1" >&2; exit 1; } # 单点失败即终止并指
 
 # 副本构建：scripts/ 放进 $TMP 后，脚本内 REPO_ROOT（= scripts/..）解析为 $TMP，
 # pidfile 天然落在 $TMP/.pi/run/，与真实环境隔离。
-mkdir -p "$TMP/scripts"
-cp "$SOURCE" "$TMP/scripts/start-dev.sh"
-sed -i 's/^BACK_PORT=5100$/BACK_PORT=15901/; s/^FRONT_PORT=3000$/FRONT_PORT=15902/' "$TMP/scripts/start-dev.sh"
-grep -q '^BACK_PORT=15901$' "$TMP/scripts/start-dev.sh" || bad '前置：副本端口替换失败（BACK_PORT）'
-grep -q '^FRONT_PORT=15902$' "$TMP/scripts/start-dev.sh" || bad '前置：副本端口替换失败（FRONT_PORT）'
-RUN="$TMP/scripts/start-dev.sh"
+mkdir -p "$TMP/scripts/dev"
+cp "$SOURCE" "$TMP/scripts/dev/start-dev.sh"
+sed -i 's/^BACK_PORT=5100$/BACK_PORT=15901/; s/^FRONT_PORT=3000$/FRONT_PORT=15902/' "$TMP/scripts/dev/start-dev.sh"
+grep -q '^BACK_PORT=15901$' "$TMP/scripts/dev/start-dev.sh" || bad '前置：副本端口替换失败（BACK_PORT）'
+grep -q '^FRONT_PORT=15902$' "$TMP/scripts/dev/start-dev.sh" || bad '前置：副本端口替换失败（FRONT_PORT）'
+RUN="$TMP/scripts/dev/start-dev.sh"
 PIDDIR="$TMP/.pi/run"
 
 RUN_OUTPUT=""

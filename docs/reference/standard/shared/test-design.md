@@ -40,7 +40,7 @@ doc-impact-applies: openspec/changes/, _test.go, .spec.ts, .test.ts | section=JI
 
 仅当本 change 的 delta specs 含 **MODIFIED / REMOVED Requirements** 时必答，纯新增 capability 豁免。
 
-改契约时旧测试可能仍在断言旧契约——**跑绿 ≠ 对**。用 `bash scripts/test-assets.sh <capability>` 反查旧资产（主 specs 现状节拍 / archive 历史含 test-cases*.md 的 change / 历史 Scenario→测试文件映射），然后在 test-cases.md 填「继承与调整」表，逐行处置才算验收：
+改契约时旧测试可能仍在断言旧契约——**跑绿 ≠ 对**。用 `bash scripts/harness/test-assets.sh <capability>` 反查旧资产（主 specs 现状节拍 / archive 历史含 test-cases*.md 的 change / 历史 Scenario→测试文件映射），然后在 test-cases.md 填「继承与调整」表，逐行处置才算验收：
 
 | 旧 Scenario | 处置 | 旧测试文件 | 动作 |
 | --- | --- | --- | --- |
@@ -144,7 +144,7 @@ UI 故事必检前三项可用性变体（误输入反馈 / 空态 / 错误态�
 **单元**：测试单元 = 一个 Requirement 的用户故事，**由 change 目录 test-cases.md 串成完整故事**（spec Scenario 只是断言片段）：主链路表串节拍（步/动作/来源 Scenario/期望/层/落点）+ 变体走查 + 效果核对 + 白盒附加。涉及行为的 change 必须有 test-cases.md（纯文档/工具链豁免）。双轨：方法单测允许（快反馈），交付账本在故事层——故事绿才算交付。
 
 **五问句**：
-0. **⓪ 改契约了吗**（仅 MODIFIED/REMOVED Requirements 时）——旧测试可能仍断言旧契约，跑绿≠对：`bash scripts/test-assets.sh <capability>` 反查旧资产，test-cases.md 填「继承与调整」表（旧Scenario×处置×旧测试×动作）逐行处置
+0. **⓪ 改契约了吗**（仅 MODIFIED/REMOVED Requirements 时）——旧测试可能仍断言旧契约，跑绿≠对：`bash scripts/harness/test-assets.sh <capability>` 反查旧资产，test-cases.md 填「继承与调整」表（旧Scenario×处置×旧测试×动作）逐行处置
 1. **节拍全吗**——每 Scenario 有落点；SHALL NOT 有负向节拍；外部依赖失败有答案；无自动化→「人工…」留痕
 2. **变体走查**——五组固定清单，每变体有明确答案，不适用划除留痕：
    - 输入：空串｜纯空白(全角/tab)｜纯分隔符(单/连/首/尾)｜单token｜大小写｜特殊字符｜超长

@@ -5,7 +5,7 @@
 # 按目录自动发现的三档映射输出建议命令。只输出命令文本，不代替执行。
 #
 # 用法：
-#   bash scripts/change-scope.sh [--base <ref>] [--json]
+#   bash scripts/harness/change-scope.sh [--base <ref>] [--json]
 #     --base   base ref，默认 HEAD（工作区视角，匹配 turn_end「本轮编辑未提交」场景）
 #     --json   机器可读输出 {base, paths[], testTargets[{cmd,tier}], notices[]}（quality-gate 消费）
 #
@@ -27,7 +27,7 @@
 
 set -u
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 # ---------------------------------------------------------------------------

@@ -223,7 +223,7 @@ try {
 		const tEm = mktmp(); tmps.push(tEm);
 		const gEm = makeGatePi(async (cmd, args) => {
 			const r = await passExec(cmd, args);
-			if (cmd === 'bash' && args[0] === 'scripts/concurrency-status.sh') {
+			if (cmd === 'bash' && args[0] === 'scripts/harness/concurrency-status.sh') {
 				return { code: 2, stdout: '{"foreignFiles":["b.go"],"changes":{"b.go":"bar"}}', stderr: '' };
 			}
 			return r;
@@ -240,7 +240,7 @@ try {
 		const tEm3 = mktmp(); tmps.push(tEm3);
 		const gEm3 = makeGatePi(async (cmd, args) => {
 			const r = await passExec(cmd, args);
-			if (cmd === 'bash' && args[0] === 'scripts/concurrency-status.sh') return { code: 3, stdout: '', stderr: '' };
+			if (cmd === 'bash' && args[0] === 'scripts/harness/concurrency-status.sh') return { code: 3, stdout: '', stderr: '' };
 			return r;
 		});
 		require('./.sgate.cjs').default(gEm3.pi);
@@ -258,12 +258,12 @@ try {
 		require('./.sgate.cjs').default(gF.pi);
 		const rF = await runGate(gF, 'openspec archive scoped-change', tF);
 		check('非 bypass 归档 → check-standards 携带 --change scoped-change',
-			rF === undefined && scopeCalls.some((args) => args.join('\u0000') === 'scripts/check-standards.sh\u0000--change\u0000scoped-change'));
+			rF === undefined && scopeCalls.some((args) => args.join('\u0000') === 'scripts/harness/check-standards.sh\u0000--change\u0000scoped-change'));
 
 		// 7g. 目标范围 standards 自身失败仍须阻断归档。
 		const tG = mktmp(); tmps.push(tG);
 		const gG = makeGatePi(async (cmd, args) => {
-			if (cmd === 'bash' && args[0] === 'scripts/check-standards.sh') return { code: 1, stdout: '', stderr: 'target standards failure' };
+			if (cmd === 'bash' && args[0] === 'scripts/harness/check-standards.sh') return { code: 1, stdout: '', stderr: 'target standards failure' };
 			return passExec(cmd, args);
 		});
 		require('./.sgate.cjs').default(gG.pi);

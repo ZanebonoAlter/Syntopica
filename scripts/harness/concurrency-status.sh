@@ -6,12 +6,12 @@
 # 仅在 Agent 主动查询 / spec-gate 检查⑤' / 编排六步派发前以命令输出形态出现。
 #
 # 用法：
-#   bash scripts/concurrency-status.sh [change]           人读三段输出
+#   bash scripts/harness/concurrency-status.sh [change]           人读三段输出
 #     ① 活跃 change 清单（名称、绑定 session、最近活动、归属文件数）
 #     ② git 脏文件 × 归属地图对照（归属本 change / 归属其他 active change /
 #        无归属三类分列，冲突文件带 ⚠ 标记）
 #     ③ 近 6h gate.check 验证流水摘要（最多 20 条）
-#   bash scripts/concurrency-status.sh --check <change>    机器可读（spec-gate 检查⑤'数据源）
+#   bash scripts/harness/concurrency-status.sh --check <change>    机器可读（spec-gate 检查⑤'数据源）
 #     exit 0 = 干净（无脏文件 / 脏文件全归属本 change）
 #     exit 2 = 存在归属其他 active change 的未 commit 脏文件（stdout 一行 JSON）
 #     exit 3 = 冷启动跳过（全部脏文件无归属 / sqlite3 或库不可用 / 参数缺失）
@@ -227,7 +227,7 @@ cmd_human() {
 case "${1:-}" in
 --check)
 	if [ $# -lt 2 ] || [ -z "${2:-}" ]; then
-		echo "用法: bash scripts/concurrency-status.sh --check <change>" >&2
+		echo "用法: bash scripts/harness/concurrency-status.sh --check <change>" >&2
 		exit 3
 	fi
 	cmd_check "$2"

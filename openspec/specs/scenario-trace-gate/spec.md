@@ -7,7 +7,7 @@
 
 ### Requirement: Scenario→测试映射对账脚本
 
-系统 SHALL 提供 `scripts/scenario-trace.sh <change-dir>`（change-dir 形如 `openspec/changes/<name>`），对单个 openspec change 做归档前对账：只做静态判定，不执行任何测试或编译命令。对账范围为 change delta specs（`<change-dir>/specs/**/*.md`）中 ADDED / MODIFIED / RENAMED Requirements 节下的全部 `#### Scenario:` 标题；REMOVED Requirements 节下的 Scenario 不计入（删除的场景不再需要测试保障）。脚本 SHALL 在 POSIX bash 环境（Linux / macOS / WSL）可运行，退出码 0=通过、1=有失败，失败输出为中文并逐条列出原因。
+系统 SHALL 提供 `scripts/harness/scenario-trace.sh <change-dir>`（change-dir 形如 `openspec/changes/<name>`），对单个 openspec change 做归档前对账：只做静态判定，不执行任何测试或编译命令。对账范围为 change delta specs（`<change-dir>/specs/**/*.md`）中 ADDED / MODIFIED / RENAMED Requirements 节下的全部 `#### Scenario:` 标题；REMOVED Requirements 节下的 Scenario 不计入（删除的场景不再需要测试保障）。脚本 SHALL 在 POSIX bash 环境（Linux / macOS / WSL）可运行，退出码 0=通过、1=有失败，失败输出为中文并逐条列出原因。
 
 #### Scenario: 映射齐全通过
 
@@ -50,7 +50,7 @@ tasks.md 的「`## <数字>. 验证`」节（与 spec-gate 尾三节同款锚定
 
 ### Requirement: 归档门禁集成（spec-gate 检查④）
 
-`openspec archive` 前置门禁 SHALL 在既有三项检查（doc-impact verify / check-standards / tasks.md 尾三节）之外新增第四项：`bash scripts/scenario-trace.sh <changeDir>` 退出码 0。该项与前三项各自独立判定、任一失败即阻断归档，失败输出与修复指引并入既有 reason 格式。逃生口沿用 `--force` 与 `SPEC_GATE_BYPASS=1`（放行且 warning 留痕），不新增豁免机制；存量 in-flight change 不豁免。
+`openspec archive` 前置门禁 SHALL 在既有三项检查（doc-impact verify / check-standards / tasks.md 尾三节）之外新增第四项：`bash scripts/harness/scenario-trace.sh <changeDir>` 退出码 0。该项与前三项各自独立判定、任一失败即阻断归档，失败输出与修复指引并入既有 reason 格式。逃生口沿用 `--force` 与 `SPEC_GATE_BYPASS=1`（放行且 warning 留痕），不新增豁免机制；存量 in-flight change 不豁免。
 
 #### Scenario: 归档时自动对账
 

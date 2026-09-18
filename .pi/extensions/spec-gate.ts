@@ -4,13 +4,13 @@
  * 设计决策（见 docs/reference/开发执行规范.md §11 归档门禁、§4.1 门禁分层表）：
  * 1. 挂 tool_call，仅 bash 命令命中 `openspec archive` 时介入；其余工具调用零开销直接放行
  * 2. 五项 block 级检查各自独立判定、不强制顺序（任一失败即 block）：
- *    ① `bash scripts/doc-impact.sh verify openspec/changes/<name>` 退出码 0
- *    ② `bash scripts/check-standards.sh --change <name>` 退出码 0（F 段只对账归档目标）
+ *    ① `bash scripts/harness/doc-impact.sh verify openspec/changes/<name>` 退出码 0
+ *    ② `bash scripts/harness/check-standards.sh --change <name>` 退出码 0（F 段只对账归档目标）
  *    ③ `<changeDir>/tasks.md` 含尾三节（「## N. 测试」「## N. 文档」「## N. 验证」各自独立
  *       命中一次，顺序不限）且含 `<!-- doc-impact:` 声明标记
- *    ④ `bash scripts/scenario-trace.sh <changeDir>` 退出码 0（Scenario→测试映射对账，
+ *    ④ `bash scripts/harness/scenario-trace.sh <changeDir>` 退出码 0（Scenario→测试映射对账，
  *       scenario-test-mapping-gate 引入，格式约定见 openspec/specs/scenario-trace-gate）
- *    ⑤' `bash scripts/concurrency-status.sh --check <name>` 退出码 2 → warn 级提醒
+ *    ⑤' `bash scripts/harness/concurrency-status.sh --check <name>` 退出码 2 → warn 级提醒
  *       （coordinate-concurrent-changes：树上存在归属其他 active change 的未 commit 文件；
  *       exit 3 冷启动/库不可用零输出，绝不 block——归属是启发式，误 block 会卡死正常归档）
  *    ④' UI 验收证据检查（make-ui-design-first-class）：新 schema（syntopica-ui）change
@@ -121,13 +121,13 @@ async function gateArchive(
 	const failures: string[] = [];
 	const failedChecks: string[] = [];
 
-	const verify = await runScript(pi, ctx, ["scripts/doc-impact.sh", "verify", changeDir]);
+	const verify = await runScript(pi, ctx, ["scripts/harness/doc-impact.sh", "verify", changeDir]);
 	if (!verify.ok) {
 		failures.push(`[doc-impact verify ${changeDir}] ${verify.detail}`);
 		failedChecks.push("doc-impact");
 	}
 
-	const standards = await runScript(pi, ctx, ["scripts/check-standards.sh", "--change", name]);
+	const standards = await runScript(pi, ctx, ["scripts/harness/check-standards.sh", "--change", name]);
 	if (!standards.ok) {
 		failures.push(`[check-standards] ${standards.detail}`);
 		failedChecks.push("standards");
@@ -139,7 +139,7 @@ async function gateArchive(
 		failedChecks.push("tasks");
 	}
 
-	const trace = await runScript(pi, ctx, ["scripts/scenario-trace.sh", changeDir]);
+	const trace = await runScript(pi, ctx, ["scripts/harness/scenario-trace.sh", changeDir]);
 	if (!trace.ok) {
 		failures.push(`[scenario-trace] ${trace.detail}`);
 		failedChecks.push("trace");
@@ -165,12 +165,12 @@ async function gateArchive(
 	// 3.5 检查⑤'：归档并发（coordinate-concurrent-changes，warn 级绝不 block）——树上
 	//     存在归属其他 active change 的未 commit 文件时 steer 提醒（先拆 commit 或与对方
 	//     协调收口）；exit 0 干净 / 3 冷启动跳过零输出；脚本异常 fail-open 零干预。
-	const conc = await runScript(pi, ctx, ["scripts/concurrency-status.sh", "--check", name]);
+	const conc = await runScript(pi, ctx, ["scripts/harness/concurrency-status.sh", "--check", name]);
 	if (conc.code === 2) {
 		console.warn(`[spec-gate] ${name} 归档时树上存在归属其他 active change 的未 commit 文件（warn 不 block）`);
 		warn(
 			pi,
-			`⚠️ [spec-gate] 检查⑤'（warn 级，不影响归档裁决）：树上存在归属其他 active change 的未 commit 文件：\n${conc.detail}\n建议：按归属地图先拆主体 commit（bash scripts/concurrency-status.sh <change> 看人读态势），或与对方 change 协调收口时序`,
+			`⚠️ [spec-gate] 检查⑤'（warn 级，不影响归档裁决）：树上存在归属其他 active change 的未 commit 文件：\n${conc.detail}\n建议：按归属地图先拆主体 commit（bash scripts/harness/concurrency-status.sh <change> 看人读态势），或与对方 change 协调收口时序`,
 		);
 		auditPolicy(ctx, name, {
 			policy: "spec-gate",
@@ -448,7 +448,7 @@ function buildBlockReason(name: string, failures: string[]): string {
 		"- check-standards：按输出逐项修复（docs/reference/standard 结构约束）",
 		"- tasks.md 尾三节：补齐「## N. 测试」「## N. 文档」「## N. 验证」三节 + doc-impact 声明标记后重试",
 		"- scenario-trace：在 tasks.md「N. 验证」节补 | Scenario | 测试文件 | 映射表（每行一个 delta Scenario 标题 + 仓库根相对测试路径或「人工…」说明）；无 delta Scenario 的 change 直接通过",
-		"- 归档撞见非本 change 的红测试：用 `bash scripts/test-patrol.sh --register <test_id> --context <本change名>` 登记台账（或用 --report 确认已在账），在验证节记一句「已记账」后可继续——本 change 影响包内的红不适用该通道，必须修复（test-debt-patrol）",
+		"- 归档撞见非本 change 的红测试：用 `bash scripts/harness/test-patrol.sh --register <test_id> --context <本change名>` 登记台账（或用 --report 确认已在账），在验证节记一句「已记账」后可继续——本 change 影响包内的红不适用该通道，必须修复（test-debt-patrol）",
 		"- UI 验收证据：major 需 ui-approval: approved + 原型存在 + tasks 验证节含 opencli 与 1440×900/1920×1080 证据 + ui-design.md 差异说明；minor 需验收映射；none 需 N/A 一致性",
 		"- 确认要跳过检查：命令加 --force 或设 SPEC_GATE_BYPASS=1（豁免会记 warning 留痕）",
 	].join("\n");

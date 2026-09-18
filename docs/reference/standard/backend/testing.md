@@ -240,15 +240,15 @@ go test ./internal/topicgraph/repository -run TestName -v    # 单个测试
 全量 `-short` 在树莓派上只值 **42 秒**（2026-09-17 实测，warm build cache；39 包 ok / 11 包无测试文件），因此后端巡检不需要拆细：
 
 ```bash
-bash scripts/test-patrol.sh --shard be-all        # 整片：go test -short -count=1 ./internal/... ./cmd/...（≈42s）
-bash scripts/test-patrol.sh                       # 默认：按「最久未巡优先」跑一片
-bash scripts/test-patrol.sh --shard be-reader     # 指定单片（±5~33s）
-bash scripts/test-patrol.sh --report              # 台账汇总（欠账清单 + 分片进度）
+bash scripts/harness/test-patrol.sh --shard be-all        # 整片：go test -short -count=1 ./internal/... ./cmd/...（≈42s）
+bash scripts/harness/test-patrol.sh                       # 默认：按「最久未巡优先」跑一片
+bash scripts/harness/test-patrol.sh --shard be-reader     # 指定单片（±5~33s）
+bash scripts/harness/test-patrol.sh --report              # 台账汇总（欠账清单 + 分片进度）
 ```
 
 - 轮转分片 6 片：`be-admin`／`be-dataenrichment`／`be-reader`／`be-tagmanagement`／`be-topicgraph`／`be-skeleton`（platform+models+app+cmd 合并），实测单片 3~33s（`survey.md` §2）；`be-all` 不入轮转，仅显式指定。
 - 巡检命令固定 `-short -count=1`：`-short` 跳过 DB 集成（无需 Docker），`-count=1` 绕过结果缓存、每次真跑。**集成测试（`go test ./...`）不在巡检范围内**，仍是已知盲区（见《开发执行规范》§6）。
-- 分片结果写 `patrol.check` 事件 + `test_debt` 台账；撞见非本 change 红 → `bash scripts/test-patrol.sh --register <test_id> --context <change名>`（归档纪律见 §11.4）。
+- 分片结果写 `patrol.check` 事件 + `test_debt` 台账；撞见非本 change 红 → `bash scripts/harness/test-patrol.sh --register <test_id> --context <change名>`（归档纪律见 §11.4）。
 
 ## 资料来源
 

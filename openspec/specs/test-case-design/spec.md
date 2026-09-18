@@ -137,7 +137,7 @@
 
 涉及 MODIFIED / REMOVED Requirements 的 change（改契约）SHALL 在其 test-cases.md 含「继承与调整」表：每行 = 旧 Scenario × 处置（继承照跑 / 改语义改断言 / 废止删除留痕）× 旧测试文件 × 动作；验收锚点为表逐行有处置（跑绿 ≠ 对，旧测试可能仍在断言旧契约）。纯新增 capability 的 change SHALL 豁免（无旧节拍可继承，不报缺失）。
 
-仓库 SHALL 提供 `scripts/test-assets.sh <capability>` 反向索引（只读只判不猜）：①主 specs 该 capability 的 Requirement/Scenario 现状清单；②archive 中含该 capability delta 且含 test-cases*.md 的历史 change；③这些 change 的 tasks.md 验证节 Scenario→测试文件映射重建。查询不存在的 capability SHALL 退出码非 0 且如实提示（不猜测）。
+仓库 SHALL 提供 `scripts/harness/test-assets.sh <capability>` 反向索引（只读只判不猜）：①主 specs 该 capability 的 Requirement/Scenario 现状清单；②archive 中含该 capability delta 且含 test-cases*.md 的历史 change；③这些 change 的 tasks.md 验证节 Scenario→测试文件映射重建。查询不存在的 capability SHALL 退出码非 0 且如实提示（不猜测）。
 
 「JIT 注入摘要」节 SHALL 含回归走查提醒（触发条件 + 继承表 + test-assets.sh 指引）。
 
@@ -154,7 +154,7 @@
 
 #### Scenario: 反向索引三段输出
 
-- **WHEN** 对存在历史的主 capability 执行 `bash scripts/test-assets.sh <capability>`
+- **WHEN** 对存在历史的主 capability 执行 `bash scripts/harness/test-assets.sh <capability>`
 - **THEN** SHALL 输出主 specs 现状节拍 + archive 命中 change 清单 + 历史映射重建三段，退出码 0
 
 #### Scenario: 查询不存在即报错

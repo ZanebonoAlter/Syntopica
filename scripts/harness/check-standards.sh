@@ -11,12 +11,12 @@
 #   I. 主 spec 结构校验（openspec validate --specs 全量零失败，fix-legacy-spec-format 引入；
 #      存量格式债清零后作为真护栏：sync 写坏主 spec 会被归档门禁 ② block）
 #
-# 用法： bash scripts/check-standards.sh [--change <changeName>]
+# 用法： bash scripts/harness/check-standards.sh [--change <changeName>]
 # 退出码：0 全过；1 有失败或参数非法。
 
 set -u
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 # --change 仅收窄 F 段（active change 的 doc-impact 对账）；其余 A-E/G-H 仍全仓运行。
@@ -27,7 +27,7 @@ if [ "$#" -eq 0 ]; then
 elif [ "$#" -eq 2 ] && [ "$1" = "--change" ]; then
 	CHANGE_NAME="$2"
 	if [ -z "$CHANGE_NAME" ]; then
-		echo "错误：--change 缺少 change 名称。用法：bash scripts/check-standards.sh [--change <changeName>]" >&2
+		echo "错误：--change 缺少 change 名称。用法：bash scripts/harness/check-standards.sh [--change <changeName>]" >&2
 		exit 1
 	fi
 	case "$CHANGE_NAME" in
@@ -46,9 +46,9 @@ elif [ "$#" -eq 2 ] && [ "$1" = "--change" ]; then
 	fi
 else
 	if [ "${1:-}" = "--change" ]; then
-		echo "错误：--change 必须且只能携带一个 change 名称。用法：bash scripts/check-standards.sh [--change <changeName>]" >&2
+		echo "错误：--change 必须且只能携带一个 change 名称。用法：bash scripts/harness/check-standards.sh [--change <changeName>]" >&2
 	else
-		echo "错误：未知参数：${1:-}。用法：bash scripts/check-standards.sh [--change <changeName>]" >&2
+		echo "错误：未知参数：${1:-}。用法：bash scripts/harness/check-standards.sh [--change <changeName>]" >&2
 	fi
 	exit 1
 fi
@@ -210,7 +210,7 @@ echo ""
 echo "== F. doc-impact 声明对账（见《开发执行规范》§11.4）=="
 # 只校验已声明 doc-impact 的 change（本 capability 首次引入于 docs-harness-consolidation，
 # 此前的 active change 无声明属正常，跳过；新 change 声明了才对账）。
-if [ -f scripts/doc-impact.sh ]; then
+if [ -f scripts/harness/doc-impact.sh ]; then
 	if [ -n "$CHANGE_NAME" ]; then
 		change_dirs=("openspec/changes/$CHANGE_NAME/")
 	else
@@ -222,17 +222,17 @@ if [ -f scripts/doc-impact.sh ]; then
 		[ "$name" = "archive" ] && continue
 		# 过渡期：未声明 doc-impact 的旧 change 跳过
 		if [ -f "$d/tasks.md" ] && grep -q '<!-- doc-impact:' "$d/tasks.md" 2>/dev/null; then
-			if bash scripts/doc-impact.sh verify "$d" >/dev/null 2>&1; then
+			if bash scripts/harness/doc-impact.sh verify "$d" >/dev/null 2>&1; then
 				ok "doc-impact 通过 $name"
 			else
-				fail "doc-impact 失败 $name（跑 bash scripts/doc-impact.sh verify $d 看详情）"
+				fail "doc-impact 失败 $name（跑 bash scripts/harness/doc-impact.sh verify $d 看详情）"
 			fi
 		else
 			ok "跳过 $name（未声明 doc-impact）"
 		fi
 	done
 else
-	fail "scripts/doc-impact.sh 不存在，F 段无法运行"
+	fail "scripts/harness/doc-impact.sh 不存在，F 段无法运行"
 fi
 
 echo ""

@@ -27,9 +27,11 @@ harness 层事实账本：以 `.pi/harness/events.db`（单表 append-only SQLit
 
 ### Requirement: 事件类型词汇与保留期
 
-事实库 SHALL 支持十一类事件：`session.start`（90 天）、`constraint.inject`（30 天）、`pin.write`（永久）、`pin.read`（30 天）、`gate.check`（30 天）、`subagent.dispatch`（30 天）、`subagent.complete`（30 天）、`mode.set`（30 天）、`spill.write`（30 天）、`policy.decision`（30 天）、`edit.map`（30 天）。每条事件 MUST 携带单调递增 id、ISO 8601 UTC 时间戳、session_id、kind，change 列可空。开库时 MUST 按 kind 分保留期清扫过期行；库文件超过 100MB 时 MUST 触发删最老一半的保险丝。除 TTL 清扫与保险丝外 MUST NOT 修改或删除既有事件（完成回填以追加新事件表达，MUST NOT 改写既有 dispatch 行）。
+事实库 SHALL 支持十二类事件：`session.start`（90 天）、`session.rollup`（90 天）、`constraint.inject`（30 天）、`pin.write`（永久）、`pin.read`（30 天）、`gate.check`（30 天）、`subagent.dispatch`（30 天）、`subagent.complete`（30 天）、`mode.set`（30 天）、`spill.write`（30 天）、`policy.decision`（30 天）、`edit.map`（30 天）。每条事件 MUST 携带单调递增 id、ISO 8601 UTC 时间戳、session_id、kind，change 列可空。开库时 MUST 按 kind 分保留期清扫过期行；库文件超过 100MB 时 MUST 触发删最老一半的保险丝。除 TTL 清扫与保险丝外 MUST NOT 修改或删除既有事件（完成回填以追加新事件表达，MUST NOT 改写既有 dispatch 行）。
 
 `edit.map` 事件由 quality-gate 在 turn_end 聚合追加：change 列为会话绑定的 change，payload 含该 change 累计编辑路径集合；聚合语义（冲突标记、无档会话不计入）见 `concurrent-change-coordination` capability。
+
+`session.rollup` 事件由 harness-telemetry 追加快照：change 列为快照写入时刻会话绑定的 change（可空）；查询侧对同一 session_id MUST 取最新一条作为终值（中间快照不参与聚合），语义对齐 `edit.map` 的快照覆盖取终值约定。
 
 #### Scenario: TTL 分级清扫
 
@@ -61,9 +63,45 @@ harness 层事实账本：以 `.pi/harness/events.db`（单表 append-only SQLit
 - **WHEN** 绑定 change 的会话在 turn_end 检出新增/变化编辑路径
 - **THEN** events.db 新增一条 kind 为 `edit.map` 的事件行（change 列为绑定 change，payload 含累计路径集合）；31 天后被 TTL 清扫，既有数据库无需 schema 迁移
 
+#### Scenario: session.rollup 随词汇扩展落库
+
+- **WHEN** 会话 turn_end 满足 rollup 节流条件
+- **THEN** events.db 新增一条 kind 为 `session.rollup` 的事件行（payload 契约见「session 效能汇总记账」）；91 天后被 TTL 清扫，既有数据库无需 schema 迁移
+
+### Requirement: session 效能汇总记账（session.rollup）
+
+harness-telemetry SHALL 从 pi 的 session jsonl 提取单会话效能汇总并写入 `session.rollup` 快照事件：payload MUST 含 `turns`（user 轮数）、`steps`（assistant 消息数）、`toolCalls`（工具结果数）、`tokens`（input/output/cacheRead/cacheWrite/total 五值）、`cost`（元，可空）、`durationSec`、`model`、`final`（布尔，终值标记）。写入路径有二：① turn_end 节流快照（节流条件实现自定义，但 MUST 保证会话最后一条快照与终值偏差有界）；② session_start 时回填 prev session（session.start payload 的 prev 指向的 jsonl 仍存在且账本中该 session 无 `final=true` 快照时，补写一条 `final=true` 终值）。jsonl 缺失、损坏或解析失败 MUST 零写入并 fail-open（不阻断任何扩展钩子），仅旁路告警。
+
+#### Scenario: turn_end 节流快照落库
+
+- **WHEN** 会话内 turn_end 多次触发且满足节流条件
+- **THEN** 每次命中节流条件追加一条快照（`final=false`），payload 数值随会话推进单调不减（tokens 累计口径）
+
+#### Scenario: 同 session 取最新一条即终值
+
+- **WHEN** 同一 session_id 存在多条 session.rollup 快照
+- **THEN** 查询侧聚合（含 retro 报告）仅取最新一条的数值，不累加中间快照
+
+#### Scenario: session_start 回填 prev 终值
+
+- **WHEN** 新会话启动且 prev session 的 jsonl 存在、账本中该 session 无 `final=true` 快照
+- **THEN** 追加一条该 prev session 的 `final=true` 快照事件（session_id 为 prev 的 id，change 列可空）；prev jsonl 不存在时零写入
+
+#### Scenario: 解析失败 fail-open
+
+- **WHEN** session jsonl 不存在或某行不可解析
+- **THEN** 不写入 rollup、不抛出、不阻断当次钩子的其余逻辑，仅 console 旁路告警
+
+#### Scenario: rollup 不改写既有事件
+
+- **WHEN** 回填 prev 终值时该 session 已有中间快照
+- **THEN** 以追加新事件表达终值，既有快照行内容不变
+
 ### Requirement: 策略显著裁决统一记账
 
 spec-gate、quota-gate、test-scope-guard SHALL 将显著裁决追加为 `policy.decision` 事件；quality-gate 的 interop 探测短路 SHALL 作为其唯一的 policy.decision 场景追加（action=fail-open，reasonCode=interop-down）。payload MUST 含 `policy`、`action`、`reasonCode`：`policy` 限定为稳定扩展标识，`action` 限定为 `block | warn | bypass | fail-open`，`reasonCode` MUST 是稳定、非空、kebab-case 的有界代码；按需附加的 `target` MUST 是不含密钥、完整命令和远端响应正文的有界摘要，`durationMs` 若存在 MUST 为非负数。事件的 change 列 SHALL 优先绑定裁决明确指向的 change，否则使用当前可检测的活跃 change，无法确定时为 null。
+
+dev-process-guard 的孤儿 dev 进程治理事件是上述 payload 形状的**唯一显式豁免**：其 `policy.decision` payload SHALL 为 `decision`（`orphan-killed | orphan-warn`）键 + 进程摘要（`cmd`/`offenders` 等有界字段），MUST NOT 含 `action` 键，且豁免场景**不要求** `policy`/`reasonCode` 键（豁免的是整个键形状而非仅 action→decision 替换；白名单语义为「对用户操作的裁决」，不适用于对进程组的处置；且避免 harness-retro ③段 fail-open 分桶与④段软提醒聚类、催修时距误吸本扩展事件）。该豁免 MUST 登记于事件词汇表文档；除豁免场景外，任何扩展写入 `policy.decision` MUST 遵守 `policy`/`action`/`reasonCode` 形状，词汇表文档与实现 SHALL 保持一致。
 
 普通成功放行 MUST NOT 写 `policy.decision`；quality-gate 其余裁决与 entry-gate 继续使用 `gate.check`，同一裁决 MUST NOT 双写（interop 短路记 policy.decision 后，被跳过的门禁命令 MUST NOT 再逐条记 gate.check）。记账失败 MUST NOT 改变原策略的放行、提醒、阻断或 fail-open 结果。
 
@@ -86,6 +124,11 @@ spec-gate、quota-gate、test-scope-guard SHALL 将显著裁决追加为 `policy
 
 - **WHEN** test-scope-guard 在 soft 模式提醒一次、在 hard 模式阻断一次非归档语境的全量测试
 - **THEN** 分别追加 action=warn 与 action=block、reasonCode=full-go-test 的 policy.decision
+
+#### Scenario: dev-process-guard 孤儿治理事件按豁免形状记账
+
+- **WHEN** dev-process-guard 在会话结束清理中杀死或警告孤儿 dev 进程组
+- **THEN** 追加 payload 含 `decision`（orphan-killed 或 orphan-warn）与进程摘要的 policy.decision，MUST NOT 含 `action` 键；harness-retro 的③段（fail-open）、④段（warn 聚类）与催修时距计算 MUST NOT 吸入该事件
 
 #### Scenario: interop 探测短路被记账且不双写
 

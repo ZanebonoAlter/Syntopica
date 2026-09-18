@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scenario-trace.sh — Scenario→测试文件映射的归档对账门禁（scenario-test-mapping-gate 引入）
 #
-# 用法：bash scripts/scenario-trace.sh <change-dir>
+# 用法：bash scripts/harness/scenario-trace.sh <change-dir>
 #   <change-dir> 形如 openspec/changes/<name>（仓库根相对或绝对路径均可）
 #
 # 做三件事（只判不跑——不执行任何测试/编译命令）：
@@ -16,12 +16,12 @@
 # 格式约定详见 openspec/specs/scenario-trace-gate/spec.md（随 change 归档同步）。
 set -u
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 CHANGE_DIR="${1:-}"
 if [ -z "$CHANGE_DIR" ]; then
-	echo "用法: bash scripts/scenario-trace.sh <change-dir>  （如 openspec/changes/<name>）"
+	echo "用法: bash scripts/harness/scenario-trace.sh <change-dir>  （如 openspec/changes/<name>）"
 	exit 1
 fi
 if [ ! -d "$CHANGE_DIR" ]; then
