@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>一次开发生命周期：10 个扩展角色谁在何时出手</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --paper: #f5f5f5; --ink: #2d3142; --muted: #4f5d75; --soft: #7a8399;
+      --accent: #eb6c36; --accent-tint: rgba(235,108,54,0.08);
+      --sans: 'Geist', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+      --serif: 'Instrument Serif', 'Noto Serif SC', serif;
+      --mono: 'Geist Mono', 'Noto Sans Mono CJK SC', ui-monospace, monospace;
+    }
+    body { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 3rem 2rem; background: var(--paper); color: var(--ink); font-family: var(--sans); }
+    .frame { width: 100%; max-width: 1240px; }
+    .eyebrow { margin-bottom: 0.5rem; color: var(--muted); font: 500 0.66rem var(--mono); letter-spacing: 0.18em; text-transform: uppercase; }
+    h1 { margin-bottom: 1rem; color: var(--ink); font: 400 clamp(1.5rem, 2.4vw + 0.75rem, 2rem)/1.15 var(--serif); letter-spacing: -0.02em; }
+    .intro { margin-bottom: 2.5rem; max-width: 46rem; color: var(--muted); font-size: 0.92rem; line-height: 1.7; }
+    h2 { margin: 3rem 0 0.5rem; color: var(--ink); font: 400 1.35rem/1.2 var(--serif); letter-spacing: -0.01em; }
+    h2 .stage { margin-left: 0.6rem; color: var(--soft); font: 500 0.72rem var(--mono); letter-spacing: 0.12em; }
+    .act-note { margin-bottom: 1rem; max-width: 46rem; color: var(--muted); font-size: 0.88rem; line-height: 1.7; }
+    .act-note em { font-family: var(--serif); font-style: italic; color: var(--ink); }
+    svg { display: block; width: 100%; min-width: 900px; }
+    .msg-label { fill: var(--soft); font: 500 12px var(--sans); text-anchor: middle; }
+    .msg-label-mono { fill: var(--muted); font: 400 8px var(--mono); text-anchor: middle; letter-spacing: 0.08em; }
+    .msg-label-r { fill: var(--soft); font: 500 12px var(--sans); text-anchor: start; }
+    .guard { fill: var(--muted); font: 500 12px var(--sans); }
+    .legend-title { fill: var(--muted); font: 400 8px var(--mono); letter-spacing: 0.18em; }
+    .legend-item { fill: var(--muted); font: 500 12px var(--sans); }
+    .colophon { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid rgba(45,49,66,0.12); color: var(--soft); font: 400 0.72rem var(--mono); letter-spacing: 0.08em; line-height: 1.8; }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <p class="eyebrow">Sequence × 4 Acts · Diagram Design</p>
+    <h1>一次开发生命周期：10 个扩展角色谁在何时出手</h1>
+    <p class="intro">图 1 全景把扩展层画成一整条泳道——这张图把那条泳道拆开演。四幕连续剧，每一幕是一张独立的顺序图（每幕至多 5 条生命线），10 个扩展角色全员登台：谁挂哪个钩子、说了什么话、软提醒还是硬拦截，消息标签就是台词。人类只有两个角色：用户（你）与主线程，子线程是派出去干活的 Agent。</p>
+
+    <!-- ================= ACT 1 ================= -->
+    <h2>第 1 幕 · 开工：规矩先进脑子<span class="stage">① 探索 → ② 提案 → ③ 编排</span></h2>
+    <p class="act-note">此时还没绑 change，constraint-injection 只给一份「约束索引」当书签——等你写完 proposal 头部的两个声明（ui-impact / constraint-domains）、切入 implementation 档，声明域的红线才整段进 system prompt。harness-telemetry 全程默默把事实写进 events.db（<em>constraint.inject / mode.set / gate.check / patrol.check / policy.decision / edit.map / spill.write / session.start / session.rollup / subagent.* / pin.write</em>），fail-safe 不干预。</p>
+
+    <svg viewBox="0 0 1080 836" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="lcs1-title lcs1-desc">
+      <title id="lcs1-title">第 1 幕 开工：约束注入与记账</title>
+      <desc id="lcs1-desc">顺序图展示会话开工阶段：用户向主线程提需求，constraint-injection 先注入约束索引，主线程写提案并获用户批准 major 原型，切入 implementation 档后声明域红线进入 system prompt，harness-telemetry 把档位切换记入 events.db，事件类型包括注入、档位、门禁、巡检、裁决、落盘、会话与 pin。</desc>
+      <defs>
+        <pattern id="lcs1-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.9" fill="rgba(45,49,66,0.10)"/></pattern>
+        <marker id="lcs1-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="lcs1-arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#4f5d75" stroke-width="1.2"/></marker>
+      </defs>
+      <rect width="1080" height="836" fill="#f5f5f5"/>
+      <rect width="1080" height="836" fill="url(#lcs1-dots)" opacity="0.55"/>
+
+      <!-- lifelines -->
+      <line x1="130" y1="120" x2="130" y2="764" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="420" y1="120" x2="420" y2="764" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="750" y1="120" x2="750" y2="764" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="980" y1="120" x2="980" y2="764" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+
+      <!-- activation bars -->
+      <rect x="126" y="166" width="8" height="28" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="126" y="496" width="8" height="28" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="416" y="150" width="8" height="442" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="746" y="222" width="8" height="184" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="746" y="614" width="8" height="106" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="976" y="700" width="8" height="44" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+
+      <!-- arrows -->
+      <line x1="138" y1="170" x2="412" y2="170" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs1-arrow)"/>
+      <path d="M 428 208 L 472 208 L 472 240 L 428 240" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs1-arrow)"/>
+      <line x1="424" y1="280" x2="742" y2="280" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs1-arrow)"/>
+      <path d="M 758 318 L 802 318 L 802 350 L 758 350" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs1-arrow)"/>
+      <line x1="742" y1="390" x2="428" y2="390" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs1-arrow)"/>
+      <path d="M 428 428 L 472 428 L 472 460 L 428 460" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs1-arrow)"/>
+      <line x1="138" y1="500" x2="412" y2="500" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs1-arrow)"/>
+      <path d="M 428 538 L 472 538 L 472 570 L 428 570" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs1-arrow)"/>
+      <line x1="424" y1="610" x2="742" y2="610" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs1-arrow)"/>
+      <path d="M 758 648 L 802 648 L 802 680 L 758 680" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs1-arrow)"/>
+      <line x1="754" y1="716" x2="972" y2="716" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs1-arrow-open)"/>
+
+      <!-- labels -->
+      <rect x="200" y="146" width="150" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="275" y="158" class="msg-label">提需求 · 开个 change</text>
+
+      <rect x="480" y="208" width="160" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="486" y="220" class="msg-label-r">explore 脑暴 · 调研</text>
+
+      <rect x="512" y="262" width="146" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="585" y="272" class="msg-label-mono">BEFORE_AGENT_START</text>
+
+      <rect x="810" y="318" width="150" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="816" y="330" class="msg-label-r">未激活档 · 只注入索引</text>
+
+      <rect x="500" y="366" width="170" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="585" y="378" class="msg-label">索引进 system prompt</text>
+
+      <rect x="480" y="428" width="252" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="486" y="440" class="msg-label-r">proposal · ui-impact/domains 声明</text>
+
+      <rect x="196" y="476" width="160" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="276" y="488" class="msg-label">批准 major 原型 approved</text>
+
+      <rect x="480" y="538" width="186" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="486" y="550" class="msg-label-r">apply 六步 · 实现计划</text>
+
+      <rect x="520" y="586" width="130" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="585" y="598" class="msg-label">切 implementation 档</text>
+
+      <rect x="810" y="648" width="152" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="816" y="660" class="msg-label-r">快照重建 · 红线注入</text>
+
+      <rect x="770" y="692" width="190" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="865" y="704" class="msg-label">mode.set 记账 · 采样</text>
+
+      <rect x="752" y="728" width="226" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="865" y="738" class="msg-label-mono">INJECT·MODE.SET·GATE.CHECK·PATROL·POLICY</text>
+
+      <!-- actors -->
+      <rect x="50" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="50" y="64" width="160" height="56" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="58" y="72" width="40" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="78" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">USER</text>
+      <text x="130" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">用户</text>
+      <text x="130" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">human</text>
+
+      <rect x="340" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="340" y="64" width="160" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="348" y="72" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="368" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ORCH</text>
+      <text x="420" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">主线程</text>
+      <text x="420" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">只调度 · 不写码</text>
+
+      <rect x="670" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="670" y="64" width="160" height="56" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="678" y="72" width="44" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+      <text x="700" y="81" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">INJECT</text>
+      <text x="750" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">constraint-injection</text>
+      <text x="750" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">挂点×5 · fail-open</text>
+
+      <rect x="900" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="900" y="64" width="160" height="56" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="908" y="72" width="46" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="931" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">LEDGER</text>
+      <text x="980" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">harness-telemetry</text>
+      <text x="980" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">events.db · fail-safe</text>
+
+      <!-- legend -->
+      <line x1="40" y1="776" x2="1040" y2="776" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="796" class="legend-title">LEGEND</text>
+      <line x1="60" y1="820" x2="88" y2="820" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs1-arrow)"/>
+      <text x="98" y="824" class="legend-item">同步调用 / 事件</text>
+      <line x1="238" y1="820" x2="266" y2="820" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs1-arrow)"/>
+      <text x="276" y="824" class="legend-item">返回</text>
+      <line x1="348" y1="820" x2="376" y2="820" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs1-arrow-open)"/>
+      <text x="386" y="824" class="legend-item">异步记账（open 箭头）</text>
+      <rect x="580" y="812" width="4" height="16" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="594" y="824" class="legend-item">激活（持锁处理）</text>
+    </svg>
+
+    <!-- ================= ACT 2 ================= -->
+    <h2>第 2 幕 · 派发：两道硬门<span class="stage">④ 派发</span></h2>
+    <p class="act-note">主线程把实现任务派给子线程，这一步埋着整个体系仅有的三道硬拦截中的两道：<em>quota-gate</em> 先查供应商额度（5h/周窗口 &lt;10% 或余额 &lt;¥1 就 block），<em>ui-design-gate</em> 再查 major 原型审批。门禁每次检查都重读磁盘——第 1 幕用户批准过，这里直接放行。</p>
+
+    <svg viewBox="0 0 1080 948" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="lcs2-title lcs2-desc">
+      <title id="lcs2-title">第 2 幕 派发：quota-gate 与 ui-design-gate 两道硬门</title>
+      <desc id="lcs2-desc">顺序图展示子线程派发阶段：主线程发起 Agent 派发，quota-gate 查询供应商额度，额度见底时硬 block 并建议换 provider 全称重试，通过后 ui-design-gate 重读磁盘确认 major 原型已获用户批准而放行，子线程继承 implementation 档位与红线约束。</desc>
+      <defs>
+        <pattern id="lcs2-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.9" fill="rgba(45,49,66,0.10)"/></pattern>
+        <marker id="lcs2-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="lcs2-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+      </defs>
+      <rect width="1080" height="948" fill="#f5f5f5"/>
+      <rect width="1080" height="948" fill="url(#lcs2-dots)" opacity="0.55"/>
+
+      <!-- lifelines -->
+      <line x1="150" y1="120" x2="150" y2="868" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="420" y1="120" x2="420" y2="868" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="700" y1="120" x2="700" y2="868" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="940" y1="120" x2="940" y2="868" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+
+      <!-- activation bars -->
+      <rect x="146" y="150" width="8" height="688" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="416" y="224" width="8" height="348" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="696" y="624" width="8" height="120" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="936" y="772" width="8" height="84" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+
+      <!-- arrows -->
+      <path d="M 158 158 L 202 158 L 202 190 L 158 190" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs2-arrow)"/>
+      <line x1="154" y1="228" x2="412" y2="228" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs2-arrow)"/>
+      <path d="M 428 266 L 472 266 L 472 298 L 428 298" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs2-arrow)"/>
+      <line x1="412" y1="396" x2="158" y2="396" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#lcs2-arrow-accent)"/>
+      <line x1="154" y1="432" x2="412" y2="432" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs2-arrow)"/>
+      <line x1="412" y1="468" x2="158" y2="468" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs2-arrow)"/>
+      <line x1="412" y1="560" x2="158" y2="560" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs2-arrow)"/>
+      <line x1="154" y1="628" x2="692" y2="628" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs2-arrow)"/>
+      <path d="M 708 666 L 752 666 L 752 698 L 708 698" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs2-arrow)"/>
+      <line x1="692" y1="736" x2="158" y2="736" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs2-arrow)"/>
+      <line x1="154" y1="776" x2="932" y2="776" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs2-arrow)"/>
+      <path d="M 948 814 L 992 814 L 992 846 L 948 846" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs2-arrow)"/>
+
+      <!-- labels -->
+      <rect x="210" y="158" width="200" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="216" y="170" class="msg-label-r">拆任务 · 定 provider/modelId</text>
+
+      <rect x="216" y="204" width="140" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="286" y="216" class="msg-label">Agent 派发 tool_call</text>
+
+      <rect x="480" y="266" width="176" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="486" y="278" class="msg-label-r">查 5h/周窗口 · 余额 ¥</text>
+
+      <rect x="176" y="372" width="216" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="284" y="384" class="msg-label">block · 换 provider 全称重试</text>
+
+      <rect x="226" y="408" width="120" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="286" y="420" class="msg-label">换全称 · 重试</text>
+
+      <rect x="246" y="444" width="80" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="286" y="456" class="msg-label">放行</text>
+
+      <rect x="206" y="536" width="160" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="286" y="548" class="msg-label">放行 · 查询失败也放</text>
+
+      <rect x="440" y="604" width="176" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="528" y="616" class="msg-label">实现派发 · 写码检查</text>
+
+      <rect x="760" y="666" width="150" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="766" y="678" class="msg-label-r">重读磁盘 · approved</text>
+
+      <rect x="440" y="712" width="220" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="550" y="724" class="msg-label">放行 · 未批则 block 派发+写码</text>
+
+      <rect x="428" y="752" width="220" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="538" y="764" class="msg-label">派实现任务 · 继承上下文</text>
+
+      <rect x="1000" y="806" width="72" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="1006" y="818" class="msg-label-r">inherit 档</text>
+
+      <!-- alt fragment -->
+      <rect x="138" y="330" width="294" height="254" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+      <rect x="138" y="330" width="44" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+      <text x="160" y="342" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.12em">ALT</text>
+      <text x="150" y="372" class="guard">[额度 &lt;10% 或 &lt;¥1]</text>
+      <line x1="146" y1="508" x2="424" y2="508" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="150" y="536" class="guard">[额度充足]</text>
+
+      <!-- actors -->
+      <rect x="70" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="70" y="64" width="160" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="78" y="72" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="98" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ORCH</text>
+      <text x="150" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">主线程</text>
+      <text x="150" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">只调度 · 不写码</text>
+
+      <rect x="340" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="340" y="64" width="160" height="56" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="348" y="72" width="38" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+      <text x="367" y="81" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HARD</text>
+      <text x="420" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">quota-gate</text>
+      <text x="420" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Agent tool_call</text>
+
+      <rect x="620" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="620" y="64" width="160" height="56" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="628" y="72" width="38" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+      <text x="647" y="81" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HARD</text>
+      <text x="700" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">ui-design-gate</text>
+      <text x="700" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">派发 + edit/write</text>
+
+      <rect x="860" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="860" y="64" width="160" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="868" y="72" width="42" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="889" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">AGENT</text>
+      <text x="940" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">子线程</text>
+      <text x="940" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">写码 · 写测试</text>
+
+      <!-- legend -->
+      <line x1="40" y1="880" x2="1040" y2="880" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="900" class="legend-title">LEGEND</text>
+      <line x1="60" y1="924" x2="88" y2="924" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs2-arrow)"/>
+      <text x="98" y="928" class="legend-item">同步调用 / 事件</text>
+      <line x1="238" y1="924" x2="266" y2="924" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs2-arrow)"/>
+      <text x="276" y="928" class="legend-item">返回 · 放行</text>
+      <line x1="408" y1="924" x2="436" y2="924" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#lcs2-arrow-accent)"/>
+      <text x="446" y="928" class="legend-item">硬 block（逃生口需显式留痕）</text>
+      <rect x="720" y="916" width="4" height="16" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="734" y="928" class="legend-item">激活（持锁处理）</text>
+    </svg>
+
+    <!-- ================= ACT 3 ================= -->
+    <h2>第 3 幕 · 写码：四个护卫轮值<span class="stage">⑤ 实现 → ⑥ 迭代 → ⑦ review</span></h2>
+    <p class="act-note">子线程开写。这一幕没有硬拦截，全是软提醒与自动整理：test-scope-guard 拦全量测试、tool-output-spill 落盘超大输出、entry-gate 催补白盒用例文档；只有 quality-gate 的 turn_end 增量门禁带牙齿——<em>[回归] 必须修</em>，[中间态] 可以继续推进，归档前全绿的总要求不变。</p>
+
+    <svg viewBox="0 0 1080 880" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="lcs3-title lcs3-desc">
+      <title id="lcs3-title">第 3 幕 写码：四个软护卫与 quality-gate 门禁</title>
+      <desc id="lcs3-desc">顺序图展示子线程写码阶段：test-scope-guard 提醒别跑全量测试，tool-output-spill 落盘超过 32KB 的工具输出，entry-gate 提醒补测试用例文档，每个 turn_end 由 quality-gate 按本回合脏文件做增量检查，失败时以 steer 喂回并区分回归与中间态，全绿则静默放行。</desc>
+      <defs>
+        <pattern id="lcs3-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.9" fill="rgba(45,49,66,0.10)"/></pattern>
+        <marker id="lcs3-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="lcs3-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+      </defs>
+      <rect width="1080" height="880" fill="#f5f5f5"/>
+      <rect width="1080" height="880" fill="url(#lcs3-dots)" opacity="0.55"/>
+
+      <!-- lifelines: 子线程 100 / quality-gate 320 / scope 540 / spill 760 / entry 980 -->
+      <line x1="100" y1="120" x2="100" y2="800" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="320" y1="120" x2="320" y2="800" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="540" y1="120" x2="540" y2="800" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="760" y1="120" x2="760" y2="800" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="980" y1="120" x2="980" y2="800" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+
+      <!-- activation bars -->
+      <rect x="96" y="150" width="8" height="650" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="316" y="452" width="8" height="260" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="536" y="224" width="8" height="48" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="756" y="300" width="8" height="48" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="976" y="376" width="8" height="48" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+
+      <!-- arrows -->
+      <path d="M 108 158 L 152 158 L 152 190 L 108 190" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs3-arrow)"/>
+      <line x1="104" y1="228" x2="536" y2="228" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs3-arrow)"/>
+      <line x1="536" y1="266" x2="104" y2="266" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs3-arrow)"/>
+      <line x1="104" y1="304" x2="756" y2="304" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs3-arrow)"/>
+      <line x1="756" y1="342" x2="104" y2="342" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs3-arrow)"/>
+      <line x1="104" y1="380" x2="976" y2="380" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs3-arrow)"/>
+      <line x1="976" y1="418" x2="104" y2="418" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs3-arrow)"/>
+      <line x1="104" y1="456" x2="316" y2="456" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs3-arrow)"/>
+      <path d="M 328 494 L 372 494 L 372 526 L 328 526" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs3-arrow)"/>
+      <line x1="316" y1="626" x2="104" y2="626" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#lcs3-arrow-accent)"/>
+      <line x1="316" y1="700" x2="104" y2="700" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs3-arrow)"/>
+      <path d="M 108 746 L 152 746 L 152 778 L 108 778" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs3-arrow)"/>
+
+      <!-- labels（全部避开生命线 100/320/540/760/980） -->
+      <rect x="156" y="158" width="160" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="162" y="170" class="msg-label-r">写码 · edit/write/bash</text>
+
+      <rect x="400" y="204" width="120" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="460" y="216" class="msg-label">go test ./... 全量</text>
+
+      <rect x="140" y="242" width="146" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="213" y="254" class="msg-label">warn 只跑影响包</text>
+
+      <rect x="620" y="280" width="116" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="678" y="292" class="msg-label">单次输出 &gt;32KB</text>
+
+      <rect x="140" y="318" width="164" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="222" y="330" class="msg-label">落盘 spill/ · 有界预览</text>
+
+      <rect x="890" y="356" width="66" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="923" y="366" class="msg-label-mono">TURN_END</text>
+
+      <rect x="140" y="394" width="160" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="220" y="406" class="msg-label">缺 test-cases · 提醒一次</text>
+
+      <rect x="179" y="432" width="66" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="212" y="442" class="msg-label-mono">TURN_END</text>
+
+      <rect x="380" y="490" width="112" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="386" y="502" class="msg-label-r">增量路由 · 脏文件</text>
+
+      <rect x="113" y="602" width="194" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="210" y="614" class="msg-label">steer：[回归]必修 / [中间态]续</text>
+
+      <rect x="130" y="676" width="140" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="200" y="688" class="msg-label">静默放行 · 不打扰</text>
+
+      <rect x="160" y="746" width="124" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="166" y="758" class="msg-label-r">review · 分级意见</text>
+
+      <!-- alt fragment（只跨参与的子线程 100 + quality-gate 320） -->
+      <rect x="88" y="560" width="244" height="158" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+      <rect x="88" y="560" width="44" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+      <text x="110" y="572" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.12em">ALT</text>
+      <text x="100" y="602" class="guard">[有失败]</text>
+      <line x1="96" y1="656" x2="324" y2="656" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="100" y="678" class="guard">[全绿 · 或纯对话]</text>
+
+      <!-- actors（盒 160 宽，中心 100/320/540/760/980，间隙全 80） -->
+      <rect x="20" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="20" y="64" width="160" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="28" y="72" width="42" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="49" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">AGENT</text>
+      <text x="100" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">子线程</text>
+      <text x="100" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">写码 · 写测试</text>
+
+      <rect x="240" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="240" y="64" width="160" height="56" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="248" y="72" width="36" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+      <text x="266" y="81" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
+      <text x="320" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">quality-gate</text>
+      <text x="320" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">turn_end 增量</text>
+
+      <rect x="460" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="460" y="64" width="160" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="468" y="72" width="38" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="487" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SOFT</text>
+      <text x="540" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">test-scope-guard</text>
+      <text x="540" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">bash tool_call</text>
+
+      <rect x="680" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="680" y="64" width="160" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="688" y="72" width="38" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="707" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">AUTO</text>
+      <text x="760" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">tool-output-spill</text>
+      <text x="760" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">tool_result · 32KB</text>
+
+      <rect x="900" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="900" y="64" width="160" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="908" y="72" width="38" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="927" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SOFT</text>
+      <text x="980" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">entry-gate</text>
+      <text x="980" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">turn_end · 每会话一次</text>
+
+      <!-- legend -->
+      <line x1="40" y1="812" x2="1040" y2="812" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="832" class="legend-title">LEGEND</text>
+      <line x1="60" y1="856" x2="88" y2="856" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs3-arrow)"/>
+      <text x="98" y="860" class="legend-item">同步调用 / 事件</text>
+      <line x1="238" y1="856" x2="266" y2="856" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs3-arrow)"/>
+      <text x="276" y="860" class="legend-item">返回 · 软提醒</text>
+      <line x1="408" y1="856" x2="436" y2="856" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#lcs3-arrow-accent)"/>
+      <text x="446" y="860" class="legend-item">steer 喂回（[回归] 必须修）</text>
+      <rect x="720" y="848" width="4" height="16" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="734" y="860" class="legend-item">激活（持锁处理）</text>
+    </svg>
+
+    <!-- ================= ACT 4 ================= -->
+    <h2>第 4 幕 · 归档与收尾：最后的关卡<span class="stage">⑧ 验收归档 → ⑨ 溯源 retro · 会话结束</span></h2>
+    <p class="act-note">主线程自检后执行 openspec archive，spec-gate 做五项机器检查——任一失败就是一份修复清单，全过才放行归档。会话结束时 dev-process-guard 清掉泄漏的 dev 进程组；harness-retro.sh 只读消费账本产出六段聚类报告（门禁失败 / 回归翻转 / 自身故障 / 软提醒失效 / 重复热点 / 注入面健康 + 效能看板），改进项走新 change——<em>故事回到第 1 幕</em>。</p>
+
+    <svg viewBox="0 0 1080 940" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="lcs4-title lcs4-desc">
+      <title id="lcs4-title">第 4 幕 归档与收尾：spec-gate 检查、进程清理与 retro 闭环</title>
+      <desc id="lcs4-desc">顺序图展示归档收尾阶段：主线程自检后触发 openspec archive，spec-gate 做五项检查，失败则 block 并给修复清单，全过则放行归档并向用户汇报；会话结束时 dev-process-guard 清理泄漏的 dev 进程，harness-retro.sh 只读消费账本产出六段聚类报告，改进项再开新 change 形成闭环。</desc>
+      <defs>
+        <pattern id="lcs4-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.9" fill="rgba(45,49,66,0.10)"/></pattern>
+        <marker id="lcs4-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="lcs4-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+      </defs>
+      <rect width="1080" height="940" fill="#f5f5f5"/>
+      <rect width="1080" height="940" fill="url(#lcs4-dots)" opacity="0.55"/>
+
+      <!-- lifelines: 主 100 / spec 320 / 用户 540 / dev 760 / retro 980 -->
+      <line x1="100" y1="120" x2="100" y2="866" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="320" y1="120" x2="320" y2="866" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="540" y1="120" x2="540" y2="866" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="760" y1="120" x2="760" y2="866" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="980" y1="120" x2="980" y2="866" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+
+      <!-- activation bars -->
+      <rect x="96" y="150" width="8" height="526" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="316" y="224" width="8" height="342" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="536" y="626" width="8" height="32" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="756" y="666" width="8" height="78" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="976" y="764" width="8" height="94" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+
+      <!-- arrows -->
+      <path d="M 108 158 L 152 158 L 152 190 L 108 190" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs4-arrow)"/>
+      <line x1="104" y1="228" x2="312" y2="228" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs4-arrow)"/>
+      <path d="M 328 266 L 372 266 L 372 298 L 328 298" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs4-arrow)"/>
+      <line x1="312" y1="396" x2="104" y2="396" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#lcs4-arrow-accent)"/>
+      <path d="M 108 428 L 152 428 L 152 460 L 108 460" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs4-arrow)"/>
+      <line x1="312" y1="558" x2="104" y2="558" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs4-arrow)"/>
+      <line x1="104" y1="630" x2="532" y2="630" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs4-arrow)"/>
+      <line x1="104" y1="670" x2="752" y2="670" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs4-arrow)"/>
+      <path d="M 768 708 L 812 708 L 812 740 L 768 740" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs4-arrow)"/>
+      <path d="M 988 768 L 1032 768 L 1032 800 L 988 800" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs4-arrow)"/>
+      <line x1="972" y1="852" x2="548" y2="852" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs4-arrow)"/>
+
+      <!-- labels（全部避开生命线 100/320/540/760/980） -->
+      <rect x="156" y="158" width="144" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="162" y="170" class="msg-label-r">§11.4 自检 + 欠账台账</text>
+
+      <rect x="146" y="204" width="126" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="209" y="216" class="msg-label">openspec archive</text>
+
+      <rect x="380" y="266" width="152" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="386" y="278" class="msg-label-r">五项检查 · 五类对账</text>
+
+      <rect x="110" y="372" width="200" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="210" y="384" class="msg-label">block · 失败清单 + 修复指引</text>
+
+      <rect x="160" y="428" width="130" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="166" y="440" class="msg-label-r">补溯源 · 修复重试</text>
+
+      <rect x="136" y="534" width="148" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="210" y="546" class="msg-label">放行 · 归档落库</text>
+
+      <rect x="330" y="606" width="200" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="430" y="618" class="msg-label">归档完成 · 部署影响汇报</text>
+
+      <rect x="590" y="646" width="154" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="667" y="656" class="msg-label-mono">SESSION_SHUTDOWN</text>
+
+      <rect x="820" y="708" width="136" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="826" y="720" class="msg-label-r">清孤儿 · 白名单豁免</text>
+
+      <rect x="845" y="806" width="110" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="900" y="818" class="msg-label">六段聚类报告</text>
+
+      <rect x="556" y="828" width="168" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="640" y="840" class="msg-label">改进项 · 可回检指标</text>
+
+      <!-- alt fragment（只跨参与的主线程 100 + spec-gate 320） -->
+      <rect x="88" y="330" width="244" height="260" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+      <rect x="88" y="330" width="44" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+      <text x="110" y="342" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.12em">ALT</text>
+      <text x="100" y="372" class="guard">[任一失败]</text>
+      <line x1="96" y1="496" x2="324" y2="496" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="100" y="522" class="guard">[全过]</text>
+
+      <!-- actors（盒 160 宽，中心 100/320/540/760/980，间隙全 80） -->
+      <rect x="20" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="20" y="64" width="160" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="28" y="72" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="48" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ORCH</text>
+      <text x="100" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">主线程</text>
+      <text x="100" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">只调度 · 不写码</text>
+
+      <rect x="240" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="240" y="64" width="160" height="56" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="248" y="72" width="38" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+      <text x="267" y="81" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HARD</text>
+      <text x="320" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">spec-gate</text>
+      <text x="320" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">openspec archive</text>
+
+      <rect x="460" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="460" y="64" width="160" height="56" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="468" y="72" width="40" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="488" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">USER</text>
+      <text x="540" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">用户</text>
+      <text x="540" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">human</text>
+
+      <rect x="680" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="680" y="64" width="160" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="688" y="72" width="46" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="711" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GUARD</text>
+      <text x="760" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">dev-process-guard</text>
+      <text x="760" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">session_shutdown</text>
+
+      <rect x="900" y="64" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="900" y="64" width="160" height="56" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="908" y="72" width="48" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="932" y="81" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SCRIPT</text>
+      <text x="980" y="98" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">harness-retro.sh</text>
+      <text x="980" y="113" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">只读账本 · 按纪律跑</text>
+
+      <!-- legend -->
+      <line x1="40" y1="878" x2="1040" y2="878" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="898" class="legend-title">LEGEND</text>
+      <line x1="60" y1="922" x2="88" y2="922" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#lcs4-arrow)"/>
+      <text x="98" y="926" class="legend-item">同步调用 / 事件</text>
+      <line x1="238" y1="922" x2="266" y2="922" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#lcs4-arrow)"/>
+      <text x="276" y="926" class="legend-item">返回 · 异步</text>
+      <line x1="408" y1="922" x2="436" y2="922" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#lcs4-arrow-accent)"/>
+      <text x="446" y="926" class="legend-item">硬 block（--force / SPEC_GATE_BYPASS 留痕可过）</text>
+      <rect x="812" y="914" width="4" height="16" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="826" y="926" class="legend-item">激活</text>
+    </svg>
+
+    <footer class="colophon">
+      SYNTOPICA · HARNESS LIFECYCLE · 4 SEQUENCE DIAGRAMS × 1 FILE — 10 EXTENSIONS + 2 SCRIPTS, 3 MIN THREADS + 1 USER<br>
+      每幕独立守 diagram-design sequence 预算（≤5 生命线 · ≤12 消息 · ≤1 组合片段）；配色与字号沿用本目录 editorial 皮肤 · 2026-09-18
+    </footer>
+  </main>
+</body>
+</html>
