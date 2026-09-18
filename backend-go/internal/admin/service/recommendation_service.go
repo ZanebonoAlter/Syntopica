@@ -341,21 +341,37 @@ func markRecommendationAccepted(tx *gorm.DB, recID, feedID uint) (bool, error) {
 // 写 candidate_preferences 权威，pending 行状态不变。）
 
 // buildFeedURL 拼接受订阅的 feed URL。
-// usable_directly：baseURL + example（或 namespace+path）；requires_parameters：用 params 填 path 参数。
+// 用户填了任一参数值 → 一律模板填参（usable_directly 的 example 只是缺省形态，不能压过
+// 用户显式填参，否则填参被无视、URL 恒为 example）；未填参时 usable_directly 用
+// baseURL + example（或 namespace+path），requires_parameters 用 params 填 path 参数。
 func buildFeedURL(r *models.RSSHubRoute, params map[string]string, baseURL string) string {
 	base := strings.TrimRight(baseURL, "/")
-	if r.UsableDirectly {
+	hasParams := false
+	for _, val := range params {
+		if strings.TrimSpace(val) != "" {
+			hasParams = true
+			break
+		}
+	}
+	if !hasParams && r.UsableDirectly {
 		if r.Example != "" {
 			return base + r.Example
 		}
 		return base + "/" + r.Namespace + r.Path
 	}
-	// requires_parameters：把 path 中的 :param 用 params 填充（未提供的可选参数跳过）。
+	// 模板填参：先剥 {regex} 约束（暴露参数名），再替换 :name?（可选标记跟随参数名一起
+	// 替换，防值尾残留 `?`），后替换裸 :name；未提供的可选段 strip，剩 : 即未填必填。
 	u := "/" + r.Namespace + r.Path
+	u = stripBraceConstraints(u)
 	for name, val := range params {
-		u = strings.ReplaceAll(u, ":"+name, url.PathEscape(val))
+		if strings.TrimSpace(val) == "" {
+			continue // 空值视作未提供：必填段残留报错、可选段 strip 丢弃
+		}
+		escaped := url.PathEscape(val)
+		u = strings.ReplaceAll(u, ":"+name+"?", escaped)
+		u = strings.ReplaceAll(u, ":"+name, escaped)
 	}
-	// 去掉剩余可选参数段 :x? 与正则约束 {..}。
+	// 去掉剩余可选参数段 :x?。
 	u = stripOptionalParams(u)
 	if !strings.Contains(u, ":") {
 		return base + u
@@ -363,17 +379,8 @@ func buildFeedURL(r *models.RSSHubRoute, params map[string]string, baseURL strin
 	return "" // 仍有未填必填参数
 }
 
-// stripOptionalParams 去掉 :param? 与 {regex} 残留。
+// stripOptionalParams 去掉 :param? 残留段（{regex} 已由 stripBraceConstraints 先行剥离）。
 func stripOptionalParams(url string) string {
-	// 去正则 {..}
-	for strings.Contains(url, "{") {
-		i := strings.Index(url, "{")
-		j := strings.Index(url, "}")
-		if j < i {
-			break
-		}
-		url = url[:i] + url[j+1:]
-	}
 	// 去可选参数段 :xxx?（整段连同前导 /）
 	out := []string{}
 	for _, seg := range strings.Split(url, "/") {
@@ -383,4 +390,18 @@ func stripOptionalParams(url string) string {
 		out = append(out, seg)
 	}
 	return strings.Join(out, "/")
+}
+
+// stripBraceConstraints 去掉路径中的 {regex} 正则约束片段（暴露参数名供替换；
+// 与 stripOptionalParams 配对：先剥约束再替换/丢弃可选段）。
+func stripBraceConstraints(url string) string {
+	for strings.Contains(url, "{") {
+		i := strings.Index(url, "{")
+		j := strings.Index(url, "}")
+		if j < i {
+			break
+		}
+		url = url[:i] + url[j+1:]
+	}
+	return url
 }

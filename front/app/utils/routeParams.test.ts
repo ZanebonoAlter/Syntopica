@@ -273,6 +273,48 @@ describe('buildRSSHubFeedUrl', () => {
     })).toBe('https://rsshub.app/weibo/user/123')
   })
 
+  // 2026-09 用户实测：zaobao/realtime/:section?（usable_directly + example 缺省 china）
+  // 旧逻辑 usableDirectly 短路返回 example，用户填的 section 被无视、地址纹丝不动。
+  it('usable_directly with explicit param replaces template (不再短路到 example)', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'http://47.110.71.194:1200',
+      namespace: 'zaobao',
+      path: '/realtime/:section?',
+      parameters: { section: 'singapore' },
+      example: '/zaobao/realtime/china',
+      usableDirectly: true,
+    })).toBe('http://47.110.71.194:1200/zaobao/realtime/singapore')
+  })
+
+  it('usable_directly with all-optional param unfilled keeps example default', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'http://47.110.71.194:1200',
+      namespace: 'zaobao',
+      path: '/realtime/:section?',
+      parameters: {},
+      example: '/zaobao/realtime/china',
+      usableDirectly: true,
+    })).toBe('http://47.110.71.194:1200/zaobao/realtime/china')
+  })
+
+  it('filled optional param leaves no trailing ? residue', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'https://rsshub.app',
+      namespace: 'zaobao',
+      path: '/realtime/:section?',
+      parameters: { section: 'singapore' },
+    })).toBe('https://rsshub.app/zaobao/realtime/singapore')
+  })
+
+  it('strips {regex} constraint before substitution (值不吃进约束残留)', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'https://rsshub.app',
+      namespace: 'test',
+      path: '/list/:keyword{.+}?',
+      parameters: { keyword: 'ai' },
+    })).toBe('https://rsshub.app/test/list/ai')
+  })
+
   it('encodes param values', () => {
     expect(buildRSSHubFeedUrl({
       baseUrl: 'https://rsshub.app',

@@ -120,3 +120,39 @@ func TestBuildFeedURLEscapesParams(t *testing.T) {
 	require.Contains(t, u, "a%20b", "空格转 %20")
 	require.Contains(t, u, "%2F", "/ 应转义防 path 注入")
 }
+
+// 2026-09 用户实测：zaobao/realtime/:section?（usable_directly + example 缺省 china）
+// 旧逻辑 usableDirectly 短路返回 example，用户填的 section 被无视、地址纹丝不动。
+func TestBuildFeedURLUsableDirectlyWithParams(t *testing.T) {
+	r := &models.RSSHubRoute{
+		Namespace: "zaobao", Path: "/realtime/:section?",
+		Example: "/zaobao/realtime/china", UsableDirectly: true,
+	}
+	require.Equal(t,
+		DefaultRSSHubBaseURL+"/zaobao/realtime/singapore",
+		buildFeedURL(r, map[string]string{"section": "singapore"}, DefaultRSSHubBaseURL),
+		"填了参数必须替换模板，不得短路到 example")
+	require.Equal(t,
+		DefaultRSSHubBaseURL+"/zaobao/realtime/china",
+		buildFeedURL(r, nil, DefaultRSSHubBaseURL),
+		"未填参保持 example 缺省形态")
+	require.Equal(t,
+		DefaultRSSHubBaseURL+"/zaobao/realtime/china",
+		buildFeedURL(r, map[string]string{"section": "  "}, DefaultRSSHubBaseURL),
+		"空白值视作未提供，不影响 example 缺省")
+}
+
+// 可选参数替换后不得残留尾部 `?`（旧逻辑 :name 替换后 val? 残留，URL 带裸 ? 可致实例 404）。
+func TestBuildFeedURLNoQuestionMarkResidue(t *testing.T) {
+	r := &models.RSSHubRoute{Namespace: "zaobao", Path: "/realtime/:section?"}
+	u := buildFeedURL(r, map[string]string{"section": "singapore"}, DefaultRSSHubBaseURL)
+	require.Equal(t, DefaultRSSHubBaseURL+"/zaobao/realtime/singapore", u)
+	require.NotContains(t, u, "?", "替换后的值不得残留可选标记 ?")
+}
+
+// {regex} 约束在替换前剥离：约束片段不得混入替换结果。
+func TestBuildFeedURLStripsBraceConstraintBeforeSubstitution(t *testing.T) {
+	r := &models.RSSHubRoute{Namespace: "test", Path: "/list/:keyword{.+}?"}
+	u := buildFeedURL(r, map[string]string{"keyword": "ai"}, DefaultRSSHubBaseURL)
+	require.Equal(t, DefaultRSSHubBaseURL+"/test/list/ai", u)
+}

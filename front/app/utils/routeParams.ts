@@ -168,8 +168,10 @@ export function stripOptionalParams(url: string): string {
 
 /**
  * 由路由模板 + 参数构建最终 RSSHub 实例订阅地址（后端 recommendation_service.buildFeedURL
- * 同规则）：usable_directly 优先 example；需参数路由把 `:param` 填入实际值（未提供的可选
- * 参数段丢弃），仍有未填必填参数时返回空串（调用方就地报错，不发请求）。
+ * 同规则）：用户填了任一参数值 → 一律走模板替换（usable_directly 的 example 只是缺省形态，
+ * 不能压过用户显式填参，否则填参被无视、URL 恒为 example）；未填参时 usable_directly 优先
+ * example，否则把 `:param` 填入实际值（未提供的可选参数段丢弃），仍有未填必填参数时返回
+ * 空串（调用方就地报错，不发请求）。
  */
 export function buildRSSHubFeedUrl(opts: {
   baseUrl: string
@@ -180,14 +182,18 @@ export function buildRSSHubFeedUrl(opts: {
   usableDirectly?: boolean
 }): string {
   const base = (opts.baseUrl || DEFAULT_RSSHUB_BASE_URL).replace(/\/+$/, '')
-  if (opts.usableDirectly) {
+  const hasParams = Object.values(opts.parameters).some(v => v.trim() !== '')
+  if (!hasParams && opts.usableDirectly) {
     return opts.example ? base + opts.example : `${base}/${opts.namespace}${opts.path}`
   }
-  let u = `/${opts.namespace}${opts.path}`
+  // 模板填参：先剥 {regex} 约束（暴露参数名），再替换 `:name?`（可选标记跟随参数名一起
+  // 替换，防值尾残留 `?`），后替换裸 `:name`；未提供的可选段 strip，剩 `:` 即未填必填。
+  let u = `/${opts.namespace}${opts.path}`.replace(/\{[^}]*\}/g, '')
   for (const [name, val] of Object.entries(opts.parameters)) {
     if (!val) continue
     // split/join 替换避免 replace 的 $ 特殊语义；值做 path 编码与后端 url.PathEscape 对齐
-    u = u.split(`:${name}`).join(encodeURIComponent(val))
+    const enc = encodeURIComponent(val)
+    u = u.split(`:${name}?`).join(enc).split(`:${name}`).join(enc)
   }
   u = stripOptionalParams(u)
   return u.includes(':') ? '' : base + u
