@@ -9,11 +9,11 @@
 | 1 | 新 pi 会话 session_start，prev jsonl 存在且账本无该 session 的 final 快照 | fact-log:「session_start 回填 prev 终值」 | 追加一条 prev session 的 `final:true` rollup（session_id=prev 文件名 UUID，change 列可空） | cjs 直测（回填判定纯函数）+ 人工 | `.pi/extensions/tests/session-rollup.smoke.cjs` |
 | 2 | prev jsonl 不存在 / previousSessionFile 为 null | fact-log:「session_start 回填 prev 终值」/「解析失败 fail-open」 | 零写入、不抛出、console 告警 | cjs 直测 | 同上 |
 | 3 | 会话内 turn_end 多次触发、满足节流条件（turn%5==0 或 token 增量>20%） | fact-log:「turn_end 节流快照落库」 | 每次命中节流追加 `final:false` 快照；payload 数值单调不减 | cjs 直测（节流判定纯函数）+ 人工 | 同上 |
-| 4 | 同一 session_id 已有多条 rollup 快照 | fact-log:「同 session 取最新一条即终值」 | 查询/报告仅取 `MAX(id)` 一条的数值，不累加中间快照 | retro smoke fixture | `scripts/harness-retro.smoke.sh` |
+| 4 | 同一 session_id 已有多条 rollup 快照 | fact-log:「同 session 取最新一条即终值」 | 查询/报告仅取 `MAX(id)` 一条的数值，不累加中间快照 | retro smoke fixture | `scripts/harness/harness-retro.smoke.sh` |
 | 5 | turn_end 时增量读 jsonl（offset 推进） | fact-log:「turn_end 节流快照落库」 | 只读新增行；repeat 读同一文件 offset 不回退、数值稳定（幂等） | cjs 直测 | `.pi/extensions/tests/session-rollup.smoke.cjs` |
 | 6 | 回填 prev 时该 session 已有中间快照 | fact-log:「rollup 不改写既有事件」 | append 新事件表达终值，既有行 payload/ts 不变 | cjs 直测（判定逻辑）+ harness-log.smoke 既有「事件追加不可变」回归 | `.pi/extensions/tests/harness-log.smoke.cjs` |
 | 7 | 词汇表登记 | fact-log:「session.rollup 随词汇扩展落库」 | harness-log TTL 表含 rollup→90 天；写入路径产出正确 kind | cjs 直测 | `.pi/extensions/tests/harness-log.smoke.cjs` |
-| 8 | fixture 库含各类事件（rollup 序列+无 rollup session+跨域注入 change） | retro:「七段齐备且各带指标」 | ⑦段输出且每指标可独立复算；故障①-⑥段不变 | retro smoke | `scripts/harness-retro.smoke.sh` |
+| 8 | fixture 库含各类事件（rollup 序列+无 rollup session+跨域注入 change） | retro:「七段齐备且各带指标」 | ⑦段输出且每指标可独立复算；故障①-⑥段不变 | retro smoke | `scripts/harness/harness-retro.smoke.sh` |
 | 9 | 窗口内多数 session 无 rollup 终值 | retro:「rollup 覆盖率显式标注」 | 覆盖率数值正确；B 组分布行尾「数据积累中」标注 | retro smoke | 同上 |
 | 10 | declaration 注入 domain-A、edit.map 路径全落 domain-B | retro:「注入命中率可复算」 | 命中率=0；域映射规则在口径说明可查 | retro smoke | 同上 |
 | 11 | gate.check 同 (session,cmd) 先红后 40 分钟后绿 | retro:「门禁催修时距可复算」 | 催修时距中位数计入该样本 | retro smoke | 同上 |
@@ -58,7 +58,7 @@
 | fact-log:「TTL 分级清扫」 | 保留（原文未变） | `.pi/extensions/tests/harness-log.smoke.cjs`「TTL 与既有事件兼容」 | 扩 fixture：91 天前 rollup 行被清、30 天前 constraint.inject 被清不变 |
 | fact-log:「事件追加不可变」 | 保留（原文未变） | 同上 smoke | 不动；新增「回填不改写中间快照」断言互补 |
 | fact-log: spill/subagent.complete/policy.decision/edit.map「随词汇扩展落库」四条 | 保留（原文未变） | harness-log.smoke / constraint-injection.smoke | 不动 |
-| retro:「六段齐备且各带指标」 | **语义收窄**（正文限定①-⑥故障视角；七段由新 Scenario 覆盖） | `scripts/harness-retro.smoke.sh`「六段齐备且各带指标」 | 检查断言是否精确计数六段——若断言「恰好六段」则改「至少含①-⑥」；数值断言不动 |
+| retro:「六段齐备且各带指标」 | **语义收窄**（正文限定①-⑥故障视角；七段由新 Scenario 覆盖） | `scripts/harness/harness-retro.smoke.sh`「六段齐备且各带指标」 | 检查断言是否精确计数六段——若断言「恰好六段」则改「至少含①-⑥」；数值断言不动 |
 | retro:「失败特征归并」「按 change 归属限定」 | 保留（原文未变） | 同上 smoke | 不动；⑦段指标须通过 --change 限定（同一断言模式扩展到⑦） |
 | retro:「生成基线与差值」「基线损坏时降级」 | 保留（正文仅加 metrics7 键） | 同上 smoke | 扩断言：metrics7 键存在且差值输出；旧基线无 metrics7 跳过提示 |
 

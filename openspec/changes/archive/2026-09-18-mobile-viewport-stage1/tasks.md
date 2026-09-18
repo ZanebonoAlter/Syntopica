@@ -29,7 +29,7 @@
 ## 测试
 
 - [x] 6.1 影响范围单测全绿：`bash scripts/harness/change-scope.sh` 判定前端影响文件，`pnpm test:unit <受影响文件...> --maxWorkers=2`（不带 `--`）全通过；`pnpm lint` + `pnpm exec nuxi typecheck` 通过（实跑：FeedLayoutShell + useMediaQuery + AppSidebarDrawer + AppHeaderView 四文件 39/39；lint 0 error；typecheck exit 0）
-- [ ] 6.2 不跑全量前端单测（树莓派负载纪律）；若归档门禁要求，先停其它 pi 会话再 `pnpm test:unit --maxWorkers=2`
+- [x] 6.2 不跑全量前端单测（树莓派负载纪律）；若归档门禁要求，先停其它 pi 会话再 `pnpm test:unit --maxWorkers=2`（实跑：一次性全量 25 分钟未完已中止；改按 patrol 机制分片——本 change 涉及 6 片 fe-core/composables/discovery/tags/components/features 全绿；巡检抓到本 change 引入的 iconify 子集缺失红（「⋯」菜单新增 mdi 图标未同步 generate-icon-subset），重生成后 fe-core 复验绿；`test-patrol.sh --report` open 欠账空，be-* 分片本 change 零后端改动且 09-17 全绿）
 
 ## 文档
 

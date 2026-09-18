@@ -84,3 +84,58 @@
 - 顺序建议 A+B 一起开 change（同触 front/nuxt.config.ts、utils/api.ts、后端 config 默认值、docs/configuration.md、deployment.md、AGENTS.md 端口口径）。
 
 <!-- pinned 2026-09-15T13:50:55Z -->
+
+## 发现页双交互 bug 根因与修复（出口清洗 + refresh 异步轮询）
+
+## 2026-09-18 用户双 bug 修复（6.2 验证发现，已实现并测试通过）
+
+### Bug1：候选库/查询结果描述一大坨原始 URL
+- 链路：RSSHub 目录 API 的 description 是 VitePress 文档页 markdown 源码（表格/链接/`<details>`/`::: tip`）→ `catalog_sync_service.go` 原文入 `rsshub_routes.description` → 出口 `EffectiveMetadata`（candidate_identity.go）原样下发 → 前端 `{{ c.description }}` 文本插值。
+- 修复：`EffectiveMetadata` 出口统一对 name/description 调 `SanitizeEffectiveText`（candidate_embedding_service.go 已有函数，对已清洗文本幂等）；一处改动覆盖候选列表/详情（buildViews）、run 详情（GetRun items）、embedding 文本三个出口。存储原文保留（搜索 LIKE/指纹/重嵌不受影响）。
+- 前端配套：`normalizeRoute` 透传 route.description 原文、normalizeCandidate 透传 manualMetadata；CandidateEditDialog 回填优先级改为 人工原文 → 上游原文 → 出口值（防止"打开编辑框就保存"把清洗值固化成人工覆盖、阻断上游更新）；三处展示位（library__desc / run-card__desc / discovery-card__desc）加 line-clamp 3。
+
+### Bug2：点刷新必弹"暂无可推荐的内容：先同步目录"且无处同步
+- 根因：后端 refresh 已异步化（E2E async-run-fix），handler 秒回 `{run_id, status, candidates:0, inserted:0, ...}`（注释明言"前端待按 run_id 轮询，不在本次范围"——遗留断裂）；前端 `refresh()` 仍读全 0 计数 → `candidates===0` 恒成立 → 必弹该 toast；且 `loadRecommendations()` 在 run 跑完前执行，拉到的还是旧列表。DB 实证：run 6 refresh succeeded、35 个 run items，用户却被告知"无可推荐"。
+- 次生问题：toast 引导"同步目录"但同步按钮只在 `catalogEmpty`（total===0）空态出现；且目录有 3097 条时同步根本不解决召回为空（召回四路：全局行为批/版块批/版块行为批/seed 批，全依赖 preference_vectors、semantic_labels 向量、discovery_interest_entries）。
+- 修复：stores/discovery.ts 抽共享 `pollRun(runId)`（2s×60 次与 submitQuery 同节奏，submitQuery 已重构复用）；`refresh()` 改为受理→轮询→按 run 终态与 items 数提示（succeeded+items>0 →「换了一批新推荐（本轮选出 N 条）」+重拉；succeeded+0 → 诚实文案"推荐依据还不够"，不提同步目录；failed → error 且不重拉；超时 → warn 可稍后再看）。CandidateLibrary 工具栏加常驻「同步目录」按钮（library-sync-catalog-btn，调已有 syncCatalog）。
+- 类型契约：RefreshSummary 改为 `{runId, status}`（后端占位计数字段前端不再消费）。
+
+### 验证记录
+- 后端：`go test -short ./internal/admin/service ./internal/admin/handler` 绿；golangci-lint 0 issues；go vet / go build 绿。新用例：TestEffectiveMetadata/上游脏markdown出口清洗、人工脏markdown同样清洗（首版断言把 ::: tip 标记与正文写同行被整行删除——标记行整行去除是 SanitizeEffectiveText 预期行为）。
+- 前端：discovery 相关 10 测试文件 116 用例绿；lint 0 errors；nuxi typecheck 干净（新增 CandidateRouteInfo.description 必填字段补齐 6 处测试字面量）。
+
+### 遗留
+- 候选 embedding 回补 20/批每小时：3099 候选仅 1483 有向量，全量补齐需数天（无阻塞，召回用已有向量子集）。
+- e2e-log 的小缺口清单仍在：409 existing_id 透前端 dupHint、?tab=candidates、PATCH 不发 revision、dismiss 丢 snoozed_until。
+- dev-process-guard 报 12 个窗口外 chromium/agent-browser 泄漏进程待用户人工确认处置。
+
+<!-- pinned 2026-09-18T16:00:22Z -->
+
+## 候选库分页补全 + markdown 不渲染的决策依据
+
+## 候选库分页补全（2026-09-19 用户报告，已实现）
+
+- 现状：后端 ListCandidates 一直支持 page/page_size（默认 30、上限 100）并返回 {items,total}，前端 api 层 getCandidates 也支持 page/perPage 并回传 pagination；但 store.loadCandidates 从不传 page（恒第 1 页）、CandidateLibrary 无分页控件 → 3099 条候选只能看前 30 条。
+- 修复：stores/discovery.ts 增 candidatesPage/candidatesPages 状态 + goToCandidatesPage（越界/同页/加载中防抖）+ 翻页间数据变少的越界回退（当前页空且 pages 变小 → 自动回拉末页）；setCandidateFilters/clearCandidateFilters 重置页码 1。CandidateLibrary 列表底部加分页条（上一页/「第 x / y 页 · 共 N 条」/下一页，data-testid=library-pager*，单页不渲染）。
+- 测试：store 2 新用例（翻页带页码、越界回退）+ 2 处既有断言适配 page:1；组件 3 新用例（多页分页条/单页隐藏/翻页+筛选重置）。
+
+## markdown 不渲染只清洗截断的理由记录（用户质疑时的决策依据）
+- 数据：1283 条有描述的 RSSHub 路由里 1085 条（85%）含文档噪音（表格/details/:::/标题），最长 67629 字——本质是开发者路由文档不是源介绍。
+- 参数取值信息已有结构化通道（param_options 字典 → 订阅弹窗下拉框），不靠渲染文档获得。
+- 渲染需配 XSS 消毒（上游内容含裸 HTML）+ markdown 库，列表 30 条/页渲染 6 万字文档不现实；design D6 契约即「先清洗格式再截取有效说明」。
+- 截断（line-clamp 3）只是清洗后仍超长的兜底，绝大多数清洗后为一两句话。详情场景如需完整文档可后续在弹窗加「查看上游文档」链接。
+
+<!-- pinned 2026-09-18T16:09:56Z -->
+
+## 订阅填参被无视（usableDirectly 短路）修复
+
+## 订阅填参被无视 bug 修复（2026-09-19 用户实测发现，已实现）
+
+- 现象：订阅候选 `zaobao/realtime/:section?`（usable_directly + example=/zaobao/realtime/china），填 section 后最终地址仍是 example 的 china，用户填参被无视。
+- 根因（前后端对称两处）：`buildFeedURL`（backend recommendation_service.go）/ `buildRSSHubFeedUrl`（front utils/routeParams.ts）的 usableDirectly 分支**无条件短路返回 example**，parameters 整个被忽略。既有测试只覆盖"空参 → example"与"必填路由填参"，恰好漏掉"usableDirectly + 填参"组合。
+- 次生 bug 一并修：`:name?` 替换裸 `:name` 后值尾残留 `?`（/singapore?），裸 `?` 可致 RSSHub 实例 404；`{regex}` 约束在替换后剥离会把约束混进值尾。
+- 修复规则（两端一致）：① 用户填了任一非空参数值 → 一律走模板替换（example 只是未填参时的缺省形态）；② 替换前先剥 `{regex}` 约束（后端提取为 stripBraceConstraints）；③ 先替换 `:name?` 再替换 `:name`（可选标记跟随参数名一起替换）；④ 空白值视作未提供（后端 trim 判定），必填段残留报错、可选段 strip。
+- 影响面：前端 CandidateSubscribeDialog finalUrl（候选/run 条目订阅弹窗共用）；后端 accept 推荐填参（recommendation_service.go:315）与可用性检查（candidate_check_service.go:256，params=nil 行为不变）。
+- 回归测试：前端 routeParams.test.ts +4（zaobao 替换/未填保持缺省/? 残留/{regex}）；后端 recommendation_service_test.go +3（UsableDirectlyWithParams 三态/NoQuestionMarkResidue/BraceConstraint）。后端 admin/service 全包绿、golangci-lint 0 issues；前端 routeParams+CandidateSubscribeDialog 52 用例绿、lint/typecheck 干净。
+
+<!-- pinned 2026-09-18T16:25:42Z -->
