@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="editorial">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syntopica 源×板块命中率 — 静态原型（可丢弃）</title>
+<style>
+  /* ===== 引用应用主题 token（front/app/assets/css/main.css editorial 语义色，纯静态复刻） ===== */
+  :root {
+    --color-bg-base: #faf7f2;
+    --color-bg-elevated: #f3ede3;
+    --color-bg-sunken: #e8dfd1;
+    --color-bg-hover: rgba(255, 255, 255, 0.85);
+    --color-text-primary: #1a1a1a;
+    --color-text-secondary: #5a5a5a;
+    --color-text-muted: #8a8a8a;
+    --color-border-subtle: rgba(26, 26, 26, 0.08);
+    --color-border-medium: rgba(26, 26, 26, 0.15);
+    --color-border-strong: rgba(26, 26, 26, 0.25);
+    --color-accent: #d94a4a;
+    --color-accent-subtle: rgba(217, 74, 74, 0.08);
+    --color-success: #3d8a4a;
+    --color-success-subtle: rgba(61, 138, 74, 0.12);
+    --color-warning: #c4883c;
+    --color-warning-subtle: rgba(196, 136, 60, 0.14);
+    --color-error: #c42f3c;
+    --color-info: #3d7a8a;
+    --color-info-subtle: rgba(61, 122, 138, 0.12);
+    --color-tag-keyword: rgba(74, 93, 138, 0.85);
+    --shadow-medium: 0 2px 8px rgba(26, 26, 26, 0.08);
+    --font-body: Georgia, "Times New Roman", "Songti SC", serif;
+    --font-ui: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--font-ui); background: var(--color-bg-base); color: var(--color-text-primary); }
+
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 24px; }
+  .demo-note {
+    font-size: 12px; color: var(--color-text-muted); line-height: 1.8;
+    background: var(--color-bg-elevated); border: 1px dashed var(--color-border-medium);
+    border-radius: 8px; padding: 10px 14px; margin-bottom: 20px;
+  }
+  .demo-note b { color: var(--color-text-secondary); }
+  .demo-note code { font-family: ui-monospace, monospace; font-size: 11px; }
+  h2.sec { font-family: var(--font-body); font-size: 15px; font-weight: 600; margin: 28px 0 10px; letter-spacing: .02em; }
+  h2.sec span { font-family: var(--font-ui); font-size: 11px; font-weight: 400; color: var(--color-text-muted); margin-left: 8px; }
+
+  /* ===== 通用小部件 ===== */
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 7px;
+    border-radius: 9px; font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .pill--high { color: var(--color-success); background: var(--color-success-subtle); border-color: rgba(61,138,74,.25); }
+  .pill--mid  { color: var(--color-text-secondary); background: var(--color-bg-sunken); border-color: var(--color-border-medium); }
+  .pill--low  { color: var(--color-warning); background: var(--color-warning-subtle); border-color: rgba(196,136,60,.3); }
+  .pill--off  { color: var(--color-text-muted); background: var(--color-bg-sunken); border-color: var(--color-border-subtle); }
+
+  .seg { display: inline-flex; border: 1px solid var(--color-border-medium); border-radius: 7px; overflow: hidden; }
+  .seg button {
+    background: none; border: none; font-family: var(--font-ui); font-size: 11px; padding: 4px 9px;
+    color: var(--color-text-secondary); cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--color-border-subtle); }
+  .seg button.on { background: var(--color-accent-subtle); color: var(--color-accent); font-weight: 600; }
+
+  .sel {
+    font-family: var(--font-ui); font-size: 11px; color: var(--color-text-secondary);
+    background: var(--color-bg-base); border: 1px solid var(--color-border-medium);
+    border-radius: 7px; padding: 4px 6px;
+  }
+  .chip-toggle {
+    font-family: var(--font-ui); font-size: 11px; padding: 4px 10px; border-radius: 12px; cursor: pointer;
+    border: 1px solid var(--color-border-medium); background: none; color: var(--color-text-secondary);
+  }
+  .chip-toggle.on { border-color: var(--color-warning); background: var(--color-warning-subtle); color: var(--color-warning); font-weight: 600; }
+
+  .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--color-border-subtle); }
+  .toolbar__label { font-size: 11px; color: var(--color-text-muted); }
+
+  /* ===== 设置 → 订阅源（master / detail split） ===== */
+  .settings-shell { display: flex; gap: 0; border: 1px solid var(--color-border-subtle); border-radius: 12px; overflow: hidden; background: var(--color-bg-elevated); min-height: 560px; }
+  .settings-nav { width: 180px; border-right: 1px solid var(--color-border-subtle); background: var(--color-bg-base); padding: 10px 8px; font-size: 12px; color: var(--color-text-muted); }
+  .settings-nav div { padding: 6px 10px; border-radius: 6px; }
+  .settings-nav div.on { background: var(--color-accent-subtle); color: var(--color-accent); font-weight: 600; }
+  .settings-body { flex: 1; display: flex; min-width: 0; }
+
+  .master { width: 320px; min-width: 280px; border-right: 1px solid var(--color-border-subtle); display: flex; flex-direction: column; }
+  .master__search { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--color-border-subtle); font-size: 12px; color: var(--color-text-muted); }
+  .master__search input { flex: 1; border: none; background: none; outline: none; font-family: var(--font-ui); font-size: 12px; color: var(--color-text-primary); }
+  .master__list { flex: 1; overflow: auto; }
+  .cat { display: flex; align-items: center; gap: 6px; padding: 7px 12px; font-size: 11px; color: var(--color-text-muted); background: var(--color-bg-base); }
+  .cat b { font-weight: 600; color: var(--color-text-secondary); }
+  .item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; }
+  .item:hover { background: var(--color-bg-hover); }
+  .item.on { background: rgba(255,255,255,.7); box-shadow: inset 2px 0 0 var(--color-accent); }
+  .item__icon { width: 24px; height: 24px; border-radius: 6px; background: var(--color-bg-sunken); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--color-text-muted); flex: none; }
+  .item__info { flex: 1; min-width: 0; }
+  .item__title { display: block; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item__meta { display: block; font-size: 10px; color: var(--color-text-muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .item--noise .item__title { color: var(--color-text-secondary); }
+
+  .detail { flex: 1; min-width: 0; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; overflow: auto; }
+  .detail__title { font-family: var(--font-body); font-size: 15px; font-weight: 600; }
+  .detail__url { font-size: 11px; color: var(--color-text-muted); margin-top: 2px; }
+  .statusbar { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--color-text-muted); }
+
+  /* “来源质量”块 */
+  .quality {
+    border: 1px solid var(--color-border-subtle); border-radius: 10px;
+    background: var(--color-bg-base); padding: 12px 14px;
+  }
+  .quality__head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .quality__title { font-size: 12px; font-weight: 600; }
+  .quality__sub { font-size: 10px; color: var(--color-text-muted); }
+  .quality__head .seg { margin-left: auto; }
+  .stackbar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; border: 1px solid var(--color-border-subtle); }
+  .stackbar > i { display: block; height: 100%; }
+  .s-in { background: var(--color-success); }
+  .s-noboard { background: var(--color-warning); }
+  .s-pending { background: var(--color-border-strong); }
+  .s-settled { background: var(--color-bg-sunken); }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 10px; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  .rate-line { margin-top: 10px; font-size: 12px; }
+  .rate-line b { font-size: 15px; font-variant-numeric: tabular-nums; }
+  .rate-line b.high { color: var(--color-success); }
+  .rate-line b.low { color: var(--color-warning); }
+  .boards { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--color-border-subtle); }
+  .boards__title { font-size: 10px; color: var(--color-text-muted); margin-bottom: 6px; }
+  .boards__chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .bchip { font-size: 10px; padding: 3px 8px; border-radius: 10px; background: var(--color-bg-elevated); border: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+  .bchip b { font-weight: 600; color: var(--color-text-primary); }
+  .form-note { font-size: 10px; color: var(--color-text-muted); }
+
+  /* ===== /tags 板块页 板块内容 tab 内来源面板 ===== */
+  .tags-shell { display: flex; height: 620px; border: 1px solid var(--color-border-subtle); border-radius: 12px; overflow: hidden; background: var(--color-bg-elevated); }
+  .tags-side { width: 210px; border-right: 1px solid var(--color-border-subtle); background: var(--color-bg-base); padding: 10px; font-size: 12px; }
+  .tags-side .b { padding: 6px 9px; border-radius: 6px; color: var(--color-text-secondary); display: flex; justify-content: space-between; }
+  .tags-side .b.on { background: var(--color-accent-subtle); color: var(--color-accent); font-weight: 600; }
+  .tags-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .tabs { display: flex; gap: 4px; padding: 10px 16px 0; border-bottom: 1px solid var(--color-border-subtle); }
+  .tabs button {
+    background: none; border: none; font-family: var(--font-ui); font-size: 11px; color: var(--color-text-muted);
+    padding: 6px 10px; border-radius: 8px 8px 0 0; cursor: pointer; position: relative;
+  }
+  .tabs button.on { color: var(--color-accent); background: var(--color-accent-subtle); font-weight: 600; }
+  .tabs button.on::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--color-accent); }
+  .tabs .right { margin-left: auto; font-size: 11px; color: var(--color-text-muted); align-self: center; padding-bottom: 6px; }
+  .panel { padding: 16px; overflow: auto; }
+
+  .summary { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: 11px; color: var(--color-text-secondary); margin-bottom: 14px; }
+  .summary b { font-size: 14px; font-variant-numeric: tabular-nums; color: var(--color-text-primary); }
+  .summary .grow { flex: 1; }
+
+  table.src { width: 100%; border-collapse: collapse; font-size: 11px; }
+  table.src th { text-align: left; font-weight: 500; color: var(--color-text-muted); font-size: 10px; padding: 6px 8px; border-bottom: 1px solid var(--color-border-medium); }
+  table.src td { padding: 8px; border-bottom: 1px solid var(--color-border-subtle); vertical-align: middle; }
+  table.src td.num { font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
+  .srcname { display: flex; align-items: center; gap: 8px; }
+  .srcname .ico { width: 20px; height: 20px; border-radius: 5px; background: var(--color-bg-sunken); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--color-text-muted); flex: none; }
+  .sharebar { display: flex; align-items: center; gap: 8px; }
+  .sharebar .track { width: 110px; height: 6px; background: var(--color-bg-sunken); border-radius: 3px; overflow: hidden; }
+  .sharebar .track > i { display: block; height: 100%; background: var(--color-tag-keyword); }
+  .footnote { margin-top: 12px; font-size: 10px; color: var(--color-text-muted); line-height: 1.7; }
+  .empty { text-align: center; color: var(--color-text-muted); font-size: 12px; padding: 40px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="demo-note">
+    <b>可丢弃静态原型</b>（change <code>add-source-board-hit-rate</code>）— 不连真实接口，数据为 2026-09-18 真库实测值快照。<br>
+    两个面：① 设置 → 订阅源（列表指标 + 排序筛选 + 详情「来源质量」块）；② <code>/tags</code> 板块页「板块内容」tab 底部内嵌「来源构成」面板（不新增 tab）。<br>
+    配色引用 editorial 主题 token；主视口 1440×900，宽屏 1920×1080 下侧栏定宽、内容用满可用宽度。
+  </div>
+
+  <h2 class="sec">① 设置 → 订阅源 <span>master/detail split，窗口切换与排序筛选同区</span></h2>
+  <div class="settings-shell">
+    <div class="settings-nav">
+      <div class="on">订阅源</div>
+      <div>AI 模型</div><div>能力路由</div><div>AI 健康</div><div>队列</div>
+      <div>兴趣画像</div><div>Firecrawl</div><div>博查搜索</div><div>分析方法</div>
+      <div>RSSHub</div><div>出站代理</div><div>定时任务</div>
+    </div>
+    <div class="settings-body">
+      <!-- 左：列表 -->
+      <div class="master">
+        <div class="master__search">🔍 <input value="" placeholder="搜索订阅源…"> <span>23</span></div>
+        <div class="toolbar">
+          <div class="seg"><button class="on">7 天</button><button>30 天</button><button>90 天</button></div>
+          <select class="sel">
+            <option>默认（分类内标题）</option>
+            <option>分类内 · 入板块率 ↑</option>
+            <option>分类内 · 篇数 ↓</option>
+            <option>分类内 · 杂音量 ↓</option>
+          </select>
+          <button class="chip-toggle on">只看低命中 &lt;30%</button>
+        </div>
+        <div class="master__list">
+          <div class="cat">▾ 📁 <b>新闻资讯</b> <span style="margin-left:auto">6</span></div>
+          <div class="item item--noise on">
+            <div class="item__icon">华</div>
+            <div class="item__info">
+              <span class="item__title">华尔街见闻 - 实时快讯 - 要闻</span>
+              <span class="item__meta">7 天内 1662 篇 · 入板块 437</span>
+            </div>
+            <span class="pill pill--low">26%</span>
+          </div>
+          <div class="item item--noise">
+            <div class="item__icon">凤</div>
+            <div class="item__info">
+              <span class="item__title">资讯_凤凰网</span>
+              <span class="item__meta">7 天内 499 篇 · 入板块 160</span>
+            </div>
+            <span class="pill pill--low">32%</span>
+          </div>
+          <div class="item">
+            <div class="item__icon">华</div>
+            <div class="item__info">
+              <span class="item__title">华尔街见闻 - 最热文章</span>
+              <span class="item__meta">7 天内 67 篇 · 入板块 56</span>
+            </div>
+            <span class="pill pill--high">84%</span>
+          </div>
+          <div class="cat">▾ 📁 <b>技术社区</b> <span style="margin-left:auto">5</span></div>
+          <div class="item">
+            <div class="item__icon">V2</div>
+            <div class="item__info">
+              <span class="item__title">V2EX - 技术</span>
+              <span class="item__meta">7 天内 162 篇 · 入板块 71</span>
+            </div>
+            <span class="pill pill--mid">44%</span>
+          </div>
+          <div class="item">
+            <div class="item__icon">HN</div>
+            <div class="item__info">
+              <span class="item__title">HackerNews</span>
+              <span class="item__meta">7 天内 14 篇 · 入板块 1</span>
+            </div>
+            <span class="pill pill--low">7%</span>
+          </div>
+          <div class="item">
+            <div class="item__icon">HF</div>
+            <div class="item__info">
+              <span class="item__title">Hugging Face - Blog</span>
+              <span class="item__meta">打标已关闭 · 7 天内 1 篇</span>
+            </div>
+            <span class="pill pill--off">打标关闭</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右：详情 -->
+      <div class="detail">
+        <div>
+          <div class="detail__title">华尔街见闻 - 实时快讯 - 要闻</div>
+          <div class="detail__url">https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel</div>
+        </div>
+        <div class="statusbar">
+          <span>🕐 每 60 分钟</span><span>📄 最多 100 篇</span><span>📑 96 篇在列</span><span>✅ 12 分钟前刷新</span>
+        </div>
+
+        <div class="quality">
+          <div class="quality__head">
+            <span class="quality__title">来源质量</span>
+            <span class="quality__sub">窗口内文章命中板块的比例（含已归档）</span>
+            <div class="seg"><button class="on">7 天</button><button>30 天</button><button>90 天</button></div>
+          </div>
+          <div class="stackbar">
+            <i class="s-in" style="width:26.3%"></i>
+            <i class="s-noboard" style="width:44.5%"></i>
+            <i class="s-pending" style="width:29.2%"></i>
+          </div>
+          <div class="legend">
+            <span><i class="s-in"></i>入板块 437</span>
+            <span><i class="s-noboard"></i>有标签无板块 739</span>
+            <span><i class="s-pending"></i>打标排队中 486</span>
+            <span><i class="s-settled"></i>已处理无标签 0</span>
+          </div>
+          <div class="rate-line">入板块率 <b class="low">26.3%</b> <span style="color:var(--color-text-muted);font-size:11px">（437 / 1662）</span></div>
+          <div class="boards">
+            <div class="boards__title">命中板块分布（Top 6，同一文章命中多板块时各计一次）</div>
+            <div class="boards__chips">
+              <span class="bchip">美国新闻 <b>142</b></span>
+              <span class="bchip">中国国内新闻 <b>118</b></span>
+              <span class="bchip">中东地缘政治与美伊关系 <b>61</b></span>
+              <span class="bchip">俄乌冲突 <b>48</b></span>
+              <span class="bchip">生成式 AI 与大模型厂商 <b>39</b></span>
+              <span class="bchip">台湾新闻 <b>29</b></span>
+              <span class="bchip">其他 2 个板块 <b>—</b></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-note">↓ 下方为既有设置项（分类 / 自动刷新 / 最大文章数 / 管线 toggle），本 change 不改动其契约</div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">② /tags 板块页 → 「板块内容」tab 底部内嵌「来源构成」面板 <span>本板块由哪些订阅源供血（不新增 tab）</span></h2>
+  <div class="tags-shell">
+    <div class="tags-side">
+      <div class="b on"><span>美国新闻</span><span>437</span></div>
+      <div class="b"><span>中国国内新闻</span><span>612</span></div>
+      <div class="b"><span>生成式 AI 与大模型厂商</span><span>286</span></div>
+      <div class="b"><span>中东地缘政治与美伊关系</span><span>154</span></div>
+      <div class="b"><span>俄乌冲突</span><span>121</span></div>
+      <div class="b"><span>影视作品</span><span>38</span></div>
+    </div>
+    <div class="tags-main">
+      <div class="tabs">
+        <button class="on">板块内容</button><button>话题总览</button><button>日报</button><button>文章</button>
+        <button>数据增强</button>
+        <div class="right">👁 我在追踪 (2)</div>
+      </div>
+      <div class="panel">
+        <div style="padding:6px 8px 14px; font-size:11px; color:var(--color-text-muted); border-bottom:1px dashed var(--color-border-subtle);">
+          ↑ 既有「板块构成」面板（示意省略）——标签构成 / 组合标签等，本 change 不改动；下方为本 change 新增内容
+        </div>
+        <div class="summary">
+          <b style="font-size:12px;">来源构成</b>
+          <div class="seg"><button class="on">7 天</button><button>30 天</button><button>90 天</button></div>
+          <span>本板块 <b>437</b> 篇</span>
+          <span>来源 <b>8</b> 个</span>
+          <span>最大来源 <b>华尔街见闻 - 实时快讯 - 要闻</b>（51%）</span>
+          <span class="grow"></span>
+          <select class="sel"><option>按篇数 ↓</option><option>按该源入板块率 ↑</option></select>
+        </div>
+
+        <table class="src">
+          <thead>
+            <tr>
+              <th style="width:34%">订阅源</th>
+              <th style="width:12%">本板块篇数</th>
+              <th style="width:22%">占本板块</th>
+              <th style="width:16%">该源入板块率</th>
+              <th style="width:16%">该源窗口内总量</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><div class="srcname"><span class="ico">华</span>华尔街见闻 - 实时快讯 - 要闻</div></td>
+              <td class="num">142</td>
+              <td><div class="sharebar"><div class="track"><i style="width:100%"></i></div><span class="num">51%</span></div></td>
+              <td><span class="pill pill--low">26%</span></td>
+              <td class="num">1662</td>
+            </tr>
+            <tr>
+              <td><div class="srcname"><span class="ico">凤</span>资讯_凤凰网</div></td>
+              <td class="num">68</td>
+              <td><div class="sharebar"><div class="track"><i style="width:48%"></i></div><span class="num">24%</span></div></td>
+              <td><span class="pill pill--low">32%</span></td>
+              <td class="num">499</td>
+            </tr>
+            <tr>
+              <td><div class="srcname"><span class="ico">华</span>华尔街见闻 - 最热文章</div></td>
+              <td class="num">34</td>
+              <td><div class="sharebar"><div class="track"><i style="width:24%"></i></div><span class="num">12%</span></div></td>
+              <td><span class="pill pill--high">84%</span></td>
+              <td class="num">67</td>
+            </tr>
+            <tr>
+              <td><div class="srcname"><span class="ico">V2</span>V2EX - 技术</div></td>
+              <td class="num">12</td>
+              <td><div class="sharebar"><div class="track"><i style="width:8%"></i></div><span class="num">4%</span></div></td>
+              <td><span class="pill pill--mid">44%</span></td>
+              <td class="num">162</td>
+            </tr>
+            <tr>
+              <td><div class="srcname"><span class="ico">HN</span>HackerNews</div></td>
+              <td class="num">1</td>
+              <td><div class="sharebar"><div class="track"><i style="width:1%"></i></div><span class="num">&lt;1%</span></div></td>
+              <td><span class="pill pill--low">7%</span></td>
+              <td class="num">14</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="footnote">
+          口径：窗口内文章（按 <code>coalesce(pub_date, created_at)</code> 取 7/30/90 天，含已归档）中至少 1 个标签挂到启用板块的篇数；本板块内按文章去重，同一篇文章命中多个板块时在每个板块各计一次（故各板块篇数合计 = 本板块总数）。<br>
+          只读面板：处置噪声源请到 设置 → 订阅源（调低最大文章数 / 关闭打标 / 退订）。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">③ 空态 <span>板块窗口内无文章 / 源窗口内样本不足</span></h2>
+  <div style="display:flex;gap:16px;flex-wrap:wrap">
+    <div style="flex:1;min-width:320px;border:1px solid var(--color-border-subtle);border-radius:10px;background:var(--color-bg-base)">
+      <div class="panel">
+        <div class="summary"><div class="seg"><button class="on">7 天</button><button>30 天</button><button>90 天</button></div><span>本板块 <b>0</b> 篇</span></div>
+        <div class="empty">近 7 天没有文章归入本板块<br><span style="font-size:11px">试试切到 30 天或 90 天窗口</span></div>
+      </div>
+    </div>
+    <div style="flex:1;min-width:320px;border:1px solid var(--color-border-subtle);border-radius:10px;background:var(--color-bg-base)">
+      <div class="panel">
+        <div class="quality__head"><span class="quality__title">来源质量</span><div class="seg"><button class="on">7 天</button><button>30 天</button><button>90 天</button></div></div>
+        <div class="empty" style="padding:24px 0">窗口内仅 2 篇，样本不足<br><span style="font-size:11px">入板块率需 ≥5 篇样本才展示，避免小样本误判</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

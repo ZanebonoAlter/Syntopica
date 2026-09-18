@@ -2,21 +2,35 @@
 import { computed, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import FeedIcon from '~/components/feed/FeedIcon.vue'
-import type { RssFeed, Category } from '~/types'
+import FeedSourceQualityBlock from './FeedSourceQualityBlock.vue'
+import type { FeedBoardHitStats, RssFeed, Category } from '~/types'
+import type { StatsWindowDays } from '../utils/sourceQuality'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   feed: RssFeed
   categories: Category[]
   refreshOptions: { label: string; value: number }[]
   maxArticlesOptions: { label: string; value: number }[]
   loading: boolean
-}>()
+  /** 来源质量块（add-source-board-hit-rate §4.4）：统计/窗口/错误由 SettingsSectionFeeds 提升持有 */
+  stats?: FeedBoardHitStats
+  statsLoading?: boolean
+  statsError?: string | null
+  windowDays?: StatsWindowDays
+}>(), {
+  stats: undefined,
+  statsLoading: false,
+  statsError: null,
+  windowDays: 7,
+})
 
 const emit = defineEmits<{
   'update-feed': [feedId: string, setting: 'refresh_interval' | 'max_articles' | 'tagging_enabled' | 'firecrawl_enabled' | 'completion_on_refresh' | 'category_id', value: number | boolean | null]
   'refresh-feed': [feedId: string]
   'create-category': [name: string]
   'delete-feed': [feedId: string]
+  'set-window': [days: StatsWindowDays]
+  'retry-stats': []
 }>()
 
 // ---- Category management ----
@@ -138,6 +152,17 @@ function formatStatus(feed: RssFeed): string {
         {{ formatStatus(feed) }}
       </span>
     </div>
+
+    <!-- 来源质量块（只读观测，位置契约：状态条之后、设置表单之前；失败不阻断下方表单） -->
+    <FeedSourceQualityBlock
+      :feed="feed"
+      :stats="stats"
+      :loading="statsLoading"
+      :error="statsError"
+      :window-days="windowDays"
+      @set-window="emit('set-window', $event)"
+      @retry="emit('retry-stats')"
+    />
 
     <!-- Settings form -->
     <div class="feed-detail__form">

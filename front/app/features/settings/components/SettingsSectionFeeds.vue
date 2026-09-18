@@ -5,6 +5,7 @@ import { useGlobalSettings } from '~/composables/useGlobalSettings'
 import { useApiStore } from '~/stores/api'
 import FeedMasterList from './FeedMasterList.vue'
 import FeedDetailEditor from './FeedDetailEditor.vue'
+import { useFeedSourceQuality } from '~/features/settings/composables/useFeedSourceQuality'
 
 const apiStore = useApiStore()
 const {
@@ -13,11 +14,24 @@ const {
   updateFeedSetting, refreshFeed, createCategoryAndAssign, deleteFeed,
 } = useGlobalSettings()
 
+// 来源质量聚合（add-source-board-hit-rate §4.5）：窗口状态提升于此，
+// 列表工具栏与详情块共享同一实例（spec：任一处切换两处同步）。
+const {
+  windowDays: statsWindowDays,
+  statsByFeed,
+  loading: statsLoading,
+  error: statsError,
+  setWindow: setStatsWindow,
+  retry: retryStats,
+  load: loadStats,
+} = useFeedSourceQuality()
+
 const selectedFeedId = ref<string | undefined>()
 
-// Fetch ALL feeds when entering settings (main page may have filtered by category)
+// 全量 feeds 与统计并行拉取，任一失败不阻塞另一个（tasks 4.5）
 onMounted(() => {
   apiStore.fetchFeeds({ per_page: 10000 })
+  loadStats()
 })
 
 const allFeeds = computed(() =>
@@ -26,6 +40,11 @@ const allFeeds = computed(() =>
 
 const selectedFeed = computed(() =>
   allFeeds.value.find(f => f.id === selectedFeedId.value)
+)
+
+/** 选中源在当前窗口下的统计（无数据时详情块显示骨架/错误态，不阻塞表单） */
+const selectedFeedStats = computed(() =>
+  selectedFeed.value ? statsByFeed.value[String(selectedFeed.value.id)] : undefined
 )
 
 function onCreateCategory(name: string) {
@@ -98,6 +117,10 @@ function reloadFeeds() {
           v-model:selected-feed-id="selectedFeedId"
           :feeds-by-category="feedsByCategory"
           :collapsed-categories="collapsedCategories"
+          :stats-by-feed="statsByFeed"
+          :stats-loading="statsLoading"
+          :window-days="statsWindowDays"
+          @set-window="setStatsWindow"
           @toggle-collapse="collapsedCategories[$event] = !collapsedCategories[$event]"
         />
       </div>
@@ -112,6 +135,12 @@ function reloadFeeds() {
           :refresh-options="refreshOptions"
           :max-articles-options="maxArticlesOptions"
           :loading="loading"
+          :stats="selectedFeedStats"
+          :stats-loading="statsLoading"
+          :stats-error="statsError"
+          :window-days="statsWindowDays"
+          @set-window="setStatsWindow"
+          @retry-stats="retryStats"
           @update-feed="updateFeedSetting"
           @refresh-feed="refreshFeed"
           @create-category="onCreateCategory"
@@ -163,7 +192,9 @@ function reloadFeeds() {
 }
 
 .feeds-master {
-  width: 280px;
+  /* ui-design Layout Contract：master 栏 width: 320px; min-width: 280px */
+  width: 320px;
+  min-width: 280px;
   flex-shrink: 0;
   border-right: 1px solid var(--color-border-subtle);
   overflow: hidden;

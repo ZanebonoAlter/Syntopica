@@ -83,6 +83,18 @@ ArticleListPanel → ArticleContentView
   → 后端聚合进 reading_behaviors 表（偏好向量画像的权重源，见 flow/discovery.md）
 ```
 
+### 源视角观测（源 → 文章 → 标签 → 板块的反向聚合，add-source-board-hit-rate）
+
+```text
+GET /api/feeds/board-hit-stats?window=7
+  → 单次批量聚合全部源（不逐源 N+1）
+  → 每源三分解：入板块 in_board / 有标签未入板块 tagged_no_board
+     / 未打标两分（排队中 untagged_pending · 已处理完 untagged_settled）
+  → + 板块分布 boards[]（该源命中板块及去重篇数）
+```
+
+把正向链路（源 → 文章 → 标签 → 板块）反查为只读观测：命中 = 文章至少 1 个标签经 `topic_tag_board_labels` 挂到 `label_type='board' AND status='active'` 的版块；窗口白名单 {7,30,90} 天。口径三条硬约束（按文章去重 / 含已归档 / 限窗口）唯一实现在 `internal/tagmanagement/service/sourcestats/`，端点契约见 [feeds.md](../api/feeds.md)。入口在设置 → 订阅源（列表「入板块率」pill + 详情「来源质量」三分解块，只读展示，处置仍走既有订阅源编辑控件）。
+
 ### Feed 图标获取与渲染（本地化）
 
 ```text
@@ -132,6 +144,7 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
    - 版式契约：正文/元信息/标签/导语/AI 整理稿同列对齐（`.reading-col`，max-width 840px，面板窄于 840 取可用宽），标题与图片/表格走 breakout 略宽于列，分区靠留白+细分隔线，不得回退到边框+投影卡片堆叠；标题衬线字体栈、红色 kicker/短粗线为编辑签名元素。
    - **CSS 作用域红线**：`ArticleContent.css` 的全局 `.markdown-body` 元素排版是 tags 域三面板（QAPanel/CausalAnalysisReport/BoardEnrichmentPanel）的共享宿主，基础排版不得改动；阅读页编辑版式覆写（引用块轻左边线、宋体 h2/h3、表格/图片 breakout 负边距）一律限定 `.preview-mode` / `.markdown-article` / `.markdown-summary` 作用域。
    - 处理链状态只以工具栏单图标四态呈现（语义同 reading-list-panel），「处理详情」浮层与「更多操作」⋯ 菜单（手动抓取/生成总结/手动打标/内容源切换）都按 feed 能力开关显隐；description 导语只在实质内容（normalize 后 ≥4 字符且与正文不重复）时渲染。
+8. **源/版块命中统计端点必须只读，口径三条硬约束唯一实现在 sourcestats 包，不得复制口径或“顺手”加 archived 过滤**（add-source-board-hit-rate）：`GET /api/feeds/board-hit-stats` 与 `GET /api/semantic-boards/:id/source-breakdown` 只读（不写库、不触发打标或匹配）；口径唯一实现 `internal/tagmanagement/service/sourcestats/`，三条硬约束——按文章去重（`COUNT(DISTINCT id)` + `EXISTS`，不 JOIN 造成行倍增）、含已归档（窗口查询不得过滤 `archived`，高频源命中几乎全在归档区）、限窗口（白名单 {7,30,90}，缺省 7，非法 400 不回退默认）；每源恒等式 `articles == in_board + tagged_no_board + untagged_pending + untagged_settled`。权威口径见 `openspec/specs/source-board-hit-rate/spec.md`，要改口径先改 spec。
 
 ## 代码入口
 
@@ -139,6 +152,7 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 - **后端阅读行为（admin 域）**：`backend-go/internal/admin/handler/preferences_handler.go`（仅留 reading-behavior handler）、`backend-go/internal/admin/routes.go`（`/reading-behavior/*`）；旧 `preferences_service.go` / `job_preference_update.go` / `/user-preferences/*` 已删除。
 - **后端偏好画像 / 订阅源发现（admin 域）**：`backend-go/internal/admin/service/{preference_profile_service,recommendation_service,catalog_sync_service,catalog_extras,rsshub_config}.go`、`backend-go/internal/admin/handler/{preference_profile_handler,discovery_handler}.go`、`backend-go/internal/admin/scheduler/{job_preference_profile_update,job_rsshub_catalog_sync}.go`，详见 [discovery.md](discovery.md)。
 - **打标签（tagmanagement 域）**：`backend-go/internal/tagmanagement/`（`TagQueue`、article_tagger）。
+- **源/版块命中统计（tagmanagement 域 sourcestats）**：`backend-go/internal/tagmanagement/service/sourcestats/`（口径唯一实现：`ParseWindow` 白名单、`FeedBoardHitStats` 源视角、`BoardSourceBreakdown` 版块视角）；源视角端点 handler `internal/reader/handler/feed_board_stats_handler.go`，版块视角 `internal/tagmanagement/handler/board_source_breakdown_handler.go`；前端 `front/app/features/settings/components/`（`FeedSourceQualityPill.vue` 行 pill、`FeedSourceQualityBlock.vue` 详情三分解块、`FeedMasterList.vue` 工具栏）与 `front/app/features/settings/composables/useFeedSourceQuality.ts`。
 - **前端**：`front/app/features/articles/`（列表/正文/阅读追踪；正文区组件 ArticleContentView/ArticleContentToolbar/ArticleContentPreviewPanel/ArticleStatusMenu——后者承担工具栏处理状态图标、详情浮层与 ⋯ 菜单）、`front/app/components/article/ArticleContent.css`（阅读列版式 + `.markdown-body` 共享排版）、`front/app/features/shell/`（FeedLayoutShell、导航）、`front/app/stores/`（api/feeds/articles）、`front/app/composables/useReadingTracker.ts`（阅读行为采集）、`front/app/utils/articleContentGuards.ts`（description 展示 guard）。偏好画像 UI 与发现页入口见 [discovery.md](discovery.md)。图标：`front/app/components/feed/FeedIcon.vue`（三类 icon 值渲染 + 降级）、`front/app/plugins/iconify-local.ts` + `front/app/assets/iconify-subset.json`（UI 图标本地子集）、`front/scripts/generate-icon-subset.mjs`（子集生成）。
 - 应用装配：`backend-go/internal/app/router.go`、`backend-go/internal/app/runtime.go`。
 
@@ -160,3 +174,4 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 | 2026-09-17 | heal-dangling-article-refs | 删除路径（删订阅源 / 删分类）连带删除文章时 MUST 同事务维护按 ID 引用的 jsonb 数组；显式删除不依赖遗留 FK；删分类确认文案与实现对齐 | [`openspec/changes/archive/2026-09-17-heal-dangling-article-refs`](../../../openspec/changes/archive/2026-09-17-heal-dangling-article-refs) |
 | 2026-09-17 | declutter-article-list-panel | 阅读页中间栏（文章列表面板）行式改版：单一 surface 行式列表（去卡片框/消灭白奶油拼贴）、处理状态收敛为行尾单图标四态（排队⏳/处理中⟳/失败⚠/完成淡灰✓）+「处理详情」浮层（抓取/总结/标签三行+失败错误文案）、订阅状态卡缩为头部 ⓘ popover（只读）、日期筛选并入标题栏+条件 chip、单 feed 视图行内去重来源名、虚拟列表固定行高 80px；纯前端展示层，无业务约束变更；新 spec 能力 `reading-list-panel` | [`openspec/changes/archive/2026-09-17-declutter-article-list-panel`](../../../openspec/changes/archive/2026-09-17-declutter-article-list-panel) |
 | 2026-09-17 | redesign-reading-pane | 阅读页右侧文章主体克制阅读版式重排：reader 840px 阅读列居中（760 起步、超宽屏反馈后上调）、去卡片化（留白+细分隔线分区）、宋体标题+红 kicker 编辑签名、暖米渐变背景（噪点方案试看后否决）、处理状态横幅撤除改工具栏单图标四态+详情浮层、手动操作收 ⋯ 菜单（按 feed 能力显隐）、description 导语化+guard 收紧；新 spec 能力 `reading-article-pane` | [`archive/2026-09-17-redesign-reading-pane`](../../../openspec/changes/archive/2026-09-17-redesign-reading-pane) |
+| 2026-09-18 | add-source-board-hit-rate | 源视角观测：新增只读聚合 `GET /api/feeds/board-hit-stats`（窗口三分解 + 板块分布），把正向链路反查为「哪个源在喂有用的东西」；口径三条硬约束（按文章去重/含已归档/限窗口）唯一实现在 `sourcestats` 包；前端设置 → 订阅源列表 pill + 详情三分解块；版块视角与板块页来源面板见 [semantic-board.md](semantic-board.md) | [`openspec/changes/archive/2026-09-18-add-source-board-hit-rate`](../../../openspec/changes/add-source-board-hit-rate) |

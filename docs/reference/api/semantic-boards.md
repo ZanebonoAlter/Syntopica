@@ -17,6 +17,7 @@
 | POST | `/semantic-boards/:id/composition` | 新增 composition 辅助标签 |
 | DELETE | `/semantic-boards/:id/composition/:auxiliary_label_id` | 移除 composition 辅助标签 |
 | GET | `/semantic-boards/:id/articles` | 查询版块下的文章 |
+| GET | `/semantic-boards/:id/source-breakdown` | 查询版块来源构成（只读聚合，add-source-board-hit-rate） |
 | GET | `/semantic-boards/:id/suggest-auxiliaries` | 版块级辅助标签建议 |
 | GET | `/semantic-boards/suggest-auxiliaries` | 全局辅助标签建议 |
 | GET | `/semantic-boards/:id/match-detail/:tagId` | tag 与版块匹配明细 |
@@ -724,6 +725,43 @@ Response（`data` 为文章数组，`pagination` 与 `data` 同级）：
 ```
 
 文章字段同 `GET /articles/:id`（`ToDict()`），额外带 `feed_name` 与 `filtered_tags`；无数据时 `data` 为空数组。
+
+### GET `/semantic-boards/:id/source-breakdown`
+
+查询版块 `:id` 窗口内的来源构成（add-source-board-hit-rate）：哪些订阅源在供血、各占多少篇与比例。**只读聚合**：不写库、不触发打标或匹配。
+
+与 [`/articles`](#get-semantic-boards-idarticles) 的口径差异：`/articles` 是版块文章列表（可分页/过滤，含 tag 匹配质量明细）；`source-breakdown` 是按源聚合的命中构成——**含已归档文章、按文章去重（同版块内多标签只计一次；同一文章命中多版块时在各版块各计一次）、必限窗口**（三条口径硬约束同 `GET /api/feeds/board-hit-stats`，见 `docs/reference/api/feeds.md`，唯一实现 `internal/tagmanagement/service/sourcestats/`）。
+
+Query：
+
+- `window` 可选，白名单 `7`/`30`/`90`，缺省 `7`；非法值返回 `400`。
+
+Response `data`：
+
+```json
+{
+  "total_articles": 437,
+  "source_count": 8,
+  "sources": [
+    {
+      "feed_id": 17,
+      "title": "华尔街见闻 - 最热文章",
+      "articles": 142,
+      "share": 0.325,
+      "feed_articles": 67,
+      "feed_hit_rate": 0.836
+    }
+  ]
+}
+```
+
+- `total_articles`：该版块窗口内命中文章总数（按文章去重）。
+- `sources[].articles`：该源在本版块的命中篇数；各项之和恒等于 `total_articles`。
+- `sources[].share`：`articles / total_articles`，`total_articles=0` 时为 0。
+- `feed_articles` / `feed_hit_rate`：该源自身窗口内总量与整体命中率（上下文列，用于识别只偶尔命中本版块的源）。
+
+- 版块不存在或非 `board` 类型返回 `404`；disabled 版块**不是** 404（按命中口径聚合为 0）。
+- 窗口内无命中文章时 `total_articles=0`、`source_count=0`、`sources=[]`，属正常结果（200）。
 
 ## 持久话题手动编排
 

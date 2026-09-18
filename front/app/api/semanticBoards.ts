@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { ApiResponse } from '~/types'
+import type { ApiResponse, BoardSourceBreakdown } from '~/types'
 
 export interface SemanticBoard {
   id: number
@@ -334,6 +334,14 @@ export function useSemanticBoardsApi() {
     return apiClient.get(`/semantic-boards/suggest-auxiliaries${query ? `?${query}` : ''}`)
   }
 
+  /**
+   * 板块来源构成（add-source-board-hit-rate，只读）：该板块窗口内供血源列表。
+   * 后端默认按篇数降序；板块不存在/非 board 类型 → 404。
+   */
+  async function getBoardSourceBreakdown(id: number, windowDays: number): Promise<ApiResponse<BoardSourceBreakdown>> {
+    return apiClient.get<BoardSourceBreakdown>(`/semantic-boards/${id}/source-breakdown?window=${windowDays}`)
+  }
+
   async function getBoardArticles(id: number, params?: Record<string, unknown>): Promise<ApiResponse<BoardArticle[]>> {
     const query = params ? apiClient.buildQueryParams(params) : ''
     return apiClient.get(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
@@ -356,12 +364,13 @@ async function suggestAuxiliariesForBoard(boardId: number, params?: {
     return apiClient.post(`/semantic-boards/${boardId}/composition`, { auxiliary_label_id: auxiliaryLabelId })
   }
 
-return {
+  return {
     getBoards,
     createBoard,
     updateBoard,
     deleteBoard,
     getComposition,
+    getBoardSourceBreakdown,
     removeFromComposition,
     addComposition,
     suggestUpgrade,

@@ -7,6 +7,8 @@ import ThemeToggle from '~/components/ui/ThemeToggle.vue'
 import { useOnboarding } from '~/composables/useOnboarding'
 import AddSemanticBoardDialog from './AddSemanticBoardDialog.vue'
 import BoardCompositionPanel from './BoardCompositionPanel.vue'
+// 来源构成面板（add-source-board-hit-rate §5）：默认 tab 首屏可见，不走 lazyPanel，静态 import
+import BoardSourcePanel from './BoardSourcePanel.vue'
 import AuxiliaryLabelPool from './AuxiliaryLabelPool.vue'
 import CompositeLabelPool from './CompositeLabelPool.vue'
 import UpgradeSuggestionPanel from './UpgradeSuggestionPanel.vue'
@@ -214,6 +216,13 @@ onMounted(() => { void loadWatchCount() })
             @remove="handleRemoveComposition"
             @refresh="() => loadComposition(selectedBoardId!)"
             @select-topic="handleLandscapeSelectTopic"
+          />
+
+          <!-- 来源构成（add-source-board-hit-rate §5）：板块构成之后、tab 内容最末；
+               同受 contentTab === 'composition' 渲染控制（切其它 tab 面板卸载），随选中板块并行重取 -->
+          <BoardSourcePanel
+            v-if="contentTab === 'composition'"
+            :board-id="selectedBoardId"
           />
 
           <BoardEnrichmentPanel
