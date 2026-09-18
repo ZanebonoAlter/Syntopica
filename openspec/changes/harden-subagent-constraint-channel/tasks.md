@@ -20,13 +20,11 @@
 - [x] T6 `docs/reference/harness/pi-extensions.md` 补「子线程通道矩阵」小节：pi-web / pi-subagents × 前台 / 后台四象限（扩展加载 / 约束可达 / 门禁行为）+ 已知限制（AGENTS.md 不自动加载、前台盲区编排兜底、pi-web 升级漂移依赖点）
 - [x] T7 `docs/reference/开发执行规范.md` §0.6 派发要点补一句：实现/验证类子线程用 `implementer` 档（带扩展），只读探索用内置 explore/plan，前台派发属盲区须任务文本带红线
 
-## 测试
-
+## 4. 测试
 - [x] T8 smoke：`.pi/extensions/tests/` 补 `isChildSession` 判定矩阵 + quality-gate 子线程 bypass 行为（零命令 + 一条 bypass 记账）+ 主会话不受影响 + policy.decision 形状断言；`bash .pi/extensions/tests/run-smoke.sh` 全绿
 - [x] T9 既有 smoke 回归（constraint-injection 全量用例含新增 pi-web 继承用例）不红
 
-## 文档
-
+## 5. 文档
 <!-- doc-impact: none(harness 与执行规范文档不在七域清单；本 change 文档产出为 harness/pi-extensions.md 与开发执行规范 §0.6，已列于上方 T6/T7 与验证节 V4/V5) -->
 
 - [x] docs/research/subagent-constraint-gap/explore-findings.md（已完成，研究底稿）
@@ -34,19 +32,25 @@
 - [x] docs/reference/开发执行规范.md（T7）
 - [x] .agents/skills/harness-facts/SKILL.md（T5 词表 + toolchain-down 补登）
 
-## 验证
-
+## 6. 验证
 Scenario→测试映射：
 
 | Scenario | 测试文件 |
 | --- | --- |
-| subagent-harness-coverage·实现档带扩展派发后约束可达 | 人工：V1 实测（事件库三事件） |
-| subagent-harness-coverage·只读探索档保持轻量 | 人工：V2（内置档现状不变） |
-| subagent-harness-coverage·子线程 turn_end 降载并记账 | `.pi/extensions/tests/quality-gate.behavior.smoke.cjs`（场景 J） |
-| subagent-harness-coverage·主会话门禁行为不变 | `.pi/extensions/tests/quality-gate.behavior.smoke.cjs`（场景 K）+ `.pi/extensions/tests/quality-gate.smoke.cjs`（CS 判定矩阵） |
-| subagent-harness-coverage·矩阵文档可检索 | V4 grep 命令 |
-| constraint-injection·子线程显式继承父会话（pi-web 通道） | `.pi/extensions/tests/constraint-injection.smoke.cjs`（新增用例）+ 人工：V1 |
-| constraint-injection·其余既有 Scenario | `.pi/extensions/tests/constraint-injection.smoke.cjs`（回归，T9） |
+| 两会话交叉绑定互不污染 | `.pi/extensions/tests/constraint-injection.smoke.cjs` |
+| 他会话绑定变化不刷新本会话稳定层 | `.pi/extensions/tests/constraint-injection.smoke.cjs` |
+| 无自身绑定且无父子关系时不借用他会话 | `.pi/extensions/tests/constraint-injection.smoke.cjs` |
+| 子线程显式继承父会话 | `.pi/extensions/tests/constraint-injection.smoke.cjs` |
+| 子线程显式继承父会话（pi-web 通道） | `.pi/extensions/tests/constraint-injection.smoke.cjs` |
+| 命中集按会话隔离 | `.pi/extensions/tests/constraint-injection.smoke.cjs` |
+| turn 绑定锁按会话隔离 | `.pi/extensions/tests/constraint-injection.smoke.cjs` |
+| 会话条目有界淘汰 | `.pi/extensions/tests/constraint-injection.smoke.cjs` |
+| 无 sessionId 语境行为等价 | `.pi/extensions/tests/constraint-injection.smoke.cjs` |
+| 实现档带扩展派发后约束可达 | 人工：V1 实测（2026-09-18 四事件齐活 + 转录含注入消息） |
+| 只读探索档保持轻量 | 人工：V2 实测（explore 探针转录零约束痕迹） |
+| 子线程 turn_end 降载并记账 | `.pi/extensions/tests/quality-gate.behavior.smoke.cjs` |
+| 主会话门禁行为不变 | `.pi/extensions/tests/quality-gate.behavior.smoke.cjs` |
+| 矩阵文档可检索 | 人工：V4 grep 命中「子线程通道矩阵」 |
 
 验证命令（每条「命令 + 期望」）：
 
