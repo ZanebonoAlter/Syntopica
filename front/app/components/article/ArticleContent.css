@@ -578,6 +578,13 @@ img[src*="Base64-Image-Removed"] {
     row-gap: 0.4rem;
   }
 
+  /* 操作组含导航按钮时可达 353px > 可用宽，允许自身横滑（正文不破版） */
+  .header-actions {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
   .feed-badge {
     max-width: 100%;
   }
@@ -587,6 +594,14 @@ img[src*="Base64-Image-Removed"] {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* 阅读容器断词兑底：RSS 原文容器（如微信 rich_media_content）不走 .markdown-body 的
+     word-break:break-word，连续长单词（满屏字母/长 URL）在 375 下无断点撑破正文
+     （实例：正文「AAAA…！」单词 440px，preview-mode 被撑到 scrollWidth 482 可横滑出空白） */
+  .preview-mode .reading-col {
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   .article-title-full {
