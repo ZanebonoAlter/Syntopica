@@ -28,6 +28,24 @@
 
 ## 6. 验证（§11 固定尾节，每条 = 命令 + 期望结果）
 
+### Scenario → 测试映射
+
+| Scenario | 测试文件 |
+| --- | --- |
+| 完整 prompt 落库 | backend-go/internal/platform/airouter/router_test.go |
+| token 用量记录 | backend-go/internal/platform/airouter/openai_compatible_test.go |
+| token 用量记录 | backend-go/internal/platform/airouter/router_test.go |
+| 无 usage 块不落全零 | backend-go/internal/platform/airouter/openai_compatible_test.go |
+| 无 usage 块不落全零 | backend-go/internal/platform/airouter/router_test.go |
+| 历史行回填 | 人工：本 change 无迁移，行为未变更，继承自 ai-call-logging-schema 既有迁移，不重验 |
+| operation 列约束 | 人工：本 change 无迁移改动，不重验 |
+| embedding 成功调用记录用量 | backend-go/internal/platform/airouter/openai_compatible_test.go |
+| embedding 成功调用记录用量 | backend-go/internal/platform/airouter/router_test.go |
+| embedding 缓存命中不记用量 | backend-go/internal/platform/airouter/embed_cache_router_test.go |
+| session 聚合涵盖 embedding 用量 | backend-go/internal/admin/handler/session_handler_test.go |
+
+（同名多行 = 同一 Scenario 的多个测试落点；session 聚合行：聚合逻辑零改动，既有用例按存储形状累加 chat+embed 不分能力，继承通过。）
+
 - [x] 6.1 `cd backend-go && golangci-lint run ./internal/platform/airouter` → 无新增告警
 - [x] 6.2 `cd backend-go && go vet ./internal/platform/airouter` → 无输出（通过）
 - [x] 6.3 `cd backend-go && go build ./...` → 构建成功无报错
