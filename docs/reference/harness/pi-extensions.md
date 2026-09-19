@@ -123,8 +123,9 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 ## 变更记录
 
 | 日期 | 变更 | 摘要 | 归档位置 |
-| 2026-09-19 | tune-quality-gate-concurrency | quality-gate 并发互斥锁（gate.lock O_EXCL+TTL 180s，held 整轮跳过 gate-lock-held 记账）+ 限核（GOMAXPROCS=2 / lint --concurrency=2 / vet-build 串行）+ 失败归属三态化（混合归属 [并发] 降级进粘性不催修，concurrent-mixed 记账） | ../../../openspec/changes/tune-quality-gate-concurrency |
-| 2026-09-18 | attribute-concurrent-gate-noise | quality-gate 失败报告按指纹去重（首现全块/持续单行/未修标记/转绿收尾）+ 并发外部归因（会话启动基线 ∪ 归属集合三向判定，[外部] 不催修不粘性，foreign-breakage 记账）；doc-impact suggest 改归属优先 + 三桶分列（change 名三源解析） | ../../../openspec/changes/attribute-concurrent-gate-noise |
+| 2026-09-19 | tune-quality-gate-concurrency | quality-gate 并发互斥锁（gate.lock O_EXCL+TTL 180s，held 整轮跳过 gate-lock-held 记账）+ 限核（GOMAXPROCS=2 / lint --concurrency=2 / vet-build 串行）+ 失败归属三态化（混合归属 [并发] 降级进粘性不催修，concurrent-mixed 记账） | ../../../openspec/changes/archive/2026-09-19-tune-quality-gate-concurrency |
+| 2026-09-19 | harden-archive-readiness | 归档就绪自查聚合入口：check-tasks-tail.sh 从 spec-gate 抽出（尾三节检查单一事实源）+ archive-readiness.sh 四项同口径只读自查 + spec-gate block 文案补自查指引（消除试探式归档重试）；效果回检挂账（7 天后 harness-retro 复测 m7.block_recur_groups ≤2） | ../../../openspec/changes/archive/2026-09-19-harden-archive-readiness |
+| 2026-09-18 | attribute-concurrent-gate-noise | quality-gate 失败报告按指纹去重（首现全块/持续单行/未修标记/转绿收尾）+ 并发外部归因（会话启动基线 ∪ 归属集合三向判定，[外部] 不催修不粘性，foreign-breakage 记账）；doc-impact suggest 改归属优先 + 三桶分列（change 名三源解析） | ../../../openspec/changes/archive/2026-09-19-attribute-concurrent-gate-noise |
 | 2026-09-18 | harden-subagent-constraint-channel | 补「子线程通道矩阵」节：pi-web/pi-subagents × 前台/后台四象限（扩展加载/约束可达/门禁行为）+ 已知限制三条；implementer 档（load_extensions:true）上线，quality-gate 子线程 turn_end 降载（bypass + child-session 记账） | ../../../openspec/changes/archive/2026-09-18-harden-subagent-constraint-channel |
 | 2026-09-18 | —（文档补记） | 补「定时任务脚本语义」节：schedule 的 `workflowScript` 是语句体语义（禁 export/import、用 `runs.run`、thinking 走 model 后缀），两套 script 语义对照 + validate 前置于 create + 改脚本需删重建 + 正文副本归 `.pi/workflows/` | —（纯文档，无 change） |
 | 2026-09-17 | dev-process-guard | 新增孤儿 dev 进程治理扩展 dev-process-guard（session_shutdown 自动清窗口内泄漏进程组 / turn_end 软提醒 / agent-browser 残留八模式判定）+ start-dev.sh pidfile 契约（.pi/run/*.pgid 白名单 + 双路 stop + KILL 升级） | ../../../openspec/changes/archive/2026-09-17-dev-process-guard |
