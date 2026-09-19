@@ -29,7 +29,9 @@ const show = computed({
         {{ loadingPreviewArticle ? '正在准备文章预览...' : '文章预览' }}
       </p>
     </template>
-    <div class="preview-body">
+    <!-- 确定高度：85vh（AppDialog 上限）− header ≈61px − body 上下 padding 40px，留 9px 余量（宁小勿大防双滚动条）；
+         AppDialog body 非 flex，flex:1 解析不出高度，下游 h-full/flex:1 链（iframe 模式）依赖此确定高度 → change fix-preview-dialog-iframe-height D1 -->
+    <div class="preview-body" :style="{ height: 'calc(85vh - 110px)' }">
       <ArticleContentView
         v-if="selectedPreviewArticle"
         :article="selectedPreviewArticle"
@@ -46,10 +48,5 @@ const show = computed({
 .preview-header-text {
   font-size: 0.875rem;
   color: var(--color-text-muted);
-}
-
-.preview-body {
-  min-height: 0;
-  flex: 1;
 }
 </style>
