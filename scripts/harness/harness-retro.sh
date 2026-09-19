@@ -250,6 +250,45 @@ DOMPY
 fi
 DOM_LIT="'$(printf '%s' "$DOM_JSON" | sed "s/'/''/g")'"
 
+# B' 每任务成本（task-cost-metrics）：归档目录锚点（双锚点之二）——目录名日期前缀在窗口内
+# 则剥前缀得 change 名，同时读 proposal.md 头 complexity 注释分桶。环境变量
+# HARNESS_RETRO_ARCHIVE_DIR 供 smoke 注入 fixture 归档目录（缺省真实 openspec/changes/archive）。
+ARCH_JSON="[]"
+ARCH_DIR="${HARNESS_RETRO_ARCHIVE_DIR:-openspec/changes/archive}"
+SINCE_DATE="$(date -u -d "-${DAYS} day" +%Y-%m-%d)"
+if [ -d "$ARCH_DIR" ]; then
+	arch_tmp="$(python3 - "$ARCH_DIR" "$SINCE_DATE" <<'ARCHPY'
+import json, os, re, sys
+root, since = sys.argv[1], sys.argv[2]
+out = []
+try:
+    entries = sorted(os.listdir(root))
+except OSError:
+    entries = []
+for e in entries:
+    m = re.match(r'^(\d{4}-\d{2}-\d{2})-(.+)$', e)
+    if not m or m.group(1) < since:
+        continue
+    name = m.group(2)
+    cx = None
+    try:
+        with open(os.path.join(root, e, 'proposal.md'), encoding='utf-8') as fh:
+            head = fh.read(4096)
+        cm = re.search(r'<!--\s*complexity:\s*([A-Za-z0-9_-]+)\s*-->', head)
+        if cm:
+            cx = cm.group(1)
+    except OSError:
+        pass
+    out.append({'name': name, 'date': m.group(1), 'cx': cx})
+print(json.dumps(out, ensure_ascii=False))
+ARCHPY
+	)"
+	case "$arch_tmp" in
+	'['*']') ARCH_JSON="$arch_tmp" ;;
+	esac
+fi
+ARCH_LIT="'$(printf '%s' "$ARCH_JSON" | sed "s/'/''/g")'"
+
 # 测试欠账巡检（test-debt-patrol）：test_debt 表可能不存在（老库/纯净库）或列结构变动——
 # 只读 SQL 引用缺表会让整段统计报错，故先用 pragma_table_info 探列，再决定用真表还是占位常量（降级不报错）。
 PATROL_DEBT_OK=0
@@ -472,7 +511,42 @@ q_sdur AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM 
 q_ctok AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT tok v FROM ru_chg WHERE tok IS NOT NULL)),
 q_ccost AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT cost v FROM ru_chg WHERE cost IS NOT NULL)),
 q_ib AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT b v FROM inj_sess)),
-q_rep AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT sec v FROM repair WHERE sec IS NOT NULL AND sec >= 0))
+q_rep AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT sec v FROM repair WHERE sec IS NOT NULL AND sec >= 0)),
+/* ---- B' 每任务成本（task-cost-metrics）：终值三路归因 + 双锚点归档 + 模型/complexity 分桶 ---- */
+arch_ev AS (SELECT DISTINCT COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) AS name -- 锚点一：change.archive 事件
+  FROM win WHERE kind='change.archive' AND json_valid(payload)
+  AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) IS NOT NULL),
+arch_dir AS (SELECT DISTINCT json_extract(je.value,'$.name') AS name FROM json_each(${ARCH_LIT}) je), -- 锚点二：archive 目录日期前缀剥名
+cx_map AS (SELECT json_extract(je.value,'$.name') name, json_extract(je.value,'$.cx') cx FROM json_each(${ARCH_LIT}) je),
+arch_all AS (SELECT name FROM arch_ev UNION SELECT name FROM arch_dir), -- 双锚点并集（单侧缺失以另一侧补齐）
+ru_px AS (SELECT ru.session_id, COALESCE(ru.change,'') chg,
+    CAST(json_extract(payload,'$.cost') AS REAL) cost,
+    json_extract(payload,'$.parentSessionId') parent,
+    CASE WHEN json_valid(json_extract(payload,'$.models')) THEN json_extract(payload,'$.models') END models_json
+  FROM ru),
+ru_attr AS ( -- 三路归因：change 列直归 / parentSessionId 归父（不递归孙会话）/ 无路径 → NULL（不可归因）
+  SELECT p.session_id, p.cost, p.models_json,
+    CASE WHEN p.chg != '' THEN p.chg
+         WHEN p.parent IS NOT NULL THEN (SELECT f.chg FROM ru_px f WHERE f.session_id=p.parent AND f.chg!='')
+    END AS attr
+  FROM ru_px p),
+tc AS (SELECT attr AS name, SUM(cost) AS cost FROM ru_attr -- 每任务成本 = 已归档 change 的归因终值 Σcost（主+子）
+  WHERE attr IS NOT NULL AND attr IN (SELECT name FROM arch_all) GROUP BY 1),
+q_tc AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT cost v FROM tc)),
+tm_flat AS ( -- 模型分桶：归档 change 归因终值的 models map 展开（无 models 字段 → 空，另计未分模型桶）
+  SELECT a.attr name, je.key AS model, CAST(json_extract(je.value,'$.cost') AS REAL) mcost
+  FROM ru_attr a JOIN ru ON ru.session_id=a.session_id, json_each(a.models_json) je
+  WHERE a.attr IN (SELECT name FROM arch_all)),
+tm_model AS (SELECT model, SUM(mcost) cost FROM tm_flat GROUP BY 1),
+tm_nom AS (SELECT SUM(a.cost) cost FROM ru_attr a -- 缺 models 字段的存量终值整体计入「未分模型」
+  WHERE a.attr IN (SELECT name FROM arch_all) AND a.models_json IS NULL),
+tcx AS (SELECT COALESCE(cx,'(未声明)') cx, COUNT(*) n, SUM(cost) cost -- complexity 桶：归档目录 proposal 头，无声明计未声明
+  FROM tc LEFT JOIN cx_map ON tc.name=cx_map.name GROUP BY 1),
+unatt AS (SELECT IFNULL(SUM(cost),0) c FROM ru_attr WHERE attr IS NULL),
+tc_total AS (SELECT IFNULL(SUM(cost),0) c FROM ru_attr),
+act_un AS (SELECT COUNT(DISTINCT attr) n FROM ru_attr WHERE attr IS NOT NULL AND attr NOT IN (SELECT name FROM arch_all)), -- 活跃未归档（幸存者偏差对照）
+arch_evo AS (SELECT COUNT(*) n FROM arch_ev WHERE name NOT IN (SELECT name FROM arch_dir)), -- 仅事件侧（目录被移/重命名）
+arch_diro AS (SELECT COUNT(*) n FROM arch_dir WHERE name NOT IN (SELECT name FROM arch_ev)) -- 仅目录侧（事件缺记/TTL 清扫）
 SELECT json_object(
   'window', json_object(
     'days', ${DAYS},
@@ -576,6 +650,24 @@ SELECT json_object(
     ),
     'archive_retry', json_object(
       'items', (SELECT json_group_array(json_object('change', chg, 'blocks', n)) FROM arch_retry)
+    ),
+    'task_cost', json_object(
+      'archived_events', (SELECT COUNT(*) FROM arch_ev),
+      'archived_dir', (SELECT COUNT(*) FROM arch_dir),
+      'archived_union', (SELECT COUNT(*) FROM arch_all),
+      'anchor_event_only', (SELECT n FROM arch_evo),
+      'anchor_dir_only', (SELECT n FROM arch_diro),
+      'count', (SELECT COUNT(*) FROM tc),
+      'cost_p50', (SELECT v FROM q_tc WHERE rn = (n+1)/2),
+      'cost_p75', (SELECT v FROM q_tc WHERE rn = (3*n+3)/4),
+      'cost_avg', (SELECT CASE WHEN COUNT(*)>0 THEN SUM(cost)/COUNT(*) END FROM tc),
+      'top_tasks', (SELECT json_group_array(json_object('change', name, 'cost', cost)) FROM (SELECT name, cost FROM tc ORDER BY cost DESC LIMIT 5)),
+      'by_model', (SELECT json_group_array(json_object('model', model, 'cost', cost)) FROM (SELECT model, cost FROM tm_model ORDER BY cost DESC)),
+      'unmodel_cost', (SELECT cost FROM tm_nom),
+      'by_complexity', (SELECT json_group_array(json_object('complexity', cx, 'n', n, 'cost', cost)) FROM (SELECT cx, n, cost FROM tcx ORDER BY cost DESC)),
+      'unattributed_cost', (SELECT c FROM unatt),
+      'total_cost', (SELECT c FROM tc_total),
+      'active_unarchived', (SELECT n FROM act_un)
     ),
     'patrol', json_object(
       'checks', (SELECT n FROM pc_agg),
@@ -730,6 +822,23 @@ metrics.update({
     'm7.sub_samples': _e('subagent.samples'),
     'm7.wave_files': len(_e('waves.items') or []),
     'm7.archive_retry_changes': len(_e('archive_retry.items') or []),
+})
+
+# B' 每任务成本（task-cost-metrics）：分布 + 分桶 + 不可归因披露；旧库无 task_cost 段时全 None
+_tc = _e('task_cost') or {}
+_by_model = {it['model']: it.get('cost') for it in (_tc.get('by_model') or [])}
+if _tc.get('unmodel_cost') is not None:
+    _by_model['(未分模型)'] = _tc.get('unmodel_cost')
+_by_cx = {it['complexity']: it.get('cost') for it in (_tc.get('by_complexity') or [])}
+metrics.update({
+    'm7.task_cost_p50': _tc.get('cost_p50'),
+    'm7.task_cost_p75': _tc.get('cost_p75'),
+    'm7.task_cost_avg': _tc.get('cost_avg'),
+    'm7.task_cost_count': _tc.get('count'),
+    'm7.task_cost_by_model': _by_model if _tc else None,
+    'm7.task_cost_by_complexity': _by_cx if _tc else None,
+    'm7.task_unattributed_cost_pct': _pct(_tc.get('unattributed_cost') or 0, _tc.get('total_cost') or 0) if _tc else None,
+    'm7.task_active_unarchived': _tc.get('active_unarchived'),
 })
 
 # ⑧/D 组：测试欠账巡检（test-debt-patrol；patrol.check 流水 + test_debt 台账，缺表/零事件时 None）
@@ -981,6 +1090,52 @@ else:
                    % (_pct(sub_tok, sub_tok + ru_tok), sub_tok, sub_tok + ru_tok, sub['samples']))
     else:
         out.append('     子线程 token 占比 : —（无子线程 token 样本）')
+
+    # B' 每任务成本（task-cost-metrics：已归档 change × 归因终值 Σcost；双锚点=change.archive 事件 ∪ archive 目录）
+    out.append("   B' 每任务成本（归档 change × 归因会话终值 Σcost；双锚点=change.archive 事件 ∪ archive 目录）")
+    _tcd = _e('task_cost') or {}
+    if (_tcd.get('count') or 0) > 0:
+        out.append('     分布              : P50 %s / P75 %s / 均值 %s（%s 个归档任务）'
+                   % ('—' if _tcd.get('cost_p50') is None else '¥%.2f' % _tcd['cost_p50'],
+                      '—' if _tcd.get('cost_p75') is None else '¥%.2f' % _tcd['cost_p75'],
+                      '—' if _tcd.get('cost_avg') is None else '¥%.2f' % _tcd['cost_avg'],
+                      _tcd.get('count')))
+    else:
+        out.append('     分布              : （窗口内无已归档 change：分布不产出，不用小样本冒充）')
+    _bm = _by_model if _by_model else {}
+    if _bm:
+        _bm_tot = sum(v for v in _bm.values() if isinstance(v, (int, float))) or None
+        segs = ['%s %s%s' % (pad((k or '(无模型)')[:30], 32),
+                             '—' if v is None else '¥%.2f' % v,
+                             '' if (not _bm_tot or not isinstance(v, (int, float))) else '（%d%%）' % _pct(v, _bm_tot))
+                for k, v in sorted(_bm.items(), key=lambda kv: -(kv[1] or 0))]
+        out.append('     按模型分桶        : %s' % '；'.join(segs))
+    else:
+        out.append('     按模型分桶        : —（归档任务终值均无 models 字段且无成本）')
+    _bcx = _e('task_cost.by_complexity') or []
+    if _bcx:
+        out.append('     按 complexity 分桶:')
+        for it in _bcx:
+            out.append('       - %s : %s 个任务 / 合计 %s'
+                       % (pad(it['complexity'], 22), it['n'],
+                          '—' if it.get('cost') is None else '¥%.2f' % it['cost']))
+    _un = _tcd.get('unattributed_cost')
+    if _un is not None and _un > 0:
+        out.append('     不可归因成本      : %s（占窗口终值 %s%%；change 列空且无父链的会话成本，不计入任务均值）'
+                   % ('¥%.2f' % _un, _pct(_un, _tcd.get('total_cost') or 0)))
+    else:
+        out.append('     不可归因成本      : 0')
+    out.append('     活跃未归档 change : %s 个（窗口内有成本归因但未归档：幸存者偏差对照，成本不在分布内）'
+               % (_tcd.get('active_unarchived') or 0))
+    _evo = _tcd.get('anchor_event_only') or 0
+    _diro = _tcd.get('anchor_dir_only') or 0
+    if _evo or _diro:
+        out.append('     锚点不对称提示    : 仅事件侧 %s 个（目录被移/重命名）、仅目录侧 %s 个（事件缺记或保留期已过，已目录兑底）'
+                   % (_evo, _diro))
+    for it in (_tcd.get('top_tasks') or [])[:5]:
+        out.append('       - %s : %s'
+                   % (pad((it['change'] or '')[:40], 42),
+                      '—' if it.get('cost') is None else '¥%.2f' % it['cost']))
 
     out.append('   C 返工信号')
     waves = _e('waves.items') or []

@@ -22,7 +22,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 | test-scope-guard | `tool_call` | bash + `ctx_execute`(仅 shell) + `ctx_batch_execute` 命中真·全量 `go test`（判定纯函数：裸 `./...` + 生效 cwd = 仓库根/backend-go；掩蔽引号/#注释/heredoc/`cat` 目标；影响包/子树/单包/写文档放行） | 软提醒（日常只跑影响包；文案列归档与依赖变更两条合法路径） | fail-open | policy.decision（full-go-test：soft=warn / hard=block；归档/依赖变更语境与 `# archive-gate`/`# allow-full-test` 逃生注释放行零记账） |
 | tool-output-spill | `tool_result` | 工具输出 >32KB（`.pi/harness.json`） | 落盘替换+有界预览 | fail-open（spill 失败原样通过） | spill.write |
 | dev-process-guard | `session_start`/`turn_end`/`session_shutdown` | 会话结束扫描仓库内泄漏类 dev 进程（go run/pnpm dev/nuxt dev 等且无终端、非 pidfile 白名单）：窗口内自动清，遗留软提醒 | 自动清（仅 session_shutdown，组杀 TERM→2s→KILL）+ 软 steer 提醒（每会话一次） | fail-open（扫描/杀/记账异常逐目标跳过）；非 Linux no-op | policy.decision（orphan-killed / orphan-warn；健康路径零记录） |
-| harness-telemetry | `session_start`/`turn_end`/`tool_call`/`tool_result` | 通用事实采集（不干预）；turn_end 节流写 session.rollup 效能快照（轮次/token/成本/时长，每 5 turn 或 token 增量>20%；session_start 回填 prev 终值，同 session 取最新一条即终值） | — | fail-safe（断链不伪造，jsonl 缺失/坏行零写入） | session.start / session.rollup / subagent.* |
+| harness-telemetry | `session_start`/`turn_end`/`tool_call`/`tool_result` | 通用事实采集（不干预）；turn_end 节流写 session.rollup 效能快照（轮次/token/成本/时长/**逐模型 models map**/**子会话 parentSessionId**，每 5 turn 或 token 增量>20%；同 session 取最新一条即终值）；session_start 回填 prev 终值（**自扫 sessions 目录**定位 prev——pi 事件从不携带 previousSessionFile，task-cost-metrics）；tool_result 配对 bash 归档命令成功 → `change.archive`（归档成功锚点，唯一成功侧记账例外） | — | fail-safe（断链不伪造，jsonl 缺失/坏行零写入；归档提取不到名零记录） | session.start / session.rollup / subagent.* / change.archive |
 
 ## 约束注入（constraint-injection，自动，管"知道"）
 
@@ -97,7 +97,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 ## 改进闭环（harness-retro）
 
-`bash scripts/harness/harness-retro.sh`（只读消费事件账本，产出失败聚类六段报告——分母按采样口径还原、`fail-open` 单列为 harness 自身故障），配 `--save-baseline`/`--baseline` 把「改一条 harness 规则前后同类事件计数」变成可回检的准 A/B；读法与改进项判据（可回检指标 + 观察窗口 + 反 overfit）见 skill `harness-retro`，归档后可选回检流程见开发执行规范 §12.5。
+`bash scripts/harness/harness-retro.sh`（只读消费事件账本，产出失败聚类六段报告——分母按采样口径还原、`fail-open` 单列为 harness 自身故障；⑦效能看板含 B' 每任务成本子组：窗口内已归档 change × 归因会话终值 Σcost 的分布与模型/complexity 分桶，双锚点=change.archive 事件 ∪ archive 目录日期前缀，指标键 `m7.task_cost_*`，task-cost-metrics），配 `--save-baseline`/`--baseline` 把「改一条 harness 规则前后同类事件计数」变成可回检的准 A/B；读法与改进项判据（可回检指标 + 观察窗口 + 反 overfit）见 skill `harness-retro`，归档后可选回检流程见开发执行规范 §12.5。
 
 ## 定时任务脚本语义（schedule / workflowScript）
 

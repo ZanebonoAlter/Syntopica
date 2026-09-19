@@ -50,7 +50,15 @@ bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 | ④ 软提醒失效 | 同 `policy+reasonCode` 的 warn 计数 ≥ 阈值 | 提醒被反复无视（同一件事触发很多次仍没改） | 三选一：升级为 block（须用户确认）/ 改提示文案与触发条件 / 承认它不该是提醒 |
 | ⑤ 重复失败热点 | 同会话同命令、归一化 diag 连续重复 ≥ 阈值 | 连续同 diag 重复 = 死循环或试探式改错 | 这类会话需要更强干预（而不是再提醒一次） |
 | ⑥ 注入面健康 | 各文档注入次数/字节 + 窗口内零命中文档 | 零命中 = 死约束（索引声明了却从没被注入）；单文档字节很高 = 注入膨胀 | 死约束：清理或修触发关键词；膨胀：走红线层提取（见 `standard/shared/doc-authoring.md`） |
-| ⑦ 效能看板 | **插件 ROI**（注入负载/注入命中率/pin 复用/门禁催修时距/block 复发）+ **效率基线**（per-session/per-change 的轮次/token/成本/时长分布，`session.rollup` 终值驱动）+ **返工信号**（跨 session 编辑波次/归档重试）+ **D 测试欠账巡检**（`patrol.check` 流水频次 + `test_debt` 台账 open/fixed/waived 趋势，test-debt-patrol） | rollup 覆盖率 <50% 时 B 组标「数据积累中」（分布仅由已覆盖 session 算，不用小样本冒充）；命中率持续 0 = 注了白注（先看「未识别通道」行：若 N>0 说明注入通道枚举已漂移，须先同步报告口径再下结论，勿把口径漂移误读成完全失效；N=0 且命中率仍低才是真低效）；催修时距长 = block 后没及时修；波次高的文件 = 反复返工热点；**`patrol.checks` 连续多天为 0 = 巡检纪律松了**（或压根没跑），`patrol.debt_open` 持续不降 = 台账变成新漂没 | **各指标独立解读，禁止合成总分**；改一条 harness 规则前后用 `--save-baseline`/`--baseline` 对 m7.*/patrol.* 键做准 A/B；注：rollup 数据从部署起积累，历史 session 永久无此维度；无 `test_debt` 表（老库）或窗口内无 `patrol.check` 时该子组降级为「无巡检数据」不报错 |
+| ⑦ 效能看板 | **插件 ROI**（注入负载/注入命中率/pin 复用/门禁催修时距/block 复发）+ **效率基线**（per-session/per-change 的轮次/token/成本/时长分布，`session.rollup` 终值驱动）+ **B' 每任务成本**（task-cost-metrics，见下）+ **返工信号**（跨 session 编辑波次/归档重试）+ **D 测试欠账巡检**（`patrol.check` 流水频次 + `test_debt` 台账 open/fixed/waived 趋势，test-debt-patrol） | rollup 覆盖率 <50% 时 B 组标「数据积累中」（分布仅由已覆盖 session 算，不用小样本冒充）；命中率持续 0 = 注了白注（先看「未识别通道」行：若 N>0 说明注入通道枚举已漂移，须先同步报告口径再下结论，勿把口径漂移误读成完全失效；N=0 且命中率仍低才是真低效）；催修时距长 = block 后没及时修；波次高的文件 = 反复返工热点；**`patrol.checks` 连续多天为 0 = 巡检纪律松了**（或压根没跑），`patrol.debt_open` 持续不降 = 台账变成新漂没 | **各指标独立解读，禁止合成总分**；改一条 harness 规则前后用 `--save-baseline`/`--baseline` 对 m7.*/patrol.* 键做准 A/B；注：rollup 数据从部署起积累，历史 session 永久无此维度；无 `test_debt` 表（老库）或窗口内无 `patrol.check` 时该子组降级为「无巡检数据」不报错 |
+
+### ⑦B' 每任务成本子组（task-cost-metrics）
+
+**口径**：任务 = 窗口内**已归档 change**；归档判定双锚点 = `change.archive` 事件（主）∪ `openspec/changes/archive/` 目录日期前缀剥名（对账兑底，单侧缺失不对称提示）。任务成本 = 该 change 归因会话的 rollup 终值 `cost` 合计——主会话按 rollup change 列直归，子会话经 payload `parentSessionId` 归父后随父归因（不递归孙会话）；归因不到的终值进「不可归因成本」单独披露（不入均值）。分桶：按模型（源 rollup `models` map，缺字段计「未分模型」桶）与按 complexity（源归档目录 proposal 头，无声明计「未声明」桶）。
+
+**降级**：存量 rollup 无 `models` 字段 → 「未分模型」桶单列；无 `parentSessionId` 的子会话成本进不可归因（随数据换代自然衰减）；09-17（rollup 上线）前会话无成本维度 → 沿用 B 组覆盖率降级标注；窗口内无归档 change → 分布不产出（不用小样本冒充）。
+
+**回检键名**：`m7.task_cost_p50/p75/avg/count`（分布）、`m7.task_cost_by_model`、`m7.task_cost_by_complexity`（分桶）、`m7.task_unattributed_cost_pct`（不可归因占比）、`m7.task_active_unarchived`（活跃未归档 change 数，幸存者偏差对照——均值只反映活下来归档的任务，烂尾成本不进来）。smoke fixture 场景 K1~K6（`harness-retro.smoke.sh`）可独立复算全部数值。
 
 ## 改进项产出判据（硬要求）
 

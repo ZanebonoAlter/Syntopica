@@ -25,6 +25,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# 归档目录锚点隔离：缺省指向空 fixture 目录，防止 B' 段误读真实 openspec/changes/archive
+# （K 段用带内容的 $TMP/arch，K6 用不存在路径验证兑底）
+export HARNESS_RETRO_ARCHIVE_DIR="$TMP/arch-empty"
+mkdir -p "$HARNESS_RETRO_ARCHIVE_DIR"
+
 pass=0
 failn=0
 
@@ -242,6 +247,82 @@ mk_db "$FJ"
 ins "$FJ" gate.check cJ '{"cmd":"golangci-lint run ./...","phase":"turn_end","ok":false,"ms":40,"diag":"golangci-lint: command not found"}'
 # 真实 lint 失败：须仍归 lint 规则族
 ins "$FJ" gate.check cJ '{"cmd":"golangci-lint run ./...","phase":"turn_end","ok":false,"ms":900,"diag":"internal/x.go:3:1: File is not properly formatted (gofmt)"}'
+
+# ---------- fixture K：B' 每任务成本四场景（task-cost-metrics 3.3） ----------
+# 归因链：chg-x 主 1.2 + 子 0.3（parentSessionId 归父）= 1.5；模型分桶缺失降级：chg-y 无 models；
+# 双锚点：chg-y 仅事件侧 / chg-z 仅目录侧；不可归因：s-orphan 无 change 无父链 0.4；
+# 幸存者偏差对照：chg-w 有归因 0.2 但未归档（活跃未归档 1）。
+FK="$TMP/k.db"
+mk_db "$FK"
+ins "$FK" session.start '' '{"reason":"new","cwd":"/x"}' s-any
+# chg-x：主会话（change 直归，models glm-5.3）+ 子会话（parentSessionId 归父）
+ins "$FK" session.rollup chg-x '{"turns":5,"tokens":{"total":9000},"cost":1.2,"durationSec":600,"model":"glm-5.3","models":{"glm-5.3":{"tokens":{"input":1,"output":2,"cacheRead":3,"cacheWrite":0,"total":9000},"cost":1.2}},"final":true}' s-main-x
+ins "$FK" session.rollup '' '{"turns":2,"tokens":{"total":2000},"cost":0.3,"durationSec":120,"model":"glm-5.3","models":{"glm-5.3":{"tokens":{"input":1,"output":2,"cacheRead":3,"cacheWrite":0,"total":2000},"cost":0.3}},"parentSessionId":"s-main-x","final":true}' s-child-x
+# chg-y：无 models（存量降级 → 未分模型桶），仅事件锚点
+ins "$FK" session.rollup chg-y '{"turns":3,"tokens":{"total":5000},"cost":0.5,"durationSec":300,"model":"glm-5.3","final":true}' s-main-y
+ins "$FK" change.archive chg-y '{"name":"chg-y"}' s-main-y
+# chg-x：双锚点齐备（事件 + 目录）
+ins "$FK" change.archive chg-x '{"name":"chg-x"}' s-main-x
+# chg-z：仅目录锚点（无事件）
+ins "$FK" session.rollup chg-z '{"turns":4,"tokens":{"total":7000},"cost":0.7,"durationSec":400,"model":"kimi-k2","models":{"kimi-k2":{"tokens":{"input":1,"output":2,"cacheRead":3,"cacheWrite":0,"total":7000},"cost":0.7}},"final":true}' s-main-z
+# chg-w：有归因但未归档（活跃未归档）
+ins "$FK" session.rollup chg-w '{"turns":1,"tokens":{"total":2000},"cost":0.2,"durationSec":100,"model":"glm-5.3","final":true}' s-main-w
+# s-orphan：change 列空且无 parentSessionId → 不可归因
+ins "$FK" session.rollup '' '{"turns":1,"tokens":{"total":1000},"cost":0.4,"durationSec":50,"model":"glm-5.3","final":true}' s-orphan
+# 归档目录 fixture（HARNESS_RETRO_ARCHIVE_DIR 注入；日期前缀窗口内）
+mkdir -p "$TMP/arch/2026-09-18-chg-x" "$TMP/arch/2026-09-18-chg-z"
+printf '<!-- complexity: simple -->\n\n## Why\ntest\n' >"$TMP/arch/2026-09-18-chg-x/proposal.md"
+printf '# no complexity marker\n' >"$TMP/arch/2026-09-18-chg-z/proposal.md"
+
+# ---------- K. B' 每任务成本四场景（task-cost-metrics） ----------
+HARNESS_RETRO_ARCHIVE_DIR="$TMP/arch" run_retro --db "$FK" --days 7
+check 0 "K1 B' 小节渲染 + 分布（[0.5,0.7,1.5] → P50 ¥0.70 / P75 ¥1.50 / 均值 ¥0.90）+ 子会话归因合计" \
+	"B' 每任务成本" "P50 ¥0.70 / P75 ¥1.50 / 均值 ¥0.90（3 个归档任务）" "chg-x" "¥1.50"
+check 0 "K2 模型分桶缺失降级（chg-y 无 models → 未分模型桶单列）" "未分模型" "glm-5.3" "kimi-k2"
+check 0 "K3 双锚点单侧缺失对账（chg-y 仅事件 / chg-z 仅目录，均进统计 + 不对称提示）" \
+	"锚点不对称提示    : 仅事件侧 1 个（目录被移/重命名）、仅目录侧 1 个（事件缺记或保留期已过，已目录兑底）"
+check 0 "K4 不可归因成本披露 + 活跃未归档对照（¥0.40 不入均值；chg-w 未归档）" \
+	"不可归因成本      : ¥0.40" "活跃未归档 change : 1 个"
+HARNESS_RETRO_ARCHIVE_DIR="$TMP/arch" "$RETRO" --db "$FK" --days 7 --json >"$TMP/fk.json" 2>/dev/null
+if python3 - "$TMP/fk.json" <<'FKPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d['metrics']
+tc = d['effectiveness']['task_cost']
+assert m['m7.task_cost_count'] == 3, m['m7.task_cost_count']
+assert abs(m['m7.task_cost_p50'] - 0.7) < 1e-6, m['m7.task_cost_p50']
+assert abs(m['m7.task_cost_p75'] - 1.5) < 1e-6, m['m7.task_cost_p75']
+assert abs(m['m7.task_cost_avg'] - 0.9) < 1e-6, m['m7.task_cost_avg']
+# 每任务成本含子会话可复算：chg-x = 主 1.2 + 子 0.3 = 1.5（top_tasks 内直查）
+top = {t['change']: t['cost'] for t in tc['top_tasks']}
+assert abs(top.get('chg-x', 0) - 1.5) < 1e-6, top
+# 模型分桶：glm-5.3 = 1.2+0.3 = 1.5；kimi-k2 = 0.7；(未分模型) = 0.5
+bm = m['m7.task_cost_by_model']
+assert abs(bm.get('glm-5.3', 0) - 1.5) < 1e-6, bm
+assert abs(bm.get('kimi-k2', 0) - 0.7) < 1e-6, bm
+assert abs(bm.get('(未分模型)', 0) - 0.5) < 1e-6, bm
+assert abs(tc['unmodel_cost'] - 0.5) < 1e-6, tc['unmodel_cost']
+# complexity 分桶：chg-x=simple（1.5）；chg-y/chg-z 无声明（0.5+0.7=1.2）
+bcx = {it['complexity']: it for it in tc['by_complexity']}
+assert bcx['simple']['n'] == 1 and abs(bcx['simple']['cost'] - 1.5) < 1e-6, bcx
+assert bcx['(未声明)']['n'] == 2 and abs(bcx['(未声明)']['cost'] - 1.2) < 1e-6, bcx
+# 不可归因：0.4 / 3.3 = 12%；活跃未归档 1；锚点不对称 1/1
+assert abs(tc['unattributed_cost'] - 0.4) < 1e-6, tc['unattributed_cost']
+assert abs(tc['total_cost'] - 3.3) < 1e-6, tc['total_cost']
+assert m['m7.task_unattributed_cost_pct'] == 12, m['m7.task_unattributed_cost_pct']
+assert m['m7.task_active_unarchived'] == 1, m['m7.task_active_unarchived']
+assert tc['anchor_event_only'] == 1 and tc['anchor_dir_only'] == 1, tc
+FKPY
+then
+	echo "  ✓ K5 JSON B' 指标=fixture 复算值（1.5/0.7/0.5 分桶、12% 不可归因、锚点 1/1）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ K5 JSON B' 指标断言失败"
+	failn=$((failn + 1))
+fi
+# K6 无归档目录（环境变量指向不存在路径）→ 目录锚点空，仅事件侧 chg-x/chg-y 统计、无崩溃
+HARNESS_RETRO_ARCHIVE_DIR="$TMP/nope-arch" run_retro --db "$FK" --days 7
+check 0 "K6 目录锚点缺失兑底（仅事件侧 chg-x/chg-y 仍统计，退出码 0）" "B' 每任务成本" "仅事件侧 2 个"
 
 # ================= A. 主链路 =================
 

@@ -62,6 +62,7 @@ node test-case-gate.smoke.cjs || rc=$?
 node ui-design-gate.smoke.cjs || rc=$?
 node policy-decision.smoke.cjs || rc=$?
 node session-rollup.smoke.cjs || rc=$?
+node telemetry-archive.smoke.cjs || rc=$?
 node dev-process-guard.smoke.cjs || rc=$?
 rm -f ./.hlog.cjs ./.fcls.cjs ./.tel.cjs ./.spill.cjs ./.sgate.cjs ./.tgset.cjs ./.tcg.cjs ./.egate.cjs ./.gsamp.cjs ./.childsess.cjs ./.pdec.cjs ./.qgate.cjs ./.tsg.cjs ./.uig.cjs ./.uige.cjs ./.qgateb.cjs ./.emap.cjs ./.srollup.cjs ./.dps.cjs ./.dpg.cjs
 exit $rc

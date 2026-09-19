@@ -27,7 +27,7 @@ harness 层事实账本：以 `.pi/harness/events.db`（单表 append-only SQLit
 
 ### Requirement: 事件类型词汇与保留期
 
-事实库 SHALL 支持十二类事件：`session.start`（90 天）、`session.rollup`（90 天）、`constraint.inject`（30 天）、`pin.write`（永久）、`pin.read`（30 天）、`gate.check`（30 天）、`subagent.dispatch`（30 天）、`subagent.complete`（30 天）、`mode.set`（30 天）、`spill.write`（30 天）、`policy.decision`（30 天）、`edit.map`（30 天）。每条事件 MUST 携带单调递增 id、ISO 8601 UTC 时间戳、session_id、kind，change 列可空。开库时 MUST 按 kind 分保留期清扫过期行；库文件超过 100MB 时 MUST 触发删最老一半的保险丝。除 TTL 清扫与保险丝外 MUST NOT 修改或删除既有事件（完成回填以追加新事件表达，MUST NOT 改写既有 dispatch 行）。
+事实库 SHALL 支持十三类事件：`session.start`（90 天）、`session.rollup`（90 天）、`constraint.inject`（30 天）、`pin.write`（永久）、`pin.read`（30 天）、`gate.check`（30 天）、`subagent.dispatch`（30 天）、`subagent.complete`（30 天）、`mode.set`（30 天）、`spill.write`（30 天）、`policy.decision`（30 天）、`edit.map`（30 天）、`change.archive`（30 天）。每条事件 MUST 携带单调递增 id、ISO 8601 UTC 时间戳、session_id、kind，change 列可空。开库时 MUST 按 kind 分保留期清扫过期行；库文件超过 100MB 时 MUST 触发删最老一半的保险丝。除 TTL 清扫与保险丝外 MUST NOT 修改或删除既有事件（完成回填以追加新事件表达，MUST NOT 改写既有 dispatch 行）。
 
 `edit.map` 事件由 quality-gate 在 turn_end 聚合追加：change 列为会话绑定的 change，payload 含该 change 累计编辑路径集合；聚合语义（冲突标记、无档会话不计入）见 `concurrent-change-coordination` capability。
 
@@ -35,8 +35,8 @@ harness 层事实账本：以 `.pi/harness/events.db`（单表 append-only SQLit
 
 #### Scenario: TTL 分级清扫
 
-- **WHEN** 开库时存在 31 天前的 constraint.inject、policy.decision、edit.map 行与 91 天前的 session.start 行
-- **THEN** 过期的 constraint.inject、policy.decision、edit.map 被删除，91 天前的 session.start 被删除，pin.write 永久保留
+- **WHEN** 开库时存在 31 天前的 constraint.inject、policy.decision、edit.map、change.archive 行与 91 天前的 session.start 行
+- **THEN** 过期的 constraint.inject、policy.decision、edit.map、change.archive 被删除，91 天前的 session.start 被删除，pin.write 永久保留
 
 #### Scenario: 事件追加不可变
 
@@ -68,9 +68,14 @@ harness 层事实账本：以 `.pi/harness/events.db`（单表 append-only SQLit
 - **WHEN** 会话 turn_end 满足 rollup 节流条件
 - **THEN** events.db 新增一条 kind 为 `session.rollup` 的事件行（payload 契约见「session 效能汇总记账」）；91 天后被 TTL 清扫，既有数据库无需 schema 迁移
 
+#### Scenario: change.archive 随词汇扩展落库
+
+- **WHEN** `openspec archive <change>` 命令成功执行（未被 spec-gate 阻断且工具结果非错误）
+- **THEN** events.db 新增一条 kind 为 `change.archive` 的事件行（payload 契约见「归档成功记账」）；31 天后被 TTL 清扫，既有数据库无需 schema 迁移
+
 ### Requirement: session 效能汇总记账（session.rollup）
 
-harness-telemetry SHALL 从 pi 的 session jsonl 提取单会话效能汇总并写入 `session.rollup` 快照事件：payload MUST 含 `turns`（user 轮数）、`steps`（assistant 消息数）、`toolCalls`（工具结果数）、`tokens`（input/output/cacheRead/cacheWrite/total 五值）、`cost`（元，可空）、`durationSec`、`model`、`final`（布尔，终值标记）。写入路径有二：① turn_end 节流快照（节流条件实现自定义，但 MUST 保证会话最后一条快照与终值偏差有界）；② session_start 时回填 prev session（session.start payload 的 prev 指向的 jsonl 仍存在且账本中该 session 无 `final=true` 快照时，补写一条 `final=true` 终值）。jsonl 缺失、损坏或解析失败 MUST 零写入并 fail-open（不阻断任何扩展钩子），仅旁路告警。
+harness-telemetry SHALL 从 pi 的 session jsonl 提取单会话效能汇总并写入 `session.rollup` 快照事件：payload MUST 含 `turns`（user 轮数）、`steps`（assistant 消息数）、`toolCalls`（工具结果数）、`tokens`（input/output/cacheRead/cacheWrite/total 五值）、`cost`（元，可空）、`durationSec`、`model`、`final`（布尔，终值标记）；SHALL 含 `models`（逐模型聚合 map：`{[modelId]: {tokens 五值, cost}}`，按 assistant 消息自身携带的 model 字段归属，无 model 字段的消息计入 `unknown` 桶）；子会话 SHALL 含 `parentSessionId`（从自身 jsonl session 头的 `parentSession` 提取的父会话 id；主会话无此头时省略该字段）。写入路径有二：① turn_end 节流快照（节流条件实现自定义，但 MUST 保证会话最后一条快照与终值偏差有界）；② session_start 时回填 prev session 终值——prev jsonl 的定位 SHALL 由 telemetry 自行扫描 sessions 目录（当前会话文件所在目录下、mtime 最新且文件名会话 id 非本会话的 `*.jsonl`；pi 的 session_start 事件 payload 从不携带 previousSessionFile，MUST NOT 依赖之），该 jsonl 仍存在且账本中该 session 无 `final=true` 快照时，补写一条 `final=true` 终值。jsonl 缺失、损坏或解析失败 MUST 零写入并 fail-open（不阻断任何扩展钩子），仅旁路告警。
 
 #### Scenario: turn_end 节流快照落库
 
@@ -84,8 +89,13 @@ harness-telemetry SHALL 从 pi 的 session jsonl 提取单会话效能汇总并�
 
 #### Scenario: session_start 回填 prev 终值
 
-- **WHEN** 新会话启动且 prev session 的 jsonl 存在、账本中该 session 无 `final=true` 快照
-- **THEN** 追加一条该 prev session 的 `final=true` 快照事件（session_id 为 prev 的 id，change 列可空）；prev jsonl 不存在时零写入
+- **WHEN** 新会话启动且同目录下存在另一会话的 jsonl（mtime 最新且非本会话）、账本中该 session 无 `final=true` 快照
+- **THEN** 追加一条该 prev session 的 `final=true` 快照事件（session_id 为 prev 的 id，change 列可空）；目录下无其他 jsonl 时零写入
+
+#### Scenario: 回填不依赖 pi 事件的 previousSessionFile
+
+- **WHEN** session_start 事件的 payload 不含 previousSessionFile（实测从不携带）
+- **THEN** 回填仍由自扫 sessions 目录路径独立完成，机制不受该字段缺失影响
 
 #### Scenario: 解析失败 fail-open
 
@@ -96,6 +106,21 @@ harness-telemetry SHALL 从 pi 的 session jsonl 提取单会话效能汇总并�
 
 - **WHEN** 回填 prev 终值时该 session 已有中间快照
 - **THEN** 以追加新事件表达终值，既有快照行内容不变
+
+#### Scenario: models 按消息级 model 字段归属
+
+- **WHEN** 同一会话先用模型 A 生成 3 条 assistant 消息（cost 合计 0.3 元）、再切模型 B 生成 2 条（cost 合计 0.1 元）
+- **THEN** 终值快照 payload 的 `models` 含 A 与 B 两个键，各自 tokens/cost 等于该模型消息的累计值，且各桶之和等于会话总 cost
+
+#### Scenario: 无 model 字段的消息计 unknown 桶
+
+- **WHEN** 某条 assistant 消息带 usage 但不带 model 字段
+- **THEN** 其 tokens/cost 计入 `models.unknown` 桶，不静默丢弃、不影响其他桶
+
+#### Scenario: 子会话携带 parentSessionId
+
+- **WHEN** 子线程会话（jsonl session 头含 parentSession 指向父会话文件）turn_end 满足节流条件
+- **THEN** 其 rollup payload 含 parentSessionId（父会话 id）；父会话自身的 rollup 无该字段
 
 ### Requirement: 策略显著裁决统一记账
 
@@ -327,3 +352,27 @@ harness-telemetry SHALL 在后台派发的子线程真实结束时追加一条 `
 
 - **WHEN** 巡检发现失败并登记台账
 - **THEN** 台账记录与 `patrol.check` 事件各司其职：事件记流水，台账记欠账生命周期；事件删除（TTL）不影响台账
+
+### Requirement: 归档成功记账（change.archive）
+
+harness-telemetry SHALL 在 `openspec archive <change>` 命令成功执行时追加一条 `change.archive` 事件：payload MUST 含 `name`（归档 change 名，按 spec-gate 同语义从命令行提取——`openspec archive` 后首个非 flag 词）；事件 change 列 MUST 绑定该 change 名。判定条件：bash 工具调用命令命中 `openspec\s+archive` 且 tool_result 非错误（未被 spec-gate 阻断、CLI 退出成功）。归档被 block、CLI 失败、命令行提取不到合法 change 名（交互式归档等）时 MUST 零记录（fail-open，不阻断归档本身）。本事件是「普通成功放行零记录」低噪声约束的**唯一成功侧事实例外**（归档低频、高价值锚点）；事件按 30 天保留期清扫。
+
+#### Scenario: 归档成功记账
+
+- **WHEN** agent 执行 `openspec archive task-cost-metrics` 且工具结果非错误
+- **THEN** 追加一条 change.archive（payload 含 name=task-cost-metrics，change 列同名），归档流程不受记账失败影响
+
+#### Scenario: 归档被阻断零记录
+
+- **WHEN** spec-gate 因归档检查失败阻断 `openspec archive`（工具结果为错误）
+- **THEN** 仅产生既有的 policy.decision(block) 事件，不产生 change.archive
+
+#### Scenario: 提取不到 change 名 fail-open
+
+- **WHEN** 归档命令为交互式形态，命令行中提取不到合法 change 名
+- **THEN** 零记录 change.archive，不阻断归档命令本身
+
+#### Scenario: 同一 change 幂等
+
+- **WHEN** 同一 change 因故成功归档两次（重跑命令）
+- **THEN** 产生两条 change.archive（append-only 不去重），消费侧按 change 名聚合时天然幂等

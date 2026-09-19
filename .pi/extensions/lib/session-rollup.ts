@@ -13,15 +13,32 @@
  *   - cost         = cost.total（元，可空）
  *   - durationSec  = 首末 message 的 ts 差（跨度非净工时，报告口径已声明）
  *   - model        = 最后一条 model_change 的 modelId（可空）
+ *   - models       = 逐模型聚合 map（task-cost-metrics D1：{[modelId]: {tokens 五值, cost}}，
+ *                    按 assistant 消息自身携带的 message.model 归属，缺字段计 unknown 桶）
  *   - skippedLines = 不可解析行计数（fail-safe：跳过不崩，口径排查用）
  *
  * 增量语义：调用方（telemetry）持 RollupAccumulator {offset, remainder, summary}，
  * 每 turn 只读新增字节；offset 精确推进到最后一个完整 \n 之后，残行区域下次整行重读
  * （重读不拼接：多字节截断自愈，且不会把残行内容计两次——重复读同一文件零变化）。
  *
- * 纯函数直测：.pi/extensions/tests/session-rollup.smoke.cjs（对齐 parseSubagentSummary 先例）。
+ * 纯函数直测：.pi/extensions/tests/session-rollup.smoke.cjs（对齐 parseSubagentSummary 先例）；
+ * task-cost-metrics 扩展：models 逐模型聚合、readParentSessionId/findPrevSessionFile
+ * （子会话父链提取 + prev 会话定位，D1/D2/D3）。
  */
 import * as fs from "node:fs";
+import * as path from "node:path";
+
+/** 逐模型聚合桶（task-cost-metrics：按消息级 model 字段归属） */
+export interface ModelUsageEntry {
+	tokens: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+	};
+	cost: number | null;
+}
 
 /** 单会话效能汇总（payload 契约，spec「session 效能汇总记账」） */
 export interface SessionUsageSummary {
@@ -38,6 +55,7 @@ export interface SessionUsageSummary {
 	cost: number | null;
 	durationSec: number;
 	model: string | null;
+	models: Record<string, ModelUsageEntry>;
 	skippedLines: number;
 }
 
@@ -59,6 +77,7 @@ export function emptySummary(): SessionUsageSummary {
 		cost: null,
 		durationSec: 0,
 		model: null,
+		models: {},
 		skippedLines: 0,
 	};
 }
@@ -93,6 +112,7 @@ export function consumeLines(acc: RollupAccumulator, lines: string[]): RollupAcc
 			modelId?: string;
 			message?: {
 				role?: string;
+				model?: string;
 				usage?: {
 					input?: number;
 					output?: number;
@@ -131,9 +151,30 @@ export function consumeLines(acc: RollupAccumulator, lines: string[]): RollupAcc
 				s.tokens.cacheWrite += num(u.cacheWrite);
 				s.tokens.total += num(u.totalTokens); // 缺 usage 的 assistant：steps+1、tokens+0（白盒 B5）
 				const c = u.cost?.total;
-				if (typeof c === "number" && Number.isFinite(c)) {
-					s.cost = (s.cost ?? 0) + c; // cost 累计（各步费用之和）
+				const cNum = typeof c === "number" && Number.isFinite(c) ? c : null;
+				if (cNum !== null) {
+					s.cost = (s.cost ?? 0) + cNum; // cost 累计（各步费用之和）
 				}
+				// 逐模型聚合（task-cost-metrics D1）：按消息级 model 字段归属，缺字段计 unknown 桶；
+				// cost null 容忍同顶层口径（桶保持 null，不伪造成 0）
+				const mkey =
+					typeof d.message.model === "string" && d.message.model
+						? d.message.model
+						: "unknown";
+				let bucket = s.models[mkey];
+				if (!bucket) {
+					bucket = {
+						tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						cost: null,
+					};
+					s.models[mkey] = bucket;
+				}
+				bucket.tokens.input += num(u.input);
+				bucket.tokens.output += num(u.output);
+				bucket.tokens.cacheRead += num(u.cacheRead);
+				bucket.tokens.cacheWrite += num(u.cacheWrite);
+				bucket.tokens.total += num(u.totalTokens);
+				if (cNum !== null) bucket.cost = (bucket.cost ?? 0) + cNum;
 			}
 		} else if (role === "toolResult") s.toolCalls += 1;
 	}
@@ -217,4 +258,64 @@ export function shouldBackfillPrev(
 	if (!prevFile) return false;
 	if (hasFinalInLedger) return false;
 	return summary.turns > 0;
+}
+
+/** 从 session jsonl 文件名提取会话 UUID（形如 <ISO>_<UUID>.jsonl；UUID 含 '-'，ISO 段
+ *  也含 '-'，故取最后一个 '_' 之后）。提不出返回 null。纯函数，smoke 直测。 */
+export function sessionFileIdOf(file: string): string | null {
+	const base = path.basename(file).replace(/\.jsonl$/, "");
+	const idx = base.lastIndexOf("_");
+	if (idx <= 0) return null;
+	const id = base.slice(idx + 1);
+	return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+		? id
+		: null;
+}
+
+/** 读 session jsonl 首行 session 头的 parentSession（父会话文件完整路径）→ 提取父会话
+ *  UUID（task-cost-metrics D2：子会话→父→任务归因链）。主会话（parentSession null/缺）
+ *  或任何读/解析失败 → null（fail-open，调用方省略键）。只读首 8KB 内的首行。 */
+export function readParentSessionId(file: string): string | null {
+	let fd: number;
+	try {
+		fd = fs.openSync(file, "r");
+	} catch {
+		return null;
+	}
+	try {
+		const buf = Buffer.alloc(8192);
+		const n = fs.readSync(fd, buf, 0, buf.length, 0);
+		const seg = buf.subarray(0, n);
+		const nl = seg.indexOf(10); // \n 字节
+		const head = (nl === -1 ? seg : seg.subarray(0, nl)).toString("utf8");
+		const d = JSON.parse(head) as { parentSession?: unknown };
+		if (typeof d.parentSession !== "string" || !d.parentSession) return null;
+		return sessionFileIdOf(d.parentSession);
+	} catch {
+		return null;
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+/** 从同目录候选集中定位 prev 会话文件（task-cost-metrics D3）：排除当前会话与提不出
+ *  UUID 的条目，取 mtime 最新者；mtime 并列时取文件名字典序大者（ISO 前缀新者胜，
+ *  保证确定性）。空目录/仅当前会话 → null。纯函数，smoke 直测。 */
+export function findPrevSessionFile(
+	entries: ReadonlyArray<{ file: string; mtimeMs: number }>,
+	currentId: string,
+): string | null {
+	let best: { file: string; mtimeMs: number } | null = null;
+	for (const e of entries) {
+		const id = sessionFileIdOf(e.file);
+		if (!id || id === currentId) continue;
+		if (
+			!best ||
+			e.mtimeMs > best.mtimeMs ||
+			(e.mtimeMs === best.mtimeMs && e.file > best.file)
+		) {
+			best = e;
+		}
+	}
+	return best?.file ?? null;
 }

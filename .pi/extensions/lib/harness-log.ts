@@ -18,6 +18,8 @@
  *   policy.decision    30 天（harden-harness-policy-and-spill：spec-gate/quota-gate/test-scope-guard 显著裁决统一记账）
  *   edit.map           30 天（coordinate-concurrent-changes：change→编辑文件归属地图，quality-gate 落库侧并集快照）
  *   patrol.check       30 天（test-debt-patrol：测试欠账巡检分片流水，仅流水；欠账生命周期由台账表自身持久化）
+ *   change.archive     30 天（task-cost-metrics：归档成功锚点——「普通成功放行零记录」低噪声约束的唯一成功侧事实例外，
+ *                      归档低频、高价值锚点，retro B' 每任务成本的分母）
  *   pin.write          永久
  *
  * 安全开库（design D2）：
@@ -102,7 +104,8 @@ export type HarnessEventKind =
 	| "spill.write"
 	| "subagent.complete"
 	| "policy.decision"
-	| "edit.map";
+	| "edit.map"
+	| "change.archive";
 
 export interface HarnessEventInput {
 	kind: HarnessEventKind;
@@ -134,6 +137,7 @@ const RETENTION_DAYS: Partial<Record<HarnessEventKind, number>> = {
 	"policy.decision": 30,
 	"edit.map": 30,
 	"patrol.check": 30,
+	"change.archive": 30,
 	// pin.write 永久，不列
 };
 
