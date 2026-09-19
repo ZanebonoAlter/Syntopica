@@ -28,9 +28,9 @@ const (
 		`{"label":"Rust语言","category":"keyword","description":"系统级编程语言"},` +
 		`{"label":"Vite构建工具","category":"keyword","description":"前端构建工具"}]}`
 
-	monoEventPersonResponse = `{"tags":[{"label":"OpenAI发布GPT-5","category":"event","auxiliary_labels":[{"label":"OpenAI","description":"人工智能研究公司"},{"label":"GPT-5","description":"大语言模型版本"},{"label":"模型发布","description":"产品发布行为"}]}]}`
+	monoMergedResponse = `{"event_person_tags":[{"label":"OpenAI发布GPT-5","category":"event","auxiliary_labels":[{"label":"OpenAI","description":"人工智能研究公司"},{"label":"GPT-5","description":"大语言模型版本"},{"label":"模型发布","description":"产品发布行为"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库管理系统"},{"label":"LangChain","category":"keyword","description":"大模型应用开发框架"}]}`
 
-	monoKeywordResponse = `{"tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库管理系统"},{"label":"LangChain","category":"keyword","description":"大模型应用开发框架"}]}`
+	monoKeywordOnlyMergedResponse = `{"event_person_tags":[],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库管理系统"},{"label":"LangChain","category":"keyword","description":"大模型应用开发框架"}]}`
 )
 
 // aggregateMarkdownSummary builds a 4-column digest (intro + 3 body columns)
@@ -120,10 +120,9 @@ func TestTagArticleAggregatePathDedupesAndTiersScores(t *testing.T) {
 
 	require.NoError(t, TagArticle(context.Background(), article, "科技周刊", "科技"))
 
-	// Intro column skipped → exactly 3 section calls, no mono-branch calls.
+	// Intro column skipped → exactly 3 section calls, no mono extraction.
 	require.Equal(t, 3, router.callCount("tag_extraction_section"))
-	require.Equal(t, 0, router.callCount("tag_extraction_event_person"))
-	require.Equal(t, 0, router.callCount("tag_extraction_keyword"))
+	require.Equal(t, 0, router.callCount("tag_extraction_merged"))
 
 	rows := loadArticleTagScores(t, db, article.ID)
 	require.Len(t, rows, 5) // 6 candidates - 1 cross-section duplicate (Kubernetes)
@@ -174,16 +173,14 @@ func TestTagArticleMonoContentFormsKeepMonoPath(t *testing.T) {
 	for _, form := range []string{"", "mono"} {
 		t.Run("content_form="+form, func(t *testing.T) {
 			router := newFakeTagChatRouter()
-			router.enqueue("tag_extraction_event_person", fakeTagChatResponse{content: monoEventPersonResponse})
-			router.enqueue("tag_extraction_keyword", fakeTagChatResponse{content: monoKeywordResponse})
+			router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: monoMergedResponse})
 			db := setupAggregateTaggerTest(t, router)
 			article := createAggregateArticle(t, db, aggregateMarkdownSummary(), form)
 
 			require.NoError(t, TagArticle(context.Background(), article, "科技周刊", "科技"))
 
 			require.Equal(t, 0, router.callCount("tag_extraction_section"))
-			require.Equal(t, 1, router.callCount("tag_extraction_event_person"))
-			require.Equal(t, 1, router.callCount("tag_extraction_keyword"))
+			require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 
 			rows := loadArticleTagScores(t, db, article.ID)
 			require.Len(t, rows, 3)
@@ -196,8 +193,7 @@ func TestTagArticleMonoContentFormsKeepMonoPath(t *testing.T) {
 
 func TestTagArticleAggregateWithoutSectionsFallsBackToMono(t *testing.T) {
 	router := newFakeTagChatRouter()
-	router.enqueue("tag_extraction_event_person", fakeTagChatResponse{content: `{"tags":[]}`})
-	router.enqueue("tag_extraction_keyword", fakeTagChatResponse{content: monoKeywordResponse})
+	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: monoKeywordOnlyMergedResponse})
 	db := setupAggregateTaggerTest(t, router)
 	// No ## headings → splitter yields nothing → fall back to the mono path.
 	article := createAggregateArticle(t, db, bodyOf("本期没有栏目结构的纯文本摘要。", 400), "aggregate")
@@ -205,7 +201,7 @@ func TestTagArticleAggregateWithoutSectionsFallsBackToMono(t *testing.T) {
 	require.NoError(t, TagArticle(context.Background(), article, "科技周刊", "科技"))
 
 	require.Equal(t, 0, router.callCount("tag_extraction_section"))
-	require.Equal(t, 1, router.callCount("tag_extraction_keyword"))
+	require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 
 	rows := loadArticleTagScores(t, db, article.ID)
 	require.Len(t, rows, 2)
@@ -343,17 +339,15 @@ func TestTagArticleAggregateAllSectionsFailedFallsBackToMono(t *testing.T) {
 	for i := 0; i < 9; i++ {
 		router.enqueue("tag_extraction_section", fakeTagChatResponse{content: "not json"})
 	}
-	// Mono fallback: event/person returns nothing, keyword branch works.
-	router.enqueue("tag_extraction_event_person", fakeTagChatResponse{content: `{"tags":[]}`})
-	router.enqueue("tag_extraction_keyword", fakeTagChatResponse{content: monoKeywordResponse})
+	// Mono fallback: single merged call, keyword array carries the tags.
+	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: monoKeywordOnlyMergedResponse})
 	db := setupAggregateTaggerTest(t, router)
 	article := createAggregateArticle(t, db, aggregateMarkdownSummary(), "aggregate")
 
 	require.NoError(t, TagArticle(context.Background(), article, "科技周刊", "科技"))
 
 	require.Equal(t, 9, router.callCount("tag_extraction_section")) // 3 sections × 3 retries
-	require.Equal(t, 1, router.callCount("tag_extraction_event_person"))
-	require.Equal(t, 1, router.callCount("tag_extraction_keyword"))
+	require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 
 	rows := loadArticleTagScores(t, db, article.ID)
 	require.Len(t, rows, 2)
@@ -373,15 +367,14 @@ func TestTagArticleAggregateAllSectionsEmptyFallsBackToMono(t *testing.T) {
 	router.enqueue("tag_extraction_section", fakeTagChatResponse{content: `{"tags":[]}`})
 	router.enqueue("tag_extraction_section", fakeTagChatResponse{content: `{"tags":[]}`})
 	router.enqueue("tag_extraction_section", fakeTagChatResponse{content: `{"tags":[]}`})
-	router.enqueue("tag_extraction_event_person", fakeTagChatResponse{content: monoEventPersonResponse})
-	router.enqueue("tag_extraction_keyword", fakeTagChatResponse{content: monoKeywordResponse})
+	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: monoMergedResponse})
 	db := setupAggregateTaggerTest(t, router)
 	article := createAggregateArticle(t, db, aggregateMarkdownSummary(), "aggregate")
 
 	require.NoError(t, TagArticle(context.Background(), article, "科技周刊", "科技"))
 
 	require.Equal(t, 3, router.callCount("tag_extraction_section"))
-	require.Equal(t, 1, router.callCount("tag_extraction_event_person"))
+	require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 
 	rows := loadArticleTagScores(t, db, article.ID)
 	require.NotEmpty(t, rows, "empty aggregate output must fall back to mono, not end with 0 tags")
@@ -400,6 +393,5 @@ func TestTagArticleAggregatePartialSuccessNoFallback(t *testing.T) {
 	require.NoError(t, TagArticle(context.Background(), article, "科技周刊", "科技"))
 
 	require.Equal(t, 7, router.callCount("tag_extraction_section"))
-	require.Equal(t, 0, router.callCount("tag_extraction_event_person"), "partial aggregate output must NOT trigger mono fallback")
-	require.Equal(t, 0, router.callCount("tag_extraction_keyword"))
+	require.Equal(t, 0, router.callCount("tag_extraction_merged"), "partial aggregate output must NOT trigger mono fallback")
 }

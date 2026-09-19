@@ -106,9 +106,7 @@ func TestTagArticleReusesSiblingTagsWithoutAI(t *testing.T) {
 		require.NoError(t, db.Where("article_id = ? AND topic_tag_id = ?", copyA.ID, link.TopicTagID).First(&original).Error)
 		require.Equal(t, original.Score, link.Score, "score must be carried over from the sibling copy")
 	}
-	for _, op := range []string{"tag_extraction_event_person", "tag_extraction_keyword"} {
-		require.Zero(t, router.callCount(op), "reuse path must not call the AI (op=%s)", op)
-	}
+	require.Zero(t, router.callCount("tag_extraction_merged"), "reuse path must not call the AI")
 	require.Empty(t, recorder.prompts(), "no prompt may reach the router on the reuse path")
 
 	var refreshed models.Article
@@ -135,16 +133,14 @@ func TestTagArticleReuseSkipsConflictingTag(t *testing.T) {
 	var got []models.ArticleTopicTag
 	require.NoError(t, db.Where("article_id = ?", copyB.ID).Order("topic_tag_id").Find(&got).Error)
 	require.Len(t, got, 3, "B must end with the union of A's tags (already-present one not duplicated)")
-	require.Zero(t, router.callCount("tag_extraction_event_person"))
-	require.Zero(t, router.callCount("tag_extraction_keyword"))
+	require.Zero(t, router.callCount("tag_extraction_merged"))
 }
 
 // TestTagArticleWithoutSiblingExtractsViaAI covers the reverse: no sibling
 // copy with tags → normal AI extraction runs and stores its own source.
 func TestTagArticleWithoutSiblingExtractsViaAI(t *testing.T) {
 	router := newFakeTagChatRouter()
-	router.enqueue("tag_extraction_event_person", fakeTagChatResponse{content: `{"tags":[]}`})
-	router.enqueue("tag_extraction_keyword", fakeTagChatResponse{content: `{"tags":[{"label":"美股存储芯片","category":"keyword","description":"存储芯片板块"}]}`})
+	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"event_person_tags":[],"keyword_tags":[{"label":"美股存储芯片","category":"keyword","description":"存储芯片板块"}]}`})
 	db := setupReuseTestDB(t, router)
 
 	feed := models.Feed{Title: "独立源", URL: "https://example.com/solo"}
@@ -160,16 +156,14 @@ func TestTagArticleWithoutSiblingExtractsViaAI(t *testing.T) {
 	for _, link := range got {
 		require.Equal(t, "llm", link.Source, "AI path rows keep their extraction source")
 	}
-	require.Equal(t, 1, router.callCount("tag_extraction_event_person"))
-	require.Equal(t, 1, router.callCount("tag_extraction_keyword"))
+	require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 }
 
 // TestRetagArticleDoesNotReuseSiblingTags covers spec scenario "手动重打标不
 // 复用": Force retag re-extracts via the AI even when a tagged sibling exists.
 func TestRetagArticleDoesNotReuseSiblingTags(t *testing.T) {
 	router := newFakeTagChatRouter()
-	router.enqueue("tag_extraction_event_person", fakeTagChatResponse{content: `{"tags":[{"label":"美债收益率下行","category":"event"}]}`})
-	router.enqueue("tag_extraction_keyword", fakeTagChatResponse{content: `{"tags":[]}`})
+	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"event_person_tags":[{"label":"美债收益率下行","category":"event"}],"keyword_tags":[]}`})
 	db := setupReuseTestDB(t, router)
 
 	copyA, copyB, tags := reuseSiblingFixture(t, db, "https://example.com/shared/story-3")
@@ -187,15 +181,14 @@ func TestRetagArticleDoesNotReuseSiblingTags(t *testing.T) {
 	for _, link := range got {
 		require.NotEqual(t, tagSourceReuse, link.Source, "Force retag rows must come from extraction, not reuse")
 	}
-	require.Equal(t, 1, router.callCount("tag_extraction_event_person"), "Force retag must call the AI")
+	require.Equal(t, 1, router.callCount("tag_extraction_merged"), "Force retag must call the AI")
 }
 
 // TestTagArticleEmptyLinkNeverReuses guards the empty-link hole: two link-less
 // articles must never "reuse" each other's tags.
 func TestTagArticleEmptyLinkNeverReuses(t *testing.T) {
 	router := newFakeTagChatRouter()
-	router.enqueue("tag_extraction_event_person", fakeTagChatResponse{content: `{"tags":[]}`})
-	router.enqueue("tag_extraction_keyword", fakeTagChatResponse{content: `{"tags":[]}`})
+	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"event_person_tags":[],"keyword_tags":[]}`})
 	db := setupReuseTestDB(t, router)
 
 	feedA := models.Feed{Title: "源A", URL: "https://example.com/x"}
@@ -215,9 +208,8 @@ func TestTagArticleEmptyLinkNeverReuses(t *testing.T) {
 	var reused int64
 	require.NoError(t, db.Model(&models.ArticleTopicTag{}).Where("article_id = ? AND source = ?", noLinkB.ID, tagSourceReuse).Count(&reused).Error)
 	require.Zero(t, reused, "empty-link articles must never reuse sibling tags")
-	// Both branches were called (extraction ran; empty result → no links).
-	require.Equal(t, 1, router.callCount("tag_extraction_event_person"))
-	require.Equal(t, 1, router.callCount("tag_extraction_keyword"))
+	// Extraction ran once (merged call, empty arrays → no links).
+	require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 }
 
 // TestTagArticleReuseStopsAtMaxArticleTags covers the cap the AI path also
@@ -263,8 +255,7 @@ func TestTagArticleReuseStopsAtMaxArticleTags(t *testing.T) {
 	}
 	require.True(t, kept[ownTag.ID], "B's pre-existing tag must survive the top-up")
 	require.True(t, kept[tags[len(tags)-1].ID], "highest-scored sibling tag must win its slot")
-	require.Zero(t, router.callCount("tag_extraction_event_person"), "capped top-up still skips the AI")
-	require.Zero(t, router.callCount("tag_extraction_keyword"))
+	require.Zero(t, router.callCount("tag_extraction_merged"), "capped top-up still skips the AI")
 }
 
 // TestTagArticleFullCopyWithOtherSiblingTagsSkipsAI covers the saturated
@@ -293,8 +284,7 @@ func TestTagArticleFullCopyWithOtherSiblingTagsSkipsAI(t *testing.T) {
 	for _, link := range got {
 		require.Equal(t, "llm", link.Source, "no reuse rows may be added on a saturated copy")
 	}
-	require.Zero(t, router.callCount("tag_extraction_event_person"))
-	require.Zero(t, router.callCount("tag_extraction_keyword"))
+	require.Zero(t, router.callCount("tag_extraction_merged"))
 }
 
 // TestTagArticleAfterContentUpdateRetags covers spec scenario "处理链完成事件
@@ -303,8 +293,7 @@ func TestTagArticleFullCopyWithOtherSiblingTagsSkipsAI(t *testing.T) {
 // the NEW content via the AI path.
 func TestTagArticleAfterContentUpdateRetags(t *testing.T) {
 	router := newFakeTagChatRouter()
-	router.enqueue("tag_extraction_event_person", fakeTagChatResponse{content: `{"tags":[{"label":"美债救市","category":"event"}]}`})
-	router.enqueue("tag_extraction_keyword", fakeTagChatResponse{content: `{"tags":[]}`})
+	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"event_person_tags":[{"label":"美债救市","category":"event"}],"keyword_tags":[]}`})
 	recorder := &promptRecordingRouter{inner: router}
 	db := setupReuseTestDB(t, recorder)
 
