@@ -217,6 +217,15 @@ export interface ForeignCheckInput {
 	foreign: Iterable<string>;
 }
 
+/** 路径 x 是否属于集合 s：精确命中，或包锚点（尾部 / 的目录前缀）与集合成员前缀命中。 */
+function pathMemberOf(p: string, s: ReadonlySet<string>): boolean {
+	if (s.has(p)) return true;
+	if (p.endsWith("/")) {
+		for (const x of s) if (x.startsWith(p)) return true;
+	}
+	return false;
+}
+
 /** 归属判定（design D5 判外部充分条件）：P 非空 ∧ P∩mine=∅ ∧ P⊆foreign。
  *  包锚点（尾部 / 的目录前缀）按前缀与集合比对：任一集合成员位于该前缀下即命中。
  *  任何混合/缺失/非字符串路径 → false（保守回现状，宁可多报不误判外部）。 */
@@ -224,16 +233,89 @@ export function isForeignFailure({ paths, mine, foreign }: ForeignCheckInput): b
 	if (!Array.isArray(paths) || paths.length === 0) return false;
 	const mineSet = mine instanceof Set ? mine : new Set(mine);
 	const foreignSet = foreign instanceof Set ? foreign : new Set(foreign);
-	const memberOf = (p: string, s: ReadonlySet<string>): boolean => {
-		if (s.has(p)) return true;
-		if (p.endsWith("/")) {
-			for (const x of s) if (x.startsWith(p)) return true;
-		}
-		return false;
-	};
 	return (
-		paths.every((p) => typeof p === "string" && !memberOf(p, mineSet)) &&
-		paths.every((p) => typeof p === "string" && memberOf(p, foreignSet))
+		paths.every((p) => typeof p === "string" && !pathMemberOf(p, mineSet)) &&
+		paths.every((p) => typeof p === "string" && pathMemberOf(p, foreignSet))
+	);
+}
+
+/* ---------- 三态归属判定与混合失败行（tune-quality-gate-concurrency design D3） ----------
+ *  混合归属（P∩mine≠∅ ∧ P∩foreign≠∅）是共享树上最常见的失败形态（7 天账本取证：
+ *  纯外部 foreign-breakage 命中 0 次，混合全部按本会话 [回归] 催修）。三态化：纯外部
+ *  维持 [外部]；混合降级 [并发]（进粘性但不取催修分级，双方路径分列）；其余保守 mine。 */
+
+export type FailureOwnership = "foreign" | "mixed" | "mine";
+
+export interface OwnershipCheckInput extends ForeignCheckInput {}
+
+/** 三态归属判定（design D3 判定序：纯外部 → 混合 → 保守 mine）：
+ *  - P∩mine=∅ ∧ P⊆foreign → foreign（既有 [外部] 语义不变）
+ *  - P∩mine≠∅ ∧ P∩foreign≠∅ → mixed（新增 [并发] 降级）
+ *  - 其余（含 paths 空 / 非字符串成员 / 输入异常如非 Iterable）→ mine（保守，宁可
+ *    多报不误判外部/漏催修） */
+export function classifyFailureOwnership({
+	paths,
+	mine,
+	foreign,
+}: OwnershipCheckInput): FailureOwnership {
+	try {
+		if (!Array.isArray(paths) || paths.length === 0) return "mine";
+		const mineSet = mine instanceof Set ? mine : new Set(mine);
+		const foreignSet = foreign instanceof Set ? foreign : new Set(foreign);
+		const valid = paths.filter((p): p is string => typeof p === "string");
+		if (valid.length === 0) return "mine";
+		const hitMine = valid.some((p) => pathMemberOf(p, mineSet));
+		const hitForeign = valid.some((p) => pathMemberOf(p, foreignSet));
+		if (!hitMine && valid.every((p) => pathMemberOf(p, foreignSet))) return "foreign";
+		if (hitMine && hitForeign) return "mixed";
+		return "mine";
+	} catch {
+		return "mine"; // 输入异常（非 Iterable 等）保守回退（B3-5）
+	}
+}
+
+/** 把失败路径按命中面分组（mixed 行双方路径分列用）：mine 命中面 / foreign 命中面
+ *  （同一路径可同时命中两侧——双方都改过同一文件，分列如实呈现重叠）。 */
+export function partitionFailurePaths({
+	paths,
+	mine,
+	foreign,
+}: OwnershipCheckInput): { mine: string[]; foreign: string[] } {
+	const out = { mine: [] as string[], foreign: [] as string[] };
+	try {
+		const mineSet = mine instanceof Set ? mine : new Set(mine);
+		const foreignSet = foreign instanceof Set ? foreign : new Set(foreign);
+		for (const p of paths ?? []) {
+			if (typeof p !== "string") continue;
+			if (pathMemberOf(p, mineSet)) out.mine.push(p);
+			if (pathMemberOf(p, foreignSet)) out.foreign.push(p);
+		}
+	} catch {
+		/* 输入异常：空分组（调用方 mixed 已保守回退，不会用到） */
+	}
+	return out;
+}
+
+/** 混合归属失败行（[并发] 前缀，design D3）：不取 [回归]/[中间态] 分级；双方路径
+ *  各 ≤3 条 + 超出计数 + 「可能非本会话所致，归档前仍需全绿」提示；diag（可选）为
+ *  与 gate.check 同源的首个失败特征行，附在尾部供辨识具体错误。 */
+export function formatMixedFailure(
+	cmd: string,
+	myPaths: readonly string[],
+	foreignPaths: readonly string[],
+	diag?: string,
+): string {
+	const clip = (xs: readonly string[]): { shown: string; more: string } => ({
+		shown: (xs ?? []).slice(0, 3).join(", "),
+		more: (xs ?? []).length > 3 ? ` 等 ${(xs ?? []).length} 个路径` : "",
+	});
+	const my = clip(myPaths);
+	const fo = clip(foreignPaths);
+	const diagLine = diag ? `\n  首个错误：${diag}` : "";
+	return (
+		`[并发] [${cmd}] 失败混合归属（他人会话与本会话文件并存，可能非本会话所致，归档前仍需全绿）：\n` +
+		`  他人路径：${fo.shown}${fo.more}\n` +
+		`  本会话路径：${my.shown}${my.more}${diagLine}`
 	);
 }
 

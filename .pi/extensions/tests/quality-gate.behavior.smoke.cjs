@@ -9,6 +9,10 @@
 // N 启动基线外部归因/[外部]/不进粘性/基线不覆盖 + 混合与解析不出保守回现状（⑥）+
 // O edit.map 归属外部/同指纹第 2 编辑回合不重发（C11）+ P 库不可用 fail-open（2.4）
 // （attribute-concurrent-gate-noise 新增）。
+// Q/B1 门禁互斥锁生命周期（抢到/held 跳过零记账/stale 覆盖/finally 释放/不误删他方锁/
+// 短路轮不抢锁）+ B3 classifyFailureOwnership 三态与保守回退 + B4 混合归属降级
+// （[并发] 前缀/进粘性/⟳ 抑制/转绿/判性翻转/双记账/同回合并存/两极回归）
+// （tune-quality-gate-concurrency 新增；N7 混合语义同步降级）。
 // 模块级状态（sticky/snapshot/gateOkStates/execPlatform）由各场景前的 session_start 重置。
 // 由 run-harness-smoke.sh 调用（先 esbuild 产出 .qgateb.cjs）。断言失败 exit 1。
 //
@@ -600,8 +604,9 @@ const setup = (router) => {
 		lintOut = 'internal/mine/a.go:1:1: e1\ninternal/x/y.go:9:9: e2'; // 混合：a.go 本会话触发过，y.go 基线
 		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-n'));
 		const mixedMsg = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
-		check('N7 ⑥混合路径保守按本会话失败（完整块 + 记账不升级）', !!mixedMsg
-			&& mixedMsg.m.content.includes('[中间态]') && mixedMsg.m.content.includes('e1')
+		check('N7 ⑥混合路径降级 [并发]（进粘性催修、不升级 [外部]）', !!mixedMsg
+			&& mixedMsg.m.content.includes('[并发]') && mixedMsg.m.content.includes('e1')
+			&& mixedMsg.m.content.includes('可能非本会话所致')
 			&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1
 			&& fbRows().length === 2);
 		files = 'backend-go/internal/mine/a.go\nbackend-go/internal/mine/c.go\nbackend-go/internal/mine/d.go\nbackend-go/internal/mine/e.go';
@@ -695,6 +700,261 @@ const setup = (router) => {
 		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-p'));
 		check('P2 2.4 失败照旧进 sticky：纯对话回合重跑', lintCalls === 2);
 		check('P3 2.4 库不可用不误判外部（路径不在基线 → C6 保守）', !messages.some(({ m }) => m.customType === 'quality-gate-foreign'));
+	}
+
+	// ============ 场景 Q/B1：门禁互斥锁生命周期（tune-quality-gate-concurrency D1） ============
+	// B1-1/2/3/7 纯函数直测（named export 自 .qgateb.cjs）；B1-4/5 turn_end 驱动；B1-6 异常释放；B1-8 短路不抢锁。
+	{
+		const qgateBundle = require('./.qgateb.cjs');
+		const lockRepo = mkrepo();
+		fs.mkdirSync(path.join(lockRepo, '.pi', 'harness'), { recursive: true });
+		const lockPath = path.join(lockRepo, '.pi', 'harness', 'gate.lock');
+		// B1-1 锁空闲 → acquired，内容含 sessionId/ts/cmd
+		const r1 = qgateBundle.acquireGateLock(lockRepo, 'sess-me', 'gate:backend');
+		const c1 = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+		check('B1-1 锁空闲 acquire=acquired 且内容含 sessionId/ts/cmd',
+			r1 === 'acquired' && c1.sessionId === 'sess-me' && typeof c1.ts === 'number' && c1.cmd === 'gate:backend');
+		// B1-2 他人活性锁 → held，锁文件不被改写
+		fs.writeFileSync(lockPath, JSON.stringify({ sessionId: 'other', ts: Date.now(), cmd: 'gate:backend' }));
+		const r2 = qgateBundle.acquireGateLock(lockRepo, 'sess-me', 'gate:backend');
+		const c2 = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+		check('B1-2 活性锁（他人）acquire=held 且锁文件不被改写', r2 === 'held' && c2.sessionId === 'other');
+		// B1-3 stale 锁（mtime > 180s TTL）→ 覆盖抢占
+		const old = new Date(Date.now() - 200_000);
+		fs.writeFileSync(lockPath, JSON.stringify({ sessionId: 'other', ts: 0, cmd: 'gate:backend' }));
+		fs.utimesSync(lockPath, old, old);
+		const r3 = qgateBundle.acquireGateLock(lockRepo, 'sess-me', 'gate:backend');
+		const c3 = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+		check('B1-3 stale 锁（mtime 超 TTL 180s）被覆盖抢占为本会话', r3 === 'acquired' && c3.sessionId === 'sess-me');
+		// B1-7 释放比对 sessionId：自己锁删除；他方锁不误删；ENOENT 吞异常
+		qgateBundle.releaseGateLock(lockRepo, 'sess-me');
+		const selfDeleted = !fs.existsSync(lockPath);
+		fs.writeFileSync(lockPath, JSON.stringify({ sessionId: 'other', ts: Date.now(), cmd: 'x' }));
+		let noThrow = true;
+		try {
+			qgateBundle.releaseGateLock(lockRepo, 'sess-me'); // 他方锁：不删不抛
+		} catch { noThrow = false; }
+		const otherKept = fs.existsSync(lockPath) && JSON.parse(fs.readFileSync(lockPath, 'utf8')).sessionId === 'other';
+		fs.rmSync(lockPath);
+		let enoentOk = true;
+		try { qgateBundle.releaseGateLock(lockRepo, 'sess-me'); } catch { enoentOk = false; } // ENOENT：吞
+		check('B1-7 释放比对 sessionId（自己删/他方不误删/ENOENT 吞异常）', selfDeleted && otherKept && noThrow && enoentOk);
+
+		// B1-4/B1-5 turn_end 驱动：held 跳过零记账 + 粘性保留 + 正常轮锁释放
+		setPlatform('native');
+		const repo = mkrepo();
+		let files = '';
+		let lintCalls = 0;
+		let lockSeenDuringGate = false;
+		const repoLockPath = path.join(repo, '.pi', 'harness', 'gate.lock');
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (cl.includes('golangci-lint')) {
+					lintCalls++;
+					if (fs.existsSync(repoLockPath)) lockSeenDuringGate = true;
+					return lintCalls === 1
+						? { code: 1, stdout: 'internal/x/a.go:1:1: bad', stderr: '' }
+						: { code: 0, stdout: '0 issues.', stderr: '' };
+				}
+				return { code: 0, stdout: '', stderr: '' };
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-b14')); // 空基线
+		files = 'backend-go/a.go';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-b14')); // T1：lint 失败 → sticky + failure steer
+		check('B1-5 acquired 后门禁正常跑完释放锁（执行期间锁在、回合结束锁删）',
+			lockSeenDuringGate && !fs.existsSync(repoLockPath));
+		const gateBefore = q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check'")[0].n;
+		const msgBefore = messages.length;
+		fs.writeFileSync(repoLockPath, JSON.stringify({ sessionId: 'other-session', ts: Date.now(), cmd: 'gate:backend' }));
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b14')); // T2：纯对话但 sticky 非空 → held 跳过
+		const polHeld = q(repo, "SELECT payload FROM events WHERE kind='policy.decision' AND payload LIKE '%gate-lock-held%'");
+		const polAll = q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n;
+		const heldOk = lintCalls === 1
+			&& q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check'")[0].n === gateBefore
+			&& messages.length === msgBefore && polAll === 1 && polHeld.length === 1
+			&& JSON.parse(polHeld[0].payload).action === 'fail-open'
+			&& JSON.parse(polHeld[0].payload).reasonCode === 'gate-lock-held'
+			&& JSON.parse(polHeld[0].payload).policy === 'quality-gate'
+			&& fs.existsSync(repoLockPath); // 他人锁不被 held 方动过
+		fs.rmSync(repoLockPath); // 模拟他人释放
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b14')); // T3：锁空闲 → 粘性重跑转绿
+		check('B1-4 held 跳过（零命令零 gate.check 零 steer + 恰 1 条 fail-open/gate-lock-held）且粘性保留（锁空闲后重跑转绿）',
+			heldOk && lintCalls === 2);
+
+		// B1-6 命令异常仍 finally 释放锁（异常冒泡，锁文件不残留）
+		setPlatform('native');
+		const repo6 = mkrepo();
+		let files6 = '';
+		const router6 = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo6, files6)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				throw new Error('gate command exploded'); // 首条门禁命令即炸
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const h6 = setup(router6);
+		await h6.handlers['session_start']({ reason: 'new' }, mkctx('smoke-b16'));
+		files6 = 'backend-go/a.go';
+		let threw6 = false;
+		try { await h6.handlers['turn_end'](EDIT_TURN, mkctx('smoke-b16')); } catch { threw6 = true; }
+		check('B1-6 门禁命令异常仍 finally 释放锁（异常冒泡 + 锁文件不存在）',
+			threw6 && !fs.existsSync(path.join(repo6, '.pi', 'harness', 'gate.lock')));
+
+		// B1-8 短路轮不抢锁：interop-down 与两侧 toolchain-down 均不产生 gate.lock
+		setPlatform('windows');
+		const repo8 = mkrepo();
+		let files8 = '';
+		const router8 = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo8, files8)(cmd, args);
+			if (cmd === 'cmd.exe') throw new Error('Command timed out'); // vsock 死 → interop-down 短路
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const h8 = setup(router8);
+		await h8.handlers['session_start']({ reason: 'new' }, mkctx('smoke-b18'));
+		files8 = 'backend-go/a.go';
+		await h8.handlers['turn_end'](EDIT_TURN, mkctx('smoke-b18'));
+		const interopNoLock = !fs.existsSync(path.join(repo8, '.pi', 'harness', 'gate.lock'));
+		setPlatform(''); // 空 PATH：无 cmd.exe（native）且 go/golangci-lint/pnpm 全缺 → 两侧 toolchain-down
+		const repo8b = mkrepo();
+		let files8b = '';
+		const router8b = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo8b, files8b)(cmd, args);
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const h8b = setup(router8b);
+		await h8b.handlers['session_start']({ reason: 'new' }, mkctx('smoke-b18b'));
+		files8b = 'backend-go/a.go\nfront/app/x.ts';
+		await h8b.handlers['turn_end'](EDIT_TURN, mkctx('smoke-b18b'));
+		check('B1-8 短路轮不抢锁（interop-down 与两侧 toolchain-down 均无 gate.lock）',
+			interopNoLock && !fs.existsSync(path.join(repo8b, '.pi', 'harness', 'gate.lock')));
+	}
+
+	// ============ 场景 B3：classifyFailureOwnership 三态判定（纯函数直测，.fcls.cjs） ============
+	{
+		const { classifyFailureOwnership } = require('./.fcls.cjs');
+		check('B3-1 纯本会话 → mine',
+			classifyFailureOwnership({ paths: ['a.go'], mine: ['a.go'], foreign: ['b.go'] }) === 'mine');
+		check('B3-2 纯外部 → foreign',
+			classifyFailureOwnership({ paths: ['b.go'], mine: ['a.go'], foreign: ['b.go'] }) === 'foreign');
+		check('B3-3 混合 → mixed',
+			classifyFailureOwnership({ paths: ['a.go', 'b.go'], mine: ['a.go'], foreign: ['b.go'] }) === 'mixed');
+		check('B3-4 paths 空 → mine（保守回退）',
+			classifyFailureOwnership({ paths: [], mine: ['a.go'], foreign: ['b.go'] }) === 'mine');
+		let noThrow = true;
+		let r5 = null;
+		try { r5 = classifyFailureOwnership({ paths: ['a.go'], mine: 123, foreign: 456 }); } catch { noThrow = false; }
+		check('B3-5 mine/foreign 异常输入吞掉回退 mine', noThrow && r5 === 'mine');
+	}
+
+	// ============ 场景 B4：混合归属降级（[并发]/粘性/⟳/转绿/判性翻转/记账/并存/两极） ============
+	// 本会话触发 internal/mine/a.go；启动基线含 internal/x/y.go（他人）。lint 失败输出混合双方路径 → mixed。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'x'), { recursive: true });
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'mine'), { recursive: true });
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'x', 'y.go'), 'package x\n');
+		for (const f of ['a.go', 'b.go', 'c.go']) {
+			fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'mine', f), 'package x\n');
+		}
+		const mineA = path.join(repo, 'backend-go', 'internal', 'mine', 'a.go');
+		let files = 'backend-go/internal/x/y.go'; // 启动基线：y.go 是别人的半成品
+		let lintGreen = false;
+		let vetGreen = true;
+		const MIXED_OUT = 'internal/mine/a.go:1:1: e1\ninternal/x/y.go:9:9: e2';
+		const MINE_ONLY = 'internal/mine/a.go:1:1: e1';
+		let lintOut = MIXED_OUT;
+		let vetOut = '';
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (cl.includes('golangci-lint')) return lintGreen
+					? { code: 0, stdout: '0 issues.', stderr: '' }
+					: { code: 1, stdout: lintOut, stderr: '' };
+				if (cl.includes('vet')) return vetGreen
+					? { code: 0, stdout: '', stderr: '' }
+					: { code: 1, stdout: vetOut, stderr: '' };
+				return { code: 0, stdout: '', stderr: '' }; // build
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages, execCalls } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-b4'));
+		files = 'backend-go/internal/x/y.go\nbackend-go/internal/mine/a.go'; // 本会话触发 a.go
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-b4')); // T1：mixed 首现
+		const fm1 = messages.find(({ m }) => m.customType === 'quality-gate-failure');
+		check('B4-1 mixed 首现：[并发] 前缀 + 双方路径分列 + 全绿提示 + 无 [回归]/[中间态] 失败行前缀',
+			!!fm1 && fm1.m.content.includes('[并发]') && fm1.m.content.includes('golangci-lint')
+				&& fm1.m.content.includes('internal/mine/a.go') && fm1.m.content.includes('internal/x/y.go')
+				&& fm1.m.content.includes('可能非本会话所致') && fm1.m.content.includes('归档前仍需全绿')
+				&& !fm1.m.content.includes('[中间态] [') && !fm1.m.content.includes('[回归] ['));
+		const cmRows = () => q(repo, "SELECT payload FROM events WHERE kind='policy.decision' AND payload LIKE '%concurrent-mixed%'");
+		check('B4-6 mixed 回合记账：gate.check ok=false 照记 + 恰 1 条 warn/concurrent-mixed(target=cmd)',
+			q(repo, "SELECT payload FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0").some((r) => r.payload.includes('e1'))
+				&& cmRows().length === 1 && JSON.parse(cmRows()[0].payload).action === 'warn'
+				&& JSON.parse(cmRows()[0].payload).target === 'golangci-lint');
+		const lintN = () => execCalls.filter((c) => c.includes('golangci-lint')).length;
+		const l1 = lintN();
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4')); // T2：纯对话粘性重跑 + 同指纹 ⟳
+		const fm2 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('B4-2/B4-3 mixed 进粘性重跑 + 同指纹 ⟳ 单行（rounds 递增不重灌）',
+			lintN() === l1 + 1 && !!fm2 && fm2.m.content.includes('⟳')
+				&& fm2.m.content.includes('第 2 回合未变化') && !fm2.m.content.includes('exit 1'))
+		check('B4-6b 每命中回合追加一条 concurrent-mixed（T2 累计 2 条）', cmRows().length === 2);
+		lintOut = MINE_ONLY; // T3：判性翻转 mixed→mine（diag 同、失败只剩本会话路径）
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4'));
+		const fm3 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('B4-5 判性翻转 mixed→mine：恢复完整块 + 正常分级（⟳ 不延续）',
+			!!fm3 && fm3.m.content.includes('[中间态]') && fm3.m.content.includes('exit 1')
+				&& !fm3.m.content.includes('⟳') && !fm3.m.content.includes('[并发]'));
+		lintGreen = true; // T4：转绿
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4'));
+		const gm = messages.find(({ m }) => m.customType === 'quality-gate-green');
+		const l4 = lintN();
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4')); // T5：纯对话 → 指纹已清零不重跑
+		check('B4-4 mixed 转绿 ✓ 收尾 + 指纹条目清除（后续纯对话零重跑）',
+			!!gm && gm.m.content.includes('✓') && gm.m.content.includes('golangci-lint')
+				&& gm.m.content.includes('已转绿') && lintN() === l4);
+		// T6：同回合并存——lint mixed 首现 + vet 纯 mine 首现，同一条 failure 消息分列
+		files = 'backend-go/internal/x/y.go\nbackend-go/internal/mine/a.go\nbackend-go/internal/mine/b.go';
+		lintGreen = false;
+		lintOut = MIXED_OUT;
+		vetGreen = false;
+		vetOut = 'internal/mine/a.go:2:2: v1';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-b4'));
+		const fm6 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('B4-7 同回合 mixed 与 mine 失败并存：同一 failure 消息内 [并发] 与 [回归] 分列',
+			!!fm6 && fm6.m.content.includes('[并发]') && fm6.m.content.includes('[回归][')
+				&& fm6.m.content.includes('internal/x/y.go') && fm6.m.content.includes('v1'));
+		// B4-8 两极回归：纯外部 → [外部]；转绿清粘性后纯对话零重跑；纯 mine → 既有 [回归] 分级
+		vetGreen = true;
+		lintOut = 'internal/x/y.go:5:5: only-foreign'; // 纯外部（y.go 在基线；lint 靠 T6 mixed 粘性重跑）
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-b4')); // T7：lint 外部 + vet 转绿
+		const fgMsg = messages.filter(({ m }) => m.customType === 'quality-gate-foreign').pop();
+		lintGreen = true;
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4')); // T7.5：lint 转绿清粘性
+		const lF = lintN();
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4')); // T7.6：纯对话零重跑（外部不进粘性）
+		const foreignNoSticky = lintN() === lF;
+		lintGreen = false;
+		lintOut = MINE_ONLY; // 纯 mine（lint 曾绿 → [回归]）
+		const later = new Date(Date.now() + 5_000);
+		fs.utimesSync(mineA, later, later); // 新 trigger：a.go mtime 变化
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-b4')); // T8
+		const fm8 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('B4-8 两极回归：纯外部 [外部] 不进粘性（转绿后纯对话零重跑）/ 纯 mine 维持既有 [回归] 分级',
+			!!fgMsg && fgMsg.m.content.includes('[外部]') && foreignNoSticky
+				&& !!fm8 && fm8.m.content.includes('[回归][') && !fm8.m.content.includes('[并发]'));
 	}
 
 	let fail = 0;

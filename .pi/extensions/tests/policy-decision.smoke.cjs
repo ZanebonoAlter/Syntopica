@@ -449,14 +449,17 @@ function makePi() {
 		     quality-gate 例外 = 环境短路 fail-open（interop-down 1 处 + toolchain-down
 		     backend/frontend 2 处）+ 子线程降载 bypass（child-session 1 处）+ 外部失败
 		     归因 warn（foreign-breakage 1 处，spec gate-failure-reporting「外部失败不进
-		     粘性且记 warn 归因」），且被短路跳过的命令零 gate.check 双写 ---------- */
+		     粘性且记 warn 归因」）+ 锁跳过 fail-open（gate-lock-held 1 处）+ 混合归属 warn（concurrent-mixed 1 处，
+		     tune-quality-gate-concurrency D3/D4），且被短路/锁跳过的命令零 gate.check 双写 ---------- */
 		const qg = fs.readFileSync(path.resolve('../quality-gate.ts'), 'utf8');
 		const eg = fs.readFileSync(path.resolve('../entry-gate.ts'), 'utf8');
-		check('quality-gate 源码 logPolicyDecision 恰五处（interop×1 + toolchain×2 + child-session bypass×1 + foreign-breakage×1）',
-			(qg.match(/logPolicyDecision\(/g) ?? []).length === 5 &&
+		check('quality-gate 源码 logPolicyDecision 恰七处（interop×1 + toolchain×2 + child-session×1 + foreign-breakage×1 + gate-lock-held×1 + concurrent-mixed×1）',
+			(qg.match(/logPolicyDecision\(/g) ?? []).length === 7 &&
 			qg.includes('reasonCode: "interop-down"') &&
 			qg.includes('reasonCode: "toolchain-down"') &&
 			qg.includes('reasonCode: "child-session"') &&
+			qg.includes('reasonCode: "gate-lock-held"') &&
+			qg.includes('reasonCode: "concurrent-mixed"') &&
 			qg.includes('"quality-gate"'));
 		check('entry-gate 源码无 policy.decision 引用（同裁决无双写）', !eg.includes('policy.decision') && !eg.includes('logPolicyDecision'));
 

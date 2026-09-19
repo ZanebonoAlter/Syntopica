@@ -272,8 +272,129 @@ const check = (name, ok) => checks.push([name, ok]);
 	}
 }
 
-/* ---------- 汇总 ---------- */
-{
+/* ---------- B2 系：门禁命令形态（tune-quality-gate-concurrency D2：限核） ----------
+ * 事件形状回放（behavior smoke 同模式的最小 mock）：native/windows 两轮 turn_end 捕获
+ * pi.exec 调用，断言 GOMAXPROCS=2 前缀两形态 / lint --concurrency=2 / vet-build 串行 / eslint 不变。
+ * B2-4 串行判定：vet 分支经 setImmediate 异步结算后置 vetSettled；build 分支若在 vet
+ * 结算前发起（Promise.all 并发窗口）则记违规——同步 mock 分不出并发窗口，必须异步间隔。
+ * 本段异步（await turn_end），包 IIFE；汇总段同步先跑，B2 断言异常/失败均置 exitCode=1。 */
+(async () => {
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+	const qualityGate = require('./.qgateb.cjs').default;
+
+	const fakeWin = fs.mkdtempSync(path.join(os.tmpdir(), 'b2fakewin-'));
+	fs.writeFileSync(path.join(fakeWin, 'cmd.exe'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+	const fakeNative = fs.mkdtempSync(path.join(os.tmpdir(), 'b2nat-'));
+	for (const exe of ['go', 'golangci-lint', 'pnpm']) {
+		fs.writeFileSync(path.join(fakeNative, exe), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+	}
+	const REAL_PATH = process.env.PATH ?? '';
+
+	const mkrepo = () => {
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'b2smoke-'));
+		fs.mkdirSync(path.join(repo, 'backend-go'), { recursive: true });
+		fs.mkdirSync(path.join(repo, 'front', 'app'), { recursive: true });
+		fs.writeFileSync(path.join(repo, 'backend-go', 'a.go'), 'package x\n');
+		fs.writeFileSync(path.join(repo, 'front', 'app', 'x.ts'), 'export {}\n');
+		return repo;
+	};
+	const mkctx = (sid) => ({ signal: undefined, sessionManager: { getSessionId: () => sid } });
+	const EDIT_TURN = { toolResults: [{ toolName: 'edit' }] };
+
+	/** 跑一轮 turn_end（session_start 空基线 → files 触发 → EDIT_TURN），返回 execCalls */
+	const runGateTurn = async (platform, triggerFiles, routerExtra) => {
+		process.env.PATH =
+			platform === 'windows' ? `${fakeWin}${path.delimiter}${REAL_PATH}` : fakeNative;
+		const repo = mkrepo();
+		const handlers = {};
+		const execCalls = [];
+		let files = ''; // 基线阶段空，turn_end 前才放触发文件（否则进基线不触发）
+		qualityGate({
+			on: (e, h) => { handlers[e] = h; },
+			exec: async (cmd, args, opts) => {
+				execCalls.push({ cmd, cl: `${cmd} ${args.join(' ')}`, args, opts });
+				if (cmd === 'git') {
+					if (args[0] === 'diff') return { code: 0, stdout: '', stderr: '' };
+					if (args[0] === 'ls-files') return { code: 0, stdout: files, stderr: '' };
+					if (args[0] === 'rev-parse') return { code: 0, stdout: repo, stderr: '' };
+					throw new Error(`unexpected git: ${args.join(' ')}`);
+				}
+				return routerExtra(cmd, args);
+			},
+			sendMessage: () => {},
+		});
+		await handlers['session_start']({ reason: 'new' }, mkctx('b2-smoke'));
+		files = triggerFiles;
+		await handlers['turn_end'](EDIT_TURN, mkctx('b2-smoke'));
+		return execCalls;
+	};
+
+	// ---- B2-1/B2-3/B2-4：native 命令形态与串行 ----
+	{
+		let vetSettled = false;
+		let buildRacedVet = false;
+		const calls = await runGateTurn('native', 'backend-go/a.go', (cmd, args) => {
+			const cl = args.join(' ');
+			if (cmd === 'bash' && cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+			if (cmd === 'bash') {
+				if (/\bvet\b/.test(cl)) {
+					return (async () => {
+						await new Promise((r) => setImmediate(r)); // 异步结算窗口（见头部说明）
+						vetSettled = true;
+						return { code: 0, stdout: '', stderr: '' };
+					})();
+				}
+				if (/\bbuild\b/.test(cl)) {
+					if (!vetSettled) buildRacedVet = true;
+					return { code: 0, stdout: '', stderr: '' };
+				}
+				return { code: 0, stdout: '0 issues.', stderr: '' }; // lint
+			}
+			throw new Error(`unexpected: ${cmd} ${cl}`);
+		});
+		const backendCls = calls.filter((c) => c.cmd === 'bash' && !c.cl.includes('change-scope')).map((c) => c.args[1]);
+		const goCls = backendCls.filter((cl) => /golangci-lint|\bgo (vet|build)\b|\bgo test\b/.test(cl));
+		check('B2-1 native 模式 go 类门禁命令统一 GOMAXPROCS=2 前缀（bash -c 语境）',
+			goCls.length >= 3 && goCls.every((cl) => cl.startsWith('GOMAXPROCS=2 ')));
+		check('B2-3 golangci-lint 同时含 --concurrency=2 与 --allow-parallel-runners',
+			backendCls.some((cl) => cl.includes('golangci-lint') && cl.includes('--concurrency=2') && cl.includes('--allow-parallel-runners')));
+		check('B2-4 vet 与 build 串行（build 发起不早于 vet 结算）', !buildRacedVet);
+	}
+
+	// ---- B2-2：windows cmd.exe 形态 ----
+	{
+		const calls = await runGateTurn('windows', 'backend-go/a.go', (cmd, args) => {
+			const cl = args.join(' ');
+			if (cmd === 'cmd.exe' && cl.includes('echo ok')) return { code: 0, stdout: 'ok', stderr: '' };
+			if (cmd === 'cmd.exe') return { code: 0, stdout: '0 issues.', stderr: '' };
+			if (cmd === 'bash') return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+			throw new Error(`unexpected: ${cmd} ${cl}`);
+		});
+		const gateCmds = calls.filter((c) => c.cmd === 'cmd.exe' && !c.cl.includes('echo ok'));
+		check('B2-2 windows 模式 set GOMAXPROCS=2 && 形态且 cd /d 链路不破坏',
+			gateCmds.length >= 3
+				&& gateCmds.every((c) => /cd \/d \S+\/backend-go && set GOMAXPROCS=2 && /.test(c.args[1] ?? '')));
+	}
+
+	// ---- B2-5：前端 eslint 命令零改动 ----
+	{
+		const calls = await runGateTurn('native', 'front/app/x.ts', (cmd, args) => {
+			const cl = args.join(' ');
+			if (cmd === 'bash' && cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+			if (cmd === 'bash' && cl.includes('eslint')) return { code: 0, stdout: '', stderr: '' };
+			throw new Error(`unexpected: ${cmd} ${cl}`);
+		});
+		const eslintCls = calls.filter((c) => c.cmd === 'bash' && c.cl.includes('eslint')).map((c) => c.args[1]);
+		check('B2-5 前端 eslint 命令零改动（无 GOMAXPROCS，--cache 参数原样）',
+			eslintCls.length === 1 && !eslintCls[0].includes('GOMAXPROCS')
+				&& eslintCls[0].includes('--cache --cache-location node_modules/.cache/eslint/.eslintcache'));
+	}
+
+	process.env.PATH = REAL_PATH;
+
+	/* ---------- 汇总（在 async 尾部：同步段与 B2 段的 checks 一起结账） ---------- */
 	let fail = 0;
 	for (const [name, ok] of checks) {
 		console.log(`${ok ? '✅' : '❌'} ${name}`);
@@ -281,4 +402,4 @@ const check = (name, ok) => checks.push([name, ok]);
 	}
 	console.log(fail ? `\n${fail} 项失败` : '\nSMOKE OK');
 	if (fail) process.exitCode = 1;
-}
+})().catch((e) => { console.error('B2 SMOKE FAIL', e); process.exitCode = 1; });

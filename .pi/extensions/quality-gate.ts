@@ -57,9 +57,30 @@
  *     显式记账 policy.decision(bypass, child-session) 一条（MUST NOT 静默），回合正常放行。
  *     正确性：共享树的增量门禁由主会话 turn_end 承担，子线程欠账晚一轮暴露不消失；
  *     主会话（判定为假）落到下方既有路径，逐行为不变。
+ * 15. 子线程降载（harden-subagent-constraint-channel D4，2026-09）：…（下略）
+ * 16. 并发互斥 / 限核 / 三态归因（tune-quality-gate-concurrency，2026-09）：多会话
+ *     共享工作树上 turn_end 门禁命令全仓库级叠加（lint ./... 等 4 核重活，7 天 341 个
+ *     冲突分钟窗口）是 load 事故结构性来源，另有混合归属失败被 [回归] 催修的串扰。三招：
+ *     ①门禁命令执行前原子抢占 .pi/harness/gate.lock（O_EXCL + mtime TTL 180s +
+ *     finally 释放；抢不到 → 本轮整体跳过 fail-open + 记 gate-lock-held，粘性集合
+ *     保留下回合重跑；短路轮不抢锁）；②go 命令统一 GOMAXPROCS=2 + lint
+ *     --concurrency=2 + vet/build 串行（单会话峰值 ~2 核）；③失败归属三态化：混合
+ *     （P∩mine≠∅ ∧ P∩foreign≠∅）降级 [并发]（进粘性不取催修分级，双方路径分列，
+ *     记 concurrent-mixed），纯外部/纯本会话两极语义不变。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { statSync, accessSync, constants } from "node:fs";
+import {
+	statSync,
+	accessSync,
+	constants,
+	openSync,
+	closeSync,
+	writeSync,
+	writeFileSync,
+	readFileSync,
+	unlinkSync,
+	mkdirSync,
+} from "node:fs";
 import { join, delimiter } from "node:path";
 import { logEvent, queryBySession } from "./lib/harness-log";
 import { detectActiveChange } from "./lib/active-change";
@@ -74,7 +95,9 @@ import {
 	isInteropFailure,
 	isToolNotFound,
 	extractFailurePaths,
-	isForeignFailure,
+	classifyFailureOwnership,
+	partitionFailurePaths,
+	formatMixedFailure,
 } from "./lib/failure-classify";
 import { logPolicyDecision } from "./lib/policy-decision";
 import { isChildSession } from "./lib/child-session";
@@ -150,6 +173,101 @@ function cmdExeReachable(): boolean {
 	return exeReachable("cmd.exe") || exeReachable("cmd");
 }
 
+/* ---------- 门禁互斥锁（tune-quality-gate-concurrency design D1） ----------
+ * 多会话共享工作树上 turn_end 门禁命令是全仓库级重活（golangci-lint ./... 均值 2.1s /
+ * 最大 28.2s，vet/build 并行且每个 go 进程默认吃满全部核心），叠加时拖垮其他会话的
+ * build/test/浏览器自动化（2026-09-17 load 106 事故日门禁命令累计 1751s CPU）。同一
+ * 仓库同一时刻至多一个会话执行门禁命令：O_EXCL 原子创建 + mtime TTL + finally unlink
+ * 三层兑底（非 flock：pi 扩展异常路径多，fd 关闭时机不可控，进程存活期间 flock 不掉）；
+ * 锁文件内容单行 JSON {sessionId, ts, cmd} 供人工/账本排查「谁在跑」。抢不到 → 本轮
+ * 门禁整体跳过（fail-open，与 interop-down 同模式）：零命令零 gate.check 零 steer，
+ * 粘性失败集合原样保留（下回合锁空闲自然重跑催修）。 */
+
+/** 锁 TTL：须大于单条门禁命令超时上限（120s），取「大概率持有方已死」的保守阈值。 */
+export const GATE_LOCK_TTL_MS = 180_000;
+
+const gateLockPath = (repoRoot: string): string =>
+	join(repoRoot, ".pi", "harness", "gate.lock");
+
+/**
+ * 原子抢占门禁锁：O_EXCL 创建成功 → acquired（内容 {sessionId, ts, cmd} 单行 JSON）；
+ * 已存在且 mtime 距今 < TTL → held（活性锁，不覆盖）；mtime 超 TTL → acquired（持有
+ * 方崩溃残留，覆盖写自愈——覆盖同时刷新 mtime）。任何非 EEXIST 异常（权限/磁盘等）
+ * → held 保守跳过（fail-open：锁不可用时宁可本轮不跑，不让命令在无互斥下叠加）。
+ */
+export function acquireGateLock(
+	repoRoot: string,
+	sessionId: string,
+	cmd: string,
+): "acquired" | "held" {
+	const lockPath = gateLockPath(repoRoot);
+	const content = `${JSON.stringify({ sessionId, ts: Date.now(), cmd })}\n`;
+	try {
+		mkdirSync(join(repoRoot, ".pi", "harness"), { recursive: true });
+	} catch {
+		/* 目录建不了（权限等）：下面 openSync 失败自然走 held */
+	}
+	const tryCreate = (): "acquired" | "held" => {
+		try {
+			const fd = openSync(lockPath, "wx");
+			try {
+				writeSync(fd, content);
+			} finally {
+				closeSync(fd);
+			}
+			return "acquired";
+		} catch {
+			return "held"; // EEXIST（被持有）或其他异常：统一 held，由主流程细分
+		}
+	};
+	const first = tryCreate();
+	if (first === "acquired") return "acquired";
+	// 已存在（EEXIST）或其他异常：TTL 判定（mtime 超时 = 崩溃残留 → 覆盖；活性 → held）
+	try {
+		const st = statSync(lockPath);
+		if (Date.now() - st.mtimeMs > GATE_LOCK_TTL_MS) {
+			writeFileSync(lockPath, content); // stale 覆盖（同时刷新 mtime，重新起算 TTL）
+			return "acquired";
+		}
+	} catch {
+		// stat 失败（恰被释放的窗口）：重试一次原子创建
+		return tryCreate();
+	}
+	return "held";
+}
+
+/**
+ * 释放门禁锁：读锁内容比对 sessionId，非本会话（已被 stale 覆盖）则不删——防误删
+ * 他方锁；内容损坏解析失败也不删（残留靠 TTL 自愈）；任何异常（含 ENOENT）吞掉，
+ * 不因释放路径打断回合收尾。
+ */
+export function releaseGateLock(repoRoot: string, sessionId: string): void {
+	try {
+		const raw = readFileSync(gateLockPath(repoRoot), "utf8");
+		const parsed = JSON.parse(raw) as { sessionId?: unknown };
+		if (parsed?.sessionId !== sessionId) return; // 他方锁 / 损坏：不删（TTL 自愈）
+		unlinkSync(gateLockPath(repoRoot));
+	} catch {
+		/* ENOENT / 解析失败：吞（B1-7） */
+	}
+}
+
+/** 持锁期间更新锁内容 cmd 字段（design D1「释放前更新为最后执行的命令」，供排查
+ *  「谁在跑什么」）；sessionId 不匹配不动他方锁，任何异常吞掉（辅助字段无碍门禁）。 */
+function touchGateLockCmd(repoRoot: string, sessionId: string, cmd: string): void {
+	try {
+		const raw = readFileSync(gateLockPath(repoRoot), "utf8");
+		const parsed = JSON.parse(raw) as { sessionId?: unknown; ts?: unknown };
+		if (parsed?.sessionId !== sessionId) return;
+		writeFileSync(
+			gateLockPath(repoRoot),
+			`${JSON.stringify({ ...parsed, ts: Date.now(), cmd })}\n`,
+		);
+	} catch {
+		/* 排查辅助：任何异常无碍门禁 */
+	}
+}
+
 /* 模块级会话状态（session_start 重置；ESM 模块缓存可能跨会话残留，显式清零） */
 // git 脏文件快照（tracked diff + untracked 的 {mtime,size}）；null = 待初始化
 let snapshot: Map<string, FileStat> | null = null;
@@ -175,7 +293,7 @@ let accumulatedTriggerPaths = new Set<string>();
 // 不落库——重复抑制是会话内报告策略，历史事实由 gate.check 全量记账承载。
 let failureReports = new Map<
 	string,
-	{ diag: string; rounds: number; foreign: boolean }
+	{ diag: string; rounds: number; foreign: boolean; mixed?: boolean }
 >();
 
 /** git 脏文件集（tracked diff + untracked）→ {mtime,size} 快照；消失文件跳过。 */
@@ -479,6 +597,35 @@ export default function (pi: ExtensionAPI) {
 			if (!isBackend && !isFrontend) return; // 两侧均被短路：本轮零命令零记账（零 gate.check 假失败）
 		}
 
+		// 3.65 门禁互斥锁（tune-quality-gate-concurrency D1）：门禁命令执行前原子抢占
+		//      仓库级 gate.lock——多会话共享树上命令级叠加（lint ./... 等 4 核重活）是
+		//      load 事故结构性来源；同一仓库同一时刻至多一个会话执行门禁。抢不到（活性
+		//      锁）→ 本轮整体跳过（fail-open）：零命令零 gate.check 零 steer，记一条
+		//      gate-lock-held 策略跳过账（MUST NOT 静默），粘性失败集合原样保留（下回合
+		//      锁空闲自然重跑催修）。位置在探测/工具链短路之后（短路轮不跑命令不该挡
+		//      他人）、归因预取之前（SQLite 读可接受，换取 mine/foreign 快照贴近命令执行
+		//      时刻）；命令执行与 steer 段整体 try/finally 释放（异常路径也不残留锁）。
+		const lockSessionId = sessionId ?? `nosid-${process.pid}`;
+		const lockCmd =
+			isBackend && isFrontend
+				? "gate:backend+frontend"
+				: isBackend
+					? "gate:backend"
+					: "gate:frontend";
+		if (acquireGateLock(repoRoot, lockSessionId, lockCmd) !== "acquired") {
+			if (sessionId) {
+				logPolicyDecision(repoRoot, {
+					sessionId,
+					policy: "quality-gate",
+					action: "fail-open",
+					reasonCode: "gate-lock-held",
+					target: "gate",
+				});
+			}
+			return;
+		}
+		try {
+
 		// 3.7 并发外部归因预取（attribute-concurrent-gate-noise D5/D7）：mine = 本会话累计
 		//     触发集 ∪ 本 change（mode.set boundChange）归属；foreign = 会话启动基线 ∪ 其他
 		//     change 归属。gateLog 是同步回调，判定集合必须在此（门禁命令执行前）预取完成，
@@ -558,24 +705,26 @@ export default function (pi: ExtensionAPI) {
 					text: `[${cmd}${linkTag}] exit ${code}：输出含工具缺失特征（command not found），判定为本机工具链环境问题而非代码问题；不计入粘性重跑，修复 pi 启动环境 PATH 后重启会话恢复`,
 				});
 			} else {
-				// 失败指纹与归属判定（D3/D4/D7）：diag 与 gate.check 记账同源（truncateDiagGate），
-				// 精确相等比较；判外部三条件 P≠∅ ∧ P∩mine=∅ ∧ P⊆foreign，任何异常/混合/
-				// 解析不出视同本会话失败（保守回现状，宁可多报不误判外部）。
+				// 失败指纹与归属判定（D3/D4/D7 + tune-quality-gate-concurrency D3 三态）：
+				// diag 与 gate.check 记账同源（truncateDiagGate），精确相等比较；归属三态
+				// classifyFailureOwnership：纯外部（P∩mine=∅ ∧ P⊆foreign）→ [外部]；混合
+				// （P∩mine≠∅ ∧ P∩foreign≠∅）→ [并发] 降级；任何异常/解析不出回退 mine
+				//（保守，宁可多报不误判外部/漏催修）。
 				const diag = truncateDiagGate(output);
 				const prev = failureReports.get(cmd);
-				let foreignHit = false;
+				let ownership: "foreign" | "mixed" | "mine" = "mine";
 				let hitPaths: string[] = [];
 				try {
 					hitPaths = extractFailurePaths(output);
-					foreignHit = isForeignFailure({
+					ownership = classifyFailureOwnership({
 						paths: hitPaths,
 						mine: mineJudge,
 						foreign: foreignJudge,
 					});
 				} catch {
-					foreignHit = false; // 归因异常吞掉 → 视同本会话失败（2.4 fail-open）
+					ownership = "mine"; // 归因异常吞掉 → 视同本会话失败（2.4 fail-open）
 				}
-				if (foreignHit) {
+				if (ownership === "foreign") {
 					// [外部]（D7）：不进粘性、不打分级；同指纹（diag+判性均未变）会话内至多一行，
 					// 后续回合静默、指纹变化重新输出（C11，与内部块共用指纹状态机）；每命中回合
 					// 追加一条 foreign-breakage 归因记账（gate.check 照记在下方，均不受抑制影响）。
@@ -598,7 +747,39 @@ export default function (pi: ExtensionAPI) {
 							`[外部] [${cmd}${linkTag}] 失败归属其他会话/本会话启动前既有改动（${shown}${more}），非本会话所致，不计入粘性重跑`,
 						);
 					}
-				} else if (prev && !prev.foreign && prev.diag === diag) {
+				} else if (ownership === "mixed") {
+					// 混合归属降级（tune-quality-gate-concurrency D3）：进粘性（本会话部分确
+					// 要修、回合末复检不断）但不取 [回归]/[中间态] 分级，改 [并发] 前缀 + 双方
+					// 路径分列；每命中回合一条 concurrent-mixed 记账；同指纹 ⟳ / 判性翻转
+					//（mixed→mine）恢复完整块与正常分级复用指纹状态机（mixed 标记专属 ⟳ 条件）。
+					if (sessionId) {
+						logPolicyDecision(repoRoot, {
+							sessionId,
+							policy: "quality-gate",
+							action: "warn",
+							reasonCode: "concurrent-mixed",
+							target: cmd,
+						});
+					}
+					if (prev && prev.mixed && prev.diag === diag) {
+						prev.rounds += 1;
+						stickyFailures.add(cmd);
+						failures.push(
+							`⟳ [${cmd}${linkTag}] 同一失败第 ${prev.rounds} 回合未变化（并发混合归属）：${diag}`,
+						);
+					} else {
+						const split = partitionFailurePaths({
+							paths: hitPaths,
+							mine: mineJudge,
+							foreign: foreignJudge,
+						});
+						failureReports.set(cmd, { diag, rounds: 1, foreign: false, mixed: true });
+						stickyFailures.add(cmd);
+						failures.push(
+							formatMixedFailure(`${cmd}${linkTag}`, split.mine, split.foreign, diag),
+						);
+					}
+				} else if (prev && !prev.foreign && !prev.mixed && prev.diag === diag) {
 					// 同指纹持续（D4）：单行摘要不重灌 30 行输出；连续 ≥3 回合附加「未修」
 					prev.rounds += 1;
 					stickyFailures.add(cmd);
@@ -606,7 +787,7 @@ export default function (pi: ExtensionAPI) {
 						`⟳ [${cmd}${linkTag}] 同一失败第 ${prev.rounds} 回合未变化：${diag}${prev.rounds >= 3 ? "（未修）" : ""}`,
 					);
 				} else {
-					// 首次/指纹变化/判性翻转（外部→本会话）：完整块视同首次（分级前缀 + tail 30）
+					// 首次/指纹变化/判性翻转（外部→本会话、mixed→本会话）：完整块视同首次（分级前缀 + tail 30）
 					failureReports.set(cmd, { diag, rounds: 1, foreign: false });
 					stickyFailures.add(cmd);
 					failures.push(
@@ -656,41 +837,52 @@ export default function (pi: ExtensionAPI) {
 				? "golangci-lint"
 				: "C:\\Users\\Admin\\go\\bin\\golangci-lint.exe";
 			// D2：lint 先行作短路哨兵——typechecking error 即编译失败，vet/build/test
-			// 必然同因失败，跳过执行（未执行零记账）；否则 vet/build 并行。
+			// 必然同因失败，跳过执行（未执行零记账）；否则 vet/build 串行（限核，
+			// tune-quality-gate-concurrency D2 修订）。
 			// domain tests 保持串行（总预算 5min 语义 + 并发峰值保守，design D2 修订）。
 			const runBackend = async (cmdline: string) => {
+				// 限核（tune-quality-gate-concurrency D2）：go 工具链命令统一 GOMAXPROCS=2
+				// （native bash -c 语境 env 前缀；windows cmd.exe `set ... && ` 形态），单会话
+				// 门禁 CPU 峰值 ~2 核，多会话叠加留余量；锁内容同步更新为当前命令（D1 排查用）。
 				const t0 = Date.now();
+				touchGateLockCmd(repoRoot, lockSessionId, cmdline.slice(0, 60));
 				const r = isNative
-					? await pi.exec("bash", ["-c", cmdline], {
+					? await pi.exec("bash", ["-c", `GOMAXPROCS=2 ${cmdline}`], {
 							cwd: backendDir,
 							signal: ctx.signal,
 							timeout: 120_000,
 						})
-					: await pi.exec("cmd.exe", ["/C", `cd /d ${backendWin} && ${cmdline}`], {
-							signal: ctx.signal,
-							timeout: 120_000,
-						});
+					: await pi.exec(
+							"cmd.exe",
+							["/C", `cd /d ${backendWin} && set GOMAXPROCS=2 && ${cmdline}`],
+							{
+								signal: ctx.signal,
+								timeout: 120_000,
+							},
+						);
 				return { code: r.code, ms: Date.now() - t0, out: `${r.stdout}\n${r.stderr}` };
 			};
 			// --allow-parallel-runners（linux-native-dev-environment）：开发机可能同时有多个
 			// 会话/手动跑 lint（并发 change 共享工作树），golangci-lint 默认对同机实例加文件锁，
 			// 后到者报 `parallel golangci-lint is running` exit 3——那是环境冲突不是代码回归，
 			// 被 [回归] 分级会诱导 agent 去修不存在的代码问题（2026-09-16 实测踩中）。
-			const lint = await runBackend(`${linterExe} run --allow-parallel-runners ./...`);
+			const lint = await runBackend(
+				`${linterExe} run --allow-parallel-runners --concurrency=2 ./...`,
+			);
 			gateLog("golangci-lint", lint.code, lint.ms, lint.out);
 			if (lint.code !== 0 && isCompileFailure(lint.out)) {
 				// 同根因短路：本回合仅 lint 一条事件（spec scenario「同根因短路未执行不记账」）
 			} else {
+				// vet/build 串行（tune-quality-gate-concurrency D2）：GOMAXPROCS=2 下再并行
+				// 两条 go 命令会吃回 4 核；顺序 await，超时预算各自独立不变。
 				const rest: ReadonlyArray<readonly [string, string]> = [
 					["go vet", `${goExe} vet ./...`],
 					["go build", `${goExe} build ./...`],
 				];
-				const rs = await Promise.all(
-					rest.map(([label, cmdline]) =>
-						runBackend(cmdline).then((r) => ({ label, ...r })),
-					),
-				);
-				for (const { label, code, ms, out } of rs) gateLog(label, code, ms, out);
+				for (const [label, cmdline] of rest) {
+					const r = await runBackend(cmdline);
+					gateLog(label, r.code, r.ms, r.out);
+				}
 
 				// 影响包测试（tier=domain）：change-scope 路径映射 → go test -short，仅跑本轮
 				// 改动命中的 domain 包（-short 下 DB 集成测试自动 skip，无需 Docker）。
@@ -736,6 +928,7 @@ export default function (pi: ExtensionAPI) {
 			const cacheArgs = eslintCacheOff
 				? ""
 				: " --cache --cache-location node_modules/.cache/eslint/.eslintcache";
+			touchGateLockCmd(repoRoot, lockSessionId, "pnpm exec eslint");
 			const t0 = Date.now();
 			const r =
 				execPlatform === "native"
@@ -803,13 +996,18 @@ export default function (pi: ExtensionAPI) {
 					`⚠️ 门禁遭遇本机工具链环境问题（非代码问题，不计粘性）：\n\n${toolchainItems.map((e) => e.text).join("\n\n")}\n\n建议：检查 pi 启动环境 PATH（go/golangci-lint/pnpm 安装位置或启动方式），修复后重启会话恢复门禁覆盖`,
 				);
 			}
-			pi.sendMessage(
+				pi.sendMessage(
 				{
 					customType: "quality-gate-env-failure",
 					content: parts.join("\n\n"),
 				},
 				{ deliverAs: "steer", triggerTurn: true },
 			);
+		}
+		// 3.65 锁释放（finally 语义）：无论命令正常结束、异常冒泡还是提前 return 后的
+		// 唯一出口，门禁锁必释放；释放比对 sessionId，不误删他方锁（B1-6/B1-7）。
+		} finally {
+			releaseGateLock(repoRoot, lockSessionId);
 		}
 	});
 }
