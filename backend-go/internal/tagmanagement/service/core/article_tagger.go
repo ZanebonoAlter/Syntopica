@@ -344,6 +344,10 @@ func limitArticleTags(tags []TopicTag) []TopicTag {
 
 const maxSummaryRunesForTagging = 4000
 
+// buildArticleSummary 按 AIContentSummary → FirecrawlContent → Content →
+// Description 选出打标正文，并采样到 maxSummaryRunesForTagging 预算内
+// （long-form-sampled-tagging）：超预算时按文集/叙事分段采样，不再一律掐头；
+// 双分支 extractor 与 aggregate 路径共享该结果，调用方零改动。
 func buildArticleSummary(article models.Article) string {
 	var body string
 	if s := strings.TrimSpace(article.AIContentSummary); s != "" {
@@ -358,11 +362,7 @@ func buildArticleSummary(article models.Article) string {
 	if body == "" {
 		return ""
 	}
-	runes := []rune(body)
-	if len(runes) > maxSummaryRunesForTagging {
-		body = string(runes[:maxSummaryRunesForTagging])
-	}
-	return body
+	return sampleTaggingSummary(body, maxSummaryRunesForTagging)
 }
 
 // TagArticles batch tags multiple articles for a feed

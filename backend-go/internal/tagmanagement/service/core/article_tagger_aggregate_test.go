@@ -291,12 +291,17 @@ func TestTagAggregateArticleScoreTiersForOneAndTwoSections(t *testing.T) {
 	})
 }
 
-func TestBuildArticleSummaryTruncatesAt4000Runes(t *testing.T) {
+// 无标题长文（叙事型）不再掐头 4000，而是头中尾采样：输出不超预算客差、
+// 头部与原文一致、带省略标记（long-form-sampled-tagging）。
+func TestBuildArticleSummaryLimitsLongInputToBudget(t *testing.T) {
 	article := models.Article{AIContentSummary: bodyOf("字", 5000)}
 
 	summary := buildArticleSummary(article)
 
-	require.Len(t, []rune(summary), 4000)
+	runes := []rune(summary)
+	require.LessOrEqual(t, len(runes), 4200) // 4000 × 1.05 容差
+	require.Contains(t, summary, ellipsisMark)
+	require.Equal(t, bodyOf("字", 2000), string(runes[:2000]))
 }
 
 func TestLimitArticleTagsCapsAtSix(t *testing.T) {
