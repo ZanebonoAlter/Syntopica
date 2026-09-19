@@ -6,8 +6,9 @@
  * 2. 五项 block 级检查各自独立判定、不强制顺序（任一失败即 block）：
  *    ① `bash scripts/harness/doc-impact.sh verify openspec/changes/<name>` 退出码 0
  *    ② `bash scripts/harness/check-standards.sh --change <name>` 退出码 0（F 段只对账归档目标）
- *    ③ `<changeDir>/tasks.md` 含尾三节（「## N. 测试」「## N. 文档」「## N. 验证」各自独立
- *       命中一次，顺序不限）且含 `<!-- doc-impact:` 声明标记
+ *    ③ `bash scripts/harness/check-tasks-tail.sh <changeDir>` 退出码 0（tasks.md 尾三节
+ *       「## N. 测试」「## N. 文档」「## N. 验证」各自独立命中一次 + `<!-- doc-impact:` 声明标记；
+ *       判定已抽出为独立脚本，与 archive-readiness.sh 自查共用同一事实源，harden-archive-readiness）
  *    ④ `bash scripts/harness/scenario-trace.sh <changeDir>` 退出码 0（Scenario→测试映射对账，
  *       scenario-test-mapping-gate 引入，格式约定见 openspec/specs/scenario-trace-gate）
  *    ⑤' `bash scripts/harness/concurrency-status.sh --check <name>` 退出码 2 → warn 级提醒
@@ -44,10 +45,6 @@ const ENABLED = !["0", "false", "off"].includes(
 );
 /** 两项脚本检查（doc-impact verify / check-standards --change）共用的超时预算（毫秒） */
 const TIMEOUT_MS = envNum("SPEC_GATE_TIMEOUT_MS", 60_000);
-/** 尾三节标题名（各自独立匹配，不强制顺序） */
-const TAIL_SECTIONS = ["测试", "文档", "验证"] as const;
-/** tasks.md 里的 doc-impact 声明标记（含冒号，天然排除 -excuse 变体） */
-const DOC_IMPACT_MARKER = "<!-- doc-impact:";
 
 /** 本扩展只用到的 ExtensionContext 子集（结构兼容，便于独立类型检查，见 quota-gate GateCtx） */
 type GateCtx = {
@@ -133,7 +130,7 @@ async function gateArchive(
 		failedChecks.push("standards");
 	}
 
-	const tasks = await checkTasksMd(pi, ctx, changeDir);
+	const tasks = await runScript(pi, ctx, ["scripts/harness/check-tasks-tail.sh", changeDir]);
 	if (!tasks.ok) {
 		failures.push(`[tasks.md 尾三节] ${tasks.detail}`);
 		failedChecks.push("tasks");
@@ -222,44 +219,6 @@ async function runScript(
 		// 检查⑤'消费方凭 code=-1 fail-open 零干预
 		return { ok: false, code: -1, detail: `执行异常（超时或无法启动）：${String(err)}` };
 	}
-}
-
-/** 检查 ③：tasks.md 尾三节（测试/文档/验证各自独立命中一次，顺序不限）+ `<!-- doc-impact:` 声明标记 */
-async function checkTasksMd(
-	pi: ExtensionAPI,
-	ctx: GateCtx,
-	changeDir: string,
-): Promise<{ ok: boolean; detail: string }> {
-	let tasks: string;
-	try {
-		const r = await pi.exec("cat", [`${changeDir}/tasks.md`], {
-			signal: ctx.signal,
-			timeout: 5_000,
-		});
-		if (r.code !== 0) {
-			return {
-				ok: false,
-				detail: `读取 ${changeDir}/tasks.md 失败（exit ${r.code}）：文件不存在或不可读`,
-			};
-		}
-		tasks = r.stdout;
-	} catch (err) {
-		return { ok: false, detail: `读取 ${changeDir}/tasks.md 异常：${String(err)}` };
-	}
-
-	const missing: string[] = [];
-	for (const sec of TAIL_SECTIONS) {
-		// 行首锚定 + 严格两井号：命中 `## N. 测试`，不命中 `### N.x` 子节与正文引用
-		if (!new RegExp(`^##\\s+\\d+\\.\\s*${sec}`, "m").test(tasks)) {
-			missing.push(`「## N. ${sec}」`);
-		}
-	}
-	if (!tasks.includes(DOC_IMPACT_MARKER)) missing.push("`<!-- doc-impact:` 声明标记");
-	if (missing.length === 0) return { ok: true, detail: "" };
-	return {
-		ok: false,
-		detail: `缺失：${missing.join("、")}。要求尾三节标题各自独立存在（顺序不限），且文内含 <!-- doc-impact: domain ... --> 声明标记`,
-	};
 }
 
 // ---------- 检查④'：UI 验收证据（快照读取 + lib 纯函数判定） ----------
@@ -444,6 +403,7 @@ function buildBlockReason(name: string, failures: string[]): string {
 		...failures.map((f, i) => `${i + 1}. ${f}`),
 		"",
 		"修复指引：",
+		"- 先跑 `bash scripts/harness/archive-readiness.sh <name>` 自查全绿再重试归档（一次看清全部缺口，勿补一项就试一次归档）",
 		"- doc-impact verify：按输出在 tasks.md 补 <!-- doc-impact: domain=理由; ... --> 声明；确属误报的域可加 <!-- doc-impact-excuse: domain=理由 --> 豁免",
 		"- check-standards：按输出逐项修复（docs/reference/standard 结构约束）",
 		"- tasks.md 尾三节：补齐「## N. 测试」「## N. 文档」「## N. 验证」三节 + doc-impact 声明标记后重试",
