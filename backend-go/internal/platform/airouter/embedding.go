@@ -22,6 +22,10 @@ type EmbeddingResult struct {
 	Model      string      `json:"model"`
 	Dimensions int         `json:"dimensions"`
 	Provider   string      `json:"provider"`
+	// Usage carries the provider-reported token usage (OpenAI-compatible
+	// "usage" block). Nil when the response carries no usage block, so call
+	// logs keep token_usage NULL instead of fabricating zeros.
+	Usage *TokenUsage `json:"usage,omitempty"`
 }
 
 // CosineSimilarity calculates the cosine similarity between two embedding vectors

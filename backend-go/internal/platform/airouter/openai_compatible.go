@@ -70,6 +70,39 @@ type TokenUsage struct {
 	TotalTokens      int `json:"total"`
 }
 
+// UnmarshalJSON accepts both the OpenAI-compatible wire keys
+// (prompt_tokens/completion_tokens/total_tokens) and the legacy stored keys
+// (prompt/completion/total). Providers on the OpenAI-compatible protocol
+// return the *_tokens family; the legacy family keeps round-trips of the
+// stored jsonb shape ({"prompt":N,...}) working defensively. When both are
+// present the standard wire keys win. Missing keys leave zero values without
+// error. MarshalJSON is intentionally left default so the stored jsonb shape
+// (consumed by session aggregation) never changes.
+func (u *TokenUsage) UnmarshalJSON(data []byte) error {
+	type alias TokenUsage
+	wire := struct {
+		PromptTokens     *int `json:"prompt_tokens"`
+		CompletionTokens *int `json:"completion_tokens"`
+		TotalTokens      *int `json:"total_tokens"`
+		*alias
+	}{
+		alias: (*alias)(u),
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.PromptTokens != nil {
+		u.PromptTokens = *wire.PromptTokens
+	}
+	if wire.CompletionTokens != nil {
+		u.CompletionTokens = *wire.CompletionTokens
+	}
+	if wire.TotalTokens != nil {
+		u.TotalTokens = *wire.TotalTokens
+	}
+	return nil
+}
+
 // ChatResponse is the return of ProviderClient.Chat (replaces bare string).
 type ChatResponse struct {
 	Content string      `json:"content"`
@@ -316,7 +349,8 @@ func (c *openAICompatibleClient) Embed(ctx context.Context, provider models.AIPr
 			Embedding []float64 `json:"embedding"`
 			Index     int       `json:"index"`
 		} `json:"data"`
-		Model string `json:"model"`
+		Model string      `json:"model"`
+		Usage *TokenUsage `json:"usage,omitempty"`
 	}
 	if err := json.Unmarshal(responseBody, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse embedding response: %w", err)
@@ -343,5 +377,6 @@ func (c *openAICompatibleClient) Embed(ctx context.Context, provider models.AIPr
 		Model:      parsed.Model,
 		Dimensions: dimensions,
 		Provider:   provider.Name,
+		Usage:      parsed.Usage,
 	}, nil
 }

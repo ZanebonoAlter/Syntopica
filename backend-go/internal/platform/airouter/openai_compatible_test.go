@@ -1,10 +1,93 @@
 package airouter
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"syntopica-backend/internal/models"
 )
+
+// newWireServer spins an httptest server returning body for any request, so
+// client-level wire parsing can be tested against real HTTP responses (the
+// fake client bypasses parsing entirely — see change test-cases.md 盲区备忘).
+func newWireServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func wireProvider(baseURL string) models.AIProvider {
+	return models.AIProvider{Name: "wire", ProviderType: ProviderTypeOpenAICompatible, BaseURL: baseURL, Model: "m", Enabled: true}
+}
+
+func TestChatParsesStandardUsageKeys(t *testing.T) {
+	srv := newWireServer(t, `{"choices":[{"message":{"content":"hi there"}}],"usage":{"prompt_tokens":9,"completion_tokens":12,"total_tokens":21}}`)
+
+	resp, err := NewOpenAICompatibleClient().Chat(context.Background(), wireProvider(srv.URL), ChatRequest{
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Usage)
+	require.Equal(t, 9, resp.Usage.PromptTokens)
+	require.Equal(t, 12, resp.Usage.CompletionTokens)
+	require.Equal(t, 21, resp.Usage.TotalTokens)
+}
+
+func TestChatWithoutUsageBlockYieldsNilUsage(t *testing.T) {
+	srv := newWireServer(t, `{"choices":[{"message":{"content":"x"}}]}`)
+
+	resp, err := NewOpenAICompatibleClient().Chat(context.Background(), wireProvider(srv.URL), ChatRequest{
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	})
+	require.NoError(t, err)
+	require.Nil(t, resp.Usage)
+}
+
+func TestEmbedParsesUsage(t *testing.T) {
+	srv := newWireServer(t, `{"data":[{"embedding":[0.1,0.2],"index":0}],"model":"e","usage":{"prompt_tokens":7,"total_tokens":7}}`)
+
+	res, err := NewOpenAICompatibleClient().Embed(context.Background(), wireProvider(srv.URL), EmbeddingRequest{
+		Input: []string{"hello"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res.Usage)
+	require.Equal(t, 7, res.Usage.PromptTokens)
+	require.Equal(t, 7, res.Usage.TotalTokens)
+}
+
+// TestTokenUsageUnmarshalJSONKeyFamilies pins the dual-key parsing contract:
+// standard wire keys, legacy stored keys (defensive), missing keys, and
+// standard-wins-on-conflict (change test-cases.md §4 分支表).
+func TestTokenUsageUnmarshalJSONKeyFamilies(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want TokenUsage
+	}{
+		{"standard wire keys", `{"prompt_tokens":9,"completion_tokens":12,"total_tokens":21}`, TokenUsage{PromptTokens: 9, CompletionTokens: 12, TotalTokens: 21}},
+		{"legacy stored keys", `{"prompt":9,"completion":12,"total":21}`, TokenUsage{PromptTokens: 9, CompletionTokens: 12, TotalTokens: 21}},
+		{"missing keys stays zero", `{}`, TokenUsage{}},
+		{"standard wins on conflict", `{"prompt":1,"completion":1,"total":1,"prompt_tokens":9,"completion_tokens":12,"total_tokens":21}`, TokenUsage{PromptTokens: 9, CompletionTokens: 12, TotalTokens: 21}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var u TokenUsage
+			require.NoError(t, json.Unmarshal([]byte(tc.raw), &u))
+			require.Equal(t, tc.want, u)
+		})
+	}
+
+	var u TokenUsage
+	require.Error(t, json.Unmarshal([]byte("not-json"), &u))
+}
 
 func TestStripThinkTags(t *testing.T) {
 	tests := []struct {

@@ -17,6 +17,9 @@ type fakeChatReply struct {
 	// nilResponse makes Chat return (nil, nil): transport success with no
 	// usable payload — the shape that must still trigger ordered fallback.
 	nilResponse bool
+	// embedUsage feeds the fake Embed result so cache/log tests can exercise
+	// usage-bearing embedding calls.
+	embedUsage *TokenUsage
 }
 
 type fakeProviderClient struct {
@@ -39,7 +42,7 @@ func (f *fakeProviderClient) Embed(_ context.Context, provider models.AIProvider
 	if res.err != nil {
 		return nil, res.err
 	}
-	return &EmbeddingResult{Embeddings: [][]float64{{0.1, 0.2}}, Model: "test", Dimensions: 2, Provider: provider.Name}, nil
+	return &EmbeddingResult{Embeddings: [][]float64{{0.1, 0.2}}, Model: "test", Dimensions: 2, Provider: provider.Name, Usage: res.embedUsage}, nil
 }
 
 func TestRouterFallsBackOnRetryableProviderError(t *testing.T) {
@@ -227,6 +230,118 @@ func TestEncodeTokenUsage(t *testing.T) {
 	require.Contains(t, encoded, "\"prompt\":10")
 	require.Contains(t, encoded, "\"completion\":20")
 	require.Contains(t, encoded, "\"total\":30")
+}
+
+// seedSingleProvider creates one provider on the default summary route.
+func seedSingleProvider(t *testing.T, db *gorm.DB, name string) {
+	t.Helper()
+	p := models.AIProvider{Name: name, ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://a.example/v1", APIKey: "k", Model: "m", Enabled: true}
+	require.NoError(t, db.Create(&p).Error)
+	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
+	require.NoError(t, db.Create(&route).Error)
+	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p.ID, Priority: 1, Enabled: true}).Error)
+}
+
+// tokenUsageIsNull asserts the stored row's token_usage column is SQL NULL
+// (not an empty string, not an all-zero jsonb).
+func tokenUsageIsNull(t *testing.T, db *gorm.DB, logID uint) {
+	t.Helper()
+	var n int64
+	require.NoError(t, db.Model(&models.AICallLog{}).Where("id = ? AND token_usage IS NULL", logID).Count(&n).Error)
+	require.Equal(t, int64(1), n, "token_usage must be SQL NULL")
+}
+
+func TestTokenUsageRecordedInCallLog(t *testing.T) {
+	db := setupAIRouterTestDB(t)
+	store := NewStore(db)
+	seedSingleProvider(t, db, "p-log-usage")
+
+	router := NewRouterWithStore(store)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"p-log-usage": {content: "ok", usage: &TokenUsage{PromptTokens: 9, CompletionTokens: 12, TotalTokens: 21}},
+	}})
+
+	_, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.log_usage",
+		Capability: CapabilitySummary,
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err)
+
+	var log models.AICallLog
+	require.NoError(t, db.First(&log, "operation = ? AND success = true", "test.log_usage").Error)
+	// Stored shape stays prompt/completion/total (consumer contract), values real.
+	require.Contains(t, log.TokenUsage, "\"prompt\":9")
+	require.Contains(t, log.TokenUsage, "\"completion\":12")
+	require.Contains(t, log.TokenUsage, "\"total\":21")
+}
+
+func TestChatWithoutUsageLogsNullTokenUsage(t *testing.T) {
+	db := setupAIRouterTestDB(t)
+	store := NewStore(db)
+	seedSingleProvider(t, db, "p-no-usage")
+
+	router := NewRouterWithStore(store)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"p-no-usage": {content: "ok, but provider sent no usage block"},
+	}})
+
+	_, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.no_usage",
+		Capability: CapabilitySummary,
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err)
+
+	var log models.AICallLog
+	require.NoError(t, db.First(&log, "operation = ? AND success = true", "test.no_usage").Error)
+	require.Empty(t, log.TokenUsage)
+	tokenUsageIsNull(t, db, log.ID)
+}
+
+func TestChatFailureLogsNullTokenUsage(t *testing.T) {
+	db := setupAIRouterTestDB(t)
+	store := NewStore(db)
+	seedSingleProvider(t, db, "p-fail")
+
+	router := NewRouterWithStore(store)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"p-fail": {err: &ProviderError{Message: "boom", Code: "boom", Retryable: false}},
+	}})
+
+	_, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.fail_usage",
+		Capability: CapabilitySummary,
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+	})
+	require.Error(t, err)
+
+	var log models.AICallLog
+	require.NoError(t, db.First(&log, "operation = ? AND success = false", "test.fail_usage").Error)
+	require.Empty(t, log.TokenUsage)
+	tokenUsageIsNull(t, db, log.ID)
+}
+
+func TestEmbedUsageRecordedInCallLog(t *testing.T) {
+	db := setupAIRouterTestDB(t)
+	store := NewStore(db)
+	setupEmbedRoute(t, store, "m1")
+
+	router := NewRouterWithStore(store)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"emb-provider": {embedUsage: &TokenUsage{PromptTokens: 7, TotalTokens: 7}},
+	}})
+
+	_, err := router.Embed(context.Background(), EmbeddingRequest{
+		Input:     []string{"hello"},
+		Operation: "test.embed_usage",
+	}, CapabilityEmbedding)
+	require.NoError(t, err)
+
+	var log models.AICallLog
+	require.NoError(t, db.First(&log, "operation = ? AND success = true", "test.embed_usage").Error)
+	require.Contains(t, log.TokenUsage, "\"prompt\":7")
+	require.Contains(t, log.TokenUsage, "\"total\":7")
 }
 
 // seedChatFailover seeds a two-provider ordered_failover route for the summary

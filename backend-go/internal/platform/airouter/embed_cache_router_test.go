@@ -16,6 +16,7 @@ import (
 type countingEmbedClient struct {
 	embedCalls atomic.Int32
 	vectors    [][]float64
+	usage      *TokenUsage
 }
 
 func (c *countingEmbedClient) Chat(_ context.Context, _ models.AIProvider, _ ChatRequest) (*ChatResponse, error) {
@@ -27,7 +28,7 @@ func (c *countingEmbedClient) Embed(_ context.Context, provider models.AIProvide
 	if c.vectors == nil {
 		c.vectors = [][]float64{{0.5, 0.25}}
 	}
-	return &EmbeddingResult{Embeddings: c.vectors, Model: provider.Model, Dimensions: len(c.vectors[0]), Provider: provider.Name}, nil
+	return &EmbeddingResult{Embeddings: c.vectors, Model: provider.Model, Dimensions: len(c.vectors[0]), Provider: provider.Name, Usage: c.usage}, nil
 }
 
 func newEmbedCacheRouter(t *testing.T) (*Router, *Store, *countingEmbedClient) {
@@ -59,6 +60,27 @@ func TestEmbedCacheHitSkipsProviderCall(t *testing.T) {
 	require.Equal(t, first.Model, second.Model)
 	require.Equal(t, first.Dimensions, second.Dimensions)
 	require.Equal(t, first.Provider, second.Provider)
+}
+
+// TestEmbedCacheHitLogsNullTokenUsage pins that a provider call with usage
+// logs real tokens while the cache-hit replay logs token_usage NULL — a cache
+// hit involves no provider call, so there is no usage to record.
+func TestEmbedCacheHitLogsNullTokenUsage(t *testing.T) {
+	router, store, client := newEmbedCacheRouter(t)
+	client.usage = &TokenUsage{PromptTokens: 5, TotalTokens: 5}
+
+	req := EmbeddingRequest{Input: []string{"OpenAI"}, Operation: "tagmanagement.embedding"}
+	_, err := router.Embed(context.Background(), req, CapabilityEmbedding) // miss → provider
+	require.NoError(t, err)
+	_, err = router.Embed(context.Background(), req, CapabilityEmbedding) // hit → cache
+	require.NoError(t, err)
+
+	var rows []models.AICallLog
+	require.NoError(t, store.db.Where("operation = ?", "tagmanagement.embedding").Order("id ASC").Find(&rows).Error)
+	require.Len(t, rows, 2)
+	require.Contains(t, rows[0].TokenUsage, "\"total\":5", "provider call must record real usage")
+	require.Empty(t, rows[1].TokenUsage, "cache hit must not fabricate usage")
+	tokenUsageIsNull(t, store.db, rows[1].ID)
 }
 
 func TestEmbedCacheHitDoesNotTakeSemaphore(t *testing.T) {

@@ -42,7 +42,7 @@ doc-impact-applies: backend-go/internal/platform/airouter/, backend-go/internal/
 | `provider_name` / `model` | ✅ | 实际调用的供应商 + 模型名 |
 | `messages`（prompt） | ✅ | **完整 system+user prompt**，不再是只存 Metadata 摘要 |
 | `response` | ✅ | 完整响应文本（超长可按「截断与脱敏策略」处理） |
-| `token_usage` | ✅ | prompt_tokens / completion_tokens / total |
+| `token_usage` | ✅ | 存储 `{"prompt":N,"completion":N,"total":N}` jsonb；解析接受 OpenAI 兼容标准键（`prompt_tokens`/`completion_tokens`/`total_tokens`）与历史键。失败或响应无 usage 块时为 NULL，不落全零 |
 | `latency_ms` | ✅ | 单次调用耗时 |
 | `success` / `error` | ✅ | 成功标志 + 失败时的错误码与信息 |
 | `session_id` | ⚠️见下一 Requirement | 一次编排内多次调用的分组键 |
