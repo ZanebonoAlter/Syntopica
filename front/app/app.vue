@@ -96,9 +96,6 @@ onUnmounted(teardownProgress)
 
   <NuxtPage v-else />
 
-  <!-- AI 模型未就绪全局提示（用户意图运行但健康门未通过时） -->
-  <AiHealthBanner />
-
   <!-- 全局 Toast 通知 -->
   <NotifyContainer />
 </template>

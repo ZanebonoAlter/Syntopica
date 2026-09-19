@@ -2,6 +2,7 @@
 import { Icon } from '@iconify/vue'
 import NotificationPanel from './NotificationPanel.vue'
 import { useNotifications } from '~/composables/useNotifications'
+import { useSchedulerStatus } from '~/composables/useSchedulerStatus'
 
 /**
  * 通知铃铛（notification-center）：未读角标 + 点击开关锚定面板
@@ -10,6 +11,14 @@ import { useNotifications } from '~/composables/useNotifications'
 
 const open = ref(false)
 const { unreadCount, openPanel, closePanel } = useNotifications()
+
+/**
+ * AI 未就绪警示态（ai-health-to-notifications）：意图运行但健康门未通过时切
+ * 警示图标/配色，与未读角标正交叠加（角标逻辑/数值完全不动，D3）。
+ * 可见性与面板置顶条一致：用户主动暂停（analysisPaused=true）不警示。
+ */
+const { analysisPaused, aiHealthy } = useSchedulerStatus()
+const aiUnready = computed(() => !analysisPaused.value && !aiHealthy.value)
 
 const badgeText = computed(() => {
   if (unreadCount.value <= 0) return ''
@@ -60,10 +69,15 @@ onUnmounted(() => {
     <button
       class="header-btn"
       data-testid="notification-bell"
-      title="通知"
+      :title="aiUnready ? '通知（AI 模型未就绪）' : '通知'"
       @click="toggle"
     >
-      <Icon icon="mdi:bell-outline" width="20" height="20" class="text-gray-600" />
+      <Icon
+        :icon="aiUnready ? 'mdi:bell-alert' : 'mdi:bell-outline'"
+        width="20"
+        height="20"
+        :class="aiUnready ? 'notif-bell--warning' : 'text-gray-600'"
+      />
       <span
         v-if="badgeText"
         class="notif-badge"
@@ -78,6 +92,10 @@ onUnmounted(() => {
 .notif-bell-wrap {
   position: relative;
   display: inline-flex;
+}
+
+.notif-bell--warning {
+  color: var(--color-warning);
 }
 
 .notif-badge {

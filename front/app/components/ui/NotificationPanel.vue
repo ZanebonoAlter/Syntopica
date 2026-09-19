@@ -3,6 +3,8 @@ import { Icon } from '@iconify/vue'
 import NotificationItem from './NotificationItem.vue'
 import AppDialog from './AppDialog.vue'
 import { useNotifications } from '~/composables/useNotifications'
+import { useSchedulerStatus } from '~/composables/useSchedulerStatus'
+import { useHealthReprobe } from '~/composables/useHealthReprobe'
 import type { AppNotification } from '~/api/notifications'
 
 /**
@@ -25,6 +27,24 @@ const {
   fetchList,
   browsingSessionActive,
 } = useNotifications()
+
+/**
+ * 置顶系统状态条（客户端虚拟条目）：首例 AI 健康未就绪提示（ai-health-to-notifications）。
+ * 由前端运行时状态驱动显隐，不落库/不触发 WS/不计未读数/不参与淘汰与已读生命周期；
+ * 可见性契约沿用 analysis-pause-control spec——意图运行（analysisPaused=false）
+ * 但健康门未通过（aiHealthy=false），用户主动暂停不提示。约束（flow/scheduler.md
+ * 业务约束第 7 条）：只做提示，不禁用/不改写暂停/启动按钮。
+ */
+const { analysisPaused, aiHealthy, loadSchedulersStatus } = useSchedulerStatus()
+const { reprobing, reprobeHealth } = useHealthReprobe()
+
+const aiUnready = computed(() => !analysisPaused.value && !aiHealthy.value)
+
+async function onReprobe() {
+  await reprobeHealth()
+  // 置顶条可见性由 scheduler status 的 ai_healthy 驱动，重探后刷新以关闭。
+  await loadSchedulersStatus()
+}
 
 const confirmVisible = ref(false)
 const markingAll = ref(false)
@@ -102,6 +122,32 @@ function relativeTime(created: string): string {
         <button class="notif-panel__mark-all" data-testid="mark-all-read" :disabled="markingAll" @click="onMarkAllRead">
           全部已读
         </button>
+      </div>
+
+      <!-- 置顶系统状态条（客户端虚拟条目，不入 view.list 分页序列）：
+           列表 loading/empty/error 各态下均可见，不受清空/全部已读影响 -->
+      <div v-if="aiUnready" class="notif-panel__status" data-testid="panel-system-status" role="alert">
+        <Icon icon="mdi:alert" width="16" height="16" class="shrink-0" />
+        <span class="notif-panel__status-text">AI 模型未就绪（LLM/Embedding 未连通），分析暂停运行</span>
+        <div class="notif-panel__status-actions">
+          <button
+            type="button"
+            class="notif-panel__status-action"
+            data-testid="panel-system-reprobe"
+            :disabled="reprobing"
+            @click="onReprobe"
+          >
+            {{ reprobing ? '检测中…' : '重新检测' }}
+          </button>
+          <NuxtLink
+            to="/settings?section=ai-health"
+            class="notif-panel__status-action"
+            data-testid="panel-system-config"
+            @click="emit('close')"
+          >
+            去配置
+          </NuxtLink>
+        </div>
       </div>
 
       <div ref="listEl" class="notif-panel__list" @scroll.passive="onListScroll">
@@ -212,6 +258,55 @@ function relativeTime(created: string): string {
 .notif-panel__mark-all:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 置顶系统状态条：warning 色令牌沿用原顶部 banner 视觉；窄屏 flex-wrap 下
+   文案可换行、按钮组不挤爆 */
+.notif-panel__status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0.5rem 1rem 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  background: var(--color-warning-bg, rgba(196, 136, 60, 0.12));
+  border: 1px solid var(--color-warning-border, rgba(196, 136, 60, 0.35));
+  color: var(--color-warning);
+}
+
+.notif-panel__status-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.notif-panel__status-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.notif-panel__status-action {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--color-link);
+  text-decoration: underline;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.8125rem;
+}
+
+.notif-panel__status-action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.notif-panel__status-action:hover:not(:disabled) {
+  opacity: 0.8;
 }
 
 .notif-panel__list {

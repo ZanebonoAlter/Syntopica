@@ -2,7 +2,7 @@
 import { Icon } from '@iconify/vue'
 
 // 全局错误兜底页（spa-loading-ux）：接管路由级/未捕获错误（如弱网下页面
-// chunk 加载失败），替代白屏；局部可恢复错误仍走 AiHealthBanner/Toast。
+// chunk 加载失败），替代白屏；局部可恢复错误仍走 Toast/通知中心。
 // 视觉与 app.vue 初始化错误态同构（ui-design.md 复用契约）。
 const error = useError()
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
+import { Icon } from '@iconify/vue'
 
 /**
  * NotificationBell 组件测试（notification-center）
@@ -45,6 +46,34 @@ vi.mock('~/composables/useNotifications', () => ({
   }),
 }))
 
+// AI 未就绪警示态（ai-health-to-notifications）：useSchedulerStatus 的
+// analysisPaused/aiHealthy 是 useState 共享态，用可控 ref 替换（AppHeaderView.test.ts
+// 同款 mock 先例；ref 保证状态翻转可响应）。默认健康 → 面板置顶条不渲染。
+const schedulerState = {
+  analysisPaused: ref(false),
+  aiHealthy: ref(true),
+}
+const reprobeMocks = {
+  reprobing: ref(false),
+  reprobeHealth: vi.fn(async () => null),
+  loadSchedulersStatus: vi.fn(async () => {}),
+}
+
+vi.mock('~/composables/useSchedulerStatus', () => ({
+  useSchedulerStatus: () => ({
+    analysisPaused: schedulerState.analysisPaused,
+    aiHealthy: schedulerState.aiHealthy,
+    loadSchedulersStatus: reprobeMocks.loadSchedulersStatus,
+  }),
+}))
+
+vi.mock('~/composables/useHealthReprobe', () => ({
+  useHealthReprobe: () => ({
+    reprobing: reprobeMocks.reprobing,
+    reprobeHealth: reprobeMocks.reprobeHealth,
+  }),
+}))
+
 import NotificationBell from './NotificationBell.vue'
 
 import type { VueWrapper } from '@vue/test-utils'
@@ -52,7 +81,11 @@ import type { VueWrapper } from '@vue/test-utils'
 const mounted: VueWrapper[] = []
 
 function mountBell(): VueWrapper {
-  const wrapper = mount(NotificationBell, { attachTo: document.body })
+  const wrapper = mount(NotificationBell, {
+    attachTo: document.body,
+    // NuxtLink 自动导入组件（警示态下真实面板的置顶条会用到）测试环境手动提供
+    global: { components: { NuxtLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } },
+  })
   mounted.push(wrapper)
   return wrapper
 }
@@ -71,6 +104,9 @@ beforeEach(() => {
   openPanel.mockClear()
   closePanel.mockClear()
   unreadCount.value = 2
+  // 警示态状态复位（默认健康）
+  schedulerState.analysisPaused.value = false
+  schedulerState.aiHealthy.value = true
 })
 
 afterEach(() => {
@@ -155,6 +191,59 @@ describe('NotificationBell — 开关与外点关闭（H2 回归锚）', () => {
 
     unreadCount.value = 0
     await nextTick()
+    expect(wrapper.find('[data-testid="notification-badge"]').exists()).toBe(false)
+  })
+})
+
+describe('NotificationBell — AI 未就绪警示态（与未读角标正交）', () => {
+  it('健康/暂停时普通态：bell-outline 图标 + 默认配色 + title「通知」', () => {
+    const wrapper = mountBell()
+    const icon = wrapper.findComponent(Icon)
+    expect(icon.props('icon')).toBe('mdi:bell-outline')
+    expect(icon.classes()).toContain('text-gray-600')
+    expect(wrapper.find('[data-testid="notification-bell"]').attributes('title')).toBe('通知')
+  })
+
+  it('意图运行但不健康时警示态：bell-alert 图标 + warning 配色 + title 提示', async () => {
+    const wrapper = mountBell()
+    schedulerState.aiHealthy.value = false
+    await nextTick()
+    const icon = wrapper.findComponent(Icon)
+    expect(icon.props('icon')).toBe('mdi:bell-alert')
+    expect(icon.classes()).toContain('notif-bell--warning')
+    expect(wrapper.find('[data-testid="notification-bell"]').attributes('title')).toContain('AI 模型未就绪')
+  })
+
+  it('用户主动暂停时不警示（已知暂停，无需再提示健康）', async () => {
+    const wrapper = mountBell()
+    schedulerState.analysisPaused.value = true
+    schedulerState.aiHealthy.value = false
+    await nextTick()
+    expect(wrapper.findComponent(Icon).props('icon')).toBe('mdi:bell-outline')
+  })
+
+  it('健康恢复后回归普通态（状态驱动）', async () => {
+    const wrapper = mountBell()
+    schedulerState.aiHealthy.value = false
+    await nextTick()
+    expect(wrapper.findComponent(Icon).props('icon')).toBe('mdi:bell-alert')
+    schedulerState.aiHealthy.value = true
+    await nextTick()
+    expect(wrapper.findComponent(Icon).props('icon')).toBe('mdi:bell-outline')
+  })
+
+  it('正交叠加：警示态下未读角标仍按未读数显示/隐藏，数值不受影响', async () => {
+    const wrapper = mountBell()
+    schedulerState.aiHealthy.value = false
+    await nextTick()
+    // 未读 2（beforeEach 默认）+ 警示态 → 双信号并存
+    expect(wrapper.findComponent(Icon).props('icon')).toBe('mdi:bell-alert')
+    expect(wrapper.find('[data-testid="notification-badge"]').text()).toBe('2')
+
+    unreadCount.value = 0
+    await nextTick()
+    // 角标归零不吞警示：警示图标仍在、角标消失
+    expect(wrapper.findComponent(Icon).props('icon')).toBe('mdi:bell-alert')
     expect(wrapper.find('[data-testid="notification-badge"]').exists()).toBe(false)
   })
 })

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, ref } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 // M4：通知点击跳转（daily-report → /tags）；TagQueueProgressChip.test.ts 同款 stub 先例
 const navigateToSpy = vi.fn(() => Promise.resolve())
@@ -44,6 +44,34 @@ vi.mock('~/composables/useNotifications', () => ({
   }),
 }))
 
+// 置顶系统状态条（ai-health-to-notifications）：useSchedulerStatus 的
+// analysisPaused/aiHealthy 是 useState 共享态，用可控 ref 替换（AppHeaderView.test.ts
+// 同款 mock 先例；用 ref 而非普通对象，保证「健康恢复后消失」这类状态翻转可响应）。
+const schedulerState = {
+  analysisPaused: ref(false),
+  aiHealthy: ref(true),
+}
+const reprobeMocks = {
+  reprobing: ref(false),
+  reprobeHealth: vi.fn(async () => null),
+  loadSchedulersStatus: vi.fn(async () => {}),
+}
+
+vi.mock('~/composables/useSchedulerStatus', () => ({
+  useSchedulerStatus: () => ({
+    analysisPaused: schedulerState.analysisPaused,
+    aiHealthy: schedulerState.aiHealthy,
+    loadSchedulersStatus: reprobeMocks.loadSchedulersStatus,
+  }),
+}))
+
+vi.mock('~/composables/useHealthReprobe', () => ({
+  useHealthReprobe: () => ({
+    reprobing: reprobeMocks.reprobing,
+    reprobeHealth: reprobeMocks.reprobeHealth,
+  }),
+}))
+
 import AppButton from './AppButton.vue'
 import NotificationPanel from './NotificationPanel.vue'
 import panelSourceRaw from './NotificationPanel.vue?raw'
@@ -60,8 +88,14 @@ const items = [
 function mountPanel() {
   return mount(NotificationPanel, {
     attachTo: document.body,
-    // AppButton 走 Nuxt 自动导入（测试环境需手动提供）；AppDialog 是面板显式导入（真实渲染）
-    global: { components: { AppButton } },
+    // AppButton 走 Nuxt 自动导入（测试环境需手动提供）；AppDialog 是面板显式导入（真实渲染）；
+    // NuxtLink 同为自动导入（置顶条「去配置」入口），测试环境手动提供 stub
+    global: {
+      components: {
+        AppButton,
+        NuxtLink: { props: ['to'], template: '<a class="system-status-link" :href="to"><slot /></a>' },
+      },
+    },
   })
 }
 
@@ -73,6 +107,10 @@ afterEach(() => {
   document.body.innerHTML = ''
   vi.clearAllMocks()
   view.value = { list: [], total: 0, loading: false, error: null }
+  // 置顶系统状态条状态复位（默认健康，防跨用例泄漏）
+  schedulerState.analysisPaused.value = false
+  schedulerState.aiHealthy.value = true
+  reprobeMocks.reprobing.value = false
 })
 
 describe('NotificationPanel — 机械锚（Teleport + 浮层样式规则锚）', () => {
@@ -196,5 +234,99 @@ describe('NotificationPanel — 浏览与已读语义（白盒 D1/D2）', () => 
     ;(panelItems[0] as HTMLElement).click()
     await nextTick()
     expect(navigateToSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('NotificationPanel — AI 未就绪置顶系统状态条（客户端虚拟条目）', () => {
+  it('意图运行且不健康时展示置顶条：文案/重新检测/去配置入口齐全，且在列表容器之上（不入分页序列）', () => {
+    schedulerState.aiHealthy.value = false
+    view.value = { list: [...items] as never[], total: 2, loading: false, error: null }
+    mountPanel()
+    const status = document.body.querySelector('[data-testid="panel-system-status"]') as HTMLElement
+    expect(status?.textContent).toContain('AI 模型未就绪')
+    expect(status?.textContent).toContain('分析暂停运行')
+    expect(status?.querySelector('[data-testid="panel-system-reprobe"]')?.textContent).toContain('重新检测')
+    const link = status?.querySelector('[data-testid="panel-system-config"]') as HTMLAnchorElement
+    expect(link?.getAttribute('href')).toBe('/settings?section=ai-health')
+    // 挂在列表容器之上：状态条在 .notif-panel__list 之前（D2）
+    const list = document.body.querySelector('.notif-panel__list') as HTMLElement
+    expect(status.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // 虚拟条目不是通知条目：列表内仍只有 2 条落库通知
+    expect(document.body.querySelectorAll('[data-testid="notification-item"]').length).toBe(2)
+  })
+
+  it('用户主动暂停（analysisPaused=true）时不展示（已知暂停，无需再提示健康）', () => {
+    schedulerState.analysisPaused.value = true
+    schedulerState.aiHealthy.value = false
+    mountPanel()
+    expect(document.body.querySelector('[data-testid="panel-system-status"]')).toBeNull()
+  })
+
+  it('健康时默认不展示；健康恢复后置顶条消失（状态驱动，无需交互清除）', async () => {
+    schedulerState.aiHealthy.value = false
+    mountPanel()
+    expect(document.body.querySelector('[data-testid="panel-system-status"]')).toBeTruthy()
+    schedulerState.aiHealthy.value = true
+    await nextTick()
+    expect(document.body.querySelector('[data-testid="panel-system-status"]')).toBeNull()
+  })
+
+  it('重新检测：点击触发 reprobeHealth 后 loadSchedulersStatus 刷新；reprobing 时禁用文案「检测中…」', async () => {
+    schedulerState.aiHealthy.value = false
+    mountPanel()
+    const btn = document.body.querySelector('[data-testid="panel-system-reprobe"]') as HTMLButtonElement
+    expect(btn.textContent).toContain('重新检测')
+    btn.click()
+    await flushPromises()
+    expect(reprobeMocks.reprobeHealth).toHaveBeenCalledTimes(1)
+    expect(reprobeMocks.loadSchedulersStatus).toHaveBeenCalledTimes(1)
+
+    reprobeMocks.reprobing.value = true
+    await nextTick()
+    expect(btn.disabled).toBe(true)
+    expect(btn.textContent).toContain('检测中…')
+  })
+
+  it('去配置：点击后关闭面板（onClose spy 断言 emit 契约，参考 onItemClick 行为）', async () => {
+    schedulerState.aiHealthy.value = false
+    const wrapper = mountPanel()
+    // 环境限制（happy-dom@20.8.4 下 VTU emitted() 记录失效，见文件头注释）：
+    // 以 onClose props spy 验证 emit('close') 契约
+    const props = (wrapper.vm.$ as { vnode: { props: Record<string, unknown> } }).vnode.props
+    const onClose = vi.fn()
+    props.onClose = onClose as never
+    ;(document.body.querySelector('[data-testid="panel-system-config"]') as HTMLElement).click()
+    await nextTick()
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('空列表时置顶条仍可见（在空态占位之上，系统状态与列表内容正交）', () => {
+    schedulerState.aiHealthy.value = false
+    mountPanel()
+    expect(document.body.querySelector('[data-testid="panel-empty"]')).toBeTruthy()
+    const status = document.body.querySelector('[data-testid="panel-system-status"]') as HTMLElement
+    expect(status).toBeTruthy()
+    const empty = document.body.querySelector('[data-testid="panel-empty"]') as HTMLElement
+    expect(status.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('虚拟条目不受清空影响：清空确认后置顶条仍在', async () => {
+    schedulerState.aiHealthy.value = false
+    view.value = { list: [...items] as never[], total: 2, loading: false, error: null }
+    mountPanel()
+    await (document.body.querySelector('[data-testid="panel-clear"]') as HTMLButtonElement).click()
+    await nextTick()
+    await (document.body.querySelector('[data-testid="panel-clear-confirm"]') as HTMLButtonElement).click()
+    expect(notifMocks.clearAll).toHaveBeenCalled()
+    expect(document.body.querySelector('[data-testid="panel-system-status"]')).toBeTruthy()
+  })
+
+  it('虚拟条目不受全部已读影响：markAllRead 后置顶条仍在', async () => {
+    schedulerState.aiHealthy.value = false
+    view.value = { list: [...items] as never[], total: 2, loading: false, error: null }
+    mountPanel()
+    await (document.body.querySelector('[data-testid="mark-all-read"]') as HTMLButtonElement).click()
+    expect(notifMocks.markAllRead).toHaveBeenCalled()
+    expect(document.body.querySelector('[data-testid="panel-system-status"]')).toBeTruthy()
   })
 })
