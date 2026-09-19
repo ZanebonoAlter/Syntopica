@@ -19,25 +19,6 @@
 - **WHEN** 事件为"日菲加强安保合作旨在牵制中国"，文中一笔带过提到"特朗普对此表示关注"
 - **THEN** "特朗普" SHALL NOT 被提取为该事件的辅助标签，因为移除特朗普后事件描述仍然成立
 
-### Requirement: Tag 提取拆分为 event/person 与 keyword 双分支调用
-系统 SHALL 将 tag 提取拆分为 event/person 分支和 keyword 分支两个独立 LLM 调用。event/person 分支 SHALL 只输出 event/person 标签，并要求每个 tag 携带 3-5 个辅助标签；keyword 分支 SHALL 只输出 keyword 标签，并要求每个 tag 携带 description，不输出 auxiliary_labels。
-
-两个分支 MAY 并行执行，但 SHALL 独立收集结果，不得因一个分支失败而取消另一个分支。系统 SHALL 合并两个分支的成功结果，并在结果中保留失败分支的错误信息。两个分支均失败时，系统 SHALL 回退到现有 heuristic keyword 提取；仅 keyword 分支失败时，系统 SHALL 使用 heuristic keyword 作为展示兜底，但 heuristic keyword 因缺少同次 LLM description，默认不进入辅助标签池。
-
-合并后的标签总数 SHALL 不超过 5 个；keyword 分支最多保留 3 个标签。若同一 slug 同时出现在多个 category 中，系统 SHALL 按 person > event > keyword 的优先级保留更具体的分类，并丢弃低优先级重复项。
-
-#### Scenario: event/person 分支失败但 keyword 分支成功
-- **WHEN** event/person 提取调用连续重试失败，但 keyword 提取调用成功返回 keyword 标签
-- **THEN** 系统 SHALL 保留 keyword 标签，记录 event/person 分支错误，不生成 event/person 标签，且不触发全量 heuristic 回退
-
-#### Scenario: keyword 分支失败但 event/person 分支成功
-- **WHEN** keyword 提取调用连续重试失败，但 event/person 提取调用成功返回 event/person 标签
-- **THEN** 系统 SHALL 保留 event/person 标签，并使用 heuristic keyword 作为展示兜底；heuristic keyword 默认不写入辅助标签池
-
-#### Scenario: 双分支合并去重
-- **WHEN** event/person 分支输出 person tag "Sam Altman"，keyword 分支也输出 keyword tag "Sam Altman"
-- **THEN** 系统 SHALL 保留 person tag，并丢弃重复的 keyword tag
-
 ### Requirement: Keyword 标签直接进入辅助标签池
 系统 SHALL 将 category=keyword 的 tag 直接作为辅助标签入库，不再生成额外的 auxiliary_labels。tag 的 label 和 description 直接复用为辅助标签的 label 和 description。
 
@@ -111,3 +92,36 @@ description SHALL 非空、长度不超过 500 字符，且不能只重复 label
 #### Scenario: 移除错误构成标签
 - **WHEN** 用户从 SemanticBoard "能源安全" 中移除辅助标签 "体育赛事"
 - **THEN** 后续匹配不再把 "体育赛事" 视为该 board 的构成标签
+
+### Requirement: Tag 提取单次调用输出 event/person 与 keyword 双数组
+
+系统 SHALL 以单次 LLM 调用完成 tag 提取，输出同时包含 event/person 标签数组与 keyword 标签数组（schema 双数组约束）。event/person 标签 SHALL 携带 3-5 个辅助标签；keyword 标签 SHALL 携带 description，不输出 auxiliary_labels。
+
+单次调用（含既有重试上限）整体失败时，系统 SHALL 回退到 heuristic keyword 提取。调用成功但 event/person 数组为空或全部未通过校验时，系统 SHALL 仅保留 keyword 产出并记录缺失原因，不视为失败、不触发全量 heuristic 回退。调用成功但 keyword 数组为空或全部未通过校验时，系统 SHALL 使用 heuristic keyword 作为展示兜底，但 heuristic keyword 因缺少同次 LLM description，默认不进入辅助标签池。
+
+合并后的标签总数 SHALL 不超过 5 个；keyword 数组最多保留 3 个标签。若同一 slug 同时出现在多个 category 中，系统 SHALL 按 person > event > keyword 的优先级保留更具体的分类，并丢弃低优先级重复项。
+
+#### Scenario: event/person 数组为空但 keyword 有产出
+
+- **WHEN** 单次调用成功返回，event/person 数组为空或全部未通过校验，keyword 数组有产出
+- **THEN** 系统 SHALL 保留 keyword 标签，记录 event/person 数组缺失原因，不生成 event/person 标签，且不触发全量 heuristic 回退
+
+#### Scenario: keyword 数组为空但 event/person 有产出
+
+- **WHEN** 单次调用成功返回，keyword 数组为空或全部未通过校验，event/person 数组有产出
+- **THEN** 系统 SHALL 保留 event/person 标签，并使用 heuristic keyword 作为展示兜底；heuristic keyword 默认不写入辅助标签池
+
+#### Scenario: 双数组间去重
+
+- **WHEN** 同一次调用的 event/person 数组输出 person tag "Sam Altman"，keyword 数组也输出 keyword tag "Sam Altman"
+- **THEN** 系统 SHALL 保留 person tag，并丢弃重复的 keyword tag
+
+#### Scenario: 单次调用整体失败回退 heuristic
+
+- **WHEN** 单次提取调用重试耗尽仍失败
+- **THEN** 系统 SHALL 回退 heuristic keyword 提取（结果 source=heuristic），失败原因记录在提取结果错误信息中
+
+#### Scenario: mono 文章提取调用数为 1
+
+- **WHEN** 一篇 mono 文章完成打标且 LLM 提取路径成功
+- **THEN** `ai_call_logs` 中该文章的 tag 提取调用（operation=tagmanagement.extractor_enhanced）恰为 1 次

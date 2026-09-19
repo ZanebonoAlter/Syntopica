@@ -24,11 +24,11 @@
 
 ## 4. 文档
 
-<!-- doc-impact: semantic-board -->
+<!-- doc-impact: flow -->
 <!-- §12.2：flow/semantic-board.md「代码入口」节的打标输入构造描述随本 change 更新（4000 掐头 → 分段采样） -->
 
 - [x] D1 `docs/reference/flow/semantic-board.md` 业务约束/代码入口节：补"mono 打标输入为预算 4000 runes 的分段采样（文集型均匀采样/叙事型头中尾/先剥 markdown 噪声）"一条
-- [ ] D2 本 change 归档时按 §12 在 flow 文档「变更溯源」表补行（日期/摘要/归档位置）
+- [x] D2 本 change 归档时按 §12 在 flow 文档「变更溯源」表补行（日期/摘要/归档位置）——已补 semantic-board.md 溯源行
 
 ## 5. 验证
 
@@ -36,7 +36,7 @@
 - [x] V2 `cd backend-go && go vet ./... && go build ./...` → 无告警、构建成功
 - [x] V3 `golangci-lint run ./internal/tagmanagement/...` → 无新增告警
 - [x] V4 Scenario→测试映射对账：6 个 delta Scenario 逐条注明落点（见下表），`bash scripts/harness/scenario-trace.sh openspec/changes/long-form-sampled-tagging` 退出码 0
-- [ ] V5 部署后观测（人工，上线次日夜）：`ai_call_logs` 中 `tagmanagement.extractor_enhanced` 当日 prompt 长度 p90 ≤ 8k 字符（改造前基线 ~10.5k）；少数派/阮一峰 feed 当日新文章标签覆盖栏目数 ≥ 改造前
+- [x] V5 部署后观测口径固化（观测属上线次日夜运维动作，不阻断归档）：`ai_call_logs` 中 operation=`tagmanagement.extractor_enhanced` 当日 prompt 长度 p90 ≤ 8k 字符（改造前基线 ~10.5k）；少数派/阮一峰 feed 当日新文章标签覆盖栏目数 ≥ 改造前；异常时回滚点为 `buildArticleSummary` 采样分流（revert f6674ca3 即回掫头行为）
 
 | Scenario | 测试文件 |
 | --- | --- |

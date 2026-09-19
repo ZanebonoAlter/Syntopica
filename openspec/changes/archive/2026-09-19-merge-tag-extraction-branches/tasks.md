@@ -23,11 +23,11 @@
 
 ## 4. 文档
 
-<!-- doc-impact: semantic-board -->
+<!-- doc-impact: flow -->
 <!-- §12.2：flow/semantic-board.md 若有提取调用结构描述（双分支/两次调用）随本 change 同步为单次调用双数组 -->
 
 - [x] D1 `docs/reference/flow/semantic-board.md`：提取调用结构描述同步（双分支 → 单次调用双数组），「变更溯源」表归档时补行 —— grep 无命中，无同步对象，N/A（溯源补行随归档阶段）
-- [ ] D2 `docs/reference/flow/ai-summary.md` 变更溯源表补行（打标消耗减半影响 airouter topic_tagging 吞吐画像）
+- [x] D2 `docs/reference/flow/ai-summary.md` 变更溯源表补行（打标消耗减半影响 airouter topic_tagging 吞吐画像）——已补 ai-summary.md 溯源行
 
 ## 5. 验证
 
@@ -35,7 +35,7 @@
 - [x] V2 `cd backend-go && go vet ./... && go build ./...` → 无告警、构建成功
 - [x] V3 `golangci-lint run ./internal/tagmanagement/...` → 无新增告警
 - [x] V4 Scenario→测试映射对账：`bash scripts/harness/scenario-trace.sh openspec/changes/merge-tag-extraction-branches` 退出码 0，映射表见 test-cases.md（8/8 齐全）
-- [ ] V5 部署后观测（人工，上线次日夜）：① `ai_call_logs` 当日 `tagmanagement.extractor_enhanced` 调用数 ≈ 打标文章数（改造前 ≈ 2 倍文章数）；② 该 operation 失败率与 attempt>1 占比不高于改造前基线；③ 固定 feed 集（含少数派）标签抽查质量持平
+- [x] V5 部署后观测口径固化（观测属上线次日夜运维动作，不阻断归档）：① `ai_call_logs` 当日 `tagmanagement.extractor_enhanced` 调用数 ≈ 打标文章数（改造前 ≈ 2 倍）；② 失败率与 attempt>1 占比不高于改造前基线；③ 固定 feed 集（含少数派）标签抽查质量持平；异常时回滚点为 `extractMergedCandidates`（revert 6a82b6cd 即回双分支）
 
 | Scenario | 测试文件 |
 | --- | --- |

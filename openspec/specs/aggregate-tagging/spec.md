@@ -5,6 +5,7 @@
 聚合型文章（科技周刊、排行榜合集等）的打标机制：摘要产出内容形态标记（content_form）、栏目级切片 map-reduce 打标路径、跨片去重与 score 分层。
 
 ## Requirements
+
 ### Requirement: 摘要生成产出内容形态标记
 
 系统的摘要生成调用（`summarizeContent`）SHALL 在 system prompt 中要求模型将文章判定为单主题（`mono`）或聚合型（`aggregate`），并以摘要第一行 HTML 注释 `<!-- form: mono -->` 或 `<!-- form: aggregate -->` 输出该判定。
@@ -82,7 +83,7 @@
 
 聚合路径 SHALL 以纯代码方式跨片去重（按 `Slugify(label)`，重复时保留首栏目出现者）并将文章级标签上限设为 15。语义级撞车（不同措辞指同一话题）SHALL 交由既有标签合并建议机制处理，SHALL NOT 在本次提取链路中新增 LLM 仲裁调用。
 
-聚合路径全部片处理完成后标签数为 0（全片失败或全部空产出）时 SHALL 回落 mono 提取路径（双分支 LLM 提取，含 heuristic 兜底），SHALL NOT 让聚合型文章以 0 标签结束打标。
+聚合路径全部片处理完成后标签数为 0（全片失败或全部空产出）时 SHALL 回落 mono 提取路径（单次调用 LLM 提取，含 heuristic 兜底），SHALL NOT 让聚合型文章以 0 标签结束打标。
 
 #### Scenario: 同名标签跨片去重
 
@@ -97,7 +98,7 @@
 #### Scenario: 全片失败回落 mono 路径
 
 - **WHEN** 某聚合文章的所有栏目片提取均失败（或全部返回空候选）
-- **THEN** 该文章走 mono 双分支提取路径打标，回落原因记录在日志，最终标签数不为 0（除非 mono 路径同样无产出）
+- **THEN** 该文章走 mono 提取路径打标（单次调用 LLM 提取，含 heuristic 兜底），回落原因记录在日志，最终标签数不为 0（除非 mono 路径同样无产出）
 
 ### Requirement: 聚合路径 score 按栏目位置分层
 

@@ -57,17 +57,46 @@ TopicTag / TagMergeSuggestion 的 `Status` 字段 SHALL 保留 GORM `default:` t
 
 ### Requirement: 单主题打标输入与上限参数
 
-mono 路径（含 content_form 为空的存量文章）SHALL 将摘要输入截断上限设为 4000 runes，文章级标签上限设为 6。存量文章（content_form 为空）SHALL 走 mono 路径且行为一致。
+mono 路径（含 content_form 为空的存量文章）SHALL 将摘要输入采样预算设为 4000 runes，文章级标签上限设为 6。存量文章（content_form 为空）SHALL 走 mono 路径且行为一致。
+
+采样预算的分配规则：
+
+- 剥离 markdown 噪声后计量：图片语法 `![alt](url)` 整体删除（alt 不保留），行内链接 `[text](url)` 仅保留 text；噪声不得占用采样预算。
+- 剥离后长度不超过预算的输入 SHALL 原样进入提取（不做任何采样与截断标记）。
+- 超预算输入按 markdown 标题（`#` 至 `######`）切段：
+  - 段数 > 3（文集型）：SHALL 保留全部段落的标题；正文预算在段落间均分（每段保底 120 runes），段内截断 SHALL 落在句子边界（回退窗口内无句界时允许硬切），被截断段落 SHALL 带省略标记；段数多至保底分配超出总预算时，超出部分的段落 SHALL 退化为仅保留标题（归入一行标题清单）。
+  - 段数 ≤ 3（叙事型）：SHALL 按头/中/尾三段采样（约 2:1:1），采样段间带省略标记。
+- 采样结果总长度 SHALL 不超过预算与固定开销之和（固定开销为标题与标记字符，允许容差不超过总预算的 5%）。
+
+#### Scenario: 短输入原样通过
+
+- **WHEN** 一篇 mono 文章剥离噪声后的正文为 1200 runes
+- **THEN** 进入提取的输入与剥离噪声后的正文一致，不含任何省略标记
 
 #### Scenario: 单主题长摘要截断
 
-- **WHEN** 一篇 mono 文章的 AIContentSummary 长度为 7000 runes
-- **THEN** 进入提取的输入为前 4000 runes
+- **WHEN** 一篇 mono 文章的 AIContentSummary 剥离噪声后为 7000 runes 且含 15 个 `##` 标题栏目
+- **THEN** 进入提取的输入为采样后的全文代表（全部 15 个栏目标题在场，正文按预算均分且段内句界截断带省略标记），总长不超过 4000 runes 的预算与固定开销容差
+
+#### Scenario: 叙事型长文头中尾采样
+
+- **WHEN** 一篇 9000 runes 的正文经标题切段仅得 2 段
+- **THEN** 提取输入由头部约 2000 runes、中部约 1000 runes、尾部约 1000 runes 的采样拼接组成，段间带省略标记
+
+#### Scenario: 段数过多退化为标题清单
+
+- **WHEN** 一篇超预算正文含 30 个标题段落，保底 120 runes/段的分配超出 4000 runes 总预算
+- **THEN** 前若干段按保底预算采样，其余段落的标题归入一行标题清单，不保留正文
+
+#### Scenario: 图片与链接噪声不占预算
+
+- **WHEN** 一篇正文含 20 处图片语法（合计约 4000 字符的 URL）且剥离后正文仍超预算
+- **THEN** 图片语法在采样计量前已被整体删除，链接仅保留文字部分，预算全部分配给正文内容
 
 #### Scenario: 存量文章走 mono 路径
 
 - **WHEN** 一篇 change 合并前入库、content_form 为空的存量文章被重新打标
-- **THEN** 其处理路径与新 mono 文章一致（4000 截断、上限 6）
+- **THEN** 其处理路径与新 mono 文章一致（同一采样规则、标签上限 6）
 
 ### Requirement: Domain package singular naming
 
