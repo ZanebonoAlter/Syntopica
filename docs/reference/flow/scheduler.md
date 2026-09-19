@@ -121,6 +121,7 @@ auto_refresh scheduler
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
+| 2026-09-19 | ai-health-to-notifications | AI 健康未就绪提示移入通知中心：铃铛警示态（mdi:bell-alert + warning 色）+ 面板置顶系统状态条（客户端虚拟条目，不落库/不推 WS/不计未读/不参与淘汰），含「重新检测」「去配置」入口；移除顶部悬浮 banner（AiHealthBanner 删除） | [`openspec/changes/archive/2026-09-19-ai-health-to-notifications`](../../../openspec/changes/archive/2026-09-19-ai-health-to-notifications) |
 | 2026-09-17 | add-notification-center | log_cleanup 扩展队列表保留：tag_jobs/firecrawl_jobs completed 留 1 天（每日重置）、failed 留 30 天；embedding_queues completed 30 天→1 天；迁移 20260917_0003 五个部分索引（status+created_at）支撑清理 DELETE；队列状态展示口径改活跃量（pending+leased）+ 今日完成 | [`openspec/changes/archive/2026-09-17-add-notification-center`](../../../openspec/changes/archive/2026-09-17-add-notification-center) |
 | 2026-08-23 | fix-quality-audit-p0 | `tag_quality_score` job 新增 topic_tags 反规范化 `feed_count` 周期对账（重算 COUNT(DISTINCT articles.feed_id)，修打标不增量维护导致的排序漂移）；同期修复前端 AI 摘要开关字段错读（详见 reading.md） | [`openspec/changes/archive/2026-08-23-fix-quality-audit-p0`](../../../openspec/changes/archive/2026-08-23-fix-quality-audit-p0) |
 | 2026-05-10 | global-settings-feed-controls | Feed 卡片新增 Firecrawl / 打标签 / 内容补全 3 个管线 toggle；后端 `tagging_enabled` 字段控制是否入 tag 队列；max_articles「无限制」上限修正 | [`openspec/changes/archive/2026-05-10-global-settings-feed-controls`](../../../openspec/changes/archive/2026-05-10-global-settings-feed-controls) |

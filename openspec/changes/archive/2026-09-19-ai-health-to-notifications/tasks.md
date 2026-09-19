@@ -22,7 +22,7 @@
 - [x] 4.1 `docs/reference/flow/scheduler.md`：健康门约束节「顶部 banner」表述改为通知中心警示、心跳节「未就绪 banner」入口表述、代码入口节 banner 组件改为 NotificationBell/NotificationPanel 置顶条；变更溯源表行按 §12.2 归档后补
 - [x] 4.2 归档前 `bash scripts/harness/doc-impact.sh verify openspec/changes/ai-health-to-notifications` 退出码 0（实测通过，声明 flow 文件 1 个）
 
-## 验证
+## 5. 验证
 
 | Scenario | 测试文件 |
 | --- | --- |
@@ -33,6 +33,8 @@
 | 虚拟条目不产生落库通知 | 人工验证（notifications 表无新行，后端无改动，grep 后端无通知写入点变更） |
 | 虚拟条目不受清空/已读操作影响 | front/app/components/ui/NotificationPanel.test.ts |
 | 铃铛警示态图标/配色 | front/app/components/ui/NotificationBell.test.ts |
+| 设置页展示健康面板与总开关 | front/app/features/settings/components/SettingsSectionAiHealth.test.ts |
+| 顶部栏常驻健康指示 | 人工验证（存量行为，非本 change 改动——AppHeaderView 常驻 heart-pulse 指示随 MODIFIED requirement 携带进 delta，实现组件实存） |
 | 顶部 banner 移除无残留 | grep -rn "AiHealthBanner" front/app 零引用 + front lint/typecheck |
 
 - `cd front && pnpm lint` → 退出码 0
