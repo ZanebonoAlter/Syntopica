@@ -50,7 +50,7 @@ Feed refresh
 
 ### feed 刷新入库判重与快讯更新语义（dedupe-rss-articles）
 
-入库唯一性由 **link** 决定，标题不参与判重（快讯源会在同一 URL 下滚动改标题）：
+入库唯一性由 **link** 决定，标题不参与判重（快讯源会在同一 URL 下滚动改标题）。entry link 在解析层先剥 URL fragment（`textutil.StripURLFragment`，`#!` hashbang 保留）——V2EX 类源会在 link 尾部滚动刷新 `#replyN` 锚点，不剥则同一主题每次刷新都被当成新文章：
 
 ```text
 RefreshFeed
@@ -123,7 +123,7 @@ article 级状态：`firecrawl_status`（`pending`/`processing`/`completed`/`fai
 8. **补全成功且 feed.tagging_enabled=true 时必须 enqueue tag_jobs 以整理稿重新打标签**：补全成功且 `feed.tagging_enabled=true` 时，enqueue `tag_jobs`（reason=`summary_completed`）重新打标签（整理稿是更优的打标签输入）。
 9. **内容补全调度器规范名为 content_completion、兼容旧别名 ai_summary，均非 ai_summaries 表的 feed 聚合摘要**：对外规范名为 `content_completion`，仍接受旧别名 `ai_summary`；它**不是** `ai_summaries` 表里的 feed 聚合摘要。
 10. **整理稿首行形态注释必须剥离后入库：标记值存 articles.content_form，正文不得残留注释，解析失败降级 mono**：摘要 system prompt（`GetSystemPrompt("zh")`）要求模型在首行输出形态判定 HTML 注释 `<!-- form: mono|aggregate -->`（异构栏目合集 = aggregate，单主题多章节也算 mono）。入库前 `parseContentFormMark` 解析并剥离该注释行：标记值存 `articles.content_form`，剥离后正文存 `ai_content_summary`（摘要正文**不得**残留注释）；解析失败（模型未输出/非法值）时 `content_form` 落空、原文照存，下游打标降级走 mono 路径。`force` 重生成时同步清空 `content_form` 防旧值残留。存量文章（change 合并前）`content_form` 为空，不回填。
-11. **同一 feed 内文章按 link 唯一（标题不参与判重），同 link 快讯更新只能 upsert 既有行、内容未变时不得触发任何处理链**：入库唯一性键 = `(feed_id, link)`，由 DB 唯一部分索引 `uq_articles_feed_link`（`WHERE link != ''`）兜底并发刷新；标题**不参与判重**（快讯源在同一 URL 下滚动改标题）。link 已命中的条目**不得插入新行**——`title` 与 `description` 均未变→直接跳过（不打标/不抓取/不生成摘要）；任一变化→ UPDATE 原地更新内容字段 + 按 `buildArticleFromEntry` 同款规则重置状态 + 清衍生字段 + 删旧标签（含 `tag_count` 重算）+ 经 `enqueueArticleProcessing` 重走链，重打标靠链条完成事件接力、不在刷新路径内联调 AI。跨 feed 同 link 各留一份（不跨 feed 归并存储），打标结果复用见 [`flow/topic-graph.md`](topic-graph.md)。
+11. **同一 feed 内文章按规范化 link 唯一（标题不参与判重；entry link 入库前先剥 URL fragment、`#!` hashbang 保留），同 link 快讯更新只能 upsert 既有行、内容未变时不得触发任何处理链**：入库唯一性键 = `(feed_id, link)`，link 在解析层先经 `textutil.StripURLFragment` 剥 URL fragment（V2EX 类源滚动刷新锚点 `#replyN`，不剥则同主题每次刷新都被判为新文章；`#!` hashbang 为 SPA 路由标识、保留），由 DB 唯一部分索引 `uq_articles_feed_link`（`WHERE link != ''`）兜底并发刷新；标题**不参与判重**（快讯源在同一 URL 下滚动改标题）。link 已命中的条目**不得插入新行**——`title` 与 `description` 均未变→直接跳过（不打标/不抓取/不生成摘要）；任一变化→ UPDATE 原地更新内容字段 + 按 `buildArticleFromEntry` 同款规则重置状态 + 清衍生字段 + 删旧标签（含 `tag_count` 重算）+ 经 `enqueueArticleProcessing` 重走链，重打标靠链条完成事件接力、不在刷新路径内联调 AI。跨 feed 同 link 各留一份（不跨 feed 归并存储），打标结果复用见 [`flow/topic-graph.md`](topic-graph.md)。
 
 ## 代码入口
 
@@ -144,3 +144,4 @@ article 级状态：`firecrawl_status`（`pending`/`processing`/`completed`/`fai
 | 2026-08-21 | nightly-throughput-embedding-cache-parallel-crawl | firecrawl 队列串行→固定 3 worker 并行（jobs channel 分发、atomic 计数、每 worker 500ms 礼貌限速）；租约/退避/terminal 降级语义不变；夜间窗口 avg_wait 3.8h→分钟级 | [`openspec/changes/archive/2026-08-21-nightly-throughput-embedding-cache-parallel-crawl`](../../../openspec/changes/archive/2026-08-21-nightly-throughput-embedding-cache-parallel-crawl) |
 | 2026-09-04 | constraint-declaration-redline | 约束节红线句格式化：本域「业务约束与不变量」节每条约束改写为首行加粗自含红线句 + 细节跟后（语义不变），declaration 注入降为红线层（上线后实测 bytes 降约 60%），细节层经关键词/JIT 全节注入按需补全；本域为格式改写，无业务行为变更 | [`openspec/changes/archive/2026-09-04-constraint-declaration-redline`](../../../openspec/changes/archive/2026-09-04-constraint-declaration-redline) |
 | 2026-09-17 | dedupe-rss-articles | RSS 入库判重键 `(feed_id, title)` → `(feed_id, link)`（标题不参与判重）+ 同 link 快讯 upsert（内容未变跳过、变化则更新内容、重置处理链、删旧标签并重算 tag_count）+ 存量 409 组重复同事务归并迁移与 `uq_articles_feed_link` 唯一部分索引 | [`archive/2026-09-17-dedupe-rss-articles`](../../../openspec/changes/archive/2026-09-17-dedupe-rss-articles) |
+| 2026-09-20 | fix-v2ex-link-fragment-dedupe（直接修复，未开 change） | 补齐判重的「link 锚点漂移」病例：解析层经 `textutil.StripURLFragment` 剥 entry link 的 `#fragment`（`#!` hashbang 保留，解析/迁移同一实现）+ 存量迁移 `20260920_0001` 剥 `articles.link` fragment 并按 20260917_0001 契约归并重复（v2ex 两源 93 组/282 行）| [`docs/research/duplicate-articles-v2ex/`](../../research/duplicate-articles-v2ex/explore-findings.md) |

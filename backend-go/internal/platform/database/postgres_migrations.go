@@ -2396,7 +2396,89 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, dedupeRSSArticlesMigration())
 	migrations = append(migrations, laneSnapshotFKMigration())
 	migrations = append(migrations, healDanglingArticleRefsMigration())
-	return append(migrations, queueRetentionIndexMigration())
+	return append(migrations, queueRetentionIndexMigration(), normalizeArticleLinkFragmentsMigration())
+}
+
+// normalizeArticleLinkFragmentsMigration implements 20260920_0001 (v2ex link
+// fragment dedupe fix): strip the URL fragment from articles.link, then merge
+// the duplicates this surfaces. V2EX appends a drifting #replyN anchor (reply
+// count at feed-generation time) to every entry link, so the same topic changed
+// link between refreshes and slipped past the (feed_id, link) dedupe — 93
+// groups / 282 surplus rows across the two v2ex tab feeds alone, every copy
+// crawling firecrawl separately. The parser now normalizes entry links at
+// ingestion (textutil.StripURLFragment); this one-shot repairs the stored rows.
+// Fragments never reach the server, so stripping loses nothing; `#!` hashbang
+// fragments (SPA route identity) are preserved.
+//
+// Irreversible: the deleted copies are not recoverable. Groups reuse the
+// 20260917_0001 merge contract (tags, reading behaviors, queued jobs and
+// daily-report refs rewire to the keeper, tag_count recomputed). Groups are
+// keyed by stripped link in Go (dialect-neutral) and disjoint by construction,
+// so the per-group normalization UPDATEs cannot collide with the
+// uq_articles_feed_link unique index. Re-running is a no-op.
+func normalizeArticleLinkFragmentsMigration() Migration {
+	return Migration{
+		Version:     "20260920_0001",
+		Description: "strip drifting #fragment anchors from articles.link (V2EX #replyN) and merge the duplicates this surfaces (20260917_0001 merge contract; #! hashbang preserved).",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "articles") {
+				logging.Infof("normalize-article-link-fragments: articles absent; nothing to repair")
+				return nil
+			}
+
+			var rows []struct {
+				ID     uint
+				FeedID uint
+				Link   string
+			}
+			if err := db.Raw(`
+				SELECT id, feed_id, link FROM articles
+				WHERE link <> '' AND link LIKE '%#%'`).Scan(&rows).Error; err != nil {
+				return fmt.Errorf("load fragment-carrying article links: %w", err)
+			}
+
+			type groupKey struct {
+				feedID uint
+				base   string
+			}
+			members := make(map[groupKey][]uint)
+			for _, r := range rows {
+				key := groupKey{r.FeedID, textutil.StripURLFragment(r.Link)}
+				members[key] = append(members[key], r.ID)
+			}
+			// Fold in the exact stripped-link row when one exists (a topic stored
+			// once without a fragment): it is the natural keeper candidate.
+			for key := range members {
+				var exact []uint
+				if err := db.Raw(`SELECT id FROM articles WHERE feed_id = ? AND link = ?`,
+					key.feedID, key.base).Scan(&exact).Error; err != nil {
+					return fmt.Errorf("probe exact-link row (feed=%d link=%s): %w", key.feedID, key.base, err)
+				}
+				members[key] = append(members[key], exact...)
+			}
+
+			var merged, normalized int
+			for key, ids := range members {
+				if len(ids) > 1 {
+					if err := mergeDuplicateArticleRows(db, key.feedID, "a.id IN ?", ids); err != nil {
+						return fmt.Errorf("merge fragment group (feed=%d link=%s): %w", key.feedID, key.base, err)
+					}
+					merged++
+				}
+				// After the merge exactly one row per group survives; stamping the
+				// stripped link cannot collide (each base appears once per feed).
+				if err := db.Model(&models.Article{}).
+					Where("id IN ?", ids).
+					Update("link", key.base).Error; err != nil {
+					return fmt.Errorf("normalize link to %s (feed=%d): %w", key.base, key.feedID, err)
+				}
+				normalized++
+			}
+			logging.Infof("normalize-article-link-fragments: fragment_rows=%d groups=%d merged=%d links_normalized=%d",
+				len(rows), len(members), merged, normalized)
+			return nil
+		},
+	}
 }
 
 // queueRetentionIndexMigration implements 20260917_0003
@@ -2540,6 +2622,15 @@ func dedupeRSSArticlesMigration() Migration {
 // mergeDuplicateArticleGroup collapses one (feed_id, link) group to a single
 // surviving article row. No-op for groups that shrank below 2 rows.
 func mergeDuplicateArticleGroup(db *gorm.DB, feedID uint, link string) error {
+	return mergeDuplicateArticleRows(db, feedID, "a.link = ?", link)
+}
+
+// mergeDuplicateArticleRows collapses one group of same-feed article rows —
+// selected by whereLink (a condition over the `a` alias, variadic-arg bound
+// via arg) — down to a single surviving row. The 20260917_0001 merge selects
+// with "a.link = ?"; the 20260920_0001 fragment migration selects by id list
+// ("a.id IN ?") because its rows differ only in the drifting #fragment.
+func mergeDuplicateArticleRows(db *gorm.DB, feedID uint, whereLink string, arg any) error {
 	var rows []struct {
 		ID               uint
 		Archived         bool
@@ -2559,9 +2650,9 @@ func mergeDuplicateArticleGroup(db *gorm.DB, feedID uint, link string) error {
 		       EXISTS(SELECT 1 FROM article_topic_tags t WHERE t.article_id = a.id) AS has_tags,
 		       EXISTS(SELECT 1 FROM reading_behaviors b WHERE b.article_id = a.id) AS has_behavior
 		FROM articles a
-		WHERE a.feed_id = ? AND a.link = ?
-		ORDER BY a.id`, feedID, link).Scan(&rows).Error; err != nil {
-		return fmt.Errorf("load duplicate group (feed=%d link=%s): %w", feedID, link, err)
+		WHERE a.feed_id = ? AND `+whereLink+`
+		ORDER BY a.id`, feedID, arg).Scan(&rows).Error; err != nil {
+		return fmt.Errorf("load duplicate group (feed=%d): %w", feedID, err)
 	}
 	if len(rows) < 2 {
 		return nil

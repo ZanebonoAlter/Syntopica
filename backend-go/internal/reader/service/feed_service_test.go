@@ -411,6 +411,54 @@ func newDedupeTestService(t *testing.T) *FeedService {
 	return service
 }
 
+// TestRefreshFeedDedupesByBaseLinkWhenFragmentDrifts covers the v2ex case:
+// the entry link carries a drifting #replyN anchor (reply count at
+// feed-generation time), so consecutive refreshes of one topic arrive with a
+// different link each time. The parser strips the fragment at ingestion, so
+// the drift must neither insert a second row nor re-trigger the processing
+// chain, and the stored link is the stripped base URL.
+func TestRefreshFeedDedupesByBaseLinkWhenFragmentDrifts(t *testing.T) {
+	setupFeedsTestDB(t)
+
+	body := rssItemBody("V2EX", "同主题", "https://example.com/t/1#reply2", "desc")
+	server := startSwitchableRSSServer(t, &body)
+
+	feed := models.Feed{Title: "V2EX", URL: server.URL, MaxArticles: 10, FirecrawlEnabled: true}
+	if err := database.DB.Create(&feed).Error; err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+
+	service := newDedupeTestService(t)
+	if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	// Replies arrived: the feed now advertises the same topic under a new
+	// anchor. Title + description unchanged → the stored row is a no-op hit.
+	body = rssItemBody("V2EX", "同主题", "https://example.com/t/1#reply9", "desc")
+	if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+
+	var articles []models.Article
+	if err := database.DB.Where("feed_id = ?", feed.ID).Find(&articles).Error; err != nil {
+		t.Fatalf("load articles: %v", err)
+	}
+	if len(articles) != 1 {
+		t.Fatalf("article rows = %d, want 1 (fragment drift must not re-insert)", len(articles))
+	}
+	if articles[0].Link != "https://example.com/t/1" {
+		t.Fatalf("stored link = %q, want stripped base %q", articles[0].Link, "https://example.com/t/1")
+	}
+	// The second (drifted) entry hit the existing row via the fragment-free
+	// link, so no second firecrawl job may have been enqueued for the topic.
+	var firecrawlJobs int64
+	database.DB.Model(&models.FirecrawlJob{}).Where("article_id = ?", articles[0].ID).Count(&firecrawlJobs)
+	if firecrawlJobs != 1 {
+		t.Fatalf("firecrawl jobs = %d, want 1 (drift entry must ride the existing row)", firecrawlJobs)
+	}
+}
+
 // TestRefreshFeedDedupesByLinkWithinFeed covers spec scenario "快讯同 link 改标题
 // 不产生新文章": a live-news feed rolling the title under one URL must not
 // produce a second article row — the stored row is refreshed instead.

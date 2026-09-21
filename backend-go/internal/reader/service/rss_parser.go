@@ -15,6 +15,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/httpclient"
+	"syntopica-backend/internal/platform/textutil"
 )
 
 type RSSParser struct {
@@ -117,8 +118,11 @@ func (p *RSSParser) convertGofeedToParsed(feed *gofeed.Feed) *ParsedFeed {
 
 	for _, item := range feed.Items {
 		entry := ParsedEntry{
-			Title:       item.Title,
-			Link:        item.Link,
+			Title: item.Title,
+			// Strip drifting #fragment anchors (V2EX appends #replyN = reply
+			// count at feed-generation time) so the (feed_id, link) dedupe
+			// compares stable URLs; #! hashbang fragments stay (SPA routing).
+			Link:        textutil.StripURLFragment(item.Link),
 			Description: item.Description,
 			Content:     extractContent(item),
 			PubDate:     parseDate(item),
