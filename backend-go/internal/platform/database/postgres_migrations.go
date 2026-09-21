@@ -2396,7 +2396,9 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, dedupeRSSArticlesMigration())
 	migrations = append(migrations, laneSnapshotFKMigration())
 	migrations = append(migrations, healDanglingArticleRefsMigration())
-	return append(migrations, queueRetentionIndexMigration(), normalizeArticleLinkFragmentsMigration())
+	migrations = append(migrations, queueRetentionIndexMigration())
+	migrations = append(migrations, completionOnRefreshOffMigration())
+	return append(migrations, normalizeArticleLinkFragmentsMigration())
 }
 
 // normalizeArticleLinkFragmentsMigration implements 20260920_0001 (v2ex link
@@ -3242,6 +3244,43 @@ func laneSnapshotFKMigration() Migration {
 				return nil
 			}); err != nil {
 				return err
+			}
+			return nil
+		},
+	}
+}
+
+// completionOnRefreshOffMigration implements 20260920_0002
+// (unify-feed-summary-toggles):
+// ①存量 feed 的 completion_on_refresh 全部置 false——历史遗产 24/24 全 true，
+// 且该字段从死字段变为真正生效的"刷新后自动总结"闸门，置 false 后自动总结
+// 静默关闭（想恢复的逐 feed 手动打开）；②冻结存量自动路径积压标记
+// pending/incomplete → complete——闸门关后这些文章不会再被调度扫描捞起，
+// 重置为 complete 避免 overview 待处理计数虚高。failed 保留以维持失败
+// 可观测性（迁移后不会再被扫描捞起，无需重置）。幂等：两条 UPDATE 的 WHERE
+// 条件在第二次执行时均命中 0 行。
+func completionOnRefreshOffMigration() Migration {
+	return Migration{
+		Version:     "20260920_0002",
+		Description: "unify-feed-summary-toggles: set all feeds completion_on_refresh=false and freeze legacy pending/incomplete summary_status to complete.",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "feeds") {
+				return nil
+			}
+			if err := db.Exec(`
+				UPDATE feeds SET completion_on_refresh = false
+				WHERE completion_on_refresh = true
+			`).Error; err != nil {
+				return fmt.Errorf("reset feeds.completion_on_refresh: %w", err)
+			}
+			if !tableExists(db, "articles") {
+				return nil
+			}
+			if err := db.Exec(`
+				UPDATE articles SET summary_status = 'complete'
+				WHERE summary_status IN ('pending', 'incomplete')
+			`).Error; err != nil {
+				return fmt.Errorf("freeze legacy pending/incomplete summary_status: %w", err)
 			}
 			return nil
 		},

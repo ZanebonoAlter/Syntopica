@@ -192,7 +192,7 @@ func processFirecrawlJob(
 		// 抓取彻底失败（已达重试上限）：降级用 RSS description 继续，避免标签/
 		// AI 摘要因 firecrawl 失败被永久阻塞。
 		if terminal {
-			if feed.ArticleSummaryEnabled {
+			if feed.ArticleSummaryEnabled && feed.CompletionOnRefresh {
 				repository.Repo.DB().Model(&art).Update("summary_status", "incomplete")
 			}
 			if feed.TaggingEnabled {
@@ -223,7 +223,7 @@ func processFirecrawlJob(
 	if art.ImageURL == "" && result.OGImage != "" {
 		updates["image_url"] = result.OGImage
 	}
-	if feed.ArticleSummaryEnabled {
+	if feed.ArticleSummaryEnabled && feed.CompletionOnRefresh {
 		updates["summary_status"] = "incomplete"
 	}
 	repository.Repo.DB().Model(&art).Updates(updates)

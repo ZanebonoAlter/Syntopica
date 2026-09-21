@@ -491,3 +491,73 @@ func TestCompleteArticle_FirecrawlFailedFallsBackToDescription(t *testing.T) {
 		t.Fatal("expected AI content summary to be populated from description fallback")
 	}
 }
+
+// Gate semantics (unify-feed-summary-toggles): the scan side must only pick
+// up articles from feeds with BOTH article_summary_enabled and
+// completion_on_refresh on. BS-1/BS-2/BS-3.
+func TestListReadyArticlesRespectsCompletionGate(t *testing.T) {
+	setupServicesTestDB(t)
+
+	seed := func(name string, summaryEnabled, gateOn bool, summaryStatus string) models.Article {
+		t.Helper()
+		feed := models.Feed{
+			Title: name, URL: "https://example.com/" + name,
+			ArticleSummaryEnabled: summaryEnabled,
+			CompletionOnRefresh:   gateOn,
+		}
+		if err := database.DB.Create(&feed).Error; err != nil {
+			t.Fatalf("create feed %s: %v", name, err)
+		}
+		article := models.Article{
+			FeedID: feed.ID, Title: "art-" + name,
+			Link:            "https://example.com/" + name + "/a",
+			FirecrawlStatus: "completed",
+			SummaryStatus:   summaryStatus,
+		}
+		if err := database.DB.Create(&article).Error; err != nil {
+			t.Fatalf("create article %s: %v", name, err)
+		}
+		return article
+	}
+
+	// BS-1: both toggles on → picked up.
+	want := seed("both-on", true, true, "incomplete")
+	// BS-2: main on, gate off → legacy backlog stays unconsumed.
+	seed("gate-off", true, false, "incomplete")
+	// BS-3: main off, gate on → not picked up.
+	seed("main-off", false, true, "incomplete")
+
+	service := NewContentCompletionService()
+	articles, err := service.ListReadyArticles(10)
+	if err != nil {
+		t.Fatalf("ListReadyArticles: %v", err)
+	}
+	if len(articles) != 1 {
+		t.Fatalf("picked %d articles, want 1 (only both-on feed)", len(articles))
+	}
+	if articles[0].ID != want.ID {
+		t.Fatalf("picked article %d, want %d (both-on feed)", articles[0].ID, want.ID)
+	}
+
+	// BS-1 regression: with all gates on, pending backlog is picked up too.
+	var pendingFeed models.Feed
+	if err := database.DB.Where("title = ?", "both-on").First(&pendingFeed).Error; err != nil {
+		t.Fatalf("load feed: %v", err)
+	}
+	pending := models.Article{
+		FeedID: pendingFeed.ID, Title: "art-both-on-pending",
+		Link:            "https://example.com/both-on/b",
+		FirecrawlStatus: "completed",
+		SummaryStatus:   "pending",
+	}
+	if err := database.DB.Create(&pending).Error; err != nil {
+		t.Fatalf("create pending article: %v", err)
+	}
+	articles, err = service.ListReadyArticles(10)
+	if err != nil {
+		t.Fatalf("ListReadyArticles (pending): %v", err)
+	}
+	if len(articles) != 2 {
+		t.Fatalf("picked %d articles, want 2 (incomplete + pending of both-on feed)", len(articles))
+	}
+}

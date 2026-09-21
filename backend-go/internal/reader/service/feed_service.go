@@ -326,10 +326,10 @@ func (s *FeedService) buildArticleFromEntry(feed models.Feed, entry ParsedEntry)
 
 	if feed.FirecrawlEnabled {
 		article.FirecrawlStatus = "pending"
-		if feed.ArticleSummaryEnabled {
+		if feed.ArticleSummaryEnabled && feed.CompletionOnRefresh {
 			article.SummaryStatus = "incomplete"
 		}
-	} else if feed.ArticleSummaryEnabled {
+	} else if feed.ArticleSummaryEnabled && feed.CompletionOnRefresh {
 		article.SummaryStatus = "pending"
 	}
 

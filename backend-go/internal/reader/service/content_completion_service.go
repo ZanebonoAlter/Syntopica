@@ -221,6 +221,7 @@ func (s *ContentCompletionService) ListReadyArticles(limit int) ([]models.Articl
 		Joins("JOIN feeds ON feeds.id = articles.feed_id").
 		Where("articles.firecrawl_status IN ?", []string{"completed", "failed"}).
 		Where("feeds.article_summary_enabled = ?", true).
+		Where("feeds.completion_on_refresh = ?", true).
 		Where("articles.summary_status = ? OR (articles.summary_status = ? AND (articles.summary_processing_started_at IS NULL OR articles.summary_processing_started_at <= ?))", "incomplete", "pending", staleBefore).
 		Omit("tag_count", "relevance_score").
 		Preload("Feed")

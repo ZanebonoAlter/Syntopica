@@ -41,7 +41,7 @@ Feed refresh
   -> firecrawl_status = pending            (if feed.firecrawl_enabled)
   -> Firecrawl scheduler 抓全文
   -> firecrawl_status = completed
-  -> summary_status = incomplete           (if feed.article_summary_enabled)
+  -> summary_status = incomplete           (if feed.article_summary_enabled && feed.completion_on_refresh)
   -> ContentCompletion scheduler 基于 firecrawl_content 生成 ai_content_summary
   -> summary_status = complete
 ```
@@ -90,7 +90,7 @@ sequenceDiagram
 ArticleContentView
   → useFirecrawlApi.crawlArticle(articleId)  (POST /api/firecrawl/article/:id)
   → 后端执行抓取 → 写回 firecrawl_content / firecrawl_status / firecrawl_crawled_at
-  → 成功后 summary_status 设为 incomplete（触发后续补全）
+  → 成功后 summary_status 设为 incomplete（仅当 feed 双开 article_summary_enabled && completion_on_refresh；触发后续补全）
   → 再次查询 completion status → UI 更新
 ```
 
@@ -105,7 +105,7 @@ ArticleContentView
 
 ### 关键状态字段
 
-feed 级开关：`firecrawl_enabled`、`article_summary_enabled`、`tagging_enabled`、`max_completion_retries`。
+feed 级开关：`firecrawl_enabled`、`article_summary_enabled`（AI 总结主开关，含手动总结可用性）、`completion_on_refresh`（刷新后自动总结闸门，默认 false）、`tagging_enabled`、`max_completion_retries`。
 
 article 级状态：`firecrawl_status`（`pending`/`processing`/`completed`/`failed`）、`firecrawl_content`、`firecrawl_error`、`firecrawl_crawled_at`；`summary_status`（`incomplete`/`pending`/`complete`/`failed`）、`ai_content_summary`、`content_form`（`mono`/`aggregate`/空）、`completion_attempts`、`completion_error`、`summary_generated_at`、`summary_processing_started_at`。
 
@@ -124,11 +124,12 @@ article 级状态：`firecrawl_status`（`pending`/`processing`/`completed`/`fai
 9. **内容补全调度器规范名为 content_completion、兼容旧别名 ai_summary，均非 ai_summaries 表的 feed 聚合摘要**：对外规范名为 `content_completion`，仍接受旧别名 `ai_summary`；它**不是** `ai_summaries` 表里的 feed 聚合摘要。
 10. **整理稿首行形态注释必须剥离后入库：标记值存 articles.content_form，正文不得残留注释，解析失败降级 mono**：摘要 system prompt（`GetSystemPrompt("zh")`）要求模型在首行输出形态判定 HTML 注释 `<!-- form: mono|aggregate -->`（异构栏目合集 = aggregate，单主题多章节也算 mono）。入库前 `parseContentFormMark` 解析并剥离该注释行：标记值存 `articles.content_form`，剥离后正文存 `ai_content_summary`（摘要正文**不得**残留注释）；解析失败（模型未输出/非法值）时 `content_form` 落空、原文照存，下游打标降级走 mono 路径。`force` 重生成时同步清空 `content_form` 防旧值残留。存量文章（change 合并前）`content_form` 为空，不回填。
 11. **同一 feed 内文章按规范化 link 唯一（标题不参与判重；entry link 入库前先剥 URL fragment、`#!` hashbang 保留），同 link 快讯更新只能 upsert 既有行、内容未变时不得触发任何处理链**：入库唯一性键 = `(feed_id, link)`，link 在解析层先经 `textutil.StripURLFragment` 剥 URL fragment（V2EX 类源滚动刷新锚点 `#replyN`，不剥则同主题每次刷新都被判为新文章；`#!` hashbang 为 SPA 路由标识、保留），由 DB 唯一部分索引 `uq_articles_feed_link`（`WHERE link != ''`）兜底并发刷新；标题**不参与判重**（快讯源在同一 URL 下滚动改标题）。link 已命中的条目**不得插入新行**——`title` 与 `description` 均未变→直接跳过（不打标/不抓取/不生成摘要）；任一变化→ UPDATE 原地更新内容字段 + 按 `buildArticleFromEntry` 同款规则重置状态 + 清衍生字段 + 删旧标签（含 `tag_count` 重算）+ 经 `enqueueArticleProcessing` 重走链，重打标靠链条完成事件接力、不在刷新路径内联调 AI。跨 feed 同 link 各留一份（不跨 feed 归并存储），打标结果复用见 [`flow/topic-graph.md`](topic-graph.md)。
+12. **自动总结双层开关：标记侧与扫描侧均须 article_summary_enabled && completion_on_refresh 双开才进自动总结链，completion_on_refresh 默认 false，手动路径只看主开关**：`article_summary_enabled` 为能力主开关（关→无任何总结能力含手动入口），`completion_on_refresh` 为刷新后自动总结闸门（仅控自动，不影响手动）。标记侧三处（`buildArticleFromEntry` 两分支、`job_firecrawl` 抓取成功/终态失败降级两处）均要求双开才置 `summary_status=incomplete/pending`；扫描侧 `ListReadyArticles` JOIN feeds 条件含 `completion_on_refresh=true`；`blocked_article_recovery` 告警统计同步加闸门。闸门关的 feed 积压文章不被调度消费；手动触发（`POST /api/content-completion/articles/:id/complete`）与前端手动按钮只依赖主开关。存量迁移（20260920_0002，幂等）：全部 feed `completion_on_refresh` 置 false + 存量 `pending/incomplete` 冻结为 `complete`（`failed` 保留失败可观测性）；已生成整理稿不动。前端 feed 数据缺省回退一律 `?? false`，词汇表：AI 总结 / 刷新后自动总结 / 全文抓取 / AI 打标签，编辑入口收敛至 settings 深链 `/settings?feed=<id>&section=feeds`（EditFeedDialog 已删）。
 
 ## 代码入口
 
 - **后端 reader 域（正文抓取）**：`backend-go/internal/reader/service/crawler.go`（`Crawler` 接口 + 中立 `ScrapeResult`）、`readability_crawler.go`（进程内主力）、`fallback_crawler.go`（降级链）、`firecrawl_service.go`（Firecrawl 兜底）、`backend-go/internal/reader/handler/`（content_completion_handler、firecrawl handler）。
-- **后端 reader 域（内容补全）**：`backend-go/internal/reader/service/content_completion_service.go`（`CompleteArticle` / `CompleteArticleWithForce` / `claimArticleForCompletion` / `ListReadyArticles` / `GetOverview`）、`backend-go/internal/reader/service/content_form.go`（`parseContentFormMark` 形态标记解析/剥离）、`backend-go/internal/reader/service/feed_service.go`（refresh 写入初始状态位、`RefreshFeed` 的 linkSet 判重与 `refreshExistingArticle` 快讯 upsert）、`backend-go/internal/reader/routes.go`（`/content-completion/*`、`/firecrawl/*`）。
+- **后端 reader 域（内容补全）**：`backend-go/internal/reader/service/content_completion_service.go`（`CompleteArticle` / `CompleteArticleWithForce` / `claimArticleForCompletion` / `ListReadyArticles` / `GetOverview`）、`backend-go/internal/reader/service/content_form.go`（`parseContentFormMark` 形态标记解析/剥离）、`backend-go/internal/reader/service/feed_service.go`（refresh 写入初始状态位、`RefreshFeed` 的 linkSet 判重与 `refreshExistingArticle` 快讯 upsert）、`backend-go/internal/reader/service/rss_parser.go`（`convertGofeedToParsed` 内经 `textutil.StripURLFragment` 剥 entry link fragment，判重/入库/索引三方同一规范化实现）、`backend-go/internal/reader/routes.go`（`/content-completion/*`、`/firecrawl/*`）。
 - **后端调度（admin 域）**：`backend-go/internal/admin/scheduler/job_firecrawl.go`、`job_content_completion.go`、`job_blocked_article_recovery.go`。
 - **平台层**：`backend-go/internal/platform/airouter/`（补全走 `CapabilitySummary` 路由，失败回退 fallback AIService）、`backend-go/internal/platform/ws/`（进度广播）、`backend-go/internal/tagmanagement/`（补全后 enqueue tag job）。
 - **前端**：`front/app/features/articles/components/ArticleContentView.vue`、`front/app/features/articles/composables/useContentCompletion.ts`、`front/app/features/shell/components/FeedLayoutShell.vue`（feed 开关编辑）、`front/app/utils/articleContentSource.ts`（内容来源切换）、`front/app/api/`。

@@ -559,7 +559,7 @@ func TestRefreshFeedSkipsUnchangedEntry(t *testing.T) {
 	// Mark the row as if the chain had fully run.
 	markProcessed := func() {
 		if err := database.DB.Model(&models.Article{}).Where("id = ?", article.ID).Updates(map[string]interface{}{
-			"firecrawl_status": "completed",
+			"firecrawl_status":  "completed",
 			"firecrawl_content": "<p>crawled body</p>",
 		}).Error; err != nil {
 			t.Fatalf("mark processed: %v", err)
@@ -596,7 +596,7 @@ func TestRefreshFeedUpdatesChangedEntryAndClearsDerivedState(t *testing.T) {
 	body := rssItemBody("Rolling", "original headline", "https://example.com/rolling/1", "original desc")
 	server := startSwitchableRSSServer(t, &body)
 
-	feed := models.Feed{Title: "Rolling", URL: server.URL, MaxArticles: 10, FirecrawlEnabled: true, ArticleSummaryEnabled: true}
+	feed := models.Feed{Title: "Rolling", URL: server.URL, MaxArticles: 10, FirecrawlEnabled: true, ArticleSummaryEnabled: true, CompletionOnRefresh: true}
 	if err := database.DB.Create(&feed).Error; err != nil {
 		t.Fatalf("create feed: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestRefreshExistingArticleStatusMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			setupFeedsTestDB(t)
 
-			feed := models.Feed{Title: "Matrix", URL: "https://example.com/matrix", FirecrawlEnabled: tc.firecrawl, ArticleSummaryEnabled: tc.summary}
+			feed := models.Feed{Title: "Matrix", URL: "https://example.com/matrix", FirecrawlEnabled: tc.firecrawl, ArticleSummaryEnabled: tc.summary, CompletionOnRefresh: true}
 			if err := database.DB.Create(&feed).Error; err != nil {
 				t.Fatalf("create feed: %v", err)
 			}

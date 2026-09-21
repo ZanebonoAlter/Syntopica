@@ -49,6 +49,7 @@ func BlockedArticleRecoveryJob(ctx context.Context) (*JobResult, error) {
 		Joins("JOIN feeds ON feeds.id = articles.feed_id").
 		Where("articles.summary_status = ?", "incomplete").
 		Where("feeds.article_summary_enabled = ?", true).
+		Where("feeds.completion_on_refresh = ?", true).
 		Where("articles.firecrawl_status <> ?", "completed").
 		Count(&blockedCount).Error
 	if err != nil {

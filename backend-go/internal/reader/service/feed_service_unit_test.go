@@ -24,34 +24,79 @@ func TestBuildArticleFromEntryTracksOnlyRunnableStates(t *testing.T) {
 		name                  string
 		firecrawlEnabled      bool
 		articleSummaryEnabled bool
+		completionOnRefresh   bool
 		wantFirecrawlStatus   string
 		wantSummaryStatus     string
 	}{
 		{
-			name:                  "both enabled: summary incomplete, firecrawl pending",
+			// BE-1: firecrawl 路径双开 → 等全文抓取后进总结流程（旧行为不变）
+			name:                  "firecrawl both toggles on: summary incomplete",
 			firecrawlEnabled:      true,
 			articleSummaryEnabled: true,
+			completionOnRefresh:   true,
 			wantFirecrawlStatus:   "pending",
 			wantSummaryStatus:     "incomplete",
 		},
 		{
-			name:                  "summary only: summary pending, no firecrawl",
+			// BE-2: firecrawl 路径仅主开、闸门关 → 无需总结
+			name:                  "firecrawl gate off: no summary",
+			firecrawlEnabled:      true,
+			articleSummaryEnabled: true,
+			completionOnRefresh:   false,
+			wantFirecrawlStatus:   "pending",
+			wantSummaryStatus:     "complete",
+		},
+		{
+			// BE-3: firecrawl 路径主开关关 → 无总结（闸门值无关）
+			name:                  "firecrawl main off: no summary",
+			firecrawlEnabled:      true,
+			articleSummaryEnabled: false,
+			completionOnRefresh:   true,
+			wantFirecrawlStatus:   "pending",
+			wantSummaryStatus:     "complete",
+		},
+		{
+			// BE-4: 非 firecrawl 路径双开 → 直接 RSS 素材待总结（旧行为不变）
+			name:                  "summary both toggles on: summary pending",
 			firecrawlEnabled:      false,
 			articleSummaryEnabled: true,
+			completionOnRefresh:   true,
 			wantFirecrawlStatus:   "completed",
 			wantSummaryStatus:     "pending",
 		},
 		{
-			name:                  "neither enabled: both default",
+			// BE-5: 非 firecrawl 路径仅主开、闸门关 → 无需总结
+			name:                  "summary gate off: no summary",
 			firecrawlEnabled:      false,
-			articleSummaryEnabled: false,
+			articleSummaryEnabled: true,
+			completionOnRefresh:   false,
 			wantFirecrawlStatus:   "completed",
 			wantSummaryStatus:     "complete",
 		},
 		{
+			// BE-6: 非 firecrawl 路径全关 → 默认无需总结
+			name:                  "neither enabled: both default",
+			firecrawlEnabled:      false,
+			articleSummaryEnabled: false,
+			completionOnRefresh:   false,
+			wantFirecrawlStatus:   "completed",
+			wantSummaryStatus:     "complete",
+		},
+		{
+			// BE-7: 仅闸门开、主开关关 → G 不越过 S
+			name:                  "gate only without main: no summary",
+			firecrawlEnabled:      false,
+			articleSummaryEnabled: false,
+			completionOnRefresh:   true,
+			wantFirecrawlStatus:   "completed",
+			wantSummaryStatus:     "complete",
+		},
+		{
+			// BE-9: firecrawl 队列不受总结开关影响
 			name:                  "firecrawl only: summary complete, firecrawl pending",
 			firecrawlEnabled:      true,
 			articleSummaryEnabled: false,
+			completionOnRefresh:   false,
 			wantFirecrawlStatus:   "pending",
 			wantSummaryStatus:     "complete",
 		},
@@ -59,7 +104,7 @@ func TestBuildArticleFromEntryTracksOnlyRunnableStates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			feed := models.Feed{FirecrawlEnabled: tt.firecrawlEnabled, ArticleSummaryEnabled: tt.articleSummaryEnabled}
+			feed := models.Feed{FirecrawlEnabled: tt.firecrawlEnabled, ArticleSummaryEnabled: tt.articleSummaryEnabled, CompletionOnRefresh: tt.completionOnRefresh}
 			article := service.buildArticleFromEntry(feed, entry)
 			if article.FirecrawlStatus != tt.wantFirecrawlStatus {
 				t.Errorf("firecrawl status = %q, want %q", article.FirecrawlStatus, tt.wantFirecrawlStatus)

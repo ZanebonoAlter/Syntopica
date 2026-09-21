@@ -111,7 +111,6 @@ function exitReadingMode() {
 const router = useRouter()
 
 const editCategoryId = ref<string | null>(null)
-const editFeedId = ref<string | null>(null)
 
 const refreshMessage = ref('')
 const refreshMessageType = ref<'success' | 'error' | 'info'>('info')
@@ -124,9 +123,6 @@ const selectedWatchedTagId = ref<string | null>(null)
 
 const editingCategory = computed(() =>
   editCategoryId.value ? feedsStore.categories.find(c => c.id === editCategoryId.value) : null
-)
-const editingFeed = computed(() =>
-  editFeedId.value ? feedsStore.feeds.find(f => f.id === editFeedId.value) : null
 )
 
 async function fetchGlobalUnreadCount() {
@@ -527,7 +523,8 @@ function handleEditCategory(categoryId: string) {
 }
 
 function handleEditFeed(feedId: string) {
-  editFeedId.value = feedId
+  // unify-feed-summary-toggles：编辑入口统一到 settings 深链（原弹窗编辑器已移除）
+  router.push({ path: '/settings', query: { feed: feedId, section: 'feeds' } })
 }
 
 async function handleDeleteCategory(categoryId: string, categoryName: string) {
@@ -649,15 +646,6 @@ import '~/components/FeedLayout.css'
       :category="editingCategory"
       @close="editCategoryId = null"
       @updated="() => {}"
-    />
-
-    <!-- 编辑订阅源对话框 -->
-    <EditFeedDialog
-      v-if="editFeedId && editingFeed"
-      :feed="editingFeed"
-      @close="editFeedId = null"
-      @updated="() => {}"
-      @deleted="() => {}"
     />
 
     <!-- 窄屏导航抽屉（任务 2.3）：同一份 AppSidebarView 信息结构（design.md D3），

@@ -64,8 +64,8 @@
 | `refresh_status` | VARCHAR(20) | DEFAULT 'idle' | 刷新状态 |
 | `refresh_error` | TEXT | — | 刷新错误信息 |
 | `last_refresh_at` | TIMESTAMP | — | 最后刷新时间 |
-| `article_summary_enabled` | BOOLEAN | DEFAULT false | 是否启用文章级 AI 总结（依赖 Firecrawl） |
-| `completion_on_refresh` | BOOLEAN | DEFAULT true | 刷新时是否自动触发内容补全 |
+| `article_summary_enabled` | BOOLEAN | DEFAULT false | AI 总结主开关（能力层：关→无任何总结含手动入口；开→文章页可手动生成） |
+| `completion_on_refresh` | BOOLEAN | DEFAULT false | 刷新后自动总结闸门（自动层：仅控制刷新后是否自动排队总结；存量已由迁移 20260920_0002 全置 false） |
 | `max_completion_retries` | INTEGER | DEFAULT 3 | AI 总结最大重试次数 |
 | `firecrawl_enabled` | BOOLEAN | DEFAULT false | 是否启用 Firecrawl 抓取 |
 | `tagging_enabled` | BOOLEAN | DEFAULT true | 是否启用自动打标签 |

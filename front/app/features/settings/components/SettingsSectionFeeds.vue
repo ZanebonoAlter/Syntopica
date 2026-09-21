@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
+import { useRoute } from 'vue-router'
 import { useGlobalSettings } from '~/composables/useGlobalSettings'
 import { useApiStore } from '~/stores/api'
 import FeedMasterList from './FeedMasterList.vue'
@@ -28,6 +29,17 @@ const {
 
 const selectedFeedId = ref<string | undefined>()
 
+// ---- 深链定位（unify-feed-summary-toggles §4.1）----
+// ?feed=<id>&section=feeds：列表就绪后选中定位并滚动；目标不存在则忽略参数落默认视图。
+// 参数保留在本地 ref：列表加载失败重试成功后仍能定位（ui-design 受影响状态约定）。
+const route = useRoute()
+const pendingDeepLinkFeedId = ref<string | null>(null)
+
+onMounted(() => {
+  const q = route.query.feed
+  if (typeof q === 'string' && q) pendingDeepLinkFeedId.value = q
+})
+
 // 全量 feeds 与统计并行拉取，任一失败不阻塞另一个（tasks 4.5）
 onMounted(() => {
   apiStore.fetchFeeds({ per_page: 10000 })
@@ -46,6 +58,20 @@ const selectedFeed = computed(() =>
 const selectedFeedStats = computed(() =>
   selectedFeed.value ? statsByFeed.value[String(selectedFeed.value.id)] : undefined
 )
+
+// 深链 watch 需在 allFeeds 声明之后（列表就绪后定位，见上方深链说明）
+watch(allFeeds, (feeds) => {
+  const targetId = pendingDeepLinkFeedId.value
+  if (!targetId || feeds.length === 0) return
+  pendingDeepLinkFeedId.value = null
+  const target = feeds.find(f => f.id === targetId)
+  // 目标不存在（如已删除）：优雅降级——不选中、不报错，落默认视图。
+  if (!target) return
+  selectedFeedId.value = target.id
+  void nextTick(() => {
+    document.querySelector('.feed-master__item--active')?.scrollIntoView({ block: 'nearest' })
+  })
+})
 
 function onCreateCategory(name: string) {
   if (!selectedFeed.value) return

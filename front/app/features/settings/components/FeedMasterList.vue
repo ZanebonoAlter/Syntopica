@@ -207,7 +207,15 @@ function formatWindowMeta(feed: RssFeed): string | null {
               <FeedIcon :icon="feed.icon" :feed-id="feed.id" :color="feed.color" :size="16" />
             </div>
             <div class="feed-master__item-info">
-              <span class="feed-master__item-title">{{ feed.title }}</span>
+              <span class="feed-master__item-title">
+                {{ feed.title }}
+                <span
+                  v-if="feed.articleSummaryEnabled"
+                  class="feed-master__item-badge"
+                  data-testid="feed-ai-summary-badge"
+                  title="AI 总结已开启"
+                >AI 总结</span>
+              </span>
               <span class="feed-master__item-meta">
                 {{ formatWindowMeta(feed) ?? formatStatus(feed) }}
                 <template v-if="!formatWindowMeta(feed) && feed.articleCount"> · {{ feed.articleCount }} 篇</template>
@@ -461,6 +469,21 @@ function formatWindowMeta(feed: RssFeed): string | null {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 「AI 总结」标识（unify-feed-summary-toggles）：主开关开才展示，让开启状态在列表可见 */
+.feed-master__item-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  vertical-align: 1px;
+  color: var(--color-warning, #e6a23c);
+  background: rgba(230, 162, 60, 0.12);
+  border: 1px solid rgba(230, 162, 60, 0.25);
 }
 
 .feed-master__item-meta {

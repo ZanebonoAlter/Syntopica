@@ -22,7 +22,7 @@ type Feed struct {
 	LastRefreshAt   *time.Time `json:"last_refresh_at"`
 
 	ArticleSummaryEnabled bool      `gorm:"default:false" json:"article_summary_enabled"`
-	CompletionOnRefresh   bool      `gorm:"default:true" json:"completion_on_refresh"`
+	CompletionOnRefresh   bool      `gorm:"default:false" json:"completion_on_refresh"`
 	MaxCompletionRetries  int       `gorm:"default:3" json:"max_completion_retries"`
 	FirecrawlEnabled      bool      `gorm:"default:false" json:"firecrawl_enabled"`
 	TaggingEnabled        bool      `gorm:"default:true" json:"tagging_enabled"`

@@ -451,16 +451,6 @@ func (r *ReaderRepository) SaveArticle(article *models.Article) error {
 	return r.db.Save(article).Error
 }
 
-func (r *ReaderRepository) ListArticlesIncomplete(limit int) ([]models.Article, error) {
-	var articles []models.Article
-	err := r.db.Omit("ContentText", "ContentHTML", "ContentPlain", "SummaryText").
-		Where("feed_id IN (SELECT id FROM feeds WHERE article_summary_enabled = true AND firecrawl_enabled = false)").
-		Where("summary_status IN ?", []string{"pending", ""}).
-		Limit(limit).
-		Find(&articles).Error
-	return articles, err
-}
-
 func (r *ReaderRepository) CountPendingArticles() (int64, error) {
 	var count int64
 	err := r.db.Model(&models.Article{}).
@@ -468,26 +458,6 @@ func (r *ReaderRepository) CountPendingArticles() (int64, error) {
 		Where("read = false").
 		Count(&count).Error
 	return count, err
-}
-
-func (r *ReaderRepository) ListArticlesForCompletion(batchQuery ItemQuery, limit int) ([]models.Article, int64, error) {
-	// Used by content completion service
-	query := r.db.Joins("JOIN feeds ON feeds.id = articles.feed_id").
-		Where("feeds.article_summary_enabled = true AND feeds.completion_on_refresh = true AND feeds.firecrawl_enabled = false").
-		Where("articles.summary_status IN ('', 'pending', 'failed')").
-		Where("feeds.max_completion_retries > articles.summary_fail_count").
-		Where("(articles.summary_last_attempt IS NULL OR articles.summary_last_attempt < ?)", batchQuery.CutoffTime).
-		Omit("ContentText", "ContentHTML", "ContentPlain", "SummaryText").
-		Preload("Feed")
-
-	var count int64
-	if err := query.Count(&count).Error; err != nil {
-		return nil, 0, err
-	}
-
-	var articles []models.Article
-	err := query.Limit(limit).Order("articles.summary_last_attempt ASC").Find(&articles).Error
-	return articles, count, err
 }
 
 // ============================================================================
@@ -555,8 +525,4 @@ func (r *ReaderRepository) ListUncategorizedFeeds() ([]models.Feed, error) {
 type FeedFilter struct {
 	CategoryID    int
 	Uncategorized bool
-}
-
-type ItemQuery struct {
-	CutoffTime string
 }

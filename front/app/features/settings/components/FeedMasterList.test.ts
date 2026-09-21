@@ -326,3 +326,35 @@ describe('FeedMasterList ↔ FeedSourceQualityBlock 窗口双向同步（B6-14�
     expect(block.find('.fsq-seg-btn--on').attributes('data-window')).toBe('7')
   })
 })
+
+describe('FeedMasterList — AI 总结标识（unify-feed-summary-toggles FE-6/FE-7）', () => {
+  it('FE-6: articleSummaryEnabled=true 的 feed 展示「AI 总结」标识', () => {
+    const withSummary = feed('f1', '开总结的源')
+    withSummary.articleSummaryEnabled = true
+    const off = feed('f2', '没开的源')
+    off.articleSummaryEnabled = false
+
+    const wrapper = mountList({
+      feedsByCategory: { 测试: [withSummary, off] },
+    })
+
+    const badges = wrapper.findAll('[data-testid="feed-ai-summary-badge"]')
+    expect(badges).toHaveLength(1)
+    expect(badges[0]!.text()).toBe('AI 总结')
+    // 标识挂在开总结源的那一行
+    const row = badges[0]!.element.closest('.feed-master__item')
+    expect(row?.querySelector('.feed-master__item-title')?.textContent).toContain('开总结的源')
+  })
+
+  it('FE-7: articleSummaryEnabled=false / 缺省的 feed 不展示标识', () => {
+    const off = feed('f1', '显式关')
+    off.articleSummaryEnabled = false
+    const missing = feed('f2', '字段缺省')
+
+    const wrapper = mountList({
+      feedsByCategory: { 测试: [off, missing] },
+    })
+
+    expect(wrapper.findAll('[data-testid="feed-ai-summary-badge"]')).toHaveLength(0)
+  })
+})
