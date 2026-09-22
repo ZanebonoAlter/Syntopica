@@ -16,6 +16,12 @@ export interface LaneSnapshot {
   summary: string
   /** 汇总截止日（= 最近一份已完成报告期，YYYY-MM-DD）。 */
   as_of: string
+  /**
+   * ≤500 字长版叙述全文（lane-trend-overview design §D3）。
+   * undefined/null = 长版缺失（存量快照或生成失败降级），趋势区回退短版并明示提示；
+   * 非空 = 长版全文，趋势区完整展示不截断。与 snapshot=null（快照整体缺失）两级可区分。
+   */
+  detail?: string | null
 }
 
 /** 时间线单日内的一个锚定 section（事件源）。 */

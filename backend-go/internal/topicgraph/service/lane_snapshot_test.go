@@ -80,9 +80,9 @@ func seedLaneSnapshotReport(t *testing.T, db *gorm.DB, boardID uint, date time.T
 func seedLaneSnapshotSection(t *testing.T, db *gorm.DB, reportID, topicID uint, label string, threadTitles ...string) {
 	t.Helper()
 	sec := repository.DailyReportSection{
-		ReportID:         reportID,
-		ClusterLabel:     label,
-		Embedding:        repository.FloatsToPgVector([]float64{0}),
+		ReportID:          reportID,
+		ClusterLabel:      label,
+		Embedding:         repository.FloatsToPgVector([]float64{0}),
 		PersistentTopicID: &topicID,
 	}
 	require.NoError(t, db.Create(&sec).Error)
@@ -112,7 +112,7 @@ func seedLaneSnapshotTopic(t *testing.T, db *gorm.DB, boardID uint, label string
 }
 
 // 素材拼接形状（tasks 1.2）：日期｜section 标题｜前 3 条 thread 标题
-//（渲染层自带 ≤3 截断，超出的第 4 条不进 prompt）；无线索标题的行省略
+// （渲染层自带 ≤3 截断，超出的第 4 条不进 prompt）；无线索标题的行省略
 // 第三段。（repository 层的同型截断另由 PG 素材测试验证。）
 func TestBuildLaneSnapshotUserPrompt_MaterialShape(t *testing.T) {
 	day := repository.NormalizeReportDate(time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC))
@@ -315,4 +315,300 @@ func TestSettleBoardLaneSnapshots_LLMFailureContinuesSiblings(t *testing.T) {
 	require.NoError(t, db.Find(&snaps).Error)
 	require.Len(t, snaps, 1)
 	assert.Equal(t, topicB.ID, snaps[0].PersistentTopicID, "失败泳道无快照，成功泳道照常结算")
+}
+
+// ── 泳道态势两版生成（lane-trend-overview design D1，test-cases SN-1~SN-10）──
+// 以下用例共同前置：单泳道/双泳道 + 一份窗口内报告；响应由 recorder 脚本化。
+
+// SN-1: 合法 JSON 两版 → 分别入库，as_of=anchor。
+func TestSettleLaneSnapshot_TwoVersionJSONUpsert(t *testing.T) {
+	db := laneSnapshotTestDB(t)
+	const boardID = uint(7)
+	now := time.Now()
+	reportID := seedLaneSnapshotReport(t, db, boardID, now)
+	topic := seedLaneSnapshotTopic(t, db, boardID, "两版话题", now)
+	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
+
+	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
+		return `{"summary":"局势平稳推进。","detail":"过去两周该话题持续有新进展，多方参与度上升，节奏未见放缓。"}`, nil
+	}})
+
+	settleBoardLaneSnapshots(context.Background(), boardID)
+
+	var snaps []repository.TopicLaneSnapshot
+	require.NoError(t, db.Find(&snaps).Error)
+	require.Len(t, snaps, 1)
+	assert.Equal(t, "局势平稳推进。", snaps[0].RollingSummary)
+	assert.Equal(t, "过去两周该话题持续有新进展，多方参与度上升，节奏未见放缓。", snaps[0].RollingDetail)
+	assert.Equal(t, repository.NormalizeReportDate(now), repository.NormalizeReportDate(snaps[0].AsOfDate), "as_of=anchor")
+}
+
+// SN-2: summary 超 100 rune / detail 超 600 rune → 各自 rune 安全截断，互不影响。
+func TestSettleLaneSnapshot_ClampBothVersionsIndependent(t *testing.T) {
+	db := laneSnapshotTestDB(t)
+	const boardID = uint(8)
+	now := time.Now()
+	reportID := seedLaneSnapshotReport(t, db, boardID, now)
+	topic := seedLaneSnapshotTopic(t, db, boardID, "超长话题", now)
+	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
+
+	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
+		return `{"summary":"` + strings.Repeat("短", 120) + `","detail":"` + strings.Repeat("长", 600) + `"}`, nil
+	}})
+
+	settleBoardLaneSnapshots(context.Background(), boardID)
+
+	var snaps []repository.TopicLaneSnapshot
+	require.NoError(t, db.Find(&snaps).Error)
+	require.Len(t, snaps, 1)
+	assert.Equal(t, strings.Repeat("短", 100), snaps[0].RollingSummary, "短版独立截 100")
+	assert.Equal(t, strings.Repeat("长", 500), snaps[0].RollingDetail, "长版独立截 500，不受短版截断影响")
+}
+
+// SN-3: detail 恰 500 rune 边界 → 不截断，原样入库。
+func TestSettleLaneSnapshot_DetailExactBoundary(t *testing.T) {
+	db := laneSnapshotTestDB(t)
+	const boardID = uint(9)
+	now := time.Now()
+	reportID := seedLaneSnapshotReport(t, db, boardID, now)
+	topic := seedLaneSnapshotTopic(t, db, boardID, "边界话题", now)
+	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
+
+	detail := strings.Repeat("边", 500)
+	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
+		return `{"summary":"短版。","detail":"` + detail + `"}`, nil
+	}})
+
+	settleBoardLaneSnapshots(context.Background(), boardID)
+
+	var snaps []repository.TopicLaneSnapshot
+	require.NoError(t, db.Find(&snaps).Error)
+	require.Len(t, snaps, 1)
+	assert.Equal(t, detail, snaps[0].RollingDetail, "恰 500 rune 不截断")
+}
+
+// SN-4: 非 JSON 纯文本 → 降级：整段截 100 作短版、长版空串；upsert 照常
+// （不算失败，下个日报日自愈）。
+func TestSettleLaneSnapshot_NonJSONDegrades(t *testing.T) {
+	db := laneSnapshotTestDB(t)
+	const boardID = uint(10)
+	now := time.Now()
+	reportID := seedLaneSnapshotReport(t, db, boardID, now)
+	topic := seedLaneSnapshotTopic(t, db, boardID, "纯文本话题", now)
+	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
+
+	raw := strings.Repeat("这段输出完全不是JSON格式。", 10) // 130 runes > 100
+	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
+		return raw, nil
+	}})
+
+	settleBoardLaneSnapshots(context.Background(), boardID) // 不得因降级而中断
+
+	var snaps []repository.TopicLaneSnapshot
+	require.NoError(t, db.Find(&snaps).Error)
+	require.Len(t, snaps, 1, "降级不算失败，upsert 照常")
+	assert.Equal(t, truncateRunes(raw, 100), snaps[0].RollingSummary, "短版=整段截 100")
+	assert.Empty(t, snaps[0].RollingDetail, "长版置空")
+}
+
+// SN-5: JSON 合法但 detail 缺失/空串 → summary 正常入库、长版空；不算失败。
+func TestSettleLaneSnapshot_MissingDetailNotFailure(t *testing.T) {
+	db := laneSnapshotTestDB(t)
+	const boardID = uint(11)
+	now := time.Now()
+	reportID := seedLaneSnapshotReport(t, db, boardID, now)
+	topic := seedLaneSnapshotTopic(t, db, boardID, "缺长版话题", now)
+	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
+
+	responses := []string{
+		`{"summary":"缺字段短版。"}`,            // detail 键缺失
+		`{"summary":"空串短版。","detail":""}`, // detail 空串
+	}
+	call := 0
+	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
+		resp := responses[call]
+		call++
+		return resp, nil
+	}})
+
+	settleBoardLaneSnapshots(context.Background(), boardID)
+	settleBoardLaneSnapshots(context.Background(), boardID)
+	require.Equal(t, 2, call, "两轮结算都发起了调用（不算失败）")
+
+	var snaps []repository.TopicLaneSnapshot
+	require.NoError(t, db.Find(&snaps).Error)
+	require.Len(t, snaps, 1)
+	assert.Equal(t, "空串短版。", snaps[0].RollingSummary, "summary 正常入库")
+	assert.Empty(t, snaps[0].RollingDetail, "detail 缺失/空串入库为空")
+}
+
+// SN-6: JSON 合法但 summary 缺失/空、detail 有值 → 维持既有空输出守卫：整次
+// 结算按失败跳过，快照保持旧值。
+func TestSettleLaneSnapshot_MissingSummaryFailsKeepsOldSnapshot(t *testing.T) {
+	db := laneSnapshotTestDB(t)
+	const boardID = uint(12)
+	now := time.Now()
+	reportID := seedLaneSnapshotReport(t, db, boardID, now)
+	topic := seedLaneSnapshotTopic(t, db, boardID, "缺短版话题", now)
+	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
+
+	responses := []string{
+		`{"summary":"旧短版。","detail":"旧长版叙述。"}`, // 第一轮合法，落旧值
+		`{"detail":"只有长版。"}`,                   // summary 缺失 → 失败
+		`{"summary":"","detail":"只有长版。"}`,      // summary 空 → 失败
+	}
+	call := 0
+	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
+		resp := responses[call]
+		call++
+		return resp, nil
+	}})
+
+	settleBoardLaneSnapshots(context.Background(), boardID) // 落旧值
+	settleBoardLaneSnapshots(context.Background(), boardID) // summary 缺失 → 跳过
+	settleBoardLaneSnapshots(context.Background(), boardID) // summary 空 → 跳过
+	require.Equal(t, 3, call)
+
+	var snaps []repository.TopicLaneSnapshot
+	require.NoError(t, db.Find(&snaps).Error)
+	require.Len(t, snaps, 1, "失败轮次不产生新行")
+	assert.Equal(t, "旧短版。", snaps[0].RollingSummary, "快照保持旧值")
+	assert.Equal(t, "旧长版叙述。", snaps[0].RollingDetail, "快照保持旧值")
+}
+
+// SN-7: JSON 外裹 markdown code fence → 剥壳后按 SN-1 处理。
+func TestSettleLaneSnapshot_CodeFenceStripped(t *testing.T) {
+	db := laneSnapshotTestDB(t)
+	const boardID = uint(13)
+	now := time.Now()
+	reportID := seedLaneSnapshotReport(t, db, boardID, now)
+	topic := seedLaneSnapshotTopic(t, db, boardID, "围栏话题", now)
+	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
+
+	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
+		return "```json\n{\"summary\":\"围栏内短版。\",\"detail\":\"围栏内长版。\"}\n```", nil
+	}})
+
+	settleBoardLaneSnapshots(context.Background(), boardID)
+
+	var snaps []repository.TopicLaneSnapshot
+	require.NoError(t, db.Find(&snaps).Error)
+	require.Len(t, snaps, 1)
+	assert.Equal(t, "围栏内短版。", snaps[0].RollingSummary)
+	assert.Equal(t, "围栏内长版。", snaps[0].RollingDetail)
+}
+
+// SN-8: LLM 调用报错 → 沿既有失败路径：快照保持旧值、不阻塞兄弟泳道。
+func TestSettleLaneSnapshot_LLMErrorKeepsOldSnapshotContinuesSiblings(t *testing.T) {
+	db := laneSnapshotTestDB(t)
+	const boardID = uint(14)
+	now := time.Now()
+	reportID := seedLaneSnapshotReport(t, db, boardID, now)
+
+	topicA := seedLaneSnapshotTopic(t, db, boardID, "A报错话题", now.AddDate(0, 0, -1))
+	topicB := seedLaneSnapshotTopic(t, db, boardID, "B成功话题", now)
+	seedLaneSnapshotSection(t, db, reportID, topicA.ID, "A的节")
+	seedLaneSnapshotSection(t, db, reportID, topicB.ID, "B的节")
+
+	// A 的旧快照（含旧长版）先落库。
+	require.NoError(t, repository.Repo.UpsertLaneSnapshot(&repository.TopicLaneSnapshot{
+		PersistentTopicID: topicA.ID,
+		RollingSummary:    "A 旧短版。",
+		RollingDetail:     "A 旧长版。",
+		AsOfDate:          repository.NormalizeReportDate(now.AddDate(0, 0, -1)),
+	}))
+
+	rec := &laneChatRecorder{}
+	rec.response = func(i int) (string, error) {
+		if strings.Contains(rec.users[i], "A报错话题") {
+			return "", fmt.Errorf("provider down")
+		}
+		return `{"summary":"B 新短版。","detail":"B 新长版。"}`, nil
+	}
+	swapLaneChat(t, rec)
+
+	settleBoardLaneSnapshots(context.Background(), boardID)
+	require.Len(t, rec.users, 2, "兄弟泳道不被阻塞")
+
+	var snaps []repository.TopicLaneSnapshot
+	require.NoError(t, db.Find(&snaps).Error)
+	require.Len(t, snaps, 2)
+	byTopic := map[uint]repository.TopicLaneSnapshot{}
+	for _, s := range snaps {
+		byTopic[s.PersistentTopicID] = s
+	}
+	assert.Equal(t, "A 旧短版。", byTopic[topicA.ID].RollingSummary, "A 快照保持旧值")
+	assert.Equal(t, "A 旧长版。", byTopic[topicA.ID].RollingDetail)
+	assert.Equal(t, "B 新短版。", byTopic[topicB.ID].RollingSummary)
+	assert.Equal(t, "B 新长版。", byTopic[topicB.ID].RollingDetail)
+}
+
+// SN-9: prompt 断言：两版结构、字数约束、同事实集要求、既有纪律句；
+// maxTokens 提为包级常量且值为 768（chatFn 引用它）。
+func TestLaneSnapshotSystemPrompt_TwoVersionContractAndMaxTokens(t *testing.T) {
+	sys := laneSnapshotSystemPrompt()
+	assert.Contains(t, sys, `"summary"`)
+	assert.Contains(t, sys, `"detail"`)
+	assert.Contains(t, sys, "100字")
+	assert.Contains(t, sys, "500字")
+	assert.Contains(t, sys, "同一")
+	assert.Contains(t, sys, "成段")
+	assert.Contains(t, sys, "不得另起炉灶")
+	// 既有纪律句保留。
+	assert.Contains(t, sys, "只基于清单内列出的事实")
+	assert.Contains(t, sys, "不得编造事件、数字、情绪与因果")
+	assert.Contains(t, sys, "不做事态预测或走向判断")
+	assert.Contains(t, sys, "直接输出 JSON 本身")
+
+	assert.Equal(t, 768, laneSnapshotMaxTokens, "design D1: maxTokens 512→768")
+}
+
+// SN-10: 存量行 detail 空 → 读侧不报错（Detail=nil 语义）；下个结算周期
+// 覆盖补齐两版。
+func TestSettleLaneSnapshot_LegacyRowDetailHeals(t *testing.T) {
+	db := laneSnapshotTestDB(t)
+	const boardID = uint(15)
+	now := time.Now()
+	reportID := seedLaneSnapshotReport(t, db, boardID, now)
+	topic := seedLaneSnapshotTopic(t, db, boardID, "存量话题", now)
+	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
+
+	// 旧行：仅短版，detail 空。
+	require.NoError(t, repository.Repo.UpsertLaneSnapshot(&repository.TopicLaneSnapshot{
+		PersistentTopicID: topic.ID,
+		RollingSummary:    "旧短版。",
+		AsOfDate:          repository.NormalizeReportDate(now),
+	}))
+
+	// 读侧 1：批量加载不报错，detail 空。
+	m, err := repository.Repo.GetLaneSnapshotsByTopicIDs([]uint{topic.ID})
+	require.NoError(t, err)
+	require.Contains(t, m, topic.ID)
+	assert.Equal(t, "旧短版。", m[topic.ID].RollingSummary)
+	assert.Empty(t, m[topic.ID].RollingDetail, "存量行 detail 空")
+
+	// 读侧 2：聚合不报错，Detail=nil（长版缺失语义）。
+	resp, err := repository.Repo.GetBoardLaneDynamics(boardID, 14)
+	require.NoError(t, err)
+	require.Len(t, resp.Lanes, 1)
+	require.NotNil(t, resp.Lanes[0].Snapshot)
+	assert.Equal(t, "旧短版。", resp.Lanes[0].Snapshot.Summary)
+	assert.Nil(t, resp.Lanes[0].Snapshot.Detail)
+
+	// 下个结算周期：两版覆盖补齐。
+	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
+		return `{"summary":"新短版。","detail":"新长版叙述。"}`, nil
+	}})
+	settleBoardLaneSnapshots(context.Background(), boardID)
+
+	m2, err := repository.Repo.GetLaneSnapshotsByTopicIDs([]uint{topic.ID})
+	require.NoError(t, err)
+	assert.Equal(t, "新短版。", m2[topic.ID].RollingSummary, "短版覆盖补齐")
+	assert.Equal(t, "新长版叙述。", m2[topic.ID].RollingDetail, "长版覆盖补齐")
+
+	resp2, err := repository.Repo.GetBoardLaneDynamics(boardID, 14)
+	require.NoError(t, err)
+	require.NotNil(t, resp2.Lanes[0].Snapshot)
+	require.NotNil(t, resp2.Lanes[0].Snapshot.Detail)
+	assert.Equal(t, "新长版叙述。", *resp2.Lanes[0].Snapshot.Detail)
 }

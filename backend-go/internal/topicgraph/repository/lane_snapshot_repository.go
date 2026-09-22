@@ -149,7 +149,7 @@ func (r *TopicGraphRepository) UpsertLaneSnapshot(snap *TopicLaneSnapshot) error
 	if err := r.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "persistent_topic_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"rolling_summary", "as_of_date", "updated_at",
+			"rolling_summary", "rolling_detail", "as_of_date", "updated_at",
 		}),
 	}).Create(snap).Error; err != nil {
 		return fmt.Errorf("lane snapshot: upsert: %w", err)
@@ -216,9 +216,13 @@ type LaneDynamicsTimelineDay struct {
 
 // LaneDynamicsSnapshot is the settled rolling summary; nil on the lane means
 // "no snapshot yet" (前端「待结算」占位，时间线照常渲染 — spec).
+// Detail is the ≤500字 long-form narrative; nil means the long form is missing
+// (legacy rows / degraded generations — lane-trend-overview design D3)，与
+// 整份快照缺失（snapshot=null）两级缺失可区分；空串归一为 nil。
 type LaneDynamicsSnapshot struct {
-	Summary string `json:"summary"`
-	AsOf    string `json:"as_of"` // YYYY-MM-DD
+	Summary string  `json:"summary"`
+	AsOf    string  `json:"as_of"`            // YYYY-MM-DD
+	Detail  *string `json:"detail,omitempty"` // 长版全文；nil=长版缺失（存量/降级）
 }
 
 // LaneDynamicsLane is one lane card's full data.
@@ -423,6 +427,12 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 			lane.Snapshot = &LaneDynamicsSnapshot{
 				Summary: snap.RollingSummary,
 				AsOf:    NormalizeReportDate(snap.AsOfDate).Format("2006-01-02"),
+			}
+			// 非空串才携带长版（空串归一 nil = 长版缺失，design D3）。拷贝到局部
+			// 变量再取址，避免 range/map 变量逃逸陷阱。
+			if snap.RollingDetail != "" {
+				detail := snap.RollingDetail
+				lane.Snapshot.Detail = &detail
 			}
 		}
 		// Timeline renders newest-first (user-facing contract: latest day on

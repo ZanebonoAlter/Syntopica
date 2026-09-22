@@ -9,6 +9,8 @@ import type {
 } from '~/api/dailyReports'
 import type { QualityZone, RequestCacheEntry } from './dailyReportMagazine'
 import type { TopicLifelineData } from '~/features/tags/composables/useDailyReportReader'
+import type { LaneDynamicsResponse } from '~/api/laneDynamics'
+import type { ContextRow } from '~/api/boardEnrichment'
 
 // Icon stub — keeps the suite offline (no iconify CDN fetch in happy-dom).
 vi.mock('@iconify/vue', () => ({
@@ -25,6 +27,8 @@ const stubs = {
   SectionTierBadge: { name: 'SectionTierBadge', template: '<span class="tier-stub" />' },
   SectionAnchorBadge: { name: 'SectionAnchorBadge', template: '<span class="anchor-stub" />' },
   SectionQualityExplore: { name: 'SectionQualityExplore', template: '<span class="explore-stub" />' },
+  // LaneTrendOverview 故意不 stub：本机环境 VTU stubs 不生效（域外预存），
+  // 统一按真实子组件断言（findComponent + 真实 testid），对环境修复前后行为一致。
 }
 
 function makeThread(id: number, over: Partial<DailyReportThread> = {}): DailyReportThread {
@@ -80,6 +84,10 @@ function mountSection(over: {
   lifelineEntries?: Map<number, RequestCacheEntry<TopicLifelineData>>
   articleEntries?: Map<number, { status: 'success'; data: { title: string } }>
   reportDetails?: Map<number, DailyReport>
+  laneDynamicsEntry?: RequestCacheEntry<LaneDynamicsResponse>
+  contextEntries?: Map<string, RequestCacheEntry<ContextRow[]>>
+  onEnsureLaneDynamics?: (retry?: boolean) => void
+  onEnsureContext?: (topicId: number, granularity: 'month' | 'year', retry?: boolean) => void
 } = {}) {
   return mount(DailyReportTopicSection, {
     props: {
@@ -88,6 +96,10 @@ function mountSection(over: {
       lifelineEntries: over.lifelineEntries ?? new Map(),
       articleEntries: over.articleEntries ?? new Map(),
       reportDetails: over.reportDetails ?? new Map(),
+      laneDynamicsEntry: over.laneDynamicsEntry ?? { status: 'idle' },
+      contextEntries: over.contextEntries ?? new Map(),
+      ...(over.onEnsureLaneDynamics ? { onEnsureLaneDynamics: over.onEnsureLaneDynamics } : {}),
+      ...(over.onEnsureContext ? { onEnsureContext: over.onEnsureContext } : {}),
     },
     global: { stubs },
   })
@@ -389,5 +401,69 @@ describe('DailyReportTopicSection — thread-fit soft-degrade (history loop)', (
     const hint = wrapper.find('.drm-history__section .drm-thread__hint')
     expect(hint.exists()).toBe(true)
     expect(hint.text()).toContain('2')
+  })
+})
+
+describe('DailyReportTopicSection — 泳道趋势区挂载（lane-trend-overview）', () => {
+  it('FD-16: active 话题泳道展开时，趋势区渲染于当日明细与节点图之前，props 传递正确', () => {
+    const wrapper = mountSection()
+    const body = wrapper.find('.drm-topic__body')
+    expect(body.exists()).toBe(true)
+
+    // 真实子组件断言（VTU stubs 本机不生效，findComponent 对真实/改名组件均可靠）
+    const trend = wrapper.find('[data-testid="lane-trend-overview"]')
+    expect(trend.exists()).toBe(true)
+
+    // DOM 顺序：趋势区第 1 → 当日 section 明细第 2 → 节点图（MiniLifeline）第 3
+    const nodes = Array.from(body.element.children)
+    expect(nodes[0]).toBe(trend.element)
+    const sectionsIndex = nodes.findIndex(node => node.classList.contains('drm-topic__sections'))
+    const lifelineElement = wrapper.findComponent({ name: 'DailyReportMiniLifeline' }).element
+    const lifelineIndex = nodes.indexOf(lifelineElement)
+    expect(sectionsIndex).toBeGreaterThan(0)
+    expect(lifelineIndex).toBeGreaterThan(sectionsIndex)
+
+    const trendComponent = wrapper.findComponent({ name: 'LaneTrendOverview' })
+    expect(trendComponent.props('topicId')).toBe(5)
+    expect(trendComponent.props('topicColor')).toBe('#b44f45')
+    // laneDynamicsEntry idle → 泳道未命中聚合数据
+    expect(trendComponent.props('lane')).toBeNull()
+  })
+
+  it('FD-16: 泳道展开信号上抛 ensureLaneDynamics，切档信号带 topicId 上抛', async () => {
+    const onEnsureLaneDynamics = vi.fn()
+    const onEnsureContext = vi.fn()
+    const wrapper = mountSection({ onEnsureLaneDynamics, onEnsureContext })
+
+    // 首个泳道自动展开即发取数信号（无 retry 参数）
+    expect(onEnsureLaneDynamics).toHaveBeenCalledTimes(1)
+
+    // 趋势区切月档 → ensureContext(topicId, 'month') 上抛
+    const trend = wrapper.findComponent({ name: 'LaneTrendOverview' })
+    trend.vm.$emit('ensureContext', 'month')
+    await nextTick()
+    expect(onEnsureContext).toHaveBeenCalledWith(5, 'month', undefined)
+  })
+
+  it('FD-13: briefs zone 泳道展开也不渲染趋势区，既有内容完整', async () => {
+    const wrapper = mountSection({ zone: briefsZone([makeSection(100, [makeThread(1)])]) })
+    expect(wrapper.find('[data-testid="lane-trend-overview"]').exists()).toBe(false)
+
+    await wrapper.find('.drm-topic__header').trigger('click')
+    expect(wrapper.find('.drm-topic__body').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="lane-trend-overview"]').exists()).toBe(false)
+    expect(wrapper.find('.drm-section-card').exists()).toBe(true)
+  })
+
+  it('FD-13: 无话题 id 的分组不渲染趋势区（也未挂节点图）', () => {
+    const wrapper = mountSection({
+      zone: activeZone([makeSection(100, [makeThread(1)], { persistent_topic: undefined })]),
+    })
+    // 首组自动展开，但无 topicId → 无趋势区
+    expect(wrapper.find('.drm-topic__body').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="lane-trend-overview"]').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'DailyReportMiniLifeline' }).exists()).toBe(false)
+    // 当日明细照常
+    expect(wrapper.find('.drm-section-card').exists()).toBe(true)
   })
 })

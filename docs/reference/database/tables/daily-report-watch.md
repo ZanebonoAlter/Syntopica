@@ -3,7 +3,7 @@
 > 真相源 = 代码（GORM struct + `postgres_migrations.go`），本文件是投影。全局约定（FK 真相 / 向量维度 / 枚举 / 唯一与 CHECK 约束）见 [_conventions.md](_conventions.md)；完整表清单与导航见 [_index.md](../_index.md)。
 
 
-> 本域 7 张表由 `internal/topicgraph` 的 `RegisterModels` 注册（`init()`），部署若未引入该包则表不存在；迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
+> 本域 8 张表由 `internal/topicgraph` 的 `RegisterModels` 注册（`init()`），部署若未引入该包则表不存在；迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
 
 ### 9.1 board_daily_reports（板块日报主表）
 
@@ -162,6 +162,21 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 
 ---
 
+### 9.8 topic_lane_snapshots（泳道滚动态势快照）
+
+每活跃泳道一行的滚动 14 天态势快照（每日日报生成后异步结算，upsert 覆盖；纯派生缓存，可随时重建）。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | SERIAL | PK | 主键 |
+| `persistent_topic_id` | INTEGER | NOT NULL; UNIQUE `idx_topic_lane_snapshots_topic`; **FK** `persistent_topic_id → board_persistent_topics(id) ON DELETE CASCADE`（迁移 `20260910_0001`） | 所属持久话题（泳道） |
+| `rolling_summary` | TEXT | NOT NULL | ≤100 字短版态势句 |
+| `rolling_detail` | TEXT | 可空（模型层空串=缺失） | ≤500 字长版成段叙述，与短版同窗同素材同一次结算生成；纯派生缓存——每日报结算 upsert 覆盖，无迁移动作（AutoMigrate 加列）；存量旧行空=合法，下个结算周期自愈补齐、不回填 |
+| `as_of_date` | DATE | NOT NULL | 汇总截止（=最新报告期） |
+| `created_at` / `updated_at` | TIMESTAMP | — | 创建 / 更新时间 |
+
+---
+
 
 ## 索引
 
@@ -244,6 +259,7 @@ erDiagram
     topic_lane_snapshots {
         SERIAL id PK
         VARCHAR rolling_summary "≤100字态势句"
+        TEXT rolling_detail "≤500字长版叙述；空=缺失（存量/生成失败）"
         DATE as_of_date "汇总截止=最新报告期"
     }
     topic_watch_hits {

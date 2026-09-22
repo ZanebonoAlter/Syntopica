@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/jsonutil"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/topicgraph/repository"
 )
@@ -19,16 +21,26 @@ import (
 // 失败/panic 绝不影响日报主流程，下个日报日自愈）。
 // 素材：该泳道近 14 个报告日「日期 + section 标题 + 前 3 条 thread 标题」，
 // 窗口锚定 MAX(period_date) 而非 now()（日报未跑时窗口不漂移）。
-// 产出：≤100 字中文态势句，upsert 进 topic_lane_snapshots（每泳道一行覆盖）。
+// 产出：长短两版（lane-trend-overview design D1）——≤100 字中文态势句 +
+// ≤500 字中文成段叙述（同一次调用、同一份素材），upsert 进
+// topic_lane_snapshots（每泳道一行覆盖）。解析失败降级为仅短版，不算失败，
+// 下个日报日自愈。
 
 const (
 	// laneSnapshotSettleWindowDays: 态势句素材窗口与时间线窗口同为滚动
 	// 14 天，以最近一份已完成日报为期（spec）。
 	laneSnapshotSettleWindowDays = 14
-	// laneSnapshotMaxRunes mechanically clamps the LLM output. The prompt
-	// already demands ≤100字; this guard protects the card layout from
+	// laneSnapshotMaxRunes mechanically clamps the LLM short-form output. The
+	// prompt already demands ≤100字; this guard protects the card layout from
 	// over-verbose models.
 	laneSnapshotMaxRunes = 100
+	// laneSnapshotDetailMaxRunes mechanically clamps the long-form narrative
+	// (design D1: ≤500字成段叙述, rune-safe like the short form).
+	laneSnapshotDetailMaxRunes = 500
+	// laneSnapshotMaxTokens bounds the single two-version call (design D1:
+	// 两版合计 ≤600字 + JSON 结构开销, 512→768). Package-level so tests can pin
+	// it (SN-9); the chat fn must keep referencing it.
+	laneSnapshotMaxTokens = 768
 	// laneSnapshotLaneTimeout bounds ONE lane's settlement (design D1).
 	laneSnapshotLaneTimeout = 60 * time.Second
 )
@@ -40,7 +52,7 @@ const (
 // other daily-report LLM call.
 var laneSnapshotChatFn = func(ctx context.Context, system, user string) (string, error) {
 	temperature := 0.3
-	maxTokens := 512
+	maxTokens := laneSnapshotMaxTokens
 	result, err := airouter.NewRouter().Chat(ctx, airouter.ChatRequest{
 		Operation:  "daily_report.lane_snapshot",
 		SessionID:  fmt.Sprintf("lane_snapshot_%s", uuid.NewString()[:8]),
@@ -60,9 +72,11 @@ var laneSnapshotChatFn = func(ctx context.Context, system, user string) (string,
 
 func laneSnapshotSystemPrompt() string {
 	return "你是新闻态势总结助手。给定一条话题泳道近14天的日报事实清单（每行：日期｜节标题｜线索标题），" +
-		"请用一句不超过100字的中文总结该话题这段时间的整体态势。" +
+		"请输出一个 JSON 对象，含两个字段：\"summary\" 为一句不超过100字的中文态势句；" +
+		"\"detail\" 为一段不超过500字的中文成段叙述。" +
+		"两版必须基于同一份清单事实：detail 是同一事实集的成段展开，不得另起炉灶。" +
 		"要求：只基于清单内列出的事实，不得编造事件、数字、情绪与因果；不做事态预测或走向判断；" +
-		"直接输出这一句话本身，不要任何前后缀、引号或标号。"
+		"直接输出 JSON 本身，不要任何前后缀、代码块围栏、引号或标号。"
 }
 
 // buildLaneSnapshotUserPrompt renders the material rows: one line per section,
@@ -89,7 +103,39 @@ func buildLaneSnapshotUserPrompt(label string, rows []repository.LaneMaterialRow
 }
 
 // truncateRunes is package-shared (watch_materialize_keyword.go) — rune-safe
-// clamp, reused for the ≤100字 mechanical guard.
+// clamp, reused for the ≤100字/≤500字 mechanical guards.
+
+// parseLaneSnapshotOutput applies design D1's two-version protocol to the raw
+// LLM output. Fence stripping reuses jsonutil.SanitizeLLMJSON — the same
+// tolerance every other structured daily-report output relies on (SN-7).
+// Returns (summary, detail, degraded):
+//   - JSON valid: fields trimmed; summary empty → error (既有空输出守卫, SN-6);
+//     detail empty/missing is legal (SN-5). Both clamped to their own caps,
+//     rune-safe and independent (SN-2/SN-3).
+//   - JSON broken: degrade (SN-4) — whole output clamped to 100 as summary,
+//     detail empty, degraded=true (caller warns; NOT a settlement failure —
+//     upsert proceeds, next report day heals). Degrade yielding an empty
+//     summary (pure whitespace output) still fails the guard.
+func parseLaneSnapshotOutput(content string) (summary, detail string, degraded bool, err error) {
+	cleaned := jsonutil.SanitizeLLMJSON(content)
+	var raw struct {
+		Summary string `json:"summary"`
+		Detail  string `json:"detail"`
+	}
+	if jerr := json.Unmarshal([]byte(cleaned), &raw); jerr != nil {
+		summary = truncateRunes(strings.TrimSpace(content), laneSnapshotMaxRunes)
+		if summary == "" {
+			return "", "", true, fmt.Errorf("empty llm output")
+		}
+		return summary, "", true, nil
+	}
+	summary = strings.TrimSpace(raw.Summary)
+	if summary == "" {
+		return "", "", false, fmt.Errorf("empty llm output")
+	}
+	detail = strings.TrimSpace(raw.Detail)
+	return truncateRunes(summary, laneSnapshotMaxRunes), truncateRunes(detail, laneSnapshotDetailMaxRunes), false, nil
+}
 
 // settleBoardLaneSnapshots settles the rolling snapshot for the board's
 // active lanes (design D1): serial per lane, clamp 20 by last_seen_date DESC
@@ -157,13 +203,18 @@ func settleLaneSnapshot(ctx context.Context, lane repository.BoardPersistentTopi
 	if err != nil {
 		return fmt.Errorf("llm call: %w", err)
 	}
-	summary := truncateRunes(strings.TrimSpace(content), laneSnapshotMaxRunes)
-	if summary == "" {
-		return fmt.Errorf("empty llm output")
+	summary, detail, degraded, err := parseLaneSnapshotOutput(content)
+	if err != nil {
+		return err
+	}
+	if degraded {
+		logging.Warnf("lane-snapshot: lane %d (%s) llm output not valid JSON — degraded to short form only, long form retried next report day",
+			lane.ID, lane.Label)
 	}
 	return repository.Repo.UpsertLaneSnapshot(&repository.TopicLaneSnapshot{
 		PersistentTopicID: lane.ID,
 		RollingSummary:    summary,
+		RollingDetail:     detail,
 		AsOfDate:          anchor,
 	})
 }

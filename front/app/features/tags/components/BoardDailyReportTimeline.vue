@@ -14,6 +14,7 @@ import {
   groupSectionsByTopic,
 } from './daily-report/dailyReportMagazine'
 import { useDailyReportReader } from '~/features/tags/composables/useDailyReportReader'
+import { useLaneTrendData } from '~/features/tags/composables/useLaneTrendData'
 import type { PeelDirection } from '~/composables/usePeelTransition'
 import { useTopicWatchesApi, type TopicWatchHit } from '~/api/topicWatches'
 import type { ActiveWatchSummary, DailyReportWatchHit } from '~/api/dailyReports'
@@ -45,6 +46,9 @@ const direction = ref<PeelDirection>('horizontal')
 const animating = ref(false)
 
 const reader = useDailyReportReader(toRef(props, 'boardId'))
+// 泳道趋势区取数（lane-trend-overview §D4）：板块级 lane-dynamics 页面级缓存（首个泳道展开触发、
+// 翻期不重拉）+ contexts 月/年按需缓存；均为只读，不随阅读报告日期变化（趋势=现在）。
+const { contextEntries, ensureLaneDynamics, ensureContext, getLaneDynamicsEntry } = useLaneTrendData(toRef(props, 'boardId'))
 const watchesApi = useTopicWatchesApi()
 const watchHitsByReport = ref(new Map<number, TopicWatchHit[]>())
 const focusSectionId = ref<number | null>(null)
@@ -386,8 +390,12 @@ onUnmounted(() => {
                     :lifeline-entries="reader.lifelineEntries.value"
                     :article-entries="reader.articleEntries.value"
                     :report-details="reader.detailCache.value"
+                    :lane-dynamics-entry="getLaneDynamicsEntry()"
+                    :context-entries="contextEntries"
                     :focus-section-id="focusSectionId"
                     @ensure-lifeline="reader.ensureLifeline"
+                    @ensure-lane-dynamics="ensureLaneDynamics"
+                    @ensure-context="ensureContext"
                     @ensure-articles="reader.ensureArticleTitles"
                     @retry-article="reader.retryArticle"
                     @load-historical="loadHistorical"

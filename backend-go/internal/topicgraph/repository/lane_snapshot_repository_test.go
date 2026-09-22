@@ -355,3 +355,74 @@ func TestLaneSnapshotDeleteCascades(t *testing.T) {
 	require.NoError(t, db.Model(&TopicLaneSnapshot{}).Where("persistent_topic_id = ?", other.ID).Count(&count).Error)
 	assert.EqualValues(t, 1, count, "sibling snapshot untouched")
 }
+
+// TestGetBoardLaneDynamics_SnapshotDetailLevels: 快照 detail 的两级缺失语义
+// （lane-trend-overview design D3，test-cases AG-1~AG-4）：
+// AG-1 detail 入库 → 聚合携带长版全文；
+// AG-2 存量空串 → Detail=nil（空串归一缺失）；
+// AG-3 无快照 → snapshot=null（既有语义不变）；
+// AG-4 detail=nil 与 snapshot=null 同板共存，JSON 形状可区分。
+func TestGetBoardLaneDynamics_SnapshotDetailLevels(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := time.Now()
+	reportID := seedTestReport(t, db, boardID, now)
+
+	tFull := seedLaneDynamicsTopic(t, db, boardID, "全长泳道", TopicStatusActive, 9, now)
+	tLegacy := seedLaneDynamicsTopic(t, db, boardID, "存量泳道", TopicStatusActive, 9, now)
+	tNone := seedLaneDynamicsTopic(t, db, boardID, "无快照泳道", TopicStatusActive, 9, now)
+	for _, tp := range []BoardPersistentTopic{tFull, tLegacy, tNone} {
+		s := seedTestSection(t, db, reportID, tp.Label+"-section")
+		assignSection(t, db, s, tp.ID)
+	}
+
+	detailText := "近两周该议题持续升温，多家厂商相继发声，监管层面亦有新动向。"
+	require.NoError(t, repo.UpsertLaneSnapshot(&TopicLaneSnapshot{
+		PersistentTopicID: tFull.ID,
+		RollingSummary:    "全长泳道短版。",
+		RollingDetail:     detailText,
+		AsOfDate:          NormalizeReportDate(now),
+	}))
+	// 存量行：detail 空串（旧数据只有短版）。
+	require.NoError(t, repo.UpsertLaneSnapshot(&TopicLaneSnapshot{
+		PersistentTopicID: tLegacy.ID,
+		RollingSummary:    "存量泳道仅短版。",
+		AsOfDate:          NormalizeReportDate(now),
+	}))
+
+	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
+	require.NoError(t, err)
+	require.Len(t, resp.Lanes, 3)
+
+	byTopic := make(map[uint]LaneDynamicsLane, len(resp.Lanes))
+	for _, l := range resp.Lanes {
+		byTopic[l.TopicID] = l
+	}
+
+	// AG-1: detail 入库 → 聚合响应携带长版全文。
+	lFull := byTopic[tFull.ID]
+	require.NotNil(t, lFull.Snapshot)
+	require.NotNil(t, lFull.Snapshot.Detail, "非空 detail 必须携带全文")
+	assert.Equal(t, detailText, *lFull.Snapshot.Detail)
+
+	// AG-2: 存量空串 → Detail=nil（缺失语义），短版照常。
+	lLegacy := byTopic[tLegacy.ID]
+	require.NotNil(t, lLegacy.Snapshot)
+	assert.Nil(t, lLegacy.Snapshot.Detail, "空串必须归一为 nil")
+	assert.Equal(t, "存量泳道仅短版。", lLegacy.Snapshot.Summary)
+
+	// AG-3: 无快照泳道 → snapshot=null（既有语义不变）。
+	assert.Nil(t, byTopic[tNone.ID].Snapshot)
+
+	// AG-4: 两级缺失同板共存且 JSON 形状可区分：detail=nil 被omitempty
+	// 隐去（有 snapshot 对象、无 detail 键），无快照泳道是字面 null。
+	data, err := json.Marshal(resp)
+	require.NoError(t, err)
+	payload := string(data)
+	assert.Contains(t, payload, `"summary":"存量泳道仅短版。"`, "detail=nil 泳道有 snapshot 对象")
+	assert.NotContains(t, payload, `"detail":null`, "nil detail 必须被 omitempty 隐去而非输出 null")
+	assert.Contains(t, payload, `"snapshot":null`, "无快照泳道是字面 null")
+	assert.Contains(t, payload, `"detail":"`+detailText+`"`, "AG-1 泳道 JSON 携带 detail 键")
+}

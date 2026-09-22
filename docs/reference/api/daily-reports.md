@@ -232,6 +232,7 @@ Response `data`：
       "section_count_14d": 9,
       "snapshot": {
         "summary": "近两周围绕出口管制升级与国产替代进展交替演进……",
+        "detail": "出口管制议题近两周持续升温：上周管制清单扩容带动备货，本周国产替代订单放量……",
         "as_of": "2026-09-09"
       },
       "timeline": [
@@ -255,7 +256,9 @@ Response `data`：
 }
 ```
 
-- `snapshot`：滚动 14 天态势句（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）；`null` 表示暂无快照（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染。
+- `snapshot`：滚动 14 天态势（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）。`summary` 为 ≤100 字短版态势句（既有语义不变，板块内容卡片仍只渲染它）；`detail` 为 ≤500 字长版成段叙述（与短版同窗同素材、同一次结算生成，lane-trend-overview 新增）。
+- 两级缺失语义：`snapshot: null` = 快照整体缺失（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染；`snapshot` 存在但 `detail` 缺失/空（omitempty，字段不出现）= 长版缺失——存量快照或该次生成解析失败降级，前端回退展示短版 `summary` 并提示长版随下次日报结算生成。
+- 月/年趋势档：日报阅读视图泳道趋势区的月/年归档摘要复用既有 `GET /persistent-topics/:topicId/enrichment/contexts?granularity=month|year`（周期归档上下文，详见 `dataenrichment.md`），本端点不新增月/年数据。
 - `timeline[].sections[].events`：该 section 的 thread 标题，最多前 5 条；`folded_count` 为被截断数量（恒输出，0 也带）。`timeline` 按日期倒序（最新日在最前）。
 - `candidates`：达可见门槛（`FilterVisibleTopics`）的 candidate + 最新 section 标题 `recent_hint`；只读提示，转正走话题管理入口。
 - `has_reports: false` 表示板块无任何日报（前端空态引导生成日报）。
