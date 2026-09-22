@@ -2,6 +2,7 @@
 import { Icon } from '@iconify/vue'
 import type { Article, RssFeed } from '~/types'
 import FeedIcon from '~/components/feed/FeedIcon.vue'
+import { proxiedImageUrl } from '~/utils/imageProxy'
 import RowStatusPopover from './RowStatusPopover.vue'
 import {
   getArticlePipelineState,
@@ -37,7 +38,7 @@ const feedsStore = useFeedsStore()
 const feed = computed(() => feedsStore.feeds.find((f: RssFeed) => f.id === props.article.feedId))
 
 // v5 封面槽：image_url 非空渲染封面；为空或加载失败降级 feed 图标占位（行高不变）
-const coverSrc = computed(() => props.article.imageUrl || '')
+const coverSrc = computed(() => proxiedImageUrl(props.article.imageUrl || ''))
 const coverFailed = ref(false)
 watch(
   () => props.article.imageUrl,

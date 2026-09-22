@@ -109,6 +109,10 @@ feed 级开关：`firecrawl_enabled`、`article_summary_enabled`（AI 总结主�
 
 article 级状态：`firecrawl_status`（`pending`/`processing`/`completed`/`failed`）、`firecrawl_content`、`firecrawl_error`、`firecrawl_crawled_at`；`summary_status`（`incomplete`/`pending`/`complete`/`failed`）、`ai_content_summary`、`content_form`（`mono`/`aggregate`/空）、`completion_attempts`、`completion_error`、`summary_generated_at`、`summary_processing_started_at`。
 
+### 正文与封面外链图片经代理（add-image-proxy）
+
+本域抓取入库的正文 HTML/Markdown 与封面 `image_url` 存储的都是**原始图床地址，抓取/存储/整理稿生成链路零改动**；渲染时才由 `proxiedImageUrl()` / `proxyImagesInHtml()`（`front/app/utils/imageProxy.ts`，正文落点 `useArticleContentView.ts` 的 `displayContent` 与 `utils/markdown.ts` 的 `renderMarkdown*`）改写为同源 `/api/image-proxy?url=...` 加载——图床 Referer 防盗链（如 sspai 禁空 Referer 403 图裂）由后端代理注入 Referer 解决。图片字节经代理缓存于 `data/image-cache/`（上限 `IMAGE_CACHE_MAX_MB` 默认 256MB，mtime LRU 淘汰），上游失败状态码透传、前端按既有降级渲染。链路详情与排查见 [reading.md](reading.md) §外链图片代理加载。
+
 ## 业务约束与不变量
 
 > 本节同时是 constraint-injection extension 的注入数据源——改 `internal/reader/`（crawler / content_completion / firecrawl） 代码前会被自动注入 system prompt，必读。

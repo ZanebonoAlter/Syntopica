@@ -20,6 +20,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | `TRACE_INSTRUMENT_GORM` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭 GORM DB 操作自动埋点（自写 `GORMTracePlugin`）。非 `"0"` 均视为启用。 |
 | `TRACE_INSTRUMENT_HTTP` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭出站 HTTP 自动埋点（`httpclient` 工厂的 otelhttp 包装）。非 `"0"` 均视为启用。 |
 | `STORAGE_ICON_DIR` | 否 | `"data/icons"` | feed 图标本地化存储根目录（实际文件在 `feeds/` 子目录），由后端 `/icons` 静态路由对外服务 |
+| `IMAGE_CACHE_MAX_MB` | 否 | `256` | 图片代理（`GET /api/image-proxy`）磁盘缓存总量上限（MB，整数）。超限按最近访问时间（mtime）从旧淘汰到 90% 水位；`"0"` 禁用缓存（每次回源）；负数/非法值回落默认。缓存目录固定 `data/image-cache/`（URL SHA-256 命名），**整目录删除即可热清缓存**（图床内容变更需强一致时），下次访问自动重建。 |
 | `BOCHA_API_KEY` | 否 | *(空)* | **部署兜底**——博查 key 首选在设置界面「博查搜索」配（存 `ai_settings` 表，动态生效）。此 env 仅用于无界面/CI/容器部署，与 `configs/config.yaml` 的 `bocha.api_key` 同为兜底（优先级：界面 DB > env > config.yaml）。全空→`web_search` 降级 Noop（返回错误 JSON，agent 自降级、不阻断） |
 | `BOCHA_ENDPOINT` | 否 | `"https://api.bochaai.com/v1/web-search"` | 博查通搜 endpoint（原始网页结果模式）的**兜底**值；界面可覆盖。仅在需要切换 endpoint（如代理/镜像）时设 |
 
@@ -119,6 +120,7 @@ database:
 | Tracing sample ratio | `0.05` | `viper.SetDefault("tracing.sample_ratio")` in `config.go`（optimize-pg-storage：全采样日产 82 万 span/600MB，降为 0.05） |
 | Tracing instrument GORM | `true` | `tracing.DefaultConfig()` / viper `tracing.instrument_gorm` |
 | Tracing instrument HTTP | `true` | `tracing.DefaultConfig()` / viper `tracing.instrument_http` |
+| Image cache max MB | `256`（`IMAGE_CACHE_MAX_MB` env） | `imageproxy.maxBytesFromEnv`（目录固定 `data/image-cache/`） |
 
 ### 前端默认值
 

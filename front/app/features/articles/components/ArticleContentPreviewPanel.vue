@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
 import dayjs from 'dayjs'
+import { ref } from 'vue'
 import type { Article } from '~/types'
 import ArticleTagList from '~/features/articles/components/ArticleTagList.vue'
+import { useMermaidRender } from '~/composables/useMermaidRender'
+import { proxiedImageUrl } from '~/utils/imageProxy'
 import '~/components/article/ArticleContent.css'
 
 defineOptions({ inheritAttrs: false })
@@ -52,10 +55,14 @@ const props = withDefaults(defineProps<{
   handleTagWatchToggle: () => {},
   openOriginal: () => {},
 })
+
+// mermaid 图渲染（render-mermaid-diagrams）：宿主 = 阅读列整体，覆盖 AI 整理稿与正文两个 v-html 区
+const readingColRef = ref<HTMLElement | null>(null)
+useMermaidRender(readingColRef, () => `${props.renderedStoredSummary ?? ''}|${props.displayContent ?? ''}`)
 </script>
 
 <template>
-  <div class="reading-col">
+  <div ref="readingColRef" class="reading-col">
     <!-- Kicker：红色小标 + 细线（编辑签名元素） -->
     <div class="kicker">
       <span class="kicker-label">{{ kickerLabel }}</span>
@@ -112,7 +119,7 @@ const props = withDefaults(defineProps<{
 
     <!-- Image -->
     <div v-if="articleImageUrl" class="article-image">
-      <img :src="articleImageUrl" :alt="articleTitleFull" class="w-full">
+      <img :src="proxiedImageUrl(articleImageUrl)" :alt="articleTitleFull" class="w-full">
     </div>
 
     <!-- AI 整理稿：无卡框小节（无摘要时整块不渲染） -->

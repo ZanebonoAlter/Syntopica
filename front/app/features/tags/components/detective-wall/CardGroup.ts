@@ -17,6 +17,7 @@ import gsap from 'gsap'
 import type { PinCard as IPinCard, SectionTimelineNode, SectionRelation, DateRange } from './types'
 import { STYLE } from './types'
 import { layoutCards } from './utils'
+import { proxiedImageUrl } from '~/utils/imageProxy'
 
 /** Status → 中文标签（tooltip 与详情面板共用）。 */
 const STATUS_LABELS: Record<string, string> = {
@@ -276,12 +277,13 @@ function makeDossierTexture(data: SectionTimelineNode): CanvasTexture {
   if (imageUrl) {
     const image = new Image()
     image.crossOrigin = 'anonymous'
-    image.referrerPolicy = 'no-referrer'
     image.onload = () => {
       renderDossierTexture(canvas, data, image)
       texture.needsUpdate = true
     }
-    image.src = imageUrl
+    // 经代理加载：图床有 Referer 防盗链，直连（尤其显式不发 Referer）会 403 图裂
+    //（spec：侦探墙贴图不再 403；本处曾置空发送策略，是 403 主因）。
+    image.src = proxiedImageUrl(imageUrl)
   }
 
   return texture

@@ -16,7 +16,10 @@ describe('FeedIcon', () => {
       props: { icon: 'https://example.com/favicon.ico' },
     })
     expect(wrapper.find('img').exists()).toBe(true)
-    expect(wrapper.find('img').attributes('src')).toBe('https://example.com/favicon.ico')
+    // 外链 favicon 经图片代理加载（spec：前端外链图片统一改写）。
+    expect(wrapper.find('img').attributes('src')).toBe(
+      `/api/image-proxy?url=${encodeURIComponent('https://example.com/favicon.ico')}`,
+    )
   })
 
   it('renders an <img> with the backend origin for a relative path', () => {
@@ -111,7 +114,9 @@ describe('FeedIcon', () => {
     // A new valid URL should render the <img> again (failure flag reset)
     await wrapper.setProps({ icon: 'https://example.com/good.ico' })
     expect(wrapper.find('img').exists()).toBe(true)
-    expect(wrapper.find('img').attributes('src')).toBe('https://example.com/good.ico')
+    expect(wrapper.find('img').attributes('src')).toBe(
+      `/api/image-proxy?url=${encodeURIComponent('https://example.com/good.ico')}`,
+    )
   })
 
   it('renders the Iconify placeholder (svg) directly when icon is empty', () => {

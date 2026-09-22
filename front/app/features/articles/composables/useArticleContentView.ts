@@ -6,6 +6,7 @@ import { useReadingTracker, useScrollDepthTracker } from '~/features/preferences
 import { useContentCompletion, type ContentCompletionStatus } from '~/features/articles/composables/useContentCompletion'
 import { useFirecrawlApi } from '~/api/firecrawl'
 import { shouldShowArticleDescription } from '~/utils/articleContentGuards'
+import { proxyImagesInHtml } from '~/utils/imageProxy'
 import {
   getArticleContentSources,
   resolveArticleContentBySource,
@@ -162,7 +163,7 @@ export function useArticleContentView(props: {
     } else {
       content = resolvedContent
     }
-    return content.replace(/<img[^>]*src=["']Base64-Image-Removed["'][^>]*\/?>/gi, '')
+    return proxyImagesInHtml(content.replace(/<img[^>]*src=["']Base64-Image-Removed["'][^>]*\/?>/gi, ''))
   })
 
   const showDescription = computed(() => {

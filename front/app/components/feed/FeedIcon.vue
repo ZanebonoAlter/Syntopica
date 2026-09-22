@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import { getApiOrigin } from '~/utils/api'
+import { proxiedImageUrl } from '~/utils/imageProxy'
 
 const props = defineProps<{
   icon?: string
@@ -28,7 +29,12 @@ const isLocalPath = computed(() => Boolean(props.icon?.startsWith('/')))
 
 const imgSrc = computed(() => {
   if (!props.icon) return ''
-  return isLocalPath.value ? `${getApiOrigin()}${props.icon}` : props.icon
+  // 后端自有资源（/icons/...）直连 API origin，绝不进图片代理：代理的自指
+  // 校验会拒绝自家地址（dev 下页面与 API 不同源时，同源判断也拦不住）。
+  if (isLocalPath.value) return `${getApiOrigin()}${props.icon}`
+  // 外链 favicon 经代理，图床防盗链 403 由代理的 Referer 注入解决。
+  if (isUrl.value) return proxiedImageUrl(props.icon)
+  return props.icon
 })
 
 // Only a real iconify name may reach <Icon>. A local path (/icons/feeds/2.ico),

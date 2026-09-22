@@ -165,7 +165,9 @@ describe('ArticleCardView 行式渲染', () => {
     const cover = withCover.find('.row-cover')
     expect(cover.exists()).toBe(true)
     expect(cover.find('img').exists()).toBe(true)
-    expect(cover.find('img').attributes('src')).toBe('https://example.com/cover.jpg')
+    expect(cover.find('img').attributes('src')).toBe(
+      `/api/image-proxy?url=${encodeURIComponent('https://example.com/cover.jpg')}`,
+    )
 
     // 无图 → 占位（FeedIcon 渲染，无 img）
     const noCover = mountCard(article())

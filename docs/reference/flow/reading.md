@@ -110,12 +110,30 @@ RefreshFeed（icon_source ∈ {auto, fallback} 才重算；custom 不碰）
   → icon 下载失败不影响 RefreshStatus（仍 success）
 
 前端 FeedIcon.vue 三类值：iconify id → <Icon>（本地子集，零联网）；
-  http(s) 远程 URL（存量）→ <img> 直连；/ 开头同源路径 → getApiOrigin() 拼后端源渲染 <img>；
+  http(s) 远程 URL（存量）→ <img> 经 /api/image-proxy 代理加载（add-image-proxy，防盗链；后端自有地址仍直连）；
+  / 开头同源路径 → getApiOrigin() 拼后端源渲染 <img>（直连不进代理，避免自指拒绝）；
   <img> onerror 降级 mdi:rss（降级分支只接受合法 iconify 名，图片路径/URL 不得当图标名传给 <Icon>——
   非法名会渲染成空 <svg>，即空白）
 ```
 
 UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local.ts` 将 `app/assets/iconify-subset.json`（源码扫描生成的子集，162 个图标）注册进 `@iconify/vue`，运行时不请求 api.iconify.design；新增图标需 `pnpm generate:icons` 重新生成并提交产物。
+
+### 外链图片代理加载（add-image-proxy）
+
+列表封面、预览/阅读页头图、正文 `<img>`、侦探墙贴图、feed 外链 favicon **一律经 `GET /api/image-proxy?url=...` 同源加载，不直连图床**：图床普遍有 Referer 防盗链（2026-09-22 实测 `cdnfile.sspai.com` 空 Referer → 403 `x-exception-info: deny by referer access rule`，直连必图裂）。
+
+```text
+前端渲染点（ArticleCardView 封面 / ArticleContentPreviewPanel 头图 / 正文 displayContent / markdown.ts 整理稿 /
+  侦探墙 CardGroup 贴图 / FeedIcon 外链 favicon）
+  → proxiedImageUrl() / proxyImagesInHtml()（front/app/utils/imageProxy.ts）渲染时改写
+    http(s) 外链 → /api/image-proxy?url=<enc>；相对路径、data:、blob:、已代理地址、同源绝对地址不改写
+  → 后端 internal/platform/imageproxy：校验（仅 http/拒自指防循环）→ 查 data/image-cache/（HIT 直接返回）
+  → 注入 Referer（默认图片自身 origin，per-host 可覆盖）+ 浏览器 UA → 上游；15s 超时（504）/失败 502
+  → 200 + image/*：tee 落缓存（sha256 命名）→ 超 IMAGE_CACHE_MAX_MB（默认 256MB）按 mtime LRU 淘汰到 90% 水位
+  → 上游非 200：状态码透传零缓存；前端按既有降级渲染（封面 @error → FeedIcon，侦探墙留空纹理）
+```
+
+**数据库仍存原始外链**（改写只发生在渲染层）——回滚零数据迁移；缓存整目录 `data/image-cache/` 删除即热清。配置见 [configuration.md](../configuration.md)，接口见 [api/system.md](../api/system.md)。
 
 ## 业务约束与不变量
 
