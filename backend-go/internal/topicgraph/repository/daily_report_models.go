@@ -534,8 +534,8 @@ func (TopicWatchHit) TableName() string { return "topic_watch_hits" }
 type TopicLaneSnapshot struct {
 	ID                uint      `gorm:"primarykey" json:"id"`
 	PersistentTopicID uint      `gorm:"not null;uniqueIndex:idx_topic_lane_snapshots_topic" json:"persistent_topic_id"`
-	RollingSummary    string    `gorm:"type:text;not null" json:"rolling_summary"` // ≤100字态势句
-	RollingDetail     string    `gorm:"type:text" json:"rolling_detail"`           // ≤500字长版叙述；空=缺失（存量/生成失败降级）
+	RollingSummary    string    `gorm:"type:text;not null" json:"rolling_summary"` // ≤200字态势句
+	RollingDetail     string    `gorm:"type:text" json:"rolling_detail"`           // ≤1000字长版叙述；空=缺失（存量/生成失败降级）
 	AsOfDate          time.Time `gorm:"type:date;not null" json:"as_of_date"`      // 汇总截止（=最近一份已完成报告期）
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`

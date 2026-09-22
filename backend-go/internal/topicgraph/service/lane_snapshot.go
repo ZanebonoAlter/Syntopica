@@ -31,16 +31,20 @@ const (
 	// 14 天，以最近一份已完成日报为期（spec）。
 	laneSnapshotSettleWindowDays = 14
 	// laneSnapshotMaxRunes mechanically clamps the LLM short-form output. The
-	// prompt already demands ≤100字; this guard protects the card layout from
+	// prompt already demands ≤200字 (relax-lane-snapshot-length-caps: 实测
+	// 100 字高频硬切烂尾); this guard protects the card layout from
 	// over-verbose models.
-	laneSnapshotMaxRunes = 100
+	laneSnapshotMaxRunes = 200
 	// laneSnapshotDetailMaxRunes mechanically clamps the long-form narrative
-	// (design D1: ≤500字成段叙述, rune-safe like the short form).
-	laneSnapshotDetailMaxRunes = 500
+	// (design D1: 成段叙述, rune-safe like the short form;
+	// relax-lane-snapshot-length-caps: 500→1000, 500 实测常态超限).
+	laneSnapshotDetailMaxRunes = 1000
 	// laneSnapshotMaxTokens bounds the single two-version call (design D1:
-	// 两版合计 ≤600字 + JSON 结构开销, 512→768). Package-level so tests can pin
-	// it (SN-9); the chat fn must keep referencing it.
-	laneSnapshotMaxTokens = 768
+	// 两版合计 + JSON 结构开销). Package-level so tests can pin it (SN-9); the
+	// chat fn must keep referencing it. relax-lane-snapshot-length-caps:
+	// 768→1536 — 768 预算下啰嗦模型会把 JSON 掐断在半路，解析失败误走降级
+	// （长版丢失+短版砍半），预算须容纳两版新上限。
+	laneSnapshotMaxTokens = 1536
 	// laneSnapshotLaneTimeout bounds ONE lane's settlement (design D1).
 	laneSnapshotLaneTimeout = 60 * time.Second
 )
@@ -72,8 +76,8 @@ var laneSnapshotChatFn = func(ctx context.Context, system, user string) (string,
 
 func laneSnapshotSystemPrompt() string {
 	return "你是新闻态势总结助手。给定一条话题泳道近14天的日报事实清单（每行：日期｜节标题｜线索标题），" +
-		"请输出一个 JSON 对象，含两个字段：\"summary\" 为一句不超过100字的中文态势句；" +
-		"\"detail\" 为一段不超过500字的中文成段叙述。" +
+		"请输出一个 JSON 对象，含两个字段：\"summary\" 为一句不超过200字的中文态势句；" +
+		"\"detail\" 为一段不超过1000字的中文成段叙述。" +
 		"两版必须基于同一份清单事实：detail 是同一事实集的成段展开，不得另起炉灶。" +
 		"要求：只基于清单内列出的事实，不得编造事件、数字、情绪与因果；不做事态预测或走向判断；" +
 		"直接输出 JSON 本身，不要任何前后缀、代码块围栏、引号或标号。"

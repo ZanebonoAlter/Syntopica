@@ -149,7 +149,7 @@ func TestSettleBoardLaneSnapshots_WindowAnchorAndUpsertIdempotent(t *testing.T) 
 		if i == 0 {
 			return "第一版态势。", nil
 		}
-		return strings.Repeat("长", 130), nil // >100 runes → mechanical clamp
+		return strings.Repeat("长", 230), nil // >200 runes → mechanical clamp
 	}}
 	swapLaneChat(t, rec)
 
@@ -161,16 +161,16 @@ func TestSettleBoardLaneSnapshots_WindowAnchorAndUpsertIdempotent(t *testing.T) 
 	assert.Contains(t, user, "十四天前的节")
 	assert.NotContains(t, user, "十五天前的节不该出现")
 	assert.NotContains(t, user, "线索四")
-	assert.Contains(t, rec.systems[0], "100字")
+	assert.Contains(t, rec.systems[0], "200字")
 
-	// Second run: same row overwritten (idempotent), clamped to 100 runes.
+	// Second run: same row overwritten (idempotent), clamped to 200 runes.
 	settleBoardLaneSnapshots(context.Background(), boardID)
 	require.Len(t, rec.users, 2)
 
 	var snaps []repository.TopicLaneSnapshot
 	require.NoError(t, db.Find(&snaps).Error)
 	require.Len(t, snaps, 1, "重复结算覆盖同一行，不产生重复快照")
-	assert.Equal(t, strings.Repeat("长", 100), snaps[0].RollingSummary)
+	assert.Equal(t, strings.Repeat("长", laneSnapshotMaxRunes), snaps[0].RollingSummary)
 	wantAsOf := repository.NormalizeReportDate(now)
 	assert.Equal(t, wantAsOf, repository.NormalizeReportDate(snaps[0].AsOfDate), "as_of=最新报告期")
 }
@@ -343,7 +343,7 @@ func TestSettleLaneSnapshot_TwoVersionJSONUpsert(t *testing.T) {
 	assert.Equal(t, repository.NormalizeReportDate(now), repository.NormalizeReportDate(snaps[0].AsOfDate), "as_of=anchor")
 }
 
-// SN-2: summary 超 100 rune / detail 超 600 rune → 各自 rune 安全截断，互不影响。
+// SN-2: summary / detail 超各自上限 → 分别 rune 安全截断，互不影响。
 func TestSettleLaneSnapshot_ClampBothVersionsIndependent(t *testing.T) {
 	db := laneSnapshotTestDB(t)
 	const boardID = uint(8)
@@ -353,7 +353,7 @@ func TestSettleLaneSnapshot_ClampBothVersionsIndependent(t *testing.T) {
 	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
 
 	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
-		return `{"summary":"` + strings.Repeat("短", 120) + `","detail":"` + strings.Repeat("长", 600) + `"}`, nil
+		return `{"summary":"` + strings.Repeat("短", 220) + `","detail":"` + strings.Repeat("长", 1100) + `"}`, nil
 	}})
 
 	settleBoardLaneSnapshots(context.Background(), boardID)
@@ -361,11 +361,11 @@ func TestSettleLaneSnapshot_ClampBothVersionsIndependent(t *testing.T) {
 	var snaps []repository.TopicLaneSnapshot
 	require.NoError(t, db.Find(&snaps).Error)
 	require.Len(t, snaps, 1)
-	assert.Equal(t, strings.Repeat("短", 100), snaps[0].RollingSummary, "短版独立截 100")
-	assert.Equal(t, strings.Repeat("长", 500), snaps[0].RollingDetail, "长版独立截 500，不受短版截断影响")
+	assert.Equal(t, strings.Repeat("短", laneSnapshotMaxRunes), snaps[0].RollingSummary, "短版独立截断至上限")
+	assert.Equal(t, strings.Repeat("长", laneSnapshotDetailMaxRunes), snaps[0].RollingDetail, "长版独立截断至上限，不受短版截断影响")
 }
 
-// SN-3: detail 恰 500 rune 边界 → 不截断，原样入库。
+// SN-3: detail 恰等于上限 rune 数（边界值）→ 不截断，原样入库。
 func TestSettleLaneSnapshot_DetailExactBoundary(t *testing.T) {
 	db := laneSnapshotTestDB(t)
 	const boardID = uint(9)
@@ -374,7 +374,7 @@ func TestSettleLaneSnapshot_DetailExactBoundary(t *testing.T) {
 	topic := seedLaneSnapshotTopic(t, db, boardID, "边界话题", now)
 	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
 
-	detail := strings.Repeat("边", 500)
+	detail := strings.Repeat("边", laneSnapshotDetailMaxRunes)
 	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
 		return `{"summary":"短版。","detail":"` + detail + `"}`, nil
 	}})
@@ -384,7 +384,7 @@ func TestSettleLaneSnapshot_DetailExactBoundary(t *testing.T) {
 	var snaps []repository.TopicLaneSnapshot
 	require.NoError(t, db.Find(&snaps).Error)
 	require.Len(t, snaps, 1)
-	assert.Equal(t, detail, snaps[0].RollingDetail, "恰 500 rune 不截断")
+	assert.Equal(t, detail, snaps[0].RollingDetail, "恰等于上限 rune 数不截断")
 }
 
 // SN-4: 非 JSON 纯文本 → 降级：整段截 100 作短版、长版空串；upsert 照常
@@ -397,7 +397,7 @@ func TestSettleLaneSnapshot_NonJSONDegrades(t *testing.T) {
 	topic := seedLaneSnapshotTopic(t, db, boardID, "纯文本话题", now)
 	seedLaneSnapshotSection(t, db, reportID, topic.ID, "节一", "线索一")
 
-	raw := strings.Repeat("这段输出完全不是JSON格式。", 10) // 130 runes > 100
+	raw := strings.Repeat("这段输出完全不是JSON格式。", 20) // 260 runes > 200
 	swapLaneChat(t, &laneChatRecorder{response: func(int) (string, error) {
 		return raw, nil
 	}})
@@ -407,7 +407,7 @@ func TestSettleLaneSnapshot_NonJSONDegrades(t *testing.T) {
 	var snaps []repository.TopicLaneSnapshot
 	require.NoError(t, db.Find(&snaps).Error)
 	require.Len(t, snaps, 1, "降级不算失败，upsert 照常")
-	assert.Equal(t, truncateRunes(raw, 100), snaps[0].RollingSummary, "短版=整段截 100")
+	assert.Equal(t, truncateRunes(raw, laneSnapshotMaxRunes), snaps[0].RollingSummary, "短版=整段截至上限")
 	assert.Empty(t, snaps[0].RollingDetail, "长版置空")
 }
 
@@ -544,13 +544,14 @@ func TestSettleLaneSnapshot_LLMErrorKeepsOldSnapshotContinuesSiblings(t *testing
 }
 
 // SN-9: prompt 断言：两版结构、字数约束、同事实集要求、既有纪律句；
-// maxTokens 提为包级常量且值为 768（chatFn 引用它）。
+// maxTokens 为包级常量（chatFn 引用它；relax-lane-snapshot-length-caps:
+// 768→1536，须容纳两版新上限 + JSON 开销）。
 func TestLaneSnapshotSystemPrompt_TwoVersionContractAndMaxTokens(t *testing.T) {
 	sys := laneSnapshotSystemPrompt()
 	assert.Contains(t, sys, `"summary"`)
 	assert.Contains(t, sys, `"detail"`)
-	assert.Contains(t, sys, "100字")
-	assert.Contains(t, sys, "500字")
+	assert.Contains(t, sys, "200字")
+	assert.Contains(t, sys, "1000字")
 	assert.Contains(t, sys, "同一")
 	assert.Contains(t, sys, "成段")
 	assert.Contains(t, sys, "不得另起炉灶")
@@ -560,7 +561,7 @@ func TestLaneSnapshotSystemPrompt_TwoVersionContractAndMaxTokens(t *testing.T) {
 	assert.Contains(t, sys, "不做事态预测或走向判断")
 	assert.Contains(t, sys, "直接输出 JSON 本身")
 
-	assert.Equal(t, 768, laneSnapshotMaxTokens, "design D1: maxTokens 512→768")
+	assert.Equal(t, 1536, laneSnapshotMaxTokens, "relax-lane-snapshot-length-caps: 768→1536")
 }
 
 // SN-10: 存量行 detail 空 → 读侧不报错（Detail=nil 语义）；下个结算周期
