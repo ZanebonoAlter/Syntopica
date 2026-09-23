@@ -21,9 +21,9 @@ func TestParseValidHHMM(t *testing.T) {
 		{"25:99", false},
 		{"abc", false},
 		{"", false},
-		{"1:30", false},   // must be zero-padded
-		{"09:60", false},  // minutes > 59
-		{"09:5", false},   // must be zero-padded
+		{"1:30", false},  // must be zero-padded
+		{"09:60", false}, // minutes > 59
+		{"09:5", false},  // must be zero-padded
 	}
 
 	for _, tt := range tests {

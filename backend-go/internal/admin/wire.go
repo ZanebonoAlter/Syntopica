@@ -115,6 +115,8 @@ var (
 	SaveProxySettings      = handler.SaveProxySettings
 	GetBochaSettings       = handler.GetBochaSettings
 	SaveBochaSettings      = handler.SaveBochaSettings
+	GetComtradeSettings    = handler.GetComtradeSettings
+	SaveComtradeSettings   = handler.SaveComtradeSettings
 )
 
 // Route param option dictionary handlers (feed-param-options)

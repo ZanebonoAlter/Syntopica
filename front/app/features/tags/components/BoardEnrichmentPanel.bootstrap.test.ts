@@ -52,6 +52,18 @@ vi.mock('~/api/boardEnrichment', () => ({
 vi.mock('~/api/dailyReports', () => ({
   useDailyReportsApi: () => ({ listBoardTopics }),
 }))
+// 信号工作台 API（board-signal-reports）：bootstrap 会拉候选/报告列表，
+// 不 mock 会走真实 fetch
+vi.mock('~/api/boardSignals', () => ({
+  useBoardSignalsApi: () => ({
+    triggerSignalDiscovery: vi.fn(),
+    listSignalCandidates: vi.fn().mockResolvedValue({ success: true, data: [] }),
+    triggerSignalResearch: vi.fn(),
+    listSignalReports: vi.fn().mockResolvedValue({ success: true, data: [] }),
+    getSignalReport: vi.fn(),
+    getSignalJobStatus: vi.fn(),
+  }),
+}))
 vi.mock('~/composables/useNotify', () => ({
   useNotify: () => notifyMocks,
 }))

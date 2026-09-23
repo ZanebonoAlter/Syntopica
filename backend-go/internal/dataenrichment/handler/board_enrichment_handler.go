@@ -268,6 +268,40 @@ func parseBoardID(c *gin.Context) (uint, bool) {
 	return uint(id), true
 }
 
+// parseBeforeID parses the exclusive cursor shared by the signal list APIs
+// (absent = head). 400 on garbage（board-signal-reports 2b 新增，候选/报告
+// 列表共用）。
+func parseBeforeID(c *gin.Context) (uint, bool) {
+	raw := strings.TrimSpace(c.Query("before_id"))
+	if raw == "" {
+		return 0, true
+	}
+	v, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || v == 0 {
+		respondError(c, http.StatusBadRequest, "invalid before_id")
+		return 0, false
+	}
+	return uint(v), true
+}
+
+// parseListLimit parses ?limit= with a default and a hard cap (>cap is
+// clamped; 0/negative/garbage is 400)——与既有候选列表同语义。
+func parseListLimit(c *gin.Context, def, cap int) (int, bool) {
+	raw := strings.TrimSpace(c.Query("limit"))
+	if raw == "" {
+		return def, true
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		respondError(c, http.StatusBadRequest, "invalid limit")
+		return 0, false
+	}
+	if v > cap {
+		v = cap
+	}
+	return v, true
+}
+
 // getAnalysisStatus reports async analysis jobs.
 // GET /enrichment/analysis-status?job_id=<id>   — 精确查一个 job（含已完成的）；未知 job_id → 404
 // GET /enrichment/analysis-status?scope=board|topic&id=<n> — 当前/最近任务（重进恢复；无任务 = idle）

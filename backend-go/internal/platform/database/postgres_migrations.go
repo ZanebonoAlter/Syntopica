@@ -2398,7 +2398,282 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, healDanglingArticleRefsMigration())
 	migrations = append(migrations, queueRetentionIndexMigration())
 	migrations = append(migrations, completionOnRefreshOffMigration())
-	return append(migrations, normalizeArticleLinkFragmentsMigration())
+	migrations = append(migrations, normalizeArticleLinkFragmentsMigration())
+	migrations = append(migrations, marginNotesTablesMigration())
+	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration())
+}
+
+// boardSignalResearchProgressMigration implements 20260922_0002
+// (board-signal-reports tasks 4.7「断了不能白跑」):
+//
+// board_signal_research_progress is created by AutoMigrate (model registered
+// in internal/dataenrichment). This migration adds what AutoMigrate cannot
+// express:
+//
+// ① the status CHECK (running|abandoned|superseded),
+// ② the composite FK pinning owner/period to the candidate (candidate_id,
+//
+//	semantic_board_id, granularity, period → board_signal_candidate same
+//	columns; a progress row can never disagree with its candidate),
+//
+// ③ the (candidate_id, updated_at DESC) lookup index and the job_id unique
+//
+//	(repeated defensively; AutoMigrate owns both on fresh DBs).
+//
+// Forward-only; idempotent via DROP CONSTRAINT IF EXISTS + ADD and
+// CREATE INDEX IF NOT EXISTS.
+func boardSignalResearchProgressMigration() Migration {
+	return Migration{
+		Version:     "20260922_0002",
+		Description: "board-signal-reports: research progress table constraints (status CHECK, candidate composite FK, candidate-updated_at index, job_id unique) — per-round rolling progress survives job timeout/failure.",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "board_signal_research_progress") {
+				return nil
+			}
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				statements := []string{
+					`ALTER TABLE board_signal_research_progress
+						DROP CONSTRAINT IF EXISTS chk_board_signal_research_progress_status`,
+					`ALTER TABLE board_signal_research_progress
+						ADD CONSTRAINT chk_board_signal_research_progress_status
+						CHECK (status IN ('running', 'abandoned', 'superseded'))`,
+				}
+				if tableExists(tx, "board_signal_candidate") {
+					statements = append(statements,
+						`ALTER TABLE board_signal_research_progress
+							DROP CONSTRAINT IF EXISTS fk_board_signal_research_progress_candidate`,
+						`ALTER TABLE board_signal_research_progress
+							ADD CONSTRAINT fk_board_signal_research_progress_candidate
+							FOREIGN KEY (candidate_id, semantic_board_id, granularity, period)
+							REFERENCES board_signal_candidate (id, semantic_board_id, granularity, period)
+							ON DELETE RESTRICT`)
+				}
+				for _, stmt := range statements {
+					if err := tx.Exec(stmt).Error; err != nil {
+						return fmt.Errorf("board signal research progress constraint: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			return withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				for _, statement := range []string{
+					`CREATE INDEX IF NOT EXISTS idx_board_signal_research_progress_candidate ON board_signal_research_progress (candidate_id, updated_at DESC)`,
+					`CREATE UNIQUE INDEX IF NOT EXISTS uq_board_signal_research_progress_job ON board_signal_research_progress (job_id)`,
+				} {
+					if err := tx.Exec(statement).Error; err != nil {
+						return fmt.Errorf("create board signal research progress index: %w", err)
+					}
+				}
+				return nil
+			})
+		},
+	}
+}
+
+// boardSignalMigration implements 20260922_0001 (board-signal-reports phase 1):
+//
+// ① topic_enrichment_result gains kind='signal_report' plus three nullable
+//
+//	columns (granularity/period/source_signal_id). The two named CHECKs are
+//	DROPped and re-ADDed with the new branch (PostgreSQL CHECK has no
+//	incremental alter; 20260828_0001 sample). Existing rows never get the
+//	new columns backfilled — every other kind keeps them NULL.
+//
+// ② board_signal_discovery / board_signal_candidate (created by AutoMigrate;
+//
+//	the migration defensively repeats the ADD COLUMNs only) get their
+//	composite owner uniqueness and the composite FKs that make a candidate's
+//	board/granularity/period immutable relative to its batch, and a
+//	signal_report's owner/period immutable relative to its candidate.
+//
+// ③ board-period-id list indexes and the source_signal_id index.
+//
+// Forward-only; idempotent via DROP CONSTRAINT IF EXISTS + ADD and
+// CREATE INDEX IF NOT EXISTS.
+func boardSignalMigration() Migration {
+	return Migration{
+		Version:     "20260922_0001",
+		Description: "board-signal-reports: result kind=signal_report with nullable granularity/period/source_signal_id; discovery/candidate tables with composite owner FKs and board-period-id indexes.",
+		Up: func(db *gorm.DB) error {
+			// Dependent FKs must drop BEFORE the uniques they reference
+			// (PostgreSQL refuses dropping a depended-on constraint); the
+			// result→candidate FK is dropped first so the new-table block can
+			// safely rebuild the candidate unique on idempotent re-runs.
+			if tableExists(db, "topic_enrichment_result") && tableExists(db, "board_signal_discovery") && tableExists(db, "board_signal_candidate") {
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+						DROP CONSTRAINT IF EXISTS fk_topic_enrichment_result_signal_candidate`).Error; err != nil {
+						return fmt.Errorf("drop stale signal candidate FK: %w", err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+
+			// ── new-table constraints (tables exist after AutoMigrate; skip
+			// topicgraph-less or not-yet-migrated deployments defensively).
+			if tableExists(db, "board_signal_discovery") && tableExists(db, "board_signal_candidate") {
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					statements := []string{
+						`ALTER TABLE board_signal_candidate
+							DROP CONSTRAINT IF EXISTS fk_board_signal_candidate_discovery`,
+						// Composite owner identity — FK targets.
+						`ALTER TABLE board_signal_discovery
+							DROP CONSTRAINT IF EXISTS uq_board_signal_discovery_id_owner`,
+						`ALTER TABLE board_signal_discovery
+							ADD CONSTRAINT uq_board_signal_discovery_id_owner
+							UNIQUE (id, semantic_board_id, granularity, period)`,
+						`ALTER TABLE board_signal_candidate
+							DROP CONSTRAINT IF EXISTS uq_board_signal_candidate_id_owner`,
+						`ALTER TABLE board_signal_candidate
+							ADD CONSTRAINT uq_board_signal_candidate_id_owner
+							UNIQUE (id, semantic_board_id, granularity, period)`,
+						// A candidate can never disagree with its batch's owner/period.
+						`ALTER TABLE board_signal_candidate
+							ADD CONSTRAINT fk_board_signal_candidate_discovery
+							FOREIGN KEY (discovery_id, semantic_board_id, granularity, period)
+							REFERENCES board_signal_discovery (id, semantic_board_id, granularity, period)
+							ON DELETE RESTRICT`,
+					}
+					for _, stmt := range statements {
+						if err := tx.Exec(stmt).Error; err != nil {
+							return fmt.Errorf("board signal discovery/candidate constraint: %w", err)
+						}
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+
+			if !tableExists(db, "topic_enrichment_result") {
+				return nil
+			}
+
+			// Pure ADD COLUMN (AutoMigrate owns them; repeated defensively so the
+			// migration also works on a direct testcontainer).
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				for _, statement := range []string{
+					`ALTER TABLE topic_enrichment_result ADD COLUMN IF NOT EXISTS granularity VARCHAR(10)`,
+					`ALTER TABLE topic_enrichment_result ADD COLUMN IF NOT EXISTS period VARCHAR(12)`,
+					`ALTER TABLE topic_enrichment_result ADD COLUMN IF NOT EXISTS source_signal_id BIGINT`,
+				} {
+					if err := tx.Exec(statement).Error; err != nil {
+						return fmt.Errorf("add signal-report column: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			// No backfill by design: pre-signal rows keep the three columns NULL
+			// (旧行不回填，不猜测历史周期归属). Defensively refuse rows that would
+			// violate the new shape before the constraints re-ADD hides them.
+			var invalidSignalRows int64
+			if err := db.Raw(`SELECT count(*) FROM topic_enrichment_result
+				WHERE result_kind <> 'signal_report'
+				  AND (granularity IS NOT NULL OR period IS NOT NULL OR source_signal_id IS NOT NULL)`).Scan(&invalidSignalRows).Error; err != nil {
+				return fmt.Errorf("check topic_enrichment_result signal columns: %w", err)
+			}
+			if invalidSignalRows > 0 {
+				return fmt.Errorf("topic_enrichment_result has %d non-signal row(s) with granularity/period/source_signal_id set; refusing migration", invalidSignalRows)
+			}
+
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				// Kind enum: re-ADD with signal_report included.
+				if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+					DROP CONSTRAINT IF EXISTS chk_topic_enrichment_result_kind`).Error; err != nil {
+					return fmt.Errorf("drop stale result kind CHECK: %w", err)
+				}
+				if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+					ADD CONSTRAINT chk_topic_enrichment_result_kind
+					CHECK (result_kind IN ('topic_analysis', 'board_brief', 'board_investigation', 'legacy_board_analysis', 'signal_report'))`).Error; err != nil {
+					return fmt.Errorf("add result kind CHECK: %w", err)
+				}
+				// Owner/period shape: re-ADD with the signal_report branch.
+				if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+					DROP CONSTRAINT IF EXISTS chk_topic_enrichment_result_parent_shape`).Error; err != nil {
+					return fmt.Errorf("drop stale result parent-shape CHECK: %w", err)
+				}
+				if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+					ADD CONSTRAINT chk_topic_enrichment_result_parent_shape CHECK (
+						(result_kind = 'topic_analysis'
+							AND analysis_scope = 'topic'
+							AND persistent_topic_id IS NOT NULL AND semantic_board_id IS NULL
+							AND parent_result_id IS NULL AND question_key IS NULL)
+						OR (result_kind IN ('board_brief', 'legacy_board_analysis')
+							AND analysis_scope = 'board'
+							AND semantic_board_id IS NOT NULL AND persistent_topic_id IS NULL
+							AND parent_result_id IS NULL AND question_key IS NULL
+							AND granularity IS NULL AND period IS NULL AND source_signal_id IS NULL)
+						OR (result_kind = 'board_investigation'
+							AND analysis_scope = 'board'
+							AND semantic_board_id IS NOT NULL AND persistent_topic_id IS NULL
+							AND parent_result_id IS NOT NULL
+							AND question_key IS NOT NULL
+							AND question_key ~ '^[0-9a-f]{64}$'
+							AND granularity IS NULL AND period IS NULL AND source_signal_id IS NULL)
+						OR (result_kind = 'signal_report'
+							AND analysis_scope = 'board'
+							AND semantic_board_id IS NOT NULL AND persistent_topic_id IS NULL
+							AND parent_result_id IS NULL AND question_key IS NULL
+							-- NULL-aware guards: a CHECK is satisfied by an UNKNOWN
+							-- (NULL) predicate in PostgreSQL, so NULL granularity/period
+							-- must be rejected explicitly, not left to IN/regex NULL
+							-- propagation.
+							AND granularity IS NOT NULL AND period IS NOT NULL
+							AND granularity IN ('month', 'year')
+							AND ((granularity = 'month' AND period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$')
+								OR (granularity = 'year' AND period ~ '^[0-9]{4}$' AND period BETWEEN '2000' AND '2100'))
+							AND source_signal_id IS NOT NULL)
+					)`).Error; err != nil {
+					return fmt.Errorf("add result parent-shape CHECK: %w", err)
+				}
+				// A signal_report's owner/period can never disagree with its
+				// candidate (NULL source_signal_id rows simply don't match —
+				// MATCH SIMPLE; non-signal rows are outside the FK entirely).
+				if tableExists(tx, "board_signal_candidate") {
+					if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+						DROP CONSTRAINT IF EXISTS fk_topic_enrichment_result_signal_candidate`).Error; err != nil {
+						return fmt.Errorf("drop stale signal candidate FK: %w", err)
+					}
+					if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+						ADD CONSTRAINT fk_topic_enrichment_result_signal_candidate
+						FOREIGN KEY (source_signal_id, semantic_board_id, granularity, period)
+						REFERENCES board_signal_candidate (id, semantic_board_id, granularity, period)
+						ON DELETE RESTRICT`).Error; err != nil {
+						return fmt.Errorf("add signal candidate FK: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				for _, statement := range []string{
+					`CREATE INDEX IF NOT EXISTS idx_board_signal_discovery_board_period ON board_signal_discovery (semantic_board_id, granularity, period, id DESC)`,
+					`CREATE INDEX IF NOT EXISTS idx_board_signal_candidate_board_period ON board_signal_candidate (semantic_board_id, granularity, period, id DESC)`,
+					`CREATE INDEX IF NOT EXISTS idx_board_signal_candidate_discovery ON board_signal_candidate (discovery_id, id DESC)`,
+					`CREATE INDEX IF NOT EXISTS idx_topic_enrichment_result_signal_board_period ON topic_enrichment_result (semantic_board_id, granularity, period, id DESC) WHERE result_kind = 'signal_report'`,
+					`CREATE INDEX IF NOT EXISTS idx_topic_enrichment_result_source_signal ON topic_enrichment_result (source_signal_id, id DESC) WHERE source_signal_id IS NOT NULL`,
+				} {
+					if err := tx.Exec(statement).Error; err != nil {
+						return fmt.Errorf("create board signal index: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
 }
 
 // normalizeArticleLinkFragmentsMigration implements 20260920_0001 (v2ex link
@@ -3300,6 +3575,114 @@ func watchSuggestionCleanupMigration() Migration {
 			}
 			if err := db.Exec(`DELETE FROM board_upgrade_suggestions WHERE decision = 'watch'`).Error; err != nil {
 				return fmt.Errorf("delete pending watch suggestions: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// marginNotesTablesMigration implements 20260922_0003
+// (daily-report-margin-notes design D1):
+//
+// 三张新表全部由本版本化迁移创建（模型不注册 AutoMigrate，SQL 是 schema 唯一
+// 权威——vector 维度、jsonb 数组契约、term_norm 唯一索引需要显式控制）：
+//
+//	report_annotations  批注锚点：quoted_text + report/section/thread 归属 +
+//	                    字符偏移线索（日报 period 不可变保证可重放定位）；
+//	annotation_qas      问答轮：cited_article_ids/extracted_terms jsonb 数组
+//	                    契约（空写 [] 不写 null，对齐 thread 引用数组），审计
+//	                    冗余存 operation/provider/model（ai_call_logs 7 天清理，
+//	                    长期分析另行保存）；FK ON DELETE CASCADE 兑现「删除批注
+//	                    连带问答」；
+//	term_notes          术语库：term_norm 归一化唯一键（trim+全角→半角+大小写
+//	                    折叠），hit_count 累计不重复建条；embedding vector(2560)
+//	                    可空列为 P2 相似词归并预留（维度=生产库实测
+//	                    semantic_labels/daily_report_sections 等列同维，2026-09-22
+//	                    核定），P1 不写入。
+//
+// 无存量数据迁移，纯新增；回滚=前端还原+表保留（孤儿数据无害）。幂等：
+// CREATE TABLE/INDEX IF NOT EXISTS + FK 按约束名探测。
+func marginNotesTablesMigration() Migration {
+	return Migration{
+		Version:     "20260922_0003",
+		Description: "daily-report-margin-notes: create report_annotations / annotation_qas / term_notes (margin note anchors, QA turns with jsonb array contract, term library with normalized unique key and nullable vector(2560) embedding reserved for P2).",
+		Up: func(db *gorm.DB) error {
+			if err := db.Exec(`
+				CREATE TABLE IF NOT EXISTS report_annotations (
+					id                  BIGSERIAL PRIMARY KEY,
+					report_id           BIGINT       NOT NULL,
+					section_id          BIGINT       NOT NULL,
+					thread_id           BIGINT       NULL,
+					quoted_text         TEXT         NOT NULL,
+					anchor_offset_start INT          NOT NULL DEFAULT 0,
+					anchor_offset_end   INT          NOT NULL DEFAULT 0,
+					created_at          TIMESTAMPTZ  NOT NULL DEFAULT now()
+				)`).Error; err != nil {
+				return fmt.Errorf("create report_annotations: %w", err)
+			}
+			if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_report_annotations_report ON report_annotations (report_id)`).Error; err != nil {
+				return fmt.Errorf("create idx_report_annotations_report: %w", err)
+			}
+			if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_report_annotations_created ON report_annotations (created_at)`).Error; err != nil {
+				return fmt.Errorf("create idx_report_annotations_created: %w", err)
+			}
+
+			if err := db.Exec(`
+				CREATE TABLE IF NOT EXISTS annotation_qas (
+					id                BIGSERIAL PRIMARY KEY,
+					annotation_id     BIGINT        NOT NULL,
+					question          TEXT          NOT NULL,
+					answer            TEXT          NOT NULL,
+					cited_article_ids JSONB         NOT NULL DEFAULT '[]'::jsonb,
+					extracted_terms   JSONB         NOT NULL DEFAULT '[]'::jsonb,
+					operation         VARCHAR(80)   NULL,
+					provider          VARCHAR(100)  NULL,
+					model             VARCHAR(100)  NULL,
+					created_at        TIMESTAMPTZ   NOT NULL DEFAULT now()
+				)`).Error; err != nil {
+				return fmt.Errorf("create annotation_qas: %w", err)
+			}
+			if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_annotation_qas_annotation ON annotation_qas (annotation_id)`).Error; err != nil {
+				return fmt.Errorf("create idx_annotation_qas_annotation: %w", err)
+			}
+			// 删除批注连带问答（spec「删除批注连带问答」）——DB 级 CASCADE 兜底，
+			// repository 删除路径仍显式先删问答再删批注（双保险，语义一致）。
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				if err := tx.Exec(`DO $$ BEGIN
+					IF NOT EXISTS (
+						SELECT 1 FROM information_schema.table_constraints
+						WHERE constraint_name = 'fk_annotation_qas_annotation'
+							  AND table_name = 'annotation_qas'
+					) THEN
+						ALTER TABLE annotation_qas
+							ADD CONSTRAINT fk_annotation_qas_annotation
+							FOREIGN KEY (annotation_id) REFERENCES report_annotations(id)
+							ON DELETE CASCADE;
+					END IF;
+				END $$`).Error; err != nil {
+					return fmt.Errorf("add fk_annotation_qas_annotation: %w", err)
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			if err := db.Exec(`
+				CREATE TABLE IF NOT EXISTS term_notes (
+					id                  BIGSERIAL PRIMARY KEY,
+					term_norm           TEXT         NOT NULL,
+					term_display        TEXT         NOT NULL,
+					hit_count           INT          NOT NULL DEFAULT 1,
+					first_seen_board_id BIGINT       NULL,
+					first_seen_date     DATE         NULL,
+					last_seen_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+					created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+					embedding           vector(2560) DEFAULT NULL
+				)`).Error; err != nil {
+				return fmt.Errorf("create term_notes: %w", err)
+			}
+			if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_term_notes_term_norm ON term_notes (term_norm)`).Error; err != nil {
+				return fmt.Errorf("create uq_term_notes_term_norm: %w", err)
 			}
 			return nil
 		},

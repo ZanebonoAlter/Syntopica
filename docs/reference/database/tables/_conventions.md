@@ -96,6 +96,8 @@
 | `fk_board_topic_watches_topic` | `board_topic_watches.persistent_topic_id → board_persistent_topics(id)` | SET NULL | `20260825_0001` |
 | `fk_topic_enrichment_result_parent_board` | `topic_enrichment_result(parent_result_id, semantic_board_id) → topic_enrichment_result(id, semantic_board_id)`（复合） | RESTRICT | `20260828_0001` |
 | `fk_composite_components_composite` | `composite_components.composite_id → semantic_labels(id)` | CASCADE | `20260902_0001` |
+| `fk_board_signal_candidate_discovery` | `board_signal_candidate(discovery_id, semantic_board_id, granularity, period) → board_signal_discovery(id, semantic_board_id, granularity, period)`（复合，靶靠唯一约束 `uq_board_signal_discovery_id_owner`） | RESTRICT | `20260922_0001` |
+| `fk_topic_enrichment_result_signal_candidate` | `topic_enrichment_result(source_signal_id, semantic_board_id, granularity, period) → board_signal_candidate(id, semantic_board_id, granularity, period)`（复合，MATCH SIMPLE：`source_signal_id` 为 NULL 的旧行不在 FK 范围内） | RESTRICT | `20260922_0001` |
 
 > 其余所有表间关联均为 GORM 逻辑关联，**DB 层未强制**（`DisableForeignKeyConstraintWhenMigrating: true`）——**但请对照上方实测修正：存量遗留 FK 仍生效**，本句只描述「新关联不再靠 DB 强制」这一趋势，不能当成「没有 FK」读。
 

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>信号研究 · 两阶段流程</title>
+<style>
+:root{--paper:#faf7f2;--ink:#1a1a1a;--muted:#5a5a5a;--rule:#d9d1c6;--accent:#d94a4a}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.8 -apple-system,"Segoe UI","PingFang SC",sans-serif}.page{max-width:1120px;padding:32px;margin:auto}h1{font:600 clamp(27px,4vw,38px)/1.4 "Noto Serif SC","Songti SC",serif;margin:12px 0}h2{font-size:16px;margin:28px 0 12px}p{color:var(--muted)}a{color:var(--accent)}.kicker{font-size:11px;letter-spacing:.18em;color:var(--accent)}.diagram{overflow:auto;margin:24px 0;border-block:1px solid var(--rule)}svg{width:100%;min-width:690px;height:auto;display:block}svg text{font-family:-apple-system,"Segoe UI","PingFang SC",sans-serif;fill:var(--ink)}svg .small{font-size:12px;fill:var(--muted)}svg .label{font-size:15px;font-weight:600}svg .node{fill:var(--paper);stroke:var(--rule);stroke-width:1.3}svg .arrow{stroke:var(--muted);stroke-width:1.2;fill:none;marker-end:url(#arrow)}.rules{margin-top:24px;display:grid;grid-template-columns:1fr 1fr;gap:24px 40px}.rules section{border-top:1px solid var(--rule)}.rules p{font-size:14px}.manual{border-left:3px solid var(--accent);padding-left:16px}.foot{font-size:12px;border-top:1px solid var(--rule);padding-top:18px;margin-top:30px}@media(max-width:600px){.page{padding:20px 16px}.rules{grid-template-columns:1fr}.diagram::after{content:'流程图可左右滚动；下方有等价文字说明';font-size:11px;color:var(--muted)}}
+</style></head><body><main class="page">
+<p class="kicker">BOARD SIGNAL REPORTS · 新交互待确认</p><h1>发现结束后，停下来等你。</h1><p>轻量发现与长研究分开。只有选中的一条信号才进入最多40轮的研究，报告完成即可阅读。</p><a href="index.html">← 返回可点击原型与报告样例</a>
+<div class="diagram"><svg viewBox="0 0 1056 610" role="img" aria-labelledby="flow-title flow-desc"><title id="flow-title">先发现、人工选择、再研究</title><desc id="flow-desc">第一阶段用户发现信号，经周期补齐和识别保存候选后结束。人工点击一条候选开启第二阶段：最多40轮研究，成文校验后保存成功报告直接阅读。没有自动连接或评审链。发现失败不当零信号，研究失败保留候选可重试。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#5a5a5a"/></marker></defs>
+<text x="24" y="35" class="small">01 / 发现任务 · 仅保存候选</text>
+<rect x="24" y="62" width="200" height="76" rx="20" class="node"/><text x="124" y="93" text-anchor="middle" class="label">手动「发现信号」</text><text x="124" y="117" text-anchor="middle" class="small">月 / 年 + period</text>
+<path d="M224 100 H284" class="arrow"/>
+<rect x="286" y="62" width="216" height="76" rx="6" class="node"/><text x="394" y="93" text-anchor="middle" class="label">周期材料 → 识别</text><text x="394" y="117" text-anchor="middle" class="small">freshness · 依据 · 门槛6</text>
+<path d="M502 100 H562" class="arrow"/>
+<rect x="564" y="62" width="212" height="76" rx="6" class="node"/><text x="670" y="93" text-anchor="middle" class="label">保存批次与候选</text><text x="670" y="117" text-anchor="middle" class="small">发现job结束 · 不取数成文</text>
+<path d="M776 100 H832" class="arrow"/>
+<rect x="834" y="62" width="196" height="76" rx="20" class="node"/><text x="932" y="93" text-anchor="middle" class="label">等待你的选择</text><text x="932" y="117" text-anchor="middle" class="small">可刷新 / 可稍后再来</text>
+<text x="24" y="178" class="small">合法零信号：空批次，不清旧候选　｜　识别故障：重试1次仍败，显示failed job</text>
+<line x1="24" y1="215" x2="1030" y2="215" stroke="#d9d1c6" stroke-dasharray="4 5"/>
+<text x="24" y="250" font-size="17" font-weight="600" style="fill:#d94a4a">人工边界：这里没有自动续跑的箭头。</text><text x="24" y="276" class="small">候选不占用LLM会话或板块锁；只有点击某条「深入分析」才发生下面的调用。</text>
+<text x="24" y="331" class="small">02 / 研究任务 · 一条信号 → 一篇报告</text>
+<rect x="24" y="356" width="200" height="84" rx="20" fill="#fff4ee" stroke="#d94a4a"/><text x="124" y="391" text-anchor="middle" class="label">点击「深入分析」</text><text x="124" y="416" text-anchor="middle" class="small">candidate_id · 冻结快照</text>
+<path d="M224 398 H284" class="arrow"/>
+<rect x="286" y="356" width="216" height="84" rx="6" class="node"/><text x="394" y="389" text-anchor="middle" class="label">研究 loop ≤40轮</text><text x="394" y="415" text-anchor="middle" class="small">取数 + 受限计算 ≤40次</text>
+<path d="M502 398 H562" class="arrow"/>
+<rect x="564" y="356" width="212" height="84" rx="6" class="node"/><text x="670" y="389" text-anchor="middle" class="label">成文与机械校验</text><text x="670" y="415" text-anchor="middle" class="small">引用 / 公式 / 条件 / 篇幅</text>
+<path d="M776 398 H832" class="arrow"/>
+<rect x="834" y="356" width="196" height="84" rx="20" class="node"/><text x="932" y="389" text-anchor="middle" class="label">成功入库，直接读</text><text x="932" y="415" text-anchor="middle" class="small">无judge / 无评审按钮</text>
+<text x="286" y="478" class="small">可提前结束；预算耗尽以现有证据成文并说明缺口。</text>
+<text x="286" y="503" class="small">单源失败记gap；任务超时/取消或成文重试耗尽 → failed job。</text>
+<text x="286" y="528" class="small">失败不写报告，候选保留；重试 / 重新研究都要你再点一次。</text>
+<line x1="24" y1="554" x2="1030" y2="554" stroke="#d9d1c6"/><text x="24" y="584" class="small">两个独立job，共享board互斥 · 运行中409 · 等待人工不持锁 · 旧API与旧评审不改</text>
+</svg></div>
+<div class="rules">
+<section><h2>40是上限，不是目标</h2><p>第17轮找到答案即可结束。取数和本地计算共用40次执行预算；失败执行计数，重复/非法请求不执行但占轮次。保持关thinking、重复拦截、完整结果不截断，墙钟超时独立限制。</p></section>
+<section><h2>把计算交给代码</h2><p>差值、百分比、窗口均值记录输入引用、公式和舍入。禁止任意脚本、库存减流量、跨源换算。模型负责提问题和解释，不能自己填一个计算结果。</p></section>
+<section><h2>更多查询不等于更多指标</h2><p>现有EIA/JODI工具没有炼厂利润、开工率或价格序列。取不到就记缺口，不能为凑结论捏造历史胜率。报告可以明确“证据不足，维持判断”。</p></section>
+<section><h2>三个不同的持久性</h2><p>候选与成功报告落库；运行job仍在内存。重启后候选不丢，job404停止轮询并提示可重试。旧报告不覆盖，显式重新研究追加新版本。</p></section>
+</div>
+<p class="manual">新原型待确认。详细契约见design.md，内容样例见sample-report.md；本页只表达人工边界与主流程，不代表业务已经实现。</p>
+<p class="foot">沿用Syntopica editorial视觉 · 无新增调度 · 无自动研究 · 无报告审批</p>
+</main></body></html>

@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"syntopica-backend/internal/admin"
 	"syntopica-backend/internal/dataenrichment"
+	wiring "syntopica-backend/internal/datasources/wiring"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/imageproxy"
 	"syntopica-backend/internal/platform/logging"
@@ -56,6 +57,7 @@ func SetupRoutes(r *gin.Engine) {
 
 		tagmanagement.RegisterRoutes(api)
 		dataenrichment.RegisterRoutes(api)
+		wiring.RegisterRoutes(api)
 
 		traceHandler := tracing.NewTraceHandler(database.DB)
 		traces := api.Group("/traces")

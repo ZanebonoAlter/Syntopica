@@ -13,6 +13,8 @@ import (
 	"syntopica-backend/internal/admin"
 	appbootstrap "syntopica-backend/internal/app"
 	"syntopica-backend/internal/dataenrichment"
+	"syntopica-backend/internal/datasources"
+	"syntopica-backend/internal/datasources/wiring"
 	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/config"
 	"syntopica-backend/internal/platform/database"
@@ -59,6 +61,13 @@ func main() {
 	// BEFORE SetupRoutes: handler.RegisterRoutes dereferences the handler
 	// singleton and panics if Init hasn't run. StartRuntime is too late.
 	dataenrichment.Init(database.DB)
+
+	// Seed the research data sources catalog (idempotent upsert; non-fatal —
+	// a failure logs a warning and the endpoints degrade to an empty catalog).
+	// The LIVE key resolver (UI DB > env/config) decides status seeding: a
+	// config-only resolver ignored UI-configured keys and left the catalog
+	// stuck on disabled (2026-09-23 实战校准 §10.4).
+	datasources.Init(database.DB, wiring.ComtradeKeyResolver())
 
 	// Ensure semantic_labels.embedding vector dimension matches the embedder model.
 	// Runs once at startup on the global DB (not inside any transaction) to avoid DDL lock contention.

@@ -93,6 +93,8 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		settings.POST("/proxy", SaveProxySettings)
 		settings.GET("/bocha", GetBochaSettings)
 		settings.POST("/bocha", SaveBochaSettings)
+		settings.GET("/comtrade", GetComtradeSettings)
+		settings.POST("/comtrade", SaveComtradeSettings)
 	}
 
 	notifications := rg.Group("/notifications")

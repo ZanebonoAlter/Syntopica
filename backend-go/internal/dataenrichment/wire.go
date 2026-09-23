@@ -1,6 +1,8 @@
 package dataenrichment
 
 import (
+	"context"
+	"fmt"
 	"strings"
 
 	"gorm.io/gorm"
@@ -8,6 +10,7 @@ import (
 	"syntopica-backend/internal/dataenrichment/handler"
 	"syntopica-backend/internal/dataenrichment/repository"
 	"syntopica-backend/internal/dataenrichment/service"
+	wiring "syntopica-backend/internal/datasources/wiring"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/config"
@@ -93,6 +96,11 @@ func Init(db *gorm.DB) {
 		service.WithLaneDetailRenderer(laneDetailRenderer),
 		service.WithInternalContextSearcher(NewDBInternalContextSearcher(db)),
 	)
+	// Research data source tools (change integrate-research-data-sources):
+	// registered into the shared registry for future research-conversation
+	// flows. NOT part of any existing flow's allowedTools — enrichment/QA tool
+	// surfaces are unchanged (spec「注入后现有工具面不变」).
+	toolRegistry.Register(wiring.BuildTools(wiring.ComtradeKeyResolver())...)
 	orchestrator := service.NewOrchestratorService(
 		airouter.NewRouter(),
 		repo,
@@ -121,14 +129,64 @@ func Init(db *gorm.DB) {
 	// get_lane_detail/web_search) are available; never writes to the result table.
 	qaAgent := service.NewQAAgent(airouter.NewRouter(), toolRegistry, repo, CapabilityAnalysis)
 
+	// Signal discovery (board-signal-reports 2a): period material → detect →
+	// atomic batch save. Holds NO tool registry — discovery makes zero
+	// data-source calls, zero calculations, zero compose steps.
+	signalDiscovery := service.NewSignalDiscoveryService(
+		airouter.NewRouter(),
+		CapabilityAnalysis,
+		service.NewSignalMaterialBuilder(db, lifelineReader),
+		repo,
+	)
+	// 发现侧能力前置（board-signal-reports tasks 3.7 发现半边）：四源目录能力
+	// 文本由 wiring 从 Catalog() 渲染，经 setter 注入 detector——service 包不
+	// 得 import datasources/wiring（会成环），仿 SetFreshnessRefresher 先例由
+	// 本处外部注入；空文本=旧 prompt 字节不变。注入知识≠授权取数：发现阶段
+	// 依然零取数。
+	signalDiscovery.SetSourceCapabilityText(wiring.SourceCapabilityText())
+
+	// Signal deep research (board-signal-reports 2b): frozen candidate →
+	// question-driven 40-round research loop（四源 cutoff 过滤白名单，仅此链
+	// 授权）→ bounded compose → immutable signal_report. Candidates/批次从
+	// repository 读，报告经 repository 校验链写入。
+	signalResearch := service.NewSignalResearchService(
+		airouter.NewRouter(),
+		CapabilityAnalysis,
+		toolRegistry,
+		repo,
+	)
+	// 研究进展持久化（board-signal-reports tasks 4.7「断了不能白跑」）：每轮
+	// 滚动 upsert 进展行，超时/失败保留 abandoned、成功标 superseded。
+	signalResearch.SetSignalProgressStore(repo)
+	// 源可用性现算（review M2 / design §10.4）：四源「当前不可用」标注不再在
+	// 启动期烘焙（BuildTools 只装静态目录元数据），由 live resolver 在研究
+	// 克隆期现算——UI 保存 key 后研究 prompt 即时生效、不用重启；probe 判定与
+	// datasources.StatusFor 同源（RequiresKey+空 key）。
+	signalResearch.SetToolAvailabilityProbe(wiring.UnavailableNoticeProbe(wiring.ComtradeKeyResolver()))
+
 	// HTTP handler singleton consumed by handler.RegisterRoutes.
 	handler.InitHandler(repo, lifelineSvc, orchestrator, boardConfigReader, debateSvc, qaAgent, db)
+	handler.SetSignalDiscoveryOnInstance(signalDiscovery)
+	handler.SetSignalResearchOnInstance(signalResearch)
 }
 
 // GetLifelineService returns the cycle-A service built by Init, for scheduler
 // registration in app/runtime.go.
 func GetLifelineService() *service.LifelineContextService {
 	return lifelineSvc
+}
+
+// SweepOrphanedSignalResearchProgress converges progress rows left status=
+// running by a dead process（board-signal-reports tasks 4.10 孤儿进展收敛；
+// design §10.4）。启动接线在 app.StartRuntime——resetStaleStates 同类时点：
+// 调度器/worker 未起、HTTP 未监听，内存必然无活研究 job，残留 running 行都是
+// 孤儿。调用方契约：失败仅记日志不阻塞启动；幂等（无 running 行时 0 行）。
+func SweepOrphanedSignalResearchProgress(ctx context.Context) (int64, error) {
+	repo := GetRepo()
+	if repo == nil {
+		return 0, fmt.Errorf("dataenrichment repository not initialized")
+	}
+	return repo.SweepOrphanedSignalResearchProgress(ctx)
 }
 
 // GetTopicLister returns the active-topic lister built by Init, for scheduler

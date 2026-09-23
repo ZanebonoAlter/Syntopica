@@ -18,6 +18,7 @@ import (
 const openNotebookConfigKey = "open_notebook_config"
 const firecrawlConfigKey = "firecrawl_config"
 const bochaConfigKey = "bocha_config"
+const comtradeConfigKey = "comtrade_config"
 const rsshubConfigKey = "rsshub_config"
 const proxyConfigKey = "http_proxy_config"
 const dailyReportTimeKey = "daily_report_time"
@@ -103,6 +104,17 @@ func LoadBochaConfig() (map[string]interface{}, *models.AISettings, error) {
 // SaveBochaConfig 写入 bocha_config。
 func SaveBochaConfig(config map[string]interface{}, description string) error {
 	return saveConfigByKey(bochaConfigKey, config, description)
+}
+
+// LoadComtradeConfig 读取 comtrade_config（研究数据源 UN Comtrade 的订阅 key + enabled）。
+// 动态读取：取数器/probe/目录 status 每次现读，界面改即时生效（对齐 bocha_config 语义）。
+func LoadComtradeConfig() (map[string]interface{}, *models.AISettings, error) {
+	return loadConfigByKey(comtradeConfigKey)
+}
+
+// SaveComtradeConfig 写入 comtrade_config。
+func SaveComtradeConfig(config map[string]interface{}, description string) error {
+	return saveConfigByKey(comtradeConfigKey, config, description)
 }
 
 func LoadOpenNotebookConfig() (map[string]interface{}, *models.AISettings, error) {

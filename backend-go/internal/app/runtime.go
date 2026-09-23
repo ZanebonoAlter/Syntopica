@@ -87,6 +87,18 @@ func resetStaleStates() {
 func StartRuntime() *Runtime {
 	resetStaleStates()
 
+	// 孤儿进展收敛（board-signal-reports tasks 4.10；design §10.4）：选点
+	// StartRuntime 开头（resetStaleStates 同类时点）而非 main.go——①这正是
+	// 「上一进程残留的进行中状态」启动收敛的既有家（调度任务/订阅/Firecrawl
+	// 同类归位都在这）；②此刻调度器/worker 未起、HTTP 未监听，内存必然无活
+	// 研究 job，残留 running 行都是孤儿；③DEMO_READ_ONLY 不进本函数，演示快
+	// 照零写入保证不变。失败仅记日志不阻塞启动；幂等。
+	if converged, err := dataenrichment.SweepOrphanedSignalResearchProgress(context.Background()); err != nil {
+		logging.Warnf("Sweep orphaned signal research progress failed (non-fatal): %v", err)
+	} else if converged > 0 {
+		logging.Infof("Swept %d orphaned signal research progress row(s) -> abandoned (orphaned_by_restart)", converged)
+	}
+
 	// Fire the one-shot AI model health probe asynchronously so it never blocks
 	// startup. The in-memory snapshot starts not-ready (Healthy()==false), so
 	// workers/IsPaused treat the startup-race window as paused until the probe

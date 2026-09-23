@@ -13,6 +13,8 @@
 
 两循环通过 `topic_lifeline_context` 单向连接、隔离运行：新闻事实保持客观，分析认知可迭代修正，互不污染。可选的 FinGenius 个股辩论提供标的级深度分析。
 
+版块级另有**信号解读报告**（board-signal-reports，2026-09-22 起为数据增强工作台主视图）：手动「发现信号」只识别并持久化候选，用户逐条点击「深入分析」才进入 40 轮预算研究，产出一篇观点先行、数字可核查、**无评审链**的解读报告——详见下文「板块信号解读报告」节。
+
 ## 链路设计
 
 ### 核心架构：两个独立循环
@@ -117,7 +119,7 @@ sequenceDiagram
 
 **形态判断**（`form`）：`event_chain`(事件链) / `theme_vein`(主题脉络) / `single_point`(单点影响) / `structural`(结构演化，长时段结构命题无离散事件) / `sparse`(骨感)，判据含 hit_count/section 数/cluster_label 发散度/内容语义，枚举可扩展。**见解层**：事实层(验证) + 见解层(推演，产出主体)，每条 insight 必挂文章/时间线依据（无依据 parse 时丢弃）+ 确定性分级（high/medium/low/question）。**深度层**（非 sparse 形态强制）：`system_reframe`(系统重定位) / `mechanism_layers`(多层机制) / `historical_analogy`(历史类比) / `regime_shift`(范式转折，可空) / `boundary`(反过度解读边界，非空) / `evidence_chain`(可核查证据链，`source_type ∈ news|web|page`)；sparse 不产深度层。**骨感型**诚实标注信息不足，不硬推演。**视角机制**（模式丙）：agent 提具体问题式视角候选（结构/系统题） → 用户选（当前默认 candidates[0]，手动选择 UI 待 3c）。
 
-### 11 个 LLM Operation 速查
+### 14 个 LLM Operation 速查
 
 | Operation | Capability | 循环 | 角色 | 触发方式 |
 | ----------- | ------------ | ------ | ------ | ---------- |
@@ -132,6 +134,9 @@ sequenceDiagram
 | `data_enrichment.board_synthesize` | `data_enrichment_analysis` | 版块调查 | 综合评估（五态 + 有限结论） | 深入调查 |
 | `data_enrichment.debate_distill` | `data_enrichment_analysis` | 可选 | 辩论提炼 | 辩论完成后自动 |
 | `data_enrichment.qa_tool_use` | `data_enrichment_analysis` | B 追问 | 报告追问每轮 | 用户对已生成报告手动提问 |
+| `data_enrichment.signal_detect` | `data_enrichment_analysis` | 信号发现 | 候选信号检测（材料→signals schema，≤2 尝试） | 手动（发现信号按钮） |
+| `data_enrichment.signal_research` | `data_enrichment_analysis` | 信号研究 | 研究循环每轮（四源取数+calculate，40 轮预算） | 手动（深入分析按钮） |
+| `data_enrichment.signal_compose` | `data_enrichment_analysis` | 信号研究 | 解读报告成文（≤3 尝试，结构/引用/篇幅校验） | 研究循环收束后（同一研究内） |
 
 > 旧 `data_enrichment.board_interpret`（v1 版块命题生成）写路径已退役，新链路 0 调用，仅函数/parser 保留作 legacy 读取兼容。
 
@@ -143,10 +148,12 @@ SessionID 规则：
 - 循环A：`lifeline_context_{topic_id}_{granularity}_{uuid8}`，一次汇总共享
 - 个股辩论提炼：`data_enrichment_debate_{topic_id}_{result_id}`
 - 报告追问：`data_enrichment_qa_{result_id}_{uuid8}`，每次询问唯一（基于 result，同一报告多轮追问各自独立 session）
+- 板块信号发现：`board_signal_discovery_{board_id}_{hex8}`，一次发现内所有 LLM 调用共享
+- 板块信号研究：`board_signal_report_{candidate_id}_{hex8}`，一次研究的 signal_research + signal_compose 共享（operation 区分阶段）
 
 ### 版块级简报与问题调查（board-level-deep-analysis：默认简报 + 显式调查）
 
-单泳道分析回答「这条泳道怎么回事」；版块级**默认动作是简报**——事实观察、关系类型与未知项，不预设立场；深度只发生在用户**显式选题调查**——多假设（含零假设）+ 支持/反证检索。语义板块是分类容器而非天然因果系统（同板块泳道仅语义相关，不保证共同驱动），因此不再自动把泳道织成单一传导链；旧「命题→论文式论证」自动链已退役为 legacy 只读（见下）。
+单泳道分析回答「这条泳道怎么回事」；版块级**默认动作是简报**——事实观察、关系类型与未知项，不预设立场；深度只发生在用户**显式选题调查**——多假设（含零假设）+ 支持/反证检索。（board-signal-reports 起工作台主视图已更替为信号解读报告，简报/调查触发链保留为 API 兼容、前端不再调用——见下节。）语义板块是分类容器而非天然因果系统（同板块泳道仅语义相关，不保证共同驱动），因此不再自动把泳道织成单一传导链；旧「命题→论文式论证」自动链已退役为 legacy 只读（见下）。
 
 #### 默认链：版块简报 `EnrichBoard(boardID)` → `result_kind=board_brief`
 
@@ -174,9 +181,26 @@ question ∈ generated（父简报 `research_questions` 候选 id，文本以父
 
 #### 任务互斥与轮询
 
-版块简报/调查共用 analysisRunner：同 board 任一 job 在跑时再触发（任意 kind）→ **409 + data 携当前任务身份**（前端恢复该 job 轮询，不误把调查完成当新简报）；成功触发 → **202 信封** `{status:"started", job_id, job_kind: board_brief|board_investigation, scope:"board", target_id}`；前端按 job_id 轮询 `GET /enrichment/analysis-status?job_id=`（未知 404；`?scope=board|topic&id=` 查当前/最近任务，无任务返 idle 骨架）；单次后台上限 30min。
+版块简报/调查共用 analysisRunner：同 board 任一 job 在跑时再触发（任意 kind）→ **409 + data 携当前任务身份**（前端恢复该 job 轮询，不误把调查完成当新简报）；成功触发 → **202 信封** `{status:"started", job_id, job_kind: board_brief|board_investigation, scope:"board", target_id}`；前端按 job_id 轮询 `GET /enrichment/analysis-status?job_id=`（未知 404；`?scope=board|topic&id=` 查当前/最近任务，无任务返 idle 骨架）；单次后台上限 30min。board-signal-reports 起 `board_signal_discovery`/`board_signal_report` 两种新 kind 加入同一互斥与轮询（signal job 额外带 phase/outcome/error_stage/周期与计数/result_id 等字段，见上节）。
 
-前端：`BoardEnrichmentPanel.vue` 工作台（简报主视图 + 聚焦分析折叠区 + 历史下拉 kind 标签）按 `result_kind` 三分派 `BoardBriefReport.vue` / `BoardInvestigationReport.vue` / legacy `BoardAnalysisReport.vue`；lane 引用点击下钻 → 聚焦分析预填 lens（`prefill_lens` 透传 `EnrichTopicLens`，写入可编辑输入框、允许修改、不自动触发）；单泳道报告渲染（CausalAnalysisReport）不变。
+前端：`BoardEnrichmentPanel.vue` 工作台主视图已换为**信号解读工作台**（`SignalCandidateList` + `SignalReportList`/`SignalReportView` + `useSignalWorkbench` 轮询，见上节）；旧简报/调查/legacy 三视图与跨版块关系面板、板块报告 QAPanel、生成简报按钮、历史下拉、绑定管理入口已卸载（组件文件与旧 API 保留兼容可读，不删不改）；聚焦分析折叠区与新闻背景折叠区保留；lane 引用点击下钻 → 聚焦分析预填 lens（`prefill_lens` 透传 `EnrichTopicLens`，写入可编辑输入框、允许修改、不自动触发）；单泳道报告渲染（CausalAnalysisReport）不变。
+
+### 板块信号解读报告（board-signal-reports：两阶段人工发现 → 单候选研究）
+
+工作台主视图换为**信号解读报告**——报告是观点，数据只是观点里引用的证据。人工两阶段，绝不自动衔接：
+
+1. **发现（只保存候选）**：手动「发现信号」（`granularity=month|year` + `period`，服务端业务时区校验，非法/未来 400 无 job）→ discovery job（`phase=prepare` 周期材料装配 → `detect` ≤2 次尝试）→ **原子保存批次+候选**（无半批）。候选字段 `signal / why_it_matters / research_question / evidence_refs / score(门槛 6) / rationale`，证据仅限本次白名单，悬空引用剔除后无有效依据的信号丢弃；0 条 `outcome=no_signal` 正常完成、不清旧记录。发现**零取数/零计算/零成文**（detector 不持工具注册表，编译级保证）。
+2. **研究（只研究点中的那条）**：候选列表逐条「深入分析」→ research job 固定该候选的冻结快照与 cutoff（不重跑 freshness、不偷换最新材料）→ 问题驱动 loop（**总决策 ≤40 轮 / 总执行 ≤40 次**：官方取数 + 本地受限计算合计占预算，失败也计执行；非法/重复动作不执行但计轮；可提前收束）→ `phase=compose` ≤3 次尝试（四段+条件判断+引用可解析+可见 <3000 非空白字符）→ 成功保存不可变 `signal_report` 直接阅读；失败 job 可重试，无不合格 result。
+
+- **cutoff 过滤先于 agent**：四源工具结果经包装层筛选（观测期结束 ≤ cutoff 才保留、打 `observation_id`），agent 历史只见筛选后集合；完整原响应回写 `result.tool_calls`（工具日志），筛选后全集进附录（无 50 点裁切）；全部观测晚于 cutoff 记 gap 不伪造。
+- **受限计算**：`calculate` 动作走本地白名单解释器（`difference`/`percent_change`/`mean`），同系列/同单位/批准流量对（imports−exports）校验，`big.Rat` 精确 + half-up 最多 4 位去末尾 0；null→missing 不填 0，混单位/跨源/脚本拒绝；`calc_id` 代码分配，模型永不提交数值。
+- **无覆盖早停反馈**：同一源连续 3 次无观测或源错误 → 该轮后向 agent 历史注入「该源无覆盖勿再换参、四源皆无请直接 finish」反馈（**每源恰一次**、四源全触发再终局恰一次）；经共享循环的可选 `toolLoopFeedbackProvider` 钩子（type assertion，同 `toolLoopActionRunner` 先例），`policy=nil` 与旧 policy 字节不变，不改 40 轮上限/计轮/预算分类，反馈不伪装工具结果、不增 ToolCallRecord——治 40 轮被换参空转烧满（2026-09-23 实战校准：JODI 20 次单国点名+Comtrade 5 次全空）。
+- **报告契约**：标题即判断 + thesis/facts/causal/implication 四段（implication 带 verdict/direction/horizon/trigger_condition/self_doubt 结构化字段）+ 0~3 图（折线 null 断点不补零）+ 代码生成 appendix（calls/calculations/gaps）；正文 `[[data:cN:oM]]`/`[[calc:kN]]`/`[[news:ID]]` 引用由前端查附录渲染数值，模型不在正文另造统计值。`stop_reason=budget_exhausted` 不是失败（generation_meta 记录 decisions/source_calls/calculation_calls/gaps），正文披露缺口。
+- **数据时效声明**：成文前机械计算「各源最新可得期 + 研究时点」注入 prompt，facts 段必须出现「数据截至」（缺失回注重试，沿用 attempts≤3）；阅读视图标题下渲染机械 as-of 行「数据截至 {appendix 观测最大期} · 研究时点 {cutoff}」，零观测如实显示「无可用数据期」；数据只取已入库 payload，不改 schema/API，存量报告同样生效——读者一眼看出数据滞后，不靠从引用期里自己抠（治文不对题不透明，2026-09-23 实战校准）。
+- **无评审链**：新报告不调 judge、不读 digest、不写 `topic_enrichment_review`，响应无任何 review 字段；只存成功不可变报告，重新研究（显式 regenerate）追加新版本不覆盖。
+- **持久化与派生状态**：`board_signal_discovery`（批次：cutoff/input_snapshot/analysis_mode，历史期标 `retrospective`）+ `board_signal_candidate`（不可变候选，复合 FK 钉死与批次同 owner/周期）+ 复用 `topic_enrichment_result`（`result_kind=signal_report` + nullable `granularity/period/source_signal_id`，DB CHECK/FK 强制，详见 [tables/data-enrichment.md](../database/tables/data-enrichment.md)）；候选状态服务端派生（live research job→`researching` / 有成功报告→`reported` / 否则→`pending`），**running 位不持久化**。
+- **研究超时与进展持久化**：研究 job 超时独立为 **150 分钟**（与 40 轮预算对齐：实测单轮 108~380s，覆盖 40 轮+compose 余量；发现保持 30 分钟）；研究 loop 每轮结束后将进展滚动 upsert 到 `board_signal_research_progress`（同 job 一行：轮次/取数/计算计数 + 全量账本 ledger jsonb，与 appendix 同源结构），超时/失败后行保留（`abandoned`+`stop_reason`（`timeout`/error_stage/`failed`）+`error`，终态写入用脱离已死 job ctx 的后台 context），成功落库报告后标 `superseded` 归档；候选可查「上次研究进展到第 N 轮/已取得 X 观测」，重启后仍可查；**进程重启兜底**：启动（`runtime.StartRuntime` 的 `resetStaleStates` 后，内存必然无活 job）把残留 `running` 行收敛为 `abandoned`+`stop_reason=orphaned_by_restart`（幂等、失败仅告警不阻塞）——进程死亡时 defer 终态写跑不到，不再永久悬挂（2026-09-23 候选6 34 轮进展行实证）；**进展表不回写候选快照、不写 `topic_enrichment_result`**（成功报告仍不可变）。落地点：`service/signal_research.go`（`signalProgressRecorder` + policy 每轮钩子）/ `repository/signal_repository.go`（`SweepOrphanedSignalResearchProgress`）/ `app/runtime.go` / 迁移 `20260922_0002`。
+- **job 内存态与旧 API 边界**：发现/研究沿用共享 board 202/409 互斥；发现 30min 超时、研究 150 分钟独立超时（与轮数预算对齐）；进程重启后 job_id 轮询 404 → 前端停轮询提示可重试，候选/报告/研究进展仍在（不永久卡「研究中」）。旧简报/调查/legacy 触发链与板块 QA 保留兼容（后端 deprecated 不删），新工作台不调用旧生成端点；旧 review 功能原样保留。前端主视图为信号工作台（候选列表 + 报告阅读），旧简报/调查/legacy 视图组件保留但不再挂载，数据源绑定管理入口卸载，新闻背景折叠区保留。
 
 ### 跨版块关系发现（add-evidence-backed-cross-board-relations：证据优先流水线）
 
@@ -268,6 +292,14 @@ flowchart TB
 25. **verifier 必须独立 session 盲验不看 scout 自评分，质量分级纯程序计算**（add-evidence-backed-cross-board-relations）：verifier 独立 session、不看 scout 自评分；四竞争解释必含零假设，不预选赢家；质量分级纯程序计算（evidence 完整性/反证处理/quote 核对），忽略模型自报 confidence；高置信 supported 必有 web/page 可核查证据。伪造 source / 无出处 quote 在 parse 时丢弃。落地点：`service/relation_scout.go` runRelationVerifier / `service/relation_evidence.go`。
 26. **机器判定的跨版块关系最高只能到 proposed，必须用户 confirm 后才进简报**（add-evidence-backed-cross-board-relations）：resolved+supported 最多 proposed，**用户 confirm 才进简报**（confirm 事务内重验目标版块存在）；dismiss 带 reason 进 `dismiss_cooldown_days`（默认 14 天）冷却防重现；confirmed 有 `confirmed_ttl_hours`（默认 720h）有效期，读取路径即时判过期 + `relation_expire` 定时任务批量转 expired；`suggestion_hash` 部分唯一索引（status IN unresolved,proposed）保幂等。落地点：`repository/relation_repository.go` / `handler/relation_discovery_handler.go` / `scheduler_jobs.go`。
 27. **confirmed 关系必须由服务端机械装配注入简报 cross_board_relations 字段，LLM 不得生成**（add-evidence-backed-cross-board-relations）：confirmed 未过期关系按 quality DESC（CASE 数值映射，非字典序）、confirmed_at DESC、id ASC 预算内注入简报为服务端装配的 `cross_board_relations` 字段（LLM 不生成、不联网、不进原 relationships 的 lane 白名单校验）；input_snapshot 冻结注入块原文与截断计数；旧简报缺字段降级为空不崩。落地点：`service/enrich_board.go` loadConfirmedRelationBackground / `service/board_brief.go`。
+28. **信号发现/研究只能由界面手动触发，两阶段绝不自动衔接，板块须开启 enrichment_enabled，同板块任一任务在跑时再触发一律 409，研究超时 150 分钟独立于发现的 30 分钟**（board-signal-reports）：「发现信号」只产候选（detector 不持工具注册表，发现零取数/零计算/零成文）；「深入分析」逐条点击才研究（一次研究只服务一条候选）；新工作台不调用旧 brief/investigation 生成端点；信号 job 与旧 kind 共享 board 互斥，202/409 信封同款，非法/未来周期 400 无 job；研究 job 超时与 40 轮预算对齐（`signalResearchJobTimeout=150min`，2026-09-22 两次 30min 超时砍在第 9/12 轮促成），发现保持 `analysisJobTimeout=30min` 不动。落地点：`handler/signal_discovery.go` / `handler/signal_research.go` / `handler/analysis_runner.go`。
+29. **发现批次/候选必须原子保存且候选不可变，owner/周期一致性由 DB 复合 FK 强制**（board-signal-reports）：批次+候选同事务写入（无半批），仅成功批次落库（含 0 条空批次）；同批「相同标题+规范化证据集合」机械去重、跨批不合并；`board_signal_candidate(discovery_id, semantic_board_id, granularity, period)` 复合 FK 钉死与批次一致，绕 repo 直写 SQL 被拒；后续发现追加新批次，不覆盖旧候选/旧报告。落地点：`repository/signal_repository.go` / 迁移 `20260922_0001`。
+30. **候选状态必须服务端派生且 running 位不持久化，job 内存态重启后轮询 404 须停轮询可重试**（board-signal-reports）：`researching` 只来自 live job（`RunningSignalReportForCandidate` 只认 board_signal_report 在跑槽位）、`reported` 来自成功 result、否则 `pending`——重启绝不残留永久「研究中」；内存 job 表重启即空闲，job_id 轮询 404 由前端停轮询+提示可重试（候选/批次/成功报告仍在）。落地点：`handler/signal_discovery.go` deriveSignalCandidateStatus / `handler/analysis_runner.go`。
+31. **signal_research 独享四源工具面，总预算 40 轮/40 次执行，cutoff 过滤必须先于 agent**（board-signal-reports）：唯一允许四源白名单 + `calculate` 的新 loop（web_search/旧探索工具被 CheckCall 拦 `tool_not_in_research_whitelist`）；取数+计算合计占执行预算、失败计执行、非法/重复动作不执行但计轮、可提前收束（`stop_reason=finished|budget_exhausted`，耗尽不是失败）；四源工具结果经包装层按「期结束 ≤ cutoff」筛选后才进 agent 历史，完整原响应回写 tool_calls、筛选后全集进附录不截 50 点；research 不重跑 freshness，只读候选冻结快照；每轮结束后进展滚动 upsert（挂点：policy 的 ObserveCall/RunLoopAction/拦截出口，`signalProgressRecorder.saveRunning`）；同一源连续 3 次无覆盖 MUST 注入早停反馈且每源恰一次、四源全触发终局恰一次，反馈 MUST NOT 改 40 轮上限/计轮、MUST NOT 伪装工具结果（`toolLoopFeedbackProvider` 可选钩子）。落地点：`service/signal_research.go` / `service/orchestrator.go`（toolLoopActionRunner/toolLoopFeedbackProvider 可选钩子，investigation/无 policy 旧路径字节不变）。
+32. **calculate 只能走本地白名单解释器，模型永不提交数值，缺失不填 0、跨源/混单位拒绝**（board-signal-reports）：仅 `difference`/`percent_change`/`mean` 三算子（同系列/同单位/批准流量对 imports−exports，不暴露脚本/SQL/URL），`big.Rat` 精确计算 half-up 最多 4 位去末尾 0；`calc_id` 代码分配；null 输入→missing+原因，base≤0/forward 引用/计算结果作输入/模型自带 value/重复请求全部拒绝。落地点：`service/signal_calculation.go`。
+33. **信号报告无评审链且不可变：不调 judge、不读 digest、不写 review，只存成功报告，重研究追加新版本**（board-signal-reports）：compose 校验（四段唯一序/implication 五字段/引用可解析/可见 <3000 非空白字符）失败重试 ≤2 次后 job failed 无 result；成功报告 append-only（`result_kind=signal_report`，DB CHECK 强制 scope=board+周期列非空+source_signal_id 非空、复合 FK 钉死与候选同 board/周期），列表/详情响应无任何 review/judge/approved/digest 字段；旧 kind 行三新列保持 NULL 不回填；研究进展表 `board_signal_research_progress` 只是编排层快照，不回写候选快照、不写 `topic_enrichment_result`。落地点：`service/signal_compose.go` / `repository/signal_repository.go` / 迁移 `20260922_0001`。
+34. **信号报告必须声明数据时效，正文与阅读视图都要让读者看到「数据截至」与研究时点**（board-signal-reports）：compose 机械计算各源最新可得期+研究时点注入 prompt，facts 段缺「数据截至」回注重试（沿用 attempts≤3，与既有校验同一 problems 通道不放宽旧规则）；前端 as-of 行只读已入库 payload（appendix 最大期 + `generation_meta.cutoff`），零观测显示「无可用数据期」，MUST NOT 改 payload schema/API，存量报告同样生效。落地点：`service/signal_compose.go` / `SignalReportView.vue` + `signalReport.ts`。
+35. **进程重启必须把残留 running 研究进展行收敛为可查终态，不得永久悬挂「研究中」**（board-signal-reports）：启动点在 `runtime.StartRuntime`（`resetStaleStates` 后，此时内存必然无活 job）执行 `SweepOrphanedSignalResearchProgress`——定向 UPDATE `running`→`abandoned`+`stop_reason=orphaned_by_restart`（轮次/账本/既有 error 不动、幂等、失败仅告警不阻塞启动）；进程内终态仍由 defer（脱离已死 ctx 的后台 context）负责；DEMO_READ_ONLY 路径不执行（演示库零写入取舍）。落地点：`repository/signal_repository.go` / `app/runtime.go`。
 
 
 ## 代码入口
@@ -279,7 +311,9 @@ flowchart TB
 
 - **后端跨版块关系**（add-evidence-backed-cross-board-relations）：`repository/relation_models.go` + `relation_repository.go`（两表/状态机/幂等，迁移 `20260901_0001`）、`service/relation_scout.go`（scout 两步 + verifier 盲验两步）、`service/relation_resolver.go`（保守解析纯函数）、`service/relation_evidence.go`（quote 核对/质量分级）、`service/relation_discovery.go`（编排 + 自动发现 enqueue + per-board 互斥）、`service/search_internal_context.go`（内部检索工具 + `DynamicLaneGrantSet` 动态授权）、`internal_context_impl.go`（DB 词法检索）、`handler/relation_discovery_handler.go`（六路由）、`scheduler_jobs.go` `RelationExpireJob`（每小时过期维护）。
 - **前端跨版块关系**：`BoardRelationPanel.vue`（建议列表/详情/裁决动作）、`composables/useBoardRelations.ts`（202/409 轮询 + epoch 守卫）、`BoardBriefReport.vue`（发现关联入口 + 已确认关系分区）、`BoardInvestigationReport.vue`（跨版块泳道引用标注与跳转）、`BoardEditDialog.vue`（自动发现开关，默认关闭）。
+- **后端板块信号解读报告**（board-signal-reports）：`service/signal_material.go`（周期/cutoff 校验与历史材料 assembler，freshness 只读不重写）、`service/signal_detect.go`（detect + 发现编排 SignalDiscoveryService + 来源能力注入 `SetSourceCapabilityText`，空文本=旧 prompt 字节一致）、`service/signal_research.go`（研究 loop + cutoff 包装层 + 账本 + 进展持久化 signalProgressRecorder + SignalResearchService）、`service/signal_calculation.go`（受限计算解释器）、`service/signal_compose.go`（成文校验 + appendix 代码生成）；repository 侧 `repository/signal_models.go` + `signal_repository.go`（批次/候选/报告/进展查询与形状校验 + 启动孤儿进展收敛 `SweepOrphanedSignalResearchProgress`）；handler 侧 `handler/signal_discovery.go` / `signal_research.go`（发现/研究/进展路由、派生状态、报告序列化）。迁移 `20260922_0001`（signal_report 形状/FK/索引）+ `20260922_0002`（研究进展表 status CHECK/复合 FK/索引，`internal/platform/database/postgres_migrations.go`）。
 - **前端**：`front/app/features/tags/components/BoardEnrichmentPanel.vue`（板块详情页「数据增强」工作台：简报主视图 + 聚焦分析折叠区 + 按 result_kind 三分派）、`BoardBriefReport.vue`（简报渲染：观察/关系/不确定项/可选题 + 下钻 + 选题调查入口）、`BoardInvestigationReport.vue`（调查报告：假设五态评估/支持反证 gap 分区/证据展开）、`BoardAnalysisReport.vue`（legacy 论文式报告，标「旧版分析」）、`DebateSection.vue`（FinGenius 个股辩论）、`composables/useBoardEnrichment.ts`（202/409 恢复/按 job_id 轮询状态机）；设置页「分析方法」section（`SettingsSectionAnalysisMethods.vue` + `AnalysisMethodPanel.vue`，sectionKey `analysis-methods`；旧 `ReferenceRolePanel.vue` 已下架不再挂载，写操作只能走 `/analysis-methods`）。
+- **前端信号工作台**（board-signal-reports）：`BoardEnrichmentPanel.vue` 主视图已换为信号解读工作台；`api/boardSignals.ts`（信号契约 API 唯一边界）、`composables/useSignalWorkbench.ts`（周期/候选/报告状态 + 202 轮询状态机 + 409 按 job_kind 接管 + job404 停轮询重拉）、`SignalCandidateList.vue`（周期工具栏 + 候选行 + 深入分析/重新研究）、`SignalReportList.vue`/`SignalReportView.vue`（报告列表/阅读视图：四段 + 引用查表渲染 + SVG 图表 + 代码附录）、`signalReport.ts`（引用解析/图表变换/状态派生纯函数）；旧简报/调查/legacy 视图与绑定管理入口卸载（组件文件保留），新闻背景折叠区保留。
 
 ### REST API 路由
 
@@ -331,6 +365,11 @@ flowchart TB
 | 方法 | 路径 | 说明 |
 | ------ | ------ | ------ |
 | POST | `/semantic-boards/:id/enrichment/analysis/trigger` | 触发版块简报（需板块开启 enrichment_enabled；202 job 信封，`job_kind=board_brief`） |
+| POST | `/semantic-boards/:id/enrichment/analysis/signal-discoveries` | 触发信号发现（body `{granularity, period}`；非法/未来周期或未开启 400 无 job；同板块互斥 409；202 `job_kind=board_signal_discovery`） |
+| GET | `/semantic-boards/:id/enrichment/analysis/signals` | 候选列表（`?granularity=&period=&before_id=&limit=`；id 倒序游标默认 20 最大 100；含服务端派生状态 pending/researching/reported 与 latest_result_id） |
+| POST | `/semantic-boards/:id/enrichment/analysis/signals/:candidateId/research` | 触发单候选深入研究（body `{regenerate?:false}`；跨板块 404、未开启 400、互斥 409、已有报告默认 200 复用、显式 regenerate 202 `job_kind=board_signal_report`） |
+| GET | `/semantic-boards/:id/enrichment/analysis/signal-reports` | 信号报告列表（仅成功报告；可带 `source_signal_id` 过滤该候选版本序列，候选归属不符 404） |
+| GET | `/semantic-boards/:id/enrichment/analysis/signal-reports/:rid` | 信号报告详情（含 tool_calls/input_snapshot；owner/kind 不符 404；响应无任何 review 字段） |
 | POST | `/semantic-boards/:id/enrichment/analysis/investigations/trigger` | 对父简报某问题触发深入调查（body `{briefing_result_id, question_id?\|question?}`；202 `job_kind=board_investigation`；同步预检 400/404） |
 | GET | `/semantic-boards/:id/enrichment/analysis/results` | 版块档历史列表（`?kind=board_brief\|board_investigation\|legacy_board_analysis`，缺省全部；非法 kind 400） |
 | GET | `/semantic-boards/:id/enrichment/analysis/results/:rid` | 单份版块档 result 详情（含 result_kind/parent_result_id/question_key；他板块/scope 不符 404） |
@@ -360,5 +399,6 @@ flowchart TB
 | 2026-08-27 | fix-board-analysis-material | 素材断供修复：态势卡取材链插 month 兜底（生产形态 week 97% 缺失→month 全量在库却无人消费）+ section 指纹改带 thread 标题实质内容（去「泳道名 (N篇)」同义反复）+ get_lane_detail 附带月/年背景记忆档案段（4000 rune 预算）+ 密度信号计入 lifeline 可用性 + 前端工作台收口（删旧话题选择条/单一下拉/新闻背景折叠化）；追加：补全门升级（week 档退出分析路径、72h 重算、as_of 钉到 now）+ 分析触发异步化（detached ctx + 同板块 409 互斥 + 轮询） | [`openspec/changes/archive/2026-08-31-fix-board-analysis-material`](../../../openspec/changes/archive/2026-08-31-fix-board-analysis-material) |
 | 2026-09-04 | constraint-declaration-redline | 约束节红线句格式化：本域「业务约束与不变量」节每条约束改写为首行加粗自含红线句 + 细节跟后（语义不变），declaration 注入降为红线层（上线后实测 bytes 降约 60%），细节层经关键词/JIT 全节注入按需补全；本域为格式改写，无业务行为变更 | [`openspec/changes/archive/2026-09-04-constraint-declaration-redline`](../../../openspec/changes/archive/2026-09-04-constraint-declaration-redline) |
 | 2026-09-02 | add-evidence-backed-cross-board-relations | 跨版块关系发现：证据优先流水线（Scout 博查检索→保守 Resolve→独立盲验 Verify→人工裁决 Persist）+ `cross_board_relation_runs`/`cross_board_relations` 两表生命周期（unresolved/proposed/confirmed/dismissed/expired，hash 幂等+dismiss 冷却+TTL 过期）+ confirmed 关系注入简报机械字段 `cross_board_relations`（质量数值排序预算截断）+ 调查链 `search_internal_context` 动态授权跨版块泳道（服务端 JSON 结果才 grant、落库前归属复验）+ 手动六路由 API（trigger 202/409、list/detail、confirm/dismiss/re-resolve）与 `relation_expire` 定时维护 + 自动发现默认关闭（板级开关+全局预算+per-board 互斥）+ 前端发现入口/建议面板/简报分区/调查跨版块标注 | [archive/2026-09-05-add-evidence-backed-cross-board-relations](../../../openspec/changes/archive/2026-09-05-add-evidence-backed-cross-board-relations/tasks.md)（含 2026-09-04 博查结构解析/run 写库双 bug 修复与真实链路验证记录） |
+| 2026-09-22 | board-signal-reports | 板块信号解读报告：两阶段人工流程（发现只存候选→逐条点击深入研究，40 轮/40 执行预算）+ `board_signal_discovery`/`board_signal_candidate` 两表与 result kind=signal_report（nullable granularity/period/source_signal_id + CHECK/复合 FK/部分索引，迁移 `20260922_0001`）+ 研究 loop 四源白名单（EIA weeks 1~12/JODI years 1~5 显式历史窗口）与受限计算（difference/percent_change/mean，模型不供数）+ 无评审四段报告（代码生成 appendix、`[[data]]/[[calc]]` 引用可核查、<3000 字符）+ job phase/outcome/error_stage 扩展与候选派生状态（running 位不持久化）+ 前端信号工作台（旧简报/调查/legacy 视图卸载保留、新闻背景保留） | 实现完成待归档（归档后按 §12 补链接） |
 
 > 资料来源：架构设计 `openspec/changes/data-enrichment-orchestration/design.md`（§0 两循环 + §4.2b 个股辩论 + §11 六决策）；概要设计 `openspec/changes/data-enrichment-orchestration/overview.md`（mermaid 流程图 + 6 Operation 速查）。

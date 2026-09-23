@@ -236,6 +236,31 @@ func validateResultShape(tx *gorm.DB, result *TopicEnrichmentResult) error {
 		if err != nil {
 			return fmt.Errorf("validate board investigation parent: %w", err)
 		}
+	case ResultKindSignalReport:
+		// Board scope + board owner only; no parent linkage; period identity
+		// and the candidate FK are enforced by the DB (shape CHECK + composite
+		// FK, migration 20260922_0001) — repository mirrors them for early,
+		// readable failures.
+		if result.AnalysisScope != "board" || result.SemanticBoardID == nil || result.PersistentTopicID != nil || hasParentData {
+			return fmt.Errorf("invalid %s result shape", result.ResultKind)
+		}
+		if result.Granularity == nil || result.Period == nil || result.SourceSignalID == nil {
+			return fmt.Errorf("invalid %s result shape: granularity/period/source_signal_id required", result.ResultKind)
+		}
+		if !ValidSignalGranularity(*result.Granularity) || !ValidSignalPeriod(*result.Granularity, *result.Period) {
+			return fmt.Errorf("invalid %s result shape: period %q does not match granularity %q", result.ResultKind, *result.Period, *result.Granularity)
+		}
+		var candidate BoardSignalCandidate
+		err := tx.Where(
+			"id = ? AND semantic_board_id = ? AND granularity = ? AND period = ?",
+			*result.SourceSignalID, *result.SemanticBoardID, *result.Granularity, *result.Period,
+		).First(&candidate).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("signal report candidate must exist on the same board and period")
+		}
+		if err != nil {
+			return fmt.Errorf("validate signal report candidate: %w", err)
+		}
 	default:
 		return fmt.Errorf("unknown result_kind: %s", result.ResultKind)
 	}

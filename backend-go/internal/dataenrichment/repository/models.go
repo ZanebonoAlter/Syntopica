@@ -95,6 +95,12 @@ const (
 	ResultKindBoardBrief          = "board_brief"
 	ResultKindBoardInvestigation  = "board_investigation"
 	ResultKindLegacyBoardAnalysis = "legacy_board_analysis"
+	// ResultKindSignalReport (board-signal-reports): immutable signal report
+	// snapshot. Board scope only; carries granularity/period/source_signal_id
+	// (all other kinds leave the three columns NULL — never backfilled).
+	// Deliberately NOT in isBoardResultKind: legacy brief/investigation APIs
+	// keep their old semantics and never surface signal reports.
+	ResultKindSignalReport = "signal_report"
 )
 
 // TopicEnrichmentResult is an immutable snapshot of one enhancement run.
@@ -115,7 +121,14 @@ type TopicEnrichmentResult struct {
 	ToolCalls           json.RawMessage `gorm:"type:jsonb" json:"tool_calls"`
 	InputSnapshot       json.RawMessage `gorm:"type:jsonb" json:"input_snapshot"`
 	SessionID           string          `gorm:"size:120" json:"session_id"`
-	CreatedAt           time.Time       `json:"created_at"`
+	// Signal-report lifecycle columns (board-signal-reports). Nullable for
+	// every kind; only signal_report rows carry values. Model tags stay
+	// constraint-free: the explicit migration owns the shape CHECK and the
+	// composite FK to board_signal_candidate (20260922_0001).
+	Granularity    *string   `gorm:"size:10" json:"granularity"`
+	Period         *string   `gorm:"size:12" json:"period"`
+	SourceSignalID *uint     `json:"source_signal_id"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 func (TopicEnrichmentResult) TableName() string { return "topic_enrichment_result" }
@@ -319,5 +332,8 @@ func init() {
 		&AnalysisMethod{},
 		&CrossBoardRelationRun{},
 		&CrossBoardRelation{},
+		&BoardSignalDiscovery{},
+		&BoardSignalCandidate{},
+		&BoardSignalResearchProgress{},
 	)
 }

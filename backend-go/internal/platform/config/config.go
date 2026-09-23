@@ -17,6 +17,7 @@ type Config struct {
 	Tracing       TracingConfig
 	Storage       StorageConfig
 	Bocha         BochaConfig
+	Comtrade      ComtradeConfig
 	CrossBoardRel CrossBoardRelationConfig
 }
 
@@ -104,6 +105,13 @@ type BochaConfig struct {
 	Endpoint string `mapstructure:"endpoint"` // default https://api.bochaai.com/v1/web-search
 }
 
+// ComtradeConfig holds the UN Comtrade subscription key (research data
+// sources domain). Empty key → the un_comtrade source stays disabled in the
+// catalog with a reason pointing at COMTRADE_API_KEY (spec「数据源目录」).
+type ComtradeConfig struct {
+	APIKey string `mapstructure:"api_key"` // empty → source disabled
+}
+
 var AppConfig *Config
 
 func LoadConfig(configPath string) error {
@@ -142,6 +150,7 @@ func LoadConfig(configPath string) error {
 
 	viper.SetDefault("bocha.api_key", "")
 	viper.SetDefault("bocha.endpoint", "https://api.bochaai.com/v1/web-search")
+	viper.SetDefault("comtrade.api_key", "")
 
 	// Cross-board relation discovery budgets (add-evidence-backed-cross-board-relations).
 	viper.SetDefault("cross_board_rel.auto_max_sources_per_brief", 3)
@@ -230,6 +239,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv("BOCHA_ENDPOINT")); v != "" {
 		cfg.Bocha.Endpoint = v
+	}
+
+	// UN Comtrade data source (research data sources domain). Empty key →
+	// un_comtrade source stays disabled in the catalog (spec「数据源目录」).
+	if v := strings.TrimSpace(os.Getenv("COMTRADE_API_KEY")); v != "" {
+		cfg.Comtrade.APIKey = v
 	}
 }
 

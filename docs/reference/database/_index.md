@@ -11,6 +11,7 @@
 | [tables/ai-routing.md](tables/ai-routing.md) | AI 路由域 | ai-summary |
 | [tables/topic-tags.md](tables/topic-tags.md) | 主题标签域 | topic-graph |
 | [tables/semantic-labels.md](tables/semantic-labels.md) | 语义标签 / 板块域 | semantic-board |
+| [tables/research-data-sources.md](tables/research-data-sources.md) | 研究数据源域 | research-data-sources |
 | [tables/embeddings.md](tables/embeddings.md) | 向量域 | topic-graph |
 | [tables/job-queues.md](tables/job-queues.md) | 任务队列域 | content-enrichment |
 | [tables/daily-report-watch.md](tables/daily-report-watch.md) | 日报 / 持久话题 / Watch 域 | daily-report |
@@ -118,6 +119,8 @@
 | `analysis_methods` | 分析方法卡库（调查链按问题选卡注入） | `dataenrichment.AnalysisMethod` |
 | `cross_board_relation_runs` | 跨板块关系生成批次 | `repository.CrossBoardRelationRun` |
 | `cross_board_relations` | 跨板块证据关系 | `repository.CrossBoardRelation` |
+| `board_signal_discovery` | 板块信号发现批次（两阶段人工流程，board-signal-reports） | `repository.BoardSignalDiscovery` |
+| `board_signal_candidate` | 板块信号候选（不可变，复合 FK 钉死与批次一致） | `repository.BoardSignalCandidate` |
 
 #### 偏好/发现 → [`tables/preference-discovery.md`](tables/preference-discovery.md)（flow: `discovery`）
 
