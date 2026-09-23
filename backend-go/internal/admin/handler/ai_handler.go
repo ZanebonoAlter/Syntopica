@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
@@ -171,22 +172,26 @@ func DeleteProvider(c *gin.Context) {
 		return
 	}
 
-	var linkCount int64
-	if err := repository.Repo.DB().Model(&models.AIRouteProvider{}).Where("provider_id = ?", provider.ID).Count(&linkCount).Error; err != nil {
+	// 级联解绑（fix-provider-delete-route-deadlock）：provider 被线路引用时
+	// 自动解除全部关联再删除，避免「删除需先解绑、页面又无法解绑」的死锁。
+	// 被摘空的线路保留，后续调用走既有的 ErrNoProviders 报错路径。
+	message := "provider deleted"
+	err = repository.Repo.DB().Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("provider_id = ?", provider.ID).Delete(&models.AIRouteProvider{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected > 0 {
+			message = fmt.Sprintf("provider deleted (detached from %d route(s))", res.RowsAffected)
+		}
+		return tx.Delete(&provider).Error
+	})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
-	if linkCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"success": false, "error": "provider is still used by one or more AI routes"})
-		return
-	}
 
-	if err := repository.Repo.DB().Delete(&provider).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "provider deleted"})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": message})
 }
 
 func ListRoutes(c *gin.Context) {

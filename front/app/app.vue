@@ -98,4 +98,7 @@ onUnmounted(teardownProgress)
 
   <!-- 全局 Toast 通知 -->
   <NotifyContainer />
+
+  <!-- 全局统一确认弹窗（useConfirm 管道渲染端，fix-provider-delete-route-deadlock 2b） -->
+  <AppConfirmDialog />
 </template>

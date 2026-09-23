@@ -28,13 +28,18 @@ func setupAIAdminTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestDeleteProviderBlocksLinkedProvider(t *testing.T) {
+// 复现测试（fix-provider-delete-route-deadlock）：provider 挂在多条线路上时
+// 删除应级联解绑成功，而非 409 拒绝（旧行为导致 provider 永远无法删除）。
+func TestDeleteProviderDetachesLinkedProvider(t *testing.T) {
 	db := setupAIAdminTestDB(t)
 	provider := models.AIProvider{Name: "linked", ProviderType: "openai_compatible", BaseURL: "https://api.example.com/v1", APIKey: "token", Model: "gpt", Enabled: true, TimeoutSeconds: 120}
 	require.NoError(t, db.Create(&provider).Error)
-	route := models.AIRoute{Name: "default", Capability: "summary", Enabled: true, Strategy: "ordered_failover"}
-	require.NoError(t, db.Create(&route).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error)
+	summaryRoute := models.AIRoute{Name: "default", Capability: "summary", Enabled: true, Strategy: "ordered_failover"}
+	require.NoError(t, db.Create(&summaryRoute).Error)
+	tagRoute := models.AIRoute{Name: "default", Capability: "topic_tagging", Enabled: true, Strategy: "ordered_failover"}
+	require.NoError(t, db.Create(&tagRoute).Error)
+	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: summaryRoute.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error)
+	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: tagRoute.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error)
 
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
@@ -42,10 +47,17 @@ func TestDeleteProviderBlocksLinkedProvider(t *testing.T) {
 	ctx.Params = gin.Params{{Key: "provider_id", Value: fmt.Sprintf("%d", provider.ID)}}
 
 	DeleteProvider(ctx)
-	require.Equal(t, http.StatusConflict, recorder.Code)
+	require.Equal(t, http.StatusOK, recorder.Code)
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
-	require.Contains(t, body["error"], "still used")
+	require.Contains(t, body["message"], "detached from 2 route(s)")
+
+	var linkCount int64
+	require.NoError(t, db.Model(&models.AIRouteProvider{}).Where("provider_id = ?", provider.ID).Count(&linkCount).Error)
+	require.EqualValues(t, 0, linkCount, "线路关联应被级联删除")
+	var providerCount int64
+	require.NoError(t, db.Model(&models.AIProvider{}).Where("id = ?", provider.ID).Count(&providerCount).Error)
+	require.EqualValues(t, 0, providerCount, "provider 应被删除")
 }
 
 func TestDeleteProviderRemovesUnusedProvider(t *testing.T) {

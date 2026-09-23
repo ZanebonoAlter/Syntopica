@@ -22,10 +22,18 @@ for (const key of ['localStorage', 'sessionStorage'] as const) {
   }
 }
 
-// Nuxt's useState returns a Ref<T>; we mock it with Vue's ref
+// Nuxt's useState returns a Ref<T> shared per key across the app（按 key 全局单例）。
+// mock 用 per-key registry 对齐该语义：同一测试文件内，一处经 useState(key) 写入的
+// 状态在别处（含被测组件内部）可见。此前每次调用都返回新 ref，会让「测试代码与被测
+// 组件各拿各的 state」，跨实例共享的 composable（如 useConfirm）无法测。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const useStateRegistry = new Map<string, { value: any }>()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 globalThis.useState = function useState<T = any>(key: string, init?: () => T) {
-  return init ? ref(init()) : ref()
+  if (!useStateRegistry.has(key)) {
+    useStateRegistry.set(key, ref(init ? init() : undefined))
+  }
+  return useStateRegistry.get(key) as { value: T }
 }
 
 // Nuxt's useRuntimeConfig returns runtime config
