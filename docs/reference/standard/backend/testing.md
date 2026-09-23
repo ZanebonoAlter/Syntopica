@@ -75,6 +75,13 @@ func TestSomethingUnit(t *testing.T) {
 ## 🛑 DSN 安全红线（事故教训 — 不可违反）
 
 > 早期版本曾通过默认 DSN 连到开发库并执行 `TRUNCATE`/`DROP TABLE`，**清空了业务数据**。该路径已彻底移除。
+> **2026-09-22 同类复发（换了一条入口）**：人工验证 entrypoint DO 块时 `psql -c "DO $$ TRUNCATE…$$"` 直接执行（`-c` 无 dry-run），CASCADE 级联清空本地 7 张表（categories/feeds/articles/article_topic_tags/reading_behaviors/user_preferences/两队列），靠当日 04:00 备份恢复。
+
+**硬约束（按副作用划界，不按工具划界——测试代码与人工命令同样适用）：**
+
+- 连**真库**执行任何含 `TRUNCATE`/`DELETE`/`DROP`/`UPDATE`/`ALTER` 的语句（含 DO 块/存储过程内部），SHALL 包在 `BEGIN; …; ROLLBACK;` 内，或在一次性临时容器/库里跑；SHALL NOT 用 `psql -c` 裸跑——`-c` 没有 dry-run，语法验证也是真执行
+- 无副作用的语法验证用解析路径（`sh -n` 管脚本、临时空数组的 DO 块、`pg_get_functiondef`），不碰有数据的库
+- 执行清理类命令前 SHALL 先 `count(*)` 留底并确认可用备份（`backups/pg-key-*.dump`，注意 `pg_restore -t` 不带 schema 前缀、带前缀会**静默零匹配**）
 
 **硬约束：**
 

@@ -111,6 +111,7 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 - Do not assume Python backend; the product backend is Go.
 - Ignore unrelated dirty-worktree changes. Verify smallest relevant command after edits.
 - git提交使用 zanebonoalter <380207345@qq.com>
+- **验证含副作用的 SQL 一律不碰真库**（2026-09-22 事故：验证 entrypoint DO 块时 `psql -c` 直接执行了 TRUNCATE…CASCADE，级联清空本地 7 张表，靠 04:00 备份才恢复）：`psql -c` **没有 dry-run，敲下去就是执行**；验证 DDL/DML（TRUNCATE/DELETE/DROP/UPDATE/ALTER）必须包 `BEGIN; …; ROLLBACK;`、在一次性临时容器/库里跑，或只用无副作用的解析路径；跑清理类命令前先 `count(*)` 留底并确认备份路径。红线权威源：`standard/backend/testing.md` §🛑；事故事实档：`docs/experience/2026-09-22-psql-truncate-cascade-incident.md`（本地不入库）。
 - **测试只跑本次修改影响的包**，不要跑全量 `go test ./...`。影响包用 `bash scripts/harness/change-scope.sh` 机械判定（路径→命令映射，未命中会提示无法判定）。例如改了 `daily_report` 和 `ws`，就只跑 `go test ./internal/domain/daily_report ./internal/platform/ws`。
 - **树莓派本机不做「顺手跑全量」**（前端 `pnpm test:unit` 全量 96 文件、后端 `go test ./...` 同理）：4 核 + SD 卡扛不住——2026-09-17 实测全量前端单测叠加多 pi 会话后 load 飙 106、系统假死重启。日常按范围跑受影响文件（`pnpm test:unit <文件> --maxWorkers=2`，参数不带 `--`）；确需全量（归档门禁 / pre-push）时先停其它 pi 会话、加 `--maxWorkers=2`、不与 `pnpm build`／浏览器自动化并行。事故详情见 `standard/frontend/testing.md`。
 - **测试欠账滚动巡检**：会话收尾若无高负载操作，顺手 `bash scripts/harness/test-patrol.sh` 跑一片（最久未巡优先，前端分片自带 `--maxWorkers=2`）；归档/pre-push 前先 `bash scripts/harness/test-patrol.sh --report` 看有无未还欠账；撞见**非本 change 引起**的红测试 → `bash scripts/harness/test-patrol.sh --register <test_id> --context <change名>` 登记台账后继续（本 change 自己的红仍须先修）。

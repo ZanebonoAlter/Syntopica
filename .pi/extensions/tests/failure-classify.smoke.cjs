@@ -137,6 +137,11 @@ const check = (name, ok) => checks.push([name, ok]);
 	check('B8 非代码路径原样返回', JSON.stringify(extractFailurePaths('openspec/changes/foo/tasks.md:12:1: ...')) === JSON.stringify(['openspec/changes/foo/tasks.md']));
 	// 不变量：null/undefined 输入安全返回 []（对齐 I8/T7 防御风格）
 	check('B-不变 null/undefined 输入安全返回 []', extractFailurePaths(null).length === 0 && extractFailurePaths(undefined).length === 0);
+
+	// ---- aggregate-concurrent-gate-warns 4.1 三形态锚点（test-cases S2 附录 B）----
+	check('B9 vet: 前缀文件锚点直并（形态三）', JSON.stringify(extractFailurePaths('vet: internal/dataenrichment/handler/x_test.go:3:1: undefined: Foo')) === JSON.stringify(['internal/dataenrichment/handler/x_test.go']));
+	check('B10 无 / 的包锚点（command-line-arguments）映射 null 不并入（保守）', extractFailurePaths('FAIL command-line-arguments [build failed]').length === 0);
+	check('B11 未登记 module 的包锚点映射 null 不并入（保守）', extractFailurePaths('# other-module/internal/x').length === 0);
 }
 
 /* ---------- 段一·IV：isForeignFailure（attribute-concurrent-gate-noise，真值表 C1-C8） ---------- */

@@ -1,53 +1,12 @@
-# gate-failure-reporting Specification
+## REMOVED Requirements
 
-## Purpose
-quality-gate 增量门禁在**共享工作树**上的失败报告口径：一是把「同一失败的重复注入」收敛为边沿触发（首次全文、持续单行、转绿收尾），避免长失败回合段把同样的字节每回合重新灌进上下文；二是在并发 change 共享一棵树时判定失败归属，让「别人造成的失败」不再以 `[回归]` 的面目催修本会话去改别人的文件。
+### Requirement: 失败指纹与重复抑制
 
-## Requirements
+**Reason**: 报告契约从「每回合都有话说」（持续单行摘要 + ≥3 回合『未修』标记，逐回合注入）整体替换为边沿触发注入（状态未变零注入）。原需求连同其两个行为已退役的 scenario（「同指纹持续只输出单行摘要」「连续三回合未变化附加未修标记」）一并退役——delta 层无法对 scenario 改名或局部删除，整体 REMOVED + ADDED 是唯一不留矛盾 scenario 名的替换方式（harness-retro ④段：逐回合提醒已被判为软提醒失效，2026-09-15~22 窗口 41 次并发类 warn 重复触发）。
 
-### Requirement: 并发失败归属判定与外部失败降级
+**Migration**: 由同一 delta 的 `### Requirement: 失败指纹与边沿触发注入` 承接：首次完整块、指纹变化重注、转绿单行收尾、指纹状态会话生命周期、粘性重跑语义不变均原样迁移；退役两个 scenario 的「查当前红态」职责由新能力 `gate-status-query` 承接，「防止长期静默漏修」职责由 spec-gate 归档前全绿硬门禁承接。
 
-quality-gate 在报告门禁失败前 SHALL 判定失败归属，判定 MUST 只使用可机证信号、MUST NOT 使用目录 mtime 之类弱启发式：
-
-- **本会话侧 `mine`**：本会话累计触发路径集合 ∪ 本会话绑定 change（同 session 最近一条 `mode.set` 的 `boundChange`）在事实库 `edit.map` 中的归属集合。
-- **外部侧 `foreign`**：会话启动时基线脏文件集合（session_start 时点已在 git 脏文件集中的路径）∪ 其他 active change 的 `edit.map` 归属集合。
-
-判定与后果：
-
-1. 从失败输出提取出的路径/包锚点集合 `P` **非空**、`P ∩ mine = ∅`、且 `P ⊆ foreign` 时，该失败 SHALL 归为 **`[外部]`**：MUST NOT 进入失败粘性集合（下回合不因它重跑）、MUST NOT 打 `[回归]/[中间态]` 分级、SHALL 以一行提示标注「归属其他会话/本会话启动前既有改动，非本会话所致」，并 SHALL 记一条 `policy.decision(action=warn, reasonCode=foreign-breakage, target=<cmd>)`。该外部提示行同样受上述「失败指纹与重复抑制」约束：会话内同指纹的外部失败至多输出一次提示行，后续回合同指纹仍存在时 MUST NOT 重复输出（指纹变化时重新输出）。
-2. 其余情形（含 `P` 为空、路径无法解析、`P` 同时含 `mine` 与 `foreign`）SHALL 维持既有语义：进粘性、按 `[回归]/[中间态]` 分级、输出完整失败块。
-
-本要求 MUST NOT 使用精确匹配以外的宽松推断扩大「外部」面；归属信号缺失或库不可用时 SHALL fail-open 回现状（视同本会话失败）。
-
-#### Scenario: 失败路径全落在会话启动基线时判外部
-
-- **WHEN** 会话启动时 `backend-go/internal/x/y.go` 已在脏文件集中（别的会话的半成品），本会话从未触发该路径，本回合 `golangci-lint` 报该文件的错误
-- **THEN** 该失败标为 `[外部]`、不进粘性、不打 `[回归]`，输出一行提示并记一条 foreign-breakage 记账
-
-#### Scenario: 失败路径含本会话触发文件时维持代码失败语义
-
-- **WHEN** 失败输出中的路径集合含本会话本次触发过的文件
-- **THEN** 该失败维持既有语义（进粘性、按分级输出完整块）
-
-#### Scenario: 路径不可解析时保守按本会话失败处理
-
-- **WHEN** 失败输出中提取不到任何路径或包锚点（如纯文本错误、工具输出格式漂移）
-- **THEN** 该失败视同本会话失败（进粘性、分级、完整块），不因无法判定而误降级
-
-#### Scenario: 归属其他 active change 的文件被识别为外部
-
-- **WHEN** 本会话未触发过 `front/app/x.vue`，而事实库中另一 active change 的 `edit.map` 归属集合含该路径，本回合前端门禁报该文件错误
-- **THEN** 该失败归为 `[外部]`（`P ⊆ foreign` 成立），不催修本会话
-
-#### Scenario: 外部失败不进粘性且记 warn 归因
-
-- **WHEN** 某回合的失败被判定为 `[外部]`
-- **THEN** 该命令不进入粘性集合（下回合纯对话时不重跑），账本新增一条 `policy.decision(action=warn, reasonCode=foreign-breakage)` 记录，且该记帐不影响门禁继续执行其他命令
-
-#### Scenario: 同指纹外部失败不重复提示
-
-- **WHEN** 某外部失败已输出 `[外部]` 提示行，后续编辑回合门禁重跑时同一指纹的外部失败仍然存在
-- **THEN** steer 消息不再重复该外部提示行（同指纹会话内至多一行），gate.check 失败记账与 policy.decision 记录不受影响
+## ADDED Requirements
 
 ### Requirement: 失败指纹与边沿触发注入
 

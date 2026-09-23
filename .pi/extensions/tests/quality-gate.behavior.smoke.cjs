@@ -461,15 +461,18 @@ const setup = (router) => {
 		check('K3 零 steer', messages.length === 0);
 	}
 
-	// ============ 场景 L：失败指纹状态机（attribute-concurrent-gate-noise 4.1 ①②④ + A 组） ============
-	// 首次完整块 → 同指纹 ⟳ 单行（第 3 回合带未修）→ 转绿 ✓ 收尾；粘性重跑语义不变。
+	// ============ 场景 L：边沿触发注入（aggregate-concurrent-gate-warns） ============
+	// 首次完整块 → 同指纹连续回合零注入（粘性照跑、无单行摘要无「未修」）→ 指纹变化
+	// 重新完整块 → 转绿 ✓ 收尾（每失败段至多一次）；粘性重跑语义不变。
 	{
 		setPlatform('windows');
 		const repo = mkrepo();
 		let files = '';
 		let lintCalls = 0;
-		let lintGreen = false; // 第 4 回合翻绿验证转绿收尾
+		let lintGreen = false; // 后续回合翻绿验证转绿收尾
 		const LINT_FAIL = 'internal/x/a.go:1:1: expected declaration, found package';
+		const LINT_FAIL2 = 'internal/x/b.go:9:9: undefined: Bar';
+		let lintOut = LINT_FAIL;
 		const router = async (cmd, args) => {
 			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
 			if (cmd === 'bash') return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
@@ -480,7 +483,7 @@ const setup = (router) => {
 					lintCalls++;
 					return lintGreen
 						? { code: 0, stdout: '0 issues.', stderr: '' }
-						: { code: 1, stdout: LINT_FAIL, stderr: '' };
+						: { code: 1, stdout: lintOut, stderr: '' };
 				}
 				return { code: 0, stdout: '', stderr: '' }; // vet/build 全绿
 			}
@@ -494,17 +497,26 @@ const setup = (router) => {
 		check('L1 ①首次失败完整块（[中间态] + exit + 输出尾部）', !!failMsg1
 			&& failMsg1.m.content.includes('[中间态]') && failMsg1.m.content.includes('exit 1')
 			&& failMsg1.m.content.includes('expected declaration'));
+		const failCountT1 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').length;
 		const lintAfterT1 = lintCalls;
 		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-l'));
-		const failMsg2 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
-		check('L2 ①同指纹第 2 回合单行（⟳ + 回合数，无输出尾部重灌）', !!failMsg2
-			&& failMsg2.m.content.includes('⟳') && failMsg2.m.content.includes('第 2 回合未变化')
-			&& failMsg2.m.content.includes(LINT_FAIL) && !failMsg2.m.content.includes('exit 1'));
-		check('L3 ④粘性在纯对话回合仍重跑（lint 重跑一次）', lintCalls === lintAfterT1 + 1);
+		check('L2 同指纹第 2 回合零注入（不新增 failure 消息、无 ⟳ 单行摘要）',
+			messages.filter(({ m }) => m.customType === 'quality-gate-failure').length === failCountT1
+				&& !messages.some(({ m }) => m.content.includes('⟳')));
+		check('L3 粘性在纯对话回合仍重跑（lint 重跑一次，注入收敛不减执行）', lintCalls === lintAfterT1 + 1);
+		const lintAfterT2 = lintCalls;
 		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-l'));
-		const failMsg3 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
-		check('L4 ①连续 3 回合未变化附加「未修」', !!failMsg3
-			&& failMsg3.m.content.includes('第 3 回合未变化') && failMsg3.m.content.includes('未修'));
+		check('L4 同指纹第 3 回合仍零注入且全文无「未修」标记（负向）',
+			messages.filter(({ m }) => m.customType === 'quality-gate-failure').length === failCountT1
+				&& !messages.some(({ m }) => m.content.includes('未修'))
+				&& lintCalls === lintAfterT2 + 1);
+		lintOut = LINT_FAIL2; // T4：失败特征行变化（指纹变化）
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-l'));
+		const failMsgChange = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('L7 指纹变化重新输出完整块（新特征行 + exit，无 ⟳，防新问题被静默吞掉）',
+			!!failMsgChange && failMsgChange.m.content.includes('exit 1')
+				&& failMsgChange.m.content.includes('undefined: Bar')
+				&& !failMsgChange.m.content.includes('⟳'));
 		files = ''; // 转绿回合：改文件已还原（无新增触发，仅粘性重跑）
 		lintGreen = true;
 		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-l'));
@@ -870,7 +882,9 @@ const setup = (router) => {
 		let lintGreen = false;
 		let vetGreen = true;
 		const MIXED_OUT = 'internal/mine/a.go:1:1: e1\ninternal/x/y.go:9:9: e2';
+		const MIXED_OUT2 = 'internal/mine/a.go:7:7: e7\ninternal/x/y.go:9:9: e2';
 		const MINE_ONLY = 'internal/mine/a.go:1:1: e1';
+		const MINE_ONLY2 = 'internal/mine/a.go:7:7: e7';
 		let lintOut = MIXED_OUT;
 		let vetOut = '';
 		const router = async (cmd, args) => {
@@ -905,19 +919,28 @@ const setup = (router) => {
 				&& JSON.parse(cmRows()[0].payload).target === 'golangci-lint');
 		const lintN = () => execCalls.filter((c) => c.includes('golangci-lint')).length;
 		const l1 = lintN();
-		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4')); // T2：纯对话粘性重跑 + 同指纹 ⟳
-		const fm2 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
-		check('B4-2/B4-3 mixed 进粘性重跑 + 同指纹 ⟳ 单行（rounds 递增不重灌）',
-			lintN() === l1 + 1 && !!fm2 && fm2.m.content.includes('⟳')
-				&& fm2.m.content.includes('第 2 回合未变化') && !fm2.m.content.includes('exit 1'))
-		check('B4-6b 每命中回合追加一条 concurrent-mixed（T2 累计 2 条）', cmRows().length === 2);
-		lintOut = MINE_ONLY; // T3：判性翻转 mixed→mine（diag 同、失败只剩本会话路径）
+		const failCountT1 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').length;
+		// T2–T5：同指纹连续 5 回合（T1 + 4 次纯对话）——粘性每回合重跑，但零注入零追加记账
+		for (let i = 0; i < 4; i++) await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4'));
+		check('B4-2/B4-3 同指纹 5 回合：每回合粘性重跑（次数不减）但后续 4 回合零注入（无 ⟳ 单行/未修）',
+			lintN() === l1 + 4
+				&& messages.filter(({ m }) => m.customType === 'quality-gate-failure').length === failCountT1
+				&& !messages.some(({ m }) => m.content.includes('⟳')));
+		check('B4-6b 同指纹 5 回合仅 1 条 concurrent-mixed 记账（按指纹边沿）', cmRows().length === 1);
+		lintOut = MIXED_OUT2; // T6：指纹变化（判性仍 mixed）
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4'));
+		const fmChange = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('B4-9 指纹变化 mixed：完整块重出 + 允许再记（累计 2 条）',
+			!!fmChange && fmChange.m.content.includes('[并发]') && fmChange.m.content.includes('e7')
+				&& !fmChange.m.content.includes('⟳') && cmRows().length === 2);
+		lintOut = MINE_ONLY2; // T7：判性翻转 mixed→mine（diag 同、失败只剩本会话路径）
 		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4'));
 		const fm3 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
-		check('B4-5 判性翻转 mixed→mine：恢复完整块 + 正常分级（⟳ 不延续）',
+		check('B4-5 判性翻转 mixed→mine：恢复完整块 + 正常分级（⟳ 不延续、不追加 mixed 记账）',
 			!!fm3 && fm3.m.content.includes('[中间态]') && fm3.m.content.includes('exit 1')
-				&& !fm3.m.content.includes('⟳') && !fm3.m.content.includes('[并发]'));
-		lintGreen = true; // T4：转绿
+				&& !fm3.m.content.includes('⟳') && !fm3.m.content.includes('[并发]')
+				&& cmRows().length === 2);
+		lintGreen = true; // T8：转绿
 		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-b4'));
 		const gm = messages.find(({ m }) => m.customType === 'quality-gate-green');
 		const l4 = lintN();
@@ -936,6 +959,7 @@ const setup = (router) => {
 		check('B4-7 同回合 mixed 与 mine 失败并存：同一 failure 消息内 [并发] 与 [回归] 分列',
 			!!fm6 && fm6.m.content.includes('[并发]') && fm6.m.content.includes('[回归][')
 				&& fm6.m.content.includes('internal/x/y.go') && fm6.m.content.includes('v1'));
+		check('B4-10 转绿清条目后再现 mixed 作为新失败段再记（累计 3 条）', cmRows().length === 3);
 		// B4-8 两极回归：纯外部 → [外部]；转绿清粘性后纯对话零重跑；纯 mine → 既有 [回归] 分级
 		vetGreen = true;
 		lintOut = 'internal/x/y.go:5:5: only-foreign'; // 纯外部（y.go 在基线；lint 靠 T6 mixed 粘性重跑）
@@ -955,6 +979,64 @@ const setup = (router) => {
 		check('B4-8 两极回归：纯外部 [外部] 不进粘性（转绿后纯对话零重跑）/ 纯 mine 维持既有 [回归] 分级',
 			!!fgMsg && fgMsg.m.content.includes('[外部]') && foreignNoSticky
 				&& !!fm8 && fm8.m.content.includes('[回归][') && !fm8.m.content.includes('[并发]'));
+	}
+
+	// ============ 场景 R：包锚点参与归属判定（aggregate-concurrent-gate-warns） ============
+	// R1：包级编译失败（输出仅 # <pkg> 锚点）且包目录已知文件全属外部（会话启动基线）
+	// → [外部]：不进粘性、不打分级（spec：包级编译失败且目录全属外部时判外部）。
+	// R2：包目录在 mine/foreign 均无归属 → 保守回退按本会话失败（防误降级锚点）。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'pkgowner'), { recursive: true });
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'mine'), { recursive: true });
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'pkgowner', 'p_test.go'), 'package pkgowner\n');
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'mine', 'a.go'), 'package mine\n');
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'mine', 'b.go'), 'package mine\n');
+		let files = 'backend-go/internal/pkgowner/p_test.go'; // 会话启动基线：p_test.go 是他人在途文件
+		let lintOut = '# syntopica-backend/internal/pkgowner [build failed]';
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (cl.includes('golangci-lint')) return { code: 1, stdout: lintOut, stderr: '' };
+				return { code: 0, stdout: '', stderr: '' }; // vet/build
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages, execCalls } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-r'));
+		files = 'backend-go/internal/pkgowner/p_test.go\nbackend-go/internal/mine/a.go'; // 本会话触发 a.go
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-r')); // R1
+		const foreignR = messages.filter(({ m }) => m.customType === 'quality-gate-foreign');
+		check('R1 包级编译失败 + 包目录已知文件全属外部 → [外部]（不进粘性、不打 [回归]/[中间态] 分级）',
+			foreignR.length === 1 && foreignR[0].m.content.includes('[外部]')
+				&& foreignR[0].m.content.includes('golangci-lint')
+				&& !messages.some(({ m }) => m.customType === 'quality-gate-failure'));
+		const lintR1 = execCalls.filter((c) => c.includes('golangci-lint')).length;
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-r'));
+		check('R1b 包级外部失败不进粘性：纯对话回合零重跑零新提示',
+			execCalls.filter((c) => c.includes('golangci-lint')).length === lintR1
+				&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1);
+		// R2：新触发让门禁重跑，失败输出换成无归属包的锚点
+		files = 'backend-go/internal/pkgowner/p_test.go\nbackend-go/internal/mine/a.go\nbackend-go/internal/mine/b.go';
+		lintOut = '# syntopica-backend/internal/ghost [build failed]';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-r'));
+		const fmR2 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('R2 包目录无归属匹配 → 保守回退按本会话失败分级（防误降级锚点）',
+			!!fmR2 && /\[(回归|中间态)\]/.test(fmR2.m.content)
+				&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1);
+		// R3：包锚点目录含本会话触发文件 → 维持既有分级 + 粘性（不降 [外部]）
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'mine', 'c.go'), 'package mine\n');
+		files = 'backend-go/internal/pkgowner/p_test.go\nbackend-go/internal/mine/a.go\nbackend-go/internal/mine/b.go\nbackend-go/internal/mine/c.go';
+		lintOut = '# syntopica-backend/internal/mine [build failed]';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-r'));
+		const fmR3 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('R3 包锚点目录含本会话文件时维持分级（不降 [外部]，粘性照进）',
+			!!fmR3 && /\[(回归|中间态)\]/.test(fmR3.m.content)
+				&& !fmR3.m.content.includes('[并发]')
+				&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1);
 	}
 
 	let fail = 0;

@@ -330,6 +330,38 @@ function expandSideForms(paths: ReadonlySet<string>): Set<string> {
 	return out;
 }
 
+/**
+ * 包锚点目录 → 实际文件路径展开（aggregate-concurrent-gate-warns design D3）：
+ * extractFailurePaths 对 `# <pkg>` / `FAIL <pkg> [build failed]` 产出的尾部 `/` 目录
+ * 前缀，在归属判定前机械映射为「该目录 ∩（git 脏文件 ∪ 各 edit.map 归属集）」的实际
+ * 文件路径并入 P——目录前缀精确匹配（startsWith，不上溯不递归不模糊）；空交不虚构
+ * 路径（该锚点对 P 零贡献 → 分类函数保守回退 mine）。两侧判定集合（mine∪foreign）
+ * = 累计触发 ∪ 会话启动基线（即各回合 git 脏文件并集）∪ 双侧 edit.map 归属，直接对
+ * 其求交；含已不在当前脏集的历史触发路径属于保守方向（多归 mine，宁可多报不误降级）。
+ */
+function expandPkgAnchorDirs(
+	paths: readonly string[],
+	...sides: ReadonlySet<string>[]
+): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	const push = (p: string): void => {
+		if (seen.has(p)) return;
+		seen.add(p);
+		out.push(p);
+	};
+	for (const p of paths) {
+		if (!p.endsWith("/")) {
+			push(p);
+			continue;
+		}
+		for (const s of sides) {
+			for (const x of s) if (x.startsWith(p)) push(x);
+		}
+	}
+	return out;
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (event, ctx) => {
 		// ⚠ reason "startup" 跳过（与 constraint-injection 同款防御）：pi-subagents 派发
@@ -715,7 +747,12 @@ export default function (pi: ExtensionAPI) {
 				let ownership: "foreign" | "mixed" | "mine" = "mine";
 				let hitPaths: string[] = [];
 				try {
-					hitPaths = extractFailurePaths(output);
+					// 包锚点（# pkg / FAIL pkg / vet: file:line）→ 目录∩已知归属集展开（D3）
+					hitPaths = expandPkgAnchorDirs(
+						extractFailurePaths(output),
+						mineJudge,
+						foreignJudge,
+					);
 					ownership = classifyFailureOwnership({
 						paths: hitPaths,
 						mine: mineJudge,
@@ -748,26 +785,26 @@ export default function (pi: ExtensionAPI) {
 						);
 					}
 				} else if (ownership === "mixed") {
-					// 混合归属降级（tune-quality-gate-concurrency D3）：进粘性（本会话部分确
-					// 要修、回合末复检不断）但不取 [回归]/[中间态] 分级，改 [并发] 前缀 + 双方
-					// 路径分列；每命中回合一条 concurrent-mixed 记账；同指纹 ⟳ / 判性翻转
-					//（mixed→mine）恢复完整块与正常分级复用指纹状态机（mixed 标记专属 ⟳ 条件）。
-					if (sessionId) {
-						logPolicyDecision(repoRoot, {
-							sessionId,
-							policy: "quality-gate",
-							action: "warn",
-							reasonCode: "concurrent-mixed",
-							target: cmd,
-						});
-					}
+					// 混合归属降级（tune-quality-gate-concurrency D3 + aggregate-concurrent-gate-warns
+					// D1/D2）：进粘性（本会话部分确要修、回合末复检不断）但不取 [回归]/[中间态] 分级，
+					// 改 [并发] 前缀 + 双方路径分列。边沿触发：仅新指纹（首现/指纹变化/失败段重建）
+					// 输出完整块并记一条 concurrent-mixed（D2：记账与注入同一边沿，同指纹会话内至多
+					// 一条）；同指纹持续回合零注入零记账（粘性照加，重跑不减）。判性翻转（mixed→mine）
+					// 走下方 mine 分支视同新指纹恢复完整块与正常分级。
 					if (prev && prev.mixed && prev.diag === diag) {
 						prev.rounds += 1;
 						stickyFailures.add(cmd);
-						failures.push(
-							`⟳ [${cmd}${linkTag}] 同一失败第 ${prev.rounds} 回合未变化（并发混合归属）：${diag}`,
-						);
+						// 状态未变零注入（spec：同指纹持续 MUST NOT 注入任何 steer）
 					} else {
+						if (sessionId) {
+							logPolicyDecision(repoRoot, {
+								sessionId,
+								policy: "quality-gate",
+								action: "warn",
+								reasonCode: "concurrent-mixed",
+								target: cmd,
+							});
+						}
 						const split = partitionFailurePaths({
 							paths: hitPaths,
 							mine: mineJudge,
@@ -780,12 +817,12 @@ export default function (pi: ExtensionAPI) {
 						);
 					}
 				} else if (prev && !prev.foreign && !prev.mixed && prev.diag === diag) {
-					// 同指纹持续（D4）：单行摘要不重灌 30 行输出；连续 ≥3 回合附加「未修」
+					// 同指纹持续（边沿触发注入，aggregate-concurrent-gate-warns D1）：状态未变零注入
+					// ——单行摘要与「≥3 回合未修」标记一并退役；红态知情 = 会话内首次全文 +
+					// gate-status.sh 查询 + 归档前全绿硬门禁（D5 三路兑底）。rounds 照增（仅内部
+					// 计数），粘性照加（重跑不减，命令执行次数不随注入收敛下降）。
 					prev.rounds += 1;
 					stickyFailures.add(cmd);
-					failures.push(
-						`⟳ [${cmd}${linkTag}] 同一失败第 ${prev.rounds} 回合未变化：${diag}${prev.rounds >= 3 ? "（未修）" : ""}`,
-					);
 				} else {
 					// 首次/指纹变化/判性翻转（外部→本会话、mixed→本会话）：完整块视同首次（分级前缀 + tail 30）
 					failureReports.set(cmd, { diag, rounds: 1, foreign: false });
@@ -949,8 +986,9 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// 5. 失败 → 软提示（steer：本回合工具跑完后、下次 LLM 调用前注入）。
-		//    报告强度递变（D4）：首次/指纹变化完整块、同指纹 ⟳ 单行（≥3 回合带未修）、
-		//    转绿 ✓ 收尾——失败块与转绿行同消息（混合回合），仅转绿时独立小消息。
+		//    边沿触发注入（aggregate-concurrent-gate-warns D1）：首次/指纹变化完整块、
+		//    同指纹持续零注入（failures 剔空则本段不发）、转绿 ✓ 收尾——失败块与转绿行
+		//    同消息（混合回合），仅转绿时独立小消息。
 		if (failures.length > 0) {
 			const green = greenLines.length > 0 ? `\n\n${greenLines.join("\n")}` : "";
 			pi.sendMessage(
