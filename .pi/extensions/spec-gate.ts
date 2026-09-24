@@ -27,11 +27,16 @@
  * 6. 检查⑤为 warn 级措辞扫描（⑤a 复杂档关键词任务无 test-cases*.md / ⑤b 纯函数×SQLite
  *    分层错配）：命中仅走 spec-gate-warning 留痕，绝不进 block 判定；自身异常同样 fail-open；
  *    关键词表与 docs/reference/standard/shared/test-design.md「验收措辞规范」节禁用词表同步
+ * 7. 检查⑤/⑤' 的 warn 投递为边沿触发（edge-trigger-archive-gate-warns）：per-sessionId
+ *    指纹态（会话内存、LRU 有界、不跨会话不落盘）——同会话同指纹（warn 内容未变）静默零记账；
+ *    首见/指纹变化/session_compact 后重发；上次 warn 过本次转绿发一行收尾并清条目。记账与
+ *    展示同边沿；bypass / fail-open / 无名 fail-open 的 warning 不进指纹表（审计留痕）
  *
  * 配置：SPEC_GATE_ENABLE（默认开，"0"/"false"/"off" 关闭）、SPEC_GATE_BYPASS=1（豁免）、
  * SPEC_GATE_TIMEOUT_MS（默认 60000，①②两项脚本检查共用预算）。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { logPolicyDecision, type PolicyDecisionInput } from "./lib/policy-decision";
@@ -53,6 +58,80 @@ type GateCtx = {
 	sessionManager?: { getSessionId?(): string | undefined } | undefined;
 };
 
+// ---------- warn 边沿触发状态模块（edge-trigger-archive-gate-warns D1：per-sessionId 二级 Map + LRU 有界 + 兜底槽） ----------
+
+/** 无 sessionId（烟测 stub / 非真实会话语境）时的兜底槽键；行为与隔离前等价（进程内首个 warn 视为首见） */
+const FALLBACK_SESSION_KEY = "__no-session__";
+/** 会话条目上限（超限淘汰最久未写会话；对齐 constraint-injection sessionStateLimit 先例；触发频率低，不设环境变量） */
+const WARN_STATE_LIMIT = 32;
+/** 单会话 warn 指纹条目：cacheKey（`<change名>:<kind>`，kind ∈ "wording"|"concurrent"）→ 指纹 */
+type WarnEntry = { at: number; items: Map<string, string> };
+/** per-sessionId 指纹态（会话内存态：会话边界由键隔离、进程重启全清，不跨会话不落盘） */
+const warnStates = new Map<string, WarnEntry>();
+
+/** 会话键：无 sessionId 落兜底槽（同 constraint-injection sessionKey 先例） */
+function warnSessionKey(ctx: GateCtx | undefined): string {
+	return ctx?.sessionManager?.getSessionId?.() || FALLBACK_SESSION_KEY;
+}
+
+/** 会话状态唯一读写入口：缺失即建 + 刷新 LRU 时间戳；超上限淘汰最久未写会话（无额外副作用） */
+function warnStateFor(sKey: string): WarnEntry {
+	let entry = warnStates.get(sKey);
+	if (!entry) {
+		entry = { at: 0, items: new Map() };
+		warnStates.set(sKey, entry);
+		while (warnStates.size > WARN_STATE_LIMIT) {
+			let oldestKey: string | null = null;
+			let oldestAt = Number.POSITIVE_INFINITY;
+			for (const [k, v] of warnStates) {
+				if (v.at < oldestAt) {
+					oldestAt = v.at;
+					oldestKey = k;
+				}
+			}
+			if (oldestKey === null) break;
+			warnStates.delete(oldestKey);
+		}
+	}
+	entry.at = Date.now();
+	return entry;
+}
+
+// ---------- 指纹取值（D2：内容先规范化再 sha256，只存 16 字节 hex 前缀，不存原文） ----------
+
+/** sha256 前 16 字节（32 hex 字符） */
+function fingerprint(s: string): string {
+	return createHash("sha256").update(s).digest("hex").slice(0, 32);
+}
+
+/** ⑤' 指纹：检查脚本 stdout 按行拆 → trim → 滤空行 → 排序去重 → join（消除输出顺序抖动的假 diff） */
+export function concurrencyFingerprint(stdout: string): string {
+	const lines = [...new Set(stdout.split("\n").map((l) => l.trim()).filter(Boolean))].sort();
+	return fingerprint(lines.join("\n"));
+}
+
+/** ⑤ 指纹：违例文案列表 join（扫描顺序已由常量词表序决定，不排序——保留「新增关键词排前」语义差异进指纹） */
+export function wordingFingerprint(warnings: string[]): string {
+	return fingerprint(warnings.join("\n"));
+}
+
+// ---------- 投递边沿判定（D3：三态纯函数，与 quality-gate 失败指纹状态机家族对齐） ----------
+
+export type WarnEdgeAction = "deliver" | "silent" | "close";
+
+/** 边沿判定：输入上次指纹与本次指纹（null = 干净/零违例），输出动作。
+ *  首见（无条目）→ deliver；同指纹 → silent；指纹变化 → deliver（视同首见）；
+ *  上次有条目本次干净 → close（收尾）；无条目且干净 → silent（不冒空收尾）。
+ *  「转净后再犯」自然覆盖：close 已删条目 → prev 回到 null → 首见。
+ *  纯函数：不 I/O、不抛异常（供冒烟直测，⑤ 措辞红线：纯函数判定不涉 DB）。 */
+export function decideWarnEdge(
+	prevFp: string | null | undefined,
+	currFp: string | null | undefined,
+): WarnEdgeAction {
+	if (!currFp) return prevFp ? "close" : "silent";
+	return prevFp === currFp ? "silent" : "deliver";
+}
+
 // ---------- 主入口 ----------
 
 export default function (pi: ExtensionAPI) {
@@ -71,6 +150,16 @@ export default function (pi: ExtensionAPI) {
 			console.warn(`[spec-gate] 未预期异常，放行：${String(err)}`);
 			warn(pi, `⚠️ [spec-gate] 归档门禁内部异常，本次放行（fail-open）：${String(err)}`);
 			return;
+		}
+	});
+
+	// session_compact（D4/D7）：清本会话指纹条目 → 下一次归档尝试 warn 重发一次（compact 会把
+	// 早先 warning 摘要掉，重发是正确性要求；只清本会话，异常 fail-open 不阻断）
+	pi.on("session_compact", async (_event, ctx) => {
+		try {
+			warnStates.delete(warnSessionKey(ctx));
+		} catch (err) {
+			console.warn(`[spec-gate] session_compact 清指纹条目异常（忽略）：${String(err)}`);
 		}
 	});
 }
@@ -162,20 +251,50 @@ async function gateArchive(
 	// 3.5 检查⑤'：归档并发（coordinate-concurrent-changes，warn 级绝不 block）——树上
 	//     存在归属其他 active change 的未 commit 文件时 steer 提醒（先拆 commit 或与对方
 	//     协调收口）；exit 0 干净 / 3 冷启动跳过零输出；脚本异常 fail-open 零干预。
+	//     投递为边沿触发（edge-trigger-archive-gate-warns）：首见/清单变化全量投递 + 记账，
+	//     同清单（指纹同）静默零记账；上次 warn 过本次 exit 0 发一行「已转净」收尾并清条目；
+	//     exit 3 冷启动不产生 warn 也不产生收尾（不触碰指纹态，维持零输出）；指纹态异常
+	//     fail-open 全量投递（D7，绝不阻断归档）。
 	const conc = await runScript(pi, ctx, ["scripts/harness/concurrency-status.sh", "--check", name]);
+	const concKey = `${name}:concurrent`;
 	if (conc.code === 2) {
-		console.warn(`[spec-gate] ${name} 归档时树上存在归属其他 active change 的未 commit 文件（warn 不 block）`);
-		warn(
-			pi,
-			`⚠️ [spec-gate] 检查⑤'（warn 级，不影响归档裁决）：树上存在归属其他 active change 的未 commit 文件：\n${conc.detail}\n建议：按归属地图先拆主体 commit（bash scripts/harness/concurrency-status.sh <change> 看人读态势），或与对方 change 协调收口时序`,
-		);
-		auditPolicy(ctx, name, {
-			policy: "spec-gate",
-			action: "warn",
-			reasonCode: "concurrent-dirty-tree",
-			target: "archive",
-		});
+		let deliver = true;
+		try {
+			const fp = concurrencyFingerprint(conc.stdout);
+			const st = warnStateFor(warnSessionKey(ctx));
+			if (decideWarnEdge(st.items.get(concKey) ?? null, fp) === "silent") {
+				deliver = false;
+				console.log(`[spec-gate] ${name} 检查⑤' 同指纹静默（上次 warn 未变，会话内不重发）`);
+			} else {
+				st.items.set(concKey, fp);
+			}
+		} catch (err) {
+			console.warn(`[spec-gate] 检查⑤' 指纹态异常，按无状态全量投递（fail-open）：${String(err)}`);
+		}
+		if (deliver) {
+			console.warn(`[spec-gate] ${name} 归档时树上存在归属其他 active change 的未 commit 文件（warn 不 block）`);
+			warn(
+				pi,
+				`⚠️ [spec-gate] 检查⑤'（warn 级，不影响归档裁决）：树上存在归属其他 active change 的未 commit 文件：\n${conc.detail}\n建议：按归属地图先拆主体 commit（bash scripts/harness/concurrency-status.sh <change> 看人读态势），或与对方 change 协调收口时序`,
+			);
+			auditPolicy(ctx, name, {
+				policy: "spec-gate",
+				action: "warn",
+				reasonCode: "concurrent-dirty-tree",
+				target: "archive",
+			});
+		}
+	} else if (conc.code === 0) {
+		// 转净收尾：仅当该 change 有 warn 指纹条目才发一行 ✓ 并删条目（无条目零输出，不冒空收尾）
+		try {
+			if (warnStates.get(warnSessionKey(ctx))?.items.delete(concKey)) {
+				warn(pi, `✓ [spec-gate] 检查⑤' 已转净（${name}：树上归属他 change 的未 commit 文件已清，本次起恢复首见提醒语义）`);
+			}
+		} catch (err) {
+			console.warn(`[spec-gate] 检查⑤' 转净收尾异常（忽略，不影响裁决）：${String(err)}`);
+		}
 	}
+	// exit 3（冷启动）与其他退出码：零输出零收尾，不触碰指纹态
 
 	if (failures.length === 0) {
 		console.log(`[spec-gate] ${name} 五项归档检查通过，放行`);
@@ -199,13 +318,14 @@ function extractChangeName(command: string): string {
 	return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) ? name : "";
 }
 
-/** 跑一个门禁脚本：code 为真实退出码（异常 -1）；ok = code===0；detail 含退出码 + 输出尾部 20 行。
+/** 跑一个门禁脚本：code 为真实退出码（异常 -1）；ok = code===0；detail 含退出码 + 输出尾部 20 行；
+ *  stdout 为原始标准输出（检查⑤'指纹输入用，其余消费方不读）。
  *  检查⑤'复用 code 字段区分 exit 2（warn）/ 3（冷启动跳过） */
 async function runScript(
 	pi: ExtensionAPI,
 	ctx: GateCtx,
 	args: string[],
-): Promise<{ ok: boolean; code: number; detail: string }> {
+): Promise<{ ok: boolean; code: number; detail: string; stdout: string }> {
 	try {
 		const r = await pi.exec("bash", args, { signal: ctx.signal, timeout: TIMEOUT_MS });
 		const out = `${r.stdout}${r.stderr}`;
@@ -213,11 +333,12 @@ async function runScript(
 			ok: r.code === 0,
 			code: r.code,
 			detail: `exit ${r.code}${out.trim() ? `\n${tail(out, 20)}` : "（无输出）"}`,
+			stdout: typeof r.stdout === "string" ? r.stdout : "",
 		};
 	} catch (err) {
 		// 超时/无法启动等异常按该项检查失败处理（扩展自身 bug 才走上层 fail-open）；
 		// 检查⑤'消费方凭 code=-1 fail-open 零干预
-		return { ok: false, code: -1, detail: `执行异常（超时或无法启动）：${String(err)}` };
+		return { ok: false, code: -1, detail: `执行异常（超时或无法启动）：${String(err)}`, stdout: "" };
 	}
 }
 
@@ -288,12 +409,17 @@ import {
 export { COMPLEXITY_KEYWORDS };
 
 /** 检查⑤：读 tasks.md + proposal.md + 列 change 目录，违例逐条走 spec-gate-warning 留痕（display: true）；
- *  自身异常 fail-open（console.warn + 留痕），绝不影响检查①-④ 的 block 裁决 */
+ *  自身异常 fail-open（console.warn + 留痕），绝不影响检查①-④ 的 block 裁决。
+ *  投递为边沿触发（edge-trigger-archive-gate-warns）：同违例集合（指纹同）会话内至多一轮——
+ *  首见/违例集合变化全量投递 + 记账；同指纹重试静默（console 一行留痕）；上次 warn 过本次
+ *  零违例发一行「已清零」收尾并清条目。指纹态异常 fail-open 全量投递（D7）。 */
 async function warnAcceptanceWording(
 	pi: ExtensionAPI,
 	ctx: GateCtx,
 	changeDir: string,
 ): Promise<void> {
+	const changeName = changeDir.split("/").pop() ?? null;
+	const wordingKey = `${changeName ?? ""}:wording`;
 	try {
 		const r = await pi.exec("cat", [`${changeDir}/tasks.md`], {
 			signal: ctx.signal,
@@ -320,13 +446,40 @@ async function warnAcceptanceWording(
 		} catch {
 			proposalText = null;
 		}
-		for (const w of scanAcceptanceWording(r.stdout, files, proposalText)) {
-			warn(pi, `⚠️ [spec-gate] 检查⑤（warn 级，不影响归档裁决）：${w}`);
-			auditPolicy(ctx, changeDir.split("/").pop() ?? null, {
-				policy: "spec-gate",
-				action: "warn",
-				reasonCode: "acceptance-wording",
-			});
+		const warnings = scanAcceptanceWording(r.stdout, files, proposalText);
+		let deliver = warnings.length > 0;
+		if (warnings.length > 0) {
+			try {
+				const fp = wordingFingerprint(warnings);
+				const st = warnStateFor(warnSessionKey(ctx));
+				if (decideWarnEdge(st.items.get(wordingKey) ?? null, fp) === "silent") {
+					deliver = false;
+					console.log(`[spec-gate] ${changeName ?? changeDir} 检查⑤ 同指纹静默（上次违例集合未变，会话内不重发）`);
+				} else {
+					st.items.set(wordingKey, fp);
+				}
+			} catch (err) {
+				console.warn(`[spec-gate] 检查⑤ 指纹态异常，按无状态全量投递（fail-open）：${String(err)}`);
+			}
+			if (deliver) {
+				for (const w of warnings) {
+					warn(pi, `⚠️ [spec-gate] 检查⑤（warn 级，不影响归档裁决）：${w}`);
+					auditPolicy(ctx, changeName, {
+						policy: "spec-gate",
+						action: "warn",
+						reasonCode: "acceptance-wording",
+					});
+				}
+			}
+		} else {
+			// 违例清零收尾：仅当该 change 有 warn 指纹条目才发一行 ✓ 并删条目（无条目零输出）
+			try {
+				if (warnStates.get(warnSessionKey(ctx))?.items.delete(wordingKey)) {
+					warn(pi, `✓ [spec-gate] 检查⑤ 已清零（${changeName ?? changeDir}：验收措辞违例已清，本次起恢复首见提醒语义）`);
+				}
+			} catch (err) {
+				console.warn(`[spec-gate] 检查⑤ 清零收尾异常（忽略，不影响裁决）：${String(err)}`);
+			}
 		}
 	} catch (err) {
 		console.warn(`[spec-gate] 检查⑤（措辞扫描）异常，跳过：${String(err)}`);

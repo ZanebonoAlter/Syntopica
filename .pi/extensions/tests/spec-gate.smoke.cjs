@@ -48,9 +48,10 @@ const passExec = async (cmd, args) => {
 	if (cmd === 'ls') return { code: 0, stdout: 'proposal.md\ndesign.md\ntasks.md\ntest-cases.md', stderr: '' };
 	return { code: 0, stdout: '', stderr: '' };
 };
-const runGate = (pi, command, cwd) => pi.handlers['tool_call'](
+/** 驱动一次归档 tool_call；sessionId 可指定（默认 'sgs1'）以测会话隔离/新会话首见 */
+const runGate = (pi, command, cwd, sessionId) => pi.handlers['tool_call'](
 	{ toolName: 'bash', input: { command }, toolCallId: 'sg1' },
-	{ signal: undefined, cwd, sessionManager: { getSessionId: () => 'sgs1' } },
+	{ signal: undefined, cwd, sessionManager: sessionId === null ? {} : { getSessionId: () => sessionId ?? 'sgs1' } },
 );
 
 const checks = [];
@@ -396,6 +397,211 @@ try {
 		require('./.sgate.cjs').default(g8h.pi);
 		const r8h = await runGate(g8h, 'openspec archive ui-major-gap --force', t8h);
 		check('8h --force → UI 检查同被豁免 + warning 留痕含 UI 项', r8h === undefined && g8h.messages.some((m) => /UI 验收证据/.test(m.content)));
+
+		// ---- 9. 归档 warn 边沿触发（edge-trigger-archive-gate-warns）：同会话多次 tool_call，
+		//     指纹态 per-sessionId（模块级 Map，跨用例存活——新用例 change 名已避让既有用例）----
+		// 9-Ⅰ（A1→A2→A3）：首见投递 → 同指纹静默 → 清单变化重投
+		const t9a = mktmp(); tmps.push(t9a);
+		let concOut9a = { code: 2, stdout: 'backend-go/b.go', stderr: '' };
+		const g9a = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'bash' && args[0] === 'scripts/harness/concurrency-status.sh') return concOut9a;
+			return r;
+		});
+		require('./.sgate.cjs').default(g9a.pi);
+		await runGate(g9a, 'openspec archive edge-conc', t9a, 'esgs-a');
+		const m9a1 = g9a.messages.length, r9a1 = policyRows(t9a).length;
+		const r9a2 = await runGate(g9a, 'openspec archive edge-conc', t9a, 'esgs-a');
+		const rows9a = policyRows(t9a);
+		check("9-Ⅰ⑤' 首见尝试 → 投递 warn + 记账 concurrent-dirty-tree 恰 1 条（锚点）",
+			m9a1 === 1 && r9a1 === 1 && rows9a[0].payload.reasonCode === 'concurrent-dirty-tree');
+		check("9-Ⅰ⑤' 同指纹第二次尝试 → 零 sendMessage 零 warn 记账（现行全量重发 → 红）",
+			r9a2 === undefined && g9a.messages.length === m9a1 && rows9a.length === r9a1);
+
+		// 9-Ⅰb（A3）：清单变化第二次重新投递并再记账（防回归锚点：现行绿，与同指纹用例解耦）
+		const t9a2 = mktmp(); tmps.push(t9a2);
+		let concOut9a2 = { code: 2, stdout: 'backend-go/b.go', stderr: '' };
+		const g9a2 = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'bash' && args[0] === 'scripts/harness/concurrency-status.sh') return concOut9a2;
+			return r;
+		});
+		require('./.sgate.cjs').default(g9a2.pi);
+		await runGate(g9a2, 'openspec archive edge-conc', t9a2, 'esgs-a2');
+		const m9a2 = g9a2.messages.length, r9a2b = policyRows(t9a2).length;
+		concOut9a2 = { code: 2, stdout: 'backend-go/b.go\nbackend-go/c.go', stderr: '' };
+		const r9a2c = await runGate(g9a2, 'openspec archive edge-conc', t9a2, 'esgs-a2');
+		check("9-Ⅰb⑤' 清单变化第二次尝试 → 重新投递完整 warn 并再记账（防回归锚点）",
+			r9a2c === undefined && g9a2.messages.length === m9a2 + 1 && policyRows(t9a2).length === r9a2b + 1);
+
+		// 9-Ⅱ（A4→A5）：转净收尾一行 → 再犯回首见
+		const t9b = mktmp(); tmps.push(t9b);
+		let concOut9b = { code: 2, stdout: 'backend-go/b.go', stderr: '' };
+		const g9b = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'bash' && args[0] === 'scripts/harness/concurrency-status.sh') return concOut9b;
+			return r;
+		});
+		require('./.sgate.cjs').default(g9b.pi);
+		await runGate(g9b, 'openspec archive edge-conc', t9b, 'esgs-b');
+		concOut9b = { code: 0, stdout: '', stderr: '' };
+		const m9b1 = g9b.messages.length, r9b1 = policyRows(t9b).length;
+		const r9b2 = await runGate(g9b, 'openspec archive edge-conc', t9b, 'esgs-b');
+		check("9-Ⅱ⑤' 转净（exit 0）→ 单行「已转净」收尾投递 + 零记账（现行无收尾 → 红）",
+			r9b2 === undefined && g9b.messages.length === m9b1 + 1 && /已转净/.test(g9b.messages[m9b1].content) && policyRows(t9b).length === r9b1);
+		concOut9b = { code: 2, stdout: 'backend-go/b.go', stderr: '' };
+		const r9b3 = await runGate(g9b, 'openspec archive edge-conc', t9b, 'esgs-b');
+		check("9-Ⅱ⑤' 转净后再犯 → 条目已删回首见：投递 + 记账",
+			r9b3 === undefined && g9b.messages.length === m9b1 + 2 && policyRows(t9b).length === r9b1 + 1);
+
+		// 9-Ⅲ：exit 3 冷启动两次 → 零输出零记账不触碰状态（锚点：现行绿）
+		const t9c = mktmp(); tmps.push(t9c);
+		const g9c = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'bash' && args[0] === 'scripts/harness/concurrency-status.sh') return { code: 3, stdout: '', stderr: '' };
+			return r;
+		});
+		require('./.sgate.cjs').default(g9c.pi);
+		await runGate(g9c, 'openspec archive edge-cold', t9c, 'esgs-c');
+		await runGate(g9c, 'openspec archive edge-cold', t9c, 'esgs-c');
+		check("9-Ⅲ⑤' exit 3 冷启动重复尝试 → 零投递零记账（锚点）",
+			g9c.messages.length === 0 && policyRows(t9c).length === 0);
+
+		// 9-Ⅳ（A6）：新 sessionId 首见重投（锚点：现行绿——每尝试都投）
+		const t9d = mktmp(); tmps.push(t9d);
+		const g9d = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'bash' && args[0] === 'scripts/harness/concurrency-status.sh') return { code: 2, stdout: 'backend-go/b.go', stderr: '' };
+			return r;
+		});
+		require('./.sgate.cjs').default(g9d.pi);
+		await runGate(g9d, 'openspec archive edge-conc', t9d, 'esgs-d1');
+		const m9d1 = g9d.messages.length, r9d1 = policyRows(t9d).length;
+		const r9d2 = await runGate(g9d, 'openspec archive edge-conc', t9d, 'esgs-d2');
+		check("9-Ⅳ⑤' 新 sessionId 首见 → 重新投递 + 记账（会话边界清零，锚点）",
+			r9d2 === undefined && g9d.messages.length === m9d1 + 1 && policyRows(t9d).length === r9d1 + 1);
+
+		// 9-Ⅴ（A7）：同会话同指纹静默 → session_compact 清条目 → 同指纹重投一次
+		const t9e = mktmp(); tmps.push(t9e);
+		const g9e = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'bash' && args[0] === 'scripts/harness/concurrency-status.sh') return { code: 2, stdout: 'backend-go/b.go', stderr: '' };
+			return r;
+		});
+		require('./.sgate.cjs').default(g9e.pi);
+		const compact9e = g9e.handlers['session_compact'];
+		await runGate(g9e, 'openspec archive edge-conc', t9e, 'esgs-e');
+		const m9e1 = g9e.messages.length;
+		await runGate(g9e, 'openspec archive edge-conc', t9e, 'esgs-e'); // 同指纹静默
+		const silentCount = g9e.messages.length;
+		if (typeof compact9e === 'function') await compact9e({}, { cwd: t9e, sessionManager: { getSessionId: () => 'esgs-e' } });
+		const r9e3 = await runGate(g9e, 'openspec archive edge-conc', t9e, 'esgs-e');
+		check("9-Ⅴ⑤' 同指纹静默（前置）→ compact 后同指纹重投一次（现行无 compact handler → 红）",
+			typeof compact9e === 'function' && silentCount === m9e1 && r9e3 === undefined && g9e.messages.length === m9e1 + 1);
+
+		// 9-Ⅵ：空 sessionId 兑底槽：无 getSessionId → 首见投递，同指纹再试静默
+		const t9f = mktmp(); tmps.push(t9f);
+		const g9f = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'bash' && args[0] === 'scripts/harness/concurrency-status.sh') return { code: 2, stdout: 'backend-go/b.go', stderr: '' };
+			return r;
+		});
+		require('./.sgate.cjs').default(g9f.pi);
+		await runGate(g9f, 'openspec archive edge-conc', t9f, null);
+		const m9f1 = g9f.messages.length;
+		await runGate(g9f, 'openspec archive edge-conc', t9f, null);
+		check('9-Ⅵ 空 sessionId → 兑底槽首见投递 + 同指纹静默（投递层面，记账本就不记）',
+			m9f1 === 1 && g9f.messages.length === m9f1);
+
+		// 9-Ⅶ：同会话跨 change 键隔离：edge-concX warn 后，同指纹输入对 edge-concY 仍首见
+		const t9g = mktmp(); tmps.push(t9g);
+		const g9g = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'bash' && args[0] === 'scripts/harness/concurrency-status.sh') return { code: 2, stdout: 'backend-go/b.go', stderr: '' };
+			return r;
+		});
+		require('./.sgate.cjs').default(g9g.pi);
+		await runGate(g9g, 'openspec archive edge-conc-x', t9g, 'esgs-g');
+		const m9g1 = g9g.messages.length;
+		const r9g2 = await runGate(g9g, 'openspec archive edge-conc-y', t9g, 'esgs-g');
+		check('9-Ⅶ 同会话跨 change 键隔离 → 换 change 仍首见投递',
+			r9g2 === undefined && g9g.messages.length === m9g1 + 1);
+
+		// 9-Ⅷ（W1→W2）：⑤ 首见投递+记账 → 同违例集合第二次零投递零记账
+		const t9h = mktmp(); tmps.push(t9h);
+		let lsOut9h = 'proposal.md\ntasks.md'; // 无 test-cases* → ⑤a 命中
+		const g9h = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: ['## 1. 任务', '- [ ] 1.1 实现解析逻辑', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n'), stderr: '' };
+			if (cmd === 'ls') return { code: 0, stdout: lsOut9h, stderr: '' };
+			return r;
+		});
+		require('./.sgate.cjs').default(g9h.pi);
+		await runGate(g9h, 'openspec archive edge-word', t9h, 'esgs-h');
+		const m9h1 = g9h.messages.length, r9h1 = policyRows(t9h).length;
+		const r9h2 = await runGate(g9h, 'openspec archive edge-word', t9h, 'esgs-h');
+		const rows9h = policyRows(t9h);
+		check('9-Ⅷ⑤ 首见违例 → 投递 + acceptance-wording 记账恰 1 条（锚点）',
+			m9h1 === 1 && r9h1 === 1 && rows9h[0].payload.reasonCode === 'acceptance-wording');
+		check('9-Ⅷ⑤ 同指纹重试 → 零重复 warning 零记账（现行全量重发 → 红）',
+			r9h2 === undefined && g9h.messages.length === m9h1 && rows9h.length === r9h1);
+
+		// 9-Ⅸ（W3）：违例集合变化（tasks 加一行关键词）→ 重新投递再记账（锚点：现行绿）
+		const t9i = mktmp(); tmps.push(t9i);
+		let tasks9i = ['## 1. 任务', '- [ ] 1.1 实现解析逻辑', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n');
+		const g9i = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: tasks9i, stderr: '' };
+			if (cmd === 'ls') return { code: 0, stdout: 'proposal.md\ntasks.md', stderr: '' };
+			return r;
+		});
+		require('./.sgate.cjs').default(g9i.pi);
+		await runGate(g9i, 'openspec archive edge-word', t9i, 'esgs-i');
+		const m9i1 = g9i.messages.length;
+		tasks9i = ['## 1. 任务', '- [ ] 1.1 实现解析逻辑', '- [ ] 1.2 状态机迁移', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n');
+		const r9i2 = await runGate(g9i, 'openspec archive edge-word', t9i, 'esgs-i');
+		check('9-Ⅸ⑤ 违例集合变化 → 重新投递 + 再记账（锚点）',
+			r9i2 === undefined && g9i.messages.length === m9i1 + 1 && policyRows(t9i).length === 2);
+
+		// 9-Ⅹ（W4）：违例清零（已补 test-cases.md）→ 单行「已清零」收尾 + 零记账（现行无 → 红）
+		const t9j = mktmp(); tmps.push(t9j);
+		let lsOut9j = 'proposal.md\ntasks.md';
+		const g9j = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: ['## 1. 任务', '- [ ] 1.1 实现解析逻辑', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n'), stderr: '' };
+			if (cmd === 'ls') return { code: 0, stdout: lsOut9j, stderr: '' };
+			return r;
+		});
+		require('./.sgate.cjs').default(g9j.pi);
+		await runGate(g9j, 'openspec archive edge-word', t9j, 'esgs-j');
+		const m9j1 = g9j.messages.length;
+		lsOut9j = 'proposal.md\ntasks.md\ntest-cases.md'; // 补文档 → ⑤a 消失 → 清零
+		const r9j2 = await runGate(g9j, 'openspec archive edge-word', t9j, 'esgs-j');
+		check('9-Ⅹ⑤ 违例清零 → 单行「已清零」收尾投递 + 零记账（现行无收尾 → 红）',
+			r9j2 === undefined && g9j.messages.length === m9j1 + 1 && /已清零/.test(g9j.messages[m9j1].content) && policyRows(t9j).length === 1);
+
+		// ---- 10. 边沿判定纯函数 decideWarnEdge 三态矩阵（1.4，无 DB 依赖；现行无此函数 → 红）----
+		const sg = require('./.sgate.cjs');
+		const hasEdge = typeof sg.decideWarnEdge === 'function';
+		const edge = (p, c) => (hasEdge ? sg.decideWarnEdge(p, c) : undefined);
+		check('10 矩阵：首见（prev=null,curr=fp）→ deliver', hasEdge && edge(null, 'fp1') === 'deliver');
+		check('10 矩阵：同指纹（fp1,fp1）→ silent', hasEdge && edge('fp1', 'fp1') === 'silent');
+		check('10 矩阵：指纹变化（fp1,fp2）→ deliver', hasEdge && edge('fp1', 'fp2') === 'deliver');
+		check('10 矩阵：转绿（fp1,null）→ close', hasEdge && edge('fp1', null) === 'close');
+		check('10 矩阵：防御（null,null）→ silent（不冒空收尾）', hasEdge && edge(null, null) === 'silent');
+		check('10 再犯闭环：close 后 prev 已删（null）→ 再犯回到 deliver', hasEdge && edge(null, 'fp1') === 'deliver');
+
+		// ---- 11. 指纹取值稳定性（design D2；现行无此函数 → 红）----
+		const hasFp = typeof sg.concurrencyFingerprint === 'function' && typeof sg.wordingFingerprint === 'function';
+		const cfp = (s) => (typeof sg.concurrencyFingerprint === 'function' ? sg.concurrencyFingerprint(s) : undefined);
+		check('11 空/纯空白/空行混入清单 → 与空串同指纹，不抛异常',
+			hasFp && cfp('') === cfp('') && cfp('') === cfp('\n  \n\n') && typeof cfp('') === 'string');
+		check('11 重复行/顺序颠倒/行首尾空白 → 同指纹（排序去重+trim）',
+			hasFp && cfp('b.go') === cfp('b.go\nb.go') && cfp('a.go\nb.go') === cfp('b.go\na.go') && cfp(' b.go ') === cfp('b.go'));
+		check('11 不同清单 → 不同指纹；超长清单不抛异常且仍 32 hex',
+			hasFp && cfp('a.go') !== cfp('a.go\nc.go') && /^[0-9a-f]{32}$/.test(cfp(Array.from({ length: 1000 }, (_, i) => `f${i}.go`).join('\n'))));
+		check('11 ⑤ 文案列表 join 不排序：顺序不同 → 指纹不同（保留新增关键词排前语义，design D2）',
+			hasFp && sg.wordingFingerprint(['w1', 'w2']) !== sg.wordingFingerprint(['w2', 'w1']) && sg.wordingFingerprint(['w1']) !== sg.wordingFingerprint(['w1', 'w2']));
 	} finally {
 		for (const t of tmps) fs.rmSync(t, { recursive: true, force: true });
 	}

@@ -85,6 +85,8 @@
 
 扫描 SHALL 抽成无副作用的纯函数（输入 tasks.md 文本与 change 目录文件列表，输出违例列表）供冒烟测试；违例列表与警告文案 SHALL NOT 影响检查①-④ 的既有 block 语义；检查⑤自身异常 SHALL fail-open（沿用本扩展既有异常策略，console.warn + 留痕，不阻断归档）。
 
+违例 warn 的投递 SHALL 为**边沿触发**（同会话同指纹至多一轮）：指纹取自本次违例文案列表的内容摘要，同会话内违例集合未变的重试归档尝试 MUST NOT 重复投递同一批 warning；违例集合变化（新增/消失关键词、补齐或删除用例文档）时视同首见重新投递；上一次投递过、本次扫描零违例时 SHALL 输出一行「已清零」收尾并清除指纹态。指纹态 MUST 与会话生命周期绑定（会话边界清零、session compact 后重发一次），MUST NOT 跨会话复用。`policy.decision(action=warn, reasonCode=acceptance-wording)` 记账与投递走同一边沿（同指纹会话内至多一轮）。
+
 禁用词表与关键词表以 `shared/test-design.md` 为权威源，spec-gate 内置同表常量并注明同步义务（表内容稳定，双源漂移风险可忽略）。
 
 #### Scenario: 无违例静默放行
@@ -113,6 +115,21 @@
 
 - **WHEN** 命令带 `--force` 或 `SPEC_GATE_BYPASS=1`
 - **THEN** 检查⑤ 随既有豁免通道放行，SHALL NOT 追加任何 block
+
+#### Scenario: 同指纹重试不重复投递
+
+- **WHEN** 同一会话内对同一 change 连续多次归档尝试，tasks.md 违例集合未变（指纹相同）
+- **THEN** 仅首次尝试投递该批 warning 与对应 `acceptance-wording` 记账，后续尝试零重复 warning（检查①-④ 结果不受影响）
+
+#### Scenario: 违例集合变化重新投递
+
+- **WHEN** 前一次尝试已投递，本次尝试违例集合变化（如新增关键词命中或已补 `test-cases*.md` 使 ⑤a 消失）
+- **THEN** 本次按新指纹重新投递剩余违例的 warning 并再记账
+
+#### Scenario: 违例清零收尾一行
+
+- **WHEN** 前一次尝试已投递，本次扫描零违例（如已补白盒用例文档且措辞已修）
+- **THEN** 输出一行「已清零」收尾提示并清除指纹态
 
 ### Requirement: 前后端标准挂接与索引
 
