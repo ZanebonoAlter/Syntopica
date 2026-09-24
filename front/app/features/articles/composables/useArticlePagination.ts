@@ -82,6 +82,55 @@ export function useArticlePagination(options: UseArticlePaginationOptions = {}) 
     state.loading = false
   }
 
+  /**
+   * 刷新当前视图（当前筛选 + 当前页）——自动刷新完成后的按需重取。
+   *
+   * 契约（slim-article-list-payload）：
+   * - 不读写 `state.loading`，用户切换视图的请求不被阻塞、也不阻塞它；
+   * - 请求前捕获 token（page + 筛选快照），响应回来与当前不一致则丢弃（不覆盖新视图）；
+   * - 绝不改 `state.page` / `filters`（选中行与滚动位置不重置）；
+   * - 失败静默返回、不写任何 state（不把平淡界面变成错误态）。
+   */
+  async function refreshCurrentPage(): Promise<void> {
+    const token = { page: state.page, filters: JSON.stringify(filters.value) }
+    const params: ArticleFilters = {
+      ...filters.value,
+      page: state.page,
+      per_page: state.pageSize,
+    }
+
+    let response: Awaited<ReturnType<typeof articlesApi.getArticles>>
+    try {
+      response = await articlesApi.getArticles(params)
+    } catch {
+      return
+    }
+
+    if (token.page !== state.page || token.filters !== JSON.stringify(filters.value)) {
+      return
+    }
+    if (!response.success || !response.data) {
+      return
+    }
+
+    const rawData = response.data as unknown as PaginatedData<ArticlePayload>
+    const rawArticles = (rawData.items || (response.data as unknown as ArticlePayload[])) as ArticlePayload[]
+    const newArticles = rawArticles.map(normalizeArticle)
+
+    if (state.page === 1) {
+      state.articles = newArticles
+    } else {
+      state.articles = [
+        ...state.articles.slice(0, (state.page - 1) * state.pageSize),
+        ...newArticles,
+      ]
+    }
+
+    state.total = response.pagination?.total ?? state.articles.length
+    const pages = response.pagination?.pages ?? 1
+    state.hasMore = state.page < pages
+  }
+
   function reset(): void {
     state.articles = []
     state.page = 1
@@ -112,6 +161,7 @@ export function useArticlePagination(options: UseArticlePaginationOptions = {}) 
     filters,
     fetchFirstPage,
     loadMore,
+    refreshCurrentPage,
     reset,
     updateArticle,
     removeArticle,

@@ -1,0 +1,25 @@
+# 动工前真库体积基线（tasks 2.5 / 29 对照组）
+日期：2026-09-24T17:09:40+08:00  形态：静态托管 :5100（改动前二进制）
+
+## GET /api/articles?per_page=20
+size_download = 144850 bytes
+content 字段出现次数 = 20
+description 字段出现次数 = 20
+firecrawl_content 字段出现次数 = 20
+excerpt 字段出现次数 = 0
+条目数 = 20
+
+## GET /api/articles?per_page=100
+size_download = 1207588 bytes
+## GET /api/articles?per_page=10000（观察截断行为）
+pagination = {'page': 1, 'pages': 21, 'per_page': 100, 'total': 2039} items = 100
+
+## 字段构成（同一响应，Python 逐字段字节统计）
+- content = 33771 bytes / description = 27709 bytes / firecrawl_content = 5699 bytes / ai_content_summary = 0
+- 三项合计 67179 bytes，其余 22 个字段合计约 5 KB
+- 归档视图 `?archived=true&per_page=20` = 31605 bytes（归档行正文已被清空，故更小）
+
+## 与 explore-findings 里 834.2 KB 记录的差异说明
+explore 阶段的 834.2 KB 是 2026-09-24 上午的另一次快照（当时最新 20 条的 `content`/`description` 明显更长/更多）。
+本文数值是**同一条命令在动工时刻（2026-09-24 17:09）的重测**，差异来自数据本身（DB 实测：非归档 2039 行 / 归档 22919 行，最新入库 2026-09-24 16:42，页面 1 的条目集合随入库滚动）。
+两者都指向同一结论：列表响应体积 99% 由正文类字段构成，且随首屏条目内容长度在 145 KB ~ 834 KB 之间波动——这正是「与链路带宽无关地保持低位」要解决的问题（验收阈值统一取 spec 的 < 100 KB）。

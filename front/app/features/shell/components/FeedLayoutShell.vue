@@ -31,6 +31,7 @@ const {
   fetchFirstPage,
   loadMore,
   updateArticle,
+  refreshCurrentPage,
 } = useArticlePagination({ pageSize: 20 })
 
 const startDate = ref<string>('')
@@ -41,7 +42,7 @@ const hasMore = computed(() => paginationState.hasMore)
 const total = computed(() => paginationState.total)
 const loading = computed(() => paginationState.loading)
 
-useGlobalAutoRefresh()
+useGlobalAutoRefresh({ onFeedRefreshed: () => refreshCurrentPage() })
 
 const { startTour } = useOnboarding()
 
@@ -209,6 +210,9 @@ async function hydrateSelectedArticle(article: Article) {
       // 保留乐观更新（hydrate 期间可能已调用 markAsRead）
       selectedArticle.value = {
         ...hydrated,
+        // 列表窄投影（slim-article-list-payload）：详情 payload 不含 excerpt，
+        // 详情 description 为空时导语要回退列表首帧的 excerpt，故此处保留
+        excerpt: hydrated.excerpt || selectedArticle.value.excerpt,
         read: selectedArticle.value.read || hydrated.read,
       }
     }

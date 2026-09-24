@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import type { Article } from '~/types'
 
 /**
@@ -15,6 +15,12 @@ vi.mock('@iconify/vue', () => ({
     props: ['icon'],
     template: '<span class="icon-stub" :data-icon="icon" aria-hidden="true" />',
   },
+}))
+
+// mermaid 动态加载 mock（render-mermaid-diagrams task 2.1：阅读页成图断言用）
+const { mermaidRenderMock } = vi.hoisted(() => ({ mermaidRenderMock: vi.fn() }))
+vi.mock('mermaid', () => ({
+  default: { initialize: vi.fn(), render: mermaidRenderMock },
 }))
 
 import ArticleContentPreviewPanel from './ArticleContentPreviewPanel.vue'
@@ -111,6 +117,27 @@ describe('ArticleContentPreviewPanel', () => {
     expect(wrapper.find('.article-description').exists()).toBe(false)
   })
 
+  it('详情未就绪时首帧导语用列表 excerpt', () => {
+    const wrapper = mountPanel({ description: '', excerpt: '列表层导语文本内容。' }, { showDescription: true })
+    const lede = wrapper.find('.lede')
+    expect(lede.exists()).toBe(true)
+    expect(lede.text()).toBe('列表层导语文本内容。')
+    // 纯文本渲染：不走 v-html，不应产生 <p> 元素
+    expect(lede.find('p').exists()).toBe(false)
+  })
+
+  it('详情返回后导语以详情 description 为准', () => {
+    const wrapper = mountPanel(
+      { description: '<p>详情导语文本。</p>', excerpt: '列表层导语文本内容。' },
+      { showDescription: true },
+    )
+    const lede = wrapper.find('.lede')
+    expect(lede.text()).toContain('详情导语文本。')
+    expect(lede.text()).not.toContain('列表层导语文本内容。')
+    // 详情 HTML 仍走 v-html
+    expect(lede.find('p').exists()).toBe(true)
+  })
+
   it('no longer renders processing banner / manual action row / content source toggle', () => {
     const wrapper = mountPanel()
     const text = wrapper.text()
@@ -128,5 +155,21 @@ describe('ArticleContentPreviewPanel', () => {
     const empty = wrapper.find('.empty-content')
     expect(empty.exists()).toBe(true)
     expect(empty.find('.app-btn-stub').text()).toContain('前往原文阅读')
+  })
+
+  it('renders mermaid fence in article body as diagram (render-mermaid-diagrams)', async () => {
+    mermaidRenderMock.mockResolvedValue({ svg: '<svg data-test="mmd"><g /></svg>' })
+    const md = '<p>前言</p><pre><code class="language-mermaid">graph TD; A--&gt;B</code></pre>'
+    const wrapper = mountPanel({}, { displayContent: md })
+    for (let i = 0; i < 4; i++) await flushPromises()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await flushPromises()
+
+    const block = wrapper.find('.markdown-article .mermaid-block')
+    expect(block.exists()).toBe(true)
+    expect(block.find('svg[data-test="mmd"]').exists()).toBe(true)
+    expect(block.find('.fig-cap').text()).toBe('图 1')
+    expect(wrapper.find('.markdown-article pre code.language-mermaid').exists()).toBe(false)
+    mermaidRenderMock.mockReset()
   })
 })

@@ -8,10 +8,25 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/reader/repository"
 	tagging "syntopica-backend/internal/tagmanagement"
 	tagwatched "syntopica-backend/internal/tagmanagement/service/watched"
 )
+
+const (
+	defaultPerPage = 20
+	maxPerPage     = 100
+)
+
+// articleListColumns is the explicit narrow projection for GET /api/articles.
+// Body fields (description/content/firecrawl_content/ai_content_summary) are
+// deliberately absent — they are served only by GET /api/articles/:id.
+const articleListColumns = "articles.id, articles.feed_id, articles.title, articles.link, articles.image_url, articles.pub_date, articles.author, articles.read, articles.favorite, articles.archived, articles.summary_status, articles.summary_generated_at, articles.firecrawl_status, articles.firecrawl_error, articles.firecrawl_crawled_at, articles.completion_error, articles.created_at"
+
+// articleListTagCountExpr keeps the pre-existing per-row correlated subquery
+// (the articles.tag_count column is 97.5% NULL and cannot be used, design D8).
+const articleListTagCountExpr = "(SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count"
 
 func loadArticleWithTagCount(articleID uint) (*models.Article, error) {
 	var article models.Article
@@ -80,9 +95,12 @@ func GetArticles(c *gin.Context) {
 	archived := c.Query("archived") == "true"
 	sortBy := c.Query("sort_by")
 
-	maxPerPage := 100
-	if perPage <= 0 || perPage > maxPerPage {
+	requestedPerPage := perPage
+	if perPage <= 0 {
+		perPage = defaultPerPage
+	} else if perPage > maxPerPage {
 		perPage = maxPerPage
+		logging.Warnf("articles list: per_page=%d exceeds max=%d, clamped to %d (path=%s)", requestedPerPage, maxPerPage, perPage, c.Request.URL.Path)
 	}
 
 	var expandedTagIDs []uint
@@ -126,25 +144,24 @@ func GetArticles(c *gin.Context) {
 		query = query.Joins("JOIN article_topic_tags att ON att.article_id = articles.id AND att.topic_tag_id IN ?", expandedTagIDs)
 	}
 
-	// Select fields — vary by watched tags mode and sort
-	articleCols := "articles.id, articles.feed_id, articles.title, articles.description, articles.content, articles.link, articles.image_url, articles.pub_date, articles.author, articles.read, articles.favorite, articles.summary_status, articles.summary_generated_at, articles.summary_processing_started_at, articles.completion_attempts, articles.completion_error, articles.ai_content_summary, articles.firecrawl_status, articles.firecrawl_error, articles.firecrawl_content, articles.firecrawl_crawled_at, articles.created_at"
+	// Select fields — narrow projection, vary by watched tags mode and sort
 	if usingWatchedTags {
 		switch sortBy {
 		case "relevance":
 			query = query.
-				Select(articleCols+", feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count, (SELECT COALESCE(SUM(CASE WHEN att2.topic_tag_id IN ? THEN 2.0 ELSE 1.0 END), 0) FROM article_topic_tags att2 WHERE att2.article_id = articles.id AND att2.topic_tag_id IN ?) AS relevance_score", childTagIDs, expandedTagIDs).
+				Select(articleListColumns+", feeds.category_id AS category_id, "+articleListTagCountExpr+", (SELECT COALESCE(SUM(CASE WHEN att2.topic_tag_id IN ? THEN 2.0 ELSE 1.0 END), 0) FROM article_topic_tags att2 WHERE att2.article_id = articles.id AND att2.topic_tag_id IN ?) AS relevance_score", childTagIDs, expandedTagIDs).
 				Group("articles.id, feeds.category_id")
 		default:
 			query = query.
-				Select("DISTINCT articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
+				Select("DISTINCT " + articleListColumns + ", feeds.category_id AS category_id, " + articleListTagCountExpr)
 		}
 	} else {
 		if conceptID > 0 || auxiliaryLabelID > 0 {
 			query = query.
-				Select("DISTINCT articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
+				Select("DISTINCT " + articleListColumns + ", feeds.category_id AS category_id, " + articleListTagCountExpr)
 		} else {
 			query = query.
-				Select("articles.*, feeds.category_id AS category_id, (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count")
+				Select(articleListColumns + ", feeds.category_id AS category_id, " + articleListTagCountExpr)
 		}
 	}
 
@@ -275,9 +292,20 @@ func GetArticles(c *gin.Context) {
 		return
 	}
 
+	articleIDs := make([]uint, 0, len(articles))
+	for _, article := range articles {
+		articleIDs = append(articleIDs, article.ID)
+	}
+	excerpts, excerptErr := excerptsByArticleID(repository.Repo.DB(), articleIDs)
+	if excerptErr != nil {
+		// Excerpts are decorative: never fail the list because of them.
+		logging.Warnf("articles list: failed to build excerpts (path=%s): %v", c.Request.URL.Path, excerptErr)
+		excerpts = map[uint]string{}
+	}
+
 	data := make([]map[string]interface{}, len(articles))
-	for i, article := range articles {
-		data[i] = article.ToDict()
+	for i := range articles {
+		data[i] = articles[i].ToListDict(excerpts[articles[i].ID])
 	}
 
 	pages := int(total) / perPage

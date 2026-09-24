@@ -25,7 +25,7 @@
 | 参数 | 类型 | 默认 | 说明 |
 |------|------|------|------|
 | `page` | int | 1 | 页码 |
-| `per_page` | int | 20 | 上限 100 |
+| `per_page` | int | 20 | 缺省 20；`≤0` 视作 20；超上限按 100 返回并记 WARN 日志 |
 | `feed_id` | int | - | 按订阅源 |
 | `category_id` | int | - | 按分类 |
 | `uncategorized` | string | - | `true` 未分类 |
@@ -39,9 +39,14 @@
 
 按发布日期降序，含 `tag_count`。使用 `watched_tag_ids` 时支持 `sort_by=relevance` 按标签相关度排序。
 
+**窄投影（slim-article-list-payload）**：列表接口只返回扫描-选择字段。列表字段：`id` / `feed_id` / `category_id` / `title` / `link` / `image_url` / `pub_date` / `author` / `read` / `favorite` / `archived` / `summary_status` / `summary_generated_at` / `firecrawl_status` / `firecrawl_error` / `firecrawl_crawled_at` / `completion_error` / `created_at` / `tag_count` / `relevance_score`（仅 `sort_by=relevance` 分支有值）/ `excerpt`。**不返回** `content` / `description` / `firecrawl_content` / `ai_content_summary`（正文类字段均为**详情接口专属**），也不返回 `summary_processing_started_at` / `completion_attempts` / `content_form`——正文与完整导语走详情接口。
+
+- `excerpt`：由 `description`（抽取后为空则回退 `content`）去 HTML 标签、还原实体、折叠空白后的纯文本，**≤200 字符**；源无实质内容（无字母/数字）时为空串 `""`；**与正文重复时（归一化后相同，或导语 ≥40 字符且被正文包含）也为空串**——去重 guard 本就会隐藏这类导语，下发只会造成首帧闪现；导语来自正文兜底（`description` 无实质文本）且该文章无 Firecrawl 正文时也为空串——展示正文就是 `content`，导语必然重复；字段恒存在。
+- `per_page`：缺省 20；`≤0` 视作 20；`>100` 按 100 返回**并记一条 WARN 日志**（含请求值与路径，不再静默截断）。
+
 ### GET /api/articles/:article_id
 
-单篇文章，附带标签列表：
+单篇文章，附带标签列表。正文类字段（`content` / `description` / `firecrawl_content` / `ai_content_summary`）为**详情接口专属**，列表接口不返回（列表只给 `excerpt`）；本接口契约不变：
 
 ```json
 {

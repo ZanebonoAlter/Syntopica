@@ -114,7 +114,10 @@ useMermaidRender(readingColRef, () => `${props.renderedStoredSummary ?? ''}|${pr
 
     <!-- 导语：description 有实质内容时，无边框浅色段（guard 收紧后无占位块） -->
     <div v-if="showDescription" class="lede">
-      <div v-html="article?.description" />
+      <!-- description 走 v-html（与既有行为一致）；excerpt 是后端去标签后的纯文本，
+           必须用 v-text 渲染，避免 a&b<c 这类文本被 v-html 当标签吞掉 -->
+      <div v-if="article?.description" v-html="article.description" />
+      <div v-else v-text="article?.excerpt ?? ''" />
     </div>
 
     <!-- Image -->
