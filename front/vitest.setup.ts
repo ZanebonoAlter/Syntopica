@@ -2,8 +2,9 @@
  * Vitest setup – mocks Nuxt/Vue auto-imports not available in test environment,
  * and restores browser globals that Node's experimental APIs shadow under happy-dom.
  */
-import { ref, computed, onUnmounted, onMounted, watch } from 'vue'
+import { ref, computed, onUnmounted, onMounted, watch, type Ref } from 'vue'
 import { Storage } from 'happy-dom'
+import { beforeEach } from 'vitest'
 
 // Node ≥ 22 自带实验性 Web Storage 全局：未传 `--localstorage-file` 时
 // `globalThis.localStorage` 是 undefined，但**键已经存在**。Vitest 的 happy-dom 环境
@@ -27,14 +28,26 @@ for (const key of ['localStorage', 'sessionStorage'] as const) {
 // 状态在别处（含被测组件内部）可见。此前每次调用都返回新 ref，会让「测试代码与被测
 // 组件各拿各的 state」，跨实例共享的 composable（如 useConfirm）无法测。
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const useStateRegistry = new Map<string, { value: any }>()
+const useStateRegistry = new Map<string, { r: Ref<any>; init?: () => any }>()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 globalThis.useState = function useState<T = any>(key: string, init?: () => T) {
-  if (!useStateRegistry.has(key)) {
-    useStateRegistry.set(key, ref(init ? init() : undefined))
+  let entry = useStateRegistry.get(key)
+  if (!entry) {
+    entry = { r: ref(init ? init() : undefined), init }
+    useStateRegistry.set(key, entry)
   }
-  return useStateRegistry.get(key) as { value: T }
+  return entry.r as { value: T }
 }
+// 用例间隔离：**重置值、保留引用**（不能 clear registry——模块顶层解构的 composable
+// 如 AppConfirmDialog.test.ts 的 confirmFn 跨用例持有 ref，清空会让组件内新建 ref 与
+// 之分支，跨实例共享断裂）。遍历把每个 ref 回到 init 语义初始态：前一用例的残留值
+// 不再泄漏（2026-09-23 fe-composables 2 条「静默降级期望清零」假失败即此因，事实链
+// 见 docs/research/test-env-pitfalls/），同时 per-key 单例语义完整保留。
+beforeEach(() => {
+  useStateRegistry.forEach((entry) => {
+    entry.r.value = entry.init ? entry.init() : undefined
+  })
+})
 
 // Nuxt's useRuntimeConfig returns runtime config
 // apiBase 默认与 nuxt.config.ts 一致（后端 5100 绝对直连）；需要相对 base 的用例在各自文件里覆盖。

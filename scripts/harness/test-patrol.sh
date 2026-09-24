@@ -154,15 +154,15 @@ SHARD_ARGS=()
 
 shard_setup() { # $1=分片名；未知名 → 返回 1
 	case "$1" in
-	be-admin) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 ./internal/admin/...) ;;
-	be-dataenrichment) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 ./internal/dataenrichment/...) ;;
-	be-reader) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 ./internal/reader/...) ;;
-	be-tagmanagement) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 ./internal/tagmanagement/...) ;;
-	be-topicgraph) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 ./internal/topicgraph/...) ;;
+	be-admin) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/admin/...) ;;
+	be-dataenrichment) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/dataenrichment/...) ;;
+	be-reader) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/reader/...) ;;
+	be-tagmanagement) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/tagmanagement/...) ;;
+	be-topicgraph) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/topicgraph/...) ;;
 	be-skeleton)
 		SHARD_KIND=backend
 		SHARD_CWD=backend-go
-		SHARD_ARGS=(go test -short -count=1 ./internal/platform/... ./internal/models/... ./internal/app/... ./cmd/...)
+		SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/platform/... ./internal/models/... ./internal/app/... ./cmd/...)
 		;;
 	be-all) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 ./internal/... ./cmd/...) ;;
 	fe-tags) SHARD_KIND=frontend; SHARD_CWD=front; SHARD_ARGS=(pnpm test:unit app/features/tags --maxWorkers=2) ;;

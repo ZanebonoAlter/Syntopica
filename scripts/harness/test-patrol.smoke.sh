@@ -488,7 +488,7 @@ group_C() {
 	# TC-C01/C02/C03 命令形态（DRY_RUN）
 	p TEST_PATROL_DRY_RUN=1 bash "$SOURCE" --shard be-reader
 	args="$(printf '%s' "$OUT" | sed -n 's/^\[DRY-RUN\] arg=//p' | tr '\n' ' ' | sed 's/ $//')"
-	assert_eq "TC-C01 后端命令逐参数" "go test -short -count=1 ./internal/reader/..." "$args"
+	assert_eq "TC-C01 后端命令逐参数" "go test -short -count=1 -timeout 120s ./internal/reader/..." "$args"
 	assert_has "TC-C01 cwd=backend-go" "$OUT" 'cwd=backend-go'
 	assert_not_has "TC-C01 无 ./... 全仓模式" "$args" ' ./... '
 	assert_not_has "TC-C01 无 -run" "$args" ' -run'
