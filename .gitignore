@@ -38,6 +38,8 @@ logs/
 logs/
 data.7z
 demo/seed/seed.sql
+demo/seed/seed-*.sql
+demo/seed/.rsshub-rewrite
 backups/
 /.*
 pgvector-pg18-arm64.tar

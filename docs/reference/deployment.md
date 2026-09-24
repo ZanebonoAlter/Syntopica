@@ -6,16 +6,104 @@ Syntopica 为单用户自托管部署设计。主要部署方式是 Docker Compo
 
 | 目标 | 配置文件 | 说明 |
 |--------|-------------|-------|
-| Docker Compose（基础服务） | `docker-compose.yml` | **默认/推荐方式**。PostgreSQL + pgvector + 应用（Go 后端，内含同源托管的前端静态产物）两容器。 |
-| Docker Compose（Firecrawl） | `docker-compose.firecrawl.yml` | **可选**。Firecrawl 全文抓取服务，需配合基础服务使用。 |
+| 远程推送部署（免密一键） | `scripts/deploy/deploy-remote.sh` | **既有远程服务器日常更新**。本机 rsync 推送 → 远程 compose 构建 → 健康检查，免密零交互。见下文「远程推送部署」。 |
+| Docker Compose（基础服务） | `deploy/compose/docker-compose.yml` | **默认/推荐方式**。PostgreSQL + pgvector + 应用（Go 后端，内含同源托管的前端静态产物）两容器。 |
+| Docker Compose（Firecrawl） | `deploy/compose/docker-compose.firecrawl.yml` | **可选**。Firecrawl 全文抓取服务，需配合基础服务使用。 |
 
 没有 PaaS 专用配置（Vercel、Netlify、Fly.io 等）。应用程序设计为通过 Docker Compose 在单机上运行。
 
+> **命令约定**：`deploy/compose/` 下的 compose 文件必须搭配 `--project-directory .` 在仓库根执行（项目目录被钉回仓库根，`.env`/`./data`/`docker/postgres` 才能按根解析）。根目录的 `docker-compose.pg.yml`（日常开发 PG）无需该参数。`docker-compose.pg.yml` 留在根目录是刻意的：它是日常最高频命令。
+
 > **注意：SQLite 版本已归档到独立的 `sqlite` 分支，主分支仅支持 PostgreSQL 数据库。**
+
+### 远程推送部署（免密一键）
+
+对既有远程服务器（如树莓派 4 `10.11.12.59`）的日常全量更新，一条命令完成，全程不手动 SSH：
+
+```bash
+# 0. 一次性：装公钥（输一次目标密码，之后永久免密）
+ssh-copy-id -i ~/.ssh/id_ed25519.pub <user>@<host>
+
+# 1. 干跑：只打印将执行的 rsync/ssh 命令，不落地
+bash scripts/deploy/deploy-remote.sh --dry-run
+
+# 2. 全量部署（默认 zanebono@10.11.12.59 → ~/software/Syntopica）
+bash scripts/deploy/deploy-remote.sh            # 可选参数 user@host，或 DEPLOY_TARGET 环境变量
+
+# 3. demo 镜像部署（对外展示形态：只读 + 脱敏 seed；本机构建镜像 save/load 推过去，
+#    远端零构建，用 demo/docker-compose.run.yml 的 Pi 内存限额档拉起 → :5080）
+bash scripts/deploy/deploy-remote.sh --demo
+```
+
+demo 模式前置：`demo/seed/seed.sql` 必须存在（gitignore 不入库），缺失时脚本会提示先跑：
+
+```bash
+cd backend-go && go run ./cmd/dump-sanitizer   # 从本地库导出脱敏 seed（默认 30 天窗口）
+```
+
+demo 镜像 tag 默认 `latest`；**远端旧 tag 镜像不删**，回滚用 `DEMO_TAG=<旧tag>` 重跑 run.yml（或 `DEMO_IMAGE_TAG=<tag>` 指定构建 tag）。
+
+执行流：SSH 免密/远端 Docker 自检 → `rsync -a --delete` 推送（排除清单镜像 `.gitignore`：**目标端 `.env`、`data/`、`backups/`、`logs/`、`*.tar` 不推不删**）→ 远程 `docker compose --project-directory . -f deploy/compose/docker-compose.yml up --build -d` → 轮询 `/health` 到 200（默认 300s，`HEALTH_TIMEOUT` 可调）。任一自检失败非零退出并给出修复动作（如 `ssh-copy-id` 指引），不做半程推送。
+
+> ⚠ **必须在仓库根目录调用**：脚本内 rsync 源是相对路径 `./`，从别的目录调会把那个目录镜像推到远端并 `--delete` 删掉远端仓库文件（2026-09-24 事故：经 systemd 从 `$HOME` 调用，演示机仓库树被灌穿，靠重跑正确镜像恢复）。定时同步 wrapper 内已显式 `cd $REPO_ROOT`，unit 里有 `WorkingDirectory` 双保险；手动调用时自己在仓库根跑。
+
+**部署形态选型**：
+
+| 场景 | 用什么 |
+|---|---|
+| 本机树莓派日常改前端 | `bash scripts/dev/deploy-frontend.sh`（本机构建铺盘，见「本地裸跑静态托管」） |
+| 新机器从零起栈 | `bash deploy/init.sh`（交互引导，三阶段） |
+| 既有远程服务器全量更新 | `bash scripts/deploy/deploy-remote.sh`（本节，免密一键） |
+| 远程服务器对外展示（demo） | `bash scripts/deploy/deploy-remote.sh --demo`（本节，本机构建镜像推过去） |
+| 浏览器与后端不同机 | 同源反代（Caddy/nginx，见「同源反代部署」） |
+| 公开只读演示 | demo compose（见「公开只读 Demo」） |
+| demo seed 每周自动刷新 | `scripts/deploy/sync-demo-weekly.sh` + 用户级 timer（见「定时同步」） |
+
+**新旧命令对照（2026-09-22 部署制品收口，BREAKING）**：
+
+| 旧（根目录平铺） | 新 |
+|---|---|
+| `bash init.sh` / `.\init.ps1` | `bash deploy/init.sh` / `.\deploy\init.ps1` |
+| `docker compose up -d` | `docker compose --project-directory . -f deploy/compose/docker-compose.yml up -d` |
+| `docker compose -f docker-compose.firecrawl.yml up -d` | `docker compose --project-directory . -f deploy/compose/docker-compose.firecrawl.yml up -d` |
+| `docker compose -f docker-compose.rsshub.yml up -d` | `docker compose --project-directory . -f deploy/compose/docker-compose.rsshub.yml up -d` |
+| `Dockerfile`（仓库根） | `deploy/docker/Dockerfile` |
+| `docker compose -f docker-compose.pg.yml up -d` | **不变**（留在根目录） |
+
+### 定时同步（demo seed 每周自动刷新，sync-demo-seed）
+
+`scripts/deploy/sync-demo-weekly.sh` 把「导出 → 断言 → 部署」串成无人值守链路，由用户级 systemd timer 每周日 05:00（+15 分钟内随机延迟）触发，`Persistent=true` 错过窗口（关机/重启）恢复后自动补跑：
+
+```
+防呆（load>4 或磁盘余量<5GB → SKIP 退出 0，下周期自愈）
+→ dump-sanitizer 脱敏导出（真库只读，30 天窗口）
+→ 安全断言（无 ai_call_logs / 无 schema_migrations / ai_providers.api_key 全空；
+   任一命中即中止，不归档不推送——宁可演示数据旧一周）
+→ seed 归档轮换（demo/seed/seed-YYYYMMDD-HHMM.sql，只留最近 2 份，gitignore 不入库）
+→ deploy-remote.sh --demo（构建镜像→推送→拉起）→ /health 复检
+```
+
+**安装**（一次性，本机是开发树莓派；演示机零改动）：
+
+```bash
+cp scripts/deploy/systemd/sync-demo-seed.{service,timer} ~/.config/systemd/user/
+loginctl enable-linger $USER
+systemctl --user daemon-reload && systemctl --user enable --now sync-demo-seed.timer
+```
+
+**卸载**：`systemctl --user disable --now sync-demo-seed.timer` + 删除 `~/.config/systemd/user/sync-demo-seed.{service,timer}`（链路无状态，卸载即完全恢复原状）。
+
+**查日志**（每阶段一行 `阶段[x]` 前缀，journal 友好）：`journalctl -t sync-demo-weekly.sh` 或 `journalctl USER_UNIT=sync-demo-seed.service`。手动触发一次全链路：`systemctl --user start sync-demo-seed.service`。
+
+**调触发时刻**：改 `~/.config/systemd/user/sync-demo-seed.timer` 的 `OnCalendar=`（默认 `Sun *-*-* 05:00:00`，避开每日 04:00 备份窗口）后 `systemctl --user daemon-reload`。
+
+**RSSHub 改写规则（必配）**：环境变量 `RSSHUB_REWRITE` 或 `demo/seed/.rsshub-rewrite`（gitignore，内容一行：`源host=目标host`）。两者皆缺时导出前置检查 fail-closed 中止——本机真库有自托管订阅源时裸导会把私有地址推上公开 demo（2026-09-24 泄露事故）。安全断言为四条：无 `ai_call_logs`、无 `schema_migrations`、`api_key` 全空、改写源 host 无残留。
+
+**防呆跳过语义**：触发时 load average > `LOAD_THRESHOLD`（默认 4，Pi 4 核满载线）或 `demo/seed` 所在盘余量 < `DISK_MIN_GB`（默认 5GB）→ 记原因、退出码 0、演示环境保持现版本继续服务，下周期自愈，不算失败。链路任一环节非零退出即停，不向演示机推半程文件；失败详情躺 journal，无外部通知（个人维护环境）。
 
 ### init.sh 一键部署
 
-项目提供 `init.sh` 脚本，自动完成从环境检查到服务启动的全流程：
+项目提供 `deploy/init.sh` 脚本（Windows 为 `deploy/init.ps1`），自动完成从环境检查到服务启动的全流程：
 
 ```
 init.sh 部署流程
@@ -23,7 +111,7 @@ init.sh 部署流程
 │   ├── 检查 Docker / Docker Compose 可用性
 │   ├── 交互收集端口、密码（全默认值）
 │   ├── 从 .env.example 生成 .env（不覆盖已有值）
-│   ├── docker compose up -d
+│   ├── docker compose --project-directory . -f deploy/compose/docker-compose.yml up -d
 │   └── 轮询等待 postgres healthy + backend /health 200
 ├── Phase 2: AI 服务（可选）
 │   ├── llama.cpp — 自动下载预编译二进制
@@ -31,7 +119,7 @@ init.sh 部署流程
 │   ├── 远程 API — OpenAI 兼容云端服务
 │   └── GPU 检测 + VRAM 推荐模型
 ├── Phase 2: Firecrawl（可选）
-│   ├── 自部署 — docker-compose.firecrawl.yml
+│   ├── 自部署 — deploy/compose/docker-compose.firecrawl.yml
 │   ├── 云 API — Firecrawl 云服务
 │   └── 跳过
 └── Phase 3: 确认与种子数据
@@ -44,13 +132,13 @@ init.sh 部署流程
 使用方式：
 
 ```bash
-bash init.sh
+bash deploy/init.sh
 ```
 
 ### Docker Compose 拓扑
 
 ```
-docker-compose.yml                    docker-compose.firecrawl.yml（可选）
+deploy/compose/docker-compose.yml            deploy/compose/docker-compose.firecrawl.yml（可选）
 ┌─────────────────────────────┐      ┌──────────────────────────────────┐
 │  postgres (:5432)           │      │  firecrawl (:3002)               │
 │  ├─ pgvector 扩展           │      │  ├─ API + Worker                 │
@@ -82,7 +170,7 @@ docker-compose.yml                    docker-compose.firecrawl.yml（可选）
 
 ### 容器构建过程
 
-单一 `Dockerfile`（仓库根）多阶段构建出**一个**前后端合一的镜像：
+单一 `Dockerfile`（`deploy/docker/Dockerfile`）多阶段构建出**一个**前后端合一的镜像：
 
 1. `front-build` 阶段（`node:22-alpine`）：corepack 装 pnpm → `pnpm install --frozen-lockfile` → 以 `NUXT_PUBLIC_API_BASE=/api`（可用 `--build-arg` 覆盖）运行 `pnpm generate`，产出静态 SPA 到 `.output/public`。
 2. 运行阶段（`alpine:3.22`）：拷入**本地预先编译**的 Go 二进制（`ARG BINARY_PATH`，默认 `./backend-go/syntopica`）、`backend-go/configs/`，以及上阶段的静态产物到 `/app/frontend/`。以非 root 用户 `appuser`（UID 10001）运行，默认 `SERVER_PORT=5000`。
@@ -95,11 +183,11 @@ docker-compose.yml                    docker-compose.firecrawl.yml（可选）
 ### Docker Compose 快速部署
 
 ```bash
-# 启动基础服务（PostgreSQL + 应用）
-docker compose up --build -d
+# 启动基础服务（PostgreSQL + 应用；在仓库根执行）
+docker compose --project-directory . -f deploy/compose/docker-compose.yml up --build -d
 
 # 可选：启动 Firecrawl 全文抓取服务
-docker compose -f docker-compose.firecrawl.yml up -d
+docker compose --project-directory . -f deploy/compose/docker-compose.firecrawl.yml up -d
 ```
 
 启动两个核心服务：
@@ -107,7 +195,7 @@ docker compose -f docker-compose.firecrawl.yml up -d
 - **postgres**: PostgreSQL（pgvector:pg18-trixie）端口 5432，带健康检查（`pg_isready`）。数据持久化在 `./data/` 目录。初始化脚本 `docker/postgres/init/01-enable-pgvector.sql` 在首次启动时执行 `CREATE EXTENSION IF NOT EXISTS vector`。
 - **syntopica**: 应用容器（容器内 5000，宿主映射默认 `${PORT:-5100}`），内部连接 postgres 服务。**同一个端口同时提供 API、WebSocket、feed 图标与前端静态页面** —— 浏览器访问 `http://<host>:5100/` 即可，无需另起前端服务。
 
-可选的 Firecrawl 服务（通过 `docker-compose.firecrawl.yml`）：
+可选的 Firecrawl 服务（通过 `deploy/compose/docker-compose.firecrawl.yml`）：
 
 - **firecrawl**: Firecrawl API + Worker，端口 3002，提供全文抓取能力。
 - **firecrawl-redis**: Firecrawl 内部 Redis，用于任务队列。
@@ -156,13 +244,13 @@ AI 相关设置（LLM 凭证、Firecrawl、Digest 导出）通过 Web UI 配置�
 
 ### 前端服务的三种形态
 
-前端**不是**独立容器 —— `docker-compose.yml` 只有 `postgres` 与 `syntopica` 两个服务，前端产物由后端同源托管。按场景三选一：
+前端**不是**独立容器 —— `deploy/compose/docker-compose.yml` 只有 `postgres` 与 `syntopica` 两个服务，前端产物由后端同源托管。按场景三选一：
 
 > 静态产物体积说明：前端含 Noto Serif SC 自托管字体分片（`@fontsource`，约 490 个 woff2 小分片，`_nuxt/` 下按 unicode-range 按需加载，单页实际只拉用到的分片，几 KB～百 KB 级）——首屏零外域请求（弱网/离线友好），代价是镜像/静态目录磁盘占用增加；维护约定见 [loading-experience.md](standard/frontend/loading-experience.md)。
 
 | 形态 | 做法 | 适用 | 跨域配置 |
 |---|---|---|---|
-| **同源（单镜像，默认）** | `docker compose up --build -d` → 访问 `http://<host>:5100/` | 常规自托管 | 不需要 |
+| **同源（单镜像，默认）** | `docker compose --project-directory . -f deploy/compose/docker-compose.yml up --build -d` → 访问 `http://<host>:5100/` | 常规自托管 | 不需要 |
 | **同源（反代）** | 见下节（Caddy 或 nginx；前端跑 dev 或静态产物皆可） | 后端已在裸跑、不想重建镜像 | 不需要 |
 | **dev 直连** | `cd front && pnpm dev` → 访问 `http://<host>:3000` | 本地开发（有 HMR） | 浏览器与后端同机时不需要 |
 
@@ -290,7 +378,7 @@ HTTPS_PROXY=http://proxy:port
 
 ### PostgreSQL
 
-PostgreSQL 数据通过 `./data/` 目录挂载持久化（`docker-compose.yml` 将 `./data/` 映射到 `/var/lib/postgresql`）。
+PostgreSQL 数据通过 `./data/` 目录挂载持久化（`deploy/compose/docker-compose.yml` 将 `./data/` 映射到 `/var/lib/postgresql`）。
 
 **定时备份（每日自动，add-pg-key-tables-backup）**：
 
@@ -373,7 +461,7 @@ docker compose -f demo/docker-compose.demo.yml up -d --build
 
 1. 停止正在运行的容器：
    ```bash
-   docker compose down
+   docker compose --project-directory . -f deploy/compose/docker-compose.yml down
    ```
 2. 检出一个之前已知正常的 commit：
    ```bash
@@ -381,7 +469,7 @@ docker compose -f demo/docker-compose.demo.yml up -d --build
    ```
 3. 重新构建并启动：
    ```bash
-   docker compose up --build -d
+   docker compose --project-directory . -f deploy/compose/docker-compose.yml up --build -d
    ```
 
 如果使用 tag，也可以 `git checkout <tag>` 替代 commit hash。

@@ -188,5 +188,22 @@ func exportSpecs() []ExportSpec {
 			Columns: []string{"id", "feed_id", "category_id", "preference_score", "avg_reading_time", "interaction_count", "scroll_depth_avg", "last_interaction_at", "created_at", "updated_at"},
 			Where:   recent,
 		},
+		{
+			// Board signal discovery 批次（board-signal-reports，2026-09-24 补）。
+			// 全量导出不加时间窗：candidate/discovery 被 topic_enrichment_result 的
+			// 复合 FK 引用（source_signal_id 等），窗口过滤会滤掉被引用行、演示机
+			// 导入即炸 FK（2026-09-24 事故：漏导两张表，手工补块救场后正式修复）。
+			Table:   "board_signal_discovery",
+			Columns: []string{"id", "semantic_board_id", "granularity", "period", "analysis_mode", "cutoff", "input_snapshot", "session_id", "candidate_count", "created_at"},
+			Sanitizers: map[string]func(string) string{
+				// 会话标识与 topic_enrichment_result.session_id 同口径清空。
+				"session_id": clearAll,
+			},
+		},
+		{
+			// Detect candidates：信号报告的数据源，紧随其批次之后导出（FK 顺序）。
+			Table:   "board_signal_candidate",
+			Columns: []string{"id", "discovery_id", "semantic_board_id", "granularity", "period", "signal", "why_it_matters", "research_question", "evidence_refs", "score", "rationale", "created_at"},
+		},
 	}
 }

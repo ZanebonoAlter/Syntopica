@@ -59,7 +59,7 @@ go run ./cmd/dump-sanitizer
   - 在反向代理层（nginx/caddy）进一步限制只放行 `GET`；
   - 不暴露 postgres 端口（compose 默认未映射 5432 到宿主）；
   - 用 TLS；
-  - 定期重新导出 seed 以保证内容新鲜。
+  - 定期重新导出 seed 以保证内容新鲜（已由本机用户级 timer `sync-demo-seed.timer` 每周日 05:00 自动完成：导出→安全断言→归档→`deploy-remote.sh --demo` 全链路，见 `docs/reference/deployment.md`「定时同步」；手动一次性刷新 `cd backend-go && go run ./cmd/dump-sanitizer` + `bash scripts/deploy/deploy-remote.sh --demo` 仍可作为备选路径）。
 
 ## 文件清单
 

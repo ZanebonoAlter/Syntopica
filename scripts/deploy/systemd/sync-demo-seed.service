@@ -1,0 +1,18 @@
+# 每周演示环境 seed 同步（用户级服务，由 sync-demo-seed.timer 触发）。
+# 安装：cp scripts/deploy/systemd/* ~/.config/systemd/user/
+#       systemctl --user daemon-reload && systemctl --user enable --now sync-demo-seed.timer
+# 日志：journalctl --user -u sync-demo-seed.service
+[Unit]
+Description=Syntopica demo seed weekly sync (export -> assert -> archive -> deploy)
+# 依赖 ssh 免密与 docker 组权限，均在用户 session 内可用（design.md D2）
+
+[Service]
+Type=oneshot
+# deploy-remote.sh 的 rsync 用相对路径 ./，必须从仓库根目录跑（wrapper 内亦会 cd 兑底）
+WorkingDirectory=%h/software/Syntopica
+# 全链路含镜像构建+推送+远端拉起，Pi 上约 10-30 分钟，放宽启动超时
+TimeoutStartSec=2h
+# 精确指到仓库内的脚本；脚本内部自带防呆（负载/磁盘超限自动跳过）
+ExecStart=%h/software/Syntopica/scripts/deploy/sync-demo-weekly.sh
+# 用户管理器默认 PATH 可能缺 go 安装位（linger 未登录场景），这里兜底
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin
