@@ -426,7 +426,7 @@ func TestB2_05_NoJobAndTaggingDisabledIsSettled(t *testing.T) {
 }
 
 // TC-B2-06：同时存在 pending 与 completed 任务行 → untagged_pending 计 1
-//（EXISTS 语义，不重复计数）。
+// （EXISTS 语义，不重复计数）。
 func TestB2_06_PendingWinsAndCountsOnce(t *testing.T) {
 	fixNow(t)
 	db := setupStatsDB(t)
@@ -537,7 +537,7 @@ func TestB3_06_WindowMonotonicity(t *testing.T) {
 }
 
 // TC-B3-07：注入固定 now，文章恰在 7 天前 1 秒 → 不计入；恰在 7 天前 0 秒
-//（边界）→ 计入（>= 语义）。
+// （边界）→ 计入（>= 语义）。
 func TestB3_07_OneSecondBeforeCutoffExcluded(t *testing.T) {
 	fixNow(t)
 	db := setupStatsDB(t)

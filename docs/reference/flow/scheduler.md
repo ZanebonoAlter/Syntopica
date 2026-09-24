@@ -16,7 +16,7 @@ Scheduler 解决「集中调度周期性后台任务」的问题。Syntopica 有
 
 ### 调度器清单
 
-调度器清单（按 `app/runtime.go` 注册顺序，共 14 个）：
+调度器清单（按 `app/runtime.go` 注册顺序，共 15 个）：
 
 | 注册名 | 中文名 | 触发 | 说明 |
 | ------ | ------ | ------ | ------ |
@@ -31,9 +31,9 @@ Scheduler 解决「集中调度周期性后台任务」的问题。Syntopica 有
 | `tag_quality_score` | 标签质量分重算 | 3600s | 重算 topic tags 的持久化质量分；并对账辅助标签 ref_count 与 topic tags 反规范化 feed_count（打标路径不增量维护，靠此周期重算） |
 | `auto_refresh` | Feed 自动刷新 | 60s | 刷新 `refresh_interval>0` 的 RSS feed，并种入后续链路状态位 |
 | `content_completion` | 内容补全（别名 `ai_summary`） | 60s | 补全文章内容 + 生成文章级整理稿；持久化任务名/别名均为 `ai_summary` |
-| `daily_report` | 日报生成 | 每日定时（TriggerNowWithDate 包装） | 为所有活跃版块生成日报，生成完当天后自动补档保留窗口内缺档日期（队列空前置、只补缺、顺延次日，超窗日期重建被拒；见 `flow/daily-report.md`） |
+| `daily_report` | 日报生成 | 每日定时，队列感知（night-window-alignment）：不早于 `daily_report_time`，tag/embedding 双队列清空才生成，最晚 `daily_report_deadline` 兜底强制（TriggerNowWithDate 包装） | 为所有活跃版块生成日报（单版完整制，当日已存在不重复）；生成完当天后自动补档保留窗口内缺档日期（队列空前置、只补缺、顺延次日，超窗日期重建被拒；见 `flow/daily-report.md` 约束 23） |
 | `board_upgrade_suggest` | 版块升级建议 | 每日 06:30 固定点（松耦合） | discover_new 生成 + watch 观察池 GC，失败仅记日志 |
-| `firecrawl` | Firecrawl 全文抓取 | 300s | 自动抓取文章全文 |
+| `firecrawl` | Firecrawl 全文抓取 | 300s | 自动抓取文章全文（readability 主力 + Firecrawl 兜底；纯抓取零 LLM，**不受 analysis_paused/健康门管制**，白天照抓） |
 | `lifeline_weekly` | 生命线周度刷新 | 每周一 03:00（循环 A） | 刷新所有活跃话题的周度新闻汇总（含历史回填，见 `flow/data-enrichment.md`） |
 | `lifeline_monthly` | 生命线月度刷新 | 每月1号 03:30（循环 A） | 月度新闻汇总（含历史回填） |
 | `lifeline_yearly` | 生命线年度刷新 | 每年1月1号 04:00（循环 A） | 年度新闻汇总（含历史回填） |
@@ -102,7 +102,7 @@ auto_refresh scheduler
 4. **单 job 失败默认标 task failed，松耦合 job 须吞 error 仅记日志、不阻塞同轮兄弟 job**：单个 job 执行失败默认标记 task failed；但**松耦合 job（如 board_upgrade_suggest、preference_profile_update、rsshub_catalog_sync）刻意吞掉 error 返回 nil**，仅记日志，不阻塞同轮兄弟 job（design D4）。`rsshub_catalog_sync` 实例不可达时仅记日志保留旧目录，推荐继续用存量目录。
 5. **auto_refresh 只扫描 refresh_interval > 0 的 feed，触发后先标 refresh_status=refreshing 再异步刷新**：只扫描 `refresh_interval > 0` 的 feed；触发后先标 `feed.refresh_status=refreshing` 防止重复触发，再异步 `RefreshFeed`。
 6. **auto_refresh 刷新文章时必须按 feed 开关预埋 firecrawl_status / summary_status 初始状态位**：`auto_refresh` 刷新文章时必须按 feed 开关（`firecrawl_enabled` / `article_summary_enabled`）种入 `firecrawl_status` / `summary_status` 初始位，否则后续 Firecrawl / 内容补全链路会漏处理。
-7. **analysis_paused 总闸开启时分析类 job 与 tag worker 池一律跳过不 lease（优雅停），auto_refresh 与维护类不受影响**：全局 `analysis_paused` 标志（存 `ai_settings`，重启保持）开启时，所有分析类调度 job（`content_completion` / `firecrawl` / `daily_report` / `board_upgrade_suggest` / `lifeline_weekly/monthly/yearly` / `tag_quality_score`）在 tick 自检直接返回 `skipped: analysis paused`、不 lease；tag worker 池（`TagQueue` / `EmbeddingQueue` / `MergeReembedding`）不消费队列。`auto_refresh`（入库）与维护类（`log_cleanup` / `aux_label_cleanup`（含标签边时间窗回收 `tag_edge_retention_days`，同属维护类不受暂停门禁）/ `blocked_article_recovery` / `rsshub_catalog_sync` / `preference_profile_update`）不受影响。优雅停：在跑批次跑完，不强杀。与 per-feed 的 `tagging_enabled`（分闸）共存——总闸关时分闸无效。开关经 `GET/POST /api/analysis/pause` 控制，前端顶部栏二态开关（`mdi:pause`↔`mdi:play`）+ favicon 暂停态 ⏸ 角标。
+7. **analysis_paused 总闸开启时分析类 job 与 tag worker 池一律跳过不 lease（优雅停），auto_refresh、firecrawl（纯抓取零 LLM）与维护类不受影响**：全局 `analysis_paused` 标志（存 `ai_settings`，重启保持）开启时，所有分析类调度 job（`content_completion` / `daily_report` / `board_upgrade_suggest` / `lifeline_weekly/monthly/yearly` / `tag_quality_score`）在 tick 自检直接返回 `skipped: analysis paused`、不 lease；tag worker 池（`TagQueue` / `EmbeddingQueue` / `MergeReembedding`）不消费队列。`auto_refresh`（入库）、`firecrawl`（正文抓取——纯 Pi 算力零 LLM 调用，2026-09-23 night-window-alignment 起移出门禁：白天健康门关闭时照抓，抓取完成仅落状态位 + 下游 `tag_jobs` 照常入队，worker 暂停不消费，不硬调 LLM）与维护类（`log_cleanup` / `aux_label_cleanup`（含标签边时间窗回收 `tag_edge_retention_days`，同属维护类不受暂停门禁）/ `blocked_article_recovery` / `rsshub_catalog_sync` / `preference_profile_update`）不受影响。优雅停：在跑批次跑完，不强杀。与 per-feed 的 `tagging_enabled`（分闸）共存——总闸关时分闸无效。开关经 `GET/POST /api/analysis/pause` 控制，前端顶部栏二态开关（`mdi:pause`↔`mdi:play`）+ favicon 暂停态 ⏸ 角标。
 
     **健康门维度（ai-model-health-gate）**：暂停判定含健康门——`有效暂停 = 用户暂停 || NOT 健康`。健康由 `aihealth` 启动探活决定（宽松判定：≥1 embedding 路由主 provider 通 **且** ≥1 llm 路由主 provider 通）；启动竞态期快照未就绪 → healthy=false → 有效暂停、分析不 lease，探活完成后自动恢复。**用户开关/按钮/favicon/API 的 `analysis_paused` 仍只反映用户意图**（`UserPaused()`），不受健康影响；前端在「意图运行但 !健康」时通知中心警示提示（铃铛警示态 + 面板置顶条，见 §代码入口；2026-09-19 前为顶部悬浮 banner，已退役）。
 
@@ -122,6 +122,7 @@ auto_refresh scheduler
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
 | 2026-09-19 | ai-health-to-notifications | AI 健康未就绪提示移入通知中心：铃铛警示态（mdi:bell-alert + warning 色）+ 面板置顶系统状态条（客户端虚拟条目，不落库/不推 WS/不计未读/不参与淘汰），含「重新检测」「去配置」入口；移除顶部悬浮 banner（AiHealthBanner 删除） | [`openspec/changes/archive/2026-09-19-ai-health-to-notifications`](../../../openspec/changes/archive/2026-09-19-ai-health-to-notifications) |
+| 2026-09-23 | night-window-alignment | 夜间窗口对齐：firecrawl 移出 analysis_paused/健康门管制（白天照抓、下游只入队不消费）；原方案含过期任务 TTL 淘汰（`tag_job_ttl_sweep`），验收期用户决策取消（既有 7 天归档 GC 已兜底，未合入）；`daily_report` 改队列感知单版完整制（双队列清空或 23:30 兜底才生成，新 key `daily_report_deadline`） | [`openspec/changes/archive/2026-09-24-night-window-alignment`](../../../openspec/changes/archive/2026-09-24-night-window-alignment) |
 | 2026-09-17 | add-notification-center | log_cleanup 扩展队列表保留：tag_jobs/firecrawl_jobs completed 留 1 天（每日重置）、failed 留 30 天；embedding_queues completed 30 天→1 天；迁移 20260917_0003 五个部分索引（status+created_at）支撑清理 DELETE；队列状态展示口径改活跃量（pending+leased）+ 今日完成 | [`openspec/changes/archive/2026-09-17-add-notification-center`](../../../openspec/changes/archive/2026-09-17-add-notification-center) |
 | 2026-08-23 | fix-quality-audit-p0 | `tag_quality_score` job 新增 topic_tags 反规范化 `feed_count` 周期对账（重算 COUNT(DISTINCT articles.feed_id)，修打标不增量维护导致的排序漂移）；同期修复前端 AI 摘要开关字段错读（详见 reading.md） | [`openspec/changes/archive/2026-08-23-fix-quality-audit-p0`](../../../openspec/changes/archive/2026-08-23-fix-quality-audit-p0) |
 | 2026-05-10 | global-settings-feed-controls | Feed 卡片新增 Firecrawl / 打标签 / 内容补全 3 个管线 toggle；后端 `tagging_enabled` 字段控制是否入 tag 队列；max_articles「无限制」上限修正 | [`openspec/changes/archive/2026-05-10-global-settings-feed-controls`](../../../openspec/changes/archive/2026-05-10-global-settings-feed-controls) |

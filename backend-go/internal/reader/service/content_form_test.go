@@ -4,10 +4,10 @@ import "testing"
 
 func TestParseContentFormMark(t *testing.T) {
 	cases := []struct {
-		name       string
-		summary    string
-		wantForm   string
-		wantClean  string
+		name      string
+		summary   string
+		wantForm  string
+		wantClean string
 	}{
 		{
 			name:      "mono mark on first line",

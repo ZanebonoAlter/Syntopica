@@ -52,32 +52,155 @@ func adjudicateDailyReportTerminal(date time.Time, totalBoards, successCount, fa
 // left (usually nothing), silently failing every generation.
 const backfillScanTimeout = 30 * time.Minute
 
-// NextDailyReportTime computes the next wall-clock time for the daily report.
-// It reads the configured HH:MM from AISettings (default "21:00") and returns
-// today at that time if it hasn't passed yet, otherwise tomorrow at that time.
-func NextDailyReportTime(now time.Time) time.Time {
-	hhmm, err := aisettings.LoadDailyReportTimeConfig()
+// ── 队列感知调度缝（night-window-alignment D4）──
+//
+// 等待循环状态机：等待(墙钟到) → [复查] 双队列清空? →生成→结束｜非空→ [=deadline?]
+// 是→强制生成→结束｜否→sleep 复查周期→复查。所有外部依赖都走包级缝，单测替换后
+// 无需真实等待/墙钟：
+var (
+	// dailyReportQueueDrained 双队列清空判定：tag_jobs 无 pending/leased 且
+	// embedding_queues 无 pending/processing。lane 分桶依赖 tag embedding 对
+	// 质心的距离，embedding 未完成时生成会退化为 unmatched 桶，故双零才出报告。
+	dailyReportQueueDrained = countQueuesDrained
+	// dailyReportExistsForDate 当日任意版面已有报告（单版完整制幂等判定）。
+	dailyReportExistsForDate = func(date time.Time) (bool, error) {
+		return topicgraphrepo.Repo.ReportExistsForDate(date)
+	}
+	// dailyReportDeadlineFn 兜底时刻解析（每次现读配置，更新即时生效）。
+	dailyReportDeadlineFn = func(now time.Time) time.Time {
+		_, deadline := dailyReportWindow(now)
+		return deadline
+	}
+	// dailyReportPollInterval 复查周期（spec：分钟级周期复查）。
+	dailyReportPollInterval = 60 * time.Second
+)
+
+// dailyReportWindow resolves today's wall-clock start time and fallback
+// deadline in local time (night-window-alignment D4/D5). AISettings keys:
+// daily_report_time (default 21:00) and daily_report_deadline (default 23:30);
+// a deadline earlier than the wall-clock time already fell back to 23:30 in
+// the loader, and a still-earlier deadline after fallback clamps to the wall
+// time (墙钟=兜底合法，等价单时刻).
+func dailyReportWindow(now time.Time) (wall, deadline time.Time) {
+	timeStr, deadlineStr, err := aisettings.LoadDailyReportWindowConfig()
 	if err != nil {
-		logging.Warnf("daily_report: failed to load time config, using default: %v", err)
-		hhmm = "21:00"
+		logging.Warnf("daily_report: failed to load window config, using defaults: %v", err)
+		timeStr, deadlineStr = "21:00", "23:30"
+	}
+	wall = parseDailyReportClock(now, timeStr, 21, 0)
+	deadline = parseDailyReportClock(now, deadlineStr, 23, 30)
+	if deadline.Before(wall) {
+		deadline = wall
+	}
+	return wall, deadline
+}
+
+// parseDailyReportClock builds today at the given HH:MM in local time, with a
+// defensive fallback to the default clock on parse failure (the loader already
+// validated the format).
+func parseDailyReportClock(now time.Time, hhmm string, defH, defM int) time.Time {
+	h, m := defH, defM
+	if _, err := fmt.Sscanf(hhmm, "%d:%d", &h, &m); err != nil {
+		logging.Warnf("daily_report: failed to parse time %q, using default %02d:%02d: %v", hhmm, defH, defM, err)
+		h, m = defH, defM
+	}
+	return time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
+}
+
+// countQueuesDrained reports whether both consumer queues are fully drained:
+// tag_jobs has no pending/leased rows AND embedding_queues has no
+// pending/processing rows (night-window-alignment D4). skipped 是终态、不计入
+// 活跃量（pending+leased），天然不阻塞生成。
+func countQueuesDrained() (bool, error) {
+	db := repository.Repo.DB()
+	var tagBacklog int64
+	if err := db.Model(&models.TagJob{}).
+		Where("status IN ?", []string{string(models.JobStatusPending), string(models.JobStatusLeased)}).
+		Count(&tagBacklog).Error; err != nil {
+		return false, fmt.Errorf("count tag job backlog: %w", err)
+	}
+	var embeddingBacklog int64
+	if err := db.Model(&models.EmbeddingQueue{}).
+		Where("status IN ?", []string{models.EmbeddingQueueStatusPending, models.EmbeddingQueueStatusProcessing}).
+		Count(&embeddingBacklog).Error; err != nil {
+		return false, fmt.Errorf("count embedding queue backlog: %w", err)
+	}
+	return tagBacklog == 0 && embeddingBacklog == 0, nil
+}
+
+// waitForDailyReportWindow blocks until today's report can be generated
+// (night-window-alignment D4 单版完整制):
+//   - 当日报告已存在 → "already_exists"（当日不重复生成，进入即返回）；
+//   - 双队列清空 → ""（正常生成；首查即查，双空不等复查周期）；
+//   - 到达兜底时刻 → ""（强制生成，队列未清也出）；
+//   - ctx 取消（停机） → "cancelled"（等待循环内状态不持久化，重启后按
+//     next_execution 逻辑重新进入等待，幂等）。
+func waitForDailyReportWindow(ctx context.Context, date time.Time) string {
+	if exists, err := dailyReportExistsForDate(date); err != nil {
+		logging.Warnf("daily-report: report existence check failed: %v; assuming not generated", err)
+	} else if exists {
+		return "already_exists"
 	}
 
-	h, m := 21, 0
-	_, scanErr := fmt.Sscanf(hhmm, "%d:%d", &h, &m)
-	if scanErr != nil {
-		logging.Warnf("daily_report: failed to parse time %q, using default 21:00: %v", hhmm, scanErr)
-		h, m = 21, 0
+	for {
+		drained, err := dailyReportQueueDrained()
+		if err != nil {
+			logging.Warnf("daily-report: queue drain check failed: %v; treating as not drained", err)
+		}
+		if drained {
+			return ""
+		}
+		// 兜底判定在复查周期检查之后：deadline 恰落在 sleep 中时，醒后首查
+		// 仍会先看队列再看兜底，两个出口都不会错过。
+		if !time.Now().Before(dailyReportDeadlineFn(time.Now())) {
+			logging.Infof("daily-report: deadline reached with queues not drained; forcing generation")
+			return ""
+		}
+		select {
+		case <-ctx.Done():
+			return "cancelled"
+		case <-time.After(dailyReportPollInterval):
+		}
+	}
+}
+
+// NextDailyReportTime computes the next trigger time for the daily report
+// (night-window-alignment D4 队列感知语义):
+//
+//   - 当日报告已生成 → 明日墙钟时刻（单版完整制，当日不再重复生成；
+//     手动提前生成的日子也直接顺延，避免无谓的空转触发）；
+//   - 未到今日墙钟时刻 → 今日墙钟时刻（服务提前启动场景）；
+//   - 墙钟已过、未到兜底 → now+复查周期（重启落在窗口内时重新进入等待
+//     循环——SHALL NOT 因重启退化为 24h；暂停期 skip 后按分钟级周期重试，
+//     既不热循环也不丢当日）；
+//   - 兜底时刻已过 → 明日墙钟时刻（当日缺档由既有补档机制兑住，SHALL NOT
+//     启动后立即触发）。
+func NextDailyReportTime(now time.Time) time.Time {
+	wall, deadline := dailyReportWindow(now)
+	tomorrow := wall.Add(24 * time.Hour)
+
+	if generated, err := dailyReportExistsForDate(now); err != nil {
+		logging.Warnf("daily_report: report existence check failed (%v); assuming not generated", err)
+	} else if generated {
+		return tomorrow
 	}
 
-	today := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
-	if now.Before(today) {
-		return today
+	switch {
+	case now.Before(wall):
+		return wall
+	case now.Before(deadline):
+		return now.Add(dailyReportPollInterval)
+	default:
+		return tomorrow
 	}
-	return today.Add(24 * time.Hour)
 }
 
 // DailyReportJob generates daily reports for all active semantic boards.
-// When no targetDate is provided (nil), it reports on the current local time.
+// When no targetDate is provided (nil) — the wall-clock scheduled path — the
+// job first waits for the queue-aware window (night-window-alignment D4):
+// today's report absent, both queues drained, or the fallback deadline
+// reached. A manual TriggerNowWithDate is a deliberate single-date rebuild
+// and keeps the existing run-immediately semantics.
 func DailyReportJob(targetDate ...time.Time) JobFunc {
 	return func(ctx context.Context) (*JobResult, error) {
 		startTime := time.Now()
@@ -85,6 +208,19 @@ func DailyReportJob(targetDate ...time.Time) JobFunc {
 		date := time.Now().In(time.Local)
 		if len(targetDate) > 0 {
 			date = targetDate[0]
+		}
+
+		// 队列感知等待（night-window-alignment D4）：仅定时路径等待；等待在
+		// 主生成 30min 预算之外（WithTimeout 之前），不蚕食生成预算。等待期
+		// 内 runJob 持有 isExecuting，手动 TriggerNowWithDate 命中 409 重入
+		// 保护（既有同 job 不并发语义）。
+		if len(targetDate) == 0 {
+			if skip := waitForDailyReportWindow(ctx, date); skip != "" {
+				return &JobResult{
+					Data:    map[string]interface{}{"skipped": skip},
+					Summary: fmt.Sprintf("daily report skipped: %s", skip),
+				}, nil
+			}
 		}
 
 		boardIDs, err := daily_report.CollectBoardIDsForDate(date)

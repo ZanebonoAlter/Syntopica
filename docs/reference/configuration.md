@@ -23,6 +23,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | `IMAGE_CACHE_MAX_MB` | 否 | `256` | 图片代理（`GET /api/image-proxy`）磁盘缓存总量上限（MB，整数）。超限按最近访问时间（mtime）从旧淘汰到 90% 水位；`"0"` 禁用缓存（每次回源）；负数/非法值回落默认。缓存目录固定 `data/image-cache/`（URL SHA-256 命名），**整目录删除即可热清缓存**（图床内容变更需强一致时），下次访问自动重建。 |
 | `BOCHA_API_KEY` | 否 | *(空)* | **部署兜底**——博查 key 首选在设置界面「博查搜索」配（存 `ai_settings` 表，动态生效）。此 env 仅用于无界面/CI/容器部署，与 `configs/config.yaml` 的 `bocha.api_key` 同为兜底（优先级：界面 DB > env > config.yaml）。全空→`web_search` 降级 Noop（返回错误 JSON，agent 自降级、不阻断） |
 | `BOCHA_ENDPOINT` | 否 | `"https://api.bochaai.com/v1/web-search"` | 博查通搜 endpoint（原始网页结果模式）的**兜底**值；界面可覆盖。仅在需要切换 endpoint（如代理/镜像）时设 |
+| `COMTRADE_API_KEY` | 否 | *(空)* | UN Comtrade 订阅 key 的**兜底**（研究数据源域，change integrate-research-data-sources）。**首选在设置界面「研究数据源」配**（存 `ai_settings` 表 `comtrade_config`，动态生效免重启，同博查语义）；优先级：界面 DB > env > `configs/config.yaml` `comtrade.api_key`。全空→`un_comtrade` 源在目录中 disabled 且取数报「配置缺失」型 SOURCE_UNAVAILABLE（消息指向配置项），其余三源（EIA/JODI/WDI）匿名可用不受影响。key 获取：comtradedeveloper.un.org 订阅 Free APIs 产品（详见下方「研究数据源」节） |
 
 ### 前端（Nuxt）
 
@@ -52,7 +53,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 ### Docker Compose（Firecrawl）
 
-以下变量由 `docker-compose.firecrawl.yml` 使用，仅在启动 Firecrawl 服务时有效。
+以下变量由 `deploy/compose/docker-compose.firecrawl.yml` 使用，仅在启动 Firecrawl 服务时有效。
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
@@ -147,7 +148,7 @@ docker run -d --name rss-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e 
 ### Docker（PostgreSQL + pgvector）— 推荐方式
 
 ```bash
-docker compose up -d
+docker compose --project-directory . -f deploy/compose/docker-compose.yml up -d
 ```
 
 启动两个服务：
@@ -171,7 +172,8 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `open_notebook_config` | Open Notebook digest 导出设置（启用、base URL、API key、model、目标笔记本、prompt 模式、自动发送日报/周报） |
 | `rsshub_config` | RSSHub 实例配置（订阅源发现用，见下「订阅源发现」节；`rsshub_base_url` 缺省回落 `http://rsshub.app`） |
 | `http_proxy_config` | 全局出站代理配置（feed 抓取 / Firecrawl / LLM 等所有外部请求；见下「出站代理」节；`http_proxy_url` 空=直连） |
-| `daily_report_time` | 日报生成时刻（HH:MM 格式，默认 `21:00`） |
+| `daily_report_time` | 日报生成最早时刻（HH:MM 格式，默认 `21:00`）；实际生成还受队列感知门控（双队列清空才出，见下一条） |
+| `daily_report_deadline` | 日报兜底强制生成时刻（HH:MM 格式，默认 `23:30`；队列未清空时到点强制出报告；早于 `daily_report_time` 回退默认并告警） |
 | `auto_start_models` | 本地模型自动拉起总开关（默认 `false`）：后端启动时，对「探测不通且配了 `start_command`」的 provider 自动执行启动命令拉起本地模型进程。见下「本地模型自动拉起」节 |
 | `persistent_topic_match_threshold` | 新 section 锚定已有话题的余弦距离阈值（默认 `0.30`） |
 | `persistent_topic_upgrade_threshold` | candidate 允许人工确认所需、同时为管理 UI 可见门槛的连续命中天数（默认 `3`；不会自动转 active） |
@@ -363,3 +365,30 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 - **能力边界（诚实声明）**：专业数据仅 EIA/JODI 两个只读源已接入；**STEO 及其他专业接口仍未接入**，persona 已约束不假装查询过。工具白名单≠OS 沙箱隔离。搜索 `maxUses` 与 host `maxParallelToolCalls` 保持原样，**尚无整场 token/硬预算限制**。
 - 行为契约为 openspec change `configure-dsh-energy-research`（spec：`dsh-research-preset`）与 `connect-dsh-energy-data-sources`（spec：`dsh-energy-mcp-tools`，energy_data 服务器行为契约）。
 
+
+## 研究数据源（Syntopica 应用，非 dsh 外部工具）
+
+后端内置四个只读研究数据源（change `integrate-research-data-sources`，代码 `backend-go/internal/datasources/`），为后续研究对话助手供给结构化官方数值；本节是配置与口径速查。
+
+**部署与配置**：
+
+- 目录表 `data_sources` 启动时自动建表并 seed（幂等 upsert）；无迁移操作、无观测值落库（取数仅内存 TTL 缓存 900s，快照由消费方留存）。
+- 仅 UN Comtrade 需配置，三级优先（**同博查语义**）：**设置界面「研究数据源」**（`ai_settings.comtrade_config`，动态生效免重启）> `COMTRADE_API_KEY` env > `configs/config.yaml` `comtrade.api_key`。key 获取路径（2026-09 实测）：`comtradedeveloper.un.org` → 用主站（comtradeplus.un.org）同一账号登录 → 右上 **Products** → 订阅 **Free APIs** 产品（自动批准）→ **Profile → Subscriptions** 显示 primary key。免费档 500 次/天；**保活**：账号长期（半年~一年）不登录门户且无 API 活动，key 会被移除需重新生成。
+- 未配置 key 时：目录 API 中 `un_comtrade` 行 `status=disabled` 带原因；probe/取数报「配置缺失」型 SOURCE_UNAVAILABLE（消息含配置项名）；其余三源完全不受影响。目录 status 与取数**每次现读**配置（免重启翻转），设置 API 脱敏回显（已配置+末 4 位，不回显完整 key），空 key 保存不清除已存值、`enabled=false` 跳过界面值走兜底。
+
+**四源口径速查**：
+
+| 源 code | 数据 | 频度/滞后 | 单位纪律 |
+| --- | --- | --- | --- |
+| `eia_wpsr` | 美国原油库存（商业不含SPR/SPR/含SPR总量）与供需（产量/进出口） | 周度（周三发布上周五截止） | stocks=MMbbl、supply=Mb/d，不换算；仅美国不得称全球 |
+| `jodi_oil_primary` | 96 经济体原油产量/进出口/期末库存（含中日韩美） | 月度，滞后 1.5~2 月 | KBD（流量）/KBBL（库存）不换算；缺失标记（`-`/`..`/`x`）映射 null 不转 0 |
+| `wb_wdi` | 世界银行宏观年度指标（出口/GDP、燃料进口占比等） | 年度 | 指标原生单位；null 期保留 |
+| `un_comtrade` | 全球 HS 商品双边贸易（金额+数量，分伙伴国） | 年度完整；月度滞后 4 月+（中国更长） | netWgt/qty=kg、primaryValue=USD；partner_code=0 为 World 合计行；M49 码（中156/日392/韩410/沙682）；原油 HS2709 |
+
+**验证与排障**：
+
+- `GET /api/datasources`：目录全量（含各源 status）。
+- `POST /api/datasources/{code}/probe`：一次真实取数（最小参数集），返回摘要/耗时/`retrieved_at`；失败返回 `error_code`（`INVALID_ARGUMENT`=400 / `SOURCE_UNAVAILABLE`=`SCHEMA_CHANGED`=502，消息可区分配置缺失/网络/上游结构漂移）。probe 不改目录状态。
+- 上游 CSV 结构漂移（如 EIA 改列）会显式报 `SCHEMA_CHANGED` 并驱逐缓存，不做模糊容错——这是预期行为，等待上游口径更新后重试。
+
+**消费方式**：四源已注册为 agent 工具（`eia_wpsr_table1`/`jodi_oil_primary`/`wb_wdi`/`un_comtrade_trade`，经 dataenrichment 工具注册表），供后续研究对话会话使用；现有增强/问答流程的默认工具集**不含**这些工具（spec「注入后现有工具面不变」）。

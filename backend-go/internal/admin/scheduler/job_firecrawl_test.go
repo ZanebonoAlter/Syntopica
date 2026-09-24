@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 	adminrepo "syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/analysispause"
 	"syntopica-backend/internal/platform/database"
 	content "syntopica-backend/internal/reader"
 	readerservice "syntopica-backend/internal/reader/service"
@@ -433,5 +435,40 @@ func TestFirecrawlJobTerminalFailureGateOffSkipsSummaryMarking(t *testing.T) {
 	}
 	if fallbackTagJobs != 1 {
 		t.Fatalf("fallback retag jobs = %d, want 1 (gate must not affect tagging fallback)", fallbackTagJobs)
+	}
+}
+
+// TestFirecrawlCompletionEnqueuesTagJobsWhilePaused（A3，night-window-alignment）：
+// 暂停态下 firecrawl 完成回调只落状态位 + tag_jobs 照常入队（pending 等待），
+// 不发起任何 LLM 调用——enqueue 非 LLM 工作，worker 暂停天然不消费。
+func TestFirecrawlCompletionEnqueuesTagJobsWhilePaused(t *testing.T) {
+	db := setupFirecrawlJobTest(t)
+	queue := content.NewFirecrawlJobQueue(db)
+	seedFirecrawlArticles(t, db, queue, 2, false)
+
+	require.NoError(t, analysispause.SetPaused(true))
+	t.Cleanup(func() { _ = analysispause.SetPaused(false) })
+
+	res, err := firecrawlJobWithCrawler(queue, "paused-downstream", func(*content.FirecrawlConfig) content.Crawler {
+		return newFakeCrawler(time.Millisecond, nil)
+	})(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.Equal(t, 2, res.Data["completed"].(int), "crawl itself must complete while paused")
+
+	// 抓取结果照常落 firecrawl 状态位。
+	var completedArticles int64
+	require.NoError(t, db.Model(&models.Article{}).Where("firecrawl_status = ?", "completed").Count(&completedArticles).Error)
+	require.EqualValues(t, 2, completedArticles)
+
+	// 下游 tag_jobs 照常入队且保持 pending：无 worker 消费、无 LLM 路径触发
+	//（ai_call_logs 不新增行的结构性前提——本测试进程内没有任何打标/嵌入调用）。
+	var tagJobs []models.TagJob
+	require.NoError(t, db.Find(&tagJobs).Error)
+	require.Len(t, tagJobs, 2)
+	for _, job := range tagJobs {
+		require.Equal(t, string(models.JobStatusPending), job.Status, "tag job must stay pending while paused")
+		require.Equal(t, "firecrawl_completed", job.Reason)
+		require.True(t, job.ForceRetag)
 	}
 }

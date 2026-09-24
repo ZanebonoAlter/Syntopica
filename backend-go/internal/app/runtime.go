@@ -248,14 +248,16 @@ func StartRuntime() *Runtime {
 			boardUpgradeNextRunFn),
 	}))
 
-	// Firecrawl: with custom status enricher
+	// Firecrawl: with custom status enricher. 不包暂停包裹（night-window-alignment
+	// D1）：正文抓取是纯抓取算力、零 LLM 调用，不受 analysis_paused/健康门管制，
+	// 与 auto_refresh 同列；下游 tag_jobs 照常入队，worker 暂停期间天然不消费。
 	firecrawlQueue := content.NewFirecrawlJobQueue(database.DB)
 	registry.Register("firecrawl", scheduler.New(scheduler.Config{
 		Name:         "Firecrawl Crawler",
 		Description:  "Auto-crawl full content for articles",
 		Interval:     300 * time.Second,
 		StartupDelay: 0,
-		Job:          scheduler.PauseAware(admin.FirecrawlJob(firecrawlQueue, "scheduled")),
+		Job:          admin.FirecrawlJob(firecrawlQueue, "scheduled"),
 		StatusDetail: admin.FirecrawlStatusEnricher(),
 		Persistence: admin.NewTaskPersistence("firecrawl",
 			"自动爬取文章全文"),

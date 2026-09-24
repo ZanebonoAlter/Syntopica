@@ -77,7 +77,7 @@ func TestIsPaused_TruthTable(t *testing.T) {
 		name       string
 		userPaused bool
 		// healthState: "healthy", "unhealthy", or "not_ready"
-		healthState string
+		healthState  string
 		wantIsPaused bool
 	}{
 		{"user_off+healthy", false, "healthy", false},

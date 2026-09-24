@@ -18,6 +18,7 @@ import (
 	"syntopica-backend/internal/platform/analysispause"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/testutil"
+	content "syntopica-backend/internal/reader"
 	tagging "syntopica-backend/internal/tagmanagement"
 	taggingrepo "syntopica-backend/internal/tagmanagement/repository"
 )
@@ -181,4 +182,130 @@ func TestPauseAware_RunsWhenNotPaused(t *testing.T) {
 	require.NotNil(t, result)
 	require.Equal(t, "real job ran", result.Summary)
 	require.Equal(t, true, result.Data["ran"])
+}
+
+// ── night-window-alignment：firecrawl 摘门 + 恢复续跑顺序 ──
+//
+// runtime.go 已把 firecrawl 注册处的暂停包裹摘除（与 auto_refresh 同列）。断言
+// 结构 + 行为双口径（对齐 TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused 的
+// 既有模式）：PauseAware 包裹形态在暂停/健康门下仍 skip（content_completion
+// 等分析类的对照），而裸 job 形态（runtime 实际注册方式）照常抓取。
+
+// TestFirecrawlCrawlRunsWhileAnalysisPaused（A1）：用户暂停路径下 firecrawl tick
+// 照常执行抓取，JobResult 不带 "analysis paused"。
+func TestFirecrawlCrawlRunsWhileAnalysisPaused(t *testing.T) {
+	db := setupFirecrawlJobTest(t)
+	queue := content.NewFirecrawlJobQueue(db)
+	_, links := seedFirecrawlArticles(t, db, queue, 2, false)
+
+	require.NoError(t, analysispause.SetPaused(true))
+	t.Cleanup(func() { _ = analysispause.SetPaused(false) })
+
+	crawler := newFakeCrawler(time.Millisecond, nil)
+	res, err := firecrawlJobWithCrawler(queue, "paused-crawl", func(*content.FirecrawlConfig) content.Crawler {
+		return crawler
+	})(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotContains(t, res.Summary, "paused", "firecrawl must not be gated by the pause")
+	require.NotContains(t, res.Summary, "skipped")
+	require.Equal(t, 2, res.Data["completed"].(int), "crawl must actually run while paused")
+	for _, link := range links {
+		require.Equal(t, 1, crawler.callCount(link), "%s must be crawled while paused", link)
+	}
+
+	// 对照：分析类注册形态（PauseAware 包裹）暂停态仍 skip。
+	var called int32
+	skipped, err := PauseAware(func(ctx context.Context) (*JobResult, error) {
+		atomic.AddInt32(&called, 1)
+		return &JobResult{Summary: "analysis ran"}, nil
+	})(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 0, atomic.LoadInt32(&called))
+	require.Contains(t, skipped.Summary, "skipped")
+}
+
+// TestFirecrawlCrawlRunsWhenModelUnhealthy（A2）：健康门路径（快照 NOT 健康、
+// 用户未暂停）下 firecrawl 照常执行；content_completion 形态的 tick 仍 skip。
+func TestFirecrawlCrawlRunsWhenModelUnhealthy(t *testing.T) {
+	db := setupFirecrawlJobTest(t)
+	queue := content.NewFirecrawlJobQueue(db)
+	seedFirecrawlArticles(t, db, queue, 2, false)
+
+	require.NoError(t, analysispause.SetPaused(false))
+	now := time.Now()
+	aihealth.SetSnapshotForTest(aihealth.Snapshot{Healthy: false, CheckedAt: &now})
+	t.Cleanup(func() { aihealth.SetSnapshotForTest(aihealth.Snapshot{}) })
+
+	// 对照：content_completion 注册形态（PauseAware 包裹）健康门下 skip。
+	var called int32
+	skipped, err := PauseAware(func(ctx context.Context) (*JobResult, error) {
+		atomic.AddInt32(&called, 1)
+		return &JobResult{Summary: "content completion ran"}, nil
+	})(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 0, atomic.LoadInt32(&called), "analysis-class tick must be skipped while model unhealthy")
+	require.Contains(t, skipped.Summary, "model_unhealthy")
+
+	// firecrawl（零 LLM、无暂停包裹）照常抓取。
+	res, err := firecrawlJobWithCrawler(queue, "unhealthy-crawl", func(*content.FirecrawlConfig) content.Crawler {
+		return newFakeCrawler(time.Millisecond, nil)
+	})(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotContains(t, res.Summary, "skipped")
+	require.Equal(t, 2, res.Data["completed"].(int), "crawl must run when the model is NOT healthy")
+}
+
+// TestTagQueueResumeDrainsNewestFirst（B4，spec「恢复后自动续跑」改写口径）：
+// 暂停期间任务堆积不被消费，恢复后按新任务优先顺序 lease（不再是 FIFO）。
+func TestTagQueueResumeDrainsNewestFirst(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:pause-tagresume-%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
+	require.NoError(t, err)
+
+	prevTaggingRepo := taggingrepo.Repo
+	prevDatabase := database.DB
+	tagging.InitRepository(db)
+	database.DB = db
+	t.Cleanup(func() {
+		taggingrepo.Repo = prevTaggingRepo
+		database.DB = prevDatabase
+	})
+	// AISettings：analysispause.SetPaused 持久化走 ai_settings 表。
+	require.NoError(t, db.AutoMigrate(&models.TagJob{}, &models.AISettings{}))
+
+	now := time.Now()
+	nextID := uint(1)
+	mk := func(age time.Duration) uint {
+		job := models.TagJob{
+			ArticleID:   nextID,
+			Status:      string(models.JobStatusPending),
+			AvailableAt: now.Add(-age),
+		}
+		nextID++
+		require.NoError(t, db.Create(&job).Error)
+		// created_at is auto-populated by GORM on insert; pin it explicitly.
+		require.NoError(t, db.Model(&models.TagJob{}).Where("id = ?", job.ID).
+			Update("created_at", now.Add(-age)).Error)
+		return job.ID
+	}
+	oldest := mk(48 * time.Hour)
+	mid := mk(8 * time.Hour)
+	newest := mk(time.Minute)
+
+	// 暂停期：任务堆积、无任何 lease 发生（tag worker 停消费）。
+	require.NoError(t, analysispause.SetPaused(true))
+	t.Cleanup(func() { _ = analysispause.SetPaused(false) })
+	var leased int64
+	require.NoError(t, db.Model(&models.TagJob{}).Where("status = ?", string(models.JobStatusLeased)).Count(&leased).Error)
+	require.Zero(t, leased, "no job may be leased while paused")
+
+	// 恢复后：按新任务优先顺序消化（新契约，不再是 created_at FIFO）。
+	require.NoError(t, analysispause.SetPaused(false))
+	jobs, err := taggingrepo.NewTagJobQueue(db).Claim(3, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, jobs, 3)
+	require.Equal(t, []uint{newest, mid, oldest},
+		[]uint{jobs[0].ID, jobs[1].ID, jobs[2].ID},
+		"resume must drain newest-first")
 }

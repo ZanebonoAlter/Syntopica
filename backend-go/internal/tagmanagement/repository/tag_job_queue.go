@@ -102,10 +102,15 @@ func (q *TagJobQueue) Claim(limit int, lease time.Duration) ([]models.TagJob, er
 			return err
 		}
 
+		// 消费顺序（night-window-alignment D2）：新任务优先——priority 可插队，
+		// 同顺位内按入队时间新→旧（created_at DESC；入队时间与到达时间近似单调
+		// 同步，避免 join articles 的成本与 pub_date 缺失边界）。
+		// 注：退避语义由上方 WHERE available_at <= now 保证（未来时刻不可 lease，
+		// B3）；不把 available_at ASC 作排序键——Enqueue 时 available_at =
+		// created_at，对 due 任务按它升序等于旧任务先出，会复活 FIFO。
 		if err := tx.Where("status = ? AND available_at <= ?", string(models.JobStatusPending), now).
 			Order("priority DESC").
-			Order("available_at ASC").
-			Order("id ASC").
+			Order("created_at DESC").
 			Limit(limit).
 			Find(&jobs).Error; err != nil {
 			return err

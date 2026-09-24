@@ -15,6 +15,7 @@ import (
 	adminrepo "syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/articlerefs"
+	"syntopica-backend/internal/platform/database"
 	tagging "syntopica-backend/internal/tagmanagement"
 	topicgraphrepo "syntopica-backend/internal/topicgraph/repository"
 )
@@ -56,11 +57,16 @@ func setupDailyReportJobTest(t *testing.T) *gorm.DB {
 
 	prevAdminRepo := adminrepo.Repo
 	prevTopicRepo := topicgraphrepo.Repo
+	prevPlatformDB := database.DB
 	adminrepo.InitRepository(db)
 	topicgraphrepo.InitRepository(db)
+	// aisettings 读取走 platform 全局（daily_report_time/deadline 键），测试接入
+	// 同一内存库（night-window-alignment D4）。
+	database.DB = db
 	t.Cleanup(func() {
 		adminrepo.Repo = prevAdminRepo
 		topicgraphrepo.Repo = prevTopicRepo
+		database.DB = prevPlatformDB
 	})
 
 	require.NoError(t, db.AutoMigrate(
@@ -70,9 +76,17 @@ func setupDailyReportJobTest(t *testing.T) *gorm.DB {
 		&models.ArticleTopicTag{},
 		&models.TopicTagBoardLabel{},
 		&models.TagJob{},
+		&models.EmbeddingQueue{},
 		&models.AISettings{},
 		&topicgraphrepo.BoardDailyReport{},
 	))
+
+	// 等待循环复查周期缩到 1ms：空队列用例首查即过、不受影响；排队用例
+	// （窗口测试）依赖自身缝控制，不依赖真实 60s（night-window-alignment D4）。
+	prevPoll := dailyReportPollInterval
+	dailyReportPollInterval = time.Millisecond
+	t.Cleanup(func() { dailyReportPollInterval = prevPoll })
+
 	return db
 }
 
@@ -202,6 +216,10 @@ func TestDailyReportJobBackfillsMissingReportsInWindow(t *testing.T) {
 
 // Scenario「队列未清空顺延」: pending or leased tag jobs defer the whole backfill
 // pass while today's report is generated as usual.
+//
+// night-window-alignment D4 后定时路径先等队列清空/兑底；本用例把兑底缝拨到
+// 过去，等价「队列未清、拖到兑底强制生成」分支——主断言（backfill 顺延、当日
+// 照常生成）在新旧契约下语义一致。
 func TestDailyReportJobBackfillDefersUntilTagQueueDrains(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -226,6 +244,11 @@ func TestDailyReportJobBackfillDefersUntilTagQueueDrains(t *testing.T) {
 				Status:      string(tc.status),
 				AvailableAt: time.Now(),
 			}).Error)
+
+			// 兑底已过：等待循环首查队列非空后立即走强制生成分支（不真实等待）。
+			prevDeadline := dailyReportDeadlineFn
+			dailyReportDeadlineFn = func(now time.Time) time.Time { return now.Add(-time.Second) }
+			t.Cleanup(func() { dailyReportDeadlineFn = prevDeadline })
 
 			stub := stubDailyReportGeneration(t, db)
 
