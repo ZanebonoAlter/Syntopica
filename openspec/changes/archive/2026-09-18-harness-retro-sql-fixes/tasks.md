@@ -57,6 +57,7 @@
 ## 7. 文档
 
 <!-- doc-impact: none(harness 工具链纠错，不触及 reference 文档域；改动仅限脚本/skill 文档/research 文档) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 harness 报告 SQL 纠错，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 
 - [x] 7.1 `docs/research/harness-effectiveness-metrics/retro-analysis-2026-09-18.md` 改进项清单补「修复状态」标注（#1/#2/#3 → 本 change；#4 → 契约豁免方案落地）；验证：grep 修复状态标记存在
 - [x] 7.2 归档前 `bash scripts/harness/doc-impact.sh verify harness-retro-sql-fixes` 与 `bash scripts/harness/check-standards.sh --change harness-retro-sql-fixes` 通过（harness 域无 flow 文档，预期无 flow 溯源要求）；验证：两命令退出码 0（2026-09-18 实测：verify 通过声明 none；check-standards 168/168）

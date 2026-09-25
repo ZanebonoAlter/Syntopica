@@ -26,6 +26,7 @@
 
 ## 5. 文档
 <!-- doc-impact: none(harness 与执行规范文档不在七域清单；本 change 文档产出为 harness/pi-extensions.md 与开发执行规范 §0.6，已列于上方 T6/T7 与验证节 V4/V5) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 子线程约束通道加固，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 
 - [x] docs/research/subagent-constraint-gap/explore-findings.md（已完成，研究底稿）
 - [x] docs/reference/harness/pi-extensions.md（T6）

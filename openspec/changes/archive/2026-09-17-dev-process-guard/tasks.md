@@ -37,6 +37,7 @@
 ## 6. 文档
 
 <!-- doc-impact: none(harness 工具链 change：仅更新 docs/reference/harness/pi-extensions.md 与 AGENTS.md，均不在 8 域路径内；无 flow 业务域变更) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 harness dev 进程治理扩展，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 - [x] docs/reference/harness/pi-extensions.md（全景表 + 机制节，见 4.1）
 - [x] AGENTS.md（扩展计数与红线，见 4.2）
 - [x] openspec 主 spec 同步：archive 时 `specs/dev-process-guard/spec.md` 落 `openspec/specs/dev-process-guard/`（归档自动）

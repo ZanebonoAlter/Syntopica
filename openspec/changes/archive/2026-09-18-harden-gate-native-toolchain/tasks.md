@@ -20,6 +20,7 @@
 ## 文档
 
 <!-- doc-impact: none(harness 机制文档不在 doc-impact 七域；pi-extensions.md 属 harness 扩展机制全景文档，随本 change 就地同步) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 门禁工具链加固，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 
 - [x] D1 `docs/reference/harness/pi-extensions.md`：quality-gate 节补「native 工具链探测短路（toolchain-down）」小节——触发条件/短路范围/边沿记账/恢复路径，与 interop-down 并列表述
 - [x] D2 research finding 回链：`docs/research/harness-gate-hardening/explore-findings.md` 标注问题一已由本 change 处理（问题二仍开放）

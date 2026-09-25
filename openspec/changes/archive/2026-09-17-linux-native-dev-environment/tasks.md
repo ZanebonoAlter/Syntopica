@@ -33,6 +33,7 @@
 ## 4. 文档
 
 <!-- doc-impact: standard, architecture, deployment, configuration -->
+- **无 flow 影响**（§12.2 归档后回填：纯 开发主机平台迁移（本 change 自有 doc-impact-excuse 已载明零业务链路改动），非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 <!-- doc-impact-excuse: flow=启发式命中系其他在途 change 的后端脏文件（topicgraph/service/daily_report_article_filter*.go 等，未追踪新文件），本 change 零业务链路改动; api=启发式命中系其他在途 change 的后端脏文件（reader/handler/feed_handler.go 等），本 change 零 API 改动; database=同上脏文件干扰（platform/database/postgres_migrations.go 含 ALTER TABLE 字样），本 change 零 schema/数据模型改动 -->
 
 - [x] 4.1 `docs/reference/development.md` 新增「Docker 镜像来源与可达性」小节：加速来源配置方式（daemon.json `registry-mirrors`）、备选路径（本机 HTTP 代理 / 直接带前缀拉取后 tag）、以及**不把加速站写进仓库**的约定；验证：该节含配置示例与「仓库零改动」说明，`grep -rn 'daemon.json' docs/reference/development.md` 命中

@@ -38,6 +38,7 @@
 ## 6. 文档
 
 <!-- doc-impact: none(纯 harness 工具链改动：新增只读报告脚本 + 冒烟测试 + agent 技能文档，并更新根 AGENTS.md / 开发执行规范的流程措辞；不涉及业务链路、API、数据库、架构、代码规约、配置、部署任一域文档的语义变更，产品行为与用户界面零变化) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 harness 只读复盘脚本，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 <!-- doc-impact-excuse: flow/api/database/standard/configuration/deployment=启发式命中全部来自**其他在途 change 的脏文件**（topicgraph/service/daily_report_article_filter*.go、reader/handler/feed_handler.go、platform/articlerefs/*、configs/config.yaml、init.sh、standard/backend/testing.md 等，见 `bash scripts/concurrency-status.sh` 归属地图），本 change 未触及其中任一文件 -->
 
 - [x] 6.1 文档域声明对账：归档前重跑 `bash scripts/doc-impact.sh suggest openspec/changes/harness-retro-loop`，确认「none」声明与启发式命中的差异全部由他 change 脏文件解释；验证：`bash scripts/doc-impact.sh verify openspec/changes/harness-retro-loop` 无 FAIL（excuse 覆盖的域不判 FAIL）

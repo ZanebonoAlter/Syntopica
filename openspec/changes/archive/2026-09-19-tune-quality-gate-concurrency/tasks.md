@@ -31,6 +31,7 @@
 ## 6. 文档
 
 <!-- doc-impact: none(harness 机制文档不在 doc-impact 七域；pi-extensions.md 属 harness 扩展机制全景文档，随本 change 就地同步) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 quality-gate 并发调参，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 
 - [x] D1 `docs/reference/harness/pi-extensions.md`：quality-gate 节补「并发互斥与限核（gate-lock-held / GOMAXPROCS=2 / vet-build 串行）」与「混合归属降级（concurrent-mixed）」小节；记账口径表补两行新 reasonCode
 - [x] D2 `docs/research/quality-gate-concurrency/explore-findings.md` 顶部标注：三个影响渠道已由本 change 处理（真增量命令方案 C 仍开放为后续 change）

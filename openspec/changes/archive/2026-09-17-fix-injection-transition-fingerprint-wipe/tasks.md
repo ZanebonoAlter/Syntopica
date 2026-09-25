@@ -1,6 +1,7 @@
 # Tasks — fix-injection-transition-fingerprint-wipe
 
 <!-- doc-impact: none(纯工具链：pi 扩展内部状态机修复，不触前后端业务代码与 reference 文档) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 pi 扩展内部状态机修复，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 
 ## 1. 状态结构与写入点
 

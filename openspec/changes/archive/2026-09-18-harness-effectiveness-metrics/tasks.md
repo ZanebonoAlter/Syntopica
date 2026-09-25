@@ -30,6 +30,7 @@
 ## 4. 文档
 
 <!-- doc-impact: none(harness 工具链改动：pi 扩展埋点 + retro 脚本效能看板段；改动仅限 .pi/extensions/、脚本、skill 文档、AGENTS.md、docs/research/，不触及 reference 各域文档语义) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 harness 效能看板埋点，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 
 - [x] 4.1 `.agents/skills/harness-facts/SKILL.md`：词汇表加 `session.rollup` 行（保留期/payload/快照覆盖取终值/prev 回填语义）
 - [x] 4.2 `.agents/skills/harness-retro/SKILL.md`：报告结构六段→七段说明 + ⑦段读法（覆盖率/降级标注/禁综合分）

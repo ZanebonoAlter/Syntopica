@@ -32,6 +32,7 @@
 ## 5. 文档
 
 <!-- doc-impact: none(harness 机制文档不在 doc-impact 七域；pi-extensions.md 与开发执行规范属 harness 机制/流程文档，随本 change 就地同步) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 并发门禁噪音归属修复，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 
 - [x] 5.1 `docs/reference/harness/pi-extensions.md` quality-gate 节补「失败报告收敛与并发归因」小节（指纹递变规则 / 外部判定三向信号 / foreign-breakage 记账 / 保守边界），并在 spec-gate 行附近说明与归档前 `concurrent-dirty-tree` warn 的分工（一个在 turn_end、一个在归档）。验证：文档节存在且与实现一致（逐条对照 spec Scenario）
 - [x] 5.2 `docs/reference/开发执行规范.md` §0.6 第 1 步与 §11 相关表述同步 suggest 新口径（归属轨优先 + 三桶 + 回退标注；`--change` 可选参数）。验证：§0.6/§11 中 suggest 描述与实际输出一致，无残留「全树预勾选」旧措辞

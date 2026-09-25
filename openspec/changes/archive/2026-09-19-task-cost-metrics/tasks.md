@@ -38,6 +38,7 @@
 ## 6. 文档
 
 <!-- doc-impact: none(harness 工具链改动：pi 扩展埋点 + retro 脚本效能看板；改动仅限 .pi/extensions/、scripts/harness/、两个 harness skill、docs/research/ 快照与 pi-extensions.md，不触及 reference 各域业务文档语义) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 harness 任务成本埋点，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 
 见 §4。
 

@@ -54,6 +54,7 @@
 ## 7. 文档
 
 <!-- doc-impact: none(纯 harness 工具链：改动仅在 .pi/extensions/constraint-injection.ts + 其 smoke 用例；harness 规则文档 AGENTS.md 与 .agents/skills/harness-facts/SKILL.md 当刻被其他 active change 脏改（并发工作树），本 change 不动它们以避免冲突，改由扩展内模块注释 + 本 change 归档记录承载不变量) -->
+- **无 flow 影响**（§12.2 归档后回填：纯 constraint-injection 扩展会话绑定，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 
 - [x] 7.1 `constraint-injection.ts` 顶部模块注释 （新增「职责 0. 会话作用域状态」段：隔离不变量 + 继承规则 + 有界性 + 回归面指引）补充「会话作用域状态 + 父子继承 + 不借用他会话」不变量（源码即 harness 文档）
 - [x] 7.2 `apply-report.md` 记录 design 决策 （见本 change 的 apply-report：§1 结论 + 逐节点改动 + 原始门禁结果）（父会话识别走 1.1 还是 1.2 路径）与偏移
