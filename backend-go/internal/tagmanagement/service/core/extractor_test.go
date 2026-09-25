@@ -394,32 +394,14 @@ func TestExtractTagsKeepsKeywordBranchWhenEventPersonFails(t *testing.T) {
 	require.Equal(t, "llm", result.Source)
 	require.Len(t, result.Tags, 1)
 	require.Equal(t, "PostgreSQL", result.Tags[0].Label)
-	require.Contains(t, strings.Join(result.Errors, "\n"), "event/person extraction failed")
+	require.Contains(t, strings.Join(result.Errors, "\n"), "event/person extraction: empty event/person array (accepted as-is)")
 	require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 }
 
-func TestExtractTagsFallsBackToHeuristicKeywordWhenKeywordBranchFails(t *testing.T) {
-	// 单次调用成功但 keyword 数组为空 → heuristic keyword 展示兑底（不入辅助池）。
-	router := newFakeTagChatRouter()
-	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"event_person_tags":[{"label":"OpenAI发布GPT-5","category":"event","auxiliary_labels":[{"label":"OpenAI","description":"人工智能研究公司"},{"label":"GPT-5","description":"大语言模型版本"},{"label":"模型发布","description":"产品发布行为"}]}],"keyword_tags":[]}`})
-	extractor := &TagExtractor{router: router}
-
-	result, err := extractor.ExtractTags(context.Background(), ExtractionInput{
-		Title:   "OpenAI pushes GPT-5 agent workflow",
-		Summary: "OpenAI is shipping a new AI agent workflow around GPT-5 with coding automation.",
-	})
-
-	require.NoError(t, err)
-	require.Equal(t, "llm", result.Source)
-	require.Contains(t, topicLabels(result.Tags), "OpenAI发布GPT-5")
-	require.Contains(t, strings.Join(result.Errors, "\n"), "keyword extraction failed")
-	for _, tag := range result.Tags {
-		if tag.Category == "keyword" {
-			require.Empty(t, tag.Description)
-			require.Empty(t, tag.AuxiliaryLabels)
-		}
-	}
-}
+// 旧用例 TestExtractTagsFallsBackToHeuristicKeywordWhenKeywordBranchFails（空
+// keyword 数组→heuristic 回填）已随 fix-tagging-pollution 契约变更删除：新契约
+// 下空 keyword 是合法结论、不回填，改由 extractor_enhanced_test.go 的
+// TestExtractTagsKeepsLLMResultWhenKeywordArrayEmpty 守护。
 
 func TestExtractTagsFallsBackToHeuristicWhenMergedCallFails(t *testing.T) {
 	// spec Scenario: 单次调用重试耗尽仍失败 → 整体回退 heuristic，错误信息保留。

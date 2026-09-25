@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"go.opentelemetry.io/otel"
 	"strings"
@@ -52,19 +51,27 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 		return te.extractWithHeuristic(input, err)
 	}
 
+	// 空 keyword / 空 event-person 数组是「宁缺毋滥」提示词下的合法结论：
+	// 只记观察信息，不再用 heuristicKeywordCandidates 回填规则词候选
+	// （fix-tagging-pollution：旧回填把分类名「新闻」等泛词顶进 llm 来源结果）。
 	branchErrors := make([]string, 0, 2)
 	if len(eventPersonTags) == 0 {
-		branchErrors = append(branchErrors, "event/person extraction failed: empty event/person array")
+		branchErrors = append(branchErrors, "event/person extraction: empty event/person array (accepted as-is)")
 	}
 	if len(keywordTags) == 0 {
-		branchErrors = append(branchErrors, "keyword extraction failed: empty keyword array")
-		keywordTags = heuristicKeywordCandidates(input)
+		branchErrors = append(branchErrors, "keyword extraction: empty keyword array (accepted as-is)")
 	}
 
 	candidates := mergeExtractedTags(eventPersonTags, keywordTags)
 
 	if len(candidates) == 0 {
-		return te.extractWithHeuristic(input, errors.New("no candidates extracted"))
+		// 零候选同样原样返回（Source=llm）：不降级 heuristic——旧降级会让
+		// 空结果文章顶上规则词标签，使 tagger 层兜底收窄形同虚设。
+		return &ExtractionResult{
+			Tags:   []TopicTag{},
+			Errors: branchErrors,
+			Source: "llm",
+		}, nil
 	}
 
 	// Resolve each candidate against existing tags
@@ -144,19 +151,6 @@ func (te *TagExtractor) extractMergedCandidates(ctx context.Context, input Extra
 		return eventPersonTags, keywordTags, nil
 	}
 	return nil, nil, lastErr
-}
-
-func heuristicKeywordCandidates(input ExtractionInput) []ExtractedTag {
-	topics := ExtractTopics(input)
-	tags := make([]ExtractedTag, 0, len(topics))
-	for _, topic := range topics {
-		tags = append(tags, ExtractedTag{
-			Label:    topic.Label,
-			Category: "keyword",
-			Aliases:  topic.Aliases,
-		})
-	}
-	return tags
 }
 
 func mergeExtractedTags(eventPersonTags, keywordTags []ExtractedTag) []ExtractedTag {

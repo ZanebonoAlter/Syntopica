@@ -18,6 +18,51 @@ import (
 
 const maxArticleTags = 6
 
+// genericLabelBlacklist 是泛词标签黑名单（fix-tagging-pollution）：这些词
+// 不携带文章内容信息，任何来源（llm/heuristic/回填）都不得成为文章标签。
+// 封闭词表，不做子串匹配——Slugify 后完整匹配，「GLM Coding Plan」等复合
+// 正常标签不受影响；「Coding」不进名单（编程文章的合法主题词）。
+var genericLabelBlacklist = []string{"新闻", "论坛", "要闻", "快讯", "文章", "内容", "技术", "发展"}
+
+// genericLabelSlugSet 预计算黑名单 slug 集合，供 filterGenericLabels 与
+// reuse 查询的 SQL NOT IN 共用。
+var genericLabelSlugSet = map[string]struct{}{
+	Slugify("新闻"): {},
+	Slugify("论坛"): {},
+	Slugify("要闻"): {},
+	Slugify("快讯"): {},
+	Slugify("文章"): {},
+	Slugify("内容"): {},
+	Slugify("技术"): {},
+	Slugify("发展"): {},
+}
+
+func genericLabelSlugs() []string {
+	slugs := make([]string, 0, len(genericLabelBlacklist))
+	for _, label := range genericLabelBlacklist {
+		slugs = append(slugs, Slugify(label))
+	}
+	return slugs
+}
+
+func isGenericLabel(label string) bool {
+	_, generic := genericLabelSlugSet[Slugify(label)]
+	return generic
+}
+
+// filterGenericLabels 在持久化入口拦截黑名单泛词候选：被拦截候选不落库、
+// 不进辅助标签池。
+func filterGenericLabels(tags []TopicTag) []TopicTag {
+	filtered := make([]TopicTag, 0, len(tags))
+	for _, tag := range tags {
+		if isGenericLabel(tag.Label) {
+			continue
+		}
+		filtered = append(filtered, tag)
+	}
+	return filtered
+}
+
 // tagSourceReuse marks article_topic_tags rows copied from a sibling copy of
 // the same article (same link, another feed) instead of extracted by the AI
 // (dedupe-rss-articles D3).
@@ -131,8 +176,9 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 				tags, source, handled = aggTags, "llm", true
 			} else {
 				// All sections failed or returned empty candidates: fall back to
-				// the mono path (dual-branch extraction with heuristic fallback)
-				// so aggregate articles never end up with zero tags.
+				// the mono path. Note the mono path may now also legitimately
+				// return zero tags (fix-tagging-pollution: 空结果是合法结论，不再
+				// 强行凑标签) — the article then simply stays untagged.
 				logging.Infof("aggregate tagging yielded no tags for article %d, falling back to mono path", article.ID)
 			}
 		}
@@ -140,8 +186,9 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 	}
 	if !handled {
 		result, err := extractor.ExtractTags(context.Background(), input)
-		if err != nil || len(result.Tags) == 0 {
-			// Fall back to legacy heuristic extraction
+		if err != nil {
+			// 兑底仅限「调用失败」（transport/HTTP 错误，fix-tagging-pollution）。
+			// 调用成功但零标签是合法结论：文章保持无标签，等待后续重打。
 			tags = legacyExtractTopics(input)
 			source = "heuristic"
 		} else {
@@ -158,10 +205,14 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 	return persistArticleTags(ctx, article, tags, source)
 }
 
-// persistArticleTags stores the extracted tags for an article: dedupe, then for
-// each tag find-or-create the topic tag, attach auxiliary labels and link it to
-// the article. Shared by the mono and aggregate extraction paths.
+// persistArticleTags stores the extracted tags for an article: filter generic
+// labels, dedupe, then for each tag find-or-create the topic tag, attach
+// auxiliary labels and link it to the article. Shared by the mono and
+// aggregate extraction paths.
 func persistArticleTags(ctx context.Context, article *models.Article, tags []TopicTag, source string) error {
+	// 泛词黑名单拦截（fix-tagging-pollution）：mono / aggregate / heuristic
+	// 三条写入路径的汇聚点，被拦截候选不进 topic_tags / 辅助标签池。
+	tags = filterGenericLabels(tags)
 	// Build article context for description generation
 	articleContext := ""
 	pubDateStr := formatPubDate(article.PubDate)
@@ -268,9 +319,14 @@ func reuseTagsFromSiblingArticle(article *models.Article) (bool, error) {
 	// Highest-scored sibling tags first: a partially tagged copy is topped up
 	// only to the per-article cap (same maxArticleTags the AI path applies in
 	// limitArticleTags), so the cap is spent on the best-scored tags.
+	// Blacklisted generic labels are excluded at the query level: this path
+	// copies sibling rows directly and never goes through persistArticleTags,
+	// so the filter must live here too (fix-tagging-pollution D3).
 	var siblingLinks []models.ArticleTopicTag
 	if err := repository.Repo.DB().
+		Joins("JOIN topic_tags ON topic_tags.id = article_topic_tags.topic_tag_id").
 		Where("article_id != ? AND article_id IN (SELECT id FROM articles WHERE link = ?)", article.ID, article.Link).
+		Where("topic_tags.slug NOT IN ?", genericLabelSlugs()).
 		Order("score DESC, topic_tag_id ASC").
 		Find(&siblingLinks).Error; err != nil {
 		return false, err
