@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type {
   ResultDetailRow,
   AnalyzeOutput,
@@ -9,6 +9,7 @@ import type {
 } from '~/api/boardEnrichment'
 import AnalyzeRefChip from './AnalyzeRefChip.vue'
 import { renderMarkdown, renderMarkdownInline } from '~/utils/markdown'
+import { useMermaidRender } from '~/composables/useMermaidRender'
 // 全局 .markdown-body 样式（文章阅读器同款），让 md 渲染产物有标题/列表/粗体样式 + 双主题
 import '~/components/article/ArticleContent.css'
 
@@ -39,6 +40,10 @@ const props = defineProps<{
   topicLabel?: string
   loading?: boolean
 }>()
+
+// mermaid 图渲染（render-mermaid-diagrams）：宿主 = 报告根，覆盖洞察/脉络各 markdown 块
+const causalRootRef = ref<HTMLElement | null>(null)
+useMermaidRender(causalRootRef, () => props.result)
 
 // ── 形态标签 ──────────────────────────────────────────────────────────────
 const FORM_LABELS: Record<AnalyzeForm, string> = {
@@ -194,7 +199,7 @@ function toolName(t: unknown): string {
 </script>
 
 <template>
-  <section class="causal-report">
+  <section ref="causalRootRef" class="causal-report">
     <!-- ── loading 骨架 ─────────────────────────────────────────────── -->
     <div v-if="loading" class="ca-loading">
       <div class="ca-sk-line w-60" />

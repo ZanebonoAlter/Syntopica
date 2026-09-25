@@ -8,6 +8,7 @@ import type {
 } from '~/api/boardEnrichment'
 import AnalyzeRefChip from './AnalyzeRefChip.vue'
 import { renderMarkdown } from '~/utils/markdown'
+import { useMermaidRender } from '~/composables/useMermaidRender'
 // 全局 .markdown-body 样式（文章阅读器同款），让 md 渲染产物有标题/列表/粗体样式 + 双主题
 import '~/components/article/ArticleContent.css'
 
@@ -46,6 +47,10 @@ const emit = defineEmits<{
   /** 加载某 result 的追问历史（挂载/resultId 变更时触发）。 */
   load: [resultId: number]
 }>()
+
+// mermaid 图渲染（render-mermaid-diagrams）：宿主 = 面板根，扫描全部回答的 markdown 主体
+const qaRootRef = ref<HTMLElement | null>(null)
+useMermaidRender(qaRootRef, () => props.qaList)
 
 // ── 挂载 / resultId 变更 → 拉历史 ────────────────────────────────────────
 watch(
@@ -125,7 +130,7 @@ function formatTime(iso: string): string {
 </script>
 
 <template>
-  <section class="qa-panel">
+  <section ref="qaRootRef" class="qa-panel">
     <header class="qa-head">
       <h3 class="serif qa-title">
         <Icon icon="mdi:comment-question-outline" width="16" />
