@@ -33,10 +33,14 @@ func exportSpecs() []ExportSpec {
 				"base_url": clearAll,
 				"metadata": emptyJSON,
 			},
+			// demo 不展示用户 AI 配置（2026-09-22 用户决策）：保留导出结构，记录清空。
+			Where: "FALSE",
 		},
 		{
 			Table:   "ai_routes",
 			Columns: []string{"id", "name", "capability", "enabled", "priority", "strategy", "description", "max_concurrency", "created_at", "updated_at"},
+			// 记录清空（同 ai_providers，2026-09-22）。
+			Where: "FALSE",
 		},
 		{
 			Table:   "ai_settings",
@@ -44,6 +48,8 @@ func exportSpecs() []ExportSpec {
 			Sanitizers: map[string]func(string) string{
 				"value": emptyJSON,
 			},
+			// 记录清空（同 ai_providers，2026-09-22）。
+			Where: "FALSE",
 		},
 		{
 			Table:   "embedding_config",
@@ -76,7 +82,8 @@ func exportSpecs() []ExportSpec {
 		{
 			Table:   "feeds",
 			Columns: []string{"id", "title", "description", "url", "category_id", "icon", "icon_source", "color", "last_updated", "created_at", "max_articles", "refresh_interval", "refresh_status", "refresh_error", "last_refresh_at", "article_summary_enabled", "completion_on_refresh", "max_completion_retries", "firecrawl_enabled", "tagging_enabled"},
-			Where:   recent,
+			// 全量导出：created_at 是「订阅时间」而非更新时间，按窗口过滤会把老订阅
+			// 全滤掉（2026-09-22 实测 24 个订阅只剩 1 个），文章对不上源。
 			Sanitizers: map[string]func(string) string{
 				// Rewrite self-hosted RSSHub to the public instance first (avoids
 				// leaking private infra), then strip tracking query strings.
@@ -139,6 +146,8 @@ func exportSpecs() []ExportSpec {
 		{
 			Table:   "ai_route_providers",
 			Columns: []string{"id", "route_id", "provider_id", "priority", "enabled", "created_at", "updated_at"},
+			// 记录清空（同 ai_providers，2026-09-22）。
+			Where: "FALSE",
 		},
 		{
 			Table:   "topic_tag_relations",
@@ -157,8 +166,11 @@ func exportSpecs() []ExportSpec {
 			Where:   "period_date >= NOW() - INTERVAL ':days days'",
 		},
 		{
+			// 泳道归属/追踪列必须导出（2026-09-22 教训：漏 persistent_topic_id 时
+			// 远程 demo 的泳道动态按「沉寂不展示」过滤后 lanes 全空；lane_tier/watch_id
+			// 是日报详情 watch 徽章的持久化来源，topic_status_at_report 供 active/candidate 分类）。
 			Table:         "daily_report_sections",
-			Columns:       []string{"id", "report_id", "cluster_index", "cluster_label", "cluster_tag_ids", "article_count", "best_tier", "avg_score", "embedding", "created_at"},
+			Columns:       []string{"id", "report_id", "cluster_index", "cluster_label", "cluster_tag_ids", "article_count", "best_tier", "avg_score", "embedding", "quality_breakdown", "persistent_topic_id", "topic_match_distance", "topic_match_confidence", "topic_status_at_report", "lane_tier", "watch_id", "created_at"},
 			VectorColumns: map[string]bool{"embedding": true},
 			// No date column on sections; filter by report recency via join.
 			Where: "report_id IN (SELECT id FROM board_daily_reports WHERE period_date >= NOW() - INTERVAL ':days days')",
@@ -188,6 +200,34 @@ func exportSpecs() []ExportSpec {
 			Columns: []string{"id", "feed_id", "category_id", "preference_score", "avg_reading_time", "interaction_count", "scroll_depth_avg", "last_interaction_at", "created_at", "updated_at"},
 			Where:   recent,
 		},
+
+		// --- Layer 6: narrative enrichment（叙事工坊增强面板，2026-09-22 补）---
+		// demo 的叙事工坊原先全空：这批表从来没进过白名单（白名单是早期版本）。
+		// 全量导出（无时间窗）——分析存量资产，行数小（合计 ~2.5k），按窗口过滤会把面板清空。
+		// 排序满足物理 FK：watches/lane → persistent_topics；qa/review → result；其余指向 semantic_labels。
+		{
+			Table:   "analysis_methods",
+			Columns: []string{"id", "name", "title", "summary", "selection_meta", "content", "enabled", "legacy", "deleted_at", "created_at", "updated_at"},
+		},
+		{
+			Table:   "reference_roles",
+			Columns: []string{"id", "name", "title", "content", "enabled", "created_at", "updated_at"},
+		},
+		{
+			Table:         "board_persistent_topics",
+			Columns:       []string{"id", "semantic_board_id", "label", "description", "embedding", "status", "first_seen_date", "last_seen_date", "hit_count", "consecutive_hits", "created_at", "updated_at", "source", "centroid", "is_vacuum", "vacuum_strong", "vacuum_mid"},
+			VectorColumns: map[string]bool{"embedding": true, "centroid": true},
+		},
+		{
+			Table:      "composite_components",
+			Columns:    []string{"composite_id", "component_label_id", "position"},
+			NoSequence: true,
+		},
+		{
+			Table:         "board_topic_watches",
+			Columns:       []string{"id", "semantic_board_id", "label", "status", "created_at", "updated_at", "type", "query", "embedding_cache", "persistent_topic_id"},
+			VectorColumns: map[string]bool{"embedding_cache": true},
+		},
 		{
 			// Board signal discovery 批次（board-signal-reports，2026-09-24 补）。
 			// 全量导出不加时间窗：candidate/discovery 被 topic_enrichment_result 的
@@ -204,6 +244,37 @@ func exportSpecs() []ExportSpec {
 			// Detect candidates：信号报告的数据源，紧随其批次之后导出（FK 顺序）。
 			Table:   "board_signal_candidate",
 			Columns: []string{"id", "discovery_id", "semantic_board_id", "granularity", "period", "signal", "why_it_matters", "research_question", "evidence_refs", "score", "rationale", "created_at"},
+		},
+		{
+			Table:   "topic_enrichment_result",
+			Columns: []string{"id", "persistent_topic_id", "evolution_assessment", "sectors", "causal_chain", "tool_calls", "input_snapshot", "session_id", "created_at", "semantic_board_id", "analysis_scope", "result_kind", "parent_result_id", "question_key", "granularity", "period", "source_signal_id"},
+			Sanitizers: map[string]func(string) string{
+				"session_id": clearAll,
+			},
+		},
+		{
+			Table:   "topic_lifeline_context",
+			Columns: []string{"id", "persistent_topic_id", "granularity", "content", "as_of_date", "source", "created_at", "updated_at", "period"},
+		},
+		{
+			Table:   "topic_lane_snapshots",
+			Columns: []string{"id", "persistent_topic_id", "rolling_summary", "as_of_date", "created_at", "updated_at", "rolling_detail"},
+		},
+		{
+			Table:   "topic_enrichment_qa",
+			Columns: []string{"id", "topic_enrichment_result_id", "question", "answer", "tool_calls", "source", "sedimented", "created_at"},
+		},
+		{
+			Table:   "topic_enrichment_review",
+			Columns: []string{"id", "persistent_topic_id", "prev_result_id", "curr_result_id", "deviation_summary", "affected_context", "confidence", "applied", "source", "created_at", "updated_at", "verdict", "semantic_board_id"},
+		},
+		{
+			Table:   "cross_board_relations",
+			Columns: []string{"id", "run_id", "source_board_id", "target_board_id", "target_lane_id", "target_concept", "mapping_snapshot", "relation_type", "claim", "mechanism", "verification_verdict", "quality_grade", "evidence", "counterevidence", "gaps", "status", "suggestion_hash", "evidence_version", "expires_at", "confirmed_at", "dismissed_at", "expired_at", "dismiss_reason", "resolved_by", "created_at", "updated_at"},
+		},
+		{
+			Table:   "board_upgrade_suggestions",
+			Columns: []string{"id", "batch_id", "mode", "decision", "board_label", "description", "target_board_id", "auxiliary_label_ids", "confidence", "evidence", "status", "dismiss_reason", "created_at", "resolved_at", "resolved_by", "suggestion_hash"},
 		},
 	}
 }

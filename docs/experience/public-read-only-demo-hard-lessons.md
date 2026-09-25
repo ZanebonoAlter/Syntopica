@@ -183,3 +183,7 @@ curl.exe -s -w "`nHTTP_STATUS:%{http_code}`n" http://127.0.0.1:5000/ws
 ## 一句话原则
 
 公开 demo 的难点不是“能不能跑起来”，而是让构建、导入、脱敏、只读和验证都可重复。每个临时修复都要落到 Dockerfile、entrypoint、sanitizer 或 tasks 门禁里，否则下一次构建就会把同一个问题重新翻出来。
+
+## 另见
+
+- [`2026-09-22-remote-demo-deploy-pitfalls.md`](2026-09-22-remote-demo-deploy-pitfalls.md)：首次把 demo 部署到远程服务器（10.11.12.59）的 7 个坑（seed 列白名单缺口 / 清场缺表重启循环 / pnpm patch 静默丢失 / OOM / CRLF / 时间窗语义 / psql 无 dry-run）。

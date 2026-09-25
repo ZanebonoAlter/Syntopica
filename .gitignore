@@ -14,6 +14,8 @@ backend-go/main.exe
 backend-go/*.exe
 backend-go/syntopica
 backend-go/syntopica.exe
+backend-go/dump-sanitizer
+backend-go/dump-sanitizer.exe
 backend-go/server.exe
 backend-go/instrumenter
 backend-go/bin/fresh.exe
