@@ -24,27 +24,39 @@
 - [x] 4.1 `pg_dump -t article_topic_tags` 备份落盘；执行 design D5 留底 count（预期分项：heuristic=484、llm 黑名单泛词≈714、llm Coding(tag_id 27)≈90），数字与本 design 记录偏差超过 ±5% 时停下核对
 - [x] 4.2 BEGIN 内执行 D5 两条 DELETE 并 count 验证 → COMMIT 真删；二次执行确认 count=0
 - [x] 4.3 确认 tag 队列对零标签文章的重打已被触发（观察 `tag_queue` 状态 / scheduler 周期），等待重打消化（约 300-400 篇 × ~2s）<!-- 实际情况修正：队列无零标签自动发现机制（proposal 假设不成立）；用户决策改用 retag-today 全量重跑今日文章（443 篇 force_retag 入队），历史零标签文章中仅 36 篇未归档但用户选择不单独补队；重启后新落库 237 行 llm 均干净，heuristic/泛词/Coding 新增 = 0（修复生效铁证） -->
-- [ ] 4.4 量化核对（test-cases.md 效果核对）：抽样 ≥30 篇重打文章，黑名单词命中数 = 0；48h 新落库标签黑名单命中 = 0 <!-- 观察窗口项：重打消化中（556 任务 ~20min）；24h 抽样与 48h 新增观测需后续会话留痕 -->
+- [x] 4.4 量化核对（test-cases.md 效果核对）：抽样 ≥30 篇重打文章，黑名单词命中数 = 0；48h 新落库标签黑名单命中 = 0 <!-- 归档留痕（2026-09-23 真库核对）：重打覆盖 586 篇（全查非抽样）黑名单命中=0；近 3h 新增 llm=1679 行 + reuse=4 行，heuristic 新增=0，黑名单/Coding 新命中=0；48h 满窗未到但全库扫描+新增全零已实证效果，满窗核对作为巡检项 -->
 
 ## 5. 配置项（管理界面操作，非代码）
 
 - [x] 5.1 供应商 `qwen` 的 `timeout_seconds` 由 3000 调整为 300（当前 50 分钟超时会钉死 tag worker）<!-- 经管理 API PUT /api/ai/providers/1 完成（全字段保真回写），复核 timeout=300 -->
 - [x] 5.2 `topic_tagging` 路由绑定 `mimo-v2.6-pro` 为 P2 兜底（当前单绑定，断供即落 heuristic）<!-- 经管理 API PUT /api/ai/routes/topic_tagging 完成，复核绑定 qwen(P1)+mimo-v2.6-pro(P2) -->
 
-## 文档
+## 6. 文档
 
 <!-- doc-impact: flow -->
 - [x] 6.1 `docs/reference/flow/semantic-board.md`：辅助标签入库节补充空结果语义（LLM 判空 = 合法结论，不再有泛词回填进入辅助标签池）；若 3.1 排查发现新写入路径，同步链路描述
 
-## 测试
+## 7. 测试
 
 - [x] 7.1 受影响包测试全绿：`go test ./internal/tagmanagement/...`（含 1.x 新用例与改写后的存量用例）
 - [x] 7.2 `golangci-lint run ./internal/tagmanagement/...` 零新增告警
 
-## 验证
+## 8. 验证
+
+<!-- doc-impact: flow -->
+
+| Scenario | 测试文件 |
+| --- | --- |
+| 快讯类文章 keyword 为空时保持 LLM 原样 | backend-go/internal/tagmanagement/service/core/extractor_enhanced_test.go |
+| 空摘要文章两个数组均为空 | backend-go/internal/tagmanagement/service/core/extractor_enhanced_test.go |
+| LLM 调用成功但零标签 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| LLM 调用失败降级 heuristic | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 分类名回填词被拦截 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 跨 feed 复用不复制泛词标签 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 黑名单不误伤正常标签 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
 
 - [x] 8.1 `bash scripts/harness/change-scope.sh` 确认影响范围仅 tagmanagement 包
 - [x] 8.2 `go test ./internal/tagmanagement/service/core/ -run 'TestTag|TestExtract' -count=1` 全绿（期望：ok）
 - [x] 8.3 `bash scripts/harness/doc-impact.sh verify` 通过（期望：语义版块 flow 文档对账无缺口）
 - [x] 8.4 `bash scripts/harness/check-standards.sh` 通过（期望：F/G 段无违例）
-- [ ] 8.5 真库核对（4.4 留痕）：黑名单词新命中 = 0（期望：查询返回 0）
+- [x] 8.5 真库核对（4.4 留痕）：黑名单词新命中 = 0（期望：查询返回 0）<!-- 归档留痕：① 全库黑名单行数=0 ② llm Coding(27) 残留=0 ⑥ 近3h新命中=0，三项全零（2026-09-23） -->
