@@ -5,12 +5,14 @@
  * （参照 useEventStream 的模块级单例先例——WS 本身是 client-only 逻辑）。
  *
  * 生命周期：ensureStarted() 由 app.vue 根层调用一次，订阅常驻不随组件卸载断开。
- * 未读数策略：启动拉一次 API 对账 → WS notification 事件 +1 → 60s 定时对账兜底
- * （useEventStream 未暴露重连回调，定时对账同时覆盖「断线重连后重拉」——见任务回报偏差说明）。
+ * 未读数策略：定时对账合并进 /api/poll（usePollBundle 单例，client-poll-budget）
+ * → WS notification 事件 +1（本地增量）→ bundle 对账以 DB 为准回写
+ * （浏览会话内不回写，见 bundle 的 browsingSessionActive 联动）。
  */
 
 import { useEventStream } from '~/composables/useEventStream'
 import { EVENT_TYPES } from '~/utils/eventTypes'
+import { usePollBundle } from '~/composables/usePollBundle'
 import { useNotificationsApi, type AppNotification } from '~/api/notifications'
 
 export interface NotificationViewState {
@@ -20,12 +22,10 @@ export interface NotificationViewState {
   error: string | null
 }
 
-const RECONCILE_INTERVAL_MS = 60_000
 const PAGE_SIZE = 20
 
 let started = false
 let unsubNotification: (() => void) | null = null
-let reconcileTimer: ReturnType<typeof setInterval> | null = null
 
 export function useNotifications() {
   const api = useNotificationsApi()
@@ -44,14 +44,9 @@ export function useNotifications() {
   const hardCap = 500
 
   async function refreshUnreadCount() {
-    try {
-      const response = await api.unreadCount()
-      if (response.success && response.data) {
-        unreadCount.value = response.data.unread
-      }
-    } catch {
-      // 静默降级：角标不显示不误报，定时对账/重连后自动恢复
-    }
+    // 局部未读数刷新已合并进 /api/poll（usePollBundle 分发，键
+    // notifications:unread-count）；保留空实现仅为兼容内部历史调用点清理过渡。
+    await usePollBundle().reconcileNow()
   }
 
   async function fetchList(offset = 0) {
@@ -92,13 +87,10 @@ export function useNotifications() {
     if (typeof window === 'undefined') return
     started = true
 
+    // 定时对账合并进 /api/poll（usePollBundle 单例）：定时 + 可见性暂停 +
+    // 失败退避都在 bundle 内；本 composable 保留 WS 实时增量与面板逻辑。
+    usePollBundle().ensureStarted()
     unsubNotification = stream.on(EVENT_TYPES.NOTIFICATION, onNotificationEvent)
-    void refreshUnreadCount()
-    reconcileTimer = setInterval(() => {
-      // 浏览会话内跳过回写：DB 端尚未收到 markAllRead 落库时（fail-open 失败态），
-      // 旧未读数回写会让角标在浏览会话内闪烁回跳
-      if (!browsingSessionActive.value) void refreshUnreadCount()
-    }, RECONCILE_INTERVAL_MS)
   }
 
   /**
@@ -118,10 +110,10 @@ export function useNotifications() {
     }
   }
 
-  /** 关闭面板：浏览会话结束（未读强调消失），重拉未读数对账 */
+  /** 关闭面板：浏览会话结束（未读强调消失），立即对账一次（合并入口） */
   function closePanel() {
     browsingSessionActive.value = false
-    void refreshUnreadCount()
+    void usePollBundle().reconcileNow()
   }
 
   /** 单条标已读（乐观更新 + 回滚） */
@@ -189,9 +181,5 @@ export function __resetNotificationsForTest() {
   if (unsubNotification) {
     unsubNotification()
     unsubNotification = null
-  }
-  if (reconcileTimer) {
-    clearInterval(reconcileTimer)
-    reconcileTimer = null
   }
 }

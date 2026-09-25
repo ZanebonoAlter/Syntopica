@@ -116,6 +116,11 @@ func main() {
 		r.Use(middleware.CORS(config.AppConfig))
 	}
 	r.Use(gin.Recovery())
+	// Response compression lives in the app process (not any reverse proxy):
+	// public paths reach the Go binary directly, so gzip negotiation must be
+	// mounted above every route — static files, /api, /icons and /health alike.
+	// WebSocket upgrades and whitelisted SSE streams bypass inside the middleware.
+	r.Use(middleware.Compress())
 
 	appbootstrap.SetupStaticFiles(r)
 	appbootstrap.SetupRoutes(r)

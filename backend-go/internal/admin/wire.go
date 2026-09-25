@@ -54,6 +54,7 @@ var (
 // Scheduler handlers
 var (
 	GetSchedulersStatus         = handler.GetSchedulersStatus
+	GetPollBundle               = handler.GetPollBundle
 	GetSchedulerStatus          = handler.GetSchedulerStatus
 	TriggerScheduler            = handler.TriggerScheduler
 	ResetSchedulerStats         = handler.ResetSchedulerStats
@@ -115,6 +116,8 @@ var (
 	SaveProxySettings      = handler.SaveProxySettings
 	GetBochaSettings       = handler.GetBochaSettings
 	SaveBochaSettings      = handler.SaveBochaSettings
+	GetSearxngSettings     = handler.GetSearxngSettings
+	SaveSearxngSettings    = handler.SaveSearxngSettings
 	GetComtradeSettings    = handler.GetComtradeSettings
 	SaveComtradeSettings   = handler.SaveComtradeSettings
 )

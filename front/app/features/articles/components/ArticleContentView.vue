@@ -127,7 +127,7 @@ const previewProps = computed(() => ({
   <div v-if="!article" class="h-full flex items-center justify-center" style="background: var(--color-bg-base)">
     <div class="text-center">
       <div>
-        <img src="/favicon.png" alt="Syntopica" width="360" height="360" class="mx-auto mb-4" />
+        <img src="/brand-mark.png" alt="Syntopica" width="360" height="360" class="mx-auto mb-4" />
       </div>
       <h3 class="mb-2 text-xl font-semibold" style="color: var(--color-text-primary)">选择一篇文章开始阅读</h3>
       <p style="color: var(--color-text-secondary)">点击左侧文章列表查看内容</p>

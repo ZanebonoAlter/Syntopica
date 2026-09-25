@@ -6,6 +6,11 @@ import (
 
 // RegisterRoutes registers all admin module routes under the given router group.
 func RegisterRoutes(rg *gin.RouterGroup) {
+	// Single reconciliation endpoint for the frontend's resident status data
+	// (schedulers + tag queue + unread count) — client-poll-budget 契约;
+	// legacy per-domain endpoints stay registered for already-open tabs.
+	rg.GET("/poll", GetPollBundle)
+
 	ai := rg.Group("/ai")
 	{
 		ai.GET("/providers", ListProviders)
@@ -93,6 +98,8 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		settings.POST("/proxy", SaveProxySettings)
 		settings.GET("/bocha", GetBochaSettings)
 		settings.POST("/bocha", SaveBochaSettings)
+		settings.GET("/searxng", GetSearxngSettings)
+		settings.POST("/searxng", SaveSearxngSettings)
 		settings.GET("/comtrade", GetComtradeSettings)
 		settings.POST("/comtrade", SaveComtradeSettings)
 	}

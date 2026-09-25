@@ -27,6 +27,26 @@ type SchedulerRegistry interface {
 // Reg is the global scheduler registry, set by app.StartRuntime via admin.SetRegistry.
 var Reg SchedulerRegistry
 
+// lookupScheduler is the nil-safe Reg.Get: in read-only demo mode StartRuntime
+// never runs, Reg stays nil, and a raw call would panic on the nil receiver —
+// surfacing as a 500 on every status poll (openspec: scheduler-observability /
+// 无调度器的运行模式返回空集合而非错误). "No scheduler" is a legal state:
+// these helpers make status handlers answer 200 + empty collections instead.
+func lookupScheduler(name string) (interface{}, bool) {
+	if Reg == nil {
+		return nil, false
+	}
+	return Reg.Get(name)
+}
+
+// orderedSchedulerNames is the nil-safe Reg.OrderedNames (see lookupScheduler).
+func orderedSchedulerNames() []string {
+	if Reg == nil {
+		return nil
+	}
+	return Reg.OrderedNames()
+}
+
 type UpdateSchedulerIntervalRequest struct {
 	Interval int `json:"interval" binding:"required"`
 }
@@ -75,11 +95,11 @@ func schedulerLabel(s interface{}, key string) string {
 // scheduler registered with the registry (plus its Config.Aliases) is
 // resolvable here without a separate descriptor list.
 func ResolveScheduler(name string) (string, interface{}) {
-	if s, ok := Reg.Get(name); ok {
+	if s, ok := lookupScheduler(name); ok {
 		return name, s
 	}
-	for _, key := range Reg.OrderedNames() {
-		s, ok := Reg.Get(key)
+	for _, key := range orderedSchedulerNames() {
+		s, ok := lookupScheduler(key)
 		if !ok {
 			continue
 		}
@@ -120,8 +140,8 @@ func safeGetStatus(scheduler interface{}, displayName string) *SchedulerStatusRe
 
 func GetSchedulersStatus(c *gin.Context) {
 	schedulers := make([]SchedulerStatusResponse, 0)
-	for _, key := range Reg.OrderedNames() {
-		s, ok := Reg.Get(key)
+	for _, key := range orderedSchedulerNames() {
+		s, ok := lookupScheduler(key)
 		if !ok {
 			continue
 		}
@@ -131,6 +151,14 @@ func GetSchedulersStatus(c *gin.Context) {
 		}
 	}
 
+	c.JSON(http.StatusOK, buildSchedulerStatusPayload(schedulers))
+}
+
+// buildSchedulerStatusPayload assembles the schedulers/status body (data plus
+// the analysis_paused / ai_healthy top-level fields) — shared verbatim by
+// GetSchedulersStatus and GetPollBundle so the merged /api/poll response keeps
+// the exact shape the frontend already consumes.
+func buildSchedulerStatusPayload(schedulers []SchedulerStatusResponse) gin.H {
 	pausedAt := analysispause.PausedAt()
 	pausedAtStr := ""
 	if pausedAt != nil {
@@ -152,14 +180,14 @@ func GetSchedulersStatus(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	return gin.H{
 		"success":            true,
 		"data":               schedulers,
 		"analysis_paused":    analysispause.UserPaused(),
 		"analysis_paused_at": pausedAtStr,
 		"ai_healthy":         aihealth.Healthy(),
 		"ai_health_routes":   healthRoutes,
-	})
+	}
 }
 
 func GetSchedulerStatus(c *gin.Context) {
@@ -359,7 +387,7 @@ func GetTasksStatus(c *gin.Context) {
 	queueSize := 0
 	activeTasks := 0
 
-	if status := safeGetTaskStatus(func() interface{} { s, _ := Reg.Get("content_completion"); return s }()); status != nil {
+	if status := safeGetTaskStatus(func() interface{} { s, _ := lookupScheduler("content_completion"); return s }()); status != nil {
 		if overview, ok := status["overview"].(map[string]interface{}); ok {
 			pendingCount := asInt(overview["pending_count"])
 			processingCount := asInt(overview["processing_count"])
@@ -377,7 +405,7 @@ func GetTasksStatus(c *gin.Context) {
 		}
 	}
 
-	if status := safeGetTaskStatus(func() interface{} { s, _ := Reg.Get("firecrawl"); return s }()); status != nil {
+	if status := safeGetTaskStatus(func() interface{} { s, _ := lookupScheduler("firecrawl"); return s }()); status != nil {
 		queueCount := asInt(status["queue_size"])
 		processingCount := asInt(status["processing"])
 		if queueCount > 0 || processingCount > 0 {

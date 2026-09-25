@@ -73,3 +73,35 @@
   }
 }
 ```
+
+### GET /api/poll
+
+前端常驻状态的单一批量对账端点（harden-go-same-origin-serving，client-poll-budget 契约）：一次请求同时返回调度器状态、标签队列计数与通知未读数，替代前端三处独立轮询。复用三个分项端点的既有查询，**三个旧端点保留**（`/api/schedulers/status`、`/api/tag-queue/status`、`/api/notifications/unread-count`）供已打开的旧标签页继续工作。
+
+**响应**：
+
+```json
+{
+  "success": true,
+  "data": {
+    "schedulers": [],
+    "tag_queue": { "pending": 0, "processing": 0, "completed": 0, "failed": 0, "total": 0, "completed_today": 0 },
+    "notifications": { "unread": 0 }
+  },
+  "analysis_paused": false,
+  "analysis_paused_at": "",
+  "ai_healthy": true,
+  "ai_health_routes": [],
+  "server_time": "2026-09-24T22:00:00+08:00"
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `data.schedulers` | 调度器状态数组，结构同 `GET /api/schedulers/status` 的 `data` |
+| `data.tag_queue` | 队列计数，结构同 `GET /api/tag-queue/status` 的 `data` |
+| `data.notifications.unread` | 未读数，同 `GET /api/notifications/unread-count` |
+| `analysis_paused` / `ai_healthy` / `ai_health_routes` | 顶层全局态，语义同 `GET /api/schedulers/status` 顶层字段 |
+| `server_time` | 服务端时间（RFC3339），供前端时钟对齐 |
+
+只读 demo 模式（调度器未注册）下 `data.schedulers` 为空数组、整体 HTTP 200（非 5xx，契约见 `flow/scheduler.md` 业务约束 #8）。

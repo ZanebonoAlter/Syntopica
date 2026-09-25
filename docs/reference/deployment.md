@@ -55,7 +55,7 @@ demo 镜像 tag 默认 `latest`；**远端旧 tag 镜像不删**，回滚用 `DE
 | 新机器从零起栈 | `bash deploy/init.sh`（交互引导，三阶段） |
 | 既有远程服务器全量更新 | `bash scripts/deploy/deploy-remote.sh`（本节，免密一键） |
 | 远程服务器对外展示（demo） | `bash scripts/deploy/deploy-remote.sh --demo`（本节，本机构建镜像推过去） |
-| 浏览器与后端不同机 | 同源反代（Caddy/nginx，见「同源反代部署」） |
+| 浏览器与后端不同机 | Go 单进程同域（`backend-go/frontend/` 托管静态产物，见「本地裸跑静态托管」；反代形态已**弃用**） |
 | 公开只读演示 | demo compose（见「公开只读 Demo」） |
 | demo seed 每周自动刷新 | `scripts/deploy/sync-demo-weekly.sh` + 用户级 timer（见「定时同步」） |
 
@@ -251,7 +251,7 @@ AI 相关设置（LLM 凭证、Firecrawl、Digest 导出）通过 Web UI 配置�
 | 形态 | 做法 | 适用 | 跨域配置 |
 |---|---|---|---|
 | **同源（单镜像，默认）** | `docker compose --project-directory . -f deploy/compose/docker-compose.yml up --build -d` → 访问 `http://<host>:5100/` | 常规自托管 | 不需要 |
-| **同源（反代）** | 见下节（Caddy 或 nginx；前端跑 dev 或静态产物皆可） | 后端已在裸跑、不想重建镜像 | 不需要 |
+| ~~同源（反代）~~ | **弃用（不再维护）**：历史制品见下节，不再是受支持路径 | — | — |
 | **dev 直连** | `cd front && pnpm dev` → 访问 `http://<host>:3000` | 本地开发（有 HMR） | 浏览器与后端同机时不需要 |
 
 #### 本地裸跑静态托管（树莓派日常形态，2026-09-17 用户决策）
@@ -271,7 +271,7 @@ bash scripts/dev/start-dev.sh back --restart   # 或手动重启 go run
 
 - 访问 `http://<pi-ip>:5100/`（API、WebSocket、feed 图标、静态页面同端口，与 Docker 部署形态一致）；代价是无 HMR，改前端代码须重新 generate + 拷贝。
 - `backend-go/frontend/` 是构建产物（不入 git 语义的部署产物），**别手改**；后端启动时该目录不存在则自动纯 API 模式（`internal/app/static.go`）。
-- dev server 仅留作需要 HMR 调样式时临时用，用完即停；注意 nginx 同源入口的 `/` 上游仍指向 :3000，dev 不在跑时走 nginx 入口会 502，直连 :5100 即可。
+- dev server 仅留作需要 HMR 调样式时临时用，用完即停（同源 nginx 入口已弃用，不存在 502 干扰）；直连 :5100 即可。
 
 #### 发现 v2 部署注意（improve-discovery-recommendations，2026-09-19）
 
@@ -280,7 +280,9 @@ bash scripts/dev/start-dev.sh back --restart   # 或手动重启 go run
 - **旧数据降级**：旧 `preference_vectors.source=seed` 行仅作迁移历史不参与召回；已发布旧推荐不自动删除；已订阅源与文章不受任何影响；候选向量回补 20 条/批每小时自然补齐（3099 候选首日仅部分有向量，发现召回与推荐质量随回补进度提升，非故障）。
 - **回滚**：真回滚到 v1 推荐引擎需另做 candidate_preferences → 旧路由资格投影（design 迁移计划 6），v2 开关不包含该投影；仅迁移回滚时配合 SPEC_GATE_BYPASS 类逃生口走数据库回滚脚本。
 
-### 同源反代部署（Caddy / nginx）
+### 同源反代部署（Caddy / nginx）—— ⛔ 弃用（不再维护）
+
+> **弃用标注（harden-go-same-origin-serving，2026-09-24 用户决策）**：受支持的同源形态收敛为 **Go 单进程同域**（`:5100` 托管前端静态产物 + API + WS + 图标，前端静态副本唯一来源 `backend-go/frontend/`）。本节 Caddy/nginx 反代制品与 `/srv/www` 静态根**不再维护、不再是受支持路径**，以下内容仅作历史参考保留；新部署一律走「本地裸跑静态托管」或单镜像 compose。
 
 后端已在既有方式下运行（裸二进制 / `go run` / 单独容器）时，用一个反代入口把前端与后端拼成同一个 origin —— 两个环境变量都不用配。制品在 [`deploy/same-origin/`](../../deploy/same-origin/README.md)，两种入口 × 两种模式：
 

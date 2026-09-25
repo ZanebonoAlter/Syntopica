@@ -3,16 +3,21 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 /**
  * useNotifications 单测（notification-center，S1 故事 + 白盒 D 组）：
  * - WS notification 事件驱动角标（S1 步 3）
- * - 启动 API 对账（未读数）
+ * - 启动对账已合并进 /api/poll（usePollBundle 分发，harden-go-same-origin-serving）
  * - 打开面板即算浏览（D1/D2）、标已读乐观更新、全部标已读
  */
 
-const { listMock, unreadCountMock, markReadMock, markAllReadMock, clearAllMock } = vi.hoisted(() => ({
+const { listMock, unreadCountMock, markReadMock, markAllReadMock, clearAllMock, getPollBundleMock } = vi.hoisted(() => ({
   listMock: vi.fn(),
   unreadCountMock: vi.fn(),
   markReadMock: vi.fn(),
   markAllReadMock: vi.fn(),
   clearAllMock: vi.fn(),
+  getPollBundleMock: vi.fn(),
+}))
+
+vi.mock('~/api/poll', () => ({
+  usePollApi: () => ({ getPollBundle: getPollBundleMock }),
 }))
 
 vi.mock('~/api/notifications', () => ({
@@ -41,6 +46,19 @@ vi.mock('~/composables/useEventStream', () => ({
 }))
 
 const { useNotifications, __resetNotificationsForTest } = await import('./useNotifications')
+const { usePollBundle } = await import('./usePollBundle')
+
+/** /api/poll 合并响应（未读数分项） */
+function pollBundleResponse(unread: number) {
+  return {
+    success: true,
+    data: {
+      schedulers: [],
+      tag_queue: { pending: 0, processing: 0, completed: 0, failed: 0, total: 0 },
+      notifications: { unread },
+    },
+  }
+}
 
 const items = [
   { id: '1', type: 'success', title: '日报已生成 · 9-17', summary: '共 6 个版面', link_type: null, link_id: null, is_read: false, created_at: '2026-09-17T04:00:00Z' },
@@ -49,8 +67,10 @@ const items = [
 
 beforeEach(() => {
   __resetNotificationsForTest()
+  usePollBundle().__resetPollBundleForTest()
   listMock.mockReset().mockResolvedValue({ success: true, data: { notifications: items, total: items.length } })
   unreadCountMock.mockReset().mockResolvedValue({ success: true, data: { unread: 0 } })
+  getPollBundleMock.mockReset().mockResolvedValue(pollBundleResponse(0))
   markReadMock.mockReset().mockResolvedValue({ success: true, data: {} })
   markAllReadMock.mockReset().mockResolvedValue({ success: true, data: {} })
   clearAllMock.mockReset().mockResolvedValue({ success: true, data: {} })
@@ -60,16 +80,18 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetNotificationsForTest()
+  usePollBundle().__resetPollBundleForTest()
 })
 
 describe('useNotifications — 启动对账与 WS 事件驱动', () => {
-  it('S1 步 3：ensureStarted 拉一次未读数对账，WS notification 事件使角标 +1', async () => {
-    unreadCountMock.mockResolvedValue({ success: true, data: { unread: 0 } })
+  it('S1 步 3：ensureStarted 经合并入口对账一次（/api/poll 分发未读数），WS notification 事件使角标 +1', async () => {
+    getPollBundleMock.mockResolvedValue(pollBundleResponse(0))
     const notif = useNotifications()
     notif.ensureStarted()
     await Promise.resolve()
+    await Promise.resolve()
     expect(notif.unreadCount.value).toBe(0)
-    expect(unreadCountMock).toHaveBeenCalledTimes(1)
+    expect(getPollBundleMock).toHaveBeenCalledTimes(1)
 
     eventHandler?.({})
     await Promise.resolve()
@@ -120,40 +142,41 @@ describe('useNotifications — 面板列表与已读语义（白盒 D）', () =>
     expect(notif.view.value.list.every(n => !n.is_read)).toBe(true)
   })
 
-  it('M2：浏览会话内 reconcile 跳过回写（60s 定时器不覆盖本地清零）', async () => {
+  it('M2：浏览会话内 bundle 对账跳过回写（不覆盖本地清零），关闭面板后恢复', async () => {
     vi.useFakeTimers()
     try {
       const notif = useNotifications()
       notif.ensureStarted()
       await notif.openPanel()
-      unreadCountMock.mockResolvedValue({ success: true, data: { unread: 7 } })
-      unreadCountMock.mockClear()
-      // 快进 60s：浏览会话内 reconcile 不应回写
-      vi.advanceTimersByTime(60_000)
-      await Promise.resolve()
-      expect(unreadCountMock).not.toHaveBeenCalled()
+      // 浏览会话内：bundle 对账返回 DB 未读 7 → 不回写（本地清零保留）
+      getPollBundleMock.mockResolvedValue(pollBundleResponse(7))
+      getPollBundleMock.mockClear()
+      await usePollBundle().reconcileNow()
+      expect(getPollBundleMock).toHaveBeenCalled()
       expect(notif.unreadCount.value).toBe(0)
-      // 关闭面板后恢复回写
+      // 关闭面板后：浏览态结束，立即对账以 DB 为准回写
       notif.closePanel()
       await Promise.resolve()
-      expect(notif.unreadCount.value).toBe(7)
-      // 再快进一轮：非浏览态下 reconcile 恢复
-      unreadCountMock.mockClear()
-      vi.advanceTimersByTime(60_000)
       await Promise.resolve()
-      expect(unreadCountMock).toHaveBeenCalled()
+      expect(notif.unreadCount.value).toBe(7)
+      // 非浏览态下后续对账恢复正常回写
+      getPollBundleMock.mockClear()
+      getPollBundleMock.mockResolvedValue(pollBundleResponse(2))
+      await usePollBundle().reconcileNow()
+      expect(notif.unreadCount.value).toBe(2)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('closePanel 结束浏览态并重拉未读数对账', async () => {
-    unreadCountMock.mockResolvedValue({ success: true, data: { unread: 5 } })
+  it('closePanel 结束浏览态并经合并入口立即对账一次', async () => {
+    getPollBundleMock.mockResolvedValue(pollBundleResponse(5))
     const notif = useNotifications()
     notif.ensureStarted()
     await notif.openPanel()
     notif.closePanel()
     expect(notif.browsingSessionActive.value).toBe(false)
+    await Promise.resolve()
     await Promise.resolve()
     expect(notif.unreadCount.value).toBe(5)
   })
@@ -176,9 +199,10 @@ describe('useNotifications — 面板列表与已读语义（白盒 D）', () =>
   })
 
   it('未浏览（面板未开）场景下角标 >0 时单条标已读使角标 -1（D3 完整语义）', async () => {
-    unreadCountMock.mockResolvedValue({ success: true, data: { unread: 1 } })
+    getPollBundleMock.mockResolvedValue(pollBundleResponse(1))
     const notif = useNotifications()
     notif.ensureStarted()
+    await Promise.resolve()
     await Promise.resolve()
     expect(notif.unreadCount.value).toBe(1)
     // 直接标记列表内条目（绕过面板浏览流程，模拟在面板关闭前发出的一次标记）

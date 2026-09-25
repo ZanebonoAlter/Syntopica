@@ -4,7 +4,7 @@
 
 | 文件 | 领域 | 路由前缀 |
 | ------ | ------ | ---------- |
-| [system.md](system.md) | 系统信息、健康检查、全局任务、图片代理 | `/`, `/health`, `/api/tasks/status`, `/api/image-proxy` |
+| [system.md](system.md) | 系统信息、健康检查、全局任务、图片代理、常驻对账 | `/`, `/health`, `/api/tasks/status`, `/api/poll`, `/api/image-proxy` |
 | [categories.md](categories.md) | 分类 CRUD | `/api/categories` |
 | [feeds.md](feeds.md) | 订阅 CRUD、刷新 | `/api/feeds` |
 | [articles.md](articles.md) | 文章列表、详情、状态 | `/api/articles` |

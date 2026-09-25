@@ -3,7 +3,7 @@
 ## Purpose
 定义 Syntopica 的**同源部署形态**：前端产物与后端 API / WebSocket / 图标由同一个入口对浏览器提供服务，浏览器只面对一个 origin。同源消除跨主机部署下「`localhost` 默认值 + CORS 白名单」的双重必配项，适用于浏览器与后端不同机的常驻部署（树莓派 / 任意 Linux 主机）。
 
-仓库已有两条同源产出路径，本 spec 同时约束两者：**单镜像**（后端 `internal/app/static.go` 在进程工作目录下托管 `frontend/` 静态产物）与**反代**（`deploy/same-origin/` 的 Caddy 制品，后端可继续以任意方式运行）。
+受支持形态自 2026-09-24 起收敛为单一：**Go 单进程同域**（后端 `internal/app/static.go` 在进程工作目录下托管 `frontend/` 静态产物，前端静态副本唯一来源 `backend-go/frontend/`）。历史反代形态（`deploy/same-origin/` 的 Caddy/nginx 制品与 `/srv/www` 静态根）已**弃用（不再维护、不再是受支持路径）**，仅作历史参考保留。
 
 ## Requirements
 
@@ -13,7 +13,7 @@
 
 #### Scenario: 镜像内产物不含宿主地址
 
-- **WHEN** 以默认参数构建 `Dockerfile` 的镜像
+- **WHEN** 以默认参数构建 `deploy/docker/Dockerfile` 的镜像
 - **THEN** 产物中不出现 `http://localhost:5100`，浏览器从任意主机访问该镜像暴露的端口时，请求发往同一 origin 的 `/api/...`
 
 #### Scenario: 构建期可覆盖
@@ -62,4 +62,4 @@
 #### Scenario: 文档与实际部署形态一致
 
 - **WHEN** 对 `docs/reference/deployment.md` 检索前端服务描述
-- **THEN** 描述与仓库实际制品一致（`docker-compose.yml` 无 `front` 服务、`front/Dockerfile` 不存在、`NUXT_PUBLIC_API_ORIGIN` 已废弃），不存在指向幽灵制品的指引
+- **THEN** 描述与仓库实际制品一致（`deploy/compose/docker-compose.yml` 无 `front` 服务、`front/Dockerfile` 不存在、`NUXT_PUBLIC_API_ORIGIN` 已废弃），不存在指向幽灵制品的指引

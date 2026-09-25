@@ -29,7 +29,10 @@ func getTagQueueStatusReader() *tagQueueStatusReader {
 	return tagQueueStatusService
 }
 
-type tagQueueStatusCounts struct {
+// TagQueueStatusCounts is the queue counter snapshot shared by
+// GET /api/tag-queue/status and the merged GET /api/poll bundle.
+// 可见性判据（白盒 E，唯一判据）：pending+leased>0 || failed>0；WS 事件只触发重对账。
+type TagQueueStatusCounts struct {
 	Pending        int64 `json:"pending"`
 	Processing     int64 `json:"processing"`
 	Completed      int64 `json:"completed"`
@@ -38,7 +41,10 @@ type tagQueueStatusCounts struct {
 	CompletedToday int64 `json:"completed_today"`
 }
 
-func GetTagQueueStatus(c *gin.Context) {
+// TagQueueStatusSnapshot queries the current queue counters. Shared by
+// GetTagQueueStatus and the admin /api/poll bundle so both endpoints always
+// agree on the same SQL and status-mapping semantics.
+func TagQueueStatusSnapshot() (TagQueueStatusCounts, error) {
 	reader := getTagQueueStatusReader()
 
 	type statusRow struct {
@@ -46,16 +52,14 @@ func GetTagQueueStatus(c *gin.Context) {
 		Count  int64
 	}
 	var rows []statusRow
-	err := reader.db.Model(&models.TagJob{}).
+	if err := reader.db.Model(&models.TagJob{}).
 		Select("status, count(*) as count").
 		Group("status").
-		Scan(&rows).Error
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
-		return
+		Scan(&rows).Error; err != nil {
+		return TagQueueStatusCounts{}, err
 	}
 
-	counts := tagQueueStatusCounts{}
+	counts := TagQueueStatusCounts{}
 	var total int64
 	for _, r := range rows {
 		total += r.Count
@@ -80,10 +84,17 @@ func GetTagQueueStatus(c *gin.Context) {
 	if err := reader.db.Model(&models.TagJob{}).
 		Where("status = ? AND created_at >= ?", string(models.JobStatusCompleted), startOfToday).
 		Count(&counts.CompletedToday).Error; err != nil {
+		return TagQueueStatusCounts{}, err
+	}
+	return counts, nil
+}
+
+func GetTagQueueStatus(c *gin.Context) {
+	counts, err := TagQueueStatusSnapshot()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": counts})
 }
 
