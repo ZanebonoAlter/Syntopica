@@ -45,7 +45,7 @@ func GetTagQueue() *TagQueue {
 			pollInterval: time.Second,
 			lease:        10 * time.Minute,
 			batchSize:    20,
-			concurrency:  3,
+			concurrency:  10,
 		}
 	})
 	if instance.queue == nil {
