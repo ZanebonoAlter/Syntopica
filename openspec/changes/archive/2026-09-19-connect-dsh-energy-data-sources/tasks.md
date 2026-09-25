@@ -34,6 +34,7 @@
 ## 6. 文档
 
 <!-- doc-impact: configuration -->
+- **无 flow 影响**（§12.2 归档后回填：纯 dsh（仓库外 shell）MCP 数据源接入，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 - [x] `docs/reference/configuration.md`（dsh 节增补，见 4.1）
 
 ## 7. 验证

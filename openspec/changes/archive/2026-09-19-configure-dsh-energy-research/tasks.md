@@ -17,6 +17,7 @@
 ## 4. 文档
 
 <!-- doc-impact: configuration -->
+- **无 flow 影响**（§12.2 归档后回填：纯 dsh（仓库外 shell）研究预设配置，非业务链路改动，不触及任何 `flow/*.md` 业务链路，E 段溯源豁免）
 
 - [x] 4.1 `docs/reference/configuration.md` 增补「dsh 能源研究本地预设」节（L338 起）：仓库源与 live 路径、新建会话选预设操作、旧会话/默认值保留、删除用户预设目录的回退语义（停止向新会话提供；已运行会话及历史不删除/撤销）、当前无专业数据源与整场硬预算、版本前提 dsh 0.1.2-rc.1；收尾轮修正「DeepSeek Shell」→「DeepSeek Harness」
 
