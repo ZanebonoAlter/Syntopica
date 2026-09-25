@@ -2,7 +2,12 @@
 FROM node:22-alpine AS front-build
 WORKDIR /app
 RUN corepack enable
-COPY front/package.json front/pnpm-lock.yaml ./
+# Pi 4（4GB）上 pnpm generate 实测默认堆 ~2GB 即 OOM（2026-09-22）；拉到 3GB 利用可用内存
+ENV NODE_OPTIONS=--max-old-space-size=3072
+COPY front/package.json front/pnpm-lock.yaml front/pnpm-workspace.yaml ./
+# patchedDependencies 配置在 pnpm-workspace.yaml + patches/（pnpm ≥10 严格校验：
+# 不拷进来会因 lockfile 对不上而 frozen 安装失败）
+COPY front/patches ./patches
 RUN pnpm install --frozen-lockfile
 COPY front/ .
 # 同源部署：这个镜像里后端（internal/app/static.go）自己提供前端静态产物，

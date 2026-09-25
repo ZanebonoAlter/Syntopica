@@ -18,20 +18,22 @@ ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
 # Enable pnpm (pinned via packageManager in front/package.json) BEFORE any
 # pnpm invocation, else "pnpm: not found".
 RUN corepack enable
+# Pi 4（4GB）上 pnpm generate 实测默认堆 ~2GB 即 OOM（2026-09-22 与 Dockerfile 同步修复）
+ENV NODE_OPTIONS=--max-old-space-size=3072
 RUN pnpm config set fetch-retries 5 && pnpm config set fetch-retry-mintimeout 20000 && pnpm config set fetch-retry-maxtimeout 120000
 # Nuxt bakes runtimeConfig.public.apiBase at `generate` time, so inject the
 # same-origin relative path here. resolveApiBase() returns "/api" verbatim for
 # non-absolute values, and the browser then hits same-origin /api/* on :5000.
 ENV NUXT_PUBLIC_API_BASE=/api
 COPY front/package.json front/pnpm-lock.yaml ./
+# patchedDependencies 配置在 pnpm-workspace.yaml（pnpm ≥10 从这里读）；
+# 不拷则 three patch 被静默丢弃（--no-frozen-lockfile 会直接重写 lockfile 绕过校验）。
+COPY front/pnpm-workspace.yaml ./
 # patchedDependencies (three patch) references patches/* — must be present for
 # install hash verification, else ERR_PNPM_LOCKFILE_CONFIG_MISMATCH.
 COPY front/patches ./patches
-# NOTE: --no-frozen-lockfile is required because the repo's pnpm-lock.yaml
-# declares a three@0.183.2 patchedDependency whose entry is absent from
-# package.json's pnpm.patchedDependencies, so strict frozen mode rejects it.
-# pnpm still honours the lockfile for resolution; this matches local dev
-# behaviour. (Pre-existing front/ lockfile state, not introduced by this demo.)
+# NOTE: --no-frozen-lockfile kept for compat with pre-existing lockfile state
+# (pnpm-10 严格度下即使 workspace 配置齐全，历史 lockfile 也可能触发 frozen 拒绝)。
 RUN pnpm install --no-frozen-lockfile
 COPY front/ .
 RUN pnpm generate

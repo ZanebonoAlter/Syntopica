@@ -39,7 +39,7 @@ services:
       # Context is the repo root (relative to this compose file), so Dockerfile.demo
       # and the front/ + backend-go/ + demo/ COPY sources all resolve.
       context: ..
-      dockerfile: Dockerfile.demo
+      dockerfile: deploy/docker/Dockerfile.demo
     container_name: syntopica-demo
     restart: unless-stopped
     depends_on:

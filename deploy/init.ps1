@@ -100,6 +100,10 @@ $DOCKER_COMPOSE = $null
 $DOCKER_COMPOSE_STR = ""
 $SCRIPT_DIR = $PSScriptRoot
 if (-not $SCRIPT_DIR) { $SCRIPT_DIR = (Get-Location).Path }
+$ROOT_DIR = Split-Path -Parent $SCRIPT_DIR
+# compose 统一入口：项目目录钉在仓库根（.env / ./data / docker/postgres 相对根解析）
+$COMPOSE_MAIN = Join-Path $ROOT_DIR "deploy\compose\docker-compose.yml"
+$COMPOSE_FLAGS = @("--project-directory", $ROOT_DIR, "-f", $COMPOSE_MAIN)
 
 # ════════════════════════════════════════════════════════════════════════════
 # 阶段 1：核心启动
@@ -151,8 +155,8 @@ function collect_config {
 function merge_env {
   step "生成 .env"
 
-  $env_file = "$SCRIPT_DIR\.env"
-  $example_file = "$SCRIPT_DIR\.env.example"
+  $env_file = "$ROOT_DIR\.env"
+  $example_file = "$ROOT_DIR\.env.example"
 
   if (-not (Test-Path $example_file)) {
     warn ".env.example 未找到，创建最小 .env"
@@ -215,8 +219,8 @@ TZ=$TZ
 
 function start_services {
   step "启动服务"
-  info "运行 docker compose up -d..."
-  & $script:DOCKER_COMPOSE -f docker-compose.yml up -d 2>&1 | Out-Null
+  info "运行 docker compose --project-directory . -f deploy/compose/docker-compose.yml up -d..."
+  & $script:DOCKER_COMPOSE @COMPOSE_FLAGS up -d 2>&1 | Out-Null
   if ($LASTEXITCODE -ne 0) { fail "Docker 服务启动失败" }
   ok "Docker 服务已启动"
 }
@@ -227,7 +231,7 @@ function wait_healthy {
   info "等待 PostgreSQL..."
   $retries = 30
   while ($retries -gt 0) {
-    $null = & $script:DOCKER_COMPOSE exec -T postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB 2>$null
+    $null = & $script:DOCKER_COMPOSE @COMPOSE_FLAGS exec -T postgres pg_isready -U $POSTGRES_USER -d $POSTGRES_DB 2>$null
     if ($LASTEXITCODE -eq 0) { break }
     $retries--
     Start-Sleep -Seconds 2
@@ -409,20 +413,21 @@ function ask_firecrawl_mode {
 }
 
 function setup_firecrawl_self {
-  $yml = "$SCRIPT_DIR\docker-compose.firecrawl.yml"
+  $yml = "$ROOT_DIR\deploy\compose\docker-compose.firecrawl.yml"
   if (Test-Path $yml) {
     info "启动 Firecrawl 服务..."
-    $output = & $script:DOCKER_COMPOSE -f $yml up -d 2>&1
+    $fcFlags = @("--project-directory", $ROOT_DIR, "-f", $yml)
+    $output = & $script:DOCKER_COMPOSE @fcFlags up -d 2>&1
     if ($LASTEXITCODE -ne 0) {
       warn "Firecrawl 启动失败:"
       Write-Host $output
-      warn "可手动启动: docker compose -f docker-compose.firecrawl.yml up -d"
+      warn "可手动启动: docker compose --project-directory . -f deploy/compose/docker-compose.firecrawl.yml up -d"
     } else {
       ok "Firecrawl 已启动"
     }
     $script:FIRECRAWL_API_URL = "http://firecrawl:3002"
   } else {
-    warn "docker-compose.firecrawl.yml 未找到"
+    warn "deploy/compose/docker-compose.firecrawl.yml 未找到"
     warn "请先创建该文件，参见 docs/reference/deployment.md"
     $script:FIRECRAWL_API_URL = "http://firecrawl:3002"
   }
@@ -619,10 +624,10 @@ function print_final {
   }
 
   Write-Host "`n${BOLD}常用命令:${NC}"
-  Write-Host "  启动服务:     $($script:DOCKER_COMPOSE_STR) up -d"
-  Write-Host "  停止服务:     $($script:DOCKER_COMPOSE_STR) down"
-  Write-Host "  查看日志:     $($script:DOCKER_COMPOSE_STR) logs -f"
-  Write-Host "  重新配置:     .\init.ps1"
+  Write-Host "  启动服务:     docker compose --project-directory . -f deploy/compose/docker-compose.yml up -d"
+  Write-Host "  停止服务:     docker compose --project-directory . -f deploy/compose/docker-compose.yml down"
+  Write-Host "  查看日志:     docker compose --project-directory . -f deploy/compose/docker-compose.yml logs -f"
+  Write-Host "  重新配置:     .\deploy\init.ps1"
   Write-Host ""
 
   if ($AI_MODE -eq "ollama") {

@@ -352,13 +352,13 @@ Syntopica 仍在持续迭代。下面这些不是隐藏条件：
 Windows：
 
 ```powershell
-.\init.ps1
+.\deploy\init.ps1
 ```
 
 Linux：
 
 ```bash
-bash init.sh
+bash deploy/init.sh
 ```
 
 启动后访问 `http://localhost:5000`。
@@ -366,14 +366,14 @@ bash init.sh
 ### Docker Compose
 
 ```bash
-# PostgreSQL + Syntopica
-docker compose up -d
+# PostgreSQL + Syntopica（在仓库根执行）
+docker compose --project-directory . -f deploy/compose/docker-compose.yml up -d
 
 # 可选：Firecrawl 全文抓取
-docker compose -f docker-compose.firecrawl.yml up -d
+docker compose --project-directory . -f deploy/compose/docker-compose.firecrawl.yml up -d
 
 # 可选：RSSHub + Redis + Browserless
-docker compose -f docker-compose.rsshub.yml up -d
+docker compose --project-directory . -f deploy/compose/docker-compose.rsshub.yml up -d
 ```
 
 PostgreSQL 数据默认持久化在 `./data/`。端口和数据库密码可通过 `.env` 调整。
@@ -484,11 +484,13 @@ Syntopica/
 ├── tests/workflow/                     # 工作流集成测试
 ├── tests/firecrawl/                    # Firecrawl 集成测试
 ├── docker/                             # Docker 构建配置
+├── deploy/                             # 部署制品（compose / Dockerfile / init 脚本 / 同源反代）
+│   ├── compose/                        # docker-compose.yml / .firecrawl.yml / .rsshub.yml
+│   ├── docker/                         # Dockerfile / Dockerfile.demo / Dockerfile.pg
+│   └── same-origin/                    # 同源反代（Caddy/nginx）制品
+├── scripts/                            # dev/harness/deploy/db 脚本
 ├── img/                                # README 与演示图片
-├── docker-compose.yml                  # 完整部署
-├── docker-compose.pg.yml               # 本地开发 PostgreSQL
-├── docker-compose.firecrawl.yml        # 可选 Firecrawl
-└── docker-compose.rsshub.yml           # 可选 RSSHub
+└── docker-compose.pg.yml               # 本地开发 PostgreSQL（留在根目录）
 ```
 
 ## 文档

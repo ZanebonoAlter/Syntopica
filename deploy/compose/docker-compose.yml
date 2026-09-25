@@ -29,7 +29,7 @@ services:
     image: zanebonoalter/syntopica:${TAG:-latest}
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: deploy/docker/Dockerfile
     container_name: syntopica
     restart: unless-stopped
     depends_on:

@@ -25,10 +25,10 @@
 docker run -d --name rss-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=syntopica pgvector/pgvector:pg18-trixie
 ```
 
-或使用项目自带的 docker-compose：
+或使用项目自带的 docker-compose（主栈，在仓库根执行）：
 
 ```bash
-docker compose up -d
+docker compose --project-directory . -f deploy/compose/docker-compose.yml up -d
 ```
 
 > SQLite 版本已归档到 `sqlite` 分支，主分支不再支持。
@@ -73,7 +73,7 @@ pnpm dev
 #### 仅启动 PostgreSQL 数据库（开发用）
 
 ```bash
-docker compose up -d
+docker compose -f docker-compose.pg.yml up -d
 ```
 
 这会启动一个 pgvector 容器，端口和数据目录可在 `.env` 中配置。
