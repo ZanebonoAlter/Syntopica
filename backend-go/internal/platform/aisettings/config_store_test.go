@@ -179,3 +179,40 @@ func TestSaveAndLoadBochaConfig(t *testing.T) {
 	require.Equal(t, "https://api.bochaai.com/v1/web-search", cfg["endpoint"])
 	require.Equal(t, true, cfg["enabled"])
 }
+
+// TestSearxngConfigKey covers the jsonb key constant for the margin-note QA
+// SearXNG backend (design D7).
+func TestSearxngConfigKey(t *testing.T) {
+	if searxngConfigKey != "searxng_config" {
+		t.Errorf("searxngConfigKey = %q, want %q", searxngConfigKey, "searxng_config")
+	}
+}
+
+// TestLoadSearxngConfig_DefaultEmpty covers the absent-key default: empty map
+// → caller falls back to env/config.yaml, both empty = disabled (silent degrade).
+func TestLoadSearxngConfig_DefaultEmpty(t *testing.T) {
+	testutil.SetupTestDB(t)
+
+	cfg, settings, err := LoadSearxngConfig()
+	require.NoError(t, err)
+	require.Empty(t, cfg)
+	require.Nil(t, settings)
+}
+
+// TestSaveAndLoadSearxngConfig covers the store round trip for the
+// {endpoint, enabled} shape.
+func TestSaveAndLoadSearxngConfig(t *testing.T) {
+	testutil.SetupTestDB(t)
+
+	require.NoError(t, SaveSearxngConfig(map[string]interface{}{
+		"endpoint": "http://localhost:8889",
+		"enabled":  true,
+	}, "SearXNG local search configuration"))
+
+	cfg, settings, err := LoadSearxngConfig()
+	require.NoError(t, err)
+	require.NotNil(t, settings)
+	require.Equal(t, searxngConfigKey, settings.Key)
+	require.Equal(t, "http://localhost:8889", cfg["endpoint"])
+	require.Equal(t, true, cfg["enabled"])
+}

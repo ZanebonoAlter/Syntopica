@@ -18,6 +18,7 @@ import (
 const openNotebookConfigKey = "open_notebook_config"
 const firecrawlConfigKey = "firecrawl_config"
 const bochaConfigKey = "bocha_config"
+const searxngConfigKey = "searxng_config"
 const comtradeConfigKey = "comtrade_config"
 const rsshubConfigKey = "rsshub_config"
 const proxyConfigKey = "http_proxy_config"
@@ -106,6 +107,17 @@ func LoadBochaConfig() (map[string]interface{}, *models.AISettings, error) {
 // SaveBochaConfig 写入 bocha_config。
 func SaveBochaConfig(config map[string]interface{}, description string) error {
 	return saveConfigByKey(bochaConfigKey, config, description)
+}
+
+// LoadSearxngConfig 读取 searxng_config（页边注问答联网后端本地 SearXNG 的 endpoint + enabled）。
+// 动态读取：调用方每次 Search 前现读，界面改即时生效（对齐 bocha_config 语义；design D7）。
+func LoadSearxngConfig() (map[string]interface{}, *models.AISettings, error) {
+	return loadConfigByKey(searxngConfigKey)
+}
+
+// SaveSearxngConfig 写入 searxng_config。
+func SaveSearxngConfig(config map[string]interface{}, description string) error {
+	return saveConfigByKey(searxngConfigKey, config, description)
 }
 
 // LoadComtradeConfig 读取 comtrade_config（研究数据源 UN Comtrade 的订阅 key + enabled）。

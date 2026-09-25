@@ -8,7 +8,7 @@
 
 系统里有大量 AI 调用（文章整理稿、日报聚类/线程、标签提取、embedding、整理稿润色），早期各自直连 LLM、缺统一治理。AI 路由层（airouter）解决：
 
-- **能力路由**：按「能力」（summary / topic_tagging / digest_polish / open_notebook / embedding）把请求路由到配置好的 provider，不同能力可用不同模型/供应商。
+- **能力路由**：按「能力」（summary / topic_tagging / digest_polish / open_notebook / embedding）把请求路由到配置好的 provider，不同能力可用不同模型/供应商。业务用途绑定：`summary` 文章整理、`topic_tagging` 标签提取、`digest_polish` 日报润色、`embedding` 向量化、`open_notebook` 日报页边注问答（`daily_report.margin_note_qa`，daily-report-margin-notes，2026-09 从预留槽转为首个实际调用方）。
 - **失败降级**：同一能力下多个 provider 按序尝试，主 provider 失败自动切备用，调用方无感。
 - **并发限流**：每能力独立并发上限，避免单能力打爆 LLM 配额。
 - **调用审计**：每次调用（成功/失败）落 `ai_call_logs`，含 operation、prompt、token 用量、provider、延迟、session，供调试幻觉 / 查错数据 / 重建编排。

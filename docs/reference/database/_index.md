@@ -15,6 +15,7 @@
 | [tables/embeddings.md](tables/embeddings.md) | 向量域 | topic-graph |
 | [tables/job-queues.md](tables/job-queues.md) | 任务队列域 | content-enrichment |
 | [tables/daily-report-watch.md](tables/daily-report-watch.md) | 日报 / 持久话题 / Watch 域 | daily-report |
+| [tables/margin-notes.md](tables/margin-notes.md) | 页边注域（批注锚点 / 问答轮 / 术语库） | daily-report |
 | [tables/data-enrichment.md](tables/data-enrichment.md) | 数据增强域 | data-enrichment |
 | [tables/preference-discovery.md](tables/preference-discovery.md) | 用户行为与偏好发现域 | discovery |
 | [tables/tracing.md](tables/tracing.md) | 链路追踪域 | — |
@@ -22,7 +23,7 @@
 
 另：[DATA_LIFECYCLE.md](DATA_LIFECYCLE.md)（数据状态字段流转，独立于域文档）。
 
-## 完整表清单（52 业务 + 5 废弃 + 1 框架，按域分组 = 归属速查表；2026-09-02 cross_board 两表此前漏录，本次补齐）
+## 完整表清单（55 业务 + 5 废弃 + 1 框架，按域分组 = 归属速查表；2026-09-02 cross_board 两表补齐；2026-09-24 页边注三表补齐）
 
 #### 内容 → [`tables/content.md`](tables/content.md)（flow: `content-enrichment`）
 
@@ -104,6 +105,14 @@
 | `board_persistent_topics` | 板块持久叙事话题 | `topicgraph.BoardPersistentTopic` |
 | `board_topic_watches` | 用户声明的话题 Watch 标签 | `topicgraph.BoardTopicWatch` |
 | `topic_watch_hits` | Watch 命中记录 | `topicgraph.TopicWatchHit` |
+
+#### 页边注 → [`tables/margin-notes.md`](tables/margin-notes.md)（flow: `daily-report`）
+
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `report_annotations` | 批注锚点（划词 + 归属 + 偏移线索） | `topicgraph.ReportAnnotation` |
+| `annotation_qas` | 问答轮（引用/网络来源/术语 jsonb 数组契约） | `topicgraph.AnnotationQA` |
+| `term_notes` | 术语库（归一化唯一键 + P2 预留 embedding） | `topicgraph.TermNote` |
 
 #### 数据增强 → [`tables/data-enrichment.md`](tables/data-enrichment.md)（flow: `data-enrichment`）
 

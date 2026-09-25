@@ -12,6 +12,10 @@ const api = vi.hoisted(() => ({
   getWatchHits: vi.fn(),
   getLaneDynamics: vi.fn(),
   listContexts: vi.fn(),
+  getReportAnnotations: vi.fn(),
+  anchorAnnotation: vi.fn(),
+  askAnnotation: vi.fn(),
+  deleteAnnotation: vi.fn(),
 }))
 
 vi.mock('~/api/dailyReports', () => ({
@@ -36,6 +40,15 @@ vi.mock('~/api/laneDynamics', () => ({
 
 vi.mock('~/api/boardEnrichment', () => ({
   useBoardEnrichmentApi: () => ({ listContexts: api.listContexts }),
+}))
+
+vi.mock('~/api/marginNotes', () => ({
+  useMarginNotesApi: () => ({
+    getReportAnnotations: api.getReportAnnotations,
+    anchorAnnotation: api.anchorAnnotation,
+    askAnnotation: api.askAnnotation,
+    deleteAnnotation: api.deleteAnnotation,
+  }),
 }))
 
 vi.mock('@floating-ui/vue', () => ({
@@ -162,6 +175,9 @@ describe('BoardDailyReportTimeline preserved behavior', () => {
       },
     })
     api.listContexts.mockResolvedValue({ success: true, data: [] })
+    api.getReportAnnotations.mockResolvedValue({ success: true, data: { annotations: [] } })
+    api.askAnnotation.mockResolvedValue({ success: false })
+    api.deleteAnnotation.mockResolvedValue({ success: true, data: null })
   })
 
   afterEach(() => {
@@ -292,6 +308,9 @@ describe('BoardDailyReportTimeline — 泳道趋势区宿主取数（lane-trend-
       },
     })
     api.listContexts.mockResolvedValue({ success: true, data: [] })
+    api.getReportAnnotations.mockResolvedValue({ success: true, data: { annotations: [] } })
+    api.askAnnotation.mockResolvedValue({ success: false })
+    api.deleteAnnotation.mockResolvedValue({ success: true, data: null })
   })
 
   afterEach(() => {
@@ -369,5 +388,165 @@ describe('BoardDailyReportTimeline — 泳道趋势区宿主取数（lane-trend-
     ;(document.body.querySelector('[data-testid="trend-tab-month"]') as HTMLElement).click()
     await flushPromises()
     expect(api.listContexts).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('页边注冲突消解红线（daily-report-margin-notes specs 三 Scenario）', () => {
+  const mounted: Array<{ unmount: () => void }> = []
+
+  function makeActiveDetailForNotes(id: number): DailyReport {
+    const base = makeDetail(id)
+    // topic_status_at_report='active' → 首话题自动展开，thread 行头才渲染（与线上 active 泳道一致）
+    return {
+      ...base,
+      sections: base.sections.map(section => ({ ...section, topic_status_at_report: 'active' as const })),
+    }
+  }
+
+  beforeEach(() => {
+    api.getBoardDailyReports.mockResolvedValue({ success: true, data: { reports } })
+    api.getDailyReportDetail.mockImplementation(async (id: number) => ({ success: true, data: { report: makeActiveDetailForNotes(id) } }))
+    api.getArticle.mockResolvedValue({ success: true, data: { id: 99, title: '航运恢复观察' } })
+    api.getWatchHits.mockResolvedValue({ success: true, data: [] })
+    api.getTopicLifeline.mockResolvedValue({ success: true, data: { sections: [], relations: [] } })
+    api.getLaneDynamics.mockResolvedValue({ success: true, data: { window_days: 14, has_reports: false, lanes: [], candidates: [] } })
+    api.listContexts.mockResolvedValue({ success: true, data: [] })
+    api.getReportAnnotations.mockResolvedValue({ success: true, data: { annotations: [] } })
+    api.askAnnotation.mockResolvedValue({ success: false })
+    api.deleteAnnotation.mockResolvedValue({ success: true, data: null })
+  })
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+    vi.clearAllMocks()
+    vi.restoreAllMocks()
+  })
+
+  async function openReader() {
+    const wrapper = await mountTimeline()
+    mounted.push(wrapper)
+    await wrapper.find('.drt-summary-card').trigger('click')
+    await flushPromises()
+    await nextTick()
+    return wrapper
+  }
+
+  it('RG-2 划选不误展开：有效选区存续期间点行头，toggle 不触发、气泡出现', async () => {
+    await openReader()
+    const header = document.body.querySelector('.drm-thread__header') as HTMLButtonElement
+    expect(header).toBeTruthy()
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      isCollapsed: false,
+      toString: () => '航运风险开始回落',
+      rangeCount: 1,
+    } as unknown as Selection)
+
+    header.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+    expect(document.body.querySelector('.drm-articles')).toBeNull()
+  })
+
+  it('RG-1 无选区纯点击正常展开：collapsed 选区下点行头，溯源文章列表展开', async () => {
+    await openReader()
+    const header = document.body.querySelector('.drm-thread__header') as HTMLButtonElement
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      isCollapsed: true,
+      toString: () => '',
+      rangeCount: 0,
+    } as unknown as Selection)
+
+    header.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+    // ensureArticles 预取链路照常触发
+    expect(api.getArticle).toHaveBeenCalled()
+  })
+
+  it('RG-4 点高亮 mark 跳卡不展开：mark click 点亮对应卡，thread 状态不变', async () => {
+    api.getReportAnnotations.mockResolvedValue({
+      success: true,
+      data: {
+        annotations: [{
+          id: 77,
+          report_id: 60,
+          section_id: 366,
+          thread_id: 10,
+          quoted_text: '航运风险开始回落。',
+          anchor_offset_start: null,
+          anchor_offset_end: null,
+          created_at: '2026-06-21T00:00:00Z',
+          qas: [],
+        }],
+      },
+    })
+    await openReader()
+
+    // 批注加载后高亮自愈循环把 mark 落进 thread 摘要
+    await nextTick()
+    await nextTick()
+    const mark = document.body.querySelector('mark.mn-highlight[data-jump="77"]') as HTMLElement
+    expect(mark).toBeTruthy()
+
+    const header = document.body.querySelector('.drm-thread__header') as HTMLButtonElement
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+    mark.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    // toggle 未被触发
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+    // 对应卡被点亮（lit 态）且渲染在右栏
+    const card = document.body.querySelector('[data-annotation-id="77"]')
+    expect(card).toBeTruthy()
+    expect(card?.classList.contains('mn-card--lit')).toBe(true)
+  })
+
+  it('桌面挂载页边注第三列；窄屏（<1100px）收为浮动入口 + 抽屉', async () => {
+    const wrapper = await openReader()
+    expect(document.body.querySelector('.drm-notes-rail')).toBeTruthy()
+
+    // 空批注时无 fab；有批注 + 窄屏才出现 fab（窄屏分支无法在 happy-dom 翻转 matchMedia，
+    // 桌面分支只断言 rail 常驻；抽屉形态由组件级用例覆盖）
+    expect(document.body.querySelector('[data-testid="mn-fab"]')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('批注删除确认流：确认后 DELETE 与高亮自愈清理', async () => {
+    api.getReportAnnotations.mockResolvedValue({
+      success: true,
+      data: {
+        annotations: [{
+          id: 88,
+          report_id: 60,
+          section_id: 366,
+          thread_id: 10,
+          quoted_text: '航运风险开始回落。',
+          anchor_offset_start: null,
+          anchor_offset_end: null,
+          created_at: '2026-06-21T00:00:00Z',
+          qas: [{ id: 1, annotation_id: 88, question: 'q', answer: 'a', cited_article_ids: [], extracted_terms: [], created_at: '' }],
+        }],
+      },
+    })
+    await openReader()
+    await nextTick()
+    await nextTick()
+    expect(document.body.querySelector('mark.mn-highlight[data-jump="88"]')).toBeTruthy()
+
+    const del = document.body.querySelector('[data-annotation-id="88"] [data-testid="mn-delete"]') as HTMLElement
+    del.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(document.body.textContent).toContain('连带删除')
+
+    const confirm = document.body.querySelector('[data-testid="mn-confirm-delete"]') as HTMLElement
+    confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(api.deleteAnnotation).toHaveBeenCalledWith(88)
+    await nextTick()
+    await nextTick()
+    // 高亮随批注删除被自愈清理
+    expect(document.body.querySelector('mark.mn-highlight[data-jump="88"]')).toBeNull()
+    expect(document.body.querySelector('[data-annotation-id="88"]')).toBeNull()
   })
 })

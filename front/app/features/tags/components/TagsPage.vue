@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onMounted, provide, ref, watch } from 'vue'
 import type { Component } from 'vue'
+import { useRoute } from 'vue-router'
 import type { BoardArticleTag } from '~/api/semanticBoards'
 import { Icon } from '@iconify/vue'
 import ThemeToggle from '~/components/ui/ThemeToggle.vue'
@@ -133,6 +134,25 @@ function handleOpenBoard(boardId: number) {
   selectedBoardId.value = boardId
 }
 onMounted(() => { void loadWatchCount() })
+
+// —— 深链（daily-report-margin-notes 管理页「跳原日报」，MG-5/MG-7）：
+// /tags?board=&report=&annotation= → 选版块、切日报 tab，并把报告/批注定位传给时间线。
+// 一次性消费：仅在挂载时读取；report/annotation 作为初始 props 传入，时间线自身负责定位闪现。
+const route = useRoute()
+const deepLinkReportId = ref<number | null>(null)
+const deepLinkAnnotationId = ref<number | null>(null)
+onMounted(() => {
+  // route 在无 router 插件的测试环境下可能为 undefined，防御性短路（生产恒有值）
+  const query = route?.query ?? {}
+  const boardParam = Number(query.board)
+  const reportParam = Number(query.report)
+  const annotationParam = Number(query.annotation)
+  if (!Number.isFinite(boardParam) || boardParam <= 0) return
+  handleSelectBoard(boardParam)
+  contentTab.value = 'daily-reports'
+  if (Number.isFinite(reportParam) && reportParam > 0) deepLinkReportId.value = reportParam
+  if (Number.isFinite(annotationParam) && annotationParam > 0) deepLinkAnnotationId.value = annotationParam
+})
 </script>
 
 <template>
@@ -236,6 +256,8 @@ onMounted(() => { void loadWatchCount() })
             :board-id="selectedBoardId"
             :board-title="selectedBoardLabel"
             :boards="boards"
+            :initial-report-id="deepLinkReportId"
+            :initial-annotation-id="deepLinkAnnotationId"
             @open-article="openArticlePreview"
             @select-board="handleSelectBoard"
           />

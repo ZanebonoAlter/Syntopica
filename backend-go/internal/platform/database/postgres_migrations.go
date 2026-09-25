@@ -2400,6 +2400,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, completionOnRefreshOffMigration())
 	migrations = append(migrations, normalizeArticleLinkFragmentsMigration())
 	migrations = append(migrations, marginNotesTablesMigration())
+	migrations = append(migrations, marginNotesWebSourcesMigration())
 	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration())
 }
 
@@ -3683,6 +3684,29 @@ func marginNotesTablesMigration() Migration {
 			}
 			if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_term_notes_term_norm ON term_notes (term_norm)`).Error; err != nil {
 				return fmt.Errorf("create uq_term_notes_term_norm: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// marginNotesWebSourcesMigration implements 20260924_0001
+// (daily-report-margin-notes 联网扩充，design D7)：
+//
+//	annotation_qas 追加 cited_web_sources jsonb NOT NULL DEFAULT '[]'——
+//	AI 回答引用的网络来源结构化沉淀（[{"title","url"}] 保序去重，url 经
+//	本次搜索结果集白名单校验，空写 [] 不写 null——对齐 cited_article_ids
+//	数组契约）。存量行为回填为 []（无网络来源，语义正确）。
+//
+// 幂等：ADD COLUMN IF NOT EXISTS。回滚=列保留（旧前端不读则无害）。
+func marginNotesWebSourcesMigration() Migration {
+	return Migration{
+		Version:     "20260924_0001",
+		Description: "daily-report-margin-notes web augmentation: annotation_qas.cited_web_sources jsonb (whitelisted [{title,url}] web citations, array contract empty=[])",
+		Up: func(db *gorm.DB) error {
+			if err := db.Exec(`ALTER TABLE annotation_qas
+				ADD COLUMN IF NOT EXISTS cited_web_sources JSONB NOT NULL DEFAULT '[]'::jsonb`).Error; err != nil {
+				return fmt.Errorf("add annotation_qas.cited_web_sources: %w", err)
 			}
 			return nil
 		},

@@ -292,7 +292,8 @@ watch(() => props.focusSectionId, async (sectionId) => {
                         />
                         <strong>{{ thread.title }}</strong>
                       </span>
-                      <small v-if="thread.summary">{{ thread.summary }}</small>
+                      <!-- data-mn-anchor：页边注划选/锚定容器（批注范围限叙事文本，行头不开放批注但开放划选） -->
+                      <small v-if="thread.summary" :data-mn-anchor="`t:${thread.id}`">{{ thread.summary }}</small>
                     </span>
                     <span class="drm-thread__meta">
                       <span v-if="thread.related_article_ids?.length" class="drm-thread__count">
@@ -705,6 +706,9 @@ watch(() => props.focusSectionId, async (sectionId) => {
   background: transparent;
   color: var(--color-text-primary);
   text-align: left;
+  /* 页边注（daily-report-margin-notes）：显式放开 button 内划选；
+     划选后的误触由宿主 selection guard 吞 click 消解，行为经行为核定（Chromium 152） */
+  user-select: text;
 }
 
 .drm-thread__header:not(:disabled) {

@@ -30,7 +30,8 @@ const highlights = computed(() => (props.report.highlights || []).slice(0, 3))
     <section v-if="lead" id="report-lead" class="drm-lead" aria-labelledby="drm-lead-title">
       <div class="drm-lead__kicker">北京时间 · {{ formatMagazineDate(report.period_date) }}</div>
       <h2 id="drm-lead-title" class="drm-lead__title">{{ lead.title }}</h2>
-      <p v-if="lead.summary" class="drm-lead__summary">{{ lead.summary }}</p>
+      <!-- data-mn-anchor="lead"：头条 lead 摘要开放划选批注（纯 p 无按钮冲突） -->
+      <p v-if="lead.summary" class="drm-lead__summary" data-mn-anchor="lead">{{ lead.summary }}</p>
     </section>
 
     <section v-if="highlights.length" id="report-highlights" class="drm-highlights" aria-label="今日重点">

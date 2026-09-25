@@ -100,4 +100,21 @@ describe('AppSidebarDrawer 布局契约', () => {
     expect(panelEl().parentElement).toBe(drawerEl())
     expect(drawerEl().parentElement).toBe(document.body)
   })
+
+  it('side="right"（daily-report-margin-notes）：右缘滑入形态，遮罩/开合/Esc 行为与左形态一致', async () => {
+    const { wrapper, onClose } = mountDrawer({ side: 'right' })
+    // transform 由样式表定义（happy-dom 不内联），右侧形态以 is-right class 为机械锚
+    expect(panelEl().classList.contains('is-right')).toBe(true)
+    await wrapper.setProps({ open: true })
+    expect(drawerEl().classList.contains('is-open')).toBe(true)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    await scrimEl().click()
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
+  it('side 默认 left：面板无 is-right（既有调用方零变化）', () => {
+    mountDrawer()
+    expect(panelEl().classList.contains('is-right')).toBe(false)
+  })
 })

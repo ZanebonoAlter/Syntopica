@@ -8,11 +8,13 @@ import SettingsSectionQueues from '~/features/settings/components/SettingsSectio
 import SettingsSectionPreferences from '~/features/settings/components/SettingsSectionPreferences.vue'
 import SettingsSectionFirecrawl from '~/features/settings/components/SettingsSectionFirecrawl.vue'
 import SettingsSectionBocha from '~/features/settings/components/SettingsSectionBocha.vue'
+import SettingsSectionSearxng from '~/features/settings/components/SettingsSectionSearxng.vue'
 import SettingsSectionDatasources from '~/features/settings/components/SettingsSectionDatasources.vue'
 import SettingsSectionAnalysisMethods from '~/features/settings/components/SettingsSectionAnalysisMethods.vue'
 import SettingsSectionRsshub from '~/features/settings/components/SettingsSectionRsshub.vue'
 import SettingsSectionProxy from '~/features/settings/components/SettingsSectionProxy.vue'
 import SettingsSectionSchedulers from '~/features/settings/components/SettingsSectionSchedulers.vue'
+import SettingsSectionMarginNotes from '~/features/settings/components/SettingsSectionMarginNotes.vue'
 
 import type { SectionKey } from '~/features/settings/components/SettingsWorkspace.vue'
 
@@ -25,11 +27,13 @@ const sectionComponents: Record<SectionKey, any> = {
   'preferences': SettingsSectionPreferences,
   'firecrawl': SettingsSectionFirecrawl,
   'bocha': SettingsSectionBocha,
+  'searxng': SettingsSectionSearxng,
   'datasources': SettingsSectionDatasources,
   'analysis-methods': SettingsSectionAnalysisMethods,
   'rsshub': SettingsSectionRsshub,
   'proxy': SettingsSectionProxy,
   'schedulers': SettingsSectionSchedulers,
+  'margin-notes': SettingsSectionMarginNotes,
 }
 </script>
 

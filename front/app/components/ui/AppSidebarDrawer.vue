@@ -3,15 +3,19 @@ import { onUnmounted, watch } from 'vue'
 
 /**
  * 窄屏导航抽屉容器（mobile-viewport-stage1，ui-design.md Component Reuse）：
- * 只做容器壳——Teleport + 遮罩 + 左侧滑入面板，内容由默认 slot 供给
+ * 只做容器壳——Teleport + 遮罩 + 滑入面板，内容由默认 slot 供给
  * （宽屏常驻侧栏与窄屏抽屉渲染同一份信息结构，见 design.md D3：不复用 AppDialog）。
  */
 interface Props {
   /** 打开态：驱动面板滑入/滑出与遮罩淡入/淡出 */
   open: boolean
+  /** 抽屉侧别（daily-report-margin-notes）：默认 left 维持既有行为；right = 右侧滑入。 */
+  side?: 'left' | 'right'
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  side: 'left',
+})
 
 const emit = defineEmits<{
   close: []
@@ -44,6 +48,7 @@ onUnmounted(() => {
       <div class="app-sidebar-drawer__scrim" aria-hidden="true" @click="emit('close')"></div>
       <div
         class="app-sidebar-drawer__panel"
+        :class="{ 'is-right': side === 'right' }"
         role="dialog"
         aria-modal="true"
         :style="{ '--drawer-w': PANEL_WIDTH }"
@@ -98,6 +103,19 @@ onUnmounted(() => {
 }
 
 .app-sidebar-drawer.is-open .app-sidebar-drawer__panel {
+  transform: translateX(0);
+}
+
+/* 右侧形态（daily-report-margin-notes 窄屏批注抽屉）：右缘停靠、自右滑入；遮罩/开合态行为与左形态完全一致。 */
+.app-sidebar-drawer__panel.is-right {
+  right: 0;
+  left: auto;
+  border-right: 0;
+  border-left: 1px solid var(--color-border-medium);
+  transform: translateX(100%);
+}
+
+.app-sidebar-drawer.is-open .app-sidebar-drawer__panel.is-right {
   transform: translateX(0);
 }
 </style>

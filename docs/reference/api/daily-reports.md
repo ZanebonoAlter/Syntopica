@@ -20,6 +20,11 @@
 | DELETE | `/daily-reports/topics/:id` | 硬删话题（解绑 section） |
 | POST | `/daily-reports/topics/:id/merge` | 合并源话题到目标 |
 | POST | `/daily-reports/topics/:id/split` | 拆分 section 为新话题 |
+| GET | `/daily-reports/:id/annotations` | 日报页边注批注列表（含问答轮） |
+| POST | `/daily-reports/:id/annotations` | 落锚批注 |
+| DELETE | `/annotations/:id` | 删除批注（连带问答） |
+| POST | `/annotations/:id/questions` | 批注提问/追问（SearXNG 联网补强） |
+| GET | `/annotations` | 跨报告管理页列表（版块/关键词筛选） |
 | POST | `/daily-reports/backfill-embeddings` | 回填 section 向量 |
 | POST | `/daily-reports/backfill-relations` | 回填话题关系 |
 | POST | `/daily-reports/backfill-topics` | 历史重建持久话题 |
@@ -501,6 +506,72 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 ```
 
 每条记录由 `(watch_id, section_id, report_id)` 唯一索引去重。
+
+## 页边注（批注/问答，daily-report-margin-notes）
+
+页边注四端点 + 管理页列表端点。问答单次 LLM 调用产出回答 + 引用 + 网络来源 + 术语；`cited_article_ids` / `cited_web_sources` / `extracted_terms` 三字段统一「空写 `[]` 不写 null」数组契约。
+
+### GET `/daily-reports/:id/annotations`
+
+列出该日报全部批注（含问答轮与术语）。Response `data.annotations`：
+
+```json
+[
+  {
+    "id": 1, "report_id": 896, "section_id": 100, "thread_id": 7,
+    "quoted_text": "以利率招标…", "anchor_offset_start": 0, "anchor_offset_end": 12,
+    "created_at": "...",
+    "qas": [
+      {
+        "id": 9, "annotation_id": 1, "question": "…", "answer": "…",
+        "cited_article_ids": [102, 103],
+        "cited_web_sources": [{ "title": "逆回购_财经百科", "url": "https://…" }],
+        "extracted_terms": ["逆回购", "DR007"],
+        "operation": "daily_report.margin_note_qa", "provider": "…", "model": "",
+        "created_at": "..."
+      }
+    ]
+  }
+]
+```
+
+- `thread_id=null` + `section_id=0` = 头条 lead 批注（PR-4 放行路径）。
+- `cited_web_sources` 为 D7 联网白名单来源（url 均在提问当次的 SearXNG 搜索结果集内），前端外链新窗口打开。
+
+### POST `/daily-reports/:id/annotations`
+
+落锚。Request：`{ "section_id": 100, "thread_id": 7, "quoted_text": "划词（必填，≤500 字符）", "anchor_offset_start": 0, "anchor_offset_end": 12 }`。`thread_id` 可空（头条批注传 0）。返回 `data.annotation`（形状同上，`qas` 为 `[]`）。
+
+错误：report 不存在 404；section/thread 归属不符 400；quoted_text 空或超长 400。
+
+### DELETE `/api/annotations/:id`
+
+删除批注连带全部问答（服务端直接删，确认在前端）。返回 `{"success": true}`；不存在 404。
+
+### POST `/api/annotations/:id/questions`
+
+提问/追问（同一端点，追加新问答轮）。Request：`{ "question": "…（必填，≤1000 字符）" }`。
+
+提问时先以划词（截 80 runes，空则回退问题）调本地 SearXNG（失败/未配置静默降级），原始结果作为参考并入同一次 LLM 调用（operation `daily_report.margin_note_qa`，capability `open_notebook`）。Response `data.qa` 形状同 GET 的 qas 条目，另带：
+
+```json
+{
+  "qa": {
+    "…": "同 GET 条目",
+    "extracted_terms": [{ "term": "逆回购", "is_new": true }]
+  },
+  "answer": "…", "cited_article_ids": [102], "cited_web_sources": [{"title":"…","url":"…"}],
+  "new_terms": ["逆回购"], "terms": ["逆回购"],
+  "pure_model_knowledge": false, "provider": "…"
+}
+```
+
+- `pure_model_knowledge`：本地文章引用与网络来源均为空时为 true（前端据此标注）。
+- LLM/路由失败 502（行内可重试，已提交问题与历史轮次不受影响）；annotation 不存在 404。
+
+### GET `/api/annotations?board_id=&q=&page_size=&page=`
+
+跨报告管理页列表，按日期倒序；`q` 命中划词/提问/术语；`board_id` 版块筛选。Response `data.rows` 每行含 `board_id`/`board_label`（join semantic_labels）、`terms`（跨轮去重后的术语对象数组）与 `qas`（同上形状）。`data.total` 供分页。
 
 ## 前端消费约定
 

@@ -87,6 +87,9 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 
 	// Topic watch routes
 	RegisterTopicWatchRoutes(api)
+
+	// 日报页边注（daily-report-margin-notes）：批注四端点 + 管理页列表
+	RegisterMarginNoteRoutes(api)
 }
 
 // triggerGenerateDailyReport handles POST /api/daily-reports/generate

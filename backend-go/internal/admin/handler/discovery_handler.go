@@ -444,6 +444,75 @@ func SaveBochaSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
+// ── searxng settings（页边注问答联网后端，design D7）──
+
+// GetSearxngSettings GET /api/settings/searxng — 读 SearXNG 配置（endpoint + enabled，
+// 无 key）。响应形状对齐 bocha（去掉 key 字段）；未配置时 endpoint 返回空串。
+func GetSearxngSettings(c *gin.Context) {
+	endpoint := ""
+	enabled := false
+	if cfg, _, err := aisettings.LoadSearxngConfig(); err == nil && cfg != nil {
+		if v, ok := cfg["endpoint"].(string); ok && strings.TrimSpace(v) != "" {
+			endpoint = strings.TrimSpace(v)
+		}
+		if v, ok := cfg["enabled"].(bool); ok {
+			enabled = v
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"endpoint": endpoint,
+			"enabled":  enabled,
+		},
+	})
+}
+
+// saveSearxngSettingsRequest 保存 SearXNG 配置请求体。Enabled 指针语义对齐 bocha
+// （nil=保留现有值）；endpoint 空=不改。
+type saveSearxngSettingsRequest struct {
+	Endpoint string `json:"endpoint"`
+	Enabled  *bool  `json:"enabled"`
+}
+
+// SaveSearxngSettings POST /api/settings/searxng — 写 SearXNG 配置。
+// 界面改即时生效（marginNoteSearxngEndpoint 每次 Search 现读）。
+func SaveSearxngSettings(c *gin.Context) {
+	var req saveSearxngSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request body"})
+		return
+	}
+
+	// 读现有配置，作为“不改”语义的缺省源。
+	existing, _, _ := aisettings.LoadSearxngConfig()
+	if existing == nil {
+		existing = map[string]interface{}{}
+	}
+	endpoint, _ := existing["endpoint"].(string)
+	enabled := false
+	if v, ok := existing["enabled"].(bool); ok {
+		enabled = v
+	}
+
+	if ep := strings.TrimSpace(req.Endpoint); ep != "" {
+		endpoint = ep
+	}
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+
+	configJSON := map[string]interface{}{
+		"endpoint": endpoint,
+		"enabled":  enabled,
+	}
+	if err := aisettings.SaveSearxngConfig(configJSON, "SearXNG local search configuration"); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
 // ── proxy settings（全局出站代理）──
 
 // GetProxySettings GET /api/settings/proxy — 读全局出站代理地址（feed 抓取等所有外部请求）。
