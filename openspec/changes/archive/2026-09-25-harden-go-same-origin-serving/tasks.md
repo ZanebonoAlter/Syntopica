@@ -90,5 +90,5 @@
 | 任务队列状态同样可用 | backend-go/internal/admin/handler/scheduler_handler_test.go |
 | 读模式不影响生产模式语义 | backend-go/internal/admin/handler/scheduler_handler_test.go |
 | 部署步骤可复现 | 人工：按 deployment.md 同源小节操作至浏览器可用（evidence/） |
-| 文档与实际部署形态一致 | 命令：`grep -rn 'srv/www' docs/reference/deployment.md` 命中行含「弃用」 |
-| 弃用形态可判据 | 命令：`grep -rn 'deploy/same-origin' docs/reference/deployment.md` 不含「推荐」 |
+| 文档与实际部署形态一致 | 人工：grep -n 'srv/www' docs/reference/deployment.md 命中行含「弃用」（2026-09-25 实测通过，L285 弃用标注） |
+| 弃用形态可判据 | 人工：grep -n 'deploy/same-origin' docs/reference/deployment.md 不含「推荐」（2026-09-25 实测通过） |
