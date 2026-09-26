@@ -198,21 +198,24 @@ review 的 `applied` 标记 SHALL NOT 触发对 `topic_lifeline_context` 的任�
 
 ### Requirement: 仅手动触发（不挂日报管线）
 
-数据增强（循环 B）SHALL **仅由用户手动触发**（CRUD 界面"重新分析某话题"），SHALL NOT 自动挂载到日报管线。理由：不是所有板块对金融数据有影响（如"开发工具"板块），自动增强无意义且浪费成本。
+数据增强循环B SHALL 仅由用户触发。新工作台分两次手动操作：发现信号→持久候选→人工选择→深入研究/报告。SHALL NOT 从发现job自动启动研究，不自动调度或挂日报。仅enrichment_enabled=true允许发现/研究；二者与旧board任务共享互斥，等待人工不持锁。
 
-- SHALL 只对 `enrichment_enabled=true` 的板块允许触发。
-- 增强结果 SHALL 写入独立的 `topic_enrichment_result` 表（快照不可变，不含 report_id），**不得修改** `daily_report_sections.persistent_topic_id` 或任何 topic 的 status/lifecycle。
-- 增强失败 SHALL 只记日志告警，不影响其他（手动触发天然隔离）。
+新入口只生成候选或signal_report；旧brief/investigation/topic API保留deprecated原语义，新工作台不调用。报告/候选不得修改daily_report_sections、board_persistent_topics或新闻lifeline；前置freshness仍按原规则工作。研究失败保留候选和补齐结果，须人工重试。新报告不读写review链。
 
 #### Scenario: 仅手动触发
 
-- **WHEN** 用户在 CRUD 界面对某 topic 点"重新分析"
-- **THEN** SHALL 立即跑一次增强，不依赖任何日报管线调度
+- **WHEN** 用户只点发现而未点深入分析
+- **THEN** 最多保存发现批次/候选，取数/计算/成文调用为0；增强关闭时400无任务
+
+#### Scenario: 旧新入口语义隔离
+
+- **WHEN** 调用新research入口与旧brief API
+- **THEN** 各自保留新报告与旧brief语义，旧API不悄悄返回signal_report
 
 #### Scenario: 只读不污染主数据
 
-- **WHEN** 数据增强完成
-- **THEN** `daily_report_sections` 与 `board_persistent_topics` 的所有字段 SHALL 不被增强流程修改
+- **WHEN** 候选发现或研究成功/失败
+- **THEN** daily_report_sections与board_persistent_topics字段不被这些流程修改，报告不回写lifeline；freshness已完成写入不回滚
 
 ### Requirement: 数据增强全程可观测与可追溯
 
@@ -241,39 +244,44 @@ review 的 `applied` 标记 SHALL NOT 触发对 `topic_lifeline_context` 的任�
 
 ### Requirement: 板块 tab 「认知工作台」界面
 
-板块详情页的数据增强工作台 SHALL 按用户认知任务组织，而不是把结果表或后端术语平铺出来：
+数据增强默认工作台 SHALL 为候选信号列表与已生成报告，保留month/year周期选择、新闻背景折叠/历史翻阅/叙事内联编辑。顶部「发现信号」只生成候选，每条「深入分析」才研究，已有报告可阅读或显式重新研究。旧简报/调查/legacy产出及绑定管理入口不再挂载，旧数据仅API兼容。本次新报告 SHALL NOT 有评审/采纳按钮、徽标或judge阶段。
 
-- **① 新闻背景**：周期筛选、历史翻阅与既有 inline 编辑能力保留；
-- **② 版块简报**：展示最新/历史 brief 的关键观察、关系、不确定项和可调查问题；
-- **③ 深入调查与认知变化**：用户显式选择问题后查看 investigation、支持/反证/gaps、QA 与同类 review；legacy 报告在历史兼容入口只读展示；
-- **④ 数据源/参数**：折叠高级区。
+候选显示异常、值得查原因、研究问题、新闻依据、发现时间和派生状态；报告显示目标周期/实际生成时间/真实取数次数，历史标事后回顾。详情reader≤760px，精确数据/计算引用、可降级图表、机械附录。提供双主题和loading/empty/error，不将故障冒充无信号。
 
-工作台 SHALL 使用人话，提供 loading/empty/error 与双主题。简报和调查通过 job id/job kind 分别显示当前异步任务状态；同一 board 虽串行执行，前端 MUST NOT 把调查完成误报为“新简报完成”。数据契约 SHALL 保持可被后续侦探墙视图复用。
+#### Scenario: 工作台呈现候选与报告
+
+- **WHEN** 用户发现多条信号
+- **THEN** 每条分别可深入分析，不自动研究；选一条不触发其余候选
 
 #### Scenario: 周期筛选翻历史
 
-- **WHEN** 用户在新闻背景选择月粒度并翻到历史 period
-- **THEN** 系统展示该 period 独立存储的新闻汇总，不被当前周期覆盖
+- **WHEN** 在新闻背景选择月粒度并翻到历史period
+- **THEN** 展示该period新闻与候选/报告，历史研究明确标事后回顾，不被当前周期覆盖
 
 #### Scenario: 证据链 tooltip 不跳转
 
-- **WHEN** 用户查看 news/web/page 证据的原文摘录
-- **THEN** 可在原地 tooltip/展开区查看 quote；lane 引用则按 board-level-analysis 契约允许下钻
+- **WHEN** 用户查看新报告新闻依据或数据/计算引用
+- **THEN** 原地tooltip/展开显示来源，引用可定位附录；旧news/web/page/lane字段由API原样保留，不承诺已退役legacy UI入口
 
 #### Scenario: 兑现度复盘可见
 
-- **WHEN** 用户打开认知变化区
-- **THEN** 新结果展示见解/关系/假设状态变化；legacy 预测报告若有 hit/part/miss 则在旧版兼容视图继续可见
+- **WHEN** 旧客户端读取带hit/part/miss的legacy报告
+- **THEN** API仍返回历史字段；新工作台不挂legacy视图，也不为新报告生成兑现评审（本change明确收缩原UI范围）
 
 #### Scenario: 契约为侦探墙铺路
 
-- **WHEN** 前端消费 brief/investigation/review 数据
-- **THEN** 观察、关系、假设和证据均为可复用结构字段，不依赖连续论文文本解析
+- **WHEN** 客户端消费新候选/报告或旧brief/investigation/review
+- **THEN** 新信号、依据ID、观测/计算和条件判断均为结构字段；旧观察/关系/假设结构不变，不依赖长文反解析
 
 #### Scenario: 简报到调查由用户确认
 
-- **WHEN** 简报生成候选研究问题
-- **THEN** 工作台只展示“深入调查”入口，不在简报完成后自动触发调查
+- **WHEN** 新候选发现结束或旧兼容API完成简报
+- **THEN** 不自动研究/调查；新候选须用户点击深入分析，旧调查须显式调用，报告后追问本次不做
+
+#### Scenario: 报告阅读无需评审
+
+- **WHEN** 信号报告成功生成
+- **THEN** 直接可读，无通过/驳回/采纳/忽略按钮，新闻背景仍可编辑
 
 ### Requirement: 话题形态判断
 

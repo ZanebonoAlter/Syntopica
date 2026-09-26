@@ -58,4 +58,4 @@
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
 | 2026-09-19 | integrate-research-data-sources | 建域：四源取数器（EIA/JODI 口径从 energy-mcp Go 化 + WDI/Comtrade 新接）、预算 HTTP 层+TTL 缓存、data_sources 目录表+seed、目录/probe API、agent 工具适配注入（现有工具面不变）、COMTRADE_API_KEY 配置 | [`openspec/changes/archive/2026-09-19-integrate-research-data-sources`](../../../openspec/changes/archive/2026-09-19-integrate-research-data-sources) |
-| 2026-09-22 | board-signal-reports | 研究授权首例：板块信号研究 loop 显式授权四源（唯一例外，经 cutoff 过滤包装层消费，旧流程工具面零变化）+ EIA `weeks` 1~12 官方归档版次 CSV 历史窗口（无 key、缓存键参数化）+ JODI `years` 1~5 显式多年（与 month 互斥、本年 404 回退一次去重、历史年记 gap） | 实现完成待归档（归档后按 §12 补链接） |
+| 2026-09-22 | board-signal-reports | 研究授权首例：板块信号研究 loop 显式授权四源（唯一例外，经 cutoff 过滤包装层消费，旧流程工具面零变化）+ EIA `weeks` 1~12 官方归档版次 CSV 历史窗口（无 key、缓存键参数化）+ JODI `years` 1~5 显式多年（与 month 互斥、本年 404 回退一次去重、历史年记 gap） | [archive/2026-09-26-board-signal-reports](../../../openspec/changes/archive/2026-09-26-board-signal-reports) |
