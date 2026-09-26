@@ -8,9 +8,15 @@ import (
 	"syntopica-backend/internal/topicgraph/service"
 )
 
+// Repo re-exports the repository singleton (decouple-backend-domains:
+// admin's daily-report job consumed topicgraph/repository.Repo via a deep
+// path; cross-domain callers now use topicgraph.Repo).
+var Repo = repository.Repo
+
 // InitRepository initializes the topicgraph repository singleton.
 func InitRepository(db *gorm.DB) {
 	repository.InitRepository(db)
+	Repo = repository.Repo
 }
 
 // RegisterDailyReportRoutes registers all daily report routes.

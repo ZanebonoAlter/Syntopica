@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"syntopica-backend/internal/models"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 func TestBuildTagEmbeddingText(t *testing.T) {
@@ -261,7 +262,7 @@ func TestEmbeddingDimensionMismatch2560(t *testing.T) {
 }
 
 func TestGenerateEmbeddingBuildsCorrectDimension(t *testing.T) {
-	emb := &models.TopicTagEmbedding{
+	emb := &tagmodels.TopicTagEmbedding{
 		TopicTagID:   1,
 		EmbeddingVec: "[0.100000,0.200000,0.300000]",
 		Dimension:    2560,

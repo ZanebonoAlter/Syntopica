@@ -8,6 +8,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -41,7 +42,7 @@ func TestMergeTagsEnqueuesReembeddingAfterSuccess(t *testing.T) {
 	if err := db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: source.ID}).Error; err != nil {
 		t.Fatalf("create article topic tag: %v", err)
 	}
-	if err := db.Create(&models.TopicTagEmbedding{TopicTagID: source.ID, EmbeddingType: EmbeddingTypeIdentity, EmbeddingVec: makeValidVector(4096), Dimension: 4096, Model: "test", TextHash: "source"}).Error; err != nil {
+	if err := db.Create(&tagmodels.TopicTagEmbedding{TopicTagID: source.ID, EmbeddingType: EmbeddingTypeIdentity, EmbeddingVec: makeValidVector(4096), Dimension: 4096, Model: "test", TextHash: "source"}).Error; err != nil {
 		t.Fatalf("create source embedding: %v", err)
 	}
 
@@ -49,7 +50,7 @@ func TestMergeTagsEnqueuesReembeddingAfterSuccess(t *testing.T) {
 		t.Fatalf("MergeTags returned error: %v", err)
 	}
 
-	var queueTasks []models.MergeReembeddingQueue
+	var queueTasks []tagmodels.MergeReembeddingQueue
 	if err := db.Order("id ASC").Find(&queueTasks).Error; err != nil {
 		t.Fatalf("load queue tasks: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestMergeTagsEnqueuesReembeddingAfterSuccess(t *testing.T) {
 	if queueTasks[0].TargetTagID != target.ID {
 		t.Fatalf("queue target_tag_id = %d, want %d", queueTasks[0].TargetTagID, target.ID)
 	}
-	if queueTasks[0].Status != models.MergeReembeddingQueueStatusPending {
+	if queueTasks[0].Status != tagmodels.MergeReembeddingQueueStatusPending {
 		t.Fatalf("queue status = %s, want pending", queueTasks[0].Status)
 	}
 

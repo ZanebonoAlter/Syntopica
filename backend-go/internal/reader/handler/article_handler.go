@@ -11,7 +11,6 @@ import (
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/reader/repository"
 	tagging "syntopica-backend/internal/tagmanagement"
-	tagwatched "syntopica-backend/internal/tagmanagement/service/watched"
 )
 
 const (
@@ -108,7 +107,7 @@ func GetArticles(c *gin.Context) {
 	usingWatchedTags := false
 
 	if watchedTagsMode {
-		watchedIDs, children, err := tagwatched.GetWatchedTagIDsExpanded(repository.Repo.DB())
+		watchedIDs, children, err := tagging.GetWatchedTagIDsExpanded(repository.Repo.DB())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "failed to expand watched tags"})
 			return

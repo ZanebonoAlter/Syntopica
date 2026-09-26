@@ -16,6 +16,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"gorm.io/gorm"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -63,7 +64,7 @@ func NewEmbeddingService() *EmbeddingService {
 }
 
 // GenerateEmbedding generates an embedding for a tag's text representation
-func (s *EmbeddingService) GenerateEmbedding(ctx context.Context, tag *models.TopicTag, embeddingType string, opts ...EmbeddingTextOptions) (*models.TopicTagEmbedding, []float64, error) {
+func (s *EmbeddingService) GenerateEmbedding(ctx context.Context, tag *models.TopicTag, embeddingType string, opts ...EmbeddingTextOptions) (*tagmodels.TopicTagEmbedding, []float64, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "EmbeddingService.GenerateEmbedding")
 	defer span.End()
 	text := buildTagEmbeddingText(tag, embeddingType, opts...)
@@ -90,7 +91,7 @@ func (s *EmbeddingService) GenerateEmbedding(ctx context.Context, tag *models.To
 
 	pgVecStr := FloatsToPgVector(result.Embeddings[0])
 
-	embedding := &models.TopicTagEmbedding{
+	embedding := &tagmodels.TopicTagEmbedding{
 		TopicTagID:    tag.ID,
 		EmbeddingType: embeddingType,
 		EmbeddingVec:  pgVecStr,
@@ -102,7 +103,7 @@ func (s *EmbeddingService) GenerateEmbedding(ctx context.Context, tag *models.To
 	return embedding, result.Embeddings[0], nil
 }
 
-func (s *EmbeddingService) GenerateEmbeddingForText(ctx context.Context, tagID uint, embeddingType string, text string) (*models.TopicTagEmbedding, []float64, error) {
+func (s *EmbeddingService) GenerateEmbeddingForText(ctx context.Context, tagID uint, embeddingType string, text string) (*tagmodels.TopicTagEmbedding, []float64, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "EmbeddingService.GenerateEmbeddingForText")
 	defer span.End()
 	textHash := hashText(embeddingType + "\n" + text)
@@ -123,7 +124,7 @@ func (s *EmbeddingService) GenerateEmbeddingForText(ctx context.Context, tagID u
 
 	pgVecStr := FloatsToPgVector(result.Embeddings[0])
 
-	embedding := &models.TopicTagEmbedding{
+	embedding := &tagmodels.TopicTagEmbedding{
 		TopicTagID:    tagID,
 		EmbeddingType: embeddingType,
 		EmbeddingVec:  pgVecStr,
@@ -424,7 +425,7 @@ func MergeTags(sourceTagID, targetTagID uint) error {
 
 // SaveEmbedding saves or updates a tag's embedding in the database.
 // If the actual vector dimension differs from the column definition, it alters the column type.
-func (s *EmbeddingService) SaveEmbedding(embedding *models.TopicTagEmbedding) error {
+func (s *EmbeddingService) SaveEmbedding(embedding *tagmodels.TopicTagEmbedding) error {
 	if embedding.Dimension > 0 && embedding.EmbeddingVec != "" {
 		if err := ensureVectorDimension(embedding.Dimension); err != nil {
 			return fmt.Errorf("ensure vector dimension %d: %w", embedding.Dimension, err)
@@ -443,9 +444,9 @@ func (s *EmbeddingService) SaveEmbedding(embedding *models.TopicTagEmbedding) er
 	repository.Repo.DB().Where(
 		"topic_tag_id = ? AND embedding_type = ? AND text_hash != ?",
 		embedding.TopicTagID, embedding.EmbeddingType, embedding.TextHash,
-	).Delete(&models.TopicTagEmbedding{})
+	).Delete(&tagmodels.TopicTagEmbedding{})
 
-	var existing models.TopicTagEmbedding
+	var existing tagmodels.TopicTagEmbedding
 	err := repository.Repo.DB().Where("topic_tag_id = ? AND embedding_type = ? AND text_hash = ?", embedding.TopicTagID, embedding.EmbeddingType, embedding.TextHash).First(&existing).Error
 
 	if err == nil {
@@ -506,8 +507,8 @@ func ensureVectorDimension(dim int) error {
 }
 
 // GetEmbedding retrieves the embedding for a tag
-func (s *EmbeddingService) GetEmbedding(tagID uint, embeddingType string) (*models.TopicTagEmbedding, error) {
-	var embedding models.TopicTagEmbedding
+func (s *EmbeddingService) GetEmbedding(tagID uint, embeddingType string) (*tagmodels.TopicTagEmbedding, error) {
+	var embedding tagmodels.TopicTagEmbedding
 	err := repository.Repo.DB().Where("topic_tag_id = ? AND embedding_type = ?", tagID, embeddingType).First(&embedding).Error
 	if err != nil {
 		return nil, err

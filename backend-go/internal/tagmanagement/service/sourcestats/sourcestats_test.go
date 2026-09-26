@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"syntopica-backend/internal/models"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 // 用例来源：openspec/changes/archive/2026-09-18-add-source-board-hit-rate/test-cases.md
@@ -32,7 +33,7 @@ func setupStatsDB(t *testing.T) *gorm.DB {
 		&models.TopicTag{},
 		&models.ArticleTopicTag{},
 		&models.SemanticLabel{},
-		&models.TopicTagBoardLabel{},
+		&tagmodels.TopicTagBoardLabel{},
 		&models.TagJob{},
 	))
 	return db
@@ -93,7 +94,7 @@ func seedStatsLabel(t *testing.T, db *gorm.DB, label, slug, labelType, status st
 
 func linkStatsTagBoard(t *testing.T, db *gorm.DB, tagID, boardID uint) {
 	t.Helper()
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tagID, SemanticBoardID: boardID, Score: 0.9}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tagID, SemanticBoardID: boardID, Score: 0.9}).Error)
 }
 
 func tagStatsArticle(t *testing.T, db *gorm.DB, articleID, tagID uint) {

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -19,7 +19,7 @@ func NewEmbeddingConfigService() *EmbeddingConfigService {
 
 // LoadConfig loads all config rows into a map
 func (s *EmbeddingConfigService) LoadConfig() (map[string]string, error) {
-	var configs []models.EmbeddingConfig
+	var configs []tagmodels.EmbeddingConfig
 	if err := repository.Repo.DB().Find(&configs).Error; err != nil {
 		return nil, fmt.Errorf("failed to load embedding config: %w", err)
 	}
@@ -99,7 +99,7 @@ func (s *EmbeddingConfigService) UpdateConfig(key, value string) error {
 
 	// Check for model change
 	if key == "embedding_model" {
-		var existing models.EmbeddingConfig
+		var existing tagmodels.EmbeddingConfig
 		if err := repository.Repo.DB().Where("key = ?", key).First(&existing).Error; err == nil {
 			if existing.Value != value && value != "" {
 				logging.Warnf("WARNING: Embedding model changed from %q to %q. Existing embeddings may be stale.", existing.Value, value)
@@ -107,7 +107,7 @@ func (s *EmbeddingConfigService) UpdateConfig(key, value string) error {
 		}
 	}
 
-	result := repository.Repo.DB().Model(&models.EmbeddingConfig{}).Where("key = ?", key).Update("value", value)
+	result := repository.Repo.DB().Model(&tagmodels.EmbeddingConfig{}).Where("key = ?", key).Update("value", value)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update config %s: %w", key, result.Error)
 	}
@@ -118,8 +118,8 @@ func (s *EmbeddingConfigService) UpdateConfig(key, value string) error {
 }
 
 // GetAllConfig returns all config rows
-func (s *EmbeddingConfigService) GetAllConfig() ([]models.EmbeddingConfig, error) {
-	var configs []models.EmbeddingConfig
+func (s *EmbeddingConfigService) GetAllConfig() ([]tagmodels.EmbeddingConfig, error) {
+	var configs []tagmodels.EmbeddingConfig
 	if err := repository.Repo.DB().Order("key ASC").Find(&configs).Error; err != nil {
 		return nil, fmt.Errorf("failed to load embedding configs: %w", err)
 	}

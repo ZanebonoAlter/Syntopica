@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	discmodels "syntopica-backend/internal/discovery/models"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/testutil"
@@ -64,7 +65,7 @@ func TestDiscoveryV2BackfillLegacyUpgradeAndIdempotentRerun(t *testing.T) {
 	board := models.SemanticLabel{Label: "迁移测试版块", Slug: "mig-test-board", LabelType: "board", Status: "active"}
 	require.NoError(t, db.Create(&board).Error)
 
-	routes := []models.RSSHubRoute{
+	routes := []discmodels.RSSHubRoute{
 		// namespace/path 大小写混合：stable_key 必须收敛为全小写。Parameters 是 jsonb 列的
 		// 原始 JSON 字符串，必须给合法 JSON（空串会被 PG 拒绝）。
 		{Namespace: "Blogs", Path: "User", Name: "用户博客", URL: "https://rsshub.local/blogs/user", ContentHash: "h-blogs", Parameters: "{}"},
@@ -76,15 +77,15 @@ func TestDiscoveryV2BackfillLegacyUpgradeAndIdempotentRerun(t *testing.T) {
 	}
 
 	// 旧 seed 两条（全局桶 + 具体版块）+ behavior 一条（不得迁移）。
-	seedGlobal := models.PreferenceVector{
+	seedGlobal := discmodels.PreferenceVector{
 		Source: "seed", EmbeddingVec: "[1,0,0]", Dimension: 3, Model: "mig-embed",
 		TagWeights: models.MetadataMap{}, LastComputedAt: now,
 	}
-	seedBoard := models.PreferenceVector{
+	seedBoard := discmodels.PreferenceVector{
 		BoardID: &board.ID, Source: "seed", EmbeddingVec: "[0,1,0]", Dimension: 3, Model: "mig-embed",
 		TagWeights: models.MetadataMap{}, LastComputedAt: now,
 	}
-	behaviorVec := models.PreferenceVector{
+	behaviorVec := discmodels.PreferenceVector{
 		Source: "behavior", EmbeddingVec: "[0,0,1]", Dimension: 3, Model: "mig-embed",
 		TagWeights: models.MetadataMap{}, LastComputedAt: now,
 	}
@@ -94,15 +95,15 @@ func TestDiscoveryV2BackfillLegacyUpgradeAndIdempotentRerun(t *testing.T) {
 
 	// 旧推荐：同 hash 两条 pending（重复组）、一条独立 hash pending、一条 accepted、
 	// 一条 30 天内 dismissed、一条 35 天前 dismissed。
-	dupFirst := models.FeedRecommendation{RouteID: routes[0].ID, Source: "qa", Status: "pending", RecommendationHash: "mig-dup-hash", Score: 0.5}
-	dupSecond := models.FeedRecommendation{RouteID: routes[0].ID, Source: "manual_refresh", Status: "pending", RecommendationHash: "mig-dup-hash", Score: 0.6}
-	singlePending := models.FeedRecommendation{RouteID: routes[1].ID, Source: "qa", Status: "pending", RecommendationHash: "mig-single-hash", Score: 0.7}
-	accepted := models.FeedRecommendation{RouteID: routes[2].ID, Source: "qa", Status: "accepted", RecommendationHash: "mig-acc-hash", Score: 0.9}
+	dupFirst := discmodels.FeedRecommendation{RouteID: routes[0].ID, Source: "qa", Status: "pending", RecommendationHash: "mig-dup-hash", Score: 0.5}
+	dupSecond := discmodels.FeedRecommendation{RouteID: routes[0].ID, Source: "manual_refresh", Status: "pending", RecommendationHash: "mig-dup-hash", Score: 0.6}
+	singlePending := discmodels.FeedRecommendation{RouteID: routes[1].ID, Source: "qa", Status: "pending", RecommendationHash: "mig-single-hash", Score: 0.7}
+	accepted := discmodels.FeedRecommendation{RouteID: routes[2].ID, Source: "qa", Status: "accepted", RecommendationHash: "mig-acc-hash", Score: 0.9}
 	dismissedRecentAt := now.Add(-5 * 24 * time.Hour)
-	dismissedRecent := models.FeedRecommendation{RouteID: routes[1].ID, Source: "qa", Status: "dismissed", RecommendationHash: "mig-diss-new", DismissedAt: &dismissedRecentAt}
+	dismissedRecent := discmodels.FeedRecommendation{RouteID: routes[1].ID, Source: "qa", Status: "dismissed", RecommendationHash: "mig-diss-new", DismissedAt: &dismissedRecentAt}
 	dismissedOldAt := now.Add(-35 * 24 * time.Hour)
-	dismissedOld := models.FeedRecommendation{RouteID: routes[2].ID, Source: "qa", Status: "dismissed", RecommendationHash: "mig-diss-old", DismissedAt: &dismissedOldAt}
-	for _, rec := range []*models.FeedRecommendation{&dupFirst, &dupSecond, &singlePending, &accepted, &dismissedRecent, &dismissedOld} {
+	dismissedOld := discmodels.FeedRecommendation{RouteID: routes[2].ID, Source: "qa", Status: "dismissed", RecommendationHash: "mig-diss-old", DismissedAt: &dismissedOldAt}
+	for _, rec := range []*discmodels.FeedRecommendation{&dupFirst, &dupSecond, &singlePending, &accepted, &dismissedRecent, &dismissedOld} {
 		require.NoError(t, db.Create(rec).Error)
 	}
 	require.Greater(t, dupSecond.ID, dupFirst.ID, "后插入的重复组行 id 更大，是去重时保留者")

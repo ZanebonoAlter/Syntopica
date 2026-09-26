@@ -8,6 +8,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service/core"
 
@@ -211,9 +212,9 @@ func (s *CompositeLabelService) CreateCompositeLabel(ctx context.Context, label,
 		if err := tx.Create(&created).Error; err != nil {
 			return err
 		}
-		rows := make([]models.CompositeComponent, 0, len(ids))
+		rows := make([]tagmodels.CompositeComponent, 0, len(ids))
 		for i, id := range ids {
-			rows = append(rows, models.CompositeComponent{
+			rows = append(rows, tagmodels.CompositeComponent{
 				CompositeID:      created.ID,
 				ComponentLabelID: id,
 				Position:         i + 1,
@@ -287,7 +288,7 @@ func (s *CompositeLabelService) ListCompositeLabels(ctx context.Context, status 
 	for _, r := range rows {
 		ids = append(ids, r.ID)
 	}
-	var comps []models.CompositeComponent
+	var comps []tagmodels.CompositeComponent
 	if err := s.db.WithContext(ctx).Where("composite_id IN ?", ids).Order("composite_id, position").Find(&comps).Error; err != nil {
 		return nil, err
 	}
@@ -410,7 +411,7 @@ func (s *CompositeLabelService) ListComponentOptions(ctx context.Context, limit 
 			BoardID    uint
 			BoardLabel string
 		}
-		if err := s.db.WithContext(ctx).Model(&models.BoardComposition{}).
+		if err := s.db.WithContext(ctx).Model(&tagmodels.BoardComposition{}).
 			Select("board_composition.auxiliary_label_id AS aux_id, board_composition.board_id AS board_id, boards.label AS board_label").
 			Joins("JOIN semantic_labels AS boards ON boards.id = board_composition.board_id AND boards.status = 'active' AND boards.label_type = 'board'").
 			Where("board_composition.auxiliary_label_id IN ?", boardIDs).
@@ -451,7 +452,7 @@ func (s *CompositeLabelService) embedCompositePhrase(ctx context.Context, label,
 // loadCompositeComponentSets returns the component-ID set of every composite
 // (any status) keyed by composite ID.
 func (s *CompositeLabelService) loadCompositeComponentSets(ctx context.Context) (map[uint]map[uint]struct{}, error) {
-	var rows []models.CompositeComponent
+	var rows []tagmodels.CompositeComponent
 	if err := s.db.WithContext(ctx).
 		Joins("JOIN semantic_labels sl ON sl.id = composite_components.composite_id AND sl.label_type = 'composite'").
 		Find(&rows).Error; err != nil {

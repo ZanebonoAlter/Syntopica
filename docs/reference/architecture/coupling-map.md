@@ -43,9 +43,41 @@
 - 双重确认已放宽为"embedding 阈值内 AND LLM 同指"（见 `quality-scoring-observability` design D6）。若有人想收紧回"必须最近邻"，**必先看本条 + 守卫测试**——收紧会重新引入脆弱性。
 - 评估 scope 时，截断/聚类输入改动的 Risks 评估必须把"→ topic 持久化"这条传导链纳入，不能只写"截断边界变化"。
 
+
+## §2 dataenrichment→admin 调度器反向依赖（已解除：decouple-backend-domains）
+
+| 项 | 内容 |
+|----|------|
+| **源功能** | dataenrichment 生命线三 job（lifeline_weekly/monthly/yearly JobFunc） |
+| **目标功能** | 调度器框架（原 `internal/admin/scheduler`） |
+| **耦合性质** | 基础设施反向依赖业务域：业务域 import admin 的框架类型（JobFunc/JobResult），改框架牵连所有 job 域 |
+| **守卫测试** | depguard boundary 规则 + tasks 8.5 grep（`dataenrichment/platform` 对 `admin/scheduler` 生产 import = 空） |
+
+**传导链**：~~dataenrichment/scheduler_jobs.go → admin/scheduler（框架）~~ → **已解除（decouple-backend-domains，2026-09-26）**：框架迁 `internal/platform/scheduler`，dataenrichment/platform 直接 import 平台层。
+
+**触发条件**：不再适用（结构性解除）。
+
+## §3 域间深路径耦合现状（decouple-backend-domains 收敛后基线）
+
+| 项 | 内容 |
+|----|------|
+| **源功能** | 全部业务域（admin/reader/tagmanagement/topicgraph/dataenrichment/datasources/discovery） |
+| **目标功能** | 彼此的 handler/service/repository/models 子包 |
+| **耦合性质** | 跨域深路径 import（编译耦合 + 心智负担）；已由 depguard 编译期拦截 |
+| **守卫测试** | `.golangci.yml` 7 条 boundary 规则（`golangci-lint run ./...` 退出码 0 = 合规） |
+
+**传导链**：收敛前基线（2026-09-26 复测）：生产深路径域间边 9 条/14 文件（admin→tagmanagement 3、admin→reader 2、admin→topicgraph 1、admin→datasources 1、reader→tagmanagement 2、dataenrichment→{admin,reader,datasources} 各 1、datasources→dataenrichment 2）。收敛后：**业务域间生产深路径 = 0**（跨域一律走 root 门面：tagmanagement/reader/topicgraph/discovery 各 wire.go re-export）。
+
+**剩余耦合边（豁免层，depguard 不管）**：app→任意域（装配层）；platform/testutil→tagmodels（golden schema hook）；datasources↔dataenrichment 互嵌（唯一带注释豁免的边界违规，改门面会成 root 环，待后续 change 拆解）。
+
+**触发条件**：新增跨域调用时——只 import 对方 root 门面包，需要新符号就在对方 wire.go 加 re-export；模型引用同样经 root（对方 models/ 是深路径）。
+
+**注意事项**：
+- 白名单共享模型（internal/models 18 项+FeedStats 例外）唯一权威登记处 = `.golangci.yml` 白名单注释；单域独占新模型必须定义在所属域 models/ 子包并 init() 调 `database.RegisterModels` 自注册（静态清单 import 域包会成环，见 platform/scheduler/task.go 注释）。
+
 ---
 
-<!-- 后续耦合点按 §2、§3... 增量登记。模板：
+<!-- 后续耦合点按 §4、§5... 增量登记。模板：
 ## §N <耦合名>
 
 | 项 | 内容 |

@@ -10,6 +10,7 @@ import (
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -71,7 +72,7 @@ func (s *EmbeddingQueueService) Enqueue(tagID uint) error {
 }
 
 func (s *EmbeddingQueueService) allEmbeddingsCurrent(tag *models.TopicTag) bool {
-	var identityEmb models.TopicTagEmbedding
+	var identityEmb tagmodels.TopicTagEmbedding
 	if err := s.db.Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeIdentity).First(&identityEmb).Error; err != nil {
 		return false
 	}
@@ -80,7 +81,7 @@ func (s *EmbeddingQueueService) allEmbeddingsCurrent(tag *models.TopicTag) bool 
 		return false
 	}
 
-	var semanticEmb models.TopicTagEmbedding
+	var semanticEmb tagmodels.TopicTagEmbedding
 	if err := s.db.Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeSemantic).First(&semanticEmb).Error; err != nil {
 		return false
 	}
@@ -94,7 +95,7 @@ func (s *EmbeddingQueueService) allEmbeddingsCurrent(tag *models.TopicTag) bool 
 		for _, kw := range keywords {
 			kwHash := hashText(EmbeddingTypeEventKeyword + "\n" + kw)
 			var kwCount int64
-			s.db.Model(&models.TopicTagEmbedding{}).
+			s.db.Model(&tagmodels.TopicTagEmbedding{}).
 				Where("topic_tag_id = ? AND embedding_type = ? AND text_hash = ?", tag.ID, EmbeddingTypeEventKeyword, kwHash).
 				Count(&kwCount)
 			if kwCount == 0 {
@@ -316,7 +317,7 @@ func (s *EmbeddingQueueService) processNext() {
 	}
 
 	if tag.Category == "event" {
-		s.db.Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeEventKeyword).Delete(&models.TopicTagEmbedding{})
+		s.db.Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeEventKeyword).Delete(&tagmodels.TopicTagEmbedding{})
 
 		keywords := getEventKeywords(&tag)
 		for _, kw := range keywords {

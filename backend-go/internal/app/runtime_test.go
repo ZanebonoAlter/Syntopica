@@ -10,10 +10,11 @@ import (
 	"gorm.io/gorm"
 
 	"syntopica-backend/internal/admin"
-	"syntopica-backend/internal/admin/scheduler"
+	discmodels "syntopica-backend/internal/discovery/models"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/analysispause"
 	"syntopica-backend/internal/platform/database"
+	psched "syntopica-backend/internal/platform/scheduler"
 )
 
 // ── improve-discovery-recommendations 4.6：发现 v2 后台任务的注册接线 ──
@@ -27,19 +28,19 @@ func setupRuntimeSchedulerTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:runtime-%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
-		&models.AISettings{}, &models.FeedCandidate{}, &models.RSSHubRoute{},
-		&models.CandidateAvailability{}, &models.CandidateEmbedding{}, &models.DiscoveryRun{},
+		&models.AISettings{}, &discmodels.FeedCandidate{}, &discmodels.RSSHubRoute{},
+		&discmodels.CandidateAvailability{}, &discmodels.CandidateEmbedding{}, &discmodels.DiscoveryRun{},
 	))
 	database.DB = db
 	admin.InitRepository(db)
 	return db
 }
 
-func baseSchedulerOf(t *testing.T, reg *admin.SchedulerRegistry, name string) *scheduler.BaseScheduler {
+func baseSchedulerOf(t *testing.T, reg *admin.SchedulerRegistry, name string) *psched.BaseScheduler {
 	t.Helper()
 	s, ok := reg.Get(name)
 	require.True(t, ok, "scheduler %s should be registered", name)
-	bs, ok := s.(*scheduler.BaseScheduler)
+	bs, ok := s.(*psched.BaseScheduler)
 	require.True(t, ok, "scheduler %s should be a BaseScheduler, got %T", name, s)
 	return bs
 }
@@ -99,7 +100,7 @@ func TestDiscoveryV2RegistrationPauseAndSingleExecution(t *testing.T) {
 	backfill.ClearExecuting()
 
 	// 维护 job 真实执行：卡死 running 超 1 小时 → failed/stale_running。
-	stale := models.DiscoveryRun{
+	stale := discmodels.DiscoveryRun{
 		RequestKey: "rk-runtime-stale", Kind: "ask", Status: "running",
 		StartedAt: time.Now().Add(-90 * time.Minute),
 	}
@@ -107,7 +108,7 @@ func TestDiscoveryV2RegistrationPauseAndSingleExecution(t *testing.T) {
 	res = maintenance.TriggerNow()
 	require.Equal(t, true, res["accepted"])
 	require.EqualValues(t, 1, res["stale_runs_failed"])
-	var got models.DiscoveryRun
+	var got discmodels.DiscoveryRun
 	require.NoError(t, db.First(&got, stale.ID).Error)
 	require.Equal(t, "failed", got.Status)
 	require.Equal(t, "stale_running", got.ErrorCode)

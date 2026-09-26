@@ -100,7 +100,7 @@ func TestLogCleanupJobRetention(t *testing.T) {
 	require.NoError(t, db.Model(&models.AIEmbeddingCache{}).Order("cache_key").Pluck("cache_key", &cacheKeys).Error)
 	require.Equal(t, []string{"fresh"}, cacheKeys, "embedding cache TTL is 14 days")
 
-	// JobResult.Data 计数字段（task 2.2）
+	// scheduler.JobResult.Data 计数字段（task 2.2）
 	data := result.Data
 	require.Equal(t, int64(1), data["last_embedding_queue_deleted"])
 	require.Equal(t, int64(2), data["last_tag_jobs_deleted"])

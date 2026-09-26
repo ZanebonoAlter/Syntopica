@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	reader "syntopica-backend/internal/reader/service"
+	reader "syntopica-backend/internal/reader"
 )
 
 // maxFetchPageRunes caps the main_text length returned by fetch_page so a single

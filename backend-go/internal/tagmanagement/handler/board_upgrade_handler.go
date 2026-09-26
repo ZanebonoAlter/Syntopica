@@ -12,6 +12,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service"
 )
@@ -226,7 +227,7 @@ type idLabelDTO struct {
 
 // upgradeSuggestionsToRowDTO maps persisted rows to the panel DTO, batch-resolving
 // auxiliary-label and target-board names in two queries regardless of row count.
-func (h *semanticBoardHandler) upgradeSuggestionsToRowDTO(ctx context.Context, rows []models.BoardUpgradeSuggestion) []boardUpgradeSuggestionRowDTO {
+func (h *semanticBoardHandler) upgradeSuggestionsToRowDTO(ctx context.Context, rows []tagmodels.BoardUpgradeSuggestion) []boardUpgradeSuggestionRowDTO {
 	labelIDSet := make(map[uint]struct{})
 	boardIDSet := make(map[uint]struct{})
 	for _, r := range rows {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"syntopica-backend/internal/models"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 func TestPostgresMigrationsDocumentStagedEmbeddingCutover(t *testing.T) {
@@ -28,7 +28,7 @@ func TestPostgresMigrationsDocumentStagedEmbeddingCutover(t *testing.T) {
 }
 
 func TestTopicTagAnalysisPayloadJSONExplicitlyStaysTextInModel(t *testing.T) {
-	field, ok := reflect.TypeOf(models.TopicTagAnalysis{}).FieldByName("PayloadJSON")
+	field, ok := reflect.TypeOf(tagmodels.TopicTagAnalysis{}).FieldByName("PayloadJSON")
 	if !ok {
 		t.Fatal("PayloadJSON field not found")
 	}

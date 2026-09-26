@@ -9,6 +9,7 @@ import (
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/scheduler"
 	"syntopica-backend/internal/platform/ws"
 	feed "syntopica-backend/internal/reader"
 )
@@ -39,7 +40,7 @@ type AutoRefreshSummary struct {
 
 // AutoRefreshJob runs a feed refresh cycle: scans feeds, checks which need
 // refresh, resets stale "refreshing" feeds, and triggers async refreshes.
-func AutoRefreshJob(ctx context.Context) (*JobResult, error) {
+func AutoRefreshJob(ctx context.Context) (*scheduler.JobResult, error) {
 	startTime := time.Now()
 	feedService := feed.NewFeedService()
 
@@ -80,7 +81,7 @@ func AutoRefreshJob(ctx context.Context) (*JobResult, error) {
 	summary.FinishedAt = time.Now().Format(time.RFC3339)
 	summary.Reason = autoRefreshJobReason(summary)
 
-	return &JobResult{
+	return &scheduler.JobResult{
 		Data: map[string]interface{}{
 			"trigger_source":           summary.TriggerSource,
 			"scanned_feeds":            summary.ScannedFeeds,

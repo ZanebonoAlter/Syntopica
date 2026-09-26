@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"syntopica-backend/internal/admin/repository"
+	"syntopica-backend/internal/platform/scheduler"
 )
 
 // LogCleanupJob deletes expired ai_call_logs, otel_spans, ai_embedding_cache
@@ -15,7 +16,7 @@ import (
 //   - completed rows: kept 1 day (daily reset — total counts then reflect
 //     active work + today's completions)
 //   - failed rows: kept 30 days (TagQueuePanel retry entry stays usable)
-func LogCleanupJob(ctx context.Context) (*JobResult, error) {
+func LogCleanupJob(ctx context.Context) (*scheduler.JobResult, error) {
 	cutoff := time.Now().AddDate(0, 0, -7)
 
 	var aiCallLogsDeleted int64
@@ -66,7 +67,7 @@ func LogCleanupJob(ctx context.Context) (*JobResult, error) {
 		return nil, err
 	}
 
-	return &JobResult{
+	return &scheduler.JobResult{
 		Data: map[string]interface{}{
 			"last_ai_call_logs_deleted":    aiCallLogsDeleted,
 			"last_otel_spans_deleted":      otelSpansDeleted,

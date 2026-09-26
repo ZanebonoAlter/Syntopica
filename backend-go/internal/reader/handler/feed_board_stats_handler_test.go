@@ -16,6 +16,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/reader/repository"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 // 用例来源：openspec/changes/archive/2026-09-18-add-source-board-hit-rate/test-cases.md B4
@@ -31,7 +32,7 @@ func setupBoardHitStatsTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 		&models.TopicTag{},
 		&models.ArticleTopicTag{},
 		&models.SemanticLabel{},
-		&models.TopicTagBoardLabel{},
+		&tagmodels.TopicTagBoardLabel{},
 		&models.TagJob{},
 	))
 	database.DB = db
@@ -64,7 +65,7 @@ func seedBHHitFixture(t *testing.T, db *gorm.DB) (models.SemanticLabel, models.T
 	require.NoError(t, db.Create(&board).Error)
 	tag := models.TopicTag{Slug: fmt.Sprintf("t-%d", time.Now().UnixNano()), Label: "t", Status: "active", IsCanonical: true}
 	require.NoError(t, db.Create(&tag).Error)
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: board.ID, Score: 0.9}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: board.ID, Score: 0.9}).Error)
 	return board, tag
 }
 

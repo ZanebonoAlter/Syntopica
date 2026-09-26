@@ -3,6 +3,7 @@ package repository
 import (
 	"gorm.io/gorm"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/scheduler"
 )
 
 // ============================================================================
@@ -237,26 +238,26 @@ func (r *AdminRepository) GetFeedByID(id uint) (*models.Feed, error) {
 // Scheduler Task operations
 // ============================================================================
 
-func (r *AdminRepository) ListSchedulerTasks() ([]models.SchedulerTask, error) {
-	var tasks []models.SchedulerTask
+func (r *AdminRepository) ListSchedulerTasks() ([]scheduler.SchedulerTask, error) {
+	var tasks []scheduler.SchedulerTask
 	err := r.db.Order("name ASC").Find(&tasks).Error
 	return tasks, err
 }
 
-func (r *AdminRepository) GetSchedulerTaskByName(name string) (*models.SchedulerTask, error) {
-	var task models.SchedulerTask
+func (r *AdminRepository) GetSchedulerTaskByName(name string) (*scheduler.SchedulerTask, error) {
+	var task scheduler.SchedulerTask
 	if err := r.db.Where("name = ?", name).First(&task).Error; err != nil {
 		return nil, err
 	}
 	return &task, nil
 }
 
-func (r *AdminRepository) SaveSchedulerTask(task *models.SchedulerTask) error {
+func (r *AdminRepository) SaveSchedulerTask(task *scheduler.SchedulerTask) error {
 	return r.db.Save(task).Error
 }
 
 func (r *AdminRepository) UpdateSchedulerTask(name string, updates map[string]interface{}) error {
-	var task models.SchedulerTask
+	var task scheduler.SchedulerTask
 	if err := r.db.Where("name = ?", name).First(&task).Error; err != nil {
 		return err
 	}

@@ -12,12 +12,14 @@ import (
 	"syntopica-backend/internal/admin"
 	"syntopica-backend/internal/admin/scheduler"
 	"syntopica-backend/internal/dataenrichment"
+	"syntopica-backend/internal/discovery"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/aihealth"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/logging"
+	psched "syntopica-backend/internal/platform/scheduler"
 	content "syntopica-backend/internal/reader"
 	tagging "syntopica-backend/internal/tagmanagement"
 )
@@ -29,7 +31,7 @@ type Runtime struct {
 func resetStaleStates() {
 	resetCount := 0
 
-	result := database.DB.Model(&models.SchedulerTask{}).
+	result := database.DB.Model(&psched.SchedulerTask{}).
 		Where("status = ?", "running").
 		Updates(map[string]interface{}{
 			"status":     "idle",
@@ -123,7 +125,7 @@ func StartRuntime() *Runtime {
 	// Each scheduler is configured with its JobFunc, interval, startup delay,
 	// and optional TaskPersistence for DB state tracking.
 
-	registry.Register("log_cleanup", scheduler.New(scheduler.Config{
+	registry.Register("log_cleanup", psched.New(psched.Config{
 		Name:         "Log Cleanup",
 		Description:  "Clean up expired ai_call_logs and otel_spans rows",
 		Interval:     86400 * time.Second,
@@ -133,7 +135,7 @@ func StartRuntime() *Runtime {
 			"清理过期的 AI 调用日志和追踪数据"),
 	}))
 
-	registry.Register("aux_label_cleanup", scheduler.New(scheduler.Config{
+	registry.Register("aux_label_cleanup", psched.New(psched.Config{
 		Name:         "Aux Label Cleanup",
 		Description:  "Clean up auxiliary labels with no active topic_tag references",
 		Interval:     3600 * time.Second,
@@ -143,7 +145,7 @@ func StartRuntime() *Runtime {
 			"清理无活跃标签引用的辅助标签"),
 	}))
 
-	registry.Register("blocked_article_recovery", scheduler.New(scheduler.Config{
+	registry.Register("blocked_article_recovery", psched.New(psched.Config{
 		Name:        "Blocked Article Recovery",
 		Description: "Recover articles stuck in blocked state",
 		Interval:    3600 * time.Second,
@@ -155,7 +157,7 @@ func StartRuntime() *Runtime {
 	// Medium schedulers: with SchedulerTask DB persistence
 
 	// preference-vector-feed-discovery: 偏好向量画像重算（D1，零 LLM/embedding）。
-	registry.Register("preference_profile_update", scheduler.New(scheduler.Config{
+	registry.Register("preference_profile_update", psched.New(psched.Config{
 		Name:        "Preference Profile Update",
 		Description: "重算偏好向量画像（行为加权标签向量质心，按版块分桶）",
 		Interval:    3600 * time.Second,
@@ -165,7 +167,7 @@ func StartRuntime() *Runtime {
 	}))
 
 	// preference-vector-feed-discovery: RSSHub 路由目录同步（D2/D8，自建实例 /api/namespace）。
-	registry.Register("rsshub_catalog_sync", scheduler.New(scheduler.Config{
+	registry.Register("rsshub_catalog_sync", psched.New(psched.Config{
 		Name:        "RSSHub Catalog Sync",
 		Description: "同步 RSSHub 路由目录（自建实例 /api/namespace）",
 		Interval:    24 * time.Hour,
@@ -177,18 +179,18 @@ func StartRuntime() *Runtime {
 	// improve-discovery-recommendations 4.6：发现 v2 后台任务（可用性检查 / 向量回补 /
 	// 运行维护）。开关 ai_settings.discovery_v2 默认启用；关闭时不注册这三个任务
 	// （回滚边界：只停后台任务，ask/refresh 推荐主链与已发布推荐不受影响）。
-	registerDiscoveryV2Jobs(registry, admin.DiscoveryV2Enabled(database.DB))
+	registerDiscoveryV2Jobs(registry, discovery.LoadDiscoveryV2Enabled(database.DB))
 
-	registry.Register("tag_quality_score", scheduler.New(scheduler.Config{
+	registry.Register("tag_quality_score", psched.New(psched.Config{
 		Name:        "Tag Quality Score",
 		Description: "Recompute persistent quality scores for topic tags",
 		Interval:    3600 * time.Second,
-		Job:         scheduler.PauseAware(admin.TagQualityScoreJob),
+		Job:         psched.PauseAware(admin.TagQualityScoreJob),
 		Persistence: admin.NewTaskPersistence("tag_quality_score",
 			"Recompute persistent quality scores for topic tags"),
 	}))
 
-	registry.Register("auto_refresh", scheduler.New(scheduler.Config{
+	registry.Register("auto_refresh", psched.New(psched.Config{
 		Name:        "Auto Refresh",
 		Description: "Auto-refresh RSS feeds",
 		Interval:    60 * time.Second,
@@ -199,24 +201,24 @@ func StartRuntime() *Runtime {
 
 	// Complex schedulers
 	content.InitContentCompletionHandler()
-	registry.Register("content_completion", scheduler.New(scheduler.Config{
+	registry.Register("content_completion", psched.New(psched.Config{
 		Name:        "Content Completion",
 		Description: "Complete article content and generate article summaries",
 		TaskName:    "ai_summary",
 		Aliases:     []string{"ai_summary"},
 		Interval:    60 * time.Second,
-		Job:         scheduler.PauseAware(admin.ContentCompletionJob(content.GetContentCompletionService())),
+		Job:         psched.PauseAware(admin.ContentCompletionJob(content.GetContentCompletionService())),
 		Persistence: admin.NewTaskPersistence("ai_summary",
 			"Complete article content and generate article summaries"),
 	}))
 
 	// DailyReport: wrapped with TriggerNowWithDate support
 	dailyReportNextRunFn := scheduler.NextDailyReportTime
-	dailyReportBase := scheduler.New(scheduler.Config{
+	dailyReportBase := psched.New(psched.Config{
 		Name:        "Daily Report",
 		Description: "Generate daily reports for all active semantic boards",
 		NextRun:     dailyReportNextRunFn,
-		Job:         scheduler.PauseAware(admin.DailyReportJob()), // uses current time at each execution
+		Job:         psched.PauseAware(admin.DailyReportJob()), // uses current time at each execution
 		Persistence: admin.NewTaskPersistenceWithNextRun("daily_report",
 			"Generate daily reports for all active semantic boards",
 			dailyReportNextRunFn),
@@ -228,7 +230,7 @@ func StartRuntime() *Runtime {
 	// Loosely coupled fixed-time trigger (default 06:30), not chained to the
 	// daily report. Manual trigger via POST /upgrade-suggestions/generate.
 	boardUpgradeNextRunFn := scheduler.NextBoardUpgradeSuggestTime
-	registry.Register("relation_expire", scheduler.New(scheduler.Config{
+	registry.Register("relation_expire", psched.New(psched.Config{
 		Name:         "Cross-Board Relation Expire",
 		Description:  "Batch-mark expired confirmed cross-board relations",
 		Interval:     3600 * time.Second,
@@ -238,11 +240,11 @@ func StartRuntime() *Runtime {
 			"批量标记过期的已确认跨版块关系"),
 	}))
 
-	registry.Register("board_upgrade_suggest", scheduler.New(scheduler.Config{
+	registry.Register("board_upgrade_suggest", psched.New(psched.Config{
 		Name:        "Board Upgrade Suggest",
 		Description: "每日生成版块升级建议 + 观察池 watch GC",
 		NextRun:     boardUpgradeNextRunFn,
-		Job:         scheduler.PauseAware(admin.BoardUpgradeSuggestJob()),
+		Job:         psched.PauseAware(admin.BoardUpgradeSuggestJob()),
 		Persistence: admin.NewTaskPersistenceWithNextRun("board_upgrade_suggest",
 			"每日生成版块升级建议(discover_new)+观察池GC",
 			boardUpgradeNextRunFn),
@@ -252,7 +254,7 @@ func StartRuntime() *Runtime {
 	// D1）：正文抓取是纯抓取算力、零 LLM 调用，不受 analysis_paused/健康门管制，
 	// 与 auto_refresh 同列；下游 tag_jobs 照常入队，worker 暂停期间天然不消费。
 	firecrawlQueue := content.NewFirecrawlJobQueue(database.DB)
-	registry.Register("firecrawl", scheduler.New(scheduler.Config{
+	registry.Register("firecrawl", psched.New(psched.Config{
 		Name:         "Firecrawl Crawler",
 		Description:  "Auto-crawl full content for articles",
 		Interval:     300 * time.Second,
@@ -278,33 +280,33 @@ func StartRuntime() *Runtime {
 	// Registration stays commented for reference; existing week rows remain
 	// consumable via the situation-card chain.
 	_ = dataenrichment.NextWeeklyLifelineTime // keep helper referenced
-	// registry.Register("lifeline_weekly", scheduler.New(scheduler.Config{
+	// registry.Register("lifeline_weekly", psched.New(psched.Config{
 	// 	Name:        "Lifeline Weekly Refresh",
 	// 	Description: "每周一刷新所有活跃话题的周度新闻汇总（循环A，含历史回填）",
 	// 	NextRun:     dataenrichment.NextWeeklyLifelineTime,
-	// 	Job:         scheduler.PauseAware(dataenrichment.WeeklyLifelineJob(lifelineSvc, lister)),
+	// 	Job:         psched.PauseAware(dataenrichment.WeeklyLifelineJob(lifelineSvc, lister)),
 	// 	Persistence: admin.NewTaskPersistenceWithNextRun("lifeline_weekly",
 	// 		"每周一刷新所有活跃话题的周度新闻汇总上下文", dataenrichment.NextWeeklyLifelineTime),
 	// }))
 
 	// Monthly lifeline: every 1st of month 03:30 Asia/Shanghai.
 	monthlyNextRun := dataenrichment.NextMonthlyLifelineTime
-	registry.Register("lifeline_monthly", scheduler.New(scheduler.Config{
+	registry.Register("lifeline_monthly", psched.New(psched.Config{
 		Name:        "Lifeline Monthly Refresh",
 		Description: "每月1号刷新所有活跃话题的月度新闻汇总（循环A，含历史回填）",
 		NextRun:     monthlyNextRun,
-		Job:         scheduler.PauseAware(dataenrichment.MonthlyLifelineJob(lifelineSvc, lister)),
+		Job:         psched.PauseAware(dataenrichment.MonthlyLifelineJob(lifelineSvc, lister)),
 		Persistence: admin.NewTaskPersistenceWithNextRun("lifeline_monthly",
 			"每月1号刷新所有活跃话题的月度新闻汇总上下文", monthlyNextRun),
 	}))
 
 	// Yearly lifeline: every Jan 1 04:00 Asia/Shanghai.
 	yearlyNextRun := dataenrichment.NextYearlyLifelineTime
-	registry.Register("lifeline_yearly", scheduler.New(scheduler.Config{
+	registry.Register("lifeline_yearly", psched.New(psched.Config{
 		Name:        "Lifeline Yearly Refresh",
 		Description: "每年1月1号刷新所有活跃话题的年度新闻汇总（循环A，含历史回填）",
 		NextRun:     yearlyNextRun,
-		Job:         scheduler.PauseAware(dataenrichment.YearlyLifelineJob(lifelineSvc, lister)),
+		Job:         psched.PauseAware(dataenrichment.YearlyLifelineJob(lifelineSvc, lister)),
 		Persistence: admin.NewTaskPersistenceWithNextRun("lifeline_yearly",
 			"每年1月1号刷新所有活跃话题的年度新闻汇总上下文", yearlyNextRun),
 	}))
@@ -338,7 +340,7 @@ func registerDiscoveryV2Jobs(registry *admin.SchedulerRegistry, enabled bool) {
 		return
 	}
 
-	registry.Register("candidate_availability_check", scheduler.New(scheduler.Config{
+	registry.Register("candidate_availability_check", psched.New(psched.Config{
 		Name:         "Candidate Availability Check",
 		Description:  "周期检查候选实际端点可用性（维护类，不受分析暂停影响）",
 		Interval:     3600 * time.Second,
@@ -348,17 +350,17 @@ func registerDiscoveryV2Jobs(registry *admin.SchedulerRegistry, enabled bool) {
 			"周期检查候选实际端点可用性"),
 	}))
 
-	registry.Register("candidate_embedding_backfill", scheduler.New(scheduler.Config{
+	registry.Register("candidate_embedding_backfill", psched.New(psched.Config{
 		Name:         "Candidate Embedding Backfill",
 		Description:  "候选有效介绍向量增量回补（分析类，遵守 analysis_paused）",
 		Interval:     3600 * time.Second,
 		StartupDelay: 5 * time.Minute,
-		Job:          scheduler.PauseAware(admin.CandidateEmbeddingBackfillJob),
+		Job:          psched.PauseAware(admin.CandidateEmbeddingBackfillJob),
 		Persistence: admin.NewTaskPersistence("candidate_embedding_backfill",
 			"候选有效介绍向量增量回补"),
 	}))
 
-	registry.Register("discovery_run_maintenance", scheduler.New(scheduler.Config{
+	registry.Register("discovery_run_maintenance", psched.New(psched.Config{
 		Name:         "Discovery Run Maintenance",
 		Description:  "把卡死 running 超过 1 小时的发现运行置 failed（维护类）",
 		Interval:     3600 * time.Second,

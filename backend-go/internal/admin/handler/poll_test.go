@@ -10,8 +10,8 @@ import (
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/testutil"
-	tagmanrepo "syntopica-backend/internal/tagmanagement/repository"
 	tagqueue "syntopica-backend/internal/tagmanagement/handler"
+	tagmanrepo "syntopica-backend/internal/tagmanagement/repository"
 )
 
 // setupPollTestDB wires an isolated Postgres (testcontainers) schema into

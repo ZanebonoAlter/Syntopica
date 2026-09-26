@@ -9,6 +9,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 // seedDupAuxLabels creates three active auxiliary labels that all normalize to
@@ -47,7 +48,7 @@ func seedDupAuxLabels(t *testing.T, db *gorm.DB) (primaryA, secondaryB, secondar
 
 	// topic_tag_semantic_labels references (these drive ref_count recount).
 	//   primaryA <- t1 ; secondaryB <- t2,t3 ; secondaryC <- t4
-	refs := []models.TopicTagSemanticLabel{
+	refs := []tagmodels.TopicTagSemanticLabel{
 		{TopicTagID: topics[0].ID, SemanticLabelID: primaryA.ID},
 		{TopicTagID: topics[1].ID, SemanticLabelID: secondaryB.ID},
 		{TopicTagID: topics[2].ID, SemanticLabelID: secondaryB.ID},
@@ -59,7 +60,7 @@ func seedDupAuxLabels(t *testing.T, db *gorm.DB) (primaryA, secondaryB, secondar
 
 	// board_composition references:
 	//   board1 <- primaryA, secondaryB ; board2 <- secondaryB
-	comps := []models.BoardComposition{
+	comps := []tagmodels.BoardComposition{
 		{BoardID: board1.ID, AuxiliaryLabelID: primaryA.ID},
 		{BoardID: board1.ID, AuxiliaryLabelID: secondaryB.ID},
 		{BoardID: board2.ID, AuxiliaryLabelID: secondaryB.ID},
@@ -97,20 +98,20 @@ func TestAuxLabelDupMergeMergesTextVariants(t *testing.T) {
 
 	// No topic_tag_semantic_labels reference the secondaries anymore.
 	var bLinks, cLinks int64
-	require.NoError(t, db.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", secondaryB.ID).Count(&bLinks).Error)
-	require.NoError(t, db.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", secondaryC.ID).Count(&cLinks).Error)
+	require.NoError(t, db.Model(&tagmodels.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", secondaryB.ID).Count(&bLinks).Error)
+	require.NoError(t, db.Model(&tagmodels.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", secondaryC.ID).Count(&cLinks).Error)
 	require.Zero(t, bLinks, "no topic_tag links should reference secondary B")
 	require.Zero(t, cLinks, "no topic_tag links should reference secondary C")
 
 	// 4 distinct topic_tags now reference primaryA.
 	var aLinks int64
-	require.NoError(t, db.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", primaryA.ID).Count(&aLinks).Error)
+	require.NoError(t, db.Model(&tagmodels.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", primaryA.ID).Count(&aLinks).Error)
 	require.Equal(t, int64(4), aLinks)
 
 	// No board_composition references the secondaries.
 	var bComps, cComps int64
-	require.NoError(t, db.Model(&models.BoardComposition{}).Where("auxiliary_label_id = ?", secondaryB.ID).Count(&bComps).Error)
-	require.NoError(t, db.Model(&models.BoardComposition{}).Where("auxiliary_label_id = ?", secondaryC.ID).Count(&cComps).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).Where("auxiliary_label_id = ?", secondaryB.ID).Count(&bComps).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).Where("auxiliary_label_id = ?", secondaryC.ID).Count(&cComps).Error)
 	require.Zero(t, bComps, "no board_composition should reference secondary B")
 	require.Zero(t, cComps, "no board_composition should reference secondary C")
 
@@ -147,7 +148,7 @@ func TestAuxLabelDupMergeIdempotent(t *testing.T) {
 
 	// Still no dangling references to secondaries.
 	var dangling int64
-	require.NoError(t, db.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id IN ?", []uint{secondaryB.ID, secondaryC.ID}).Count(&dangling).Error)
+	require.NoError(t, db.Model(&tagmodels.TopicTagSemanticLabel{}).Where("semantic_label_id IN ?", []uint{secondaryB.ID, secondaryC.ID}).Count(&dangling).Error)
 	require.Zero(t, dangling)
 }
 

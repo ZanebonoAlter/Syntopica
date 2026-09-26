@@ -10,6 +10,7 @@ import (
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -39,10 +40,10 @@ func NewMergeReembeddingQueueService(logger *zap.Logger) *MergeReembeddingQueueS
 
 func (s *MergeReembeddingQueueService) Enqueue(sourceTagID, targetTagID uint) error {
 	var activeCount int64
-	err := s.db.Model(&models.MergeReembeddingQueue{}).
+	err := s.db.Model(&tagmodels.MergeReembeddingQueue{}).
 		Where("target_tag_id = ? AND status IN ?", targetTagID, []string{
-			models.MergeReembeddingQueueStatusPending,
-			models.MergeReembeddingQueueStatusProcessing,
+			tagmodels.MergeReembeddingQueueStatusPending,
+			tagmodels.MergeReembeddingQueueStatusProcessing,
 		}).
 		Count(&activeCount).Error
 	if err != nil {
@@ -52,10 +53,10 @@ func (s *MergeReembeddingQueueService) Enqueue(sourceTagID, targetTagID uint) er
 		return nil
 	}
 
-	task := models.MergeReembeddingQueue{
+	task := tagmodels.MergeReembeddingQueue{
 		SourceTagID: sourceTagID,
 		TargetTagID: targetTagID,
-		Status:      models.MergeReembeddingQueueStatusPending,
+		Status:      tagmodels.MergeReembeddingQueueStatusPending,
 	}
 
 	return s.db.Create(&task).Error
@@ -68,7 +69,7 @@ func (s *MergeReembeddingQueueService) GetStatus() (map[string]int64, error) {
 	}
 
 	var rows []statusRow
-	err := s.db.Model(&models.MergeReembeddingQueue{}).
+	err := s.db.Model(&tagmodels.MergeReembeddingQueue{}).
 		Select("status, count(*) as count").
 		Group("status").
 		Scan(&rows).Error
@@ -94,8 +95,8 @@ func (s *MergeReembeddingQueueService) GetStatus() (map[string]int64, error) {
 	return result, nil
 }
 
-func (s *MergeReembeddingQueueService) GetTasks(status string, limit, offset int) ([]models.MergeReembeddingQueue, int64, error) {
-	query := s.db.Model(&models.MergeReembeddingQueue{})
+func (s *MergeReembeddingQueueService) GetTasks(status string, limit, offset int) ([]tagmodels.MergeReembeddingQueue, int64, error) {
+	query := s.db.Model(&tagmodels.MergeReembeddingQueue{})
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -105,7 +106,7 @@ func (s *MergeReembeddingQueueService) GetTasks(status string, limit, offset int
 		return nil, 0, err
 	}
 
-	var tasks []models.MergeReembeddingQueue
+	var tasks []tagmodels.MergeReembeddingQueue
 	err := query.
 		Preload("SourceTag").
 		Preload("TargetTag").
@@ -121,10 +122,10 @@ func (s *MergeReembeddingQueueService) GetTasks(status string, limit, offset int
 }
 
 func (s *MergeReembeddingQueueService) RetryFailed() (int64, error) {
-	result := s.db.Model(&models.MergeReembeddingQueue{}).
-		Where("status = ?", models.MergeReembeddingQueueStatusFailed).
+	result := s.db.Model(&tagmodels.MergeReembeddingQueue{}).
+		Where("status = ?", tagmodels.MergeReembeddingQueueStatusFailed).
 		Updates(map[string]interface{}{
-			"status":        models.MergeReembeddingQueueStatusPending,
+			"status":        tagmodels.MergeReembeddingQueueStatusPending,
 			"error_message": "",
 			"started_at":    nil,
 			"completed_at":  nil,
@@ -144,10 +145,10 @@ func (s *MergeReembeddingQueueService) Start() {
 	}
 	s.mu.Unlock()
 
-	result := s.db.Model(&models.MergeReembeddingQueue{}).
-		Where("status = ?", models.MergeReembeddingQueueStatusProcessing).
+	result := s.db.Model(&tagmodels.MergeReembeddingQueue{}).
+		Where("status = ?", tagmodels.MergeReembeddingQueueStatusProcessing).
 		Updates(map[string]interface{}{
-			"status":     models.MergeReembeddingQueueStatusPending,
+			"status":     tagmodels.MergeReembeddingQueueStatusPending,
 			"started_at": nil,
 		})
 	if result.Error != nil {
@@ -207,10 +208,10 @@ func (s *MergeReembeddingQueueService) worker() {
 }
 
 func (s *MergeReembeddingQueueService) processNext() {
-	var tasks []models.MergeReembeddingQueue
+	var tasks []tagmodels.MergeReembeddingQueue
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("status = ?", models.MergeReembeddingQueueStatusPending).
+		if err := tx.Where("status = ?", tagmodels.MergeReembeddingQueueStatusPending).
 			Order("created_at ASC").
 			Limit(1).
 			Find(&tasks).Error; err != nil {
@@ -221,10 +222,10 @@ func (s *MergeReembeddingQueueService) processNext() {
 		}
 
 		now := time.Now()
-		result := tx.Model(&models.MergeReembeddingQueue{}).
-			Where("id = ? AND status = ?", tasks[0].ID, models.MergeReembeddingQueueStatusPending).
+		result := tx.Model(&tagmodels.MergeReembeddingQueue{}).
+			Where("id = ? AND status = ?", tasks[0].ID, tagmodels.MergeReembeddingQueueStatusPending).
 			Updates(map[string]interface{}{
-				"status":     models.MergeReembeddingQueueStatusProcessing,
+				"status":     tagmodels.MergeReembeddingQueueStatusProcessing,
 				"started_at": now,
 			})
 		if result.Error != nil {
@@ -282,10 +283,10 @@ func (s *MergeReembeddingQueueService) processNext() {
 	}
 
 	now := time.Now()
-	if err := s.db.Model(&models.MergeReembeddingQueue{}).
+	if err := s.db.Model(&tagmodels.MergeReembeddingQueue{}).
 		Where("id = ?", task.ID).
 		Updates(map[string]interface{}{
-			"status":       models.MergeReembeddingQueueStatusCompleted,
+			"status":       tagmodels.MergeReembeddingQueueStatusCompleted,
 			"completed_at": now,
 		}).Error; err != nil {
 		s.logger.Error("failed to mark merge re-embedding task completed", zap.Uint("task_id", task.ID), zap.Error(err))
@@ -297,10 +298,10 @@ func (s *MergeReembeddingQueueService) processNext() {
 
 func (s *MergeReembeddingQueueService) markFailed(taskID uint, errMsg string) {
 	now := time.Now()
-	if err := s.db.Model(&models.MergeReembeddingQueue{}).
+	if err := s.db.Model(&tagmodels.MergeReembeddingQueue{}).
 		Where("id = ?", taskID).
 		Updates(map[string]interface{}{
-			"status":        models.MergeReembeddingQueueStatusFailed,
+			"status":        tagmodels.MergeReembeddingQueueStatusFailed,
 			"error_message": errMsg,
 			"completed_at":  now,
 			"retry_count":   gorm.Expr("retry_count + 1"),

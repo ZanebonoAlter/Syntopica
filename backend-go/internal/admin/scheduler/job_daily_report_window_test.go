@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/scheduler"
 	topicgraphrepo "syntopica-backend/internal/topicgraph/repository"
 )
 
@@ -141,9 +142,9 @@ func TestDailyReportWindow_ExistingReportSkipsGeneration(t *testing.T) {
 // TestDailyReportWindow_ManualTriggerDuringWaitReturns409（D5）：等待循环持有
 // isExecuting 期间手动 TriggerNowWithDate 命中 409 重入保护（既有同 job 不并发）。
 func TestDailyReportWindow_ManualTriggerDuringWaitReturns409(t *testing.T) {
-	base := New(Config{
+	base := scheduler.New(scheduler.Config{
 		Name: "Daily Report",
-		Job: func(ctx context.Context) (*JobResult, error) { return nil, nil },
+		Job:  func(ctx context.Context) (*scheduler.JobResult, error) { return nil, nil },
 	})
 	wrapper := NewDailyReportSchedulerWrapper(base)
 

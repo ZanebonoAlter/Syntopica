@@ -47,7 +47,7 @@
 - `registry.StartAll()`：启动所有已注册调度器
 - `registry.StopAll()`：停止所有已注册调度器
 
-调度器通过 `internal/admin/scheduler` 包的工厂模式创建，每个调度器只需一个 `JobFunc` 函数 + 一行注册代码。
+调度器框架位于 `internal/platform/scheduler`（`BaseScheduler` 工厂 + `Registry` + `PauseAware`，decouple-backend-domains 迁自 `admin/scheduler`），每个调度器只需一个 `JobFunc` 函数 + 一行注册代码；具体 job 定义（`job_*.go`）留在 `internal/admin/scheduler` 等域内编排。
 
 ## 启动参数与默认值
 
@@ -222,7 +222,7 @@
 1. `backend-go/cmd/server/main.go`
 2. `backend-go/internal/app/router.go`
 3. `backend-go/internal/app/runtime.go`
-4. `backend-go/internal/admin/scheduler/base.go`
-5. `backend-go/internal/admin/scheduler/registry.go`
-6. `backend-go/internal/admin/scheduler/job_*.go`
+4. `backend-go/internal/platform/scheduler/base.go`（调度器框架）
+5. `backend-go/internal/platform/scheduler/registry.go`
+6. `backend-go/internal/admin/scheduler/job_*.go`（域内 job 定义，import platform/scheduler）
 再回到 `docs/reference/architecture/backend.md` 看业务分层，会比较容易把“启动装配”和“业务链路”对上。

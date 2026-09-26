@@ -7,6 +7,7 @@ import (
 	"syntopica-backend/internal/admin"
 	"syntopica-backend/internal/dataenrichment"
 	wiring "syntopica-backend/internal/datasources/wiring"
+	"syntopica-backend/internal/discovery"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/imageproxy"
 	"syntopica-backend/internal/platform/logging"
@@ -53,6 +54,7 @@ func SetupRoutes(r *gin.Engine) {
 		reader.RegisterRoutes(api)
 		topicgraph.RegisterRoutes(api)
 		admin.RegisterRoutes(api)
+		discovery.RegisterRoutes(api)
 		imageproxy.RegisterRoutes(api)
 
 		tagmanagement.RegisterRoutes(api)

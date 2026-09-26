@@ -13,6 +13,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service/auxlabel"
 )
@@ -226,7 +227,7 @@ func (s *SemanticBoardMatchingService) loadAllCompositeSets(ctx context.Context)
 	if cached, ok := s.cache.GetAllCompositeSets(); ok {
 		return cached, nil
 	}
-	var rows []models.CompositeComponent
+	var rows []tagmodels.CompositeComponent
 	if err := s.db.WithContext(ctx).
 		Joins("JOIN semantic_labels ON semantic_labels.id = composite_components.composite_id AND semantic_labels.label_type = ? AND semantic_labels.status = ?", "composite", "active").
 		Order("composite_id, position").
@@ -264,7 +265,7 @@ func (s *SemanticBoardMatchingService) loadBoardComposites(ctx context.Context) 
 }
 
 func (s *SemanticBoardMatchingService) LoadTagIdentityEmbedding(ctx context.Context, topicTagID uint) ([]float64, error) {
-	var emb models.TopicTagEmbedding
+	var emb tagmodels.TopicTagEmbedding
 	err := s.db.WithContext(ctx).
 		Where("topic_tag_id = ? AND embedding_type = ?", topicTagID, "identity").
 		First(&emb).Error
@@ -631,11 +632,11 @@ func scoreSemanticBoardSimilarity(tagVectors [][]float64, boardVectors [][]float
 
 func (s *SemanticBoardMatchingService) replaceTopicTagBoardLabels(ctx context.Context, topicTagID uint, matches []SemanticBoardMatchResult) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("topic_tag_id = ?", topicTagID).Delete(&models.TopicTagBoardLabel{}).Error; err != nil {
+		if err := tx.Where("topic_tag_id = ?", topicTagID).Delete(&tagmodels.TopicTagBoardLabel{}).Error; err != nil {
 			return err
 		}
 		for _, match := range matches {
-			row := models.TopicTagBoardLabel{TopicTagID: topicTagID, SemanticBoardID: match.SemanticBoardID, Score: match.Score, MatchReason: match.MatchReason, Downgraded: match.Downgraded, DirectionMismatch: match.DirectionMismatch}
+			row := tagmodels.TopicTagBoardLabel{TopicTagID: topicTagID, SemanticBoardID: match.SemanticBoardID, Score: match.Score, MatchReason: match.MatchReason, Downgraded: match.Downgraded, DirectionMismatch: match.DirectionMismatch}
 			if err := tx.Create(&row).Error; err != nil {
 				return err
 			}

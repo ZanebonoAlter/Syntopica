@@ -13,10 +13,10 @@ import (
 	"syntopica-backend/internal/platform/articlerefs"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/notification"
+	"syntopica-backend/internal/platform/scheduler"
 	"syntopica-backend/internal/platform/ws"
 	tagging "syntopica-backend/internal/tagmanagement"
 	daily_report "syntopica-backend/internal/topicgraph"
-	topicgraphrepo "syntopica-backend/internal/topicgraph/repository"
 )
 
 // generateAndSaveReport is the daily report generation entry point used by both
@@ -64,7 +64,7 @@ var (
 	dailyReportQueueDrained = countQueuesDrained
 	// dailyReportExistsForDate 当日任意版面已有报告（单版完整制幂等判定）。
 	dailyReportExistsForDate = func(date time.Time) (bool, error) {
-		return topicgraphrepo.Repo.ReportExistsForDate(date)
+		return daily_report.Repo.ReportExistsForDate(date)
 	}
 	// dailyReportDeadlineFn 兜底时刻解析（每次现读配置，更新即时生效）。
 	dailyReportDeadlineFn = func(now time.Time) time.Time {
@@ -201,8 +201,8 @@ func NextDailyReportTime(now time.Time) time.Time {
 // today's report absent, both queues drained, or the fallback deadline
 // reached. A manual TriggerNowWithDate is a deliberate single-date rebuild
 // and keeps the existing run-immediately semantics.
-func DailyReportJob(targetDate ...time.Time) JobFunc {
-	return func(ctx context.Context) (*JobResult, error) {
+func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
+	return func(ctx context.Context) (*scheduler.JobResult, error) {
 		startTime := time.Now()
 
 		date := time.Now().In(time.Local)
@@ -216,7 +216,7 @@ func DailyReportJob(targetDate ...time.Time) JobFunc {
 		// 保护（既有同 job 不并发语义）。
 		if len(targetDate) == 0 {
 			if skip := waitForDailyReportWindow(ctx, date); skip != "" {
-				return &JobResult{
+				return &scheduler.JobResult{
 					Data:    map[string]interface{}{"skipped": skip},
 					Summary: fmt.Sprintf("daily report skipped: %s", skip),
 				}, nil
@@ -304,7 +304,7 @@ func DailyReportJob(targetDate ...time.Time) JobFunc {
 			logging.Infof("daily-report: dangling article refs=0")
 		}
 
-		return &JobResult{
+		return &scheduler.JobResult{
 			Data:    resultData,
 			Summary: summary,
 		}, nil
@@ -373,7 +373,7 @@ func backfillMissingReports(ctx context.Context, today time.Time) (int, map[stri
 			continue
 		}
 		for _, boardID := range boardIDs {
-			exists, existsErr := topicgraphrepo.Repo.ReportExistsForBoardDate(boardID, day)
+			exists, existsErr := daily_report.Repo.ReportExistsForBoardDate(boardID, day)
 			if existsErr != nil {
 				logging.Warnf("daily-report: backfill existence check failed for board %d on %s: %v",
 					boardID, day.Format("2006-01-02"), existsErr)
@@ -425,15 +425,15 @@ func countUnfinishedTagJobs() (pending, leased, failed int64, err error) {
 	return pending, leased, failed, nil
 }
 
-// DailyReportSchedulerWrapper wraps BaseScheduler to add TriggerNowWithDate.
+// DailyReportSchedulerWrapper wraps scheduler.BaseScheduler to add TriggerNowWithDate.
 type DailyReportSchedulerWrapper struct {
-	*BaseScheduler
+	*scheduler.BaseScheduler
 	targetDateFn func() time.Time // default target date (today), overridable
 }
 
 // NewDailyReportSchedulerWrapper creates a DailyReportSchedulerWrapper that
-// embeds BaseScheduler and adds TriggerNowWithDate support.
-func NewDailyReportSchedulerWrapper(bs *BaseScheduler) *DailyReportSchedulerWrapper {
+// embeds scheduler.BaseScheduler and adds TriggerNowWithDate support.
+func NewDailyReportSchedulerWrapper(bs *scheduler.BaseScheduler) *DailyReportSchedulerWrapper {
 	return &DailyReportSchedulerWrapper{
 		BaseScheduler: bs,
 		targetDateFn:  func() time.Time { return time.Now().In(time.Local) },

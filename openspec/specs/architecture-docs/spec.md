@@ -17,12 +17,12 @@ The `architecture/backend.md` document SHALL reflect the actual `backend-go/` di
 
 #### Scenario: internal directory matches code
 - **WHEN** a developer reads the directory tree in `architecture/backend.md`
-- **THEN** the `internal/` tree SHALL match `backend-go/internal/` (including `admin/`, `reader/`, `tagmanagement/`, `topicgraph/`, `platform/`, `models/`, `app/`)
+- **THEN** the `internal/` tree SHALL match `backend-go/internal/`（含 `admin/`、`discovery/`、`reader/`、`tagmanagement/`、`topicgraph/`、`dataenrichment/`、`datasources/`、`platform/`、`models/`、`app/`；各业务域含自己的 `models/` 子包）
 - **AND** SHALL NOT reference deleted directories (`internal/domain/`, `internal/jobs/`, `internal/app/runtimeinfo/`)
 
 #### Scenario: platform subpackages match code
 - **WHEN** a developer reads the `internal/platform/` section
-- **THEN** the listed subpackages SHALL match `ls backend-go/internal/platform/` (`airouter`, `aisettings`, `config`, `database`, `jsonutil`, `logging`, `middleware`, `testutil`, `tracing`, `ws`)
+- **THEN** the listed subpackages SHALL match `ls backend-go/internal/platform/`（decouple-backend-domains 后含 `scheduler/` 调度器框架子包，完整清单以 `ls` 实际输出为准）
 - **AND** SHALL NOT list `ai/` or `opennotebook/` (neither exists)
 
 ### Requirement: backend.md SHALL use correct tech stack
@@ -36,7 +36,7 @@ The `architecture/backend.md` document SHALL describe the actual technology stac
 #### Scenario: No reference to removed cron dependency
 - **WHEN** a developer reads the "技术栈" section
 - **THEN** the document SHALL NOT list `robfig/cron` (not present in `go.mod` or source imports)
-- **AND** SHALL describe scheduled tasks as driven by `internal/admin/scheduler` (BaseScheduler factory + Interval)
+- **AND** SHALL describe the scheduler framework (BaseScheduler factory + JobFunc + Interval) as located in `internal/platform/scheduler`, with domain job definitions (`job_*.go`) remaining in `internal/admin/scheduler`
 
 ### Requirement: backend.md SHALL list all registered schedulers
 
@@ -91,7 +91,7 @@ The `architecture/overview.md` document SHALL state the correct number of regist
 
 ### Requirement: runtime.md SHALL describe the SchedulerRegistry pattern
 
-The `architecture/runtime.md` document SHALL describe runtime state sharing via the `SchedulerRegistry` as implemented in `internal/app/runtime.go`, not the removed `runtimeinfo` global Interface pattern.
+The `architecture/runtime.md` document SHALL describe runtime state sharing via the `SchedulerRegistry`——框架（registry/base/persistence）位于 `internal/platform/scheduler`（decouple-backend-domains 迁自 admin/scheduler），注册发生在 `internal/app/runtime.go` 的 `StartRuntime()`——not the removed `runtimeinfo` global Interface pattern.
 
 #### Scenario: No references to removed runtimeinfo interfaces
 - **WHEN** a developer reads `architecture/runtime.md`

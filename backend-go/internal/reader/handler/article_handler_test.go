@@ -20,6 +20,7 @@ import (
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/reader/repository"
 	tagging "syntopica-backend/internal/tagmanagement"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 func setupArticlesHandlerTestDB(t *testing.T) {
@@ -247,7 +248,7 @@ func TestRetagArticleWithExistingLeasedJob(t *testing.T) {
 
 func TestGetArticles_Projection(t *testing.T) {
 	setupArticlesHandlerTestDB(t)
-	require.NoError(t, database.DB.AutoMigrate(&models.TopicTagRelation{}, &models.TopicTagBoardLabel{}, &models.TopicTagSemanticLabel{}))
+	require.NoError(t, database.DB.AutoMigrate(&models.TopicTagRelation{}, &tagmodels.TopicTagBoardLabel{}, &tagmodels.TopicTagSemanticLabel{}))
 	gin.SetMode(gin.TestMode)
 
 	category := models.Category{Name: "Projection", Slug: "projection", Color: "#3b6b87", Icon: "mdi:brain"}
@@ -289,8 +290,8 @@ func TestGetArticles_Projection(t *testing.T) {
 
 	boardID := uint(7)
 	auxLabelID := uint(9)
-	require.NoError(t, database.DB.Create(&models.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: boardID}).Error)
-	require.NoError(t, database.DB.Create(&models.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxLabelID}).Error)
+	require.NoError(t, database.DB.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: boardID}).Error)
+	require.NoError(t, database.DB.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxLabelID}).Error)
 
 	expectedKeys := map[string]struct{}{
 		"id": {}, "feed_id": {}, "category_id": {}, "title": {}, "link": {}, "image_url": {},

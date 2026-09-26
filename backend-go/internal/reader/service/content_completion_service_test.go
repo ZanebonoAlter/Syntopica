@@ -15,6 +15,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/scheduler"
 	"syntopica-backend/internal/reader/repository"
 )
 
@@ -31,7 +32,7 @@ func setupServicesTestDB(t *testing.T) {
 	if err := database.DB.AutoMigrate(&models.TopicTag{}, &models.ArticleTopicTag{}, &models.TagJob{}, &models.FirecrawlJob{}); err != nil {
 		t.Fatalf("migrate topic tag tables: %v", err)
 	}
-	if err := database.DB.AutoMigrate(&models.Feed{}, &models.Article{}, &models.SchedulerTask{}, &models.AIProvider{}, &models.AIRoute{}, &models.AIRouteProvider{}, &models.AICallLog{}); err != nil {
+	if err := database.DB.AutoMigrate(&models.Feed{}, &models.Article{}, &scheduler.SchedulerTask{}, &models.AIProvider{}, &models.AIRoute{}, &models.AIRouteProvider{}, &models.AICallLog{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 }

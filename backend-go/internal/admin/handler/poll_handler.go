@@ -6,7 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"syntopica-backend/internal/platform/notification"
-	tagqueue "syntopica-backend/internal/tagmanagement/handler"
+	tagging "syntopica-backend/internal/tagmanagement"
 )
 
 // GetPollBundle handles GET /api/poll — the single reconciliation endpoint for
@@ -30,7 +30,7 @@ func GetPollBundle(c *gin.Context) {
 		}
 	}
 
-	queue, err := tagqueue.TagQueueStatusSnapshot()
+	queue, err := tagging.TagQueueStatusSnapshot()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return

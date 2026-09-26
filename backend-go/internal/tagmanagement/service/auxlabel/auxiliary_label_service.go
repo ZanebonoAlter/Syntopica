@@ -12,6 +12,7 @@ import (
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/textutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/service/core"
 
 	"gorm.io/gorm"
@@ -163,7 +164,7 @@ func (s *AuxiliaryLabelService) AttachAuxiliaryLabels(ctx context.Context, topic
 			if err != nil {
 				return err
 			}
-			link := models.TopicTagSemanticLabel{TopicTagID: topicTagID, SemanticLabelID: label.ID}
+			link := tagmodels.TopicTagSemanticLabel{TopicTagID: topicTagID, SemanticLabelID: label.ID}
 			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&link)
 			if res.Error != nil {
 				return res.Error
@@ -300,26 +301,26 @@ func (s *AuxiliaryLabelService) MergeAuxiliaryLabelAlias(ctx context.Context, so
 			return err
 		}
 
-		var links []models.TopicTagSemanticLabel
+		var links []tagmodels.TopicTagSemanticLabel
 		if err := tx.Where("semantic_label_id = ?", sourceID).Find(&links).Error; err != nil {
 			return err
 		}
 		for _, link := range links {
-			migrated := models.TopicTagSemanticLabel{TopicTagID: link.TopicTagID, SemanticLabelID: targetID}
+			migrated := tagmodels.TopicTagSemanticLabel{TopicTagID: link.TopicTagID, SemanticLabelID: targetID}
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&migrated).Error; err != nil {
 				return err
 			}
 		}
-		if err := tx.Where("semantic_label_id = ?", sourceID).Delete(&models.TopicTagSemanticLabel{}).Error; err != nil {
+		if err := tx.Where("semantic_label_id = ?", sourceID).Delete(&tagmodels.TopicTagSemanticLabel{}).Error; err != nil {
 			return err
 		}
 
 		var targetRefCount int64
-		if err := tx.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", targetID).Count(&targetRefCount).Error; err != nil {
+		if err := tx.Model(&tagmodels.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", targetID).Count(&targetRefCount).Error; err != nil {
 			return err
 		}
 		var sourceRefCount int64
-		if err := tx.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", sourceID).Count(&sourceRefCount).Error; err != nil {
+		if err := tx.Model(&tagmodels.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", sourceID).Count(&sourceRefCount).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&models.SemanticLabel{}).Where("id = ?", targetID).Update("ref_count", int(targetRefCount)).Error; err != nil {
@@ -344,7 +345,7 @@ func (s *AuxiliaryLabelService) RemoveBoardComposition(ctx context.Context, boar
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("board_id = ? AND auxiliary_label_id = ?", boardID, auxiliaryLabelID).
-			Delete(&models.BoardComposition{}).Error; err != nil {
+			Delete(&tagmodels.BoardComposition{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Exec(
@@ -371,7 +372,7 @@ func (s *AuxiliaryLabelService) RecountRefs(ctx context.Context, ids []uint) err
 	}
 	for _, id := range ids {
 		var count int64
-		if err := s.db.WithContext(ctx).Model(&models.TopicTagSemanticLabel{}).
+		if err := s.db.WithContext(ctx).Model(&tagmodels.TopicTagSemanticLabel{}).
 			Where("semantic_label_id = ?", id).Count(&count).Error; err != nil {
 			return fmt.Errorf("recount refs for semantic_label %d: %w", id, err)
 		}
@@ -491,7 +492,7 @@ func (s *AuxiliaryLabelService) gcCleanup(ctx context.Context, req AuxLabelGCReq
 	if req.Mode == AuxLabelGCModeDisable {
 		// Delete board_composition rows referencing these labels
 		if err := s.db.WithContext(ctx).Where("auxiliary_label_id IN ?", ids).
-			Delete(&models.BoardComposition{}).Error; err != nil {
+			Delete(&tagmodels.BoardComposition{}).Error; err != nil {
 			return nil, fmt.Errorf("delete board_composition: %w", err)
 		}
 		// Soft-delete: update status to disabled (vectors dropped — re-enable regenerates)

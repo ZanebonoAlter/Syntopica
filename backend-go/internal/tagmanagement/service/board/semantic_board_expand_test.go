@@ -10,6 +10,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/service/auxlabel"
 	"syntopica-backend/internal/tagmanagement/service/core"
 )
@@ -69,7 +70,7 @@ func TestRecallExpandAuxCandidatesDaysCooccurWindow(t *testing.T) {
 	board := createUpgradeLabel(t, db, "美债CW", "us-treasury-cw", "board", "active", 0, []float64{1, 0, 0})
 	// 构成标签正交向量：不进相似路，隔离共现路。
 	boardAux := createUpgradeLabel(t, db, "美国国债CW", "us-treasury-aux-cw", "auxiliary", "active", 2, []float64{0, 1, 0})
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
 	// 共现 aux：2 篇 1 天前 + 3 篇 5 天前（ExpandCooccurrence 默认阈值 3）。
 	coAux := createUpgradeLabel(t, db, "国债期货CW", "treasury-futures-cw", "auxiliary", "active", 6, []float64{0, 1, 0})
 	tag := createComposeEventTag(t, db, "cw-event", boardAux.ID, coAux.ID)
@@ -97,7 +98,7 @@ func TestGenerateExpandComposeDaysWindow(t *testing.T) {
 	board := createUpgradeLabel(t, db, "美债DW", "us-treasury-dw", "board", "active", 0, []float64{1, 0, 0})
 	boardAux := createUpgradeLabel(t, db, "美国国债DW", "us-treasury-aux-dw", "auxiliary", "active", 8, []float64{1, 0, 0})
 	yieldAux := createUpgradeLabel(t, db, "收益率DW", "yield-dw", "auxiliary", "active", 6, []float64{0.9, 0.4358898943, 0})
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
 	// 共现对 11 篇全部在 5 天前（CompositeCoTagMinCooccurrence 默认 10）：
 	// 30 天窗口达标、3 天窗口不够。
 	tag := createComposeEventTag(t, db, "dw-event", boardAux.ID, yieldAux.ID)
@@ -131,7 +132,7 @@ func TestRecallExpandAuxCandidatesSimAndCooccur(t *testing.T) {
 	// 版块「美债」：embedding 沿 (1,0,0)，构成标签 seed。
 	board := createUpgradeLabel(t, db, "美债", "us-treasury", "board", "active", 0, []float64{1, 0, 0})
 	boardAux := createUpgradeLabel(t, db, "美国国债", "us-treasury-aux", "auxiliary", "active", 2, []float64{1, 0, 0})
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
 	// 相似路命中：距离 0.2 ≤ 默认 0.35。
 	near := createUpgradeLabel(t, db, "美债拍卖", "us-treasury-auction", "auxiliary", "active", 8, []float64{0.9, 0.4358898943, 0})
 	// 相似路未命中：正交向量距离 1.0。
@@ -206,9 +207,9 @@ func TestGenerateExpandSuggestionsMergeBinary(t *testing.T) {
 	require.NoError(t, db.Model(&models.SemanticLabel{}).Where("id = ?", board.ID).Update("description", "美国国债相关主题").Error)
 	boardAux := createUpgradeLabel(t, db, "美国国债", "us-treasury-aux-b", "auxiliary", "active", 2, []float64{1, 0, 0})
 	compositeComp := createUpgradeLabel(t, db, "组合件", "comp-x", "auxiliary", "active", 2, []float64{1, 0, 0})
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
 	composite := createUpgradeLabel(t, db, "美债收益率组合", "us-treasury-comp", "composite", "active", 0, nil)
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: composite.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: composite.ID}).Error)
 	_ = compositeComp
 	topic := createUpgradePersistentTopic(t, db, board.ID, "active")
 	report := createUpgradeBoardDailyReport(t, db, board.ID, daysAgo(1))
@@ -241,7 +242,7 @@ func TestGenerateExpandSuggestionsComposeTarget(t *testing.T) {
 	board := createUpgradeLabel(t, db, "美债", "us-treasury-c", "board", "active", 0, []float64{1, 0, 0})
 	boardAux := createUpgradeLabel(t, db, "美国国债", "us-treasury-aux-c", "auxiliary", "active", 8, []float64{1, 0, 0})
 	yieldAux := createUpgradeLabel(t, db, "收益率", "yield-c", "auxiliary", "active", 6, []float64{0.9, 0.4358898943, 0})
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
 	// 相关共现对：美国国债（构成内）× 收益率，共现 ≥10。
 	tag := createComposeEventTag(t, db, "ex-compose-event", boardAux.ID, yieldAux.ID)
 	createComposeArticles(t, db, 12, 0, tag.ID)
@@ -331,7 +332,7 @@ func TestConfirmComposeSuggestionMountsToTargetBoard(t *testing.T) {
 	require.NotNil(t, result.CompositeLabelID)
 
 	var count int64
-	require.NoError(t, db.Model(&models.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", board.ID, *result.CompositeLabelID).Count(&count).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", board.ID, *result.CompositeLabelID).Count(&count).Error)
 	require.Equal(t, int64(1), count, "组合标签挂载进目标版块 board_composition")
 }
 

@@ -52,54 +52,10 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		readingBehavior.GET("/stats", GetReadingStats)
 	}
 
-	preferenceProfile := rg.Group("/preference-profile")
-	{
-		preferenceProfile.GET("", GetPreferenceProfile)
-		preferenceProfile.POST("/recompute", RecomputePreferenceProfile)
-	}
-
-	discovery := rg.Group("/discovery")
-	{
-		discovery.POST("/catalog/sync", SyncCatalog)
-		discovery.GET("/catalog/status", GetCatalogStatus)
-		discovery.GET("/recommendations", GetRecommendations)
-		discovery.POST("/recommendations/refresh", RefreshRecommendations)
-		discovery.POST("/recommendations/:id/accept", AcceptRecommendation)
-		discovery.POST("/recommendations/:id/dismiss", DismissRecommendation)
-		// 生命周期用户动作（4.4 / D5）：长期排除与恢复资格。
-		discovery.POST("/recommendations/:id/exclude", ExcludeRecommendation)
-		discovery.POST("/recommendations/:id/restore", RestoreRecommendation)
-		discovery.POST("/ask", Ask)
-		// 手动查询 run 详情（improve-discovery-recommendations，design D2/D9）
-		discovery.GET("/runs/:id", GetDiscoveryRun)
-		// 兴趣记录列表（improve-discovery-recommendations High 1 修复，design D9）
-		discovery.GET("/interests", GetInterests)
-
-		// 候选源库（improve-discovery-recommendations，design D9）
-		discovery.GET("/candidates", ListCandidates)
-		discovery.POST("/candidates", CreateCandidate)
-		discovery.GET("/candidates/:id", GetCandidate)
-		discovery.PATCH("/candidates/:id", UpdateCandidate)
-		// 可用性检查（3.3，design D7）：:id 同名子路由与 import/* 静态段并存（静态优先）。
-		discovery.POST("/candidates/:id/check", CheckCandidate)
-		// 私网访问授权确认（Medium 7，design D9/C5）：private_pending → private_allowed。
-		discovery.POST("/candidates/:id/access-confirm", ConfirmCandidateAccess)
-		// 目录导入导出（3.2，design D8）：export 与 :id 同段静态路由优先于参数路由。
-		discovery.GET("/candidates/export", ExportCandidates)
-		discovery.POST("/candidates/import/preview", PreviewCatalogImport)
-		discovery.POST("/candidates/import/confirm", ConfirmCatalogImport)
-	}
-
+	// discovery 域 settings 路由（rsshub/proxy/bocha/searxng）已迁
+	// internal/discovery/routes.go（decouple-backend-domains）。
 	settings := rg.Group("/settings")
 	{
-		settings.GET("/rsshub", GetRSSHubSettings)
-		settings.POST("/rsshub", SaveRSSHubSettings)
-		settings.GET("/proxy", GetProxySettings)
-		settings.POST("/proxy", SaveProxySettings)
-		settings.GET("/bocha", GetBochaSettings)
-		settings.POST("/bocha", SaveBochaSettings)
-		settings.GET("/searxng", GetSearxngSettings)
-		settings.POST("/searxng", SaveSearxngSettings)
 		settings.GET("/comtrade", GetComtradeSettings)
 		settings.POST("/comtrade", SaveComtradeSettings)
 	}
@@ -113,12 +69,4 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		notifications.DELETE("", ClearNotifications)
 	}
 
-	// 路由参数可选值字典 CRUD（feed-param-options）
-	routeParamOptions := rg.Group("/admin/route-param-options")
-	{
-		routeParamOptions.GET("", ListRouteParamOptions)
-		routeParamOptions.POST("", CreateRouteParamOption)
-		routeParamOptions.PUT("/:id", UpdateRouteParamOption)
-		routeParamOptions.DELETE("/:id", DeleteRouteParamOption)
-	}
 }

@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"syntopica-backend/internal/models"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -30,7 +31,7 @@ func setupEdgeGCTestDB(t *testing.T) *gorm.DB {
 		&models.Article{},
 		&models.TopicTag{},
 		&models.ArticleTopicTag{},
-		&models.TopicTagSemanticLabel{},
+		&tagmodels.TopicTagSemanticLabel{},
 		&models.AISettings{},
 	); err != nil {
 		t.Fatalf("migrate test db: %v", err)

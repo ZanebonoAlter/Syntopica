@@ -16,7 +16,10 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/articlerefs"
 	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/scheduler"
 	tagging "syntopica-backend/internal/tagmanagement"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
+	daily_report "syntopica-backend/internal/topicgraph"
 	topicgraphrepo "syntopica-backend/internal/topicgraph/repository"
 )
 
@@ -57,15 +60,19 @@ func setupDailyReportJobTest(t *testing.T) *gorm.DB {
 
 	prevAdminRepo := adminrepo.Repo
 	prevTopicRepo := topicgraphrepo.Repo
+	// decouple-backend-domains: 生产 job 经 topicgraph root 门面取 Repo，
+	// fixture 须同步初始化 root（root.Repo 是包级拷贝，深路径 Init 不会更新它）。
 	prevPlatformDB := database.DB
 	adminrepo.InitRepository(db)
 	topicgraphrepo.InitRepository(db)
+	daily_report.InitRepository(db)
 	// aisettings 读取走 platform 全局（daily_report_time/deadline 键），测试接入
 	// 同一内存库（night-window-alignment D4）。
 	database.DB = db
 	t.Cleanup(func() {
 		adminrepo.Repo = prevAdminRepo
 		topicgraphrepo.Repo = prevTopicRepo
+		daily_report.Repo = prevTopicRepo
 		database.DB = prevPlatformDB
 	})
 
@@ -74,7 +81,7 @@ func setupDailyReportJobTest(t *testing.T) *gorm.DB {
 		&models.Article{},
 		&models.TopicTag{},
 		&models.ArticleTopicTag{},
-		&models.TopicTagBoardLabel{},
+		&tagmodels.TopicTagBoardLabel{},
 		&models.TagJob{},
 		&models.EmbeddingQueue{},
 		&models.AISettings{},
@@ -146,7 +153,7 @@ func seedReportBoardsForDate(t *testing.T, db *gorm.DB, day time.Time, boardIDs 
 	require.NoError(t, db.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag.ID, Source: "llm"}).Error)
 
 	for _, boardID := range boardIDs {
-		require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: boardID}).Error)
+		require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: boardID}).Error)
 	}
 }
 
@@ -318,7 +325,7 @@ func TestBoardDailyReportUniqueIndexRejectsDuplicateBoardDate(t *testing.T) {
 	require.Error(t, err, "a second report for the same (board, day) must be rejected")
 }
 
-// M1: failed tag jobs are surfaced in JobResult but never block the backfill
+// M1: failed tag jobs are surfaced in scheduler.JobResult but never block the backfill
 // (their articles may simply have no edges yet — a permanently failing job must
 // not freeze the catch-up forever).
 func TestDailyReportJobBackfillReportsFailedJobsWithoutBlocking(t *testing.T) {
@@ -372,7 +379,7 @@ func TestDailyReportJobRetentionGuardMatchesHandlerWindow(t *testing.T) {
 			}
 
 			target := today.AddDate(0, 0, -tc.days)
-			wrapper := NewDailyReportSchedulerWrapper(New(Config{Name: "daily_report_guard_" + tc.name}))
+			wrapper := NewDailyReportSchedulerWrapper(scheduler.New(scheduler.Config{Name: "daily_report_guard_" + tc.name}))
 
 			res := wrapper.TriggerNowWithDate(target.Format("2006-01-02"))
 

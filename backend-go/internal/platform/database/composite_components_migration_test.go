@@ -8,6 +8,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 // TestCompositeComponentsMigration exercises migration 20260902_0001
@@ -35,7 +36,7 @@ func TestCompositeComponentsMigration(t *testing.T) {
 	// DROP SCHEMA CASCADE 会连带删掉装在 public 里的 pgvector 扩展，重建它。
 	require.NoError(t, db.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error)
 	require.NoError(t, db.AutoMigrate(
-		&models.CompositeComponent{},
+		&tagmodels.CompositeComponent{},
 		&models.SemanticLabel{},
 		&models.AISettings{},
 	))
@@ -92,9 +93,9 @@ func TestCompositeComponentsMigration(t *testing.T) {
 	composite := seed("美债收益率", "cmp-mig-composite", "composite")
 
 	// 4. Ordered components persist and cascade-delete with the composite row.
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: composite.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: composite.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
-	var comps []models.CompositeComponent
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: composite.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: composite.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
+	var comps []tagmodels.CompositeComponent
 	require.NoError(t, db.Where("composite_id = ?", composite.ID).Order("position").Find(&comps).Error)
 	require.Len(t, comps, 2)
 	require.Equal(t, 1, comps[0].Position)
@@ -102,7 +103,7 @@ func TestCompositeComponentsMigration(t *testing.T) {
 
 	require.NoError(t, db.Delete(&models.SemanticLabel{}, composite.ID).Error)
 	var remain int64
-	require.NoError(t, db.Model(&models.CompositeComponent{}).Where("composite_id = ?", composite.ID).Count(&remain).Error)
+	require.NoError(t, db.Model(&tagmodels.CompositeComponent{}).Where("composite_id = ?", composite.ID).Count(&remain).Error)
 	require.Equal(t, int64(0), remain, "composite_components must cascade-delete with the composite label row")
 
 	// 5. Seeds present with documented defaults.

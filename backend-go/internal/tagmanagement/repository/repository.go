@@ -3,6 +3,7 @@ package repository
 import (
 	"gorm.io/gorm"
 	"syntopica-backend/internal/models"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 var Repo *TagManagementRepository
@@ -73,24 +74,24 @@ func (r *TagManagementRepository) GetTagArticleCount(tagID uint) (int64, error) 
 
 // ---- TagMergeSuggestion ----
 
-func (r *TagManagementRepository) ListPendingSuggestions(limit int) ([]models.TagMergeSuggestion, error) {
-	var suggestions []models.TagMergeSuggestion
+func (r *TagManagementRepository) ListPendingSuggestions(limit int) ([]tagmodels.TagMergeSuggestion, error) {
+	var suggestions []tagmodels.TagMergeSuggestion
 	err := r.db.Where("status = ?", "pending").Order("similarity DESC").Limit(limit).Find(&suggestions).Error
 	return suggestions, err
 }
 
-func (r *TagManagementRepository) CreateSuggestion(s *models.TagMergeSuggestion) error {
+func (r *TagManagementRepository) CreateSuggestion(s *tagmodels.TagMergeSuggestion) error {
 	return r.db.Create(s).Error
 }
 
 func (r *TagManagementRepository) DismissSuggestion(newID, existingID uint) error {
-	return r.db.Model(&models.TagMergeSuggestion{}).
+	return r.db.Model(&tagmodels.TagMergeSuggestion{}).
 		Where("new_tag_id = ? AND existing_tag_id = ? AND status = ?", newID, existingID, "pending").
 		Update("status", "dismissed").Error
 }
 
 func (r *TagManagementRepository) MarkSuggestionsMerged(sourceIDs []uint, targetID uint) error {
-	return r.db.Model(&models.TagMergeSuggestion{}).
+	return r.db.Model(&tagmodels.TagMergeSuggestion{}).
 		Where("status = ? AND (new_tag_id IN ? OR existing_tag_id IN ? OR new_tag_id = ? OR existing_tag_id = ?)",
 			"pending", sourceIDs, sourceIDs, targetID, targetID).
 		Update("status", "merged").Error

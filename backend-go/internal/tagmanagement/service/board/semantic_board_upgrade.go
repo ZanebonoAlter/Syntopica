@@ -13,6 +13,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service/auxlabel"
 	"syntopica-backend/internal/tagmanagement/service/core"
@@ -453,7 +454,7 @@ func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req
 			result.CompositeLabelID = &createResult.Label.ID
 			boardID = 0 // compose creates a composite label, not a board
 			if composeTargetBoard != 0 {
-				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&models.BoardComposition{BoardID: composeTargetBoard, AuxiliaryLabelID: createResult.Label.ID}).Error; err != nil {
+				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&tagmodels.BoardComposition{BoardID: composeTargetBoard, AuxiliaryLabelID: createResult.Label.ID}).Error; err != nil {
 					return fmt.Errorf("mount composite to board %d: %w", composeTargetBoard, err)
 				}
 			}
@@ -462,9 +463,9 @@ func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req
 		}
 
 		if req.Decision != SemanticBoardUpgradeDecisionCompose {
-			rows := make([]models.BoardComposition, 0, len(auxiliaryIDs))
+			rows := make([]tagmodels.BoardComposition, 0, len(auxiliaryIDs))
 			for _, auxiliaryID := range auxiliaryIDs {
-				rows = append(rows, models.BoardComposition{BoardID: boardID, AuxiliaryLabelID: auxiliaryID})
+				rows = append(rows, tagmodels.BoardComposition{BoardID: boardID, AuxiliaryLabelID: auxiliaryID})
 			}
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
 				return err
@@ -536,7 +537,7 @@ func (s *SemanticBoardUpgradeService) loadCoTagEventContext(ctx context.Context,
 	}
 
 	var seedTopicIDs []uint
-	if err := s.db.WithContext(ctx).Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id IN ?", auxiliaryIDs).Distinct().Pluck("topic_tag_id", &seedTopicIDs).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&tagmodels.TopicTagSemanticLabel{}).Where("semantic_label_id IN ?", auxiliaryIDs).Distinct().Pluck("topic_tag_id", &seedTopicIDs).Error; err != nil {
 		return nil, err
 	}
 	if len(seedTopicIDs) == 0 {

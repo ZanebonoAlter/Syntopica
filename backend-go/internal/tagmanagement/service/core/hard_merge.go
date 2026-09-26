@@ -6,6 +6,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 
 	"gorm.io/gorm"
 )
@@ -46,13 +47,13 @@ func HardMergeTags(db *gorm.DB, sourceID, targetID uint) error {
 			}
 		}
 
-		if err := tx.Where("topic_tag_id = ?", sourceID).Delete(&models.TopicTagEmbedding{}).Error; err != nil {
+		if err := tx.Where("topic_tag_id = ?", sourceID).Delete(&tagmodels.TopicTagEmbedding{}).Error; err != nil {
 			return fmt.Errorf("delete source tag embeddings: %w", err)
 		}
 
 		// Collect aux label IDs before CASCADE deletes topic_tag_semantic_labels
 		var affectedAuxLabelIDs []uint
-		if err := tx.Model(&models.TopicTagSemanticLabel{}).
+		if err := tx.Model(&tagmodels.TopicTagSemanticLabel{}).
 			Where("topic_tag_id = ?", sourceID).
 			Distinct("semantic_label_id").
 			Pluck("semantic_label_id", &affectedAuxLabelIDs).Error; err != nil {
@@ -64,7 +65,7 @@ func HardMergeTags(db *gorm.DB, sourceID, targetID uint) error {
 		if err := tx.Where("tag_id = ?", sourceID).Delete(&models.EmbeddingQueue{}).Error; err != nil {
 			return fmt.Errorf("delete source tag embedding queue entries: %w", err)
 		}
-		if err := tx.Where("source_tag_id = ? OR target_tag_id = ?", sourceID, sourceID).Delete(&models.MergeReembeddingQueue{}).Error; err != nil {
+		if err := tx.Where("source_tag_id = ? OR target_tag_id = ?", sourceID, sourceID).Delete(&tagmodels.MergeReembeddingQueue{}).Error; err != nil {
 			return fmt.Errorf("delete source tag merge re-embedding queue entries: %w", err)
 		}
 

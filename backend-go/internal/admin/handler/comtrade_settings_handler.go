@@ -92,3 +92,13 @@ func SaveComtradeSettings(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+// maskAPIKey 返回 key 末 4 位（脱敏提示）。本地复制自 discovery_handler
+// （decouple-backend-domains 迁移后 comtrade 留 admin，不跨域引 helper）。
+func maskAPIKey(key string) string {
+	key = strings.TrimSpace(key)
+	if len(key) <= 4 {
+		return ""
+	}
+	return key[len(key)-4:]
+}

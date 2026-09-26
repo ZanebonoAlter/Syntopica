@@ -8,12 +8,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"syntopica-backend/internal/admin/repository"
-	"syntopica-backend/internal/admin/scheduler"
-	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/aihealth"
 	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/analysispause"
 	"syntopica-backend/internal/platform/logging"
+	pssched "syntopica-backend/internal/platform/scheduler"
 )
 
 // SchedulerRegistry is the minimal interface for the global scheduler registry.
@@ -74,11 +73,11 @@ type SchedulerStatusResponse struct {
 // scheduler does not expose one (e.g. a non-BaseScheduler implementation).
 // The admin handler reads Description/TaskName/Aliases from here for
 // auto-discovery, instead of a hardcoded descriptor list.
-func schedulerConfig(s interface{}) scheduler.Config {
-	if cfg, ok := s.(interface{ GetConfig() scheduler.Config }); ok {
+func schedulerConfig(s interface{}) pssched.Config {
+	if cfg, ok := s.(interface{ GetConfig() pssched.Config }); ok {
 		return cfg.GetConfig()
 	}
-	return scheduler.Config{}
+	return pssched.Config{}
 }
 
 // schedulerLabel returns a human-readable label (Config.Name) for log/error
@@ -513,7 +512,7 @@ func enrichStatus(scheduler interface{}, key string, status *SchedulerStatusResp
 		return
 	}
 
-	var task models.SchedulerTask
+	var task pssched.SchedulerTask
 	if err := repository.Repo.DB().Where("name = ?", taskName).First(&task).Error; err == nil {
 		status.DatabaseState = task.ToDict()
 		if task.LastExecutionResult != "" {
@@ -561,7 +560,7 @@ func schedulerStatusFromMap(status map[string]interface{}, displayName string) S
 }
 
 func resetSchedulerTask(taskName string) error {
-	var task models.SchedulerTask
+	var task pssched.SchedulerTask
 	if err := repository.Repo.DB().Where("name = ?", taskName).First(&task).Error; err != nil {
 		return err
 	}

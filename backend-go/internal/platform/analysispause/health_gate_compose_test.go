@@ -28,11 +28,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"syntopica-backend/internal/admin/scheduler"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/aihealth"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/analysispause"
+	"syntopica-backend/internal/platform/scheduler"
 	"syntopica-backend/internal/platform/testutil"
 )
 

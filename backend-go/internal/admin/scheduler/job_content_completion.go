@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/scheduler"
 	content "syntopica-backend/internal/reader"
 )
 
 // ContentCompletionJob runs the content completion cycle: fetches pending
 // articles and completes them one by one using the AI service.
-func ContentCompletionJob(completionService *content.ContentCompletionService) JobFunc {
-	return func(ctx context.Context) (*JobResult, error) {
+func ContentCompletionJob(completionService *content.ContentCompletionService) scheduler.JobFunc {
+	return func(ctx context.Context) (*scheduler.JobResult, error) {
 		startTime := time.Now()
 
 		// Check if AI is configured
@@ -28,7 +29,7 @@ func ContentCompletionJob(completionService *content.ContentCompletionService) J
 		}
 
 		if len(articles) == 0 {
-			return &JobResult{
+			return &scheduler.JobResult{
 				Data:    map[string]interface{}{},
 				Summary: "no pending content to complete",
 			}, nil
@@ -46,7 +47,7 @@ func ContentCompletionJob(completionService *content.ContentCompletionService) J
 			}
 		}
 
-		return &JobResult{
+		return &scheduler.JobResult{
 			Data: map[string]interface{}{
 				"completed_count": completedCount,
 				"failed_count":    failedCount,

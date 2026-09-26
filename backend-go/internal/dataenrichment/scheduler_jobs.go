@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"syntopica-backend/internal/admin/scheduler"
 	"syntopica-backend/internal/dataenrichment/repository"
 	"syntopica-backend/internal/dataenrichment/service"
+	"syntopica-backend/internal/platform/scheduler"
 )
 
 // WeeklyLifelineJob creates a scheduler JobFunc that:

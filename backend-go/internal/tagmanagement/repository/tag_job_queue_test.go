@@ -69,7 +69,6 @@ func TestClaimOrderNewestFirst(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	InitRepository(db)
 
-
 	now := time.Now()
 	t0 := seedTagJobRaw(t, 101, string(models.JobStatusPending), 0, now.Add(-48*time.Hour), now.Add(-48*time.Hour))
 	t1 := seedTagJobRaw(t, 102, string(models.JobStatusPending), 0, now.Add(-8*time.Hour), now.Add(-8*time.Hour))
@@ -94,7 +93,6 @@ func TestClaimPriorityPreemptsFreshness(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	InitRepository(db)
 
-
 	now := time.Now()
 	oldHigh := seedTagJobRaw(t, 201, string(models.JobStatusPending), 10, now.Add(-72*time.Hour), now.Add(-72*time.Hour))
 	newLow := seedTagJobRaw(t, 202, string(models.JobStatusPending), 0, now.Add(-time.Minute), now.Add(-time.Minute))
@@ -114,7 +112,6 @@ func TestClaimPriorityPreemptsFreshness(t *testing.T) {
 func TestClaimSkipsBackoffJob(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	InitRepository(db)
-
 
 	now := time.Now()
 	backoff := seedTagJobRaw(t, 301, string(models.JobStatusPending), 0, now.Add(-time.Minute), now.Add(time.Hour))
@@ -147,4 +144,3 @@ func jobIDs(jobs []models.TagJob) []uint {
 	}
 	return ids
 }
-

@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"syntopica-backend/internal/reader/repository"
-	"syntopica-backend/internal/tagmanagement/service/sourcestats"
+	tagging "syntopica-backend/internal/tagmanagement"
 )
 
 // GetBoardHitStats — GET /api/feeds/board-hit-stats?window=7 (spec: 按订阅源
@@ -14,7 +14,7 @@ import (
 // tagging/matching side effects. Invalid window → 400 (never a silent
 // fallback to the default); aggregation failure → 500.
 func GetBoardHitStats(c *gin.Context) {
-	windowDays, err := sourcestats.ParseWindow(c.Query("window"))
+	windowDays, err := tagging.ParseWindow(c.Query("window"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
@@ -23,7 +23,7 @@ func GetBoardHitStats(c *gin.Context) {
 		return
 	}
 
-	stats, err := sourcestats.FeedBoardHitStats(c.Request.Context(), repository.Repo.DB(), windowDays)
+	stats, err := tagging.FeedBoardHitStats(c.Request.Context(), repository.Repo.DB(), windowDays)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,

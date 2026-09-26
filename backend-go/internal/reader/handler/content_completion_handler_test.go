@@ -14,6 +14,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/scheduler"
 	"syntopica-backend/internal/reader/repository"
 	"syntopica-backend/internal/reader/service"
 )
@@ -36,7 +37,7 @@ func setupHandlersTestDB(t *testing.T) {
 
 	database.DB = db
 	repository.InitRepository(database.DB)
-	if err := database.DB.AutoMigrate(&models.Feed{}, &models.Article{}, &models.SchedulerTask{}, &models.TopicTag{}, &models.ArticleTopicTag{}, &models.TagJob{}, &models.FirecrawlJob{}, &models.AIProvider{}, &models.AIRoute{}, &models.AIRouteProvider{}, &models.AICallLog{}); err != nil {
+	if err := database.DB.AutoMigrate(&models.Feed{}, &models.Article{}, &scheduler.SchedulerTask{}, &models.TopicTag{}, &models.ArticleTopicTag{}, &models.TagJob{}, &models.FirecrawlJob{}, &models.AIProvider{}, &models.AIRoute{}, &models.AIRouteProvider{}, &models.AICallLog{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 }

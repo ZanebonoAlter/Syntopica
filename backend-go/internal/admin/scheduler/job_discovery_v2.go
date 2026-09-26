@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"syntopica-backend/internal/admin/repository"
-	adminservice "syntopica-backend/internal/admin/service"
+	"syntopica-backend/internal/discovery"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/safefetch"
+	"syntopica-backend/internal/platform/scheduler"
 )
 
 // ── improve-discovery-recommendations 4.6：候选检查 / 向量回补 / 运行维护 三个调度任务 ──
@@ -24,12 +25,12 @@ import (
 // 单批取 DueCandidateIDs（next_check_at 到期，private_pending 恒排除，
 // requires_parameters 不排队），逐个执行状态机检查；单条失败只记日志，不中断整批
 // （可用性失败是数据结论，不是 job 故障）。
-func CandidateAvailabilityCheckJob(ctx context.Context) (*JobResult, error) {
-	if !adminservice.LoadDiscoveryV2Enabled(repository.Repo.DB()) {
+func CandidateAvailabilityCheckJob(ctx context.Context) (*scheduler.JobResult, error) {
+	if !discovery.LoadDiscoveryV2Enabled(repository.Repo.DB()) {
 		return skippedDiscoveryV2Job("candidate availability check"), nil
 	}
-	svc := adminservice.NewCandidateCheckService(repository.Repo.DB())
-	due, err := svc.DueCandidateIDs(ctx, time.Now(), adminservice.CandidateCheckDefaultBatchSize)
+	svc := discovery.NewCandidateCheckService(repository.Repo.DB())
+	due, err := svc.DueCandidateIDs(ctx, time.Now(), discovery.CandidateCheckDefaultBatchSize)
 	if err != nil {
 		return nil, fmt.Errorf("candidate availability check: list due candidates: %w", err)
 	}
@@ -47,7 +48,7 @@ func CandidateAvailabilityCheckJob(ctx context.Context) (*JobResult, error) {
 		_ = res
 		checked++
 	}
-	return &JobResult{
+	return &scheduler.JobResult{
 		Data: map[string]interface{}{
 			"due":     len(due),
 			"checked": checked,
@@ -59,16 +60,16 @@ func CandidateAvailabilityCheckJob(ctx context.Context) (*JobResult, error) {
 
 // CandidateEmbeddingBackfillJob 候选有效介绍向量增量回补（分析类，runtime 包 PauseAware）。
 // 单批上限 20（design D9：初始全量回补限批，不阻塞页面请求）；单条失败保留旧向量、下批重试。
-func CandidateEmbeddingBackfillJob(ctx context.Context) (*JobResult, error) {
-	if !adminservice.LoadDiscoveryV2Enabled(repository.Repo.DB()) {
+func CandidateEmbeddingBackfillJob(ctx context.Context) (*scheduler.JobResult, error) {
+	if !discovery.LoadDiscoveryV2Enabled(repository.Repo.DB()) {
 		return skippedDiscoveryV2Job("candidate embedding backfill"), nil
 	}
-	svc := adminservice.NewCandidateEmbeddingService(repository.Repo.DB(), airouter.NewRouter())
-	summary, err := svc.DirtyCandidateEmbeddings(ctx, adminservice.CandidateEmbeddingBatchSizeDefault)
+	svc := discovery.NewCandidateEmbeddingService(repository.Repo.DB(), airouter.NewRouter())
+	summary, err := svc.DirtyCandidateEmbeddings(ctx, discovery.CandidateEmbeddingBatchSizeDefault)
 	if err != nil {
 		return nil, fmt.Errorf("candidate embedding backfill: %w", err)
 	}
-	return &JobResult{
+	return &scheduler.JobResult{
 		Data: map[string]interface{}{
 			"generated": summary.Generated,
 			"stale":     summary.Stale,
@@ -82,25 +83,25 @@ func CandidateEmbeddingBackfillJob(ctx context.Context) (*JobResult, error) {
 
 // DiscoveryRunMaintenanceJob 运行账本维护（维护类，不包 PauseAware）：把超过 1 小时仍
 // running 的 DiscoveryRun 置 failed（error_code=stale_running），终结进程崩溃留下的僵尸 run。
-func DiscoveryRunMaintenanceJob(ctx context.Context) (*JobResult, error) {
-	if !adminservice.LoadDiscoveryV2Enabled(repository.Repo.DB()) {
+func DiscoveryRunMaintenanceJob(ctx context.Context) (*scheduler.JobResult, error) {
+	if !discovery.LoadDiscoveryV2Enabled(repository.Repo.DB()) {
 		return skippedDiscoveryV2Job("discovery run maintenance"), nil
 	}
 	now := time.Now()
-	marked, err := adminservice.MarkStaleRunningDiscoveryRuns(
-		ctx, repository.Repo.DB(), now, adminservice.DiscoveryRunStaleThresholdDefault)
+	marked, err := discovery.MarkStaleRunningDiscoveryRuns(
+		ctx, repository.Repo.DB(), now, discovery.DiscoveryRunStaleThresholdDefault)
 	if err != nil {
 		return nil, fmt.Errorf("discovery run maintenance: %w", err)
 	}
-	return &JobResult{
+	return &scheduler.JobResult{
 		Data:    map[string]interface{}{"stale_runs_failed": marked},
 		Summary: fmt.Sprintf("discovery run maintenance: stale running runs marked failed=%d", marked),
 	}, nil
 }
 
 // skippedDiscoveryV2Job 是开关关闭时的良性跳过结果（err=nil，不计失败）。
-func skippedDiscoveryV2Job(name string) *JobResult {
-	return &JobResult{
+func skippedDiscoveryV2Job(name string) *scheduler.JobResult {
+	return &scheduler.JobResult{
 		Summary: fmt.Sprintf("%s skipped: discovery v2 disabled", name),
 		Data:    map[string]interface{}{"skipped": "discovery_v2_disabled"},
 	}

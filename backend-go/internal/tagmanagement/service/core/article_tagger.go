@@ -13,6 +13,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/tracing"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -536,7 +537,7 @@ func CleanupOrphanedTags(tagIDs []uint) {
 
 	// Collect affected aux label IDs before CASCADE deletes them
 	var affectedAuxLabelIDs []uint
-	repository.Repo.DB().Model(&models.TopicTagSemanticLabel{}).
+	repository.Repo.DB().Model(&tagmodels.TopicTagSemanticLabel{}).
 		Where("topic_tag_id IN ?", orphanIDs).
 		Distinct("semantic_label_id").
 		Pluck("semantic_label_id", &affectedAuxLabelIDs)

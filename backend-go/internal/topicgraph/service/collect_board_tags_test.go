@@ -9,6 +9,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/topicgraph/repository"
 )
 
@@ -54,11 +55,11 @@ func TestCollectBoardTags_PGHonorsDowngradedColumn(t *testing.T) {
 	require.NoError(t, db.Create(&tagDowngraded).Error)
 
 	// Board labels carry the per-tag match quality we assert on later.
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagDirect.ID, SemanticBoardID: board.ID,
 		MatchReason: "direct_hit", Score: 1.0, Downgraded: false,
 	}).Error)
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagDowngraded.ID, SemanticBoardID: board.ID,
 		MatchReason: "max_sim", Score: 0.7, Downgraded: true,
 	}).Error)
@@ -109,7 +110,7 @@ func TestCollectBoardTags_PopulatesArticleContext(t *testing.T) {
 		Slug: "rate-cut", Label: "降准", Category: models.TagCategoryEvent, Status: "active",
 	}
 	require.NoError(t, db.Create(&tag).Error)
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tag.ID, SemanticBoardID: board.ID,
 		MatchReason: "direct_hit", Score: 1.0, Downgraded: false,
 	}).Error)

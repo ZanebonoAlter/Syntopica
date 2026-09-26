@@ -6,6 +6,7 @@ import (
 
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/scheduler"
 	tagging "syntopica-backend/internal/tagmanagement"
 )
 
@@ -18,7 +19,7 @@ import (
 // scheduler entry. Archiving no longer deletes edges (design D4), which makes
 // this pass the single owner of edge removal — and therefore of the orphan tag
 // cleanup that follows it.
-func AuxLabelCleanupJob(ctx context.Context) (*JobResult, error) {
+func AuxLabelCleanupJob(ctx context.Context) (*scheduler.JobResult, error) {
 	service := tagging.NewAuxiliaryLabelService(repository.Repo.DB(), nil)
 	result, err := service.GC(ctx, tagging.AuxLabelGCRequest{
 		Mode:      tagging.AuxLabelGCModeDisable,
@@ -50,7 +51,7 @@ func AuxLabelCleanupJob(ctx context.Context) (*JobResult, error) {
 			summary, edgeResult.DeletedEdges, edgeResult.OrphanedTags)
 	}
 
-	return &JobResult{
+	return &scheduler.JobResult{
 		Data:    data,
 		Summary: summary,
 	}, nil

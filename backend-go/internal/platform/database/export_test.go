@@ -4,7 +4,7 @@ package database
 // package (database_test) so integration tests can drive them directly with
 // seeded data. These vars exist only in the test build.
 var (
-	ExportedRunAuxLabelDupMerge = runAuxLabelDupMerge
+	ExportedRunAuxLabelDupMerge = runAuxLabelDupMergeHook // hook wrapper (logic moved to tagmanagement/models)
 
 	// RunMigrationsList exposes the core migration loop so tests can run a
 	// hand-built migration list (e.g. a probe migration with RunOutsideTx=true)

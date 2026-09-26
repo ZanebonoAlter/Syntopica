@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 // TestBoardUpgradeSuggestionCountDismissedInCooldown verifies the cooldown
@@ -26,13 +26,13 @@ func TestBoardUpgradeSuggestionCountDismissedInCooldown(t *testing.T) {
 	fifteenDaysAgo := now.AddDate(0, 0, -15)
 
 	// Dismissed 3 days ago → still inside the default 14-day cooldown.
-	require.NoError(t, db.Create(&models.BoardUpgradeSuggestion{
+	require.NoError(t, db.Create(&tagmodels.BoardUpgradeSuggestion{
 		BatchID: "c-in", Mode: "discover_new", Decision: "create_new",
 		BoardLabel: "In Cooldown", SuggestionHash: "cd-in",
 		Status: "dismissed", ResolvedAt: &threeDaysAgo,
 	}).Error)
 	// Dismissed 15 days ago → cooldown window (14d) has elapsed.
-	require.NoError(t, db.Create(&models.BoardUpgradeSuggestion{
+	require.NoError(t, db.Create(&tagmodels.BoardUpgradeSuggestion{
 		BatchID: "c-out", Mode: "discover_new", Decision: "create_new",
 		BoardLabel: "Expired", SuggestionHash: "cd-out",
 		Status: "dismissed", ResolvedAt: &fifteenDaysAgo,
@@ -56,7 +56,7 @@ func TestBoardUpgradeSuggestionInsertPendingIsIdempotent(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewBoardUpgradeSuggestionRepository(db)
 
-	first := &models.BoardUpgradeSuggestion{
+	first := &tagmodels.BoardUpgradeSuggestion{
 		BatchID: "b2", Mode: "discover_new", Decision: "create_new",
 		BoardLabel: "Dup Board", AuxiliaryLabelIDs: []uint{7},
 		Confidence: "llm", Status: "pending", SuggestionHash: "dup-hash-3-2",
@@ -66,7 +66,7 @@ func TestBoardUpgradeSuggestionInsertPendingIsIdempotent(t *testing.T) {
 	require.True(t, inserted1, "first insert must succeed")
 
 	// Re-generate the same cluster+decision → same suggestion_hash, still pending.
-	repeated := &models.BoardUpgradeSuggestion{
+	repeated := &tagmodels.BoardUpgradeSuggestion{
 		BatchID: "b2-later", Mode: "discover_new", Decision: "create_new",
 		BoardLabel: "Dup Board", AuxiliaryLabelIDs: []uint{7},
 		Confidence: "llm", Status: "pending", SuggestionHash: "dup-hash-3-2",
@@ -76,7 +76,7 @@ func TestBoardUpgradeSuggestionInsertPendingIsIdempotent(t *testing.T) {
 	require.False(t, inserted2, "duplicate must report inserted=false")
 
 	var count int64
-	require.NoError(t, db.Model(&models.BoardUpgradeSuggestion{}).Where("suggestion_hash = ?", "dup-hash-3-2").Count(&count).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardUpgradeSuggestion{}).Where("suggestion_hash = ?", "dup-hash-3-2").Count(&count).Error)
 	require.Equal(t, int64(1), count, "only one pending row for the hash may exist")
 }
 
@@ -89,7 +89,7 @@ func TestBoardUpgradeSuggestionInsertPendingPersistsRows(t *testing.T) {
 	repo := NewBoardUpgradeSuggestionRepository(db)
 
 	base := time.Now()
-	sugs := []*models.BoardUpgradeSuggestion{
+	sugs := []*tagmodels.BoardUpgradeSuggestion{
 		{BatchID: "b1", Mode: "discover_new", Decision: "create_new", BoardLabel: "Board A", Description: "d A", AuxiliaryLabelIDs: []uint{101}, Confidence: "llm", Status: "pending", SuggestionHash: "hash-3-1-a", CreatedAt: base},
 		{BatchID: "b1", Mode: "discover_new", Decision: "create_new", BoardLabel: "Board B", Description: "d B", AuxiliaryLabelIDs: []uint{102}, Confidence: "llm", Status: "pending", SuggestionHash: "hash-3-1-b", CreatedAt: base},
 		{BatchID: "b1", Mode: "discover_new", Decision: "create_new", BoardLabel: "Board C", Description: "d C", AuxiliaryLabelIDs: []uint{103}, Confidence: "llm", Status: "pending", SuggestionHash: "hash-3-1-c", CreatedAt: base},
@@ -100,7 +100,7 @@ func TestBoardUpgradeSuggestionInsertPendingPersistsRows(t *testing.T) {
 		require.True(t, inserted, "distinct-hash insert must succeed")
 	}
 
-	var rows []models.BoardUpgradeSuggestion
+	var rows []tagmodels.BoardUpgradeSuggestion
 	require.NoError(t, db.Order("id ASC").Find(&rows).Error)
 	require.Len(t, rows, 3, "three non-skip suggestions must be persisted")
 	for _, r := range rows {
@@ -120,8 +120,8 @@ func TestBoardUpgradeSuggestionListFilters(t *testing.T) {
 	repo := NewBoardUpgradeSuggestionRepository(db)
 	now := time.Now()
 
-	mk := func(hash, status, decision, confidence string, age time.Duration) *models.BoardUpgradeSuggestion {
-		return &models.BoardUpgradeSuggestion{
+	mk := func(hash, status, decision, confidence string, age time.Duration) *tagmodels.BoardUpgradeSuggestion {
+		return &tagmodels.BoardUpgradeSuggestion{
 			BatchID: "t", Mode: "discover_new", Decision: decision,
 			BoardLabel: "L-" + hash, AuxiliaryLabelIDs: []uint{1},
 			Confidence: confidence, Status: status, SuggestionHash: hash,
@@ -172,12 +172,12 @@ func TestBoardUpgradeSuggestionMarkDismissed(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewBoardUpgradeSuggestionRepository(db)
 
-	require.NoError(t, db.Create(&models.BoardUpgradeSuggestion{
+	require.NoError(t, db.Create(&tagmodels.BoardUpgradeSuggestion{
 		BatchID: "d", Mode: "discover_new", Decision: "create_new",
 		BoardLabel: "Dismiss Me", AuxiliaryLabelIDs: []uint{9},
 		Confidence: "llm", Status: "pending", SuggestionHash: "d-1",
 	}).Error)
-	var sug models.BoardUpgradeSuggestion
+	var sug tagmodels.BoardUpgradeSuggestion
 	require.NoError(t, db.Where("suggestion_hash = ?", "d-1").First(&sug).Error)
 
 	require.NoError(t, repo.MarkDismissed(context.Background(), sug.ID, "not now"))

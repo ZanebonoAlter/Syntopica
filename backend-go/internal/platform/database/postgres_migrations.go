@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/articlerefs"
 	"syntopica-backend/internal/platform/logging"
@@ -25,6 +24,39 @@ var PruneRelationsRebuild func(tx *gorm.DB, boardID uint) error
 // registered by internal/topicgraph) use it to no-op when the table is absent,
 // rather than failing on CREATE INDEX / ALTER TABLE. This keeps migrations
 // safe on deployments that don't register those domain models.
+// EmbeddingConfigDefault is the payload for the EmbeddingConfigSeeder hook
+// (declared here so migrations and the tagmanagement implementation agree
+// without database importing tagmanagement/models — decouple-backend-domains).
+type EmbeddingConfigDefault struct {
+	Key         string
+	Value       string
+	Description string
+}
+
+var (
+	// EmbeddingConfigSeeder seeds embedding_config defaults. Wired by the
+	// tagmanagement root (production) and platform/testutil (golden schema).
+	EmbeddingConfigSeeder func(db *gorm.DB, defaults []EmbeddingConfigDefault) error
+	// AuxLabelDupMerge performs the one-shot auxiliary-label dedup migration.
+	// Wired by the tagmanagement root (production) and platform/testutil.
+	AuxLabelDupMerge func(db *gorm.DB) error
+)
+
+func runAuxLabelDupMergeHook(db *gorm.DB) error {
+	if AuxLabelDupMerge == nil {
+		return fmt.Errorf("aux label dup-merge hook not wired (tagmanagement root import missing)")
+	}
+	if err := AuxLabelDupMerge(db); err != nil {
+		return err
+	}
+	// Invalidate board composition cache here (hook owner side): the moved
+	// implementation cannot import database.InvalidateBoardCache.
+	if InvalidateBoardCache != nil {
+		InvalidateBoardCache()
+	}
+	return nil
+}
+
 func tableExists(db *gorm.DB, table string) bool {
 	var exists bool
 	if err := db.Raw(`SELECT to_regclass(?) IS NOT NULL`, "public."+table).Row().Scan(&exists); err != nil {
@@ -250,40 +282,28 @@ func postgresMigrations() []Migration {
 			Version:     "20260413_0002",
 			Description: "Seed embedding_config default values.",
 			Up: func(db *gorm.DB) error {
-				defaults := []models.EmbeddingConfig{
+				if EmbeddingConfigSeeder == nil {
+					return fmt.Errorf("embedding config seeder hook not wired (tagmanagement root import missing)")
+				}
+				return EmbeddingConfigSeeder(db, []EmbeddingConfigDefault{
 					{Key: "high_similarity_threshold", Value: "0.97", Description: "Auto-reuse existing tag if similarity >= this value"},
 					{Key: "low_similarity_threshold", Value: "0.78", Description: "Auto-create new tag if similarity < this value"},
 					{Key: "embedding_model", Value: "", Description: "Override embedding model name (empty = read from provider)"},
 					{Key: "embedding_dimension", Value: "1024", Description: "Embedding vector dimension"},
-				}
-				for _, d := range defaults {
-					var existing models.EmbeddingConfig
-					if err := db.Where("key = ?", d.Key).First(&existing).Error; err != nil {
-						if err := db.Create(&d).Error; err != nil {
-							logging.Warnf("Warning: failed to seed embedding_config key %s: %v", d.Key, err)
-						}
-					}
-				}
-				return nil
+				})
 			},
 		},
 		{
 			Version:     "20260514_0002",
 			Description: "Seed event clustering config keys into embedding_config.",
 			Up: func(db *gorm.DB) error {
-				defaults := []models.EmbeddingConfig{
+				if EmbeddingConfigSeeder == nil {
+					return fmt.Errorf("embedding config seeder hook not wired (tagmanagement root import missing)")
+				}
+				return EmbeddingConfigSeeder(db, []EmbeddingConfigDefault{
 					{Key: "event_cluster_kw_min_overlap", Value: "2", Description: "Minimum shared keyword count for Stage 1 event tag keyword-overlap clustering"},
 					{Key: "event_cluster_sem_threshold", Value: "0.80", Description: "Minimum semantic cosine similarity for Stage 2 event tag clustering filter"},
-				}
-				for _, d := range defaults {
-					var existing models.EmbeddingConfig
-					if err := db.Where("key = ?", d.Key).First(&existing).Error; err != nil {
-						if err := db.Create(&d).Error; err != nil {
-							logging.Warnf("Warning: failed to seed embedding_config key %s: %v", d.Key, err)
-						}
-					}
-				}
-				return nil
+				})
 			},
 		},
 
@@ -1339,7 +1359,7 @@ func postgresMigrations() []Migration {
 		{
 			Version:     "20260717_0002",
 			Description: "Merge auxiliary label text variant duplicates by normalize_key grouping, reusing MergeAuxiliaryLabelAlias.",
-			Up:          runAuxLabelDupMerge,
+			Up:          runAuxLabelDupMergeHook,
 		},
 
 		// ── causal-analysis-agent: clear stale 演进定位 enrichment data ──
@@ -3202,172 +3222,6 @@ func referenceRoleSeedRetireMigration() Migration {
 // the semantic board cache after the aux-label dup-merge migration (which modifies
 // board_composition). Set from semantic_board_cache.go init().
 var InvalidateBoardCache func()
-
-// runAuxLabelDupMerge performs a one-shot deduplication of active auxiliary
-// labels whose normalizeKey is identical (text-variant duplicates like
-// "SK 海力士" / "SK海力士").
-//
-// For each group: the label with the highest ref_count (ties broken by smallest
-// id) is the primary; all others are merged into it by moving aliases,
-// topic_tag_semantic_labels, and board_composition references, then disabling
-// the source. This mirrors the runtime MergeAuxiliaryLabelAlias semantics.
-//
-// Idempotent: after a successful run no group will have count>1 (disabled
-// labels are excluded from the grouping query).
-func runAuxLabelDupMerge(db *gorm.DB) error {
-	// Query active auxiliary labels.
-	type auxRow struct {
-		ID       uint
-		Label    string
-		RefCount int
-	}
-	var allRows []auxRow
-	if err := db.Model(&models.SemanticLabel{}).
-		Select("id, label, ref_count").
-		Where("label_type = ? AND status = ?", "auxiliary", "active").
-		Order("id ASC").
-		Find(&allRows).Error; err != nil {
-		return fmt.Errorf("dup-merge: query active auxiliary labels: %w", err)
-	}
-
-	// Group by normalizeKey.
-	groups := make(map[string][]auxRow)
-	for _, r := range allRows {
-		nk := textutil.NormalizeLabelKey(r.Label)
-		groups[nk] = append(groups[nk], r)
-	}
-
-	var mergeCount int
-	for nk, group := range groups {
-		if len(group) < 2 {
-			continue
-		}
-
-		// Primary = highest ref_count, ties broken by smallest id.
-		primary := group[0]
-		for i := 1; i < len(group); i++ {
-			if group[i].RefCount > primary.RefCount ||
-				(group[i].RefCount == primary.RefCount && group[i].ID < primary.ID) {
-				primary = group[i]
-			}
-		}
-
-		for _, secondary := range group {
-			if secondary.ID == primary.ID {
-				continue
-			}
-
-			logging.Infof("Dup-merge: normalize_key=%q: merging source=%d(%q, ref=%d) → target=%d(%q, ref=%d)",
-				nk, secondary.ID, secondary.Label, secondary.RefCount, primary.ID, primary.Label, primary.RefCount)
-
-			if err := mergeOneAuxLabelDup(db, secondary.ID, primary.ID); err != nil {
-				return fmt.Errorf("dup-merge: merge source=%d into target=%d: %w", secondary.ID, primary.ID, err)
-			}
-			mergeCount++
-		}
-
-		logging.Infof("Dup-merge: normalized %d duplicates into primary %q (id=%d)", len(group)-1, primary.Label, primary.ID)
-	}
-
-	logging.Infof("Dup-merge: complete — %d auxiliary labels merged across all groups", mergeCount)
-
-	// Invalidate board composition cache (board_composition rows may have been reassigned).
-	if InvalidateBoardCache != nil {
-		InvalidateBoardCache()
-	}
-
-	return nil
-}
-
-// mergeOneAuxLabelDup merges a single source auxiliary label into a target.
-// Mirrors MergeAuxiliaryLabelAlias semantics but uses direct DB operations
-// (the service method lives in a package that would create a circular import).
-func mergeOneAuxLabelDup(db *gorm.DB, sourceID, targetID uint) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		var source, target models.SemanticLabel
-		if err := tx.Where("id = ? AND label_type = ?", sourceID, "auxiliary").First(&source).Error; err != nil {
-			return fmt.Errorf("load source: %w", err)
-		}
-		if err := tx.Where("id = ? AND label_type = ?", targetID, "auxiliary").First(&target).Error; err != nil {
-			return fmt.Errorf("load target: %w", err)
-		}
-
-		// Merge aliases: source label + source aliases → target aliases (dedup).
-		aliasSet := make(map[string]bool)
-		for _, a := range target.Aliases {
-			aliasSet[strings.ToLower(strings.TrimSpace(a))] = true
-		}
-		for _, a := range append([]string{source.Label}, source.Aliases...) {
-			key := strings.ToLower(strings.TrimSpace(a))
-			if !aliasSet[key] && !strings.EqualFold(target.Label, a) {
-				target.Aliases = append(target.Aliases, a)
-				aliasSet[key] = true
-			}
-		}
-		if err := tx.Save(&target).Error; err != nil {
-			return fmt.Errorf("save target aliases: %w", err)
-		}
-
-		// Migrate topic_tag_semantic_labels: source → target, ON CONFLICT DO NOTHING.
-		var links []models.TopicTagSemanticLabel
-		if err := tx.Where("semantic_label_id = ?", sourceID).Find(&links).Error; err != nil {
-			return fmt.Errorf("load source links: %w", err)
-		}
-		for _, link := range links {
-			migrated := models.TopicTagSemanticLabel{TopicTagID: link.TopicTagID, SemanticLabelID: targetID}
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&migrated).Error; err != nil {
-				return fmt.Errorf("migrate link topic_tag=%d: %w", link.TopicTagID, err)
-			}
-		}
-		if err := tx.Where("semantic_label_id = ?", sourceID).Delete(&models.TopicTagSemanticLabel{}).Error; err != nil {
-			return fmt.Errorf("delete source links: %w", err)
-		}
-
-		// Migrate board_composition: source → target, ON CONFLICT DO NOTHING.
-		type boardCompRow struct {
-			BoardID          uint `gorm:"column:board_id"`
-			AuxiliaryLabelID uint `gorm:"column:auxiliary_label_id"`
-		}
-		var comps []boardCompRow
-		if err := tx.Table("board_composition").Where("auxiliary_label_id = ?", sourceID).Find(&comps).Error; err != nil {
-			return fmt.Errorf("load source board_composition: %w", err)
-		}
-		for _, comp := range comps {
-			if err := tx.Exec(`
-				INSERT INTO board_composition (board_id, auxiliary_label_id)
-				VALUES (?, ?) ON CONFLICT DO NOTHING
-			`, comp.BoardID, targetID).Error; err != nil {
-				return fmt.Errorf("migrate board_composition board=%d: %w", comp.BoardID, err)
-			}
-		}
-		if err := tx.Where("auxiliary_label_id = ?", sourceID).Delete(&models.BoardComposition{}).Error; err != nil {
-			return fmt.Errorf("delete source board_composition: %w", err)
-		}
-
-		// Recalculate ref_counts.
-		var targetRefCount int64
-		if err := tx.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", targetID).Count(&targetRefCount).Error; err != nil {
-			return fmt.Errorf("count target refs: %w", err)
-		}
-		var sourceRefCount int64
-		if err := tx.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", sourceID).Count(&sourceRefCount).Error; err != nil {
-			return fmt.Errorf("count source refs: %w", err)
-		}
-		if err := tx.Model(&models.SemanticLabel{}).Where("id = ?", targetID).Update("ref_count", int(targetRefCount)).Error; err != nil {
-			return fmt.Errorf("update target ref_count: %w", err)
-		}
-		if err := tx.Model(&models.SemanticLabel{}).Where("id = ?", sourceID).Updates(map[string]any{
-			"ref_count":       int(sourceRefCount),
-			"status":          "disabled",
-			"embedding":       nil,
-			"merge_embedding": nil,
-		}).Error; err != nil {
-			return fmt.Errorf("disable source: %w", err)
-		}
-
-		return nil
-	})
-}
 
 // PruneUnderqualifiedCandidates hard-deletes all candidate topics with
 // hit_count < upgradeThreshold. Sections referencing them are unlinked

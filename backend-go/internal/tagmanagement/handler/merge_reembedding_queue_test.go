@@ -12,6 +12,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service"
 )
@@ -65,11 +66,11 @@ func TestMergeReembeddingQueueStatusEndpointReturnsCounts(t *testing.T) {
 	db := setupMergeReembeddingTestDB(t)
 	source, target := seedMergeQueueTags(t, db)
 
-	tasks := []models.MergeReembeddingQueue{
-		{SourceTagID: source.ID, TargetTagID: target.ID, Status: models.MergeReembeddingQueueStatusPending},
-		{SourceTagID: source.ID, TargetTagID: target.ID, Status: models.MergeReembeddingQueueStatusProcessing},
-		{SourceTagID: source.ID, TargetTagID: target.ID, Status: models.MergeReembeddingQueueStatusCompleted},
-		{SourceTagID: source.ID, TargetTagID: target.ID, Status: models.MergeReembeddingQueueStatusFailed},
+	tasks := []tagmodels.MergeReembeddingQueue{
+		{SourceTagID: source.ID, TargetTagID: target.ID, Status: tagmodels.MergeReembeddingQueueStatusPending},
+		{SourceTagID: source.ID, TargetTagID: target.ID, Status: tagmodels.MergeReembeddingQueueStatusProcessing},
+		{SourceTagID: source.ID, TargetTagID: target.ID, Status: tagmodels.MergeReembeddingQueueStatusCompleted},
+		{SourceTagID: source.ID, TargetTagID: target.ID, Status: tagmodels.MergeReembeddingQueueStatusFailed},
 	}
 	if err := db.Create(&tasks).Error; err != nil {
 		t.Fatalf("seed tasks: %v", err)
@@ -119,21 +120,21 @@ func TestMergeReembeddingQueueEnqueueDedupesTargetTag(t *testing.T) {
 	}
 
 	var count int64
-	if err := db.Model(&models.MergeReembeddingQueue{}).Where("target_tag_id = ?", target.ID).Count(&count).Error; err != nil {
+	if err := db.Model(&tagmodels.MergeReembeddingQueue{}).Where("target_tag_id = ?", target.ID).Count(&count).Error; err != nil {
 		t.Fatalf("count queue tasks: %v", err)
 	}
 	if count != 1 {
 		t.Fatalf("task count = %d, want 1", count)
 	}
 
-	if err := db.Model(&models.MergeReembeddingQueue{}).Where("target_tag_id = ?", target.ID).Update("status", models.MergeReembeddingQueueStatusProcessing).Error; err != nil {
+	if err := db.Model(&tagmodels.MergeReembeddingQueue{}).Where("target_tag_id = ?", target.ID).Update("status", tagmodels.MergeReembeddingQueueStatusProcessing).Error; err != nil {
 		t.Fatalf("mark processing: %v", err)
 	}
 	if err := service.Enqueue(source.ID, target.ID); err != nil {
 		t.Fatalf("enqueue with processing task: %v", err)
 	}
 
-	if err := db.Model(&models.MergeReembeddingQueue{}).Where("target_tag_id = ?", target.ID).Count(&count).Error; err != nil {
+	if err := db.Model(&tagmodels.MergeReembeddingQueue{}).Where("target_tag_id = ?", target.ID).Count(&count).Error; err != nil {
 		t.Fatalf("count queue tasks after processing dedupe: %v", err)
 	}
 	if count != 1 {
@@ -145,10 +146,10 @@ func TestMergeReembeddingQueueRetryEndpointResetsFailedTasks(t *testing.T) {
 	db := setupMergeReembeddingTestDB(t)
 	source, target := seedMergeQueueTags(t, db)
 
-	tasks := []models.MergeReembeddingQueue{
-		{SourceTagID: source.ID, TargetTagID: target.ID, Status: models.MergeReembeddingQueueStatusFailed, ErrorMessage: "boom", RetryCount: 1},
-		{SourceTagID: source.ID, TargetTagID: target.ID, Status: models.MergeReembeddingQueueStatusFailed, ErrorMessage: "pow", RetryCount: 2},
-		{SourceTagID: source.ID, TargetTagID: target.ID, Status: models.MergeReembeddingQueueStatusCompleted},
+	tasks := []tagmodels.MergeReembeddingQueue{
+		{SourceTagID: source.ID, TargetTagID: target.ID, Status: tagmodels.MergeReembeddingQueueStatusFailed, ErrorMessage: "boom", RetryCount: 1},
+		{SourceTagID: source.ID, TargetTagID: target.ID, Status: tagmodels.MergeReembeddingQueueStatusFailed, ErrorMessage: "pow", RetryCount: 2},
+		{SourceTagID: source.ID, TargetTagID: target.ID, Status: tagmodels.MergeReembeddingQueueStatusCompleted},
 	}
 	if err := db.Create(&tasks).Error; err != nil {
 		t.Fatalf("seed retry tasks: %v", err)
@@ -162,13 +163,13 @@ func TestMergeReembeddingQueueRetryEndpointResetsFailedTasks(t *testing.T) {
 		t.Fatalf("status code = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 
-	var failedTasks []models.MergeReembeddingQueue
+	var failedTasks []tagmodels.MergeReembeddingQueue
 	if err := db.Where("id IN ?", []uint{tasks[0].ID, tasks[1].ID}).Order("id ASC").Find(&failedTasks).Error; err != nil {
 		t.Fatalf("reload failed tasks: %v", err)
 	}
 
 	for _, task := range failedTasks {
-		if task.Status != models.MergeReembeddingQueueStatusPending {
+		if task.Status != tagmodels.MergeReembeddingQueueStatusPending {
 			t.Fatalf("failed task status = %s, want pending", task.Status)
 		}
 		if task.ErrorMessage != "" {
@@ -179,11 +180,11 @@ func TestMergeReembeddingQueueRetryEndpointResetsFailedTasks(t *testing.T) {
 		}
 	}
 
-	var completed models.MergeReembeddingQueue
+	var completed tagmodels.MergeReembeddingQueue
 	if err := db.First(&completed, tasks[2].ID).Error; err != nil {
 		t.Fatalf("reload completed task: %v", err)
 	}
-	if completed.Status != models.MergeReembeddingQueueStatusCompleted {
+	if completed.Status != tagmodels.MergeReembeddingQueueStatusCompleted {
 		t.Fatalf("completed task status = %s, want completed", completed.Status)
 	}
 }

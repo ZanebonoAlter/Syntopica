@@ -45,7 +45,7 @@ func TestCompletionOnRefreshOffMigrationIdempotent(t *testing.T) {
 		}
 		art := models.Article{
 			FeedID: feedOn.ID, Title: fmt.Sprintf("art-%s", status),
-			Link: fmt.Sprintf("https://example.com/a/%d", i),
+			Link:          fmt.Sprintf("https://example.com/a/%d", i),
 			SummaryStatus: status, FirecrawlStatus: "completed",
 		}
 		require.NoError(t, db.Create(&art).Error)
@@ -105,7 +105,7 @@ func TestCompletionOnRefreshOffMigrationBacklogNotScanned(t *testing.T) {
 	for i, status := range []string{"pending", "incomplete"} {
 		art := models.Article{
 			FeedID: feed.ID, Title: "art-" + status,
-			Link: fmt.Sprintf("https://example.com/b/%d", i),
+			Link:          fmt.Sprintf("https://example.com/b/%d", i),
 			SummaryStatus: status, FirecrawlStatus: "completed",
 		}
 		require.NoError(t, db.Create(&art).Error)

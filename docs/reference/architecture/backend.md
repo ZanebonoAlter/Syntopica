@@ -9,7 +9,8 @@
 - `cmd/server/`：启动入口
 - `internal/app/`：应用装配、路由注册、运行时启动与退出
 - `internal/platform/`：数据库、配置、AI 路由、WebSocket、共享基础设施
-- 业务域：`internal/reader/`、`internal/tagmanagement/`、`internal/topicgraph/`、`internal/admin/`、`internal/models/`
+- 业务域：`internal/reader/`、`internal/tagmanagement/`、`internal/topicgraph/`、`internal/discovery/`、`internal/dataenrichment/`、`internal/datasources/`、`internal/admin/`、`internal/models/`（共享模型白名单）
+- 域间依赖只走 root 门面包（`internal/<domain>` 根包 re-export），跨域深路径（handler/service/repository/models）由 `.golangci.yml` depguard 编译期拦截（spec `backend-package-boundaries`）
 
 如果你发现文档和代码不一致，优先相信源码入口：`backend-go/cmd/server/main.go`、`backend-go/internal/app/router.go`、`backend-go/internal/app/runtime.go`。
 
@@ -21,7 +22,7 @@
 - PostgreSQL + pgvector
 - Viper
 - Gorilla WebSocket
-- internal/admin/scheduler（自研调度器工厂 + Interval）
+- internal/platform/scheduler（自研调度器工厂 + Interval；域内 job 定义 `job_*.go` 留在各域，admin/scheduler 持有 9+ 个任务编排）
 
 ## 实时通信基础设施
 
@@ -86,13 +87,19 @@ backend-go/
 │   └── server/
 ├── configs/
 ├── internal/
-│   ├── app/
-│   ├── models/                    # 共享 GORM 模型
-│   ├── admin/                     # 管理后台域
-│   │   ├── handler/               # AI/scheduler/preferences API
+│   ├── app/                       # 装配层（路由注册、运行时启动，可引任意域）
+│   ├── models/                    # 共享 GORM 模型白名单（18 项 + FeedStats 例外，
+│   │                              #   唯一权威登记处=.golangci.yml 白名单注释）
+│   ├── admin/                     # 管理后台域（AI 运维/scheduler 编排/偏好设置）
+│   │   ├── handler/               # AI/scheduler/poll/preferences API
 │   │   ├── repository/
-│   │   ├── scheduler/             # BaseScheduler 工厂模式
-│   │   └── service/
+│   │   ├── scheduler/             # 域内 job 定义 job_*.go（框架在 platform/scheduler）
+│   │   ├── routes.go / wire.go
+│   ├── discovery/                 # 订阅发现域（feed-discovery，自 admin 迁出）
+│   │   ├── handler/               # /api/discovery/* + 发现相关 settings 路由
+│   │   ├── service/               # 候选/召回/推荐/可用性/目录/偏好画像
+│   │   ├── models/                # 域独占模型（DiscoveryRun/FeedCandidate 等 12 个）
+│   │   ├── routes.go / wire.go    # root 门面（跨域调用唯一入口）
 │   ├── reader/                    # 订阅与文章域
 │   │   ├── handler/               # feed/article/firecrawl/OPML API
 │   │   ├── repository/
@@ -100,22 +107,24 @@ backend-go/
 │   ├── tagmanagement/             # 标签系统域
 │   │   ├── handler/               # board/tag/merge/embedding API
 │   │   ├── repository/
-│   │   └── service/               # core/auxlabel/board/merge/watched
+│   │   ├── models/                # 域独占模型（BoardComposition/EmbeddingConfig 等 11 个）
+│   │   └── service/               # core/auxlabel/board/merge/watched/sourcestats
 │   ├── topicgraph/                # 主题图谱域
-│   │   ├── handler/               # daily_report API
+│   │   ├── handler/               # daily_report/watch/margin_notes API
 │   │   ├── repository/
+│   │   ├── models/                # 域独占模型（TopicAnalysisCursor）
 │   │   └── service/
+│   ├── dataenrichment/            # 数据增强域（board 分析/信号/论证）
+│   ├── datasources/               # 外部数据源域（EIA/JODi/WDI/Comtrade）
 │   └── platform/                  # 共享基础设施
 │       ├── airouter/              # AI provider/capability/failover 路由
 │       ├── aisettings/            # AI/Firecrawl 配置读写
-│       ├── config/
-│       ├── database/
-│       ├── jsonutil/
-│       ├── logging/
-│       ├── middleware/
-│       ├── testutil/
-│       ├── tracing/
-│       └── ws/                    # WebSocket hub
+│       ├── scheduler/             # 调度器框架（BaseScheduler/Registry/PauseAware/
+│       │                          #   SchedulerTask，自 admin/scheduler 迁出）
+│       ├── analysispause/         # 分析暂停总闸
+│       ├── aihealth/ articlerefs/ config/ database/ httpclient/ imageproxy/
+│       ├── jsonutil/ logging/ middleware/ notification/ safefetch/
+│       ├── searxng/ testutil/ textutil/ tracing/ ws/
 ```
 
 每个业务域统一遵循三层结构：
@@ -163,19 +172,34 @@ internal/<domain>/
 - `testutil/`：测试辅助工具
 - `tracing/`：OpenTelemetry tracing
 
+### `internal/platform/scheduler/`
+
+调度器框架（横切基础设施，decouple-backend-domains 迁自 admin/scheduler）：
+
+- `base.go`：`BaseScheduler`、`JobFunc`、`Config`、`JobResult` 类型
+- `registry.go`：调度器注册表（`Registry`/`NewRegistry`）
+- `pause.go`：`PauseAware`（分析暂停闸门包装）
+- `persistence.go`：可选的 `SchedulerTask` DB 状态持久化
+- `task.go`：`SchedulerTask` 模型（AutoMigrate 经 `database.RegisterModels` 自注册）
+
 ### `internal/admin/`
 
-管理后台域：AI 配置、调度器、偏好设置。
+管理后台域：AI 运维、调度任务编排、偏好设置。
 
-- `handler/`：AI provider 管理、scheduler 状态/手动触发、偏好 API
+- `handler/`：AI provider 管理、scheduler 状态/手动触发、poll 聚合、comtrade 设置
 - `repository/`：管理域数据访问
-- `scheduler/`：调度器核心，采用 `BaseScheduler` + `JobFunc` 工厂模式
-  - `base.go`：`BaseScheduler`、`JobFunc`、`Config`、`JobResult` 类型
-  - `job_*.go`：9 个调度任务（每个只需一个函数）
-  - `persistence.go`：可选的 `SchedulerTask` DB 状态持久化
-  - `registry.go`：调度器注册表
-- `service/`：管理域业务逻辑
-- `wire.go`：re-export 调度器工厂函数和 handler 初始化
+- `scheduler/`：域内 job 定义 `job_*.go`（auto_refresh/daily_report/firecrawl/discovery_v2 等，
+  import `internal/platform/scheduler` 框架；discovery 相关 job 经 discovery root 门面调用）
+- `routes.go` + `wire.go`：路由与 re-export（discovery 域路由已迁 `internal/discovery/routes.go`）
+
+### `internal/discovery/`
+
+订阅发现域（feed-discovery，decouple-backend-domains 自 admin 整体迁出；对外 API `/api/discovery/*` 不变）：
+
+- `handler/`：发现/推荐/候选目录/路由参数字典/偏好画像 API（含 `/api/settings` 的 rsshub/proxy/bocha/searxng）
+- `service/`：候选召回、精排推荐、可用性检查、RSSHub 目录同步、偏好画像、seed 策略
+- `models/`：域独占模型（DiscoveryRun、FeedCandidate、FeedRecommendation、RSSHubRoute、PreferenceVector 等 12 个，AutoMigrate 自注册）
+- `routes.go` + `wire.go`：路由注册 + root 门面（admin jobs / app runtime 的唯一跨域入口）
 
 ### `internal/reader/`
 

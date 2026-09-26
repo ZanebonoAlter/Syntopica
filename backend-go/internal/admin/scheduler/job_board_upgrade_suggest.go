@@ -8,7 +8,8 @@ import (
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
-	boardsvc "syntopica-backend/internal/tagmanagement/service/board"
+	"syntopica-backend/internal/platform/scheduler"
+	tagging "syntopica-backend/internal/tagmanagement"
 )
 
 const defaultBoardUpgradeSuggestTime = "06:30"
@@ -49,7 +50,7 @@ func parseBoardUpgradeHHMM(s string) (int, int, error) {
 // BoardUpgradeSuggestJob runs one discover_new generation pass and then GCs
 // stale watch suggestions (spec: scheduler 定期生成建议 + 观察池建议自动回收).
 // Only discover_new is run (design D4). A generation failure is logged only and
-// surfaces as a non-nil JobResult carrying the error string but a nil error —
+// surfaces as a non-nil scheduler.JobResult carrying the error string but a nil error —
 // the scheduler loop stays healthy and sibling jobs keep running. Returns
 // inserted/skipped/cooldown/watch_gc counts for status display.
 // BoardUpgradeSuggestJob runs the two create-direction generation passes
@@ -58,15 +59,15 @@ func parseBoardUpgradeHHMM(s string) (int, int, error) {
 // and does not abort the sibling pass; the job returns a nil error so the
 // scheduler loop stays healthy (flow 红线 10). Returns inserted/skipped/cooldown
 // counts for status display.
-func BoardUpgradeSuggestJob() JobFunc {
-	return func(ctx context.Context) (*JobResult, error) {
+func BoardUpgradeSuggestJob() scheduler.JobFunc {
+	return func(ctx context.Context) (*scheduler.JobResult, error) {
 		startTime := time.Now()
 		db := repository.Repo.DB()
-		svc := boardsvc.NewSemanticBoardUpgradeService(db, boardsvc.NewDefaultSemanticBoardUpgradeLLM(), nil)
+		svc := tagging.NewSemanticBoardUpgradeService(db, tagging.NewDefaultSemanticBoardUpgradeLLM(), nil)
 
-		passes := []boardsvc.UpgradeGenerateRequest{
-			{Direction: boardsvc.UpgradeDirectionCreate, Source: boardsvc.UpgradeSourceAux},
-			{Direction: boardsvc.UpgradeDirectionCreate, Source: boardsvc.UpgradeSourceComposite},
+		passes := []tagging.UpgradeGenerateRequest{
+			{Direction: tagging.UpgradeDirectionCreate, Source: tagging.UpgradeSourceAux},
+			{Direction: tagging.UpgradeDirectionCreate, Source: tagging.UpgradeSourceComposite},
 		}
 		var inserted, skipped, cooldownBlocked int
 		for _, pass := range passes {
@@ -81,7 +82,7 @@ func BoardUpgradeSuggestJob() JobFunc {
 			cooldownBlocked += pCooldown
 		}
 
-		return &JobResult{
+		return &scheduler.JobResult{
 			Data: map[string]interface{}{
 				"inserted":         inserted,
 				"skipped":          skipped,

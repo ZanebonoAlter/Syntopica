@@ -17,9 +17,11 @@ import (
 	"syntopica-backend/internal/platform/aihealth"
 	"syntopica-backend/internal/platform/analysispause"
 	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/scheduler"
 	"syntopica-backend/internal/platform/testutil"
 	content "syntopica-backend/internal/reader"
 	tagging "syntopica-backend/internal/tagmanagement"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	taggingrepo "syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -45,12 +47,12 @@ func TestPauseAware_SkipsWhenPaused(t *testing.T) {
 	require.NoError(t, analysispause.SetPaused(true))
 
 	var called int32
-	job := func(ctx context.Context) (*JobResult, error) {
+	job := func(ctx context.Context) (*scheduler.JobResult, error) {
 		atomic.AddInt32(&called, 1)
-		return &JobResult{Summary: "real job ran", Data: map[string]interface{}{"ran": true}}, nil
+		return &scheduler.JobResult{Summary: "real job ran", Data: map[string]interface{}{"ran": true}}, nil
 	}
 
-	wrapped := PauseAware(job)
+	wrapped := scheduler.PauseAware(job)
 	result, err := wrapped(context.Background())
 
 	require.NoError(t, err, "skipped result must be a success (err=nil)")
@@ -73,12 +75,12 @@ func TestPauseAware_SkipsWhenModelUnhealthy(t *testing.T) {
 	t.Cleanup(func() { aihealth.SetSnapshotForTest(aihealth.Snapshot{}) })
 
 	var called int32
-	job := func(ctx context.Context) (*JobResult, error) {
+	job := func(ctx context.Context) (*scheduler.JobResult, error) {
 		atomic.AddInt32(&called, 1)
-		return &JobResult{Summary: "real job ran"}, nil
+		return &scheduler.JobResult{Summary: "real job ran"}, nil
 	}
 
-	result, err := PauseAware(job)(context.Background())
+	result, err := scheduler.PauseAware(job)(context.Background())
 
 	require.NoError(t, err)
 	require.EqualValues(t, 0, atomic.LoadInt32(&called), "real job must NOT run when models are unhealthy")
@@ -89,11 +91,11 @@ func TestPauseAware_SkipsWhenModelUnhealthy(t *testing.T) {
 // TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused pins the maintenance-class
 // contract for aux_label_cleanup (offline-catchup step 6 / design D9 of
 // pause-analysis): tag edge GC is data hygiene, not analysis, so it MUST NOT sit
-// behind the PauseAware gate — otherwise a long AI outage would let the edge
+// behind the scheduler.PauseAware gate — otherwise a long AI outage would let the edge
 // table grow without bound exactly when nobody is watching.
 //
 // The assertion is structural + behavioral: runtime registers AuxLabelCleanupJob
-// bare (no PauseAware wrapper), so the raw job still reclaims edges while paused,
+// bare (no scheduler.PauseAware wrapper), so the raw job still reclaims edges while paused,
 // whereas the wrapped form used by analysis-class jobs is skipped.
 func TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:pause-auxgc-%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
@@ -118,8 +120,8 @@ func TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused(t *testing.T) {
 		&models.TopicTag{},
 		&models.ArticleTopicTag{},
 		&models.SemanticLabel{},
-		&models.TopicTagSemanticLabel{},
-		&models.BoardComposition{},
+		&tagmodels.TopicTagSemanticLabel{},
+		&tagmodels.BoardComposition{},
 		&models.AISettings{},
 	))
 
@@ -143,9 +145,9 @@ func TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused(t *testing.T) {
 	t.Cleanup(func() { _ = analysispause.SetPaused(false) })
 
 	// Analysis-class composition (what runtime does NOT do for this job): skipped.
-	skipped, err := PauseAware(AuxLabelCleanupJob)(context.Background())
+	skipped, err := scheduler.PauseAware(AuxLabelCleanupJob)(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, "paused", skipped.Data["skipped"], "PauseAware must gate analysis-class jobs")
+	require.Equal(t, "paused", skipped.Data["skipped"], "scheduler.PauseAware must gate analysis-class jobs")
 
 	// Maintenance-class composition (how runtime actually registers it): runs.
 	result, err := AuxLabelCleanupJob(context.Background())
@@ -169,12 +171,12 @@ func TestPauseAware_RunsWhenNotPaused(t *testing.T) {
 	useHealthySnapshot(t)
 
 	var called int32
-	job := func(ctx context.Context) (*JobResult, error) {
+	job := func(ctx context.Context) (*scheduler.JobResult, error) {
 		atomic.AddInt32(&called, 1)
-		return &JobResult{Summary: "real job ran", Data: map[string]interface{}{"ran": true}}, nil
+		return &scheduler.JobResult{Summary: "real job ran", Data: map[string]interface{}{"ran": true}}, nil
 	}
 
-	wrapped := PauseAware(job)
+	wrapped := scheduler.PauseAware(job)
 	result, err := wrapped(context.Background())
 
 	require.NoError(t, err)
@@ -188,11 +190,11 @@ func TestPauseAware_RunsWhenNotPaused(t *testing.T) {
 //
 // runtime.go 已把 firecrawl 注册处的暂停包裹摘除（与 auto_refresh 同列）。断言
 // 结构 + 行为双口径（对齐 TestAuxLabelCleanupEdgeGCRunsWhileAnalysisPaused 的
-// 既有模式）：PauseAware 包裹形态在暂停/健康门下仍 skip（content_completion
+// 既有模式）：scheduler.PauseAware 包裹形态在暂停/健康门下仍 skip（content_completion
 // 等分析类的对照），而裸 job 形态（runtime 实际注册方式）照常抓取。
 
 // TestFirecrawlCrawlRunsWhileAnalysisPaused（A1）：用户暂停路径下 firecrawl tick
-// 照常执行抓取，JobResult 不带 "analysis paused"。
+// 照常执行抓取，scheduler.JobResult 不带 "analysis paused"。
 func TestFirecrawlCrawlRunsWhileAnalysisPaused(t *testing.T) {
 	db := setupFirecrawlJobTest(t)
 	queue := content.NewFirecrawlJobQueue(db)
@@ -214,11 +216,11 @@ func TestFirecrawlCrawlRunsWhileAnalysisPaused(t *testing.T) {
 		require.Equal(t, 1, crawler.callCount(link), "%s must be crawled while paused", link)
 	}
 
-	// 对照：分析类注册形态（PauseAware 包裹）暂停态仍 skip。
+	// 对照：分析类注册形态（scheduler.PauseAware 包裹）暂停态仍 skip。
 	var called int32
-	skipped, err := PauseAware(func(ctx context.Context) (*JobResult, error) {
+	skipped, err := scheduler.PauseAware(func(ctx context.Context) (*scheduler.JobResult, error) {
 		atomic.AddInt32(&called, 1)
-		return &JobResult{Summary: "analysis ran"}, nil
+		return &scheduler.JobResult{Summary: "analysis ran"}, nil
 	})(context.Background())
 	require.NoError(t, err)
 	require.EqualValues(t, 0, atomic.LoadInt32(&called))
@@ -237,11 +239,11 @@ func TestFirecrawlCrawlRunsWhenModelUnhealthy(t *testing.T) {
 	aihealth.SetSnapshotForTest(aihealth.Snapshot{Healthy: false, CheckedAt: &now})
 	t.Cleanup(func() { aihealth.SetSnapshotForTest(aihealth.Snapshot{}) })
 
-	// 对照：content_completion 注册形态（PauseAware 包裹）健康门下 skip。
+	// 对照：content_completion 注册形态（scheduler.PauseAware 包裹）健康门下 skip。
 	var called int32
-	skipped, err := PauseAware(func(ctx context.Context) (*JobResult, error) {
+	skipped, err := scheduler.PauseAware(func(ctx context.Context) (*scheduler.JobResult, error) {
 		atomic.AddInt32(&called, 1)
-		return &JobResult{Summary: "content completion ran"}, nil
+		return &scheduler.JobResult{Summary: "content completion ran"}, nil
 	})(context.Background())
 	require.NoError(t, err)
 	require.EqualValues(t, 0, atomic.LoadInt32(&called), "analysis-class tick must be skipped while model unhealthy")

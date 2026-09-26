@@ -12,11 +12,13 @@ import (
 	"gorm.io/gorm"
 
 	"syntopica-backend/internal/admin/repository"
-	adminservice "syntopica-backend/internal/admin/service"
+	discmodels "syntopica-backend/internal/discovery/models"
+	adminservice "syntopica-backend/internal/discovery/service"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/analysispause"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/safefetch"
+	"syntopica-backend/internal/platform/scheduler"
 )
 
 // ── improve-discovery-recommendations 4.6：发现 v2 三个后台任务 ──
@@ -30,8 +32,8 @@ func setupDiscoveryV2SchedulerDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:sched-%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
-		&models.AISettings{}, &models.FeedCandidate{}, &models.RSSHubRoute{},
-		&models.CandidateAvailability{}, &models.CandidateEmbedding{}, &models.DiscoveryRun{},
+		&models.AISettings{}, &discmodels.FeedCandidate{}, &discmodels.RSSHubRoute{},
+		&discmodels.CandidateAvailability{}, &discmodels.CandidateEmbedding{}, &discmodels.DiscoveryRun{},
 	))
 	database.DB = db
 	repository.InitRepository(db)
@@ -39,15 +41,15 @@ func setupDiscoveryV2SchedulerDB(t *testing.T) *gorm.DB {
 }
 
 // TestDiscoveryV2PauseClassification（design D9）：analysis_paused 打开时，分析类的
-// 候选向量回补被 PauseAware 跳过（良性成功，不计失败），维护类的可用性检查照常执行。
+// 候选向量回补被 scheduler.PauseAware 跳过（良性成功，不计失败），维护类的可用性检查照常执行。
 func TestDiscoveryV2PauseClassification(t *testing.T) {
 	db := setupDiscoveryV2SchedulerDB(t)
 	require.NoError(t, analysispause.SetPaused(true))
 	t.Cleanup(func() { _ = analysispause.SetPaused(false) })
 	ctx := context.Background()
 
-	// 分析类：回补 job 外包 PauseAware（runtime 注册形态）→ 跳过，不调 embedding。
-	res, err := PauseAware(CandidateEmbeddingBackfillJob)(ctx)
+	// 分析类：回补 job 外包 scheduler.PauseAware（runtime 注册形态）→ 跳过，不调 embedding。
+	res, err := scheduler.PauseAware(CandidateEmbeddingBackfillJob)(ctx)
 	require.NoError(t, err, "跳过必须是良性成功（err=nil）")
 	require.Equal(t, "paused", res.Data["skipped"])
 	require.Contains(t, res.Summary, "paused")
@@ -55,7 +57,7 @@ func TestDiscoveryV2PauseClassification(t *testing.T) {
 	// 造一条到期候选：检查任务必须在暂停期间照跑（纯 HTTP 检查属维护类）。
 	url := "https://example.com/feed.xml"
 	enabled := true
-	cand := models.FeedCandidate{
+	cand := discmodels.FeedCandidate{
 		StableKey: "rss:check", Kind: "rss", FeedURL: &url, CanonicalKey: url,
 		ManualMetadata:        models.MetadataMap{adminservice.ManualFieldName: "检查目标"},
 		RecommendationEnabled: &enabled, AccessScope: "public", Revision: 1,
@@ -76,7 +78,7 @@ func TestDiscoveryV2PauseClassification(t *testing.T) {
 	require.EqualValues(t, 1, fetchCalls, "暂停期间检查任务仍执行")
 	require.EqualValues(t, 1, res.Data["checked"])
 
-	var row models.CandidateAvailability
+	var row discmodels.CandidateAvailability
 	require.NoError(t, db.Where("candidate_id = ?", cand.ID).First(&row).Error)
 	require.Equal(t, adminservice.AvailabilityStatusOK, row.Status)
 }
@@ -90,13 +92,13 @@ func TestDiscoveryV2JobsSkipWhenDisabled(t *testing.T) {
 
 	url := "https://example.com/feed.xml"
 	enabled := true
-	cand := models.FeedCandidate{
+	cand := discmodels.FeedCandidate{
 		StableKey: "rss:off", Kind: "rss", FeedURL: &url, CanonicalKey: url,
 		ManualMetadata:        models.MetadataMap{adminservice.ManualFieldName: "停用目标"},
 		RecommendationEnabled: &enabled, AccessScope: "public", Revision: 1,
 	}
 	require.NoError(t, db.Create(&cand).Error)
-	stale := models.DiscoveryRun{RequestKey: "rk-off", Kind: "ask", Status: "running", StartedAt: time.Now().Add(-3 * time.Hour)}
+	stale := discmodels.DiscoveryRun{RequestKey: "rk-off", Kind: "ask", Status: "running", StartedAt: time.Now().Add(-3 * time.Hour)}
 	require.NoError(t, db.Create(&stale).Error)
 
 	fetchCalls := 0
@@ -106,7 +108,7 @@ func TestDiscoveryV2JobsSkipWhenDisabled(t *testing.T) {
 	})
 	t.Cleanup(restore)
 
-	jobs := map[string]JobFunc{
+	jobs := map[string]scheduler.JobFunc{
 		"candidate_availability_check": CandidateAvailabilityCheckJob,
 		"candidate_embedding_backfill": CandidateEmbeddingBackfillJob,
 		"discovery_run_maintenance":    DiscoveryRunMaintenanceJob,
@@ -118,9 +120,9 @@ func TestDiscoveryV2JobsSkipWhenDisabled(t *testing.T) {
 	}
 	require.Equal(t, 0, fetchCalls, "开关关闭时不得发起检查请求")
 	var availabilityCount int64
-	require.NoError(t, db.Model(&models.CandidateAvailability{}).Count(&availabilityCount).Error)
+	require.NoError(t, db.Model(&discmodels.CandidateAvailability{}).Count(&availabilityCount).Error)
 	require.EqualValues(t, 0, availabilityCount)
-	var run models.DiscoveryRun
+	var run discmodels.DiscoveryRun
 	require.NoError(t, db.First(&run, stale.ID).Error)
 	require.Equal(t, "running", run.Status, "开关关闭时维护任务不动作")
 }
@@ -130,11 +132,11 @@ func TestDiscoveryV2JobsSkipWhenDisabled(t *testing.T) {
 func TestDiscoveryRunMaintenanceJobMarksStaleRunning(t *testing.T) {
 	db := setupDiscoveryV2SchedulerDB(t)
 	now := time.Now()
-	stale := models.DiscoveryRun{RequestKey: "rk-stale", Kind: "ask", Status: "running", StartedAt: now.Add(-2 * time.Hour)}
-	fresh := models.DiscoveryRun{RequestKey: "rk-fresh", Kind: "refresh", Status: "running", StartedAt: now.Add(-time.Minute)}
+	stale := discmodels.DiscoveryRun{RequestKey: "rk-stale", Kind: "ask", Status: "running", StartedAt: now.Add(-2 * time.Hour)}
+	fresh := discmodels.DiscoveryRun{RequestKey: "rk-fresh", Kind: "refresh", Status: "running", StartedAt: now.Add(-time.Minute)}
 	finished := now.Add(-3 * time.Hour)
-	done := models.DiscoveryRun{RequestKey: "rk-done", Kind: "ask", Status: "succeeded", StartedAt: now.Add(-5 * time.Hour), FinishedAt: &finished}
-	for _, run := range []*models.DiscoveryRun{&stale, &fresh, &done} {
+	done := discmodels.DiscoveryRun{RequestKey: "rk-done", Kind: "ask", Status: "succeeded", StartedAt: now.Add(-5 * time.Hour), FinishedAt: &finished}
+	for _, run := range []*discmodels.DiscoveryRun{&stale, &fresh, &done} {
 		require.NoError(t, db.Create(run).Error)
 	}
 
@@ -142,16 +144,16 @@ func TestDiscoveryRunMaintenanceJobMarksStaleRunning(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, res.Data["stale_runs_failed"])
 
-	var gotStale models.DiscoveryRun
+	var gotStale discmodels.DiscoveryRun
 	require.NoError(t, db.First(&gotStale, stale.ID).Error)
 	require.Equal(t, adminservice.DiscoveryRunStatusFailed, gotStale.Status)
 	require.Equal(t, adminservice.DiscoveryRunErrorStaleRunning, gotStale.ErrorCode)
 	require.NotNil(t, gotStale.FinishedAt)
 
-	var gotFresh models.DiscoveryRun
+	var gotFresh discmodels.DiscoveryRun
 	require.NoError(t, db.First(&gotFresh, fresh.ID).Error)
 	require.Equal(t, "running", gotFresh.Status, "未超阈值的运行不得误杀")
-	var gotDone models.DiscoveryRun
+	var gotDone discmodels.DiscoveryRun
 	require.NoError(t, db.First(&gotDone, done.ID).Error)
 	require.Equal(t, "succeeded", gotDone.Status)
 }
@@ -163,7 +165,7 @@ func TestCandidateAvailabilityCheckJobSingleExecution(t *testing.T) {
 	_ = setupDiscoveryV2SchedulerDB(t)
 	url := "https://example.com/feed.xml"
 	enabled := true
-	cand := models.FeedCandidate{
+	cand := discmodels.FeedCandidate{
 		StableKey: "rss:concurrent", Kind: "rss", FeedURL: &url, CanonicalKey: url,
 		ManualMetadata:        models.MetadataMap{adminservice.ManualFieldName: "并发目标"},
 		RecommendationEnabled: &enabled, AccessScope: "public", Revision: 1,
@@ -180,8 +182,8 @@ func TestCandidateAvailabilityCheckJobSingleExecution(t *testing.T) {
 	})
 	t.Cleanup(restore)
 
-	reg := NewRegistry()
-	base := New(Config{Name: "candidate_availability_check", Interval: time.Hour, Job: CandidateAvailabilityCheckJob})
+	reg := scheduler.NewRegistry()
+	base := scheduler.New(scheduler.Config{Name: "candidate_availability_check", Interval: time.Hour, Job: CandidateAvailabilityCheckJob})
 	reg.Register("candidate_availability_check", base)
 
 	firstResult := make(chan map[string]interface{}, 1)
@@ -209,7 +211,7 @@ func TestCandidateAvailabilityCheckJobBatchLimit(t *testing.T) {
 	for i := 0; i < adminservice.CandidateCheckDefaultBatchSize+5; i++ {
 		url := fmt.Sprintf("https://example.com/feed-%d.xml", i)
 		enabled := true
-		seed := models.FeedCandidate{
+		seed := discmodels.FeedCandidate{
 			StableKey: fmt.Sprintf("rss:batch-%d", i), Kind: "rss", FeedURL: &url, CanonicalKey: url,
 			ManualMetadata:        models.MetadataMap{adminservice.ManualFieldName: fmt.Sprintf("批量%d", i)},
 			RecommendationEnabled: &enabled, AccessScope: "public", Revision: 1,

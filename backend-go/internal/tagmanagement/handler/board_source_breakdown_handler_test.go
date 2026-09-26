@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"syntopica-backend/internal/models"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -32,7 +33,7 @@ func setupBoardSourceBreakdownTest(t *testing.T) (*gorm.DB, *gin.Engine) {
 		&models.TopicTag{},
 		&models.ArticleTopicTag{},
 		&models.SemanticLabel{},
-		&models.TopicTagBoardLabel{},
+		&tagmodels.TopicTagBoardLabel{},
 		&models.TagJob{},
 	))
 	repository.InitRepository(db)
@@ -63,7 +64,7 @@ func seedBSSourceTag(t *testing.T, db *gorm.DB, boardID uint) models.TopicTag {
 	t.Helper()
 	tag := models.TopicTag{Slug: fmt.Sprintf("t-%d", time.Now().UnixNano()), Label: "t", Status: "active", IsCanonical: true}
 	require.NoError(t, db.Create(&tag).Error)
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: boardID, Score: 0.9}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: boardID, Score: 0.9}).Error)
 	return tag
 }
 
