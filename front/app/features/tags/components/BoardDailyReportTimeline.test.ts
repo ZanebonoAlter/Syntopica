@@ -549,4 +549,30 @@ describe('页边注冲突消解红线（daily-report-margin-notes specs 三 Scen
     expect(document.body.querySelector('mark.mn-highlight[data-jump="88"]')).toBeNull()
     expect(document.body.querySelector('[data-annotation-id="88"]')).toBeNull()
   })
+
+  it('MG-5b 深链竞态：报告列表慢返回时定位目标报告，不回退最新一期', async () => {
+    // 真机走查（2026-09-26，报告 896）发现的间歇性回归：挂载时列表还在飞，
+    // selectReportById findIndex -1 静默放弃 → loading watch 兜底自动选最新一期，
+    // 深链定位失效。修复：深链挂起期间等列表就绪再定位，并阻止自动选中抢先。
+    let resolveList!: (value: unknown) => void
+    api.getBoardDailyReports.mockImplementation(() => new Promise(resolve => { resolveList = resolve }))
+    const wrapper = mount(BoardDailyReportTimeline, {
+      attachTo: document.body,
+      props: { boardId: 1974, initialReportId: 52, initialAnnotationId: 7 },
+    })
+    // 列表未就绪：阅读层已开但不自动选中，也不请求任何详情
+    await flushPromises()
+    expect(document.body.querySelector('.drm-overlay')).not.toBeNull()
+    expect(api.getDailyReportDetail).not.toHaveBeenCalled()
+
+    resolveList({ success: true, data: { reports } })
+    await flushPromises()
+    await nextTick()
+    // 定位 initialReportId=52（非最新一期 60），详情只请求目标报告
+    expect(api.getDailyReportDetail).toHaveBeenCalledWith(52)
+    expect(api.getDailyReportDetail).not.toHaveBeenCalledWith(60)
+    const overlay = document.body.querySelector('.drm-overlay')
+    expect(overlay?.textContent).toContain('6 月 20 日')
+    wrapper.unmount()
+  })
 })

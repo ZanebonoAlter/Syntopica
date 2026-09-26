@@ -90,6 +90,8 @@ const peelPage = ref<HTMLElement | null>(null)
 const railRef = ref<{ focusCard: (annotationId: number, options?: { focusInput?: boolean }) => Promise<boolean> } | null>(null)
 const litNoteId = ref<number | null>(null)
 const pendingFocusNoteId = ref<number | null>(null)
+/** 深链定位挂起标志：报告列表未就绪期间阻止 loading watch 自动选中最新一期。 */
+const deepLinkPending = ref(false)
 /** 引用文本失配（原文已变更）的批注 id（高亮应用后回写，PR-3）。 */
 const changedNoteIds = ref<number[]>([])
 /** 窄屏（<1100px，沿用 drm-layout 现有断点）：右抽屉 + 右下浮动入口。 */
@@ -218,10 +220,28 @@ onMounted(async () => {
   if (!props.initialReportId) return
   lastTrigger.value = null
   showReader.value = true
-  await reader.selectReportById(props.initialReportId)
+  // 批注定位请求须在报告选中前挂起：消费端（applyNoteHighlights）要求 annotations
+  // 到齐才消费，提前置上不会白跑；反之放到末尾会错过 watcher 触发（annotations 先到
+  // → watcher 白跑一次 → 赋值后无人再触发，定位丢失，反向竞态）。
+  if (props.initialAnnotationId != null) pendingFocusNoteId.value = props.initialAnnotationId
+  // 挂载时报告列表异步加载存在竞态：列表未到齐时 selectReportById 找不到目标会
+  // 静默放弃，随后 loading watch 兜底自动选中最新一期，深链定位间歇性失效。
+  // 挂起期间置 deepLinkPending 阻止自动选中抢先，等列表就绪后再定位。
+  deepLinkPending.value = true
+  try {
+    if (reader.loading.value) {
+      await new Promise<void>(resolve => {
+        const stop = watch(reader.loading, (isLoading) => {
+          if (!isLoading) { stop(); resolve() }
+        })
+      })
+    }
+    await reader.selectReportById(props.initialReportId)
+  } finally {
+    deepLinkPending.value = false
+  }
   const detail = reader.selectedDetail.value
   if (detail) await ensureWatchHits(detail.id, detail)
-  if (props.initialAnnotationId != null) pendingFocusNoteId.value = props.initialAnnotationId
 })
 
 const reportStatusLabel: Record<string, string> = {
@@ -385,8 +405,10 @@ watch(() => props.boardId, () => {
 })
 
 // 版块切换后（reader 开着）日报列表重载完成时自动选中第一天，触发纵向翻页进入转场。
+// 深链定位挂起期间跳过自动选中（否则会抢先选最新一期，随后再跳目标造成闪跳）。
 watch(reader.loading, async (isLoading) => {
   if (isLoading) return
+  if (deepLinkPending.value) return
   if (!showReader.value || reader.currentDayIndex.value >= 0) return
   if (reader.reports.value.length > 0) {
     await reader.selectReport(0)
