@@ -27,6 +27,9 @@ Syntopica 想回答的不是“今天又有多少篇新文章”，而是：
 > 一个话题是刚刚出现、持续发展，还是正在分化与结束？
 
 <p align="center">
+  <img src="img/readme/syntopica.png" width="100%" alt="Syntopica">
+</p>
+<p align="center">
   <img src="img/readme/overview.png" width="100%" alt="Syntopica 阅读工作台">
 </p>
 
