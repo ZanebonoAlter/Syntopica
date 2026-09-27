@@ -91,7 +91,7 @@ func invSeedFreshAndStaleLanes(t *testing.T, repo *repository.Repository, now ti
 	}
 }
 
-// ── 调用顺序：gate 先于 method_select/hypothesize，lane 集来自父简报 ─────────
+// ── 调用顺序：gate 先于 hypothesize，lane 集来自父简报 ─────────
 
 func TestInvestigateBoardFreshness_GateRunsBeforeMethodSelectAndHypothesize(t *testing.T) {
 	inner := newMockAirRouter()
@@ -111,8 +111,7 @@ func TestInvestigateBoardFreshness_GateRunsBeforeMethodSelectAndHypothesize(t *t
 		log.record(fmt.Sprintf("refresh:%d/%s/%s", topicID, gran, period))
 	}
 
-	m := seedInvMethod(t, repo, "inv-freshness-order-method", "因果链检验", "逐环核对时间先后与独立来源。")
-	addInvChainWithSelector(inner, invSynthesisLLM, [2]string{fmt.Sprintf("%d", m.ID), "适配"})
+	addInvChain(inner, invSynthesisLLM)
 
 	q := service.BoardInvestigationQuestion{ID: "q1", Text: "两条泳道是否由同一资金驱动", Source: "generated"}
 	out, err := orch.InvestigateBoardQuestion(context.Background(), boardID, brief.ID, q)
@@ -138,9 +137,8 @@ func TestInvestigateBoardFreshness_GateRunsBeforeMethodSelectAndHypothesize(t *t
 	for i := 0; i < firstLLM; i++ {
 		require.True(t, strings.HasPrefix(events[i], "refresh:902/"), "fresh lane 901 must not be refreshed: %v", events)
 	}
-	// 链上首个 LLM 是方法选择，其次是假设生成（gate 在两者之前）。
-	require.Equal(t, "llm:data_enrichment.board_method_select", events[firstLLM])
-	require.Equal(t, "llm:data_enrichment.board_hypothesize", events[firstLLM+1])
+	// 链上首个 LLM 是假设生成（gate 在其之前）。
+	require.Equal(t, "llm:data_enrichment.board_hypothesize", events[firstLLM])
 
 	// 快照固化：phase=pre_hypothesize、lanes=2（父简报推导）、report.refreshed=3。
 	fresh := invSectorsMap(t, out.Result.InputSnapshot)["freshness"].(map[string]any)

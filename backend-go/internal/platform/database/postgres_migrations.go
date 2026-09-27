@@ -2421,7 +2421,43 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, normalizeArticleLinkFragmentsMigration())
 	migrations = append(migrations, marginNotesTablesMigration())
 	migrations = append(migrations, marginNotesWebSourcesMigration())
-	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration())
+	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration())
+}
+
+// dropProfileTablesMigration implements 20260926_0001
+// (restructure-settings-navigation): drop the two retired profile tables.
+// 事实依据：reference_roles 仅 1 行 seed 演示数据（UI 入口 2026-09-04 已摘）；
+// analysis_methods 仅 1 条 legacy 停用卡（从未启用，注入零次发生）——两表
+// 无用户数据价值，drop 无行为损失。幂等：IF EXISTS。回滚 = 按下方快照重建
+// 空表（无数据恢复诉求）。
+//
+// 表结构快照（供考古/重建，2026-09-26 取自真库）：
+//
+//	reference_roles:
+//	  id bigint PK (seq), name varchar(120) UNIQUE NOT NULL,
+//	  title varchar(200), content text NOT NULL, enabled boolean NOT NULL,
+//	  created_at/updated_at timestamptz
+//
+//	analysis_methods:
+//	  id bigint PK (seq), name varchar(120) UNIQUE NOT NULL,
+//	  title varchar(200), summary text,
+//	  selection_meta jsonb NOT NULL DEFAULT '{}', content text NOT NULL,
+//	  enabled boolean NOT NULL, legacy boolean NOT NULL DEFAULT false,
+//	  deleted_at timestamptz (indexed), created_at/updated_at timestamptz
+func dropProfileTablesMigration() Migration {
+	return Migration{
+		Version:     "20260926_0001",
+		Description: "restructure-settings-navigation: drop retired profile tables reference_roles and analysis_methods (zero usage, no user data).",
+		Up: func(db *gorm.DB) error {
+			if err := db.Exec(`DROP TABLE IF EXISTS reference_roles`).Error; err != nil {
+				return fmt.Errorf("drop reference_roles: %w", err)
+			}
+			if err := db.Exec(`DROP TABLE IF EXISTS analysis_methods`).Error; err != nil {
+				return fmt.Errorf("drop analysis_methods: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 // boardSignalResearchProgressMigration implements 20260922_0002

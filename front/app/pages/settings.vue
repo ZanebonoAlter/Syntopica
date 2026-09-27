@@ -1,46 +1,10 @@
 <script setup lang="ts">
+// 设置工作区（restructure-settings-navigation 后）：
+// 导航元数据与 section 组件映射收敛在 SettingsWorkspace 的 sections 单一来源（D3），
+// 本页仅作路由挂载点。
 import SettingsWorkspace from '~/features/settings/components/SettingsWorkspace.vue'
-import SettingsSectionFeeds from '~/features/settings/components/SettingsSectionFeeds.vue'
-import SettingsSectionAiProviders from '~/features/settings/components/SettingsSectionAiProviders.vue'
-import SettingsSectionCapabilityRoutes from '~/features/settings/components/SettingsSectionCapabilityRoutes.vue'
-import SettingsSectionAiHealth from '~/features/settings/components/SettingsSectionAiHealth.vue'
-import SettingsSectionQueues from '~/features/settings/components/SettingsSectionQueues.vue'
-import SettingsSectionPreferences from '~/features/settings/components/SettingsSectionPreferences.vue'
-import SettingsSectionFirecrawl from '~/features/settings/components/SettingsSectionFirecrawl.vue'
-import SettingsSectionBocha from '~/features/settings/components/SettingsSectionBocha.vue'
-import SettingsSectionSearxng from '~/features/settings/components/SettingsSectionSearxng.vue'
-import SettingsSectionDatasources from '~/features/settings/components/SettingsSectionDatasources.vue'
-import SettingsSectionAnalysisMethods from '~/features/settings/components/SettingsSectionAnalysisMethods.vue'
-import SettingsSectionRsshub from '~/features/settings/components/SettingsSectionRsshub.vue'
-import SettingsSectionProxy from '~/features/settings/components/SettingsSectionProxy.vue'
-import SettingsSectionSchedulers from '~/features/settings/components/SettingsSectionSchedulers.vue'
-import SettingsSectionMarginNotes from '~/features/settings/components/SettingsSectionMarginNotes.vue'
-
-import type { SectionKey } from '~/features/settings/components/SettingsWorkspace.vue'
-
-const sectionComponents: Record<SectionKey, any> = {
-  'feeds': SettingsSectionFeeds,
-  'ai-providers': SettingsSectionAiProviders,
-  'capability-routes': SettingsSectionCapabilityRoutes,
-  'ai-health': SettingsSectionAiHealth,
-  'queues': SettingsSectionQueues,
-  'preferences': SettingsSectionPreferences,
-  'firecrawl': SettingsSectionFirecrawl,
-  'bocha': SettingsSectionBocha,
-  'searxng': SettingsSectionSearxng,
-  'datasources': SettingsSectionDatasources,
-  'analysis-methods': SettingsSectionAnalysisMethods,
-  'rsshub': SettingsSectionRsshub,
-  'proxy': SettingsSectionProxy,
-  'schedulers': SettingsSectionSchedulers,
-  'margin-notes': SettingsSectionMarginNotes,
-}
 </script>
 
 <template>
-  <SettingsWorkspace>
-    <template #default="{ section }">
-      <component :is="sectionComponents[section]" :key="section" />
-    </template>
-  </SettingsWorkspace>
+  <SettingsWorkspace />
 </template>

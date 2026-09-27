@@ -40,8 +40,10 @@ export interface ProbeResult {
 }
 
 export function useDatasourcesApi() {
-  async function listCatalog(): Promise<ApiResponse<{ data_sources: DataSourceEntry[] }>> {
-    return apiClient.get('/datasources')
+  async function listCatalog(): Promise<ApiResponse<{ data_sources: DataSourceEntry[] }> & { data_sources?: DataSourceEntry[] }> {
+    // 后端目录端点返回裸结构 {data_sources:[...]}（spec 未定包装形状），
+    // apiClient 的 extras 通道把非标准键透传到顶层；兼容两种取法。
+    return apiClient.get('/datasources') as Promise<ApiResponse<{ data_sources: DataSourceEntry[] }> & { data_sources?: DataSourceEntry[] }>
   }
 
   async function probe(code: string): Promise<ApiResponse<ProbeResult>> {

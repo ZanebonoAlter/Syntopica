@@ -26,8 +26,10 @@ export function useDatasources() {
     try {
       const { listCatalog } = useDatasourcesApi()
       const res = await listCatalog()
-      if (res.success && res.data?.data_sources) {
-        sources.value = res.data.data_sources
+      // 目录端点裸结构：data_sources 经 extras 透传在顶层（见 api/datasources.ts 注释）
+      const list = res.data_sources ?? res.data?.data_sources
+      if (res.success && list) {
+        sources.value = list
       } else {
         throw new Error(res.error || '加载失败')
       }

@@ -29,14 +29,28 @@ import (
 //   support、refuted/weakened 缺存活 counter = 清洗后结构失败（重试→0 行），
 //   plausible/insufficient 不强制
 
+// chatErrRouter 首个 Chat 调用返回注入错误，其余走内嵌 mock（模拟携带内部
+// 细节的传输/上游失败）。
+type chatErrRouter struct {
+	*internalMockRouter
+	err error
+	hit int
+}
+
+func (m *chatErrRouter) Chat(ctx context.Context, req airouter.ChatRequest) (*airouter.ChatResult, error) {
+	if m.hit == 0 {
+		m.hit++
+		m.calls = append(m.calls, req)
+		return nil, m.err
+	}
+	return m.internalMockRouter.Chat(ctx, req)
+}
+
 // ── 测试素材 ────────────────────────────────────────────────────────────────
 
 func synthesisTestStage() *boardHypothesisStageResult {
 	return &boardHypothesisStageResult{
-		Question:    investigationTestQuestion(),
-		Methods:     boardMethodSelection{Candidates: []boardMethodCandidate{}, Selected: []boardMethodSelected{}, Dropped: []DroppedAnalysisMethod{}},
-		MethodRefs:  []AnalysisMethodRef{},
-		MethodCards: []AnalysisMethodCardTrace{},
+		Question: investigationTestQuestion(),
 		Hypotheses: boardHypothesisGeneration{
 			Hypotheses: []boardHypothesis{
 				{ID: "h0", Label: "无统一机制，可分别解释", IsNull: true, SupportNeeded: []string{"共同机制"}, DisconfirmNeeded: []string{"独立解释"}, Scope: "板块"},
@@ -149,10 +163,6 @@ func TestBoardSynthesis_ParseH0MostCredibleAndNoThesisSchema(t *testing.T) {
 	}
 	if p.Scope != "board" || p.ResultKind != "board_investigation" {
 		t.Fatalf("scope/kind must be fixed: %+v", p)
-	}
-	// 方法引用不由 LLM 决定（parser 永不读 method_refs）。
-	if len(p.MethodRefs) != 0 {
-		t.Fatalf("parser must not adopt LLM method_refs: %+v", p.MethodRefs)
 	}
 }
 
@@ -486,17 +496,10 @@ func TestBoardSynthesis_QualityGuardFollowsDerivedFrom(t *testing.T) {
 	}
 }
 
-// ── prompt 契约：研究结果与方法留痕入，旧论文结构出 ─────────────────────────
+// ── prompt 契约：研究结果入，旧论文结构出 ─────────────────────────
 
 func TestBoardSynthesis_PromptContract(t *testing.T) {
 	stage := synthesisTestStage()
-	stage.MethodPrompt = "CONTENT-CAUSAL-STEP 检查每一环传导证据"
-	stage.MethodRefs = []AnalysisMethodRef{{ID: 11, Title: "因果链检验", ContentHash: "abc123"}}
-	stage.Methods.Selected = []boardMethodSelected{{ID: 11, Title: "因果链检验", Reason: "适配"}}
-	stage.Methods.Dropped = []DroppedAnalysisMethod{
-		{ID: 22, Title: "历史对照", Reason: "budget_exceeded"},
-		{ID: 33, Title: "修辞卡", Reason: "content_noncompliant"},
-	}
 	prompt := assembleBoardSynthesizePrompt(synthesisTestQuestion(), investigationTestBrief(), stage, synthesisTestResearch(), []uint{1, 2})
 	for _, want := range []string{
 		"两条泳道是否由同一资金驱动",    // 问题
@@ -507,8 +510,6 @@ func TestBoardSynthesis_PromptContract(t *testing.T) {
 		"基金公告原文摘录ABC",                    // 工具结果原文（供 quote 逐字核对）
 		"tool_unavailable", "fetch_page", // gap 留痕
 		"counter_attempted", "neutral", // coverage
-		"CONTENT-CAUSAL-STEP", "因果链检验", // 实际注入方法正文
-		"budget_exceeded", "content_noncompliant", // 舍弃机码
 		"白名单", // lane 白名单
 	} {
 		if !strings.Contains(prompt, want) {
@@ -560,7 +561,7 @@ func TestBoardHypothesis_RetryReasonStableCodeNoLeak(t *testing.T) {
 		{Content: cannedHypothesesJSON},
 	}}
 	orch := &OrchestratorService{airouter: router, capability: internalTestCap}
-	gen, err := orch.generateBoardHypotheses(context.Background(), "inv-sess", investigationTestQuestion(), investigationTestBrief(), "")
+	gen, err := orch.generateBoardHypotheses(context.Background(), "inv-sess", investigationTestQuestion(), investigationTestBrief())
 	if err != nil {
 		t.Fatalf("parse failure must recover on retry: %v", err)
 	}
@@ -578,7 +579,7 @@ func TestBoardHypothesis_RetryReasonStableCodeNoLeak(t *testing.T) {
 	leaky := fmt.Errorf("dial tcp 10.0.0.7:5432 refused")
 	errRouter := &chatErrRouter{internalMockRouter: &internalMockRouter{responses: []*airouter.ChatResult{{Content: cannedHypothesesJSON}}}, err: leaky}
 	orch2 := &OrchestratorService{airouter: errRouter, capability: internalTestCap}
-	gen2, err := orch2.generateBoardHypotheses(context.Background(), "inv-sess", investigationTestQuestion(), investigationTestBrief(), "")
+	gen2, err := orch2.generateBoardHypotheses(context.Background(), "inv-sess", investigationTestQuestion(), investigationTestBrief())
 	if err != nil {
 		t.Fatalf("chat error must recover on retry: %v", err)
 	}
@@ -591,7 +592,7 @@ func TestBoardHypothesis_RetryReasonStableCodeNoLeak(t *testing.T) {
 		{Content: noH0HypothesesJSON},
 	}}
 	orch3 := &OrchestratorService{airouter: noH0Router, capability: internalTestCap}
-	gen3, err := orch3.generateBoardHypotheses(context.Background(), "inv-sess", investigationTestQuestion(), investigationTestBrief(), "")
+	gen3, err := orch3.generateBoardHypotheses(context.Background(), "inv-sess", investigationTestQuestion(), investigationTestBrief())
 	if err != nil {
 		t.Fatalf("mechanical H0 path: %v", err)
 	}

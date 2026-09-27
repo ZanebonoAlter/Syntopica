@@ -101,7 +101,7 @@
 
 编排 SHALL 对单次 LLM 调用设 max_loops 上限（默认 6）。解读员 SHALL 读取历史 applied review。编排 SHALL NOT 产出已废弃的走向预测字段 `direction` / `confidence` / `horizon` / `trigger_up` / `trigger_down`。
 
-从版块简报或调查下钻时，单泳道入口 MAY 接收可修改的预填研究问题/观察点；该输入只用于聚焦，不得作为不可推翻的既定命题。本 change 的方法卡自动选择仅适用于 `board_investigation`；单泳道不新增多假设 schema，也不自动选择方法卡，但 MUST 停止注入旧作者画像，并按「证据适配与反证纪律」移除固定证据类型配额。
+从版块简报或调查下钻时，单泳道入口 MAY 接收可修改的预填研究问题/观察点；该输入只用于聚焦，不得作为不可推翻的既定命题。编排 SHALL NOT 注入作者画像或方法卡（方法卡体系已整体移除；单泳道不新增多假设 schema），并按「证据适配与反证纪律」SHALL NOT 使用固定证据类型配额。
 
 #### Scenario: 消费分层上下文
 
@@ -130,8 +130,8 @@
 
 #### Scenario: 单泳道不继承作者画像
 
-- **WHEN** 数据库仍保留旧参考角色文档时触发单泳道分析
-- **THEN** 其内容不再全局注入单泳道三角色 prompt，单泳道现有结果 schema 保持不变
+- **WHEN** 触发单泳道分析
+- **THEN** 编排输入 SHALL NOT 含任何作者画像或方法卡内容
 
 ### Requirement: agent loop 的三个强制防御
 

@@ -230,8 +230,30 @@ describe('useOnboarding', () => {
 
       const config = driverMock.mock.calls[0]?.[0] as Config | undefined
       const titles = (config?.steps ?? []).map(s => s.popover?.title)
-      expect(titles).toContain('七个分区')
+      expect(titles).toContain('分组导航')
       el.remove()
+    })
+
+    it('settings tour anchors resolve on grouped navigation (no schedulers anchor)', async () => {
+      // 分组导航下全部步骤锚点可解析：设置 DOM 含 4 个锚点元素
+      const anchors = ['settings-nav', 'settings-nav-feeds', 'settings-nav-ai-providers', 'settings-nav-runtime-status']
+      const els = anchors.map((a) => {
+        const el = document.createElement(a === 'settings-nav' ? 'nav' : 'button')
+        el.setAttribute('data-onboarding', a)
+        document.body.appendChild(el)
+        return el
+      })
+
+      const { startSettingsTour } = useOnboarding()
+      await startSettingsTour()
+
+      const config = driverMock.mock.calls[0]?.[0] as Config | undefined
+      const steps = config?.steps ?? []
+      // 带 element 的步骤全部通过 pre-filter（无步骤被丢弃）
+      expect(steps.filter(s => s.element)).toHaveLength(4)
+      // 旧锚点 settings-nav-schedulers 不再被引用
+      expect(JSON.stringify(steps)).not.toContain('settings-nav-schedulers')
+      els.forEach(el => el.remove())
     })
   })
 })

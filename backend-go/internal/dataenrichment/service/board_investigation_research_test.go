@@ -110,7 +110,6 @@ func researchTestInput(hyps []boardHypothesis) BoardInvestigationResearchInput {
 		Brief:         investigationTestBrief(),
 		LaneWhitelist: []uint{1, 2},
 		Hypotheses:    hyps,
-		EvidenceNeeds: []string{"资金来源的一手公告", "两条泳道时间线的独立对照"},
 	}
 }
 
@@ -563,7 +562,7 @@ func TestBoardInvestigationResearch_InvalidPurposeAndUnknownTargetBlocked(t *tes
 	}
 }
 
-// ── prompt 契约：问题/假设/证据需求/泳道白名单；无方法卡正文、无赢家 ─────────
+// ── prompt 契约：问题/假设/泳道白名单；无方法卡正文、无赢家 ─────────────────
 
 func TestBoardInvestigationResearch_PromptContract(t *testing.T) {
 	in := researchTestInput(researchHypotheses())
@@ -575,7 +574,6 @@ func TestBoardInvestigationResearch_PromptContract(t *testing.T) {
 		in.Question.Text,
 		"h0", "h1", "h2",
 		"同一产业基金同时推动产能与招标", // h1 label
-		"资金来源的一手公告",       // evidence need
 		"政策补贴周期同步带动",
 		ResearchPurposeNeutral, ResearchPurposeSupport, ResearchPurposeCounter,
 		"web_search",
@@ -595,7 +593,7 @@ func TestBoardInvestigationResearch_PromptContract(t *testing.T) {
 		}
 	}
 	// 方法卡正文/作者文风/赢家不入 prompt：输入结构上没有该方法参数，
-	// 再对哨兵词兜底断言（AssembleSelectedAnalysisMethods 的装配产物不会出现）。
+	// 再对哨兵词兜底断言（方法卡体系已移除，产物不会出现）。
 	for _, banned := range []string{"分析方法参考", "CONTENT-", "作者", "模仿"} {
 		if strings.Contains(prompt, banned) {
 			t.Errorf("prompt must not contain %q", banned)

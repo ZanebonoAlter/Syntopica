@@ -2,51 +2,60 @@
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Icon } from '@iconify/vue'
+import type { Component } from 'vue'
 import { useTheme } from '~/composables/useTheme'
 import { useOnboarding } from '~/composables/useOnboarding'
 import SettingsSidebar from './SettingsSidebar.vue'
+import SettingsSectionFeeds from './SettingsSectionFeeds.vue'
+import SettingsSectionPreferences from './SettingsSectionPreferences.vue'
+import SettingsSectionMarginNotes from './SettingsSectionMarginNotes.vue'
+import AIProviderManagement from '~/features/ai/components/AIProviderManagement.vue'
+import SettingsSectionCapabilityRoutes from './SettingsSectionCapabilityRoutes.vue'
+import SettingsSectionDatasourcesNetwork from './SettingsSectionDatasourcesNetwork.vue'
+import SettingsSectionRuntimeStatus from './SettingsSectionRuntimeStatus.vue'
 
 export type SectionKey =
   | 'feeds'
+  | 'preferences'
+  | 'margin-notes'
   | 'ai-providers'
   | 'capability-routes'
-  | 'ai-health'
-  | 'queues'
-  | 'preferences'
-  | 'firecrawl'
-  | 'bocha'
-  | 'searxng'
-  | 'datasources'
-  | 'analysis-methods'
-  | 'rsshub'
-  | 'proxy'
-  | 'schedulers'
-  | 'margin-notes'
+  | 'datasources-network'
+  | 'runtime-status'
 
-interface SectionMeta {
+export interface SectionMeta {
   key: SectionKey
+  /** 分组标题（内容管理 / AI 配置 / 数据源与网络 / 运行状态），组标题不可点击 */
+  group: string
   label: string
   description: string
   icon: string
+  component: Component
 }
 
+/** sections 单一来源（D3）：导航元数据与渲染组件收敛于此，pages/settings.vue 不再维护映射 */
 const sections: SectionMeta[] = [
-  { key: 'feeds', label: '订阅源', description: '管理 RSS 订阅源的刷新、抓取和标签配置', icon: 'mdi:rss' },
-  { key: 'ai-providers', label: 'AI 模型', description: '配置主模型与备用模型提供商', icon: 'mdi:brain' },
-  { key: 'capability-routes', label: '能力路由', description: '按能力分配模型优先级与降级顺序', icon: 'mdi:routes' },
-  { key: 'ai-health', label: 'AI 健康', description: '各路由主模型连通性与本地模型自动拉起开关', icon: 'mdi:heart-pulse' },
-  { key: 'queues', label: '队列', description: 'Embedding 与标签打标队列的监控', icon: 'mdi:format-list-bulleted' },
-  { key: 'preferences', label: '兴趣画像', description: '按版块查看兴趣标签与权重，驱动订阅源推荐', icon: 'mdi:account-heart-outline' },
-  { key: 'firecrawl', label: 'Firecrawl', description: 'Firecrawl 服务配置与抓取参数', icon: 'mdi:spider' },
-  { key: 'bocha', label: '博查搜索', description: '数据增强联网检索的博查 web 搜索配置', icon: 'mdi:magnify' },
-  { key: 'searxng', label: 'SearXNG 搜索', description: '日报页边注问答的本地联网搜索实例配置', icon: 'mdi:web' },
-  { key: 'datasources', label: '研究数据源', description: '原油库存/贸易/宏观官方数据源目录与 Comtrade Key 配置', icon: 'mdi:database-search' },
-  { key: 'analysis-methods', label: '分析方法', description: '全局方法卡库（适用/禁用/证据/失败模式），仅按调查问题适配选择', icon: 'mdi:book-open-outline' },
-  { key: 'rsshub', label: 'RSSHub', description: '订阅源发现的 RSSHub 实例地址', icon: 'mdi:radio-tower' },
-  { key: 'proxy', label: '出站代理', description: 'feed 抓取等所有外部请求的全局代理', icon: 'mdi:lan-connect' },
-  { key: 'schedulers', label: '定时任务', description: '定时任务状态与手动触发', icon: 'mdi:clock-outline' },
-  { key: 'margin-notes', label: '页边注', description: '跨报告的日报划词批注与问答：筛选、跳原日报定位、删除', icon: 'mdi:notebook-outline' },
+  { key: 'feeds', group: '内容管理', label: '订阅源', description: '管理 RSS 订阅源的刷新、抓取和标签配置', icon: 'mdi:rss', component: SettingsSectionFeeds },
+  { key: 'preferences', group: '内容管理', label: '兴趣画像', description: '按版块查看兴趣标签与权重，驱动订阅源推荐', icon: 'mdi:account-heart-outline', component: SettingsSectionPreferences },
+  { key: 'margin-notes', group: '内容管理', label: '页边注', description: '跨报告的日报划词批注与问答：筛选、跳原日报定位、删除', icon: 'mdi:notebook-outline', component: SettingsSectionMarginNotes },
+  { key: 'ai-providers', group: 'AI 配置', label: 'AI 模型', description: '配置主模型与备用模型提供商', icon: 'mdi:brain', component: AIProviderManagement },
+  { key: 'capability-routes', group: 'AI 配置', label: '能力路由', description: '按能力分配模型优先级与降级顺序', icon: 'mdi:routes', component: SettingsSectionCapabilityRoutes },
+  { key: 'datasources-network', group: '数据源与网络', label: '数据源与网络', description: 'Firecrawl、博查、SearXNG、RSSHub、研究数据源与出站代理配置', icon: 'mdi:database-network-outline', component: SettingsSectionDatasourcesNetwork },
+  { key: 'runtime-status', group: '运行状态', label: '运行状态', description: 'AI 健康、队列与定时任务的监控与手动触发', icon: 'mdi:monitor-dashboard', component: SettingsSectionRuntimeStatus },
 ]
+
+/** 旧 section 键深链重定向（D2）：9 旧键 → 2 复合键 + tab=旧键，外部书签与 onboarding 不死链 */
+const LEGACY_SECTION_REDIRECT: Record<string, { section: SectionKey, tab: string }> = {
+  firecrawl: { section: 'datasources-network', tab: 'firecrawl' },
+  bocha: { section: 'datasources-network', tab: 'bocha' },
+  searxng: { section: 'datasources-network', tab: 'searxng' },
+  rsshub: { section: 'datasources-network', tab: 'rsshub' },
+  datasources: { section: 'datasources-network', tab: 'datasources' },
+  proxy: { section: 'datasources-network', tab: 'proxy' },
+  'ai-health': { section: 'runtime-status', tab: 'ai-health' },
+  queues: { section: 'runtime-status', tab: 'queues' },
+  schedulers: { section: 'runtime-status', tab: 'schedulers' },
+}
 
 const router = useRouter()
 const route = useRoute()
@@ -64,6 +73,19 @@ const activeSection = computed<SectionKey>(() => {
   if (q && sections.some(s => s.key === q)) return q as SectionKey
   return 'feeds'
 })
+
+// 旧键命中即 router.replace 到新键携带 tab=<旧键>（幂等：replace 后键为合法新键不再触发）
+watch(
+  () => route.query.section as string | undefined,
+  (q) => {
+    if (!q) return
+    const redirect = LEGACY_SECTION_REDIRECT[q]
+    if (redirect) {
+      router.replace({ query: { ...route.query, section: redirect.section, tab: redirect.tab } })
+    }
+  },
+  { immediate: true },
+)
 
 const currentMeta = computed(() => {
   const found = sections.find(s => s.key === activeSection.value)
@@ -131,7 +153,7 @@ function goHome() {
 
       <!-- Content -->
       <main class="settings-content">
-        <slot :section="activeSection" />
+        <component :is="currentMeta.component" :key="activeSection" />
       </main>
     </div>
   </div>
@@ -268,7 +290,7 @@ function goHome() {
 }
 
 /* Narrow viewport */
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .settings-header__mobile-nav {
     display: flex;
   }

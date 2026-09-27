@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import { mount } from '@vue/test-utils'
-import SettingsSectionSearxng from './SettingsSectionSearxng.vue'
+import SearxngConfigPanel from './SearxngConfigPanel.vue'
 import AppToggle from '~/components/ui/AppToggle.vue'
 
 vi.mock('@iconify/vue', () => ({
@@ -18,7 +18,7 @@ vi.mock('~/api', () => ({
 }))
 
 function mountSection() {
-  return mount(SettingsSectionSearxng)
+  return mount(SearxngConfigPanel)
 }
 
 function findSaveButton(wrapper: ReturnType<typeof mountSection>) {
@@ -27,7 +27,7 @@ function findSaveButton(wrapper: ReturnType<typeof mountSection>) {
   return btn!
 }
 
-describe('SettingsSectionSearxng（D7 联网后端配置）', () => {
+describe('SearxngConfigPanel（D7 联网后端配置）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })

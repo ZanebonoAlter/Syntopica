@@ -210,25 +210,8 @@ func (h *EnrichmentHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	}
 
 	// ── Analysis methods (global method-card library; design D6) ───────────
-	methods := rg.Group("/analysis-methods")
-	{
-		methods.GET("", h.listAnalysisMethods)
-		methods.POST("", h.createAnalysisMethod)
-		methods.GET("/:id", h.getAnalysisMethod)
-		methods.PUT("/:id", h.updateAnalysisMethod)
-		methods.PUT("/:id/enable", h.setAnalysisMethodEnabled)
-		methods.DELETE("/:id", h.deleteAnalysisMethod)
-	}
 
-	// ── Legacy reference roles: one-version read-only compatibility ────────
-	roles := rg.Group("/reference-roles")
-	{
-		roles.GET("", h.listReferenceRoles)
-		roles.POST("", h.createReferenceRole)
-		roles.GET("/:id", h.getReferenceRole)
-		roles.PUT("/:id", h.updateReferenceRole)
-		roles.DELETE("/:id", h.deleteReferenceRole)
-	}
+	// ── Legacy reference roles: removed (restructure-settings-navigation) ──
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
