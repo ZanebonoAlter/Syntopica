@@ -27,7 +27,7 @@ Syntopica 是一个个人部署的 RSS 阅读器，采用前后端分离的单�
 ```mermaid
 graph TD
     Browser["浏览器<br/>Nuxt 4 前端 :3000"]
-    API["Go 后端 API<br/>Gin :5000"]
+    API["Go 后端 API<br/>Gin :5100"]
     WS["WebSocket Hub<br/>/ws"]
     PostgreSQL["PostgreSQL + pgvector<br/>syntopica"]
 ```
@@ -148,10 +148,12 @@ my-robot/
 ├── tests/                    # 独立测试
 │   ├── workflow/             # Python 集成测试（scheduler、workflow）
 │   └── firecrawl/            # Firecrawl 集成检查
+├── deploy/                 # 部署制品（compose / Dockerfile / init 脚本 / 同源反代）
+│   └── compose/            # docker-compose.yml（主栈）及可选组件变体
 ├── docker/                   # Docker 相关配置
 │   └── postgres/             # PostgreSQL 迁移支持
 ├── data/                     # PostgreSQL 数据持久化
-├── docker-compose.yml        # Docker Compose PostgreSQL 服务（pgvector 扩展）
+├── docker-compose.pg.yml     # 本地开发 PostgreSQL（根目录日常入口）
 ├── .env.example              # 环境变量模板
 ├── AGENTS.md                 # 代理协作规则
 └── README.md                 # 项目简介与启动指南
@@ -207,10 +209,10 @@ my-robot/
 
 系统通过 Docker Compose 部署：
 
-- **PostgreSQL 模式**（`docker-compose.yml`，默认）：前后端 + PostgreSQL + pgvector 三容器，数据库通过 `pgdata` volume 持久化，支持向量检索
+- **PostgreSQL 模式**（`deploy/compose/docker-compose.yml`，默认）：后端 + PostgreSQL + pgvector 两容器（前端由后端同源托管），数据库经 `./data/` bind mount 持久化，支持向量检索
 - **SQLite 模式**：已归档到 `sqlite` 分支，使用 `docker-compose.sqlite.yml` 部署，主分支不再维护
 
-默认端口：前端 `http://localhost:3000`，后端 `http://localhost:5000`。开发模式下前端默认运行在 `http://localhost:3000`。
+默认端口：前端 `http://localhost:3000`（dev server 绑 0.0.0.0，本机与局域网均可达），后端 `http://localhost:5100`（前端绝对直连，后端 CORS 放行）。
 
 ## 相关文档
 

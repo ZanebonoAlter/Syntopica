@@ -1,4 +1,10 @@
-## ADDED Requirements
+# lint-zero-debt Specification
+
+## Purpose
+
+门禁零债务契约：后端 golangci-lint 与前端 pnpm lint 保持 0 issues，禁止以"存量豁免"名义累积 lint 债。
+
+## Requirements
 
 ### Requirement: Quality gate zero-debt
 

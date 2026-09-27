@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"syntopica-backend/internal/models"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 // GenerateAndPersist runs one generation pass (mode) and persists the non-skip
@@ -47,7 +48,7 @@ func (s *SemanticBoardUpgradeService) GenerateAndPersist(ctx context.Context, re
 			cooldownBlocked++
 			continue
 		}
-		model := &models.BoardUpgradeSuggestion{
+		model := &tagmodels.BoardUpgradeSuggestion{
 			BatchID:           batchID,
 			Mode:              mode,
 			Decision:          string(sug.Decision),

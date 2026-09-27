@@ -45,7 +45,6 @@ func TestBoardBriefConsumesConfirmedRelations(t *testing.T) {
 	orch, router, repo := newEnrichBoardOrch(t, true)
 	seedBoardLane(t, repo, 901, 8821, "泳道甲")
 	seedWeekLifelinePG(t, repo, 901, "2026-W34", "周内容：一期产能落地", time.Now())
-	seedEnabledAnalysisMethod(t, repo)
 	router.addResponse(validBriefLLM)
 	// 一进（本板 8821 是 target）一出（本板 8821 是 source）。
 	seedConfirmedCrossRelation(t, repo, 1, 8821, 9902, "causal", "medium", "日债收益率走高经避险资金传导", 2, 30)

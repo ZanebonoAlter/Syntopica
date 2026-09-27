@@ -32,6 +32,8 @@ export interface LeadStory {
   title: string
   summary: string
   source: 'highlight' | 'section'
+  /** 头条由 section 线索派生时的 section id（lead 批注无 thread 时锚定归属线索用；highlight 派生时无）。 */
+  sectionId?: number
 }
 
 export interface LifelineDay {
@@ -136,6 +138,7 @@ export function selectLeadStory(report: DailyReport): LeadStory | null {
     title: section.cluster_label,
     summary: firstThread?.summary || firstThread?.title || report.summary,
     source: 'section',
+    sectionId: section.id,
   }
 }
 

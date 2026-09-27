@@ -44,6 +44,7 @@
 | `idx_articles_favorite` | articles | `(favorite)` |
 | `idx_articles_feed_pub_date` | articles | `(feed_id, pub_date DESC)` |
 | `idx_articles_feed_id_title` | articles | `(feed_id, title)` |
+| `idx_articles_link` | articles | `(link)`（迁移 `20260917_0001`，跨 feed 打标复用 + 存量归并） |
 | `idx_article_topic_tags_article_id` | article_topic_tags | `(article_id)` |
 | `idx_feeds_category_id` | feeds | `(category_id)` |
 
@@ -61,6 +62,7 @@
 | -------- | ------ | ------ |
 | `uq_section_relations_pair` | daily_report_section_relations | UNIQUE `(from_section_id, to_section_id, relation_type)` |
 | `uq_board_upgrade_suggestions_hash` | board_upgrade_suggestions | 部分唯一 `(suggestion_hash) WHERE status='pending'` |
+| `uq_articles_feed_link` | articles | 部分唯一 `(feed_id, link) WHERE link <> ''`（迁移 `20260917_0001`，入库判重键；空 link 行豁免） |
 
 ### CHECK 约束（迁移添加，DB 层强制）
 
@@ -71,7 +73,20 @@
 | `chk_board_topic_watches_status` | board_topic_watches | `status IN ('active','paused')` | `20260630_0001` |
 | `chk_board_topic_watches_type` | board_topic_watches | `type IN ('label','keyword')` | `20260824_0002` |
 
-### DB 级外键（全库共 6 条，权威清单）
+### DB 级外键
+
+**⚠️ 实测修正（2026-09-17，heal-dangling-article-refs）**：本仓库 `DisableForeignKeyConstraintWhenMigrating: true` 只阻止**新建** FK，**不会移除存量 FK**——真库现有 **25 条** FK（`pg_constraint` 实测），远多于下表「迁移引入」的 6 条。历史 GORM AutoMigrate 时代遗留的 FK 仍在生效，其中**两条会在删行时静默级联**，是引用完整性分析的关键事实：
+
+| 约束名 | 表.列 → 引用 | ON DELETE | 后果 |
+| -------- | ------ | ------ | ------ |
+| `fk_feeds_articles` | `articles.feed_id → feeds(id)` | CASCADE | 删 feed 行 → 其全部文章行消失（日报 `related_article_ids` 悬空的根因之一） |
+| `fk_categories_feeds` | `feeds.category_id → categories(id)` | CASCADE | 删 category 行 → 其下全部 feed 连文章一起消失（**第三条删行路径**） |
+| `fk_article_topic_tags_article` / `fk_tag_jobs_article` / `fk_firecrawl_jobs_article` | 各自 `article_id → articles(id)` | CASCADE | 文章消失时依赖行随之消失（无需手工清理） |
+| `fk_reading_behaviors_article` / `fk_reading_behaviors_feed` / `fk_user_preferences_feed` / `fk_user_preferences_category` | 各自 → `articles` / `feeds` / `categories` | **NO ACTION** | 被引用行有这些子行时删除会 **FK 报错**（删 feed 前必须先清 `reading_behaviors`，删 category 同理） |
+
+**推论（约束）**：任何删除 `articles` 行的路径都必须同事务维护按 ID 引用文章的 jsonb 数组（`daily_report_threads.related_article_ids`，维护器 `internal/platform/articlerefs`）。删行路径全量清单（2026-09-17 实测）：去重归并迁移、`DeleteFeedCascade`（删 feed）、`DeleteCategoryCascade`（删分类，两级到文章）、以及仓库删行原语。**删除实现必须显式删行、不依赖上述 FK 是否存在**（存量 FK 不进新建库，靠级联会得到环境相关的行为）；被删文章的依赖行（`article_topic_tags`/`tag_jobs`/`firecrawl_jobs`）由删除路径显式清理，孤儿 `topic_tags` 仍交 `aux_label_cleanup` 回收。语义见 `flow/daily-report.md` 约束 21。
+
+### 迁移显式引入的 FK（原有清单，仍有效）
 
 | 约束名 | 表.列 → 引用 | ON DELETE | 迁移 |
 | -------- | ------ | ------ | ------ |
@@ -81,8 +96,10 @@
 | `fk_board_topic_watches_topic` | `board_topic_watches.persistent_topic_id → board_persistent_topics(id)` | SET NULL | `20260825_0001` |
 | `fk_topic_enrichment_result_parent_board` | `topic_enrichment_result(parent_result_id, semantic_board_id) → topic_enrichment_result(id, semantic_board_id)`（复合） | RESTRICT | `20260828_0001` |
 | `fk_composite_components_composite` | `composite_components.composite_id → semantic_labels(id)` | CASCADE | `20260902_0001` |
+| `fk_board_signal_candidate_discovery` | `board_signal_candidate(discovery_id, semantic_board_id, granularity, period) → board_signal_discovery(id, semantic_board_id, granularity, period)`（复合，靶靠唯一约束 `uq_board_signal_discovery_id_owner`） | RESTRICT | `20260922_0001` |
+| `fk_topic_enrichment_result_signal_candidate` | `topic_enrichment_result(source_signal_id, semantic_board_id, granularity, period) → board_signal_candidate(id, semantic_board_id, granularity, period)`（复合，MATCH SIMPLE：`source_signal_id` 为 NULL 的旧行不在 FK 范围内） | RESTRICT | `20260922_0001` |
 
-> 其余所有表间关联均为 GORM 逻辑关联，**DB 层未强制**（`DisableForeignKeyConstraintWhenMigrating: true`）。
+> 其余所有表间关联均为 GORM 逻辑关联，**DB 层未强制**（`DisableForeignKeyConstraintWhenMigrating: true`）——**但请对照上方实测修正：存量遗留 FK 仍生效**，本句只描述「新关联不再靠 DB 强制」这一趋势，不能当成「没有 FK」读。
 
 ---
 
@@ -165,6 +182,7 @@
 | `topic_watch_hits` | `report_id` | `board_daily_reports` | `id` | 无 OnDelete |
 | `board_data_sources` | `semantic_board_id` | `semantic_labels` | `id` | 无 OnDelete |
 | `topic_lifeline_context` | `persistent_topic_id` | `board_persistent_topics` | `id` | 无 OnDelete |
+| `topic_lane_snapshots` | `persistent_topic_id` | `board_persistent_topics` | `id` | UNIQUE + ON DELETE CASCADE（migration `20260910_0001`，每泳道一行滚动覆盖） |
 | `topic_enrichment_result` | `persistent_topic_id` | `board_persistent_topics` | `id` | 无 OnDelete |
 | `topic_enrichment_review` | `persistent_topic_id` | `board_persistent_topics` | `id` | 无 OnDelete |
 | `topic_enrichment_review` | `curr_result_id` | `topic_enrichment_result` | `id` | 无 OnDelete |
@@ -205,7 +223,7 @@
 
 - **`ai_call_logs`**：存储 `route_name` 和 `provider_name`（冗余）以保留调用时的上下文快照，即使后续路由/供应商被修改或删除。
 - **`board_upgrade_suggestions.auxiliary_label_ids`**（JSONB `[]uint`）：逻辑指向 `semantic_labels.id`（auxiliary），不保证完整性。
-- **`daily_report_threads.tag_ids` / `related_article_ids`**（JSONB）：逻辑指向 `topic_tags.id` / `articles.id`，无 FK。
+- **`daily_report_threads.tag_ids` / `related_article_ids`**（JSONB）：逻辑指向 `topic_tags.id` / `articles.id`，无 FK。其中 `related_article_ids` 的**完整性由写方维护**：任何删除 `articles` 行的路径 MUST 在同一事务内、删行前先改指保留条（去重归并）或剔除引用（删源级联等），维护器 `internal/platform/articlerefs`；数组保序、去重（首个为准）、空引用写 `[]`，MUST NOT 写 JSON `null` 标量（`jsonb_array_elements_text` 遇 null 抛 SQLSTATE 22023，会让整条查询静默失败）。存量悬空由迁移 `20260917_0002` 一次性修复（规范化非数组值 + 分批剪除悬空 id，幂等）；日报 job 每日以只读探针记录悬空计数。语义与约束见 `flow/daily-report.md` 约束 21。
 
 ### JSON-stored ID Lists（无 FK 约束的关系）
 

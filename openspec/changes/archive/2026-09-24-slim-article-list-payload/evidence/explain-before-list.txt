@@ -1,0 +1,110 @@
+# EXPLAIN evidence — BEFORE (articles.* 全宽列表查询，动工前基线)
+
+- 日期：2026-09-24T17:14:55+08:00
+- 分支/HEAD：develop @ 160e6b11
+- 库：真库（Docker `syntopica-postgres`，`127.0.0.1:5432/syntopica`，只读）
+- 数据规模：`articles` 共 25017 行，其中 `archived=false` 2039 行
+- 命令（**只读**，无 DDL/DML）：
+  `PGPASSWORD=postgres psql -h 127.0.0.1 -p 5432 -U postgres -d syntopica -X -q -c "<SQL below>"`
+
+## SQL（BEFORE：旧 `articles.*` 投影）
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+SELECT articles.*, feeds.category_id AS category_id,
+       (SELECT COUNT(*) FROM article_topic_tags att_cnt WHERE att_cnt.article_id = articles.id) AS tag_count
+FROM articles
+LEFT JOIN feeds ON articles.feed_id = feeds.id
+WHERE articles.archived = false
+ORDER BY articles.pub_date DESC
+LIMIT 20;
+```
+
+## run 1（冷缓存）
+
+```
+ Limit  (cost=3157.14..3244.94 rows=20 width=1075) (actual time=71.609..71.691 rows=20.00 loops=1)
+   Buffers: shared hit=42 read=2855
+   ->  Result  (cost=3157.14..12147.86 rows=2048 width=1075) (actual time=71.607..71.685 rows=20.00 loops=1)
+         Buffers: shared hit=42 read=2855
+         ->  Sort  (cost=3157.14..3162.26 rows=2048 width=1067) (actual time=70.147..70.158 rows=20.00 loops=1)
+               Sort Key: articles.pub_date DESC
+               Sort Method: top-N heapsort  Memory: 65kB
+               Buffers: shared hit=4 read=2851
+               ->  Hash Left Join  (cost=3.54..3102.64 rows=2048 width=1067) (actual time=0.303..67.202 rows=2039.00 loops=1)
+                     Hash Cond: (articles.feed_id = feeds.id)
+                     Buffers: shared hit=1 read=2851
+                     ->  Seq Scan on articles  (cost=0.00..3092.78 rows=2048 width=1059) (actual time=0.197..65.603 rows=2039.00 loops=1)
+                           Filter: (NOT archived)
+                           Rows Removed by Filter: 22978
+                           Buffers: shared read=2849
+                     ->  Hash  (cost=3.24..3.24 rows=24 width=16) (actual time=0.086..0.088 rows=24.00 loops=1)
+                           Buckets: 1024  Batches: 1  Memory Usage: 10kB
+                           Buffers: shared hit=1 read=2
+                           ->  Seq Scan on feeds  (cost=0.00..3.24 rows=24 width=16) (actual time=0.033..0.070 rows=24.00 loops=1)
+                                 Buffers: shared hit=1 read=2
+         SubPlan 1
+           ->  Aggregate  (cost=4.37..4.38 rows=1 width=8) (actual time=0.074..0.074 rows=1.00 loops=20)
+                 Buffers: shared hit=38 read=4
+                 ->  Index Only Scan using idx_article_topic_tags_article_id on article_topic_tags att_cnt  (cost=0.29..4.36 rows=4 width=0) (actual time=0.073..0.073 rows=0.20 loops=20)
+                       Index Cond: (article_id = articles.id)
+                       Heap Fetches: 4
+                       Index Searches: 20
+                       Buffers: shared hit=38 read=4
+ Planning:
+   Buffers: shared hit=524 read=101
+ Planning Time: 86.557 ms
+ Execution Time: 71.865 ms
+```
+
+## run 2（暖缓存）
+
+```
+ Limit  (cost=3157.14..3244.94 rows=20 width=1075) (actual time=18.921..18.977 rows=20.00 loops=1)
+   Buffers: shared hit=2897
+   ->  Result  (cost=3157.14..12147.86 rows=2048 width=1075) (actual time=18.919..18.972 rows=20.00 loops=1)
+         Buffers: shared hit=2897
+         ->  Sort  (cost=3157.14..3162.26 rows=2048 width=1067) (actual time=18.783..18.789 rows=20.00 loops=1)
+               Sort Key: articles.pub_date DESC
+               Sort Method: top-N heapsort  Memory: 65kB
+               Buffers: shared hit=2855
+               ->  Hash Left Join  (cost=3.54..3102.64 rows=2048 width=1067) (actual time=0.089..17.039 rows=2039.00 loops=1)
+                     Hash Cond: (articles.feed_id = feeds.id)
+                     Buffers: shared hit=2852
+                     ->  Seq Scan on articles  (cost=0.00..3092.78 rows=2048 width=1059) (actual time=0.045..16.119 rows=2039.00 loops=1)
+                           Filter: (NOT archived)
+                           Rows Removed by Filter: 22978
+                           Buffers: shared hit=2849
+                     ->  Hash  (cost=3.24..3.24 rows=24 width=16) (actual time=0.035..0.036 rows=24.00 loops=1)
+                           Buckets: 1024  Batches: 1  Memory Usage: 10kB
+                           Buffers: shared hit=3
+                           ->  Seq Scan on feeds  (cost=0.00..3.24 rows=24 width=16) (actual time=0.011..0.025 rows=24.00 loops=1)
+                                 Buffers: shared hit=3
+         SubPlan 1
+           ->  Aggregate  (cost=4.37..4.38 rows=1 width=8) (actual time=0.008..0.008 rows=1.00 loops=20)
+                 Buffers: shared hit=42
+                 ->  Index Only Scan using idx_article_topic_tags_article_id on article_topic_tags att_cnt  (cost=0.29..4.36 rows=4 width=0) (actual time=0.007..0.007 rows=0.20 loops=20)
+                       Index Cond: (article_id = articles.id)
+                       Heap Fetches: 4
+                       Index Searches: 20
+                       Buffers: shared hit=42
+ Planning:
+   Buffers: shared hit=625
+ Planning Time: 2.438 ms
+ Execution Time: 19.171 ms
+```
+
+## 关键数字（BEFORE）
+
+| 指标 | run1（冷） | run2（暖） |
+|---|---|---|
+| 计划节点类型 | Limit → Result → Sort(top-N heapsort) → Hash Left Join → Seq Scan articles + Hash feeds；SubPlan 1 = Aggregate over Index Only Scan | 同左 |
+| 返回 rows（Limit/Sort） | 20 | 20 |
+| 中间行数（Hash Left Join 输出） | 2039 | 2039 |
+| `articles` Seq Scan 行数 | 2039（Filter 移除 22978） | 2039（Filter 移除 22978） |
+| **行宽 width**（Limit/Result） | **1075** | **1075** |
+| Seq Scan width | 1059 | 1059 |
+| Sort 内存 | 65 kB | 65 kB |
+| tag_count 子查询执行 | SubPlan 1，**loops=20**，Index Only Scan `idx_article_topic_tags_article_id`，Index Searches 20 / Heap Fetches 4 | 同左 |
+| Execution Time | 71.865 ms | 19.171 ms |
+| Buffers | hit=42 read=2855 | hit=2897 |

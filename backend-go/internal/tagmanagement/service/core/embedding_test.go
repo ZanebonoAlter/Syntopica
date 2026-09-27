@@ -8,6 +8,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -35,7 +36,7 @@ func TestSaveEmbeddingReturnsTagNotFoundWhenParentDeleted(t *testing.T) {
 		t.Fatalf("delete tag: %v", err)
 	}
 
-	err := service.SaveEmbedding(&models.TopicTagEmbedding{
+	err := service.SaveEmbedding(&tagmodels.TopicTagEmbedding{
 		TopicTagID:    tag.ID,
 		EmbeddingType: EmbeddingTypeIdentity,
 		Model:         "test-model",
@@ -49,7 +50,7 @@ func TestSaveEmbeddingReturnsTagNotFoundWhenParentDeleted(t *testing.T) {
 	}
 
 	var count int64
-	if err := db.Model(&models.TopicTagEmbedding{}).Count(&count).Error; err != nil {
+	if err := db.Model(&tagmodels.TopicTagEmbedding{}).Count(&count).Error; err != nil {
 		t.Fatalf("count embeddings: %v", err)
 	}
 	if count != 0 {
@@ -73,7 +74,7 @@ func TestSaveEmbeddingCleansUpStaleRecords(t *testing.T) {
 
 	vec4096 := makeValidVector(4096)
 	for i, hash := range []string{"stale-hash-1", "stale-hash-2", "stale-hash-3"} {
-		if err := db.Create(&models.TopicTagEmbedding{
+		if err := db.Create(&tagmodels.TopicTagEmbedding{
 			TopicTagID:    tag.ID,
 			EmbeddingType: EmbeddingTypeIdentity,
 			EmbeddingVec:  vec4096,
@@ -86,13 +87,13 @@ func TestSaveEmbeddingCleansUpStaleRecords(t *testing.T) {
 	}
 
 	var count int64
-	db.Model(&models.TopicTagEmbedding{}).Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeIdentity).Count(&count)
+	db.Model(&tagmodels.TopicTagEmbedding{}).Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeIdentity).Count(&count)
 	if count != 3 {
 		t.Fatalf("stale embedding count = %d, want 3 before cleanup", count)
 	}
 
 	newHash := "fresh-hash"
-	if err := service.SaveEmbedding(&models.TopicTagEmbedding{
+	if err := service.SaveEmbedding(&tagmodels.TopicTagEmbedding{
 		TopicTagID:    tag.ID,
 		EmbeddingType: EmbeddingTypeIdentity,
 		EmbeddingVec:  vec4096,
@@ -103,12 +104,12 @@ func TestSaveEmbeddingCleansUpStaleRecords(t *testing.T) {
 		t.Fatalf("SaveEmbedding: %v", err)
 	}
 
-	db.Model(&models.TopicTagEmbedding{}).Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeIdentity).Count(&count)
+	db.Model(&tagmodels.TopicTagEmbedding{}).Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeIdentity).Count(&count)
 	if count != 1 {
 		t.Fatalf("embedding count after cleanup = %d, want 1", count)
 	}
 
-	var remaining models.TopicTagEmbedding
+	var remaining tagmodels.TopicTagEmbedding
 	if err := db.Where("topic_tag_id = ? AND embedding_type = ?", tag.ID, EmbeddingTypeIdentity).First(&remaining).Error; err != nil {
 		t.Fatalf("find remaining embedding: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestProcessNextEventKeywordEmbeddings(t *testing.T) {
 			t.Errorf("empty hash for keyword %q", kw)
 		}
 		var count int64
-		db.Model(&models.TopicTagEmbedding{}).
+		db.Model(&tagmodels.TopicTagEmbedding{}).
 			Where("topic_tag_id = ? AND embedding_type = ? AND text_hash = ?", tag.ID, EmbeddingTypeEventKeyword, kwHash).
 			Count(&count)
 		if count != 0 {

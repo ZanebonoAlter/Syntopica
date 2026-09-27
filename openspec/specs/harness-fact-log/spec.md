@@ -27,14 +27,16 @@ harness 层事实账本：以 `.pi/harness/events.db`（单表 append-only SQLit
 
 ### Requirement: 事件类型词汇与保留期
 
-事实库 SHALL 支持十一类事件：`session.start`（90 天）、`constraint.inject`（30 天）、`pin.write`（永久）、`pin.read`（30 天）、`gate.check`（30 天）、`subagent.dispatch`（30 天）、`subagent.complete`（30 天）、`mode.set`（30 天）、`spill.write`（30 天）、`policy.decision`（30 天）、`edit.map`（30 天）。每条事件 MUST 携带单调递增 id、ISO 8601 UTC 时间戳、session_id、kind，change 列可空。开库时 MUST 按 kind 分保留期清扫过期行；库文件超过 100MB 时 MUST 触发删最老一半的保险丝。除 TTL 清扫与保险丝外 MUST NOT 修改或删除既有事件（完成回填以追加新事件表达，MUST NOT 改写既有 dispatch 行）。
+事实库 SHALL 支持十三类事件：`session.start`（90 天）、`session.rollup`（90 天）、`constraint.inject`（30 天）、`pin.write`（永久）、`pin.read`（30 天）、`gate.check`（30 天）、`subagent.dispatch`（30 天）、`subagent.complete`（30 天）、`mode.set`（30 天）、`spill.write`（30 天）、`policy.decision`（30 天）、`edit.map`（30 天）、`change.archive`（30 天）。每条事件 MUST 携带单调递增 id、ISO 8601 UTC 时间戳、session_id、kind，change 列可空。开库时 MUST 按 kind 分保留期清扫过期行；库文件超过 100MB 时 MUST 触发删最老一半的保险丝。除 TTL 清扫与保险丝外 MUST NOT 修改或删除既有事件（完成回填以追加新事件表达，MUST NOT 改写既有 dispatch 行）。
 
 `edit.map` 事件由 quality-gate 在 turn_end 聚合追加：change 列为会话绑定的 change，payload 含该 change 累计编辑路径集合；聚合语义（冲突标记、无档会话不计入）见 `concurrent-change-coordination` capability。
 
+`session.rollup` 事件由 harness-telemetry 追加快照：change 列为快照写入时刻会话绑定的 change（可空）；查询侧对同一 session_id MUST 取最新一条作为终值（中间快照不参与聚合），语义对齐 `edit.map` 的快照覆盖取终值约定。
+
 #### Scenario: TTL 分级清扫
 
-- **WHEN** 开库时存在 31 天前的 constraint.inject、policy.decision、edit.map 行与 91 天前的 session.start 行
-- **THEN** 过期的 constraint.inject、policy.decision、edit.map 被删除，91 天前的 session.start 被删除，pin.write 永久保留
+- **WHEN** 开库时存在 31 天前的 constraint.inject、policy.decision、edit.map、change.archive 行与 91 天前的 session.start 行
+- **THEN** 过期的 constraint.inject、policy.decision、edit.map、change.archive 被删除，91 天前的 session.start 被删除，pin.write 永久保留
 
 #### Scenario: 事件追加不可变
 
@@ -61,11 +63,72 @@ harness 层事实账本：以 `.pi/harness/events.db`（单表 append-only SQLit
 - **WHEN** 绑定 change 的会话在 turn_end 检出新增/变化编辑路径
 - **THEN** events.db 新增一条 kind 为 `edit.map` 的事件行（change 列为绑定 change，payload 含累计路径集合）；31 天后被 TTL 清扫，既有数据库无需 schema 迁移
 
+#### Scenario: session.rollup 随词汇扩展落库
+
+- **WHEN** 会话 turn_end 满足 rollup 节流条件
+- **THEN** events.db 新增一条 kind 为 `session.rollup` 的事件行（payload 契约见「session 效能汇总记账」）；91 天后被 TTL 清扫，既有数据库无需 schema 迁移
+
+#### Scenario: change.archive 随词汇扩展落库
+
+- **WHEN** `openspec archive <change>` 命令成功执行（未被 spec-gate 阻断且工具结果非错误）
+- **THEN** events.db 新增一条 kind 为 `change.archive` 的事件行（payload 契约见「归档成功记账」）；31 天后被 TTL 清扫，既有数据库无需 schema 迁移
+
+### Requirement: session 效能汇总记账（session.rollup）
+
+harness-telemetry SHALL 从 pi 的 session jsonl 提取单会话效能汇总并写入 `session.rollup` 快照事件：payload MUST 含 `turns`（user 轮数）、`steps`（assistant 消息数）、`toolCalls`（工具结果数）、`tokens`（input/output/cacheRead/cacheWrite/total 五值）、`cost`（元，可空）、`durationSec`、`model`、`final`（布尔，终值标记）；SHALL 含 `models`（逐模型聚合 map：`{[modelId]: {tokens 五值, cost}}`，按 assistant 消息自身携带的 model 字段归属，无 model 字段的消息计入 `unknown` 桶）；子会话 SHALL 含 `parentSessionId`（从自身 jsonl session 头的 `parentSession` 提取的父会话 id；主会话无此头时省略该字段）。写入路径有二：① turn_end 节流快照（节流条件实现自定义，但 MUST 保证会话最后一条快照与终值偏差有界）；② session_start 时回填 prev session 终值——prev jsonl 的定位 SHALL 由 telemetry 自行扫描 sessions 目录（当前会话文件所在目录下、mtime 最新且文件名会话 id 非本会话的 `*.jsonl`；pi 的 session_start 事件 payload 从不携带 previousSessionFile，MUST NOT 依赖之），该 jsonl 仍存在且账本中该 session 无 `final=true` 快照时，补写一条 `final=true` 终值。jsonl 缺失、损坏或解析失败 MUST 零写入并 fail-open（不阻断任何扩展钩子），仅旁路告警。
+
+#### Scenario: turn_end 节流快照落库
+
+- **WHEN** 会话内 turn_end 多次触发且满足节流条件
+- **THEN** 每次命中节流条件追加一条快照（`final=false`），payload 数值随会话推进单调不减（tokens 累计口径）
+
+#### Scenario: 同 session 取最新一条即终值
+
+- **WHEN** 同一 session_id 存在多条 session.rollup 快照
+- **THEN** 查询侧聚合（含 retro 报告）仅取最新一条的数值，不累加中间快照
+
+#### Scenario: session_start 回填 prev 终值
+
+- **WHEN** 新会话启动且同目录下存在另一会话的 jsonl（mtime 最新且非本会话）、账本中该 session 无 `final=true` 快照
+- **THEN** 追加一条该 prev session 的 `final=true` 快照事件（session_id 为 prev 的 id，change 列可空）；目录下无其他 jsonl 时零写入
+
+#### Scenario: 回填不依赖 pi 事件的 previousSessionFile
+
+- **WHEN** session_start 事件的 payload 不含 previousSessionFile（实测从不携带）
+- **THEN** 回填仍由自扫 sessions 目录路径独立完成，机制不受该字段缺失影响
+
+#### Scenario: 解析失败 fail-open
+
+- **WHEN** session jsonl 不存在或某行不可解析
+- **THEN** 不写入 rollup、不抛出、不阻断当次钩子的其余逻辑，仅 console 旁路告警
+
+#### Scenario: rollup 不改写既有事件
+
+- **WHEN** 回填 prev 终值时该 session 已有中间快照
+- **THEN** 以追加新事件表达终值，既有快照行内容不变
+
+#### Scenario: models 按消息级 model 字段归属
+
+- **WHEN** 同一会话先用模型 A 生成 3 条 assistant 消息（cost 合计 0.3 元）、再切模型 B 生成 2 条（cost 合计 0.1 元）
+- **THEN** 终值快照 payload 的 `models` 含 A 与 B 两个键，各自 tokens/cost 等于该模型消息的累计值，且各桶之和等于会话总 cost
+
+#### Scenario: 无 model 字段的消息计 unknown 桶
+
+- **WHEN** 某条 assistant 消息带 usage 但不带 model 字段
+- **THEN** 其 tokens/cost 计入 `models.unknown` 桶，不静默丢弃、不影响其他桶
+
+#### Scenario: 子会话携带 parentSessionId
+
+- **WHEN** 子线程会话（jsonl session 头含 parentSession 指向父会话文件）turn_end 满足节流条件
+- **THEN** 其 rollup payload 含 parentSessionId（父会话 id）；父会话自身的 rollup 无该字段
+
 ### Requirement: 策略显著裁决统一记账
 
-spec-gate、quota-gate、test-scope-guard SHALL 将显著裁决追加为 `policy.decision` 事件。payload MUST 含 `policy`、`action`、`reasonCode`：`policy` 限定为稳定扩展标识，`action` 限定为 `block | warn | bypass | fail-open`，`reasonCode` MUST 是稳定、非空、kebab-case 的有界代码；按需附加的 `target` MUST 是不含密钥、完整命令和远端响应正文的有界摘要，`durationMs` 若存在 MUST 为非负数。事件的 change 列 SHALL 优先绑定裁决明确指向的 change，否则使用当前可检测的活跃 change，无法确定时为 null。
+spec-gate、quota-gate、test-scope-guard SHALL 将显著裁决追加为 `policy.decision` 事件；quality-gate 的 interop 探测短路 SHALL 作为其唯一的 policy.decision 场景追加（action=fail-open，reasonCode=interop-down）。payload MUST 含 `policy`、`action`、`reasonCode`：`policy` 限定为稳定扩展标识，`action` 限定为 `block | warn | bypass | fail-open`，`reasonCode` MUST 是稳定、非空、kebab-case 的有界代码；按需附加的 `target` MUST 是不含密钥、完整命令和远端响应正文的有界摘要，`durationMs` 若存在 MUST 为非负数。事件的 change 列 SHALL 优先绑定裁决明确指向的 change，否则使用当前可检测的活跃 change，无法确定时为 null。
 
-普通成功放行 MUST NOT 写 `policy.decision`；quality-gate 与 entry-gate 继续使用 `gate.check`，MUST NOT 为同一裁决重复写 `policy.decision`。记账失败 MUST NOT 改变原策略的放行、提醒、阻断或 fail-open 结果。
+dev-process-guard 的孤儿 dev 进程治理事件是上述 payload 形状的**唯一显式豁免**：其 `policy.decision` payload SHALL 为 `decision`（`orphan-killed | orphan-warn`）键 + 进程摘要（`cmd`/`offenders` 等有界字段），MUST NOT 含 `action` 键，且豁免场景**不要求** `policy`/`reasonCode` 键（豁免的是整个键形状而非仅 action→decision 替换；白名单语义为「对用户操作的裁决」，不适用于对进程组的处置；且避免 harness-retro ③段 fail-open 分桶与④段软提醒聚类、催修时距误吸本扩展事件）。该豁免 MUST 登记于事件词汇表文档；除豁免场景外，任何扩展写入 `policy.decision` MUST 遵守 `policy`/`action`/`reasonCode` 形状，词汇表文档与实现 SHALL 保持一致。
+
+普通成功放行 MUST NOT 写 `policy.decision`；quality-gate 其余裁决与 entry-gate 继续使用 `gate.check`，同一裁决 MUST NOT 双写（interop 短路记 policy.decision 后，被跳过的门禁命令 MUST NOT 再逐条记 gate.check）。记账失败 MUST NOT 改变原策略的放行、提醒、阻断或 fail-open 结果。
 
 #### Scenario: spec-gate 阻断归档被记录
 
@@ -87,10 +150,20 @@ spec-gate、quota-gate、test-scope-guard SHALL 将显著裁决追加为 `policy
 - **WHEN** test-scope-guard 在 soft 模式提醒一次、在 hard 模式阻断一次非归档语境的全量测试
 - **THEN** 分别追加 action=warn 与 action=block、reasonCode=full-go-test 的 policy.decision
 
+#### Scenario: dev-process-guard 孤儿治理事件按豁免形状记账
+
+- **WHEN** dev-process-guard 在会话结束清理中杀死或警告孤儿 dev 进程组
+- **THEN** 追加 payload 含 `decision`（orphan-killed 或 orphan-warn）与进程摘要的 policy.decision，MUST NOT 含 `action` 键；harness-retro 的③段（fail-open）、④段（warn 聚类）与催修时距计算 MUST NOT 吸入该事件
+
+#### Scenario: interop 探测短路被记账且不双写
+
+- **WHEN** quality-gate 的 interop 健康探测失败导致本轮 cmd 链路门禁整体短路
+- **THEN** 追加一条 policy=quality-gate、action=fail-open、reasonCode=interop-down 的 policy.decision，且本轮被跳过的门禁命令不再产生任何 gate.check 事件
+
 #### Scenario: 正常放行零记录
 
-- **WHEN** spec-gate 的归档检查全部通过、quota-gate 判定额度充足，或命令未命中 test-scope-guard
-- **THEN** 不产生 policy.decision 事件
+- **WHEN** spec-gate 的归档检查全部通过、quota-gate 判定额度充足、命令未命中 test-scope-guard，或 interop 探测健康后门禁正常执行
+- **THEN** 不产生 policy.decision 事件（探测健康本身零记录）
 
 #### Scenario: 记账故障不改变裁决
 
@@ -99,23 +172,34 @@ spec-gate、quota-gate、test-scope-guard SHALL 将显著裁决追加为 `policy
 
 ### Requirement: 注入与 pin 记账（constraint-injection 自报）
 
-constraint-injection SHALL 在实现档注入 explore-findings.md 时，按 `## `（二级标题）解析 pin 标题并自报 `pin.read` 事件（payload 含 title、change、doc 路径、是否 digest 模式）；同一会话内同一标题 MUST 只记一次（会话内去重，session_start 重置）。pin_finding 成功写入 md 后 SHALL 自报 `pin.write`（payload 含 title、topic/change、落盘路径；失败调用不记账）。research 语境（无激活档位）写盘时 MUST 在标题行后追加 `<!-- pin:<8hex> -->` 锚点作为持久身份。每次注入送达时 SHALL 按 `{path, mode, reason, bytes}` 自报 `constraint.inject`——注入原因（档位绑定/关键词/规则）是排查"为何未注入"的数据源。
+constraint-injection SHALL 在实现档注入 explore-findings.md 时，按 `## `（二级标题）解析 pin 标题并自报 `pin.read` 事件（payload 含 title、change、doc 路径、是否 digest 模式）；同一会话内同一标题 MUST 只记一次（会话内去重，session_start 重置）。pin_finding 成功写入 md 后 SHALL 自报 `pin.write`（payload 含 title、topic/change、落盘路径；失败调用不记账）。research 语境（无激活档位）写盘时 MUST 在标题行后追加 `<!-- pin:<8hex> -->` 锚点作为持久身份。
+
+`constraint.inject` SHALL 在注入内容**实际送达时**记账（payload 含 `{path, mode, reason, bytes}`，注入原因是排查"为何未注入"的数据源），**MUST NOT 每 turn 重复记账**（混合通道下：稳定层在档位切换/绑定修正导致注入块变化时记一次；动态层在 steer 消息实际发送时按消息内条目记；compact 后快照重发按快照内条目记一次，payload 附 `source:"compact-resend"` 区分）。同会话内字节与原因均未变化的条目 SHALL NOT 重复记账。
 
 #### Scenario: pin.read 首次注入记账并会话内去重
 
-- **WHEN** 实现档会话第 1 回合注入含 `## 告警表结构` 的 explore-findings.md，第 2 回合再次注入同名文件
-- **THEN** 第 1 回合产生一条 pin.read（title=告警表结构），第 2 回合不再重复记账
+- **WHEN** 同一会话内同一 pin 标题的 explore-findings 被多次送达（档位激活注入一次、findings 更新后 steer 消息再送一次）
+- **THEN** pin.read 仅记首次一条
 
 #### Scenario: pin.write 仅成功路径记账
 
 - **WHEN** pin_finding 因配置缺失失败，随后一次成功写入
-
 - **THEN** 失败调用不产生事件，成功调用产生一条 pin.write 且 payload 含最终落盘路径
 
 #### Scenario: constraint.inject 记录命中原因
 
-- **WHEN** 实现档注入命中文档 X（档位绑定）
-- **THEN** 产生一条 constraint.inject 事件，payload 含 X 的完整路径、mode、命中原因与字节数
+- **WHEN** 某文档的约束节经 steer 消息首次送达
+- **THEN** 产生一条 constraint.inject 事件，payload 含完整路径、mode、命中原因与字节数
+
+#### Scenario: 稳定层档位生命周期内不重复记账
+
+- **WHEN** implementation 档绑定 change X 激活（稳定层注入记账一轮），此后 20 个 turn 稳定层字节不变
+- **THEN** 稳定层条目零新增 constraint.inject（不再每 turn 重复记）
+
+#### Scenario: compact 重发快照记账标记
+
+- **WHEN** compaction 后约束快照重发，快照含 3 个文档条目
+- **THEN** 产生 3 条 constraint.inject，payload 附 source=compact-resend
 
 ### Requirement: 门禁记账（gate.check）
 
@@ -204,22 +288,32 @@ harness-telemetry SHALL 在 Agent 工具 tool_result 为失败时，通过纯函
 
 ### Requirement: 档位记账（mode.set）
 
-constraint-injection SHALL 在档位激活（input 命令命中或 tool_execution_start 的 skill 路径命中）时自报 `mode.set` 事件，payload 含 mode（`requirements` / `implementation`）与 boundChange（可空）；档位绑定 change 修正（提及 change / 写 change 目录）时 SHALL 追记新事件以反映最新绑定。事件写入失败 MUST 不阻断档位激活本身（记账 fail-loud、注入照常）。`session_start{reason:"resume"}` 的恢复取数 MUST 复用既有查询 API；恢复语义（new/fork/reload 不恢复、change 不存在回落）由 constraint-injection capability 定义。
+constraint-injection SHALL 在**档位或绑定变化的全部路径**自报 `mode.set` 事件：input 命令命中、tool_execution_start 的 skill 路径命中、写 change 目录的兜底绑定、resume/reload/startup 恢复、mtime 兜底显式化。payload 含 mode（`requirements` / `implementation`）、boundChange（可空）与 **source 字段**（`command` / `skill` / `edit-dir` / `recover` / `inherit` / `fallback`——绑定来源可归因，隐性绑定 MUST NOT 存在）。事件写入失败 MUST 不阻断档位激活本身（记账 fail-loud、注入照常）。`session_start{reason:"resume"}` 的恢复取数 MUST 复用既有查询 API；恢复语义（new/fork/reload 不恢复、change 不存在回落）由 constraint-injection capability 定义。
 
 #### Scenario: 档位激活记账
 
 - **WHEN** 用户输入 `/opsx-apply some-change` 激活 implementation 档
-- **THEN** 产生一条 mode.set（payload 含 mode=implementation、boundChange=some-change），档位激活不因记账失败而中断
+- **THEN** 产生一条 mode.set（payload 含 mode=implementation、boundChange=some-change、source=command），档位激活不因记账失败而中断
 
 #### Scenario: 绑定修正追记
 
-- **WHEN** implementation 档会话中 agent 写 `openspec/changes/another-change/tasks.md` 使绑定修正
-- **THEN** 追记一条 mode.set（boundChange=another-change），此前事件不改写
+- **WHEN** implementation 档会话绑定为空，agent 写 `openspec/changes/another-change/tasks.md` 触发兑底绑定修正
+- **THEN** 追记一条 mode.set（boundChange=another-change、source=edit-dir），此前事件不改写
 
 #### Scenario: TTL 与既有事件兼容
 
-- **WHEN** 升级后首次开库（既有六类事件已存在）
+- **WHEN** 升级后首次开库（既有事件已存在）
 - **THEN** 开库校验与 DDL 幂等通过，mode.set 按写入正常入账，既有事件不受影响
+
+#### Scenario: 恢复路径记账
+
+- **WHEN** pi 重启后按同 sessionId 恢复档位为 implementation 绑定 X
+- **THEN** 记一条 mode.set（payload source=recover）
+
+#### Scenario: 记账失败不阻断激活
+
+- **WHEN** 事实库写入异常（库锁/磁盘），档位命令命中
+- **THEN** 档位照常激活、注入照常执行，console 报记账失败，会话不中断
 
 ### Requirement: 子线程完成回填（subagent.complete）
 
@@ -244,3 +338,41 @@ harness-telemetry SHALL 在后台派发的子线程真实结束时追加一条 `
 
 - **WHEN** 绑定 change 的会话在 turn_end 检出新增/变化编辑路径
 - **THEN** events.db 新增一条 kind 为 `edit.map` 的事件行（change 列为绑定 change，payload 含累计路径集合）；31 天后被 TTL 清扫，既有数据库无需 schema 迁移
+
+### Requirement: 巡检事件记账（patrol.check）
+
+巡检脚本每执行一个分片 SHALL 向事实库追加一条 `patrol.check` 事件：`shard`（分片名）、`ok`（布尔）、`ms`（耗时）、`fails`（失败测试标识数组，成功为空数组）。事件归因 change 列为空（巡检是仓库级活动，不归属单个 change）。保留期按既有 gate.check 同级（30 天）；台账自身持久化欠账，事件仅作巡检流水。
+
+#### Scenario: 分片巡检完成落事件
+
+- **WHEN** 巡检脚本完成一个分片
+- **THEN** 事实库新增一条 `patrol.check`，含分片名、结果、耗时与失败清单
+
+#### Scenario: 台账登记不双写事件
+
+- **WHEN** 巡检发现失败并登记台账
+- **THEN** 台账记录与 `patrol.check` 事件各司其职：事件记流水，台账记欠账生命周期；事件删除（TTL）不影响台账
+
+### Requirement: 归档成功记账（change.archive）
+
+harness-telemetry SHALL 在 `openspec archive <change>` 命令成功执行时追加一条 `change.archive` 事件：payload MUST 含 `name`（归档 change 名，按 spec-gate 同语义从命令行提取——`openspec archive` 后首个非 flag 词）；事件 change 列 MUST 绑定该 change 名。判定条件：bash 工具调用命令命中 `openspec\s+archive` 且 tool_result 非错误（未被 spec-gate 阻断、CLI 退出成功）。归档被 block、CLI 失败、命令行提取不到合法 change 名（交互式归档等）时 MUST 零记录（fail-open，不阻断归档本身）。本事件是「普通成功放行零记录」低噪声约束的**唯一成功侧事实例外**（归档低频、高价值锚点）；事件按 30 天保留期清扫。
+
+#### Scenario: 归档成功记账
+
+- **WHEN** agent 执行 `openspec archive task-cost-metrics` 且工具结果非错误
+- **THEN** 追加一条 change.archive（payload 含 name=task-cost-metrics，change 列同名），归档流程不受记账失败影响
+
+#### Scenario: 归档被阻断零记录
+
+- **WHEN** spec-gate 因归档检查失败阻断 `openspec archive`（工具结果为错误）
+- **THEN** 仅产生既有的 policy.decision(block) 事件，不产生 change.archive
+
+#### Scenario: 提取不到 change 名 fail-open
+
+- **WHEN** 归档命令为交互式形态，命令行中提取不到合法 change 名
+- **THEN** 零记录 change.archive，不阻断归档命令本身
+
+#### Scenario: 同一 change 幂等
+
+- **WHEN** 同一 change 因故成功归档两次（重跑命令）
+- **THEN** 产生两条 change.archive（append-only 不去重），消费侧按 change 名聚合时天然幂等

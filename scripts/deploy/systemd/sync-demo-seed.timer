@@ -1,0 +1,16 @@
+# 每周触发一次演示环境 seed 同步（design.md D3）：
+#   - 周日 05:00 触发，避开每日 04:00 备份窗口（留 1 小时余量收尾）
+#   - RandomizedDelaySec 防与其他周期任务对齐
+#   - Persistent=true：触发时刻关机/重启则恢复后补跑一次（spec「错过窗口后补跑」）
+# 调整触发时刻：改 OnCalendar 后 systemctl --user daemon-reload
+[Unit]
+Description=Weekly timer for Syntopica demo seed sync (Sun 05:00, catch-up on miss)
+
+[Timer]
+OnCalendar=Sun *-*-* 05:00:00
+RandomizedDelaySec=15min
+Persistent=true
+Unit=sync-demo-seed.service
+
+[Install]
+WantedBy=timers.target

@@ -2,21 +2,35 @@
 import { computed, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import FeedIcon from '~/components/feed/FeedIcon.vue'
-import type { RssFeed, Category } from '~/types'
+import FeedSourceQualityBlock from './FeedSourceQualityBlock.vue'
+import type { FeedBoardHitStats, RssFeed, Category } from '~/types'
+import type { StatsWindowDays } from '../utils/sourceQuality'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   feed: RssFeed
   categories: Category[]
   refreshOptions: { label: string; value: number }[]
   maxArticlesOptions: { label: string; value: number }[]
   loading: boolean
-}>()
+  /** 来源质量块（add-source-board-hit-rate §4.4）：统计/窗口/错误由 SettingsSectionFeeds 提升持有 */
+  stats?: FeedBoardHitStats
+  statsLoading?: boolean
+  statsError?: string | null
+  windowDays?: StatsWindowDays
+}>(), {
+  stats: undefined,
+  statsLoading: false,
+  statsError: null,
+  windowDays: 7,
+})
 
 const emit = defineEmits<{
-  'update-feed': [feedId: string, setting: 'refresh_interval' | 'max_articles' | 'tagging_enabled' | 'firecrawl_enabled' | 'completion_on_refresh' | 'category_id', value: number | boolean | null]
+  'update-feed': [feedId: string, setting: 'refresh_interval' | 'max_articles' | 'tagging_enabled' | 'firecrawl_enabled' | 'completion_on_refresh' | 'article_summary_enabled' | 'max_completion_retries' | 'category_id' | 'url', value: number | boolean | string | null]
   'refresh-feed': [feedId: string]
   'create-category': [name: string]
   'delete-feed': [feedId: string]
+  'set-window': [days: StatsWindowDays]
+  'retry-stats': []
 }>()
 
 // ---- Category management ----
@@ -67,6 +81,22 @@ function getIntervalColor(minutes: number): string {
   if (minutes <= 120) return 'var(--color-link)'
   return 'var(--color-text-secondary)'
 }
+
+// ---- RSS URL editing (unify-feed-summary-toggles) ----
+const urlDraft = ref(props.feed.url)
+watch(() => props.feed, (f) => { urlDraft.value = f.url })
+
+const urlDirty = computed(() => {
+  const draft = urlDraft.value.trim()
+  return draft !== '' && draft !== props.feed.url
+})
+
+function saveUrl() {
+  if (!urlDirty.value) return
+  emit('update-feed', props.feed.id, 'url', urlDraft.value.trim())
+}
+
+const completionRetryOptions = [1, 2, 3, 5, 10]
 
 function formatStatus(feed: RssFeed): string {
   if (feed.refreshStatus === 'refreshing') return '刷新中…'
@@ -139,6 +169,17 @@ function formatStatus(feed: RssFeed): string {
       </span>
     </div>
 
+    <!-- 来源质量块（只读观测，位置契约：状态条之后、设置表单之前；失败不阻断下方表单） -->
+    <FeedSourceQualityBlock
+      :feed="feed"
+      :stats="stats"
+      :loading="statsLoading"
+      :error="statsError"
+      :window-days="windowDays"
+      @set-window="emit('set-window', $event)"
+      @retry="emit('retry-stats')"
+    />
+
     <!-- Settings form -->
     <div class="feed-detail__form">
       <!-- Category selector -->
@@ -193,13 +234,73 @@ function formatStatus(feed: RssFeed): string {
         </div>
       </div>
 
+      <!-- RSS 地址 + 总结重试上限（保存走 PATCH 单字段） -->
+      <div class="feed-detail__row">
+        <div class="feed-detail__field">
+          <label class="feed-detail__label">RSS 地址</label>
+          <div class="feed-detail__url-edit">
+            <input
+              v-model="urlDraft"
+              class="feed-detail__input"
+              type="url"
+              placeholder="https://example.com/feed.xml"
+              @keyup.enter="saveUrl"
+            />
+            <button
+              class="feed-detail__mini-btn feed-detail__mini-btn--primary"
+              :disabled="!urlDirty || loading"
+              @click="saveUrl"
+            >保存</button>
+          </div>
+        </div>
+        <div class="feed-detail__field">
+          <label class="feed-detail__label">总结重试上限</label>
+          <select
+            :value="feed.maxCompletionRetries ?? 3"
+            class="feed-detail__select"
+            @change="emit('update-feed', feed.id, 'max_completion_retries', Number(($event.target as HTMLSelectElement).value))"
+          >
+            <option v-for="n in completionRetryOptions" :key="n" :value="n">最多 {{ n }} 次</option>
+          </select>
+          <p class="feed-detail__field-hint">自动总结失败后的最大重试次数</p>
+        </div>
+      </div>
+
       <div class="feed-detail__toggles">
+        <div class="feed-detail__toggle-row">
+          <div class="feed-detail__toggle-label">
+            <Icon icon="mdi:brain" width="16" height="16" style="color: var(--color-warning, #e6a23c)" />
+            <div>
+              <span class="feed-detail__toggle-name">AI 总结</span>
+              <span class="feed-detail__toggle-desc">为文章生成 AI 整理稿；开启后文章页可手动生成</span>
+            </div>
+          </div>
+          <AppToggle
+            :model-value="!!feed.articleSummaryEnabled"
+            @update:model-value="emit('update-feed', feed.id, 'article_summary_enabled', $event)"
+          />
+        </div>
+
+        <div class="feed-detail__toggle-row">
+          <div class="feed-detail__toggle-label">
+            <Icon icon="mdi:refresh-auto" width="16" height="16" style="color: var(--color-success)" />
+            <div>
+              <span class="feed-detail__toggle-name">刷新后自动总结</span>
+              <span class="feed-detail__toggle-desc">新文章自动排队总结；关闭后仅手动生成</span>
+            </div>
+          </div>
+          <AppToggle
+            :model-value="!!feed.completionOnRefresh"
+            @update:model-value="emit('update-feed', feed.id, 'completion_on_refresh', $event)"
+          />
+        </div>
+
         <div class="feed-detail__toggle-row">
           <div class="feed-detail__toggle-label">
             <Icon icon="mdi:web" width="16" height="16" style="color: var(--color-link)" />
             <div>
-              <span class="feed-detail__toggle-name">Firecrawl 全文抓取</span>
-              <span class="feed-detail__toggle-desc">使用 Firecrawl 获取完整文章内容</span>
+              <span class="feed-detail__toggle-name">全文抓取</span>
+              <span class="feed-detail__toggle-desc">用 Firecrawl 抓取完整正文供阅读，与总结独立</span>
             </div>
           </div>
           <AppToggle
@@ -219,20 +320,6 @@ function formatStatus(feed: RssFeed): string {
           <AppToggle
             :model-value="!!feed.taggingEnabled"
             @update:model-value="emit('update-feed', feed.id, 'tagging_enabled', $event)"
-          />
-        </div>
-
-        <div class="feed-detail__toggle-row">
-          <div class="feed-detail__toggle-label">
-            <Icon icon="mdi:text-box-plus" width="16" height="16" style="color: var(--color-success)" />
-            <div>
-              <span class="feed-detail__toggle-name">内容补全</span>
-              <span class="feed-detail__toggle-desc">刷新时自动补全文章正文</span>
-            </div>
-          </div>
-          <AppToggle
-            :model-value="!!feed.completionOnRefresh"
-            @update:model-value="emit('update-feed', feed.id, 'completion_on_refresh', $event)"
           />
         </div>
       </div>
@@ -450,6 +537,12 @@ function formatStatus(feed: RssFeed): string {
   font-size: 12px;
   color: var(--color-text-secondary);
   opacity: 0.8;
+}
+
+.feed-detail__url-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .feed-detail__select {

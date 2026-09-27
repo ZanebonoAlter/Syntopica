@@ -14,7 +14,7 @@
 | `title` | VARCHAR(500) | NOT NULL | 文章标题 |
 | `description` | TEXT | — | 文章描述（参与全文检索，权重 B） |
 | `content` | TEXT | — | RSS 原始内容（HTML 片段） |
-| `link` | VARCHAR(1000) | — | 文章链接 |
+| `link` | VARCHAR(1000) | index `idx_articles_link`；部分唯一索引 `uq_articles_feed_link`（迁移 `20260917_0001`） | 文章链接。**入库判重键 = `(feed_id, link)`**（标题不参与判重），唯一部分索引 `WHERE link <> ''` 兜底并发刷新（空 link 行不受约束）；跨 feed 复用打标与存量归并都依赖 `idx_articles_link` |
 | `image_url` | VARCHAR(1000) | — | 封面图 |
 | `pub_date` | TIMESTAMP | — | 发布时间 |
 | `author` | VARCHAR(200) | — | 作者 |
@@ -43,6 +43,8 @@
 
 **复合索引（迁移 `20260417_0001`）**：`idx_articles_feed_pub_date(feed_id, pub_date DESC)`、`idx_articles_feed_id_title(feed_id, title)`。
 
+**去重相关索引（迁移 `20260917_0001`）**：`idx_articles_link(link)`（普通索引，服务跨 feed 打标复用查询与存量归并）+ `uq_articles_feed_link(feed_id, link) WHERE link <> ''`（部分唯一索引，同 feed 同 link 只能有一行——并发刷新双方的 `Create` 冲突被刷新路径 `continue` 吞掉，空 link 行豁免）。
+
 ### 1.2 feeds（订阅源表）
 
 | 字段名 | 类型 | 约束/默认/索引 | 用途 |
@@ -62,8 +64,8 @@
 | `refresh_status` | VARCHAR(20) | DEFAULT 'idle' | 刷新状态 |
 | `refresh_error` | TEXT | — | 刷新错误信息 |
 | `last_refresh_at` | TIMESTAMP | — | 最后刷新时间 |
-| `article_summary_enabled` | BOOLEAN | DEFAULT false | 是否启用文章级 AI 总结（依赖 Firecrawl） |
-| `completion_on_refresh` | BOOLEAN | DEFAULT true | 刷新时是否自动触发内容补全 |
+| `article_summary_enabled` | BOOLEAN | DEFAULT false | AI 总结主开关（能力层：关→无任何总结含手动入口；开→文章页可手动生成） |
+| `completion_on_refresh` | BOOLEAN | DEFAULT false | 刷新后自动总结闸门（自动层：仅控制刷新后是否自动排队总结；存量已由迁移 20260920_0002 全置 false） |
 | `max_completion_retries` | INTEGER | DEFAULT 3 | AI 总结最大重试次数 |
 | `firecrawl_enabled` | BOOLEAN | DEFAULT false | 是否启用 Firecrawl 抓取 |
 | `tagging_enabled` | BOOLEAN | DEFAULT true | 是否启用自动打标签 |

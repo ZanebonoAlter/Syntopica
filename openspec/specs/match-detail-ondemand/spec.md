@@ -25,7 +25,7 @@
 
 ### Requirement: getTagMatchDetail 返回 direction_sim
 
-getTagMatchDetail 响应新增 `direction_sim` 字段（float64 或 null）。计算方式：在 handler 层实时计算 cosine(tag identity embedding, board embedding)，**不在** `computeMatchDetail` 内部——direction_sim 是匹配后校验结果，非匹配过程的一部分。
+getTagMatchDetail 响应 SHALL 新增 `direction_sim` 字段（float64 或 null）。计算方式：在 handler 层实时计算 cosine(tag identity embedding, board embedding)，**不在** `computeMatchDetail` 内部——direction_sim 是匹配后校验结果，非匹配过程的一部分。
 
 #### Scenario: direction_sim available
 - **WHEN** tag identity embedding 和 board embedding 均存在
@@ -37,3 +37,8 @@ getTagMatchDetail 响应新增 `direction_sim` 字段（float64 或 null）。�
 
 ### Requirement: 返回当前匹配配置参数
 系统 SHALL 在匹配详情响应中返回当前生效的匹配配置参数（从 ai_settings 读取），包括 sim_threshold、direct_hit_min_overlap、direct_hit_rate、hit_rate_sim_blend、min_effective_sample、direct_max_sim、direct_max_sim_min_hits、direct_max_sim_min_hit_rate、weight_sim、weight_density、weighted_threshold。
+
+#### Scenario: 响应包含当前生效配置
+
+- **WHEN** 客户端调用 `GET /api/semantic-boards/:id/match-detail/:tagId`
+- **THEN** 响应 SHALL 携带从 ai_settings 读取的当前生效配置参数（sim_threshold、direct_hit_min_overlap、direct_hit_rate、hit_rate_sim_blend、min_effective_sample、direct_max_sim、direct_max_sim_min_hits、direct_max_sim_min_hit_rate、weight_sim、weight_density、weighted_threshold）

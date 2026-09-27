@@ -70,4 +70,16 @@ defineEmits<{
   background: var(--color-bg-hover);
   border-color: var(--color-accent);
 }
+
+/* 窄屏（<768px）：按钮全宽、收紧内边距（mobile-viewport-stage1 任务 4.1） */
+@media (max-width: 767.98px) {
+  .feed-empty-guide {
+    padding: 1.5rem 1rem;
+  }
+
+  .feed-empty-guide__btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
 </style>

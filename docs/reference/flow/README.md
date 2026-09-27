@@ -5,7 +5,7 @@
 
 ## 这层装什么（五段式）
 
-每个 `flow/<功能>.md` 固定五个二级标题（`scripts/check-standards.sh` A 段校验齐全）：
+每个 `flow/<功能>.md` 固定五个二级标题（`scripts/harness/check-standards.sh` A 段校验齐全）：
 
 1. **需求说明** — 功能给用户解决什么问题（面向使用视角）
 2. **链路设计** — mermaid 流程图 + 状态流转
@@ -76,7 +76,7 @@ flowchart LR
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
 | 2026-07-20 | docs-harness-consolidation | flow 升级五位一体活文档（需求/链路/业务约束/代码入口/溯源）；业务约束节作为注入数据源（时为 `doc-impact.sh context`，2026-08-22 起由 constraint-injection extension 接管，见 port-constraint-injection）；原 user-guide 定位由 flow「需求说明」节承接 | [archive/2026-07-20-docs-harness-consolidation](../../../openspec/changes/archive/2026-07-20-docs-harness-consolidation) |
-| 2026-08-21 | add-change-scope | 新增 `scripts/change-scope.sh` 改动范围→最小验证命令机械判定（路径三档映射，未命中不猜）；quality-gate turn_end 升级自动跑影响包 `go test -short`（DB 集成测试 -short 自动 skip）。「测试只跑影响包」从自觉规则变机械执行 | [archive/2026-08-21-add-change-scope](../../../openspec/changes/archive/2026-08-21-add-change-scope) |
+| 2026-08-21 | add-change-scope | 新增 `scripts/harness/change-scope.sh` 改动范围→最小验证命令机械判定（路径三档映射，未命中不猜）；quality-gate turn_end 升级自动跑影响包 `go test -short`（DB 集成测试 -short 自动 skip）。「测试只跑影响包」从自觉规则变机械执行 | [archive/2026-08-21-add-change-scope](../../../openspec/changes/archive/2026-08-21-add-change-scope) |
 | 2026-08-21 | amend-dev-workflow | 测试纪律改用例先行（Scenario 即黑盒用例+复杂档白盒用例，顺序解绑，bug 先复现底线不变）；调研两级落点（change research.md / `docs/research/`），experience 回归纯踩坑复盘 | [archive/2026-08-21-amend-dev-workflow](../../../openspec/changes/archive/2026-08-21-amend-dev-workflow) |
 | 2026-08-23 | port-constraint-injection | 移植 constraint-injection extension（harness 层每 turn 注入：flow「业务约束与不变量」节级注入 + standard JIT 路径命中 + 关键词命中粘性保前缀缓存 + pin_finding 两级落点）；`doc-impact.sh context` 子命令退役，9 个 flow 文档脚注数据源表述改指 extension | [archive/2026-08-23-port-constraint-injection](../../../openspec/changes/archive/2026-08-23-port-constraint-injection) |
 | 2026-08-23 | harness-facts-tier-a | harness 层事实库落地（`.pi/harness/events.db` 六类事件记账：constraint.inject / pin.write / pin.read / gate.check / subagent.dispatch / session.start），constraint-injection 注入与 pin 读写经 lib/harness-log 自报，模型零参与；flow 文档作为注入数据源的机制不变，仅新增记账维度 | [archive/2026-08-23-harness-facts-tier-a](../../../openspec/changes/archive/2026-08-23-harness-facts-tier-a) |
@@ -87,3 +87,8 @@ flowchart LR
 | 2026-08-26 | harness-observability-fixes | harness 观测面修复三件：① gate.check diag 用 truncateDiagGate 节最小字节下限（不丢 FAIL 行）；② quality-gate 增量路由（触发集=本回合相对快照新增/变化路径，非 git 累积 diff）+ 失败粘性（上回合失败未转绿纯对话也重跑）；③ telemetry 补 subagent.complete 回填（完成派发也有账）。事件词汇七类不变，仅补完成态记账 | [archive/2026-08-26-harness-observability-fixes](../../../openspec/changes/archive/2026-08-26-harness-observability-fixes) |
 | 2026-08-26 | test-case-entry-gate | 白盒用例反馈前置两件：① 复杂度声明制——proposal 头 MUST 携 `<!-- complexity: complex\|simple -->`（判定标准：状态机≥3状态/算法/多模块协议任一命中，义务家在开发执行规范 §2，openspec 官方 skill 不植入定制项）；② entry-gate 动工入口门禁——implementation 档 + 缺 test-cases*.md 时 steer 提醒进上下文（声明 complex=强提醒，simple/未声明+4 词兜底=质询），spec-gate ⑤a 归档同步声明优先。补文档义务从归档末端提前到动工瞬间，不再全靠自觉 | [archive/2026-08-26-test-case-entry-gate](../../../openspec/changes/archive/2026-08-26-test-case-entry-gate) |
 | 2026-09-02 | harness-quick-wins | 事实库复盘四快赢：① pnpm lint 启用 eslint --cache（cmd.exe 原生增量 2~6s，旧全量 22.3s 黑洞退役）；② quality-gate 后端三命令并行 + lint 先行短路哨兵（编译失败跳过必红同因命令，未执行不记账）；③ gate.check 成功事件改采样记账（会话首条与转绿锚点必记，其后每 5 连续成功记 1 条，失败仍全量）；④ steer 催修分级（曾绿变红=[回归]强催，从未绿=[中间态]轻提示）。AGENTS.md/harness-facts skill 补齐 8 扩展全景档 | [archive/2026-09-02-harness-quick-wins](../../../openspec/changes/archive/2026-09-02-harness-quick-wins) |
+| 2026-09-16 | add-same-origin-deploy | 同源反代部署制品落地：Caddy（Docker）/nginx（系统包）双入口，均反代 /api、/ws、/icons、/health 到 :5100，静态产物或 dev 二模式；静态模式下 NUXT_PUBLIC_API_BASE=/api 必须构建期给（SPA runtimeConfig 内联）。部署形态详见 deployment.md | [archive/2026-09-16-add-same-origin-deploy](../../../openspec/changes/archive/2026-09-16-add-same-origin-deploy) |
+| 2026-09-16 | loading-progress-tips | 全局加载提示体验：加载态文案/骨架与进度提示统一化，减少白屏与空白等待感；纯前端 UX 变更，无链路变化 | [archive/2026-09-16-loading-progress-tips](../../../openspec/changes/archive/2026-09-16-loading-progress-tips) |
+| 2026-09-16 | spa-loading-ux | SPA 静态托管加载态优化：app.vue 首屏 loading 与路由切换过渡衔接，静态托管（无 SSR）下首屏不再是白屏；配套 deployment.md 静态形态说明 | [archive/2026-09-16-spa-loading-ux](../../../openspec/changes/archive/2026-09-16-spa-loading-ux) |
+| 2026-09-23 | add-sql-safety-guard | SQL 安全硬闸（2026-09-22 `psql -c` TRUNCATE…CASCADE 清库事故复盘，软约束升级工具边界拦截）：新增 `.pi/extensions/sql-safety-guard.ts` Bash 类工具前置拦截——命令同时命中「psql 执行入口」∧「TRUNCATE/DROP」且无放行条件即 block；逃生口三条件（尾注 `# allow-truncate-drop` 授权 / BEGIN+ROLLBACK 同现 / 一次性容器），`psql -f` 读文件扫描两词；红线文档 AGENTS.md「验证含副作用的 SQL 一律不碰真库」行 + `standard/backend/testing.md` §🛑 随 change 落地 | [archive/2026-09-23-add-sql-safety-guard](../../../openspec/changes/archive/2026-09-23-add-sql-safety-guard) |
+| 2026-09-23 | aggregate-concurrent-gate-warns | 门禁提醒收敛（harness-retro 判定 concurrent-mixed/dirty-tree 软提醒失效组后）：同会话同指纹失败改边沿触发注入（状态未变零注入，首次/指纹变化/转绿收尾保留，执行频率与归档前全绿硬要求不变）；`policy.decision(concurrent-mixed)` warn 每指纹会话内至多一条；新增 `scripts/harness/gate-status.sh` 只读 facts 库查询各门禁红/绿状态替代持续提醒；失败输出包锚点（`# pkg`/`FAIL pkg`）解析归属，外部包级失败不再 fail-open 成 [回归] | [archive/2026-09-23-aggregate-concurrent-gate-warns](../../../openspec/changes/archive/2026-09-23-aggregate-concurrent-gate-warns) |

@@ -64,13 +64,13 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 		feed.IconSource = newSource
 	}
 
-	var existingTitles []string
+	var existingLinks []string
 	repository.Repo.DB().Model(&models.Article{}).
 		Where("feed_id = ?", feed.ID).
-		Pluck("title", &existingTitles)
-	titleSet := make(map[string]bool, len(existingTitles))
-	for _, t := range existingTitles {
-		titleSet[t] = true
+		Pluck("link", &existingLinks)
+	linkSet := make(map[string]bool, len(existingLinks))
+	for _, l := range existingLinks {
+		linkSet[l] = true
 	}
 
 	articlesAdded := 0
@@ -79,7 +79,15 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 			continue
 		}
 
-		if titleSet[entry.Title] {
+		if linkSet[entry.Link] {
+			// Same link already stored in this feed: apply the update
+			// semantics (dedupe-rss-articles D2) — skip when content is
+			// unchanged, refresh the stored row when it actually changed.
+			// Titles no longer participate in dedupe (live-news feeds roll
+			// titles under one URL).
+			if err := s.refreshExistingArticle(feed, entry); err != nil {
+				logging.Warnf("Error refreshing existing article for link %s (feed %d): %v", entry.Link, feed.ID, err)
+			}
 			continue
 		}
 
@@ -91,10 +99,12 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 		}
 
 		if err := repository.Repo.DB().Create(&article).Error; err != nil {
+			// Unique-index conflicts from a concurrent refresh of the same feed
+			// land here and are swallowed on purpose (dedupe-rss-articles D5).
 			continue
 		}
 
-		titleSet[entry.Title] = true
+		linkSet[entry.Link] = true
 
 		if err := s.enqueueArticleProcessing(feed, article); err != nil {
 			logging.Errorf("Error enqueueing processing for article %d (feed %d): %v", article.ID, feed.ID, err)
@@ -130,6 +140,91 @@ func (s *FeedService) enqueueArticleProcessing(feed models.Feed, article models.
 		CategoryName: tagging.FeedCategoryName(feed),
 		Reason:       "article_created",
 	})
+}
+
+// refreshExistingArticle applies the update semantics for an RSS entry whose
+// link already exists in the feed (dedupe-rss-articles D2):
+//
+//   - title+description unchanged → no-op (zero processing-chain cost);
+//   - either changed → UPDATE content fields, reset the processing-chain
+//     state exactly like a fresh insert (buildArticleFromEntry rules), clear
+//     derived fields (crawl body / AI summary / completion bookkeeping), drop
+//     stale topic tags, and re-enqueue processing. Retagging then rides the
+//     existing completion-event path (tag_jobs reasons firecrawl_completed /
+//     summary_completed / article_created) instead of calling the AI inline.
+func (s *FeedService) refreshExistingArticle(feed models.Feed, entry ParsedEntry) error {
+	var existing models.Article
+	if err := repository.Repo.DB().
+		Where("feed_id = ? AND link = ?", feed.ID, entry.Link).
+		Order("id ASC").
+		First(&existing).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// Deleted inside the refresh window; let the next refresh re-insert.
+			return nil
+		}
+		return err
+	}
+
+	if existing.Title == entry.Title && existing.Description == entry.Description {
+		return nil
+	}
+
+	fresh := s.buildArticleFromEntry(feed, entry)
+	updates := map[string]interface{}{
+		"title":                         fresh.Title,
+		"description":                   fresh.Description,
+		"content":                       fresh.Content,
+		"image_url":                     fresh.ImageURL,
+		"author":                        fresh.Author,
+		"summary_status":                fresh.SummaryStatus,
+		"summary_generated_at":          nil,
+		"summary_processing_started_at": nil,
+		"completion_attempts":           0,
+		"completion_error":              "",
+		"content_form":                  "",
+		"ai_content_summary":            "",
+		"firecrawl_status":              fresh.FirecrawlStatus,
+		"firecrawl_error":               "",
+		"firecrawl_content":             "",
+		"firecrawl_crawled_at":          nil,
+	}
+	if fresh.PubDate != nil {
+		updates["pub_date"] = fresh.PubDate
+	}
+	if err := repository.Repo.DB().Model(&models.Article{}).
+		Where("id = ?", existing.ID).
+		Updates(updates).Error; err != nil {
+		return err
+	}
+
+	// Stale tags describe the old content: drop them (retag re-creates any
+	// still-relevant tags once the refreshed chain completes).
+	var oldTagIDs []uint
+	if err := repository.Repo.DB().Model(&models.ArticleTopicTag{}).
+		Where("article_id = ?", existing.ID).
+		Pluck("topic_tag_id", &oldTagIDs).Error; err != nil {
+		return err
+	}
+	if err := repository.Repo.DB().Where("article_id = ?", existing.ID).
+		Delete(&models.ArticleTopicTag{}).Error; err != nil {
+		return err
+	}
+	tagging.CleanupOrphanedTags(oldTagIDs)
+
+	// The counter must follow the edges just dropped (the merge migration and
+	// the cross-feed reuse path both maintain it; the read path only recomputes
+	// it for some endpoints). Raw SQL on purpose: the model marks tag_count as
+	// read-only (`gorm:"->"`), so GORM's Update() would silently skip it.
+	if err := repository.Repo.DB().Exec(
+		"UPDATE articles SET tag_count = (SELECT COUNT(*) FROM article_topic_tags WHERE article_id = ?) WHERE id = ?",
+		existing.ID, existing.ID).Error; err != nil {
+		logging.Warnf("Error recomputing tag_count for refreshed article %d: %v", existing.ID, err)
+	}
+
+	if err := s.enqueueArticleProcessing(feed, existing); err != nil {
+		logging.Errorf("Error enqueueing processing for refreshed article %d (feed %d): %v", existing.ID, feed.ID, err)
+	}
+	return nil
 }
 
 func (s *FeedService) updateFeedError(feed *models.Feed, err error) {
@@ -193,15 +288,10 @@ func (s *FeedService) CleanupOldArticles(feed *models.Feed) {
 		if len(toArchive) > 0 {
 			logging.Infof("[cleanup] feed %d: archiving %d articles, IDs=%v", feed.ID, len(toArchive), toArchive)
 
-			// Collect affected tag IDs before removing edges (orphan cleanup).
-			var affectedTagIDs []uint
-			repository.Repo.DB().Model(&models.ArticleTopicTag{}).
-				Where("article_id IN ?", toArchive).
-				Pluck("topic_tag_id", &affectedTagIDs)
-
-			// Derived data goes away; the row and its text fields stay.
+			// Behaviors go away; the row, its text fields and its
+			// article_topic_tags edges stay (edges are reclaimed by the
+			// time-window GC, not by archiving).
 			repository.Repo.DB().Where("article_id IN ?", toArchive).Delete(&models.ReadingBehavior{})
-			repository.Repo.DB().Where("article_id IN ?", toArchive).Delete(&models.ArticleTopicTag{})
 
 			// Archive the rows. search_vector is Postgres-only (tsvector) —
 			// sqlite test DBs lack the column, so guard the NULL assignment.
@@ -210,9 +300,6 @@ func (s *FeedService) CleanupOldArticles(feed *models.Feed) {
 				updates["search_vector"] = nil
 			}
 			repository.Repo.DB().Model(&models.Article{}).Where("id IN ?", toArchive).Updates(updates)
-
-			// Clean up TopicTags that became orphaned after edge removal
-			tagging.CleanupOrphanedTags(affectedTagIDs)
 		} else {
 			logging.Infof("[cleanup] feed %d: no articles to archive", feed.ID)
 		}
@@ -239,14 +326,25 @@ func (s *FeedService) buildArticleFromEntry(feed models.Feed, entry ParsedEntry)
 
 	if feed.FirecrawlEnabled {
 		article.FirecrawlStatus = "pending"
-		if feed.ArticleSummaryEnabled {
+		if feed.ArticleSummaryEnabled && feed.CompletionOnRefresh {
 			article.SummaryStatus = "incomplete"
 		}
-	} else if feed.ArticleSummaryEnabled {
+	} else if feed.ArticleSummaryEnabled && feed.CompletionOnRefresh {
 		article.SummaryStatus = "pending"
 	}
 
 	return article
+}
+
+// localIconPresent reports whether the local icon file backing a DB-stored
+// "/icons/..." path is still on disk. An unwired store (partial construction)
+// keeps the legacy freeze semantics rather than risking a nil dereference in
+// the download pipeline.
+func (s *FeedService) localIconPresent(localIconPath string) bool {
+	if s.iconStore == nil {
+		return true
+	}
+	return s.iconStore.LocalIconExists(localIconPath)
 }
 
 // resolveFeedIcon applies the icon source state machine and the candidate
@@ -254,9 +352,12 @@ func (s *FeedService) buildArticleFromEntry(feed models.Feed, entry ParsedEntry)
 //
 // Skip rules:
 //   - custom (or any non-empty non-auto/fallback source) → frozen, never touched;
-//   - auto + icon already a local /icons/ path → frozen (a good downloaded icon
-//     must not be clobbered by a transient remote failure: no download, no
-//     homepage probe);
+//   - auto + icon already a local /icons/ path **whose file still exists on
+//     disk** → frozen (a good downloaded icon must not be clobbered by a
+//     transient remote failure: no download, no homepage probe);
+//   - auto + local /icons/ path whose file is gone (icon dir wiped, or the DB
+//     was restored from a dump without the runtime files) → the pipeline runs
+//     again to heal the dangling path;
 //   - auto + still-remote icon (legacy unlocalized data) → pipeline runs to
 //     complete localization;
 //   - fallback / empty (legacy rows) → pipeline runs.
@@ -270,13 +371,13 @@ func (s *FeedService) buildArticleFromEntry(feed models.Feed, entry ParsedEntry)
 // the refresh.
 //
 // Returns (icon, iconSource, ok): ok=false means the icon must be left
-// untouched (custom, or auto with an already-localized icon).
+// untouched (custom, or auto with a still-present localized icon).
 func (s *FeedService) resolveFeedIcon(feedID uint, currentIcon, currentSource, parsedImage, siteLink string) (icon, source string, ok bool) {
 	if currentSource != "auto" && currentSource != "fallback" && currentSource != "" {
 		return "", "", false // custom (or unknown): do not touch
 	}
-	if currentSource == "auto" && strings.HasPrefix(currentIcon, "/icons/") {
-		return "", "", false // auto + already-localized: skip the whole pipeline
+	if currentSource == "auto" && strings.HasPrefix(currentIcon, "/icons/") && s.localIconPresent(currentIcon) {
+		return "", "", false // auto + already-localized (file on disk): skip the whole pipeline
 	}
 	if parsedImage != "" {
 		if local, err := s.iconStore.SaveFeedIcon(feedID, parsedImage); err == nil {
@@ -286,6 +387,8 @@ func (s *FeedService) resolveFeedIcon(feedID uint, currentIcon, currentSource, p
 		}
 	}
 	// RSS image absent or failed: probe the site homepage once, then guess.
+	// Reached both by fallback/legacy rows and by auto rows whose local file is
+	// missing (self-healing the dangling /icons/ path).
 	for _, candidate := range s.rssParser.ProbeFaviconCandidates(siteLink) {
 		if candidate == "" {
 			continue

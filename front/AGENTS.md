@@ -12,10 +12,12 @@ pnpm lint  &&  pnpm exec nuxi typecheck
 pnpm test:unit  &&  pnpm test:e2e
 ```
 
-> **⚠️ WSL 注意**：`pnpm lint` 可在 WSL 跑；`pnpm exec nuxi typecheck` 和 `pnpm build` 因缺少 Linux native binding 必须在 Windows cmd 中执行：
+> **⚠️ 平台注意**：`front/node_modules` 按当前宿主平台安装。**Linux / macOS（含树莓派）直接在本机跑全部命令**；Windows + WSL 宿主下 `pnpm exec nuxi typecheck` / `pnpm build` 因 WSL 侧缺 Linux native binding 必须经 Windows cmd，`pnpm lint` 可在 WSL 跑：
 > ```bash
+> # Linux / macOS：直接跑
+> pnpm lint && pnpm exec nuxi typecheck && pnpm build
+> # Windows + WSL：前两类经 cmd
 > cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm exec nuxi typecheck"
-> cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm build"
 > ```
 > 提交前检查全流程见 `docs/reference/standard/shared/commit-pr.md`。
 
@@ -46,6 +48,7 @@ pnpm test:unit  &&  pnpm test:e2e
 → 组件/API/Store/事件流/通知/Feature 共享：`docs/reference/standard/frontend/code-style.md`
 → 双主题与设计系统：`docs/reference/standard/frontend/theming.md`
 → 布局契约（page shell/dialog 尺寸档/双视口验收）：`docs/reference/standard/frontend/layout.md`
+→ SPA 加载体验（首屏模板/字体自托管/错误兑底）：`docs/reference/standard/frontend/loading-experience.md`
 
 ## 目录归属速查
 

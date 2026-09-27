@@ -115,6 +115,35 @@ describe('useApiStore', () => {
     expect(apiStore.feeds[0]!.articleSummaryEnabled).toBe(false)
   })
 
+  // unify-feed-summary-toggles FE-8：completionOnRefresh 回退统一 false（与后端 gorm default:false 一致）
+  it('fetchFeeds defaults completionOnRefresh to false when field missing/null', async () => {
+    const { apiStore } = await createStores()
+    getFeedsMock.mockResolvedValue({
+      success: true,
+      data: [
+        { id: 9, title: 'F3', url: 'https://example.com/f3' },
+        { id: 10, title: 'F4', url: 'https://example.com/f4', completion_on_refresh: null },
+      ],
+    })
+
+    await apiStore.fetchFeeds()
+
+    expect(apiStore.feeds[0]!.completionOnRefresh).toBe(false)
+    expect(apiStore.feeds[1]!.completionOnRefresh).toBe(false)
+  })
+
+  it('fetchFeeds maps explicit completion_on_refresh=true through', async () => {
+    const { apiStore } = await createStores()
+    getFeedsMock.mockResolvedValue({
+      success: true,
+      data: [{ id: 11, title: 'F5', url: 'https://example.com/f5', completion_on_refresh: true }],
+    })
+
+    await apiStore.fetchFeeds()
+
+    expect(apiStore.feeds[0]!.completionOnRefresh).toBe(true)
+  })
+
   it('markAllAsRead via articlesStore clears apiStore feed unread counts', async () => {
     const { apiStore, articlesStore } = await createStores()
     const testFeeds = [
@@ -128,7 +157,7 @@ describe('useApiStore', () => {
 
     await articlesStore.markAllAsRead()
 
-    expect(bulkUpdateArticlesMock).toHaveBeenCalledWith({ read: true })
+    expect(bulkUpdateArticlesMock).toHaveBeenCalledWith({ read: true, all: true })
     expect(apiStore.feeds.map(feed => feed.unreadCount)).toEqual([0, 0])
   })
 

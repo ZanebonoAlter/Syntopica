@@ -279,3 +279,19 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// 研究超时与预算对齐（board-signal-reports tasks 4.6）：研究 150 分钟独立
+// 常量（覆盖 40 轮 × ~200s/轮 + compose 余量），discovery 保持 30 分钟——
+// 两者互不影响；triggerSignalResearch 传 signalResearchJobTimeout、discovery
+// 仍传 analysisJobTimeout（调用点字面引用，编译期钉死）。
+func TestSignalResearchJobTimeoutBudgetAlignment(t *testing.T) {
+	if signalResearchJobTimeout != 150*time.Minute {
+		t.Fatalf("signalResearchJobTimeout = %v, want 150m", signalResearchJobTimeout)
+	}
+	if analysisJobTimeout != 30*time.Minute {
+		t.Fatalf("analysisJobTimeout = %v, want 30m（discovery 保持不变）", analysisJobTimeout)
+	}
+	if signalResearchJobTimeout <= analysisJobTimeout {
+		t.Fatalf("research timeout must exceed discovery timeout")
+	}
+}

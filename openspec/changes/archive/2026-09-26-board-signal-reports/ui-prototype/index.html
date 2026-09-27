@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>先发现，再研究 · 信号报告原型</title>
+<style>
+:root{--color-bg-base:#faf7f2;--color-bg-elevated:#f5f0e6;--color-text-primary:#1a1a1a;--color-text-secondary:#5a5a5a;--color-text-muted:#76716a;--color-border:rgba(26,26,26,.16);--color-accent:#d94a4a;--color-accent-subtle:rgba(217,74,74,.07);--serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif}
+:root[data-theme=dark]{--color-bg-base:#211f1b;--color-bg-elevated:#292620;--color-text-primary:#eee7dc;--color-text-secondary:#c5bcae;--color-text-muted:#afa492;--color-border:rgba(238,231,220,.2);--color-accent:#ed8479;--color-accent-subtle:rgba(237,132,121,.08)}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,var(--color-bg-base),var(--color-bg-elevated));color:var(--color-text-primary);font:15px/1.8 -apple-system,"Segoe UI","PingFang SC",sans-serif;min-height:100vh}button,input,select{font:inherit;color:inherit}button,a{touch-action:manipulation}button{cursor:pointer;background:transparent;border:1px solid var(--color-border);border-radius:5px;padding:7px 13px}button:hover{background:var(--color-accent-subtle)}button:disabled{cursor:not-allowed;opacity:.55}button.primary{background:var(--color-accent);color:var(--color-bg-base);border-color:var(--color-accent)}a{color:var(--color-accent);text-underline-offset:4px}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--color-accent);outline-offset:4px}input,select{background:var(--color-bg-base);border:1px solid var(--color-border);padding:6px 8px;max-width:100%}[hidden]{display:none!important}.page{max-width:1120px;margin:auto;padding:30px 32px 80px}.proto{font-size:12px;color:var(--color-text-secondary);border-bottom:1px solid var(--color-border);padding-bottom:18px}.proto strong{color:var(--color-accent)}.top,.toolbar,.demo-controls,.row-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.top{justify-content:space-between}.kicker{color:var(--color-accent);font-size:11px;letter-spacing:.19em;font-weight:700}.page-title{font:600 clamp(25px,4vw,36px)/1.4 var(--serif);margin:24px 0 8px}.sub{color:var(--color-text-secondary);margin:0 0 28px}.toolbar{padding:14px 0;border-block:1px solid var(--color-border)}.toolbar .primary{margin-left:auto}.demo-controls{font-size:12px;color:var(--color-text-secondary);margin:15px 0}.demo-controls button{font-size:12px;padding:3px 9px}.section-title{display:flex;justify-content:space-between;gap:15px;align-items:baseline;margin-top:32px}.section-title h2{font-size:14px;letter-spacing:.1em;margin:0}.muted,.meta{color:var(--color-text-muted);font-size:12px}.candidate{border-top:1px solid var(--color-border);padding:22px 0 22px 18px;border-left:3px solid transparent;overflow-wrap:anywhere}.candidate.selected{border-left-color:var(--color-accent);background:linear-gradient(90deg,var(--color-accent-subtle),transparent)}.candidate h3{font:600 21px/1.55 var(--serif);margin:6px 0 9px}.candidate p{margin:6px 0;color:var(--color-text-secondary)}.candidate .question{color:var(--color-text-primary)}.row-actions{margin-top:14px}.status{font-size:12px;color:var(--color-accent)}details{margin-top:12px}summary{cursor:pointer;color:var(--color-text-secondary)}.empty{padding:32px 0;color:var(--color-text-muted)}.notice{margin:18px 0;padding-left:14px;border-left:2px solid var(--color-accent);overflow-wrap:anywhere}.report-link{display:block;border-top:1px solid var(--color-border);padding:16px 0;font-family:var(--serif)}.reader{max-width:760px;margin:38px auto 0;overflow-wrap:anywhere}.reader h1{font:700 clamp(25px,4vw,36px)/1.45 var(--serif);margin:14px 0}.report-meta{display:flex;gap:8px 18px;flex-wrap:wrap;font-size:12px;color:var(--color-text-muted)}.section-sep{border:0;background:var(--color-accent);width:36px;height:3px;margin:24px 0 30px}.lede{border-left:2px solid var(--color-border);padding-left:18px;font:17px/1.95 var(--serif);color:var(--color-text-secondary)}.reader h2{font-size:13px;letter-spacing:.13em;margin:32px 0 14px}.reader p{font-size:16px;line-height:1.95;margin:14px 0}.data-ref{font-weight:650;text-decoration:none;border-bottom:1px dashed var(--color-accent)}.charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:28px;margin:26px 0}.charts figure{margin:0}.charts svg{width:100%;height:auto;display:block}.charts text{font:11px sans-serif;fill:var(--color-text-secondary)}.charts .axis{stroke:var(--color-border)}.charts .data{stroke:var(--color-accent);fill:none;stroke-width:2}.charts .bar{fill:var(--color-accent)}figcaption{color:var(--color-text-secondary);font-size:12px;line-height:1.6;margin-top:8px}.judgment{border-left:3px solid var(--color-accent);padding:0 0 0 18px;margin-top:32px}.judgment h2{color:var(--color-accent)}.appendix{border-top:1px solid var(--color-border);margin-top:30px;padding-top:16px}.table-scroll{max-width:100%;overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:12px;margin:14px 0}th,td{text-align:left;border-bottom:1px solid var(--color-border);padding:8px;vertical-align:top}th{color:var(--color-text-muted)}tr:target{background:var(--color-accent-subtle)}code{overflow-wrap:anywhere}.report-footer{margin-top:30px;border-top:1px solid var(--color-border);padding-top:18px}.history{margin-top:34px;border-top:1px solid var(--color-border);padding-top:12px}.error{color:var(--color-accent)}@media(max-width:600px){.page{padding:18px 16px 50px}.toolbar .primary{margin-left:0}.charts{grid-template-columns:1fr}.candidate{padding-left:12px}.candidate h3{font-size:19px}.reader p{font-size:15px}.section-title{flex-wrap:wrap}button{min-height:40px}.proto a{display:inline-block}.report-meta{gap:6px 12px}}@media(prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+</style>
+</head>
+<body>
+<main class="page">
+<div class="proto"><div class="top"><span><strong>待确认原型 · 合成数据演示</strong>　不联网、不调用LLM，不是真实行情或40轮实测。</span><button id="theme" type="button">切换明暗</button></div><div>流程：先发现，再由你选择。<a href="flow.html">查看流程图</a> · 完整内容与账本见 <code>../sample-report.md</code>。沿用原有印刷红与备忘录排版。</div></div>
+<section id="workspace">
+<p class="kicker">原油与能源市场 / 研究工作台</p><h1 class="page-title">先找到值得问的问题。</h1><p class="sub">发现信号不会直接生成报告。只有你选中的信号，才进入深入研究。</p>
+<div class="toolbar"><label>粒度 <select id="granularity"><option value="month">月</option><option value="year">年</option></select></label><label>周期 <input id="period" value="2026-09" size="9" aria-label="周期"></label><button class="primary" id="discover" type="button">发现信号</button></div>
+<div class="demo-controls"><label>演示发现结果 <select id="scenario"><option value="signals">有信号</option><option value="empty">零信号</option><option value="error">识别失败</option></select></label><button id="reset" type="button">重置演示</button><span>只在本浏览器保存候选；不会启动后台研究。</span></div>
+<div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+<div class="section-title"><h2>候选信号</h2><span class="muted">先看原因和依据，再决定要不要查</span></div>
+<div id="candidates"></div>
+<div id="research-controls" class="demo-controls" hidden><strong>研究状态演示：</strong><button id="advance" type="button">演示推进至17轮</button><button id="complete" type="button">演示完成</button><button id="fail" type="button">演示研究失败</button><span>上限40轮，执行次数为取数+计算；可以提前结束。</span></div>
+<div class="section-title"><h2>已生成报告</h2><span class="muted">生成后即可阅读，无后续评审步骤</span></div><div id="reports"></div>
+<details class="history"><summary>新闻背景（原有区域保留）</summary><p class="muted">产品实现保留这里的周期筛选与叙事编辑。本原型不模拟原有新闻编辑功能。</p></details>
+</section>
+<section id="report" class="reader" hidden aria-labelledby="report-title">
+<div class="row-actions"><button id="back" type="button">← 返回候选</button><span class="muted">目标周期 <span id="report-period">2026-09</span> · 合成样例，非真实行情</span></div>
+<div id="primary-report">
+<p class="kicker">信号解读报告 / 阅读样例</p><h1 id="report-title">库存少了，<br>但还不能认定油价会涨</h1>
+<div class="report-meta"><span>范围：仅美国</span><span>新闻和数据均为虚构，不代表真实行情</span></div><hr class="section-sep">
+<div id="report-body">
+<p class="lede"><strong>先别因为仓库里的原油少了，就认定油价要涨。</strong> 这次变化值得关注，但我们还不知道：是大家真的用了更多油，还是企业调货、备货造成的短期变化。</p>
+<h2>发生了什么</h2>
+<p>这组数据里，有两件事同时发生：</p>
+<p><strong>第一，<a class="data-ref" href="#c1-o2">仓库里的原油比前一周少了</a>。</strong> 不过只比较了相邻两周，还不能说它会一直减少。</p>
+<p><strong>第二，美国从国外买进来的原油没有减少。</strong> 买进来的和卖出去的都增加了；把买进来的减去卖出去的，<a class="data-ref" href="#k4">结果还比前一周更多</a>。</p>
+<p>也就是说，不能简单解释成：“只是进货少了，所以仓库里的油才少了。”</p>
+<div class="charts"><figure><svg viewBox="0 0 320 175" role="img" aria-label="仓库原油两周从420降至419百万桶，纵轴418至421"><line class="axis" x1="42" y1="25" x2="42" y2="135"/><line class="axis" x1="42" y1="135" x2="296" y2="135"/><text x="4" y="29">421</text><text x="4" y="139">418</text><path class="data" d="M75 62 L265 98"/><text x="64" y="49">420.0</text><text x="243" y="87">419.0</text><text x="53" y="157">09-04</text><text x="243" y="157">09-11</text></svg><figcaption>图1 · 仓库里的油少了一点，还看不出长期趋势。单位：百万桶；纵轴418～421，不从0起。</figcaption></figure>
+<figure><svg viewBox="0 0 320 175" role="img" aria-label="买进来的减去卖出去的，从2700增至2800千桶每天，纵轴从0开始"><line class="axis" x1="42" y1="25" x2="42" y2="135"/><line class="axis" x1="42" y1="135" x2="296" y2="135"/><text x="2" y="29">3000</text><text x="22" y="139">0</text><rect class="bar" x="78" y="36" width="54" height="99"/><rect class="bar" x="210" y="32.33" width="54" height="102.67"/><text x="84" y="27">2700</text><text x="218" y="24">2800</text><text x="79" y="157">09-04</text><text x="211" y="157">09-11</text></svg><figcaption>图2 · 买进来的减去卖出去的，反而比上一周更多。单位：千桶/日，数值由代码计算。</figcaption></figure></div>
+<h2>这意味着什么</h2>
+<p>一种可能是，炼油厂拿走了更多原油，用来生产汽油和柴油。如果是这样，我们就要继续问：<strong>这些汽油和柴油真的卖得更多了，还是企业先做出来、存着以后卖？</strong></p>
+<p>这两种情况，对油价的意义不一样。前者更能说明用油需求在增加；后者可能只是暂时备货，未必能持续。</p>
+<p>但现在缺少回答这个问题的数据。油轮到港早晚、企业调货，以及统计数字的调整，也可能影响这一周的库存。因此，<strong>目前能确认的是“库存少了”，还不能确认“大家更需要油了”。</strong></p>
+<section class="judgment"><h2>接下来怎么看</h2><p><strong>未来一个月，先看这种变化能不能持续，不急着下“油价要涨”的结论。</strong></p><p>如果后面几周库存继续减少，从国外买进来的油也没有减少，再有可靠数据证明汽油、柴油确实卖得更多，那么“需求在增加”的解释就更站得住脚。这会给油价上涨多一个支持理由，但不保证价格一定上涨。</p><p>反过来，如果库存很快回升，或者查明只是调货、备货造成的变化，就不该把这次库存下降当成涨价信号。</p><p>我们可能看错的地方也很简单：<strong>只看了相邻两周，可能把一次偶然变化当成了趋势。</strong> 而且，就算需求真的改善，市场也可能早就知道、提前把价格涨上去了。</p></section>
+</div>
+<details class="appendix" id="appendix"><summary>想核对数字？展开数据和计算过程</summary><p class="muted">合成fixture，retrieved_at / hash / last_modified均NULL。c1=EIA stocks，c2=EIA supply，均缺省当周+上周。正式报告必须填真实元信息，不得伪造。</p><div class="table-scroll"><table><thead><tr><th>引用</th><th>指标</th><th>周结束日</th><th>原值</th><th>单位</th></tr></thead><tbody id="observations"></tbody></table></div><div class="table-scroll"><table><thead><tr><th>计算</th><th>操作 / 输入</th><th>结果</th></tr></thead><tbody id="calculations"></tbody></table></div><p class="muted">派生值half-up最多4位小数，原值保留源精度。缺口：两期不证明趋势；没有炼厂投料、终端需求、调整项和价格数据；未完成物料平衡。这里是论证样例，不是完整40轮实测。</p></details>
+</div>
+<div id="secondary-report" hidden><p class="kicker">第二条候选 / 操作演示</p><h1>产量没增加，不等于已经产不出更多油</h1><p>这两周美国生产的原油一样多，但不能因此认定它已经没有能力增加产量。也可能是企业暂时不想多生产。这里还缺更长时间的数据和企业生产计划，只能先把问题记下来。本分支仅演示选择操作，完整阅读样例请查看第一条。</p></div>
+<footer class="report-footer row-actions"><button id="regenerate" type="button">重新研究（新任务）</button><span class="muted">显式点击才重新取数，成功追加版本，不覆盖原报告。演示不产生费用。</span></footer>
+</section>
+</main>
+<script id="sample-fixture" type="application/json">
+{"observations":[["c1:o1","商业库存","2026-09-04","420.0","MMbbl"],["c1:o2","商业库存","2026-09-11","419.0","MMbbl"],["c1:o3","SPR库存","2026-09-04","400.0","MMbbl"],["c1:o4","SPR库存","2026-09-11","400.0","MMbbl"],["c1:o5","含SPR总库存","2026-09-04","820.0","MMbbl"],["c1:o6","含SPR总库存","2026-09-11","819.0","MMbbl"],["c2:o1","原油进口","2026-09-04","6000","Mb/d"],["c2:o2","原油进口","2026-09-11","6400","Mb/d"],["c2:o3","原油出口","2026-09-04","3300","Mb/d"],["c2:o4","原油出口","2026-09-11","3600","Mb/d"],["c2:o5","原油产量","2026-09-04","13000","Mb/d"],["c2:o6","原油产量","2026-09-11","13000","Mb/d"]],"calculations":[["k1","difference: c1:o2 − c1:o1","−1 MMbbl"],["k2","percent_change: (c1:o2 − c1:o1) / c1:o1 × 100","−0.2381%"],["k3","difference: c2:o1 − c2:o3","2700 Mb/d"],["k4","difference: c2:o2 − c2:o4","2800 Mb/d"]]}
+</script>
+<script>
+'use strict';
+const $=id=>document.getElementById(id), fixture=JSON.parse($('sample-fixture').textContent);
+const titles=['仓库里的原油少了，真的说明大家用油更多了吗？','原油产量两周没增加，是不想多生产，还是做不到？'];
+const reasons=['库存少了可能是用得更多，也可能只是进货或调货的时间变了，不能直接当成油价要涨的证据。','短时间产量不变，不等于已经没有能力增加产量。'];
+const questions=['原油为什么少了？这是不是一个值得关注的涨价信号？','还需要哪些数据，才能分清这两种情况？'];
+let state={period:'2026-09',granularity:'month',found:false,done:[],batch:0}, active=null, selected=0, decisions=0;
+try{const saved=JSON.parse(localStorage.getItem('signal-report-prototype-v3'));if(saved&&Array.isArray(saved.done))state=saved;}catch{}
+$('period').value=state.period;$('granularity').value=state.granularity;
+function save(){try{localStorage.setItem('signal-report-prototype-v3',JSON.stringify(state));}catch{}}
+function notice(text){$('notice').hidden=!text;$('notice').textContent=text;}
+function render(){
+ $('candidates').innerHTML=state.found?titles.map((t,i)=>`<article class="candidate ${active===i?'selected':''}" data-candidate="${i}"><span class="kicker">候选 ${String(i+1).padStart(2,'0')} · 合成新闻</span><h3>${t}</h3><p>${reasons[i]}</p><p class="question">要查的问题：${questions[i]}</p><span class="meta">当前周期 · 演示发现批次 ${state.batch} · 快照不会因等待而更新</span><details><summary>新闻依据（合成）</summary><p>N1：市场把去库解读为需求改善。N2：同期进口回升。没有引用真实新闻或宣称已验证。</p></details><div class="row-actions"><button type="button" data-start="${i}" ${active!==null?'disabled':''}>${state.done.includes(i)?'阅读报告':'深入分析'}</button><span class="status">${active===i?`研究中 · 决策 ${decisions}/40 · 取数 ${decisions===17?2:0} · 计算 ${decisions===17?4:0}`:state.done.includes(i)?'已有报告':'待研究 · 尚未取数'}</span></div></article>`).join(''):'<p class="empty">还没有候选信号。点击「发现信号」，先看看哪些问题值得查。</p>';
+ $('reports').innerHTML=state.done.length?state.done.map(i=>`<button class="report-link" data-read="${i}" type="button">${i===0?'库存少了，但还不能认定油价会涨':'产量没增加，不等于已经产不出更多油'} →</button>`).join(''):'<p class="empty">你选择信号并完成研究后，报告会出现在这里。</p>';
+ $('research-controls').hidden=active===null;$('discover').disabled=active!==null;
+ document.querySelectorAll('[data-start]').forEach(b=>b.onclick=()=>state.done.includes(Number(b.dataset.start))?openReport(Number(b.dataset.start)):start(Number(b.dataset.start)));
+ document.querySelectorAll('[data-read]').forEach(b=>b.onclick=()=>openReport(Number(b.dataset.read)));
+}
+function start(i){if(active!==null){notice('同板块已有任务在运行（409示意），恢复当前进度。');return;}active=i;decisions=0;$('report').hidden=true;$('workspace').hidden=false;notice('已人为启动所选候选的研究。其它候选不会跟跑。用下方“演示完成”查看结果。');render();}
+function openReport(i){selected=i;$('workspace').hidden=true;$('report').hidden=false;$('primary-report').hidden=i!==0;$('secondary-report').hidden=i===0;$('report-period').textContent=state.period+(state.granularity==='year'?' · 年度演示':' · 月度演示');window.scrollTo(0,0);}
+$('discover').onclick=()=>{const p=$('period').value,g=$('granularity').value;if(!(g==='month'?/^\d{4}-(0[1-9]|1[0-2])$/:/^\d{4}$/).test(p)){notice('周期格式无效：月度用 YYYY-MM，年度用 YYYY（400示意）。');return;}if((g==='month'&&p>'2026-09')||(g==='year'&&p>'2026')){notice('未来周期不允许发现（400示意；演示当前时间固定2026-09）。');return;}if(g!==state.granularity||p!==state.period){state={period:p,granularity:g,found:false,done:[],batch:0};}if((g==='month'&&p!=='2026-09')||(g==='year'&&p!=='2026')){save();render();notice('本原型只加载2026-09合成材料；所选历史周期为空。正式产品历史研究须标事后回顾，不把9月样例挪到历史期。');return;}if($('scenario').value==='error'){notice('识别失败：两次尝试仍不可解析（合成错误）。没有把失败当作零信号。');render();return;}state.batch++;if($('scenario').value==='signals'){state.found=true;notice('发现结束，候选已保存。尚未取数或生成报告，请自行选择。');}else notice('');save();render();};
+$('granularity').onchange=()=>{$('period').value=$('granularity').value==='year'?'2026':'2026-09';};
+$('advance').onclick=()=>{decisions=17;notice('演示第17轮：2次取数+4次计算。轮次包含未执行的决策，不等同于取数次数；这里只演示进度状态，不提供真实17轮轨迹。');render();};
+$('complete').onclick=()=>{if(active===null)return;if(!state.done.includes(active))state.done.push(active);active=null;save();notice('演示完成，可以直接阅读。报告内容使用2次取数+4项计算的合成fixture；17轮是界面状态演示，不是真实研究轨迹。');render();};
+$('fail').onclick=()=>{active=null;notice('研究失败（超时示意）。候选仍在，可点击深入分析重试；没有写入失败报告。');render();};
+$('back').onclick=()=>{$('report').hidden=true;$('workspace').hidden=false;};$('regenerate').onclick=()=>start(selected);
+$('reset').onclick=()=>{active=null;state={period:'2026-09',granularity:'month',found:false,done:[],batch:0};$('period').value=state.period;$('granularity').value=state.granularity;save();notice('');$('report').hidden=true;$('workspace').hidden=false;render();};
+$('theme').onclick=()=>{document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark';};
+$('observations').innerHTML=fixture.observations.map(row=>`<tr id="${row[0].replace(':','-')}">${row.map(v=>`<td>${v}</td>`).join('')}</tr>`).join('');
+$('calculations').innerHTML=fixture.calculations.map(row=>`<tr id="${row[0]}">${row.map(v=>`<td>${v}</td>`).join('')}</tr>`).join('');
+document.querySelectorAll('.data-ref').forEach(a=>{a.title='合成fixture：点击展开观测或计算账本';a.onclick=e=>{e.preventDefault();$('appendix').open=true;const id=a.getAttribute('href').slice(1);history.replaceState(null,'','#'+id);$(id).scrollIntoView({block:'center'});};});
+render();
+</script>
+</body>
+</html>

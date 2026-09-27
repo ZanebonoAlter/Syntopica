@@ -1,8 +1,8 @@
 package core
 
 import (
-	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 
 	"gorm.io/gorm/clause"
@@ -25,7 +25,7 @@ func RecordMergeSuggestions(newTagID uint, newLabel string, category string, can
 			nLbl, eLbl = c.Tag.Label, newLabel
 		}
 
-		suggestion := models.TagMergeSuggestion{
+		suggestion := tagmodels.TagMergeSuggestion{
 			NewTagID:      nID,
 			ExistingTagID: eID,
 			NewLabel:      nLbl,

@@ -58,9 +58,9 @@ func TestTryStartProbe_ProbeInFlight_Skipped(t *testing.T) {
 	require.False(t, started, "probe in flight -> must be skipped (no concurrent probe)")
 }
 
-// --- StartPeriodicReprobe: 不健康时按间隔重探，健康后停手 ---
+// --- StartPeriodicReprobe: 不健康时按间隔重探，探通自愈 ---
 
-func TestStartPeriodicReprobe_RetriesWhileUnhealthy_StopsWhenHealthy(t *testing.T) {
+func TestStartPeriodicReprobe_RetriesWhileUnhealthy_SelfHeals(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
 	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
@@ -90,12 +90,46 @@ func TestStartPeriodicReprobe_RetriesWhileUnhealthy_StopsWhenHealthy(t *testing.
 	// Unhealthy -> keeps re-probing until a probe succeeds and flips snapshot.
 	waitForSnapshot(t, func(s Snapshot) bool { return s.CheckedAt != nil && s.Healthy })
 	require.GreaterOrEqual(t, probeCalls, 2, "unhealthy state must trigger repeated probes")
+}
 
-	// Healthy -> timer idles: probe count must not grow any more.
-	time.Sleep(100 * time.Millisecond)
-	countAfterHealthy := probeCalls
-	time.Sleep(80 * time.Millisecond)
-	require.Equal(t, countAfterHealthy, probeCalls, "no probes once snapshot is healthy")
+// --- StartPeriodicReprobe: 健康态持续心跳（反转旧"健康即停"契约） ---
+
+func TestStartPeriodicReprobe_HeartbeatContinuesWhenHealthy(t *testing.T) {
+	resetSnapshot()
+	db, store := setupTestDB(t)
+	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
+	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
+	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
+	seedBinding(t, db, er.ID, emb.ID, 1)
+	seedBinding(t, db, sr.ID, sum.ID, 1)
+
+	probeCalls := 0
+	useFakeProbe(t, func(ctx context.Context, p models.AIProvider) (bool, string) {
+		probeCalls++
+		return true, ""
+	})
+
+	oldInterval := reprobeInterval
+	reprobeInterval = 20 * time.Millisecond
+	defer func() { reprobeInterval = oldInterval }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go StartPeriodicReprobe(ctx, store, func() bool { return false })
+
+	// First tick flips the snapshot healthy.
+	waitForSnapshot(t, func(s Snapshot) bool { return s.CheckedAt != nil && s.Healthy })
+
+	// Healthy -> the heartbeat must KEEP probing (spec: 健康态心跳持续探测).
+	// A short observation window spanning several ticks must see the count
+	// grow; the old contract asserted the opposite (timer idles when healthy).
+	countAtHealthy := probeCalls
+	deadline := time.Now().Add(2 * time.Second)
+	for probeCalls <= countAtHealthy && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	require.Greater(t, probeCalls, countAtHealthy, "heartbeat must keep probing while snapshot is healthy")
 }
 
 // --- StartPeriodicReprobe: 探测 in-flight 时 tick 跳过（不并发探测） ---

@@ -433,6 +433,7 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 				Success:      true,
 				IsFallback:   idx > 0,
 				LatencyMs:    latencyMs,
+				TokenUsage:   encodeTokenUsage(res.Usage),
 				RequestMeta:  encodeMeta(req.Metadata),
 				SessionID:    req.SessionID,
 			})

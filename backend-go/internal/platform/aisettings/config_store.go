@@ -18,10 +18,14 @@ import (
 const openNotebookConfigKey = "open_notebook_config"
 const firecrawlConfigKey = "firecrawl_config"
 const bochaConfigKey = "bocha_config"
+const searxngConfigKey = "searxng_config"
+const comtradeConfigKey = "comtrade_config"
 const rsshubConfigKey = "rsshub_config"
 const proxyConfigKey = "http_proxy_config"
 const dailyReportTimeKey = "daily_report_time"
 const defaultDailyReportTime = "21:00"
+const dailyReportDeadlineKey = "daily_report_deadline"
+const defaultDailyReportDeadline = "23:30"
 const boardUpgradeSuggestTimeKey = "semantic_board_upgrade_suggest_time"
 const defaultBoardUpgradeSuggestTime = "06:30"
 const rsshubDocBaseKey = "rsshub_doc_base"
@@ -105,6 +109,28 @@ func SaveBochaConfig(config map[string]interface{}, description string) error {
 	return saveConfigByKey(bochaConfigKey, config, description)
 }
 
+// LoadSearxngConfig 读取 searxng_config（页边注问答联网后端本地 SearXNG 的 endpoint + enabled）。
+// 动态读取：调用方每次 Search 前现读，界面改即时生效（对齐 bocha_config 语义；design D7）。
+func LoadSearxngConfig() (map[string]interface{}, *models.AISettings, error) {
+	return loadConfigByKey(searxngConfigKey)
+}
+
+// SaveSearxngConfig 写入 searxng_config。
+func SaveSearxngConfig(config map[string]interface{}, description string) error {
+	return saveConfigByKey(searxngConfigKey, config, description)
+}
+
+// LoadComtradeConfig 读取 comtrade_config（研究数据源 UN Comtrade 的订阅 key + enabled）。
+// 动态读取：取数器/probe/目录 status 每次现读，界面改即时生效（对齐 bocha_config 语义）。
+func LoadComtradeConfig() (map[string]interface{}, *models.AISettings, error) {
+	return loadConfigByKey(comtradeConfigKey)
+}
+
+// SaveComtradeConfig 写入 comtrade_config。
+func SaveComtradeConfig(config map[string]interface{}, description string) error {
+	return saveConfigByKey(comtradeConfigKey, config, description)
+}
+
 func LoadOpenNotebookConfig() (map[string]interface{}, *models.AISettings, error) {
 	return loadConfigByKey(openNotebookConfigKey)
 }
@@ -176,6 +202,83 @@ func SaveDailyReportTimeConfig(value string) error {
 		Value:       value,
 		Description: "日报生成时刻（HH:MM）",
 	}).Error
+}
+
+// LoadDailyReportDeadlineConfig loads the daily_report_deadline setting from
+// ai_settings (night-window-alignment D5). Returns the HH:MM string, or
+// default "23:30" when the key is missing or invalid (mirrors
+// LoadDailyReportTimeConfig).
+func LoadDailyReportDeadlineConfig() (string, error) {
+	var settings models.AISettings
+	err := database.DB.Where("key = ?", dailyReportDeadlineKey).First(&settings).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return defaultDailyReportDeadline, nil
+		}
+		return "", err
+	}
+
+	value := strings.TrimSpace(settings.Value)
+	if !hhmmPattern.MatchString(value) {
+		logging.Warnf("Invalid daily_report_deadline value %q, falling back to default %s", value, defaultDailyReportDeadline)
+		return defaultDailyReportDeadline, nil
+	}
+	return value, nil
+}
+
+// SaveDailyReportDeadlineConfig saves the daily_report_deadline setting.
+// Validates HH:MM format (00:00–23:59). Returns error for invalid values.
+func SaveDailyReportDeadlineConfig(value string) error {
+	value = strings.TrimSpace(value)
+	if !hhmmPattern.MatchString(value) {
+		return fmt.Errorf("invalid daily_report_deadline format %q: expected HH:MM (00:00–23:59)", value)
+	}
+
+	var settings models.AISettings
+	dbErr := database.DB.Where("key = ?", dailyReportDeadlineKey).First(&settings).Error
+	if dbErr == nil {
+		settings.Value = value
+		return database.DB.Save(&settings).Error
+	}
+	if !errors.Is(dbErr, gorm.ErrRecordNotFound) {
+		return dbErr
+	}
+
+	return database.DB.Create(&models.AISettings{
+		Key:         dailyReportDeadlineKey,
+		Value:       value,
+		Description: "日报兜底强制生成时刻（HH:MM），不得早于 daily_report_time",
+	}).Error
+}
+
+// LoadDailyReportWindowConfig loads the daily report wall-clock time and
+// fallback deadline as a pair (night-window-alignment D4/D5): both keys
+// self-fall-back to defaults on missing/invalid values (warn included), and a
+// deadline earlier than the wall-clock time falls back to the default 23:30
+// with a warning (spec: 兜底不得早于墙钟)。A database error returns empty
+// strings + err; the caller applies full defaults.
+func LoadDailyReportWindowConfig() (timeStr, deadlineStr string, err error) {
+	timeStr, err = LoadDailyReportTimeConfig()
+	if err != nil {
+		return "", "", err
+	}
+	deadlineStr, err = LoadDailyReportDeadlineConfig()
+	if err != nil {
+		return "", "", err
+	}
+	if hhmmMinutes(deadlineStr) < hhmmMinutes(timeStr) {
+		logging.Warnf("daily_report_deadline %s is earlier than daily_report_time %s, falling back to default %s",
+			deadlineStr, timeStr, defaultDailyReportDeadline)
+		deadlineStr = defaultDailyReportDeadline
+	}
+	return timeStr, deadlineStr, nil
+}
+
+// hhmmMinutes converts a pre-validated HH:MM string to minutes since midnight.
+func hhmmMinutes(hhmm string) int {
+	var h, m int
+	_, _ = fmt.Sscanf(hhmm, "%d:%d", &h, &m)
+	return h*60 + m
 }
 
 // LoadBoardUpgradeSuggestTimeConfig loads the semantic_board_upgrade_suggest_time

@@ -17,6 +17,8 @@ type Config struct {
 	Tracing       TracingConfig
 	Storage       StorageConfig
 	Bocha         BochaConfig
+	Comtrade      ComtradeConfig
+	Searxng       SearxngConfig
 	CrossBoardRel CrossBoardRelationConfig
 }
 
@@ -104,6 +106,20 @@ type BochaConfig struct {
 	Endpoint string `mapstructure:"endpoint"` // default https://api.bochaai.com/v1/web-search
 }
 
+// ComtradeConfig holds the UN Comtrade subscription key (research data
+// sources domain). Empty key → the un_comtrade source stays disabled in the
+// catalog with a reason pointing at COMTRADE_API_KEY (spec「数据源目录」).
+type ComtradeConfig struct {
+	APIKey string `mapstructure:"api_key"` // empty → source disabled
+}
+
+// SearxngConfig configures the local SearXNG instance used by the daily-report
+// margin-note QA web augmentation (design D7). Empty endpoint → disabled
+// (QA silently degrades); no API key needed.
+type SearxngConfig struct {
+	Endpoint string `mapstructure:"endpoint"` // empty → disabled
+}
+
 var AppConfig *Config
 
 func LoadConfig(configPath string) error {
@@ -114,7 +130,7 @@ func LoadConfig(configPath string) error {
 	viper.AddConfigPath("./configs")
 
 	// Set defaults
-	viper.SetDefault("server.port", "5000")
+	viper.SetDefault("server.port", "5100")
 	viper.SetDefault("server.mode", "debug")
 	viper.SetDefault("database.driver", "postgres")
 	viper.SetDefault("database.dsn", "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai")
@@ -142,6 +158,8 @@ func LoadConfig(configPath string) error {
 
 	viper.SetDefault("bocha.api_key", "")
 	viper.SetDefault("bocha.endpoint", "https://api.bochaai.com/v1/web-search")
+	viper.SetDefault("comtrade.api_key", "")
+	viper.SetDefault("searxng.endpoint", "") // empty → disabled (QA degrades silently)
 
 	// Cross-board relation discovery budgets (add-evidence-backed-cross-board-relations).
 	viper.SetDefault("cross_board_rel.auto_max_sources_per_brief", 3)
@@ -230,6 +248,17 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv("BOCHA_ENDPOINT")); v != "" {
 		cfg.Bocha.Endpoint = v
+	}
+
+	// SearXNG local search (margin-note QA web augmentation). Empty → disabled.
+	if v := strings.TrimSpace(os.Getenv("SEARXNG_URL")); v != "" {
+		cfg.Searxng.Endpoint = v
+	}
+
+	// UN Comtrade data source (research data sources domain). Empty key →
+	// un_comtrade source stays disabled in the catalog (spec「数据源目录」).
+	if v := strings.TrimSpace(os.Getenv("COMTRADE_API_KEY")); v != "" {
+		cfg.Comtrade.APIKey = v
 	}
 }
 

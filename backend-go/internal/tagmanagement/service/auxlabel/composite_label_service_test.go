@@ -11,6 +11,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 func seedCompositeComponentLabel(t *testing.T, db *gorm.DB, label, slug, labelType, status string) *models.SemanticLabel {
@@ -111,7 +112,7 @@ func TestCreateCompositeLabelEmbedsPhraseAndStoresComponents(t *testing.T) {
 	require.Equal(t, []string{"美债收益率. 美国国债与收益率的组合"}, embedder.calls, "embedder input must be the composite phrase (label + \". \" + description), never component vectors")
 	require.Equal(t, AuxiliaryLabelEmbeddingModeStorage, embedder.modes[0])
 
-	var comps []models.CompositeComponent
+	var comps []tagmodels.CompositeComponent
 	require.NoError(t, db.Where("composite_id = ?", result.Label.ID).Order("position").Find(&comps).Error)
 	require.Len(t, comps, 2)
 	require.Equal(t, auxA.ID, comps[0].ComponentLabelID)
@@ -133,7 +134,7 @@ func TestCreateCompositeLabelEmbedderFailureRollsBack(t *testing.T) {
 
 	var labelCount, compCount int64
 	require.NoError(t, db.Model(&models.SemanticLabel{}).Where("label_type = ?", "composite").Count(&labelCount).Error)
-	require.NoError(t, db.Model(&models.CompositeComponent{}).Count(&compCount).Error)
+	require.NoError(t, db.Model(&tagmodels.CompositeComponent{}).Count(&compCount).Error)
 	require.Zero(t, labelCount, "no composite row may survive an embedder failure")
 	require.Zero(t, compCount, "no component rows may survive an embedder failure")
 }
@@ -325,7 +326,7 @@ func TestDisableCompositeLabelNullsVectorsKeepsRows(t *testing.T) {
 	require.Nil(t, reloaded.Embedding, "disable must drop the vector")
 	require.Nil(t, reloaded.MergeEmbedding)
 	var comps int64
-	require.NoError(t, db.Model(&models.CompositeComponent{}).Where("composite_id = ?", created.Label.ID).Count(&comps).Error)
+	require.NoError(t, db.Model(&tagmodels.CompositeComponent{}).Where("composite_id = ?", created.Label.ID).Count(&comps).Error)
 	require.Equal(t, int64(2), comps, "components survive disable")
 	require.NotEmpty(t, reloaded.Aliases, "aliases survive disable")
 
@@ -450,7 +451,7 @@ func TestListComponentOptionsRanksByBoardThenRefCount(t *testing.T) {
 		{boardMacro.ID, auxYield.ID},
 		{boardOld.ID, auxStale.ID}, // disabled 版块挂载不计入
 	} {
-		require.NoError(t, db.Create(&models.BoardComposition{BoardID: m.board, AuxiliaryLabelID: m.aux}).Error)
+		require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: m.board, AuxiliaryLabelID: m.aux}).Error)
 	}
 
 	options, err := service.ListComponentOptions(context.Background(), 0, 0, 0)
@@ -508,18 +509,18 @@ func TestListComponentOptionsBoardAndRelatedContext(t *testing.T) {
 	auxCooc := seedCompositeComponentLabel(t, db, "加息", "ctx-hike", "auxiliary", "active")
 	auxCold := seedCompositeComponentLabel(t, db, "冷词", "ctx-cold", "auxiliary", "active")
 	require.NoError(t, db.Model(&models.SemanticLabel{}).Where("id = ?", auxGlobal.ID).Update("ref_count", 99).Error)
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxInBoard.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxInBoard.ID}).Error)
 	// 共现：3 个 tag 同时挂 美联储+加息；1 个 tag 挂 美联储+冷词
 	for i := 0; i < 3; i++ {
 		tag := &models.TopicTag{Slug: fmt.Sprintf("ctx-tag-%d", i), Label: fmt.Sprintf("ctx tag %d", i)}
 		require.NoError(t, db.Create(tag).Error)
-		require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxInBoard.ID}).Error)
-		require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxCooc.ID}).Error)
+		require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxInBoard.ID}).Error)
+		require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxCooc.ID}).Error)
 	}
 	soloTag := &models.TopicTag{Slug: "ctx-tag-solo", Label: "ctx tag solo"}
 	require.NoError(t, db.Create(soloTag).Error)
-	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: soloTag.ID, SemanticLabelID: auxInBoard.ID}).Error)
-	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: soloTag.ID, SemanticLabelID: auxCold.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: soloTag.ID, SemanticLabelID: auxInBoard.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: soloTag.ID, SemanticLabelID: auxCold.ID}).Error)
 
 	// 版块上下文：本版块挂载的「美联储」置顶（ref_count 最低也压过 ref=99 的全球热词）
 	opts, err := service.ListComponentOptions(context.Background(), 0, board.ID, 0)

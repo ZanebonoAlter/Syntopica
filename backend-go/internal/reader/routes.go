@@ -18,6 +18,8 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 	feeds := rg.Group("/feeds")
 	{
 		feeds.GET("", handler.GetFeeds)
+		// 静态段与 /:feed_id 同级共存（先例：articles 组的 /stats 与 /:article_id）。
+		feeds.GET("/board-hit-stats", handler.GetBoardHitStats)
 		feeds.GET("/:feed_id", handler.GetFeed)
 		feeds.POST("", handler.CreateFeed)
 		feeds.PUT("/:feed_id", handler.UpdateFeed)

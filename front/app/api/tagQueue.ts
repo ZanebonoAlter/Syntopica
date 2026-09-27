@@ -8,6 +8,8 @@ export interface TagQueueStatus {
   completed: number
   failed: number
   total: number
+  /** 今日 completed 计数（notification-center 新增；旧后端未合入时可选） */
+  completed_today?: number
 }
 
 export interface TagQueueTask {

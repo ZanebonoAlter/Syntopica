@@ -8,8 +8,10 @@ export function useAIAdminApi() {
 
   async function saveSettings(data: {
     base_url?: string
-    api_key: string
+    api_key?: string
     model?: string
+    /** 日报生成时刻（HH:MM，restructure-settings-navigation D6：定时任务面板复用本端点） */
+    daily_report_time?: string
   }): Promise<ApiResponse<void>> {
     return apiClient.post('/ai/settings', data)
   }

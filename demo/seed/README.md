@@ -22,8 +22,10 @@ at backend boot that would otherwise collide with this snapshot.
 
 | Field | Treatment |
 | --- | --- |
-| `ai_providers.api_key`, `base_url`, `metadata` | cleared / `{}` |
-| `ai_settings.value` | cleared to `{}` (config JSON may carry internal addresses/tokens) |
+| `ai_providers` / `ai_routes` / `ai_route_providers` / `ai_settings` **记录** | **不导出**（`Where: "FALSE"`，表结构由应用启动自建；2026-09-22 用户决策：demo 不展示任何 AI 配置记录） |
+| `topic_enrichment_result.session_id` | cleared（叙事增强结果里的会话标识） |
+| `board_persistent_topics.embedding`, `centroid`；`board_topic_watches.embedding_cache` | `NULL`（pgvector 列不离库） |
+| `feeds` | **全量导出无时间窗**（created_at=订阅时间，按窗口过滤会把老订阅滤光） |
 | `articles.link`, `image_url` | URL query string stripped |
 | `articles.content`, `ai_content_summary` | sensitive token literals (`api_key`/`API_KEY`/`api-key`) → `[redacted-token]`, then capped at 2000 chars |
 | `articles.firecrawl_content`, `firecrawl_error`, `completion_error` | cleared |

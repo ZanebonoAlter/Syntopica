@@ -355,6 +355,12 @@ function dismiss() {
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-muted);
+  /* 限 3 行防超长上游介绍撑爆卡片 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
 }
 
 .discovery-card__select {

@@ -9,6 +9,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -160,21 +161,21 @@ func TestHardMergeTags_EmbeddingsDeleted(t *testing.T) {
 	source := seedTag(t, db, "source-emb", "llm")
 	target := seedTag(t, db, "target-emb", "llm")
 
-	require.NoError(t, db.Create(&models.TopicTagEmbedding{
+	require.NoError(t, db.Create(&tagmodels.TopicTagEmbedding{
 		TopicTagID: source.ID, EmbeddingType: EmbeddingTypeIdentity, EmbeddingVec: makeValidVector(4096), Dimension: 4096, Model: "test", TextHash: "source",
 	}).Error)
-	require.NoError(t, db.Create(&models.TopicTagEmbedding{
+	require.NoError(t, db.Create(&tagmodels.TopicTagEmbedding{
 		TopicTagID: target.ID, EmbeddingType: EmbeddingTypeIdentity, EmbeddingVec: makeValidVector(4096), Dimension: 4096, Model: "test", TextHash: "target",
 	}).Error)
 
 	err := HardMergeTags(db, source.ID, target.ID)
 	require.NoError(t, err)
 
-	var sourceEmbs []models.TopicTagEmbedding
+	var sourceEmbs []tagmodels.TopicTagEmbedding
 	require.NoError(t, db.Where("topic_tag_id = ?", source.ID).Find(&sourceEmbs).Error)
 	assert.Len(t, sourceEmbs, 0, "source embeddings should be deleted")
 
-	var targetEmbs []models.TopicTagEmbedding
+	var targetEmbs []tagmodels.TopicTagEmbedding
 	require.NoError(t, db.Where("topic_tag_id = ?", target.ID).Find(&targetEmbs).Error)
 	assert.Len(t, targetEmbs, 1, "target embeddings should be preserved")
 }

@@ -64,7 +64,9 @@ function handleGenerate() {
     ...(genDirection.value === 'expand' && genTargetBoardId.value
       ? { target_board_id: genTargetBoardId.value }
       : {}),
-    ...(genDirection.value === 'create' && genSource.value === 'aux' ? { days: genDays.value } : {}),
+    // 候选时间窗四格携带（expand-upgrade-days-window）：后端仅消费扩充路；
+    // create×composite 携带无害（忽略），保持载荷结构一致。
+    days: genDays.value,
   })
 }
 
@@ -263,7 +265,7 @@ function decisionStyle(d: string): { border: string; bg: string; color: string }
               </div>
             </div>
           </div>
-          <div v-if="genDirection === 'create' && genSource === 'aux'" class="usp-gen-row usp-gen-row--days">
+          <div class="usp-gen-row usp-gen-row--days">
             <label class="usp-gen-days-label">候选时间窗</label>
             <select v-model.number="genDays" class="usp-gen-days" :disabled="persistedGenerating" data-testid="gen-days">
               <option v-for="o in dayOptions" :key="o.value" :value="o.value">{{ o.label }}</option>

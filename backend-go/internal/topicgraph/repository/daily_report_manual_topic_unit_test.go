@@ -50,7 +50,7 @@ func TestAggregateEmbeddings_EmptyInput(t *testing.T) {
 func TestAggregateEmbeddings_AllSkipped(t *testing.T) {
 	vectors := [][]float64{
 		{1.0, 2.0, 3.0},
-		nil,     // nil slice → skipped
+		nil,        // nil slice → skipped
 		{4.0, 5.0}, // wrong dim (2 vs 3) → skipped
 	}
 	mean, skipped := aggregateEmbeddings(vectors)

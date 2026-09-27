@@ -25,10 +25,10 @@
 docker run -d --name rss-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=syntopica pgvector/pgvector:pg18-trixie
 ```
 
-或使用项目自带的 docker-compose：
+或使用项目自带的 docker-compose（主栈，在仓库根执行）：
 
 ```bash
-docker compose up -d
+docker compose --project-directory . -f deploy/compose/docker-compose.yml up -d
 ```
 
 > SQLite 版本已归档到 `sqlite` 分支，主分支不再支持。
@@ -41,7 +41,7 @@ go mod tidy
 go run cmd/server/main.go
 ```
 
-后端默认运行在 `http://localhost:5000`，首次启动会自动连接 PostgreSQL 数据库并执行版本化迁移。
+后端默认运行在 `http://localhost:5100`（避开 Windows 5000 端口的 WSD/svchost 保留段冲突），首次启动会自动连接 PostgreSQL 数据库并执行版本化迁移。
 
 开发时日志现在按级别分流：常规运行日志和 warning 走 `stdout`，error / fatal / panic 走 `stderr`。如果你在 PowerShell、Docker 或 systemd 里单独收集错误输出，可以直接利用这条分流。
 
@@ -55,7 +55,9 @@ pnpm dev
 
 前端开发服务器运行在 `http://localhost:3000`。
 
-1. **验证联调** — 打开 `http://localhost:3000`，确认前端能连接到 `http://localhost:5000/api`。
+> **一把梭（推荐）**：`bash scripts/dev/start-dev.sh`（仓库根目录跑）把后端 + 前端一起起来，并**自动注入这两个容易漏的变量**——同源反代模式下注入前端 `NUXT_PUBLIC_API_BASE=/api`，同时给后端带上包含本机全部网段 IP 的 `CORS_ORIGINS`；已装的同源入口时还会把入口地址列出来。`--restart` 先停再起、`stop` 停掉、`status` 看端口/PID/健康/入口。两个变量漏一个就换一种报错（前端报 `ERR_CONNECTION_REFUSED` 或 CORS 拦），详见 [部署指南](deployment.md)「多机 / 远程访问」。
+
+1. **验证联调** — 打开 `http://localhost:3000`，确认页面正常且 Network 面板中 API 请求直连 `http://localhost:5100/api`、WebSocket 连 `ws://localhost:5100/ws`。
 
 ### 首次使用
 
@@ -71,10 +73,37 @@ pnpm dev
 #### 仅启动 PostgreSQL 数据库（开发用）
 
 ```bash
-docker compose up -d
+docker compose -f docker-compose.pg.yml up -d
 ```
 
 这会启动一个 pgvector 容器，端口和数据目录可在 `.env` 中配置。
+
+#### Docker 镜像来源与可达性（中国大陆网络）
+
+Docker Hub（`registry-1.docker.io`）在国内常不可达，而本仓库的 compose 与集成测试都按**原始镜像名**引用镜像（如 `pgvector/pgvector:pg18-trixie`）。因此**可达性在开发主机层面解决，不写进仓库**：仓库内不得出现加速站域名，也不得改写镜像名——否则换机/CI 即失效。
+
+**做法**：给 Docker 守护进程配镜像加速来源（多列几个按序回退）：
+
+```bash
+# /etc/docker/daemon.json（不存在则新建）
+{
+  "registry-mirrors": [
+    "https://docker.1ms.run",
+    "https://docker.m.daocloud.io",
+    "https://docker.1panel.live"
+  ]
+}
+sudo systemctl restart docker
+# 验证：docker info | grep -A5 'Registry Mirrors'
+```
+
+> ⚠️ **上面的域名是示例，不保证长期有效**（国内加速站开关频繁）。配前先自行验证当前可达性：`docker pull <域名>/library/hello-world` 能成功即可用；失效则换其他来源或走备选路径②。**不要把域名复制进仓库代码/配置文件**——仓库只按原始镜像名引用镜像。
+
+配好后 `docker pull pgvector/pgvector:pg18-trixie` 等原始镜像名可直接拉取，`docker compose` 与 testcontainers 均无需任何改动。
+
+**备选路径**（加速站失效时）：① 换用其他已实测可达的加速站；② 给 Docker 配 HTTP 代理（`/etc/systemd/system/docker.service.d/http-proxy.conf` 里的 `HTTP_PROXY`/`HTTPS_PROXY`）；③ 应急：带前缀拉取后重打 tag（`docker pull <mirror>/xxx && docker tag <mirror>/xxx xxx`），仅救急、不作长期方案。
+
+> 集成测试必需的镜像清单，以及「镜像缺失导致容器泄漏」的识别与清理，见 [testing.md](testing.md) 集成测试节。
 
 ### 配置说明
 
@@ -104,13 +133,15 @@ AI 相关设置（LLM、Firecrawl、Digest）通过 Web UI 的设置页面配置
 运行单个单元测试文件：
 
 ```bash
-pnpm test:unit -- app/utils/articleContentSource.test.ts
+pnpm test:unit app/utils/articleContentSource.test.ts
 ```
+
+> 不要写成 `pnpm test:unit -- <参数>`：`--` 会被 vitest 吞掉、filter 静默失效并跑成全量（2026-09-17 实测，见 [`standard/frontend/testing.md`](standard/frontend/testing.md)）。
 
 按测试名称过滤：
 
 ```bash
-pnpm test:unit -- app/utils/articleContentSource.test.ts -t "prefers firecrawl"
+pnpm test:unit app/utils/articleContentSource.test.ts -t "prefers firecrawl"
 ```
 
 ### 后端命令（在 `backend-go/` 目录执行）
@@ -158,7 +189,7 @@ pytest test_schedulers.py::TestAutoRefreshScheduler::test_name -v
 pytest --cov=. --cov-report=html
 ```
 
-> **注意**：Python 集成测试需要 Go 后端运行在 `localhost:5000`。
+> **注意**：Python 集成测试需要 Go 后端可达（默认 `http://localhost:5100`；存在系统代理时探测需绕过：设 `no_proxy=localhost,127.0.0.1,::1`）。
 
 ### Firecrawl 集成检查（在 `tests/firecrawl/` 目录执行）
 
@@ -172,11 +203,12 @@ python test_firecrawl_integration.py
 
 #### 端口已被占用
 
-如果 `http://localhost:5000` 或 `http://localhost:3000` 被占用，通过环境变量设置端口：
+如果 `http://localhost:5100` 或 `http://localhost:3000` 被占用，通过环境变量设置端口：
 
-- 后端：运行 `go run cmd/server/main.go` 前设置 `SERVER_PORT`。
-- 前端：如果后端运行在非默认端口，设置 `NUXT_PUBLIC_API_BASE` 环境变量。
-- Docker：在 `.env` 中设置 `FRONT_PORT` 和 `BACKEND_PORT`。
+- 后端：运行 `go run cmd/server/main.go` 前设置 `SERVER_PORT`（或改 `configs/config.yaml`）。
+- 前端：后端非默认端口时设 `NUXT_PUBLIC_API_BASE` 指向实际后端地址。
+- Docker：在 `.env` 中设置 `PORT`（宿主映射的应用端口，容器内固定 5000）。旧版 `.env` 里的 `FRONT_PORT` / `BACKEND_PORT` 已不再被读取。
+- 想知道是谁占着：`bash scripts/dev/start-dev.sh status`（列端口/PID/健康），`bash scripts/dev/start-dev.sh --restart` 直接接管重起。
 
 #### 后端启动失败（数据库错误）
 
@@ -188,7 +220,7 @@ docker ps | grep rss-postgres
 
 #### 前端无法连接后端
 
-确保后端在 `http://localhost:5000` 运行。前端 API 基础 URL 默认为 `http://localhost:5000/api`，如有需要可通过 `NUXT_PUBLIC_API_BASE` 环境变量覆盖。
+前端 API 基础 URL 默认 `http://localhost:5100/api`（绝对直连，后端 CORS 白名单放行前端 origin）。排查顺序：后端是否在 5100 监听（`curl --noproxy '*' http://localhost:5100/health`）→ 是否被系统代理劫持（设 `no_proxy=localhost,127.0.0.1,::1`）→ 需要跨域/远程后端时用 `NUXT_PUBLIC_API_BASE` 覆盖。
 
 #### Go 模块下载失败（中国地区）
 

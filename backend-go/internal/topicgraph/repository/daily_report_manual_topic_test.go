@@ -72,7 +72,6 @@ func TestCreateManualTopic_NoUsableEmbeddings(t *testing.T) {
 	assert.Len(t, skipped, 1, "section without embedding must be skipped")
 }
 
-
 // ── GetComposeCandidates PostgreSQL tests ──────────────────────────────────
 
 func TestGetComposeCandidates_ParsesEmbeddingsAndExcludesEmpty(t *testing.T) {
@@ -119,7 +118,7 @@ func TestGetComposeCandidates_AttachesTopicBrief(t *testing.T) {
 	// (production always sets it before CreateTopic; SQLite tolerated the zero value).
 	topic := BoardPersistentTopic{
 		SemanticBoardID: boardID, Label: "中东局势", Status: TopicStatusActive, Source: TopicSourceAuto,
-		Embedding:    vecStr(0.2, 0.1),
+		Embedding:     vecStr(0.2, 0.1),
 		FirstSeenDate: today, LastSeenDate: today,
 	}
 	require.NoError(t, repo.CreateTopic(repo.db, &topic))

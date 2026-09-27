@@ -2,19 +2,22 @@ import { ref, computed, reactive, onMounted } from 'vue'
 import { useAIAdminApi } from '~/api'
 import type { AIProvider, AIRoute, AIProviderUpsertRequest } from '~/types'
 import { useAI } from '~/composables/useAI'
+import { useConfirm } from '~/composables/useConfirm'
 
 const routeLabels: Record<string, string> = {
   summary: '文章总结',
   topic_tagging: '主题提取',
   digest_polish: '日报润色',
   embedding: '向量嵌入',
+  open_notebook: '页边注问答',
   feed_discovery: '订阅源发现',
   data_enrichment_news: '新闻总结',
   data_enrichment_analysis: '数据分析',
 }
 
-// capabilityOrder 同时是「能力路由」UI 的渲染白名单与「主模型同步」的遍历表。// data_enrichment_news/analysis 历史性遗漏于此，导致设置页看不到这两条 route、// 也无法为「数据分析」单独配强模型——补上。
-const capabilityOrder = ['summary', 'topic_tagging', 'digest_polish', 'embedding', 'feed_discovery', 'data_enrichment_news', 'data_enrichment_analysis']
+// capabilityOrder 同时是「能力路由」UI 的渲染白名单与「主模型同步」的遍历表。// data_enrichment_news/analysis 历史性遗漏于此，导致设置页看不到这两条 route、// 也无法为「数据分析」单独配强模型——补上。// open_notebook（daily-report-margin-notes）：后端 UpsertRoute 已支持，
+// 前端白名单此前漏列致页边注问答无法配 provider 链。
+const capabilityOrder = ['summary', 'topic_tagging', 'digest_polish', 'embedding', 'open_notebook', 'feed_discovery', 'data_enrichment_news', 'data_enrichment_analysis']
 
 export function useAIRouterSettings() {
   const loading = ref(false)
@@ -391,15 +394,23 @@ export function useAIRouterSettings() {
   }
 
   async function deleteBackupProvider(provider: AIProvider) {
-    if (!confirm(`确定删除备用模型 ${provider.name} 吗？`)) return
+    // 后端删除时级联解绑（fix-provider-delete-route-deadlock）：该 provider 会从
+    // 所有线路摘除，线路可能因此被摘空；删除成功后 loadData() 会用后端真值
+    // 重建线路选择（hydrateRouteSelections），本地无需也不应再手动改 state。
+    // 确认弹窗走全局 useConfirm（替代原生 confirm）。
+    const { confirm } = useConfirm()
+    const ok = await confirm({
+      title: '删除备用模型',
+      message: `确定删除备用模型 ${provider.name} 吗？它将从所有线路解绑。`,
+      confirmText: '删除',
+      danger: true,
+    })
+    if (!ok) return
     saving.value = true
     try {
       const aiAdminApi = useAIAdminApi()
       const res = await aiAdminApi.deleteProvider(provider.id)
       if (!res.success) throw new Error(res.error || '删除备用模型失败')
-      for (const capability of capabilityOrder) {
-        removeProviderFromRoute(capability, provider.id)
-      }
       if (editingProviderId.value === provider.id) cancelEditingProvider()
       await loadData()
       pushMessage('success', '备用模型已删除')

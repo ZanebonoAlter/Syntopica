@@ -1,10 +1,12 @@
-import { onUnmounted, ref } from 'vue'
+import { ref } from 'vue'
 import { useSchedulerApi } from '~/api'
 import type { SchedulerAIHealthRoute, SchedulerStatus, SchedulerTriggerResult } from '~/types/scheduler'
-import { isHotScheduler } from '~/utils/schedulerMeta'
+import { usePollBundle } from '~/composables/usePollBundle'
 
 export function useSchedulerStatus() {
-  const schedulerStatuses = ref<SchedulerStatus[]>([])
+  // 调度器状态列表：由 usePollBundle 单例对账 /api/poll 分发（client-poll-budget），
+  // useState 跨组件共享；本 composable 不再持有独立轮询 timer。
+  const schedulerStatuses = useState<SchedulerStatus[]>('poll:schedulers', () => [])
   // 分析暂停总闸是后端全局开关，用 useState 跨组件共享（同 useNotify 模式，SSR 安全）
   const analysisPaused = useState<boolean>('scheduler:analysis-paused', () => false)
   const analysisPausedAt = useState<string>('scheduler:analysis-paused-at', () => '')
@@ -19,48 +21,23 @@ export function useSchedulerStatus() {
   const scheduleTimeLoading = ref(false)
   const schedulerError = ref<string | null>(null)
   const schedulerSuccess = ref<string | null>(null)
-  let schedulerPollTimer: ReturnType<typeof setTimeout> | null = null
+  // 近期反馈信号：触发/更新后写入，usePollBundle 据此进入 ≥15s 档（≤20s 窗口）
+  const lastFeedbackAt = useState<number>('poll:last-feedback', () => 0)
 
+  /**
+   * 立即对账一次（原独立轮询入口，保留函数名兼容消费点）：
+   * 数据源已合并进 /api/poll，这里转调 usePollBundle 即时对账并重新排程。
+   * 失败静默（保留旧值），不再写 schedulerError —— spec：单次失败 MUST NOT
+   * 把状态指示转错误态。
+   */
   async function loadSchedulersStatus() {
+    const poll = usePollBundle()
     schedulerLoading.value = true
-    schedulerError.value = null
     try {
-      const { getSchedulersStatus } = useSchedulerApi()
-      const response = await getSchedulersStatus()
-      if (response.success && response.data) {
-        schedulerStatuses.value = response.data
-        analysisPaused.value = response.analysis_paused === true
-        analysisPausedAt.value = response.analysis_paused_at ?? ''
-        aiHealthy.value = response.ai_healthy !== false
-        aiHealthRoutes.value = response.ai_health_routes ?? []
-      }
-    } catch {
-      schedulerError.value = '加载定时任务状态失败'
+      await poll.reconcileNow()
     } finally {
       schedulerLoading.value = false
-      scheduleSchedulerPolling()
     }
-  }
-
-  function stopSchedulerPolling() {
-    if (schedulerPollTimer) {
-      clearTimeout(schedulerPollTimer)
-      schedulerPollTimer = null
-    }
-  }
-
-  function scheduleSchedulerPolling() {
-    stopSchedulerPolling()
-    const hasHotScheduler = schedulerStatuses.value.some(
-      s => isHotScheduler(s.name) && s.is_executing === true,
-    )
-    const hasRecentFeedback = lastSchedulerTriggerAt.value !== null
-      && Date.now() - lastSchedulerTriggerAt.value < 20000
-    const interval = hasHotScheduler ? 8000 : hasRecentFeedback ? 15000 : 30000
-
-    schedulerPollTimer = setTimeout(() => {
-      loadSchedulersStatus()
-    }, interval)
   }
 
   async function triggerScheduler(name: string) {
@@ -73,6 +50,7 @@ export function useSchedulerStatus() {
       if (response.success) {
         schedulerTriggerFeedback.value[name] = response.data
         lastSchedulerTriggerAt.value = Date.now()
+        lastFeedbackAt.value = Date.now()
         schedulerSuccess.value = response.data?.message || response.message || '任务请求已处理'
         setTimeout(() => { schedulerSuccess.value = null }, 2000)
         await loadSchedulersStatus()
@@ -81,6 +59,7 @@ export function useSchedulerStatus() {
           name, accepted: false, started: false, reason: 'request_rejected', message: '请求被拒绝',
         }
         lastSchedulerTriggerAt.value = Date.now()
+        lastFeedbackAt.value = Date.now()
         schedulerError.value = response.error || '触发失败'
       }
     } catch {
@@ -88,6 +67,7 @@ export function useSchedulerStatus() {
         name, accepted: false, started: false, reason: 'request_failed', message: '请求失败',
       }
       lastSchedulerTriggerAt.value = Date.now()
+      lastFeedbackAt.value = Date.now()
       schedulerError.value = '触发失败'
     } finally {
       schedulerTriggerLoading.value = false
@@ -132,16 +112,12 @@ export function useSchedulerStatus() {
     }
   }
 
-  onUnmounted(() => {
-    stopSchedulerPolling()
-  })
-
   return {
     schedulerStatuses, schedulerTriggerFeedback, schedulerLoading,
     schedulerTriggerLoading, schedulerError, schedulerSuccess,
     analysisPaused, analysisPausedAt, setAnalysisPaused,
     aiHealthy, aiHealthRoutes,
-    loadSchedulersStatus, stopSchedulerPolling, triggerScheduler,
+    loadSchedulersStatus, triggerScheduler,
     scheduleTimeLoading, updateScheduleTime,
   }
 }

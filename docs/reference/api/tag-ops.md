@@ -34,6 +34,55 @@
 
 ---
 
+## 通知中心 Notifications
+
+单用户通知信箱（add-notification-center）：白名单 = **日报生成终态**（完成 / 一条失败汇总，互斥），高频过程类事件（打标、抓取、自动刷新）不产生通知。新通知写入后同时经 WS 广播 `notification` 事件（载荷含完整通知对象）。
+
+| 方法 | 路径 | 说明 |
+| ------ | ------ | ------ |
+| GET | `/api/notifications` | 通知分页列表 |
+| GET | `/api/notifications/unread-count` | 未读数 |
+| POST | `/api/notifications/:id/read` | 单条标已读 |
+| POST | `/api/notifications/read-all` | 全部标已读 |
+| DELETE | `/api/notifications` | 清空全部通知 |
+
+### GET /api/notifications
+
+**查询参数**
+
+| 参数 | 默认 | 说明 |
+| ------ | ------ | ------ |
+| `limit` | `20` | 每页数量 |
+| `offset` | `0` | 偏移量 |
+| `unread` | 空 | `true` 时只返回未读 |
+
+**响应示例**
+
+```json
+{
+  "success": true,
+  "data": {
+    "notifications": [
+      {
+        "id": 1,
+        "type": "success",
+        "title": "日报已生成 · 2026-09-17",
+        "summary": "共 6 个版面，保存 42 条条目。",
+        "link_type": "daily-report",
+        "link_id": "2026-09-17",
+        "is_read": false,
+        "created_at": "2026-09-17T04:12:00Z"
+      }
+    ],
+    "total": 12
+  }
+}
+```
+
+`type` 取值：`success`（完成）/ `error`（失败汇总）。通知表上限 500 行，写入超限时淘汰最旧已读行（全未读才淘汰最旧未读），淘汰在写入路径内完成。
+
+---
+
 ## 嵌入队列 Embedding Queue
 
 ### GET /api/embedding/queue/status
@@ -147,10 +196,13 @@
     "processing": 1,
     "completed": 320,
     "failed": 2,
-    "total": 328
+    "total": 328,
+    "completed_today": 40
   }
 }
 ```
+
+`completed_today` 为今日（服务器本地时区 00:00 起）completed 行计数。由于 `log_cleanup` 每日清理昨日以前的 completed 行（保留策略见 [DATA_LIFECYCLE.md](../database/DATA_LIFECYCLE.md)），`completed` 为近 1 天内的累计值；前端展示语义以**活跃量（pending+processing）为主、今日完成为辅**，累计 total 不再用于展示。
 
 ### GET /api/tag-queue/tasks
 

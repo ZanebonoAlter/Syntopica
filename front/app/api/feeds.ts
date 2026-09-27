@@ -2,6 +2,7 @@ import { apiClient } from './client'
 import type {
   ApiResponse,
   CreateFeedData,
+  FeedBoardHitStats,
   PaginationParams,
   RssFeed,
   UpdateFeedData,
@@ -37,8 +38,17 @@ export function useFeedsApi() {
     return apiClient.post<{ message?: string }>('/feeds/refresh-all')
   }
 
+  /**
+   * 全量订阅源窗口内入板块命中统计（add-source-board-hit-rate，只读）。
+   * window 仅允许 7/30/90；响应 data 外层为 { items } 包裹。
+   */
+  async function getBoardHitStats(windowDays: number): Promise<ApiResponse<{ items: FeedBoardHitStats[] }>> {
+    return apiClient.get<{ items: FeedBoardHitStats[] }>(`/feeds/board-hit-stats?window=${windowDays}`)
+  }
+
   return {
     getFeeds,
+    getBoardHitStats,
     fetchFeed,
     createFeed,
     updateFeed,

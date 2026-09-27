@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 · 日报页边注 · daily-report-margin-notes</title>
+<link rel="stylesheet" href="proto.css">
+</head>
+<body>
+
+<div class="proto-banner">可丢弃原型 · fixture 数据 · <b>daily-report-margin-notes</b> · ui-approval: pending —— <a href="reader.html">日报页边注</a>｜<a href="manage.html">管理页（设置·页边注）</a> —— 本页：划选正文试试；行头点击仍是展开溯源</div>
+
+<header class="masthead">
+  <div class="masthead__eyebrow">Syntopica · 每日脉络</div>
+  <h1 class="masthead__title">中国宏观</h1>
+  <div class="masthead__meta">
+    <span>第 128 期</span><span>2026年9月21日 星期一</span><span>北京时间 21:00 刊发</span>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- 左导航（现有） -->
+  <aside class="nav">
+    <h2>本期目录</h2>
+    <button>头条</button>
+    <button>利率与流动性</button>
+    <button>外部环境</button>
+    <h2>持续追踪</h2>
+    <button>美联储政策路径 <span class="nav__count">14天</span></button>
+    <button>地方化债 <span class="nav__count">9天</span></button>
+    <h2>历史日报</h2>
+    <button>09月20日 · 第127期</button>
+    <button>09月19日 · 第126期</button>
+  </aside>
+
+  <!-- 报纸正文 -->
+  <main class="content" id="reportBody">
+    <article class="lead" id="lead">
+      <div class="lead__kicker">头条 · HEADLINE</div>
+      <h2 class="lead__title">季末流动性护航：央行连续加码公开市场操作</h2>
+      <p class="lead__summary" data-annotatable>临近季末，银行间资金面趋紧，央行本周连续第三天开展大额逆回购操作，单日投放规模升至 3000 亿元，净投放创近三个月新高。市场人士认为，操作意在平滑跨季资金波动，并非货币政策转向的信号。</p>
+    </article>
+
+    <div class="zone-head">
+      <span class="zone-head__eyebrow">TOPICS · 话题正文</span>
+      <span class="zone-head__title">利率与流动性</span>
+    </div>
+
+    <section class="topic">
+      <div class="topic__no">02</div>
+      <h3 class="topic__title">央行公开市场操作与资金面</h3>
+      <article class="thread" data-thread>
+        <div class="thread__header" role="button" tabindex="0" aria-expanded="false">
+          <span>
+            <h4 class="thread__title">央行开展 3000 亿元 7 天期逆回购操作</h4>
+            <p class="thread__summary" data-annotatable>人民银行公告称，为维护季末流动性合理充裕，今日<mark class="mn-highlight" id="hl-demo">以利率招标方式开展 3000 亿元 7 天期逆回购操作，中标利率维持 1.80% 不变</mark>。因今日有 1000 亿元逆回购到期，实现净投放 2000 亿元。本周累计净投放已超 8000 亿元，为近三个月单周最高。</p>
+          </span>
+          <span class="thread__caret">▸</span>
+        </div>
+        <div class="thread__meta">置信度 0.86 · 关联 3 篇文章 · 点击行头展开溯源</div>
+        <div class="thread__articles">
+          <h5>溯源 · 相关文章</h5>
+          <div class="article-row">央行公开市场业务交易公告〔2026〕第 187 号 <span class="article-src">央行官网</span></div>
+          <div class="article-row">央行单日净投放创三个月新高 跨季资金面趋稳 <span class="article-src">财新</span></div>
+          <div class="article-row">DR007 冲高回落 央行护航跨季 <span class="article-src">21世纪经济报道</span></div>
+        </div>
+      </article>
+      <article class="thread" data-thread>
+        <div class="thread__header" role="button" tabindex="0" aria-expanded="false">
+          <span>
+            <h4 class="thread__title">DR007 一度飙升至 2.1% 后回落</h4>
+            <p class="thread__summary" data-annotatable>跨季资金价格上周五快速走高，存款类机构质押式回购加权利率 DR007 一度触及 2.1%，今日随央行加码投放回落至 1.95% 附近。交易员表示，非银机构跨季融资成本仍高，预计央行将持续护航至月末。</p>
+          </span>
+          <span class="thread__caret">▸</span>
+        </div>
+        <div class="thread__meta">置信度 0.79 · 关联 2 篇文章 · 点击行头展开溯源</div>
+        <div class="thread__articles">
+          <h5>溯源 · 相关文章</h5>
+          <div class="article-row">资金面季末趋紧 非银融资成本走高 <span class="article-src">财联社</span></div>
+          <div class="article-row">央行公开市场操作连日加码 <span class="article-src">上海证券报</span></div>
+        </div>
+      </article>
+    </section>
+
+    <div class="zone-head">
+      <span class="zone-head__eyebrow">TOPICS · 话题正文</span>
+      <span class="zone-head__title">外部环境</span>
+    </div>
+
+    <section class="topic">
+      <div class="topic__no">03</div>
+      <h3 class="topic__title">美联储按兵不动，点阵图隐含年内再降一次</h3>
+      <article class="thread" data-thread>
+        <div class="thread__header" role="button" tabindex="0" aria-expanded="false">
+          <span>
+            <h4 class="thread__title">FOMC 维持利率区间 4.00%-4.25%</h4>
+            <p class="thread__summary" data-annotatable>美联储 9 月议息会议维持政策利率不变，符合市场预期。点阵图中值显示年内或还有一次降息，鲍威尔在记者会上强调"不急于调整"，缩表节奏维持不变。美股冲高回落，美元指数窄幅震荡。</p>
+          </span>
+          <span class="thread__caret">▸</span>
+        </div>
+        <div class="thread__meta">置信度 0.88 · 关联 4 篇文章 · 点击行头展开溯源</div>
+        <div class="thread__articles">
+          <h5>溯源 · 相关文章</h5>
+          <div class="article-row">美联储 9 月声明全文：维持利率不变 <span class="article-src">Fed</span></div>
+          <div class="article-row">点阵图隐含年内还有一次降息 <span class="article-src">华尔街见闻</span></div>
+          <div class="article-row">鲍威尔记者会：不急于调整政策 <span class="article-src">路透</span></div>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <!-- 页边注栏（新） -->
+  <aside class="rail" id="rail">
+    <div class="rail__head">页边注 <em>MARGIN NOTES</em></div>
+    <div id="railCards">
+      <!-- 预置完成态批注（fixture）：终态长这样 -->
+      <div class="note-card" id="card-demo">
+        <div class="note-card__quote" data-target="hl-demo" title="点击展开全文">
+          为维护季末流动性合理充裕，今日以利率招标方式开展 3000 亿元 7 天期逆回购操作，中标利率维持 1.80% 不变。因今日有 1000 亿元逆回购到期，实现净投放 2000 亿元。本周累计净投放已超 8000 亿元，为近三个月单周最高。以及后续很长很长的划词文本测试展开收起交互，长划词应能完整看到而不是被截断丢掉。
+        </div>
+        <button class="note-card__toggle" aria-expanded="false" title="展开/收起引用全文"></button>
+        <button class="note-card__jump" data-jump="hl-demo" title="跳回原文">↗</button>
+        <button class="note-card__del" data-del="card-demo" title="删除批注">✕</button>
+        <div class="note-card__body">
+          <div class="qa">
+            <div class="qa__q">逆回购是什么意思？跟降息是一回事吗？</div>
+            <div class="qa__a">逆回购（此处指央行公开市场操作）是央行向一级交易商<span class="term">买入债券并约定未来卖回</span>，等于短期借出资金、向市场注入流动性；到期后资金自动回收。它与降息不同：降息改变资金的价格（政策利率），逆回购调节的是<span class="term">资金的量</span>，且期限短、可滚动。今天日报这条指的是央行用 7 天期逆回购平滑跨季资金波动，中标利率 1.80% 不变恰恰说明这不是降息信号。</div>
+            <div class="qa__cites">
+              <span class="cite-chip" data-cites="demo">📎 基于 3 篇当天文章</span>
+            </div>
+            <ul class="cites-expand" id="cites-demo">
+              <li>央行公开市场业务交易公告 [2026] 第 187 号</li>
+              <li>财新：《央行单日净投放创三个月新高 跨季资金面趋稳》</li>
+              <li>21世纪经济报道：《DR007 冲高回落 央行护航跨季》</li>
+            </ul>
+            <div class="qa__cites">
+              <a class="web-chip" href="https://money.163.com/baike/reverse-repurchaseagreement/" target="_blank" rel="noopener">↗ 逆回购_财经百科（网易财经）</a>
+              <a class="web-chip" href="https://example.com/pboc-omo" target="_blank" rel="noopener">↗ 央行公开市场操作解读（示例站外源）</a>
+            </div>
+            <div class="qa__terms">
+              <span class="terms-label">本次涉及</span>
+              <span class="term-chip">逆回购</span>
+              <span class="term-chip">流动性对冲</span>
+              <span class="term-chip">DR007</span>
+            </div>
+          </div>
+          <div class="qa">
+            <div class="qa__q">追问：那到期不续做会怎样？</div>
+            <div class="qa__a">到期不续 = 资金自然回笼，市场流动性边际收紧；若恰逢缴税、跨季等时点，资金利率会明显上行，所以央行通常提前续做或加码。</div>
+          </div>
+          <div class="note-card__input">
+            <textarea rows="1" placeholder="继续追问……"></textarea>
+            <button class="ask-btn">问</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="rail__empty" id="railEmpty" style="display:none">
+      <span class="demo-arrow">❧</span>
+      暂无批注<br>划选左侧正文文字<br>点「问一问」即可添加
+    </div>
+  </aside>
+</div>
+
+<!-- 划词气泡 -->
+<div class="ask-bubble" id="askBubble">问一问 ✎</div>
+
+<!-- 窄屏浮动按钮 + 抽屉 -->
+<button class="rail-fab" id="railFab">❧ 页边注 <span id="fabCount">1</span></button>
+<div class="note-drawer" id="noteDrawer">
+  <div class="note-drawer__mask" id="drawerMask"></div>
+  <div class="note-drawer__panel">
+    <div class="rail__head">页边注 <em>MARGIN NOTES</em></div>
+    <div id="drawerCards"></div>
+  </div>
+</div>
+
+<!-- 删除确认（AppDialog sm 形态） -->
+<div class="dlg-mask" id="delDialog">
+  <div class="dlg">
+    <h3>删除这条批注？</h3>
+    <p>将连带删除其下全部 <b id="dlgQaCount">2</b> 轮问答（含已生成的回答、引用与术语记录），正文高亮同步移除。此操作不可恢复。</p>
+    <div class="dlg__row">
+      <button class="dlg__btn" id="delCancel">取消</button>
+      <button class="dlg__btn dlg__btn--danger" id="delConfirm">删除</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============ 原型交互模拟（setTimeout 假生成，不连真实 API） ============ */
+const bubble = document.getElementById('askBubble');
+const railCards = document.getElementById('railCards');
+const railEmpty = document.getElementById('railEmpty');
+const fabCount = document.getElementById('fabCount');
+let pendingRange = null;
+let anchorSeq = 0;
+
+/* 划选 → 气泡 */
+document.addEventListener('mouseup', (e) => {
+  if (bubble.contains(e.target)) return;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.toString().trim()) { bubble.classList.remove('show'); return; }
+  const anchor = sel.anchorNode;
+  if (!anchor || !document.getElementById('reportBody').contains(anchor.nodeType === 3 ? anchor.parentElement : anchor)) {
+    bubble.classList.remove('show'); return;
+  }
+  pendingRange = sel.getRangeAt(0);
+  const rect = pendingRange.getBoundingClientRect();
+  bubble.style.left = Math.max(12, rect.left + rect.width / 2 - 46 + window.scrollX) + 'px';
+  bubble.style.top = (rect.top + window.scrollY - 34) + 'px';
+  bubble.classList.add('show');
+});
+bubble.addEventListener('mousedown', (e) => e.preventDefault());
+bubble.addEventListener('click', () => {
+  if (!pendingRange) return;
+  const text = pendingRange.toString().trim();
+  if (!text) return;
+  const id = 'hl-' + (++anchorSeq);
+  try {
+    const mark = document.createElement('mark');
+    mark.className = 'mn-highlight';
+    mark.id = id;
+    pendingRange.surroundContents(mark);
+  } catch (err) { /* 跨节点选区：跳过高亮，仅落卡 */ }
+  createNoteCard(id, text, true);
+  bubble.classList.remove('show');
+  window.getSelection().removeAllRanges();
+});
+
+/* 落锚 → 新建批注卡 */
+function createNoteCard(anchorId, quote, focus) {
+  railEmpty.style.display = 'none';
+  const card = document.createElement('div');
+  card.className = 'note-card';
+  card.id = 'card-' + anchorId;
+  card.innerHTML = `
+    <div class="note-card__quote" title="点击展开全文">${escapeHtml(quote)}</div>
+    <button class="note-card__toggle" aria-expanded="false" title="展开/收起引用全文"></button>
+    <button class="note-card__jump" data-jump="${anchorId}" title="跳回原文">↗</button>
+    <button class="note-card__del" data-del="card-${anchorId}" title="删除批注">✕</button>
+    <div class="note-card__body">
+      <div class="note-card__input">
+        <textarea rows="1" placeholder="问点什么，比如：这段什么意思？"></textarea>
+        <button class="ask-btn">问</button>
+      </div>
+    </div>`;
+  railCards.appendChild(card);
+  syncDrawer(); updateCount();
+  if (focus) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    card.querySelector('textarea').focus();
+  }
+  bindCard(card);
+}
+
+function bindCard(card) {
+  const quote = card.querySelector('.note-card__quote');
+  const jump = card.querySelector('.note-card__jump');
+  const btn = card.querySelector('.ask-btn');
+  const ta = card.querySelector('textarea');
+
+  quote.addEventListener('click', () => card.classList.toggle('note-card--expanded'));
+  const toggle = card.querySelector('.note-card__toggle');
+  if (toggle) toggle.addEventListener('click', () => {
+    card.classList.toggle('note-card--expanded');
+    toggle.setAttribute('aria-expanded', String(card.classList.contains('note-card--expanded')));
+  });
+  jump.addEventListener('click', (e) => { e.stopPropagation(); jumpTo(jump.dataset.jump, card.id); });
+  btn.addEventListener('click', () => submitQuestion(card, ta));
+
+  const del = card.querySelector('.note-card__del');
+  del.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openDelDialog(card);
+  });
+}
+
+/* 提问 → 假生成 */
+function submitQuestion(card, ta) {
+  const q = (ta.value || '').trim();
+  if (!q) { ta.focus(); return; }
+  const body = card.querySelector('.note-card__body');
+  const qa = document.createElement('div');
+  qa.className = 'qa qa--pending';
+  qa.innerHTML = `
+    <div class="qa__q">${escapeHtml(q)}</div>
+    <div class="qa__a qa--skeleton">正在翻阅当天文章……
+      <div class="skeleton-lines"><i></i><i></i><i></i></div>
+    </div>`;
+  body.insertBefore(qa, card.querySelector('.note-card__input'));
+  ta.value = '';
+  const input = card.querySelector('.note-card__input');
+  input.style.display = 'none';
+
+  setTimeout(() => {
+    const canned = q.includes('逆回购')
+      ? '逆回购是央行向市场短期注入流动性的操作：买入债券、约定日后卖回，到期资金自动回收。与降息的区别在于——降息调"价"，逆回购调"量"。（原型演示回答，真实实现将由 open_notebook 能力结合当天文章生成）'
+      : '（原型演示回答）真实实现中，这里会由 AI 结合你划选的原文与当天相关文章作答：先讲通用概念，再解释"今天这条具体在说什么"，并附可点开查证的引用。';
+    qa.querySelector('.qa__a').outerHTML = `
+      <div class="qa__a">${canned}</div>
+      <div class="qa__cites"><span class="cite-chip" data-cites="${card.id}">📎 基于 N 篇当天文章</span></div>
+      <ul class="cites-expand" id="cites-${card.id}">
+        <li>相关文章 A（标题示意）</li><li>相关文章 B（标题示意）</li>
+      </ul>
+      <div class="qa__terms">
+        <span class="terms-label">本次涉及</span>
+        <span class="term-chip new">示例术语</span>
+      </div>`;
+    bindCites(card);
+    input.style.display = 'flex';
+    ta.placeholder = '继续追问……';
+  }, 1400);
+}
+
+/* 引用 chip 展开 */
+function bindCites(scope) {
+  scope.querySelectorAll('.cite-chip:not([data-bound])').forEach(chip => {
+    chip.dataset.bound = '1';
+    chip.addEventListener('click', () => {
+      const exp = document.getElementById('cites-' + chip.dataset.cites);
+      if (exp) exp.classList.toggle('show');
+    });
+  });
+}
+bindCites(document);
+
+/* 锚点跳回原文并闪现 */
+function jumpTo(anchorId, cardId) {
+  const target = document.getElementById(anchorId);
+  document.querySelectorAll('.note-card.lit').forEach(c => c.classList.remove('lit'));
+  if (target) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.remove('flash'); void target.offsetWidth; target.classList.add('flash');
+    const card = document.getElementById(cardId);
+    if (card) { card.classList.add('lit'); setTimeout(() => card.classList.remove('lit'), 1600); }
+  }
+}
+
+/* 删除确认 */
+let delTarget = null;
+function openDelDialog(card) {
+  delTarget = card;
+  card.classList.add('deleting');
+  document.getElementById('dlgQaCount').textContent = card.querySelectorAll('.qa').length;
+  document.getElementById('delDialog').classList.add('show');
+}
+document.getElementById('delCancel').addEventListener('click', () => {
+  if (delTarget) delTarget.classList.remove('deleting');
+  document.getElementById('delDialog').classList.remove('show');
+});
+document.getElementById('delConfirm').addEventListener('click', () => {
+  if (delTarget) {
+    const anchor = document.getElementById(delTarget.id.replace('card-', ''));
+    if (anchor) { const parent = anchor.parentNode; parent.replaceChild(document.createTextNode(anchor.textContent), anchor); parent.normalize(); }
+    delTarget.remove();
+    syncDrawer(); updateCount();
+    if (!railCards.children.length) railEmpty.style.display = 'block';
+  }
+  document.getElementById('delDialog').classList.remove('show');
+});
+
+/* 窄屏抽屉：卡片克隆同步 */
+function syncDrawer() {
+  const drawerCards = document.getElementById('drawerCards');
+  drawerCards.innerHTML = '';
+  railCards.querySelectorAll('.note-card').forEach(c => {
+    const clone = c.cloneNode(true);
+    clone.querySelectorAll('textarea').forEach(t => t.value = '');
+    drawerCards.appendChild(clone);
+    bindCard(clone);
+  });
+  bindCites(drawerCards);
+}
+document.getElementById('railFab').addEventListener('click', () => document.getElementById('noteDrawer').classList.add('open'));
+document.getElementById('drawerMask').addEventListener('click', () => document.getElementById('noteDrawer').classList.remove('open'));
+function updateCount() { fabCount.textContent = railCards.children.length; }
+bindCard(document.getElementById('card-demo'));
+
+/* ===== 现有溯源交互：thread 行头点击展开/收起相关文章（保持现状）===== */
+document.querySelectorAll('[data-thread]').forEach(t => {
+  const h = t.querySelector('.thread__header');
+  h.addEventListener('click', () => {
+    t.classList.toggle('expanded');
+    h.setAttribute('aria-expanded', String(t.classList.contains('expanded')));
+  });
+});
+/* ===== selection guard：划选后的同一点击不触发收展（冲突消解）===== */
+document.addEventListener('click', (e) => {
+  if (bubble.contains(e.target)) return;
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed && sel.toString().trim().length >= 2) {
+    e.stopPropagation(); e.preventDefault();
+  }
+}, true);
+/* ===== mark 点击分层：点高亮跳右栏对应卡，不触发 thread 展开 ===== */
+document.getElementById('reportBody').addEventListener('click', (e) => {
+  const m = e.target.closest('mark.mn-highlight');
+  if (m && m.id) {
+    e.stopPropagation();
+    const jump = document.querySelector(`.note-card__jump[data-jump="${m.id}"]`);
+    jumpTo(m.id, jump ? jump.closest('.note-card').id : null);
+  }
+}, true);
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+/* ===== 管理页深链闪现：reader.html#hl-demo → 定位该锚点并点亮对应卡 ===== */
+(function deepLinkFlash() {
+  if (location.hash.length < 2) return;
+  const mark = document.getElementById(location.hash.slice(1));
+  if (!mark) return;
+  requestAnimationFrame(() => {
+    mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    mark.classList.remove('flash'); void mark.offsetWidth; mark.classList.add('flash');
+    const card = document.querySelector(`.note-card .note-card__jump[data-jump="${mark.id}"]`);
+    if (card) { const c = card.closest('.note-card'); c.classList.add('lit'); setTimeout(() => c.classList.remove('lit'), 1600); }
+  });
+})();
+</script>
+</body>
+</html>

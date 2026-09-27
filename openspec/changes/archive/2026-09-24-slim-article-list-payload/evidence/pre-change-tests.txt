@@ -1,0 +1,41 @@
+# 动工前测试基线（任务 1.1 / test-cases.md §3「继承与调整」）
+
+快照日期：2026-09-24　分支：develop　HEAD 附近（工作树含其他 active change 的脏文件，已忽略）
+
+## 命令与结果
+
+1. `cd backend-go && go test ./internal/reader/handler/ -run TestGetArticle`
+   → `ok syntopica-backend/internal/reader/handler 0.181s`（全绿，动工前基线）
+
+2. `cd front && pnpm test:unit app/features/articles/components/ArticleContentPreviewPanel.test.ts --maxWorkers=2`
+   → `Test Files 1 passed (1) / Tests 8 passed (8)`（全绿，动工前基线）
+
+## 后端用例清单（`internal/reader/handler/article_handler_test.go`）
+
+| 用例 | 与列表投影的关系 | 结论 |
+|---|---|---|
+| `TestGetArticleReturnsArticleTags` | 走**详情**接口 `GetArticle`（按 id） | 详情契约不变 → 不改断言 |
+| `TestGetArticlesReturnsTagCount` | 走**列表**接口 `GetArticles` | 只断言 `id`/`tag_count`，**未断言 `content`/`description`/`firecrawl_content`** → 现有断言在新契约下依然成立，不需要「按新契约调整」的既有用例 |
+| `TestRetagArticleReturnsUpdatedTags`、`TestRetagArticleWithExistingLeasedJob` | 打标签接口 | 不受影响 |
+
+**结论**：列表投影**无既有断言依赖「列表带正文/完整 description」**，故无旧断言需要下调；本 change 只需**新增**断言（`TestGetArticles_Projection` / `TestExcerpt` / `TestPerPageOverLimit`，见 tasks 1.2/2.1/2.2/2.3）。
+
+## 前端用例清单（`front/app/features/articles/components/ArticleContentPreviewPanel.test.ts`）
+
+| 用例 | 是否依赖「列表带正文/完整 description」 | 结论 |
+|---|---|---|
+| `renders reading col with kicker / meta / title / body aligned` | 否（`displayContent` 由 prop 传入） | 保留回归 |
+| `does not render AI summary block when there is no summary` | 否 | 保留回归 |
+| `renders AI summary as frameless section (no card surface) when summary exists` | 否 | 保留回归 |
+| `does not render the lede when description guard hides it` | 断言 `showDescription=false` 时不渲染导语（prop 驱动） | 保留回归（guard 语义不变） |
+| `renders the lede as frameless lead paragraph (no card border) when description shows` | fixture 直接给面板传 `description`（**模拟的是「详情已就绪」形态**，不是列表形态） | 保留回归 |
+| `no longer renders processing banner / manual action row / content source toggle` | 否 | 保留回归 |
+| `renders empty-content fallback with open-original button when body is empty` | 否 | 保留回归 |
+| `renders mermaid fence in article body as diagram (render-mermaid-diagrams)` | 否 | 保留回归 |
+
+**结论**：8 个既有用例**全部保留**（数据来源变更不改变面板契约：面板收到的仍是「当前已解析的导语 + 正文」）。需**新增**两条：详情未就绪时导语用列表 `excerpt`、详情返回后导语以详情 `description` 为准（tasks 3.2）。
+
+## 反查依据（test-cases.md §3 要求）
+
+- `bash scripts/harness/test-assets.sh` 的 capability → 测试资产反查由规划阶段落表（test-cases.md §3），本文件只补「动工前实测」这一列。
+- 消费点全仓反查结果另见 `evidence/consumers.md`（tasks 3.3）。

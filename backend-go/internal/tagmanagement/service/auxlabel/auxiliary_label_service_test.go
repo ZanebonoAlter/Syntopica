@@ -9,6 +9,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service/core"
 )
@@ -155,19 +156,19 @@ func TestAuxiliaryLabelServiceMergeAuxiliaryLabelAliasMigratesLinksAndPreservesB
 	require.NoError(t, db.Create(&source).Error)
 	board := models.SemanticLabel{Label: "AI Board", Slug: "ai-board", LabelType: "board", Status: "active"}
 	require.NoError(t, db.Create(&board).Error)
-	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tagA.ID, SemanticLabelID: target.ID}).Error)
-	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tagA.ID, SemanticLabelID: source.ID}).Error)
-	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tagB.ID, SemanticLabelID: source.ID}).Error)
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tagA.ID, SemanticBoardID: board.ID, Score: 0.8, MatchReason: "existing"}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tagA.ID, SemanticLabelID: target.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tagA.ID, SemanticLabelID: source.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tagB.ID, SemanticLabelID: source.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tagA.ID, SemanticBoardID: board.ID, Score: 0.8, MatchReason: "existing"}).Error)
 	service := NewAuxiliaryLabelService(db, (&recordingAuxiliaryEmbedder{}).embed)
 
 	require.NoError(t, service.MergeAuxiliaryLabelAlias(context.Background(), source.ID, target.ID))
 
 	var targetLinks int64
-	require.NoError(t, db.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", target.ID).Count(&targetLinks).Error)
+	require.NoError(t, db.Model(&tagmodels.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", target.ID).Count(&targetLinks).Error)
 	require.Equal(t, int64(2), targetLinks)
 	var sourceLinks int64
-	require.NoError(t, db.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", source.ID).Count(&sourceLinks).Error)
+	require.NoError(t, db.Model(&tagmodels.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", source.ID).Count(&sourceLinks).Error)
 	require.Zero(t, sourceLinks)
 
 	var reloadedTarget models.SemanticLabel
@@ -182,7 +183,7 @@ func TestAuxiliaryLabelServiceMergeAuxiliaryLabelAliasMigratesLinksAndPreservesB
 	require.Zero(t, reloadedSource.RefCount)
 
 	var boardLabelCount int64
-	require.NoError(t, db.Model(&models.TopicTagBoardLabel{}).Count(&boardLabelCount).Error)
+	require.NoError(t, db.Model(&tagmodels.TopicTagBoardLabel{}).Count(&boardLabelCount).Error)
 	require.Equal(t, int64(1), boardLabelCount)
 }
 
@@ -198,22 +199,22 @@ func TestAuxiliaryLabelServiceRemoveBoardCompositionDeletesOnlyRequestedRow(t *t
 	require.NoError(t, db.Create(&otherAuxiliary).Error)
 	tag := models.TopicTag{Label: "OpenAI 发布 GPT-5", Slug: "openai-gpt-5", Category: "event", Status: "active"}
 	require.NoError(t, db.Create(&tag).Error)
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxiliary.ID}).Error)
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: otherAuxiliary.ID}).Error)
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: otherBoard.ID, AuxiliaryLabelID: auxiliary.ID}).Error)
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: board.ID, Score: 0.8, MatchReason: "existing"}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxiliary.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: otherAuxiliary.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: otherBoard.ID, AuxiliaryLabelID: auxiliary.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: board.ID, Score: 0.8, MatchReason: "existing"}).Error)
 	service := NewAuxiliaryLabelService(db, (&recordingAuxiliaryEmbedder{}).embed)
 
 	require.NoError(t, service.RemoveBoardComposition(context.Background(), board.ID, auxiliary.ID))
 
 	var requested int64
-	require.NoError(t, db.Model(&models.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", board.ID, auxiliary.ID).Count(&requested).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", board.ID, auxiliary.ID).Count(&requested).Error)
 	require.Zero(t, requested)
 	var remaining int64
-	require.NoError(t, db.Model(&models.BoardComposition{}).Count(&remaining).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).Count(&remaining).Error)
 	require.Equal(t, int64(2), remaining)
 	var boardLabelCount int64
-	require.NoError(t, db.Model(&models.TopicTagBoardLabel{}).Count(&boardLabelCount).Error)
+	require.NoError(t, db.Model(&tagmodels.TopicTagBoardLabel{}).Count(&boardLabelCount).Error)
 	require.Equal(t, int64(1), boardLabelCount)
 }
 
@@ -291,7 +292,7 @@ func TestAuxiliaryLabelServiceAttachAuxiliaryLabelsIncrementsRefCountOnce(t *tes
 	require.NoError(t, service.AttachAuxiliaryLabels(context.Background(), tag.ID, labels))
 
 	var count int64
-	require.NoError(t, db.Model(&models.TopicTagSemanticLabel{}).Where("topic_tag_id = ? AND semantic_label_id = ?", tag.ID, existing.ID).Count(&count).Error)
+	require.NoError(t, db.Model(&tagmodels.TopicTagSemanticLabel{}).Where("topic_tag_id = ? AND semantic_label_id = ?", tag.ID, existing.ID).Count(&count).Error)
 	require.Equal(t, int64(1), count)
 
 	var reloaded models.SemanticLabel

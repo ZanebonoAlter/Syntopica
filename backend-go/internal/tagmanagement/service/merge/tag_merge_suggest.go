@@ -12,6 +12,7 @@ import (
 	"syntopica-backend/internal/models"
 	airouter "syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/logging"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/service/core"
 
 	"gorm.io/gorm/clause"
@@ -147,7 +148,7 @@ func runFullScan(ctx context.Context) {
 				newLbl, existingLbl = c.Tag.Label, tag.Label
 			}
 
-			suggestion := models.TagMergeSuggestion{
+			suggestion := tagmodels.TagMergeSuggestion{
 				NewTagID:      newID,
 				ExistingTagID: existingID,
 				NewLabel:      newLbl,
@@ -275,7 +276,7 @@ func runEvaluation(ctx context.Context) {
 	}()
 
 	// Query pending suggestions, grouped by existing_tag_id
-	var suggestions []models.TagMergeSuggestion
+	var suggestions []tagmodels.TagMergeSuggestion
 	if err := repository.Repo.DB().Where("status = ?", "pending").Find(&suggestions).Error; err != nil {
 		evalState.progress <- EvaluateProgress{Status: "error", Error: err.Error()}
 		return
@@ -289,7 +290,7 @@ func runEvaluation(ctx context.Context) {
 	// Group by existing_tag_id
 	type groupInfo struct {
 		ExistingTag models.TopicTag
-		Suggestions []models.TagMergeSuggestion
+		Suggestions []tagmodels.TagMergeSuggestion
 	}
 	groups := make(map[uint]*groupInfo)
 	var groupOrder []uint
@@ -426,7 +427,7 @@ func runEvaluation(ctx context.Context) {
 				key := verdictKey{TargetTagID: existingID, NewTagID: sug.NewTagID}
 				if v, ok := verdicts[key]; ok {
 					verdictJSON, _ := json.Marshal(v)
-					repository.Repo.DB().Model(&models.TagMergeSuggestion{}).
+					repository.Repo.DB().Model(&tagmodels.TagMergeSuggestion{}).
 						Where("id = ?", sug.ID).
 						Update("llm_verdict", string(verdictJSON))
 				}

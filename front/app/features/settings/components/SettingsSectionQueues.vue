@@ -3,7 +3,10 @@ import { ref } from 'vue'
 import EmbeddingQueuePanel from '~/features/ai/components/EmbeddingQueuePanel.vue'
 import TagQueuePanel from '~/features/settings/components/TagQueuePanel.vue'
 
-const activeQueue = ref<'embedding' | 'tag'>('embedding')
+// 支持 ?queue=tag|embedding 预选（tag-queue-progress-chip 点击跳转直达标签队列）
+const route = useRoute()
+const initialQueue = route.query.queue === 'tag' ? 'tag' : 'embedding'
+const activeQueue = ref<'embedding' | 'tag'>(initialQueue)
 </script>
 
 <template>

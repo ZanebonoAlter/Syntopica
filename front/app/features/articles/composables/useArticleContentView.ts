@@ -6,6 +6,7 @@ import { useReadingTracker, useScrollDepthTracker } from '~/features/preferences
 import { useContentCompletion, type ContentCompletionStatus } from '~/features/articles/composables/useContentCompletion'
 import { useFirecrawlApi } from '~/api/firecrawl'
 import { shouldShowArticleDescription } from '~/utils/articleContentGuards'
+import { proxyImagesInHtml } from '~/utils/imageProxy'
 import {
   getArticleContentSources,
   resolveArticleContentBySource,
@@ -162,12 +163,22 @@ export function useArticleContentView(props: {
     } else {
       content = resolvedContent
     }
-    return content.replace(/<img[^>]*src=["']Base64-Image-Removed["'][^>]*\/?>/gi, '')
+    return proxyImagesInHtml(content.replace(/<img[^>]*src=["']Base64-Image-Removed["'][^>]*\/?>/gi, ''))
+  })
+
+  // 导语取值优先级（slim-article-list-payload）：详情 description 优先，
+  // 详情未就绪时回退列表窄投影的 excerpt，两者都空则为空串。
+  const ledeText = computed(() => {
+    const article = mergedArticle.value
+    if (!article) return ''
+    if (article.description.trim()) return article.description
+    if (article.excerpt?.trim()) return article.excerpt
+    return ''
   })
 
   const showDescription = computed(() => {
     if (!mergedArticle.value) return false
-    return shouldShowArticleDescription(mergedArticle.value.description, displayContent.value)
+    return shouldShowArticleDescription(ledeText.value, displayContent.value)
   })
 
   // ---- Detail lines ----

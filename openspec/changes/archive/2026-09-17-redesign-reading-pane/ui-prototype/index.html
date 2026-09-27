@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reading Pane 重排原型 — redesign-reading-pane</title>
+<style>
+  /* ===== 近似 editorial 主题 token（静态原型，取自 front/app/assets/css/main.css 语义方向） ===== */
+  :root {
+    --bg-chrome: #ece6d9;        /* 列表侧 chrome 色（仅原型示意用） */
+    --bg-paper-top: #fbf8f1;
+    --bg-paper-bottom: #f4efe3;
+    --text-primary: #1a1a1a;
+    --text-secondary: #5a5a5a;
+    --text-muted: #8f8a80;
+    --border-subtle: rgba(26, 26, 26, 0.09);
+    --border-medium: rgba(26, 26, 26, 0.18);
+    --accent: #c0392f;
+    --accent-soft: rgba(192, 57, 47, 0.07);
+    --warning: #c4883c;
+    --error: #c42f3c;
+    --info: #3d7a8a;
+    --success: #3d8a4a;
+    --serif-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+    --sans-body: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --reading-col: 760px;
+    --breakout-extra: 140px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { font-family: var(--sans-body); color: var(--text-primary); }
+
+  .note {
+    padding: 9px 20px; text-align: center; font-size: 12px;
+    color: var(--text-secondary); background: var(--bg-chrome);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .note b { color: var(--text-primary); }
+
+  /* ===== 右侧主体区：纸面（暖米色纵向微渐变，无纹理） ===== */
+  .pane {
+    height: calc(100vh - 37px);
+    display: flex; flex-direction: column;
+    background: linear-gradient(180deg, var(--bg-paper-top) 0%, #f8f4ea 55%, var(--bg-paper-bottom) 100%);
+  }
+
+  /* ===== 工具栏（安静、低对比） ===== */
+  .article-header {
+    flex-shrink: 0;
+    padding: 0.55rem 1.1rem;
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .header-left { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+  .feed-badge { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
+  .feed-icon {
+    width: 15px; height: 15px; border-radius: 4px; flex-shrink: 0;
+    background: linear-gradient(135deg, #2b6cb0 0%, #3b82f6 100%);
+  }
+  .feed-name { font-size: 0.78rem; color: var(--text-secondary); }
+  .header-title {
+    font-size: 0.78rem; color: var(--text-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .header-actions { display: flex; align-items: center; gap: 0.1rem; flex-shrink: 0; position: relative; }
+  .action-btn {
+    padding: 0.42rem; border: none; border-radius: 7px; background: transparent;
+    cursor: pointer; color: var(--text-secondary);
+    display: inline-flex; align-items: center;
+  }
+  .action-btn:hover { background: rgba(26, 26, 26, 0.05); color: var(--text-primary); }
+  .action-btn.active { color: var(--accent); }
+  .action-btn svg { display: block; }
+  .divider-v { width: 1px; height: 17px; background: var(--border-subtle); margin: 0 5px; }
+
+  /* 状态图标（常态一枚；四态颜色见注释） */
+  .status-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 25px; height: 25px; border: none; border-radius: 7px;
+    background: transparent; cursor: pointer; color: var(--text-muted);
+  }
+  .status-btn:hover { background: rgba(26, 26, 26, 0.05); }
+  /* 四态: 排队中=warning色时钟 / 进行中=info色旋转 / 失败=error色警示 / 完成=淡灰✓（本页示意） */
+
+  /* 浮层（默认收起） */
+  .pop {
+    display: none;
+    position: absolute; top: 42px; z-index: 30;
+    border: 1px solid var(--border-subtle); border-radius: 10px;
+    background: #fffdf8; box-shadow: 0 10px 32px rgba(26, 26, 26, 0.13);
+  }
+  .pop-open { display: block; }
+  .status-pop { left: 150px; width: 270px; padding: 12px 14px; font-size: 12px; color: var(--text-secondary); }
+  .status-pop h4 { font-size: 11px; letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px; font-weight: 600; }
+  .status-pop .row { display: flex; justify-content: space-between; padding: 3px 0; }
+  .status-pop .ok { color: var(--success); }
+  .status-pop .meta { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border-subtle); font-size: 11px; }
+
+  .menu-pop { right: 6px; min-width: 208px; padding: 6px; }
+  .menu-pop .label {
+    font-size: 10px; letter-spacing: 0.1em; color: var(--text-muted);
+    padding: 6px 10px 4px;
+  }
+  .menu-item {
+    display: flex; align-items: center; gap: 9px; width: 100%;
+    padding: 7px 10px; border: none; border-radius: 7px;
+    background: transparent; cursor: pointer; text-align: left;
+    font-size: 13px; color: var(--text-primary);
+  }
+  .menu-item:hover { background: rgba(26, 26, 26, 0.05); }
+  .menu-item svg { flex-shrink: 0; color: var(--text-secondary); }
+  .menu-item.disabled { opacity: 0.4; cursor: not-allowed; }
+  .menu-sep { height: 1px; margin: 5px 8px; background: var(--border-subtle); }
+  .menu-source { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; font-size: 13px; }
+  .seg { display: inline-flex; border: 1px solid var(--border-subtle); border-radius: 7px; overflow: hidden; }
+  .seg button { padding: 3px 9px; font-size: 11px; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; }
+  .seg button.on { background: #eae4d6; color: var(--text-primary); font-weight: 600; }
+
+  /* ===== 阅读滚动区 ===== */
+  .preview-scroll { flex: 1; overflow-y: auto; padding: 2.6rem 2rem 4.5rem; }
+  .reading-col { max-width: var(--reading-col); margin: 0 auto; }
+
+  /* Kicker：红色小标 + 细线（编辑签名元素） */
+  .kicker {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 1rem;
+  }
+  .kicker .tag-label {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.22em;
+    color: var(--accent);
+  }
+  .kicker .rule { flex: 0 0 28px; height: 1px; background: var(--accent); opacity: 0.55; }
+
+  .article-meta {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem;
+    font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1.4rem;
+    letter-spacing: 0.02em;
+  }
+  .article-meta .dot { opacity: 0.5; }
+  .read-badge { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--success); }
+
+  /* 大标题：宋体、紧凑行距 */
+  .article-title-full {
+    font-family: var(--serif-display);
+    font-size: clamp(1.7rem, 2.8vw, 2.25rem);
+    font-weight: 700; line-height: 1.32; letter-spacing: 0.01em;
+    margin-bottom: 1rem; text-wrap: balance;
+  }
+
+  .tag-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 1.7rem; }
+  .tag {
+    font-size: 11px; padding: 2.5px 9px; border-radius: 999px;
+    border: 1px solid var(--border-subtle); color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.5); letter-spacing: 0.02em;
+  }
+  .tag.heart { color: var(--accent); border-color: rgba(192, 57, 47, 0.3); }
+  .tag-add {
+    font-size: 11px; padding: 2.5px 9px; border-radius: 999px;
+    border: 1px dashed var(--border-medium); color: var(--text-muted);
+    background: transparent; cursor: pointer;
+  }
+  .tag-add:hover { color: var(--text-secondary); border-color: var(--text-muted); }
+
+  /* 导语：宋体、灰、细左线 */
+  .lede {
+    font-family: var(--serif-display);
+    font-size: 0.96rem; line-height: 1.95; color: var(--text-secondary);
+    padding-left: 16px; border-left: 2px solid var(--border-medium);
+    margin-bottom: 2rem;
+  }
+
+  /* AI 整理稿：小节标 + 内容，无卡框 */
+  .ai-block { margin-bottom: 1.8rem; }
+  .ai-head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.18em;
+    color: var(--text-muted); margin-bottom: 0.7rem;
+  }
+  .ai-head svg { color: var(--text-muted); }
+  .ai-body { font-size: 0.9rem; line-height: 1.85; color: var(--text-secondary); }
+  .ai-body p { margin: 0.35rem 0; }
+
+  /* 分隔：红色短粗线（杂志转场） */
+  .section-sep {
+    width: 34px; height: 3px; border: 0; margin: 0.4rem 0 2.2rem;
+    background: var(--accent); opacity: 0.8; border-radius: 2px;
+  }
+
+  /* ===== 正文 ===== */
+  .markdown { font-size: 1.02rem; line-height: 2.0; color: var(--text-primary); }
+  .markdown p { margin: 1rem 0; }
+  .markdown h2 {
+    font-family: var(--serif-display);
+    font-size: 1.35rem; font-weight: 700; margin: 2.4rem 0 0.9rem; line-height: 1.35;
+  }
+  .markdown h3 {
+    font-family: var(--serif-display);
+    font-size: 1.12rem; font-weight: 700; margin: 1.8rem 0 0.6rem;
+  }
+  .markdown code.inline {
+    padding: 0.14rem 0.4rem; border-radius: 5px; font-size: 0.87em;
+    border: 1px solid var(--border-subtle);
+    background: rgba(255, 255, 255, 0.65); color: var(--accent);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  .markdown blockquote {
+    margin: 1.5rem 0; padding: 0.15rem 0 0.15rem 17px;
+    border-left: 2px solid var(--accent); opacity: 0.92;
+    color: var(--text-secondary); font-size: 0.96rem;
+  }
+  .breakout { margin-left: calc(-1 * var(--breakout-extra) / 2); margin-right: calc(-1 * var(--breakout-extra) / 2); }
+  .breakout img {
+    display: block; width: 100%; border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(26, 26, 26, 0.07); margin: 1.8rem auto;
+  }
+  .table-wrap { overflow-x: auto; margin: 1.7rem 0; border-radius: 8px; border: 1px solid var(--border-subtle); background: rgba(255,255,255,0.55); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 620px; }
+  thead { background: rgba(26, 26, 26, 0.035); }
+  th, td { padding: 0.68rem 0.9rem; border-bottom: 1px solid var(--border-subtle); text-align: left; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  pre {
+    margin: 1.6rem 0; padding: 1rem 1.15rem; overflow-x: auto;
+    border-radius: 8px; background: #262930; color: #e8e2d6;
+    font-size: 0.84rem; line-height: 1.75;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (max-width: 900px) {
+    .breakout { margin-left: 0; margin-right: 0; }
+    .preview-scroll { padding: 1.6rem 1rem 3rem; }
+    .status-pop { left: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="note">静态原型 · <b>redesign-reading-pane</b> · editorial 阅读版式：760px 阅读列 · 宋体标题 · 红 kicker · 无噪点（点工具栏 ✓ / ⋯ 看浮层）</div>
+
+<div class="pane">
+
+  <!-- ===== 工具栏 ===== -->
+  <div class="article-header">
+    <div class="header-left">
+      <div class="feed-badge">
+        <span class="feed-icon"></span>
+        <span class="feed-name">掘金 · 人工智能</span>
+      </div>
+      <button class="status-btn" id="statusBtn" title="处理状态">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+      </button>
+      <span class="header-title">从流水线到地铁网：为什么复杂 AI 都要拆成多 Agent（上）</span>
+    </div>
+
+    <div class="header-actions">
+      <button class="action-btn" title="上一篇文章"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+      <button class="action-btn" title="下一篇文章"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
+      <div class="divider-v"></div>
+      <button class="action-btn" title="切换到内嵌网页"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg></button>
+      <button class="action-btn" title="收藏"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.8l-5.8 3.1 1.1-6.5L2.6 9.8l6.5-.9L12 3z"/></svg></button>
+      <button class="action-btn" title="全屏"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 00-2 2v3M16 3h3a2 2 0 012 2v3M8 21H5a2 2 0 01-2-2v-3M16 21h3a2 2 0 002-2v-3"/></svg></button>
+      <button class="action-btn" title="在新窗口打开原文"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></button>
+      <button class="action-btn" id="moreBtn" title="更多操作"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
+
+      <!-- 状态详情浮层 -->
+      <div class="pop status-pop" id="statusPop">
+        <h4>处理详情</h4>
+        <div class="row"><span>全文抓取</span><span class="ok">✓ 已完成</span></div>
+        <div class="row"><span>AI 总结</span><span class="ok">✓ 已完成</span></div>
+        <div class="row"><span>标签</span><span>已标记 3</span></div>
+        <div class="meta">抓取时间 09-17 16:22 · 总结时间 09-17 16:25</div>
+      </div>
+
+      <!-- ⋯ 菜单 -->
+      <div class="pop menu-pop" id="moreMenu">
+        <div class="label">手动操作</div>
+        <button class="menu-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>手动抓取全文</button>
+        <button class="menu-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 00-4 12.7V17h8v-2.3A7 7 0 0012 2z"/></svg>生成 AI 总结</button>
+        <button class="menu-item disabled"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4l-7.2 7.2a2 2 0 01-2.8 0l-8-8V4h8.8l9.2 9.2a2 2 0 010 .2z"/><circle cx="7.5" cy="7.5" r="1.2" fill="currentColor"/></svg>手动打标签</button>
+        <div class="menu-sep"></div>
+        <div class="menu-source">
+          <span>内容源</span>
+          <span class="seg"><button class="on">原始内容</button><button>Firecrawl 全文</button></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 阅读区 ===== -->
+  <div class="preview-scroll">
+    <div class="reading-col">
+
+      <div class="kicker">
+        <span class="tag-label">深度报道</span>
+        <span class="rule"></span>
+      </div>
+
+      <div class="article-meta">
+        <span>2026年9月17日</span><span class="dot">·</span>
+        <span>默笙</span><span class="dot">·</span>
+        <span class="read-badge">✓ 已读</span>
+      </div>
+
+      <h1 class="article-title-full">从流水线到地铁网：为什么复杂 AI 都要拆成多 Agent（上）</h1>
+
+      <div class="tag-row">
+        <span class="tag heart">LangGraph</span>
+        <span class="tag">Multi-Agent</span>
+        <span class="tag">LLM</span>
+        <button class="tag-add">＋ 打标签</button>
+      </div>
+
+      <div class="lede">
+        之前学 LangChain 时做过不少线性工作流，一步接一步像流水线。但今天要拆解的现实是：
+        复杂的 Agent 产品基本都是多 Agent 架构——单 Agent 把什么都扛在身上，太累了。
+      </div>
+
+      <div class="ai-block">
+        <div class="ai-head">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 00-4 12.7V17h8v-2.3A7 7 0 0012 2z"/></svg>
+          AI 整理稿
+        </div>
+        <div class="ai-body">
+          <p>本文用「中央厨房」类比讲解为什么复杂 AI 要拆成多 Agent，并以 LangGraph 为例演示网状协作编排：LangChain 是线性编排（传菜流水线），LangGraph 是网状编排（中央厨房分工协作）。</p>
+        </div>
+      </div>
+
+      <hr class="section-sep">
+
+      <div class="markdown">
+        <p>先看单 Agent 架构的痛点：所有 tool 的描述、每个功能的 prompt 都堆进 system prompt——这次只是问天气，它却背着另外 9 个技能的说明书在思考。</p>
+
+        <blockquote>
+          单 Agent 架构下，每个功能的 prompt 都要带上，token 消耗更高，无关信息干扰思考，
+          思考效率低且容易出错。
+        </blockquote>
+
+        <div class="table-wrap breakout">
+          <table>
+            <thead><tr><th>代价</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>token 浪费</td><td>无关的 prompt 每次都算钱</td></tr>
+              <tr><td>干扰思考</td><td>无关信息多了，LLM 容易"想歪"，准确率下降</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2>把流水线改成地铁网</h2>
+        <p>LangGraph 的解法是显式建模「状态机 + 网状协作」：<code class="inline">chain = prompt | model | parser</code> 变成一张可循环、可分支、可并行的工作流图。</p>
+
+        <div class="breakout">
+          <img alt="示意图" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='280'%3E%3Crect width='1200' height='280' fill='%23eae3d3'/%3E%3Ctext x='600' y='150' font-size='20' fill='%238a8a80' text-anchor='middle' font-family='sans-serif'%3E[ 示意图：图片 breakout 比正文列略宽 %2B140px ]%3C/text%3E%3C/svg%3E">
+        </div>
+
+        <h3>状态与边</h3>
+        <p>节点是函数，边是流转关系。条件边让工作流具备「问天气走 A 路、写代码走 B 路」的动态路由能力。</p>
+
+        <pre>from langgraph.graph import StateGraph, END
+
+graph = StateGraph(State)
+graph.add_node("router", router_node)
+graph.add_node("coder", coder_node)
+graph.add_conditional_edges("router", pick_branch, {"code": "coder", "END": END})</pre>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+  var toggles = { statusBtn: 'statusPop', moreBtn: 'moreMenu' };
+  function closeAllPops() {
+    document.querySelectorAll('.pop').forEach(function (el) { el.classList.remove('pop-open'); });
+  }
+  Object.keys(toggles).forEach(function (btnId) {
+    document.getElementById(btnId).addEventListener('click', function (e) {
+      e.stopPropagation();
+      var pop = document.getElementById(toggles[btnId]);
+      var wasOpen = pop.classList.contains('pop-open');
+      closeAllPops();
+      if (!wasOpen) pop.classList.add('pop-open');
+    });
+  });
+  document.addEventListener('click', closeAllPops);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAllPops(); });
+</script>
+</body>
+</html>

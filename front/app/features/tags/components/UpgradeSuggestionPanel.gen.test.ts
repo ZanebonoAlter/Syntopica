@@ -12,7 +12,7 @@ vi.mock('@iconify/vue', () => ({
  * 生成入口模式选择 — split-board-upgrade-directions（spec: 生成入口模式选择）：
  *  - 两步选择（方向 create/expand × 来源 aux/composite）
  *  - 扩充方向必须选定版块才能生成；选 create 不需要
- *  - 生成调用参数四格正确（含 target_board_id / days）
+ *  - 生成调用参数四格正确（含 target_board_id / days，expand-upgrade-days-window 后 days 四格恒携）
  *  - watch tab 不存在（观察池退役）
  *  - 扩充建议卡片展示锁定版块徽标；行内「合并到...」下拉不存在
  *  - 旧内存探索区不存在（候选列表/簇/「获取 LLM 建议」）
@@ -69,17 +69,43 @@ describe('UpgradeSuggestionPanel — 生成入口模式选择（split-board-upgr
     expect(events![0]).toEqual([{ direction: 'create', source: 'aux', days: 1 }])
   })
 
-  it('选「创建版块+组合标签」：不带 days（组合路无时间窗）', async () => {
+  it('选「创建版块+组合标签」：同样携带 days（四格恒携，组合路无独立过滤语义）', async () => {
     const w = mountPanel()
     await flushPromises()
     await w.find('[data-testid="gen-source-composite"]').setValue(true)
     await w.find('[data-testid="gen-submit"]').trigger('click')
     const events = w.emitted('generate')
     expect(events).toBeTruthy()
-    expect(events![0]).toEqual([{ direction: 'create', source: 'composite' }])
+    expect(events![0]).toEqual([{ direction: 'create', source: 'composite', days: 1 }])
   })
 
-  it('扩充方向未选版块时生成禁用；选定后 emit 带 target_board_id', async () => {
+  it('扩充方向下候选时间窗下拉恒显（v-if 放开为四格可用，expand-upgrade-days-window）', async () => {
+    const w = mountPanel()
+    await flushPromises()
+    // 默认 create×aux：可见（既有行为）
+    expect(w.find('[data-testid="gen-days"]').exists()).toBe(true)
+    // 切换到扩充×组合：仍可见（本次变更核心行为）
+    await w.find('[data-testid="gen-direction-expand"]').setValue(true)
+    await w.find('[data-testid="gen-source-composite"]').setValue(true)
+    await flushPromises()
+    expect(w.find('[data-testid="gen-days"]').exists()).toBe(true)
+    expect(w.find('[data-testid="gen-days"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('扩充方向选「最近7天」：emit 载荷携带 days=7（spec: 任意方向组合随请求传递）', async () => {
+    const w = mountPanel()
+    await flushPromises()
+    await w.find('[data-testid="gen-direction-expand"]').setValue(true)
+    await flushPromises()
+    await w.find('[data-testid="gen-board-option-42"]').trigger('click')
+    await w.find('[data-testid="gen-days"]').setValue('7')
+    await w.find('[data-testid="gen-submit"]').trigger('click')
+    const events = w.emitted('generate')
+    expect(events).toBeTruthy()
+    expect(events![0]).toEqual([{ direction: 'expand', source: 'aux', target_board_id: 42, days: 7 }])
+  })
+
+  it('扩充方向未选版块时生成禁用；选定后 emit 带 target_board_id 与 days', async () => {
     const w = mountPanel()
     await flushPromises()
     await w.find('[data-testid="gen-direction-expand"]').setValue(true)
@@ -94,10 +120,10 @@ describe('UpgradeSuggestionPanel — 生成入口模式选择（split-board-upgr
     await w.find('[data-testid="gen-submit"]').trigger('click')
     const events = w.emitted('generate')
     expect(events).toBeTruthy()
-    expect(events![events!.length - 1]).toEqual([{ direction: 'expand', source: 'aux', target_board_id: 42 }])
+    expect(events![events!.length - 1]).toEqual([{ direction: 'expand', source: 'aux', target_board_id: 42, days: 1 }])
   })
 
-  it('扩充×组合：emit 同样带 target（二分类 compose 携带目标）', async () => {
+  it('扩充×组合：emit 同样带 target 与 days（二分类 compose 携带目标）', async () => {
     const w = mountPanel()
     await flushPromises()
     await w.find('[data-testid="gen-direction-expand"]').setValue(true)
@@ -106,7 +132,7 @@ describe('UpgradeSuggestionPanel — 生成入口模式选择（split-board-upgr
     await w.find('[data-testid="gen-submit"]').trigger('click')
     const events = w.emitted('generate')
     expect(events).toBeTruthy()
-    expect(events![0]).toEqual([{ direction: 'expand', source: 'composite', target_board_id: 43 }])
+    expect(events![0]).toEqual([{ direction: 'expand', source: 'composite', target_board_id: 43, days: 1 }])
   })
 
   it('watch 过滤 tab 不存在（观察池退役）', async () => {

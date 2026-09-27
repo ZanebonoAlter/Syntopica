@@ -18,6 +18,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service"
 )
@@ -139,6 +140,7 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		boards.DELETE("/:id", handler.deleteSemanticBoard)
 		boards.GET("/:id/suggest-auxiliaries", handler.suggestAuxiliariesForBoard)
 		boards.GET("/:id/articles", handler.getBoardArticles)
+		boards.GET("/:id/source-breakdown", handler.getBoardSourceBreakdown)
 		boards.GET("/:id/match-detail/:tagId", handler.getTagMatchDetail)
 		boards.GET("/:id/composition", handler.getBoardComposition)
 		boards.POST("/:id/composition", handler.addBoardComposition)
@@ -368,7 +370,7 @@ func (h *semanticBoardHandler) getBoardComposition(c *gin.Context) {
 		for _, r := range compositeRows {
 			ids = append(ids, r.ID)
 		}
-		var comps []models.CompositeComponent
+		var comps []tagmodels.CompositeComponent
 		if err := h.db.WithContext(c.Request.Context()).Where("composite_id IN ?", ids).Order("composite_id, position").Find(&comps).Error; err != nil {
 			respondError(c, http.StatusInternalServerError, err)
 			return
@@ -900,7 +902,7 @@ func (h *semanticBoardHandler) loadSemanticBoardTagCounts(ctx context.Context, b
 		SemanticBoardID uint
 		Count           int64
 	}
-	if err := h.db.WithContext(ctx).Model(&models.TopicTagBoardLabel{}).
+	if err := h.db.WithContext(ctx).Model(&tagmodels.TopicTagBoardLabel{}).
 		Select("semantic_board_id, COUNT(*) AS count").
 		Where("semantic_board_id IN ?", boardIDs).
 		Group("semantic_board_id").
@@ -921,9 +923,9 @@ func insertBoardComposition(tx *gorm.DB, boardID uint, auxiliaryIDs []uint) erro
 	if err := service.ValidateActiveAuxiliaryLabels(tx, ids); err != nil {
 		return err
 	}
-	rows := make([]models.BoardComposition, 0, len(ids))
+	rows := make([]tagmodels.BoardComposition, 0, len(ids))
 	for _, id := range ids {
-		rows = append(rows, models.BoardComposition{BoardID: boardID, AuxiliaryLabelID: id})
+		rows = append(rows, tagmodels.BoardComposition{BoardID: boardID, AuxiliaryLabelID: id})
 	}
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }
@@ -1080,7 +1082,7 @@ func (h *semanticBoardHandler) addBoardComposition(c *gin.Context) {
 		return
 	}
 
-	row := models.BoardComposition{BoardID: boardID, AuxiliaryLabelID: req.AuxiliaryLabelID}
+	row := tagmodels.BoardComposition{BoardID: boardID, AuxiliaryLabelID: req.AuxiliaryLabelID}
 	if err := h.db.WithContext(c.Request.Context()).Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 		respondError(c, http.StatusInternalServerError, err)
 		return

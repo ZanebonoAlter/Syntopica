@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 	adminrepo "syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/analysispause"
 	"syntopica-backend/internal/platform/database"
 	content "syntopica-backend/internal/reader"
 	readerservice "syntopica-backend/internal/reader/service"
@@ -124,10 +126,11 @@ func seedFirecrawlArticles(t *testing.T, db *gorm.DB, queue *content.FirecrawlJo
 	t.Helper()
 
 	feed = models.Feed{
-		Title:                  "Firecrawl Test Feed",
-		URL:    fmt.Sprintf("https://example.com/feed-%d", time.Now().UnixNano()),
-		ArticleSummaryEnabled:  true,
-		TaggingEnabled:         true,
+		Title:                 "Firecrawl Test Feed",
+		URL:                   fmt.Sprintf("https://example.com/feed-%d", time.Now().UnixNano()),
+		ArticleSummaryEnabled: true,
+		CompletionOnRefresh:   true,
+		TaggingEnabled:        true,
 	}
 	if err := db.Create(&feed).Error; err != nil {
 		t.Fatalf("create feed: %v", err)
@@ -327,5 +330,145 @@ func TestFirecrawlJobTerminalFailureFallsBackToRSS(t *testing.T) {
 	}
 	if fallbackTagJobs != 1 {
 		t.Fatalf("fallback retag jobs = %d, want 1", fallbackTagJobs)
+	}
+}
+
+// Gate semantics (unify-feed-summary-toggles): with article_summary_enabled
+// on but completion_on_refresh off, neither the success path nor the terminal
+// failure path may mark summary_status=incomplete; tagging fallback is
+// unaffected by the gate.
+func TestFirecrawlJobCompletionGateOffSkipsSummaryMarking(t *testing.T) {
+	db := setupFirecrawlJobTest(t)
+	queue := content.NewFirecrawlJobQueue(db)
+	feed, links := seedFirecrawlArticles(t, db, queue, 1, false)
+
+	// Main toggle on, auto gate off (manual mode).
+	if err := db.Model(&models.Feed{}).Where("id = ?", feed.ID).Update("completion_on_refresh", false).Error; err != nil {
+		t.Fatalf("gate off: %v", err)
+	}
+
+	// Reload feed so the job sees the gate value (job loads feed fresh per
+	// batch; simulate by reading back and asserting the persisted value).
+	var fresh models.Feed
+	if err := db.First(&fresh, feed.ID).Error; err != nil {
+		t.Fatalf("reload feed: %v", err)
+	}
+	if fresh.CompletionOnRefresh {
+		t.Fatalf("completion_on_refresh should be false")
+	}
+
+	crawler := newFakeCrawler(5*time.Millisecond, nil)
+
+	res, err := firecrawlJobWithCrawler(queue, "test-batch", func(*content.FirecrawlConfig) content.Crawler {
+		return crawler
+	})(context.Background())
+	if err != nil {
+		t.Fatalf("job run: %v", err)
+	}
+	if completed := res.Data["completed"].(int); completed != 1 {
+		t.Fatalf("completed = %d, want 1", completed)
+	}
+
+	var art models.Article
+	if err := db.Where("link = ?", links[0]).First(&art).Error; err != nil {
+		t.Fatalf("load article: %v", err)
+	}
+	// BF-2: success path leaves summary_status untouched (seeded "").
+	if art.SummaryStatus == "incomplete" {
+		t.Fatalf("summary_status = incomplete, want untouched when gate off")
+	}
+	if art.FirecrawlStatus != "completed" {
+		t.Fatalf("firecrawl_status = %q, want completed", art.FirecrawlStatus)
+	}
+	// RG-2: tagging still enqueued after successful crawl.
+	var tagJobCount int64
+	if err := db.Model(&models.TagJob{}).Where("article_id = ? AND reason = ?", art.ID, "firecrawl_completed").Count(&tagJobCount).Error; err != nil {
+		t.Fatalf("count tag jobs: %v", err)
+	}
+	if tagJobCount != 1 {
+		t.Fatalf("article %d firecrawl_completed tag jobs = %d, want 1 (gate must not affect tagging)", art.ID, tagJobCount)
+	}
+}
+
+// BF-5: terminal crawl failure with gate off — summary_status untouched,
+// fallback retag still enqueued.
+func TestFirecrawlJobTerminalFailureGateOffSkipsSummaryMarking(t *testing.T) {
+	db := setupFirecrawlJobTest(t)
+	queue := content.NewFirecrawlJobQueue(db)
+	feed, links := seedFirecrawlArticles(t, db, queue, 1, true)
+
+	if err := db.Model(&models.Feed{}).Where("id = ?", feed.ID).Update("completion_on_refresh", false).Error; err != nil {
+		t.Fatalf("gate off: %v", err)
+	}
+
+	// Push to terminal attempts.
+	if err := db.Model(&models.FirecrawlJob{}).Where("article_id IS NOT NULL").Update("attempt_count", 4).Error; err != nil {
+		t.Fatalf("bump attempt_count: %v", err)
+	}
+
+	crawler := newFakeCrawler(5*time.Millisecond, func(url string) bool { return true })
+
+	res, err := firecrawlJobWithCrawler(queue, "test-batch", func(*content.FirecrawlConfig) content.Crawler {
+		return crawler
+	})(context.Background())
+	if err != nil {
+		t.Fatalf("job run: %v", err)
+	}
+	if failed := res.Data["failed"].(int); failed != 1 {
+		t.Fatalf("failed = %d, want 1", failed)
+	}
+
+	var art models.Article
+	if err := db.Where("link = ?", links[0]).First(&art).Error; err != nil {
+		t.Fatalf("load article: %v", err)
+	}
+	if art.SummaryStatus == "incomplete" {
+		t.Fatalf("summary_status = incomplete, want untouched when gate off (terminal failure)")
+	}
+	if art.FirecrawlStatus != "failed" {
+		t.Fatalf("firecrawl_status = %q, want failed", art.FirecrawlStatus)
+	}
+
+	var fallbackTagJobs int64
+	if err := db.Model(&models.TagJob{}).Where("article_id = ? AND reason = ?", art.ID, "firecrawl_failed_fallback").Count(&fallbackTagJobs).Error; err != nil {
+		t.Fatalf("count fallback tag jobs: %v", err)
+	}
+	if fallbackTagJobs != 1 {
+		t.Fatalf("fallback retag jobs = %d, want 1 (gate must not affect tagging fallback)", fallbackTagJobs)
+	}
+}
+
+// TestFirecrawlCompletionEnqueuesTagJobsWhilePaused（A3，night-window-alignment）：
+// 暂停态下 firecrawl 完成回调只落状态位 + tag_jobs 照常入队（pending 等待），
+// 不发起任何 LLM 调用——enqueue 非 LLM 工作，worker 暂停天然不消费。
+func TestFirecrawlCompletionEnqueuesTagJobsWhilePaused(t *testing.T) {
+	db := setupFirecrawlJobTest(t)
+	queue := content.NewFirecrawlJobQueue(db)
+	seedFirecrawlArticles(t, db, queue, 2, false)
+
+	require.NoError(t, analysispause.SetPaused(true))
+	t.Cleanup(func() { _ = analysispause.SetPaused(false) })
+
+	res, err := firecrawlJobWithCrawler(queue, "paused-downstream", func(*content.FirecrawlConfig) content.Crawler {
+		return newFakeCrawler(time.Millisecond, nil)
+	})(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.Equal(t, 2, res.Data["completed"].(int), "crawl itself must complete while paused")
+
+	// 抓取结果照常落 firecrawl 状态位。
+	var completedArticles int64
+	require.NoError(t, db.Model(&models.Article{}).Where("firecrawl_status = ?", "completed").Count(&completedArticles).Error)
+	require.EqualValues(t, 2, completedArticles)
+
+	// 下游 tag_jobs 照常入队且保持 pending：无 worker 消费、无 LLM 路径触发
+	//（ai_call_logs 不新增行的结构性前提——本测试进程内没有任何打标/嵌入调用）。
+	var tagJobs []models.TagJob
+	require.NoError(t, db.Find(&tagJobs).Error)
+	require.Len(t, tagJobs, 2)
+	for _, job := range tagJobs {
+		require.Equal(t, string(models.JobStatusPending), job.Status, "tag job must stay pending while paused")
+		require.Equal(t, "firecrawl_completed", job.Reason)
+		require.True(t, job.ForceRetag)
 	}
 }

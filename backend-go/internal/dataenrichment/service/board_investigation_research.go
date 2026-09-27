@@ -89,7 +89,6 @@ type BoardInvestigationResearchInput struct {
 	// a private set is created here so the loop still works standalone.
 	DynamicGrants *DynamicLaneGrantSet `json:"-"`
 	Hypotheses    []boardHypothesis    `json:"hypotheses"`              // 全部初始假设（一个 loop 统一服务）
-	EvidenceNeeds []string             `json:"evidence_needs"`          // 由已选方法卡派生的证据需求（非方法正文）
 	AllowedTools  []string             `json:"allowed_tools,omitempty"` // 空 = explorationToolNames
 }
 
@@ -162,12 +161,6 @@ func assembleBoardInvestigationResearchPrompt(in BoardInvestigationResearchInput
 		}
 		if h.Scope != "" {
 			fmt.Fprintf(&sb, "\n  范围: %s", h.Scope)
-		}
-	}
-	if len(in.EvidenceNeeds) > 0 {
-		sb.WriteString("\n\n---\n方法派生证据需求（检查清单提示，无配额、与问题无关可忽略）：")
-		for _, n := range in.EvidenceNeeds {
-			sb.WriteString("\n- " + n)
 		}
 	}
 	sb.WriteString("\n\n---\n泳道白名单（get_lane_detail 只允许这些 lane_id）：" + renderResearchLaneWhitelist(in.LaneWhitelist))

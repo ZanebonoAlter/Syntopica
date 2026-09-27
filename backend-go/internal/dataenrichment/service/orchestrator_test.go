@@ -13,6 +13,10 @@ import (
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/database"
 
+	// board_persistent_topics 等 topicgraph 表经 RegisterModels 副作用进 RunAutoMigrate；
+	// dataenrichment→admin/scheduler 传递链解耦后（decouple-backend-domains）需显式链接。
+	_ "syntopica-backend/internal/topicgraph/repository"
+
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )

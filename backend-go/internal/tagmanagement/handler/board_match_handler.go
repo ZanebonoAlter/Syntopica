@@ -14,6 +14,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/service"
 )
 
@@ -115,7 +116,7 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 
 	// Step 1: Get tag IDs belonging to this board
 	var boardTagIDs []uint
-	if err := h.db.WithContext(ctx).Model(&models.TopicTagBoardLabel{}).
+	if err := h.db.WithContext(ctx).Model(&tagmodels.TopicTagBoardLabel{}).
 		Select("topic_tag_id").
 		Where("semantic_board_id = ?", boardID).
 		Pluck("topic_tag_id", &boardTagIDs).Error; err != nil {
@@ -329,7 +330,7 @@ func (h *semanticBoardHandler) getTagMatchDetail(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	var stored models.TopicTagBoardLabel
+	var stored tagmodels.TopicTagBoardLabel
 	if err := h.db.WithContext(ctx).
 		Where("semantic_board_id = ? AND topic_tag_id = ?", boardID, tagID).
 		First(&stored).Error; err != nil {
@@ -509,7 +510,7 @@ func (h *semanticBoardHandler) rematchAll(c *gin.Context) {
 	ctx := c.Request.Context()
 	var tagIDs []uint
 	if err := h.db.WithContext(ctx).
-		Model(&models.TopicTagBoardLabel{}).
+		Model(&tagmodels.TopicTagBoardLabel{}).
 		Distinct("topic_tag_id").
 		Pluck("topic_tag_id", &tagIDs).Error; err != nil {
 		respondError(c, http.StatusInternalServerError, err)

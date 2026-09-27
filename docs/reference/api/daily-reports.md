@@ -1,6 +1,6 @@
 # 日报 API
 
-基础地址：`http://localhost:5000/api`
+基础地址：`http://localhost:5100/api`（开发模式亦可用同源代理 `http://localhost:3000/api`）
 
 通用响应：成功为 `{"success": true, "data": ...}`（个别管理端点如 DELETE 仅返回 `{"success": true}`）；失败为 `{"success": false, "error": "..."}`。
 
@@ -13,13 +13,18 @@
 | GET | `/semantic-boards/:id/daily-reports` | 查询板块日报列表 |
 | GET | `/semantic-boards/:id/section-timeline` | 板块 section 时间线 |
 | GET | `/semantic-boards/:id/topics` | 列出板块全部持久话题（含归档/孤儿）+ section 计数 |
-| GET | `/semantic-boards/:id/topic-landscape` | 板块话题态势版图（持久话题 identity 轨只读聚合） |
+| GET | `/semantic-boards/:id/lane-dynamics?days=14` | 板块泳道动态聚合（活跃泳道卡+发展时间线+候选栏，单请求） |
 | GET | `/daily-reports/sections/:id/lifecycle` | section 连通分量生命周期 |
 | GET | `/daily-reports/topics/:id/lifeline` | 持久话题全量 section |
 | PATCH | `/daily-reports/topics/:id` | 更新话题标题/状态 |
 | DELETE | `/daily-reports/topics/:id` | 硬删话题（解绑 section） |
 | POST | `/daily-reports/topics/:id/merge` | 合并源话题到目标 |
 | POST | `/daily-reports/topics/:id/split` | 拆分 section 为新话题 |
+| GET | `/daily-reports/:id/annotations` | 日报页边注批注列表（含问答轮） |
+| POST | `/daily-reports/:id/annotations` | 落锚批注 |
+| DELETE | `/annotations/:id` | 删除批注（连带问答） |
+| POST | `/annotations/:id/questions` | 批注提问/追问（SearXNG 联网补强） |
+| GET | `/annotations` | 跨报告管理页列表（版块/关键词筛选） |
 | POST | `/daily-reports/backfill-embeddings` | 回填 section 向量 |
 | POST | `/daily-reports/backfill-relations` | 回填话题关系 |
 | POST | `/daily-reports/backfill-topics` | 历史重建持久话题 |
@@ -61,6 +66,8 @@ WebSocket 进度消息：
   "timestamp": "2026-05-26T..."
 }
 ```
+
+**重建窗口守卫（offline-catchup）**：`date` 早于标签边保留窗口下界（`ai_settings.tag_edge_retention_days`，默认 7 天，即 `date` 早于保留窗口下界日（本地日历天零点 − N 天））时返回 **4xx**，错误消息说明「标签边已按 N 天窗口回收、超窗日期候选不全，拒绝重建」——防止超窗日期的空报告覆盖既有好报告（同日重建是整份覆盖语义，见 `flow/daily-report.md` 业务约束 20）。窗口内日期（含恰好等于下界）不受影响，照常异步触发。窗口口径与 `aux_label_cleanup` 的边 GC、日报自动补档扫描同键同口径。
 
 ## GET `/semantic-boards/:id/section-timeline?days=30`
 
@@ -205,66 +212,61 @@ Response `data`：
 
 `color` 由话题 id 稳定哈希得到；`can_activate` 表示 candidate 是否已达激活门禁。
 
-## GET `/semantic-boards/:id/topic-landscape?days=30`
+## GET `/semantic-boards/:id/lane-dynamics?days=14`
 
-板块话题态势版图：持久话题 identity 轨只读聚合，供「板块内容」tab 首屏态势总览（分区卡片墙 + mini-lifeline + 活力顶栏）。
+板块泳道动态聚合：「板块内容」tab 首屏泳道动态视图的单请求数据源（活跃泳道卡 + 滚动态势 + 发展时间线 + 候选栏）。取代已退役的 topic-landscape 端点。
 
 **参数：**
 
 - `id`：semantic_board_id。
-- `days`：lifeline 窗口天数，允许 `7 / 14 / 30 / 90`，缺省 30；非法值 clamp 到最近合法值（`days=0` 视为默认 30）。活跃判定窗口与 `days` 无关，固定 N=7 天（包级常量 `topicLandscapeActiveWindowDays`）。
+- `days`：时间线与统计窗口天数，默认 14；非正值或非法值回落 14。窗口锚定该板块最新一份已完成日报的 `period_date`（`[anchor-(days-1), anchor]` 双端闭区间，非 now()——避免日报未跑时窗口漂移）。
 
-态势**全部基于 identity 轨字段派生**（`status` / `hit_count` / `consecutive_hits` / `last_seen_date` / `is_vacuum`），**禁用 similarity 轨五态**（匈牙利二分法 section 级配对，长跨度不可靠）。`stance` 枚举（主态势互斥，按序匹配第一个命中）：
-
-| stance | 图标 | 派生规则 |
-| ------ | ---- | -------- |
-| `emerging` | 🌱 | `status='candidate' AND 1 <= hit_count < upgrade_threshold` |
-| `pending` | 🔴 | `status='candidate' AND hit_count >= upgrade_threshold`（`can_activate=true`） |
-| `active` | 🟢 | `status='active' AND consecutive_hits > 0 AND days_since(last_seen_date) <= 7` |
-| `stalled` | ⏸️ | `status='active' AND (consecutive_hits = 0 OR days_since(last_seen_date) > 7)` |
-| `archived` | ⬛ | `status='archived'` |
-
-`is_vacuum=true` 为与主态势正交的叠加标记（🌀强吸引，附 `vacuum_strong` 数值），可叠加在活跃/停滞上。可见口径：保留 `hit_count>=1` 全部（含 emerging 新苗头），仅剔 `hit=0` 纯 orphan——与话题管理 UI 的 `FilterVisibleTopics` 口径故意不同。
+**泳道集合与排序**：`lanes` = 该板块 active 泳道 ∪ watch 关联泳道（`board_topic_watches.persistent_topic_id` 非空且 watch active），按窗口内锚定 section 数降序；近窗口无 section 的 active（沉寂）不返回；candidate 不进 `lanes`（只在 `candidates`）。
 
 Response `data`：
 
 ```json
 {
-  "topics": [
+  "window_days": 14,
+  "has_reports": true,
+  "lanes": [
     {
-      "id": 12,
+      "topic_id": 12,
       "label": "芯片战",
-      "status": "active",
-      "source": "auto",
-      "stance": "active",
-      "is_vacuum": false,
-      "vacuum_strong": 0,
-      "hit_count": 47,
-      "consecutive_hits": 22,
-      "first_seen_date": "2026-05-01",
-      "last_seen_date": "2026-06-22",
-      "days_since_last": 0,
-      "can_activate": false,
-      "lifeline": [
-        { "date": "2026-06-01", "section_count": 2 },
-        { "date": "2026-06-02", "section_count": 0 }
+      "watch_linked": true,
+      "section_count_14d": 9,
+      "snapshot": {
+        "summary": "近两周围绕出口管制升级与国产替代进展交替演进……",
+        "detail": "出口管制议题近两周持续升温：上周管制清单扩容带动备货，本周国产替代订单放量……",
+        "as_of": "2026-09-09"
+      },
+      "timeline": [
+        {
+          "date": "2026-09-08",
+          "sections": [
+            {
+              "section_id": 341,
+              "label": "新规生效首日影响",
+              "events": ["厂商A暂停部分订单", "替代供应商订单量抬升"],
+              "folded_count": 0
+            }
+          ]
+        }
       ]
     }
   ],
-  "vitality": {
-    "days": 30,
-    "article_count": 142,
-    "section_count": 38,
-    "active_topic_count": 6,
-    "feed_active": null,
-    "trend": [3, 1, 2, 5, 7, 6, 4, 3]
-  }
+  "candidates": [
+    { "topic_id": 55, "label": "稀土出口博弈", "last_seen_date": "2026-09-08", "recent_hint": "稀土出口博弈：管制清单扩容传闻" }
+  ]
 }
 ```
 
-- `lifeline` 为近 N 日按天聚合（identity 轨），空日补 `section_count=0` 保证日期轴连续（`generate_series` LEFT JOIN）；`trend` 为近 N 日每日 section 数（活力顶栏缩略折线用）。
-- `topics=[]` 表示板块无任何持久话题（含未达 `upgrade_threshold` 的 observing candidate，对前端隐藏）；`vitality.trend=[]` 表示窗口内无日报。
-- `feed_active` MVP 可空（跨域 feed 查询，后续补）。
+- `snapshot`：滚动 14 天态势（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）。`summary` 为 ≤100 字短版态势句（既有语义不变，板块内容卡片仍只渲染它）；`detail` 为 ≤500 字长版成段叙述（与短版同窗同素材、同一次结算生成，lane-trend-overview 新增）。
+- 两级缺失语义：`snapshot: null` = 快照整体缺失（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染；`snapshot` 存在但 `detail` 缺失/空（omitempty，字段不出现）= 长版缺失——存量快照或该次生成解析失败降级，前端回退展示短版 `summary` 并提示长版随下次日报结算生成。
+- 月/年趋势档：日报阅读视图泳道趋势区的月/年归档摘要复用既有 `GET /persistent-topics/:topicId/enrichment/contexts?granularity=month|year`（周期归档上下文，详见 `dataenrichment.md`），本端点不新增月/年数据。
+- `timeline[].sections[].events`：该 section 的 thread 标题，最多前 5 条；`folded_count` 为被截断数量（恒输出，0 也带）。`timeline` 按日期倒序（最新日在最前）。
+- `candidates`：达可见门槛（`FilterVisibleTopics`）的 candidate + 最新 section 标题 `recent_hint`；只读提示，转正走话题管理入口。
+- `has_reports: false` 表示板块无任何日报（前端空态引导生成日报）。
 
 ## GET `/semantic-boards/:id/daily-reports?days=7`
 
@@ -504,6 +506,72 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 ```
 
 每条记录由 `(watch_id, section_id, report_id)` 唯一索引去重。
+
+## 页边注（批注/问答，daily-report-margin-notes）
+
+页边注四端点 + 管理页列表端点。问答单次 LLM 调用产出回答 + 引用 + 网络来源 + 术语；`cited_article_ids` / `cited_web_sources` / `extracted_terms` 三字段统一「空写 `[]` 不写 null」数组契约。
+
+### GET `/daily-reports/:id/annotations`
+
+列出该日报全部批注（含问答轮与术语）。Response `data.annotations`：
+
+```json
+[
+  {
+    "id": 1, "report_id": 896, "section_id": 100, "thread_id": 7,
+    "quoted_text": "以利率招标…", "anchor_offset_start": 0, "anchor_offset_end": 12,
+    "created_at": "...",
+    "qas": [
+      {
+        "id": 9, "annotation_id": 1, "question": "…", "answer": "…",
+        "cited_article_ids": [102, 103],
+        "cited_web_sources": [{ "title": "逆回购_财经百科", "url": "https://…" }],
+        "extracted_terms": ["逆回购", "DR007"],
+        "operation": "daily_report.margin_note_qa", "provider": "…", "model": "",
+        "created_at": "..."
+      }
+    ]
+  }
+]
+```
+
+- `thread_id=null` + `section_id=0` = 头条 lead 批注（PR-4 放行路径）。
+- `cited_web_sources` 为 D7 联网白名单来源（url 均在提问当次的 SearXNG 搜索结果集内），前端外链新窗口打开。
+
+### POST `/daily-reports/:id/annotations`
+
+落锚。Request：`{ "section_id": 100, "thread_id": 7, "quoted_text": "划词（必填，≤500 字符）", "anchor_offset_start": 0, "anchor_offset_end": 12 }`。`thread_id` 可空（头条批注传 0）。返回 `data.annotation`（形状同上，`qas` 为 `[]`）。
+
+错误：report 不存在 404；section/thread 归属不符 400；quoted_text 空或超长 400。
+
+### DELETE `/api/annotations/:id`
+
+删除批注连带全部问答（服务端直接删，确认在前端）。返回 `{"success": true}`；不存在 404。
+
+### POST `/api/annotations/:id/questions`
+
+提问/追问（同一端点，追加新问答轮）。Request：`{ "question": "…（必填，≤1000 字符）" }`。
+
+提问时先以划词（截 80 runes，空则回退问题）调本地 SearXNG（失败/未配置静默降级），原始结果作为参考并入同一次 LLM 调用（operation `daily_report.margin_note_qa`，capability `open_notebook`）。Response `data.qa` 形状同 GET 的 qas 条目，另带：
+
+```json
+{
+  "qa": {
+    "…": "同 GET 条目",
+    "extracted_terms": [{ "term": "逆回购", "is_new": true }]
+  },
+  "answer": "…", "cited_article_ids": [102], "cited_web_sources": [{"title":"…","url":"…"}],
+  "new_terms": ["逆回购"], "terms": ["逆回购"],
+  "pure_model_knowledge": false, "provider": "…"
+}
+```
+
+- `pure_model_knowledge`：本地文章引用与网络来源均为空时为 true（前端据此标注）。
+- LLM/路由失败 502（行内可重试，已提交问题与历史轮次不受影响）；annotation 不存在 404。
+
+### GET `/api/annotations?board_id=&q=&page_size=&page=`
+
+跨报告管理页列表，按日期倒序；`q` 命中划词/提问/术语；`board_id` 版块筛选。Response `data.rows` 每行含 `board_id`/`board_label`（join semantic_labels）、`terms`（跨轮去重后的术语对象数组）与 `qas`（同上形状）。`data.total` 供分页。
 
 ## 前端消费约定
 

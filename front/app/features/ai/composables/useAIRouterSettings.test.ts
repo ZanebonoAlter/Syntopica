@@ -20,6 +20,14 @@ vi.mock('~/composables/useAI', () => ({
   useAI: () => ({ loadSettings: vi.fn() }),
 }))
 
+// fix-provider-delete-route-deadlock 2b：确认弹窗改走全局 useConfirm（promise 式），
+// 原生 confirm 的 stubGlobal 方式废弃；用例内用 confirmMock.mockResolvedValue 控制确认/取消。
+const confirmMock = vi.hoisted(() => vi.fn())
+
+vi.mock('~/composables/useConfirm', () => ({
+  useConfirm: () => ({ confirm: confirmMock }),
+}))
+
 import { useAIRouterSettings } from './useAIRouterSettings'
 
 function makeProvider(partial: Partial<AIProvider> & { id: number; name: string }): AIProvider {
@@ -126,6 +134,14 @@ describe('useAIRouterSettings（model_kind）', () => {
     expect(ctx.routeLabels.data_enrichment_analysis).toBe('数据分析')
   })
 
+  it('能力路由显式包含 open_notebook（页边注问答，daily-report-margin-notes）', () => {
+    // 后端 UpsertRoute 已支持 open_notebook 且无门槛；前端白名单此前漏列，
+    // 导致页边注问答无法在设置页配 provider 链。
+    const ctx = useAIRouterSettings()
+    expect(ctx.capabilityOrder).toContain('open_notebook')
+    expect(ctx.routeLabels.open_notebook).toBe('页边注问答')
+  })
+
   it('保存 LLM 主模型：同步挂载到所有 LLM 能力路由首位，且绝不碰 embedding 路由', async () => {
     // 主模型的语义是「同类型能力的默认首选」。同步循环历史上无脑挂全部路由，
     // 旧后端把 LLM 挂上过 embedding 路由（脏数据），带类型校验的后端则直接报
@@ -163,5 +179,39 @@ describe('useAIRouterSettings（model_kind）', () => {
     // summary 同步后首位是主模型 id=1，原备挂 id=2 保持在后；embedding 路由完全不被触碰
     const summaryCall = apiMocks.updateRoute.mock.calls.find(call => call[0] === 'summary')!
     expect(summaryCall[1].provider_ids).toEqual([1, 2])
+  })
+
+  it('删除备用模型：后端级联解绑，成功后 loadData 重建且不再本地改线路选择', async () => {
+    // fix-provider-delete-route-deadlock：旧实现先调删除接口（挂线路时被后端 409
+    // 拦下抛错），后面的本地解绑循环永远执行不到；现在后端删除时自动解绑，
+    // 前端只依赖 loadData() 重建，不得再手动改 routeSelections。确认弹窗走 useConfirm。
+    confirmMock.mockResolvedValue(true)
+    apiMocks.deleteProvider.mockResolvedValue({ success: true, message: 'provider deleted (detached from 2 route(s))' })
+
+    const ctx = useAIRouterSettings()
+    await ctx.loadData()
+    ctx.routeSelections.value = { summary: [7] }
+    const removeSpy = vi.spyOn(ctx, 'removeProviderFromRoute')
+
+    await ctx.deleteBackupProvider(makeProvider({ id: 7, name: ' doomed ' }))
+
+    const confirmOptions = confirmMock.mock.calls[0]?.[0] ?? {}
+    expect(confirmOptions.message).toContain('解绑')
+    expect(confirmOptions.danger).toBe(true)
+    expect(apiMocks.deleteProvider).toHaveBeenCalledWith(7)
+    expect(removeSpy).not.toHaveBeenCalled()
+    expect(ctx.error.value).toBeNull()
+    // loadData 被重新拉取（线路选择用后端真值重建，恢复为空默认值）
+    expect(ctx.routeSelections.value.summary).toEqual([])
+  })
+
+  it('删除备用模型：用户取消确认则不调后端', async () => {
+    confirmMock.mockResolvedValue(false)
+    const ctx = useAIRouterSettings()
+    await ctx.loadData()
+
+    await ctx.deleteBackupProvider(makeProvider({ id: 7, name: 'x' }))
+
+    expect(apiMocks.deleteProvider).not.toHaveBeenCalled()
   })
 })

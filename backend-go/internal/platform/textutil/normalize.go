@@ -28,3 +28,22 @@ func NormalizeLabelKey(value string) string {
 	cleaned = whitespacePattern.ReplaceAllString(cleaned, "")
 	return cleaned
 }
+
+// StripURLFragment removes the URL fragment (#...) from a link, preserving
+// `#!` hashbang fragments (SPA route identity on some sites).
+//
+// Some feeds append a drifting anchor to every entry link — V2EX's #replyN is
+// the reply count at feed-generation time — so the same story changes link
+// between refreshes and slips past the (feed_id, link) dedupe as a "new"
+// article. The fragment is client-side only and never reaches the server, so
+// stripping it loses nothing. This is the SINGLE shared implementation used by
+// both the RSS parser (ingestion-time link normalization) and the one-shot
+// stored-link migration, so freshly parsed entries and migrated rows always
+// compare equal.
+func StripURLFragment(link string) string {
+	i := strings.IndexByte(link, '#')
+	if i < 0 || (i+1 < len(link) && link[i+1] == '!') {
+		return link
+	}
+	return link[:i]
+}

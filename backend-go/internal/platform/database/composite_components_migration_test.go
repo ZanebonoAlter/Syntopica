@@ -8,6 +8,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 // TestCompositeComponentsMigration exercises migration 20260902_0001
@@ -24,11 +25,24 @@ func TestCompositeComponentsMigration(t *testing.T) {
 	}
 	db := testutil.OpenTestDB(t)
 	require.NoError(t, db.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error)
-	require.NoError(t, database.RunAutoMigrate(db))
+	// 本测试的前提是生产升级路径：全新 schema → AutoMigrate 建表 → 版本化迁移补
+	// FK/种子。共享容器里其他测试可能已建好全量迁移后的金 schema——对它跑
+	// RunAutoMigrate 会按 GORM tag 回写所有列，剥掉由迁移物化的 NOT NULL/DEFAULT
+	// 约束（20260723_0001，如 scheduler_tasks.check_interval、
+	// semantic_labels.ref_count），下游 TestModelTagConstraints 即红。故先重建
+	// 私有干净 schema 再 AutoMigrate，结束后 ReimportTestDB 还原金 schema。
+	require.NoError(t, db.Exec("DROP SCHEMA public CASCADE").Error)
+	require.NoError(t, db.Exec("CREATE SCHEMA public").Error)
+	// DROP SCHEMA CASCADE 会连带删掉装在 public 里的 pgvector 扩展，重建它。
+	require.NoError(t, db.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error)
+	require.NoError(t, db.AutoMigrate(
+		&tagmodels.CompositeComponent{},
+		&models.SemanticLabel{},
+		&models.AISettings{},
+	))
 
 	t.Cleanup(func() {
-		_ = db.Exec(`DELETE FROM semantic_labels WHERE slug IN ('cmp-mig-composite', 'cmp-mig-aux-a', 'cmp-mig-aux-b')`).Error
-		_ = db.Exec(`DELETE FROM ai_settings WHERE key IN ('composite_label_dedupe_sim','semantic_board_match_direct_hit_score_factor','semantic_board_upgrade_composite_min_cooccurrence')`).Error
+		testutil.ReimportTestDB(t, db)
 	})
 
 	// Locate migration 20260902_0001's Up closure and run it in-tx (mirrors the
@@ -79,9 +93,9 @@ func TestCompositeComponentsMigration(t *testing.T) {
 	composite := seed("美债收益率", "cmp-mig-composite", "composite")
 
 	// 4. Ordered components persist and cascade-delete with the composite row.
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: composite.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: composite.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
-	var comps []models.CompositeComponent
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: composite.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: composite.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
+	var comps []tagmodels.CompositeComponent
 	require.NoError(t, db.Where("composite_id = ?", composite.ID).Order("position").Find(&comps).Error)
 	require.Len(t, comps, 2)
 	require.Equal(t, 1, comps[0].Position)
@@ -89,7 +103,7 @@ func TestCompositeComponentsMigration(t *testing.T) {
 
 	require.NoError(t, db.Delete(&models.SemanticLabel{}, composite.ID).Error)
 	var remain int64
-	require.NoError(t, db.Model(&models.CompositeComponent{}).Where("composite_id = ?", composite.ID).Count(&remain).Error)
+	require.NoError(t, db.Model(&tagmodels.CompositeComponent{}).Where("composite_id = ?", composite.ID).Count(&remain).Error)
 	require.Equal(t, int64(0), remain, "composite_components must cascade-delete with the composite label row")
 
 	// 5. Seeds present with documented defaults.

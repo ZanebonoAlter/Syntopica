@@ -42,6 +42,17 @@ type (
 	EmbeddingQueueService        = core.EmbeddingQueueService
 	EmbeddingConfigService       = core.EmbeddingConfigService
 	MergeReembeddingQueueService = core.MergeReembeddingQueueService
+	EdgeGCRequest                = core.EdgeGCRequest
+	EdgeGCResult                 = core.EdgeGCResult
+)
+
+// ============================================================================
+// Constants from core/
+// ============================================================================
+
+const (
+	DefaultTagEdgeRetentionDays = core.DefaultTagEdgeRetentionDays
+	TagEdgeRetentionDaysKey     = core.TagEdgeRetentionDaysKey
 )
 
 // ============================================================================
@@ -65,6 +76,11 @@ var (
 	NormalizeDisplayCategory  = core.NormalizeDisplayCategory
 	RegisterVectorDimEnsurer  = auxlabel.RegisterVectorDimEnsurer
 	EnsureVectorDimensionOnce = auxlabel.EnsureVectorDimensionOnce
+)
+
+var (
+	EdgeGC                   = core.EdgeGC
+	LoadTagEdgeRetentionDays = core.LoadTagEdgeRetentionDays
 )
 
 var (

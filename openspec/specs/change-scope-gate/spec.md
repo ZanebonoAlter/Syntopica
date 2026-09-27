@@ -7,7 +7,7 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 
 ### Requirement: 改动范围→验证命令判定（change-scope 脚本）
 
-系统 SHALL 提供 `scripts/change-scope.sh`，对给定 base ref（默认 `HEAD`）收集改动文件集合（committed/staged/unstaged/untracked，与 doc-impact.sh `changed_files()` 同口径），并按路径映射表输出建议执行的最小验证命令清单。脚本 SHALL 在 WSL bash 环境可运行且不触发任何编译命令的执行（只输出命令文本，不代替执行）。
+系统 SHALL 提供 `scripts/harness/change-scope.sh`，对给定 base ref（默认 `HEAD`）收集改动文件集合（committed/staged/unstaged/untracked，与 doc-impact.sh `changed_files()` 同口径），并按路径映射表输出建议执行的最小验证命令清单。脚本 SHALL 在 POSIX bash 环境（Linux / macOS / WSL）可运行且不触发任何编译命令的执行（只输出命令文本，不代替执行）。
 
 映射表 SHALL 按目录结构自动发现 domain 档位，无需硬编码白名单维护：
 
@@ -17,7 +17,7 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 | `backend-go/internal/platform/<pkg>/**` | `go test ./internal/platform/<pkg>` + 升级提示（`go vet ./...`） |
 | `backend-go/internal/{app,models}/**` 或 `backend-go/cmd/**` | `go build ./...` + `go vet ./...`（不自动 test） |
 | `backend-go/go.mod` 或 `go.sum` | 提示全量 `go test ./...` |
-| `front/**`（非 .md） | `pnpm lint`；typecheck/test:unit/build 标注「需 cmd.exe」 |
+| `front/**`（非 .md） | `pnpm lint`；typecheck/test:unit/build 按平台标注执行前置（Windows 经 cmd.exe，Linux/macOS 本机直跑） |
 | `docs/**`、`*.md`、`scripts/**`、`.pi/**` | 无测试命令，提示文档/规范一致性检查 |
 
 #### Scenario: domain 包改动
@@ -38,7 +38,7 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 #### Scenario: 前端命令标注跨平台限制
 
 - **WHEN** 改动含 `front/app/components/Foo.vue`
-- **THEN** 脚本输出的 `pnpm lint` 可在 WSL 执行，typecheck/test:unit/build 命令附带「需 cmd.exe」标注
+- **THEN** 脚本输出的 `pnpm lint` 可直接在 POSIX bash 执行，typecheck/test:unit/build 命令附带按平台区分的执行前置标注（Windows 需 cmd.exe；Linux/macOS 本机直跑），不暗示这些命令在所有平台都受限
 
 #### Scenario: 未命中路径不猜测
 
@@ -47,17 +47,22 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 
 ### Requirement: 机器可读输出（--json）
 
-`scripts/change-scope.sh --json` SHALL 输出合法 JSON（单行或多行均可），包含字段：
+`scripts/harness/change-scope.sh --json` SHALL 输出合法 JSON（单行或多行均可），包含字段：
 
 - `base`：实际使用的 base ref
 - `paths`：改动文件路径数组
 - `testTargets`：判定出的可执行测试目标数组（每项含 `cmd` 命令文本与 `tier` 档位：`domain` / `platform` / `skeleton` / `frontend`）
-- `notices`：提示文本数组（升级提示、需 cmd.exe 标注、无法判定警告）
+- `notices`：提示文本数组（升级提示、平台执行前置标注、无法判定警告）
 
 #### Scenario: quality-gate 消费
 
 - **WHEN** 以 `--json` 运行且改动含 `backend-go/internal/topicgraph/`
 - **THEN** 输出可被 `JSON.parse` 解析，且 `testTargets` 含 `{"cmd":"go test ./internal/topicgraph","tier":"domain"}`
+
+#### Scenario: 平台标注随宿主变化
+
+- **WHEN** 在同一改动集上于 Linux 宿主与 Windows+WSL 宿主分别以 `--json` 运行
+- **THEN** `testTargets` 的 `cmd` 与 `tier` 保持一致，仅 `notices` 中前端类型检查类命令的执行前置标注按平台不同
 
 ### Requirement: quality-gate turn_end 跑影响包 go test
 
@@ -71,7 +76,7 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 - go test 统一带 `-short` 标志：DB 集成测试自动 skip（无 Docker 不挂、有 Docker 不耗时），完整集成测试由 agent 手动或归档门禁执行。
 - `tier=platform` 在门禁中 SHALL 只执行 `go vet`；`tier=skeleton` 只执行 `go build` + `go vet`。
 - 测试失败与 lint 失败同机制处理（steer 消息回喂，agent 必须修复或显式说明豁免理由）。
-- 前端门禁维持仅 `pnpm lint`（cmd.exe 限制不变）。
+- 门禁 SHALL 只执行与平台无关或平台已适配的命令集；前端门禁维持仅 `pnpm lint`——这是门禁分层设计（typecheck/build/test:unit 与完整集成测试留给 agent 手动执行与归档门禁兜底），与执行平台无关，MUST NOT 因平台能力变化而扩大门禁范围。
 
 #### Scenario: domain 改动触发自动测试
 
@@ -86,7 +91,7 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 #### Scenario: 前端改动行为不变
 
 - **WHEN** 本轮有前端新变化（修改 `front/` 下非 .md 文件）
-- **THEN** 门禁仅执行 `pnpm lint`，不尝试执行任何需 cmd.exe 的命令
+- **THEN** 门禁仅执行 `pnpm lint`，不执行 typecheck/build/test:unit 类命令
 
 #### Scenario: 残留前端脏文件不触发前端门禁
 
@@ -105,9 +110,9 @@ TBD - created by archiving change add-change-scope. Update Purpose after archive
 
 ### Requirement: 规则文本与判定命令一致
 
-AGENTS.md「测试只跑本次修改影响的包」段落及 `docs/reference/开发执行规范.md` 相应段落 SHALL 指向 `bash scripts/change-scope.sh` 作为权威判定方式，替代纯文字描述的自觉执行。
+AGENTS.md「测试只跑本次修改影响的包」段落及 `docs/reference/开发执行规范.md` 相应段落 SHALL 指向 `bash scripts/harness/change-scope.sh` 作为权威判定方式，替代纯文字描述的自觉执行。
 
 #### Scenario: 文档指向脚本
 
 - **WHEN** 开发者/agent 需确定本次改动应跑哪些测试
-- **THEN** AGENTS.md 与开发执行规范的相关段落可检索到 `scripts/change-scope.sh` 命令引用
+- **THEN** AGENTS.md 与开发执行规范的相关段落可检索到 `scripts/harness/change-scope.sh` 命令引用

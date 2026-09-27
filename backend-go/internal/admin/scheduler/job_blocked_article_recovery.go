@@ -7,12 +7,13 @@ import (
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/scheduler"
 )
 
 const blockedArticleThreshold = 50
 
 // BlockedArticleRecoveryJob recovers articles stuck in blocked/firecrawl waiting states.
-func BlockedArticleRecoveryJob(ctx context.Context) (*JobResult, error) {
+func BlockedArticleRecoveryJob(ctx context.Context) (*scheduler.JobResult, error) {
 	var blockedArticles []models.Article
 	err := repository.Repo.DB().
 		Joins("JOIN feeds ON feeds.id = articles.feed_id").
@@ -49,6 +50,7 @@ func BlockedArticleRecoveryJob(ctx context.Context) (*JobResult, error) {
 		Joins("JOIN feeds ON feeds.id = articles.feed_id").
 		Where("articles.summary_status = ?", "incomplete").
 		Where("feeds.article_summary_enabled = ?", true).
+		Where("feeds.completion_on_refresh = ?", true).
 		Where("articles.firecrawl_status <> ?", "completed").
 		Count(&blockedCount).Error
 	if err != nil {
@@ -57,7 +59,7 @@ func BlockedArticleRecoveryJob(ctx context.Context) (*JobResult, error) {
 		logging.Warnf("ContentCompletion blocked articles exceeded threshold: %d > %d", blockedCount, blockedArticleThreshold)
 	}
 
-	return &JobResult{
+	return &scheduler.JobResult{
 		Data: map[string]interface{}{
 			"recovered_count": recoveredCount,
 		},

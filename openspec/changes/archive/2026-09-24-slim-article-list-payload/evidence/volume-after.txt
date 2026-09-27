@@ -1,0 +1,75 @@
+# 动工后真库验证（tasks 2.5 / 29 / 30 + 各筛选分支字段集）
+日期：2026-09-24T17:27:23+08:00
+形态：静态托管 :5100（新二进制 + 新静态产物）
+对照：evidence/volume-before.txt（动工前 144850B / content 20 次 / excerpt 0 次）
+
+per_page=20: size=19577B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 20/20 样本='高质量三维结构数据的稀缺性以及核酸构象的灵活性，长期限制着核酸折叠与蛋白–核酸复合物结构预测的发展。如何利用更易获得的二级结构信息，帮助全原'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+per_page=100: size=94292B items=100 per_page=100 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 98/100 样本='高质量三维结构数据的稀缺性以及核酸构象的灵活性，长期限制着核酸折叠与蛋白–核酸复合物结构预测的发展。如何利用更易获得的二级结构信息，帮助全原'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+feed_id=1: size=18005B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 20/20 样本='高质量三维结构数据的稀缺性以及核酸构象的灵活性，长期限制着核酸折叠与蛋白–核酸复合物结构预测的发展。如何利用更易获得的二级结构信息，帮助全原'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+category_id=1: size=18678B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 20/20 样本='高质量三维结构数据的稀缺性以及核酸构象的灵活性，长期限制着核酸折叠与蛋白–核酸复合物结构预测的发展。如何利用更易获得的二级结构信息，帮助全原'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+watched_tag_ids=3&sort_by=relevance: size=15465B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 20/20 样本='璞泰来：发行H股获中国证监会备案。'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+watched_tag_ids=3（DISTINCT 路径）: size=15465B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 20/20 样本='璞泰来：发行H股获中国证监会备案。'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+concept_id=2197: size=21311B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 20/20 样本='据伊朗法尔斯通讯社，伊朗最高领袖顾问Yahya Rahim Safavi表示：“既然战争已从波斯湾和霍尔木兹海峡扩大到红海，那么在潜在冲突的'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+auxiliary_label_id=341: size=23136B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 20/20 样本='据伊朗法尔斯通讯社，伊朗最高领袖顾问Yahya Rahim Safavi表示：“既然战争已从波斯湾和霍尔木兹海峡扩大到红海，那么在潜在冲突的'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+archived=true: size=16730B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 20/20 样本='WorkBuddy微信小程序发布能力上线，生成、预览、发布，都能在WorkBuddy完成，常规流程无需另外安装开发者工具、配置AppID或手'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+per_page=10000: size=94292B items=100 per_page=100 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 98/100 样本='高质量三维结构数据的稀缺性以及核酸构象的灵活性，长期限制着核酸折叠与蛋白–核酸复合物结构预测的发展。如何利用更易获得的二级结构信息，帮助全原'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+per_page=101: size=94292B items=100 per_page=100 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 98/100 样本='高质量三维结构数据的稀缺性以及核酸构象的灵活性，长期限制着核酸折叠与蛋白–核酸复合物结构预测的发展。如何利用更易获得的二级结构信息，帮助全原'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+per_page=0: size=19577B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 20/20 样本='高质量三维结构数据的稀缺性以及核酸构象的灵活性，长期限制着核酸折叠与蛋白–核酸复合物结构预测的发展。如何利用更易获得的二级结构信息，帮助全原'
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+
+## 补丁后复测（导语去重抑制，2026-09-24 用户确认方案 B）
+per_page=20（补丁后）: size=11203B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 0/20 样本=''
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+feed_id=1（补丁后）: size=13078B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 0/20 样本=''
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+archived=true（补丁后）: size=11218B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 0/20 样本=''
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+feed_id=12（映维网，description 与正文不同）: size=12403B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 0/20 样本=''
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']
+per_page=20（补丁二后）: size=11007B items=20 per_page=20 keys=21
+    禁列命中=[] excerpt=True relevance_score=True
+    非空 excerpt: 0/20 样本=''
+    KEY_SET=['archived', 'author', 'category_id', 'completion_error', 'created_at', 'excerpt', 'favorite', 'feed_id', 'firecrawl_crawled_at', 'firecrawl_error', 'firecrawl_status', 'id', 'image_url', 'link', 'pub_date', 'read', 'relevance_score', 'summary_generated_at', 'summary_status', 'tag_count', 'title']

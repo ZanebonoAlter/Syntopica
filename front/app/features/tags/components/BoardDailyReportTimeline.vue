@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, toRef, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, toRef, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import BoardThreadBrowser from './BoardThreadBrowser.vue'
 import TopicDetectiveWall from './TopicDetectiveWall.client.vue'
@@ -7,13 +7,24 @@ import DailyReportMasthead from './daily-report/DailyReportMasthead.vue'
 import DailyReportSidebar from './daily-report/DailyReportSidebar.vue'
 import DailyReportTopicSection from './daily-report/DailyReportTopicSection.vue'
 import DailyReportWatchIndex from './daily-report/DailyReportWatchIndex.vue'
+import MarginNotesRail from './daily-report/MarginNotesRail.vue'
+import SelectionAskBubble from './daily-report/SelectionAskBubble.vue'
+import AppSidebarDrawer from '~/components/ui/AppSidebarDrawer.vue'
 import PeelTransition from '~/components/PeelTransition.vue'
+import {
+  applyMarginNoteHighlights,
+} from './daily-report/marginNoteAnchor'
+import { useMarginNoteSelection, type MarginNoteAnchorDraft } from '~/features/tags/composables/useMarginNoteSelection'
+import { useMarginNotes } from '~/features/tags/composables/useMarginNotes'
+import { useMediaQuery } from '~/composables/useMediaQuery'
 import {
   buildQualityZones,
   formatMagazineDate,
   groupSectionsByTopic,
+  selectLeadStory,
 } from './daily-report/dailyReportMagazine'
 import { useDailyReportReader } from '~/features/tags/composables/useDailyReportReader'
+import { useLaneTrendData } from '~/features/tags/composables/useLaneTrendData'
 import type { PeelDirection } from '~/composables/usePeelTransition'
 import { useTopicWatchesApi, type TopicWatchHit } from '~/api/topicWatches'
 import type { ActiveWatchSummary, DailyReportWatchHit } from '~/api/dailyReports'
@@ -29,8 +40,14 @@ const props = withDefaults(defineProps<{
   boardTitle?: string
   /** 可就近切换的版块列表（来自 useTagsPage.boards）；缺省时隐藏切换条。 */
   boards?: BoardOption[]
+  /** 深链（管理页「跳原日报」）：打开阅读层后直接定位的报告 id。 */
+  initialReportId?: number | null
+  /** 深链定位的批注 id（定位 + 闪现，MG-5）。 */
+  initialAnnotationId?: number | null
 }>(), {
   boards: () => [],
+  initialReportId: null,
+  initialAnnotationId: null,
 })
 
 const emit = defineEmits<{
@@ -45,6 +62,9 @@ const direction = ref<PeelDirection>('horizontal')
 const animating = ref(false)
 
 const reader = useDailyReportReader(toRef(props, 'boardId'))
+// 泳道趋势区取数（lane-trend-overview §D4）：板块级 lane-dynamics 页面级缓存（首个泳道展开触发、
+// 翻期不重拉）+ contexts 月/年按需缓存；均为只读，不随阅读报告日期变化（趋势=现在）。
+const { contextEntries, ensureLaneDynamics, ensureContext, getLaneDynamicsEntry } = useLaneTrendData(toRef(props, 'boardId'))
 const watchesApi = useTopicWatchesApi()
 const watchHitsByReport = ref(new Map<number, TopicWatchHit[]>())
 const focusSectionId = ref<number | null>(null)
@@ -59,6 +79,169 @@ const qualityZones = computed(() => buildQualityZones(reader.selectedDetail.valu
 const activeTopics = computed(() => {
   const zone = qualityZones.value.find(item => item.key === 'active')
   return zone ? groupSectionsByTopic(zone) : []
+})
+
+/** 当前报告 id：页边注数据层按报告拉取/切换。 */
+const selectedReportId = computed(() => reader.selectedDetail.value?.id ?? 0)
+const marginNotes = useMarginNotes(selectedReportId)
+
+// —— 页边注交互（daily-report-margin-notes）——
+const peelPage = ref<HTMLElement | null>(null)
+const railRef = ref<{ focusCard: (annotationId: number, options?: { focusInput?: boolean }) => Promise<boolean> } | null>(null)
+const litNoteId = ref<number | null>(null)
+const pendingFocusNoteId = ref<number | null>(null)
+/** 深链定位挂起标志：报告列表未就绪期间阻止 loading watch 自动选中最新一期。 */
+const deepLinkPending = ref(false)
+/** 引用文本失配（原文已变更）的批注 id（高亮应用后回写，PR-3）。 */
+const changedNoteIds = ref<number[]>([])
+/** 窄屏（<1100px，沿用 drm-layout 现有断点）：右抽屉 + 右下浮动入口。 */
+const isNotesNarrow = useMediaQuery('(max-width: 1100px)')
+const notesDrawerOpen = ref(false)
+let litTimer: ReturnType<typeof setTimeout> | null = null
+
+const noteAskStates = computed(() => marginNotes.askStates.value)
+
+function applyNoteHighlights() {
+  const root = peelPage.value
+  if (!root) return
+  const { resolutions } = applyMarginNoteHighlights(root, marginNotes.annotations.value)
+  changedNoteIds.value = [...resolutions.entries()]
+    .filter(([, resolution]) => resolution === 'changed')
+    .map(([id]) => id)
+  if (pendingFocusNoteId.value != null) {
+    const target = pendingFocusNoteId.value
+    // 批注数据未到达前不消费定位请求：report 详情 watcher 会先于 annotations 触发一次
+    // applyNoteHighlights（annotations 空 → 无 mark），消费掉就再没人触发定位——
+    // 深链/跳原日报会停在报告顶部、卡不点亮、正文不闪现。annotations 到齐后 watcher
+    // 会再跑一次，pendingFocusNoteId 仍在，此刻才真正定位。
+    if (!marginNotes.annotations.value.some(item => item.id === target)) return
+    pendingFocusNoteId.value = null
+    void focusAnnotation(target, { focusInput: false })
+    // 深链定位（管理页「跳原日报」）：栏内点亮之外，正文同步滚到锚点并闪现
+    // （spec「全局批注管理」：打开阅读层并定位到该批注锚点、高亮闪现）。
+    jumpToOriginal(target)
+  }
+}
+
+watch([marginNotes.annotations, () => reader.selectedDetail.value?.id], () => {
+  // 等正文（含从数据重建的 DOM）就绪后再落 mark；幂等 + 自愈清理见 marginNoteAnchor
+  void nextTick(applyNoteHighlights)
+}, { immediate: true })
+
+/** 定位并点亮某卡：窄屏先开抽屉；mark/深链/管理页跳转共用。 */
+async function focusAnnotation(annotationId: number, options?: { focusInput?: boolean }) {
+  if (isNotesNarrow.value) notesDrawerOpen.value = true
+  await nextTick()
+  if (litTimer) clearTimeout(litTimer)
+  litNoteId.value = null
+  await nextTick()
+  litNoteId.value = annotationId
+  await railRef.value?.focusCard(annotationId, { focusInput: options?.focusInput })
+  litTimer = setTimeout(() => { litNoteId.value = null }, 1600)
+}
+
+/** 卡「↗ 跳回原文」：滚动到正文 mark 并闪现（引用失配时无 mark，静默降级）。 */
+function jumpToOriginal(annotationId: number) {
+  const mark = peelPage.value?.querySelector<HTMLElement>(`mark[data-jump="${annotationId}"]`)
+  if (!mark) return
+  if (typeof mark.scrollIntoView === 'function') mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  mark.classList.remove('mn-flash')
+  mark.classList.add('mn-flash')
+  setTimeout(() => mark.classList.remove('mn-flash'), 2400)
+}
+
+/** 正文 mark 点击 → 点亮对应卡（窄屏开抽屉定位）；不触发 thread 展开。 */
+function handleMarkClick(annotationId: number) {
+  void focusAnnotation(annotationId)
+}
+
+/** lead 批注的 section 归属：headline 由 section 派生时取该 section，否则 0（后端契约点：lead 批注无 section 归属时 section_id=0，见最终汇报联调点）。 */
+const leadSectionId = computed(() => {
+  const detail = reader.selectedDetail.value
+  if (!detail) return 0
+  return selectLeadStory(detail)?.sectionId ?? 0
+})
+
+/** 气泡确认 → 落锚：乐观落锚状态机（mark 已由 handleBubbleConfirm 先行包好），成功后聚焦输入。 */
+async function handleAnchorConfirm(draft: MarginNoteAnchorDraft) {
+  const detail = reader.selectedDetail.value
+  if (!detail) return
+  const threadId = draft.key === 'lead' ? null : Number(draft.key.slice(2))
+  const sectionId = draft.key === 'lead'
+    ? leadSectionId.value
+    : (detail.sections.flatMap(section => section.threads).find(thread => thread.id === threadId)?.section_id ?? 0)
+  const created = await marginNotes.anchor({
+    section_id: sectionId,
+    thread_id: threadId,
+    quoted_text: draft.quotedText,
+    anchor_offset_start: draft.start,
+    anchor_offset_end: draft.end,
+  })
+  if (!created) return
+  await focusAnnotation(created.id, { focusInput: true })
+}
+
+const { bubble: mnBubble, confirmBubble, buildMark } = useMarginNoteSelection({
+  active: showReader,
+  reportRoot: peelPage,
+  onMarkClick: handleMarkClick,
+})
+
+/** 气泡确认：消费草稿拿回 live range → 包 mark（跨节点降级只落卡）→ 走乐观落锚状态机。 */
+function handleBubbleConfirm() {
+  const consumed = confirmBubble()
+  if (!consumed) return
+  const { draft, range } = consumed
+  if (peelPage.value && range) buildMark(range, -1) // 临时 id mark，落锚成功后高亮应用循环自愈换真 id
+  void handleAnchorConfirm(draft)
+}
+
+function handleAskNote(annotationId: number, question: string) {
+  void marginNotes.ask(annotationId, question)
+}
+
+function handleRetryAsk(annotationId: number) {
+  void marginNotes.retryAsk(annotationId)
+}
+
+async function handleRemoveNote(annotationId: number) {
+  await marginNotes.remove(annotationId)
+  // 高亮 watch 自愈：id 不在现存集合的 mark 会被清理，正文高亮同步消失
+}
+
+/** 引用 chip → 与 thread 溯源同链路：ensureArticles 取标题后走文章预览。 */
+async function openCitedArticle(articleId: number) {
+  await reader.ensureArticleTitles([articleId])
+  emit('openArticle', articleId)
+}
+
+onMounted(async () => {
+  // 深链（管理页「跳原日报」，MG-5）：开阅读层 → 定位报告 → 定位批注闪现
+  if (!props.initialReportId) return
+  lastTrigger.value = null
+  showReader.value = true
+  // 批注定位请求须在报告选中前挂起：消费端（applyNoteHighlights）要求 annotations
+  // 到齐才消费，提前置上不会白跑；反之放到末尾会错过 watcher 触发（annotations 先到
+  // → watcher 白跑一次 → 赋值后无人再触发，定位丢失，反向竞态）。
+  if (props.initialAnnotationId != null) pendingFocusNoteId.value = props.initialAnnotationId
+  // 挂载时报告列表异步加载存在竞态：列表未到齐时 selectReportById 找不到目标会
+  // 静默放弃，随后 loading watch 兜底自动选中最新一期，深链定位间歇性失效。
+  // 挂起期间置 deepLinkPending 阻止自动选中抢先，等列表就绪后再定位。
+  deepLinkPending.value = true
+  try {
+    if (reader.loading.value) {
+      await new Promise<void>(resolve => {
+        const stop = watch(reader.loading, (isLoading) => {
+          if (!isLoading) { stop(); resolve() }
+        })
+      })
+    }
+    await reader.selectReportById(props.initialReportId)
+  } finally {
+    deepLinkPending.value = false
+  }
+  const detail = reader.selectedDetail.value
+  if (detail) await ensureWatchHits(detail.id, detail)
 })
 
 const reportStatusLabel: Record<string, string> = {
@@ -188,6 +371,9 @@ function openDetectiveWall(topicId?: number) {
 function handleKeydown(event: KeyboardEvent) {
   if (!showReader.value) return
   if (event.key === 'Escape') {
+    // 窄屏页边注抽屉开着时，Esc 只该关抽屉（AppSidebarDrawer 自己的 Esc 处理器），
+    // 否则同一击键连阅读层一起关、丢失阅读位置。
+    if (notesDrawerOpen.value) return
     event.preventDefault()
     void closeReader()
   } else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
@@ -219,8 +405,10 @@ watch(() => props.boardId, () => {
 })
 
 // 版块切换后（reader 开着）日报列表重载完成时自动选中第一天，触发纵向翻页进入转场。
+// 深链定位挂起期间跳过自动选中（否则会抢先选最新一期，随后再跳目标造成闪跳）。
 watch(reader.loading, async (isLoading) => {
   if (isLoading) return
+  if (deepLinkPending.value) return
   if (!showReader.value || reader.currentDayIndex.value >= 0) return
   if (reader.reports.value.length > 0) {
     await reader.selectReport(0)
@@ -233,6 +421,7 @@ watch(reader.loading, async (isLoading) => {
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
   document.body.style.overflow = previousBodyOverflow
+  if (litTimer) clearTimeout(litTimer)
 })
 </script>
 
@@ -357,7 +546,7 @@ onUnmounted(() => {
 
           <!-- Peel 转场容器：始终挂载（reader 开启时），内部文章按 selectedDetail 显隐 + :key 触发方向化翻页 -->
           <PeelTransition :direction="direction" class="drm-peel-host" @end="onPeelEnd">
-            <div v-if="reader.selectedDetail.value" :key="reader.selectedDetail.value.id" class="drm-peel-page">
+            <div ref="peelPage" v-if="reader.selectedDetail.value" :key="reader.selectedDetail.value.id" class="drm-peel-page">
               <DailyReportMasthead :report="reader.selectedDetail.value" :board-title="boardTitle" />
               <div class="drm-layout">
                 <DailyReportSidebar
@@ -386,8 +575,12 @@ onUnmounted(() => {
                     :lifeline-entries="reader.lifelineEntries.value"
                     :article-entries="reader.articleEntries.value"
                     :report-details="reader.detailCache.value"
+                    :lane-dynamics-entry="getLaneDynamicsEntry()"
+                    :context-entries="contextEntries"
                     :focus-section-id="focusSectionId"
                     @ensure-lifeline="reader.ensureLifeline"
+                    @ensure-lane-dynamics="ensureLaneDynamics"
+                    @ensure-context="ensureContext"
                     @ensure-articles="reader.ensureArticleTitles"
                     @retry-article="reader.retryArticle"
                     @load-historical="loadHistorical"
@@ -400,12 +593,69 @@ onUnmounted(() => {
                     <p>{{ reader.selectedDetail.value.dynamics }}</p>
                   </section>
                 </main>
+                <!-- 页边注栏（桌面：第三列 sticky 视口内居中 + 内容自适应高度；窄屏收为抽屉） -->
+                <aside v-if="!isNotesNarrow" class="drm-notes-rail">
+                  <div class="drm-notes-rail__scroller">
+                    <MarginNotesRail
+                      ref="railRef"
+                      :notes="marginNotes.annotations.value"
+                      :loading="marginNotes.loading.value"
+                      :load-error="marginNotes.loadError.value"
+                      :anchor-error="marginNotes.anchorError.value"
+                      :changed-ids="changedNoteIds"
+                      :lit-id="litNoteId"
+                      :ask-states="noteAskStates"
+                      @retry-load="marginNotes.load(true)"
+                      @jump="jumpToOriginal"
+                      @remove="handleRemoveNote"
+                      @ask="handleAskNote"
+                      @retry-ask="handleRetryAsk"
+                      @open-cited="(_annotationId, articleId) => openCitedArticle(articleId)"
+                    />
+                  </div>
+                </aside>
               </div>
               <footer class="drm-colophon" aria-label="本期完">
                 <span class="drm-colophon__ornament" aria-hidden="true">◆</span>
                 <em>本期脉络由 Syntopica 整理</em>
                 <span class="drm-colophon__date">{{ reader.selectedDetail.value ? formatMagazineDate(reader.selectedDetail.value.period_date) : '' }}</span>
               </footer>
+
+              <!-- 划词「问一问」气泡：绝对定位于正文根容器坐标系 -->
+              <SelectionAskBubble :state="mnBubble" @confirm="handleBubbleConfirm" />
+
+              <!-- 窄屏（<1100px）：页边注收为右侧抽屉 + 右下浮动入口 -->
+              <AppSidebarDrawer :open="notesDrawerOpen" side="right" @close="notesDrawerOpen = false">
+                <div v-if="isNotesNarrow" class="drm-notes-drawer">
+                  <MarginNotesRail
+                    ref="railRef"
+                    :notes="marginNotes.annotations.value"
+                    :loading="marginNotes.loading.value"
+                    :load-error="marginNotes.loadError.value"
+                    :anchor-error="marginNotes.anchorError.value"
+                    :changed-ids="changedNoteIds"
+                    :lit-id="litNoteId"
+                    :ask-states="noteAskStates"
+                    @retry-load="marginNotes.load(true)"
+                    @jump="jumpToOriginal"
+                    @remove="handleRemoveNote"
+                    @ask="handleAskNote"
+                    @retry-ask="handleRetryAsk"
+                    @open-cited="(_annotationId, articleId) => openCitedArticle(articleId)"
+                  />
+                </div>
+              </AppSidebarDrawer>
+              <button
+                v-if="isNotesNarrow && marginNotes.annotations.value.length"
+                type="button"
+                class="drm-notes-fab"
+                data-testid="mn-fab"
+                @click="notesDrawerOpen = true"
+              >
+                <Icon icon="mdi:notebook-outline" width="14" />
+                页边注
+                <span class="drm-notes-fab__count">{{ marginNotes.annotations.value.length }}</span>
+              </button>
             </div>
           </PeelTransition>
         </article>
@@ -704,11 +954,106 @@ onUnmounted(() => {
 
 .drm-layout {
   display: grid;
-  grid-template-columns: 14rem minmax(0, 1fr);
+  grid-template-columns: 14rem minmax(0, 1fr) clamp(15rem, 17vw, 17rem);
   gap: clamp(2rem, 3vw, 2.75rem);
   width: 100%;
   margin: 0 auto;
   padding: clamp(2rem, 5vw, 5rem) clamp(1rem, 4vw, 4rem) 6rem;
+}
+
+/* 页边注栏（第三列）：sticky + 栏内滚动，随阅读层滚动常驻 */
+/* 页边注栏（桌面：第三列）：视口内垂直居中 + 内容自适应高度，不顶格、不被阅读层工具条压住。
+   外层 sticky 铺满「工具条之下 → 视口底部」做定位与居中（内容短 → 卡片堆整体居中留白）；
+   内层才是滚动容器（内容长 → 内层滚动），避开 flex/grid 居中 + overflow 同时用导致的
+   顶部内容被截断且滚不到（经典 safe-center 坑，`safe` 关键字跨浏览器支持不稳）。 */
+.drm-notes-rail {
+  --drm-notes-top: 4.25rem; /* 工具条 min-height 3.5rem + 呼吸 */
+  --drm-notes-bottom: 0.75rem;
+  position: sticky;
+  top: var(--drm-notes-top);
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: calc(100vh - var(--drm-notes-top) - var(--drm-notes-bottom));
+  min-width: 0;
+}
+
+/* 自适应高度：随内容伸缩，超限才栏内滚动（滚动条只在需要时出现） */
+.drm-notes-rail__scroller {
+  max-height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+/* 批注高亮 mark：由锚定器动态注入，不带 scoped 属性，用 :global 声明（主题 token 双主题跟随） */
+:global(mark.mn-highlight) {
+  background: linear-gradient(transparent 55%, color-mix(in srgb, var(--color-accent) 18%, transparent) 55%);
+  color: inherit;
+  padding: 0 0.08em;
+  cursor: pointer;
+  border-bottom: 1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent);
+  transition: background 0.25s;
+}
+
+:global(mark.mn-highlight:hover) {
+  background: linear-gradient(transparent 40%, color-mix(in srgb, var(--color-accent) 32%, transparent) 40%);
+}
+
+:global(mark.mn-highlight::after) {
+  content: "❧";
+  font-size: 0.62em;
+  color: var(--color-accent);
+  vertical-align: super;
+  margin-left: 0.12em;
+  opacity: 0.8;
+}
+
+@keyframes mnFlash {
+  0%, 100% { background: linear-gradient(transparent 40%, color-mix(in srgb, var(--color-accent) 32%, transparent) 40%); }
+  50% { background: linear-gradient(transparent 30%, color-mix(in srgb, var(--color-accent) 50%, transparent) 30%); }
+}
+
+:global(mark.mn-highlight.mn-flash) {
+  animation: mnFlash 1.2s ease 2;
+}
+
+/* 窄屏右下浮动入口（specs 窄屏抽屉形态：<1100px 且有批注时出现） */
+.drm-notes-fab {
+  position: fixed;
+  right: 1rem;
+  bottom: 1.2rem;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.55rem 1rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-text-primary);
+  color: var(--color-bg-base);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  box-shadow: var(--shadow-strong);
+}
+
+.drm-notes-fab__count {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--color-accent);
+  color: #fff;
+  font-size: 0.66rem;
+}
+
+.drm-notes-drawer {
+  height: 100%;
+  overflow-y: auto;
+  padding: 0.25rem;
 }
 
 .drm-content {
@@ -811,6 +1156,10 @@ onUnmounted(() => {
   .drm-layout {
     grid-template-columns: 1fr;
     gap: 1rem;
+  }
+
+  .drm-notes-rail {
+    display: none;
   }
 }
 

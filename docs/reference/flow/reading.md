@@ -83,10 +83,31 @@ ArticleListPanel → ArticleContentView
   → 后端聚合进 reading_behaviors 表（偏好向量画像的权重源，见 flow/discovery.md）
 ```
 
+### 列表窄投影与导语来源（slim-article-list-payload）
+
+- **列表窄投影**：`GET /api/articles` 只返回扫描-选择字段（`id`/`feed_id`/`category_id`/`title`/`link`/`image_url`/`pub_date`/`author`/`read`/`favorite`/`archived`/处理状态位/`created_at`/`tag_count`/`relevance_score`）与 `excerpt`（≤200 字符纯文本，`description` 抽取为空则回退 `content`），**不返回** `content`/`description`/`firecrawl_content`/`ai_content_summary` 等正文类大字段。
+- **导语两段式不变**：`FeedLayoutShell.hydrateSelectedArticle` 仍是「先列表行首帧 → 再详情覆盖」；首帧导语优先级「详情 `description` →（详情未就绪）回退列表 `excerpt`」，详情返回后 `displayContent` 取值链与渲染结构不变——正文与完整导语的唯一来源仍是详情接口 `GET /api/articles/:article_id`。
+- **自动刷新**：收敛为单调度器串行错峰（维护 `{feedId, intervalMinutes, nextDueAt}`，单个 `setTimeout` 排下一个到期项，同一分钟至多 1 个 feed 刷新）；刷新完成后只重取**当前筛选 + 当前页**（`per_page ≤ 100`），不再发 `per_page=10000` 的列表请求；`/api/feeds` 的 `per_page=10000` 保持不动（响应仅 14.6 KB）。
+
+### 源视角观测（源 → 文章 → 标签 → 板块的反向聚合，add-source-board-hit-rate）
+
+```text
+GET /api/feeds/board-hit-stats?window=7
+  → 单次批量聚合全部源（不逐源 N+1）
+  → 每源三分解：入板块 in_board / 有标签未入板块 tagged_no_board
+     / 未打标两分（排队中 untagged_pending · 已处理完 untagged_settled）
+  → + 板块分布 boards[]（该源命中板块及去重篇数）
+```
+
+把正向链路（源 → 文章 → 标签 → 板块）反查为只读观测：命中 = 文章至少 1 个标签经 `topic_tag_board_labels` 挂到 `label_type='board' AND status='active'` 的版块；窗口白名单 {7,30,90} 天。口径三条硬约束（按文章去重 / 含已归档 / 限窗口）唯一实现在 `internal/tagmanagement/service/sourcestats/`，端点契约见 [feeds.md](../api/feeds.md)。入口在设置 → 订阅源（列表「入板块率」pill + 详情「来源质量」三分解块，只读展示，处置仍走既有订阅源编辑控件）。
+
 ### Feed 图标获取与渲染（本地化）
 
 ```text
 RefreshFeed（icon_source ∈ {auto, fallback} 才重算；custom 不碰）
+  → auto + icon 已是 /icons/ 路径：先校验磁盘文件仍在（heal-missing-feed-icons）
+    文件在 → 整个管线跳过（冻结，好图标不被远程临时故障覆盖）
+    文件丢失（目录被清/Dump 恢复 DB 未带图标）→ 视为未本地化，重跑管线自愈
   → 候选管线：RSS <image> → 站点首页 HTML <link rel="icon">（仅 image 缺失时请求）
     → {host}/favicon.ico 猜测
   → 逐候选后端下载验证（10s 超时 / 256KB 上限 / 图片 Content-Type 校验，失败顺延）
@@ -95,11 +116,30 @@ RefreshFeed（icon_source ∈ {auto, fallback} 才重算；custom 不碰）
   → icon 下载失败不影响 RefreshStatus（仍 success）
 
 前端 FeedIcon.vue 三类值：iconify id → <Icon>（本地子集，零联网）；
-  http(s) 远程 URL（存量）→ <img> 直连；/ 开头同源路径 → getApiOrigin() 拼后端源渲染 <img>；
-  <img> onerror 降级 mdi:rss
+  http(s) 远程 URL（存量）→ <img> 经 /api/image-proxy 代理加载（add-image-proxy，防盗链；后端自有地址仍直连）；
+  / 开头同源路径 → getApiOrigin() 拼后端源渲染 <img>（直连不进代理，避免自指拒绝）；
+  <img> onerror 降级 mdi:rss（降级分支只接受合法 iconify 名，图片路径/URL 不得当图标名传给 <Icon>——
+  非法名会渲染成空 <svg>，即空白）
 ```
 
 UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local.ts` 将 `app/assets/iconify-subset.json`（源码扫描生成的子集，162 个图标）注册进 `@iconify/vue`，运行时不请求 api.iconify.design；新增图标需 `pnpm generate:icons` 重新生成并提交产物。
+
+### 外链图片代理加载（add-image-proxy）
+
+列表封面、预览/阅读页头图、正文 `<img>`、侦探墙贴图、feed 外链 favicon **一律经 `GET /api/image-proxy?url=...` 同源加载，不直连图床**：图床普遍有 Referer 防盗链（2026-09-22 实测 `cdnfile.sspai.com` 空 Referer → 403 `x-exception-info: deny by referer access rule`，直连必图裂）。
+
+```text
+前端渲染点（ArticleCardView 封面 / ArticleContentPreviewPanel 头图 / 正文 displayContent / markdown.ts 整理稿 /
+  侦探墙 CardGroup 贴图 / FeedIcon 外链 favicon）
+  → proxiedImageUrl() / proxyImagesInHtml()（front/app/utils/imageProxy.ts）渲染时改写
+    http(s) 外链 → /api/image-proxy?url=<enc>；相对路径、data:、blob:、已代理地址、同源绝对地址不改写
+  → 后端 internal/platform/imageproxy：校验（仅 http/拒自指防循环）→ 查 data/image-cache/（HIT 直接返回）
+  → 注入 Referer（默认图片自身 origin，per-host 可覆盖）+ 浏览器 UA → 上游；15s 超时（504）/失败 502
+  → 200 + image/*：tee 落缓存（sha256 命名）→ 超 IMAGE_CACHE_MAX_MB（默认 256MB）按 mtime LRU 淘汰到 90% 水位
+  → 上游非 200：状态码透传零缓存；前端按既有降级渲染（封面 @error → FeedIcon，侦探墙留空纹理）
+```
+
+**数据库仍存原始外链**（改写只发生在渲染层）——回滚零数据迁移；缓存整目录 `data/image-cache/` 删除即热清。配置见 [configuration.md](../configuration.md)，接口见 [api/system.md](../api/system.md)。
 
 ## 业务约束与不变量
 
@@ -111,16 +151,25 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
    - 普通 refresh 新文章：入库后立即打标签（feed 未开启 Firecrawl 时）。
    - feed 开启 Firecrawl：refresh 阶段**先不打标签**；Firecrawl 抓完写入 `tag_jobs` 队列，由 `TagQueue` worker 异步打标签；同时开启 `article_summary_enabled` 时，等 ContentCompletion 生成 `ai_content_summary` 后再 enqueue `tag_jobs`（打标签依赖整理后的正文）。
    - 手动打标签 `POST /api/articles/:article_id/tags`：只 enqueue 返回 `job_id`，`TagQueue` 完成后经 WebSocket 广播 `tag_completed`；mono 路径 LLM 提示词按优先级排序返回，后端写 `article_topic_tags` 前截断到文章级上限（6）作兜底。
-   - **按 `content_form` 分流（aggregate-article-tagging）**：`tagArticle` 编排层读 `articles.content_form`——`aggregate`（聚合型文章，由摘要链路形态标记产生，见 [content-enrichment.md](content-enrichment.md) 约束 #10）走切片 map-reduce 路径：纯代码按 `## ` 栏目切片（跳导读、短栏目向后合并、超长按 `###` 细分、上限 8 片，无 `##` 结构回落 mono）→ 每片 1 次融合 prompt LLM 调用（event/person/keyword 三分类合一，每片上限 4 标签，单片失败重试 3 次后跳过不阻断）→ 跨片 `Slugify` 去重（保留首栏目出现者）→ 文章级上限 15、score 按片位置分层（首片 0.9/中间 0.7/尾片 0.5）；`mono` 与空值走原双分支提取路径，输入截断 4000 runes、文章级上限 6、score 一律 0.7。两条路径共用同一入库链（`findOrCreateTag` → aux labels → `createArticleTopicTagLink` → event 标签 enqueue embedding）。
+   - **按 `content_form` 分流（aggregate-article-tagging）**：`tagArticle` 编排层读 `articles.content_form`——`aggregate`（聚合型文章，由摘要链路形态标记产生，见 [content-enrichment.md](content-enrichment.md) 约束 #10）走切片 map-reduce 路径：纯代码按 `## ` 栏目切片（跳导读、短栏目向后合并、超长按 `###` 细分、上限 8 片，无 `##` 结构回落 mono）→ 每片 1 次融合 prompt LLM 调用（event/person/keyword 三分类合一，每片上限 4 标签，单片失败重试 3 次后跳过不阻断）→ 跨片 `Slugify` 去重（保留首栏目出现者）→ 文章级上限 15、score 按片位置分层（首片 0.9/中间 0.7/尾片 0.5）；`mono` 与空值走原双分支提取路径，输入为预算 4000 runes 的分段采样（文集型按标题均匀采样/叙事型头中尾，计量前剥 markdown 噪声，见 [semantic-board.md](semantic-board.md) 约束 #18）、文章级上限 6、score 一律 0.7。两条路径共用同一入库链（`findOrCreateTag` → aux labels → `createArticleTopicTagLink` → event 标签 enqueue embedding）。
    - **提取容错（aggregate-tagging-resilience）**：JSON 解析入口（`parseRawTagObjects`，经 `jsonutil.SanitizeLLMJSON`）对尾逗号做无损修复；单标签校验失败降级不连坐——event/person 的 aux labels 校验失败时丢 aux 保标签（记 warning），融合路径 keyword 缺 description 跳过该标签（记 warning），mono 双分支同步降级；JSON 整体解析失败仍重试 3 次。聚合路径全部片处理完后标签数为 0（全片失败或全部空产出）时回落 mono 双分支提取（含 heuristic 兜底），聚合文章不以 0 标签结束。
    - `TagQueue.Start()` 首次启动失败不阻塞应用，后台按 30 秒间隔重试最多 10 次。
-4. **Feed 图标必须按 auto/custom/fallback 状态机管理并本地落盘 data/icons/feeds/，不用文章封面、下载失败不影响 refresh**：`icon_source` ∈ `auto`（系统抓取，可刷新覆盖）/ `custom`（用户设定，RefreshFeed 不碰）/ `fallback`（占位，可刷新重算）。重算走候选管线（RSS image → 首页 HTML link → favicon.ico 猜测），**后端下载落盘 `data/icons/feeds/`、DB 存 `/icons/...` 同源路径**；不用文章封面图当 feed icon；icon 下载失败不影响 refresh 成功状态。删除 feed 时清理其 icon 文件（失败不阻断）。favicon 探测以 RSS channel link（站点首页）为基准，不用 feed URL（聚合器域名）或 Google s2 等第三方服务。
+4. **Feed 图标必须按 auto/custom/fallback 状态机管理并本地落盘 data/icons/feeds/，不用文章封面、下载失败不影响 refresh**：`icon_source` ∈ `auto`（系统抓取，可刷新覆盖）/ `custom`（用户设定，RefreshFeed 不碰）/ `fallback`（占位，可刷新重算）。重算走候选管线（RSS image → 首页 HTML link → favicon.ico 猜测），**后端下载落盘 `data/icons/feeds/`、DB 存 `/icons/...` 同源路径**；不用文章封面图当 feed icon；icon 下载失败不影响 refresh 成功状态。删除 feed 时清理其 icon 文件（失败不阻断）。favicon 探测以 RSS channel link（站点首页）为基准，不用 feed URL（聚合器域名）或 Google s2 等第三方服务。**DB 的 `/icons/...` 路径不等于文件一定在**：auto + 本地路径的冻结判据 MUST 含磁盘文件存在性校验（`IconStore.LocalIconExists`，仅 `fs.ErrNotExist` 算缺失），文件丢失时 MUST 重跑管线自愈——否则仅恢复 DB（dump/换机）会留下永久 404。前端 `<img>` onerror 降级 MUST 渲染合法 iconify 占位符（图片路径/URL 不得当图标名传给 `<Icon>`，非法名渲染成空白）。
 5. **mdi:* 图标必须全部来自构建产物本地子集 iconify-subset.json，运行时零联网，新增图标须重新生成子集**：`mdi:*` 图标全部来自构建产物 `app/assets/iconify-subset.json`（`pnpm generate:icons` 生成并纳 git），运行时不访问 iconify API；源码新增图标名必须是子集的超集（一致性单测强制）。
-6. **文章超限必须归档降级而非物理删除，favorite 永不归档，归档行永久保留（article-archive-instead-of-delete）**：`CleanupOldArticles` 对超出 `max_articles` 的最旧非 favorite 文章执行**归档降级**（`archived=true`），不物理删除——行与全部文本字段永久保留（日报线索按 ID 反查依赖此语义）；归档同时清除衍生数据（`article_topic_tags` 边 + 孤儿 tag 清理、`reading_behaviors`、`search_vector` 置 NULL）。不变量：
+6. **文章超限必须归档降级而非物理删除，favorite 永不归档，归档行永久保留（article-archive-instead-of-delete）**：`CleanupOldArticles` 对超出 `max_articles` 的最旧非 favorite 文章执行**归档降级**（`archived=true`），不物理删除——行与全部文本字段永久保留（日报线索按 ID 反查依赖此语义）；归档清除的衍生数据仅限 `reading_behaviors` 删除与 `search_vector` 置 NULL，**MUST NOT 删除 `article_topic_tags` 标签边**（offline-catchup 起归档降为纯生命周期标志，删边与孤儿清理职责整体移交时间窗 GC）。不变量：
    - 活跃窗口计数与归档候选集**仅统计 `archived=false`**（归档行不得侵蚀窗口，否则每次刷新会误归档新文章）；
+   - **标签边保留窗从边创建时刻（打标落库时刻）起算**：迟到打标任务为已归档文章挂的边与普通边同窗保留，到期由 `aux_label_cleanup` 维护任务按 `tag_edge_retention_days`（默认 7 天）统一回收——不因归档即时消失、也不按归档位过滤；聚合消费方（日报候选、cotag 窗口、升级建议）继续按各自时间窗界定范围，不筛 `archived`（窗口口径见 `flow/scheduler.md`，日报补档消费见 `flow/daily-report.md`）。**回收范围仅限已归档文章的边（review M5-B）：未归档文章的边不回收，归档后才进入窗口倒计时**——活跃文章在分析面上，其标签是活数据，被阅读页标签角标/过滤直接消费。
    - RSS 去重（title dedupe）**含归档文章**（防老条目重复入库）；
    - reader 列表/全局统计/feed 统计默认过滤 `archived=false`，`GET /api/articles?archived=true` 显式查归档集；按文章 ID 的详情查询豁免过滤。
+   - **删订阅源 / 删分类会连带物理删除文章行**（存量 FK `fk_feeds_articles`（`articles.feed_id`）、`fk_categories_feeds`（`feeds.category_id`）均为 ON DELETE CASCADE，实测存在；但这两条 FK 只在历史库存在，代码里一律**显式删除**、不依赖级联与否）：删除路径 MUST 在同一事务内同步维护「按 ID 引用文章」的 jsonb 数组（`daily_report_threads.related_article_ids`，维护器 `internal/platform/articlerefs`，契约与迁移见 `flow/daily-report.md` 约束 21）——否则日报线索会指向已不存在的文章，前端降级显示「文章 #id」，线索追溯不到来源。
+   - **删分类的破坏性语义必须对用户可见**：删分类 = 连带删其下全部订阅源及其文章（不可撤销），前端确认文案 MUST 与之一致（`FeedLayoutShell.vue`，2026-09-17 用户决策：只改文案、保持删除语义）；有 `reading_behaviors` / `user_preferences` 子行时该删除仍会因 NO ACTION 外键失败（既有行为）。
    - `max_articles=0` 或 `9999` 仍为无限制；favorite 永不归档。
+7. **阅读页右侧文章主体必须保持 reader 阅读列版式：列宽 ≤760px 居中、去卡片化、处理状态/手动操作不得占据正文上方（redesign-reading-pane）**：
+   - 版式契约：正文/元信息/标签/导语/AI 整理稿同列对齐（`.reading-col`，max-width 840px，面板窄于 840 取可用宽），标题与图片/表格走 breakout 略宽于列，分区靠留白+细分隔线，不得回退到边框+投影卡片堆叠；标题衬线字体栈、红色 kicker/短粗线为编辑签名元素。
+   - **CSS 作用域红线**：`ArticleContent.css` 的全局 `.markdown-body` 元素排版是 tags 域三面板（QAPanel/CausalAnalysisReport/BoardEnrichmentPanel）的共享宿主，基础排版不得改动；阅读页编辑版式覆写（引用块轻左边线、宋体 h2/h3、表格/图片 breakout 负边距）一律限定 `.preview-mode` / `.markdown-article` / `.markdown-summary` 作用域。共享纯增量例外：基础段的 `.markdown-body .mermaid-block` 系列规则（mermaid 图轻容器：上下 hairline + 小字图题，去卡片化合规）为三面板与阅读页共用，不属「阅读页覆写」。
+   - 处理链状态只以工具栏单图标四态呈现（语义同 reading-list-panel），「处理详情」浮层与「更多操作」⋯ 菜单（手动抓取/生成总结/手动打标/内容源切换）都按 feed 能力开关显隐；description 导语只在实质内容（normalize 后 ≥4 字符且与正文不重复）时渲染。
+8. **源/版块命中统计端点必须只读，口径三条硬约束唯一实现在 sourcestats 包，不得复制口径或“顺手”加 archived 过滤**（add-source-board-hit-rate）：`GET /api/feeds/board-hit-stats` 与 `GET /api/semantic-boards/:id/source-breakdown` 只读（不写库、不触发打标或匹配）；口径唯一实现 `internal/tagmanagement/service/sourcestats/`，三条硬约束——按文章去重（`COUNT(DISTINCT id)` + `EXISTS`，不 JOIN 造成行倍增）、含已归档（窗口查询不得过滤 `archived`，高频源命中几乎全在归档区）、限窗口（白名单 {7,30,90}，缺省 7，非法 400 不回退默认）；每源恒等式 `articles == in_board + tagged_no_board + untagged_pending + untagged_settled`。权威口径见 `openspec/specs/source-board-hit-rate/spec.md`，要改口径先改 spec。
+9. **`GET /api/articles` 列表 MUST NOT 携带正文类大字段（content/description/firecrawl_content/ai_content_summary），导语只给 ≤200 字符纯文本 excerpt；正文与完整导语唯一来源是详情接口**（slim-article-list-payload）：列表窄投影只下发扫描-选择字段 + `excerpt`（由 `description` 去 HTML 标签、还原实体、折叠空白生成，抽取为空回退 `content`；源无字母/数字时为空串 `""`，字段恒存在；与正文重复（归一化后相同，或导语 ≥40 字符且被正文包含）也为空串——判据是阅读页去重 guard 的子集，避免首帧导语闪现；导语来自正文兜底（`description` 无实质文本）且无 Firecrawl 正文时同样为空串——展示正文即 `content`，导语必然重复），正文 `displayContent` 仍走详情接口 `GET /api/articles/:article_id`（契约不变，返回全部正文类字段）。阅读页导语按「详情 `description` →（未就绪）列表 `excerpt`」回退；`per_page` 缺省 20、`≤0` 视作 20、`>100` 按 100 返回并记 WARN 日志（含请求值与路径，不静默截断）；自动刷新单调度器串行 + 刷新后只重取当前筛选当前页是配套要求，列表行字段集（title/author/时间/已读/收藏/状态图标）不变为回归红线。
 
 ## 代码入口
 
@@ -128,7 +177,8 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 - **后端阅读行为（admin 域）**：`backend-go/internal/admin/handler/preferences_handler.go`（仅留 reading-behavior handler）、`backend-go/internal/admin/routes.go`（`/reading-behavior/*`）；旧 `preferences_service.go` / `job_preference_update.go` / `/user-preferences/*` 已删除。
 - **后端偏好画像 / 订阅源发现（admin 域）**：`backend-go/internal/admin/service/{preference_profile_service,recommendation_service,catalog_sync_service,catalog_extras,rsshub_config}.go`、`backend-go/internal/admin/handler/{preference_profile_handler,discovery_handler}.go`、`backend-go/internal/admin/scheduler/{job_preference_profile_update,job_rsshub_catalog_sync}.go`，详见 [discovery.md](discovery.md)。
 - **打标签（tagmanagement 域）**：`backend-go/internal/tagmanagement/`（`TagQueue`、article_tagger）。
-- **前端**：`front/app/features/articles/`（列表/正文/阅读追踪）、`front/app/features/shell/`（FeedLayoutShell、导航）、`front/app/stores/`（api/feeds/articles）、`front/app/composables/useReadingTracker.ts`（阅读行为采集）。偏好画像 UI 与发现页入口见 [discovery.md](discovery.md)。图标：`front/app/components/feed/FeedIcon.vue`（三类 icon 值渲染 + 降级）、`front/app/plugins/iconify-local.ts` + `front/app/assets/iconify-subset.json`（UI 图标本地子集）、`front/scripts/generate-icon-subset.mjs`（子集生成）。
+- **源/版块命中统计（tagmanagement 域 sourcestats）**：`backend-go/internal/tagmanagement/service/sourcestats/`（口径唯一实现：`ParseWindow` 白名单、`FeedBoardHitStats` 源视角、`BoardSourceBreakdown` 版块视角）；源视角端点 handler `internal/reader/handler/feed_board_stats_handler.go`，版块视角 `internal/tagmanagement/handler/board_source_breakdown_handler.go`；前端 `front/app/features/settings/components/`（`FeedSourceQualityPill.vue` 行 pill、`FeedSourceQualityBlock.vue` 详情三分解块、`FeedMasterList.vue` 工具栏）与 `front/app/features/settings/composables/useFeedSourceQuality.ts`。
+- **前端**：`front/app/features/articles/`（列表/正文/阅读追踪；正文区组件 ArticleContentView/ArticleContentToolbar/ArticleContentPreviewPanel/ArticleStatusMenu——后者承担工具栏处理状态图标、详情浮层与 ⋯ 菜单）、`front/app/components/article/ArticleContent.css`（阅读列版式 + `.markdown-body` 共享排版）、`front/app/features/shell/`（FeedLayoutShell、导航；**窄屏降级**（mobile-viewport-stage1）：<768px 常驻侧栏改 `components/ui/AppSidebarDrawer.vue` 抽屉、列表↔阅读单栏切换 `viewMode`（仅窄屏分支读取）、列表滚动记忆经 `features/shell/components/feedListScrollBridge.ts` provide/inject 桥、断点判定 `composables/useMediaQuery.ts` `useIsNarrowViewport()`）、`front/app/stores/`（api/feeds/articles）、`front/app/composables/useReadingTracker.ts`（阅读行为采集）、`front/app/utils/articleContentGuards.ts`（description 展示 guard）。偏好画像 UI 与发现页入口见 [discovery.md](discovery.md)。图标：`front/app/components/feed/FeedIcon.vue`（三类 icon 值渲染 + 降级）、`front/app/plugins/iconify-local.ts` + `front/app/assets/iconify-subset.json`（UI 图标本地子集）、`front/scripts/generate-icon-subset.mjs`（子集生成）。
 - 应用装配：`backend-go/internal/app/router.go`、`backend-go/internal/app/runtime.go`。
 
 ## 变更溯源
@@ -144,3 +194,16 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 | 2026-08-22 | aggregate-tagging-resilience | 提取链路容错：JSON 尾逗号无损修复（jsonutil）；单标签 aux/description 校验失败降级保留不再整片报废（mono+聚合同步）；聚合零产出回落 mono 双分支（含 heuristic 兜底）；修复后实测 event 存活（派早报 0→15 标签含 5 event、周刊首栏目 0.9 落地） | [`archive/2026-08-22-aggregate-tagging-resilience`](../../../openspec/changes/archive/2026-08-22-aggregate-tagging-resilience) |
 | 2026-08-01 | localize-icons | Feed 图标从「存远程 URL 前端直连」改为「后端下载落盘 `data/icons/feeds/` + DB 存 `/icons/...` 同源路径」；favicon 探测增强（首页 HTML `<link rel="icon">` 解析 + `/favicon.ico` 猜测 + 下载验证）；UI 图标（mdi）改本地子集注册、运行时零联网 | [`openspec/changes/archive/2026-08-01-localize-icons`](../../../openspec/changes/archive/2026-08-01-localize-icons) |
 | 2026-09-04 | constraint-declaration-redline | 约束节红线句格式化：本域「业务约束与不变量」节每条约束改写为首行加粗自含红线句 + 细节跟后（语义不变），declaration 注入降为红线层（上线后实测 bytes 降约 60%），细节层经关键词/JIT 全节注入按需补全；本域为格式改写，无业务行为变更 | [`openspec/changes/archive/2026-09-04-constraint-declaration-redline`](../../../openspec/changes/archive/2026-09-04-constraint-declaration-redline) |
+| 2026-09-16 | heal-missing-feed-icons | 图标状态机加磁盘校验自愈：auto + `/icons/` 路径冻结前 `os.Stat` 本地文件（仅 `fs.ErrNotExist` 算缺失），文件丢失即重跑管线重抓（修复生产 20 个 feed 图标全 404——DB 从 dump 恢复、图标目录 `data/icons/` 未随行）；前端 `<img>` 降级只在合法 iconify 名时沿用 icon，否则强制 `mdi:rss`（原实现把图片路径当图标名传给 `<Icon>` → 空白而非占位） | [`openspec/changes/archive/2026-09-16-heal-missing-feed-icons`](../../../openspec/changes/archive/2026-09-16-heal-missing-feed-icons) |
+| 2026-09-16 | offline-catchup | 归档不再删标签边：`CleanupOldArticles` 移除删边 + 孤儿清理段（文章行与内容字段保留语义不变），边改由时间窗回收——`aux_label_cleanup` 串接 `EdgeGC`（`tag_edge_retention_days` 默认 7 天），`article_topic_tags` 边回收/孤儿 tag 清理移交该 job | [`openspec/changes/archive/2026-09-16-offline-catchup`](../../../openspec/changes/archive/2026-09-16-offline-catchup) |
+| 2026-09-18 | mobile-viewport-stage1 | 主工作台窄屏（<768px）适配阶段一：常驻侧栏改 `AppSidebarDrawer` 抽屉、列表/阅读单栏切换 `viewMode`（滚动记忆经 feedListScrollBridge 桥）、`100dvh`、四核心页 375px 不破版；宽屏零变化（DOM 断言 + bundle 指纹对照）；验收暴露三类实机缺陷（顶栏 flex 溢出互叠/backdrop-filter 锁 z-index 菜单被盖/微信源长单词撑破阅读态）已修，并沉淀通用「UI 验收机械断言」入 test-design.md、新手引导改默认关闭；断点契约与验收纪律入 [layout.md](../standard/frontend/layout.md) | [`openspec/changes/archive/2026-09-18-mobile-viewport-stage1`](../../../openspec/changes/archive/2026-09-18-mobile-viewport-stage1) |
+| 2026-09-17 | heal-dangling-article-refs | 删除路径（删订阅源 / 删分类）连带删除文章时 MUST 同事务维护按 ID 引用的 jsonb 数组；显式删除不依赖遗留 FK；删分类确认文案与实现对齐 | [`openspec/changes/archive/2026-09-17-heal-dangling-article-refs`](../../../openspec/changes/archive/2026-09-17-heal-dangling-article-refs) |
+| 2026-09-17 | declutter-article-list-panel | 阅读页中间栏（文章列表面板）行式改版：单一 surface 行式列表（去卡片框/消灭白奶油拼贴）、处理状态收敛为行尾单图标四态（排队⏳/处理中⟳/失败⚠/完成淡灰✓）+「处理详情」浮层（抓取/总结/标签三行+失败错误文案）、订阅状态卡缩为头部 ⓘ popover（只读）、日期筛选并入标题栏+条件 chip、单 feed 视图行内去重来源名、虚拟列表固定行高 80px；纯前端展示层，无业务约束变更；新 spec 能力 `reading-list-panel` | [`openspec/changes/archive/2026-09-17-declutter-article-list-panel`](../../../openspec/changes/archive/2026-09-17-declutter-article-list-panel) |
+| 2026-09-17 | fix-bulk-markall-all-scope | 「全部文章」视图 header「全部标为已读」必现 400 修复：前端 `handleMarkAllRead` 无选中项时补发合法 scope（后端 `PUT /api/articles/bulk-update` 自 2026-06 硬化要求 ids/feed_id/category_id/uncategorized 至少一个），存量 bug（非近期回归） | [`archive/2026-09-17-fix-bulk-markall-all-scope`](../../../openspec/changes/archive/2026-09-17-fix-bulk-markall-all-scope) |
+| 2026-09-17 | redesign-reading-pane | 阅读页右侧文章主体克制阅读版式重排：reader 840px 阅读列居中（760 起步、超宽屏反馈后上调）、去卡片化（留白+细分隔线分区）、宋体标题+红 kicker 编辑签名、暖米渐变背景（噪点方案试看后否决）、处理状态横幅撤除改工具栏单图标四态+详情浮层、手动操作收 ⋯ 菜单（按 feed 能力显隐）、description 导语化+guard 收紧；新 spec 能力 `reading-article-pane` | [`archive/2026-09-17-redesign-reading-pane`](../../../openspec/changes/archive/2026-09-17-redesign-reading-pane) |
+| 2026-09-18 | add-source-board-hit-rate | 源视角观测：新增只读聚合 `GET /api/feeds/board-hit-stats`（窗口三分解 + 板块分布），把正向链路反查为「哪个源在喂有用的东西」；口径三条硬约束（按文章去重/含已归档/限窗口）唯一实现在 `sourcestats` 包；前端设置 → 订阅源列表 pill + 详情三分解块；版块视角与板块页来源面板见 [semantic-board.md](semantic-board.md) | [`openspec/changes/archive/2026-09-18-add-source-board-hit-rate`](../../../openspec/changes/add-source-board-hit-rate) |
+| 2026-09-19 | render-mermaid-diagrams | markdown 宿主内 mermaid 围栏块客户端渲染为图（存量 29 篇 AI 总结自动受益，零迁移）：`useMermaidRender` composable 动态按需加载 mermaid chunk（无块零下载）、逐块渲染失败无损降级（源码保留 + warning 提示）、`data-theme` 切换重绘；容器为方案 B 轻容器（上下 hairline + 小字图题，原型审批选定）；覆盖阅读页 AI 整理稿/firecrawl 正文 + tags 三面板；新 spec 能力 `markdown-mermaid-render` + `reading-article-pane` 增量 | [`openspec/changes/archive/2026-09-19-render-mermaid-diagrams`](../../../openspec/changes/archive/2026-09-19-render-mermaid-diagrams) |
+| 2026-09-19 | fix-preview-dialog-iframe-height | 文章预览弹窗（日报/版块共用 ArticlePreviewModal）切「内嵌网页」iframe 塌陷到 ~150px 修复：弹窗宿主高度链断裂（AppDialog body 非 flex，`.preview-body` flex:1 无效 → `h-full`/`flex:1` 整链 auto），内容区改内联确定高度 `calc(85vh - 110px)`（宁小勿大防双滚动条）；文本预览模式滚动移入内容区、工具栏常驻；新 spec 能力 `article-preview-dialog`；只动弹窗宿主，AppDialog/ArticleContentView/ArticleContent.css 未动 | [`openspec/changes/archive/2026-09-19-fix-preview-dialog-iframe-height`](../../../openspec/changes/archive/2026-09-19-fix-preview-dialog-iframe-height) |
+| 2026-09-22 | add-image-proxy | 外链图片统一经 `GET /api/image-proxy` 加载根治图床防盗链 403 图裂（实测 sspai 禁空 Referer → `deny by referer access rule`）：后端注入 Referer（默认图片自身 origin，per-host 可覆盖）+ 浏览器 UA 转发，磁盘缓存 `data/image-cache/`（sha256 命名、mtime LRU、`IMAGE_CACHE_MAX_MB` 默认 256MB 淘汰到 90% 水位）；前端 6 个加载点（列表封面/预览头图/正文 img/整理稿/侦探墙贴图/外链 favicon）经 `proxiedImageUrl()` 渲染时改写，**库里仍存原始外链零迁移**，破图降级行为不变；删侦探墙 `referrerPolicy=no-referrer`（403 主因），后端自有地址（/icons、同源）不进代理防自指 | [`openspec/changes/archive/2026-09-22-add-image-proxy`](../../../openspec/changes/archive/2026-09-22-add-image-proxy) |
+| 2026-09-24 | slim-article-list-payload | `GET /api/articles` 列表改窄投影：正文类大字段（`content`/`description`/`firecrawl_content`/`ai_content_summary`）不再下发，新增 ≤200 字符纯文本 `excerpt` 供列表首帧导语；正文与完整导语唯一来源收敛到详情接口；`per_page` 超 100 按 100 返回并记 WARN；阅读页导语改「详情 `description` → 列表 `excerpt`」回退、自动刷新单调度器串行错峰 + 刷新后只重取当前筛选当前页（单页体积 834 KB → <100 KB 量级） | [`openspec/changes/archive/2026-09-24-slim-article-list-payload`](../../../openspec/changes/archive/2026-09-24-slim-article-list-payload) |
+

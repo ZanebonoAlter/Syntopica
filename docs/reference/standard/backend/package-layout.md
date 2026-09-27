@@ -29,13 +29,17 @@ internal/<domain>/
 
 | Domain | 职责 |
 |--------|------|
-| `admin` | 管理后台（handler, service, scheduler, repository, wire） |
+| `admin` | 管理后台（handler, repository, scheduler〔域内 job 定义〕, routes, wire；AI 运维/poll/comtrade） |
 | `reader` | 订阅与文章域 |
 | `tagmanagement` | 标签系统域 |
 | `topicgraph` | 主题图谱域 |
 | `dataenrichment` | 数据增强编排域（板块↔数据源配置、分层新闻汇总循环A、三角色增强循环B、review judge 认知循环） |
+| `datasources` | 外部研究数据源域（EIA/JODi/WDI/Comtrade 取数器 + 目录/probe API + wiring 装配） |
+| `discovery` | 订阅发现域（feed-discovery：候选/召回/推荐/可用性/目录同步/偏好画像；decouple-backend-domains 自 admin 迁出） |
 
 > 新增 domain 时必须先在本表登记，再创建包；脚本会拦截未登记的 `internal/<新名>/`。
+>
+> 域间边界规则（跨域只走 root 门面 + depguard 拦截）见 spec `backend-package-boundaries` 与 `.golangci.yml` depguard 配置；单域独占模型放域内 `models/` 子包（AutoMigrate 经 `database.RegisterModels` 自注册）。
 
 ## 共享目录（非 domain）
 

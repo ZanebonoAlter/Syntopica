@@ -185,3 +185,17 @@ func TestUpsertProviderCreateDuplicateNameRejected(t *testing.T) {
 	require.Contains(t, err.Error(), "alpha")
 }
 
+// fix-provider-delete-route-deadlock：provider 删除级联解绑后线路可能被摘空，
+// 查询该能力时返回既有的 ErrNoProviders，而非 panic 或不一致状态。
+func TestStoreLoadRouteWithProvidersEmptyRoute(t *testing.T) {
+	db := setupAIRouterTestDB(t)
+	store := NewStore(db)
+
+	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
+	require.NoError(t, db.Create(&route).Error)
+
+	loadedRoute, providers, err := store.LoadRouteWithProviders(CapabilitySummary)
+	require.ErrorIs(t, err, ErrNoProviders)
+	require.NotNil(t, loadedRoute, "被摘空的线路本身应保留")
+	require.Empty(t, providers)
+}

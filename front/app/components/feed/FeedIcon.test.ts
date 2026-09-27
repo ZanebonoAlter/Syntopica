@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { Icon } from '@iconify/vue'
 import FeedIcon from './FeedIcon.vue'
 
 // FeedIcon's load-bearing behavior is graceful degradation: when an icon URL
@@ -15,17 +16,20 @@ describe('FeedIcon', () => {
       props: { icon: 'https://example.com/favicon.ico' },
     })
     expect(wrapper.find('img').exists()).toBe(true)
-    expect(wrapper.find('img').attributes('src')).toBe('https://example.com/favicon.ico')
+    // 外链 favicon 经图片代理加载（spec：前端外链图片统一改写）。
+    expect(wrapper.find('img').attributes('src')).toBe(
+      `/api/image-proxy?url=${encodeURIComponent('https://example.com/favicon.ico')}`,
+    )
   })
 
-  it('renders an <img> with the backend origin for a same-origin relative path', () => {
-    // Backend-served local icon: /icons/feeds/<id>.<ext> (dev origin is
-    // http://localhost:5000 via getApiOrigin, prod is same-origin).
+  it('renders an <img> with the backend origin for a relative path', () => {
+    // Backend-served local icon: /icons/feeds/<id>.<ext> (default apiBase is
+    // absolute http://localhost:5100/api, so origin is the backend).
     const wrapper = mount(FeedIcon, {
       props: { icon: '/icons/feeds/42.png' },
     })
     expect(wrapper.find('img').exists()).toBe(true)
-    expect(wrapper.find('img').attributes('src')).toBe('http://localhost:5000/icons/feeds/42.png')
+    expect(wrapper.find('img').attributes('src')).toBe('http://localhost:5100/icons/feeds/42.png')
   })
 
   it('falls back to the Iconify placeholder when a local path image fails to load', async () => {
@@ -38,6 +42,51 @@ describe('FeedIcon', () => {
 
     expect(wrapper.find('img').exists()).toBe(false)
     expect(wrapper.find('svg').exists()).toBe(true)
+  })
+
+  // Regression: the placeholder used to receive the raw icon value, so a local
+  // path became an unresolvable iconify name and <Icon> rendered an empty <svg>
+  // — a blank gap, exactly what the degradation is supposed to prevent.
+  it('passes mdi:rss (not the image path) to the placeholder when a local path fails', async () => {
+    const wrapper = mount(FeedIcon, {
+      props: { icon: '/icons/feeds/2.ico' },
+    })
+    await wrapper.find('img').trigger('error')
+
+    expect(wrapper.findComponent(Icon).props('icon')).toBe('mdi:rss')
+  })
+
+  it('passes mdi:rss (not the remote URL) to the placeholder when a remote URL fails', async () => {
+    const wrapper = mount(FeedIcon, {
+      props: { icon: 'https://example.com/broken.ico' },
+    })
+    await wrapper.find('img').trigger('error')
+
+    expect(wrapper.findComponent(Icon).props('icon')).toBe('mdi:rss')
+  })
+
+  it('keeps a real iconify name when one is supplied', () => {
+    const wrapper = mount(FeedIcon, {
+      props: { icon: 'mdi:github' },
+    })
+
+    expect(wrapper.findComponent(Icon).props('icon')).toBe('mdi:github')
+  })
+
+  it('keeps a hyphenated third-party iconify name', () => {
+    const wrapper = mount(FeedIcon, {
+      props: { icon: 'simple-icons:nuxtdotjs' },
+    })
+
+    expect(wrapper.findComponent(Icon).props('icon')).toBe('simple-icons:nuxtdotjs')
+  })
+
+  it('renders mdi:rss for legacy / non-name icon values instead of a blank gap', () => {
+    for (const icon of ['rss', 'icons/feeds/2.ico', 'data:image/png;base64,AAAA']) {
+      const wrapper = mount(FeedIcon, { props: { icon } })
+      expect(wrapper.findComponent(Icon).props('icon')).toBe('mdi:rss')
+      expect(wrapper.find('img').exists()).toBe(false)
+    }
   })
 
   it('falls back to the Iconify placeholder (svg) when the image fails to load', async () => {
@@ -65,7 +114,9 @@ describe('FeedIcon', () => {
     // A new valid URL should render the <img> again (failure flag reset)
     await wrapper.setProps({ icon: 'https://example.com/good.ico' })
     expect(wrapper.find('img').exists()).toBe(true)
-    expect(wrapper.find('img').attributes('src')).toBe('https://example.com/good.ico')
+    expect(wrapper.find('img').attributes('src')).toBe(
+      `/api/image-proxy?url=${encodeURIComponent('https://example.com/good.ico')}`,
+    )
   })
 
   it('renders the Iconify placeholder (svg) directly when icon is empty', () => {

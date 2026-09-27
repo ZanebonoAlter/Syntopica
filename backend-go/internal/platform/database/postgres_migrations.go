@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/articlerefs"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/textutil"
 )
@@ -24,6 +24,39 @@ var PruneRelationsRebuild func(tx *gorm.DB, boardID uint) error
 // registered by internal/topicgraph) use it to no-op when the table is absent,
 // rather than failing on CREATE INDEX / ALTER TABLE. This keeps migrations
 // safe on deployments that don't register those domain models.
+// EmbeddingConfigDefault is the payload for the EmbeddingConfigSeeder hook
+// (declared here so migrations and the tagmanagement implementation agree
+// without database importing tagmanagement/models — decouple-backend-domains).
+type EmbeddingConfigDefault struct {
+	Key         string
+	Value       string
+	Description string
+}
+
+var (
+	// EmbeddingConfigSeeder seeds embedding_config defaults. Wired by the
+	// tagmanagement root (production) and platform/testutil (golden schema).
+	EmbeddingConfigSeeder func(db *gorm.DB, defaults []EmbeddingConfigDefault) error
+	// AuxLabelDupMerge performs the one-shot auxiliary-label dedup migration.
+	// Wired by the tagmanagement root (production) and platform/testutil.
+	AuxLabelDupMerge func(db *gorm.DB) error
+)
+
+func runAuxLabelDupMergeHook(db *gorm.DB) error {
+	if AuxLabelDupMerge == nil {
+		return fmt.Errorf("aux label dup-merge hook not wired (tagmanagement root import missing)")
+	}
+	if err := AuxLabelDupMerge(db); err != nil {
+		return err
+	}
+	// Invalidate board composition cache here (hook owner side): the moved
+	// implementation cannot import database.InvalidateBoardCache.
+	if InvalidateBoardCache != nil {
+		InvalidateBoardCache()
+	}
+	return nil
+}
+
 func tableExists(db *gorm.DB, table string) bool {
 	var exists bool
 	if err := db.Raw(`SELECT to_regclass(?) IS NOT NULL`, "public."+table).Row().Scan(&exists); err != nil {
@@ -249,40 +282,28 @@ func postgresMigrations() []Migration {
 			Version:     "20260413_0002",
 			Description: "Seed embedding_config default values.",
 			Up: func(db *gorm.DB) error {
-				defaults := []models.EmbeddingConfig{
+				if EmbeddingConfigSeeder == nil {
+					return fmt.Errorf("embedding config seeder hook not wired (tagmanagement root import missing)")
+				}
+				return EmbeddingConfigSeeder(db, []EmbeddingConfigDefault{
 					{Key: "high_similarity_threshold", Value: "0.97", Description: "Auto-reuse existing tag if similarity >= this value"},
 					{Key: "low_similarity_threshold", Value: "0.78", Description: "Auto-create new tag if similarity < this value"},
 					{Key: "embedding_model", Value: "", Description: "Override embedding model name (empty = read from provider)"},
 					{Key: "embedding_dimension", Value: "1024", Description: "Embedding vector dimension"},
-				}
-				for _, d := range defaults {
-					var existing models.EmbeddingConfig
-					if err := db.Where("key = ?", d.Key).First(&existing).Error; err != nil {
-						if err := db.Create(&d).Error; err != nil {
-							logging.Warnf("Warning: failed to seed embedding_config key %s: %v", d.Key, err)
-						}
-					}
-				}
-				return nil
+				})
 			},
 		},
 		{
 			Version:     "20260514_0002",
 			Description: "Seed event clustering config keys into embedding_config.",
 			Up: func(db *gorm.DB) error {
-				defaults := []models.EmbeddingConfig{
+				if EmbeddingConfigSeeder == nil {
+					return fmt.Errorf("embedding config seeder hook not wired (tagmanagement root import missing)")
+				}
+				return EmbeddingConfigSeeder(db, []EmbeddingConfigDefault{
 					{Key: "event_cluster_kw_min_overlap", Value: "2", Description: "Minimum shared keyword count for Stage 1 event tag keyword-overlap clustering"},
 					{Key: "event_cluster_sem_threshold", Value: "0.80", Description: "Minimum semantic cosine similarity for Stage 2 event tag clustering filter"},
-				}
-				for _, d := range defaults {
-					var existing models.EmbeddingConfig
-					if err := db.Where("key = ?", d.Key).First(&existing).Error; err != nil {
-						if err := db.Create(&d).Error; err != nil {
-							logging.Warnf("Warning: failed to seed embedding_config key %s: %v", d.Key, err)
-						}
-					}
-				}
-				return nil
+				})
 			},
 		},
 
@@ -1338,7 +1359,7 @@ func postgresMigrations() []Migration {
 		{
 			Version:     "20260717_0002",
 			Description: "Merge auxiliary label text variant duplicates by normalize_key grouping, reusing MergeAuxiliaryLabelAlias.",
-			Up:          runAuxLabelDupMerge,
+			Up:          runAuxLabelDupMergeHook,
 		},
 
 		// ── causal-analysis-agent: clear stale 演进定位 enrichment data ──
@@ -2391,7 +2412,679 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, compositeComponentsMigration())
 	migrations = append(migrations, watchMaterializedHintCleanupMigration())
 	migrations = append(migrations, watchSuggestionCleanupMigration())
-	return append(migrations, legacyDiscoverNewPendingDismissMigration())
+	migrations = append(migrations, legacyDiscoverNewPendingDismissMigration())
+	migrations = append(migrations, dedupeRSSArticlesMigration())
+	migrations = append(migrations, laneSnapshotFKMigration())
+	migrations = append(migrations, healDanglingArticleRefsMigration())
+	migrations = append(migrations, queueRetentionIndexMigration())
+	migrations = append(migrations, completionOnRefreshOffMigration())
+	migrations = append(migrations, normalizeArticleLinkFragmentsMigration())
+	migrations = append(migrations, marginNotesTablesMigration())
+	migrations = append(migrations, marginNotesWebSourcesMigration())
+	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration())
+}
+
+// dropProfileTablesMigration implements 20260926_0001
+// (restructure-settings-navigation): drop the two retired profile tables.
+// 事实依据：reference_roles 仅 1 行 seed 演示数据（UI 入口 2026-09-04 已摘）；
+// analysis_methods 仅 1 条 legacy 停用卡（从未启用，注入零次发生）——两表
+// 无用户数据价值，drop 无行为损失。幂等：IF EXISTS。回滚 = 按下方快照重建
+// 空表（无数据恢复诉求）。
+//
+// 表结构快照（供考古/重建，2026-09-26 取自真库）：
+//
+//	reference_roles:
+//	  id bigint PK (seq), name varchar(120) UNIQUE NOT NULL,
+//	  title varchar(200), content text NOT NULL, enabled boolean NOT NULL,
+//	  created_at/updated_at timestamptz
+//
+//	analysis_methods:
+//	  id bigint PK (seq), name varchar(120) UNIQUE NOT NULL,
+//	  title varchar(200), summary text,
+//	  selection_meta jsonb NOT NULL DEFAULT '{}', content text NOT NULL,
+//	  enabled boolean NOT NULL, legacy boolean NOT NULL DEFAULT false,
+//	  deleted_at timestamptz (indexed), created_at/updated_at timestamptz
+func dropProfileTablesMigration() Migration {
+	return Migration{
+		Version:     "20260926_0001",
+		Description: "restructure-settings-navigation: drop retired profile tables reference_roles and analysis_methods (zero usage, no user data).",
+		Up: func(db *gorm.DB) error {
+			if err := db.Exec(`DROP TABLE IF EXISTS reference_roles`).Error; err != nil {
+				return fmt.Errorf("drop reference_roles: %w", err)
+			}
+			if err := db.Exec(`DROP TABLE IF EXISTS analysis_methods`).Error; err != nil {
+				return fmt.Errorf("drop analysis_methods: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// boardSignalResearchProgressMigration implements 20260922_0002
+// (board-signal-reports tasks 4.7「断了不能白跑」):
+//
+// board_signal_research_progress is created by AutoMigrate (model registered
+// in internal/dataenrichment). This migration adds what AutoMigrate cannot
+// express:
+//
+// ① the status CHECK (running|abandoned|superseded),
+// ② the composite FK pinning owner/period to the candidate (candidate_id,
+//
+//	semantic_board_id, granularity, period → board_signal_candidate same
+//	columns; a progress row can never disagree with its candidate),
+//
+// ③ the (candidate_id, updated_at DESC) lookup index and the job_id unique
+//
+//	(repeated defensively; AutoMigrate owns both on fresh DBs).
+//
+// Forward-only; idempotent via DROP CONSTRAINT IF EXISTS + ADD and
+// CREATE INDEX IF NOT EXISTS.
+func boardSignalResearchProgressMigration() Migration {
+	return Migration{
+		Version:     "20260922_0002",
+		Description: "board-signal-reports: research progress table constraints (status CHECK, candidate composite FK, candidate-updated_at index, job_id unique) — per-round rolling progress survives job timeout/failure.",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "board_signal_research_progress") {
+				return nil
+			}
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				statements := []string{
+					`ALTER TABLE board_signal_research_progress
+						DROP CONSTRAINT IF EXISTS chk_board_signal_research_progress_status`,
+					`ALTER TABLE board_signal_research_progress
+						ADD CONSTRAINT chk_board_signal_research_progress_status
+						CHECK (status IN ('running', 'abandoned', 'superseded'))`,
+				}
+				if tableExists(tx, "board_signal_candidate") {
+					statements = append(statements,
+						`ALTER TABLE board_signal_research_progress
+							DROP CONSTRAINT IF EXISTS fk_board_signal_research_progress_candidate`,
+						`ALTER TABLE board_signal_research_progress
+							ADD CONSTRAINT fk_board_signal_research_progress_candidate
+							FOREIGN KEY (candidate_id, semantic_board_id, granularity, period)
+							REFERENCES board_signal_candidate (id, semantic_board_id, granularity, period)
+							ON DELETE RESTRICT`)
+				}
+				for _, stmt := range statements {
+					if err := tx.Exec(stmt).Error; err != nil {
+						return fmt.Errorf("board signal research progress constraint: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			return withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				for _, statement := range []string{
+					`CREATE INDEX IF NOT EXISTS idx_board_signal_research_progress_candidate ON board_signal_research_progress (candidate_id, updated_at DESC)`,
+					`CREATE UNIQUE INDEX IF NOT EXISTS uq_board_signal_research_progress_job ON board_signal_research_progress (job_id)`,
+				} {
+					if err := tx.Exec(statement).Error; err != nil {
+						return fmt.Errorf("create board signal research progress index: %w", err)
+					}
+				}
+				return nil
+			})
+		},
+	}
+}
+
+// boardSignalMigration implements 20260922_0001 (board-signal-reports phase 1):
+//
+// ① topic_enrichment_result gains kind='signal_report' plus three nullable
+//
+//	columns (granularity/period/source_signal_id). The two named CHECKs are
+//	DROPped and re-ADDed with the new branch (PostgreSQL CHECK has no
+//	incremental alter; 20260828_0001 sample). Existing rows never get the
+//	new columns backfilled — every other kind keeps them NULL.
+//
+// ② board_signal_discovery / board_signal_candidate (created by AutoMigrate;
+//
+//	the migration defensively repeats the ADD COLUMNs only) get their
+//	composite owner uniqueness and the composite FKs that make a candidate's
+//	board/granularity/period immutable relative to its batch, and a
+//	signal_report's owner/period immutable relative to its candidate.
+//
+// ③ board-period-id list indexes and the source_signal_id index.
+//
+// Forward-only; idempotent via DROP CONSTRAINT IF EXISTS + ADD and
+// CREATE INDEX IF NOT EXISTS.
+func boardSignalMigration() Migration {
+	return Migration{
+		Version:     "20260922_0001",
+		Description: "board-signal-reports: result kind=signal_report with nullable granularity/period/source_signal_id; discovery/candidate tables with composite owner FKs and board-period-id indexes.",
+		Up: func(db *gorm.DB) error {
+			// Dependent FKs must drop BEFORE the uniques they reference
+			// (PostgreSQL refuses dropping a depended-on constraint); the
+			// result→candidate FK is dropped first so the new-table block can
+			// safely rebuild the candidate unique on idempotent re-runs.
+			if tableExists(db, "topic_enrichment_result") && tableExists(db, "board_signal_discovery") && tableExists(db, "board_signal_candidate") {
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+						DROP CONSTRAINT IF EXISTS fk_topic_enrichment_result_signal_candidate`).Error; err != nil {
+						return fmt.Errorf("drop stale signal candidate FK: %w", err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+
+			// ── new-table constraints (tables exist after AutoMigrate; skip
+			// topicgraph-less or not-yet-migrated deployments defensively).
+			if tableExists(db, "board_signal_discovery") && tableExists(db, "board_signal_candidate") {
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					statements := []string{
+						`ALTER TABLE board_signal_candidate
+							DROP CONSTRAINT IF EXISTS fk_board_signal_candidate_discovery`,
+						// Composite owner identity — FK targets.
+						`ALTER TABLE board_signal_discovery
+							DROP CONSTRAINT IF EXISTS uq_board_signal_discovery_id_owner`,
+						`ALTER TABLE board_signal_discovery
+							ADD CONSTRAINT uq_board_signal_discovery_id_owner
+							UNIQUE (id, semantic_board_id, granularity, period)`,
+						`ALTER TABLE board_signal_candidate
+							DROP CONSTRAINT IF EXISTS uq_board_signal_candidate_id_owner`,
+						`ALTER TABLE board_signal_candidate
+							ADD CONSTRAINT uq_board_signal_candidate_id_owner
+							UNIQUE (id, semantic_board_id, granularity, period)`,
+						// A candidate can never disagree with its batch's owner/period.
+						`ALTER TABLE board_signal_candidate
+							ADD CONSTRAINT fk_board_signal_candidate_discovery
+							FOREIGN KEY (discovery_id, semantic_board_id, granularity, period)
+							REFERENCES board_signal_discovery (id, semantic_board_id, granularity, period)
+							ON DELETE RESTRICT`,
+					}
+					for _, stmt := range statements {
+						if err := tx.Exec(stmt).Error; err != nil {
+							return fmt.Errorf("board signal discovery/candidate constraint: %w", err)
+						}
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+
+			if !tableExists(db, "topic_enrichment_result") {
+				return nil
+			}
+
+			// Pure ADD COLUMN (AutoMigrate owns them; repeated defensively so the
+			// migration also works on a direct testcontainer).
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				for _, statement := range []string{
+					`ALTER TABLE topic_enrichment_result ADD COLUMN IF NOT EXISTS granularity VARCHAR(10)`,
+					`ALTER TABLE topic_enrichment_result ADD COLUMN IF NOT EXISTS period VARCHAR(12)`,
+					`ALTER TABLE topic_enrichment_result ADD COLUMN IF NOT EXISTS source_signal_id BIGINT`,
+				} {
+					if err := tx.Exec(statement).Error; err != nil {
+						return fmt.Errorf("add signal-report column: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			// No backfill by design: pre-signal rows keep the three columns NULL
+			// (旧行不回填，不猜测历史周期归属). Defensively refuse rows that would
+			// violate the new shape before the constraints re-ADD hides them.
+			var invalidSignalRows int64
+			if err := db.Raw(`SELECT count(*) FROM topic_enrichment_result
+				WHERE result_kind <> 'signal_report'
+				  AND (granularity IS NOT NULL OR period IS NOT NULL OR source_signal_id IS NOT NULL)`).Scan(&invalidSignalRows).Error; err != nil {
+				return fmt.Errorf("check topic_enrichment_result signal columns: %w", err)
+			}
+			if invalidSignalRows > 0 {
+				return fmt.Errorf("topic_enrichment_result has %d non-signal row(s) with granularity/period/source_signal_id set; refusing migration", invalidSignalRows)
+			}
+
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				// Kind enum: re-ADD with signal_report included.
+				if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+					DROP CONSTRAINT IF EXISTS chk_topic_enrichment_result_kind`).Error; err != nil {
+					return fmt.Errorf("drop stale result kind CHECK: %w", err)
+				}
+				if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+					ADD CONSTRAINT chk_topic_enrichment_result_kind
+					CHECK (result_kind IN ('topic_analysis', 'board_brief', 'board_investigation', 'legacy_board_analysis', 'signal_report'))`).Error; err != nil {
+					return fmt.Errorf("add result kind CHECK: %w", err)
+				}
+				// Owner/period shape: re-ADD with the signal_report branch.
+				if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+					DROP CONSTRAINT IF EXISTS chk_topic_enrichment_result_parent_shape`).Error; err != nil {
+					return fmt.Errorf("drop stale result parent-shape CHECK: %w", err)
+				}
+				if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+					ADD CONSTRAINT chk_topic_enrichment_result_parent_shape CHECK (
+						(result_kind = 'topic_analysis'
+							AND analysis_scope = 'topic'
+							AND persistent_topic_id IS NOT NULL AND semantic_board_id IS NULL
+							AND parent_result_id IS NULL AND question_key IS NULL)
+						OR (result_kind IN ('board_brief', 'legacy_board_analysis')
+							AND analysis_scope = 'board'
+							AND semantic_board_id IS NOT NULL AND persistent_topic_id IS NULL
+							AND parent_result_id IS NULL AND question_key IS NULL
+							AND granularity IS NULL AND period IS NULL AND source_signal_id IS NULL)
+						OR (result_kind = 'board_investigation'
+							AND analysis_scope = 'board'
+							AND semantic_board_id IS NOT NULL AND persistent_topic_id IS NULL
+							AND parent_result_id IS NOT NULL
+							AND question_key IS NOT NULL
+							AND question_key ~ '^[0-9a-f]{64}$'
+							AND granularity IS NULL AND period IS NULL AND source_signal_id IS NULL)
+						OR (result_kind = 'signal_report'
+							AND analysis_scope = 'board'
+							AND semantic_board_id IS NOT NULL AND persistent_topic_id IS NULL
+							AND parent_result_id IS NULL AND question_key IS NULL
+							-- NULL-aware guards: a CHECK is satisfied by an UNKNOWN
+							-- (NULL) predicate in PostgreSQL, so NULL granularity/period
+							-- must be rejected explicitly, not left to IN/regex NULL
+							-- propagation.
+							AND granularity IS NOT NULL AND period IS NOT NULL
+							AND granularity IN ('month', 'year')
+							AND ((granularity = 'month' AND period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$')
+								OR (granularity = 'year' AND period ~ '^[0-9]{4}$' AND period BETWEEN '2000' AND '2100'))
+							AND source_signal_id IS NOT NULL)
+					)`).Error; err != nil {
+					return fmt.Errorf("add result parent-shape CHECK: %w", err)
+				}
+				// A signal_report's owner/period can never disagree with its
+				// candidate (NULL source_signal_id rows simply don't match —
+				// MATCH SIMPLE; non-signal rows are outside the FK entirely).
+				if tableExists(tx, "board_signal_candidate") {
+					if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+						DROP CONSTRAINT IF EXISTS fk_topic_enrichment_result_signal_candidate`).Error; err != nil {
+						return fmt.Errorf("drop stale signal candidate FK: %w", err)
+					}
+					if err := tx.Exec(`ALTER TABLE topic_enrichment_result
+						ADD CONSTRAINT fk_topic_enrichment_result_signal_candidate
+						FOREIGN KEY (source_signal_id, semantic_board_id, granularity, period)
+						REFERENCES board_signal_candidate (id, semantic_board_id, granularity, period)
+						ON DELETE RESTRICT`).Error; err != nil {
+						return fmt.Errorf("add signal candidate FK: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				for _, statement := range []string{
+					`CREATE INDEX IF NOT EXISTS idx_board_signal_discovery_board_period ON board_signal_discovery (semantic_board_id, granularity, period, id DESC)`,
+					`CREATE INDEX IF NOT EXISTS idx_board_signal_candidate_board_period ON board_signal_candidate (semantic_board_id, granularity, period, id DESC)`,
+					`CREATE INDEX IF NOT EXISTS idx_board_signal_candidate_discovery ON board_signal_candidate (discovery_id, id DESC)`,
+					`CREATE INDEX IF NOT EXISTS idx_topic_enrichment_result_signal_board_period ON topic_enrichment_result (semantic_board_id, granularity, period, id DESC) WHERE result_kind = 'signal_report'`,
+					`CREATE INDEX IF NOT EXISTS idx_topic_enrichment_result_source_signal ON topic_enrichment_result (source_signal_id, id DESC) WHERE source_signal_id IS NOT NULL`,
+				} {
+					if err := tx.Exec(statement).Error; err != nil {
+						return fmt.Errorf("create board signal index: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+}
+
+// normalizeArticleLinkFragmentsMigration implements 20260920_0001 (v2ex link
+// fragment dedupe fix): strip the URL fragment from articles.link, then merge
+// the duplicates this surfaces. V2EX appends a drifting #replyN anchor (reply
+// count at feed-generation time) to every entry link, so the same topic changed
+// link between refreshes and slipped past the (feed_id, link) dedupe — 93
+// groups / 282 surplus rows across the two v2ex tab feeds alone, every copy
+// crawling firecrawl separately. The parser now normalizes entry links at
+// ingestion (textutil.StripURLFragment); this one-shot repairs the stored rows.
+// Fragments never reach the server, so stripping loses nothing; `#!` hashbang
+// fragments (SPA route identity) are preserved.
+//
+// Irreversible: the deleted copies are not recoverable. Groups reuse the
+// 20260917_0001 merge contract (tags, reading behaviors, queued jobs and
+// daily-report refs rewire to the keeper, tag_count recomputed). Groups are
+// keyed by stripped link in Go (dialect-neutral) and disjoint by construction,
+// so the per-group normalization UPDATEs cannot collide with the
+// uq_articles_feed_link unique index. Re-running is a no-op.
+func normalizeArticleLinkFragmentsMigration() Migration {
+	return Migration{
+		Version:     "20260920_0001",
+		Description: "strip drifting #fragment anchors from articles.link (V2EX #replyN) and merge the duplicates this surfaces (20260917_0001 merge contract; #! hashbang preserved).",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "articles") {
+				logging.Infof("normalize-article-link-fragments: articles absent; nothing to repair")
+				return nil
+			}
+
+			var rows []struct {
+				ID     uint
+				FeedID uint
+				Link   string
+			}
+			if err := db.Raw(`
+				SELECT id, feed_id, link FROM articles
+				WHERE link <> '' AND link LIKE '%#%'`).Scan(&rows).Error; err != nil {
+				return fmt.Errorf("load fragment-carrying article links: %w", err)
+			}
+
+			type groupKey struct {
+				feedID uint
+				base   string
+			}
+			members := make(map[groupKey][]uint)
+			for _, r := range rows {
+				key := groupKey{r.FeedID, textutil.StripURLFragment(r.Link)}
+				members[key] = append(members[key], r.ID)
+			}
+			// Fold in the exact stripped-link row when one exists (a topic stored
+			// once without a fragment): it is the natural keeper candidate.
+			for key := range members {
+				var exact []uint
+				if err := db.Raw(`SELECT id FROM articles WHERE feed_id = ? AND link = ?`,
+					key.feedID, key.base).Scan(&exact).Error; err != nil {
+					return fmt.Errorf("probe exact-link row (feed=%d link=%s): %w", key.feedID, key.base, err)
+				}
+				members[key] = append(members[key], exact...)
+			}
+
+			var merged, normalized int
+			for key, ids := range members {
+				if len(ids) > 1 {
+					if err := mergeDuplicateArticleRows(db, key.feedID, "a.id IN ?", ids); err != nil {
+						return fmt.Errorf("merge fragment group (feed=%d link=%s): %w", key.feedID, key.base, err)
+					}
+					merged++
+				}
+				// After the merge exactly one row per group survives; stamping the
+				// stripped link cannot collide (each base appears once per feed).
+				if err := db.Model(&models.Article{}).
+					Where("id IN ?", ids).
+					Update("link", key.base).Error; err != nil {
+					return fmt.Errorf("normalize link to %s (feed=%d): %w", key.base, key.feedID, err)
+				}
+				normalized++
+			}
+			logging.Infof("normalize-article-link-fragments: fragment_rows=%d groups=%d merged=%d links_normalized=%d",
+				len(rows), len(members), merged, normalized)
+			return nil
+		},
+	}
+}
+
+// queueRetentionIndexMigration implements 20260917_0003
+// (add-notification-center, log-cleanup delta): partial indexes backing the
+// extended queue-row retention DELETEs in job_log_cleanup — completed rows
+// older than 1 day, failed rows older than 30 days — across tag_jobs,
+// firecrawl_jobs and embedding_queues. Same partial-index precedent as
+// idx_embedding_queues_completed_created (20260820_0002). Idempotent.
+func queueRetentionIndexMigration() Migration {
+	type queueIdx struct {
+		table string
+		name  string
+		where string
+	}
+	indexes := []queueIdx{
+		{"tag_jobs", "idx_tag_jobs_completed_created", "status = 'completed'"},
+		{"tag_jobs", "idx_tag_jobs_failed_created", "status = 'failed'"},
+		{"firecrawl_jobs", "idx_firecrawl_jobs_completed_created", "status = 'completed'"},
+		{"firecrawl_jobs", "idx_firecrawl_jobs_failed_created", "status = 'failed'"},
+		{"embedding_queues", "idx_embedding_queues_failed_created", "status = 'failed'"},
+	}
+	return Migration{
+		Version:     "20260917_0003",
+		Description: "Add partial indexes on created_at WHERE status IN ('completed','failed') for tag_jobs/firecrawl_jobs/embedding_queues to back the extended log_cleanup queue-row retention DELETEs (completed 1d, failed 30d). Idempotent.",
+		Up: func(db *gorm.DB) error {
+			for _, idx := range indexes {
+				if !tableExists(db, idx.table) {
+					continue
+				}
+				if err := db.Exec(fmt.Sprintf(
+					`CREATE INDEX IF NOT EXISTS %s ON %s (created_at) WHERE %s`,
+					idx.name, idx.table, idx.where)).Error; err != nil {
+					return fmt.Errorf("create %s: %w", idx.name, err)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// healDanglingArticleRefsMigration implements 20260917_0002
+// (heal-dangling-article-refs D5): one-shot repair of the article references that
+// pre-fix delete paths orphaned inside daily_report_threads.related_article_ids —
+// the loser copies removed by 20260917_0001 carried references nobody rewired,
+// which made daily-report 线索 resolve to "文章 #<id>" instead of a source.
+//
+// Two steps, in this order: normalize non-array values (JSON null scalar and SQL
+// NULL) to [] so the sweep can read every row, then prune references without a
+// live articles row. Irreversible data repair — no Down; generated-at-the-time
+// snapshot counters (board_daily_reports.article_count and friends) are
+// deliberately NOT recomputed (they are report-time snapshots, not live counts).
+// Re-running is a no-op.
+func healDanglingArticleRefsMigration() Migration {
+	return Migration{
+		Version:     "20260917_0002",
+		Description: "heal-dangling-article-refs: normalize daily_report_threads.related_article_ids (JSON null → []) and prune references to deleted articles (irreversible data repair; report snapshot counters untouched).",
+		Up: func(db *gorm.DB) error {
+			// daily_report_threads is AutoMigrated from the daily-report models, not
+			// created by a versioned migration, so a binary that never registers
+			// those models (CLI tools, narrow test packages) has no table to repair.
+			// Same guard the thread-index migration uses.
+			if !tableExists(db, "daily_report_threads") {
+				logging.Infof("heal-dangling-article-refs: daily_report_threads absent; nothing to repair")
+				return nil
+			}
+			normalized, err := articlerefs.NormalizeThreadRefs(db)
+			if err != nil {
+				return fmt.Errorf("normalize thread article refs: %w", err)
+			}
+			rows, refs, err := articlerefs.PruneDanglingRefs(db, articlerefs.DefaultBatchSize)
+			if err != nil {
+				return fmt.Errorf("prune dangling article refs: %w", err)
+			}
+			logging.Infof("heal-dangling-article-refs: normalized=%d rows_repaired=%d refs_removed=%d",
+				normalized, rows, refs)
+			return nil
+		},
+	}
+}
+
+// dedupeRSSArticlesMigration implements 20260917_0001 (dedupe-rss-articles D4):
+// one-shot merge of articles duplicated inside one feed (same feed_id + link).
+// Historically the refresh path deduped on (feed_id, title) only, so live-news
+// feeds that roll the title under a stable URL and concurrent refreshes left
+// 2..5 rows per article; every copy was tagged separately (duplicate AI calls
+// and duplicate tagging records).
+//
+// Per group the most complete row is kept — active before archived (an
+// archived keeper would silently drop the article out of the live window),
+// then tagged / crawled / summarised, then engagement — and ties go to the
+// lowest id (earliest). Tag links move to the keeper (conflicts are dropped,
+// the (article_id, topic_tag_id) unique index survives either way), reading
+// behaviours are re-pointed, queued jobs are re-pointed or dropped, copies are
+// deleted, and the keeper's denormalised tag_count is recomputed. The unique
+// partial index on (feed_id, link) is created in the same transaction so
+// "merge succeeded" and "constraint enforced" stay atomic.
+//
+// Irreversible: the deleted copies are not recoverable. Rows with an empty link
+// are never touched (they cannot be deduped) and are excluded from the unique
+// index.
+func dedupeRSSArticlesMigration() Migration {
+	return Migration{
+		Version:     "20260917_0001",
+		Description: "dedupe-rss-articles: merge articles duplicated per (feed_id, link), rewire tags/behaviors/jobs, add unique (feed_id, link) index.",
+		Up: func(db *gorm.DB) error {
+			// Plain link index: serves the merge below and the runtime cross-feed
+			// tag-reuse lookup (same name as the GORM model tag).
+			if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_articles_link ON articles(link)").Error; err != nil {
+				return fmt.Errorf("create articles.link index: %w", err)
+			}
+
+			var groups []struct {
+				FeedID uint
+				Link   string
+			}
+			if err := db.Raw(`
+				SELECT feed_id, link FROM articles
+				WHERE link <> ''
+				GROUP BY feed_id, link
+				HAVING COUNT(*) > 1`).Scan(&groups).Error; err != nil {
+				return fmt.Errorf("find duplicate article groups: %w", err)
+			}
+			for _, g := range groups {
+				if err := mergeDuplicateArticleGroup(db, g.FeedID, g.Link); err != nil {
+					return err
+				}
+			}
+			if len(groups) > 0 {
+				logging.Infof("dedupe-rss-articles: merged %d duplicate article groups", len(groups))
+			}
+
+			if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_articles_feed_link
+				ON articles(feed_id, link) WHERE link <> ''`).Error; err != nil {
+				return fmt.Errorf("create unique (feed_id, link) index: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// mergeDuplicateArticleGroup collapses one (feed_id, link) group to a single
+// surviving article row. No-op for groups that shrank below 2 rows.
+func mergeDuplicateArticleGroup(db *gorm.DB, feedID uint, link string) error {
+	return mergeDuplicateArticleRows(db, feedID, "a.link = ?", link)
+}
+
+// mergeDuplicateArticleRows collapses one group of same-feed article rows —
+// selected by whereLink (a condition over the `a` alias, variadic-arg bound
+// via arg) — down to a single surviving row. The 20260917_0001 merge selects
+// with "a.link = ?"; the 20260920_0001 fragment migration selects by id list
+// ("a.id IN ?") because its rows differ only in the drifting #fragment.
+func mergeDuplicateArticleRows(db *gorm.DB, feedID uint, whereLink string, arg any) error {
+	var rows []struct {
+		ID               uint
+		Archived         bool
+		Favorite         bool
+		Read             bool
+		FirecrawlContent string
+		AIContentSummary string
+		HasTags          bool
+		HasBehavior      bool
+	}
+	// has_tags / has_behavior come from EXISTS rather than the denormalised
+	// tag_count column so a stale counter can never steer the keeper choice.
+	if err := db.Raw(`
+		SELECT a.id, a.archived, a.favorite, a."read",
+		       COALESCE(a.firecrawl_content, '') AS firecrawl_content,
+		       COALESCE(a.ai_content_summary, '') AS ai_content_summary,
+		       EXISTS(SELECT 1 FROM article_topic_tags t WHERE t.article_id = a.id) AS has_tags,
+		       EXISTS(SELECT 1 FROM reading_behaviors b WHERE b.article_id = a.id) AS has_behavior
+		FROM articles a
+		WHERE a.feed_id = ? AND `+whereLink+`
+		ORDER BY a.id`, feedID, arg).Scan(&rows).Error; err != nil {
+		return fmt.Errorf("load duplicate group (feed=%d): %w", feedID, err)
+	}
+	if len(rows) < 2 {
+		return nil
+	}
+
+	score := func(i int) int {
+		r := rows[i]
+		s := 0
+		if !r.Archived {
+			s += 1000
+		}
+		if r.HasTags {
+			s += 100
+		}
+		if r.FirecrawlContent != "" {
+			s += 10
+		}
+		if r.AIContentSummary != "" {
+			s += 10
+		}
+		if r.Favorite || r.Read || r.HasBehavior {
+			s++
+		}
+		return s
+	}
+
+	best := 0
+	for i := 1; i < len(rows); i++ {
+		if score(i) > score(best) {
+			best = i
+		}
+	}
+	keeper := rows[best].ID
+
+	for _, r := range rows {
+		if r.ID == keeper {
+			continue
+		}
+		// Move the copy's tag links the keeper does not already carry; the
+		// remaining (conflicting) rows are dropped below so the unique index
+		// on (article_id, topic_tag_id) is never violated.
+		if err := db.Exec(`
+			UPDATE article_topic_tags t SET article_id = ?
+			WHERE t.article_id = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM article_topic_tags k
+				WHERE k.article_id = ? AND k.topic_tag_id = t.topic_tag_id)`,
+			keeper, r.ID, keeper).Error; err != nil {
+			return fmt.Errorf("rewire tag links from article %d to %d: %w", r.ID, keeper, err)
+		}
+		if err := db.Exec(`DELETE FROM article_topic_tags WHERE article_id = ?`, r.ID).Error; err != nil {
+			return fmt.Errorf("drop conflicting tag links of article %d: %w", r.ID, err)
+		}
+
+		// Reading behaviours are real events: re-point them (and their
+		// denormalised feed id) so the surviving article keeps the history.
+		if err := db.Exec(`UPDATE reading_behaviors SET article_id = ?, feed_id = ? WHERE article_id = ?`,
+			keeper, feedID, r.ID).Error; err != nil {
+			return fmt.Errorf("re-point reading behaviors of article %d: %w", r.ID, err)
+		}
+
+		// Queued work for a row about to disappear is dropped when finished
+		// and re-pointed when still pending, so no job points at a dead id.
+		for _, job := range []struct{ table string }{
+			{"tag_jobs"}, {"firecrawl_jobs"},
+		} {
+			if !tableExists(db, job.table) {
+				continue
+			}
+			if err := db.Exec("DELETE FROM "+job.table+" WHERE article_id = ? AND status IN ('completed','failed')", r.ID).Error; err != nil {
+				return fmt.Errorf("drop finished %s rows of article %d: %w", job.table, r.ID, err)
+			}
+			if err := db.Exec("UPDATE "+job.table+" SET article_id = ? WHERE article_id = ?", keeper, r.ID).Error; err != nil {
+				return fmt.Errorf("re-point %s rows of article %d: %w", job.table, r.ID, err)
+			}
+		}
+
+		// Daily-report threads reference articles by ID. Point the doomed copy's
+		// references at the keeper before the row disappears, otherwise every
+		// 线索 that cited it becomes a dead link (heal-dangling-article-refs D2).
+		// A failure aborts the whole merge: a dangling reference costs more than
+		// a rolled-back group.
+		if _, err := articlerefs.RewireArticleRefs(db, r.ID, keeper); err != nil {
+			return fmt.Errorf("rewire article refs of article %d to %d: %w", r.ID, keeper, err)
+		}
+
+		if err := db.Exec(`DELETE FROM articles WHERE id = ?`, r.ID).Error; err != nil {
+			return fmt.Errorf("delete duplicate article %d: %w", r.ID, err)
+		}
+	}
+
+	// The survivor's counter must match the edges it actually holds.
+	if err := db.Exec(`UPDATE articles SET tag_count =
+		(SELECT COUNT(*) FROM article_topic_tags WHERE article_id = ?) WHERE id = ?`,
+		keeper, keeper).Error; err != nil {
+		return fmt.Errorf("recompute tag_count for article %d: %w", keeper, err)
+	}
+	return nil
 }
 
 // watchMaterializedHintCleanupMigration implements 20260905_0001: one-shot
@@ -2566,172 +3259,6 @@ func referenceRoleSeedRetireMigration() Migration {
 // board_composition). Set from semantic_board_cache.go init().
 var InvalidateBoardCache func()
 
-// runAuxLabelDupMerge performs a one-shot deduplication of active auxiliary
-// labels whose normalizeKey is identical (text-variant duplicates like
-// "SK 海力士" / "SK海力士").
-//
-// For each group: the label with the highest ref_count (ties broken by smallest
-// id) is the primary; all others are merged into it by moving aliases,
-// topic_tag_semantic_labels, and board_composition references, then disabling
-// the source. This mirrors the runtime MergeAuxiliaryLabelAlias semantics.
-//
-// Idempotent: after a successful run no group will have count>1 (disabled
-// labels are excluded from the grouping query).
-func runAuxLabelDupMerge(db *gorm.DB) error {
-	// Query active auxiliary labels.
-	type auxRow struct {
-		ID       uint
-		Label    string
-		RefCount int
-	}
-	var allRows []auxRow
-	if err := db.Model(&models.SemanticLabel{}).
-		Select("id, label, ref_count").
-		Where("label_type = ? AND status = ?", "auxiliary", "active").
-		Order("id ASC").
-		Find(&allRows).Error; err != nil {
-		return fmt.Errorf("dup-merge: query active auxiliary labels: %w", err)
-	}
-
-	// Group by normalizeKey.
-	groups := make(map[string][]auxRow)
-	for _, r := range allRows {
-		nk := textutil.NormalizeLabelKey(r.Label)
-		groups[nk] = append(groups[nk], r)
-	}
-
-	var mergeCount int
-	for nk, group := range groups {
-		if len(group) < 2 {
-			continue
-		}
-
-		// Primary = highest ref_count, ties broken by smallest id.
-		primary := group[0]
-		for i := 1; i < len(group); i++ {
-			if group[i].RefCount > primary.RefCount ||
-				(group[i].RefCount == primary.RefCount && group[i].ID < primary.ID) {
-				primary = group[i]
-			}
-		}
-
-		for _, secondary := range group {
-			if secondary.ID == primary.ID {
-				continue
-			}
-
-			logging.Infof("Dup-merge: normalize_key=%q: merging source=%d(%q, ref=%d) → target=%d(%q, ref=%d)",
-				nk, secondary.ID, secondary.Label, secondary.RefCount, primary.ID, primary.Label, primary.RefCount)
-
-			if err := mergeOneAuxLabelDup(db, secondary.ID, primary.ID); err != nil {
-				return fmt.Errorf("dup-merge: merge source=%d into target=%d: %w", secondary.ID, primary.ID, err)
-			}
-			mergeCount++
-		}
-
-		logging.Infof("Dup-merge: normalized %d duplicates into primary %q (id=%d)", len(group)-1, primary.Label, primary.ID)
-	}
-
-	logging.Infof("Dup-merge: complete — %d auxiliary labels merged across all groups", mergeCount)
-
-	// Invalidate board composition cache (board_composition rows may have been reassigned).
-	if InvalidateBoardCache != nil {
-		InvalidateBoardCache()
-	}
-
-	return nil
-}
-
-// mergeOneAuxLabelDup merges a single source auxiliary label into a target.
-// Mirrors MergeAuxiliaryLabelAlias semantics but uses direct DB operations
-// (the service method lives in a package that would create a circular import).
-func mergeOneAuxLabelDup(db *gorm.DB, sourceID, targetID uint) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		var source, target models.SemanticLabel
-		if err := tx.Where("id = ? AND label_type = ?", sourceID, "auxiliary").First(&source).Error; err != nil {
-			return fmt.Errorf("load source: %w", err)
-		}
-		if err := tx.Where("id = ? AND label_type = ?", targetID, "auxiliary").First(&target).Error; err != nil {
-			return fmt.Errorf("load target: %w", err)
-		}
-
-		// Merge aliases: source label + source aliases → target aliases (dedup).
-		aliasSet := make(map[string]bool)
-		for _, a := range target.Aliases {
-			aliasSet[strings.ToLower(strings.TrimSpace(a))] = true
-		}
-		for _, a := range append([]string{source.Label}, source.Aliases...) {
-			key := strings.ToLower(strings.TrimSpace(a))
-			if !aliasSet[key] && !strings.EqualFold(target.Label, a) {
-				target.Aliases = append(target.Aliases, a)
-				aliasSet[key] = true
-			}
-		}
-		if err := tx.Save(&target).Error; err != nil {
-			return fmt.Errorf("save target aliases: %w", err)
-		}
-
-		// Migrate topic_tag_semantic_labels: source → target, ON CONFLICT DO NOTHING.
-		var links []models.TopicTagSemanticLabel
-		if err := tx.Where("semantic_label_id = ?", sourceID).Find(&links).Error; err != nil {
-			return fmt.Errorf("load source links: %w", err)
-		}
-		for _, link := range links {
-			migrated := models.TopicTagSemanticLabel{TopicTagID: link.TopicTagID, SemanticLabelID: targetID}
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&migrated).Error; err != nil {
-				return fmt.Errorf("migrate link topic_tag=%d: %w", link.TopicTagID, err)
-			}
-		}
-		if err := tx.Where("semantic_label_id = ?", sourceID).Delete(&models.TopicTagSemanticLabel{}).Error; err != nil {
-			return fmt.Errorf("delete source links: %w", err)
-		}
-
-		// Migrate board_composition: source → target, ON CONFLICT DO NOTHING.
-		type boardCompRow struct {
-			BoardID          uint `gorm:"column:board_id"`
-			AuxiliaryLabelID uint `gorm:"column:auxiliary_label_id"`
-		}
-		var comps []boardCompRow
-		if err := tx.Table("board_composition").Where("auxiliary_label_id = ?", sourceID).Find(&comps).Error; err != nil {
-			return fmt.Errorf("load source board_composition: %w", err)
-		}
-		for _, comp := range comps {
-			if err := tx.Exec(`
-				INSERT INTO board_composition (board_id, auxiliary_label_id)
-				VALUES (?, ?) ON CONFLICT DO NOTHING
-			`, comp.BoardID, targetID).Error; err != nil {
-				return fmt.Errorf("migrate board_composition board=%d: %w", comp.BoardID, err)
-			}
-		}
-		if err := tx.Where("auxiliary_label_id = ?", sourceID).Delete(&models.BoardComposition{}).Error; err != nil {
-			return fmt.Errorf("delete source board_composition: %w", err)
-		}
-
-		// Recalculate ref_counts.
-		var targetRefCount int64
-		if err := tx.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", targetID).Count(&targetRefCount).Error; err != nil {
-			return fmt.Errorf("count target refs: %w", err)
-		}
-		var sourceRefCount int64
-		if err := tx.Model(&models.TopicTagSemanticLabel{}).Where("semantic_label_id = ?", sourceID).Count(&sourceRefCount).Error; err != nil {
-			return fmt.Errorf("count source refs: %w", err)
-		}
-		if err := tx.Model(&models.SemanticLabel{}).Where("id = ?", targetID).Update("ref_count", int(targetRefCount)).Error; err != nil {
-			return fmt.Errorf("update target ref_count: %w", err)
-		}
-		if err := tx.Model(&models.SemanticLabel{}).Where("id = ?", sourceID).Updates(map[string]any{
-			"ref_count":       int(sourceRefCount),
-			"status":          "disabled",
-			"embedding":       nil,
-			"merge_embedding": nil,
-		}).Error; err != nil {
-			return fmt.Errorf("disable source: %w", err)
-		}
-
-		return nil
-	})
-}
-
 // PruneUnderqualifiedCandidates hard-deletes all candidate topics with
 // hit_count < upgradeThreshold. Sections referencing them are unlinked
 // (persistent_topic_id / match fields / topic_status_at_report set to NULL).
@@ -2840,6 +3367,92 @@ func legacyDiscoverNewPendingDismissMigration() Migration {
 	}
 }
 
+// laneSnapshotFKMigration implements 20260910_0001: add the FK
+// topic_lane_snapshots.persistent_topic_id → board_persistent_topics(id)
+// ON DELETE CASCADE (overview-lane-dynamics design D2). AutoMigrate creates
+// the table + unique index but runs with DisableForeignKeyConstraintWhenMigrating,
+// so the FK lives here (same policy as fk_topic_watch_hits_watch / 20260825_0001).
+// Hard-deleting a topic removes its snapshot — the snapshot is a pure derived
+// cache, orphan rows are meaningless. Idempotent; skips when either table is
+// absent (topicgraph-less deployments).
+func laneSnapshotFKMigration() Migration {
+	return Migration{
+		Version:     "20260910_0001",
+		Description: "overview-lane-dynamics: FK topic_lane_snapshots.persistent_topic_id → board_persistent_topics ON DELETE CASCADE.",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_lane_snapshots") || !tableExists(db, "board_persistent_topics") {
+				return nil
+			}
+			// Orphan cleanup BEFORE the ADD CONSTRAINT (it validates existing rows;
+			// a stray orphan would fail the whole migration). The table ships new
+			// in this deploy so orphans cannot pre-exist — the guard is defensive,
+			// mirroring the watch-hit FK policy.
+			if err := db.Exec(`DELETE FROM topic_lane_snapshots
+				WHERE persistent_topic_id NOT IN (SELECT id FROM board_persistent_topics)`).Error; err != nil {
+				return fmt.Errorf("delete orphan lane snapshots: %w", err)
+			}
+			// FK (constraint DDL takes AccessExclusiveLock — guard with lock timeout).
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				if err := tx.Exec(`DO $$ BEGIN
+					IF NOT EXISTS (
+						SELECT 1 FROM information_schema.table_constraints
+						WHERE constraint_name = 'fk_topic_lane_snapshots_topic'
+							  AND table_name = 'topic_lane_snapshots'
+					) THEN
+						ALTER TABLE topic_lane_snapshots
+							ADD CONSTRAINT fk_topic_lane_snapshots_topic
+							FOREIGN KEY (persistent_topic_id) REFERENCES board_persistent_topics(id)
+							ON DELETE CASCADE;
+					END IF;
+				END $$`).Error; err != nil {
+					return fmt.Errorf("add fk_topic_lane_snapshots_topic: %w", err)
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+}
+
+// completionOnRefreshOffMigration implements 20260920_0002
+// (unify-feed-summary-toggles):
+// ①存量 feed 的 completion_on_refresh 全部置 false——历史遗产 24/24 全 true，
+// 且该字段从死字段变为真正生效的"刷新后自动总结"闸门，置 false 后自动总结
+// 静默关闭（想恢复的逐 feed 手动打开）；②冻结存量自动路径积压标记
+// pending/incomplete → complete——闸门关后这些文章不会再被调度扫描捞起，
+// 重置为 complete 避免 overview 待处理计数虚高。failed 保留以维持失败
+// 可观测性（迁移后不会再被扫描捞起，无需重置）。幂等：两条 UPDATE 的 WHERE
+// 条件在第二次执行时均命中 0 行。
+func completionOnRefreshOffMigration() Migration {
+	return Migration{
+		Version:     "20260920_0002",
+		Description: "unify-feed-summary-toggles: set all feeds completion_on_refresh=false and freeze legacy pending/incomplete summary_status to complete.",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "feeds") {
+				return nil
+			}
+			if err := db.Exec(`
+				UPDATE feeds SET completion_on_refresh = false
+				WHERE completion_on_refresh = true
+			`).Error; err != nil {
+				return fmt.Errorf("reset feeds.completion_on_refresh: %w", err)
+			}
+			if !tableExists(db, "articles") {
+				return nil
+			}
+			if err := db.Exec(`
+				UPDATE articles SET summary_status = 'complete'
+				WHERE summary_status IN ('pending', 'incomplete')
+			`).Error; err != nil {
+				return fmt.Errorf("freeze legacy pending/incomplete summary_status: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
 // watchSuggestionCleanupMigration one-shot deletes pending watch suggestions
 // (split-board-upgrade-directions: watch 观察池退役——存量 pending watch 行
 // 清理，幂等，二次执行 no-op。高置信 merge 存量 pending 行保留可确认).
@@ -2853,6 +3466,137 @@ func watchSuggestionCleanupMigration() Migration {
 			}
 			if err := db.Exec(`DELETE FROM board_upgrade_suggestions WHERE decision = 'watch'`).Error; err != nil {
 				return fmt.Errorf("delete pending watch suggestions: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// marginNotesTablesMigration implements 20260922_0003
+// (daily-report-margin-notes design D1):
+//
+// 三张新表全部由本版本化迁移创建（模型不注册 AutoMigrate，SQL 是 schema 唯一
+// 权威——vector 维度、jsonb 数组契约、term_norm 唯一索引需要显式控制）：
+//
+//	report_annotations  批注锚点：quoted_text + report/section/thread 归属 +
+//	                    字符偏移线索（日报 period 不可变保证可重放定位）；
+//	annotation_qas      问答轮：cited_article_ids/extracted_terms jsonb 数组
+//	                    契约（空写 [] 不写 null，对齐 thread 引用数组），审计
+//	                    冗余存 operation/provider/model（ai_call_logs 7 天清理，
+//	                    长期分析另行保存）；FK ON DELETE CASCADE 兑现「删除批注
+//	                    连带问答」；
+//	term_notes          术语库：term_norm 归一化唯一键（trim+全角→半角+大小写
+//	                    折叠），hit_count 累计不重复建条；embedding vector(2560)
+//	                    可空列为 P2 相似词归并预留（维度=生产库实测
+//	                    semantic_labels/daily_report_sections 等列同维，2026-09-22
+//	                    核定），P1 不写入。
+//
+// 无存量数据迁移，纯新增；回滚=前端还原+表保留（孤儿数据无害）。幂等：
+// CREATE TABLE/INDEX IF NOT EXISTS + FK 按约束名探测。
+func marginNotesTablesMigration() Migration {
+	return Migration{
+		Version:     "20260922_0003",
+		Description: "daily-report-margin-notes: create report_annotations / annotation_qas / term_notes (margin note anchors, QA turns with jsonb array contract, term library with normalized unique key and nullable vector(2560) embedding reserved for P2).",
+		Up: func(db *gorm.DB) error {
+			if err := db.Exec(`
+				CREATE TABLE IF NOT EXISTS report_annotations (
+					id                  BIGSERIAL PRIMARY KEY,
+					report_id           BIGINT       NOT NULL,
+					section_id          BIGINT       NOT NULL,
+					thread_id           BIGINT       NULL,
+					quoted_text         TEXT         NOT NULL,
+					anchor_offset_start INT          NOT NULL DEFAULT 0,
+					anchor_offset_end   INT          NOT NULL DEFAULT 0,
+					created_at          TIMESTAMPTZ  NOT NULL DEFAULT now()
+				)`).Error; err != nil {
+				return fmt.Errorf("create report_annotations: %w", err)
+			}
+			if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_report_annotations_report ON report_annotations (report_id)`).Error; err != nil {
+				return fmt.Errorf("create idx_report_annotations_report: %w", err)
+			}
+			if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_report_annotations_created ON report_annotations (created_at)`).Error; err != nil {
+				return fmt.Errorf("create idx_report_annotations_created: %w", err)
+			}
+
+			if err := db.Exec(`
+				CREATE TABLE IF NOT EXISTS annotation_qas (
+					id                BIGSERIAL PRIMARY KEY,
+					annotation_id     BIGINT        NOT NULL,
+					question          TEXT          NOT NULL,
+					answer            TEXT          NOT NULL,
+					cited_article_ids JSONB         NOT NULL DEFAULT '[]'::jsonb,
+					extracted_terms   JSONB         NOT NULL DEFAULT '[]'::jsonb,
+					operation         VARCHAR(80)   NULL,
+					provider          VARCHAR(100)  NULL,
+					model             VARCHAR(100)  NULL,
+					created_at        TIMESTAMPTZ   NOT NULL DEFAULT now()
+				)`).Error; err != nil {
+				return fmt.Errorf("create annotation_qas: %w", err)
+			}
+			if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_annotation_qas_annotation ON annotation_qas (annotation_id)`).Error; err != nil {
+				return fmt.Errorf("create idx_annotation_qas_annotation: %w", err)
+			}
+			// 删除批注连带问答（spec「删除批注连带问答」）——DB 级 CASCADE 兜底，
+			// repository 删除路径仍显式先删问答再删批注（双保险，语义一致）。
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				if err := tx.Exec(`DO $$ BEGIN
+					IF NOT EXISTS (
+						SELECT 1 FROM information_schema.table_constraints
+						WHERE constraint_name = 'fk_annotation_qas_annotation'
+							  AND table_name = 'annotation_qas'
+					) THEN
+						ALTER TABLE annotation_qas
+							ADD CONSTRAINT fk_annotation_qas_annotation
+							FOREIGN KEY (annotation_id) REFERENCES report_annotations(id)
+							ON DELETE CASCADE;
+					END IF;
+				END $$`).Error; err != nil {
+					return fmt.Errorf("add fk_annotation_qas_annotation: %w", err)
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			if err := db.Exec(`
+				CREATE TABLE IF NOT EXISTS term_notes (
+					id                  BIGSERIAL PRIMARY KEY,
+					term_norm           TEXT         NOT NULL,
+					term_display        TEXT         NOT NULL,
+					hit_count           INT          NOT NULL DEFAULT 1,
+					first_seen_board_id BIGINT       NULL,
+					first_seen_date     DATE         NULL,
+					last_seen_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+					created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+					embedding           vector(2560) DEFAULT NULL
+				)`).Error; err != nil {
+				return fmt.Errorf("create term_notes: %w", err)
+			}
+			if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_term_notes_term_norm ON term_notes (term_norm)`).Error; err != nil {
+				return fmt.Errorf("create uq_term_notes_term_norm: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// marginNotesWebSourcesMigration implements 20260924_0001
+// (daily-report-margin-notes 联网扩充，design D7)：
+//
+//	annotation_qas 追加 cited_web_sources jsonb NOT NULL DEFAULT '[]'——
+//	AI 回答引用的网络来源结构化沉淀（[{"title","url"}] 保序去重，url 经
+//	本次搜索结果集白名单校验，空写 [] 不写 null——对齐 cited_article_ids
+//	数组契约）。存量行为回填为 []（无网络来源，语义正确）。
+//
+// 幂等：ADD COLUMN IF NOT EXISTS。回滚=列保留（旧前端不读则无害）。
+func marginNotesWebSourcesMigration() Migration {
+	return Migration{
+		Version:     "20260924_0001",
+		Description: "daily-report-margin-notes web augmentation: annotation_qas.cited_web_sources jsonb (whitelisted [{title,url}] web citations, array contract empty=[])",
+		Up: func(db *gorm.DB) error {
+			if err := db.Exec(`ALTER TABLE annotation_qas
+				ADD COLUMN IF NOT EXISTS cited_web_sources JSONB NOT NULL DEFAULT '[]'::jsonb`).Error; err != nil {
+				return fmt.Errorf("add annotation_qas.cited_web_sources: %w", err)
 			}
 			return nil
 		},

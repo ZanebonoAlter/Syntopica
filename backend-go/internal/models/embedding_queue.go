@@ -15,7 +15,7 @@ type EmbeddingQueue struct {
 	Status       string     `gorm:"size:20;not null;default:pending;index" json:"status"`
 	ErrorMessage string     `gorm:"type:text" json:"error_message"`
 	RetryCount   int        `gorm:"default:0" json:"retry_count"`
-	CreatedAt    time.Time  `json:"created_at"`
+	CreatedAt    time.Time  `gorm:"index" json:"created_at"`
 	StartedAt    *time.Time `json:"started_at"`
 	CompletedAt  *time.Time `json:"completed_at"`
 	Tag          *TopicTag  `gorm:"foreignKey:TagID" json:"tag,omitempty"`

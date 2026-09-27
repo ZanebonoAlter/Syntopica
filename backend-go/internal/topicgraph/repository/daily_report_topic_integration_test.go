@@ -695,7 +695,7 @@ func TestManualTopic_MigrationIdempotent(t *testing.T) {
 				ADD COLUMN IF NOT EXISTS source VARCHAR(10) NOT NULL DEFAULT 'auto'
 			`).Error, "add source column (run %d)", i)
 
-			require.NoError(t, db.Exec(`
+		require.NoError(t, db.Exec(`
 				DO $$ BEGIN
 					IF NOT EXISTS (
 						SELECT 1 FROM information_schema.table_constraints

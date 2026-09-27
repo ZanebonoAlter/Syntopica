@@ -23,8 +23,12 @@ export interface ArticlePayload {
   id: number
   feed_id: number
   title: string
-  description: string
-  content: string
+  /** 列表窄投影下缺省；详情接口返回完整值 */
+  description?: string
+  /** 列表窄投影下缺省；详情接口返回完整值 */
+  content?: string
+  /** 列表窄投影导语（后端去标签纯文本，≤200 字符） */
+  excerpt?: string
   link: string
   pub_date: string
   created_at: string
@@ -39,6 +43,7 @@ export interface ArticlePayload {
   ai_content_summary?: string
   firecrawl_status?: string
   firecrawl_error?: string
+  /** 列表窄投影下缺省；详情接口返回完整值 */
   firecrawl_content?: string
   firecrawl_crawled_at?: string
   image_url?: string
@@ -75,6 +80,7 @@ export function normalizeArticle(article: ArticlePayload): Article {
     title: article.title,
     description: article.description || '',
     content: article.content || '',
+    excerpt: article.excerpt || '',
     link: article.link,
     pubDate: article.pub_date || article.created_at || '',
     author: article.author,

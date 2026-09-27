@@ -10,14 +10,15 @@ import (
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
-	tagservice "syntopica-backend/internal/tagmanagement/service"
+	"syntopica-backend/internal/platform/scheduler"
+	tagging "syntopica-backend/internal/tagmanagement"
 )
 
 // TagQualityScoreJob recomputes persistent quality scores for topic tags.
-func TagQualityScoreJob(ctx context.Context) (*JobResult, error) {
+func TagQualityScoreJob(ctx context.Context) (*scheduler.JobResult, error) {
 	startTime := time.Now()
 
-	if err := tagservice.ComputeAllQualityScores(); err != nil {
+	if err := tagging.ComputeAllQualityScores(); err != nil {
 		return nil, fmt.Errorf("failed to compute quality scores: %w", err)
 	}
 
@@ -53,7 +54,7 @@ func TagQualityScoreJob(ctx context.Context) (*JobResult, error) {
 		logging.Infof("TagQualityScore: cleaned up %d orphan auxiliary labels", result.RowsAffected)
 	}
 
-	return &JobResult{
+	return &scheduler.JobResult{
 		Data: map[string]interface{}{
 			"updated_count":      0, // ComputedAllQualityScores doesn't return a count
 			"orphan_aux_deleted": orphanAuxDeleted,

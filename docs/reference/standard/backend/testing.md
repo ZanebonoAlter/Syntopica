@@ -75,6 +75,13 @@ func TestSomethingUnit(t *testing.T) {
 ## 🛑 DSN 安全红线（事故教训 — 不可违反）
 
 > 早期版本曾通过默认 DSN 连到开发库并执行 `TRUNCATE`/`DROP TABLE`，**清空了业务数据**。该路径已彻底移除。
+> **2026-09-22 同类复发（换了一条入口）**：人工验证 entrypoint DO 块时 `psql -c "DO $$ TRUNCATE…$$"` 直接执行（`-c` 无 dry-run），CASCADE 级联清空本地 7 张表（categories/feeds/articles/article_topic_tags/reading_behaviors/user_preferences/两队列），靠当日 04:00 备份恢复。
+
+**硬约束（按副作用划界，不按工具划界——测试代码与人工命令同样适用）：**
+
+- 连**真库**执行任何含 `TRUNCATE`/`DELETE`/`DROP`/`UPDATE`/`ALTER` 的语句（含 DO 块/存储过程内部），SHALL 包在 `BEGIN; …; ROLLBACK;` 内，或在一次性临时容器/库里跑；SHALL NOT 用 `psql -c` 裸跑——`-c` 没有 dry-run，语法验证也是真执行
+- 无副作用的语法验证用解析路径（`sh -n` 管脚本、临时空数组的 DO 块、`pg_get_functiondef`），不碰有数据的库
+- 执行清理类命令前 SHALL 先 `count(*)` 留底并确认可用备份（`backups/pg-key-*.dump`，注意 `pg_restore -t` 不带 schema 前缀、带前缀会**静默零匹配**）
 
 **硬约束：**
 
@@ -193,6 +200,36 @@ SQLite 内存测试每次新建**空库**，迁移在有数据时的行为（回
 
 **判定法**：这个功能的效果是否依赖测试断言之外的"数据/环境/模型行为"？是 → 绿灯后必须做真实数据核对 + 效果评估，不能直接交付。
 
+## 集成测试必需的 Docker 镜像
+
+集成测试靠 testcontainers-go 自建隔离环境，因此本机必须能拉到下面两个镜像（均按**原始镜像名**引用，靠开发主机的 `registry-mirrors` 解决可达性，见 [development.md](../../development.md) Docker 镜像来源节）：
+
+| 镜像 | 用途 | 来源常量 |
+| --- | --- | --- |
+| `pgvector/pgvector:pg18-trixie` | 测试用 PostgreSQL（与生产 `docker-compose.pg.yml` 同镜像，保证 pgvector 行为一致） | `internal/platform/testutil/testutil.go` 的 `pgImage` |
+| `testcontainers/ryuk:0.13.0` | Ryuk sidecar——容器回收器（testcontainers-go v0.42.0 的 `ReaperDefaultImage`） | testcontainers-go 内部常量 |
+
+### ⚠️ Ryuk 镜像缺失会泄露容器
+
+`testutil.go` 的容器清理**完全委托 Ryuk**（代码显式不调 `TerminateContainer`）。若 Ryuk 镜像拉不下来，testcontainers 会先建好 pgvector 容器、再在启动 Ryuk 时失败返回——**已建的容器无人回收**。
+
+**症状与判定**：
+
+```bash
+docker ps -aq | wc -l          # 跑几轮集成测试后只增不减
+docker ps -a --filter name=ryuk # 无输出（sidecar 根本没起来）= 命中本節
+```
+
+**清理**：只删随机名测试容器，**不要**动 compose 管理的生产库与数据目录：
+
+```bash
+docker ps -a --format '{{.Names}}' | grep -v '^syntopica-postgres$' | xargs -r docker rm -f
+```
+
+> `syntopica-postgres` 是 `docker-compose.pg.yml` 的持久化容器（数据在 `./data/`），MUST NOT 被当泄漏物删除。
+
+**修复**：补齐 `testcontainers/ryuk:0.13.0` 后，再跑一次集成测试，运行前后 `docker ps -aq | wc -l` 应回到同一数字。
+
 ## 运行
 
 ```bash
@@ -204,6 +241,21 @@ go test ./internal/topicgraph/repository -run TestName -v    # 单个测试
 ```
 
 > AGENTS.md 约定：日常验证**只跑本次修改影响的包**，不跑全量。
+
+### 巡检分片（滚动全量兜底）
+
+全量 `-short` 在树莓派上只值 **42 秒**（2026-09-17 实测，warm build cache；39 包 ok / 11 包无测试文件），因此后端巡检不需要拆细：
+
+```bash
+bash scripts/harness/test-patrol.sh --shard be-all        # 整片：go test -short -count=1 ./internal/... ./cmd/...（≈42s）
+bash scripts/harness/test-patrol.sh                       # 默认：按「最久未巡优先」跑一片
+bash scripts/harness/test-patrol.sh --shard be-reader     # 指定单片（±5~33s）
+bash scripts/harness/test-patrol.sh --report              # 台账汇总（欠账清单 + 分片进度）
+```
+
+- 轮转分片 6 片：`be-admin`／`be-dataenrichment`／`be-reader`／`be-tagmanagement`／`be-topicgraph`／`be-skeleton`（platform+models+app+cmd 合并），实测单片 3~33s（`survey.md` §2）；`be-all` 不入轮转，仅显式指定。
+- 巡检命令固定 `-short -count=1`：`-short` 跳过 DB 集成（无需 Docker），`-count=1` 绕过结果缓存、每次真跑。**集成测试（`go test ./...`）不在巡检范围内**，仍是已知盲区（见《开发执行规范》§6）。
+- 分片结果写 `patrol.check` 事件 + `test_debt` 台账；撞见非本 change 红 → `bash scripts/harness/test-patrol.sh --register <test_id> --context <change名>`（归档纪律见 §11.4）。
 
 ## 资料来源
 

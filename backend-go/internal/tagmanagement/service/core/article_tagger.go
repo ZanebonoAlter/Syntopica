@@ -13,10 +13,67 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/tracing"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
 const maxArticleTags = 6
+
+// genericLabelBlacklist 是泛词标签黑名单（fix-tagging-pollution）：这些词
+// 不携带文章内容信息，任何来源（llm/heuristic/回填）都不得成为文章标签。
+// 封闭词表，不做子串匹配——Slugify 后完整匹配，「GLM Coding Plan」等复合
+// 正常标签不受影响；「Coding」不进名单（编程文章的合法主题词）。
+var genericLabelBlacklist = []string{"新闻", "论坛", "要闻", "快讯", "文章", "内容", "技术", "发展"}
+
+// genericLabelSlugSet 预计算黑名单 slug 集合，供 filterGenericLabels 与
+// reuse 查询的 SQL NOT IN 共用。
+var genericLabelSlugSet = map[string]struct{}{
+	Slugify("新闻"): {},
+	Slugify("论坛"): {},
+	Slugify("要闻"): {},
+	Slugify("快讯"): {},
+	Slugify("文章"): {},
+	Slugify("内容"): {},
+	Slugify("技术"): {},
+	Slugify("发展"): {},
+}
+
+func genericLabelSlugs() []string {
+	slugs := make([]string, 0, len(genericLabelBlacklist))
+	for _, label := range genericLabelBlacklist {
+		slugs = append(slugs, Slugify(label))
+	}
+	return slugs
+}
+
+func isGenericLabel(label string) bool {
+	_, generic := genericLabelSlugSet[Slugify(label)]
+	return generic
+}
+
+// filterGenericLabels 在持久化入口拦截黑名单泛词候选：被拦截候选不落库、
+// 不进辅助标签池。
+func filterGenericLabels(tags []TopicTag) []TopicTag {
+	filtered := make([]TopicTag, 0, len(tags))
+	for _, tag := range tags {
+		if isGenericLabel(tag.Label) {
+			continue
+		}
+		filtered = append(filtered, tag)
+	}
+	return filtered
+}
+
+// tagSourceReuse marks article_topic_tags rows copied from a sibling copy of
+// the same article (same link, another feed) instead of extracted by the AI
+// (dedupe-rss-articles D3).
+const tagSourceReuse = "reuse"
+
+// reuseTagsFromSiblingArticle copies article_topic_tags rows from a sibling
+// copy of the article (same link under another feed) onto this article with
+// source="reuse". Returns true when at least one tag link was copied, meaning
+// the AI extraction can be skipped entirely. Articles without a link never
+// participate — an empty link would match every other empty-link row.
 
 // tagExtractorFactory builds the extractor used by tagArticle. Overridden in
 // tests to inject a fake router.
@@ -72,6 +129,22 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 		CleanupOrphanedTags(oldTagIDs)
 	}
 
+	// Cross-feed reuse (dedupe-rss-articles D3): a sibling copy of this
+	// article (same link under another feed) already carries the tagging
+	// result — copy the tag links instead of calling the AI again. Runs
+	// before the already-tagged skip so a partially-tagged copy also gets
+	// topped up from its sibling (existing links are never duplicated, and
+	// the top-up stops at maxArticleTags).
+	// Force retag never reuses (an explicit re-extraction was requested).
+	if !options.Force {
+		reused, err := reuseTagsFromSiblingArticle(article)
+		if err != nil {
+			logging.Warnf("cross-feed tag reuse failed for article %d, falling back to AI extraction: %v", article.ID, err)
+		} else if reused {
+			return nil
+		}
+	}
+
 	// Skip if already tagged
 	var existingCount int64
 	repository.Repo.DB().Model(&models.ArticleTopicTag{}).Where("article_id = ?", article.ID).Count(&existingCount)
@@ -104,8 +177,9 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 				tags, source, handled = aggTags, "llm", true
 			} else {
 				// All sections failed or returned empty candidates: fall back to
-				// the mono path (dual-branch extraction with heuristic fallback)
-				// so aggregate articles never end up with zero tags.
+				// the mono path. Note the mono path may now also legitimately
+				// return zero tags (fix-tagging-pollution: 空结果是合法结论，不再
+				// 强行凑标签) — the article then simply stays untagged.
 				logging.Infof("aggregate tagging yielded no tags for article %d, falling back to mono path", article.ID)
 			}
 		}
@@ -113,8 +187,9 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 	}
 	if !handled {
 		result, err := extractor.ExtractTags(context.Background(), input)
-		if err != nil || len(result.Tags) == 0 {
-			// Fall back to legacy heuristic extraction
+		if err != nil {
+			// 兑底仅限「调用失败」（transport/HTTP 错误，fix-tagging-pollution）。
+			// 调用成功但零标签是合法结论：文章保持无标签，等待后续重打。
 			tags = legacyExtractTopics(input)
 			source = "heuristic"
 		} else {
@@ -131,10 +206,14 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 	return persistArticleTags(ctx, article, tags, source)
 }
 
-// persistArticleTags stores the extracted tags for an article: dedupe, then for
-// each tag find-or-create the topic tag, attach auxiliary labels and link it to
-// the article. Shared by the mono and aggregate extraction paths.
+// persistArticleTags stores the extracted tags for an article: filter generic
+// labels, dedupe, then for each tag find-or-create the topic tag, attach
+// auxiliary labels and link it to the article. Shared by the mono and
+// aggregate extraction paths.
 func persistArticleTags(ctx context.Context, article *models.Article, tags []TopicTag, source string) error {
+	// 泛词黑名单拦截（fix-tagging-pollution）：mono / aggregate / heuristic
+	// 三条写入路径的汇聚点，被拦截候选不进 topic_tags / 辅助标签池。
+	tags = filterGenericLabels(tags)
 	// Build article context for description generation
 	articleContext := ""
 	pubDateStr := formatPubDate(article.PubDate)
@@ -233,6 +312,86 @@ func createArticleTopicTagLink(link *models.ArticleTopicTag) (bool, error) {
 	return articleExists, err
 }
 
+func reuseTagsFromSiblingArticle(article *models.Article) (bool, error) {
+	if strings.TrimSpace(article.Link) == "" {
+		return false, nil
+	}
+
+	// Highest-scored sibling tags first: a partially tagged copy is topped up
+	// only to the per-article cap (same maxArticleTags the AI path applies in
+	// limitArticleTags), so the cap is spent on the best-scored tags.
+	// Blacklisted generic labels are excluded at the query level: this path
+	// copies sibling rows directly and never goes through persistArticleTags,
+	// so the filter must live here too (fix-tagging-pollution D3).
+	var siblingLinks []models.ArticleTopicTag
+	if err := repository.Repo.DB().
+		Joins("JOIN topic_tags ON topic_tags.id = article_topic_tags.topic_tag_id").
+		Where("article_id != ? AND article_id IN (SELECT id FROM articles WHERE link = ?)", article.ID, article.Link).
+		Where("topic_tags.slug NOT IN ?", genericLabelSlugs()).
+		Order("score DESC, topic_tag_id ASC").
+		Find(&siblingLinks).Error; err != nil {
+		return false, err
+	}
+	if len(siblingLinks) == 0 {
+		return false, nil
+	}
+
+	ownTagIDs := make(map[uint]struct{})
+	var ownIDs []uint
+	if err := repository.Repo.DB().Model(&models.ArticleTopicTag{}).
+		Where("article_id = ?", article.ID).
+		Pluck("topic_tag_id", &ownIDs).Error; err != nil {
+		return false, err
+	}
+	for _, id := range ownIDs {
+		ownTagIDs[id] = struct{}{}
+	}
+
+	// Already at the cap: nothing to top up. Returning false lets the caller's
+	// already-tagged guard keep the AI path away as well.
+	if len(ownTagIDs) >= maxArticleTags {
+		return false, nil
+	}
+
+	copied := false
+	for _, link := range siblingLinks {
+		if _, dup := ownTagIDs[link.TopicTagID]; dup {
+			// Already present on this article: skip (unique index
+			// idx_article_topic_tags_link would reject a duplicate anyway).
+			continue
+		}
+		if len(ownTagIDs) >= maxArticleTags {
+			break
+		}
+		ownTagIDs[link.TopicTagID] = struct{}{}
+		newLink := models.ArticleTopicTag{
+			ArticleID:  article.ID,
+			TopicTagID: link.TopicTagID,
+			Score:      link.Score,
+			Source:     tagSourceReuse,
+		}
+		articleExists, err := createArticleTopicTagLink(&newLink)
+		if err != nil {
+			return copied, err
+		}
+		if !articleExists {
+			return copied, nil
+		}
+		copied = true
+	}
+
+	if copied {
+		// Keep the counter in sync with the edges just written (the read path
+		// recomputes tag_count via subquery, but the column is still part of the
+		// row contract). Raw SQL on purpose: the model marks tag_count as
+		// read-only (`gorm:"->"`), so GORM's Update() would silently skip it.
+		repository.Repo.DB().Exec(
+			"UPDATE articles SET tag_count = (SELECT COUNT(*) FROM article_topic_tags WHERE article_id = ?) WHERE id = ?",
+			article.ID, article.ID)
+	}
+	return copied, nil
+}
+
 func limitArticleTags(tags []TopicTag) []TopicTag {
 	if len(tags) <= maxArticleTags {
 		return tags
@@ -242,6 +401,10 @@ func limitArticleTags(tags []TopicTag) []TopicTag {
 
 const maxSummaryRunesForTagging = 4000
 
+// buildArticleSummary 按 AIContentSummary → FirecrawlContent → Content →
+// Description 选出打标正文，并采样到 maxSummaryRunesForTagging 预算内
+// （long-form-sampled-tagging）：超预算时按文集/叙事分段采样，不再一律掐头；
+// 双分支 extractor 与 aggregate 路径共享该结果，调用方零改动。
 func buildArticleSummary(article models.Article) string {
 	var body string
 	if s := strings.TrimSpace(article.AIContentSummary); s != "" {
@@ -256,11 +419,7 @@ func buildArticleSummary(article models.Article) string {
 	if body == "" {
 		return ""
 	}
-	runes := []rune(body)
-	if len(runes) > maxSummaryRunesForTagging {
-		body = string(runes[:maxSummaryRunesForTagging])
-	}
-	return body
+	return sampleTaggingSummary(body, maxSummaryRunesForTagging)
 }
 
 // TagArticles batch tags multiple articles for a feed
@@ -378,7 +537,7 @@ func CleanupOrphanedTags(tagIDs []uint) {
 
 	// Collect affected aux label IDs before CASCADE deletes them
 	var affectedAuxLabelIDs []uint
-	repository.Repo.DB().Model(&models.TopicTagSemanticLabel{}).
+	repository.Repo.DB().Model(&tagmodels.TopicTagSemanticLabel{}).
 		Where("topic_tag_id IN ?", orphanIDs).
 		Distinct("semantic_label_id").
 		Pluck("semantic_label_id", &affectedAuxLabelIDs)

@@ -1,14 +1,14 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
-import type { SectionKey } from './SettingsWorkspace.vue'
+import type { SectionKey, SectionMeta } from './SettingsWorkspace.vue'
 
-interface SectionMeta {
-  key: SectionKey
-  label: string
-  icon: string
-}
-
-defineProps<{
+/**
+ * 设置导航侧栏（restructure-settings-navigation）：
+ * 按分组渲染导航项（组标题不可点击，仅导航项可点）；
+ * 桌面侧栏与移动抽屉结构同构。
+ */
+const props = defineProps<{
   sections: SectionMeta[]
   activeSection: SectionKey
   mobileOpen: boolean
@@ -18,23 +18,45 @@ const emit = defineEmits<{
   select: [key: SectionKey]
   close: []
 }>()
+
+interface SectionGroup {
+  group: string
+  items: SectionMeta[]
+}
+
+/** sections 按 group 顺序聚合（保持 sections 数组声明顺序） */
+const groups = computed<SectionGroup[]>(() => {
+  const ordered: SectionGroup[] = []
+  for (const section of props.sections) {
+    const last = ordered[ordered.length - 1]
+    if (last && last.group === section.group) {
+      last.items.push(section)
+    } else {
+      ordered.push({ group: section.group, items: [section] })
+    }
+  }
+  return ordered
+})
 </script>
 
 <template>
   <!-- Desktop sidebar -->
   <aside class="settings-sidebar">
     <nav class="settings-sidebar__nav" data-onboarding="settings-nav">
-      <button
-        v-for="section in sections"
-        :key="section.key"
-        class="settings-sidebar__item"
-        :data-onboarding="`settings-nav-${section.key}`"
-        :class="{ 'settings-sidebar__item--active': activeSection === section.key }"
-        @click="emit('select', section.key)"
-      >
-        <Icon :icon="section.icon" width="18" height="18" />
-        <span>{{ section.label }}</span>
-      </button>
+      <template v-for="group in groups" :key="group.group">
+        <p class="settings-sidebar__group-title" aria-hidden="true">{{ group.group }}</p>
+        <button
+          v-for="section in group.items"
+          :key="section.key"
+          class="settings-sidebar__item"
+          :data-onboarding="`settings-nav-${section.key}`"
+          :class="{ 'settings-sidebar__item--active': activeSection === section.key }"
+          @click="emit('select', section.key)"
+        >
+          <Icon :icon="section.icon" width="18" height="18" />
+          <span>{{ section.label }}</span>
+        </button>
+      </template>
     </nav>
   </aside>
 
@@ -50,16 +72,19 @@ const emit = defineEmits<{
     <Transition name="sidebar-drawer">
       <aside v-if="mobileOpen" class="settings-sidebar-drawer">
         <nav class="settings-sidebar__nav">
-          <button
-            v-for="section in sections"
-            :key="section.key"
-            class="settings-sidebar__item"
-            :class="{ 'settings-sidebar__item--active': activeSection === section.key }"
-            @click="emit('select', section.key)"
-          >
-            <Icon :icon="section.icon" width="18" height="18" />
-            <span>{{ section.label }}</span>
-          </button>
+          <template v-for="group in groups" :key="group.group">
+            <p class="settings-sidebar__group-title" aria-hidden="true">{{ group.group }}</p>
+            <button
+              v-for="section in group.items"
+              :key="section.key"
+              class="settings-sidebar__item"
+              :class="{ 'settings-sidebar__item--active': activeSection === section.key }"
+              @click="emit('select', section.key)"
+            >
+              <Icon :icon="section.icon" width="18" height="18" />
+              <span>{{ section.label }}</span>
+            </button>
+          </template>
         </nav>
       </aside>
     </Transition>
@@ -81,6 +106,21 @@ const emit = defineEmits<{
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* 分组标题：纯展示不可点击（settings-workspace spec：分组导航渲染） */
+.settings-sidebar__group-title {
+  margin: 14px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  user-select: none;
+}
+
+.settings-sidebar__group-title:first-child {
+  margin-top: 2px;
 }
 
 .settings-sidebar__item {
@@ -158,7 +198,7 @@ const emit = defineEmits<{
 }
 
 /* Hide desktop sidebar on narrow screens */
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .settings-sidebar {
     display: none;
   }

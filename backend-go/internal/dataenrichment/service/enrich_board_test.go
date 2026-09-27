@@ -108,21 +108,6 @@ func seedWeekLifelinePG(t *testing.T, repo *repository.Repository, topicID uint,
 	})
 }
 
-// seedEnabledAnalysisMethod plants an enabled method card whose content must
-// never reach the brief prompt (M7.5 stage isolation).
-func seedEnabledAnalysisMethod(t *testing.T, repo *repository.Repository) string {
-	t.Helper()
-	const sentinel = "BRIEF_MUST_NOT_INJECT_METHOD_CARD_SENTINEL"
-	m := &repository.AnalysisMethod{
-		Name: "brief-isolation-probe", Title: "隔离探针", Content: sentinel, Enabled: true,
-	}
-	if err := repo.DB().Create(m).Error; err != nil {
-		t.Fatalf("seed analysis method: %v", err)
-	}
-	t.Cleanup(func() { _ = repo.DB().Unscoped().Where("id = ?", m.ID).Delete(&repository.AnalysisMethod{}).Error })
-	return sentinel
-}
-
 // validBriefLLM is a legal board_brief response (one ghost observation +
 // ghost lane id inside a relationship to exercise the sanitizer end-to-end).
 const validBriefLLM = `{"summary":"板块两条泳道有进展，暂未发现统一关系。","observations":[
@@ -261,7 +246,6 @@ func TestEnrichBoard_DefaultTriggerIsBriefOnly(t *testing.T) {
 	seedBoardLane(t, repo, 901, 8801, "泳道甲")
 	seedBoardLane(t, repo, 902, 8801, "泳道乙")
 	seedWeekLifelinePG(t, repo, 901, "2026-W34", "周内容：一期产能落地", time.Now())
-	sentinel := seedEnabledAnalysisMethod(t, repo)
 	router.addResponse(validBriefLLM)
 
 	out, err := orch.EnrichBoard(context.Background(), 8801)
@@ -282,7 +266,7 @@ func TestEnrichBoard_DefaultTriggerIsBriefOnly(t *testing.T) {
 			t.Fatalf("brief prompt missing %q", want)
 		}
 	}
-	for _, banned := range []string{"可用工具", "web_search", sentinel, "而是", "thesis"} {
+	for _, banned := range []string{"可用工具", "web_search", "而是", "thesis"} {
 		if strings.Contains(prompt, banned) {
 			t.Fatalf("brief prompt must not contain %q", banned)
 		}

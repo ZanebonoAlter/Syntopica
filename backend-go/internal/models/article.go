@@ -11,7 +11,7 @@ type Article struct {
 	Title       string     `gorm:"size:500;not null" json:"title"`
 	Description string     `gorm:"type:text" json:"description"`
 	Content     string     `gorm:"type:text" json:"content"`
-	Link        string     `gorm:"size:1000" json:"link"`
+	Link        string     `gorm:"size:1000;index" json:"link"`
 	ImageURL    string     `gorm:"size:1000" json:"image_url"`
 	PubDate     *time.Time `json:"pub_date"`
 	Author      string     `gorm:"size:200" json:"author"`
@@ -77,5 +77,35 @@ func (a *Article) ToDict() map[string]interface{} {
 		"created_at":           FormatDatetimeCST(a.CreatedAt),
 		"tag_count":            a.TagCount,
 		"relevance_score":      a.RelevanceScore,
+	}
+}
+
+// ToListDict returns the narrow payload for GET /api/articles list rows.
+// It intentionally omits the body fields (description/content/firecrawl_content/
+// ai_content_summary) — those are served only by GET /api/articles/:id.
+// excerpt is the pre-computed plain-text lede (see handler.buildExcerpt).
+func (a *Article) ToListDict(excerpt string) map[string]interface{} {
+	return map[string]interface{}{
+		"id":                   a.ID,
+		"feed_id":              a.FeedID,
+		"category_id":          a.CategoryID,
+		"title":                a.Title,
+		"link":                 a.Link,
+		"image_url":            a.ImageURL,
+		"pub_date":             FormatDatetimeCSTPtr(a.PubDate),
+		"author":               a.Author,
+		"read":                 a.Read,
+		"favorite":             a.Favorite,
+		"archived":             a.Archived,
+		"summary_status":       a.SummaryStatus,
+		"summary_generated_at": FormatDatetimeCSTPtr(a.SummaryGeneratedAt),
+		"firecrawl_status":     a.FirecrawlStatus,
+		"firecrawl_error":      a.FirecrawlError,
+		"firecrawl_crawled_at": FormatDatetimeCSTPtr(a.FirecrawlCrawledAt),
+		"completion_error":     a.CompletionError,
+		"created_at":           FormatDatetimeCST(a.CreatedAt),
+		"tag_count":            a.TagCount,
+		"relevance_score":      a.RelevanceScore,
+		"excerpt":              excerpt,
 	}
 }

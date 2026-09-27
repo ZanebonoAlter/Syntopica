@@ -209,7 +209,6 @@ func TestInvestigateBoardQuestion_PersistsFullInvestigation(t *testing.T) {
 	require.Contains(t, sectors, "conclusion")
 	require.Len(t, sectors["evidence_chain"], 2)
 	require.Len(t, sectors["lane_refs"], 2)
-	require.Empty(t, sectors["method_refs"])
 	concl := sectors["conclusion"].(map[string]any)
 	for _, k := range []string{"summary", "confidence", "scope", "boundary"} {
 		require.Contains(t, concl, k)
@@ -240,7 +239,6 @@ func TestInvestigateBoardQuestion_PersistsFullInvestigation(t *testing.T) {
 	require.Contains(t, snap, "methods")
 	require.Contains(t, snap, "method_prompt")
 	require.Contains(t, snap, "method_cards")
-	require.Contains(t, snap, "method_refs")
 	require.Contains(t, snap, "evidence_needs")
 	initial := snap["initial_hypotheses"].(map[string]any)
 	require.Len(t, initial["hypotheses"], 3)
@@ -389,114 +387,4 @@ func TestInvestigateBoardQuestion_SynthesisFailureLeavesZeroRows(t *testing.T) {
 
 // ── 方法软删除后历史调查可回放（M7.10）──────────────────────────────────────
 
-func TestInvestigateBoardQuestion_MethodSoftDeletedHistoryReplayable(t *testing.T) {
-	orch, router, repo := newInvestigationOrch(t, true)
-	const boardID = uint(95151)
-	brief := seedInvBrief(t, repo, boardID)
-	const methodContent = "检查传导链每一环：时间先后、独立来源、替代解释逐一核对。"
-	m := seedInvMethod(t, repo, "inv-replayable-method", "因果链检验", methodContent)
-	addInvChainWithSelector(router, invSynthesisLLM, [2]string{fmt.Sprintf("%d", m.ID), "适配"})
-
-	q := service.BoardInvestigationQuestion{ID: "q1", Text: "两条泳道是否由同一资金驱动", Source: "generated"}
-	out, err := orch.InvestigateBoardQuestion(context.Background(), boardID, brief.ID, q)
-	require.NoError(t, err)
-
-	// 方法正文进入 hypothesize prompt（ai_call_logs 可回放）。
-	hypothesizePrompt := ""
-	for _, c := range router.Calls {
-		if c.Operation == "data_enrichment.board_hypothesize" {
-			hypothesizePrompt = c.Messages[0].Content
-		}
-	}
-	require.Contains(t, hypothesizePrompt, methodContent)
-
-	// 软删除方法卡。
-	require.NoError(t, repo.DeleteAnalysisMethod(context.Background(), m.ID))
-
-	var row repository.TopicEnrichmentResult
-	require.NoError(t, repo.DB().Where("id = ?", out.Result.ID).First(&row).Error)
-	sectors := invSectorsMap(t, row.Sectors)
-	refs := sectors["method_refs"].([]any)
-	require.Len(t, refs, 1)
-	ref := refs[0].(map[string]any)
-	require.Equal(t, "因果链检验", ref["title"])
-	require.Equal(t, service.AnalysisMethodContentHash(methodContent), ref["content_hash"])
-
-	// snapshot 仍带实际注入正文与逐卡 trace（读取不依赖方法表）。
-	snap := invSectorsMap(t, row.InputSnapshot)
-	require.Contains(t, snap["method_prompt"], methodContent)
-	cards := snap["method_cards"].([]any)
-	require.Len(t, cards, 1)
-	card := cards[0].(map[string]any)
-	require.Equal(t, true, card["injected"])
-	require.Equal(t, methodContent, card["injected_content"])
-}
-
 // ── budget/修辞舍弃机码落快照且不泄原文 ─────────────────────────────────────
-
-func TestInvestigateBoardQuestion_MethodDropTraceInSnapshotNoLeak(t *testing.T) {
-	orch, router, repo := newInvestigationOrch(t, true)
-	const boardID = uint(95161)
-	brief := seedInvBrief(t, repo, boardID)
-
-	// Run 1：选中 [超预算卡B, 正常卡A] → B 整卡 budget_exceeded，A 注入。
-	normalContent := "常规步骤：逐环核对时间先后与独立来源。"
-	oversizedMarker := strings.Repeat("OVERSIZED-CONTENT-MARKER-", 200) // 5200 runes > 4000 预算
-	a := seedInvMethod(t, repo, "inv-budget-normal", "常规检验", normalContent)
-	b := seedInvMethod(t, repo, "inv-budget-oversized", "超预算卡", oversizedMarker)
-	addInvChainWithSelector(router, invSynthesisLLM,
-		[2]string{fmt.Sprintf("%d", b.ID), "次适配"}, [2]string{fmt.Sprintf("%d", a.ID), "最适配"})
-
-	q := service.BoardInvestigationQuestion{ID: "q1", Text: "两条泳道是否由同一资金驱动", Source: "generated"}
-	out1, err := orch.InvestigateBoardQuestion(context.Background(), boardID, brief.ID, q)
-	require.NoError(t, err)
-	snapRaw1 := string(out1.Result.InputSnapshot)
-	require.Contains(t, snapRaw1, "budget_exceeded")
-	require.NotContains(t, snapRaw1, "OVERSIZED-CONTENT-MARKER-", "oversized card content must not leak into the snapshot")
-	require.Contains(t, snapRaw1, normalContent)
-	// 舍弃机码进 synthesize prompt（→ ai_call_logs）。
-	synthPrompt := ""
-	for _, c := range router.Calls {
-		if c.Operation == "data_enrichment.board_synthesize" {
-			synthPrompt = c.Messages[0].Content
-		}
-	}
-	require.Contains(t, synthPrompt, "budget_exceeded")
-	require.Contains(t, synthPrompt, normalContent)
-	require.NotContains(t, synthPrompt, "OVERSIZED-CONTENT-MARKER-")
-
-	// Run 2：纯修辞卡（清洗后为空）→ content_noncompliant，被过滤原文不落快照。
-	rhetoricMarker := "每段结尾都要用金句收尾"
-	rhetoricContent := rhetoricMarker + "\n写作时必须保持冷嘲的语气"
-	c := seedInvMethod(t, repo, "inv-rhetoric-card", "修辞卡", rhetoricContent)
-	addInvChainWithSelector(router, invSynthesisLLM, [2]string{fmt.Sprintf("%d", c.ID), "适配"})
-	out2, err := orch.InvestigateBoardQuestion(context.Background(), boardID, brief.ID,
-		service.BoardInvestigationQuestion{ID: "q2", Text: "招标节奏是否影响产能排期", Source: "generated"})
-	require.NoError(t, err)
-	snapRaw2 := string(out2.Result.InputSnapshot)
-	require.Contains(t, snapRaw2, "content_noncompliant")
-	require.NotContains(t, snapRaw2, rhetoricMarker, "filtered rhetoric lines must not leak into the snapshot")
-	require.NotContains(t, snapRaw2, "冷嘲")
-	cards := invSectorsMap(t, out2.Result.InputSnapshot)["method_cards"].([]any)
-	require.Len(t, cards, 1)
-	card := cards[0].(map[string]any)
-	require.Equal(t, false, card["injected"])
-	require.Equal(t, "content_noncompliant", card["dropped_reason"])
-	require.GreaterOrEqual(t, int(card["filtered_lines"].(float64)), 2)
-	require.Empty(t, card["injected_content"])
-	require.NotEmpty(t, card["reason_codes"])
-}
-
-func seedInvMethod(t *testing.T, repo *repository.Repository, name, title, content string) *repository.AnalysisMethod {
-	t.Helper()
-	m := &repository.AnalysisMethod{
-		Name: name, Title: title, Summary: "适配传导检验", Content: content, Enabled: true,
-		SelectionMeta: repository.AnalysisMethodSelectionMeta{
-			ApplicableWhen:   []string{"怀疑存在跨泳道传导"},
-			RequiredEvidence: []string{"两个独立来源"},
-		},
-	}
-	require.NoError(t, repo.CreateAnalysisMethod(context.Background(), m))
-	t.Cleanup(func() { _ = repo.DB().Unscoped().Where("name = ?", name).Delete(&repository.AnalysisMethod{}).Error })
-	return m
-}

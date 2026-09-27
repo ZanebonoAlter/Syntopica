@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 — 设置工作区导航重组 · restructure-settings-navigation</title>
+<style>
+  /* ===== editorial 主题 token（对齐 front/app/assets/css/main.css）===== */
+  :root {
+    --bg-base: #faf7f2;
+    --bg-elevated: #f5f0e6;
+    --bg-sunken: #e8dfd1;
+    --bg-hover: rgba(255,255,255,.85);
+    --ink: #1a1a1a;
+    --ink-2: #5a5a5a;
+    --ink-3: #8a8a8a;
+    --border-subtle: rgba(26,26,26,.08);
+    --border-medium: rgba(26,26,26,.15);
+    --border-strong: rgba(26,26,26,.25);
+    --accent: #d94a4a;
+    --accent-subtle: rgba(217,74,74,.08);
+    --success: #3d8a4a;
+    --success-bg: rgba(61,138,74,.1);
+    --warning: #c4883c;
+    --warning-bg: rgba(196,136,60,.12);
+    --error: #c42f3c;
+    --shadow-print: 0 1px 0 rgba(26,26,26,.1), 0 2px 4px rgba(26,26,26,.06);
+    --shadow-medium: 0 2px 8px rgba(26,26,26,.08);
+    --serif: Georgia, 'Times New Roman', 'Songti SC', serif;
+    --sans: -apple-system, 'PingFang SC', 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { font-family: var(--sans); background: var(--bg-base); color: var(--ink); }
+
+  /* ===== demo 说明条（非产品 UI）===== */
+  .demo-bar {
+    background: var(--bg-sunken); border-bottom: 1px solid var(--border-medium);
+    padding: 10px 20px; font-size: 12px; color: var(--ink-2); line-height: 1.7;
+  }
+  .demo-bar strong { color: var(--ink); }
+  .demo-bar .tag {
+    display: inline-block; background: var(--accent); color: #fff; border-radius: 4px;
+    padding: 1px 7px; font-size: 11px; margin-right: 8px; font-weight: 600;
+  }
+  .demo-bar .map { color: var(--ink-3); }
+  .demo-bar .map b { color: var(--accent); font-weight: 600; }
+
+  /* ===== 页面骨架：全高双栏 ===== */
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  .shell { display: flex; flex: 1; overflow: hidden; }
+
+  /* header */
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-base);
+  }
+  .header__left { display: flex; align-items: center; gap: 14px; }
+  .header__back {
+    width: 34px; height: 34px; border: 1px solid var(--border-medium); border-radius: 8px;
+    background: transparent; cursor: pointer; color: var(--ink-2); font-size: 15px;
+  }
+  .header__title { font-family: var(--serif); font-size: 20px; font-weight: 700; letter-spacing: .02em; }
+  .header__desc { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+  .header__actions { display: flex; gap: 8px; }
+  .header__btn {
+    width: 34px; height: 34px; border: 1px solid var(--border-medium); border-radius: 8px;
+    background: transparent; cursor: pointer; color: var(--ink-2); font-size: 15px;
+  }
+
+  /* ===== sidebar：分组导航 ===== */
+  .sidebar {
+    width: 200px; flex-shrink: 0; border-right: 1px solid var(--border-subtle);
+    background: var(--bg-elevated); overflow-y: auto; padding: 14px 8px;
+  }
+  .nav-group { margin-bottom: 14px; }
+  .nav-group__label {
+    font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--ink-3); padding: 6px 12px 5px;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 9px 12px; border: none; background: transparent; text-align: left;
+    color: var(--ink-2); font-size: 13px; font-weight: 500; cursor: pointer;
+    border-radius: 8px; font-family: var(--sans); transition: background .15s, color .15s;
+  }
+  .nav-item:hover { background: var(--bg-hover); color: var(--ink); }
+  .nav-item.active { background: var(--accent-subtle); color: var(--accent); font-weight: 600; }
+  .nav-item .dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    background: var(--border-strong);
+  }
+  .nav-item.active .dot { background: var(--accent); }
+
+  /* ===== content ===== */
+  .content { flex: 1; overflow-y: auto; min-width: 480px; }
+  .content__inner { padding: 24px 32px 48px; max-width: 860px; }
+
+  /* 子 tab 条（复合 section 专用，sticky）*/
+  .tabs {
+    position: sticky; top: 0; z-index: 5; display: flex; gap: 2px;
+    background: var(--bg-base); border-bottom: 1px solid var(--border-medium);
+    padding: 0 32px; overflow-x: auto; scrollbar-width: none;
+    box-shadow: 0 1px 0 var(--border-subtle);
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    padding: 11px 14px; border: none; background: transparent; cursor: pointer;
+    font-size: 13px; font-weight: 500; color: var(--ink-2); white-space: nowrap;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; font-family: var(--sans);
+    transition: color .15s, border-color .15s;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--accent); font-weight: 600; border-bottom-color: var(--accent); }
+
+  /* 面板通用 */
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .card {
+    background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+    border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; box-shadow: var(--shadow-print);
+  }
+  .card h3 { font-family: var(--serif); font-size: 15.5px; font-weight: 700; margin-bottom: 4px; }
+  .card .hint { font-size: 12.5px; color: var(--ink-2); line-height: 1.65; margin-bottom: 12px; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 5px; }
+  .field input[type=text], .field input[type=password] {
+    width: 100%; padding: 8px 12px; font-size: 13px; font-family: var(--sans);
+    border: 1px solid var(--border-medium); border-radius: 8px; background: rgba(255,255,255,.6);
+    color: var(--ink);
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  .btn {
+    display: inline-block; padding: 7px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+    border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff;
+    font-family: var(--sans);
+  }
+  .btn--ghost { background: transparent; color: var(--ink-2); border-color: var(--border-medium); }
+  .btn--ghost:hover { border-color: var(--border-strong); color: var(--ink); }
+  .toast-success {
+    display: inline-block; font-size: 12.5px; padding: 7px 12px; border-radius: 8px;
+    background: var(--success-bg); border: 1px solid rgba(61,138,74,.25); color: var(--success);
+    margin-bottom: 12px;
+  }
+  .placeholder {
+    border: 1.5px dashed var(--border-strong); border-radius: 10px; padding: 36px 24px;
+    text-align: center; color: var(--ink-3); font-size: 13px; line-height: 1.8;
+    background: rgba(255,255,255,.4);
+  }
+  .placeholder b { color: var(--ink-2); }
+
+  /* 状态徽标 / 监控卡片 */
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
+  .badge--ok { background: var(--success-bg); color: var(--success); }
+  .badge--warn { background: var(--warning-bg); color: var(--warning); }
+  .badge--err { background: rgba(196,47,60,.1); color: var(--error); }
+  .badge--muted { background: rgba(26,26,26,.06); color: var(--ink-3); }
+
+  .status-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 11px 0; border-bottom: 1px solid var(--border-subtle); font-size: 13px;
+  }
+  .status-row:last-child { border-bottom: none; }
+  .status-row .name { font-weight: 600; }
+  .status-row .meta { color: var(--ink-3); font-size: 12px; margin-top: 1px; }
+  .progress { height: 6px; border-radius: 4px; background: var(--bg-sunken); overflow: hidden; margin: 6px 0 2px; }
+  .progress__fill { height: 100%; background: var(--accent); border-radius: 4px; }
+
+  /* 窄屏示意（原型不实现抽屉，说明即可）*/
+  @media (max-width: 767.98px) {
+    .sidebar { display: none; }
+    .content { min-width: 0; }
+    .content__inner, .tabs { padding-left: 16px; padding-right: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- demo 说明条：非产品 UI，仅审批参考 -->
+<div class="demo-bar">
+  <span class="tag">PROTOTYPE</span>
+  <strong>restructure-settings-navigation</strong> ·
+  导航 15 平铺 → <b>4 组 7 项</b>；「数据源与网络」6 项、「运行状态」3 项合并为复合 section（子 tab）；参考角色与分析方法卡两套面像全链删除。
+  <span class="map">可点击：左栏 7 项 / 复合页内子 tab。旧映射：firecrawl·bocha·searxng·rsshub·datasources·proxy → <b>datasources-network</b>；ai-health·queues·schedulers → <b>runtime-status</b>；analysis-methods 随功能删除；其余键不变仅归组。</span>
+</div>
+
+<div class="app">
+  <header class="header">
+    <div class="header__left">
+      <button class="header__back" title="返回首页">←</button>
+      <div>
+        <div class="header__title" id="pageTitle">数据源与网络</div>
+        <div class="header__desc" id="pageDesc">外部抓取、搜索与网络出口配置</div>
+      </div>
+    </div>
+    <div class="header__actions">
+      <button class="header__btn" title="设置引导">◎</button>
+      <button class="header__btn" title="切换主题">◐</button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- ===================== 分组 sidebar ===================== -->
+    <aside class="sidebar">
+      <div class="nav-group">
+        <div class="nav-group__label">内容管理</div>
+        <button class="nav-item" data-section="feeds"><span class="dot"></span>订阅源</button>
+        <button class="nav-item" data-section="preferences"><span class="dot"></span>兴趣画像</button>
+        <button class="nav-item" data-section="margin-notes"><span class="dot"></span>页边注</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group__label">AI 配置</div>
+        <button class="nav-item" data-section="ai-providers"><span class="dot"></span>AI 模型</button>
+        <button class="nav-item" data-section="capability-routes"><span class="dot"></span>能力路由</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group__label">数据源与网络</div>
+        <button class="nav-item active" data-section="datasources-network"><span class="dot"></span>数据源与网络</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group__label">运行状态</div>
+        <button class="nav-item" data-section="runtime-status"><span class="dot"></span>运行状态</button>
+      </div>
+    </aside>
+
+    <!-- ===================== content ===================== -->
+    <main class="content">
+
+      <!-- ========== 复合 section：数据源与网络 ========== -->
+      <div class="section" id="sec-datasources-network">
+        <div class="tabs" data-tabs="dn">
+          <button class="tab active" data-tab="firecrawl">Firecrawl</button>
+          <button class="tab" data-tab="bocha">博查搜索</button>
+          <button class="tab" data-tab="searxng">SearXNG</button>
+          <button class="tab" data-tab="rsshub">RSSHub</button>
+          <button class="tab" data-tab="datasources">研究数据源</button>
+          <button class="tab" data-tab="proxy">出站代理</button>
+        </div>
+        <div class="content__inner">
+
+          <div class="panel active" data-panel="dn-firecrawl">
+            <div class="card">
+              <h3>Firecrawl 抓取服务</h3>
+              <p class="hint">正文抓取与补全服务；不可直连时经出站代理转发。配置沿用现有面板。</p>
+              <div class="field"><label>API Base URL</label><input type="text" value="https://api.firecrawl.dev"></div>
+              <div class="field"><label>API Key</label><input type="password" value="fc-xxxxxxxxxxxx"></div>
+              <div class="field"><label>并发数</label><input type="text" value="4"></div>
+              <button class="btn">保存</button>
+            </div>
+          </div>
+
+          <div class="panel" data-panel="dn-bocha">
+            <div class="card">
+              <h3>博查搜索</h3>
+              <p class="hint">数据增强联网检索（web 搜索）使用；Key 校验逻辑沿用现有面板。</p>
+              <div class="field"><label>API Key</label><input type="password" placeholder="sk-..."></div>
+              <button class="btn">保存并校验</button>
+              <button class="btn--ghost btn" style="margin-left:8px">测试搜索</button>
+            </div>
+          </div>
+
+          <div class="panel" data-panel="dn-searxng">
+            <div class="card">
+              <h3>SearXNG 搜索</h3>
+              <p class="hint">日报页边注问答使用的本地联网搜索实例。</p>
+              <div class="field"><label>实例地址</label><input type="text" value="http://192.168.1.10:8888"></div>
+              <button class="btn">保存</button>
+            </div>
+          </div>
+
+          <div class="panel" data-panel="dn-rsshub">
+            <div class="card">
+              <h3>RSSHub</h3>
+              <p class="hint">订阅源发现使用的 RSSHub 实例。</p>
+              <div class="field"><label>实例地址</label><input type="text" value="https://rsshub.app"></div>
+              <button class="btn">保存</button>
+            </div>
+          </div>
+
+          <div class="panel" data-panel="dn-datasources">
+            <div class="card">
+              <h3>研究数据源</h3>
+              <p class="hint">原油库存 / 贸易 / 宏观官方数据源目录与 Comtrade Key。</p>
+              <div class="status-row"><div><div class="name">EIA 原油库存</div><div class="meta">周度 · 官方 API</div></div><span class="badge badge--ok">可用</span></div>
+              <div class="status-row"><div><div class="name">UN Comtrade 贸易</div><div class="meta">月度 · 需 API Key</div></div><span class="badge badge--warn">Key 未配</span></div>
+              <div class="status-row"><div><div class="name">宏观指标（FRED 等）</div><div class="meta">不定期</div></div><span class="badge badge--ok">可用</span></div>
+            </div>
+            <div class="card">
+              <h3>Comtrade API Key</h3>
+              <div class="field"><label>Key</label><input type="password" placeholder="..."></div>
+              <button class="btn">保存</button>
+            </div>
+          </div>
+
+          <div class="panel" data-panel="dn-proxy">
+            <div class="toast-success">已保存 · 代理对所有外部请求生效</div>
+            <div class="card">
+              <h3>出站代理</h3>
+              <p class="hint">feed 抓取、Firecrawl、LLM 等所有外部请求经此代理转发。留空 = 直连（重启后仍生效）。</p>
+              <div class="field"><label>代理地址</label><input type="text" value="http://127.0.0.1:7890" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"></div>
+              <button class="btn">保存</button>
+              <button class="btn--ghost btn" style="margin-left:8px">测试连通性</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ========== 复合 section：运行状态 ========== -->
+      <div class="section" id="sec-runtime-status" style="display:none">
+        <div class="tabs" data-tabs="rs">
+          <button class="tab active" data-tab="ai-health">AI 健康</button>
+          <button class="tab" data-tab="queues">队列</button>
+          <button class="tab" data-tab="schedulers">定时任务</button>
+        </div>
+        <div class="content__inner">
+
+          <div class="panel active" data-panel="rs-ai-health">
+            <div class="card">
+              <h3>各路由主模型连通性</h3>
+              <p class="hint">定时探测 + 手动重测；本地模型自动拉起开关沿用现有面板。</p>
+              <div class="status-row"><div><div class="name">digest · 摘要生成</div><div class="meta">glm-4.7-flash · 890ms</div></div><span class="badge badge--ok">在线</span></div>
+              <div class="status-row"><div><div class="name">analysis · 数据增强分析</div><div class="meta">glm-4.7 · 1.2s</div></div><span class="badge badge--ok">在线</span></div>
+              <div class="status-row"><div><div class="name">tagging · 打标</div><div class="meta">本地 nomic-embed · —</div></div><span class="badge badge--warn">待拉起</span></div>
+              <div class="status-row"><div><div class="name">margin-qa · 页边注问答</div><div class="meta">glm-4.7 · 640ms</div></div><span class="badge badge--ok">在线</span></div>
+              <div style="margin-top:12px"><button class="btn">全部重测</button></div>
+            </div>
+          </div>
+
+          <div class="panel" data-panel="rs-queues">
+            <div class="card">
+              <h3>Embedding 队列</h3>
+              <div class="status-row"><div style="flex:1"><div style="display:flex;justify-content:space-between"><span class="name">文章向量</span><span class="meta">1240 / 1680</span></div><div class="progress"><div class="progress__fill" style="width:74%"></div></div></div><span class="badge badge--ok">运行中</span></div>
+            </div>
+            <div class="card">
+              <h3>标签打标队列</h3>
+              <div class="status-row"><div style="flex:1"><div style="display:flex;justify-content:space-between"><span class="name">待打标文章</span><span class="meta">36 / 210</span></div><div class="progress"><div class="progress__fill" style="width:17%"></div></div></div><span class="badge badge--ok">运行中</span></div>
+            </div>
+          </div>
+
+          <div class="panel" data-panel="rs-schedulers">
+            <div class="card">
+              <h3>定时任务</h3>
+              <p class="hint">状态总览与手动触发，逻辑沿用现有面板。</p>
+              <div class="status-row"><div><div class="name">日报生成</div><div class="meta">每日 05:30 · 下次 05:30</div></div><div><span class="badge badge--ok">正常</span> <button class="btn btn--ghost" style="margin-left:8px;padding:4px 12px">手动触发</button></div></div>
+              <div class="status-row"><div><div class="name">feed 刷新</div><div class="meta">每 30 分钟 · 下次 14:00</div></div><div><span class="badge badge--ok">正常</span> <button class="btn btn--ghost" style="margin-left:8px;padding:4px 12px">手动触发</button></div></div>
+              <div class="status-row"><div><div class="name">AI 健康探测</div><div class="meta">每 15 分钟</div></div><div><span class="badge badge--muted">静默期</span></div></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ========== 保持不变的 section：占位示意 ========== -->
+      <div class="section" id="sec-feeds" style="display:none">
+        <div class="content__inner">
+          <div class="placeholder"><b>订阅源</b><br>功能与交互完全不变（master list + 详情编辑 + 来源质量块）<br>本次仅归入「内容管理」组 · section 键保持 feeds</div>
+        </div>
+      </div>
+      <div class="section" id="sec-preferences" style="display:none">
+        <div class="content__inner">
+          <div class="placeholder"><b>兴趣画像</b><br>纯查看型面板不变 · 键保持 preferences</div>
+        </div>
+      </div>
+      <div class="section" id="sec-margin-notes" style="display:none">
+        <div class="content__inner">
+          <div class="placeholder"><b>页边注</b><br>跨报告批注管理不变 · 键保持 margin-notes</div>
+        </div>
+      </div>
+      <div class="section" id="sec-ai-providers" style="display:none">
+        <div class="content__inner">
+          <div class="placeholder"><b>AI 模型</b><br>主/备 provider 配置不变 · 键保持 ai-providers</div>
+        </div>
+      </div>
+      <div class="section" id="sec-capability-routes" style="display:none">
+        <div class="content__inner">
+          <div class="placeholder"><b>能力路由</b><br>按能力分配模型优先级不变 · 键保持 capability-routes</div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<script>
+  const SECTION_META = {
+    'datasources-network': ['数据源与网络', '外部抓取、搜索与网络出口配置（Firecrawl / 博查 / SearXNG / RSSHub / 研究数据源 / 代理）'],
+    'runtime-status': ['运行状态', 'AI 健康、队列与定时任务的监控总览'],
+    'feeds': ['订阅源', '管理 RSS 订阅源的刷新、抓取和标签配置'],
+    'preferences': ['兴趣画像', '按版块查看兴趣标签与权重，驱动订阅源推荐'],
+    'margin-notes': ['页边注', '跨报告的日报划词批注与问答'],
+    'ai-providers': ['AI 模型', '配置主模型与备用模型提供商'],
+    'capability-routes': ['能力路由', '按能力分配模型优先级与降级顺序'],
+  };
+
+  const titleEl = document.getElementById('pageTitle');
+  const descEl = document.getElementById('pageDesc');
+
+  function activateSection(key) {
+    document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.section === key));
+    document.querySelectorAll('.section').forEach(s => s.style.display = s.id === 'sec-' + key ? '' : 'none');
+    const meta = SECTION_META[key];
+    if (meta) { titleEl.textContent = meta[0]; descEl.textContent = meta[1]; }
+    // 回到该 section 的默认子 tab
+    const sec = document.getElementById('sec-' + key);
+    if (sec) {
+      const firstTab = sec.querySelector('.tab');
+      if (firstTab) activateTab(sec, firstTab.dataset.tab);
+    }
+  }
+
+  function activateTab(sectionEl, tabKey) {
+    const group = sectionEl.querySelector('.tabs').dataset.tabs;
+    sectionEl.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabKey));
+    sectionEl.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === group + '-' + tabKey));
+  }
+
+  document.querySelectorAll('.nav-item').forEach(btn =>
+    btn.addEventListener('click', () => activateSection(btn.dataset.section)));
+
+  document.querySelectorAll('.tab').forEach(btn =>
+    btn.addEventListener('click', e => {
+      const sec = e.target.closest('.section');
+      activateTab(sec, btn.dataset.tab);
+    }));
+</script>
+</body>
+</html>

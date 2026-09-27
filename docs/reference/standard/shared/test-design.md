@@ -40,7 +40,7 @@ doc-impact-applies: openspec/changes/, _test.go, .spec.ts, .test.ts | section=JI
 
 仅当本 change 的 delta specs 含 **MODIFIED / REMOVED Requirements** 时必答，纯新增 capability 豁免。
 
-改契约时旧测试可能仍在断言旧契约——**跑绿 ≠ 对**。用 `bash scripts/test-assets.sh <capability>` 反查旧资产（主 specs 现状节拍 / archive 历史含 test-cases*.md 的 change / 历史 Scenario→测试文件映射），然后在 test-cases.md 填「继承与调整」表，逐行处置才算验收：
+改契约时旧测试可能仍在断言旧契约——**跑绿 ≠ 对**。用 `bash scripts/harness/test-assets.sh <capability>` 反查旧资产（主 specs 现状节拍 / archive 历史含 test-cases*.md 的 change / 历史 Scenario→测试文件映射），然后在 test-cases.md 填「继承与调整」表，逐行处置才算验收：
 
 | 旧 Scenario | 处置 | 旧测试文件 | 动作 |
 | --- | --- | --- | --- |
@@ -81,6 +81,7 @@ UI 故事必检前三项可用性变体（误输入反馈 / 空态 / 错误态�
 | **完整交互故事（多步导航 / 表单流 / 前后端联动）** | **opencli 端到端** | 驱动真实 Chrome 走主链路（§5.3：交互流程验证主力） |
 
 - **涉及前端交互流程的 change，主用户故事至少一个 opencli 端到端落点**（或「人工」留痕豁免）——组件测试管单页逻辑，完整故事要真实浏览器讲完。
+- **改「操作允许性」语义（删除/编辑入口的 disabled、状态流转门槛）的 change，至少一条组件层挂载用例**断言按钮可点性/提示文案——composable 测试 mock 掉 confirm/事件后测不到「按钮到底点不点得动」，后端放开了 UI 仍可能禁着（教训：fix-provider-delete-route-deadlock）。
 - 视觉 / 布局验证派 k3 子代理截图，不混入交互验证（§5.3 工具分流）。
 
 ## 问句④：效果核对了吗
@@ -123,6 +124,19 @@ UI 故事必检前三项可用性变体（误输入反馈 / 空态 / 错误态�
 | 声明 `simple` 但任务行命中复杂档关键词（算法 / 状态机 / 解析 / 协议）且无 test-cases*.md | 声明与任务措辞矛盾（⑤a 反向质询） | 改声明为 complex 并补文档，或调整措辞并确非复杂档 |
 | 未声明 + 任务行命中复杂档关键词且无 test-cases*.md | 可能复杂档漏白盒（⑤a 兜底，entry-gate 动工时 steer 提醒） | 补声明；确复杂则补文档 |
 
+## UI 验收机械断言（通用，不限窄屏）
+
+UI 验收的通过依据 SHALL 是**机械断言**，不得依赖执行方（模型/子线程）的视觉能力或「目测截图」；截图作为证据留档，有视觉能力的复核方 SHOULD 抽检，缺视觉不构成阻断。四必测（每条源自实机翻车案例）：
+
+1. **展示重叠**：弹层（菜单/面板/抽屉/dialog）打开后用 `elementFromPoint` 探测内容中心，SHALL 命中弹层本体——`backdrop-filter`/`transform` 均可创建 stacking context 使 `z-index` 失效，DOM 存在性断言测不出遮挡；非弹层的溢出互叠（flex/absolute 内容被压溢出）用量矩形相交检出。
+2. **功能点击后的页面**：每个可点交互（按钮/菜单项/列表项）的断言 SHALL 覆盖「点击后到达的状态」（视图切换/筛选生效/URL 或状态变化），不得止步于「按钮存在且可点」。
+3. **文字可读**：截断 SHALL 是 `text-overflow: ellipsis`（完整文本经 title/详情可达），不得硬裁或与其它元素互叠；无法机械化的可读性（字号/对比度/换行舒适度）走「人工：验证方式」留痕。
+4. **逐交互状态 + 真实长内容**：布局断言（如 `scrollWidth <= 视口宽`）SHALL 覆盖各交互状态与条件渲染元素**在场态**（任务 chip/进度条等，不能只在无任务「干净态」验收），且用含连续长单词/超宽媒体的真实数据验证断词兑底（`overflow-wrap: break-word`），不用短标题假数据。
+
+**标准环境**：Web UI 验收用静态发布路径（`NUXT_PUBLIC_API_BASE=/api pnpm generate` → 铺 `backend-go/frontend/` → `:5100` 同源，见 [deployment.md](../../deployment.md) §本地裸跑静态托管）；dev server 的 apiBase/HMR/首访引导均为噪声源，不作为验收依据。验收前 SHALL 关闭引导类全屏遮罩（项目已默认关闭首访自动启动，仅留手动入口）。
+
+实例：溢出菜单被内容面板遮挡（stacking context 锁 z-index）、顶栏任务 chip 与汉堡互叠、微信源长单词撑破阅读态——均在 mobile-viewport-stage1 验收后由用户实机发现，机械断言化后可在验收期检出。
+
 ## 白盒分支表（复杂档附加）
 
 复杂档（状态机 ≥3 状态 / 复杂算法 / 多模块协议）在用例文档的「白盒附加」节补分支表——**附加件非主角**，故事层测不到的分支爆炸才需要（沿 case-first-testing 义务；断言判据主线程定，机械枚举可派子线程）：
@@ -139,12 +153,12 @@ UI 故事必检前三项可用性变体（误输入反馈 / 空态 / 错误态�
 
 ## JIT 注入摘要
 
-> 速查版，权威全文见本文档主体，**改主体必同步本节**（≤3KB 硬约束）。
+> 速查版，权威全文见主体，**改主体必同步本节**（≤3KB 硬约束）。
 
-**单元**：测试单元 = 一个 Requirement 的用户故事，**由 change 目录 test-cases.md 串成完整故事**（spec Scenario 只是断言片段）：主链路表串节拍（步/动作/来源 Scenario/期望/层/落点）+ 变体走查 + 效果核对 + 白盒附加。涉及行为的 change 必须有 test-cases.md（纯文档/工具链豁免）。双轨：方法单测允许（快反馈），交付账本在故事层——故事绿才算交付。
+**单元**：测试单元 = 一个 Requirement 的用户故事，**由 change 目录 test-cases.md 串成完整故事**（spec Scenario 只是断言片段）：主链路表串节拍（步/动作/来源 Scenario/期望/层/落点）+ 变体走查 + 效果核对 + 白盒附加。涉及行为的 change 必须有 test-cases.md（纯文档/工具链豁免）。双轨：方法单测允许，交付账本在故事层——故事绿才算交付。
 
 **五问句**：
-0. **⓪ 改契约了吗**（仅 MODIFIED/REMOVED Requirements 时）——旧测试可能仍断言旧契约，跑绿≠对：`bash scripts/test-assets.sh <capability>` 反查旧资产，test-cases.md 填「继承与调整」表（旧Scenario×处置×旧测试×动作）逐行处置
+0. **⓪ 改契约了吗**（仅契约 M/R 时）——旧测试可能仍断言旧契约，跑绿≠对：`bash scripts/harness/test-assets.sh <capability>` 反查旧资产，test-cases.md 填「继承与调整」表（旧Scenario×处置×旧测试×动作）逐行处置
 1. **节拍全吗**——每 Scenario 有落点；SHALL NOT 有负向节拍；外部依赖失败有答案；无自动化→「人工…」留痕
 2. **变体走查**——五组固定清单，每变体有明确答案，不适用划除留痕：
    - 输入：空串｜纯空白(全角/tab)｜纯分隔符(单/连/首/尾)｜单token｜大小写｜特殊字符｜超长
@@ -152,10 +166,12 @@ UI 故事必检前三项可用性变体（误输入反馈 / 空态 / 错误态�
    - 时间窗口：边界两端(当天算不算)｜空窗口｜跨窗口｜归一化
    - 幂等：重复执行｜部分失败重试｜并发(仅当声称线程安全)
    - 可用性(UI必检前三)：误输入反馈｜空态｜错误态｜加载态｜超长文本｜重复提交
-3. **层选对了吗**——最便宜层：纯逻辑→函数单测｜SQL/迁移→testcontainer PG(repository禁SQLite)｜HTTP→handler｜组件→Vitest｜**完整交互故事→opencli 端到端(前端交互 change 主链路至少一个 opencli 落点或人工豁免)**；视觉派 k3 截图
+3. **层选对了吗**——最便宜层：纯逻辑→函数单测｜SQL/迁移→testcontainer PG(repository禁SQLite)｜HTTP→handler｜组件→Vitest｜**完整交互故事→opencli 端到端(前端交互 change 主链路至少一个 opencli 落点或人工豁免)**；允许性变更含组件层用例；视觉派 k3 截图
 4. **效果核对了吗**——效果依赖断言外因素(数据覆盖率/LLM行为)→真库量化核对：触发原因/方法/量化结果/结论
-5. **展示字段盘点了吗**（改数据结构时）——含用户可见字段(标题/摘要/状态/计数/徽标)→**来源语义**须有 spec 锚；有锚改走 MODIFIED+⓪，无锚先补 Requirement 再改（隐式契约=测试盲区，详见主体⑤）
+5. **展示字段盘点了吗**（改数据结构时）——含用户可见字段(标题/摘要/状态/计数/徽标)→**来源语义**须有 spec 锚；有锚改走 MODIFIED+⓪，无锚先补 Requirement 再改(隐式契约=盲区)
 
-**验收措辞**：三形态之一——命令+期望｜文件存在｜「人工：验证方式」。黑名单：「单测覆盖」无清单｜「PASS」无命令｜「正确/合理/完整/等/之类」单独出现｜纯函数×SQLite（⑤b）｜复杂度未声明｜声明 complex 缺 test-cases*.md（⑤a 强违例）｜simple/未声明+任务行命中 ⑤a 关键词（算法/状态机/解析/协议）。词表不扩容（主信号=声明，词表仅兜底）。
+**验收措辞**：三形态之一——命令+期望｜文件存在｜「人工：验证方式」。黑名单：「单测覆盖」无清单｜「PASS」无命令｜「正确/合理/完整/等/之类」单独出现｜纯函数×SQLite（⑤b）｜复杂度未声明｜声明 complex 缺 test-cases*.md（⑤a 强违例）｜simple/未声明+任务行命中 ⑤a 关键词（算法/状态机/解析/协议）。词表不扩容。
 
-**白盒附加**：复杂档（状态机/算法/协议）在 test-cases.md 白盒附加节出分支表+边界值+不适用划除留痕（判据主线程定）——附加件非主角。
+**UI 验收**：机械断言为准不依赖视觉——弹层 elementFromPoint 命中本体｜点击后到达状态断言｜ellipsis 不硬裁｜逐状态+任务态+长内容；Web 验收走静态 :5100，详见主体。
+
+**白盒附加**：复杂档在 test-cases.md 白盒附加节出分支表+边界值+不适用划除留痕——附加件非主角。

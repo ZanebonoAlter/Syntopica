@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"gorm.io/gorm"
-
 	"syntopica-backend/internal/platform/database"
 )
 
@@ -95,6 +93,12 @@ const (
 	ResultKindBoardBrief          = "board_brief"
 	ResultKindBoardInvestigation  = "board_investigation"
 	ResultKindLegacyBoardAnalysis = "legacy_board_analysis"
+	// ResultKindSignalReport (board-signal-reports): immutable signal report
+	// snapshot. Board scope only; carries granularity/period/source_signal_id
+	// (all other kinds leave the three columns NULL — never backfilled).
+	// Deliberately NOT in isBoardResultKind: legacy brief/investigation APIs
+	// keep their old semantics and never surface signal reports.
+	ResultKindSignalReport = "signal_report"
 )
 
 // TopicEnrichmentResult is an immutable snapshot of one enhancement run.
@@ -115,7 +119,14 @@ type TopicEnrichmentResult struct {
 	ToolCalls           json.RawMessage `gorm:"type:jsonb" json:"tool_calls"`
 	InputSnapshot       json.RawMessage `gorm:"type:jsonb" json:"input_snapshot"`
 	SessionID           string          `gorm:"size:120" json:"session_id"`
-	CreatedAt           time.Time       `json:"created_at"`
+	// Signal-report lifecycle columns (board-signal-reports). Nullable for
+	// every kind; only signal_report rows carry values. Model tags stay
+	// constraint-free: the explicit migration owns the shape CHECK and the
+	// composite FK to board_signal_candidate (20260922_0001).
+	Granularity    *string   `gorm:"size:10" json:"granularity"`
+	Period         *string   `gorm:"size:12" json:"period"`
+	SourceSignalID *uint     `json:"source_signal_id"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 func (TopicEnrichmentResult) TableName() string { return "topic_enrichment_result" }
@@ -233,79 +244,9 @@ type TopicEnrichmentQA struct {
 
 func (TopicEnrichmentQA) TableName() string { return "topic_enrichment_qa" }
 
-// ReferenceRole is a reusable methodology profile injected into the analysis
-// prompt as an appendix (design D5: 方法非事实 — roles shape HOW the agent
-// analyzes, never inject facts/evidence).
-// Table: reference_roles
-// Added by board-level-deep-analysis.
-type ReferenceRole struct {
-	ID      uint   `gorm:"primarykey" json:"id"`
-	Name    string `gorm:"size:120;uniqueIndex;not null" json:"name"`
-	Title   string `gorm:"size:200" json:"title"`
-	Content string `gorm:"type:text;not null" json:"content"`
-	// No gorm default tag: a default tag makes GORM skip zero-value (false)
-	// fields on INSERT, silently flipping Enabled=false creations to the DB
-	// default. Handlers set Enabled explicitly (true when omitted).
-	Enabled   bool      `gorm:"not null" json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-func (ReferenceRole) TableName() string { return "reference_roles" }
-
-// AnalysisMethodSelectionMeta declares when a method is suitable, when it must
-// not be selected, which evidence it needs, and its known failure modes. The
-// concrete type keeps JSONB payloads validated and avoids unstructured maps.
-type AnalysisMethodSelectionMeta struct {
-	ApplicableWhen   []string `json:"applicable_when"`
-	AvoidWhen        []string `json:"avoid_when"`
-	RequiredEvidence []string `json:"required_evidence"`
-	FailureModes     []string `json:"failure_modes"`
-}
-
-func (m *AnalysisMethodSelectionMeta) normalize() {
-	if m.ApplicableWhen == nil {
-		m.ApplicableWhen = []string{}
-	}
-	if m.AvoidWhen == nil {
-		m.AvoidWhen = []string{}
-	}
-	if m.RequiredEvidence == nil {
-		m.RequiredEvidence = []string{}
-	}
-	if m.FailureModes == nil {
-		m.FailureModes = []string{}
-	}
-}
-
-// AnalysisMethod is a globally managed process/checklist card. It is never
-// injected globally: future investigation selection loads summaries first and
-// full Content only for explicitly selected IDs.
-type AnalysisMethod struct {
-	ID            uint                        `gorm:"primarykey" json:"id"`
-	Name          string                      `gorm:"size:120;uniqueIndex;not null" json:"name"`
-	Title         string                      `gorm:"size:200" json:"title"`
-	Summary       string                      `gorm:"type:text" json:"summary"`
-	SelectionMeta AnalysisMethodSelectionMeta `gorm:"type:jsonb;serializer:json;not null;default:'{}'" json:"selection_meta"`
-	Content       string                      `gorm:"type:text;not null" json:"content"`
-	Enabled       bool                        `gorm:"not null" json:"enabled"`
-	Legacy        bool                        `gorm:"not null;default:false" json:"legacy"`
-	DeletedAt     gorm.DeletedAt              `gorm:"index" json:"deleted_at,omitempty"`
-	CreatedAt     time.Time                   `json:"created_at"`
-	UpdatedAt     time.Time                   `json:"updated_at"`
-}
-
-func (AnalysisMethod) TableName() string { return "analysis_methods" }
-
-func (m *AnalysisMethod) BeforeSave(_ *gorm.DB) error {
-	m.SelectionMeta.normalize()
-	return nil
-}
-
-func (m *AnalysisMethod) AfterFind(_ *gorm.DB) error {
-	m.SelectionMeta.normalize()
-	return nil
-}
+// ReferenceRole 与 AnalysisMethod 两套画像体系已整体移除
+// （restructure-settings-navigation：零启用零注入，删除无行为损失；
+// 表结构快照见 drop 迁移注释）。
 
 func init() {
 	database.RegisterModels(
@@ -315,9 +256,10 @@ func init() {
 		&TopicEnrichmentReview{},
 		&StockDebateResult{},
 		&TopicEnrichmentQA{},
-		&ReferenceRole{},
-		&AnalysisMethod{},
 		&CrossBoardRelationRun{},
 		&CrossBoardRelation{},
+		&BoardSignalDiscovery{},
+		&BoardSignalCandidate{},
+		&BoardSignalResearchProgress{},
 	)
 }

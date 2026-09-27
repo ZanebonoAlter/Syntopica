@@ -14,6 +14,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service"
 )
@@ -182,7 +183,7 @@ func TestCompositeLabelHandlerComponentOptions(t *testing.T) {
 	auxMounted := createHandlerSemanticLabel(t, db, "美国国债", "coh-treasury", "auxiliary", "active", 3, []float64{1, 0, 0})
 	createHandlerSemanticLabel(t, db, "热门通用", "coh-hot", "auxiliary", "active", 20, []float64{0, 1, 0})
 	createHandlerSemanticLabel(t, db, "冷门通用", "coh-cold", "auxiliary", "active", 1, []float64{0, 0, 1})
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxMounted.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxMounted.ID}).Error)
 
 	resp := performJSON(t, router, http.MethodGet, "/api/composite-labels/component-options", nil)
 	require.Equal(t, http.StatusOK, resp.Code)

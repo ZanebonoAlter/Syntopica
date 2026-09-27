@@ -1,0 +1,353 @@
+/**
+ * failure-classify — 子线程失败白名单纯函数（A4 / design D4）
+ *
+ * 输入 tool_result(Agent) 失败现场的原始信号，产出有界结构化失败事实：
+ *   failure = { stage, category, exitLike, diag }
+ *
+ * dsh 纪律：「诊断是展示文本不是协议，程序不得按其分支」——category 仅用于统计/展示，
+ * 不构成任何控制流依据。
+ *
+ * - category 限定白名单枚举，按有序关键词表首中映射；映射不进一律落 unknown，
+ *   原始错误文本不透传（仅 ≤512B 安全摘要 diag）
+ * - stage 按证据判定：未观察到 tool_call 起点（如 quota-gate 拦截）→ dispatch；
+ *   起点存在且执行失败 → run；details.status 显示 agent 已完成但结果装配失败 → result
+ * - diag：首个非空错误行、剥控制字符、压成单行、≤512 字节（截断加 …）——
+ *   gate.check 的 diag 复用同一规范（truncateDiag）
+ */
+
+export type FailureStage = "dispatch" | "run" | "result";
+export type FailureCategory =
+	| "quota-block"
+	| "timeout"
+	| "gate-fail"
+	| "model-error"
+	| "tool-error"
+	| "unknown";
+
+export interface FailureFact {
+	stage: FailureStage;
+	category: FailureCategory;
+	/** 可提取的数字退出码，否则 null */
+	exitLike: number | null;
+	/** 首个非空错误行的单行截断（≤512 字节，剥控制字符） */
+	diag: string;
+}
+
+/** 有序关键词表：首个命中胜出；不命中 → unknown（不复制原值） */
+const CATEGORY_RULES: readonly (readonly [FailureCategory, RegExp])[] = [
+	// quota-gate block reason 中文文案（"额度不足/剩余情况/窗口剩余/重置时间"）+ 英文 quota
+	["quota-block", /额度|剩余|窗口|重置|quota|阻断/i],
+	["timeout", /timeout|timed\s*out|超时|ETIMEDOUT/i],
+	["gate-fail", /增量门禁|门禁未通过|quality.?gate/i],
+	["model-error", /rate limit|429|\b5\d{2}\b|provider|overloaded|context (?:length|window)|api key/i],
+	["tool-error", /exit (?:code )?\d|not found|permission denied|ENOENT|EACCES|no such file|command failed/i],
+];
+
+function classifyCategory(errorText: string): FailureCategory {
+	for (const [category, re] of CATEGORY_RULES) {
+		if (re.test(errorText)) return category;
+	}
+	return "unknown";
+}
+
+function extractExitLike(errorText: string): number | null {
+	const m = errorText.match(/exit(?:\s+code)?\s*[:=]?\s*(\d{1,3})/i);
+	return m ? Number.parseInt(m[1], 10) : null;
+}
+
+/** 单行规范化：剥 ANSI/控制字符、压空格、≤512 字节（截断加 …）。 */
+function truncateLine(firstLine: string): string {
+	const stripped = firstLine
+		// ANSI 转义序列整体剥除（颜色码等；先于单控制字符，避免留下 [31m 残渣）
+		.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+		.replace(/[\x00-\x1f\x7f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	// 字节级截断（中文一字 3B），预留 …（3B）
+	let out = stripped;
+	while (out.length > 0 && Buffer.byteLength(`${out}…`, "utf8") > 512) {
+		out = out.slice(0, -1);
+	}
+	return out.length < stripped.length ? `${out}…` : out;
+}
+
+/** A4 截断规范：首个非空行、剥控制字符、压单行、≤512 字节（截断加 …）。 */
+export function truncateDiag(text: string): string {
+	const firstLine =
+		text
+			.split(/\r?\n/)
+			.map((l) => l.trim())
+			.find((l) => l.length > 0) ?? "";
+	return truncateLine(firstLine);
+}
+
+/** gate.check 专用 diag 提取（harness-observability-fixes design D2）：失败特征行优先。
+ *  门禁命令失败时 stdout 首行常是成功文案（golangci-lint "0 issues."、go test
+ *  "? pkg [no test files]"），真实错误在 stderr 后续行——首个非空行策略会把
+ *  噪声记进 DB，事后审计无法还原失败原因（events.db 2026-08-25 实测 9 连假象）。
+ *  按有序关键词表取首个命中行，无命中回退首个非空行；截断规范复用 truncateDiag。
+ *  仅 gate.check 记账路径使用；classifyFailure（子线程白名单）语义不同，继续用 truncateDiag。 */
+const GATE_DIAG_RULES: readonly RegExp[] = [
+	/FAIL/, // go test 失败锚点（FAIL pkg [build failed]）
+	/\berror\b/i, // 编译/lint 错误行（含 eslint error）
+	/^#\s+\S/, // Go 工具链错误锚点：# syntopica-backend/internal/topicgraph/service
+	/\bexit\b/i, // exit 1 / exit code 2
+	/\bundefined\b/i, // TS/JS undefined 引用
+	/\bcannot\b/i, // cannot find package / cannot use
+	/\bdenied\b/i, // permission denied / EACCES 语义行
+];
+
+export function truncateDiagGate(text: string): string {
+	const lines = text
+		.split(/\r?\n/)
+		.map((l) => l.trim())
+		.filter((l) => l.length > 0);
+	const hit =
+		lines.find((l) => GATE_DIAG_RULES.some((re) => re.test(l))) ?? lines[0] ?? "";
+	return truncateDiag(hit);
+}
+
+/** WSL interop 层环境故障特征（harden-gate-interop-health design D3 双关键字并集锚定，
+ *  任一命中即环境故障）：
+ *  1. UtilAcceptVsock 关键字（accept4 failed 110 = ETIMEDOUT，vsock 通道死）；
+ *  2. <N>WSL (pid - ) ERROR 行首前缀形态（WSL 注入的 stderr，仅 interop 未正常
+ *     启动/通信时出现，不会与正常门禁输出混合——cmd.exe 成功启动后无此形态）。
+ *  单形态随 WSL 版本漂移时另一形态仍可命中；两者全漂移则退化为既有行为（可考古）。
+ *  样本：`<3>WSL (1751 - ) ERROR: UtilAcceptVsock:251: accept4 failed 110` */
+const INTEROP_FAILURE_RE = /UtilAcceptVsock|^<\d>WSL \([^)]*\) ERROR/m;
+
+/** 判定门禁命令输出是否为 WSL interop 环境故障（非代码问题）。
+ *  供 quality-gate gateLog 分流：命中 → 不进粘性、归因环境；未命中 → 既有语义。 */
+export function isInteropFailure(output: string): boolean {
+	return INTEROP_FAILURE_RE.test(output ?? "");
+}
+
+/** native 模式工具链缺失特征（harden-gate-native-toolchain design D4）：
+ *  bash 经 PATH 查找失败的标准文案 `bash: line 1: <exe>: command not found`
+ *  （events.db 2026-09-17 事故实测形态，单次事故 945 条假失败）。
+ *  仅 native 模式参与判定（quality-gate 侧门控）：windows 模式用 Windows 绝对路径执行，
+ *  不经 bash PATH 查找，同名字符串不得触发跨语义环境归因——与 isInteropFailure 
+ *  仅 windows 判定对称。两特征集正交（interop 特征不含 command not found，反之亦然），
+ *  错发恢复建议（如 native 场景建议重启 WSL）由调用侧文案分流防。
+ *  样本：`bash: line 1: go: command not found` */
+const TOOL_NOT_FOUND_RE = /command not found/i;
+
+/** 判定门禁命令输出是否为 native 工具链缺失（非代码问题）。
+ *  供 quality-gate gateLog 分流：命中 → 不进粘性、归因环境（工具链缺失）；
+ *  未命中 → 既有语义（真实代码失败照进粘性/分级）。 */
+export function isToolNotFound(output: string): boolean {
+	return TOOL_NOT_FOUND_RE.test(output ?? "");
+}
+
+/* ---------- 并发外部归因：路径提取与归属判定（attribute-concurrent-gate-noise design D6） ----------
+ *  从门禁失败输出提取「像路径/像包」的 token，供 quality-gate 判定失败归属（mine/foreign）。
+ *  不变量：有界白名单正则，只匹配到明确形态；不做任何「猜测式」推断——
+ *  解析结果为空一律返回 []，调用方视同 P=∅ 维持现状（多报不少报，不误判外部）。 */
+
+/** 文件锚点：「像路径的 token + :行(:列)」形态（golangci-lint / go vet 编译错误行）。
+ *  token 字符集有界（非空白非冒号），必须含至少一个路径分隔符且以「.字母开头的短扩展名」
+ *  收尾——版本号形态（v0.1.0）不误判；不满足即不视为路径。 */
+const FAILURE_PATH_ANCHOR_RE = /([^\s:]+[\\/][^\s:]+?\.[A-Za-z][A-Za-z0-9]{0,11}):(\d+)(?::\d+)?/g;
+
+/** 独立路径行锚点（eslint stylish 的 bare path 行，相对/绝对双形态）：整行就是一个
+ *  带路径分隔符 + 扩展名的 token。空格/冒号拒入（散文行、go: downloading 等不命中）。 */
+const FAILURE_PATH_LINE_RE = /^[^\s:]*[\\/][^\s:]*\.[A-Za-z][A-Za-z0-9]{0,11}$/;
+
+/** 包锚点（go vet / go test）：`# <module>/<pkg>` / `FAIL <module>/<pkg> ...` */
+const GO_PKG_ANCHOR_RE = /^(?:#\s*|FAIL\s+)(\S+)(?:\s|$)/;
+
+/** Go module 名 → 仓库目录前缀映射（本仓库唯一 Go module；未登记 module 不映射 =
+ *  提取不出 = 调用方保守回现状）。包锚点转成目录前缀（尾部 /）供前缀比对。 */
+const GO_MODULE_DIR_MAP: Readonly<Record<string, string>> = {
+	"syntopica-backend": "backend-go",
+};
+
+/** 包路径 → 目录前缀；无 module 映射 / 无包路径（如 command-line-arguments）→ null。 */
+function goPkgToDirPrefix(pkg: string): string | null {
+	const slash = pkg.indexOf("/");
+	if (slash <= 0) return null;
+	const dir = GO_MODULE_DIR_MAP[pkg.slice(0, slash)];
+	if (!dir) return null;
+	return `${dir}/${pkg.slice(slash + 1)}/`;
+}
+
+/** 从门禁失败输出提取路径/包锚点集合（去重，保首次出现序；解析不出 → []）。
+ *  双锚点：文件形态（path:LINE[:COL]、eslint bare path 行）+ 包锚点（# / FAIL
+ *  <module>/<pkg> → 目录前缀）；反斜杠归一为 /（Windows 实测形态）；剥包裹括号引号。 */
+export function extractFailurePaths(output: string): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	const push = (raw: string): void => {
+		const p = raw
+			.replace(/^[(\[{"']+/, "")
+			.replace(/[)\]}"':,;]+$/, "")
+			.replace(/\\/g, "/");
+		if (!p || seen.has(p)) return;
+		seen.add(p);
+		out.push(p);
+	};
+	const text = typeof output === "string" ? output : "";
+	for (const rawLine of text.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line) continue;
+		const pkg = line.match(GO_PKG_ANCHOR_RE);
+		if (pkg) {
+			const prefix = goPkgToDirPrefix(pkg[1]);
+			if (prefix) push(prefix);
+			continue; // # / FAIL 行是包锚点行，不再按文件锚点扫
+		}
+		let matched = false;
+		for (const h of line.matchAll(FAILURE_PATH_ANCHOR_RE)) {
+			if (h[1].startsWith("//")) continue; // 协议相对 URL 形态不算路径
+			push(h[1]);
+			matched = true;
+		}
+		if (matched) continue;
+		if (FAILURE_PATH_LINE_RE.test(line)) push(line);
+	}
+	return out;
+}
+
+export interface ForeignCheckInput {
+	/** 失败输出提取出的路径/包锚点集合（extractFailurePaths 的输出） */
+	paths: readonly string[];
+	/** 本会话侧：累计触发集 ∪ 本 change 归属 */
+	mine: Iterable<string>;
+	/** 外部侧：会话启动基线 ∪ 其他 change 归属 */
+	foreign: Iterable<string>;
+}
+
+/** 路径 x 是否属于集合 s：精确命中，或包锚点（尾部 / 的目录前缀）与集合成员前缀命中。 */
+function pathMemberOf(p: string, s: ReadonlySet<string>): boolean {
+	if (s.has(p)) return true;
+	if (p.endsWith("/")) {
+		for (const x of s) if (x.startsWith(p)) return true;
+	}
+	return false;
+}
+
+/** 归属判定（design D5 判外部充分条件）：P 非空 ∧ P∩mine=∅ ∧ P⊆foreign。
+ *  包锚点（尾部 / 的目录前缀）按前缀与集合比对：任一集合成员位于该前缀下即命中。
+ *  任何混合/缺失/非字符串路径 → false（保守回现状，宁可多报不误判外部）。 */
+export function isForeignFailure({ paths, mine, foreign }: ForeignCheckInput): boolean {
+	if (!Array.isArray(paths) || paths.length === 0) return false;
+	const mineSet = mine instanceof Set ? mine : new Set(mine);
+	const foreignSet = foreign instanceof Set ? foreign : new Set(foreign);
+	return (
+		paths.every((p) => typeof p === "string" && !pathMemberOf(p, mineSet)) &&
+		paths.every((p) => typeof p === "string" && pathMemberOf(p, foreignSet))
+	);
+}
+
+/* ---------- 三态归属判定与混合失败行（tune-quality-gate-concurrency design D3） ----------
+ *  混合归属（P∩mine≠∅ ∧ P∩foreign≠∅）是共享树上最常见的失败形态（7 天账本取证：
+ *  纯外部 foreign-breakage 命中 0 次，混合全部按本会话 [回归] 催修）。三态化：纯外部
+ *  维持 [外部]；混合降级 [并发]（进粘性但不取催修分级，双方路径分列）；其余保守 mine。 */
+
+export type FailureOwnership = "foreign" | "mixed" | "mine";
+
+export interface OwnershipCheckInput extends ForeignCheckInput {}
+
+/** 三态归属判定（design D3 判定序：纯外部 → 混合 → 保守 mine）：
+ *  - P∩mine=∅ ∧ P⊆foreign → foreign（既有 [外部] 语义不变）
+ *  - P∩mine≠∅ ∧ P∩foreign≠∅ → mixed（新增 [并发] 降级）
+ *  - 其余（含 paths 空 / 非字符串成员 / 输入异常如非 Iterable）→ mine（保守，宁可
+ *    多报不误判外部/漏催修） */
+export function classifyFailureOwnership({
+	paths,
+	mine,
+	foreign,
+}: OwnershipCheckInput): FailureOwnership {
+	try {
+		if (!Array.isArray(paths) || paths.length === 0) return "mine";
+		const mineSet = mine instanceof Set ? mine : new Set(mine);
+		const foreignSet = foreign instanceof Set ? foreign : new Set(foreign);
+		const valid = paths.filter((p): p is string => typeof p === "string");
+		if (valid.length === 0) return "mine";
+		const hitMine = valid.some((p) => pathMemberOf(p, mineSet));
+		const hitForeign = valid.some((p) => pathMemberOf(p, foreignSet));
+		if (!hitMine && valid.every((p) => pathMemberOf(p, foreignSet))) return "foreign";
+		if (hitMine && hitForeign) return "mixed";
+		return "mine";
+	} catch {
+		return "mine"; // 输入异常（非 Iterable 等）保守回退（B3-5）
+	}
+}
+
+/** 把失败路径按命中面分组（mixed 行双方路径分列用）：mine 命中面 / foreign 命中面
+ *  （同一路径可同时命中两侧——双方都改过同一文件，分列如实呈现重叠）。 */
+export function partitionFailurePaths({
+	paths,
+	mine,
+	foreign,
+}: OwnershipCheckInput): { mine: string[]; foreign: string[] } {
+	const out = { mine: [] as string[], foreign: [] as string[] };
+	try {
+		const mineSet = mine instanceof Set ? mine : new Set(mine);
+		const foreignSet = foreign instanceof Set ? foreign : new Set(foreign);
+		for (const p of paths ?? []) {
+			if (typeof p !== "string") continue;
+			if (pathMemberOf(p, mineSet)) out.mine.push(p);
+			if (pathMemberOf(p, foreignSet)) out.foreign.push(p);
+		}
+	} catch {
+		/* 输入异常：空分组（调用方 mixed 已保守回退，不会用到） */
+	}
+	return out;
+}
+
+/** 混合归属失败行（[并发] 前缀，design D3）：不取 [回归]/[中间态] 分级；双方路径
+ *  各 ≤3 条 + 超出计数 + 「可能非本会话所致，归档前仍需全绿」提示；diag（可选）为
+ *  与 gate.check 同源的首个失败特征行，附在尾部供辨识具体错误。 */
+export function formatMixedFailure(
+	cmd: string,
+	myPaths: readonly string[],
+	foreignPaths: readonly string[],
+	diag?: string,
+): string {
+	const clip = (xs: readonly string[]): { shown: string; more: string } => ({
+		shown: (xs ?? []).slice(0, 3).join(", "),
+		more: (xs ?? []).length > 3 ? ` 等 ${(xs ?? []).length} 个路径` : "",
+	});
+	const my = clip(myPaths);
+	const fo = clip(foreignPaths);
+	const diagLine = diag ? `\n  首个错误：${diag}` : "";
+	return (
+		`[并发] [${cmd}] 失败混合归属（他人会话与本会话文件并存，可能非本会话所致，归档前仍需全绿）：\n` +
+		`  他人路径：${fo.shown}${fo.more}\n` +
+		`  本会话路径：${my.shown}${my.more}${diagLine}`
+	);
+}
+
+function classifyStage(
+	started: boolean | undefined,
+	status: unknown,
+): FailureStage {
+	if (started == null) return "dispatch"; // 未观察到 tool_call 起点（如门禁拦截）
+	const s = typeof status === "string" ? status.toLowerCase() : "";
+	if (/complet|done|finish|success/.test(s)) return "result"; // agent 完成但结果装配失败
+	return "run";
+}
+
+/**
+ * 对一次失败的 Agent tool_result 做白名单分类。
+ * 成功与用户取消不得调用本函数（telemetry 侧以 isError 守卫，产出端不出现 failure 对象）。
+ */
+export function classifyFailure(input: {
+	/** 失败时的错误文本（tool_result.content 的 text 部分拼接）；非字符串按空处理 */
+	errorText?: unknown;
+	/** tool_result.details（读取 status 判定 result 态） */
+	details?: { status?: unknown } | Record<string, unknown> | null;
+	/** agentStarts 是否观察到本次 tool_call 起点；undefined = dispatch 态 */
+	started?: boolean;
+}): FailureFact {
+	const errorText =
+		typeof input.errorText === "string" ? input.errorText : "";
+	const details = (input.details ?? {}) as { status?: unknown };
+	return {
+		stage: classifyStage(input.started, details.status),
+		category: classifyCategory(errorText),
+		exitLike: extractExitLike(errorText),
+		diag: truncateDiag(errorText),
+	};
+}

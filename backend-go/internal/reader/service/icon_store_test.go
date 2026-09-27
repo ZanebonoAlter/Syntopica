@@ -341,3 +341,60 @@ func TestIconStorageDir_DefaultsToDataIcons(t *testing.T) {
 		t.Errorf("unexpected icon dir %q", IconStorageDir())
 	}
 }
+
+// TestLocalIconExists covers the disk half of the icon state machine: a
+// /icons/... path is only "present" when a regular file backs it, and malformed
+// or out-of-tree paths must never be treated as present.
+func TestLocalIconExists(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	store := NewIconStore(dir)
+
+	localPath, err := store.SaveFeedIcon(7, srv.URL+"/icon.png")
+	if err != nil {
+		t.Fatalf("SaveFeedIcon: %v", err)
+	}
+	if localPath != "/icons/feeds/7.png" {
+		t.Fatalf("localPath = %q, want /icons/feeds/7.png", localPath)
+	}
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "stored file exists", path: localPath, want: true},
+		{name: "file never written", path: "/icons/feeds/999.png", want: false},
+		{name: "dir creation pending", path: "/icons/feeds", want: false},
+		{name: "non-directory path component", path: "/icons/feeds/7.png/x", want: false},
+		{name: "empty path", path: "", want: false},
+		{name: "not an icons path", path: "/static/7.png", want: false},
+		{name: "remote URL", path: "https://example.com/favicon.ico", want: false},
+		{name: "parent traversal", path: "/icons/feeds/../../etc/passwd", want: false},
+		{name: "dot segment", path: "/icons/./feeds/7.png", want: false},
+		{name: "backslash separator", path: `/icons/feeds\7.png`, want: false},
+		{name: "nested traversal only", path: "/icons/../icons/feeds/7.png", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := store.LocalIconExists(tt.path); got != tt.want {
+				t.Errorf("LocalIconExists(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+
+	// Deleting the file (runtime dir wiped / restore without assets) flips the
+	// answer to false so the refresh pipeline re-downloads instead of 404ing.
+	if err := os.Remove(filepath.Join(dir, "feeds", "7.png")); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if store.LocalIconExists(localPath) {
+		t.Errorf("LocalIconExists(%q) = true after the file was removed, want false", localPath)
+	}
+}

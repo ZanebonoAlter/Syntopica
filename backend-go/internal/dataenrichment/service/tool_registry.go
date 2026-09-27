@@ -144,6 +144,17 @@ func (r *Registry) Tools() map[string]*Tool {
 	return r.tools
 }
 
+// Register adds externally-provided tools at wiring time (research data
+// sources). Registered tools are callable by name via Execute but are NOT
+// added to any flow's allowedTools list — every agent flow keeps its existing
+// tool surface unless it explicitly opts in (change
+// integrate-research-data-sources spec「工具适配不改现有工具面」).
+func (r *Registry) Register(tools ...*Tool) {
+	for _, t := range tools {
+		r.tools[t.Name] = t
+	}
+}
+
 // Execute runs a tool by name with the given arguments.
 // Returns JSON string on success or error JSON on failure.
 func (r *Registry) Execute(ctx context.Context, name string, args map[string]any) (string, error) {

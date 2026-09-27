@@ -14,34 +14,6 @@ const (
 	TagCategoryKeyword = "keyword" // 关键词，兜底类别（组织、产品、概念等）
 )
 
-// TagCategoryMeta defines default display properties for each category
-type TagCategoryMeta struct {
-	Key         string // category key: event, person, keyword
-	Label       string // display label: 事件, 人物, 关键词
-	DefaultIcon string // Iconify icon id
-	Color       string // default color for nodes/badges
-}
-
-// DefaultTagCategories returns the standard category definitions
-func DefaultTagCategories() []TagCategoryMeta {
-	return []TagCategoryMeta{
-		{Key: TagCategoryEvent, Label: "事件", DefaultIcon: "mdi:calendar-star", Color: "#f59e0b"},
-		{Key: TagCategoryPerson, Label: "人物", DefaultIcon: "mdi:account", Color: "#10b981"},
-		{Key: TagCategoryKeyword, Label: "关键词", DefaultIcon: "mdi:tag", Color: "#6366f1"},
-	}
-}
-
-// GetCategoryMeta returns the metadata for a category key
-func GetCategoryMeta(category string) TagCategoryMeta {
-	for _, meta := range DefaultTagCategories() {
-		if meta.Key == category {
-			return meta
-		}
-	}
-	// Default to keyword
-	return TagCategoryMeta{Key: TagCategoryKeyword, Label: "关键词", DefaultIcon: "mdi:tag", Color: "#6366f1"}
-}
-
 // TopicTag represents a tag extracted from AI summaries
 // Tags are categorized into event, person, or keyword
 type TopicTag struct {
@@ -68,11 +40,11 @@ type TopicTag struct {
 	// This field is retained for backward compatibility and will be removed with a DB migration.
 	Kind string `gorm:"size:20" json:"kind"`
 
-	// Deprecated: Each tag now has multiple embeddings (identity + semantic).
-	// Use direct queries on topic_tag_embeddings with embedding_type filter instead.
-	Embedding  *TopicTagEmbedding  `gorm:"foreignKey:TopicTagID" json:"embedding,omitempty"`
-	Embeddings []TopicTagEmbedding `gorm:"foreignKey:TopicTagID" json:"embeddings,omitempty"`
-	MergedInto *TopicTag           `gorm:"foreignKey:MergedIntoID" json:"merged_into,omitempty"`
+	// Deprecated embedding associations (Embedding/Embeddings []TopicTagEmbedding)
+	// removed in decouple-backend-domains: zero consumers (no Preload, no field
+	// access in production); association fields carry no DDL. Query
+	// topic_tag_embeddings directly with embedding_type filter.
+	MergedInto *TopicTag `gorm:"foreignKey:MergedIntoID" json:"merged_into,omitempty"`
 }
 
 type MetadataMap map[string]any
@@ -113,42 +85,6 @@ func (m *MetadataMap) Scan(value any) error {
 
 func (TopicTag) TableName() string {
 	return "topic_tags"
-}
-
-// TopicTagEmbedding stores vector embeddings for tag similarity matching
-type TopicTagEmbedding struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	TopicTagID    uint      `gorm:"uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"topic_tag_id"`
-	EmbeddingType string    `gorm:"size:20;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"embedding_type"`
-	EmbeddingVec  string    `gorm:"type:vector;column:embedding" json:"-"`
-	Dimension     int       `json:"dimension"`                                                                   // Vector dimension (e.g., 2048 for text-embedding-3-large)
-	Model         string    `gorm:"size:50" json:"model"`                                                        // Model used: "text-embedding-ada-002"
-	TextHash      string    `gorm:"size:64;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"text_hash"` // Hash of (label + aliases + category) for re-embedding detection
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-
-	TopicTag *TopicTag `gorm:"foreignKey:TopicTagID;constraint:OnDelete:CASCADE" json:"topic_tag,omitempty"`
-}
-
-// TableName specifies the table name for TopicTagEmbedding
-func (TopicTagEmbedding) TableName() string {
-	return "topic_tag_embeddings"
-}
-
-// TagMergeSuggestion records a pair of similar tags proposed for manual merging.
-type TagMergeSuggestion struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	NewTagID      uint      `gorm:"uniqueIndex:idx_tag_merge_suggestion_pair" json:"new_tag_id"`
-	ExistingTagID uint      `gorm:"uniqueIndex:idx_tag_merge_suggestion_pair" json:"existing_tag_id"`
-	NewLabel      string    `gorm:"size:160" json:"new_label"`
-	ExistingLabel string    `gorm:"size:160" json:"existing_label"`
-	Category      string    `gorm:"size:20" json:"category"`
-	Similarity    float64   `gorm:"index:idx_tag_merge_suggestion_status_sim" json:"similarity"`
-	Status        string    `gorm:"size:20;default:pending;index:idx_tag_merge_suggestion_status_sim" json:"status"` // pending, merged, dismissed
-	Source        string    `gorm:"size:20" json:"source"`                                                           // incremental, full_scan
-	LLMVerdict    string    `gorm:"type:text" json:"llm_verdict"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // ArticleTopicTag represents the many-to-many relationship between articles and tags

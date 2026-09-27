@@ -5,54 +5,6 @@ import (
 	"time"
 )
 
-type SchedulerTask struct {
-	ID                    uint       `gorm:"primaryKey" json:"id"`
-	Name                  string     `gorm:"size:50;unique;index" json:"name"`
-	Description           string     `gorm:"size:200" json:"description"`
-	CheckInterval         int        `json:"check_interval"` // seconds
-	LastExecutionTime     *time.Time `json:"last_execution_time"`
-	NextExecutionTime     *time.Time `json:"next_execution_time"`
-	Status                string     `gorm:"size:20;index" json:"status"`
-	LastError             string     `gorm:"type:text" json:"last_error"`
-	LastErrorTime         *time.Time `json:"last_error_time"`
-	TotalExecutions       int        `json:"total_executions"`
-	SuccessfulExecutions  int        `json:"successful_executions"`
-	FailedExecutions      int        `json:"failed_executions"`
-	ConsecutiveFailures   int        `json:"consecutive_failures"`
-	LastExecutionDuration *float64   `json:"last_execution_duration"` // seconds
-	LastExecutionResult   string     `gorm:"type:text" json:"last_execution_result"`
-	CreatedAt             time.Time  `json:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
-}
-
-func (s *SchedulerTask) ToDict() map[string]interface{} {
-	successRate := 0.0
-	if s.TotalExecutions > 0 {
-		successRate = float64(s.SuccessfulExecutions) / float64(s.TotalExecutions) * 100
-	}
-
-	return map[string]interface{}{
-		"id":                      s.ID,
-		"name":                    s.Name,
-		"description":             s.Description,
-		"check_interval":          s.CheckInterval,
-		"last_execution_time":     FormatDatetimeCSTPtr(s.LastExecutionTime),
-		"next_execution_time":     FormatDatetimeCSTPtr(s.NextExecutionTime),
-		"status":                  s.Status,
-		"last_error":              s.LastError,
-		"last_error_time":         FormatDatetimeCSTPtr(s.LastErrorTime),
-		"total_executions":        s.TotalExecutions,
-		"successful_executions":   s.SuccessfulExecutions,
-		"failed_executions":       s.FailedExecutions,
-		"consecutive_failures":    s.ConsecutiveFailures,
-		"last_execution_duration": s.LastExecutionDuration,
-		"last_execution_result":   s.LastExecutionResult,
-		"created_at":              FormatDatetimeCST(s.CreatedAt),
-		"updated_at":              FormatDatetimeCST(s.UpdatedAt),
-		"success_rate":            successRate,
-	}
-}
-
 type AISettings struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	Key         string    `gorm:"size:100;unique;index" json:"key"`

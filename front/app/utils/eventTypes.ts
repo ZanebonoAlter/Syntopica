@@ -26,6 +26,9 @@ export const EVENT_TYPES = {
 
   // 层级重建
   HIERARCHY_REBUILD: 'hierarchy_rebuild',
+
+  // 统一通知中心事件（notification-center：日报终态通知推送）
+  NOTIFICATION: 'notification',
 } as const
 
 export type EventType = (typeof EVENT_TYPES)[keyof typeof EVENT_TYPES]

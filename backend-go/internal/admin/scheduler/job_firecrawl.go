@@ -12,6 +12,7 @@ import (
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/scheduler"
 	"syntopica-backend/internal/platform/ws"
 	content "syntopica-backend/internal/reader"
 	tagging "syntopica-backend/internal/tagmanagement"
@@ -29,7 +30,7 @@ var firecrawlRateLimit = 500 * time.Millisecond
 
 // FirecrawlJob runs one firecrawl cycle: claims pending crawl jobs from the
 // queue and processes them with a fixed worker pool (concurrency 3).
-func FirecrawlJob(queue *content.FirecrawlJobQueue, batchID string) JobFunc {
+func FirecrawlJob(queue *content.FirecrawlJobQueue, batchID string) scheduler.JobFunc {
 	return firecrawlJobWithCrawler(queue, batchID, func(config *content.FirecrawlConfig) content.Crawler {
 		return content.NewFallbackCrawler(
 			content.NewReadabilityCrawler(),
@@ -41,8 +42,8 @@ func FirecrawlJob(queue *content.FirecrawlJobQueue, batchID string) JobFunc {
 // firecrawlJobWithCrawler is the testable core of FirecrawlJob: the crawler
 // is built by newCrawler after the config loads, so tests can inject fakes
 // while production wiring (readability → firecrawl fallback) stays unchanged.
-func firecrawlJobWithCrawler(queue *content.FirecrawlJobQueue, batchID string, newCrawler func(*content.FirecrawlConfig) content.Crawler) JobFunc {
-	return func(ctx context.Context) (*JobResult, error) {
+func firecrawlJobWithCrawler(queue *content.FirecrawlJobQueue, batchID string, newCrawler func(*content.FirecrawlConfig) content.Crawler) scheduler.JobFunc {
+	return func(ctx context.Context) (*scheduler.JobResult, error) {
 		startTime := time.Now()
 
 		config, err := content.GetFirecrawlConfig()
@@ -50,7 +51,7 @@ func firecrawlJobWithCrawler(queue *content.FirecrawlJobQueue, batchID string, n
 			return nil, fmt.Errorf("firecrawl config error: %w", err)
 		}
 		if !config.Enabled {
-			return &JobResult{
+			return &scheduler.JobResult{
 				Data:    map[string]interface{}{},
 				Summary: "firecrawl disabled",
 			}, nil
@@ -64,7 +65,7 @@ func firecrawlJobWithCrawler(queue *content.FirecrawlJobQueue, batchID string, n
 		}
 
 		if len(jobs) == 0 {
-			return &JobResult{
+			return &scheduler.JobResult{
 				Data:    map[string]interface{}{},
 				Summary: "no jobs to process",
 			}, nil
@@ -109,7 +110,7 @@ func firecrawlJobWithCrawler(queue *content.FirecrawlJobQueue, batchID string, n
 
 		broadcastFirecrawlProgress(batchID, "completed", len(jobs), completedTotal, failedTotal, nil, &processingCount)
 
-		return &JobResult{
+		return &scheduler.JobResult{
 			Data: map[string]interface{}{
 				"completed": completedTotal,
 				"failed":    failedTotal,
@@ -192,7 +193,7 @@ func processFirecrawlJob(
 		// 抓取彻底失败（已达重试上限）：降级用 RSS description 继续，避免标签/
 		// AI 摘要因 firecrawl 失败被永久阻塞。
 		if terminal {
-			if feed.ArticleSummaryEnabled {
+			if feed.ArticleSummaryEnabled && feed.CompletionOnRefresh {
 				repository.Repo.DB().Model(&art).Update("summary_status", "incomplete")
 			}
 			if feed.TaggingEnabled {
@@ -223,7 +224,7 @@ func processFirecrawlJob(
 	if art.ImageURL == "" && result.OGImage != "" {
 		updates["image_url"] = result.OGImage
 	}
-	if feed.ArticleSummaryEnabled {
+	if feed.ArticleSummaryEnabled && feed.CompletionOnRefresh {
 		updates["summary_status"] = "incomplete"
 	}
 	repository.Repo.DB().Model(&art).Updates(updates)
@@ -311,10 +312,10 @@ func broadcastFirecrawlProgress(batchID, status string, total, completed, failed
 	hub.BroadcastRaw(data)
 }
 
-// FirecrawlStatusEnricher returns a StatusDetailFunc that adds firecrawl-specific
+// FirecrawlStatusEnricher returns a scheduler.StatusDetailFunc that adds firecrawl-specific
 // status fields.
-func FirecrawlStatusEnricher() StatusDetailFunc {
-	return func(result *JobResult) map[string]interface{} {
+func FirecrawlStatusEnricher() scheduler.StatusDetailFunc {
+	return func(result *scheduler.JobResult) map[string]interface{} {
 		return map[string]interface{}{
 			"concurrency": firecrawlWorkerCount,
 		}

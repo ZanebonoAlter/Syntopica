@@ -155,6 +155,12 @@ InteractionLayer SHALL 管理 Raycaster 悬停/点击、BFS 生命线展开、2D
 
 TopicDetectiveWall.client.vue SHALL 管理 DOM/canvas/overlay，调用 API 获取数据，传给 TopicWallScene，接收 InteractionLayer 回调更新 Vue 响应式状态，渲染 2D overlay。
 
+#### Scenario: 桥接职责
+
+- **WHEN** TopicDetectiveWall.client.vue 挂载并加载板块数据
+- **THEN** 组件 SHALL 管理 DOM/canvas/overlay，把数据传给 TopicWallScene 渲染
+- **AND** InteractionLayer 回调 SHALL 更新 Vue 响应式状态，驱动 2D overlay 渲染
+
 ### Requirement: 依赖与约束
 
 - Raycaster 检测在 requestAnimationFrame 中执行，不在 pointermove 回调中直接计算
@@ -164,3 +170,21 @@ TopicDetectiveWall.client.vue SHALL 管理 DOM/canvas/overlay，调用 API 获�
 - BFS 动画 highlight stagger 必须用 bfsLifeline 返回的 depth Map
 - 移动端（<768px）不提供 3D 入口
 - ChapterTransition 当前无 BoardSelector 入口，相关 watch/wipe/cover DOM 已移除，转场期间禁用交互的约束暂不生效
+
+#### Scenario: 计算与渲染分工
+
+- **WHEN** 侦探墙交互运行
+- **THEN** Raycaster 检测 SHALL 在 requestAnimationFrame 中执行（不在 pointermove 回调中计算）
+- **AND** BFS 计算 SHALL 同步完成（<100 节点 <1ms，不引入 Web Worker）
+- **AND** 详情面板 SHALL 用 Vue overlay + motion-v，卡片 tooltip SHALL 用 CSS2DRenderer
+
+#### Scenario: 数据 API 分工
+
+- **WHEN** 加载生命线数据
+- **THEN** 完整生命周期模式 SHALL 使用 getSectionLifecycle（不限天数），BFS 模式 SHALL 使用 getBoardSectionTimeline（受 days 限制），二者 SHALL NOT 混用
+- **AND** BFS 动画 highlight stagger SHALL 使用 bfsLifeline 返回的 depth Map
+
+#### Scenario: 移动端无 3D 入口
+
+- **WHEN** 视口宽度 < 768px
+- **THEN** 前端 SHALL 不提供 3D 侦探墙入口

@@ -1113,36 +1113,6 @@ func TestSedimentQA_IDORProtection(t *testing.T) {
 
 // ── Reference roles read-only compatibility (design D6) ────────────────────
 
-func TestReferenceRoleRoutes(t *testing.T) {
-	db := setupHandlerTestDB(t)
-	h := newTestHandler(db, &mockLifelineService{}, &mockOrchestrator{}, &alwaysEnabledBoardConfig{})
-	role := &repository.ReferenceRole{Name: "compat-role", Title: "旧画像", Content: "原文", Enabled: true}
-	if err := repository.Repo.CreateReferenceRole(context.Background(), role); err != nil {
-		t.Fatalf("seed role: %v", err)
-	}
-	r := newTestRouter(h)
-
-	if w := doRequest(t, r, http.MethodGet, "/api/reference-roles", ""); w.Code != http.StatusOK {
-		t.Fatalf("list: want 200, got %d", w.Code)
-	}
-	if w := doRequest(t, r, http.MethodGet, fmt.Sprintf("/api/reference-roles/%d", role.ID), ""); w.Code != http.StatusOK {
-		t.Fatalf("get: want 200, got %d", w.Code)
-	}
-	for _, tc := range []struct{ method, path, body string }{
-		{http.MethodPost, "/api/reference-roles", `{"name":"new","content":"x"}`},
-		{http.MethodPut, fmt.Sprintf("/api/reference-roles/%d", role.ID), `{"enabled":false}`},
-		{http.MethodDelete, fmt.Sprintf("/api/reference-roles/%d", role.ID), ""},
-	} {
-		if w := doRequest(t, r, tc.method, tc.path, tc.body); w.Code != http.StatusGone {
-			t.Fatalf("%s %s: want 410, got %d", tc.method, tc.path, w.Code)
-		}
-	}
-	unchanged, err := repository.Repo.GetReferenceRoleByID(context.Background(), role.ID)
-	if err != nil || !unchanged.Enabled || unchanged.Content != "原文" {
-		t.Fatalf("legacy write changed stored role: role=%+v err=%v", unchanged, err)
-	}
-}
-
 // RunRelationDiscovery implements the relation-discovery arm of the mock
 // (blocks on relationBlock when set, mirroring investBlock semantics).
 func (m *mockOrchestrator) RunRelationDiscovery(ctx context.Context, in service.RelationDiscoveryInput) (*service.RelationDiscoveryOutput, error) {

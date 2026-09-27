@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,12 +12,14 @@ import (
 	"syntopica-backend/internal/admin"
 	"syntopica-backend/internal/admin/scheduler"
 	"syntopica-backend/internal/dataenrichment"
+	"syntopica-backend/internal/discovery"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/aihealth"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/logging"
+	psched "syntopica-backend/internal/platform/scheduler"
 	content "syntopica-backend/internal/reader"
 	tagging "syntopica-backend/internal/tagmanagement"
 )
@@ -27,7 +31,7 @@ type Runtime struct {
 func resetStaleStates() {
 	resetCount := 0
 
-	result := database.DB.Model(&models.SchedulerTask{}).
+	result := database.DB.Model(&psched.SchedulerTask{}).
 		Where("status = ?", "running").
 		Updates(map[string]interface{}{
 			"status":     "idle",
@@ -85,6 +89,18 @@ func resetStaleStates() {
 func StartRuntime() *Runtime {
 	resetStaleStates()
 
+	// 孤儿进展收敛（board-signal-reports tasks 4.10；design §10.4）：选点
+	// StartRuntime 开头（resetStaleStates 同类时点）而非 main.go——①这正是
+	// 「上一进程残留的进行中状态」启动收敛的既有家（调度任务/订阅/Firecrawl
+	// 同类归位都在这）；②此刻调度器/worker 未起、HTTP 未监听，内存必然无活
+	// 研究 job，残留 running 行都是孤儿；③DEMO_READ_ONLY 不进本函数，演示快
+	// 照零写入保证不变。失败仅记日志不阻塞启动；幂等。
+	if converged, err := dataenrichment.SweepOrphanedSignalResearchProgress(context.Background()); err != nil {
+		logging.Warnf("Sweep orphaned signal research progress failed (non-fatal): %v", err)
+	} else if converged > 0 {
+		logging.Infof("Swept %d orphaned signal research progress row(s) -> abandoned (orphaned_by_restart)", converged)
+	}
+
 	// Fire the one-shot AI model health probe asynchronously so it never blocks
 	// startup. The in-memory snapshot starts not-ready (Healthy()==false), so
 	// workers/IsPaused treat the startup-race window as paused until the probe
@@ -109,7 +125,7 @@ func StartRuntime() *Runtime {
 	// Each scheduler is configured with its JobFunc, interval, startup delay,
 	// and optional TaskPersistence for DB state tracking.
 
-	registry.Register("log_cleanup", scheduler.New(scheduler.Config{
+	registry.Register("log_cleanup", psched.New(psched.Config{
 		Name:         "Log Cleanup",
 		Description:  "Clean up expired ai_call_logs and otel_spans rows",
 		Interval:     86400 * time.Second,
@@ -119,7 +135,7 @@ func StartRuntime() *Runtime {
 			"清理过期的 AI 调用日志和追踪数据"),
 	}))
 
-	registry.Register("aux_label_cleanup", scheduler.New(scheduler.Config{
+	registry.Register("aux_label_cleanup", psched.New(psched.Config{
 		Name:         "Aux Label Cleanup",
 		Description:  "Clean up auxiliary labels with no active topic_tag references",
 		Interval:     3600 * time.Second,
@@ -129,7 +145,7 @@ func StartRuntime() *Runtime {
 			"清理无活跃标签引用的辅助标签"),
 	}))
 
-	registry.Register("blocked_article_recovery", scheduler.New(scheduler.Config{
+	registry.Register("blocked_article_recovery", psched.New(psched.Config{
 		Name:        "Blocked Article Recovery",
 		Description: "Recover articles stuck in blocked state",
 		Interval:    3600 * time.Second,
@@ -141,7 +157,7 @@ func StartRuntime() *Runtime {
 	// Medium schedulers: with SchedulerTask DB persistence
 
 	// preference-vector-feed-discovery: 偏好向量画像重算（D1，零 LLM/embedding）。
-	registry.Register("preference_profile_update", scheduler.New(scheduler.Config{
+	registry.Register("preference_profile_update", psched.New(psched.Config{
 		Name:        "Preference Profile Update",
 		Description: "重算偏好向量画像（行为加权标签向量质心，按版块分桶）",
 		Interval:    3600 * time.Second,
@@ -151,7 +167,7 @@ func StartRuntime() *Runtime {
 	}))
 
 	// preference-vector-feed-discovery: RSSHub 路由目录同步（D2/D8，自建实例 /api/namespace）。
-	registry.Register("rsshub_catalog_sync", scheduler.New(scheduler.Config{
+	registry.Register("rsshub_catalog_sync", psched.New(psched.Config{
 		Name:        "RSSHub Catalog Sync",
 		Description: "同步 RSSHub 路由目录（自建实例 /api/namespace）",
 		Interval:    24 * time.Hour,
@@ -160,16 +176,21 @@ func StartRuntime() *Runtime {
 			"同步 RSSHub 路由目录"),
 	}))
 
-	registry.Register("tag_quality_score", scheduler.New(scheduler.Config{
+	// improve-discovery-recommendations 4.6：发现 v2 后台任务（可用性检查 / 向量回补 /
+	// 运行维护）。开关 ai_settings.discovery_v2 默认启用；关闭时不注册这三个任务
+	// （回滚边界：只停后台任务，ask/refresh 推荐主链与已发布推荐不受影响）。
+	registerDiscoveryV2Jobs(registry, discovery.LoadDiscoveryV2Enabled(database.DB))
+
+	registry.Register("tag_quality_score", psched.New(psched.Config{
 		Name:        "Tag Quality Score",
 		Description: "Recompute persistent quality scores for topic tags",
 		Interval:    3600 * time.Second,
-		Job:         scheduler.PauseAware(admin.TagQualityScoreJob),
+		Job:         psched.PauseAware(admin.TagQualityScoreJob),
 		Persistence: admin.NewTaskPersistence("tag_quality_score",
 			"Recompute persistent quality scores for topic tags"),
 	}))
 
-	registry.Register("auto_refresh", scheduler.New(scheduler.Config{
+	registry.Register("auto_refresh", psched.New(psched.Config{
 		Name:        "Auto Refresh",
 		Description: "Auto-refresh RSS feeds",
 		Interval:    60 * time.Second,
@@ -180,24 +201,24 @@ func StartRuntime() *Runtime {
 
 	// Complex schedulers
 	content.InitContentCompletionHandler()
-	registry.Register("content_completion", scheduler.New(scheduler.Config{
+	registry.Register("content_completion", psched.New(psched.Config{
 		Name:        "Content Completion",
 		Description: "Complete article content and generate article summaries",
 		TaskName:    "ai_summary",
 		Aliases:     []string{"ai_summary"},
 		Interval:    60 * time.Second,
-		Job:         scheduler.PauseAware(admin.ContentCompletionJob(content.GetContentCompletionService())),
+		Job:         psched.PauseAware(admin.ContentCompletionJob(content.GetContentCompletionService())),
 		Persistence: admin.NewTaskPersistence("ai_summary",
 			"Complete article content and generate article summaries"),
 	}))
 
 	// DailyReport: wrapped with TriggerNowWithDate support
 	dailyReportNextRunFn := scheduler.NextDailyReportTime
-	dailyReportBase := scheduler.New(scheduler.Config{
+	dailyReportBase := psched.New(psched.Config{
 		Name:        "Daily Report",
 		Description: "Generate daily reports for all active semantic boards",
 		NextRun:     dailyReportNextRunFn,
-		Job:         scheduler.PauseAware(admin.DailyReportJob()), // uses current time at each execution
+		Job:         psched.PauseAware(admin.DailyReportJob()), // uses current time at each execution
 		Persistence: admin.NewTaskPersistenceWithNextRun("daily_report",
 			"Generate daily reports for all active semantic boards",
 			dailyReportNextRunFn),
@@ -209,7 +230,7 @@ func StartRuntime() *Runtime {
 	// Loosely coupled fixed-time trigger (default 06:30), not chained to the
 	// daily report. Manual trigger via POST /upgrade-suggestions/generate.
 	boardUpgradeNextRunFn := scheduler.NextBoardUpgradeSuggestTime
-	registry.Register("relation_expire", scheduler.New(scheduler.Config{
+	registry.Register("relation_expire", psched.New(psched.Config{
 		Name:         "Cross-Board Relation Expire",
 		Description:  "Batch-mark expired confirmed cross-board relations",
 		Interval:     3600 * time.Second,
@@ -219,24 +240,26 @@ func StartRuntime() *Runtime {
 			"批量标记过期的已确认跨版块关系"),
 	}))
 
-	registry.Register("board_upgrade_suggest", scheduler.New(scheduler.Config{
+	registry.Register("board_upgrade_suggest", psched.New(psched.Config{
 		Name:        "Board Upgrade Suggest",
 		Description: "每日生成版块升级建议 + 观察池 watch GC",
 		NextRun:     boardUpgradeNextRunFn,
-		Job:         scheduler.PauseAware(admin.BoardUpgradeSuggestJob()),
+		Job:         psched.PauseAware(admin.BoardUpgradeSuggestJob()),
 		Persistence: admin.NewTaskPersistenceWithNextRun("board_upgrade_suggest",
 			"每日生成版块升级建议(discover_new)+观察池GC",
 			boardUpgradeNextRunFn),
 	}))
 
-	// Firecrawl: with custom status enricher
+	// Firecrawl: with custom status enricher. 不包暂停包裹（night-window-alignment
+	// D1）：正文抓取是纯抓取算力、零 LLM 调用，不受 analysis_paused/健康门管制，
+	// 与 auto_refresh 同列；下游 tag_jobs 照常入队，worker 暂停期间天然不消费。
 	firecrawlQueue := content.NewFirecrawlJobQueue(database.DB)
-	registry.Register("firecrawl", scheduler.New(scheduler.Config{
+	registry.Register("firecrawl", psched.New(psched.Config{
 		Name:         "Firecrawl Crawler",
 		Description:  "Auto-crawl full content for articles",
 		Interval:     300 * time.Second,
 		StartupDelay: 0,
-		Job:          scheduler.PauseAware(admin.FirecrawlJob(firecrawlQueue, "scheduled")),
+		Job:          admin.FirecrawlJob(firecrawlQueue, "scheduled"),
 		StatusDetail: admin.FirecrawlStatusEnricher(),
 		Persistence: admin.NewTaskPersistence("firecrawl",
 			"自动爬取文章全文"),
@@ -257,33 +280,33 @@ func StartRuntime() *Runtime {
 	// Registration stays commented for reference; existing week rows remain
 	// consumable via the situation-card chain.
 	_ = dataenrichment.NextWeeklyLifelineTime // keep helper referenced
-	// registry.Register("lifeline_weekly", scheduler.New(scheduler.Config{
+	// registry.Register("lifeline_weekly", psched.New(psched.Config{
 	// 	Name:        "Lifeline Weekly Refresh",
 	// 	Description: "每周一刷新所有活跃话题的周度新闻汇总（循环A，含历史回填）",
 	// 	NextRun:     dataenrichment.NextWeeklyLifelineTime,
-	// 	Job:         scheduler.PauseAware(dataenrichment.WeeklyLifelineJob(lifelineSvc, lister)),
+	// 	Job:         psched.PauseAware(dataenrichment.WeeklyLifelineJob(lifelineSvc, lister)),
 	// 	Persistence: admin.NewTaskPersistenceWithNextRun("lifeline_weekly",
 	// 		"每周一刷新所有活跃话题的周度新闻汇总上下文", dataenrichment.NextWeeklyLifelineTime),
 	// }))
 
 	// Monthly lifeline: every 1st of month 03:30 Asia/Shanghai.
 	monthlyNextRun := dataenrichment.NextMonthlyLifelineTime
-	registry.Register("lifeline_monthly", scheduler.New(scheduler.Config{
+	registry.Register("lifeline_monthly", psched.New(psched.Config{
 		Name:        "Lifeline Monthly Refresh",
 		Description: "每月1号刷新所有活跃话题的月度新闻汇总（循环A，含历史回填）",
 		NextRun:     monthlyNextRun,
-		Job:         scheduler.PauseAware(dataenrichment.MonthlyLifelineJob(lifelineSvc, lister)),
+		Job:         psched.PauseAware(dataenrichment.MonthlyLifelineJob(lifelineSvc, lister)),
 		Persistence: admin.NewTaskPersistenceWithNextRun("lifeline_monthly",
 			"每月1号刷新所有活跃话题的月度新闻汇总上下文", monthlyNextRun),
 	}))
 
 	// Yearly lifeline: every Jan 1 04:00 Asia/Shanghai.
 	yearlyNextRun := dataenrichment.NextYearlyLifelineTime
-	registry.Register("lifeline_yearly", scheduler.New(scheduler.Config{
+	registry.Register("lifeline_yearly", psched.New(psched.Config{
 		Name:        "Lifeline Yearly Refresh",
 		Description: "每年1月1号刷新所有活跃话题的年度新闻汇总（循环A，含历史回填）",
 		NextRun:     yearlyNextRun,
-		Job:         scheduler.PauseAware(dataenrichment.YearlyLifelineJob(lifelineSvc, lister)),
+		Job:         psched.PauseAware(dataenrichment.YearlyLifelineJob(lifelineSvc, lister)),
 		Persistence: admin.NewTaskPersistenceWithNextRun("lifeline_yearly",
 			"每年1月1号刷新所有活跃话题的年度新闻汇总上下文", yearlyNextRun),
 	}))
@@ -300,21 +323,207 @@ func StartRuntime() *Runtime {
 	return &Runtime{Registry: registry}
 }
 
-func SetupGracefulShutdown(runtime *Runtime) {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+// registerDiscoveryV2Jobs 注册发现 v2 的三个后台任务（improve-discovery-recommendations 4.6,
+// design D9 / 迁移计划 5-6）：
+//
+//   - candidate_availability_check 候选实际端点的周期可用性检查——维护类（纯 HTTP 检查），
+//     不包 PauseAware（design D9：纯 HTTP 检查不受分析暂停影响）；
+//   - candidate_embedding_backfill 候选有效介绍向量增量回补——分析类，包 PauseAware
+//     （embedding 属分析工作，总闸/模型未就绪时优雅停）；
+//   - discovery_run_maintenance 僵尸 run 清理——维护类（只改本库状态，不算分析）。
+//
+// enabled=false（ai_settings.discovery_v2）时一个都不注册：停后台任务与检查端点属回滚
+// 手段；ask/refresh 推荐主链不经此开关（引擎已整体切 v2，无旧引擎可回落）。
+func registerDiscoveryV2Jobs(registry *admin.SchedulerRegistry, enabled bool) {
+	if !enabled {
+		logging.Infof("ai_settings.discovery_v2 disabled: skipping discovery v2 background schedulers")
+		return
+	}
+
+	registry.Register("candidate_availability_check", psched.New(psched.Config{
+		Name:         "Candidate Availability Check",
+		Description:  "周期检查候选实际端点可用性（维护类，不受分析暂停影响）",
+		Interval:     3600 * time.Second,
+		StartupDelay: 5 * time.Minute,
+		Job:          admin.CandidateAvailabilityCheckJob,
+		Persistence: admin.NewTaskPersistence("candidate_availability_check",
+			"周期检查候选实际端点可用性"),
+	}))
+
+	registry.Register("candidate_embedding_backfill", psched.New(psched.Config{
+		Name:         "Candidate Embedding Backfill",
+		Description:  "候选有效介绍向量增量回补（分析类，遵守 analysis_paused）",
+		Interval:     3600 * time.Second,
+		StartupDelay: 5 * time.Minute,
+		Job:          psched.PauseAware(admin.CandidateEmbeddingBackfillJob),
+		Persistence: admin.NewTaskPersistence("candidate_embedding_backfill",
+			"候选有效介绍向量增量回补"),
+	}))
+
+	registry.Register("discovery_run_maintenance", psched.New(psched.Config{
+		Name:         "Discovery Run Maintenance",
+		Description:  "把卡死 running 超过 1 小时的发现运行置 failed（维护类）",
+		Interval:     3600 * time.Second,
+		StartupDelay: 5 * time.Minute,
+		Job:          admin.DiscoveryRunMaintenanceJob,
+		Persistence: admin.NewTaskPersistence("discovery_run_maintenance",
+			"清理僵尸发现运行"),
+	}))
+}
+
+// ---- 优雅关停（graceful-shutdown-hardening）----
+//
+// 关停协议：收到 SIGTERM/SIGINT 后按固定顺序执行四步，端口最先释放——
+//
+//	① srv.Shutdown：关 listener（端口立即释放）并排空在途请求（httpShutdownTimeout）
+//	② Registry.StopAll（registryShutdownTimeout，维持历史 30s 上限）
+//	③ stopWorkersFn 外包超时（workersShutdownTimeout），workers.go 本体零改动
+//	④ 单行耗时汇总，使关停慢的构成可被单次关停直接采集
+//
+// 任一步骤 panic/失败/超时都只记日志、不阻断后续步骤；序列结束后 close(done) 让 main
+// 正常 return，使 tracer flush / logging.Close 等 defer 真实执行（不再绕过 defer 链硬退出）。
+
+// shutdownTimings 记录四步关停各自的耗时与总耗时。
+type shutdownTimings struct {
+	HTTP     time.Duration
+	Registry time.Duration
+	Workers  time.Duration
+	Total    time.Duration
+}
+
+var (
+	// 三个关停上限是包级 var（非 const）：单测覆写成短值，避免真实 5s/30s/10s 等待。
+	httpShutdownTimeout     = 5 * time.Second
+	registryShutdownTimeout = 30 * time.Second
+	workersShutdownTimeout  = 10 * time.Second
+)
+
+var (
+	// stopWorkersFn 是工作队列停止的注入缝（D4）：真身依赖 DB 单例，单测替换为记录型 fake 即可无 DB 运行。
+	stopWorkersFn = tagging.StopAllWorkers
+	// stopRegistryFn 是调度器注册表停止的注入缝：单测据此注入同步 panic/阻塞，验证步级隔离。
+	stopRegistryFn = func(r *Runtime, timeout time.Duration) { r.Registry.StopAll(timeout) }
+	// shutdownHTTPStepFn 是 ① HTTP 摘端口步的注入缝（test-cases A2：TC-11 用缝注入 panic，
+	// 改动最小；默认实现即线上语义——httpShutdownTimeout ctx 的 srv.Shutdown）。
+	shutdownHTTPStepFn = func(srv *http.Server) error {
+		ctx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+		defer cancel()
+		return srv.Shutdown(ctx)
+	}
+	// signalChanFactory 是信号注册的注入缝：单测注入假通道，不发真实信号。
+	signalChanFactory = func() <-chan os.Signal {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+		return ch
+	}
+	// listenAndServeFn 是启动监听函数的注入缝：单测注入 http.ErrServerClosed / 自建 listener。
+	listenAndServeFn = func(srv *http.Server) error { return srv.ListenAndServe() }
+)
+
+// runShutdownStep 执行一个关停步骤并返回其耗时。
+// 每步独立 recover：panic 只记 warn 不向外传播，保证后续步骤照走；
+// 耗时用命名返回值 + defer 赋值，panic 路径同样计入。
+func runShutdownStep(name string, fn func()) (elapsed time.Duration) {
+	start := time.Now()
+	defer func() {
+		elapsed = time.Since(start)
+		if r := recover(); r != nil {
+			logging.Warnf("Shutdown step %q panicked: %v", name, r)
+		}
+	}()
+	fn()
+	return elapsed
+}
+
+// runShutdownSequence 同步执行四步关停并返回各步耗时。
+// 任一步骤 panic/失败/超时都不阻断后续步骤；汇总行固定格式且跳过步骤字段照打（值 0.0s）。
+func runShutdownSequence(rt *Runtime, srv *http.Server) shutdownTimings {
+	startedAt := time.Now()
+	var timings shutdownTimings
+
+	if srv != nil {
+		timings.HTTP = runShutdownStep("http", func() {
+			if err := shutdownHTTPStepFn(srv); err != nil {
+				// 在途请求没排完属预期路径（有界优先），记 warn 后继续，不 Fatal。
+				logging.Warnf("HTTP shutdown did not complete cleanly: %v", err)
+			}
+		})
+	}
+
+	if rt != nil && rt.Registry != nil {
+		timings.Registry = runShutdownStep("registry", func() {
+			stopRegistryFn(rt, registryShutdownTimeout)
+		})
+	}
+
+	timings.Workers = runShutdownStep("workers", func() {
+		// 同步段先捕获当前实现，避免单测还原包级 var 时与下方 goroutine 竞态。
+		fn := stopWorkersFn
+		finished := make(chan struct{})
+		go func() {
+			defer close(finished)
+			defer func() {
+				if r := recover(); r != nil {
+					logging.Warnf("Workers shutdown panicked: %v", r)
+				}
+			}()
+			fn()
+		}()
+		select {
+		case <-finished:
+		case <-time.After(workersShutdownTimeout):
+			// 超时只告警不重试：卡死的 worker 随进程退出，队列持久化保证可恢复。
+			logging.Warnf("Workers shutdown timed out after %v, continuing without retry", workersShutdownTimeout)
+		}
+	})
+
+	timings.Total = time.Since(startedAt)
+	logging.Infof("shutdown steps: http=%.1fs registry=%.1fs workers=%.1fs total=%.1fs",
+		timings.HTTP.Seconds(), timings.Registry.Seconds(), timings.Workers.Seconds(), timings.Total.Seconds())
+	return timings
+}
+
+// SetupGracefulShutdown 注册 SIGINT/SIGTERM 信号处理，并返回关停完成信号通道 done。
+// 处理 goroutine 顶层 recover 保证 done 必关闭（panic 也 fail-open，不挂死 main）。
+// done 关闭后 main 正常 return，defer 链（tracer flush / logging.Close）真实执行——
+// 不再绕过 defer 链直接终止进程。
+func SetupGracefulShutdown(rt *Runtime, srv *http.Server) <-chan struct{} {
+	done := make(chan struct{})
+	sigChan := signalChanFactory()
 
 	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("Graceful shutdown panicked: %v", r)
+			}
+		}()
+
 		sig := <-sigChan
 		logging.Infof("Received signal: %v, shutting down gracefully...", sig)
-
-		tagging.StopAllWorkers()
-
-		if runtime.Registry != nil {
-			runtime.Registry.StopAll(30 * time.Second)
-		}
-
+		runShutdownSequence(rt, srv)
 		logging.Infoln("Graceful shutdown completed")
-		os.Exit(0)
 	}()
+
+	return done
+}
+
+// RunServer 启动 HTTP 服务并等待关停完成。
+// 仅当 ListenAndServe 返回非 http.ErrServerClosed 的错误时返回该错误（main 据此 Fatalf，
+// 端口占用行为不变）；ErrServerClosed（srv.Shutdown 引发）不回报、也不解除等待——Shutdown
+// 关掉 listener 后仍在排空在途请求，若此时 main 提前 return 会跳过后续关停步骤。
+func RunServer(srv *http.Server, done <-chan struct{}) error {
+	errCh := make(chan error, 1)
+	go func() {
+		if err := listenAndServeFn(srv); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-done:
+		return nil
+	}
 }

@@ -1,6 +1,6 @@
 # API 通用约定
 
-基路径：`/api`，后端默认 `http://localhost:5000`。
+基路径：`/api`，后端默认 `http://localhost:5100`（前端绝对直连，后端 CORS 放行）。
 
 ## 响应格式
 
@@ -46,7 +46,7 @@
 
 ## WebSocket
 
-实时端点：`ws://localhost:5000/ws`，用于 AI 总结进度推送等。
+实时端点：`ws://localhost:5100/ws`，用于 AI 总结进度推送等。
 
 ## 全局任务状态
 

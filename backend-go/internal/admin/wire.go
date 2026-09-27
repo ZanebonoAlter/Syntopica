@@ -10,6 +10,7 @@ import (
 	"syntopica-backend/internal/admin/handler"
 	"syntopica-backend/internal/admin/repository"
 	"syntopica-backend/internal/admin/scheduler"
+	platformscheduler "syntopica-backend/internal/platform/scheduler"
 )
 
 // ============================================================================
@@ -53,6 +54,7 @@ var (
 // Scheduler handlers
 var (
 	GetSchedulersStatus         = handler.GetSchedulersStatus
+	GetPollBundle               = handler.GetPollBundle
 	GetSchedulerStatus          = handler.GetSchedulerStatus
 	TriggerScheduler            = handler.TriggerScheduler
 	ResetSchedulerStats         = handler.ResetSchedulerStats
@@ -65,6 +67,15 @@ var (
 var (
 	GetAnalysisPause = handler.GetAnalysisPause
 	SetAnalysisPause = handler.SetAnalysisPause
+)
+
+// Notification handlers (add-notification-center)
+var (
+	ListNotifications        = handler.ListNotifications
+	GetUnreadCount           = handler.GetUnreadCount
+	MarkNotificationRead     = handler.MarkNotificationRead
+	MarkAllNotificationsRead = handler.MarkAllNotificationsRead
+	ClearNotifications       = handler.ClearNotifications
 )
 
 // AI call log handlers
@@ -80,54 +91,29 @@ var (
 	GetReadingStats           = handler.GetReadingStats
 )
 
-// Preference profile handlers (preference-vector-feed-discovery)
-var (
-	GetPreferenceProfile       = handler.GetPreferenceProfile
-	RecomputePreferenceProfile = handler.RecomputePreferenceProfile
-)
-
-// Discovery handlers (preference-vector-feed-discovery)
-var (
-	SyncCatalog            = handler.SyncCatalog
-	GetCatalogStatus       = handler.GetCatalogStatus
-	GetRecommendations     = handler.GetRecommendations
-	RefreshRecommendations = handler.RefreshRecommendations
-	AcceptRecommendation   = handler.AcceptRecommendation
-	DismissRecommendation  = handler.DismissRecommendation
-	Ask                    = handler.Ask
-	GetRSSHubSettings      = handler.GetRSSHubSettings
-	SaveRSSHubSettings     = handler.SaveRSSHubSettings
-	GetProxySettings       = handler.GetProxySettings
-	SaveProxySettings      = handler.SaveProxySettings
-	GetBochaSettings       = handler.GetBochaSettings
-	SaveBochaSettings      = handler.SaveBochaSettings
-)
-
-// Route param option dictionary handlers (feed-param-options)
-var (
-	ListRouteParamOptions  = handler.ListRouteParamOptions
-	CreateRouteParamOption = handler.CreateRouteParamOption
-	UpdateRouteParamOption = handler.UpdateRouteParamOption
-	DeleteRouteParamOption = handler.DeleteRouteParamOption
-)
-
 // ============================================================================
+// Comtrade settings handlers（comtrade_settings_handler 留 admin 域）
+var (
+	GetComtradeSettings  = handler.GetComtradeSettings
+	SaveComtradeSettings = handler.SaveComtradeSettings
+)
+
 // Scheduler re-exports (types and constructors used in internal/app/runtime.go)
 // ============================================================================
 
 // SchedulerRegistry is the registry that manages named scheduler instances.
-type SchedulerRegistry = scheduler.Registry
+type SchedulerRegistry = platformscheduler.Registry
 
 var (
-	NewSchedulerRegistry = scheduler.NewRegistry
+	NewSchedulerRegistry = platformscheduler.NewRegistry
 )
 
 // BaseScheduler types and constructors for the factory pattern.
 // Runtime uses scheduler.New(scheduler.Config{...}) directly.
 var (
-	NewBaseScheduler              = scheduler.New
-	NewTaskPersistence            = scheduler.NewTaskPersistence
-	NewTaskPersistenceWithNextRun = scheduler.NewTaskPersistenceWithNextRun
+	NewBaseScheduler              = platformscheduler.New
+	NewTaskPersistence            = platformscheduler.NewTaskPersistence
+	NewTaskPersistenceWithNextRun = platformscheduler.NewTaskPersistenceWithNextRun
 	NextDailyReportTime           = scheduler.NextDailyReportTime
 	NextBoardUpgradeSuggestTime   = scheduler.NextBoardUpgradeSuggestTime
 )
@@ -153,4 +139,10 @@ var (
 	BoardUpgradeSuggestJob     = scheduler.BoardUpgradeSuggestJob
 	FirecrawlJob               = scheduler.FirecrawlJob
 	FirecrawlStatusEnricher    = scheduler.FirecrawlStatusEnricher
+
+	// improve-discovery-recommendations 4.6：发现 v2 三个后台任务
+	// （检查=维护类、回补=分析类由 runtime 包 PauseAware、运行维护=维护类）。
+	CandidateAvailabilityCheckJob = scheduler.CandidateAvailabilityCheckJob
+	CandidateEmbeddingBackfillJob = scheduler.CandidateEmbeddingBackfillJob
+	DiscoveryRunMaintenanceJob    = scheduler.DiscoveryRunMaintenanceJob
 )

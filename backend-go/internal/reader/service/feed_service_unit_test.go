@@ -3,6 +3,8 @@ package service
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"syntopica-backend/internal/models"
@@ -22,34 +24,79 @@ func TestBuildArticleFromEntryTracksOnlyRunnableStates(t *testing.T) {
 		name                  string
 		firecrawlEnabled      bool
 		articleSummaryEnabled bool
+		completionOnRefresh   bool
 		wantFirecrawlStatus   string
 		wantSummaryStatus     string
 	}{
 		{
-			name:                  "both enabled: summary incomplete, firecrawl pending",
+			// BE-1: firecrawl 路径双开 → 等全文抓取后进总结流程（旧行为不变）
+			name:                  "firecrawl both toggles on: summary incomplete",
 			firecrawlEnabled:      true,
 			articleSummaryEnabled: true,
+			completionOnRefresh:   true,
 			wantFirecrawlStatus:   "pending",
 			wantSummaryStatus:     "incomplete",
 		},
 		{
-			name:                  "summary only: summary pending, no firecrawl",
+			// BE-2: firecrawl 路径仅主开、闸门关 → 无需总结
+			name:                  "firecrawl gate off: no summary",
+			firecrawlEnabled:      true,
+			articleSummaryEnabled: true,
+			completionOnRefresh:   false,
+			wantFirecrawlStatus:   "pending",
+			wantSummaryStatus:     "complete",
+		},
+		{
+			// BE-3: firecrawl 路径主开关关 → 无总结（闸门值无关）
+			name:                  "firecrawl main off: no summary",
+			firecrawlEnabled:      true,
+			articleSummaryEnabled: false,
+			completionOnRefresh:   true,
+			wantFirecrawlStatus:   "pending",
+			wantSummaryStatus:     "complete",
+		},
+		{
+			// BE-4: 非 firecrawl 路径双开 → 直接 RSS 素材待总结（旧行为不变）
+			name:                  "summary both toggles on: summary pending",
 			firecrawlEnabled:      false,
 			articleSummaryEnabled: true,
+			completionOnRefresh:   true,
 			wantFirecrawlStatus:   "completed",
 			wantSummaryStatus:     "pending",
 		},
 		{
-			name:                  "neither enabled: both default",
+			// BE-5: 非 firecrawl 路径仅主开、闸门关 → 无需总结
+			name:                  "summary gate off: no summary",
 			firecrawlEnabled:      false,
-			articleSummaryEnabled: false,
+			articleSummaryEnabled: true,
+			completionOnRefresh:   false,
 			wantFirecrawlStatus:   "completed",
 			wantSummaryStatus:     "complete",
 		},
 		{
+			// BE-6: 非 firecrawl 路径全关 → 默认无需总结
+			name:                  "neither enabled: both default",
+			firecrawlEnabled:      false,
+			articleSummaryEnabled: false,
+			completionOnRefresh:   false,
+			wantFirecrawlStatus:   "completed",
+			wantSummaryStatus:     "complete",
+		},
+		{
+			// BE-7: 仅闸门开、主开关关 → G 不越过 S
+			name:                  "gate only without main: no summary",
+			firecrawlEnabled:      false,
+			articleSummaryEnabled: false,
+			completionOnRefresh:   true,
+			wantFirecrawlStatus:   "completed",
+			wantSummaryStatus:     "complete",
+		},
+		{
+			// BE-9: firecrawl 队列不受总结开关影响
 			name:                  "firecrawl only: summary complete, firecrawl pending",
 			firecrawlEnabled:      true,
 			articleSummaryEnabled: false,
+			completionOnRefresh:   false,
 			wantFirecrawlStatus:   "pending",
 			wantSummaryStatus:     "complete",
 		},
@@ -57,7 +104,7 @@ func TestBuildArticleFromEntryTracksOnlyRunnableStates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			feed := models.Feed{FirecrawlEnabled: tt.firecrawlEnabled, ArticleSummaryEnabled: tt.articleSummaryEnabled}
+			feed := models.Feed{FirecrawlEnabled: tt.firecrawlEnabled, ArticleSummaryEnabled: tt.articleSummaryEnabled, CompletionOnRefresh: tt.completionOnRefresh}
 			article := service.buildArticleFromEntry(feed, entry)
 			if article.FirecrawlStatus != tt.wantFirecrawlStatus {
 				t.Errorf("firecrawl status = %q, want %q", article.FirecrawlStatus, tt.wantFirecrawlStatus)
@@ -119,6 +166,19 @@ func resolveTestService(t *testing.T) *FeedService {
 	svc := NewFeedService()
 	svc.iconStore = NewIconStore(t.TempDir())
 	return svc
+}
+
+// storeIconFile writes a local icon file into the service's store so tests can
+// exercise the "local /icons/ path with a file still on disk" branch.
+func storeIconFile(t *testing.T, svc *FeedService, fileName string) {
+	t.Helper()
+	feedDir := filepath.Join(svc.iconStore.dir, "feeds")
+	if err := os.MkdirAll(feedDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(feedDir, fileName), pngBytes, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 }
 
 // TestResolveFeedIcon_CustomFrozen locks in: custom icons are never touched by
@@ -211,19 +271,58 @@ func TestResolveFeedIcon_AllCandidatesFailKeepsFallback(t *testing.T) {
 }
 
 // TestResolveFeedIcon_AutoLocalIconSkipsPipeline: an auto source whose icon is
-// already a local /icons/ path must skip the whole pipeline (no download, no
-// homepage probe) — a good downloaded icon survives transient remote failures
-// instead of being downgraded to fallback.
+// already a local /icons/ path AND whose file is still on disk must skip the
+// whole pipeline (no download, no homepage probe) — a good downloaded icon
+// survives transient remote failures instead of being downgraded to fallback.
 func TestResolveFeedIcon_AutoLocalIconSkipsPipeline(t *testing.T) {
 	// No test servers wired: if the pipeline ran at all it would hit the real
 	// network and fail, returning a fallback result — the test then fails on ok.
 	svc := resolveTestService(t)
+	storeIconFile(t, svc, "206.png")
+
 	icon, source, ok := svc.resolveFeedIcon(206, "/icons/feeds/206.png", "auto", "https://example.com/rss.png", "https://example.com")
 	if ok {
-		t.Fatalf("ok = true, want false (auto + local icon must be frozen)")
+		t.Fatalf("ok = true, want false (auto + present local icon must be frozen)")
 	}
 	if icon != "" || source != "" {
 		t.Errorf("auto + local icon must be untouched, got icon=%q source=%q", icon, source)
+	}
+}
+
+// TestResolveFeedIcon_AutoLocalIconMissingFileHeals locks in the self-healing
+// path for this change: the DB claims the icon is localized but the file is
+// gone (runtime dir wiped / DB restored from a dump), so the pipeline must run
+// again and re-download instead of serving a permanent 404.
+func TestResolveFeedIcon_AutoLocalIconMissingFileHeals(t *testing.T) {
+	iconsURL, _ := iconTestServers(t)
+	svc := resolveTestService(t)
+
+	icon, source, ok := svc.resolveFeedIcon(208, "/icons/feeds/208.ico", "auto", iconsURL+"/img/rss.png", "")
+	if !ok {
+		t.Fatalf("ok = false, want true (missing local file must re-run the pipeline)")
+	}
+	if source != "auto" || icon != "/icons/feeds/208.png" {
+		t.Errorf("got icon=%q source=%q, want /icons/feeds/208.png auto", icon, source)
+	}
+	if !svc.iconStore.LocalIconExists(icon) {
+		t.Errorf("re-downloaded icon file %q not found on disk", icon)
+	}
+}
+
+// TestResolveFeedIcon_AutoLocalIconMissingFileAllCandidatesFail: a dangling
+// local path whose re-download fails must converge to the fallback placeholder
+// (never keep pointing at the missing file).
+func TestResolveFeedIcon_AutoLocalIconMissingFileAllCandidatesFail(t *testing.T) {
+	iconsURL, _ := iconTestServers(t)
+	svc := resolveTestService(t)
+
+	// siteLink = icons server: homepage 404s and its /favicon.ico guess too.
+	icon, source, ok := svc.resolveFeedIcon(209, "/icons/feeds/209.png", "auto", iconsURL+"/missing.png", iconsURL)
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if source != "fallback" || icon != "mdi:rss" {
+		t.Errorf("got icon=%q source=%q, want mdi:rss fallback", icon, source)
 	}
 }
 

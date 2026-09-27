@@ -13,6 +13,10 @@ import {
   type RequestCacheEntry,
   type TopicGroup,
 } from './dailyReportMagazine'
+import LaneTrendOverview from './LaneTrendOverview.vue'
+import { contextCacheKey } from '~/features/tags/composables/useLaneTrendData'
+import type { LaneDynamicsLane, LaneDynamicsResponse } from '~/api/laneDynamics'
+import type { ContextRow } from '~/api/boardEnrichment'
 import { isThreadFitDemoted, threadFitLabel } from '~/utils/threadFit'
 import type { ArticleTitle, TopicLifelineData } from '~/features/tags/composables/useDailyReportReader'
 import type { DailyReport, DailyReportSection, DailyReportThread } from '~/api/dailyReports'
@@ -23,6 +27,10 @@ const props = defineProps<{
   lifelineEntries: Map<number, RequestCacheEntry<TopicLifelineData>>
   articleEntries: Map<number, RequestCacheEntry<ArticleTitle>>
   reportDetails: Map<number, DailyReport>
+  /** 板块级泳道趋势聚合缓存（宿主 useLaneTrendData；首个泳道展开触发，翻期不重拉）。 */
+  laneDynamicsEntry: RequestCacheEntry<LaneDynamicsResponse>
+  /** 话题周期归档缓存（键 contextCacheKey(topicId, granularity)，宿主 useLaneTrendData）。 */
+  contextEntries: Map<string, RequestCacheEntry<ContextRow[]>>
   /** Section id requested by a watch index or timeline preview. */
   focusSectionId?: number | null
 }>()
@@ -34,6 +42,10 @@ const emit = defineEmits<{
   loadHistorical: [reportIds: number[]]
   openArticle: [articleId: number]
   openDetective: [topicId: number]
+  /** 泳道展开信号：宿主首个展开时拉一次板块级 lane-dynamics（页面级缓存去重）。 */
+  ensureLaneDynamics: [retry?: boolean]
+  /** 月/年档切档信号：宿主按 topicId+granularity 按需拉取 contexts。 */
+  ensureContext: [topicId: number, granularity: 'month' | 'year', retry?: boolean]
 }>()
 
 const groups = computed(() => groupSectionsByTopic(props.zone))
@@ -55,12 +67,29 @@ function articleEntry(articleId: number): RequestCacheEntry<ArticleTitle> {
   return props.articleEntries.get(articleId) ?? { status: 'idle' }
 }
 
+/** 按 topic_id 从板块 lanes 过滤出本泳道聚合数据（无顶层 map，数组线性查）。 */
+function laneForTopic(topicId: number): LaneDynamicsLane | null {
+  return props.laneDynamicsEntry.data?.lanes.find(lane => lane.topic_id === topicId) ?? null
+}
+
+function contextEntry(topicId: number, granularity: 'month' | 'year'): RequestCacheEntry<ContextRow[]> {
+  return props.contextEntries.get(contextCacheKey(topicId, granularity)) ?? { status: 'idle' }
+}
+
+/** 趋势区切档信号转发（v-if 已保证 topicId 非空；回调内窄化不可达，运行时再兜底）。 */
+function forwardTrendContext(topicId: number | undefined, granularity: 'month' | 'year', retry?: boolean) {
+  if (topicId != null) emit('ensureContext', topicId, granularity, retry)
+}
+
 function toggleTopic(group: TopicGroup) {
   const next = new Set(expandedTopics.value)
   if (next.has(group.key)) next.delete(group.key)
   else {
     next.add(group.key)
-    if (group.topicId != null && props.zone.key === 'active') emit('ensureLifeline', group.topicId)
+    if (group.topicId != null && props.zone.key === 'active') {
+      emit('ensureLifeline', group.topicId)
+      emit('ensureLaneDynamics')
+    }
   }
   expandedTopics.value = next
 }
@@ -134,7 +163,10 @@ watch([groups, () => props.reportDate], ([nextGroups, reportDate]) => {
   autoExpandedDate = reportDate
   const first = nextGroups[0]
   expandedTopics.value = new Set([first.key])
-  if (first.topicId != null) emit('ensureLifeline', first.topicId)
+  if (first.topicId != null) {
+    emit('ensureLifeline', first.topicId)
+    emit('ensureLaneDynamics')
+  }
 }, { immediate: true })
 
 watch(() => props.focusSectionId, async (sectionId) => {
@@ -145,7 +177,10 @@ watch(() => props.focusSectionId, async (sectionId) => {
   const next = new Set(expandedTopics.value)
   next.add(group.key)
   expandedTopics.value = next
-  if (group.topicId != null && props.zone.key === 'active') emit('ensureLifeline', group.topicId)
+  if (group.topicId != null && props.zone.key === 'active') {
+    emit('ensureLifeline', group.topicId)
+    emit('ensureLaneDynamics')
+  }
 
   await nextTick()
   const target = document.getElementById(`report-section-${sectionId}`)
@@ -199,6 +234,17 @@ watch(() => props.focusSectionId, async (sectionId) => {
         </button>
 
         <div v-if="expandedTopics.has(group.key)" class="drm-topic__body">
+          <LaneTrendOverview
+            v-if="zone.key === 'active' && group.topicId != null"
+            :topic-id="group.topicId"
+            :topic-color="group.color"
+            :lane="laneForTopic(group.topicId)"
+            :lane-entry="laneDynamicsEntry"
+            :month-entry="contextEntry(group.topicId, 'month')"
+            :year-entry="contextEntry(group.topicId, 'year')"
+            @retry-lane="emit('ensureLaneDynamics', true)"
+            @ensure-context="(granularity, retry) => forwardTrendContext(group.topicId, granularity, retry)"
+          />
           <div class="drm-topic__sections">
             <article
               v-for="section in group.sections"
@@ -246,7 +292,8 @@ watch(() => props.focusSectionId, async (sectionId) => {
                         />
                         <strong>{{ thread.title }}</strong>
                       </span>
-                      <small v-if="thread.summary">{{ thread.summary }}</small>
+                      <!-- data-mn-anchor：页边注划选/锚定容器（批注范围限叙事文本，行头不开放批注但开放划选） -->
+                      <small v-if="thread.summary" :data-mn-anchor="`t:${thread.id}`">{{ thread.summary }}</small>
                     </span>
                     <span class="drm-thread__meta">
                       <span v-if="thread.related_article_ids?.length" class="drm-thread__count">
@@ -659,6 +706,9 @@ watch(() => props.focusSectionId, async (sectionId) => {
   background: transparent;
   color: var(--color-text-primary);
   text-align: left;
+  /* 页边注（daily-report-margin-notes）：显式放开 button 内划选；
+     划选后的误触由宿主 selection guard 吞 click 消解，行为经行为核定（Chromium 152） */
+  user-select: text;
 }
 
 .drm-thread__header:not(:disabled) {

@@ -17,6 +17,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service"
 )
@@ -93,7 +94,7 @@ func TestSemanticBoardHandlerSuggestAuxiliaries(t *testing.T) {
 
 	// Case 5: exclude_board_id — create a board with composition
 	board := createHandlerSemanticLabel(t, db, "AI Board", "ai-board", "board", "active", 0, []float64{1, 0, 0})
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: 1}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: 1}).Error)
 	excludeResp := performJSON(t, router, http.MethodGet, fmt.Sprintf("/api/semantic-boards/suggest-auxiliaries?label=AI&exclude_board_id=%d", board.ID), nil)
 	require.Equal(t, http.StatusOK, excludeResp.Code)
 	var excludeBody map[string]any
@@ -121,7 +122,7 @@ func TestSemanticBoardHandlerSuggestAuxiliariesForBoard(t *testing.T) {
 	_ = createHandlerSemanticLabel(t, db, "量子计算", "liang-zi-ji-suan", "auxiliary", "active", 3, []float64{0, 0, 1})
 
 	board := createHandlerSemanticLabel(t, db, "AI Board", "ai-board", "board", "active", 0, []float64{1, 0, 0})
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: 1}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: 1}).Error)
 
 	// Should exclude already-composed labels
 	resp := performJSON(t, router, http.MethodGet, fmt.Sprintf("/api/semantic-boards/%d/suggest-auxiliaries", board.ID), nil)
@@ -148,13 +149,13 @@ func TestSemanticBoardHandlerAddComposition(t *testing.T) {
 	resp := performJSON(t, router, http.MethodPost, fmt.Sprintf("/api/semantic-boards/%d/composition", board.ID), map[string]any{"auxiliary_label_id": auxiliary.ID})
 	require.Equal(t, http.StatusOK, resp.Code)
 	var count int64
-	require.NoError(t, db.Model(&models.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", board.ID, auxiliary.ID).Count(&count).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", board.ID, auxiliary.ID).Count(&count).Error)
 	require.Equal(t, int64(1), count)
 
 	// Case 2: Idempotent add
 	resp2 := performJSON(t, router, http.MethodPost, fmt.Sprintf("/api/semantic-boards/%d/composition", board.ID), map[string]any{"auxiliary_label_id": auxiliary.ID})
 	require.Equal(t, http.StatusOK, resp2.Code)
-	require.NoError(t, db.Model(&models.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", board.ID, auxiliary.ID).Count(&count).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", board.ID, auxiliary.ID).Count(&count).Error)
 	require.Equal(t, int64(1), count)
 
 	// Case 3: Board not found
@@ -173,7 +174,7 @@ func TestSemanticBoardHandlerAddComposition(t *testing.T) {
 	composite := createHandlerSemanticLabel(t, db, "美债收益率", "mei-zhai-shou-yi-lu", "composite", "active", 0, []float64{0.5, 0.5, 0.5})
 	respComp := performJSON(t, router, http.MethodPost, fmt.Sprintf("/api/semantic-boards/%d/composition", board.ID), map[string]any{"auxiliary_label_id": composite.ID})
 	require.Equal(t, http.StatusOK, respComp.Code)
-	require.NoError(t, db.Model(&models.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", board.ID, composite.ID).Count(&count).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", board.ID, composite.ID).Count(&count).Error)
 	require.Equal(t, int64(1), count)
 
 	// Case 7: disabled composite 拒绝挂载
@@ -197,7 +198,7 @@ func TestSemanticBoardHandlerCRUDAndComposition(t *testing.T) {
 	require.NotZero(t, createdID)
 
 	boardID := uint(createdID)
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: boardID, Score: 0.9, MatchReason: "direct_hit"}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: boardID, Score: 0.9, MatchReason: "direct_hit"}).Error)
 
 	list := performJSON(t, router, http.MethodGet, "/api/semantic-boards", nil)
 	require.Equal(t, http.StatusOK, list.Code)
@@ -217,7 +218,7 @@ func TestSemanticBoardHandlerCRUDAndComposition(t *testing.T) {
 	removed := performJSON(t, router, http.MethodDelete, fmt.Sprintf("/api/semantic-boards/%d/composition/%d", boardID, auxiliary.ID), nil)
 	require.Equal(t, http.StatusOK, removed.Code)
 	var count int64
-	require.NoError(t, db.Model(&models.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", boardID, auxiliary.ID).Count(&count).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).Where("board_id = ? AND auxiliary_label_id = ?", boardID, auxiliary.ID).Count(&count).Error)
 	require.Zero(t, count)
 
 	deleted := performJSON(t, router, http.MethodDelete, fmt.Sprintf("/api/semantic-boards/%d", boardID), nil)
@@ -234,10 +235,10 @@ func TestSemanticBoardHandlerAuxiliaryGovernanceAndTagAssociations(t *testing.T)
 	source := createHandlerSemanticLabel(t, db, "Open AI", "open-ai", "auxiliary", "active", 1, []float64{1, 0, 0})
 	board := createHandlerSemanticLabel(t, db, "AI Board", "ai-board", "board", "active", 0, nil)
 	disabledBoard := createHandlerSemanticLabel(t, db, "Disabled Board", "disabled-board", "board", "disabled", 0, nil)
-	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: target.ID}).Error)
-	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: source.ID}).Error)
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: board.ID, Score: 0.75, MatchReason: "weighted"}).Error)
-	require.NoError(t, db.Create(&models.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: disabledBoard.ID, Score: 0.9, MatchReason: "disabled"}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: target.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: source.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: board.ID, Score: 0.75, MatchReason: "weighted"}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: disabledBoard.ID, Score: 0.9, MatchReason: "disabled"}).Error)
 
 	auxiliaries := performJSON(t, router, http.MethodGet, "/api/auxiliary-labels?search=Open", nil)
 	require.Equal(t, http.StatusOK, auxiliaries.Code)
@@ -268,7 +269,7 @@ func TestSemanticBoardHandlerUpgradeBackfillAndConfig(t *testing.T) {
 	require.NoError(t, db.Where(models.AISettings{Key: "semantic_board_upgrade_ref_count_threshold"}).Assign(models.AISettings{Value: "1"}).FirstOrCreate(&models.AISettings{}).Error)
 	auxiliary := createHandlerSemanticLabel(t, db, "OpenAI", "openai", "auxiliary", "active", 5, []float64{1, 0, 0})
 	tag := createHandlerTopicTag(t, db, "GPT-5", models.TagCategoryEvent)
-	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxiliary.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxiliary.ID}).Error)
 
 	// 旧 upgrade-candidates 端点已退役（spec REMOVED: getUpgradeCandidates，
 	// 路由未注册 → 4xx 非 200）。

@@ -1,4 +1,11 @@
 @import "tailwindcss";
+/* Noto Serif SC 自托管（spa-loading-ux）：CJK unicode-range 分片按需加载，
+   弱网/离线不再被 fonts.googleapis.com 渲染阻塞；改字重范围时同步此处 */
+@import "@fontsource/noto-serif-sc/300.css";
+@import "@fontsource/noto-serif-sc/400.css";
+@import "@fontsource/noto-serif-sc/500.css";
+@import "@fontsource/noto-serif-sc/600.css";
+@import "@fontsource/noto-serif-sc/700.css";
 
 /* === Layer 1: Primitive Tokens === */
 :root {

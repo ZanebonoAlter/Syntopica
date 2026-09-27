@@ -1,14 +1,17 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"syntopica-backend/internal/platform/config"
@@ -168,6 +171,52 @@ func (s *IconStore) removeStaleFeedIcons(feedID uint, keepPath string) {
 			_ = os.Remove(m)
 		}
 	}
+}
+
+// LocalIconExists reports whether a DB-stored local icon path (the
+// "/icons/..." form written by writeFeedIcon) still has a backing file in this
+// store. It is the disk half of the icon state machine: the DB path alone is
+// not proof the file survived (dump-restored DBs, wiped runtime dirs, container
+// volume loss), and a missing file must trigger a re-download rather than a
+// permanent 404.
+//
+// "Missing" means only the errors that definitively prove the path cannot
+// exist: ENOENT and ENOTDIR (a path component is a non-directory). Any other
+// error (permissions, I/O) is treated as present so a transient problem never
+// clobbers a good icon. Malformed or out-of-tree paths return false.
+func (s *IconStore) LocalIconExists(localPath string) bool {
+	rel, ok := iconRelPath(localPath)
+	if !ok {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(s.dir, rel))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			return false
+		}
+		return true
+	}
+	return !info.IsDir()
+}
+
+// iconRelPath converts a "/icons/..." URL path into a store-relative
+// filesystem path, rejecting anything that could escape the store root
+// (absolute paths, backslash separators, empty/dot/dot-dot segments).
+func iconRelPath(localPath string) (string, bool) {
+	const prefix = "/icons/"
+	if !strings.HasPrefix(localPath, prefix) {
+		return "", false
+	}
+	rel := strings.TrimPrefix(localPath, prefix)
+	if rel == "" || strings.Contains(rel, "\\") {
+		return "", false
+	}
+	for _, segment := range strings.Split(rel, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", false
+		}
+	}
+	return filepath.FromSlash(rel), true
 }
 
 // RemoveFeedIcon deletes all locally stored icon files for the feed

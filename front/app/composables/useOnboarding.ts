@@ -150,10 +150,10 @@ const SETTINGS_STEPS: DriveStep[] = [
       side: 'over',
     },
   },
-  { element: '[data-onboarding="settings-nav"]', popover: { title: '七个分区', description: '左侧导航：订阅源、AI 模型、能力路由、队列、阅读偏好、Firecrawl、定时任务。点击切换。' } },
+  { element: '[data-onboarding="settings-nav"]', popover: { title: '分组导航', description: '左侧导航按四组组织：内容管理、AI 配置、数据源与网络、运行状态。点击组内项切换。' } },
   { element: '[data-onboarding="settings-nav-feeds"]', popover: { title: '订阅源', description: '管理 RSS 源的刷新频率、抓取深度与标签规则，是数据的入口。' } },
   { element: '[data-onboarding="settings-nav-ai-providers"]', popover: { title: 'AI 模型', description: '配置主/备模型提供商；能力路由决定哪个能力（打标、总结、整理稿）走哪个模型。' } },
-  { element: '[data-onboarding="settings-nav-schedulers"]', popover: { title: '定时任务', description: '查看并手动触发内容抓取、标签打标、日报生成等后台任务的执行。' } },
+  { element: '[data-onboarding="settings-nav-runtime-status"]', popover: { title: '运行状态', description: 'AI 健康、队列与定时任务（含日报生成时刻）合并为一个分区，内部子 tab 切换。' } },
 ]
 
 /* ------------------------------------------------------------------ *

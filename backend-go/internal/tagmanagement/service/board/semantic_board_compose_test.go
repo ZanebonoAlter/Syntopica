@@ -12,6 +12,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service/auxlabel"
 	"syntopica-backend/internal/tagmanagement/service/core"
@@ -33,7 +34,7 @@ func createComposeEventTag(t *testing.T, db *gorm.DB, slug string, auxIDs ...uin
 	tag := models.TopicTag{Label: slug, Slug: slug, Category: "event", Status: "active"}
 	require.NoError(t, db.Create(&tag).Error)
 	for _, auxID := range auxIDs {
-		require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxID}).Error)
+		require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxID}).Error)
 	}
 	return tag
 }
@@ -316,7 +317,7 @@ func TestConfirmComposeSuggestion(t *testing.T) {
 	}
 	service := NewSemanticBoardUpgradeService(db, nil, embedder)
 
-	suggestion := &models.BoardUpgradeSuggestion{
+	suggestion := &tagmodels.BoardUpgradeSuggestion{
 		BatchID: "test-batch", Mode: "", Decision: "compose", BoardLabel: "确认组合",
 		Description: "确认组合描述", AuxiliaryLabelIDs: []uint{auxA.ID, auxB.ID},
 		Status: "pending", SuggestionHash: ComputeSuggestionHash("", "compose", nil, []uint{auxA.ID, auxB.ID}),
@@ -342,10 +343,10 @@ func TestConfirmComposeSuggestion(t *testing.T) {
 	require.Equal(t, "composite", composite.LabelType)
 	require.Equal(t, "upgrade_suggest", composite.Source)
 	require.Equal(t, "active", composite.Status)
-	var components []models.CompositeComponent
+	var components []tagmodels.CompositeComponent
 	require.NoError(t, db.Where("composite_id = ?", composite.ID).Order("position ASC").Find(&components).Error)
 	require.Len(t, components, 2)
-	var confirmed models.BoardUpgradeSuggestion
+	var confirmed tagmodels.BoardUpgradeSuggestion
 	require.NoError(t, db.Where("id = ?", suggestion.ID).First(&confirmed).Error)
 	require.Equal(t, "confirmed", confirmed.Status)
 }
@@ -361,7 +362,7 @@ func TestConfirmComposeSuggestionEmbedderFailureRollsBack(t *testing.T) {
 	}
 	service := NewSemanticBoardUpgradeService(db, nil, failingEmbedder)
 
-	suggestion := &models.BoardUpgradeSuggestion{
+	suggestion := &tagmodels.BoardUpgradeSuggestion{
 		BatchID: "test-batch-rb", Mode: "", Decision: "compose", BoardLabel: "回滚组合",
 		AuxiliaryLabelIDs: []uint{auxA.ID, auxB.ID}, Status: "pending",
 		SuggestionHash: ComputeSuggestionHash("", "compose", nil, []uint{auxA.ID, auxB.ID}),
@@ -382,7 +383,7 @@ func TestConfirmComposeSuggestionEmbedderFailureRollsBack(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&models.SemanticLabel{}).Where("label_type = ?", "composite").Count(&count).Error)
 	require.Zero(t, count)
-	var still models.BoardUpgradeSuggestion
+	var still tagmodels.BoardUpgradeSuggestion
 	require.NoError(t, db.Where("id = ?", suggestion.ID).First(&still).Error)
 	require.Equal(t, "pending", still.Status)
 }
@@ -396,8 +397,8 @@ func TestConfirmComposeSuggestionDedupeReuse(t *testing.T) {
 	// Pre-existing composite with the same component set (L1 reuse path).
 	existing := models.SemanticLabel{Label: "已有组合", Slug: "du-existing", LabelType: "composite", Status: "active", Source: "manual"}
 	require.NoError(t, db.Create(&existing).Error)
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existing.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existing.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: existing.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: existing.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
 
 	embedder := func(ctx context.Context, input string, mode auxlabel.AuxiliaryLabelEmbeddingMode) (string, []float64, error) {
 		vec := testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim)
@@ -405,7 +406,7 @@ func TestConfirmComposeSuggestionDedupeReuse(t *testing.T) {
 	}
 	service := NewSemanticBoardUpgradeService(db, nil, embedder)
 
-	suggestion := &models.BoardUpgradeSuggestion{
+	suggestion := &tagmodels.BoardUpgradeSuggestion{
 		BatchID: "test-batch-du", Mode: "", Decision: "compose", BoardLabel: "复用组合",
 		AuxiliaryLabelIDs: []uint{auxA.ID, auxB.ID}, Status: "pending",
 		SuggestionHash: ComputeSuggestionHash("", "compose", nil, []uint{auxA.ID, auxB.ID}),
@@ -428,7 +429,7 @@ func TestConfirmComposeSuggestionDedupeReuse(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&models.SemanticLabel{}).Where("label_type = ?", "composite").Count(&count).Error)
 	require.Equal(t, int64(1), count)
-	var confirmed models.BoardUpgradeSuggestion
+	var confirmed tagmodels.BoardUpgradeSuggestion
 	require.NoError(t, db.Where("id = ?", suggestion.ID).First(&confirmed).Error)
 	require.Equal(t, "confirmed", confirmed.Status)
 }
@@ -451,13 +452,13 @@ func TestFilterExistingComposeCandidates(t *testing.T) {
 	// 既有组合 [A,B]。另建 [A,B,C] 三元组合验证部分重叠不误伤。
 	existing := models.SemanticLabel{Label: "既有组合", Slug: "fx-existing", LabelType: "composite", Status: "active", Source: "manual"}
 	require.NoError(t, db.Create(&existing).Error)
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existing.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existing.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: existing.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: existing.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
 	existingTriple := models.SemanticLabel{Label: "既有三元组合", Slug: "fx-existing-triple", LabelType: "composite", Status: "active", Source: "manual"}
 	require.NoError(t, db.Create(&existingTriple).Error)
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existingTriple.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existingTriple.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
-	require.NoError(t, db.Create(&models.CompositeComponent{CompositeID: existingTriple.ID, ComponentLabelID: auxC.ID, Position: 3}).Error)
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: existingTriple.ID, ComponentLabelID: auxA.ID, Position: 1}).Error)
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: existingTriple.ID, ComponentLabelID: auxB.ID, Position: 2}).Error)
+	require.NoError(t, db.Create(&tagmodels.CompositeComponent{CompositeID: existingTriple.ID, ComponentLabelID: auxC.ID, Position: 3}).Error)
 
 	candidates := []ComposeCandidate{
 		{ComponentIDs: []uint{auxA.ID, auxB.ID}, Cooccurrence: 20}, // 与既有二元组合完全一致
@@ -478,7 +479,7 @@ func TestFilterExistingComposeCandidates(t *testing.T) {
 	require.Len(t, got, 2)
 
 	// expand 路：组合已挂载目标版块 → 排除。
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: existing.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: existing.ID}).Error)
 	got, err = service.filterExistingComposeCandidates(context.Background(), candidates, &board.ID)
 	require.NoError(t, err)
 	require.Len(t, got, 1)

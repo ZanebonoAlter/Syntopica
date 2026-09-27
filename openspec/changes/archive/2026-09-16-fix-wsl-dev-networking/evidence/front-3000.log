@@ -1,0 +1,38 @@
+
+> @syntopica/web@ dev D:\project\Syntopica\front
+> nuxt dev
+
+[90m│[39m
+[34m●[39m  [32mNuxt [1m4.2.2[22m[39m[90m (with [39m[90mNitro [1m2.13.0[22m[39m[90m, Vite [1m7.3.1[22m[39m[90m and Vue [1m3.5.26[22m[39m[90m)[39m
+
+ 
+              █▀▀▀▀▀▀▀█▀▀▀█▀▀█▀██▀▀▀▀▀▀▀█
+              █ █▀▀▀█ █ ▄ ▀█▄ ▀ █ █▀▀▀█ █
+              █ █   █ █▄▄█▄█ █ ██ █   █ █
+              █ ▀▀▀▀▀ █ █▀▄ ▄ █▀█ ▀▀▀▀▀ █
+              █▀▀██▀▀▀██▄█▀▄█ ▀███▀█▀▀▀▀█
+              █▄▄▄▄█ ▀▀█▄▄▀ ▀█ ▀█▀▄▄ ▀▄██
+              █▀█▀▀▄▄▀ ██ ▄▀█▀█ ▄ ██▀  ▀█
+              █▄▄▀▀▄▀▀▄▄████ █ █ █ ▄▀▀▄██
+              █▀▀▀▄▄▀▀▀█▀▀▀ █ ▄ ▀▀▀▀  ▄██
+              █▀▀▀▀▀▀▀█▄▀▄▀ ▄█▄ █▀█ ▀▄███
+              █ █▀▀▀█ █  █▀ █▀▄ ▀▀▀ ▄ ███
+              █ █   █ ██   ▄▄██▄█ ██▄▄ ▄█
+              █ ▀▀▀▀▀ █ ▀▀▄██▀▄█ ▀▄▄▄  ▀█
+              ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ 
+[32m  ➜ Local:   [39m [36m[4mhttp://0.0.0.0:[1m3000[22m/[24m[39m
+[35m  ➜ Network: [39m [36m[4mhttp://10.11.12.111:[1m3000[22m/[24m[39m[90m [QR code][39m
+[35m  ➜ Network: [39m [36m[4mhttp://192.168.5.23:[1m3000[22m/[24m[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 51ms
+[32m✔[39m Vite server built in 92ms
+[90m[[90mnitro[90m][39m [32m✔[39m Nuxt Nitro server built in 627ms
+[36mℹ[39m Vite client warmed up in 1ms
+
+[43m[30m WARN [39m[49m Browserslist: browsers data (caniuse-lite) is 9 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+

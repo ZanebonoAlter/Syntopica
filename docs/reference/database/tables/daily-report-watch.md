@@ -3,7 +3,7 @@
 > 真相源 = 代码（GORM struct + `postgres_migrations.go`），本文件是投影。全局约定（FK 真相 / 向量维度 / 枚举 / 唯一与 CHECK 约束）见 [_conventions.md](_conventions.md)；完整表清单与导航见 [_index.md](../_index.md)。
 
 
-> 本域 7 张表由 `internal/topicgraph` 的 `RegisterModels` 注册（`init()`），部署若未引入该包则表不存在；迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
+> 本域 8 张表由 `internal/topicgraph` 的 `RegisterModels` 注册（`init()`），部署若未引入该包则表不存在；迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
 
 ### 9.1 board_daily_reports（板块日报主表）
 
@@ -70,12 +70,14 @@
 | `summary` | VARCHAR(256) | — | 线程摘要 |
 | `tag_ids` | JSONB | — | 关联标签 ID 列表 |
 | `confidence` | FLOAT | DEFAULT 0 | 置信度 |
-| `related_article_ids` | JSONB | — | 关联文章 ID 列表 |
+| `related_article_ids` | JSONB | 保序、去重（首个为准） | 关联文章 ID 列表（逻辑引用 `articles.id`，无 FK）。**写入时只允许存在的 id**：日报生成写库前过一次存在性校验；空引用写 `[]`，**不得**写 JSON `null`（`jsonb_array_elements_text` 遇 null 抛 22023）。**删除路径必须维护**：`articles` 行被删时同事务内改指保留条或剔除（详见 `flow/daily-report.md` 约束 21） |
 | `embedding` | vector | —（运行时维度） | 线程向量 |
 | `fit_distance` | FLOAT | —（`*float64`，**无 default**，刻意区分 nil 与 0.0） | 与所属分区的契合距离（nil = 无信号，0.0 = 完美契合） |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 
 > **已删列**：`status`、`prev_thread_id`（迁移 `20260603_0001`）。
+
+> **`related_article_ids` 完整性（heal-dangling-article-refs）**：该数组是「按 ID 逻辑引用文章」的唯一 jsonb 持有者（全库 jsonb 列盘点结论）。契约：保序、去重、空写 `[]`、禁 JSON `null` 标量；删除 `articles` 行的三条路径（去重归并 `mergeDuplicateArticleGroup`、删订阅源级联 `DeleteFeedCascade`/`DeleteArticlesByFeed`、未来的删行原语）MUST 在同一事务内先调 `internal/platform/articlerefs` 维护再删行；日报写入前 MUST 对全部候选 id（含 Step7.5 watch 物化 thread）做一次存在性校验。存量悬空由迁移 `20260917_0002` 一次性修复（不可逆、幂等）；生成时快照计数不回填。
 
 ### 9.4 daily_report_section_relations（跨日分区关系，多对多）
 
@@ -160,6 +162,21 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 
 ---
 
+### 9.8 topic_lane_snapshots（泳道滚动态势快照）
+
+每活跃泳道一行的滚动 14 天态势快照（每日日报生成后异步结算，upsert 覆盖；纯派生缓存，可随时重建）。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | SERIAL | PK | 主键 |
+| `persistent_topic_id` | INTEGER | NOT NULL; UNIQUE `idx_topic_lane_snapshots_topic`; **FK** `persistent_topic_id → board_persistent_topics(id) ON DELETE CASCADE`（迁移 `20260910_0001`） | 所属持久话题（泳道） |
+| `rolling_summary` | TEXT | NOT NULL | ≤100 字短版态势句 |
+| `rolling_detail` | TEXT | 可空（模型层空串=缺失） | ≤500 字长版成段叙述，与短版同窗同素材同一次结算生成；纯派生缓存——每日报结算 upsert 覆盖，无迁移动作（AutoMigrate 加列）；存量旧行空=合法，下个结算周期自愈补齐、不回填 |
+| `as_of_date` | DATE | NOT NULL | 汇总截止（=最新报告期） |
+| `created_at` / `updated_at` | TIMESTAMP | — | 创建 / 更新时间 |
+
+---
+
 
 ## 索引
 
@@ -198,6 +215,7 @@ erDiagram
     board_persistent_topics ||--o{ topic_enrichment_result : "persistent_topic_id"
     board_persistent_topics ||--o{ topic_enrichment_review : "persistent_topic_id"
     board_persistent_topics ||--o{ topic_lifeline_context : "persistent_topic_id"
+    board_persistent_topics ||--|| topic_lane_snapshots : "persistent_topic_id (UNIQUE, OnDelete:CASCADE)" %% 每泳道一行滚动14天态势
     board_topic_watches ||--o{ topic_watch_hits : "watch_id (OnDelete:CASCADE)" %% 真实DB FK
     daily_report_sections ||--o{ daily_report_section_relations : "from_section_id"
     daily_report_sections ||--o{ daily_report_section_relations : "to_section_id"
@@ -237,6 +255,12 @@ erDiagram
     topic_enrichment_review {
     }
     topic_lifeline_context {
+    }
+    topic_lane_snapshots {
+        SERIAL id PK
+        VARCHAR rolling_summary "≤100字态势句"
+        TEXT rolling_detail "≤500字长版叙述；空=缺失（存量/生成失败）"
+        DATE as_of_date "汇总截止=最新报告期"
     }
     topic_watch_hits {
         SERIAL id PK

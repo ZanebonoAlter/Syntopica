@@ -540,6 +540,43 @@ type toolFinishVerdict struct {
 	Feedback string
 }
 
+// toolLoopActionRunner is an OPTIONAL policy extension for loops that need
+// more actions than call_tool/finish（board-signal-reports 2b：signal_research
+// 新增 calculate 本地计算动作）. It is consulted ONLY in runToolLoop's default
+// case via type assertion, so policies that do not implement it（调查纪律
+// investigationPolicy）and policy-less legacy callers keep their exact old
+// behavior byte-for-byte. Implementations fully handle the action — validation,
+// execution, record — and return it with a history line; handled=false keeps
+// the legacy unknown-action abort. This is how 非法/未授权/重复动作不执行但计轮
+// works without forking the loop: the runner returns a blocked record and the
+// loop just continues to the next decision round.
+type toolLoopActionRunner interface {
+	RunLoopAction(step int, action string, decision map[string]any) (record ToolCallRecord, historyLine string, handled bool)
+}
+
+// toolLoopFeedbackProvider is an OPTIONAL policy extension（board-signal-
+// reports 3.8 无覆盖早停反馈）. runToolLoop consults it AFTER each decision
+// round's history line is appended; a non-empty return is appended as ONE
+// additional standalone history line（形如「系统提示（源覆盖）：…」）. The
+// feedback is plain history guidance: it is NOT a tool result, adds no
+// ToolCallRecord and consumes no decision round. Policies that do not
+// implement it（investigationPolicy）and policy-less legacy callers keep
+// their history byte-for-byte identical.
+type toolLoopFeedbackProvider interface {
+	RunLoopFeedback() string
+}
+
+// appendToolLoopFeedback consults the optional feedback provider（nil 安全：
+// policy=nil 与未实现该接口的 policy 断言失败，原切片原样返回——字节不变）。
+func appendToolLoopFeedback(historyLines []string, policy toolLoopPolicy) []string {
+	if fp, ok := policy.(toolLoopFeedbackProvider); ok {
+		if msg := fp.RunLoopFeedback(); msg != "" {
+			historyLines = append(historyLines, "系统提示（源覆盖）："+msg)
+		}
+	}
+	return historyLines
+}
+
 // Structured ToolCallRecord.Outcome values (policy path only).
 const (
 	toolCallOutcomeOK      = "ok"
@@ -627,6 +664,7 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 			if p.policy != nil {
 				if v := p.policy.CheckFinish(step, summary); v.Blocked {
 					historyLines = append(historyLines, fmt.Sprintf("第%d步: 宣布完成被拦: %s — 请继续按研究纪律调用工具。", step, v.Feedback))
+					historyLines = appendToolLoopFeedback(historyLines, p.policy)
 					continue
 				}
 			}
@@ -666,6 +704,7 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 					}
 					result.ToolCalls = append(result.ToolCalls, tc)
 					historyLines = append(historyLines, fmt.Sprintf("第%d步: 调用 %s(%s) — 被拦[%s]: %s", step, toolName, argsToJSON(args), v.BlockedReason, v.Feedback))
+					historyLines = appendToolLoopFeedback(historyLines, p.policy)
 					continue
 				}
 			}
@@ -687,6 +726,7 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 				}
 				result.ToolCalls = append(result.ToolCalls, tc)
 				historyLines = append(historyLines, fmt.Sprintf("第%d步: 调用 %s(%s) — 结果: %s", step, toolName, argsToJSON(args), errJSON))
+				historyLines = appendToolLoopFeedback(historyLines, p.policy)
 				continue
 			}
 
@@ -708,6 +748,7 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 				}
 				result.ToolCalls = append(result.ToolCalls, tc)
 				historyLines = append(historyLines, fmt.Sprintf("第%d步: 调用 %s(%s) — 结果: %s", step, toolName, argsToJSON(args), errJSON))
+				historyLines = appendToolLoopFeedback(historyLines, p.policy)
 				continue
 			}
 			seenCalls[dedupKey] = true
@@ -752,8 +793,25 @@ func runToolLoop(ctx context.Context, router AirRouter, toolRegistry *Registry, 
 			}
 			result.ToolCalls = append(result.ToolCalls, tc)
 			historyLines = append(historyLines, fmt.Sprintf("第%d步: 调用 %s(%s) — 想法: %s — 结果: %s", step, toolName, argsToJSON(args), thought, toolResult))
+			historyLines = appendToolLoopFeedback(historyLines, p.policy)
 
 		default:
+			// Optional action-runner extension（board-signal-reports 2b）: policies
+			// implementing toolLoopActionRunner handle loop-native extra actions
+			// (calculate) AND unknown actions here — blocked actions consume the
+			// decision round but never execute. Legacy callers (no policy, or a
+			// policy without the runner) keep the exact old abort below.
+			if p.policy != nil {
+				if runner, ok := p.policy.(toolLoopActionRunner); ok {
+					if rec, line, handled := runner.RunLoopAction(step, action, decision); handled {
+						rec.Step = step
+						result.ToolCalls = append(result.ToolCalls, rec)
+						historyLines = append(historyLines, line)
+						historyLines = appendToolLoopFeedback(historyLines, p.policy)
+						continue
+					}
+				}
+			}
 			result.Error = fmt.Sprintf("第%d轮 action 不合法: %s", step, action)
 			return result, nil
 		}

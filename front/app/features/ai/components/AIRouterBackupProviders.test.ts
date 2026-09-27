@@ -144,3 +144,37 @@ describe('AIRouterBackupProviders（model_kind/start_command 表单）', () => {
     expect(testBtn!.find('.animate-spin').exists()).toBe(true)
   })
 })
+
+describe('AIRouterBackupProviders 删除入口（挂线路不阻断，fix-provider-delete-route-deadlock 2b）', () => {
+  // spec「删除入口不被引用状态阻断」：后端已级联解绑，前端不得再用 disabled
+  // 阻断挂线路 provider 的删除按钮；行内提示必须是告知性文案（解绑后果），
+  // 而非「先移除再删」的阻断式引导。
+  it('provider 挂在线路上：删除按钮可点（无 disabled），行内提示为解绑告知', () => {
+    const ctx = makeCtx({
+      backupProviders: [makeProvider()],
+      isProviderLinked: () => true,
+    })
+    const wrapper = mountWithCtx(ctx)
+
+    const deleteBtn = wrapper.find('button.ai-icon-btn--danger')
+    expect(deleteBtn.exists()).toBe(true)
+    expect(deleteBtn.attributes('disabled')).toBeUndefined()
+
+    const warn = wrapper.find('.ai-warn-text')
+    expect(warn.exists()).toBe(true)
+    expect(warn.text()).toContain('解绑')
+    expect(warn.text()).not.toContain('先移除再删')
+  })
+
+  it('provider 未挂线路：删除按钮可点，无行内提示', () => {
+    const ctx = makeCtx({
+      backupProviders: [makeProvider()],
+      isProviderLinked: () => false,
+    })
+    const wrapper = mountWithCtx(ctx)
+
+    const deleteBtn = wrapper.find('button.ai-icon-btn--danger')
+    expect(deleteBtn.attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('.ai-warn-text').exists()).toBe(false)
+  })
+})

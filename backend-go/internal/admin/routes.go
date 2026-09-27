@@ -6,6 +6,11 @@ import (
 
 // RegisterRoutes registers all admin module routes under the given router group.
 func RegisterRoutes(rg *gin.RouterGroup) {
+	// Single reconciliation endpoint for the frontend's resident status data
+	// (schedulers + tag queue + unread count) — client-poll-budget 契约;
+	// legacy per-domain endpoints stay registered for already-open tabs.
+	rg.GET("/poll", GetPollBundle)
+
 	ai := rg.Group("/ai")
 	{
 		ai.GET("/providers", ListProviders)
@@ -47,39 +52,21 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		readingBehavior.GET("/stats", GetReadingStats)
 	}
 
-	preferenceProfile := rg.Group("/preference-profile")
-	{
-		preferenceProfile.GET("", GetPreferenceProfile)
-		preferenceProfile.POST("/recompute", RecomputePreferenceProfile)
-	}
-
-	discovery := rg.Group("/discovery")
-	{
-		discovery.POST("/catalog/sync", SyncCatalog)
-		discovery.GET("/catalog/status", GetCatalogStatus)
-		discovery.GET("/recommendations", GetRecommendations)
-		discovery.POST("/recommendations/refresh", RefreshRecommendations)
-		discovery.POST("/recommendations/:id/accept", AcceptRecommendation)
-		discovery.POST("/recommendations/:id/dismiss", DismissRecommendation)
-		discovery.POST("/ask", Ask)
-	}
-
+	// discovery 域 settings 路由（rsshub/proxy/bocha/searxng）已迁
+	// internal/discovery/routes.go（decouple-backend-domains）。
 	settings := rg.Group("/settings")
 	{
-		settings.GET("/rsshub", GetRSSHubSettings)
-		settings.POST("/rsshub", SaveRSSHubSettings)
-		settings.GET("/proxy", GetProxySettings)
-		settings.POST("/proxy", SaveProxySettings)
-		settings.GET("/bocha", GetBochaSettings)
-		settings.POST("/bocha", SaveBochaSettings)
+		settings.GET("/comtrade", GetComtradeSettings)
+		settings.POST("/comtrade", SaveComtradeSettings)
 	}
 
-	// 路由参数可选值字典 CRUD（feed-param-options）
-	routeParamOptions := rg.Group("/admin/route-param-options")
+	notifications := rg.Group("/notifications")
 	{
-		routeParamOptions.GET("", ListRouteParamOptions)
-		routeParamOptions.POST("", CreateRouteParamOption)
-		routeParamOptions.PUT("/:id", UpdateRouteParamOption)
-		routeParamOptions.DELETE("/:id", DeleteRouteParamOption)
+		notifications.GET("", ListNotifications)
+		notifications.GET("/unread-count", GetUnreadCount)
+		notifications.POST("/:id/read", MarkNotificationRead)
+		notifications.POST("/read-all", MarkAllNotificationsRead)
+		notifications.DELETE("", ClearNotifications)
 	}
+
 }

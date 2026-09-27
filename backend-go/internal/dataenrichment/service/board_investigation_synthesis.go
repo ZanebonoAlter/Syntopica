@@ -173,8 +173,7 @@ type boardInvestigationEvidence struct {
 }
 
 // boardInvestigationPayload is the sectors jsonb shape for
-// result_kind=board_investigation. MethodRefs is set mechanically from the
-// hypothesis stage (never adopted from the LLM); ParentBriefingID/Question
+// result_kind=board_investigation. ParentBriefingID/Question
 // are stamped by the orchestrator before persistence.
 type boardInvestigationPayload struct {
 	Scope            string                         `json:"scope"` // always "board"
@@ -185,7 +184,6 @@ type boardInvestigationPayload struct {
 	Conclusion       boardInvestigationConclusion   `json:"conclusion"`
 	EvidenceChain    []boardInvestigationEvidence   `json:"evidence_chain"`
 	LaneRefs         []laneRef                      `json:"lane_refs"`
-	MethodRefs       []AnalysisMethodRef            `json:"method_refs"`
 	RetryReason      string                         `json:"retry_reason,omitempty"` // 稳定原因码
 }
 
@@ -209,10 +207,9 @@ type boardInvestigationResearchSnapshot struct {
 }
 
 // boardInvestigationInputSnapshot is the result's input_snapshot payload:
-// enough to replay the whole investigation without the method table — parent
-// raw sectors + projection, question + key, method candidates/selection/
-// clean-inject trace + actually injected content, initial hypotheses (with
-// safe retry codes), research digest, synthesis meta.
+// enough to replay the whole investigation — parent raw sectors + projection,
+// question + key, initial hypotheses (with safe retry codes), research
+// digest, synthesis meta.
 // boardInvestigationFreshnessPhase 标记补全门在调查链中的执行阶段（供回放
 // 定位）：固定 pre_hypothesize——先于方法选择/假设/研究/综合任何 LLM。
 const boardInvestigationFreshnessPhase = "pre_hypothesize"
@@ -241,11 +238,6 @@ type boardInvestigationInputSnapshot struct {
 	// authorized by trusted tool results this run) for replay.
 	DynamicGrants     []LaneGrant                          `json:"dynamic_grants"`
 	Freshness         *boardInvestigationFreshnessSnapshot `json:"freshness"`
-	Methods           boardMethodSelection                 `json:"methods"`
-	MethodPrompt      string                               `json:"method_prompt"`
-	MethodCards       []AnalysisMethodCardTrace            `json:"method_cards"`
-	MethodRefs        []AnalysisMethodRef                  `json:"method_refs"`
-	EvidenceNeeds     []string                             `json:"evidence_needs"`
 	InitialHypotheses *boardHypothesisGeneration           `json:"initial_hypotheses"`
 	Research          boardInvestigationResearchSnapshot   `json:"research"`
 	Synthesis         *boardSynthesisGenerationMeta        `json:"synthesis"`
@@ -279,8 +271,7 @@ const boardSynthesizeRetryLead = "上次输出不是合格的调查综合"
 const boardSynthesizeRetryNote = "\n\n---\n" + boardSynthesizeRetryLead + "（问题：%s）。请重新输出完整 JSON：严格遵循上述 schema、每个假设带合法 assessment 枚举、conclusion 四字段齐全、evidence_chain 带显式 supports/counters；web/page 的 quote 必须逐字摘自工具结果原文。"
 
 // assembleBoardSynthesizePrompt builds the synthesis prompt (pure function,
-// contract unit-tested). Method content enters as the CLEANED injection plus
-// drop machine codes — never the filtered original rhetoric.
+// contract unit-tested).
 func assembleBoardSynthesizePrompt(
 	question BoardInvestigationQuestion, brief *BoardBriefPayload,
 	stage *boardHypothesisStageResult, research *BoardInvestigationResearchResult,
@@ -308,32 +299,8 @@ func assembleBoardSynthesizePrompt(
 		fmt.Fprintf(&sb, "\n- %s [%s] %s", h.ID, tag, h.Label)
 	}
 
-	sb.WriteString(renderMethodTraceForSynthesis(stage))
 	sb.WriteString(renderResearchForSynthesis(research))
 	sb.WriteString("\n\n---\n泳道白名单（lane 证据与引用只允许这些编号）：" + renderResearchLaneWhitelist(laneWhitelist))
-	return sb.String()
-}
-
-// renderMethodTraceForSynthesis renders the actually-injected method content
-// plus the selection/drop machine-code trail. Drop reasons are machine codes
-// only; filtered original lines never appear (M7.7).
-func renderMethodTraceForSynthesis(stage *boardHypothesisStageResult) string {
-	if stage == nil {
-		return ""
-	}
-	var sb strings.Builder
-	if p := strings.TrimSpace(stage.MethodPrompt); p != "" {
-		sb.WriteString("\n\n---\n分析方法参考（本次调查实际注入的清洗后正文，仅约束评估过程，不是事实来源）：\n" + p)
-	}
-	if len(stage.MethodRefs) > 0 || len(stage.Methods.Dropped) > 0 {
-		sb.WriteString("\n\n方法注入留痕（机码，供审计）：")
-		for _, r := range stage.MethodRefs {
-			fmt.Fprintf(&sb, "\n- 方法#%d《%s》已注入（content_hash=%s）", r.ID, r.Title, r.ContentHash)
-		}
-		for _, d := range stage.Methods.Dropped {
-			fmt.Fprintf(&sb, "\n- 方法#%d《%s》未注入（%s）", d.ID, d.Title, d.Reason)
-		}
-	}
 	return sb.String()
 }
 
@@ -908,7 +875,6 @@ func parseBoardInvestigationSynthesis(
 		Conclusion:    conclusion,
 		EvidenceChain: evs,
 		LaneRefs:      laneRefs,
-		MethodRefs:    []AnalysisMethodRef{},
 	}, nil
 }
 
@@ -1336,7 +1302,6 @@ func (o *OrchestratorService) InvestigateBoardQuestion(ctx context.Context, boar
 	}
 
 	// ── 2. 共享研究循环（lane 集来自父简报不可变快照；完整默认工具集）──
-	evidenceNeeds := deriveMethodEvidenceNeeds(stage)
 	research, err := o.RunBoardInvestigationResearch(ctx, BoardInvestigationResearchInput{
 		SessionID:     sessionID,
 		Question:      stage.Question,
@@ -1344,7 +1309,6 @@ func (o *OrchestratorService) InvestigateBoardQuestion(ctx context.Context, boar
 		LaneWhitelist: laneWhitelist,
 		DynamicGrants: dynamicGrants,
 		Hypotheses:    stage.Hypotheses.Hypotheses,
-		EvidenceNeeds: evidenceNeeds,
 		// AllowedTools 留空 = explorationToolNames 完整默认（lane 内部工具 +
 		// web_search + fetch_page）。
 	})
@@ -1359,7 +1323,6 @@ func (o *OrchestratorService) InvestigateBoardQuestion(ctx context.Context, boar
 	}
 	payload.ParentBriefingID = parent.ID
 	payload.Question = stage.Question
-	payload.MethodRefs = stage.MethodRefs
 
 	// ── 3.5 跨版块引用归属复验（add-evidence-backed-cross-board-relations）──
 	// parse 阶段已按 grant 集合剔除幽灵引用；落库前对存活跨版块引用再做
@@ -1368,7 +1331,7 @@ func (o *OrchestratorService) InvestigateBoardQuestion(ctx context.Context, boar
 	o.validateCrossBoardLaneRefs(ctx, payload, dynamicGrants)
 
 	// ── 4. sanitize 完成 → 一次性构造不可变快照并落库 ──
-	result, err := o.buildBoardInvestigationResult(boardID, parent.ID, questionKey, sessionID, payload, stage, research, synthMeta, brief, evidenceNeeds, parent.Sectors, freshness, dynamicGrants)
+	result, err := o.buildBoardInvestigationResult(boardID, parent.ID, questionKey, sessionID, payload, stage, research, synthMeta, brief, parent.Sectors, freshness, dynamicGrants)
 	if err != nil {
 		return nil, err
 	}
@@ -1432,7 +1395,6 @@ func (o *OrchestratorService) buildBoardInvestigationResult(
 	research *BoardInvestigationResearchResult,
 	synthMeta *boardSynthesisGenerationMeta,
 	brief *BoardBriefPayload,
-	evidenceNeeds []string,
 	parentSectors json.RawMessage,
 	freshness *boardInvestigationFreshnessSnapshot,
 	dynamicGrants *DynamicLaneGrantSet,
@@ -1466,21 +1428,10 @@ func (o *OrchestratorService) buildBoardInvestigationResult(
 		QuestionKey:       questionKey,
 		LaneWhitelist:     laneWhitelistOrEmpty(deriveLaneWhitelistFromBrief(brief)),
 		Freshness:         freshness,
-		Methods:           stage.Methods,
-		MethodPrompt:      stage.MethodPrompt,
-		MethodCards:       stage.MethodCards,
-		MethodRefs:        stage.MethodRefs,
-		EvidenceNeeds:     evidenceNeeds,
 		InitialHypotheses: &stage.Hypotheses,
 		Research:          researchSnap,
 		Synthesis:         synthMeta,
 		DynamicGrants:     dynamicGrants.Audit(),
-	}
-	if snapshot.MethodCards == nil {
-		snapshot.MethodCards = []AnalysisMethodCardTrace{}
-	}
-	if snapshot.MethodRefs == nil {
-		snapshot.MethodRefs = []AnalysisMethodRef{}
 	}
 	snapJSON, err := json.Marshal(snapshot)
 	if err != nil {
@@ -1518,34 +1469,4 @@ func laneWhitelistOrEmpty(ids []uint) []uint {
 		return []uint{}
 	}
 	return ids
-}
-
-// deriveMethodEvidenceNeeds projects the selected+injected methods'
-// RequiredEvidence into the research loop's evidence-needs list (D6: the
-// research agent receives method-derived checklists, never method prose).
-func deriveMethodEvidenceNeeds(stage *boardHypothesisStageResult) []string {
-	if stage == nil {
-		return nil
-	}
-	byID := make(map[uint]boardMethodCandidate, len(stage.Methods.Candidates))
-	for _, c := range stage.Methods.Candidates {
-		byID[c.ID] = c
-	}
-	needs := []string{}
-	seen := map[string]bool{}
-	for _, ref := range stage.MethodRefs {
-		c, ok := byID[ref.ID]
-		if !ok {
-			continue
-		}
-		for _, n := range c.RequiredEvidence {
-			n = truncateRunes(strings.TrimSpace(n), boardSynthesisMaxGapRunes)
-			if n == "" || seen[n] {
-				continue
-			}
-			seen[n] = true
-			needs = append(needs, n)
-		}
-	}
-	return needs
 }

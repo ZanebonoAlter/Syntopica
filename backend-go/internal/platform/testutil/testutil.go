@@ -15,6 +15,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/database"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 // ── Safety contract ──────────────────────────────────────────────────────────
@@ -24,6 +25,12 @@ import (
 // environment variable that could redirect it at the developer's docker-compose
 // Postgres (which is the production database). An earlier revision connected to
 // the production database and truncated it — that path no longer exists.
+//
+// Container cleanup is delegated entirely to the Testcontainers Ryuk sidecar
+// (this package intentionally never calls TerminateContainer). If the Ryuk image
+// cannot be pulled — default `testcontainers/ryuk:<version>` — the container is
+// created but never reclaimed, and the test still passes: the leak is silent.
+// Image list, symptoms and cleanup: docs/reference/standard/backend/testing.md
 
 const (
 	// pgImage is the throwaway container image. Same image as production
@@ -45,13 +52,14 @@ var (
 
 	// Golden-schema state. migrateOnce builds the schema once per process;
 	// every later SetupTestDB call resets via ResetTestData (fast path).
-	migrateOnce        sync.Once // runs runTestMigrations + takeSeedSnapshot once
-	goldenSchemaErr    error     // captures first-build error, surfaced on every call
-	migrationsRunCount int64     // test-only observable: how often runTestMigrations ran
-	setupCallCount     int64     // distinguishes first SetupTestDB call from later ones
-	seedSnapshotMu     sync.Mutex
-	aiSettingsSeed     []models.AISettings
-	embeddingCfgSeed   []models.EmbeddingConfig
+	migrateOnce         sync.Once // runs runTestMigrations + takeSeedSnapshot once
+	tagModelsRegistered bool      // guards one-shot RegisterModels of tag domain models
+	goldenSchemaErr     error     // captures first-build error, surfaced on every call
+	migrationsRunCount  int64     // test-only observable: how often runTestMigrations ran
+	setupCallCount      int64     // distinguishes first SetupTestDB call from later ones
+	seedSnapshotMu      sync.Mutex
+	aiSettingsSeed      []models.AISettings
+	embeddingCfgSeed    []tagmodels.EmbeddingConfig
 
 	// goldenVectorColumns snapshots vector-typed columns at golden-build so
 	// ResetTestData can re-ALTER them back if a test mutated the dimension
@@ -435,6 +443,43 @@ func PadVector(vec []float64, dim int) []float64 {
 // golden schema matches production + historical data cleanup. Production never
 // sets this env (destructive migrations self-skip); see db-migration-safety.
 func runTestMigrations(t *testing.T, db *gorm.DB) error {
+	// Wire domain migration hooks (mirrors tagmanagement/wire.go init in
+	// production): testutil cannot import the tagmanagement root (test cycle),
+	// so hooks are assigned directly against tagmanagement/models.
+	if database.EmbeddingConfigSeeder == nil {
+		database.EmbeddingConfigSeeder = func(gdb *gorm.DB, defaults []database.EmbeddingConfigDefault) error {
+			conv := make([]struct {
+				Key         string
+				Value       string
+				Description string
+			}, len(defaults))
+			for i, d := range defaults {
+				conv[i] = struct {
+					Key         string
+					Value       string
+					Description string
+				}{d.Key, d.Value, d.Description}
+			}
+			return tagmodels.SeedEmbeddingConfigs(gdb, conv)
+		}
+	}
+	if database.AuxLabelDupMerge == nil {
+		database.AuxLabelDupMerge = tagmodels.RunAuxLabelDupMerge
+	}
+	// Register tag-domain models into AutoMigrate extra list (mirrors
+	// tagmanagement/wire.go init; the blank root import would cycle here).
+	if !tagModelsRegistered {
+		tagModelsRegistered = true
+		database.RegisterModels(
+			&tagmodels.BoardComposition{}, &tagmodels.BoardUpgradeSuggestion{},
+			&tagmodels.CompositeComponent{}, &tagmodels.EmbeddingConfig{},
+			&tagmodels.MergeReembeddingQueue{}, &tagmodels.TagCategoryMeta{},
+			&tagmodels.TopicTagAnalysis{}, &tagmodels.TopicTagBoardLabel{},
+			&tagmodels.TopicTagEmbedding{}, &tagmodels.TopicTagSemanticLabel{},
+			&tagmodels.TagMergeSuggestion{},
+		)
+	}
+
 	t.Setenv("MIGRATIONS_ALLOW_DESTRUCTIVE", "1")
 	atomic.AddInt64(&migrationsRunCount, 1)
 	// Enable pgvector extension (mirrors the first production migration).

@@ -102,12 +102,12 @@ const ctx = inject<AIRouterCtx>('ai-router-ctx')!
               <button class="ai-icon-btn" @click="ctx.startEditingProvider(provider)">
                 <Icon icon="mdi:pencil-outline" width="14" height="14" />
               </button>
-              <button class="ai-icon-btn ai-icon-btn--danger" :disabled="ctx.isProviderLinked(provider.id)" @click="ctx.deleteBackupProvider(provider)">
+              <button class="ai-icon-btn ai-icon-btn--danger" @click="ctx.deleteBackupProvider(provider)">
                 <Icon icon="mdi:trash-can-outline" width="14" height="14" />
               </button>
             </div>
           </div>
-          <p v-if="ctx.isProviderLinked(provider.id)" class="ai-warn-text">还挂在某条路由上，先移除再删</p>
+          <p v-if="ctx.isProviderLinked(provider.id)" class="ai-warn-text">挂在线路上，删除将自动从所有线路解绑</p>
 
           <!-- Edit Form -->
           <div v-if="ctx.editingProviderId === provider.id" class="ai-edit-form">

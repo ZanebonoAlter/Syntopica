@@ -85,3 +85,21 @@ var SetSchedulerLookup = handler.SetSchedulerLookup
 
 // GetContentCompletionService is a re-export.
 var GetContentCompletionService = handler.GetContentCompletionService
+
+// ============================================================================
+// Cross-domain facade additions (decouple-backend-domains Batch 3):
+// discovery (candidate check / recommendation accept) and dataenrichment
+// (fetch_page) previously reached into reader/service directly.
+// ============================================================================
+
+type (
+	// FeedCreateOptions is a re-export.
+	FeedCreateOptions = service.FeedCreateOptions
+	// ReadabilityCrawler is a re-export.
+	ReadabilityCrawler = service.ReadabilityCrawler
+)
+
+var (
+	NewFeedCreateService = service.NewFeedCreateService
+	ParseFeedBody        = service.ParseFeedBody
+)

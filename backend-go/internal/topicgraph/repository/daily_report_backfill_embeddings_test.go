@@ -109,7 +109,7 @@ func TestBackfillSectionEmbeddings_RangeFilter(t *testing.T) {
 	old := NormalizeReportDate(time.Now().AddDate(0, 0, -40))
 
 	rA1 := seedTestReport(t, db, boardA, today)
-	rA2 := seedTestReport(t, db, boardA, old) // out of 30d window
+	rA2 := seedTestReport(t, db, boardA, old)      // out of 30d window
 	rB1 := seedTestReport(t, db, boardB.ID, today) // other board
 
 	tagA := seedBackfillTag(t, db, "话题甲", "")

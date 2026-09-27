@@ -14,6 +14,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service/core"
 )
@@ -49,7 +50,7 @@ func TestSemanticBoardUpgradeCollectsCandidates(t *testing.T) {
 	createUpgradeLabel(t, db, "No Embedding", "no-embedding", "auxiliary", "active", 8, nil)
 	composed := createUpgradeLabel(t, db, "Composed", "composed", "auxiliary", "active", 8, []float64{0, 1, 0})
 	board := createUpgradeLabel(t, db, "Board", "board", "board", "active", 0, nil)
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: composed.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: composed.ID}).Error)
 	service := NewSemanticBoardUpgradeService(db, nil, nil)
 
 	candidates, err := service.CollectCandidates(context.Background(), service.LoadUpgradeConfig(context.Background()), 0)
@@ -67,7 +68,7 @@ func TestSemanticBoardUpgradeClustersCandidatesWithExistingBoards(t *testing.T) 
 	candidateC := createUpgradeLabel(t, db, "Battery", "battery", "auxiliary", "active", 5, []float64{0, 1, 0})
 	boardAux := createUpgradeLabel(t, db, "AI", "ai", "auxiliary", "active", 2, []float64{1, 0, 0})
 	board := createUpgradeLabel(t, db, "AI Board", "ai-board", "board", "active", 0, nil)
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
 	service := NewSemanticBoardUpgradeService(db, nil, nil)
 	candidates := []SemanticBoardUpgradeCandidate{
 		{ID: candidateA.ID, Label: candidateA.Label, RefCount: 5, Embedding: testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim)},
@@ -369,7 +370,7 @@ func TestSemanticBoardUpgradeLoadsCoTagEventContext(t *testing.T) {
 	createUpgradeTopicEmbedding(t, db, eventSimilar.ID, []float64{0.99, 0.1410673598, 0})
 	createUpgradeTopicEmbedding(t, db, eventB.ID, []float64{0, 1, 0})
 	createUpgradeTopicEmbedding(t, db, eventC.ID, []float64{0, 0, 1})
-	require.NoError(t, db.Create(&models.TopicTagSemanticLabel{TopicTagID: seed.ID, SemanticLabelID: auxiliary.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: seed.ID, SemanticLabelID: auxiliary.ID}).Error)
 	createUpgradeArticleWithTags(t, db, seed.ID, eventA.ID, eventB.ID)
 	createUpgradeArticleWithTags(t, db, seed.ID, eventA.ID, eventSimilar.ID)
 	createUpgradeArticleWithTags(t, db, seed.ID, eventSimilar.ID, eventC.ID)
@@ -412,7 +413,7 @@ func TestSemanticBoardUpgradeGenerateSuggestionsUsesLLMMock(t *testing.T) {
 	require.NoError(t, db.Model(&models.SemanticLabel{}).Where("label_type = ?", "board").Count(&boardCount).Error)
 	require.Zero(t, boardCount)
 	var compositionCount int64
-	require.NoError(t, db.Model(&models.BoardComposition{}).Count(&compositionCount).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).Count(&compositionCount).Error)
 	require.Zero(t, compositionCount)
 }
 
@@ -532,7 +533,7 @@ func TestSemanticBoardUpgradeConfirmCreateNew(t *testing.T) {
 	require.Equal(t, "llm_suggest", board.Source)
 	require.Equal(t, "active", board.Status)
 	require.Equal(t, "AI model ecosystem", board.Description)
-	var rows []models.BoardComposition
+	var rows []tagmodels.BoardComposition
 	require.NoError(t, db.Order("auxiliary_label_id ASC").Find(&rows).Error)
 	require.Len(t, rows, 2)
 	require.Equal(t, auxiliaryA.ID, rows[0].AuxiliaryLabelID)
@@ -544,7 +545,7 @@ func TestSemanticBoardUpgradeConfirmMergeIntoExisting(t *testing.T) {
 	auxiliaryA := createUpgradeLabel(t, db, "OpenAI", "openai", "auxiliary", "active", 5, []float64{1, 0, 0})
 	auxiliaryB := createUpgradeLabel(t, db, "GPT", "gpt", "auxiliary", "active", 5, []float64{0, 1, 0})
 	board := createUpgradeLabel(t, db, "AI Board", "ai-board", "board", "active", 0, nil)
-	require.NoError(t, db.Create(&models.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxiliaryA.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxiliaryA.ID}).Error)
 	service := NewSemanticBoardUpgradeService(db, nil, nil)
 
 	result, err := service.ConfirmSuggestion(context.Background(), ConfirmSemanticBoardUpgradeRequest{
@@ -555,7 +556,7 @@ func TestSemanticBoardUpgradeConfirmMergeIntoExisting(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, board.ID, result.SemanticBoardID)
-	var rows []models.BoardComposition
+	var rows []tagmodels.BoardComposition
 	require.NoError(t, db.Where("board_id = ?", board.ID).Order("auxiliary_label_id ASC").Find(&rows).Error)
 	require.Len(t, rows, 2)
 	require.Equal(t, auxiliaryA.ID, rows[0].AuxiliaryLabelID)
@@ -575,7 +576,7 @@ func TestSemanticBoardUpgradeConfirmLinksPendingSuggestion(t *testing.T) {
 	board := createUpgradeLabel(t, db, "AI Board", "ai-board", "board", "active", 0, nil)
 
 	repo := repository.NewBoardUpgradeSuggestionRepository(db)
-	sug := &models.BoardUpgradeSuggestion{
+	sug := &tagmodels.BoardUpgradeSuggestion{
 		BatchID: "conf-1", Mode: "discover_new", Decision: "merge_into_existing",
 		BoardLabel: "DeepSeek", TargetBoardID: &board.ID, AuxiliaryLabelIDs: []uint{aux.ID},
 		Confidence: "llm", SuggestionHash: "conf-hash-1",
@@ -593,7 +594,7 @@ func TestSemanticBoardUpgradeConfirmLinksPendingSuggestion(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var reloaded models.BoardUpgradeSuggestion
+	var reloaded tagmodels.BoardUpgradeSuggestion
 	require.NoError(t, db.First(&reloaded, sug.ID).Error)
 	require.Equal(t, "confirmed", reloaded.Status, "linked pending suggestion must be confirmed in the same tx")
 	require.NotNil(t, reloaded.ResolvedAt, "confirmed suggestion records resolved_at")
@@ -610,7 +611,7 @@ func TestSemanticBoardUpgradeConfirmTxFailureLeavesSuggestionPending(t *testing.
 
 	repo := repository.NewBoardUpgradeSuggestionRepository(db)
 	badTarget := uint(99999)
-	sug := &models.BoardUpgradeSuggestion{
+	sug := &tagmodels.BoardUpgradeSuggestion{
 		BatchID: "conf-tx", Mode: "discover_new", Decision: "merge_into_existing",
 		BoardLabel: "Llama", TargetBoardID: &badTarget, AuxiliaryLabelIDs: []uint{aux.ID},
 		Confidence: "llm", SuggestionHash: "conf-hash-tx",
@@ -628,7 +629,7 @@ func TestSemanticBoardUpgradeConfirmTxFailureLeavesSuggestionPending(t *testing.
 	})
 	require.Error(t, err, "confirm against a non-existent target must fail")
 
-	var reloaded models.BoardUpgradeSuggestion
+	var reloaded tagmodels.BoardUpgradeSuggestion
 	require.NoError(t, db.First(&reloaded, sug.ID).Error)
 	require.Equal(t, "pending", reloaded.Status, "tx failure must leave suggestion state unchanged")
 	require.Nil(t, reloaded.ResolvedAt, "no resolved_at on a rolled-back confirm")
@@ -644,7 +645,7 @@ func TestSemanticBoardUpgradeConfirmMergeMissingTarget(t *testing.T) {
 
 	repo := repository.NewBoardUpgradeSuggestionRepository(db)
 	// 方案 B: merge 建议保留但 target_board_id=NULL（target_off_shortlist=true）。
-	sug := &models.BoardUpgradeSuggestion{
+	sug := &tagmodels.BoardUpgradeSuggestion{
 		BatchID: "conf-missing", Mode: "discover_new", Decision: "merge_into_existing",
 		BoardLabel: "全球科技巨头动态", AuxiliaryLabelIDs: []uint{aux.ID},
 		Confidence: "llm", SuggestionHash: "conf-missing-hash",
@@ -663,7 +664,7 @@ func TestSemanticBoardUpgradeConfirmMergeMissingTarget(t *testing.T) {
 	require.Contains(t, err.Error(), "目标板块", "error must prompt the user to pick a target board")
 
 	// Suggestion state unchanged on the failed confirm.
-	var reloaded models.BoardUpgradeSuggestion
+	var reloaded tagmodels.BoardUpgradeSuggestion
 	require.NoError(t, db.First(&reloaded, sug.ID).Error)
 	require.Equal(t, "pending", reloaded.Status)
 }
@@ -678,7 +679,7 @@ func TestSemanticBoardUpgradeConfirmWithoutSuggestionIDLeavesItPending(t *testin
 	board := createUpgradeLabel(t, db, "LLM Board", "llm-board", "board", "active", 0, nil)
 
 	repo := repository.NewBoardUpgradeSuggestionRepository(db)
-	sug := &models.BoardUpgradeSuggestion{
+	sug := &tagmodels.BoardUpgradeSuggestion{
 		BatchID: "conf-noid", Mode: "discover_new", Decision: "merge_into_existing",
 		BoardLabel: "Mistral", TargetBoardID: &board.ID, AuxiliaryLabelIDs: []uint{aux.ID},
 		Confidence: "llm", SuggestionHash: "conf-hash-noid",
@@ -697,7 +698,7 @@ func TestSemanticBoardUpgradeConfirmWithoutSuggestionIDLeavesItPending(t *testin
 	require.NoError(t, err)
 	require.Equal(t, board.ID, res.SemanticBoardID, "board composition must still be written")
 
-	var reloaded models.BoardUpgradeSuggestion
+	var reloaded tagmodels.BoardUpgradeSuggestion
 	require.NoError(t, db.First(&reloaded, sug.ID).Error)
 	require.Equal(t, "pending", reloaded.Status, "confirm without suggestion_id must not touch suggestion state")
 	require.Nil(t, reloaded.ResolvedAt)
@@ -724,7 +725,7 @@ func TestSemanticBoardUpgradeConfirmSkipsInactiveAuxiliaryLabels(t *testing.T) {
 	require.Equal(t, board.ID, result.SemanticBoardID)
 	require.Equal(t, []uint{activeA.ID}, result.AuxiliaryLabelIDs, "inactive label must be skipped")
 
-	var rows []models.BoardComposition
+	var rows []tagmodels.BoardComposition
 	require.NoError(t, db.Where("board_id = ?", board.ID).Find(&rows).Error)
 	require.Len(t, rows, 1)
 	require.Equal(t, activeA.ID, rows[0].AuxiliaryLabelID, "only the active label is linked to the board")
@@ -749,7 +750,7 @@ func TestSemanticBoardUpgradeConfirmAllInactiveAuxiliaryLabelsErrors(t *testing.
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "失效", "error must explain all labels are inactive")
 
-	var rows []models.BoardComposition
+	var rows []tagmodels.BoardComposition
 	require.NoError(t, db.Where("board_id = ?", board.ID).Find(&rows).Error)
 	require.Empty(t, rows, "no composition written when all labels are inactive")
 }
@@ -777,7 +778,7 @@ func TestSemanticBoardUpgradeGenerateAndPersistInsertsNonSkip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, inserted, "two non-skip suggestions must be persisted")
 
-	var rows []models.BoardUpgradeSuggestion
+	var rows []tagmodels.BoardUpgradeSuggestion
 	require.NoError(t, db.Order("board_label ASC").Find(&rows).Error)
 	require.Len(t, rows, 2, "skip decision must NOT be persisted")
 	for _, r := range rows {
@@ -816,7 +817,7 @@ func TestSemanticBoardUpgradeGenerateAndPersistIdempotentOnSecondRun(t *testing.
 	require.Equal(t, 1, skipped2, "the idempotent duplicate must be counted as skipped")
 
 	var count int64
-	require.NoError(t, db.Model(&models.BoardUpgradeSuggestion{}).Count(&count).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardUpgradeSuggestion{}).Count(&count).Error)
 	require.Equal(t, int64(1), count, "still exactly one row after re-run")
 }
 
@@ -838,7 +839,7 @@ func TestSemanticBoardUpgradeGenerateAndPersistBlocksOnDismissedCooldown(t *test
 	// the identical hash so the cooldown gate must block re-generation.
 	hash := ComputeSuggestionHash("create:aux", "create_new", nil, []uint{auxA.ID})
 	threeDaysAgo := time.Now().AddDate(0, 0, -3)
-	require.NoError(t, db.Create(&models.BoardUpgradeSuggestion{
+	require.NoError(t, db.Create(&tagmodels.BoardUpgradeSuggestion{
 		BatchID: "seed", Mode: "create:aux", Decision: "create_new",
 		BoardLabel: "Board A", AuxiliaryLabelIDs: []uint{auxA.ID},
 		Confidence: "llm", Status: "dismissed", ResolvedAt: &threeDaysAgo,
@@ -857,7 +858,7 @@ func TestSemanticBoardUpgradeGenerateAndPersistBlocksOnDismissedCooldown(t *test
 
 	// No NEW pending row created for this hash (only the pre-seeded dismissed one exists).
 	var pending int64
-	require.NoError(t, db.Model(&models.BoardUpgradeSuggestion{}).Where("suggestion_hash = ? AND status = ?", hash, "pending").Count(&pending).Error)
+	require.NoError(t, db.Model(&tagmodels.BoardUpgradeSuggestion{}).Where("suggestion_hash = ? AND status = ?", hash, "pending").Count(&pending).Error)
 	require.Zero(t, pending, "no pending row must be created for a cooled-down hash")
 }
 
@@ -883,7 +884,7 @@ func createUpgradeTopicEmbedding(t *testing.T, db *gorm.DB, topicTagID uint, vec
 	t.Helper()
 	padded := testutil.PadVector(vector, testutil.TestEmbeddingDim)
 	pgVector := core.FloatsToPgVector(padded)
-	require.NoError(t, db.Create(&models.TopicTagEmbedding{TopicTagID: topicTagID, EmbeddingType: "semantic", EmbeddingVec: pgVector, Dimension: testutil.TestEmbeddingDim, Model: "test", TextHash: fmt.Sprintf("hash-%d", topicTagID)}).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagEmbedding{TopicTagID: topicTagID, EmbeddingType: "semantic", EmbeddingVec: pgVector, Dimension: testutil.TestEmbeddingDim, Model: "test", TextHash: fmt.Sprintf("hash-%d", topicTagID)}).Error)
 }
 
 func createUpgradeArticleWithTags(t *testing.T, db *gorm.DB, topicTagIDs ...uint) {

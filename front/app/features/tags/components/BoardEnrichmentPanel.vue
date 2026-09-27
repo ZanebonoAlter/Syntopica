@@ -1,32 +1,31 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useBoardEnrichment } from '~/features/tags/composables/useBoardEnrichment'
-import type { ContextGranularity, DataSourceRow, AnalyzeOutput, AnalyzeRef } from '~/api/boardEnrichment'
+import { useSignalWorkbench } from '~/features/tags/composables/useSignalWorkbench'
+import type { ContextGranularity, AnalyzeOutput, AnalyzeRef } from '~/api/boardEnrichment'
 import { useNotify } from '~/composables/useNotify'
 import { useSemanticBoardsApi } from '~/api/semanticBoards'
 import { renderMarkdown } from '~/utils/markdown'
+import { useMermaidRender } from '~/composables/useMermaidRender'
 // 全局 .markdown-body 样式（文章阅读器同款），供新闻背景叙事 md 渲染产物使用
 import '~/components/article/ArticleContent.css'
 import CausalAnalysisReport from './CausalAnalysisReport.vue'
-import BoardAnalysisReport from './BoardAnalysisReport.vue'
-import BoardBriefReport from './BoardBriefReport.vue'
-import BoardRelationPanel from './BoardRelationPanel.vue'
-import { useBoardRelations } from '../composables/useBoardRelations'
-import BoardInvestigationReport from './BoardInvestigationReport.vue'
 import QAPanel from './QAPanel.vue'
 import DebateSection from './DebateSection.vue'
+import SignalCandidateList from './SignalCandidateList.vue'
+import SignalReportList from './SignalReportList.vue'
+import SignalReportView from './SignalReportView.vue'
 
 /**
- * 数据增强 · 认知工作台（board-level-deep-analysis 5.5 重排）。
+ * 数据增强 · 信号解读工作台（board-signal-reports 5.2 重排）。
  *
- * 主视图 = 版块简报（BoardBriefReport：关键观察/关系/不确定项/可选题调查）；
- * 调查报告（board_investigation）走 BoardInvestigationReport（研究档案/
- * 证据台账，问题+假设+有界结论，渐进展开）；旧论文式结果
- * （legacy_board_analysis）走 BoardAnalysisReport 并标「旧版分析」。
- * 单泳道分析收拢为「聚焦分析」折叠区（唯一泳道选择点 → 触发
- * EnrichTopic / lane 下钻预填）；新闻背景（循环A 新闻记忆）为折叠
- * section（分析不回写）。
+ * 主视图 = 候选信号列表 + 已生成报告列表（手动「发现信号」只保存候选；
+ * 逐条点「深入分析」才启动研究；报告生成即可阅读，无评审/采纳链）。
+ * 报告阅读走 SignalReportView（AppPageShell reader≤760）。旧简报/调查/
+ * 旧版分析视图与数据源绑定管理入口从工作台退役（后端 API 保留兼容）；
+ * 聚焦分析折叠区（单泳道下钻 + 泳道选择）与新闻背景（循环A 新闻记忆）
+ * 折叠区保留。
  *
  * DebateSection（FinGenius 个股辩论）作为「金融可选模块 · 独立于因果主线」
  * 默认折叠保留。
@@ -54,20 +53,15 @@ const {
   latestResultId, latestResultDetail, latestResultDetailLoading,
   // table 3
   reviews,
-  // data sources
-  dataSources, loadDataSources, saveDataSource, removeDataSource,
+  // data sources（绑定管理入口已从工作台退役；bootstrap 仍拉取保持旧 API 可读）
+  loadDataSources,
   // stock debates
   debates, debateTriggering, debateError, debateStage, loadDebates, triggerDebate,
   // qa (causal-analysis-agent 阶段3：报告追问 + 沉淀)
   qaList, qaLoading, qaError, latestAnswer, loadQA, askQuestion, sedimentAnswer,
-  // board qa (board-level-deep-analysis 6.2：版块报告追问，独立 state)
-  boardQaList, boardQaLoading, boardQaError, boardLatestAnswer,
-  loadBoardQA, askBoardQuestion, sedimentBoardAnswer,
-  // board-level analysis (board-level-deep-analysis)
-  boardResults, boardResultsLoading, boardAnalysisTriggering, activeBoardJob,
-  selectedBoardResult,
-  loadBoardAnalysisResults, triggerBoardAnalysis, triggerBoardInvestigation, selectBoardResult,
-  syncBoardAnalysisStatus, syncTopicAnalysisStatus, activateBoardContext,
+  // board-level analysis（旧 brief/investigation 视图已退役；保留加载/同步：
+  // 旧任务在跑时与新发现/研究共享 409 互斥，恢复轮询的提示仍真实）
+  loadBoardAnalysisResults, syncBoardAnalysisStatus, syncTopicAnalysisStatus, activateBoardContext,
   // workbench UI
   selectedGran, selectedPeriodIdx, periodList, currentContext,
   setGran, shiftPeriod, selectPeriod,
@@ -75,113 +69,68 @@ const {
   loadAllTopicTables,
 } = useBoardEnrichment()
 
-// ── 跨版块关系（add-evidence-backed-cross-board-relations 6.1/6.2）─────────
-const {
-  relations, relationsLoading, relationsError, loadRelations,
-  relationDetail, relationDetailLoading, loadRelationDetail,
-  triggeringSource, triggerDiscovery,
-  confirmingRelationId, dismissingRelationId, reResolvingRelationId,
-  confirmRelation, dismissRelation, reResolveRelation,
-  resetRelationView, disposeRelationView,
-} = useBoardRelations()
-onUnmounted(() => disposeRelationView())
+// mermaid 图渲染（render-mermaid-diagrams）：宿主 = 工作台根，覆盖叙事/报告 markdown 块
+const ewRootRef = ref<HTMLElement | null>(null)
+useMermaidRender(ewRootRef, () => currentContext.value)
 
-async function handleDiscoverRelation(payload: { briefing_result_id: number; source_kind: string; source_key: string }) {
-  await triggerDiscovery(props.boardId, payload as { briefing_result_id: number; source_kind: 'observation' | 'question'; source_key: string })
-}
+// ── 信号解读工作台（board-signal-reports 5.2/5.4）─────────────────────
+// 主视图 = 候选信号列表 + 已生成报告列表：手动「发现信号」只保存候选；
+// 逐条点「深入分析」才启动研究；报告生成即可阅读，无评审/采纳链。
+// 轮询与任务态由 useSignalWorkbench 持有（发现结束即停，绝不串发研究）。
+const sig = reactive(useSignalWorkbench())
 
-function handleRelationReload(status?: string) {
-  void loadRelations(props.boardId, status)
-}
-function handleRelationDetail(relationId: number) {
-  void loadRelationDetail(props.boardId, relationId)
-}
-function handleRelationConfirm(relationId: number) {
-  void confirmRelation(props.boardId, relationId)
-}
-function handleRelationDismiss(relationId: number, reason: string) {
-  void dismissRelation(props.boardId, relationId, reason)
-}
-function handleRelationReResolve(relationId: number) {
-  void reResolveRelation(props.boardId, relationId)
-}
-function handleOpenBoard(boardId: number) {
-  emit('open-board', boardId)
+/** 信号周期默认值（客户端时钟近似当期；未来周期由服务端按业务时区拒绝）。 */
+function defaultSignalPeriod(gran: 'month' | 'year'): string {
+  const now = new Date()
+  return gran === 'year'
+    ? String(now.getFullYear())
+    : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 }
 
-const { success: notifySuccess, error: notifyError, warn: notifyWarn } = useNotify()
+/** 周期提交（工具栏 change）：只重拉候选/报告列表，不触发任何 LLM。 */
+function handleSignalCommit(payload: { granularity: 'month' | 'year'; period: string }) {
+  void sig.changePeriod(props.boardId, payload.granularity, payload.period)
+}
+
+/** 「发现信号」：先把视图切到所点周期（只重拉列表），再发 discovery——
+ * FE-1：发现链路绝不串发 research 请求，发现结束即停等人工。 */
+/** 查看候选历史研究进展（tasks 4.8 历史入口）。 */
+async function handleSignalOpenProgress(candidateId: number) {
+  await sig.openProgressHistory(props.boardId, candidateId)
+}
+async function handleSignalDiscover(payload: { granularity: 'month' | 'year'; period: string }) {
+  if (payload.granularity !== sig.granularity || payload.period !== sig.period) {
+    const ok = await sig.changePeriod(props.boardId, payload.granularity, payload.period)
+    if (!ok) return
+  }
+  void sig.discover(props.boardId)
+}
+
+/** 深入分析/重新研究；regenerate=true 仅来自显式入口（先确认预算提示）。 */
+function handleSignalResearch(candidateId: number, options: { regenerate: boolean }) {
+  if (options.regenerate && !confirm('重新研究该信号？\n（新任务会重新取数与计算，可能消耗预算；成功后追加新版本报告，不覆盖原报告）')) return
+  void sig.research(props.boardId, candidateId, { regenerate: options.regenerate })
+}
+
+function handleOpenSignalReport(resultId: number) {
+  void sig.openReport(props.boardId, resultId)
+}
+
+function handleReportRegenerate(candidateId: number) {
+  handleSignalResearch(candidateId, { regenerate: true })
+}
+
+const { success: notifySuccess, error: notifyError } = useNotify()
 
 // ── 新闻背景折叠区（fix-board-analysis-material：去单 tab 导航）─────────
 /** 新闻背景（循环A 新闻记忆）折叠态，默认收起。 */
 const newsOpen = ref(false)
 
 // ── 聚焦分析折叠区（单泳道分析收拢，board-level-deep-analysis 4.2）───────
-/** 折叠区展开态（默认收起——主视图是版块报告，单泳道是下钻入口）。 */
+/** 折叠区展开态（默认收起——主视图是信号工作台，单泳道是下钻入口）。 */
 const focusOpen = ref(false)
-/** 下钻预填的 lens（来自版块报告 lane 点击；空 = 常规单泳道分析）。 */
+/** 预填的 lens（空 = 常规单泳道分析）。 */
 const prefillLens = ref('')
-
-/** lane 下钻（5.8）：展开聚焦区 + 选中对应泳道 + 预填具体调查问题/观察/证据
- * 说明到可编辑 textarea + 滚动过去。lane 先校验属于当前板块泳道集——幽灵
- * lane（不在 topics）notify 提示且不误选/不展开；简报组件 emit {laneId, prefill}；
- * 调查报告 evidence lane 事件同样走这里；旧版分析组件 emit {laneId, lens}（兼容）。
- * 下钻只预填不自动触发，用户可修改后自己点「聚焦分析」。 */
-function handleDrillLane(payload: { laneId: number; prefill?: string; lens?: string }) {
-  const lane = topics.value.find((t) => t.id === payload.laneId)
-  if (!lane) {
-    notifyWarn(`报告引用的泳道 #${payload.laneId} 不在当前板块的泳道列表里（可能已被移除），无法下钻`)
-    return
-  }
-  selectedTopicId.value = lane.id
-  prefillLens.value = payload.prefill ?? payload.lens ?? ''
-  focusOpen.value = true
-  nextTick(() => {
-    document.getElementById('focus-analysis')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  })
-}
-
-// ── 简报主视图分派（5.5）：board_brief → 简报；legacy → 旧版分析；
-// investigation → 占位（5.6/5.7 接线，不冒充简报）──────────────────
-const selectedResultView = computed<'brief' | 'legacy' | 'investigation'>(() => {
-  const r = selectedBoardResult.value
-  if (!r) return 'brief'
-  if (r.result_kind === 'board_brief') return 'brief'
-  if (r.result_kind === 'board_investigation') return 'investigation'
-  return 'legacy' // legacy_board_analysis 或旧数据无 kind（后端已兑底 legacy）
-})
-const selectedBoardBrief = computed(() =>
-  selectedResultView.value === 'brief' ? selectedBoardResult.value : null,
-)
-
-/** 历史下拉的 kind 标签（旧数据无 kind → 旧版分析）。 */
-function resultKindLabel(kind?: string): string {
-  switch (kind) {
-    case 'board_brief': return '简报'
-    case 'board_investigation': return '调查'
-    default: return '旧版分析'
-  }
-}
-function resultDateLabel(r: { created_at?: string }): string {
-  return r.created_at ? new Date(r.created_at).toISOString().slice(0, 10) : '—'
-}
-
-// ── 深入调查（5.4 事件契约 → 5.7 接线）：简报组件的 generated/custom
-// investigate 事件接到 composable 的异步任务（同一套按 job_id 轮询 +
-// 视图守卫）；面板层绝不自动触发——只有用户点「深入调查」才发。
-async function handleInvestigate(payload: { briefing_result_id: number; question: string; question_id?: string }) {
-  await triggerBoardInvestigation(props.boardId, payload)
-}
-
-/** 调查任务在跑（禁用简报里的问题按钮/自填提交并显示「正在调查」）。 */
-const investigationRunning = computed(
-  () => boardAnalysisTriggering.value && activeBoardJob.value?.jobKind === 'board_investigation',
-)
-
-async function handleBoardAnalysisTrigger() {
-  if (boardAnalysisTriggering.value) return
-  if (!confirm('生成版块简报？\n（后台异步执行，可离开页面：先自动补齐新闻背景档案，再汇总关键观察、跨泳道关系与不确定项；需板块已开启增强开关）')) return
-  await triggerBoardAnalysis(props.boardId)
-}
 
 // ── 增强开关快捷入口（fix-board-analysis-material：新板块默认关，报错英文且
 // 开关藏在编辑弹窗深处，用户找不到；工作台面板直接暴露状态 + 一键开启）──
@@ -204,11 +153,21 @@ async function enableEnrichment() {
 }
 
 // ── lifecycle: board switch ──────────────────────────────────────────────
+/** 已完成信号工作台初始化的板块（切板块才重置信号视图，刷新不误杀在跑轮询）。 */
+let signalBoardLoaded = -1
 async function bootstrap(boardId: number) {
   // 统一 board view context 守卫（5.4/5.5 review）：bootstrap 最前面激活新板块
   // 上下文——内部停旧 board 轮询（gen++ 隔离在途 poll）+ viewEpoch++（隔离旧板块
   // 在途/迟到的 trigger/sync/loader 响应）：旧板块慢响应一律静默丢弃（不 start
   // poll、不 toast、不写列表/选中/任务态），不串台新板块；随后才加载/同步新板块。
+  // 信号工作台：切板块时隔离旧视图（停轮询+epoch++，迟到响应全数丢弃）；
+  // 首次进入默认当前月（客户端近似，未来周期由服务端按业务时区拒）。同板块
+  // 刷新（头部刷新按钮）不重置任务态，只重拉列表，不误杀在跑轮询。
+  if (signalBoardLoaded !== boardId) {
+    sig.setBoard(boardId)
+    if (!sig.period) sig.period = defaultSignalPeriod(sig.granularity)
+    signalBoardLoaded = boardId
+  }
   activateBoardContext(boardId)
   // board 级三件套同步启动（与 loadTopics 无依赖，保持挂载即拉）；loadTopics
   // 先行 await 确定 selectedTopicId（5.5 最终 review：topic 档重进恢复）——
@@ -218,6 +177,7 @@ async function bootstrap(boardId: number) {
     loadDataSources(boardId),
     loadBoardAnalysisResults(boardId),
     syncBoardAnalysisStatus(boardId),
+    sig.loadPeriod(boardId),
   ])
   await loadTopics(boardId)
   const topicId = selectedTopicId.value
@@ -375,28 +335,6 @@ const narrativeCiteCount = computed(() => {
   return n
 })
 
-// ── dialogs：数据源 ──────────────────────────────────────────────────────
-const editingSource = ref<{ source_type: string; config_text: string; enabled: boolean; isNew: boolean } | null>(null)
-const SOURCE_TYPE_OPTIONS = ['etf_quote', 'exchange_rate', 'gdelt_event'] as const
-function openEditSource(row?: DataSourceRow) {
-  if (row) {
-    editingSource.value = { source_type: row.source_type, config_text: JSON.stringify(row.config ?? {}, null, 2), enabled: row.enabled, isNew: false }
-  } else {
-    editingSource.value = { source_type: SOURCE_TYPE_OPTIONS[0], config_text: '{}', enabled: true, isNew: true }
-  }
-}
-async function saveEditingSource() {
-  if (!editingSource.value) return
-  let config: Record<string, unknown> = {}
-  try { config = editingSource.value.config_text.trim() ? JSON.parse(editingSource.value.config_text) : {} }
-  catch { notifyError('config 不是合法 JSON'); return }
-  const ok = await saveDataSource(props.boardId, { source_type: editingSource.value.source_type, config, enabled: editingSource.value.enabled })
-  if (ok) editingSource.value = null
-}
-function confirmDeleteSource(sourceType: string) {
-  if (!confirm(`删除数据源「${sourceType}」？`)) return
-  void removeDataSource(props.boardId, sourceType)
-}
 
 // ── 触发增强 / session_id 复制 ───────────────────────────────────────────
 async function handleTrigger() {
@@ -425,112 +363,75 @@ async function handleDebateRetry() {
 </script>
 
 <template>
-  <div class="ew-panel">
-    <!-- ── 版块简报主视图（唯一顶层视图；刷新/生成入口在此头部） ─────── -->
+  <div ref="ewRootRef" class="ew-panel">
+    <!-- ── 信号解读工作台（board-signal-reports：发现 → 候选 → 报告，无评审） ── -->
     <section class="block board-analysis-main">
       <div class="block-head board-head">
-        <h2 class="serif">版块简报</h2>
-        <span class="helper">关键观察 · 泳道关系 · 不确定项 · 可选题调查 · 新鲜度自动补齐</span>
-        <span v-if="boardAnalysisTriggering && activeBoardJob" class="bb-job-tag">
+        <h2 class="serif">信号解读</h2>
+        <span class="helper">发现信号只保存候选 · 逐条深入研究 · 报告生成即可阅读</span>
+        <span v-if="sig.discoveryRunning" class="bb-job-tag" data-testid="signal-discovery-tag">
           <Icon icon="mdi:loading" width="13" class="spin" />
-          {{ activeBoardJob.jobKind === 'board_investigation' ? '正在调查…可离开' : '正在生成简报…可离开' }}
+          信号发现中…（不生成报告）
+        </span>
+        <span v-else-if="sig.researchCandidateId !== null" class="bb-job-tag" data-testid="signal-research-tag">
+          <Icon icon="mdi:loading" width="13" class="spin" />
+          {{ sig.researchProgressLabel }}
         </span>
         <span class="ew-spacer" />
-        <button type="button" class="ew-ghost-btn" title="刷新（重拉泳道/数据源/历史报告）" @click="bootstrap(boardId)">
+        <button type="button" class="ew-ghost-btn" title="刷新（重拉候选/报告/泳道）" @click="bootstrap(boardId)">
           <Icon icon="mdi:refresh" width="14" />
-        </button>
-        <select
-          v-if="boardResults.length > 1"
-          class="ew-select board-history"
-          aria-label="历史报告"
-          :value="selectedBoardResult?.id"
-          @change="selectBoardResult(Number(($event.target as HTMLSelectElement).value))"
-        >
-          <option v-for="r in boardResults" :key="r.id" :value="r.id">
-            {{ r.id }} · {{ resultDateLabel(r) }} · {{ resultKindLabel(r.result_kind) }}
-          </option>
-        </select>
-        <button type="button" class="btn btn-primary" :disabled="boardAnalysisTriggering || !enrichmentEnabled" @click="handleBoardAnalysisTrigger">
-          <Icon icon="mdi:play" width="13" />
-          {{ boardAnalysisTriggering ? '生成中…可离开' : '生成简报' }}
         </button>
       </div>
       <div v-if="!enrichmentEnabled" class="ew-enrichment-off">
         <Icon icon="mdi:shield-alert-outline" width="15" />
-        <span>该板块未开启数据增强（循环 B 默认关闭，防误触烧 LLM）</span>
+        <span>该板块未开启数据增强（发现信号需要先开启，防止误触烧 LLM）</span>
         <button type="button" class="btn btn-primary btn-sm" :disabled="enrichToggling" @click="enableEnrichment">
           {{ enrichToggling ? '开启中…' : '一键开启' }}
         </button>
       </div>
-      <!-- 简报主视图（board_brief） -->
-      <BoardBriefReport
-        v-if="selectedResultView === 'brief'"
-        :result="selectedBoardBrief"
-        :loading="boardResultsLoading"
-        :investigation-running="investigationRunning"
-        :relation-discovery-running="triggeringSource !== null"
-        @drill-lane="handleDrillLane"
-        @investigate="handleInvestigate"
-        @open-board="handleOpenBoard"
-        @discover-relation="handleDiscoverRelation"
-      />
 
-      <!-- 旧论文式报告（legacy_board_analysis）：只读兼容 + 标注 -->
-      <template v-else-if="selectedResultView === 'legacy'">
-        <div class="bb-legacy-banner">
-          <Icon icon="mdi:file-document-outline" width="13" />
-          旧版分析 · 论文式长文（只读兼容，新触发不再生成此形态）
-        </div>
-        <BoardAnalysisReport
-          :result="selectedBoardResult"
-          :loading="boardResultsLoading"
-          @drill-lane="handleDrillLane"
+      <!-- 报告阅读视图（reader≤760；激活时替换候选/报告列表，返回保留周期） -->
+      <SignalReportView
+        v-if="sig.activeReportId !== null"
+        :report="sig.activeReport"
+        :loading="sig.activeReportLoading"
+        :error="sig.activeReportError"
+        :regenerating="sig.researchCandidateId !== null"
+        :regenerate-phase="sig.researchPhase"
+        @back="sig.closeReport()"
+        @regenerate="handleReportRegenerate"
+      />
+      <template v-else>
+        <!-- 候选信号列表（周期工具栏 + 发现信号 + 候选行） -->
+        <SignalCandidateList
+          :candidates="sig.candidates"
+          :loading="sig.candidatesLoading"
+          :error="sig.candidatesError"
+          :granularity="sig.granularity"
+          :period="sig.period"
+          :discovery-running="sig.discoveryRunning"
+          :discovery-phase="sig.discoveryPhase"
+          :discovery-error="sig.discoveryError"
+          :research-candidate-id="sig.researchCandidateId"
+          :research-phase="sig.researchPhase"
+          :research-error="sig.researchError"
+          :research-progress-label="sig.researchProgressLabel"
+          :research-progress="sig.researchProgress"
+          @commit="handleSignalCommit"
+          @discover="handleSignalDiscover"
+          @research="handleSignalResearch"
+          @open-report="handleOpenSignalReport"
+          @open-progress="handleSignalOpenProgress"
+        />
+
+        <!-- 已生成报告列表（真实计数；历史标事后回顾；无评审操作） -->
+        <SignalReportList
+          :reports="sig.reports"
+          :loading="sig.reportsLoading"
+          :error="sig.reportsError"
+          @open="handleOpenSignalReport"
         />
       </template>
-
-      <!-- 调查报告（board_investigation 5.6/5.7）：问题 + 假设评估 + 有界结论
-           + 证据台账（渐进展开，无 argument/depth 长文） -->
-      <BoardInvestigationReport
-        v-else-if="selectedResultView === 'investigation'"
-        :result="selectedBoardResult"
-        :loading="boardResultsLoading"
-        @drill-lane="handleDrillLane"
-        @open-board="handleOpenBoard"
-      />
-
-      <!-- 跨版块关系建议面板（6.2）：列表 + 详情 + confirm/dismiss/re-resolve；
-         独立于报告形态（brief/legacy/investigation 都可裁决关系） -->
-      <BoardRelationPanel
-        :relations="relations"
-        :loading="relationsLoading"
-        :error="relationsError"
-        :detail="relationDetail"
-        :detail-loading="relationDetailLoading"
-        :confirming-id="confirmingRelationId"
-        :dismissing-id="dismissingRelationId"
-        :re-resolving-id="reResolvingRelationId"
-        :active-source="triggeringSource"
-        @reload="handleRelationReload"
-        @open-detail="handleRelationDetail"
-        @confirm="handleRelationConfirm"
-        @dismiss="handleRelationDismiss"
-        @re-resolve="handleRelationReResolve"
-      />
-
-      <!-- 版块报告追问（6.2：三 kind 均可追问；QA 独立行 append-only，
-           报告本体只读；切历史报告时 resultId 变更自动重拉） -->
-      <QAPanel
-        v-if="selectedBoardResult !== null"
-        class="board-qa"
-        :result-id="selectedBoardResult?.id ?? null"
-        :qa-list="boardQaList"
-        :qa-loading="boardQaLoading"
-        :qa-error="boardQaError"
-        :latest-answer="boardLatestAnswer"
-        @ask="askBoardQuestion"
-        @sediment="sedimentBoardAnswer"
-        @load="loadBoardQA"
-      />
     </section>
 
     <!-- ── 聚焦分析折叠区（单泳道下钻入口，默认收起） ────────────────────── -->
@@ -706,50 +607,6 @@ async function handleDebateRetry() {
         </details>
       </section>
 
-      <!-- ── 数据源与参数（折叠高级） ─────────────────────────────────── -->
-      <section class="block">
-        <details class="adv">
-          <summary>数据源与参数（高级 · 一般不用动）</summary>
-          <div class="adv-body">
-            <div class="adv-row">
-              <span class="kv" style="margin-right:.4rem">已绑数据源：</span>
-              <template v-if="dataSources.length">
-                <span v-for="ds in dataSources" :key="ds.id" class="src-chip" @click="openEditSource(ds)">
-                  {{ ds.source_type }} <span :class="ds.enabled ? 'ok' : 'muted'">{{ ds.enabled ? '✓' : '✕' }}</span>
-                </span>
-              </template>
-              <span v-else class="muted">未绑定</span>
-              <button type="button" class="btn btn-ghost btn-sm" @click="openEditSource()">+ 绑定</button>
-            </div>
-            <div class="kv">话题状态：<b>{{ selectedTopic?.status ?? '—' }}</b> · 历史上下文：周 {{ contexts.filter(c => c.granularity==='week').length }} / 月 {{ contexts.filter(c => c.granularity==='month').length }} / 年 {{ contexts.filter(c => c.granularity==='year').length }}</div>
-          </div>
-        </details>
-      </section>
-
-    <!-- ── Dialog: 绑定/编辑数据源 ─────────────────────────────────────── -->
-    <AppDialog :model-value="editingSource !== null" :title="editingSource?.isNew ? '绑定数据源' : '编辑数据源'" width="560px" @update:model-value="(v) => { if (!v) editingSource = null }">
-      <div v-if="editingSource" class="ew-dialog-form">
-        <label class="ew-field">
-          <span class="ew-field-label">source_type</span>
-          <select v-model="editingSource.source_type" class="ew-select" :disabled="!editingSource.isNew">
-            <option v-for="opt in SOURCE_TYPE_OPTIONS" :key="opt" :value="opt">{{ opt }}</option>
-          </select>
-        </label>
-        <label class="ew-field">
-          <span class="ew-field-label">config（JSON）</span>
-          <textarea v-model="editingSource.config_text" class="ew-textarea ew-textarea--mono" rows="8" spellcheck="false" />
-        </label>
-        <label class="ew-field ew-field--row">
-          <AppToggle v-model="editingSource.enabled" />
-          <span class="ew-field-label">启用</span>
-        </label>
-        <button v-if="!editingSource.isNew" type="button" class="btn btn-ghost btn-sm" @click="confirmDeleteSource(editingSource.source_type)">删除该数据源</button>
-      </div>
-      <template #footer>
-        <AppButton variant="ghost" size="sm" @click="editingSource = null">取消</AppButton>
-        <AppButton variant="primary" size="sm" @click="saveEditingSource">保存</AppButton>
-      </template>
-    </AppDialog>
 
     <!-- ── Dialog: 补生成周期（7.3.1） ──────────────────────────────── -->
     <AppDialog :model-value="genDialogOpen" title="补生成周期" width="440px" @update:model-value="(v) => { if (!v) genDialogOpen = false }">

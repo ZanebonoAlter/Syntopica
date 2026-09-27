@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>开发生命周期 × harness 介入点全景</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --paper: #f5f5f5; --ink: #2d3142; --muted: #4f5d75; --soft: #7a8399;
+      --accent: #eb6c36; --gate: #5a7d9a;
+      --sans: 'Geist', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+      --serif: 'Instrument Serif', 'Noto Serif SC', serif;
+      --mono: 'Geist Mono', 'Noto Sans Mono CJK SC', ui-monospace, monospace;
+    }
+    body { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 3rem 2rem; background: var(--paper); color: var(--ink); font-family: var(--sans); }
+    .frame { width: 100%; max-width: 1400px; }
+    .eyebrow { margin-bottom: 0.5rem; color: var(--muted); font: 500 0.66rem var(--mono); letter-spacing: 0.18em; text-transform: uppercase; }
+    h1 { margin-bottom: 1.5rem; color: var(--ink); font: 400 clamp(1.5rem, 2.4vw + 0.75rem, 2rem)/1.15 var(--serif); letter-spacing: -0.02em; }
+    svg { display: block; width: 100%; min-width: 1000px; }
+    .lane-label { fill: var(--muted); font: 500 12px var(--sans); text-anchor: middle; }
+    .step-label { fill: var(--muted); font: 500 12px var(--sans); text-anchor: middle; }
+    .step-label.focal { fill: var(--accent); }
+    .step-num { fill: var(--ink); font: 500 8px var(--mono); text-anchor: middle; }
+    .step-num.focal { fill: var(--accent); }
+    .node { fill: #ffffff; stroke: rgba(45,49,66,0.25); stroke-width: 1; }
+    .node.gate { fill: rgba(90,125,154,0.06); stroke: rgba(90,125,154,0.35); }
+    .node.focal { fill: rgba(235,108,54,0.08); stroke: #eb6c36; stroke-width: 1.2; }
+    .role-chip { fill: transparent; stroke: rgba(45,49,66,0.40); stroke-width: 0.8; }
+    .role-chip.gate { stroke: rgba(90,125,154,0.55); }
+    .role-chip.focal { stroke: rgba(235,108,54,0.50); }
+    .role-text { fill: var(--muted); font: 600 6px var(--mono); text-anchor: middle; letter-spacing: 0.06em; }
+    .role-text.gate { fill: var(--gate); }
+    .role-text.focal { fill: var(--accent); }
+    .title { fill: var(--ink); font: 600 12px var(--sans); text-anchor: middle; }
+    .title.gate { fill: var(--gate); }
+    .sub { fill: var(--muted); font: 400 7px var(--mono); text-anchor: middle; letter-spacing: 0.04em; }
+    .cat { fill: var(--muted); font: 400 6px var(--mono); letter-spacing: 0.12em; }
+    .legend-item { fill: var(--muted); font: 500 12px var(--sans); }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <p class="eyebrow">Process · Diagram Design</p>
+    <h1>Syntopica 开发生命周期 × harness 介入点全景</h1>
+
+    <svg viewBox="0 0 1460 456" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="lifecycle-panorama-title lifecycle-panorama-desc">
+      <title id="lifecycle-panorama-title">开发生命周期 × harness 介入点全景</title>
+      <desc id="lifecycle-panorama-desc">流程泳道图展示一次 change 从需求探索、提案、计划、派发、实现、增量门禁、review、验收到归档拦截与溯源复盘的十个阶段里，用户、主线程、子线程与 harness 扩展层的分工与交接，实现阶段为焦点。</desc>
+      <defs>
+        <pattern id="lp-dots" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="11" cy="11" r="0.8" fill="rgba(45,49,66,0.10)"/>
+        </pattern>
+        <marker id="lp-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="lp-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="lp-arrow-sm" markerWidth="6" markerHeight="5" refX="5" refY="2.5" orient="auto"><polygon points="0 0, 6 2.5, 0 5" fill="#4f5d75"/></marker>
+      </defs>
+      <rect width="1460" height="456" fill="#f5f5f5"/>
+      <rect width="1460" height="456" fill="url(#lp-dots)" opacity="0.55"/>
+
+      <!-- Alternating lane tints (lanes 0 and 2) -->
+      <rect x="112" y="48" width="1348" height="80" fill="rgba(45,49,66,0.018)"/>
+      <rect x="112" y="208" width="1348" height="80" fill="rgba(45,49,66,0.018)"/>
+
+      <!-- Lane dividers + label column border -->
+      <line x1="0" y1="48" x2="1460" y2="48" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <line x1="0" y1="128" x2="1460" y2="128" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <line x1="0" y1="208" x2="1460" y2="208" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <line x1="0" y1="288" x2="1460" y2="288" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <line x1="0" y1="368" x2="1460" y2="368" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <line x1="112" y1="48" x2="112" y2="368" stroke="rgba(45,49,66,0.20)" stroke-width="1"/>
+
+      <!-- Lane labels -->
+      <text x="56" y="92" class="lane-label">用户</text>
+      <text x="56" y="172" class="lane-label">主线程</text>
+      <text x="56" y="252" class="lane-label">子线程</text>
+      <text x="56" y="332" class="lane-label">扩展层</text>
+
+      <!-- Step header chips + labels -->
+      <rect x="172" y="8" width="16" height="16" rx="8" fill="rgba(45,49,66,0.12)"/>
+      <text x="180" y="19" class="step-num">1</text>
+      <text x="180" y="40" class="step-label">探索</text>
+      <rect x="304" y="8" width="16" height="16" rx="8" fill="rgba(45,49,66,0.12)"/>
+      <text x="312" y="19" class="step-num">2</text>
+      <text x="312" y="40" class="step-label">提案</text>
+      <rect x="436" y="8" width="16" height="16" rx="8" fill="rgba(45,49,66,0.12)"/>
+      <text x="444" y="19" class="step-num">3</text>
+      <text x="444" y="40" class="step-label">计划</text>
+      <rect x="568" y="8" width="16" height="16" rx="8" fill="rgba(45,49,66,0.12)"/>
+      <text x="576" y="19" class="step-num">4</text>
+      <text x="576" y="40" class="step-label">派发</text>
+      <rect x="700" y="8" width="16" height="16" rx="8" fill="rgba(235,108,54,0.20)"/>
+      <text x="708" y="19" class="step-num focal">5</text>
+      <text x="708" y="40" class="step-label focal">实现</text>
+      <rect x="832" y="8" width="16" height="16" rx="8" fill="rgba(45,49,66,0.12)"/>
+      <text x="840" y="19" class="step-num">6</text>
+      <text x="840" y="40" class="step-label">迭代</text>
+      <rect x="964" y="8" width="16" height="16" rx="8" fill="rgba(45,49,66,0.12)"/>
+      <text x="972" y="19" class="step-num">7</text>
+      <text x="972" y="40" class="step-label">review</text>
+      <rect x="1096" y="8" width="16" height="16" rx="8" fill="rgba(45,49,66,0.12)"/>
+      <text x="1104" y="19" class="step-num">8</text>
+      <text x="1104" y="40" class="step-label">验收</text>
+      <rect x="1228" y="8" width="16" height="16" rx="8" fill="rgba(45,49,66,0.12)"/>
+      <text x="1236" y="19" class="step-num">9</text>
+      <text x="1236" y="40" class="step-label">归档</text>
+      <rect x="1358" y="8" width="20" height="16" rx="8" fill="rgba(45,49,66,0.12)"/>
+      <text x="1368" y="19" class="step-num">10</text>
+      <text x="1368" y="40" class="step-label">溯源复盘</text>
+
+      <!-- ===== ARROWS (before nodes) ===== -->
+      <line x1="240" y1="168" x2="252" y2="168" stroke="#4f5d75" stroke-width="1" marker-end="url(#lp-arrow)"/>
+      <line x1="372" y1="168" x2="384" y2="168" stroke="#4f5d75" stroke-width="1" marker-end="url(#lp-arrow)"/>
+      <path d="M504 156 H700 Q708 156 708 164 V212" fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#lp-arrow-accent)"/>
+      <path d="M504 180 H568 Q576 180 576 188 V292" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#lp-arrow-sm)"/>
+      <path d="M636 328 H700 Q708 328 708 320 V284" fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#lp-arrow-accent)"/>
+      <path d="M768 248 H832 Q840 248 840 256 V292" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#lp-arrow)"/>
+      <path d="M900 328 H964 Q972 328 972 320 V284" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#lp-arrow)"/>
+      <path d="M1032 248 H1096 Q1104 248 1104 240 V204" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#lp-arrow)"/>
+      <path d="M1164 180 H1228 Q1236 180 1236 188 V292" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#lp-arrow-sm)"/>
+      <path d="M1296 328 H1360 Q1368 328 1368 320 V204" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#lp-arrow)"/>
+      <line x1="1164" y1="156" x2="1308" y2="156" stroke="#4f5d75" stroke-width="1" marker-end="url(#lp-arrow)"/>
+
+      <!-- ===== NODES ===== -->
+      <!-- 用户 lane -->
+      <rect class="node" x="516" y="52" width="120" height="72" rx="6"/>
+      <rect class="role-chip" x="520" y="56" width="22" height="10" rx="2"/>
+      <text x="531" y="64" class="role-text">USR</text>
+      <text x="576" y="84" class="title">原型批准</text>
+      <text x="576" y="104" class="sub">ui-approval</text>
+
+      <!-- 主线程 lane -->
+      <rect class="node" x="120" y="132" width="120" height="72" rx="6"/>
+      <rect class="role-chip" x="124" y="136" width="22" height="10" rx="2"/>
+      <text x="135" y="144" class="role-text">LEAD</text>
+      <text x="180" y="164" class="title">脑暴·调研</text>
+      <text x="180" y="184" class="sub">openspec-explore</text>
+
+      <rect class="node" x="252" y="132" width="120" height="72" rx="6"/>
+      <rect class="role-chip" x="256" y="136" width="22" height="10" rx="2"/>
+      <text x="267" y="144" class="role-text">LEAD</text>
+      <text x="312" y="164" class="title">提案双声明</text>
+      <text x="312" y="184" class="sub">ui-impact · domains</text>
+
+      <rect class="node" x="384" y="132" width="120" height="72" rx="6"/>
+      <rect class="role-chip" x="388" y="136" width="22" height="10" rx="2"/>
+      <text x="399" y="144" class="role-text">LEAD</text>
+      <text x="444" y="164" class="title">编排计划</text>
+      <text x="444" y="184" class="sub">tasks · scenario</text>
+
+      <rect class="node" x="1044" y="132" width="120" height="72" rx="6"/>
+      <rect class="role-chip" x="1048" y="136" width="22" height="10" rx="2"/>
+      <text x="1059" y="144" class="role-text">LEAD</text>
+      <text x="1104" y="164" class="title">验收·归档</text>
+      <text x="1104" y="184" class="sub">s11 self-check</text>
+
+      <rect class="node" x="1308" y="132" width="120" height="72" rx="6"/>
+      <rect class="role-chip" x="1312" y="136" width="22" height="10" rx="2"/>
+      <text x="1323" y="144" class="role-text">LEAD</text>
+      <text x="1368" y="164" class="title">溯源·retro</text>
+      <text x="1368" y="184" class="sub">flow · harness-retro</text>
+
+      <!-- 子线程 lane -->
+      <rect class="node focal" x="648" y="212" width="120" height="72" rx="6"/>
+      <rect class="role-chip focal" x="652" y="216" width="22" height="10" rx="2"/>
+      <text x="663" y="224" class="role-text focal">IMPL</text>
+      <text x="708" y="244" class="title">实现·测试</text>
+      <text x="708" y="264" class="sub">code · tests</text>
+
+      <rect class="node" x="912" y="212" width="120" height="72" rx="6"/>
+      <rect class="role-chip" x="916" y="216" width="22" height="10" rx="2"/>
+      <text x="927" y="224" class="role-text">IMPL</text>
+      <text x="972" y="244" class="title">聚焦 review</text>
+      <text x="972" y="264" class="sub">High · Med · Low</text>
+
+      <!-- 扩展层 lane -->
+      <rect class="node gate" x="516" y="292" width="120" height="72" rx="6"/>
+      <rect class="role-chip gate" x="520" y="296" width="22" height="10" rx="2"/>
+      <text x="531" y="304" class="role-text gate">GATE</text>
+      <text x="576" y="324" class="title gate">派发拦截</text>
+      <text x="576" y="344" class="sub">quota · ui-design gate</text>
+
+      <rect class="node gate" x="780" y="292" width="120" height="72" rx="6"/>
+      <rect class="role-chip gate" x="784" y="296" width="22" height="10" rx="2"/>
+      <text x="795" y="304" class="role-text gate">GATE</text>
+      <text x="840" y="324" class="title gate">增量门禁</text>
+      <text x="840" y="344" class="sub">quality-gate turn_end</text>
+
+      <rect class="node gate" x="1176" y="292" width="120" height="72" rx="6"/>
+      <rect class="role-chip gate" x="1180" y="296" width="22" height="10" rx="2"/>
+      <text x="1191" y="304" class="role-text gate">GATE</text>
+      <text x="1236" y="324" class="title gate">归档拦截</text>
+      <text x="1236" y="344" class="sub">spec-gate · 5 checks</text>
+
+      <!-- ===== LEGEND ===== -->
+      <text x="116" y="384" class="cat">CONCERN</text>
+      <rect x="168" y="376" width="14" height="10" rx="2" fill="rgba(90,125,154,0.06)" stroke="rgba(90,125,154,0.35)" stroke-width="1"/>
+      <text x="190" y="386" class="legend-item">扩展介入点（自动）</text>
+      <rect x="420" y="376" width="14" height="10" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="442" y="386" class="legend-item">聚焦（实现）</text>
+
+      <text x="116" y="412" class="cat">FLOW</text>
+      <line x1="168" y1="408" x2="196" y2="408" stroke="#4f5d75" stroke-width="1" marker-end="url(#lp-arrow)"/>
+      <text x="206" y="414" class="legend-item">交接</text>
+      <line x1="280" y1="408" x2="308" y2="408" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#lp-arrow-accent)"/>
+      <text x="318" y="414" class="legend-item">聚焦流</text>
+      <line x1="400" y1="408" x2="428" y2="408" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#lp-arrow-sm)"/>
+      <text x="438" y="414" class="legend-item">触发 / 拦截</text>
+    </svg>
+  </main>
+</body>
+</html>

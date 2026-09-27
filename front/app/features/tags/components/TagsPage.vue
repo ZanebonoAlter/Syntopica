@@ -1,29 +1,43 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, provide, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, provide, ref, watch } from 'vue'
+import type { Component } from 'vue'
+import { useRoute } from 'vue-router'
+import type { BoardArticleTag } from '~/api/semanticBoards'
 import { Icon } from '@iconify/vue'
 import ThemeToggle from '~/components/ui/ThemeToggle.vue'
 import { useOnboarding } from '~/composables/useOnboarding'
 import AddSemanticBoardDialog from './AddSemanticBoardDialog.vue'
 import BoardCompositionPanel from './BoardCompositionPanel.vue'
+// 来源构成面板（add-source-board-hit-rate §5）：默认 tab 首屏可见，不走 lazyPanel，静态 import
+import BoardSourcePanel from './BoardSourcePanel.vue'
 import AuxiliaryLabelPool from './AuxiliaryLabelPool.vue'
 import CompositeLabelPool from './CompositeLabelPool.vue'
 import UpgradeSuggestionPanel from './UpgradeSuggestionPanel.vue'
 import BackfillProgress from './BackfillProgress.vue'
 import MatchingConfigDialog from './MatchingConfigDialog.vue'
 import DailyReportGenerateDialog from './DailyReportGenerateDialog.vue'
-import BoardDailyReportTimeline from './BoardDailyReportTimeline.vue'
-import BoardThreadBrowser from './BoardThreadBrowser.vue'
-import TopicDetectiveWall from './TopicDetectiveWall.client.vue'
 import TagMergePreview from './TagMergePreview.vue'
 import BoardListSidebar from './BoardListSidebar.vue'
-import BoardTimelinePanel from './BoardTimelinePanel.vue'
-import BoardEnrichmentPanel from './BoardEnrichmentPanel.vue'
 import BoardEditDialog from './BoardEditDialog.vue'
 import ArticlePreviewModal from './ArticlePreviewModal.vue'
 import WatchManagePanel from './topic-watch/WatchManagePanel.vue'
+import PanelAsyncPlaceholder from './PanelAsyncPlaceholder.vue'
 import { WATCH_PANEL_KEY } from './topic-watch/watchPanelInject'
 import { useTopicWatchesApi } from '~/api/topicWatches'
 import { useTagsPage } from '~/features/tags/composables/useTagsPage'
+
+// 非默认 tab 面板 + 侦探墙懒加载（fix-spa-nav-loading-ux D3）：
+// 降 tags 路由首包体积；默认「板块内容」面板、侧边栏与 dialog 群保持 eager。
+// delay=200：暖切 <200ms 就绪不闪占位；不设 timeout：慢设备由导航加载态兜底整体反馈。
+function lazyPanel<T extends Component>(loader: () => Promise<T>) {
+  return defineAsyncComponent({ loader, loadingComponent: PanelAsyncPlaceholder, delay: 200 })
+}
+const BoardThreadBrowser = lazyPanel(() => import('./BoardThreadBrowser.vue'))
+const BoardDailyReportTimeline = lazyPanel(() => import('./BoardDailyReportTimeline.vue'))
+const BoardTimelinePanel = lazyPanel(() => import('./BoardTimelinePanel.vue'))
+const BoardEnrichmentPanel = lazyPanel(() => import('./BoardEnrichmentPanel.vue'))
+// 侦探墙 v-if 默认 false，但原先静态 import 仍进首包，同样改按需加载
+const TopicDetectiveWall = lazyPanel(() => import('./TopicDetectiveWall.client.vue'))
 
 // 标签池视图切换（未选板块时）：辅助标签 / 组合标签
 const poolTab = ref<'aux' | 'composite'>('aux')
@@ -73,7 +87,7 @@ const {
   handleArticleFavorite, handleArticleUpdate,
 } = useTagsPage()
 
-const { isTagsFirstRun, startTagsTour } = useOnboarding()
+const { startTagsTour } = useOnboarding()
 const selectedBoardLabel = computed(() => boards.value.find(board => board.id === selectedBoardId.value)?.label)
 
 // 话题总览 tab：侦探墙全屏入口（BoardThreadBrowser @open-detective-wall 触发）
@@ -96,9 +110,7 @@ function handleLandscapeSelectTopic(topicId: number) {
 }
 
 onMounted(() => {
-  if (isTagsFirstRun.value) {
-    void startTagsTour()
-  }
+  // 首访自动启动已移除（默认关闭）；手动入口：「语义板块引导」按钮
 })
 
 // —— 版块级关注管理（watch-keyword-and-quickadd：入口 chip 常驻 tab 栏右端）——
@@ -122,6 +134,25 @@ function handleOpenBoard(boardId: number) {
   selectedBoardId.value = boardId
 }
 onMounted(() => { void loadWatchCount() })
+
+// —— 深链（daily-report-margin-notes 管理页「跳原日报」，MG-5/MG-7）：
+// /tags?board=&report=&annotation= → 选版块、切日报 tab，并把报告/批注定位传给时间线。
+// 一次性消费：仅在挂载时读取；report/annotation 作为初始 props 传入，时间线自身负责定位闪现。
+const route = useRoute()
+const deepLinkReportId = ref<number | null>(null)
+const deepLinkAnnotationId = ref<number | null>(null)
+onMounted(() => {
+  // route 在无 router 插件的测试环境下可能为 undefined，防御性短路（生产恒有值）
+  const query = route?.query ?? {}
+  const boardParam = Number(query.board)
+  const reportParam = Number(query.report)
+  const annotationParam = Number(query.annotation)
+  if (!Number.isFinite(boardParam) || boardParam <= 0) return
+  handleSelectBoard(boardParam)
+  contentTab.value = 'daily-reports'
+  if (Number.isFinite(reportParam) && reportParam > 0) deepLinkReportId.value = reportParam
+  if (Number.isFinite(annotationParam) && annotationParam > 0) deepLinkAnnotationId.value = annotationParam
+})
 </script>
 
 <template>
@@ -205,6 +236,13 @@ onMounted(() => { void loadWatchCount() })
             @select-topic="handleLandscapeSelectTopic"
           />
 
+          <!-- 来源构成（add-source-board-hit-rate §5）：板块构成之后、tab 内容最末；
+               同受 contentTab === 'composition' 渲染控制（切其它 tab 面板卸载），随选中板块并行重取 -->
+          <BoardSourcePanel
+            v-if="contentTab === 'composition'"
+            :board-id="selectedBoardId"
+          />
+
           <BoardEnrichmentPanel
             v-if="contentTab === 'enrichment'"
             :board-id="selectedBoardId"
@@ -218,6 +256,8 @@ onMounted(() => { void loadWatchCount() })
             :board-id="selectedBoardId"
             :board-title="selectedBoardLabel"
             :boards="boards"
+            :initial-report-id="deepLinkReportId"
+            :initial-annotation-id="deepLinkAnnotationId"
             @open-article="openArticlePreview"
             @select-board="handleSelectBoard"
           />
@@ -263,7 +303,7 @@ onMounted(() => { void loadWatchCount() })
             @date-input-change="handleDateInputChange(selectedBoardId)"
             @apply-quick-range="(range: 'today' | '3d' | '7d' | '30d') => applyQuickRange(range, selectedBoardId)"
             @open-article-preview="(id: number) => openArticlePreview(id)"
-            @toggle-match-detail="(tag) => toggleMatchDetail(tag)"
+            @toggle-match-detail="(tag: BoardArticleTag) => toggleMatchDetail(tag)"
             @update:filter-feed-id="(id: number | null) => { filterFeedId = id; handleFilterChange(selectedBoardId) }"
             @update:start-date="(v: string) => startDate = v"
             @update:end-date="(v: string) => endDate = v"
@@ -364,7 +404,7 @@ onMounted(() => { void loadWatchCount() })
 </template>
 
 <style scoped>
-.tags-page { display: flex; flex-direction: column; height: 100vh; background: var(--color-bg-base); color: var(--color-text-primary); }
+.tags-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh; background: var(--color-bg-base); color: var(--color-text-primary); }
 .tags-topbar { position: sticky; top: 0; z-index: 30; border-bottom: 1px solid var(--color-border-subtle); background: var(--color-bg-elevated); backdrop-filter: blur(16px); }
 .tags-topbar-inner { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1.5rem; }
 .tags-back-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 1px solid var(--color-border-medium); border-radius: 8px; color: var(--color-text-muted); text-decoration: none; transition: all 0.12s ease; }
@@ -390,4 +430,12 @@ onMounted(() => { void loadWatchCount() })
 .tags-pool-tab.is-active { color: var(--color-accent); background: var(--color-accent-subtle); }
 .tags-pool-tab.is-active::after { content: ''; position: absolute; bottom: -1px; left: 0; right: 0; height: 2px; background: var(--color-accent); border-radius: 1px; }
 .tags-bottombar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 40; display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem; padding: 0.45rem 1.25rem; border-top: 1px solid var(--color-border-subtle); background: var(--color-bg-elevated); backdrop-filter: blur(12px); }
+
+/* 窄屏（<768px）：双栏纵向堆叠，tab 栏横向滚动（mobile-viewport-stage1 任务 4.1） */
+@media (max-width: 767.98px) {
+  .tags-topbar-inner { padding: 0.75rem 1rem; }
+  .tags-main { flex-direction: column; }
+  .tags-content { padding: 1rem 1rem 3.5rem; }
+  .tags-content-tabs { overflow-x: auto; }
+}
 </style>

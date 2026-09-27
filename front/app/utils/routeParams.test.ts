@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   buildRouteDocUrl,
   buildRouteParamSpecs,
+  buildRSSHubFeedUrl,
+  DEFAULT_RSSHUB_BASE_URL,
   DEFAULT_RSSHUB_DOC_BASE,
   parseParameterDescriptions,
   parseParameterOptions,
   parsePathParams,
+  stripOptionalParams,
 } from './routeParams'
 
 describe('parsePathParams', () => {
@@ -222,5 +225,121 @@ describe('buildRouteDocUrl', () => {
   it('falls back to default doc base when empty', () => {
     expect(buildRouteDocUrl('', '81rc', '/realtime/:category?'))
       .toBe(`${DEFAULT_RSSHUB_DOC_BASE}/routes/81rc#realtime`)
+  })
+})
+
+describe('stripOptionalParams', () => {
+  it('drops optional param segments with leading slash', () => {
+    expect(stripOptionalParams('/81rc/realtime/:category?')).toBe('/81rc/realtime')
+  })
+
+  it('strips regex constraints inline', () => {
+    expect(stripOptionalParams('/bilibili/user/video/:uid{[0-9]+}')).toBe('/bilibili/user/video/:uid')
+  })
+
+  it('keeps required param segments', () => {
+    expect(stripOptionalParams('/weibo/user/:uid')).toBe('/weibo/user/:uid')
+  })
+})
+
+describe('buildRSSHubFeedUrl', () => {
+  it('usable_directly prefers example path', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'https://rsshub.app/',
+      namespace: '81rc',
+      path: '/realtime/:category?',
+      parameters: {},
+      example: '/81rc/realtime/1',
+      usableDirectly: true,
+    })).toBe('https://rsshub.app/81rc/realtime/1')
+  })
+
+  it('usable_directly falls back to namespace+path', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'https://rsshub.app',
+      namespace: 'test',
+      path: '/plain',
+      parameters: {},
+      usableDirectly: true,
+    })).toBe('https://rsshub.app/test/plain')
+  })
+
+  it('fills params and drops unfilled optional segments', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'https://rsshub.app',
+      namespace: 'weibo',
+      path: '/user/:uid/:tab?',
+      parameters: { uid: '123' },
+    })).toBe('https://rsshub.app/weibo/user/123')
+  })
+
+  // 2026-09 用户实测：zaobao/realtime/:section?（usable_directly + example 缺省 china）
+  // 旧逻辑 usableDirectly 短路返回 example，用户填的 section 被无视、地址纹丝不动。
+  it('usable_directly with explicit param replaces template (不再短路到 example)', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'http://47.110.71.194:1200',
+      namespace: 'zaobao',
+      path: '/realtime/:section?',
+      parameters: { section: 'singapore' },
+      example: '/zaobao/realtime/china',
+      usableDirectly: true,
+    })).toBe('http://47.110.71.194:1200/zaobao/realtime/singapore')
+  })
+
+  it('usable_directly with all-optional param unfilled keeps example default', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'http://47.110.71.194:1200',
+      namespace: 'zaobao',
+      path: '/realtime/:section?',
+      parameters: {},
+      example: '/zaobao/realtime/china',
+      usableDirectly: true,
+    })).toBe('http://47.110.71.194:1200/zaobao/realtime/china')
+  })
+
+  it('filled optional param leaves no trailing ? residue', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'https://rsshub.app',
+      namespace: 'zaobao',
+      path: '/realtime/:section?',
+      parameters: { section: 'singapore' },
+    })).toBe('https://rsshub.app/zaobao/realtime/singapore')
+  })
+
+  it('strips {regex} constraint before substitution (值不吃进约束残留)', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'https://rsshub.app',
+      namespace: 'test',
+      path: '/list/:keyword{.+}?',
+      parameters: { keyword: 'ai' },
+    })).toBe('https://rsshub.app/test/list/ai')
+  })
+
+  it('encodes param values', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'https://rsshub.app',
+      namespace: 'test',
+      path: '/list/:name',
+      parameters: { name: 'a b/c' },
+    })).toBe('https://rsshub.app/test/list/a%20b%2Fc')
+  })
+
+  it('returns empty string when required param missing', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: 'https://rsshub.app',
+      namespace: 'weibo',
+      path: '/user/:uid',
+      parameters: {},
+    })).toBe('')
+  })
+
+  it('falls back to default base url when empty', () => {
+    expect(buildRSSHubFeedUrl({
+      baseUrl: '',
+      namespace: 'test',
+      path: '/plain',
+      parameters: {},
+      usableDirectly: true,
+    })).toBe(`${DEFAULT_RSSHUB_BASE_URL}/test/plain`)
   })
 })

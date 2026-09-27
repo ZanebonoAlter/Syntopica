@@ -1,6 +1,45 @@
 import type { Article, RssFeed } from '~/types'
 
-type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
+export type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
+
+export interface PipelineLine {
+  label: string
+  value: string
+  tone: StatusTone
+}
+
+/** 行尾单图标四态：失败 > 进行中 > 排队 > 完成（见 change declutter-article-list-panel design D3） */
+export type PipelineState = 'queued' | 'processing' | 'failed' | 'done'
+
+export function getArticlePipelineState(article: Article): PipelineState {
+  const statuses = [article.firecrawlStatus, article.summaryStatus]
+  if (statuses.includes('failed')) return 'failed'
+  if (article.firecrawlStatus === 'processing' || article.summaryStatus === 'pending') return 'processing'
+  if (article.firecrawlStatus === 'pending' || article.summaryStatus === 'incomplete') return 'queued'
+  return 'done'
+}
+
+export interface PipelineStateMeta {
+  icon: string
+  spinning: boolean
+  /** 状态图标颜色（语义 token 名） */
+  colorToken: 'warning' | 'info' | 'error' | 'muted'
+  title: string
+}
+
+export function getPipelineStateMeta(state: PipelineState): PipelineStateMeta {
+  switch (state) {
+    case 'failed':
+      return { icon: 'mdi:alert-circle', spinning: false, colorToken: 'error', title: '处理状态：失败' }
+    case 'processing':
+      return { icon: 'mdi:loading', spinning: true, colorToken: 'info', title: '处理状态：进行中' }
+    case 'queued':
+      return { icon: 'mdi:clock-outline', spinning: false, colorToken: 'warning', title: '处理状态：排队中' }
+    case 'done':
+    default:
+      return { icon: 'mdi:check-circle', spinning: false, colorToken: 'muted', title: '处理状态：完成' }
+  }
+}
 
 export interface ProcessingStatusMeta {
   label: string

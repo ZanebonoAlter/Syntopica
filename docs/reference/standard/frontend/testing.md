@@ -45,26 +45,56 @@ describe('myFunction', () => {
 
 ```bash
 cd front
-pnpm test:unit                                            # 全部
-pnpm test:unit -- app/utils/articleContentSource.test.ts  # 单文件
-pnpm test:unit -- app/utils/articleContentSource.test.ts -t "prefers firecrawl"  # 按名称
+pnpm test:unit                                            # 全部（⚠️ 树莓派本机不做，见下方红线）
+pnpm test:unit app/utils/articleContentSource.test.ts     # 单文件
+pnpm test:unit app/utils/articleContentSource.test.ts -t "prefers firecrawl"  # 按名称
 ```
 
-### 跨平台运行（WSL 必须切 Windows cmd）
+> 🔴 **不要写 `pnpm test:unit -- <参数>`**（2026-09-17 摸底实测，3 次复现）：`--` 会被 vitest 当位置参数**吞掉**，filter 与 `--maxWorkers=2` **一起失效**、静默跑成全量（例：`pnpm test:unit -- app/features/tags/components` 实际跑了全量 100 个文件）——正是下方 load-106 事故的引信。参数直接跟在脚本名后即可（`pnpm test:unit <filter> --maxWorkers=2`）。
+
+> **树莓派（本机）不做全量测试**：`pnpm test:unit` 不带参数会跑全部 ~100 个测试文件（2026-09-17 摸底：4 worker 202~295s，`--maxWorkers=2` 全量约 20 分钟）——4 核打满，并叠加 zram swap 抖动与 SD 卡（`mmcblk0`）IO backlog（2026-09-17 晚实测 IO backlog 20s、load 106，系统假死重启）。日常 MUST 按改动范围只跑受影响文件；确需全量（归档门禁 / pre-push）时：先停掉其它 pi 会话、加 `--maxWorkers=2`，且不与 `pnpm build`／浏览器自动化并行。滚动巡检通道见下方「巡检分片」。
+
+### 巡检分片（滚动全量兜底）
+
+日常不做全量，但全量红需要兜底——`scripts/harness/test-patrol.sh` 把 100 个测试文件拆成 **6 个静态分片**按「最久未巡优先」滚动跑（前端分片内部硬约束 `--maxWorkers=2`）：
+
+| 分片 | 目录组 | 文件数 | 实测耗时（2026-09-17） |
+| --- | --- | --- | --- |
+| `fe-tags` | `app/features/tags` | 43 | 197s |
+| `fe-discovery` | `app/features/discovery` | 9 | 12s |
+| `fe-features` | `app/features/settings app/features/articles app/features/ai app/features/shell` | 13 | 143s |
+| `fe-core` | `app/api app/utils app/stores app/plugins app/assets` | 20 | 13s |
+| `fe-composables` | `app/composables` | 6 | 4s |
+| `fe-components` | `app/components app/error.test.ts app/spa-loading-template.test.ts` | 9 | 15s |
+
+```bash
+bash scripts/harness/test-patrol.sh                    # 默认跑最久未巡的一片
+bash scripts/harness/test-patrol.sh --shard fe-tags    # 指定片
+bash scripts/harness/test-patrol.sh --report           # 台账汇总 + 分片进度
+```
+
+- 脚本内部调用形式为 `pnpm test:unit <filter...> --maxWorkers=2`（**不带 `--`**，理由见上方红线）。手动补跑同片时照此写。
+- 分片耗时受外网超时噪声影响大（测试内真实 fetch 每次 TCP 重试 ≈130s，同一组可从 12s 到 9 分钟）；噪声源与降噪候选登记在 `openspec/changes/test-debt-patrol/survey.md` §4。
+- 失败测试入 `test_debt` 台账（供排期还债）；撞见非本 change 红 → `bash scripts/harness/test-patrol.sh --register <test_id> --context <change名>`。
+
+### 跨平台运行（按宿主平台决定执行方式）
 
 > 与 `typecheck` / `build` 同源问题，本节为权威定义；`AGENTS.md` 只留红线速查。
 
-**WSL bash 下 `pnpm test:unit` 跑不起来**：vitest 经 Vite → rollup，依赖原生 binding（`@rollup/rollup-linux-x64-gnu`），但本仓库 `node_modules` 是 Windows 侧 `pnpm install` 的，只装了 win32 平台包，Linux 平台的 optional 包被裁掉。报错形如：`Cannot find module '@rollup/rollup-linux-x64-gnu'`。
+**`front/node_modules` 是按安装时的宿主平台装的**，能跑什么命令取决于它：
 
-**正确做法**：vitest 一律走 Windows cmd（lint 可继续在 WSL 跑）：
+- **Linux / macOS（含树莓派）**：`pnpm install` 装的是本平台包（如 `@rollup/rollup-linux-arm64-gnu`、`@oxc-parser/binding-linux-arm64-gnu`），`lint` / `typecheck` / `build` / `test:unit` 全部直接在本机跑。
+- **Windows + WSL**：`node_modules` 由 Windows 侧 `pnpm install` 生成，只含 win32 平台包；WSL bash 下跑 `test:unit` / `typecheck` / `build` 会因缺 Linux native binding 失败，报错形如 `Cannot find module '@rollup/rollup-linux-x64-gnu'`。此时这些命令必须经 Windows cmd（`lint` 仍可在 WSL 跑）。
 
 ```bash
-# test:unit — 必须用 cmd（同 typecheck / build）
+# Linux / macOS：直接跑（test:unit 按改动范围传文件名；全量须限 worker，见上方红线）
+cd front && pnpm lint && pnpm exec nuxi typecheck && pnpm build && pnpm test:unit
+
+# Windows + WSL：typecheck/build/test:unit 经 cmd（lint 可在 WSL）
 cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm test:unit 2>&1"
 cmd.exe /C "cd /d D:\project\Syntopica\front && pnpm test:unit topicAnchor 2>&1"  # 按名筛选
 ```
-
-> 不要为了“在 WSL 跑通”去 `pnpm add -D @rollup/rollup-linux-x64-gnu` —— 会污染 `package.json` / `pnpm-lock.yaml`，引入与具体 change 无关的脏改动。
+> 不要在 WSL 侧补装 Linux 平台包来“跑通”（如 `pnpm add -D @rollup/rollup-linux-x64-gnu`）—— 会污染 `package.json` / `pnpm-lock.yaml`，引入与具体 change 无关的脏改动。要在哪个平台跑，就在那里 `pnpm install`。
 
 ### 常见陷阱
 

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 · 设置·页边注 · daily-report-margin-notes</title>
+<link rel="stylesheet" href="proto.css">
+</head>
+<body>
+
+<div class="proto-banner">可丢弃原型 · fixture 数据 · <b>daily-report-margin-notes</b> · ui-approval: pending —— <a href="reader.html">日报页边注</a>｜<a href="manage.html">管理页（设置·页边注）</a> —— 本页：跨报告批注管理（筛选 / 跳原日报 / 删除）</div>
+
+<div class="mg-layout">
+  <aside class="mg-nav">
+    <h2>设置</h2>
+    <button class="dim">订阅源</button>
+    <button class="dim">AI 模型</button>
+    <button class="dim">能力路由</button>
+    <button class="dim">兴趣画像</button>
+    <button class="active">❧ 页边注</button>
+    <button class="dim">定时任务</button>
+    <button class="dim">出站代理</button>
+  </aside>
+  <main class="mg-main">
+    <header class="mg-head">
+      <div>
+        <h1>页边注</h1>
+        <p>全部日报的划词批注与问答 · 共 <b id="mg-count">6</b> 条 · 删除与日报内同源（连带问答）</p>
+      </div>
+      <div class="mg-filters">
+        <select id="mg-board">
+          <option value="">全部版块</option>
+          <option value="中国宏观">中国宏观</option>
+          <option value="美联储观察">美联储观察</option>
+        </select>
+        <input id="mg-q" type="search" placeholder="搜索划词 / 提问 / 术语…">
+      </div>
+    </header>
+    <div id="mg-list"></div>
+    <div class="mg-empty" id="mg-empty" style="display:none">没有匹配的批注</div>
+  </main>
+</div>
+
+<!-- 删除确认（AppDialog sm 形态，与日报内同源同语义） -->
+<div class="dlg-mask" id="delDialog">
+  <div class="dlg">
+    <h3>删除这条批注？</h3>
+    <p>将连带删除其下全部 <b id="dlgQaCount">2</b> 轮问答（含已生成的回答、引用与术语记录）。此操作不可恢复。</p>
+    <div class="dlg__row">
+      <button class="dlg__btn" id="delCancel">取消</button>
+      <button class="dlg__btn dlg__btn--danger" id="delConfirm">删除</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============ 管理页 fixture（与阅读视图共数据源，此处独立演示） ============ */
+const mgData = [
+  { id: 1, board: '中国宏观', date: '2026-09-21', issue: '第128期', terms: ['逆回购', '流动性对冲', 'DR007'],
+    quote: '以利率招标方式开展 3000 亿元 7 天期逆回购操作，中标利率维持 1.80% 不变。因今日有 1000 亿元逆回购到期，实现净投放 2000 亿元。',
+    qas: [
+      { q: '逆回购是什么意思？跟降息是一回事吗？', a: '逆回购是央行向市场短期注入流动性的操作：买债到期卖回，调“量”；降息调“价”。' },
+      { q: '追问：那到期不续做会怎样？', a: '资金自然回笼，流动性边际收紧；跨季时点央行通常提前续做。' },
+    ] },
+  { id: 2, board: '中国宏观', date: '2026-09-21', issue: '第128期', terms: ['DR007'],
+    quote: 'DR007 一度触及 2.1%，今日随央行加码投放回落至 1.95% 附近。',
+    qas: [ { q: 'DR007 看什么？', a: '银行间存款类机构 7 天质押式回购利率，资金面松紧的温度计。' } ] },
+  { id: 3, board: '中国宏观', date: '2026-09-20', issue: '第127期', terms: ['缩表'],
+    quote: '鲍威尔在记者会上强调“不急于调整”，缩表节奏维持不变。', qas: [] },
+  { id: 4, board: '美联储观察', date: '2026-09-19', issue: '第96期', terms: ['点阵图'],
+    quote: '点阵图中值显示年内或还有一次降息。',
+    qas: [ { q: '点阵图准吗？', a: '是委员预期的中位数，非承诺，历史上经常修正。' } ] },
+  { id: 5, board: '美联储观察', date: '2026-09-18', issue: '第95期', terms: ['联邦基金利率'],
+    quote: '联邦基金利率目标区间维持在 4.00%-4.25%。', qas: [] },
+  { id: 6, board: '中国宏观', date: '2026-09-18', issue: '第126期', terms: ['LPR'],
+    quote: 'LPR 报价连续第四个月持平。',
+    qas: [ { q: 'LPR 和逆回购利率什么关系？', a: '政策利率（如逆回购利率）传导至 LPR 报价，中间隔 MLF。' } ] },
+];
+
+let delTarget = null;
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function renderManage() {
+  const board = document.getElementById('mg-board').value;
+  const q = document.getElementById('mg-q').value.trim().toLowerCase();
+  const list = document.getElementById('mg-list');
+  const rows = mgData.filter(x =>
+    (!board || x.board === board) &&
+    (!q || (x.quote + ' ' + x.terms.join(' ') + ' ' + x.qas.map(r => r.q + r.a).join(' ')).toLowerCase().includes(q)));
+  list.innerHTML = '';
+  rows.forEach(x => {
+    const el = document.createElement('article');
+    el.className = 'mg-row';
+    el.dataset.mgid = x.id;
+    const qasHtml = x.qas.length
+      ? `<details class="mg-row__qa"><summary>${x.qas.length} 轮问答</summary>${x.qas.map(r =>
+          `<div class="qa"><div class="qa__q">${escapeHtml(r.q)}</div><div class="qa__a">${escapeHtml(r.a)}</div></div>`).join('')}</details>`
+      : '<div class="mg-row__qa"><span style="font-size:0.7rem;color:var(--text-muted)">尚无提问（仅标记）</span></div>';
+    el.innerHTML = `
+      <div class="mg-row__head">
+        <span class="mg-row__meta">${x.board} · ${x.date} · ${x.issue}</span>
+        <span class="mg-row__terms">${x.terms.map(t => `<span class="term-chip">${t}</span>`).join('')}</span>
+        <span class="mg-row__ops">
+          <button data-op="jump" title="打开原日报并定位该批注">↗ 原日报</button>
+          <button data-op="del" title="删除批注（连带问答）">✕ 删除</button>
+        </span>
+      </div>
+      <div class="mg-row__quote">${escapeHtml(x.quote)}</div>
+      ${qasHtml}`;
+    el.querySelector('[data-op="jump"]').addEventListener('click', () => {
+      location.href = 'reader.html#hl-demo';
+    });
+    el.querySelector('[data-op="del"]').addEventListener('click', () => openDelDialog(el, x));
+    list.appendChild(el);
+  });
+  document.getElementById('mg-empty').style.display = rows.length ? 'none' : 'block';
+  document.getElementById('mg-count').textContent = mgData.length;
+}
+
+/* 删除确认（与日报内同源同语义） */
+function openDelDialog(el, x) {
+  delTarget = { el, id: x.id };
+  el.classList.add('deleting');
+  document.getElementById('dlgQaCount').textContent = x.qas.length;
+  document.getElementById('delDialog').classList.add('show');
+}
+document.getElementById('delCancel').addEventListener('click', () => {
+  if (delTarget) delTarget.el.classList.remove('deleting');
+  document.getElementById('delDialog').classList.remove('show');
+});
+document.getElementById('delConfirm').addEventListener('click', () => {
+  if (delTarget) {
+    const i = mgData.findIndex(x => x.id === delTarget.id);
+    if (i >= 0) mgData.splice(i, 1);
+    delTarget.el.remove();
+    renderManage();
+  }
+  document.getElementById('delDialog').classList.remove('show');
+});
+
+document.getElementById('mg-board').addEventListener('change', renderManage);
+document.getElementById('mg-q').addEventListener('input', renderManage);
+renderManage();
+</script>
+</body>
+</html>

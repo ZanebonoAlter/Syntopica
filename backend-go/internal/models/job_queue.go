@@ -23,7 +23,7 @@ type FirecrawlJob struct {
 	LeaseExpiresAt *time.Time `gorm:"index" json:"lease_expires_at"`
 	LastError      string     `gorm:"type:text" json:"last_error"`
 	URLSnapshot    string     `gorm:"size:1000" json:"url_snapshot"`
-	CreatedAt      time.Time  `json:"created_at"`
+	CreatedAt      time.Time  `gorm:"index" json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	Article        *Article   `gorm:"foreignKey:ArticleID;constraint:OnDelete:CASCADE" json:"article,omitempty"`
 }
@@ -47,7 +47,7 @@ type TagJob struct {
 	CategoryNameSnapshot string     `gorm:"size:100" json:"category_name_snapshot"`
 	ForceRetag           bool       `gorm:"default:false" json:"force_retag"`
 	Reason               string     `gorm:"size:50" json:"reason"`
-	CreatedAt            time.Time  `json:"created_at"`
+	CreatedAt            time.Time  `gorm:"index" json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 	Article              *Article   `gorm:"foreignKey:ArticleID;constraint:OnDelete:CASCADE" json:"article,omitempty"`
 }

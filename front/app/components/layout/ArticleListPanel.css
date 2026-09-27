@@ -1,3 +1,7 @@
+/* 阅读页文章列表面板（declutter-article-list-panel）
+   单一 surface：面板容器与头部、列表同底色，仅以细分隔线分层；
+   头部浮层（日期面板 / 订阅状态 popover）覆盖式定位。 */
+
 .article-list-panel {
   display: flex;
   flex-direction: column;
@@ -11,27 +15,100 @@
   overflow: hidden;
 }
 
+/* 头部行：标题 + 计数 + 条件 chip + 📅 + ⓘ（唯一 chrome 层，同底色） */
 .panel-header {
-  padding: 0.75rem 1rem;
-  background: var(--color-bg-hover);
-  border-bottom: 1px solid var(--color-border-subtle);
-  flex-shrink: 0;
-}
-
-.header-content {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 6px;
+  padding: 8px 8px 8px 14px;
+  background: transparent;
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 6;
 }
 
 .header-title {
-  font-weight: 600;
+  font-size: 14.5px;
+  font-weight: 700;
   color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .article-count {
-  font-size: 0.875rem;
-  color: var(--color-text-secondary);
+  font-size: 12px;
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.header-spacer {
+  flex: 1;
+}
+
+.header-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.header-icon-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.header-icon-btn.on {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+}
+
+/* 日期筛选激活条件 chip */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 25%, transparent);
+  border-radius: 999px;
+  padding: 2px 4px 2px 8px;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.filter-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
+.filter-chip-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.filter-chip-clear:hover {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
 }
 
 .panel-content {
@@ -50,7 +127,7 @@
   min-height: 12rem;
 }
 
-/* Articles List - 文章列表 */
+/* Articles List - 文章列表（行式，分隔线由 ArticleCard.css 提供） */
 .articles-list {
   flex: 1;
   display: flex;
@@ -69,195 +146,179 @@
   color: var(--color-text-muted);
 }
 
-/* Filter Bar - 筛选栏 */
-.filter-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 16px;
-  background: var(--color-bg-hover);
-  border-bottom: 1px solid var(--color-border-subtle);
+/* 头部下拉浮层（日期面板 / 订阅状态 popover）— 实心底 */
+.head-pop {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 10px;
+  right: 10px;
+  z-index: 10;
+  background: var(--color-bg-base);
+  border: 1px solid var(--color-border-medium);
+  border-radius: 12px;
+  box-shadow: var(--shadow-medium);
+  padding: 12px;
 }
 
-.filter-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.head-pop.feed-pop {
+  left: auto;
+  width: 236px;
 }
 
-/* Date Filter Panel - 日期筛选展开面板 */
-.date-filter-panel {
-  padding: 16px;
-  background: var(--color-bg-hover);
-  border-bottom: 1px solid var(--color-border-subtle);
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-/* Quick Options Row - 快速选项行 */
-.quick-options-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.row-label {
-  font-size: 11px;
-  font-weight: 600;
+.hp-section-label {
+  font-size: 10.5px;
+  font-weight: 700;
   color: var(--color-text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-  min-width: 60px;
+  letter-spacing: 0.05em;
+  margin-bottom: 7px;
 }
 
+/* 快速日期选项 */
 .quick-options {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   flex-wrap: wrap;
+  margin-bottom: 10px;
 }
 
 .quick-option-btn {
-  padding: 8px 16px;
-  background: var(--color-bg-hover);
+  padding: 5px 11px;
+  background: var(--color-bg-elevated);
   border: 1px solid var(--color-border-subtle);
-  border-radius: 0.5rem;
-  font-size: 12px;
+  border-radius: 8px;
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--color-text-primary);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
 }
 
 .quick-option-btn:hover {
-  background: var(--color-accent-subtle);
   border-color: var(--color-border-medium);
-  color: var(--color-accent);
 }
 
 .quick-option-btn.active {
   background: var(--color-accent);
   color: white;
   border-color: transparent;
-  box-shadow: var(--shadow-subtle);
 }
 
-/* Custom Date Row - 自定义日期行 */
-.custom-date-row-vertical {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
+/* 起止日期输入 */
 .date-input-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .date-input-row .row-label {
-  min-width: 80px;
-}
-
-.input-label {
-  font-size: 13px;
-  color: var(--color-text-primary);
-  font-weight: 500;
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+  width: 52px;
+  flex-shrink: 0;
 }
 
 .date-input {
-  padding: 8px 12px;
-  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 12px;
   color: var(--color-text-primary);
-  background: var(--color-input-bg);
-  border: 1px solid var(--color-input-border);
-  border-radius: 0.5rem;
-  transition: all 0.2s ease;
-  min-width: 120px;
+  background: var(--color-input-bg, #fff);
+  border: 1px solid var(--color-border-medium);
+  border-radius: 7px;
 }
 
 .date-input:focus {
   outline: none;
-  border-color: var(--color-input-focus);
+  border-color: var(--color-accent);
   box-shadow: 0 0 0 3px var(--color-accent-subtle);
 }
 
-/* Panel Actions - 面板操作按钮 */
 .panel-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--color-border-subtle);
+  gap: 8px;
+  margin-top: 4px;
 }
 
-.btn-secondary-sm {
-  padding: 8px 16px;
-  background: var(--color-bg-hover);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 0.5rem;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--color-text-primary);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn-secondary-sm:hover {
-  background: var(--color-bg-active);
-}
-
-.btn-primary-sm {
-  padding: 8px 16px;
-  background: var(--color-accent);
-  border: none;
-  border-radius: 0.5rem;
-  font-size: 12px;
-  font-weight: 600;
-  color: white;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: var(--shadow-subtle);
-}
-
-.btn-primary-sm:hover {
-  box-shadow: var(--shadow-medium);
-  transform: translateY(-1px);
-}
-
-/* Filter Toggle Button - 筛选切换按钮 */
-.filter-toggle-btn {
+/* 订阅源状态行 */
+.feed-line {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  background: var(--color-bg-hover);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 0.5rem;
-  font-size: 13px;
-  font-weight: 500;
+  gap: 8px;
+  padding: 5px 2px;
+  font-size: 12.5px;
+}
+
+.feed-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.feed-dot-success {
+  background: var(--color-success);
+}
+
+.feed-dot-error {
+  background: var(--color-error);
+}
+
+.feed-dot-info {
+  background: var(--color-info);
+}
+
+.feed-dot-neutral {
+  background: var(--color-border-strong);
+}
+
+.feed-dot-spin {
+  border: 2px solid var(--color-border-medium);
+  border-top-color: var(--color-info);
+  animation: feed-dot-spin 1s linear infinite;
+  width: 9px;
+  height: 9px;
+}
+
+@keyframes feed-dot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.feed-key {
+  color: var(--color-text-secondary);
+}
+
+.feed-value {
+  font-weight: 600;
+  margin-left: auto;
   color: var(--color-text-primary);
-  cursor: pointer;
-  transition: all 0.2s ease;
 }
 
-.filter-toggle-btn:hover {
-  background: var(--color-accent-subtle);
-  border-color: var(--color-border-medium);
-  color: var(--color-accent);
+.feed-value-success {
+  color: var(--color-success);
 }
 
-.filter-toggle-btn.active {
-  background: var(--color-accent);
-  color: white;
-  border-color: transparent;
-  box-shadow: var(--shadow-subtle);
+.feed-value-error {
+  color: var(--color-error);
 }
 
-.toggle-icon {
-  transition: transform 0.2s ease;
+.feed-value-info {
+  color: var(--color-info);
 }
 
+.feed-value-neutral {
+  color: var(--color-text-muted);
+}
 
+.feed-hint {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border-subtle);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}

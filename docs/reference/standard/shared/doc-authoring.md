@@ -16,6 +16,7 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 | `api/` | API 参考（按路由前缀拆分） | — |
 | `database/` | 数据库字段参考 | — |
 | `开发执行规范.md` | 任务拆解/用例先行/门禁分层/归档纪律（how 与流程） | 代码风格细节（→ standard/） |
+| `harness/` | pi harness 扩展机制参考（扩展全景表/注入通道/门禁分层/事件账本入口） | 业务约束（→ flow/）、代码风格（→ standard/）、流程编排（→ 开发执行规范.md）、agent 日常行为红线（→ AGENTS.md） |
 | `constraints-index.md` | 常驻约束索引（constraint-injection 数据源）；业务域→flow 文档映射表 | 手工堆放约束正文（正文在 flow/standard，这里只索引） |
 | `configuration.md` / `deployment.md` | 配置 / 部署 | — |
 | `development.md` / `testing.md` | 仅存构建/运行参考（规范内容已迁 standard/） | 新的规范条款（写这里=错误位置） |

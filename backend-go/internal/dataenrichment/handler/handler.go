@@ -57,6 +57,12 @@ type EnrichmentHandler struct {
 	qaRunner          QARunner
 	db                *gorm.DB
 	analysis          *analysisRunner
+	// signals is the signal-discovery runner (board-signal-reports); wired
+	// post-construction via SetSignalDiscovery (see signal_discovery.go).
+	signals SignalDiscoveryRunner
+	// signalResearch is the deep-research runner (board-signal-reports 2b);
+	// wired post-construction via SetSignalResearch (see signal_research.go).
+	signalResearch SignalResearchRunner
 }
 
 var instance *EnrichmentHandler
@@ -183,6 +189,16 @@ func (h *EnrichmentHandler) RegisterRoutes(rg *gin.RouterGroup) {
 		boardAnalysis.POST("/results/:rid/qa", h.askBoardQA)
 		boardAnalysis.GET("/results/:rid/qa", h.listBoardQA)
 		boardAnalysis.POST("/results/:rid/qa/:qid/sediment", h.sedimentBoardQA)
+
+		// Signal reports (board-signal-reports design §7): discovery trigger +
+		// candidate list share this board analysis group and its 202/409 mutex.
+		// research (2b): 手动逐条深入研究与报告查询，同一互斥组。
+		boardAnalysis.POST("/signal-discoveries", h.triggerSignalDiscovery)
+		boardAnalysis.GET("/signals", h.listSignalCandidates)
+		boardAnalysis.GET("/signals/:candidateId/research-progress", h.getSignalResearchProgress)
+		boardAnalysis.POST("/signals/:candidateId/research", h.triggerSignalResearch)
+		boardAnalysis.GET("/signal-reports", h.listSignalReports)
+		boardAnalysis.GET("/signal-reports/:rid", h.getSignalReport)
 	}
 
 	// ── Board data source bindings (board dimension) ────────────────────────
@@ -194,25 +210,8 @@ func (h *EnrichmentHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	}
 
 	// ── Analysis methods (global method-card library; design D6) ───────────
-	methods := rg.Group("/analysis-methods")
-	{
-		methods.GET("", h.listAnalysisMethods)
-		methods.POST("", h.createAnalysisMethod)
-		methods.GET("/:id", h.getAnalysisMethod)
-		methods.PUT("/:id", h.updateAnalysisMethod)
-		methods.PUT("/:id/enable", h.setAnalysisMethodEnabled)
-		methods.DELETE("/:id", h.deleteAnalysisMethod)
-	}
 
-	// ── Legacy reference roles: one-version read-only compatibility ────────
-	roles := rg.Group("/reference-roles")
-	{
-		roles.GET("", h.listReferenceRoles)
-		roles.POST("", h.createReferenceRole)
-		roles.GET("/:id", h.getReferenceRole)
-		roles.PUT("/:id", h.updateReferenceRole)
-		roles.DELETE("/:id", h.deleteReferenceRole)
-	}
+	// ── Legacy reference roles: removed (restructure-settings-navigation) ──
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

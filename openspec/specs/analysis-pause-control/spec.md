@@ -43,7 +43,9 @@ TBD - created by archiving change pause-analysis. Update Purpose after archive.
 - **THEN** 有效暂停 SHALL 为 true，分析类任务 SHALL 不运行
 
 ### Requirement: 暂停生效范围——分析类
-当 analysis_paused 为 true 时，分析类调度任务的 JobFunc SHALL 在每次 tick 自检并直接返回、不 lease 新任务，覆盖：content_completion、firecrawl、daily_report、board_upgrade_suggest、lifeline_weekly、lifeline_monthly、lifeline_yearly、tag_quality_score。tag worker 池（TagQueue、EmbeddingQueueWorker、MergeReembeddingQueueWorker）SHALL 不消费各自队列。
+当 analysis_paused 为 true 时，分析类调度任务的 JobFunc SHALL 在每次 tick 自检并直接返回、不 lease 新任务，覆盖：content_completion、daily_report、board_upgrade_suggest、lifeline_weekly、lifeline_monthly、lifeline_yearly、tag_quality_score。tag worker 池（TagQueue、EmbeddingQueueWorker、MergeReembeddingQueueWorker）SHALL 不消费各自队列。
+
+firecrawl（正文抓取）SHALL NOT 属于分析类管制（见「入库与维护类不受暂停影响」）；其抓取完成的下游影响 SHALL 仅限于落库 firecrawl 状态位与入队后续任务，下游 LLM 消费方（tag worker、content_completion）在暂停期间 SHALL NOT 被触发发起任何 LLM 调用。
 
 #### Scenario: 暂停时调度任务不 lease
 - **WHEN** analysis_paused 为 true 且 content_completion 调度器触发 tick
@@ -53,8 +55,12 @@ TBD - created by archiving change pause-analysis. Update Purpose after archive.
 - **WHEN** analysis_paused 为 true
 - **THEN** TagQueue 不 lease tag_jobs，EmbeddingQueueWorker 不 lease embedding_queues
 
+#### Scenario: 暂停时 firecrawl 的下游不触发 LLM
+- **GIVEN** analysis_paused 为 true，某文章 firecrawl 抓取完成且所属 feed tagging_enabled=true
+- **WHEN** 抓取完成事件处理
+- **THEN** 该文章 tag_jobs 照常入队（pending 等待），SHALL NOT 因此发起任何 LLM 调用；恢复后由 worker 按消费顺序消化
 ### Requirement: 入库与维护类不受暂停影响
-当 analysis_paused 为 true 时，auto_refresh（RSS 入库）及维护类调度（log_cleanup、aux_label_cleanup、blocked_article_recovery、rsshub_catalog_sync、preference_profile_update）SHALL 继续正常运行。
+当 analysis_paused 为 true 时，auto_refresh（RSS 入库）、firecrawl（正文抓取，纯抓取算力、零 LLM 调用）及维护类调度（log_cleanup、aux_label_cleanup、blocked_article_recovery、rsshub_catalog_sync、preference_profile_update）SHALL 继续正常运行。
 
 #### Scenario: 暂停时 RSS 继续入库
 - **WHEN** analysis_paused 为 true 且 auto_refresh 触发
@@ -64,6 +70,10 @@ TBD - created by archiving change pause-analysis. Update Purpose after archive.
 - **WHEN** analysis_paused 为 true 且 log_cleanup 触发
 - **THEN** log_cleanup 照常清理过期日志
 
+#### Scenario: 暂停时 firecrawl 照常抓取
+- **GIVEN** analysis_paused 为 true（含模型 NOT 健康的常态白天），存在 firecrawl_status=pending 的文章
+- **WHEN** firecrawl 调度器触发 tick
+- **THEN** 照常抓取正文并写回 firecrawl 状态字段；SHALL NOT 因暂停跳过
 ### Requirement: 优雅停——不强杀在跑任务
 暂停 SHALL 只阻断新的 tick/lease，当前正在执行（已 lease）的任务 SHALL 自然执行完成，系统 SHALL NOT 强制中断在跑任务。
 
@@ -72,12 +82,11 @@ TBD - created by archiving change pause-analysis. Update Purpose after archive.
 - **THEN** 当前这批抓取任务执行完成，后续 tick 不再 lease 新任务
 
 ### Requirement: 恢复后自动续跑
-当 analysis_paused 从 true 切回 false 时，暂停期间堆积的 pending 队列任务 SHALL 在后续 tick/lease 周期按既有 created_at 顺序自动消化，无需手动干预。
+当 analysis_paused 从 true 切回 false 时，暂停期间堆积的 pending 队列任务 SHALL 在后续 tick/lease 周期按 tag-queue-scheduling 定义的消费顺序（新任务优先，priority 可插队）自动消化，无需手动干预。
 
 #### Scenario: 恢复后消化堆积任务
 - **WHEN** 暂停期间 tag_jobs 堆积了 50 条 pending，用户触发恢复
-- **THEN** TagQueue 在后续周期按 created_at 顺序逐步处理这 50 条，无需手动操作
-
+- **THEN** TagQueue 在后续周期按新任务优先顺序逐步处理这 50 条，无需手动操作
 ### Requirement: 总闸与分闸共存
 全局分析暂停（总闸）与 feed.tagging_enabled（分闸）SHALL 共存。当全局暂停生效时，即使 feed.tagging_enabled 为 true，该 feed 的文章 SHALL NOT 进入 tag 处理；全局恢复后，分闸重新生效。
 
@@ -124,13 +133,19 @@ TBD - created by archiving change pause-analysis. Update Purpose after archive.
 
 ### Requirement: 健康门硬执行
 
-当 AI 模型未就绪（NOT 健康，见 ai-model-health）时，所有分析类调度任务的 JobFunc SHALL 在每次 tick 自检 `analysispause.IsPaused()`（= 用户暂停 || NOT 健康）并直接返回、不 lease 新任务；tag worker 池（TagQueue、EmbeddingQueueWorker、MergeReembeddingQueueWorker）SHALL 不消费各自队列。`IsPaused()` 在健康快照未就绪（启动竞态）时 SHALL 视 NOT 健康返回 true（保守，分析不跑）。手动切换暂停/恢复（POST /api/analysis/pause）SHALL NOT 因健康状态被拒绝——开关仅表达用户意图，实际是否运行由健康门在 worker 侧裁定。
+当 AI 模型未就绪（NOT 健康，见 ai-model-health）时，所有分析类调度任务的 JobFunc SHALL 在每次 tick 自检 `analysispause.IsPaused()`（= 用户暂停 || NOT 健康）并直接返回、不 lease 新任务；tag worker 池（TagQueue、EmbeddingQueueWorker、MergeReembeddingQueueWorker）SHALL 不消费各自队列。firecrawl 因零 LLM 调用 SHALL NOT 受健康门管制。`IsPaused()` 在健康快照未就绪（启动竞态）时 SHALL 视 NOT 健康返回 true（保守，分析不跑）。手动切换暂停/恢复（POST /api/analysis/pause）SHALL NOT 因健康状态被拒绝——开关仅表达用户意图，实际是否运行由健康门在 worker 侧裁定。
 
 #### Scenario: 模型未就绪时调度任务不 lease
 
 - **GIVEN** analysis_paused=false（用户未暂停），模型 NOT 健康
-- **WHEN** content_completion / firecrawl / daily_report 等分析类调度器触发 tick
+- **WHEN** content_completion / daily_report 等分析类调度器触发 tick
 - **THEN** 各 tick SHALL 不 lease 任务，直接返回（与用户主动暂停表现一致）
+
+#### Scenario: 模型未就绪时 firecrawl 照常抓取
+
+- **GIVEN** 模型 NOT 健康（如本地 LLM 主机未开机）
+- **WHEN** firecrawl 调度器触发 tick
+- **THEN** firecrawl SHALL 照常抓取（不受健康门管制），其下游 LLM 任务仍不消费
 
 #### Scenario: 模型未就绪时 tag worker 不消费
 
@@ -152,22 +167,27 @@ TBD - created by archiving change pause-analysis. Update Purpose after archive.
 
 - **WHEN** 用户点击恢复（POST /api/analysis/pause { paused:false }）
 - **THEN** 系统 SHALL 在更新用户开关后异步触发一次 RunStartupProbe，使健康门能自愈（启动探活曾失败、或模型后来才就绪时，点恢复即重新评估）；pause=true 时 SHALL NOT 触发。响应仍只反映用户意图
-
 ### Requirement: 前端健康未就绪提示
 
-前端 SHALL 在「用户意图为运行（analysis_paused=false）但 AI 模型未就绪（NOT 健康）」时，于显著位置（顶部 banner）展示提示，告知用户 LLM/Embedding 未连通、分析暂停运行，并提供跳转至模型配置页的入口。该提示 SHALL NOT 修改或禁用既有的暂停/启动按钮。设置页 SHALL 提供「AI 健康状态」面板，展示各路由主 provider 的可达性明细、是否被后端拉起、上次检测时间，以及 `auto_start_models` 总开关。
+前端 SHALL 在「用户意图为运行（analysis_paused=false）但 AI 模型未就绪（NOT 健康）」时，通过通知中心展示健康未就绪提示：通知铃铛进入警示态（警示图标/配色，与未读数角标正交叠加），且通知面板列表顶部展示置顶系统状态条，告知用户 LLM/Embedding 未连通、分析暂停运行，并提供「重新检测」与跳转至模型配置页的入口。该提示 SHALL NOT 修改或禁用既有的暂停/启动按钮，SHALL NOT 在页面顶部悬浮 banner 形式展示。设置页 SHALL 提供「AI 健康状态」面板，展示各路由主 provider 的可达性明细、是否被后端拉起、上次检测时间，以及 `auto_start_models` 总开关。
 
 #### Scenario: 意图运行但不健康时展示 banner
 
 - **GIVEN** analysis_paused=false，ai_healthy=false
 - **WHEN** 用户打开任意页面
-- **THEN** 顶部 SHALL 显示「AI 模型未就绪（LLM/Embedding 未连通），分析暂停运行」提示，含跳转设置页入口，且暂停/启动按钮 SHALL 保持可用不被禁用
+- **THEN** 通知铃铛 SHALL 进入警示态，通知面板列表顶部 SHALL 显示「AI 模型未就绪（LLM/Embedding 未连通），分析暂停运行」置顶条（提示条随通知中心展示，不再悬浮页面顶部），含「重新检测」按钮与跳转设置页入口，且暂停/启动按钮 SHALL 保持可用不被禁用
+
+#### Scenario: 健康恢复后警示消失
+
+- **GIVEN** 通知中心处于 AI 未就绪警示态
+- **WHEN** ai_healthy 变为 true（探活自愈或手动重探通过）
+- **THEN** 铃铛 SHALL 回归普通态，面板置顶条 SHALL 消失（状态驱动，无需用户交互清除）
 
 #### Scenario: 用户主动暂停时不展示健康 banner
 
 - **GIVEN** analysis_paused=true（用户主动暂停）
 - **WHEN** 模型亦 NOT 健康
-- **THEN** 顶部 SHALL NOT 显示该健康未就绪 banner（用户已主动暂停，无需再提示健康）
+- **THEN** 铃铛 SHALL NOT 进入健康警示态，面板 SHALL NOT 显示该健康未就绪置顶条（用户已主动暂停，无需再提示健康）
 
 #### Scenario: 设置页展示健康面板与总开关
 
@@ -177,5 +197,11 @@ TBD - created by archiving change pause-analysis. Update Purpose after archive.
 #### Scenario: 顶部栏常驻健康指示
 
 - **WHEN** 顶部栏渲染
-- **THEN** SHALL 常驻显示当前 AI 健康状态（健康/不健康二态，如 mdi:heart-pulse 绿/红），点击跳 AI 健康设置 section；与仅在不健康时出现的 banner 并存，二者 SHALL NOT 互斥
+- **THEN** SHALL 常驻显示当前 AI 健康状态（健康/不健康二态，如 mdi:heart-pulse 绿/红），点击跳 AI 健康设置 section；与通知中心的健康未就绪警示（铃铛警示 + 面板置顶条）并存，二者 SHALL NOT 互斥
+
+#### Scenario: 面板空列表时置顶条仍可见
+
+- **GIVEN** analysis_paused=false，ai_healthy=false，通知列表为空
+- **WHEN** 用户打开通知面板
+- **THEN** 置顶系统状态条 SHALL 显示在空列表占位之上（系统状态与通知列表内容正交）
 

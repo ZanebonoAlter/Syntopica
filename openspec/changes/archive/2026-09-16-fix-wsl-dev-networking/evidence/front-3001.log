@@ -1,0 +1,166 @@
+
+> @syntopica/web@ dev D:\project\Syntopica\front
+> nuxt dev "--port" "3001"
+
+[90m│[39m
+[34m●[39m  [32mNuxt [1m4.2.2[22m[39m[90m (with [39m[90mNitro [1m2.13.0[22m[39m[90m, Vite [1m7.3.1[22m[39m[90m and Vue [1m3.5.26[22m[39m[90m)[39m
+[get-port] Unable to find an available port (tried 3001 on host "localhost"). Using alternative port 3000.
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3000[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 50ms
+[32m✔[39m Vite server built in 93ms
+[90m[[90mnitro[90m][39m [32m✔[39m Nuxt Nitro server built in 746ms
+[36mℹ[39m Vite client warmed up in 2ms
+
+[43m[30m WARN [39m[49m Browserslist: browsers data (caniuse-lite) is 9 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+
+
+[41m[30m ERROR [39m[49m [unhandledRejection] read ECONNRESET
+
+    [90mat [39mTCP.onStreamRead ([36mnode:internal/stream_base_commons:216:20[39m)
+
+[get-port] Unable to find an available port (tried 3001 on host "localhost"). Using alternative port 3000.
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3000[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 64ms
+[32m✔[39m Vite server built in 99ms
+[90m[[90mnitro[90m][39m [32m✔[39m Nuxt Nitro server built in 811ms
+[36mℹ[39m Vite client warmed up in 2ms
+Browserslist: browsers data (caniuse-lite) is 9 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+[90m│[39m
+[34m●[39m  Restarting Nuxt due to error: [36mError: read ECONNRESET[39m
+[get-port] Unable to find an available port (tried 3001 on host "localhost"). Using alternative port 3000.
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3000[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 71ms
+[32m✔[39m Vite server built in 130ms
+[90m[[90mnitro[90m][39m [32m✔[39m Nuxt Nitro server built in 927ms
+[36mℹ[39m Vite client warmed up in 1ms
+Browserslist: browsers data (caniuse-lite) is 9 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+nuxt.config.ts updated. Restarting Nuxt...
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 69ms
+[32m✔[39m Vite server built in 123ms
+[90m[[90mnitro[90m][39m [32m✔[39m Nuxt Nitro server built in 1493ms
+[36mℹ[39m Vite client warmed up in 6ms
+[90m│[39m
+[34m●[39m  Restarting Nuxt due to error: [36mError: read ECONNRESET[39m
+[get-port] Unable to find an available port (tried 3001 on host "localhost"). Using alternative port 3000.
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3000[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 89ms
+[32m✔[39m Vite server built in 136ms
+[90m│[39m
+[34m●[39m  Restarting Nuxt due to error: [36mError: read ECONNRESET[39m
+[get-port] Unable to find an available port (tried 3001 on host "localhost"). Using alternative port 3000.
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3000[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 139ms
+[32m✔[39m Vite server built in 206ms
+[90m[[90mnitro[90m][39m [32m✔[39m Nuxt Nitro server built in 1314ms
+[36mℹ[39m Vite client warmed up in 2ms
+Browserslist: browsers data (caniuse-lite) is 9 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+[90m│[39m
+[34m●[39m  Restarting Nuxt due to error: [36mError: read ECONNRESET[39m
+[get-port] Unable to find an available port (tried 3001 on host "localhost"). Using alternative port 3000.
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3000[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 86ms
+[32m✔[39m Vite server built in 126ms
+[90m│[39m
+[34m●[39m  Restarting Nuxt due to error: [36mError: read ECONNRESET[39m
+[get-port] Unable to find an available port (tried 3001 on host "localhost"). Using alternative port 3000.
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3000[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 110ms
+[32m✔[39m Vite server built in 129ms
+[90m[[90mnitro[90m][39m [32m✔[39m Nuxt Nitro server built in 1612ms
+[36mℹ[39m Vite client warmed up in 2ms
+[90m│[39m
+[34m●[39m  Restarting Nuxt due to error: [36mError: read ECONNRESET[39m
+[get-port] Unable to find an available port (tried 3001 on host "localhost"). Using alternative port 3000.
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3000[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 84ms
+[32m✔[39m Vite server built in 148ms
+[90m│[39m
+[34m●[39m  Restarting Nuxt due to error: [36mError: read ECONNRESET[39m
+[get-port] Unable to find an available port (tried 3001 on host "localhost"). Using alternative port 3000.
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3000[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 86ms
+[32m✔[39m Vite server built in 156ms
+[90m[[90mnitro[90m][39m [32m✔[39m Nuxt Nitro server built in 1681ms
+[36mℹ[39m Vite client warmed up in 2ms
+[90m│[39m
+[34m●[39m  Restarting Nuxt due to error: [36mError: read ECONNRESET[39m
+[get-port] Unable to find an available port (tried 3001 on host "localhost"). Using alternative port 3000.
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3000[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 88ms
+[32m✔[39m Vite server built in 205ms
+[90m│[39m
+[34m●[39m  Restarting Nuxt due to error: [36mError: read ECONNRESET[39m
+
+[32m  ➜ Local:   [39m [36m[4mhttp://localhost:[1m3001[22m/[24m[39m
+[90m  ➜ Network:  use [37m--host[90m to expose[39m
+
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+[32m✔[39m Vite client built in 64ms
+[32m✔[39m Vite server built in 110ms
+[90m[[90mnitro[90m][39m [32m✔[39m Nuxt Nitro server built in 992ms
+[36mℹ[39m Vite client warmed up in 2ms
+nuxt.config.ts updated. Restarting Nuxt...
+[33m  ➜ DevTools: [39m[2mpress [22m[32mShift[39m[2m + [22m[32mAlt[39m[2m + [22m[32mD[39m[2m in the browser (v3.1.1)[22m
+
+ ELIFECYCLE  Command failed with exit code 1.

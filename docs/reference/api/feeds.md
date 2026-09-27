@@ -4,6 +4,7 @@
 |------|------|------|
 | GET | `/api/feeds` | 获取订阅列表 |
 | GET | `/api/feeds/:feed_id` | 获取单个订阅 |
+| GET | `/api/feeds/board-hit-stats` | 源 × 板块命中统计（只读聚合） |
 | POST | `/api/feeds` | 创建订阅 |
 | PUT | `/api/feeds/:feed_id` | 更新订阅 |
 | DELETE | `/api/feeds/:feed_id` | 删除订阅 |
@@ -27,6 +28,37 @@
 ### GET /api/feeds/:feed_id
 
 单个订阅详情，含文章统计。
+
+### GET /api/feeds/board-hit-stats
+
+源视角只读聚合：窗口内每个订阅源的文章三分解（入板块 / 有标签未入板块 / 未打标两分）与板块分布。全量源一次批量返回（不逐源 N+1）；**只读**：不写库、不触发打标或匹配。
+
+| 参数 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `window` | int | 7 | 统计窗口天数，白名单 `7`/`30`/`90`；非法值（如 `14`/`0`/`abc`）返回 `400`，**不回退默认值** |
+
+返回 `{ "success": true, "data": { "items": [...] } }`，`items` 每条：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `feed_id` | uint | 订阅源 ID |
+| `title` | string | 订阅源名 |
+| `tagging_enabled` | bool | 是否开启打标（关闭的源照常返回，不特殊处理） |
+| `articles` | int | 窗口内文章总数 |
+| `in_board` | int | 命中文章数（去重后） |
+| `tagged_no_board` | int | 有标签但未命中板块 |
+| `untagged_pending` | int | 无标签且打标排队中（存在 pending/leased 任务） |
+| `untagged_settled` | int | 无标签且已处理完（completed/failed/从未入队） |
+| `hit_rate` | float | `in_board / articles`，`articles=0` 时为 0 |
+| `boards` | array | 命中板块分布 `[{board_id, label, articles}]`，空数组非 null |
+
+口径三条硬约束（唯一权威 `openspec/specs/source-board-hit-rate/spec.md`，唯一实现 `internal/tagmanagement/service/sourcestats/`）：
+
+1. **按文章去重**：所有计数以文章为单位去重（`COUNT(DISTINCT id)`，布尔位用 `EXISTS` 不 JOIN），不因一篇文章多标签/多板块重复计数；
+2. **含已归档文章**：窗口内 `archived=true` 的文章计入，**不过滤归档位**（高频源超 `max_articles` 被归档的文章往往是命中主力，排除会得出相反结论）；
+3. **限窗口**：按 `coalesce(pub_date, created_at) >= now - window 天` 界定，不做全量统计（老文章打标覆盖低，全量会把所有老源冤枉成杂音源）。
+
+窗口内 0 篇的源照常返回（`articles=0`、`hit_rate=0`、`boards=[]`）。恒等式：每源 `articles == in_board + tagged_no_board + untagged_pending + untagged_settled`；`boards` 各项之和可大于 `in_board`（同一文章命中多板块各计一次）。
 
 ### POST /api/feeds
 

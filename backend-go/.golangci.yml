@@ -2,6 +2,7 @@ version: "2"
 
 linters:
   enable:
+    - depguard
     - staticcheck
     - revive
     - gosec
@@ -11,6 +12,21 @@ linters:
     - govet
     - ineffassign
 
+  exclusions:
+    rules:
+      # 测试文件豁免（v2 迁移自 v1 issues.exclude-rules；depguard 不在此列——
+      # 各 boundary 规则的 !$test 已排除测试文件）。
+      - path: _test\.go
+        linters: [gosec, errcheck, staticcheck, gocritic, govet]
+      # 豁免留痕（spec backend-package-boundaries「豁免留痕」）：
+      # datasources/wiring→dataenrichment/service 是 datasources↔dataenrichment
+      # 结构性互嵌的一半（另一半 dataenrichment/wire.go→datasources/wiring）；
+      # 改走 dataenrichment root 门面会形成 root 环（wiring→root→wire→wiring）。
+      # change: decouple-backend-domains（2026-09-26 登记）
+      # 解除条件：后续 change 拆解两域互嵌（回调反转/注入）后删除本条豁免。
+      - path: internal/datasources/wiring/(register|tools)\.go
+        linters: [depguard]
+
   settings:
     revive:
       rules:
@@ -19,34 +35,438 @@ linters:
         - name: package-comments
           disabled: true
 
+    depguard:
+      rules:
+        # spec: backend-package-boundaries「业务域之间只许 import 对方 root 门面包」。
+        # 每条规则=一个发起方域：deny 其余 6 域的 handler/service/repository/models
+        # 深路径（含子包，前缀匹配）；域内分层自由；app 装配层 / platform 基础设施 /
+        # models 共享层不匹配任何规则故天然豁免；$test 排除测试文件（对应 spec
+        # Scenario「测试文件豁免深路径」）。
+        # 临时豁免登记处：在对应 deny 项旁加注释（change 名 + 解除条件），
+        # 无注释的豁免视为违规（spec「豁免留痕」）。
+        admin-boundary:
+          files:
+            - "**/internal/admin/**"
+            - "!$test"
+          deny:
+            - pkg: syntopica-backend/internal/reader/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+        reader-boundary:
+          files:
+            - "**/internal/reader/**"
+            - "!$test"
+          deny:
+            - pkg: syntopica-backend/internal/admin/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+        tagmanagement-boundary:
+          files:
+            - "**/internal/tagmanagement/**"
+            - "!$test"
+          deny:
+            - pkg: syntopica-backend/internal/admin/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+        topicgraph-boundary:
+          files:
+            - "**/internal/topicgraph/**"
+            - "!$test"
+          deny:
+            - pkg: syntopica-backend/internal/admin/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+        dataenrichment-boundary:
+          files:
+            - "**/internal/dataenrichment/**"
+            - "!$test"
+          deny:
+            - pkg: syntopica-backend/internal/admin/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+        datasources-boundary:
+          files:
+            - "**/internal/datasources/**"
+            - "!$test"
+          # 豁免留痕（spec「豁免留痕」）：datasources/wiring→dataenrichment/service
+          # 是 datasources↔dataenrichment 结构性互嵌的一半（另一半
+          # dataenrichment/wire.go→datasources/wiring）；改走 dataenrichment root
+          # 门面会形成 root 环（wiring→root→wire→wiring）。解除条件：后续 change
+          # 拆解两域互嵌（如反向注入/回调反转）后删除本豁免。
+          # change: decouple-backend-domains（2026-09-26 登记）
+          deny:
+            - pkg: syntopica-backend/internal/admin/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/discovery/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+        discovery-boundary:
+          files:
+            - "**/internal/discovery/**"
+            - "!$test"
+          deny:
+            - pkg: syntopica-backend/internal/admin/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/admin/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/reader/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/tagmanagement/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/topicgraph/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/dataenrichment/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/handler
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/service
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/repository
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+            - pkg: syntopica-backend/internal/datasources/models
+              desc: "跨域深路径 import 禁止：只许 import 对方 root 门面包（如 syntopica-backend/internal/tagmanagement）；模型引用经 root re-export。见 spec backend-package-boundaries / change decouple-backend-domains。"
+
     errcheck:
       exclude-functions:
         - (net/http.ResponseWriter).Write
         - (*github.com/gin-gonic/gin.Context).JSON
 
+# ============================================================================
+# internal/models 共享模型白名单（唯一权威登记处）
+# 规则：internal/models 只保留被 2 个及以上业务域引用的共享模型
+# （spec backend-package-boundaries「共享模型白名单」）。
+# 单域独占模型必须定义在所属域 models/ 子包；新增/移除白名单项须在
+# 同 change 内更新本注释（模型名 | 消费域 | 理由）。
+# decouple-backend-domains 后基线（18 项 + 1 例外）：
+#   多业务域共享（12）：
+#     AISettings          | admin/dataenrichment/topicgraph… | AI 设置 KV，全域读
+#     Article             | reader/tagmanagement/topicgraph… | 文章主实体
+#     ArticleTopicTag     | reader/tagmanagement/topicgraph  | 文章-标签关联
+#     Category            | reader                            | 与 Feed 组合消费（Feed 共享连带）
+#     EmbeddingQueue      | tagmanagement/admin              | 嵌入队列
+#     Feed                | reader/tagmanagement/discovery…  | 订阅源主实体
+#     FirecrawlJob        | reader/admin(dataenrichment)     | 抓取任务
+#     ReadingBehavior     | admin/reader                     | 阅读行为
+#     SemanticLabel       | tagmanagement/discovery/topicgraph | 语义标签
+#     TagJob              | tagmanagement/admin              | 标签任务队列
+#     TopicTag            | tagmanagement/discovery/topicgraph | 标签主实体
+#     TopicTagRelation    | tagmanagement/topicgraph         | 标签关系
+#   跨 platform 层共享（6）：
+#     AIProvider          | admin + platform/airouter        | 路由配置
+#     AIRoute             | admin + platform/airouter        | 路由配置
+#     AIRouteProvider     | admin + platform/airouter        | 路由配置
+#     AICallLog           | admin + platform/airouter        | 调用日志
+#     AIEmbeddingCache    | tagmanagement + platform/airouter | 嵌入缓存
+#     Notification        | admin/topicgraph + platform/notification | 通知
+#   例外（非 GORM 表，登记留痕）：
+#     FeedStats           | reader 独占；Feed.ToDict 签名耦合（方法须定义在
+#                          | Feed 所在包），非 GORM 模型不触发「单域模型
+#                          | 不落在 models」场景，暂留并以此注释为准。
+# ============================================================================
+
 run:
   tests: false
 
-issues:
-  max-issues-per-linter: 50
-  max-same-issues: 5
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
-        - staticcheck
-        - gocritic
-        - govet
-        - revive
-        - unused
-        - ineffassign
 
 formatters:
   enable:
     - gofmt
   exclusions:
-    rules:
-      - path: _test\.go
-        formatters:
-          - gofmt
+    paths:
+      - _test\.go

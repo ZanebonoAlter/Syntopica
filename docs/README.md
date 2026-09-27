@@ -99,4 +99,4 @@ Syntopica 全部文档入口。
 - flow 五段式 + 业务约束归属见 `reference/开发执行规范.md` §0.5
 - SDD 文档流转（archive → reference，archive 即家）见 §12
 - 归档门禁（验证节 + `doc-impact.sh verify` + 导航层死链检查）见 §11.4
-- 死链由 `scripts/check-standards.sh` G 段校验
+- 死链由 `scripts/harness/check-standards.sh` G 段校验

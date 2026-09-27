@@ -2,7 +2,12 @@
 import { onMounted, ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import SchedulerStatusPanel from '~/components/dialog/SchedulerStatusPanel.vue'
-import { apiClient } from '~/api/client'
+import { useAIAdminApi } from '~/api'
+
+// 端点经 aiAdmin 封装（endpoint 不带 /api 前缀，由 apiClient base 拼接；
+// restructure-settings-navigation D6 修复：原手写 '/api/settings' 在任何
+// apiBase 模式下都会双拼成 /api/api/* 404，导致保存必败且静默显示默认值）。
+const { getSettings, saveSettings: saveAISettings } = useAIAdminApi()
 
 const dailyReportTime = ref('21:00')
 const savingTime = ref(false)
@@ -10,7 +15,7 @@ const timeSaved = ref(false)
 const timeError = ref('')
 
 onMounted(async () => {
-  const res = await apiClient.get<Record<string, unknown>>('/api/settings')
+  const res = await getSettings()
   if (res.success && res.data) {
     const val = res.data.daily_report_time
     if (typeof val === 'string' && val.length > 0) {
@@ -25,7 +30,7 @@ async function saveDailyReportTime() {
   timeError.value = ''
   timeSaved.value = false
 
-  const res = await apiClient.post('/api/settings', { daily_report_time: dailyReportTime.value })
+  const res = await saveAISettings({ daily_report_time: dailyReportTime.value })
   savingTime.value = false
 
   if (res.success) {

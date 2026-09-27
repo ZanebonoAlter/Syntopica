@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="editorial">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 · mermaid 图容器三方案对比 — render-mermaid-diagrams</title>
+<style>
+  /* ===== 真实主题令牌（摘自 front/app/assets/css/main.css，editorial/dark 双套） ===== */
+  :root {
+    --color-bg-base:     #faf7f2;
+    --color-bg-elevated: #f5f0e6;
+    --color-bg-sunken:   #e8dfd1;
+    --color-text-primary:   #1a1a1a;
+    --color-text-secondary: #5a5a5a;
+    --color-text-muted:     #8a8a8a;
+    --color-border-subtle: rgba(26, 26, 26, 0.08);
+    --color-border-medium: rgba(26, 26, 26, 0.15);
+    --color-border-strong: rgba(26, 26, 26, 0.25);
+    --color-accent: #d94a4a;
+    --color-warning: #c4883c;
+    --font-serif-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", sans-serif;
+  }
+  [data-theme="dark"] {
+    --color-bg-base:     #080c12;
+    --color-bg-elevated: rgba(17, 27, 38, 0.98);
+    --color-bg-sunken:   #0e161d;
+    --color-text-primary:   rgba(255, 255, 255, 0.9);
+    --color-text-secondary: rgba(255, 255, 255, 0.6);
+    --color-text-muted:     rgba(255, 255, 255, 0.35);
+    --color-border-subtle: rgba(255, 255, 255, 0.06);
+    --color-border-medium: rgba(255, 255, 255, 0.10);
+    --color-border-strong: rgba(255, 255, 255, 0.18);
+    --color-accent: rgba(240, 138, 75, 0.85);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: var(--color-bg-base); }
+
+  /* ===== 阅读滚动区：暖米渐变（editorial）/ 深空（dark），还原 ArticleContent.css ===== */
+  body {
+    font-family: var(--font-body);
+    color: var(--color-text-primary);
+    background: linear-gradient(180deg, var(--color-bg-base) 0%, var(--color-bg-elevated) 55%, var(--color-bg-sunken) 100%);
+    min-height: 100vh;
+  }
+
+  /* ===== 工具条（仅原型用，非产品 UI） ===== */
+  .proto-bar {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 20px;
+    background: var(--color-bg-sunken);
+    border-bottom: 1px solid var(--color-border-medium);
+    font-size: 13px; color: var(--color-text-secondary);
+  }
+  .proto-bar strong { color: var(--color-text-primary); }
+  .proto-bar button {
+    padding: 6px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--color-border-medium);
+    background: transparent; color: var(--color-text-primary); font-size: 13px;
+  }
+  .proto-bar button:hover { border-color: var(--color-border-strong); }
+
+  /* ===== 阅读列（reader 语义：max 840px 居中） ===== */
+  .reading-col { max-width: 840px; margin: 0 auto; padding: 2.6rem 2rem 4.5rem; }
+
+  .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 1rem; }
+  .kicker span { color: var(--color-accent); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; }
+  .kicker::after { content: ""; flex: 0 0 40px; height: 2px; background: var(--color-accent); }
+  h1 { font-family: var(--font-serif-display); font-size: 2rem; font-weight: 700; line-height: 1.25; margin-bottom: 0.8rem; }
+  .meta { font-size: 0.82rem; color: var(--color-text-muted); margin-bottom: 2.2rem; }
+  .prose { font-size: 1.02rem; line-height: 1.85; color: var(--color-text-primary); }
+  .prose p { margin: 0 0 1.1rem; }
+  .summary-h {
+    font-family: var(--font-serif-display); font-size: 1.35rem; font-weight: 700;
+    margin: 2.6rem 0 1.1rem; padding-top: 1.6rem; border-top: 1px solid var(--color-border-subtle);
+  }
+  .sec-label {
+    display: inline-block; margin: 3.2rem 0 0.4rem; padding: 2px 10px;
+    font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em;
+    color: var(--color-text-secondary);
+    border: 1px solid var(--color-border-medium); border-radius: 999px;
+  }
+  .verdict { font-size: 0.88rem; color: var(--color-text-secondary); line-height: 1.7; margin: 0.7rem 0 0; }
+  .verdict b { color: var(--color-text-primary); }
+
+  /* ===== 代码块（既有样式：恒定深底 #1f2430，双主题不变） ===== */
+  pre.code {
+    margin: 1.4rem 0; padding: 1rem 1.1rem; overflow-x: auto;
+    border-radius: 0.9rem; border: 1px solid rgba(26, 26, 26, 0.12);
+    background: #1f2430; color: #f6efe4;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 0.85rem; line-height: 1.6;
+  }
+
+  /* ================================================================
+     mermaid 图容器三方案（本次对比对象）
+     ================================================================ */
+
+  /* 方案 A：裸图融合 —— SVG 直接入文流（同图片待遇），无边框无底色 */
+  .mermaid-block.scheme-a { margin: 1.5rem 0; text-align: center; }
+  .mermaid-block.scheme-a svg { max-width: 100%; height: auto; }
+
+  /* 方案 B：细分隔线轻容器 —— 上下 hairline + 小字图题，去卡片化合规 */
+  .mermaid-block.scheme-b {
+    margin: 1.7rem 0; padding: 1.2rem 0.4rem 0.9rem; text-align: center;
+    border-top: 1px solid var(--color-border-subtle);
+    border-bottom: 1px solid var(--color-border-subtle);
+    overflow-x: auto;
+  }
+  .mermaid-block.scheme-b svg { max-width: 100%; height: auto; }
+  .mermaid-block .fig-cap {
+    display: block; margin-top: 0.6rem;
+    font-size: 0.75rem; color: var(--color-text-muted); letter-spacing: 0.04em;
+  }
+
+  /* 方案 C：恒定深底容器 —— 沿用代码块深底，图固定 dark 主题渲染 */
+  .mermaid-block.scheme-c {
+    margin: 1.5rem 0; padding: 1.2rem 1rem 0.9rem; text-align: center;
+    border-radius: 0.9rem; border: 1px solid rgba(26, 26, 26, 0.12);
+    background: #1f2430; overflow-x: auto;
+  }
+  .mermaid-block.scheme-c .fig-cap { color: #829ab1; }
+  .mermaid-block.scheme-c svg { max-width: 100%; height: auto; }
+
+  /* ===== SVG 图元配色：方案 A/B 跟随页面主题令牌 ===== */
+  .mmd .node rect { fill: var(--color-bg-hover, rgba(255,255,255,0.65)); }
+  [data-theme="editorial"] .mmd .node rect { fill: rgba(255, 255, 255, 0.72); }
+  [data-theme="dark"] .mmd .node rect { fill: rgba(255, 255, 255, 0.07); }
+  .mmd .node rect { stroke: var(--color-border-strong); stroke-width: 1.2; }
+  .mmd .node polygon { fill: rgba(255, 255, 255, 0.55); stroke: var(--color-border-strong); stroke-width: 1.2; }
+  [data-theme="dark"] .mmd .node polygon { fill: rgba(255, 255, 255, 0.05); }
+  .mmd .edge-path { fill: none; stroke: var(--color-text-muted); stroke-width: 1.4; }
+  .mmd .edge-label { font-size: 12px; fill: var(--color-text-secondary); paint-order: stroke; stroke: var(--color-bg-elevated); stroke-width: 4px; }
+  .mmd text.nlabel { font-size: 13px; fill: var(--color-text-primary); font-family: var(--font-body); }
+  /* 方案 C：图固定 dark 主题（不受页面主题影响） */
+  .mmd-dark .node rect, .mmd-dark .node polygon { fill: #2a3242; stroke: #829ab1; stroke-width: 1.2; }
+  .mmd-dark .edge-path { stroke: #829ab1; }
+  .mmd-dark .edge-label { fill: #9fb3c8; paint-order: stroke; stroke: #1f2430; }
+  .mmd-dark text.nlabel { fill: #f6efe4; }
+
+  /* ===== 渲染失败降级示例 ===== */
+  .mermaid-error-hint {
+    margin: -0.6rem 0 1.4rem; padding-left: 1.1rem;
+    font-size: 0.78rem; color: var(--color-warning);
+  }
+
+  /* 超宽图滚动示例容器 */
+  .wide-wrap { margin: 1.5rem 0; overflow-x: auto; padding: 0.6rem 0; border-top: 1px solid var(--color-border-subtle); border-bottom: 1px solid var(--color-border-subtle); }
+  .wide-wrap svg { min-width: 1100px; }
+</style>
+</head>
+<body>
+
+<div class="proto-bar">
+  <div><strong>原型（可丢弃）</strong> · mermaid 图容器三方案对比 · 看完在对话里说选 A / B / C（可混搭，如「B 的容器 + C 的深底」）</div>
+  <button onclick="toggleTheme()">切换主题（editorial / dark）</button>
+</div>
+
+<div class="reading-col">
+  <div class="kicker"><span>AI 总结样例</span></div>
+  <h1>基于 Firecrawl 的文章处理链设计</h1>
+  <div class="meta">订阅源 · 2026-09-19 · 以下 mermaid 块来自 LLM 整理稿</div>
+
+  <div class="prose">
+    <p>这是一篇普通文章的阅读语境还原：暖米渐变背景、840px 阅读列、衬线标题。假设 AI 整理稿小节里 LLM 产出了一张流程图——现在它渲染为「源代码」，本原型对比三种容器方案把它变成图。</p>
+    <p>往下滚动依次是方案 A、B、C，同一张图、同一段上下文，右上角可切换 editorial / dark 主题看双主题效果。</p>
+  </div>
+
+  <h2 class="summary-h">整理稿：处理链全景</h2>
+  <div class="prose"><p>文章从订阅到呈现经过五道工序，其中抓取完整度决定是否重试：</p></div>
+
+  <!-- ── 方案 A ─────────────────────────────────────────── -->
+  <span class="sec-label">方案 A · 裸图融合</span>
+  <div class="mermaid-block scheme-a" data-diagram="pipeline"></div>
+  <p class="verdict"><b>取舍：</b>图与正文完全一体，最「编辑排版」；无边框无底，图与文字直接对话。缺点是图与正文缺视觉分隔，密集长文里图的存在感弱，深浅主题都依赖 mermaid 主题重绘。</p>
+
+  <!-- ── 方案 B ─────────────────────────────────────────── -->
+  <span class="sec-label">方案 B · 细分隔线轻容器</span>
+  <div class="mermaid-block scheme-b" data-diagram="pipeline">
+    <span class="fig-cap">图 1 · 文章处理链（AI 整理稿生成）</span>
+  </div>
+  <p class="verdict"><b>取舍：</b>上下 hairline 与正文形成呼吸分区，图题提供「这是什么图」的锚点；去卡片化红线（禁边框+投影）完全合规，与现有引用块/分隔线语言同族。缺点是比 A 多一层视觉标记，图题文案需要约定（如「图 N ·」序号或直接省略）。</p>
+
+  <!-- ── 方案 C ─────────────────────────────────────────── -->
+  <span class="sec-label">方案 C · 恒定深底容器</span>
+  <div class="mermaid-block scheme-c" data-diagram="pipeline-dark">
+    <span class="fig-cap">图 1 · 文章处理链（AI 整理稿生成）</span>
+  </div>
+  <p class="verdict"><b>取舍：</b>与既有代码块（恒定 #1f2430 深底）视觉连续——「代码和图都是特殊内容块」的心智一致；图固定 dark 主题渲染，<b>主题切换零重绘成本</b>，实现最省。缺点是 light 主题下多出一个深色块，与暖米阅读底对比强烈；圆角深底块已接近「卡片」观感，需注意去卡片化红线的解读空间。</p>
+
+  <!-- ── 失败降级 ───────────────────────────────────────── -->
+  <span class="sec-label">边界 · 渲染失败降级</span>
+  <pre class="code">graph TD; A-&gt;[broken syntax</pre>
+  <div class="mermaid-error-hint">⚠ 图渲染失败：mermaid 语法无效（第 1 行）。已保留源码，可复制排查。</div>
+  <p class="verdict"><b>约定：</b>LLM 产出的 mermaid 语法经常「看着像但不合法」，渲染失败时保留源码块 + 一行 warning 色提示，绝不白屏、绝不吞内容。</p>
+
+  <!-- ── 超宽图 ─────────────────────────────────────────── -->
+  <span class="sec-label">边界 · 超宽图横向滚动</span>
+  <div class="wide-wrap" data-diagram="chain"></div>
+  <p class="verdict"><b>约定：</b>超宽图容器 <code>overflow-x: auto</code> 兜底，横向可滚、不破 840px 列版式（此示例以方案 B 容器示意，实际随选定方案走）。</p>
+</div>
+
+<script>
+/* ── 主题切换 ── */
+function toggleTheme() {
+  const el = document.documentElement;
+  el.dataset.theme = el.dataset.theme === 'dark' ? 'editorial' : 'dark';
+}
+
+/* ── 手绘 SVG（静态原型替代 mermaid 运行时渲染，观感对齐 mermaid 默认主题的几何形态） ── */
+function flowSvg(cls) {
+  const node = (x, y, w, h, label) =>
+    `<g class="node"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="9"/><text class="nlabel" x="${x + w/2}" y="${y + h/2 + 4.5}" text-anchor="middle">${label}</text></g>`;
+  const edge = (d) => `<path class="edge-path" d="${d}" marker-end="url(#arr)"/>`;
+  const elabel = (x, y, t) => `<text class="edge-label" x="${x}" y="${y}" text-anchor="middle">${t}</text>`;
+  return `<svg class="mmd ${cls}" width="640" height="520" viewBox="0 0 640 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="文章处理链流程图">
+    <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="edge-path" style="fill:context-stroke"/></marker></defs>
+    ${node(225, 18, 190, 42, 'RSS 拉取')}
+    ${edge('M320,60 L320,96')}
+    ${node(225, 100, 190, 42, 'Firecrawl 抓正文')}
+    ${edge('M320,142 L320,168')}
+    <g class="node"><polygon points="320,172 430,212 320,252 210,212"/>
+      <text class="nlabel" x="320" y="216.5" text-anchor="middle">正文完整?</text></g>
+    ${elabel(338, 276, '是')}${edge('M320,252 L320,288')}
+    ${node(225, 292, 190, 42, 'AI 总结')}
+    ${edge('M320,334 L320,370')}
+    ${node(225, 374, 190, 42, '打标签')}
+    ${edge('M320,416 L320,452')}
+    ${node(225, 456, 190, 42, '阅读页呈现')}
+    ${elabel(148, 236, '否')}
+    ${edge('M210,212 C130,212 130,170 130,121 L221,121')}
+  </svg>`;
+}
+
+function chainSvg() {
+  const names = ['RSS 拉取', '抓正文', '正文清洗', 'AI 总结', '打标签', '向量化', '偏好画像'];
+  let s = `<svg class="mmd" width="1180" height="76" viewBox="0 0 1180 76" xmlns="http://www.w3.org/2000/svg">`;
+  names.forEach((n, i) => {
+    const x = 10 + i * 170;
+    s += `<g class="node"><rect x="${x}" y="18" width="140" height="40" rx="9"/><text class="nlabel" x="${x + 70}" y="42.5" text-anchor="middle">${n}</text></g>`;
+    if (i < names.length - 1) s += `<path class="edge-path" d="M${x + 140},38 L${x + 166},38" marker-end="url(#arr)"/>`;
+  });
+  return s + `</svg>`;
+}
+
+document.querySelectorAll('[data-diagram]').forEach(el => {
+  const kind = el.dataset.diagram;
+  el.insertAdjacentHTML('afterbegin', kind === 'chain' ? chainSvg() : flowSvg(kind === 'pipeline-dark' ? 'mmd-dark' : ''));
+});
+</script>
+</body>
+</html>

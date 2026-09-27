@@ -1,0 +1,32 @@
+# Syntopica 同源反代部署入口 · dev 模式变体
+#
+# 与同目录默认 Caddyfile 的唯一区别：前端不构建静态产物，直接反代 Pi 上跑着的
+# Nuxt dev server（:3000）。适合「在树莓派上 pnpm dev」的日常开发/试用形态。
+#
+# 用法（Pi 上）：
+#   1. 前端带相对 base 重启：cd ~/syntopica/front && NUXT_PUBLIC_API_BASE=/api pnpm dev
+#   2. CADDYFILE=./Caddyfile.dev docker compose -f deploy/same-origin/docker-compose.yml up -d
+#   3. 浏览器开 http://<pi-ip>/（不是 :3000）
+#
+# 注意：dev server 只监听本机时也可（Caddy 走 host 网络访问 127.0.0.1:3000）。
+# Vite HMR 的 WebSocket 同样经 Caddy 转发，reverse_proxy 透明处理 upgrade。
+{
+	admin off
+	# 局域网 IP 访问、没有域名 → 关掉自动 HTTPS。
+	auto_https off
+}
+
+:80 {
+	encode gzip
+
+	# ── 后端：四条路径转发到 5100（与默认 Caddyfile 一致）──
+	@backend path /api /api/* /ws /ws/* /icons /icons/* /health
+	handle @backend {
+		reverse_proxy 127.0.0.1:5100
+	}
+
+	# ── 前端：dev server（含 Vite HMR）──
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}

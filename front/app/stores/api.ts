@@ -145,8 +145,8 @@ export const useApiStore = defineStore('api', () => {
         refreshError: feed.refresh_error,
         lastRefreshAt: feed.last_refresh_at,
         articleSummaryEnabled: feed.article_summary_enabled ?? false, // 后端 gorm default:false
-        completionOnRefresh: feed.completion_on_refresh,
-        maxCompletionRetries: feed.max_completion_retries,
+        completionOnRefresh: feed.completion_on_refresh ?? false, // unify-feed-summary-toggles：默认关，回退统一 false
+        maxCompletionRetries: feed.max_completion_retries ?? 3,
         firecrawlEnabled: feed.firecrawl_enabled,
         taggingEnabled: feed.tagging_enabled,
       }))

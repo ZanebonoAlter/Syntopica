@@ -85,6 +85,8 @@
 
 扫描 SHALL 抽成无副作用的纯函数（输入 tasks.md 文本与 change 目录文件列表，输出违例列表）供冒烟测试；违例列表与警告文案 SHALL NOT 影响检查①-④ 的既有 block 语义；检查⑤自身异常 SHALL fail-open（沿用本扩展既有异常策略，console.warn + 留痕，不阻断归档）。
 
+违例 warn 的投递 SHALL 为**边沿触发**（同会话同指纹至多一轮）：指纹取自本次违例文案列表的内容摘要，同会话内违例集合未变的重试归档尝试 MUST NOT 重复投递同一批 warning；违例集合变化（新增/消失关键词、补齐或删除用例文档）时视同首见重新投递；上一次投递过、本次扫描零违例时 SHALL 输出一行「已清零」收尾并清除指纹态。指纹态 MUST 与会话生命周期绑定（会话边界清零、session compact 后重发一次），MUST NOT 跨会话复用。`policy.decision(action=warn, reasonCode=acceptance-wording)` 记账与投递走同一边沿（同指纹会话内至多一轮）。
+
 禁用词表与关键词表以 `shared/test-design.md` 为权威源，spec-gate 内置同表常量并注明同步义务（表内容稳定，双源漂移风险可忽略）。
 
 #### Scenario: 无违例静默放行
@@ -114,6 +116,21 @@
 - **WHEN** 命令带 `--force` 或 `SPEC_GATE_BYPASS=1`
 - **THEN** 检查⑤ 随既有豁免通道放行，SHALL NOT 追加任何 block
 
+#### Scenario: 同指纹重试不重复投递
+
+- **WHEN** 同一会话内对同一 change 连续多次归档尝试，tasks.md 违例集合未变（指纹相同）
+- **THEN** 仅首次尝试投递该批 warning 与对应 `acceptance-wording` 记账，后续尝试零重复 warning（检查①-④ 结果不受影响）
+
+#### Scenario: 违例集合变化重新投递
+
+- **WHEN** 前一次尝试已投递，本次尝试违例集合变化（如新增关键词命中或已补 `test-cases*.md` 使 ⑤a 消失）
+- **THEN** 本次按新指纹重新投递剩余违例的 warning 并再记账
+
+#### Scenario: 违例清零收尾一行
+
+- **WHEN** 前一次尝试已投递，本次扫描零违例（如已补白盒用例文档且措辞已修）
+- **THEN** 输出一行「已清零」收尾提示并清除指纹态
+
 ### Requirement: 前后端标准挂接与索引
 
 `standard/backend/testing.md` 与 `standard/frontend/testing.md` SHALL 各含「用例设计」小节：引用 `shared/test-design.md` 为权威源，并补各自端的用例分层判据（后端：纯函数 → `*_unit_test.go` 无 DB / repository 与迁移 → testcontainer PG / handler → 轻量；前端：纯函数 → 单测 / 组件行为 → Vitest 组件测试 / 流程 → opencli）。`docs/reference/constraints-index.md` 执行规范表 SHALL 新增 test-design 行。挂接 SHALL NOT 改动两份 testing.md 的既有权威内容（怎么跑 / DSN 红线 / 禁 SQLite 等原样保留）。
@@ -137,7 +154,7 @@
 
 涉及 MODIFIED / REMOVED Requirements 的 change（改契约）SHALL 在其 test-cases.md 含「继承与调整」表：每行 = 旧 Scenario × 处置（继承照跑 / 改语义改断言 / 废止删除留痕）× 旧测试文件 × 动作；验收锚点为表逐行有处置（跑绿 ≠ 对，旧测试可能仍在断言旧契约）。纯新增 capability 的 change SHALL 豁免（无旧节拍可继承，不报缺失）。
 
-仓库 SHALL 提供 `scripts/test-assets.sh <capability>` 反向索引（只读只判不猜）：①主 specs 该 capability 的 Requirement/Scenario 现状清单；②archive 中含该 capability delta 且含 test-cases*.md 的历史 change；③这些 change 的 tasks.md 验证节 Scenario→测试文件映射重建。查询不存在的 capability SHALL 退出码非 0 且如实提示（不猜测）。
+仓库 SHALL 提供 `scripts/harness/test-assets.sh <capability>` 反向索引（只读只判不猜）：①主 specs 该 capability 的 Requirement/Scenario 现状清单；②archive 中含该 capability delta 且含 test-cases*.md 的历史 change；③这些 change 的 tasks.md 验证节 Scenario→测试文件映射重建。查询不存在的 capability SHALL 退出码非 0 且如实提示（不猜测）。
 
 「JIT 注入摘要」节 SHALL 含回归走查提醒（触发条件 + 继承表 + test-assets.sh 指引）。
 
@@ -154,7 +171,7 @@
 
 #### Scenario: 反向索引三段输出
 
-- **WHEN** 对存在历史的主 capability 执行 `bash scripts/test-assets.sh <capability>`
+- **WHEN** 对存在历史的主 capability 执行 `bash scripts/harness/test-assets.sh <capability>`
 - **THEN** SHALL 输出主 specs 现状节拍 + archive 命中 change 清单 + 历史映射重建三段，退出码 0
 
 #### Scenario: 查询不存在即报错

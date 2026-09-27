@@ -42,26 +42,30 @@
 | `id` | BIGSERIAL | PK | 主键 |
 | `persistent_topic_id` | BIGINT | NULL; index（board 档为 NULL） | 持久话题 ID（board-level-deep-analysis 迁移 `20260826_0001` 起 NOT NULL 放宽） |
 | `analysis_scope` | VARCHAR(20) | NOT NULL; DEFAULT 'topic'（迁移 `20260826_0001`） | 分析档位：`topic`=单泳道 / `board`=版块级 |
-| `result_kind` | VARCHAR(32) | NOT NULL; DEFAULT 'topic_analysis'（迁移 `20260828_0001`） | 结果种类：`topic_analysis` / `board_brief`（版块简报）/ `board_investigation`（问题调查）/ `legacy_board_analysis`（v1 论文式存量回填）；CHECK `chk_topic_enrichment_result_kind` + 形状约束见下 |
+| `result_kind` | VARCHAR(32) | NOT NULL; DEFAULT 'topic_analysis'（迁移 `20260828_0001`） | 结果种类：`topic_analysis` / `board_brief`（版块简报）/ `board_investigation`（问题调查）/ `legacy_board_analysis`（v1 论文式存量回填）/ `signal_report`（板块信号解读报告，迁移 `20260922_0001`）；CHECK `chk_topic_enrichment_result_kind` + 形状约束见下 |
 | `semantic_board_id` | BIGINT | NULL; index; 复合唯一 `uq_topic_enrichment_result_id_board (id, semantic_board_id)`（复合 FK 靶） | 版块级 result 所属板块（board 档必填，topic 档 NULL） |
 | `parent_result_id` | BIGINT | NULL（`*uint`）；复合 FK 见下 | 调查的父简报 result ID（仅 board_investigation 非空） |
 | `question_key` | VARCHAR(64) | NULL（`*string`）；CHECK `~ '^[0-9a-f]{64}$'` | 调查问题的规范化 hash（trim+空白折叠后 SHA-256；generated/custom 同算法；仅 board_investigation 非空） |
+| `granularity` | VARCHAR(10) | NULL；仅 `signal_report` 非空且 ∈ `month\|year`（CHECK 强制）；部分索引见下 | 报告目标周期粒度（迁移 `20260922_0001`；**旧 kind 行保持 NULL 不回填**） |
+| `period` | VARCHAR(12) | NULL；仅 `signal_report` 非空（month=`^[0-9]{4}-(0[1-9]\|1[0-2])$` / year=`^[0-9]{4}$` 且 2000~2100，CHECK 强制） | 报告目标周期（同上） |
+| `source_signal_id` | BIGINT | NULL；仅 `signal_report` 非空；部分索引 `idx_topic_enrichment_result_source_signal`；复合 FK 见下 | 报告所属候选（`board_signal_candidate.id`；同候选重新研究追加新版本行，不覆盖） |
 | `evolution_assessment` | TEXT | — | ⚠️ causal-analysis-agent 起弃用（旧演进定位产物）；字段保留对齐后端 JSON，新分析产出存 `sectors.{form,lens,analysis}` |
-| `sectors` | JSONB | — | 复合对象，按 `result_kind` 多态：topic 档 `{form, lens, analysis}`；`board_brief` 载 `{summary, observations, relationships, uncertainties, research_questions, lane_refs, degraded?, retry_reason?}`；`board_investigation` 载 `{question, hypotheses, conclusion, evidence_chain, lane_refs, method_refs, retry_reason?}`（lane evidence 持久化统一使用十进制字符串 `ref`；provider 的安全数值 `lane_id` 别名只在 parser 内归一，不落双字段）；legacy 原样透传 v1 五字段。免 DDL 复用列 |
+| `sectors` | JSONB | — | 复合对象，按 `result_kind` 多态：topic 档 `{form, lens, analysis}`；`board_brief` 载 `{summary, observations, relationships, uncertainties, research_questions, lane_refs, degraded?, retry_reason?}`；`board_investigation` 载 `{question, hypotheses, conclusion, evidence_chain, lane_refs, method_refs, retry_reason?}`（lane evidence 持久化统一使用十进制字符串 `ref`；provider 的安全数值 `lane_id` 别名只在 parser 内归一，不落双字段）；`signal_report` 载 `{schema_version:2, signal_snapshot, report:{title, sections(四段), charts(0~3)}, appendix:{calls, calculations, gaps}, generation_meta}`（端点契约见 [api/board-signals.md](../../api/board-signals.md)）；legacy 原样透传 v1 五字段。免 DDL 复用列 |
 | `causal_chain` | TEXT | — | ⚠️ causal-analysis-agent 起弃用（旧演进定位产物）；字段保留对齐后端 JSON |
 | `tool_calls` | JSONB | — | 工具调用记录（名/参数/返回摘要/耗时；调查档为共享研究循环完整有序记录） |
 | `input_snapshot` | JSONB | — | 编排元数据（读的 context 层 / as_of / section 范围 / 引用 review ID；调查档含父简报投影/方法选择 trace/假设重试码/研究覆盖，以及综合 generation 的 `attempts`/`retry_reason`/窄修复 `repair_reason=terminal_root_delimiter` 等） |
 | `session_id` | VARCHAR(120) | — | 编排分组键，关联 `ai_call_logs.session_id` |
 | `created_at` | TIMESTAMPTZ | — | 创建时间 |
 
-**result_kind 约束体系（迁移 `20260828_0001`，全库唯三真实 DB FK 之一在此）**：
+**result_kind 约束体系（迁移 `20260828_0001`，全库唯三真实 DB FK 之一在此；`20260922_0001` 扩展 signal_report 分支）**：
 
-- **形状约束** `chk_topic_enrichment_result_parent_shape`：`topic_analysis` = scope topic + topic owner + 无父无 key；`board_brief`/`legacy_board_analysis` = scope board + board owner + 无父无 key；`board_investigation` = scope board + board owner + 父非空 + 64-hex key 非空（owner 互斥，scope 与 owner 不符的脏行无法落库）。
+- **形状约束** `chk_topic_enrichment_result_parent_shape`：`topic_analysis` = scope topic + topic owner + 无父无 key；`board_brief`/`legacy_board_analysis` = scope board + board owner + 无父无 key + 三周期列全 NULL；`board_investigation` = scope board + board owner + 父非空 + 64-hex key 非空 + 三周期列全 NULL；`signal_report` = scope board + board owner + 无父无 key + `granularity/period/source_signal_id` **全部非空**（NULL-aware 显式拒绝，CHECK 的 NULL 传播不能隐式拦截）+ 周期形状/范围校验（owner 互斥，scope 与 owner 不符的脏行无法落库）。
 - **复合 FK** `fk_topic_enrichment_result_parent_board (parent_result_id, semantic_board_id) → (id, semantic_board_id)` `ON DELETE RESTRICT`（靶靠唯一约束 `uq_topic_enrichment_result_id_board` 存在）：父必存在且同板块。
+- **复合 FK** `fk_topic_enrichment_result_signal_candidate (source_signal_id, semantic_board_id, granularity, period) → board_signal_candidate(id, semantic_board_id, granularity, period)` `ON DELETE RESTRICT`（迁移 `20260922_0001`；MATCH SIMPLE：NULL `source_signal_id` 的非 signal 行不在 FK 范围内）：signal_report 的 owner/周期与候选钉死一致。
 - **触发器** `trg_validate_topic_enrichment_result_parent`（`BEFORE INSERT OR UPDATE OF result_kind, parent_result_id, semantic_board_id`，函数 `validate_topic_enrichment_result_parent`）：调查父必须是同板块 `board_brief`；有子调查的 brief 不得改 kind/换板块——直写 SQL/GORM 也被拦。
-- **索引**：`idx_topic_enrichment_result_board_kind_id (semantic_board_id, result_kind, id DESC)`（kind 列表/上一份同 kind 查询）；`idx_topic_enrichment_result_parent_question_id (parent_result_id, question_key, id DESC)` partial `WHERE parent_result_id IS NOT NULL`（同父同题重跑对比）。
-- **回填与拒绝**：升级时旧 board 行回填 `legacy_board_analysis`、旧 topic 行回填 `topic_analysis`，sectors JSON 原样不动；存在 mixed/missing owner 行或非法调查父行则**拒绝迁移**（不掩盖数据损坏）；迁移仅向上（无 Down）。
-- `EffectiveResultKind`（代码层兼容）：空 kind 的内存历史 fixture 按 scope 兑底（board→legacy，topic→topic_analysis），与 DB 默认一致。
+- **索引**：`idx_topic_enrichment_result_board_kind_id (semantic_board_id, result_kind, id DESC)`（kind 列表/上一份同 kind 查询）；`idx_topic_enrichment_result_parent_question_id (parent_result_id, question_key, id DESC)` partial `WHERE parent_result_id IS NOT NULL`（同父同题重跑对比）；`idx_topic_enrichment_result_signal_board_period (semantic_board_id, granularity, period, id DESC)` partial `WHERE result_kind='signal_report'` + `idx_topic_enrichment_result_source_signal (source_signal_id, id DESC)` partial `WHERE source_signal_id IS NOT NULL`（迁移 `20260922_0001`，board-period-id 列表与候选版本序列）。
+- **回填与拒绝**：升级时旧 board 行回填 `legacy_board_analysis`、旧 topic 行回填 `topic_analysis`，sectors JSON 原样不动；signal_report 三新列**不回填**（旧行 NULL，不猜历史周期归属，DB-4）；存在 mixed/missing owner 行或非法调查父行则**拒绝迁移**（不掩盖数据损坏）；迁移仅向上（无 Down）。两条具名 CHECK 在 `20260922_0001` 中 DROP+re-ADD（PostgreSQL CHECK 无增量 alter），重跑前先检查旧行违规并显式失败。
+- `EffectiveResultKind`（代码层兼容）：空 kind 的内存历史 fixture 按 scope 兑底（board→legacy，topic→topic_analysis），与 DB 默认一致；`signal_report` **不入** legacy `isBoardResultKind`（旧 brief/investigation API 永不浮出信号报告）。
 
 ### 10.4 topic_enrichment_review（数据增强认知演进反思）
 
@@ -213,6 +217,65 @@ v1 方法论画像库（如「内部看美国」分析基因），**已退役**�
 
 **关联**：`semantic_labels.relation_auto_discovery_enabled` BOOLEAN DEFAULT false——板级自动发现开关（同迁移加列）。
 
+### 10.11 board_signal_discovery（板块信号发现批次，board-signal-reports）
+
+一次手动「发现信号」的批次。**仅成功批次落库（含 0 条空批次），批次+候选同事务写入，无半批**；后续发现追加新批次，不覆盖旧候选/旧报告。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK；复合唯一 `uq_board_signal_discovery_id_owner (id, semantic_board_id, granularity, period)`（复合 FK 靶，迁移 `20260922_0001`） | 主键 |
+| `semantic_board_id` | BIGINT | NOT NULL; 复合索引 `idx_board_signal_discovery_board_period` 首列 | 所属板块 |
+| `granularity` | VARCHAR(10) | NOT NULL; 同上复合索引 | `month` / `year`（week/all 代码层拒绝） |
+| `period` | VARCHAR(12) | NOT NULL; 同上复合索引 | `YYYY-MM` / `YYYY`（服务端业务时区校验，未来周期 400 无 job） |
+| `analysis_mode` | VARCHAR(16) | NOT NULL DEFAULT 'current' | `current`（当前周期，cutoff=job started_at）/ `retrospective`（历史周期，cutoff=周期结束；事后回顾，不声称 point-in-time 回测） |
+| `cutoff` | TIMESTAMPTZ | NOT NULL | 发现的数据截止边界（材料/研究统一用它筛选） |
+| `input_snapshot` | JSONB | — | 冻结材料（周期切片/证据白名单/时间边界及选择排除原因；研究只读此快照，不重装配） |
+| `session_id` | VARCHAR(120) | — | `board_signal_discovery_{board_id}_{hex8}`，关联 `ai_call_logs` |
+| `candidate_count` | INTEGER | NOT NULL DEFAULT 0 | 保存候选数（0 条合法=no_signal） |
+| `created_at` | TIMESTAMPTZ | — | 创建时间（即候选列表「发现时间」的来源） |
+
+### 10.12 board_signal_candidate（板块信号候选，不可变）
+
+detect 产出的单条候选，**落库后不可变**；owner/周期列在写入时从批次盖戳，并由复合 FK 钉死与批次一致（绕 repo 直写 SQL 被拒，DB-1）。同批「相同标题+规范化证据集合」机械去重（`ComputeSignalCandidateDedupeKey`），跨批不合并。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK；复合唯一 `uq_board_signal_candidate_id_owner (id, semantic_board_id, granularity, period)`（复合 FK 靶） | 主键（前端只传 candidate_id，不信任模型 id） |
+| `discovery_id` | BIGINT | NOT NULL; 复合索引 `idx_board_signal_candidate_discovery (discovery_id, id DESC)` | 所属批次；复合 FK `fk_board_signal_candidate_discovery (discovery_id, semantic_board_id, granularity, period) → board_signal_discovery(...)` ON DELETE RESTRICT |
+| `semantic_board_id` | BIGINT | NOT NULL; 复合索引 `idx_board_signal_candidate_board_period` 首列 | 所属板块（与批次一致） |
+| `granularity` / `period` | VARCHAR(10)/VARCHAR(12) | NOT NULL; 同上复合索引 | 周期（与批次一致） |
+| `signal` | TEXT | NOT NULL | 异常信号标题（detect 校验后原文） |
+| `why_it_matters` | TEXT | NOT NULL | 值得查的原因 |
+| `research_question` | TEXT | NOT NULL | 研究问题（深入分析的问题驱动起点） |
+| `evidence_refs` | JSONB | — | 新闻切片 id 白名单数组（指向批次 input_snapshot；悬空引用 detect 已剔除，无有效依据的信号不落库） |
+| `score` | INTEGER | NOT NULL | 1~10 整数（门槛 6；展示层可忽略） |
+| `rationale` | TEXT | NOT NULL | 打分理由 |
+| `created_at` | TIMESTAMPTZ | — | 创建时间 |
+
+**关联**：候选的「研究中/已有报告」状态不在本表（running 位不持久化）——派生自 live job 与 `topic_enrichment_result`（`result_kind=signal_report` 且 `source_signal_id` 指向本表）。
+
+
+### 10.13 board_signal_research_progress（研究进展滚动快照，board-signal-reports）
+
+一次研究 job 的进展行（tasks 4.7「断了不能白跑」）：研究 loop 每轮结束后按 `job_id` 滚动 upsert 一次（同 job 永远一行），超时/失败后行保留（`abandoned`+`stop_reason`+`error`，候选可查上次进展），成功落库报告后标 `superseded` 归档保留。**只是编排层快照：不回写候选快照、不写 `topic_enrichment_result`**（成功报告仍不可变一行）；`ai_call_logs` 按轮留痕不变，本表补齐编排层视角，中断后可重建研究过程。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 主键 |
+| `job_id` | VARCHAR(64) | NOT NULL; 唯一 `uq_board_signal_research_progress_job` | analysis runner 任务身份（handler 经 ctx 传入 service）；同 job 滚动更新的主键 |
+| `semantic_board_id` | BIGINT | NOT NULL; 复合 FK 列 | 所属板块（与候选一致） |
+| `candidate_id` | BIGINT | NOT NULL; 复合索引 `idx_board_signal_research_progress_candidate (candidate_id, updated_at DESC)` 首列 | 所属候选（`board_signal_candidate.id`） |
+| `granularity` / `period` | VARCHAR(10)/VARCHAR(12) | NOT NULL; 复合 FK 列 | 周期（与候选一致） |
+| `rounds_done` | INTEGER | NOT NULL DEFAULT 0 | 已完成决策轮数（含被拦/非法动作轮） |
+| `source_calls` | INTEGER | NOT NULL DEFAULT 0 | 已执行取数次数 |
+| `calculation_calls` | INTEGER | NOT NULL DEFAULT 0 | 已执行计算次数 |
+| `ledger` | JSONB | NOT NULL DEFAULT '{}' | 全量研究账本（`calls`/`calculations`/`gaps` 三段，与报告 appendix 同源结构——服务层复用 `SignalReportAppendix` 序列化，不维护第二份形状） |
+| `status` | VARCHAR(16) | NOT NULL DEFAULT 'running'; CHECK `chk_board_signal_research_progress_status` 限 `running\|abandoned\|superseded` | 行状态 |
+| `stop_reason` | VARCHAR(32) | — | 仅 abandoned：`timeout`（job 截止）/ `research\|compose\|save`（error_stage）/ `failed` |
+| `error` | TEXT | — | 仅 abandoned：错误原文 |
+| `created_at` / `updated_at` | TIMESTAMPTZ | — | 创建/最近滚动时间 |
+
+**关联**：复合 FK `fk_board_signal_research_progress_candidate (candidate_id, semantic_board_id, granularity, period) → board_signal_candidate(id, …)` `ON DELETE RESTRICT`（迁移 `20260922_0002`）——进展行的 owner/周期永远与候选钉死一致；`job_id` 关联内存 job（重启后 job 404 但进展行仍可查）。
 
 ## 域 ER 图
 
@@ -221,6 +284,8 @@ v1 方法论画像库（如「内部看美国」分析基因），**已退役**�
 ```mermaid
 erDiagram
     board_persistent_topics ||--o{ stock_debate_result : "persistent_topic_id"
+    board_signal_discovery ||--o{ board_signal_candidate : "discovery_id (复合 FK, RESTRICT)"
+    board_signal_candidate ||--o{ topic_enrichment_result : "source_signal_id (复合 FK, RESTRICT, 仅 signal_report)"
     board_persistent_topics ||--o{ topic_enrichment_result : "persistent_topic_id"
     board_persistent_topics ||--o{ topic_enrichment_review : "persistent_topic_id"
     board_persistent_topics ||--o{ topic_lifeline_context : "persistent_topic_id"
@@ -234,6 +299,15 @@ erDiagram
 
     board_data_sources {
         SERIAL id PK
+    }
+    board_signal_discovery {
+        SERIAL id PK
+        VARCHAR granularity "month|year"
+        VARCHAR analysis_mode "current|retrospective"
+    }
+    board_signal_candidate {
+        SERIAL id PK
+        INT score "1~10, 门槛6"
     }
     board_persistent_topics {
     }

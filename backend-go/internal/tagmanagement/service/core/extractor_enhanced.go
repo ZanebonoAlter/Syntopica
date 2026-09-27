@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"go.opentelemetry.io/otel"
 	"strings"
@@ -41,45 +40,41 @@ type ExtractionResult struct {
 
 const defaultTagExtractionScore = 0.7
 
-// ExtractTags extracts tags from a summary using independent event/person and keyword branches.
+// ExtractTags extracts tags from a summary using a single LLM call whose
+// response carries the event/person and keyword tag arrays together.
 func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) (*ExtractionResult, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "TagExtractor.ExtractTags")
 	defer span.End()
-	eventPersonCh := make(chan extractionBranchResult, 1)
-	keywordCh := make(chan extractionBranchResult, 1)
 
-	go func() {
-		tags, err := te.extractEventPersonCandidates(ctx, input)
-		eventPersonCh <- extractionBranchResult{tags: tags, err: err}
-	}()
-	go func() {
-		tags, err := te.extractKeywordCandidates(ctx, input)
-		keywordCh <- extractionBranchResult{tags: tags, err: err}
-	}()
-
-	eventPersonResult := <-eventPersonCh
-	keywordResult := <-keywordCh
-
-	if eventPersonResult.err != nil && keywordResult.err != nil {
-		return te.extractWithHeuristic(input, errors.Join(eventPersonResult.err, keywordResult.err))
+	eventPersonTags, keywordTags, err := te.extractMergedCandidates(ctx, input)
+	if err != nil {
+		return te.extractWithHeuristic(input, err)
 	}
 
+	// 空 keyword / 空 event-person 数组是「宁缺毋滥」提示词下的合法结论：
+	// 只记观察信息，不再用 heuristicKeywordCandidates 回填规则词候选
+	// （fix-tagging-pollution：旧回填把分类名「新闻」等泛词顶进 llm 来源结果）。
 	branchErrors := make([]string, 0, 2)
-	if eventPersonResult.err != nil {
-		branchErrors = append(branchErrors, fmt.Sprintf("event/person extraction failed: %v", eventPersonResult.err))
+	if len(eventPersonTags) == 0 {
+		branchErrors = append(branchErrors, "event/person extraction: empty event/person array (accepted as-is)")
 	}
-	if keywordResult.err != nil {
-		branchErrors = append(branchErrors, fmt.Sprintf("keyword extraction failed: %v", keywordResult.err))
-		keywordResult.tags = heuristicKeywordCandidates(input)
+	if len(keywordTags) == 0 {
+		branchErrors = append(branchErrors, "keyword extraction: empty keyword array (accepted as-is)")
 	}
 
-	candidates := mergeExtractedTags(eventPersonResult.tags, keywordResult.tags)
+	candidates := mergeExtractedTags(eventPersonTags, keywordTags)
 
 	if len(candidates) == 0 {
-		return te.extractWithHeuristic(input, errors.New("no candidates extracted"))
+		// 零候选同样原样返回（Source=llm）：不降级 heuristic——旧降级会让
+		// 空结果文章顶上规则词标签，使 tagger 层兜底收窄形同虚设。
+		return &ExtractionResult{
+			Tags:   []TopicTag{},
+			Errors: branchErrors,
+			Source: "llm",
+		}, nil
 	}
 
-	// Step 2: Resolve each candidate against existing tags
+	// Resolve each candidate against existing tags
 	tags := make([]TopicTag, 0, len(candidates))
 	var skipped []string
 	errs := branchErrors
@@ -105,26 +100,15 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 	}, nil
 }
 
-type extractionBranchResult struct {
-	tags []ExtractedTag
-	err  error
-}
-
-func (te *TagExtractor) extractEventPersonCandidates(ctx context.Context, input ExtractionInput) ([]ExtractedTag, error) {
-	return te.extractBranchCandidates(ctx, input, buildEventPersonPrompt(), eventPersonExtractionSchema(), "tag_extraction_event_person", parseEventPersonTags)
-}
-
-func (te *TagExtractor) extractKeywordCandidates(ctx context.Context, input ExtractionInput) ([]ExtractedTag, error) {
-	return te.extractBranchCandidates(ctx, input, buildKeywordPrompt(), keywordExtractionSchema(), "tag_extraction_keyword", parseKeywordTags)
-}
-
-func (te *TagExtractor) extractBranchCandidates(ctx context.Context, input ExtractionInput, systemPrompt string, schema *airouter.JSONSchema, operation string, parse func(string) ([]ExtractedTag, error)) ([]ExtractedTag, error) {
+// extractMergedCandidates runs the single merged extraction call (event/person
+// and keyword arrays in one response) with the shared retry budget.
+func (te *TagExtractor) extractMergedCandidates(ctx context.Context, input ExtractionInput) ([]ExtractedTag, []ExtractedTag, error) {
 	userPrompt := buildExtractionUserPrompt(input)
 
 	maxTokens := 2048
 	temperature := 0.2
 	metadata := map[string]any{
-		"operation": operation,
+		"operation": "tag_extraction_merged",
 		"title":     input.Title,
 	}
 	if input.FeedName != "" {
@@ -144,42 +128,29 @@ func (te *TagExtractor) extractBranchCandidates(ctx context.Context, input Extra
 			Operation:  "tagmanagement.extractor_enhanced",
 			Capability: airouter.CapabilityTopicTagging,
 			Messages: []airouter.Message{
-				{Role: "system", Content: systemPrompt},
+				{Role: "system", Content: buildMergedExtractionPrompt()},
 				{Role: "user", Content: userPrompt},
 			},
 			Temperature: &temperature,
 			MaxTokens:   &maxTokens,
 			Metadata:    metadata,
 			JSONMode:    true,
-			JSONSchema:  schema,
+			JSONSchema:  mergedTagExtractionSchema(),
 		})
 		if err != nil {
 			lastErr = fmt.Errorf("AI extraction failed (attempt %d/%d): %w", attempt, maxRetries, err)
 			continue
 		}
 
-		tags, err := parse(result.Content)
+		eventPersonTags, keywordTags, err := parseMergedExtractionTags(result.Content)
 		if err != nil {
 			lastErr = fmt.Errorf("parse extraction result failed (attempt %d/%d): %w", attempt, maxRetries, err)
 			continue
 		}
 
-		return tags, nil
+		return eventPersonTags, keywordTags, nil
 	}
-	return nil, lastErr
-}
-
-func heuristicKeywordCandidates(input ExtractionInput) []ExtractedTag {
-	topics := ExtractTopics(input)
-	tags := make([]ExtractedTag, 0, len(topics))
-	for _, topic := range topics {
-		tags = append(tags, ExtractedTag{
-			Label:    topic.Label,
-			Category: "keyword",
-			Aliases:  topic.Aliases,
-		})
-	}
-	return tags
+	return nil, nil, lastErr
 }
 
 func mergeExtractedTags(eventPersonTags, keywordTags []ExtractedTag) []ExtractedTag {
@@ -289,81 +260,44 @@ func (te *TagExtractor) extractWithHeuristic(input ExtractionInput, originalErr 
 
 // Helper functions
 
-func buildEventPersonPrompt() string {
-	return `你是一个专业的新闻分析助手，只负责从新闻摘要中提取 event 和 person 标签。
+// buildMergedExtractionPrompt returns the single system prompt for the merged
+// extraction call: event/person rules (auxiliary label requirements) and
+// keyword rules (description requirements) share the common rule block. It
+// replaces the former two per-branch prompts; tests cap it at 1500 runes.
+func buildMergedExtractionPrompt() string {
+	return `你是新闻分析助手，一次性从新闻摘要提取 event/person 与 keyword 标签，同时输出两个数组。
 
-event（事件）：完整描述的新闻事件名词短语，必须具备语义完整性。
-- 正确示例："苹果WWDC 2024发布会"、"央行禁止比特币交易"、"某景区门票涨价风波"
-- 错误示例："3月30"（裸日期）、"禁止交易"（无主体动作）、"门票涨价"（无归属状态）、"北京中关村"（裸地名）、"AI体验活动"（泛化活动名）
-
-person（人物）：具体的个人姓名。
-- 正确示例："Sam Altman"、"Elon Musk"、"李飞飞"
-- 错误示例："CEO"（泛称）、"发言人"（角色而非具体人）、"某公司创始人"（非姓名）
-
-提取规则：
-- 只输出 event 或 person，不要输出 keyword
-- 宁缺毋滥，不需要每篇都凑数量
-- 拒绝纯年份/日期/时间词、过于宽泛的通用词、文章中未展开讨论的附带提及词
-- event 标签必须是能独立传达事件内容的完整名词短语
-- 标签必须按优先级从高到低排序，最重要的标签放前面
+【event/person 数组】
+event（事件）：语义完整的事件名词短语，如"央行禁止比特币交易"；拒绝裸日期、无主体动作短语、裸地名、泛化活动名。
+person（人物）：具体个人姓名，如"Sam Altman"；拒绝泛称（"CEO"）与非姓名（"某公司创始人"）。
 
 辅助标签要求：
 - 每个 event/person 标签必须输出 auxiliary_labels，数量 3-5 个
-- auxiliary_labels 必须是对象数组，每项包含 label 和 description，例如 {"label":"伊朗","description":"中东地区国家"}
-- auxiliary_labels 应是具体语义锚点，如关键实体、人物、地点、动作、技术名词
-- description 必须简短具体，不能为空，不能只重复 label
-- 不要输出明显泛词，如"事件"、"情况"、"问题"、"技术"、"发展"、"行业"、"趋势"、"市场"、"影响"、"创新"、"未来"、"公司"
-- 辅助标签必须与事件核心主体直接相关，是理解事件不可或缺的要素
-- 文章中仅为背景提及、一笔带过的人物或国家不应作为辅助标签
-- 如果移除某个实体后事件描述仍然成立，则该实体不应成为辅助标签
-- 正例：{"label":"伊朗","description":"中东地区国家"}、{"label":"导弹袭击","description":"以导弹进行军事打击的行动"}
-- 反例：{"label":"技术","description":"技术"}、{"label":"事件","description":"事件"}、"伊朗"（字符串而非对象）
+- auxiliary_labels 是对象数组，每项含 label 和 description，如 {"label":"伊朗","description":"中东地区国家"}
+- 辅助标签须与事件核心直接相关，是具体语义锚点（实体、人物、地点、动作）；背景提及、移除后事件仍成立的实体不要输出
+- description 简短具体，不能为空，不能只重复 label；拒绝"事件"、"技术"、"发展"、"市场"等泛词
+- 反例：{"label":"技术","description":"技术"}、"伊朗"（字符串而非对象）
+- event description 中文1句话不超50字、不重复标签名；person 可留空
 
-输出格式正例：
-{"tags":[{"label":"伊朗袭击以色列","category":"event","aliases":["伊以冲突"],"description":"伊朗对以色列发动军事打击的新闻事件","auxiliary_labels":[{"label":"伊朗","description":"中东地区国家"},{"label":"以色列","description":"中东国家"},{"label":"导弹袭击","description":"以导弹进行军事打击的行动"}]}]}
+【keyword 数组】
+keyword（关键词）：有持久辨识度的专业术语、技术概念、产品、组织机构，如"Transformer架构"、"PostgreSQL"；拒绝时间词（"2026"）、泛称（"公司"）、空泛词（"发展"）。
 
-输出格式反例：
-- {"label":"OpenAI","category":"keyword"}：本分支不输出 keyword
-- {"label":"OpenAI发布GPT-5","category":"event","auxiliary_labels":["OpenAI","GPT-5","模型发布"]}：auxiliary_labels 不能是字符串数组
+description 要求：每个 keyword 必须输出 description，中文1句话不超50字、不重复标签名，如 "PostgreSQL" → "开源关系型数据库"。
 
-描述要求：
-- event description 用中文1句话解释事件，不超过50字，不重复标签名
-- person description 可留空，系统会后续单独生成`
-}
+【共同规则】
+- event/person 数组只放 event/person，keyword 数组只放 keyword，不要串放
+- 最多返回 3 个 keyword；宁缺毋滥，不需要每篇都凑数量
+- keyword 不输出 auxiliary_labels 字段，将用标签自身 label + description 直接进入辅助标签池
+- 拒绝日期/时间词、过于宽泛的通用词、未展开讨论的附带提及词
+- 标签按优先级从高到低排序，最重要的放前面
 
-func buildKeywordPrompt() string {
-	return `你是一个专业的新闻分析助手，只负责从新闻摘要中提取 keyword 标签。
-
-keyword（关键词）：专业术语、技术概念、产品名称、组织机构等具有持久辨识度的实体或术语。
-- 正确示例："Transformer架构"、"RAG检索增强生成"、"PostgreSQL"、"Kubernetes"、"苹果公司"、"SaaS服务"、"量子计算"
-- 错误示例："2026"、"Q3"、"星期二"（时间词）、"公司"（泛称）、"技术"（过于宽泛）、"发展"（无具体含义）
-
-提取规则：
-- 只输出 keyword，不要输出 event 或 person
-- 最多返回 3 个 keyword，合并后系统总标签数最多 6 个
-- keyword 必须具有长期可复用的辨识度，不接受只在单篇文章出现的临时性描述词
-- 优先提取专业术语、技术概念、产品、组织机构，而非泛化描述词
-- 拒绝纯年份/日期/时间词、过于宽泛的通用词、文章中未展开讨论的附带提及词
-- 标签必须按优先级从高到低排序，最重要的标签放前面
-
-description 要求：
-- 每个 keyword 必须输出 description
-- 中文，1句话，不超过50字
-- 解释标签指代什么，不重复标签名
-- 例如 "ChatGPT" → "OpenAI开发的大型语言模型聊天机器人"
-- 例如 "PostgreSQL" → "开源关系型数据库管理系统"
-
-辅助标签要求：
-- keyword 不输出 auxiliary_labels 字段
-- keyword 将用标签自身 label + description 直接进入辅助标签池
-
-输出格式正例：
-{"tags":[{"label":"PostgreSQL","category":"keyword","aliases":[],"description":"开源关系型数据库管理系统"}]}
-
-输出格式反例：
-- {"label":"OpenAI发布GPT-5","category":"event"}：本分支不输出 event
-- {"label":"OpenAI","category":"keyword","auxiliary_labels":[{"label":"AI","description":"人工智能"}]}：keyword 不应生成额外辅助标签
-- {"label":"技术","category":"keyword","description":"技术"}：标签和描述都过于泛化`
+【输出格式】
+正例：
+{"event_person_tags":[{"label":"伊朗袭击以色列","category":"event","description":"伊朗对以色列的军事打击","auxiliary_labels":[{"label":"伊朗","description":"中东国家"},{"label":"以色列","description":"中东国家"},{"label":"导弹袭击","description":"军事打击行动"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库"}]}
+反例：
+- keyword 标签放进 event/person 数组（串放）
+- auxiliary_labels 写成字符串数组（必须是含 label/description 的对象数组）
+- {"label":"技术","category":"keyword","description":"技术"}（标签与描述都过于泛化）`
 }
 
 func buildExtractionUserPrompt(input ExtractionInput) string {
@@ -412,12 +346,7 @@ func parseRawTagObjects(content string) ([]rawExtractedTag, error) {
 	return raw, nil
 }
 
-func parseEventPersonTags(content string) ([]ExtractedTag, error) {
-	raw, err := parseRawTagObjects(content)
-	if err != nil {
-		return nil, err
-	}
-
+func parseEventPersonTagObjects(raw []rawExtractedTag) ([]ExtractedTag, error) {
 	result := make([]ExtractedTag, 0, len(raw))
 	for _, t := range raw {
 		if strings.TrimSpace(t.Label) == "" {
@@ -444,12 +373,7 @@ func parseEventPersonTags(content string) ([]ExtractedTag, error) {
 	return result, nil
 }
 
-func parseKeywordTags(content string) ([]ExtractedTag, error) {
-	raw, err := parseRawTagObjects(content)
-	if err != nil {
-		return nil, err
-	}
-
+func parseKeywordTagObjects(raw []rawExtractedTag) ([]ExtractedTag, error) {
 	result := make([]ExtractedTag, 0, len(raw))
 	for _, t := range raw {
 		label := strings.TrimSpace(t.Label)
@@ -472,6 +396,99 @@ func parseKeywordTags(content string) ([]ExtractedTag, error) {
 		})
 	}
 	return result, nil
+}
+
+type rawMergedExtraction struct {
+	EventPersonTags []rawExtractedTag `json:"event_person_tags"`
+	KeywordTags     []rawExtractedTag `json:"keyword_tags"`
+}
+
+// parseMergedExtractionTags splits a single-call response into event/person
+// and keyword candidates, reusing each branch's per-item field validation.
+// Besides the canonical double-array object it tolerates the response shapes
+// the former single-array parsers accepted: the double arrays wrapped in a
+// "tags" object, and legacy single arrays (bare or under "tags"), whose
+// items are routed by category.
+func parseMergedExtractionTags(content string) ([]ExtractedTag, []ExtractedTag, error) {
+	merged, err := unmarshalMergedExtraction(jsonutil.SanitizeLLMJSON(content))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse merged extraction: %w", err)
+	}
+
+	eventPersonTags, err := parseEventPersonTagObjects(merged.EventPersonTags)
+	if err != nil {
+		return nil, nil, err
+	}
+	keywordTags, err := parseKeywordTagObjects(merged.KeywordTags)
+	if err != nil {
+		return nil, nil, err
+	}
+	return eventPersonTags, keywordTags, nil
+}
+
+func unmarshalMergedExtraction(content string) (*rawMergedExtraction, error) {
+	// {"tags": ...} wrapper: either the double arrays again or a legacy array.
+	var wrapped struct {
+		Tags json.RawMessage `json:"tags"`
+	}
+	if err := json.Unmarshal([]byte(content), &wrapped); err == nil && len(wrapped.Tags) > 0 {
+		var merged rawMergedExtraction
+		if err := json.Unmarshal(wrapped.Tags, &merged); err == nil {
+			return &merged, nil
+		}
+		raw, err := parseRawTagObjects(content)
+		if err != nil {
+			return nil, err
+		}
+		return routeLegacyTagObjects(raw), nil
+	}
+
+	// Canonical double-array object. An empty object stays whitelisted (both
+	// arrays empty, per the array-empty path contract); any non-empty object
+	// missing both target keys is a malformed response and must surface as a
+	// parse error so the retry loop kicks in, instead of silently degrading to
+	// the array-empty path.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &probe); err == nil {
+		hasEventPerson, hasKeyword := false, false
+		for key := range probe {
+			switch {
+			case strings.EqualFold(key, "event_person_tags"):
+				hasEventPerson = true
+			case strings.EqualFold(key, "keyword_tags"):
+				hasKeyword = true
+			}
+		}
+		if len(probe) > 0 && !hasEventPerson && !hasKeyword {
+			return nil, fmt.Errorf("merged extraction object has neither event_person_tags nor keyword_tags keys")
+		}
+		var merged rawMergedExtraction
+		if err := json.Unmarshal([]byte(content), &merged); err != nil {
+			return nil, err
+		}
+		return &merged, nil
+	}
+
+	// Legacy bare array: route items by category.
+	raw, err := parseRawTagObjects(content)
+	if err != nil {
+		return nil, err
+	}
+	return routeLegacyTagObjects(raw), nil
+}
+
+// routeLegacyTagObjects splits legacy single-array responses by category:
+// event/person items go to the event/person array, the rest to keywords.
+func routeLegacyTagObjects(raw []rawExtractedTag) *rawMergedExtraction {
+	var merged rawMergedExtraction
+	for _, t := range raw {
+		if validateCategory(t.Category) == "keyword" {
+			merged.KeywordTags = append(merged.KeywordTags, t)
+		} else {
+			merged.EventPersonTags = append(merged.EventPersonTags, t)
+		}
+	}
+	return &merged
 }
 
 var GenericAuxiliaryLabels = map[string]struct{}{
@@ -566,11 +583,11 @@ func validateCategory(cat string) string {
 	}
 }
 
-func eventPersonExtractionSchema() *airouter.JSONSchema {
+func mergedTagExtractionSchema() *airouter.JSONSchema {
 	return &airouter.JSONSchema{
 		Type: "object",
 		Properties: map[string]airouter.SchemaProperty{
-			"tags": {
+			"event_person_tags": {
 				Type: "array",
 				Items: &airouter.SchemaProperty{
 					Type: "object",
@@ -595,16 +612,7 @@ func eventPersonExtractionSchema() *airouter.JSONSchema {
 					Required: []string{"label", "category", "auxiliary_labels"},
 				},
 			},
-		},
-		Required: []string{"tags"},
-	}
-}
-
-func keywordExtractionSchema() *airouter.JSONSchema {
-	return &airouter.JSONSchema{
-		Type: "object",
-		Properties: map[string]airouter.SchemaProperty{
-			"tags": {
+			"keyword_tags": {
 				Type: "array",
 				Items: &airouter.SchemaProperty{
 					Type: "object",
@@ -618,6 +626,6 @@ func keywordExtractionSchema() *airouter.JSONSchema {
 				},
 			},
 		},
-		Required: []string{"tags"},
+		Required: []string{"event_person_tags", "keyword_tags"},
 	}
 }

@@ -278,8 +278,8 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		threads := threadsByCluster[i]
 		var batch []repository.DailyReportThread
 		for _, th := range threads {
-			tagIDsJSON, _ := json.Marshal(th.TagIDs)
-			articleIDsJSON, _ := json.Marshal(th.RelatedArticleIDs)
+			tagIDsJSON := marshalJSONArray(th.TagIDs)
+			articleIDsJSON := marshalJSONArray(th.RelatedArticleIDs)
 			batch = append(batch, repository.DailyReportThread{
 				Title:             th.Title,
 				Summary:           th.Summary,
@@ -392,6 +392,13 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			}
 		}
 	}
+
+	// Last step before the write: drop references to articles that vanished
+	// between candidate collection and this point (a concurrent duplicate merge
+	// or feed deletion). It runs here — after watch materialization appended its
+	// own threads — so both the clustered and the materialized references are
+	// covered by one probe (heal-dangling-article-refs D3).
+	filterVanishedArticleRefs(repository.Repo.DB(), threadBatches)
 
 	return report, sections, threadBatches, nil
 }

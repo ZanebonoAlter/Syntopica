@@ -15,7 +15,9 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/notification"
 	"syntopica-backend/internal/platform/ws"
+	tagging "syntopica-backend/internal/tagmanagement"
 	"syntopica-backend/internal/topicgraph/repository"
 	"syntopica-backend/internal/topicgraph/service"
 )
@@ -38,9 +40,10 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 	// and orphans) with section counts, for the management UI.
 	api.GET("/semantic-boards/:id/topics", listBoardTopics)
 
-	// GET /api/semantic-boards/:id/topic-landscape — topic stance overview
-	// (identity-track derived) + mini-lifeline + board vitality. Read-only.
-	api.GET("/semantic-boards/:id/topic-landscape", getBoardTopicLandscape)
+	// GET /api/semantic-boards/:id/lane-dynamics — 泳道动态聚合端点
+	// (overview-lane-dynamics design D4): lanes + timeline + candidates +
+	// has_reports in one shot. Read-only.
+	api.GET("/semantic-boards/:id/lane-dynamics", getBoardLaneDynamics)
 
 	// GET /api/daily-reports/sections/:id/lifecycle
 	api.GET("/daily-reports/sections/:id/lifecycle", getSectionLifecycle)
@@ -84,6 +87,9 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 
 	// Topic watch routes
 	RegisterTopicWatchRoutes(api)
+
+	// 日报页边注（daily-report-margin-notes）：批注四端点 + 管理页列表
+	RegisterMarginNoteRoutes(api)
 }
 
 // triggerGenerateDailyReport handles POST /api/daily-reports/generate
@@ -109,6 +115,21 @@ func triggerGenerateDailyReport(c *gin.Context) {
 		date = time.Now()
 	}
 
+	// Rebuild window guard (offline-catchup design D6): a date older than the
+	// tag edge retention window has had its edges reclaimed, so its candidate set
+	// is incomplete — rebuilding would overwrite a possibly good existing report
+	// with an empty one (same-day rebuild is a full replace). Shares the
+	// predicate + wording with the scheduler's TriggerNowWithDate.
+	retentionDays := tagging.LoadTagEdgeRetentionDays(repository.Repo.DB())
+	if service.IsDateOutsideRebuildWindow(date, time.Now(), retentionDays) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   service.RebuildWindowRejectionMessage(retentionDays),
+			"reason":  "out_of_retention_window",
+		})
+		return
+	}
+
 	jobID := uuid.New().String()
 
 	if req.BoardID != nil {
@@ -128,6 +149,19 @@ func triggerGenerateDailyReport(c *gin.Context) {
 	})
 }
 
+// notifyDailyReportTerminal is the single adjudication point for the
+// daily-report terminal-state notification (test-cases 白盒 B):
+// failedCount==0 → one completion notification; failedCount>0 → ONE failure
+// summary (success/failed counts in the copy), mutually exclusive with the
+// completion notification. Never more than one notification per run.
+func notifyDailyReportTerminal(date time.Time, totalBoards, successCount, failedCount int) {
+	if failedCount > 0 {
+		notification.DailyReportFailedSummary(date, successCount, failedCount)
+	} else {
+		notification.DailyReportSuccess(date, totalBoards, successCount)
+	}
+}
+
 func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 	ctx, cancel := timeoutCtx(10 * time.Minute)
 	defer cancel()
@@ -140,16 +174,21 @@ func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 		logging.Errorf("daily-report: generate/save failed for board %d: %v", boardID, err)
 		broadcastProgress(jobID, "failed", boardID, boardName, 0, "1/1")
 		broadcastDone(jobID, 0, 1)
+		// 单版面项目：失败 1 = 全部失败 → 1 条失败汇总（白盒 B3/B 边界）
+		notifyDailyReportTerminal(date, 1, 0, 1)
 		return
 	}
 	if report == nil {
 		broadcastProgress(jobID, "completed", boardID, boardName, 0, "1/1")
 		broadcastDone(jobID, 0, 1)
+		// 版面无内容不算失败：终态完成（保存 0 条）
+		notifyDailyReportTerminal(date, 1, 0, 0)
 		return
 	}
 
 	broadcastProgress(jobID, "completed", boardID, boardName, 1, "1/1")
 	broadcastDone(jobID, 1, 1)
+	notifyDailyReportTerminal(date, 1, 1, 0)
 }
 
 func generateAllBoards(date time.Time, jobID string) {
@@ -161,6 +200,8 @@ func generateAllBoards(date time.Time, jobID string) {
 		logging.Errorf("daily-report: collect boards failed: %v", err)
 		broadcastProgress(jobID, "failed", 0, "All boards", 0, "0/0")
 		broadcastDone(jobID, 0, 0)
+		// 收集阶段即失败：一次失败汇总（B3 同型，至多一条）
+		notifyDailyReportTerminal(date, 0, 0, 1)
 		return
 	}
 
@@ -171,6 +212,7 @@ func generateAllBoards(date time.Time, jobID string) {
 	}
 
 	savedCount := 0
+	failedCount := 0
 	for idx, boardID := range boardIDs {
 		boardName := dailyReportBoardName(boardID)
 		broadcastProgress(jobID, "generating", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx, totalBoards))
@@ -179,6 +221,7 @@ func generateAllBoards(date time.Time, jobID string) {
 		if genErr != nil {
 			logging.Warnf("daily-report: generate/save failed for board %d: %v", boardID, genErr)
 			broadcastProgress(jobID, "failed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+			failedCount++
 			continue
 		}
 		if report == nil {
@@ -190,6 +233,8 @@ func generateAllBoards(date time.Time, jobID string) {
 	}
 
 	broadcastDone(jobID, savedCount, totalBoards)
+	// 终态通知（白盒 B1/B2/B3）：failed==0 → 完成通知；≥1 → 一条失败汇总，互斥。
+	notifyDailyReportTerminal(date, totalBoards, savedCount, failedCount)
 }
 
 // listBoardDailyReports handles GET /api/semantic-boards/:id/daily-reports
@@ -314,27 +359,6 @@ func listBoardTopics(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"topics": items}})
-}
-
-// getBoardTopicLandscape handles GET /api/semantic-boards/:id/topic-landscape.
-// Returns the topic-landscape view: per-topic stance (derived from the
-// identity track) + mini-lifeline + board vitality. Read-only — it neither
-// reads nor writes the similarity track (daily_report_section_relations /
-// matching / assignment). ?days= is clamped to {7,14,30,90} (default 30).
-func getBoardTopicLandscape(c *gin.Context) {
-	boardID, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid board id"})
-		return
-	}
-	days := repository.ClampTopicLandscapeDays(c.Query("days"))
-	resp, err := repository.Repo.GetBoardTopicLandscape(uint(boardID), days)
-	if err != nil {
-		logging.Errorf("get board topic landscape: board=%d: %v", boardID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "failed to get topic landscape"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": resp})
 }
 
 // getSectionLifecycle handles GET /api/daily-reports/sections/:id/lifecycle

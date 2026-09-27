@@ -1,3 +1,25 @@
+# unified-form-controls Specification
+
+## Purpose
+
+统一表单原子组件（AppButton/AppToggle/AppInput/AppSectionHeader），响应主题 token，替代历史上多套不一致的按钮/开关/输入框样式。组件 API 细节见下方各节。
+
+## Requirements
+
+### Requirement: 表单原子组件统一且响应主题
+
+表单基础控件 SHALL 统一使用原子组件族（`AppButton`/`AppToggle`/`AppInput`/`AppSectionHeader`），视觉 SHALL 经主题 token 自动适配双主题（editorial/dark），SHALL NOT 另起平行样式体系。
+
+#### Scenario: 表单控件使用原子组件
+
+- **WHEN** 页面需要按钮/开关/输入框/分组标题
+- **THEN** 实现 SHALL 使用对应 `App*` 原子组件而非自写样式变体
+
+#### Scenario: 双主题下表单控件可读
+
+- **WHEN** 切换 editorial ↔ dark 主题
+- **THEN** 全部表单原子组件 SHALL 经语义 token 自动适配，无可读性回归
+
 ## Capability
 
 统一表单原子组件，响应主题 token。AppButton、AppToggle、AppInput、AppSectionHeader 四个组件，替代现有三套不一致的按钮/开关/输入框样式。

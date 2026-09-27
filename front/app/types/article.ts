@@ -6,8 +6,12 @@ export interface Article {
   id: string
   feedId: string
   title: string
+  /** 列表窄投影下为空串（列表不携带正文类字段）；完整值仅在详情接口返回 */
   description: string
+  /** 列表窄投影下为空串（列表不携带正文类字段）；完整值仅在详情接口返回 */
   content: string
+  /** 列表窄投影导语（后端去标签纯文本，≤200 字符）；详情返回后由 description 优先 */
+  excerpt?: string
   link: string
   pubDate: string
   author?: string
@@ -21,6 +25,7 @@ export interface Article {
   aiContentSummary?: string
   firecrawlStatus?: 'pending' | 'processing' | 'completed' | 'failed'
   firecrawlError?: string
+  /** 列表窄投影下缺省；完整值仅在详情接口返回 */
   firecrawlContent?: string
   firecrawlCrawledAt?: string
   imageUrl?: string
@@ -67,6 +72,8 @@ export interface BulkUpdateArticlesData {
   feed_id?: number
   category_id?: number
   uncategorized?: boolean
+  /** 显式全站 scope（fix-bulk-markall-all-scope）：与 ids/feed_id/category_id/uncategorized 互斥 */
+  all?: boolean
   read?: boolean
   favorite?: boolean
 }

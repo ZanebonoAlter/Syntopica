@@ -5,15 +5,16 @@ import (
 	"fmt"
 
 	"syntopica-backend/internal/admin/repository"
-	adminservice "syntopica-backend/internal/admin/service"
+	"syntopica-backend/internal/discovery"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/scheduler"
 )
 
 // RSSHubCatalogSyncJob 从自建 RSSHub 实例同步全量路由目录（design D2/D8）。
 // 失败仅记日志（实例不可达时 SyncAll 内部已处理，保留既有目录）。
-func RSSHubCatalogSyncJob(ctx context.Context) (*JobResult, error) {
-	svc := adminservice.NewCatalogSyncService(repository.Repo.DB(), "")
+func RSSHubCatalogSyncJob(ctx context.Context) (*scheduler.JobResult, error) {
+	svc := discovery.NewCatalogSyncService(repository.Repo.DB(), "")
 	summary, err := svc.SyncAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("rsshub catalog sync failed: %w", err)
@@ -23,7 +24,7 @@ func RSSHubCatalogSyncJob(ctx context.Context) (*JobResult, error) {
 	if embErr != nil {
 		logging.Infof("rsshub catalog sync: embed pending routes failed: %v", embErr)
 	}
-	return &JobResult{
+	return &scheduler.JobResult{
 		Data: map[string]interface{}{
 			"total":        summary.Total,
 			"inserted":     summary.Inserted,

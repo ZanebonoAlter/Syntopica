@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"syntopica-backend/internal/models"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service"
 )
@@ -51,7 +52,7 @@ func ScanMergePreviewHandler(c *gin.Context) {
 	}
 
 	// Query pending suggestions from the table
-	var suggestions []models.TagMergeSuggestion
+	var suggestions []tagmodels.TagMergeSuggestion
 	if err := repository.Repo.DB().
 		Where("status = ?", "pending").
 		Order("similarity DESC").
@@ -62,7 +63,7 @@ func ScanMergePreviewHandler(c *gin.Context) {
 	}
 
 	// Filter out suggestions where LLM verdict explicitly says should_merge=false
-	filtered := make([]models.TagMergeSuggestion, 0, len(suggestions))
+	filtered := make([]tagmodels.TagMergeSuggestion, 0, len(suggestions))
 	for _, sug := range suggestions {
 		if sug.LLMVerdict != "" {
 			// Parse verdict: if it contains "should_merge":false, skip it
@@ -257,7 +258,7 @@ func MergeTagsWithCustomNameHandler(c *gin.Context) {
 	}
 
 	// Mark related suggestions as merged
-	repository.Repo.DB().Model(&models.TagMergeSuggestion{}).
+	repository.Repo.DB().Model(&tagmodels.TagMergeSuggestion{}).
 		Where("status = ? AND (new_tag_id = ? OR existing_tag_id = ? OR new_tag_id = ? OR existing_tag_id = ?)",
 			"pending", body.SourceTagID, body.SourceTagID, body.TargetTagID, body.TargetTagID).
 		Update("status", "merged")
@@ -289,7 +290,7 @@ func DismissSuggestionHandler(c *gin.Context) {
 		return
 	}
 
-	result := repository.Repo.DB().Model(&models.TagMergeSuggestion{}).
+	result := repository.Repo.DB().Model(&tagmodels.TagMergeSuggestion{}).
 		Where("new_tag_id = ? AND existing_tag_id = ? AND status = ?",
 			body.NewTagID, body.ExistingTagID, "pending").
 		Update("status", "dismissed")
@@ -412,7 +413,7 @@ func AddToGroupHandler(c *gin.Context) {
 		return
 	}
 
-	suggestion := models.TagMergeSuggestion{
+	suggestion := tagmodels.TagMergeSuggestion{
 		NewTagID:      body.NewTagID,
 		ExistingTagID: body.TargetTagID,
 		NewLabel:      newTag.Label,

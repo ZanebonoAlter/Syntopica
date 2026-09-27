@@ -53,22 +53,23 @@ type expandAuxCandidate struct {
 }
 
 // generateExpandSuggestions 是扩充方向分发：expand×aux（merge 二分类）与
-// expand×composite（compose+target 二分类）。days 在扩充路忽略（共现走
-// CoTagWindowDays、相似是全库语义，spec: 扩充候选召回）。
+// expand×composite（compose+target 二分类）。days 时间窗贯通两路召回：
+// 相似路近期活跃过滤 + 共现/compose 路窗口收紧；days=0 与无时间窗行为一致
+// （spec: 扩充候选的时间窗过滤）。
 func (s *SemanticBoardUpgradeService) generateExpandSuggestions(ctx context.Context, config SemanticBoardUpgradeConfig, req UpgradeGenerateRequest) ([]SemanticBoardUpgradeSuggestion, []SemanticBoardUpgradeCluster, error) {
 	profile, err := s.loadBoardExpandProfile(ctx, req.TargetBoardID)
 	if err != nil {
 		return nil, nil, err
 	}
 	if req.Source == UpgradeSourceComposite {
-		suggestions, err := s.generateExpandCompose(ctx, config, profile)
+		suggestions, err := s.generateExpandCompose(ctx, config, profile, req.Days)
 		if err != nil {
 			return nil, nil, err
 		}
 		return suggestions, nil, nil
 	}
 
-	candidates, validIDs, err := s.recallExpandAuxCandidates(ctx, config, profile)
+	candidates, validIDs, err := s.recallExpandAuxCandidates(ctx, config, profile, req.Days)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -164,8 +165,10 @@ func (s *SemanticBoardUpgradeService) loadBoardRecentSections(ctx context.Contex
 // embedding 余弦距离 ≤ ExpandSimDistance）+ 共现路（与版块构成标签在
 // CoTagWindowDays 窗口内同文章共现 ≥ ExpandCooccurrence），两路并集去重、
 // 排除已挂载进目标版块与 disabled 的 aux，各路上限 expandRecallLimit。
-// 返回排序候选 + 有效 ID 集（LLM 输出过滤用）。
-func (s *SemanticBoardUpgradeService) recallExpandAuxCandidates(ctx context.Context, config SemanticBoardUpgradeConfig, profile *boardExpandProfile) ([]expandAuxCandidate, map[uint]struct{}, error) {
+// days>0 时收紧：相似路候选需近 days 天文章中引用过（批量 EXISTS 过滤），
+// 共现窗口取 days 与 CoTagWindowDays 更严者；days=0 等于无时间窗现状
+// （spec: 扩充候选的时间窗过滤）。返回排序候选 + 有效 ID 集（LLM 输出过滤用）。
+func (s *SemanticBoardUpgradeService) recallExpandAuxCandidates(ctx context.Context, config SemanticBoardUpgradeConfig, profile *boardExpandProfile, days int) ([]expandAuxCandidate, map[uint]struct{}, error) {
 	compositionIDs := make([]uint, 0, len(profile.Composition))
 	if err := s.db.WithContext(ctx).
 		Table("board_composition").
@@ -206,6 +209,26 @@ func (s *SemanticBoardUpgradeService) recallExpandAuxCandidates(ctx context.Cont
 				simHits = append(simHits, simHit{candidate: expandAuxCandidate{ID: label.ID, Label: label.Label, RefCount: label.RefCount}, dist: dist})
 			}
 		}
+		// ── 相似路近期活跃过滤（days>0）：排序截断前批量剔除窗口内无文章引用的标签 ──
+		// 复用 create×aux 的 EXISTS 语义（article_topic_tags → articles.created_at），
+		// IN 一次执行避免 N+1；days=0 跳过 = 现状全库语义召回。
+		if days > 0 && len(simHits) > 0 {
+			hitIDs := make([]uint, 0, len(simHits))
+			for _, hit := range simHits {
+				hitIDs = append(hitIDs, hit.candidate.ID)
+			}
+			recent, err := s.labelIDsRecentlyActive(ctx, hitIDs, days)
+			if err != nil {
+				return nil, nil, err
+			}
+			kept := make([]simHit, 0, len(simHits))
+			for _, hit := range simHits {
+				if _, ok := recent[hit.candidate.ID]; ok {
+					kept = append(kept, hit)
+				}
+			}
+			simHits = kept
+		}
 		// 距离升序截断上限（design D3：相似路优先）。
 		sort.SliceStable(simHits, func(i, j int) bool { return simHits[i].dist < simHits[j].dist })
 		if len(simHits) > expandRecallLimit {
@@ -221,7 +244,7 @@ func (s *SemanticBoardUpgradeService) recallExpandAuxCandidates(ctx context.Cont
 
 	// ── 共现路：与版块构成标签同文章共现的 aux ──
 	if len(compositionIDs) > 0 {
-		pairs, err := s.loadExpandCooccurrence(ctx, config, compositionIDs, mounted)
+		pairs, err := s.loadExpandCooccurrence(ctx, config, compositionIDs, mounted, days)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -272,11 +295,46 @@ func (s *SemanticBoardUpgradeService) recallExpandAuxCandidates(ctx context.Cont
 	return candidates, validIDs, nil
 }
 
+// effectiveCoTagWindowDays 返回共现统计的有效窗口天数：UI days 只收紧不放宽
+// （与全局 CoTagWindowDays 取更严/更短者），days≤0 保持全局配置（days=0 等于
+// 现状，spec: 扩充候选的时间窗过滤——共现路 cutoff 取更严者）。
+func effectiveCoTagWindowDays(config SemanticBoardUpgradeConfig, days int) int {
+	if days > 0 && days < config.CoTagWindowDays {
+		return days
+	}
+	return config.CoTagWindowDays
+}
+
+// labelIDsRecentlyActive returns the subset of label IDs referenced by at
+// least one article created within the last days days（批量 IN 查询，复用
+// create×aux 的 EXISTS 子查询语义：topic_tag_semantic_labels →
+// article_topic_tags → articles.created_at）。
+func (s *SemanticBoardUpgradeService) labelIDsRecentlyActive(ctx context.Context, labelIDs []uint, days int) (map[uint]struct{}, error) {
+	cutoff := time.Now().AddDate(0, 0, -days)
+	var activeIDs []uint
+	err := s.db.WithContext(ctx).
+		Table("topic_tag_semantic_labels AS ttsl").
+		Joins("JOIN article_topic_tags AS att ON att.topic_tag_id = ttsl.topic_tag_id").
+		Joins("JOIN articles AS a ON a.id = att.article_id").
+		Where("ttsl.semantic_label_id IN ? AND a.created_at >= ?", labelIDs, cutoff).
+		Distinct().
+		Pluck("ttsl.semantic_label_id", &activeIDs).Error
+	if err != nil {
+		return nil, err
+	}
+	active := make(map[uint]struct{}, len(activeIDs))
+	for _, id := range activeIDs {
+		active[id] = struct{}{}
+	}
+	return active, nil
+}
+
 // loadExpandCooccurrence counts same-article co-occurrences between each
 // un-mounted active aux and the board composition set within the co-tag
-// window（复用 compose 段的文章→aux 映射查询语义）.
-func (s *SemanticBoardUpgradeService) loadExpandCooccurrence(ctx context.Context, config SemanticBoardUpgradeConfig, compositionIDs []uint, mounted map[uint]struct{}) ([]expandAuxCandidate, error) {
-	cutoff := time.Now().AddDate(0, 0, -config.CoTagWindowDays)
+// window（复用 compose 段的文章→aux 映射查询语义）。days>0 时窗口取
+// days 与 CoTagWindowDays 更严者（effectiveCoTagWindowDays）。
+func (s *SemanticBoardUpgradeService) loadExpandCooccurrence(ctx context.Context, config SemanticBoardUpgradeConfig, compositionIDs []uint, mounted map[uint]struct{}, days int) ([]expandAuxCandidate, error) {
+	cutoff := time.Now().AddDate(0, 0, -effectiveCoTagWindowDays(config, days))
 	compositionSet := make(map[uint]struct{}, len(compositionIDs))
 	for _, id := range compositionIDs {
 		compositionSet[id] = struct{}{}
@@ -354,9 +412,10 @@ func (s *SemanticBoardUpgradeService) loadExpandCooccurrence(ctx context.Context
 // generateExpandCompose 是扩充×组合路（design D3 组合路过滤）：compose 候选中
 // 至少一组件 ∈ 召回集 ∪ 版块构成集，LLM 裁决「值得组合且属于目标版块」，
 // 输出 compose 建议（服务端注入 target，spec: 扩充方向的组合建议携带目标）。
-func (s *SemanticBoardUpgradeService) generateExpandCompose(ctx context.Context, config SemanticBoardUpgradeConfig, profile *boardExpandProfile) ([]SemanticBoardUpgradeSuggestion, error) {
+// days>0 时召回与 compose 共现窗口同步收紧（与共现路同规则），days=0 等于现状。
+func (s *SemanticBoardUpgradeService) generateExpandCompose(ctx context.Context, config SemanticBoardUpgradeConfig, profile *boardExpandProfile, days int) ([]SemanticBoardUpgradeSuggestion, error) {
 	// 召回集复用单标签路（相关性判据同源），失败即空（构成集兜底）。
-	recalled, _, err := s.recallExpandAuxCandidates(ctx, config, profile)
+	recalled, _, err := s.recallExpandAuxCandidates(ctx, config, profile, days)
 	if err != nil {
 		logging.Warnf("[semantic-board-expand] composite recall failed, falling back to composition-only filter: %v", err)
 		recalled = nil
@@ -369,7 +428,11 @@ func (s *SemanticBoardUpgradeService) generateExpandCompose(ctx context.Context,
 		related[id] = struct{}{}
 	}
 
-	candidates, err := s.collectComposeCandidates(ctx, config)
+	// compose 段共现窗口同步收紧（spec: 组合路收紧规则与共现路相同）：仅收紧
+	// 本次调用的窗口副本，create×composite 路仍走全局配置语义不受影响。
+	composeWindow := config
+	composeWindow.CoTagWindowDays = effectiveCoTagWindowDays(config, days)
+	candidates, err := s.collectComposeCandidates(ctx, composeWindow)
 	if err != nil {
 		return nil, err
 	}

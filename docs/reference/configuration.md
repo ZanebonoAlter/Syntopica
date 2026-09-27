@@ -10,18 +10,21 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `SERVER_PORT` | 否 | `"5000"` | 后端 HTTP 监听端口 |
+| `SERVER_PORT` | 否 | `"5100"` | 后端 HTTP 监听端口（避开 Windows 5000 端口 WSD/svchost 保留段冲突；该冲突为 Windows 特有，其他平台沿用同一默认值以保持跨平台统一） |
 | `SERVER_MODE` | 否 | `"debug"` | Gin 模式：`"debug"`、`"release"` 或 `"test"` |
 | `DATABASE_DRIVER` | 否 | `"postgres"` | 数据库驱动，主分支仅支持 `"postgres"` |
 | `DATABASE_DSN` | 否 | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | PostgreSQL 连接字符串 |
-| `CORS_ORIGINS` | 否 | `"http://localhost:3000,http://localhost:3000"` | 逗号分隔的允许 CORS 来源列表 |
+| `CORS_ORIGINS` | 否 | `"http://localhost:3000,http://localhost:3000"` | 逗号分隔的允许 CORS 来源列表（首尾空白会被裁剪）。**精确匹配**（`middleware/cors.go` 逐条比对，无通配回退）：跨 origin 部署时须逐个列出浏览器地址栏里的 origin；同源部署（前端由后端同源托管或反代提供）下不参与。见[部署指南](deployment.md)「多机 / 远程访问」节。 |
 | `MIGRATIONS_ALLOW_DESTRUCTIVE` | 否 | *(未设置)* | 仅设为 `"1"` 时启用破坏性数据库迁移（含 `TRUNCATE`/`DROP` 的历史数据清理迁移）。**生产环境绝不设置**；dev/本地开发设 `"1"` 以执行历史数据清理。见 [部署指南](deployment.md#破坏性迁移开关)。 |
 | `TRACE_SAMPLE_RATIO` | 否 | `0.05` | OTel root span 采样比例（`ParentBased(TraceIDRatioBased)`）。`1.0`=全采；`<1.0` 按比例降采样；被采 root 的所有子 span（DB/出站 HTTP/业务）完整保留。非法值（不可解析或超出 0.0–1.0）回退默认 `0.05` 并打 warn。全采样下 otel_spans 日增 ~82 万行/600MB，故默认低采样；排障时临时设 `1.0` 重启即可恢复全采。 |
 | `TRACE_INSTRUMENT_GORM` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭 GORM DB 操作自动埋点（自写 `GORMTracePlugin`）。非 `"0"` 均视为启用。 |
 | `TRACE_INSTRUMENT_HTTP` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭出站 HTTP 自动埋点（`httpclient` 工厂的 otelhttp 包装）。非 `"0"` 均视为启用。 |
 | `STORAGE_ICON_DIR` | 否 | `"data/icons"` | feed 图标本地化存储根目录（实际文件在 `feeds/` 子目录），由后端 `/icons` 静态路由对外服务 |
+| `IMAGE_CACHE_MAX_MB` | 否 | `256` | 图片代理（`GET /api/image-proxy`）磁盘缓存总量上限（MB，整数）。超限按最近访问时间（mtime）从旧淘汰到 90% 水位；`"0"` 禁用缓存（每次回源）；负数/非法值回落默认。缓存目录固定 `data/image-cache/`（URL SHA-256 命名），**整目录删除即可热清缓存**（图床内容变更需强一致时），下次访问自动重建。 |
 | `BOCHA_API_KEY` | 否 | *(空)* | **部署兜底**——博查 key 首选在设置界面「博查搜索」配（存 `ai_settings` 表，动态生效）。此 env 仅用于无界面/CI/容器部署，与 `configs/config.yaml` 的 `bocha.api_key` 同为兜底（优先级：界面 DB > env > config.yaml）。全空→`web_search` 降级 Noop（返回错误 JSON，agent 自降级、不阻断） |
 | `BOCHA_ENDPOINT` | 否 | `"https://api.bochaai.com/v1/web-search"` | 博查通搜 endpoint（原始网页结果模式）的**兜底**值；界面可覆盖。仅在需要切换 endpoint（如代理/镜像）时设 |
+| `SEARXNG_URL` | 否 | *(空)* | 本地 SearXNG 实例地址的**兜底**（页边注问答联网补强，daily-report-margin-notes D7）。**首选在设置界面「SearXNG 搜索」配**（存 `ai_settings` 表 `searxng_config`，每次提问现读、即时生效，优先级：界面 DB > env > `configs/config.yaml` `searxng.endpoint`）。空→禁用（问答静默降级为纯文章+模型知识，不报错）。客户端：`internal/platform/searxng` |
+| `COMTRADE_API_KEY` | 否 | *(空)* | UN Comtrade 订阅 key 的**兜底**（研究数据源域，change integrate-research-data-sources）。**首选在设置界面「研究数据源」配**（存 `ai_settings` 表 `comtrade_config`，动态生效免重启，同博查语义）；优先级：界面 DB > env > `configs/config.yaml` `comtrade.api_key`。全空→`un_comtrade` 源在目录中 disabled 且取数报「配置缺失」型 SOURCE_UNAVAILABLE（消息指向配置项），其余三源（EIA/JODI/WDI）匿名可用不受影响。key 获取：comtradedeveloper.un.org 订阅 Free APIs 产品（详见下方「研究数据源」节） |
 
 ### 前端（Nuxt）
 
@@ -29,9 +32,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `API_INTERNAL_BASE` | 否 | `"http://localhost:5000/api"` | 服务端 API 基础 URL（SSR 时使用） |
-| `NUXT_PUBLIC_API_ORIGIN` | 否 | `"http://localhost:5000"` | 暴露给浏览器的公共 API 源 |
-| `NUXT_PUBLIC_API_BASE` | 否 | `"http://localhost:5000/api"` | 暴露给浏览器的公共 API 基础 URL |
+| `NUXT_PUBLIC_API_BASE` | 否 | `"http://localhost:5100/api"` | 暴露给浏览器的 API 基础 URL。语义随运行形态不同：**dev 模式启动时读取**（改完要重启 dev server）；**静态产物**（`pnpm generate` / 镜像构建）在**构建期内联**，部署后再设同名环境变量无效。绝对地址用于「浏览器直连后端」（后端 CORS 白名单须放行前端 origin）；相对路径 `/api` 用于同源部署（前端由后端同源托管或反代提供，无跨域）。见[部署指南](deployment.md)「前端服务的三种形态」节。 |
 
 ### Docker Compose
 
@@ -39,8 +40,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `FRONT_PORT` | 否 | `"3000"` | 前端容器映射到宿主机的端口 |
-| `BACKEND_PORT` | 否 | `"5000"` | 后端容器映射到宿主机的端口 |
+| `PORT` | 否 | `"5100"` | 应用容器（前端页面 + API + WebSocket + 图标同源）映射到宿主机的端口；demo 栈默认 `5080` |
 | `POSTGRES_DB` | 否 | `"syntopica"` | PostgreSQL 数据库名 |
 | `POSTGRES_USER` | 否 | `"postgres"` | PostgreSQL 用户名 |
 | `POSTGRES_PASSWORD` | 否 | `"postgres"` | PostgreSQL 密码 |
@@ -50,9 +50,11 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | `GOSUMDB` | 否 | *(空)* | 后端构建时的 Go 校验数据库 |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 否 | *(空)* | 代理设置，传递到构建上下文 |
 
+> 旧版 `.env` 里可能残留 `FRONT_PORT` / `BACKEND_PORT`：两者**已不被任何 compose 文件读取**（前端不再有独立容器，后端端口改用 `PORT`），留着无害但会被误认为生效。
+
 ### Docker Compose（Firecrawl）
 
-以下变量由 `docker-compose.firecrawl.yml` 使用，仅在启动 Firecrawl 服务时有效。
+以下变量由 `deploy/compose/docker-compose.firecrawl.yml` 使用，仅在启动 Firecrawl 服务时有效。
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
@@ -71,7 +73,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 ```yaml
 server:
-  port: "5000"
+  port: "5100"
   mode: "debug"           # debug | release | test
 
 database:
@@ -104,7 +106,7 @@ database:
 
 | 设置 | 默认值 | 来源 |
 |---|---|---|
-| Server port | `"5000"` | `viper.SetDefault` in `config.go` |
+| Server port | `"5100"` | `viper.SetDefault` in `config.go` |
 | Server mode | `"debug"` | `viper.SetDefault` in `config.go` |
 | Database driver | `"postgres"` | `viper.SetDefault` in `config.go` |
 | Database DSN | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | `viper.SetDefault` in `config.go` |
@@ -120,14 +122,14 @@ database:
 | Tracing sample ratio | `0.05` | `viper.SetDefault("tracing.sample_ratio")` in `config.go`（optimize-pg-storage：全采样日产 82 万 span/600MB，降为 0.05） |
 | Tracing instrument GORM | `true` | `tracing.DefaultConfig()` / viper `tracing.instrument_gorm` |
 | Tracing instrument HTTP | `true` | `tracing.DefaultConfig()` / viper `tracing.instrument_http` |
+| Image cache max MB | `256`（`IMAGE_CACHE_MAX_MB` env） | `imageproxy.maxBytesFromEnv`（目录固定 `data/image-cache/`） |
 
 ### 前端默认值
 
 | 设置 | 默认值 | 来源 |
 |---|---|---|
-| API internal base | `"http://localhost:5000/api"` | `nuxt.config.ts` |
-| Public API origin | `"http://localhost:5000"` | `nuxt.config.ts` |
-| Public API base | `"http://localhost:5000/api"` | `nuxt.config.ts` |
+| Public API base | `"http://localhost:5100/api"` | `nuxt.config.ts` |
+| dev server host | `"0.0.0.0"` | `nuxt.config.ts`（修 Windows 下 localhost 只绑 ::1 的问题） |
 
 ## 各环境覆盖
 
@@ -135,8 +137,8 @@ database:
 
 本地开发时默认值开箱即用：
 
-- 后端运行在 `http://localhost:5000`，使用 PostgreSQL 数据库。
-- 前端开发服务器（`pnpm dev`）运行在 `http://localhost:3000`。
+- 后端运行在 `http://localhost:5100`，使用 PostgreSQL 数据库。
+- 前端开发服务器（`pnpm dev`，绑 0.0.0.0）运行在 `http://localhost:3000`，API/WS 直连后端 5100。
 - 无需配置文件或 `.env` 文件。
 - 需要本地运行 PostgreSQL + pgvector，可通过 Docker 启动：
 
@@ -147,18 +149,17 @@ docker run -d --name rss-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e 
 ### Docker（PostgreSQL + pgvector）— 推荐方式
 
 ```bash
-docker compose up -d
+docker compose --project-directory . -f deploy/compose/docker-compose.yml up -d
 ```
 
-启动三个服务：
+启动两个服务：
 
 - **postgres**: PostgreSQL（pgvector:pg18-trixie）端口 5432，数据通过 `./data/` 目录持久化。
-- **backend**: Go API 服务器端口 5000，内部连接 postgres 服务。
-- **front**: Nuxt SSR 服务器内部端口 3000，通过 `${FRONT_PORT:-3000}` 映射到宿主机。内部通过 `http://backend:5000/api` 代理 API 请求。
+- **syntopica**: 应用容器（容器内 5000，宿主映射默认 `${PORT:-5100}`），内部连接 postgres 服务，并同源托管前端静态产物。
 
 启动后：
-- 前端：`http://localhost:3000`
-- 后端 API：`http://localhost:5000/api`
+- 应用（前端页面 + API + WebSocket + 图标）：`http://localhost:5100`
+- API 基址：`http://localhost:5100/api`
 
 ## 数据库存储的设置（AI 功能）
 
@@ -172,7 +173,8 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `open_notebook_config` | Open Notebook digest 导出设置（启用、base URL、API key、model、目标笔记本、prompt 模式、自动发送日报/周报） |
 | `rsshub_config` | RSSHub 实例配置（订阅源发现用，见下「订阅源发现」节；`rsshub_base_url` 缺省回落 `http://rsshub.app`） |
 | `http_proxy_config` | 全局出站代理配置（feed 抓取 / Firecrawl / LLM 等所有外部请求；见下「出站代理」节；`http_proxy_url` 空=直连） |
-| `daily_report_time` | 日报生成时刻（HH:MM 格式，默认 `21:00`） |
+| `daily_report_time` | 日报生成最早时刻（HH:MM 格式，默认 `21:00`）；实际生成还受队列感知门控（双队列清空才出，见下一条） |
+| `daily_report_deadline` | 日报兜底强制生成时刻（HH:MM 格式，默认 `23:30`；队列未清空时到点强制出报告；早于 `daily_report_time` 回退默认并告警） |
 | `auto_start_models` | 本地模型自动拉起总开关（默认 `false`）：后端启动时，对「探测不通且配了 `start_command`」的 provider 自动执行启动命令拉起本地模型进程。见下「本地模型自动拉起」节 |
 | `persistent_topic_match_threshold` | 新 section 锚定已有话题的余弦距离阈值（默认 `0.30`） |
 | `persistent_topic_upgrade_threshold` | candidate 允许人工确认所需、同时为管理 UI 可见门槛的连续命中天数（默认 `3`；不会自动转 active） |
@@ -187,6 +189,7 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `persistent_topic_l2_candidate_k` | L2 LLM prompt 注入的 top-K 候选 topic 数（按质心距离排序）。默认 `5` |
 | `daily_report_section_merge_enabled` | 同日 section 两阶段合并（确定性 <0.20 + 灰区 LLM 仲裁）总开关。默认 `false`（关）——关闭时 section 按lane 管线原始分组落库；开启时合并仍受锚定边界约束（不同 `persistent_topic_id` / 新叙事↔锚定跨界禁止合并）。见 `flow/daily-report.md` 业务约束 12 |
 | `persistent_topic_candidate_l1_gate_enabled` | **观察期门禁**：candidate topic 是否享有 L1 直挂资格。默认 `true`（开）——开启时最近话题为 candidate 的近距离 tag（距离 < `lane_l1_threshold`）降级进 L2 band 交 LLM 裁决，阻断「一次性新闻标题 candidate 靠同域 tag 无限续命」；关闭时回退 active/candidate 均可直挂的旧行为（在线回滚用，无需发版）。见 `flow/daily-report.md` 业务约束 14 |
+| `tag_edge_retention_days` | 标签边（`article_topic_tags`）保留窗口天数，默认 `7`；缺失/非数字/≤0 回退默认并记 warn。一个键驱动三处同口径：① `aux_label_cleanup` 的边时间窗 GC（删 `created_at` 早于保留窗口下界日（本地日历天零点 − N 天）的边（仅归档文章）+ 收孤儿）；② 日报自动补档扫描窗口 `[today-N, today)`；③ `POST /api/daily-reports/generate` 与 `TriggerNowWithDate` 的重建守卫下界。见 `flow/daily-report.md` 业务约束 19/20 与 `flow/reading.md` 业务约束 6 |
 这些设置通过 `aisettings.LoadSummaryConfig()`、`aisettings.LoadFirecrawlConfig()` 等函数加载，在前端设置页面中配置。
 
 文章手动总结会在每次请求时重新读取 AI Provider 配置：优先使用 `summary` capability 的启用路由；未配置该路由时，回退到任一启用且具有 Base URL 和 Model 的 Provider。因此服务启动后新增 Provider 无需重启。API Key 对本地 Ollama、llama.cpp 或无需鉴权的 OpenAI-compatible 服务是可选项。
@@ -290,9 +293,10 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 
 - **回环地址自动直连**：即使配置了代理，目标为回环地址（`localhost` / `127.0.0.0/8` / `::1` / 空 host）的请求一律绕过代理直连（NO_PROXY 惯例）——本地托管模型（llama-server）的探测/推理不被代理 502 拦截（2026-08-19 修复，见 ai-health-reprobe）。
 
-- 保存即时生效（`httpclient.SetProxy` 运行时替换全局 transport），重启后由 `cmd/server/main.go` 从该配置注入，无需重设。
-- 与 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量的关系：本配置优先；当 `http_proxy_url` 为空时，`httpclient` 回落 `http.DefaultTransport`，仍遵循标准库 `ProxyFromEnvironment`（即环境变量作兜底）。
-- 实现入口：`internal/platform/httpclient/httpclient.go`（`SetProxy` + 包级 `proxyTransport`，Proxy 函数含回环直连 `isLoopbackHost`）；复用 `aisettings` 通用配置存储，与 RSSHub/Firecrawl 配置同机制。
+- **代理不可达熔断直连回退**（2026-09-17，见 outbound-proxy-failover）：拨代理本身失败（连接拒绝/拨号超时，如 Clash 进程退出）时，该请求立即直连重试（dial 阶段失败请求未发出，重试无副作用），并打开熔断 60 秒——窗口内所有请求直接直连零等待；到期放行单个请求试探代理（单飞，并发其余直连），代理路径通则自动接回、仍不通则续期。仅「拨代理失败」触发：代理活着但目标侧失败（502/CONNECT 拒绝/目标超时）不熔断也不直连重试（那类站点可能正是依赖代理的）。
+- **保存真正即时生效**：代理 URL 原子存储、包级 failover transport 每请求动态读取——`httpclient.SetProxy` 运行时变更（换址/清空）对**所有已构造 client**（含启动时建好的抓取/AI 单例）立即生效，无需重启；换址同时重置熔断状态（新地址按健康对待）。重启后由 `cmd/server/main.go` 从该配置注入，无需重设。
+- 与 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量的关系：本配置优先；当 `http_proxy_url` 为空时，路由回落标准库 `ProxyFromEnvironment`（即环境变量作兜底）；代理故障降级直连的重试同样保留该兑底。
+- 实现入口：`internal/platform/httpclient/`（`httpclient.go` 的 `SetProxy` 原子 URL + `failover.go` 的包级 failover transport：熔断器 3 态状态机 + `proxyDialContext` 拨号层错误打标，回环直连 `isLoopbackHost` 在路由函数内）；复用 `aisettings` 通用配置存储，与 RSSHub/Firecrawl 配置同机制。
 
 ### 订阅源发现（Feed Discovery）
 
@@ -316,7 +320,17 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 
 需在 `ai_routes` 表 seed 为启用状态并绑定至少一个 provider。未配置时精排会失败，问答/刷新返回错误（粗筛与状态机仍可用）。
 
-#### 3. 调度间隔（可由 `/api/schedulers/:name/interval` 覆盖）
+#### 3. 发现 v2 配置（improve-discovery-recommendations，均存 `ai_settings` JSON blob）
+
+| key | 默认值 | 说明 |
+|------|--------|------|
+| `discovery_seed_policy` | 窗口 30 天 / 上限 5 条 / 半衰期 7 天 / 成熟度 20 篇 / 预算 4 / 匹配阈值 0.78 / margin 0.03 | 兴趣衰减与种子预算七参数（design D3）：窗口超时置 inactive、半衰期降份额、行为成熟度让位、参与种子预算；版块匹配阈值+margin 双条件 |
+| `discovery_lifecycle` | TTL 14 天 / 暂时不看冷却 30 天 | 推荐时效与冷却（design D5）：到期未入选自动退出默认列表（≠ 拒绝），冷却跨 source 生效 |
+| `discovery_v2` | `true`（fail-open：缺省/读取失败均按启用） | v2 后台任务开关（design 迁移计划 6）：false = 停候选可用性检查/向量回补/run 维护三 job + 检查/回补入口返 503；**不管** ask/refresh 主链、候选 CRUD/导入导出、accept 建源；真回滚旧引擎需另做投影，本开关不包含 |
+
+另有调度 interval 可覆盖：`candidate_availability_check` / `candidate_embedding_backfill` / `discovery_run_maintenance` 三 job（默认每小时，启动延迟 5 分钟；见 [flow/scheduler.md](flow/scheduler.md)）。候选向量回补单批默认 20 条（`CandidateEmbeddingBatchSizeDefault`，design D9 限批）。
+
+#### 4. 调度间隔（可由 `/api/schedulers/:name/interval` 覆盖）
 
 | 调度器 | 默认间隔 | 说明 |
 |--------|----------|------|
@@ -337,16 +351,45 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 
 ## dsh 能源研究本地预设（外部工具，非 Syntopica 应用配置）
 
-本地 dsh（DeepSeek Harness，版本前提 **0.1.2-rc.1**，Web UI `http://127.0.0.1:3080`）的「能源研究」用户预设：原油供需研究专用受限 agent（仅网页检索/抓取 + 提问 + 压缩；无 Shell、文件编辑、委派能力）。本节只描述外部工具配置，不影响 Syntopica 前后端。
+本地 dsh（DeepSeek Harness，版本前提 **0.1.2-rc.1**，Web UI `http://127.0.0.1:3080`）的「能源研究」用户预设：原油供需研究专用受限 agent——工具面 = 网页检索/抓取 + 提问 + 压缩 + **单个只读 MCP 服务器 `energy_data`（EIA WPSR 周报 + JODI Oil Primary 月度，见 `tools/energy-mcp/README.md`）**；无 Shell、文件编辑、委派能力。本节只描述外部工具配置，不影响 Syntopica 前后端。
 
 | 位置 | 路径 | 说明 |
 |------|------|------|
 | 仓库配置源（唯一编辑点） | `config/dsh/presets/energy-research/`（`preset.yml` + `agent.cordis.yml`） | 进 git 可追溯；改动后需手动同步到 live |
 | live 部署 | `C:/Users/Admin/.dsh/.agent-presets/energy-research/`（同两文件） | dsh 用户预设根目录，下一次 roster 读取自动发现，无需重启 |
 
-- **同步方式**：将仓库源两文件逐字节复制到 live 目录（部署时已验证 SHA256 一致：preset.yml `afa39270…`、agent.cordis.yml `a3fd3073…`）。
-- **选用**：dsh Web UI 新建会话时在预设选择器选「能源研究」（排在「标准模式」之后，`order: 20`）。预设只在会话尚未产出内容时可选；**旧会话与部署默认预设不受影响**（未改 `settings.yaml`/模型/权限/凭据）。
-- **回退**：删除 `C:/Users/Admin/.dsh/.agent-presets/energy-research/` 目录即停止向新会话提供该预设；已运行会话及其历史不会被删除/撤销，仓库源保留。
-- **能力边界（诚实声明）**：当前**未接入** EIA/JODI/STEO 等专业数据接口（无 MCP 行、无虚构端点），取材仅限网页检索/抓取；persona 已约束不编造数值、缺证据停止。工具白名单≠OS 沙箱隔离。搜索 `maxUses` 与 host `maxParallelToolCalls` 保持原样，**尚无整场 token/硬预算限制**。
-- 行为契约为 openspec change `configure-dsh-energy-research`（spec：`dsh-research-preset`）。
+- **同步方式**：将仓库源两文件逐字节复制到 live 目录；仓库源与 live 的 `diff` 输出须为零（逐字一致）。
+- **选用**：dsh Web UI 新建会话时在预设选择器选「能源研究」（排在「标准模式」之后，`order: 20`）。预设只在会话尚未产出内容时可选；**旧会话与部署默认预设（standard）不受影响**（未改 `settings.yaml`/模型/权限/凭据）。
+- **依赖同步（新会话生效前提）**：dsh 启动命令带 `uv --frozen --no-sync`，会话建立零安装等待——但改过 `tools/energy-mcp/pyproject.toml` 后必须先手动跑一次 `uv sync --frozen`（Windows cmd：`cd /d D:\project\Syntopica\tools\energy-mcp && uv sync --frozen`），否则新会话里服务器启动失败（preset 配 `failOnStartupError: true`，会中止预设应用并报错）。
+- **工具与口径速查**（详见 `tools/energy-mcp/README.md`）：`mcp__energy_data__eia_wpsr_table1`（美国周度：库存 MMbbl / 供需 Mb/d）与 `mcp__energy_data__jodi_oil_primary`（各经济体月度，KBD/KBBL，不换算）；缺值映射 null 不转 0；`assessment_code` 原样透传（官方语义未核实）；`TIME_PERIOD` 是数据期非发布期，`last_modified` 仅为 HTTP 头未经证实；无 API key。
+- **故障与回退**：删除 live 目录两配置文件中 `tool-energy-data`（mcp-client）行（或还原仓库 `config/dsh/presets/energy-research/` 改动前副本，旧版保存在 openspec change evidence `preset-backup/`）即恢复旧工具面，已运行会话不受影响；也可整目录删除停止提供该预设。
+- **能力边界（诚实声明）**：专业数据仅 EIA/JODI 两个只读源已接入；**STEO 及其他专业接口仍未接入**，persona 已约束不假装查询过。工具白名单≠OS 沙箱隔离。搜索 `maxUses` 与 host `maxParallelToolCalls` 保持原样，**尚无整场 token/硬预算限制**。
+- 行为契约为 openspec change `configure-dsh-energy-research`（spec：`dsh-research-preset`）与 `connect-dsh-energy-data-sources`（spec：`dsh-energy-mcp-tools`，energy_data 服务器行为契约）。
 
+
+## 研究数据源（Syntopica 应用，非 dsh 外部工具）
+
+后端内置四个只读研究数据源（change `integrate-research-data-sources`，代码 `backend-go/internal/datasources/`），为后续研究对话助手供给结构化官方数值；本节是配置与口径速查。
+
+**部署与配置**：
+
+- 目录表 `data_sources` 启动时自动建表并 seed（幂等 upsert）；无迁移操作、无观测值落库（取数仅内存 TTL 缓存 900s，快照由消费方留存）。
+- 仅 UN Comtrade 需配置，三级优先（**同博查语义**）：**设置界面「研究数据源」**（`ai_settings.comtrade_config`，动态生效免重启）> `COMTRADE_API_KEY` env > `configs/config.yaml` `comtrade.api_key`。key 获取路径（2026-09 实测）：`comtradedeveloper.un.org` → 用主站（comtradeplus.un.org）同一账号登录 → 右上 **Products** → 订阅 **Free APIs** 产品（自动批准）→ **Profile → Subscriptions** 显示 primary key。免费档 500 次/天；**保活**：账号长期（半年~一年）不登录门户且无 API 活动，key 会被移除需重新生成。
+- 未配置 key 时：目录 API 中 `un_comtrade` 行 `status=disabled` 带原因；probe/取数报「配置缺失」型 SOURCE_UNAVAILABLE（消息含配置项名）；其余三源完全不受影响。目录 status 与取数**每次现读**配置（免重启翻转），设置 API 脱敏回显（已配置+末 4 位，不回显完整 key），空 key 保存不清除已存值、`enabled=false` 跳过界面值走兜底。
+
+**四源口径速查**：
+
+| 源 code | 数据 | 频度/滞后 | 单位纪律 |
+| --- | --- | --- | --- |
+| `eia_wpsr` | 美国原油库存（商业不含SPR/SPR/含SPR总量）与供需（产量/进出口） | 周度（周三发布上周五截止） | stocks=MMbbl、supply=Mb/d，不换算；仅美国不得称全球 |
+| `jodi_oil_primary` | 96 经济体原油产量/进出口/期末库存（含中日韩美） | 月度，滞后 1.5~2 月 | KBD（流量）/KBBL（库存）不换算；缺失标记（`-`/`..`/`x`）映射 null 不转 0 |
+| `wb_wdi` | 世界银行宏观年度指标（出口/GDP、燃料进口占比等） | 年度 | 指标原生单位；null 期保留 |
+| `un_comtrade` | 全球 HS 商品双边贸易（金额+数量，分伙伴国） | 年度完整；月度滞后 4 月+（中国更长） | netWgt/qty=kg、primaryValue=USD；partner_code=0 为 World 合计行；M49 码（中156/日392/韩410/沙682）；原油 HS2709 |
+
+**验证与排障**：
+
+- `GET /api/datasources`：目录全量（含各源 status）。
+- `POST /api/datasources/{code}/probe`：一次真实取数（最小参数集），返回摘要/耗时/`retrieved_at`；失败返回 `error_code`（`INVALID_ARGUMENT`=400 / `SOURCE_UNAVAILABLE`=`SCHEMA_CHANGED`=502，消息可区分配置缺失/网络/上游结构漂移）。probe 不改目录状态。
+- 上游 CSV 结构漂移（如 EIA 改列）会显式报 `SCHEMA_CHANGED` 并驱逐缓存，不做模糊容错——这是预期行为，等待上游口径更新后重试。
+
+**消费方式**：四源已注册为 agent 工具（`eia_wpsr_table1`/`jodi_oil_primary`/`wb_wdi`/`un_comtrade_trade`，经 dataenrichment 工具注册表），供后续研究对话会话使用；现有增强/问答流程的默认工具集**不含**这些工具（spec「注入后现有工具面不变」）。

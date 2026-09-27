@@ -17,7 +17,7 @@ SemanticBoard 和辅助标签相关的所有 API 端点，包括 CRUD、升级�
 
 ### Requirement: updateBoard refreshes embedding on description change
 
-PUT /api/semantic-boards/:id 当 description 变更时，重新生成 board embedding（输入 label + description）。当前仅在 label 变更时生成 embedding。
+PUT /api/semantic-boards/:id SHALL 当 description 变更时重新生成 board embedding（输入 label + description）。当前仅在 label 变更时生成 embedding。
 
 #### Scenario: description changed
 - **WHEN** updateBoard called with new description value
@@ -48,6 +48,16 @@ PUT /api/semantic-boards/:id 当 description 变更时，重新生成 board embe
 
 ### Requirement: 升级建议 API
 系统 SHALL 提供查看当前升级候选（ref_count ≥ 5 的辅助标签 + 聚类结果）和触发 LLM 升级建议的 API。
+
+#### Scenario: 查看当前升级候选
+
+- **WHEN** 用户请求升级候选列表
+- **THEN** 系统 SHALL 返回 ref_count ≥ 5 的未升级辅助标签及其预聚类结果
+
+#### Scenario: 触发 LLM 升级建议
+
+- **WHEN** 用户通过 API 触发升级建议
+- **THEN** 系统 SHALL 执行聚类 + LLM 判断流程，返回建议结果供用户确认/拒绝
 
 ### Requirement: 升级建议 DTO 包含标签名称和板块名称
 升级建议 API 的响应 SHALL 在每条建议中包含 `auxiliary_labels`（数组，每个元素含 id 和 label）和 `target_board_label`（字符串，当 decision=merge_into_existing 时）。原有 `auxiliary_label_ids` 和 `target_board_id` 字段 SHALL 保留用于执行操作。
@@ -104,7 +114,7 @@ PUT /api/semantic-boards/:id 当 description 变更时，重新生成 board embe
 
 ### Requirement: Board embedding backfill API
 
-POST /api/semantic-boards/backfill-embeddings 为所有 embedding IS NULL 且 label_type='board' 的板块生成 embedding（输入 `label + ". " + description`，description 为空时仅用 label）。返回 backfill 数量。
+POST /api/semantic-boards/backfill-embeddings SHALL 为所有 embedding IS NULL 且 label_type='board' 的板块生成 embedding（输入 `label + ". " + description`，description 为空时仅用 label），返回 backfill 数量。
 
 #### Scenario: backfill null embeddings
 - **WHEN** backfill-embeddings called
@@ -112,7 +122,7 @@ POST /api/semantic-boards/backfill-embeddings 为所有 embedding IS NULL 且 la
 
 ### Requirement: Board rematch API
 
-POST /api/semantic-boards/rematch-all 查询所有在 `topic_tag_board_labels` 中有记录的 tag，逐个调用 `MatchTopicTag` 重新匹配。用于 backfill embedding 后刷新 direction_mismatch 标记。
+POST /api/semantic-boards/rematch-all SHALL 查询所有在 `topic_tag_board_labels` 中有记录的 tag，逐个调用 `MatchTopicTag` 重新匹配。用于 backfill embedding 后刷新 direction_mismatch 标记。
 
 #### Scenario: rematch after backfill
 - **WHEN** rematch-all called
@@ -124,7 +134,7 @@ POST /api/semantic-boards/rematch-all 查询所有在 `topic_tag_board_labels` �
 
 ### Requirement: getBoardArticles supports direction_mismatch filtering
 
-GET /api/semantic-boards/:id/articles 新增 query param `show_direction_mismatch`。默认 `false`，filtered_tags 排除 direction_mismatch=true 的标签。`true` 时包含全部。
+GET /api/semantic-boards/:id/articles SHALL 支持 query param `show_direction_mismatch`。默认 `false`，filtered_tags 排除 direction_mismatch=true 的标签；`true` 时包含全部。
 
 #### Scenario: default (hide direction mismatch)
 - **WHEN** request without show_direction_mismatch param

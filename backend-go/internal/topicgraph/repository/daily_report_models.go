@@ -12,10 +12,16 @@ import (
 )
 
 // BoardDailyReport — one report per board per day
+//
+// The (semantic_board_id, period_date) unique index is the DB-level guarantee
+// behind SaveReport's find-then-create upsert: once the backfill scan adds a
+// second writer, two concurrent generations for the same (board, day) would
+// otherwise insert duplicate reports (flow/daily-report 红线 1). A conflicting
+// insert now fails loudly and the caller logs/continues (offline-catchup H2).
 type BoardDailyReport struct {
 	ID                      uint      `gorm:"primarykey" json:"id"`
-	SemanticBoardID         uint      `gorm:"index;not null" json:"semantic_board_id"`
-	PeriodDate              time.Time `gorm:"type:date;not null" json:"period_date"`
+	SemanticBoardID         uint      `gorm:"index;uniqueIndex:idx_board_daily_reports_board_period,priority:1;not null" json:"semantic_board_id"`
+	PeriodDate              time.Time `gorm:"type:date;not null;uniqueIndex:idx_board_daily_reports_board_period,priority:2" json:"period_date"`
 	Title                   string    `json:"title"`
 	Summary                 string    `json:"summary"`
 	Highlights              JSON      `gorm:"type:jsonb" json:"highlights"`
@@ -517,3 +523,22 @@ type TopicWatchHit struct {
 }
 
 func (TopicWatchHit) TableName() string { return "topic_watch_hits" }
+
+// TopicLaneSnapshot is a lane's rolling situation snapshot
+// (overview-lane-dynamics design D2): one row per persistent topic,
+// overwritten by each daily-report settlement (每泳道保留一份当前快照).
+// Purely derived cache — recomputable from report data on the next report
+// day, so no backfill is needed. FK ON DELETE CASCADE (deleting a topic
+// removes its snapshot) is owned by migration 20260910_0001 — AutoMigrate
+// runs with DisableForeignKeyConstraintWhenMigrating and cannot create it.
+type TopicLaneSnapshot struct {
+	ID                uint      `gorm:"primarykey" json:"id"`
+	PersistentTopicID uint      `gorm:"not null;uniqueIndex:idx_topic_lane_snapshots_topic" json:"persistent_topic_id"`
+	RollingSummary    string    `gorm:"type:text;not null" json:"rolling_summary"` // ≤200字态势句
+	RollingDetail     string    `gorm:"type:text" json:"rolling_detail"`           // ≤1000字长版叙述；空=缺失（存量/生成失败降级）
+	AsOfDate          time.Time `gorm:"type:date;not null" json:"as_of_date"`      // 汇总截止（=最近一份已完成报告期）
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+func (TopicLaneSnapshot) TableName() string { return "topic_lane_snapshots" }

@@ -72,3 +72,21 @@ erDiagram
     }
 ```
 
+
+---
+
+## notifications（add-notification-center，2026-09-17）
+
+单用户通知信箱。**白名单 = 日报生成终态**（完成 / 一条失败汇总，互斥；高频过程类事件不落行）。
+
+| 字段 | 类型 | 说明 |
+| ------ | ------ | ------ |
+| `id` | bigserial PK | |
+| `type` | varchar | `success` / `error` |
+| `title` | varchar | 如「日报已生成 · 2026-09-17」 |
+| `summary` | text | 如「共 6 个版面，保存 42 条条目。」 |
+| `link_type` / `link_id` | varchar | 可选跳转目标（`daily-report` → /tags 日报读者） |
+| `is_read` | bool | 已读=已浏览（打开面板即全部置已读） |
+| `created_at` | timestamptz | |
+
+保留：**上限 500 行，写入路径内淘汰**（DELETE 最旧已读优先，全未读才删最旧未读）；不参与 log_cleanup。新行写入后同步经 WS 广播 `notification` 事件。模型：`internal/models/notification.go`，服务：`internal/platform/notification/`。

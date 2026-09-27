@@ -14,6 +14,8 @@ backend-go/main.exe
 backend-go/*.exe
 backend-go/syntopica
 backend-go/syntopica.exe
+backend-go/dump-sanitizer
+backend-go/dump-sanitizer.exe
 backend-go/server.exe
 backend-go/instrumenter
 backend-go/bin/fresh.exe
@@ -38,6 +40,8 @@ logs/
 logs/
 data.7z
 demo/seed/seed.sql
+demo/seed/seed-*.sql
+demo/seed/.rsshub-rewrite
 backups/
 /.*
 pgvector-pg18-arm64.tar
@@ -46,9 +50,27 @@ tests
 research/readability-spike/readability-spike.exe
 backend-go/verify-cluster-prompt
 analysis-reports/
-# harness 事实库本机运行数据（.pi/ 已被 /.* 忽略，此处显式自文档化）
+# harness 扩展源码入库（.pi/ 本被 /.* 忽略；仅放行插件源码与配置，
+# 运行数据/日志/本机技能副本仍排除——避免把 events.db、spill、日志提交进仓）
+!.pi/
+!.pi/extensions/
+!.pi/extensions/**
+!.pi/constraint-injection.json
+!.pi/harness.json
+# 排除项（顺序在下、后匹配胜出）：事实库 DB + spill + 本机技能/提示词副本 + smoke 构建产物
 .pi/harness/
+.pi/prompts/
+.pi/skills/
+.pi/extensions/tests/.*.cjs
+# 运行时状态：start-dev.sh 的 pidfile（.pi/run/*.pgid）与 pi-subagents 调度状态
+.pi/run/
+.pi/subagents/
+.pi/tmp/
+nohup.out
 docs/research
 docs/experience
 artifacts
 *.dump
+
+# 前端静态构建产物（本地静态托管形态，pnpm generate 生成，不入库）
+backend-go/frontend/

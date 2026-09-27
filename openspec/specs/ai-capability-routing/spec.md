@@ -1,17 +1,27 @@
 ## Purpose
 
 AI 能力路由系统：为每个 AI capability（summary、digest_polish、topic_tagging、embedding 等）维护独立的路由配置、provider 绑定与并发配额，使各业务流程通过其绑定的 capability 加载路由与 provider，互不干扰。
+
 ## Requirements
+
 ### Requirement: 能力与业务用途绑定
-系统 SHALL 为每个 AI capability 维护与业务用途的唯一绑定：`summary` SHALL 驱动文章自动总结；`digest_polish` SHALL 驱动日报生成；`topic_tagging` SHALL 驱动事件标签提取与标签相关的语义操作；`embedding` SHALL 驱动向量嵌入。每个业务流程 SHALL 仅通过其绑定的 capability 加载路由与 provider。
+
+系统 SHALL 为每个 AI capability 维护与业务用途的唯一绑定：`summary` SHALL 驱动文章自动总结；`digest_polish` SHALL 驱动日报生成；`topic_tagging` SHALL 驱动事件标签提取与标签相关的语义操作；`embedding` SHALL 驱动向量嵌入；`open_notebook` SHALL 驱动日报页边注问答（margin notes QA，通用概念 + 当天文章上下文 RAG 作答与术语抽取）。每个业务流程 SHALL 仅通过其绑定的 capability 加载路由与 provider。
 
 #### Scenario: 文章总结使用 summary 路由
+
 - **WHEN** 文章自动总结流程（`summarizeContent`）调用 LLM
 - **THEN** 系统 SHALL 通过 `summary` capability 加载路由与 provider
 
 #### Scenario: 日报生成使用 digest_polish 路由
+
 - **WHEN** 日报生成流程的任一 LLM 调用（聚类、要闻、叙事）执行
 - **THEN** 系统 SHALL 通过 `digest_polish` capability 加载路由与 provider
+
+#### Scenario: 页边注问答使用 open_notebook 路由
+
+- **WHEN** 日报页边注批注的问答流程（回答生成与术语抽取）调用 LLM
+- **THEN** 系统 SHALL 通过 `open_notebook` capability 加载路由与 provider，并按该 capability 的并发配额限流
 
 ### Requirement: 默认并发配额独立
 系统 SHALL 为每个 capability 提供独立的默认并发上限信号量，可被路由级 `MaxConcurrency` 覆盖。不同 capability 的并发配额 SHALL 互不挤占。
@@ -143,3 +153,39 @@ AI 能力路由系统：为每个 AI capability（summary、digest_polish、topi
 - **WHEN** 调用 GET /api/ai/providers
 - **THEN** 每个 provider 对象 SHALL 至少包含表示 start_command 是否已配置的字段（start_command 原文或 start_command_configured 布尔）
 
+### Requirement: Provider 删除级联解绑
+
+系统 SHALL 允许删除被能力线路引用的 provider：删除请求 SHALL 在同一事务内先解除该 provider 的全部线路关联（`ai_route_provider` 关联记录），再删除 provider 本身。系统 SHALL NOT 因 provider 仍被线路引用而拒绝删除请求。删除响应 SHALL 告知用户解除的线路关联数量。
+
+#### Scenario: 删除挂在线路上的 provider
+
+- **WHEN** 用户删除一个被一条或多条能力线路引用的 provider
+- **THEN** 系统 SHALL 删除该 provider 及其在所有线路上的关联记录，返回成功响应并说明解除的关联数量
+
+#### Scenario: 删除未被引用的 provider
+
+- **WHEN** 用户删除一个没有任何线路引用的 provider
+- **THEN** 系统 SHALL 直接删除该 provider，行为与级联解绑路径一致
+
+### Requirement: 删除入口不被引用状态阻断
+
+管理界面 SHALL NOT 因 provider 仍被线路引用而禁用或阻断其删除入口；当被删 provider 挂在线路上时，界面 SHALL 在删除确认前告知「将从所有线路解绑」的后果。
+
+#### Scenario: 挂线路 provider 的删除入口与告知
+
+- **WHEN** 用户查看一个被线路引用的 provider 的删除操作入口
+- **THEN** 删除按钮 SHALL 可点击，且行内 SHALL 展示告知性文案（删除将自动从所有线路解绑）
+
+#### Scenario: 删除确认弹窗
+
+- **WHEN** 用户点击删除按钮
+- **THEN** 系统 SHALL 弹出统一确认弹窗（非原生 confirm），确认后执行删除，取消则不发起任何请求
+
+### Requirement: 被摘空的线路允许存在
+
+线路因 provider 删除（级联解绑）而不再持有任何 provider 时，系统 SHALL 保留该线路及其配置。后续调用该能力的 LLM/嵌入时，系统 SHALL 走既有的「无可用 provider」错误路径，SHALL NOT 因线路为空而 panic 或产生不一致状态。
+
+#### Scenario: 线路被摘空后调用该能力
+
+- **WHEN** 某能力的全部 provider 均被删除（线路被摘空）后，业务流程调用该能力
+- **THEN** 系统 SHALL 返回既有的无可用 provider 错误，错误信息可预期

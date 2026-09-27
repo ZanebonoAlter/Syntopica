@@ -1,7 +1,9 @@
 ## Purpose
 
 调度器的执行结果必须端到端可见：每个调度器的执行产物（如「清理了 N 条日志」「恢复 N 篇文章」）SHALL 持久化到数据库、SHALL 通过 API 可读、SHALL 在前端展示。本能力修复当前「结果只在内存、重启即丢」「前端不展示详情」「部分调度器在 API 不可见」的问题。
+
 ## Requirements
+
 ### Requirement: 所有调度器持久化执行结果
 全部 9 个调度器（auto_refresh, preference_update, content_completion, firecrawl, tag_quality_score, log_cleanup, daily_report, aux_label_cleanup, blocked_article_recovery）SHALL 在执行后将 `JobResult`（含 `Data` 计数与 `Summary`）写入 `scheduler_tasks.last_execution_result` 字段。SHALL NOT 有任何调度器在注册时缺少持久化配置。
 
@@ -77,3 +79,21 @@
 - **WHEN** analysis_paused 切回 false
 - **THEN** 受影响调度器状态恢复正常 idle/running 语义
 
+### Requirement: 无调度器的运行模式返回空集合而非错误
+
+在调度器未注册/未启动的运行模式（如只读 demo、`DEMO_READ_ONLY=1`）下，调度器状态类端点（至少 `/api/schedulers/status`、`/api/tasks/status`）SHALL 返回 HTTP 200 与结构合法的空集合（`data: []` 或等价空结构），MUST NOT 以 5xx 表达「无调度器」。前端常驻轮询这些端点时 MUST NOT 收到 5xx。
+
+#### Scenario: 只读模式返回 200 空集合
+
+- **WHEN** 在只读 demo 模式（调度器未注册）下请求 `/api/schedulers/status`
+- **THEN** 响应 SHALL 为 HTTP 200，且响应体 SHALL 为可被前端解析的空调度器列表
+
+#### Scenario: 任务队列状态同样可用
+
+- **WHEN** 在只读 demo 模式（任务账本未初始化）下请求 `/api/tasks/status`
+- **THEN** 响应 SHALL 为 HTTP 200，且响应体 SHALL 表示「无活跃任务、队列为空」
+
+#### Scenario: 读模式不影响生产模式语义
+
+- **WHEN** 在调度器正常注册的运行模式下请求同一端点
+- **THEN** 响应 SHALL 仍为既有结构（含真实调度器列表与 `analysis_paused`/`ai_healthy` 等顶层字段）
