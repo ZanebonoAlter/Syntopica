@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="front/public/favicon.png" width="300" alt="Syntopica">
+  <img src="img/readme/syntopica.png" width="100%" alt="Syntopica">
 </p>
 
 <h1 align="center">Syntopica</h1>
