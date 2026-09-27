@@ -376,6 +376,57 @@ HTTPS_PROXY=http://proxy:port
 
 这些通过两个 Docker Compose 文件的 `build.args` 部分传递。
 
+## 本地 AI 推理（llama.cpp）
+
+> 本节为 README「AI 模型配置」外链的完整参考（refresh-readme-2026-10 D4：完整命令行与显存表迁到部署指南，README 只留方案对比）。
+
+### 命令行示例
+
+从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases) 下载对应平台的预编译版本，并准备 GGUF 模型。
+
+文本服务：
+
+```bash
+./llama-server \
+  -m model/Qwen3.5-9B-UD-Q6_K_XL.gguf \
+  -c 49152 -ngl 999 \
+  --cache-type-k q8_0 --cache-type-v q8_0 \
+  --flash-attn on --port 8080 --host 0.0.0.0 \
+  --jinja --reasoning-format deepseek \
+  --chat-template-kwargs '{"enable_thinking":false}' \
+  -np 2
+```
+
+Embedding 服务：
+
+```bash
+./llama-server \
+  -m model/Qwen3-Embedding-4B-Q6_K.gguf \
+  -c 8192 --embeddings --pooling mean \
+  --host 0.0.0.0 --port 8081
+```
+
+如果 Syntopica 运行在 Docker 内，而模型服务运行在宿主机，请使用 `host.docker.internal`，例如：
+
+```text
+http://host.docker.internal:8080/v1
+http://host.docker.internal:8081/v1
+```
+
+两个服务都在 Syntopica Web UI 中以 OpenAI Compatible API 形式接入（文本/Embedding 分开配置，见配置指南的 AI 能力路由）。
+
+### 显存参考
+
+实际占用还会受到 KV Cache、上下文长度、量化方式和并发数影响。
+
+| GPU 显存 | 文本模型参考 | Embedding 模型参考 |
+|---|---|---|
+| 无 GPU / 4 GB | Qwen3 4B 量化 | Qwen3 Embedding 0.6B |
+| 6-8 GB | Qwen3 8B 量化 | Qwen3 Embedding 0.6B / 4B |
+| 12 GB | Qwen3.5 9B 量化 | Qwen3 Embedding 4B |
+| 16 GB | Qwen3 14B 量化 | Qwen3 Embedding 4B |
+| 24 GB+ | Qwen3 32B 量化 | Qwen3 Embedding 4B |
+
 ## 数据持久化
 
 ### PostgreSQL
