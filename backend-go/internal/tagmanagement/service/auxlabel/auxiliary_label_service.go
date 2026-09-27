@@ -297,7 +297,14 @@ func (s *AuxiliaryLabelService) MergeAuxiliaryLabelAlias(ctx context.Context, so
 				target.Aliases = append(target.Aliases, alias)
 			}
 		}
-		if err := tx.Save(&target).Error; err != nil {
+		// 列级更新只写 aliases 列：target 虽为全列加载、全量 Save 当前恰好安全，但这是
+		// 巧合式安全——任何后续改用缓存结构体（loadActiveAuxiliaryLabels 刻意不加载
+		// 向量列）就会复发 addAlias 同款清向量 bug。统一列级更新把「alias 合并不碰
+		// 向量列」变成路径无关的硬事实（fix-alias-save-vector-wipe）。
+		if err := tx.Model(&models.SemanticLabel{}).
+			Where("id = ?", target.ID).
+			Select("aliases").
+			Updates(models.SemanticLabel{Aliases: target.Aliases}).Error; err != nil {
 			return err
 		}
 
@@ -382,6 +389,108 @@ func (s *AuxiliaryLabelService) RecountRefs(ctx context.Context, ids []uint) err
 		}
 	}
 	return nil
+}
+
+// auxLabelBackfillBatchSize is the per-batch row count when scanning
+// dead-vector auxiliary labels (design D3). Cursor pagination (id > lastID)
+// ensures every qualifying row is visited exactly once per trigger, even
+// when some rows fail generation and stay NULL.
+const auxLabelBackfillBatchSize = 50
+
+// AuxLabelBackfillSummary reports what one backfill pass did.
+type AuxLabelBackfillSummary struct {
+	Scanned int `json:"scanned"` // dead-vector rows visited this pass
+	Fixed   int `json:"fixed"`   // rows whose missing vectors were rebuilt
+	Skipped int `json:"skipped"` // rows skipped due to generation/persist failure
+}
+
+// CountMissingEmbeddings counts active auxiliary labels whose embedding or
+// merge_embedding is NULL — the dead-vector rows targeted by backfill
+// (fix-alias-save-vector-wipe: addAlias 全量 Save 清零向量的受害行).
+func (s *AuxiliaryLabelService) CountMissingEmbeddings(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&models.SemanticLabel{}).
+		Where("label_type = ? AND status = ?", "auxiliary", "active").
+		Where("embedding IS NULL OR merge_embedding IS NULL").
+		Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count dead-vector auxiliary labels: %w", err)
+	}
+	return count, nil
+}
+
+// BackfillMissingEmbeddings rebuilds missing vectors for active auxiliary
+// labels using the exact L3 generation rules (merge embedding ← label,
+// storage embedding ← "label: description" or bare label). Only the NULL
+// column(s) of each row are written — existing vectors are never touched,
+// which also makes the pass idempotent: re-triggering processes only rows
+// that are still NULL. Row-level failures (LLM error, persist error) are
+// logged as warnings and skipped so one bad row cannot block the rest.
+func (s *AuxiliaryLabelService) BackfillMissingEmbeddings(ctx context.Context) (*AuxLabelBackfillSummary, error) {
+	summary := &AuxLabelBackfillSummary{}
+	var lastID uint
+	for {
+		var rows []models.SemanticLabel
+		if err := s.db.WithContext(ctx).
+			Select("id, label, description, embedding, merge_embedding").
+			Where("label_type = ? AND status = ?", "auxiliary", "active").
+			Where("id > ?", lastID).
+			Where("embedding IS NULL OR merge_embedding IS NULL").
+			Order("id ASC").
+			Limit(auxLabelBackfillBatchSize).
+			Find(&rows).Error; err != nil {
+			return summary, fmt.Errorf("query dead-vector auxiliary labels: %w", err)
+		}
+		if len(rows) == 0 {
+			if summary.Fixed > 0 {
+				// 恢复的 merge 向量此前不在 L2 去重缓存里，失效后下次打标即吃到新向量
+				s.cache.mu.Lock()
+				s.cache.mergeEmbeddings = nil
+				s.cache.mergeEmbeddingsAt = time.Time{}
+				s.cache.mu.Unlock()
+			}
+			return summary, nil
+		}
+		for i := range rows {
+			lastID = rows[i].ID
+			if err := s.backfillRow(ctx, &rows[i]); err != nil {
+				logging.Warnf("aux label backfill: skip id=%d label=%q: %v", rows[i].ID, rows[i].Label, err)
+				summary.Skipped++
+				continue
+			}
+			summary.Fixed++
+		}
+		summary.Scanned += len(rows)
+	}
+}
+
+// backfillRow rebuilds the NULL vector columns of one auxiliary label with
+// L3-identical generation rules, writing only the columns it rebuilt.
+func (s *AuxiliaryLabelService) backfillRow(ctx context.Context, row *models.SemanticLabel) error {
+	updates := map[string]any{}
+	if row.MergeEmbedding == nil {
+		mergePgVector, _, err := s.embedder(ctx, row.Label, AuxiliaryLabelEmbeddingModeMerge)
+		if err != nil {
+			return fmt.Errorf("merge embedding: %w", err)
+		}
+		updates["merge_embedding"] = mergePgVector
+	}
+	if row.Embedding == nil {
+		storageInput := row.Label
+		if desc := strings.TrimSpace(row.Description); desc != "" {
+			storageInput = row.Label + ": " + desc
+		}
+		storagePgVector, _, err := s.embedder(ctx, storageInput, AuxiliaryLabelEmbeddingModeStorage)
+		if err != nil {
+			return fmt.Errorf("storage embedding: %w", err)
+		}
+		updates["embedding"] = storagePgVector
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Model(&models.SemanticLabel{}).
+		Where("id = ?", row.ID).
+		Updates(updates).Error
 }
 
 // GC performs garbage collection on auxiliary labels based on the requested mode.
@@ -661,7 +770,16 @@ func packageAuxLabelCacheGetOrLoad(ctx context.Context, db *gorm.DB) (map[uint][
 func (s *AuxiliaryLabelService) addAlias(ctx context.Context, label *models.SemanticLabel, alias string) (*models.SemanticLabel, error) {
 	if !semanticAliasesContain(label.Aliases, alias) && !strings.EqualFold(label.Label, alias) {
 		label.Aliases = append(label.Aliases, alias)
-		if err := s.db.WithContext(ctx).Save(label).Error; err != nil {
+		// 列级更新只写 aliases 列：label 来自缓存加载（Select 刻意排除向量列，
+		// 17.5k 标签的内存预算），历史实现的全量 Save 会把 nil 向量字段写成 NULL
+		// ——标签向量静默清零的根源（fix-alias-save-vector-wipe）。用
+		// Select("aliases")+struct 而非 map 形式：GORM 只有 struct 路径才对
+		// jsonb serializer 字段（Aliases）做序列化，且 updated_at 照常自动维护。
+		if err := s.db.WithContext(ctx).
+			Model(&models.SemanticLabel{}).
+			Where("id = ?", label.ID).
+			Select("aliases").
+			Updates(models.SemanticLabel{Aliases: label.Aliases}).Error; err != nil {
 			return nil, err
 		}
 		s.invalidateOnAliasChange()

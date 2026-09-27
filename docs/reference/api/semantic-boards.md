@@ -24,6 +24,7 @@
 | GET | `/auxiliary-labels` | 查询辅助标签池 |
 | GET | `/auxiliary-labels/clusters` | 辅助标签聚类 |
 | POST | `/auxiliary-labels/merge-alias` | 合并辅助标签为 alias |
+| POST | `/auxiliary-labels/backfill-embeddings` | 辅助标签死向量回填（202 异步） |
 | POST | `/auxiliary-labels/gc` | 辅助标签垃圾回收 |
 | POST | `/auxiliary-labels/:id/disable` | 禁用辅助标签 |
 | GET | `/composite-labels` | 查询组合标签（?status=active/disabled） |
@@ -292,6 +293,18 @@ Response `data`：
 ```
 
 `label` 为簇代表（`ref_count` 最高者）；`unclustered_count` 为未能进入任何 ≥2 簇的标签数。
+
+### POST `/auxiliary-labels/backfill-embeddings`
+
+重建 active 辅助标签缺失（NULL）的 embedding / merge_embedding 向量（fix-alias-save-vector-wipe 存量修复）。生成规则与 L3 新建一致（merge ← label，storage ← "label: description"，无 description 时仅 label），**只补缺失的那列**、已有向量不重算；行级生成失败跳过不阻塞。
+
+幂等：重复触发只处理仍缺向量的行；无死向量时空操作（零 LLM 调用）。同步返回 pending 数后由后台 goroutine 异步执行，重触发至 `pending: 0` 即完成；完成后可选跑 `POST /semantic-boards/rematch-all` 让版块挂载重新竞争。
+
+无请求体。Response `202` `data`：
+
+```json
+{ "pending": 1505 }
+```
 
 ### POST `/auxiliary-labels/gc`
 

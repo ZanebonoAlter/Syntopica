@@ -16,6 +16,13 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/database"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
+
+	// decouple-backend-domains 后 discovery 模型改由 discovery/models 包 init 注册
+	// （生产经 internal/app → internal/discovery 引入）；testutil 不能走 app（太重），
+	// blank import 让 init 生效，golden schema 才有 feed_recommendations 等表——
+	// runDiscoveryV2Backfill 在 AutoMigrate 后直接查它们。4421c068 漏改本文件，
+	// 曾致全部 PG testcontainer 测试红（2026-09-27 存量回归，fix-alias-save-vector-wipe 巡检发现）。
+	_ "syntopica-backend/internal/discovery/models"
 )
 
 // ── Safety contract ──────────────────────────────────────────────────────────
