@@ -31,7 +31,7 @@
 
 - [x] 5.1 `docs/reference/flow/discovery.md`「业务约束与不变量」节补一条约束（编号顺延）：**来源订阅状态的展示判定与召回期资格过滤是两套口径**——展示层 RSSHub 按路由级前缀（段边界 + 最长前缀优先）、原生 RSS 按精确地址，只读不建关联；召回期仍按精确 `feeds.url` 过滤（本 change 不改）；路由级命中只提示、不禁用订阅入口，重复保护落在最终地址（弹出/提交前比对）。同时更新「链路设计」中候选库/推荐卡的订阅状态描述（若与现状不符）
 - [x] 5.2 `docs/reference/api/discovery.md`：候选列表/详情、推荐卡片、查询结果条目三处响应说明补 `subscribed`（RSSHub 路由级 / 原生精确）与 `subscribed_urls` 字段语义与空值形态
-- [ ] 5.3 **归档后**（§12 强制）：在 `flow/discovery.md`「变更溯源」表补本 change 行（`<date>-fix-discovery-subscribed-hint` + 一句话说明）
+- [x] 5.3 **归档后**（§12 强制）：在 `flow/discovery.md`「变更溯源」表补本 change 行（`<date>-fix-discovery-subscribed-hint` + 一句话说明）（2026-09-29 归档时已补）
 
 ## 6. 测试
 
@@ -50,7 +50,12 @@
 | 原生 RSS 地址已订阅不再给重复入口 | backend-go/internal/discovery/service/candidate_catalog_service_test.go front/app/features/discovery/components/CandidateLibrary.test.ts |
 | 已订阅来源的提示（推荐卡） | backend-go/internal/discovery/service/recommendation_service_test.go front/app/features/discovery/components/DiscoveryCard.test.ts |
 | 已订阅来源的提示（查询结果） | backend-go/internal/discovery/service/discovery_run_service_test.go front/app/features/discovery/components/DiscoveryRunCard.test.ts front/app/features/discovery/components/DiscoveryPanel.test.ts |
-| 原生与参数订阅（弹窗按最终地址锁定，行为不回退） | front/app/features/discovery/components/CandidateSubscribeDialog.test.ts |
+| 原生与参数订阅 | front/app/features/discovery/components/CandidateSubscribeDialog.test.ts |
+| 已订阅来源的提示 | backend-go/internal/discovery/service/recommendation_service_test.go, front/app/features/discovery/components/DiscoveryCard.test.ts, front/app/features/discovery/components/DiscoveryRunCard.test.ts, front/app/features/discovery/components/DiscoveryPanel.test.ts |
+| 多来源和缺失检查信息 | 人工·已订阅提示徽标 title 附真实召回来源，不改推荐元数据展示（主体 a8fd876a 已含既有断言，DiscoveryCard.test.ts 不回归） |
+| 手动入库再订阅 | backend-go/internal/discovery/service/candidate_catalog_service_test.go |
+| 输入校验及同源重复 | backend-go/internal/discovery/service/candidate_catalog_service_test.go |
+| 停用与订阅独立 | backend-go/internal/discovery/service/candidate_catalog_service_test.go |
 | 前缀/段边界/最长前缀/精确匹配规则 | backend-go/internal/discovery/service/subscription_state_test.go |
 | 三处响应字段契约（含空值形态 `[]`） | backend-go/internal/discovery/service/{candidate_catalog,recommendation,discovery_run}_service_test.go |
 | 文档口径与字段说明落实 | `grep -n "subscribed_urls" docs/reference/api/discovery.md`；`grep -n "路由级" docs/reference/flow/discovery.md` |
