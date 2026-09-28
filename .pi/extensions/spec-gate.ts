@@ -17,7 +17,9 @@
  *    ④' UI 验收证据检查（make-ui-design-first-class）：新 schema（syntopica-ui）change
  *       归档时按 ui-design.md 影响等级校验验收证据（major：approved+原型存在+opencli
  *       +1440×900/1920×1080+差异说明；minor：组件/opencli/人工映射；none：N/A 一致性），
- *       缺项记 policy=ui-design-gate block ui-verification-missing；旧 schema 零检查不阻断
+ *       缺项记 policy=ui-design-gate block ui-verification-missing；旧 schema 零检查不阻断；
+ *       此前有未解除的 ui-verification-missing block 而本次证据齐备 → 放行时刻记
+ *       action=pass（ui-design-satisfied，add-change-lifecycle-retro design D2）
  * 3. 失败 → { block: true, reason }：reason 中文，列失败项 + 每项尾部输出（tail 20 行）+
  *    修复指引（含 doc-impact-excuse 豁免机制与 --force / SPEC_GATE_BYPASS=1 逃生口）
  * 4. 豁免：命令带 --force 或环境变量 SPEC_GATE_BYPASS=1 → 放行，但 custom_message 记
@@ -41,6 +43,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { logPolicyDecision, type PolicyDecisionInput } from "./lib/policy-decision";
 import { missingArchiveUiEvidence } from "./lib/ui-design-gate";
+import { queryByChange } from "./lib/harness-log";
 
 // ---------- 配置常量（环境变量可覆盖） ----------
 
@@ -298,7 +301,11 @@ async function gateArchive(
 
 	if (failures.length === 0) {
 		console.log(`[spec-gate] ${name} 五项归档检查通过，放行`);
-		return; // 正常放行：零 policy.decision（低噪声约束）
+		// 放行侧锚点（add-change-lifecycle-retro D2）：检查④'曾以 ui-verification-missing
+		// block 过本 change（账本上未解除）而本次证据齐备 → 放行时刻记 action=pass；
+		// 首次归档（无 block 在案）零记录。旁路化：异常不影响放行。
+		recordUiEvidenceRelease(ctx, name);
+		return; // 正常放行：其余零 policy.decision（低噪声约束）
 	}
 	console.warn(`[spec-gate] ${name} 归档检查未通过（${failures.length} 项失败），已阻断`);
 	auditPolicy(ctx, name, {
@@ -316,6 +323,48 @@ function extractChangeName(command: string): string {
 	if (!m) return "";
 	const name = m[1].trim().split(/\s+/).find((tok) => !tok.startsWith("-")) ?? "";
 	return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) ? name : "";
+}
+
+/**
+ * 归档侧 UI 证据解除记账（add-change-lifecycle-retro design D2）：查账本中该 change
+ * 名下 policy=ui-design-gate 的 block/pass 序列，最近一条未解除的 block 是
+ * ui-verification-missing（本检查④'曾拦下）→ 记 action=pass（ui-design-satisfied）。
+ * 工具侧四码的解除由 ui-design-gate 扩展的 tool_call 路径记（职责分列不双写）；
+ * 无 block 在案 / 已解除 / 非本检查码 → 零记录。纯旁路：异常仅告警不影响放行。
+ */
+function recordUiEvidenceRelease(ctx: GateCtx, name: string): void {
+	try {
+		const sessionId = ctx.sessionManager?.getSessionId?.();
+		if (!ctx.cwd || !sessionId) return;
+		const rows = queryByChange(ctx.cwd, name, ["policy.decision"]);
+		let lastBlockReason: string | null = null;
+		let released = false;
+		for (const r of rows) {
+			let p: { policy?: unknown; action?: unknown; reasonCode?: unknown };
+			try {
+				p = JSON.parse(r.payload) as typeof p;
+			} catch {
+				continue;
+			}
+			if (p.policy !== "ui-design-gate") continue;
+			if (p.action === "block") {
+				lastBlockReason =
+					typeof p.reasonCode === "string" ? p.reasonCode : null;
+				released = false;
+			} else if (p.action === "pass") {
+				released = true;
+			}
+		}
+		if (lastBlockReason !== "ui-verification-missing" || released) return;
+		auditPolicy(ctx, name, {
+			policy: "ui-design-gate",
+			action: "pass",
+			reasonCode: "ui-design-satisfied",
+			target: "archive",
+		});
+	} catch (err) {
+		console.warn(`[spec-gate] UI 证据解除记账异常（旁路忽略）：${String(err)}`);
+	}
 }
 
 /** 跑一个门禁脚本：code 为真实退出码（异常 -1）；ok = code===0；detail 含退出码 + 输出尾部 20 行；

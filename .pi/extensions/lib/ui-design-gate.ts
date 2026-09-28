@@ -29,6 +29,44 @@ export const UI_REASON_CODES = [
 ] as const;
 export type UiReasonCode = (typeof UI_REASON_CODES)[number];
 
+/**
+ * 放行侧 pass reasonCode（add-change-lifecycle-retro design D2；与 block 白名单分列，
+ * 属 harness-fact-log 词汇表而非 ui-design-workflow spec 的阻断码）：
+ * - ui-approval-approved：用户在对话中明确批准原型（major 档 approval pending→approved 的时刻）
+ * - ui-design-satisfied：block 后补齐文档/修正声明，门禁放行的时刻
+ */
+export const UI_PASS_REASON_CODES = [
+	"ui-approval-approved",
+	"ui-design-satisfied",
+] as const;
+export type UiPassReasonCode = (typeof UI_PASS_REASON_CODES)[number];
+
+/** 工具侧 block reasonCode（其放行由 ui-design-gate 扩展的 tool_call 路径记 pass） */
+const TOOL_SIDE_BLOCK_CODES: readonly string[] = [
+	"ui-impact-missing",
+	"ui-impact-mismatch",
+	"ui-design-missing",
+	"ui-prototype-missing",
+];
+
+/**
+ * 由「最近一条未解除的 block」的 reasonCode 推导放行 pass 的 reasonCode（纯函数，白盒直测点）：
+ * - ui-approval-pending → ui-approval-approved（末次卡点是审批，批准即放行时刻）
+ * - 工具侧文档类四码 → ui-design-satisfied（补齐/修正后放行）
+ * - 其余（归档侧 ui-verification-missing 由 spec-gate 归档路径解除 / 无 block / 未知码）
+ *   → null（本路径不记 pass）。
+ * 合并瞬间（文档与审批同时补齐）取末次 block 语义：审批码优先，文档修复折入同一条 pass。
+ */
+export function passReasonForRelease(
+	lastBlockReason: string | null | undefined,
+): UiPassReasonCode | null {
+	if (lastBlockReason === "ui-approval-pending") return "ui-approval-approved";
+	if (TOOL_SIDE_BLOCK_CODES.includes(lastBlockReason ?? "")) {
+		return "ui-design-satisfied";
+	}
+	return null;
+}
+
 /** ui-impact 合法档位 */
 export type UiImpact = "none" | "minor" | "major";
 /** ui-approval 合法值（none/minor 档固定 not-required；major 只允许 pending/approved） */
@@ -386,9 +424,9 @@ export interface UiToolGateInput extends UiContractInput {
 	tool: UiToolAction;
 }
 
-/** 工具动作判定结果 */
+/** 工具动作判定结果（allow 携带 verdict：放行侧记账需区分「合同健康放行」与 requirements/legacy 静默） */
 export type UiToolDecision =
-	| { action: "allow"; silent: true }
+	| { action: "allow"; silent: true; verdict?: UiContractVerdict }
 	| { action: "block"; reasonCode: UiReasonCode; message: string }
 	| { action: "warn-legacy"; reasonCode: "ui-design-missing"; message: string };
 
@@ -421,10 +459,12 @@ export function decideUiToolGate(input: UiToolGateInput): UiToolDecision {
 				message: `「${input.boundChange}」仍绑定旧 spec-driven schema 且缺少 ui-design.md：本提示每会话仅一次，不阻断；建议迁移到 ${UI_SCHEMA} schema（补 ui-impact 声明与 ui-design.md 制品）`,
 			};
 		}
-		return { action: "allow", silent: true };
+		return { action: "allow", silent: true, verdict };
 	}
 
-	if (verdict.kind === "pass") return { action: "allow", silent: true };
+	if (verdict.kind === "pass") {
+		return { action: "allow", silent: true, verdict };
+	}
 
 	// block 裁决 → 按工具动作分流
 	if (input.tool.kind === "other") return { action: "allow", silent: true };

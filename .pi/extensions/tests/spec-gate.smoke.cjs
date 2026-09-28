@@ -384,6 +384,34 @@ try {
 		const r8g = await runGate(g8g, 'openspec archive legacy-chg', t8g);
 		check('8g legacy schema → UI 证据零检查零事件（旧 change 不卡死）', r8g === undefined && policyRows(t8g).length === 0);
 
+		// 8g2. 归档侧放行锚点（add-change-lifecycle-retro D2）：先 block(ui-verification-missing)，
+		//      补齐证据后归档检查全过 → 放行时刻记 pass(ui-design-satisfied) 恰一条；
+		//      再归档一次（已解除）零新增。首次归档零记录（8a 已覆盖）。
+		const t8g2 = mktmp(); tmps.push(t8g2);
+		writeUiChange(t8g2, 'ui-evidence-retro', {
+			'.openspec.yaml': 'schema: syntopica-ui\ncreated: 2026-09-03\n',
+			'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
+			'ui-design.md': majorUi('approved'),
+			'ui-prototype/index.html': '<html>proto</html>',
+			'tasks.md': TASKS_NO_EVIDENCE,
+		});
+		const g8g2a = makeGatePi(passExec);
+		require('./.sgate.cjs').default(g8g2a.pi);
+		const r8g2a = await runGate(g8g2a, 'openspec archive ui-evidence-retro', t8g2);
+		check('8g2a 证据缺失 → block（ui-verification-missing）', r8g2a && r8g2a.block === true && policyRows(t8g2).some((r) => r.payload.policy === 'ui-design-gate' && r.payload.reasonCode === 'ui-verification-missing'));
+		fs.writeFileSync(path.join(t8g2, 'openspec/changes/ui-evidence-retro/tasks.md'), TASKS_FULL_EVIDENCE);
+		const g8g2b = makeGatePi(passExec);
+		require('./.sgate.cjs').default(g8g2b.pi);
+		const r8g2b = await runGate(g8g2b, 'openspec archive ui-evidence-retro', t8g2);
+		check('8g2b 补齐后归档放行 → pass ui-design-satisfied 恰一条（绑定 change，不与 block 双写）', (() => {
+			const rows = policyRows(t8g2).filter((r) => r.payload.policy === 'ui-design-gate');
+			return r8g2b === undefined && rows.length === 2 && rows[1].payload.action === 'pass' && rows[1].payload.reasonCode === 'ui-design-satisfied' && rows[1].change === 'ui-evidence-retro';
+		})());
+		const g8g2c = makeGatePi(passExec);
+		require('./.sgate.cjs').default(g8g2c.pi);
+		const r8g2c = await runGate(g8g2c, 'openspec archive ui-evidence-retro', t8g2);
+		check('8g2c 已解除后再归档零新增 pass', r8g2c === undefined && policyRows(t8g2).filter((r) => r.payload.action === 'pass').length === 1);
+
 		// 8h. --force 仍豁免 UI 检查（逃生口留痕不变）
 		const t8h = mktmp(); tmps.push(t8h);
 		writeUiChange(t8h, 'ui-major-gap', {

@@ -18,7 +18,11 @@
  * 6. 逃生口 UI_DESIGN_GATE_BYPASS=1：仅在原本会 block 时生效，放行必须留痕
  *    （policy bypass + 显式 warning），不静默。
  * 7. 记账（lib/policy-decision）：block/warn/bypass/fail-open 全记
- *    （policy=ui-design-gate，reasonCode 白名单 8 值）；健康放行零记录。
+ *    （policy=ui-design-gate，reasonCode 白名单 8 值）；健康放行零记录，**例外**：
+ *    此前有未解除的 block 且本次合同健康放行 → 记一条 action=pass
+ *    （ui-approval-approved / ui-design-satisfied，add-change-lifecycle-retro design D2，
+ *    与 change.archive 同族的低频高价值成功锚点；账本查「最近未解除 block」判定，
+ *    跨 session 可靠）。归档侧 ui-verification-missing 的解除由 spec-gate 归档路径记。
  *    记账失败不改变裁决。
  * 8. 全程 fail-open：扩展自身异常 → 放行 + console.warn + steer 告警 +
  *    policy fail-open（ui-gate-check-failed），绝不把 agent 卡死。
@@ -30,9 +34,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { logPolicyDecision, type PolicyDecisionInput } from "./lib/policy-decision";
-import { queryBySession } from "./lib/harness-log";
+import { queryByChange, queryBySession } from "./lib/harness-log";
 import {
 	decideUiToolGate,
+	passReasonForRelease,
 	type UiToolAction,
 	type UiToolGateInput,
 } from "./lib/ui-design-gate";
@@ -132,7 +137,14 @@ async function check(
 	// 3. 纯函数判定
 	const decision = decideUiToolGate(input);
 
-	if (decision.action === "allow") return; // 健康放行零记录
+	if (decision.action === "allow") {
+		// 放行侧锚点（add-change-lifecycle-retro D2）：新 schema 合同健康放行且账本上有
+		// 未解除的 block → 记 action=pass；普通健康放行 / requirements / legacy 零记录。
+		if (decision.verdict?.kind === "pass") {
+			recordReleasePass(ctx, boundChange);
+		}
+		return;
+	}
 
 	if (decision.action === "warn-legacy") {
 		// 每 session/change 仅提醒与记账一次
@@ -246,6 +258,49 @@ function normalizeTarget(tool: UiToolAction, cwd: string): UiToolAction {
 }
 
 // ---------- 记账与留痕 ----------
+
+/**
+ * 放行侧 pass 记账（add-change-lifecycle-retro design D2）：查账本中该 change 名下
+ * policy=ui-design-gate 的 block/pass 序列，最近一条未解除的 block 在案且本次合同健康
+ * 放行 → 记一条 action=pass。跨 session 可靠（block 与放行常分属两会话）；已有 pass
+ * 在后（已解除）或无 block 在案 → 零记录。归档侧 ui-verification-missing 不在本路径
+ * 解除（由 spec-gate 归档路径记）；纯旁路：任何异常仅告警不影响放行。
+ */
+function recordReleasePass(ctx: GateCtx, change: string): void {
+	try {
+		const sessionId = ctx.sessionManager?.getSessionId?.();
+		if (!ctx.cwd || !sessionId) return;
+		const rows = queryByChange(ctx.cwd, change, ["policy.decision"]);
+		let lastBlockReason: string | null = null;
+		let released = false;
+		for (const r of rows) {
+			let p: { policy?: unknown; action?: unknown; reasonCode?: unknown };
+			try {
+				p = JSON.parse(r.payload) as typeof p;
+			} catch {
+				continue;
+			}
+			if (p.policy !== "ui-design-gate") continue;
+			if (p.action === "block") {
+				lastBlockReason =
+					typeof p.reasonCode === "string" ? p.reasonCode : null;
+				released = false;
+			} else if (p.action === "pass") {
+				released = true;
+			}
+		}
+		if (!lastBlockReason || released) return; // 无 block 在案 / 已解除 → 零记录
+		const reasonCode = passReasonForRelease(lastBlockReason);
+		if (!reasonCode) return; // 归档侧码 / 未知码：非本路径解除
+		auditPolicy(ctx, change, {
+			policy: "ui-design-gate",
+			action: "pass",
+			reasonCode,
+		});
+	} catch (err) {
+		console.warn(`[ui-design-gate] 放行记账异常（旁路忽略）：${String(err)}`);
+	}
+}
 
 /** policy.decision 旁路记账（同 spec-gate：无 cwd/sessionId 不记；失败不影响裁决） */
 function auditPolicy(

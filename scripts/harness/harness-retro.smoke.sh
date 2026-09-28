@@ -350,7 +350,7 @@ run_retro --db "$FG" --days 7
 check 0 "G1 七段齐备：⑦段与覆盖率降级标注" "⑦ 效能看板" "rollup 覆盖率        : 1 / 3 session（33%）⚠ 数据积累中"
 check 0 "G2 rollup 终值取最新快照不累加（tok=5000 非 8000）" "tokens 中位 5000 / P75 5000"
 check 0 "G3 跨域注入命中率=0（注入 ai-summary、编辑落 topicgraph 域，两域不相交）" "注入命中率        : 编辑域命中注入域 0 / 6（0%；"
-check 0 "G4 催修时距 40 分钟计入中位" "门禁催修时距      : 红→绿 中位 40.0 min（n=1）"
+check 0 "G4 催修时距 40 分钟计入中位（分派口径：quality-gate=转绿）" "门禁催修时距      : 中位 40.0 min（n=1；分派：quality-gate=转绿 / ui-design-gate=pass 放行 / quota-gate=成功派发 / spec-gate=归档）"
 check 0 "G5 返工波次清单（3 session 文件）" "跨 session 编辑波次: 1 个文件 ≥3 session" "backend-go/internal/topicgraph/model.go" "×3 session"
 check 0 "G6 pin 复用零值形态" "pin 复用          : write 0 条 / read 0 条（比值 —）"
 "$RETRO" --db "$FG" --days 7 --json >"$TMP/fg.json" 2>/dev/null
@@ -614,6 +614,182 @@ if [ "$(count_rows "$FB")" = "$rows_before" ]; then
 	pass=$((pass + 1))
 else
 	echo "  ✗ D7b 注入生效（行数变化）"
+	failn=$((failn + 1))
+fi
+
+# ================= M. lifecycle 体检卡 + 催修时距分派 + abandon 终态（add-change-lifecycle-retro） =================
+
+# 时间戳助手（相对 now，保证 id 序与 ts 序一致）
+MT() { date -u -d "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+
+FM="$TMP/m.db"
+mk_db "$FM"
+# life-ui（已归档、事件完整）：双锚点（事件+目录）、成本主 1.0+子 0.5、ui 卡点×2→pass、
+# spec-gate 归档重试 30min、lint 红→绿 40min（quality-gate 口径）
+ins "$FM" mode.set life-ui '{"mode":"implementation","boundChange":"life-ui","source":"command"}' s-m1 "$(MT '-200 min')"
+ins "$FM" mode.set life-ui '{"mode":"implementation","boundChange":"life-ui","source":"recover"}' s-m2 "$(MT '-30 min')"
+ins "$FM" constraint.inject life-ui '{"path":"docs/reference/flow/daily-report.md","mode":"section","reason":"declaration","bytes":800}' s-m1 "$(MT '-190 min')"
+ins "$FM" constraint.inject life-ui '{"path":"docs/reference/flow/reading.md","mode":"section","reason":"keyword","bytes":900}' s-m2 "$(MT '-29 min')"
+ins "$FM" pin.write life-ui '{"title":"t","file":"x.md"}' s-m1 "$(MT '-180 min')"
+for i in 1 2 3; do ins "$FM" pin.read life-ui '{"file":"x.md"}' s-m1 "$(MT '-170 min')"; done
+ins "$FM" edit.map life-ui '{"paths":["backend-go/a.go","front/app/b.vue"],"n":2}' s-m1 "$(MT '-100 min')"
+ins "$FM" edit.map life-ui '{"paths":["backend-go/a.go","backend-go/c.go"],"n":2}' s-m2 "$(MT '-20 min')"
+ins "$FM" gate.check life-ui '{"cmd":"lint","ok":false,"diag":"oops"}' s-m1 "$(MT '-80 min')"
+ins "$FM" gate.check life-ui '{"cmd":"lint","ok":true,"flip":1}' s-m1 "$(MT '-40 min')"
+ins "$FM" policy.decision life-ui '{"policy":"ui-design-gate","action":"block","reasonCode":"ui-prototype-missing"}' s-m1 "$(MT '-92 min')"
+ins "$FM" policy.decision life-ui '{"policy":"ui-design-gate","action":"block","reasonCode":"ui-prototype-missing"}' s-m1 "$(MT '-91 min')"
+ins "$FM" policy.decision life-ui '{"policy":"ui-design-gate","action":"pass","reasonCode":"ui-design-satisfied"}' s-m1 "$(MT '-90 min')"
+ins "$FM" policy.decision life-ui '{"policy":"spec-gate","action":"block","reasonCode":"archive-check-failed","target":"doc-impact"}' s-m1 "$(MT '-35 min')"
+ins "$FM" policy.decision life-ui '{"policy":"quality-gate","action":"fail-open","reasonCode":"interop-down"}' s-m1 "$(MT '-60 min')"
+ins "$FM" subagent.dispatch life-ui '{"type":"explore","model":"glm-5.3","ms":100,"status":"completed","isError":false}' s-m1 "$(MT '-10 min')"
+ins "$FM" session.rollup life-ui '{"turns":8,"toolCalls":30,"cost":1.0,"durationSec":600,"models":{"glm-5.3":{"tokens":{"total":8000},"cost":1.0}},"final":true}' s-m1 "$(MT '-6 min')"
+ins "$FM" session.rollup '' '{"turns":3,"toolCalls":10,"cost":0.5,"durationSec":200,"models":{"glm-5.3":{"tokens":{"total":3000},"cost":0.5}},"parentSessionId":"s-m1","final":true}' s-c1 "$(MT '-5 min')"
+ins "$FM" change.archive life-ui '{"name":"life-ui"}' s-m1 "$(MT '-5 min')"
+# c-q（未归档）：quota block 后无成功派发（89 分钟假慢反例：同 session lint 红→绿 89min
+# 不得归到 quota 头上——quota 样本剔除，89min 样本属 quality-gate 口径）
+ins "$FM" policy.decision c-q '{"policy":"quota-gate","action":"block","reasonCode":"quota-low","target":"zai-coding-cn/glm-5.3"}' s-q "$(MT '-95 min')"
+ins "$FM" gate.check c-q '{"cmd":"lint","ok":false,"diag":"oops-q"}' s-q "$(MT '-94 min')"
+ins "$FM" gate.check c-q '{"cmd":"lint","ok":true,"flip":1}' s-q "$(MT '-5 min')"
+# life-old（未归档、引入前历史）：仅 block 无 pass → 放行态推断口径
+ins "$FM" policy.decision life-old '{"policy":"ui-design-gate","action":"block","reasonCode":"ui-design-missing"}' s-o "$(MT '-1200 min')"
+# life-zombie（已放弃）：有成本归因 + abandon、无归档 → B' 已放弃桶
+ins "$FM" session.rollup life-zombie '{"turns":2,"toolCalls":5,"cost":0.3,"durationSec":100,"final":true}' s-z "$(MT '-300 min')"
+ins "$FM" change.abandon life-zombie '{"name":"life-zombie"}' s-z "$(MT '-280 min')"
+# life-conflict：archive 与 abandon 并存 → 以归档为准 + 冲突提示
+ins "$FM" session.rollup life-conflict '{"turns":2,"toolCalls":5,"cost":0.7,"durationSec":100,"final":true}' s-x "$(MT '-400 min')"
+ins "$FM" change.abandon life-conflict '{"name":"life-conflict"}' s-x "$(MT '-390 min')"
+ins "$FM" change.archive life-conflict '{"name":"life-conflict"}' s-x "$(MT '-50 min')"
+# ④段 fixture：5× 纠正型 warn（pass 词汇不得吸入任何分桶）
+for i in 1 2 3 4 5; do
+	ins "$FM" policy.decision life-ui '{"policy":"test-scope-guard","action":"warn","reasonCode":"full-go-test"}' s-m2 "$(MT '-15 min')"
+done
+
+# 元数据 fixture：changes/（未归档）与 archive/（已归档）两棵树
+MCH="$TMP/mchanges"
+mkdir -p "$MCH/c-q" "$MCH/life-old"
+printf '<!-- ui-impact: minor -->\n\n## Why\nx\n' >"$MCH/c-q/proposal.md"
+printf '<!-- ui-impact: major -->\n<!-- complexity: simple -->\n\n## Why\nx\n' >"$MCH/life-old/proposal.md"
+MARCH="$TMP/march"
+ARCH_DM="$(date -u -d '2 days ago' +%F)"
+mkdir -p "$MARCH/$ARCH_DM-life-ui" "$MARCH/$ARCH_DM-life-conflict"
+printf '<!-- complexity: moderate -->\n<!-- ui-impact: major -->\n<!-- constraint-domains: daily-report, reading -->\n\n## Why\nx\n' >"$MARCH/$ARCH_DM-life-ui/proposal.md"
+printf '# no markers\n' >"$MARCH/$ARCH_DM-life-conflict/proposal.md"
+
+Menv() { HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" run_retro --db "$FM" "$@"; }
+
+# ---------- L1-L4：体检卡四段与三态 ----------
+Menv --lifecycle life-ui
+check 0 "L1 已归档 change 四段齐备 + 归档目录声明元数据（日期前缀剥离后拼路径）" \
+	"一、流程规范段" "二、UI 工作流段" "三、成本卡" "四、健康度段" \
+	"声明元数据: ui-impact=major / complexity=moderate / constraint-domains=daily-report, reading" \
+	"终态      : 已归档"
+check 0 "L1b 流程规范段指标（档位/注入/pin/编辑/门禁）" \
+	"档位绑定        : 2 次 mode.set" "约束注入        : 2 条 / 1700 B" "declaration×1" "keyword×1" \
+	"pin 接力        : write 1 条 / read 3 条" "编辑归属        : 2 个路径（edit.map 快照 2 次" "门禁执行        : 1 次执行 / 1 次失败（还原口径；Top：lint 1/1）"
+check 0 "L1c UI 工作流：卡点链 + pass 直读口径" \
+	"卡点链          : ui-prototype-missing ×2" "放行态          : 已放行（pass ui-design-satisfied"
+check 0 "L1d 成本卡：主+子归因合计 + 模型分桶" \
+	"归因会话        : 2 个 rollup 终值会话" "合计            : cost ¥1.50 / turns 11 / toolCalls 40" "按模型分桶      : glm-5.3" "¥1.50"
+check 0 "L1e 健康度：催修时距中位 2min（lifecycle 限定本 change：[1,2,30,40] rn=2）+ 回归/波次" \
+	"催修时距        : 中位 2.0 min（n=4" "回归翻转        : 0 次" "返工波次        : 1 个文件 ≥2 session" "backend-go/a.go" "×2 session"
+
+Menv --lifecycle c-q
+check 0 "L2 未归档不假定终态（最后活动时间，不猜活跃/放弃）" "终态      : 未归档（最后活动" "不假定终态" "声明元数据: ui-impact=minor"
+
+Menv --lifecycle never-started
+check 0 "L3 无事件 change：降级标注而非静默省略，exit 0" "声明元数据: 声明缺席" "无任何事件"
+
+m_rows_before="$(count_rows "$FM")"
+Menv --lifecycle life-ui >/dev/null 2>&1
+if [ "$(count_rows "$FM")" = "$m_rows_before" ]; then
+	echo "  ✓ L4 --lifecycle 只读零写入（行数不变）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L4 --lifecycle 写了账本"
+	failn=$((failn + 1))
+fi
+
+Menv --lifecycle life-old
+check 0 "L5 放行态双口径：无 pass 历史按末 block 推断并标注" "放行态          : 推断（无放行事件）" "ui-design-missing"
+
+Menv --lifecycle life-conflict
+check 0 "L6 abandon×archive 并存以归档为准 + 冲突提示行" "终态      : 已归档" "冲突提示  : 同名 change.archive 与 change.abandon 并存" "以归档为准"
+
+Menv --lifecycle life-zombie
+check 0 "L7 已放弃终态区分（不再算活跃）" "终态      : 已放弃（change.abandon" "声明元数据: 声明缺席"
+
+run_retro --db "$FM" --lifecycle life-ui --change life-ui 2>/dev/null
+check 1 "L8 --lifecycle 与 --change 互斥拒绝" "互斥"
+
+# ---------- L9：lifecycle --json 可解析 ----------
+HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" "$RETRO" --db "$FM" --lifecycle life-ui --json >"$TMP/fm-life.json" 2>/dev/null
+if python3 - "$TMP/fm-life.json" <<'FMLPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d['terminal']['state'] == 'archived', d['terminal']
+assert d['meta']['declaration']['ui_impact'] == 'major', d['meta']
+assert d['meta']['declaration']['complexity'] == 'moderate', d['meta']
+assert abs(d['cost']['cost'] - 1.5) < 1e-6, d['cost']
+assert d['cost']['sessions'] == 2, d['cost']
+assert d['ui']['passes'] and d['ui']['passes'][0]['reason'] == 'ui-design-satisfied', d['ui']
+assert d['health']['repair']['median_sec'] is not None and abs(d['health']['repair']['median_sec'] - 120) < 60, d['health']
+FMLPY
+then
+	echo "  ✓ L9 lifecycle --json 结构与数值可复算（terminal/cost 1.5/repair 30min）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L9 lifecycle --json 断言失败"
+	failn=$((failn + 1))
+fi
+
+# ---------- L10：催修时距分派（design D3，89 分钟假慢反例） ----------
+"$RETRO" --db "$FM" --days 7 --json >"$TMP/fm7.json" 2>/dev/null
+run_retro --db "$FM" --days 7
+check 0 "L10a 分派后中位 30.0 min（样本 n=5）+ 剔除披露（quota 无派发 + life-old 无 pass）" \
+	"门禁催修时距      : 中位 30.0 min（n=5；分派：quality-gate=转绿 / ui-design-gate=pass 放行 / quota-gate=成功派发 / spec-gate=归档；剔除无解除信号 2 条）"
+if python3 - "$TMP/fm7.json" <<'FM7PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d['metrics']
+assert m['m7.repair_samples'] == 5, m['m7.repair_samples']
+assert m['m7.repair_med_sec'] is not None and abs(m['m7.repair_med_sec'] - 1800) < 60, m['m7.repair_med_sec']
+assert m['m7.repair_excluded'] == 2, m['m7.repair_excluded']  # quota 无成功派发 + life-old 无 pass → 均剔除
+bp = {it['policy']: it for it in d['effectiveness']['repair']['by_policy']}
+assert bp['quota-gate']['n'] == 0 and bp['quota-gate']['excluded'] == 1, bp  # 89min 假慢不归 quota（c-q 的 lint 红→绿 89min 属 quality-gate 口径）
+assert bp['quality-gate']['n'] == 2, bp  # 40min(life-ui lint) + 89min(c-q lint) 同键红→绿
+assert bp['ui-design-gate']['n'] == 2 and bp['ui-design-gate']['excluded'] == 1, bp  # 两 block 各以 pass 计（2min/1min）；life-old 无 pass 剔除
+assert bp['spec-gate']['n'] == 1, bp      # archive-check-failed → change.archive 30min
+# B' 已放弃区分 + 冲突
+assert m['m7.task_abandoned'] == 1, m['m7.task_abandoned']
+assert m['m7.task_abandon_conflict'] == 1, m['m7.task_abandon_conflict']
+assert m['m7.task_active_unarchived'] == 0, m['m7.task_active_unarchived']  # life-zombie 已放弃不占活跃
+FM7PY
+then
+	echo "  ✓ L10b 分派口径/剔除数/B' 已放弃=fixture 复算值（quota 89min 不入、abandon 1、冲突 1）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L10b JSON 分派断言失败"
+	failn=$((failn + 1))
+fi
+run_retro --db "$FM" --days 7
+check 0 "L10c B' 文本：已放弃单列 + 终态冲突提示" "已放弃 change     : 1 个" "终态冲突        : 1 个"
+
+# ---------- L11：pass 不入 ③ fail-open 分桶 / ④ 失效 warn 聚类（task 1.2） ----------
+run_retro --db "$FM" --days 7
+check 0 "L11a ③段只计 fail-open（pass 事件不吸入故障分桶）" "故障条数            : 1"
+check_absent "L11b pass reasonCode 不进 ④失效名单" "ui-design-gate / ui-design-satisfied" "ui-design-gate / ui-approval-approved"
+if python3 - "$TMP/fm7.json" <<'FM7BPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+s = d['soft']
+assert s['groups_total'] == 1 and s['warn_total'] == 5, s  # 仅 full-go-test warn；pass 零吸入
+assert d['faults']['fail_open'] == 1, d['faults']
+FM7BPY
+then
+	echo "  ✓ L11c ④段 warn 聚类不含 pass（groups=1/warn=5、fail_open=1）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L11c ③④分桶断言失败"
 	failn=$((failn + 1))
 fi
 

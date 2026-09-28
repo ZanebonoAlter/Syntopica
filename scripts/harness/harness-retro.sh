@@ -5,6 +5,9 @@
 #   --db PATH              目标账本（缺省 .pi/harness/events.db）
 #   --days N               统计窗口天数（缺省 7）
 #   --change NAME          只统计 change 列归属该值的事件（缺省全局）
+#   --lifecycle NAME       单 change 生命周期体检卡（四段：流程规范/UI 工作流/成本卡/健康度
+#                          + proposal 头注释声明元数据；不受 --days 窗口限制，TTL 30 天为硬上限；
+#                          add-change-lifecycle-retro）
 #   --warn-threshold N     软提醒失效阈值（缺省 5）
 #   --json                 输出机器可读 JSON（与文本同结构）
 #   --save-baseline [PATH] 落基线快照（缺省 .pi/harness/retro-baseline.json）
@@ -50,6 +53,7 @@ INFORMATIVE_SQL_LIST="$(printf "'%s'," $INFORMATIVE_REASONS | sed 's/,$//')"
 DB=".pi/harness/events.db"
 DAYS=7
 CHANGE=""
+LIFECYCLE=""
 WARN_THRESHOLD=$HOTSPOT_DEFAULT_THR
 JSON_MODE=0
 SAVE_BASELINE=""
@@ -65,6 +69,8 @@ harness-retro — harness 事实账本的失败聚类复盘报告（只读）
   --db PATH               目标账本（缺省 .pi/harness/events.db）
   --days N                统计窗口天数（缺省 7；超过 30 天会提示 TTL 清扫风险）
   --change NAME           只统计 change 列归属该值的事件（缺省全局）
+  --lifecycle NAME        单 change 生命周期体检卡（四段 + proposal 声明元数据；
+                          与 --change / 基线选项互斥，不受 --days 窗口限制）
   --warn-threshold N      纠正型软提醒失效阈值（缺省 5；纠正型 warn 计数 ≥ 阈值即列出；
                           仅作用于纠正型失效判定，情报型 warn 单列计数不受影响）
   --json                  输出机器可读 JSON
@@ -121,6 +127,14 @@ while [ "$#" -gt 0 ]; do
 		CHANGE="$2"
 		shift 2
 		;;
+	--lifecycle)
+		[ "$#" -ge 2 ] || {
+			echo "✗ --lifecycle 需要一个 change 名参数"
+			exit 1
+		}
+		LIFECYCLE="$2"
+		shift 2
+		;;
 	--warn-threshold)
 		[ "$#" -ge 2 ] || {
 			echo "✗ --warn-threshold 需要一个正整数参数"
@@ -165,6 +179,18 @@ while [ "$#" -gt 0 ]; do
 		;;
 	esac
 done
+
+# --lifecycle 互斥校验（体检卡是独立模式，不做七段过滤/基线比对）
+if [ -n "$LIFECYCLE" ]; then
+	if [ -n "$CHANGE" ]; then
+		echo "✗ --lifecycle 与 --change 互斥（体检卡自带 change 维度）"
+		exit 1
+	fi
+	if [ -n "$SAVE_BASELINE" ] || [ -n "$BASELINE" ]; then
+		echo "✗ --lifecycle 不支持基线选项（体检卡无 metrics 基线语义）"
+		exit 1
+	fi
+fi
 
 # ---------- 库校验（只读打开 + 身份校验） ----------
 
@@ -333,6 +359,344 @@ if [ "$OPEN_MODE" = "immutable" ]; then
 	add_warning "账本以 immutable=1 回退方式打开（只读打开失败）：可能少最后几条未 checkpoint 的事件"
 fi
 
+# ---------- --lifecycle 模式（add-change-lifecycle-retro design D1/D6）：单 change 体检卡 ----------
+
+if [ -n "$LIFECYCLE" ]; then
+	NAME_LIT="$(sql_quote "$LIFECYCLE")"
+	# proposal 声明元数据源解析：未归档读 changes/，已归档读 archive/（目录名日期前缀剥离后拼路径）。
+	# HARNESS_RETRO_CHANGES_DIR / HARNESS_RETRO_ARCHIVE_DIR 供 smoke 注入 fixture 目录。
+	LIFE_CHANGES_DIR="${HARNESS_RETRO_CHANGES_DIR:-openspec/changes}"
+	LIFE_META_PATH=""
+	LIFE_DIR_HIT=0
+	if [ -f "$LIFE_CHANGES_DIR/$LIFECYCLE/proposal.md" ]; then
+		LIFE_META_PATH="$LIFE_CHANGES_DIR/$LIFECYCLE/proposal.md"
+	elif LIFE_DIR_HIT_PATH="$(compgen -G "$ARCH_DIR/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-$LIFECYCLE" 2>/dev/null | head -n 1)" && [ -n "${LIFE_DIR_HIT_PATH:-}" ]; then
+		LIFE_META_PATH="$LIFE_DIR_HIT_PATH/proposal.md"
+		LIFE_DIR_HIT=1
+	fi
+
+	LIFE_SQL="$(cat <<LIFESQL
+WITH ev AS (
+  SELECT id, ts, session_id, kind, payload FROM events WHERE change = ${NAME_LIT}
+),
+term AS (
+  SELECT
+    (SELECT MIN(ts) FROM events WHERE kind='change.archive' AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) = ${NAME_LIT}) AS arch_ts,
+    (SELECT COUNT(*) FROM events WHERE kind='change.archive' AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) = ${NAME_LIT}) AS arch_n,
+    (SELECT MIN(ts) FROM events WHERE kind='change.abandon' AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) = ${NAME_LIT}) AS abandon_ts,
+    (SELECT COUNT(*) FROM events WHERE kind='change.abandon' AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) = ${NAME_LIT}) AS abandon_n
+),
+sess AS (SELECT COUNT(DISTINCT session_id) n, MAX(ts) last_ts FROM ev),
+mode_seq AS (SELECT ts, session_id, json_extract(payload,'$.mode') m, json_extract(payload,'$.source') src FROM ev WHERE kind='mode.set' ORDER BY id),
+mode_by AS (SELECT json_extract(payload,'$.mode') m, COUNT(*) n FROM ev WHERE kind='mode.set' GROUP BY 1),
+inj AS (SELECT COALESCE(json_extract(payload,'$.reason'),'(无 reason)') reason, COUNT(*) n, IFNULL(SUM(CAST(json_extract(payload,'$.bytes') AS INTEGER)),0) b FROM ev WHERE kind='constraint.inject' GROUP BY 1 ORDER BY n DESC),
+pinw AS (SELECT COUNT(*) n FROM ev WHERE kind='pin.write'),
+pinr AS (SELECT COUNT(*) n FROM ev WHERE kind='pin.read'),
+emap_last AS (SELECT CAST(json_extract(payload,'$.n') AS INTEGER) n, ts FROM ev WHERE kind='edit.map' ORDER BY id DESC LIMIT 1),
+emap_snaps AS (SELECT COUNT(*) n FROM ev WHERE kind='edit.map'),
+emap_flat AS (SELECT session_id, je.value p FROM ev, json_each(json_extract(payload,'$.paths')) je WHERE kind='edit.map' AND json_valid(payload)),
+wave AS (SELECT p, COUNT(DISTINCT session_id) n FROM emap_flat GROUP BY 1 HAVING n >= 2 ORDER BY n DESC, p LIMIT 10),
+g AS (
+  SELECT id, ts, session_id,
+    CASE WHEN json_valid(payload) THEN json_extract(payload,'$.ok') END ok,
+    CASE WHEN json_valid(payload) THEN json_extract(payload,'$.cmd') END cmd,
+    CASE WHEN json_valid(payload) THEN json_extract(payload,'$.sampled') END sampled,
+    CASE WHEN json_valid(payload) THEN json_extract(payload,'$.n') END n
+  FROM ev WHERE kind='gate.check'
+),
+gc AS (SELECT * FROM g WHERE ok IS NOT NULL),
+filled AS (SELECT *, CASE WHEN ok=0 THEN 0 WHEN sampled=1 THEN (CASE WHEN n IS NULL THEN ${DEFAULT_SAMPLE_N} WHEN typeof(n)='integer' AND n > 0 THEN n ELSE 1 END) ELSE 1 END AS ok_runs FROM gc),
+gcmd AS (SELECT IFNULL(cmd,'(无 cmd)') cmd, IFNULL(SUM(ok_runs),0) runs, SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END) fails FROM filled GROUP BY 1 ORDER BY fails DESC, runs DESC LIMIT 8),
+gsum AS (SELECT IFNULL(SUM(ok_runs),0) runs, SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END) fails FROM filled),
+reg AS (SELECT COUNT(*) n FROM (SELECT id, ok, MAX(CASE WHEN ok=1 THEN id END) OVER (PARTITION BY session_id, cmd ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) prev_ok FROM gc) WHERE ok=0 AND prev_ok IS NOT NULL),
+uip AS (SELECT id, ts, json_extract(payload,'$.action') action, json_extract(payload,'$.reasonCode') reason FROM ev WHERE kind='policy.decision' AND json_valid(payload) AND json_extract(payload,'$.policy')='ui-design-gate' ORDER BY id),
+ui_block AS (SELECT reason, COUNT(*) n FROM uip WHERE action='block' GROUP BY 1 ORDER BY n DESC),
+ui_pass AS (SELECT ts, reason FROM uip WHERE action='pass' ORDER BY id),
+ui_last AS (SELECT id, ts, reason FROM uip WHERE action='block' ORDER BY id DESC LIMIT 1),
+ru_raw AS (SELECT id, session_id, change, payload FROM events WHERE kind='session.rollup' AND json_valid(payload)),
+ru AS (SELECT * FROM ru_raw WHERE id IN (SELECT MAX(id) FROM ru_raw GROUP BY session_id, change)), -- 探索验证配方（design D1）：终值按 (session_id, change) 取 MAX——交织会话按绑定段归因（与 B' 按会话终归的既有口径并存，体检卡以此为准）
+ru_px AS (SELECT ru.id, ru.session_id, COALESCE(ru.change,'') chg,
+    CAST(json_extract(payload,'$.turns') AS INTEGER) turns,
+    CAST(json_extract(payload,'$.toolCalls') AS INTEGER) tc,
+    CAST(json_extract(payload,'$.cost') AS REAL) cost,
+    CAST(json_extract(payload,'$.durationSec') AS INTEGER) dur,
+    json_extract(payload,'$.parentSessionId') parent,
+    CASE WHEN json_valid(json_extract(payload,'$.models')) THEN json_extract(payload,'$.models') END models_json
+  FROM ru),
+ru_attr AS (SELECT p.session_id, p.turns, p.tc, p.cost, p.dur, p.models_json,
+    CASE WHEN p.chg != '' THEN p.chg WHEN p.parent IS NOT NULL THEN (SELECT f.chg FROM ru_px f WHERE f.session_id=p.parent AND f.chg!='' ORDER BY f.id DESC LIMIT 1) END AS attr
+  FROM ru_px p),
+life_ru AS (SELECT * FROM ru_attr WHERE attr = ${NAME_LIT}),
+cost_sum AS (SELECT COUNT(*) n, IFNULL(SUM(cost),0) cost, IFNULL(SUM(turns),0) turns, IFNULL(SUM(tc),0) tc, IFNULL(SUM(dur),0) dur FROM life_ru),
+cost_model AS (SELECT je.key model, SUM(CAST(json_extract(je.value,'$.cost') AS REAL)) cost FROM life_ru, json_each(life_ru.models_json) je GROUP BY 1 ORDER BY 2 DESC),
+cost_nom AS (SELECT IFNULL(SUM(cost),0) c FROM life_ru WHERE models_json IS NULL),
+chg_sess AS (SELECT DISTINCT session_id FROM ev),
+disp_e AS (SELECT d.id, d.ts, d.session_id FROM events d JOIN chg_sess s ON d.session_id = s.session_id
+  WHERE d.kind='subagent.dispatch' AND json_valid(d.payload) AND NOT COALESCE(json_extract(d.payload,'$.isError'),0)),
+arch_e AS (SELECT id, ts FROM events WHERE kind='change.archive' AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) = ${NAME_LIT}),
+pb AS (SELECT id, ts, session_id, json_extract(payload,'$.policy') policy FROM ev WHERE kind='policy.decision' AND json_valid(payload)
+  AND json_extract(payload,'$.action') IN ('block','warn')
+  AND json_extract(payload,'$.policy') IN ('ui-design-gate','quota-gate','spec-gate')),
+uipass AS (SELECT id, ts FROM uip WHERE action='pass'),
+pr AS (SELECT b.policy,
+    CASE b.policy
+      WHEN 'ui-design-gate' THEN (SELECT MIN((julianday(p.ts)-julianday(b.ts))*86400.0) FROM uipass p WHERE p.id > b.id)
+      WHEN 'quota-gate' THEN (SELECT MIN((julianday(d.ts)-julianday(b.ts))*86400.0) FROM disp_e d WHERE d.id > b.id AND d.session_id = b.session_id)
+      WHEN 'spec-gate' THEN (SELECT MIN((julianday(a.ts)-julianday(b.ts))*86400.0) FROM arch_e a WHERE a.id > b.id)
+    END sec
+  FROM pb b),
+repair_p AS (SELECT policy, sec FROM pr WHERE sec IS NOT NULL AND sec >= 0),
+repair_x AS (SELECT COUNT(*) n FROM pr WHERE sec IS NULL OR sec < 0),
+gseq AS (SELECT ts, cmd, ok, LEAD(ok) OVER (PARTITION BY session_id, cmd ORDER BY id) nok, LEAD(ts) OVER (PARTITION BY session_id, cmd ORDER BY id) nts FROM gc),
+repair_gate AS (SELECT (julianday(nts)-julianday(ts))*86400.0 sec FROM gseq WHERE ok=0 AND nok=1),
+repair_all AS (SELECT sec FROM repair_gate WHERE sec IS NOT NULL AND sec >= 0 UNION ALL SELECT sec FROM repair_p),
+q_rep AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT sec v FROM repair_all))
+SELECT json_object(
+  'name', ${NAME_LIT},
+  'terminal', json_object('arch_ts',(SELECT arch_ts FROM term),'arch_n',(SELECT arch_n FROM term),'abandon_ts',(SELECT abandon_ts FROM term),'abandon_n',(SELECT abandon_n FROM term)),
+  'sessions', json_object('total',(SELECT n FROM sess),'last_activity',(SELECT last_ts FROM sess)),
+  'flow', json_object(
+    'mode_seq', (SELECT json_group_array(json_object('ts',ts,'session',session_id,'mode',m,'source',src)) FROM mode_seq),
+    'mode_by', (SELECT json_group_array(json_object('mode',m,'n',n)) FROM mode_by),
+    'inject', (SELECT json_group_array(json_object('reason',reason,'n',n,'bytes',b)) FROM inj),
+    'pin', json_object('write',(SELECT n FROM pinw),'read',(SELECT n FROM pinr)),
+    'emap', json_object('paths',(SELECT n FROM emap_last),'snaps',(SELECT n FROM emap_snaps),'last_ts',(SELECT ts FROM emap_last)),
+    'gate', json_object('runs',(SELECT runs FROM gsum),'fails',(SELECT fails FROM gsum),'by_cmd',(SELECT json_group_array(json_object('cmd',cmd,'runs',runs,'fails',fails)) FROM gcmd))
+  ),
+  'ui', json_object(
+    'blocks', (SELECT json_group_array(json_object('reason',reason,'n',n)) FROM ui_block),
+    'passes', (SELECT json_group_array(json_object('ts',ts,'reason',reason)) FROM ui_pass),
+    'last_block', (SELECT json_object('ts',ts,'reason',reason) FROM ui_last)
+  ),
+  'cost', json_object(
+    'sessions',(SELECT n FROM cost_sum),'cost',(SELECT cost FROM cost_sum),'turns',(SELECT turns FROM cost_sum),'toolCalls',(SELECT tc FROM cost_sum),'durationSec',(SELECT dur FROM cost_sum),
+    'by_model',(SELECT json_group_array(json_object('model',model,'cost',cost)) FROM cost_model),
+    'unmodel_cost',(SELECT c FROM cost_nom)
+  ),
+  'health', json_object(
+    'repair', json_object('median_sec',(SELECT v FROM q_rep WHERE rn=(n+1)/2),'samples',(SELECT n FROM q_rep),'excluded',(SELECT IFNULL(n,0) FROM repair_x)),
+    'regressions',(SELECT n FROM reg),
+    'waves',(SELECT json_group_array(json_object('path',p,'sessions',n)) FROM wave)
+  )
+);
+LIFESQL
+	)"
+
+	if ! LIFE_STATS="$(printf '%s\n' "$LIFE_SQL" | run_sql 2>&1)"; then
+		echo "✗ 体检卡查询失败: $DB"
+		printf '%s\n' "$LIFE_STATS" | sed 's/^/  /'
+		exit 1
+	fi
+	case "$LIFE_STATS" in
+	'{'*) ;;
+	*)
+		echo "✗ 体检卡查询未返回预期结果: $DB"
+		printf '%s\n' "$LIFE_STATS" | sed 's/^/  /'
+		exit 1
+		;;
+	esac
+
+	LIFE_TMP="$(mktemp)"
+	trap 'rm -f "$LIFE_TMP"' EXIT
+	printf '%s' "$LIFE_STATS" >"$LIFE_TMP"
+
+	python3 - "$LIFE_TMP" "$JSON_MODE" "$DB" "$LIFECYCLE" "$LIFE_META_PATH" "$LIFE_DIR_HIT" \
+		"$OPEN_MODE" "$WARNINGS" "$ARCH_DIR" <<'LIFEPY'
+import json, re, sys
+import unicodedata
+
+
+def wide(s):
+    return sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1 for ch in (s or ''))
+
+
+def pad(s, width):
+    s = s or ''
+    return s + ' ' * max(0, width - wide(s))
+
+
+def _pct(num, den):
+    if not den:
+        return None
+    return int((num * 200 + den) // (2 * den))
+
+(stats_path, json_mode, db, name, meta_path, dir_hit, open_mode,
+ warnings_raw, arch_dir) = sys.argv[1:10]
+dir_hit = dir_hit == '1'
+
+with open(stats_path, encoding='utf-8') as fh:
+    st = json.load(fh)
+
+warnings = [w for w in (warnings_raw or '').split('\n') if w.strip()]
+term = st.get('terminal') or {}
+sess = st.get('sessions') or {}
+flow = st.get('flow') or {}
+ui = st.get('ui') or {}
+cost = st.get('cost') or {}
+health = st.get('health') or {}
+
+# ---- 声明元数据（proposal 头注释，账本外的声明侧；缺失标注「声明缺席」） ----
+meta = {'ui_impact': None, 'complexity': None, 'constraint_domains': None, 'source': meta_path or None}
+if meta_path:
+    try:
+        with open(meta_path, encoding='utf-8') as fh:
+            head = fh.read(4096)
+        for key, marker in (('ui_impact', 'ui-impact'), ('complexity', 'complexity'), ('constraint_domains', 'constraint-domains')):
+            m = re.search(r'<!--\s*%s\s*:\s*([^>]*?)\s*-->' % marker, head)
+            meta[key] = m.group(1) if m else None
+    except OSError as exc:
+        warnings.append('proposal 元数据读取失败（%s）：%s' % (meta_path, exc))
+
+# ---- 终态判定（archive 优先；abandon×archive 并存冲突提示；未归档不假定终态） ----
+archived = term.get('arch_ts') is not None or dir_hit
+abandoned = term.get('abandon_ts') is not None
+conflict = archived and abandoned
+if conflict:
+    terminal_txt = '已归档（change.archive @ %s）' % term.get('arch_ts')
+elif archived:
+    terminal_txt = '已归档（%s）' % (
+        ('change.archive @ %s' % term.get('arch_ts')) if term.get('arch_ts')
+        else 'archive 目录锚点（事件缺记或已过保留期，目录兑底）')
+elif abandoned:
+    terminal_txt = '已放弃（change.abandon @ %s，不假定会归档）' % term.get('abandon_ts')
+else:
+    terminal_txt = '未归档（最后活动 %s；不假定终态——活跃/放弃需后续事实）' % (sess.get('last_activity') or '无事件')
+
+empty = (sess.get('total') or 0) == 0 and not archived and not abandoned
+
+if json_mode == '1':
+    doc = {
+        'meta': {
+            'change': name, 'db': db, 'open_mode': open_mode,
+            'generated_at': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'declaration': meta, 'dir_anchor': dir_hit, 'empty': empty,
+        },
+        'terminal': {'state': ('conflict-archived' if conflict else 'archived' if archived else 'abandoned' if abandoned else 'unarchived'),
+                     'arch_ts': term.get('arch_ts'), 'abandon_ts': term.get('abandon_ts'), 'conflict': conflict},
+        'sessions': sess, 'flow': flow, 'ui': ui, 'cost': cost, 'health': health,
+        'warnings': warnings,
+    }
+    json.dump(doc, sys.stdout, ensure_ascii=False, indent=2, sort_keys=True)
+    sys.stdout.write('\n')
+    sys.exit(0)
+
+# ---- 文本渲染 ----
+out = []
+out.append('harness-retro --lifecycle — 单 change 生命周期体检卡')
+out.append('账本      : %s（%s 打开，只读；全程零写入）' % (db, open_mode))
+out.append('Change    : %s' % name)
+if meta['source']:
+    out.append('声明元数据: ui-impact=%s / complexity=%s / constraint-domains=%s（源：%s）' % (
+        meta['ui_impact'] or '（未声明）', meta['complexity'] or '（未声明）',
+        meta['constraint_domains'] or '（未声明）', meta['source']))
+else:
+    out.append('声明元数据: 声明缺席（changes/ 与 archive/ 下均未找到 proposal.md）')
+out.append('终态      : %s' % terminal_txt)
+if conflict:
+    out.append('冲突提示  : 同名 change.archive 与 change.abandon 并存（abandon @ %s）——以归档为准，abandon 疑为误登记' % term.get('abandon_ts'))
+out.append('')
+
+if empty:
+    out.append('该 change 名下无任何事件且无终态锚点：各段降级为缺席标注（可能从未启动，或事件已过 TTL 30 天保留期）。')
+else:
+    # ---- 一、流程规范段 ----
+    out.append('一、流程规范段（档位绑定 → 约束注入 → pin 接力 → 编辑归属 → 门禁执行 → 终态锚点）')
+    ms = flow.get('mode_seq') or []
+    if ms:
+        out.append('   档位绑定        : %d 次 mode.set（%s）' % (
+            len(ms),
+            ' / '.join('%s@%s' % ((it.get('mode') or '?'), (it.get('ts') or '')[5:16]) for it in ms[:6]) + (' …' if len(ms) > 6 else '')))
+    else:
+        out.append('   档位绑定        : 无 mode.set 记录（requirements 档未激活，或已过保留期）')
+    inj = flow.get('inject') or []
+    if inj:
+        _n = sum(it['n'] for it in inj)
+        _b = sum(it.get('bytes') or 0 for it in inj)
+        out.append('   约束注入        : %d 条 / %d B（%s）' % (_n, _b, ' / '.join('%s×%s' % (it['reason'], it['n']) for it in inj[:5])))
+    else:
+        out.append('   约束注入        : 无 constraint.inject 记录')
+    pin = flow.get('pin') or {}
+    out.append('   pin 接力        : write %s 条 / read %s 条' % (pin.get('write') or 0, pin.get('read') or 0))
+    em = flow.get('emap') or {}
+    if em.get('snaps'):
+        out.append('   编辑归属        : %s 个路径（edit.map 快照 %s 次，最新 @ %s）' % (em.get('paths'), em.get('snaps'), (em.get('last_ts') or '')[:19]))
+    else:
+        out.append('   编辑归属        : 无 edit.map 记录（未发生结构化编辑，或已过保留期）')
+    gt = flow.get('gate') or {}
+    if (gt.get('runs') or 0) + (gt.get('fails') or 0) > 0:
+        out.append('   门禁执行        : %s 次执行 / %s 次失败（还原口径；Top：%s）' % (
+            gt.get('runs') or 0, gt.get('fails') or 0,
+            '；'.join('%s %s/%s' % ((it['cmd'] or '?')[:36], it['runs'], it['fails']) for it in (gt.get('by_cmd') or [])[:4]) or '无'))
+    else:
+        out.append('   门禁执行        : 无 gate.check 记录')
+    out.append('   终态锚点        : %s' % terminal_txt)
+    out.append('')
+
+    # ---- 二、UI 工作流段 ----
+    out.append('二、UI 工作流段（ui-design-gate 卡点链 × 放行态）')
+    blocks = ui.get('blocks') or []
+    passes = ui.get('passes') or []
+    if blocks:
+        out.append('   卡点链          : %s（block 计数）' % ' / '.join('%s ×%s' % (it['reason'], it['n']) for it in blocks))
+    else:
+        out.append('   卡点链          : 无 ui-design-gate block 记录%s' % ('（有 pass 放行锚点）' if passes else ''))
+    if passes:
+        out.append('   放行态          : 已放行（%s）' % '；'.join('pass %s @ %s' % (it['reason'], (it['ts'] or '')[:19]) for it in passes[:4]))
+    elif blocks:
+        lb = ui.get('last_block') or {}
+        out.append('   放行态          : 推断（无放行事件）：末次 block %s @ %s 后无新 block——引入 pass 记账（2026-09-28）前的历史只能推断' % (lb.get('reason'), (lb.get('ts') or '')[:19]))
+    else:
+        out.append('   放行态          : 无卡点记录（ui-impact: none/minor 直接过，或未触及前端路径）')
+    out.append('')
+
+    # ---- 三、成本卡 ----
+    out.append('三、成本卡（session.rollup 终值聚合，主会话直归 + 子会话归父）')
+    cs = cost.get('sessions') or 0
+    st_n = sess.get('total') or 0
+    if cs > 0:
+        cov = _pct(cs, st_n) if st_n else None
+        cov_txt = '' if (cov is None or cov >= 100) else '（覆盖率 %s/%s session%s）' % (cs, st_n, '，⚠ 数据积累中' if (cov is not None and cov < 50) else '')
+        out.append('   归因会话        : %s 个 rollup 终值会话%s' % (cs, cov_txt))
+        out.append('   合计            : cost ¥%.2f / turns %s / toolCalls %s / 时长 %.1f h' % (
+            cost.get('cost') or 0, cost.get('turns') or 0, cost.get('toolCalls') or 0, (cost.get('durationSec') or 0) / 3600.0))
+        bm = cost.get('by_model') or []
+        un = cost.get('unmodel_cost')
+        segs = ['%s ¥%.2f' % (pad((it.get('model') or '(无模型)')[:28], 30), it.get('cost') or 0) for it in bm]
+        if un:
+            segs.append('(未分模型) ¥%.2f' % un)
+        out.append('   按模型分桶      : %s' % ('；'.join(segs) if segs else '—（终值均无 models 字段）'))
+    else:
+        out.append('   归因会话        : 无 rollup 终值（数据积累中，或该 change 早于 2026-09-17 rollup 上线——历史会话无成本维度）')
+    out.append('')
+
+    # ---- 四、健康度段 ----
+    out.append('四、健康度段（催修时距 / 回归翻转 / 返工波次）')
+    rep = health.get('repair') or {}
+    med = rep.get('median_sec')
+    if rep.get('samples'):
+        out.append('   催修时距        : 中位 %s（n=%s；分派：quality-gate=转绿 / ui-design-gate=pass / quota-gate=成功派发 / spec-gate=归档%s）' % (
+            '%.1f min' % (med / 60.0) if med is not None else '—', rep.get('samples'),
+            '；剔除无解除信号 %s 条' % rep.get('excluded') if rep.get('excluded') else ''))
+    else:
+        out.append('   催修时距        : 无样本（%s）' % ('剔除 %s 条无解除信号' % rep.get('excluded') if rep.get('excluded') else '无 block/warn 或无 gate.check 红→绿'))
+    out.append('   回归翻转        : %s 次（同 session+cmd 曾绿变红）' % (health.get('regressions') or 0))
+    waves = health.get('waves') or []
+    out.append('   返工波次        : %s 个文件 ≥2 session（累计快照口径，含被动携带）' % len(waves))
+    for it in waves[:6]:
+        out.append('     - %s ×%s session' % (pad((it.get('path') or '')[:56], 58), it.get('sessions')))
+    out.append('')
+
+if warnings:
+    out.append('提示 / 降级:')
+    for w in warnings:
+        out.append('  ⚠ %s' % w)
+    out.append('')
+
+sys.stdout.write('\n'.join(out))
+LIFEPY
+	exit 0
+fi
+
 # ---------- 统计（单次 SQL：聚合下推到 SQLite，数值可独立复算） ----------
 
 STATS_SQL="$(
@@ -486,7 +850,38 @@ gseq AS (SELECT session_id, cmd, ok, ts,
     LEAD(ok) OVER (PARTITION BY session_id, cmd ORDER BY id) AS nok,
     LEAD(ts)  OVER (PARTITION BY session_id, cmd ORDER BY id) AS nts
   FROM gc),
-repair AS (SELECT (julianday(nts)-julianday(ts))*86400.0 AS sec FROM gseq WHERE ok=0 AND nok=1),
+/* 催修时距分派（add-change-lifecycle-retro design D3）：quality-gate 口径=既有 gate.check
+   红→绿（不变）；非 gate 类裁决（ui-design-gate/quota-gate/spec-gate）的解除信号按
+   policy 语义分派，信号缺席样本剔除并披露剔除数——统一用 gate.check 转绿判解除对
+   非 gate 裁决是错配（实测产出 89 分钟假慢） */
+repair_gate AS (SELECT (julianday(nts)-julianday(ts))*86400.0 AS sec FROM gseq WHERE ok=0 AND nok=1),
+pb AS (SELECT id, ts, session_id, change, json_extract(payload,'$.policy') policy
+  FROM win WHERE kind='policy.decision' AND json_valid(payload)
+  AND json_extract(payload,'$.action') IN ('block','warn')
+  AND json_extract(payload,'$.policy') IN ('ui-design-gate','quota-gate','spec-gate')),
+pass_e AS (SELECT id, ts, change FROM win WHERE kind='policy.decision' AND json_valid(payload)
+  AND json_extract(payload,'$.policy')='ui-design-gate' AND json_extract(payload,'$.action')='pass'),
+disp_e AS (SELECT id, ts, session_id FROM win WHERE kind='subagent.dispatch' AND json_valid(payload)
+  AND NOT COALESCE(json_extract(payload,'$.isError'),0)),
+arch_sig AS (SELECT id, ts, COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) AS name
+  FROM win WHERE kind='change.archive' AND json_valid(payload)),
+pr AS (SELECT b.policy,
+    CASE b.policy
+      WHEN 'ui-design-gate' THEN (SELECT MIN((julianday(p.ts)-julianday(b.ts))*86400.0) FROM pass_e p WHERE p.id > b.id AND b.change IS NOT NULL AND p.change = b.change)
+      WHEN 'quota-gate' THEN (SELECT MIN((julianday(d.ts)-julianday(b.ts))*86400.0) FROM disp_e d WHERE d.id > b.id AND d.session_id = b.session_id)
+      WHEN 'spec-gate' THEN (SELECT MIN((julianday(a.ts)-julianday(b.ts))*86400.0) FROM arch_sig a WHERE a.id > b.id AND b.change IS NOT NULL AND a.name = b.change)
+    END sec
+  FROM pb b),
+repair_p AS (SELECT policy, sec FROM pr WHERE sec IS NOT NULL AND sec >= 0),
+repair_x AS (SELECT COUNT(*) n FROM pr WHERE sec IS NULL OR sec < 0),
+rep_pol AS (SELECT policy, SUM(n) n, SUM(x) x FROM (
+    SELECT 'quality-gate' AS policy, COUNT(*) AS n, 0 AS x FROM repair_gate WHERE sec IS NOT NULL AND sec >= 0
+    UNION ALL
+    SELECT policy, COUNT(*) AS n, 0 AS x FROM repair_p GROUP BY 1
+    UNION ALL
+    SELECT policy, 0 AS n, COUNT(*) AS x FROM pr WHERE sec IS NULL OR sec < 0 GROUP BY 1
+  ) GROUP BY 1),
+repair_all AS (SELECT sec FROM repair_gate WHERE sec IS NOT NULL AND sec >= 0 UNION ALL SELECT sec FROM repair_p),
 pblock AS (SELECT COALESCE(change,'(无归属)') chg,
     CASE WHEN json_valid(payload) THEN json_extract(payload,'$.reasonCode') END AS reason, COUNT(*) n
   FROM win WHERE kind='policy.decision' AND json_valid(payload) AND json_extract(payload,'$.action')='block' GROUP BY 1,2), -- win 直取：p CTE 无 change 列
@@ -524,7 +919,7 @@ q_sdur AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM 
 q_ctok AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT tok v FROM ru_chg WHERE tok IS NOT NULL)),
 q_ccost AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT cost v FROM ru_chg WHERE cost IS NOT NULL)),
 q_ib AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT b v FROM inj_sess)),
-q_rep AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT sec v FROM repair WHERE sec IS NOT NULL AND sec >= 0)),
+q_rep AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT sec v FROM repair_all)),
 /* ---- B' 每任务成本（task-cost-metrics）：终值三路归因 + 双锚点归档 + 模型/complexity 分桶 ---- */
 arch_ev AS (SELECT DISTINCT COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) AS name -- 锚点一：change.archive 事件
   FROM win WHERE kind='change.archive' AND json_valid(payload)
@@ -557,7 +952,14 @@ tcx AS (SELECT COALESCE(cx,'(未声明)') cx, COUNT(*) n, SUM(cost) cost -- comp
   FROM tc LEFT JOIN cx_map ON tc.name=cx_map.name GROUP BY 1),
 unatt AS (SELECT IFNULL(SUM(cost),0) c FROM ru_attr WHERE attr IS NULL),
 tc_total AS (SELECT IFNULL(SUM(cost),0) c FROM ru_attr),
-act_un AS (SELECT COUNT(DISTINCT attr) n FROM ru_attr WHERE attr IS NOT NULL AND attr NOT IN (SELECT name FROM arch_all)), -- 活跃未归档（幸存者偏差对照）
+abandon_ev AS (SELECT DISTINCT COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) AS name -- 已放弃终态（add-change-lifecycle-retro：与 change.archive 家族对称）
+  FROM win WHERE kind='change.abandon' AND json_valid(payload)
+  AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) IS NOT NULL),
+act_un AS (SELECT COUNT(DISTINCT attr) n FROM ru_attr WHERE attr IS NOT NULL AND attr NOT IN (SELECT name FROM arch_all)
+  AND attr NOT IN (SELECT name FROM abandon_ev)), -- 活跃未归档（幸存者偏差对照；已放弃的不占活跃口径）
+act_ab AS (SELECT COUNT(DISTINCT attr) n FROM ru_attr WHERE attr IS NOT NULL
+  AND attr IN (SELECT name FROM abandon_ev) AND attr NOT IN (SELECT name FROM arch_all)), -- 已放弃（有成本归因无归档锚点）
+ab_conf AS (SELECT COUNT(*) n FROM abandon_ev WHERE name IN (SELECT name FROM arch_all)), -- abandon×archive 并存（以归档为准，疑误登记）
 arch_evo AS (SELECT COUNT(*) n FROM arch_ev WHERE name NOT IN (SELECT name FROM arch_dir)), -- 仅事件侧（目录被移/重命名）
 arch_diro AS (SELECT COUNT(*) n FROM arch_dir WHERE name NOT IN (SELECT name FROM arch_ev)) -- 仅目录侧（事件缺记/TTL 清扫）
 SELECT json_object(
@@ -634,7 +1036,9 @@ SELECT json_object(
     'pin', json_object('write', (SELECT n FROM pw), 'read', (SELECT n FROM prd)),
     'repair', json_object(
       'median_sec', (SELECT v FROM q_rep WHERE rn = (n+1)/2),
-      'samples', (SELECT n FROM q_rep)
+      'samples', (SELECT n FROM q_rep),
+      'excluded', (SELECT IFNULL(n,0) FROM repair_x),
+      'by_policy', (SELECT json_group_array(json_object('policy', policy, 'n', n, 'excluded', x)) FROM (SELECT policy, n, x FROM rep_pol ORDER BY policy))
     ),
     'block_recur', json_object(
       'items', (SELECT json_group_array(json_object('change', chg, 'reason', reason, 'n', n)) FROM (SELECT chg, reason, n FROM pblock WHERE n > 1 ORDER BY n DESC LIMIT 8))
@@ -683,7 +1087,9 @@ SELECT json_object(
       'by_complexity', (SELECT json_group_array(json_object('complexity', cx, 'n', n, 'cost', cost)) FROM (SELECT cx, n, cost FROM tcx ORDER BY cost DESC)),
       'unattributed_cost', (SELECT c FROM unatt),
       'total_cost', (SELECT c FROM tc_total),
-      'active_unarchived', (SELECT n FROM act_un)
+      'active_unarchived', (SELECT n FROM act_un),
+      'abandoned', (SELECT n FROM act_ab),
+      'abandon_conflicts', (SELECT n FROM ab_conf)
     ),
     'patrol', json_object(
       'checks', (SELECT n FROM pc_agg),
@@ -832,6 +1238,7 @@ metrics.update({
     'm7.pin_read': _e('pin.read'),
     'm7.repair_med_sec': _e('repair.median_sec'),
     'm7.repair_samples': _e('repair.samples'),
+    'm7.repair_excluded': _e('repair.excluded'),
     'm7.block_recur_groups': len(_e('block_recur.items') or []),
     'm7.sess_tok_p50': _e('sess_dist.tok_p50'),
     'm7.sess_tok_p75': _e('sess_dist.tok_p75'),
@@ -859,6 +1266,8 @@ metrics.update({
     'm7.task_cost_by_complexity': _by_cx if _tc else None,
     'm7.task_unattributed_cost_pct': _pct(_tc.get('unattributed_cost') or 0, _tc.get('total_cost') or 0) if _tc else None,
     'm7.task_active_unarchived': _tc.get('active_unarchived'),
+    'm7.task_abandoned': _tc.get('abandoned'),
+    'm7.task_abandon_conflict': _tc.get('abandon_conflicts'),
 })
 
 # ⑧/D 组：测试欠账巡检（test-debt-patrol；patrol.check 流水 + test_debt 台账，缺表/零事件时 None）
@@ -1081,8 +1490,10 @@ else:
                   '—' if not _e('pin.write') else '%.1f' % ((_e('pin.read') or 0) / _e('pin.write'))))
     rep_med = _e('repair.median_sec')
     rep_n = _e('repair.samples') or 0
-    out.append('     门禁催修时距      : 红→绿 中位 %s（n=%s）'
-               % ('—' if rep_med is None else '%.1f min' % (rep_med / 60.0), rep_n))
+    rep_ex = _e('repair.excluded') or 0
+    out.append('     门禁催修时距      : 中位 %s（n=%s；分派：quality-gate=转绿 / ui-design-gate=pass 放行 / quota-gate=成功派发 / spec-gate=归档%s）'
+               % ('—' if rep_med is None else '%.1f min' % (rep_med / 60.0), rep_n,
+                  '；剔除无解除信号 %s 条' % rep_ex if rep_ex else ''))
     recur = _e('block_recur.items') or []
     out.append('     block 复发        : %s 组（同 change×reasonCode >1 次）' % len(recur))
     for it in recur[:5]:
@@ -1152,8 +1563,14 @@ else:
                    % ('¥%.2f' % _un, _pct(_un, _tcd.get('total_cost') or 0)))
     else:
         out.append('     不可归因成本      : 0')
-    out.append('     活跃未归档 change : %s 个（窗口内有成本归因但未归档：幸存者偏差对照，成本不在分布内）'
+    out.append('     活跃未归档 change : %s 个（窗口内有成本归因但未归档且未登记放弃：幸存者偏差对照，成本不在分布内）'
                % (_tcd.get('active_unarchived') or 0))
+    _abn = _tcd.get('abandoned') or 0
+    if _abn:
+        out.append('     已放弃 change     : %s 个（change.abandon 登记：不再活跃也不会归档，成本不在分布内——完整分母要加回）' % _abn)
+    _abc = _tcd.get('abandon_conflicts') or 0
+    if _abc:
+        out.append('     ⚠ 终态冲突        : %s 个 change 名下 abandon×archive 并存，以归档为准（abandon 疑为误登记，见 scripts/harness/change-abandon.sh）' % _abc)
     _evo = _tcd.get('anchor_event_only') or 0
     _diro = _tcd.get('anchor_dir_only') or 0
     if _evo or _diro:

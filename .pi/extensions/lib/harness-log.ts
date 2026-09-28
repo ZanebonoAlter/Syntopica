@@ -20,6 +20,9 @@
  *   patrol.check       30 天（test-debt-patrol：测试欠账巡检分片流水，仅流水；欠账生命周期由台账表自身持久化）
  *   change.archive     30 天（task-cost-metrics：归档成功锚点——「普通成功放行零记录」低噪声约束的唯一成功侧事实例外，
  *                      归档低频、高价值锚点，retro B' 每任务成本的分母）
+ *   change.abandon     30 天（add-change-lifecycle-retro：change 放弃终态，与 change.archive 家族对称；
+ *                      专用登记脚本 scripts/harness/change-abandon.sh 直写，append-only 不去重；
+ *                      消费侧同名 archive 并存时以 change.archive 为准并提示冲突）
  *   pin.write          永久
  *
  * 安全开库（design D2）：
@@ -105,7 +108,8 @@ export type HarnessEventKind =
 	| "subagent.complete"
 	| "policy.decision"
 	| "edit.map"
-	| "change.archive";
+	| "change.archive"
+	| "change.abandon";
 
 export interface HarnessEventInput {
 	kind: HarnessEventKind;
@@ -138,6 +142,7 @@ const RETENTION_DAYS: Partial<Record<HarnessEventKind, number>> = {
 	"edit.map": 30,
 	"patrol.check": 30,
 	"change.archive": 30,
+	"change.abandon": 30,
 	// pin.write 永久，不列
 };
 

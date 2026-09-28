@@ -44,9 +44,9 @@ function makePi() {
 	try {
 		/* ---------- 1. normalizeDecision 白盒：action 白名单 / reasonCode 有界 / target / durationMs ---------- */
 		const { normalizeDecision, logPolicyDecision, UNKNOWN_REASON_CODE } = loadFresh('./.pdec.cjs');
-		for (const a of ['block', 'warn', 'bypass', 'fail-open']) {
+		for (const a of ['block', 'warn', 'bypass', 'fail-open', 'pass']) {
 			const r = normalizeDecision({ policy: 'spec-gate', action: a, reasonCode: 'full-go-test' });
-			check(`四种合法 action 入白名单（${a}）`, r.ok === true && r.payload.action === a);
+			check(`五种合法 action 入白名单（${a}）`, r.ok === true && r.payload.action === a);
 		}
 		check('action 白名单外（"allow"）拒绝 → ok:false', normalizeDecision({ policy: 'x', action: 'allow', reasonCode: 'r' }).ok === false);
 		check('action 空串拒绝', normalizeDecision({ policy: 'x', action: '', reasonCode: 'r' }).ok === false);
