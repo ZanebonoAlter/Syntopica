@@ -41,7 +41,9 @@ HOTSPOT_DEFAULT_THR=5
 # harness-facts skill 的 reasonCode 词汇表同步演进；白名单之外的 reasonCode 一律缺省按
 # 纠正型处理（最强监督口径：新情报型词汇须显式登记入此白名单，防静默漏进失效名单；
 # 发现误归类时修白名单，不放宽缺省）。
-INFORMATIVE_REASONS="concurrent-mixed concurrent-dirty-tree foreign-breakage"
+# attribution-degraded（add-foreign-gate-steer-attribution）：归因信号缺席/判定异常而保守
+# 回退本会话失败的告知性记账——考古"为何判 mine"用，不构成催修指令。
+INFORMATIVE_REASONS="concurrent-mixed concurrent-dirty-tree foreign-breakage attribution-degraded"
 # SQL IN 字面量（仅含 [a-z0-9-]，无需引号转义）：'concurrent-mixed','…','…'
 INFORMATIVE_SQL_LIST="$(printf "'%s'," $INFORMATIVE_REASONS | sed 's/,$//')"
 

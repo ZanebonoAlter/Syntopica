@@ -54,6 +54,9 @@ npx -y esbuild ../dev-process-guard.ts --bundle --platform=node --format=cjs \
 rc=0
 node harness-log.smoke.cjs || rc=$?
 node failure-classify.smoke.cjs || rc=$?
+# 归一化指纹断言（add-foreign-gate-steer-attribution）：node 原生 strip-types 直跑
+# import ../lib/failure-classify.ts（零依赖纯函数库，无需 esbuild 中转）
+node --experimental-strip-types failure-fingerprint.smoke.ts || rc=$?
 node spill.smoke.cjs || rc=$?
 node spec-gate.smoke.cjs || rc=$?
 node quality-gate.smoke.cjs || rc=$?

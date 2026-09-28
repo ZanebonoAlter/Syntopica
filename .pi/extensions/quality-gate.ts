@@ -98,6 +98,7 @@ import {
 	classifyFailureOwnership,
 	partitionFailurePaths,
 	formatMixedFailure,
+	normalizeDiagFingerprint,
 } from "./lib/failure-classify";
 import { logPolicyDecision } from "./lib/policy-decision";
 import { isChildSession } from "./lib/child-session";
@@ -287,14 +288,31 @@ let baselinePaths = new Set<string>();
 // 只增不减——bash 编辑（sed -i/gofmt -w/代码生成）不进 edit.map 只进当回合 trigger，
 // mine 依赖本集合，防止这类文件从下回合起掉出 mine 被误判 [外部]。
 let accumulatedTriggerPaths = new Set<string>();
-// 失败指纹状态机（D3/D4）：cmd → { diag, rounds, foreign }。diag 取 truncateDiagGate
-// （与 gate.check diag 同源同值），精确相等比较；foreign 标记失败段当前判性（外部/本
-// 会话），判性翻转视同新指纹重新完整报告。会话边界与 stickyFailures 同点位清零，
-// 不落库——重复抑制是会话内报告策略，历史事实由 gate.check 全量记账承载。
+// 失败指纹状态机（D3/D4 + add-foreign-gate-steer-attribution D1）：cmd → { fp, rounds,
+// foreign }。fp 取 truncateDiagGate 后再经 normalizeDiagFingerprint 归一化（剥日志时间戳/
+// IP:port/耗时毫秒/数字序列/仓库根前缀等运行期动态值）——运行期输出逐轮变化不再击穿
+// 同指纹静默（2026-09-28 实测 23 轮近乎逐字重复注入的根因）；完整块展示与 gate.check
+// 记账 diag 保留原文。foreign 标记失败段当前判性（外部/本会话），判性翻转视同新指纹
+// 重新完整报告。会话边界与 stickyFailures 同点位清零，不落库——重复抑制是会话内报告
+// 策略，历史事实由 gate.check 全量记账承载。
 let failureReports = new Map<
 	string,
-	{ diag: string; rounds: number; foreign: boolean; mixed?: boolean }
+	{ fp: string; rounds: number; foreign: boolean; mixed?: boolean }
 >();
+// 归因降级记账状态（add-foreign-gate-steer-attribution D3）：判定过程异常/解析不出按
+// (cmd, fp) 边沿去重；基线信号缺席的会话级单发标记。随会话边界与 failureReports
+// 同点位清零。
+let degradedEdges = new Set<string>();
+let baselineDegradedNoted = false;
+// 启动基线信号是否缺席（D3）：session_start git 快照失败/未初始化 → true。区别于
+// 「干净仓库基线为空」的合法空集——空集是已证实的无外部脏文件，缺席是快照没拍成
+// （「本可判外部的路径无法判」）。lazy 兜底路径不回填基线，维持缺席语义。
+let baselineAbsent = true;
+
+/** gate.check ok=false 的归属四态（design D2）：mine/foreign/mixed 透传
+ *  classifyFailureOwnership 结果；attribution-degraded = 归因信号缺席/判定异常的
+ *  保守回退标记。ok=true 与环境故障（interop/toolchain）失败无归属语义，不带该键。 */
+type GateOwnership = "mine" | "foreign" | "mixed" | "attribution-degraded";
 
 /** git 脏文件集（tracked diff + untracked）→ {mtime,size} 快照；消失文件跳过。 */
 function statGitFiles(repoRoot: string, files: string): Map<string, FileStat> {
@@ -376,6 +394,9 @@ export default function (pi: ExtensionAPI) {
 		baselinePaths = new Set(); // 启动基线随会话边界重建（D5）
 		accumulatedTriggerPaths = new Set(); // 累计触发集随会话边界清零（D5）
 		failureReports = new Map(); // 失败指纹随会话边界清零（D3：不跨会话复用）
+		degradedEdges = new Set(); // 归因降级 (cmd,fp) 边沿随会话边界清零（attribution D3）
+		baselineDegradedNoted = false; // 基线缺席会话级降级随会话边界清零（attribution D3）
+		baselineAbsent = true; // 基线信号缺席待快照证伪（快照成功即 false；空集=干净≠缺席）
 		execPlatform = null; // 平台判定随会话边界重判（spec：判定在会话内稳定）
 		nativeToolchain = { backend: null, frontend: null }; // 工具链探测随会话边界重探（D3）
 		toolchainDownNotified = { backend: false, frontend: false }; // 短路边沿状态随会话边界清零（D5）
@@ -406,6 +427,9 @@ export default function (pi: ExtensionAPI) {
 		// 启动基线一次性快照（D5）：此后 turn_end 不再覆盖；lazy 兜底路径不回填——
 		// 中途文件进「基线」会扩大外部面（信号缺席宁可保守回现状，不误判外部）。
 		baselinePaths = snapshot ? new Set(snapshot.keys()) : new Set();
+		// 基线信号缺席标记（attribution D3）：快照失败/未初始化 → true（空 Map=干净仓库
+		// =不缺席）；供归因降级判定与降级记账（基线缺席时本可判外部的失败被保守判 mine）。
+		baselineAbsent = snapshot === null;
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -419,6 +443,9 @@ export default function (pi: ExtensionAPI) {
 		baselinePaths = new Set();
 		accumulatedTriggerPaths = new Set();
 		failureReports = new Map();
+		degradedEdges = new Set();
+		baselineDegradedNoted = false;
+		baselineAbsent = true;
 		execPlatform = null;
 		nativeToolchain = { backend: null, frontend: null };
 		toolchainDownNotified = { backend: false, frontend: false };
@@ -658,28 +685,46 @@ export default function (pi: ExtensionAPI) {
 		}
 		try {
 
-		// 3.7 并发外部归因预取（attribute-concurrent-gate-noise D5/D7）：mine = 本会话累计
-		//     触发集 ∪ 本 change（mode.set boundChange）归属；foreign = 会话启动基线 ∪ 其他
-		//     change 归属。gateLog 是同步回调，判定集合必须在此（门禁命令执行前）预取完成，
-		//     不得在回调内发起查询。无绑定 change / 库不可用 → 归属信号整体缺席，判定退化
-		//     为基线单信号（不扩大外部面）；任何异常吞掉（fail-open），不影响门禁既有流程。
-		for (const p of trigger) accumulatedTriggerPaths.add(p);
-		const minePaths = new Set(accumulatedTriggerPaths);
-		const foreignPaths = new Set(baselinePaths);
+		// 3.7 并发外部归因预取（attribute-concurrent-gate-noise D5/D7 +
+		//     add-foreign-gate-steer-attribution D4 修复）：mine = 本会话累计触发集 ∪
+		//     本 change（mode.set boundChange）归属；foreign = 会话启动基线 ∪ 其他 change
+		//     归属。gateLog 是同步回调，判定集合必须在此（门禁命令执行前）预取完成，
+		//     不得在回调内发起查询。库不可用 → 归属信号缺席，判定退化为触发集/基线
+		//     （保守方向）；任何异常吞掉（fail-open），不影响门禁既有流程。
+		//     2026-09-28 复盘双修（23 轮全判 mine 的断点）：
+		//     ①Fix C：其他 change 的 edit.map 归属不再以本会话有绑定 change 为前提——
+		//       spec foreign 侧 = 基线 ∪ 其他 active change 归属，与本会话是否绑定无关；
+		//       旧 `if (bound)` 门控让无绑定会话（探索/requirements）的 foreign 信号
+		//       退化为纯基线，物主明明登记了归属却判不进外部。
+		//     ②Fix A：累计触发集排除已归属其他 change 的路径——跨会话 diff 噪声（他会话
+		//       在本会话两回合之间的编辑）会经 trigger 误进 mine，零编辑会话的
+		//       accumulatedTriggerPaths 全是物主中间态文件；edit.map 归属是精确信号，
+		//       排除不违反「不扩大外部面」。未登记路径维持原语义进 mine（本会话 bash
+		//       编辑兜底，宁可多报）。
+		let boundChangeName: string | null = null;
+		const otherChangePaths = new Set<string>();
+		const boundChangePaths = new Set<string>();
 		try {
 			const modeRows = sessionId
 				? queryBySession(repoRoot, sessionId, ["mode.set"])
 				: [];
-			const bound = parseModeSetPayload(modeRows[modeRows.length - 1]);
-			if (bound) {
-				for (const [change, paths] of latestEditMapByChange(repoRoot)) {
-					const target = change === bound ? minePaths : foreignPaths;
-					for (const p of paths) target.add(p);
-				}
+			boundChangeName =
+				parseModeSetPayload(modeRows[modeRows.length - 1]) ?? null;
+			for (const [change, paths] of latestEditMapByChange(repoRoot)) {
+				const target =
+					change === boundChangeName ? boundChangePaths : otherChangePaths;
+				for (const p of paths) target.add(p);
 			}
 		} catch {
 			/* 归属信号缺席：mine/foreign 保持触发集/基线（保守方向） */
 		}
+		for (const p of trigger) {
+			if (!otherChangePaths.has(p)) accumulatedTriggerPaths.add(p);
+		}
+		const minePaths = new Set(accumulatedTriggerPaths);
+		for (const p of boundChangePaths) minePaths.add(p);
+		const foreignPaths = new Set(baselinePaths);
+		for (const p of otherChangePaths) foreignPaths.add(p);
 		const mineJudge = expandSideForms(minePaths);
 		const foreignJudge = expandSideForms(foreignPaths);
 
@@ -707,6 +752,10 @@ export default function (pi: ExtensionAPI) {
 			const ok = code === 0;
 			const d = stepGateOk(gateOkStates.get(cmd) ?? initGateOkState(), ok);
 			gateOkStates.set(cmd, d.next);
+			// 归属判定结果（add-foreign-gate-steer-attribution D2）：仅下方分类路径赋值；
+			// ok=true 无归属语义、环境故障（interop/toolchain）无归属判定——均不带该键
+			//（消费侧对无键事件判空回退，与存量无键事件同语义）。
+			let ownership: GateOwnership | undefined;
 			// 当前 gateLog 覆盖的命令按模式经 cmd.exe interop（windows）或本机 PATH（native）
 			// 执行，失败行按实际链路标注（windows 标（wsl环境）；native 标本机）。
 			// spec：不弱化真实失败的修复义务——真实失败仍走粘性+分级。
@@ -737,19 +786,30 @@ export default function (pi: ExtensionAPI) {
 					text: `[${cmd}${linkTag}] exit ${code}：输出含工具缺失特征（command not found），判定为本机工具链环境问题而非代码问题；不计入粘性重跑，修复 pi 启动环境 PATH 后重启会话恢复`,
 				});
 			} else {
-				// 失败指纹与归属判定（D3/D4/D7 + tune-quality-gate-concurrency D3 三态）：
-				// diag 与 gate.check 记账同源（truncateDiagGate），精确相等比较；归属三态
+				// 失败指纹与归属判定（D3/D4/D7 + tune-quality-gate-concurrency D3 三态 +
+				// add-foreign-gate-steer-attribution D1/D2/D3）：diag 与 gate.check 记账同源
+				//（truncateDiagGate，原文保留）；同指纹比较改用归一化指纹 normalizeDiagFingerprint
+				//（剥日志时间戳/IP:port/耗时毫秒/数字序列/仓库根前缀——运行期动态值不构成
+				// 新指纹，2026-09-28 实测 23 轮逐字重复注入的击穿点）。归属三态
 				// classifyFailureOwnership：纯外部（P∩mine=∅ ∧ P⊆foreign）→ [外部]；混合
-				// （P∩mine≠∅ ∧ P∩foreign≠∅）→ [并发] 降级；任何异常/解析不出回退 mine
-				//（保守，宁可多报不误判外部/漏催修）。
+				//（P∩mine≠∅ ∧ P∩foreign≠∅）→ [并发] 降级；任何异常/解析不出回退 mine
+				//（保守，宁可多报不误判外部/漏催修）。归因降级（判定异常/解析不出/基线信号
+				// 缺席）显式记账不静默，判定结果与门禁行为不变。
 				const diag = truncateDiagGate(output);
+				const fp = normalizeDiagFingerprint(diag);
 				const prev = failureReports.get(cmd);
-				let ownership: "foreign" | "mixed" | "mine" = "mine";
+				ownership = "mine";
 				let hitPaths: string[] = [];
+				let judged = false;
 				try {
-					// 包锚点（# pkg / FAIL pkg / vet: file:line）→ 目录∩已知归属集展开（D3）
+					// 包锚点（# pkg / FAIL pkg / vet: file:line）→ 目录∩已知归属集展开（D3）。
+					// Fix B（attribution D4）：先剥仓库根绝对前缀——测试日志行常打绝对路径
+					//（2026-09-28 实账：`/home/…/Syntopica/backend-go/…/store_vendor.go:260`），
+					// 绝对形态与 repo 相对判定集永不精确命中 → P⊆foreign 恒假。
+					const stripRepoRoot = (p: string): string =>
+						p.startsWith(`${repoRoot}/`) ? p.slice(repoRoot.length + 1) : p;
 					hitPaths = expandPkgAnchorDirs(
-						extractFailurePaths(output),
+						extractFailurePaths(output).map(stripRepoRoot),
 						mineJudge,
 						foreignJudge,
 					);
@@ -758,8 +818,50 @@ export default function (pi: ExtensionAPI) {
 						mine: mineJudge,
 						foreign: foreignJudge,
 					});
+					judged = true;
 				} catch {
-					ownership = "mine"; // 归因异常吞掉 → 视同本会话失败（2.4 fail-open）
+					ownership = "attribution-degraded"; // 判定过程异常：保守视同本会话 + 显式降级记账
+				}
+				// 归因降级记账（design D3，spec：MUST NOT 静默；与 gate.check 失败事实不双写
+				// ——gate.check 记失败本身与 ownership，policy.decision 只记降级原因）：
+				// ①判定过程异常（catch）②解析不出（P=∅，spec scenario「路径不可解析」）→
+				// 同 (cmd, fp) 会话内至多一条；③基线信号缺席（session_start 快照失败）且失败
+				// 无 mine 命中（本可判外部）→ 会话级一条 + ownership 覆写降级态（spec scenario
+				// 「归属降级显式标注」）。至多记一条，判定与门禁行为不变。
+				if (!judged || hitPaths.length === 0) {
+					const dkey = `${cmd}\u0000${fp}`;
+					if (!degradedEdges.has(dkey) && sessionId) {
+						degradedEdges.add(dkey);
+						logPolicyDecision(repoRoot, {
+							sessionId,
+							policy: "quality-gate",
+							action: "warn",
+							reasonCode: "attribution-degraded",
+							target: cmd,
+						});
+					}
+				} else if (
+					ownership === "mine" &&
+					baselineAbsent &&
+					partitionFailurePaths({
+						paths: hitPaths,
+						mine: mineJudge,
+						foreign: foreignJudge,
+					}).mine.length === 0
+				) {
+					// 基线缺席 + 无 mine 命中：本可判外部的失败被保守判 mine——会话级单发
+					// （基线缺席是会话级四因，避免逐命令重复），ownership 覆写降级态可考古。
+					ownership = "attribution-degraded";
+					if (!baselineDegradedNoted && sessionId) {
+						baselineDegradedNoted = true;
+						logPolicyDecision(repoRoot, {
+							sessionId,
+							policy: "quality-gate",
+							action: "warn",
+							reasonCode: "attribution-degraded",
+							target: cmd,
+						});
+					}
 				}
 				if (ownership === "foreign") {
 					// [外部]（D7）：不进粘性、不打分级；同指纹（diag+判性均未变）会话内至多一行，
@@ -774,10 +876,10 @@ export default function (pi: ExtensionAPI) {
 							target: cmd,
 						});
 					}
-					if (prev && prev.foreign && prev.diag === diag) {
-						prev.rounds += 1; // 同指纹：静默（账本照记；无催修义务不重提）
+					if (prev && prev.foreign && prev.fp === fp) {
+						prev.rounds += 1; // 同指纹（归一化）：静默（账本照记；无催修义务不重提）
 					} else {
-						failureReports.set(cmd, { diag, rounds: 1, foreign: true });
+						failureReports.set(cmd, { fp, rounds: 1, foreign: true });
 						const shown = hitPaths.slice(0, 3).join(", ");
 						const more = hitPaths.length > 3 ? ` 等 ${hitPaths.length} 个路径` : "";
 						foreignLines.push(
@@ -791,7 +893,7 @@ export default function (pi: ExtensionAPI) {
 					// 输出完整块并记一条 concurrent-mixed（D2：记账与注入同一边沿，同指纹会话内至多
 					// 一条）；同指纹持续回合零注入零记账（粘性照加，重跑不减）。判性翻转（mixed→mine）
 					// 走下方 mine 分支视同新指纹恢复完整块与正常分级。
-					if (prev && prev.mixed && prev.diag === diag) {
+					if (prev && prev.mixed && prev.fp === fp) {
 						prev.rounds += 1;
 						stickyFailures.add(cmd);
 						// 状态未变零注入（spec：同指纹持续 MUST NOT 注入任何 steer）
@@ -810,13 +912,13 @@ export default function (pi: ExtensionAPI) {
 							mine: mineJudge,
 							foreign: foreignJudge,
 						});
-						failureReports.set(cmd, { diag, rounds: 1, foreign: false, mixed: true });
+						failureReports.set(cmd, { fp, rounds: 1, foreign: false, mixed: true });
 						stickyFailures.add(cmd);
 						failures.push(
 							formatMixedFailure(`${cmd}${linkTag}`, split.mine, split.foreign, diag),
 						);
 					}
-				} else if (prev && !prev.foreign && !prev.mixed && prev.diag === diag) {
+				} else if (prev && !prev.foreign && !prev.mixed && prev.fp === fp) {
 					// 同指纹持续（边沿触发注入，aggregate-concurrent-gate-warns D1）：状态未变零注入
 					// ——单行摘要与「≥3 回合未修」标记一并退役；红态知情 = 会话内首次全文 +
 					// gate-status.sh 查询 + 归档前全绿硬门禁（D5 三路兑底）。rounds 照增（仅内部
@@ -825,7 +927,7 @@ export default function (pi: ExtensionAPI) {
 					stickyFailures.add(cmd);
 				} else {
 					// 首次/指纹变化/判性翻转（外部→本会话、mixed→本会话）：完整块视同首次（分级前缀 + tail 30）
-					failureReports.set(cmd, { diag, rounds: 1, foreign: false });
+					failureReports.set(cmd, { fp, rounds: 1, foreign: false });
 					stickyFailures.add(cmd);
 					failures.push(
 						`${d.failPrefix}[${cmd}${linkTag}] exit ${code}\n${tail(output, 30)}`,
@@ -846,6 +948,9 @@ export default function (pi: ExtensionAPI) {
 					ok,
 					ms,
 					diag: ok ? null : truncateDiagGate(output),
+					// 归属四态（attribution D2）：仅分类路径携带（ok=true 无归属语义；interop/
+					// toolchain 环境故障无归属判定——均不带该键，消费侧判空回退=存量无键语义）。
+					...(ok || ownership === undefined ? {} : { ownership }),
 					...(d.flip ? { flip: true } : {}),
 					...(d.sampled ? { sampled: true, n: d.n } : {}),
 				},

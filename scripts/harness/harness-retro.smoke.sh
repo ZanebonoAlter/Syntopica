@@ -281,6 +281,11 @@ mk_db "$FL"
 for i in 1 2 3 4 5 6; do
 	ins "$FL" policy.decision probe-L '{"policy":"quality-gate","action":"warn","reasonCode":"concurrent-mixed"}'
 done
+# attribution-degraded（add-foreign-gate-steer-attribution）：5 条 = 恰在失效阈值上，
+# 验证情报型登记后不吸入④段失效名单（新词汇不漂移进纠正型）
+for i in 1 2 3 4 5; do
+	ins "$FL" policy.decision probe-L '{"policy":"quality-gate","action":"warn","reasonCode":"attribution-degraded"}'
+done
 for i in 1 2 3 4 5 6; do
 	ins "$FL" policy.decision probe-L '{"policy":"test-scope-guard","action":"warn","reasonCode":"full-go-test"}'
 done
@@ -491,24 +496,25 @@ check_absent "B4 低于阈值 warn 不产生噪声" "ui-impact-mismatch"
 # ---------- L. 情报型/纠正型分开统计（split-retro-warn-classes） ----------
 
 run_retro --db "$FL" --days 7
-check 0 "L1 失效名单只含纠正型（full-go-test 6 次；标题含纠正型；情报型单列计数）" \
+check 0 "L1 失效名单只含纠正型（full-go-test 6 次；标题含纠正型；情报型单列计数含 attribution-degraded）" \
 	"④ 软提醒失效（纠正型；同 policy+reasonCode 的 warn 计数 ≥ 5）" \
 	"test-scope-guard / full-go-test : 6 次" \
-	"情报型 warn（归属/状态告知，不计失效）: 6 条（quality-gate/concurrent-mixed 6）"
+	"情报型 warn（归属/状态告知，不计失效）: 11 条（quality-gate/concurrent-mixed 6 / quality-gate/attribution-degraded 5）"
 check_absent "L2 情报型不进失效名单（失效行格式不含 concurrent-mixed）" "quality-gate / concurrent-mixed"
+check_absent "L2b attribution-degraded 情报型登记不吸入失效名单（恰在阈值 5 上仍单列）" "quality-gate / attribution-degraded : 5 次"
 "$RETRO" --db "$FL" --days 7 --json >"$TMP/fl.json" 2>/dev/null
 if python3 - "$TMP/fl.json" <<'FLPY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 m = d['metrics']
 s = d['soft']
-assert m['soft.warn_total'] == 12, m['soft.warn_total']
+assert m['soft.warn_total'] == 17, m['soft.warn_total']
 assert m['soft.warn_total_corrective'] == 6, m['soft.warn_total_corrective']
-assert m['soft.warn_total_informative'] == 6, m['soft.warn_total_informative']
-assert m['soft.informative_groups'] == 1, m['soft.informative_groups']
+assert m['soft.warn_total_informative'] == 11, m['soft.warn_total_informative']
+assert m['soft.informative_groups'] == 2, m['soft.informative_groups']
 assert m['soft.stale_groups'] == 1, m['soft.stale_groups']
 assert [it['reason'] for it in s['items']] == ['full-go-test'], s['items']
-assert [it['reason'] for it in s['informative']] == ['concurrent-mixed'], s['informative']
+assert [it['reason'] for it in s['informative']] == ['concurrent-mixed', 'attribution-degraded'], s['informative']
 FLPY
 then
 	echo "  ✓ L3 JSON soft 键=fixture 复算值（12=6+6、stale 1、informative 1 组）"
