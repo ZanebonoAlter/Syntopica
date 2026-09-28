@@ -98,8 +98,8 @@ func seedEnabledRoute(t *testing.T, store *airouter.Store, capability, providerN
 
 // TestHealthGate_ProbeComposesWithPauseGate is the happy-path compose proof:
 // the startup race (snapshot not ready) pauses analysis; after RunStartupProbe
-// finds both an embedding and an llm route reachable (real HTTP against local
-// mock endpoints), the gate opens and PauseAware passes the job through.
+// finds the core pair (embedding + topic_tagging) reachable (real HTTP against
+// local mock endpoints), the gate opens and PauseAware passes the job through.
 func TestHealthGate_ProbeComposesWithPauseGate(t *testing.T) {
 	resetHealthForTest(t)
 	db := testutil.SetupTestDB(t)
@@ -109,7 +109,7 @@ func TestHealthGate_ProbeComposesWithPauseGate(t *testing.T) {
 	require.False(t, analysispause.UserPaused())
 
 	seedEnabledRoute(t, store, string(airouter.CapabilityEmbedding), "emb-test", mockProviderServer(t).URL, "embedding")
-	seedEnabledRoute(t, store, string(airouter.CapabilitySummary), "llm-test", mockProviderServer(t).URL, "llm")
+	seedEnabledRoute(t, store, string(airouter.CapabilityTopicTagging), "tag-test", mockProviderServer(t).URL, "llm")
 
 	// Startup race: before the first probe completes the snapshot is not ready,
 	// so Healthy()==false and the effective pause is ON (fail-closed).
@@ -149,7 +149,7 @@ func TestHealthGate_ProbeUnhealthy_PauseAwareSkips(t *testing.T) {
 
 	unreachable := closedProviderURL(t)
 	seedEnabledRoute(t, store, string(airouter.CapabilityEmbedding), "emb-test", unreachable, "embedding")
-	seedEnabledRoute(t, store, string(airouter.CapabilitySummary), "llm-test", unreachable, "llm")
+	seedEnabledRoute(t, store, string(airouter.CapabilityTopicTagging), "tag-test", unreachable, "llm")
 
 	aihealth.RunStartupProbe(context.Background(), store, false)
 
@@ -186,12 +186,12 @@ func TestHealthGate_HeartbeatDegrade_PauseAwareSkips(t *testing.T) {
 
 	require.False(t, analysispause.UserPaused())
 
-	// Two live mock servers establish a healthy snapshot.
+	// Two live mock servers establish a healthy snapshot (core pair up).
 	seedEnabledRoute(t, store, string(airouter.CapabilityEmbedding), "emb-test", mockProviderServer(t).URL, "embedding")
-	seedEnabledRoute(t, store, string(airouter.CapabilitySummary), "llm-test", mockProviderServer(t).URL, "llm")
+	seedEnabledRoute(t, store, string(airouter.CapabilityTopicTagging), "tag-test", mockProviderServer(t).URL, "llm")
 
 	aihealth.RunStartupProbe(context.Background(), store, false)
-	require.True(t, aihealth.Healthy(), "baseline: both mock providers reachable")
+	require.True(t, aihealth.Healthy(), "baseline: core pair reachable")
 	require.False(t, analysispause.IsPaused())
 
 	// Kill both endpoints: connection refused from here on (真实秒拒型失败).
@@ -256,7 +256,7 @@ func TestHealthGate_SlowProviderWithinTimeout_Healthy(t *testing.T) {
 	t.Cleanup(slow.Close)
 
 	seedEnabledRoute(t, store, string(airouter.CapabilityEmbedding), "emb-slow", slow.URL, "embedding")
-	seedEnabledRoute(t, store, string(airouter.CapabilitySummary), "llm-slow", slow.URL, "llm")
+	seedEnabledRoute(t, store, string(airouter.CapabilityTopicTagging), "tag-slow", slow.URL, "llm")
 
 	// Two consecutive probes against the slow-but-alive endpoints: both must
 	// count as successes (no failures, no degrade) — even back-to-back.
@@ -267,10 +267,12 @@ func TestHealthGate_SlowProviderWithinTimeout_Healthy(t *testing.T) {
 	require.True(t, aihealth.Healthy(), "repeated slow-but-alive probes must never degrade")
 }
 
-// TestHealthGate_EmbeddingUp_LLMDown_NotHealthy pins the lenient-health
-// boundary in the compose chain: embedding reachable alone is NOT healthy
-// (缺 llm → Healthy=false), so the pause gate stays closed.
-func TestHealthGate_EmbeddingUp_LLMDown_NotHealthy(t *testing.T) {
+// TestHealthGate_EmbeddingUp_TaggingDown_NotHealthy pins the core-route hard
+// condition in the compose chain: embedding reachable alone is NOT healthy
+// (缺打标路由 → Healthy=false), so the pause gate stays closed.
+// (Renamed from TestHealthGate_EmbeddingUp_LLMDown_NotHealthy: under the
+// lenient rule any reachable llm route counted; now only the tagging route does.)
+func TestHealthGate_EmbeddingUp_TaggingDown_NotHealthy(t *testing.T) {
 	resetHealthForTest(t)
 	db := testutil.SetupTestDB(t)
 	store := airouter.NewStore(db)
@@ -278,12 +280,12 @@ func TestHealthGate_EmbeddingUp_LLMDown_NotHealthy(t *testing.T) {
 	require.False(t, analysispause.UserPaused())
 
 	seedEnabledRoute(t, store, string(airouter.CapabilityEmbedding), "emb-test", mockProviderServer(t).URL, "embedding")
-	seedEnabledRoute(t, store, string(airouter.CapabilitySummary), "llm-test", closedProviderURL(t), "llm")
+	seedEnabledRoute(t, store, string(airouter.CapabilityTopicTagging), "tag-test", closedProviderURL(t), "llm")
 
 	aihealth.RunStartupProbe(context.Background(), store, false)
 
 	snap := aihealth.GetSnapshot()
-	require.False(t, snap.Healthy, "missing a reachable llm route -> not healthy")
+	require.False(t, snap.Healthy, "unreachable tagging route -> not healthy")
 	require.False(t, aihealth.Healthy())
 	require.True(t, analysispause.IsPaused())
 
@@ -295,6 +297,49 @@ func TestHealthGate_EmbeddingUp_LLMDown_NotHealthy(t *testing.T) {
 
 	require.NoError(t, err, "skipped result must be a success (err=nil)")
 	require.EqualValues(t, 0, atomic.LoadInt32(&ran), "real job must NOT run while the health gate is closed")
+	require.Contains(t, result.Summary, "model_unhealthy")
+	require.Equal(t, "paused", result.Data["skipped"])
+}
+
+// TestHealthGate_CloudLLMReachable_NoRescue pins the 2026-09-28 production
+// regression end to end: the local tagging route is dead, embedding is up, and
+// the cloud llm routes (digest_polish / data_enrichment_analysis) answer fine
+// (reachable mock servers standing in for api.deepseek.com). Under the old
+// lenient rule those cloud routes held the gate open and the tag worker kept
+// leasing — producing heuristic-degraded tags. The core-route hard condition
+// must keep it closed (spec: 云端 LLM 可达不救命).
+func TestHealthGate_CloudLLMReachable_NoRescue(t *testing.T) {
+	resetHealthForTest(t)
+	db := testutil.SetupTestDB(t)
+	store := airouter.NewStore(db)
+
+	require.False(t, analysispause.UserPaused())
+
+	seedEnabledRoute(t, store, string(airouter.CapabilityEmbedding), "emb-local", mockProviderServer(t).URL, "embedding")
+	// 打标路由（对应本地 qwen 10.11.12.111:8080）不可达。
+	seedEnabledRoute(t, store, string(airouter.CapabilityTopicTagging), "tag-local", closedProviderURL(t), "llm")
+	// 云端非核心路由可达——旧口径下正是这两条把门撑开。
+	seedEnabledRoute(t, store, string(airouter.CapabilityDigestPolish), "dp-cloud", mockProviderServer(t).URL, "llm")
+	// dataenrichment.CapabilityAnalysis 的字面值（避免引入 heavy 包）。
+	seedEnabledRoute(t, store, "data_enrichment_analysis", "de-cloud", mockProviderServer(t).URL, "llm")
+
+	aihealth.RunStartupProbe(context.Background(), store, false)
+
+	snap := aihealth.GetSnapshot()
+	require.False(t, snap.Healthy, "cloud llm reachability must not rescue an unreachable tagging route")
+	require.False(t, aihealth.Healthy())
+	require.Len(t, snap.Routes, 4, "snapshot details keep every entry (core + non-core)")
+	require.True(t, analysispause.IsPaused())
+	require.Equal(t, "model_unhealthy", analysispause.PauseReason())
+
+	var ran int32
+	result, err := scheduler.PauseAware(func(ctx context.Context) (*scheduler.JobResult, error) {
+		atomic.AddInt32(&ran, 1)
+		return &scheduler.JobResult{Summary: "real job ran"}, nil
+	})(context.Background())
+
+	require.NoError(t, err, "skipped result must be a success (err=nil)")
+	require.EqualValues(t, 0, atomic.LoadInt32(&ran), "tag worker pool must not lease while tagging is dead")
 	require.Contains(t, result.Summary, "model_unhealthy")
 	require.Equal(t, "paused", result.Data["skipped"])
 }

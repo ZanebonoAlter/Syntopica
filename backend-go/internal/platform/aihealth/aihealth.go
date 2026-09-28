@@ -56,6 +56,24 @@ const (
 // it.
 var reprobeInterval = 60 * time.Second
 
+// coreHealthCapabilities enumerates the route capabilities that MUST each have
+// at least one reachable primary provider for the model layer to count as
+// ready. The health gate is the article-ingestion precondition (spec: 健康就绪
+// 判定 核心路由硬条件): embedding backs article vectors and topic_tagging backs
+// tag extraction, so a missing or unreachable tagging route means articles can
+// only land with degraded heuristic tags — the gate must stay closed
+// (fail-closed). Non-core routes (summary / digest_polish / data_enrichment_* /
+// feed_discovery / open_notebook) do NOT take part in the verdict; their
+// reachability is still reported in the snapshot details.
+//
+// A capability with no enabled route bound to an enabled provider simply has
+// no entry in `entries`, which fails the check by construction — that is the
+// fail-closed path for 路由缺失 / 链路全禁用.
+var coreHealthCapabilities = [...]string{
+	string(airouter.CapabilityEmbedding),
+	string(airouter.CapabilityTopicTagging),
+}
+
 // degradeFailures is how many consecutive unhealthy probe verdicts it takes to
 // degrade a healthy snapshot to not healthy (debounce). Fast-refused failures
 // (host powered off, latency ≈0) each count one heartbeat, so the worst-case
@@ -315,7 +333,6 @@ func runProbeLocked(ctx context.Context, store *airouter.Store, autoStart bool) 
 	}
 	outcomes := make(map[uint]probeOutcome)
 
-	embeddingCap := string(airouter.CapabilityEmbedding)
 	entries := make([]RouteHealth, 0)
 	for _, route := range routes {
 		if !route.Enabled || len(route.RouteProviders) == 0 {
@@ -382,28 +399,30 @@ func runProbeLocked(ctx context.Context, store *airouter.Store, autoStart bool) 
 		})
 	}
 
-	// Lenient health (spec 健康就绪判定宽松): at least one reachable
-	// embedding-capability route AND at least one reachable non-embedding
-	// (llm-class) route. Classification is by route capability, not provider
-	// model_kind.
-	healthy := hasReachableCapability(entries, embeddingCap) &&
-		hasReachableCapabilityOtherThan(entries, embeddingCap)
+	// Core-route hard condition (spec 健康就绪判定 核心路由硬条件): every core
+	// capability must have at least one reachable primary provider. A missing
+	// route (no enabled route, or no enabled provider link) yields no entry and
+	// therefore fails too — fail-closed. Classification is by route capability,
+	// not provider model_kind, and a single unreachable non-core route (e.g.
+	// digest_polish) never flips the verdict: reachable cloud llm routes cannot
+	// rescue an unreachable tagging route.
+	healthy := true
+	for _, capability := range coreHealthCapabilities {
+		if !hasReachableCapability(entries, capability) {
+			healthy = false
+			break
+		}
+	}
 
 	applyProbeVerdict(healthy, now, entries, autoStart)
 }
 
+// hasReachableCapability reports whether at least one entry of that capability
+// has a reachable primary provider. It is the per-capability aggregate used by
+// the core-route verdict ("≥1 reachable primary per capability").
 func hasReachableCapability(entries []RouteHealth, want string) bool {
 	for _, e := range entries {
 		if e.Capability == want && e.Reachable {
-			return true
-		}
-	}
-	return false
-}
-
-func hasReachableCapabilityOtherThan(entries []RouteHealth, exclude string) bool {
-	for _, e := range entries {
-		if e.Capability != exclude && e.Reachable {
 			return true
 		}
 	}

@@ -77,14 +77,16 @@ func newResumeGinContext(t *testing.T, body string) (*gin.Context, *httptest.Res
 // (paused:false) asynchronously re-runs the startup probe so the health gate
 // can self-heal (e.g. after a transient startup-probe failure). The probe is
 // driven through the fake seam; the snapshot must flip to healthy=true.
+// The fixture is the core pair (embedding + topic_tagging): those are the two
+// capabilities the health verdict hard-requires.
 func TestSetAnalysisPause_Resume_TriggersHealthReprobe(t *testing.T) {
 	db := setupAnalysisPauseResumeTestDB(t)
 	emb := seedResumeProvider(t, db, "emb-main", "embedding")
-	sum := seedResumeProvider(t, db, "llm-main", "llm")
+	tag := seedResumeProvider(t, db, "tag-main", "llm")
 	er := seedResumeRoute(t, db, string(airouter.CapabilityEmbedding))
-	sr := seedResumeRoute(t, db, string(airouter.CapabilitySummary))
+	tr := seedResumeRoute(t, db, string(airouter.CapabilityTopicTagging))
 	seedResumeBinding(t, db, er.ID, emb.ID)
-	seedResumeBinding(t, db, sr.ID, sum.ID)
+	seedResumeBinding(t, db, tr.ID, tag.ID)
 
 	// Start from the not-ready (startup-race) state; restore on cleanup.
 	aihealth.SetSnapshotForTest(aihealth.Snapshot{})

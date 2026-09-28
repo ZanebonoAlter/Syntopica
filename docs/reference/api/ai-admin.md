@@ -122,7 +122,7 @@
 }
 ```
 
-- `healthy`：宽松判定——≥1 条 embedding 路由主 provider 可达 **且** ≥1 条 llm 路由主 provider 可达；首轮探活未完成（启动竞态期）为 `false`（fail-closed）。
+- `healthy`：**核心路由硬条件**——≥1 条 embedding 路由主 provider 可达 **且** `topic_tagging` 路由主 provider 可达（ai-health-gate-tagging-required，语义为「文章入库前置拦截」）；两条任一不满足为 `false`，`topic_tagging` 路由缺失/未绑定启用 provider/主 provider 不可达一律 `false`（fail-closed）；其余非核心路由（summary / digest_polish / data_enrichment_* / feed_discovery / open_notebook）不参与判定，其通断明细仍照常出现在 `routes`。首轮探活未完成（启动竞态期）为 `false`（fail-closed）。
 - `checked_at`：快照生成时间；未就绪时为 `null`。
 - `routes`：每条 enabled 且有启用 provider 的路由的主 provider（priority 最高）通断明细；`reachable` 为探活结果，`launched_by_backend` 表示本轮是否由后端 `start_command` 拉起，`last_checked` 为 RFC3339 时间，`error` 为不通原因。
 - `auto_start_models`：本地模型自动拉起总开关（存 `ai_settings`，默认 `false`）。

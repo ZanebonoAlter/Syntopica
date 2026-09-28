@@ -29,13 +29,13 @@ func TestTryStartProbe_NoProbeInFlight_StartsAndUpdatesSnapshot(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
 	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	tag := seedProvider(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
 	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
+	seedBinding(t, db, tr.ID, tag.ID, 1)
 
-	useFakeProbe(t, reachableByName("emb-main", "llm-main"))
+	useFakeProbe(t, reachableByName("emb-main", "tag-main"))
 
 	started := TryStartProbe(context.Background(), store, false)
 	require.True(t, started, "no probe in flight -> must start one")
@@ -64,11 +64,11 @@ func TestStartPeriodicReprobe_RetriesWhileUnhealthy_SelfHeals(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
 	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	tag := seedProvider(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
 	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
+	seedBinding(t, db, tr.ID, tag.ID, 1)
 
 	probeCalls := 0
 	useFakeProbe(t, func(ctx context.Context, p models.AIProvider) (bool, string) {
@@ -98,11 +98,11 @@ func TestStartPeriodicReprobe_HeartbeatContinuesWhenHealthy(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
 	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	tag := seedProvider(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
 	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
+	seedBinding(t, db, tr.ID, tag.ID, 1)
 
 	probeCalls := 0
 	useFakeProbe(t, func(ctx context.Context, p models.AIProvider) (bool, string) {

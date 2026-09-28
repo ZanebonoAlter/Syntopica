@@ -123,22 +123,23 @@ func entryByCapability(s Snapshot) map[string]RouteHealth {
 }
 
 // --- Scenario: 启动时探测每条路由主 provider / 两类各通一条即健康 ---
+// （「两类」自本 change 起指核心两类：embedding 与 topic_tagging）
 
 func TestRunStartupProbe_AllReachable_Healthy(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
 	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	tag := seedProvider(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
 	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
+	seedBinding(t, db, tr.ID, tag.ID, 1)
 
 	// Before first probe: not ready -> Healthy() == false.
 	require.False(t, Healthy())
 	require.Nil(t, GetSnapshot().CheckedAt)
 
-	useFakeProbe(t, reachableByName("emb-main", "llm-main"))
+	useFakeProbe(t, reachableByName("emb-main", "tag-main"))
 
 	RunStartupProbe(context.Background(), store, false)
 
@@ -150,7 +151,7 @@ func TestRunStartupProbe_AllReachable_Healthy(t *testing.T) {
 
 	byCap := entryByCapability(snap)
 	require.True(t, byCap[string(airouter.CapabilityEmbedding)].Reachable)
-	require.True(t, byCap[string(airouter.CapabilitySummary)].Reachable)
+	require.True(t, byCap[string(airouter.CapabilityTopicTagging)].Reachable)
 
 	// After probe, package Healthy() mirrors snapshot.
 	require.True(t, Healthy())
@@ -244,11 +245,12 @@ func TestRunStartupProbe_RouteWithoutProvidersSkipped(t *testing.T) {
 func TestRunStartupProbe_MissingEmbedding_NotHealthy(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
-	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
+	tag := seedProvider(t, db, "tag-main", "llm", "", true)
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
+	seedBinding(t, db, tr.ID, tag.ID, 1)
 
-	useFakeProbe(t, reachableByName("llm-main"))
+	// 前提：打标路由可达——此时不健康只可能是缺 embedding 造成的。
+	useFakeProbe(t, reachableByName("tag-main"))
 
 	RunStartupProbe(context.Background(), store, false)
 
@@ -256,21 +258,31 @@ func TestRunStartupProbe_MissingEmbedding_NotHealthy(t *testing.T) {
 	require.False(t, snap.Healthy, "no reachable embedding route -> not healthy")
 }
 
-// --- Scenario: 缺 llm 则不健康 ---
+// --- Scenario: 缺 llm 则不健康（收紧为「打标路由主 provider 不可达即不健康」，
+// 其他 LLM 路由（含云端）可达不救命） ---
 
 func TestRunStartupProbe_MissingLLM_NotHealthy(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
 	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
+	tag := seedProvider(t, db, "tag-main", "llm", "", true)
+	sum := seedProvider(t, db, "sum-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
+	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
 	seedBinding(t, db, er.ID, emb.ID, 1)
+	seedBinding(t, db, tr.ID, tag.ID, 1)
+	seedBinding(t, db, sr.ID, sum.ID, 1)
 
-	useFakeProbe(t, reachableByName("emb-main"))
+	// embedding 与另一条 llm 路由可达，唯独打标主 provider 不可达。
+	useFakeProbe(t, reachableByName("emb-main", "sum-main"))
 
 	RunStartupProbe(context.Background(), store, false)
 
 	snap := GetSnapshot()
-	require.False(t, snap.Healthy, "no reachable llm route -> not healthy")
+	require.False(t, snap.Healthy,
+		"topic_tagging primary unreachable -> not healthy even with another llm route reachable")
+	require.Len(t, snap.Routes, 3, "the unreachable tagging route keeps its detail entry")
 }
 
 // --- Scenario: 未配置任何 enabled+provider 路由不健康 ---
@@ -288,36 +300,200 @@ func TestRunStartupProbe_NoRoutes_NotHealthy(t *testing.T) {
 	require.NotNil(t, snap.CheckedAt, "probe completes (not probing) even with no routes")
 }
 
-// --- Scenario: 健康判定宽松（digest_polish 不通不推翻整体）---
+// --- Scenario: 两类各通一条即健康（非核心 digest_polish 断路不推翻整体）---
 
-func TestRunStartupProbe_LenientHealth_NonCriticalDown(t *testing.T) {
+func TestRunStartupProbe_CorePairUp_NonCriticalDown_Healthy(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
 	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	tag := seedProvider(t, db, "tag-main", "llm", "", true)
 	dp := seedProvider(t, db, "dp-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
 	dr := seedRoute(t, db, "default", string(airouter.CapabilityDigestPolish), true)
 	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
+	seedBinding(t, db, tr.ID, tag.ID, 1)
 	seedBinding(t, db, dr.ID, dp.ID, 1)
 
-	// emb + summary reachable; digest_polish NOT reachable.
-	useFakeProbe(t, reachableByName("emb-main", "llm-main"))
+	// Core pair reachable; the non-core digest_polish route is NOT reachable.
+	useFakeProbe(t, reachableByName("emb-main", "tag-main"))
 
 	RunStartupProbe(context.Background(), store, false)
 
 	snap := GetSnapshot()
 	require.True(t, snap.Healthy, "digest_polish down must not break overall health")
-	// disambiguate the two "default" routes by provider name.
-	var dpEntry RouteHealth
-	for _, e := range snap.Routes {
+	// disambiguate the "default" routes by provider name.
+	var dpEntry *RouteHealth
+	for i, e := range snap.Routes {
 		if e.PrimaryProvider == "dp-main" {
-			dpEntry = e
+			dpEntry = &snap.Routes[i]
 		}
 	}
+	require.NotNil(t, dpEntry, "non-core route must still have a detail entry")
 	require.False(t, dpEntry.Reachable, "digest_polish entry still recorded as down")
+}
+
+// --- 判定矩阵：delta spec「健康就绪判定（核心路由硬条件）」6 个 Scenario ---
+
+// healthMatrixRoute 是矩阵 fixture 里的一条路由。
+type healthMatrixRoute struct {
+	capability string
+	provider   string
+	reachable  bool
+	// routeName 默认 "default"（(capability, name) 唯一）；同 capability 多路由
+	// 的变体必须给不同名字。
+	routeName string
+	// linkDisabled：链路被禁用（路由对判定不可见，等价于「该路由未绑定任何启用的
+	// provider」）；providerDisabled：链路启用但 provider 本身被禁用。
+	linkDisabled     bool
+	providerDisabled bool
+}
+
+// TestRunStartupProbe_HealthVerdictMatrix 把 spec 的 6 个 Scenario 各落一行，
+// 另加两条变体（同 capability 多路由 → ≥1 主通即该 capability 通；打标路由
+// provider 被禁用）。
+func TestRunStartupProbe_HealthVerdictMatrix(t *testing.T) {
+	// dataenrichment.CapabilityAnalysis 的字面值——为一条 fixture 引 heavy 包不值当。
+	const dataEnrichmentAnalysis = "data_enrichment_analysis"
+
+	emb := airouter.CapabilityEmbedding
+	tag := airouter.CapabilityTopicTagging
+	sum := airouter.CapabilitySummary
+	dp := airouter.CapabilityDigestPolish
+
+	cases := []struct {
+		name        string
+		routes      []healthMatrixRoute
+		wantHealthy bool
+		wantEntries int
+	}{
+		{
+			name: "两类各通一条即健康",
+			routes: []healthMatrixRoute{
+				{capability: string(emb), provider: "emb-main", reachable: true},
+				{capability: string(tag), provider: "tag-main", reachable: true},
+				{capability: string(dp), provider: "dp-main", reachable: false},
+			},
+			wantHealthy: true,
+			wantEntries: 3,
+		},
+		{
+			name: "缺 embedding 则不健康",
+			routes: []healthMatrixRoute{
+				{capability: string(emb), provider: "emb-main", reachable: false},
+				{capability: string(tag), provider: "tag-main", reachable: true},
+			},
+			wantHealthy: false,
+			wantEntries: 2,
+		},
+		{
+			name: "缺 llm 则不健康（打标主不可达，非核心 llm 可达不救命）",
+			routes: []healthMatrixRoute{
+				{capability: string(emb), provider: "emb-main", reachable: true},
+				{capability: string(tag), provider: "tag-main", reachable: false},
+				{capability: string(sum), provider: "sum-main", reachable: true},
+			},
+			wantHealthy: false,
+			wantEntries: 3,
+		},
+		{
+			name: "云端 LLM 可达不救命（2026-09-28 实测回归）",
+			routes: []healthMatrixRoute{
+				{capability: string(emb), provider: "emb-main", reachable: true},
+				{capability: string(tag), provider: "tag-main", reachable: false},
+				{capability: string(dp), provider: "dp-cloud", reachable: true},
+				{capability: dataEnrichmentAnalysis, provider: "de-cloud", reachable: true},
+			},
+			wantHealthy: false,
+			wantEntries: 4,
+		},
+		{
+			name: "打标路由未配置不健康（无 topic_tagging 路由）",
+			routes: []healthMatrixRoute{
+				{capability: string(emb), provider: "emb-main", reachable: true},
+			},
+			wantHealthy: false,
+			wantEntries: 1,
+		},
+		{
+			name: "打标路由未配置不健康（链路全禁用）",
+			routes: []healthMatrixRoute{
+				{capability: string(emb), provider: "emb-main", reachable: true},
+				{capability: string(tag), provider: "tag-main", reachable: true, linkDisabled: true},
+			},
+			wantHealthy: false,
+			wantEntries: 1,
+		},
+		{
+			name: "打标路由未配置不健康（provider 被禁用）",
+			routes: []healthMatrixRoute{
+				{capability: string(emb), provider: "emb-main", reachable: true},
+				{capability: string(tag), provider: "tag-main", reachable: true, providerDisabled: true},
+			},
+			wantHealthy: false,
+			wantEntries: 1,
+		},
+		{
+			name:        "未配置任何路由不健康",
+			routes:      nil,
+			wantHealthy: false,
+			wantEntries: 0,
+		},
+		{
+			name: "同 capability 双路由一通一断即该 capability 通",
+			routes: []healthMatrixRoute{
+				{capability: string(emb), provider: "emb-a", reachable: true},
+				{capability: string(emb), provider: "emb-b", reachable: false, routeName: "secondary"},
+				{capability: string(tag), provider: "tag-main", reachable: true},
+			},
+			wantHealthy: true,
+			wantEntries: 3,
+		},
+		{
+			name: "同 capability 双打标路由一断一通即该 capability 通",
+			routes: []healthMatrixRoute{
+				{capability: string(emb), provider: "emb-main", reachable: true},
+				{capability: string(tag), provider: "tag-a", reachable: false},
+				{capability: string(tag), provider: "tag-b", reachable: true, routeName: "secondary"},
+			},
+			wantHealthy: true,
+			wantEntries: 3,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetSnapshot()
+			db, store := setupTestDB(t)
+
+			reachable := make([]string, 0, len(tc.routes))
+			for _, rs := range tc.routes {
+				kind := "llm"
+				if rs.capability == string(emb) {
+					kind = "embedding"
+				}
+				routeName := rs.routeName
+				if routeName == "" {
+					routeName = "default"
+				}
+				p := seedProvider(t, db, rs.provider, kind, "", !rs.providerDisabled)
+				r := seedRoute(t, db, routeName, rs.capability, true)
+				seedBindingFlag(t, db, r.ID, p.ID, 1, !rs.linkDisabled)
+				if rs.reachable {
+					reachable = append(reachable, rs.provider)
+				}
+			}
+			useFakeProbe(t, reachableByName(reachable...))
+
+			RunStartupProbe(context.Background(), store, false)
+
+			snap := GetSnapshot()
+			require.Equal(t, tc.wantHealthy, snap.Healthy,
+				"verdict must follow the core-route hard condition (embedding ∧ topic_tagging)")
+			require.Len(t, snap.Routes, tc.wantEntries,
+				"snapshot details keep one entry per usable route (core + non-core)")
+		})
+	}
 }
 
 // --- Scenario: 总开关关时不拉起 ---
@@ -378,11 +554,11 @@ func TestRunStartupProbe_AutoStartOn_Unreachable_LaunchAndReprobe(t *testing.T) 
 	resetSnapshot()
 	db, store := setupTestDB(t)
 	emb := seedProvider(t, db, "emb-local", "embedding", "llama-server --port 8081", true)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	tag := seedProvider(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
 	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
+	seedBinding(t, db, tr.ID, tag.ID, 1)
 
 	embUp := false // flips to reachable only AFTER launch runs.
 	useFakeProbe(t, func(ctx context.Context, p models.AIProvider) (bool, string) {
@@ -392,7 +568,7 @@ func TestRunStartupProbe_AutoStartOn_Unreachable_LaunchAndReprobe(t *testing.T) 
 			}
 			return false, "connection refused"
 		}
-		return true, "" // llm reachable
+		return true, "" // the topic_tagging route stays reachable
 	})
 	launchCalls := 0
 	useFakeLaunch(t, func(string) error {
@@ -501,17 +677,17 @@ func TestHealthy_NotReadyThenReady(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
 	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	tag := seedProvider(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
 	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
+	seedBinding(t, db, tr.ID, tag.ID, 1)
 
 	// Not ready: Healthy() false, CheckedAt nil.
 	require.False(t, Healthy())
 	require.Nil(t, GetSnapshot().CheckedAt)
 
-	useFakeProbe(t, reachableByName("emb-main", "llm-main"))
+	useFakeProbe(t, reachableByName("emb-main", "tag-main"))
 	RunStartupProbe(context.Background(), store, false)
 
 	require.NotNil(t, GetSnapshot().CheckedAt)
