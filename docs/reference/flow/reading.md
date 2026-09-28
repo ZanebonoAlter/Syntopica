@@ -162,7 +162,8 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
    - RSS 去重（title dedupe）**含归档文章**（防老条目重复入库）；
    - reader 列表/全局统计/feed 统计默认过滤 `archived=false`，`GET /api/articles?archived=true` 显式查归档集；按文章 ID 的详情查询豁免过滤。
    - **删订阅源 / 删分类会连带物理删除文章行**（存量 FK `fk_feeds_articles`（`articles.feed_id`）、`fk_categories_feeds`（`feeds.category_id`）均为 ON DELETE CASCADE，实测存在；但这两条 FK 只在历史库存在，代码里一律**显式删除**、不依赖级联与否）：删除路径 MUST 在同一事务内同步维护「按 ID 引用文章」的 jsonb 数组（`daily_report_threads.related_article_ids`，维护器 `internal/platform/articlerefs`，契约与迁移见 `flow/daily-report.md` 约束 21）——否则日报线索会指向已不存在的文章，前端降级显示「文章 #id」，线索追溯不到来源。
-   - **删分类的破坏性语义必须对用户可见**：删分类 = 连带删其下全部订阅源及其文章（不可撤销），前端确认文案 MUST 与之一致（`FeedLayoutShell.vue`，2026-09-17 用户决策：只改文案、保持删除语义）；有 `reading_behaviors` / `user_preferences` 子行时该删除仍会因 NO ACTION 外键失败（既有行为）。
+   - **删分类的破坏性语义必须对用户可见**：删分类 = 连带删其下全部订阅源及其文章（不可撤销），前端确认文案 MUST 与之一致（`FeedLayoutShell.vue`，2026-09-17 用户决策：只改文案、保持删除语义）。
+   - **删源 / 删分类必须同事务清理 NO ACTION 引用行，删除不得因残留引用失败（fix-feed-delete-and-sequence-drift，2026-09-28）**：`DeleteFeedCascade` MUST 在删文章前清 `reading_behaviors`（按 `feed_id`）与 `user_preferences`（按 `feed_id`）；`DeleteCategoryCascade` MUST 在删文章前清 `reading_behaviors`（按分类下 feed id 集合）与 `user_preferences`（`feed_id ∈ 分类下订阅源` 或 `category_id = 分类`，覆盖纯分类级偏好行）。引用表不存在（窄部署 / 已执行 DROP 迁移的环境）时跳过该步不报错；任一步失败整体回滚。**此前「有 `reading_behaviors` / `user_preferences` 子行时该删除仍会因 NO ACTION 外键失败」的既有行为已废止**（2026-09-28 用户报障：24 个订阅源中 18 个因 `fk_user_preferences_feed` 删不掉，前端报错但库中记录原样）。
    - `max_articles=0` 或 `9999` 仍为无限制；favorite 永不归档。
 7. **阅读页右侧文章主体必须保持 reader 阅读列版式：列宽 ≤760px 居中、去卡片化、处理状态/手动操作不得占据正文上方（redesign-reading-pane）**：
    - 版式契约：正文/元信息/标签/导语/AI 整理稿同列对齐（`.reading-col`，max-width 840px，面板窄于 840 取可用宽），标题与图片/表格走 breakout 略宽于列，分区靠留白+细分隔线，不得回退到边框+投影卡片堆叠；标题衬线字体栈、红色 kicker/短粗线为编辑签名元素。

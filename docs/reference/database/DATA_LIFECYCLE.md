@@ -241,7 +241,7 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 | `log_cleanup` | 86400s（每日，启动延迟5min） | `DELETE FROM ai_call_logs WHERE created_at < now()-7天`；`DELETE FROM otel_spans WHERE start_time_unix_nano < now()-7天`。**保留 7 天**。另：`DELETE FROM ai_embedding_cache WHERE created_at < now()-14天`（embedding 结果缓存，仅白名单 operation 落行；存储格式为 bytea 二进制 float32 小端字节流，~10KB/条，见 `models/embedding_codec.go`——optimize-pg-storage：原 jsonb 文本形式 ~31.5KB/条，2026-08-28 起 pre-migrate 非破坏转换）；`DELETE FROM embedding_queues WHERE status='completed' AND created_at < now()-1天`（add-notification-center：30 天收紧为 1 天，每天重置）；`DELETE FROM tag_jobs / firecrawl_jobs WHERE status='completed' AND created_at < now()-1天`（每日重置）；`DELETE FROM tag_jobs / firecrawl_jobs / embedding_queues WHERE status='failed' AND created_at < now()-30天`（failed 保留 30 天，保面板重试）。支撑索引见迁移 20260917_0003（五部分索引）+ 既有 idx_embedding_queues_completed_created。 |
 | `aux_label_cleanup` | 3600s（每时，启动延迟10min） | 软禁用「无活跃引用」的辅助标签：`semantic_labels` 中 `label_type='auxiliary' AND status='active' AND protected=false AND created_at < now()-1天` 且无 `topic_tag_semantic_labels` 引用且不在 `board_composition` 中 → `status='disabled'`（并删其 board_composition 行）。**不硬删**，模式为 disable、宽限1天。 |
 | `blocked_article_recovery` | 3600s（每时） | 恢复卡在 `articles.firecrawl_status IN ('waiting_for_firecrawl','blocked')` 且其 `feed.firecrawl_enabled=true` 的文章 → 置回 `pending` 重试。另含 STAT-05 告警（阻塞数>50 时 WARN）。 |
-| `preference_update` | 1800s（每30min） | 聚合 `reading_behaviors`→`user_preferences`；并运行孤儿清理：修复/删除 category_id 指向已删分类的 reading_behaviors，删除 feed_id 指向已删源的 reading_behaviors 与 user_preferences。**仅孤儿清理，无时间型 TTL**。 |
+| ~~`preference_update`~~ | ~~1800s（每30min）~~ | **已废弃（无此调度器）**：聚合 `reading_behaviors`→`user_preferences` 的旧偏好体系已随 preference-vector-feed-discovery 整体拆除（代码零引用）；`user_preferences` 表本身也可能仍残留在未开启 `MIGRATIONS_ALLOW_DESTRUCTIVE` 的环境。现状：行为数据仅作偏好**向量画像**的权重源，无此调度器。 |
 | `board_upgrade_suggest` | 墙钟（默认每日06:30） | 生成 discover_new 升级建议 + **watch GC**：`board_upgrade_suggestions` 中 `decision='watch' AND status='pending'` 且创建超过观察期（`ai_settings.semantic_board_upgrade_watch_gc_days`，默认30天）→ `status='dismissed'`、`resolved_by='watch_gc'`。**软回收，不硬删**。 |
 | `tag_quality_score` | 3600s | 重算 `topic_tags` 质量分并执行 tag 合并（源 Tag 硬删，见“主题标签生命周期”）。 |
 
@@ -254,6 +254,8 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 - `articles.firecrawl_status: processing → pending`
 - `firecrawl_jobs.status: leased → pending`（清 leased_at / lease_expires_at）
 - `tag_jobs.status: leased → pending`（清 leased_at / lease_expires_at）
+
+同一启动阶段（`StartRuntime`，`internal/app/runtime.go`）还会做**自增序列漂移自愈**（fix-feed-delete-and-sequence-drift，2026-09-28）：扫描「有 `id` 列且存在 `<table>_id_seq`」的表，凡「下一次 `nextval` 分配值 ≤ 表内 `max(id)`」即执行 `setval(seq, max(id)+1, false)` 并打 WARN 日志（无漂移时不写入；单表失败不阻塞启动）。漂移成因与手工核对/兜底见 [deployment.md](../deployment.md#序列漂移与启动自愈sequence-drift)。
 
 ### 队列状态流转与重试（重点）
 
@@ -281,7 +283,7 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 - 日报：`board_daily_reports` / `daily_report_sections` / `daily_report_threads` / `daily_report_section_relations`（日报重生成仅删当日同 report 的旧分区，非 TTL 清理）
 - 持久话题与观察：`board_persistent_topics`（仅一次性迁移裁剪 candidate、状态机自驱动 candidate→active→archived，无时间型删除）、`board_topic_watches`、`topic_watch_hits`
 - 升级建议：`board_upgrade_suggestions`（仅 watch 软回收为 dismissed，不删行；confirmed/dismissed 行累积）
-- 阅读与偏好：`reading_behaviors`（仅孤儿清理，无 TTL）、`user_preferences`
+- 阅读与偏好：`reading_behaviors`（仅孤儿清理，无 TTL）、`user_preferences`（**表已废弃**，仅可能残留在未开启 `MIGRATIONS_ALLOW_DESTRUCTIVE` 的环境；删除路径按存在性探测清理）
 - 基础数据：`articles` / `topic_tags` / `topic_tag_embeddings` / `semantic_labels` / `ai_call_logs`（仅 tag 合并会硬删被合并源）
 
 ---

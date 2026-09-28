@@ -359,7 +359,44 @@ command:
 
 > **测试环境**：testcontainer 集成测试路径（`testutil.runTestMigrations`）自动 `t.Setenv("MIGRATIONS_ALLOW_DESTRUCTIVE","1")`，无需手动设置，维持「测试库跑全量生产迁移」不变量。
 
+> **副作用：被跳过的 DROP 类迁移不会补跑（`user_preferences` 案例）**。跳过即记 `applied` 的语义是为避免每次启动重复告警（spec `db-migration-safety` 明文要求），代价是**表结构类**破坏性迁移（如 `20260725_0001` DROP `user_preferences`）在从未开启开关的环境里永久不执行——事后即使开启也不会重跑（版本已记）。因此业务代码 MUST NOT 依赖这类废弃表消失：`user_preferences` 已废弃（Go 零引用）但可能残留，其 `NO ACTION` 外键会阻挡删除事务（delete 会报 `fk_user_preferences_feed` / `fk_user_preferences_category`），删除路径已按「表存在则清理、不存在则跳过」容错（见 [database/tables/_conventions.md](database/tables/_conventions.md) 与 [flow/reading.md](flow/reading.md) 约束 6）。若要真正清掉残留表，需在独立 change 里评估，不能只靠打开开关。
+
 完整环境变量说明见 [配置指南](configuration.md#环境变量)。
+
+### 序列漂移与启动自愈（sequence drift）
+
+**症状**：新增订阅源 / 分类 / 文章报 `duplicate key value violates unique constraint "<table>_pkey"`，DETAIL 为 `Key (id)=(N) already exists`。
+
+**成因**：①清库脚本（`demo/entrypoint.sh` 的 `TRUNCATE TABLE ... RESTART IDENTITY CASCADE`）会把 `<table>_id_seq` 重置为 1；②随后用**带表过滤**的方式恢复数据时，序列状态不会被带回来：
+
+```bash
+# ⚠️ 这种恢复会漏掉序列状态（-t 只匹配表对象，TOC 里的 SEQUENCE SET 条目被过滤）
+docker exec syntopica-postgres pg_restore --data-only --disable-triggers -t articles -t feeds ...
+```
+
+数据回来了（`COPY` 携带原 id，不推进序列），序列仍停在重置后的值 → 下一个 `nextval` 分配一个**已被占用**的 id，插入即主键冲突。补充：`setval` **不受事务回滚保护**，所以不能靠 `BEGIN; …; ROLLBACK;` 预演序列修复（序列操作执行即生效，无 dry-run）。
+
+**处理：启动时自动自愈，无需人工干预**。后端 `StartRuntime`（`backend-go/internal/app/runtime.go`）在启动期扫描「同时存在 `id` 列与 `<table>_id_seq` 序列」的表，凡「下一次 `nextval` 分配值 ≤ 表内 `max(id)`」即执行 `setval(seq, max(id)+1, false)`，并对每张被修复的表打 `WARN` 日志（表名 / 序列名 / 漂移前后值 / 根因提示）。无漂移时不产生写入，可重复执行不倒退；单表失败只记日志、不阻塞启动。（自愈接在 `StartRuntime`，而 `DEMO_READ_ONLY=1` 时该函数整体不被调用，故只读演示实例天然不受影响。）
+
+**手工核对（只读）**：
+
+```bash
+# seq_last 明显小于 tbl_max 即为漂移；正常状态 seq_last >= tbl_max
+psql -h localhost -U postgres -d syntopica -c "
+SELECT 'feeds' AS tbl, (SELECT last_value FROM feeds_id_seq) AS seq_last,
+       (SELECT COALESCE(MAX(id),0) FROM feeds) AS tbl_max;"
+```
+
+**兜底修复（仅动序列、不碰数据；执行即生效）**：
+
+```bash
+psql -h localhost -U postgres -d syntopica -c "
+SELECT setval(pg_get_serial_sequence('feeds','id'), COALESCE((SELECT MAX(id) FROM feeds),0)+1, false);"
+```
+
+**恢复流程建议**：优先**整库恢复**（不带 `-t`），此时归档里的 SEQUENCE SET 条目会一并恢复；若必须按表恢复，恢复后的首次启动会由自愈对齐（也可跑上面的兜底 SQL 提前修）。
+
+> 实证（2026-09-22 → 2026-09-28）：事故后按表恢复导致 5 张表序列落后（`feeds` 1/34、`categories` 1/5、`articles` 4501/133738、`article_topic_tags` 15681/225551、`user_preferences` 1/15920），新增订阅源 100% 失败直到对齐（fix-feed-delete-and-sequence-drift）。
 
 ### 代理设置（中国 / 受限网络）
 

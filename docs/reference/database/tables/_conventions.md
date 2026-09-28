@@ -82,7 +82,7 @@
 | `fk_feeds_articles` | `articles.feed_id → feeds(id)` | CASCADE | 删 feed 行 → 其全部文章行消失（日报 `related_article_ids` 悬空的根因之一） |
 | `fk_categories_feeds` | `feeds.category_id → categories(id)` | CASCADE | 删 category 行 → 其下全部 feed 连文章一起消失（**第三条删行路径**） |
 | `fk_article_topic_tags_article` / `fk_tag_jobs_article` / `fk_firecrawl_jobs_article` | 各自 `article_id → articles(id)` | CASCADE | 文章消失时依赖行随之消失（无需手工清理） |
-| `fk_reading_behaviors_article` / `fk_reading_behaviors_feed` / `fk_user_preferences_feed` / `fk_user_preferences_category` | 各自 → `articles` / `feeds` / `categories` | **NO ACTION** | 被引用行有这些子行时删除会 **FK 报错**（删 feed 前必须先清 `reading_behaviors`，删 category 同理） |
+| `fk_reading_behaviors_article` / `fk_reading_behaviors_feed` / `fk_user_preferences_feed` / `fk_user_preferences_category` | 各自 → `articles` / `feeds` / `categories` | **NO ACTION** | 被引用行有这些子行时删除会 **FK 报错**——删除路径据此必须在**同一事务内先清引用行**：`DeleteFeedCascade` 清 `reading_behaviors`（按 `feed_id`）与 `user_preferences`（按 `feed_id`）；`DeleteCategoryCascade` 清 `reading_behaviors`（按分类下 feed 集合）与 `user_preferences`（feed 集合或 `category_id`），均在删文章之前（补全于 2026-09-28 fix-feed-delete-and-sequence-drift；此前 `user_preferences` 无人清理，导致删源/删分类必然失败）。`user_preferences` 已废弃但可能残留（见 B-2），其清理按表存在性探测容错（表不在则跳过不报错） |
 
 **推论（约束）**：任何删除 `articles` 行的路径都必须同事务维护按 ID 引用文章的 jsonb 数组（`daily_report_threads.related_article_ids`，维护器 `internal/platform/articlerefs`）。删行路径全量清单（2026-09-17 实测）：去重归并迁移、`DeleteFeedCascade`（删 feed）、`DeleteCategoryCascade`（删分类，两级到文章）、以及仓库删行原语。**删除实现必须显式删行、不依赖上述 FK 是否存在**（存量 FK 不进新建库，靠级联会得到环境相关的行为）；被删文章的依赖行（`article_topic_tags`/`tag_jobs`/`firecrawl_jobs`）由删除路径显式清理，孤儿 `topic_tags` 仍交 `aux_label_cleanup` 回收。语义见 `flow/daily-report.md` 约束 21。
 
@@ -159,8 +159,8 @@
 | --- | --- | --- | --- | --- |
 | `reading_behaviors` | `article_id` | `articles` | `id` | 无 OnDelete |
 | `reading_behaviors` | `feed_id` | `feeds` | `id` | 无 OnDelete |
-| `user_preferences` | `feed_id` | `feeds` | `id` | 无 OnDelete |
-| `user_preferences` | `category_id` | `categories` | `id` | 无 OnDelete |
+| `user_preferences` | `feed_id` | `feeds` | `id` | **表已废弃**（无 model；DROP 迁移受 `MIGRATIONS_ALLOW_DESTRUCTIVE` 守卫，未开启开关的环境仍残留）——删除路径按存在性探测容错，不依赖它消失 |
+| `user_preferences` | `category_id` | `categories` | `id` | 同上 |
 | `embedding_queues` | `tag_id` | `topic_tags` | `id` | 历史 DB FK 已被迁移 DROP |
 | `merge_reembedding_queues` | `source_tag_id` | `topic_tags` | `id` | 历史 DB FK 已被迁移 DROP |
 | `merge_reembedding_queues` | `target_tag_id` | `topic_tags` | `id` | 历史 DB FK 已被迁移 DROP |

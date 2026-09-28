@@ -114,11 +114,11 @@ erDiagram
     articles ||--o{ tag_jobs : "article_id"
     categories ||--o{ ai_summaries : "category_id (已废弃)"
     categories ||--o{ feeds : "category_id"
-    categories ||--o{ user_preferences : "category_id"
+    categories ||--o{ user_preferences : "category_id (已废弃)"
     feeds ||--o{ ai_summaries : "feed_id (已废弃)"
     feeds ||--o{ articles : "feed_id"
     feeds ||--o{ reading_behaviors : "feed_id"
-    feeds ||--o{ user_preferences : "feed_id"
+    feeds ||--o{ user_preferences : "feed_id (已废弃)"
 
     ai_summaries {
     }
