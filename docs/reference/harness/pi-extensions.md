@@ -101,7 +101,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 `bash scripts/harness/test-patrol.sh`（change: test-debt-patrol）把全量测试拆成静态分片滚动巡检，堵住「增量门禁只保局部绿、存量红无人记账」的缺口（不跑扩展，按纪律/归档流程调用）：
 
-- **分片枚举**：12 片轮转（后端 6 片：`be-admin`/`be-dataenrichment`/`be-reader`/`be-tagmanagement`/`be-topicgraph`/`be-skeleton`；前端 6 片：`fe-tags`/`fe-discovery`/`fe-features`/`fe-core`/`fe-composables`/`fe-components`）+ `be-all`（整片，不入轮转，仅 `--shard` 显式指定）。默认跑「最久未巡优先」一片，`--shards <n>` 连跑 n 片。
+- **分片枚举**：14 片轮转（后端 8 片：`be-admin`/`be-dataenrichment`/`be-datasources`/`be-discovery`/`be-reader`/`be-tagmanagement`/`be-topicgraph`/`be-skeleton`；前端 6 片：`fe-tags`/`fe-discovery`/`fe-features`（含 feeds）/`fe-core`/`fe-composables`/`fe-components`）+ `be-all`（整片，不入轮转，仅 `--shard` 显式指定）。默认跑「最久未巡优先」一片，`--shards <n>` 连跑 n 片。
 - **资源红线**：前端分片固定 `--maxWorkers=2`（且 `pnpm test:unit` 的 filter **不带 `--`**——带 `--` 会吞掉 filter 静默跑全量，见 `standard/frontend/testing.md`）；跑前查 load average >4 或检出并发 build/浏览器自动化 → 只提醒不阻断。
 - **`patrol.check` 事件**：每个分片执行完向 `.pi/harness/events.db` 的 `events` 表追加一条，payload 恰为 `{shard, ok, ms, fails[]}`，`change` 列为 NULL（巡检是仓库级活动，不属单个 change），**保留期 30 天**（与 `gate.check` 同级，登记于 `lib/harness-log.ts` 的 `RETENTION_DAYS`）。事件只记流水。
 - **`test_debt` 台账（状态数据，不走 TTL）**：同一库内的独立表，登记「非本 change 改坏、不在本次修复范围内」的红测试——`test_id`（后端 `internal/<pkg>::<TestName>` / 前端 `front/<path>::<suite > case>`，整文件级用 `::<file-level>`）、`domain`（= 分片名）、`first_seen`/`last_seen`、`context`（巡检分片名 / 归档 change 名 / 存量摸底）、`status`（`open` → `fixed`｜`waived`，终态保留不物理删除）、`fixed_by`、`waived_reason`/`waived_at`、`note`。`patrol_shard` 表存分片进度（`last_run`/`last_ok`/`last_ms`/`last_fails`/`runs`/`total_fails`）。
@@ -136,6 +136,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 ## 变更记录
 
 | 日期 | 变更 | 摘要 | 归档位置 |
+| 2026-09-28 | split-retro-warn-classes | harness-retro ④ 段按情报型白名单（concurrent-mixed / concurrent-dirty-tree / foreign-breakage）拆分纠正型/情报型：失效名单只含纠正型、情报型单列计数不进失效判定；metrics 新增 soft.warn_total_corrective / soft.warn_total_informative / soft.informative_groups（stale_groups 键名不变、语义收窄；本周失效名单 3 组→0 全为口径修正） | ../../../openspec/changes/archive/2026-09-28-split-retro-warn-classes（已归档） |
 | 2026-09-19 | tune-quality-gate-concurrency | quality-gate 并发互斥锁（gate.lock O_EXCL+TTL 180s，held 整轮跳过 gate-lock-held 记账）+ 限核（GOMAXPROCS=2 / lint --concurrency=2 / vet-build 串行）+ 失败归属三态化（混合归属 [并发] 降级进粘性不催修，concurrent-mixed 记账） | ../../../openspec/changes/archive/2026-09-19-tune-quality-gate-concurrency |
 | 2026-09-19 | harden-archive-readiness | 归档就绪自查聚合入口：check-tasks-tail.sh 从 spec-gate 抽出（尾三节检查单一事实源）+ archive-readiness.sh 四项同口径只读自查 + spec-gate block 文案补自查指引（消除试探式归档重试）；效果回检挂账（7 天后 harness-retro 复测 m7.block_recur_groups ≤2） | ../../../openspec/changes/archive/2026-09-19-harden-archive-readiness |
 | 2026-09-18 | attribute-concurrent-gate-noise | quality-gate 失败报告按指纹去重（首现全块/持续单行/未修标记/转绿收尾）+ 并发外部归因（会话启动基线 ∪ 归属集合三向判定，[外部] 不催修不粘性，foreign-breakage 记账）；doc-impact suggest 改归属优先 + 三桶分列（change 名三源解析） | ../../../openspec/changes/archive/2026-09-19-attribute-concurrent-gate-noise |

@@ -35,6 +35,16 @@ DEFAULT_SAMPLE_N=5    # 与 .pi/extensions/lib/gate-sample.ts 的 GATE_OK_SAMPLE
 TTL_DAYS_MIN=30       # 被消费 kind 的最短保留期（session.start 为 90 天）
 HOTSPOT_DEFAULT_THR=5
 
+# 情报型 reasonCode 白名单（④ 段分类，split-retro-warn-classes）：归属/状态告知类 warn——
+# 告知"这个红不全是你弄的"等客观状态（如跨 change 并发撞车、外部破坏），不期待 agent 的
+# 服从动作，故不计入软提醒失效判定，只单列计数供并发频率/成本趋势观察。白名单与
+# harness-facts skill 的 reasonCode 词汇表同步演进；白名单之外的 reasonCode 一律缺省按
+# 纠正型处理（最强监督口径：新情报型词汇须显式登记入此白名单，防静默漏进失效名单；
+# 发现误归类时修白名单，不放宽缺省）。
+INFORMATIVE_REASONS="concurrent-mixed concurrent-dirty-tree foreign-breakage"
+# SQL IN 字面量（仅含 [a-z0-9-]，无需引号转义）：'concurrent-mixed','…','…'
+INFORMATIVE_SQL_LIST="$(printf "'%s'," $INFORMATIVE_REASONS | sed 's/,$//')"
+
 DB=".pi/harness/events.db"
 DAYS=7
 CHANGE=""
@@ -53,7 +63,8 @@ harness-retro — harness 事实账本的失败聚类复盘报告（只读）
   --db PATH               目标账本（缺省 .pi/harness/events.db）
   --days N                统计窗口天数（缺省 7；超过 30 天会提示 TTL 清扫风险）
   --change NAME           只统计 change 列归属该值的事件（缺省全局）
-  --warn-threshold N      软提醒失效阈值（缺省 5；同 policy+reasonCode 的 warn 计数 ≥ 阈值即列出）
+  --warn-threshold N      纠正型软提醒失效阈值（缺省 5；纠正型 warn 计数 ≥ 阈值即列出；
+                          仅作用于纠正型失效判定，情报型 warn 单列计数不受影响）
   --json                  输出机器可读 JSON
   --save-baseline [PATH]  落基线快照（缺省 .pi/harness/retro-baseline.json）
   --baseline [PATH]       与基线比对并输出变化量（同上缺省路径）
@@ -581,7 +592,10 @@ SELECT json_object(
     'threshold', ${WARN_THRESHOLD},
     'groups_total', (SELECT COUNT(*) FROM warns),
     'warn_total', (SELECT IFNULL(SUM(n),0) FROM warns),
-    'items', (SELECT json_group_array(json_object('policy', policy, 'reason', reason, 'n', n)) FROM (SELECT * FROM warns WHERE n >= ${WARN_THRESHOLD} ORDER BY n DESC))
+    'warn_total_corrective', (SELECT IFNULL(SUM(n),0) FROM warns WHERE IFNULL(reason,'') NOT IN (${INFORMATIVE_SQL_LIST})),
+    'warn_total_informative', (SELECT IFNULL(SUM(n),0) FROM warns WHERE IFNULL(reason,'') IN (${INFORMATIVE_SQL_LIST})),
+    'informative', (SELECT json_group_array(json_object('policy', policy, 'reason', reason, 'n', n)) FROM (SELECT * FROM warns WHERE IFNULL(reason,'') IN (${INFORMATIVE_SQL_LIST}) ORDER BY n DESC)),
+    'items', (SELECT json_group_array(json_object('policy', policy, 'reason', reason, 'n', n)) FROM (SELECT * FROM warns WHERE n >= ${WARN_THRESHOLD} AND IFNULL(reason,'') NOT IN (${INFORMATIVE_SQL_LIST}) ORDER BY n DESC))
   ),
   'hotspot', json_object(
     'threshold', ${WARN_THRESHOLD},
@@ -773,8 +787,12 @@ metrics = {
     'gate.flip_anchors': gate['flip_anchors'],
     'harness.fail_open': faults['fail_open'],
     'harness.blocks': faults['blocks'],
+    # stale_groups 语义=纠正型失效组数（soft.items 已按情报型白名单剔除；键名不变保基线连续）
     'soft.stale_groups': len(soft['items']),
     'soft.warn_total': soft['warn_total'],
+    'soft.warn_total_corrective': soft['warn_total_corrective'],
+    'soft.warn_total_informative': soft['warn_total_informative'],
+    'soft.informative_groups': len(soft.get('informative') or []),
     'hotspot.runs': len(hot['items']),
     'inject.hits': inj['hits'],
     'inject.bytes': inj['bytes'],
@@ -984,13 +1002,20 @@ else:
     out.append('   另有 block 裁决     : %s（策略正常工作，不计入故障段）' % faults['blocks'])
     out.append('')
 
-    out.append('④ 软提醒失效（同 policy+reasonCode 的 warn 计数 ≥ %s）' % soft['threshold'])
+    out.append('④ 软提醒失效（纠正型；同 policy+reasonCode 的 warn 计数 ≥ %s）' % soft['threshold'])
     out.append('   失效组数            : %s / %s（本窗口 warn 共 %s 条）'
                % (len(soft['items']), soft['groups_total'], soft['warn_total']))
     for it in soft['items']:
         out.append('     - %s / %s : %s 次' % (it['policy'], it['reason'], it['n']))
     if not soft['items']:
-        out.append('     （无：软提醒未达到重复阈值）')
+        out.append('     （无：纠正型软提醒未达到重复阈值）')
+    inf = soft.get('informative') or []
+    inf_total = soft.get('warn_total_informative') or 0
+    if inf:
+        out.append('   情报型 warn（归属/状态告知，不计失效）: %s 条（%s）'
+                   % (inf_total, ' / '.join('%s/%s %s' % (it['policy'], it['reason'], it['n']) for it in inf)))
+    else:
+        out.append('   情报型 warn（归属/状态告知，不计失效）: （无）')
     out.append('')
 
     out.append('⑤ 重复失败热点（同会话同命令、归一化 diag 连续重复 ≥ %s：死循环信号）' % hot['threshold'])
@@ -1173,7 +1198,10 @@ else:
 if baseline_diff is not None:
     out.append('较基线变化（基线 %s，生成于 %s）' % (baseline_diff['path'], baseline_diff['generated_at']))
     for k, d in baseline_diff['diff'].items():
-        out.append('   %-24s %s' % (k, '—' if d is None else '%+d' % d))
+        if d is None and isinstance(metrics.get(k), (int, float)):
+            out.append('   %-24s 新增（基线无此键）' % k)
+        else:
+            out.append('   %-24s %s' % (k, '—' if d is None else '%+d' % d))
     out.append('')
 
 if warnings:

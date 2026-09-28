@@ -269,10 +269,21 @@ ins "$FK" session.rollup chg-z '{"turns":4,"tokens":{"total":7000},"cost":0.7,"d
 ins "$FK" session.rollup chg-w '{"turns":1,"tokens":{"total":2000},"cost":0.2,"durationSec":100,"model":"glm-5.3","final":true}' s-main-w
 # s-orphan：change 列空且无 parentSessionId → 不可归因
 ins "$FK" session.rollup '' '{"turns":1,"tokens":{"total":1000},"cost":0.4,"durationSec":50,"model":"glm-5.3","final":true}' s-orphan
-# 归档目录 fixture（HARNESS_RETRO_ARCHIVE_DIR 注入；日期前缀窗口内）
-mkdir -p "$TMP/arch/2026-09-18-chg-x" "$TMP/arch/2026-09-18-chg-z"
-printf '<!-- complexity: simple -->\n\n## Why\ntest\n' >"$TMP/arch/2026-09-18-chg-x/proposal.md"
-printf '# no complexity marker\n' >"$TMP/arch/2026-09-18-chg-z/proposal.md"
+# 归档目录 fixture（HARNESS_RETRO_ARCHIVE_DIR 注入；日期前缀窗口内——动态取 2 天前，防 --days 7 窗口滑出后时间腐烂）
+ARCH_D="$(date -u -d '2 days ago' +%F)"
+mkdir -p "$TMP/arch/$ARCH_D-chg-x" "$TMP/arch/$ARCH_D-chg-z"
+printf '<!-- complexity: simple -->\n\n## Why\ntest\n' >"$TMP/arch/$ARCH_D-chg-x/proposal.md"
+printf '# no complexity marker\n' >"$TMP/arch/$ARCH_D-chg-z/proposal.md"
+
+# ---------- fixture L：混合情报型+纠正型 warn 分开统计（split-retro-warn-classes） ----------
+FL="$TMP/l.db"
+mk_db "$FL"
+for i in 1 2 3 4 5 6; do
+	ins "$FL" policy.decision probe-L '{"policy":"quality-gate","action":"warn","reasonCode":"concurrent-mixed"}'
+done
+for i in 1 2 3 4 5 6; do
+	ins "$FL" policy.decision probe-L '{"policy":"test-scope-guard","action":"warn","reasonCode":"full-go-test"}'
+done
 
 # ---------- K. B' 每任务成本四场景（task-cost-metrics） ----------
 HARNESS_RETRO_ARCHIVE_DIR="$TMP/arch" run_retro --db "$FK" --days 7
@@ -327,7 +338,7 @@ check 0 "K6 目录锚点缺失兑底（仅事件侧 chg-x/chg-y 仍统计，退�
 # ================= A. 主链路 =================
 
 run_retro --db "$FB" --days 7
-check 0 "A1 六段齐备且各带指标" "① 门禁失败聚类" "② 回归翻转" "③ harness 自身故障" "④ 软提醒失效" "⑤ 重复失败热点" "⑥ 注入面健康" "失败条数            : 4" "注入条数 / 字节" "docs/reference/flow/daily-report.md"
+check 0 "A1 六段齐备且各带指标" "① 门禁失败聚类" "② 回归翻转" "③ harness 自身故障" "④ 软提醒失效（纠正型" "⑤ 重复失败热点" "⑥ 注入面健康" "失败条数            : 4" "注入条数 / 字节" "docs/reference/flow/daily-report.md"
 
 # ---------- G. ⑦效能看板 ----------
 run_retro --db "$FG" --days 7
@@ -476,6 +487,36 @@ check 0 "B1 fail-open 单列且不计入 agent 失败" "③ harness 自身故障
 check_absent "B2 block 与 bypass 不入故障段" "archive-check-failed" "explicit-bypass"
 check 0 "B3 超阈值 warn 入段（=5 命中）" "test-scope-guard / full-go-test : 5 次"
 check_absent "B4 低于阈值 warn 不产生噪声" "ui-impact-mismatch"
+
+# ---------- L. 情报型/纠正型分开统计（split-retro-warn-classes） ----------
+
+run_retro --db "$FL" --days 7
+check 0 "L1 失效名单只含纠正型（full-go-test 6 次；标题含纠正型；情报型单列计数）" \
+	"④ 软提醒失效（纠正型；同 policy+reasonCode 的 warn 计数 ≥ 5）" \
+	"test-scope-guard / full-go-test : 6 次" \
+	"情报型 warn（归属/状态告知，不计失效）: 6 条（quality-gate/concurrent-mixed 6）"
+check_absent "L2 情报型不进失效名单（失效行格式不含 concurrent-mixed）" "quality-gate / concurrent-mixed"
+"$RETRO" --db "$FL" --days 7 --json >"$TMP/fl.json" 2>/dev/null
+if python3 - "$TMP/fl.json" <<'FLPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d['metrics']
+s = d['soft']
+assert m['soft.warn_total'] == 12, m['soft.warn_total']
+assert m['soft.warn_total_corrective'] == 6, m['soft.warn_total_corrective']
+assert m['soft.warn_total_informative'] == 6, m['soft.warn_total_informative']
+assert m['soft.informative_groups'] == 1, m['soft.informative_groups']
+assert m['soft.stale_groups'] == 1, m['soft.stale_groups']
+assert [it['reason'] for it in s['items']] == ['full-go-test'], s['items']
+assert [it['reason'] for it in s['informative']] == ['concurrent-mixed'], s['informative']
+FLPY
+then
+	echo "  ✓ L3 JSON soft 键=fixture 复算值（12=6+6、stale 1、informative 1 组）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L3 JSON soft 键断言失败"
+	failn=$((failn + 1))
+fi
 
 # ================= C. 库异常、窗口与只读 =================
 
