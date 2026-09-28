@@ -919,3 +919,102 @@ func TestRun_AskDoesNotTouchPreferenceVectors(t *testing.T) {
 	require.Equal(t, before.Model, pvs[0].Model)
 	require.Equal(t, before.Dimension, pvs[0].Dimension)
 }
+
+// TestGetRunSubscribedState 2.3 / spec feed-discovery：run 条目携带订阅状态——rsshub
+// 候选按候选侧路由（feed_candidates.route_id → rsshub_routes）路由级判定，原生候选按
+// 精确地址；候选行缺失的历史条目保持 false/空；既有展示字段来源不变。
+func TestGetRunSubscribedState(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	base := resolveRSSHubBaseURL(db)
+
+	// rsshub 候选：已订阅 world 分区，而 route.example 是 china。
+	subRoute := discmodels.RSSHubRoute{
+		Namespace: "zaobao", Path: "/znews/:section?", Name: "联合早报", Description: "route desc",
+		Example: "/zaobao/znews/china", UsableDirectly: true, Status: "ok", Parameters: "{}",
+	}
+	otherRoute := discmodels.RSSHubRoute{
+		Namespace: "oschina", Path: "/event/:category?", Name: "开源中国",
+		Example: "/oschina/event", UsableDirectly: true, Status: "ok", Parameters: "{}",
+	}
+	require.NoError(t, db.Create(&subRoute).Error)
+	require.NoError(t, db.Create(&otherRoute).Error)
+	subscribedURL := base + "/zaobao/znews/world"
+	require.NoError(t, db.Create(&models.Feed{Title: "联合早报-世界", URL: subscribedURL}).Error)
+
+	subCand := discmodels.FeedCandidate{
+		StableKey: "zaobao/znews/:section?", Kind: "rsshub", RouteID: &subRoute.ID,
+		ManualMetadata: models.MetadataMap{}, AccessScope: "public", Revision: 1,
+	}
+	otherCand := discmodels.FeedCandidate{
+		StableKey: "oschina/event/:category?", Kind: "rsshub", RouteID: &otherRoute.ID,
+		ManualMetadata: models.MetadataMap{}, AccessScope: "public", Revision: 1,
+	}
+	nativeCand := discmodels.FeedCandidate{
+		StableKey: "rss:run-native", Kind: "rss",
+		FeedURL: candidateStr("https://native.example.com/feed.xml"), CanonicalKey: "https://native.example.com/feed.xml",
+		ManualMetadata: models.MetadataMap{}, AccessScope: "public", Revision: 1,
+	}
+	require.NoError(t, db.Create(&subCand).Error)
+	require.NoError(t, db.Create(&otherCand).Error)
+	require.NoError(t, db.Create(&nativeCand).Error)
+	require.NoError(t, db.Create(&models.Feed{Title: "原生已订", URL: "https://native.example.com/feed.xml"}).Error)
+
+	// 展示字段仍走 feed_recommendations → 路由 join（既有路径，不改来源）。
+	rec := discmodels.FeedRecommendation{
+		RouteID: subRoute.ID, Source: RecommendationSourceQA, Score: 1,
+		Status: "accepted", RecommendationHash: "run-subscribed-hash",
+	}
+	require.NoError(t, db.Create(&rec).Error)
+
+	run := discmodels.DiscoveryRun{
+		RequestKey: "run-subscribed-state", Kind: DiscoveryRunKindAsk, Query: "测试查询",
+		Status: "succeeded", StartedAt: time.Now(),
+	}
+	require.NoError(t, db.Create(&run).Error)
+	items := []struct {
+		candID uint
+		recID  *uint
+		rank   int
+	}{
+		{subCand.ID, &rec.ID, 1},
+		{otherCand.ID, nil, 2},
+		{nativeCand.ID, nil, 3},
+		{99999, nil, 4}, // 候选行缺失的历史条目
+	}
+	for _, it := range items {
+		require.NoError(t, db.Create(&discmodels.DiscoveryRunItem{
+			RunID: run.ID, CandidateID: it.candID, RecommendationID: it.recID, Rank: it.rank,
+			RecallSources: models.MetadataMap{}, ReasonSnapshot: "理由",
+		}).Error)
+	}
+
+	svc := NewDiscoveryRunService(db, nil, nil)
+	view, err := svc.GetRun(ctx, run.ID)
+	require.NoError(t, err)
+	require.Len(t, view.Items, 4)
+
+	byCandidate := map[uint]DiscoveryRunItemView{}
+	for _, it := range view.Items {
+		require.NotNil(t, it.SubscribedURLs, "空集合必须为 []（非 null）")
+		byCandidate[it.CandidateID] = it
+	}
+
+	sub := byCandidate[subCand.ID]
+	require.True(t, sub.Subscribed, "rsshub 按候选侧路由判定（example 不同也命中）")
+	require.Equal(t, []string{subscribedURL}, sub.SubscribedURLs)
+	require.Equal(t, "联合早报", sub.Name, "展示字段仍来自 feed_recommendations 路由 join")
+	require.Equal(t, "ok", sub.Availability, "可用性语义未被订阅查询改写")
+
+	other := byCandidate[otherCand.ID]
+	require.False(t, other.Subscribed)
+	require.Empty(t, other.SubscribedURLs)
+
+	native := byCandidate[nativeCand.ID]
+	require.True(t, native.Subscribed, "原生按精确地址命中")
+	require.Equal(t, []string{"https://native.example.com/feed.xml"}, native.SubscribedURLs)
+
+	missing := byCandidate[99999]
+	require.False(t, missing.Subscribed, "候选行缺失保持未订阅")
+	require.Empty(t, missing.SubscribedURLs)
+}

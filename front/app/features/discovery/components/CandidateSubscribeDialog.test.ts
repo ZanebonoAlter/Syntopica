@@ -58,6 +58,7 @@ function rssDetail(over: Partial<CandidateDetail> = {}): CandidateDetail {
     name: '田野笔记',
     feedUrl: 'https://field.example/feed.xml',
     subscribed: false,
+    subscribedUrls: [],
     route: null,
     ...over,
   }
@@ -70,6 +71,7 @@ function rsshubDetail(over: Partial<CandidateDetail> = {}): CandidateDetail {
     name: '测试期刊路由',
     feedUrl: '',
     subscribed: false,
+    subscribedUrls: [],
     route: {
       namespace: 'test',
       path: '/journal/:section',
@@ -171,7 +173,8 @@ describe('CandidateSubscribeDialog — 原生 RSS（R6：确认规范化地址�
       url: 'https://field.example/feed.xml',
       verify: false, // 原生确认即建，不走 fetch 验证
     }))
-    expect(markSubscribedMock).toHaveBeenCalledWith('5')
+    // 带上本次地址：候选库行的「已有订阅」提示即时包含它（不必等下次列表刷新）
+    expect(markSubscribedMock).toHaveBeenCalledWith('5', 'https://field.example/feed.xml')
     expect(wrapper.emitted('subscribed')?.at(-1)).toEqual(['5'])
     const done = dialogEl()!.querySelector('[data-testid="subscribe-done"]')!
     expect(done.textContent).toContain('已订阅')
@@ -300,6 +303,69 @@ describe('CandidateSubscribeDialog — 详情加载', () => {
     expect(dialogEl()!.querySelector('[data-testid="subscribe-done"]')).not.toBeNull()
     expect(dialogEl()!.querySelector('[data-testid="subscribe-submit"]')).toBeNull()
     expect(subscribeMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+describe('CandidateSubscribeDialog — 已有订阅对照与最终地址锁定（fix-discovery-subscribed-hint）', () => {
+  const subscribedUrls = ['https://rsshub.example/test/journal/tech']
+
+  it('RSSHub 路由级已订阅：信息块列出已有地址；未命中其它参数时提交放行（只提示不锁定）', async () => {
+    detailMock.mockResolvedValue({
+      success: true,
+      data: rsshubDetail({ subscribed: true, subscribedUrls }),
+    })
+    statusMock.mockResolvedValue(okStatus())
+    const wrapper = await mountDialog({ candidateId: '6' })
+
+    // 只读信息块：列出已有订阅地址供对照
+    const existing = dialogEl()!.querySelector('[data-testid="subscribe-existing"]')!
+    expect(existing.textContent).toContain('已有订阅')
+    expect(existing.textContent).toContain(subscribedUrls[0]!)
+    // 路由级命中不再直接锁终态：表单与提交入口仍在
+    expect(dialogEl()!.querySelector('[data-testid="subscribe-done"]')).toBeNull()
+    expect(dialogEl()!.querySelector('[data-testid="subscribe-url-exists"]')).toBeNull()
+
+    // 填其它参数：最终地址未命中已有订阅 → 不锁定、可提交
+    setSelectValue('subscribe-param-section', 'life')
+    await nextTick()
+    expect(dialogEl()!.querySelector('[data-testid="subscribe-url-exists"]')).toBeNull()
+    expect((dialogEl()!.querySelector('[data-testid="subscribe-submit"]') as HTMLButtonElement).disabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('RSSHub 填参命中已有订阅地址：就地锁定提交并说明，不发订阅请求', async () => {
+    detailMock.mockResolvedValue({
+      success: true,
+      data: rsshubDetail({ subscribed: true, subscribedUrls }),
+    })
+    statusMock.mockResolvedValue(okStatus())
+    const wrapper = await mountDialog({ candidateId: '6' })
+
+    setSelectValue('subscribe-param-section', 'tech')
+    await nextTick()
+    expect(dialogEl()!.querySelector('[data-testid="subscribe-final-url"]')!.textContent)
+      .toBe('https://rsshub.example/test/journal/tech')
+    const locked = dialogEl()!.querySelector('[data-testid="subscribe-url-exists"]')!
+    expect(locked.textContent).toContain('该地址已在订阅列表')
+    expect((dialogEl()!.querySelector('[data-testid="subscribe-submit"]') as HTMLButtonElement).disabled).toBe(true)
+
+    // 锁定后点击也不发订阅请求（canSubmit 兜底）
+    clickBtn('subscribe-submit')
+    await flushPromises()
+    expect(subscribeMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('原生 RSS 详情已订阅：仍走「已订阅」终态，行为不回退（无提交入口）', async () => {
+    detailMock.mockResolvedValue({
+      success: true,
+      data: rssDetail({ subscribed: true, subscribedUrls: ['https://field.example/feed.xml'] }),
+    })
+    statusMock.mockResolvedValue(okStatus())
+    const wrapper = await mountDialog()
+    expect(dialogEl()!.querySelector('[data-testid="subscribe-done"]')).not.toBeNull()
+    expect(dialogEl()!.querySelector('[data-testid="subscribe-submit"]')).toBeNull()
     wrapper.unmount()
   })
 })

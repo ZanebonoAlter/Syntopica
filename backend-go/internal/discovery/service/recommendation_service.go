@@ -126,6 +126,11 @@ type RecommendationCard struct {
 	// ParamOptions 按参数名分组的可选值字典（feed-param-options D7）。必为非 nil map：
 	// 无字典数据时序列化为 {}（向后兼容），永不为 null。
 	ParamOptions map[string][]ParamOption `json:"param_options"`
+	// Subscribed / SubscribedURLs：来源订阅状态（fix-discovery-subscribed-hint D4）——
+	// rsshub 按路由级、原生 rss 按精确地址；SubscribedURLs 空为 []（不为 null）。
+	// 只供前端只读提示，不影响订阅入口（是否重复由订阅动作按最终地址判定）。
+	Subscribed     bool     `json:"subscribed"`
+	SubscribedURLs []string `json:"subscribed_urls"`
 }
 
 // GetRecommendations 返回推荐卡片列表（默认 pending）。pending 列表只返回未到期
@@ -174,6 +179,9 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, status s
 		cards = append(cards, card)
 	}
 	s.attachParamOptions(ctx, cards)
+	if err := s.attachSubscriptionState(ctx, cards); err != nil {
+		return nil, err
+	}
 	return cards, nil
 }
 
@@ -203,6 +211,55 @@ func (s *RecommendationService) attachParamOptions(ctx context.Context, cards []
 			cards[i].ParamOptions = inner
 		}
 	}
+}
+
+// attachSubscriptionState 批量注入卡片订阅状态（design D4）：一次装载 feeds.url 索引 +
+// 一次按 CandidateID 的候选 IN 查询（禁 N+1）；rsshub 候选按路由级（复用卡片已预载的
+// Route）、rss 候选按精确地址。legacy 无候选的卡片保持 subscribed=false、地址为空切片；
+// 订阅查询失败时向上返回错误（不得静默当作未订阅，那会伪造订阅状态）。
+func (s *RecommendationService) attachSubscriptionState(ctx context.Context, cards []RecommendationCard) error {
+	for i := range cards {
+		cards[i].SubscribedURLs = []string{} // 兜底非 nil：JSON 为 []
+	}
+	candIDs := make([]uint, 0, len(cards))
+	for i := range cards {
+		if cards[i].CandidateID != nil {
+			candIDs = append(candIDs, *cards[i].CandidateID)
+		}
+	}
+	if len(candIDs) == 0 {
+		return nil
+	}
+	var cands []discmodels.FeedCandidate
+	if err := s.db.WithContext(ctx).
+		Select("id", "kind", "route_id", "feed_url").
+		Where("id IN ?", candIDs).
+		Find(&cands).Error; err != nil {
+		return err
+	}
+	// 路由资料复用卡片已预载的 Route（同一推荐行的候选同一路由，无需再查）。
+	routes := map[uint]discmodels.RSSHubRoute{}
+	for i := range cards {
+		if cards[i].Route != nil {
+			routes[cards[i].RouteID] = *cards[i].Route
+		}
+	}
+	index, err := LoadSubscriptionIndex(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	urlsByCandidate := resolveCandidateSubscriptions(index, resolveRSSHubBaseURL(s.db), cands, routes)
+	for i := range cards {
+		if cards[i].CandidateID == nil {
+			continue
+		}
+		urls := urlsByCandidate[*cards[i].CandidateID]
+		if len(urls) > 0 {
+			cards[i].Subscribed = true
+			cards[i].SubscribedURLs = urls
+		}
+	}
+	return nil
 }
 
 // AcceptRecommendation 接受推荐：原生 RSS 用候选规范化地址，RSSHub 填参拼最终地址；
@@ -345,6 +402,7 @@ func markRecommendationAccepted(tx *gorm.DB, recID, feedID uint) (bool, error) {
 // 用户填了任一参数值 → 一律模板填参（usable_directly 的 example 只是缺省形态，不能压过
 // 用户显式填参，否则填参被无视、URL 恒为 example）；未填参时 usable_directly 用
 // baseURL + example（或 namespace+path），requires_parameters 用 params 填 path 参数。
+// 判定返回值是否可用看**段首 `:` 残留**（hasUnfilledParamSegment），不看整串是否含 `:`。
 func buildFeedURL(r *discmodels.RSSHubRoute, params map[string]string, baseURL string) string {
 	base := strings.TrimRight(baseURL, "/")
 	hasParams := false
@@ -374,10 +432,23 @@ func buildFeedURL(r *discmodels.RSSHubRoute, params map[string]string, baseURL s
 	}
 	// 去掉剩余可选参数段 :x?。
 	u = stripOptionalParams(u)
-	if !strings.Contains(u, ":") {
+	if !hasUnfilledParamSegment(u) {
 		return base + u
 	}
 	return "" // 仍有未填必填参数
+}
+
+// hasUnfilledParamSegment 判定路径中是否仍有未填参数段（段首 `:`）。
+// 不能用 strings.Contains(u, ":")：参数值本身含 `:`（如时间 10:00）会被误判成未填必填参数，
+// 把本可用的地址拼不出来；与前端 buildRSSHubFeedUrl 同口径（fix-discovery-subscribed-hint
+// review M1 连带修复：两侧编码/拼接必须逐字节一致，同址才等于同订阅）。
+func hasUnfilledParamSegment(u string) bool {
+	for _, seg := range strings.Split(u, "/") {
+		if strings.HasPrefix(seg, ":") {
+			return true
+		}
+	}
+	return false
 }
 
 // stripOptionalParams 去掉 :param? 残留段（{regex} 已由 stripBraceConstraints 先行剥离）。

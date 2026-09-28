@@ -126,6 +126,23 @@ function subscribedText(c: DiscoveryCandidate): string {
   return c.subscribed ? '已订阅' : '未订阅'
 }
 
+/** 已订阅状态位 title：附已有订阅地址供对照（RSSHub 路由级命中可能不只一条） */
+function subscribedTitle(c: DiscoveryCandidate): string {
+  return c.subscribedUrls.length > 0
+    ? `已订阅：\n${c.subscribedUrls.join('\n')}`
+    : '该来源已有订阅'
+}
+
+/**
+ * 是否还提供订阅入口（D5 提示与动作分离）：
+ * 原生 RSS 已订阅 = 精确同址，不可能再产生新订阅 → 隐藏入口（同现状）；
+ * RSSHub 路由级命中只提示 → 保留入口（仍可订同路由其它参数，重复由弹窗按最终地址拦截）。
+ * 上游已下架（gone）单独禁用按钮，不在此处隐藏。
+ */
+function canOfferSubscribe(c: DiscoveryCandidate): boolean {
+  return !(c.kind === 'rss' && c.subscribed)
+}
+
 /** 编辑弹窗 */
 const dialogVisible = ref(false)
 const editingCandidate = ref<DiscoveryCandidate | null>(null)
@@ -155,7 +172,7 @@ const subscribeVisible = computed({
 })
 
 function openSubscribe(c: DiscoveryCandidate) {
-  if (c.subscribed) return // 已订阅不给重复入口（防重复创建）
+  if (!canOfferSubscribe(c)) return // 原生 RSS 已订阅不给重复入口（同址无新可订）
   subscribeTarget.value = c
 }
 </script>
@@ -290,6 +307,7 @@ function openSubscribe(c: DiscoveryCandidate) {
             <span
               class="library__status-value"
               :class="c.subscribed ? 'is-subscribed' : 'is-unsubscribed'"
+              :title="c.subscribed ? subscribedTitle(c) : undefined"
               data-testid="library-subscribed"
             >{{ subscribedText(c) }}</span>
           </div>
@@ -306,9 +324,9 @@ function openSubscribe(c: DiscoveryCandidate) {
           <AppButton size="sm" variant="secondary" data-testid="library-edit-btn" @click="openEdit(c)">
             编辑
           </AppButton>
-          <!-- 订阅动作：入库 ≠ 订阅，按需另行确认（R6）；已订阅不重复入口；上游已下架不可订阅（C2） -->
+          <!-- 订阅动作：入库 ≠ 订阅，按需另行确认（R6）；原生已订阅不重复入口，RSSHub 路由级命中保留入口；上游已下架不可订阅（C2） -->
           <AppButton
-            v-if="!c.subscribed"
+            v-if="canOfferSubscribe(c)"
             size="sm"
             :disabled="isUpstreamGone(c)"
             :title="isUpstreamGone(c) ? '上游已下架，无法订阅；已有订阅不受影响' : undefined"

@@ -29,6 +29,9 @@ import type { CandidateDetail } from '~/types/discovery'
  * - 原生 RSS 不显示 RSSHub 文档链接（不伪造）。
  * - 成功「已订阅」+ 提交禁用（防重复创建）；失败保留输入与所选分类，可重试。
  * - 409（地址已存在）：视为已订阅，不重复创建。
+ * fix-discovery-subscribed-hint：RSSHub 路由级命中（详情 subscribed）只给只读提示，不再直接
+ * 终态；填参拼出的最终地址命中 subscribedUrls 时就地锁定提交并说明（同路由它参仍可提交）。
+ * 原生 RSS 已订阅仍走「已订阅」终态（同址无新可订，行为不回退）。
  */
 const props = defineProps<{
   modelValue: boolean
@@ -97,7 +100,9 @@ async function load() {
   loading.value = false
   if (detailRes && detailRes.success && detailRes.data) {
     detail.value = detailRes.data
-    if (detail.value.subscribed) done.value = true
+    // 原生 RSS 已订阅 = 精确同址，无新可订 → 「已订阅」终态（同现状）；
+    // RSSHub 路由级命中不锁终态：仍可订其它参数，由 finalUrlSubscribed 按当前地址锁定
+    if (detail.value.kind === 'rss' && detail.value.subscribed) done.value = true
     // 填参表单初值
     const specs = paramSpecs.value
     paramValues.value = Object.fromEntries(specs.map(s => [s.name, '']))
@@ -157,11 +162,23 @@ const submitting = computed(() =>
   !!props.candidateId && store.subscribingIds.includes(props.candidateId),
 )
 
+/**
+ * 当前填参拼出的最终地址已在订阅列表（D5「能否再点按地址是否可能新增判断」）：
+ * 仅 RSSHub 路径会出现——原生 RSS 已订阅直接走「已订阅」终态，不会到这里；
+ * 同路由已有其它参数订阅时 finalUrl 不命中，仍可提交（只提示不锁定）。
+ */
+const finalUrlSubscribed = computed(() =>
+  detail.value?.kind === 'rsshub'
+  && !!finalUrl.value
+  && detail.value.subscribedUrls.includes(finalUrl.value),
+)
+
 const canSubmit = computed(() =>
   !loading.value
   && !loadError.value
   && !done.value
   && !submitting.value
+  && !finalUrlSubscribed.value
   && !!finalUrl.value
   && !missingRequired.value,
 )
@@ -186,7 +203,8 @@ async function submit() {
   if (res.status === 'subscribed' || res.status === 'already') {
     done.value = true
     doneAsExisting.value = res.status === 'already'
-    store.markSubscribed(props.candidateId)
+    // 带上本次地址：候选库行的「已有订阅」提示即时包含它（不必等下次列表刷新）
+    store.markSubscribed(props.candidateId, finalUrl.value)
     emit('subscribed', props.candidateId)
     return
   }
@@ -239,6 +257,17 @@ function close() {
         </div>
 
         <template v-else>
+          <!-- 已有订阅信息块（只读）：路由级命中时列出已有地址供对照；提示 ≠ 阻止再订其它参数 -->
+          <div v-if="detail.subscribedUrls.length > 0" class="sub__existing" data-testid="subscribe-existing">
+            <label class="sub__label">已有订阅</label>
+            <ul class="sub__existing-list">
+              <li v-for="url in detail.subscribedUrls" :key="url" class="sub__url u-break-url">{{ url }}</li>
+            </ul>
+            <p v-if="detail.kind === 'rsshub'" class="sub__hint">
+              该路由已有订阅；仍可订阅同一路由的其它参数。
+            </p>
+          </div>
+
           <!-- 原生 RSS：确认规范化后地址 -->
           <div v-if="detail.kind === 'rss'" class="sub__field" data-testid="subscribe-rss-confirm">
             <label class="sub__label">确认订阅地址（已规范化）</label>
@@ -255,6 +284,15 @@ function close() {
               </p>
               <p v-else-if="requiresParams && missingRequired" class="sub__hint" data-testid="subscribe-missing-required">
                 还有必填参数未填写，填完后会展示最终地址。
+              </p>
+              <!-- 最终地址命中已有订阅：就地锁定提交并说明（同路由它参未命中时不锁定） -->
+              <p
+                v-if="finalUrlSubscribed"
+                class="sub__locked"
+                role="status"
+                data-testid="subscribe-url-exists"
+              >
+                该地址已在订阅列表，不再重复创建；同一路由的其它参数仍可提交。
               </p>
             </div>
 
@@ -479,6 +517,38 @@ function close() {
   color: var(--color-success);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.sub__existing {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-bg-sunken);
+  border: 1px solid var(--color-border-subtle);
+  min-width: 0;
+}
+
+.sub__existing-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sub__existing-list .sub__url {
+  background: var(--color-bg-elevated);
+}
+
+.sub__locked {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-warning);
 }
 
 .sub__error {

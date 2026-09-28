@@ -12,6 +12,38 @@ export const DEFAULT_RSSHUB_DOC_BASE = 'https://docs.rsshub.app'
 /** RSSHub 实例基址默认值（后端 DefaultRSSHubBaseURL 同值；settings 拉取失败时兜底）。 */
 export const DEFAULT_RSSHUB_BASE_URL = 'https://rsshub.app'
 
+/** Go 路径段不转义集合（encodePathSegment）：保留字面量，其余按字节转义。 */
+const PATH_ESCAPE_LITERAL = /^[A-Za-z0-9\-_.~$&+:=@]$/
+
+/**
+ * 与后端 Go `url.PathEscape` 对齐的 path 段编码。
+ *
+ * 为什么不能用 `encodeURIComponent`：两者在 `+ & = : @ $ ! ' ( ) *` 上分叉（如 `C++`
+ * → Go `C++` / encodeURIComponent `C%2B%2B`），而「同址即同订阅」靠 `feeds.url` 逐字节
+ * 相等判定——分叉会让同一逻辑地址落成两条 feed，也让订阅弹窗的最终地址锁（
+ * `finalUrl ∈ subscribedUrls`）失效（fix-discovery-subscribed-hint review M1）。
+ * 非 ASCII 与空格两侧同为 %XX 大写十六进制（UTF-8 字节序）。
+ */
+function pathEscape(value: string): string {
+  let out = ''
+  for (const ch of value) {
+    if (PATH_ESCAPE_LITERAL.test(ch)) {
+      out += ch
+      continue
+    }
+    try {
+      // encodeURIComponent 不转义 ! ' ( ) *，而 Go PathEscape 会——补上这五个的转义
+      out += encodeURIComponent(ch).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+    }
+    catch {
+      // 孤立代理项（非法 UTF-16）会让 encodeURIComponent 抛 URIError；兜底为 U+FFFD，
+      // 不让异常冒泡到模板 computed（这种值本就无法与后端逐字节对齐）。
+      out += '%EF%BF%BD'
+    }
+  }
+  return out
+}
+
 export interface RouteParamSpec {
   name: string
   required: boolean
@@ -192,11 +224,13 @@ export function buildRSSHubFeedUrl(opts: {
   for (const [name, val] of Object.entries(opts.parameters)) {
     if (!val) continue
     // split/join 替换避免 replace 的 $ 特殊语义；值做 path 编码与后端 url.PathEscape 对齐
-    const enc = encodeURIComponent(val)
+    const enc = pathEscape(val)
     u = u.split(`:${name}?`).join(enc).split(`:${name}`).join(enc)
   }
   u = stripOptionalParams(u)
-  return u.includes(':') ? '' : base + u
+  // 段首 `:` 才是未填参数段：不能用 includes(':')——参数值本身含 `:`（如 10:00）会被
+  // 误判为未填必填参数，与后端 hasUnfilledParamSegment 同口径（review M1 连带修复）。
+  return u.split('/').some(seg => seg.startsWith(':')) ? '' : base + u
 }
 
 /**

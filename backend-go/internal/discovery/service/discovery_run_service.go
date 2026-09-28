@@ -991,6 +991,11 @@ type DiscoveryRunItemView struct {
 	Name             string             `json:"name"`
 	Description      string             `json:"description"`
 	Availability     string             `json:"availability"`
+	// Subscribed / SubscribedURLs：来源订阅状态（fix-discovery-subscribed-hint D4）——
+	// rsshub 按候选侧路由级、原生 rss 按精确地址；空集合为 []（不为 null）。
+	// 只供前端只读提示，不影响订阅入口（是否重复由订阅动作按最终地址判定）。
+	Subscribed     bool     `json:"subscribed"`
+	SubscribedURLs []string `json:"subscribed_urls"`
 }
 
 // DiscoveryRunView 是 run 详情响应体（前端 DiscoveryRun 类型形状：id/kind/query/
@@ -1007,7 +1012,8 @@ type DiscoveryRunView struct {
 }
 
 // GetRun 返回 run 详情（items 按 rank 升序）。展示字段经 feed_recommendations →
-// rsshub_routes 联查；可用性映射 requires_parameters 优先、否则透传 route status。
+// rsshub_routes 联查；可用性映射 requires_parameters 优先、否则透传 route status；
+// 订阅状态经 feed_candidates.route_id → rsshub_routes 的路由级（或原生精确）判定。
 func (s *DiscoveryRunService) GetRun(ctx context.Context, id uint) (*DiscoveryRunView, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "DiscoveryRunService.GetRun")
 	defer span.End()
@@ -1032,6 +1038,10 @@ func (s *DiscoveryRunService) GetRun(ctx context.Context, id uint) (*DiscoveryRu
 		RequiresParametersRow     *bool `gorm:"column:requires_parameters"`
 		ManualMetadata            models.MetadataMap
 		FeedURL                   *string
+		CandidateKind             *string `gorm:"column:candidate_kind"`
+		CandidateRouteID          *uint   `gorm:"column:candidate_route_id"`
+		CandidateRouteNamespace   *string `gorm:"column:candidate_route_namespace"`
+		CandidateRoutePath        *string `gorm:"column:candidate_route_path"`
 		CandidateAvailabilityName *string `gorm:"column:candidate_availability_status"`
 	}
 	var rows []itemJoin
@@ -1039,17 +1049,43 @@ func (s *DiscoveryRunService) GetRun(ctx context.Context, id uint) (*DiscoveryRu
 		SELECT ri.*, r.name AS route_name, r.description AS route_description,
 		       r.status AS route_status, r.usable_directly, r.requires_parameters,
 		       fc.manual_metadata AS manual_metadata, fc.feed_url AS feed_url,
+		       fc.kind AS candidate_kind, fc.route_id AS candidate_route_id,
+		       cr.namespace AS candidate_route_namespace, cr.path AS candidate_route_path,
 		       ca.status AS candidate_availability_status
 		FROM discovery_run_items ri
 		LEFT JOIN feed_recommendations fr ON fr.id = ri.recommendation_id
 		LEFT JOIN rsshub_routes r ON r.id = fr.route_id
 		LEFT JOIN feed_candidates fc ON fc.id = ri.candidate_id
+		LEFT JOIN rsshub_routes cr ON cr.id = fc.route_id
 		LEFT JOIN candidate_availability ca ON ca.candidate_id = ri.candidate_id
 		WHERE ri.run_id = ?
 		ORDER BY ri.rank ASC`, id).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
+
+	// 订阅状态：一次装载 feeds.url 索引；候选侧路由取 feed_candidates.route_id →
+	// rsshub_routes（不改展示字段来源）；全 run 候选前缀集合内最长前缀优先（design D2/D4）。
+	subIndex, err := LoadSubscriptionIndex(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+	candidateInputs := make([]discmodels.FeedCandidate, 0, len(rows))
+	routeRefs := map[uint]discmodels.RSSHubRoute{}
+	for _, r := range rows {
+		if r.CandidateKind == nil {
+			continue // 候选行缺失（历史数据）：保持未订阅
+		}
+		candidateInputs = append(candidateInputs, discmodels.FeedCandidate{
+			ID: r.CandidateID, Kind: *r.CandidateKind, RouteID: r.CandidateRouteID, FeedURL: r.FeedURL,
+		})
+		if r.CandidateRouteID != nil && r.CandidateRouteNamespace != nil && r.CandidateRoutePath != nil {
+			routeRefs[*r.CandidateRouteID] = discmodels.RSSHubRoute{
+				Namespace: *r.CandidateRouteNamespace, Path: *r.CandidateRoutePath,
+			}
+		}
+	}
+	subscribedByCandidate := resolveCandidateSubscriptions(subIndex, resolveRSSHubBaseURL(s.db), candidateInputs, routeRefs)
 	for _, r := range rows {
 		availability := "unknown"
 		if r.RouteStatus != nil && *r.RouteStatus != "" {
@@ -1068,12 +1104,18 @@ func (s *DiscoveryRunService) GetRun(ctx context.Context, id uint) (*DiscoveryRu
 		if strings.TrimSpace(name) == "" {
 			name = derefString(r.FeedURL)
 		}
+		// 订阅状态（rsshub 候选侧路由级 / rss 精确；design D4）：空集合保持非 nil。
+		urls := subscribedByCandidate[r.CandidateID]
+		if urls == nil {
+			urls = []string{}
+		}
 		item := DiscoveryRunItemView{
 			CandidateID: r.CandidateID, RecommendationID: r.RecommendationID,
 			Rank: r.Rank, RecallSources: r.RecallSources,
 			RecallOrigins: flattenRecallSources(r.RecallSources),
 			Reason:        r.ReasonSnapshot, Availability: availability,
 			Name: name, Description: description,
+			Subscribed: len(urls) > 0, SubscribedURLs: urls,
 		}
 		view.Items = append(view.Items, item)
 	}

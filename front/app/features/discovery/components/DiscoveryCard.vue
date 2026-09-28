@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
+import AppButton from '~/components/ui/AppButton.vue'
+import AppInput from '~/components/ui/AppInput.vue'
 import { useDiscoveryStore } from '~/stores/discovery'
 import { useApiStore } from '~/stores/api'
 import { buildRouteDocUrl, buildRouteParamSpecs, DEFAULT_RSSHUB_DOC_BASE } from '~/utils/routeParams'
@@ -37,6 +39,13 @@ const scorePercent = computed(() => Math.round(props.card.score * 100))
 
 /** 匹配版块名；无版块时兜底「全局推荐」 */
 const boardLabel = computed(() => props.card.boardLabel || '全局推荐')
+
+/** 已订阅徽标 title：列出已有订阅地址供对照（路由级命中可能不只一条；无地址时只说明已订阅） */
+const subscribedTitle = computed(() =>
+  props.card.subscribedUrls.length > 0
+    ? `已订阅：\n${props.card.subscribedUrls.join('\n')}`
+    : '该来源已有订阅',
+)
 
 const acting = computed(() => store.actingIds.includes(props.card.id))
 
@@ -90,6 +99,13 @@ function dismiss() {
           class="discovery-card__badge discovery-card__badge--qa"
           aria-label="来自问答"
         >问答</span>
+        <!-- 已订阅：只读提示（路由级命中只提示、不禁用订阅入口）→ title 附已有订阅地址供对照 -->
+        <span
+          v-if="card.subscribed"
+          class="discovery-card__badge discovery-card__badge--subscribed"
+          :title="subscribedTitle"
+          data-testid="card-subscribed-badge"
+        >已订阅</span>
         <span
           v-if="card.requiresParameters"
           class="discovery-card__badge discovery-card__badge--param"
@@ -250,6 +266,11 @@ function dismiss() {
 .discovery-card__badge--qa {
   background: var(--color-accent-subtle);
   color: var(--color-accent);
+}
+
+.discovery-card__badge--subscribed {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
 }
 
 .discovery-card__dismiss {

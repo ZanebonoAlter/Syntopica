@@ -41,6 +41,7 @@ function candidate(over: Partial<DiscoveryCandidate> = {}): DiscoveryCandidate {
     address: 'https://fieldnotes.example/feed.xml',
     recommendationEnabled: true,
     subscribed: false,
+    subscribedUrls: [],
     availability: 'unknown',
     lastCheckedAt: null,
     ...over,

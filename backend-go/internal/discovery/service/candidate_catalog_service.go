@@ -340,8 +340,12 @@ type CandidateView struct {
 	Language    string `json:"language"`
 	Region      string `json:"region"`
 
-	// Subscribed = feed_url 与 feeds.url 精确匹配存在（只读判断，不建关联）。
-	Subscribed bool `json:"subscribed"`
+	// Subscribed / SubscribedURLs：来源已订阅的只读推定（fix-discovery-subscribed-hint
+	// D4）——rsshub 候选按路由级前缀（同 namespace+path 模板任意已填参数都算）、
+	// 原生 RSS 按精确地址；SubscribedURLs 为该来源命中的 feeds.url 列表（排序稳定，
+	// 空为 []，供界面提示与订阅弹窗对照）。不建关联、不写候选数据。
+	Subscribed     bool     `json:"subscribed"`
+	SubscribedURLs []string `json:"subscribed_urls"`
 
 	// 可用性（3.3 / design D7）：candidate_availability 的当前状态；无记录 = unknown
 	// 「未验证」（未验证不得当作失效，也不进推荐硬过滤）。LastCheckedAt 为最近一次检查时刻，
@@ -437,8 +441,8 @@ func (s *CandidateCatalogService) buildView(ctx context.Context, cand discmodels
 	return &views[0], nil
 }
 
-// buildViews 批量视图构造：一次 IN 查询预载 rsshub_routes（禁 N+1），一次 IN 查询
-// feeds.url 判订阅，有效字段经 EffectiveMetadata 计算。
+// buildViews 批量视图构造：一次 IN 查询预载 rsshub_routes（禁 N+1），一次装载
+// feeds.url 只读索引判订阅（rsshub 路由级 / 原生精确），有效字段经 EffectiveMetadata 计算。
 func (s *CandidateCatalogService) buildViews(ctx context.Context, cands []discmodels.FeedCandidate) ([]CandidateView, error) {
 	if len(cands) == 0 {
 		return []CandidateView{}, nil
@@ -462,23 +466,14 @@ func (s *CandidateCatalogService) buildViews(ctx context.Context, cands []discmo
 		}
 	}
 
-	// 订阅状态：feed_url 与 feeds.url 精确匹配（只读）。
-	feedURLs := make([]string, 0, len(cands))
-	for _, c := range cands {
-		if c.FeedURL != nil {
-			feedURLs = append(feedURLs, *c.FeedURL)
-		}
+	// 订阅状态：一次装载 feeds.url 只读索引（design D3）；rsshub 候选按路由级前缀
+	// （本响应全部候选前缀内最长前缀优先）、原生候选按精确地址，判定见
+	// subscription_state.go。
+	subIndex, err := LoadSubscriptionIndex(ctx, s.db)
+	if err != nil {
+		return nil, err
 	}
-	subscribedSet := map[string]struct{}{}
-	if len(feedURLs) > 0 {
-		var urls []string
-		if err := s.db.WithContext(ctx).Model(&models.Feed{}).Where("url IN ?", feedURLs).Pluck("url", &urls).Error; err != nil {
-			return nil, err
-		}
-		for _, u := range urls {
-			subscribedSet[u] = struct{}{}
-		}
-	}
+	subscribedByCandidate := resolveCandidateSubscriptions(subIndex, resolveRSSHubBaseURL(s.db), cands, routes)
 
 	// 可用性状态：一次 IN 查询预载（禁 N+1）；无记录保持 unknown（未验证）。
 	availabilityByCandidate := map[uint]discmodels.CandidateAvailability{}
@@ -514,11 +509,13 @@ func (s *CandidateCatalogService) buildViews(ctx context.Context, cands []discmo
 		}
 		eff := EffectiveMetadata(c.ManualMetadata, upstreamName, upstreamDesc, "", "")
 		v.Name, v.Description, v.Language, v.Region = eff.Name, eff.Description, eff.Language, eff.Region
-		if c.FeedURL != nil {
-			if _, ok := subscribedSet[*c.FeedURL]; ok {
-				v.Subscribed = true
-			}
+		// 订阅状态（rsshub 路由级 / rss 精确；design D4）：空集合保持非 nil，JSON 为 []。
+		urls := subscribedByCandidate[c.ID]
+		if urls == nil {
+			urls = []string{}
 		}
+		v.Subscribed = len(urls) > 0
+		v.SubscribedURLs = urls
 		v.Availability = AvailabilityStatusUnknown
 		if row, ok := availabilityByCandidate[c.ID]; ok {
 			if row.Status != "" {

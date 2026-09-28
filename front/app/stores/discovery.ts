@@ -398,7 +398,7 @@ export const useDiscoveryStore = defineStore('discovery', () => {
   const feedsApi = useFeedsApi()
   /** 订阅提交中的候选 id（防连点） */
   const subscribingIds = ref<string[]>([])
-  /** 查询 run 条目订阅成功的本地标记（run 响应无 subscribed 字段，会话内防重复） */
+  /** 查询 run 条目订阅成功的本地标记（与后端 item.subscribed 取或，订阅后即时反馈） */
   const subscribedRunIds = ref<string[]>([])
 
   /**
@@ -444,10 +444,16 @@ export const useDiscoveryStore = defineStore('discovery', () => {
     }
   }
 
-  /** 订阅成功后的本地标记：候选库行 + run 条目都置为已订阅 */
-  function markSubscribed(candidateId: string) {
+  /** 订阅成功后的本地标记：候选库行 + run 条目都置为已订阅；subscribedUrl 非空时
+   * 同时补进该行 subscribedUrls（标题/信息块即时准确，不必等下次列表刷新）。 */
+  function markSubscribed(candidateId: string, subscribedUrl?: string) {
     const row = candidates.value.find(c => c.id === candidateId)
-    if (row && !row.subscribed) row.subscribed = true
+    if (row) {
+      if (!row.subscribed) row.subscribed = true
+      if (subscribedUrl && !row.subscribedUrls.includes(subscribedUrl)) {
+        row.subscribedUrls = [...row.subscribedUrls, subscribedUrl]
+      }
+    }
     if (!subscribedRunIds.value.includes(candidateId)) {
       subscribedRunIds.value = [...subscribedRunIds.value, candidateId]
     }
