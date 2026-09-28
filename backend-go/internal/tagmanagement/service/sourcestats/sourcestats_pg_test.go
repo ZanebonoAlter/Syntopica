@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/config"
-	"syntopica-backend/internal/platform/database"
 )
 
 // 用例来源：openspec/changes/archive/2026-09-18-add-source-board-hit-rate/test-cases.md B7
@@ -22,6 +22,11 @@ import (
 //	go test -run TestSourceStatsPostgres ./internal/tagmanagement/service/sourcestats/ -v
 //
 // -short 下 skip（见 docs/reference/standard/backend/testing.md 巡检纪律）。
+//
+// 只读约束（2026-09-28 hotfix）：本测试直接按配置 DSN 开**纯连接**，MUST NOT 调
+// database.InitDB——那会在真库上跑 AutoMigrate + 全量版本迁移（DDL 要排他锁），
+// 2026-09-28 曾与用户在途事务互锁、全库锁排队导致全站接口 pending
+//（testing.md 🛑 DSN 红线：真库不得因测试发生 schema 变更）。
 
 func TestSourceStatsPostgres(t *testing.T) {
 	if testing.Short() {
@@ -30,10 +35,13 @@ func TestSourceStatsPostgres(t *testing.T) {
 	if err := config.LoadConfig("../../../configs"); err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if err := database.InitDB(config.AppConfig); err != nil {
-		t.Fatalf("InitDB: %v", err)
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		DSN:                  config.AppConfig.Database.DSN,
+		PreferSimpleProtocol: true,
+	}), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open dev database for read-only spot check: %v", err)
 	}
-	db := database.DB
 	ctx := context.Background()
 
 	// ── TC-B7-01 全源恒等式 + TC-B7-02 去重不变量（7 天窗口）──
