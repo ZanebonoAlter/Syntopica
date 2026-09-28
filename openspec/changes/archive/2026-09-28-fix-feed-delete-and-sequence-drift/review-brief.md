@@ -16,7 +16,7 @@
 | 1.1–1.4 删除路径引用清理 | `backend-go/internal/reader/repository/repository.go`：新增 `deleteReferencingRowsIfPresent` / `deleteFeedReferenceRows` / `deleteCategoryReferenceRows`；`DeleteFeedCascade` / `DeleteCategoryCascade` 接入；两处过时注释改写 |
 | 1.5 集成测试 | `backend-go/internal/reader/repository/feed_delete_refs_test.go`（新增，PG testcontainer：测试内重建 `user_preferences` 表与历史 NO ACTION FK） |
 | 2.1–2.4 序列自愈实现 | `backend-go/internal/platform/database/sequence_heal*.go`（新增：纯函数判定 + 候选表枚举 + setval + WARN 日志）、`backend-go/internal/app/runtime.go`（`StartRuntime` 接线） |
-| 2.5–2.6 序列自愈测试 | `backend-go/internal/platform/database/sequence_heal_test.go`（纯函数边界）、`sequence_heal_pg_test.go`（testcontainer PG 真序列） |
+| 2.5–2.6 序列自愈测试 | `backend-go/internal/platform/database/sequence_heal_unit_test.go`（纯函数边界）、`sequence_heal_pg_test.go`（testcontainer PG 真序列） |
 | 3.x 文档 | `docs/reference/flow/reading.md`（约束 #6）、`docs/reference/deployment.md`（新「序列漂移与启动自愈」节 + 破坏性迁移副作用段）、`docs/reference/database/{DATA_LIFECYCLE.md,tables/_conventions.md,tables/content.md}`、`backend-go/DATABASE.md` / `DATABASE_SUMMARY.md` |
 
 设计权威源：`openspec/changes/fix-feed-delete-and-sequence-drift/design.md`（决策 D1–D7 + Non-Goals + Risks）。

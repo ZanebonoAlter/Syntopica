@@ -12,7 +12,7 @@
 - [x] 2.2 平台层实现：枚举候选表（有 `id` 列且存在 `<table>_id_seq`，schema 限定 `public`）→ 逐表读 `last_value`/`is_called` 与 `MAX(id)` → 漂移表执行 `setval(seq, max+1, false)` → WARN 日志（表名 / 序列名 / 漂移前下一次分配值 / `max(id)` / 对齐目标 / 漂移根因提示）
 - [x] 2.3 失败语义：单表检测或 `setval` 失败只记日志继续；候选表枚举（目录查询）失败同样只记日志；均不阻塞启动
 - [x] 2.4 `StartRuntime` 接线：位置在 `resetStaleStates()` 之后、调度器与 HTTP 启动之前（runtime.go）
-- [x] 2.5 单测（`sequence_heal_test.go`，SQLite/纯函数可跑）：六类边界组合（已调用且落后 / 已调用且领先 / 未调用且落后 / 未调用且领先 / 空表 max=0 / 恰好等于 max）
+- [x] 2.5 单测（`sequence_heal_unit_test.go`，纯逻辑无外部依赖，按 testing.md 分层命名；含一条内存 SQLite 的错误分支）：六类边界组合（已调用且落后 / 已调用且领先 / 未调用且落后 / 未调用且领先 / 空表 max=0 / 恰好等于 max）
 - [x] 2.6 集成测试（`sequence_heal_pg_test.go`，testcontainer PG）：人为 `setval` 至落后值 → 触发自愈 → 插入新行拿到 `max(id)+1` 不冲突；已对齐时二次执行零写入（幂等，序列不回退）；日志含修复记录
 
 ## 3. 文档
@@ -53,14 +53,14 @@
 | daily-report 引用同步维护 | backend-go/internal/reader/repository/article_refs_test.go |
 | 不越权清理孤儿标签 | backend-go/internal/reader/repository/article_refs_test.go |
 | 落后的序列被对齐到 max(id)+1 | backend-go/internal/platform/database/sequence_heal_pg_test.go |
-| 未漂移的序列不被改动 | backend-go/internal/platform/database/sequence_heal_test.go |
-| 空表与从未调用过的序列不被误修 | backend-go/internal/platform/database/sequence_heal_test.go |
-| 重复执行不使序列倒退 | backend-go/internal/platform/database/sequence_heal_test.go backend-go/internal/platform/database/sequence_heal_pg_test.go |
+| 未漂移的序列不被改动 | backend-go/internal/platform/database/sequence_heal_unit_test.go |
+| 空表与从未调用过的序列不被误修 | backend-go/internal/platform/database/sequence_heal_unit_test.go |
+| 重复执行不使序列倒退 | backend-go/internal/platform/database/sequence_heal_unit_test.go backend-go/internal/platform/database/sequence_heal_pg_test.go |
 | 五张已知漂移表全部被覆盖 | backend-go/internal/platform/database/sequence_heal_pg_test.go |
 | 修复留痕 | backend-go/internal/platform/database/sequence_heal_pg_test.go |
 | 单表失败不影响启动 | backend-go/internal/platform/database/sequence_heal_pg_test.go |
 | 目录查询失败不影响启动 | 人工：代码审查探测失败分支 + 单测覆盖错误返回分支（验证命令 3） |
-| 判定边界被单测覆盖 | backend-go/internal/platform/database/sequence_heal_test.go |
+| 判定边界被单测覆盖 | backend-go/internal/platform/database/sequence_heal_unit_test.go |
 | 真实序列行为由集成测试覆盖 | backend-go/internal/platform/database/sequence_heal_pg_test.go |
 
 > 映射说明（review Low-3 处置）：「五张已知漂移表全部被覆盖」由**机制泛化**覆盖——实现按 catalog 全量枚举 + 同一 `SequenceNeedsHeal` 判定，不按表名分支；PG 用例实测钉住两侧（漂移表被修 = `feeds`、未漂移表不被碰 = `categories`），五张表的字面状态由真机复验（下文 ① 与真机复验段）与纯函数边界矩阵共同佐证。
@@ -76,6 +76,10 @@
 9. **域外红已记账**（§11.4）：`bash scripts/harness/test-patrol.sh --report` 可见两条 be-skeleton 欠账——`backend-go/internal/platform/database::TestBoardLevelAnalysisScopeMigration`（期望 `reference_roles`，模型已随 restructure-settings-navigation(dddc3408) 删除）与 `::TestModelTagConstraints_MaterializedInDB`（本包测试二进制未链接 `internal/platform/scheduler`），两者在 `git archive HEAD` 干净树上同样 FAIL，均非本 change 引起，已按 AGENTS.md 欠账纪律登记（context=fix-feed-delete-and-sequence-drift）
 
 > 实测证据（2026-09-28）：`go test -count=1 -skip 'TestBoardLevelAnalysisScopeMigration|TestModelTagConstraints_MaterializedInDB' ./internal/platform/database/` 全绿（含本 change 的 4 个 PG 用例）；`go test -short -count=1 ./internal/reader/... ./internal/platform/database/ ./internal/app/` 全绿。
+>
+> **同轮撞见的第三条域外红（已记台账）**：hotfix 触及 `internal/tagmanagement/service/sourcestats` 后，增量门禁跑了整棵 `./internal/tagmanagement/...`，撞上 `merge` 包的已知偶发红（`TestStartFullScan_RejectsConcurrent` 起的后台 goroutine 里 `repository.Repo` 为 nil → `DB()` nil 解引用 panic 打崩进程；3 跑 1 红）。2026-09-20 已在 test_debt 有同源 open 条目，本轮又按 `--register ... --context fix-feed-delete-and-sequence-drift` 登记一次（domain=be-tagmanagement）。
+>
+> **本轮 hotfix（独立提交 `126ba347`，属 2026-09-28 全站 pending 事故的紧急修复，按纪律 24h 内需独立 change 归档）**：`internal/platform/database/db_test.go`（无 short 守卫、真库 DSN + `InitDB` → 真库 AutoMigrate）已删除；`sourcestats_pg_test.go` 的真库只读抽检改为纯 `gorm.Open`（不再调 `InitDB`）。该事故与本 change 无关（本 change 未动 `semantic_labels` 与测试连接路径），但与本 change 同一轮排查中发现并处置。
 
 > **真机复验（2026-09-28，本机 :5100，`bash scripts/dev/start-dev.sh --restart back` 加载新代码）**：
 > ① **序列自愈**：先把 `categories_id_seq` `setval` 到 1（`is_called=false`，表内 `max(id)=5`）→ 重启后端 → 日志 `level=WARN msg="Sequence drift repaired: table=categories sequence=categories_id_seq next_would_be=1 max_id=5 new_next=6; cause is usually a TRUNCATE ... RESTART IDENTITY followed by a table-filtered pg_restore that skipped SEQUENCE SET"` + `level=INFO msg="Sequence drift self-heal repaired 1 sequence(s) on startup"`；复查 `last_value=6, is_called=f` ✅
