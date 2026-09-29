@@ -5,7 +5,7 @@
 #   --db PATH              目标账本（缺省 .pi/harness/events.db）
 #   --days N               统计窗口天数（缺省 7）
 #   --change NAME          只统计 change 列归属该值的事件（缺省全局）
-#   --lifecycle NAME       单 change 生命周期体检卡（四段：流程规范/UI 工作流/成本卡/健康度
+#   --lifecycle NAME       单 change 生命周期体检卡（五段：流程规范/UI 工作流/成本卡/健康度/人类反馈
 #                          + proposal 头注释声明元数据；不受 --days 窗口限制，TTL 30 天为硬上限；
 #                          add-change-lifecycle-retro）
 #   --warn-threshold N     软提醒失效阈值（缺省 5）
@@ -69,7 +69,7 @@ harness-retro — harness 事实账本的失败聚类复盘报告（只读）
   --db PATH               目标账本（缺省 .pi/harness/events.db）
   --days N                统计窗口天数（缺省 7；超过 30 天会提示 TTL 清扫风险）
   --change NAME           只统计 change 列归属该值的事件（缺省全局）
-  --lifecycle NAME        单 change 生命周期体检卡（四段 + proposal 声明元数据；
+  --lifecycle NAME        单 change 生命周期体检卡（五段 + proposal 声明元数据；
                           与 --change / 基线选项互斥，不受 --days 窗口限制）
   --warn-threshold N      纠正型软提醒失效阈值（缺省 5；纠正型 warn 计数 ≥ 阈值即列出；
                           仅作用于纠正型失效判定，情报型 warn 单列计数不受影响）
@@ -374,6 +374,15 @@ if [ -n "$LIFECYCLE" ]; then
 		LIFE_META_PATH="$LIFE_DIR_HIT_PATH/proposal.md"
 		LIFE_DIR_HIT=1
 	fi
+	# 第五段人类反馈文件目录（design D7/D8）：路径规则同声明元数据——未归档读 changes/、
+	# 已归档读 archive/ 剥日期前缀；目录判定独立于 proposal.md 存在性（human-feedback.md
+	# 可独立存在），优先级一致：changes/ 未归档目录优先。
+	LIFE_CHANGE_DIR=""
+	if [ -d "$LIFE_CHANGES_DIR/$LIFECYCLE" ]; then
+		LIFE_CHANGE_DIR="$LIFE_CHANGES_DIR/$LIFECYCLE"
+	elif [ "$LIFE_DIR_HIT" = "1" ]; then
+		LIFE_CHANGE_DIR="$LIFE_DIR_HIT_PATH"
+	fi
 
 	LIFE_SQL="$(cat <<LIFESQL
 WITH ev AS (
@@ -501,8 +510,8 @@ LIFESQL
 	printf '%s' "$LIFE_STATS" >"$LIFE_TMP"
 
 	python3 - "$LIFE_TMP" "$JSON_MODE" "$DB" "$LIFECYCLE" "$LIFE_META_PATH" "$LIFE_DIR_HIT" \
-		"$OPEN_MODE" "$WARNINGS" "$ARCH_DIR" <<'LIFEPY'
-import json, re, sys
+		"$OPEN_MODE" "$WARNINGS" "$ARCH_DIR" "$LIFE_CHANGE_DIR" <<'LIFEPY'
+import json, os, re, sys
 import unicodedata
 
 
@@ -521,7 +530,7 @@ def _pct(num, den):
     return int((num * 200 + den) // (2 * den))
 
 (stats_path, json_mode, db, name, meta_path, dir_hit, open_mode,
- warnings_raw, arch_dir) = sys.argv[1:10]
+ warnings_raw, arch_dir, fb_dir) = sys.argv[1:11]
 dir_hit = dir_hit == '1'
 
 with open(stats_path, encoding='utf-8') as fh:
@@ -546,6 +555,47 @@ if meta_path:
             meta[key] = m.group(1) if m else None
     except OSError as exc:
         warnings.append('proposal 元数据读取失败（%s）：%s' % (meta_path, exc))
+
+# ---- 人类反馈段数据源（design D7/D8：文件为源，路径规则同声明元数据；
+#      宽容降级：单条解析失败计「格式异常」单列披露，不炸整段） ----
+FB_STATUSES = ('待处理', '处理中', '已消化', '已转挂', '已放弃')
+
+def parse_feedback(change_dir):
+    '''返回 (stat dict or None, error str or None)；文件缺席/无条目 → (None, None)。'''
+    if not change_dir:
+        return None, None
+    path = change_dir.rstrip('/') + '/human-feedback.md'
+    if not os.path.isfile(path):
+        return None, None
+    try:
+        with open(path, encoding='utf-8') as fh:
+            content = fh.read()
+    except OSError as exc:
+        return None, '读取失败（%s）：%s' % (path, exc)
+    stat = {'total': 0, 'types': {}, 'layers': {}, 'open': 0, 'open_ids': [], 'bad': 0, 'bad_ids': []}
+    for blk in re.split(r'(?m)^(?=### FB-\d+)', content):
+        if not re.match(r'^### FB-\d+', blk):
+            continue
+        stat['total'] += 1
+        head = blk.split('\n', 1)[0]
+        no = re.match(r'^### FB-(\d+)', head).group(1)
+        hm = re.match(r'^### FB-\d+\s+\S+【(产品|流程)\|(frontend|backend|test-gap|fact-check|process)】', head)
+        sm = re.search(r'(?m)^- \*\*状态\*\*：\s*(.*)$', blk)
+        st_word = next((w for w in FB_STATUSES if sm and sm.group(1).strip().startswith(w)), None)
+        if not hm or st_word is None:
+            stat['bad'] += 1
+            stat['bad_ids'].append(no)
+            continue
+        stat['types'][hm.group(1)] = stat['types'].get(hm.group(1), 0) + 1
+        stat['layers'][hm.group(2)] = stat['layers'].get(hm.group(2), 0) + 1
+        if st_word in ('待处理', '处理中'):
+            stat['open'] += 1
+            stat['open_ids'].append('FB-%s' % no)
+    if not stat['total']:
+        return None, None  # 文件存在但无条目 → 同缺席降级（spec：无条目输出降级标注）
+    return stat, None
+
+fb, fb_err = parse_feedback(fb_dir)
 
 # ---- 终态判定（archive 优先；abandon×archive 并存冲突提示；未归档不假定终态） ----
 archived = term.get('arch_ts') is not None or dir_hit
@@ -574,6 +624,7 @@ if json_mode == '1':
         'terminal': {'state': ('conflict-archived' if conflict else 'archived' if archived else 'abandoned' if abandoned else 'unarchived'),
                      'arch_ts': term.get('arch_ts'), 'abandon_ts': term.get('abandon_ts'), 'conflict': conflict},
         'sessions': sess, 'flow': flow, 'ui': ui, 'cost': cost, 'health': health,
+        'human_feedback': {'present': fb is not None, 'error': fb_err, **(fb or {})},
         'warnings': warnings,
     }
     json.dump(doc, sys.stdout, ensure_ascii=False, indent=2, sort_keys=True)
@@ -685,6 +736,23 @@ else:
     for it in waves[:6]:
         out.append('     - %s ×%s session' % (pad((it.get('path') or '')[:56], 58), it.get('sessions')))
     out.append('')
+
+# ---- 五、人类反馈段（design D7/D8：条数/归因分布/未处置；文件缺席降级；格式异常单列披露不炸段） ----
+# 独立于事件 empty 判定：反馈文件与事件账本正交，无事件 change 也可有反馈记录。
+out.append('五、人类反馈段（human-feedback.md：条目 / 归因分布 / 未处置）')
+if fb_err:
+    out.append('   反馈记录        : 读取失败降级——%s' % fb_err)
+elif fb is None:
+    out.append('   反馈记录        : 无反馈记录（或未启用）')
+else:
+    types_txt = ' / '.join('%s %s' % (k, v) for k, v in sorted(fb['types'].items())) or '—'
+    out.append('   条目            : %s（可解析 %s/%s 条）' % (types_txt, fb['total'] - fb['bad'], fb['total']))
+    layers_txt = ' / '.join('%s×%s' % (k, v) for k, v in sorted(fb['layers'].items(), key=lambda kv: (-kv[1], kv[0]))) or '—'
+    out.append('   归因分布        : %s' % layers_txt)
+    out.append('   未处置          : %s 条（待处理/处理中：%s）' % (fb['open'], '、'.join(fb['open_ids']) or '无'))
+    if fb['bad']:
+        out.append('   格式异常        : %s 条（%s）——词表外归因/缺状态行，单列披露不炸段' % (fb['bad'], '、'.join('FB-%s' % i for i in fb['bad_ids'])))
+out.append('')
 
 if warnings:
     out.append('提示 / 降级:')

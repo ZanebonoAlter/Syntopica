@@ -4,21 +4,32 @@
 
 ### Requirement: 单 change 生命周期体检卡
 
-harness-retro SHALL 提供 `--lifecycle <change>` 模式：以单个 change 为生命周期单位，只读消费事实账本与 openspec change 目录，输出该 change 的流程执行体检卡。体检卡 SHALL 含四段，各段数据缺席时输出降级标注而非静默省略：
+harness-retro SHALL 提供 `--lifecycle <change>` 模式：以单个 change 为生命周期单位，只读消费事实账本与 openspec change 目录，输出该 change 的流程执行体检卡。体检卡 SHALL 含五段，各段数据缺席时输出降级标注而非静默省略：
 
 1. **流程规范段**：档位绑定链（`mode.set` 序列与 boundChange）、约束注入概要（`constraint.inject` 通道/字节）、pin 接力（`pin.write`/`pin.read` 计数）、编辑归属（`edit.map` 路径数）、门禁执行概要（`gate.check` 按 cmd 的执行/失败计数）、归档锚点（`change.archive` 或 archive 目录名）。无归档锚点时 MUST 标注「未归档」并输出最后活动时间，MUST NOT 假定终态。
 2. **UI 工作流段**：ui-design-gate 的卡点链（policy.decision 按 reasonCode 计数）与放行态——放行判定优先消费放行事件，放行事件缺失时按「末次 block 后无新 block」推断并 MUST 标注推断口径。
 3. **成本卡**：该 change 归因会话的 `session.rollup` 终值聚合（cost / turns / toolCalls / durationSec / 会话数），MUST 按模型分桶披露（源 rollup payload `models` map）；rollup 覆盖不足或无终值时标注「数据积累中」。
 4. **健康度段**：block 催修时距（按 policy 分派解除信号，口径同「效能看板指标」A 组）、回归翻转计数、返工波次（该 change 名下文件的跨 session 编辑次数）。
+5. **人类反馈段**：解析 change 目录 `human-feedback.md`（路径规则同声明元数据：未归档读 `openspec/changes/<name>/`，已归档读 `openspec/changes/archive/` 目录剥日期前缀），输出条目计数（产品/流程二分）、归因分布（词表见「human-feedback 反馈建账」Requirement）、未处置条目数（状态为待处理/处理中）。文件缺席或无条目时输出「无反馈记录（或未启用）」降级标注；单条解析失败 MUST 计入「格式异常」单列披露，MUST NOT 中断整段输出。
 
 体检卡 MUST 联合 openspec 侧声明元数据（proposal 头注释 `ui-impact` / `complexity` / `constraint-domains`；未归档读 `openspec/changes/<name>/proposal.md`，已归档读 `openspec/changes/archive/` 目录对应 proposal），并在头部逐项展示；元数据文件缺失时标注「声明缺席」。
 
 体检卡 MUST 保持只读：不产生任何事件写入、不修改账本与 change 目录。输出不进入注入通道（同既有「输出形态不进入注入通道」约束）。
 
-#### Scenario: 体检卡四段齐备
+#### Scenario: 体检卡五段齐备
 
-- **WHEN** 以一个已归档、有完整事件轨迹的 change 运行 `--lifecycle`
-- **THEN** 输出含流程规范、UI 工作流、成本卡、健康度四段，头部含 proposal 声明元数据
+- **WHEN** 以一个已归档、有完整事件轨迹且含 human-feedback.md 的 change 运行 `--lifecycle`
+- **THEN** 输出含流程规范、UI 工作流、成本卡、健康度、人类反馈五段，头部含 proposal 声明元数据
+
+#### Scenario: 人类反馈段缺席降级
+
+- **WHEN** 某 change 目录无 human-feedback.md
+- **THEN** 人类反馈段输出「无反馈记录（或未启用）」降级标注，其余四段正常输出，不静默省略该段
+
+#### Scenario: 格式异常条目单列披露
+
+- **WHEN** human-feedback.md 存在词表外归因或缺失状态行的条目
+- **THEN** 该条计入「格式异常」单列计数，其余可解析条目照常统计，段输出不中断
 
 #### Scenario: UI 工作流放行口径标注
 
@@ -34,6 +45,42 @@ harness-retro SHALL 提供 `--lifecycle <change>` 模式：以单个 change 为�
 
 - **WHEN** 运行 `--lifecycle` 前后各对账本做事件计数
 - **THEN** 计数不变（零写入），change 目录文件无修改
+
+### Requirement: human-feedback 反馈建账
+
+change 目录 `human-feedback.md` SHALL 作为人类反馈的一手建账文件（可选制品）：记录用户在 change 生命周期内对产物（proposal/design/ui-design/原型/实现/文档）的反馈，作为修订依据与 harness 计量输入。反馈条目 MUST 采用机器可解析的条目级格式契约：
+
+- 条目标题行 `### FB-<N> <日期>【<类型>|<归因>】<标题>`，N 为 change 内自增编号；类型限定 `产品 | 流程`；归因限定封闭词表 `frontend | backend | test-gap | fact-check | process`（frontend=前端设计/交互/视觉；backend=后端业务/参数/数据；test-gap=测试该拦未拦；fact-check=探索或搬运时未核实；process=流程/harness 本身）。
+- 条目含状态行，状态限定封闭词表 `待处理 | 处理中 | 已消化 | 已转挂 | 已放弃`。
+- 同一问题多因时按根因归因（如既属未核实又属测试盲区时归 fact-check）。
+
+`scripts/harness/feedback.sh` SHALL 提供三个子命令：
+
+- `menu`：打印归因词表与说明（选择题而非自由发挥）。
+- `add <change> --layer <归因> --type <产品|流程> "<反馈要点>"`：定位 change 目录（未归档 changes/、已归档拒绝建账提示用归档事实），human-feedback.md 不存在时按模板创建（含头部定位说明）；编号取现有最大 FB-N 自增；套条目模板写入，状态初始化「待处理」；词表外归因/类型非零退出且零写入。
+- `verify <change-dir>`：扫描条目状态，存在待处理/处理中条目时输出处置提醒（转新 change 或更新状态）并退出码 1；全部处置或文件缺席时退出码 0。归档对账流程（archive-readiness）SHALL 顺带调用本 verify 并透传其结果语义。
+
+human-feedback.md MUST NOT 写入 events.db（文件随 change 归档永久保存，账本有 TTL；文件为人写给人的修订账本，不要求存储友好格式）。
+
+#### Scenario: add 建账编号自增
+
+- **WHEN** 某 change 的 human-feedback.md 已有 FB-1 至 FB-10，执行 `feedback.sh add <change> --layer frontend --type 产品 "原话"`
+- **THEN** 新条目编号 FB-11，标题行含【产品|frontend】，状态行为「待处理」，文件其余内容不变
+
+#### Scenario: 词表外值零写入
+
+- **WHEN** 执行 `feedback.sh add <change> --layer ui --type 产品 "原话"`（ui 不在归因词表）
+- **THEN** 非零退出，human-feedback.md 无任何修改
+
+#### Scenario: verify 拦截未处置条目
+
+- **WHEN** 某 change 的 human-feedback.md 存在状态为「待处理」的条目，对其目录执行 `feedback.sh verify`
+- **THEN** 输出该条目的处置提醒，退出码 1；全部条目已消化/已转挂/已放弃或文件缺席时退出码 0
+
+#### Scenario: 已归档 change 拒绝建账
+
+- **WHEN** 对归档目录中的 change 执行 `feedback.sh add`
+- **THEN** 拒绝写入并提示走归档后修订流程，文件零修改
 
 ## MODIFIED Requirements
 

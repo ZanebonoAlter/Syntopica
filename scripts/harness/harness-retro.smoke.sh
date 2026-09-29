@@ -674,6 +674,43 @@ ARCH_DM="$(date -u -d '2 days ago' +%F)"
 mkdir -p "$MARCH/$ARCH_DM-life-ui" "$MARCH/$ARCH_DM-life-conflict"
 printf '<!-- complexity: moderate -->\n<!-- ui-impact: major -->\n<!-- constraint-domains: daily-report, reading -->\n\n## Why\nx\n' >"$MARCH/$ARCH_DM-life-ui/proposal.md"
 printf '# no markers\n' >"$MARCH/$ARCH_DM-life-conflict/proposal.md"
+# 人类反馈段 fixture（design D7/D8）：life-ui（archive 树，归档路径解析 + 真数据：
+# 产品 2 / 流程 1，frontend×2 / process×1，未处置 1）；c-q（changes 树，格式异常 2 条：
+# 词表外归因 + 缺状态行，可解析 1 条 backend）；life-old 无文件（降级标注）
+cat >"$MARCH/$ARCH_DM-life-ui/human-feedback.md" <<'MFBAEOF'
+# Human Feedback — life-ui
+
+## 反馈清单
+
+### FB-1 2026-09-20【产品|frontend】原型布局返工
+
+- **状态**：已消化（原型当日修）
+
+### FB-2 2026-09-21【产品|frontend】暗色对比度不足
+
+- **状态**：待处理
+
+### FB-3 2026-09-22【流程|process】审批流程太绕
+
+- **状态**：已转挂 → add-change-lifecycle-retro
+MFBAEOF
+cat >"$MCH/c-q/human-feedback.md" <<'MFBCEOF'
+# Human Feedback — c-q
+
+## 反馈清单
+
+### FB-1 2026-09-20【产品|backend】超时默认值太短
+
+- **状态**：已消化（当日修复）
+
+### FB-2 2026-09-21【产品|ui】词表外归因条目
+
+- **状态**：已消化
+
+### FB-3 2026-09-22【产品|frontend】缺状态行条目
+
+（正文没有任何状态行）
+MFBCEOF
 
 Menv() { HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" run_retro --db "$FM" "$@"; }
 
@@ -733,12 +770,43 @@ assert abs(d['cost']['cost'] - 1.5) < 1e-6, d['cost']
 assert d['cost']['sessions'] == 2, d['cost']
 assert d['ui']['passes'] and d['ui']['passes'][0]['reason'] == 'ui-design-satisfied', d['ui']
 assert d['health']['repair']['median_sec'] is not None and abs(d['health']['repair']['median_sec'] - 120) < 60, d['health']
+hf = d['human_feedback']
+assert hf['present'] is True, hf
+assert hf['total'] == 3 and hf['types'] == {'产品': 2, '流程': 1}, hf
+assert hf['layers'] == {'frontend': 2, 'process': 1}, hf
+assert hf['open'] == 1 and hf['open_ids'] == ['FB-2'], hf
+assert hf['bad'] == 0, hf
 FMLPY
 then
-	echo "  ✓ L9 lifecycle --json 结构与数值可复算（terminal/cost 1.5/repair 30min）"
+	echo "  ✓ L9 lifecycle --json 结构与数值可复算（terminal/cost 1.5/repair 30min/反馈 3 条）"
 	pass=$((pass + 1))
 else
 	echo "  ✗ L9 lifecycle --json 断言失败"
+	failn=$((failn + 1))
+fi
+
+# ---------- L12-L14：第五段人类反馈段（design D7/D8，task 8.3） ----------
+Menv --lifecycle life-ui
+check 0 "L12 人类反馈段真数据（archive 路径解析 + 条数/归因分布/未处置）" \
+	"五、人类反馈段" "条目            : 产品 2 / 流程 1（可解析 3/3 条）" \
+	"归因分布        : frontend×2 / process×1" "未处置          : 1 条（待处理/处理中：FB-2）"
+
+Menv --lifecycle c-q
+check 0 "L13 格式异常单列披露不炸段（词表外归因/缺状态行；可解析条目照常统计）" \
+	"五、人类反馈段" "条目            : 产品 1（可解析 1/3 条）" "backend×1" \
+	"格式异常        : 2 条（FB-2、FB-3）——词表外归因/缺状态行，单列披露不炸段"
+
+Menv --lifecycle life-old
+check 0 "L13b 无反馈文件 → 降级标注不静默省略（其余四段不受影响）" \
+	"五、人类反馈段" "反馈记录        : 无反馈记录（或未启用）" "一、流程规范段"
+
+_fbmd5_before="$(md5sum "$MARCH/$ARCH_DM-life-ui/human-feedback.md" | cut -d' ' -f1)"
+Menv --lifecycle life-ui >/dev/null 2>&1
+if [ "$(md5sum "$MARCH/$ARCH_DM-life-ui/human-feedback.md" | cut -d' ' -f1)" = "$_fbmd5_before" ]; then
+	echo "  ✓ L14 反馈文件只读（md5 不变；与 L4 账本只读互补）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L14 反馈文件被修改"
 	failn=$((failn + 1))
 fi
 

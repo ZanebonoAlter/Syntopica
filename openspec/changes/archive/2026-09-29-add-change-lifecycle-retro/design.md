@@ -9,11 +9,14 @@
 **Goals:**
 - `--lifecycle <change>` 单命令输出体检卡四段（流程规范/UI 工作流/成本卡/健康度）+ proposal 声明元数据联合展示。
 - 三个数据坑修复：解除信号按 policy 分派、UI 放行显式记账、change.abandon 终态登记。
+- human-feedback 反馈建账制度化：格式契约 + feedback.sh 三件套 + 体检卡第五段计量（FB-4 转挂诉求）。
 
 **Non-Goals:**
 - 不动七段全局报告的既有段结构（--lifecycle 是并列新模式）。
 - 不做自动终态判定（静默推断"多久无活动算放弃"引入假阳性，终态必须显式登记）。
 - 不改 events.db schema（新事件 kind 沿用单表 JSON payload 模式）。
+- 不做反馈采集的 extension 自动化（先规范+脚本两档起步，观察漏采程度再议）。
+- 不算消化率/消化时滞等流程效率指标（用户拍板：归因是主线，状态仅用于归档对账）。
 
 ## Decisions
 
@@ -54,11 +57,35 @@
 
 引入前的历史 change 无 pass 事件：放行态按「末次 block 后该 reasonCode 无新 block」推断，输出标注「推断（无放行事件）」；引入后直接呈现 pass 事件时间。两口径并存于同一报告，逐 change 标注，不混算。
 
+### D7 human-feedback 数据源=文件，格式契约三要素
+
+数据源拍板：human-feedback.md 是人写给人的修订账本，不要求存储友好格式，不进 events.db——双写一致性无解（采集断链必失真）且账本有 TTL（rollup 90 天）而文件随 change 归档永久保存。计量消费方（--lifecycle 第五段）直接解析文件，路径规则同声明元数据解析（D1：未归档读 changes/、已归档读 archive/ 剥日期前缀）。
+
+格式契约（参考 doc-impact.sh 白名单模式：选择题+封闭词表）：
+- 条目标题行 `### FB-<N> <日期>【<类型>|<归因>】<标题>`——一行正则全解析，标签放条目级而非文件头（doc-impact 是文件头标签，因它是整文档一个域；human-feedback 一个文件多条、每条归因不同）。
+- 状态行五值封闭：待处理/处理中/已消化/已转挂/已放弃。
+- 归因五类封闭：frontend/backend/test-gap/fact-check/process，语义与规范整理去向映射：frontend→standard/frontend/、backend→standard/backend/+flow/、test-gap→test-design.md、fact-check→探索纪律、process→harness/执行规范。同一问题多因按根因优先归 fact-check（FB-8 既未核实又是测试盲区→fact-check，根因在前）。
+
+存量补标：ai-provider-model-overhaul 10 条手工补归因（实测分布 frontend×5 / fact-check×3 / backend×1 / process×1），状态词六种写法归一到五值、条目状态与处置表双源不一致处以处置记录为准修正（FB-1 条目仍「待处理」但处置表已完成）。存量小（10 条）一次补齐，不留推断口径（与 D6 双口径相反的决策——此处样本量支持补齐）。
+
+*替代方案否决*：事件侧记账（feedback.record 事件）——采集靠 agent 自觉双写必断链、TTL 与归档持久性矛盾；复用【类型】字段不设归因——类型（改什么）与归因（哪层的责）正交（FB-4 是流程类型+process 归因），合并丢维度。
+
+### D8 feedback.sh 三件套与第五段：对齐 doc-impact 脚本模式
+
+- `menu`：打印归因词表+说明（把"归因是什么"从回忆题变选择题）。
+- `add <change> --layer <归因> --type <产品|流程> "<要点>"`：定位 change 目录（已归档拒绝建账，提示走归档后修订）；文件不存在按模板创建（头部含定位/消费方/格式说明，对齐 ai-provider-model-overhaul 首例文件结构）；编号取现有最大 FB-N 自增；状态初始化待处理；词表外值非零退出零写入。
+- `verify <change-dir>`：待处理/处理中存在→处置提醒+退出码 1（语义对齐 doc-impact verify）；全部处置或无文件→0。挂接点：archive-readiness.sh 顺带调用透传结果，不进 spec-gate 硬门禁（轻量起步，与 test-patrol 登记、doc-impact verify 同层的脚本级对账）。
+- 体检卡第五段：条数（产品/流程）、归因分布、未处置数；文件缺席→「无反馈记录（或未启用）」降级标注；单条解析失败计「格式异常」单列披露不炸整段（宽容降级，手改漂移不致报告失效）。
+
+采集完整性两档起步：①规范清单（doc-authoring + 执行规范 §0.6 制品清单，add 命令降低记录成本）；②观察期——若后续体检卡发现高发漏采（如多轮返工但零反馈记录的 change），再议 extension 钩子，本期不做。
+
 ## Risks / Trade-offs
 
 - [action 枚举扩 pass 引发未知消费方假设破坏] → 全库消费方盘点已完成（harness-retro③④段、催修时距、harness-facts 词汇表、gate-status-query 不消费 policy.decision 的 action），smoke 断言稳定集同步扩；retro 消费侧按 D2 显式排除 pass。
 - [abandon 登记滥用导致终态污染] → 脚本校验 change 存在且未归档；archive 优先冲突规则（spec 已定）兜底误操作。
 - [体检卡 SQL 随事件口径漂移（如 ownership 字段引入）] → 查询配方集中在脚本单文件头部注释区，口径变更走 change 流程（与 harness-retro 同纪律）。
+- [采集完整性靠自觉，系统性漏采低估计量] → 起步规范+脚本两档（D8），观察期后评估 extension 钩子；第五段对高返工零反馈的 change 天然暴露漏采信号（返工波次×反馈条数交叉）。
+- [human-feedback.md 手改漂移（词表外值/缺状态行）] → 解析器宽容降级：单条计「格式异常」单列披露不炸整段；verify 输出待修正提示。
 
 ## Migration Plan
 
@@ -66,8 +93,11 @@
 2. change-abandon.sh 脚本 + 只读校验（纯新增）。
 3. retro --lifecycle 模式（纯新增只读消费）。
 4. 催修时距分派改造（⑦段 A 组，独立提交）。
-回滚：各步独立 revert；pass 事件为 append-only 新增，无需数据回滚；abandon 脚本删除即回滚。
+5. feedback.sh 三件套 + 存量补标（纯新增 + 存量文件一次性修正，独立提交）。
+6. 第五段计量 + 制品清单制度化（文档侧）。
+回滚：各步独立 revert；pass 事件为 append-only 新增，无需数据回滚；abandon 脚本删除即回滚；feedback.sh 删除即回滚（human-feedback.md 是 change 制品文件，不受脚本存废影响）。
 
 ## Open Questions
 
 - 体检卡输出格式（纯文本段 vs markdown 表格）——实现时取 retro 七段现有风格（文本+缩进表），不足虑。
+- 观察期后是否需要反馈采集 extension 钩子（D8 观察条件：返工波次×反馈条数交叉暴露的漏采率）——归后续 change。

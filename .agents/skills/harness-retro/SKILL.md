@@ -14,7 +14,7 @@ description: Syntopica harness 失败聚类复盘指南（.pi/harness/events.db 
 | 触发场景 | 跑法 |
 | --- | --- |
 | change 归档后（看这次改动有没有留下新噪声） | `bash scripts/harness/harness-retro.sh --days 7` |
-| 单个 change 全生命周期复盘（流程执行/UI 卡点/成本/健康度四段体检） | `bash scripts/harness/harness-retro.sh --lifecycle <change-name>` |
+| 单个 change 全生命周期复盘（流程执行/UI 卡点/成本/健康度/人类反馈五段体检） | `bash scripts/harness/harness-retro.sh --lifecycle <change-name>` |
 | 某 change 不再推进了，登记放弃终态（不再算活跃） | `bash scripts/harness/change-abandon.sh <change-name>` |
 | 定期体检（如每周一次） | `--days 7`；配合 `--save-baseline` 留快照 |
 | 怀疑某条软提醒 / 某条规则无效（"这事提醒了八百遍还在犯"） | `--days 7`，重点看第 ④ 段 |
@@ -33,7 +33,7 @@ bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 | `--db PATH` | `.pi/harness/events.db` | 目标账本（换机 / 指向快照副本时用） |
 | `--days N` | 7 | 统计窗口（UTC，左闭）；> 30 天会提示 TTL 清扫风险 |
 | `--change NAME` | 全局 | 只看某个 change 名下的事件 |
-| `--lifecycle NAME` | — | 单 change 生命周期体检卡（四段 + 声明元数据；与 `--change`/基线选项互斥，不受 `--days` 窗口限制，TTL 30 天为硬上限） |
+| `--lifecycle NAME` | — | 单 change 生命周期体检卡（五段 + 声明元数据；与 `--change`/基线选项互斥，不受 `--days` 窗口限制，TTL 30 天为硬上限） |
 | `--warn-threshold N` | 5 | 第 ④ 段阈值（同 policy+reasonCode 的 warn 计数 ≥ 阈值才列出） |
 | `--json` | 关 | 机器可读（基线比对与脚本消费用） |
 | `--save-baseline [PATH]` | `.pi/harness/retro-baseline.json` | 落基线快照 |
@@ -71,7 +71,7 @@ bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 - **声明元数据**：proposal 头注释的 ui-impact / complexity / constraint-domains（未归档读 `changes/`、已归档读 `archive/` 目录日期前缀剥离后拼路径）；两棵树都找不到 → 「声明缺席」（要么从未存在，要么目录被移）。
 - **终态**：已归档（change.archive 事件 / archive 目录双锚点）｜已放弃（change.abandon 登记）｜未归档（附最后活动时间，**不假定终态**——活跃还是放弃需后续事实）。同名 archive 与 abandon 并存 → 以归档为准 + 冲突提示行（abandon 疑为误登记）。
 
-四段正文：
+五段正文（第五段人类反馈，add-change-lifecycle-retro）：
 
 | 段 | 看什么 | 什么算信号 |
 | --- | --- | --- |
@@ -79,8 +79,16 @@ bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 | 二、UI 工作流 | ui-design-gate 卡点链（reasonCode ×N）与放行态 | 卡点同一码多次 = 文档反复返工；放行态双口径：**pass 事件直读**（引入后）vs **推断（无放行事件）**（引入前历史只能按末 block 后无新 block 推断）——推断口径的数字别当精确值用 |
 | 三、成本卡 | 归因会话终值 Σ（cost/turns/toolCalls/时长）+ 按模型分桶 | 终值按 (session_id, change) 探索配方归因（交织会话按绑定段归因，与 B' 按会话终归口径并存）；rollup 覆盖率不足时标「数据积累中」——成本是下限不是全量；2026-09-17（rollup 上线）前的 change 无成本维度 |
 | 四、健康度 | 催修时距（按 policy 分派，见下）/ 回归翻转 / 返工波次（同文件 ≥2 session） | 波次高的文件 = 该 change 的反复返工热点；回归翻转多 = 改动反复打破既有绿灯 |
+| 五、人类反馈 | human-feedback.md 条数（产品/流程）/ 归因分布 / 未处置数（待处理/处理中） | 文件缺席→「无反馈记录（或未启用）」降级（不静默省略）；高返工波次×零反馈条数 = **漏采信号**（多轮打回却没人建账，采集纪律松了） |
 
 **催修时距分派口径**（⑦段 A 组同款，add-change-lifecycle-retro）：block→解除的时距按 policy 语义分派解除信号——quality-gate=同 (session,cmd) gate.check 转绿（既有口径）｜ui-design-gate=该 change 后续首条 pass 放行事件｜quota-gate=同 session 后续成功派发（subagent.dispatch）｜spec-gate=change.archive 归档事件。**信号缺席的样本剔除并披露剔除数**——别拿旧口径的「统一转绿判解除」数字对比（对 ui-design-gate/quota-gate 会算出假慢，实测 89 分钟）。
+
+**第五段人类反馈怎么读**（add-change-lifecycle-retro，数据源=change 目录 human-feedback.md 文件而非 events.db——事件侧观测不到人类真实不满，文件随 change 归档永久保存而账本有 TTL）：
+
+- **归因分布怎么看**：归因五类封闭 frontend/backend/test-gap/fact-check/process（词表与格式契约见 add-change-lifecycle-retro design D7、`feedback.sh menu`）。**高发层直接映射规范整理去向**——frontend 高发 → `standard/frontend/`；backend 高发 → `standard/backend/` + `flow/`；test-gap 高发 → `standard/shared/test-design.md`（变体清单/层选择补盲）；fact-check 高发 → 探索纪律（核实后再写，探索阶段未核实事实不落盘进 design）；process 高发 → `harness/` 与开发执行规范本身。多因按根因优先归 fact-check。
+- **状态不算指标**：状态五值只用于建账初始化、归档对账（`feedback.sh verify`，未处置条目提醒不阻断）与体检卡展示——不算消化率/时滞等流程效率指标（用户拍板砍掉，归因是主线）。
+- **格式异常单列**：词表外归因/缺状态行条目计「格式异常」单列披露不炸段（宽容降级，手改漂移不致报告失效）——异常多说明建账后被人手改，跑 `feedback.sh menu` 对照修正。
+- **openspec list 消费方说明**：human-feedback.md 是**仓库约定制品**（doc-authoring.md 注册点速查登记），非 openspec 原生制品——`openspec status`/`instructions` 不感知它，不影响 artifact 清单与任务进度；它的消费方是 `feedback.sh`（建账/对账）与本体检卡第五段（计量）。
 
 ## 改进项产出判据（硬要求）
 
