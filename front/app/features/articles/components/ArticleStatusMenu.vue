@@ -324,8 +324,11 @@ onUnmounted(() => {
 }
 
 .asm-status-pop {
-  left: 0;
+  /* 右对齐锚定：status-menu 恒在工具栏最右，left:0 会让 272px 面板伸出视口右缘被裁（越界 bug） */
+  right: 0;
   width: 272px;
+  /* 极窄视口兜底：不超出视口减两侧留白 */
+  max-width: calc(100vw - 2rem);
   padding: 12px 14px;
   font-size: 0.75rem;
   color: var(--color-text-secondary);
