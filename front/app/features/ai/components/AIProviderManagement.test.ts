@@ -290,12 +290,14 @@ describe('AIProviderManagement section 容器', () => {
     expect(lastToast()?.message).toBe('已保存')
   })
 
-  it('头部与空态的新增按钮打开弹窗（modelValue=true、vendor=null）', async () => {
+  it('新增入口唯一在头部（FB-6）；空态只引导不重复按钮；点击打开弹窗（modelValue=true、vendor=null）', async () => {
     installMocks({ vendors: [] })
     const wrapper = mountSection()
 
     const addBtns = wrapper.findAll('button').filter(b => b.text().includes('新增供应商'))
-    expect(addBtns.length).toBeGreaterThanOrEqual(2)
+    // FB-6：header 唯一入口；空态文案引导，不再放第二个按钮
+    expect(addBtns).toHaveLength(1)
+    expect(wrapper.find('.empty-hint').text()).toContain('右上角')
     await addBtns[0]!.trigger('click')
     expect(wrapper.findComponent(VendorDialog).props('modelValue')).toBe(true)
   })

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 /**
- * 「能力路由」section（ai-provider-model-overhaul 4.3：链式卡片升级）。
- * 每 capability 一条绑定链：链项 = 序号 + 模型@供应商 + 思考档下拉（ThinkingLevelSelect）
- * + 覆盖徽章 + ↑↓×；hover 模型名提示「另承载 N 个能力」；底部 + chips 按 vendor 分组
- * 追加（embedding 行只列 embedding 模型）。drag + ↑↓× 交互沿用既有实现。
- * 数据源 useAIRoutes / useAIModels 单实例自取；保存体 PUT
- * bindings=[{model_id, thinking_level}]（null=继承模型默认档），失败 toast 后端原文。
- * 深链 focus_capability（观测面板「定位」跳入）：滚动到对应 route-section 并脉冲高亮一次，
- * 随后清掉 query 参数（保留 section），刷新不重复触发。
+ * 「能力路由」section（tasks 8.3，FB-3+FB-5+FB-7：行式泳道重构）。
+ * 布局：顶部 ModelPoolStrip（vendor 分组模型卡，拖拽/点击菜单双通道添加）+
+ * 每能力一行 CapabilitySwimlane（行内自左向右 = 降级优先级，卡片间箭头即降级
+ * 方向）；降级状态内嵌行内（useRouteHealth 聚合 24h 观测：失败卡红边/接管徽章/
+ * 高亮箭头/行头健康点三态）。取代第一轮链式卡片 + chips 追加（FB-3 定稿形态，
+ * FB-5 由列式修正为行式，FB-7 补点击菜单与卡内防溢出）。
+ * 数据源 useAIRoutes / useAIModels / useAIVendors 单实例自取；保存体 PUT
+ * bindings=[{model_id, thinking_level}]（null=继承模型默认档），priority 由
+ * 行内顺序派生（后端契约不变）。深链 focus_capability（观测面板「定位」跳入）：
+ * 滚动到对应泳道行并脉冲高亮一次，随后清掉 query 参数（保留 section）。
  */
 import { Icon } from '@iconify/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -15,32 +17,29 @@ import { useRoute, useRouter } from 'vue-router'
 import AppButton from '~/components/ui/AppButton.vue'
 import AppSectionHeader from '~/components/ui/AppSectionHeader.vue'
 import { useNotify } from '~/composables/useNotify'
-import type { AIModel, ModelKind, ThinkingLevel } from '~/types'
+import type { ModelKind, ThinkingLevel } from '~/types'
 import { useAIModels } from '../composables/useAIModels'
 import { capabilityOrder, routeLabels, useAIRoutes } from '../composables/useAIRoutes'
-import ThinkingLevelSelect from './ThinkingLevelSelect.vue'
+import { useRouteHealth } from '../composables/useRouteHealth'
+import { useAIVendors } from '../composables/useAIVendors'
+import { findVendorPreset } from '../presets'
+import CapabilitySwimlane, { type SwimCard } from './CapabilitySwimlane.vue'
+import ModelPoolStrip, { type PickerCapability, type PoolGroup } from './ModelPoolStrip.vue'
 
-/** 本地编辑态绑定项（route_models 投影） */
+/** 本地编辑态绑定项（route_models 投影；priority = 数组序） */
 interface BindingEdit {
   model_id: number
   thinking_level: ThinkingLevel | null
 }
 
-interface ModelInfo {
-  name: string
-  vendorName: string
-  kind: ModelKind
-  supportsXhighMax: boolean
-  defaultLevel: ThinkingLevel | null
-}
-
 const notify = useNotify()
 const routesCtx = useAIRoutes()
 const modelsCtx = useAIModels()
+const vendorsCtx = useAIVendors()
+const healthCtx = useRouteHealth()
 const route = useRoute()
 const router = useRouter()
 
-/** 保存锁（saving）由 useAIRoutes 维护；首屏加载错误取两数据源第一条 */
 const saving = routesCtx.saving
 const loadError = computed(() => routesCtx.error.value || modelsCtx.error.value)
 
@@ -55,9 +54,9 @@ function chain(capability: string): BindingEdit[] {
 function hydrateEdits() {
   const next: Record<string, BindingEdit[]> = {}
   for (const cap of capabilityOrder) {
-    const route = routesCtx.routeByCapability.value[cap]
-    next[cap] = route
-      ? route.route_models
+    const r = routesCtx.routeByCapability.value[cap]
+    next[cap] = r
+      ? r.route_models
           .slice()
           .sort((a, b) => a.priority - b.priority)
           .map(b => ({ model_id: b.model_id, thinking_level: b.thinking_level }))
@@ -66,13 +65,30 @@ function hydrateEdits() {
   edits.value = next
 }
 
-// ---- 链项展示信息（模型清单优先，缺失时回退路由绑定内嵌快照） ----
+// ---- 模型信息（模型清单优先，缺失时回退路由绑定内嵌快照） ----
+interface ModelInfo {
+  name: string
+  vendorId: number
+  vendorName: string
+  logo: string | null
+  kind: ModelKind
+  supportsXhighMax: boolean
+  defaultLevel: ThinkingLevel | null
+}
+
+function vendorLogo(vendorId: number): string | null {
+  const v = vendorsCtx.vendors.value.find(x => x.id === vendorId)
+  return v?.preset_id ? (findVendorPreset(v.preset_id)?.logo ?? null) : null
+}
+
 function modelInfo(capability: string, modelId: number): ModelInfo | null {
   const m = modelsCtx.models.value.find(x => x.id === modelId)
   if (m) {
     return {
       name: m.name,
+      vendorId: m.vendor_id,
       vendorName: m.vendor?.name ?? '',
+      logo: vendorLogo(m.vendor_id),
       kind: m.model_kind,
       supportsXhighMax: m.supports_xhigh_max,
       defaultLevel: m.thinking_level,
@@ -82,7 +98,9 @@ function modelInfo(capability: string, modelId: number): ModelInfo | null {
   if (binding) {
     return {
       name: binding.model.name,
+      vendorId: binding.vendor.id,
       vendorName: binding.vendor.name,
+      logo: vendorLogo(binding.vendor.id),
       kind: binding.model.model_kind,
       supportsXhighMax: binding.model.supports_xhigh_max,
       defaultLevel: binding.model.thinking_level,
@@ -91,13 +109,7 @@ function modelInfo(capability: string, modelId: number): ModelInfo | null {
   return null
 }
 
-function displayName(capability: string, modelId: number): string {
-  const info = modelInfo(capability, modelId)
-  if (!info) return `#${modelId}`
-  return info.vendorName ? `${info.name}@${info.vendorName}` : info.name
-}
-
-/** 扇出反向视角：该模型被绑定的去重 capability 数 - 当前能力（=其他能力数） */
+/** 扇出反向视角：该模型被绑定的去重 capability 数 - 当前能力 */
 function otherCapabilityCount(modelId: number, currentCapability: string): number {
   let count = 0
   for (const r of routesCtx.routes.value) {
@@ -107,13 +119,69 @@ function otherCapabilityCount(modelId: number, currentCapability: string): numbe
   return count
 }
 
-function fanoutTip(capability: string, modelId: number): string {
-  const name = modelInfo(capability, modelId)?.name ?? `#${modelId}`
-  const n = otherCapabilityCount(modelId, capability)
-  return n > 0 ? `${name} 另承载 ${n} 个能力` : '未承载其他能力'
+// ---- 泳道卡视图模型（含降级标注，FB-5；cardHealth 按当前行卡名序列做结构吻合校验） ----
+function swimCards(capability: string): SwimCard[] {
+  const list = chain(capability)
+  const chainNames = list.map(b => modelInfo(capability, b.model_id)?.name ?? `#${b.model_id}`)
+  return list.map((b, index) => {
+    const info = modelInfo(capability, b.model_id)
+    const h = healthCtx.cardHealth(capability, index, chainNames)
+    return {
+      modelId: b.model_id,
+      name: info?.name ?? `#${b.model_id}`,
+      vendorName: info?.vendorName ?? '',
+      logo: info?.logo ?? null,
+      kind: (info?.kind ?? 'llm') as 'llm' | 'embedding',
+      defaultLevel: info?.defaultLevel ?? null,
+      supportsXhighMax: info?.supportsXhighMax ?? true,
+      thinkingLevel: b.thinking_level,
+      fanoutOthers: otherCapabilityCount(b.model_id, capability),
+      fail: h.fail,
+      lastErr: h.lastErr,
+      takeover: h.takeover,
+    }
+  })
 }
 
-// ---- 链操作（调档/增删/换位即时反映到本地状态） ----
+function rowHealthOf(capability: string): { level: 'ok' | 'warn' | 'err', text: string } {
+  const summary = healthCtx.rowHealth(capability, chain(capability).length > 1)
+  return { level: summary.level, text: summary.text }
+}
+
+// ---- 模型池（usable 全集按 vendor 分组，FB-3） ----
+const poolGroups = computed<PoolGroup[]>(() => {
+  const groups = new Map<number, PoolGroup>()
+  for (const m of modelsCtx.usableModels.value) {
+    if (!m.vendor) continue
+    let g = groups.get(m.vendor_id)
+    if (!g) {
+      g = { vendorName: m.vendor.name, logo: vendorLogo(m.vendor_id), models: [] }
+      groups.set(m.vendor_id, g)
+    }
+    g.models.push({ id: m.id, name: m.name, kind: m.model_kind })
+  }
+  return Array.from(groups.values())
+})
+
+/** 点击池卡的候选能力清单（embedding 行只收 embedding 模型，FB-7 菜单过滤） */
+function capabilitiesFor(model: { id: number, kind: ModelKind }): PickerCapability[] {
+  return capabilityOrder.map((cap) => {
+    const needKind: ModelKind = cap === 'embedding' ? 'embedding' : 'llm'
+    const mismatch = model.kind !== needKind
+    const inChain = !mismatch && chain(cap).some(b => b.model_id === model.id)
+    return {
+      capability: cap,
+      label: routeLabels[cap] || cap,
+      firstChar: (routeLabels[cap] || cap).charAt(0),
+      disabled: mismatch,
+      disabledReason: `仅 ${needKind}`,
+      inChain,
+      count: chain(cap).length,
+    }
+  })
+}
+
+// ---- 行操作（调档/增删/换位即时反映到本地编辑态） ----
 function onLevelChange(capability: string, modelId: number, value: ThinkingLevel | null) {
   const binding = chain(capability).find(b => b.model_id === modelId)
   if (binding) binding.thinking_level = value
@@ -123,19 +191,26 @@ function inChain(capability: string, modelId: number): boolean {
   return chain(capability).some(b => b.model_id === modelId)
 }
 
+function insertAt(capability: string, modelId: number, targetModelId: number | null, before: boolean) {
+  const current = [...chain(capability)]
+  const binding: BindingEdit = { model_id: modelId, thinking_level: null }
+  if (targetModelId === null) {
+    current.push(binding)
+  } else {
+    const idx = current.findIndex(b => b.model_id === targetModelId)
+    if (idx < 0) current.push(binding)
+    else current.splice(before ? idx : idx + 1, 0, binding)
+  }
+  edits.value[capability] = current
+}
+
 function addModel(capability: string, modelId: number) {
   if (inChain(capability, modelId)) return
-  edits.value[capability] = [...chain(capability), { model_id: modelId, thinking_level: null }]
+  insertAt(capability, modelId, null, true)
 }
 
 function removeModel(capability: string, modelId: number) {
   edits.value[capability] = chain(capability).filter(b => b.model_id !== modelId)
-}
-
-/** chips 点选：不在链中→链尾追加；已在链中→移除（同 ×，可重加） */
-function toggleModel(capability: string, modelId: number) {
-  if (inChain(capability, modelId)) removeModel(capability, modelId)
-  else addModel(capability, modelId)
 }
 
 function moveModel(capability: string, modelId: number, direction: -1 | 1) {
@@ -151,55 +226,73 @@ function moveModel(capability: string, modelId: number, direction: -1 | 1) {
   edits.value[capability] = current
 }
 
-// ---- drag 换位（沿用既有实现，作用于本地编辑态） ----
-const draggingCapability = ref<string | null>(null)
-const draggingModelId = ref<number | null>(null)
+// ---- DnD（FB-3+FB-7 双通道：池→行拖入 + 行内换位；跨行拖动提示先移除） ----
+const dragPoolModelId = ref<number | null>(null)
+const dragLane = ref<{ capability: string, modelId: number } | null>(null)
+const dragOverCapability = ref<string | null>(null)
+const rejectCapability = ref<string | null>(null)
+let rejectTimer: ReturnType<typeof setTimeout> | null = null
 
-function handleDragStart(capability: string, modelId: number) {
-  draggingCapability.value = capability
-  draggingModelId.value = modelId
+function kindOf(modelId: number): ModelKind {
+  return modelsCtx.models.value.find(x => x.id === modelId)?.model_kind ?? 'llm'
 }
 
-function handleDragEnd() {
-  draggingCapability.value = null
-  draggingModelId.value = null
+function flashReject(capability: string) {
+  rejectCapability.value = capability
+  if (rejectTimer) clearTimeout(rejectTimer)
+  rejectTimer = setTimeout(() => { rejectCapability.value = null }, 450)
 }
 
-function handleDropOnModel(capability: string, targetModelId: number) {
-  if (draggingCapability.value !== capability || draggingModelId.value === null) {
-    handleDragEnd()
+/** 泳道行 drop 入口（targetModelId=null 行尾；before 仅对有 target 有效） */
+function onDropIn(capability: string, targetModelId: number | null, before: boolean) {
+  dragOverCapability.value = null
+  // 行内换位
+  if (dragLane.value) {
+    const lane = dragLane.value
+    if (lane.capability !== capability) {
+      notify.warn('跨行移动：请先 × 移除，再到目标行拖入')
+      dragLane.value = null
+      return
+    }
+    const current = [...chain(capability)]
+    const fromIdx = current.findIndex(b => b.model_id === lane.modelId)
+    if (fromIdx < 0) { dragLane.value = null; return }
+    const moved = current.splice(fromIdx, 1)[0]!
+    let to: number
+    if (targetModelId === null) to = current.length
+    else {
+      const idx = current.findIndex(b => b.model_id === targetModelId)
+      if (idx < 0) to = current.length
+      else {
+        const base = idx < fromIdx ? idx : idx - 1
+        to = before ? base : base + 1
+      }
+    }
+    current.splice(Math.max(0, Math.min(to, current.length)), 0, moved)
+    edits.value[capability] = current
+    dragLane.value = null
     return
   }
-  const current = [...chain(capability)]
-  const fromIdx = current.findIndex(b => b.model_id === draggingModelId.value)
-  const toIdx = current.findIndex(b => b.model_id === targetModelId)
-  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) {
-    handleDragEnd()
+  // 池卡拖入
+  if (dragPoolModelId.value === null) return
+  const modelId = dragPoolModelId.value
+  const needKind: ModelKind = capability === 'embedding' ? 'embedding' : 'llm'
+  if (kindOf(modelId) !== needKind) {
+    flashReject(capability)
+    notify.warn(`「${routeLabels[capability] || capability}」行只接受 ${needKind} 模型`)
+    dragPoolModelId.value = null
     return
   }
-  const [moved] = current.splice(fromIdx, 1)
-  if (!moved) {
-    handleDragEnd()
+  if (inChain(capability, modelId)) {
+    notify.warn('该模型已在此行中')
+    dragPoolModelId.value = null
     return
   }
-  current.splice(toIdx, 0, moved)
-  edits.value[capability] = current
-  handleDragEnd()
+  insertAt(capability, modelId, targetModelId, before)
+  dragPoolModelId.value = null
 }
 
-// ---- chips：usable 模型按 vendor 分组（embedding 行只列 embedding 模型） ----
-function chipGroups(capability: string): Array<{ vendorName: string, models: AIModel[] }> {
-  const groups = new Map<string, AIModel[]>()
-  for (const m of modelsCtx.usableModelsForCapability(capability)) {
-    if (!m.vendor) continue
-    const list = groups.get(m.vendor.name)
-    if (list) list.push(m)
-    else groups.set(m.vendor.name, [m])
-  }
-  return Array.from(groups.entries()).map(([vendorName, models]) => ({ vendorName, models }))
-}
-
-// ---- 保存：逐能力 PUT bindings（空链也发 bindings:[] 以持久化清空；失败 toast 后端原文并停在失败处，未保存能力本地态保留） ----
+// ---- 保存：逐能力 PUT bindings（空行也发 bindings:[] 持久化清空；失败 toast 停在失败处） ----
 async function saveRoutes() {
   const hasBindings = capabilityOrder.some(cap => chain(cap).length > 0)
   if (!hasBindings) {
@@ -220,7 +313,7 @@ async function saveRoutes() {
   hydrateEdits()
 }
 
-// ---- 观测面板「定位」跳入：滚动到对应 route-section + 脉冲高亮一次 ----
+// ---- 观测面板「定位」跳入：滚动到对应泳道行 + 脉冲高亮一次 ----
 const rootEl = ref<HTMLElement | null>(null)
 const pulsingCapability = ref<string | null>(null)
 const PULSE_MS = 1400
@@ -230,7 +323,7 @@ function focusSection(capability: string) {
   if (!rootEl.value) return
   const el = rootEl.value.querySelector<HTMLElement>(`[data-route-section="${capability}"]`)
   if (!el) return
-  el.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  el.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
   pulsingCapability.value = capability
   if (pulseTimer) clearTimeout(pulseTimer)
   pulseTimer = setTimeout(() => {
@@ -239,7 +332,12 @@ function focusSection(capability: string) {
 }
 
 async function loadData() {
-  await Promise.all([routesCtx.fetchRoutes(), modelsCtx.fetchModels()])
+  await Promise.all([
+    routesCtx.fetchRoutes(),
+    modelsCtx.fetchModels(),
+    vendorsCtx.fetchVendors(),
+    healthCtx.fetchHealth(),
+  ])
   initialLoading.value = false
   hydrateEdits()
 }
@@ -260,13 +358,13 @@ onMounted(async () => {
   await consumeFocusCapability()
 })
 
-// 组件挂载期间 query 再变化（非重挂载路径）同样定位；首载期间交给 onMounted 处理
 watch(() => route.query.focus_capability, () => {
   if (!initialLoading.value) void consumeFocusCapability()
 })
 
 onBeforeUnmount(() => {
   if (pulseTimer) clearTimeout(pulseTimer)
+  if (rejectTimer) clearTimeout(rejectTimer)
 })
 </script>
 
@@ -275,7 +373,7 @@ onBeforeUnmount(() => {
     <div class="route-card__header">
       <AppSectionHeader
         title="能力路由"
-        description="按能力分配模型与降级顺序；每项可单独指定思考档（默认继承模型配置）"
+        description="每能力一行泳道：从模型池拖卡或点击添加；行内自左向右 = 降级优先级，红卡/接管徽章 = 24h 降级状态"
         icon-name="mdi:transit-connection-variant" />
       <AppButton variant="primary" size="sm" :disabled="saving" @click="saveRoutes">
         <Icon v-if="saving" icon="mdi:loading" width="12" height="12" class="animate-spin" />
@@ -283,12 +381,12 @@ onBeforeUnmount(() => {
       </AppButton>
     </div>
 
-    <!-- loading：route-section 骨架 -->
+    <!-- loading：泳道骨架 -->
     <div v-if="initialLoading" class="route-card__state">
       <Icon icon="mdi:loading" width="28" height="28" class="animate-spin" style="color: var(--color-text-muted)" />
     </div>
 
-    <!-- error：列表加载失败内联条 + 重试 -->
+    <!-- error：加载失败内联条 + 重试 -->
     <div v-else-if="loadError" class="route-card__state">
       <div class="error-bar">
         <Icon icon="mdi:alert-circle" width="14" height="14" class="shrink-0" />
@@ -297,101 +395,44 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-else class="route-card__sections">
-      <div
+    <template v-else>
+      <!-- 模型池横条（FB-3/FB-7：拖拽 + 点击菜单双通道） -->
+      <ModelPoolStrip
+        :groups="poolGroups"
+        :capabilities-for="capabilitiesFor"
+        @drag-start="dragPoolModelId = $event"
+        @add="addModel"
+      />
+
+      <!-- 能力泳道行 ×N -->
+      <CapabilitySwimlane
         v-for="capability in capabilityOrder"
         :key="capability"
-        class="route-section"
-        :class="{ 'route-section--pulse': pulsingCapability === capability }"
-        :data-route-section="capability"
-      >
-        <div class="route-section__title-row">
-          <div
-            class="route-section__badge"
-            :class="chain(capability).length > 0 ? 'route-section__badge--active' : 'route-section__badge--empty'">
-            {{ (routeLabels[capability] || capability).charAt(0) }}
-          </div>
-          <span class="route-section__name">{{ routeLabels[capability] || capability }}</span>
-          <span class="route-section__count">{{ chain(capability).length }} 模型</span>
-        </div>
+        :capability="capability"
+        :label="routeLabels[capability] || capability"
+        :cards="swimCards(capability)"
+        :health-level="rowHealthOf(capability).level"
+        :health-text="rowHealthOf(capability).text"
+        :dragging-over="dragOverCapability === capability"
+        :reject-flash="rejectCapability === capability"
+        :pulsing="pulsingCapability === capability"
+        @level-change="(modelId, v) => onLevelChange(capability, modelId, v)"
+        @remove="modelId => removeModel(capability, modelId)"
+        @move="(modelId, dir) => moveModel(capability, modelId, dir)"
+        @drop-in="(targetId, before) => onDropIn(capability, targetId, before)"
+        @card-drag-start="modelId => { dragLane = { capability, modelId } }"
+        @card-drag-end="dragLane = null"
+        @drag-over="dragOverCapability = capability"
+        @drag-leave="dragOverCapability === capability && (dragOverCapability = null)"
+      />
 
-        <!-- 空链：虚线引导（沿用现有空态） -->
-        <div v-if="chain(capability).length === 0" class="route-section__empty">
-          点击下方按钮添加模型
-        </div>
-
-        <TransitionGroup v-else tag="div" name="bind" class="route-section__providers">
-          <div
-            v-for="(binding, index) in chain(capability)"
-            :key="binding.model_id"
-            draggable="true"
-            class="route-provider"
-            :class="{
-              'route-provider--dragging': draggingCapability === capability && draggingModelId === binding.model_id,
-            }"
-            @dragstart="handleDragStart(capability, binding.model_id)"
-            @dragend="handleDragEnd"
-            @dragover.prevent
-            @drop.prevent="handleDropOnModel(capability, binding.model_id)"
-          >
-            <span class="route-provider__rank" :class="index === 0 ? 'route-provider__rank--first' : ''">{{ index + 1 }}</span>
-            <Icon icon="mdi:drag" width="12" height="12" class="route-provider__drag" />
-
-            <!-- 模型@供应商 + hover 扇出提示 -->
-            <div class="route-provider__model" :title="displayName(capability, binding.model_id)">
-              <span class="route-provider__name">{{ displayName(capability, binding.model_id) }}</span>
-              <span class="fanout-tip">{{ fanoutTip(capability, binding.model_id) }}</span>
-            </div>
-
-            <!-- 覆盖徽章：非继承档时显示（accent-subtle 底色） -->
-            <span v-if="binding.thinking_level !== null" class="route-provider__override">覆盖</span>
-
-            <!-- 思考档下拉；embedding 绑定不携带覆盖值（spec 禁止） -->
-            <ThinkingLevelSelect
-              v-if="modelInfo(capability, binding.model_id)?.kind !== 'embedding'"
-              :model-value="binding.thinking_level"
-              :model-default="modelInfo(capability, binding.model_id)?.defaultLevel ?? null"
-              :supports-xhigh-max="modelInfo(capability, binding.model_id)?.supportsXhighMax ?? true"
-              class="route-provider__level"
-              @update:model-value="(value: ThinkingLevel | null) => onLevelChange(capability, binding.model_id, value)"
-            />
-            <span v-else class="route-provider__dash" title="embedding 绑定不携带思考档">—</span>
-
-            <div class="flex items-center gap-0.5 shrink-0">
-              <button class="route-icon-btn" :disabled="index === 0" title="上移" @click="moveModel(capability, binding.model_id, -1)">
-                <Icon icon="mdi:chevron-up" width="14" height="14" />
-              </button>
-              <button class="route-icon-btn" :disabled="index === chain(capability).length - 1" title="下移" @click="moveModel(capability, binding.model_id, 1)">
-                <Icon icon="mdi:chevron-down" width="14" height="14" />
-              </button>
-              <button class="route-icon-btn route-icon-btn--danger" title="移除" @click="removeModel(capability, binding.model_id)">
-                <Icon icon="mdi:close" width="13" height="13" />
-              </button>
-            </div>
-          </div>
-        </TransitionGroup>
-
-        <!-- + chips 按 vendor 分组（点击追加链尾 / 移除已在链中的项） -->
-        <div class="route-section__actions">
-          <template v-if="chipGroups(capability).length > 0">
-            <template v-for="group in chipGroups(capability)" :key="group.vendorName">
-              <span class="route-chip-group">{{ group.vendorName }}：</span>
-              <button
-                v-for="m in group.models"
-                :key="m.id"
-                class="route-chip"
-                :class="inChain(capability, m.id) ? 'route-chip--selected' : ''"
-                @click="toggleModel(capability, m.id)">
-                {{ inChain(capability, m.id) ? '✓' : '+' }} {{ m.name }}
-              </button>
-            </template>
-          </template>
-          <span v-else class="route-section__hint">
-            先在「AI 模型」里启用一个 {{ capability === 'embedding' ? 'embedding' : 'llm' }} 类型的模型
-          </span>
-        </div>
+      <div class="route-card__foot">
+        <span>行内自左向右 = 降级优先级（序号 1 首选）</span>
+        <span>同一模型可出现在多行（扇出可见）</span>
+        <span>embedding 行只收 embedding 模型</span>
+        <span>红卡=近期失败 · 黄徽=接管 · 红箭头=正在降级</span>
       </div>
-    </div>
+    </template>
   </div>
 </template>
 
@@ -422,330 +463,36 @@ onBeforeUnmount(() => {
   justify-content: center;
 }
 
-.route-card__sections {
-  display: flex;
-  flex-direction: column;
-}
-
-.route-section {
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-
-.route-section:last-child {
-  border-bottom: none;
-}
-
-/* 定位跳入脉冲：一次后由 JS 移除 class */
-.route-section--pulse {
-  animation: section-pulse 1.2s ease;
-}
-
-@keyframes section-pulse {
-  0% {
-    background: var(--color-accent-subtle);
-    box-shadow: inset 0 0 0 2px var(--color-accent);
-  }
-  100% {
-    background: transparent;
-    box-shadow: none;
-  }
-}
-
-.route-section__title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.route-section__badge {
-  width: 24px;
-  height: 24px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-.route-section__badge--active {
-  background: var(--color-accent);
-  color: var(--color-text-inverted);
-}
-
-.route-section__badge--empty {
-  background: var(--color-bg-sunken);
-  color: var(--color-text-muted);
-}
-
-.route-section__name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-text-primary);
-}
-
-.route-section__count {
-  font-size: 11px;
-  color: var(--color-text-muted);
-}
-
-.route-section__empty {
-  text-align: center;
-  padding: 12px 0;
-  font-size: 11px;
-  color: var(--color-text-muted);
-  border-radius: 8px;
-  border: 1px dashed var(--color-border-medium);
-  margin-bottom: 12px;
-}
-
-.route-section__providers {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.route-provider {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-sunken);
-  cursor: move;
-  user-select: none;
-  transition: opacity 0.15s, box-shadow 0.15s, border-color 0.15s;
-}
-
-.route-provider:hover {
-  border-color: var(--color-border-medium);
-}
-
-.route-provider--dragging {
-  opacity: 0.4;
-  box-shadow: 0 0 0 2px var(--color-link);
-}
-
-/* chips 追加链尾入场过渡 / 换位移动过渡（TransitionGroup） */
-.bind-enter-active {
-  animation: bind-in 0.3s ease;
-}
-
-.bind-leave-active {
-  display: none;
-}
-
-.bind-move {
-  transition: transform 0.25s ease;
-}
-
-@keyframes bind-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.route-provider__rank {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  font-weight: 700;
-  background: var(--color-bg-hover);
-  color: var(--color-text-secondary);
-  flex-shrink: 0;
-}
-
-.route-provider__rank--first {
-  background: var(--color-accent);
-  color: var(--color-text-inverted);
-}
-
-.route-provider__drag {
-  color: var(--color-text-muted);
-  flex-shrink: 0;
-}
-
-.route-provider__model {
-  position: relative;
-  min-width: 0;
-  flex: 1;
-  cursor: help;
-}
-
-.route-provider__name {
-  display: block;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 扇出反向视角 tooltip：hover 模型名出现（「另承载 N 个能力」/「未承载其他能力」） */
-.fanout-tip {
-  display: none;
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 6px);
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-medium);
-  border-radius: 6px;
-  box-shadow: var(--shadow-strong, 0 8px 24px rgba(0, 0, 0, 0.12));
+.route-card__foot {
+  padding: 9px 20px;
+  border-top: 1px solid var(--color-border-subtle);
   font-size: 11.5px;
-  color: var(--color-text-secondary);
-  padding: 4px 10px;
-  white-space: nowrap;
-  z-index: 10;
-}
-
-.route-provider__model:hover .fanout-tip {
-  display: block;
-}
-
-.route-provider__override {
-  font-size: 10.5px;
-  color: var(--color-accent);
-  background: var(--color-accent-subtle);
-  border-radius: 4px;
-  padding: 0 6px;
-  flex-shrink: 0;
-}
-
-.route-provider__level {
-  flex-shrink: 0;
-}
-
-.route-provider__dash {
   color: var(--color-text-muted);
-  font-size: 12px;
-  flex-shrink: 0;
-}
-
-.route-icon-btn {
-  padding: 2px;
-  border-radius: 4px;
-  border: none;
-  background: transparent;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.route-icon-btn:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-secondary);
-}
-
-.route-icon-btn--danger:hover {
-  background: var(--color-error-subtle);
-  color: var(--color-error);
-}
-
-.route-icon-btn:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.route-section__actions {
   display: flex;
+  gap: 18px;
   flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.route-chip-group {
-  font-size: 11px;
-  color: var(--color-text-muted);
-  margin-right: 2px;
-}
-
-.route-chip {
-  padding: 2px 10px;
-  font-size: 11px;
-  font-weight: 500;
-  border-radius: 99px;
-  border: 1px solid var(--color-border-medium);
-  background: transparent;
-  color: var(--color-text-primary);
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.route-chip:hover {
-  border-color: var(--color-text-primary);
-  background: var(--color-bg-hover);
-}
-
-.route-chip--selected {
-  border-color: var(--color-accent);
-  color: var(--color-accent);
-  background: var(--color-accent-subtle);
-}
-
-.route-section__hint {
-  font-size: 11px;
-  color: var(--color-text-muted);
-  align-self: center;
 }
 
 .error-bar {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
   border-radius: 8px;
-  padding: 10px 14px;
-  font-size: 13px;
   background: var(--color-error-subtle);
-  border: 1px solid var(--color-error);
   color: var(--color-error);
+  font-size: 12.5px;
 }
 
 .retry-btn {
-  font-size: 12px;
-  padding: 3px 12px;
+  border: 1px solid currentColor;
+  background: none;
   border-radius: 6px;
-  border: 1px solid var(--color-error);
-  background: transparent;
-  color: var(--color-error);
+  padding: 2px 10px;
+  font-size: 12px;
+  color: inherit;
   cursor: pointer;
-}
-
-.retry-btn:hover {
-  background: var(--color-error-subtle);
-}
-
-/* 窄屏（767.98px 统一断点）：链项允许换行，操作可达不破版 */
-@media (max-width: 767.98px) {
-  .route-provider {
-    flex-wrap: wrap;
-  }
-
-  .route-provider__model {
-    flex-basis: 100%;
-    order: 5;
-  }
-
-  .route-provider__level {
-    margin-left: auto;
-  }
+  flex: none;
 }
 </style>

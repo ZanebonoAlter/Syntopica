@@ -13,7 +13,7 @@
 - **模型列表支持接口刷新**：对 vendor 触发 `GET {base}/models` 拉取可用模型清单入库（`last_seen_at` 时间戳），上游消失的模型标 stale 不静默删；模型选择从手填字符串变为清单勾选。
 - **结构化输出能力档位收编**（原 response-format-adaptation 的核心）：`structured_output` 档位落 vendor（`json_schema | json_object | none`）+ `buildPayload` 按档构造 + 400 运行时降级链（`json_schema`→`json_object`+schema 入 prompt→纯文本）+ schema→prompt 注入，治好 deepseek 兜底从未生效的出血点。
 - **存量配置迁移**（除 deepseek 外均为 llama.cpp 启动）：`qwen`（:8080，start_command 迁 vendor）→ vendor+model；`qwen3-embedding`（:8081）同理；`deepseek-flash`（云端）→ vendor+model；`ai_route_providers` 绑定改挂 model。
-- **UI major 重设计**：AI 设置改为供应商卡片 + 模型清单管理（刷新/勾选/档位配置）、能力路由绑定处按场景配思考等级、新增路由降级观测面板（近 24h 成功/降级/失败统计 + 事件流，数据源 `ai_call_logs`）；**新增供应商为预设目录三步接入（选供应商 → 只输 API Key → 自动拉模型清单勾选）**，预设携带 base_url/思考方言/结构化输出能力，自定义（OpenAI 兼容）走全量表单。
+- **UI major 重设计**：AI 设置改为供应商卡片 + 模型清单管理（刷新/勾选/档位配置）、**能力路由行式泳道**（2026-09-29 反馈修订：每能力一行，行内自左向右=降级优先级，模型卡片从顶部模型池拖入、行内拖动换序，卡片携带思考档；**降级状态内嵌行内**——失败卡红边/接管徽章/高亮降级箭头/行头健康点，数据源既有 /ai/health 与 /observability 端点；取代原「链式卡片 + model@vendor 文字串 + chips 追加」，反馈依据见 change 内 human-feedback.md FB-3/FB-5）、新增路由降级观测面板（近 24h 成功/降级/失败统计 + 事件流，数据源 `ai_call_logs`）；**新增供应商为预设目录三步接入（选供应商 → 只输 API Key → 自动拉模型清单勾选）**，预设目录覆盖 **pi 内置全部 41 家厂商**（同 pi `defaultModelPerProvider`，分组呈现）+ 本地 Ollama/llama.cpp + 自定义，预设携带 base_url/思考方言/结构化输出能力，自定义（OpenAI 兼容）走全量表单；**厂商图标直接复用 pi-web `provider-icons.svg`**（30 symbol spritesheet，无图标厂商首字母回退，不自建图标）。
 - **无 BREAKING**：业务调用方（extractor / dataenrichment / topicgraph 等）的 `Chat/Embed + Capability + Operation` 接口不变；变化收敛在 airouter 内部、admin API 与设置页。
 
 ## Capabilities
@@ -33,6 +33,6 @@
 ## Impact
 
 - **后端**：`internal/models/`（新 `AIVendor`/`AIModel`，`AIProvider` 废弃）；`internal/platform/database/postgres_migrations.go`（两层表建表 + 存量拆解迁移 + 死字段不迁）；`internal/platform/airouter/`（`buildPayload` 档位构造与方言映射、降级链、`Store` 改挂 model、模型刷新服务）；`internal/admin/handler/ai_handler.go`（vendor/model CRUD + 刷新 + 降级观测查询）；`internal/platform/aihealth/`（探测对象改 vendor）。
-- **前端**：`front/app/features/ai/`（供应商卡片、模型清单、思考档位选择器、降级观测面板，major 重设计）；`front/app/features/settings/`（AI 配置分区结构调整）；`front/app/types/ai.ts` 与 `useAIRouterSettings.ts` 重写。
+- **前端**：`front/app/features/ai/`（供应商卡片、模型清单、思考档位选择器、看板泳道路由、降级观测面板，major 重设计）；`front/app/features/settings/`（AI 配置分区结构调整）；`front/app/types/ai.ts` 与 `useAIRouterSettings.ts` 重写；`front/app/assets/`（新增 pi provider-icons spritesheet）与预设目录常量（41 家分组）。
 - **数据**：`ai_providers`（3 行）→ `ai_vendors`+`ai_models`；`ai_route_providers`（10 行）改挂 model_id；`ai_call_logs` 仅读不改 schema；`ai_routes` 死列不迁移。存量 `enable_thinking` bool 按 `true→high / false→off` 迁默认档。
 - **文档**：`docs/reference/flow/ai-summary.md`（AI 调用/路由约束 + 变更溯源）、`docs/reference/database/`（表结构）；`standard/backend/ai-logging.md` 记账口径不变不动。

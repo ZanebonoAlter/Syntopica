@@ -96,3 +96,36 @@ H1 图标子集再生时发现：brief 要求新增的六个图标中有三个�
 **引用**：front/app/features/ai/presets.ts、front/app/assets/iconify-subset.json、front/scripts/generate-icon-subset.mjs
 
 <!-- pinned 2026-09-29T01:40:01Z -->
+
+## pi 内置厂商全集与图标资产（FB-1/FB-2 数据源）
+
+用户三点反馈（2026-09-29，记录于 change 的 human-feedback.md）：
+1. 预设厂商目录照抄 pi 内置全集，不是原型里那 7 家。pi 内置清单在 pi-coding-agent `dist/core/model-resolver.js` 导出的 `defaultModelPerProvider`（41 家 provider id）：amazon-bedrock, ant-ling, anthropic, openai, azure-openai-responses, openai-codex, radius, nvidia, deepseek, google, google-vertex, github-copilot, openrouter, vercel-ai-gateway, xai, groq, cerebras, zai, zai-coding-cn, mistral, minimax, minimax-cn, moonshotai, moonshotai-cn, huggingface, fireworks, together, baseten, opencode, opencode-go, kimi-coding, meta, cloudflare-workers-ai, cloudflare-ai-gateway, qwen-token-plan, qwen-token-plan-cn, qwen-token-plan-individual, xiaomi, xiaomi-token-plan-cn, xiaomi-token-plan-ams, xiaomi-token-plan-sgp。各家 env/认证见 pi docs/providers.md。本地项 Ollama/llama.cpp/自定义继续保留（pi 清单无）。
+2. 图标用 pi 现成资产：pi-web `public/provider-icons.svg`（40KB spritesheet，30 个 symbol：anthropic, openai, google, deepseek, groq, mistral, moonshot, minimax, fireworks, huggingface, cerebras, openrouter, xai, cloudflare, vercel, githubcopilot, aws, azure, kimi, qwen, zhipu, cohere, perplexity, together, grok, antgroup, nvidia, opencode, xiaomimimo, zai，多源 lobe-icons）。用法：拷进 front/app/assets 作 spritesheet，`<use href="#...">`；约 11 家无图标（baseten/meta/radius/opencode-go 等）首字母回退。推翻现行 Iconify mdi 实现（ui-design 差异清单第 3 条）。
+3. 能力路由交互重做（方案待用户拍板）：看板泳道式 / Dify 式画布节点连线 / 链式视觉优化三选项。属 ui-impact major 主交互变更 → ui-design 五节 + 原型视图二重做 + ui-approval 重置 pending 重走审批；数据契约不变后端零改动（除非画布方案要存布局坐标）。
+另外 FB-4 流程反馈：human-feedback.md 纳入 change 可选制品 + harness-retro 增扫描源（计量：消化率/打回率/origin 环节标注），待立项。
+
+**引用**：pi-coding-agent/dist/core/model-resolver.js:defaultModelPerProvider、pi-web/public/provider-icons.svg、pi-coding-agent/docs/providers.md、openspec/changes/ai-provider-model-overhaul/human-feedback.md
+
+<!-- pinned 2026-09-29T07:16:17Z -->
+
+## 反馈修订轮定稿：行式泳道 + 降级内嵌 + 44 预设 + pi 图标
+
+反馈修订轮定稿形态（FB-1~6，2026-09-29，第一轮实现后用户看板反馈）：
+- 能力路由 = **行式泳道**（FB-3 拍板看板后 FB-5 修正为行式）：顶部模型池横条（vendor 分组可拖卡）+ 每能力一行；行内自左向右 = 降级优先级；卡片间箭头即降级方向；priority 由行序派生（后端契约零改动，PUT /api/ai/routes 仍为 [{model_id, thinking_level?, priority}]）；不存布局坐标。
+- **降级内嵌行内**（FB-5 核心诉求「断掉了也能在这里体现」）：失败卡红边+错误角标+「24h 失败 N」；接管卡「接管 N」徽章；发生迁移的箭头高亮标次数；行头健康点三态（绿正常/黄降级已兜底/红近期失败无兜底，聚合=行内最差状态归约）；数据源消费既有 /api/ai/health + /api/ai/observability/degradations（前端聚合，后端零新增）。
+- 拖拽约束：池→行（落点卡左/右插入，行尾虚线 slot 追加）+ 行内换位；不支持跨行拖（先×再拖入）；embedding 行拒收 llm（红框+回弹）；键盘←→调序。
+- 预设目录 44 项五组（FB-1：pi 41 家 + Ollama/llama.cpp/自定义）+ 搜索框；图标 pi provider-icons.svg 30 symbol 内嵌 + presetId→symbolId 映射 + 5 家首字母回退（FB-2，推翻 Iconify mdi）；新增供应商唯一入口在 section 头 actions 位（FB-6 删底部重复按钮）。
+- 原型已重做并 agent-browser 验证（8 行泳道/降级徽章/拖拽三路径/44 预设/30 symbol/双视口无溢出），截图 proto3-1440/1920-swimlane-rows + proto3-dialog-preset-catalog；ui-approval 已重置 pending 待用户浏览器确认；tasks §8 增量 6 项未勾，实现落点：ModelPoolStrip.vue + CapabilitySwimlane.vue + VendorPresetCatalog.vue + front/app/assets/vendor-icons.svg。
+
+**引用**：openspec/changes/ai-provider-model-overhaul/ui-prototype/index.html、openspec/changes/ai-provider-model-overhaul/human-feedback.md、openspec/changes/ai-provider-model-overhaul/tasks.md
+
+<!-- pinned 2026-09-29T07:47:10Z -->
+
+## FB-7：select 越界修复 + 点击添加双通道
+
+FB-7 增量（用户确认行式泳道方向后）：① 泳道卡 select 越界修复——卡片 172→208px + overflow:hidden，lc-foot flex-wrap，select min-width:0 + flex 收缩，全局 select{max-width:100%}；实现时同样约束。② 添加绑定双通道——拖拽（落点左/右插入/尾 slot）+ 点击（池卡带＋徽标，点击弹能力选择菜单：类型不匹配项置灰「仅 embedding/llm」、已在行中标出、点外/ESC 关闭，选中追加行尾）；点击是键盘/无障碍友好路径。验证：卡内 select 零溢出、菜单 8 项、追加/ESC 全过，截图 proto4-{1440,1920}-swimlane / proto4-cap-menu / proto4-dialog-preset-catalog。ui-design 主操作表已补「添加绑定（点击）」行，test-cases ②/U7 已补菜单断言。ui-approval 仍 pending 待用户最终浏览器确认。
+
+**引用**：openspec/changes/ai-provider-model-overhaul/ui-prototype/index.html、openspec/changes/ai-provider-model-overhaul/human-feedback.md
+
+<!-- pinned 2026-09-29T07:54:19Z -->

@@ -12,8 +12,9 @@ import { computed, reactive, ref, watch } from 'vue'
 import AppButton from '~/components/ui/AppButton.vue'
 import AppDialog from '~/components/ui/AppDialog.vue'
 import AppInput from '~/components/ui/AppInput.vue'
+import VendorLogo from './VendorLogo.vue'
 import { useAIVendors } from '../composables/useAIVendors'
-import { AI_VENDOR_PRESETS, findVendorPreset, type AIVendorPreset } from '../presets'
+import { AI_VENDOR_PRESETS, PRESET_GROUPS, findVendorPreset, type AIVendorPreset } from '../presets'
 import type { AIVendor, AIVendorUpsertRequest, ProviderType, StructuredOutputMode, ThinkingDialect } from '~/types'
 
 interface Props {
@@ -59,7 +60,7 @@ const form = reactive({
   clearApiKey: false,
   startCommand: '',
   clearStartCommand: false,
-  timeoutSeconds: 120 as number | '',
+  timeoutSeconds: 600 as number | '',
   dialect: '' as ThinkingDialect | '',
   structuredOutput: '' as StructuredOutputMode | '',
 })
@@ -102,7 +103,7 @@ function resetForm() {
   form.clearApiKey = false
   form.startCommand = ''
   form.clearStartCommand = false
-  form.timeoutSeconds = 120
+  form.timeoutSeconds = 600
   form.dialect = ''
   form.structuredOutput = ''
   errors.name = ''
@@ -116,7 +117,7 @@ function resetForm() {
   form.name = v.name
   form.providerType = v.provider_type
   form.baseUrl = v.base_url
-  form.timeoutSeconds = v.timeout_seconds || 120
+  form.timeoutSeconds = v.timeout_seconds || 600
   // 档位与预设一致 → 显示「跟随预设」；覆盖过 → 预填具体档位（编辑可改，spec「档位可改」）
   form.dialect = v.thinking_dialect === p?.thinkingDialect ? '' : v.thinking_dialect
   form.structuredOutput = v.structured_output === p?.structuredOutput ? '' : v.structured_output
@@ -165,7 +166,7 @@ function onSave() {
     name: form.name.trim(),
     provider_type: form.providerType,
     base_url: form.baseUrl.trim(),
-    timeout_seconds: typeof form.timeoutSeconds === 'number' && form.timeoutSeconds > 0 ? form.timeoutSeconds : 120,
+    timeout_seconds: typeof form.timeoutSeconds === 'number' && form.timeoutSeconds > 0 ? form.timeoutSeconds : 600,
     thinking_dialect: form.dialect || p.thinkingDialect,
     structured_output: form.structuredOutput || p.structuredOutput,
   }
@@ -186,6 +187,20 @@ const step2Label = computed(() => {
   if (p.id === 'custom') return '自定义接入（OpenAI 兼容）'
   return `接入 ${p.label}${p.needsApiKey ? '（只需 API Key）' : ''}`
 })
+
+/* 预设目录搜索（FB-1：44 项分组 + 搜索，ui-design Interaction Contract） */
+const presetQuery = ref('')
+const groupedPresets = computed(() => {
+  const q = presetQuery.value.trim().toLowerCase()
+  return PRESET_GROUPS
+    .map(g => ({
+      id: g.id,
+      label: g.label,
+      items: AI_VENDOR_PRESETS.filter(p => p.group === g.id
+        && (!q || p.label.toLowerCase().includes(q) || p.id.toLowerCase().includes(q))),
+    }))
+    .filter(g => g.items.length > 0)
+})
 </script>
 
 <template>
@@ -193,18 +208,25 @@ const step2Label = computed(() => {
     :title="isEdit && vendor ? `编辑供应商：${vendor.name}` : '新增供应商'"
     :close-on-overlay="!saving" @update:model-value="(v: boolean) => { if (!v) close() }">
     <div class="vendor-dialog">
-      <!-- 第一段：预设目录 -->
+      <!-- 第一段：预设目录（FB-1：44 项五组 + 搜索） -->
       <p class="step-label"><span class="step-n">1</span>选择供应商</p>
-      <div class="preset-grid" role="listbox" aria-label="供应商预设">
-        <button v-for="p in AI_VENDOR_PRESETS" :key="p.id" type="button" class="preset-card"
-          :class="{ 'preset-card--selected': form.presetId === p.id }"
-          :title="p.note" @click="selectPreset(p)">
-          <span class="preset-card__name">
-            <Icon :icon="p.icon" width="14" height="14" />
-            {{ p.label }}
-          </span>
-          <span class="preset-card__kind">{{ p.isLocal ? '本地' : (p.id === 'custom' ? '手动' : '云端') }}</span>
-        </button>
+      <AppInput v-model="presetQuery" type="text" placeholder="搜索预设（44 项：名称 / id）…" class="preset-search" />
+      <div class="preset-scroll">
+        <div v-for="g in groupedPresets" :key="g.id" class="preset-group">
+          <p class="preset-group__title">{{ g.label }} · {{ g.items.length }}</p>
+          <div class="preset-grid" role="listbox" :aria-label="`供应商预设 ${g.label}`">
+            <button v-for="p in g.items" :key="p.id" type="button" class="preset-card"
+              :class="{ 'preset-card--selected': form.presetId === p.id }"
+              :title="p.note" @click="selectPreset(p)">
+              <span class="preset-card__name">
+                <VendorLogo :symbol-id="p.logo" :name="p.label" :size="14" />
+                <span class="preset-card__label">{{ p.label }}</span>
+              </span>
+              <span class="preset-card__kind">{{ p.isLocal ? '本地' : (p.id === 'custom' ? '全量表单' : '云端') }}</span>
+            </button>
+          </div>
+        </div>
+        <p v-if="!groupedPresets.length" class="preset-empty">无匹配预设，试试「自定义」（OpenAI 兼容）</p>
       </div>
 
       <!-- 第二段：接入配置 -->
@@ -342,6 +364,40 @@ const step2Label = computed(() => {
   line-height: 18px;
 }
 
+.preset-search {
+  margin-bottom: 10px;
+}
+
+.preset-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.preset-group {
+  margin-bottom: 12px;
+}
+.preset-group:last-child {
+  margin-bottom: 0;
+}
+
+.preset-group__title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--color-text-muted);
+  margin: 2px 0 6px;
+}
+
+.preset-empty {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  padding: 4px 2px;
+  margin: 0;
+}
+
 .preset-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -379,6 +435,10 @@ const step2Label = computed(() => {
   gap: 6px;
   min-width: 0;
   white-space: nowrap;
+}
+
+.preset-card__label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }

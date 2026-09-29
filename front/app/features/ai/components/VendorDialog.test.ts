@@ -42,7 +42,8 @@ async function selectPreset(wrapper: ReturnType<typeof mountDialog>, label: stri
 }
 
 function textInputs(wrapper: ReturnType<typeof mountDialog>) {
-  return wrapper.findAll('input.app-input')
+  // 排除预设目录搜索框（FB-1：placeholder 含「搜索预设」不算第二段表单字段）
+  return wrapper.findAll('input.app-input').filter(i => !(i.attributes('placeholder') || '').includes('搜索预设'))
 }
 
 function saveButton(wrapper: ReturnType<typeof mountDialog>) {
@@ -68,9 +69,12 @@ describe('VendorDialog 两段式（U1）', () => {
     vi.clearAllMocks()
   })
 
-  it('打开默认停在第一段：未选预设时第二段提示先选择，无表单字段', () => {
+  it('打开默认停在第一段：44 项预设分组呈现，未选预设时第二段提示先选择，无表单字段', () => {
     const wrapper = mountDialog()
-    expect(wrapper.findAll('.preset-card')).toHaveLength(7)
+    expect(wrapper.findAll('.preset-card')).toHaveLength(44)
+    // 五组分组标题（FB-1）与搜索框在位
+    expect(wrapper.findAll('.preset-group__title')).toHaveLength(5)
+    expect(wrapper.find('input[placeholder*="搜索预设"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('先在上方选择供应商')
     expect(textInputs(wrapper)).toHaveLength(0)
   })

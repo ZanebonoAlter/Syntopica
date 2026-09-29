@@ -1,18 +1,54 @@
 import { describe, expect, it } from 'vitest'
-import { AI_VENDOR_PRESETS, findVendorPreset, isLocalBaseUrl } from './presets'
+import { AI_VENDOR_PRESETS, PRESET_GROUPS, findVendorPreset, isLocalBaseUrl } from './presets'
 import type { ProviderType, StructuredOutputMode, ThinkingDialect } from '~/types'
 
-const EXPECTED_IDS = ['deepseek', 'xiaomi-mimo', 'zai', 'openrouter', 'ollama', 'llamacpp', 'custom']
+/**
+ * 预设目录锚点（tasks 8.1，FB-1：pi 内置 41 家 + Ollama/llama.cpp/自定义 = 44 项五组）。
+ * pi 清单来源 pi-coding-agent dist/core/model-resolver.js defaultModelPerProvider 键；
+ * logo 映射 pi-web provider-icons.svg symbol id（FB-2）。
+ */
+const EXPECTED_GROUP_COUNTS: Record<string, number> = {
+  cn: 15,
+  global: 10,
+  gateway: 16,
+  local: 2,
+  custom: 1,
+}
 
 const VALID_PROVIDER_TYPES: ProviderType[] = ['openai_compatible', 'ollama']
 const VALID_DIALECTS: ThinkingDialect[] = ['qwen-chat-template', 'deepseek', 'reasoning-effort', 'none']
 const VALID_SO: StructuredOutputMode[] = ['json_schema', 'json_object', 'none']
 
-describe('AI_VENDOR_PRESETS（4.2 交付 1：供应商预设目录）', () => {
-  it('清单完备：7 项且 id 集合固定（VendorDialog 第一段目录顺序即清单顺序）', () => {
-    expect(AI_VENDOR_PRESETS).toHaveLength(7)
-    expect(AI_VENDOR_PRESETS.map(p => p.id)).toEqual(EXPECTED_IDS)
-    expect(new Set(AI_VENDOR_PRESETS.map(p => p.id)).size).toBe(7)
+describe('AI_VENDOR_PRESETS（tasks 8.1：44 项五组预设目录）', () => {
+  it('清单完备：44 项且分组计数与 pi 内置清单对账（cn15/global10/gateway16/local2/custom1）', () => {
+    expect(AI_VENDOR_PRESETS).toHaveLength(44)
+    expect(new Set(AI_VENDOR_PRESETS.map(p => p.id)).size).toBe(44)
+    const counts = AI_VENDOR_PRESETS.reduce<Record<string, number>>((acc, p) => {
+      acc[p.group] = (acc[p.group] ?? 0) + 1
+      return acc
+    }, {})
+    expect(counts).toEqual(EXPECTED_GROUP_COUNTS)
+    // pi 内置 41 家 + 本地 2 + 自定义 1：本地/自定义组不含 pi 家
+    expect(AI_VENDOR_PRESETS.filter(p => p.group === 'local' || p.group === 'custom')).toHaveLength(3)
+  })
+
+  it('PRESET_GROUPS：五组顺序固定（VendorDialog 目录展示顺序）', () => {
+    expect(PRESET_GROUPS.map(g => g.id)).toEqual(['cn', 'global', 'gateway', 'local', 'custom'])
+  })
+
+  it('pi 关键厂商在册：anthropic/openai/deepseek/zai-coding-cn/xiaomi/qwen-token-plan/kimi-coding 等', () => {
+    for (const id of [
+      'anthropic', 'openai', 'google', 'deepseek', 'xai', 'groq', 'mistral',
+      'zai', 'zai-coding-cn', 'xiaomi', 'xiaomi-token-plan-cn', 'qwen-token-plan',
+      'qwen-token-plan-individual', 'kimi-coding', 'moonshotai', 'moonshotai-cn',
+      'minimax', 'minimax-cn', 'ant-ling', 'openrouter', 'amazon-bedrock',
+      'azure-openai-responses', 'cloudflare-workers-ai', 'github-copilot', 'nvidia',
+      'huggingface', 'fireworks', 'together', 'baseten', 'meta', 'cerebras',
+      'opencode', 'opencode-go', 'openai-codex', 'radius', 'vercel-ai-gateway',
+      'google-vertex', 'cloudflare-ai-gateway', 'ollama', 'llamacpp', 'custom',
+    ]) {
+      expect(findVendorPreset(id), `${id} 应在预设目录`).toBeTruthy()
+    }
   })
 
   it('DeepSeek 预设 structured_output=json_object（spec 明确的厂商默认档）', () => {
@@ -23,18 +59,37 @@ describe('AI_VENDOR_PRESETS（4.2 交付 1：供应商预设目录）', () => {
     expect(deepseek!.baseUrl).toBe('https://api.deepseek.com/v1')
   })
 
+  it('小米 Token Plan 三区 base_url 为 token-plan 域名（FB-8，与 pi 内置定义对齐）；标准 xiaomi 家用 api 域名', () => {
+    expect(findVendorPreset('xiaomi')!.baseUrl).toBe('https://api.xiaomimimo.com/v1')
+    expect(findVendorPreset('xiaomi-token-plan-cn')!.baseUrl).toBe('https://token-plan-cn.xiaomimimo.com/v1')
+    expect(findVendorPreset('xiaomi-token-plan-ams')!.baseUrl).toBe('https://token-plan-ams.xiaomimimo.com/v1')
+    expect(findVendorPreset('xiaomi-token-plan-sgp')!.baseUrl).toBe('https://token-plan-sgp.xiaomimimo.com/v1')
+  })
+
   it('枚举值全部合法（providerType/dialect/structuredOutput 与 types/ai.ts 联合一致）', () => {
     for (const p of AI_VENDOR_PRESETS) {
       expect(VALID_PROVIDER_TYPES).toContain(p.providerType)
       expect(VALID_DIALECTS).toContain(p.thinkingDialect)
       expect(VALID_SO).toContain(p.structuredOutput)
       expect(p.label.length).toBeGreaterThan(0)
-      expect(p.icon).toMatch(/^mdi:/)
     }
   })
 
+  it('logo 为 vendor-icons.svg symbol id 或 null（首字母回退，FB-2）', () => {
+    for (const p of AI_VENDOR_PRESETS) {
+      if (p.logo !== null) {
+        expect(p.logo).toMatch(/^[a-z][a-z0-9-]*$/i)
+      }
+    }
+    // 无图标厂商走首字母回退（集合比较，不依赖清单顺序）：
+    // pi 家中无 symbol 的 5 家 + 本地/自定义 3 项 = 8 项
+    const noLogo = AI_VENDOR_PRESETS.filter(p => p.logo === null).map(p => p.id)
+    expect(noLogo).toHaveLength(8)
+    expect(new Set(noLogo)).toEqual(new Set(['openai-codex', 'radius', 'opencode-go', 'baseten', 'meta', 'custom', 'ollama', 'llamacpp']))
+  })
+
   it('云端预设 needsApiKey 且非 isLocal；本地预设无需密钥且 isLocal', () => {
-    const cloud = AI_VENDOR_PRESETS.filter(p => !p.isLocal && p.id !== 'custom')
+    const cloud = AI_VENDOR_PRESETS.filter(p => !p.isLocal && p.group !== 'custom')
     for (const p of cloud) {
       expect(p.needsApiKey, `${p.id} 云端预设应需密钥`).toBe(true)
     }

@@ -6,6 +6,8 @@ import type { AIModel, AIRoute, AIRouteModelBinding, RouteSaveRequest, ThinkingL
 const composableMocks = vi.hoisted(() => ({
   useAIModels: vi.fn(),
   useAIRoutes: vi.fn(),
+  useAIVendors: vi.fn(),
+  useRouteHealth: vi.fn(),
 }))
 
 // 常量（capabilityOrder/routeLabels）保留真实导出，仅替换 composable 函数
@@ -16,6 +18,14 @@ vi.mock('../composables/useAIModels', async (importOriginal) => {
 vi.mock('../composables/useAIRoutes', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../composables/useAIRoutes')>()
   return { ...actual, useAIRoutes: composableMocks.useAIRoutes }
+})
+vi.mock('../composables/useAIVendors', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../composables/useAIVendors')>()
+  return { ...actual, useAIVendors: composableMocks.useAIVendors }
+})
+vi.mock('../composables/useRouteHealth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../composables/useRouteHealth')>()
+  return { ...actual, useRouteHealth: composableMocks.useRouteHealth }
 })
 
 // focus_capability 深链（观测面板「定位」跳入）；route 需 reactive 以支撑挂载期间 watch 路径
@@ -126,7 +136,18 @@ function buildCtx(overrides: { routes?: AIRoute[], models?: ModelWithVendor[] } 
     routeByCapability: computed(() => Object.fromEntries(routes.map(r => [r.capability, r]))),
     saveRoute: vi.fn(async (_capability: string, _data: RouteSaveRequest) => true),
   }
-  return { modelsCtx, routesCtx }
+  const vendorsCtx = {
+    vendors: ref<Array<{ id: number, name: string, preset_id?: string }>>([]),
+    fetchVendors: vi.fn(async () => []),
+  }
+  const healthCtx = {
+    fetchHealth: vi.fn(async () => {}),
+    cardHealth: vi.fn((_capability: string, _index: number, _name: string): { fail: number, lastErr: string | null, takeover: number } => ({ fail: 0, lastErr: null, takeover: 0 })),
+    rowHealth: vi.fn((_capability: string, _hasBackup: boolean): { level: 'ok' | 'warn' | 'err', text: string, degradedCount: number } => ({ level: 'ok', text: '正常', degradedCount: 0 })),
+    loaded: ref(false),
+    error: ref<string | null>(null),
+  }
+  return { modelsCtx, routesCtx, vendorsCtx, healthCtx }
 }
 
 type TestCtx = ReturnType<typeof buildCtx>
@@ -137,6 +158,8 @@ function installMocks(overrides: { routes?: AIRoute[], models?: ModelWithVendor[
   ctx = buildCtx(overrides)
   composableMocks.useAIModels.mockReturnValue(ctx.modelsCtx)
   composableMocks.useAIRoutes.mockReturnValue(ctx.routesCtx)
+  composableMocks.useAIVendors.mockReturnValue(ctx.vendorsCtx)
+  composableMocks.useRouteHealth.mockReturnValue(ctx.healthCtx)
   return ctx
 }
 
@@ -158,8 +181,8 @@ function section(wrapper: Awaited<ReturnType<typeof mountRoutes>>, capability: s
   return wrapper.find(`[data-route-section="${capability}"]`)
 }
 
-function chainItems(capabilityRoot: ReturnType<typeof section>) {
-  return capabilityRoot.findAll('.route-provider')
+function laneCards(capabilityRoot: ReturnType<typeof section>) {
+  return capabilityRoot.findAll('.swim-card')
 }
 
 function saveButton(wrapper: Awaited<ReturnType<typeof mountRoutes>>) {
@@ -193,113 +216,168 @@ afterEach(() => {
   mountedWrappers.length = 0
 })
 
-describe('AIRouterCapabilityRoutes 链式卡片（U7）', () => {
-  it('链项显示「模型名@供应商名」+ 计数；rank 1 高亮；本地编辑态初始 = route_models[].thinking_level', async () => {
+describe('AIRouterCapabilityRoutes 行式泳道（U7，tasks 8.3）', () => {
+  it('泳道卡：模型名+供应商名分行（告别 model@vendor 文字串）；rank 1 高亮；初始继承/覆盖态来自 route_models', async () => {
     const wrapper = await mountRoutes()
     const summary = section(wrapper, 'summary')
 
-    const items = chainItems(summary)
-    expect(items).toHaveLength(2)
-    expect(items[0]!.text()).toContain('qwythos@llamacpp-qwen')
-    expect(items[1]!.text()).toContain('deepseek-flash@DeepSeek')
-    expect(items[0]!.find('.route-provider__rank--first').exists()).toBe(true)
-    expect(summary.text()).toContain('2 模型')
-    // 初始继承/覆盖态来自 route_models
-    expect((items[0]!.find('select').element as HTMLSelectElement).value).toBe('')
-    expect((items[1]!.find('select').element as HTMLSelectElement).value).toBe('low')
-    expect(items[1]!.find('.route-provider__override').exists()).toBe(true)
-    expect(items[0]!.find('.route-provider__override').exists()).toBe(false)
+    const cards = laneCards(summary)
+    expect(cards).toHaveLength(2)
+    expect(cards[0]!.text()).toContain('qwythos')
+    expect(cards[0]!.text()).toContain('llamacpp-qwen')
+    expect(cards[0]!.text()).not.toContain('@')
+    expect(cards[1]!.text()).toContain('deepseek-flash')
+    expect(cards[1]!.text()).toContain('DeepSeek')
+    expect(cards[0]!.find('.swim-card__rank--first').exists()).toBe(true)
+    expect(summary.find('.swimlane__name').text()).toBe('文章总结')
+    // 初始继承/覆盖态
+    expect((cards[0]!.find('select').element as HTMLSelectElement).value).toBe('')
+    expect((cards[1]!.find('select').element as HTMLSelectElement).value).toBe('low')
+    expect(cards[1]!.find('.swim-card__badge--override').exists()).toBe(true)
+    expect(cards[0]!.find('.swim-card__badge--override').exists()).toBe(false)
   })
 
-  it('hover 模型名扇出提示：其他能力数 N>0 显「另承载 N 个能力」，N=0 显「未承载其他能力」', async () => {
+  it('模型池横条：usable 模型按 vendor 分组渲染；停用模型不出现；行内计数正确', async () => {
     const wrapper = await mountRoutes()
-    const items = chainItems(section(wrapper, 'summary'))
-
-    // qwythos 同挂 summary + topic_tagging → 另承载 1
-    expect(items[0]!.find('.fanout-tip').text()).toBe('qwythos 另承载 1 个能力')
-    // deepseek-flash 仅挂 summary → 未承载其他能力
-    expect(items[1]!.find('.fanout-tip').text()).toBe('未承载其他能力')
+    const groups = wrapper.findAll('.pool-strip__group')
+    expect(groups).toHaveLength(2)
+    const poolText = wrapper.find('.pool-strip').text()
+    expect(poolText).toContain('qwythos')
+    expect(poolText).toContain('deepseek-flash')
+    expect(poolText).toContain('qwen3-embedding')
+    expect(poolText).not.toContain('m-disabled')
+    // 行头计数
+    expect(section(wrapper, 'summary').find('.swimlane__count').text()).toBe('2')
   })
 
-  it('调档即本地态变化：选中非继承档出现「覆盖」徽章，选回继承徽章消失', async () => {
+  it('hover 卡片扇出提示：另承载 N 个能力 / 未承载其他能力', async () => {
     const wrapper = await mountRoutes()
-    const firstSelect = chainItems(section(wrapper, 'summary'))[0]!.find('select')
+    const cards = laneCards(section(wrapper, 'summary'))
+    expect(cards[0]!.find('.fanout-tip').text()).toContain('qwythos 另承载 1 个能力')
+    expect(cards[1]!.find('.fanout-tip').text()).toContain('未承载其他能力')
+  })
+
+  it('调档即本地态变化：覆盖徽章出现/消失；未声明 xhigh/max 的模型下拉不含候选（钳制）', async () => {
+    const wrapper = await mountRoutes()
+    const firstSelect = laneCards(section(wrapper, 'summary'))[0]!.find('select')
 
     await firstSelect.setValue('low')
-    let items = chainItems(section(wrapper, 'summary'))
-    expect(items[0]!.find('.route-provider__override').exists()).toBe(true)
-    // 未声明 xhigh/max 的模型（qwythos）下拉不含 xhigh/max 候选（spec 钳制）
-    const values = items[0]!.findAll('option').map(o => o.element.value)
+    let cards = laneCards(section(wrapper, 'summary'))
+    expect(cards[0]!.find('.swim-card__badge--override').exists()).toBe(true)
+    const values = cards[0]!.findAll('option').map(o => o.element.value)
     expect(values).not.toContain('xhigh')
     expect(values).not.toContain('max')
 
-    await items[0]!.find('select').setValue('')
-    items = chainItems(section(wrapper, 'summary'))
-    expect(items[0]!.find('.route-provider__override').exists()).toBe(false)
+    await cards[0]!.find('select').setValue('')
+    cards = laneCards(section(wrapper, 'summary'))
+    expect(cards[0]!.find('.swim-card__badge--override').exists()).toBe(false)
   })
 
-  it('chips 点击追加链尾（✓ 标已在链中）；↑↓ 换位即时生效；× 移除', async () => {
+  it('点击池卡弹能力菜单（FB-7）：类型不匹配置灰、已在行中标出；选中追加行尾', async () => {
     const wrapper = await mountRoutes()
 
-    // topic_tagging 链当前只有 qwythos；点 deepseek-flash chip → 追加链尾
-    const tagging = section(wrapper, 'topic_tagging')
-    const chip = tagging.findAll('.route-chip').find(c => c.text().includes('deepseek-flash'))!
-    expect(chip.text()).toContain('+')
-    await chip.trigger('click')
+    // 点 deepseek-flash（llm）池卡 → 菜单展开
+    const poolCard = wrapper.findAll('.pool-card').find(c => c.text().includes('deepseek-flash'))!
+    await poolCard.trigger('click')
+    const menu = document.body.querySelector('.cap-picker')
+    expect(menu).toBeTruthy()
+    const items = [...menu!.querySelectorAll('.cap-picker__item')]
+    expect(items).toHaveLength(8)
 
-    let items = chainItems(section(wrapper, 'topic_tagging'))
-    expect(items).toHaveLength(2)
-    expect(items[1]!.text()).toContain('deepseek-flash@DeepSeek')
-    expect(section(wrapper, 'topic_tagging').findAll('.route-chip').find(c => c.text().includes('deepseek-flash'))!.text()).toContain('✓')
+    // embedding 行对 llm 卡置灰（仅 embedding）
+    const embItem = items.find(el => el.textContent?.includes('向量嵌入'))!
+    expect(embItem.className).toContain('cap-picker__item--disabled')
+    expect(embItem.textContent).toContain('仅 embedding')
+    // topic_tagging 可选且显示当前 1 卡
+    const taggingItem = items.find(el => el.textContent?.includes('主题提取'))!
+    expect(taggingItem.textContent).toContain('1 卡')
+    taggingItem.dispatchEvent(new Event('click'))
+    await flushAsync()
 
-    // ↑ 换位：第二项上移到 rank 1
-    await items[1]!.findAll('.route-icon-btn')[0]!.trigger('click')
-    items = chainItems(section(wrapper, 'topic_tagging'))
-    expect(items[0]!.text()).toContain('deepseek-flash@DeepSeek')
-    expect(items[0]!.find('.route-provider__rank--first').exists()).toBe(true)
+    // 追加行尾 + 菜单关闭
+    const cards = laneCards(section(wrapper, 'topic_tagging'))
+    expect(cards).toHaveLength(2)
+    expect(cards[1]!.text()).toContain('deepseek-flash')
+    expect(document.body.querySelector('.cap-picker')).toBeNull()
 
-    // × 移除
-    await items[0]!.find('.route-icon-btn--danger').trigger('click')
-    items = chainItems(section(wrapper, 'topic_tagging'))
-    expect(items).toHaveLength(1)
-    expect(items[0]!.text()).toContain('qwythos@llamacpp-qwen')
+    // 已在行中：再点池卡菜单该项标「已在行中」
+    await wrapper.findAll('.pool-card').find(c => c.text().includes('deepseek-flash'))!.trigger('click')
+    const again = [...document.body.querySelectorAll('.cap-picker__item')]
+    expect(again.find(el => el.textContent?.includes('主题提取'))!.textContent).toContain('已在行中')
   })
 
-  it('chips 按 vendor 分组渲染；embedding 行只列 embedding 模型；非 usable 模型不出现', async () => {
+  it('←→ 换位即时生效；× 移除（FB-3 键盘/按钮双通道）', async () => {
     const wrapper = await mountRoutes()
-    const summary = section(wrapper, 'summary')
+    let cards = laneCards(section(wrapper, 'summary'))
+    expect(cards).toHaveLength(2)
 
-    const groups = summary.findAll('.route-chip-group').map(g => g.text())
-    expect(groups).toEqual(['llamacpp-qwen：', 'DeepSeek：'])
-    const chipNames = summary.findAll('.route-chip').map(c => c.text())
-    expect(chipNames.some(t => t.includes('qwythos'))).toBe(true)
-    expect(chipNames.some(t => t.includes('deepseek-flash'))).toBe(true)
-    // 停用模型不是绑定候选
-    expect(chipNames.some(t => t.includes('m-disabled'))).toBe(false)
-    // llm 行不列 embedding 模型
-    expect(chipNames.some(t => t.includes('qwen3-embedding'))).toBe(false)
+    // 第二张卡 ← 前移 → rank 1
+    await cards[1]!.findAll('.swim-icon-btn').find(b => b.attributes('title') === '前移')!.trigger('click')
+    cards = laneCards(section(wrapper, 'summary'))
+    expect(cards[0]!.text()).toContain('deepseek-flash')
+    expect(cards[0]!.find('.swim-card__rank--first').exists()).toBe(true)
 
-    const embeddingChips = section(wrapper, 'embedding').findAll('.route-chip').map(c => c.text())
-    expect(embeddingChips.some(t => t.includes('qwen3-embedding'))).toBe(true)
-    expect(embeddingChips.some(t => t.includes('qwythos'))).toBe(false)
+    // 第一张卡 → 后移回去
+    await cards[0]!.findAll('.swim-icon-btn').find(b => b.attributes('title') === '后移')!.trigger('click')
+    cards = laneCards(section(wrapper, 'summary'))
+    expect(cards[0]!.text()).toContain('qwythos')
+
+    // × 移除第二张
+    await cards[1]!.find('.swim-icon-btn--danger').trigger('click')
+    cards = laneCards(section(wrapper, 'summary'))
+    expect(cards).toHaveLength(1)
+    expect(cards[0]!.text()).toContain('qwythos')
   })
 
-  it('embedding 链项不出现思考档下拉（绑定不携带覆盖值），显示 —', async () => {
+  it('embedding 卡不出现思考档下拉（绑定不携带覆盖值），显示 —', async () => {
     const wrapper = await mountRoutes()
-    const item = chainItems(section(wrapper, 'embedding'))[0]!
-    expect(item.find('select').exists()).toBe(false)
-    expect(item.find('.route-provider__dash').exists()).toBe(true)
+    const card = laneCards(section(wrapper, 'embedding'))[0]!
+    expect(card.find('select').exists()).toBe(false)
+    expect(card.find('.swim-card__dash').exists()).toBe(true)
   })
 
-  it('保存：逐能力 PUT bindings=[{model_id, thinking_level}]（null=继承），成功 toast', async () => {
+  it('降级内嵌标注（FB-5）：失败卡红边+徽章、接管徽章、行头健康点三态', async () => {
+    // summary：顺位1失败2次（timeout），顺位2接管2次 → 行头 warn「降级中·已兜底」
+    ctx.healthCtx.cardHealth.mockImplementation((_cap: string, index: number, _name: string) => {
+      if (index === 0) return { fail: 2, lastErr: 'timeout 30s · 01:52', takeover: 0 }
+      if (index === 1) return { fail: 0, lastErr: null, takeover: 2 }
+      return { fail: 0, lastErr: null, takeover: 0 }
+    })
+    ctx.healthCtx.rowHealth.mockImplementation((_cap: string, hasBackup: boolean) => {
+      if (_cap === 'summary' && hasBackup) return { level: 'warn', text: '24h 降级 2 次·已兜底', degradedCount: 2 }
+      if (_cap === 'topic_tagging') return { level: 'err', text: '24h 失败 1 次·无兜底', degradedCount: 1 }
+      return { level: 'ok', text: '正常', degradedCount: 0 }
+    })
     const wrapper = await mountRoutes()
 
-    // topic_tagging 追加 deepseek-flash（继承档）后保存
-    await section(wrapper, 'topic_tagging').findAll('.route-chip').find(c => c.text().includes('deepseek-flash'))!.trigger('click')
+    const cards = laneCards(section(wrapper, 'summary'))
+    expect(cards[0]!.classes()).toContain('swim-card--fail')
+    expect(cards[0]!.find('.swim-card__err-dot').text()).toBe('2')
+    expect(cards[0]!.find('.swim-card__badge--fail').text()).toContain('24h 失败 2')
+    expect(cards[0]!.attributes('title')).toContain('timeout 30s')
+    expect(cards[1]!.find('.swim-card__badge--takeover').text()).toContain('接管 2')
+    // 行头三态
+    expect(section(wrapper, 'summary').find('.swimlane__dot--warn').exists()).toBe(true)
+    expect(section(wrapper, 'summary').text()).toContain('已兜底')
+    expect(section(wrapper, 'topic_tagging').find('.swimlane__dot--err').exists()).toBe(true)
+    expect(section(wrapper, 'topic_tagging').text()).toContain('无兜底')
+    expect(section(wrapper, 'digest_polish').find('.swimlane__dot--ok').exists()).toBe(true)
+  })
+
+  it('保存：逐能力 PUT bindings=[{model_id, thinking_level}]（priority 由行序派生），成功 toast', async () => {
+    const wrapper = await mountRoutes()
+
+    // 点击菜单给 topic_tagging 追加 deepseek-flash（继承档）
+    await wrapper.findAll('.pool-card').find(c => c.text().includes('deepseek-flash'))!.trigger('click')
+    ;[...document.body.querySelectorAll('.cap-picker__item')]
+      .find(el => el.textContent?.includes('主题提取'))!
+      .dispatchEvent(new Event('click'))
+    await flushAsync()
+
     await saveButton(wrapper).trigger('click')
     await flushAsync()
 
-    // 逐能力全量 PUT（含 fixture 中无路由的 5 条空链 → bindings:[]）
+    // 逐能力全量 PUT（含 fixture 中无路由的 5 行空链 → bindings:[]）
     expect(ctx.routesCtx.saveRoute).toHaveBeenCalledTimes(8)
     expect(ctx.routesCtx.saveRoute).toHaveBeenCalledWith('digest_polish', { bindings: [] })
     expect(ctx.routesCtx.saveRoute).toHaveBeenCalledWith('summary', {
@@ -320,8 +398,7 @@ describe('AIRouterCapabilityRoutes 链式卡片（U7）', () => {
     expect(lastToast()?.type).toBe('success')
   })
 
-  it('清空保存：移除某能力最后一个绑定后保存，该能力 PUT bindings=[] 且成功后本地态不复活', async () => {
-    // 模拟真实 saveRoute 语义：后端接受 payload 后 fetchRoutes 刷新路由缓存
+  it('清空保存：移除某行最后一个绑定后保存，该能力 PUT bindings=[] 且成功后本地态不复活', async () => {
     ctx.routesCtx.saveRoute.mockImplementation(async (capability: string, data: RouteSaveRequest) => {
       const route = ctx.routesCtx.routes.value.find(r => r.capability === capability)
       if (route) {
@@ -335,18 +412,14 @@ describe('AIRouterCapabilityRoutes 链式卡片（U7）', () => {
     })
     const wrapper = await mountRoutes()
 
-    // × 移除 topic_tagging 唯一绑定 → 保存
-    await section(wrapper, 'topic_tagging').find('.route-icon-btn--danger').trigger('click')
+    await section(wrapper, 'topic_tagging').find('.swim-icon-btn--danger').trigger('click')
     await saveButton(wrapper).trigger('click')
     await flushAsync()
 
-    // 空链也被持久化：PUT bindings=[]（后端 UpsertRouteModels 清空语义）
     expect(ctx.routesCtx.saveRoute).toHaveBeenCalledWith('topic_tagging', { bindings: [] })
     expect(lastToast()?.type).toBe('success')
-
-    // 保存成功后 hydrate 自刷新后的路由：清空态不复活
-    expect(section(wrapper, 'topic_tagging').find('.route-section__empty').text()).toContain('点击下方按钮添加模型')
-    expect(chainItems(section(wrapper, 'topic_tagging'))).toHaveLength(0)
+    expect(section(wrapper, 'topic_tagging').find('.swimlane__empty').text()).toContain('拖入模型卡片')
+    expect(laneCards(section(wrapper, 'topic_tagging'))).toHaveLength(0)
   })
 
   it('保存失败：toast 后端错误原文并停在失败能力（未保存能力本地态保留）', async () => {
@@ -362,14 +435,14 @@ describe('AIRouterCapabilityRoutes 链式卡片（U7）', () => {
     expect(lastToast()?.message).toBe('embedding 路由不能挂 llm 模型「X」')
   })
 
-  it('空链态：虚线引导；无可绑定候选时提示先启用对应类型模型', async () => {
+  it('空行引导；全部模型停用时池空态引导', async () => {
     const wrapper = await mountRoutes()
-    expect(section(wrapper, 'digest_polish').find('.route-section__empty').text()).toContain('点击下方按钮添加模型')
+    expect(section(wrapper, 'digest_polish').find('.swimlane__empty').text()).toContain('拖入模型卡片')
 
-    // 全部模型停用 → 无候选 → hint 引导
     installMocks({ models: MODELS.map(m => ({ ...m, enabled: false, usable: false })) })
     const bare = await mountRoutes()
-    expect(bare.find('.route-section__hint').text()).toContain('先在「AI 模型」里启用一个 llm 类型的模型')
+    expect(bare.find('.pool-strip').text()).toContain('先在「供应商与模型」里启用模型')
+    expect(bare.findAll('.pool-card')).toHaveLength(0)
   })
 })
 
@@ -380,15 +453,15 @@ describe('AIRouterCapabilityRoutes 定位跳入（observability Scenario: 定位
     const wrapper = await mountRoutes()
 
     const tagging = section(wrapper, 'topic_tagging')
-    expect(tagging.classes()).toContain('route-section--pulse')
-    expect(section(wrapper, 'summary').classes()).not.toContain('route-section--pulse')
+    expect(tagging.classes()).toContain('swimlane--pulse')
+    expect(section(wrapper, 'summary').classes()).not.toContain('swimlane--pulse')
 
     // 聚焦即清参：focus_capability 移除，section 保留（深链不丢）
     expect(routerMocks.replace).toHaveBeenCalledTimes(1)
     expect(lastReplaceQuery()).toEqual({ section: 'capability-routes' })
 
     await vi.advanceTimersByTimeAsync(1500)
-    expect(tagging.classes()).not.toContain('route-section--pulse')
+    expect(tagging.classes()).not.toContain('swimlane--pulse')
   })
 
   it('未知 focus_capability 忽略：不脉冲、不清参', async () => {
@@ -396,24 +469,24 @@ describe('AIRouterCapabilityRoutes 定位跳入（observability Scenario: 定位
     installMocks()
     const wrapper = await mountRoutes()
 
-    for (const el of wrapper.findAll('.route-section')) {
-      expect(el.classes()).not.toContain('route-section--pulse')
+    for (const el of wrapper.findAll('.swimlane')) {
+      expect(el.classes()).not.toContain('swimlane--pulse')
     }
     expect(routerMocks.replace).not.toHaveBeenCalled()
   })
 
   it('挂载期间 focus_capability 变化（watch 路径）同样定位脉冲并清参', async () => {
     const wrapper = await mountRoutes()
-    expect(section(wrapper, 'topic_tagging').classes()).not.toContain('route-section--pulse')
+    expect(section(wrapper, 'topic_tagging').classes()).not.toContain('swimlane--pulse')
 
     setRouteQuery({ section: 'capability-routes', focus_capability: 'topic_tagging' })
     await flushAsync()
 
     const tagging = section(wrapper, 'topic_tagging')
-    expect(tagging.classes()).toContain('route-section--pulse')
+    expect(tagging.classes()).toContain('swimlane--pulse')
     expect(lastReplaceQuery()).toEqual({ section: 'capability-routes' })
 
     await vi.advanceTimersByTimeAsync(1500)
-    expect(tagging.classes()).not.toContain('route-section--pulse')
+    expect(tagging.classes()).not.toContain('swimlane--pulse')
   })
 })

@@ -197,14 +197,11 @@ onMounted(() => {
       <button class="retry-btn" type="button" @click="reload">重试</button>
     </div>
 
-    <!-- empty：还没有供应商 -->
+    <!-- empty：还没有供应商（FB-6：入口唯一在 section 头部右上角，这里只引导） -->
     <div v-else-if="vendors.length === 0" class="empty-state">
       <Icon icon="mdi:brain" width="28" height="28" />
       <p>还没有供应商</p>
-      <p class="empty-hint">新增一个供应商并启用模型后，即可在「能力路由」中绑定</p>
-      <AppButton variant="primary" size="sm" @click="openCreate">
-        <Icon icon="mdi:plus" width="14" height="14" /> 新增供应商
-      </AppButton>
+      <p class="empty-hint">点击右上角「新增供应商」，启用模型后即可在「能力路由」中绑定</p>
     </div>
 
     <!-- 供应商卡片列表 -->
@@ -224,9 +221,6 @@ onMounted(() => {
         @delete="onDelete(v)"
         @update-model="onUpdateModel"
       />
-      <button class="add-vendor" type="button" @click="openCreate">
-        <Icon icon="mdi:plus" width="14" height="14" /> 新增供应商
-      </button>
     </template>
 
     <VendorDialog v-model="dialogOpen" :vendor="dialogVendor" :saving="dialogSaving" @save="onSave" />
@@ -276,25 +270,5 @@ onMounted(() => {
 .empty-hint {
   font-size: 12.5px;
   color: var(--color-text-muted);
-}
-
-.add-vendor {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  padding: 10px;
-  border-radius: 12px;
-  border: 1px dashed var(--color-border-strong);
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-}
-.add-vendor:hover {
-  border-color: var(--color-text-primary);
-  background: var(--color-bg-hover);
 }
 </style>

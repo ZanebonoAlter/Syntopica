@@ -30,9 +30,9 @@ func TestCreateVendorEmptyAPIKeyAllowed(t *testing.T) {
 	var loaded models.AIVendor
 	require.NoError(t, db.First(&loaded, vendor.ID).Error)
 	require.Equal(t, "", loaded.APIKey)
-	// 默认值补齐
+	// 默认值补齐（FB-10：超时缺省 600s）
 	require.Equal(t, ProviderTypeOpenAICompatible, loaded.ProviderType)
-	require.Equal(t, 120, loaded.TimeoutSeconds)
+	require.Equal(t, 600, loaded.TimeoutSeconds)
 	require.Equal(t, "none", loaded.ThinkingDialect)
 	require.Equal(t, "json_schema", loaded.StructuredOutput)
 }

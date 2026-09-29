@@ -252,7 +252,8 @@ func (c *openAICompatibleClient) postChatWithStatus(ctx context.Context, vendor 
 
 	timeout := time.Duration(vendor.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
-		timeout = 120 * time.Second
+		// FB-10：与 store 层 normalizeVendor 缺省一致（600s）
+		timeout = 600 * time.Second
 	}
 	resp, err := httpclient.New(httpclient.WithTimeout(timeout)).Do(httpReq)
 	if err != nil {

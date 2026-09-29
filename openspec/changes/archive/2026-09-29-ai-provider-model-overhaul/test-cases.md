@@ -27,12 +27,13 @@
 
 | 步 | 动作 | 来源 Scenario | 期望 | 层 | 落点 |
 | --- | --- | --- | --- | --- | --- |
-| ① | 设置页「AI 模型」→「+ 新增供应商」→ 选 DeepSeek 预设 → 只输 API Key → 保存 | vendor-model「vendor 承载协议」「新拉取默认未启用」 | 弹窗两段式；保存后新 VendorCard 出现且自动展开模型清单（全部未勾选）；卡片头显示 base_url/「新」标模型 | e2e | opencli（ui-design Acceptance ①） |
-| ② | 勾选 deepseek-chat 启用 → 「能力路由」→ summary 链 + chips 添加该模型 | routing「stale 与未启用不可绑定」反向 | 链项显示「模型@供应商」；chips 按 vendor 分组；embedding 行只列 embedding 模型 | e2e | opencli（Acceptance ②） |
-| ③ | 链项思考档从「继承」改「低」→ 保存 | thinking「绑定处按场景调档」 | 链项出现「覆盖」徽章；保存成功 toast；重新加载后值保持 | e2e | opencli（Acceptance ②） |
-| ④ | hover 链项模型名 | ui-design Interaction Contract | tooltip「另承载 N 个能力」出现 | e2e | opencli（Acceptance ③） |
-| ⑤ | 「运行状态」→ ai-health tab → 降级观测块切 7d → 点某事件「定位」 | observability「定位跳转能力路由」 | 跳能力路由 section，对应能力行滚动进入视口并脉冲高亮一次 | e2e | opencli（Acceptance ④） |
-| ⑥（附加） | 删除该供应商 | vendor-model「删除确认弹窗列明级联」 | AppConfirmDialog sm 弹窗列明「N 模型 / M 绑定」级联影响；确认后卡片消失、路由链上对应链项同步消失 | e2e | opencli（Acceptance ⑤） |
+| ① | 设置页「AI 模型」→「+ 新增供应商」→ 预设目录分组展示（44 项五组+搜索框）→ 选 DeepSeek 预设 → 只输 API Key → 保存 | vendor-model「vendor 承载协议」「新拉取默认未启用」；FB-1 | 弹窗两段式；目录分组（中国区/国际直连/聚合网关与云平台/本地/自定义）+搜索过滤；卡片 logo 用 pi provider-icons symbol；保存后新 VendorCard 出现且自动展开模型清单（全部未勾选）；卡片头显示 base_url/「新」标模型 | e2e | opencli（ui-design Acceptance ①） |
+| ② | 勾选 deepseek-chat 启用 → 「能力路由」行式泳道：**点击**模型池 deepseek 卡 → 能力菜单选「文章总结」追加；另拖/点一张 llm 卡验证 embedding 行拒绝（拖入红框 / 菜单项置灰） | routing「stale 与未启用不可绑定」反向；FB-3/FB-5/FB-7 双通道 | 卡片落位带序号；菜单项类型过滤与「已在行中」标注正确；拖入红框拒绝 + 回弹 + toast；模型池按 vendor 分组横排 | e2e | opencli（Acceptance ②⑥） |
+| ③ | summary 行内拖动卡片换位（或键盘←→）；卡片思考档从「继承」改「低」→ 保存 | thinking「绑定处按场景调档」 | 换位后序号重排=优先级；卡片出现「覆盖」徽章；保存成功 toast；重新加载后行序与档位保持（priority 由行序派生） | e2e | opencli（Acceptance ②） |
+| ④ | hover 列内卡片 | ui-design Interaction Contract | tooltip「另承载 N 个能力」出现 | e2e | opencli（Acceptance ③） |
+| ⑤ | 「运行状态」→ ai-health tab → 降级观测块切 7d → 点某事件「定位」 | observability「定位跳转能力路由」 | 跳能力路由 section，对应能力行滚动进入视口，行内目标卡片脉冲高亮一次 | e2e | opencli（Acceptance ④） |
+| ⑥（附加） | 删除该供应商 | vendor-model「删除确认弹窗列明级联」 | AppConfirmDialog sm 弹窗列明「N 模型 / M 绑定」级联影响；确认后卡片消失、能力行上对应卡片同步消失序号重排 | e2e | opencli（Acceptance ⑤） |
+| ⑦（附加） | 造一条 fallback 调用日志（顺位 1 失败→顺位 2 成功）→ 刷新能力路由 | FB-5 降级内嵌 | 失败卡红边+错误角标+「24h 失败 N」；接管卡「接管 N」徽章；两卡间箭头高亮标「降级 N」；行头健康点黄色「降级中·已兑底」 | e2e | opencli（Acceptance ⑦） |
 
 ## 2. 白盒用例（分支表 / 边界值清单，断言判据主线程定死）
 
@@ -365,7 +366,7 @@
 | U4 | ThinkingLevelSelect | 下拉项：继承（显示模型默认 N）+ 七档文字；未声明 xhigh/max 的模型只有到 high 的选项；选中非继承→父链项「覆盖」徽章 |
 | U5 | 删除确认 | AppConfirmDialog sm；正文含「将删除 N 个模型、解除 M 条绑定」 |
 | U6 | DegradationPanel | 统计行随窗口切换重新请求（mock api 断言参数）；事件行字段（时间/能力/顺位/模型/类型标/错误码）；「定位」emit 事件携带 capability；空态文案 |
-| U7 | 能力路由链 | 调档/添加/移除/换位即时反映到本地状态 + 保存后 PUT payload 结构（[{model_id, thinking_level?}]）；chips 按 vendor 分组渲染；embedding 行 chips 只含 embedding 模型 |
+| U7 | 能力路由行式泳道（FB-3+FB-5+FB-7） | 拖入（落点左/右插入/尾 slot）与**点击菜单**双通道添加（菜单类型过滤/已在行中标出/ESC 关闭）；换位/移除即时反映本地状态 + 保存后 PUT payload 结构（[{model_id, thinking_level?, priority}]，priority=行序）；embedding 行拒绝 llm 卡；跨行拖动提示先移除；键盘调序（←→）；**降级内嵌**：行头三态点聚合、失败卡/接管卡/降级箭头标注；卡内控件（select/徽章）不溢出卡片边界；预设目录（FB-1）：44 项五组 + 搜索 + 选中态；图标（FB-2）：presetId→symbolId 映射正确、无图标首字母回退 |
 
 ## 7. 双视口验收（任务 5.3）
 

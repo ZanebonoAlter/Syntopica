@@ -106,9 +106,20 @@ GET             /api/ai/observability/degradations?window&capability
 |---|---|
 | `types/ai.ts` AIProvider/AIRoute | AIVendor/AIModel/AIRouteModelBinding（重写） |
 | `AIProviderManagement.vue`（主+备表单） | `VendorCard.vue`（卡片+扇出徽章+展开清单）+ `VendorDialog.vue`（两段式） |
-| `AIRouterCapabilityRoutes.vue` | 保留链式骨架，链项 provider→model 引用 + `ThinkingLevelSelect.vue`（继承/七档/覆盖徽章） |
+| `AIRouterCapabilityRoutes.vue` | 重构为行式泳道（2026-09-29 FB-3+FB-5 修订：顶部模型池横条 + 每能力一行，卡片拖入/行内左右拖序=优先级，降级标注内嵌；取代链式卡片与 chips 追加；后端绑定契约不变）；`ThinkingLevelSelect.vue`（继承/七档/覆盖徽章）挂到卡片上 |
+| —（新增） | 预设目录常量（pi 41 家分组，见 D9）+ vendor icon spritesheet + `presetId→symbolId` 映射 |
 | `SettingsSectionAiHealth.vue` | 追加 `DegradationPanel.vue`（统计+事件流+定位，挂 ai-health tab） |
 | `useAIRouterSettings.ts` | 拆 `useAIVendors.ts` / `useAIModels.ts` / `useAIRoutes.ts` |
+
+### D9 预设目录全集与图标资产（2026-09-29 反馈修订，FB-1/FB-2）
+
+**预设目录 = pi 内置 41 家 + 本地 2 项 + 自定义**，共 44 项，前端常量（仍不后端托管，Non-Goal 不变）：
+
+- **数据源**：厂商清单以 pi-coding-agent `dist/core/model-resolver.js` 导出的 `defaultModelPerProvider` 键为准（41 家）；base_url/认证方式对照 pi `docs/providers.md`；随 pi 版本更新手动同步。
+- **分组呈现**（目录过长，两段式弹窗第一段分组）：中国区（zai/zai-coding-cn、xiaomi×4、qwen-token-plan×3、minimax/minimax-cn、moonshotai-cn、kimi-coding、ant-ling、deepseek）；国际直连（anthropic、openai、google、xai、groq、mistral、moonshotai、meta 等）；聚合网关与云平台（openrouter、vercel-ai-gateway、radius、opencode/opencode-go、github-copilot、openai-codex、azure-openai-responses、amazon-bedrock、google-vertex、cloudflare×2、nvidia、huggingface、fireworks、together、baseten、cerebras）；本地（Ollama、llama.cpp，pi 清单外保留）；自定义（OpenAI 兼容全量表单）。
+- **预设携带字段沿用既有 VendorDialog 契约**：base_url + 思考方言 + 结构化输出档。pi 侧无后两者元数据，预设默认值按 D4 方言表归类（deepseek→deepseek；qwen 系→qwen-chat-template；openai/xai/groq/google 系→reasoning-effort；其余→none；实现期按各家 4xx 实测校准），高级折叠可覆盖（已有机制不新增）。
+- **图标**：拷贝 pi-web `public/provider-icons.svg`（30 symbol，40KB）至 `front/app/assets/vendor-icons.svg` 作 spritesheet，`<use href="#…">` 引用；`presetId→symbolId` 映射表处理非同名项（amazon-bedrock→aws、azure-openai-responses→azure、kimi-coding→kimi、qwen-token-plan*→qwen、moonshotai*→moonshot、ant-ling→antgroup、xiaomi*→xiaomimimo、cloudflare*→cloudflare、vercel-ai-gateway→vercel、github-copilot→githubcopilot、minimax-cn→minimax）；41 家中 5 家无图标（openai-codex/radius/opencode-go/baseten/meta）首字母回退。推翻先前 Iconify mdi 决策（ui-design 差异清单第 3 条）。
+- **能力路由行式泳道**（FB-3+FB-5）：数据契约不变（`PUT /api/ai/routes` 绑定项仍为 `[{model_id, thinking_level?, priority}]`，priority 由行内顺序派生）；不存布局坐标；降级内嵌标注消费既有 /ai/health 与 /api/ai/observability/degradations（前端聚合，后端 API 零改动）。
 
 ## Risks / Trade-offs
 
@@ -128,4 +139,4 @@ GET             /api/ai/observability/degradations?window&capability
 ## Open Questions
 
 - deepseek `thinking` 参数取值域与 qwen 方言在 minimal..high 间是否有更细 wire 差异——实现期按厂商文档校准 D4 映射表，不影响架构。
-- 预设目录初始清单（除 DeepSeek/小米/ZAI/OpenRouter/Ollama/llama.cpp/自定义外是否再加）——前端常量，随时可补，不阻塞。
+- ~~预设目录初始清单~~（已定，2026-09-29 FB-1）：照抄 pi 内置 41 家 + Ollama/llama.cpp/自定义，见 D9；剩思考方言/结构化输出预设默认值按厂商文档校准，不阻塞架构。

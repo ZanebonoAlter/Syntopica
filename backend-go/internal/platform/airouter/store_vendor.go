@@ -227,7 +227,8 @@ func normalizeVendor(v *models.AIVendor) error {
 		v.ProviderType = ProviderTypeOpenAICompatible
 	}
 	if v.TimeoutSeconds <= 0 {
-		v.TimeoutSeconds = 120
+		// FB-10（2026-09-29 用户反馈）：默认 120s 对长思考链路过短，提到 600s
+		v.TimeoutSeconds = 600
 	}
 	if v.ThinkingDialect == "" {
 		v.ThinkingDialect = "none"

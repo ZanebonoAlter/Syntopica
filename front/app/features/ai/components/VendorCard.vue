@@ -8,6 +8,7 @@
 import { Icon } from '@iconify/vue'
 import { computed, ref } from 'vue'
 import AppToggle from '~/components/ui/AppToggle.vue'
+import VendorLogo from './VendorLogo.vue'
 import { useConfirm } from '~/composables/useConfirm'
 import { useAIVendors } from '../composables/useAIVendors'
 import { findVendorPreset, isLocalBaseUrl } from '../presets'
@@ -57,7 +58,7 @@ const LEVEL_LABELS: Record<string, string> = {
 }
 
 const preset = computed(() => findVendorPreset(props.vendor.preset_id))
-const presetIcon = computed(() => preset.value?.icon ?? '')
+const presetLogo = computed(() => preset.value?.logo ?? null)
 
 /** 本地判定镜像后端 hostIsLocal(base_url)：仅本地 vendor 可配 embedding */
 const isLocal = computed(() => isLocalBaseUrl(props.vendor.base_url))
@@ -147,8 +148,7 @@ function onLevelChange(m: AIModel, level: string) {
     <div class="vendor-head" role="button" tabindex="0"
       @click="emit('toggle')" @keydown.enter="emit('toggle')" @keydown.space.prevent="emit('toggle')">
       <span class="vendor-head__logo">
-        <Icon v-if="presetIcon" :icon="presetIcon" width="16" height="16" />
-        <template v-else>{{ vendor.name.charAt(0).toUpperCase() }}</template>
+        <VendorLogo :symbol-id="presetLogo" :name="vendor.name" :size="16" />
       </span>
       <div class="vendor-head__id">
         <div class="vendor-head__name">{{ vendor.name }}</div>
