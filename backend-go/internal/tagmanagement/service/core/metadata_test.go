@@ -42,16 +42,20 @@ func TestTagArticleStoresOnlyTopKeywordTags(t *testing.T) {
 	}))
 	defer aiServer.Close()
 
-	provider := models.AIProvider{Name: "tag-primary", ProviderType: airouter.ProviderTypeOpenAICompatible, BaseURL: aiServer.URL, APIKey: "token", Model: "test-model", Enabled: true}
-	if err := repository.Repo.DB().Create(&provider).Error; err != nil {
-		t.Fatalf("create provider: %v", err)
+	vendor := models.AIVendor{Name: "tag-vendor", ProviderType: airouter.ProviderTypeOpenAICompatible, BaseURL: aiServer.URL, APIKey: "token", Enabled: true}
+	if err := repository.Repo.DB().Create(&vendor).Error; err != nil {
+		t.Fatalf("create vendor: %v", err)
 	}
-	route := models.AIRoute{Name: airouter.DefaultRouteName, Capability: string(airouter.CapabilityTopicTagging), Enabled: true, Strategy: "ordered_failover"}
+	model := models.AIModel{VendorID: vendor.ID, Name: "test-model", ModelKind: airouter.ModelKindLLM, Enabled: true, Status: airouter.ModelStatusOK}
+	if err := repository.Repo.DB().Create(&model).Error; err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+	route := models.AIRoute{Name: airouter.DefaultRouteName, Capability: string(airouter.CapabilityTopicTagging), Enabled: true}
 	if err := repository.Repo.DB().Create(&route).Error; err != nil {
 		t.Fatalf("create route: %v", err)
 	}
-	if err := repository.Repo.DB().Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error; err != nil {
-		t.Fatalf("create route provider: %v", err)
+	if err := repository.Repo.DB().Create(&models.AIRouteModel{RouteID: route.ID, ModelID: model.ID, Priority: 1, Enabled: true}).Error; err != nil {
+		t.Fatalf("create route model: %v", err)
 	}
 
 	feed := models.Feed{Title: "OpenAI Feed", URL: "https://example.com/feed-limit"}

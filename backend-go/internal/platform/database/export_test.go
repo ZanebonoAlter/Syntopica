@@ -22,4 +22,9 @@ var (
 	// ~60-migration path). Used by fix-watch-delete-cascade's historical-orphan
 	// migration test.
 	ExportedPostgresMigrations = postgresMigrations
+
+	// ExportedVendorSnapshotDir points at the ai_providers legacy snapshot
+	// output directory so the vendor-model migration test can redirect writes
+	// to a t.TempDir() instead of polluting the repo working directory.
+	ExportedVendorSnapshotDir = &vendorSnapshotDir
 )

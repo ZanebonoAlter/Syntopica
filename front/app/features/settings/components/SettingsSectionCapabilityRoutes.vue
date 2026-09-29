@@ -1,17 +1,12 @@
 <script setup lang="ts">
-import { provide, reactive } from 'vue'
-import { useAIRouterSettings } from '~/features/ai/composables/useAIRouterSettings'
+/**
+ * 「能力路由」section 挂载壳（ai-provider-model-overhaul 4.3）。
+ * 取数/加载/错误/保存状态已全部内聚到 AIRouterCapabilityRoutes
+ * （useAIRoutes/useAIModels 自取），本壳只做 section 装配。
+ */
 import AIRouterCapabilityRoutes from '~/features/ai/components/AIRouterCapabilityRoutes.vue'
-
-const ctx = useAIRouterSettings()
-provide('ai-router-ctx', reactive(ctx))
 </script>
 
 <template>
-  <div>
-    <div v-if="ctx.loading.value" class="py-12 flex justify-center" style="color: var(--color-text-muted)">
-      加载中…
-    </div>
-    <AIRouterCapabilityRoutes v-else />
-  </div>
+  <AIRouterCapabilityRoutes />
 </template>

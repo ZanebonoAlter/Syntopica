@@ -13,9 +13,9 @@
 // NOTE on the probe seam: aihealth.probeFn is an unexported package variable
 // with no exported setter, so an external test package cannot swap in a fake
 // probe. Instead these tests drive RunStartupProbe through its REAL default
-// probe (airouter.TestConnection) against local httptest mock provider
+// probe (airouter.TestVendorConnection) against local httptest mock vendor
 // endpoints — exactly the "mock provider 端点" wording of task 3.6 — which
-// exercises TestConnection itself and requires no product-code change.
+// exercises TestVendorConnection itself and requires no product-code change.
 package analysispause_test
 
 import (
@@ -47,8 +47,8 @@ func resetHealthForTest(t *testing.T) {
 }
 
 // mockProviderServer returns an httptest server answering GET /models with a
-// valid OpenAI-style model list — enough for airouter.TestConnection (the real
-// probe) to report reachable.
+// valid OpenAI-style model list — enough for airouter.TestVendorConnection (the
+// real probe) to report reachable.
 func mockProviderServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +65,7 @@ func mockProviderServer(t *testing.T) *httptest.Server {
 
 // closedProviderURL returns a base URL that refuses connections: a server is
 // started and immediately closed, so the port is guaranteed not listening and
-// TestConnection fails fast with connection refused.
+// TestVendorConnection fails fast with connection refused.
 func closedProviderURL(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.NotFoundHandler())
@@ -73,27 +73,28 @@ func closedProviderURL(t *testing.T) string {
 	return srv.URL
 }
 
-// seedEnabledRoute upserts an enabled provider of the given model_kind bound as
-// the primary (priority 1) link of an enabled route with the given capability.
-// UpsertProvider/UpsertRoute are the production paths, so link priority and the
+// seedEnabledRoute upserts an enabled vendor (answering at baseURL) with one
+// enabled model of the given model_kind bound as the primary (priority 1)
+// binding of an enabled route with the given capability. CreateVendor/UpsertModel/
+// UpsertRouteModels are the production paths, so binding priority and the
 // model_kind binding check are exercised for real.
-func seedEnabledRoute(t *testing.T, store *airouter.Store, capability, providerName, baseURL, modelKind string) {
+func seedEnabledRoute(t *testing.T, store *airouter.Store, capability, vendorName, baseURL, modelKind string) {
 	t.Helper()
-	p := models.AIProvider{
-		Name:         providerName,
-		ProviderType: airouter.ProviderTypeOpenAICompatible,
-		BaseURL:      baseURL,
-		Model:        providerName + "-model",
-		APIKey:       "test-key",
-		Enabled:      true,
-		ModelKind:    modelKind,
+	v := models.AIVendor{
+		Name: vendorName, ProviderType: airouter.ProviderTypeOpenAICompatible,
+		BaseURL: baseURL, APIKey: "test-key", Enabled: true,
 	}
-	require.NoError(t, store.UpsertProvider(&p))
-	require.NoError(t, store.UpsertRoute(&models.AIRoute{
+	require.NoError(t, store.CreateVendor(&v))
+	m := models.AIModel{
+		VendorID: v.ID, Name: vendorName + "-model", ModelKind: modelKind,
+		Enabled: true, Status: airouter.ModelStatusOK,
+	}
+	require.NoError(t, store.UpsertModel(&m))
+	require.NoError(t, store.UpsertRouteModels(&models.AIRoute{
 		Name:       "default",
 		Capability: capability,
 		Enabled:    true,
-	}, []uint{p.ID}))
+	}, []airouter.RouteModelBindingInput{{ModelID: m.ID}}))
 }
 
 // TestHealthGate_ProbeComposesWithPauseGate is the happy-path compose proof:
@@ -194,8 +195,8 @@ func TestHealthGate_HeartbeatDegrade_PauseAwareSkips(t *testing.T) {
 	require.True(t, aihealth.Healthy(), "baseline: core pair reachable")
 	require.False(t, analysispause.IsPaused())
 
-	// Kill both endpoints: connection refused from here on (真实秒拒型失败).
-	killProviders(t, store)
+	// Kill both endpoints: connection refused from here on（真实秒拒型失败）.
+	killVendors(t, store)
 
 	// Failure #1: debounce window keeps the overall verdict healthy.
 	aihealth.RunStartupProbe(context.Background(), store, false)
@@ -220,25 +221,25 @@ func TestHealthGate_HeartbeatDegrade_PauseAwareSkips(t *testing.T) {
 	require.Equal(t, "paused", result.Data["skipped"])
 }
 
-// killProviders shuts down every enabled provider endpoint by pointing its
-// base_url at a guaranteed-dead port (server started then closed), so the next
-// real probe fails fast with connection refused — the actual failure shape of
-// a powered-off AI host.
-func killProviders(t *testing.T, store *airouter.Store) {
+// killVendors shuts down every vendor endpoint by pointing its base_url at a
+// guaranteed-dead port (server started then closed), so the next real probe
+// fails fast with connection refused — the actual failure shape of a
+// powered-off AI host.
+func killVendors(t *testing.T, store *airouter.Store) {
 	t.Helper()
 	dead := closedProviderURL(t)
-	providers, err := store.ListProviders()
+	vendors, err := store.ListVendors()
 	require.NoError(t, err)
-	for _, p := range providers {
-		p.BaseURL = dead
-		require.NoError(t, store.UpsertProvider(&p))
+	for _, v := range vendors {
+		v.BaseURL = dead
+		require.NoError(t, store.UpdateVendor(&v, false))
 	}
 }
 
 // TestHealthGate_SlowProviderWithinTimeout_Healthy pins the busy-tolerance
-// compose proof: a provider whose /models answers slowly (but well within its
+// compose proof: a vendor whose /models answers slowly (but well within its
 // probe timeout) counts as reachable, NOT as a failure — the debounce logic
-// never even sees it. 慢而活着的服务器不计失败（忙容忍由 provider 超时提供）.
+// never even sees it. 慢而活着的服务器不计失败（忙容忍由 vendor 超时提供）.
 func TestHealthGate_SlowProviderWithinTimeout_Healthy(t *testing.T) {
 	resetHealthForTest(t)
 	db := testutil.SetupTestDB(t)
@@ -249,7 +250,7 @@ func TestHealthGate_SlowProviderWithinTimeout_Healthy(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		time.Sleep(300 * time.Millisecond) // slow but alive; probe timeout defaults to 15s
+		time.Sleep(300 * time.Millisecond) // slow but alive; vendor probe timeout defaults well above this
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"id":"test-model"}]}`))
 	}))

@@ -44,8 +44,7 @@ func TestModelTagConstraints_MaterializedInDB(t *testing.T) {
 		{"ai_routes", "name", true, ""},
 		{"ai_routes", "capability", true, ""},
 		{"ai_routes", "enabled", true, "true"},
-		{"ai_routes", "priority", true, "100"},
-		{"ai_routes", "strategy", true, "ordered_failover"},
+		// ai_routes.priority/strategy 死列已随 vendor/model 两层化移除（全新库不再建列）。
 		{"ai_routes", "max_concurrency", true, "0"},
 		{"ai_route_providers", "route_id", true, ""},
 		{"ai_route_providers", "provider_id", true, ""},

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/reader/repository"
 	"syntopica-backend/internal/reader/service"
@@ -31,24 +32,37 @@ func loadCompletionAISettings() {
 		return
 	}
 
-	provider, _, err := airouter.NewRouter().ResolvePrimaryProvider(airouter.CapabilitySummary)
-	if err == nil && provider != nil && provider.BaseURL != "" && provider.Model != "" {
-		completionService.SetAICredentials(provider.BaseURL, provider.APIKey, provider.Model)
+	model, vendor, _, err := airouter.NewRouter().ResolvePrimaryModel(airouter.CapabilitySummary)
+	if err == nil && model != nil && vendor != nil && vendor.BaseURL != "" && model.Name != "" {
+		completionService.SetAICredentials(vendor.BaseURL, vendor.APIKey, model.Name)
 		return
 	}
 
-	// Fallback: use any enabled provider when no summary-specific route exists.
-	// This handles the common case where the user configured an AI provider
-	// but did not create a dedicated route for the summary capability.
+	// Fallback: use any enabled model (under an enabled vendor) when no
+	// summary-specific route exists. This handles the common case where the
+	// user configured an AI vendor/model but did not create a dedicated route
+	// for the summary capability.
 	store := airouter.NewStore(nil)
-	providers, err := store.ListProviders()
+	vendors, err := store.ListVendors()
 	if err != nil {
 		return
 	}
-	for _, p := range providers {
-		if p.Enabled && p.BaseURL != "" && p.Model != "" {
-			completionService.SetAICredentials(p.BaseURL, p.APIKey, p.Model)
-			return
+	enabledVendor := make(map[uint]models.AIVendor, len(vendors))
+	for _, v := range vendors {
+		if v.Enabled {
+			enabledVendor[v.ID] = v
+		}
+	}
+	modelList, err := store.ListModels()
+	if err != nil {
+		return
+	}
+	for _, m := range modelList {
+		if m.Enabled && m.Status == airouter.ModelStatusOK {
+			if v, ok := enabledVendor[m.VendorID]; ok && v.BaseURL != "" && m.Name != "" {
+				completionService.SetAICredentials(v.BaseURL, v.APIKey, m.Name)
+				return
+			}
 		}
 	}
 }

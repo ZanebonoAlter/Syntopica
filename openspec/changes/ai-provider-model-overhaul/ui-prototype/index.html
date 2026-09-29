@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="editorial">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 配置重构 — 原型（ai-provider-model-overhaul · 概念 B：设置页常规形态）</title>
+<style>
+  /* ===== 主题 token（摘自 front/app/assets/css/main.css） ===== */
+  :root {
+    --raw-stone-50: #faf7f2; --raw-stone-100: #f5f0e6; --raw-stone-200: #e8dfd1;
+    --raw-red-500: #d94a4a; --raw-red-600: #c12f2f;
+    --raw-success: #3d8a4a; --raw-warning: #c4883c; --raw-error: #c42f3c;
+  }
+  [data-theme="editorial"] {
+    --color-bg-base: var(--raw-stone-50);
+    --color-bg-elevated: var(--raw-stone-100);
+    --color-bg-sunken: var(--raw-stone-200);
+    --color-bg-overlay: rgba(26, 26, 26, 0.4);
+    --color-bg-hover: rgba(255, 255, 255, 0.85);
+    --color-text-primary: #1a1a1a;
+    --color-text-secondary: #5a5a5a;
+    --color-text-muted: #8a8a8a;
+    --color-text-inverted: #fff;
+    --color-border-subtle: rgba(26, 26, 26, 0.08);
+    --color-border-medium: rgba(26, 26, 26, 0.15);
+    --color-border-strong: rgba(26, 26, 26, 0.25);
+    --color-accent: var(--raw-red-500);
+    --color-accent-hover: var(--raw-red-600);
+    --color-accent-subtle: rgba(217, 74, 74, 0.08);
+    --color-success: var(--raw-success); --color-warning: var(--raw-warning); --color-error: var(--raw-error);
+    --color-success-subtle: rgba(61, 138, 74, 0.12);
+    --color-warning-subtle: rgba(196, 136, 60, 0.14);
+    --color-error-subtle: rgba(196, 47, 60, 0.10);
+    --color-input-bg: rgba(255, 255, 255, 0.6);
+    --color-input-border: rgba(26, 26, 26, 0.12);
+    --color-input-focus: var(--raw-red-500);
+    --color-dialog-bg: rgba(255, 255, 255, 0.95);
+    --shadow-strong: 0 4px 16px rgba(26, 26, 26, 0.12);
+  }
+  [data-theme="dark"] {
+    --color-bg-base: #080c12;
+    --color-bg-elevated: rgba(17, 27, 38, 0.98);
+    --color-bg-sunken: #0e161d;
+    --color-bg-overlay: rgba(8, 12, 18, 0.75);
+    --color-bg-hover: rgba(255, 255, 255, 0.06);
+    --color-text-primary: rgba(255, 255, 255, 0.9);
+    --color-text-secondary: rgba(255, 255, 255, 0.6);
+    --color-text-muted: rgba(255, 255, 255, 0.35);
+    --color-text-inverted: #080c12;
+    --color-border-subtle: rgba(255, 255, 255, 0.06);
+    --color-border-medium: rgba(255, 255, 255, 0.10);
+    --color-border-strong: rgba(255, 255, 255, 0.18);
+    --color-accent: rgba(240, 138, 75, 0.85);
+    --color-accent-hover: rgba(240, 138, 75, 1);
+    --color-accent-subtle: rgba(240, 138, 75, 0.08);
+    --color-success: #4ea68f; --color-warning: rgba(240, 162, 75, 1); --color-error: rgba(207, 116, 88, 1);
+    --color-success-subtle: rgba(78, 166, 143, 0.14);
+    --color-warning-subtle: rgba(240, 162, 75, 0.14);
+    --color-error-subtle: rgba(207, 116, 88, 0.14);
+    --color-input-bg: rgba(255, 255, 255, 0.04);
+    --color-input-border: rgba(255, 255, 255, 0.10);
+    --color-input-focus: rgba(240, 138, 75, 0.85);
+    --color-dialog-bg: rgba(17, 27, 38, 0.98);
+    --shadow-strong: 0 4px 16px rgba(0, 0, 0, 0.5);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--color-bg-base); color: var(--color-text-primary); font: 14px/1.7 "Noto Serif SC", "Source Han Serif SC", "Songti SC", Georgia, serif; transition: background .2s, color .2s; }
+
+  /* ===== 原型横幅 + 视图切换 ===== */
+  .proto-banner { background: var(--color-bg-elevated); border-bottom: 1px solid var(--color-border-subtle); padding: 8px 20px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; position: sticky; top: 0; z-index: 30; }
+  .proto-banner .tag { color: var(--color-text-muted); font-size: 12px; }
+  .view-switch { display: inline-flex; border: 1px solid var(--color-border-strong); border-radius: 8px; overflow: hidden; }
+  .view-switch button { border: none; border-radius: 0; padding: 4px 16px; font-size: 12.5px; }
+  .view-switch button.on { background: var(--color-accent); color: #fff; }
+  .proto-banner .theme-btn { margin-left: auto; font-size: 12px; padding: 3px 12px; }
+  .entry-note { font-size: 12px; color: var(--color-text-muted); padding: 10px 0 0; }
+  .entry-note b { color: var(--color-text-secondary); font-weight: 500; }
+
+  /* ===== 内容容器（模拟 settings content 区） ===== */
+  .content { max-width: 920px; margin: 0 auto; padding: 18px 24px 90px; }
+
+  /* ===== AppSectionHeader 形态 ===== */
+  .sec-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+  .sec-header .icon-box { width: 34px; height: 34px; border-radius: 8px; background: var(--color-accent-subtle); color: var(--color-accent); display: flex; align-items: center; justify-content: center; font-size: 17px; flex-shrink: 0; }
+  .sec-header .t-group { flex: 1; min-width: 0; }
+  .sec-header h1 { font-size: 14px; font-weight: 600; margin: 0; }
+  .sec-header .desc { font-size: 13px; color: var(--color-text-muted); margin: 2px 0 0; }
+  .sec-header .actions { display: flex; gap: 8px; }
+
+  /* ===== 卡片（产品 route-card 形态：12px 圆角 + header 分隔线） ===== */
+  .card { border-radius: 12px; border: 1px solid var(--color-border-subtle); background: var(--color-bg-elevated); overflow: hidden; margin-bottom: 14px; }
+  .card-head { display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--color-border-subtle); }
+  .card-head h2 { font-size: 14px; font-weight: 600; margin: 0; }
+  .card-head .spacer { flex: 1; }
+
+  /* 供应商卡片头 */
+  .vendor-head { display: flex; align-items: center; gap: 10px; padding: 14px 20px; cursor: pointer; }
+  .vendor-head:hover { background: var(--color-bg-hover); }
+  .logo-box { width: 26px; height: 26px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; flex: none; background: var(--color-accent-subtle); color: var(--color-accent); font-size: 12px; font-weight: 700; overflow: hidden; }
+  .logo-box svg { width: 18px; height: 18px; fill: currentColor; }
+  .v-id { min-width: 0; }
+  .v-name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .v-url { font-size: 11.5px; color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+  .health { width: 7px; height: 7px; border-radius: 99px; background: var(--color-success); flex: none; }
+  .health.warn { background: var(--color-warning); }
+  .cnt-chip { font-size: 11px; color: var(--color-text-secondary); background: var(--color-bg-sunken); border-radius: 99px; padding: 1px 9px; flex: none; }
+  .fanout-badge { font-size: 11px; color: var(--color-warning); background: var(--color-warning-subtle); border-radius: 6px; padding: 1px 8px; flex: none; }
+  .fanout-badge.zero { color: var(--color-text-muted); background: var(--color-bg-sunken); }
+  .caret { color: var(--color-text-muted); font-size: 11px; flex: none; }
+  .vendor-card.open .vendor-head { border-bottom: 1px solid var(--color-border-subtle); }
+
+  /* 模型清单 */
+  .vendor-panel { display: none; padding: 12px 20px 16px; }
+  .vendor-card.open .vendor-panel { display: block; }
+  .model-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .model-table th { text-align: left; font-size: 11px; color: var(--color-text-muted); font-weight: 500; padding: 5px 8px; border-bottom: 1px solid var(--color-border-medium); }
+  .model-table td { padding: 6px 8px; border-bottom: 1px solid var(--color-border-subtle); }
+  .model-table tr:last-child td { border-bottom: none; }
+  .model-table tr.stale td { color: var(--color-text-muted); opacity: .7; }
+  .model-table td.mname { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .new-tag { background: var(--color-success-subtle); color: var(--color-success); font-size: 10.5px; padding: 0 6px; border-radius: 4px; margin-left: 6px; }
+  .stale-tag { color: var(--color-warning); font-size: 11px; }
+  .panel-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .refresh-note { font-size: 11.5px; color: var(--color-warning); margin-top: 8px; display: none; }
+  .add-vendor { width: 100%; border-style: dashed; color: var(--color-text-secondary); padding: 10px; border-radius: 12px; }
+
+  /* ===== 能力路由（链式卡片，沿用既有形态） ===== */
+  .route-section { padding: 16px 20px; border-bottom: 1px solid var(--color-border-subtle); }
+  .route-section:last-child { border-bottom: none; }
+  .route-section.pulse { animation: secPulse 1.2s ease; }
+  @keyframes secPulse { 0% { background: var(--color-accent-subtle); box-shadow: inset 0 0 0 2px var(--color-accent); } 100% { background: transparent; box-shadow: none; } }
+  .rs-title { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .rs-badge { width: 24px; height: 24px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0; background: var(--color-accent); color: var(--color-text-inverted); }
+  .rs-badge.empty { background: var(--color-bg-sunken); color: var(--color-text-muted); }
+  .rs-name { font-size: 13px; font-weight: 500; }
+  .rs-count { font-size: 11px; color: var(--color-text-muted); }
+  .rs-empty { text-align: center; padding: 12px 0; font-size: 11px; color: var(--color-text-muted); border-radius: 8px; border: 1px dashed var(--color-border-medium); margin-bottom: 12px; }
+
+  .bind { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--color-border-subtle); border-radius: 8px; background: var(--color-bg-base); margin-bottom: 6px; transition: border-color .15s, background .15s; }
+  .bind:hover { border-color: var(--color-border-medium); }
+  .bind.just-set { animation: bindIn .3s ease; }
+  @keyframes bindIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .bind .rank { width: 20px; height: 20px; border-radius: 4px; background: var(--color-bg-sunken); color: var(--color-text-secondary); font-size: 10.5px; display: flex; align-items: center; justify-content: center; flex: none; }
+  .bind .rank.first { background: var(--color-accent); color: var(--color-text-inverted); }
+  .bind .drag { color: var(--color-text-muted); font-size: 13px; cursor: grab; flex: none; }
+  .bind .model-ref { position: relative; min-width: 0; flex: 1; }
+  .bind .m-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bind .m-vendor { font-size: 11px; color: var(--color-text-muted); }
+  .bind:hover .model-ref { cursor: help; }
+  .fanout-tip { display: none; position: absolute; left: 0; bottom: calc(100% + 6px); background: var(--color-dialog-bg); border: 1px solid var(--color-border-medium); border-radius: 6px; box-shadow: var(--shadow-strong); font-size: 11.5px; color: var(--color-text-secondary); padding: 4px 10px; white-space: nowrap; z-index: 10; }
+  .fanout-tip b { color: var(--color-warning); }
+  .model-ref:hover .fanout-tip { display: block; }
+  .think-wrap { display: flex; align-items: center; gap: 6px; flex: none; }
+  .think-wrap select { min-width: 96px; }
+  .ov-badge { font-size: 10.5px; color: var(--color-accent); background: var(--color-accent-subtle); border-radius: 4px; padding: 0 6px; display: none; }
+  .ov-badge.on { display: inline-block; }
+  .icon-btns { display: flex; gap: 2px; flex: none; }
+  .icon-btn { border: none; background: none; padding: 3px; border-radius: 4px; color: var(--color-text-muted); font-size: 13px; cursor: pointer; }
+  .icon-btn:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+  .icon-btn:disabled { opacity: .3; cursor: not-allowed; }
+  .icon-btn.danger:hover { color: var(--color-error); }
+
+  .chips-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+  .chip-group-label { font-size: 11px; color: var(--color-text-muted); margin-right: 2px; }
+  .chip { border: 1px solid var(--color-border-medium); border-radius: 99px; background: transparent; padding: 2px 12px; font-size: 12px; cursor: pointer; }
+  .chip:hover { border-color: var(--color-text-primary); background: var(--color-bg-hover); }
+  .chip.selected { border-color: var(--color-accent); color: var(--color-accent); background: var(--color-accent-subtle); }
+  .chips-hint { font-size: 11px; color: var(--color-text-muted); }
+
+  /* ===== 降级观测块 ===== */
+  .obs-block { padding: 14px 20px 16px; }
+  .obs-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+  .obs-head h3 { font-size: 13.5px; font-weight: 600; margin: 0; }
+  .obs-stats { font-size: 12.5px; color: var(--color-text-secondary); }
+  .obs-stats b { font-weight: 600; color: var(--color-text-primary); }
+  .seg { display: inline-flex; border: 1px solid var(--color-border-strong); border-radius: 6px; overflow: hidden; margin-left: auto; }
+  .seg button { border: none; border-radius: 0; padding: 3px 14px; font-size: 11.5px; }
+  .seg button.on { background: var(--color-accent); color: #fff; }
+  .evt-row { display: flex; gap: 12px; align-items: baseline; padding: 6px 2px; border-bottom: 1px solid var(--color-border-subtle); font-size: 12.5px; }
+  .evt-row:last-child { border-bottom: none; }
+  .evt-row .time { color: var(--color-text-muted); font-variant-numeric: tabular-nums; flex: none; }
+  .evt-row .cap-ref { font-weight: 600; flex: none; }
+  .evt-row .move { color: var(--color-warning); flex: none; }
+  .evt-row .model { color: var(--color-text-secondary); max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .type-tag { font-size: 10.5px; border-radius: 4px; padding: 0 7px; flex: none; }
+  .type-tag.structured { color: var(--color-accent); background: var(--color-accent-subtle); }
+  .type-tag.fallback { color: var(--color-warning); background: var(--color-warning-subtle); }
+  .evt-row .code { color: var(--color-text-muted); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .evt-row button { padding: 1px 10px; font-size: 11px; flex: none; }
+
+  /* 健康快照示意（现有保留，只画两行示意） */
+  .snap-rows { padding: 12px 20px; font-size: 12.5px; color: var(--color-text-secondary); }
+  .snap-rows .row { display: flex; gap: 10px; padding: 3px 0; }
+
+  /* ===== 基础控件 ===== */
+  select, input[type="text"], input[type="password"], input[type="number"] { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--color-input-border); background: var(--color-input-bg); color: var(--color-text-primary); font-size: 12.5px; }
+  select:focus, input:focus { outline: 2px solid var(--color-input-focus); outline-offset: 0; }
+  button { font: inherit; font-size: 12.5px; padding: 5px 14px; border-radius: 6px; border: 1px solid var(--color-border-strong); background: transparent; color: var(--color-text-primary); cursor: pointer; transition: all .15s; }
+  button:hover { border-color: var(--color-text-primary); background: var(--color-bg-hover); }
+  button.primary { background: var(--color-accent); color: #fff; border-color: var(--color-accent); font-weight: 500; }
+  button.primary:hover { background: var(--color-accent-hover); border-color: var(--color-accent-hover); }
+  button.danger { color: var(--color-error); border-color: var(--color-error); }
+  button.danger:hover { background: var(--color-error-subtle); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.sm { font-size: 12px; padding: 3px 11px; }
+
+  /* ===== 弹窗（AppDialog 形态：lg=760 / sm=420，92vw 上限） ===== */
+  .overlay { position: fixed; inset: 0; background: var(--color-bg-overlay); display: none; align-items: flex-start; justify-content: center; padding: 6vh 16px; z-index: 50; }
+  .overlay.open { display: flex; }
+  .dialog { width: 760px; max-width: 92vw; background: var(--color-dialog-bg); border: 1px solid var(--color-border-medium); border-radius: 12px; box-shadow: var(--shadow-strong); max-height: 88vh; overflow: auto; }
+  .dialog.sm { width: 420px; }
+  .dialog-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 1px solid var(--color-border-medium); }
+  .dialog-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .dialog-close { border: none; background: none; font-size: 17px; color: var(--color-text-muted); padding: 2px 8px; }
+  .dialog-body { padding: 16px 22px; }
+  .step-label { font-size: 12.5px; color: var(--color-text-secondary); margin: 0 0 10px; font-weight: 600; }
+  .step-label .n { display: inline-block; width: 18px; height: 18px; border-radius: 4px; background: var(--color-accent); color: #fff; font-size: 11px; text-align: center; line-height: 18px; margin-right: 8px; }
+  .preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-bottom: 18px; }
+  .preset-card { border: 1px solid var(--color-border-medium); border-radius: 8px; padding: 11px 12px; cursor: pointer; font-size: 12.5px; background: transparent; transition: all .15s; text-align: left; }
+  .preset-card:hover { border-color: var(--color-text-primary); background: var(--color-bg-hover); }
+  .preset-card.selected { border-color: var(--color-accent); box-shadow: inset 0 0 0 1px var(--color-accent); background: var(--color-accent-subtle); }
+  .preset-card .pname { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .preset-card .pkind { color: var(--color-text-muted); font-size: 11px; margin-left: 32px; }
+  .preset-summary { background: var(--color-bg-sunken); border-radius: 6px; padding: 7px 12px; font-size: 12px; color: var(--color-text-secondary); margin-bottom: 14px; }
+  .preset-summary b { color: var(--color-text-primary); }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px 18px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field.full { grid-column: 1 / -1; }
+  .field label { font-size: 12px; color: var(--color-text-secondary); }
+  .field .err-msg { font-size: 11px; color: var(--color-error); display: none; }
+  .field .help { font-size: 11px; color: var(--color-text-muted); }
+  .field.invalid input, .field.invalid select { border-color: var(--color-error); }
+  .field.invalid .err-msg { display: block; }
+  details.advanced { margin-top: 12px; font-size: 12px; border-top: 1px solid var(--color-border-subtle); padding-top: 10px; }
+  details.advanced summary { cursor: pointer; color: var(--color-text-muted); }
+  .dialog-foot { padding: 13px 22px; border-top: 1px solid var(--color-border-subtle); display: flex; align-items: center; gap: 10px; }
+  .conn-result { font-size: 12px; padding: 5px 10px; border-radius: 6px; display: none; }
+  .conn-result.testing { display: block; background: var(--color-bg-sunken); color: var(--color-text-secondary); }
+  .conn-result.ok { display: block; background: var(--color-success-subtle); color: var(--color-success); }
+  .conn-result.fail { display: block; background: var(--color-error-subtle); color: var(--color-error); }
+  .dialog-foot .spacer { flex: 1; }
+  .confirm-body { padding: 18px 22px; font-size: 13px; color: var(--color-text-secondary); }
+  .confirm-body b { color: var(--color-text-primary); }
+
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute"><symbol id="pi-deepseek" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 12h8M12 8v8" stroke="currentColor" stroke-width="2" fill="none"/></symbol></svg>
+
+<!-- 原型横幅：视图切换模拟设置页 sidebar 导航（真实入口见各视图 entry-note） -->
+<div class="proto-banner">
+  <span class="tag">静态原型 · ai-provider-model-overhaul · 概念 B：设置页常规形态</span>
+  <div class="view-switch">
+    <button class="on" onclick="switchView('vendors', this)">供应商与模型</button>
+    <button onclick="switchView('routes', this)">能力路由</button>
+    <button onclick="switchView('obs', this)">降级观测</button>
+  </div>
+  <button class="theme-btn" onclick="toggleTheme()">主题（<span id="theme-name">editorial</span>）</button>
+</div>
+
+<div class="content">
+
+  <!-- ============ 视图一：供应商与模型 ============ -->
+  <section id="view-vendors">
+    <div class="entry-note">真实入口：<b>设置 → AI 配置 → AI 模型</b>（sidebar 导航不变，本视图切换仅为原型演示）</div>
+    <div class="sec-header" style="margin-top:14px">
+      <div class="icon-box">◆</div>
+      <div class="t-group">
+        <h1>供应商与模型</h1>
+        <p class="desc">管理 AI 供应商接入与模型清单；卡片上的「承载 N 能力」提示该供应商被多少能力路由依赖</p>
+      </div>
+      <div class="actions"><button class="primary" onclick="openVendorDialog(null)">+ 新增供应商</button></div>
+    </div>
+    <div id="vendor-list"></div>
+    <button class="add-vendor" onclick="openVendorDialog(null)">+ 新增供应商</button>
+  </section>
+
+  <!-- ============ 视图二：能力路由 ============ -->
+  <section id="view-routes" class="hidden">
+    <div class="entry-note">真实入口：<b>设置 → AI 配置 → 能力路由</b></div>
+    <div class="sec-header" style="margin-top:14px">
+      <div class="icon-box">⇄</div>
+      <div class="t-group">
+        <h1>能力路由</h1>
+        <p class="desc">按能力分配模型与降级顺序；每项可单独指定思考档（默认继承模型配置）</p>
+      </div>
+      <div class="actions"><button class="primary" id="btn-save-routes" onclick="saveRoutes(this)">保存路由</button></div>
+    </div>
+    <div class="card" id="routes-body"></div>
+  </section>
+
+  <!-- ============ 视图三：降级观测 ============ -->
+  <section id="view-obs" class="hidden">
+    <div class="entry-note">真实入口：<b>设置 → 运行状态 → AI 健康 tab</b>（降级观测块位于健康快照下方）</div>
+    <div class="sec-header" style="margin-top:14px">
+      <div class="icon-box">♥</div>
+      <div class="t-group">
+        <h1>AI 健康</h1>
+        <p class="desc">供应商健康快照与自动拉起（现有功能保留）+ 路由降级观测</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>健康快照（现有，示意）</h2></div>
+      <div class="snap-rows">
+        <div class="row"><span>llamacpp-qwen</span><span style="color:var(--color-success)">● 健康</span><span style="color:var(--color-text-muted)">最近探测 02:30</span></div>
+        <div class="row"><span>DeepSeek</span><span style="color:var(--color-success)">● 健康</span><span style="color:var(--color-text-muted)">最近探测 02:30</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="obs-block">
+        <div class="obs-head">
+          <h3>降级观测</h3>
+          <div class="obs-stats" id="obs-stats"><b>1,842</b> 调用 · <b>12</b> 降级 · <b>3</b> 失败</div>
+          <div class="seg">
+            <button class="on" onclick="pickWindow(this,'24h')">24h</button>
+            <button onclick="pickWindow(this,'7d')">7d</button>
+          </div>
+        </div>
+        <div id="evt-list"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- 新增/编辑供应商（两段式，AppDialog lg=760） -->
+<div class="overlay" id="vendor-overlay" onclick="overlayClose(event)">
+  <div class="dialog" role="dialog" aria-modal="true">
+    <div class="dialog-head">
+      <h2 id="dlg-title">新增供应商</h2>
+      <button class="dialog-close" onclick="closeVendorDialog()" aria-label="关闭">✕</button>
+    </div>
+    <div class="dialog-body">
+      <p class="step-label"><span class="n">1</span>选择供应商</p>
+      <div class="preset-grid" id="preset-grid"></div>
+      <p class="step-label"><span class="n">2</span><span id="step2-label">接入配置</span></p>
+      <div class="preset-summary" id="preset-summary" style="display:none"></div>
+      <div class="form-grid" id="form-grid"></div>
+      <details class="advanced">
+        <summary>高级（超时 / 思考方言 / 结构化输出）</summary>
+        <div class="form-grid" style="margin-top:10px" id="adv-grid"></div>
+      </details>
+    </div>
+    <div class="dialog-foot">
+      <button onclick="testConnection()">测试连接</button>
+      <div class="conn-result" id="conn-result"></div>
+      <div class="spacer"></div>
+      <button onclick="closeVendorDialog()">取消</button>
+      <button class="primary" id="btn-save" onclick="saveVendor()">保存并拉取模型</button>
+    </div>
+  </div>
+</div>
+
+<!-- 删除确认（AppConfirmDialog sm=420） -->
+<div class="overlay" id="confirm-overlay" onclick="if(event.target===this)closeConfirm()">
+  <div class="dialog sm" role="alertdialog" aria-modal="true">
+    <div class="dialog-head"><h2 id="confirm-title">确认删除</h2></div>
+    <div class="confirm-body" id="confirm-body"></div>
+    <div class="dialog-foot">
+      <div class="spacer"></div>
+      <button onclick="closeConfirm()">取消</button>
+      <button class="danger" id="confirm-ok">删除</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  /* ============ fixture ============ */
+  const PRESETS = [
+    { id: 'deepseek', name: 'DeepSeek', kind: '云端', logo: 'deepseek', url: 'https://api.deepseek.com', dialect: 'deepseek', so: 'json_object', needKey: true,
+      models: [ { name: 'deepseek-flash', kind: 'llm' }, { name: 'deepseek-reasoner', kind: 'llm' } ] },
+    { id: 'xiaomi', name: '小米 MiMo', kind: '云端', logo: null, url: 'https://api.xiaomimimo.com/v1', dialect: 'reasoning-effort', so: 'json_schema', needKey: true,
+      models: [ { name: 'mimo-7b', kind: 'llm' } ] },
+    { id: 'zai', name: 'ZAI Coding Plan', kind: '云端', logo: null, url: 'https://open.bigmodel.cn/api/paas/v4', dialect: 'reasoning-effort', so: 'json_schema', needKey: true,
+      models: [ { name: 'glm-5.3', kind: 'llm' } ] },
+    { id: 'openrouter', name: 'OpenRouter', kind: '云端', logo: null, url: 'https://openrouter.ai/api/v1', dialect: 'reasoning-effort', so: 'json_schema', needKey: true,
+      models: [ { name: 'claude-sonnet-5', kind: 'llm' } ] },
+    { id: 'ollama', name: 'Ollama', kind: '本地', logo: null, url: 'http://localhost:11434/v1', dialect: 'none', so: 'json_schema', needKey: false, supportsEmbedding: true,
+      models: [ { name: 'qwen3:32b', kind: 'llm' }, { name: 'nomic-embed-text', kind: 'embedding' } ] },
+    { id: 'llamacpp', name: 'llama.cpp', kind: '本地', logo: null, url: 'http://10.11.12.111:8080/v1', dialect: 'qwen-chat-template', so: 'json_schema', needKey: false, hasStartCmd: true, supportsEmbedding: true,
+      models: [ { name: 'qwythos', kind: 'llm' }, { name: 'qwen3-embedding', kind: 'embedding' } ] },
+    { id: 'custom', name: '自定义', kind: '手动', logo: null, url: '', dialect: 'qwen-chat-template', so: 'json_schema', needKey: true,
+      models: [ { name: 'my-model', kind: 'llm' } ] },
+  ];
+
+  let vendors = [
+    { id: 1, name: 'llamacpp-qwen', preset: 'llamacpp', url: 'http://10.11.12.111:8080/v1', dialect: 'qwen-chat-template', so: 'json_schema', supportsEmbedding: true,
+      cmd: 'llama-server -m qwythos.gguf --port 8080', timeout: 300, health: 'ok', open: true,
+      models: [ { name: 'qwythos', kind: 'llm', think: 'medium', status: 'ok', enabled: true } ] },
+    { id: 2, name: 'llamacpp-emb', preset: 'llamacpp', url: 'http://10.11.12.111:8081/v1', dialect: 'qwen-chat-template', so: 'json_schema', supportsEmbedding: true,
+      cmd: '', timeout: 120, health: 'ok', open: false,
+      models: [ { name: 'qwen3-embedding', kind: 'embedding', think: null, status: 'ok', enabled: true } ] },
+    { id: 3, name: 'DeepSeek', preset: 'deepseek', url: 'https://api.deepseek.com', dialect: 'deepseek', so: 'json_object', supportsEmbedding: false,
+      cmd: '', timeout: 6000, health: 'ok', open: false,
+      models: [ { name: 'deepseek-flash', kind: 'llm', think: 'high', status: 'ok', enabled: true }, { name: 'deepseek-reasoner', kind: 'llm', think: null, status: 'stale', enabled: false } ] },
+  ];
+  let nextId = 4, editingId = null;
+
+  const THINK_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const CN = { off: '关', minimal: '微', low: '低', medium: '中', high: '高', xhigh: '超高', max: '极' };
+  const DIALECT_LEVELS = { 'qwen-chat-template': ['off', 'minimal', 'low', 'medium', 'high'], 'deepseek': THINK_LEVELS, 'reasoning-effort': THINK_LEVELS, 'none': ['off'] };
+  const CAP_LABELS = { summary: '文章总结', topic_tagging: '主题提取', digest_polish: '日报润色', embedding: '向量嵌入', open_notebook: '页边注问答', data_enrichment_news: '新闻增强', data_enrichment_analysis: '分析增强', feed_discovery: '订阅发现' };
+
+  /* binding = {v: vendorId, m: 模型名, level: 七档|null(继承)} */
+  let routes = [
+    { cap: 'summary', chain: [ { v: 1, m: 'qwythos', level: null } ] },
+    { cap: 'topic_tagging', chain: [ { v: 1, m: 'qwythos', level: 'low' } ] },
+    { cap: 'digest_polish', chain: [ { v: 3, m: 'deepseek-flash', level: null }, { v: 1, m: 'qwythos', level: null } ] },
+    { cap: 'open_notebook', chain: [ { v: 1, m: 'qwythos', level: 'high' } ] },
+    { cap: 'embedding', chain: [ { v: 2, m: 'qwen3-embedding', level: null } ] },
+    { cap: 'data_enrichment_news', chain: [ { v: 1, m: 'qwythos', level: null } ] },
+    { cap: 'data_enrichment_analysis', chain: [ { v: 3, m: 'deepseek-flash', level: null }, { v: 1, m: 'qwythos', level: null } ] },
+    { cap: 'feed_discovery', chain: [ { v: 1, m: 'qwythos', level: null } ] },
+  ];
+
+  /* type: structured=结构化输出降级 / fallback=供应商失败降级 */
+  const events = [
+    { t: '02:14:33', cap: 'topic_tagging', from: 0, to: 1, model: 'qwythos', type: 'fallback', code: 'empty_response' },
+    { t: '02:14:31', cap: 'topic_tagging', from: 0, to: 1, model: 'qwythos', type: 'structured', code: 'json_schema→json_object' },
+    { t: '01:52:07', cap: 'digest_polish', from: -1, to: -1, model: 'deepseek-flash', type: 'structured', code: 'json_object→纯文本' },
+    { t: '01:31:44', cap: 'open_notebook', from: 0, to: 1, model: 'qwythos', type: 'fallback', code: 'timeout' },
+  ];
+
+  /* ============ 工具 ============ */
+  function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+  function findVendor(id) { return vendors.find(x => x.id === id); }
+  function modelOf(b) { const v = findVendor(b.v); return v ? v.models.find(m => m.name === b.m) : null; }
+  function vendorName(id) { const v = findVendor(id); return v ? v.name : '?'; }
+  function fanoutOf(vendorId, modelName) { return routes.filter(r => r.chain.some(b => b.v === vendorId && b.m === modelName)).length; }
+  function vendorFanout(vendorId) { return routes.filter(r => r.chain.some(b => b.v === vendorId)).length; }
+  function logoHtml(logo, name) {
+    if (logo) return `<span class="logo-box"><svg viewBox="0 0 24 24"><use href="#pi-${logo}"/></svg></span>`;
+    return `<span class="logo-box">${escapeHtml((name || '?').charAt(0).toUpperCase())}</span>`;
+  }
+
+  /* ============ 视图切换 ============ */
+  function switchView(id, btn) {
+    for (const v of ['vendors', 'routes', 'obs']) document.getElementById('view-' + v).classList.toggle('hidden', v !== id);
+    document.querySelectorAll('.view-switch button').forEach(b => b.classList.remove('on'));
+    if (btn) btn.classList.add('on');
+    window.scrollTo({ top: 0 });
+  }
+
+  /* ============ 视图一：供应商与模型 ============ */
+  function renderVendors() {
+    const el = document.getElementById('vendor-list');
+    el.innerHTML = '';
+    vendors.forEach(v => {
+      const fan = vendorFanout(v.id);
+      const card = document.createElement('div');
+      card.className = 'vendor-card card' + (v.open ? ' open' : '');
+      card.id = 'vendor-' + v.id;
+      const rows = v.models.map((m, i) => {
+        const stale = m.status === 'stale';
+        const kindCell = stale ? `<span>${m.kind}</span>` : (v.supportsEmbedding
+          ? `<select onchange="changeModelKind(${v.id},${i},this.value)"><option ${m.kind === 'llm' ? 'selected' : ''}>llm</option><option ${m.kind === 'embedding' ? 'selected' : ''}>embedding</option></select>`
+          : `<span>llm</span>`);
+        const thinkCell = m.kind === 'embedding' ? '<span style="color:var(--color-text-muted)">—</span>'
+          : `<select onchange="changeModelThink(${v.id},${i},this.value)">${(DIALECT_LEVELS[v.dialect] || ['off']).map(l => `<option ${l === m.think ? 'selected' : ''} value="${l}">${CN[l]}</option>`).join('')}</select>`;
+        return `<tr class="${stale ? 'stale' : ''}">
+          <td style="width:30px"><input type="checkbox" ${m.enabled ? 'checked' : ''} ${stale ? 'disabled' : ''} onchange="vendors.find(x=>x.id===${v.id}).models[${i}].enabled=this.checked;renderRoutes()"></td>
+          <td class="mname" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}${m.isNew ? '<span class="new-tag">新</span>' : ''}</td>
+          <td>${kindCell}</td>
+          <td>${thinkCell}</td>
+          <td>${stale ? '<span class="stale-tag">stale</span>' : ''}</td>
+        </tr>`;
+      }).join('');
+      card.innerHTML = `
+        <div class="vendor-head" onclick="toggleVendor(${v.id})">
+          ${logoHtml(PRESETS.find(p => p.id === v.preset)?.logo, v.name)}
+          <div class="v-id">
+            <div class="v-name">${escapeHtml(v.name)}</div>
+            <div class="v-url" title="${escapeHtml(v.url)}">${escapeHtml(v.url)}</div>
+          </div>
+          <span class="health ${v.health === 'ok' ? '' : 'warn'}"></span>
+          <span class="cnt-chip">${v.models.length} 模型</span>
+          <span class="fanout-badge ${fan === 0 ? 'zero' : ''}">${fan === 0 ? '未接入路由' : '承载 ' + fan + ' 能力'}</span>
+          <span class="caret">${v.open ? '▾' : '▸'}</span>
+        </div>
+        <div class="vendor-panel">
+          <table class="model-table">
+            <tr><th style="width:30px">启用</th><th>模型</th><th>类型</th><th>默认思考档</th><th></th></tr>
+            ${rows}
+          </table>
+          <div class="panel-actions">
+            <button class="sm" onclick="simulateRefresh(this, ${v.id})">刷新模型列表</button>
+            <button class="sm" onclick="fakeToast('测试连接：✓ 连接成功')">测试连接</button>
+            <button class="sm" onclick="openVendorDialog(${v.id})">编辑</button>
+            <button class="sm danger" onclick="askDelete(${v.id})">删除</button>
+          </div>
+          <div class="refresh-note" data-diff="${v.id}">刷新完成：新增模型标「新」，上游消失的灰显 stale（不静默删除）。</div>
+        </div>`;
+      el.appendChild(card);
+    });
+  }
+  function toggleVendor(vid) { const v = findVendor(vid); v.open = !v.open; renderVendors(); }
+  function changeModelKind(vid, i, kind) { const v = findVendor(vid); v.models[i].kind = kind; if (kind === 'embedding') v.models[i].think = null; renderVendors(); renderRoutes(); }
+  function changeModelThink(vid, i, lv) { findVendor(vid).models[i].think = lv; renderRoutes(); }
+
+  /* ============ 视图二：能力路由（链式卡片） ============ */
+  function renderRoutes() {
+    const body = document.getElementById('routes-body');
+    body.innerHTML = '';
+    routes.forEach(r => {
+      const sec = document.createElement('div');
+      sec.className = 'route-section';
+      sec.id = 'route-' + r.cap;
+      const n = r.chain.length;
+      let html = `
+        <div class="rs-title">
+          <div class="rs-badge ${n === 0 ? 'empty' : ''}">${escapeHtml((CAP_LABELS[r.cap] || r.cap).charAt(0))}</div>
+          <span class="rs-name">${escapeHtml(CAP_LABELS[r.cap] || r.cap)}</span>
+          <span class="rs-count">${n} 模型</span>
+        </div>`;
+      if (n === 0) html += `<div class="rs-empty">点击下方按钮添加模型</div>`;
+      r.chain.forEach((b, pi) => {
+        const m = modelOf(b);
+        const fan = fanoutOf(b.v, b.m);
+        const inherit = (m && m.think) || 'medium';
+        html += `
+        <div class="bind ${b.justSet ? 'just-set' : ''}">
+          <span class="rank ${pi === 0 ? 'first' : ''}">${pi + 1}</span>
+          <span class="drag">⠿</span>
+          <div class="model-ref">
+            <div class="m-name">${escapeHtml(b.m)}</div>
+            <div class="m-vendor">${escapeHtml(vendorName(b.v))}</div>
+            <div class="fanout-tip">${escapeHtml(b.m)} 另承载 <b>${fan - 1}</b> 个能力${fan - 1 === 0 ? '' : '（单点依赖注意）'}</div>
+          </div>
+          <div class="think-wrap">
+            <span class="ov-badge ${b.level ? 'on' : ''}">覆盖</span>
+            <select onchange="setLevel('${r.cap}',${pi},this.value)" title="思考档">
+              <option value="">继承（${CN[inherit]}）</option>
+              ${THINK_LEVELS.map(l => `<option value="${l}" ${b.level === l ? 'selected' : ''}>${CN[l]}</option>`).join('')}
+            </select>
+          </div>
+          <div class="icon-btns">
+            <button class="icon-btn" ${pi === 0 ? 'disabled' : ''} onclick="moveBind('${r.cap}',${pi},-1)" title="上移">↑</button>
+            <button class="icon-btn" ${pi >= n - 1 ? 'disabled' : ''} onclick="moveBind('${r.cap}',${pi},1)" title="下移">↓</button>
+            <button class="icon-btn danger" onclick="removeBind('${r.cap}',${pi})" title="移除">×</button>
+          </div>
+        </div>`;
+        if (b.justSet) setTimeout(() => { b.justSet = false; }, 400);
+      });
+      /* + chips 按 vendor 分组 */
+      const embOnly = r.cap === 'embedding';
+      const groups = new Map();
+      vendors.forEach(v => {
+        const cands = v.models.filter(m => m.status !== 'stale' && m.enabled !== false && (embOnly ? m.kind === 'embedding' : m.kind === 'llm'));
+        if (cands.length) groups.set(v, cands);
+      });
+      if (groups.size) {
+        html += `<div class="chips-row">`;
+        groups.forEach((cands, v) => {
+          html += `<span class="chip-group-label">${escapeHtml(v.name)}：</span>`;
+          cands.forEach(m => {
+            const inChain = r.chain.some(b => b.v === v.id && b.m === m.name);
+            html += `<button class="chip ${inChain ? 'selected' : ''}" onclick="${inChain ? `removeByRef('${r.cap}',${v.id},'${escapeHtml(m.name)}')` : `addBind('${r.cap}',${v.id},'${escapeHtml(m.name)}')`}">${inChain ? '✓ ' : '+ '}${escapeHtml(m.name)}</button>`;
+          });
+        });
+        html += `</div>`;
+      } else {
+        html += `<div class="chips-hint">先在「供应商与模型」里启用一个${embOnly ? ' embedding' : ' llm'}类型的模型</div>`;
+      }
+      sec.innerHTML = html;
+      body.appendChild(sec);
+    });
+  }
+  function setLevel(cap, pi, lv) {
+    const b = routes.find(r => r.cap === cap).chain[pi];
+    b.level = lv || null;
+    renderRoutes();
+  }
+  function moveBind(cap, pi, dir) {
+    const chain = routes.find(r => r.cap === cap).chain;
+    const t = pi + dir;
+    if (t < 0 || t >= chain.length) return;
+    [chain[pi], chain[t]] = [chain[t], chain[pi]];
+    renderRoutes();
+  }
+  function removeBind(cap, pi) { routes.find(r => r.cap === cap).chain.splice(pi, 1); renderRoutes(); }
+  function removeByRef(cap, vid, name) {
+    const r = routes.find(x => x.cap === cap);
+    const pi = r.chain.findIndex(b => b.v === vid && b.m === name);
+    if (pi >= 0) r.chain.splice(pi, 1);
+    renderRoutes();
+  }
+  function addBind(cap, vid, name) {
+    routes.find(r => r.cap === cap).chain.push({ v: vid, m: name, level: null, justSet: true });
+    renderRoutes();
+  }
+  function saveRoutes(btn) {
+    btn.disabled = true; btn.textContent = '保存中…';
+    setTimeout(() => { btn.disabled = false; btn.textContent = '保存路由'; fakeToast('路由已保存'); }, 600);
+  }
+
+  /* ============ 视图三：降级观测 ============ */
+  function renderEvents() {
+    const el = document.getElementById('evt-list');
+    el.innerHTML = events.map((e, i) => {
+      const move = e.from < 0 ? '<span>全链失败</span>' : `<span class="move">顺位${e.from + 1}→${e.to + 1}</span>`;
+      const typeName = e.type === 'structured' ? '结构化降级' : '供应商失败';
+      return `<div class="evt-row">
+        <span class="time">${e.t}</span>
+        <span class="cap-ref">${escapeHtml(CAP_LABELS[e.cap] || e.cap)}</span>
+        ${move}
+        <span class="model" title="${escapeHtml(e.model)}">${escapeHtml(e.model)}</span>
+        <span class="type-tag ${e.type}">${typeName}</span>
+        <span class="code" title="${escapeHtml(e.code)}">${escapeHtml(e.code)}</span>
+        <button onclick="locateEvent(${i})">定位</button>
+      </div>`;
+    }).join('');
+  }
+  function locateEvent(i) {
+    const e = events[i];
+    switchView('routes', document.querySelectorAll('.view-switch button')[1]);
+    requestAnimationFrame(() => {
+      const sec = document.getElementById('route-' + e.cap);
+      if (!sec) return;
+      sec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      sec.classList.remove('pulse'); void sec.offsetWidth; sec.classList.add('pulse');
+    });
+  }
+  function pickWindow(btn, win) {
+    btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    document.getElementById('obs-stats').innerHTML = win === '24h'
+      ? '<b>1,842</b> 调用 · <b>12</b> 降级 · <b>3</b> 失败'
+      : '<b>12,907</b> 调用 · <b>86</b> 降级 · <b>41</b> 失败';
+  }
+
+  /* ============ 主题 ============ */
+  function toggleTheme() {
+    const root = document.documentElement;
+    const next = root.dataset.theme === 'editorial' ? 'dark' : 'editorial';
+    root.dataset.theme = next;
+    document.getElementById('theme-name').textContent = next;
+  }
+
+  /* ============ 新增/编辑供应商弹窗（两段式） ============ */
+  let selectedPreset = null;
+  function openVendorDialog(vid) {
+    editingId = vid;
+    const v = vid ? findVendor(vid) : null;
+    selectedPreset = v ? PRESETS.find(p => p.id === v.preset) : null;
+    document.getElementById('dlg-title').textContent = v ? `编辑供应商：${v.name}` : '新增供应商';
+    document.getElementById('btn-save').textContent = v ? '保存' : '保存并拉取模型';
+    renderPresets(); renderStep2(v);
+    document.getElementById('vendor-overlay').classList.add('open');
+  }
+  function closeVendorDialog() {
+    document.getElementById('vendor-overlay').classList.remove('open');
+    const r = document.getElementById('conn-result'); r.className = 'conn-result'; r.textContent = '';
+    document.getElementById('btn-save').disabled = false;
+    editingId = null;
+  }
+  function overlayClose(e) { if (e.target === e.currentTarget) closeVendorDialog(); }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeVendorDialog(); closeConfirm(); } });
+
+  function renderPresets() {
+    const grid = document.getElementById('preset-grid');
+    grid.innerHTML = '';
+    PRESETS.forEach(p => {
+      const el = document.createElement('button');
+      el.className = 'preset-card' + (selectedPreset?.id === p.id ? ' selected' : '');
+      el.innerHTML = `<span class="pname">${logoHtml(p.logo, p.name)}${escapeHtml(p.name)}</span><span class="pkind">${escapeHtml(p.kind)}</span>`;
+      el.onclick = () => { selectedPreset = p; renderPresets(); renderStep2(null); };
+      grid.appendChild(el);
+    });
+  }
+  function renderStep2(editVal) {
+    const p = selectedPreset;
+    const label = document.getElementById('step2-label');
+    const summary = document.getElementById('preset-summary');
+    const grid = document.getElementById('form-grid');
+    const adv = document.getElementById('adv-grid');
+    if (!p) {
+      label.textContent = '接入配置'; summary.style.display = 'none';
+      grid.innerHTML = '<p style="color:var(--color-text-muted);font-size:12px">↑ 先选择供应商</p>'; adv.innerHTML = '';
+      return;
+    }
+    const ev = editVal || {};
+    const nameVal = ev.name || p.name, urlVal = ev.url ?? p.url, cmdVal = ev.cmd || '', timeoutVal = ev.timeout || 300;
+    if (p.id === 'custom') {
+      label.textContent = '自定义接入（OpenAI 兼容）'; summary.style.display = 'none';
+      grid.innerHTML = `
+        <div class="field" id="f-name"><label>名称 *</label><input type="text" id="in-name" value="${escapeHtml(nameVal)}"><span class="err-msg">请填写名称</span></div>
+        <div class="field" id="f-url"><label>Base URL *</label><input type="text" id="in-url" value="${escapeHtml(urlVal)}"><span class="err-msg">请填写合法 URL</span></div>
+        <div class="field" id="f-key"><label>API Key *</label><input type="password" id="in-key"><span class="err-msg">请填写 API Key</span></div>
+        <div class="field"><label>思考方言</label><select id="in-dialect">
+          ${['qwen-chat-template', 'deepseek', 'reasoning-effort', 'none'].map(d => `<option ${ev.dialect === d ? 'selected' : ''}>${d}</option>`).join('')}
+        </select></div>
+        <div class="field"><label>结构化输出</label><select id="in-so">
+          ${[['json_schema', '严格 json_schema'], ['json_object', '宽松 json_object'], ['none', '不用']].map(([val, t]) => `<option value="${val}" ${ev.so === val ? 'selected' : ''}>${t}</option>`).join('')}
+        </select></div>`;
+      adv.innerHTML = `<div class="field"><label>超时（秒）</label><input type="number" id="in-timeout" value="${timeoutVal}"></div>`;
+    } else {
+      label.textContent = `接入 ${p.name}${p.needKey ? '（只需 API Key）' : ''}`;
+      summary.style.display = 'block';
+      summary.innerHTML = `预设：<b>${escapeHtml(p.url)}</b> · ${escapeHtml(p.dialect)} · ${escapeHtml(p.so)}（高级可覆盖）`;
+      const keyField = p.needKey ? `<div class="field full" id="f-key"><label>API Key *</label><input type="password" id="in-key"><span class="err-msg">请填写 API Key</span></div>` : '';
+      const cmdField = p.hasStartCmd ? `
+        <div class="field full"><label>llama.cpp 启动命令（可选）</label>
+          <input type="text" id="in-cmd" value="${escapeHtml(cmdVal)}">
+          <span class="help">命令在后端主机执行；服务跑在别的机器（如 Windows）请留空——留空只探测不拉起</span>
+        </div>` : '';
+      grid.innerHTML = `
+        <div class="field full" id="f-url"><label>Base URL *</label><input type="text" id="in-url" value="${escapeHtml(urlVal)}"><span class="help">可改（服务可能在其他主机）</span><span class="err-msg">请填写合法 URL</span></div>
+        ${keyField}${cmdField}`;
+      adv.innerHTML = `
+        <div class="field"><label>超时（秒）</label><input type="number" id="in-timeout" value="${timeoutVal}"></div>
+        <div class="field"><label>思考方言覆盖</label><select id="in-dialect">
+          <option value="">跟随预设（${escapeHtml(p.dialect)}）</option>
+          ${['qwen-chat-template', 'deepseek', 'reasoning-effort', 'none'].map(d => `<option>${d}</option>`).join('')}
+        </select></div>
+        <div class="field"><label>结构化输出覆盖</label><select id="in-so">
+          <option value="">跟随预设（${escapeHtml(p.so)}）</option>
+          ${[['json_schema', '严格'], ['json_object', '宽松'], ['none', '不用']].map(([val, t]) => `<option value="${val}">${t}</option>`).join('')}
+        </select></div>`;
+    }
+    bindValidate();
+  }
+  function validate() {
+    const p = selectedPreset; if (!p) return false;
+    let ok = true;
+    const mark = (fid, cond) => { const f = document.getElementById(fid); if (!f) return; if (cond) f.classList.remove('invalid'); else { f.classList.add('invalid'); ok = false; } };
+    mark('f-url', /^https?:\/\/.+/.test(document.getElementById('in-url').value.trim()));
+    if (p.id === 'custom') {
+      mark('f-name', document.getElementById('in-name').value.trim().length > 0);
+      mark('f-key', document.getElementById('in-key').value.trim().length > 0);
+    } else if (p.needKey) {
+      mark('f-key', document.getElementById('in-key').value.trim().length > 0);
+    }
+    return ok;
+  }
+  function bindValidate() {
+    ['in-name', 'in-url', 'in-key'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.addEventListener('input', validate);
+    });
+  }
+  function testConnection() {
+    if (!selectedPreset || !validate()) return;
+    const r = document.getElementById('conn-result');
+    r.className = 'conn-result testing'; r.textContent = '⏳ 探测 GET /models …';
+    setTimeout(() => {
+      const url = document.getElementById('in-url').value;
+      if (url.includes('fail') || url.includes('1.2.3.4')) { r.className = 'conn-result fail'; r.textContent = '✕ 连接失败：dial timeout'; }
+      else { r.className = 'conn-result ok'; r.textContent = `✓ 连接成功，发现 ${selectedPreset.models.length} 个模型`; }
+    }, 900);
+  }
+  function saveVendor() {
+    if (!validate()) return;
+    const save = document.getElementById('btn-save');
+    save.disabled = true; save.textContent = '保存中…';
+    setTimeout(() => {
+      const p = selectedPreset, isEdit = editingId !== null;
+      const name = p.id === 'custom' ? document.getElementById('in-name').value.trim() : (isEdit ? findVendor(editingId).name : p.name);
+      const url = document.getElementById('in-url').value.trim();
+      const dialectEl = document.getElementById('in-dialect'), soEl = document.getElementById('in-so');
+      const dialect = p.id === 'custom' ? dialectEl.value : (dialectEl.value || p.dialect);
+      const so = p.id === 'custom' ? soEl.value : (soEl.value || p.so);
+      const cmd = document.getElementById('in-cmd')?.value.trim() || '';
+      const timeout = parseInt(document.getElementById('in-timeout').value) || 300;
+      if (isEdit) {
+        Object.assign(findVendor(editingId), { url, dialect, so, cmd, timeout });
+      } else {
+        const models = p.models.map(m => ({
+          name: m.name,
+          kind: (p.supportsEmbedding && /embed/i.test(m.name)) ? 'embedding' : 'llm',
+          think: (p.supportsEmbedding && /embed/i.test(m.name)) ? null : 'medium',
+          status: 'ok', isNew: true, enabled: false,
+        }));
+        vendors.push({ id: nextId++, name, preset: p.id, url, dialect, so, cmd, timeout, health: 'warn', supportsEmbedding: !!p.supportsEmbedding, open: true, models });
+      }
+      renderVendors(); renderRoutes();
+      closeVendorDialog();
+      fakeToast(isEdit ? '已保存' : '已保存，模型清单已拉取（新模型默认未启用，勾选后生效）');
+    }, 600);
+  }
+
+  /* ============ 删除确认 ============ */
+  let pendingDelete = null;
+  function askDelete(vid) {
+    const v = findVendor(vid);
+    pendingDelete = vid;
+    document.getElementById('confirm-title').textContent = `删除供应商「${v.name}」？`;
+    const nBindings = routes.reduce((n, r) => n + r.chain.filter(b => b.v === vid).length, 0);
+    document.getElementById('confirm-body').innerHTML = `将一并移除其下 <b>${v.models.length}</b> 个模型与 <b>${nBindings}</b> 条能力路由绑定。`;
+    document.getElementById('confirm-overlay').classList.add('open');
+    document.getElementById('confirm-ok').onclick = () => {
+      vendors = vendors.filter(x => x.id !== pendingDelete);
+      routes.forEach(r => { r.chain = r.chain.filter(b => b.v !== pendingDelete); });
+      renderVendors(); renderRoutes();
+      closeConfirm();
+    };
+  }
+  function closeConfirm() { document.getElementById('confirm-overlay').classList.remove('open'); pendingDelete = null; }
+
+  /* ============ 刷新 / toast ============ */
+  function simulateRefresh(btn, vid) {
+    btn.disabled = true; btn.textContent = '刷新中…';
+    setTimeout(() => {
+      btn.disabled = false; btn.textContent = '刷新模型列表';
+      const note = document.querySelector(`[data-diff="${vid}"]`);
+      if (note) note.style.display = 'block';
+    }, 800);
+  }
+  function fakeToast(msg) {
+    let t = document.getElementById('fake-toast');
+    if (!t) { t = document.createElement('div'); t.id = 'fake-toast'; t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--color-dialog-bg);border:1px solid var(--color-border-medium);border-radius:8px;box-shadow:var(--shadow-strong);padding:8px 18px;font-size:12.5px;z-index:99;transition:opacity .2s;'; document.body.appendChild(t); }
+    t.textContent = msg; t.style.opacity = '1';
+    clearTimeout(t._h); t._h = setTimeout(() => { t.style.opacity = '0'; }, 2200);
+  }
+
+  /* 初始 */
+  renderVendors();
+  renderRoutes();
+  renderEvents();
+</script>
+</body>
+</html>

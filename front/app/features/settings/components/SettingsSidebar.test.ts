@@ -13,7 +13,7 @@ const sections: SectionMeta[] = [
   { key: 'margin-notes', group: '内容管理', label: '页边注', description: '', icon: 'mdi:notebook-outline', component: { name: 'MarginNotesStub' } },
   { key: 'ai-providers', group: 'AI 配置', label: 'AI 模型', description: '', icon: 'mdi:brain', component: { name: 'AiProvidersStub' } },
   { key: 'capability-routes', group: 'AI 配置', label: '能力路由', description: '', icon: 'mdi:routes', component: { name: 'CapabilityRoutesStub' } },
-  { key: 'datasources-network', group: '数据源与网络', label: '数据源与网络', description: '', icon: 'mdi:database-network-outline', component: { name: 'DatasourcesNetworkStub' } },
+  { key: 'datasources-network', group: '数据源与网络', label: '数据源与网络', description: '', icon: 'mdi:lan-connect', component: { name: 'DatasourcesNetworkStub' } },
   { key: 'runtime-status', group: '运行状态', label: '运行状态', description: '', icon: 'mdi:monitor-dashboard', component: { name: 'RuntimeStatusStub' } },
 ]
 

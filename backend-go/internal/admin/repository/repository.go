@@ -34,61 +34,12 @@ func (r *AdminRepository) DB() *gorm.DB {
 }
 
 // ============================================================================
-// AI Provider operations
+// AI Provider / AI Route operations —— 田代码已删除
 // ============================================================================
-
-func (r *AdminRepository) ListProviders() ([]models.AIProvider, error) {
-	var providers []models.AIProvider
-	err := r.db.Order("name ASC").Find(&providers).Error
-	return providers, err
-}
-
-func (r *AdminRepository) GetProviderByID(id uint) (*models.AIProvider, error) {
-	var provider models.AIProvider
-	if err := r.db.First(&provider, id).Error; err != nil {
-		return nil, err
-	}
-	return &provider, nil
-}
-
-func (r *AdminRepository) UpsertProvider(p *models.AIProvider) error {
-	return r.db.Save(p).Error
-}
-
-func (r *AdminRepository) DeleteProvider(id uint) error {
-	return r.db.Delete(&models.AIProvider{}, id).Error
-}
-
-// ============================================================================
-// AI Route operations
-// ============================================================================
-
-func (r *AdminRepository) ListRoutes() ([]models.AIRoute, error) {
-	var routes []models.AIRoute
-	err := r.db.Preload("RouteProviders.Provider").
-		Preload("RouteProviders", func(db *gorm.DB) *gorm.DB {
-			return db.Order("priority ASC")
-		}).
-		Order("capability ASC, name ASC").
-		Find(&routes).Error
-	return routes, err
-}
-
-func (r *AdminRepository) GetRouteByID(id uint) (*models.AIRoute, error) {
-	var route models.AIRoute
-	if err := r.db.Preload("RouteProviders.Provider").First(&route, id).Error; err != nil {
-		return nil, err
-	}
-	return &route, nil
-}
-
-func (r *AdminRepository) UpsertRoute(rt *models.AIRoute) error {
-	return r.db.Save(rt).Error
-}
-
-func (r *AdminRepository) DeleteRoute(id uint) error {
-	return r.db.Delete(&models.AIRoute{}, id).Error
-}
+// ai-provider-model-overhaul 后旧 /api/ai/providers* 端点与 airouter store 旧方法
+// 均已删（vendor/model 两层取代）；本 repository 层的 ListProviders/UpsertRoute 等
+// 无调用方方法一并删除（其中 ListRoutes/GetRouteByID 的 Preload("RouteProviders")
+// 因 AIRoute.RouteProviders 字段移除而失效）。新链路直接走 airouter.Store 新方法。
 
 // ============================================================================
 // AI Settings operations

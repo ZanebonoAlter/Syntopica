@@ -14,11 +14,13 @@ import (
 
 // aiHealthRouteDTO is the per-route projection of aihealth.RouteHealth exposed
 // by GET /api/ai/health. Field names are snake_case to match the public API
-// contract (spec: 健康快照与查询 API).
+// contract (spec: 健康快照与查询 API — route_name/capability/primary_model/
+// vendor/model_kind/reachable/launched_by_backend/last_checked/error).
 type aiHealthRouteDTO struct {
 	RouteName         string `json:"route_name"`
 	Capability        string `json:"capability"`
-	PrimaryProvider   string `json:"primary_provider"`
+	PrimaryModel      string `json:"primary_model"`
+	Vendor            string `json:"vendor"`
 	ModelKind         string `json:"model_kind"`
 	Reachable         bool   `json:"reachable"`
 	LaunchedByBackend bool   `json:"launched_by_backend"`
@@ -48,7 +50,8 @@ func GetAIHealth(c *gin.Context) {
 		routes = append(routes, aiHealthRouteDTO{
 			RouteName:         r.RouteName,
 			Capability:        r.Capability,
-			PrimaryProvider:   r.PrimaryProvider,
+			PrimaryModel:      r.PrimaryModel,
+			Vendor:            r.Vendor,
 			ModelKind:         r.ModelKind,
 			Reachable:         r.Reachable,
 			LaunchedByBackend: r.LaunchedByBackend,

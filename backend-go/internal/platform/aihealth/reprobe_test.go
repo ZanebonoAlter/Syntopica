@@ -28,12 +28,12 @@ func waitForSnapshot(t *testing.T, pred func(Snapshot) bool) {
 func TestTryStartProbe_NoProbeInFlight_StartsAndUpdatesSnapshot(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	tag := seedProvider(t, db, "tag-main", "llm", "", true)
+	_, embModel := seedVendorModel(t, db, "emb-main", "embedding", "", true)
+	_, tagModel := seedVendorModel(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
 	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
-	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, tr.ID, tag.ID, 1)
+	seedBinding(t, db, er.ID, embModel.ID, 1)
+	seedBinding(t, db, tr.ID, tagModel.ID, 1)
 
 	useFakeProbe(t, reachableByName("emb-main", "tag-main"))
 
@@ -63,15 +63,15 @@ func TestTryStartProbe_ProbeInFlight_Skipped(t *testing.T) {
 func TestStartPeriodicReprobe_RetriesWhileUnhealthy_SelfHeals(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	tag := seedProvider(t, db, "tag-main", "llm", "", true)
+	_, embModel := seedVendorModel(t, db, "emb-main", "embedding", "", true)
+	_, tagModel := seedVendorModel(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
 	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
-	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, tr.ID, tag.ID, 1)
+	seedBinding(t, db, er.ID, embModel.ID, 1)
+	seedBinding(t, db, tr.ID, tagModel.ID, 1)
 
 	probeCalls := 0
-	useFakeProbe(t, func(ctx context.Context, p models.AIProvider) (bool, string) {
+	useFakeProbe(t, func(ctx context.Context, v models.AIVendor) (bool, string) {
 		probeCalls++
 		if probeCalls <= 1 {
 			return false, "model still loading"
@@ -97,15 +97,15 @@ func TestStartPeriodicReprobe_RetriesWhileUnhealthy_SelfHeals(t *testing.T) {
 func TestStartPeriodicReprobe_HeartbeatContinuesWhenHealthy(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	tag := seedProvider(t, db, "tag-main", "llm", "", true)
+	_, embModel := seedVendorModel(t, db, "emb-main", "embedding", "", true)
+	_, tagModel := seedVendorModel(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
 	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
-	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, tr.ID, tag.ID, 1)
+	seedBinding(t, db, er.ID, embModel.ID, 1)
+	seedBinding(t, db, tr.ID, tagModel.ID, 1)
 
 	probeCalls := 0
-	useFakeProbe(t, func(ctx context.Context, p models.AIProvider) (bool, string) {
+	useFakeProbe(t, func(ctx context.Context, v models.AIVendor) (bool, string) {
 		probeCalls++
 		return true, ""
 	})
@@ -137,16 +137,16 @@ func TestStartPeriodicReprobe_HeartbeatContinuesWhenHealthy(t *testing.T) {
 func TestStartPeriodicReprobe_InFlightTickSkipped(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	_, embModel := seedVendorModel(t, db, "emb-main", "embedding", "", true)
+	_, sumModel := seedVendorModel(t, db, "llm-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
 	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
-	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
+	seedBinding(t, db, er.ID, embModel.ID, 1)
+	seedBinding(t, db, sr.ID, sumModel.ID, 1)
 
 	slow := make(chan struct{})
 	probeCalls := 0
-	useFakeProbe(t, func(ctx context.Context, p models.AIProvider) (bool, string) {
+	useFakeProbe(t, func(ctx context.Context, v models.AIVendor) (bool, string) {
 		probeCalls++
 		if probeCalls == 1 {
 			<-slow // hold the first probe in flight
@@ -188,14 +188,14 @@ func TestStartPeriodicReprobe_InFlightTickSkipped(t *testing.T) {
 func TestStartPeriodicReprobe_CtxCancelStops(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	// One route + provider so every probe pass actually calls probeFn (always
+	// One route + vendor/model so every probe pass actually calls probeFn (always
 	// failing -> snapshot stays unhealthy -> timer keeps ticking).
-	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
+	_, embModel := seedVendorModel(t, db, "emb-main", "embedding", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	seedBinding(t, db, er.ID, emb.ID, 1)
+	seedBinding(t, db, er.ID, embModel.ID, 1)
 
 	probeCalls := 0
-	useFakeProbe(t, func(ctx context.Context, p models.AIProvider) (bool, string) {
+	useFakeProbe(t, func(ctx context.Context, v models.AIVendor) (bool, string) {
 		probeCalls++
 		return false, "down"
 	})

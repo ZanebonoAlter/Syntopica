@@ -1,10 +1,10 @@
-// Package aihealth probes the reachability of each AI route's primary provider
-// at backend startup and keeps an in-memory snapshot that the analysis pause
-// gate (and later the health API) reads to decide whether the model layer is
-// ready. Optionally it can fire-and-forget a provider's start_command to bring
+// Package aihealth probes the reachability of each AI route's primary model's
+// vendor at backend startup and keeps an in-memory snapshot that the analysis
+// pause gate (and later the health API) reads to decide whether the model layer
+// is ready. Optionally it can fire-and-forget a vendor's start_command to bring
 // a local model process up before re-probing. A background heartbeat timer
 // (StartPeriodicReprobe) keeps probing regardless of the snapshot state, so a
-// mid-session provider death (e.g. the AI host powering off) degrades the
+// mid-session vendor death (e.g. the AI host powering off) degrades the
 // snapshot after degradeFailures consecutive failures.
 package aihealth
 
@@ -21,11 +21,12 @@ import (
 )
 
 // RouteHealth records the reachability of one route's primary (highest
-// priority) provider at probe time.
+// priority) model's vendor at probe time.
 type RouteHealth struct {
 	RouteName         string
 	Capability        string
-	PrimaryProvider   string
+	PrimaryModel      string
+	Vendor            string
 	ModelKind         string
 	Reachable         bool
 	LaunchedByBackend bool
@@ -57,7 +58,7 @@ const (
 var reprobeInterval = 60 * time.Second
 
 // coreHealthCapabilities enumerates the route capabilities that MUST each have
-// at least one reachable primary provider for the model layer to count as
+// at least one reachable primary model's vendor for the model layer to count as
 // ready. The health gate is the article-ingestion precondition (spec: 健康就绪
 // 判定 核心路由硬条件): embedding backs article vectors and topic_tagging backs
 // tag extraction, so a missing or unreachable tagging route means articles can
@@ -66,8 +67,8 @@ var reprobeInterval = 60 * time.Second
 // feed_discovery / open_notebook) do NOT take part in the verdict; their
 // reachability is still reported in the snapshot details.
 //
-// A capability with no enabled route bound to an enabled provider simply has
-// no entry in `entries`, which fails the check by construction — that is the
+// A capability with no enabled route bound to a usable model simply has no
+// entry in `entries`, which fails the check by construction — that is the
 // fail-closed path for 路由缺失 / 链路全禁用.
 var coreHealthCapabilities = [...]string{
 	string(airouter.CapabilityEmbedding),
@@ -78,8 +79,8 @@ var coreHealthCapabilities = [...]string{
 // degrade a healthy snapshot to not healthy (debounce). Fast-refused failures
 // (host powered off, latency ≈0) each count one heartbeat, so the worst-case
 // degrade delay is ≈ degradeFailures × reprobeInterval. Timeout-shaped
-// failures are already stretched by the per-provider probe timeout
-// (provider.timeout_seconds, see airouter.TestConnection): a slow-but-alive
+// failures are already stretched by the per-vendor probe timeout
+// (vendor.timeout_seconds, see airouter.TestVendorConnection): a slow-but-alive
 // server answers /models within its own call timeout and never counts as a
 // failure, so no extra busy-tolerance window is needed on top. Package-level
 // so tests can shrink it.
@@ -97,7 +98,7 @@ var (
 	// each fire start_command.
 	probeMu sync.Mutex
 
-	// launchCooldown suppresses re-executing a provider's start_command within
+	// launchCooldown suppresses re-executing a vendor's start_command within
 	// this window after a successful launch. A slow-loading model stays
 	// unreachable past the 45s poll window; without the cooldown every reprobe
 	// (each resume click) would spawn another copy of the process. Package
@@ -184,15 +185,16 @@ func applyProbeVerdict(healthy bool, checkedAt time.Time, entries []RouteHealth,
 	setSnapshot(next)
 }
 
-// listRoutesWithRetry calls store.ListRoutes with a bounded retry/backoff so a
-// single transient DB error (socket exhaustion / port conflict at startup)
-// does not weld the health gate shut. It returns the routes on the first
-// success, or the last error once all attempts are exhausted.
+// listRoutesWithRetry calls store.ListRoutesWithModels with a bounded
+// retry/backoff so a single transient DB error (socket exhaustion / port
+// conflict at startup) does not weld the health gate shut. It returns the
+// routes on the first success, or the last error once all attempts are
+// exhausted.
 func listRoutesWithRetry(store *airouter.Store) ([]models.AIRoute, error) {
 	var routes []models.AIRoute
 	var lastErr error
 	for attempt := 1; attempt <= listRoutesMaxRetries; attempt++ {
-		routes, lastErr = store.ListRoutes()
+		routes, lastErr = store.ListRoutesWithModels()
 		if lastErr == nil {
 			return routes, nil
 		}
@@ -217,53 +219,52 @@ func SetSnapshotForTest(s Snapshot) {
 // packages (e.g. the analysis-pause handler test that drives a reprobe). It
 // returns a cleanup func restoring the previous value. Production code must
 // not call this.
-func SetProbeFnForTest(fn func(context.Context, models.AIProvider) (bool, string)) func() {
+func SetProbeFnForTest(fn func(context.Context, models.AIVendor) (bool, string)) func() {
 	old := probeFn
 	probeFn = fn
 	return func() { probeFn = old }
 }
 
-// probeFn is the seam that turns a provider into a (reachable, error) verdict.
+// probeFn is the seam that turns a vendor into a (reachable, error) verdict.
 // Tests replace it to avoid real network. The default delegates to
-// airouter.TestConnection (GET {base_url}/models, zero tokens).
+// airouter.TestVendorConnection (GET {base_url}/models, zero tokens).
 var probeFn = defaultProbe
 
 // launchFn is the seam that fire-and-forgets a start_command. The default is a
 // cross-platform detached exec (see launch_windows.go / launch_unix.go).
 var launchFn = defaultLaunch
 
-func defaultProbe(ctx context.Context, p models.AIProvider) (bool, string) {
-	_, err := airouter.TestConnection(ctx, p)
-	if err != nil {
+func defaultProbe(ctx context.Context, v models.AIVendor) (bool, string) {
+	if _, err := airouter.TestVendorConnection(ctx, v); err != nil {
 		return false, err.Error()
 	}
 	return true, ""
 }
 
-// recentlyLaunched reports whether this provider was successfully launched
+// recentlyLaunched reports whether this vendor was successfully launched
 // within the launch cooldown window (i.e. a process we started is presumably
 // still warming up).
-func recentlyLaunched(providerID uint) bool {
+func recentlyLaunched(vendorID uint) bool {
 	launchMu.Lock()
 	defer launchMu.Unlock()
-	last, ok := lastLaunchAt[providerID]
+	last, ok := lastLaunchAt[vendorID]
 	return ok && time.Since(last) < launchCooldown
 }
 
-// recordLaunch marks a successful launch of the provider's start_command so
+// recordLaunch marks a successful launch of the vendor's start_command so
 // later probes within launchCooldown skip re-launching it. Called only after
 // launchFn succeeds; concurrent runs are prevented by probeMu and within-run
-// duplicates by the per-provider outcome cache, so check-then-record is safe.
-func recordLaunch(providerID uint) {
+// duplicates by the per-vendor outcome cache, so check-then-record is safe.
+func recordLaunch(vendorID uint) {
 	launchMu.Lock()
 	defer launchMu.Unlock()
-	lastLaunchAt[providerID] = time.Now()
+	lastLaunchAt[vendorID] = time.Now()
 }
 
-// RunStartupProbe probes the primary provider of every enabled route that has
-// at least one provider bound, optionally auto-launching unreachable local
-// providers, then writes the result into the in-memory snapshot. It is meant
-// to run once at backend startup and again on analysis resume. Runs are
+// RunStartupProbe probes the primary model's vendor of every enabled route
+// that has at least one usable binding, optionally auto-launching unreachable
+// local vendors, then writes the result into the in-memory snapshot. It is
+// meant to run once at backend startup and again on analysis resume. Runs are
 // serialized: a reprobe fired while one is in flight returns immediately.
 func RunStartupProbe(ctx context.Context, store *airouter.Store, autoStart bool) {
 	if !probeMu.TryLock() {
@@ -323,9 +324,9 @@ func runProbeLocked(ctx context.Context, store *airouter.Store, autoStart bool) 
 		return
 	}
 
-	// probeOutcome is the per-provider verdict reused by every route whose
-	// primary is that provider, so a provider shared by several routes is
-	// probed — and potentially launched — at most once per run.
+	// probeOutcome is the per-vendor verdict reused by every route whose
+	// primary model belongs to that vendor, so a vendor shared by several
+	// routes is probed — and potentially launched — at most once per run.
 	type probeOutcome struct {
 		reachable bool
 		errMsg    string
@@ -335,23 +336,26 @@ func runProbeLocked(ctx context.Context, store *airouter.Store, autoStart bool) 
 
 	entries := make([]RouteHealth, 0)
 	for _, route := range routes {
-		if !route.Enabled || len(route.RouteProviders) == 0 {
+		if !route.Enabled || len(route.RouteModels) == 0 {
 			continue
 		}
-		// RouteProviders are preloaded ordered by priority ASC. Skip links that
-		// are disabled (or whose provider is disabled), matching
-		// LoadRouteWithProviders semantics, and take the first passing link as
-		// the primary (highest precedence) provider. Only the primary is
-		// probed; fallbacks are intentionally skipped (spec: 仅探主 provider).
-		// A route whose links are all disabled produces no entry, same as a
-		// route without any provider.
-		var primary models.AIProvider
+		// RouteModels are preloaded ordered by priority ASC. Skip links that
+		// are disabled (or whose model is disabled/stale or whose vendor is
+		// disabled), matching LoadRouteWithModels semantics, and take the
+		// first passing binding as the primary (highest precedence) model.
+		// Only the primary model's vendor is probed; fallbacks are
+		// intentionally skipped (spec: 仅探首位模型的 vendor). A route whose
+		// bindings are all unusable produces no entry, same as a route
+		// without any binding (fail-closed).
+		var primaryModel models.AIModel
+		var primaryVendor models.AIVendor
 		found := false
-		for _, link := range route.RouteProviders {
-			if !link.Enabled || !link.Provider.Enabled {
+		for _, link := range route.RouteModels {
+			if !link.Enabled || !link.Model.Enabled || link.Model.Status != airouter.ModelStatusOK || !link.Model.Vendor.Enabled {
 				continue
 			}
-			primary = link.Provider
+			primaryModel = link.Model
+			primaryVendor = link.Model.Vendor
 			found = true
 			break
 		}
@@ -359,39 +363,40 @@ func runProbeLocked(ctx context.Context, store *airouter.Store, autoStart bool) 
 			continue
 		}
 
-		outcome, cached := outcomes[primary.ID]
+		outcome, cached := outcomes[primaryVendor.ID]
 		if !cached {
-			reachable, errMsg := probeFn(ctx, primary)
+			reachable, errMsg := probeFn(ctx, primaryVendor)
 			launched := false
-			if !reachable && autoStart && strings.TrimSpace(primary.StartCommand) != "" {
-				if recentlyLaunched(primary.ID) {
+			if !reachable && autoStart && strings.TrimSpace(primaryVendor.StartCommand) != "" {
+				if recentlyLaunched(primaryVendor.ID) {
 					// A process we launched is still warming up (model loads can
 					// outlast the 45s poll window). Do not spawn another copy —
 					// just keep waiting on the one already started.
-					logging.Infof("aihealth: provider %q launched within %s; skip re-launch, keep polling",
-						primary.Name, launchCooldown)
-					reachable, errMsg = pollProbe(ctx, primary, probePollTimeout, probePollInterval)
+					logging.Infof("aihealth: vendor %q launched within %s; skip re-launch, keep polling",
+						primaryVendor.Name, launchCooldown)
+					reachable, errMsg = pollProbe(ctx, primaryVendor, probePollTimeout, probePollInterval)
 					launched = reachable
-				} else if lerr := launchFn(primary.StartCommand); lerr != nil {
-					logging.Errorf("aihealth: launch start_command for provider %q failed: %v", primary.Name, lerr)
+				} else if lerr := launchFn(primaryVendor.StartCommand); lerr != nil {
+					logging.Errorf("aihealth: launch start_command for vendor %q failed: %v", primaryVendor.Name, lerr)
 					errMsg = fmt.Sprintf("launch failed: %v", lerr)
 				} else {
-					recordLaunch(primary.ID)
-					reachable, errMsg = pollProbe(ctx, primary, probePollTimeout, probePollInterval)
+					recordLaunch(primaryVendor.ID)
+					reachable, errMsg = pollProbe(ctx, primaryVendor, probePollTimeout, probePollInterval)
 					if reachable {
 						launched = true
 					}
 				}
 			}
 			outcome = probeOutcome{reachable: reachable, errMsg: errMsg, launched: launched}
-			outcomes[primary.ID] = outcome
+			outcomes[primaryVendor.ID] = outcome
 		}
 
 		entries = append(entries, RouteHealth{
 			RouteName:         route.Name,
 			Capability:        route.Capability,
-			PrimaryProvider:   primary.Name,
-			ModelKind:         primary.ModelKind,
+			PrimaryModel:      primaryModel.Name,
+			Vendor:            primaryVendor.Name,
+			ModelKind:         primaryModel.ModelKind,
 			Reachable:         outcome.reachable,
 			LaunchedByBackend: outcome.launched,
 			LastCheckedAt:     time.Now(),
@@ -400,12 +405,12 @@ func runProbeLocked(ctx context.Context, store *airouter.Store, autoStart bool) 
 	}
 
 	// Core-route hard condition (spec 健康就绪判定 核心路由硬条件): every core
-	// capability must have at least one reachable primary provider. A missing
-	// route (no enabled route, or no enabled provider link) yields no entry and
-	// therefore fails too — fail-closed. Classification is by route capability,
-	// not provider model_kind, and a single unreachable non-core route (e.g.
-	// digest_polish) never flips the verdict: reachable cloud llm routes cannot
-	// rescue an unreachable tagging route.
+	// capability must have at least one reachable primary model's vendor. A
+	// missing route (no enabled route, or no usable binding) yields no entry
+	// and therefore fails too — fail-closed. Classification is by route
+	// capability, not model_kind, and a single unreachable non-core route
+	// (e.g. digest_polish) never flips the verdict: reachable cloud llm routes
+	// cannot rescue an unreachable tagging route.
 	healthy := true
 	for _, capability := range coreHealthCapabilities {
 		if !hasReachableCapability(entries, capability) {
@@ -418,8 +423,8 @@ func runProbeLocked(ctx context.Context, store *airouter.Store, autoStart bool) 
 }
 
 // hasReachableCapability reports whether at least one entry of that capability
-// has a reachable primary provider. It is the per-capability aggregate used by
-// the core-route verdict ("≥1 reachable primary per capability").
+// has a reachable primary model's vendor. It is the per-capability aggregate
+// used by the core-route verdict ("≥1 reachable primary per capability").
 func hasReachableCapability(entries []RouteHealth, want string) bool {
 	for _, e := range entries {
 		if e.Capability == want && e.Reachable {
@@ -429,10 +434,10 @@ func hasReachableCapability(entries []RouteHealth, want string) bool {
 	return false
 }
 
-// pollProbe repeatedly probes the provider at interval until it is reachable or
+// pollProbe repeatedly probes the vendor at interval until it is reachable or
 // upTo elapses. The first probe runs immediately so a freshly-launched process
 // that is already up resolves without waiting.
-func pollProbe(ctx context.Context, p models.AIProvider, upTo, interval time.Duration) (bool, string) {
+func pollProbe(ctx context.Context, v models.AIVendor, upTo, interval time.Duration) (bool, string) {
 	pollCtx, cancel := context.WithTimeout(ctx, upTo)
 	defer cancel()
 
@@ -441,7 +446,7 @@ func pollProbe(ctx context.Context, p models.AIProvider, upTo, interval time.Dur
 
 	var lastErr string
 	for {
-		reachable, errMsg := probeFn(pollCtx, p)
+		reachable, errMsg := probeFn(pollCtx, v)
 		lastErr = errMsg
 		if reachable {
 			return true, ""

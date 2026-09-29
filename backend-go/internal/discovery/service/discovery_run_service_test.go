@@ -36,48 +36,58 @@ type mockDiscoveryClient struct {
 	embedCalls int
 }
 
-func (m *mockDiscoveryClient) Chat(_ context.Context, _ models.AIProvider, req airouter.ChatRequest) (*airouter.ChatResponse, error) {
+func (m *mockDiscoveryClient) Chat(_ context.Context, _ models.AIVendor, _ models.AIModel, _ string, req airouter.ChatRequest) (*airouter.ChatResponse, []airouter.StructuredAttempt, error) {
 	m.chatCalls++
 	if m.chatFn == nil {
-		return &airouter.ChatResponse{Content: `{"selected":[]}`}, nil
+		return &airouter.ChatResponse{Content: `{"selected":[]}`}, nil, nil
 	}
 	content, err := m.chatFn(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &airouter.ChatResponse{Content: content}, nil
+	return &airouter.ChatResponse{Content: content}, nil, nil
 }
 
-func (m *mockDiscoveryClient) Embed(_ context.Context, provider models.AIProvider, req airouter.EmbeddingRequest) (*airouter.EmbeddingResult, error) {
+func (m *mockDiscoveryClient) Embed(_ context.Context, vendor models.AIVendor, _ models.AIModel, req airouter.EmbeddingRequest) (*airouter.EmbeddingResult, error) {
 	m.embedCalls++
 	if m.embedFn == nil {
-		return &airouter.EmbeddingResult{Embeddings: [][]float64{{1, 0, 0}}, Model: "test", Dimensions: 3, Provider: provider.Name}, nil
+		return &airouter.EmbeddingResult{Embeddings: [][]float64{{1, 0, 0}}, Model: "test", Dimensions: 3, Provider: vendor.Name}, nil
 	}
 	return m.embedFn(req)
 }
 
 // newMockAIRouter 在 db（sqlite 或 PG 测试库）上建 ai fixtures 并注入 mock client：
-// llm provider + feed_discovery route；embedding provider + embedding route。
+// feed_discovery 路由 + vendor+model+route_models 绑定链；embedding 路由同理。
+// 旧 provider 直挂链已随 ResolvePrimaryModel/LoadRouteWithModels 切换删除。
 // skipEmbedding 时只建精排能力（配置缺失用例不建任何 fixture，直接用 nil router）。
 func newMockAIRouter(t *testing.T, db *gorm.DB, client *mockDiscoveryClient, skipEmbedding bool) *airouter.Router {
 	t.Helper()
-	llm := models.AIProvider{Name: "fd-llm", ProviderType: airouter.ProviderTypeOpenAICompatible,
-		BaseURL: "https://a.example/v1", APIKey: "k", Model: "m", ModelKind: "llm", Enabled: true}
-	require.NoError(t, db.Create(&llm).Error)
-	fdRoute := models.AIRoute{Name: "test-fd", Capability: string(airouter.CapabilityFeedDiscovery), Enabled: true, Strategy: "ordered_failover"}
+	fdRoute := models.AIRoute{Name: "test-fd", Capability: string(airouter.CapabilityFeedDiscovery), Enabled: true}
 	require.NoError(t, db.Create(&fdRoute).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: fdRoute.ID, ProviderID: llm.ID, Priority: 1, Enabled: true}).Error)
+	seedRouteModelChain(t, db, fdRoute.ID, "fd-llm-vendor", "m", airouter.ModelKindLLM)
 	if !skipEmbedding {
-		emb := models.AIProvider{Name: "fd-emb", ProviderType: airouter.ProviderTypeOpenAICompatible,
-			BaseURL: "https://b.example/v1", APIKey: "k", Model: "e", ModelKind: "embedding", Enabled: true}
-		require.NoError(t, db.Create(&emb).Error)
-		embRoute := models.AIRoute{Name: "test-emb", Capability: string(airouter.CapabilityEmbedding), Enabled: true, Strategy: "ordered_failover"}
+		embRoute := models.AIRoute{Name: "test-emb", Capability: string(airouter.CapabilityEmbedding), Enabled: true}
 		require.NoError(t, db.Create(&embRoute).Error)
-		require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: embRoute.ID, ProviderID: emb.ID, Priority: 1, Enabled: true}).Error)
+		seedRouteModelChain(t, db, embRoute.ID, "fd-emb-vendor", "e", airouter.ModelKindEmbedding)
 	}
 	router := airouter.NewRouterWithStore(airouter.NewStore(db))
 	router.RegisterClient(airouter.ProviderTypeOpenAICompatible, client)
 	return router
+}
+
+// seedRouteModelChain 在既有路由上补 vendor+model+route_models 绑定链
+// （参照 airouter/router_test.go 的 seedChatBinding 模式），供 Router 数据面
+// LoadRouteWithModels 读取。
+func seedRouteModelChain(t *testing.T, db *gorm.DB, routeID uint, vendorName, modelName, kind string) {
+	t.Helper()
+	vendor := models.AIVendor{Name: vendorName, ProviderType: airouter.ProviderTypeOpenAICompatible,
+		BaseURL: "https://" + vendorName + ".example/v1", APIKey: "k", Enabled: true}
+	require.NoError(t, db.Create(&vendor).Error)
+	m := models.AIModel{VendorID: vendor.ID, Name: modelName, ModelKind: kind,
+		Enabled: true, Status: airouter.ModelStatusOK}
+	require.NoError(t, db.Create(&m).Error)
+	require.NoError(t, db.Create(&models.AIRouteModel{RouteID: routeID, ModelID: m.ID,
+		Priority: 1, Enabled: true}).Error)
 }
 
 // setupRunRoutesFixture 建 n 条 usable_directly ok 路由（无 embedding——召回由
@@ -216,15 +226,12 @@ func newSelectAllMockRouter(t *testing.T, db *gorm.DB) (*airouter.Router, *mockD
 }
 
 // newMockAIRouterEmbeddingOnly 只建 embedding 能力（不建 feed_discovery route），
-// 用于配置缺失用例：capability 无 provider → configuration 失败、零 provider 调用。
+// 用于配置缺失用例：capability 无可用模型 → configuration 失败、零 provider 调用。
 func newMockAIRouterEmbeddingOnly(t *testing.T, db *gorm.DB, client *mockDiscoveryClient) *airouter.Router {
 	t.Helper()
-	emb := models.AIProvider{Name: "fd-emb", ProviderType: airouter.ProviderTypeOpenAICompatible,
-		BaseURL: "https://b.example/v1", APIKey: "k", Model: "e", ModelKind: "embedding", Enabled: true}
-	require.NoError(t, db.Create(&emb).Error)
-	embRoute := models.AIRoute{Name: "test-emb", Capability: string(airouter.CapabilityEmbedding), Enabled: true, Strategy: "ordered_failover"}
+	embRoute := models.AIRoute{Name: "test-emb", Capability: string(airouter.CapabilityEmbedding), Enabled: true}
 	require.NoError(t, db.Create(&embRoute).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: embRoute.ID, ProviderID: emb.ID, Priority: 1, Enabled: true}).Error)
+	seedRouteModelChain(t, db, embRoute.ID, "fd-emb-vendor", "e", airouter.ModelKindEmbedding)
 	router := airouter.NewRouterWithStore(airouter.NewStore(db))
 	router.RegisterClient(airouter.ProviderTypeOpenAICompatible, client)
 	return router
@@ -454,8 +461,8 @@ func TestRun_EmptyAPIKeyProviderPassesPreflight(t *testing.T) {
 	_ = setupAskFixture(t, db, 3)
 	client := &mockDiscoveryClient{}
 	router := newMockAIRouter(t, db, client, false)
-	// 构造后清空全部 provider 的 api_key（模拟本地网关无凭据）。
-	require.NoError(t, db.Model(&models.AIProvider{}).Where("1 = 1").Update("api_key", "").Error)
+	// 构造后清空全部 vendor 的 api_key（模拟本地网关无凭据）。
+	require.NoError(t, db.Model(&models.AIVendor{}).Where("1 = 1").Update("api_key", "").Error)
 	svc := NewDiscoveryRunService(db, router, nil)
 
 	run, err := svc.StartAsk(context.Background(), "查询", "")

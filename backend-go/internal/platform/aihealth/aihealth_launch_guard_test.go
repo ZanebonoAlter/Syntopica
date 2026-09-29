@@ -2,7 +2,7 @@ package aihealth
 
 // Regression tests for duplicate process launches: a slow-starting local
 // model (unreachable through the whole 45s poll window) used to be re-launched
-// once per route sharing the provider and once per reprobe (every resume
+// once per route sharing its vendor and once per reprobe (every resume
 // click), stacking processes. Poll windows are cut short via a cancelling
 // context instead of waiting out the real 45s.
 
@@ -18,8 +18,8 @@ import (
 
 // neverReachableProbe builds a probe fake that is never reachable (model still
 // loading) and counts probe calls.
-func neverReachableProbe(counter *int) func(context.Context, models.AIProvider) (bool, string) {
-	return func(context.Context, models.AIProvider) (bool, string) {
+func neverReachableProbe(counter *int) func(context.Context, models.AIVendor) (bool, string) {
+	return func(context.Context, models.AIVendor) (bool, string) {
 		if counter != nil {
 			*counter++
 		}
@@ -31,16 +31,20 @@ func countingLaunch(counter *int) func(string) error {
 	return func(string) error { *counter++; return nil }
 }
 
-// Scenario: two routes share the same slow-starting provider — one probe run
-// must launch it exactly once (previously once per route).
-func TestRunStartupProbe_SharedProvider_LaunchedOncePerRun(t *testing.T) {
+// Scenario: two routes whose primary models belong to the same slow-starting
+// vendor — one probe run must launch that vendor exactly once (previously once
+// per route). The two routes bind DIFFERENT models of the same vendor, so the
+// dedup key really is the vendor, not the model (W11-2).
+func TestRunStartupProbe_SharedVendor_LaunchedOncePerRun(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	p := seedProvider(t, db, "local-llm", "llm", "start-llm.bat", true)
+	v := seedVendor(t, db, "local-llm", "start-llm.bat", true)
+	embModel := seedModel(t, db, v, "local-emb", "embedding", true)
+	llmModel := seedModel(t, db, v, "local-llm-main", "llm", true)
 	emb := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
 	llm := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
-	seedBinding(t, db, emb.ID, p.ID, 1)
-	seedBinding(t, db, llm.ID, p.ID, 1)
+	seedBinding(t, db, emb.ID, embModel.ID, 1)
+	seedBinding(t, db, llm.ID, llmModel.ID, 1)
 
 	useFakeProbe(t, neverReachableProbe(nil))
 	launches := 0
@@ -50,12 +54,12 @@ func TestRunStartupProbe_SharedProvider_LaunchedOncePerRun(t *testing.T) {
 	defer cancel()
 	RunStartupProbe(ctx, store, true)
 
-	require.Equal(t, 1, launches, "provider shared by two routes must be launched once per run")
+	require.Equal(t, 1, launches, "vendor shared by two routes must be launched once per run")
 	snap := GetSnapshot()
 	require.Len(t, snap.Routes, 2)
 	for _, e := range snap.Routes {
 		require.False(t, e.Reachable)
-		require.Equal(t, "local-llm", e.PrimaryProvider)
+		require.Equal(t, "local-llm", e.Vendor)
 	}
 }
 
@@ -65,9 +69,9 @@ func TestRunStartupProbe_SharedProvider_LaunchedOncePerRun(t *testing.T) {
 func TestRunStartupProbe_CooldownBlocksRelaunch(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	p := seedProvider(t, db, "local-llm", "llm", "start-llm.bat", true)
+	_, m := seedVendorModel(t, db, "local-llm", "llm", "start-llm.bat", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	seedBinding(t, db, er.ID, p.ID, 1)
+	seedBinding(t, db, er.ID, m.ID, 1)
 
 	probeCalls := 0
 	useFakeProbe(t, neverReachableProbe(&probeCalls))
@@ -88,14 +92,14 @@ func TestRunStartupProbe_CooldownBlocksRelaunch(t *testing.T) {
 	require.Greater(t, probeCalls, 1, "second run must still poll the warming-up provider")
 }
 
-// Scenario: after the cooldown expires, a still-unreachable provider may be
+// Scenario: after the cooldown expires, a still-unreachable vendor may be
 // launched again (a genuinely dead process is recoverable on reprobe).
 func TestRunStartupProbe_CooldownExpiry_Relaunches(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	p := seedProvider(t, db, "local-llm", "llm", "start-llm.bat", true)
+	_, m := seedVendorModel(t, db, "local-llm", "llm", "start-llm.bat", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	seedBinding(t, db, er.ID, p.ID, 1)
+	seedBinding(t, db, er.ID, m.ID, 1)
 
 	useFakeProbe(t, neverReachableProbe(nil))
 	launches := 0
@@ -122,9 +126,9 @@ func TestRunStartupProbe_CooldownExpiry_Relaunches(t *testing.T) {
 func TestRunStartupProbe_ReentrantRunSkipped(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	p := seedProvider(t, db, "local-llm", "llm", "start-llm.bat", true)
+	_, m := seedVendorModel(t, db, "local-llm", "llm", "start-llm.bat", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	seedBinding(t, db, er.ID, p.ID, 1)
+	seedBinding(t, db, er.ID, m.ID, 1)
 
 	probeCalls := 0
 	useFakeProbe(t, neverReachableProbe(&probeCalls))

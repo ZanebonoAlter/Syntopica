@@ -93,20 +93,21 @@ func TestGetAIHealth_NotReady(t *testing.T) {
 
 // TestGetAIHealth_Ready covers a ready, healthy snapshot: checked_at is a
 // non-empty RFC3339 string, healthy=true, and the per-route projection carries
-// every contract field.
+// every contract field (spec: route_name/capability/primary_model/vendor/
+// model_kind/reachable/launched_by_backend/last_checked/error).
 func TestGetAIHealth_Ready(t *testing.T) {
 	setupAIHealthTestDB(t)
 	checked := time.Now()
 	useReadySnapshot(t, true, []aihealth.RouteHealth{
 		{
-			RouteName: "default", Capability: "embedding", PrimaryProvider: "emb-main",
-			ModelKind: "embedding", Reachable: true, LaunchedByBackend: false,
-			LastCheckedAt: checked, Error: "",
+			RouteName: "default", Capability: "embedding", PrimaryModel: "emb-main",
+			Vendor: "emb-local", ModelKind: "embedding", Reachable: true,
+			LaunchedByBackend: false, LastCheckedAt: checked, Error: "",
 		},
 		{
-			RouteName: "default", Capability: "summary", PrimaryProvider: "llm-main",
-			ModelKind: "llm", Reachable: true, LaunchedByBackend: true,
-			LastCheckedAt: checked, Error: "",
+			RouteName: "default", Capability: "summary", PrimaryModel: "llm-main",
+			Vendor: "llm-cloud", ModelKind: "llm", Reachable: true,
+			LaunchedByBackend: true, LastCheckedAt: checked, Error: "",
 		},
 	})
 
@@ -128,10 +129,12 @@ func TestGetAIHealth_Ready(t *testing.T) {
 	require.Len(t, routes, 2)
 	first := routes[0].(map[string]any)
 	require.Equal(t, "embedding", first["capability"])
-	require.Equal(t, "emb-main", first["primary_provider"])
+	require.Equal(t, "emb-main", first["primary_model"])
+	require.Equal(t, "emb-local", first["vendor"])
 	require.Equal(t, "embedding", first["model_kind"])
 	require.Equal(t, true, first["reachable"])
 	require.Equal(t, false, first["launched_by_backend"])
+	require.NotContains(t, first, "primary_provider", "legacy primary_provider field must be gone")
 }
 
 // TestSetAutoStartModels_RoundTrip covers PUT {enabled:true} then GET: the

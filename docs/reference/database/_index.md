@@ -23,7 +23,7 @@
 
 另：[DATA_LIFECYCLE.md](DATA_LIFECYCLE.md)（数据状态字段流转，独立于域文档）。
 
-## 完整表清单（55 业务 + 5 废弃 + 1 框架，按域分组 = 归属速查表；2026-09-02 cross_board 两表补齐；2026-09-24 页边注三表补齐）
+## 完整表清单（58 业务 + 5 废弃 + 1 框架，按域分组 = 归属速查表；2026-09-02 cross_board 两表补齐；2026-09-24 页边注三表补齐；2026-10 ai-provider-model-overhaul 三张两层表补齐、ai_providers/ai_route_providers 停写废弃）
 
 #### 内容 → [`tables/content.md`](tables/content.md)（flow: `content-enrichment`）
 
@@ -44,11 +44,14 @@
 
 | 表名 | 说明 | 对应模型 |
 | ------ | ------ | ---------- |
-| `ai_providers` | AI 供应商 | `models.AIProvider` |
-| `ai_routes` | AI 路由 | `models.AIRoute` |
-| `ai_route_providers` | AI 路由-供应商绑定 | `models.AIRouteProvider` |
+| `ai_vendors` | AI 供应商（协议/认证/端点/方言/结构化档） | `models.AIVendor` |
+| `ai_models` | AI 模型（唯一挂 vendor，七档思考默认档） | `models.AIModel` |
+| `ai_route_models` | AI 路由-模型绑定（场景思考覆盖档） | `models.AIRouteModel` |
+| `ai_routes` | AI 能力路由 | `models.AIRoute` |
 | `ai_call_logs` | AI 调用日志 | `models.AICallLog` |
 | `ai_embedding_cache` | embedding 结果缓存 | `models.AIEmbeddingCache` |
+| `ai_providers` | AI 供应商（⛔ 停写废弃，迁移 `20261005_0001` 拆解为 vendor+model） | `models.AIProvider`（Deprecated） |
+| `ai_route_providers` | AI 路由-供应商绑定（⛔ 停写废弃，改挂 ai_route_models） | `models.AIRouteProvider`（Deprecated） |
 
 #### 主题标签 → [`tables/topic-tags.md`](tables/topic-tags.md)（flow: `topic-graph`）
 
@@ -217,10 +220,10 @@
 │  board_daily_   │
 │   reports       │                                 ┌─────────────────┐
 │  daily_report_  │                                 │ AI Infra        │
-│   sections      │                                 │ ai_providers/   │
-│  daily_report_  │                                 │  ai_routes/     │
+│   sections      │                                 │ ai_vendors/     │
+│  daily_report_  │                                 │  ai_models/     │
 │   threads       │                                 │  ai_route_      │
-│  daily_report_  │                                 │  providers/     │
+│  daily_report_  │                                 │  models/        │
 │ section_relations                                  │  ai_call_logs/  │
 │  board_persistent│                                 │  ai_settings/   │
 │   topics        │                                 │  scheduler_tasks│

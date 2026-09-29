@@ -744,7 +744,7 @@ func summarizeError(err error) string {
 	return msg
 }
 
-// requireCapabilities 配置预检：路由已配置且 provider 能解析出来（非空）。失败 → run
+// requireCapabilities 配置预检：路由已配置且首位模型能解析出来（非空）。失败 → run
 // failed + error_code=configuration，不发任何 provider 调用。
 //
 // 有意不检查 API key 是否为空：本地/自建 openai_compatible 网关（如内网 qwen 代理）
@@ -755,12 +755,12 @@ func (s *DiscoveryRunService) requireCapabilities(caps ...airouter.Capability) e
 		return fmt.Errorf("airouter not configured")
 	}
 	for _, c := range caps {
-		provider, _, err := s.router.ResolvePrimaryProvider(c)
+		model, _, _, err := s.router.ResolvePrimaryModel(c)
 		if err != nil {
 			return fmt.Errorf("capability %s: %w", string(c), err)
 		}
-		if provider == nil {
-			return fmt.Errorf("capability %s: no provider", string(c))
+		if model == nil {
+			return fmt.Errorf("capability %s: no model", string(c))
 		}
 	}
 	return nil

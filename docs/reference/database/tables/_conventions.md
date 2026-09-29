@@ -61,6 +61,9 @@
 | 约束名 | 表 | 列 |
 | -------- | ------ | ------ |
 | `uq_section_relations_pair` | daily_report_section_relations | UNIQUE `(from_section_id, to_section_id, relation_type)` |
+| `idx_ai_vendors_name` | ai_vendors | UNIQUE `(name)`（`20261005_0001`；vendor.name 全局唯一） |
+| `idx_ai_models_vendor_name` | ai_models | UNIQUE `(vendor_id, name)`（`20261005_0001`；模型名唯一性收敛到 vendor 内） |
+| `idx_air_route_model_link` | ai_route_models | UNIQUE `(route_id, model_id)`（`20261005_0001`） |
 | `uq_board_upgrade_suggestions_hash` | board_upgrade_suggestions | 部分唯一 `(suggestion_hash) WHERE status='pending'` |
 | `uq_articles_feed_link` | articles | 部分唯一 `(feed_id, link) WHERE link <> ''`（迁移 `20260917_0001`，入库判重键；空 link 行豁免） |
 
@@ -166,8 +169,9 @@
 | `merge_reembedding_queues` | `target_tag_id` | `topic_tags` | `id` | 历史 DB FK 已被迁移 DROP |
 | `topic_tag_analyses` | `topic_tag_id` | `topic_tags` | `id` | 无 OnDelete |
 | `topic_analysis_cursors` | `topic_tag_id` | `topic_tags` | `id` | 无 OnDelete |
-| `ai_route_providers` | `route_id` | `ai_routes` | `id` | 无 OnDelete |
-| `ai_route_providers` | `provider_id` | `ai_providers` | `id` | 无 OnDelete |
+| `ai_models` | `vendor_id` | `ai_vendors` | `id` | 复合唯一 `(vendor_id, name)`；无 OnDelete，级联删除走应用层单事务（ai-provider-model-overhaul `20261005_0001`） |
+| `ai_route_models` | `route_id` | `ai_routes` | `id` | 复合唯一 `(route_id, model_id)`；无 OnDelete |
+| `ai_route_models` | `model_id` | `ai_models` | `id` | 复合唯一同上；无 OnDelete（应用层级联） |
 | `board_daily_reports` | `semantic_board_id` | `semantic_labels` | `id` | 无 OnDelete |
 | `board_daily_reports` | `prev_report_id` | `board_daily_reports` | `id` | 自引用，可空，无 OnDelete |
 | `daily_report_sections` | `report_id` | `board_daily_reports` | `id` | 无 OnDelete（`BoardDailyReport.Sections`） |
@@ -210,7 +214,7 @@
 ### 带 id 的桥接/明细表
 
 - **`article_topic_tags`**：连接 `articles` ↔ `topic_tags`，桥接表 + 关联评分，**有 `id`**，两端 `OnDelete:CASCADE`。
-- **`ai_route_providers`**：连接 `ai_routes` ↔ `ai_providers`，附带 `priority`，**有 `id`**，无 OnDelete。
+- **`ai_route_models`**：连接 `ai_routes` ↔ `ai_models`（ai-provider-model-overhaul，取代停写的 `ai_route_providers`），附带 `priority`（顺位 1..n）与 `thinking_level`（场景覆盖档，NULL=继承），**有 `id`**，无 OnDelete。
 - **`daily_report_section_relations`**：连接 `daily_report_sections` ↔ `daily_report_sections`（跨日分区多对多），**有 `id`**，区分 `relation_type`（similarity / identity），唯一约束 `(from_section_id, to_section_id, relation_type)`，无 OnDelete。
 
 ### 自引用（Self-Referential）

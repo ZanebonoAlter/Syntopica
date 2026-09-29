@@ -13,20 +13,28 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 
 	ai := rg.Group("/ai")
 	{
-		ai.GET("/providers", ListProviders)
-		ai.POST("/providers", UpsertProvider)
-		ai.PUT("/providers/:provider_id", UpdateProvider)
-		ai.DELETE("/providers/:provider_id", DeleteProvider)
-		ai.GET("/routes", ListRoutes)
-		ai.PUT("/routes/:capability", UpdateRoute)
+		// vendor/model 两层管理端点（ai-provider-model-overhaul design D7，
+		// 旧 /providers* 端点原子删除，不留兼容窗口）。
+		ai.GET("/vendors", ListAIVendors)
+		ai.POST("/vendors", CreateAIVendor)
+		ai.POST("/vendors/test", TestAIVendorInline) // 静态段优先于 :id（gin 同段静/参兄弟）
+		ai.GET("/vendors/:id", GetAIVendor)
+		ai.PUT("/vendors/:id", UpdateAIVendor)
+		ai.DELETE("/vendors/:id", DeleteAIVendor)
+		ai.POST("/vendors/:id/models/refresh", RefreshAIVendorModels)
+		ai.POST("/vendors/:id/test", TestAIVendor)
+		ai.GET("/models", ListAIModels)
+		ai.PUT("/models/:id", UpdateAIModel)
+		ai.GET("/routes", ListAIRoutes)
+		ai.PUT("/routes/:capability", UpdateAIRoute)
 		ai.GET("/settings", GetSettings)
 		ai.POST("/settings", SaveSettings)
-		ai.POST("/test", TestConnection)
 		ai.GET("/call-logs", ListCallLogs)
 		ai.GET("/sessions/:session_id", GetSession)
 		ai.GET("/health", GetAIHealth)
 		ai.PUT("/health/auto-start-models", SetAutoStartModels)
 		ai.POST("/health/reprobe", ReprobeAIHealth)
+		ai.GET("/observability/degradations", QueryDegradations)
 	}
 
 	schedulers := rg.Group("/schedulers")
