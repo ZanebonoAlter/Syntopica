@@ -8,11 +8,11 @@
 
 系统里有大量 AI 调用（文章整理稿、日报聚类/线程、标签提取、embedding、整理稿润色），早期各自直连 LLM、缺统一治理。AI 路由层（airouter）解决：
 
-- **能力路由**：按「能力」（summary / topic_tagging / digest_polish / open_notebook / embedding）把请求路由到配置好的模型绑定链，不同能力可用不同模型/供应商。业务用途绑定：`summary` 文章整理、`topic_tagging` 标签提取、`digest_polish` 日报润色、`embedding` 向量化、`open_notebook` 日报页边注问答（`daily_report.margin_note_qa`，daily-report-margin-notes，2026-09 从预留槽转为首个实际调用方）。
+- **能力路由**：按「能力」（summary / topic_tagging / digest_polish / open_notebook / embedding）把请求路由到配置好的模型绑定链，不同能力可用不同模型/供应商。业务用途绑定：`summary` 文章整理、`topic_tagging` 标签提取、`digest_polish` 日报润色、`embedding` 向量化、`open_notebook` 日报页边注问答（回答调用 `daily_report.margin_note_qa` + 搜索词生成轻量调用 `daily_report.margin_note_search_query`（margin-note-llm-search-query），daily-report-margin-notes，2026-09 从预留槽转为首个实际调用方）。
 - **失败降级**：同一能力下多个模型绑定按序尝试，主绑定失败自动切备用，调用方无感。
 - **并发限流**：每能力独立并发上限，避免单能力打爆 LLM 配额。
 - **调用审计**：每次调用（成功/失败）落 `ai_call_logs`，含 operation、prompt、token 用量、供应商、延迟、session，供调试幻觉 / 查错数据 / 重建编排；同一调用的全部尝试共享 trace_id，可还原降级链。
-- **配置可视**：前端「AI」页管理供应商（vendor）与模型清单（刷新/勾选/思考档配置）、能力路由模型绑定链（可按场景覆盖思考档），AI 健康页查看降级观测面板，无需改后端代码。
+- **配置可视**：前端「AI」页管理供应商（vendor）与模型清单（刷新/勾选/思考档配置）、能力路由模型绑定链（可按场景覆盖思考档），AI 健康页查看降级观测面板，无需改后端代码。每条能力泳道行头附「供血对象」说明小字（`routeDescriptions`，add-capability-route-descriptions）——重点口径：`digest_polish` 供血日报生成 + 泳道趋势「近 14 天」档，`data_enrichment_news` 供血话题生命线月/年周期归档（泳道趋势「月」「年」档，与日报无关）。
 
 > **范围说明（已确认过时，仅留路由层）**：本 flow 早期标题为「AI 总结批量生成（队列 + WebSocket 进度推送）」，描述的 `submitQueueSummary` / `AISummariesListView` / `useSummaryWebSocket` 等 feed 级批量总结功能在后端 router 与前端代码中**已不存在**。批量总结能力已被 **`content_completion` 调度器**（兼容别名 `ai_summary`）+ 文章级整理稿 API 取代（见 `flow/content-enrichment.md`）；版块级叙事走日报（见 `flow/daily-report.md`）。当前 `internal/platform/airouter/` + `front/app/features/ai/` 实际承载的是 **AI 调用路由层（airouter）**，本 flow 围绕此真实功能描述。
 

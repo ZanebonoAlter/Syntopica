@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,17 +52,39 @@ func swapMarginNoteChat(t *testing.T, rec *marginNoteChatRecorder) {
 	// 默认钩子会去打 aisettings（nil 全局）空指针；需要联网分支的用例再显式
 	// swapMarginNoteSearch 覆盖。
 	swapMarginNoteSearch(t, &marginNoteSearchRecorder{err: errMarginNoteSearchDisabled})
+	// 本 change：默认同时 stub 端点预检为「未配置」+ query 生成钩子为 err 记录
+	// 器——非联网用例因此走「跳过联网链路」（queryGen 零调用，可断言）；防
+	// 「未 stub 走默认 airouter 失败→静默回退锚文本」的意外绿路径（test-cases
+	// §继承与调整）。联网分支用例再显式 swapEndpoint+swapQueryGen 覆盖。
+	swapMarginNoteEndpoint(t, "", false)
+	swapMarginNoteQueryGen(t, &marginNoteQueryGenRecorder{err: errors.New("query gen stub: unexpected call")})
 }
 
 // marginNoteSearchRecorder captures search queries and replays scripted results.
-type marginNoteSearchRecorder struct {
-	queries []string
+// 并发安全：多 query 并行搜索时 hook 被 goroutine 并发调（D4），queries 记录
+// 与 byQuery 读都在锁内。byQuery 命中的 query 用分派结果，其余用 results/err。
+type marginNoteSearchOutcome struct {
 	results []searxng.Result
 	err     error
 }
 
+type marginNoteSearchRecorder struct {
+	mu      sync.Mutex
+	queries []string
+	results []searxng.Result
+	err     error
+	byQuery map[string]marginNoteSearchOutcome
+}
+
 func (r *marginNoteSearchRecorder) hook(_ context.Context, query string) ([]searxng.Result, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.queries = append(r.queries, query)
+	if r.byQuery != nil {
+		if oc, ok := r.byQuery[query]; ok {
+			return oc.results, oc.err
+		}
+	}
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -73,6 +96,44 @@ func swapMarginNoteSearch(t *testing.T, rec *marginNoteSearchRecorder) {
 	original := marginNoteWebSearchFn
 	marginNoteWebSearchFn = rec.hook
 	t.Cleanup(func() { marginNoteWebSearchFn = original })
+}
+
+// marginNoteQueryGenRecorder captures query-generation requests and replays
+// scripted responses (对齐 marginNoteChatRecorder)。
+type marginNoteQueryGenRecorder struct {
+	mu      sync.Mutex
+	calls   int
+	reqs    []airouter.ChatRequest
+	content string
+	err     error
+}
+
+func (r *marginNoteQueryGenRecorder) hook(_ context.Context, req airouter.ChatRequest) (*airouter.ChatResult, error) {
+	r.mu.Lock()
+	r.calls++
+	r.reqs = append(r.reqs, req)
+	content, err := r.content, r.err
+	r.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return &airouter.ChatResult{Content: content, ProviderName: "stub-querygen"}, nil
+}
+
+func swapMarginNoteQueryGen(t *testing.T, rec *marginNoteQueryGenRecorder) {
+	t.Helper()
+	original := marginNoteQueryGenFn
+	marginNoteQueryGenFn = rec.hook
+	t.Cleanup(func() { marginNoteQueryGenFn = original })
+}
+
+// swapMarginNoteEndpoint stubs the endpoint precheck (D3)：ok=false 模拟
+// 未配置/禁用（跳过整个联网链路），ok=true 模拟已配置。
+func swapMarginNoteEndpoint(t *testing.T, endpoint string, ok bool) {
+	t.Helper()
+	original := marginNoteSearxngEndpointFn
+	marginNoteSearxngEndpointFn = func() (string, bool) { return endpoint, ok }
+	t.Cleanup(func() { marginNoteSearxngEndpointFn = original })
 }
 
 func marginNoteTestDB(t *testing.T) *gorm.DB {
@@ -372,28 +433,54 @@ func TestAskMarginNote_WebResults_EnrichPromptAndWhitelist(t *testing.T) {
 	threadID := seedMarginNoteThread(t, db, reportID, sectionID) // 无关联文章
 	annotation := seedMarginNoteAnnotation(t, db, reportID, sectionID, &threadID)
 
-	// 注意顺序：swapMarginNoteChat 内部会重置搜索 stub（防 nil 全局），联网分支
-	// 用例必须先 swap chat 再 swap search。
+	// 注意顺序：swapMarginNoteChat 内部会重置搜索/端点/query 生成 stub（防 nil
+	// 全局与意外回退），联网分支用例必须最后 swap endpoint + queryGen +
+	// search 三钩子。
 	rec := &marginNoteChatRecorder{content: `{"answer":"答","cited_article_ids":[],"web_sources":[{"title":"逆回购百科","url":"https://a.example.com/x"},{"title":"编造","url":"https://evil.example.com"}]}`}
 	swapMarginNoteChat(t, rec)
-	search := &marginNoteSearchRecorder{results: []searxng.Result{
-		{Title: "逆回购百科", URL: "https://a.example.com/x", Content: "逆回购是..."},
-		{Title: "无关页", URL: "https://b.example.com/y", Content: "..."},
+	swapMarginNoteEndpoint(t, "http://searxng.local:8080", true)
+	queryGen := &marginNoteQueryGenRecorder{content: `{"queries":["央行逆回购 操作", "逆回购 工具"]}`}
+	swapMarginNoteQueryGen(t, queryGen)
+	search := &marginNoteSearchRecorder{byQuery: map[string]marginNoteSearchOutcome{
+		"央行逆回购 操作": {results: []searxng.Result{
+			{Title: "逆回购百科", URL: "https://a.example.com/x", Content: "逆回购是..."},
+		}},
+		"逆回购 工具": {results: []searxng.Result{
+			{Title: "无关页", URL: "https://b.example.com/y", Content: "..."},
+		}},
 	}}
 	swapMarginNoteSearch(t, search)
 
 	res, err := AskMarginNote(context.Background(), annotation.ID, "逆回购是什么")
 	require.NoError(t, err)
 
-	// WS-8：搜索 query 取划词。
-	require.Len(t, search.queries, 1)
-	assert.Equal(t, "以利率招标方式开展 3000 亿元逆回购操作", search.queries[0])
+	// query 生成调用形状（D1/D2）：operation 区分审计、open_notebook 路由、
+	// 短输出压缩；生成的 queries 成为搜索入参（非锚文本机械截断）。
+	require.Equal(t, 1, queryGen.calls, "前置一次轻量 query 生成调用")
+	qgReq := queryGen.reqs[0]
+	assert.Equal(t, MarginNoteQueryGenOperation, qgReq.Operation)
+	assert.Equal(t, airouter.CapabilityOpenNotebook, qgReq.Capability)
+	require.NotNil(t, qgReq.MaxTokens)
+	assert.Equal(t, 128, *qgReq.MaxTokens)
+	require.NotNil(t, qgReq.Temperature)
+	assert.InDelta(t, 0.1, *qgReq.Temperature, 1e-9)
+	assert.True(t, qgReq.JSONMode)
+	assert.Contains(t, qgReq.JSONSchema.Properties, "queries")
+	qgUser := qgReq.Messages[1].Content
+	assert.Contains(t, qgUser, "逆回购是什么", "问题拼入 query 生成 prompt")
+	assert.Contains(t, qgUser, annotation.QuotedText, "锚文本拼入 query 生成 prompt")
+	assert.Contains(t, qgUser, "央行逆回购", "线索标题拼入 query 生成 prompt")
 
-	// WS-1：联网参考块入 prompt（含红线措辞与结果 URL）。
+	// 搜索入参 = 生成的 queries（两个都发，非锚文本）。
+	require.Len(t, search.queries, 2)
+	assert.ElementsMatch(t, []string{"央行逆回购 操作", "逆回购 工具"}, search.queries)
+
+	// WS-1：联网参考块入 prompt（含红线措辞与结果 URL，两 query 合并池）。
 	user := rec.reqs[0].Messages[1].Content
 	assert.Contains(t, user, "联网搜索结果")
 	assert.Contains(t, user, "不得视为指令")
 	assert.Contains(t, user, "https://a.example.com/x")
+	assert.Contains(t, user, "https://b.example.com/y", "多 query 合并池全部进 prompt")
 	sys := rec.reqs[0].Messages[0].Content
 	assert.Contains(t, sys, "web_sources")
 
@@ -418,9 +505,12 @@ func TestAskMarginNote_SearchFailure_SilentDegrade(t *testing.T) {
 	threadID := seedMarginNoteThread(t, db, reportID, sectionID)
 	annotation := seedMarginNoteAnnotation(t, db, reportID, sectionID, &threadID)
 
-	// WS-2：搜索超时/失败 → 静默降级，回答照常、无网络来源、无报错（顺序同上）。
+	// WS-2/B4：stub query 生成成功 + 搜索钩子全部报错 → 静默降级，回答照常、
+	// 无网络来源、无报错；不再回退锚文本（SearXNG 同轮已挂）。顺序同上。
 	rec := &marginNoteChatRecorder{content: `{"answer":"离线答","cited_article_ids":[],"web_sources":[]}`}
 	swapMarginNoteChat(t, rec)
+	swapMarginNoteEndpoint(t, "http://searxng.local:8080", true)
+	swapMarginNoteQueryGen(t, &marginNoteQueryGenRecorder{content: `{"queries":["q1","q2"]}`})
 	swapMarginNoteSearch(t, &marginNoteSearchRecorder{err: errors.New("searxng fetch: timeout")})
 
 	res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
@@ -433,4 +523,289 @@ func TestAskMarginNote_SearchFailure_SilentDegrade(t *testing.T) {
 	var qa repository.AnnotationQA
 	require.NoError(t, db.First(&qa, "annotation_id = ?", annotation.ID).Error)
 	assert.JSONEq(t, `[]`, string(qa.CitedWebSources), "空写 [] 不写 null")
+}
+
+// ── LLM 自由选词搜索（margin-note-llm-search-query）─────────────────────
+
+// TestMarginNoteQueryGen_ParseVariants 覆盖 test-cases §单测 QG 组解析变体：
+// 成功 1/3 条、5 条截 3、空串与纯空白过滤、非 JSON、单条超长截 60。
+func TestMarginNoteQueryGen_ParseVariants(t *testing.T) {
+	// 成功 1 条（单 token 下限合法）。
+	assert.Equal(t, []string{"蓝白合"}, parseMarginNoteQueries(`{"queries":["蓝白合"]}`))
+	// 成功 3 条（上限）。
+	assert.Equal(t, []string{"蓝白合", "台湾政党联盟", "柯文哲 侯友宜"},
+		parseMarginNoteQueries(`{"queries":["蓝白合","台湾政党联盟","柯文哲 侯友宜"]}`))
+	// 返回 5 条 → 截前 3。
+	assert.Equal(t, []string{"q1", "q2", "q3"},
+		parseMarginNoteQueries(`{"queries":["q1","q2","q3","q4","q5"]}`))
+	// 空串/半角空格/全角空格/tab 逐条过滤；部分有效保留有效项。
+	assert.Equal(t, []string{"q1", "q2"},
+		parseMarginNoteQueries(`{"queries":["", "  ", "q1", "　", "\t", "q2"]}`))
+	// 过滤后全空 → 整体视为生成空（调用方回退锚文本）。
+	assert.Nil(t, parseMarginNoteQueries(`{"queries":["", "  ", "　", "\t"]}`))
+	// 非解析 JSON / queries 字段缺失 / 空数组 → nil。
+	assert.Nil(t, parseMarginNoteQueries("抱歉，这不是 JSON。"))
+	assert.Nil(t, parseMarginNoteQueries(`{}`))
+	assert.Nil(t, parseMarginNoteQueries(`{"queries":[]}`))
+	// 单条超长 → 截 ≤60 runes。
+	long := strings.Repeat("词", 100)
+	got := parseMarginNoteQueries(`{"queries":["` + long + `"]}`)
+	require.Len(t, got, 1)
+	assert.Len(t, []rune(got[0]), 60)
+}
+
+// TestMarginNoteQueryGen_GenerateFlow 覆盖生成链路容错与 prompt 拼装（形状断
+// 言见 TestAskMarginNote_WebResults_EnrichPromptAndWhitelist）。
+func TestMarginNoteQueryGen_GenerateFlow(t *testing.T) {
+	ctx := context.Background()
+	// 成功 5 条 → 截前 3 返回。
+	qg := &marginNoteQueryGenRecorder{content: `{"queries":["q1","q2","q3","q4","q5"]}`}
+	swapMarginNoteQueryGen(t, qg)
+	assert.Equal(t, []string{"q1", "q2", "q3"}, generateMarginNoteSearchQueries(ctx, "锚文本", "问题", "标题", "摘要"))
+	require.Equal(t, 1, qg.calls)
+
+	// 生成调用失败/超时 → nil（静默回退由调用方接管，B6）。
+	swapMarginNoteQueryGen(t, &marginNoteQueryGenRecorder{err: errors.New("open_notebook 路由不可用")})
+	assert.Nil(t, generateMarginNoteSearchQueries(ctx, "锚", "问题", "", ""))
+
+	// 输出全空白/非 JSON/空 → nil（同失败路径，B7）。
+	for _, content := range []string{`{"queries":["", "　"]}`, "抱歉不是 JSON", `{"queries":[]}`} {
+		swapMarginNoteQueryGen(t, &marginNoteQueryGenRecorder{content: content})
+		assert.Nil(t, generateMarginNoteSearchQueries(ctx, "锚", "问题", "", ""), "content=%s", content)
+	}
+
+	// 锚文本 200 runes 边界：进 prompt 截 200（回退搜索截 80 由 TestMarginNoteSearchQuery 覆盖）。
+	qg2 := &marginNoteQueryGenRecorder{content: `{"queries":["q"]}`}
+	swapMarginNoteQueryGen(t, qg2)
+	require.NotNil(t, generateMarginNoteSearchQueries(ctx, strings.Repeat("字", 250), "问题", "线索标题", "线索摘要"))
+	user := qg2.reqs[0].Messages[1].Content
+	assert.Contains(t, user, strings.Repeat("字", 200))
+	assert.NotContains(t, user, strings.Repeat("字", 201), "锚文本超 200 截断")
+	assert.Contains(t, user, "线索标题", "线索标题拼入")
+	assert.Contains(t, user, "线索摘要", "线索摘要拼入")
+}
+
+// TestMergeSearchResults 覆盖 D4 合并：跨 query/单 query 内 URL 去重保序、
+// trim 匹配、池长截 5、全空。
+func TestMergeSearchResults(t *testing.T) {
+	q1 := []searxng.Result{
+		{Title: "a1", URL: "https://a.example.com/1"},
+		{Title: "a2", URL: " https://a.example.com/2 "}, // trim 匹配键
+		{Title: "dup", URL: "https://a.example.com/1"},  // 单 query 内重复
+	}
+	q2 := []searxng.Result{
+		{Title: "b1", URL: "https://a.example.com/1"},  // 跨 query 重复（丢弃）
+		{Title: "b2", URL: "https://a.example.com/2"},  // trim 匹配 q1 的带空格 URL（丢弃）
+		{Title: "b3", URL: ""},                         // 空 URL 跳过
+	}
+	got := mergeMarginNoteSearchResults([][]searxng.Result{q1, q2})
+	require.Len(t, got, 2, "首次出现位次保序，重复/空 URL 剔除")
+	assert.Equal(t, "https://a.example.com/1", got[0].URL)
+	assert.Equal(t, " https://a.example.com/2 ", got[1].URL, "对象原样保留，仅去重键 trim")
+
+	// 池长 6（2 query × 3 不重复）→ 截前 5（query 顺序 × 各自结果顺序）。
+	p1 := []searxng.Result{{URL: "u1"}, {URL: "u2"}, {URL: "u3"}}
+	p2 := []searxng.Result{{URL: "u4"}, {URL: "u5"}, {URL: "u6"}}
+	got = mergeMarginNoteSearchResults([][]searxng.Result{p1, p2})
+	require.Len(t, got, 5, "marginNoteSearxngResultLimit 不变")
+	assert.Equal(t, "u4", got[3].URL)
+	assert.Equal(t, "u5", got[4].URL)
+	assert.NotEqual(t, "u6", got[4].URL, "第 6 条丢弃")
+
+	// 池长正好 5 → 全保留。
+	assert.Len(t, mergeMarginNoteSearchResults([][]searxng.Result{p1, p2[:2]}), 5)
+
+	// 全空 / nil → 空。
+	assert.Empty(t, mergeMarginNoteSearchResults(nil))
+	assert.Empty(t, mergeMarginNoteSearchResults([][]searxng.Result{nil, {}}))
+}
+
+// setupMarginNoteDegrade seeds 一个带 thread 的批注（降级树用例共用底座）。
+func setupMarginNoteDegrade(t *testing.T) *repository.ReportAnnotation {
+	db := marginNoteTestDB(t)
+	reportID, sectionID := seedMarginNoteReport(t, db, 3)
+	threadID := seedMarginNoteThread(t, db, reportID, sectionID)
+	return seedMarginNoteAnnotation(t, db, reportID, sectionID, &threadID)
+}
+
+// swapMarginNoteWebEnv 一键布置联网链路三钩子（endpoint 已配置 + query 生成 + 搜索）。
+func swapMarginNoteWebEnv(t *testing.T, queryGen *marginNoteQueryGenRecorder, search *marginNoteSearchRecorder) {
+	t.Helper()
+	swapMarginNoteEndpoint(t, "http://searxng.local:8080", true)
+	if queryGen != nil {
+		swapMarginNoteQueryGen(t, queryGen)
+	}
+	if search != nil {
+		swapMarginNoteSearch(t, search)
+	}
+}
+
+// TestAskMarginNoteDegrade 覆盖 D5 降级决策树全分支（test-cases §白盒附加 B1~B8）。
+func TestAskMarginNoteDegrade(t *testing.T) {
+	answerJSON := `{"answer":"回答","cited_article_ids":[],"web_sources":[]}`
+
+	t.Run("B1_endpoint_unconfigured_skips_query_gen", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: answerJSON}
+		swapMarginNoteChat(t, rec)
+		queryGen := &marginNoteQueryGenRecorder{content: `{"queries":["q"]}`}
+		swapMarginNoteQueryGen(t, queryGen)
+		// swapMarginNoteChat 默认 endpoint=false；显式再置一次以明示分支条件。
+		swapMarginNoteEndpoint(t, "", false)
+
+		res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err)
+		assert.Zero(t, queryGen.calls, "B1：未配置时 query 生成钩子零调用（省 LLM 调用）")
+		assert.NotContains(t, rec.reqs[0].Messages[1].Content, "联网搜索结果")
+		assert.True(t, res.PureModelKnowledge)
+	})
+
+	t.Run("B2_query_gen_success_all_search_ok_merged_pool", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: `{"answer":"答","cited_article_ids":[],"web_sources":[{"title":"合并池来源","url":"https://a.example.com/1"}]}`}
+		swapMarginNoteChat(t, rec)
+		queryGen := &marginNoteQueryGenRecorder{content: `{"queries":["q1","q2"]}`}
+		search := &marginNoteSearchRecorder{byQuery: map[string]marginNoteSearchOutcome{
+			"q1": {results: []searxng.Result{
+				{Title: "r1", URL: "https://a.example.com/1", Content: "c1"},
+				{Title: "r2", URL: "https://a.example.com/2", Content: "c2"},
+			}},
+			"q2": {results: []searxng.Result{
+				{Title: "r3", URL: "https://a.example.com/1", Content: "c1"}, // 跨 query 重复
+				{Title: "r4", URL: "https://b.example.com/3", Content: "c3"},
+			}},
+		}}
+		swapMarginNoteWebEnv(t, queryGen, search)
+
+		res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err)
+		user := rec.reqs[0].Messages[1].Content
+		assert.Contains(t, user, "https://a.example.com/1", "合并去重结果进 prompt")
+		assert.Contains(t, user, "https://a.example.com/2")
+		assert.Contains(t, user, "https://b.example.com/3")
+		require.Len(t, res.CitedWebSources, 1, "合并池作为白名单候选集（跨 query 命中）")
+		assert.Equal(t, "https://a.example.com/1", res.CitedWebSources[0].URL)
+		assert.False(t, res.PureModelKnowledge)
+	})
+
+	t.Run("B3_partial_search_failure_survivors_used", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: answerJSON}
+		swapMarginNoteChat(t, rec)
+		queryGen := &marginNoteQueryGenRecorder{content: `{"queries":["q1","q2"]}`}
+		search := &marginNoteSearchRecorder{byQuery: map[string]marginNoteSearchOutcome{
+			"q1": {results: []searxng.Result{{Title: "r1", URL: "https://a.example.com/1", Content: "c1"}}},
+			"q2": {err: errors.New("searxng fetch: timeout")},
+		}}
+		swapMarginNoteWebEnv(t, queryGen, search)
+
+		_, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err, "单个 query 失败不拖垮其他")
+		user := rec.reqs[0].Messages[1].Content
+		assert.Contains(t, user, "https://a.example.com/1", "成功 query 的结果照用")
+	})
+
+	t.Run("B4_all_search_failed_no_quoted_fallback", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: answerJSON}
+		swapMarginNoteChat(t, rec)
+		queryGen := &marginNoteQueryGenRecorder{content: `{"queries":["q1","q2"]}`}
+		search := &marginNoteSearchRecorder{err: errors.New("searxng fetch: connection refused")}
+		swapMarginNoteWebEnv(t, queryGen, search)
+
+		res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err)
+		assert.Empty(t, res.CitedWebSources)
+		assert.NotContains(t, rec.reqs[0].Messages[1].Content, "联网搜索结果", "全部失败 → 无联网块")
+		// D4：不再回退锚文本——SearXNG 同轮已挂，二跳只加延迟。
+		require.Len(t, search.queries, 2, "只发起生成的 2 个 query")
+		assert.ElementsMatch(t, []string{"q1", "q2"}, search.queries)
+		for _, q := range search.queries {
+			assert.NotContains(t, q, "逆回购操作", "B4：不回退锚文本 query")
+		}
+		assert.True(t, res.PureModelKnowledge)
+	})
+
+	t.Run("B5_all_search_empty_same_as_B4", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: answerJSON}
+		swapMarginNoteChat(t, rec)
+		queryGen := &marginNoteQueryGenRecorder{content: `{"queries":["q1","q2"]}`}
+		search := &marginNoteSearchRecorder{byQuery: map[string]marginNoteSearchOutcome{
+			"q1": {}, "q2": {},
+		}}
+		swapMarginNoteWebEnv(t, queryGen, search)
+
+		res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err)
+		assert.Empty(t, res.CitedWebSources)
+		assert.NotContains(t, rec.reqs[0].Messages[1].Content, "联网搜索结果", "各 query 结果全空 → 无联网块")
+		require.Len(t, search.queries, 2)
+		assert.True(t, res.PureModelKnowledge)
+	})
+
+	t.Run("B6_query_gen_failed_fallback_quoted_search", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: `{"answer":"答","cited_article_ids":[],"web_sources":[{"title":"锚文本搜到的","url":"https://a.example.com/x"}]}`}
+		swapMarginNoteChat(t, rec)
+		queryGen := &marginNoteQueryGenRecorder{err: errors.New("open_notebook 全部失败")}
+		search := &marginNoteSearchRecorder{results: []searxng.Result{
+			{Title: "锚文本搜到的", URL: "https://a.example.com/x", Content: "c"},
+		}}
+		swapMarginNoteWebEnv(t, queryGen, search)
+
+		res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err)
+		// 回退 = 现状规则：锚文本 query（截前 80 runes）单 query 搜索。
+		require.Len(t, search.queries, 1)
+		assert.Equal(t, "以利率招标方式开展 3000 亿元逆回购操作", search.queries[0])
+		assert.Contains(t, rec.reqs[0].Messages[1].Content, "https://a.example.com/x", "回退搜索结果进 prompt")
+		require.Len(t, res.CitedWebSources, 1)
+		assert.False(t, res.PureModelKnowledge)
+	})
+
+	t.Run("B8_fallback_search_also_failed_silent_final", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: answerJSON}
+		swapMarginNoteChat(t, rec)
+		queryGen := &marginNoteQueryGenRecorder{err: errors.New("timeout")}
+		search := &marginNoteSearchRecorder{err: errors.New("searxng fetch: timeout")}
+		swapMarginNoteWebEnv(t, queryGen, search)
+
+		res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err, "双保险耗尽 → 静默终态，问答照常")
+		assert.Empty(t, res.CitedWebSources)
+		assert.NotContains(t, rec.reqs[0].Messages[1].Content, "联网搜索结果")
+		assert.True(t, res.PureModelKnowledge)
+	})
+}
+
+// TestAskMarginNote_QueryChangesWithQuestion 覆盖 spec Scenario「搜索词随问题
+// 语义变化」：同一批注先后两问，搜索入参随 query 生成输出变化（非固定锚文本）。
+func TestAskMarginNote_QueryChangesWithQuestion(t *testing.T) {
+	annotation := setupMarginNoteDegrade(t)
+	rec := &marginNoteChatRecorder{content: `{"answer":"答","cited_article_ids":[],"web_sources":[]}`}
+	swapMarginNoteChat(t, rec)
+	queryGen := &marginNoteQueryGenRecorder{content: `{"queries":["蓝白合 政党联盟"]}`}
+	search := &marginNoteSearchRecorder{}
+	swapMarginNoteWebEnv(t, queryGen, search)
+
+	_, err := AskMarginNote(context.Background(), annotation.ID, "蓝白合是什么")
+	require.NoError(t, err)
+	require.Equal(t, 1, queryGen.calls)
+
+	// 追问语义不同的问题：query 生成输出随问题变化，搜索入参随之变化。
+	queryGen.mu.Lock()
+	queryGen.content = `{"queries":["2024台湾大选 两岸关系"]}`
+	queryGen.mu.Unlock()
+	_, err = AskMarginNote(context.Background(), annotation.ID, "2024 大选对两岸关系什么影响")
+	require.NoError(t, err)
+	require.Equal(t, 2, queryGen.calls)
+	require.Len(t, search.queries, 2, "每轮各搜一次（本轮各 1 个 query）")
+	assert.Equal(t, "蓝白合 政党联盟", search.queries[0])
+	assert.Equal(t, "2024台湾大选 两岸关系", search.queries[1])
+	assert.NotEqual(t, search.queries[0], search.queries[1], "两问搜索词互不相同")
+	for _, q := range search.queries {
+		assert.NotEqual(t, "以利率招标方式开展 3000 亿元逆回购操作", q, "搜索词非固定锚文本")
+	}
 }

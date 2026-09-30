@@ -14,15 +14,19 @@ import (
 	"syntopica-backend/internal/topicgraph/repository"
 )
 
-// 日报页边注问答（daily-report-margin-notes design D4/D6/D7）。
+// 日报页边注问答（daily-report-margin-notes design D4/D6/D7；margin-note-
+// llm-search-query 翻案 D7 搜索策略）。
 //
-// 契约：单次 LLM 调用同时产出 {answer, cited_article_ids[], web_sources[], terms[]}
-// （capability open_notebook 首个调用方，operation daily_report.margin_note_qa）；
-// 提问前先搜本地 SearXNG（每次必搜+失败静默降级，D7），原始结果作为参考块入 prompt；
-// cited_article_ids 与 web_sources 均走候选集白名单硬校验（集外剔除，空=纯模型
-// 知识——本地引用与网络来源均为空才标，D7）；terms ≤5 归一化 upsert，其解析/
-// 入库失败只 Warn 不阻断回答返回（D6 失败隔离——answer 已成功时宁可少几个
-// chips 不整轮失败）。
+// 契约：回答单次 LLM 调用产出 {answer, cited_article_ids[], web_sources[], terms[]}
+// （capability open_notebook 首个调用方，operation daily_report.margin_note_qa）
+// + 前置一次轻量 query 生成调用（operation daily_report.margin_note_search_query，
+// 输出仅 1~3 条搜索词）——每次提问 LLM 调用从 1 次变为最多 2 次，两调用的
+// operation 区分审计；提问前先搜本地 SearXNG（每次必搜+失败静默降级，D7），
+// query 由 LLM 依问题语义自由生成（失败回退划词文本），多 query 结果按 URL
+// 合并去重为白名单池；cited_article_ids 与 web_sources 均走候选集白名单硬校
+// 验（集外剔除，空=纯模型知识——本地引用与网络来源均为空才标，D7）；terms ≤5
+// 归一化 upsert，其解析/入库失败只 Warn 不阻断回答返回（D6 失败隔离——answer
+// 已成功时宁可少几个 chips 不整轮失败）。
 
 // MarginNoteQAOperation is the audit operation name for margin note QA calls.
 const MarginNoteQAOperation = "daily_report.margin_note_qa"
@@ -84,9 +88,11 @@ func AskMarginNote(ctx context.Context, annotationID uint, question string) (*Ma
 		return nil, fmt.Errorf("margin note qa: load article excerpts: %w", err)
 	}
 
-	// D7 联网补强：每次必搜 + 失败静默降级。搜索失败/超时/未配置只影响
-	// 是否携带联网参考块，绝不阻断问答（联网是增益不是依赖）。
-	webResults := searchWebForMarginNote(ctx, MarginNoteSearchQuery(annotation.QuotedText, question))
+	// D7 联网补强 + 本 change 翻案：每次必搜 + 失败静默降级不变，query 来源改
+	// 为 LLM 自由生成（端点预检 → query 生成 → 并行搜索合并，降级树见
+	// searchWebForMarginNoteWithQueryGen）。搜索失败/超时/未配置只影响是否携
+	// 带联网参考块，绝不阻断问答（联网是增益不是依赖）。
+	webResults := searchWebForMarginNoteWithQueryGen(ctx, annotation.QuotedText, question, threadTitle, threadSummary)
 
 	system, user := buildMarginNoteQAPrompt(annotation.QuotedText, question, threadTitle, threadSummary, excerpts, webResults)
 
