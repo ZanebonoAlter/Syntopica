@@ -11,6 +11,14 @@ import (
 	"syntopica-backend/internal/dataenrichment/repository"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/testutil"
+
+	// Blank import registers tagmanagement-owned models (topic_tag_embeddings
+	// etc., wire.go init → database.RegisterModels) for this test binary's
+	// AutoMigrate. RunAutoMigrate's table set depends on these init() side
+	// effects; without the import the migration chain's ALTER on
+	// topic_tag_embeddings (20260403_0003) hits "relation does not exist".
+	// Same pattern as semantic_board_upgrade_test.go's local init().
+	_ "syntopica-backend/internal/tagmanagement"
 )
 
 // setupCrossBoardRelationDB opens a migrated testcontainer Postgres and

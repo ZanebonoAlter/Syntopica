@@ -64,11 +64,13 @@ func TestSomethingUnit(t *testing.T) {
 - **`TruncateAllTables(t, db)`**：CASCADE 清空所有业务表（**含 seed**，真·全空），无快照恢复、无重开。原义保留，供显式需要「连 seed 一起清空」的场景。
 - **`ReimportTestDB(t, db) *gorm.DB`**：DROP schema + 重建 + 重跑迁移 + 重开连接池。作为**逃生口保留**——少数需要「干净迁移态」的回归测试（如 `TestReimportPreservesVectorInserts`）继续可用（只操作临时容器，不读开发/生产 DSN）。
 
-### 🛑 黄金 schema 模型的两条约束
+### 🛑 黄金 schema 模型的三条约束
 
 **约束①——新增迁移 seed 表必须同步登记快照**：当前快照表名清单仅 `ai_settings`、`embedding_config`（受控元数据，快照**内容**运行时从黄金 schema 的 DB 读取，不存手工副本，不会 drift）。未来若版本化迁移向第三张表注入 seed，MUST 同步把该表名加入 `ResetTestData` 的快照表名列表，否则该表 seed 不被恢复、测试失败。
 
 **约束②——共享 schema 模型下禁止对集成测试加 `t.Parallel()`**：黄金 schema 是进程级共享态，所有测试串行轮流使用、测试间用 truncate 清数据。给集成测试加 `t.Parallel()` 会并发 truncate 串台、跨测试数据污染。
+
+**约束③——跨包集成测试建库不依赖被测包 import 链（fix-test-schema-missing-tables，2026-09-30）**：`RunAutoMigrate` 的表集 = 静态模型列表 + 各域包 `init()` 里 `database.RegisterModels` 的副作用注册（tagmanagement/wire.go、dataenrichment/repository/models.go、platform/scheduler/task.go 等）。跨包测试二进制 import 链拉不到依赖包 → init 不执行 → 表不建 → 版本化迁移 ALTER 报 `relation does not exist`。修复模式：测试文件头部 blank import 对应域包（如 `cross_board_relation_test.go` 的 `_ "syntopica-backend/internal/tagmanagement"`、`constraints_test.go` 的 `_ "syntopica-backend/internal/platform/scheduler"`）或在测试文件内 `init()` 手动 `RegisterModels`（先例 `semantic_board_upgrade_test.go:1020`），均配注释说明机制。踩坑特征：单独跑全绿、迁移链报某表不存在——先查是不是缺域注册，不是迁移坏了。
 
 > **性能现实**：黄金 schema + reset 把 `topicgraph/repository` 包（41 个 `SetupTestDB` 调用点）从 ~382s 降到 ~147s（~2.6x）。瓶颈在每次 reset 重开连接池（撤销测试对 vector 列的 ALTER 变异、清除失效 prepared statement）；进一步优化路径见 `openspec/changes/speed-up-testcontainer-setup/design.md` 决策⑥。
 

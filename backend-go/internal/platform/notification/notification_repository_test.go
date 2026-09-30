@@ -101,7 +101,10 @@ func TestNotificationEvictionAllUnread(t *testing.T) {
 	// 最旧未读行（minutesAgo=1000）仍在：已读行（999）优先被淘汰
 	var oldestUnread models.Notification
 	require.NoError(t, databaseDB().Where("is_read = ?", false).Order("created_at ASC, id ASC").First(&oldestUnread).Error)
-	require.Equal(t, createdAtX(1000).Unix(), oldestUnread.CreatedAt.Unix())
+	// 容差 ±2s：createdAtX() 在断言时重新取 time.Now()，与 seed 落库时间戳可能跨秒边界
+	//（高负载偶发假红，见 fix-test-schema-missing-tables）——改用容差比较而非严格相等。
+	require.WithinDuration(t, createdAtX(1000), oldestUnread.CreatedAt, 2*time.Second,
+		"oldest unread row must keep its seed timestamp within ±2s")
 	var readRow models.Notification
 	err = databaseDB().Where("is_read = ? AND created_at = ?", true, createdAtX(999)).First(&readRow).Error
 	require.Error(t, err, "oldest read row must have been evicted in priority over unread")

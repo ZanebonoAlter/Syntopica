@@ -5,6 +5,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"syntopica-backend/internal/platform/testutil"
+
+	// Blank import registers scheduler-owned models (scheduler_tasks, task.go
+	// init → database.RegisterModels) for this test binary's AutoMigrate. The
+	// information_schema assertions below need scheduler_tasks to exist in the
+	// golden schema; RunAutoMigrate's table set depends on these init() side
+	// effects (platform/database cannot reference the package statically —
+	// import cycle, see task.go:11).
+	_ "syntopica-backend/internal/platform/scheduler"
 )
 
 // This integration test guards against "constraint vacuum": after the model-tag

@@ -11,11 +11,12 @@ import (
 
 // TestBoardLevelAnalysisScopeMigration exercises migration 20260826_0001
 // end-to-end against a testcontainer PG in the production upgrade scenario:
-// AutoMigrate has added topic_enrichment_result.{semantic_board_id,analysis_scope}
-// and the reference_roles table, but persistent_topic_id still carries its
-// legacy NOT NULL (AutoMigrate never drops constraints). The migration must
-// backfill analysis_scope='topic' for NULL rows and drop NOT NULL on both
-// enrichment id columns so board-scoped rows (NULL topic) can be inserted.
+// AutoMigrate has added topic_enrichment_result.{semantic_board_id,analysis_scope},
+// but persistent_topic_id still carries its legacy NOT NULL (AutoMigrate never
+// drops constraints). The migration must backfill analysis_scope='topic' for
+// NULL rows and drop NOT NULL on both enrichment id columns so board-scoped
+// rows (NULL topic) can be inserted. reference_roles 断言已对齐退役现实
+//（20260926_0001 DROP，详见断言 3/5）。
 //
 // Docker required. Skipped under -short.
 func TestBoardLevelAnalysisScopeMigration(t *testing.T) {
@@ -32,7 +33,6 @@ func TestBoardLevelAnalysisScopeMigration(t *testing.T) {
 	t.Cleanup(func() {
 		_ = db.Exec(`DELETE FROM topic_enrichment_result WHERE session_id LIKE 'bld-mig-%' OR persistent_topic_id IN (9201, 9202)`).Error
 		_ = db.Exec(`DELETE FROM topic_enrichment_review WHERE deviation_summary LIKE 'bld-mig-%' OR semantic_board_id = 9301`).Error
-		_ = db.Exec(`DELETE FROM reference_roles WHERE name IN ('bld-mig-role', 'inside-america-v2')`).Error
 	})
 	require.NoError(t, db.Exec(`DELETE FROM topic_enrichment_result WHERE session_id LIKE 'bld-mig-%' OR persistent_topic_id = 9201`).Error)
 	require.NoError(t, db.Exec(`DELETE FROM topic_enrichment_review WHERE deviation_summary LIKE 'bld-mig-%'`).Error)
@@ -68,21 +68,24 @@ func TestBoardLevelAnalysisScopeMigration(t *testing.T) {
 	require.NoError(t, db.Exec(`INSERT INTO topic_enrichment_review (persistent_topic_id, semantic_board_id, curr_result_id, deviation_summary, created_at, updated_at)
 		VALUES (NULL, 9301, 1, 'bld-mig-board-review', now(), now())`).Error)
 
-	// 3. reference_roles table exists via AutoMigrate with the unique name index.
-	require.NoError(t, db.Exec(`INSERT INTO reference_roles (name, content, enabled, created_at, updated_at)
-		VALUES ('bld-mig-role', 'test content', true, now(), now())`).Error)
-	err := db.Exec(`INSERT INTO reference_roles (name, content, enabled, created_at, updated_at)
-		VALUES ('bld-mig-role', 'dup', true, now(), now())`).Error
-	require.Error(t, err, "reference_roles.name must be unique")
+	// 3. reference_roles retired semantics: the table was dropped by
+	// 20260926_0001 (restructure-settings-navigation) and is not created by
+	// this binary's AutoMigrate — it must be absent in a fresh schema.
+	var roleTableExists bool
+	require.NoError(t, db.Raw(`SELECT EXISTS (SELECT 1 FROM information_schema.tables
+		WHERE table_schema='public' AND table_name='reference_roles')`).Scan(&roleTableExists).Error)
+	require.False(t, roleTableExists, "reference_roles is retired and must not exist in a fresh schema")
 
 	// 4. Topic-scoped inserts still work (regression: dropping NOT NULL must
 	// not break the old write path).
 	require.NoError(t, db.Exec(`INSERT INTO topic_enrichment_result (persistent_topic_id, analysis_scope, session_id, created_at)
 		VALUES (9201, 'topic', 'bld-mig-topic2', now())`).Error)
 
-	// 5. Seed migration: first reference role present with real content and
-	// enabled (tasks 2.3 — 库中可查询到 enabled 文档). Locate and run
-	// 20260826_0002 the same way (this test drives Ups directly, not RunMigrations).
+	// 5. Seed migration retired semantics: 20260826_0002 seeds reference_roles,
+	// but the table has since been retired (dropped by 20260926_0001). On a
+	// schema without the table its tableExists guard must make Up a safe
+	// no-op — drive it twice to pin the idempotent skip (this test drives Ups
+	// directly, not RunMigrations).
 	var upSeed func(*gorm.DB) error
 	for _, m := range database.ExportedPostgresMigrations() {
 		if m.Version == "20260826_0002" {
@@ -92,15 +95,7 @@ func TestBoardLevelAnalysisScopeMigration(t *testing.T) {
 	}
 	require.NotNil(t, upSeed, "migration 20260826_0002 not found in list")
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return upSeed(tx) }))
-	// Idempotent: seeding twice is a no-op (ON CONFLICT DO NOTHING).
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return upSeed(tx) }))
-	var roleName, roleTitle string
-	var roleEnabled bool
-	var roleLen int
-	require.NoError(t, db.Raw(`SELECT name, title, enabled, length(content) FROM reference_roles WHERE name = 'inside-america-v2'`).Row().Scan(&roleName, &roleTitle, &roleEnabled, &roleLen))
-	require.Equal(t, "inside-america-v2", roleName)
-	require.Equal(t, true, roleEnabled)
-	require.Greater(t, roleLen, 2000, "profile content should be the full v2 snapshot")
 
 	// Idempotency: re-running Up is a no-op.
 	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return up(tx) }))
