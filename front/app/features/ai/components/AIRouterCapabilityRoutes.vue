@@ -19,7 +19,7 @@ import AppSectionHeader from '~/components/ui/AppSectionHeader.vue'
 import { useNotify } from '~/composables/useNotify'
 import type { ModelKind, ThinkingLevel } from '~/types'
 import { useAIModels } from '../composables/useAIModels'
-import { capabilityOrder, routeLabels, useAIRoutes } from '../composables/useAIRoutes'
+import { capabilityOrder, routeDescriptions, routeLabels, useAIRoutes } from '../composables/useAIRoutes'
 import { useRouteHealth } from '../composables/useRouteHealth'
 import { useAIVendors } from '../composables/useAIVendors'
 import { findVendorPreset } from '../presets'
@@ -410,6 +410,7 @@ onBeforeUnmount(() => {
         :key="capability"
         :capability="capability"
         :label="routeLabels[capability] || capability"
+        :description="routeDescriptions[capability]"
         :cards="swimCards(capability)"
         :health-level="rowHealthOf(capability).level"
         :health-text="rowHealthOf(capability).text"

@@ -237,6 +237,19 @@ describe('AIRouterCapabilityRoutes 行式泳道（U7，tasks 8.3）', () => {
     expect(cards[0]!.find('.swim-card__badge--override').exists()).toBe(false)
   })
 
+  it('泳道行头供血说明：八条能力均渲染非空说明小字；文案与真实供血一致', async () => {
+    const wrapper = await mountRoutes()
+    for (const cap of ['summary', 'topic_tagging', 'digest_polish', 'embedding', 'open_notebook', 'feed_discovery', 'data_enrichment_news', 'data_enrichment_analysis']) {
+      const desc = section(wrapper, cap).find('.swimlane__desc')
+      expect(desc.exists(), `${cap} 缺供血说明行`).toBe(true)
+      expect(desc.text().trim()).not.toBe('')
+    }
+    // 关键分工（spec）：新闻总结=生命线月/年归档（不暗示日报）；日报润色=日报+近14天档
+    expect(section(wrapper, 'data_enrichment_news').find('.swimlane__desc').text()).toContain('归档')
+    expect(section(wrapper, 'data_enrichment_news').find('.swimlane__desc').text()).not.toContain('日报')
+    expect(section(wrapper, 'digest_polish').find('.swimlane__desc').text()).toContain('14')
+  })
+
   it('模型池横条：usable 模型按 vendor 分组渲染；停用模型不出现；行内计数正确', async () => {
     const wrapper = await mountRoutes()
     const groups = wrapper.findAll('.pool-strip__group')
@@ -488,5 +501,29 @@ describe('AIRouterCapabilityRoutes 定位跳入（observability Scenario: 定位
 
     await vi.advanceTimersByTimeAsync(1500)
     expect(tagging.classes()).not.toContain('swimlane--pulse')
+  })
+})
+
+describe('CapabilitySwimlane 供血说明行（spec Scenario: 未收录能力不渲染空说明行）', () => {
+  it('不传 description 时不渲染 .swimlane__desc（空占位不出现）', async () => {
+    const { default: CapabilitySwimlane } = await import('./CapabilitySwimlane.vue')
+    const wrapper = mount(CapabilitySwimlane, {
+      global: { stubs },
+      props: {
+        capability: 'future_cap',
+        label: '未来能力',
+        cards: [],
+        healthLevel: 'ok',
+        healthText: '正常',
+        draggingOver: false,
+        rejectFlash: false,
+        pulsing: false,
+      },
+    })
+    mountedWrappers.push(wrapper)
+    expect(wrapper.find('.swimlane__desc').exists()).toBe(false)
+
+    await wrapper.setProps({ description: '供血某功能' })
+    expect(wrapper.find('.swimlane__desc').text()).toBe('供血某功能')
   })
 })

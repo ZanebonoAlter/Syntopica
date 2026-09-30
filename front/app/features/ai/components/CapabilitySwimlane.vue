@@ -30,6 +30,8 @@ export interface SwimCard {
 const props = defineProps<{
   capability: string
   label: string
+  /** 行头「供血对象」说明小字（routeDescriptions；空/undefined 不渲染该行） */
+  description?: string
   cards: SwimCard[]
   /** 行头健康（useRouteHealth.rowHealth 结果） */
   healthLevel: 'ok' | 'warn' | 'err'
@@ -92,6 +94,7 @@ function arrowDegraded(prev: SwimCard, next: SwimCard): number | null {
         <span class="swimlane__name" :title="label">{{ label }}</span>
         <span class="swimlane__count">{{ cards.length }}</span>
       </div>
+      <p v-if="description" class="swimlane__desc" :title="description">{{ description }}</p>
       <span class="swimlane__health">
         <span class="swimlane__dot" :class="`swimlane__dot--${healthLevel}`" />
         {{ healthText }}
@@ -249,6 +252,17 @@ function arrowDegraded(prev: SwimCard, next: SwimCard): number | null {
   font-size: 10.5px;
   color: var(--color-text-muted);
   flex: none;
+}
+
+.swimlane__desc {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--color-text-muted);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .swimlane__health {

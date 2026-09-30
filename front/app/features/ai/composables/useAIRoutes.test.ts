@@ -10,7 +10,7 @@ vi.mock('~/api', () => ({
   useAIAdminApi: () => apiMocks,
 }))
 
-import { capabilityOrder, routeLabels, useAIRoutes } from './useAIRoutes'
+import { capabilityOrder, routeDescriptions, routeLabels, useAIRoutes } from './useAIRoutes'
 
 function makeRoute(partial: Partial<AIRoute> & { capability: string }): AIRoute {
   return {
@@ -89,5 +89,24 @@ describe('useAIRoutes', () => {
       'summary', 'topic_tagging', 'digest_polish', 'embedding', 'open_notebook',
       'feed_discovery', 'data_enrichment_news', 'data_enrichment_analysis',
     ])
+  })
+
+  it('routeDescriptions 覆盖白名单全部能力且非空（行头供血说明）', () => {
+    for (const cap of capabilityOrder) {
+      expect(routeDescriptions[cap], `capability ${cap} 缺供血说明`).toBeTruthy()
+      expect(routeDescriptions[cap]!.trim()).not.toBe('')
+    }
+  })
+
+  it('关键分工文案与真实供血一致（spec：新闻总结=月/年归档非日报，日报润色含日报+近14天）', () => {
+    // data_enrichment_news 供血 lifeline 周期归档（summarize_context，泳道趋势月/年档），
+    // 与日报无关——文案绝不能暗示日报，否则回到「蒙蔽」原点。
+    expect(routeDescriptions.data_enrichment_news).toContain('月')
+    expect(routeDescriptions.data_enrichment_news).toContain('年')
+    expect(routeDescriptions.data_enrichment_news).toContain('归档')
+    expect(routeDescriptions.data_enrichment_news).not.toContain('日报')
+    // digest_polish 两个消费方：日报生成 + 泳道趋势近14天档（lane_snapshot）
+    expect(routeDescriptions.digest_polish).toContain('日报')
+    expect(routeDescriptions.digest_polish).toContain('14')
   })
 })
