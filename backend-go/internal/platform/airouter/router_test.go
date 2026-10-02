@@ -17,7 +17,10 @@ import (
 type fakeChatReply struct {
 	content string
 	usage   *TokenUsage
-	err     error
+	// finishReason feeds ChatResponse.FinishReason (choices[0].finish_reason
+	// on the wire) so empty/parse-error failure rows can assert attribution.
+	finishReason string
+	err          error
 	// nilResponse makes Chat return (nil, nil): transport success with no
 	// usable payload — the shape that must still trigger ordered fallback.
 	nilResponse bool
@@ -50,7 +53,7 @@ func (f *fakeProviderClient) Chat(_ context.Context, vendor models.AIVendor, mod
 	if res.nilResponse {
 		return nil, res.attempts, nil
 	}
-	return &ChatResponse{Content: res.content, Usage: res.usage}, res.attempts, nil
+	return &ChatResponse{Content: res.content, Usage: res.usage, FinishReason: res.finishReason}, res.attempts, nil
 }
 
 func (f *fakeProviderClient) Embed(_ context.Context, vendor models.AIVendor, model models.AIModel, _ EmbeddingRequest) (*EmbeddingResult, error) {
@@ -457,8 +460,123 @@ func TestRouterChatFallsBackOnEmptyResponse(t *testing.T) {
 	}
 }
 
+// TestRouterEmptyResponseFailureRowCarriesUsageAndFinishReason：DeepSeek 空 content
+// 事故后的账目契约（fix-deepseek-thinking-empty-response）——HTTP 200 + usage 块
+// （全为 reasoning 烧掉）+ finish_reason=length 的空响应，失败行必须落 usage 四键
+// 且 snippet 带 finish_reason 前缀，使「预算耗尽型空响应」可在账上直接归因。
+func TestRouterEmptyResponseFailureRowCarriesUsageAndFinishReason(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "empty_string", content: ""},
+		{name: "whitespace_only", content: " \n\t "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, db := seedChatFailover(t)
+			router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+				"primary-empty": {content: tc.content,
+					usage:        &TokenUsage{PromptTokens: 100, CompletionTokens: 1536, TotalTokens: 1636, ReasoningTokens: 1536},
+					finishReason:  "length"},
+				"backup": {content: "ok from backup"},
+			}})
+
+			result, err := router.Chat(context.Background(), ChatRequest{
+				Operation:  "test.empty_usage",
+				Capability: CapabilitySummary,
+				SessionID:  "sess-empty-usage",
+				Messages:   []Message{{Role: "user", Content: "hi"}},
+			})
+			require.NoError(t, err)
+			require.Equal(t, "ok from backup", result.Content)
+
+			logs := chatCallLogs(t, db)
+			require.Len(t, logs, 2)
+
+			primary := logs[0]
+			require.False(t, primary.Success)
+			require.Equal(t, "empty_response", primary.ErrorCode)
+			// 失败行落 usage：provider 已真实消耗的 token 不得因失败从账上消失。
+			require.Contains(t, primary.TokenUsage, `"prompt":100`)
+			require.Contains(t, primary.TokenUsage, `"completion":1536`)
+			require.Contains(t, primary.TokenUsage, `"total":1636`)
+			require.Contains(t, primary.TokenUsage, `"reasoning":1536`)
+			// snippet 前缀标注 finish_reason，预算耗尽型与真空响应可区分。
+			require.Contains(t, primary.ResponseSnippet, "finish_reason=length")
+			require.Contains(t, primary.ResponseSnippet, "empty response content")
+			// ErrorMessage 保持原错误语义，不携带前缀（snippet 承担归因标注）。
+			require.NotContains(t, primary.ErrorMessage, "finish_reason")
+			// Retryable 语义不变：降级链继续，backup 成功行照常。
+			require.True(t, logs[1].Success)
+			require.True(t, logs[1].IsFallback)
+		})
+	}
+}
+
+// TestRouterHTTP502FailureRowUsageNullAndNoFinishReason：无响应体的失败
+// （网络/HTTP 4xx-5xx）usage 天然无值——失败行保持 SQL NULL，snippet 无
+// finish_reason 前缀（负向节拍：SHALL NOT 落全零 jsonb / 伪归因）。
+func TestRouterHTTP502FailureRowUsageNullAndNoFinishReason(t *testing.T) {
+	router, db := seedChatFailover(t)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"primary-empty": {err: &ProviderError{Message: "upstream unavailable", Code: "http_502", Retryable: true}},
+		"backup":        {content: "ok from backup"},
+	}})
+
+	_, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.http502",
+		Capability: CapabilitySummary,
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err)
+
+	logs := chatCallLogs(t, db)
+	require.Len(t, logs, 2)
+	primary := logs[0]
+	require.False(t, primary.Success)
+	require.Equal(t, "http_502", primary.ErrorCode)
+	tokenUsageIsNull(t, db, primary.ID)
+	require.NotContains(t, primary.ResponseSnippet, "finish_reason=", "无响应体失败不得携带伪归因前缀")
+	require.True(t, logs[1].Success)
+}
+
+// TestRouterParseErrorFailureRowCarriesUsage：结构化 parse_error（HTTP 200 +
+// 内容无合法 JSON）同样携带 usage/finish_reason——provider 已消耗的 token
+// 不得因提取失败从账上消失（spec「失败但响应携带 usage 块落库」场景）。
+func TestRouterParseErrorFailureRowCarriesUsage(t *testing.T) {
+	router, db := seedChatFailover(t)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"primary-empty": {content: "not json at all",
+			usage:        &TokenUsage{PromptTokens: 50, CompletionTokens: 80, TotalTokens: 130, ReasoningTokens: 30},
+			finishReason:  "stop"},
+		"backup": {content: `{"ok":true}`},
+	}})
+
+	result, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.parse_error_usage",
+		Capability: CapabilitySummary,
+		JSONMode:   true,
+		JSONSchema: &JSONSchema{Type: "object"},
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, `{"ok":true}`, result.Content)
+
+	logs := chatCallLogs(t, db)
+	require.Len(t, logs, 2)
+	primary := logs[0]
+	require.False(t, primary.Success)
+	require.Equal(t, "parse_error", primary.ErrorCode)
+	require.Contains(t, primary.TokenUsage, `"total":130`)
+	require.Contains(t, primary.TokenUsage, `"reasoning":30`)
+	require.Contains(t, primary.ResponseSnippet, "finish_reason=stop")
+	require.True(t, logs[1].Success)
+}
+
 // TestRouterChatNilResponseFallsBack: a provider client returning (nil, nil)
 // must not panic and must still be treated as empty_response + fallback.
+// nil 响应无 usage/finish_reason 可携：失败行 usage 保持 NULL（防御分支）。
 func TestRouterChatNilResponseFallsBack(t *testing.T) {
 	router, db := seedChatFailover(t)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
@@ -481,6 +599,7 @@ func TestRouterChatNilResponseFallsBack(t *testing.T) {
 	require.Len(t, logs, 2)
 	require.False(t, logs[0].Success)
 	require.Equal(t, "empty_response", logs[0].ErrorCode)
+	tokenUsageIsNull(t, db, logs[0].ID)
 	require.True(t, logs[1].Success)
 }
 

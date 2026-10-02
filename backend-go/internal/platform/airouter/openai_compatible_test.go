@@ -129,6 +129,12 @@ func TestTokenUsageUnmarshalJSONKeyFamilies(t *testing.T) {
 		{"legacy stored keys", `{"prompt":9,"completion":12,"total":21}`, TokenUsage{PromptTokens: 9, CompletionTokens: 12, TotalTokens: 21}},
 		{"missing keys stays zero", `{}`, TokenUsage{}},
 		{"standard wins on conflict", `{"prompt":1,"completion":1,"total":1,"prompt_tokens":9,"completion_tokens":12,"total_tokens":21}`, TokenUsage{PromptTokens: 9, CompletionTokens: 12, TotalTokens: 21}},
+		// reasoning 细分（fix-deepseek-thinking-empty-response）：wire 键
+		// completion_tokens_details.reasoning_tokens / legacy 平键 reasoning 各自可解析。
+		{"reasoning detail wire key", `{"prompt_tokens":100,"completion_tokens":1536,"total_tokens":1636,"completion_tokens_details":{"reasoning_tokens":1536}}`, TokenUsage{PromptTokens: 100, CompletionTokens: 1536, TotalTokens: 1636, ReasoningTokens: 1536}},
+		{"reasoning legacy flat key", `{"prompt":1,"completion":2,"total":3,"reasoning":2}`, TokenUsage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3, ReasoningTokens: 2}},
+		{"reasoning detail wins over flat key", `{"prompt":1,"completion":5,"total":6,"reasoning":1,"completion_tokens_details":{"reasoning_tokens":4}}`, TokenUsage{PromptTokens: 1, CompletionTokens: 5, TotalTokens: 6, ReasoningTokens: 4}},
+		{"empty details object keeps zero", `{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"completion_tokens_details":{}}`, TokenUsage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -140,6 +146,50 @@ func TestTokenUsageUnmarshalJSONKeyFamilies(t *testing.T) {
 
 	var u TokenUsage
 	require.Error(t, json.Unmarshal([]byte("not-json"), &u))
+}
+
+// TestTokenUsageMarshalReasoningOptionalKey pins the stored jsonb shape
+// (fix-deepseek-thinking-empty-response)：基础三键永不变，reasoning 仅在 >0
+// 时作为第四键出现——session 聚合等消费方按三键读取，附加键不破坏兼容。
+func TestTokenUsageMarshalReasoningOptionalKey(t *testing.T) {
+	b, err := json.Marshal(&TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"prompt":10,"completion":20,"total":30}`, string(b), "无 reasoning 细分时必须是基础三键形状")
+
+	b, err = json.Marshal(&TokenUsage{PromptTokens: 100, CompletionTokens: 1536, TotalTokens: 1636, ReasoningTokens: 1536})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"prompt":100,"completion":1536,"total":1636,"reasoning":1536}`, string(b), "带 reasoning 细分时为四键，且三键同形")
+}
+
+// TestChatParsesFinishReasonOnEmptyContent：DeepSeek 空 content 事故的真实响应
+// 形状（fix-deepseek-thinking-empty-response）——HTTP 200 + content 空 +
+// finish_reason=length + usage 全为 reasoning。client 层不判空（归一化在
+// Router），但必须把 usage/finish_reason 解析上行，否则 Router 无法归因。
+func TestChatParsesFinishReasonOnEmptyContent(t *testing.T) {
+	srv := newWireServer(t, `{"choices":[{"message":{"content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":100,"completion_tokens":1536,"total_tokens":1636,"completion_tokens_details":{"reasoning_tokens":1536}}}`)
+	resp, _, err := NewOpenAICompatibleClient().Chat(context.Background(), wireVendor(srv.URL), wireModel(), "low", ChatRequest{
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	})
+	require.NoError(t, err, "client 层空 content 不是错误（归一化在 Router）")
+	require.Empty(t, resp.Content)
+	require.Equal(t, "length", resp.FinishReason)
+	require.NotNil(t, resp.Usage)
+	require.Equal(t, 1536, resp.Usage.ReasoningTokens)
+	require.Equal(t, 1636, resp.Usage.TotalTokens)
+}
+
+// TestChatFinishReasonAbsentStaysEmpty：无 finish_reason 的正常响应（本地 qwen 形状）
+// 上行为空串，不产生伪归因。
+func TestChatFinishReasonAbsentStaysEmpty(t *testing.T) {
+	srv := newWireServer(t, `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":9,"completion_tokens":12,"total_tokens":21}}`)
+	resp, _, err := NewOpenAICompatibleClient().Chat(context.Background(), wireVendor(srv.URL), wireModel(), "off", ChatRequest{
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ok", resp.Content)
+	require.Empty(t, resp.FinishReason)
+	require.NotNil(t, resp.Usage)
+	require.Equal(t, 0, resp.Usage.ReasoningTokens)
 }
 
 func TestStripThinkTags(t *testing.T) {

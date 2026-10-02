@@ -73,26 +73,56 @@ type ChatResult struct {
 }
 
 // TokenUsage mirrors the OpenAI usage block.
+// ReasoningTokens carries the reasoning-burn share (DeepSeek/OpenAI wire key
+// completion_tokens_details.reasoning_tokens) as an optional fourth key: it
+// marshals into the stored jsonb only when > 0 so the base three-key shape
+// (consumed by session aggregation) never changes.
 type TokenUsage struct {
 	PromptTokens     int `json:"prompt"`
 	CompletionTokens int `json:"completion"`
 	TotalTokens      int `json:"total"`
+	ReasoningTokens  int `json:"reasoning,omitempty"`
+}
+
+// MarshalJSON keeps the stored jsonb shape stable: base three keys
+// (prompt/completion/total) always present, "reasoning" appended only when
+// positive. TokenUsageAgg-style consumers reading the three base keys are
+// unaffected by the optional key (unknown-key-tolerant json.Unmarshal).
+func (u TokenUsage) MarshalJSON() ([]byte, error) {
+	if u.ReasoningTokens > 0 {
+		return json.Marshal(struct {
+			PromptTokens     int `json:"prompt"`
+			CompletionTokens int `json:"completion"`
+			TotalTokens      int `json:"total"`
+			ReasoningTokens  int `json:"reasoning"`
+		}{u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.ReasoningTokens})
+	}
+	return json.Marshal(struct {
+		PromptTokens     int `json:"prompt"`
+		CompletionTokens int `json:"completion"`
+		TotalTokens      int `json:"total"`
+	}{u.PromptTokens, u.CompletionTokens, u.TotalTokens})
 }
 
 // UnmarshalJSON accepts both the OpenAI-compatible wire keys
-// (prompt_tokens/completion_tokens/total_tokens) and the legacy stored keys
-// (prompt/completion/total). Providers on the OpenAI-compatible protocol
-// return the *_tokens family; the legacy family keeps round-trips of the
-// stored jsonb shape ({"prompt":N,...}) working defensively. When both are
-// present the standard wire keys win. Missing keys leave zero values without
-// error. MarshalJSON is intentionally left default so the stored jsonb shape
-// (consumed by session aggregation) never changes.
+// (prompt_tokens/completion_tokens/total_tokens, plus the optional
+// completion_tokens_details.reasoning_tokens reasoning breakdown) and the
+// legacy stored keys (prompt/completion/total/reasoning). Providers on the
+// OpenAI-compatible protocol return the *_tokens family; the legacy family
+// keeps round-trips of the stored jsonb shape working defensively. When both
+// are present the standard wire keys win; the reasoning detail key wins over
+// the flat legacy "reasoning" key. Missing keys leave zero values without
+// error.
 func (u *TokenUsage) UnmarshalJSON(data []byte) error {
 	type alias TokenUsage
 	wire := struct {
-		PromptTokens     *int `json:"prompt_tokens"`
-		CompletionTokens *int `json:"completion_tokens"`
-		TotalTokens      *int `json:"total_tokens"`
+		PromptTokens            *int `json:"prompt_tokens"`
+		CompletionTokens        *int `json:"completion_tokens"`
+		TotalTokens             *int `json:"total_tokens"`
+		ReasoningTokens         *int `json:"reasoning"` // legacy stored key round-trip
+		CompletionTokensDetails *struct {
+			ReasoningTokens *int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 		*alias
 	}{
 		alias: (*alias)(u),
@@ -109,13 +139,24 @@ func (u *TokenUsage) UnmarshalJSON(data []byte) error {
 	if wire.TotalTokens != nil {
 		u.TotalTokens = *wire.TotalTokens
 	}
+	if wire.ReasoningTokens != nil {
+		u.ReasoningTokens = *wire.ReasoningTokens
+	}
+	if wire.CompletionTokensDetails != nil && wire.CompletionTokensDetails.ReasoningTokens != nil {
+		u.ReasoningTokens = *wire.CompletionTokensDetails.ReasoningTokens
+	}
 	return nil
 }
 
 // ChatResponse is the return of ProviderClient.Chat (replaces bare string).
+// FinishReason is a pure observability field (choices[0].finish_reason on the
+// wire, e.g. "length" for budget-exhausted empty content) surfaced so the
+// Router's failure normalization can attribute empty responses; it never
+// influences success/failure semantics.
 type ChatResponse struct {
-	Content string      `json:"content"`
-	Usage   *TokenUsage `json:"usage,omitempty"`
+	Content      string      `json:"content"`
+	Usage        *TokenUsage `json:"usage,omitempty"`
+	FinishReason string      `json:"finish_reason,omitempty"`
 }
 
 // 结构化输出档位（vendor.StructuredOutput 值域）与降级链尝试档共用同一词表：
@@ -146,10 +187,19 @@ type ProviderClient interface {
 	Embed(ctx context.Context, vendor models.AIVendor, model models.AIModel, req EmbeddingRequest) (*EmbeddingResult, error)
 }
 
+// ProviderError is the failure-path carrier for provider calls. Usage and
+// FinishReason are optional observability payloads (fix-deepseek-thinking-
+// empty-response): when the provider DID return an HTTP 200 body carrying a
+// usage block / finish_reason but the call was still normalized into a
+// failure (empty_response, structured parse_error), the consumed tokens and
+// the terminal cause ride on the error so failure log rows can account for
+// them. They never participate in Retryable semantics.
 type ProviderError struct {
-	Message   string
-	Code      string
-	Retryable bool
+	Message      string
+	Code         string
+	Retryable    bool
+	Usage        *TokenUsage
+	FinishReason string
 }
 
 func (e *ProviderError) Error() string {
@@ -272,6 +322,7 @@ func (c *openAICompatibleClient) postChatWithStatus(ctx context.Context, vendor 
 				Content          string `json:"content"`
 				ReasoningContent string `json:"reasoning_content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Error *struct {
 			Message string      `json:"message"`
@@ -309,7 +360,7 @@ func (c *openAICompatibleClient) postChatWithStatus(ctx context.Context, vendor 
 	}
 
 	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
-	return &ChatResponse{Content: content, Usage: parsed.Usage}, resp.StatusCode, nil
+	return &ChatResponse{Content: content, Usage: parsed.Usage, FinishReason: parsed.Choices[0].FinishReason}, resp.StatusCode, nil
 }
 
 // buildPayload 按 vendor 思考方言与结构化输出档位构造 OpenAI 兼容请求 payload。

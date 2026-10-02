@@ -88,6 +88,25 @@ func isEmptyChatResponse(resp *ChatResponse) bool {
 	return resp == nil || strings.TrimSpace(resp.Content) == ""
 }
 
+// chatUsage safely extracts the usage payload from a possibly-nil ChatResponse
+// (the nil case means "no body to account for", leaving the failure row's
+// token_usage SQL NULL).
+func chatUsage(resp *ChatResponse) *TokenUsage {
+	if resp == nil {
+		return nil
+	}
+	return resp.Usage
+}
+
+// chatFinishReason safely extracts choices[0].finish_reason from a possibly-nil
+// ChatResponse for failure-row attribution.
+func chatFinishReason(resp *ChatResponse) string {
+	if resp == nil {
+		return ""
+	}
+	return resp.FinishReason
+}
+
 type Router struct {
 	store   *Store
 	clients map[string]ProviderClient
@@ -270,10 +289,18 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 			// assistant content is a retryable provider failure, not a success.
 			// Applies to every provider type uniformly (no per-client special
 			// casing) and flows into the existing failure log / fallback path.
+			// Observability payloads (fix-deepseek-thinking-empty-response):
+			// an HTTP 200 body may still carry a usage block (tokens already
+			// consumed, e.g. reasoning burn) and a finish_reason (e.g. "length"
+			// for budget exhaustion) — they ride on the error so the failure
+			// row can account for them. chatResp may be nil (defensive), and
+			// network/HTTP-error paths have neither by construction.
 			callErr = &ProviderError{
-				Code:      "empty_response",
-				Retryable: true,
-				Message:   "provider returned empty response content",
+				Code:         "empty_response",
+				Retryable:    true,
+				Message:      "provider returned empty response content",
+				Usage:        chatUsage(chatResp),
+				FinishReason: chatFinishReason(chatResp),
 			}
 		}
 
@@ -289,10 +316,15 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 				if cleaned, ok := correctStructuredJSON(content); ok {
 					content = cleaned
 				} else {
+					// Structured parse failure on an HTTP 200 response: same
+					// usage/finish_reason payload rules as empty_response above —
+					// the provider did consume the tokens it reported.
 					callErr = &ProviderError{
-						Code:      "parse_error",
-						Retryable: true,
-						Message:   "response does not contain extractable valid JSON",
+						Code:         "parse_error",
+						Retryable:    true,
+						Message:      "response does not contain extractable valid JSON",
+						Usage:        chatUsage(chatResp),
+						FinishReason: chatFinishReason(chatResp),
 					}
 				}
 			}
@@ -343,6 +375,16 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 				code = providerErr.Code
 			}
 		}
+		// Failure-row accounting (fix-deepseek-thinking-empty-response):
+		// token_usage falls back to the error's payload when present (HTTP 200
+		// bodies with a usage block), else stays empty → SQL NULL (network /
+		// HTTP 4xx-5xx failures have no body usage by construction). The snippet
+		// gets a finish_reason= prefix so budget-exhausted empty responses are
+		// distinguishable from genuinely-empty server responses.
+		errSnippet := callErr.Error()
+		if providerErr.FinishReason != "" {
+			errSnippet = "finish_reason=" + providerErr.FinishReason + "; " + errSnippet
+		}
 		if !chainExhausted {
 			r.store.LogCall(ctx, &models.AICallLog{
 				Operation:       req.Operation,
@@ -357,7 +399,8 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 				ErrorMessage:    callErr.Error(),
 				Prompt:          formatMessages(req.Messages),
 				RequestMeta:     encodeMeta(req.Metadata),
-				ResponseSnippet: truncateSnippet(callErr.Error()),
+				ResponseSnippet: truncateSnippet(errSnippet),
+				TokenUsage:      encodeTokenUsage(providerErr.Usage),
 				SessionID:       req.SessionID,
 			})
 		}

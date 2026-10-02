@@ -178,6 +178,45 @@ func TestGetSession_TokenAggregationAndErrorCount(t *testing.T) {
 	require.Equal(t, float64(180), tokens["total"])
 }
 
+// TestGetSession_FailureRowUsageCountedAndReasoningKeyIgnored 锁定失败行
+// usage 记账后的聚合口径（fix-deepseek-thinking-empty-response）：修正前失败行
+// token_usage 恒 NULL，total_tokens 事实上只含成功行；修正后 empty_response 等
+// 失败行开始携带 usage（provider 已真实计费），聚合将其计入总量——账实相符，
+// 空思考烧掉的 token 在 session 视图直接可见。reasoning 附加键不破坏三键解析
+// （tokenUsageAgg 只读基础三键，未知键被 json.Unmarshal 忽略）。
+func TestGetSession_FailureRowUsageCountedAndReasoningKeyIgnored(t *testing.T) {
+	db := setupSessionTestDB(t)
+	const sessionID = "sess-failure-usage"
+	now := time.Now()
+
+	require.NoError(t, db.Create(&models.AICallLog{
+		Operation: "op-fail", SessionID: sessionID,
+		Success: false, ErrorCode: "empty_response",
+		TokenUsage: `{"prompt":100,"completion":1536,"total":1636,"reasoning":1536}`,
+		ResponseSnippet: "finish_reason=length; provider returned empty response content",
+		CreatedAt: now,
+	}).Error)
+	require.NoError(t, db.Create(&models.AICallLog{
+		Operation: "op-ok", SessionID: sessionID,
+		Success: true, TokenUsage: `{"prompt":50,"completion":10,"total":60}`, CreatedAt: now.Add(time.Second),
+	}).Error)
+
+	ctx, recorder := newSessionContext(sessionID)
+	GetSession(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+
+	summary := body["data"].(map[string]interface{})["summary"].(map[string]interface{})
+	require.Equal(t, float64(2), summary["call_count"])
+	require.Equal(t, float64(1), summary["error_count"])
+	tokens := summary["total_tokens"].(map[string]interface{})
+	require.Equal(t, float64(150), tokens["prompt"])
+	require.Equal(t, float64(1546), tokens["completion"])
+	require.Equal(t, float64(1696), tokens["total"])
+}
+
 // TestGetSession_MultipleTraceIDs verifies the IN query spans multiple traces
 // for one session and the timeline includes spans from every trace.
 func TestGetSession_MultipleTraceIDs(t *testing.T) {

@@ -13,7 +13,11 @@ TBD - created by archiving change ai-call-logging-schema. Update Purpose after a
 
 建表与加列 SHALL 通过显式迁移完成（开发执行规范 §10），不依赖 gorm AutoMigrate。
 
-chat 调用成功且 provider 响应携带 `usage` 块时，系统 SHALL 按 OpenAI 兼容接口标准键（`prompt_tokens`、`completion_tokens`、`total_tokens`）解析用量，并将 `ai_call_logs.token_usage` 落库为 `{"prompt":N,"completion":N,"total":N}` 的 jsonb。存储 jsonb 形状 SHALL 保持不变（消费方如 session 聚合按此形状读取）。provider 响应不携带 `usage` 块或调用失败时，`token_usage` SHALL 为 NULL，SHALL NOT 落库全零值。
+chat 调用成功且 provider 响应携带 `usage` 块时，系统 SHALL 按 OpenAI 兼容接口标准键（`prompt_tokens`、`completion_tokens`、`total_tokens`）解析用量，并将 `ai_call_logs.token_usage` 落库为 `{"prompt":N,"completion":N,"total":N}` 的 jsonb。基础三键形状 SHALL 保持不变（消费方如 session 聚合按此形状读取）；当 usage 块携带思考用量细分（如 `completion_tokens_details.reasoning_tokens`）时，系统 SHALL 附加 `reasoning` 可选键落库，SHALL NOT 因此改变基础三键。provider 响应不携带 `usage` 块（无论成功或失败）时，`token_usage` SHALL 为 NULL，SHALL NOT 落库全零值。
+
+**调用失败但 provider 响应携带 `usage` 块时**（如 HTTP 200 但 content 为空被归一化为 `empty_response`、结构化解析失败 `parse_error`），失败行 SHALL 落库该 `token_usage`——provider 侧已实际消耗的 token（含被思考烧掉的 reasoning token）不得因调用失败而从账目中消失；网络错误、HTTP 4xx/5xx 等无响应体的失败 SHALL 保持 NULL。
+
+失败行的归因信息：当 provider 响应携带 `finish_reason`（如 `length`、`stop`）时，失败行 SHALL 将其记入 `response_snippet`（前缀标注），使"预算耗尽型空响应"（finish_reason=length）与"服务端真空响应"可区分；无响应体的失败 SHALL 不携带该前缀。
 
 #### Scenario: 完整 prompt 落库
 
@@ -25,9 +29,19 @@ chat 调用成功且 provider 响应携带 `usage` 块时，系统 SHALL 按 Ope
 - **WHEN** chat 调用成功且 provider 响应包含 `usage` 块（键为 `prompt_tokens`/`completion_tokens`/`total_tokens`）
 - **THEN** `ai_call_logs.token_usage` SHALL 为 `{"prompt":N,"completion":N,"total":N}` 且 `total` 大于 0，与响应 `usage` 块数值一致
 
+#### Scenario: 失败但响应携带 usage 块落库
+
+- **WHEN** chat 调用返回 HTTP 200 且响应包含 `usage` 块（`completion_tokens` = `reasoning_tokens` > 0），但 content 为空被归一化为 `empty_response` 失败
+- **THEN** 失败行 `ai_call_logs.token_usage` SHALL 落库该用量（含 `reasoning` 可选键），`success=false`，账目可据此核算空思考烧掉的 token
+
+#### Scenario: 失败行携带 finish_reason
+
+- **WHEN** chat 调用返回 HTTP 200、`choices[0].finish_reason="length"` 且 content 为空
+- **THEN** 失败行的 `response_snippet` SHALL 含 `finish_reason=length` 标注
+
 #### Scenario: 无 usage 块不落全零
 
-- **WHEN** chat 调用成功但 provider 响应不包含 `usage` 块，或调用失败
+- **WHEN** chat 调用成功但 provider 响应不包含 `usage` 块，或调用因网络错误/HTTP 4xx/5xx 失败（无响应体 usage）
 - **THEN** `ai_call_logs.token_usage` SHALL 为 NULL，SHALL NOT 写入 `{"prompt":0,"completion":0,"total":0}`
 
 #### Scenario: 历史行回填
