@@ -24,6 +24,15 @@ import (
 // substitute a stub: the real implementation drives the whole LLM pipeline.
 var generateAndSaveReport = daily_report.GenerateAndSaveReport
 
+// Generation gate seams (guard-daily-report-generate D1/D2): the process-wide
+// daily-report mutual-exclusion gate, shared with the manual
+// POST /api/daily-reports/generate endpoint (re-exported by the topicgraph
+// root package). Package-level vars so tests can stub/observe the gate.
+var (
+	tryAcquireDailyReportGate = daily_report.TryAcquireDailyReportGeneration
+	releaseDailyReportGate    = daily_report.ReleaseDailyReportGeneration
+)
+
 // Notification seams (add-notification-center, 白盒 B): package-level vars so
 // tests can capture adjudication calls without a notification database
 // (same seam as generateAndSaveReport).
@@ -203,6 +212,21 @@ func NextDailyReportTime(now time.Time) time.Time {
 // and keeps the existing run-immediately semantics.
 func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 	return func(ctx context.Context) (*scheduler.JobResult, error) {
+		// Generation gate (guard-daily-report-generate D1/D2): at most ONE
+		// daily-report pipeline process-wide — the manual endpoint shares this
+		// same gate. Acquired BEFORE waitForDailyReportWindow: the window wait
+		// (queue-drain polling) holds the gate too, so a manual click during the
+		// wait cannot double-run (the 2026-09-30 incident). A failed acquire is
+		// a skip (existing skip mechanism), not an error: the sibling manual
+		// pipeline owns the terminal notification.
+		if !tryAcquireDailyReportGate() {
+			return &scheduler.JobResult{
+				Data:    map[string]interface{}{"skipped": "already_running"},
+				Summary: "daily report skipped: already_running",
+			}, nil
+		}
+		defer releaseDailyReportGate()
+
 		startTime := time.Now()
 
 		date := time.Now().In(time.Local)
@@ -213,7 +237,8 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 		// 队列感知等待（night-window-alignment D4）：仅定时路径等待；等待在
 		// 主生成 30min 预算之外（WithTimeout 之前），不蚕食生成预算。等待期
 		// 内 runJob 持有 isExecuting，手动 TriggerNowWithDate 命中 409 重入
-		// 保护（既有同 job 不并发语义）。
+		// 保护（既有同 job 不并发语义）；域闸在等待之前已持有（见闭包开头），
+		// 手动端点同期待 409 already_running（guard-daily-report-generate）。
 		if len(targetDate) == 0 {
 			if skip := waitForDailyReportWindow(ctx, date); skip != "" {
 				return &scheduler.JobResult{

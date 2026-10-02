@@ -2,10 +2,12 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"syntopica-backend/internal/models"
 	tagging "syntopica-backend/internal/tagmanagement"
 	"syntopica-backend/internal/topicgraph/repository"
+	"syntopica-backend/internal/topicgraph/service"
 )
 
 func TestFilterVisibleTopics_HidesObservingCandidates(t *testing.T) {
@@ -110,10 +113,17 @@ func setupDailyReportGuardTest(t *testing.T, retentionSetting string) *gin.Engin
 
 func postGenerateDailyReport(t *testing.T, engine *gin.Engine, date string) (int, map[string]interface{}) {
 	t.Helper()
-	body, err := json.Marshal(map[string]string{"date": date})
+	return postGenerateDailyReportBody(t, engine, map[string]interface{}{"date": date})
+}
+
+// postGenerateDailyReportBody posts an arbitrary generate payload (with or
+// without board_id) and decodes the JSON response.
+func postGenerateDailyReportBody(t *testing.T, engine *gin.Engine, body map[string]interface{}) (int, map[string]interface{}) {
+	t.Helper()
+	payloadBytes, err := json.Marshal(body)
 	require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/daily-reports/generate", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/daily-reports/generate", bytes.NewReader(payloadBytes))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, req)
@@ -172,6 +182,9 @@ func TestTriggerGenerateDailyReportRetentionGuardAllowsInsideWindow(t *testing.T
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			engine := setupDailyReportGuardTest(t, tc.setting)
+			// 受理即异步占真闸，连续子测试会相互 409——装恒真 seam 隔离
+			// （闸互斥本身由 gate/409 专门用例覆盖）。
+			stubGenerationGatePermissive(t)
 			date := time.Now().In(time.Local).AddDate(0, 0, -tc.offsetDay)
 
 			status, payload := postGenerateDailyReport(t, engine, date.Format("2006-01-02"))
@@ -181,4 +194,178 @@ func TestTriggerGenerateDailyReportRetentionGuardAllowsInsideWindow(t *testing.T
 			require.NotEqual(t, "out_of_retention_window", payload["reason"])
 		})
 	}
+}
+
+// ── guard-daily-report-generate 3.1：手动端点接域闸 ──
+//
+// 契约锚：spec Scenario「生成进行中重复手动触发」「管线结束后闸释放」「手动
+// 触发与定时调度互斥不产生重复通知」。闸与调度 DailyReportJob 同一把
+// （service/generation_gate.go）；测试经包级 seam 桩接，不碰真 LLM 管线。
+
+// stubGenerationGatePermissive installs an always-acquire gate stub and a
+// no-op release, for in-window acceptance cases: consecutive requests never
+// race on the real gate (their worker goroutines may still be holding it).
+func stubGenerationGatePermissive(t *testing.T) {
+	t.Helper()
+	prevAcquire, prevRelease := tryAcquireGenerationGate, releaseGenerationGate
+	tryAcquireGenerationGate = func() bool { return true }
+	releaseGenerationGate = func() {}
+	t.Cleanup(func() {
+		tryAcquireGenerationGate, releaseGenerationGate = prevAcquire, prevRelease
+	})
+}
+
+// gateProbe counts acquire attempts/releases while refusing acquisition:
+// simulates "a pipeline (manual or scheduled) is already running".
+type gateProbe struct {
+	acquireAttempts int32
+	releaseCalls    int32
+}
+
+func (p *gateProbe) stub(t *testing.T) {
+	t.Helper()
+	prevAcquire, prevRelease := tryAcquireGenerationGate, releaseGenerationGate
+	tryAcquireGenerationGate = func() bool {
+		atomic.AddInt32(&p.acquireAttempts, 1)
+		return false
+	}
+	releaseGenerationGate = func() { atomic.AddInt32(&p.releaseCalls, 1) }
+	t.Cleanup(func() {
+		tryAcquireGenerationGate, releaseGenerationGate = prevAcquire, prevRelease
+	})
+}
+
+// genEntryCounter swaps the generation entry point for a counting no-op stub.
+// Returns the call counter; the rejected-path cases assert it stays zero.
+func genEntryCounter(t *testing.T) *int32 {
+	t.Helper()
+	var calls int32
+	prev := generateReportEntry
+	generateReportEntry = func(_ context.Context, _ uint, _ time.Time) (*repository.BoardDailyReport, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, nil
+	}
+	t.Cleanup(func() { generateReportEntry = prev })
+	return &calls
+}
+
+// Scenario「生成进行中重复手动触发」（全板/单板各一）：闸被占时 409
+// already_running，不启第二条管线（生成入口未被调），无终态广播面（未拿闸
+// 无可释放）。文案与 TriggerNowWithDate 同口径。
+func TestTriggerGenerateDailyReportAlreadyRunning(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]interface{}
+	}{
+		{name: "all boards", body: map[string]interface{}{"date": time.Now().Format("2006-01-02")}},
+		{name: "single board", body: map[string]interface{}{"date": time.Now().Format("2006-01-02"), "board_id": 7}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := setupDailyReportGuardTest(t, "")
+			probe := &gateProbe{}
+			probe.stub(t)
+			genCalls := genEntryCounter(t)
+
+			status, payload := postGenerateDailyReportBody(t, engine, tc.body)
+
+			require.Equal(t, http.StatusConflict, status)
+			require.Equal(t, false, payload["success"])
+			require.Equal(t, "already_running", payload["reason"])
+			msg, ok := payload["error"].(string)
+			require.True(t, ok, "error must be a string: %v", payload)
+			require.Equal(t, "日报生成正在执行中，请稍后再试。", msg)
+
+			require.EqualValues(t, 1, atomic.LoadInt32(&probe.acquireAttempts), "gate checked exactly once")
+			require.Zero(t, atomic.LoadInt32(&probe.releaseCalls), "rejected trigger never owned the gate")
+			require.Zero(t, atomic.LoadInt32(genCalls), "second pipeline must NOT start")
+		})
+	}
+}
+
+// 白盒（闸校验顺序）：rebuild-window 400 优先于 already_running 409——超窗
+// 日期直接拒绝，不尝试占闸。
+func TestTriggerGenerateDailyReportRebuildWindowCheckedBeforeGate(t *testing.T) {
+	engine := setupDailyReportGuardTest(t, "")
+	probe := &gateProbe{}
+	probe.stub(t)
+	genCalls := genEntryCounter(t)
+
+	outside := time.Now().In(time.Local).AddDate(0, 0, -8) // default window is 7 days
+	status, payload := postGenerateDailyReport(t, engine, outside.Format("2006-01-02"))
+
+	require.Equal(t, http.StatusBadRequest, status, "out-of-window rejection wins over the gate: %v", payload)
+	require.Equal(t, "out_of_retention_window", payload["reason"])
+	require.Zero(t, atomic.LoadInt32(&probe.acquireAttempts), "the gate must not even be tried for an out-of-window date")
+	require.Zero(t, atomic.LoadInt32(genCalls))
+}
+
+// Scenario「管线结束后闸释放」成功态：受理后 worker goroutine 结束时 defer
+// release 必须真释放真闸——下一个请求不再 409。用真闸（非 seam）验证端到端
+// defer 挂点；轮询等待异步 goroutine 退出，避免时序脆断。
+func TestTriggerGenerateDailyReportReleasesGateAfterRun(t *testing.T) {
+	engine := setupDailyReportGuardTest(t, "")
+
+	// 真闸（setup 未动 seam，但显式指回 service 真函数，防未来 setup 改动）。
+	prevAcquire, prevRelease := tryAcquireGenerationGate, releaseGenerationGate
+	tryAcquireGenerationGate = service.TryAcquireDailyReportGeneration
+	releaseGenerationGate = service.ReleaseDailyReportGeneration
+	t.Cleanup(func() {
+		tryAcquireGenerationGate, releaseGenerationGate = prevAcquire, prevRelease
+		service.ReleaseDailyReportGeneration() // 兜底归位
+	})
+	service.ReleaseDailyReportGeneration()
+
+	// 单板路径 + 无副作用快速 stub：goroutine 秒退，闸即刻释放。
+	var genCalls int32
+	prevEntry := generateReportEntry
+	generateReportEntry = func(_ context.Context, _ uint, _ time.Time) (*repository.BoardDailyReport, error) {
+		atomic.AddInt32(&genCalls, 1)
+		return nil, nil
+	}
+	t.Cleanup(func() { generateReportEntry = prevEntry })
+
+	status, payload := postGenerateDailyReportBody(t, engine, map[string]interface{}{
+		"date":     time.Now().Format("2006-01-02"),
+		"board_id": 42,
+	})
+	require.Equal(t, http.StatusOK, status, "accepted while idle: %v", payload)
+	require.Equal(t, true, payload["success"])
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if service.TryAcquireDailyReportGeneration() {
+			service.ReleaseDailyReportGeneration()
+			require.EqualValues(t, 1, atomic.LoadInt32(&genCalls), "exactly one pipeline ran")
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("gate was not released within 5s after the accepted run — defer release missing or stuck")
+}
+
+// Scenario「管线结束后闸释放」panic 态：worker goroutine 生成入口 panic 时
+// defer release 在 unwind 中执行，闸不泄漏。测试侧 recover 收 panic 防进程崩。
+func TestGenerateSingleBoardReleasesGateOnPanic(t *testing.T) {
+	engine := setupDailyReportGuardTest(t, "") // repository.Repo for board name lookup
+	_ = engine
+
+	// 模拟 handler 已占闸，随后管线 panic。
+	require.True(t, service.TryAcquireDailyReportGeneration(), "setup: gate must be free")
+	t.Cleanup(service.ReleaseDailyReportGeneration)
+
+	prevEntry := generateReportEntry
+	generateReportEntry = func(_ context.Context, _ uint, _ time.Time) (*repository.BoardDailyReport, error) {
+		panic("simulated pipeline crash")
+	}
+	t.Cleanup(func() { generateReportEntry = prevEntry })
+
+	func() {
+		defer func() { _ = recover() }() // 收 panic：被测点是 defer release 的 unwind 执行
+		generateSingleBoard(42, time.Now(), "job-panic")
+	}()
+
+	require.True(t, service.TryAcquireDailyReportGeneration(), "gate must be released after panic unwind — defer FIRST discipline")
+	service.ReleaseDailyReportGeneration()
 }

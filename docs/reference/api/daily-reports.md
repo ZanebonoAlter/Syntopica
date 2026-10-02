@@ -69,6 +69,14 @@ WebSocket 进度消息：
 
 **重建窗口守卫（offline-catchup）**：`date` 早于标签边保留窗口下界（`ai_settings.tag_edge_retention_days`，默认 7 天，即 `date` 早于保留窗口下界日（本地日历天零点 − N 天））时返回 **4xx**，错误消息说明「标签边已按 N 天窗口回收、超窗日期候选不全，拒绝重建」——防止超窗日期的空报告覆盖既有好报告（同日重建是整份覆盖语义，见 `flow/daily-report.md` 业务约束 20）。窗口内日期（含恰好等于下界）不受影响，照常异步触发。窗口口径与 `aux_label_cleanup` 的边 GC、日报自动补档扫描同键同口径。
 
+**防重入闸（already_running）**：日报生成管线全局互斥（调度/手动同一把域闸，见 `flow/daily-report.md` 业务约束 26）——已有生成在跑（定时、`TriggerNowWithDate` 或本端点）时返回 **409**：
+
+```json
+{ "success": false, "error": "日报生成正在执行中，请稍后再试。", "reason": "already_running" }
+```
+
+调度侧同闸获取失败则记 skip（`skipped: "already_running"`，不标 failed、不发第二条终态通知）。窗口校验在闸检查之前：超窗日期不碰闸直接 4xx。
+
 ## GET `/semantic-boards/:id/section-timeline?days=30`
 
 查询板块日报 section 时间线，供 2D 线索浏览和 3D 侦探墙复用。

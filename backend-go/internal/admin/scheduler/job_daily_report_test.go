@@ -558,3 +558,70 @@ func TestDailyReportTerminalNotificationAdjudication(t *testing.T) {
 		require.Equal(t, 2, cap.failFailed[0])
 	})
 }
+
+// ── guard-daily-report-generate 2.1：调度路径接域闸 ──
+//
+// 契约锚：spec Scenario「生成进行中调度到期」——手动管线在跑期间定时调度
+// 到期触发 DailyReportJob，本次调度记 skip（reason already_running），不与
+// 手动管线并发生成，不发送重复完成通知。
+func TestDailyReportJobSkipsWhenGateHeld(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11, 22)
+	stub := stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	// 模拟手动管线占闸（同一把域闸，手动端点在 handler 侧 acquire）。
+	require.True(t, tryAcquireDailyReportGate(), "setup: gate must be free")
+	t.Cleanup(releaseDailyReportGate)
+
+	// 手动重建路径（带 targetDate）与定时路径（不带）的闸检查都在闭包开头，
+	// 这里用手动路径验证：免窗口等待、直达闸拒绝分支。
+	result, err := DailyReportJob(today)(context.Background())
+	require.NoError(t, err, "gate-held skip is not a job error")
+	require.NotNil(t, result)
+	require.Equal(t, "already_running", result.Data["skipped"], "skip reason must be already_running")
+	require.Empty(t, stub.snapshot(), "generation entry point must NOT be called")
+	require.Equal(t, 0, cap.successCalls(), "no terminal notification while skipped")
+	require.Equal(t, 0, cap.failCalls(), "no failure summary while skipped")
+}
+
+// 定时路径（无 targetDate）同样被域闸拦住：闸在 waitForDailyReportWindow
+// 之前获取，窗口等待（队列轮询）期间闸一直被上一持有者占着，到期触发直接
+// skip，不碰生成入口。
+func TestDailyReportJobScheduledPathSkipsWhenGateHeld(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11, 22)
+	stub := stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	require.True(t, tryAcquireDailyReportGate(), "setup: gate must be free")
+	t.Cleanup(releaseDailyReportGate)
+
+	result, err := DailyReportJob()(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "already_running", result.Data["skipped"])
+	require.Empty(t, stub.snapshot(), "generation entry point must NOT be called")
+	require.Equal(t, 0, cap.successCalls())
+	require.Equal(t, 0, cap.failCalls())
+}
+
+// 域闸在 job 结束后必须释放（成功路径）：后续触发可正常受理，无残留 409/skip。
+// 契约锚：spec Scenario「管线结束后闸释放」成功态。
+func TestDailyReportJobReleasesGateAfterRun(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11)
+	stubGenerationBehavior(t, map[uint]string{11: "ok"})
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	_, err := DailyReportJob(today)(context.Background())
+	require.NoError(t, err)
+	require.True(t, tryAcquireDailyReportGate(), "gate must be free after a successful run")
+	releaseDailyReportGate()
+}
