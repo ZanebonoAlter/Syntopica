@@ -22,6 +22,149 @@ func setupSemanticBoardMatchingTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+// TestSemanticBoardMatchingDirectHitRatioGate covers fix-board-match-cross-domain:
+// direct_hit requires the overlap to make up at least DirectHitMinRatio (default
+// 0.5) of the tag's active auxiliary labels. Overlap 2/5 (0.4) falls through to
+// Priority 3; with orthogonal embeddings the similarity rules also miss, so the
+// tag is not mounted at all.
+func TestSemanticBoardMatchingDirectHitRatioGate(t *testing.T) {
+	db := setupSemanticBoardMatchingTestDB(t)
+	tag := createMatchTag(t, db, "us-nonfarm-cross-domain")
+	// 5 auxiliaries: 2 overlap the board composition (A股/港股 stand-ins),
+	// 3 pure US-domain ones with orthogonal vectors so indirect similarity misses.
+	overlapA := createMatchLabel(t, db, "AuxA", "aux-a", "auxiliary", "active", []float64{1, 0, 0})
+	overlapB := createMatchLabel(t, db, "AuxB", "aux-b", "auxiliary", "active", []float64{0, 1, 0})
+	farA := createMatchLabel(t, db, "FarA", "far-a", "auxiliary", "active", []float64{0, 0, 1})
+	farB := createMatchLabel(t, db, "FarB", "far-b", "auxiliary", "active", []float64{0, 0, 1})
+	farC := createMatchLabel(t, db, "FarC", "far-c", "auxiliary", "active", []float64{0, 0, 1})
+	board := createMatchLabel(t, db, "CN Board", "cn-board", "board", "active", nil)
+	for _, aux := range []models.SemanticLabel{overlapA, overlapB, farA, farB, farC} {
+		require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: aux.ID}).Error)
+	}
+	for _, aux := range []models.SemanticLabel{overlapA, overlapB} {
+		require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: aux.ID}).Error)
+	}
+	svc := NewSemanticBoardMatchingService(db)
+
+	results, err := svc.MatchTopicTag(context.Background(), tag.ID)
+
+	require.NoError(t, err)
+	require.Empty(t, results, "overlap 2/5=0.4 < 0.5 ratio gate: no direct_hit, indirect similarity misses with orthogonal vectors")
+	var rows []tagmodels.TopicTagBoardLabel
+	require.NoError(t, db.Find(&rows).Error)
+	require.Empty(t, rows)
+}
+
+// TestSemanticBoardMatchingDirectHitRatioHalf covers the inclusive boundary:
+// overlap 2/4 = 0.5 >= DirectHitMinRatio still mounts as direct_hit.
+func TestSemanticBoardMatchingDirectHitRatioHalf(t *testing.T) {
+	db := setupSemanticBoardMatchingTestDB(t)
+	tag := createMatchTag(t, db, "half-ratio-tag")
+	overlapA := createMatchLabel(t, db, "HalfA", "half-a", "auxiliary", "active", []float64{1, 0, 0})
+	overlapB := createMatchLabel(t, db, "HalfB", "half-b", "auxiliary", "active", []float64{0, 1, 0})
+	farA := createMatchLabel(t, db, "HalfFarA", "half-far-a", "auxiliary", "active", []float64{0, 0, 1})
+	farB := createMatchLabel(t, db, "HalfFarB", "half-far-b", "auxiliary", "active", []float64{0, 0, 1})
+	board := createMatchLabel(t, db, "Half Board", "half-board", "board", "active", nil)
+	for _, aux := range []models.SemanticLabel{overlapA, overlapB, farA, farB} {
+		require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: aux.ID}).Error)
+	}
+	for _, aux := range []models.SemanticLabel{overlapA, overlapB} {
+		require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: aux.ID}).Error)
+	}
+	svc := NewSemanticBoardMatchingService(db)
+
+	results, err := svc.MatchTopicTag(context.Background(), tag.ID)
+
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, board.ID, results[0].SemanticBoardID)
+	require.Equal(t, "direct_hit", results[0].MatchReason)
+	require.InDelta(t, 0.7, results[0].Score, 0.0001)
+}
+
+// TestSemanticBoardMatchingDirectHitRatioDisabled covers ratio=0 (gate off,
+// legacy count-only behavior): the 2/5 case mounts as direct_hit again.
+func TestSemanticBoardMatchingDirectHitRatioDisabled(t *testing.T) {
+	db := setupSemanticBoardMatchingTestDB(t)
+	upsertMatchSetting(t, db, "semantic_board_match_direct_hit_min_ratio", "0")
+	tag := createMatchTag(t, db, "ratio-off-tag")
+	overlapA := createMatchLabel(t, db, "OffA", "off-a", "auxiliary", "active", []float64{1, 0, 0})
+	overlapB := createMatchLabel(t, db, "OffB", "off-b", "auxiliary", "active", []float64{0, 1, 0})
+	farA := createMatchLabel(t, db, "OffFarA", "off-far-a", "auxiliary", "active", []float64{0, 0, 1})
+	farB := createMatchLabel(t, db, "OffFarB", "off-far-b", "auxiliary", "active", []float64{0, 0, 1})
+	farC := createMatchLabel(t, db, "OffFarC", "off-far-c", "auxiliary", "active", []float64{0, 0, 1})
+	board := createMatchLabel(t, db, "Off Board", "off-board", "board", "active", nil)
+	for _, aux := range []models.SemanticLabel{overlapA, overlapB, farA, farB, farC} {
+		require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: aux.ID}).Error)
+	}
+	for _, aux := range []models.SemanticLabel{overlapA, overlapB} {
+		require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: aux.ID}).Error)
+	}
+	svc := NewSemanticBoardMatchingService(db)
+
+	results, err := svc.MatchTopicTag(context.Background(), tag.ID)
+
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "direct_hit", results[0].MatchReason)
+}
+
+// TestSemanticBoardMatchingDirectHitOverlapBelowMin covers B3: overlap below
+// DirectHitMinOverlap never mounts regardless of the ratio gate.
+func TestSemanticBoardMatchingDirectHitOverlapBelowMin(t *testing.T) {
+	db := setupSemanticBoardMatchingTestDB(t)
+	tag := createMatchTag(t, db, "single-overlap-tag")
+	overlapA := createMatchLabel(t, db, "SingleA", "single-a", "auxiliary", "active", []float64{1, 0, 0})
+	farA := createMatchLabel(t, db, "SingleFarA", "single-far-a", "auxiliary", "active", []float64{0, 0, 1})
+	board := createMatchLabel(t, db, "Single Board", "single-board", "board", "active", nil)
+	for _, aux := range []models.SemanticLabel{overlapA, farA} {
+		require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: aux.ID}).Error)
+	}
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: overlapA.ID}).Error)
+	svc := NewSemanticBoardMatchingService(db)
+
+	results, err := svc.MatchTopicTag(context.Background(), tag.ID)
+
+	require.NoError(t, err)
+	require.Empty(t, results, "overlap 1 < DirectHitMinOverlap 2: no direct_hit regardless of ratio (1/2=0.5 meets the gate)")
+}
+
+// TestSemanticBoardMatchingDirectHitRatioBlockedButSimilar covers the switch-track
+// rule: ratio-gated overlap labels are excluded from Priority 3 evidence, yet the
+// remaining labels may still mount via genuine similarity (here identical to a
+// distinct board label, so no self-similarity is involved).
+func TestSemanticBoardMatchingDirectHitRatioBlockedButSimilar(t *testing.T) {
+	db := setupSemanticBoardMatchingTestDB(t)
+	tag := createMatchTag(t, db, "blocked-but-similar")
+	// 2 overlapping labels (0.4 ratio → direct_hit blocked, excluded from P3).
+	overlapA := createMatchLabel(t, db, "BOverlapA", "b-overlap-a", "auxiliary", "active", []float64{1, 0, 0})
+	overlapB := createMatchLabel(t, db, "BOverlapB", "b-overlap-b", "auxiliary", "active", []float64{0, 1, 0})
+	// 3 remaining labels with vectors distinct from the overlaps but identical
+	// to other board composition labels → genuine similarity path survives.
+	remA := createMatchLabel(t, db, "BRemA", "b-rem-a", "auxiliary", "active", []float64{0, 0, 1})
+	remB := createMatchLabel(t, db, "BRemB", "b-rem-b", "auxiliary", "active", []float64{0, 0, 1})
+	remC := createMatchLabel(t, db, "BRemC", "b-rem-c", "auxiliary", "active", []float64{0, 0, 1})
+	boardRemA := createMatchLabel(t, db, "BoardRemA", "board-rem-a", "auxiliary", "active", []float64{0, 0, 1})
+	boardRemB := createMatchLabel(t, db, "BoardRemB", "board-rem-b", "auxiliary", "active", []float64{0, 0, 1})
+	board := createMatchLabel(t, db, "B Board", "b-board", "board", "active", nil)
+	for _, aux := range []models.SemanticLabel{overlapA, overlapB, remA, remB, remC} {
+		require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: aux.ID}).Error)
+	}
+	for _, aux := range []models.SemanticLabel{overlapA, overlapB, boardRemA, boardRemB} {
+		require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: aux.ID}).Error)
+	}
+	svc := NewSemanticBoardMatchingService(db)
+
+	results, err := svc.MatchTopicTag(context.Background(), tag.ID)
+
+	require.NoError(t, err)
+	require.NotEmpty(t, results, "blocked overlap must not kill genuine similarity from remaining labels")
+	require.Equal(t, board.ID, results[0].SemanticBoardID)
+	// 3 remaining labels all hit (3/5=0.6 > DirectHitRate 0.5) → hit_rate branch
+	// outranks max_sim inside Priority 3; either way it is a similarity mount.
+	require.Equal(t, "hit_rate", results[0].MatchReason)
+}
+
 func TestSemanticBoardMatchingDirectHit(t *testing.T) {
 	db := setupSemanticBoardMatchingTestDB(t)
 	tag := createMatchTag(t, db, "openai-gpt-5")

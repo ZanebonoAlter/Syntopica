@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 	"syntopica-backend/internal/platform/tracing"
 	tagging "syntopica-backend/internal/tagmanagement"
 	"syntopica-backend/internal/topicgraph/repository"
+
+	"gorm.io/gorm"
 )
 
 func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*repository.BoardDailyReport, []repository.DailyReportSection, [][]repository.DailyReportThread, error) {
@@ -461,9 +464,46 @@ func pickArticleSummary(fields ...string) string {
 	}
 	return ""
 }
+
+// dailyReportCollectConfig controls the tag-collection stage of daily report
+// generation. ExclusiveGap implements cross-board exclusivity
+// (fix-board-match-cross-domain): a tag whose mount on another board outscores
+// the current board's mount by at least the gap is excluded from this board's
+// candidates — weak attachments must not pollute the report when a clearly
+// stronger home exists. Gap <= 0 disables exclusivity entirely.
+type dailyReportCollectConfig struct {
+	ExclusiveGap float64
+}
+
+const semanticBoardReportExclusiveGapKey = "semantic_board_report_exclusive_gap"
+
+// loadDailyReportCollectConfig reads the collection config from ai_settings,
+// falling back to defaults on missing/invalid rows (same mechanism as
+// LoadWatchMaterializeConfig).
+func loadDailyReportCollectConfig(db *gorm.DB) dailyReportCollectConfig {
+	cfg := dailyReportCollectConfig{ExclusiveGap: 0.3}
+	if db == nil {
+		return cfg
+	}
+	var row struct {
+		Value string
+	}
+	if err := db.Table("ai_settings").
+		Select("value").
+		Where("key = ?", semanticBoardReportExclusiveGapKey).
+		Take(&row).Error; err != nil {
+		return cfg
+	}
+	if v, err := strconv.ParseFloat(strings.TrimSpace(row.Value), 64); err == nil && v >= 0 {
+		cfg.ExclusiveGap = v
+	}
+	return cfg
+}
+
 func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]uint, error) {
 	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
 	endOfDay := startOfDay.Add(24 * time.Hour)
+	collectCfg := loadDailyReportCollectConfig(repository.Repo.DB())
 
 	type tagRow struct {
 		ID           uint    `json:"id"`
@@ -478,7 +518,7 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 	}
 
 	var rows []tagRow
-	err := repository.Repo.DB().Model(&models.TopicTag{}).
+	boardTagsQuery := repository.Repo.DB().Model(&models.TopicTag{}).
 		Select(`topic_tags.id AS id,
 			topic_tags.label AS label,
 			topic_tags.category AS category,
@@ -494,7 +534,19 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 		Where("topic_tag_board_labels.semantic_board_id = ?", boardID).
 		Where("NOT COALESCE(topic_tag_board_labels.direction_mismatch, false)").
 		Where("topic_tags.status = ? AND topic_tags.category = ?", "active", models.TagCategoryEvent).
-		Where("articles.pub_date >= ? AND articles.pub_date < ?", startOfDay, endOfDay).
+		Where("articles.pub_date >= ? AND articles.pub_date < ?", startOfDay, endOfDay)
+	// Cross-board exclusivity (fix-board-match-cross-domain): skip tags whose
+	// mount here is outsold by another board by >= ExclusiveGap — e.g. a 0.7
+	// borrowed-word attachment next to a 1.0 true home. The kill switch is a
+	// Go-side branch (gap <= 0 keeps the legacy query untouched) — do NOT
+	// inline the gap as a `? <= 0 OR …` SQL parameter: binding a parameter as
+	// the left operand of a comparison silently mis-evaluates on pgx.
+	if collectCfg.ExclusiveGap > 0 {
+		boardTagsQuery = boardTagsQuery.Where(
+			"NOT EXISTS (SELECT 1 FROM topic_tag_board_labels stronger WHERE stronger.topic_tag_id = topic_tag_board_labels.topic_tag_id AND stronger.semantic_board_id <> topic_tag_board_labels.semantic_board_id AND stronger.score >= topic_tag_board_labels.score + ?)",
+			collectCfg.ExclusiveGap)
+	}
+	err := boardTagsQuery.
 		Group("topic_tags.id, topic_tags.label, topic_tags.category, topic_tags.description, topic_tags.source, topic_tag_board_labels.match_reason, topic_tag_board_labels.score, topic_tag_board_labels.downgraded").
 		Order("article_count DESC, topic_tags.id ASC").
 		Scan(&rows).Error
@@ -563,6 +615,12 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 				}
 			}
 			if boardMatch == nil {
+				continue
+			}
+			// Same cross-board exclusivity as the main query: when the best match
+			// for this tag lives on another board and outscores ours by >= the
+			// gap, the fallback must not admit it here either.
+			if collectCfg.ExclusiveGap > 0 && matches[0].Score-boardMatch.Score >= collectCfg.ExclusiveGap {
 				continue
 			}
 

@@ -559,7 +559,10 @@ Response `data`：
   "semantic_board_match_weight_sim": 0.6,
   "semantic_board_match_weight_density": 0.4,
   "semantic_board_match_weighted_threshold": 0.6,
-  "semantic_board_match_max_boards": 3
+  "semantic_board_match_max_boards": 3,
+  "semantic_board_match_direct_hit_min_overlap": 2,
+  "semantic_board_match_direct_hit_min_ratio": 0.5,
+  "semantic_board_match_direction_sim_threshold": 0.5
 }
 ```
 

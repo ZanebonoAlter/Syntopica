@@ -575,6 +575,7 @@ func semanticBoardMatchConfigToMap(config service.SemanticBoardMatchConfig) gin.
 		"semantic_board_match_weighted_threshold":          config.WeightedThreshold,
 		"semantic_board_match_max_boards":                  config.MaxBoards,
 		"semantic_board_match_direct_hit_min_overlap":      config.DirectHitMinOverlap,
+		"semantic_board_match_direct_hit_min_ratio":        config.DirectHitMinRatio,
 		"semantic_board_match_direction_sim_threshold":     config.DirectionSimThreshold,
 	}
 }

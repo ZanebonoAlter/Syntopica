@@ -990,7 +990,7 @@ func (h *semanticBoardHandler) getAllConfigs(c *gin.Context) gin.H {
 
 func isSemanticBoardConfigKey(key string) bool {
 	switch key {
-	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards", "semantic_board_match_direct_hit_min_overlap", "semantic_board_match_direction_sim_threshold",
+	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards", "semantic_board_match_direct_hit_min_overlap", "semantic_board_match_direct_hit_min_ratio", "semantic_board_match_direction_sim_threshold",
 		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit", "semantic_board_upgrade_cluster_method":
 		return true
 	default:
