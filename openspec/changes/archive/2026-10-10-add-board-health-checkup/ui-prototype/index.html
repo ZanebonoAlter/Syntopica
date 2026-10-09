@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型：版块体检治理面板 BoardHealthPanel（合并构成管理）</title>
+<style>
+  /* 贴 main.css 既有主题变量（浅色值 + 深色 media query），实现时直接用 var() */
+  :root {
+    --color-text: #1a1a1a;
+    --color-text-secondary: #5a5a5a;
+    --color-text-muted: #8a8a8a;
+    --color-success: #3d8a4a;
+    --color-success-subtle: rgba(61, 138, 74, 0.12);
+    --color-warning: #c4883c;
+    --color-warning-subtle: rgba(196, 136, 60, 0.14);
+    --color-danger: #c0453e;
+    --color-danger-subtle: rgba(192, 69, 62, 0.12);
+    --color-border-subtle: rgba(26, 26, 26, 0.08);
+    --color-border-medium: rgba(26, 26, 26, 0.15);
+    --color-bg: #fafaf9;
+    --color-bg-elevated: #f0efec;
+    --color-bg-sunken: #e5e4e0;
+    --color-primary: #2563a8;
+    --color-primary-subtle: rgba(37, 99, 168, 0.1);
+  }
+  [data-theme="dark"] {
+      --color-text: #e8eaed;
+      --color-text-secondary: #a3adb8;
+      --color-text-muted: #6e7b88;
+      --color-success: #5cb76a;
+      --color-success-subtle: rgba(92, 183, 106, 0.16);
+      --color-warning: #d9a05b;
+      --color-warning-subtle: rgba(217, 160, 91, 0.16);
+      --color-danger: #e06a63;
+      --color-danger-subtle: rgba(224, 106, 99, 0.16);
+      --color-border-subtle: rgba(232, 234, 237, 0.1);
+      --color-border-medium: rgba(232, 234, 237, 0.18);
+      --color-bg: #0b1117;
+      --color-bg-elevated: rgba(17, 27, 38, 0.98);
+      --color-bg-sunken: #0e161d;
+      --color-primary: #6aa6e0;
+      --color-primary-subtle: rgba(106, 166, 224, 0.14);
+    }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--color-bg); color: var(--color-text);
+    padding: 24px; font-size: 13px; line-height: 1.55;
+  }
+  .page { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 16px; margin-bottom: 4px; }
+  .page-note { color: var(--color-text-muted); font-size: 12px; margin-bottom: 16px; }
+
+  /* 状态切换器（原型自用，非产品 UI） */
+  .proto-switch { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+  .proto-switch button {
+    font-size: 12px; padding: 5px 12px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--color-border-medium); background: var(--color-bg-elevated);
+    color: var(--color-text-secondary);
+  }
+  .proto-switch button.on { background: var(--color-primary); color: #fff; border-color: transparent; }
+
+  /* 模拟邻居占位（示意插入位，非原型主体） */
+  .neighbor {
+    margin-top: 16px; padding: 14px 16px; border: 1px dashed var(--color-border-medium);
+    border-radius: 10px; color: var(--color-text-muted); font-size: 12px;
+    background: var(--color-bg-elevated); opacity: .75;
+  }
+
+  /* 警告条（低分时 tab 顶部） */
+  .bhp-alert {
+    margin-top: 16px; display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-radius: 10px; cursor: pointer;
+    border: 1px solid var(--color-danger); background: var(--color-danger-subtle);
+    color: var(--color-danger); font-weight: 500;
+  }
+  .bhp-alert small { color: var(--color-text-secondary); font-weight: 400; margin-left: auto; }
+
+  /* —— 治理主面板（吸收构成管理）—— */
+  .bhp-panel {
+    margin-top: 16px; padding: 16px;
+    border: 1px solid var(--color-border-subtle); border-radius: 10px;
+    background: var(--color-bg-elevated);
+  }
+  .bhp-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .bhp-title { font-size: 14px; font-weight: 600; }
+  .bhp-score-badge {
+    display: inline-flex; align-items: baseline; gap: 4px;
+    padding: 3px 10px; border-radius: 999px; font-weight: 600; font-size: 13px;
+  }
+  .bhp-score-badge--good { color: var(--color-success); background: var(--color-success-subtle); }
+  .bhp-score-badge--warn { color: var(--color-warning); background: var(--color-warning-subtle); }
+  .bhp-score-badge--bad  { color: var(--color-danger);  background: var(--color-danger-subtle); }
+  .bhp-score-badge--none { color: var(--color-text-muted); background: var(--color-bg-sunken); }
+  .bhp-score-badge small { font-weight: 400; opacity: .75; font-size: 10px; }
+  .bhp-summary-item { color: var(--color-text-secondary); font-size: 12px; }
+  .bhp-summary-item b { color: var(--color-text); font-weight: 600; }
+  .bhp-spacer { flex: 1; }
+
+  /* 治理动作按钮（header） */
+  .bhp-add-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 12px; border-radius: 8px; cursor: pointer; font-size: 12px;
+    border: 1px solid var(--color-primary); color: var(--color-primary);
+    background: var(--color-primary-subtle);
+  }
+  /* 添加 picker（展开态示意） */
+  .bhp-picker {
+    margin-top: 10px; padding: 10px 12px; border-radius: 8px;
+    border: 1px dashed var(--color-border-medium); background: var(--color-bg-sunken);
+    color: var(--color-text-secondary); font-size: 12px;
+  }
+  .bhp-picker b { color: var(--color-text); }
+  .bhp-picker .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+  .bhp-picker .cand {
+    padding: 2px 10px; border-radius: 999px; border: 1px solid var(--color-border-medium);
+    background: var(--color-bg-elevated); font-size: 12px; cursor: pointer;
+  }
+  .bhp-picker .cand.on { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-subtle); }
+  .bhp-picker .foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .bhp-confirm-btn {
+    padding: 4px 12px; border-radius: 8px; cursor: pointer; font-size: 12px;
+    border: none; background: var(--color-primary); color: #fff;
+  }
+  .bhp-cancel-link { color: var(--color-text-muted); cursor: pointer; font-size: 12px; }
+
+  .bhp-comment {
+    margin-top: 10px; padding: 8px 12px; border-left: 3px solid var(--color-primary);
+    background: var(--color-bg-sunken); border-radius: 0 8px 8px 0;
+    color: var(--color-text-secondary); font-size: 12.5px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .bhp-metrics { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .bhp-chip {
+    padding: 4px 10px; border-radius: 8px; font-size: 12px;
+    background: var(--color-bg-sunken); color: var(--color-text-secondary);
+  }
+  .bhp-chip b { color: var(--color-text); }
+  .bhp-chip--alert { background: var(--color-warning-subtle); color: var(--color-warning); }
+  .bhp-chip--alert b { color: var(--color-warning); }
+
+  .bhp-section-title {
+    margin: 16px 0 6px; font-size: 12px; font-weight: 600; color: var(--color-text-secondary);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .bhp-section-title .count { color: var(--color-text-muted); font-weight: 400; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th {
+    text-align: left; padding: 6px 8px; color: var(--color-text-muted); font-weight: 500;
+    border-bottom: 1px solid var(--color-border-subtle); font-size: 11.5px; white-space: nowrap;
+  }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--color-border-subtle); vertical-align: middle; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar {
+    height: 5px; border-radius: 3px; background: var(--color-bg-sunken);
+    overflow: hidden; width: 56px; display: inline-block; vertical-align: middle;
+  }
+  .bar i { display: block; height: 100%; border-radius: 3px; background: var(--color-primary); }
+  .bar i.low { background: var(--color-warning); }
+  .tag-insufficient { color: var(--color-text-muted); font-style: normal; font-size: 11.5px; }
+  .st-ok   { color: var(--color-success); }
+  .st-warn { color: var(--color-warning); }
+
+  /* 行内移除按钮 */
+  .bhp-remove-btn {
+    border: none; background: none; color: var(--color-text-muted); cursor: pointer;
+    font-size: 13px; padding: 2px 6px; border-radius: 6px; line-height: 1;
+  }
+  .bhp-remove-btn:hover { color: var(--color-danger); background: var(--color-danger-subtle); }
+
+  /* 组合标签区（自原 BoardCompositionPanel 平移） */
+  .bhp-comp-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .bhp-comp-item {
+    display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+    border: 1px solid var(--color-border-subtle); border-radius: 8px;
+    background: var(--color-bg-sunken); font-size: 12.5px; flex-wrap: wrap;
+  }
+  .bhp-comp-name { font-weight: 600; }
+  .bhp-comp-chain { color: var(--color-text-muted); font-size: 11.5px; }
+  .bhp-comp-hint { color: var(--color-text-muted); font-size: 11.5px; margin-top: 6px; }
+  .bhp-create-btn {
+    padding: 3px 10px; border-radius: 8px; cursor: pointer; font-size: 11.5px;
+    border: 1px solid var(--color-border-medium); color: var(--color-text-secondary);
+    background: var(--color-bg-elevated);
+  }
+
+  .bhp-two-col { display: flex; gap: 20px; flex-wrap: wrap; }
+  .bhp-two-col > div { flex: 1; min-width: 300px; }
+  .bhp-trend { display: flex; align-items: flex-end; gap: 12px; }
+  .bhp-trend-note { color: var(--color-text-muted); font-size: 11.5px; max-width: 200px; }
+
+  /* 未收编候选（带收编快捷动作） */
+  .bhp-cand-row {
+    display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 12.5px;
+    border-bottom: 1px dashed var(--color-border-subtle);
+  }
+  .bhp-cand-row:last-of-type { border-bottom: none; }
+  .bhp-cand-row b { min-width: 76px; }
+  .bhp-cand-row span { color: var(--color-text-secondary); }
+  .bhp-adopt-btn {
+    margin-left: auto; padding: 2px 12px; border-radius: 999px; cursor: pointer; font-size: 11.5px;
+    border: 1px solid var(--color-primary); color: var(--color-primary);
+    background: var(--color-primary-subtle); white-space: nowrap;
+  }
+  .bhp-adopt-btn:disabled { opacity: .45; cursor: default; }
+  .bhp-candidates-hint { color: var(--color-text-muted); font-size: 11.5px; margin-top: 8px; }
+
+  /* toast（收编成功反馈示意） */
+  .bhp-toast {
+    position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; border-radius: 10px;
+    background: var(--color-success); color: #fff; font-size: 13px; box-shadow: 0 4px 14px rgba(0,0,0,.25);
+    display: none;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>版块体检治理面板 — 形态 A（吸收构成管理）</h1>
+  <div class="page-note">
+    BoardCompositionPanel 退役 → 本面板承担：体检评价 + 构成管理（添加/移除/组合）+ 收编快捷动作 ｜
+    泳道动态独立渲染位置不变 ｜ 评分色档 ≥80 绿 / 60-79 橙 / &lt;60 红（告警线 60）
+  </div>
+
+  <div class="proto-switch" id="switch">
+    <button data-s="good" class="on">健康（78 分）</button>
+    <button data-s="good-picker">健康 · 添加展开</button>
+    <button data-s="warn">需关注（52 分 · 警告条）</button>
+    <button data-s="empty">无快照（构成管理照常）</button>
+    <button id="themeBtn" style="margin-left:auto">🌓 切换主题（editorial/dark）</button>
+  </div>
+
+  <!-- ============ 状态一：健康 ============ -->
+  <div class="state" id="s-good">
+    <div class="neighbor">… 话题卡片区（现有，tab 顶部）…</div>
+
+    <section class="bhp-panel">
+      <div class="bhp-header">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+        <span class="bhp-title">版块体检</span>
+        <span class="bhp-score-badge bhp-score-badge--good">78<small>/100</small></span>
+        <span class="bhp-summary-item">上次体检 <b>10-02 05:12</b></span>
+        <span class="bhp-summary-item">构成 <b>14</b></span>
+        <span class="bhp-spacer"></span>
+        <button type="button" class="bhp-add-btn">＋ 添加构成</button>
+      </div>
+
+      <div class="bhp-comment">整体健康：组合命中占比稳定，推理/大模型两标签贡献了大部分高置信匹配；「中美竞争」标签低分占比偏高，建议观察其近期匹配质量。</div>
+
+      <div class="bhp-metrics">
+        <span class="bhp-chip">单 aux 话题占比 <b>40%</b></span>
+        <span class="bhp-chip">cosine 均值 <b>0.79</b></span>
+        <span class="bhp-chip">中位数 <b>0.82</b></span>
+        <span class="bhp-chip">幽灵匹配 <b>12</b></span>
+        <span class="bhp-chip">向量缺失 <b>3</b></span>
+      </div>
+
+      <div class="bhp-section-title">构成标签 <span class="count">（14 · 质量按单 aux 纯净样本归因）</span></div>
+      <table>
+        <thead><tr>
+          <th style="width:24%">标签</th><th class="num" style="width:11%">样本</th>
+          <th class="num" style="width:13%">均值</th><th class="num" style="width:13%">中位数</th>
+          <th style="width:23%">低分占比</th><th style="width:10%">状态</th><th style="width:6%"></th>
+        </tr></thead>
+        <tbody>
+          <tr><td>大模型</td><td class="num">32</td><td class="num">0.84</td><td class="num">0.86</td>
+            <td><span class="bar"><i style="width:6%"></i></span> 6%</td><td class="st-ok">正常</td>
+            <td><button class="bhp-remove-btn" title="移除（不会自动回填历史数据）">✕</button></td></tr>
+          <tr><td>推理</td><td class="num">18</td><td class="num">0.81</td><td class="num">0.83</td>
+            <td><span class="bar"><i style="width:11%"></i></span> 11%</td><td class="st-ok">正常</td>
+            <td><button class="bhp-remove-btn" title="移除（不会自动回填历史数据）">✕</button></td></tr>
+          <tr><td>中美竞争</td><td class="num">26</td><td class="num">0.72</td><td class="num">0.74</td>
+            <td><span class="bar"><i class="low" style="width:19%"></i></span> 19%</td><td class="st-warn">偏低</td>
+            <td><button class="bhp-remove-btn" title="移除（不会自动回填历史数据）">✕</button></td></tr>
+          <tr><td>AGI</td><td class="num">1</td><td class="num">—</td><td class="num">—</td>
+            <td class="tag-insufficient">样本 &lt; 5</td><td class="tag-insufficient">数据不足</td>
+            <td><button class="bhp-remove-btn" title="移除（不会自动回填历史数据）">✕</button></td></tr>
+          <tr><td colspan="7" class="tag-insufficient">… 其余 10 个构成标签 …</td></tr>
+        </tbody>
+      </table>
+
+      <div class="bhp-section-title">组合标签 <span class="count">（最强匹配信号 composite_hit）</span>
+        <span class="bhp-spacer"></span>
+        <button class="bhp-create-btn">＋ 创建组合</button>
+      </div>
+      <div class="bhp-comp-list">
+        <div class="bhp-comp-item">
+          <span class="bhp-comp-name">大模型推理</span>
+          <span class="bhp-comp-chain">= 大模型 × 推理</span>
+          <span class="bhp-spacer"></span>
+          <button class="bhp-remove-btn" title="移除挂载">✕</button>
+        </div>
+        <div class="bhp-comp-item">
+          <span class="bhp-comp-name">AI 芯片</span>
+          <span class="bhp-comp-chain">= 芯片 × 算力 × 半导体</span>
+          <span class="bhp-spacer"></span>
+          <button class="bhp-remove-btn" title="移除挂载">✕</button>
+        </div>
+      </div>
+
+      <div class="bhp-two-col" style="margin-top:16px">
+        <div>
+          <div class="bhp-section-title" style="margin-top:0">评分趋势（近 7 次）</div>
+          <div class="bhp-trend">
+            <svg width="260" height="60" viewBox="0 0 260 60">
+              <polyline points="8,42 48,38 88,32 128,36 168,25 208,17 252,13"
+                fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round"/>
+              <circle cx="252" cy="13" r="3.5" fill="var(--color-primary)"/>
+              <text x="8" y="57" font-size="10" fill="var(--color-text-muted)">09-26</text>
+              <text x="224" y="57" font-size="10" fill="var(--color-text-muted)">10-02</text>
+            </svg>
+            <div class="bhp-trend-note">64 → 78：09-28 收编「推理」后上行</div>
+          </div>
+        </div>
+        <div>
+          <div class="bhp-section-title" style="margin-top:0">未收编候选 <span class="count">（top 3 / 9）</span></div>
+          <div class="bhp-cand-row"><b>算力</b><span>12 话题携带 · 45 篇</span><button class="bhp-adopt-btn">收编</button></div>
+          <div class="bhp-cand-row"><b>评测</b><span>9 话题携带 · 31 篇</span><button class="bhp-adopt-btn">收编</button></div>
+          <div class="bhp-cand-row"><b>芯片制程</b><span>7 话题携带 · 22 篇</span><button class="bhp-adopt-btn">收编</button></div>
+          <div class="bhp-candidates-hint">收编 = 手动挂载（即时生效，历史不回填）；批量/经 LLM 裁决的扩充走上方「升级建议」入口</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="neighbor">… 泳道动态 LaneDynamicsPanel（独立组件，位置不变）…</div>
+    <div class="neighbor">… 来源构成 BoardSourcePanel（不动）…</div>
+  </div>
+
+  <!-- ============ 状态一b：健康 · 添加展开 ============ -->
+  <div class="state" id="s-good-picker" style="display:none">
+    <div class="neighbor">… 话题卡片区（现有，tab 顶部）…</div>
+
+    <section class="bhp-panel">
+      <div class="bhp-header">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+        <span class="bhp-title">版块体检</span>
+        <span class="bhp-score-badge bhp-score-badge--good">78<small>/100</small></span>
+        <span class="bhp-spacer"></span>
+        <button type="button" class="bhp-add-btn">＋ 添加构成</button>
+      </div>
+
+      <!-- 添加 picker 展开态（自原 BoardCompositionPanel 平移：搜索 + 多选 + 确认） -->
+      <div class="bhp-picker">
+        <b>添加构成标签</b>（搜索 active 辅助标签，排除已挂载）
+        <div class="row">
+          <span class="cand on">算力</span>
+          <span class="cand">评测</span>
+          <span class="cand on">芯片制程</span>
+          <span class="cand">开源模型</span>
+          <span class="cand">推理框架</span>
+          <span class="cand"> multimodal</span>
+          <span class="cand">具身智能</span>
+        </div>
+        <div class="foot">
+          <button class="bhp-confirm-btn">确认添加 2 个标签</button>
+          <span class="bhp-cancel-link">取消</span>
+          <span style="font-size:11px;color:var(--color-text-muted)">添加后：历史归属不自动回填，可手动触发回填</span>
+        </div>
+      </div>
+
+      <div class="bhp-section-title">构成标签 <span class="count">（14）</span></div>
+      <table>
+        <thead><tr>
+          <th style="width:24%">标签</th><th class="num" style="width:11%">样本</th>
+          <th class="num" style="width:13%">均值</th><th class="num" style="width:13%">中位数</th>
+          <th style="width:23%">低分占比</th><th style="width:10%">状态</th><th style="width:6%"></th>
+        </tr></thead>
+        <tbody>
+          <tr><td>大模型</td><td class="num">32</td><td class="num">0.84</td><td class="num">0.86</td>
+            <td><span class="bar"><i style="width:6%"></i></span> 6%</td><td class="st-ok">正常</td>
+            <td><button class="bhp-remove-btn">✕</button></td></tr>
+          <tr><td colspan="7" class="tag-insufficient">… 其余 13 个构成标签 …</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <div class="neighbor">… 泳道动态 / 来源构成（位置不变）…</div>
+  </div>
+
+  <!-- ============ 状态二：需关注 ============ -->
+  <div class="state" id="s-warn" style="display:none">
+    <div class="bhp-alert" onclick="document.getElementById('warnPanel').scrollIntoView({behavior:'smooth'})">
+      ⚠ 体检评分 52：4 个构成标签低分占比超 30%，幽灵匹配上升
+      <small>点此查看体检 ↓</small>
+    </div>
+    <div class="neighbor">… 话题卡片区（现有，tab 顶部）…</div>
+
+    <section class="bhp-panel" id="warnPanel">
+      <div class="bhp-header">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+        <span class="bhp-title">版块体检</span>
+        <span class="bhp-score-badge bhp-score-badge--bad">52<small>/100</small></span>
+        <span class="bhp-summary-item">上次体检 <b>10-02 05:12</b></span>
+        <span class="bhp-summary-item">幽灵匹配 <b style="color:var(--color-danger)">41</b></span>
+        <span class="bhp-spacer"></span>
+        <button type="button" class="bhp-add-btn">＋ 添加构成</button>
+      </div>
+      <div class="bhp-comment">匹配质量下滑：「新能源车」标签吸引了大量方向不符的话题（低分 44%），建议移除或等待 LLM 升级建议重组。</div>
+      <div class="bhp-metrics">
+        <span class="bhp-chip bhp-chip--alert">单 aux 话题占比 <b>61%</b></span>
+        <span class="bhp-chip bhp-chip--alert">cosine 均值 <b>0.58</b></span>
+        <span class="bhp-chip">中位数 <b>0.63</b></span>
+        <span class="bhp-chip bhp-chip--alert">幽灵匹配 <b>41</b></span>
+        <span class="bhp-chip">向量缺失 <b>2</b></span>
+      </div>
+      <div class="bhp-section-title">构成标签 <span class="count">（11）</span></div>
+      <table>
+        <thead><tr>
+          <th style="width:24%">标签</th><th class="num" style="width:11%">样本</th>
+          <th class="num" style="width:13%">均值</th><th class="num" style="width:13%">中位数</th>
+          <th style="width:23%">低分占比</th><th style="width:10%">状态</th><th style="width:6%"></th>
+        </tr></thead>
+        <tbody>
+          <tr><td>新能源车</td><td class="num">34</td><td class="num">0.51</td><td class="num">0.55</td>
+            <td><span class="bar"><i class="low" style="width:44%"></i></span> 44%</td><td class="st-warn">偏低</td>
+            <td><button class="bhp-remove-btn" title="移除（不会自动回填历史数据）">✕</button></td></tr>
+          <tr><td>储能</td><td class="num">15</td><td class="num">0.66</td><td class="num">0.69</td>
+            <td><span class="bar"><i class="low" style="width:22%"></i></span> 22%</td><td class="st-warn">偏低</td>
+            <td><button class="bhp-remove-btn">✕</button></td></tr>
+          <tr><td>锂矿</td><td class="num">2</td><td class="num">—</td><td class="num">—</td>
+            <td class="tag-insufficient">样本 &lt; 5</td><td class="tag-insufficient">数据不足</td>
+            <td><button class="bhp-remove-btn">✕</button></td></tr>
+        </tbody>
+      </table>
+      <div class="bhp-section-title">评分趋势（近 7 次）</div>
+      <div class="bhp-trend">
+        <svg width="260" height="60" viewBox="0 0 260 60">
+          <polyline points="8,20 48,18 88,24 128,30 168,38 208,42 252,48"
+            fill="none" stroke="var(--color-danger)" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="252" cy="48" r="3.5" fill="var(--color-danger)"/>
+          <text x="8" y="57" font-size="10" fill="var(--color-text-muted)">09-26</text>
+          <text x="224" y="57" font-size="10" fill="var(--color-text-muted)">10-02</text>
+        </svg>
+        <div class="bhp-trend-note">74 → 52：连续 5 轮下行，已触发异常通知</div>
+      </div>
+    </section>
+
+    <div class="neighbor">… 泳道动态 / 来源构成（位置不变）…</div>
+  </div>
+
+  <!-- ============ 状态三：无快照（构成管理照常可用）============ -->
+  <div class="state" id="s-empty" style="display:none">
+    <div class="neighbor">… 话题卡片区（现有，tab 顶部）…</div>
+
+    <section class="bhp-panel">
+      <div class="bhp-header">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+        <span class="bhp-title">版块体检</span>
+        <span class="bhp-score-badge bhp-score-badge--none">等待首轮体检</span>
+        <span class="bhp-summary-item">体检在每天日报生成后自动运行；也可手动触发日报生成立即体检</span>
+        <span class="bhp-spacer"></span>
+        <button type="button" class="bhp-add-btn">＋ 添加构成</button>
+      </div>
+      <!-- 无快照：质量列显示占位，构成管理照常 -->
+      <div class="bhp-section-title">构成标签 <span class="count">（14 · 质量数据待体检）</span></div>
+      <table>
+        <thead><tr>
+          <th style="width:24%">标签</th><th class="num" style="width:11%">样本</th>
+          <th class="num" style="width:13%">均值</th><th class="num" style="width:13%">中位数</th>
+          <th style="width:23%">低分占比</th><th style="width:10%">状态</th><th style="width:6%"></th>
+        </tr></thead>
+        <tbody>
+          <tr><td>大模型</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>
+            <td class="tag-insufficient">待体检</td><td class="tag-insufficient">—</td>
+            <td><button class="bhp-remove-btn">✕</button></td></tr>
+          <tr><td>推理</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>
+            <td class="tag-insufficient">待体检</td><td class="tag-insufficient">—</td>
+            <td><button class="bhp-remove-btn">✕</button></td></tr>
+          <tr><td colspan="7" class="tag-insufficient">… 其余 12 个构成标签 …</td></tr>
+        </tbody>
+      </table>
+      <div class="bhp-section-title">组合标签 <span class="count">（最强匹配信号 composite_hit）</span>
+        <span class="bhp-spacer"></span>
+        <button class="bhp-create-btn">＋ 创建组合</button>
+      </div>
+      <div class="bhp-comp-hint">暂未挂载组合标签——组合标签是最强匹配信号，适合「美国国债×收益率」这类指向性主题</div>
+    </section>
+
+    <div class="neighbor">… 泳道动态 / 来源构成（位置不变）…</div>
+  </div>
+</div>
+
+<div class="bhp-toast" id="toast">已收编「算力」为构成标签</div>
+
+<script>
+  document.getElementById('themeBtn').addEventListener('click', function () {
+    var el = document.documentElement;
+    el.dataset.theme = el.dataset.theme === 'dark' ? 'editorial' : 'dark';
+  });
+  document.getElementById('switch').addEventListener('click', function (e) {
+    var btn = e.target.closest('button'); if (!btn) return;
+    this.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b === btn); });
+    document.querySelectorAll('.state').forEach(function (s) { s.style.display = 'none'; });
+    document.getElementById('s-' + btn.dataset.s).style.display = '';
+  });
+  // 收编按钮演示反馈（原型自用）
+  document.querySelectorAll('.bhp-adopt-btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var t = document.getElementById('toast');
+      t.style.display = 'block';
+      setTimeout(function () { t.style.display = 'none'; }, 1600);
+      b.textContent = '已收编'; b.disabled = true;
+    });
+  });
+</script>
+</body>
+</html>
