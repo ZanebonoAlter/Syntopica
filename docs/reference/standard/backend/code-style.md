@@ -113,6 +113,7 @@ if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
 - ❌ 在 service 层重写日报归属逻辑（归属在 `repository/daily_report_assignment.go`）
 - ❌ 删 section embedding 或 topic centroid/首义向量（质心是匹配锚点，embedding 是退化兑底 + thread fit 源）
 - ❌ 给新 section 不设 `LaneTier` 就调 SaveReport（新契约要求分桶阶段设 lane_tier；历史 section lane_tier=NULL 视为旧数据）
+- ❌ **在事务闭包内调慢 I/O（外部 AI API / 长网络往返 / 大结果集全量拉）**：事务开着等 HTTP 响应即 `idle in transaction`，持 xmin 阻塞 vacuum、与 autovacuum 调优直接对抗（fix-aux-label-idle-tx-cache：辅助标签入库曾因此在单事务内逐标签调 embedding，生产实测 4–40s）。正确形态是两阶段——事务外预计算（LLM embedding / 批量向量化，参考 `auxlabel.planAuxiliaryLabels` 与 `CompositeLabelService.PlanCompositeLabel`），短事务内纯写（`executeAuxiliaryPlans` / `ApplyCompositeLabel`）；`pg_stat_activity` 出现秒级 idle in transaction 即违本条。兜底防线：`docker-compose.pg.yml` 的 `idle_in_transaction_session_timeout=60s` 会掐断违例事务（日志可见 terminating connection due to idle-in-transaction timeout）。
 
 ## 资料来源
 

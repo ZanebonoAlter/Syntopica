@@ -20,13 +20,19 @@ SemanticBoard（语义版块）解决「把散装 event 标签组织成持久主
 ```mermaid
 flowchart TD
   TAG[tagging/extraction: LLM 提取 tag + 3-5 辅助标签] --> SVC[auxiliary_label_service.go]
-  SVC --> L1{L1: slug/alias 精确匹配}
+  SVC --> P1["阶段一（无事务，慢 I/O 区）<br/>L1 内存预解析 + 批量 embedding（merge 批 1 次 + storage 批 1 次）+ L2 决策"]
+  P1 --> L1{L1: slug/alias/normalizeKey 精确匹配}
   L1 -->|命中| R1[复用 ref_count++]
   L1 -->|未命中| L2{L2: embedding ≥ 0.95}
   L2 -->|命中| R2[小方加入 aliases ref_count++]
-  L2 -->|未命中| L3[L3: 新建 semantic_label<br/>label_type=auxiliary + 生成 embedding]
-  R1 & R2 & L3 --> REL[topic_tag_semantic_labels 记录关联]
+  L2 -->|未命中| L3[L3: 新建 semantic_label<br/>label_type=auxiliary + 双向量已备齐]
+  R1 & R2 & L3 --> P2["阶段二（短事务，毫秒级纯写）<br/>alias UPDATE / INSERT / link OnConflict / ref_count++ → 提交后增量更新缓存"]
+  P2 --> REL[topic_tag_semantic_labels 记录关联]
 ```
+
+> **两阶段事务边界（fix-aux-label-idle-tx-cache，2026-10-06）**：历史实现在单事务内逐标签调外部 AI embedding API，是生产 `idle in transaction` 4–40s 的元凶（事务持 xmin 阻塞 vacuum，与 autovacuum 调优对抗）。现在 `AttachAuxiliaryLabels` 先在事务外完成全部慢 I/O（缓存加载、批量 embedding——`airouter.Embed` 原生 `[]string` 输入，N 个新标签恰好 2 次调用），再用一个短事务完成全部纯写；全有或全无原子性由阶段二保留（任一写失败整体回滚）。同模式已清理 `ConfirmSuggestion`（板向量/composite 短语 LLM 均事务前预计算，事务内 `ApplyCompositeLabel` 纯写）。规划与写入之间的 slug TOCTOU 与旧事务内「查后插入」一致，靠 `idx_semantic_labels_slug` 唯一索引兑底：冲突冒泡由打标 job 记 warn 跳过。批内重复 label（同 slug/normalizeKey）在阶段一去重共享首个决策；批内语义近似但文本不同的标签各自新建（旧串行路径靠缓存回灌 L2 归并，属罕见场景，后续手动合并治理）。PG 侧另有 `idle_in_transaction_session_timeout=60s` 防呆（`docker-compose.pg.yml`，recreate 生效）。
+
+> **缓存失效增量维护（同 change）**：L2 去重依赖包级 `packageAuxLabelCache`（17.5k 行 merge 向量 ≈ 216MB 文本传输 + 解析，TTL 10 分钟），历史「一写全清」使批量打标每个新标签炸一次缓存再全量拉。现在 L3 新建直接把 merge 向量塞进 map + activeLabels append 轻量副本（列集合对齐、不含向量列）；disable/alias 合并源按行删除；alias 变更仍只清轻量的 activeLabels；时间戳不重置 → 批量打标零全量重拉，仅冷启动 1 次。handler 直改 status 的路径不经 service 失效，由 TTL 兑底（窗口与历史一致）。
 
 > **L2 不会形成「合并黑洞」**：与主标签路径不同（`findOrCreateTag` 的 embedding 命中曾覆盖 label/slug → text_hash 变 → 重生成 embedding → 恶性循环，见 `v1.3.1/fix-tag-blackhole-embedding-match`），aux 的 L2 命中只 `addAlias`（append alias + ref_count++），**不改 Label、不重算 MergeEmbedding**（MergeEmbedding 仅 L3 新建时生成一次，之后恒定）。既有 aux 的「吸引力」= 固定 embedding 的 cosine，不随 alias 增多 / ref_count 升高而自我放大，无循环根因。阈值 `auxiliary_label_dedupe_sim` 可配（默认 0.95）。
 
@@ -389,3 +395,4 @@ handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembed
 | 2026-09-11 | overview-lane-dynamics | 版块内容 tab 首屏「泳道动态」视图（泳道卡：滚动 14 天态势句 + 逐日发展时间线 + watch 角标 + 候选栏），取代话题态势版图（整体退役）；新端点 `GET /semantic-boards/:id/lane-dynamics` 单请求聚合；态势句随日报异步滚动结算（见 daily-report.md） | [`openspec/changes/archive/2026-09-11-overview-lane-dynamics`](../../../openspec/changes/archive/2026-09-11-overview-lane-dynamics) |
 | 2026-09-18 | add-source-board-hit-rate | 板块来源构成：新增只读端点 `GET /semantic-boards/:id/source-breakdown`（供血源视角：本版块篇数/占比/该源自身命中率，`Σ sources == total_articles`）；「板块内容」tab 底部（不新增 tab）`BoardSourcePanel.vue` 来源面板；与源视角共用 `sourcestats` 口径唯一实现（按文章去重/含已归档/限窗口，红线 17） | [`openspec/changes/archive/2026-09-18-add-source-board-hit-rate`](../../../openspec/changes/add-source-board-hit-rate) |
 | 2026-10-10 | add-board-health-checkup | 版块体检：挂日报成功尾步每日纯读统计（版块级指标 + 标签级贴合度分布，10-08 口径修正弃单 aux 纯净样本）+ 事实画像 diff 未收编候选 + LLM 合并评分/评语/打扰裁决 + `board_health_snapshots` 快照趋势 + 异常通知（冷却 3 天）+ 只读端点 + member-derived 扩充召回主路（无快照回退双路，红线 10/20/21/22）；前端体检治理面板 BoardHealthPanel 吸收构成管理（BoardCompositionPanel 退役）+ 低分警告条 | [archive/2026-10-10-add-board-health-checkup](../../../openspec/changes/archive/2026-10-10-add-board-health-checkup) |
+| 2026-10-06 | fix-aux-label-idle-tx-cache | 辅助标签入库两阶段化：AI embedding 调用移出事务（N 新标签恰 2 次批量调用），短事务毫秒级纯写保留全有或全无原子性，idle in transaction 4–40s → 0；同模式清理 ConfirmSuggestion（`ConfirmSuggestion` 预计算 + `ApplyCompositeLabel` 纯写）；缓存失效增量维护仅 activeLabels 半边（mergeEmbeddings 原位写曾致 concurrent map fatal 两次宕机，FB-1 修订回退 TTL 重拉，见 callout 与 code-style.md 事务内慢 I/O 硬禁）；PG 防呆 `idle_in_transaction_session_timeout=60s`（recreate 生效） | [archive/2026-10-10-fix-aux-label-idle-tx-cache](../../../openspec/changes/archive/2026-10-10-fix-aux-label-idle-tx-cache) |

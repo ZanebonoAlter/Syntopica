@@ -65,6 +65,13 @@ const (
 
 type AuxiliaryLabelEmbedder func(ctx context.Context, input string, mode AuxiliaryLabelEmbeddingMode) (string, []float64, error)
 
+// AuxiliaryLabelBatchEmbedder embeds a batch of inputs in one call per mode.
+// Returns two parallel slices: pgvector strings and raw float vectors, both
+// indexed like inputs. Backed by airouter.Embed (whose Input is []string —
+// the batch capability is native); kept as a distinct type so tests can mock
+// and count batch calls (design D1 phase one).
+type AuxiliaryLabelBatchEmbedder func(ctx context.Context, inputs []string, mode AuxiliaryLabelEmbeddingMode) ([]string, [][]float64, error)
+
 type mergeMatcherFunc func(ctx context.Context, db *gorm.DB, labels []models.SemanticLabel, mergePgVector string, mergeVector []float64) (*models.SemanticLabel, error)
 
 const (
@@ -85,10 +92,11 @@ type auxLabelCache struct {
 }
 
 type AuxiliaryLabelService struct {
-	db           *gorm.DB
-	embedder     AuxiliaryLabelEmbedder
-	mergeMatcher mergeMatcherFunc
-	cache        *auxLabelCache
+	db            *gorm.DB
+	embedder      AuxiliaryLabelEmbedder
+	batchEmbedder AuxiliaryLabelBatchEmbedder
+	mergeMatcher  mergeMatcherFunc
+	cache         *auxLabelCache
 }
 
 // package-level cache for AuxiliaryLabelService — shared across instances
@@ -112,9 +120,27 @@ func NewAuxiliaryLabelService(db *gorm.DB, embedder AuxiliaryLabelEmbedder) *Aux
 		db = repository.Repo.DB()
 	}
 	if embedder == nil {
-		embedder = DefaultAuxiliaryLabelEmbedder
+		// Production path: single + batch units both hit airouter (true batching).
+		return &AuxiliaryLabelService{
+			db: db, embedder: DefaultAuxiliaryLabelEmbedder, batchEmbedder: DefaultAuxiliaryLabelBatchEmbedder,
+			mergeMatcher: sqlMergeMatcher, cache: packageAuxLabelCache,
+		}
 	}
-	return &AuxiliaryLabelService{db: db, embedder: embedder, mergeMatcher: sqlMergeMatcher, cache: packageAuxLabelCache}
+	// Custom (usually mock) single embedder: wrap it sequentially so tests that
+	// only need deterministic vectors keep working without touching the network.
+	return &AuxiliaryLabelService{
+		db: db, embedder: embedder, batchEmbedder: batchFromSingleEmbedder(embedder),
+		mergeMatcher: sqlMergeMatcher, cache: packageAuxLabelCache,
+	}
+}
+
+// SetBatchEmbedder overrides the batch embedding unit (test seam — the default
+// for custom single embedders loops the single one per input, which is correct
+// but not observable as a batch; inject a batch mock to assert call counts).
+func (s *AuxiliaryLabelService) SetBatchEmbedder(batch AuxiliaryLabelBatchEmbedder) {
+	if batch != nil {
+		s.batchEmbedder = batch
+	}
 }
 
 // vectorDimEnsurers holds callbacks registered by other packages to ensure their
@@ -156,106 +182,307 @@ func (s *AuxiliaryLabelService) AttachAuxiliaryLabels(ctx context.Context, topic
 	if topicTagID == 0 || len(labels) == 0 {
 		return nil
 	}
+	// 两阶段（design D1）：阶段一在事务外完成全部慢 I/O（缓存加载、批量
+	// embedding LLM 调用、L1/L2 匹配决策）；阶段二是毫秒级纯写短事务。历史实现
+	// 在单事务内逐标签调外部 AI API，是 idle in transaction 4-40s 的元凶
+	// （事务持 xmin 阻塞 vacuum）。全有或全无原子性由阶段二保留。
+	plans, err := s.planAuxiliaryLabels(ctx, labels)
+	if err != nil {
+		return err
+	}
+	return s.executeAuxiliaryPlans(ctx, topicTagID, plans)
+}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		txService := NewAuxiliaryLabelService(tx, s.embedder)
-		for _, item := range labels {
-			label, err := txService.ResolveAuxiliaryLabel(ctx, item.Label, item.Description)
-			if err != nil {
-				return err
+// auxPlanKind enumerates the three resolve outcomes of phase one.
+type auxPlanKind int
+
+const (
+	auxPlanInvalid auxPlanKind = iota // defensive: unfilled placeholder
+	auxPlanReuse                      // L1 hit or batch-internal duplicate → link only
+	auxPlanAlias                      // L2 hit → append alias + link
+	auxPlanCreate                     // L3 miss → INSERT + link
+)
+
+// auxLabelPlan is one label's phase-one decision. Only the fields for its
+// kind are populated; refIndex is set for batch-internal duplicates (same
+// slug/normalize-key as an earlier entry — the legacy sequential loop saw
+// those via cache-reload L1 re-matching, the maps replicate it).
+type auxLabelPlan struct {
+	kind        auxPlanKind
+	refIndex    int
+	existing    *models.SemanticLabel // reuse: matched row copy
+	target      *models.SemanticLabel // alias: L2 best match copy
+	alias       string                // alias: incoming label text
+	aliasAdded  bool                  // alias: set at execution for cache step
+	created     *models.SemanticLabel // create: fully populated, ID zero until phase two
+	mergeVector []float64             // create: merge vector for incremental cache absorb
+}
+
+// planAuxiliaryLabels is phase one of the two-phase attach (design D1):
+// validation, L1 in-memory matching, one batch merge-embedding call, L2
+// cosine decisions and one batch storage-embedding call — all OUTSIDE any
+// transaction. N new labels cost exactly 2 batch embedder calls.
+func (s *AuxiliaryLabelService) planAuxiliaryLabels(ctx context.Context, labels []core.AuxiliaryLabel) ([]auxLabelPlan, error) {
+	gateStart := time.Now()
+	plans := make([]auxLabelPlan, len(labels))
+
+	active, err := s.loadActiveAuxiliaryLabels(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	type missEntry struct {
+		label, description, slug, normKey string
+		planIdx                           int
+	}
+	var misses []missEntry
+	seenSlug := map[string]int{}
+	seenNorm := map[string]int{}
+
+	for i := range labels {
+		item := labels[i]
+		label := strings.TrimSpace(item.Label)
+		if label == "" {
+			return nil, fmt.Errorf("auxiliary label must not be empty")
+		}
+		if _, generic := core.GenericAuxiliaryLabels[label]; generic {
+			return nil, fmt.Errorf("auxiliary label %q is too generic", label)
+		}
+		slug := core.Slugify(label)
+		if slug == "" {
+			return nil, fmt.Errorf("auxiliary label slug is empty")
+		}
+		normKey := textutil.NormalizeLabelKey(label)
+
+		// Batch-internal dedupe (slug then normalize key): identical/equivalent
+		// texts in one attach share the earlier plan's outcome.
+		if idx, dup := seenSlug[slug]; dup {
+			plans[i] = auxLabelPlan{kind: auxPlanReuse, refIndex: idx}
+			continue
+		}
+		if idx, dup := seenNorm[normKey]; dup {
+			plans[i] = auxLabelPlan{kind: auxPlanReuse, refIndex: idx}
+			continue
+		}
+		seenSlug[slug] = i
+		seenNorm[normKey] = i
+
+		// L1: exact match by slug, alias, or whitespace-insensitive normalize key.
+		for j := range active {
+			if active[j].Slug == slug || semanticAliasesContain(active[j].Aliases, label) ||
+				textutil.NormalizeLabelKey(active[j].Label) == normKey {
+				row := active[j] // heap copy — never hand out cache-owned storage
+				plans[i] = auxLabelPlan{kind: auxPlanReuse, existing: &row}
+				break
 			}
-			link := tagmodels.TopicTagSemanticLabel{TopicTagID: topicTagID, SemanticLabelID: label.ID}
+		}
+		if plans[i].kind == auxPlanReuse {
+			continue
+		}
+		misses = append(misses, missEntry{
+			label: label, description: strings.TrimSpace(item.Description),
+			slug: slug, normKey: normKey, planIdx: i,
+		})
+	}
+
+	if len(misses) > 0 {
+		// L2: one batch merge embedding for every L1 miss.
+		inputs := make([]string, len(misses))
+		for i, m := range misses {
+			inputs[i] = m.label
+		}
+		mergePgVectors, mergeVectors, err := s.batchEmbedder(ctx, inputs, AuxiliaryLabelEmbeddingModeMerge)
+		if err != nil {
+			return nil, err
+		}
+		if len(mergePgVectors) != len(misses) || len(mergeVectors) != len(misses) {
+			return nil, fmt.Errorf("batch merge embedder returned %d vectors for %d inputs", len(mergeVectors), len(misses))
+		}
+
+		var l3Misses []int
+		for i, m := range misses {
+			best, err := s.mergeMatcher(ctx, s.db, active, mergePgVectors[i], mergeVectors[i])
+			if err != nil {
+				return nil, err
+			}
+			if best != nil {
+				plans[m.planIdx] = auxLabelPlan{kind: auxPlanAlias, target: best, alias: m.label}
+				continue
+			}
+			l3Misses = append(l3Misses, i)
+		}
+
+		// L3: one batch storage embedding ("label: description") for every L2 miss;
+		// the merge vector from above is reused as the row's merge_embedding.
+		if len(l3Misses) > 0 {
+			storageInputs := make([]string, len(l3Misses))
+			for j, i := range l3Misses {
+				if misses[i].description != "" {
+					storageInputs[j] = misses[i].label + ": " + misses[i].description
+				} else {
+					storageInputs[j] = misses[i].label
+				}
+			}
+			storagePgVectors, _, err := s.batchEmbedder(ctx, storageInputs, AuxiliaryLabelEmbeddingModeStorage)
+			if err != nil {
+				return nil, err
+			}
+			if len(storagePgVectors) != len(l3Misses) {
+				return nil, fmt.Errorf("batch storage embedder returned %d vectors for %d inputs", len(storagePgVectors), len(l3Misses))
+			}
+			for j, i := range l3Misses {
+				m := misses[i]
+				created := &models.SemanticLabel{
+					Label:          m.label,
+					Slug:           UniqueSemanticLabelSlug(s.db.WithContext(ctx), m.slug),
+					LabelType:      "auxiliary",
+					Source:         "llm_extract",
+					Status:         "active",
+					Embedding:      &storagePgVectors[j],
+					MergeEmbedding: &mergePgVectors[i],
+				}
+				if m.description != "" {
+					created.Description = m.description
+				}
+				plans[m.planIdx] = auxLabelPlan{kind: auxPlanCreate, created: created, mergeVector: mergeVectors[i]}
+			}
+		}
+	}
+
+	for i := range plans {
+		if plans[i].kind == auxPlanInvalid {
+			return nil, fmt.Errorf("internal error: auxiliary plan %d left unresolved", i)
+		}
+	}
+	if elapsed := time.Since(gateStart); elapsed > time.Duration(50*len(labels))*time.Millisecond {
+		logging.Warnf("auxiliary label dedup gate slow: %d labels took=%s (>50ms/label), review L1/L2 (embedder/merge) performance", len(labels), elapsed)
+	}
+	return plans, nil
+}
+
+// executeAuxiliaryPlans is phase two (design D1): a short pure-write
+// transaction — alias UPDATE, L3 INSERT, link OnConflict create, ref_count
+// bump. No embedder or cache load runs inside. All-or-nothing atomicity is
+// preserved: any write failure rolls back the whole attach.
+func (s *AuxiliaryLabelService) executeAuxiliaryPlans(ctx context.Context, topicTagID uint, plans []auxLabelPlan) error {
+	resolved := make([]uint, len(plans))
+	// Two plans may L2-match the same target with different aliases; writes
+	// accumulate per target ID so the later UPDATE never clobbers the earlier.
+	aliasFinal := map[uint][]string{}
+	aliasChanged := false
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for i := range plans {
+			p := &plans[i]
+			switch p.kind {
+			case auxPlanReuse:
+				if p.existing != nil {
+					resolved[i] = p.existing.ID
+				} else {
+					resolved[i] = resolved[p.refIndex]
+				}
+			case auxPlanAlias:
+				aliases, ok := aliasFinal[p.target.ID]
+				if !ok {
+					aliases = p.target.Aliases
+				}
+				if !semanticAliasesContain(aliases, p.alias) && !strings.EqualFold(p.target.Label, p.alias) {
+					aliases = append(aliases, p.alias)
+					aliasFinal[p.target.ID] = aliases
+					p.target.Aliases = aliases
+					p.aliasAdded = true
+					aliasChanged = true
+					if err := tx.Model(&models.SemanticLabel{}).
+						Where("id = ?", p.target.ID).
+						Select("aliases").
+						Updates(models.SemanticLabel{Aliases: aliases}).Error; err != nil {
+						return err
+					}
+				} else {
+					aliasFinal[p.target.ID] = aliases
+				}
+				resolved[i] = p.target.ID
+			case auxPlanCreate:
+				if err := tx.Create(p.created).Error; err != nil {
+					return err
+				}
+				resolved[i] = p.created.ID
+			default:
+				return fmt.Errorf("internal error: corrupt auxiliary plan kind %d", p.kind)
+			}
+
+			link := tagmodels.TopicTagSemanticLabel{TopicTagID: topicTagID, SemanticLabelID: resolved[i]}
 			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&link)
 			if res.Error != nil {
 				return res.Error
 			}
 			if res.RowsAffected > 0 {
-				if err := tx.Model(&models.SemanticLabel{}).Where("id = ?", label.ID).UpdateColumn("ref_count", gorm.Expr("ref_count + 1")).Error; err != nil {
+				if err := tx.Model(&models.SemanticLabel{}).Where("id = ?", resolved[i]).UpdateColumn("ref_count", gorm.Expr("ref_count + 1")).Error; err != nil {
 					return err
 				}
 			}
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	// Post-commit cache absorb (design D2): a rolled-back attach must never
+	// poison the cache with rows that do not exist.
+	for i := range plans {
+		if plans[i].kind == auxPlanCreate {
+			s.cache.applyCreate(plans[i].created, plans[i].mergeVector)
+		}
+	}
+	if aliasChanged {
+		s.invalidateOnAliasChange()
+	}
+	return nil
 }
 
 func (s *AuxiliaryLabelService) ResolveAuxiliaryLabel(ctx context.Context, rawLabel, description string) (*models.SemanticLabel, error) {
-	label := strings.TrimSpace(rawLabel)
-	if label == "" {
-		return nil, fmt.Errorf("auxiliary label must not be empty")
-	}
-	if _, generic := core.GenericAuxiliaryLabels[label]; generic {
-		return nil, fmt.Errorf("auxiliary label %q is too generic", label)
-	}
-	slug := core.Slugify(label)
-	if slug == "" {
-		return nil, fmt.Errorf("auxiliary label slug is empty")
-	}
-
-	description = strings.TrimSpace(description)
-
-	labels, err := s.loadActiveAuxiliaryLabels(ctx)
+	plans, err := s.planAuxiliaryLabels(ctx, []core.AuxiliaryLabel{{Label: rawLabel, Description: description}})
 	if err != nil {
 		return nil, err
 	}
-
-	gateStart := time.Now()
-	// L1: exact match by slug, alias, or whitespace-insensitive normalize key.
-	// The normalize key (strip all whitespace + lower) collapses text variants
-	// like "SK 海力士" / "SK海力士" that Slugify misses (Slugify keeps a single
-	// space). Same function as the one-shot dup-merge migration (design D5/D6).
-	normalizeKey := textutil.NormalizeLabelKey(label)
-	for _, existing := range labels {
-		if existing.Slug == slug || semanticAliasesContain(existing.Aliases, label) ||
-			textutil.NormalizeLabelKey(existing.Label) == normalizeKey {
-			return &existing, nil
+	plan := &plans[0]
+	switch plan.kind {
+	case auxPlanReuse:
+		return plan.existing, nil
+	case auxPlanAlias:
+		// 单条路径无批内累积需求，但保持与批量一致的列级更新写法。
+		if _, err := applyAuxAliasWrite(s.db.WithContext(ctx), plan.target, plan.alias); err != nil {
+			return nil, err
 		}
+		s.invalidateOnAliasChange()
+		return plan.target, nil
+	case auxPlanCreate:
+		if err := s.db.WithContext(ctx).Create(plan.created).Error; err != nil {
+			return nil, err
+		}
+		s.cache.applyCreate(plan.created, plan.mergeVector)
+		return plan.created, nil
+	default:
+		return nil, fmt.Errorf("internal error: corrupt auxiliary plan kind %d", plan.kind)
 	}
+}
 
-	// L2: merge embedding comparison (Go-side cosine for 2560-dim vectors — pgvector HNSW cannot index >2000 dim)
-	mergePgVector, mergeVector, err := s.embedder(ctx, label, AuxiliaryLabelEmbeddingModeMerge)
-	if err != nil {
-		return nil, err
+// applyAuxAliasWrite appends alias (when absent) via the column-level update —
+// only the aliases column is written; the label row may come from the
+// vector-less cache projection where a full Save would NULL the vectors
+// (fix-alias-save-vector-wipe). Mirrors the appended alias into target.
+func applyAuxAliasWrite(db *gorm.DB, target *models.SemanticLabel, alias string) (bool, error) {
+	if semanticAliasesContain(target.Aliases, alias) || strings.EqualFold(target.Label, alias) {
+		return false, nil
 	}
-
-	bestMatch, err := s.mergeMatcher(ctx, s.db, labels, mergePgVector, mergeVector)
-	if err != nil {
-		return nil, err
+	target.Aliases = append(target.Aliases, alias)
+	if err := db.Model(&models.SemanticLabel{}).
+		Where("id = ?", target.ID).
+		Select("aliases").
+		Updates(models.SemanticLabel{Aliases: target.Aliases}).Error; err != nil {
+		return false, err
 	}
-	if elapsed := time.Since(gateStart); elapsed > 50*time.Millisecond {
-		logging.Warnf("auxiliary label dedup gate slow: label=%q took=%s (>50ms), review L1/L2 (embedder/merge) performance", label, elapsed)
-	}
-	if bestMatch != nil {
-		return s.addAlias(ctx, bestMatch, label)
-	}
-
-	// L3: create new — storage embedding from label+description, reuse L2 merge embedding
-	storageInput := label
-	if description != "" {
-		storageInput = label + ": " + description
-	}
-	storagePgVector, _, err := s.embedder(ctx, storageInput, AuxiliaryLabelEmbeddingModeStorage)
-	if err != nil {
-		return nil, err
-	}
-
-	created := models.SemanticLabel{
-		Label:          label,
-		Slug:           UniqueSemanticLabelSlug(s.db.WithContext(ctx), slug),
-		LabelType:      "auxiliary",
-		Source:         "llm_extract",
-		Status:         "active",
-		Embedding:      &storagePgVector,
-		MergeEmbedding: &mergePgVector,
-	}
-	if description != "" {
-		created.Description = description
-	}
-	if err := s.db.WithContext(ctx).Create(&created).Error; err != nil {
-		return nil, err
-	}
-	s.invalidateOnCreate()
-	return &created, nil
+	return true, nil
 }
 
 func (s *AuxiliaryLabelService) DisableAuxiliaryLabel(ctx context.Context, labelID uint) error {
@@ -270,7 +497,8 @@ func (s *AuxiliaryLabelService) DisableAuxiliaryLabel(ctx context.Context, label
 	if err := s.db.WithContext(ctx).Model(&label).Updates(map[string]any{"status": "disabled", "embedding": nil, "merge_embedding": nil}).Error; err != nil {
 		return err
 	}
-	s.invalidateOnDisable()
+	// 增量失效（design D2）：只删本行条目，不再全清触发 216MB 重拉。
+	s.cache.applyDisable(labelID)
 	return nil
 }
 
@@ -282,12 +510,12 @@ func (s *AuxiliaryLabelService) MergeAuxiliaryLabelAlias(ctx context.Context, so
 		return fmt.Errorf("source and target auxiliary label ids must be different")
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var target models.SemanticLabel
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var source models.SemanticLabel
 		if err := tx.Where("id = ? AND label_type = ?", sourceID, "auxiliary").First(&source).Error; err != nil {
 			return err
 		}
-		var target models.SemanticLabel
 		if err := tx.Where("id = ? AND label_type = ?", targetID, "auxiliary").First(&target).Error; err != nil {
 			return err
 		}
@@ -335,6 +563,12 @@ func (s *AuxiliaryLabelService) MergeAuxiliaryLabelAlias(ctx context.Context, so
 		}
 		return tx.Model(&models.SemanticLabel{}).Where("id = ?", sourceID).Updates(map[string]any{"ref_count": int(sourceRefCount), "status": "disabled", "embedding": nil, "merge_embedding": nil}).Error
 	})
+	if err != nil {
+		return err
+	}
+	// 提交后增量失效（design D2）：source 按行删除，target 以最终 aliases 刷新。
+	s.cache.applyMerge(sourceID, &target)
+	return nil
 }
 
 func (s *AuxiliaryLabelService) RemoveBoardComposition(ctx context.Context, boardID uint, auxiliaryLabelID uint) error {
@@ -651,22 +885,86 @@ func (s *AuxiliaryLabelService) loadActiveAuxiliaryLabels(ctx context.Context) (
 	return labels, nil
 }
 
-func (s *AuxiliaryLabelService) invalidateOnCreate() {
-	s.cache.mu.Lock()
-	defer s.cache.mu.Unlock()
-	s.cache.activeLabels = nil
-	s.cache.activeLabelsAt = time.Time{}
-	s.cache.mergeEmbeddings = nil
-	s.cache.mergeEmbeddingsAt = time.Time{}
+// lightweightLabelCopy projects a label row onto the column set
+// loadActiveAuxiliaryLabels selects — vectors are deliberately excluded
+// (the 17.5k-row memory budget), so incremental cache appends must nil them.
+func lightweightLabelCopy(row *models.SemanticLabel) models.SemanticLabel {
+	copy := *row
+	copy.Embedding = nil
+	copy.MergeEmbedding = nil
+	return copy
 }
 
-func (s *AuxiliaryLabelService) invalidateOnDisable() {
-	s.cache.mu.Lock()
-	defer s.cache.mu.Unlock()
-	s.cache.activeLabels = nil
-	s.cache.activeLabelsAt = time.Time{}
-	s.cache.mergeEmbeddings = nil
-	s.cache.mergeEmbeddingsAt = time.Time{}
+// applyCreate incrementally absorbs one L3-created label (design D2): a
+// lightweight row copy is appended to the active list. The merge-embedding
+// map is deliberately NOT touched: readers (sqlMergeMatcher) index it
+// without holding the lock — an in-place map write races them into
+// `fatal error: concurrent map read and map write` (unrecoverable, kills
+// the whole process; observed 2026-10-07). The new vector becomes visible
+// to L2 matching on the next full reload (10min TTL). Timestamps are NOT
+// reset — an incremental upsert is not a cache expiry, so the 216MB full
+// pull never fires mid-batch. Cold (nil) cache halves stay nil; the next
+// full load picks the row up.
+func (c *auxLabelCache) applyCreate(created *models.SemanticLabel, mergeVector []float64) {
+	_ = mergeVector
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.activeLabels != nil {
+		// append beyond any reader's snapshot length — safe against concurrent
+		// iterators, which never touch indices ≥ their snapshot len.
+		c.activeLabels = append(c.activeLabels, lightweightLabelCopy(created))
+	}
+}
+
+// applyDisable incrementally removes disabled labels (design D2): the
+// active list is filtered. The merge-embedding map is deliberately NOT
+// touched (see applyCreate: in-place map mutation races lock-free readers
+// into a fatal). Stale vectors linger until the next full reload (10min
+// TTL). Fresh slices only — in-place filtering would race with readers
+// holding the old slice header.
+func (c *auxLabelCache) applyDisable(ids ...uint) {
+	if len(ids) == 0 {
+		return
+	}
+	drop := make(map[uint]struct{}, len(ids))
+	for _, id := range ids {
+		drop[id] = struct{}{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.activeLabels != nil {
+		kept := make([]models.SemanticLabel, 0, len(c.activeLabels))
+		for _, l := range c.activeLabels {
+			if _, gone := drop[l.ID]; !gone {
+				kept = append(kept, l)
+			}
+		}
+		c.activeLabels = kept
+	}
+}
+
+// applyMerge absorbs one MergeAuxiliaryLabelAlias outcome (design D2): the
+// disabled source is dropped from the active list and the target's cached
+// copy is refreshed with its final aliases — no full invalidation. The
+// merge-embedding map is deliberately NOT touched (see applyCreate).
+func (c *auxLabelCache) applyMerge(sourceID uint, target *models.SemanticLabel) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.activeLabels == nil {
+		return
+	}
+	refreshed := lightweightLabelCopy(target)
+	kept := make([]models.SemanticLabel, 0, len(c.activeLabels))
+	for _, l := range c.activeLabels {
+		switch l.ID {
+		case sourceID: // disabled — drop
+		case target.ID:
+			kept = append(kept, refreshed)
+		default:
+			kept = append(kept, l)
+		}
+	}
+	c.activeLabels = kept
 }
 
 func (s *AuxiliaryLabelService) invalidateOnAliasChange() {
@@ -767,25 +1065,10 @@ func packageAuxLabelCacheGetOrLoad(ctx context.Context, db *gorm.DB) (map[uint][
 	return result, nil
 }
 
-func (s *AuxiliaryLabelService) addAlias(ctx context.Context, label *models.SemanticLabel, alias string) (*models.SemanticLabel, error) {
-	if !semanticAliasesContain(label.Aliases, alias) && !strings.EqualFold(label.Label, alias) {
-		label.Aliases = append(label.Aliases, alias)
-		// 列级更新只写 aliases 列：label 来自缓存加载（Select 刻意排除向量列，
-		// 17.5k 标签的内存预算），历史实现的全量 Save 会把 nil 向量字段写成 NULL
-		// ——标签向量静默清零的根源（fix-alias-save-vector-wipe）。用
-		// Select("aliases")+struct 而非 map 形式：GORM 只有 struct 路径才对
-		// jsonb serializer 字段（Aliases）做序列化，且 updated_at 照常自动维护。
-		if err := s.db.WithContext(ctx).
-			Model(&models.SemanticLabel{}).
-			Where("id = ?", label.ID).
-			Select("aliases").
-			Updates(models.SemanticLabel{Aliases: label.Aliases}).Error; err != nil {
-			return nil, err
-		}
-		s.invalidateOnAliasChange()
-	}
-	return label, nil
-}
+// applyAuxAliasWrite（列级只写 aliases 列）取代了历史 addAlias：label 来自缓存加载
+// （Select 刻意排除向量列，17.5k 标签的内存预算），历史实现的全量 Save 会把 nil
+// 向量字段写成 NULL——标签向量静默清零的根源（fix-alias-save-vector-wipe）。
+// struct 路径才会对 jsonb serializer 字段（Aliases）做序列化，updated_at 照常自动维护。
 
 func semanticAliasesContain(aliases []string, label string) bool {
 	for _, alias := range aliases {
@@ -818,6 +1101,81 @@ func DefaultAuxiliaryLabelEmbedder(ctx context.Context, input string, mode Auxil
 	}
 	vector := result.Embeddings[0]
 	return core.FloatsToPgVector(vector), vector, nil
+}
+
+// auxBatchEmbedChunk caps per-request inputs of the default batch embedder
+// (provider payload safety); one attach batch rarely exceeds this.
+const auxBatchEmbedChunk = 32
+
+// DefaultAuxiliaryLabelBatchEmbedder implements AuxiliaryLabelBatchEmbedder
+// against airouter.Embed — Input []string is native there, so one call per mode
+// per chunk replaces N per-label round trips (design D1).
+func DefaultAuxiliaryLabelBatchEmbedder(ctx context.Context, inputs []string, mode AuxiliaryLabelEmbeddingMode) ([]string, [][]float64, error) {
+	opName := "auxiliary_label_storage_embedding"
+	if mode == AuxiliaryLabelEmbeddingModeMerge {
+		opName = "auxiliary_label_merge_embedding"
+	}
+	router := airouter.NewRouter()
+	pgVectors := make([]string, 0, len(inputs))
+	vectors := make([][]float64, 0, len(inputs))
+	for _, chunk := range chunkStrings(inputs, auxBatchEmbedChunk) {
+		result, err := router.Embed(ctx, airouter.EmbeddingRequest{
+			Input:     chunk,
+			Operation: "tagmanagement.auxlabel_embedding",
+			Metadata: map[string]any{
+				"operation": opName,
+				"batch":     len(chunk),
+			},
+		}, airouter.CapabilityEmbedding)
+		if err != nil {
+			return nil, nil, err
+		}
+		if result == nil || len(result.Embeddings) != len(chunk) {
+			got := 0
+			if result != nil {
+				got = len(result.Embeddings)
+			}
+			return nil, nil, fmt.Errorf("batch embedding returned %d vectors for %d inputs", got, len(chunk))
+		}
+		for _, vector := range result.Embeddings {
+			pgVectors = append(pgVectors, core.FloatsToPgVector(vector))
+			vectors = append(vectors, vector)
+		}
+	}
+	return pgVectors, vectors, nil
+}
+
+// batchFromSingleEmbedder adapts a single-input embedder (usually a test
+// mock) into the batch signature by looping — correct, just not batched.
+func batchFromSingleEmbedder(single AuxiliaryLabelEmbedder) AuxiliaryLabelBatchEmbedder {
+	return func(ctx context.Context, inputs []string, mode AuxiliaryLabelEmbeddingMode) ([]string, [][]float64, error) {
+		pgVectors := make([]string, len(inputs))
+		vectors := make([][]float64, len(inputs))
+		for i, input := range inputs {
+			pg, vec, err := single(ctx, input, mode)
+			if err != nil {
+				return nil, nil, err
+			}
+			pgVectors[i], vectors[i] = pg, vec
+		}
+		return pgVectors, vectors, nil
+	}
+}
+
+// chunkStrings splits s into consecutive chunks of at most size elements.
+func chunkStrings(s []string, size int) [][]string {
+	if size <= 0 || len(s) <= size {
+		return [][]string{s}
+	}
+	var out [][]string
+	for start := 0; start < len(s); start += size {
+		end := start + size
+		if end > len(s) {
+			end = len(s)
+		}
+		out = append(out, s[start:end])
+	}
+	return out
 }
 
 func ParsePgVector(value string) ([]float64, error) {
