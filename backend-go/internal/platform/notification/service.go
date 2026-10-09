@@ -13,6 +13,7 @@ package notification
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"gorm.io/gorm"
@@ -44,6 +45,30 @@ func DailyReportFailedSummary(date time.Time, successCount, failedCount int) {
 	title := fmt.Sprintf("日报生成有失败 · %s", date.Format("2006-01-02"))
 	summary := fmt.Sprintf("共 %d 个版面，%d 成功 %d 失败。", successCount+failedCount, successCount, failedCount)
 	createAndBroadcast("error", title, summary, "daily-report", date.Format("2006-01-02"))
+}
+
+// BoardHealthAlert creates a board-health warning notification for a board
+// whose checkup score fell below the alert threshold and whose LLM notify
+// verdict was positive (add-board-health-checkup design D6). Reuses the
+// "error" tier — the notification center renders a binary success/error
+// style, and a health alert is user-attention-worthy, not celebratory.
+// Fail-open like every mailbox writer: errors are logged, not returned.
+// Callers own the cooldown: only boardhealth.notifyIfAlert may call this,
+// after its cooldown query — do NOT call from anywhere else.
+func BoardHealthAlert(boardID uint, boardLabel string, score *float64, llmComment string) {
+	if score == nil {
+		return // defensive: degraded rounds never alert
+	}
+	title := fmt.Sprintf("版块体检预警 · %s", boardLabel)
+	comment := llmComment
+	if comment == "" {
+		comment = "体检评分低于告警线，建议检查构成标签质量。"
+	}
+	if len(comment) > 200 {
+		comment = comment[:200] + "…"
+	}
+	summary := fmt.Sprintf("体检评分 %.0f。%s", *score, comment)
+	createAndBroadcast("error", title, summary, "board", strconv.FormatUint(uint64(boardID), 10))
 }
 
 // createAndBroadcast persists the row, evicts over the cap, then broadcasts.

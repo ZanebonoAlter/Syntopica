@@ -46,7 +46,8 @@ vi.mock('./BoardThreadBrowser.vue', () => {
   return { __esModule: true, default: { name: 'BoardThreadBrowser', template: '<div data-testid="lazy-panel-topic-overview" />' } }
 })
 vi.mock('./AddSemanticBoardDialog.vue', () => ({ default: { template: '<span />' } }))
-vi.mock('./BoardCompositionPanel.vue', () => ({ default: { name: 'BoardCompositionPanel', template: '<div data-testid="eager-panel-composition" />' } }))
+vi.mock('./BoardHealthPanel.vue', () => ({ default: { name: 'BoardHealthPanel', template: '<div data-testid="eager-panel-composition" />' } }))
+vi.mock('./lane-dynamics/LaneDynamicsPanel.vue', () => ({ default: { name: 'LaneDynamicsPanel', template: '<div data-testid="eager-panel-lane-dynamics" />' } }))
 vi.mock('./AuxiliaryLabelPool.vue', () => ({ default: { template: '<span />' } }))
 vi.mock('./UpgradeSuggestionPanel.vue', () => ({ default: { template: '<span />' } }))
 vi.mock('./BackfillProgress.vue', () => ({ default: { template: '<span />' } }))
@@ -145,5 +146,52 @@ describe('TagsPage — tab 面板懒加载（fix-spa-nav-loading-ux D3）', () =
     expect(wrapper.find('[data-testid="lazy-panel-topic-overview"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="lazy-panel-articles"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="lazy-panel-detective-wall"]').exists()).toBe(false)
+  })
+})
+
+describe('TagsPage — 版块体检治理面板装配（add-board-health-checkup 形态 A）', () => {
+  function mountTagsPage() {
+    return mount(TagsPage, {
+      global: { stubs: { WatchManagePanel: WatchManagePanelStub } },
+    })
+  }
+
+  it('板块内容 tab：体检治理面板 + 泳道动态直接渲染（BoardCompositionPanel 退役）', async () => {
+    apiMocks.listWatches.mockResolvedValue({ success: true, data: [] })
+    const wrapper = mountTagsPage()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="eager-panel-composition"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="eager-panel-lane-dynamics"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="board-source-panel"]').exists()).toBe(true)
+  })
+
+  it('低分警告条：healthLoaded 上报低分时渲染、健康分不渲染、点击滚动定位', async () => {
+    apiMocks.listWatches.mockResolvedValue({ success: true, data: [] })
+    const wrapper = mountTagsPage()
+    await flushPromises()
+
+    const healthPanel = wrapper.findComponent({ name: 'BoardHealthPanel' })
+    expect(healthPanel.exists()).toBe(true)
+
+    // 健康分（78）：不渲染警告条
+    healthPanel.vm.$emit('healthLoaded', { hasSnapshot: true, score: 78 })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="board-health-alert-bar"]').exists()).toBe(false)
+
+    // 无快照：不渲染
+    healthPanel.vm.$emit('healthLoaded', { hasSnapshot: false, score: null })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="board-health-alert-bar"]').exists()).toBe(false)
+
+    // 低分（52）：渲染 + scrollIntoView 定位
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(healthPanel.element, 'scrollIntoView', { value: scrollIntoView, configurable: true })
+    healthPanel.vm.$emit('healthLoaded', { hasSnapshot: true, score: 52 })
+    await flushPromises()
+    const bar = wrapper.find('[data-testid="board-health-alert-bar"]')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('体检发现质量预警')
+    await bar.trigger('click')
+    expect(scrollIntoView).toHaveBeenCalled()
   })
 })

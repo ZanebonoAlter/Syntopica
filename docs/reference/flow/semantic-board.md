@@ -194,15 +194,15 @@ SemanticBoard 管理面板
 | `POST /api/auxiliary-labels/:id/disable` | 禁用单个 aux |
 | `GET/POST /api/semantic-boards/:id/composition`、`DELETE /:id/composition/:aux` | 版块 composition 增删查 |
 
-前端治理 UI（`features/tags/components/`）：`AuxiliaryLabelPool.vue`（辅助标签池）、`AuxiliaryLabelPicker.vue`（选择器）、`BoardCompositionPanel.vue`（版块 composition 管理）、`composables/useAuxiliaryLabels.ts`。
+前端治理 UI（`features/tags/components/`）：`AuxiliaryLabelPool.vue`（辅助标签池）、`AuxiliaryLabelPicker.vue`（选择器，双模式：版块推荐/手动指定）、`BoardHealthPanel.vue`（体检治理主面板，含版块 composition 管理）、`composables/useAuxiliaryLabels.ts`。
 
 ### 泳道动态（board-lane-dynamics，取代已退役的话题态势版图）
 
-版块内容 tab 首屏（`BoardCompositionPanel` 构成标签管理区下方）的泳道动态视图，回答「每条关注/追踪的泳道近 14 天发生了什么」——每条泳道一张卡：泳道名 + watch 角标（追踪中）+ 滚动 14 天态势句（一句话，随每日日报异步结算）+ 发展时间线（日期→事件 thread 标题，后端显式携带对应关系，前端不推断）+ 单日超限折叠；点卡片跳「话题总览」tab 聚焦该话题（focus 视图）。底部候选栏只读列出达门槛 candidate（名字+最近动向），转正走话题管理入口。空态两分支：无日报→引导生成（WS 进度，完成后自动刷新）；有日报无活跃泳道→文案提示。接口契约见 `docs/reference/api/daily-reports.md` §`GET /semantic-boards/:id/lane-dynamics`。
+版块内容 tab 首屏（体检治理面板 `BoardHealthPanel` 下方、由 `TagsPage` 直接渲染）的泳道动态视图，回答「每条关注/追踪的泳道近 14 天发生了什么」——每条泳道一张卡：泳道名 + watch 角标（追踪中）+ 滚动 14 天态势句（一句话，随每日日报异步结算）+ 发展时间线（日期→事件 thread 标题，后端显式携带对应关系，前端不推断）+ 单日超限折叠；点卡片跳「话题总览」tab 聚焦该话题（focus 视图）。底部候选栏只读列出达门槛 candidate（名字+最近动向），转正走话题管理入口。空态两分支：无日报→引导生成（WS 进度，完成后自动刷新）；有日报无活跃泳道→文案提示。接口契约见 `docs/reference/api/daily-reports.md` §`GET /semantic-boards/:id/lane-dynamics`。
 
 - **展示范围**：active ∪ watch 关联泳道（`board_topic_watches.persistent_topic_id`），按窗口内 section 数降序；沉寂（近窗口无 section）不展示；candidate 只进候选栏。
 - **态势结算**（日结算异步，见 `flow/daily-report.md` §泳道态势结算）：每日日报生成后为活跃泳道滚动重算 ≤100 字态势句（输入=窗口内「日期+节标题+前3线索」，LLM），存 `topic_lane_snapshots`（每泳道一行覆盖更新）；失败不阻塞日报，下个日报日自愈；快照缺失时卡片「待结算」降级、时间线照常。
-- **代码入口**：后端 `backend-go/internal/topicgraph/repository/lane_snapshot_repository.go`（聚合 `GetBoardLaneDynamics` + 结算侧查询）、`service/lane_snapshot.go`（结算管线，operation=`daily_report.lane_snapshot`）、`handler/lane_dynamics_handler.go`；前端 `front/app/features/tags/components/lane-dynamics/`（`LaneDynamicsPanel.vue` / `LaneDynamicsCard.vue`，挂载于 `BoardCompositionPanel.vue`）；API client `front/app/api/laneDynamics.ts`。
+- **代码入口**：后端 `backend-go/internal/topicgraph/repository/lane_snapshot_repository.go`（聚合 `GetBoardLaneDynamics` + 结算侧查询）、`service/lane_snapshot.go`（结算管线，operation=`daily_report.lane_snapshot`）、`handler/lane_dynamics_handler.go`；前端 `front/app/features/tags/components/lane-dynamics/`（`LaneDynamicsPanel.vue` / `LaneDynamicsCard.vue`，由 `TagsPage.vue` 直接渲染）；API client `front/app/api/laneDynamics.ts`。
 
 > 退役说明：原话题态势版图（分区卡片墙/活力顶栏/节奏气泡图/mini-lifeline/stance 五态派生）随 overview-lane-dynamics 整体移除（2026-09-10）；stance 派生与 ECharts 图表不再存在，历史设计见归档 change `2026-08-01-board-topic-landscape`。
 
@@ -214,12 +214,36 @@ SemanticBoard 管理面板
 
 ```text
 TagsPage「版块内容」tab（默认）
-  → BoardCompositionPanel（既有构成标签管理）之后
+  → BoardHealthPanel（体检治理主面板，吸收构成管理）之后
   → BoardSourcePanel.vue（不新增 tab；窗口 7/30/90 + 汇总行 + 来源表，只读无写动作）
   → 选中版块变化时与 loadComposition 并行重取（请求竞态沿用既有面板惯例）
 ```
 
 口径与源视角（`GET /api/feeds/board-hit-stats`，见 [reading.md](reading.md) §源视角观测）共用同一份聚合代码 `internal/tagmanagement/service/sourcestats/`；契约见 [semantic-boards.md](../api/semantic-boards.md)。处置入口不在面板内（仍在设置 → 订阅源）。
+
+### 版块体检（add-board-health-checkup，每日纯读统计）
+
+> 🗺 全链路图：[`diagrams/board-health-checkup.html`](diagrams/board-health-checkup.html)（双主题，含 2026-10-03 评分 prompt 方法学锚：insufficient ≠ 失效，<60 只看真实病征）
+
+版块构成质量的自动反馈环：挂日报生成成功路径之后同步执行（`DailyReportJob` 成功裁决尾步，手动 TriggerNowWithDate 同触发；体检 error/panic 仅日志不污染日报 job），对每个活跃版块算两级统计 + 事实画像 diff，LLM 单次合并产出评分/评语/打扰裁决，落 `board_health_snapshots` 快照（趋势可查，历史不覆盖），异常时经通知中心发 LinkType=board 通知（冷却默认 3 天）。**纯读硬边界：不写匹配表、不落任何扩充建议**（扩充建议仍必须用户手动触发，红线 10 不动）。
+
+- **口径（唯一实现 `internal/tagmanagement/service/boardhealth/`，对标 sourcestats 纪律；2026-10-08 实测修正——初版「单 aux 纯净样本」口径因样本占比仅 2%-11% 且永不增长而废弃，实测数据见归档 change design D4）**：版块级（口径①全部匹配行）= matched_tags / reason_dist / ghost_matches（direction_mismatch 计数）/ vector_missing；标签级（口径②贴合度分布）= 每个构成标签 embedding × 该版块全部挂载 tags 的 identity embedding 现场重算 cosine（MUST NOT 按 tag 的 aux 挂载数量筛样本，不做功劳归因），分布 mean/median/p25/p75/low_sim_ratio（低分线=板块内各构成标签 cosine_mean 的 P25 相对线，自适应板块主题纯度），任一侧向量缺失跳过分布并计数（不按 0 计入），构成标签自身缺 embedding → 该标签 insufficient；samples < `board_health_min_sample_size`（默认 5）标 insufficient 分布置 null。
+- **事实画像 diff（uncaptured_candidates）**：已挂到版块的 tags 所携带、但不在版块构成中的高频 aux（排除已挂载与 disabled），按 member_tags 降序存 top 50；只存候选不落建议。
+- **member-derived 扩充主路（回退语义）**：手动扩充生成时候选来自最新快照的未收编清单前 `board_health_member_candidates_top`（默认 20，排除已挂载保险滤 + days>0 近期文章过滤）；无快照/清单空/滤后空 → 回退既有相似+共现双路（行为不变）。
+- **LLM 降级**：坏 JSON/超时 → 统计照常落快照、score/comment 置 NULL，本轮跳过通知不重试。
+- **配置（ai_settings，均可缺省）**：`board_health_min_sample_size`(5) / `board_health_alert_threshold`(60) / `board_health_notify_cooldown_days`(3) / `board_health_member_candidates_top`(20)。
+- **只读端点**：`GET /api/semantic-boards/:id/health-checkup?trend=N`（N 白名单 1-90 默认 7，非法 400）：latest + 趋势升序；版块不存在 404，disabled/非 board 返回空态（非 404，同红线 17 端点纪律）。
+- **前端**：板块内容 tab 治理主面板 `BoardHealthPanel.vue`（形态 A：吸收构成管理，BoardCompositionPanel 退役）——评分徽章（好≥70/中 60-69/差<60）+ 评语 + 指标 chips + 质量表（行内移除，无快照「待体检」降级）+ 组合标签区 + 趋势 + 未收编候选（收编快捷动作 = 既有 addComposition 手动挂载，不走 LLM 建议管道）；低分时 tab 顶部警告条（点击滚到面板）。
+
+```text
+DailyReportJob 成功裁决（failedCount==0）
+  → runPostReportBoardHealthCheckup（10min 独立预算，panic 隔离）
+  → boardhealth.RunCheckup：遍历 active 版块 → 统计/画像 diff → LLM 评分 → 快照落库 → 通知裁决（冷却）
+  → 单版块失败仅记日志继续兄弟版块
+
+手动扩充生成 expand×aux
+  → recallExpandAuxCandidates → 最新快照 uncaptured_candidates 非空？主路 top N（保险滤 + days 过滤） ：回退相似+共现双路
+```
 
 ### 标签级 watched tags（区别于话题级 topic-watch）
 
@@ -305,6 +329,9 @@ Event 类标签不随入库立即向量化，而是等描述与关键词生成�
 17. **源/版块命中统计口径唯一实现于 sourcestats 包且两端点只读，消费方不得复制公式；版块不存在/非 board → 404，disabled 版块不是 404（聚合为 0）**（add-source-board-hit-rate）：`GET /api/semantic-boards/:id/source-breakdown`（与源视角 `GET /api/feeds/board-hit-stats`）的聚合口径唯一实现 `internal/tagmanagement/service/sourcestats/`——按文章去重、含已归档（不过滤 `archived`）、限窗口白名单 {7,30,90}（非法 400 不回退）、命中 = 标签经 `topic_tag_board_labels` 挂到 `label_type='board' AND status='active'`、未打标两分（pending/leased vs 其余）；端点只读（不写库、不触发打标/匹配）；不变量 `Σ sources[].articles == total_articles`。要改口径先改 spec（`openspec/specs/source-board-hit-rate/spec.md`）。
 18. **mono 打标输入为预算 4000 runes 的分段采样（文集型按标题均匀采样/叙事型头中尾采样，计量前先剥 markdown 图片与链接噪声），超限不再掐头；采样逻辑唯一实现于 sampling_splitter.go，aggregate 路径的 splitSections 不受影响**（long-form-sampled-tagging）：`buildArticleSummary`（`service/core/article_tagger.go`）按 AIContentSummary → FirecrawlContent → Content → Description 选出打标正文后调 `sampleTaggingSummary`（`sampling_splitter.go`）——正文超 `maxSummaryRunesForTagging`（4000）预算时按标题切段：≤3 段视为叙事型走头中尾采样，>3 段为文集型按段均匀分配预算（句界回退窗口、`……` 省略标记拼接）；噪声剥离先于计量（图片语法整体删、行内链接只留 text，不占采样预算），无标题整篇聚合为单段即叙事型；aggregate 路径的栏目切片 `splitSections`（带 dropIntro/mergeShort/splitLong 后处理）职责不同、互不依赖、不受影响。
 19. **打标提取的空结果是合法结论：LLM 空 keyword 数组不触发规则词回填、成功调用零候选不降级 heuristic（仅提取调用 err != nil 时降级），零候选文章保持无标签等待重打；泛词黑名单（新闻/论坛/要闻/快讯/文章/内容/技术/发展，Slugify 后完整匹配）在 persistArticleTags 入口与跨 feed reuse siblingLinks 查询两处拦截，任何来源的泛词标签不得入库/进辅助标签池**（fix-tagging-pollution）：`extractor_enhanced.go` ExtractTags 对空数组只记观察信息（不再调 heuristicKeywordCandidates 回填，该函数已删除——旧回填把分类名「新闻」与凤凰网 HTML `decoding="async"` 属性子串误命的「Coding」以 llm 来源写库）；零候选原样返回（Tags=[]、Source=llm）；`article_tagger.go` 兜底条件收窄为 `err != nil`，`filterGenericLabels` 为 mono/aggregate/heuristic 三路径汇聚拦截点，reuse 路径（不经 persist 入口）在 siblingLinks 查询 join topic_tags 排除黑名单 slug（全黑名单 sibling → reuse 返回 false 落回 AI 提取）。
+20. **体检轮次纯读不落任何扩充建议（pending 行零新增）、不写匹配结果表，自动化与扩充手动边界不变**（add-board-health-checkup）：体检挂日报成功尾步自动执行（单版块失败仅记日志继续兄弟版块，error/panic 不污染日报 job），但只写 `board_health_snapshots` + 少量冷却内异常通知；体检产出的未收编候选只是快照附属产物，扩充建议仍必须用户手动触发（红线 10 不动），体检轮次 MUST NOT 造成 `board_upgrade_suggestions` 新增 pending 行或 `topic_tag_board_labels` 任何写入。
+21. **member-derived 扩充主路回退语义：最新快照未收编候选非空时候选 ONLY 来自快照清单 top N（排除已挂载保险滤 + days>0 近期文章过滤），无快照/清单空/滤后空必须回退既有相似+共现双路且行为不变**（add-board-health-checkup）：主路命中时不得触发全库相似/共现扫描；组合路（expand×composite）不受影响；suggestion 管道（hash 幂等/dismiss 冷却/LLM 裁决/逐条勾选）零改动，仅候选来源变化。
+22. **体检统计口径唯一实现于 boardhealth 包（对标 sourcestats 纪律），标签级=构成标签 embedding × 全部挂载 tags identity embedding 的贴合度分布（现场 cosine 重算，不按 aux 挂载数量筛样本），样本不足标 insufficient 不硬凑，端点只读且 disabled 版块不是 404（空态）**（add-board-health-checkup）：`internal/tagmanagement/service/boardhealth/` 是两级指标/画像 diff/低分线（板块内 cosine_mean P25 相对线）/分布分位唯一实现，`GET /api/semantic-boards/:id/health-checkup?trend=N`（N 白名单 1-90 默认 7，非法 400）只读消费同一实现；标签级归因 MUST NOT 按 tag 的 aux 挂载数量筛选样本（不做功劳归因），规则分数 MUST NOT 作相似度统计输入，任一侧向量缺失跳过分布计入 vector_missing（不按 0 计入），LLM 坏 JSON/超时降级 score=NULL 不重试不丢统计。
 
 ## 代码入口
 
@@ -315,9 +342,10 @@ Event 类标签不随入库立即向量化，而是等描述与关键词生成�
 - **后端标签关注 / 合并预览 / 队列 handler**：同目录下 `watched_tags_handler.go`（标签级 watched tags）、`tag_merge_preview_handler.go`（scan/evaluate SSE + dismiss/merge-with-name）、`tag_queue_handler.go`、`embedding_queue_handler.go`、`merge_reembedding_queue_handler.go`（见下「队列与回填运维」）。
 - **后端 watched/merge service**：`service/watched/watched_tags_service.go`、`service/merge/tag_merge_suggest.go`、`service/core/{merge_suggestions,hard_merge,merge_reembedding_queue,person_metadata_backfill}.go`。
 - **后端源/版块命中统计（sourcestats）**：`backend-go/internal/tagmanagement/service/sourcestats/`（口径唯一实现）、`handler/board_source_breakdown_handler.go`（版块视角端点）；源视角端点在 reader 域 `internal/reader/handler/feed_board_stats_handler.go`。
+- **后端版块体检（boardhealth）**：`backend-go/internal/tagmanagement/service/boardhealth/`（统计口径/画像 diff/LLM 评分降级/通知冷却/RunCheckup 编排唯一实现；`metrics.go` 两级指标、`diff.go` 未收编候选聚合、`llm.go` 合并评分 prompt、`notify.go` 打扰裁决、`run.go` 轮次编排+只读视图）、`handler/board_health_handler.go`（只读端点）；日报尾步挂载 `internal/admin/scheduler/job_daily_report.go`（runPostReportBoardHealthCheckup seam，经 tagmanagement root 门面 re-export）；扩充召回主路 `service/board/semantic_board_expand.go`（recallMemberDerivedCandidates）；快照模型/迁移 `tagmanagement/models/board_health.go` + `database/postgres_migrations.go` 20261006_0001（FK CASCADE）。
 - **后端版块调度**：`backend-go/internal/admin/scheduler/job_board_upgrade_suggest.go`（定时 06:30，仅创建方向两段：{create,aux} → {create,composite}）。
 - **后端版块时间线**：`backend-go/internal/topicgraph/`（`service/daily_report_*.go` 版块时间线、`handler/`）。
-- **前端**：`front/app/features/tags/components/UpgradeSuggestionPanel.vue`（升级建议面板：四格生成入口 + 版块单选 + 持久化建议列表（含 compose 卡片与「组合」过滤 tab）；旧内存探索区已退役）、`CompositeLabelPool.vue` + `CompositeLabelEditDialog.vue`（组合标签治理页，未选版块时「组合标签」tab）、`MatchDetailPanel.vue`（匹配详情，composite_hit 组合链展示）、`BoardSourcePanel.vue`（板块来源构成面板，「板块内容」tab 内 BoardCompositionPanel 之后，只读无写动作）、`TagsPage.vue`、`front/app/features/tags/composables/useTagsPage.ts`。
+- **前端**：`front/app/features/tags/components/UpgradeSuggestionPanel.vue`（升级建议面板：四格生成入口 + 版块单选 + 持久化建议列表（含 compose 卡片与「组合」过滤 tab）；旧内存探索区已退役）、`CompositeLabelPool.vue` + `CompositeLabelEditDialog.vue`（组合标签治理页，未选版块时「组合标签」tab）、`MatchDetailPanel.vue`（匹配详情，composite_hit 组合链展示）、`BoardSourcePanel.vue`（板块来源构成面板，「板块内容」tab 内体检治理面板之后，只读无写动作）、`BoardHealthPanel.vue`（体检治理主面板，吸收原 BoardCompositionPanel 全部构成管理职能：picker 双模式添加/行内移除/组合创建挂载 + 体检评分/质量表/趋势/未收编候选收编；低分警告条与泳道动态 LaneDynamicsPanel 由 TagsPage 直接渲染）、`TagsPage.vue`、`front/app/features/tags/composables/useTagsPage.ts`。
 
 ## 队列与回填运维
 

@@ -148,6 +148,7 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		boards.GET("/:id/suggest-auxiliaries", handler.suggestAuxiliariesForBoard)
 		boards.GET("/:id/articles", handler.getBoardArticles)
 		boards.GET("/:id/source-breakdown", handler.getBoardSourceBreakdown)
+		boards.GET("/:id/health-checkup", handler.getBoardHealthCheckup)
 		boards.GET("/:id/match-detail/:tagId", handler.getTagMatchDetail)
 		boards.GET("/:id/composition", handler.getBoardComposition)
 		boards.POST("/:id/composition", handler.addBoardComposition)

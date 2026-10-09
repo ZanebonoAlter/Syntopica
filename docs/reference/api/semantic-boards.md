@@ -18,6 +18,7 @@
 | DELETE | `/semantic-boards/:id/composition/:auxiliary_label_id` | 移除 composition 辅助标签 |
 | GET | `/semantic-boards/:id/articles` | 查询版块下的文章 |
 | GET | `/semantic-boards/:id/source-breakdown` | 查询版块来源构成（只读聚合，add-source-board-hit-rate） |
+| GET | `/semantic-boards/:id/health-checkup` | 查询版块体检数据（最新快照+评分趋势，只读，add-board-health-checkup） |
 | GET | `/semantic-boards/:id/suggest-auxiliaries` | 版块级辅助标签建议 |
 | GET | `/semantic-boards/suggest-auxiliaries` | 全局辅助标签建议 |
 | GET | `/semantic-boards/:id/match-detail/:tagId` | tag 与版块匹配明细 |
@@ -775,6 +776,64 @@ Response `data`：
 
 - 版块不存在或非 `board` 类型返回 `404`；disabled 版块**不是** 404（按命中口径聚合为 0）。
 - 窗口内无命中文章时 `total_articles=0`、`source_count=0`、`sources=[]`，属正常结果（200）。
+
+### GET `/semantic-boards/:id/health-checkup`
+
+查询版块 `:id` 的体检数据（add-board-health-checkup）：最新体检快照（两级统计 + 未收编候选 + LLM 评分/评语）与评分趋势序列。**只读**：不写库、不触发体检执行（体检由日报生成成功路径尾步自动跑，见 `docs/reference/flow/semantic-board.md` §版块体检；收编/添加/移除复用既有 composition 接口）。统计口径唯一实现 `internal/tagmanagement/service/boardhealth/`。
+
+Query：
+
+- `trend` 可选，整数白名单 `[1, 90]`，缺省 `7`；非法值（0/91/负数/非整数）返回 `400`。
+
+Response `data`：
+
+```json
+{
+  "latest": {
+    "id": 12,
+    "semantic_board_id": 5,
+    "checked_at": "2026-10-02T08:00:00Z",
+    "metrics": {
+      "board": {
+        "matched_tags": 320,
+        "reason_dist": { "direct_hit": 210, "composite_hit": 30 },
+        "ghost_matches": 12,
+        "vector_missing": 3
+      },
+      "labels": [
+        {
+          "aux_id": 42,
+          "label": "推理",
+          "samples": 18,
+          "cosine_mean": 0.81,
+          "cosine_median": 0.83,
+          "cosine_p25": 0.76,
+          "cosine_p75": 0.88,
+          "low_sim_ratio": 0.11,
+          "insufficient": false
+        }
+      ]
+    },
+    "uncaptured_candidates": [
+      { "aux_id": 77, "label": "算力", "member_tags": 12, "member_articles": 5 }
+    ],
+    "llm_score": 78,
+    "llm_comment": "构成清晰，方向匹配整体健康。",
+    "created_at": "2026-10-02T08:00:01Z"
+  },
+  "trend": [
+    { "checked_at": "2026-10-01T08:00:00Z", "llm_score": 70 },
+    { "checked_at": "2026-10-02T08:00:00Z", "llm_score": 78 }
+  ]
+}
+```
+
+- `latest`：最新一条快照；从未跑过体检时为 `null`（空态，非错误）。
+- `metrics.board`：版块级指标（全部匹配行口径）；`metrics.labels[]`：标签级贴合度分布（构成标签 embedding × 全部挂载 tags identity embedding 现场重算，不按 aux 挂载数量筛样本），`insufficient=true` 时分布字段全 `null`（样本不足不硬凑）。
+- `uncaptured_candidates[]`：未收编候选（成员 tags 高频携带但不在构成中的 active aux，按 member_tags 降序 top 50）。
+- `llm_score` / `llm_comment`：LLM 综合评分（0-100）与一句评语；LLM 降级轮为 `null`（统计照常）。
+- `trend[]`：按 `checked_at` **升序**的最近 N 条评分序列；同日多条保留不去重（手动补跑日报是真实数据点）。
+- 版块不存在返回 `404`；disabled / 非 board 版块返回空态（`latest=null`、`trend=[]`，非 404）。
 
 ## 持久话题手动编排
 

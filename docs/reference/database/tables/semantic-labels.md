@@ -78,6 +78,23 @@
 
 > ⚠️ 旧文档曾列 `id BIGSERIAL PK`：代码无 `id`，复合主键。
 
+### 5.5 board_health_snapshots（版块体检快照，add-board-health-checkup）
+
+每轮体检每活跃版块一条；同日多条保留不去重（手动补跑日报是真实数据点，趋势原样展示）；历史快照不覆盖。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 自增主键 |
+| `semantic_board_id` | BIGINT | NOT NULL; FK→semantic_labels(id) ON DELETE CASCADE | 目标版块（迁移 `20261006_0001` 建 FK；AutoMigrate 建表不建 FK） |
+| `checked_at` | TIMESTAMPTZ | NOT NULL | 体检轮次时间 |
+| `metrics` | JSONB | NOT NULL | 两级统计（版块级全部匹配行 + 标签级贴合度分布〔构成标签 × 全部挂载 tags，不按 aux 挂载数量筛样本〕，分布字段样本不足为 null） |
+| `uncaptured_candidates` | JSONB | NOT NULL DEFAULT '[]' | 未收编候选 `[{aux_id,label,member_tags,member_articles}]`（member_tags 降序 top 50，扩充召回主路数据源） |
+| `llm_score` | DOUBLE PRECISION | NULL | LLM 评分（0-100）；降级轮为 NULL（统计照常） |
+| `llm_comment` | TEXT | NULL | LLM 一句评语 |
+| `created_at` | TIMESTAMPTZ | — | 创建时间 |
+
+主键：`id`。复合索引：`idx_board_health_snapshots_board_checked (semantic_board_id, checked_at)`（趋势查询）。
+
 
 ### 5.4.1 composite_components（组合标签组件序列，中间表）
 
@@ -134,6 +151,7 @@ add-composite-labels 引入。纯关联表，复合主键，组件按 `position`
 | `idx_topic_tag_board_labels_semantic_board_id` | topic_tag_board_labels | `(semantic_board_id)` |
 | `idx_board_composition_board_id` | board_composition | `(board_id)` |
 | `idx_board_composition_auxiliary_label_id` | board_composition | `(auxiliary_label_id)` |
+| `idx_board_health_snapshots_board_checked` | board_health_snapshots | `(semantic_board_id, checked_at)` |
 
 
 ## 域 ER 图

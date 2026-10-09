@@ -479,6 +479,7 @@ func runTestMigrations(t *testing.T, db *gorm.DB) error {
 		tagModelsRegistered = true
 		database.RegisterModels(
 			&tagmodels.BoardComposition{}, &tagmodels.BoardUpgradeSuggestion{},
+			&tagmodels.BoardHealthSnapshot{},
 			&tagmodels.CompositeComponent{}, &tagmodels.EmbeddingConfig{},
 			&tagmodels.MergeReembeddingQueue{}, &tagmodels.TagCategoryMeta{},
 			&tagmodels.TopicTagAnalysis{}, &tagmodels.TopicTagBoardLabel{},

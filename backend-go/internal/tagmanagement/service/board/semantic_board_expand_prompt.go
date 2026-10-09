@@ -48,12 +48,15 @@ func buildExpandAuxPrompt(profile *boardExpandProfile, candidates []expandAuxCan
 	builder.WriteString("返回 JSON 格式：{\"suggestions\": [{\"decision\": \"merge_into_existing|skip\", \"board_label\": \"\", \"description\": \"\", \"auxiliary_label_ids\": [id1], \"reason\": \"判断理由\"}]}\n\n")
 	builder.WriteString("候选辅助标签：\n")
 	for _, c := range candidates {
-		evidence := make([]string, 0, 2)
+		evidence := make([]string, 0, 3)
 		if c.SimDist != nil {
 			evidence = append(evidence, fmt.Sprintf("与版块语义距离 %.4f", *c.SimDist))
 		}
 		if c.Cooccur > 0 {
 			evidence = append(evidence, fmt.Sprintf("与构成标签共现 %d 篇", c.Cooccur))
+		}
+		if c.MemberTags > 0 {
+			evidence = append(evidence, fmt.Sprintf("版块成员 tags 中 %d 个携带该标签", c.MemberTags))
 		}
 		fmt.Fprintf(&builder, "  - ID=%d: %s（引用次数=%d，%s）\n", c.ID, c.Label, c.RefCount, strings.Join(evidence, "，"))
 	}

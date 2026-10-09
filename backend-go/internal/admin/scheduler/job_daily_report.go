@@ -41,6 +41,30 @@ var (
 	notifyDailyReportFailedSummary = notification.DailyReportFailedSummary
 )
 
+// runPostReportBoardHealthCheckup is the board-health tail-step seam
+// (add-board-health-checkup design D3): package-level var so tests can
+// capture the call / inject failures without a real checkup. The real
+// implementation bounds the checkup with its own 10-minute budget carved
+// from the caller's context so a slow LLM cannot eat the backfill sweep's
+// budget.
+var runPostReportBoardHealthCheckup = func(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
+	defer cancel()
+	tagging.RunBoardHealthCheckupWrapped(ctx, repository.Repo.DB())
+}
+
+// runBoardHealthCheckupTailStep invokes the seam with panic isolation AT THE
+// CALL SITE: even a replaced/panicking seam must never take down the
+// daily-report job (design D3 — 体检 panic 仅日志不影响日报 job 返回值).
+func runBoardHealthCheckupTailStep(parent context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Errorf("board-health: post-report checkup panicked (daily-report result untouched): %v", r)
+		}
+	}()
+	runPostReportBoardHealthCheckup(parent)
+}
+
 // adjudicateDailyReportTerminal is the single adjudication point for the
 // scheduled daily-report terminal-state notification (白盒 B):
 // failedCount>0 → ONE failure summary (success/failed counts in the copy);
@@ -293,6 +317,16 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 		// 空版面不是失败）。失败汇总与完成通知互斥（adjudicateDailyReportTerminal）。
 		if totalBoards := len(boardIDs); totalBoards > 0 {
 			adjudicateDailyReportTerminal(date, totalBoards, reportCount, failedCount)
+
+			// Board-health checkup tail step (add-board-health-checkup design D3):
+			// chained synchronously after the SUCCESS adjudication only — the
+			// daily report owns this run's outcome, the checkup is a best-effort
+			// follow-up whose errors/panics are logged and never alter the job
+			// result. Manual TriggerNowWithDate flows through DailyReportJob too,
+			// so the manual path triggers the checkup with no separate wiring.
+			if failedCount == 0 {
+				runBoardHealthCheckupTailStep(baseCtx)
+			}
 		}
 
 		resultData := map[string]interface{}{

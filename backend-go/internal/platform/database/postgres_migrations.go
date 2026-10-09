@@ -2437,7 +2437,48 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, marginNotesTablesMigration())
 	migrations = append(migrations, marginNotesWebSourcesMigration())
 	migrations = append(migrations, vendorModelMigration())
-	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration())
+	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration())
+}
+
+// boardHealthSnapshotMigration implements 20261006_0001
+// (add-board-health-checkup design D2): add the FK
+// board_health_snapshots.semantic_board_id → semantic_labels(id) ON DELETE
+// CASCADE. AutoMigrate creates the table + composite index but runs with
+// DisableForeignKeyConstraintWhenMigrating, so the FK lives here (same policy
+// as fk_topic_lane_snapshots_topic / 20260910_0001). Hard-deleting a board
+// removes its snapshots — they are pure log-style data, orphan rows are
+// meaningless. Idempotent (IF NOT EXISTS); skips when the table is absent.
+func boardHealthSnapshotMigration() Migration {
+	return Migration{
+		Version:     "20261006_0001",
+		Description: "board-health-checkup: FK board_health_snapshots.semantic_board_id -> semantic_labels(id) ON DELETE CASCADE (AutoMigrate owns the table; migration owns the FK)",
+		Up: func(db *gorm.DB) error {
+			var tableExists bool
+			if err := db.Raw(`SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables WHERE table_name = 'board_health_snapshots')`).Scan(&tableExists).Error; err != nil {
+				return fmt.Errorf("check board_health_snapshots: %w", err)
+			}
+			if !tableExists {
+				return nil
+			}
+			if err := db.Exec(`ALTER TABLE board_health_snapshots
+				ADD CONSTRAINT fk_board_health_snapshots_board
+				FOREIGN KEY (semantic_board_id) REFERENCES semantic_labels(id)
+				ON DELETE CASCADE`).Error; err != nil {
+				// Idempotent guard: a concurrent first-run (AutoMigrate + migration
+				// racing a second process) may have added the constraint already.
+				var constraintExists bool
+				if cErr := db.Raw(`SELECT EXISTS (
+					SELECT 1 FROM information_schema.table_constraints
+					WHERE constraint_name = 'fk_board_health_snapshots_board'
+					  AND table_name = 'board_health_snapshots')`).Scan(&constraintExists).Error; cErr == nil && constraintExists {
+					return nil
+				}
+				return fmt.Errorf("add fk_board_health_snapshots_board: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 // dropProfileTablesMigration implements 20260926_0001
@@ -3905,3 +3946,4 @@ func marginNotesWebSourcesMigration() Migration {
 		},
 	}
 }
+

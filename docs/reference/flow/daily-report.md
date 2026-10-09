@@ -143,7 +143,7 @@ POST /api/daily-reports/backfill-topics       重建持久话题
 
 可按 board 限定（body 传 `board_id`）或全量回填，与自动生成一样走 topicgraph service、幂等重建。
 
-> **自动补档（offline-catchup）**：手动 backfill 之外，`DailyReportJob` 每晚生成完当天报告后会自动补齐保留窗口内的缺档日期（tag 队列空为前置、窗口内逐日只补缺、队列未清顺延次日；超窗日期拒绝重建，见业务约束 19/20）——停机错过的日期无需人工逐日重建。
+> **自动补档（offline-catchup）**：手动 backfill 之外，`DailyReportJob` 每晚生成完当天报告后会自动补齐保留窗口内的缺档日期（tag 队列空为前置、窗口内逐日只补缺、队列未清顺延次日；超窗日期拒绝重建，见业务约束 19/20）——停机错过的日期无需人工逐日重建。成功裁决后另有**版块体检尾步**（add-board-health-checkup：同步 RunCheckup 纯读统计+LLM 评分落快照，error/panic 不污染日报 job，链路见 [semantic-board.md](semantic-board.md) §版块体检）。
 
 ### 后端：泳道态势结算（lane-snapshot，日报尾部异步）
 

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="editorial">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>版块体检全链路 · Syntopica</title>
+  <style>
+    /* Skin: Syntopica 设计系统 Layer 2 语义 token（editorial / dark 双主题）
+       来源 front/app/assets/css/main.css [data-theme] 块，2026-10-03 提取 */
+    :root, [data-theme="editorial"] {
+      --paper: #faf7f2;          /* stone-50 bg-base */
+      --paper-2: #f5f0e6;        /* stone-100 bg-elevated */
+      --card: #ffffff;
+      --ink: #1a1a1a;            /* text-primary */
+      --muted: #5a5a5a;          /* text-secondary */
+      --soft: #8a8a8a;           /* text-muted */
+      --rule: rgba(26, 26, 26, 0.08);
+      --rule-strong: rgba(26, 26, 26, 0.25);
+      --accent: #d94a4a;         /* red-500 */
+      --accent-tint: rgba(217, 74, 74, 0.08);
+      --shadow: 0 1px 3px rgba(26, 26, 26, 0.06);
+    }
+    [data-theme="dark"] {
+      --paper: #080c12;
+      --paper-2: #0e161d;
+      --card: #111b26;
+      --ink: rgba(255, 255, 255, 0.9);
+      --muted: rgba(255, 255, 255, 0.6);
+      --soft: rgba(255, 255, 255, 0.35);
+      --rule: rgba(255, 255, 255, 0.06);
+      --rule-strong: rgba(255, 255, 255, 0.18);
+      --accent: rgba(240, 138, 75, 0.95);
+      --accent-tint: rgba(240, 138, 75, 0.08);
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--paper); min-height: 100vh; padding: 2.5rem 1.5rem; color: var(--ink);
+      transition: background 0.25s ease, color 0.25s ease;
+    }
+    .container { max-width: 1080px; margin: 0 auto; }
+    .theme-toggle {
+      position: fixed; top: 1rem; right: 1rem; z-index: 10;
+      font: 500 0.72rem/1 ui-monospace, "JetBrains Mono", monospace; letter-spacing: 0.08em;
+      background: var(--card); color: var(--muted); border: 1px solid var(--rule-strong);
+      border-radius: 999px; padding: 0.45rem 0.9rem; cursor: pointer; box-shadow: var(--shadow);
+    }
+    .theme-toggle:hover { color: var(--ink); }
+    .header { margin-bottom: 2rem; }
+    .header-eyebrow {
+      font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 0.64rem; font-weight: 500;
+      letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.7rem;
+    }
+    h1 {
+      font-family: "Noto Serif SC", "Songti SC", Georgia, serif;
+      font-size: clamp(1.6rem, 3vw + 0.9rem, 2.3rem); font-weight: 600;
+      letter-spacing: -0.01em; line-height: 1.15; margin-bottom: 0.5rem;
+    }
+    .subtitle { font-size: 0.92rem; line-height: 1.6; color: var(--muted); max-width: 62ch; }
+    .diagram-container {
+      background: var(--paper-2); border-radius: 8px; border: 1px solid var(--rule);
+      padding: 1.25rem; overflow-x: auto; transition: background 0.25s ease;
+    }
+    svg { width: 100%; min-width: 860px; display: block; }
+    .cards { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+    @media (max-width: 880px) { .cards { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card); border-radius: 6px; border: 1px solid var(--rule);
+      padding: 1.15rem 1.25rem; box-shadow: var(--shadow);
+    }
+    .card .eyebrow {
+      font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 0.56rem;
+      letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.5rem;
+    }
+    .card h3 { font-size: 0.85rem; font-weight: 600; margin-bottom: 0.55rem; }
+    .card p, .card ul { color: var(--muted); font-size: 0.78rem; line-height: 1.6; }
+    .card li { margin-bottom: 0.28rem; padding-left: 0.8rem; position: relative; list-style: none; }
+    .card li::before { content: '—'; position: absolute; left: 0; color: var(--soft); }
+    .card code {
+      font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 0.72rem;
+      color: var(--ink); background: var(--paper-2); padding: 0.05rem 0.3rem; border-radius: 3px;
+    }
+    .footer {
+      margin-top: 1.75rem; padding-top: 1.25rem; border-top: 1px solid var(--rule);
+      font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 0.68rem;
+      letter-spacing: 0.05em; color: var(--soft);
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <button class="theme-toggle" onclick="const h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'editorial':'dark';this.textContent=h.dataset.theme==='dark'?'☀ editorial':'🌙 dark'">🌙 dark</button>
+  <div class="container">
+    <div class="header">
+      <p class="header-eyebrow">Semantic Board · Board Health Checkup</p>
+      <h1>版块体检全链路</h1>
+      <p class="subtitle">日报成功后自动运行的纯读体检：双口径统计 → LLM 评分（方法学锚）→ 快照落库 → 通知闸门 → 面板与扩充召回消费。形状承载类型：圆角胶囊是端点，矩形是步骤，菱形是判定。</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1000 1050" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="bhc-title bhc-desc">
+        <title id="bhc-title">版块体检全链路</title>
+        <desc id="bhc-desc">日报成功裁决触发体检尾步，逐板块做双口径统计与候选 diff，LLM 评分带方法学锚，失败降级 score=NULL；分数低于阈值且 notify 且过冷却才发通知；快照原样落库供面板趋势与扩充召回消费。</desc>
+        <defs>
+          <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+            <circle cx="1" cy="1" r="0.9" fill="var(--rule)"/>
+          </pattern>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="var(--muted)"/>
+          </marker>
+        </defs>
+
+        <rect width="100%" height="100%" fill="var(--paper-2)"/>
+        <rect width="100%" height="100%" fill="url(#dots)" opacity="0.5"/>
+
+        <!-- ── 箭头（先画，垫底） ─────────────────────────── -->
+        <line x1="430" y1="92"  x2="430" y2="118" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <line x1="430" y1="176" x2="430" y2="202" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <line x1="430" y1="260" x2="430" y2="286" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <line x1="430" y1="424" x2="430" y2="450" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <line x1="430" y1="508" x2="430" y2="534" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <!-- 菱形1「否」→ 降级（左） -->
+        <line x1="330" y1="600" x2="288" y2="600" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <rect x="292" y="586" width="22" height="13" rx="2" fill="var(--paper-2)"/>
+        <text x="303" y="596" fill="var(--muted)" font-size="8.5" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.1em">否</text>
+        <!-- 菱形1「是」↓ -->
+        <line x1="430" y1="664" x2="430" y2="690" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <rect x="416" y="668" width="22" height="13" rx="2" fill="var(--paper-2)"/>
+        <text x="427" y="678" fill="var(--muted)" font-size="8.5" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.1em">是</text>
+        <!-- 降级 ↓ 汇合 -->
+        <polyline points="160,636 160,860 410,860" fill="none" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <!-- 菱形2「是」→ 通知（右，accent 走向） -->
+        <line x1="530" y1="756" x2="646" y2="756" stroke="var(--accent)" stroke-width="1.4" marker-end="url(#arrow)"/>
+        <rect x="548" y="742" width="22" height="13" rx="2" fill="var(--paper-2)"/>
+        <text x="559" y="752" fill="var(--accent)" font-size="8.5" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.1em">是</text>
+        <!-- 菱形2「否」↓ 静默 -->
+        <line x1="430" y1="820" x2="430" y2="850" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <rect x="442" y="828" width="56" height="13" rx="2" fill="var(--paper-2)"/>
+        <text x="470" y="838" fill="var(--muted)" font-size="8.5" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.1em">否·静默</text>
+        <!-- 汇合点 → 落库 → 消费 -->
+        <line x1="430" y1="866" x2="430" y2="882" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <line x1="430" y1="944" x2="430" y2="968" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- ── 节点 ─────────────────────────────────────── -->
+        <!-- 1 起点：日报成功裁决 -->
+        <rect x="300" y="40" width="260" height="52" rx="26" fill="var(--paper-2)" stroke="var(--rule-strong)" stroke-width="1"/>
+        <text x="430" y="62" fill="var(--ink)" font-size="12.5" font-weight="600" text-anchor="middle" font-family="inherit">日报成功裁决</text>
+        <text x="430" y="80" fill="var(--soft)" font-size="9" text-anchor="middle" font-family="ui-monospace, monospace">21:00 自然轮 · 手动 TriggerNowWithDate 同路径</text>
+
+        <!-- 2 体检尾步 -->
+        <rect x="300" y="120" width="260" height="56" rx="6" fill="var(--card)" stroke="var(--ink)" stroke-width="1"/>
+        <text x="430" y="144" fill="var(--ink)" font-size="12.5" font-weight="600" text-anchor="middle" font-family="inherit">体检尾步（链式同步）</text>
+        <text x="430" y="162" fill="var(--muted)" font-size="9.5" text-anchor="middle" font-family="inherit">panic 隔离 · 10min 独立预算 · 不影响日报结果</text>
+
+        <!-- 3 逐板块循环 -->
+        <rect x="300" y="204" width="260" height="56" rx="6" fill="var(--card)" stroke="var(--ink)" stroke-width="1"/>
+        <text x="430" y="228" fill="var(--ink)" font-size="12.5" font-weight="600" text-anchor="middle" font-family="inherit">逐板块循环（12 版块）</text>
+        <text x="430" y="246" fill="var(--muted)" font-size="9.5" text-anchor="middle" font-family="inherit">单板块失败仅记日志 · 不影响兄弟板块</text>
+
+        <!-- 4 双口径统计（大节点） -->
+        <rect x="240" y="288" width="380" height="136" rx="6" fill="var(--card)" stroke="var(--ink)" stroke-width="1"/>
+        <text x="430" y="310" fill="var(--ink)" font-size="12.5" font-weight="600" text-anchor="middle" font-family="inherit">双口径统计（纯读 · 口径唯一实现于 boardhealth）</text>
+        <text x="262" y="334" fill="var(--muted)" font-size="10" font-family="inherit">① 全量匹配行：matched_tags · reason_dist · ghost（cosine&lt;0.5）</text>
+        <text x="262" y="356" fill="var(--muted)" font-size="10" font-family="inherit">② 贴合度分布（构成标签 × 全部挂载 tags）现场重算：样本&lt;5 → insufficient</text>
+        <text x="262" y="378" fill="var(--muted)" font-size="10" font-family="inherit">③ 候选 diff：成员 tags 高频携带 top 50（排除已挂载 / disabled）</text>
+        <text x="262" y="400" fill="var(--soft)" font-size="9" font-family="ui-monospace, monospace">vector_missing 只计缺失侧 · 泛词黑名单沿用打标口径</text>
+
+        <!-- 5 评分 prompt -->
+        <rect x="300" y="452" width="260" height="56" rx="6" fill="var(--card)" stroke="var(--ink)" stroke-width="1"/>
+        <text x="430" y="476" fill="var(--ink)" font-size="12.5" font-weight="600" text-anchor="middle" font-family="inherit">评分 prompt（方法学锚）</text>
+        <text x="430" y="494" fill="var(--muted)" font-size="9.5" text-anchor="middle" font-family="inherit">insufficient ≠ 失效 · &lt;60 只看真实病征</text>
+
+        <!-- 6 菱形1：LLM 有效 JSON？ -->
+        <polygon points="430,536 530,600 430,664 330,600" fill="var(--card)" stroke="var(--ink)" stroke-width="1"/>
+        <text x="430" y="596" fill="var(--ink)" font-size="11.5" font-weight="600" text-anchor="middle" font-family="inherit">LLM 返回</text>
+        <text x="430" y="612" fill="var(--ink)" font-size="11.5" font-weight="600" text-anchor="middle" font-family="inherit">有效 JSON？</text>
+
+        <!-- 7 降级落库（左） -->
+        <rect x="40" y="572" width="248" height="64" rx="6" fill="var(--card)" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 3"/>
+        <text x="164" y="594" fill="var(--ink)" font-size="12" font-weight="600" text-anchor="middle" font-family="inherit">降级轮</text>
+        <text x="164" y="612" fill="var(--muted)" font-size="9.5" text-anchor="middle" font-family="inherit">score=NULL · 不重试</text>
+        <text x="164" y="626" fill="var(--muted)" font-size="9.5" text-anchor="middle" font-family="inherit">统计完整保留 · 永不通知</text>
+
+        <!-- 8 菱形2：通知闸门 -->
+        <polygon points="430,692 530,756 430,820 330,756" fill="var(--card)" stroke="var(--ink)" stroke-width="1"/>
+        <text x="430" y="746" fill="var(--ink)" font-size="11" font-weight="600" text-anchor="middle" font-family="inherit">score&lt;60 且 notify</text>
+        <text x="430" y="762" fill="var(--ink)" font-size="11" font-weight="600" text-anchor="middle" font-family="inherit">且冷却&gt;3 天？</text>
+        <text x="430" y="778" fill="var(--soft)" font-size="8.5" text-anchor="middle" font-family="ui-monospace, monospace">threshold / cooldown 可经 ai_settings 覆盖</text>
+
+        <!-- 9 通知端点（accent） -->
+        <rect x="650" y="728" width="300" height="56" rx="28" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="1.2"/>
+        <text x="800" y="750" fill="var(--ink)" font-size="12.5" font-weight="600" text-anchor="middle" font-family="inherit">BoardHealthAlert 通知</text>
+        <text x="800" y="768" fill="var(--muted)" font-size="9.5" text-anchor="middle" font-family="inherit">error 档 · LinkType=board 跳转板块 · 冷却内不重复</text>
+
+        <!-- 汇合点 -->
+        <circle cx="430" cy="860" r="4.5" fill="var(--ink)"/>
+
+        <!-- 10 快照落库 -->
+        <rect x="290" y="886" width="280" height="58" rx="6" fill="var(--card)" stroke="var(--ink)" stroke-width="1"/>
+        <text x="430" y="909" fill="var(--ink)" font-size="12" font-weight="600" text-anchor="middle" font-family="inherit">快照落库 board_health_snapshots</text>
+        <text x="430" y="927" fill="var(--muted)" font-size="9.5" text-anchor="middle" font-family="inherit">同日多轮 = 真实数据点 · 趋势原样保留</text>
+
+        <!-- 11 终点：下游消费（accent focal） -->
+        <rect x="270" y="970" width="320" height="62" rx="31" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="1.2"/>
+        <text x="430" y="994" fill="var(--ink)" font-size="12.5" font-weight="600" text-anchor="middle" font-family="inherit">下游消费</text>
+        <text x="430" y="1014" fill="var(--muted)" font-size="9.5" text-anchor="middle" font-family="inherit">治理面板（趋势 / 收编）· 扩充召回 top 20（空则回退双路）</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <p class="eyebrow">insufficient 不是病（2026-10-08 口径修正）</p>
+        <h3>口径②已改贴合度分布，覆盖全量挂载 tags</h3>
+        <ul>
+          <li>旧「纯净样本（只挂单个 aux 的 tag）」口径覆盖仅 1.4%~6.8% 且样本池不增长，2026-10-08 真库实测后废弃，改为构成标签 × 全部挂载 tags 的贴合度分布</li>
+          <li><code>insufficient</code> = 证据缺失 ≠ 标签失效 ≠ 内容匮乏（2026-10-03 修复：评分 prompt 增方法学锚）</li>
+          <li>不硬凑分布是红线（semantic-board 红线 22）</li>
+        </ul>
+      </div>
+      <div class="card">
+        <p class="eyebrow">评分 &lt;60 的真实病征</p>
+        <h3>insufficient 数量不是扣分项</h3>
+        <ul>
+          <li>幽灵匹配占比高（ghost / matched，如 25%）</li>
+          <li>有样本标签 cosine 普遍 &lt; 0.5</li>
+          <li>matched_tags 相对构成规模萎缩；弱路径（hit_rate / max_sim / weighted）主导且 composite ≈ 0</li>
+        </ul>
+      </div>
+      <div class="card">
+        <p class="eyebrow">降级与通知语义</p>
+        <h3>统计永不因 LLM 丢失</h3>
+        <ul>
+          <li>LLM 坏 JSON / 超时 → score=NULL 不重试，统计照常落快照</li>
+          <li>score ≥ 60 永不通知；冷却 3 天内（严格 &lt;）不重复；NULL 轮永不通知</li>
+          <li>体检纯读：不写匹配表、不落任何扩充建议</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span>Syntopica · add-board-health-checkup · 2026-10-03</span>
+      <span>docs/reference/flow/semantic-board.md §版块体检</span>
+    </div>
+  </div>
+</body>
+</html>
