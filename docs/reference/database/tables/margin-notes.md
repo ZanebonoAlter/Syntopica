@@ -1,6 +1,6 @@
 # 页边注三表（`tables/margin-notes.md`）
 
-> 日报页边注（批注锚点 / 问答轮 / 术语库）的表结构事实。来源 change：`openspec/changes/archive` → daily-report-margin-notes（2026-09-24 联网扩充含 `cited_web_sources` 列）。模型定义：`backend-go/internal/topicgraph/repository/margin_notes_repository.go`；迁移：`postgres_migrations.go` `20260922_0003` + `20260924_0001`。
+> 日报页边注（批注锚点 / 问答轮 / 术语库）的表结构事实。来源 change：`openspec/changes/archive` → daily-report-margin-notes（2026-09-24 联网扩充含 `cited_web_sources` 列）→ add-searxng-health-indicator（`web_search_status` 列）。模型定义：`backend-go/internal/topicgraph/repository/margin_notes_repository.go`；迁移：`postgres_migrations.go` `20260922_0003` + `20260924_0001` + `20261007_0001`。
 
 ## 表清单
 
@@ -31,6 +31,7 @@
 | `question` / `answer` | TEXT | NOT NULL | 问答原文 |
 | `cited_article_ids` | JSONB | NOT NULL DEFAULT `'[]'::jsonb` | 引用文章 id 数组：**空写 `[]` 不写 null、保序去重**（数组契约）；服务端按 thread 关联文章白名单硬校验（集外剔除，WS-3/EF-1） |
 | `cited_web_sources` | JSONB | NOT NULL DEFAULT `'[]'::jsonb`（`20260924_0001` 追加） | 网络来源 `[{"title","url"}]`：url 必须在本次 SearXNG 搜索结果集内（防编造链接），保序去重；空写 `[]` |
+| `web_search_status` | TEXT | NULL（`20261007_0001` 追加，add-searxng-health-indicator） | 本轮联网搜索状态三态：`disabled`（预检不过）/`ok`（有结果进池）/`empty`（链路启用但全部搜索失败或空）；旧行 NULL=历史数据不回填（前端不渲染标记）；与降级树同函数采集，随 QA 响应透出 |
 | `extracted_terms` | JSONB | NOT NULL DEFAULT `'[]'::jsonb` | 本轮涉及术语（归一化字符串数组；service 回答时另带 `new_terms` 标识本轮新建） |
 | `operation` / `provider` / `model` | VARCHAR(80)/(100)/(100) | NULL | 审计冗余（ai_call_logs 7 天清理后仍可按 provider/operation 对账）；`model` P1 写空值（ChatResult 不携带） |
 | `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | |

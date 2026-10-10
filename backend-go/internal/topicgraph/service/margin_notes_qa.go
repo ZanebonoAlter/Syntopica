@@ -58,6 +58,9 @@ type MarginNoteQAResult struct {
 	NewTerms           []string                         // normalized subset that was newly created（入库角标）
 	PureModelKnowledge bool
 	Provider           string
+	// WebSearchStatus is the web-search status of this turn (add-searxng-
+	// health-indicator D3/D4)：disabled/ok/empty，与降级树同函数采集。
+	WebSearchStatus string
 	// QA is the persisted turn (id/question/answer 已落库)，供 handler 按 GET 同形状
 	// 返回 —— 前端卡片按 qa.id 做 key、按 qa.question/answer 渲染，缺了会整轮卡在 pending。
 	QA *repository.AnnotationQA
@@ -91,8 +94,9 @@ func AskMarginNote(ctx context.Context, annotationID uint, question string) (*Ma
 	// D7 联网补强 + 本 change 翻案：每次必搜 + 失败静默降级不变，query 来源改
 	// 为 LLM 自由生成（端点预检 → query 生成 → 并行搜索合并，降级树见
 	// searchWebForMarginNoteWithQueryGen）。搜索失败/超时/未配置只影响是否携
-	// 带联网参考块，绝不阻断问答（联网是增益不是依赖）。
-	webResults := searchWebForMarginNoteWithQueryGen(ctx, annotation.QuotedText, question, threadTitle, threadSummary)
+	// 带联网参考块，绝不阻断问答（联网是增益不是依赖）；status 与降级树同
+	// 函数采集（disabled/ok/empty），随轮落库与响应透出。
+	webResults, webSearchStatus := searchWebForMarginNoteWithQueryGen(ctx, annotation.QuotedText, question, threadTitle, threadSummary)
 
 	system, user := buildMarginNoteQAPrompt(annotation.QuotedText, question, threadTitle, threadSummary, excerpts, webResults)
 
@@ -137,6 +141,7 @@ func AskMarginNote(ctx context.Context, annotationID uint, question string) (*Ma
 		CitedArticleIDs: mustJSON(cited),
 		CitedWebSources: mustJSON(webSources),
 		ExtractedTerms:  mustJSON([]string{}),
+		WebSearchStatus: &webSearchStatus,
 		Operation:       MarginNoteQAOperation,
 		Provider:        result.ProviderName,
 	}
@@ -151,6 +156,7 @@ func AskMarginNote(ctx context.Context, annotationID uint, question string) (*Ma
 		Terms:              parsed.Terms,
 		PureModelKnowledge: pureModelKnowledge,
 		Provider:           result.ProviderName,
+		WebSearchStatus:    webSearchStatus,
 	}
 
 	// D6 失败隔离：terms 解析失败/截断/upsert 失败只 Warn，不阻断回答返回。

@@ -204,6 +204,7 @@ func askAnnotationQuestion(c *gin.Context) {
 			"extracted_terms":      termsWithNewFlag(result.Terms, result.NewTerms),
 			"pure_model_knowledge": result.PureModelKnowledge,
 			"provider":             result.Provider,
+			"web_search_status":    result.WebSearchStatus,
 			"created_at":           qa.CreatedAt,
 		},
 	}})

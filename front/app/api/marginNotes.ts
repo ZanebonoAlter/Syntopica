@@ -70,6 +70,9 @@ export interface MarginNoteQa {
   cited_article_ids: number[]
   cited_web_sources: MarginNoteWebSource[]
   extracted_terms: MarginNoteTerm[]
+  /** 本轮联网搜索状态（add-searxng-health-indicator）：ok/disabled/empty；
+   *  旧行（本 change 上线前）无此字段（NULL 不序列化），前端按无标记处理。 */
+  web_search_status?: 'ok' | 'disabled' | 'empty' | null
   /** 审计冗余（provider/model），离线核对用；前端仅透传展示。 */
   provider?: string
   model?: string

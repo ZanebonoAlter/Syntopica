@@ -182,6 +182,24 @@
 >
 > `rsshub_doc_base` 存 `ai_settings.rsshub_doc_base`（官方文档基址，用于推荐卡片「官方文档」链接生成）。缺省 `https://docs.rsshub.app`；官方文档站国内可能访问受限，可配换镜像。
 
+## SearXNG 配置与健康探测
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/settings/searxng` | 读取 SearXNG 配置（endpoint + enabled） |
+| POST | `/api/settings/searxng` | 保存 SearXNG 配置 |
+| GET | `/api/settings/searxng/health` | 连通性主动探测（四态 + 耗时，add-searxng-health-indicator） |
+
+### GET /api/settings/searxng/health
+
+```json
+{ "success": true, "data": { "status": "degraded", "latency_ms": 5213, "detail": "服务可达但搜索无结果（引擎可能故障或上游代理失效）" } }
+```
+
+`status` 四态：`disabled`（未配置/未启用，200 正常态非错误）｜`unreachable`（endpoint 连接失败/超时/响应体解析失败）｜`degraded`（HTTP 可达但搜索结果为空——引擎全挂，2026-10-01 Clash 出口失效事故形态）｜`ok`（可达且结果非空）。`detail` 为人话摘要，不透传原始 JSON。
+
+> 探测=真实探针搜索（固定 query `connectivity probe`），非进程探活——事故形态是「进程活、引擎死」，`/healthz` 类端点无法暴露。复用页边注问答联网链路同一配置解析（`platform/searxng.ResolveConfiguredEndpoint`，DB>env>yaml 现读现生效）与同一搜索客户端，面板与链路同源判活。按需触发不轮询；不走 airouter、不落 `ai_call_logs`（非 AI 调用）；探测日志前缀 `margin-notes: health probe` 可与问答降级 WARN 一起 grep。设置面板保存配置成功后自动探测一次；探测失败不阻塞保存。
+
 ## 路由参数字典（admin）
 
 需填参路由的参数可选值字典，注入 recommendation 响应 `param_options`。链路与铁律见 [../flow/discovery.md](../flow/discovery.md) §参数可选值字典。

@@ -780,6 +780,79 @@ func TestAskMarginNoteDegrade(t *testing.T) {
 	})
 }
 
+// ── 联网搜索状态三态（add-searxng-health-indicator）──────────────────
+
+// TestAskMarginNote_WebSearchStatus_ThreeStates 覆盖故事一步 1~3：联网失效
+// →empty、未启用→disabled、正常→ok；每轮独立落库 annotation_qas.
+// web_search_status（新行非 NULL）；B6 形态（query 生成失败但回退搜索成功）
+// 同为 ok（状态描述搜索池，不描述引用）。
+func TestAskMarginNote_WebSearchStatus_ThreeStates(t *testing.T) {
+	answerJSON := `{"answer":"答","cited_article_ids":[],"web_sources":[]}`
+
+	t.Run("disabled_endpoint_unconfigured", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: answerJSON}
+		swapMarginNoteChat(t, rec)
+		swapMarginNoteEndpoint(t, "", false) // 预检不过（B1 形态）
+
+		res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err)
+		assert.Equal(t, MarginNoteWebSearchStatusDisabled, res.WebSearchStatus)
+		var qa repository.AnnotationQA
+		require.NoError(t, repository.Repo.DB().First(&qa, "annotation_id = ?", annotation.ID).Error)
+		require.NotNil(t, qa.WebSearchStatus)
+		assert.Equal(t, MarginNoteWebSearchStatusDisabled, *qa.WebSearchStatus)
+	})
+
+	t.Run("ok_search_results_entered_pool", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: answerJSON}
+		swapMarginNoteChat(t, rec)
+		swapMarginNoteWebEnv(t,
+			&marginNoteQueryGenRecorder{content: `{"queries":["q1"]}`},
+			&marginNoteSearchRecorder{results: []searxng.Result{{Title: "r1", URL: "https://a.example.com/1", Content: "c1"}}})
+
+		res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err)
+		assert.Equal(t, MarginNoteWebSearchStatusOK, res.WebSearchStatus)
+		var qa repository.AnnotationQA
+		require.NoError(t, repository.Repo.DB().First(&qa, "annotation_id = ?", annotation.ID).Error)
+		require.NotNil(t, qa.WebSearchStatus)
+		assert.Equal(t, MarginNoteWebSearchStatusOK, *qa.WebSearchStatus)
+	})
+
+	t.Run("empty_all_engines_dead_or_no_results", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: answerJSON}
+		swapMarginNoteChat(t, rec)
+		swapMarginNoteWebEnv(t,
+			&marginNoteQueryGenRecorder{content: `{"queries":["q1","q2"]}`},
+			&marginNoteSearchRecorder{err: errors.New("searxng fetch: all engines timed out")}) // 本次事故形态：HTTP 200 但引擎全挂
+
+		res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err, "联网失效不得阻断问答")
+		assert.Equal(t, "答", res.Answer)
+		assert.Equal(t, MarginNoteWebSearchStatusEmpty, res.WebSearchStatus)
+		var qa repository.AnnotationQA
+		require.NoError(t, repository.Repo.DB().First(&qa, "annotation_id = ?", annotation.ID).Error)
+		require.NotNil(t, qa.WebSearchStatus)
+		assert.Equal(t, MarginNoteWebSearchStatusEmpty, *qa.WebSearchStatus)
+	})
+
+	t.Run("ok_via_quoted_fallback_after_query_gen_failure", func(t *testing.T) {
+		annotation := setupMarginNoteDegrade(t)
+		rec := &marginNoteChatRecorder{content: answerJSON}
+		swapMarginNoteChat(t, rec)
+		swapMarginNoteWebEnv(t,
+			&marginNoteQueryGenRecorder{err: errors.New("timeout")},
+			&marginNoteSearchRecorder{results: []searxng.Result{{Title: "锚文本搜到", URL: "https://a.example.com/x", Content: "c"}}})
+
+		res, err := AskMarginNote(context.Background(), annotation.ID, "问题")
+		require.NoError(t, err)
+		assert.Equal(t, MarginNoteWebSearchStatusOK, res.WebSearchStatus, "回退搜索有结果 → ok（B6 形态）")
+	})
+}
+
 // TestAskMarginNote_QueryChangesWithQuestion 覆盖 spec Scenario「搜索词随问题
 // 语义变化」：同一批注先后两问，搜索入参随 query 生成输出变化（非固定锚文本）。
 func TestAskMarginNote_QueryChangesWithQuestion(t *testing.T) {

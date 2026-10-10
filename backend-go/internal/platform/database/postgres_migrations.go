@@ -2436,6 +2436,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, normalizeArticleLinkFragmentsMigration())
 	migrations = append(migrations, marginNotesTablesMigration())
 	migrations = append(migrations, marginNotesWebSourcesMigration())
+	migrations = append(migrations, marginNotesWebSearchStatusMigration())
 	migrations = append(migrations, vendorModelMigration())
 	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration())
 }
@@ -3947,3 +3948,25 @@ func marginNotesWebSourcesMigration() Migration {
 	}
 }
 
+// marginNotesWebSearchStatusMigration implements 20261007_0001
+// (add-searxng-health-indicator design D5)：
+//
+//	annotation_qas 追加 web_search_status text NULL——问答轮联网搜索状态
+//	（disabled/ok/empty；empty=链路启用但全部搜索失败或结果为空，落库不细分
+//	unreachable/degraded——对读者语义同为「联网没帮上」）。存量行为 NULL
+//	（历史数据无标记语义，不回填；前端 NULL 不渲染标记）。
+//
+// 幂等：ADD COLUMN IF NOT EXISTS。回滚=列残留无害（旧前端不读则忽略）。
+func marginNotesWebSearchStatusMigration() Migration {
+	return Migration{
+		Version:     "20261007_0001",
+		Description: "add-searxng-health-indicator: annotation_qas.web_search_status text NULL (per-turn web search status disabled/ok/empty, legacy rows stay NULL)",
+		Up: func(db *gorm.DB) error {
+			if err := db.Exec(`ALTER TABLE annotation_qas
+				ADD COLUMN IF NOT EXISTS web_search_status TEXT NULL`).Error; err != nil {
+				return fmt.Errorf("add annotation_qas.web_search_status: %w", err)
+			}
+			return nil
+		},
+	}
+}

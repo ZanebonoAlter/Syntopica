@@ -183,6 +183,39 @@ func TestListReportAnnotations_Contract(t *testing.T) {
 	assert.Empty(t, body["data"].(map[string]interface{})["annotations"].([]interface{}))
 }
 
+// TestListReportAnnotations_WebSearchStatusContract（add-searxng-health-indicator
+// 故事一步 4 + 2.2）：GET 响应 qas 条目带出 web_search_status——新行（已采集）
+// 透传枚举值；旧行 NULL 省略字段（omitempty，前端按无标记处理）。
+func TestListReportAnnotations_WebSearchStatusContract(t *testing.T) {
+	engine := setupMarginNoteHandlerTest(t)
+	db := repository.Repo.DB()
+	reportID, _, _, annotationID := seedMarginNoteHandlerFixtures(t, db)
+
+	// 旧行（NULL，本 change 上线前的历史轮）与新行（empty）同批注混存。
+	require.NoError(t, repository.Repo.InsertAnnotationQA(&repository.AnnotationQA{
+		AnnotationID: annotationID, Question: "历史问题", Answer: "历史回答",
+		CitedArticleIDs: repository.JSON("[]"), ExtractedTerms: repository.JSON("[]"),
+		Operation: "daily_report.margin_note_qa",
+	}))
+	empty := "empty"
+	require.NoError(t, repository.Repo.InsertAnnotationQA(&repository.AnnotationQA{
+		AnnotationID: annotationID, Question: "新问题", Answer: "新回答",
+		CitedArticleIDs: repository.JSON("[]"), ExtractedTerms: repository.JSON("[]"),
+		WebSearchStatus: &empty,
+		Operation: "daily_report.margin_note_qa",
+	}))
+
+	code, body := doJSON(engine, http.MethodGet, fmt.Sprintf("/api/daily-reports/%d/annotations", reportID), nil)
+	require.Equal(t, http.StatusOK, code)
+	qas := body["data"].(map[string]interface{})["annotations"].([]interface{})[0].(map[string]interface{})["qas"].([]interface{})
+	require.Len(t, qas, 2)
+	legacy := qas[0].(map[string]interface{})
+	fresh := qas[1].(map[string]interface{})
+	_, hasKey := legacy["web_search_status"]
+	assert.False(t, hasKey, "旧行 NULL 不透出字段（历史数据无标记语义）")
+	assert.Equal(t, "empty", fresh["web_search_status"], "新行透出采集的状态")
+}
+
 func TestDeleteAnnotation_Contract(t *testing.T) {
 	engine := setupMarginNoteHandlerTest(t)
 	db := repository.Repo.DB()
