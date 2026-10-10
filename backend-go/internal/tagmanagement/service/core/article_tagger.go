@@ -206,15 +206,11 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 	return persistArticleTags(ctx, article, tags, source)
 }
 
-// persistArticleTags stores the extracted tags for an article: filter generic
-// labels, dedupe, then for each tag find-or-create the topic tag, attach
-// auxiliary labels and link it to the article. Shared by the mono and
-// aggregate extraction paths.
-func persistArticleTags(ctx context.Context, article *models.Article, tags []TopicTag, source string) error {
-	// 泛词黑名单拦截（fix-tagging-pollution）：mono / aggregate / heuristic
-	// 三条写入路径的汇聚点，被拦截候选不进 topic_tags / 辅助标签池。
-	tags = filterGenericLabels(tags)
-	// Build article context for description generation
+// buildArticleContext builds the article context fed to description
+// generation: "[日期: 发布日期] 标题. 摘要(≤800 runes)". Shared by the tagging
+// pipeline (persistArticleTags) and the event-tag anchor-fix regeneration so
+// both anchor to the exact same article context format.
+func buildArticleContext(article *models.Article) string {
 	articleContext := ""
 	pubDateStr := formatPubDate(article.PubDate)
 	if pubDateStr != "" {
@@ -234,6 +230,19 @@ func persistArticleTags(ctx context.Context, article *models.Article, tags []Top
 		}
 		articleContext += articleSummary
 	}
+	return articleContext
+}
+
+// persistArticleTags stores the extracted tags for an article: filter generic
+// labels, dedupe, then for each tag find-or-create the topic tag, attach
+// auxiliary labels and link it to the article. Shared by the mono and
+// aggregate extraction paths.
+func persistArticleTags(ctx context.Context, article *models.Article, tags []TopicTag, source string) error {
+	// 泛词黑名单拦截（fix-tagging-pollution）：mono / aggregate / heuristic
+	// 三条写入路径的汇聚点，被拦截候选不进 topic_tags / 辅助标签池。
+	tags = filterGenericLabels(tags)
+	// Build article context for description generation
+	articleContext := buildArticleContext(article)
 
 	dedupedTags := dedupeTagsWithCategory(tags)
 

@@ -273,10 +273,10 @@ person（人物）：具体个人姓名，如"Sam Altman"；拒绝泛称（"CEO"
 
 辅助标签要求：
 - 每个 event/person 标签必须输出 auxiliary_labels，数量 3-5 个
-- auxiliary_labels 是对象数组，每项含 label 和 description，如 {"label":"伊朗","description":"中东地区国家"}
+- auxiliary_labels 是对象数组，每项含 label 和 description，如 {"label":"央行","description":"货币当局"}
 - 辅助标签须与事件核心直接相关，是具体语义锚点（实体、人物、地点、动作）；背景提及、移除后事件仍成立的实体不要输出
 - description 简短具体，不能为空，不能只重复 label；拒绝"事件"、"技术"、"发展"、"市场"等泛词
-- 反例：{"label":"技术","description":"技术"}、"伊朗"（字符串而非对象）
+- 反例：{"label":"技术","description":"技术"}、"决策机构"（字符串而非对象）
 - event description 中文1句话不超50字、不重复标签名；person 可留空
 
 【keyword 数组】
@@ -293,7 +293,7 @@ description 要求：每个 keyword 必须输出 description，中文1句话不�
 
 【输出格式】
 正例：
-{"event_person_tags":[{"label":"伊朗袭击以色列","category":"event","description":"伊朗对以色列的军事打击","auxiliary_labels":[{"label":"伊朗","description":"中东国家"},{"label":"以色列","description":"中东国家"},{"label":"导弹袭击","description":"军事打击行动"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库"}]}
+{"event_person_tags":[{"label":"某国央行上调基准利率","category":"event","description":"某国央行上调基准利率的政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"货币政策利率"},{"label":"利率上调","description":"提高利率的举措"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库"}]}
 反例：
 - keyword 标签放进 event/person 数组（串放）
 - auxiliary_labels 写成字符串数组（必须是含 label/description 的对象数组）

@@ -54,7 +54,7 @@ description 要求：
 - person：可留空
 
 输出格式正例：
-{"tags":[{"label":"伊朗袭击以色列","category":"event","aliases":["伊以冲突"],"description":"伊朗对以色列发动军事打击的新闻事件","auxiliary_labels":[{"label":"伊朗","description":"中东地区国家"},{"label":"以色列","description":"中东国家"},{"label":"导弹袭击","description":"以导弹进行军事打击的行动"}]},{"label":"Kubernetes","category":"keyword","aliases":["K8s"],"description":"开源容器编排系统"}]}`
+{"tags":[{"label":"某国央行上调基准利率","category":"event","aliases":["央行加息"],"description":"某国央行上调基准利率的政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"货币政策利率"},{"label":"利率上调","description":"提高利率的举措"}]},{"label":"Kubernetes","category":"keyword","aliases":["K8s"],"description":"开源容器编排系统"}]}`
 }
 
 // sectionExtractionSchema is the fused JSON schema for per-section extraction.
