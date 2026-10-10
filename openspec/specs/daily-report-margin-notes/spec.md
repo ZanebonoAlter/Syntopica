@@ -86,6 +86,7 @@
 
 - **WHEN** 回答引用了网络来源但无本地文章引用
 - **THEN** 不标注"纯模型知识"；仅当本地文章引用与网络来源均为空时才标注
+
 ### Requirement: 术语派生沉淀
 
 每次问答完成后，系统 SHALL 从问答中抽取涉及的术语并沉淀入术语库（term_notes）：术语归一化后去重（同术语再次出现 SHALL 命中既有条目并累计遇到次数，不重复建条），记录首次遇到的版块与日期。批注卡尾部 SHALL 以 chips 形式展示本次涉及的术语。第一期术语库仅作为数据沉淀与卡内展示，SHALL NOT 提供独立术语库浏览页面。
@@ -156,3 +157,30 @@
 
 - **WHEN** 视口宽 <1100px 且存在批注
 - **THEN** 右侧栏收起，右下出现浮动批注入口（含批注数），点击打开右侧抽屉查看与操作批注
+
+### Requirement: 问答联网状态可见性
+
+页边注问答每次调用 SHALL 采集联网搜索状态 `web_search_status` 并持久化到问答轮（`annotation_qas.web_search_status`）：`disabled`（SearXNG 未配置或未启用）｜`ok`（搜索链路启用且有结果进入参考池）｜`empty`（链路启用但全部搜索失败或结果为空）。该字段 SHALL 随 QA 响应一并返回（加法字段，旧消费方不受影响）。旧行（列值为 NULL）SHALL 视为历史数据，不显示任何联网标记。
+
+批注卡问答轮 WHEN `web_search_status=empty` SHALL 显示「联网搜索无结果」弱化标记（含 title 提示前往设置面板排查）；`ok`/`disabled`/NULL SHALL 不显示标记。标记为纯展示，SHALL NOT 影响回答内容、引用校验与静默降级行为（「搜索失败静默降级」既有语义不变）。
+
+#### Scenario: 联网失效时回答带降级标记
+
+- **WHEN** SearXNG 启用但其上游引擎全部超时，读者完成一次提问
+- **THEN** 问答轮带 `web_search_status=empty` 落库并在批注卡显示「联网搜索无结果」标记，回答正常返回
+
+#### Scenario: 未启用联网时不显示标记
+
+- **WHEN** searxng_config 未配置或 enabled=false 时完成一次提问
+
+- **THEN** 问答轮 `web_search_status=disabled` 落库，批注卡不显示任何联网标记
+
+#### Scenario: 联网正常时不显示标记
+
+- **WHEN** 搜索链路启用且有结果进入参考池（无论回答是否引用）
+- **THEN** 问答轮 `web_search_status=ok` 落库，批注卡不显示联网标记
+
+#### Scenario: 历史问答不显示标记
+
+- **WHEN** 打开本 change 上线前创建的日报批注
+- **THEN** 旧问答轮（web_search_status 为 NULL）不显示联网标记
