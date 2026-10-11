@@ -105,6 +105,14 @@ func runFullScan(ctx context.Context) {
 		return
 	}
 
+	// Defensive: Repo is a package-level singleton initialized at server startup;
+	// in unit-test processes (or misordered startup) it stays nil, and dereferencing
+	// it here would panic the whole host process from this background goroutine.
+	if repository.Repo == nil {
+		scanState.progress <- ScanProgress{Status: "error", Error: "repository not initialized"}
+		return
+	}
+
 	// Load all active tags
 	var tags []models.TopicTag
 	if err := repository.Repo.DB().Where("status = 'active' OR status = '' OR status IS NULL").Find(&tags).Error; err != nil {
