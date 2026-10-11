@@ -5,9 +5,9 @@
 #   --db PATH              目标账本（缺省 .pi/harness/events.db）
 #   --days N               统计窗口天数（缺省 7）
 #   --change NAME          只统计 change 列归属该值的事件（缺省全局）
-#   --lifecycle NAME       单 change 生命周期体检卡（五段：流程规范/UI 工作流/成本卡/健康度/人类反馈
-#                          + proposal 头注释声明元数据；不受 --days 窗口限制，TTL 30 天为硬上限；
-#                          add-change-lifecycle-retro）
+#   --lifecycle NAME       单 change 生命周期体检卡（六段：流程规范/UI 工作流/成本卡/健康度/人类反馈/
+#                          review 覆盖 + proposal 头注释声明元数据；不受 --days 窗口限制，TTL 30 天为硬上限；
+#                          add-change-lifecycle-retro + add-review-trace-gate）
 #   --warn-threshold N     软提醒失效阈值（缺省 5）
 #   --json                 输出机器可读 JSON（与文本同结构）
 #   --save-baseline [PATH] 落基线快照（缺省 .pi/harness/retro-baseline.json）
@@ -69,7 +69,7 @@ harness-retro — harness 事实账本的失败聚类复盘报告（只读）
   --db PATH               目标账本（缺省 .pi/harness/events.db）
   --days N                统计窗口天数（缺省 7；超过 30 天会提示 TTL 清扫风险）
   --change NAME           只统计 change 列归属该值的事件（缺省全局）
-  --lifecycle NAME        单 change 生命周期体检卡（五段 + proposal 声明元数据；
+  --lifecycle NAME        单 change 生命周期体检卡（六段 + proposal 声明元数据；
                           与 --change / 基线选项互斥，不受 --days 窗口限制）
   --warn-threshold N      纠正型软提醒失效阈值（缺省 5；纠正型 warn 计数 ≥ 阈值即列出；
                           仅作用于纠正型失效判定，情报型 warn 单列计数不受影响）
@@ -459,7 +459,15 @@ repair_x AS (SELECT COUNT(*) n FROM pr WHERE sec IS NULL OR sec < 0),
 gseq AS (SELECT ts, cmd, ok, LEAD(ok) OVER (PARTITION BY session_id, cmd ORDER BY id) nok, LEAD(ts) OVER (PARTITION BY session_id, cmd ORDER BY id) nts FROM gc),
 repair_gate AS (SELECT (julianday(nts)-julianday(ts))*86400.0 sec FROM gseq WHERE ok=0 AND nok=1),
 repair_all AS (SELECT sec FROM repair_gate WHERE sec IS NOT NULL AND sec >= 0 UNION ALL SELECT sec FROM repair_p),
-q_rep AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT sec v FROM repair_all))
+q_rep AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (SELECT sec v FROM repair_all)),
+/* review 覆盖段（add-review-trace-gate design D7）：dispatch 分类参考口径——desc 含
+   「修复」优先归修复类（防「修复 review M1」误计 review 类）；仅有带 change 归属的
+   dispatch 才在 ev 内（历史无归属行不回填；total=0 时展示层标注「归属改造前无数据」） */
+rv_disp AS (SELECT json_extract(payload,'$.type') typ, json_extract(payload,'$.desc') dsc
+  FROM ev WHERE kind='subagent.dispatch' AND json_valid(payload)),
+rv_cls AS (SELECT CASE WHEN dsc IS NOT NULL AND dsc LIKE '%修复%' THEN 'repair'
+    WHEN typ = 'change-review-glm' OR (dsc LIKE '%review%' OR dsc LIKE '%审查%') THEN 'review'
+    ELSE 'other' END cls FROM rv_disp)
 SELECT json_object(
   'name', ${NAME_LIT},
   'terminal', json_object('arch_ts',(SELECT arch_ts FROM term),'arch_n',(SELECT arch_n FROM term),'abandon_ts',(SELECT abandon_ts FROM term),'abandon_n',(SELECT abandon_n FROM term)),
@@ -486,6 +494,11 @@ SELECT json_object(
     'repair', json_object('median_sec',(SELECT v FROM q_rep WHERE rn=(n+1)/2),'samples',(SELECT n FROM q_rep),'excluded',(SELECT IFNULL(n,0) FROM repair_x)),
     'regressions',(SELECT n FROM reg),
     'waves',(SELECT json_group_array(json_object('path',p,'sessions',n)) FROM wave)
+  ),
+  'review', json_object(
+    'dispatch_total',(SELECT COUNT(*) FROM rv_disp),
+    'review_disp',(SELECT COUNT(*) FROM rv_cls WHERE cls='review'),
+    'repair_disp',(SELECT COUNT(*) FROM rv_cls WHERE cls='repair')
   )
 );
 LIFESQL
@@ -597,6 +610,51 @@ def parse_feedback(change_dir):
 
 fb, fb_err = parse_feedback(fb_dir)
 
+# ---- review 覆盖段数据源（add-review-trace-gate）：文件痕迹三态（权威口径）——
+#      review.md 建账 / proposal 头部 waived 声明 / 皆无；判据与 review-trace.sh 同构
+#      （一行正则全解析，标题与状态行间允许空行；waived 优先，双痕迹展示并存） ----
+def parse_review_trace(change_dir, meta_path):
+    '''返回 {'waived','entries','no_finding'}；文件缺席按零痕迹降级（不炸段）'''
+    out_rv = {'waived': False, 'entries': 0, 'no_finding': False}
+    if meta_path:
+        try:
+            with open(meta_path, encoding='utf-8') as fh:
+                for line in fh:
+                    s = line.strip()
+                    if not s:
+                        continue
+                    if not (s.startswith('<!--') and s.endswith('-->')):
+                        break  # 头部机器可读注释区结束（正文段落 marker 不识别）
+                    if re.match(r'^<!--\s*review\s*:\s*waived\s*-->$', s):
+                        out_rv['waived'] = True
+        except OSError:
+            pass
+    if change_dir:
+        path = change_dir.rstrip('/') + '/review.md'
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding='utf-8') as fh:
+                    content = fh.read()
+                pending = False
+                for line in content.split('\n'):
+                    if re.match(r'^### R-\d+ \d{4}-\d{2}-\d{2}【(High|Medium|Low)】.+', line):
+                        pending = True
+                        continue
+                    if pending:
+                        if re.match(r'^- \*\*状态\*\*：(待处理|已修复|已采纳|已驳回|误报丢弃)(（.*）)?\s*$', line):
+                            out_rv['entries'] += 1
+                            pending = False
+                        elif not line.strip():
+                            pass  # 标题与状态行间的惯例空行
+                        else:
+                            pending = False
+                out_rv['no_finding'] = bool(re.search(r'(?m)^- 审毕无发现（审查范围：.+）\s*$', content))
+            except OSError:
+                pass
+    return out_rv
+
+rv_trace = parse_review_trace(fb_dir, meta_path)
+
 # ---- 终态判定（archive 优先；abandon×archive 并存冲突提示；未归档不假定终态） ----
 archived = term.get('arch_ts') is not None or dir_hit
 abandoned = term.get('abandon_ts') is not None
@@ -625,6 +683,8 @@ if json_mode == '1':
                      'arch_ts': term.get('arch_ts'), 'abandon_ts': term.get('abandon_ts'), 'conflict': conflict},
         'sessions': sess, 'flow': flow, 'ui': ui, 'cost': cost, 'health': health,
         'human_feedback': {'present': fb is not None, 'error': fb_err, **(fb or {})},
+        'review': {'state': ('waived' if rv_trace['waived'] else 'review_md' if rv_trace['entries'] else 'no_finding' if rv_trace['no_finding'] else 'none'),
+                   **rv_trace, 'archived': archived, 'dispatch': st.get('review') or {}},
         'warnings': warnings,
     }
     json.dump(doc, sys.stdout, ensure_ascii=False, indent=2, sort_keys=True)
@@ -752,6 +812,33 @@ else:
     out.append('   未处置          : %s 条（待处理/处理中：%s）' % (fb['open'], '、'.join(fb['open_ids']) or '无'))
     if fb['bad']:
         out.append('   格式异常        : %s 条（%s）——词表外归因/缺状态行，单列披露不炸段' % (fb['bad'], '、'.join('FB-%s' % i for i in fb['bad_ids'])))
+out.append('')
+
+# ---- 六、review 覆盖段（add-review-trace-gate design D1/D7：文件痕迹三态为权威口径，
+#      dispatch 分类计数为参考口径——desc 关键词有误报面，「修复」优先归修复类防误计；
+#      独立于事件 empty 判定：痕迹文件与事件账本正交） ----
+out.append('六、review 覆盖段（review.md 痕迹 / waived 豁免 / review 类派发参考口径）')
+if rv_trace['waived']:
+    _dual = ''
+    if rv_trace['entries']:
+        _dual = '（双痕迹：另检出 review.md 建账 %s 条，以 waived 计）' % rv_trace['entries']
+    elif rv_trace['no_finding']:
+        _dual = '（双痕迹：另检出审毕无发现声明，以 waived 计）'
+    out.append('   痕迹形态        : waived 显式豁免（proposal 头部声明）%s' % _dual)
+elif rv_trace['entries']:
+    out.append('   痕迹形态        : review.md 建账（%s 条）' % rv_trace['entries'])
+elif rv_trace['no_finding']:
+    out.append('   痕迹形态        : 审毕无发现（review.md 显式声明）')
+elif archived:
+    out.append('   痕迹形态        : 皆无（已归档——缺口：归档前未做 review 也未显式豁免）')
+else:
+    out.append('   痕迹形态        : 皆无（未归档——归档门禁 review-trace 将对账，两者皆无则阻断）')
+_rvdisp = (st.get('review') or {})
+if (_rvdisp.get('dispatch_total') or 0) > 0:
+    out.append('   review 类派发   : %s 次（参考口径：type=change-review-glm 或 desc 含 review/审查）' % (_rvdisp.get('review_disp') or 0))
+    out.append('   修复类派发      : %s 次（参考口径：desc 含「修复」优先归类，不计 review 类）' % (_rvdisp.get('repair_disp') or 0))
+else:
+    out.append('   review 类派发   : 归属改造前无数据（dispatch 事件 change 归属自 add-review-trace-gate 落地起记录，历史不回填）')
 out.append('')
 
 if warnings:

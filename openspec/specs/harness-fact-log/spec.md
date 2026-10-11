@@ -33,6 +33,8 @@ harness 层事实账本：以 `.pi/harness/events.db`（单表 append-only SQLit
 
 `session.rollup` 事件由 harness-telemetry 追加快照：change 列为快照写入时刻会话绑定的 change（可空）；查询侧对同一 session_id MUST 取最新一条作为终值（中间快照不参与聚合），语义对齐 `edit.map` 的快照覆盖取终值约定。
 
+`subagent.dispatch` 事件由 harness-telemetry 追加：change 列为派发落账时刻的活跃 change（与 session.rollup 快照同源的 detectActiveChange 判定；解析不到为 null）。后台派发的 agentId→change 绑定快照与 subagent.complete 回填共用同一判定结果（agentChangeBindings）；dispatch 与 complete 两侧 change 值以各自落账时刻为准，不做跨时刻一致性承诺（会话中途切档属正常）。既有无 change 归属的历史 dispatch 行不改写，归属统计自改造落地后有效。
+
 #### Scenario: TTL 分级清扫
 
 - **WHEN** 开库时存在 31 天前的 constraint.inject、policy.decision、edit.map、change.archive 行与 91 天前的 session.start 行
@@ -72,6 +74,16 @@ harness 层事实账本：以 `.pi/harness/events.db`（单表 append-only SQLit
 
 - **WHEN** `openspec archive <change>` 命令成功执行（未被 spec-gate 阻断且工具结果非错误）
 - **THEN** events.db 新增一条 kind 为 `change.archive` 的事件行（payload 契约见「归档成功记账」）；31 天后被 TTL 清扫，既有数据库无需 schema 迁移
+
+#### Scenario: dispatch 携带 change 归属
+
+- **WHEN** detectActiveChange 解析出活跃 change（openspec/changes/ 下存在非 archive change 目录）时派发 Agent 子线程
+- **THEN** events.db 新增一条 kind 为 `subagent.dispatch` 的事件行，change 列为该 change 名，payload 契约不变（仅新增归属列值）
+
+#### Scenario: 无活跃 change 时 dispatch 归属可空
+
+- **WHEN** openspec/changes/ 无非 archive change 目录（或目录检测失败）时派发 Agent 子线程
+- **THEN** 新增 dispatch 行 change 列为 null，事件照常落库，不阻断派发
 
 ### Requirement: session 效能汇总记账（session.rollup）
 

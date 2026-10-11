@@ -42,8 +42,8 @@ description: Syntopica harness 事实库（.pi/harness/events.db）查询指南�
 | `gate.check` | 30 天 | `cmd`、`phase`(turn_end)、`ok`、`ms`、`diag`；ok=false 另附 `ownership`（add-foreign-gate-steer-attribution，四态：`mine`/`foreign`/`mixed` 透传归属判定，`attribution-degraded`=归因信号缺席/判定异常的保守回退标记）——仅分类路径携带，ok=true 与环境故障（interop/toolchain）失败无该键，**存量无键事件判空回退视为未判定**（`json_extract` 返回 NULL 不报错） |
 | `patrol.check` | 30 天 | `shard`、`ok`、`ms`、`fails[]`（失败测试标识数组，全绿为空数组）；由 `scripts/harness/test-patrol.sh` 直写（非扩展，`session_id`=PI_SESSION_ID 或 `patrol.sh`），**`change` 列恒 NULL**（巡检是仓库级活动） |
 | `mode.set` | 30 天 | `mode`、`boundChange`、`source`（`command` / `skill` / `edit-dir` / `recover` / `inherit` / `fallback`——**所有绑定变化路径均记账，隐性绑定不存在**） |
-| `subagent.dispatch` | 30 天 | `type`、`model`、`desc`、`ms`、`tokens`、`status`、`agentId`、`isError` |
-| `subagent.complete` | 30 天 | `agentId`、`status`、`ms`、`tokens`、`toolUses`、`isError`（后台子线程完成回填） |
+| `subagent.dispatch` | 30 天 | `type`、`model`、`desc`、`ms`、`tokens`、`status`、`agentId`、`isError`；**change 列 = 派发落账时刻的活跃 change**（与 session.rollup 快照同源 detectActiveChange 判定，一次判定两用 agentChangeBindings + 事件 change 列，add-review-trace-gate；解析不到记 null 不阻断派发）。历史边界：add-review-trace-gate 落地前的 dispatch 行 change 列为空（不回填，事件追加不可变）——retro review 覆盖统计对该时段标注「归属改造前无数据」 |
+| `subagent.complete` | 30 天 | `agentId`、`status`、`ms`、`tokens`、`toolUses`、`isError`（后台子线程完成回填；change 列 = 派发时刻暂存的 agentChangeBindings 绑定值，与 dispatch 侧各自落账时刻为准，不做跨时刻一致性承诺） |
 | `spill.write` | 30 天 | `tool`、`bytes`、`path`、`ok`（大工具结果落盘记账） |
 | `pin.write` | 永久 | 见 pin_finding 写入方 |
 | `edit.map` | 30 天 | `paths`（该 change 累计编辑路径全量快照，排序去重）、`n`（=paths.length）；change 列 = 会话绑定的 change（mode.set boundChange 语义）；归属地图查询首选 `bash scripts/harness/concurrency-status.sh [change]`（人读三段）或 `--check <change>`（exit 0 干净/2 有归属其他 active change 脏文件/3 冷启动） |

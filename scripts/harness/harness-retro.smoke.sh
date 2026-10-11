@@ -642,6 +642,10 @@ ins "$FM" policy.decision life-ui '{"policy":"ui-design-gate","action":"pass","r
 ins "$FM" policy.decision life-ui '{"policy":"spec-gate","action":"block","reasonCode":"archive-check-failed","target":"doc-impact"}' s-m1 "$(MT '-35 min')"
 ins "$FM" policy.decision life-ui '{"policy":"quality-gate","action":"fail-open","reasonCode":"interop-down"}' s-m1 "$(MT '-60 min')"
 ins "$FM" subagent.dispatch life-ui '{"type":"explore","model":"glm-5.3","ms":100,"status":"completed","isError":false}' s-m1 "$(MT '-10 min')"
+# review 覆盖段 fixture（add-review-trace-gate）：带归属 dispatch 三条——explore(other)/
+# change-review-glm(review 类)/desc 含「修复」(repair 类优先，desc 含 review 不误计)
+ins "$FM" subagent.dispatch life-ui '{"type":"change-review-glm","model":"zai-coding-cn/glm-5.3","desc":"change-review-glm 审查","ms":5000,"status":"completed","isError":false}' s-m1 "$(MT '-9 min')"
+ins "$FM" subagent.dispatch life-ui '{"type":"general-purpose","desc":"修复 review R-1 并归档","ms":3000,"status":"completed","isError":false}' s-m1 "$(MT '-8 min')"
 ins "$FM" session.rollup life-ui '{"turns":8,"toolCalls":30,"cost":1.0,"durationSec":600,"models":{"glm-5.3":{"tokens":{"total":8000},"cost":1.0}},"final":true}' s-m1 "$(MT '-6 min')"
 ins "$FM" session.rollup '' '{"turns":3,"toolCalls":10,"cost":0.5,"durationSec":200,"models":{"glm-5.3":{"tokens":{"total":3000},"cost":0.5}},"parentSessionId":"s-m1","final":true}' s-c1 "$(MT '-5 min')"
 ins "$FM" change.archive life-ui '{"name":"life-ui"}' s-m1 "$(MT '-5 min')"
@@ -667,7 +671,7 @@ done
 # 元数据 fixture：changes/（未归档）与 archive/（已归档）两棵树
 MCH="$TMP/mchanges"
 mkdir -p "$MCH/c-q" "$MCH/life-old"
-printf '<!-- ui-impact: minor -->\n\n## Why\nx\n' >"$MCH/c-q/proposal.md"
+printf '<!-- ui-impact: minor -->\n<!-- review: waived -->\n\n## Why\nx\n' >"$MCH/c-q/proposal.md"
 printf '<!-- ui-impact: major -->\n<!-- complexity: simple -->\n\n## Why\nx\n' >"$MCH/life-old/proposal.md"
 MARCH="$TMP/march"
 ARCH_DM="$(date -u -d '2 days ago' +%F)"
@@ -711,6 +715,25 @@ cat >"$MCH/c-q/human-feedback.md" <<'MFBCEOF'
 
 （正文没有任何状态行）
 MFBCEOF
+# review 建账 fixture（add-review-trace-gate）：life-ui（archive 树，2 条合法 + 1 条
+# 词表外不计入）；c-q 走 waived；life-old / life-conflict 皆无（未归档/已归档两态）
+cat >"$MARCH/$ARCH_DM-life-ui/review.md" <<'MRVEOF'
+# Review — life-ui
+
+## 意见清单
+
+### R-1 2026-10-12【High】成本卡归因子会话错记
+
+- **状态**：已修复
+
+### R-2 2026-10-12【Medium】放行态文案与门禁枚举不一致
+
+- **状态**：已采纳
+
+### R-3 2026-10-12【Critical】词表外等级不计入
+
+- **状态**：已修复
+MRVEOF
 
 Menv() { HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" run_retro --db "$FM" "$@"; }
 
@@ -776,6 +799,11 @@ assert hf['total'] == 3 and hf['types'] == {'产品': 2, '流程': 1}, hf
 assert hf['layers'] == {'frontend': 2, 'process': 1}, hf
 assert hf['open'] == 1 and hf['open_ids'] == ['FB-2'], hf
 assert hf['bad'] == 0, hf
+rv = d['review']
+assert rv['state'] == 'review_md' and rv['entries'] == 2, rv
+assert rv['waived'] is False and rv['no_finding'] is False, rv
+assert rv['dispatch']['dispatch_total'] == 3, rv
+assert rv['dispatch']['review_disp'] == 1 and rv['dispatch']['repair_disp'] == 1, rv
 FMLPY
 then
 	echo "  ✓ L9 lifecycle --json 结构与数值可复算（terminal/cost 1.5/repair 30min/反馈 3 条）"
@@ -809,6 +837,24 @@ else
 	echo "  ✗ L14 反馈文件被修改"
 	failn=$((failn + 1))
 fi
+
+# ---------- L15-L18：第六段 review 覆盖段（add-review-trace-gate 1.4） ----------
+Menv --lifecycle life-ui
+check 0 "L15 建账 change 覆盖段展示（archive 路径 + 条目计数 + 派发分类参考口径）" \
+	"六、review 覆盖段" "痕迹形态        : review.md 建账（2 条）" \
+	"review 类派发   : 1 次（参考口径" "修复类派发      : 1 次（参考口径"
+
+Menv --lifecycle c-q
+check 0 "L16 waived 形态 + 无带归属派发 → 归属改造前无数据（不输出误导性 0）" \
+	"痕迹形态        : waived 显式豁免" "归属改造前无数据"
+
+Menv --lifecycle life-old
+check 0 "L17 皆无未归档 → 归档门禁将对账提示（不记缺口）" \
+	"痕迹形态        : 皆无（未归档"
+
+Menv --lifecycle life-conflict
+check 0 "L18 皆无已归档 → 记缺口（归档前未做 review 也未显式豁免）" \
+	"痕迹形态        : 皆无（已归档——缺口"
 
 # ---------- L10：催修时距分派（design D3，89 分钟假慢反例） ----------
 "$RETRO" --db "$FM" --days 7 --json >"$TMP/fm7.json" 2>/dev/null

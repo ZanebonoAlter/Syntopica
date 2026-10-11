@@ -17,8 +17,10 @@
  *   tool_call(bash) 暂存 openspec archive 命令（task-cost-metrics D4，配对 tool_result 记 change.archive）
  *   tool_result(bash)         → change.archive（归档成功锚点：命令命中且非错误 → 记
  *                               change 名（正则语义同 spec-gate）；失败/提取不到零记录 fail-open）
- *   tool_result(Agent)         → subagent.dispatch（类型/模型/摘要/耗时/token；失败附白名单 failure；
- *                               后台派发时暂存 agentId→change 绑定供完成回填复用）
+ *   tool_result(Agent)         → subagent.dispatch（类型/模型/摘要/耗时/token/change 归属；
+ *                               失败附白名单 failure；后台派发时暂存 agentId→change 绑定
+ *                               供完成回填复用——add-review-trace-gate D2：change 列与
+ *                               session.rollup 同源 detectActiveChange，历史无归属行不回填）
  *   tool_result(get_subagent_result) → subagent.complete（后台子线程完成回填，
  *                               harness-observability-fixes D3：解析结果摘要首两行；
  *                               13/17 条 dispatch 永停 background 态的审计断链修复）
@@ -387,12 +389,12 @@ export default function (pi: ExtensionAPI) {
 		const tokenLabel = details?.tokens ?? null;
 		const tokens = usage?.totalTokens ?? parseTokenCount(tokenLabel);
 
-		// 后台派发暂存 agentId → 当时 change 绑定（subagent.complete 复用，D3）
+		// dispatch 落账补 change 归属（add-review-trace-gate design D2）：与 session.rollup
+		// 快照同源 detectActiveChange，一次判定两用——写 agentChangeBindings（complete 回填
+		// 复用，不二次调用）+ dispatch 事件 change 列；既有无归属历史行不改写（追加不改写）
+		const dispatchChange = detectActiveChange(ctx.cwd)?.name ?? null;
 		if (details?.agentId) {
-			agentChangeBindings.set(
-				details.agentId,
-				detectActiveChange(ctx.cwd)?.name ?? null,
-			);
+			agentChangeBindings.set(details.agentId, dispatchChange);
 		}
 
 		// A4 失败白名单：仅失败产出 failure（成功/取消不产出）；diag≤512B，原文不透传
@@ -408,6 +410,7 @@ export default function (pi: ExtensionAPI) {
 		guardedLog(ctx.cwd, ctx, {
 			kind: "subagent.dispatch",
 			sessionId,
+			change: dispatchChange, // 派发落账时刻的活跃 change（解析不到 null；complete 分支不动）
 			payload: {
 				parent_session_id: sessionId,
 				type: input.subagent_type ?? null,

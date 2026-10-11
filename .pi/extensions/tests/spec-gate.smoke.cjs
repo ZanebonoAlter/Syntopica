@@ -173,7 +173,7 @@ try {
 		check('block → policy=spec-gate/action=block/reasonCode=archive-check-failed 恰一条',
 			rowsA.length === 1 && rowsA[0].payload.policy === 'spec-gate' && rowsA[0].payload.action === 'block' && rowsA[0].payload.reasonCode === 'archive-check-failed');
 		check('block 事件 change 绑定被归档 change（fake-change）', rowsA[0].change === 'fake-change');
-		check('block 事件 target 只含失败检查名（无输出正文）', rowsA[0].payload.target === 'doc-impact,standards,tasks,trace' && !JSON.stringify(rowsA[0].payload).includes('boom'));
+		check('block 事件 target 只含失败检查名（无输出正文）', rowsA[0].payload.target === 'doc-impact,standards,tasks,trace,review' && !JSON.stringify(rowsA[0].payload).includes('boom'));
 		check('block 路径不发 custom_message', gA.messages.length === 0);
 
 		// 7b. 显式 bypass（--force）→ 放行 + policy.decision(bypass, explicit-bypass)
@@ -425,6 +425,46 @@ try {
 		require('./.sgate.cjs').default(g8h.pi);
 		const r8h = await runGate(g8h, 'openspec archive ui-major-gap --force', t8h);
 		check('8h --force → UI 检查同被豁免 + warning 留痕含 UI 项', r8h === undefined && g8h.messages.some((m) => /UI 验收证据/.test(m.content)));
+
+		// ---- 7i/7j. 检查⑤ review-trace 痕迹对账（add-review-trace-gate）：真跑真脚本 + 真 fixture ----
+		const { spawnSync } = require('child_process');
+		const REAL_RT = path.resolve(__dirname, '../../../scripts/harness/review-trace.sh');
+		const rtChangeDir = (t, name) => {
+			const dir = path.join(t, 'openspec', 'changes', name);
+			fs.mkdirSync(dir, { recursive: true });
+			return dir;
+		};
+		/** review-trace.sh 真跑（绝对路径透传），其余走 passExec */
+		const rtRealExec = (t) => async (cmd, args) => {
+			if (cmd === 'bash' && args[0] === 'scripts/harness/review-trace.sh') {
+				const r = spawnSync('bash', [REAL_RT, path.resolve(t, args[1])], { encoding: 'utf8' });
+				return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+			}
+			return passExec(cmd, args);
+		};
+
+		// 7i. 零痕迹 fixture（无 review.md 无 waived）→ block，reason 含两条修复路径
+		const tI = mktmp(); tmps.push(tI);
+		const dirI = rtChangeDir(tI, 'rt-zero-chg');
+		fs.writeFileSync(path.join(dirI, 'proposal.md'), '## Why\nx\n');
+		const gI = makeGatePi(rtRealExec(tI));
+		require('./.sgate.cjs').default(gI.pi);
+		const rI = await runGate(gI, 'openspec archive rt-zero-chg', tI);
+		const rowsI = policyRows(tI);
+		check('7i review-trace 零痕迹 → block + reason 含零痕迹与两条修复路径（真跑真脚本）',
+			rI && rI.block === true && /\[review-trace\]/.test(rI.reason) && /零痕迹/.test(rI.reason) && /修复路径（二选一）/.test(rI.reason));
+		check('7i review-trace 失败 → target 只含 review（其余四项绿）',
+			rowsI.length === 1 && rowsI[0].payload.target === 'review' && rowsI[0].payload.reasonCode === 'archive-check-failed');
+
+		// 7j. waived fixture（proposal 头部声明）→ 真跑通过 → 放行零记账
+		const tJ = mktmp(); tmps.push(tJ);
+		const dirJ = rtChangeDir(tJ, 'rt-waived-chg');
+		fs.writeFileSync(path.join(dirJ, 'proposal.md'), '<!-- review: waived -->\n\n## Why\nx\n');
+		const gJ = makeGatePi(rtRealExec(tJ));
+		require('./.sgate.cjs').default(gJ.pi);
+		const rJ = await runGate(gJ, 'openspec archive rt-waived-chg', tJ);
+		check('7j review-trace waived 声明 → 五项全过放行 + 零 policy.decision（真跑真脚本）',
+			rJ === undefined && policyRows(tJ).length === 0);
 
 		// ---- 9. 归档 warn 边沿触发（edge-trigger-archive-gate-warns）：同会话多次 tool_call，
 		//     指纹态 per-sessionId（模块级 Map，跨用例存活——新用例 change 名已避让既有用例）----

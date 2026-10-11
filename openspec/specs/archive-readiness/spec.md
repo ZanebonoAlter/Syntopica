@@ -7,16 +7,16 @@
 
 ### Requirement: 归档就绪聚合自查脚本
 
-系统 SHALL 提供 `scripts/harness/archive-readiness.sh <change>`（change 为 openspec change 名，kebab-case），执行与 spec-gate 归档门禁完全相同口径的四项检查：doc-impact verify、check-standards、tasks.md 尾三节与 doc-impact 声明标记、scenario-trace 对账。脚本 SHALL 逐项输出绿/红与失败原因摘要，任一项红则退出码 1，全绿退出码 0。四项判定 SHALL 复用与门禁相同的脚本与判定实现（同一事实源），不得另立第二份判定逻辑；脚本 SHALL 只读判定，不修改仓库文件、不执行测试或编译命令。
+系统 SHALL 提供 `scripts/harness/archive-readiness.sh <change>`（change 为 openspec change 名，kebab-case），执行与 spec-gate 归档门禁完全相同口径的五项检查：doc-impact verify、check-standards、tasks.md 尾三节与 doc-impact 声明标记、scenario-trace 对账、review-trace 痕迹对账。脚本 SHALL 逐项输出绿/红与失败原因摘要，任一项红则退出码 1，全绿退出码 0。五项判定 SHALL 复用与门禁相同的脚本与判定实现（同一事实源），不得另立第二份判定逻辑；脚本 SHALL 只读判定，不修改仓库文件、不执行测试或编译命令。human-feedback 处置对账提醒层（add-change-lifecycle-retro）保持不阻断语义，展示编号顺延。
 
 #### Scenario: 全绿通过
 
-- **WHEN** 四项检查全部通过
+- **WHEN** 五项检查全部通过
 - **THEN** 脚本退出码 0，输出逐项 ✓ 与总通过语
 
 #### Scenario: 多项红一次性汇总
 
-- **WHEN** 四项中存在至少一项红
+- **WHEN** 五项中存在至少一项红
 - **THEN** 脚本退出码 1，一次性列出全部红项（非仅首个）及各自的失败原因摘要
 
 #### Scenario: change 不存在
@@ -28,6 +28,11 @@
 
 - **WHEN** 脚本对任意 change 执行
 - **THEN** 仓库文件零修改，且全程不执行测试或编译命令
+
+#### Scenario: review 痕迹红项聚合
+
+- **WHEN** 五项中仅 review-trace 红（review.md 与 waived 声明皆无）
+- **THEN** 脚本退出码 1，该项红项输出透传 review-trace.sh 的失败原因与修复路径指引
 
 ### Requirement: 门禁 block 指引联动
 
