@@ -2,13 +2,13 @@
 description: 只读审查 openspec change（绑定 zai-coding-cn/glm-5.3 high）；读 brief 文件产出中文审查报告
 display_name: change-review-glm
 tools: read, grep, find, ls, bash
-load_skills: false
+load_skills: true
 load_extensions: false
 enabled: true
 inherit_context: false
 run_in_background: false
 prompt_mode: append
-skills: false
+skills: true
 extensions: false
 model: zai-coding-cn/glm-5.3
 thinking: max
