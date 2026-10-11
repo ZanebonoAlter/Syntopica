@@ -16,6 +16,16 @@ export function useDatasources() {
   const comtradeError = ref<string | null>(null)
   const comtradeSuccess = ref<string | null>(null)
 
+  // FRED key 管理（add-fast-frequency-datasources：与 Comtrade 同款语义）
+  const fredEnabled = ref(true)
+  const fredApiKey = ref('')
+  const fredApiKeyConfigured = ref(false)
+  const fredApiKeyHint = ref('')
+  const fredApiKeyVisible = ref(false)
+  const fredLoading = ref(false)
+  const fredError = ref<string | null>(null)
+  const fredSuccess = ref<string | null>(null)
+
   // probe 逐源状态
   const probing = ref<Record<string, boolean>>({})
   const probeResults = ref<Record<string, { ok: boolean; text: string }>>({})
@@ -78,6 +88,44 @@ export function useDatasources() {
     }
   }
 
+  async function loadFred() {
+    try {
+      const { getFredStatus } = useDatasourcesApi()
+      const res = await getFredStatus()
+      if (res.success && res.data) {
+        fredEnabled.value = res.data.enabled
+        fredApiKeyConfigured.value = res.data.api_key_configured === true
+        fredApiKeyHint.value = res.data.api_key_hint || ''
+      }
+    } catch {
+      fredError.value = '加载 FRED 配置失败'
+    }
+  }
+
+  async function saveFred() {
+    fredLoading.value = true
+    fredError.value = null
+    fredSuccess.value = null
+    try {
+      const { saveFredSettings } = useDatasourcesApi()
+      const res = await saveFredSettings({
+        enabled: fredEnabled.value,
+        api_key: fredApiKey.value,
+      })
+      if (!res.success) throw new Error(res.error || '保存失败')
+      if (fredApiKey.value) {
+        fredApiKeyConfigured.value = true
+        fredApiKey.value = ''
+      }
+      fredSuccess.value = '已保存，即时生效'
+      await loadCatalog() // fred status 可能随 key 配置翻转
+    } catch (e) {
+      fredError.value = e instanceof Error ? e.message : '保存失败'
+    } finally {
+      fredLoading.value = false
+    }
+  }
+
   async function runProbe(code: string) {
     probing.value = { ...probing.value, [code]: true }
     try {
@@ -119,6 +167,16 @@ export function useDatasources() {
     comtradeSuccess,
     loadComtrade,
     saveComtrade,
+    fredEnabled,
+    fredApiKey,
+    fredApiKeyConfigured,
+    fredApiKeyHint,
+    fredApiKeyVisible,
+    fredLoading,
+    fredError,
+    fredSuccess,
+    loadFred,
+    saveFred,
     probing,
     probeResults,
     runProbe,

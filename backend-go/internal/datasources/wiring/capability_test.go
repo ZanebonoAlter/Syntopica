@@ -10,8 +10,9 @@ import (
 // 发现侧能力文本（board-signal-reports tasks 3.7 发现半边）内容契约：每源
 // 行四字段（code | Coverage | Frequency | TypicalLag | UnitPolicy）全部从
 // datasources.Catalog() 派生——单一事实来源，改 catalog 必然改渲染，出现
-// 手抄第二份的漂移直接红。硬限制句钉住三件事：四源无价格/裂解价差/运价/
-// 政策数据、EIA 仅美国、发现阶段不取数。
+// 手抄第二份的漂移直接红。能力边界句钉住（add-fast-frequency-datasources
+// 新口径）：价格只有 yahoo/fred、事件层只有 gdelt 热度、量类不含价格、
+// EIA 仅美国、发现阶段不取数。
 func TestSourceCapabilityTextDerivesFromCatalog(t *testing.T) {
 	text := SourceCapabilityText()
 	catalog := datasources.Catalog()
@@ -24,13 +25,15 @@ func TestSourceCapabilityTextDerivesFromCatalog(t *testing.T) {
 			t.Fatalf("capability text missing catalog line for %s:\nwant line: %q\ntext: %q", d.Code, line, text)
 		}
 	}
-	for _, code := range []string{"eia_wpsr", "jodi_oil_primary", "wb_wdi", "un_comtrade"} {
+	for _, code := range []string{"eia_wpsr", "jodi_oil_primary", "wb_wdi", "un_comtrade", "yahoo_finance", "fred", "gdelt"} {
 		if !strings.Contains(text, code) {
 			t.Fatalf("capability text missing source %s", code)
 		}
 	}
 	for _, phrase := range []string{
-		"裂解价差", "运价", "政策",
+		"价格/行情类数据只有 yahoo_finance 与 fred",
+		"事件层只有 gdelt",
+		"量类源", "不含价格", "运价",
 		"EIA 仅美国",
 		"发现阶段", "不调用任何数据源取数",
 	} {

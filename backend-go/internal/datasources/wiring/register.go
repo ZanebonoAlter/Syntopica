@@ -26,11 +26,11 @@ import (
 // only).
 const cacheTTL = 900 * time.Second
 
-// newStack builds the shared fetcher/cache and the four source fetchers.
-// resolve supplies the Comtrade key live (UI-configured value wins without
-// restart).
-func newStack(resolve datasources.KeyResolver) (*sources.EIA, *sources.JODI, *sources.WDI, *sources.Comtrade) {
-	hosts := make([]string, 0, 4)
+// newStack builds the shared fetcher/cache and the seven source fetchers.
+// resolve supplies the Comtrade/FRED keys live (UI-configured values win
+// without restart).
+func newStack(resolve datasources.KeyResolver) (*sources.EIA, *sources.JODI, *sources.WDI, *sources.Comtrade, *sources.Yahoo, *sources.Fred, *sources.Gdelt) {
+	hosts := make([]string, 0, 8)
 	for _, d := range datasources.Catalog() {
 		hosts = append(hosts, d.HostAllowlist...)
 	}
@@ -39,27 +39,30 @@ func newStack(resolve datasources.KeyResolver) (*sources.EIA, *sources.JODI, *so
 	return sources.NewEIA(fetch, cache),
 		sources.NewJODI(fetch, cache),
 		sources.NewWDI(fetch, cache),
-		sources.NewComtrade(fetch, cache, func() string { return resolve("COMTRADE_API_KEY") })
+		sources.NewComtrade(fetch, cache, func() string { return resolve("COMTRADE_API_KEY") }),
+		sources.NewYahoo(fetch, cache),
+		sources.NewFred(fetch, cache, func() string { return resolve("FRED_API_KEY") }),
+		sources.NewGdelt(fetch, cache)
 }
 
-// BuildTools assembles the fetcher stack and returns the four agent-loop
+// BuildTools assembles the fetcher stack and returns the seven agent-loop
 // tools (used by the dataenrichment wiring; registered but not in any default
 // allowedTools list). Descriptions carry only STATIC catalog metadata; the
 // 「当前不可用」availability notice is computed per research run from the live
 // resolver (UnavailableNoticeProbe + service clone), never baked here
-// (design §10.4：不用启动快照). resolve is still live for the Comtrade
-// fetcher's per-call key lookup.
+// (design §10.4：不用启动快照). resolve is still live for the keyed
+// fetchers' per-call key lookup (COMTRADE_API_KEY / FRED_API_KEY).
 func BuildTools(resolve datasources.KeyResolver) []*service.Tool {
-	e, j, w, c := newStack(resolve)
-	return ResearchTools(e, j, w, c)
+	e, j, w, c, y, f, g := newStack(resolve)
+	return ResearchTools(e, j, w, c, y, f, g)
 }
 
 // RegisterRoutes mounts GET /api/datasources + POST /api/datasources/:code/probe
-// with all four probes wired, using the global database.DB (domain
+// with all seven probes wired, using the global database.DB (domain
 // RegisterRoutes convention).
 func RegisterRoutes(api *gin.RouterGroup) *datasources.Handler {
-	resolve := ComtradeKeyResolver()
-	eia, jodi, wdi, comtrade := newStack(resolve)
+	resolve := DataSourcesKeyResolver()
+	eia, jodi, wdi, comtrade, yahoo, fred, gdelt := newStack(resolve)
 
 	h := datasources.NewHandler(gormDB())
 	h.SetKeyResolver(resolve)
@@ -81,6 +84,18 @@ func RegisterRoutes(api *gin.RouterGroup) *datasources.Handler {
 		})
 		return probeSummary(res, err, "rows", "count")
 	})
+	h.RegisterProbe("yahoo_finance", func(ctx context.Context) (map[string]any, time.Time, error) {
+		res, err := yahoo.Fetch(ctx, "CL=F", "1mo")
+		return probeSummary(res, err, "rows", "rows")
+	})
+	h.RegisterProbe("fred", func(ctx context.Context) (map[string]any, time.Time, error) {
+		res, err := fred.Fetch(ctx, "DCOILWTICO", "", "")
+		return probeSummary(res, err, "rows", "rows")
+	})
+	h.RegisterProbe("gdelt", func(ctx context.Context) (map[string]any, time.Time, error) {
+		res, err := gdelt.Fetch(ctx, "oil", "timelinevol", "7d")
+		return probeSummary(res, err, "rows", "rows")
+	})
 
 	ds := api.Group("/datasources")
 	{
@@ -90,15 +105,23 @@ func RegisterRoutes(api *gin.RouterGroup) *datasources.Handler {
 	return h
 }
 
-// ComtradeKeyResolver returns the live key chain (bocha_config semantics):
-// UI DB (comtrade_config: api_key + enabled, dynamic) > env/config.yaml
-// (merged by viper at boot). Key-requiring sources re-resolve per call.
-func ComtradeKeyResolver() datasources.KeyResolver {
+// DataSourcesKeyResolver returns the live key chain for every keyed research
+// source (bocha_config semantics): UI DB (api_key + enabled, dynamic) >
+// env/config.yaml (merged by viper at boot). Key-requiring sources re-resolve
+// per call. Covers COMTRADE_API_KEY and FRED_API_KEY (add-fast-frequency-
+// datasources；旧名 ComtradeKeyResolver 语义扩容，改名以名实相副).
+func DataSourcesKeyResolver() datasources.KeyResolver {
 	return func(configKeyName string) string {
-		if configKeyName != "COMTRADE_API_KEY" {
+		var cfg map[string]any
+		switch configKeyName {
+		case "COMTRADE_API_KEY":
+			cfg, _, _ = aisettings.LoadComtradeConfig()
+		case "FRED_API_KEY":
+			cfg, _, _ = aisettings.LoadFredConfig()
+		default:
 			return ""
 		}
-		if cfg, _, err := aisettings.LoadComtradeConfig(); err == nil && cfg != nil {
+		if cfg != nil {
 			enabled := true
 			if v, ok := cfg["enabled"].(bool); ok {
 				enabled = v
@@ -108,7 +131,10 @@ func ComtradeKeyResolver() datasources.KeyResolver {
 			}
 		}
 		if config.AppConfig != nil {
-			return strings.TrimSpace(config.AppConfig.Comtrade.APIKey)
+			if configKeyName == "COMTRADE_API_KEY" {
+				return strings.TrimSpace(config.AppConfig.Comtrade.APIKey)
+			}
+			return strings.TrimSpace(config.AppConfig.Fred.APIKey)
 		}
 		return ""
 	}

@@ -192,7 +192,7 @@ const signalComposeSystemPrompt = `你是一位给普通读者写解读的分析
 - 每个图表的 claim 里如出现数据量，同样只能用引用占位符。
 
 时效纪律：
-- facts 段必须出现「数据截至」四个字并给出数据最新期：从用户消息「数据可用性」行取各源最新可得期中的最新者原样写入（如「数据截至 2026-07」）；零观测（「数据可用性」行注明本研究无可用数据观测）时写「数据截至：无可用数据期」。
+- facts 段必须出现「数据截至」四个字并给出数据最新期：从用户消息「数据可用性」行取各源最新可得期中的最新者原样写入（月度/年度源写「数据截至 2026-07」/「数据截至 2024」，日度源（价格/事件热度）最新期为 YYYY-MM-DD 形态，必须原样带日写入如「数据截至 2026-10-01」，不得缩写为月）；零观测（「数据可用性」行注明本研究无可用数据观测）时写「数据截至：无可用数据期」。
 - 「数据截至」后的期间必须原样取自「数据可用性」行，不得自己编造或推断更新的期间。
 
 图表纪律：
@@ -299,17 +299,6 @@ func signalPeriodRank(period string) (int, bool) {
 		return 0, false
 	}
 	return (year*12+month)*32 + day, true
-}
-
-// signalPeriodMonthKey 把期值归一到月粒度：signalPeriodRank 的日分量严格小于
-// 32，整除 32 即 (年*12+月)。「2026-07-31」与「2026-07」同月视为一致；年度
-// 期值（如 WDI 的 2024）归一为 2024-01（review M1 月粒度比较口径）。
-func signalPeriodMonthKey(period string) (int, bool) {
-	rank, ok := signalPeriodRank(period)
-	if !ok {
-		return 0, false
-	}
-	return rank / 32, true
 }
 
 // signalSourceLatest 是一个源（工具）的机械计算最新可得期。
@@ -526,10 +515,12 @@ func parseSignalComposeDraft(content string) (*signalComposeDraft, error) {
 var signalAsOfPeriodTokenRe = regexp.MustCompile(`\d{4}[年/-]\d{1,2}(?:[月/-]\d{1,2})?日?|\d{6}|\d{4}`)
 
 // validateSignalFactsAsOf 校验 facts 段的「数据截至」声明（design §10.3，
-// tasks 4.9；review M1 治编造期值）：期值必须月粒度等于机械计算的各源最新期
-// 之一（signalPeriodMonthKey vs view.sourceLatest）；零观测账本唯一合法值是
-// 「无可用数据期」。失败走既有 problems 聚合回注通道，反馈点名「期值必须取自
-// 数据可用性行/不得编造」——不用模型自造期值蒙过字样检查。
+// tasks 4.9；review M1 治编造期值；add-fast-frequency-datasources 日度适配）：
+// 期值必须原样取自机械计算的各源最新期（signalPeriodRank vs
+// view.sourceLatest）——日度期值（含日分量）按日粒度精确匹配日度最新期，月
+// 度/年度期值保持月粒度匹配月度源（跨粒度缩写/编造一律拒）；零观测账本唯一
+// 合法值是「无可用数据期」。失败走既有 problems 聚合回注通道，反馈点名「期
+// 值必须取自数据可用性行/不得编造」——不用模型自造期值蒙过字样检查。
 func validateSignalFactsAsOf(text string, view *signalLedgerView, add func(string, ...any)) {
 	idx := strings.Index(text, "数据截至")
 	if idx < 0 {
@@ -557,22 +548,39 @@ func validateSignalFactsAsOf(text string, view *signalLedgerView, add func(strin
 		add("facts 段「数据截至」后缺少可识别的数据期（如 2026-07）：期值必须原样取自用户消息「数据可用性」行，不得编造")
 		return
 	}
-	key, ok := signalPeriodMonthKey(token)
+	key, ok := signalPeriodRank(token)
 	if !ok {
-		add("facts 段「数据截至 %s」不是可识别的数据期：期值必须原样取自用户消息「数据可用性」行，不得编造", token)
+		add("facts 段「数据截至 %s」不是可识别的数据期：期值必须原样取自用户消息「数据可用性」行的各源最新期，不得编造", token)
 		return
 	}
+	// 分形匹配（add-fast-frequency-datasources）：token 含日分量（日度期值，如
+	// yahoo/gdelt/fred 的 YYYY-MM-DD）→ 按日粒度精确匹配可用性行里的日度最新
+	// 期；token 月度/年度 → 月粒度匹配非日度源（日度源最新期的缩写月不算原样
+	// 引用，拒绝——防跨粒度编造与日度缩写）。
+	if key%32 > 0 {
+		for _, s := range view.sourceLatest {
+			if s.Latest == "" {
+				continue
+			}
+			if rk, ok := signalPeriodRank(s.Latest); ok && rk == key {
+				return
+			}
+		}
+		add("facts 段「数据截至 %s」不在数据可用性行的各源最新期内（含日度期值时按日粒度精确匹配，日度最新期不得缩写为月）：期值必须原样取自「数据可用性」行，不得编造或推断更新的期间", token)
+		return
+	}
+	monthKey := key / 32
 	allowed := make(map[int]bool, len(view.sourceLatest))
 	for _, s := range view.sourceLatest {
 		if s.Latest == "" {
 			continue
 		}
-		if k, ok := signalPeriodMonthKey(s.Latest); ok {
-			allowed[k] = true
+		if rk, ok := signalPeriodRank(s.Latest); ok && rk%32 == 0 {
+			allowed[rk/32] = true
 		}
 	}
-	if !allowed[key] {
-		add("facts 段「数据截至 %s」不在数据可用性行的各源最新期内（月粒度比较）：期值必须原样取自「数据可用性」行，不得编造或推断更新的期间", token)
+	if !allowed[monthKey] {
+		add("facts 段「数据截至 %s」不在数据可用性行的各源最新期内（月粒度比较；可用性行含日度期值时日度期须原样写全 YYYY-MM-DD）：期值必须原样取自「数据可用性」行，不得编造或推断更新的期间", token)
 	}
 }
 

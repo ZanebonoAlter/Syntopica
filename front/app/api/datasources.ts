@@ -31,6 +31,19 @@ export interface ComtradeConfig {
   api_key: string
 }
 
+/** FRED 设置（同款动态链；add-fast-frequency-datasources） */
+export interface FredStatus {
+  enabled: boolean
+  api_key_configured: boolean
+  api_key_hint?: string
+}
+
+export interface FredConfig {
+  enabled: boolean
+  /** 空串 = 不修改已有 key，非空才覆盖 */
+  api_key: string
+}
+
 /** probe 结果（成功形态；失败走 error_code） */
 export interface ProbeResult {
   code: string
@@ -58,10 +71,20 @@ export function useDatasourcesApi() {
     return apiClient.post('/settings/comtrade', config)
   }
 
+  async function getFredStatus(): Promise<ApiResponse<FredStatus>> {
+    return apiClient.get('/settings/fred')
+  }
+
+  async function saveFredSettings(config: FredConfig): Promise<ApiResponse<FredStatus>> {
+    return apiClient.post('/settings/fred', config)
+  }
+
   return {
     listCatalog,
     probe,
     getComtradeStatus,
     saveComtradeSettings,
+    getFredStatus,
+    saveFredSettings,
   }
 }

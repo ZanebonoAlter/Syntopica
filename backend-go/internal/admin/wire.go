@@ -100,10 +100,12 @@ var (
 )
 
 // ============================================================================
-// Comtrade settings handlers（comtrade_settings_handler 留 admin 域）
+// Comtrade/FRED settings handlers（研究数据源 key 界面配置；handler 留 admin 域）
 var (
 	GetComtradeSettings  = handler.GetComtradeSettings
 	SaveComtradeSettings = handler.SaveComtradeSettings
+	GetFredSettings      = handler.GetFredSettings
+	SaveFredSettings     = handler.SaveFredSettings
 )
 
 // Scheduler re-exports (types and constructors used in internal/app/runtime.go)

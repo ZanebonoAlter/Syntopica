@@ -66,6 +66,8 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 	{
 		settings.GET("/comtrade", GetComtradeSettings)
 		settings.POST("/comtrade", SaveComtradeSettings)
+		settings.GET("/fred", GetFredSettings)
+		settings.POST("/fred", SaveFredSettings)
 	}
 
 	notifications := rg.Group("/notifications")

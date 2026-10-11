@@ -18,6 +18,7 @@ type Config struct {
 	Storage       StorageConfig
 	Bocha         BochaConfig
 	Comtrade      ComtradeConfig
+	Fred          FredConfig
 	Searxng       SearxngConfig
 	CrossBoardRel CrossBoardRelationConfig
 }
@@ -113,6 +114,14 @@ type ComtradeConfig struct {
 	APIKey string `mapstructure:"api_key"` // empty → source disabled
 }
 
+// FredConfig holds the FRED API key (research data sources domain,
+// add-fast-frequency-datasources). Empty key → the fred source stays disabled
+// in the catalog with a reason pointing at FRED_API_KEY (same semantics as
+// Comtrade).
+type FredConfig struct {
+	APIKey string `mapstructure:"api_key"` // empty → source disabled
+}
+
 // SearxngConfig configures the local SearXNG instance used by the daily-report
 // margin-note QA web augmentation (design D7). Empty endpoint → disabled
 // (QA silently degrades); no API key needed.
@@ -159,6 +168,7 @@ func LoadConfig(configPath string) error {
 	viper.SetDefault("bocha.api_key", "")
 	viper.SetDefault("bocha.endpoint", "https://api.bochaai.com/v1/web-search")
 	viper.SetDefault("comtrade.api_key", "")
+	viper.SetDefault("fred.api_key", "")
 	viper.SetDefault("searxng.endpoint", "") // empty → disabled (QA degrades silently)
 
 	// Cross-board relation discovery budgets (add-evidence-backed-cross-board-relations).
@@ -259,6 +269,12 @@ func applyEnvOverrides(cfg *Config) {
 	// un_comtrade source stays disabled in the catalog (spec「数据源目录」).
 	if v := strings.TrimSpace(os.Getenv("COMTRADE_API_KEY")); v != "" {
 		cfg.Comtrade.APIKey = v
+	}
+
+	// FRED data source (research data sources domain; FRED_API_KEY > config.yaml
+	// fred.api_key). Empty key → fred source stays disabled (spec「数据源目录」).
+	if v := strings.TrimSpace(os.Getenv("FRED_API_KEY")); v != "" {
+		cfg.Fred.APIKey = v
 	}
 }
 

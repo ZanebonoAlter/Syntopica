@@ -100,7 +100,7 @@ func Init(db *gorm.DB) {
 	// registered into the shared registry for future research-conversation
 	// flows. NOT part of any existing flow's allowedTools — enrichment/QA tool
 	// surfaces are unchanged (spec「注入后现有工具面不变」).
-	toolRegistry.Register(wiring.BuildTools(wiring.ComtradeKeyResolver())...)
+	toolRegistry.Register(wiring.BuildTools(wiring.DataSourcesKeyResolver())...)
 	orchestrator := service.NewOrchestratorService(
 		airouter.NewRouter(),
 		repo,
@@ -162,7 +162,7 @@ func Init(db *gorm.DB) {
 	// 启动期烘焙（BuildTools 只装静态目录元数据），由 live resolver 在研究
 	// 克隆期现算——UI 保存 key 后研究 prompt 即时生效、不用重启；probe 判定与
 	// datasources.StatusFor 同源（RequiresKey+空 key）。
-	signalResearch.SetToolAvailabilityProbe(wiring.UnavailableNoticeProbe(wiring.ComtradeKeyResolver()))
+	signalResearch.SetToolAvailabilityProbe(wiring.UnavailableNoticeProbe(wiring.DataSourcesKeyResolver()))
 
 	// HTTP handler singleton consumed by handler.RegisterRoutes.
 	handler.InitHandler(repo, lifelineSvc, orchestrator, boardConfigReader, debateSvc, qaAgent, db)
