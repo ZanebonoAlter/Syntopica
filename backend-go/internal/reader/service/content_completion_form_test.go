@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"syntopica-backend/internal/models"
-	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/database"
 )
 
@@ -24,17 +23,7 @@ func setupFormMarkFixture(t *testing.T, replyContent string) models.Article {
 	}))
 	t.Cleanup(aiServer.Close)
 
-	provider := models.AIProvider{Name: "completion-primary", ProviderType: airouter.ProviderTypeOpenAICompatible, BaseURL: aiServer.URL, APIKey: "token", Model: "test-model", Enabled: true}
-	if err := database.DB.Create(&provider).Error; err != nil {
-		t.Fatalf("create provider: %v", err)
-	}
-	route := models.AIRoute{Name: airouter.DefaultRouteName, Capability: string(airouter.CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	if err := database.DB.Create(&route).Error; err != nil {
-		t.Fatalf("create route: %v", err)
-	}
-	if err := database.DB.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error; err != nil {
-		t.Fatalf("create route provider: %v", err)
-	}
+	seedSummaryRouteFixture(t, aiServer.URL)
 
 	feed := models.Feed{Title: "Feed", URL: fmt.Sprintf("https://example.com/%s", t.Name()), ArticleSummaryEnabled: true, FirecrawlEnabled: true, MaxCompletionRetries: 2}
 	if err := database.DB.Create(&feed).Error; err != nil {

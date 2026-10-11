@@ -38,3 +38,14 @@ var (
 	IsDateOutsideRebuildWindow    = service.IsDateOutsideRebuildWindow
 	RebuildWindowRejectionMessage = service.RebuildWindowRejectionMessage
 )
+
+// Daily report generation mutual-exclusion gate (guard-daily-report-generate
+// D1): one process-wide gate shared by the scheduled DailyReportJob and the
+// manual POST /api/daily-reports/generate endpoint. The gate itself lives in
+// service/ (the handler already imports service; importing this root package
+// from the handler would be an import cycle). Re-exported here so the admin
+// scheduler reaches it through its existing daily_report import.
+var (
+	TryAcquireDailyReportGeneration = service.TryAcquireDailyReportGeneration
+	ReleaseDailyReportGeneration    = service.ReleaseDailyReportGeneration
+)

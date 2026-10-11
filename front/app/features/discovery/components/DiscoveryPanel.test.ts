@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import DiscoveryPanel from './DiscoveryPanel.vue'
+import CandidateSubscribeDialog from './CandidateSubscribeDialog.vue'
 import { useDiscoveryStore } from '~/stores/discovery'
 import type { DiscoveryHistoryItem, DiscoveryRun } from '~/types/discovery'
 
@@ -19,6 +20,7 @@ const getRunMock = vi.fn()
 const getRecommendationsMock = vi.fn()
 const getRecommendationHistoryMock = vi.fn()
 const restoreRecommendationMock = vi.fn()
+const getCandidateDetailMock = vi.fn()
 const notifyErrorMock = vi.fn()
 const notifySuccessMock = vi.fn()
 
@@ -29,6 +31,7 @@ vi.mock('~/api/discovery', () => ({
     getRun: getRunMock,
     getRecommendationHistory: getRecommendationHistoryMock,
     restoreRecommendation: restoreRecommendationMock,
+    getCandidateDetail: getCandidateDetailMock,
   }),
 }))
 
@@ -68,7 +71,12 @@ vi.mock('./DiscoveryCard.vue', () => ({
 }))
 
 vi.mock('./DiscoveryRunCard.vue', () => ({
-  default: { name: 'DiscoveryRunCard', props: ['item'], template: '<div :data-testid="`stub-run-card-${item.candidateId}`" />' },
+  default: {
+    name: 'DiscoveryRunCard',
+    props: ['item', 'subscribed', 'subscribing'],
+    emits: ['subscribe'],
+    template: "<div :data-testid=\"'stub-run-card-' + item.candidateId\" :data-subscribed=\"String(!!subscribed)\" :data-item-subscribed=\"String(!!item.subscribed)\"><button :data-testid=\"'stub-run-subscribe-' + item.candidateId\" @click=\"$emit('subscribe', item)\" /></div>",
+  },
 }))
 
 function runPayload(over: Partial<DiscoveryRun> = {}): DiscoveryRun {
@@ -80,8 +88,8 @@ function runPayload(over: Partial<DiscoveryRun> = {}): DiscoveryRun {
     startedAt: '2026-09-12T00:00:00Z',
     finishedAt: '2026-09-12T00:00:05Z',
     items: [
-      { candidateId: 'a1', name: '量子期刊', description: '', reason: '', recallOrigins: [], availability: 'unknown' },
-      { candidateId: 'a2', name: '量子博客', description: '', reason: '', recallOrigins: [], availability: 'unknown' },
+      { candidateId: 'a1', name: '量子期刊', description: '', reason: '', recallOrigins: [], availability: 'unknown', subscribed: false, subscribedUrls: [] },
+      { candidateId: 'a2', name: '量子博客', description: '', reason: '', recallOrigins: [], availability: 'unknown', subscribed: false, subscribedUrls: [] },
     ],
     ...over,
   }
@@ -240,6 +248,54 @@ describe('DiscoveryPanel — 查询流状态机（S1）', () => {
     expect(failed.text()).toContain('手动刷新') // 超时提示手动刷新
     expect(getRunMock).toHaveBeenCalledTimes(60) // 上限 60 次不无限轮询
     vi.useRealTimers()
+    wrapper.unmount()
+  })
+})
+
+describe('DiscoveryPanel — run 条目订阅状态（fix-discovery-subscribed-hint）', () => {
+  it('订阅状态透传：后端字段随 item 下发，会话内标记走 subscribed prop', async () => {
+    askDiscoveryMock.mockResolvedValue({ success: true, data: { runId: '7' } })
+    getRunMock.mockResolvedValue({
+      success: true,
+      data: runPayload({
+        items: [
+          { candidateId: 'a1', name: 'A', description: '', reason: '', recallOrigins: [], availability: 'unknown', subscribed: true, subscribedUrls: ['https://rsshub.example/x'] },
+          { candidateId: 'a2', name: 'B', description: '', reason: '', recallOrigins: [], availability: 'unknown', subscribed: false, subscribedUrls: [] },
+        ],
+      }),
+    })
+    const wrapper = mountPanel()
+    await submitQuery(wrapper, '量子计算')
+
+    // 后端字段随条目下发（卡片内与会话标记取或后决定徽标）
+    const a1 = wrapper.find('[data-testid="stub-run-card-a1"]')
+    expect(a1.attributes('data-item-subscribed')).toBe('true')
+    expect(a1.attributes('data-subscribed')).toBe('false')
+
+    // 订阅成功后会话内标记透传（卡片端取或，后端快照仍为 false 也不回退）
+    useDiscoveryStore().markSubscribed('a2')
+    await nextTick()
+    const a2 = wrapper.find('[data-testid="stub-run-card-a2"]')
+    expect(a2.attributes('data-subscribed')).toBe('true')
+    wrapper.unmount()
+  })
+
+  // H1 回归（review 提出并已实测）：卡片去掉 v-if 后按钮仍在，若父级仍因「会话内已订阅」
+  // 早退，按钮就变成点击无反应的死控件——「路由级命中保留订阅入口」的决策落不了地。
+  it('会话内已订阅的 run 条目再点订阅：弹窗照常打开（父级不吞事件）', async () => {
+    askDiscoveryMock.mockResolvedValue({ success: true, data: { runId: '7' } })
+    getRunMock.mockResolvedValue({ success: true, data: runPayload() })
+    getCandidateDetailMock.mockResolvedValue({ success: false, error: '未预置' })
+    const wrapper = mountPanel()
+    await submitQuery(wrapper, '量子计算')
+
+    useDiscoveryStore().markSubscribed('a2')
+    await nextTick()
+    expect(wrapper.findComponent(CandidateSubscribeDialog).props('candidateId')).toBeNull()
+
+    await wrapper.find('[data-testid="stub-run-subscribe-a2"]').trigger('click')
+    await nextTick()
+    expect(wrapper.findComponent(CandidateSubscribeDialog).props('candidateId')).toBe('a2')
     wrapper.unmount()
   })
 })

@@ -51,13 +51,26 @@
 ### Requirement: 日报质量筛选
 `collectBoardTags` 查询携带 `match_reason` 和 `score`（包括 fallback 路径产生的标签）。生成管线 SHALL 在聚类前按以下规则筛选标签：
 
-1. 过滤 `direction_mismatch = true`
-2. 保留 `match_reason ∈ {direct_hit, hit_rate, max_sim}`（含 downgraded）
-3. 过滤 `weighted`（最弱规则）
-4. 如果剩余 < 10 个标签，把 weighted 也拉回来（保底）
-5. 如果剩余 > 30 个标签，按 `(tier, score)` 排序后截断到 top-30
+1. **跨版块排他**：同一 tag 在其他版块存在 `score ≥ 本版块 score + exclusive_gap`（`semantic_board_report_exclusive_gap`，默认 0.3，ai_settings 可配；设为 0 时排他关闭）的挂载时，本版块 SHALL NOT 收该标签。排他剔除的标签 SHALL NOT 参与后续任何保底回捞（「有更强归属」是确定性判断，与弱规则保底语义不同）。主查询与 fallback 路径（现场计算匹配后择本版块结果）SHALL 应用同一规则。
+2. 过滤 `direction_mismatch = true`
+3. 保留 `match_reason ∈ {direct_hit, hit_rate, max_sim}`（含 downgraded）
+4. 过滤 `weighted`（最弱规则）
+5. 如果剩余 < 10 个标签，把 weighted 也拉回来（保底；被排他剔除的标签不回捞）
+6. 如果剩余 > 30 个标签，按 `(tier, score)` 排序后截断到 top-30
 
-Fallback 标签同等对待：fallback 路径产生的标签也携带 `match_reason`/`score`，筛选规则完全一致。
+Fallback 标签同等对待：fallback 路径产生的标签也携带 `match_reason`/`score`，筛选规则完全一致（含跨版块排他）。
+
+#### Scenario: 跨版块排他剔除弱归属标签
+- **WHEN** tag「美国非农数据超预期降温」挂载「美国新闻」score=1.0（max_sim）与「中国国内新闻」score=0.7（direct_hit），分差 0.3 ≥ exclusive_gap=0.3，生成「中国国内新闻」日报
+- **THEN** 该标签 SHALL NOT 进入「中国国内新闻」日报的聚类候选（「美国新闻」日报不受影响）
+
+#### Scenario: 排他不影响分差不足的双挂载
+- **WHEN** tag「中美贸易谈判」挂载「美国新闻」score=0.8 与「中国国内新闻」score=0.7，分差 0.1 < exclusive_gap=0.3
+- **THEN** 两个版块日报 SHALL 均可收该标签（真跨界场景保留多版块呈现）
+
+#### Scenario: 排他剔除不参与保底回捞
+- **WHEN** 某版块当日收集 12 个标签，其中 3 个被跨版块排他剔除、5 个为 weighted，剩余 4 个 (< 10)
+- **THEN** 系统 SHALL 把 weighted 拉回（9 个进入聚类），被排他剔除的 3 个标签 SHALL NOT 回捞
 
 #### Scenario: 质量筛选过滤 weighted
 - **WHEN** 收集到 20 个标签，其中 5 个 weighted
@@ -70,6 +83,10 @@ Fallback 标签同等对待：fallback 路径产生的标签也携带 `match_rea
 #### Scenario: 截断机制
 - **WHEN** 收集到 40 个标签，过滤后剩 35 个 (> 30)
 - **THEN** 系统 SHALL 按 (tier, score) 排序后截断到 top-30
+
+#### Scenario: fallback 路径同样应用排他
+- **WHEN** fallback 现场计算某无挂载 tag 的匹配，结果含「美国新闻」score=1.0 与「中国国内新闻」score=0.7，当前正在生成「中国国内新闻」日报
+- **THEN** fallback SHALL NOT 把该标签以 0.7 分收进「中国国内新闻」候选
 
 ### Requirement: 聚类数限制
 
@@ -199,6 +216,8 @@ prompt version 升级为 "3.0"。
 ### Requirement: 日报生成 API — 异步触发
 系统 SHALL 提供 `POST /api/daily-reports/generate` 端点，接受 `{date: string, board_id?: number}` 参数。board_id 为空时生成所有活跃 board 的日报。端点 SHALL 立即返回 `{job_id: string, status: "processing"}`，后台 goroutine 异步执行生成。
 
+同一时刻 SHALL 至多存在一条日报生成管线（定时调度或手动触发共享同一执行闸）。已有管线在跑时，手动触发（本端点及调度器 `TriggerNowWithDate`）SHALL NOT 启动新管线，SHALL 返回 409 与 `reason: "already_running"`（文案：「日报生成正在执行中，请稍后再试。」）；定时调度路径获取闸失败时 SHALL 记 skip（reason `already_running`）并照常释放闸。闸在管线结束（成功、失败或 panic）后 MUST 释放。被拒触发 SHALL NOT 产生任何完成/失败终态通知。
+
 #### Scenario: 触发单板日报生成
 - **WHEN** 请求 `POST /api/daily-reports/generate {date: "2026-05-25", board_id: 5}`
 - **THEN** 系统 SHALL 立即返回 `{job_id: "xxx", status: "processing"}`，后台开始为 board #5 生成日报
@@ -206,6 +225,22 @@ prompt version 升级为 "3.0"。
 #### Scenario: 触发全板日报生成
 - **WHEN** 请求 `POST /api/daily-reports/generate {date: "2026-05-25"}`
 - **THEN** 系统 SHALL 立即返回 `{job_id: "xxx", status: "processing"}`，后台依次为所有活跃 board 生成日报
+
+#### Scenario: 生成进行中重复手动触发
+- **WHEN** 某日报生成管线（定时或手动）尚未结束，再次请求 `POST /api/daily-reports/generate`
+- **THEN** 系统 SHALL 返回 HTTP 409、`{success: false, reason: "already_running"}`，SHALL NOT 启动第二条管线，SHALL NOT 广播进度或发送终态通知
+
+#### Scenario: 生成进行中调度到期
+- **WHEN** 手动管线在跑期间定时调度到期触发 `DailyReportJob`
+- **THEN** 本次调度 SHALL 记为 skip（reason `already_running`），SHALL NOT 与手动管线并发生成，SHALL NOT 发送重复完成通知
+
+#### Scenario: 管线结束后闸释放
+- **WHEN** 一次生成管线结束（全部版面成功、部分失败或 panic）后，再次请求 `POST /api/daily-reports/generate`
+- **THEN** 端点 SHALL 正常受理（返回 `status: "processing"`），不残留 409
+
+#### Scenario: 手动触发与定时调度互斥不产生重复通知
+- **WHEN** 手动触发被 409 拒绝
+- **THEN** 通知中心 SHALL NOT 出现同日期的第二条「日报已生成」条目（通知只由实际运行的管线发送一次）
 
 ### Requirement: 日报生成 WebSocket 进度广播
 生成 goroutine SHALL 通过 `ws.GetHub().BroadcastRaw()` 广播两类消息：

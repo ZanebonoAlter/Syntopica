@@ -38,8 +38,8 @@ func TestHandlerListCatalog(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.DataSources) != 4 {
-		t.Fatalf("want 4 sources, got %d", len(resp.DataSources))
+	if len(resp.DataSources) != 7 {
+		t.Fatalf("want 7 sources, got %d", len(resp.DataSources))
 	}
 	for _, s := range resp.DataSources {
 		if s.Topics == nil {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
+import VendorIconSprite from '~/features/ai/components/VendorIconSprite.vue'
 
 // 初始化主题系统
 useTheme()
@@ -52,6 +53,8 @@ onUnmounted(teardownProgress)
 </script>
 
 <template>
+  <!-- 厂商图标 spritesheet（vendor-icons.svg，全局一次，FB-2） -->
+  <VendorIconSprite />
   <!-- 路由切换/页面 chunk 懒加载期间的顶部进度条（spa-loading-ux）
        颜色跟随主题 accent 令牌，双主题均可见 -->
   <NuxtLoadingIndicator :color="'var(--color-accent)'" :height="2" />

@@ -33,7 +33,7 @@ TBD - created by archiving change test-debt-patrol. Update Purpose after archive
 
 ### Requirement: 滚动分片巡检
 
-系统 SHALL 提供巡检脚本（`scripts/harness/test-patrol.sh`）将全量测试拆为有界分片滚动执行：后端按 `backend-go/internal/` domain 目录分片（`go test -short`，跳过 DB 集成，**且显式设置 `-timeout 120s` 超时上界**——防外部锁竞争（如 dev 后端 AutoMigrate 持表锁）把分片拖满 go test 默认 600s 后以无法归账的 panic 收场）；前端按测试文件组分片（`pnpm test:unit <filter...>`，**不带 `--`**——实测 `pnpm test:unit -- <filter>` 会吞掉 filter 静默跑全量，见 `standard/frontend/testing.md`；统一 `--maxWorkers=2`）。分片划分 SHALL 在脚本内静态可枚举（不依赖运行时发现），每片资源占用 SHALL 有上界。
+系统 SHALL 提供巡检脚本（`scripts/harness/test-patrol.sh`）将全量测试拆为有界分片滚动执行：后端按 `backend-go/internal/` domain 目录分片（`go test -short`，跳过 DB 集成，**且显式设置 `-timeout 120s` 超时上界**——防外部锁竞争（如 dev 后端 AutoMigrate 持表锁）把分片拖满 go test 默认 600s 后以无法归账的 panic 收场）；前端按测试文件组分片（`pnpm test:unit <filter...>`，**不带 `--`**——实测 `pnpm test:unit -- <filter>` 会吞掉 filter 静默跑全量，见 `standard/frontend/testing.md`；统一 `--maxWorkers=2`）。分片划分 SHALL 在脚本内静态可枚举（不依赖运行时发现），每片资源占用 SHALL 有上界。**`backend-go/internal/` 下每个含测试文件的 domain 目录 SHALL 有对应的轮转分片**（当前 14 片：be-admin / be-dataenrichment / be-datasources / be-discovery / be-reader / be-tagmanagement / be-topicgraph / be-skeleton + 前端 6 片）。
 
 巡检进度 SHALL 持久化（最近完成分片、时间、结果摘要），跨会话可续：连续巡检按「最久未巡的分片优先」推进，一轮全部完成后重新开始。支持一次跑一片（默认）与一次跑多片（显式参数）。
 
@@ -56,6 +56,11 @@ TBD - created by archiving change test-debt-patrol. Update Purpose after archive
 
 - **WHEN** 某分片全部通过
 - **THEN** 不产生任何台账记录变更，仅更新该分片的巡检进度
+
+#### Scenario: 新增 domain 目录纳入轮转分片
+
+- **WHEN** `backend-go/internal/` 下新增含测试文件的 domain 目录（如 `datasources`）
+- **THEN** 巡检脚本 SHALL 提供对应的轮转分片执行该域测试，smoke 的枚举完整性断言（`--help` 分片清单、internal 顶层目录计数、轮转片总数）SHALL 同步更新；分片静态枚举与 internal 目录现状不一致时 smoke SHALL 失败
 
 ### Requirement: 归档语境欠账记账
 

@@ -2,6 +2,7 @@ package auxlabel
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,12 +23,16 @@ func setupAuxiliaryLabelTestDB(t *testing.T) *gorm.DB {
 }
 
 type recordingAuxiliaryEmbedder struct {
-	calls   []string
-	modes   []AuxiliaryLabelEmbeddingMode
-	vectors map[string][]float64
+	calls      []string
+	modes      []AuxiliaryLabelEmbeddingMode
+	vectors    map[string][]float64
+	failInputs map[string]bool
 }
 
 func (e *recordingAuxiliaryEmbedder) embed(ctx context.Context, input string, mode AuxiliaryLabelEmbeddingMode) (string, []float64, error) {
+	if e.failInputs != nil && e.failInputs[input] {
+		return "", nil, fmt.Errorf("embedder forced failure for %q", input)
+	}
 	e.calls = append(e.calls, input)
 	e.modes = append(e.modes, mode)
 	if e.vectors != nil {
@@ -298,4 +303,210 @@ func TestAuxiliaryLabelServiceAttachAuxiliaryLabelsIncrementsRefCountOnce(t *tes
 	var reloaded models.SemanticLabel
 	require.NoError(t, db.First(&reloaded, existing.ID).Error)
 	require.Equal(t, 1, reloaded.RefCount)
+}
+
+// --- fix-alias-save-vector-wipe：alias 写路径向量保持 + 死向量回填 ---
+
+// requireSameVector 断言两个 pgvector 字符串是同一个向量（按元素 float32 比对）：
+// pgvector 列存 float4，回读文本是它的最短表示（写入 "1.000000" 回读 "1"），
+// 字符串逐字节比较会被格式归一化误伤，语义上的「向量不变」应按值比较。
+func requireSameVector(t *testing.T, expected, actual string, msgAndArgs ...interface{}) {
+	t.Helper()
+	expVec, err := ParsePgVector(expected)
+	require.NoError(t, err, msgAndArgs...)
+	actVec, err := ParsePgVector(actual)
+	require.NoError(t, err, msgAndArgs...)
+	require.Len(t, actVec, len(expVec), msgAndArgs...)
+	for i := range expVec {
+		require.Equal(t, float32(expVec[i]), float32(actVec[i]), "vector element %d differs: %v", i, msgAndArgs)
+	}
+}
+
+// 主链路步1+步3：建行（带双向量）→ 三个别名变体串行 L2 归并 → 向量逐字节原样、
+// aliases 追加、终态 active ⇒ 双向量非 NULL（归并路径不产生死向量行）。
+func TestAuxiliaryLabelServiceAddAliasPreservesVectors(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	storageVec := core.FloatsToPgVector(testutil.PadVector([]float64{0, 1, 0}, testutil.TestEmbeddingDim))
+	mergeVec := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
+	existing := models.SemanticLabel{
+		Label: "高市早苗", Slug: "takaichi-sanae", LabelType: "auxiliary", Status: "active",
+		Embedding: &storageVec, MergeEmbedding: &mergeVec, RefCount: 47,
+	}
+	require.NoError(t, db.Create(&existing).Error)
+
+	// 三个别名变体的 merge 向量与既有 merge 向量 cosine ~0.999 ≥ 0.95 → 依次 L2 归并
+	embedder := &recordingAuxiliaryEmbedder{vectors: map[string][]float64{
+		"高市早苗政府":   {0.999, 0.001, 0},
+		"日本首相高市早苗": {0.998, 0.002, 0},
+		"高市早苗内阁":   {0.997, 0.003, 0},
+	}}
+	service := NewAuxiliaryLabelService(db, embedder.embed)
+
+	for _, alias := range []string{"高市早苗政府", "日本首相高市早苗", "高市早苗内阁"} {
+		label, err := service.ResolveAuxiliaryLabel(context.Background(), alias, "")
+		require.NoError(t, err)
+		require.Equal(t, existing.ID, label.ID, "alias %q should L2-merge into existing label", alias)
+		require.Contains(t, label.Aliases, alias)
+	}
+
+	var reloaded models.SemanticLabel
+	require.NoError(t, db.First(&reloaded, existing.ID).Error)
+	// 核心断言：归并后向量逐字节原样保留（历史 bug：缓存结构体全量 Save 把向量写 NULL）
+	require.NotNil(t, reloaded.Embedding)
+	require.NotNil(t, reloaded.MergeEmbedding)
+	requireSameVector(t, storageVec, *reloaded.Embedding)
+	requireSameVector(t, mergeVec, *reloaded.MergeEmbedding)
+	// active ⇒ 向量非 NULL 不变量 + aliases 累积
+	require.Equal(t, "active", reloaded.Status)
+	require.Len(t, reloaded.Aliases, 3)
+}
+
+// 主链路步2：手动 alias 合并后目标标签向量保持不变；source 侧按既有语义 disabled+NULL。
+func TestAuxiliaryLabelServiceMergeAuxiliaryAliasPreservesTargetVectors(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	targetVec := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
+	targetMerge := core.FloatsToPgVector(testutil.PadVector([]float64{0, 1, 0}, testutil.TestEmbeddingDim))
+	target := models.SemanticLabel{
+		Label: "OpenAI", Slug: "openai", LabelType: "auxiliary", Status: "active",
+		Embedding: &targetVec, MergeEmbedding: &targetMerge, Aliases: []string{"Open AI"},
+	}
+	require.NoError(t, db.Create(&target).Error)
+	source := models.SemanticLabel{Label: "ChatGPT", Slug: "chatgpt", LabelType: "auxiliary", Status: "active", Aliases: []string{"GPT"}}
+	require.NoError(t, db.Create(&source).Error)
+	service := NewAuxiliaryLabelService(db, (&recordingAuxiliaryEmbedder{}).embed)
+
+	require.NoError(t, service.MergeAuxiliaryLabelAlias(context.Background(), source.ID, target.ID))
+
+	var reloadedTarget models.SemanticLabel
+	require.NoError(t, db.First(&reloadedTarget, target.ID).Error)
+	require.NotNil(t, reloadedTarget.Embedding)
+	requireSameVector(t, targetVec, *reloadedTarget.Embedding, "merge-alias must not touch target embedding")
+	require.NotNil(t, reloadedTarget.MergeEmbedding)
+	requireSameVector(t, targetMerge, *reloadedTarget.MergeEmbedding, "merge-alias must not touch target merge embedding")
+	require.Contains(t, reloadedTarget.Aliases, "ChatGPT")
+	require.Contains(t, reloadedTarget.Aliases, "GPT")
+
+	var reloadedSource models.SemanticLabel
+	require.NoError(t, db.First(&reloadedSource, source.ID).Error)
+	require.Equal(t, "disabled", reloadedSource.Status)
+	require.Nil(t, reloadedSource.Embedding)
+	require.Nil(t, reloadedSource.MergeEmbedding)
+}
+
+// 主链路步4：回填补齐死向量行——L3 同款生成规则（merge←label、storage←"label: description"）。
+func TestAuxiliaryLabelServiceBackfillMissingEmbeddingsFillsNulls(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	dead := models.SemanticLabel{Label: "高市早苗", Slug: "takaichi", LabelType: "auxiliary", Status: "active", Description: "日本首相"}
+	require.NoError(t, db.Create(&dead).Error)
+	embedder := &recordingAuxiliaryEmbedder{vectors: map[string][]float64{
+		"高市早苗":       {0, 1, 0}, // merge ← label
+		"高市早苗: 日本首相": {1, 0, 0}, // storage ← "label: description"
+	}}
+	service := NewAuxiliaryLabelService(db, embedder.embed)
+
+	summary, err := service.BackfillMissingEmbeddings(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, 1, summary.Scanned)
+	require.Equal(t, 1, summary.Fixed)
+	require.Zero(t, summary.Skipped)
+	require.Equal(t, []string{"高市早苗", "高市早苗: 日本首相"}, embedder.calls)
+	require.Equal(t, []AuxiliaryLabelEmbeddingMode{AuxiliaryLabelEmbeddingModeMerge, AuxiliaryLabelEmbeddingModeStorage}, embedder.modes)
+
+	var reloaded models.SemanticLabel
+	require.NoError(t, db.First(&reloaded, dead.ID).Error)
+	require.NotNil(t, reloaded.Embedding)
+	require.NotNil(t, reloaded.MergeEmbedding)
+	expectedMerge := core.FloatsToPgVector(testutil.PadVector([]float64{0, 1, 0}, testutil.TestEmbeddingDim))
+	expectedStorage := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
+	requireSameVector(t, expectedMerge, *reloaded.MergeEmbedding)
+	requireSameVector(t, expectedStorage, *reloaded.Embedding)
+}
+
+// 主链路步5：只补 NULL 列——已有列值不变且不为该列发起生成。
+func TestAuxiliaryLabelServiceBackfillSkipsExistingColumns(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	existingStorage := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
+	row := models.SemanticLabel{
+		Label: "日本央行", Slug: "boj", LabelType: "auxiliary", Status: "active",
+		Embedding: &existingStorage, Description: "中央银行",
+	}
+	require.NoError(t, db.Create(&row).Error)
+	embedder := &recordingAuxiliaryEmbedder{vectors: map[string][]float64{"日本央行": {0, 1, 0}}}
+	service := NewAuxiliaryLabelService(db, embedder.embed)
+
+	summary, err := service.BackfillMissingEmbeddings(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, 1, summary.Fixed)
+	// storage 列已在 → 只调 merge 模式一次，不为已有列发起生成
+	require.Equal(t, []string{"日本央行"}, embedder.calls)
+	require.Equal(t, []AuxiliaryLabelEmbeddingMode{AuxiliaryLabelEmbeddingModeMerge}, embedder.modes)
+
+	var reloaded models.SemanticLabel
+	require.NoError(t, db.First(&reloaded, row.ID).Error)
+	requireSameVector(t, existingStorage, *reloaded.Embedding, "existing storage embedding must stay unchanged")
+	require.NotNil(t, reloaded.MergeEmbedding)
+}
+
+// 主链路步6 + 幂等变体：单行生成失败跳过不阻塞；重触发 pending 只含残余行。
+func TestAuxiliaryLabelServiceBackfillRowFailureSkips(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	badRow := models.SemanticLabel{Label: "坏标签", Slug: "bad", LabelType: "auxiliary", Status: "active"}
+	goodA := models.SemanticLabel{Label: "好标签A", Slug: "good-a", LabelType: "auxiliary", Status: "active"}
+	goodB := models.SemanticLabel{Label: "好标签B", Slug: "good-b", LabelType: "auxiliary", Status: "active"}
+	require.NoError(t, db.Create(&badRow).Error)
+	require.NoError(t, db.Create(&goodA).Error)
+	require.NoError(t, db.Create(&goodB).Error)
+	embedder := &recordingAuxiliaryEmbedder{
+		vectors:    map[string][]float64{"好标签A": {0, 1, 0}, "好标签B": {0, 0, 1}},
+		failInputs: map[string]bool{"坏标签": true},
+	}
+	service := NewAuxiliaryLabelService(db, embedder.embed)
+
+	summary, err := service.BackfillMissingEmbeddings(context.Background())
+
+	require.NoError(t, err, "row-level failure must not bubble up")
+	require.Equal(t, 3, summary.Scanned)
+	require.Equal(t, 2, summary.Fixed)
+	require.Equal(t, 1, summary.Skipped)
+
+	var reloadedBad models.SemanticLabel
+	require.NoError(t, db.First(&reloadedBad, badRow.ID).Error)
+	require.Nil(t, reloadedBad.Embedding, "failed row stays NULL for retry")
+	require.Nil(t, reloadedBad.MergeEmbedding)
+
+	// 幂等重触发：pending 只含失败行；二次回填（仍失败）无 error、残余不变
+	pending, err := service.CountMissingEmbeddings(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), pending)
+
+	summary2, err := service.BackfillMissingEmbeddings(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, summary2.Scanned)
+	require.Equal(t, 0, summary2.Fixed)
+	require.Equal(t, 1, summary2.Skipped)
+}
+
+// 主链路步7（service 半）：无死向量时回填为空操作——零行处理、零 LLM 调用。
+func TestAuxiliaryLabelServiceBackfillNoopHealthy(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	vec := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
+	healthy := models.SemanticLabel{
+		Label: "OpenAI", Slug: "openai", LabelType: "auxiliary", Status: "active",
+		Embedding: &vec, MergeEmbedding: &vec,
+	}
+	require.NoError(t, db.Create(&healthy).Error)
+	embedder := &recordingAuxiliaryEmbedder{}
+	service := NewAuxiliaryLabelService(db, embedder.embed)
+
+	pending, err := service.CountMissingEmbeddings(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, pending)
+
+	summary, err := service.BackfillMissingEmbeddings(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, summary.Scanned)
+	require.Zero(t, summary.Fixed)
+	require.Empty(t, embedder.calls, "healthy DB must trigger zero LLM calls")
 }

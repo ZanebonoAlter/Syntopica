@@ -14,7 +14,7 @@ import (
 // path flips the status live via UpdateStatus — no restart.
 
 // emptyResolver / uiKeyResolver stand in for the live resolver chains main
-// injects (nothing configured / COMTRADE_API_KEY present).
+// injects (nothing configured / COMTRADE_API_KEY present but no FRED key).
 func emptyResolver(configKeyName string) string { return "" }
 
 func uiKeyResolver(configKeyName string) string {
@@ -25,8 +25,9 @@ func uiKeyResolver(configKeyName string) string {
 }
 
 // TestInitEmptyKeyDisablesComtradeWithConfigKeyReason: no key anywhere →
-// un_comtrade seeded disabled with a reason naming the config key; every
-// key-free source seeds enabled.
+// every key-requiring source (un_comtrade / fred) seeds disabled with a
+// reason naming its config key; every key-free source seeds enabled; the
+// catalog carries seven sources.
 func TestInitEmptyKeyDisablesComtradeWithConfigKeyReason(t *testing.T) {
 	db := setupTestDB(t)
 	Init(db, emptyResolver)
@@ -35,18 +36,25 @@ func TestInitEmptyKeyDisablesComtradeWithConfigKeyReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
+	if len(rows) != 7 {
+		t.Fatalf("catalog must carry seven sources, got %d", len(rows))
+	}
 	for _, r := range rows {
-		if r.Code != "un_comtrade" {
+		if r.Code != "un_comtrade" && r.Code != "fred" {
 			if r.Status != StatusEnabled {
 				t.Fatalf("%s requires no key, want enabled, got %s (%s)", r.Code, r.Status, r.StatusReason)
 			}
 			continue
 		}
-		if r.Status != StatusDisabled {
-			t.Fatalf("comtrade without key must be disabled, got %s", r.Status)
+		wantKey := "COMTRADE_API_KEY"
+		if r.Code == "fred" {
+			wantKey = "FRED_API_KEY"
 		}
-		if !strings.Contains(r.StatusReason, "COMTRADE_API_KEY") {
-			t.Fatalf("reason must point at the config key: %q", r.StatusReason)
+		if r.Status != StatusDisabled {
+			t.Fatalf("%s without key must be disabled, got %s", r.Code, r.Status)
+		}
+		if !strings.Contains(r.StatusReason, wantKey) {
+			t.Fatalf("%s reason must point at its config key: %q", r.Code, r.StatusReason)
 		}
 	}
 }

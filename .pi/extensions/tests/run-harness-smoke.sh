@@ -54,6 +54,9 @@ npx -y esbuild ../dev-process-guard.ts --bundle --platform=node --format=cjs \
 rc=0
 node harness-log.smoke.cjs || rc=$?
 node failure-classify.smoke.cjs || rc=$?
+# 归一化指纹断言（add-foreign-gate-steer-attribution）：node 原生 strip-types 直跑
+# import ../lib/failure-classify.ts（零依赖纯函数库，无需 esbuild 中转）
+node --experimental-strip-types failure-fingerprint.smoke.ts || rc=$?
 node spill.smoke.cjs || rc=$?
 node spec-gate.smoke.cjs || rc=$?
 node quality-gate.smoke.cjs || rc=$?
@@ -64,6 +67,7 @@ node policy-decision.smoke.cjs || rc=$?
 node sql-safety-guard.smoke.cjs || rc=$?
 node session-rollup.smoke.cjs || rc=$?
 node telemetry-archive.smoke.cjs || rc=$?
+node telemetry-dispatch.smoke.cjs || rc=$?
 node dev-process-guard.smoke.cjs || rc=$?
 rm -f ./.hlog.cjs ./.fcls.cjs ./.tel.cjs ./.spill.cjs ./.sgate.cjs ./.tgset.cjs ./.tcg.cjs ./.egate.cjs ./.gsamp.cjs ./.childsess.cjs ./.pdec.cjs ./.qgate.cjs ./.tsg.cjs ./.uig.cjs ./.uige.cjs ./.qgateb.cjs ./.emap.cjs ./.srollup.cjs ./.dps.cjs ./.dpg.cjs ./.ssql.cjs
 exit $rc

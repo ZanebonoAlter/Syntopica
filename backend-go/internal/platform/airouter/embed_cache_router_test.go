@@ -19,16 +19,16 @@ type countingEmbedClient struct {
 	usage      *TokenUsage
 }
 
-func (c *countingEmbedClient) Chat(_ context.Context, _ models.AIProvider, _ ChatRequest) (*ChatResponse, error) {
-	return &ChatResponse{Content: "unused"}, nil
+func (c *countingEmbedClient) Chat(_ context.Context, _ models.AIVendor, _ models.AIModel, _ string, _ ChatRequest) (*ChatResponse, []StructuredAttempt, error) {
+	return &ChatResponse{Content: "unused"}, nil, nil
 }
 
-func (c *countingEmbedClient) Embed(_ context.Context, provider models.AIProvider, _ EmbeddingRequest) (*EmbeddingResult, error) {
+func (c *countingEmbedClient) Embed(_ context.Context, vendor models.AIVendor, model models.AIModel, _ EmbeddingRequest) (*EmbeddingResult, error) {
 	c.embedCalls.Add(1)
 	if c.vectors == nil {
 		c.vectors = [][]float64{{0.5, 0.25}}
 	}
-	return &EmbeddingResult{Embeddings: c.vectors, Model: provider.Model, Dimensions: len(c.vectors[0]), Provider: provider.Name, Usage: c.usage}, nil
+	return &EmbeddingResult{Embeddings: c.vectors, Model: model.Name, Dimensions: len(c.vectors[0]), Provider: vendor.Name, Usage: c.usage}, nil
 }
 
 func newEmbedCacheRouter(t *testing.T) (*Router, *Store, *countingEmbedClient) {
@@ -92,7 +92,7 @@ func TestEmbedCacheHitDoesNotTakeSemaphore(t *testing.T) {
 	require.Equal(t, int32(1), client.embedCalls.Load())
 
 	// Fill every embedding semaphore slot (default capacity 5).
-	route, _, err := store.LoadRouteWithProviders(CapabilityEmbedding)
+	route, _, err := store.LoadRouteWithModels(CapabilityEmbedding)
 	require.NoError(t, err)
 	sem := router.getSemaphore(CapabilityEmbedding, route)
 	for i := 0; i < cap(sem); i++ {
@@ -116,11 +116,12 @@ func TestEmbedCacheDifferentModelDoesNotCrossHit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int32(1), client.embedCalls.Load())
 
-	// Switch the provider's model: same input must miss the cache.
-	var p models.AIProvider
-	require.NoError(t, store.db.First(&p, "name = ?", "emb-provider").Error)
-	p.Model = "m2"
-	require.NoError(t, store.db.Save(&p).Error)
+	// Switch the model's name: same input must miss the cache（缓存键改用
+	// 绑定模型名 b.Model.Name，改 AIModel 行即可换键）。
+	var m models.AIModel
+	require.NoError(t, store.db.First(&m, "name = ?", "m1").Error)
+	m.Name = "m2"
+	require.NoError(t, store.db.Save(&m).Error)
 
 	_, err = router.Embed(context.Background(), req, CapabilityEmbedding)
 	require.NoError(t, err)
@@ -139,7 +140,7 @@ func TestEmbedCacheWriteFailureDoesNotAffectResult(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	require.Equal(t, int32(1), client.embedCalls.Load())
-	require.Equal(t, "emb-provider", res.Provider)
+	require.Equal(t, "emb-vendor", res.Provider)
 }
 
 func TestEmbedCacheLookupFailureFallsThroughToProvider(t *testing.T) {
@@ -153,7 +154,7 @@ func TestEmbedCacheLookupFailureFallsThroughToProvider(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, first)
 	require.Equal(t, int32(1), client.embedCalls.Load())
-	require.Equal(t, "emb-provider", first.Provider)
+	require.Equal(t, "emb-vendor", first.Provider)
 
 	// Second call: lookup fails again and must still fall through to the
 	// provider instead of erroring out.
@@ -206,6 +207,9 @@ func TestEmbedCacheHitLogsCallWithCacheHitMeta(t *testing.T) {
 	require.True(t, second.Success)
 	require.Contains(t, second.RequestMeta, `"cache_hit":true`)
 	require.Contains(t, second.RequestMeta, `"article_id":42`)
+	// 命中日志来源换 vendor/model 新链：ProviderName=vendor.Name、Model=模型名。
+	require.Equal(t, "emb-vendor", second.ProviderName)
+	require.Equal(t, "m1", second.Model)
 }
 
 // TestEmbedCacheExcludedOperationBypassesCache verifies the allowlist:

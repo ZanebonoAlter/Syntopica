@@ -13,27 +13,30 @@ import (
 )
 
 // setupReprobeStore builds a store with one enabled route bound to one
-// provider, so a probe pass actually reaches probeFn (needed to hold probes in
-// flight).
+// vendor+model, so a probe pass actually reaches probeFn (needed to hold
+// probes in flight).
 func setupReprobeStore(t *testing.T) *airouter.Store {
 	t.Helper()
 	db := setupAIHealthTestDB(t)
 	require.NoError(t, db.AutoMigrate(
-		&models.AIProvider{}, &models.AIRoute{}, &models.AIRouteProvider{},
+		&models.AIVendor{}, &models.AIModel{}, &models.AIRoute{}, &models.AIRouteModel{},
 	))
-	p := models.AIProvider{
+	v := models.AIVendor{
 		Name:         "probe-target",
 		ProviderType: airouter.ProviderTypeOpenAICompatible,
 		BaseURL:      "http://127.0.0.1:8081/v1",
-		Model:        "m",
 		Enabled:      true,
-		ModelKind:    "embedding",
 	}
-	require.NoError(t, db.Create(&p).Error)
-	r := models.AIRoute{Name: "default", Capability: string(airouter.CapabilityEmbedding), Enabled: true, Strategy: "ordered_failover"}
+	require.NoError(t, db.Create(&v).Error)
+	m := models.AIModel{
+		VendorID: v.ID, Name: "probe-model", ModelKind: "embedding",
+		Enabled: true, Status: airouter.ModelStatusOK,
+	}
+	require.NoError(t, db.Create(&m).Error)
+	r := models.AIRoute{Name: "default", Capability: string(airouter.CapabilityEmbedding), Enabled: true}
 	require.NoError(t, db.Create(&r).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{
-		RouteID: r.ID, ProviderID: p.ID, Priority: 1, Enabled: true,
+	require.NoError(t, db.Create(&models.AIRouteModel{
+		RouteID: r.ID, ModelID: m.ID, Priority: 1, Enabled: true,
 	}).Error)
 	return airouter.NewStore(db)
 }
@@ -45,7 +48,7 @@ func TestReprobeAIHealth_TriggersProbe(t *testing.T) {
 	useNotReadySnapshot(t)
 
 	probed := make(chan struct{}, 1)
-	restore := aihealth.SetProbeFnForTest(func(ctx context.Context, p models.AIProvider) (bool, string) {
+	restore := aihealth.SetProbeFnForTest(func(ctx context.Context, v models.AIVendor) (bool, string) {
 		select {
 		case probed <- struct{}{}:
 		default:
@@ -80,7 +83,7 @@ func TestReprobeAIHealth_ProbeInFlight_Skipped(t *testing.T) {
 
 	// Hold a probe in flight: the first probeFn call blocks until release.
 	release := make(chan struct{})
-	restore := aihealth.SetProbeFnForTest(func(ctx context.Context, p models.AIProvider) (bool, string) {
+	restore := aihealth.SetProbeFnForTest(func(ctx context.Context, v models.AIVendor) (bool, string) {
 		<-release
 		return true, ""
 	})

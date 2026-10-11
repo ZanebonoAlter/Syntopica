@@ -127,7 +127,8 @@ const subscribeVisible = computed({
 })
 
 function openRunSubscribe(item: { candidateId: string, name: string }) {
-  if (store.subscribedRunIds.includes(item.candidateId)) return
+  // 不因「已订阅」早退：路由级命中仍可订同一路由其它参数，重复由弹窗按最终地址锁定
+  // （fix-discovery-subscribed-hint H1——旧早退 + 卡片去 v-if 会让按钮变成点击无反应的死控件）。
   subscribeTarget.value = { id: item.candidateId, name: item.name }
 }
 </script>
@@ -227,6 +228,7 @@ function openRunSubscribe(item: { candidateId: string, name: string }) {
       <!-- 成功：结果卡片（理由 / 召回来源 / 可用性 / 订阅动作） -->
       <ul v-else-if="store.askStatus === 'succeeded'" class="discovery-runview__list" data-testid="discovery-run-list">
         <li v-for="item in runItems" :key="item.candidateId">
+          <!-- subscribed 传会话内标记；与条目自带 item.subscribed 在卡片内取或决定徽标（本 change） -->
           <DiscoveryRunCard
             :item="item"
             :subscribed="store.subscribedRunIds.includes(item.candidateId)"

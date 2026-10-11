@@ -37,7 +37,7 @@ func setupHandlersTestDB(t *testing.T) {
 
 	database.DB = db
 	repository.InitRepository(database.DB)
-	if err := database.DB.AutoMigrate(&models.Feed{}, &models.Article{}, &scheduler.SchedulerTask{}, &models.TopicTag{}, &models.ArticleTopicTag{}, &models.TagJob{}, &models.FirecrawlJob{}, &models.AIProvider{}, &models.AIRoute{}, &models.AIRouteProvider{}, &models.AICallLog{}); err != nil {
+	if err := database.DB.AutoMigrate(&models.Feed{}, &models.Article{}, &scheduler.SchedulerTask{}, &models.TopicTag{}, &models.ArticleTopicTag{}, &models.TagJob{}, &models.FirecrawlJob{}, &models.AIVendor{}, &models.AIModel{}, &models.AIRoute{}, &models.AIRouteModel{}, &models.AICallLog{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 }
@@ -123,16 +123,20 @@ func TestCompleteArticleContentReloadsProviderWithoutSummaryRouteOrAPIKey(t *tes
 	}))
 	defer aiServer.Close()
 
-	provider := models.AIProvider{
-		Name:         "late-local-provider",
-		ProviderType: airouter.ProviderTypeOpenAICompatible,
-		BaseURL:      aiServer.URL,
-		APIKey:       "",
-		Model:        "test-model",
-		Enabled:      true,
+	// 配置补充进 vendor+model 两层（无 summary 路由 → 走「任意启用模型」兜底）。
+	vendor := models.AIVendor{
+		Name: "late-local-vendor", ProviderType: airouter.ProviderTypeOpenAICompatible,
+		BaseURL: aiServer.URL, APIKey: "", Enabled: true,
 	}
-	if err := database.DB.Create(&provider).Error; err != nil {
-		t.Fatalf("create provider: %v", err)
+	if err := database.DB.Create(&vendor).Error; err != nil {
+		t.Fatalf("create vendor: %v", err)
+	}
+	model := models.AIModel{
+		VendorID: vendor.ID, Name: "test-model", ModelKind: airouter.ModelKindLLM,
+		Enabled: true, Status: airouter.ModelStatusOK,
+	}
+	if err := database.DB.Create(&model).Error; err != nil {
+		t.Fatalf("create model: %v", err)
 	}
 
 	feed := models.Feed{

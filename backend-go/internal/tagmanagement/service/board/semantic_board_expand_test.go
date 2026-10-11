@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
@@ -180,6 +181,17 @@ func TestRecallExpandAuxCandidatesEmpty(t *testing.T) {
 	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), svc.LoadUpgradeConfig(context.Background()), profile, 0)
 	require.NoError(t, err)
 	require.Empty(t, candidates, "召回为空是正常结果非错误")
+
+	// add-board-health-checkup 组合分支：快照主路存在但被保险滤/时间窗全滤空
+	// 且回退路也无候选 → 依然空结果非错误（spec: 召回为空）。
+	mounted := createUpgradeLabel(t, db, "挂载后空候选", "mounted-empty", "auxiliary", "active", 8, []float64{0, 1, 0})
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: mounted.ID}).Error)
+	seedHealthSnapshot(t, db, board.ID, []tagmodels.BoardHealthCandidate{
+		{AuxID: mounted.ID, Label: "挂载后空候选", MemberTags: 9, MemberArticles: 3},
+	})
+	candidates, _, err = svc.recallExpandAuxCandidates(context.Background(), svc.LoadUpgradeConfig(context.Background()), profile, 0)
+	require.NoError(t, err)
+	require.Empty(t, candidates, "member-derived 滤空 + 回退路空 → 空结果非错误")
 }
 
 func TestRecallExpandAuxCandidatesDisabledExcluded(t *testing.T) {
@@ -355,4 +367,141 @@ func TestConfirmComposeSuggestionDisabledTargetFails(t *testing.T) {
 	var compositeCount int64
 	require.NoError(t, db.Model(&models.SemanticLabel{}).Where("label_type = ? AND label = ?", "composite", "禁用目标组合").Count(&compositeCount).Error)
 	require.Zero(t, compositeCount, "确认失败整体回滚：组合标签不落库")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// member-derived 主路（add-board-health-checkup，spec: 扩充候选召回）
+// ─────────────────────────────────────────────────────────────────────────────
+
+// seedHealthSnapshot inserts a board-health snapshot carrying the given
+// uncaptured candidates (member-tags-desc order preserved as persisted).
+func seedHealthSnapshot(t *testing.T, db *gorm.DB, boardID uint, candidates []tagmodels.BoardHealthCandidate) {
+	t.Helper()
+	require.NoError(t, db.Create(&tagmodels.BoardHealthSnapshot{
+		SemanticBoardID:      boardID,
+		CheckedAt:            time.Now(),
+		Metrics:              tagmodels.BoardHealthMetrics{Board: tagmodels.BoardHealthBoardMetrics{ReasonDist: map[string]int{}}, Labels: []tagmodels.BoardHealthLabelMetrics{}},
+		UncapturedCandidates: candidates,
+	}).Error)
+}
+
+// Scenario「member-derived 候选被召回」：快照候选进 LLM，不走全库相似/共现扫描。
+func TestRecallExpandAuxCandidatesMemberDerivedPrimary(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	board := createUpgradeLabel(t, db, "AI前沿M", "ai-frontier-m", "board", "active", 0, []float64{1, 0, 0})
+	// 构成标签（隔离相似路：构成非空但正交，共现路无达标文章）。
+	boardAux := createUpgradeLabel(t, db, "推理M", "reasoning-m", "auxiliary", "active", 2, []float64{0, 1, 0})
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: boardAux.ID}).Error)
+	// 快照候选「算力M」：应召回。
+	suanli := createUpgradeLabel(t, db, "算力M", "compute-power-m", "auxiliary", "active", 8, []float64{0, 1, 0})
+	// 相似达标但不在快照候选清单的「相似诱惑M」：主路命中时不得进入（证明没跑全库扫描）。
+	createUpgradeLabel(t, db, "相似诱惑M", "sim-lure-m", "auxiliary", "active", 8, []float64{0.99, 0.1410673598, 0})
+	seedHealthSnapshot(t, db, board.ID, []tagmodels.BoardHealthCandidate{
+		{AuxID: suanli.ID, Label: "算力M", MemberTags: 12, MemberArticles: 5},
+	})
+
+	svc := NewSemanticBoardUpgradeService(db, nil, nil)
+	profile, err := svc.loadBoardExpandProfile(context.Background(), board.ID)
+	require.NoError(t, err)
+	config := svc.LoadUpgradeConfig(context.Background())
+
+	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), config, profile, 0)
+	require.NoError(t, err)
+	ids := expandCandidateIDs(candidates)
+	require.True(t, ids[suanli.ID], "member-derived candidate recalled")
+	require.Len(t, candidates, 1, "no whole-pool scan: sim-qualified label outside the snapshot list must NOT appear")
+	require.Equal(t, 12, candidates[0].MemberTags, "member evidence carried into the candidate")
+}
+
+// Scenario「无体检快照回退全库召回」由既有双路用例覆盖（夹具不建快照即回退路）；
+// 这里补「快照存在但清单为空 → 回退」与「清单全被保险滤 → 回退」两分支。
+func TestRecallExpandAuxCandidatesMemberDerivedFallbacks(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	board := createUpgradeLabel(t, db, "美债M", "us-treasury-m2", "board", "active", 0, []float64{1, 0, 0})
+	// 相似达标标签：回退路应召回（证明回退生效）。
+	simAux := createUpgradeLabel(t, db, "美债拍卖M", "us-treasury-auction-m", "auxiliary", "active", 8, []float64{0.9, 0.4358898943, 0})
+	recentTag := createComposeEventTag(t, db, "auction-event-m", simAux.ID)
+	createComposeArticles(t, db, 1, 24*time.Hour, recentTag.ID)
+
+	svc := NewSemanticBoardUpgradeService(db, nil, nil)
+	profile, err := svc.loadBoardExpandProfile(context.Background(), board.ID)
+	require.NoError(t, err)
+	config := svc.LoadUpgradeConfig(context.Background())
+
+	// 分支一：快照存在但候选清单为空 → 回退双路。
+	seedHealthSnapshot(t, db, board.ID, nil)
+	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), config, profile, 0)
+	require.NoError(t, err)
+	require.True(t, expandCandidateIDs(candidates)[simAux.ID], "empty snapshot list falls back to the dual path")
+
+	// 分支二：清单候选已全部挂载（保险滤空）→ 回退双路。
+	mounted := createUpgradeLabel(t, db, "已收编M", "already-mounted-m", "auxiliary", "active", 8, []float64{0, 1, 0})
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: mounted.ID}).Error)
+	seedHealthSnapshot(t, db, board.ID, []tagmodels.BoardHealthCandidate{
+		{AuxID: mounted.ID, Label: "已收编M", MemberTags: 9, MemberArticles: 3},
+	})
+	candidates, _, err = svc.recallExpandAuxCandidates(context.Background(), config, profile, 0)
+	require.NoError(t, err)
+	require.True(t, expandCandidateIDs(candidates)[simAux.ID], "all-mounted snapshot list falls back to the dual path")
+	require.False(t, expandCandidateIDs(candidates)[mounted.ID], "mounted label never recalled")
+}
+
+// Scenario「时间窗收紧 member-derived 召回」+ 白盒「召回：days=0 不过滤」。
+func TestRecallExpandAuxCandidatesMemberDerivedDaysFilter(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	board := createUpgradeLabel(t, db, "前沿D", "ai-frontier-d", "board", "active", 0, []float64{1, 0, 0})
+	recent := createUpgradeLabel(t, db, "近期算力D", "recent-compute-d", "auxiliary", "active", 8, []float64{0, 1, 0})
+	stale := createUpgradeLabel(t, db, "陈旧算力D", "stale-compute-d", "auxiliary", "active", 8, []float64{0, 1, 0})
+	seedHealthSnapshot(t, db, board.ID, []tagmodels.BoardHealthCandidate{
+		{AuxID: recent.ID, Label: "近期算力D", MemberTags: 7, MemberArticles: 3},
+		{AuxID: stale.ID, Label: "陈旧算力D", MemberTags: 6, MemberArticles: 2},
+	})
+	// 近期：1 天前有文章引用；陈旧：全部文章在 8 天前。
+	recentTag := createComposeEventTag(t, db, "recent-event-d", recent.ID)
+	createComposeArticles(t, db, 1, 24*time.Hour, recentTag.ID)
+	staleTag := createComposeEventTag(t, db, "stale-event-d", stale.ID)
+	createComposeArticles(t, db, 1, 8*24*time.Hour, staleTag.ID)
+
+	svc := NewSemanticBoardUpgradeService(db, nil, nil)
+	profile, err := svc.loadBoardExpandProfile(context.Background(), board.ID)
+	require.NoError(t, err)
+	config := svc.LoadUpgradeConfig(context.Background())
+
+	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), config, profile, 0)
+	require.NoError(t, err)
+	ids := expandCandidateIDs(candidates)
+	require.True(t, ids[recent.ID] && ids[stale.ID], "days=0: member list unfiltered")
+
+	candidates, _, err = svc.recallExpandAuxCandidates(context.Background(), config, profile, 7)
+	require.NoError(t, err)
+	ids = expandCandidateIDs(candidates)
+	require.True(t, ids[recent.ID], "days=7: recently referenced kept")
+	require.False(t, ids[stale.ID], "days=7: stale member candidate dropped")
+}
+
+// 主路候选被时间窗全部滤空 → 回退双路（test-cases ⓪「召回为空」组合分支）。
+func TestRecallExpandAuxCandidatesMemberDerivedAllFilteredFallsBack(t *testing.T) {
+	db := setupSemanticBoardUpgradeTestDB(t)
+	board := createUpgradeLabel(t, db, "前沿F", "ai-frontier-f", "board", "active", 0, []float64{1, 0, 0})
+	stale := createUpgradeLabel(t, db, "陈旧候选F", "stale-candidate-f", "auxiliary", "active", 8, []float64{0, 1, 0})
+	// 相似达标回退路标签（近 1 天有引用）。
+	fallback := createUpgradeLabel(t, db, "回退相似F", "fallback-sim-f", "auxiliary", "active", 8, []float64{0.9, 0.4358898943, 0})
+	seedHealthSnapshot(t, db, board.ID, []tagmodels.BoardHealthCandidate{
+		{AuxID: stale.ID, Label: "陈旧候选F", MemberTags: 5, MemberArticles: 1},
+	})
+	staleTag := createComposeEventTag(t, db, "stale-event-f", stale.ID)
+	createComposeArticles(t, db, 1, 8*24*time.Hour, staleTag.ID)
+	fbTag := createComposeEventTag(t, db, "fallback-event-f", fallback.ID)
+	createComposeArticles(t, db, 1, 24*time.Hour, fbTag.ID)
+
+	svc := NewSemanticBoardUpgradeService(db, nil, nil)
+	profile, err := svc.loadBoardExpandProfile(context.Background(), board.ID)
+	require.NoError(t, err)
+	config := svc.LoadUpgradeConfig(context.Background())
+
+	candidates, _, err := svc.recallExpandAuxCandidates(context.Background(), config, profile, 7)
+	require.NoError(t, err)
+	ids := expandCandidateIDs(candidates)
+	require.False(t, ids[stale.ID], "stale member candidate dropped by days window")
+	require.True(t, ids[fallback.ID], "member list emptied by the window → dual-path fallback engaged")
 }

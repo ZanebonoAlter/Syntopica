@@ -24,6 +24,15 @@ import (
 // substitute a stub: the real implementation drives the whole LLM pipeline.
 var generateAndSaveReport = daily_report.GenerateAndSaveReport
 
+// Generation gate seams (guard-daily-report-generate D1/D2): the process-wide
+// daily-report mutual-exclusion gate, shared with the manual
+// POST /api/daily-reports/generate endpoint (re-exported by the topicgraph
+// root package). Package-level vars so tests can stub/observe the gate.
+var (
+	tryAcquireDailyReportGate = daily_report.TryAcquireDailyReportGeneration
+	releaseDailyReportGate    = daily_report.ReleaseDailyReportGeneration
+)
+
 // Notification seams (add-notification-center, 白盒 B): package-level vars so
 // tests can capture adjudication calls without a notification database
 // (same seam as generateAndSaveReport).
@@ -31,6 +40,30 @@ var (
 	notifyDailyReportSuccess       = notification.DailyReportSuccess
 	notifyDailyReportFailedSummary = notification.DailyReportFailedSummary
 )
+
+// runPostReportBoardHealthCheckup is the board-health tail-step seam
+// (add-board-health-checkup design D3): package-level var so tests can
+// capture the call / inject failures without a real checkup. The real
+// implementation bounds the checkup with its own 10-minute budget carved
+// from the caller's context so a slow LLM cannot eat the backfill sweep's
+// budget.
+var runPostReportBoardHealthCheckup = func(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
+	defer cancel()
+	tagging.RunBoardHealthCheckupWrapped(ctx, repository.Repo.DB())
+}
+
+// runBoardHealthCheckupTailStep invokes the seam with panic isolation AT THE
+// CALL SITE: even a replaced/panicking seam must never take down the
+// daily-report job (design D3 — 体检 panic 仅日志不影响日报 job 返回值).
+func runBoardHealthCheckupTailStep(parent context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Errorf("board-health: post-report checkup panicked (daily-report result untouched): %v", r)
+		}
+	}()
+	runPostReportBoardHealthCheckup(parent)
+}
 
 // adjudicateDailyReportTerminal is the single adjudication point for the
 // scheduled daily-report terminal-state notification (白盒 B):
@@ -203,6 +236,21 @@ func NextDailyReportTime(now time.Time) time.Time {
 // and keeps the existing run-immediately semantics.
 func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 	return func(ctx context.Context) (*scheduler.JobResult, error) {
+		// Generation gate (guard-daily-report-generate D1/D2): at most ONE
+		// daily-report pipeline process-wide — the manual endpoint shares this
+		// same gate. Acquired BEFORE waitForDailyReportWindow: the window wait
+		// (queue-drain polling) holds the gate too, so a manual click during the
+		// wait cannot double-run (the 2026-09-30 incident). A failed acquire is
+		// a skip (existing skip mechanism), not an error: the sibling manual
+		// pipeline owns the terminal notification.
+		if !tryAcquireDailyReportGate() {
+			return &scheduler.JobResult{
+				Data:    map[string]interface{}{"skipped": "already_running"},
+				Summary: "daily report skipped: already_running",
+			}, nil
+		}
+		defer releaseDailyReportGate()
+
 		startTime := time.Now()
 
 		date := time.Now().In(time.Local)
@@ -213,7 +261,8 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 		// 队列感知等待（night-window-alignment D4）：仅定时路径等待；等待在
 		// 主生成 30min 预算之外（WithTimeout 之前），不蚕食生成预算。等待期
 		// 内 runJob 持有 isExecuting，手动 TriggerNowWithDate 命中 409 重入
-		// 保护（既有同 job 不并发语义）。
+		// 保护（既有同 job 不并发语义）；域闸在等待之前已持有（见闭包开头），
+		// 手动端点同期待 409 already_running（guard-daily-report-generate）。
 		if len(targetDate) == 0 {
 			if skip := waitForDailyReportWindow(ctx, date); skip != "" {
 				return &scheduler.JobResult{
@@ -268,6 +317,16 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 		// 空版面不是失败）。失败汇总与完成通知互斥（adjudicateDailyReportTerminal）。
 		if totalBoards := len(boardIDs); totalBoards > 0 {
 			adjudicateDailyReportTerminal(date, totalBoards, reportCount, failedCount)
+
+			// Board-health checkup tail step (add-board-health-checkup design D3):
+			// chained synchronously after the SUCCESS adjudication only — the
+			// daily report owns this run's outcome, the checkup is a best-effort
+			// follow-up whose errors/panics are logged and never alter the job
+			// result. Manual TriggerNowWithDate flows through DailyReportJob too,
+			// so the manual path triggers the checkup with no separate wiring.
+			if failedCount == 0 {
+				runBoardHealthCheckupTailStep(baseCtx)
+			}
 		}
 
 		resultData := map[string]interface{}{

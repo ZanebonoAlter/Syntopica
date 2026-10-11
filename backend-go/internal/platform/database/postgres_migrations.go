@@ -3,6 +3,8 @@ package database
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -1418,7 +1420,20 @@ func postgresMigrations() []Migration {
 			Description: "Materialize NOT NULL/DEFAULT constraints (previously driven by GORM tags) for ai_models/topic_graph/semantic_label tables, so model tags can be stripped. Idempotent.",
 			Up: func(db *gorm.DB) error {
 				// helper: set DEFAULT then backfill+NOT NULL for one column.
+				// Column-existence guard（ai-provider-model-overhaul）：ai_routes 的
+				// priority/strategy 已按 D2 死列收口从 model 删除，全新库（RunAutoMigrate
+				// 建表）不再有这两列——跳过不报错；存量库列在，照常落约束。
 				constrain := func(table, column, defaultLit string, notNull bool) error {
+					var colExists bool
+					if err := db.Raw(`SELECT EXISTS (
+						SELECT 1 FROM information_schema.columns
+						WHERE table_name = ? AND column_name = ?
+					)`, table, column).Scan(&colExists).Error; err != nil {
+						return fmt.Errorf("check column %s.%s: %w", table, column, err)
+					}
+					if !colExists {
+						return nil
+					}
 					if defaultLit != "" {
 						if err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s`, table, column, defaultLit)).Error; err != nil {
 							return fmt.Errorf("set default %s.%s: %w", table, column, err)
@@ -2421,7 +2436,50 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, normalizeArticleLinkFragmentsMigration())
 	migrations = append(migrations, marginNotesTablesMigration())
 	migrations = append(migrations, marginNotesWebSourcesMigration())
-	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration())
+	migrations = append(migrations, marginNotesWebSearchStatusMigration())
+	migrations = append(migrations, vendorModelMigration())
+	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration())
+}
+
+// boardHealthSnapshotMigration implements 20261006_0001
+// (add-board-health-checkup design D2): add the FK
+// board_health_snapshots.semantic_board_id → semantic_labels(id) ON DELETE
+// CASCADE. AutoMigrate creates the table + composite index but runs with
+// DisableForeignKeyConstraintWhenMigrating, so the FK lives here (same policy
+// as fk_topic_lane_snapshots_topic / 20260910_0001). Hard-deleting a board
+// removes its snapshots — they are pure log-style data, orphan rows are
+// meaningless. Idempotent (IF NOT EXISTS); skips when the table is absent.
+func boardHealthSnapshotMigration() Migration {
+	return Migration{
+		Version:     "20261006_0001",
+		Description: "board-health-checkup: FK board_health_snapshots.semantic_board_id -> semantic_labels(id) ON DELETE CASCADE (AutoMigrate owns the table; migration owns the FK)",
+		Up: func(db *gorm.DB) error {
+			var tableExists bool
+			if err := db.Raw(`SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables WHERE table_name = 'board_health_snapshots')`).Scan(&tableExists).Error; err != nil {
+				return fmt.Errorf("check board_health_snapshots: %w", err)
+			}
+			if !tableExists {
+				return nil
+			}
+			if err := db.Exec(`ALTER TABLE board_health_snapshots
+				ADD CONSTRAINT fk_board_health_snapshots_board
+				FOREIGN KEY (semantic_board_id) REFERENCES semantic_labels(id)
+				ON DELETE CASCADE`).Error; err != nil {
+				// Idempotent guard: a concurrent first-run (AutoMigrate + migration
+				// racing a second process) may have added the constraint already.
+				var constraintExists bool
+				if cErr := db.Raw(`SELECT EXISTS (
+					SELECT 1 FROM information_schema.table_constraints
+					WHERE constraint_name = 'fk_board_health_snapshots_board'
+					  AND table_name = 'board_health_snapshots')`).Scan(&constraintExists).Error; cErr == nil && constraintExists {
+					return nil
+				}
+				return fmt.Errorf("add fk_board_health_snapshots_board: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 // dropProfileTablesMigration implements 20260926_0001
@@ -3580,6 +3638,293 @@ func marginNotesTablesMigration() Migration {
 	}
 }
 
+// vendorSnapshotDir is the directory the pre-migration ai_providers JSON
+// snapshot is written to. Package-level so the migration test can redirect it
+// to a t.TempDir() instead of polluting the repo working directory.
+var vendorSnapshotDir = "data"
+
+// vendorModelMigration implements 20261005_0001
+// (ai-provider-model-overhaul design D1/D2)：
+//
+//	ai_providers 单层实体拆解为 ai_vendors + ai_models 两层（每行 provider →
+//	1 vendor + 1 model），ai_route_providers 绑定改挂 ai_route_models（priority
+//	保序、thinking_level 置 NULL=继承模型默认档）。方言/结构化档按 provider 名
+//	前缀推断（存量 3 行硬编码映射）；enable_thinking 布尔按 true→high/false→off
+//	写入模型默认思考档（embedding 行恒 NULL）。拆解前全表 JSON 快照落
+//	ai_providers_legacy_snapshot.json（失败仅告警不阻断）。死字段
+//	（ai_providers.metadata、ai_routes.strategy/priority）不迁不建；旧表旧列
+//	物理保留不 DROP（回滚保险，下个大版本清理）。
+//
+// 幂等：vendor 按 legacy_provider_id 判重命中即跳过整行；name 重名跳过并告警；
+//
+//	绑定改挂 NOT EXISTS 防重；建表/建索引全部 IF NOT EXISTS。
+func vendorModelMigration() Migration {
+	return Migration{
+		Version:     "20261005_0001",
+		Description: "ai-provider-model-overhaul: split ai_providers into ai_vendors/ai_models two-layer tables, reattach ai_route_providers bindings to ai_route_models (priority preserved), legacy snapshot to data/.",
+		Up: func(db *gorm.DB) error {
+			// 1. 建三层新表（字段与 models.AIVendor/AIModel/AIRouteModel 一致，含全部索引）
+			stmts := []string{
+				`CREATE TABLE IF NOT EXISTS ai_vendors (
+					id                 BIGSERIAL PRIMARY KEY,
+					name               VARCHAR(100) NOT NULL,
+					preset_id          VARCHAR(50)  NOT NULL DEFAULT '',
+					provider_type      VARCHAR(50)  NOT NULL,
+					base_url           VARCHAR(500) NOT NULL,
+					api_key            TEXT         NULL,
+					timeout_seconds    BIGINT       NOT NULL,
+					start_command      TEXT         NULL,
+					thinking_dialect   VARCHAR(50)  NOT NULL DEFAULT 'none',
+					structured_output  VARCHAR(50)  NOT NULL DEFAULT 'json_schema',
+					legacy_provider_id BIGINT       NULL,
+					enabled            BOOLEAN      NOT NULL,
+					created_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
+					updated_at         TIMESTAMPTZ  NOT NULL DEFAULT now()
+				)`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_vendors_name ON ai_vendors(name)`,
+				`CREATE INDEX IF NOT EXISTS idx_ai_vendors_provider_type ON ai_vendors(provider_type)`,
+				`CREATE INDEX IF NOT EXISTS idx_ai_vendors_legacy_provider_id ON ai_vendors(legacy_provider_id)`,
+				`CREATE INDEX IF NOT EXISTS idx_ai_vendors_enabled ON ai_vendors(enabled)`,
+				`CREATE TABLE IF NOT EXISTS ai_models (
+					id                 BIGSERIAL PRIMARY KEY,
+					vendor_id          BIGINT       NOT NULL,
+					name               VARCHAR(100) NOT NULL,
+					model_kind         VARCHAR(20)  NOT NULL DEFAULT 'llm',
+					thinking_level     VARCHAR(20)  NULL,
+					supports_xhigh_max BOOLEAN      NOT NULL DEFAULT false,
+					enabled            BOOLEAN      NOT NULL,
+					status             VARCHAR(20)  NOT NULL DEFAULT 'ok',
+					last_seen_at       TIMESTAMPTZ  NULL,
+					created_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
+					updated_at         TIMESTAMPTZ  NOT NULL DEFAULT now()
+				)`,
+				`CREATE INDEX IF NOT EXISTS idx_ai_models_vendor_id ON ai_models(vendor_id)`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_models_vendor_name ON ai_models(vendor_id, name)`,
+				`CREATE INDEX IF NOT EXISTS idx_ai_models_model_kind ON ai_models(model_kind)`,
+				`CREATE INDEX IF NOT EXISTS idx_ai_models_enabled ON ai_models(enabled)`,
+				`CREATE INDEX IF NOT EXISTS idx_ai_models_status ON ai_models(status)`,
+				`CREATE TABLE IF NOT EXISTS ai_route_models (
+					id             BIGSERIAL PRIMARY KEY,
+					route_id       BIGINT      NOT NULL,
+					model_id       BIGINT      NOT NULL,
+					priority       BIGINT      NOT NULL,
+					thinking_level VARCHAR(20) NULL,
+					enabled        BOOLEAN     NOT NULL,
+					created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+					updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+				)`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_air_route_model_link ON ai_route_models(route_id, model_id)`,
+				`CREATE INDEX IF NOT EXISTS idx_air_route_models_priority ON ai_route_models(priority)`,
+				`CREATE INDEX IF NOT EXISTS idx_air_route_models_enabled ON ai_route_models(enabled)`,
+			}
+			for _, stmt := range stmts {
+				if err := db.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("create vendor/model tables: %w", err)
+				}
+			}
+
+			// 2. trace_id 观测索引：降级观测面板按 trace_id 分组还原降级链（D6），
+			// 同表加索引非 schema 语义变更，幂等。
+			if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_call_logs_trace ON ai_call_logs(trace_id)`).Error; err != nil {
+				return fmt.Errorf("create idx_call_logs_trace: %w", err)
+			}
+
+			// 3. 拆解前快照（ai_providers 存在且有行才写，失败仅告警）
+			if tableExists(db, "ai_providers") {
+				snapshotLegacyProviders(db)
+			}
+
+			// 4. 拆解（ai_providers 不存在则无事可做）
+			if !tableExists(db, "ai_providers") {
+				return nil
+			}
+			vendors, models, bindings, err := splitLegacyProviders(db)
+			if err != nil {
+				return err
+			}
+
+			// 5. 冲突告警：同一 model 同时挂在 embedding 路由与 llm 路由——存量脏
+			// 数据只可见化不阻断（ai-route-model spec「存量迁移后冲突告警」）
+			var conflicts []struct {
+				ID   uint
+				Name string
+			}
+			if err := db.Raw(`SELECT rm.model_id AS id, m.name AS name FROM ai_route_models rm
+				JOIN ai_routes r ON r.id = rm.route_id
+				JOIN ai_models m ON m.id = rm.model_id
+				GROUP BY rm.model_id, m.name
+				HAVING COUNT(*) FILTER (WHERE r.capability = 'embedding') > 0
+				   AND COUNT(*) FILTER (WHERE r.capability <> 'embedding') > 0`).Scan(&conflicts).Error; err != nil {
+				return fmt.Errorf("check embedding/llm binding conflicts: %w", err)
+			}
+			for _, c := range conflicts {
+				logging.Warnf("vendor-model migration: model %q (id=%d) bound to both embedding and llm routes", c.Name, c.ID)
+			}
+
+			// 6. 对账日志：部署后验证清单核对计数（design Migration Plan）
+			logging.Infof("vendor-model migration: vendors=%d models=%d bindings=%d", vendors, models, bindings)
+			return nil
+		},
+	}
+}
+
+// snapshotLegacyProviders writes the full ai_providers table (SELECT * scanned
+// into generic row maps) to <vendorSnapshotDir>/ai_providers_legacy_snapshot.json
+// before the split mutates anything. Snapshot is a rollback aid only: any failure
+// warns and continues, never blocks the migration.
+func snapshotLegacyProviders(db *gorm.DB) {
+	var count int64
+	if err := db.Raw(`SELECT count(*) FROM ai_providers`).Scan(&count).Error; err != nil || count == 0 {
+		return // 空表/读失败：无内容可快照（读失败留给拆解步骤显式报错）
+	}
+	var rows []map[string]any
+	if err := db.Raw(`SELECT * FROM ai_providers`).Scan(&rows).Error; err != nil {
+		logging.Warnf("vendor-model migration: legacy snapshot read failed: %v", err)
+		return
+	}
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		logging.Warnf("vendor-model migration: legacy snapshot marshal failed: %v", err)
+		return
+	}
+	if err := os.MkdirAll(vendorSnapshotDir, 0o750); err != nil {
+		logging.Warnf("vendor-model migration: legacy snapshot mkdir %s: %v", vendorSnapshotDir, err)
+		return
+	}
+	path := filepath.Join(vendorSnapshotDir, "ai_providers_legacy_snapshot.json")
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		logging.Warnf("vendor-model migration: legacy snapshot write %s: %v", path, err)
+	}
+}
+
+// legacyProviderRow is the projection of ai_providers the split consumes.
+// All columns COALESCEd at read time: AutoMigrate-created legacy columns are
+// nullable and pre-default rows may hold NULLs.
+type legacyProviderRow struct {
+	ID             uint
+	Name           string
+	ProviderType   string
+	BaseURL        string
+	APIKey         string
+	Model          string
+	Enabled        bool
+	TimeoutSeconds int
+	ModelKind      string
+	StartCommand   string
+	EnableThinking bool
+}
+
+// splitLegacyProviders expands each ai_providers row into one ai_vendors row +
+// one ai_models row and reattaches ai_route_providers bindings to ai_route_models.
+// Returns the split counters for the reconciliation log.
+func splitLegacyProviders(db *gorm.DB) (vendors, models, bindings int, err error) {
+	var legacy []legacyProviderRow
+	if err := db.Raw(`SELECT id,
+		COALESCE(name, '') AS name,
+		COALESCE(provider_type, '') AS provider_type,
+		COALESCE(base_url, '') AS base_url,
+		COALESCE(api_key, '') AS api_key,
+		COALESCE(model, '') AS model,
+		COALESCE(enabled, false) AS enabled,
+		COALESCE(timeout_seconds, 0) AS timeout_seconds,
+		COALESCE(model_kind, '') AS model_kind,
+		COALESCE(start_command, '') AS start_command,
+		COALESCE(enable_thinking, false) AS enable_thinking
+		FROM ai_providers`).Scan(&legacy).Error; err != nil {
+		return 0, 0, 0, fmt.Errorf("read legacy ai_providers: %w", err)
+	}
+
+	for _, p := range legacy {
+		// 已迁移判重：legacy_provider_id 命中即跳过整行（含 model 与绑定改挂）
+		var migrated uint
+		if err := db.Raw(`SELECT id FROM ai_vendors WHERE legacy_provider_id = ?`, p.ID).Scan(&migrated).Error; err != nil {
+			return vendors, models, bindings, fmt.Errorf("check legacy_provider_id %d: %w", p.ID, err)
+		}
+		if migrated != 0 {
+			continue
+		}
+		// 重名判重：vendor.name 全局唯一（继承 provider.name 语义），重名跳过并告警
+		var nameOwner uint
+		if err := db.Raw(`SELECT id FROM ai_vendors WHERE name = ?`, p.Name).Scan(&nameOwner).Error; err != nil {
+			return vendors, models, bindings, fmt.Errorf("check vendor name %q: %w", p.Name, err)
+		}
+		if nameOwner != 0 {
+			logging.Warnf("vendor-model migration: vendor name %q already exists, skipping legacy provider %d", p.Name, p.ID)
+			continue
+		}
+
+		dialect, structured := inferVendorDialect(p.Name)
+		timeout := p.TimeoutSeconds
+		if timeout <= 0 {
+			timeout = 120
+		}
+		var vendorID uint
+		if err := db.Raw(`INSERT INTO ai_vendors
+			(name, preset_id, provider_type, base_url, api_key, timeout_seconds, start_command,
+			 thinking_dialect, structured_output, legacy_provider_id, enabled, created_at, updated_at)
+			VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, now(), now()) RETURNING id`,
+			p.Name, p.ProviderType, p.BaseURL, p.APIKey, timeout, p.StartCommand,
+			dialect, structured, p.ID, p.Enabled).Scan(&vendorID).Error; err != nil {
+			return vendors, models, bindings, fmt.Errorf("insert vendor for legacy provider %d: %w", p.ID, err)
+		}
+		vendors++
+
+		// 模型：name=provider.model；model_kind 空则 llm；thinking_level——llm 行
+		// 按 enable_thinking true→high/false→off，embedding 行恒 NULL（无思考语义）
+		kind := p.ModelKind
+		if kind == "" {
+			kind = "llm"
+		}
+		var thinkingLevel any // nil → NULL
+		if kind != "embedding" {
+			if p.EnableThinking {
+				thinkingLevel = "high"
+			} else {
+				thinkingLevel = "off"
+			}
+		}
+		var modelID uint
+		if err := db.Raw(`INSERT INTO ai_models
+			(vendor_id, name, model_kind, thinking_level, supports_xhigh_max, enabled, status,
+			 last_seen_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, false, ?, 'ok', now(), now(), now()) RETURNING id`,
+			vendorID, p.Model, kind, thinkingLevel, p.Enabled).Scan(&modelID).Error; err != nil {
+			return vendors, models, bindings, fmt.Errorf("insert model for legacy provider %d: %w", p.ID, err)
+		}
+		models++
+
+		// 绑定改挂：provider_id → 拆出 model_id，priority 保序（旧列可空取 0）、
+		// thinking_level 置 NULL=继承；NOT EXISTS 防重复改挂
+		res := db.Exec(`INSERT INTO ai_route_models (route_id, model_id, priority, thinking_level, enabled, created_at, updated_at)
+			SELECT rp.route_id, ?, COALESCE(rp.priority, 0), NULL, COALESCE(rp.enabled, true), now(), now()
+			FROM ai_route_providers rp
+			WHERE rp.provider_id = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM ai_route_models rm
+				WHERE rm.route_id = rp.route_id AND rm.model_id = ?
+			  )`, modelID, p.ID, modelID)
+		if res.Error != nil {
+			return vendors, models, bindings, fmt.Errorf("reattach bindings for legacy provider %d: %w", p.ID, res.Error)
+		}
+		bindings += int(res.RowsAffected)
+	}
+	return vendors, models, bindings, nil
+}
+
+// inferVendorDialect maps a legacy provider name to (thinking_dialect,
+// structured_output). 存量就 3 行，硬编码前缀映射：qwen*→qwen-chat-template+
+// json_schema、deepseek*→deepseek+json_object、其余 none+json_schema。
+func inferVendorDialect(name string) (dialect, structured string) {
+	switch {
+	case strings.HasPrefix(name, "qwen"):
+		return "qwen-chat-template", "json_schema"
+	case strings.HasPrefix(name, "deepseek"):
+		return "deepseek", "json_object"
+	default:
+		return "none", "json_schema"
+	}
+}
+
 // marginNotesWebSourcesMigration implements 20260924_0001
 // (daily-report-margin-notes 联网扩充，design D7)：
 //
@@ -3597,6 +3942,29 @@ func marginNotesWebSourcesMigration() Migration {
 			if err := db.Exec(`ALTER TABLE annotation_qas
 				ADD COLUMN IF NOT EXISTS cited_web_sources JSONB NOT NULL DEFAULT '[]'::jsonb`).Error; err != nil {
 				return fmt.Errorf("add annotation_qas.cited_web_sources: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// marginNotesWebSearchStatusMigration implements 20261007_0001
+// (add-searxng-health-indicator design D5)：
+//
+//	annotation_qas 追加 web_search_status text NULL——问答轮联网搜索状态
+//	（disabled/ok/empty；empty=链路启用但全部搜索失败或结果为空，落库不细分
+//	unreachable/degraded——对读者语义同为「联网没帮上」）。存量行为 NULL
+//	（历史数据无标记语义，不回填；前端 NULL 不渲染标记）。
+//
+// 幂等：ADD COLUMN IF NOT EXISTS。回滚=列残留无害（旧前端不读则忽略）。
+func marginNotesWebSearchStatusMigration() Migration {
+	return Migration{
+		Version:     "20261007_0001",
+		Description: "add-searxng-health-indicator: annotation_qas.web_search_status text NULL (per-turn web search status disabled/ok/empty, legacy rows stay NULL)",
+		Up: func(db *gorm.DB) error {
+			if err := db.Exec(`ALTER TABLE annotation_qas
+				ADD COLUMN IF NOT EXISTS web_search_status TEXT NULL`).Error; err != nil {
+				return fmt.Errorf("add annotation_qas.web_search_status: %w", err)
 			}
 			return nil
 		},

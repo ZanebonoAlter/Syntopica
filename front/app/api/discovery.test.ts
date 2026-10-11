@@ -150,6 +150,110 @@ describe('useDiscoveryApi — 候选列表 normalizer', () => {
 })
 
 /**
+ * 订阅状态字段（fix-discovery-subscribed-hint D4）：推荐卡 / 查询条目 / 候选库与详情
+ * 三处响应补 subscribed + subscribed_urls 后，normalizer 必须全部归一（缺省/非数组 →
+ * false / []）；漏一处就会让四个入口的「已订阅」口径分裂。
+ */
+describe('useDiscoveryApi — 订阅状态字段 normalizer', () => {
+  beforeEach(() => {
+    getMock.mockReset()
+  })
+
+  function recommendationPayload(over: Record<string, unknown> = {}) {
+    return {
+      id: 1,
+      route_id: 9,
+      source: 'manual_refresh',
+      score: 0.5,
+      llm_reason: '',
+      status: 'pending',
+      created_at: '',
+      route_namespace: 'zaobao',
+      route_path: '/znews/:section?',
+      route_name: '早报',
+      route_example: '/zaobao/znews/china',
+      usable_directly: false,
+      requires_parameters: true,
+      parameters: '{}',
+      board_label: '新闻',
+      ...over,
+    }
+  }
+
+  it('推荐卡：subscribed / subscribed_urls 透出，缺省归一 false 与 []', async () => {
+    getMock.mockResolvedValue({
+      success: true,
+      data: [
+        recommendationPayload({ id: 1, subscribed: true, subscribed_urls: ['https://rsshub.example/zaobao/znews/world'] }),
+        recommendationPayload({ id: 2 }),
+      ],
+    })
+    const api = useDiscoveryApi()
+    const res = await api.getRecommendations()
+
+    expect(res.data![0]!.subscribed).toBe(true)
+    expect(res.data![0]!.subscribedUrls).toEqual(['https://rsshub.example/zaobao/znews/world'])
+    expect(res.data![1]!.subscribed).toBe(false)
+    expect(res.data![1]!.subscribedUrls).toEqual([])
+  })
+
+  it('查询结果条目：subscribed / subscribed_urls 透出，非数组归一 []', async () => {
+    getMock.mockResolvedValue({
+      success: true,
+      data: {
+        id: 7,
+        kind: 'qa',
+        query: 'q',
+        status: 'succeeded',
+        started_at: '',
+        finished_at: null,
+        items: [
+          { candidate_id: 1, name: 'A', description: '', reason: '', recall_origins: [], availability: 'unknown', subscribed: true, subscribed_urls: ['https://rsshub.example/a/p/1'] },
+          { candidate_id: 2, name: 'B', description: '', reason: '', availability: 'unknown', subscribed_urls: 'bad' },
+        ],
+      },
+    })
+    const api = useDiscoveryApi()
+    const res = await api.getRun('7')
+
+    expect(res.data!.items[0]!.subscribed).toBe(true)
+    expect(res.data!.items[0]!.subscribedUrls).toEqual(['https://rsshub.example/a/p/1'])
+    expect(res.data!.items[1]!.subscribed).toBe(false)
+    expect(res.data!.items[1]!.subscribedUrls).toEqual([])
+  })
+
+  it('候选列表与详情：subscribed_urls 透出（弹窗已有订阅信息块数据源）', async () => {
+    getMock.mockResolvedValue({
+      success: true,
+      data: {
+        items: [candidateItem({ id: 11, subscribed: true, subscribed_urls: ['https://rsshub.example/design/weekly'] })],
+        total: 1,
+      },
+    })
+    const api = useDiscoveryApi()
+    const list = await api.getCandidates()
+    expect(list.data![0]!.subscribed).toBe(true)
+    expect(list.data![0]!.subscribedUrls).toEqual(['https://rsshub.example/design/weekly'])
+
+    getMock.mockResolvedValue({
+      success: true,
+      data: {
+        id: 11,
+        kind: 'rsshub',
+        name: 'design-weekly',
+        feed_url: null,
+        subscribed: true,
+        subscribed_urls: ['https://rsshub.example/design/weekly'],
+        route: null,
+      },
+    })
+    const detail = await api.getCandidateDetail('11')
+    expect(detail.data?.subscribed).toBe(true)
+    expect(detail.data?.subscribedUrls).toEqual(['https://rsshub.example/design/weekly'])
+  })
+})
+
+/**
  * 参数名映射（后端 handler.ListCandidates 只认 q/page/page_size/kind/recommendation_enabled）：
  * 前端类型层保持语义命名，映射在 api 层完成；发旧名会被后端静默忽略，
  * 用户可见症状是「搜索与筛选点了没反应」。此组用例锁住 wire 名与 URL。

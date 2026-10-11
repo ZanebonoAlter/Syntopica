@@ -367,10 +367,10 @@ func (s *ContentCompletionService) hasRouteConfig() bool {
 	if s.router == nil {
 		return false
 	}
-	provider, _, err := s.router.ResolvePrimaryProvider(airouter.CapabilitySummary)
-	return err == nil && provider != nil &&
-		strings.TrimSpace(provider.BaseURL) != "" &&
-		strings.TrimSpace(provider.Model) != ""
+	model, vendor, _, err := s.router.ResolvePrimaryModel(airouter.CapabilitySummary)
+	return err == nil && model != nil && vendor != nil &&
+		strings.TrimSpace(vendor.BaseURL) != "" &&
+		strings.TrimSpace(model.Name) != ""
 }
 
 func (s *ContentCompletionService) hasFallbackConfig() bool {

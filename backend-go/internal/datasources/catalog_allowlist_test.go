@@ -16,7 +16,7 @@ import (
 // Fetcher gate (checkURL) — never a hand-written host list nor a test-local
 // fetcher.
 func TestEiaArchiveHostPassesProductionAllowlist(t *testing.T) {
-	hosts := make([]string, 0, 4)
+	hosts := make([]string, 0, 8)
 	for _, d := range Catalog() {
 		hosts = append(hosts, d.HostAllowlist...)
 	}
@@ -28,6 +28,14 @@ func TestEiaArchiveHostPassesProductionAllowlist(t *testing.T) {
 		// ({eiaArchiveBase}/{YYYY}/{YYYY_MM_DD}/csv/table1.csv): previously
 		// rejected by the gate, now must pass it.
 		"https://www.eia.gov/petroleum/supply/weekly/archive/2026/2026_09_09/csv/table1.csv",
+		// Fast-frequency sources (add-fast-frequency-datasources tasks 1.5):
+		// every upstream host the three new fetchers build URLs against —
+		// pinned through the SAME production gate derived from Catalog().
+		"https://query1.finance.yahoo.com/v8/finance/chart/CL=F?range=1mo&interval=1d",
+		"https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=3mo&interval=1d",
+		"https://api.stlouisfed.org/fred/series/observations?series_id=DCOILWTICO&file_type=json",
+		"https://api.stlouisfed.org/fred/series?series_id=DCOILWTICO&file_type=json",
+		"https://api.gdeltproject.org/api/v2/doc/doc?query=iran+oil&mode=timelinevol&timespan=7d&format=json",
 	} {
 		if err := fetcher.checkURL(u); err != nil {
 			t.Fatalf("production allowlist must accept %s, got: %v", u, err)

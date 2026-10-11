@@ -87,7 +87,7 @@ func SaveComtradeSettings(c *gin.Context) {
 	// 同步回写 data_sources 目录 status（live resolver 现算，UI 已配 key 即时
 	// 生效不必重启；design §10.4 状态源统一）。回写失败不阻断保存——key 已
 	// 落库，下次重启 Init 会按同一 resolver 重算。
-	if err := datasources.UpdateStatus(database.DB, "un_comtrade", wiring.ComtradeKeyResolver()); err != nil {
+	if err := datasources.UpdateStatus(database.DB, "un_comtrade", wiring.DataSourcesKeyResolver()); err != nil {
 		logging.Warnf("comtrade settings: refresh data_sources status: %v", err)
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})

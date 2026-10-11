@@ -88,6 +88,25 @@ func isEmptyChatResponse(resp *ChatResponse) bool {
 	return resp == nil || strings.TrimSpace(resp.Content) == ""
 }
 
+// chatUsage safely extracts the usage payload from a possibly-nil ChatResponse
+// (the nil case means "no body to account for", leaving the failure row's
+// token_usage SQL NULL).
+func chatUsage(resp *ChatResponse) *TokenUsage {
+	if resp == nil {
+		return nil
+	}
+	return resp.Usage
+}
+
+// chatFinishReason safely extracts choices[0].finish_reason from a possibly-nil
+// ChatResponse for failure-row attribution.
+func chatFinishReason(resp *ChatResponse) string {
+	if resp == nil {
+		return ""
+	}
+	return resp.FinishReason
+}
+
 type Router struct {
 	store   *Store
 	clients map[string]ProviderClient
@@ -154,6 +173,40 @@ func (r *Router) releaseSem(sem chan struct{}) {
 	}
 }
 
+// levelPtr 把字符串档位转 *string（空串=nil 未指定），适配 effectiveThinkingLevel 的三级指针入参。
+func levelPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// structuredStageMeta clone 调用方 metadata 并附加 structured_stage（观测还原降级方向
+// 的错点，D6）。返回新 map，不修改调用方数据。
+func structuredStageMeta(base map[string]any, stage string) map[string]any {
+	meta := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		meta[k] = v
+	}
+	meta["structured_stage"] = stage
+	return meta
+}
+
+// correctStructuredJSON 校验结构化响应内容（W5 解析纠错，Router 在拿到 2xx 内容后、
+// 返回 ChatResult 前执行）：原文合法 JSON → 原样；否则提取首个平衡 JSON 块再校验。
+// 均失败 → false（调用方按 parse_error 尝试失败处理，不把非 JSON 原文冒充结果返回）。
+func correctStructuredJSON(content string) (string, bool) {
+	trimmed := strings.TrimSpace(content)
+	if json.Valid([]byte(trimmed)) {
+		return trimmed, true
+	}
+	extracted, ok := extractBalancedJSON(trimmed)
+	if !ok || !json.Valid([]byte(extracted)) {
+		return "", false
+	}
+	return extracted, true
+}
+
 func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult, err error) {
 	if req.Operation == "" {
 		return nil, errors.New("airouter: Operation is required")
@@ -177,7 +230,7 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 			span.SetAttributes(attribute.String("baggage."+m.Key(), m.Value()))
 		}
 	}
-	route, providers, err := r.store.LoadRouteWithProviders(req.Capability)
+	route, bindings, err := r.store.LoadRouteWithModels(req.Capability)
 	if err != nil {
 		return nil, err
 	}
@@ -188,54 +241,131 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 	}
 	defer r.releaseSem(sem)
 
+	structured := req.JSONMode && req.JSONSchema != nil
 	var attemptErrors []error
-	for idx, provider := range providers {
-		client := r.clients[provider.ProviderType]
+	for idx, b := range bindings {
+		client := r.clients[b.Vendor.ProviderType]
 		if client == nil {
-			attemptErrors = append(attemptErrors, fmt.Errorf("provider type %s unsupported", provider.ProviderType))
+			attemptErrors = append(attemptErrors, fmt.Errorf("provider type %s unsupported", b.Vendor.ProviderType))
 			continue
 		}
 
+		// 四级解析（请求级>绑定级>模型默认>medium）+ 按模型支持度钳制（钳制发生在 wire 之前）。
+		effLevel := clampLevel(effectiveThinkingLevel(levelPtr(req.ThinkingLevel), levelPtr(b.ThinkingLevel), b.Model.ThinkingLevel), b.Model.SupportsXhighMax)
+
 		start := time.Now()
-		chatResp, callErr := client.Chat(ctx, provider, req)
+		chatResp, attempts, callErr := client.Chat(ctx, b.Vendor, b.Model, effLevel, req)
 		latencyMs := int(time.Since(start).Milliseconds())
+
+		// 降级链失败档逐行审计（红线5：每档真实 HTTP 尝试各留一行；W4 RequestMeta
+		// 带 structured_stage 供观测还原降级方向）。
+		for _, at := range attempts {
+			if at.ErrorCode == "" {
+				continue // 成功档由下方常规成功行覆盖
+			}
+			r.store.LogCall(ctx, &models.AICallLog{
+				Operation:       req.Operation,
+				Capability:      string(req.Capability),
+				RouteName:       route.Name,
+				ProviderName:    b.Vendor.Name,
+				Model:           b.Model.Name,
+				Success:         false,
+				IsFallback:      idx > 0,
+				LatencyMs:       at.LatencyMs,
+				ErrorCode:       at.ErrorCode,
+				ErrorMessage:    at.ErrorMsg,
+				Prompt:          formatMessages(req.Messages),
+				RequestMeta:     encodeMeta(structuredStageMeta(req.Metadata, at.Stage)),
+				ResponseSnippet: truncateSnippet(at.ErrorMsg),
+				SessionID:       req.SessionID,
+			})
+		}
+		// 降级链穷尽（最后一档仍 4xx）时失败档已逐行留痕，HTTP 层无未记录调用，
+		// 不再补一行笼统失败行（1 次 HTTP = 1 行，D5）。
+		chainExhausted := len(attempts) > 0 && attempts[len(attempts)-1].ErrorCode != ""
+
 		if callErr == nil && isEmptyChatResponse(chatResp) {
 			// Provider boundary normalization: HTTP success with no usable
 			// assistant content is a retryable provider failure, not a success.
 			// Applies to every provider type uniformly (no per-client special
 			// casing) and flows into the existing failure log / fallback path.
+			// Observability payloads (fix-deepseek-thinking-empty-response):
+			// an HTTP 200 body may still carry a usage block (tokens already
+			// consumed, e.g. reasoning burn) and a finish_reason (e.g. "length"
+			// for budget exhaustion) — they ride on the error so the failure
+			// row can account for them. chatResp may be nil (defensive), and
+			// network/HTTP-error paths have neither by construction.
 			callErr = &ProviderError{
-				Code:      "empty_response",
-				Retryable: true,
-				Message:   "provider returned empty response content",
+				Code:         "empty_response",
+				Retryable:    true,
+				Message:      "provider returned empty response content",
+				Usage:        chatUsage(chatResp),
+				FinishReason: chatFinishReason(chatResp),
 			}
 		}
-		if callErr == nil {
-			r.store.LogCall(ctx, &models.AICallLog{
-				Operation:       req.Operation,
-				Capability:      string(req.Capability),
-				RouteName:       route.Name,
-				ProviderName:    provider.Name,
-				Model:           provider.Model,
-				Success:         true,
-				IsFallback:      idx > 0,
-				LatencyMs:       latencyMs,
-				Prompt:          formatMessages(req.Messages),
-				RequestMeta:     encodeMeta(req.Metadata),
-				ResponseSnippet: truncateSnippet(chatResp.Content),
-				TokenUsage:      encodeTokenUsage(chatResp.Usage),
-				SessionID:       req.SessionID,
-			})
 
-			return &ChatResult{
-				Content:      chatResp.Content,
-				ProviderID:   provider.ID,
-				ProviderName: provider.Name,
-				RouteName:    route.Name,
-				UsedFallback: idx > 0,
-				AttemptCount: idx + 1,
-				Usage:        chatResp.Usage,
-			}, nil
+		if callErr == nil {
+			content := chatResp.Content
+			// 输出清理跟随生效档（specs/ai-thinking-levels）：off 保留原文（含 <think>
+			// 标签），非 off 剥离后 TrimSpace。清理在解析纠错之前（先剥标签再提取 JSON）；
+			// reasoning_content 独立字段行为保持（client 解析只取 content）。
+			if effLevel != ThinkingOff {
+				content = stripThinkTags(content)
+			}
+			if structured {
+				if cleaned, ok := correctStructuredJSON(content); ok {
+					content = cleaned
+				} else {
+					// Structured parse failure on an HTTP 200 response: same
+					// usage/finish_reason payload rules as empty_response above —
+					// the provider did consume the tokens it reported.
+					callErr = &ProviderError{
+						Code:         "parse_error",
+						Retryable:    true,
+						Message:      "response does not contain extractable valid JSON",
+						Usage:        chatUsage(chatResp),
+						FinishReason: chatFinishReason(chatResp),
+					}
+				}
+			}
+			if callErr == nil {
+				chatResp.Content = content
+				meta := req.Metadata
+				if structured {
+					// 降级链成功时取成功档；单档时取 vendor 声明档位（观测识别结构化调用）。
+					stage := b.Vendor.StructuredOutput
+					if n := len(attempts); n > 0 {
+						stage = attempts[n-1].Stage
+					}
+					meta = structuredStageMeta(req.Metadata, stage)
+				}
+				r.store.LogCall(ctx, &models.AICallLog{
+					Operation:       req.Operation,
+					Capability:      string(req.Capability),
+					RouteName:       route.Name,
+					ProviderName:    b.Vendor.Name,
+					Model:           b.Model.Name,
+					Success:         true,
+					IsFallback:      idx > 0,
+					LatencyMs:       latencyMs,
+					Prompt:          formatMessages(req.Messages),
+					RequestMeta:     encodeMeta(meta),
+					ResponseSnippet: truncateSnippet(chatResp.Content),
+					TokenUsage:      encodeTokenUsage(chatResp.Usage),
+					SessionID:       req.SessionID,
+				})
+
+				return &ChatResult{
+					Content:      chatResp.Content,
+					ProviderID:   b.Vendor.ID,
+					ProviderName: b.Vendor.Name,
+					ModelName:    b.Model.Name,
+					RouteName:    route.Name,
+					UsedFallback: idx > 0,
+					AttemptCount: idx + 1,
+					Usage:        chatResp.Usage,
+				}, nil
+			}
 		}
 
 		providerErr := &ProviderError{}
@@ -245,23 +375,36 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 				code = providerErr.Code
 			}
 		}
-		r.store.LogCall(ctx, &models.AICallLog{
-			Operation:       req.Operation,
-			Capability:      string(req.Capability),
-			RouteName:       route.Name,
-			ProviderName:    provider.Name,
-			Model:           provider.Model,
-			Success:         false,
-			IsFallback:      idx > 0,
-			LatencyMs:       latencyMs,
-			ErrorCode:       code,
-			ErrorMessage:    callErr.Error(),
-			Prompt:          formatMessages(req.Messages),
-			RequestMeta:     encodeMeta(req.Metadata),
-			ResponseSnippet: truncateSnippet(callErr.Error()),
-			SessionID:       req.SessionID,
-		})
-		attemptErrors = append(attemptErrors, fmt.Errorf("%s: %w", provider.Name, callErr))
+		// Failure-row accounting (fix-deepseek-thinking-empty-response):
+		// token_usage falls back to the error's payload when present (HTTP 200
+		// bodies with a usage block), else stays empty → SQL NULL (network /
+		// HTTP 4xx-5xx failures have no body usage by construction). The snippet
+		// gets a finish_reason= prefix so budget-exhausted empty responses are
+		// distinguishable from genuinely-empty server responses.
+		errSnippet := callErr.Error()
+		if providerErr.FinishReason != "" {
+			errSnippet = "finish_reason=" + providerErr.FinishReason + "; " + errSnippet
+		}
+		if !chainExhausted {
+			r.store.LogCall(ctx, &models.AICallLog{
+				Operation:       req.Operation,
+				Capability:      string(req.Capability),
+				RouteName:       route.Name,
+				ProviderName:    b.Vendor.Name,
+				Model:           b.Model.Name,
+				Success:         false,
+				IsFallback:      idx > 0,
+				LatencyMs:       latencyMs,
+				ErrorCode:       code,
+				ErrorMessage:    callErr.Error(),
+				Prompt:          formatMessages(req.Messages),
+				RequestMeta:     encodeMeta(req.Metadata),
+				ResponseSnippet: truncateSnippet(errSnippet),
+				TokenUsage:      encodeTokenUsage(providerErr.Usage),
+				SessionID:       req.SessionID,
+			})
+		}
+		attemptErrors = append(attemptErrors, fmt.Errorf("%s: %w", b.Vendor.Name, callErr))
 	}
 
 	finalErr := errors.Join(attemptErrors...)
@@ -290,8 +433,8 @@ func (r *Router) saveEmbeddingCache(req EmbeddingRequest, model string, res *Emb
 	}
 }
 
-func (r *Router) ResolvePrimaryProvider(capability Capability) (*models.AIProvider, *models.AIRoute, error) {
-	return r.store.ResolvePrimaryProvider(capability)
+func (r *Router) ResolvePrimaryModel(capability Capability) (*models.AIModel, *models.AIVendor, *models.AIRoute, error) {
+	return r.store.ResolvePrimaryModel(capability)
 }
 
 // embeddingCacheOperations is the allowlist of operations whose results are
@@ -346,7 +489,7 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 		span.SetAttributes(attribute.String("ai.session_id", req.SessionID))
 	}
 
-	route, providers, err := r.store.LoadRouteWithProviders(capability)
+	route, bindings, err := r.store.LoadRouteWithModels(capability)
 	if err != nil {
 		return nil, err
 	}
@@ -356,11 +499,11 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 	// Operations outside embeddingCacheOperations skip the lookup entirely
 	// (their rows are never written, so lookup would always miss) and go
 	// straight to the provider below.
-	// The cache key intentionally uses the route provider's Model, not
+	// The cache key intentionally uses the route binding's Model name, not
 	// req.Model: no call site sets req.Model today, and the client layer
-	// falls back to provider.Model when req.Model is empty. If a future call
-	// site starts setting req.Model, normalize the effective model before it
-	// participates in the key, otherwise the cached Model field observability
+	// falls back to the binding's model when req.Model is empty. If a future
+	// call site starts setting req.Model, normalize the effective model before
+	// it participates in the key, otherwise the cached Model field observability
 	// becomes inaccurate.
 	var lookupStart time.Time
 	var cacheKey string
@@ -368,7 +511,7 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 	var lookupErr error
 	if embeddingCacheable(req.Operation) {
 		lookupStart = time.Now()
-		cacheKey = embeddingCacheKey(providers[0].Model, req.Input)
+		cacheKey = embeddingCacheKey(bindings[0].Model.Name, req.Input)
 		cached, lookupErr = r.store.LookupEmbeddingCache(ctx, cacheKey)
 	}
 	if lookupErr != nil {
@@ -389,7 +532,7 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 				Operation:    req.Operation,
 				Capability:   string(capability),
 				RouteName:    route.Name,
-				ProviderName: providers[0].Name,
+				ProviderName: bindings[0].Vendor.Name,
 				Model:        cached.Model,
 				Success:      true,
 				IsFallback:   false,
@@ -401,7 +544,7 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 				Embeddings: vectors,
 				Model:      cached.Model,
 				Dimensions: cached.Dimensions,
-				Provider:   providers[0].Name,
+				Provider:   bindings[0].Vendor.Name,
 			}, nil
 		}
 	}
@@ -413,23 +556,23 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 	defer r.releaseSem(sem)
 
 	var attemptErrors []error
-	for idx, provider := range providers {
-		client := r.clients[provider.ProviderType]
+	for idx, b := range bindings {
+		client := r.clients[b.Vendor.ProviderType]
 		if client == nil {
-			attemptErrors = append(attemptErrors, fmt.Errorf("provider type %s unsupported", provider.ProviderType))
+			attemptErrors = append(attemptErrors, fmt.Errorf("provider type %s unsupported", b.Vendor.ProviderType))
 			continue
 		}
 
 		start := time.Now()
-		res, callErr := client.Embed(ctx, provider, req)
+		res, callErr := client.Embed(ctx, b.Vendor, b.Model, req)
 		latencyMs := int(time.Since(start).Milliseconds())
 		if callErr == nil {
 			r.store.LogCall(ctx, &models.AICallLog{
 				Operation:    req.Operation,
 				Capability:   string(capability),
 				RouteName:    route.Name,
-				ProviderName: provider.Name,
-				Model:        provider.Model,
+				ProviderName: b.Vendor.Name,
+				Model:        b.Model.Name,
 				Success:      true,
 				IsFallback:   idx > 0,
 				LatencyMs:    latencyMs,
@@ -437,7 +580,7 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 				RequestMeta:  encodeMeta(req.Metadata),
 				SessionID:    req.SessionID,
 			})
-			r.saveEmbeddingCache(req, provider.Model, res)
+			r.saveEmbeddingCache(req, b.Model.Name, res)
 			return res, nil
 		}
 
@@ -452,8 +595,8 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 			Operation:    req.Operation,
 			Capability:   string(capability),
 			RouteName:    route.Name,
-			ProviderName: provider.Name,
-			Model:        provider.Model,
+			ProviderName: b.Vendor.Name,
+			Model:        b.Model.Name,
 			Success:      false,
 			IsFallback:   idx > 0,
 			LatencyMs:    latencyMs,
@@ -462,7 +605,7 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 			RequestMeta:  encodeMeta(req.Metadata),
 			SessionID:    req.SessionID,
 		})
-		attemptErrors = append(attemptErrors, fmt.Errorf("%s: %w", provider.Name, callErr))
+		attemptErrors = append(attemptErrors, fmt.Errorf("%s: %w", b.Vendor.Name, callErr))
 	}
 
 	return nil, errors.Join(attemptErrors...)

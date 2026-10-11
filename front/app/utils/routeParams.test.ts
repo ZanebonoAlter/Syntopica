@@ -324,6 +324,31 @@ describe('buildRSSHubFeedUrl', () => {
     })).toBe('https://rsshub.app/test/list/a%20b%2Fc')
   })
 
+  // fix-discovery-subscribed-hint review M1：编码必须与后端 Go url.PathEscape 逐字节一致——
+  // 「同址即同订阅」靠 feeds.url 相等判定，分叉会让同一逻辑地址落成两条 feed，弹窗的
+  // 最终地址锁（finalUrl ∈ subscribedUrls）也会漏锁。encodeURIComponent 在 + & = : @ $ 与
+  // ! ' ( ) * 上与 Go 分叉，这里逐类钉住。
+  it('encodes params with Go url.PathEscape semantics (保留 $&+:=@，转义 !\'()*)', () => {
+    const url = (name: string) => buildRSSHubFeedUrl({
+      baseUrl: 'https://rsshub.app',
+      namespace: 'test',
+      path: '/list/:name',
+      parameters: { name },
+    })
+    // Go 不转义的保留字符（encodeURIComponent 会转义）
+    expect(url('C++')).toBe('https://rsshub.app/test/list/C++')
+    expect(url('a&b=c')).toBe('https://rsshub.app/test/list/a&b=c')
+    expect(url('x:y@z')).toBe('https://rsshub.app/test/list/x:y@z')
+    expect(url('a$b')).toBe('https://rsshub.app/test/list/a$b')
+    // Go 转义、encodeURIComponent 不转义的字符
+    expect(url("O'Brien")).toBe('https://rsshub.app/test/list/O%27Brien')
+    expect(url('hi!')).toBe('https://rsshub.app/test/list/hi%21')
+    expect(url('a(b)*c')).toBe('https://rsshub.app/test/list/a%28b%29%2Ac')
+    // 两侧本就一致：空格 / 斜杠 / 逗号 / 分号 / 非 ASCII（UTF-8 大写十六进制）
+    expect(url('a b/c,d;e')).toBe('https://rsshub.app/test/list/a%20b%2Fc%2Cd%3Be')
+    expect(url('中文')).toBe('https://rsshub.app/test/list/%E4%B8%AD%E6%96%87')
+  })
+
   it('returns empty string when required param missing', () => {
     expect(buildRSSHubFeedUrl({
       baseUrl: 'https://rsshub.app',

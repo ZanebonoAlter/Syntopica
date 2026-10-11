@@ -59,6 +59,8 @@
       "parameters": "",
       "param_options": {},
       "route_status": "ok",
+      "subscribed": false,
+      "subscribed_urls": [],
       "board_id": "12",
       "board_label": "AI 芯片",
       "score": 0.78,
@@ -68,6 +70,8 @@
   ]
 }
 ```
+
+`subscribed` / `subscribed_urls`：该卡片对应来源是否已订阅的**只读**判定——RSSHub 路由按路由级（同一 namespace+path 的固定前缀，任意已填参数订阅都算已订阅），原生 RSS 按规范化地址精确比对；`subscribed_urls` 给出命中的已有订阅地址（无则 `[]`）。命中只作提示，**不隐藏订阅入口**（同一路由仍可订别的参数），见 [../flow/discovery.md](../flow/discovery.md) §业务约束 25。
 
 ### POST /api/discovery/recommendations/refresh
 
@@ -112,7 +116,7 @@
 |------|------|------|------|
 | `question` | string | 是 | 自然语言兴趣表达（如「我想看 AI 芯片相关资讯」） |
 
-**v2 异步契约（同 refresh）**：受理秒回 `{run_id, status: "running"}`，查询 run 后台推进（embedding → 版块匹配 → 双路召回 → 精排 → 原子发布）；产出经 `GET /api/discovery/runs/:id` 轮询获取（`items` 附每条候选的 name/description/reason/recall_origins/availability），**不再直接返回推荐卡片**。成功查询形成独立兴趣记录（`discovery_interest_entries` 逐条独立，不合成平均画像）。
+**v2 异步契约（同 refresh）**：受理秒回 `{run_id, status: "running"}`，查询 run 后台推进（embedding → 版块匹配 → 双路召回 → 精排 → 原子发布）；产出经 `GET /api/discovery/runs/:id` 轮询获取（`items` 附每条候选的 name/description/reason/recall_origins/availability/subscribed/subscribed_urls），**不再直接返回推荐卡片**。成功查询形成独立兴趣记录（`discovery_interest_entries` 逐条独立，不合成平均画像）。
 
 ```json
 { "success": true, "data": { "run_id": 7, "status": "running" } }
@@ -140,7 +144,7 @@
 | POST | `/api/discovery/candidates/import/preview` | 导入预览（文件级问题 400 就地展示；revision 冲突 409 stale_preview） |
 | POST | `/api/discovery/candidates/import/confirm` | 导入确认（回传预览凭据 + 文件本体；不触发订阅） |
 
-候选响应的有效展示字段（name/description/language/region）经 `EffectiveMetadata` 计算（人工非空覆盖上游；出口统一清洗 markdown 格式噪音），另有 `subscribed`（feeds.url 精确匹配只读判断）、`availability`（unknown/ok/broken/requires_parameters，无记录=unknown 明示未验证）。上游路由消失（`route.status=gone`）仅禁止再次订阅，条目与已有订阅保留。
+候选响应的有效展示字段（name/description/language/region）经 `EffectiveMetadata` 计算（人工非空覆盖上游；出口统一清洗 markdown 格式噪音），另有 `subscribed` 与 `subscribed_urls`（来源订阅状态的只读判定：RSSHub 候选按**路由级**——同一 `namespace + path` 固定前缀下任意参数订阅都算已订阅，原生 RSS 按规范化地址精确比对；`subscribed_urls` 列出命中的已有订阅地址，无订阅为 `[]` 而非 `null`）、`availability`（unknown/ok/broken/requires_parameters，无记录=unknown 明示未验证）。路由级命中不阻止再订阅其它参数（仅原生 RSS 地址已订阅时不给重复入口）。上游路由消失（`route.status=gone`）仅禁止再次订阅，条目与已有订阅保留。
 
 ### 目录同步
 
@@ -177,6 +181,24 @@
 > 实例地址存 `ai_settings.rsshub_config`，缺省回落 `DefaultRSSHubBaseURL=http://rsshub.app`。改一处全链路（目录同步 + 推荐订阅落地）生效。
 >
 > `rsshub_doc_base` 存 `ai_settings.rsshub_doc_base`（官方文档基址，用于推荐卡片「官方文档」链接生成）。缺省 `https://docs.rsshub.app`；官方文档站国内可能访问受限，可配换镜像。
+
+## SearXNG 配置与健康探测
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/settings/searxng` | 读取 SearXNG 配置（endpoint + enabled） |
+| POST | `/api/settings/searxng` | 保存 SearXNG 配置 |
+| GET | `/api/settings/searxng/health` | 连通性主动探测（四态 + 耗时，add-searxng-health-indicator） |
+
+### GET /api/settings/searxng/health
+
+```json
+{ "success": true, "data": { "status": "degraded", "latency_ms": 5213, "detail": "服务可达但搜索无结果（引擎可能故障或上游代理失效）" } }
+```
+
+`status` 四态：`disabled`（未配置/未启用，200 正常态非错误）｜`unreachable`（endpoint 连接失败/超时/响应体解析失败）｜`degraded`（HTTP 可达但搜索结果为空——引擎全挂，2026-10-01 Clash 出口失效事故形态）｜`ok`（可达且结果非空）。`detail` 为人话摘要，不透传原始 JSON。
+
+> 探测=真实探针搜索（固定 query `connectivity probe`），非进程探活——事故形态是「进程活、引擎死」，`/healthz` 类端点无法暴露。复用页边注问答联网链路同一配置解析（`platform/searxng.ResolveConfiguredEndpoint`，DB>env>yaml 现读现生效）与同一搜索客户端，面板与链路同源判活。按需触发不轮询；不走 airouter、不落 `ai_call_logs`（非 AI 调用）；探测日志前缀 `margin-notes: health probe` 可与问答降级 WARN 一起 grep。设置面板保存配置成功后自动探测一次；探测失败不阻塞保存。
 
 ## 路由参数字典（admin）
 

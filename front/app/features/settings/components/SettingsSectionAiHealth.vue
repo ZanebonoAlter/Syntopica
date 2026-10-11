@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAIAdminApi } from '~/api'
 import type { AIHealthSnapshot } from '~/types'
 import AppSectionHeader from '~/components/ui/AppSectionHeader.vue'
 import AppToggle from '~/components/ui/AppToggle.vue'
 import AppButton from '~/components/ui/AppButton.vue'
+import DegradationPanel from './DegradationPanel.vue'
 import { useHealthReprobe } from '~/composables/useHealthReprobe'
+
+const router = useRouter()
 
 const loading = ref(false)
 const saving = ref(false)
@@ -76,12 +80,18 @@ async function handleReprobe() {
 }
 
 onMounted(() => { void loadHealth() })
+
+/** 降级事件「定位」：跳能力路由 section，并携带 focus_capability 供链式卡片滚动+脉冲 */
+function locateCapability(capability: string) {
+  void router.push({ query: { section: 'capability-routes', focus_capability: capability } })
+}
 </script>
 
 <template>
-  <div class="health-card">
+  <div class="space-y-4">
+    <div class="health-card">
     <div class="health-card__header">
-      <AppSectionHeader title="AI 健康状态" description="后端启动时探测各能力路由主 provider 的可达性" icon-name="mdi:heart-pulse" />
+      <AppSectionHeader title="AI 健康状态" description="后端启动时探测各能力路由主模型的可达性" icon-name="mdi:heart-pulse" />
       <div class="flex items-center gap-2.5">
         <AppButton variant="ghost" size="sm" :loading="reprobing" @click="handleReprobe">重新检测</AppButton>
         <span v-if="snapshot" class="health-badge" :class="snapshot.healthy ? 'health-badge--ok' : 'health-badge--down'">
@@ -102,7 +112,7 @@ onMounted(() => { void loadHealth() })
         </p>
 
         <div v-if="snapshot.routes.length === 0" class="health-empty">
-          暂无路由健康数据（没有启用且绑定了 provider 的路由）
+          暂无路由健康数据（没有启用且绑定了模型的路由）
         </div>
 
         <table v-else class="health-table">
@@ -110,7 +120,8 @@ onMounted(() => { void loadHealth() })
             <tr>
               <th>路由</th>
               <th>能力</th>
-              <th>主 provider</th>
+              <th>主模型</th>
+              <th>供应商</th>
               <th>类型</th>
               <th>可达</th>
               <th>后端拉起</th>
@@ -122,7 +133,8 @@ onMounted(() => { void loadHealth() })
             <tr v-for="route in snapshot.routes" :key="route.route_name">
               <td class="health-table__name">{{ route.route_name }}</td>
               <td>{{ capabilityLabel(route.capability) }}</td>
-              <td class="health-table__name">{{ route.primary_provider }}</td>
+              <td class="health-table__name">{{ route.primary_model }}</td>
+              <td>{{ route.vendor }}</td>
               <td>{{ route.model_kind }}</td>
               <td>
                 <span class="health-dot" :class="route.reachable ? 'health-dot--ok' : 'health-dot--down'">
@@ -157,6 +169,10 @@ onMounted(() => { void loadHealth() })
         <AppButton variant="ghost" size="sm" class="ml-auto" @click="loadHealth">重试</AppButton>
       </div>
     </div>
+  </div>
+
+  <!-- 降级观测块（ai-route-observability）：只读，位于健康快照下方 -->
+  <DegradationPanel @locate="locateCapability" />
   </div>
 </template>
 

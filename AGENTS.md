@@ -6,7 +6,7 @@ Agent guide for coding assistants working in `Syntopica`（仓库路径 `~/softw
 
 本仓库同时加载 superpowers / openspec / context-mode 等外部规则体系，打架时按此优先级：
 
-**用户当场指令 > 本文件 + `docs/reference/`（含开发执行规范） > openspec 流程 > superpowers skill > 工具型 skill（context-mode / headroom / caveman 等）**
+**用户当场指令 > 本文件 + `docs/reference/`（含开发执行规范） > openspec 流程 > superpowers skill > 工具型 skill（context-mode / caveman 等）**
 
 superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做两套**：
 
@@ -125,6 +125,6 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 - 完成任务后更新维护 `./docs/reference/` 知识库；openspec change 执行走 `开发执行规范.md` §0.6 标准编排流程（**apply 启动跑 `doc-impact.sh suggest`+`context`，归档前跑 `doc-impact.sh verify`+`check-standards.sh`**），归档前满足 §11 门禁，归档后按 §12 补 flow 变更溯源链接（archive 即永久家，v1.x 里程碑可选）。
 - **开工前/完工后必须汇报"部署后影响 + 需要的操作"**：每个 change 完工汇报必须包含一节明确告诉用户——(a) 部署/合并后用户可见行为会发生什么变化；(b) 需要用户手动执行的操作（如重新生成数据、清理、配置）；(c) 旧数据如何降级。避免用户打开界面才发现行为变了产生误会。涉及数据迁移、状态机变更、UI 分区变更时尤其强制。
 
-## context-mode / Headroom — 上下文工具
+## context-mode — 上下文工具
 
-大块输出（日志/grep/JSON >20 行）用 `ctx_batch_execute` / `ctx_execute` 沙箱化，分析文件用 `ctx_execute_file`，网络请求用 `ctx_fetch_and_index`，多问题合并一次 `ctx_search`；并发：网络类 4-8，CPU/共享状态（test/build/lint）保持 1；大产物写文件别内联。**与项目规范冲突时项目规范优先**（测试只跑影响包、前端命令按宿主平台执行、中文沟通等不变）。详细用法见 context-mode 包自带 skill；另有 Headroom 压缩工具（`/skill:headroom`，配置 `~/.pi/agent/mcp.json`）。
+大块输出（日志/grep/JSON >20 行）用 `ctx_batch_execute` / `ctx_execute` 沙箱化，分析文件用 `ctx_execute_file`，网络请求用 `ctx_fetch_and_index`，多问题合并一次 `ctx_search`；并发：网络类 4-8，CPU/共享状态（test/build/lint）保持 1；大产物写文件别内联。**codemode**（pi 自带）与之分工：ctx 工具管「大输出不过脑」，codemode 管「一次指挥多个工具」——需要一次调用里并行/链式编排多个工具（`Promise.allSettled`）、调用未声明的 MCP 工具（`searchTools`/`describeTool`）、或跨调用记小状态（`store`/`load`）时用。**与项目规范冲突时项目规范优先**（测试只跑影响包、前端命令按宿主平台执行、中文沟通等不变）。详细用法见 context-mode 包自带 skill。（Headroom 已于 2026-10 弃用删除：pi-web 迁移回 builtin MCP 时配置已失，压缩能力由 context-mode 承担。）**npm 更新 pi-web 后必须 `systemctl --user restart pi-web`**：`Restart=always` 救不了「进程活着但包目录/临时目录被更新删掉」——老进程拉起的 MCP server 会继承幽灵 cwd，ctx 工具报 `uv_cwd`/`MCP server exited` 全挂（2026-10-11 事故，复盘见 `docs/experience/2026-10-11-piweb-update-mcp-ghost-cwd.md`）。

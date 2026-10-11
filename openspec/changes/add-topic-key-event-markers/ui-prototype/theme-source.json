@@ -1,0 +1,9 @@
+{
+  "source": "front/app/assets/css/main.css",
+  "sha256": "18142f63841ac270154f3e08604c7839c7cd9af8e2b66f8731d55c2bb77d8037",
+  "selectors": [
+    ":root",
+    "[data-theme=\"editorial\"]",
+    "[data-theme=\"dark\"]"
+  ]
+}

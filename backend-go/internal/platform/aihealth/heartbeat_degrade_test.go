@@ -17,24 +17,25 @@ import (
 // seedHealthyPair between reachable / refused without re-registering it.
 var probeReachableHook func(bool)
 
-// seedHealthyPair seeds one embedding + one llm route, installs a flippable
-// fake probe (reachable by default), and returns the store.
+// seedHealthyPair seeds the core pair (one embedding + one topic_tagging
+// route — the two capabilities the health gate hard-requires), installs a
+// flippable fake probe (reachable by default), and returns the store.
 func seedHealthyPair(t *testing.T) *airouter.Store {
 	t.Helper()
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	_, embModel := seedVendorModel(t, db, "emb-main", "embedding", "", true)
+	_, tagModel := seedVendorModel(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
-	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
+	seedBinding(t, db, er.ID, embModel.ID, 1)
+	seedBinding(t, db, tr.ID, tagModel.ID, 1)
 
 	reachable := true
 	probeReachableHook = func(v bool) { reachable = v }
 	t.Cleanup(func() { probeReachableHook = nil })
 
-	useFakeProbe(t, func(ctx context.Context, p models.AIProvider) (bool, string) {
+	useFakeProbe(t, func(ctx context.Context, v models.AIVendor) (bool, string) {
 		if reachable {
 			return true, ""
 		}
@@ -166,13 +167,13 @@ func TestHeartbeatRecover_SingleSuccessAfterDegrade(t *testing.T) {
 func TestHeartbeat_NotReadyFirstFail_NoDebounce(t *testing.T) {
 	resetSnapshot()
 	db, store := setupTestDB(t)
-	emb := seedProvider(t, db, "emb-main", "embedding", "", true)
-	sum := seedProvider(t, db, "llm-main", "llm", "", true)
+	_, embModel := seedVendorModel(t, db, "emb-main", "embedding", "", true)
+	_, tagModel := seedVendorModel(t, db, "tag-main", "llm", "", true)
 	er := seedRoute(t, db, "default", string(airouter.CapabilityEmbedding), true)
-	sr := seedRoute(t, db, "default", string(airouter.CapabilitySummary), true)
-	seedBinding(t, db, er.ID, emb.ID, 1)
-	seedBinding(t, db, sr.ID, sum.ID, 1)
-	useFakeProbe(t, func(ctx context.Context, p models.AIProvider) (bool, string) {
+	tr := seedRoute(t, db, "default", string(airouter.CapabilityTopicTagging), true)
+	seedBinding(t, db, er.ID, embModel.ID, 1)
+	seedBinding(t, db, tr.ID, tagModel.ID, 1)
+	useFakeProbe(t, func(ctx context.Context, v models.AIVendor) (bool, string) {
 		return false, "connection refused"
 	})
 

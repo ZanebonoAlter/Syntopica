@@ -66,6 +66,7 @@ function candidate(over: Partial<DiscoveryCandidate> = {}): DiscoveryCandidate {
     address: 'https://fieldnotes.example/feed.xml',
     recommendationEnabled: true,
     subscribed: false,
+    subscribedUrls: [],
     availability: 'unknown',
     lastCheckedAt: null,
     ...over,
@@ -138,7 +139,7 @@ describe('CandidateLibrary — 四态区分（S15：空库与筛选无结果）'
   it('成功列表：来源徽标 + 已订阅与参与推荐分列展示', async () => {
     getCandidatesMock.mockResolvedValue(okList([
       candidate({ id: '1', subscribed: false, recommendationEnabled: true }),
-      candidate({ id: '2', kind: 'rsshub', name: '设计周刊', subscribed: true, recommendationEnabled: false, address: 'rsshub://design/:sec' }),
+      candidate({ id: '2', kind: 'rsshub', name: '设计周刊', subscribed: true, recommendationEnabled: false, address: 'rsshub://design/:sec', subscribedUrls: ['https://rsshub.example/design/weekly'] }),
     ]))
     const wrapper = mountLibrary()
     await flushPromises()
@@ -151,6 +152,10 @@ describe('CandidateLibrary — 四态区分（S15：空库与筛选无结果）'
     const second = wrapper.findAll('.library__item')[1]!
     expect(second.find('.library__badge').text()).toBe('RSSHub 目录')
     expect(second.find('[data-testid="library-subscribed"]').text()).toBe('已订阅')
+    expect(second.find('[data-testid="library-subscribed"]').attributes('title')).toContain('https://rsshub.example/design/weekly')
+    // 入口规则：原生未订阅可订；RSSHub 已订阅保留入口（可订同路由其它参数）
+    expect(first.find('[data-testid="library-subscribe-btn-1"]').exists()).toBe(true)
+    expect(second.find('[data-testid="library-subscribe-btn-2"]').exists()).toBe(true)
     wrapper.unmount()
   })
 })
@@ -371,16 +376,58 @@ describe('CandidateLibrary — 上游已下架（C2：route.status=gone）', () 
     wrapper.unmount()
   })
 
-  it('已订阅的 gone 条目不再出现订阅入口（订阅不被取消）', async () => {
+  it('已订阅的 gone 条目：原生 RSS 不再给入口；RSSHub 保留入口但（下架）禁用', async () => {
     getCandidatesMock.mockResolvedValue(okList([
       candidate({ id: '1', kind: 'rsshub', subscribed: true, route: { namespace: '/a', path: '/b', name: 'a', description: '上游介绍', example: '', parameters: '{}', usableDirectly: true, requiresParameters: false, status: 'gone' } }),
+      candidate({ id: '2', kind: 'rss', subscribed: true, address: 'https://fieldnotes.example/feed.xml' }),
     ]))
     const wrapper = mountLibrary()
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="library-subscribe-btn-1"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="library-gone-badge"]').exists()).toBe(true)
+    const items = wrapper.findAll('.library__item')
+    // RSSHub 路由级命中：入口保留（可订同路由其它参数），但上游已下架禁用
+    const rsshubBtn = items[0]!.find('[data-testid="library-subscribe-btn-1"]')
+    expect(rsshubBtn.exists()).toBe(true)
+    expect(rsshubBtn.attributes('disabled')).toBeDefined()
+    // 原生精确已订阅：同址无新可订，不给入口
+    expect(items[1]!.find('[data-testid="library-subscribe-btn-2"]').exists()).toBe(false)
+    // 订阅不被取消：两行仍显示已订阅，gone 条目仍标下架
+    expect(items[0]!.find('[data-testid="library-gone-badge"]').exists()).toBe(true)
+    expect(items[0]!.find('[data-testid="library-subscribed"]').text()).toBe('已订阅')
+    expect(items[1]!.find('[data-testid="library-subscribed"]').text()).toBe('已订阅')
+    wrapper.unmount()
+  })
+})
+
+describe('CandidateLibrary — 订阅状态与入口规则（fix-discovery-subscribed-hint）', () => {
+  it('RSSHub 路由级已订阅：状态位「已订阅」（不再恒未订阅），订阅入口保留可订其它参数', async () => {
+    getCandidatesMock.mockResolvedValue(okList([
+      candidate({
+        id: '1',
+        kind: 'rsshub',
+        name: '早报',
+        subscribed: true,
+        address: 'zaobao/znews/:section',
+        subscribedUrls: ['https://rsshub.example/zaobao/znews/world'],
+        route: { namespace: 'zaobao', path: '/znews/:section?', name: '早报', description: '', example: '/zaobao/znews/china', parameters: '{}', usableDirectly: false, requiresParameters: true, status: 'ok' },
+      }),
+    ]))
+    const wrapper = mountLibrary()
+    await flushPromises()
     expect(wrapper.find('[data-testid="library-subscribed"]').text()).toBe('已订阅')
+    expect(wrapper.find('[data-testid="library-subscribed"]').attributes('title')).toContain('/zaobao/znews/world')
+    expect(wrapper.find('[data-testid="library-subscribe-btn-1"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('原生 RSS 精确已订阅：状态位「已订阅」，不给重复入口', async () => {
+    getCandidatesMock.mockResolvedValue(okList([
+      candidate({ id: '2', kind: 'rss', subscribed: true }),
+    ]))
+    const wrapper = mountLibrary()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="library-subscribed"]').text()).toBe('已订阅')
+    expect(wrapper.find('[data-testid="library-subscribe-btn-2"]').exists()).toBe(false)
     wrapper.unmount()
   })
 })

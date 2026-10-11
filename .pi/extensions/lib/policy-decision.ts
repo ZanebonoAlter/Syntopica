@@ -5,7 +5,9 @@
  *
  * 职责（只管记账，不管裁决）：
  *   - 为 spec-gate / quota-gate / test-scope-guard 提供统一的 policy.decision 事件收敛写入
- *   - action 固定四值：block | warn | bypass | fail-open（白名单外拒绝写入）
+ *   - action 固定五值：block | warn | bypass | fail-open | pass（pass 为 add-change-lifecycle-retro
+ *     引入的放行侧高价值锚点——仅 ui-design-gate 审批通过/补齐放行两场景，与 change.archive
+ *     「低频高价值成功锚点」同族例外；普通成功放行继续零记录）
  *   - reasonCode 只接受稳定、非空、kebab-case 的有界代码；非法值归一为 unknown，
  *     绝不把自由文本（命令、密钥、远端响应、长错误）写进账本
  *   - target 仅允许 change/provider 等短摘要（截断 120 字符），禁止复制正文
@@ -23,14 +25,15 @@
 import { logEvent } from "./harness-log";
 import { detectActiveChange } from "./active-change";
 
-export type PolicyAction = "block" | "warn" | "bypass" | "fail-open";
+export type PolicyAction = "block" | "warn" | "bypass" | "fail-open" | "pass";
 
-/** action 白名单（spec: 策略显著裁决统一记账） */
+/** action 白名单（spec: 策略显著裁决统一记账；pass = add-change-lifecycle-retro 放行锚点） */
 const POLICY_ACTIONS: readonly PolicyAction[] = [
 	"block",
 	"warn",
 	"bypass",
 	"fail-open",
+	"pass",
 ];
 
 /** reasonCode 合法形态：非空 kebab-case（小写字母/数字段，连字符分隔），长度 ≤64 */

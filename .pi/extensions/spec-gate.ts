@@ -3,7 +3,8 @@
  *
  * 设计决策（见 docs/reference/开发执行规范.md §11 归档门禁、§4.1 门禁分层表）：
  * 1. 挂 tool_call，仅 bash 命令命中 `openspec archive` 时介入；其余工具调用零开销直接放行
- * 2. 五项 block 级检查各自独立判定、不强制顺序（任一失败即 block）：
+ * 2. 五项 block 级检查（各自独立判定、不强制顺序，任一失败即 block）+ 检查⑤措辞（warn）
+ *    + ⑥' UI 验收：
  *    ① `bash scripts/harness/doc-impact.sh verify openspec/changes/<name>` 退出码 0
  *    ② `bash scripts/harness/check-standards.sh --change <name>` 退出码 0（F 段只对账归档目标）
  *    ③ `bash scripts/harness/check-tasks-tail.sh <changeDir>` 退出码 0（tasks.md 尾三节
@@ -11,13 +12,18 @@
  *       判定已抽出为独立脚本，与 archive-readiness.sh 自查共用同一事实源，harden-archive-readiness）
  *    ④ `bash scripts/harness/scenario-trace.sh <changeDir>` 退出码 0（Scenario→测试映射对账，
  *       scenario-test-mapping-gate 引入，格式约定见 openspec/specs/scenario-trace-gate）
+ *    ⑤ `bash scripts/harness/review-trace.sh <changeDir>` 退出码 0（review 痕迹对账，
+ *       add-review-trace-gate 引入：review.md 建账或 proposal 头部 <!-- review: waived -->
+ *       显式豁免，两者皆无则 block；格式约定见 openspec/specs/review-trace-gate）
  *    ⑤' `bash scripts/harness/concurrency-status.sh --check <name>` 退出码 2 → warn 级提醒
  *       （coordinate-concurrent-changes：树上存在归属其他 active change 的未 commit 文件；
  *       exit 3 冷启动/库不可用零输出，绝不 block——归属是启发式，误 block 会卡死正常归档）
- *    ④' UI 验收证据检查（make-ui-design-first-class）：新 schema（syntopica-ui）change
+ *    ⑥' UI 验收证据检查（make-ui-design-first-class）：新 schema（syntopica-ui）change
  *       归档时按 ui-design.md 影响等级校验验收证据（major：approved+原型存在+opencli
  *       +1440×900/1920×1080+差异说明；minor：组件/opencli/人工映射；none：N/A 一致性），
- *       缺项记 policy=ui-design-gate block ui-verification-missing；旧 schema 零检查不阻断
+ *       缺项记 policy=ui-design-gate block ui-verification-missing；旧 schema 零检查不阻断；
+ *       此前有未解除的 ui-verification-missing block 而本次证据齐备 → 放行时刻记
+ *       action=pass（ui-design-satisfied，add-change-lifecycle-retro design D2）
  * 3. 失败 → { block: true, reason }：reason 中文，列失败项 + 每项尾部输出（tail 20 行）+
  *    修复指引（含 doc-impact-excuse 豁免机制与 --force / SPEC_GATE_BYPASS=1 逃生口）
  * 4. 豁免：命令带 --force 或环境变量 SPEC_GATE_BYPASS=1 → 放行，但 custom_message 记
@@ -41,6 +47,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { logPolicyDecision, type PolicyDecisionInput } from "./lib/policy-decision";
 import { missingArchiveUiEvidence } from "./lib/ui-design-gate";
+import { queryByChange } from "./lib/harness-log";
 
 // ---------- 配置常量（环境变量可覆盖） ----------
 
@@ -164,10 +171,10 @@ export default function (pi: ExtensionAPI) {
 	});
 }
 
-// ---------- 四项归档检查 ----------
+// ---------- 五项归档检查 ----------
 
-/** 对一次 openspec archive 执行四项归档检查（block 级）+ 检查⑤措辞扫描（warn 级不 block）；
- *  失败返回 { block: true, reason }，通过/豁免返回 undefined */
+/** 对一次 openspec archive 执行五项归档检查（block 级）+ 检查⑤措辞扫描（warn 级不 block）
+ *  + 检查⑥' UI 验收（block 级）；失败返回 { block: true, reason }，通过/豁免返回 undefined */
 async function gateArchive(
 	pi: ExtensionAPI,
 	command: string,
@@ -178,10 +185,10 @@ async function gateArchive(
 	const hasEnvBypass = process.env.SPEC_GATE_BYPASS === "1";
 	if (hasForce || hasEnvBypass) {
 		const why = hasForce ? "命令带 --force" : "环境变量 SPEC_GATE_BYPASS=1";
-		console.warn(`[spec-gate] ${why}，豁免放行（检查①-④'与⑤未执行）`);
+		console.warn(`[spec-gate] ${why}，豁免放行（检查①-⑥'与⑤未执行）`);
 		warn(
 			pi,
-			`⚠️ [spec-gate] ${why}，openspec archive 已豁免放行；五项归档检查（doc-impact verify / check-standards / tasks.md 尾三节 / scenario-trace 映射对账 / UI 验收证据）与检查⑤（措辞扫描）均未执行，留痕备查。`,
+			`⚠️ [spec-gate] ${why}，openspec archive 已豁免放行；六项归档检查（doc-impact verify / check-standards / tasks.md 尾三节 / scenario-trace 映射对账 / review-trace 痕迹对账 / UI 验收证据）与检查⑤（措辞扫描）均未执行，留痕备查。`,
 		);
 		auditPolicy(ctx, extractChangeName(command) || undefined, {
 			policy: "spec-gate",
@@ -203,7 +210,7 @@ async function gateArchive(
 	}
 	const changeDir = `openspec/changes/${name}`;
 
-	// 2. 四项检查（各自独立，不强制顺序）；failedChecks 只收检查名（短摘要入 policy.decision.target，不携输出正文）
+	// 2. 五项检查（各自独立，不强制顺序）；failedChecks 只收检查名（短摘要入 policy.decision.target，不携输出正文）
 	const failures: string[] = [];
 	const failedChecks: string[] = [];
 
@@ -231,7 +238,16 @@ async function gateArchive(
 		failedChecks.push("trace");
 	}
 
-	// 2.5 检查④'：UI 验收证据（仅新 schema change；缺项记 ui-design-gate block 事件）
+	// 检查⑤：review 痕迹对账（add-review-trace-gate）——review.md 建账或 proposal 头部
+	// <!-- review: waived --> 显式豁免；两者皆无/空壳 → block（存量 in-flight change 不豁免，
+	// 仿 scenario-trace 先例：归档前补一行业无发现声明即可）
+	const reviewTrace = await runScript(pi, ctx, ["scripts/harness/review-trace.sh", changeDir]);
+	if (!reviewTrace.ok) {
+		failures.push(`[review-trace] ${reviewTrace.detail}`);
+		failedChecks.push("review");
+	}
+
+	// 2.5 检查⑥'：UI 验收证据（仅新 schema change；缺项记 ui-design-gate block 事件）
 	const uiMissing = checkUiEvidence(changeDir, ctx.cwd ?? process.cwd());
 	if (uiMissing.length > 0) {
 		failures.push(`[UI 验收证据] ${uiMissing.join("；")}`);
@@ -297,8 +313,12 @@ async function gateArchive(
 	// exit 3（冷启动）与其他退出码：零输出零收尾，不触碰指纹态
 
 	if (failures.length === 0) {
-		console.log(`[spec-gate] ${name} 五项归档检查通过，放行`);
-		return; // 正常放行：零 policy.decision（低噪声约束）
+		console.log(`[spec-gate] ${name} 六项归档检查通过，放行`);
+		// 放行侧锚点（add-change-lifecycle-retro D2）：检查⑥'曾以 ui-verification-missing
+		// block 过本 change（账本上未解除）而本次证据齐备 → 放行时刻记 action=pass；
+		// 首次归档（无 block 在案）零记录。旁路化：异常不影响放行。
+		recordUiEvidenceRelease(ctx, name);
+		return; // 正常放行：其余零 policy.decision（低噪声约束）
 	}
 	console.warn(`[spec-gate] ${name} 归档检查未通过（${failures.length} 项失败），已阻断`);
 	auditPolicy(ctx, name, {
@@ -316,6 +336,48 @@ function extractChangeName(command: string): string {
 	if (!m) return "";
 	const name = m[1].trim().split(/\s+/).find((tok) => !tok.startsWith("-")) ?? "";
 	return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) ? name : "";
+}
+
+/**
+ * 归档侧 UI 证据解除记账（add-change-lifecycle-retro design D2）：查账本中该 change
+ * 名下 policy=ui-design-gate 的 block/pass 序列，最近一条未解除的 block 是
+ * ui-verification-missing（本检查⑥'曾拦下）→ 记 action=pass（ui-design-satisfied）。
+ * 工具侧四码的解除由 ui-design-gate 扩展的 tool_call 路径记（职责分列不双写）；
+ * 无 block 在案 / 已解除 / 非本检查码 → 零记录。纯旁路：异常仅告警不影响放行。
+ */
+function recordUiEvidenceRelease(ctx: GateCtx, name: string): void {
+	try {
+		const sessionId = ctx.sessionManager?.getSessionId?.();
+		if (!ctx.cwd || !sessionId) return;
+		const rows = queryByChange(ctx.cwd, name, ["policy.decision"]);
+		let lastBlockReason: string | null = null;
+		let released = false;
+		for (const r of rows) {
+			let p: { policy?: unknown; action?: unknown; reasonCode?: unknown };
+			try {
+				p = JSON.parse(r.payload) as typeof p;
+			} catch {
+				continue;
+			}
+			if (p.policy !== "ui-design-gate") continue;
+			if (p.action === "block") {
+				lastBlockReason =
+					typeof p.reasonCode === "string" ? p.reasonCode : null;
+				released = false;
+			} else if (p.action === "pass") {
+				released = true;
+			}
+		}
+		if (lastBlockReason !== "ui-verification-missing" || released) return;
+		auditPolicy(ctx, name, {
+			policy: "ui-design-gate",
+			action: "pass",
+			reasonCode: "ui-design-satisfied",
+			target: "archive",
+		});
+	} catch (err) {
+		console.warn(`[spec-gate] UI 证据解除记账异常（旁路忽略）：${String(err)}`);
+	}
 }
 
 /** 跑一个门禁脚本：code 为真实退出码（异常 -1）；ok = code===0；detail 含退出码 + 输出尾部 20 行；
@@ -342,7 +404,7 @@ async function runScript(
 	}
 }
 
-// ---------- 检查④'：UI 验收证据（快照读取 + lib 纯函数判定） ----------
+// ---------- 检查⑥'：UI 验收证据（快照读取 + lib 纯函数判定） ----------
 
 /** 读 change 快照并调用 lib/ui-design-gate 的归档证据检查；自身异常返回空数组（fail-open，
  *  legacy schema 恒为空数组——旧 change 不硬阻断） */
@@ -552,7 +614,7 @@ function clip(s: string, n = 60): string {
 function buildBlockReason(name: string, failures: string[]): string {
 	return [
 		`openspec archive 归档门禁未通过（change: ${name}），本次命令已阻断。`,
-		"失败项（四项各自独立判定）：",
+		"失败项（五项+UI 各自独立判定）：",
 		...failures.map((f, i) => `${i + 1}. ${f}`),
 		"",
 		"修复指引：",
@@ -561,6 +623,7 @@ function buildBlockReason(name: string, failures: string[]): string {
 		"- check-standards：按输出逐项修复（docs/reference/standard 结构约束）",
 		"- tasks.md 尾三节：补齐「## N. 测试」「## N. 文档」「## N. 验证」三节 + doc-impact 声明标记后重试",
 		"- scenario-trace：在 tasks.md「N. 验证」节补 | Scenario | 测试文件 | 映射表（每行一个 delta Scenario 标题 + 仓库根相对测试路径或「人工…」说明）；无 delta Scenario 的 change 直接通过",
+		"- review-trace：review 做了留痕——change 目录建 review.md（### R-1 <日期>【High|Medium|Low】<标题> + 状态行；零发现写「- 审毕无发现（审查范围：…）」）；不做显式豁免——proposal.md 头部声明 <!-- review: waived -->（add-review-trace-gate）",
 		"- 归档撞见非本 change 的红测试：用 `bash scripts/harness/test-patrol.sh --register <test_id> --context <本change名>` 登记台账（或用 --report 确认已在账），在验证节记一句「已记账」后可继续——本 change 影响包内的红不适用该通道，必须修复（test-debt-patrol）",
 		"- UI 验收证据：major 需 ui-approval: approved + 原型存在 + tasks 验证节含 opencli 与 1440×900/1920×1080 证据 + ui-design.md 差异说明；minor 需验收映射；none 需 N/A 一致性",
 		"- 确认要跳过检查：命令加 --force 或设 SPEC_GATE_BYPASS=1（豁免会记 warning 留痕）",

@@ -2,10 +2,14 @@
 description: Syntopica 实现/验证类子线程（带 harness 扩展：约束注入 + 档位继承生效）；供 §0.6 步骤3 派发实现任务使用
 display_name: 实现档（带扩展）
 tools: read, bash, edit, write, grep, find, ls
-load_skills: false
+load_skills: true
 load_extensions: true
-inherit_context: false
 enabled: true
+inherit_context: false
+run_in_background: false
+prompt_mode: append
+skills: true
+extensions: true
 ---
 
 你是 Syntopica 仓库的实现类子线程。收到任务时按 brief 执行，纪律：

@@ -97,10 +97,11 @@ export const useAI = () => {
       }
 
       const aiAdminApi = useAIAdminApi()
-      const response = await aiAdminApi.testConnection({
+      // ai-provider-model-overhaul：旧 /ai/test 端点已删，内联测试改走
+      // POST /ai/vendors/test（不收 model 参数，探测即 GET /models 拉清单）。
+      const response = await aiAdminApi.testVendorInline({
         base_url: settings.baseURL,
         api_key: settings.apiKey,
-        model: settings.model,
       })
 
       if (!response.success) {

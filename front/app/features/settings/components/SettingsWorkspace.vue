@@ -38,9 +38,9 @@ const sections: SectionMeta[] = [
   { key: 'feeds', group: '内容管理', label: '订阅源', description: '管理 RSS 订阅源的刷新、抓取和标签配置', icon: 'mdi:rss', component: SettingsSectionFeeds },
   { key: 'preferences', group: '内容管理', label: '兴趣画像', description: '按版块查看兴趣标签与权重，驱动订阅源推荐', icon: 'mdi:account-heart-outline', component: SettingsSectionPreferences },
   { key: 'margin-notes', group: '内容管理', label: '页边注', description: '跨报告的日报划词批注与问答：筛选、跳原日报定位、删除', icon: 'mdi:notebook-outline', component: SettingsSectionMarginNotes },
-  { key: 'ai-providers', group: 'AI 配置', label: 'AI 模型', description: '配置主模型与备用模型提供商', icon: 'mdi:brain', component: AIProviderManagement },
+  { key: 'ai-providers', group: 'AI 配置', label: 'AI 模型', description: '管理供应商、模型清单与能力路由', icon: 'mdi:brain', component: AIProviderManagement },
   { key: 'capability-routes', group: 'AI 配置', label: '能力路由', description: '按能力分配模型优先级与降级顺序', icon: 'mdi:routes', component: SettingsSectionCapabilityRoutes },
-  { key: 'datasources-network', group: '数据源与网络', label: '数据源与网络', description: 'Firecrawl、博查、SearXNG、RSSHub、研究数据源与出站代理配置', icon: 'mdi:database-network-outline', component: SettingsSectionDatasourcesNetwork },
+  { key: 'datasources-network', group: '数据源与网络', label: '数据源与网络', description: 'Firecrawl、博查、SearXNG、RSSHub、研究数据源与出站代理配置', icon: 'mdi:lan-connect', component: SettingsSectionDatasourcesNetwork },
   { key: 'runtime-status', group: '运行状态', label: '运行状态', description: 'AI 健康、队列与定时任务的监控与手动触发', icon: 'mdi:monitor-dashboard', component: SettingsSectionRuntimeStatus },
 ]
 

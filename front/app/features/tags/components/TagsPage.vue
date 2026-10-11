@@ -7,7 +7,8 @@ import { Icon } from '@iconify/vue'
 import ThemeToggle from '~/components/ui/ThemeToggle.vue'
 import { useOnboarding } from '~/composables/useOnboarding'
 import AddSemanticBoardDialog from './AddSemanticBoardDialog.vue'
-import BoardCompositionPanel from './BoardCompositionPanel.vue'
+import BoardHealthPanel from './BoardHealthPanel.vue'
+import LaneDynamicsPanel from './lane-dynamics/LaneDynamicsPanel.vue'
 // 来源构成面板（add-source-board-hit-rate §5）：默认 tab 首屏可见，不走 lazyPanel，静态 import
 import BoardSourcePanel from './BoardSourcePanel.vue'
 import AuxiliaryLabelPool from './AuxiliaryLabelPool.vue'
@@ -107,6 +108,20 @@ function handleLandscapeSelectTopic(topicId: number) {
   nextTick(() => {
     focusTopicIdInBrowser.value = topicId
   })
+}
+
+// ── 版块体检（add-board-health-checkup）：低分警告条 + 滚动定位 ──
+const boardHealthPanelRef = ref<InstanceType<typeof BoardHealthPanel> | null>(null)
+const boardHealthAlert = ref(false)
+const HEALTH_ALERT_THRESHOLD = 60
+
+function onBoardHealthLoaded(payload: { hasSnapshot: boolean; score: number | null }) {
+  boardHealthAlert.value = payload.hasSnapshot && payload.score != null && payload.score < HEALTH_ALERT_THRESHOLD
+}
+
+function scrollToBoardHealthPanel() {
+  const el = boardHealthPanelRef.value?.$el as HTMLElement | undefined
+  el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 onMounted(() => {
@@ -224,8 +239,26 @@ onMounted(() => {
             </button>
           </div>
 
-          <BoardCompositionPanel
+          <!-- 低分警告条（add-board-health-checkup ui-design 状态矩阵）：有快照且评分
+               低于告警线时渲染在 tab 顶部，点击滚动定位到体检治理面板 -->
+          <div
+            v-if="contentTab === 'composition' && boardHealthAlert"
+            ref="boardHealthAlertBarRef"
+            class="tags-health-alert"
+            data-testid="board-health-alert-bar"
+            role="button"
+            tabindex="0"
+            @click="scrollToBoardHealthPanel"
+            @keyup.enter="scrollToBoardHealthPanel"
+          >
+            <Icon icon="mdi:heart-pulse" width="14" />
+            <span>体检发现质量预警：本版块健康度偏低，点击查看体检详情</span>
+            <Icon icon="mdi:chevron-down" width="14" class="tags-health-alert__arrow" />
+          </div>
+
+          <BoardHealthPanel
             v-if="contentTab === 'composition'"
+            ref="boardHealthPanelRef"
             :board-id="selectedBoardId"
             :labels="compositionLabels"
             :composites="compositionComposites"
@@ -233,6 +266,14 @@ onMounted(() => {
             :loading="compositionLoading"
             @remove="handleRemoveComposition"
             @refresh="() => loadComposition(selectedBoardId!)"
+            @health-loaded="onBoardHealthLoaded"
+          />
+
+          <!-- 泳道动态（add-board-health-checkup 形态 A：自 BoardCompositionPanel 迁出，
+               直接渲染，位置视觉不变） -->
+          <LaneDynamicsPanel
+            v-if="contentTab === 'composition'"
+            :board-id="selectedBoardId"
             @select-topic="handleLandscapeSelectTopic"
           />
 
@@ -415,6 +456,11 @@ onMounted(() => {
 .tags-main { display: flex; flex: 1; min-height: 0; width: 100%; }
 .tags-content { flex: 1; min-width: 0; padding: 1.25rem 1.5rem 3.5rem; overflow-y: auto; }
 .tags-content-tabs { display: flex; gap: 0.25rem; padding: 0 0 0.75rem; margin-bottom: 1rem; border-bottom: 1px solid var(--color-border-subtle); }
+
+/* 低分警告条（add-board-health-checkup）：措辞形态化（探究区哲学），点击滚到体检面板 */
+.tags-health-alert { display: flex; align-items: center; gap: 0.45rem; padding: 0.5rem 0.8rem; margin-bottom: 0.75rem; border: 1px solid var(--color-error-subtle); border-radius: 9px; background: var(--color-error-subtle); color: var(--color-error); font-size: 0.75rem; font-weight: 500; cursor: pointer; }
+.tags-health-alert__arrow { margin-left: auto; }
+.tags-health-alert:hover { filter: brightness(0.97); }
 .tags-content-tab { display: flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.75rem; border: none; border-radius: 8px 8px 0 0; background: none; color: var(--color-text-muted); font-size: 0.75rem; cursor: pointer; transition: all 0.12s ease; position: relative; }
 .tags-content-tab:hover { color: var(--color-text-secondary); background: var(--color-bg-hover); }
 .tags-content-tab--active { color: var(--color-accent); background: var(--color-accent-subtle); }

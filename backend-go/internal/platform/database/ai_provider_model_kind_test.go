@@ -47,8 +47,8 @@ func TestAIProviderModelKindBackfillMigration(t *testing.T) {
 	require.NoError(t, db.Create(&pLLM).Error)
 	require.NoError(t, db.Create(&pBoth).Error)
 
-	embRoute := models.AIRoute{ID: 9101, Name: "default", Capability: "embedding", Enabled: true, Strategy: "ordered_failover", Priority: 0, MaxConcurrency: 1}
-	sumRoute := models.AIRoute{ID: 9102, Name: "default", Capability: "summary", Enabled: true, Strategy: "ordered_failover", Priority: 0, MaxConcurrency: 1}
+	embRoute := models.AIRoute{ID: 9101, Name: "default", Capability: "embedding", Enabled: true, MaxConcurrency: 1}
+	sumRoute := models.AIRoute{ID: 9102, Name: "default", Capability: "summary", Enabled: true, MaxConcurrency: 1}
 	require.NoError(t, db.Create(&embRoute).Error)
 	require.NoError(t, db.Create(&sumRoute).Error)
 

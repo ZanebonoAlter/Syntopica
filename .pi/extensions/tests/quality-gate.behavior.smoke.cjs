@@ -1039,6 +1039,235 @@ const setup = (router) => {
 				&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1);
 	}
 
+	// ============ 场景 FP：运行时动态值不构成新指纹（add-foreign-gate-steer-attribution） ============
+	// 2026-09-28 实录复刻（故事 S1，spec scenario「运行时动态值不构成新指纹」）：测试
+	// 运行期输出首个失败特征行 = 带秒级时间戳的日志行（绝对路径 + :行号），逐轮时间戳
+	// 必变 → 旧精确相等比较永假 → 每轮完整块注入（23 轮轰炸）。归一化指纹后：首轮完整
+	// 块 → 动态值轮零注入 → 错误主体变化重新完整块；展示与 gate.check 记账 diag 保留原文。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'mine'), { recursive: true });
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'mine', 'a.go'), 'package mine\n');
+		let files = '';
+		let call = 0;
+		let errBody = 'undefined: Foo';
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (cl.includes('golangci-lint')) {
+					call++;
+					// 实账形态：秒级时间戳逐轮递进 + 绝对路径 + :行号（时间戳/行号均动态）
+					return { code: 1, stdout: `2026/09/28 22:3${call}:46 ${repo}/backend-go/internal/mine/a.go:10:2: ${errBody}`, stderr: '' };
+				}
+				return { code: 0, stdout: '', stderr: '' };
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-fp'));
+		files = 'backend-go/internal/mine/a.go';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-fp')); // T1 首现
+		const fp1 = messages.find(({ m }) => m.customType === 'quality-gate-failure');
+		check('FP1 动态值风暴首轮完整块（[中间态] + exit + 原文主体）', !!fp1
+			&& fp1.m.content.includes('[中间态]') && fp1.m.content.includes('exit 1')
+			&& fp1.m.content.includes('undefined: Foo'));
+		const cnt1 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').length;
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-fp')); // T2 仅时间戳/行号不同
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-fp')); // T3 再来一轮
+		check('FP2 同指纹（动态值不同）后续回合零注入',
+			messages.filter(({ m }) => m.customType === 'quality-gate-failure').length === cnt1);
+		// 记账 diag 保留原文：各轮 gate.check 的 diag 含本轮时间戳（非归一化值）
+		const diags = q(repo, "SELECT json_extract(payload,'$.diag') d, json_extract(payload,'$.ownership') o FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0 ORDER BY ts");
+		check('FP3 记账 diag 保留原文（各轮时间戳原样、无归一化残迹 <N>）',
+			diags.length >= 3 && diags.some((r) => r.d.includes('22:31:46')) && diags.some((r) => r.d.includes('22:33:46'))
+				&& !diags.some((r) => r.d.includes('<N>')));
+		check('FP3b mine 路径失败 ownership=mine（绝对路径剥根后命中 mine）',
+			diags.length >= 3 && diags.every((r) => r.o === 'mine'));
+		errBody = 'undefined: Bar'; // T4 错误主体变化 → 新指纹
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-fp'));
+		const fp4 = messages.filter(({ m }) => m.customType === 'quality-gate-failure').pop();
+		check('FP4 错误主体变化重新完整块（新指纹，防新问题被静默）', !!fp4
+			&& fp4.m.content.includes('undefined: Bar')
+			&& messages.filter(({ m }) => m.customType === 'quality-gate-failure').length === cnt1 + 1);
+	}
+
+	// ============ 场景 OW：gate.check ownership 四态落库 + 归因降级记账（attribution D2/D3） ============
+	// OW-a：健康会话一轮三命令各落一态（mine/foreign/mixed）+ 无降级；OW-c：解析不出
+	//（P=∅）→ ownership=mine + attribution-degraded 按 (cmd,fp) 边沿去重；OW-b：基线
+	// 信号缺席（session_start git 快照失败）→ ownership 覆写 attribution-degraded +
+	// 会话级单发降级记账（同轮两命令不双发）。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'x'), { recursive: true });
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'mine'), { recursive: true });
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'x', 'y.go'), 'package x\n');
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'mine', 'a.go'), 'package mine\n');
+		let files = 'backend-go/internal/x/y.go'; // y.go 他人在启动前已脏 → 基线
+		let lintOut = '';
+		let vetOut = '';
+		let buildOut = '';
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (cl.includes('golangci-lint')) return lintOut ? { code: 1, stdout: lintOut, stderr: '' } : { code: 0, stdout: '0 issues.', stderr: '' };
+				if (cl.includes('vet')) return vetOut ? { code: 1, stdout: vetOut, stderr: '' } : { code: 0, stdout: '', stderr: '' };
+				return buildOut ? { code: 1, stdout: buildOut, stderr: '' } : { code: 0, stdout: '', stderr: '' };
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-ow'));
+		files = 'backend-go/internal/x/y.go\nbackend-go/internal/mine/a.go';
+		lintOut = 'internal/mine/a.go:1:1: e1'; // 纯 mine
+		vetOut = 'internal/x/y.go:9:9: e2'; // 纯 foreign（基线）
+		buildOut = 'internal/mine/a.go:1:1: e1\ninternal/x/y.go:9:9: e2'; // mixed
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-ow')); // OW-a：一轮三态
+		const ownRows = () => q(repo, "SELECT json_extract(payload,'$.cmd') c, json_extract(payload,'$.ownership') o FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0");
+		const ownOf = (cmd) => ownRows().filter((r) => r.c === cmd).map((r) => r.o);
+		check('OW-a1 三命令各落一态：lint=mine / vet=foreign / build=mixed',
+			ownOf('golangci-lint').every((o) => o === 'mine')
+				&& ownOf('go vet').every((o) => o === 'foreign')
+				&& ownOf('go build').every((o) => o === 'mixed'));
+		check('OW-a2 健康会话零归因降级事件',
+			q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision' AND payload LIKE '%attribution-degraded%'")[0].n === 0);
+		// OW-c：解析不出（P=∅）→ ownership=mine + (cmd,fp) 边沿去重的降级记账
+		lintOut = 'something went terribly wrong without any paths';
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-ow')); // 新指纹 → 完整块 + 降级事件①
+		check('OW-c1 解析不出：ownership=mine（保守）+ 1 条 attribution-degraded',
+			ownOf('golangci-lint').slice(-1)[0] === 'mine'
+				&& q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision' AND payload LIKE '%attribution-degraded%'")[0].n === 1);
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-ow')); // 同指纹 → 零注入零新事件
+		check('OW-c2 同 (cmd,fp) 降级去重（第 2 回合不重复记账）',
+			q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision' AND payload LIKE '%attribution-degraded%'")[0].n === 1);
+		lintOut = 'another different pathless failure text'; // 新指纹 → 再记一条
+		await handlers['turn_end'](CHAT_TURN, mkctx('smoke-ow'));
+		check('OW-c3 新指纹降级再记（累计 2 条）',
+			q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision' AND payload LIKE '%attribution-degraded%'")[0].n === 2);
+	}
+	{
+		// OW-b：基线信号缺席（session_start git 快照失败，turn_end 恢复）→ 基线缺席会话级
+		// 降级：无 mine 命中的失败 ownership 覆写 attribution-degraded，两命令仅 1 条降级事件。
+		setPlatform('native');
+		const repo = mkrepo();
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'x'), { recursive: true });
+		fs.mkdirSync(path.join(repo, 'backend-go', 'internal', 'mine'), { recursive: true });
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'x', 'y.go'), 'package x\n');
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'mine', 'other.go'), 'package mine\n');
+		fs.writeFileSync(path.join(repo, 'backend-go', 'internal', 'mine', 'a2.go'), 'package mine\n');
+		let gitOk = false; // session_start 期间 git 失败（模拟快照窗口期异常）
+		let files = '';
+		const router = async (cmd, args) => {
+			if (cmd === 'git') {
+				if (!gitOk) throw new Error('git lock contention during session_start');
+				return gitRouter(repo, files)(cmd, args);
+			}
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[]}', stderr: '' };
+				if (cl.includes('golangci-lint')) return { code: 1, stdout: 'internal/x/y.go:1:1: boom', stderr: '' };
+				if (cl.includes('vet')) return { code: 1, stdout: 'internal/x/z.go:9:9: bam', stderr: '' };
+				return { code: 0, stdout: '', stderr: '' };
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-owb')); // git 失败 → 基线缺席
+		gitOk = true;
+		files = 'backend-go/internal/mine/other.go';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-owb')); // lazy 兜底轮（trigger 空，无门禁）
+		files = 'backend-go/internal/mine/other.go\nbackend-go/internal/mine/a2.go';
+		await handlers['turn_end'](EDIT_TURN, mkctx('smoke-owb')); // trigger 非空 → 门禁跑
+		const ownRows = q(repo, "SELECT json_extract(payload,'$.cmd') c, json_extract(payload,'$.ownership') o FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0");
+		check('OW-b1 基线缺席 + 无 mine 命中：两命令 ownership 均覆写 attribution-degraded',
+			ownRows.length === 2 && ownRows.every((r) => r.o === 'attribution-degraded'));
+		const deg = q(repo, "SELECT payload FROM events WHERE kind='policy.decision' AND payload LIKE '%attribution-degraded%'");
+		check('OW-b2 基线缺席降级会话级单发（两命令仅 1 条，不逐命令重复）',
+			deg.length === 1 && JSON.parse(deg[0].payload).action === 'warn'
+				&& JSON.parse(deg[0].payload).policy === 'quality-gate');
+		check('OW-b3 降级不与 gate.check 失败事实双写（失败事实照记全量）',
+			ownRows.length === 2 && deg.length === 1);
+	}
+
+	// ============ 场景 T：2026-09-28 复现固化的回归（attribution D4：先记后修） ============
+	// T-a：物主 change（ch-other，edit.map 已登记 reader 包文件）持续编辑，探索会话（无
+	// 绑定、纯 bash 查询）零编辑；go test 失败输出为带秒级时间戳的绝对路径日志行 + FAIL
+	// 包锚点（实账形态）。修复后（Fix A 跨会话噪声不进 mine / Fix B 绝对路径剥根 /
+	// Fix C edit.map 归属不再依赖 bound）→ [外部] + ownership=foreign + 动态值轮零注入。
+	// T-b：失败落在无人归属的调用点文件（实账 store_vendor.go 形态——错误浮出面 ≠ 物主
+	// 编辑的文件）→ 保守 mine + 同指纹单次完整块（23 轮轰炸的根治：指纹归一化生效）。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		const readerDir = path.join(repo, 'backend-go', 'internal', 'reader');
+		fs.mkdirSync(readerDir, { recursive: true });
+		for (const f of ['svc.go', 'svc2.go', 'svc3.go', 'svc4.go']) {
+			fs.writeFileSync(path.join(readerDir, f), 'package reader\n');
+		}
+		// 物主 change 的归属登记（implementation 会话 edit 工具回合落的 edit.map；
+		// svc3/svc4 = 探索会话启动后物主继续编辑并登记的文件）
+		const hlog = require('./.hlog.cjs');
+		hlog.logEvent(repo, { kind: 'edit.map', sessionId: 'owner-sess', change: 'ch-other', payload: { paths: ['backend-go/internal/reader/svc.go', 'backend-go/internal/reader/svc2.go', 'backend-go/internal/reader/svc3.go', 'backend-go/internal/reader/svc4.go'], n: 4 } });
+		let files = 'backend-go/internal/reader/svc.go'; // 启动前物主已改 svc.go → 基线
+		let call = 0;
+		let failOnSvc = true; // T-a 失败打在物主文件；false = T-b 打在无人归属文件
+		const router = async (cmd, args) => {
+			if (cmd === 'git') return gitRouter(repo, files)(cmd, args);
+			if (cmd === 'bash') {
+				const cl = args.join(' ');
+				if (cl.includes('change-scope')) return { code: 0, stdout: '{"testTargets":[{"cmd":"go test -short ./internal/reader/...","tier":"domain"}]}', stderr: '' };
+				if (cl.includes('golangci-lint')) return { code: 0, stdout: '0 issues.', stderr: '' };
+				if (cl.includes('vet') || cl.includes('build')) return { code: 0, stdout: '', stderr: '' };
+				if (cl.includes('go test')) {
+					call++;
+					const target = failOnSvc ? 'reader/svc.go' : 'platform/airouter/store_vendor.go';
+					return { code: 1, stdout: `2026/09/28 22:3${call}:46 ${repo}/backend-go/internal/${target}:260 SQL logic error: no such table: ai_vendors (1)\nFAIL syntopica-backend/internal/reader [build failed]`, stderr: '' };
+				}
+				return { code: 0, stdout: '', stderr: '' };
+			}
+			throw new Error(`unexpected: ${cmd}`);
+		};
+		const { handlers, messages } = setup(router);
+		await handlers['session_start']({ reason: 'new' }, mkctx('smoke-t'));
+		// 物主在探索会话启动后继续编辑（svc2/svc3/svc4 逐轮进脏集，均在 edit.map 登记）；
+		// 探索会话纯 bash 回合零编辑
+		files = 'backend-go/internal/reader/svc.go\nbackend-go/internal/reader/svc2.go';
+		await handlers['turn_end']({ toolResults: [{ toolName: 'bash' }] }, mkctx('smoke-t'));
+		files = 'backend-go/internal/reader/svc.go\nbackend-go/internal/reader/svc2.go\nbackend-go/internal/reader/svc3.go';
+		await handlers['turn_end']({ toolResults: [{ toolName: 'bash' }] }, mkctx('smoke-t'));
+		const foreignT = messages.filter(({ m }) => m.customType === 'quality-gate-foreign');
+		check('T1 失败打在物主登记文件：[外部] 单行（非本会话所致，不催修）',
+			foreignT.length === 1 && foreignT[0].m.content.includes('[外部]')
+				&& foreignT[0].m.content.includes('go test -short ./internal/reader/...')
+				&& !messages.some(({ m }) => m.customType === 'quality-gate-failure'));
+		check('T2 两轮 ownership 均为 foreign（gate.check 可考古）',
+			q(repo, "SELECT json_extract(payload,'$.ownership') o FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0")
+				.every((r) => r.o === 'foreign'));
+		check('T3 外部失败时间戳轮零重复注入 + foreign-breakage 逐回合记账（对齐既有口径）',
+			foreignT.length === 1
+				&& q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision' AND payload LIKE '%foreign-breakage%'")[0].n === 2);
+		// T-b：失败改落在无人归属的调用点文件（实账 store_vendor.go 形态）；svc4 进脏集触发
+		call = 0;
+		failOnSvc = false;
+		files = 'backend-go/internal/reader/svc.go\nbackend-go/internal/reader/svc2.go\nbackend-go/internal/reader/svc3.go\nbackend-go/internal/reader/svc4.go';
+		await handlers['turn_end']({ toolResults: [{ toolName: 'bash' }] }, mkctx('smoke-t'));
+		// 第 2 轮无新触发，但 T-b mine 失败已进粘性 → 粘性重跑（同指纹零注入）
+		await handlers['turn_end']({ toolResults: [{ toolName: 'bash' }] }, mkctx('smoke-t'));
+		const failTb = messages.filter(({ m }) => m.customType === 'quality-gate-failure');
+		check('T4 无人归属调用点：保守 mine 完整块仅一次（同指纹零重复，23 轮轰炸根治）',
+			failTb.length === 1 && /\[(回归|中间态)\]/.test(failTb[0].m.content)
+			&& messages.filter(({ m }) => m.customType === 'quality-gate-foreign').length === 1);
+		const ownTb = q(repo, "SELECT json_extract(payload,'$.ownership') o FROM events WHERE kind='gate.check' AND json_extract(payload,'$.ok')=0 AND json_extract(payload,'$.diag') LIKE '%store_vendor%'");
+		check('T5 T-b 两轮 ownership=mine（保守回退可考古）+ 无降级事件（信号在、归属不成立非降级）',
+			ownTb.length === 2 && ownTb.every((r) => r.o === 'mine')
+				&& q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision' AND payload LIKE '%attribution-degraded%'")[0].n === 0);
+	}
+
 	let fail = 0;
 	for (const [name, ok] of checks) {
 		console.log(`${ok ? '✅' : '❌'} ${name}`);

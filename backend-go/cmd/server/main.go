@@ -67,7 +67,7 @@ func main() {
 	// The LIVE key resolver (UI DB > env/config) decides status seeding: a
 	// config-only resolver ignored UI-configured keys and left the catalog
 	// stuck on disabled (2026-09-23 实战校准 §10.4).
-	datasources.Init(database.DB, wiring.ComtradeKeyResolver())
+	datasources.Init(database.DB, wiring.DataSourcesKeyResolver())
 
 	// Ensure semantic_labels.embedding vector dimension matches the embedder model.
 	// Runs once at startup on the global DB (not inside any transaction) to avoid DDL lock contention.

@@ -9,17 +9,22 @@ import (
 	"syntopica-backend/internal/models"
 )
 
-// setupEmbedRoute creates one enabled embedding provider bound to the default
-// embedding route, mirroring the fixture style of router_test.go.
-func setupEmbedRoute(t *testing.T, store *Store, model string) models.AIProvider {
+// setupEmbedRoute creates one enabled embedding model on an "emb-vendor" bound
+// to the default embedding route, mirroring the fixture style of router_test.go
+// （Router 数据面已换 vendor/model 绑定链）。
+func setupEmbedRoute(t *testing.T, store *Store, modelName string) (models.AIVendor, models.AIModel) {
 	t.Helper()
 	db := store.db
-	p := models.AIProvider{Name: "emb-provider", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://e.example/v1", APIKey: "k", Model: model, Enabled: true, ModelKind: "embedding"}
-	require.NoError(t, db.Create(&p).Error)
-	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilityEmbedding), Enabled: true, Strategy: "ordered_failover"}
+	vendor := models.AIVendor{Name: "emb-vendor", ProviderType: ProviderTypeOpenAICompatible,
+		BaseURL: "https://e.example/v1", APIKey: "k", Enabled: true}
+	require.NoError(t, db.Create(&vendor).Error)
+	m := models.AIModel{VendorID: vendor.ID, Name: modelName, ModelKind: ModelKindEmbedding,
+		Enabled: true, Status: ModelStatusOK}
+	require.NoError(t, db.Create(&m).Error)
+	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilityEmbedding), Enabled: true}
 	require.NoError(t, db.Create(&route).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p.ID, Priority: 1, Enabled: true}).Error)
-	return p
+	require.NoError(t, db.Create(&models.AIRouteModel{RouteID: route.ID, ModelID: m.ID, Priority: 1, Enabled: true}).Error)
+	return vendor, m
 }
 
 func TestSaveEmbeddingCacheUpsertIdempotent(t *testing.T) {

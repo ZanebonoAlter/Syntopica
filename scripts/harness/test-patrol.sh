@@ -39,9 +39,9 @@ SESSION_ID="${PI_SESSION_ID:-patrol.sh}"
 STALE_DAYS=30
 LOAD_THRESHOLD=4
 
-# 12 片轮转（静态枚举，顺序即冷启动与平局优先级；be-all 不入轮转）
+# 14 片轮转（静态枚举，顺序即冷启动与平局优先级；be-all 不入轮转）
 SHARD_ORDER=(
-	be-admin be-dataenrichment be-reader be-tagmanagement be-topicgraph be-skeleton
+	be-admin be-dataenrichment be-datasources be-discovery be-reader be-tagmanagement be-topicgraph be-skeleton
 	fe-tags fe-discovery fe-features fe-core fe-composables fe-components
 )
 SHARD_ALL="be-all"
@@ -156,6 +156,8 @@ shard_setup() { # $1=分片名；未知名 → 返回 1
 	case "$1" in
 	be-admin) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/admin/...) ;;
 	be-dataenrichment) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/dataenrichment/...) ;;
+	be-datasources) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/datasources/...) ;;
+	be-discovery) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/discovery/...) ;;
 	be-reader) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/reader/...) ;;
 	be-tagmanagement) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/tagmanagement/...) ;;
 	be-topicgraph) SHARD_KIND=backend; SHARD_CWD=backend-go; SHARD_ARGS=(go test -short -count=1 -timeout 120s ./internal/topicgraph/...) ;;
@@ -170,7 +172,7 @@ shard_setup() { # $1=分片名；未知名 → 返回 1
 	fe-features)
 		SHARD_KIND=frontend
 		SHARD_CWD=front
-		SHARD_ARGS=(pnpm test:unit app/features/settings app/features/articles app/features/ai app/features/shell --maxWorkers=2)
+		SHARD_ARGS=(pnpm test:unit app/features/settings app/features/articles app/features/ai app/features/shell app/features/feeds --maxWorkers=2)
 		;;
 	fe-core)
 		SHARD_KIND=frontend
@@ -818,9 +820,9 @@ print_help() {
 test-patrol.sh — 测试欠账滚动巡检（change: test-debt-patrol）
 
 用法：
-  bash scripts/harness/test-patrol.sh                  默认：跑最久未巡的一片（12 片轮转，NULL 最优先）
-  bash scripts/harness/test-patrol.sh --shard <name>   指定分片（12 轮转片 + be-all）
-  bash scripts/harness/test-patrol.sh --shards <n>     连续跑 n 片（最久未巡优先；n 超 12 时跑满一轮）
+  bash scripts/harness/test-patrol.sh                  默认：跑最久未巡的一片（14 片轮转，NULL 最优先）
+  bash scripts/harness/test-patrol.sh --shard <name>   指定分片（14 轮转片 + be-all）
+  bash scripts/harness/test-patrol.sh --shards <n>     连续跑 n 片（最久未巡优先；n 超 14 时跑满一轮）
   bash scripts/harness/test-patrol.sh --init           建表（test_debt / patrol_shard，幂等）
   bash scripts/harness/test-patrol.sh --report         台账汇总（三态计数 / domain / open 清单 / stale / 进度）
   bash scripts/harness/test-patrol.sh --register <test_id> --context <ctx> [--domain <d>] [--note <text>]
@@ -837,7 +839,7 @@ test-patrol.sh — 测试欠账滚动巡检（change: test-debt-patrol）
 测试缝：TEST_PATROL_DB / TEST_PATROL_FAKE_OUTPUT / TEST_PATROL_FAKE_RC / TEST_PATROL_FAKE_SLEEP /
         TEST_PATROL_DRY_RUN=1 / TEST_PATROL_LOADAVG_FILE / TEST_PATROL_PROCESS_LIST / TEST_PATROL_NOW
 
-分片静态枚举（12 片轮转 + be-all；前端恒 --maxWorkers=2，不带 --——`pnpm test:unit -- <filter>` 会吞 filter 跑全量）：
+分片静态枚举（14 片轮转 + be-all；前端恒 --maxWorkers=2，不带 --——`pnpm test:unit -- <filter>` 会吞 filter 跑全量）：
 HELP
 	local s
 	for s in "${SHARD_ORDER[@]}" "$SHARD_ALL"; do

@@ -130,6 +130,19 @@ func triggerGenerateDailyReport(c *gin.Context) {
 		return
 	}
 
+	// Generation gate (guard-daily-report-generate D1/D2): mutual exclusion
+	// with the scheduled pipeline — at most ONE generation pipeline
+	// process-wide. Checked AFTER the rebuild-window guard so an out-of-window
+	// date never touches the gate. Same wording as TriggerNowWithDate.
+	if !tryAcquireGenerationGate() {
+		c.JSON(http.StatusConflict, gin.H{
+			"success": false,
+			"error":   "日报生成正在执行中，请稍后再试。",
+			"reason":  "already_running",
+		})
+		return
+	}
+
 	jobID := uuid.New().String()
 
 	if req.BoardID != nil {
@@ -162,14 +175,36 @@ func notifyDailyReportTerminal(date time.Time, totalBoards, successCount, failed
 	}
 }
 
+// Generation gate seams (guard-daily-report-generate D1/D2): the manual
+// endpoint shares the process-wide daily-report generation gate with the
+// scheduled DailyReportJob (the gate itself lives in service/; the topicgraph
+// root package re-exports it for the admin scheduler). Package-level vars so
+// tests can stub the gate without side effects.
+var (
+	tryAcquireGenerationGate = service.TryAcquireDailyReportGeneration
+	releaseGenerationGate    = service.ReleaseDailyReportGeneration
+)
+
+// generateReportEntry is the generation entry point used by the manual
+// endpoint's worker goroutines. A package-level variable so tests can
+// substitute a stub (same seam pattern as the scheduler's
+// generateAndSaveReport): the real implementation drives the whole LLM
+// pipeline.
+var generateReportEntry = service.GenerateAndSaveReport
+
 func generateSingleBoard(boardID uint, date time.Time, jobID string) {
+	// Gate release (guard-daily-report-generate): this goroutine owns the
+	// generation gate acquired by the handler; deferred FIRST so every exit
+	// path — success, failure, or panic unwind — releases it.
+	defer releaseGenerationGate()
+
 	ctx, cancel := timeoutCtx(10 * time.Minute)
 	defer cancel()
 
 	boardName := dailyReportBoardName(boardID)
 	broadcastProgress(jobID, "generating", boardID, boardName, 0, "0/1")
 
-	report, err := service.GenerateAndSaveReport(ctx, boardID, date)
+	report, err := generateReportEntry(ctx, boardID, date)
 	if err != nil {
 		logging.Errorf("daily-report: generate/save failed for board %d: %v", boardID, err)
 		broadcastProgress(jobID, "failed", boardID, boardName, 0, "1/1")
@@ -192,6 +227,11 @@ func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 }
 
 func generateAllBoards(date time.Time, jobID string) {
+	// Gate release (guard-daily-report-generate): this goroutine owns the
+	// generation gate acquired by the handler; deferred FIRST so every exit
+	// path — success, failure, or panic unwind — releases it.
+	defer releaseGenerationGate()
+
 	ctx, cancel := timeoutCtx(30 * time.Minute)
 	defer cancel()
 
@@ -217,7 +257,7 @@ func generateAllBoards(date time.Time, jobID string) {
 		boardName := dailyReportBoardName(boardID)
 		broadcastProgress(jobID, "generating", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx, totalBoards))
 
-		report, genErr := service.GenerateAndSaveReport(ctx, boardID, date)
+		report, genErr := generateReportEntry(ctx, boardID, date)
 		if genErr != nil {
 			logging.Warnf("daily-report: generate/save failed for board %d: %v", boardID, genErr)
 			broadcastProgress(jobID, "failed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))

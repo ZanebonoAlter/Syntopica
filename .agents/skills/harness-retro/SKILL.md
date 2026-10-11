@@ -1,6 +1,6 @@
 ---
 name: harness-retro
-description: Syntopica harness 失败聚类复盘指南（.pi/harness/events.db 的只读消费方）。当需要回答"最近门禁为什么老红"、"这条软提醒到底有没有用"、"改了 harness 规则有没有效果"、"哪些约束文档从没被注入过"、"失败里有多少是环境噪声"、"插件到底值不值（注入命中率/token 消耗/返工）"这类**从数据找改进项**的问题时用本 skill。含报告七段的解读方式（⑦效能看板）、改进项产出判据（可回检指标 + 观察窗口 + 反 overfit）与基线回检流程。与 harness-facts 的分工见文末（那边管"当时为什么这样"，本 skill 管"接下来该改什么"）。
+description: Syntopica harness 失败聚类复盘指南（.pi/harness/events.db 的只读消费方）。当需要回答"最近门禁为什么老红"、"这条软提醒到底有没有用"、"改了 harness 规则有没有效果"、"哪些约束文档从没被注入过"、"失败里有多少是环境噪声"、"插件到底值不值（注入命中率/token 消耗/返工）"、"某个 change 的全生命周期执行情况怎么样（流程/UI/成本/健康度）"这类**从数据找改进项**的问题时用本 skill。含报告七段的解读方式（⑦效能看板）、--lifecycle 单 change 体检卡读法、改进项产出判据（可回检指标 + 观察窗口 + 反 overfit）与基线回检流程。与 harness-facts 的分工见文末（那边管"当时为什么这样"，本 skill 管"接下来该改什么"）。
 ---
 
 # harness-retro — 从事实账本产出改进项
@@ -14,7 +14,9 @@ description: Syntopica harness 失败聚类复盘指南（.pi/harness/events.db 
 | 触发场景 | 跑法 |
 | --- | --- |
 | change 归档后（看这次改动有没有留下新噪声） | `bash scripts/harness/harness-retro.sh --days 7` |
-| 定期体检（如每周一次） | 同上；配合 `--save-baseline` 留快照 |
+| 单个 change 全生命周期复盘（流程执行/UI 卡点/成本/健康度/人类反馈五段体检） | `bash scripts/harness/harness-retro.sh --lifecycle <change-name>` |
+| 某 change 不再推进了，登记放弃终态（不再算活跃） | `bash scripts/harness/change-abandon.sh <change-name>` |
+| 定期体检（如每周一次） | `--days 7`；配合 `--save-baseline` 留快照 |
 | 怀疑某条软提醒 / 某条规则无效（"这事提醒了八百遍还在犯"） | `--days 7`，重点看第 ④ 段 |
 | 要改 harness 门禁或约束注入规则（准 A/B） | 改前 `--save-baseline`，改后 `--baseline`，对比同类指标 |
 | 排查"为啥最近老是红" | `--days 3`，重点看第 ①③⑤ 段 |
@@ -23,7 +25,7 @@ description: Syntopica harness 失败聚类复盘指南（.pi/harness/events.db 
 
 ```bash
 bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
-    [--warn-threshold N] [--json] [--save-baseline [PATH]] [--baseline [PATH]] [--help]
+    [--lifecycle NAME] [--warn-threshold N] [--json] [--save-baseline [PATH]] [--baseline [PATH]] [--help]
 ```
 
 | 参数 | 缺省 | 说明 |
@@ -31,6 +33,7 @@ bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 | `--db PATH` | `.pi/harness/events.db` | 目标账本（换机 / 指向快照副本时用） |
 | `--days N` | 7 | 统计窗口（UTC，左闭）；> 30 天会提示 TTL 清扫风险 |
 | `--change NAME` | 全局 | 只看某个 change 名下的事件 |
+| `--lifecycle NAME` | — | 单 change 生命周期体检卡（五段 + 声明元数据；与 `--change`/基线选项互斥，不受 `--days` 窗口限制，TTL 30 天为硬上限） |
 | `--warn-threshold N` | 5 | 第 ④ 段阈值（同 policy+reasonCode 的 warn 计数 ≥ 阈值才列出） |
 | `--json` | 关 | 机器可读（基线比对与脚本消费用） |
 | `--save-baseline [PATH]` | `.pi/harness/retro-baseline.json` | 落基线快照 |
@@ -47,10 +50,11 @@ bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 | ① 门禁失败聚类 | 失败率（用还原分母）+ **失败特征归并** | 「并发/环境冲突」「测试环境未就绪」占比高 → 失败噪声来自环境；「编译/类型」高 → 真实代码问题 | 环境族高 → 修门禁/环境稳定性，**别催 agent 改代码**；代码族高 → 看 Top 命令与 ⑤。归并规则次序即语义：diag 含 `command not found`（命令/解释器缺失，进程级失败）**优先归入并发/环境冲突族**，先于一切按命令名关键词（如 `%lint%`、`%go%`）的族判断——环境风暴不得被误计为代码问题族 |
 | ② 回归翻转 | 回归失败数（曾绿变红）占比 + 转绿锚点 | 占比高 = 改动反复打破既有绿灯（改前没跑影响包 / 改错方向） | 强化「改前先跑影响包」；锚点数 = 修复次数（越高说明反复修） |
 | ③ harness 自身故障 | `action=fail-open` 条数（如 `interop-down`） | 条数高 = **门禁自己不可用**，不是代码质量下降 | 先修 harness（环境链路），**别据此放宽阈值**——放宽会把真问题一起放掉 |
-| ④ 软提醒失效 | 同 `policy+reasonCode` 的 warn 计数 ≥ 阈值 | 提醒被反复无视（同一件事触发很多次仍没改） | 三选一：升级为 block（须用户确认）/ 改提示文案与触发条件 / 承认它不该是提醒 |
+| ④ 软提醒失效（纠正型） | **纠正型**（白名单外）`policy+reasonCode` 的 warn 计数 ≥ 阈值（`--warn-threshold` 仅作用于这半边） | 提醒被反复无视（同一件事触发很多次仍没改） | 三选一：升级为 block（须用户确认）/ 改提示文案与触发条件 / 承认它不该是提醒 |
+| ④ 情报型 warn 单列 | 白名单内 reasonCode（`concurrent-mixed` / `concurrent-dirty-tree` / `foreign-breakage`；归属/状态告知，不期待服从动作）的分组计数汇总，不受阈值影响 | 读成**并发频率/成本趋势**：计数持续走高 = 跨 change 并发密度在涨，属记账副产物，**别读成「催了 N 次没用」** | 不进失效判定、不升 block；嫌吵去调 quality-gate 的记账/触发条件，别把并发状态的客观归属当违规罚；白名单与 harness-facts reasonCode 词汇表同步演进（白名单外缺省纠正型，误归类修白名单不放宽缺省） |
 | ⑤ 重复失败热点 | 同会话同命令、归一化 diag 连续重复 ≥ 阈值 | 连续同 diag 重复 = 死循环或试探式改错 | 这类会话需要更强干预（而不是再提醒一次） |
 | ⑥ 注入面健康 | 各文档注入次数/字节 + 窗口内零命中文档 | 零命中 = 死约束（索引声明了却从没被注入）；单文档字节很高 = 注入膨胀 | 死约束：清理或修触发关键词；膨胀：走红线层提取（见 `standard/shared/doc-authoring.md`） |
-| ⑦ 效能看板 | **插件 ROI**（注入负载/注入命中率/pin 复用/门禁催修时距/block 复发）+ **效率基线**（per-session/per-change 的轮次/token/成本/时长分布，`session.rollup` 终值驱动）+ **B' 每任务成本**（task-cost-metrics，见下）+ **返工信号**（跨 session 编辑波次/归档重试）+ **D 测试欠账巡检**（`patrol.check` 流水频次 + `test_debt` 台账 open/fixed/waived 趋势，test-debt-patrol） | rollup 覆盖率 <50% 时 B 组标「数据积累中」（分布仅由已覆盖 session 算，不用小样本冒充）；命中率持续 0 = 注了白注（先看「未识别通道」行：若 N>0 说明注入通道枚举已漂移，须先同步报告口径再下结论，勿把口径漂移误读成完全失效；N=0 且命中率仍低才是真低效）；催修时距长 = block 后没及时修；波次高的文件 = 反复返工热点；**`patrol.checks` 连续多天为 0 = 巡检纪律松了**（或压根没跑），`patrol.debt_open` 持续不降 = 台账变成新漂没 | **各指标独立解读，禁止合成总分**；改一条 harness 规则前后用 `--save-baseline`/`--baseline` 对 m7.*/patrol.* 键做准 A/B；注：rollup 数据从部署起积累，历史 session 永久无此维度；无 `test_debt` 表（老库）或窗口内无 `patrol.check` 时该子组降级为「无巡检数据」不报错 |
+| ⑦ 效能看板 | **插件 ROI**（注入负载/注入命中率/pin 复用/门禁催修时距/block 复发）+ **效率基线**（per-session/per-change 的轮次/token/成本/时长分布，`session.rollup` 终值驱动）+ **B' 每任务成本**（task-cost-metrics，见下）+ **返工信号**（跨 session 编辑波次/归档重试）+ **D 测试欠账巡检**（`patrol.check` 流水频次 + `test_debt` 台账 open/fixed/waived 趋势，test-debt-patrol）+ **E 生命周期面**（add-retro-lifecycle-rollup：human-feedback 覆盖有账/无账/未处置 + 归因五类跨 change 聚合 + 漏采信号 = 波次 ≥3 session 且零反馈的 change 名单；清单口径 = 活跃 + 窗口内归档） | rollup 覆盖率 <50% 时 B 组标「数据积累中」（分布仅由已覆盖 session 算，不用小样本冒充）；命中率持续 0 = 注了白注（先看「未识别通道」行：若 N>0 说明注入通道枚举已漂移，须先同步报告口径再下结论，勿把口径漂移误读成完全失效；N=0 且命中率仍低才是真低效）；门禁催修时距按 policy 分派解除信号（quality-gate=转绿/ui-design-gate=pass/quota-gate=成功派发/spec-gate=归档，add-change-lifecycle-retro），信号缺席样本剔除并披露剔除数——剔除数高不是慢，是解除信号没等到（如 quota block 后从未成功派发）；波次高的文件 = 反复返工热点；**`patrol.checks` 连续多天为 0 = 巡检纪律松了**（或压根没跑），`patrol.debt_open` 持续不降 = 台账变成新漂没 | **各指标独立解读，禁止合成总分**；改一条 harness 规则前后用 `--save-baseline`/`--baseline` 对 m7.*/patrol.* 键做准 A/B；注：rollup 数据从部署起积累，历史 session 永久无此维度；无 `test_debt` 表（老库）或窗口内无 `patrol.check` 时该子组降级为「无巡检数据」不报错；E 面漏采信号名单里的 change = 多轮返工却没人建反馈账（采集纪律松了），归因高发层直接映射规范整理去向（frontend→standard/frontend/、backend→standard/backend/+flow/、test-gap→test-design.md、fact-check→探索纪律、process→harness/ 与执行规范），反馈文件缺席不算异常、格式异常单列；改前改后用 `m7.lifecycle_*` 键做准 A/B |
 
 ### ⑦B' 每任务成本子组（task-cost-metrics）
 
@@ -58,11 +62,37 @@ bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 
 **降级**：存量 rollup 无 `models` 字段 → 「未分模型」桶单列；无 `parentSessionId` 的子会话成本进不可归因（随数据换代自然衰减）；09-17（rollup 上线）前会话无成本维度 → 沿用 B 组覆盖率降级标注；窗口内无归档 change → 分布不产出（不用小样本冒充）。
 
-**回检键名**：`m7.task_cost_p50/p75/avg/count`（分布）、`m7.task_cost_by_model`、`m7.task_cost_by_complexity`（分桶）、`m7.task_unattributed_cost_pct`（不可归因占比）、`m7.task_active_unarchived`（活跃未归档 change 数，幸存者偏差对照——均值只反映活下来归档的任务，烂尾成本不进来）。smoke fixture 场景 K1~K6（`harness-retro.smoke.sh`）可独立复算全部数值。
+**回检键名**：`m7.task_cost_p50/p75/avg/count`（分布）、`m7.task_cost_by_model`、`m7.task_cost_by_complexity`（分桶）、`m7.task_unattributed_cost_pct`（不可归因占比）、`m7.task_active_unarchived`（活跃未归档 change 数，幸存者偏差对照——均值只反映活下来归档的任务，烂尾成本不进来）、`m7.task_abandoned` / `m7.task_abandon_conflict`（已放弃/终态冲突，add-change-lifecycle-retro：放弃的 change 用 `change-abandon.sh` 登记，不占活跃口径但成本也不在分布内——完整分母要加回）、`m7.repair_excluded`（催修时距无解除信号剔除数）。smoke fixture 场景 K1~K6 + L1~L11（`harness-retro.smoke.sh`）可独立复算全部数值。
+
+## `--lifecycle` 单 change 体检卡怎么读（add-change-lifecycle-retro）
+
+以单个 change 为生命周期单位的只读报告（不写账本、不改 change 目录），头部两行先看：
+
+- **声明元数据**：proposal 头注释的 ui-impact / complexity / constraint-domains（未归档读 `changes/`、已归档读 `archive/` 目录日期前缀剥离后拼路径）；两棵树都找不到 → 「声明缺席」（要么从未存在，要么目录被移）。
+- **终态**：已归档（change.archive 事件 / archive 目录双锚点）｜已放弃（change.abandon 登记）｜未归档（附最后活动时间，**不假定终态**——活跃还是放弃需后续事实）。同名 archive 与 abandon 并存 → 以归档为准 + 冲突提示行（abandon 疑为误登记）。
+
+五段正文（第五段人类反馈，add-change-lifecycle-retro）：
+
+| 段 | 看什么 | 什么算信号 |
+| --- | --- | --- |
+| 一、流程规范 | 档位绑定次数（mode.set 序列）/ 约束注入条数字节与通道 / pin 接力 write:read / 编辑归属路径数 / 门禁执行与失败 Top | 档位反复切换（requirements↔implementation 震荡）= 规划不稳；注入大但 pin read 低 = 注了没人用 |
+| 二、UI 工作流 | ui-design-gate 卡点链（reasonCode ×N）与放行态 | 卡点同一码多次 = 文档反复返工；放行态双口径：**pass 事件直读**（引入后）vs **推断（无放行事件）**（引入前历史只能按末 block 后无新 block 推断）——推断口径的数字别当精确值用 |
+| 三、成本卡 | 归因会话终值 Σ（cost/turns/toolCalls/时长）+ 按模型分桶 | 终值按 (session_id, change) 探索配方归因（交织会话按绑定段归因，与 B' 按会话终归口径并存）；rollup 覆盖率不足时标「数据积累中」——成本是下限不是全量；2026-09-17（rollup 上线）前的 change 无成本维度 |
+| 四、健康度 | 催修时距（按 policy 分派，见下）/ 回归翻转 / 返工波次（同文件 ≥2 session） | 波次高的文件 = 该 change 的反复返工热点；回归翻转多 = 改动反复打破既有绿灯 |
+| 五、人类反馈 | human-feedback.md 条数（产品/流程）/ 归因分布 / 未处置数（待处理/处理中） | 文件缺席→「无反馈记录（或未启用）」降级（不静默省略）；高返工波次×零反馈条数 = **漏采信号**（多轮打回却没人建账，采集纪律松了） |
+
+**催修时距分派口径**（⑦段 A 组同款，add-change-lifecycle-retro）：block→解除的时距按 policy 语义分派解除信号——quality-gate=同 (session,cmd) gate.check 转绿（既有口径）｜ui-design-gate=该 change 后续首条 pass 放行事件｜quota-gate=同 session 后续成功派发（subagent.dispatch）｜spec-gate=change.archive 归档事件。**信号缺席的样本剔除并披露剔除数**——别拿旧口径的「统一转绿判解除」数字对比（对 ui-design-gate/quota-gate 会算出假慢，实测 89 分钟）。
+
+**第五段人类反馈怎么读**（add-change-lifecycle-retro，数据源=change 目录 human-feedback.md 文件而非 events.db——事件侧观测不到人类真实不满，文件随 change 归档永久保存而账本有 TTL）：
+
+- **归因分布怎么看**：归因五类封闭 frontend/backend/test-gap/fact-check/process（词表与格式契约见 add-change-lifecycle-retro design D7、`feedback.sh menu`）。**高发层直接映射规范整理去向**——frontend 高发 → `standard/frontend/`；backend 高发 → `standard/backend/` + `flow/`；test-gap 高发 → `standard/shared/test-design.md`（变体清单/层选择补盲）；fact-check 高发 → 探索纪律（核实后再写，探索阶段未核实事实不落盘进 design）；process 高发 → `harness/` 与开发执行规范本身。多因按根因优先归 fact-check。
+- **状态不算指标**：状态五值只用于建账初始化、归档对账（`feedback.sh verify`，未处置条目提醒不阻断）与体检卡展示——不算消化率/时滞等流程效率指标（用户拍板砍掉，归因是主线）。
+- **格式异常单列**：词表外归因/缺状态行条目计「格式异常」单列披露不炸段（宽容降级，手改漂移不致报告失效）——异常多说明建账后被人手改，跑 `feedback.sh menu` 对照修正。
+- **openspec list 消费方说明**：human-feedback.md 是**仓库约定制品**（doc-authoring.md 注册点速查登记），非 openspec 原生制品——`openspec status`/`instructions` 不感知它，不影响 artifact 清单与任务进度；它的消费方是 `feedback.sh`（建账/对账）与本体检卡第五段（计量）。
 
 ## 改进项产出判据（硬要求）
 
-1. **必须绑定可回检指标**：每条改进项写清「哪段指标名 + 当前值 + 期望值 + 观察窗口（如未来 7 天）」。指标名取自报告或 `--json` 的 `metrics`（`gate.failures` / `harness.fail_open` / `soft.stale_groups` / `inject.zero_hit_docs` / `patrol.checks` / `patrol.debt_open` …）。落不到指标上的主观判断不算改进项。
+1. **必须绑定可回检指标**：每条改进项写清「哪段指标名 + 当前值 + 期望值 + 观察窗口（如未来 7 天）」。指标名取自报告或 `--json` 的 `metrics`（`gate.failures` / `harness.fail_open` / `soft.stale_groups`（纠正型失效组数）/ `soft.warn_total_informative` / `soft.informative_groups` / `inject.zero_hit_docs` / `patrol.checks` / `patrol.debt_open` …）。落不到指标上的主观判断不算改进项。
 2. **单次偶发不得升格为规则**：只在一个 session 出现一次的失败，**不许**直接写成新规则；至少跨 2 个 session 或累计 ≥3 次再动规则。
 3. **改完必须回检**：`--save-baseline` → 改 → `--baseline` 对比同类指标；差值不降就说明改动无效（或问题不在那）。
 4. **反 overfit 警告**：针对单一任务、单一 diag 文本堆特例的规则会伤害泛化。优先调**口径、阈值、触发条件**，其次才是加规则；加规则前先问「这条规则对第二个场景也成立吗」。

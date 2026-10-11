@@ -204,7 +204,7 @@ group_F() {
 
 	# TC-F04 未知分片 / 空串
 	expect_usage_error "TC-F04 --shard bogus → exit 2" --shard bogus
-	assert_eq "TC-F04 错误输出列出 13 个可选分片" "13" "$(printf '%s' "$OUT" | grep -cE '^    (be|fe)-[a-z-]+')"
+	assert_eq "TC-F04 错误输出列出 15 个可选分片" "15" "$(printf '%s' "$OUT" | grep -cE '^    (be|fe)-[a-z-]+')"
 	expect_usage_error "TC-F04 --shard 空串 → exit 2" --shard ''
 
 	# TC-F05 --shards 校验
@@ -340,7 +340,7 @@ group_A() {
 # ---------------------------------------------------------------------------
 # B 组：分片调度
 # ---------------------------------------------------------------------------
-SHARDS_STATIC=(be-admin be-dataenrichment be-reader be-tagmanagement be-topicgraph be-skeleton fe-tags fe-discovery fe-features fe-core fe-composables fe-components)
+SHARDS_STATIC=(be-admin be-dataenrichment be-datasources be-discovery be-reader be-tagmanagement be-topicgraph be-skeleton fe-tags fe-discovery fe-features fe-core fe-composables fe-components)
 
 group_B() {
 	group "B 组 分片调度（最久未巡优先 / be-all 不入轮转）"
@@ -359,17 +359,17 @@ group_B() {
 	assert_eq "TC-B02 两片 last_run 非空且 be-admin 更早" "1" \
 		"$(q "SELECT (SELECT last_run FROM patrol_shard WHERE shard='be-admin') < (SELECT last_run FROM patrol_shard WHERE shard='be-dataenrichment');")"
 
-	# TC-B03 一轮完成后回到起点：13 次无参 = 静态表整轮循环
+	# TC-B03 一轮完成后回到起点：15 次无参 = 静态表整轮循环
 	reset_db
 	seq_out=""
 	i=1
-	while [ "$i" -le 13 ]; do
+	while [ "$i" -le 15 ]; do
 		p TEST_PATROL_NOW="$(nth_now "$i")" bash "$SOURCE"
 		seq_out="$seq_out $(pick_of)"
 		i=$((i + 1))
 	done
 	expected_seq=" ${SHARDS_STATIC[*]} be-admin"
-	assert_eq "TC-B03 13 次选中序列 = 静态表整轮循环" "$expected_seq" "$seq_out"
+	assert_eq "TC-B03 15 次选中序列 = 静态表整轮循环" "$expected_seq" "$seq_out"
 
 	# TC-B04 NULL 优先于任何时间戳
 	reset_db
@@ -397,16 +397,16 @@ group_B() {
 	assert_eq "TC-B05 平局选静态表靠前者" "be-reader" "$first"
 	assert_eq "TC-B05 平局结果稳定（第二次仍同上）" "be-reader" "$second"
 
-	# TC-B06 12 次跑满一轮：无重复无遗漏、be-all 从不入选
+	# TC-B06 14 次跑满一轮：无重复无遗漏、be-all 从不入选
 	reset_db
 	seen=""
 	i=0
-	while [ "$i" -lt 12 ]; do
+	while [ "$i" -lt 14 ]; do
 		p TEST_PATROL_NOW="$(nth_now "$((i + 1))")" bash "$SOURCE"
 		seen="$seen $(pick_of)"
 		i=$((i + 1))
 	done
-	assert_eq "TC-B06 选中集合恰为 12 个轮转片（无重复/无遗漏）" "$(printf '%s\n' "${SHARDS_STATIC[@]}" | sort | tr '\n' ' ' | sed 's/ $//')" "$(printf '%s' "$seen" | tr ' ' '\n' | awk 'NF' | sort | tr '\n' ' ' | sed 's/ $//')"
+	assert_eq "TC-B06 选中集合恰为 14 个轮转片（无重复/无遗漏）" "$(printf '%s\n' "${SHARDS_STATIC[@]}" | sort | tr '\n' ' ' | sed 's/ $//')" "$(printf '%s' "$seen" | tr ' ' '\n' | awk 'NF' | sort | tr '\n' ' ' | sed 's/ $//')"
 	assert_eq "TC-B06 be-all 从未被选中" "0" "$(printf '%s' "$seen" | grep -c 'be-all' || true)"
 	assert_eq "TC-B06 进度表无 be-all 行" "0" "$(q "SELECT COUNT(*) FROM patrol_shard WHERE shard='be-all';")"
 
@@ -422,7 +422,7 @@ group_B() {
 	reset_db
 	run_fx "$FI/be-green.out" 0 --shards 3
 	assert_eq "TC-B08 stdout 3 行摘要" "3" "$(summary_lines)"
-	assert_eq "TC-B08 顺序 = 静态表前 3 片" "be-admin be-dataenrichment be-reader" "$(pick_all | tr '\n' ' ' | sed 's/ $//')"
+	assert_eq "TC-B08 顺序 = 静态表前 3 片" "be-admin be-dataenrichment be-datasources" "$(pick_all | tr '\n' ' ' | sed 's/ $//')"
 	assert_eq "TC-B08 3 片 runs 均为 1" "3" "$(q 'SELECT COUNT(*) FROM patrol_shard WHERE runs=1;')"
 
 	# TC-B09 --shards 99 跑满一轮不重复
@@ -434,13 +434,13 @@ group_B() {
 	done
 	p TEST_PATROL_NOW="$(nth_now 1000)" bash "$SOURCE" --shards 99
 	assert_rc "TC-B09 --shards 99 exit 0" 0
-	assert_eq "TC-B09 恰 12 行摘要（不重复）" "12" "$(summary_lines)"
-	assert_eq "TC-B09 12 片各再跑一次（runs=2）" "12" "$(q 'SELECT COUNT(*) FROM patrol_shard WHERE runs=2;')"
+	assert_eq "TC-B09 恰 14 行摘要（不重复）" "14" "$(summary_lines)"
+	assert_eq "TC-B09 14 片各再跑一次（runs=2）" "14" "$(q 'SELECT COUNT(*) FROM patrol_shard WHERE runs=2;')"
 
-	# TC-B10 --shards 12 == 总数
+	# TC-B10 --shards 14 == 总数
 	reset_db
-	run_fx "$FI/be-green.out" 0 --shards 12
-	assert_eq "TC-B10 恰跑 12 片" "12" "$(q 'SELECT COUNT(*) FROM patrol_shard;')"
+	run_fx "$FI/be-green.out" 0 --shards 14
+	assert_eq "TC-B10 恰跑 14 片" "14" "$(q 'SELECT COUNT(*) FROM patrol_shard;')"
 	assert_eq "TC-B10 be-all 不在其中" "0" "$(q "SELECT COUNT(*) FROM patrol_shard WHERE shard='be-all';")"
 
 	# TC-B11 DRY_RUN 不执行不写库
@@ -458,9 +458,9 @@ group_B() {
 	for s in "${SHARDS_STATIC[@]}" be-all; do
 		case "$OUT" in *"$s"*) ;; *) missing="$missing $s" ;; esac
 	done
-	if [ -z "$missing" ]; then ok "TC-B12 --help 逐字列出 12 轮转片 + be-all"; else bad "TC-B12 --help 缺分片：$missing"; fi
+	if [ -z "$missing" ]; then ok "TC-B12 --help 逐字列出 14 轮转片 + be-all"; else bad "TC-B12 --help 缺分片：$missing"; fi
 	fe_total=0
-	for d in app/features/tags app/features/discovery app/features/settings app/features/articles app/features/ai app/features/shell app/api app/utils app/stores app/plugins app/assets app/composables app/components; do
+	for d in app/features/tags app/features/discovery app/features/settings app/features/articles app/features/ai app/features/shell app/features/feeds app/api app/utils app/stores app/plugins app/assets app/composables app/components; do
 		n="$(find "$REPO_ROOT/front/$d" -name '*.test.ts' 2>/dev/null | wc -l | tr -d ' ')"
 		fe_total=$((fe_total + n))
 		[ "$n" -ge 1 ] || bad "TC-B12 前端片目录 $d 无 *.test.ts"
@@ -470,12 +470,12 @@ group_B() {
 	all_n="$(find "$REPO_ROOT/front/app" -name '*.test.ts' | wc -l | tr -d ' ')"
 	assert_eq "TC-B12 前端 6 片覆盖全部测试文件（$fe_total/$all_n）" "$all_n" "$fe_total"
 	be_rows=""
-	for d in admin dataenrichment reader tagmanagement topicgraph platform models app; do
+	for d in admin dataenrichment datasources discovery reader tagmanagement topicgraph platform models app; do
 		n="$(find "$REPO_ROOT/backend-go/internal/$d" -name '*.go' 2>/dev/null | wc -l | tr -d ' ')"
 		[ "$n" -ge 1 ] || bad "TC-B12 后端片目录 internal/$d 无 .go 文件"
 	done
 	be_rows="$(find "$REPO_ROOT/backend-go/internal" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
-	assert_eq "TC-B12 后端 8 个 internal 顶层目录都被分片覆盖" "8" "$be_rows"
+	assert_eq "TC-B12 后端 10 个 internal 顶层目录都被分片覆盖" "10" "$be_rows"
 	assert_eq "TC-B12 cmd/ 子目录非空" "5" "$(find "$REPO_ROOT/backend-go/cmd" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 }
 
@@ -501,11 +501,11 @@ group_C() {
 	assert_has "TC-C02 含 --maxWorkers=2" "$args" '--maxWorkers=2'
 	assert_eq "TC-C02 参数序列无单独的 -- 元素" "0" "$(printf '%s' "$OUT" | sed -n 's/^\[DRY-RUN\] arg=//p' | grep -cx -- '--' || true)"
 
-	p TEST_PATROL_DRY_RUN=1 bash "$SOURCE" --shards 13
+	p TEST_PATROL_DRY_RUN=1 bash "$SOURCE" --shards 14
 	cwd_n="$(printf '%s' "$OUT" | grep -c '^\[DRY-RUN\] cwd=')"
-	assert_eq "TC-C03 12 片各恰 1 次调用（不重试）" "12" "$cwd_n"
+	assert_eq "TC-C03 14 片各恰 1 次调用（不重试）" "14" "$cwd_n"
 	assert_eq "TC-C03 全片命令无单独的 -- 元素" "0" "$(printf '%s' "$OUT" | sed -n 's/^\[DRY-RUN\] arg=//p' | grep -cx -- '--' || true)"
-	assert_eq "TC-C03 --shards 13 不执行 be-all" "0" "$(printf '%s' "$OUT" | grep -c 'internal/\.\.\. \./cmd' || true)"
+	assert_eq "TC-C03 --shards 14 不执行 be-all" "0" "$(printf '%s' "$OUT" | grep -c 'internal/\.\.\. \./cmd' || true)"
 
 	# TC-C04 后端全绿
 	reset_db
@@ -907,7 +907,7 @@ group_SUR() {
 	assert_has "TC-SUR02 survey 记录后端 -short 全量 42s" "$(sed -n '1,40p' "$survey")" '**42s**'
 	assert_has "TC-SUR02 design 保留后端 6 片定夺" "$(sed -n '1,80p' "$design")" '共 6 片'
 	p bash "$SOURCE" --help
-	assert_eq "TC-SUR02 分片枚举 12+1 与 design 一致" "13" "$(printf '%s' "$OUT" | grep -cE '^  (be|fe)-[a-z-]+ ')"
+	assert_eq "TC-SUR02 分片枚举 14+1 与现状一致" "15" "$(printf '%s' "$OUT" | grep -cE '^  (be|fe)-[a-z-]+ ')"
 }
 
 # ---------------------------------------------------------------------------

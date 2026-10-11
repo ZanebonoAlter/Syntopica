@@ -55,8 +55,15 @@ type SemanticBoardMatchConfig struct {
 	WeightedThreshold      float64
 	MaxBoards              int
 	DirectHitMinOverlap    int
+	DirectHitMinRatio      float64
 	DirectionSimThreshold  float64
 	DirectHitScoreFactor   float64
+	// DirectionRelativeMargin is the relative gate margin for the direction
+	// check: a mount is flagged when bestCos-cos(tagIdentity, board) >=
+	// margin, where bestCos is the highest identity cosine among all boards
+	// the tag matched this run. Zero or negative disables the gate
+	// (absolute threshold only).
+	DirectionRelativeMargin float64
 }
 
 type SemanticBoardMatchResult struct {
@@ -328,6 +335,7 @@ func (s *SemanticBoardMatchingService) LoadBoardAuxiliariesByBoardID(ctx context
 func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAuxiliaries []BoardAuxiliaryLabel, tagComposites []models.SemanticLabel, boardComposites []BoardCompositeLabel, config SemanticBoardMatchConfig, tagEmbedding []float64, boardEmbeddings map[uint][]float64) []SemanticBoardMatchResult {
 	tagAuxiliaryIDs := make(map[uint]struct{}, len(tagAuxiliaries))
 	tagVectors := make([][]float64, 0, len(tagAuxiliaries))
+	tagAuxVectors := make([]taggedAuxVector, 0, len(tagAuxiliaries))
 	for _, label := range tagAuxiliaries {
 		tagAuxiliaryIDs[label.ID] = struct{}{}
 		if label.Embedding == nil {
@@ -336,6 +344,7 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		vector, err := auxlabel.ParsePgVector(*label.Embedding)
 		if err == nil {
 			tagVectors = append(tagVectors, vector)
+			tagAuxVectors = append(tagAuxVectors, taggedAuxVector{labelID: label.ID, vector: vector})
 		}
 	}
 
@@ -369,10 +378,11 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		allBoards[boardID] = struct{}{}
 	}
 
-	// Direction check applies to every match reason except composite_hit
-	// (a composite hit already implies aligned direction). Missing tag or
-	// board embeddings keep directionMismatch=false, matching the indirect
-	// rules' existing semantics.
+	// Absolute direction gate applies to every match reason except
+	// composite_hit (a composite hit already implies aligned direction).
+	// Missing tag or board embeddings keep directionMismatch=false, matching
+	// the indirect rules' existing semantics. The relative gate runs as a
+	// post-pass over all matched candidates (see applyDirectionRelativeGate).
 	directionMismatch := func(boardID uint) bool {
 		if len(tagEmbedding) == 0 {
 			return false
@@ -398,13 +408,31 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 
 		// Priority 2: direct_hit — downgraded to DirectHitScoreFactor and now
 		// subject to the direction check like every non-composite reason.
-		if countDirectSemanticBoardHits(tagAuxiliaryIDs, auxiliaries) >= config.DirectHitMinOverlap {
-			matches = append(matches, SemanticBoardMatchResult{SemanticBoardID: boardID, Score: config.DirectHitScoreFactor, MatchReason: "direct_hit", DirectionMismatch: directionMismatch(boardID)})
-			continue
+		// fix-board-match-cross-domain: the overlap must also make up at
+		// least DirectHitMinRatio of the tag's active auxiliary labels. When
+		// the count gate passes but the ratio gate fails (e.g. a 2/5
+		// cross-domain overlap), the overlapping labels are recorded so
+		// Priority 3 cannot reuse them as similarity evidence — identical
+		// pairs would trivially score 1.0 and re-admit the tag.
+		overlap := countDirectSemanticBoardHits(tagAuxiliaryIDs, auxiliaries)
+		var blockedOverlapIDs map[uint]struct{}
+		if overlap >= config.DirectHitMinOverlap {
+			if directHitRatioSatisfied(overlap, len(tagAuxiliaryIDs), config.DirectHitMinRatio) {
+				matches = append(matches, SemanticBoardMatchResult{SemanticBoardID: boardID, Score: config.DirectHitScoreFactor, MatchReason: "direct_hit", DirectionMismatch: directionMismatch(boardID)})
+				continue
+			}
+			blockedOverlapIDs = boardOverlapIDs(tagAuxiliaryIDs, auxiliaries)
 		}
 
-		// Priority 3: indirect similarity rules (unchanged).
-		if len(tagVectors) == 0 {
+		// Priority 3: indirect similarity rules. When Priority 2 was blocked
+		// by the ratio gate, the overlapping labels are excluded from the tag
+		// side vectors (evidence must not switch tracks); an empty remainder
+		// means the tag carries no similarity evidence for this board at all.
+		p3TagVectors := tagVectors
+		if blockedOverlapIDs != nil {
+			p3TagVectors = tagVectorsExcluding(tagAuxVectors, blockedOverlapIDs)
+		}
+		if len(p3TagVectors) == 0 {
 			continue
 		}
 		boardVectors := parseBoardAuxiliaryVectors(auxiliaries)
@@ -412,7 +440,7 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 			continue
 		}
 
-		hitRate, maxSimilarity := scoreSemanticBoardSimilarity(tagVectors, boardVectors, len(tagAuxiliaries), config.SimThreshold, config.MinEffectiveSample)
+		hitRate, maxSimilarity := scoreSemanticBoardSimilarity(p3TagVectors, boardVectors, len(tagAuxiliaries), config.SimThreshold, config.MinEffectiveSample)
 		weighted := config.WeightSim*maxSimilarity + config.WeightDensity*hitRate
 		score := 0.0
 		matchReason := ""
@@ -439,6 +467,12 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		}
 	}
 
+	// Relative gate (fix-digest-tag-leak): a mount is additionally flagged
+	// when its identity cosine sits DirectionRelativeMargin below the best
+	// cosine among all boards the tag matched this run. Must run after the
+	// per-board loop so the reference set covers every candidate.
+	applyDirectionRelativeGate(matches, tagEmbedding, boardEmbeddings, config)
+
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].Score == matches[j].Score {
 			return matches[i].SemanticBoardID < matches[j].SemanticBoardID
@@ -446,6 +480,52 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		return matches[i].Score > matches[j].Score
 	})
 	return matches
+}
+
+// applyDirectionRelativeGate flags mounts whose identity cosine falls
+// margin below the best cosine among all boards the tag matched this run
+// (the reference set includes candidates that will themselves be flagged —
+// the digest leak case: a tag matches its true board at 0.81 and a distant
+// board at 0.60, gap 0.21). Single-board mounts have gap 0 and always pass;
+// a margin <= 0 disables the gate (absolute threshold only). composite_hit
+// mounts are exempt; mounts without a computable cosine (missing tag or
+// board embedding) skip the gate. The flag only ORs in on top of the
+// absolute gate — it never clears an existing direction_mismatch.
+func applyDirectionRelativeGate(matches []SemanticBoardMatchResult, tagEmbedding []float64, boardEmbeddings map[uint][]float64, config SemanticBoardMatchConfig) {
+	if config.DirectionRelativeMargin <= 0 || len(tagEmbedding) == 0 {
+		return
+	}
+	cosByBoard := make(map[uint]float64, len(matches))
+	bestCos := math.Inf(-1)
+	for _, match := range matches {
+		if match.MatchReason == "composite_hit" {
+			continue
+		}
+		boardEmb, ok := boardEmbeddings[match.SemanticBoardID]
+		if !ok || len(boardEmb) == 0 {
+			continue
+		}
+		cos := CosineSimilarity(tagEmbedding, boardEmb)
+		cosByBoard[match.SemanticBoardID] = cos
+		if cos > bestCos {
+			bestCos = cos
+		}
+	}
+	if len(cosByBoard) == 0 {
+		return
+	}
+	for i := range matches {
+		if matches[i].MatchReason == "composite_hit" {
+			continue
+		}
+		cos, ok := cosByBoard[matches[i].SemanticBoardID]
+		if !ok {
+			continue
+		}
+		if bestCos-cos >= config.DirectionRelativeMargin {
+			matches[i].DirectionMismatch = true
+		}
+	}
 }
 
 // hasCompositeIntersection reports whether any board-mounted composite is
@@ -591,6 +671,56 @@ func countDirectSemanticBoardHits(tagAuxiliaryIDs map[uint]struct{}, boardAuxili
 	return count
 }
 
+// directHitRatioSatisfied reports whether the overlap count makes up at
+// least minRatio of the tag's active auxiliary labels. A zero minRatio
+// disables the ratio gate entirely (legacy count-only behavior); an empty
+// auxiliary set can never satisfy a positive gate (and cannot reach the
+// overlap minimum anyway).
+func directHitRatioSatisfied(overlap, total int, minRatio float64) bool {
+	if minRatio <= 0 {
+		return true
+	}
+	if total <= 0 {
+		return false
+	}
+	return float64(overlap)/float64(total) >= minRatio
+}
+
+// taggedAuxVector keeps the label ID next to its parsed vector so Priority 3
+// can exclude specific labels from the similarity evidence.
+type taggedAuxVector struct {
+	labelID uint
+	vector  []float64
+}
+
+// boardOverlapIDs returns the exact set of auxiliary label IDs shared
+// between the tag and one board's composition (the identities behind
+// countDirectSemanticBoardHits).
+func boardOverlapIDs(tagAuxiliaryIDs map[uint]struct{}, boardAuxiliaries []BoardAuxiliaryLabel) map[uint]struct{} {
+	ids := make(map[uint]struct{})
+	for _, auxiliary := range boardAuxiliaries {
+		if _, ok := tagAuxiliaryIDs[auxiliary.AuxiliaryLabelID]; ok {
+			ids[auxiliary.AuxiliaryLabelID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+// tagVectorsExcluding drops the blocked labels from the tag-side similarity
+// vectors. The hit-rate denominator stays at the full auxiliary count at the
+// call site (the evidence pool is unchanged; only reuse of blocked overlaps
+// as similarity hits is prevented).
+func tagVectorsExcluding(tagAuxVectors []taggedAuxVector, blocked map[uint]struct{}) [][]float64 {
+	vectors := make([][]float64, 0, len(tagAuxVectors))
+	for _, aux := range tagAuxVectors {
+		if _, ok := blocked[aux.labelID]; ok {
+			continue
+		}
+		vectors = append(vectors, aux.vector)
+	}
+	return vectors
+}
+
 func parseBoardAuxiliaryVectors(auxiliaries []BoardAuxiliaryLabel) [][]float64 {
 	vectors := make([][]float64, 0, len(auxiliaries))
 	for _, auxiliary := range auxiliaries {
@@ -650,20 +780,22 @@ func (s *SemanticBoardMatchingService) LoadConfig(ctx context.Context) SemanticB
 		return *cached
 	}
 	config := SemanticBoardMatchConfig{
-		SimThreshold:           0.8,
-		DirectHitRate:          0.5,
-		DirectMaxSim:           0.8,
-		DirectMaxSimMinHits:    2,
-		DirectMaxSimMinHitRate: 0.3,
-		MinEffectiveSample:     3,
-		HitRateSimBlend:        0.7,
-		WeightSim:              0.6,
-		WeightDensity:          0.4,
-		WeightedThreshold:      0.6,
-		MaxBoards:              3,
-		DirectHitMinOverlap:    2,
-		DirectionSimThreshold:  0.5,
-		DirectHitScoreFactor:   0.7,
+		SimThreshold:            0.8,
+		DirectHitRate:           0.5,
+		DirectMaxSim:            0.8,
+		DirectMaxSimMinHits:     2,
+		DirectMaxSimMinHitRate:  0.3,
+		MinEffectiveSample:      3,
+		HitRateSimBlend:         0.7,
+		WeightSim:               0.6,
+		WeightDensity:           0.4,
+		WeightedThreshold:       0.6,
+		MaxBoards:               3,
+		DirectHitMinOverlap:     2,
+		DirectHitMinRatio:       0.5,
+		DirectionSimThreshold:   0.5,
+		DirectHitScoreFactor:    0.7,
+		DirectionRelativeMargin: 0.15,
 	}
 
 	var settings []models.AISettings
@@ -680,8 +812,10 @@ func (s *SemanticBoardMatchingService) LoadConfig(ctx context.Context) SemanticB
 		"semantic_board_match_weighted_threshold",
 		"semantic_board_match_max_boards",
 		"semantic_board_match_direct_hit_min_overlap",
+		"semantic_board_match_direct_hit_min_ratio",
 		"semantic_board_match_direction_sim_threshold",
 		"semantic_board_match_direct_hit_score_factor",
+		"semantic_board_match_direction_relative_margin",
 	}).Find(&settings).Error; err != nil {
 		return config
 	}
@@ -711,10 +845,17 @@ func (s *SemanticBoardMatchingService) LoadConfig(ctx context.Context) SemanticB
 			config.MaxBoards = parseSemanticBoardMatchInt(setting.Value, config.MaxBoards)
 		case "semantic_board_match_direct_hit_min_overlap":
 			config.DirectHitMinOverlap = parseSemanticBoardMatchInt(setting.Value, config.DirectHitMinOverlap)
+		case "semantic_board_match_direct_hit_min_ratio":
+			ratio := parseSemanticBoardMatchFloat(setting.Value, config.DirectHitMinRatio)
+			if ratio >= 0 && ratio <= 1 {
+				config.DirectHitMinRatio = ratio
+			}
 		case "semantic_board_match_direction_sim_threshold":
 			config.DirectionSimThreshold = parseSemanticBoardMatchFloat(setting.Value, config.DirectionSimThreshold)
 		case "semantic_board_match_direct_hit_score_factor":
 			config.DirectHitScoreFactor = parseSemanticBoardMatchFloat(setting.Value, config.DirectHitScoreFactor)
+		case "semantic_board_match_direction_relative_margin":
+			config.DirectionRelativeMargin = parseDirectionRelativeMargin(setting.Value, config.DirectionRelativeMargin)
 		}
 	}
 	s.cache.SetConfig(config)
@@ -740,6 +881,23 @@ func CosineSimilarity(a, b []float64) float64 {
 func parseSemanticBoardMatchFloat(value string, fallback float64) float64 {
 	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil || parsed < 0 || parsed > 1 {
+		return fallback
+	}
+	return parsed
+}
+
+// parseDirectionRelativeMargin keeps the shared parse semantics for invalid
+// input (non-numeric / >1 falls back to the default) but converges negatives
+// to 0: a negative margin means "gate off", same as an explicit 0.
+func parseDirectionRelativeMargin(value string, fallback float64) float64 {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	if parsed < 0 {
+		return 0
+	}
+	if parsed > 1 {
 		return fallback
 	}
 	return parsed

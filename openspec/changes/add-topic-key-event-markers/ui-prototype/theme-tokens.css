@@ -1,0 +1,225 @@
+/* Generated from front/app/assets/css/main.css; do not hand-pick a new palette. */
+:root {
+  /* Slate (蓝灰 — 替代旧 ink-*, 主文字/边框色系) */
+  --raw-slate-50:  #f0f4f8;
+  --raw-slate-100: #d9e2ec;
+  --raw-slate-200: #bcccdc;
+  --raw-slate-300: #9fb3c8;
+  --raw-slate-400: #829ab1;
+  --raw-slate-500: #627d98;
+  --raw-slate-600: #486581;
+  --raw-slate-700: #334e68;
+  --raw-slate-800: #243b53;
+  --raw-slate-900: #102a43;
+
+  /* Stone (暖灰 — 替代旧 paper-*, 背景色系) */
+  --raw-stone-50:  #faf7f2;
+  --raw-stone-100: #f5f0e6;
+  --raw-stone-200: #e8dfd1;
+  --raw-stone-300: #d4c9b8;
+  --raw-stone-400: #b8a994;
+  --raw-stone-500: #9a8a74;
+  --raw-stone-600: #7d6e5b;
+  --raw-stone-700: #5f5344;
+  --raw-stone-800: #43392f;
+  --raw-stone-900: #2a221b;
+
+  /* Red (红色 — 替代旧 print-red-*, 强调色系) */
+  --raw-red-50:  #fef2f2;
+  --raw-red-100: #fde6e6;
+  --raw-red-200: #f9c5c5;
+  --raw-red-300: #f29a9a;
+  --raw-red-400: #e87070;
+  --raw-red-500: #d94a4a;
+  --raw-red-600: #c12f2f;
+  --raw-red-700: #a41f1f;
+  --raw-red-800: #8a1818;
+  --raw-red-900: #721515;
+
+  /* Amber (琥珀 — dark 主题强调色) */
+  --raw-amber-400: #f0a24b;
+  --raw-amber-500: #d4883c;
+
+  /* Blue (蓝色 — 辅助色) */
+  --raw-blue-400: #63b3ed;
+  --raw-blue-500: #3f7cff;
+
+  /* Teal (青色 — 成功色系) */
+  --raw-teal-500: #2d8a7a;
+  --raw-teal-600: #3d8a4a;
+
+  /* Indigo (靛蓝 — 信息色系) */
+  --raw-indigo-500: #4a5d8a;
+
+  /* Semantic (语义色, 不随主题变) */
+  --raw-success: #3d8a4a;
+  --raw-warning: #c4883c;
+  --raw-error:   #c42f3c;
+  --raw-info:    #3d7a8a;
+}
+
+[data-theme="editorial"] {
+  --color-bg-base:     var(--raw-stone-50);
+  --color-bg-elevated: var(--raw-stone-100);
+  --color-bg-sunken:   var(--raw-stone-200);
+  --color-bg-overlay:  rgba(26, 26, 26, 0.4);
+  --color-bg-hover:    rgba(255, 255, 255, 0.85);
+  --color-bg-active:   rgba(255, 255, 255, 0.6);
+  --color-bg-elevated-strong: #e8dfd1; /* ink-100 深色 elevated */
+
+  --color-text-primary:   #1a1a1a;
+  --color-text-secondary: #5a5a5a;
+  --color-text-muted:     #8a8a8a;
+  --color-text-inverted:  #faf7f2;
+
+  --color-border-subtle: rgba(26, 26, 26, 0.08);
+  --color-border-medium: rgba(26, 26, 26, 0.15);
+  --color-border-strong: rgba(26, 26, 26, 0.25);
+  --color-border-soft:   #d0dde8; /* ink-100 浅蓝灰边框 */
+  --color-border-faint:  #e8eef4; /* ink-50 极浅边框 */
+
+  --color-accent:       var(--raw-red-500);
+  --color-accent-hover: var(--raw-red-600);
+  --color-accent-subtle: rgba(217, 74, 74, 0.08);
+
+  --color-secondary: var(--raw-amber-500);
+  --color-tertiary:  var(--raw-blue-400);
+
+  --shadow-subtle: 0 1px 3px rgba(26, 26, 26, 0.06);
+  --shadow-medium: 0 2px 8px rgba(26, 26, 26, 0.08);
+  --shadow-strong: 0 4px 16px rgba(26, 26, 26, 0.12);
+  --shadow-print:  0 1px 0 rgba(26, 26, 26, 0.1), 0 2px 4px rgba(26, 26, 26, 0.06);
+
+  --color-success: var(--raw-success);
+  --color-warning: var(--raw-warning);
+  --color-error:   var(--raw-error);
+  --color-info:    var(--raw-info);
+
+  /* Subtle (translucent) variants for soft backgrounds (health cards, outlier
+     highlights in the compose workbench). Mirror the accent-subtle convention. */
+  --color-success-subtle: rgba(61, 138, 74, 0.12);
+  --color-warning-subtle: rgba(196, 136, 60, 0.14);
+
+  --color-input-bg:    rgba(255, 255, 255, 0.6);
+  --color-input-border: rgba(26, 26, 26, 0.12);
+  --color-input-focus:  var(--raw-red-500);
+
+  --color-dialog-bg:      rgba(255, 255, 255, 0.95);
+  --color-dialog-header:  transparent;
+  --color-dialog-divider: rgba(26, 26, 26, 0.06);
+
+  /* Tag category colors */
+  --color-tag-event:          rgba(196, 136, 60, 0.85);
+  --color-tag-event-bg:       rgba(196, 136, 60, 0.12);
+  --color-tag-event-border:   rgba(196, 136, 60, 0.25);
+  --color-tag-person:         rgba(45, 138, 122, 0.85);
+  --color-tag-person-bg:      rgba(45, 138, 122, 0.12);
+  --color-tag-person-border:  rgba(45, 138, 122, 0.25);
+  --color-tag-keyword:        rgba(74, 93, 138, 0.85);
+  --color-tag-keyword-bg:     rgba(74, 93, 138, 0.12);
+  --color-tag-keyword-border: rgba(74, 93, 138, 0.25);
+
+  /* Match-quality tiers (direct_hit / hit_rate / max_sim / weighted).
+     Shared by TagsPage chips, daily-report explore panel and section tier badge.
+     Downgraded indicators halve opacity at the call site via color-mix. */
+  --color-match-direct-hit: #22c55e;
+  --color-match-hit-rate:   #3b82f6;
+  --color-match-max-sim:    #f59e0b;
+  --color-match-weighted:   #94a3b8;
+
+  /* Thread lifecycle status (BoardThreadBrowser) */
+  --color-thread-status-emerging:  #16a34a;
+  --color-thread-status-continuing: #2563eb;
+  --color-thread-status-split:      #ea580c;
+  --color-thread-status-merge:      #9333ea;
+  --color-thread-status-ending:     #64748b;
+
+  /* Interactive/link blue */
+  --color-link:            rgba(63, 124, 255, 0.9);
+  --color-link-hover:      rgba(63, 124, 255, 1);
+  --color-link-subtle:     rgba(63, 124, 255, 0.08);
+  --color-link-border:     rgba(63, 124, 255, 0.2);
+  --color-link-border-hover: rgba(63, 124, 255, 0.4);
+}
+
+[data-theme="dark"] {
+  --color-bg-base:     #080c12;
+  --color-bg-elevated: rgba(17, 27, 38, 0.98);
+  --color-bg-sunken:   #0e161d;
+  --color-bg-overlay:  rgba(8, 12, 18, 0.75);
+  --color-bg-hover:    rgba(255, 255, 255, 0.06);
+  --color-bg-active:   rgba(255, 255, 255, 0.08);
+  --color-bg-elevated-strong: rgba(255, 255, 255, 0.10); /* ink-100 深色 elevated */
+
+  --color-text-primary:   rgba(255, 255, 255, 0.9);
+  --color-text-secondary: rgba(255, 255, 255, 0.6);
+  --color-text-muted:     rgba(255, 255, 255, 0.35);
+  --color-text-inverted:  #1a1a1a;
+
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-medium: rgba(255, 255, 255, 0.10);
+  --color-border-strong: rgba(255, 255, 255, 0.18);
+  --color-border-soft:   rgba(255, 255, 255, 0.12); /* ink-100 */
+  --color-border-faint:  rgba(255, 255, 255, 0.08); /* ink-50 */
+
+  --color-accent:       rgba(240, 138, 75, 0.85);
+  --color-accent-hover: rgba(240, 138, 75, 1);
+  --color-accent-subtle: rgba(240, 138, 75, 0.08);
+
+  --color-secondary: rgba(99, 179, 237, 0.85);
+  --color-tertiary:  rgba(63, 124, 255, 0.85);
+
+  --shadow-subtle: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-medium: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-strong: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-print:  0 1px 0 rgba(0, 0, 0, 0.2), 0 2px 4px rgba(0, 0, 0, 0.3);
+
+  --color-success: var(--raw-success);
+  --color-warning: var(--raw-warning);
+  --color-error:   var(--raw-error);
+  --color-info:    var(--raw-info);
+
+  /* Subtle (translucent) variants for soft backgrounds (health cards, outlier
+     highlights in the compose workbench). Mirror the accent-subtle convention. */
+  --color-success-subtle: rgba(78, 166, 143, 0.14);
+  --color-warning-subtle: rgba(240, 162, 75, 0.14);
+
+  --color-input-bg:    rgba(255, 255, 255, 0.04);
+  --color-input-border: rgba(255, 255, 255, 0.10);
+  --color-input-focus:  rgba(240, 138, 75, 0.85);
+
+  --color-dialog-bg:      rgba(17, 27, 38, 0.98);
+  --color-dialog-header:  rgba(255, 255, 255, 0.03);
+  --color-dialog-divider: rgba(255, 255, 255, 0.06);
+
+  /* Tag category colors */
+  --color-tag-event:          rgba(245, 158, 11, 0.72);
+  --color-tag-event-bg:       rgba(245, 158, 11, 0.18);
+  --color-tag-event-border:   rgba(245, 158, 11, 0.32);
+  --color-tag-person:         rgba(16, 185, 129, 0.72);
+  --color-tag-person-bg:      rgba(16, 185, 129, 0.18);
+  --color-tag-person-border:  rgba(16, 185, 129, 0.32);
+  --color-tag-keyword:        rgba(99, 102, 241, 0.72);
+  --color-tag-keyword-bg:     rgba(99, 102, 241, 0.18);
+  --color-tag-keyword-border: rgba(99, 102, 241, 0.32);
+
+  /* Match-quality tiers — brightened for the deep dark ground. */
+  --color-match-direct-hit: #4ade80;
+  --color-match-hit-rate:   #60a5fa;
+  --color-match-max-sim:    #fbbf24;
+  --color-match-weighted:   #94a3b8;
+
+  /* Thread lifecycle status (BoardThreadBrowser) — brighter on dark bg */
+  --color-thread-status-emerging:  #34d399;
+  --color-thread-status-continuing: #60a5fa;
+  --color-thread-status-split:      #fb923c;
+  --color-thread-status-merge:      #c084fc;
+  --color-thread-status-ending:     #9ca3af;
+
+  /* Interactive/link blue */
+  --color-link:            rgba(99, 179, 237, 0.9);
+  --color-link-hover:      rgba(99, 179, 237, 1);
+  --color-link-subtle:     rgba(99, 179, 237, 0.1);
+  --color-link-border:     rgba(99, 179, 237, 0.25);
+  --color-link-border-hover: rgba(99, 179, 237, 0.5);
+}

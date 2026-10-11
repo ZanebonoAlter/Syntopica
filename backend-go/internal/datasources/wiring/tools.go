@@ -12,11 +12,11 @@ import (
 	"syntopica-backend/internal/datasources/sources"
 )
 
-// ResearchTools adapts the four source fetchers into agent-loop Tool shape
+// ResearchTools adapts the seven source fetchers into agent-loop Tool shape
 // (dataenrichment/service.Tool). Execute output is a JSON string; typed
 // errors serialize as {"error_code","message","detail"} so the agent loop
 // sees structured failures, matching the unified error taxonomy.
-func ResearchTools(eia EIAFetcher, jodi JODIFetcher, wdi WDIFetcher, comtrade ComtradeFetcher) []*service.Tool {
+func ResearchTools(eia EIAFetcher, jodi JODIFetcher, wdi WDIFetcher, comtrade ComtradeFetcher, yahoo YahooFetcher, fred FredFetcher, gdelt GdeltFetcher) []*service.Tool {
 	tools := []*service.Tool{
 		{
 			Name:        "eia_wpsr_table1",
@@ -142,21 +142,72 @@ func ResearchTools(eia EIAFetcher, jodi JODIFetcher, wdi WDIFetcher, comtrade Co
 				return marshalResult(res, err)
 			},
 		},
+		{
+			Name:        "yahoo_chart",
+			Description: "Yahoo Finance 日度价格行情（非官方接口，匿名）。symbol 封闭枚举 15 个：能源期货 CL=F/BZ=F/HO=F/RB=F/NG=F、贵金属 GC=F/SI=F、股指 ^GSPC/^IXIC/^DJI/^VIX、汇率 JPY=X/EUR=X/USDCNY=X、加密 BTC-USD；range=1mo/3mo/6mo/1y（缺省 1mo）。返回逐交易日 OHLC（计价货币 meta.currency 原样透传，不换算）；裂解价差/跨期价差等用 calculate difference/percent_change 对同 symbol 序列计算。非官方接口无 SLA：结构漂移/限流显式失败（SCHEMA_CHANGED/SOURCE_UNAVAILABLE）不模糊容错；null 收盘价如实缺失；不带成交量口径。",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"symbol": map[string]any{"type": "string", "enum": sources.YahooSymbolList(), "description": "核定枚举，如 CL=F（WTI 原油）"},
+					"range":  map[string]any{"type": "string", "enum": []string{"1mo", "3mo", "6mo", "1y"}, "description": "缺省 1mo"},
+				},
+				"required": []string{"symbol"},
+			},
+			Execute: func(ctx context.Context, args map[string]any) (string, error) {
+				res, err := yahoo.Fetch(ctx, str(args, "symbol"), str(args, "range"))
+				return marshalResult(res, err)
+			},
+		},
+		{
+			Name:        "fred_series",
+			Description: "FRED 宏观/价格序列（圣路易斯联储，需免费 key；未配置时目录标注不可用并返回配置缺失错误帧）。series_id 格式 ^[A-Z0-9_]{1,64}$（非枚举，格式即边界），如 DCOILWTICO/DCOILBRENTEU（WTI/Brent 日度现货，美元/桶）、SOFR、DGS10（10年期美债）、DTWEXBGS（美元指数）。返回观测序列 date+value（units/frequency/title 原样透传）；缺失观测（.）为 null 不转 0；窗口缺省最近 1 年，显式 start/end（YYYY-MM-DD）≤10 年。价格的正规军，与 yahoo_chart 互为备份。",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"series_id": map[string]any{"type": "string", "description": "如 DCOILWTICO"},
+					"start":     map[string]any{"type": "string", "description": "可选 YYYY-MM-DD"},
+					"end":       map[string]any{"type": "string", "description": "可选 YYYY-MM-DD"},
+				},
+				"required": []string{"series_id"},
+			},
+			Execute: func(ctx context.Context, args map[string]any) (string, error) {
+				res, err := fred.Fetch(ctx, str(args, "series_id"), str(args, "start"), str(args, "end"))
+				return marshalResult(res, err)
+			},
+		},
+		{
+			Name:        "gdelt_doc",
+			Description: "GDELT 全球新闻事件热度时间线（匿名，准实时）。query 关键词（≤120 字符）+ mode=timelinevol（声量热度）/timelinetone（情绪基调）+ timespan=7d/30d/90d。返回带时间戳的结构化热度/情绪点序列（7d 小时级、30d/90d 日级）——【非事实核查、非新闻检索】：只用于感知某话题报道热度与基调的走势，不得据此直接断言某事件发生与否，也不返回新闻正文。零结果如实空序列。",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":    map[string]any{"type": "string", "description": "关键词或组合，如 \"iran oil\""},
+					"mode":     map[string]any{"type": "string", "enum": []string{"timelinevol", "timelinetone"}, "description": "缺省 timelinevol"},
+					"timespan": map[string]any{"type": "string", "enum": []string{"7d", "30d", "90d"}, "description": "缺省 7d"},
+				},
+				"required": []string{"query"},
+			},
+			Execute: func(ctx context.Context, args map[string]any) (string, error) {
+				res, err := gdelt.Fetch(ctx, str(args, "query"), str(args, "mode"), str(args, "timespan"))
+				return marshalResult(res, err)
+			},
+		},
 	}
 	appendCatalogMetadata(tools)
 	return tools
 }
 
 // toolCatalogCodes aligns the fixed ResearchTools construction order
-// (eia/jodi/wdi/comtrade, pinned by TestResearchToolsToolSurfaceUnchanged) to
-// catalog codes, so descriptions are enriched from datasources.Definition —
-// the single metadata source, never a hand-copied second set.
-var toolCatalogCodes = [...]string{"eia_wpsr", "jodi_oil_primary", "wb_wdi", "un_comtrade"}
+// (eia/jodi/wdi/comtrade/yahoo/fred/gdelt, pinned by
+// TestResearchToolsToolSurfaceUnchanged) to catalog codes, so descriptions are
+// enriched from datasources.Definition — the single metadata source, never a
+// hand-copied second set.
+var toolCatalogCodes = [...]string{"eia_wpsr", "jodi_oil_primary", "wb_wdi", "un_comtrade", "yahoo_finance", "fred", "gdelt"}
 
-// researchHardLimitNote states what none of the four sources can answer
-// (design §10.1): the first real signal report burned its whole budget
-// re-trying diesel/crack-spread/freight questions no source covers.
-const researchHardLimitNote = "\n【硬限制】四个数据源均无价格序列、裂解价差、运价、政策文本类数据；超出覆盖的研究问题不要反复换参重试，直接如实声明无覆盖。"
+// researchHardLimitNote states the ensemble capability boundaries
+// (add-fast-frequency-datasources: 价格/事件类快频源已接入，旧「均无价格」表
+// 述废止，改为按类如实划界)。
+const researchHardLimitNote = "\n【硬限制】价格/行情类数据只有 yahoo_chart 与 fred_series（日度序列，可算价差/涨跌幅）；事件层只有 gdelt_doc 的结构化热度/情绪走势（非事实核查、无新闻正文）；量类源（eia_wpsr_table1/jodi_oil_primary/wb_wdi/un_comtrade_trade）不含价格；EIA 仅美国；任何源均无运价与政策文本原文。超出覆盖的研究问题不要反复换参重试，直接如实声明无覆盖。"
 
 // comtradeMeasuredCoverageNote declares the subscription-tier reality measured
 // 2026-09-23 (CN returns rows; US/JP count=0 for any period): count=0 means
@@ -196,6 +247,9 @@ var researchCatalogCodeByTool = map[string]string{
 	"jodi_oil_primary":  "jodi_oil_primary",
 	"wb_wdi":            "wb_wdi",
 	"un_comtrade_trade": "un_comtrade",
+	"yahoo_chart":       "yahoo_finance",
+	"fred_series":       "fred",
+	"gdelt_doc":         "gdelt",
 }
 
 // UnavailableNoticeProbe returns the LIVE availability probe injected into the
@@ -243,6 +297,15 @@ type (
 	}
 	ComtradeFetcher interface {
 		Fetch(ctx context.Context, p sources.ComtradeParams) (map[string]any, error)
+	}
+	YahooFetcher interface {
+		Fetch(ctx context.Context, symbol, rng string) (map[string]any, error)
+	}
+	FredFetcher interface {
+		Fetch(ctx context.Context, seriesID, start, end string) (map[string]any, error)
+	}
+	GdeltFetcher interface {
+		Fetch(ctx context.Context, query, mode, timespan string) (map[string]any, error)
 	}
 )
 

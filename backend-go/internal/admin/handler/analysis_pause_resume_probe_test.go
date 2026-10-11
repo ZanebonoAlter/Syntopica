@@ -20,46 +20,48 @@ import (
 )
 
 // setupAnalysisPauseResumeTestDB builds an in-memory SQLite DB with the AI
-// route/provider tables so RunStartupProbe (triggered on resume) can read the
-// seeded routes. Mirrors the aihealth package's test setup.
+// vendor/model/route tables so RunStartupProbe (triggered on resume) can read
+// the seeded routes. Mirrors the aihealth package's test setup.
 func setupAnalysisPauseResumeTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
-		&models.AISettings{}, &models.AIProvider{}, &models.AIRoute{},
-		&models.AIRouteProvider{}, &models.AICallLog{},
+		&models.AISettings{}, &models.AIVendor{}, &models.AIModel{}, &models.AIRoute{},
+		&models.AIRouteModel{}, &models.AICallLog{},
 	))
 	database.DB = db
 	return db
 }
 
-func seedResumeProvider(t *testing.T, db *gorm.DB, name, kind string) models.AIProvider {
+// seedResumeVendorModel seeds one vendor plus one model under it (the
+// vendor-chain replacement of the old per-provider seeding).
+func seedResumeVendorModel(t *testing.T, db *gorm.DB, vendorName, modelName, kind string) models.AIModel {
 	t.Helper()
-	p := models.AIProvider{
-		Name:         name,
-		ProviderType: airouter.ProviderTypeOpenAICompatible,
-		BaseURL:      "http://127.0.0.1:8081/v1",
-		Model:        name + "-model",
-		APIKey:       "k",
-		Enabled:      true,
-		ModelKind:    kind,
+	v := models.AIVendor{
+		Name: vendorName, ProviderType: airouter.ProviderTypeOpenAICompatible,
+		BaseURL: "http://127.0.0.1:8081/v1", Enabled: true,
 	}
-	require.NoError(t, db.Create(&p).Error)
-	return p
+	require.NoError(t, db.Create(&v).Error)
+	m := models.AIModel{
+		VendorID: v.ID, Name: modelName, ModelKind: kind,
+		Enabled: true, Status: airouter.ModelStatusOK,
+	}
+	require.NoError(t, db.Create(&m).Error)
+	return m
 }
 
 func seedResumeRoute(t *testing.T, db *gorm.DB, capability string) models.AIRoute {
 	t.Helper()
-	r := models.AIRoute{Name: "default", Capability: capability, Enabled: true, Strategy: "ordered_failover"}
+	r := models.AIRoute{Name: "default", Capability: capability, Enabled: true}
 	require.NoError(t, db.Create(&r).Error)
 	return r
 }
 
-func seedResumeBinding(t *testing.T, db *gorm.DB, routeID, providerID uint) {
+func seedResumeBinding(t *testing.T, db *gorm.DB, routeID, modelID uint) {
 	t.Helper()
-	require.NoError(t, db.Create(&models.AIRouteProvider{
-		RouteID: routeID, ProviderID: providerID, Priority: 1, Enabled: true,
+	require.NoError(t, db.Create(&models.AIRouteModel{
+		RouteID: routeID, ModelID: modelID, Priority: 1, Enabled: true,
 	}).Error)
 }
 
@@ -77,21 +79,23 @@ func newResumeGinContext(t *testing.T, body string) (*gin.Context, *httptest.Res
 // (paused:false) asynchronously re-runs the startup probe so the health gate
 // can self-heal (e.g. after a transient startup-probe failure). The probe is
 // driven through the fake seam; the snapshot must flip to healthy=true.
+// The fixture is the core pair (embedding + topic_tagging): those are the two
+// capabilities the health verdict hard-requires.
 func TestSetAnalysisPause_Resume_TriggersHealthReprobe(t *testing.T) {
 	db := setupAnalysisPauseResumeTestDB(t)
-	emb := seedResumeProvider(t, db, "emb-main", "embedding")
-	sum := seedResumeProvider(t, db, "llm-main", "llm")
+	emb := seedResumeVendorModel(t, db, "emb-main", "emb-main-model", "embedding")
+	tag := seedResumeVendorModel(t, db, "tag-main", "tag-main-model", "llm")
 	er := seedResumeRoute(t, db, string(airouter.CapabilityEmbedding))
-	sr := seedResumeRoute(t, db, string(airouter.CapabilitySummary))
+	tr := seedResumeRoute(t, db, string(airouter.CapabilityTopicTagging))
 	seedResumeBinding(t, db, er.ID, emb.ID)
-	seedResumeBinding(t, db, sr.ID, sum.ID)
+	seedResumeBinding(t, db, tr.ID, tag.ID)
 
 	// Start from the not-ready (startup-race) state; restore on cleanup.
 	aihealth.SetSnapshotForTest(aihealth.Snapshot{})
 	t.Cleanup(func() { aihealth.SetSnapshotForTest(aihealth.Snapshot{}) })
 
-	// Fake probe: both primary providers reachable -> probe marks healthy.
-	restoreProbe := aihealth.SetProbeFnForTest(func(context.Context, models.AIProvider) (bool, string) {
+	// Fake probe: every primary vendor reachable -> probe marks healthy.
+	restoreProbe := aihealth.SetProbeFnForTest(func(context.Context, models.AIVendor) (bool, string) {
 		return true, ""
 	})
 	t.Cleanup(restoreProbe)
@@ -118,7 +122,7 @@ func TestSetAnalysisPause_Pause_DoesNotTriggerReprobe(t *testing.T) {
 	t.Cleanup(func() { aihealth.SetSnapshotForTest(aihealth.Snapshot{}) })
 
 	probeCalled := false
-	restoreProbe := aihealth.SetProbeFnForTest(func(context.Context, models.AIProvider) (bool, string) {
+	restoreProbe := aihealth.SetProbeFnForTest(func(context.Context, models.AIVendor) (bool, string) {
 		probeCalled = true
 		return true, ""
 	})

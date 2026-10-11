@@ -41,6 +41,10 @@ export interface DiscoveryRecommendation {
   parameters: string
   /** 参数可选值字典（按 param_name 分组，只来自 manual/scraped 真实数据）；无字典数据为空对象 */
   paramOptions: Record<string, RouteParamOption[]>
+  /** 该来源是否已有订阅（RSSHub 路由级 / 原生 RSS 精确地址）；只读提示，不阻止再订其它参数 */
+  subscribed: boolean
+  /** 已有订阅地址（供 title 对照）；无为空数组 */
+  subscribedUrls: string[]
   createdAt: string
 }
 
@@ -110,8 +114,10 @@ export interface DiscoveryCandidate {
   address: string
   /** 参与推荐开关（与订阅状态正交：关闭不取消订阅） */
   recommendationEnabled: boolean
-  /** 是否已订阅（独立字段，与参与推荐分列展示） */
+  /** 是否已订阅（独立字段，与参与推荐分列展示；RSSHub 按路由级 / 原生按精确地址） */
   subscribed: boolean
+  /** 已有订阅地址（RSSHub = 同路由命中集合 / 原生 = 精确命中）；无为空数组 */
+  subscribedUrls: string[]
   /** 可用性状态 */
   availability: CandidateAvailability
   /** 最近检查时间；null = 无检查记录（明示未验证，不伪造时间） */
@@ -218,6 +224,8 @@ export interface CandidateDetail {
   /** rss 条目的规范化 feed 地址；rsshub 为空 */
   feedUrl: string
   subscribed: boolean
+  /** 已有订阅地址（rsshub = 同路由命中集合 / rss = 精确命中）；无为空数组 */
+  subscribedUrls: string[]
   /** rsshub 条目的上游路由原始资料；rss 为 null */
   route: CandidateRouteInfo | null
 }
@@ -278,6 +286,10 @@ export interface DiscoveryRunItem {
   recallOrigins: string[]
   /** 可用性（unknown = 未验证：明示不伪造，不冒称可用/失效） */
   availability: CandidateAvailability
+  /** 该来源是否已有订阅（RSSHub 路由级 / 原生精确地址）；只读提示，不阻止再订其它参数 */
+  subscribed: boolean
+  /** 已有订阅地址（供对照）；无为空数组 */
+  subscribedUrls: string[]
 }
 
 /** GET /api/discovery/runs/:id：手动查询的独立结果，不覆盖个性化列表 */

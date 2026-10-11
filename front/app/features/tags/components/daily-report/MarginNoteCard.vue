@@ -150,6 +150,15 @@ defineExpose({
             {{ webLabel(web) }}
           </a>
         </div>
+        <!-- 联网降级标记（add-searxng-health-indicator）：仅 empty（链路启用但无结果）
+             时渲染；ok/disabled/旧行 NULL 不渲染（用户主动关闭不打扰，历史数据不追溯）。
+             纯展示：不影响回答内容、引用校验与静默降级行为。 -->
+        <span
+          v-if="qa.web_search_status === 'empty'"
+          class="mn-qa__search-empty"
+          data-testid="mn-web-search-empty"
+          title="本次问答联网搜索未获得结果，可在设置-数据源与网络中测试连接"
+        >联网搜索无结果</span>
         <!-- D7 口径：本地引用与网络来源均空才标纯模型知识。 -->
         <p
           v-if="!qa.cited_article_ids.length && !qa.cited_web_sources?.length"
@@ -417,6 +426,18 @@ defineExpose({
   color: var(--color-text-muted);
   font-size: 0.64rem;
   font-style: italic;
+}
+
+/* 联网降级标记：与 mn-web-chip 中性色系同族（弱化展示，无交互），仅 title 提示。 */
+.mn-qa__search-empty {
+  display: inline-block;
+  margin-top: 0.35rem;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-muted);
+  font-size: 0.62rem;
+  cursor: help;
 }
 
 .mn-qa__terms {

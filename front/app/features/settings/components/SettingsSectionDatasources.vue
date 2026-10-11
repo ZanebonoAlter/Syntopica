@@ -7,12 +7,17 @@ const {
   sources, catalogLoading, catalogError, loadCatalog,
   comtradeEnabled, comtradeApiKey, comtradeApiKeyConfigured, comtradeApiKeyHint,
   comtradeApiKeyVisible, comtradeLoading, comtradeError, comtradeSuccess,
-  loadComtrade, saveComtrade, probing, probeResults, runProbe,
+  loadComtrade, saveComtrade,
+  fredEnabled, fredApiKey, fredApiKeyConfigured, fredApiKeyHint,
+  fredApiKeyVisible, fredLoading, fredError, fredSuccess,
+  loadFred, saveFred,
+  probing, probeResults, runProbe,
 } = useDatasources()
 
 onMounted(() => {
   loadCatalog()
   loadComtrade()
+  loadFred()
 })
 
 const freqLabel: Record<string, string> = {
@@ -20,6 +25,7 @@ const freqLabel: Record<string, string> = {
   monthly: '月度',
   'monthly+annual': '月度+年度',
   annual: '年度',
+  daily: '日度',
 }
 </script>
 
@@ -29,21 +35,21 @@ const freqLabel: Record<string, string> = {
       <Icon icon="mdi:loading" width="48" height="48" class="animate-spin" style="color: var(--color-link)" />
     </div>
     <template v-else>
-      <div v-if="comtradeSuccess" class="p-3 rounded-lg text-sm" style="background: var(--color-success-bg, rgba(61, 138, 74, 0.1)); border: 1px solid var(--color-success-border, rgba(61, 138, 74, 0.25)); color: var(--color-success)">
-        {{ comtradeSuccess }}
+      <div v-if="comtradeSuccess || fredSuccess" class="p-3 rounded-lg text-sm" style="background: var(--color-success-bg, rgba(61, 138, 74, 0.1)); border: 1px solid var(--color-success-border, rgba(61, 138, 74, 0.25)); color: var(--color-success)">
+        {{ comtradeSuccess || fredSuccess }}
       </div>
-      <div v-if="comtradeError || catalogError" class="p-3 rounded-lg text-sm" style="background: var(--color-error-bg, rgba(196, 47, 60, 0.1)); border: 1px solid var(--color-error-border, rgba(196, 47, 60, 0.25)); color: var(--color-error)">
-        {{ comtradeError || catalogError }}
+      <div v-if="comtradeError || fredError || catalogError" class="p-3 rounded-lg text-sm" style="background: var(--color-error-bg, rgba(196, 47, 60, 0.1)); border: 1px solid var(--color-error-border, rgba(196, 47, 60, 0.25)); color: var(--color-error)">
+        {{ comtradeError || fredError || catalogError }}
       </div>
 
       <div>
         <h3 class="font-semibold" style="color: var(--color-text-primary)">研究数据源</h3>
         <p class="text-sm mt-0.5" style="color: var(--color-text-secondary)">
-          官方数据取数源（原油库存/贸易/宏观），供研究分析使用；EIA / JODI / WDI 匿名可用
+          官方数据取数源（量：库存/贸易/宏观；价：日度行情；事件：新闻热度），供研究分析使用；EIA / JODI / WDI / Yahoo / GDELT 匿名可用
         </p>
       </div>
 
-      <!-- 四源状态列表 -->
+      <!-- 七源状态列表（数据驱动：目录扩容自动多卡） -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div
           v-for="s in sources" :key="s.code"
@@ -131,6 +137,55 @@ const freqLabel: Record<string, string> = {
             @click="saveComtrade"
           >
             <span v-if="comtradeLoading" class="flex items-center gap-2">
+              <Icon icon="mdi:loading" width="16" class="animate-spin" /> 保存中...
+            </span>
+            <span v-else>保存设置</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- FRED key 管理（add-fast-frequency-datasources：同款模式） -->
+      <div class="p-4 rounded-lg border space-y-3" style="border-color: var(--color-border)">
+        <div class="flex items-center justify-between">
+          <div>
+            <h4 class="text-sm font-medium" style="color: var(--color-text-primary)">FRED API Key</h4>
+            <p class="text-xs mt-0.5" style="color: var(--color-text-secondary)">
+              免费 key；在 stlouisfed.org 注册获取（1 分钟）；界面配置即时生效，环境变量 FRED_API_KEY 作兜底
+            </p>
+          </div>
+          <AppToggle v-model="fredEnabled" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1" style="color: var(--color-text-secondary)">API Key</label>
+          <div class="relative">
+            <input
+              :type="fredApiKeyVisible ? 'text' : 'password'"
+              v-model="fredApiKey"
+              class="w-full px-3 py-2 rounded-lg text-sm pr-10 input"
+              :placeholder="fredApiKeyConfigured ? `已配置（末 4 位 ${fredApiKeyHint}），留空保持不变` : 'fred api key'"
+            >
+            <button
+              type="button"
+              class="absolute right-2 top-1/2 -translate-y-1/2 hover:opacity-80"
+              style="color: var(--color-text-muted)"
+              @click="fredApiKeyVisible = !fredApiKeyVisible"
+            >
+              <Icon :icon="fredApiKeyVisible ? 'mdi:eye-off' : 'mdi:eye'" width="18" />
+            </button>
+          </div>
+          <p v-if="fredApiKeyConfigured" class="text-xs mt-1" style="color: var(--color-text-muted)">
+            当前已配置 Key，留空保存不修改；输入新值则覆盖
+          </p>
+        </div>
+        <div class="flex justify-end">
+          <button
+            type="button"
+            class="px-4 py-2 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            style="background: var(--color-accent)"
+            :disabled="fredLoading"
+            @click="saveFred"
+          >
+            <span v-if="fredLoading" class="flex items-center gap-2">
               <Icon icon="mdi:loading" width="16" class="animate-spin" /> 保存中...
             </span>
             <span v-else>保存设置</span>

@@ -61,6 +61,9 @@
 | 约束名 | 表 | 列 |
 | -------- | ------ | ------ |
 | `uq_section_relations_pair` | daily_report_section_relations | UNIQUE `(from_section_id, to_section_id, relation_type)` |
+| `idx_ai_vendors_name` | ai_vendors | UNIQUE `(name)`（`20261005_0001`；vendor.name 全局唯一） |
+| `idx_ai_models_vendor_name` | ai_models | UNIQUE `(vendor_id, name)`（`20261005_0001`；模型名唯一性收敛到 vendor 内） |
+| `idx_air_route_model_link` | ai_route_models | UNIQUE `(route_id, model_id)`（`20261005_0001`） |
 | `uq_board_upgrade_suggestions_hash` | board_upgrade_suggestions | 部分唯一 `(suggestion_hash) WHERE status='pending'` |
 | `uq_articles_feed_link` | articles | 部分唯一 `(feed_id, link) WHERE link <> ''`（迁移 `20260917_0001`，入库判重键；空 link 行豁免） |
 
@@ -82,7 +85,7 @@
 | `fk_feeds_articles` | `articles.feed_id → feeds(id)` | CASCADE | 删 feed 行 → 其全部文章行消失（日报 `related_article_ids` 悬空的根因之一） |
 | `fk_categories_feeds` | `feeds.category_id → categories(id)` | CASCADE | 删 category 行 → 其下全部 feed 连文章一起消失（**第三条删行路径**） |
 | `fk_article_topic_tags_article` / `fk_tag_jobs_article` / `fk_firecrawl_jobs_article` | 各自 `article_id → articles(id)` | CASCADE | 文章消失时依赖行随之消失（无需手工清理） |
-| `fk_reading_behaviors_article` / `fk_reading_behaviors_feed` / `fk_user_preferences_feed` / `fk_user_preferences_category` | 各自 → `articles` / `feeds` / `categories` | **NO ACTION** | 被引用行有这些子行时删除会 **FK 报错**（删 feed 前必须先清 `reading_behaviors`，删 category 同理） |
+| `fk_reading_behaviors_article` / `fk_reading_behaviors_feed` / `fk_user_preferences_feed` / `fk_user_preferences_category` | 各自 → `articles` / `feeds` / `categories` | **NO ACTION** | 被引用行有这些子行时删除会 **FK 报错**——删除路径据此必须在**同一事务内先清引用行**：`DeleteFeedCascade` 清 `reading_behaviors`（按 `feed_id`）与 `user_preferences`（按 `feed_id`）；`DeleteCategoryCascade` 清 `reading_behaviors`（按分类下 feed 集合）与 `user_preferences`（feed 集合或 `category_id`），均在删文章之前（补全于 2026-09-28 fix-feed-delete-and-sequence-drift；此前 `user_preferences` 无人清理，导致删源/删分类必然失败）。`user_preferences` 已废弃但可能残留（见 B-2），其清理按表存在性探测容错（表不在则跳过不报错） |
 
 **推论（约束）**：任何删除 `articles` 行的路径都必须同事务维护按 ID 引用文章的 jsonb 数组（`daily_report_threads.related_article_ids`，维护器 `internal/platform/articlerefs`）。删行路径全量清单（2026-09-17 实测）：去重归并迁移、`DeleteFeedCascade`（删 feed）、`DeleteCategoryCascade`（删分类，两级到文章）、以及仓库删行原语。**删除实现必须显式删行、不依赖上述 FK 是否存在**（存量 FK 不进新建库，靠级联会得到环境相关的行为）；被删文章的依赖行（`article_topic_tags`/`tag_jobs`/`firecrawl_jobs`）由删除路径显式清理，孤儿 `topic_tags` 仍交 `aux_label_cleanup` 回收。语义见 `flow/daily-report.md` 约束 21。
 
@@ -159,15 +162,16 @@
 | --- | --- | --- | --- | --- |
 | `reading_behaviors` | `article_id` | `articles` | `id` | 无 OnDelete |
 | `reading_behaviors` | `feed_id` | `feeds` | `id` | 无 OnDelete |
-| `user_preferences` | `feed_id` | `feeds` | `id` | 无 OnDelete |
-| `user_preferences` | `category_id` | `categories` | `id` | 无 OnDelete |
+| `user_preferences` | `feed_id` | `feeds` | `id` | **表已废弃**（无 model；DROP 迁移受 `MIGRATIONS_ALLOW_DESTRUCTIVE` 守卫，未开启开关的环境仍残留）——删除路径按存在性探测容错，不依赖它消失 |
+| `user_preferences` | `category_id` | `categories` | `id` | 同上 |
 | `embedding_queues` | `tag_id` | `topic_tags` | `id` | 历史 DB FK 已被迁移 DROP |
 | `merge_reembedding_queues` | `source_tag_id` | `topic_tags` | `id` | 历史 DB FK 已被迁移 DROP |
 | `merge_reembedding_queues` | `target_tag_id` | `topic_tags` | `id` | 历史 DB FK 已被迁移 DROP |
 | `topic_tag_analyses` | `topic_tag_id` | `topic_tags` | `id` | 无 OnDelete |
 | `topic_analysis_cursors` | `topic_tag_id` | `topic_tags` | `id` | 无 OnDelete |
-| `ai_route_providers` | `route_id` | `ai_routes` | `id` | 无 OnDelete |
-| `ai_route_providers` | `provider_id` | `ai_providers` | `id` | 无 OnDelete |
+| `ai_models` | `vendor_id` | `ai_vendors` | `id` | 复合唯一 `(vendor_id, name)`；无 OnDelete，级联删除走应用层单事务（ai-provider-model-overhaul `20261005_0001`） |
+| `ai_route_models` | `route_id` | `ai_routes` | `id` | 复合唯一 `(route_id, model_id)`；无 OnDelete |
+| `ai_route_models` | `model_id` | `ai_models` | `id` | 复合唯一同上；无 OnDelete（应用层级联） |
 | `board_daily_reports` | `semantic_board_id` | `semantic_labels` | `id` | 无 OnDelete |
 | `board_daily_reports` | `prev_report_id` | `board_daily_reports` | `id` | 自引用，可空，无 OnDelete |
 | `daily_report_sections` | `report_id` | `board_daily_reports` | `id` | 无 OnDelete（`BoardDailyReport.Sections`） |
@@ -210,7 +214,7 @@
 ### 带 id 的桥接/明细表
 
 - **`article_topic_tags`**：连接 `articles` ↔ `topic_tags`，桥接表 + 关联评分，**有 `id`**，两端 `OnDelete:CASCADE`。
-- **`ai_route_providers`**：连接 `ai_routes` ↔ `ai_providers`，附带 `priority`，**有 `id`**，无 OnDelete。
+- **`ai_route_models`**：连接 `ai_routes` ↔ `ai_models`（ai-provider-model-overhaul，取代停写的 `ai_route_providers`），附带 `priority`（顺位 1..n）与 `thinking_level`（场景覆盖档，NULL=继承），**有 `id`**，无 OnDelete。
 - **`daily_report_section_relations`**：连接 `daily_report_sections` ↔ `daily_report_sections`（跨日分区多对多），**有 `id`**，区分 `relation_type`（similarity / identity），唯一约束 `(from_section_id, to_section_id, relation_type)`，无 OnDelete。
 
 ### 自引用（Self-Referential）

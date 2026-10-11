@@ -55,7 +55,7 @@ func TestDailyReportStepSpans_NamedAndParentedUnderGenerate(t *testing.T) {
 	rootID := rootSpan.SpanContext().SpanID()
 
 	// dedup — empty input early-returns, span still recorded.
-	DeduplicateTags(ctx, nil, nil)
+	DeduplicateTags(ctx, nil, nil, nil)
 
 	// cluster_tags — <=2 tags skips the LLM, span still recorded.
 	_, _ = ClusterTags(ctx, []repository.TagInput{{ID: 1, Label: "solo"}}, nil, nil)

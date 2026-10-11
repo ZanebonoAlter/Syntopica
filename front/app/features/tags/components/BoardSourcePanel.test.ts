@@ -245,8 +245,11 @@ vi.mock('~/components/ui/ThemeToggle.vue', () => ({
 vi.mock('@iconify/vue', () => ({
   Icon: { name: 'Icon', template: '<span />' },
 }))
-vi.mock('./BoardCompositionPanel.vue', () => ({
-  default: { name: 'BoardCompositionPanel', template: '<div data-testid="eager-panel-composition" />' },
+vi.mock('./BoardHealthPanel.vue', () => ({
+  default: { name: 'BoardHealthPanel', template: '<div data-testid="eager-panel-composition" />' },
+}))
+vi.mock('./lane-dynamics/LaneDynamicsPanel.vue', () => ({
+  default: { name: 'LaneDynamicsPanel', template: '<div data-testid="eager-panel-lane-dynamics" />' },
 }))
 // 注意：不能 vi.mock('./BoardSourcePanel.vue') —— 同一模块 id 会把组件层测试的被测组件也替换成 stub；
 // TagsPage 装配层直接渲染真实面板（其 API 依赖已在上方 mock）。

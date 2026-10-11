@@ -2,6 +2,10 @@ package airouter
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -9,54 +13,101 @@ import (
 	"syntopica-backend/internal/models"
 )
 
-// fakeChatReply configures fakeProviderClient.Chat for one provider name.
+// fakeChatReply configures fakeProviderClient.Chat for one vendor name.
 type fakeChatReply struct {
 	content string
 	usage   *TokenUsage
-	err     error
+	// finishReason feeds ChatResponse.FinishReason (choices[0].finish_reason
+	// on the wire) so empty/parse-error failure rows can assert attribution.
+	finishReason string
+	err          error
 	// nilResponse makes Chat return (nil, nil): transport success with no
 	// usable payload — the shape that must still trigger ordered fallback.
 	nilResponse bool
+	// attempts 透传模拟 client 内降级链产物（Router 须逐失败档写审计行）。
+	attempts []StructuredAttempt
 	// embedUsage feeds the fake Embed result so cache/log tests can exercise
 	// usage-bearing embedding calls.
 	embedUsage *TokenUsage
 }
 
+// fakeChatCall records one Chat invocation's binding identity + effective
+// thinking level, so thinking-level resolution can be asserted end-to-end.
+type fakeChatCall struct {
+	vendorName string
+	modelName  string
+	effLevel   string
+}
+
 type fakeProviderClient struct {
 	responses map[string]fakeChatReply
+	chatCalls []fakeChatCall
 }
 
-func (f *fakeProviderClient) Chat(_ context.Context, provider models.AIProvider, _ ChatRequest) (*ChatResponse, error) {
-	res := f.responses[provider.Name]
+func (f *fakeProviderClient) Chat(_ context.Context, vendor models.AIVendor, model models.AIModel, effLevel string, _ ChatRequest) (*ChatResponse, []StructuredAttempt, error) {
+	f.chatCalls = append(f.chatCalls, fakeChatCall{vendorName: vendor.Name, modelName: model.Name, effLevel: effLevel})
+	res := f.responses[vendor.Name]
 	if res.err != nil {
-		return nil, res.err
+		return nil, res.attempts, res.err
 	}
 	if res.nilResponse {
-		return nil, nil
+		return nil, res.attempts, nil
 	}
-	return &ChatResponse{Content: res.content, Usage: res.usage}, nil
+	return &ChatResponse{Content: res.content, Usage: res.usage, FinishReason: res.finishReason}, res.attempts, nil
 }
 
-func (f *fakeProviderClient) Embed(_ context.Context, provider models.AIProvider, _ EmbeddingRequest) (*EmbeddingResult, error) {
-	res := f.responses[provider.Name]
+func (f *fakeProviderClient) Embed(_ context.Context, vendor models.AIVendor, model models.AIModel, _ EmbeddingRequest) (*EmbeddingResult, error) {
+	res := f.responses[vendor.Name]
 	if res.err != nil {
 		return nil, res.err
 	}
-	return &EmbeddingResult{Embeddings: [][]float64{{0.1, 0.2}}, Model: "test", Dimensions: 2, Provider: provider.Name, Usage: res.embedUsage}, nil
+	return &EmbeddingResult{Embeddings: [][]float64{{0.1, 0.2}}, Model: model.Name, Dimensions: 2, Provider: vendor.Name, Usage: res.embedUsage}, nil
+}
+
+// chatFixture 组装一份 vendor+model 绑定夹具（Router 数据面已换 LoadRouteWithModels）。
+type chatFixture struct {
+	vendor models.AIVendor
+	model  models.AIModel
+}
+
+// seedChatBinding 建 vendor+model 并把绑定追加到 default summary 路由（路由不存在则建）。
+func seedChatBinding(t *testing.T, db *gorm.DB, route *models.AIRoute, vendorName, modelName string,
+	mutateVendor func(*models.AIVendor), mutateModel func(*models.AIModel), thinkingLevel string, priority int) chatFixture {
+	t.Helper()
+	vendor := models.AIVendor{Name: vendorName, ProviderType: ProviderTypeOpenAICompatible,
+		BaseURL: "https://" + vendorName + ".example/v1", APIKey: "k", Enabled: true,
+		ThinkingDialect: "none", StructuredOutput: StructOutputJSONSchema}
+	if mutateVendor != nil {
+		mutateVendor(&vendor)
+	}
+	require.NoError(t, db.Create(&vendor).Error)
+
+	model := models.AIModel{VendorID: vendor.ID, Name: modelName, ModelKind: ModelKindLLM,
+		Enabled: true, Status: ModelStatusOK}
+	if mutateModel != nil {
+		mutateModel(&model)
+	}
+	require.NoError(t, db.Create(&model).Error)
+
+	require.NoError(t, db.Create(&models.AIRouteModel{RouteID: route.ID, ModelID: model.ID,
+		Priority: priority, Enabled: true, ThinkingLevel: levelPtr(thinkingLevel)}).Error)
+	return chatFixture{vendor: vendor, model: model}
+}
+
+// seedDefaultSummaryRoute 建 default summary 路由（幂等：调用方每测试建一次）。
+func seedDefaultSummaryRoute(t *testing.T, db *gorm.DB) models.AIRoute {
+	t.Helper()
+	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true}
+	require.NoError(t, db.Create(&route).Error)
+	return route
 }
 
 func TestRouterFallsBackOnRetryableProviderError(t *testing.T) {
 	db := setupAIRouterTestDB(t)
 	store := NewStore(db)
-
-	p1 := models.AIProvider{Name: "primary", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://a.example/v1", APIKey: "a", Model: "m1", Enabled: true}
-	p2 := models.AIProvider{Name: "backup", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://b.example/v1", APIKey: "b", Model: "m2", Enabled: true}
-	require.NoError(t, db.Create(&p1).Error)
-	require.NoError(t, db.Create(&p2).Error)
-	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	require.NoError(t, db.Create(&route).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p1.ID, Priority: 1, Enabled: true}).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p2.ID, Priority: 2, Enabled: true}).Error)
+	route := seedDefaultSummaryRoute(t, db)
+	seedChatBinding(t, db, &route, "primary", "m1", nil, nil, "", 1)
+	backup := seedChatBinding(t, db, &route, "backup", "m2", nil, nil, "", 2)
 
 	router := NewRouterWithStore(store)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
@@ -74,20 +125,18 @@ func TestRouterFallsBackOnRetryableProviderError(t *testing.T) {
 	require.Equal(t, "ok from backup", result.Content)
 	require.True(t, result.UsedFallback)
 	require.Equal(t, 2, result.AttemptCount)
+	// vendor/model 新来源语义：ProviderName/ProviderID 承载 vendor，ModelName 承载模型。
+	require.Equal(t, "backup", result.ProviderName)
+	require.Equal(t, backup.vendor.ID, result.ProviderID)
+	require.Equal(t, backup.model.Name, result.ModelName)
 }
 
 func TestRouterFallsBackOnTerminalError(t *testing.T) {
 	db := setupAIRouterTestDB(t)
 	store := NewStore(db)
-
-	p1 := models.AIProvider{Name: "primary-terminal", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://a.example/v1", APIKey: "a", Model: "m1", Enabled: true}
-	p2 := models.AIProvider{Name: "backup", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://b.example/v1", APIKey: "b", Model: "m2", Enabled: true}
-	require.NoError(t, db.Create(&p1).Error)
-	require.NoError(t, db.Create(&p2).Error)
-	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	require.NoError(t, db.Create(&route).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p1.ID, Priority: 1, Enabled: true}).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p2.ID, Priority: 2, Enabled: true}).Error)
+	route := seedDefaultSummaryRoute(t, db)
+	seedChatBinding(t, db, &route, "primary-terminal", "m1", nil, nil, "", 1)
+	seedChatBinding(t, db, &route, "backup", "m2", nil, nil, "", 2)
 
 	router := NewRouterWithStore(store)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
@@ -110,12 +159,8 @@ func TestRouterFallsBackOnTerminalError(t *testing.T) {
 func TestRouterChatRejectsEmptyOperation(t *testing.T) {
 	db := setupAIRouterTestDB(t)
 	store := NewStore(db)
-
-	p := models.AIProvider{Name: "p", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://a.example/v1", APIKey: "k", Model: "m", Enabled: true}
-	require.NoError(t, db.Create(&p).Error)
-	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	require.NoError(t, db.Create(&route).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p.ID, Priority: 1, Enabled: true}).Error)
+	route := seedDefaultSummaryRoute(t, db)
+	seedChatBinding(t, db, &route, "p", "m", nil, nil, "", 1)
 
 	router := NewRouterWithStore(store)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
@@ -134,16 +179,11 @@ func TestRouterChatRejectsEmptyOperation(t *testing.T) {
 func TestRouterEmbedRejectsEmptyOperation(t *testing.T) {
 	db := setupAIRouterTestDB(t)
 	store := NewStore(db)
-
-	p := models.AIProvider{Name: "emb-p", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://a.example/v1", APIKey: "k", Model: "m", Enabled: true}
-	require.NoError(t, db.Create(&p).Error)
-	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilityEmbedding), Enabled: true, Strategy: "ordered_failover"}
-	require.NoError(t, db.Create(&route).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p.ID, Priority: 1, Enabled: true}).Error)
+	setupEmbedRoute(t, store, "emb-m")
 
 	router := NewRouterWithStore(store)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
-		"emb-p": {content: "ok"},
+		"emb-vendor": {content: "ok"},
 	}})
 
 	result, err := router.Embed(context.Background(), EmbeddingRequest{Input: []string{"test"}}, CapabilityEmbedding)
@@ -198,11 +238,8 @@ func TestTokenUsageInChatResult(t *testing.T) {
 
 	usage := &TokenUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}
 
-	p := models.AIProvider{Name: "p-usage", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://a.example/v1", APIKey: "k", Model: "m", Enabled: true}
-	require.NoError(t, db.Create(&p).Error)
-	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	require.NoError(t, db.Create(&route).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p.ID, Priority: 1, Enabled: true}).Error)
+	route := seedDefaultSummaryRoute(t, db)
+	seedChatBinding(t, db, &route, "p-usage", "m", nil, nil, "", 1)
 
 	router := NewRouterWithStore(store)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
@@ -232,14 +269,11 @@ func TestEncodeTokenUsage(t *testing.T) {
 	require.Contains(t, encoded, "\"total\":30")
 }
 
-// seedSingleProvider creates one provider on the default summary route.
-func seedSingleProvider(t *testing.T, db *gorm.DB, name string) {
+// seedSingleChatBinding 建单个 vendor+model 的 default summary 路由（旧 seedSingleProvider 等价物）。
+func seedSingleChatBinding(t *testing.T, db *gorm.DB, vendorName string) {
 	t.Helper()
-	p := models.AIProvider{Name: name, ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://a.example/v1", APIKey: "k", Model: "m", Enabled: true}
-	require.NoError(t, db.Create(&p).Error)
-	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	require.NoError(t, db.Create(&route).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p.ID, Priority: 1, Enabled: true}).Error)
+	route := seedDefaultSummaryRoute(t, db)
+	seedChatBinding(t, db, &route, vendorName, "m", nil, nil, "", 1)
 }
 
 // tokenUsageIsNull asserts the stored row's token_usage column is SQL NULL
@@ -254,7 +288,7 @@ func tokenUsageIsNull(t *testing.T, db *gorm.DB, logID uint) {
 func TestTokenUsageRecordedInCallLog(t *testing.T) {
 	db := setupAIRouterTestDB(t)
 	store := NewStore(db)
-	seedSingleProvider(t, db, "p-log-usage")
+	seedSingleChatBinding(t, db, "p-log-usage")
 
 	router := NewRouterWithStore(store)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
@@ -279,7 +313,7 @@ func TestTokenUsageRecordedInCallLog(t *testing.T) {
 func TestChatWithoutUsageLogsNullTokenUsage(t *testing.T) {
 	db := setupAIRouterTestDB(t)
 	store := NewStore(db)
-	seedSingleProvider(t, db, "p-no-usage")
+	seedSingleChatBinding(t, db, "p-no-usage")
 
 	router := NewRouterWithStore(store)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
@@ -302,7 +336,7 @@ func TestChatWithoutUsageLogsNullTokenUsage(t *testing.T) {
 func TestChatFailureLogsNullTokenUsage(t *testing.T) {
 	db := setupAIRouterTestDB(t)
 	store := NewStore(db)
-	seedSingleProvider(t, db, "p-fail")
+	seedSingleChatBinding(t, db, "p-fail")
 
 	router := NewRouterWithStore(store)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
@@ -329,7 +363,7 @@ func TestEmbedUsageRecordedInCallLog(t *testing.T) {
 
 	router := NewRouterWithStore(store)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
-		"emb-provider": {embedUsage: &TokenUsage{PromptTokens: 7, TotalTokens: 7}},
+		"emb-vendor": {embedUsage: &TokenUsage{PromptTokens: 7, TotalTokens: 7}},
 	}})
 
 	_, err := router.Embed(context.Background(), EmbeddingRequest{
@@ -344,23 +378,16 @@ func TestEmbedUsageRecordedInCallLog(t *testing.T) {
 	require.Contains(t, log.TokenUsage, "\"total\":7")
 }
 
-// seedChatFailover seeds a two-provider ordered_failover route for the summary
+// seedChatFailover seeds a two-binding ordered_failover route for the summary
 // capability (primary-empty → backup) and returns the router plus the db
 // handle for ai_call_logs assertions.
 func seedChatFailover(t *testing.T) (*Router, *gorm.DB) {
 	t.Helper()
 	db := setupAIRouterTestDB(t)
 	store := NewStore(db)
-
-	p1 := models.AIProvider{Name: "primary-empty", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://a.example/v1", APIKey: "a", Model: "m1", Enabled: true}
-	p2 := models.AIProvider{Name: "backup", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://b.example/v1", APIKey: "b", Model: "m2", Enabled: true}
-	require.NoError(t, db.Create(&p1).Error)
-	require.NoError(t, db.Create(&p2).Error)
-	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	require.NoError(t, db.Create(&route).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p1.ID, Priority: 1, Enabled: true}).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p2.ID, Priority: 2, Enabled: true}).Error)
-
+	route := seedDefaultSummaryRoute(t, db)
+	seedChatBinding(t, db, &route, "primary-empty", "m1", nil, nil, "", 1)
+	seedChatBinding(t, db, &route, "backup", "m2", nil, nil, "", 2)
 	return NewRouterWithStore(store), db
 }
 
@@ -375,7 +402,7 @@ func chatCallLogs(t *testing.T, db *gorm.DB) []models.AICallLog {
 // TestRouterChatFallsBackOnEmptyResponse covers the real-world shape observed
 // on glm board_synthesize: HTTP 200 but assistant content "" (or blank). The
 // router must log the primary attempt as an empty_response failure (never a
-// success row), then fall through ordered fallback to the backup provider,
+// success row), then fall through ordered fallback to the backup binding,
 // keeping the existing prompt/session/operation logging contract.
 func TestRouterChatFallsBackOnEmptyResponse(t *testing.T) {
 	cases := []struct {
@@ -410,6 +437,7 @@ func TestRouterChatFallsBackOnEmptyResponse(t *testing.T) {
 
 			primary := logs[0]
 			require.Equal(t, "primary-empty", primary.ProviderName)
+			require.Equal(t, "m1", primary.Model)
 			require.False(t, primary.Success)
 			require.False(t, primary.IsFallback)
 			require.Equal(t, "empty_response", primary.ErrorCode)
@@ -422,6 +450,7 @@ func TestRouterChatFallsBackOnEmptyResponse(t *testing.T) {
 
 			backup := logs[1]
 			require.Equal(t, "backup", backup.ProviderName)
+			require.Equal(t, "m2", backup.Model)
 			require.True(t, backup.Success)
 			require.True(t, backup.IsFallback)
 			require.Equal(t, "ok from backup", backup.ResponseSnippet)
@@ -431,8 +460,123 @@ func TestRouterChatFallsBackOnEmptyResponse(t *testing.T) {
 	}
 }
 
+// TestRouterEmptyResponseFailureRowCarriesUsageAndFinishReason：DeepSeek 空 content
+// 事故后的账目契约（fix-deepseek-thinking-empty-response）——HTTP 200 + usage 块
+// （全为 reasoning 烧掉）+ finish_reason=length 的空响应，失败行必须落 usage 四键
+// 且 snippet 带 finish_reason 前缀，使「预算耗尽型空响应」可在账上直接归因。
+func TestRouterEmptyResponseFailureRowCarriesUsageAndFinishReason(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "empty_string", content: ""},
+		{name: "whitespace_only", content: " \n\t "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, db := seedChatFailover(t)
+			router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+				"primary-empty": {content: tc.content,
+					usage:        &TokenUsage{PromptTokens: 100, CompletionTokens: 1536, TotalTokens: 1636, ReasoningTokens: 1536},
+					finishReason:  "length"},
+				"backup": {content: "ok from backup"},
+			}})
+
+			result, err := router.Chat(context.Background(), ChatRequest{
+				Operation:  "test.empty_usage",
+				Capability: CapabilitySummary,
+				SessionID:  "sess-empty-usage",
+				Messages:   []Message{{Role: "user", Content: "hi"}},
+			})
+			require.NoError(t, err)
+			require.Equal(t, "ok from backup", result.Content)
+
+			logs := chatCallLogs(t, db)
+			require.Len(t, logs, 2)
+
+			primary := logs[0]
+			require.False(t, primary.Success)
+			require.Equal(t, "empty_response", primary.ErrorCode)
+			// 失败行落 usage：provider 已真实消耗的 token 不得因失败从账上消失。
+			require.Contains(t, primary.TokenUsage, `"prompt":100`)
+			require.Contains(t, primary.TokenUsage, `"completion":1536`)
+			require.Contains(t, primary.TokenUsage, `"total":1636`)
+			require.Contains(t, primary.TokenUsage, `"reasoning":1536`)
+			// snippet 前缀标注 finish_reason，预算耗尽型与真空响应可区分。
+			require.Contains(t, primary.ResponseSnippet, "finish_reason=length")
+			require.Contains(t, primary.ResponseSnippet, "empty response content")
+			// ErrorMessage 保持原错误语义，不携带前缀（snippet 承担归因标注）。
+			require.NotContains(t, primary.ErrorMessage, "finish_reason")
+			// Retryable 语义不变：降级链继续，backup 成功行照常。
+			require.True(t, logs[1].Success)
+			require.True(t, logs[1].IsFallback)
+		})
+	}
+}
+
+// TestRouterHTTP502FailureRowUsageNullAndNoFinishReason：无响应体的失败
+// （网络/HTTP 4xx-5xx）usage 天然无值——失败行保持 SQL NULL，snippet 无
+// finish_reason 前缀（负向节拍：SHALL NOT 落全零 jsonb / 伪归因）。
+func TestRouterHTTP502FailureRowUsageNullAndNoFinishReason(t *testing.T) {
+	router, db := seedChatFailover(t)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"primary-empty": {err: &ProviderError{Message: "upstream unavailable", Code: "http_502", Retryable: true}},
+		"backup":        {content: "ok from backup"},
+	}})
+
+	_, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.http502",
+		Capability: CapabilitySummary,
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err)
+
+	logs := chatCallLogs(t, db)
+	require.Len(t, logs, 2)
+	primary := logs[0]
+	require.False(t, primary.Success)
+	require.Equal(t, "http_502", primary.ErrorCode)
+	tokenUsageIsNull(t, db, primary.ID)
+	require.NotContains(t, primary.ResponseSnippet, "finish_reason=", "无响应体失败不得携带伪归因前缀")
+	require.True(t, logs[1].Success)
+}
+
+// TestRouterParseErrorFailureRowCarriesUsage：结构化 parse_error（HTTP 200 +
+// 内容无合法 JSON）同样携带 usage/finish_reason——provider 已消耗的 token
+// 不得因提取失败从账上消失（spec「失败但响应携带 usage 块落库」场景）。
+func TestRouterParseErrorFailureRowCarriesUsage(t *testing.T) {
+	router, db := seedChatFailover(t)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"primary-empty": {content: "not json at all",
+			usage:        &TokenUsage{PromptTokens: 50, CompletionTokens: 80, TotalTokens: 130, ReasoningTokens: 30},
+			finishReason:  "stop"},
+		"backup": {content: `{"ok":true}`},
+	}})
+
+	result, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.parse_error_usage",
+		Capability: CapabilitySummary,
+		JSONMode:   true,
+		JSONSchema: &JSONSchema{Type: "object"},
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, `{"ok":true}`, result.Content)
+
+	logs := chatCallLogs(t, db)
+	require.Len(t, logs, 2)
+	primary := logs[0]
+	require.False(t, primary.Success)
+	require.Equal(t, "parse_error", primary.ErrorCode)
+	require.Contains(t, primary.TokenUsage, `"total":130`)
+	require.Contains(t, primary.TokenUsage, `"reasoning":30`)
+	require.Contains(t, primary.ResponseSnippet, "finish_reason=stop")
+	require.True(t, logs[1].Success)
+}
+
 // TestRouterChatNilResponseFallsBack: a provider client returning (nil, nil)
 // must not panic and must still be treated as empty_response + fallback.
+// nil 响应无 usage/finish_reason 可携：失败行 usage 保持 NULL（防御分支）。
 func TestRouterChatNilResponseFallsBack(t *testing.T) {
 	router, db := seedChatFailover(t)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
@@ -455,11 +599,12 @@ func TestRouterChatNilResponseFallsBack(t *testing.T) {
 	require.Len(t, logs, 2)
 	require.False(t, logs[0].Success)
 	require.Equal(t, "empty_response", logs[0].ErrorCode)
+	tokenUsageIsNull(t, db, logs[0].ID)
 	require.True(t, logs[1].Success)
 }
 
-// TestRouterChatAllProvidersEmptyReturnsError: when every provider yields an
-// empty response, Chat must return an error naming each provider plus the
+// TestRouterChatAllBindingsEmptyReturnsError: when every binding yields an
+// empty response, Chat must return an error naming each vendor plus the
 // empty-response cause, with a nil result and no success log rows.
 func TestRouterChatAllProvidersEmptyReturnsError(t *testing.T) {
 	router, db := seedChatFailover(t)
@@ -488,8 +633,9 @@ func TestRouterChatAllProvidersEmptyReturnsError(t *testing.T) {
 }
 
 // TestRouterChatPaddedContentStillSucceeds: whitespace around non-empty
-// content must not count as an empty response; content is returned verbatim
-// (no trimming) so caller contracts stay unchanged.
+// content must not count as an empty response. 非 off 生效档（默认 medium）按
+// specs/ai-thinking-levels「输出清理跟随思考档」剥离 <think> 标签后 TrimSpace，
+// 故返回内容为首尾空白剥除后的文本。
 func TestRouterChatPaddedContentStillSucceeds(t *testing.T) {
 	router, db := seedChatFailover(t)
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
@@ -503,7 +649,7 @@ func TestRouterChatPaddedContentStillSucceeds(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Equal(t, "  padded answer  ", result.Content)
+	require.Equal(t, "padded answer", result.Content)
 	require.False(t, result.UsedFallback)
 	require.Equal(t, 1, result.AttemptCount)
 
@@ -511,4 +657,234 @@ func TestRouterChatPaddedContentStillSucceeds(t *testing.T) {
 	require.Len(t, logs, 1)
 	require.True(t, logs[0].Success)
 	require.Equal(t, "", logs[0].ErrorCode)
+}
+
+// ─── 思考档四级解析端到端（W2）───────────────────────────────────────────────
+
+// TestRouterChatThinkingLevelResolution: 请求级 > 绑定级 > 模型默认 > medium，
+// xhigh/max 按模型支持度钳制。fake client 记录每次调用的 effLevel 断言。
+func TestRouterChatThinkingLevelResolution(t *testing.T) {
+	cases := []struct {
+		name       string
+		reqLevel   string
+		bindLevel  string
+		modelLevel string // 空=模型默认档 NULL
+		xhighMax   bool
+		want       string
+	}{
+		{name: "request wins over all", reqLevel: "high", bindLevel: "low", modelLevel: "off", want: "high"},
+		{name: "binding beats model default", reqLevel: "", bindLevel: "high", modelLevel: "medium", want: "high"},
+		{name: "model default when no overrides", reqLevel: "", bindLevel: "", modelLevel: "off", want: "off"},
+		{name: "global default medium", reqLevel: "", bindLevel: "", modelLevel: "", want: "medium"},
+		{name: "xhigh clamped to high when unsupported", reqLevel: "xhigh", bindLevel: "low", modelLevel: "", xhighMax: false, want: "high"},
+		{name: "xhigh kept when declared", reqLevel: "xhigh", bindLevel: "", modelLevel: "", xhighMax: true, want: "xhigh"},
+		{name: "binding xhigh clamped too", reqLevel: "", bindLevel: "max", modelLevel: "", xhighMax: false, want: "high"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupAIRouterTestDB(t)
+			store := NewStore(db)
+			route := seedDefaultSummaryRoute(t, db)
+			seedChatBinding(t, db, &route, "lvl-vendor", "lvl-model",
+				nil,
+				func(m *models.AIModel) {
+					m.ThinkingLevel = levelPtr(tc.modelLevel)
+					m.SupportsXhighMax = tc.xhighMax
+				},
+				tc.bindLevel, 1)
+
+			client := &fakeProviderClient{responses: map[string]fakeChatReply{
+				"lvl-vendor": {content: "ok"},
+			}}
+			router := NewRouterWithStore(store)
+			router.RegisterClient(ProviderTypeOpenAICompatible, client)
+
+			_, err := router.Chat(context.Background(), ChatRequest{
+				Operation:     "test.thinking",
+				Capability:    CapabilitySummary,
+				Messages:      []Message{{Role: "user", Content: "hi"}},
+				ThinkingLevel: tc.reqLevel,
+			})
+			require.NoError(t, err)
+			require.Len(t, client.chatCalls, 1)
+			require.Equal(t, tc.want, client.chatCalls[0].effLevel)
+			require.Equal(t, "lvl-model", client.chatCalls[0].modelName)
+		})
+	}
+}
+
+// ─── 输出清理跟随思考档（specs/ai-thinking-levels）───────────────────────────
+
+// TestRouterChatOffLevelKeepsThinkTags: 生效档 off 保留原始内容（含 <think> 标签）。
+func TestRouterChatOffLevelKeepsThinkTags(t *testing.T) {
+	db := setupAIRouterTestDB(t)
+	store := NewStore(db)
+	route := seedDefaultSummaryRoute(t, db)
+	seedChatBinding(t, db, &route, "off-vendor", "off-model", nil,
+		func(m *models.AIModel) { m.ThinkingLevel = levelPtr("off") }, "", 1)
+
+	raw := "<think\n>reasoning</think\n>The answer is 42"
+	router := NewRouterWithStore(store)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"off-vendor": {content: raw},
+	}})
+
+	result, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.off_keep",
+		Capability: CapabilitySummary,
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, raw, result.Content, "off 档必须原样返回（含标签）")
+}
+
+// TestRouterChatNonOffStripsThinkTags: 非 off 档剥离 <think>...</think> 并 TrimSpace。
+func TestRouterChatNonOffStripsThinkTags(t *testing.T) {
+	db := setupAIRouterTestDB(t)
+	store := NewStore(db)
+	route := seedDefaultSummaryRoute(t, db)
+	seedChatBinding(t, db, &route, "strip-vendor", "strip-model", nil, nil, "", 1)
+
+	router := NewRouterWithStore(store)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"strip-vendor": {content: "<think>reasoning</think>\nThe answer is 42"},
+	}})
+
+	result, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.strip",
+		Capability: CapabilitySummary,
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "The answer is 42", result.Content)
+	require.NotContains(t, result.Content, "<think>")
+}
+
+// ─── 结构化解析纠错（W5 Router 侧）────────────────────────────────────────────
+
+// TestRouterChatStructuredCorrectionExtractsWrappedJSON: 带包裹文本的响应经平衡
+// 花括号纠错提取后，ChatResult.Content = 提取后的纯 JSON 文本（调用方直接 Unmarshal）。
+func TestRouterChatStructuredCorrectionExtractsWrappedJSON(t *testing.T) {
+	db := setupAIRouterTestDB(t)
+	store := NewStore(db)
+	route := seedDefaultSummaryRoute(t, db)
+	fix := seedChatBinding(t, db, &route, "corr-vendor", "corr-model", nil, nil, "", 1)
+
+	router := NewRouterWithStore(store)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"corr-vendor": {content: "以下是结果：{\"a\":1}\n完毕"},
+	}})
+
+	result, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.corr",
+		Capability: CapabilitySummary,
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+		JSONMode:   true,
+		JSONSchema: &JSONSchema{Type: "object"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, `{"a":1}`, result.Content)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(result.Content), &parsed))
+	require.Equal(t, fix.vendor.Name, result.ProviderName)
+	require.Equal(t, "corr-model", result.ModelName)
+}
+
+// TestRouterChatCorrectionFailureFallsToNextBinding: 响应不含可提取 JSON 时该
+// binding 按 parse_error 尝试失败处理（不得把原文当结构化结果返回），继续下一绑定。
+func TestRouterChatCorrectionFailureFallsToNextBinding(t *testing.T) {
+	db := setupAIRouterTestDB(t)
+	store := NewStore(db)
+	route := seedDefaultSummaryRoute(t, db)
+	seedChatBinding(t, db, &route, "bad-json", "m1", nil, nil, "", 1)
+	seedChatBinding(t, db, &route, "good-json", "m2", nil, nil, "", 2)
+
+	router := NewRouterWithStore(store)
+	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
+		"bad-json":  {content: "完全没有任何花括号"},
+		"good-json": {content: `{"ok":true}`},
+	}})
+
+	result, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.corr_fail",
+		Capability: CapabilitySummary,
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+		JSONMode:   true,
+		JSONSchema: &JSONSchema{Type: "object"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, `{"ok":true}`, result.Content)
+	require.True(t, result.UsedFallback)
+	require.Equal(t, 2, result.AttemptCount)
+
+	logs := chatCallLogs(t, db)
+	require.Len(t, logs, 2)
+	require.False(t, logs[0].Success)
+	require.Equal(t, "parse_error", logs[0].ErrorCode)
+	require.NotContains(t, logs[0].ResponseSnippet, "完全没有任何花括号", "非 JSON 原文不得冒充结构化结果回传")
+	require.True(t, logs[1].Success)
+	require.Equal(t, `{"ok":true}`, logs[1].ResponseSnippet)
+}
+
+// ─── 降级链日志行数与 structured_stage（W4 Router 侧，真实 client + fake server）──
+
+// TestRouterChatDegradeChainLogsStructuredStages: json_schema 400 → json_object
+// 成功，Router 必须写两行：失败档（error_code=http_400、structured_stage=json_schema）
+// + 成功档（structured_stage=json_object），vendor 档位不被降级链修改。
+func TestRouterChatDegradeChainLogsStructuredStages(t *testing.T) {
+	db := setupAIRouterTestDB(t)
+	store := NewStore(db)
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		n := calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"schema not supported","code":"http_400"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"a\":2}"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	route := seedDefaultSummaryRoute(t, db)
+	seedChatBinding(t, db, &route, "ds-vendor", "ds-chat",
+		func(v *models.AIVendor) {
+			v.BaseURL = srv.URL
+			v.StructuredOutput = StructOutputJSONSchema
+		}, nil, "", 1)
+
+	router := NewRouterWithStore(store)
+	router.RegisterClient(ProviderTypeOpenAICompatible, NewOpenAICompatibleClient())
+
+	result, err := router.Chat(context.Background(), ChatRequest{
+		Operation:  "test.chain",
+		Capability: CapabilitySummary,
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+		JSONMode:   true,
+		JSONSchema: &JSONSchema{Type: "object"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, `{"a":2}`, result.Content)
+	require.Equal(t, int32(2), calls.Load())
+
+	logs := chatCallLogs(t, db)
+	require.Len(t, logs, 2, "每档真实 HTTP 尝试各写一行（D5/红线5）")
+
+	failed := logs[0]
+	require.False(t, failed.Success)
+	require.Equal(t, "http_400", failed.ErrorCode)
+	require.Equal(t, "ds-vendor", failed.ProviderName)
+	require.Equal(t, "ds-chat", failed.Model)
+	require.Contains(t, failed.RequestMeta, `"structured_stage":"json_schema"`)
+	require.Contains(t, failed.ResponseSnippet, "schema not supported")
+
+	succeeded := logs[1]
+	require.True(t, succeeded.Success)
+	require.False(t, succeeded.IsFallback)
+	require.Contains(t, succeeded.RequestMeta, `"structured_stage":"json_object"`)
+	require.Equal(t, `{"a":2}`, succeeded.ResponseSnippet)
 }

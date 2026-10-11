@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -14,6 +15,7 @@ import (
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/httpclient"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/searxng"
 )
 
 // ── discovery handler（preference-vector-feed-discovery + improve-discovery-recommendations）──
@@ -445,6 +447,26 @@ func SaveBochaSettings(c *gin.Context) {
 }
 
 // ── searxng settings（页边注问答联网后端，design D7）──
+
+// GetSearxngHealth GET /api/settings/searxng/health — SearXNG 连通性主动探测
+// （add-searxng-health-indicator）：复用问答联网链路同一配置解析与同一搜索
+// 客户端，发一次真实探针搜索返回四态（disabled/unreachable/degraded/ok）
+// + 耗时。配置现读现生效（探测与下次提问同源判活）。disabled 是正常态非错
+// 误（200 带状态，不返回错误码）；探测不重试、不落 ai_call_logs（非 AI 调
+// 用）。handler 层再包一层 8s context 超时防悬挂（searxng 客户端自身已 8s）。
+func GetSearxngHealth(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
+	defer cancel()
+	res := searxng.ProbeHealth(ctx)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"status":     res.Status,
+			"latency_ms": res.LatencyMS,
+			"detail":     res.Detail,
+		},
+	})
+}
 
 // GetSearxngSettings GET /api/settings/searxng — 读 SearXNG 配置（endpoint + enabled，
 // 无 key）。响应形状对齐 bocha（去掉 key 字段）；未配置时 endpoint 返回空串。

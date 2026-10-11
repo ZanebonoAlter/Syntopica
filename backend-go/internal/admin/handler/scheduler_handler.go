@@ -172,10 +172,11 @@ func buildSchedulerStatusPayload(schedulers []SchedulerStatusResponse) gin.H {
 	healthRoutes := make([]gin.H, 0, len(healthSnap.Routes))
 	for _, r := range healthSnap.Routes {
 		healthRoutes = append(healthRoutes, gin.H{
-			"route_name":       r.RouteName,
-			"capability":       r.Capability,
-			"primary_provider": r.PrimaryProvider,
-			"reachable":        r.Reachable,
+			"route_name":    r.RouteName,
+			"capability":    r.Capability,
+			"primary_model": r.PrimaryModel,
+			"vendor":        r.Vendor,
+			"reachable":     r.Reachable,
 		})
 	}
 

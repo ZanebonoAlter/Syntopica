@@ -70,6 +70,8 @@ function createCard(overrides: Partial<DiscoveryRecommendation> = {}): Discovery
     requiresParameters: true,
     parameters: '{"uid":"用户 id"}',
     paramOptions: {},
+    subscribed: false,
+    subscribedUrls: [],
     createdAt: '2026-07-25T00:00:00Z',
     ...overrides,
   }
@@ -105,8 +107,8 @@ describe('useDiscoveryStore', () => {
     getRunMock.mockResolvedValue({
       success: true,
       data: { id: '9', kind: 'refresh', query: '', status: 'succeeded', startedAt: '2026-09-18T00:00:00Z', finishedAt: '2026-09-18T00:01:00Z', items: [
-        { candidateId: '1', name: 'A', description: '', reason: '', recallOrigins: [], availability: 'unknown' },
-        { candidateId: '2', name: 'B', description: '', reason: '', recallOrigins: [], availability: 'unknown' },
+        { candidateId: '1', name: 'A', description: '', reason: '', recallOrigins: [], availability: 'unknown', subscribed: false, subscribedUrls: [] },
+        { candidateId: '2', name: 'B', description: '', reason: '', recallOrigins: [], availability: 'unknown', subscribed: false, subscribedUrls: [] },
       ] },
     })
     getRecommendationsMock.mockResolvedValue({ success: true, data: [createCard()] })
@@ -330,6 +332,7 @@ function createCandidate(overrides: Partial<DiscoveryCandidate> = {}): Discovery
     address: 'https://fieldnotes.example/feed.xml',
     recommendationEnabled: true,
     subscribed: false,
+    subscribedUrls: [],
     availability: 'unknown',
     lastCheckedAt: null,
     ...overrides,

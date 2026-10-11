@@ -1,6 +1,8 @@
 package tagging
 
 import (
+	"context"
+
 	"gorm.io/gorm"
 
 	"syntopica-backend/internal/platform/database"
@@ -9,6 +11,7 @@ import (
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service"
 	"syntopica-backend/internal/tagmanagement/service/board"
+	"syntopica-backend/internal/tagmanagement/service/boardhealth"
 	"syntopica-backend/internal/tagmanagement/service/sourcestats"
 	"syntopica-backend/internal/tagmanagement/service/watched"
 )
@@ -39,6 +42,7 @@ func init() {
 	database.AuxLabelDupMerge = tagmodels.RunAuxLabelDupMerge
 	database.RegisterModels(
 		&tagmodels.BoardComposition{},
+		&tagmodels.BoardHealthSnapshot{},
 		&tagmodels.BoardUpgradeSuggestion{},
 		&tagmodels.CompositeComponent{},
 		&tagmodels.EmbeddingConfig{},
@@ -196,3 +200,19 @@ var (
 	NewSemanticBoardUpgradeService    = board.NewSemanticBoardUpgradeService
 	NewDefaultSemanticBoardUpgradeLLM = board.NewDefaultSemanticBoardUpgradeLLM
 )
+
+// Board health checkup (add-board-health-checkup): the scheduler's daily-report
+// tail step consumes these root re-exports only (admin-boundary: deep imports
+// of tagmanagement subpackages are forbidden from admin).
+type BoardHealthLLM = boardhealth.BoardHealthLLM
+
+var (
+	RunBoardHealthCheckup    = boardhealth.RunCheckup
+	NewDefaultBoardHealthLLM = boardhealth.NewDefaultBoardHealthLLM
+)
+
+// RunBoardHealthCheckupWrapped runs a full checkup round with the production
+// airouter-backed LLM — the exact entry the daily-report tail step calls.
+func RunBoardHealthCheckupWrapped(ctx context.Context, db *gorm.DB) {
+	boardhealth.RunCheckup(ctx, db, boardhealth.NewDefaultBoardHealthLLM())
+}

@@ -54,8 +54,40 @@ func (s stubComtrade) Fetch(ctx context.Context, p sources.ComtradeParams) (map[
 	return s.res, s.err
 }
 
+// add-fast-frequency-datasources: three new fast-frequency stubs.
+type stubYahoo struct {
+	res map[string]any
+	err error
+}
+
+func (s *stubYahoo) Fetch(ctx context.Context, symbol, rng string) (map[string]any, error) {
+	s.res["_args"] = map[string]string{"symbol": symbol, "range": rng}
+	return s.res, s.err
+}
+
+type stubFred struct {
+	res map[string]any
+	err error
+}
+
+func (s *stubFred) Fetch(ctx context.Context, seriesID, start, end string) (map[string]any, error) {
+	s.res["_args"] = map[string]string{"series_id": seriesID, "start": start, "end": end}
+	return s.res, s.err
+}
+
+type stubGdelt struct {
+	res map[string]any
+	err error
+}
+
+func (s *stubGdelt) Fetch(ctx context.Context, query, mode, timespan string) (map[string]any, error) {
+	s.res["_args"] = map[string]string{"query": query, "mode": mode, "timespan": timespan}
+	return s.res, s.err
+}
+
+
 func TestResearchToolsNoURLParameters(t *testing.T) {
-	tools := ResearchTools(&stubEIA{}, &stubJODI{}, &stubWDI{}, &stubComtrade{})
+	tools := ResearchTools(&stubEIA{}, &stubJODI{}, &stubWDI{}, &stubComtrade{}, &stubYahoo{res: map[string]any{}}, &stubFred{res: map[string]any{}}, &stubGdelt{res: map[string]any{}})
 	for _, tool := range tools {
 		schema := tool.InputSchema
 		b, _ := json.Marshal(schema)
@@ -64,13 +96,13 @@ func TestResearchToolsNoURLParameters(t *testing.T) {
 			t.Fatalf("%s: InputSchema must not expose url/path parameters: %s", tool.Name, b)
 		}
 	}
-	if len(tools) != 4 {
-		t.Fatalf("want 4 tools, got %d", len(tools))
+	if len(tools) != 7 {
+		t.Fatalf("want 7 tools, got %d", len(tools))
 	}
 }
 
 func TestEiaToolSectionAndErrors(t *testing.T) {
-	tools := ResearchTools(&stubEIA{res: map[string]any{"observations": []map[string]any{{"flow": "x"}}}}, &stubJODI{}, &stubWDI{}, &stubComtrade{})
+	tools := ResearchTools(&stubEIA{res: map[string]any{"observations": []map[string]any{{"flow": "x"}}}}, &stubJODI{}, &stubWDI{}, &stubComtrade{}, &stubYahoo{res: map[string]any{}}, &stubFred{res: map[string]any{}}, &stubGdelt{res: map[string]any{}})
 	var eia = tools[0]
 	out, err := eia.Execute(context.Background(), map[string]any{"section": "stocks"})
 	if err != nil {
@@ -82,7 +114,7 @@ func TestEiaToolSectionAndErrors(t *testing.T) {
 
 	// Typed error → structured error_code JSON, NOT a Go error (the agent loop
 	// consumes tool output).
-	errTools := ResearchTools(&stubEIA{err: datasources.SchemaChanged("eia_wpsr", "上游结构漂移")}, &stubJODI{}, &stubWDI{}, &stubComtrade{})
+	errTools := ResearchTools(&stubEIA{err: datasources.SchemaChanged("eia_wpsr", "上游结构漂移")}, &stubJODI{}, &stubWDI{}, &stubComtrade{}, &stubYahoo{res: map[string]any{}}, &stubFred{res: map[string]any{}}, &stubGdelt{res: map[string]any{}})
 	out, err = errTools[0].Execute(context.Background(), map[string]any{"section": "stocks"})
 	if err != nil {
 		t.Fatalf("typed errors are tool output, not Go errors: %v", err)
@@ -93,7 +125,7 @@ func TestEiaToolSectionAndErrors(t *testing.T) {
 }
 
 func TestJodiToolArgPassing(t *testing.T) {
-	tools := ResearchTools(&stubEIA{}, &stubJODI{res: map[string]any{}}, &stubWDI{}, &stubComtrade{})
+	tools := ResearchTools(&stubEIA{}, &stubJODI{res: map[string]any{}}, &stubWDI{}, &stubComtrade{}, &stubYahoo{res: map[string]any{}}, &stubFred{res: map[string]any{}}, &stubGdelt{res: map[string]any{}})
 	out, err := tools[1].Execute(context.Background(), map[string]any{
 		"geo": "US", "flow": "production",
 	})
@@ -109,7 +141,7 @@ func TestJodiToolArgPassing(t *testing.T) {
 }
 
 func TestWdiToolArgConversion(t *testing.T) {
-	tools := ResearchTools(&stubEIA{}, &stubJODI{}, &stubWDI{res: map[string]any{}}, &stubComtrade{})
+	tools := ResearchTools(&stubEIA{}, &stubJODI{}, &stubWDI{res: map[string]any{}}, &stubComtrade{}, &stubYahoo{res: map[string]any{}}, &stubFred{res: map[string]any{}}, &stubGdelt{res: map[string]any{}})
 	out, err := tools[2].Execute(context.Background(), map[string]any{
 		"indicator": "NE.EXP.GNFS.ZS",
 		"countries": []any{"CHN", "JPN"},
@@ -128,7 +160,7 @@ func TestWdiToolArgConversion(t *testing.T) {
 
 func TestComtradeToolPartnerOptional(t *testing.T) {
 	// With partner → pointer set.
-	tools := ResearchTools(&stubEIA{}, &stubJODI{}, &stubWDI{}, &stubComtrade{res: map[string]any{}})
+	tools := ResearchTools(&stubEIA{}, &stubJODI{}, &stubWDI{}, &stubComtrade{res: map[string]any{}}, &stubYahoo{res: map[string]any{}}, &stubFred{res: map[string]any{}}, &stubGdelt{res: map[string]any{}})
 	out, err := tools[3].Execute(context.Background(), map[string]any{
 		"freq_code": "A", "reporter": float64(156), "partner": float64(682),
 		"cmd_code": "2709", "flow_code": "M", "period": "2024",
@@ -149,12 +181,13 @@ func TestComtradeToolPartnerOptional(t *testing.T) {
 // ── explicit window params (HR-1/3/6/7): optional, strict, old surface intact ──
 
 // TestResearchToolsToolSurfaceUnchanged pins the registered tool registry:
-// exactly the four research tools, names unchanged, and the new optional
-// window params (weeks/years) are NOT required — old callers' argument sets
-// stay valid (HR-7: existing tool surface zero change outside new research).
+// exactly the seven research tools, names unchanged (construction order
+// aligned to toolCatalogCodes), and the optional window params (weeks/years)
+// are NOT required — old callers' argument sets stay valid (HR-7: existing
+// tool surface zero change outside new research).
 func TestResearchToolsToolSurfaceUnchanged(t *testing.T) {
-	tools := ResearchTools(&stubEIA{}, &stubJODI{}, &stubWDI{}, &stubComtrade{})
-	want := []string{"eia_wpsr_table1", "jodi_oil_primary", "wb_wdi", "un_comtrade_trade"}
+	tools := ResearchTools(&stubEIA{}, &stubJODI{}, &stubWDI{}, &stubComtrade{}, &stubYahoo{res: map[string]any{}}, &stubFred{res: map[string]any{}}, &stubGdelt{res: map[string]any{}})
+	want := []string{"eia_wpsr_table1", "jodi_oil_primary", "wb_wdi", "un_comtrade_trade", "yahoo_chart", "fred_series", "gdelt_doc"}
 	if len(tools) != len(want) {
 		t.Fatalf("want %d tools, got %d", len(want), len(tools))
 	}
@@ -175,7 +208,7 @@ func TestResearchToolsToolSurfaceUnchanged(t *testing.T) {
 
 func TestEiaToolWeeksPassThrough(t *testing.T) {
 	eia := &stubEIA{res: map[string]any{}}
-	tools := ResearchTools(eia, &stubJODI{}, &stubWDI{}, &stubComtrade{})
+	tools := ResearchTools(eia, &stubJODI{}, &stubWDI{}, &stubComtrade{}, &stubYahoo{res: map[string]any{}}, &stubFred{res: map[string]any{}}, &stubGdelt{res: map[string]any{}})
 
 	// Absent → no window (default mode), zero-valued variadic.
 	if _, err := tools[0].Execute(context.Background(), map[string]any{"section": "stocks"}); err != nil {
@@ -206,7 +239,7 @@ func TestEiaToolWeeksPassThrough(t *testing.T) {
 
 func TestJodiToolYearsPassThrough(t *testing.T) {
 	jodi := &stubJODI{res: map[string]any{}}
-	tools := ResearchTools(&stubEIA{}, jodi, &stubWDI{}, &stubComtrade{})
+	tools := ResearchTools(&stubEIA{}, jodi, &stubWDI{}, &stubComtrade{}, &stubYahoo{res: map[string]any{}}, &stubFred{res: map[string]any{}}, &stubGdelt{res: map[string]any{}})
 
 	if _, err := tools[1].Execute(context.Background(), map[string]any{"geo": "US", "flow": "production", "years": float64(5)}); err != nil {
 		t.Fatalf("years=5: %v", err)
@@ -243,12 +276,12 @@ func TestJodiToolYearsPassThrough(t *testing.T) {
 // unavailability wording.
 func TestBuildToolsDescriptionsCarryCatalogMetadata(t *testing.T) {
 	tools := BuildTools(func(configKeyName string) string {
-		if configKeyName == "COMTRADE_API_KEY" {
+		if configKeyName == "COMTRADE_API_KEY" || configKeyName == "FRED_API_KEY" {
 			return "test-key"
 		}
 		return ""
 	})
-	codes := []string{"eia_wpsr", "jodi_oil_primary", "wb_wdi", "un_comtrade"}
+	codes := []string{"eia_wpsr", "jodi_oil_primary", "wb_wdi", "un_comtrade", "yahoo_finance", "fred", "gdelt"}
 	for i, tool := range tools {
 		d, ok := datasources.Definition(codes[i])
 		if !ok {
@@ -259,8 +292,8 @@ func TestBuildToolsDescriptionsCarryCatalogMetadata(t *testing.T) {
 				t.Fatalf("%s: description must carry catalog metadata %q: %s", tool.Name, field, tool.Description)
 			}
 		}
-		if !strings.Contains(tool.Description, "无价格序列、裂解价差、运价") {
-			t.Fatalf("%s: description must declare the ensemble hard limits: %s", tool.Name, tool.Description)
+		if !strings.Contains(tool.Description, "价格/行情类数据只有 yahoo_chart 与 fred_series") {
+			t.Fatalf("%s: description must declare the ensemble capability boundaries: %s", tool.Name, tool.Description)
 		}
 		if strings.Contains(tool.Description, "当前不可用") {
 			t.Fatalf("%s: must not claim unavailability while its key is configured: %s", tool.Name, tool.Description)
@@ -283,15 +316,20 @@ func TestBuildToolsMarksUnconfiguredKeySourceUnavailable(t *testing.T) {
 			t.Fatalf("%s: BuildTools must not bake a startup availability snapshot: %s", tool.Name, tool.Description)
 		}
 	}
-	// 新路径等价行为：现算 probe 只标 RequiresKey 且 key 为空的源。
+	// 新路径等价行为：现算 probe 只标 RequiresKey 且 key 为空的源
+	// （un_comtrade_trade 与 fred_series 两键位）。
 	probe := UnavailableNoticeProbe(func(string) string { return "" })
 	for i, tool := range tools {
-		has := strings.Contains(probe(tool.Name), "当前不可用：未配置 COMTRADE_API_KEY")
-		if i == 3 && !has {
+		hasComtrade := strings.Contains(probe(tool.Name), "当前不可用：未配置 COMTRADE_API_KEY")
+		hasFred := strings.Contains(probe(tool.Name), "当前不可用：未配置 FRED_API_KEY")
+		if i == 3 && !hasComtrade {
 			t.Fatalf("un_comtrade_trade: key missing, research-time probe must mark it unavailable")
 		}
-		if i != 3 && has {
-			t.Fatalf("%s: requires no key, probe must not mark it unavailable", tool.Name)
+		if i == 5 && !hasFred {
+			t.Fatalf("fred_series: key missing, research-time probe must mark it unavailable")
+		}
+		if (i != 3 && hasComtrade) || (i != 5 && hasFred) {
+			t.Fatalf("%s: wrong unavailability marking (comtrade=%v fred=%v)", tool.Name, hasComtrade, hasFred)
 		}
 	}
 }
@@ -301,8 +339,8 @@ func TestBuildToolsMarksUnconfiguredKeySourceUnavailable(t *testing.T) {
 // via the same live resolver)，UI 保存 key 后两者同步翻转、无需重启
 // (review M2 / design §10.4).
 func TestUnavailableNoticeProbeMirrorsStatusFor(t *testing.T) {
-	codes := []string{"eia_wpsr", "jodi_oil_primary", "wb_wdi", "un_comtrade"}
-	names := []string{"eia_wpsr_table1", "jodi_oil_primary", "wb_wdi", "un_comtrade_trade"}
+	codes := []string{"eia_wpsr", "jodi_oil_primary", "wb_wdi", "un_comtrade", "yahoo_finance", "fred", "gdelt"}
+	names := []string{"eia_wpsr_table1", "jodi_oil_primary", "wb_wdi", "un_comtrade_trade", "yahoo_chart", "fred_series", "gdelt_doc"}
 	for _, keyConfigured := range []bool{false, true} {
 		resolve := datasources.KeyResolver(func(string) string {
 			if keyConfigured {

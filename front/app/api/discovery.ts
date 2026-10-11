@@ -62,6 +62,10 @@ interface RecommendationPayload {
   parameters: string
   /** 参数可选值字典（按 param_name 分组）；无字典数据为空对象 */
   param_options?: Record<string, RouteParamOption[]>
+  /** 该来源是否已有订阅（RSSHub 路由级 / 原生精确）；旧后端缺省 false */
+  subscribed?: boolean
+  /** 已有订阅地址；缺省/非数组时归一为 [] */
+  subscribed_urls?: string[]
   board_label: string
 }
 
@@ -89,6 +93,8 @@ function normalizeCard(p: RecommendationPayload): DiscoveryRecommendation {
     requiresParameters: Boolean(p.requires_parameters),
     parameters: p.parameters || '{}',
     paramOptions: p.param_options ?? {},
+    subscribed: Boolean(p.subscribed),
+    subscribedUrls: Array.isArray(p.subscribed_urls) ? p.subscribed_urls : [],
     createdAt: p.created_at || '',
   }
 }
@@ -177,6 +183,8 @@ export function useDiscoveryApi() {
     feed_url?: string | null
     recommendation_enabled: boolean
     subscribed: boolean
+    /** 已有订阅地址；缺省/非数组时归一为 [] */
+    subscribed_urls?: string[]
     availability: string
     last_checked_at?: string | null
     /** rsshub 条目的上游原始资料（snake_case）；rss 条目缺省（omitempty） */
@@ -244,6 +252,7 @@ export function useDiscoveryApi() {
       address: candidateAddress(p),
       recommendationEnabled: Boolean(p.recommendation_enabled),
       subscribed: Boolean(p.subscribed),
+      subscribedUrls: Array.isArray(p.subscribed_urls) ? p.subscribed_urls : [],
       availability,
       lastCheckedAt: p.last_checked_at ?? null,
       route: p.route ? normalizeRoute(p.route) : null,
@@ -382,6 +391,10 @@ export function useDiscoveryApi() {
     reason: string
     recall_origins?: string[]
     availability?: string
+    /** 该来源是否已有订阅（RSSHub 路由级 / 原生精确）；旧后端缺省 false */
+    subscribed?: boolean
+    /** 已有订阅地址；缺省/非数组时归一为 [] */
+    subscribed_urls?: string[]
   }
 
   interface RunPayload {
@@ -407,6 +420,8 @@ export function useDiscoveryApi() {
       reason: p.reason || '',
       recallOrigins: Array.isArray(p.recall_origins) ? p.recall_origins : [],
       availability,
+      subscribed: Boolean(p.subscribed),
+      subscribedUrls: Array.isArray(p.subscribed_urls) ? p.subscribed_urls : [],
     }
   }
 
@@ -506,6 +521,8 @@ export function useDiscoveryApi() {
     name: string
     feed_url?: string | null
     subscribed: boolean
+    /** 已有订阅地址；缺省/非数组时归一为 [] */
+    subscribed_urls?: string[]
     route?: RoutePayload | null
   }
 
@@ -517,6 +534,7 @@ export function useDiscoveryApi() {
       name: p.name || '',
       feedUrl: p.feed_url ?? '',
       subscribed: Boolean(p.subscribed),
+      subscribedUrls: Array.isArray(p.subscribed_urls) ? p.subscribed_urls : [],
       route: p.route ? normalizeRoute(p.route) : null,
     }
   }

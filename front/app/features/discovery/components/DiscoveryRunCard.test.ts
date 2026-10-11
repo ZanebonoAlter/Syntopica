@@ -23,11 +23,13 @@ function item(over: Partial<DiscoveryRunItem> = {}): DiscoveryRunItem {
     reason: '与你查询的「日本经济」方向一致',
     recallOrigins: ['版块召回', '行为画像'],
     availability: 'unknown',
+    subscribed: false,
+    subscribedUrls: [],
     ...over,
   }
 }
 
-function mountCard(props: { item: DiscoveryRunItem }) {
+function mountCard(props: { item: DiscoveryRunItem, subscribed?: boolean, subscribing?: boolean }) {
   return mount(DiscoveryRunCard, { props })
 }
 
@@ -76,6 +78,43 @@ describe('DiscoveryRunCard — 字段展示', () => {
   it('超长名称带换行锚点（u-break-title）', () => {
     const wrapper = mountCard({ item: item({ name: '长'.repeat(150) }) })
     expect(wrapper.find('.run-card__name.u-break-title').exists()).toBe(true)
+    wrapper.unmount()
+  })
+})
+
+describe('DiscoveryRunCard — 已订阅提示与订阅入口并存（fix-discovery-subscribed-hint）', () => {
+  it('后端字段 item.subscribed：显示「已订阅」徽标，title 列出已有订阅地址，订阅按钮保留', () => {
+    const wrapper = mountCard({
+      item: item({ subscribed: true, subscribedUrls: ['https://rsshub.example/zaobao/znews/world'] }),
+    })
+    const badge = wrapper.find('[data-testid="run-subscribed-badge"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('已订阅')
+    expect(badge.attributes('title')).toContain('https://rsshub.example/zaobao/znews/world')
+    // 按钮保留：路由级命中仍可订其它参数；旧「按钮替换为已订阅文本」分支已移除
+    expect(wrapper.find('[data-testid="run-subscribe-btn-42"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-subscribed-label"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('会话内标记 subscribed：同样显示徽标且按钮保留（订阅成功即时反馈）', () => {
+    const wrapper = mountCard({ item: item(), subscribed: true })
+    expect(wrapper.find('[data-testid="run-subscribed-badge"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-subscribe-btn-42"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('未订阅：不显示徽标，订阅按钮在（不误报）', () => {
+    const wrapper = mountCard({ item: item() })
+    expect(wrapper.find('[data-testid="run-subscribed-badge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="run-subscribe-btn-42"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('已订阅时点击订阅按钮仍 emit item（入口保留后可继续订阅）', async () => {
+    const wrapper = mountCard({ item: item({ subscribed: true, subscribedUrls: [] }) })
+    await wrapper.find('[data-testid="run-subscribe-btn-42"]').trigger('click')
+    expect(wrapper.emitted('subscribe')?.at(-1)?.[0]).toMatchObject({ candidateId: '42' })
     wrapper.unmount()
   })
 })

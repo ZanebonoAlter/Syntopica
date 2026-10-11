@@ -349,9 +349,10 @@ func existingArticleDependents(tx *gorm.DB) []articleDependent {
 //
 // Deliberately out of scope: topic_tags left without edges are reclaimed by the
 // aux_label_cleanup maintenance job — the same owner as when a cascade removes
-// the edges — and reading_behaviors is untouched, because its NO ACTION foreign
-// key already fails such a delete today (DeleteFeedCascade removes them per feed
-// first); deleting them here would silently widen the operation.
+// the edges — and reading_behaviors is not removed here either: the delete paths
+// clear it per feed (DeleteFeedCascade / DeleteCategoryCascade) in the same
+// transaction, before the article rows go. Removing it per article would widen
+// this cleanup past the rows the caller declared to delete.
 //
 // dependents carries the tables the caller resolved once (see
 // existingArticleDependents): a table absent from a narrow deployment is skipped
@@ -368,12 +369,90 @@ func (r *ReaderRepository) deleteArticleDependents(tx *gorm.DB, articleIDs []uin
 	return nil
 }
 
+// deleteReferencingRowsIfPresent runs remove only in a database that actually
+// has the named table.
+//
+// Boundary (deliberate, narrow-deployment compatibility) — the same trade as
+// existingArticleDependents: GORM's HasTable returns a bare bool, so a metadata
+// query that fails reads as false and the reference rows are skipped while the
+// deletion still completes, which can leave orphans behind. Failing a user's
+// deletion on a table probe is the worse outcome. Only table existence is
+// guarded, not columns: a missing column makes the DELETE itself error, which
+// rolls the whole transaction back (fail-closed).
+//
+// On a database that still carries the legacy NO ACTION foreign keys, a failed
+// probe therefore surfaces as a foreign-key violation when the feed or category
+// row goes: the transaction rolls back and the error reaches the caller — never
+// a silent half-deletion.
+//
+// user_preferences is the table this guard exists for: its model is gone from Go
+// and its DROP migration only runs with MIGRATIONS_ALLOW_DESTRUCTIVE set (a
+// skipped run is still recorded as applied), so the table survives in some
+// deployments and not in others — the delete path tolerates both.
+func deleteReferencingRowsIfPresent(tx *gorm.DB, table string, remove func(tx *gorm.DB) error) error {
+	if !tx.Migrator().HasTable(table) {
+		return nil
+	}
+	return remove(tx)
+}
+
+// deleteFeedReferenceRows removes every row that points at one feed through a
+// NO ACTION foreign key: the recorded reading behaviors
+// (fk_reading_behaviors_feed) and the legacy user_preferences rows
+// (fk_user_preferences_feed). Both are cleared before the feed's articles go, so
+// neither constraint can roll the deletion transaction back. Runs on the
+// caller's transaction.
+func deleteFeedReferenceRows(tx *gorm.DB, feedID uint) error {
+	if err := deleteReferencingRowsIfPresent(tx, "reading_behaviors", func(tx *gorm.DB) error {
+		return tx.Where("feed_id = ?", feedID).Delete(&models.ReadingBehavior{}).Error
+	}); err != nil {
+		return err
+	}
+	// user_preferences no longer has a Go model: the table name is a constant and
+	// the id stays a bound parameter, never interpolated into the SQL.
+	return deleteReferencingRowsIfPresent(tx, "user_preferences", func(tx *gorm.DB) error {
+		return tx.Exec("DELETE FROM user_preferences WHERE feed_id = ?", feedID).Error
+	})
+}
+
+// deleteCategoryReferenceRows removes the rows that point at a category or at
+// the feeds filed under it: reading_behaviors by the category's feed id set
+// (fk_reading_behaviors_feed) and user_preferences by feed id set or by
+// category_id (fk_user_preferences_feed / fk_user_preferences_category). It must
+// run before the articles are deleted — a surviving reading_behaviors row also
+// references its article through NO ACTION (fk_reading_behaviors_article) and
+// would block that delete. Runs on the caller's transaction.
+func deleteCategoryReferenceRows(tx *gorm.DB, categoryID uint, feedIDs []uint) error {
+	if len(feedIDs) > 0 {
+		if err := deleteReferencingRowsIfPresent(tx, "reading_behaviors", func(tx *gorm.DB) error {
+			return tx.Where("feed_id IN ?", feedIDs).Delete(&models.ReadingBehavior{}).Error
+		}); err != nil {
+			return err
+		}
+	}
+	// user_preferences holds feed-level and category-level rows, so this step is
+	// not skippable when the category has no feeds: a row with feed_id IS NULL
+	// and category_id pointing here is still caught, and an empty id set never
+	// reaches SQL.
+	return deleteReferencingRowsIfPresent(tx, "user_preferences", func(tx *gorm.DB) error {
+		if len(feedIDs) == 0 {
+			return tx.Exec("DELETE FROM user_preferences WHERE category_id = ?", categoryID).Error
+		}
+		return tx.Exec("DELETE FROM user_preferences WHERE category_id = ? OR feed_id IN ?", categoryID, feedIDs).Error
+	})
+}
+
 func (r *ReaderRepository) DeleteArticlesByFeed(feedID uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		return r.deleteArticlesWithRefs(tx, feedID)
 	})
 }
 
+// DeleteCascadeByFeed removes a feed's reading behaviors and articles, leaving
+// the feed row itself in place. A full feed deletion must go through
+// DeleteFeedCascade instead: this path deliberately skips the user_preferences
+// cleanup that the legacy fk_user_preferences_feed constraint requires, so it
+// cannot serve a caller that then deletes the feed row.
 func (r *ReaderRepository) DeleteCascadeByFeed(feedID uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("feed_id = ?", feedID).Delete(&models.ReadingBehavior{}).Error; err != nil {
@@ -388,9 +467,15 @@ func (r *ReaderRepository) DeleteCascadeByFeed(feedID uint) error {
 // alone, which left daily-report references pointing at deleted rows; they are
 // now deleted explicitly — together with their own dependent rows — after their
 // references are pruned, in the same transaction as the feed row itself.
+//
+// The rows that reference the feed through a NO ACTION foreign key — its reading
+// behaviors and the legacy user_preferences rows — are removed first (see
+// deleteFeedReferenceRows); without that the whole transaction would roll back
+// with a foreign-key violation and the user's deletion would silently do
+// nothing.
 func (r *ReaderRepository) DeleteFeedCascade(feedID uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("feed_id = ?", feedID).Delete(&models.ReadingBehavior{}).Error; err != nil {
+		if err := deleteFeedReferenceRows(tx, feedID); err != nil {
 			return err
 		}
 		if err := r.deleteArticlesWithRefs(tx, feedID); err != nil {
@@ -411,16 +496,22 @@ func (r *ReaderRepository) DeleteFeedCascade(feedID uint) error {
 // cascade the prune would hit articles that survive. The deletion is therefore
 // explicit, which is what the constraint does wherever it exists.
 //
-// reading_behaviors / user_preferences are deliberately untouched: their NO
-// ACTION foreign keys already fail this deletion today, and deleting them to make
-// it succeed would silently widen an admin operation. Everything runs in one
-// transaction, so a constraint failure rolls the prune back with it.
+// The rows that reference the feeds or the category through NO ACTION foreign
+// keys — reading_behaviors and the legacy user_preferences rows — are removed
+// before the articles go (see deleteCategoryReferenceRows): reading_behaviors
+// also references its article, so a leftover row would block the article
+// deletion. Only the category, its feeds and the rows pointing at them are
+// touched. Everything runs in one transaction, so a failure rolls the prune back
+// with it.
 func (r *ReaderRepository) DeleteCategoryCascade(categoryID uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var feedIDs []uint
 		if err := tx.Model(&models.Feed{}).
 			Where("category_id = ?", categoryID).
 			Pluck("id", &feedIDs).Error; err != nil {
+			return err
+		}
+		if err := deleteCategoryReferenceRows(tx, categoryID, feedIDs); err != nil {
 			return err
 		}
 		if err := r.deleteArticlesOfFeedsWithRefs(tx, feedIDs); err != nil {

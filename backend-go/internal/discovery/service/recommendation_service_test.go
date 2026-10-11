@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	discmodels "syntopica-backend/internal/discovery/models"
+	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
 )
 
@@ -109,6 +110,82 @@ func TestRecommendationCardIncludesRouteStatus(t *testing.T) {
 	}
 }
 
+// TestRecommendationCardSubscribedState 2.2 / spec feed-discovery：卡片携带订阅状态——
+// rsshub 候选按路由级（example 不同也命中，覆盖「订阅发生在建卡之后」）、原生按精确地址；
+// legacy 无候选行保持 false/空；空集合非 nil。
+func TestRecommendationCardSubscribedState(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	base := resolveRSSHubBaseURL(db)
+
+	// rsshub 候选：已订阅 world 分区，而 route.example 是 china。
+	subRoute := discmodels.RSSHubRoute{
+		Namespace: "zaobao", Path: "/znews/:section?", Name: "联合早报",
+		Example: "/zaobao/znews/china", UsableDirectly: true, Status: "ok", Parameters: "{}",
+	}
+	require.NoError(t, db.Create(&subRoute).Error)
+	subCandID := setupCandidateVector(t, db, subRoute.ID, subRoute.Namespace, subRoute.Path, "test", []float64{1, 0, 0})
+	subscribedURL := base + "/zaobao/znews/world"
+	require.NoError(t, db.Create(&models.Feed{Title: "联合早报-世界", URL: subscribedURL}).Error)
+
+	// 原生候选：精确命中一条 + 未命中一条（同 host 异 path）。
+	nativeHit := discmodels.FeedCandidate{
+		StableKey: "rss:rec-native-hit", Kind: "rss",
+		FeedURL: candidateStr("https://native.example.com/feed.xml"), CanonicalKey: "https://native.example.com/feed.xml",
+		ManualMetadata: models.MetadataMap{}, AccessScope: "public", Revision: 1,
+	}
+	nativeMiss := discmodels.FeedCandidate{
+		StableKey: "rss:rec-native-miss", Kind: "rss",
+		FeedURL: candidateStr("https://native.example.com/other.xml"), CanonicalKey: "https://native.example.com/other.xml",
+		ManualMetadata: models.MetadataMap{}, AccessScope: "public", Revision: 1,
+	}
+	require.NoError(t, db.Create(&nativeHit).Error)
+	require.NoError(t, db.Create(&nativeMiss).Error)
+	require.NoError(t, db.Create(&models.Feed{Title: "原生已订", URL: "https://native.example.com/feed.xml"}).Error)
+
+	mkRec := func(hash string, candID *uint) {
+		require.NoError(t, db.Create(&discmodels.FeedRecommendation{
+			RouteID: subRoute.ID, Source: RecommendationSourceQA, Score: 1,
+			Status: "pending", RecommendationHash: hash, CandidateID: candID,
+		}).Error)
+	}
+	mkRec("rec-sub-rsshub", &subCandID)
+	mkRec("rec-native-hit", &nativeHit.ID)
+	mkRec("rec-native-miss", &nativeMiss.ID)
+	mkRec("rec-legacy", nil) // legacy 无候选行（同路由已订阅也不猜）
+
+	svc := NewRecommendationService(db, nil, nil)
+	cards, err := svc.GetRecommendations(ctx, "pending")
+	require.NoError(t, err)
+	require.Len(t, cards, 4)
+
+	byCand := map[uint]RecommendationCard{}
+	var legacy *RecommendationCard
+	for i := range cards {
+		require.NotNil(t, cards[i].SubscribedURLs)
+		if cards[i].CandidateID == nil {
+			legacy = &cards[i]
+			continue
+		}
+		byCand[*cards[i].CandidateID] = cards[i]
+	}
+	require.NotNil(t, legacy)
+	require.False(t, legacy.Subscribed, "legacy 无候选行保持未订阅（不按路由猜）")
+	require.Empty(t, legacy.SubscribedURLs)
+
+	sub := byCand[subCandID]
+	require.True(t, sub.Subscribed, "rsshub 路由级命中：example 不同也认")
+	require.Equal(t, []string{subscribedURL}, sub.SubscribedURLs)
+
+	hit := byCand[nativeHit.ID]
+	require.True(t, hit.Subscribed, "原生按精确地址命中")
+	require.Equal(t, []string{"https://native.example.com/feed.xml"}, hit.SubscribedURLs)
+
+	miss := byCand[nativeMiss.ID]
+	require.False(t, miss.Subscribed)
+	require.Empty(t, miss.SubscribedURLs)
+}
+
 // TestBuildFeedURLEscapesParams：requires_parameters 路由，用户填的参数值含特殊字符要 path-escape（M2）。
 func TestBuildFeedURLEscapesParams(t *testing.T) {
 	r := &discmodels.RSSHubRoute{
@@ -119,6 +196,24 @@ func TestBuildFeedURLEscapesParams(t *testing.T) {
 	require.NotContains(t, u, " ", "空格应转义")
 	require.Contains(t, u, "a%20b", "空格转 %20")
 	require.Contains(t, u, "%2F", "/ 应转义防 path 注入")
+}
+
+// TestBuildFeedURLParamValueWithColon：参数值本身含 `:`（如时间 10:00）不得被误判成
+// 「仍有未填必填参数」——未填判定必须看段首 `:`，不能整串 Contains（否则本可用的地址
+// 拼不出来，且与前端 buildRSSHubFeedUrl 分叉；fix-discovery-subscribed-hint review M1）。
+func TestBuildFeedURLParamValueWithColon(t *testing.T) {
+	r := &discmodels.RSSHubRoute{
+		Namespace: "test", Path: "/list/:range",
+		RequiresParameters: true, UsableDirectly: false,
+	}
+	require.Equal(t,
+		DefaultRSSHubBaseURL+"/test/list/10:00",
+		buildFeedURL(r, map[string]string{"range": "10:00"}, DefaultRSSHubBaseURL),
+		"含 `:` 的参数值不得被误判为未填参数")
+	require.Equal(t, "", buildFeedURL(r, nil, DefaultRSSHubBaseURL),
+		"未填必填参数仍须拒绝（段首 `:` 残留）")
+	require.Equal(t, "", buildFeedURL(r, map[string]string{"range": "  "}, DefaultRSSHubBaseURL),
+		"空白值视作未提供，仍须拒绝")
 }
 
 // 2026-09 用户实测：zaobao/realtime/:section?（usable_directly + example 缺省 china）

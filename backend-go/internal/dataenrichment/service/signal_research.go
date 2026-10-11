@@ -46,14 +46,18 @@ const (
 // 不是 Registry 工具（design §5：不新增通用 Registry 工具）。
 const signalResearchActionCalculate = "calculate"
 
-// signalResearchToolNames 是研究 loop 的完整工具白名单：仅四源，不含
-// web_search / 脚本 / 探索工具；旧流程 allowedTools 零变化（约束「工具面
-// 不变量」唯一放开的口子，见 specs/research-data-sources MODIFIED）。
+// signalResearchToolNames 是研究 loop 的完整工具白名单：七源（四量类 +
+// yahoo/fred 价格类 + gdelt 事件热度类），不含 web_search / 脚本 / 探索工
+// 具；旧流程 allowedTools 零变化（约束「工具面不变量」唯一放开的口子，见
+// specs/research-data-sources MODIFIED；add-fast-frequency-datasources 扩客）。
 var signalResearchToolNames = []string{
 	"eia_wpsr_table1",
 	"jodi_oil_primary",
 	"wb_wdi",
 	"un_comtrade_trade",
+	"yahoo_chart",
+	"fred_series",
+	"gdelt_doc",
 }
 
 func isSignalSourceTool(name string) bool {
@@ -154,6 +158,17 @@ func signalObservationPeriodEnd(toolName string, obs map[string]any) (time.Time,
 		default:
 			return time.Time{}, false
 		}
+	case "yahoo_chart", "fred_series", "gdelt_doc":
+		// 日度/时间线源（add-fast-frequency-datasources）：period=YYYY-MM-DD，
+		// 结束时刻=当日零点——恰=cutoff 当日的观测保留（当日收盘/聚合属既成
+		// 事实，test-cases 变体走查口径）；FRED 周月序列的期代表日（月 1 日）
+		// 同口径，天然不晚于该期最后可得时点之后的次日零点。
+		p, _ := obs["period"].(string)
+		t, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(p), shanghai)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return t, true
 	default:
 		return time.Time{}, false
 	}
@@ -386,6 +401,25 @@ func signalCalcObservationFromMap(ref, callID, tool string, obs map[string]any) 
 		// WDI 观测不带单位列（原生单位按指标定义）；同系列计算不受影响，
 		// 跨系列计算由 series 判定拒绝。
 		entry.Unit = ""
+	case "yahoo_chart":
+		symbol, _ := obs["symbol"].(string)
+		currency, _ := obs["currency"].(string)
+		entry.SeriesID = "yahoo|" + symbol
+		entry.Unit = currency
+		// 规范值 = close（value 同源）。
+		entry.Value = optionalSignalFloat(obs["close"])
+	case "fred_series":
+		seriesID, _ := obs["series_id"].(string)
+		entry.SeriesID = "fred|" + seriesID
+		// FRED 序列原生单位随序列定义（units 顶层透传），同系列单位恒一致；
+		// 观测行不重复携带，计算索引留空（同 WDI 先例）。
+		entry.Unit = ""
+	case "gdelt_doc":
+		query, _ := obs["query"].(string)
+		mode, _ := obs["mode"].(string)
+		// 声量（timelinevol）与情绪（timelinetone）量纲不同，不得互算差值：mode 进系列身份。
+		entry.SeriesID = "gdelt|" + mode + "|" + query
+		entry.Unit = "" // 无量纲热度/情绪指数
 	default: // un_comtrade_trade
 		reporter, _ := obs["reporter_code"].(float64)
 		partner, _ := obs["partner_code"].(float64)
@@ -516,8 +550,9 @@ func (p *signalResearchPolicy) notifyProgress() {
 }
 
 // CheckCall validates every call_tool decision BEFORE execution：工具必须属
-// 于四源白名单，且必须带非空 question（对应研究问题的一步）。Blocked 调用
-// 不执行、不消耗去重键，但该决策轮照常消耗（防无限空转）。
+// 于研究白名单（七源），且必须带非空 question（对应研究问题的一步）。Blocked
+// 调用不执行、不消耗去重键，但该决策轮照常消耗（防无限空转）。拦截反馈文案
+// 按白名单动态生成（源数与清单不再硬编码，防下次扩源漂移）。
 func (p *signalResearchPolicy) CheckCall(step int, decision map[string]any) toolCallVerdict {
 	p.markStep(step)
 	toolName, _ := decision["tool"].(string)
@@ -526,7 +561,8 @@ func (p *signalResearchPolicy) CheckCall(step int, decision map[string]any) tool
 		return toolCallVerdict{
 			Blocked:       true,
 			BlockedReason: "tool_not_in_research_whitelist",
-			Feedback:      fmt.Sprintf("%q 不在本次研究的工具白名单内；只能调用四源工具：%s。与研究无关的源不要乱调凑数量，四源都不相关时请直接 finish。", toolName, strings.Join(signalResearchToolNames, " / ")),
+			Feedback: fmt.Sprintf("%q 不在本次研究的工具白名单内；只能调用 %d 个研究数据源工具：%s。与研究无关的源不要乱调凑数量，白名单源都不相关时请直接 finish。",
+				toolName, len(signalResearchToolNames), strings.Join(signalResearchToolNames, " / ")),
 		}
 	}
 	question, _ := decision["question"].(string)
@@ -561,8 +597,8 @@ func (p *signalResearchPolicy) ObserveCall(_ int, toolName string, _ map[string]
 	p.notifyProgress()
 }
 
-// CheckFinish：研究不设机械配额——证据足够、或四源都查不到相关数据时都可
-// 以收束（design §4：四源不匹配时可提前 finish）。
+// CheckFinish：研究不设机械配额——证据足够、或白名单源都查不到相关数据时
+// 都可以收束（design §4：全源不匹配时可提前 finish）。
 func (p *signalResearchPolicy) CheckFinish(step int, _ string) toolFinishVerdict {
 	p.markStep(step)
 	return toolFinishVerdict{}
@@ -678,7 +714,7 @@ func (p *signalResearchPolicy) trackSourceCoverage(toolName, resultFull string) 
 		}
 		p.sourceNudged[toolName] = true
 		p.pendingFeedback = append(p.pendingFeedback, fmt.Sprintf(
-			"%s：该源在本研究问题上已连续%d次无覆盖，换参数也不会有数据；若四源皆无覆盖请直接 finish（summary 里如实列缺口）",
+			"%s：该源在本研究问题上已连续%d次无覆盖，换参数也不会有数据；若白名单源皆无覆盖请直接 finish（summary 里如实列缺口）",
 			toolName, signalSourceNoCoverageStreak))
 		allNudged := true
 		for _, name := range signalResearchToolNames {
@@ -689,8 +725,8 @@ func (p *signalResearchPolicy) trackSourceCoverage(toolName, resultFull string) 
 		}
 		if allNudged && !p.finaleNudged {
 			p.finaleNudged = true
-			p.pendingFeedback = append(p.pendingFeedback,
-				"四个数据源均确认无覆盖：请基于已有证据 finish，不要继续换参试探")
+			p.pendingFeedback = append(p.pendingFeedback, fmt.Sprintf(
+				"%d 个数据源均确认无覆盖：请基于已有证据 finish，不要继续换参试探", len(signalResearchToolNames)))
 		}
 		return
 	}
@@ -791,7 +827,7 @@ func assembleSignalResearchPrompt(candidate *repository.BoardSignalCandidate, ma
 	sb.WriteString(`
 
 工作纪律：
-1. 取数优先服务研究问题：不要为凑数量乱调与研究无关的源/指标/经济体；四源都查不到相关数据时，直接 finish 并如实说明。
+1. 取数优先服务研究问题：不要为凑数量乱调与研究无关的源/指标/经济体；白名单数据源都查不到相关数据时，直接 finish 并如实说明。
 2. 每次 call_tool / calculate 必须带非空 question 字段，说明这一步回答研究问题的哪一小问。
 3. 工具返回的 observations 已按研究时点（cutoff）过滤，每条带 observation_id（如 "c1:o2"）。后续计算与成文只能引用这些 observation_id；晚于 cutoff 的数据已被剔除，不要假设更新的数据存在。
 4. calculate 是受限计算，值由代码计算（你不能自己算数、不能提交 value）：

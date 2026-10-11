@@ -97,15 +97,31 @@ func NewCompositeLabelService(db *gorm.DB, embedder AuxiliaryLabelEmbedder) *Com
 	return &CompositeLabelService{db: db, embedder: embedder}
 }
 
-// CreateCompositeLabel creates (or dedup-reuses) a composite label. The
-// embedder is called before any DB write so an embed failure leaves zero rows
-// behind (transactional-rollback semantics without holding a tx across LLM I/O).
-//
-// L1 compares against all composites (active AND disabled — exact identity
-// must not fork the space); a disabled hit is returned as-is, callers surface
-// its status. L2 only compares active composites (disabled rows carry NULL
-// vectors by the disable-drops-vectors red line).
-func (s *CompositeLabelService) CreateCompositeLabel(ctx context.Context, label, description string, componentIDs []uint, source string) (*CompositeLabelCreateResult, error) {
+// CompositeLabelPlan is the pre-transaction resolution of a composite create:
+// every read and the (single) LLM embedding call happen in PlanCompositeLabel;
+// ApplyCompositeLabel then performs all writes inside a caller-owned
+// transaction (fix-aux-label-idle-tx-cache design D1 — no slow I/O inside
+// transactions). Producing a plan never writes anything.
+type CompositeLabelPlan struct {
+	Outcome CompositeCreateOutcome
+	// ReuseRow — reused_l1: freshly loaded match; Apply bumps ref_count only.
+	ReuseRow *models.SemanticLabel
+	// AliasTarget — alias_l2: best match with the new alias already appended
+	// in memory; Apply persists aliases (when AliasAdded) and bumps ref_count.
+	AliasTarget *models.SemanticLabel
+	AliasAdded  bool
+	// ToCreate / ComponentIDs — created: fully populated row (ID zero);
+	// Apply inserts it plus the ordered composite_components rows.
+	ToCreate     *models.SemanticLabel
+	ComponentIDs []uint
+}
+
+// PlanCompositeLabel resolves a composite create without writing: component
+// validation, L1 canonical component-ID set match, the LLM composite-phrase
+// embedding and the L2 cosine gate — the read/LLM half of the former
+// CreateCompositeLabel. Callers that only need the legacy single-shot
+// behavior can keep using CreateCompositeLabel.
+func (s *CompositeLabelService) PlanCompositeLabel(ctx context.Context, label, description string, componentIDs []uint, source string) (*CompositeLabelPlan, error) {
 	label = strings.TrimSpace(label)
 	if label == "" {
 		return nil, fmt.Errorf("composite label must not be empty")
@@ -156,13 +172,7 @@ func (s *CompositeLabelService) CreateCompositeLabel(ctx context.Context, label,
 			if err := s.db.WithContext(ctx).Where("id = ? AND label_type = ?", compositeID, "composite").First(&row).Error; err != nil {
 				return nil, err
 			}
-			if err := s.db.WithContext(ctx).Model(&models.SemanticLabel{}).
-				Where("id = ?", compositeID).
-				UpdateColumn("ref_count", gorm.Expr("ref_count + 1")).Error; err != nil {
-				return nil, err
-			}
-			row.RefCount++
-			return &CompositeLabelCreateResult{Label: &row, Outcome: CompositeOutcomeReusedL1}, nil
+			return &CompositeLabelPlan{Outcome: CompositeOutcomeReusedL1, ReuseRow: &row}, nil
 		}
 	}
 
@@ -179,19 +189,18 @@ func (s *CompositeLabelService) CreateCompositeLabel(ctx context.Context, label,
 		return nil, err
 	}
 	if best != nil {
-		if err := s.addCompositeAlias(ctx, best, label); err != nil {
-			return nil, err
+		// Mirror the legacy addCompositeAlias mutation here (alias appended in
+		// memory); Apply persists it via Save on the caller's transaction.
+		aliasAdded := false
+		if !semanticAliasesContain(best.Aliases, label) && !strings.EqualFold(best.Label, label) {
+			best.Aliases = append(best.Aliases, label)
+			aliasAdded = true
 		}
-		if err := s.db.WithContext(ctx).Model(&models.SemanticLabel{}).
-			Where("id = ?", best.ID).
-			UpdateColumn("ref_count", gorm.Expr("ref_count + 1")).Error; err != nil {
-			return nil, err
-		}
-		best.RefCount++
-		return &CompositeLabelCreateResult{Label: best, Outcome: CompositeOutcomeAliasL2}, nil
+		return &CompositeLabelPlan{Outcome: CompositeOutcomeAliasL2, AliasTarget: best, AliasAdded: aliasAdded}, nil
 	}
 
-	// Miss on both gates → create (single tx: label row + ordered components).
+	// Miss on both gates → create. The row is fully populated here; the INSERT
+	// (plus ordered components) happens in ApplyCompositeLabel.
 	slug := core.Slugify(label)
 	if slug == "" {
 		return nil, fmt.Errorf("composite label slug is empty")
@@ -208,24 +217,84 @@ func (s *CompositeLabelService) CreateCompositeLabel(ctx context.Context, label,
 	if desc := strings.TrimSpace(description); desc != "" {
 		created.Description = desc
 	}
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&created).Error; err != nil {
-			return err
+	return &CompositeLabelPlan{Outcome: CompositeOutcomeCreated, ToCreate: &created, ComponentIDs: ids}, nil
+}
+
+// ApplyCompositeLabel performs the writes of a plan on the caller-owned
+// transaction (tx): ref_count bump / alias Save / label+components INSERT.
+// No embedder or other slow I/O runs here — the caller keeps the transaction
+// short (design D1).
+func (s *CompositeLabelService) ApplyCompositeLabel(ctx context.Context, tx *gorm.DB, plan *CompositeLabelPlan) (*CompositeLabelCreateResult, error) {
+	switch plan.Outcome {
+	case CompositeOutcomeReusedL1:
+		if err := tx.Model(&models.SemanticLabel{}).
+			Where("id = ?", plan.ReuseRow.ID).
+			UpdateColumn("ref_count", gorm.Expr("ref_count + 1")).Error; err != nil {
+			return nil, err
 		}
-		rows := make([]tagmodels.CompositeComponent, 0, len(ids))
-		for i, id := range ids {
+		plan.ReuseRow.RefCount++
+		return &CompositeLabelCreateResult{Label: plan.ReuseRow, Outcome: plan.Outcome}, nil
+
+	case CompositeOutcomeAliasL2:
+		if plan.AliasAdded {
+			// Save so the Aliases jsonb serializer applies (UpdateColumn with a
+			// raw slice bypasses it and writes invalid json).
+			if err := tx.Save(plan.AliasTarget).Error; err != nil {
+				return nil, err
+			}
+		}
+		if err := tx.Model(&models.SemanticLabel{}).
+			Where("id = ?", plan.AliasTarget.ID).
+			UpdateColumn("ref_count", gorm.Expr("ref_count + 1")).Error; err != nil {
+			return nil, err
+		}
+		plan.AliasTarget.RefCount++
+		return &CompositeLabelCreateResult{Label: plan.AliasTarget, Outcome: plan.Outcome}, nil
+
+	case CompositeOutcomeCreated:
+		if err := tx.Create(plan.ToCreate).Error; err != nil {
+			return nil, err
+		}
+		rows := make([]tagmodels.CompositeComponent, 0, len(plan.ComponentIDs))
+		for i, id := range plan.ComponentIDs {
 			rows = append(rows, tagmodels.CompositeComponent{
-				CompositeID:      created.ID,
+				CompositeID:      plan.ToCreate.ID,
 				ComponentLabelID: id,
 				Position:         i + 1,
 			})
 		}
-		return tx.Create(&rows).Error
+		if err := tx.Create(&rows).Error; err != nil {
+			return nil, err
+		}
+		return &CompositeLabelCreateResult{Label: plan.ToCreate, Outcome: plan.Outcome}, nil
+	}
+	return nil, fmt.Errorf("invalid composite plan outcome %q", plan.Outcome)
+}
+
+// CreateCompositeLabel creates (or dedup-reuses) a composite label: plan
+// (reads + LLM) then a short write-only transaction. The embedder is called
+// before any DB write so an embed failure leaves zero rows behind
+// (transactional-rollback semantics without holding a tx across LLM I/O).
+//
+// L1 compares against all composites (active AND disabled — exact identity
+// must not fork the space); a disabled hit is returned as-is, callers surface
+// its status. L2 only compares active composites (disabled rows carry NULL
+// vectors by the disable-drops-vectors red line).
+func (s *CompositeLabelService) CreateCompositeLabel(ctx context.Context, label, description string, componentIDs []uint, source string) (*CompositeLabelCreateResult, error) {
+	plan, err := s.PlanCompositeLabel(ctx, label, description, componentIDs, source)
+	if err != nil {
+		return nil, err
+	}
+	var result *CompositeLabelCreateResult
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var applyErr error
+		result, applyErr = s.ApplyCompositeLabel(ctx, tx, plan)
+		return applyErr
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &CompositeLabelCreateResult{Label: &created, Outcome: CompositeOutcomeCreated}, nil
+	return result, nil
 }
 
 // DisableCompositeLabel flips status to disabled and drops both vectors in the
@@ -500,17 +569,6 @@ func (s *CompositeLabelService) bestCompositeByEmbedding(ctx context.Context, ve
 		}
 	}
 	return best, nil
-}
-
-// addCompositeAlias appends alias when absent (idempotent) without touching
-// label or embeddings. Uses Save so the Aliases jsonb serializer applies
-// (UpdateColumn with a raw slice bypasses it and writes invalid json).
-func (s *CompositeLabelService) addCompositeAlias(ctx context.Context, label *models.SemanticLabel, alias string) error {
-	if semanticAliasesContain(label.Aliases, alias) || strings.EqualFold(label.Label, alias) {
-		return nil
-	}
-	label.Aliases = append(label.Aliases, alias)
-	return s.db.WithContext(ctx).Save(label).Error
 }
 
 // loadCompositeDedupeSim reads ai_settings.composite_label_dedupe_sim,

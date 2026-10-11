@@ -89,6 +89,16 @@ func resetStaleStates() {
 func StartRuntime() *Runtime {
 	resetStaleStates()
 
+	// Sequence drift self-heal（fix-feed-delete-and-sequence-drift D4/D5）：启动期
+	// 扫描「id 列 + <table>_id_seq」的表，把「下一次 nextval 将分配的值 ≤ max(id)」
+	// 的序列 setval 对齐到 max(id)+1。选点与 resetStaleStates 同处 StartRuntime 开头——
+	// 此刻调度器与 HTTP 未起、无并发写，max(id) 是稳定快照；DEMO_READ_ONLY 不进本函数，
+	// 演示只读快照零写入保证不变。setval 不受事务回滚保护，失败仅记日志不阻塞启动
+	// （D7）；无漂移不写，幂等。
+	if healed := database.HealSequenceDrift(database.DB); healed > 0 {
+		logging.Infof("Sequence drift self-heal repaired %d sequence(s) on startup", healed)
+	}
+
 	// 孤儿进展收敛（board-signal-reports tasks 4.10；design §10.4）：选点
 	// StartRuntime 开头（resetStaleStates 同类时点）而非 main.go——①这正是
 	// 「上一进程残留的进行中状态」启动收敛的既有家（调度任务/订阅/Firecrawl

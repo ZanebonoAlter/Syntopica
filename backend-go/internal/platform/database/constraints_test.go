@@ -5,6 +5,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"syntopica-backend/internal/platform/testutil"
+
+	// Blank import registers scheduler-owned models (scheduler_tasks, task.go
+	// init → database.RegisterModels) for this test binary's AutoMigrate. The
+	// information_schema assertions below need scheduler_tasks to exist in the
+	// golden schema; RunAutoMigrate's table set depends on these init() side
+	// effects (platform/database cannot reference the package statically —
+	// import cycle, see task.go:11).
+	_ "syntopica-backend/internal/platform/scheduler"
 )
 
 // This integration test guards against "constraint vacuum": after the model-tag
@@ -44,8 +52,7 @@ func TestModelTagConstraints_MaterializedInDB(t *testing.T) {
 		{"ai_routes", "name", true, ""},
 		{"ai_routes", "capability", true, ""},
 		{"ai_routes", "enabled", true, "true"},
-		{"ai_routes", "priority", true, "100"},
-		{"ai_routes", "strategy", true, "ordered_failover"},
+		// ai_routes.priority/strategy 死列已随 vendor/model 两层化移除（全新库不再建列）。
 		{"ai_routes", "max_concurrency", true, "0"},
 		{"ai_route_providers", "route_id", true, ""},
 		{"ai_route_providers", "provider_id", true, ""},

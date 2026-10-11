@@ -107,6 +107,57 @@ export function truncateDiagGate(text: string): string {
 	return truncateDiag(hit);
 }
 
+/* ---------- 失败指纹归一化（add-foreign-gate-steer-attribution design D1） ----------
+ *  gate.check 记账与完整块展示保留原始 diag；同指纹判定（quality-gate
+ *  failureReports 比较）改用本函数产出的归一化指纹。背景：2026-09-28 实测
+ *  （session 01a0e7f1，23 轮近乎逐字重复注入）——测试运行期输出的首个失败特征行
+ *  是带秒级时间戳的日志行（`2026/09/28 22:33:46 …` → `22:46:39 …` 逐轮必变），
+ *  精确相等比较永假 → 同指纹静默永不触发。归一化只剥「必然逐轮变化」的动态形态，
+ *  错误文本主体保留进指纹（宁可多报不漏报新指纹，与归属判定保守取向同向）。
+ *  规则按序应用（design D1），MUST 确定性：相同输出字节 → 相同指纹。
+ *    1. 行首日志时间戳（`2026/09/28 22:33:46` / RFC3339 `2026-09-28T22:33:46.123`）
+ *    2. IP:port 整体与 `://host:port` 端口段（`127.0.0.1:34505` / `http://h:3000`）
+ *    3. 耗时括号、毫秒标注与裸耗时值（`(0.02s)` / `[0.029ms]` / `10.793s`）
+ *    4. 剩余连续数字序列压平（行号/计数/毫秒残段，`:260` → `:<N>`；标识符邻接
+ *       的数字是错误文本主体/点分版本链（`e1`/`models2`/`go1.27`）——保留进指纹，
+ *       宁可多报不漏报新指纹，与 D1 保守取向同向）
+ *    5. 仓库根绝对路径前缀剥除（`/home/<user>/…/Syntopica/` → 仓库相对）
+ *  输入约定：来自 truncateDiagGate 的单行有界产物（截断/剥控制字符不在此层）。 */
+
+/** 规则 1：行首日志时间戳（`[T ]` 覆盖 RFC3339 与空格两形态，含可选毫秒段；
+ *  连带其后空白剥除，避免残留前导空格破坏规则 5 的行首锚定） */
+const FP_TS_PREFIX_RE = /^\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?\s*/;
+/** 规则 2：IP:port 整体（含 127.0.0.1:34505）*/
+const FP_IPPORT_RE = /\b\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}\b/g;
+/** 规则 2：`://host:port` 的端口段（非 IP host 形态，保留 host 剥端口） */
+const FP_URLPORT_RE = /(:\/\/[^\s/:]+):\d{2,5}\b/g;
+/** 规则 3：耗时括号 `(0.02s)` / `(120ms)` */
+const FP_DURATION_PAREN_RE = /\(\d+(?:\.\d+)?(?:ms|s)\)/g;
+/** 规则 3：毫秒标注 `[0.029ms]` */
+const FP_DURATION_MS_RE = /\[\d+(?:\.\d+)?ms\]/g;
+/** 规则 3：裸耗时值（`10.793s` / `120ms`，无括号包裹形态；go test FAIL 行尾时长） */
+const FP_DURATION_BARE_RE = /\d+(?:\.\d+)?(?:ms|s)\b/g;
+/** 规则 4：剩余数字序列压平——标识符邻接守卫（前后紧邻 `\w` 或 `.` 的数字属错误
+ *  文本主体/点分版本链，如 `e1`/`models2`/`go1.27`，不压平）；只剥独立数字形态
+ * （行号/计数/毫秒残段）。宁可多报不漏报新指纹，与 D1 保守取向同向。 */
+const FP_NUMSEQ_RE = /(?<![\w.])\d+(?![\w.])/g;
+/** 规则 5：仓库根绝对路径前缀（非贪婪至首个 `/Syntopica/`）→ 仓库相对路径 */
+const FP_REPO_ROOT_RE = /^\/[^\s]*?\/Syntopica\//;
+
+/** 失败特征行 → 归一化指纹（仅用于同指纹比较；展示与 gate.check 记账用原文）。 */
+export function normalizeDiagFingerprint(text: string): string {
+	let s = typeof text === "string" ? text : "";
+	s = s.replace(FP_TS_PREFIX_RE, "");
+	s = s.replace(FP_IPPORT_RE, "");
+	s = s.replace(FP_URLPORT_RE, "$1");
+	s = s.replace(FP_DURATION_PAREN_RE, "");
+	s = s.replace(FP_DURATION_MS_RE, "");
+	s = s.replace(FP_DURATION_BARE_RE, "");
+	s = s.replace(FP_NUMSEQ_RE, "<N>");
+	s = s.replace(FP_REPO_ROOT_RE, "");
+	return s.trim();
+}
+
 /** WSL interop 层环境故障特征（harden-gate-interop-health design D3 双关键字并集锚定，
  *  任一命中即环境故障）：
  *  1. UtilAcceptVsock 关键字（accept4 failed 110 = ETIMEDOUT，vsock 通道死）；

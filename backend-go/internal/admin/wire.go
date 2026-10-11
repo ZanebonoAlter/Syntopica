@@ -31,17 +31,25 @@ func SetRegistry(reg handler.SchedulerRegistry) {
 // Handler re-exports (HTTP handlers registered in internal/app/router.go)
 // ============================================================================
 
-// AI provider / route / settings handlers
+// AI vendor / model / route / settings / observability handlers
+// （ai-provider-model-overhaul：旧 ListProviders/UpsertProvider/UpdateProvider/
+// DeleteProvider/TestConnection re-export 随旧端点一并删除）
 var (
-	ListProviders  = handler.ListProviders
-	UpsertProvider = handler.UpsertProvider
-	UpdateProvider = handler.UpdateProvider
-	DeleteProvider = handler.DeleteProvider
-	ListRoutes     = handler.ListRoutes
-	UpdateRoute    = handler.UpdateRoute
-	GetSettings    = handler.GetSettings
-	SaveSettings   = handler.SaveSettings
-	TestConnection = handler.TestConnection
+	ListAIVendors         = handler.ListAIVendors
+	CreateAIVendor        = handler.CreateAIVendor
+	GetAIVendor           = handler.GetAIVendor
+	UpdateAIVendor        = handler.UpdateAIVendor
+	DeleteAIVendor        = handler.DeleteAIVendor
+	RefreshAIVendorModels = handler.RefreshAIVendorModels
+	TestAIVendor          = handler.TestAIVendor
+	TestAIVendorInline    = handler.TestAIVendorInline
+	ListAIModels          = handler.ListAIModels
+	UpdateAIModel         = handler.UpdateAIModel
+	ListAIRoutes          = handler.ListAIRoutes
+	UpdateAIRoute         = handler.UpdateAIRoute
+	GetSettings           = handler.GetSettings
+	SaveSettings          = handler.SaveSettings
+	QueryDegradations     = handler.QueryDegradations
 )
 
 // AI model health handlers (ai-model-health)
@@ -92,10 +100,12 @@ var (
 )
 
 // ============================================================================
-// Comtrade settings handlers（comtrade_settings_handler 留 admin 域）
+// Comtrade/FRED settings handlers（研究数据源 key 界面配置；handler 留 admin 域）
 var (
 	GetComtradeSettings  = handler.GetComtradeSettings
 	SaveComtradeSettings = handler.SaveComtradeSettings
+	GetFredSettings      = handler.GetFredSettings
+	SaveFredSettings     = handler.SaveFredSettings
 )
 
 // Scheduler re-exports (types and constructors used in internal/app/runtime.go)

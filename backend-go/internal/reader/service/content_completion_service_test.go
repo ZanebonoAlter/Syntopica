@@ -32,8 +32,30 @@ func setupServicesTestDB(t *testing.T) {
 	if err := database.DB.AutoMigrate(&models.TopicTag{}, &models.ArticleTopicTag{}, &models.TagJob{}, &models.FirecrawlJob{}); err != nil {
 		t.Fatalf("migrate topic tag tables: %v", err)
 	}
-	if err := database.DB.AutoMigrate(&models.Feed{}, &models.Article{}, &scheduler.SchedulerTask{}, &models.AIProvider{}, &models.AIRoute{}, &models.AIRouteProvider{}, &models.AICallLog{}); err != nil {
+	if err := database.DB.AutoMigrate(&models.Feed{}, &models.Article{}, &scheduler.SchedulerTask{}, &models.AIVendor{}, &models.AIModel{}, &models.AIRoute{}, &models.AIRouteModel{}, &models.AICallLog{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
+	}
+}
+
+// seedSummaryRouteFixture 建 summary 能力路由的 vendor+model+route_models 绑定链
+// （Router 数据面已切 LoadRouteWithModels，参照 discovery seedRouteModelChain 模式），
+// 模型指向 baseURL 的 OpenAI 兼容假服务。
+func seedSummaryRouteFixture(t *testing.T, baseURL string) {
+	t.Helper()
+	vendor := models.AIVendor{Name: "completion-vendor", ProviderType: airouter.ProviderTypeOpenAICompatible, BaseURL: baseURL, APIKey: "token", Enabled: true}
+	if err := database.DB.Create(&vendor).Error; err != nil {
+		t.Fatalf("create vendor: %v", err)
+	}
+	model := models.AIModel{VendorID: vendor.ID, Name: "test-model", ModelKind: airouter.ModelKindLLM, Enabled: true, Status: airouter.ModelStatusOK}
+	if err := database.DB.Create(&model).Error; err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+	route := models.AIRoute{Name: airouter.DefaultRouteName, Capability: string(airouter.CapabilitySummary), Enabled: true}
+	if err := database.DB.Create(&route).Error; err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	if err := database.DB.Create(&models.AIRouteModel{RouteID: route.ID, ModelID: model.ID, Priority: 1, Enabled: true}).Error; err != nil {
+		t.Fatalf("create route model: %v", err)
 	}
 }
 
@@ -46,17 +68,7 @@ func TestCompleteArticleWithForceUsesAIRouterRoute(t *testing.T) {
 	}))
 	defer aiServer.Close()
 
-	provider := models.AIProvider{Name: "completion-primary", ProviderType: airouter.ProviderTypeOpenAICompatible, BaseURL: aiServer.URL, APIKey: "token", Model: "test-model", Enabled: true}
-	if err := database.DB.Create(&provider).Error; err != nil {
-		t.Fatalf("create provider: %v", err)
-	}
-	route := models.AIRoute{Name: airouter.DefaultRouteName, Capability: string(airouter.CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	if err := database.DB.Create(&route).Error; err != nil {
-		t.Fatalf("create route: %v", err)
-	}
-	if err := database.DB.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error; err != nil {
-		t.Fatalf("create route provider: %v", err)
-	}
+	seedSummaryRouteFixture(t, aiServer.URL)
 
 	feed := models.Feed{Title: "Feed", URL: fmt.Sprintf("https://example.com/%s", t.Name()), ArticleSummaryEnabled: true, FirecrawlEnabled: true, MaxCompletionRetries: 2}
 	if err := database.DB.Create(&feed).Error; err != nil {
@@ -193,17 +205,7 @@ func TestCompleteArticleWithForceRetriesUntilMaxAndLogsMetadata(t *testing.T) {
 	}))
 	defer aiServer.Close()
 
-	provider := models.AIProvider{Name: "completion-primary", ProviderType: airouter.ProviderTypeOpenAICompatible, BaseURL: aiServer.URL, APIKey: "token", Model: "test-model", Enabled: true}
-	if err := database.DB.Create(&provider).Error; err != nil {
-		t.Fatalf("create provider: %v", err)
-	}
-	route := models.AIRoute{Name: airouter.DefaultRouteName, Capability: string(airouter.CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	if err := database.DB.Create(&route).Error; err != nil {
-		t.Fatalf("create route: %v", err)
-	}
-	if err := database.DB.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error; err != nil {
-		t.Fatalf("create route provider: %v", err)
-	}
+	seedSummaryRouteFixture(t, aiServer.URL)
 
 	feed := models.Feed{Title: "Feed", URL: fmt.Sprintf("https://example.com/%s", t.Name()), ArticleSummaryEnabled: true, FirecrawlEnabled: true, MaxCompletionRetries: 2}
 	if err := database.DB.Create(&feed).Error; err != nil {
@@ -268,17 +270,7 @@ func TestCompleteArticleWithForceSkipsFreshPendingAndReclaimsStalePending(t *tes
 	}))
 	defer aiServer.Close()
 
-	provider := models.AIProvider{Name: "completion-primary", ProviderType: airouter.ProviderTypeOpenAICompatible, BaseURL: aiServer.URL, APIKey: "token", Model: "test-model", Enabled: true}
-	if err := database.DB.Create(&provider).Error; err != nil {
-		t.Fatalf("create provider: %v", err)
-	}
-	route := models.AIRoute{Name: airouter.DefaultRouteName, Capability: string(airouter.CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	if err := database.DB.Create(&route).Error; err != nil {
-		t.Fatalf("create route: %v", err)
-	}
-	if err := database.DB.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error; err != nil {
-		t.Fatalf("create route provider: %v", err)
-	}
+	seedSummaryRouteFixture(t, aiServer.URL)
 
 	feed := models.Feed{Title: "Feed", URL: fmt.Sprintf("https://example.com/%s", t.Name()), ArticleSummaryEnabled: true, FirecrawlEnabled: true, MaxCompletionRetries: 2}
 	if err := database.DB.Create(&feed).Error; err != nil {
@@ -349,17 +341,7 @@ func TestCompleteArticleWithMetadataAddsSchedulerRunIDToCallLogs(t *testing.T) {
 	}))
 	defer aiServer.Close()
 
-	provider := models.AIProvider{Name: "completion-primary", ProviderType: airouter.ProviderTypeOpenAICompatible, BaseURL: aiServer.URL, APIKey: "token", Model: "test-model", Enabled: true}
-	if err := database.DB.Create(&provider).Error; err != nil {
-		t.Fatalf("create provider: %v", err)
-	}
-	route := models.AIRoute{Name: airouter.DefaultRouteName, Capability: string(airouter.CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	if err := database.DB.Create(&route).Error; err != nil {
-		t.Fatalf("create route: %v", err)
-	}
-	if err := database.DB.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error; err != nil {
-		t.Fatalf("create route provider: %v", err)
-	}
+	seedSummaryRouteFixture(t, aiServer.URL)
 
 	feed := models.Feed{Title: "Feed", URL: fmt.Sprintf("https://example.com/%s", t.Name()), ArticleSummaryEnabled: true, FirecrawlEnabled: true, MaxCompletionRetries: 2}
 	if err := database.DB.Create(&feed).Error; err != nil {
@@ -405,17 +387,7 @@ func TestCompleteArticleEnqueuesRetagJobAfterSuccessfulCompletion(t *testing.T) 
 	}))
 	defer aiServer.Close()
 
-	provider := models.AIProvider{Name: "completion-primary", ProviderType: airouter.ProviderTypeOpenAICompatible, BaseURL: aiServer.URL, APIKey: "token", Model: "test-model", Enabled: true}
-	if err := database.DB.Create(&provider).Error; err != nil {
-		t.Fatalf("create provider: %v", err)
-	}
-	route := models.AIRoute{Name: airouter.DefaultRouteName, Capability: string(airouter.CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	if err := database.DB.Create(&route).Error; err != nil {
-		t.Fatalf("create route: %v", err)
-	}
-	if err := database.DB.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error; err != nil {
-		t.Fatalf("create route provider: %v", err)
-	}
+	seedSummaryRouteFixture(t, aiServer.URL)
 
 	feed := models.Feed{Title: "OpenAI Feed", URL: fmt.Sprintf("https://example.com/%s", t.Name()), ArticleSummaryEnabled: true, FirecrawlEnabled: true, MaxCompletionRetries: 2}
 	if err := database.DB.Create(&feed).Error; err != nil {
@@ -453,17 +425,7 @@ func TestCompleteArticle_FirecrawlFailedFallsBackToDescription(t *testing.T) {
 	}))
 	defer aiServer.Close()
 
-	provider := models.AIProvider{Name: "completion-primary", ProviderType: airouter.ProviderTypeOpenAICompatible, BaseURL: aiServer.URL, APIKey: "token", Model: "test-model", Enabled: true}
-	if err := database.DB.Create(&provider).Error; err != nil {
-		t.Fatalf("create provider: %v", err)
-	}
-	route := models.AIRoute{Name: airouter.DefaultRouteName, Capability: string(airouter.CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	if err := database.DB.Create(&route).Error; err != nil {
-		t.Fatalf("create route: %v", err)
-	}
-	if err := database.DB.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: provider.ID, Priority: 1, Enabled: true}).Error; err != nil {
-		t.Fatalf("create route provider: %v", err)
-	}
+	seedSummaryRouteFixture(t, aiServer.URL)
 
 	feed := models.Feed{Title: "Feed", URL: fmt.Sprintf("https://example.com/%s", t.Name()), ArticleSummaryEnabled: true, FirecrawlEnabled: true, TaggingEnabled: true, MaxCompletionRetries: 2}
 	if err := database.DB.Create(&feed).Error; err != nil {

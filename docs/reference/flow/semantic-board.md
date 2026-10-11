@@ -20,13 +20,19 @@ SemanticBoard（语义版块）解决「把散装 event 标签组织成持久主
 ```mermaid
 flowchart TD
   TAG[tagging/extraction: LLM 提取 tag + 3-5 辅助标签] --> SVC[auxiliary_label_service.go]
-  SVC --> L1{L1: slug/alias 精确匹配}
+  SVC --> P1["阶段一（无事务，慢 I/O 区）<br/>L1 内存预解析 + 批量 embedding（merge 批 1 次 + storage 批 1 次）+ L2 决策"]
+  P1 --> L1{L1: slug/alias/normalizeKey 精确匹配}
   L1 -->|命中| R1[复用 ref_count++]
   L1 -->|未命中| L2{L2: embedding ≥ 0.95}
   L2 -->|命中| R2[小方加入 aliases ref_count++]
-  L2 -->|未命中| L3[L3: 新建 semantic_label<br/>label_type=auxiliary + 生成 embedding]
-  R1 & R2 & L3 --> REL[topic_tag_semantic_labels 记录关联]
+  L2 -->|未命中| L3[L3: 新建 semantic_label<br/>label_type=auxiliary + 双向量已备齐]
+  R1 & R2 & L3 --> P2["阶段二（短事务，毫秒级纯写）<br/>alias UPDATE / INSERT / link OnConflict / ref_count++ → 提交后增量更新缓存"]
+  P2 --> REL[topic_tag_semantic_labels 记录关联]
 ```
+
+> **两阶段事务边界（fix-aux-label-idle-tx-cache，2026-10-06）**：历史实现在单事务内逐标签调外部 AI embedding API，是生产 `idle in transaction` 4–40s 的元凶（事务持 xmin 阻塞 vacuum，与 autovacuum 调优对抗）。现在 `AttachAuxiliaryLabels` 先在事务外完成全部慢 I/O（缓存加载、批量 embedding——`airouter.Embed` 原生 `[]string` 输入，N 个新标签恰好 2 次调用），再用一个短事务完成全部纯写；全有或全无原子性由阶段二保留（任一写失败整体回滚）。同模式已清理 `ConfirmSuggestion`（板向量/composite 短语 LLM 均事务前预计算，事务内 `ApplyCompositeLabel` 纯写）。规划与写入之间的 slug TOCTOU 与旧事务内「查后插入」一致，靠 `idx_semantic_labels_slug` 唯一索引兑底：冲突冒泡由打标 job 记 warn 跳过。批内重复 label（同 slug/normalizeKey）在阶段一去重共享首个决策；批内语义近似但文本不同的标签各自新建（旧串行路径靠缓存回灌 L2 归并，属罕见场景，后续手动合并治理）。PG 侧另有 `idle_in_transaction_session_timeout=60s` 防呆（`docker-compose.pg.yml`，recreate 生效）。
+
+> **缓存失效增量维护（同 change）**：L2 去重依赖包级 `packageAuxLabelCache`（17.5k 行 merge 向量 ≈ 216MB 文本传输 + 解析，TTL 10 分钟），历史「一写全清」使批量打标每个新标签炸一次缓存再全量拉。现在 L3 新建直接把 merge 向量塞进 map + activeLabels append 轻量副本（列集合对齐、不含向量列）；disable/alias 合并源按行删除；alias 变更仍只清轻量的 activeLabels；时间戳不重置 → 批量打标零全量重拉，仅冷启动 1 次。handler 直改 status 的路径不经 service 失效，由 TTL 兑底（窗口与历史一致）。
 
 > **L2 不会形成「合并黑洞」**：与主标签路径不同（`findOrCreateTag` 的 embedding 命中曾覆盖 label/slug → text_hash 变 → 重生成 embedding → 恶性循环，见 `v1.3.1/fix-tag-blackhole-embedding-match`），aux 的 L2 命中只 `addAlias`（append alias + ref_count++），**不改 Label、不重算 MergeEmbedding**（MergeEmbedding 仅 L3 新建时生成一次，之后恒定）。既有 aux 的「吸引力」= 固定 embedding 的 cosine，不随 alias 增多 / ref_count 升高而自我放大，无循环根因。阈值 `auxiliary_label_dedupe_sim` 可配（默认 0.95）。
 
@@ -44,7 +50,7 @@ semantic_board_matching.go
 ```
 
 - **composite_hit**：tag 挂的组合标签（显式关联 ∪ **推导命中**：tag 挂齐某 active 组合的全部组件 aux 即视为挂该组合——确认组合后重算即生效的闭环来源）∩ board composition 挂的组合标签 ≠ ∅ 即命中，score 恒 1.0、`direction_mismatch=false`（组合命中即指向一致）；同 tag-board 同时满足单标签重叠时只记 composite_hit。组合 embedding 为 NULL（disabled/历史缺失）的组合不参与判定；全量组合组件集进匹配缓存（随 InvalidateBoardData 失效）。
-- **direct_hit 降级**：单 aux 重叠是「话题域相同」的弱证据，score 从 1.0 降为 `semantic_board_match_direct_hit_score_factor`（默认 0.7，可配 1.0 恢复旧分数），且与间接规则一样强制方向校验（低于 `direction_sim_threshold` 标 `direction_mismatch=true`，前端默认隐藏）。0.7 让 direct_hit 仍强于典型 weighted 但弱于组合命中与高质量 hit_rate。
+- **direct_hit 降级**：单 aux 重叠是「话题域相同」的弱证据，score 从 1.0 降为 `semantic_board_match_direct_hit_score_factor`（默认 0.7，可配 1.0 恢复旧分数），且与间接规则一样强制方向校验（绝对+相对双门，见下方红线 4，前端默认隐藏）。0.7 让 direct_hit 仍强于典型 weighted 但弱于组合命中与高质量 hit_rate。
 - 只挂组合（无 aux）的 board 不被 aux 数量预过滤拦下，仍可被 composite_hit 命中；board 组合数据进 board match cache（与 auxiliaries/embeddings 同失效语义，composition 变更即失效）。
 
 ### 组合标签（composite label，add-composite-labels）
@@ -194,15 +200,15 @@ SemanticBoard 管理面板
 | `POST /api/auxiliary-labels/:id/disable` | 禁用单个 aux |
 | `GET/POST /api/semantic-boards/:id/composition`、`DELETE /:id/composition/:aux` | 版块 composition 增删查 |
 
-前端治理 UI（`features/tags/components/`）：`AuxiliaryLabelPool.vue`（辅助标签池）、`AuxiliaryLabelPicker.vue`（选择器）、`BoardCompositionPanel.vue`（版块 composition 管理）、`composables/useAuxiliaryLabels.ts`。
+前端治理 UI（`features/tags/components/`）：`AuxiliaryLabelPool.vue`（辅助标签池）、`AuxiliaryLabelPicker.vue`（选择器，双模式：版块推荐/手动指定）、`BoardHealthPanel.vue`（体检治理主面板，含版块 composition 管理）、`composables/useAuxiliaryLabels.ts`。
 
 ### 泳道动态（board-lane-dynamics，取代已退役的话题态势版图）
 
-版块内容 tab 首屏（`BoardCompositionPanel` 构成标签管理区下方）的泳道动态视图，回答「每条关注/追踪的泳道近 14 天发生了什么」——每条泳道一张卡：泳道名 + watch 角标（追踪中）+ 滚动 14 天态势句（一句话，随每日日报异步结算）+ 发展时间线（日期→事件 thread 标题，后端显式携带对应关系，前端不推断）+ 单日超限折叠；点卡片跳「话题总览」tab 聚焦该话题（focus 视图）。底部候选栏只读列出达门槛 candidate（名字+最近动向），转正走话题管理入口。空态两分支：无日报→引导生成（WS 进度，完成后自动刷新）；有日报无活跃泳道→文案提示。接口契约见 `docs/reference/api/daily-reports.md` §`GET /semantic-boards/:id/lane-dynamics`。
+版块内容 tab 首屏（体检治理面板 `BoardHealthPanel` 下方、由 `TagsPage` 直接渲染）的泳道动态视图，回答「每条关注/追踪的泳道近 14 天发生了什么」——每条泳道一张卡：泳道名 + watch 角标（追踪中）+ 滚动 14 天态势句（一句话，随每日日报异步结算）+ 发展时间线（日期→事件 thread 标题，后端显式携带对应关系，前端不推断）+ 单日超限折叠；点卡片跳「话题总览」tab 聚焦该话题（focus 视图）。底部候选栏只读列出达门槛 candidate（名字+最近动向），转正走话题管理入口。空态两分支：无日报→引导生成（WS 进度，完成后自动刷新）；有日报无活跃泳道→文案提示。接口契约见 `docs/reference/api/daily-reports.md` §`GET /semantic-boards/:id/lane-dynamics`。
 
 - **展示范围**：active ∪ watch 关联泳道（`board_topic_watches.persistent_topic_id`），按窗口内 section 数降序；沉寂（近窗口无 section）不展示；candidate 只进候选栏。
 - **态势结算**（日结算异步，见 `flow/daily-report.md` §泳道态势结算）：每日日报生成后为活跃泳道滚动重算 ≤100 字态势句（输入=窗口内「日期+节标题+前3线索」，LLM），存 `topic_lane_snapshots`（每泳道一行覆盖更新）；失败不阻塞日报，下个日报日自愈；快照缺失时卡片「待结算」降级、时间线照常。
-- **代码入口**：后端 `backend-go/internal/topicgraph/repository/lane_snapshot_repository.go`（聚合 `GetBoardLaneDynamics` + 结算侧查询）、`service/lane_snapshot.go`（结算管线，operation=`daily_report.lane_snapshot`）、`handler/lane_dynamics_handler.go`；前端 `front/app/features/tags/components/lane-dynamics/`（`LaneDynamicsPanel.vue` / `LaneDynamicsCard.vue`，挂载于 `BoardCompositionPanel.vue`）；API client `front/app/api/laneDynamics.ts`。
+- **代码入口**：后端 `backend-go/internal/topicgraph/repository/lane_snapshot_repository.go`（聚合 `GetBoardLaneDynamics` + 结算侧查询）、`service/lane_snapshot.go`（结算管线，operation=`daily_report.lane_snapshot`）、`handler/lane_dynamics_handler.go`；前端 `front/app/features/tags/components/lane-dynamics/`（`LaneDynamicsPanel.vue` / `LaneDynamicsCard.vue`，由 `TagsPage.vue` 直接渲染）；API client `front/app/api/laneDynamics.ts`。
 
 > 退役说明：原话题态势版图（分区卡片墙/活力顶栏/节奏气泡图/mini-lifeline/stance 五态派生）随 overview-lane-dynamics 整体移除（2026-09-10）；stance 派生与 ECharts 图表不再存在，历史设计见归档 change `2026-08-01-board-topic-landscape`。
 
@@ -214,12 +220,36 @@ SemanticBoard 管理面板
 
 ```text
 TagsPage「版块内容」tab（默认）
-  → BoardCompositionPanel（既有构成标签管理）之后
+  → BoardHealthPanel（体检治理主面板，吸收构成管理）之后
   → BoardSourcePanel.vue（不新增 tab；窗口 7/30/90 + 汇总行 + 来源表，只读无写动作）
   → 选中版块变化时与 loadComposition 并行重取（请求竞态沿用既有面板惯例）
 ```
 
 口径与源视角（`GET /api/feeds/board-hit-stats`，见 [reading.md](reading.md) §源视角观测）共用同一份聚合代码 `internal/tagmanagement/service/sourcestats/`；契约见 [semantic-boards.md](../api/semantic-boards.md)。处置入口不在面板内（仍在设置 → 订阅源）。
+
+### 版块体检（add-board-health-checkup，每日纯读统计）
+
+> 🗺 全链路图：[`diagrams/board-health-checkup.html`](diagrams/board-health-checkup.html)（双主题，含 2026-10-03 评分 prompt 方法学锚：insufficient ≠ 失效，<60 只看真实病征）
+
+版块构成质量的自动反馈环：挂日报生成成功路径之后同步执行（`DailyReportJob` 成功裁决尾步，手动 TriggerNowWithDate 同触发；体检 error/panic 仅日志不污染日报 job），对每个活跃版块算两级统计 + 事实画像 diff，LLM 单次合并产出评分/评语/打扰裁决，落 `board_health_snapshots` 快照（趋势可查，历史不覆盖），异常时经通知中心发 LinkType=board 通知（冷却默认 3 天）。**纯读硬边界：不写匹配表、不落任何扩充建议**（扩充建议仍必须用户手动触发，红线 10 不动）。
+
+- **口径（唯一实现 `internal/tagmanagement/service/boardhealth/`，对标 sourcestats 纪律；2026-10-08 实测修正——初版「单 aux 纯净样本」口径因样本占比仅 2%-11% 且永不增长而废弃，实测数据见归档 change design D4）**：版块级（口径①全部匹配行）= matched_tags / reason_dist / ghost_matches（direction_mismatch 计数）/ vector_missing；标签级（口径②贴合度分布）= 每个构成标签 embedding × 该版块全部挂载 tags 的 identity embedding 现场重算 cosine（MUST NOT 按 tag 的 aux 挂载数量筛样本，不做功劳归因），分布 mean/median/p25/p75/low_sim_ratio（低分线=板块内各构成标签 cosine_mean 的 P25 相对线，自适应板块主题纯度），任一侧向量缺失跳过分布并计数（不按 0 计入），构成标签自身缺 embedding → 该标签 insufficient；samples < `board_health_min_sample_size`（默认 5）标 insufficient 分布置 null。
+- **事实画像 diff（uncaptured_candidates）**：已挂到版块的 tags 所携带、但不在版块构成中的高频 aux（排除已挂载与 disabled），按 member_tags 降序存 top 50；只存候选不落建议。
+- **member-derived 扩充主路（回退语义）**：手动扩充生成时候选来自最新快照的未收编清单前 `board_health_member_candidates_top`（默认 20，排除已挂载保险滤 + days>0 近期文章过滤）；无快照/清单空/滤后空 → 回退既有相似+共现双路（行为不变）。
+- **LLM 降级**：坏 JSON/超时 → 统计照常落快照、score/comment 置 NULL，本轮跳过通知不重试。
+- **配置（ai_settings，均可缺省）**：`board_health_min_sample_size`(5) / `board_health_alert_threshold`(60) / `board_health_notify_cooldown_days`(3) / `board_health_member_candidates_top`(20)。
+- **只读端点**：`GET /api/semantic-boards/:id/health-checkup?trend=N`（N 白名单 1-90 默认 7，非法 400）：latest + 趋势升序；版块不存在 404，disabled/非 board 返回空态（非 404，同红线 17 端点纪律）。
+- **前端**：板块内容 tab 治理主面板 `BoardHealthPanel.vue`（形态 A：吸收构成管理，BoardCompositionPanel 退役）——评分徽章（好≥70/中 60-69/差<60）+ 评语 + 指标 chips + 质量表（行内移除，无快照「待体检」降级）+ 组合标签区 + 趋势 + 未收编候选（收编快捷动作 = 既有 addComposition 手动挂载，不走 LLM 建议管道）；低分时 tab 顶部警告条（点击滚到面板）。
+
+```text
+DailyReportJob 成功裁决（failedCount==0）
+  → runPostReportBoardHealthCheckup（10min 独立预算，panic 隔离）
+  → boardhealth.RunCheckup：遍历 active 版块 → 统计/画像 diff → LLM 评分 → 快照落库 → 通知裁决（冷却）
+  → 单版块失败仅记日志继续兄弟版块
+
+手动扩充生成 expand×aux
+  → recallExpandAuxCandidates → 最新快照 uncaptured_candidates 非空？主路 top N（保险滤 + days 过滤） ：回退相似+共现双路
+```
 
 ### 标签级 watched tags（区别于话题级 topic-watch）
 
@@ -287,9 +317,9 @@ Event 类标签不随入库立即向量化，而是等描述与关键词生成�
 > 本节是 constraint-injection extension 的注入数据源：apply 改 `internal/tagmanagement/` 或 `internal/topicgraph/` 代码前会自动注入 system prompt，必须遵守。
 
 1. **辅助标签按三级去重：L1 slug/alias 精确匹配复用、L2 embedding 相似命中只加 alias、L3 未命中才新建**：L1 slug/alias 精确匹配复用（`ref_count++`）；L2 embedding ≥ `auxiliary_label_dedupe_sim`（默认 0.95）命中只 `addAlias`（append alias + `ref_count++`）；L3 未命中才新建 `label_type=auxiliary` 的 `semantic_label`。
-2. **辅助标签 L2 命中只 addAlias，不得改 Label 或重算 MergeEmbedding，以免形成合并黑洞**：aux 的 L2 命中**只 `addAlias`，不改 Label、不重算 MergeEmbedding**。`MergeEmbedding` 仅 L3 新建时生成一次，之后恒定——既有 aux 的「吸引力」= 固定 embedding 的 cosine，不随 alias 增多 / ref_count 升高自我放大。（对照主标签 `findOrCreateTag` 的 embedding 黑洞教训。）
-3. **tag 挂版块按 composite_hit→direct_hit→hit_rate→max_sim→weighted 优先级判定，同 board 组合与单标签重叠同时满足只记 composite_hit，单 tag 最多挂 MaxBoards（默认 3）个版块**：composite_hit（tag 组合 ∩ board 组合 ≠ ∅）score=1.0 且免方向校验；单标签 direct_hit 交集 ≥ `direct_hit_min_overlap` 命中 score=`direct_hit_score_factor`（默认 0.7）；再后 hit_rate → max_sim → weighted（`semantic_board_matching.go`），单 tag 最多挂载 `MaxBoards`（默认 3）个版块写入 `topic_tag_board_labels`。（add-composite-labels：direct_hit 从 1.0 降级 + 免检特权取消。）
-4. **除 composite_hit 外的匹配命中（含 direct_hit）必须校验 tag 与 board 向量 cosine，mismatch 仍记录但不计日报且前端默认隐藏**：除 composite_hit（组合命中即指向一致，天然免检）外所有匹配规则——含降级后的 direct_hit——命中后校验 tag identity embedding 与 board embedding 的 cosine；低于阈值标 `direction_mismatch=true`——**仍记录但不计入日报、前端默认隐藏**。（`board-direction-check` 引入；add-composite-labels 将 direct_hit 纳入强制校验。）
+2. **辅助标签 L2 命中只 addAlias，不得改 Label 或重算 MergeEmbedding，以免形成合并黑洞**：aux 的 L2 命中**只 `addAlias`，不改 Label、不重算 MergeEmbedding**。`MergeEmbedding` 仅 L3 新建时生成一次，之后恒定——既有 aux 的「吸引力」= 固定 embedding 的 cosine，不随 alias 增多 / ref_count 升高自我放大。（对照主标签 `findOrCreateTag` 的 embedding 黑洞教训。）（fix-alias-save-vector-wipe：alias 写路径已升级为代码级列级更新——`addAlias` 与手动 alias 合并 target 侧均 `Select("aliases")` 只写 aliases 列，向量列永不沾染；历史全量 `Save` 曾把缓存结构体的 nil 向量写 NULL 致 1505 个 active 死向量，存量由 `POST /api/auxiliary-labels/backfill-embeddings` 回填，见「队列与回填运维」。）
+3. **tag 挂版块按 composite_hit→direct_hit→hit_rate→max_sim→weighted 优先级判定，同 board 组合与单标签重叠同时满足只记 composite_hit，单 tag 最多挂 MaxBoards（默认 3）个版块**：composite_hit（tag 组合 ∩ board 组合 ≠ ∅）score=1.0 且免方向校验；单标签 direct_hit 需交集 ≥ `direct_hit_min_overlap` **且交集数 / tag active 辅助标签总数 ≥ `direct_hit_min_ratio`（默认 0.5，0=门槛关闭）**才命中 score=`direct_hit_score_factor`（默认 0.7）；**交集数达标但占比不足时不得 direct_hit，退回相似度路径判定，且重叠标签不得再作为该版块的相似度证据（同一批标签不得既作直接命中证据又作相似度证据——自相似恒 1.0 会变相重新挂载）**；再后 hit_rate → max_sim → weighted（`semantic_board_matching.go`），单 tag 最多挂载 `MaxBoards`（默认 3）个版块写入 `topic_tag_board_labels`。（add-composite-labels：direct_hit 从 1.0 降级 + 免检特权取消；fix-board-match-cross-domain：补占比门槛拦蹭词挂载——2026-10-04 非农事故形态的源头防线。）
+4. **除 composite_hit 外的匹配命中（含 direct_hit）必须校验 tag 与 board 向量 cosine，mismatch 仍记录但不计日报且前端默认隐藏**：除 composite_hit（组合命中即指向一致，天然免检）外所有匹配规则——含降级后的 direct_hit——命中后走**绝对+相对双门**方向校验：①绝对门 cosine(tag identity embedding, board embedding) 低于 `direction_sim_threshold`（默认 0.5）；②相对门 gap = bestCos − cos ≥ `semantic_board_match_direction_relative_margin`（默认 0.15，ai_settings 可配，0/负值=关闭只留绝对门），bestCos=该标签**同轮匹配上的全部版块**（含将被标 mismatch 的候选）中 identity cosine 最大者——单挂标签 gap≡0 恒过，相对门天然只作用于多挂标签；任一门触发即标 `direction_mismatch=true`——**仍记录但不计入日报、前端默认隐藏**；tag identity 或 board embedding 缺失时跳过对应门。（`board-direction-check` 引入绝对门；add-composite-labels 将 direct_hit 纳入强制校验；fix-digest-tag-leak 补相对门拦多挂串味——digest 案例正确归属 0.81 vs 串味 0.60，绝对阈值切不开、相对 gap 0.21 稳定拦截。）
 5. **max_sim ≥ 0.8 直接挂载必须同时满足 hits ≥ min(2, N) 且 hit_rate ≥ 0.3**：max_sim ≥ 0.8 直接挂载需同时满足 `hits ≥ min(2, N)` 且 `hit_rate ≥ 0.3`，防止单标签高相似度跨域误匹配。（`board-interaction-overhaul` 引入。）
 6. **升级建议按 suggestion_hash 幂等，同 hash 已有 pending 行则 skipped 不重复入库**：`ComputeSuggestionHash(mode, decision, targetBoardID, auxIDs)` 为 32-hex 指纹（mode 维度值 = `direction:source` 四格键）；同 hash 已有 pending 行则 `skipped`（幂等 no-op），不重复入库。
 7. **被 dismiss 的升级建议在冷却期（默认 14 天）内同 hash 不得重新生成**：被 dismiss 的建议在 `semantic_board_upgrade_suggestion_dismiss_cooldown_days`（默认 14 天）内，同 hash 下一轮生成被 `CountDismissedInCooldown` 拦截（`cooldown_blocked`），期满才可重生。
@@ -305,6 +335,10 @@ Event 类标签不随入库立即向量化，而是等描述与关键词生成�
 17. **源/版块命中统计口径唯一实现于 sourcestats 包且两端点只读，消费方不得复制公式；版块不存在/非 board → 404，disabled 版块不是 404（聚合为 0）**（add-source-board-hit-rate）：`GET /api/semantic-boards/:id/source-breakdown`（与源视角 `GET /api/feeds/board-hit-stats`）的聚合口径唯一实现 `internal/tagmanagement/service/sourcestats/`——按文章去重、含已归档（不过滤 `archived`）、限窗口白名单 {7,30,90}（非法 400 不回退）、命中 = 标签经 `topic_tag_board_labels` 挂到 `label_type='board' AND status='active'`、未打标两分（pending/leased vs 其余）；端点只读（不写库、不触发打标/匹配）；不变量 `Σ sources[].articles == total_articles`。要改口径先改 spec（`openspec/specs/source-board-hit-rate/spec.md`）。
 18. **mono 打标输入为预算 4000 runes 的分段采样（文集型按标题均匀采样/叙事型头中尾采样，计量前先剥 markdown 图片与链接噪声），超限不再掐头；采样逻辑唯一实现于 sampling_splitter.go，aggregate 路径的 splitSections 不受影响**（long-form-sampled-tagging）：`buildArticleSummary`（`service/core/article_tagger.go`）按 AIContentSummary → FirecrawlContent → Content → Description 选出打标正文后调 `sampleTaggingSummary`（`sampling_splitter.go`）——正文超 `maxSummaryRunesForTagging`（4000）预算时按标题切段：≤3 段视为叙事型走头中尾采样，>3 段为文集型按段均匀分配预算（句界回退窗口、`……` 省略标记拼接）；噪声剥离先于计量（图片语法整体删、行内链接只留 text，不占采样预算），无标题整篇聚合为单段即叙事型；aggregate 路径的栏目切片 `splitSections`（带 dropIntro/mergeShort/splitLong 后处理）职责不同、互不依赖、不受影响。
 19. **打标提取的空结果是合法结论：LLM 空 keyword 数组不触发规则词回填、成功调用零候选不降级 heuristic（仅提取调用 err != nil 时降级），零候选文章保持无标签等待重打；泛词黑名单（新闻/论坛/要闻/快讯/文章/内容/技术/发展，Slugify 后完整匹配）在 persistArticleTags 入口与跨 feed reuse siblingLinks 查询两处拦截，任何来源的泛词标签不得入库/进辅助标签池**（fix-tagging-pollution）：`extractor_enhanced.go` ExtractTags 对空数组只记观察信息（不再调 heuristicKeywordCandidates 回填，该函数已删除——旧回填把分类名「新闻」与凤凰网 HTML `decoding="async"` 属性子串误命的「Coding」以 llm 来源写库）；零候选原样返回（Tags=[]、Source=llm）；`article_tagger.go` 兜底条件收窄为 `err != nil`，`filterGenericLabels` 为 mono/aggregate/heuristic 三路径汇聚拦截点，reuse 路径（不经 persist 入口）在 siblingLinks 查询 join topic_tags 排除黑名单 slug（全黑名单 sibling → reuse 返回 false 落回 AI 提取）。
+20. **体检轮次纯读不落任何扩充建议（pending 行零新增）、不写匹配结果表，自动化与扩充手动边界不变**（add-board-health-checkup）：体检挂日报成功尾步自动执行（单版块失败仅记日志继续兄弟版块，error/panic 不污染日报 job），但只写 `board_health_snapshots` + 少量冷却内异常通知；体检产出的未收编候选只是快照附属产物，扩充建议仍必须用户手动触发（红线 10 不动），体检轮次 MUST NOT 造成 `board_upgrade_suggestions` 新增 pending 行或 `topic_tag_board_labels` 任何写入。
+21. **member-derived 扩充主路回退语义：最新快照未收编候选非空时候选 ONLY 来自快照清单 top N（排除已挂载保险滤 + days>0 近期文章过滤），无快照/清单空/滤后空必须回退既有相似+共现双路且行为不变**（add-board-health-checkup）：主路命中时不得触发全库相似/共现扫描；组合路（expand×composite）不受影响；suggestion 管道（hash 幂等/dismiss 冷却/LLM 裁决/逐条勾选）零改动，仅候选来源变化。
+22. **体检统计口径唯一实现于 boardhealth 包（对标 sourcestats 纪律），标签级=构成标签 embedding × 全部挂载 tags identity embedding 的贴合度分布（现场 cosine 重算，不按 aux 挂载数量筛样本），样本不足标 insufficient 不硬凑，端点只读且 disabled 版块不是 404（空态）**（add-board-health-checkup）：`internal/tagmanagement/service/boardhealth/` 是两级指标/画像 diff/低分线（板块内 cosine_mean P25 相对线）/分布分位唯一实现，`GET /api/semantic-boards/:id/health-checkup?trend=N`（N 白名单 1-90 默认 7，非法 400）只读消费同一实现；标签级归因 MUST NOT 按 tag 的 aux 挂载数量筛选样本（不做功劳归因），规则分数 MUST NOT 作相似度统计输入，任一侧向量缺失跳过分布计入 vector_missing（不按 0 计入），LLM 坏 JSON/超时降级 score=NULL 不重试不丢统计。
+23. **event 标签 description 时间锚以首挂文章日期为准：生成/重生成 MUST 以 articleContext 中的 `[日期: …]`（文章发布日期）为参照、MUST NOT 引入 Context 外时间信息（含模型先验知识中的历史事件时间），打标与描述生成的 prompt 示例 MUST 用时间中性/虚构事件（禁真实事件+具体历史年月组合）**（fix-event-tag-time-anchor）：`generateTagDescription` event 分支（`buildEventTagDescriptionPrompt`）与两个 extractor prompt 的正例均不得携带历史时间锚；存量修复走 `cmd/admin fix-event-tag-anchor`（dry-run 默认出清单+备份 CSV，`--apply --ids` 显式圈选，非候选 ID 整批拒绝不触碰，重生成复用首挂文章 articleContext 同一构造口径 `buildArticleContext`）。
 
 ## 代码入口
 
@@ -315,9 +349,10 @@ Event 类标签不随入库立即向量化，而是等描述与关键词生成�
 - **后端标签关注 / 合并预览 / 队列 handler**：同目录下 `watched_tags_handler.go`（标签级 watched tags）、`tag_merge_preview_handler.go`（scan/evaluate SSE + dismiss/merge-with-name）、`tag_queue_handler.go`、`embedding_queue_handler.go`、`merge_reembedding_queue_handler.go`（见下「队列与回填运维」）。
 - **后端 watched/merge service**：`service/watched/watched_tags_service.go`、`service/merge/tag_merge_suggest.go`、`service/core/{merge_suggestions,hard_merge,merge_reembedding_queue,person_metadata_backfill}.go`。
 - **后端源/版块命中统计（sourcestats）**：`backend-go/internal/tagmanagement/service/sourcestats/`（口径唯一实现）、`handler/board_source_breakdown_handler.go`（版块视角端点）；源视角端点在 reader 域 `internal/reader/handler/feed_board_stats_handler.go`。
+- **后端版块体检（boardhealth）**：`backend-go/internal/tagmanagement/service/boardhealth/`（统计口径/画像 diff/LLM 评分降级/通知冷却/RunCheckup 编排唯一实现；`metrics.go` 两级指标、`diff.go` 未收编候选聚合、`llm.go` 合并评分 prompt、`notify.go` 打扰裁决、`run.go` 轮次编排+只读视图）、`handler/board_health_handler.go`（只读端点）；日报尾步挂载 `internal/admin/scheduler/job_daily_report.go`（runPostReportBoardHealthCheckup seam，经 tagmanagement root 门面 re-export）；扩充召回主路 `service/board/semantic_board_expand.go`（recallMemberDerivedCandidates）；快照模型/迁移 `tagmanagement/models/board_health.go` + `database/postgres_migrations.go` 20261006_0001（FK CASCADE）。
 - **后端版块调度**：`backend-go/internal/admin/scheduler/job_board_upgrade_suggest.go`（定时 06:30，仅创建方向两段：{create,aux} → {create,composite}）。
 - **后端版块时间线**：`backend-go/internal/topicgraph/`（`service/daily_report_*.go` 版块时间线、`handler/`）。
-- **前端**：`front/app/features/tags/components/UpgradeSuggestionPanel.vue`（升级建议面板：四格生成入口 + 版块单选 + 持久化建议列表（含 compose 卡片与「组合」过滤 tab）；旧内存探索区已退役）、`CompositeLabelPool.vue` + `CompositeLabelEditDialog.vue`（组合标签治理页，未选版块时「组合标签」tab）、`MatchDetailPanel.vue`（匹配详情，composite_hit 组合链展示）、`BoardSourcePanel.vue`（板块来源构成面板，「板块内容」tab 内 BoardCompositionPanel 之后，只读无写动作）、`TagsPage.vue`、`front/app/features/tags/composables/useTagsPage.ts`。
+- **前端**：`front/app/features/tags/components/UpgradeSuggestionPanel.vue`（升级建议面板：四格生成入口 + 版块单选 + 持久化建议列表（含 compose 卡片与「组合」过滤 tab）；旧内存探索区已退役）、`CompositeLabelPool.vue` + `CompositeLabelEditDialog.vue`（组合标签治理页，未选版块时「组合标签」tab）、`MatchDetailPanel.vue`（匹配详情，composite_hit 组合链展示）、`BoardSourcePanel.vue`（板块来源构成面板，「板块内容」tab 内体检治理面板之后，只读无写动作）、`BoardHealthPanel.vue`（体检治理主面板，吸收原 BoardCompositionPanel 全部构成管理职能：picker 双模式添加/行内移除/组合创建挂载 + 体检评分/质量表/趋势/未收编候选收编；低分警告条与泳道动态 LaneDynamicsPanel 由 TagsPage 直接渲染）、`TagsPage.vue`、`front/app/features/tags/composables/useTagsPage.ts`。
 
 ## 队列与回填运维
 
@@ -329,6 +364,7 @@ Event 类标签不随入库立即向量化，而是等描述与关键词生成�
 | embedding/queue | `/api/embedding/queue/{status,tasks,retry}` | 标签/版块 embedding 生成队列（`EmbeddingQueueService`）。前端 `features/ai/components/EmbeddingQueuePanel.vue` |
 | embedding/merge-reembedding | `/api/embedding/merge-reembedding/{status,tasks,retry}` | 标签合并后重算 embedding 的独立队列；`merge-with-name` 提交后由 `EnqueueMergeReembedding` 入队（`MergeReembeddingQueueService`） |
 | person-metadata 回填 | `POST /api/embedding/queue/person-metadata/backfill` | 人物标签元数据回填（`service/core/person_metadata_backfill.go` 的 `BackfillPersonMetadata`） |
+| 辅助标签死向量回填 | `POST /api/auxiliary-labels/backfill-embeddings` | 重建 active aux 标签缺失（NULL）的 embedding/merge_embedding（L3 同款生成规则，只补缺列、幂等重触发只处理残余、行级失败跳过）；同步查 pending 数、detached goroutine 异步跑、立即 202 `{pending:N}`，重触发至 pending=0 即完成。存量死向量源自己录：addAlias 曾用缓存结构体（不含向量列）全量 Save 把向量写 NULL（fix-alias-save-vector-wipe 修复 + 回填），完成后建议可选跑 `rematch-all` 让版块挂载重新竞争 |
 
 handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembedding_queue}_handler.go`。
 
@@ -336,6 +372,7 @@ handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembed
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 | ------ | ------ | ------ | ---------- |
+| 2026-09-27 | fix-alias-save-vector-wipe | addAlias 清向量 bug 修复：L2 归并与手动 alias 合并改列级更新（Select("aliases")+struct，向量列永不沾染，红线 2 升级为代码+测试不变量）；新增死向量回填端点 `POST /api/auxiliary-labels/backfill-embeddings`（L3 同款生成、只补缺列、幂等、行级容错，202 异步）；真库存量 1505 个 active aux 死向量全部恢复（日本新闻版块构成 30 个 aux 复活）；附带修复 testutil 漏注册 discovery 模型的解耦回归（4421c068） | [`openspec/changes/archive/2026-09-27-fix-alias-save-vector-wipe`](../../../openspec/changes/archive/2026-09-27-fix-alias-save-vector-wipe) |
 | 2026-09-25 | fix-tagging-pollution | 打标污染修复三件套：LLM 空 keyword 不再触发规则回填（判空=合法结论）、heuristic 兜底仅限提取调用失败、泛词标签黑名单拦截（新闻/论坛/要闻/快讯/文章/内容/技术/发展，persist 前丢弃 + reuse 复制排除）；存量清理（heuristic 484 行 + llm 泛词/Coding ≈800 行）+ retag 重打 586 篇全查零污染、近 3h 新增 llm=1679 行零命中 | [`openspec/changes/archive/2026-09-25-fix-tagging-pollution`](../../../openspec/changes/archive/2026-09-25-fix-tagging-pollution) |
 | 2026-09-19 | long-form-sampled-tagging | mono 打标超长输入从「掫头 4000 runes」改为预算 4000 runes 分段采样：先剥 markdown 噪声（图片整删、链接保文字），文集型（标题段 >3）标题全保 + 正文均分段内句界截断（保底 120/段，段数超限退化标题清单），叙事型头中尾采样（2:1:1）；短文（≤4000）行为不变，新采样切分器 sampling_splitter.go 不动 aggregate 路径 | [`openspec/changes/archive/2026-09-19-long-form-sampled-tagging`](../../../openspec/changes/archive/2026-09-19-long-form-sampled-tagging) |
 | 2026-09-19 | merge-tag-extraction-branches | mono 打标双分支提取（event/person + keyword 两次 LLM 调用）合并为单次调用双数组输出：两份系统提示合并去重、schema 双数组、数组级部分产出（空数组不触发 heuristic、仅保留另一侧），整体失败仍回退 heuristic；调用数 2→1、prefill 减半，去重优先级/上限/三级入库契约不变，aggregate 回落路径零改动 | [`openspec/changes/archive/2026-09-19-merge-tag-extraction-branches`](../../../openspec/changes/archive/2026-09-19-merge-tag-extraction-branches) |
@@ -358,3 +395,7 @@ handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembed
 | 2026-09-05 | add-evidence-backed-cross-board-relations | 跨版块关系发现与版块语义归属正交：目标解析只引用现有版块（约束 13），不自动创建/合并/修改版块、不做 board×board 全量扫描、不强制映射；confirmed 关系只注入简报背景字段不改版块成员 | [`openspec/changes/archive/2026-09-05-add-evidence-backed-cross-board-relations`](../../../openspec/changes/archive/2026-09-05-add-evidence-backed-cross-board-relations) |
 | 2026-09-11 | overview-lane-dynamics | 版块内容 tab 首屏「泳道动态」视图（泳道卡：滚动 14 天态势句 + 逐日发展时间线 + watch 角标 + 候选栏），取代话题态势版图（整体退役）；新端点 `GET /semantic-boards/:id/lane-dynamics` 单请求聚合；态势句随日报异步滚动结算（见 daily-report.md） | [`openspec/changes/archive/2026-09-11-overview-lane-dynamics`](../../../openspec/changes/archive/2026-09-11-overview-lane-dynamics) |
 | 2026-09-18 | add-source-board-hit-rate | 板块来源构成：新增只读端点 `GET /semantic-boards/:id/source-breakdown`（供血源视角：本版块篇数/占比/该源自身命中率，`Σ sources == total_articles`）；「板块内容」tab 底部（不新增 tab）`BoardSourcePanel.vue` 来源面板；与源视角共用 `sourcestats` 口径唯一实现（按文章去重/含已归档/限窗口，红线 17） | [`openspec/changes/archive/2026-09-18-add-source-board-hit-rate`](../../../openspec/changes/add-source-board-hit-rate) |
+| 2026-10-10 | add-board-health-checkup | 版块体检：挂日报成功尾步每日纯读统计（版块级指标 + 标签级贴合度分布，10-08 口径修正弃单 aux 纯净样本）+ 事实画像 diff 未收编候选 + LLM 合并评分/评语/打扰裁决 + `board_health_snapshots` 快照趋势 + 异常通知（冷却 3 天）+ 只读端点 + member-derived 扩充召回主路（无快照回退双路，红线 10/20/21/22）；前端体检治理面板 BoardHealthPanel 吸收构成管理（BoardCompositionPanel 退役）+ 低分警告条 | [archive/2026-10-10-add-board-health-checkup](../../../openspec/changes/archive/2026-10-10-add-board-health-checkup) |
+| 2026-10-06 | fix-aux-label-idle-tx-cache | 辅助标签入库两阶段化：AI embedding 调用移出事务（N 新标签恰 2 次批量调用），短事务毫秒级纯写保留全有或全无原子性，idle in transaction 4–40s → 0；同模式清理 ConfirmSuggestion（`ConfirmSuggestion` 预计算 + `ApplyCompositeLabel` 纯写）；缓存失效增量维护仅 activeLabels 半边（mergeEmbeddings 原位写曾致 concurrent map fatal 两次宕机，FB-1 修订回退 TTL 重拉，见 callout 与 code-style.md 事务内慢 I/O 硬禁）；PG 防呆 `idle_in_transaction_session_timeout=60s`（recreate 生效） | [archive/2026-10-10-fix-aux-label-idle-tx-cache](../../../openspec/changes/archive/2026-10-10-fix-aux-label-idle-tx-cache) |
+| 2026-10-04 | fix-board-match-cross-domain | direct_hit 占比门槛（交集达标且占比 ≥ 0.5 才命中，不足退回相似度且重叠标签不作相似度证据——拦蹭词挂载，约束 3）+ 匹配配置新 key `semantic_board_match_direct_hit_min_ratio`（matching-config 可调）；存量弱挂载不重算（用户决策），日报侧防线见 daily-report.md 排他约束 | [archive/2026-10-10-fix-board-match-cross-domain](../../../openspec/changes/archive/2026-10-10-fix-board-match-cross-domain) |
+| 2026-10-09 | fix-event-tag-time-anchor | event 标签时间锚污染修复：三处 prompt 捒掉自带「2024年4月」历史时间锚的「伊朗袭击以色列」毒示例（generateTagDescription event 分支重构为 buildEventTagDescriptionPrompt + 两个 extractor 正例全换中性虚构事件「某国央行上调基准利率」），event 描述生成加时间锚纪律三句（锚定 Context `[日期: …]`/禁 Context 外时间/同名历史事件以 Context 为准）；存量还债 CLI `cmd/admin fix-event-tag-anchor`（dry-run 默认出清单+备份 CSV，`--apply --ids` 显式圈选非候选拒碰，重生成复用首挂文章 articleContext 同一口径 buildArticleContext）；真库全量扫候选 321，圈选 4 病态标签 apply 4/4 成功，复扫 321→317 全部不再命中（约束 23） | [archive/2026-10-10-fix-event-tag-time-anchor](../../../openspec/changes/archive/2026-10-10-fix-event-tag-time-anchor) |

@@ -57,7 +57,7 @@
 
 ### Requirement: 报告分段与可回检指标
 
-报告 SHALL 至少包含以下分段，且每段 MUST 输出该段的指标名与数值（供基线比对复用）：① 门禁失败聚类（按命令、按 domain 包、按失败特征归并的 diag 族）；② 回归翻转（同一 `(session, cmd)` 由绿转红）；③ harness 自身故障（单列，见下条）；④ 软提醒失效（见下条）；⑤ 重复失败热点（同一会话内同命令同 diag 的连续重复，作为死循环信号）；⑥ 注入面健康（`constraint.inject` 的文档命中次数与字节分布，暴露零命中死约束与注入膨胀）；⑦ 效能看板（插件 ROI、效率基线与返工信号，指标契约见「效能看板指标」Requirement）。聚类结果 MUST 可限定到单个 change（`change` 列归属）或全局。
+报告 SHALL 至少包含以下分段，且每段 MUST 输出该段的指标名与数值（供基线比对复用）：① 门禁失败聚类（按命令、按 domain 包、按失败特征归并的 diag 族）；② 回归翻转（同一 `(session, cmd)` 由绿转红）；③ harness 自身故障（单列，见下条）；④ 软提醒失效（**纠正型**，见下条；情报型 warn 在同段单列计数汇总，不进失效判定）；⑤ 重复失败热点（同一会话内同命令同 diag 的连续重复，作为死循环信号）；⑥ 注入面健康（`constraint.inject` 的文档命中次数与字节分布，暴露零命中死约束与注入膨胀）；⑦ 效能看板（插件 ROI、效率基线与返工信号，指标契约见「效能看板指标」Requirement）。聚类结果 MUST 可限定到单个 change（`change` 列归属）或全局。
 
 失败特征归并 SHALL 将命令/解释器缺失类失败（diag 含 `command not found`）优先归入环境冲突族，该规则 MUST 先于任何按命令名关键词（如 `%lint%`、`%go%`）的族判断执行，使环境噪声不被误计为代码问题族。指标匹配口径（如注入通道 `reason` 枚举、注入域与编辑路径的域名映射）MUST 与账本实际词汇对齐：指标口径子集内（如 flow 文档注入）匹配集合覆盖不到的词汇 SHALL 被显式计数并在报告中呈现（或随词汇演进同步匹配集合），MUST NOT 静默归零——防止口径漂移把真实命中呈现为完全失效；口径子集外的合法词汇 MUST NOT 被误标为未识别。
 
@@ -78,8 +78,13 @@
 
 #### Scenario: 命令缺失类失败归入环境族
 
-- **WHEN** fixture 内含 diag 为 `golangci-lint: command not found` 的 `gate.check` 失败
-- **THEN** 该失败被归入并发/环境冲突族，MUST NOT 因命令名含 `lint` 被计入 lint 规则族
+- **WHEN** fixture 内含 diag 为 `command not found` 的失败与按命令名关键词应归其它族的失败
+- **THEN** 前者归入环境冲突族，且该归并先于命令名关键词判断执行
+
+#### Scenario: block 与 bypass 不计入故障段
+
+- **WHEN** 窗口内存在 `action=block` 与 `action=bypass` 的 policy.decision
+- **THEN** 它们不出现在「harness 自身故障」段（该段只收 fail-open 语义的事件）
 
 #### Scenario: 按 change 归属限定
 
@@ -95,7 +100,7 @@
 
 ⑦ 效能看板段 SHALL 输出四组指标，MUST 以中位数与 P75 表达分布、MUST NOT 输出加权合成的单一总分；参与效率分布的 session MUST 仅限有 `session.rollup` 终值者，且报告 MUST 显式标注窗口内 rollup 覆盖率（有终值快照的 session 占比），覆盖率不足时对分布指标输出降级标注而非静默使用小样本。
 
-- **A 插件 ROI**：注入负载（每 session 注入字节中位数/P75，源 `constraint.inject`）；注入命中率（被注入域与该 change `edit.map` 实际编辑路径映射域的重合比例）；pin 复用率（`pin.write` 落盘数与后续 `pin.read` 引用数之比）；门禁催修效率（`policy.decision` block/warn 到同 `(session, cmd)` 转绿的时距中位数；同 reasonCode 在同 change 的复发次数）。
+- **A 插件 ROI**：注入负载（每 session 注入字节中位数/P75，源 `constraint.inject`）；注入命中率（被注入域与该 change `edit.map` 实际编辑路径映射域的重合比例）；pin 复用率（`pin.write` 落盘数与后续 `pin.read` 引用数之比）；门禁催修效率（`policy.decision` block/warn 到解除信号的时距中位数；同 reasonCode 在同 change 的复发次数）。**解除信号 MUST 按 policy 语义分派**：quality-gate 的裁决以同 `(session, cmd)` 的 `gate.check` ok=true 为解除；非 gate 类裁决（如 ui-design-gate 依赖补文档/审批解除、quota-gate 依赖换 provider）MUST NOT 用 gate.check 转绿判定，SHALL 以对应的放行/后续非阻断裁决事件为解除信号，信号缺席的样本 MUST 从时距统计中剔除并披露剔除数。
 - **B 效率基线**：每 change 与每 session 的 turns、tokens（total 与 output 分列）、cost、durationSec 的中位数/P75（rollup 终值驱动）；子线程 token 占比（`subagent.dispatch`/`complete` tokens 合计 ÷ 含主线程的总量）。
 - **B' 每任务成本**：窗口内**已归档 change** 的每任务成本分布（P50/P75/均值）。任务成本 = 该 change 归因会话的 rollup 终值 `cost` 合计——主会话按 rollup 的 change 列直归，子会话经 payload `parentSessionId` 归父后随父会话归因（不递归孙会话）。归档判定用**双锚点**：`change.archive` 事件为主，`openspec/changes/archive/` 目录名日期前缀（`YYYY-MM-DD-<name>`，剥前缀得 change 名）对账兜底；两锚点单侧缺失时以另一侧补齐并输出提示。MUST 按模型分桶（源 rollup payload `models` map；缺失该字段的存量快照整体计入「未分模型」桶）与按 complexity 分桶（源归档 change proposal 头 `<!-- complexity: ... -->`，无声明计「未声明」桶）。MUST 披露：不可归因成本占比（窗口内终值 cost 无法归属任何 change 的部分）、活跃未归档 change 数（对照幸存者偏差）。指标键 `m7.task_cost_*`。09-17（rollup 上线）前历史会话无成本维度，MUST 沿用 rollup 覆盖率降级标注，不得以小样本冒充全量。
 - **C 返工信号**：同文件跨 session 编辑波次（`edit.map` 快照序列按 session 去重后的文件出现次数，Top 清单）；归档重试次数（spec-gate `archive-check-failed` block 到成功归档间的重复 block 次数）。
@@ -115,6 +120,11 @@
 
 - **WHEN** fixture 内某 `(session, cmd)` 先 block 后在 40 分钟后同键转绿
 - **THEN** 催修时距中位数计入 40 分钟量级的样本（具体边界由实现定义，报告口径说明可查）
+
+#### Scenario: 非 gate 裁决解除信号按语义分派
+
+- **WHEN** fixture 内某 change 被 ui-design-gate block（ui-prototype-missing），2 分钟后补齐原型文档放行（无任何 gate.check 变化），另有某 quality-gate block 40 分钟后同 (session, cmd) gate.check 转绿
+- **THEN** ui-design-gate 样本以放行事件计时距（约 2 分钟），不得按 gate.check 口径计为假慢；quality-gate 样本计入 40 分钟；无解除信号的样本被剔除并披露剔除数
 
 #### Scenario: 返工波次清单
 
@@ -167,21 +177,36 @@
 
 ### Requirement: 软提醒失效判定
 
-报告 SHALL 按 `policy + reasonCode` 统计 `action=warn` 的重复次数，达到或超过可配置阈值时 MUST 列入「软提醒失效」段并给出重复次数；低于阈值的事件 MUST NOT 进入该段。阈值 MUST 可通过参数（或等价配置）调整，缺省值在实现中给定。阈值参数非法（0 或非数字）时 MUST 拒绝执行并非 0 退出，MUST NOT 退化为「全部命中」的静默语义。
+报告 SHALL 按 `policy + reasonCode` 统计 `action=warn` 的重复次数并做**语义分类**：
+
+- **纠正型**（期待 agent 行为改变的提醒）：达到或超过可配置阈值时 MUST 列入「软提醒失效」段并给出重复次数；低于阈值 MUST NOT 进入该段。
+- **情报型**（归属/状态告知，不期待服从动作；维护一份 reasonCode 白名单，至少含 `concurrent-mixed` / `concurrent-dirty-tree` / `foreign-breakage`，白名单与账本 reasonCode 词汇表同步演进）：SHALL 在 ④ 段内单列分组计数汇总（可作并发频率/成本趋势观察），MUST NOT 进入失效判定名单，MUST NOT 受 `--warn-threshold` 影响。
+
+白名单之外的 reasonCode 默认归纠正型（未知词汇按最强监督口径处理，防新情报型词汇静默漏进失效名单——发现误归类时修白名单而非放宽缺省）。阈值 MUST 可通过参数（或等价配置）调整，缺省值在实现中给定。阈值参数非法（0 或非数字）时 MUST 拒绝执行并非 0 退出，MUST NOT 退化为「全部命中」的静默语义。
 
 #### Scenario: 超阈值提醒纳入
 
-- **WHEN** 某 `policy + reasonCode` 的 warn 计数达到阈值
+- **WHEN** 某 `policy + reasonCode` 的 warn 计数达到阈值且不在情报型白名单（纠正型）
 - **THEN** 该项出现在「软提醒失效」段，并显示重复次数
+
+#### Scenario: 情报型 warn 不进失效名单
+
+- **WHEN** 白名单内 reasonCode（如 `concurrent-mixed`）的 warn 计数达到或超过阈值
+- **THEN** 该项不出现在失效判定名单，而在 ④ 段情报型汇总行中按分组计数呈现（不受阈值过滤）
+
+#### Scenario: 混合两类时分开统计
+
+- **WHEN** 同一窗口内同时存在超阈值的情报型与超阈值的纠正型 warn
+- **THEN** 失效名单仅含纠正型组；情报型计数与纠正型计数分别可由 fixture 输入独立复算，`soft.warn_total` 等于两类之和
 
 #### Scenario: 阈值边界按「等于即命中」
 
-- **WHEN** 某组 warn 计数恰好等于阈值
+- **WHEN** 某纠正型组 warn 计数恰好等于阈值
 - **THEN** 该项被列入「软提醒失效」段
 
 #### Scenario: 低于阈值不产生噪声
 
-- **WHEN** 另一 `policy + reasonCode` 的 warn 计数低于阈值
+- **WHEN** 另一纠正型 `policy + reasonCode` 的 warn 计数低于阈值
 - **THEN** 该项不出现在报告的任何分段中
 
 ### Requirement: 基线快照与回检比对
@@ -253,3 +278,125 @@
 
 - **WHEN** 读者按方法论产出一条改进项
 - **THEN** 该改进项能落到报告某个分段的指标名上（可回检），而不是无法度量的主观判断
+
+### Requirement: 单 change 生命周期体检卡
+
+harness-retro SHALL 提供 `--lifecycle <change>` 模式：以单个 change 为生命周期单位，只读消费事实账本与 openspec change 目录，输出该 change 的流程执行体检卡。体检卡 SHALL 含五段，各段数据缺席时输出降级标注而非静默省略：
+
+1. **流程规范段**：档位绑定链（`mode.set` 序列与 boundChange）、约束注入概要（`constraint.inject` 通道/字节）、pin 接力（`pin.write`/`pin.read` 计数）、编辑归属（`edit.map` 路径数）、门禁执行概要（`gate.check` 按 cmd 的执行/失败计数）、归档锚点（`change.archive` 或 archive 目录名）。无归档锚点时 MUST 标注「未归档」并输出最后活动时间，MUST NOT 假定终态。
+2. **UI 工作流段**：ui-design-gate 的卡点链（policy.decision 按 reasonCode 计数）与放行态——放行判定优先消费放行事件，放行事件缺失时按「末次 block 后无新 block」推断并 MUST 标注推断口径。
+3. **成本卡**：该 change 归因会话的 `session.rollup` 终值聚合（cost / turns / toolCalls / durationSec / 会话数），MUST 按模型分桶披露（源 rollup payload `models` map）；rollup 覆盖不足或无终值时标注「数据积累中」。
+4. **健康度段**：block 催修时距（按 policy 分派解除信号，口径同「效能看板指标」A 组）、回归翻转计数、返工波次（该 change 名下文件的跨 session 编辑次数）。
+5. **人类反馈段**：解析 change 目录 `human-feedback.md`（路径规则同声明元数据：未归档读 `openspec/changes/<name>/`，已归档读 `openspec/changes/archive/` 目录剥日期前缀），输出条目计数（产品/流程二分）、归因分布（词表见「human-feedback 反馈建账」Requirement）、未处置条目数（状态为待处理/处理中）。文件缺席或无条目时输出「无反馈记录（或未启用）」降级标注；单条解析失败 MUST 计入「格式异常」单列披露，MUST NOT 中断整段输出。
+
+体检卡 MUST 联合 openspec 侧声明元数据（proposal 头注释 `ui-impact` / `complexity` / `constraint-domains`；未归档读 `openspec/changes/<name>/proposal.md`，已归档读 `openspec/changes/archive/` 目录对应 proposal），并在头部逐项展示；元数据文件缺失时标注「声明缺席」。
+
+体检卡 MUST 保持只读：不产生任何事件写入、不修改账本与 change 目录。输出不进入注入通道（同既有「输出形态不进入注入通道」约束）。
+
+#### Scenario: 体检卡五段齐备
+
+- **WHEN** 以一个已归档、有完整事件轨迹且含 human-feedback.md 的 change 运行 `--lifecycle`
+- **THEN** 输出含流程规范、UI 工作流、成本卡、健康度、人类反馈五段，头部含 proposal 声明元数据
+
+#### Scenario: 人类反馈段缺席降级
+
+- **WHEN** 某 change 目录无 human-feedback.md
+- **THEN** 人类反馈段输出「无反馈记录（或未启用）」降级标注，其余四段正常输出，不静默省略该段
+
+#### Scenario: 格式异常条目单列披露
+
+- **WHEN** human-feedback.md 存在词表外归因或缺失状态行的条目
+- **THEN** 该条计入「格式异常」单列计数，其余可解析条目照常统计，段输出不中断
+
+#### Scenario: UI 工作流放行口径标注
+
+- **WHEN** 某 major UI change 曾被 ui-prototype-missing block 两次，补原型后放行但无放行事件（本能力引入前）
+- **THEN** 体检卡 UI 工作流段列出卡点计数，放行态标注「推断（无放行事件）」；引入后同场景有放行事件时直接呈现事件时间
+
+#### Scenario: 未归档 change 不假定终态
+
+- **WHEN** 以一个仍有事件活动、无 change.archive 锚点的 change 运行 `--lifecycle`
+- **THEN** 流程规范段标注「未归档」并显示最后活动时间戳，成本卡正常输出已积累数据
+
+#### Scenario: 只读不变更账本
+
+- **WHEN** 运行 `--lifecycle` 前后各对账本做事件计数
+- **THEN** 计数不变（零写入），change 目录文件无修改
+
+### Requirement: human-feedback 反馈建账
+
+change 目录 `human-feedback.md` SHALL 作为人类反馈的一手建账文件（可选制品）：记录用户在 change 生命周期内对产物（proposal/design/ui-design/原型/实现/文档）的反馈，作为修订依据与 harness 计量输入。反馈条目 MUST 采用机器可解析的条目级格式契约：
+
+- 条目标题行 `### FB-<N> <日期>【<类型>|<归因>】<标题>`，N 为 change 内自增编号；类型限定 `产品 | 流程`；归因限定封闭词表 `frontend | backend | test-gap | fact-check | process`（frontend=前端设计/交互/视觉；backend=后端业务/参数/数据；test-gap=测试该拦未拦；fact-check=探索或搬运时未核实；process=流程/harness 本身）。
+- 条目含状态行，状态限定封闭词表 `待处理 | 处理中 | 已消化 | 已转挂 | 已放弃`。
+- 同一问题多因时按根因归因（如既属未核实又属测试盲区时归 fact-check）。
+
+`scripts/harness/feedback.sh` SHALL 提供三个子命令：
+
+- `menu`：打印归因词表与说明（选择题而非自由发挥）。
+- `add <change> --layer <归因> --type <产品|流程> "<反馈要点>"`：定位 change 目录（未归档 changes/、已归档拒绝建账提示用归档事实），human-feedback.md 不存在时按模板创建（含头部定位说明）；编号取现有最大 FB-N 自增；套条目模板写入，状态初始化「待处理」；词表外归因/类型非零退出且零写入。
+- `verify <change-dir>`：扫描条目状态，存在待处理/处理中条目时输出处置提醒（转新 change 或更新状态）并退出码 1；全部处置或文件缺席时退出码 0。归档对账流程（archive-readiness）SHALL 顺带调用本 verify 并透传其结果语义。
+
+human-feedback.md MUST NOT 写入 events.db（文件随 change 归档永久保存，账本有 TTL；文件为人写给人的修订账本，不要求存储友好格式）。
+
+#### Scenario: add 建账编号自增
+
+- **WHEN** 某 change 的 human-feedback.md 已有 FB-1 至 FB-10，执行 `feedback.sh add <change> --layer frontend --type 产品 "原话"`
+- **THEN** 新条目编号 FB-11，标题行含【产品|frontend】，状态行为「待处理」，文件其余内容不变
+
+#### Scenario: 词表外值零写入
+
+- **WHEN** 执行 `feedback.sh add <change> --layer ui --type 产品 "原话"`（ui 不在归因词表）
+- **THEN** 非零退出，human-feedback.md 无任何修改
+
+#### Scenario: verify 拦截未处置条目
+
+- **WHEN** 某 change 的 human-feedback.md 存在状态为「待处理」的条目，对其目录执行 `feedback.sh verify`
+- **THEN** 输出该条目的处置提醒，退出码 1；全部条目已消化/已转挂/已放弃或文件缺席时退出码 0
+
+#### Scenario: 已归档 change 拒绝建账
+
+- **WHEN** 对归档目录中的 change 执行 `feedback.sh add`
+- **THEN** 拒绝写入并提示走归档后修订流程，文件零修改
+
+### Requirement: 生命周期面汇总
+
+全局报告 ⑦ 效能看板 SHALL 输出 E 子组「生命周期面」，把单 change 体检卡第五段（人类反馈）与全局 C 组（返工波次）的数据在全局窗口上乘起来巡视；该子组 MUST 只读消费 change 目录文件与 events.db，MUST NOT 产生任何写入。
+
+change 清单口径：MUST 覆盖全部活跃 change（`openspec/changes/` 非 archive 子项）与窗口内归档 change（`archive/` 目录名日期前缀落在统计窗口内）。反馈文件解析 MUST 复用 lifecycle 模式既有词表与降级语义：归因五类封闭词表（frontend/backend/test-gap/fact-check/process）、文件缺席不算异常、格式异常条目单列披露不炸段。
+
+子组 MUST 输出三项：
+
+- **反馈覆盖**：有反馈账 change 数 / 无账 change 数 / 未处置条目数（待处理+处理中+状态不明）
+- **归因分布聚合**：窗口内全部反馈条目按归因五类的跨 change 聚合计数
+- **漏采信号**：窗口内编辑波次 ≥3 session（复用 C 组波次口径）且反馈 0 条的 change 名单——多轮返工却零反馈建账即采集纪律信号
+
+#### Scenario: 反馈覆盖计数
+
+- **WHEN** 窗口内 5 个 change 中 2 个目录含 human-feedback.md（共 3 条，其中 1 条待处理）
+- **THEN** E 子组输出有账 2 / 无账 3 / 未处置 1
+
+#### Scenario: 归因分布聚合
+
+- **WHEN** 窗口内反馈条目归因为 backend×2、test-gap×1
+- **THEN** E 子组输出聚合分布 backend 2 / test-gap 1（其余类 0 或省略，口径可查）
+
+#### Scenario: 漏采信号
+
+- **WHEN** 活跃 change X 在窗口内有 4 个 session 的 edit.map 波次且其目录无 human-feedback.md
+- **THEN** E 子组的漏采信号名单包含 X；仅有 ≤2 波次或已有反馈条目的 change 不进名单
+
+#### Scenario: 反馈文件格式异常不炸段
+
+- **WHEN** 某 human-feedback.md 存在词表外归因或缺失状态行的条目
+- **THEN** 该条目计入「格式异常」单列披露，子组其余输出不受影响
+
+#### Scenario: 零反馈数据降级
+
+- **WHEN** 窗口内所有 change 均无 human-feedback.md
+- **THEN** E 子组输出有账 0 与「无反馈记录」降级标注，不静默省略子组
+
+#### Scenario: 全程只读
+
+- **WHEN** 全局报告执行
+- **THEN** events.db 以 readonly 打开，change 目录仅 stat/读取，无任何文件或库写入

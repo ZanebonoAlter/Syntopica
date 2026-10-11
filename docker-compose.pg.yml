@@ -8,6 +8,14 @@ services:
     # churn) and raise cost limit so vacuum keeps up with write volume.
     # Defaults were 0.2 scale factor / cost_limit 200 — dead tuples piled up for
     # days and TOAST bloat multiplied storage 13x. Needs container recreate.
+    #
+    # idle_in_transaction_session_timeout (fix-aux-label-idle-tx-cache D4):
+    # hard guard against future "slow call inside a transaction" regressions —
+    # the aux-label attach path now commits its transactions in milliseconds,
+    # and the only legitimate long transaction (HardMergeTags row migration)
+    # is pure SQL and finishes well within 60s. If a misfire ever shows up in
+    # logs as "terminating connection due to idle-in-transaction timeout",
+    # raise or drop this parameter. Needs container recreate (connection blip).
     command:
       - postgres
       - -c
@@ -20,6 +28,8 @@ services:
       - autovacuum_vacuum_cost_limit=2000
       - -c
       - wal_compression=on
+      - -c
+      - idle_in_transaction_session_timeout=60s
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     environment:
@@ -35,7 +45,10 @@ services:
       test:
         - CMD-SHELL
         - pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-syntopica}
-      interval: 10s
+      # Pi 5 上每次 exec 都要走一遍 dockerd/containerd/runc 生命周期，10s 频率会
+      # 让 daemon 持续烧 ~0.5 核 CPU；启动期用 start_interval 快检，稳态 60s 一次。
+      interval: 60s
       timeout: 5s
       retries: 10
-      start_period: 10s
+      start_period: 30s
+      start_interval: 5s

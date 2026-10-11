@@ -363,26 +363,67 @@ func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req
 		return nil, fmt.Errorf("auxiliary label ids are required")
 	}
 
-	var result ConfirmSemanticBoardUpgradeResult
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 跳过已失效（status≠active）的辅助标签：建议生成后标签可能被禁用/合并，
-		// 硬性全量校验会让陈旧建议整体 400。这里软过滤，只保留仍 active 的标签。
-		activeIDs, err := FilterActiveAuxiliaryLabels(tx, auxiliaryIDs)
-		if err != nil {
-			return err
-		}
-		if len(activeIDs) == 0 {
-			return fmt.Errorf("所有传入的辅助标签均已失效（status≠active），请重新选择有效的辅助标签后重试")
-		}
-		auxiliaryIDs = activeIDs
+	// ── 阶段〇（事务外，读）：软过滤已失效标签 ──
+	// 跳过已失效（status≠active）的辅助标签：建议生成后标签可能被禁用/合并，
+	// 硬性全量校验会让陈旧建议整体 400。这里软过滤，只保留仍 active 的标签。
+	activeIDs, err := FilterActiveAuxiliaryLabels(s.db.WithContext(ctx), auxiliaryIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(activeIDs) == 0 {
+		return nil, fmt.Errorf("所有传入的辅助标签均已失效（status≠active），请重新选择有效的辅助标签后重试")
+	}
+	auxiliaryIDs = activeIDs
 
+	// ── 阶段一（事务外，慢 I/O）：LLM embedding 预计算（design D1，
+	// fix-aux-label-idle-tx-cache）——历史实现把 embedder 调用放在事务闭包内，
+	// 是 idle in transaction 的同模式元凶；现在事务前算好向量，事务内纯写。──
+	var boardEmbedding *string
+	var composePlan *auxlabel.CompositeLabelPlan
+	var composable *auxlabel.CompositeLabelService
+	switch req.Decision {
+	case SemanticBoardUpgradeDecisionCreateNew:
+		label := strings.TrimSpace(req.BoardLabel)
+		if label == "" {
+			return nil, fmt.Errorf("board label is required")
+		}
+		if s.embedder != nil {
+			input := label
+			if desc := strings.TrimSpace(req.Description); desc != "" {
+				input = label + ". " + desc
+			}
+			pgVector, _, embedErr := s.embedder(ctx, input, auxlabel.AuxiliaryLabelEmbeddingModeStorage)
+			if embedErr != nil {
+				return nil, fmt.Errorf("generate board embedding: %w", embedErr)
+			}
+			boardEmbedding = &pgVector
+		}
+	case SemanticBoardUpgradeDecisionCompose:
+		// 组件已由上方 FilterActiveAuxiliaryLabels 软过滤为 active。Plan 阶段
+		// （事务外）完成组件校验、L1/L2 去重与 LLM 组合短语 embedding；写阶段
+		// ApplyCompositeLabel 在下方事务内执行（spec: compose 建议确认必须在
+		// 同一事务内创建组合标签 + MarkConfirmed，失败整体回滚建议保持 pending）。
+		if len(auxiliaryIDs) < auxlabel.CompositeMinComponents || len(auxiliaryIDs) > auxlabel.CompositeMaxComponents {
+			return nil, fmt.Errorf("组合建议需要 %d-%d 个组件，当前 %d 个", auxlabel.CompositeMinComponents, auxlabel.CompositeMaxComponents, len(auxiliaryIDs))
+		}
+		label := strings.TrimSpace(req.BoardLabel)
+		if label == "" {
+			return nil, fmt.Errorf("composite label is required")
+		}
+		composable = auxlabel.NewCompositeLabelService(s.db, s.embedder)
+		composePlan, err = composable.PlanCompositeLabel(ctx, label, req.Description, auxiliaryIDs, "upgrade_suggest")
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// ── 阶段二（短事务，毫秒级纯写）──
+	var result ConfirmSemanticBoardUpgradeResult
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var boardID uint
 		switch req.Decision {
 		case SemanticBoardUpgradeDecisionCreateNew:
 			label := strings.TrimSpace(req.BoardLabel)
-			if label == "" {
-				return fmt.Errorf("board label is required")
-			}
 			board := models.SemanticLabel{
 				Label:       label,
 				Slug:        auxlabel.UniqueSemanticLabelSlug(tx, core.Slugify(label)),
@@ -390,17 +431,7 @@ func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req
 				Description: req.Description,
 				Source:      "llm_suggest",
 				Status:      "active",
-			}
-			if s.embedder != nil {
-				input := label
-				if desc := strings.TrimSpace(req.Description); desc != "" {
-					input = label + ". " + desc
-				}
-				pgVector, _, embedErr := s.embedder(ctx, input, auxlabel.AuxiliaryLabelEmbeddingModeStorage)
-				if embedErr != nil {
-					return fmt.Errorf("generate board embedding: %w", embedErr)
-				}
-				board.Embedding = &pgVector
+				Embedding:   boardEmbedding, // 事务前预计算（nil = embedder 未注入）
 			}
 			if err := tx.Create(&board).Error; err != nil {
 				return err
@@ -421,18 +452,11 @@ func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req
 			}
 			boardID = *req.TargetBoardID
 		case SemanticBoardUpgradeDecisionCompose:
-			// 组件已由上方 FilterActiveAuxiliaryLabels 软过滤为 active。同一事务内
-			// 创建组合标签（含 L1/L2 去重复用路径）；扩充方向（建议携带 target）
-			// 同一事务内将组合标签挂载进目标版块的 board_composition（spec: compose
-			// 建议确认执行——挂载失败整体回滚）；embedder 失败等任何错误回滚，
-			// 建议保持 pending。
-			if len(auxiliaryIDs) < auxlabel.CompositeMinComponents || len(auxiliaryIDs) > auxlabel.CompositeMaxComponents {
-				return fmt.Errorf("组合建议需要 %d-%d 个组件，当前 %d 个", auxlabel.CompositeMinComponents, auxlabel.CompositeMaxComponents, len(auxiliaryIDs))
-			}
-			label := strings.TrimSpace(req.BoardLabel)
-			if label == "" {
-				return fmt.Errorf("composite label is required")
-			}
+			// 组合标签的 L1/L2 去重与 LLM embedding 已在阶段一（事务外）
+			// PlanCompositeLabel 完成；此处同一事务内落库（含去重复用路径）。
+			// 扩充方向（建议携带 target）同一事务内将组合标签挂载进目标版块的
+			// board_composition（spec: compose 建议确认执行——挂载失败整体回滚）；
+			// 任何错误回滚，建议保持 pending。
 			var composeTargetBoard uint
 			if req.TargetBoardID != nil && *req.TargetBoardID != 0 {
 				// 扩充方向：目标版块须仍为活跃 board（生成后可能被禁用，spec:
@@ -446,10 +470,10 @@ func (s *SemanticBoardUpgradeService) ConfirmSuggestion(ctx context.Context, req
 				}
 				composeTargetBoard = *req.TargetBoardID
 			}
-			compositeService := auxlabel.NewCompositeLabelService(tx, s.embedder)
-			createResult, createErr := compositeService.CreateCompositeLabel(ctx, label, req.Description, auxiliaryIDs, "upgrade_suggest")
-			if createErr != nil {
-				return createErr
+			// composable 于阶段一构造：Apply 只写不调 embedder（Plan 已完成 LLM 调用）。
+			createResult, applyErr := composable.ApplyCompositeLabel(ctx, tx, composePlan)
+			if applyErr != nil {
+				return applyErr
 			}
 			result.CompositeLabelID = &createResult.Label.ID
 			boardID = 0 // compose creates a composite label, not a board

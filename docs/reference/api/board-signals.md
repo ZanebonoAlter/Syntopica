@@ -151,7 +151,7 @@ job 内部：`prepare`（周期材料装配，历史期只取当时归属板块�
   "scope": "board", "target_id": 9, "candidate_id": 3, "granularity": "month", "period": "2026-08" } }
 ```
 
-研究链：读取候选冻结快照（不重新装配、不偷换最新材料，不重跑 freshness）→ 40 轮问题驱动 loop（四源取数 + `calculate` 合计 ≤40 次执行，可提前收束）→ `compose` ≤3 次尝试 → 成功保存不可变报告。失败 job 可重试（重试仍需用户点击，无自动重试）。研究 job 超时独立为 **150 分钟**（与 40 轮预算对齐：实测单轮 108~380s；发现保持 30 分钟），超时/失败时已完成轮次的进展（轮次计数+账本）持久化到 `board_signal_research_progress` 保留可查（见上节），不随 job 终止丢失。
+研究链：读取候选冻结快照（不重新装配、不偷换最新材料，不重跑 freshness）→ 40 轮问题驱动 loop（七源取数 + `calculate` 合计 ≤40 次执行，可提前收束；add-fast-frequency-datasources 扩 yahoo_chart/fred_series/gdelt_doc 三快频源，报告头「数据截至」支持日度期值）→ `compose` ≤3 次尝试 → 成功保存不可变报告。失败 job 可重试（重试仍需用户点击，无自动重试）。研究 job 超时独立为 **150 分钟**（与 40 轮预算对齐：实测单轮 108~380s；发现保持 30 分钟），超时/失败时已完成轮次的进展（轮次计数+账本）持久化到 `board_signal_research_progress` 保留可查（见上节），不随 job 终止丢失。
 
 ---
 

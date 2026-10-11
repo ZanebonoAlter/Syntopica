@@ -25,6 +25,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | `BOCHA_ENDPOINT` | 否 | `"https://api.bochaai.com/v1/web-search"` | 博查通搜 endpoint（原始网页结果模式）的**兜底**值；界面可覆盖。仅在需要切换 endpoint（如代理/镜像）时设 |
 | `SEARXNG_URL` | 否 | *(空)* | 本地 SearXNG 实例地址的**兜底**（页边注问答联网补强，daily-report-margin-notes D7）。**首选在设置界面「SearXNG 搜索」配**（存 `ai_settings` 表 `searxng_config`，每次提问现读、即时生效，优先级：界面 DB > env > `configs/config.yaml` `searxng.endpoint`）。空→禁用（问答静默降级为纯文章+模型知识，不报错）。客户端：`internal/platform/searxng` |
 | `COMTRADE_API_KEY` | 否 | *(空)* | UN Comtrade 订阅 key 的**兜底**（研究数据源域，change integrate-research-data-sources）。**首选在设置界面「研究数据源」配**（存 `ai_settings` 表 `comtrade_config`，动态生效免重启，同博查语义）；优先级：界面 DB > env > `configs/config.yaml` `comtrade.api_key`。全空→`un_comtrade` 源在目录中 disabled 且取数报「配置缺失」型 SOURCE_UNAVAILABLE（消息指向配置项），其余三源（EIA/JODI/WDI）匿名可用不受影响。key 获取：comtradedeveloper.un.org 订阅 Free APIs 产品（详见下方「研究数据源」节） |
+| `FRED_API_KEY` | 否 | *(空)* | FRED API key 的**兜底**（研究数据源域，change add-fast-frequency-datasources，同 Comtrade 动态链）。**首选在设置界面「研究数据源」配**（存 `ai_settings` 表 `fred_config`，动态生效免重启）；优先级：界面 DB > env > `configs/config.yaml` `fred.api_key`。全空→`fred` 源在目录中 disabled 且取数报「配置缺失」型 SOURCE_UNAVAILABLE，其余六源匿名可用不受影响。key 获取：stlouisfed.org 免费注册（1 分钟，详见下方「研究数据源」节） |
 
 ### 前端（Nuxt）
 
@@ -369,15 +370,17 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 
 ## 研究数据源（Syntopica 应用，非 dsh 外部工具）
 
-后端内置四个只读研究数据源（change `integrate-research-data-sources`，代码 `backend-go/internal/datasources/`），为后续研究对话助手供给结构化官方数值；本节是配置与口径速查。
+后端内置七个只读研究数据源（change `integrate-research-data-sources` 建四源 + `add-fast-frequency-datasources` 扩三快频源，代码 `backend-go/internal/datasources/`），为研究分析供给结构化官方数值；本节是配置与口径速查。
 
 **部署与配置**：
 
 - 目录表 `data_sources` 启动时自动建表并 seed（幂等 upsert）；无迁移操作、无观测值落库（取数仅内存 TTL 缓存 900s，快照由消费方留存）。
-- 仅 UN Comtrade 需配置，三级优先（**同博查语义**）：**设置界面「研究数据源」**（`ai_settings.comtrade_config`，动态生效免重启）> `COMTRADE_API_KEY` env > `configs/config.yaml` `comtrade.api_key`。key 获取路径（2026-09 实测）：`comtradedeveloper.un.org` → 用主站（comtradeplus.un.org）同一账号登录 → 右上 **Products** → 订阅 **Free APIs** 产品（自动批准）→ **Profile → Subscriptions** 显示 primary key。免费档 500 次/天；**保活**：账号长期（半年~一年）不登录门户且无 API 活动，key 会被移除需重新生成。
-- 未配置 key 时：目录 API 中 `un_comtrade` 行 `status=disabled` 带原因；probe/取数报「配置缺失」型 SOURCE_UNAVAILABLE（消息含配置项名）；其余三源完全不受影响。目录 status 与取数**每次现读**配置（免重启翻转），设置 API 脱敏回显（已配置+末 4 位，不回显完整 key），空 key 保存不清除已存值、`enabled=false` 跳过界面值走兜底。
+- 需 key 的源：UN Comtrade 与 FRED，各自三级优先（**同博查语义**）：**设置界面「研究数据源」**（`ai_settings.comtrade_config` / `fred_config`，动态生效免重启）> env（`COMTRADE_API_KEY` / `FRED_API_KEY`）> `configs/config.yaml`（`comtrade.api_key` / `fred.api_key`）。
+  - Comtrade key 获取路径（2026-09 实测）：`comtradedeveloper.un.org` → 用主站（comtradeplus.un.org）同一账号登录 → 右上 **Products** → 订阅 **Free APIs** 产品（自动批准）→ **Profile → Subscriptions** 显示 primary key。免费档 500 次/天；**保活**：账号长期（半年~一年）不登录门户且无 API 活动，key 会被移除需重新生成。
+  - FRED key 获取路径：`stlouisfed.org` → 右上 **My Account** 注册（免费，1 分钟）→ **API Keys** 页生成 32 位 key。免费档限速宽松（研究 loop 场景无感）。
+- 未配置 key 时：目录 API 中对应源行 `status=disabled` 带原因；probe/取数报「配置缺失」型 SOURCE_UNAVAILABLE（消息含配置项名）；其余源完全不受影响。目录 status 与取数**每次现读**配置（免重启翻转），设置 API 脱敏回显（已配置+末 4 位，不回显完整 key），空 key 保存不清除已存值、`enabled=false` 跳过界面值走兜底。
 
-**四源口径速查**：
+**七源口径速查**：
 
 | 源 code | 数据 | 频度/滞后 | 单位纪律 |
 | --- | --- | --- | --- |
@@ -385,6 +388,9 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `jodi_oil_primary` | 96 经济体原油产量/进出口/期末库存（含中日韩美） | 月度，滞后 1.5~2 月 | KBD（流量）/KBBL（库存）不换算；缺失标记（`-`/`..`/`x`）映射 null 不转 0 |
 | `wb_wdi` | 世界银行宏观年度指标（出口/GDP、燃料进口占比等） | 年度 | 指标原生单位；null 期保留 |
 | `un_comtrade` | 全球 HS 商品双边贸易（金额+数量，分伙伴国） | 年度完整；月度滞后 4 月+（中国更长） | netWgt/qty=kg、primaryValue=USD；partner_code=0 为 World 合计行；M49 码（中156/日392/韩410/沙682）；原油 HS2709 |
+| `yahoo_finance` | 日度价格行情（OHLC）。symbol 封闭枚举 15 个：能源期货 `CL=F`/`BZ=F`/`HO=F`/`RB=F`/`NG=F`、贵金属 `GC=F`/`SI=F`、股指 `^GSPC`/`^IXIC`/`^DJI`/`^VIX`、汇率 `JPY=X`/`EUR=X`/`USDCNY=X`、加密 `BTC-USD`；range=1mo/3mo/6mo/1y（缺省 1mo） | 日度，T+0（收盘后当日可得） | OHLC 原计价货币（`meta.currency` 透传）不换算；null 收盘价如实缺失；**非官方接口无 SLA**（匿名、结构漂移显式 SCHEMA_CHANGED） |
+| `fred` | FRED 宏观/价格序列。series_id 格式 `^[A-Z0-9_]{1,64}$`（非枚举，格式即边界）；常用 `DCOILWTICO`/`DCOILBRENTEU`（WTI/Brent 日度现货）、`SOFR`、`DGS10`、`DTWEXBGS`；窗口缺省最近 1 年、显式起止 ≤10 年 | 日度，T+0~T+1 | units/frequency/title 原样透传不换算；缺失观测（`.`）映射 null 不转 0；需免费 key |
+| `gdelt` | 新闻事件热度时间线。query 关键词（≤120 字符）+ mode=`timelinevol`（声量）/`timelinetone`（情绪）+ timespan=7d/30d/90d（缺省 7d；7d 小时级、30d/90d 日级） | 小时级（准实时聚合） | 无量纲热度/情绪指数；**非事实核查、非新闻正文**；匿名，免费档限流 1 次/5 秒（撞限流显式 429 失败记 gap，不阻断研究） |
 
 **验证与排障**：
 
@@ -392,4 +398,4 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 - `POST /api/datasources/{code}/probe`：一次真实取数（最小参数集），返回摘要/耗时/`retrieved_at`；失败返回 `error_code`（`INVALID_ARGUMENT`=400 / `SOURCE_UNAVAILABLE`=`SCHEMA_CHANGED`=502，消息可区分配置缺失/网络/上游结构漂移）。probe 不改目录状态。
 - 上游 CSV 结构漂移（如 EIA 改列）会显式报 `SCHEMA_CHANGED` 并驱逐缓存，不做模糊容错——这是预期行为，等待上游口径更新后重试。
 
-**消费方式**：四源已注册为 agent 工具（`eia_wpsr_table1`/`jodi_oil_primary`/`wb_wdi`/`un_comtrade_trade`，经 dataenrichment 工具注册表），供后续研究对话会话使用；现有增强/问答流程的默认工具集**不含**这些工具（spec「注入后现有工具面不变」）。
+**消费方式**：七源已注册为 agent 工具（`eia_wpsr_table1`/`jodi_oil_primary`/`wb_wdi`/`un_comtrade_trade`/`yahoo_chart`/`fred_series`/`gdelt_doc`，经 dataenrichment 工具注册表）；唯一授权消费方是板块信号研究 loop（board-signal-reports，用户显式触发「深入分析」），现有增强/问答/调查流程的默认工具集**不含**这些工具（spec「注入后现有工具面不变」）。probe 对三新源自动可用（`yahoo_finance` 取 CL=F 1mo、`fred` 取 DCOILWTICO、`gdelt` 取 oil 声量）。

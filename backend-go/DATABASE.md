@@ -14,7 +14,7 @@
 4. `scheduler_tasks` - 定时任务表
 5. `ai_settings` - AI 设置表
 6. `reading_behaviors` - 阅读行为表
-7. `user_preferences` - 用户偏好表
+7. `user_preferences` - 用户偏好表（**已废弃**：无 model、代码零引用；未开启 `MIGRATIONS_ALLOW_DESTRUCTIVE` 的环境可能仍残留，删除路径已按存在性探测容错）
 
 ## 工作原理
 

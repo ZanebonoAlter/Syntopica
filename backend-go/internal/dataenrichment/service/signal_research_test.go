@@ -598,7 +598,7 @@ func TestSignalResearch_QuestionRequiredDedupAndDefenses(t *testing.T) {
 			srDecision("call_tool", map[string]any{"tool": "eia_wpsr_table1", "args": map[string]any{"section": "stocks"}, "question": "库存是否下降"}),
 			srDecision("finish", map[string]any{"summary": "done"}),
 		},
-		compose: []srComposeReply{{content: srComposeOK("c1:o1")}},
+		compose: []srComposeReply{{content: srComposeReplyWithAsOf("数据截至 2026-08-07。", "c1:o1")}},
 	}
 	tool := &srToolStub{replies: []srToolReply{{body: body}}}
 	candidate, discovery := srFixturePair(7)
@@ -647,7 +647,7 @@ func TestSignalResearch_CutoffFilterBeforeAgent(t *testing.T) {
 			srDecision("call_tool", map[string]any{"tool": "eia_wpsr_table1", "args": map[string]any{"section": "stocks"}, "question": "库存走势"}),
 			srDecision("finish", map[string]any{"summary": "done"}),
 		},
-		compose: []srComposeReply{{content: srComposeOK("c1:o1")}},
+		compose: []srComposeReply{{content: srComposeReplyWithAsOf("数据截至 2026-08-07。", "c1:o1")}}, // 09-25 晚于 cutoff 被剔，最新保留期 08-07
 	}
 	tool := &srToolStub{replies: []srToolReply{{body: body}}}
 	candidate, discovery := srFixturePair(7)
@@ -734,7 +734,7 @@ func TestSignalResearch_SixtyObservationsNotCutToFifty(t *testing.T) {
 			srDecision("call_tool", map[string]any{"tool": "eia_wpsr_table1", "args": map[string]any{"section": "stocks"}, "question": "库存"}),
 			srDecision("finish", map[string]any{"summary": "done"}),
 		},
-		compose: []srComposeReply{{content: srComposeOK("c1:o1")}},
+		compose: []srComposeReply{{content: srComposeReplyWithAsOf("数据截至 2026-08-07。", "c1:o1")}}, // 60 条最大期 08-07
 	}
 	tool := &srToolStub{replies: []srToolReply{{body: srEiaBody(obs...)}}}
 	candidate, discovery := srFixturePair(7)
@@ -750,7 +750,7 @@ func TestSignalResearch_SixtyObservationsNotCutToFifty(t *testing.T) {
 // ── allowedTools / 工具面不变量（HR-7 新研究侧）───────────────────────────────
 
 func TestSignalResearch_AllowedToolsPinnedAndLegacyUnchanged(t *testing.T) {
-	want := []string{"eia_wpsr_table1", "jodi_oil_primary", "wb_wdi", "un_comtrade_trade"}
+	want := []string{"eia_wpsr_table1", "jodi_oil_primary", "wb_wdi", "un_comtrade_trade", "yahoo_chart", "fred_series", "gdelt_doc"}
 	if len(signalResearchToolNames) != len(want) {
 		t.Fatalf("research tool whitelist changed: %v", signalResearchToolNames)
 	}
@@ -759,7 +759,7 @@ func TestSignalResearch_AllowedToolsPinnedAndLegacyUnchanged(t *testing.T) {
 			t.Fatalf("research tool whitelist changed: %v", signalResearchToolNames)
 		}
 	}
-	// 旧 loop：explorationToolNames 逐字不变，且不含四源。
+	// 旧 loop：explorationToolNames 逐字不变，且不含研究数据源工具。
 	legacy := []string{"list_boards", "list_lanes", "get_lane_detail", "web_search", "fetch_page", "search_internal_context"}
 	if len(explorationToolNames) != len(legacy) {
 		t.Fatalf("explorationToolNames must stay unchanged: %v", explorationToolNames)
@@ -819,7 +819,7 @@ func TestSignalResearch_CalculateActionValidation(t *testing.T) {
 			srDecision("calculate", map[string]any{"op": "difference", "inputs": []string{"c1:o1", "c1:o2"}, "question": "变化多少"}),
 			srDecision("finish", map[string]any{"summary": "done"}),
 		},
-		compose: []srComposeReply{{content: srComposeOK("c1:o1", "c1:o2", "k1")}},
+		compose: []srComposeReply{{content: srComposeReplyWithAsOf("数据截至 2026-08-14。", "c1:o1", "c1:o2", "k1")}}, // 最新观测 08-14
 	}
 	tool := &srToolStub{replies: []srToolReply{{body: srEiaBody(srEiaObs("2026-08-07", 420.0), srEiaObs("2026-08-14", 419.0))}}}
 	candidate, discovery := srFixturePair(7)
@@ -861,7 +861,7 @@ func TestSignalResearch_NR_NoReviewNoNewsPollution(t *testing.T) {
 			srDecision("call_tool", map[string]any{"tool": "eia_wpsr_table1", "args": map[string]any{"section": "s"}, "question": "q"}),
 			srDecision("finish", map[string]any{"summary": "done"}),
 		},
-		compose: []srComposeReply{{content: srComposeOK("c1:o1")}},
+		compose: []srComposeReply{{content: srComposeReplyWithAsOf("数据截至 2026-08-01。", "c1:o1")}}, // 最新观测 08-01
 	}
 	tool := &srToolStub{replies: []srToolReply{{body: srEiaBody(srEiaObs("2026-08-01", 420.0))}}}
 	candidate, discovery := srFixturePair(7)
@@ -967,7 +967,7 @@ func TestSignalResearch_ProgressPerRoundUpsertAndSupersede(t *testing.T) {
 			}),
 			srDecision("finish", map[string]any{"summary": "研究笔记：关键发现。"}),
 		},
-		compose: []srComposeReply{{content: srComposeOK("c1:o1")}},
+		compose: []srComposeReply{{content: srComposeReplyWithAsOf("数据截至 2026-08-07。", "c1:o1")}}, // 最新观测 08-07
 	}
 	tool := &srToolStub{replies: []srToolReply{
 		{body: srEiaBody(srEiaObs("2026-07-31", 420.0))},
@@ -1171,7 +1171,7 @@ func TestSignalResearch_ProgressStopReasonDerivation(t *testing.T) {
 //   ③ TestSignalResearch_NoCoverageStreakResetsOnSuccess —— 成功取数清零计数
 //    （2空手+成功+1空手不触发），再3连空手才重新达到触发条件（反馈行每源仍
 //     恰一次，design「每源最多注入一次」权威）；
-//   ④ TestSignalResearch_NoCoverageFinaleOnceAfterAllFourSources —— 四源全触
+//   ④ TestSignalResearch_NoCoverageFinaleOnceAfterAllSources —— 七源全触
 //     发 → 终局提示恰一次；
 //   ⑤ TestSignalResearch_NoFeedbackWithoutProviderOrPolicy —— policy=nil 与
 //     未实现新接口的 policy：历史逐字节一致且零反馈行；
@@ -1246,7 +1246,7 @@ func TestSignalResearch_NoCoverageFeedbackAfterThirdEmptyCall(t *testing.T) {
 	if got := strings.Count(final, "系统提示（源覆盖）"); got != 1 {
 		t.Fatalf("feedback line must appear exactly once after round 3, got %d", got)
 	}
-	wantLine := "系统提示（源覆盖）：eia_wpsr_table1：该源在本研究问题上已连续3次无覆盖，换参数也不会有数据；若四源皆无覆盖请直接 finish（summary 里如实列缺口）"
+	wantLine := "系统提示（源覆盖）：eia_wpsr_table1：该源在本研究问题上已连续3次无覆盖，换参数也不会有数据；若白名单源皆无覆盖请直接 finish（summary 里如实列缺口）"
 	if !strings.Contains(final, wantLine) {
 		t.Fatalf("feedback text mismatch, history tail: %q", final)
 	}
@@ -1305,7 +1305,7 @@ func TestSignalResearch_NoCoverageFeedbackOncePerSource(t *testing.T) {
 // 累计第3次空手会提前触发）；成功后再3连空手才重新达到触发条件；反馈行每源
 // 仍恰一次（design §10.2「每源最多注入一次」权威，不随成功重置）。
 func TestSignalResearch_NoCoverageStreakResetsOnSuccess(t *testing.T) {
-	router := &srStubRouter{compose: []srComposeReply{{content: srComposeOK("c3:o1")}}}
+	router := &srStubRouter{compose: []srComposeReply{{content: srComposeReplyWithAsOf("数据截至 2026-08-07。", "c3:o1")}}} // 唯一成功观测 08-07
 	for i := 0; i < 6; i++ {
 		router.decisions = append(router.decisions, srDecision("call_tool", map[string]any{
 			"tool": "eia_wpsr_table1", "args": map[string]any{"section": fmt.Sprintf("s%d", i)},
@@ -1335,8 +1335,8 @@ func TestSignalResearch_NoCoverageStreakResetsOnSuccess(t *testing.T) {
 	}
 }
 
-// ④：四源全部触发过 → 终局提示恰一次（与第4个源的反馈同轮注入）。
-func TestSignalResearch_NoCoverageFinaleOnceAfterAllFourSources(t *testing.T) {
+// ④：白名单七源全部触发过 → 终局提示恰一次（与最后一个源的反馈同轮注入）。
+func TestSignalResearch_NoCoverageFinaleOnceAfterAllSources(t *testing.T) {
 	router := &srStubRouter{compose: []srComposeReply{{content: srComposeOKNoData()}}}
 	type srcSpec struct {
 		tool string
@@ -1347,6 +1347,9 @@ func TestSignalResearch_NoCoverageFinaleOnceAfterAllFourSources(t *testing.T) {
 		{"jodi_oil_primary", func(i int) map[string]any { return map[string]any{"geo": fmt.Sprintf("g%d", i)} }},
 		{"wb_wdi", func(i int) map[string]any { return map[string]any{"indicator": fmt.Sprintf("i%d", i)} }},
 		{"un_comtrade_trade", func(i int) map[string]any { return map[string]any{"period": fmt.Sprintf("p%d", i)} }},
+		{"yahoo_chart", func(i int) map[string]any { return map[string]any{"symbol": "CL=F", "range": fmt.Sprintf("r%d", i)} }},
+		{"fred_series", func(i int) map[string]any { return map[string]any{"series_id": fmt.Sprintf("SERIES%d", i)} }},
+		{"gdelt_doc", func(i int) map[string]any { return map[string]any{"query": fmt.Sprintf("q%d oil", i)} }},
 	}
 	for _, spec := range specs {
 		for i := 0; i < 3; i++ {
@@ -1365,6 +1368,9 @@ func TestSignalResearch_NoCoverageFinaleOnceAfterAllFourSources(t *testing.T) {
 		"jodi_oil_primary":  {replies: emptyReplies()},
 		"wb_wdi":            {replies: emptyReplies()},
 		"un_comtrade_trade": {replies: []srToolReply{{body: srTypedErrorBody()}, {body: srTypedErrorBody()}, {body: srTypedErrorBody()}}},
+		"yahoo_chart":       {replies: emptyReplies()},
+		"fred_series":       {replies: emptyReplies()},
+		"gdelt_doc":         {replies: emptyReplies()},
 	}
 	candidate, discovery := srFixturePair(7)
 	store := &srStubStore{candidate: candidate, discovery: discovery}
@@ -1382,14 +1388,14 @@ func TestSignalResearch_NoCoverageFinaleOnceAfterAllFourSources(t *testing.T) {
 			t.Fatalf("%s feedback must fire exactly once, got %d", spec.tool, got)
 		}
 	}
-	// 终局提示恰一次，与第4源反馈同轮（round 12）之后注入。
-	if idx := srFirstHistoryContaining(router, "四个数据源均确认无覆盖"); idx != 12 {
-		t.Fatalf("finale expected after round 12, first seen at round %d", idx+1)
+	// 终局提示恰一次，与第7源反馈同轮（round 21）之后注入。
+	if idx := srFirstHistoryContaining(router, "7 个数据源均确认无覆盖"); idx != 21 {
+		t.Fatalf("finale expected after round 21, first seen at round %d", idx+1)
 	}
-	if got := srCountInHistories(router, "四个数据源均确认无覆盖"); got != 1 {
+	if got := srCountInHistories(router, "7 个数据源均确认无覆盖"); got != 1 {
 		t.Fatalf("finale must fire exactly once, got %d", got)
 	}
-	if payload.GenerationMeta.Decisions != 13 || payload.GenerationMeta.SourceCalls != 12 {
+	if payload.GenerationMeta.Decisions != 22 || payload.GenerationMeta.SourceCalls != 21 {
 		t.Fatalf("finale must not alter accounting: %+v", payload.GenerationMeta)
 	}
 }

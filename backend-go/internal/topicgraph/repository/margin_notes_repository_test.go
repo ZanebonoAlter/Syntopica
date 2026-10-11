@@ -123,6 +123,37 @@ func TestAnnotation_DeleteCascadesQAs(t *testing.T) {
 
 // ── jsonb 数组契约 ──────────────────────────────────────────────────────
 
+// TestAnnotationQA_WebSearchStatus_NullAndSetRoundTrip（add-searxng-health-indicator
+// 任务 1.2）：旧行 NULL 与新行三态在同一批注下混存——写入不报错、读回值逐行
+// 对应（NULL 保持 NULL、枚举值原样）；NULL 是历史数据语义，不回填不默认。
+func TestAnnotationQA_WebSearchStatus_NullAndSetRoundTrip(t *testing.T) {
+	repo := setupMarginNotesTestDB(t)
+	boardID := seedTestBoard(t, repo.db)
+	reportID := seedTestReport(t, repo.db, boardID, time.Now())
+	sectionID := seedTestSection(t, repo.db, reportID, "section")
+	a := mustCreateAnnotation(t, repo, reportID, sectionID, nil, "联网状态读写验证")
+
+	// 旧行（NULL）：不设 WebSearchStatus，模拟本 change 上线前的历史问答轮。
+	legacy := mustInsertQA(t, repo, a.ID, "历史问题", "历史回答", nil, nil)
+	require.Nil(t, legacy.WebSearchStatus)
+	// 新行三态逐个写入。
+	for _, status := range []string{"disabled", "ok", "empty"} {
+		s := status
+		qa := &AnnotationQA{AnnotationID: a.ID, Question: "q-" + s, Answer: "a", WebSearchStatus: &s}
+		require.NoError(t, repo.InsertAnnotationQA(qa))
+	}
+
+	got, err := repo.ListAnnotationsByReport(reportID)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Len(t, got[0].QAs, 4)
+	assert.Nil(t, got[0].QAs[0].WebSearchStatus, "旧行 NULL 原样读回，不得报错或回填")
+	for i, want := range []string{"disabled", "ok", "empty"} {
+		require.NotNil(t, got[0].QAs[i+1].WebSearchStatus)
+		assert.Equal(t, want, *got[0].QAs[i+1].WebSearchStatus)
+	}
+}
+
 func TestAnnotationQA_JSONBArrayContract(t *testing.T) {
 	repo := setupMarginNotesTestDB(t)
 	boardID := seedTestBoard(t, repo.db)

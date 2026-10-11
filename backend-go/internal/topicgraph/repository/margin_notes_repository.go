@@ -50,8 +50,13 @@ type AnnotationQA struct {
 	CitedArticleIDs JSON `gorm:"type:jsonb;not null" json:"cited_article_ids"`
 	// CitedWebSources is the whitelist-filtered web source array (D7：
 	// [{title,url}] 保序去重，url 必须在本次搜索结果集内；空写 [] 不写 null).
-	CitedWebSources JSON      `gorm:"type:jsonb;not null" json:"cited_web_sources"`
-	ExtractedTerms  JSON      `gorm:"type:jsonb;not null" json:"extracted_terms"`
+	CitedWebSources JSON `gorm:"type:jsonb;not null" json:"cited_web_sources"`
+	ExtractedTerms  JSON `gorm:"type:jsonb;not null" json:"extracted_terms"`
+	// WebSearchStatus is the web-search status of this turn
+	// (add-searxng-health-indicator): disabled / ok / empty. Pointer keeps
+	// pre-change rows NULL (历史数据无标记语义，不回填)；新轮由 AskMarginNote
+	// 三态采集写入（落库不细分 unreachable/degraded，对读者语义同为 empty）。
+	WebSearchStatus *string   `gorm:"size:16" json:"web_search_status,omitempty"`
 	Operation       string    `gorm:"size:80" json:"operation,omitempty"`
 	Provider        string    `gorm:"size:100" json:"provider,omitempty"`
 	Model           string    `gorm:"size:100" json:"model,omitempty"`

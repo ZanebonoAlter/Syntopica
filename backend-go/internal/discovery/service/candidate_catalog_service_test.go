@@ -13,6 +13,7 @@ import (
 
 	discmodels "syntopica-backend/internal/discovery/models"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/database"
 )
 
 // ── 候选源库 S9（feed-candidate-catalog spec：Candidate Catalog Is Not a Subscription List）──
@@ -30,6 +31,9 @@ func setupCandidateCatalogTestDB(t *testing.T) *gorm.DB {
 		&discmodels.FeedCandidate{}, &models.Feed{}, &discmodels.RSSHubRoute{}, &discmodels.RouteParamOption{},
 		&discmodels.CandidateAvailability{},
 	))
+	// 订阅判定经 resolveRSSHubBaseURL 读全局 database.DB（ai_settings 表缺失 → 如实回落
+	// 默认 base），这里把全局指向 sqlite 测试库避免空指针（与 setupAcceptTestDB 同约定）。
+	database.DB = db
 	return db
 }
 
@@ -497,6 +501,47 @@ func TestCandidateCatalogGetRSSHubPreloadRoute(t *testing.T) {
 	require.Equal(t, CandidateErrorCodeNotFound, ce.Code)
 }
 
+// TestCandidateCatalogRSSHubSubscribedByRoute 2.1 / spec feed-candidate-catalog：RSSHub
+// 候选按路由级判定——订了 /znews/world（route.example 是 /znews/china）也显示已订阅，
+// 并附已有订阅地址；未订阅时 subscribed_urls 为空切片（JSON 为 [] 不是 null）。
+func TestCandidateCatalogRSSHubSubscribedByRoute(t *testing.T) {
+	db := setupCandidateCatalogTestDB(t)
+	svc := NewCandidateCatalogService(db)
+	ctx := context.Background()
+
+	route := discmodels.RSSHubRoute{
+		Namespace: "zaobao", Path: "/znews/:section?", Name: "联合早报",
+		Example: "/zaobao/znews/china", UsableDirectly: true, Status: "ok",
+	}
+	require.NoError(t, db.Create(&route).Error)
+	cand := discmodels.FeedCandidate{
+		StableKey: "zaobao/znews/:section?", Kind: "rsshub", RouteID: &route.ID,
+		ManualMetadata: models.MetadataMap{}, AccessScope: "public", Revision: 1,
+	}
+	require.NoError(t, db.Create(&cand).Error)
+
+	// 未订阅：false + 空切片（非 nil）。
+	view, err := svc.GetCandidate(ctx, cand.ID)
+	require.NoError(t, err)
+	require.False(t, view.Subscribed)
+	require.NotNil(t, view.SubscribedURLs)
+	require.Empty(t, view.SubscribedURLs)
+
+	// 订阅 world 分区（与 route.example=china 不同）→ 路由级命中（修正 rsshub 恒 false）。
+	subscribedURL := DefaultRSSHubBaseURL + "/zaobao/znews/world"
+	require.NoError(t, db.Create(&models.Feed{Title: "联合早报-世界", URL: subscribedURL}).Error)
+	view, err = svc.GetCandidate(ctx, cand.ID)
+	require.NoError(t, err)
+	require.True(t, view.Subscribed, "同一路由任意参数已订阅即算该候选已订阅（修正 rsshub 恒 false）")
+	require.Equal(t, []string{subscribedURL}, view.SubscribedURLs)
+
+	// 段边界：/znews2 不并入订阅地址（裸 HasPrefix 会误命中）。
+	require.NoError(t, db.Create(&models.Feed{Title: "撞名前缀", URL: DefaultRSSHubBaseURL + "/zaobao/znews2"}).Error)
+	view, err = svc.GetCandidate(ctx, cand.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{subscribedURL}, view.SubscribedURLs, "段边界外地址不得并入订阅地址")
+}
+
 // TestCandidateCatalogListPagination 分页：默认 30、上限 100 截断、page 翻页、total 正确。
 func TestCandidateCatalogListPagination(t *testing.T) {
 	db := setupCandidateCatalogTestDB(t)
@@ -583,6 +628,7 @@ func TestCandidateCatalogListKeywordAndFilters(t *testing.T) {
 	require.EqualValues(t, 1, res.Total)
 	require.Equal(t, seed[0].ID, res.Items[0].ID)
 	require.True(t, res.Items[0].Subscribed) // feeds.url 精确匹配
+	require.Equal(t, []string{"https://ai.example.com/feed"}, res.Items[0].SubscribedURLs)
 
 	// 关键词命中 manual description。
 	res, err = svc.ListCandidates(ctx, CandidateListQuery{Keyword: "科技新闻"})
@@ -602,6 +648,9 @@ func TestCandidateCatalogListKeywordAndFilters(t *testing.T) {
 	require.EqualValues(t, 1, res.Total)
 	require.Equal(t, hub.ID, res.Items[0].ID)
 	require.NotNil(t, res.Items[0].Route)
+	require.False(t, res.Items[0].Subscribed, "rsshub 候选无路由级订阅命中")
+	require.NotNil(t, res.Items[0].SubscribedURLs)
+	require.Empty(t, res.Items[0].SubscribedURLs)
 
 	// LIKE 通配符按字面匹配，不放大结果。
 	res, err = svc.ListCandidates(ctx, CandidateListQuery{Keyword: "%"})

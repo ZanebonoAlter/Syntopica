@@ -16,186 +16,42 @@ func setupAIRouterTestDB(t *testing.T) *gorm.DB {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&models.AISettings{}, &models.AIProvider{}, &models.AIRoute{}, &models.AIRouteProvider{}, &models.AICallLog{}, &models.AIEmbeddingCache{}))
+	require.NoError(t, db.AutoMigrate(&models.AISettings{}, &models.AIProvider{}, &models.AIRoute{}, &models.AIRouteProvider{},
+		&models.AICallLog{}, &models.AIEmbeddingCache{},
+		// vendor/model 两层新表（ai-provider-model-overhaul）：AIVendor 需在 AIModel 前，
+		// AutoMigrate 建 AIModel.Vendor 外键约束时依赖它已存在
+		&models.AIVendor{}, &models.AIModel{}, &models.AIRouteModel{}))
 	database.DB = db
 	return db
 }
 
-func TestStoreLoadRouteWithProvidersOrdersByPriority(t *testing.T) {
+// TestStoreLoadRouteWithModelsOrdersByPriority 语义平移自旧
+// LoadRouteWithProvidersOrdersByPriority：绑定按 ai_route_models.priority 升序返回
+// （priority 2 先建、priority 1 后建，读取仍按顺位）。ErrRouteNotFound /
+// ErrNoProviders / 过滤语义见 store_vendor_test.go。
+func TestStoreLoadRouteWithModelsOrdersByPriority(t *testing.T) {
 	db := setupAIRouterTestDB(t)
 	store := NewStore(db)
 
-	p1 := models.AIProvider{Name: "primary", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://a.example/v1", APIKey: "a", Model: "m1", Enabled: true}
-	p2 := models.AIProvider{Name: "backup", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://b.example/v1", APIKey: "b", Model: "m2", Enabled: true}
-	require.NoError(t, db.Create(&p1).Error)
-	require.NoError(t, db.Create(&p2).Error)
-	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	require.NoError(t, db.Create(&route).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p2.ID, Priority: 2, Enabled: true}).Error)
-	require.NoError(t, db.Create(&models.AIRouteProvider{RouteID: route.ID, ProviderID: p1.ID, Priority: 1, Enabled: true}).Error)
+	vendor := &models.AIVendor{Name: "ord-vendor", ProviderType: ProviderTypeOpenAICompatible,
+		BaseURL: "https://ord.example/v1", Enabled: true}
+	require.NoError(t, store.CreateVendor(vendor))
+	primary := &models.AIModel{VendorID: vendor.ID, Name: "primary", ModelKind: ModelKindLLM, Enabled: true, Status: ModelStatusOK}
+	backup := &models.AIModel{VendorID: vendor.ID, Name: "backup", ModelKind: ModelKindLLM, Enabled: true, Status: ModelStatusOK}
+	require.NoError(t, store.UpsertModel(primary))
+	require.NoError(t, store.UpsertModel(backup))
 
-	loadedRoute, providers, err := store.LoadRouteWithProviders(CapabilitySummary)
+	route := &models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true}
+	require.NoError(t, store.UpsertRouteModels(route, nil))
+	// 语义平移旧测试：显式建两条绑定且 priority 与插入顺序相反（priority 2 先建、
+	// priority 1 后建），验证读取按 priority 升序而非插入序。
+	require.NoError(t, db.Create(&models.AIRouteModel{RouteID: route.ID, ModelID: backup.ID, Priority: 2, Enabled: true}).Error)
+	require.NoError(t, db.Create(&models.AIRouteModel{RouteID: route.ID, ModelID: primary.ID, Priority: 1, Enabled: true}).Error)
+
+	loadedRoute, bindings, err := store.LoadRouteWithModels(CapabilitySummary)
 	require.NoError(t, err)
 	require.NotNil(t, loadedRoute)
-	require.Len(t, providers, 2)
-	require.Equal(t, "primary", providers[0].Name)
-	require.Equal(t, "backup", providers[1].Name)
-}
-
-func TestStoreLoadRouteWithProvidersReturnsErrorWhenMissing(t *testing.T) {
-	db := setupAIRouterTestDB(t)
-	store := NewStore(db)
-
-	loadedRoute, providers, err := store.LoadRouteWithProviders(CapabilitySummary)
-	require.ErrorIs(t, err, ErrRouteNotFound)
-	require.Nil(t, loadedRoute)
-	require.Nil(t, providers)
-}
-
-func TestUpsertProviderOpenAICompatibleEmptyKeyAllowed(t *testing.T) {
-	db := setupAIRouterTestDB(t)
-	store := NewStore(db)
-
-	provider := &models.AIProvider{
-		Name:         "local-llama",
-		ProviderType: ProviderTypeOpenAICompatible,
-		BaseURL:      "http://localhost:8080/v1",
-		APIKey:       "",
-		Model:        "qwen3-8b",
-		Enabled:      true,
-	}
-	err := store.UpsertProvider(provider)
-	require.NoError(t, err)
-	require.NotZero(t, provider.ID)
-
-	var loaded models.AIProvider
-	require.NoError(t, db.First(&loaded, provider.ID).Error)
-	require.Equal(t, "", loaded.APIKey)
-}
-
-func TestUpsertProviderModelKindDefaultsToLLM(t *testing.T) {
-	db := setupAIRouterTestDB(t)
-	store := NewStore(db)
-
-	provider := &models.AIProvider{
-		Name:         "default-kind",
-		ProviderType: ProviderTypeOpenAICompatible,
-		BaseURL:      "http://localhost:8080/v1",
-		Model:        "qwen3-8b",
-		Enabled:      true,
-	}
-	require.NoError(t, store.UpsertProvider(provider))
-
-	var loaded models.AIProvider
-	require.NoError(t, db.First(&loaded, provider.ID).Error)
-	require.Equal(t, "llm", loaded.ModelKind, "empty model_kind must normalize to llm")
-}
-
-func TestUpsertProviderModelKindAcceptsEmbedding(t *testing.T) {
-	db := setupAIRouterTestDB(t)
-	store := NewStore(db)
-
-	provider := &models.AIProvider{
-		Name:         "emb-kind",
-		ProviderType: ProviderTypeOpenAICompatible,
-		BaseURL:      "http://localhost:8080/v1",
-		Model:        "bge-m3",
-		ModelKind:    "embedding",
-		Enabled:      true,
-	}
-	require.NoError(t, store.UpsertProvider(provider))
-
-	var loaded models.AIProvider
-	require.NoError(t, db.First(&loaded, provider.ID).Error)
-	require.Equal(t, "embedding", loaded.ModelKind)
-}
-
-func TestUpsertProviderModelKindRejectsInvalid(t *testing.T) {
-	db := setupAIRouterTestDB(t)
-	store := NewStore(db)
-
-	provider := &models.AIProvider{
-		Name:         "bad-kind",
-		ProviderType: ProviderTypeOpenAICompatible,
-		BaseURL:      "http://localhost:8080/v1",
-		Model:        "m",
-		ModelKind:    "vision",
-		Enabled:      true,
-	}
-	err := store.UpsertProvider(provider)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid model_kind")
-	require.Contains(t, err.Error(), "vision")
-}
-
-func TestUpsertProviderRenameUpdatesInPlace(t *testing.T) {
-	db := setupAIRouterTestDB(t)
-	store := NewStore(db)
-
-	created := &models.AIProvider{
-		Name: "alpha", ProviderType: ProviderTypeOpenAICompatible,
-		BaseURL: "https://alpha.example/v1", Model: "m1", Enabled: true,
-	}
-	require.NoError(t, store.UpsertProvider(created))
-	require.NotZero(t, created.ID)
-
-	created.Name = "beta"
-	created.BaseURL = "https://beta.example/v1"
-	require.NoError(t, store.UpsertProvider(created))
-
-	var count int64
-	require.NoError(t, db.Model(&models.AIProvider{}).Count(&count).Error)
-	require.EqualValues(t, 1, count, "rename must not create a second row")
-
-	var loaded models.AIProvider
-	require.NoError(t, db.First(&loaded, created.ID).Error)
-	require.Equal(t, "beta", loaded.Name)
-	require.Equal(t, "https://beta.example/v1", loaded.BaseURL)
-}
-
-func TestUpsertProviderRenameToExistingNameRejected(t *testing.T) {
-	db := setupAIRouterTestDB(t)
-	store := NewStore(db)
-
-	alpha := &models.AIProvider{Name: "alpha", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://alpha.example/v1", Model: "m1", Enabled: true}
-	beta := &models.AIProvider{Name: "beta", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://beta.example/v1", Model: "m2", Enabled: true}
-	require.NoError(t, store.UpsertProvider(alpha))
-	require.NoError(t, store.UpsertProvider(beta))
-
-	alpha.Name = "beta"
-	err := store.UpsertProvider(alpha)
-	require.Error(t, err, "renaming onto another provider's name must be rejected, not silently overwrite it")
-	require.Contains(t, err.Error(), "beta")
-
-	var loaded models.AIProvider
-	require.NoError(t, db.First(&loaded, beta.ID).Error)
-	require.Equal(t, "https://beta.example/v1", loaded.BaseURL, "the conflicting provider must stay untouched")
-}
-
-func TestUpsertProviderCreateDuplicateNameRejected(t *testing.T) {
-	db := setupAIRouterTestDB(t)
-	store := NewStore(db)
-
-	first := &models.AIProvider{Name: "alpha", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://alpha.example/v1", Model: "m1", Enabled: true}
-	require.NoError(t, store.UpsertProvider(first))
-
-	dup := &models.AIProvider{Name: "alpha", ProviderType: ProviderTypeOpenAICompatible, BaseURL: "https://other.example/v1", Model: "m2", Enabled: true}
-	err := store.UpsertProvider(dup)
-	require.Error(t, err, "creating a provider with an existing name must be rejected, not silently overwrite it")
-	require.Contains(t, err.Error(), "alpha")
-}
-
-// fix-provider-delete-route-deadlock：provider 删除级联解绑后线路可能被摘空，
-// 查询该能力时返回既有的 ErrNoProviders，而非 panic 或不一致状态。
-func TestStoreLoadRouteWithProvidersEmptyRoute(t *testing.T) {
-	db := setupAIRouterTestDB(t)
-	store := NewStore(db)
-
-	route := models.AIRoute{Name: DefaultRouteName, Capability: string(CapabilitySummary), Enabled: true, Strategy: "ordered_failover"}
-	require.NoError(t, db.Create(&route).Error)
-
-	loadedRoute, providers, err := store.LoadRouteWithProviders(CapabilitySummary)
-	require.ErrorIs(t, err, ErrNoProviders)
-	require.NotNil(t, loadedRoute, "被摘空的线路本身应保留")
-	require.Empty(t, providers)
+	require.Len(t, bindings, 2)
+	require.Equal(t, "primary", bindings[0].Model.Name)
+	require.Equal(t, "backup", bindings[1].Model.Name)
 }

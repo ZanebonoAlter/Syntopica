@@ -9,7 +9,9 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/service/auxlabel"
+	"syntopica-backend/internal/tagmanagement/service/boardhealth"
 )
 
 // 版块扩充方向（design D3/D4）：用户锁定单版块触发（spec board-upgrade-expand）。
@@ -50,6 +52,10 @@ type expandAuxCandidate struct {
 	RefCount int
 	SimDist  *float64 // 相似路证据：与版块 embedding 的余弦距离（共现路召回时为 nil）
 	Cooccur  int      // 共现路证据：与版块构成标签的同文章共现次数
+	// MemberTags is the member-derived evidence (add-board-health-checkup
+	// design D7): how many tags already matched to the board carry this label
+	// (from the latest health snapshot's uncaptured candidate list).
+	MemberTags int
 }
 
 // generateExpandSuggestions 是扩充方向分发：expand×aux（merge 二分类）与
@@ -181,6 +187,15 @@ func (s *SemanticBoardUpgradeService) recallExpandAuxCandidates(ctx context.Cont
 		mounted[id] = struct{}{}
 	}
 
+	// ── member-derived 主路（add-board-health-checkup design D7）：目标版块最新
+	// 体检快照含未收编候选时，候选直接来自快照清单（事实标签画像高频 aux），
+	// 不触发全库相似/共现扫描；无快照/清单空/滤后空 → 回退双路（行为不变）。
+	if candidates, validIDs, hit, err := s.recallMemberDerivedCandidates(ctx, profile, mounted, days); err != nil {
+		return nil, nil, err
+	} else if hit {
+		return candidates, validIDs, nil
+	}
+
 	// ── 相似路：active aux（不在目标版块构成中）与版块 embedding 的距离 ──
 	byID := make(map[uint]*expandAuxCandidate)
 	if len(profile.Embedding) > 0 {
@@ -293,6 +308,99 @@ func (s *SemanticBoardUpgradeService) recallExpandAuxCandidates(ctx context.Cont
 		validIDs[c.ID] = struct{}{}
 	}
 	return candidates, validIDs, nil
+}
+
+// recallMemberDerivedCandidates is the member-derived primary recall path
+// (add-board-health-checkup design D7): candidates come from the board's
+// LATEST health snapshot's uncaptured candidate list (factual label
+// profile), not a whole-pool scan. hit=false means "no snapshot / empty list /
+// everything filtered out" — the caller falls back to the dual similarity +
+// co-occurrence path unchanged.
+//
+// Insurance filters on top of the snapshot list (the snapshot is at best
+// yesterday's): labels already mounted into the board, and labels no longer
+// active-aux (re-verified in one batch load, also refreshing ref_count).
+// days>0 applies the same recent-article EXISTS filter as the similarity
+// path (labelIDsRecentlyActive); days=0 keeps the list as-is (spec:
+// member-derived 候选被召回 / 时间窗收紧 member-derived 召回).
+func (s *SemanticBoardUpgradeService) recallMemberDerivedCandidates(ctx context.Context, profile *boardExpandProfile, mounted map[uint]struct{}, days int) ([]expandAuxCandidate, map[uint]struct{}, bool, error) {
+	snapshot, err := boardhealth.LatestSnapshot(ctx, s.db, profile.BoardID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if snapshot == nil || len(snapshot.UncapturedCandidates) == 0 {
+		return nil, nil, false, nil
+	}
+	top := boardhealth.LoadConfig(ctx, s.db).MemberCandidatesTop
+	if top <= 0 {
+		top = boardhealth.DefaultMemberCandidatesTop
+	}
+	if top > len(snapshot.UncapturedCandidates) {
+		top = len(snapshot.UncapturedCandidates)
+	}
+	// The snapshot list is persisted in member-tags-desc order — keep it.
+	wanted := make([]uint, 0, top)
+	byID := make(map[uint]tagmodels.BoardHealthCandidate, top)
+	for _, c := range snapshot.UncapturedCandidates[:top] {
+		if _, already := mounted[c.AuxID]; already {
+			continue // 保险滤：快照后已被收编的剔除
+		}
+		wanted = append(wanted, c.AuxID)
+		byID[c.AuxID] = c
+	}
+	if len(wanted) == 0 {
+		return nil, nil, false, nil
+	}
+	// Batch re-verify: label still exists, active, auxiliary; refresh ref_count.
+	var labels []models.SemanticLabel
+	if err := s.db.WithContext(ctx).
+		Where("id IN ? AND label_type = ? AND status = ?", wanted, "auxiliary", "active").
+		Order("id ASC").
+		Find(&labels).Error; err != nil {
+		return nil, nil, false, err
+	}
+	if len(labels) == 0 {
+		return nil, nil, false, nil
+	}
+	if days > 0 {
+		labelIDs := make([]uint, 0, len(labels))
+		for _, label := range labels {
+			labelIDs = append(labelIDs, label.ID)
+		}
+		recent, err := s.labelIDsRecentlyActive(ctx, labelIDs, days)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		kept := labels[:0]
+		for _, label := range labels {
+			if _, ok := recent[label.ID]; ok {
+				kept = append(kept, label)
+			}
+		}
+		labels = kept
+		if len(labels) == 0 {
+			return nil, nil, false, nil // 主路被时间窗滤空 → 回退双路
+		}
+	}
+	candidates := make([]expandAuxCandidate, 0, len(labels))
+	for _, label := range labels {
+		c := byID[label.ID]
+		candidates = append(candidates, expandAuxCandidate{
+			ID: label.ID, Label: label.Label, RefCount: label.RefCount, MemberTags: c.MemberTags,
+		})
+	}
+	// Stable order by evidence strength (member tags desc), id asc.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].MemberTags != candidates[j].MemberTags {
+			return candidates[i].MemberTags > candidates[j].MemberTags
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	validIDs := make(map[uint]struct{}, len(candidates))
+	for _, c := range candidates {
+		validIDs[c.ID] = struct{}{}
+	}
+	return candidates, validIDs, true, nil
 }
 
 // effectiveCoTagWindowDays 返回共现统计的有效窗口天数：UI days 只收紧不放宽

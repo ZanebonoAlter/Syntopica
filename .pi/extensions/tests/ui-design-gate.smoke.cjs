@@ -26,6 +26,8 @@ const { DatabaseSync } = require('node:sqlite');
 const {
 	UI_SCHEMA,
 	UI_REASON_CODES,
+	UI_PASS_REASON_CODES,
+	passReasonForRelease,
 	evaluateUiContract,
 	decideUiToolGate,
 	parseUiImpactDeclaration,
@@ -262,7 +264,43 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		fs.writeFileSync(path.join(t1, 'openspec/changes/major-chg/ui-design.md'), UI_MAJOR_FULL('approved', 'ui-prototype/index.html'));
 		const r3 = await runTool(loadFresh('./.uige.cjs'), t1, 's1', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
 		check('C3 批准落盘后即时放行（重新读磁盘）', r3.result === undefined);
-		check('D3 健康放行零记录', policyRows(t1, 'ui-design-gate').length === 2);
+		// D3 放行锚点（add-change-lifecycle-retro D2）：批准前有未解除的 block(ui-approval-pending)
+		// → 本次健康放行记 pass(ui-approval-approved) 恰一条，且不与既有 block 双写
+		check('D3 批准后健康放行 → pass ui-approval-approved 恰一条（绑定 change）', (() => {
+			const rows = policyRows(t1, 'ui-design-gate');
+			return rows.length === 3 && rows[2].payload.action === 'pass' && rows[2].payload.reasonCode === 'ui-approval-approved' && rows[2].change === 'major-chg';
+		})());
+		// D3b 已解除后再次健康放行 → 零新增（健康放行零记录，pass 不重复）
+		const r3b = await runTool(loadFresh('./.uige.cjs'), t1, 's1', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
+		check('D3b 解除后再健康放行零新增（pass 不重复记）', r3b.result === undefined && policyRows(t1, 'ui-design-gate').length === 3);
+
+		// C3.5 补齐文档放行（ui-design-satisfied）：block(ui-prototype-missing) → 补齐原型 →
+		//      新 session 健康放行（跨 session 解除：block 与放行常分属两会话，账本判定可靠）
+		const t3b = mktmp(); tmps.push(t3b);
+		writeChange(t3b, 'proto-chg', {
+			'.openspec.yaml': SCHEMA_UI,
+			'proposal.md': PROP_MAJOR,
+			'ui-design.md': UI_MAJOR_FULL('approved', 'ui-prototype/broken.html'),
+			'ui-prototype/broken.html': 'x', // 占位：C7 同款断链场景改用真实缺失
+		});
+		fs.rmSync(path.join(t3b, 'openspec/changes/proto-chg/ui-prototype/broken.html'));
+		seedModeSet(t3b, 's-block', 'implementation', 'proto-chg');
+		seedModeSet(t3b, 's-release', 'implementation', 'proto-chg');
+		const r3c = await runTool(loadFresh('./.uige.cjs'), t3b, 's-block', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
+		check('C3.5a 原型缺失 → block ui-prototype-missing', r3c.result && r3c.result.block === true && r3c.result.reason.includes('ui-prototype-missing'));
+		// 用户补齐原型（change 目录内 mutation 放行，不触发 pass——verdict 仍为 block）
+		fs.writeFileSync(path.join(t3b, 'openspec/changes/proto-chg/ui-prototype/broken.html'), '<html>fixed</html>');
+		const r3d = await runTool(loadFresh('./.uige.cjs'), t3b, 's-release', 'Agent', { prompt: 'x', subagent_type: 'Explore' }); // 新 session 解除
+		check('C3.5b 补齐后新 session 健康放行 → pass ui-design-satisfied 恰一条', (() => {
+			const rows = policyRows(t3b, 'ui-design-gate');
+			return r3d.result === undefined && rows.length === 2 && rows[1].payload.action === 'pass' && rows[1].payload.reasonCode === 'ui-design-satisfied' && rows[1].change === 'proto-chg';
+		})());
+		// C3.5c 无 block 在案的健康放行（none 档）→ 零 pass（首过不记）
+		const t3c = mktmp(); tmps.push(t3c);
+		writeChange(t3c, 'none2-chg', NONE_OK_FILES);
+		seedModeSet(t3c, 's-none2', 'implementation', 'none2-chg');
+		const r3e = await runTool(loadFresh('./.uige.cjs'), t3c, 's-none2', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
+		check('C3.5c 无 block 在案 → 健康放行零 pass', r3e.result === undefined && policyRows(t3c, 'ui-design-gate').length === 0);
 
 		// C4 requirements 档静默：同 change 任意工具零介入零记账
 		const t4 = mktmp(); tmps.push(t4);
@@ -344,6 +382,18 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		// D7 reasonCode 白名单与 spec 八值对齐
 		const expected = ['ui-impact-missing', 'ui-impact-mismatch', 'ui-design-missing', 'ui-prototype-missing', 'ui-approval-pending', 'ui-verification-missing', 'explicit-bypass', 'ui-gate-check-failed'];
 		check('D7 UI_REASON_CODES 与 spec 八值对齐', expected.every((c) => UI_REASON_CODES.includes(c)) && UI_REASON_CODES.length === 8);
+		// D7b 放行侧 pass 词汇稳定集（add-change-lifecycle-retro）：两码有界、推导纯函数四分支
+		check('D7b UI_PASS_REASON_CODES 稳定集 = ui-approval-approved / ui-design-satisfied',
+			UI_PASS_REASON_CODES.length === 2 && UI_PASS_REASON_CODES.includes('ui-approval-approved') && UI_PASS_REASON_CODES.includes('ui-design-satisfied'));
+		check('D7c passReasonForRelease：审批码→approved、工具侧四码→satisfied、归档/无/未知→null',
+			passReasonForRelease('ui-approval-pending') === 'ui-approval-approved'
+			&& passReasonForRelease('ui-design-missing') === 'ui-design-satisfied'
+			&& passReasonForRelease('ui-prototype-missing') === 'ui-design-satisfied'
+			&& passReasonForRelease('ui-impact-missing') === 'ui-design-satisfied'
+			&& passReasonForRelease('ui-impact-mismatch') === 'ui-design-satisfied'
+			&& passReasonForRelease('ui-verification-missing') === null
+			&& passReasonForRelease(null) === null
+			&& passReasonForRelease('some-unknown-code') === null);
 
 		// D8 归档证据检查纯函数速测（详测在 spec-gate.smoke.cjs）
 		check('D8 missingArchiveUiEvidence：legacy → 空（不硬阻断）', missingArchiveUiEvidence({ schema: 'spec-driven', proposalText: PROP_MAJOR, uiDesignText: null, tasksMd: '', changeDirFiles: [] }).length === 0);

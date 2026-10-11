@@ -1,7 +1,9 @@
 package merge
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/tagmanagement/service/core"
@@ -52,18 +54,54 @@ func TestRecordMergeSuggestions_CandidateStructConstruction(t *testing.T) {
 
 func TestStartFullScan_RejectsConcurrent(t *testing.T) {
 	// If a scan is already running, StartFullScan should return false.
-	// We can't easily start a real scan in unit tests (needs DB + embedding service),
-	// so this test verifies the function signature and basic behavior.
-	// The actual concurrency protection is tested via integration.
-	result := StartFullScan()
-	// Without a real DB, the scan goroutine will likely error and finish quickly.
-	// The key assertion: if first call started, second should be rejected.
-	if result {
-		// First call started a scan — second should fail
-		if StartFullScan() {
-			t.Error("second StartFullScan() = true, want false (already running)")
-		}
+	// Simulate the running state directly instead of starting a real scan:
+	// runFullScan needs DB + embedding, and a leaked goroutine would race the
+	// test binary's exit and panic on nil repository.Repo (flaky crash, patrol
+	// 2026-10-11). The real start path is covered by production/integration.
+	scanState.mu.Lock()
+	scanState.running.Store(true)
+	scanState.progress = make(chan ScanProgress, 1)
+	scanState.mu.Unlock()
+	defer func() {
+		scanState.mu.Lock()
+		scanState.running.Store(false)
+		scanState.progress = nil
+		scanState.mu.Unlock()
+	}()
+
+	if StartFullScan() {
+		t.Error("StartFullScan() = true, want false (already running)")
 	}
+}
+
+func TestRunFullScan_NilRepo_NoPanic(t *testing.T) {
+	// runFullScan must not panic when repository.Repo is nil (unit-test process
+	// or misordered startup): it should emit an error progress and return,
+	// never crash the host process from this background goroutine.
+	scanState.mu.Lock()
+	scanState.progress = make(chan ScanProgress, 1)
+	scanState.mu.Unlock()
+	defer func() {
+		scanState.mu.Lock()
+		scanState.progress = nil
+		scanState.mu.Unlock()
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runFullScan(context.Background())
+	}()
+
+	select {
+	case p, ok := <-scanState.progress:
+		if !ok || p.Status != "error" {
+			t.Errorf("progress = (%+v, %v), want (Status:error, open)", p, ok)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for error progress from runFullScan")
+	}
+	<-done // runFullScan returned without panicking
 }
 
 func TestScanProgress_JSONFields(t *testing.T) {

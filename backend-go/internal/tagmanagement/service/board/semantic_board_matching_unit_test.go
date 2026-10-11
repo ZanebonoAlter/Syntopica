@@ -2,6 +2,7 @@ package board
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -443,5 +444,195 @@ func TestEvaluateSemanticBoardMatches_DowngradedMark(t *testing.T) {
 		results := evaluateSemanticBoardMatches(tagAux3, boardAux, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.False(t, results[0].Downgraded, "expected downgraded=false for N=3 tag")
+	})
+}
+
+// TestEvaluateSemanticBoardMatches_DirectionRelativeGate covers the relative
+// direction gate (fix-digest-tag-leak 故事 A，test-cases.md 主链路)：多挂标签
+// 的挂载点 identity cosine 落到 bestCos − margin 以下时标记
+// direction_mismatch=true。composite_hit 豁免、direct_hit 纳入（spec 漂移修正）、
+// 单挂 gap=0 恒过、embedding 缺失跳门、margin=0 关门、gap==margin 等值边界。
+func TestEvaluateSemanticBoardMatches_DirectionRelativeGate(t *testing.T) {
+	baseConfig := func() SemanticBoardMatchConfig {
+		return SemanticBoardMatchConfig{
+			SimThreshold:            0.5,
+			DirectHitRate:           0.9,
+			DirectMaxSim:            0.7,
+			DirectMaxSimMinHits:     1,
+			DirectMaxSimMinHitRate:  0.2,
+			MinEffectiveSample:      3,
+			HitRateSimBlend:         0.7,
+			WeightSim:               0.6,
+			WeightDensity:           0.4,
+			WeightedThreshold:       0.6,
+			MaxBoards:               3,
+			DirectHitMinOverlap:     2,
+			DirectHitMinRatio:       0.5,
+			DirectionSimThreshold:   0.5,
+			DirectionRelativeMargin: 0.15,
+		}
+	}
+
+	// 单共享 aux + DirectHitMinOverlap=2 → 每个 board 走 max_sim 间接命中；
+	// identity cosine 由 tagEmb/boardEmbs 独立构造，与匹配通道解耦。
+	newFixture := func(boardIDs ...uint) ([]models.SemanticLabel, []BoardAuxiliaryLabel) {
+		tagAux := []models.SemanticLabel{{ID: 1, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.9, 0.1, 0.0}))}}
+		boardAux := make([]BoardAuxiliaryLabel, 0, len(boardIDs))
+		for _, id := range boardIDs {
+			boardAux = append(boardAux, BoardAuxiliaryLabel{
+				BoardID:          id,
+				AuxiliaryLabelID: 100,
+				Embedding:        ptrStr(core.FloatsToPgVector([]float64{0.88, 0.12, 0.0})),
+			})
+		}
+		return tagAux, boardAux
+	}
+
+	xAxis := []float64{1, 0, 0}
+	// relVec 返回与 x 轴 cosine=c 的单位向量（c²+s²=1）。
+	relVec := func(c float64) []float64 {
+		return []float64{c, math.Sqrt(1 - c*c), 0}
+	}
+	resultsByBoard := func(results []SemanticBoardMatchResult) (map[uint]bool, map[uint]string) {
+		mismatch := make(map[uint]bool, len(results))
+		reason := make(map[uint]string, len(results))
+		for _, r := range results {
+			mismatch[r.SemanticBoardID] = r.DirectionMismatch
+			reason[r.SemanticBoardID] = r.MatchReason
+		}
+		return mismatch, reason
+	}
+
+	t.Run("multi-mount cross-domain leak flagged", func(t *testing.T) {
+		tagAux, boardAux := newFixture(10, 20, 30)
+		boardEmbs := map[uint][]float64{10: relVec(0.81), 20: relVec(0.60), 30: relVec(0.56)}
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, baseConfig(), xAxis, boardEmbs)
+		mismatch, reason := resultsByBoard(results)
+		require.Len(t, results, 3)
+		for _, id := range []uint{10, 20, 30} {
+			require.Equal(t, "max_sim", reason[id])
+		}
+		require.False(t, mismatch[10], "best mount survives")
+		require.True(t, mismatch[20], "gap 0.21 >= 0.15")
+		require.True(t, mismatch[30], "gap 0.25 >= 0.15")
+	})
+
+	t.Run("legal dual-mount within margin survives", func(t *testing.T) {
+		tagAux, boardAux := newFixture(10, 20)
+		boardEmbs := map[uint][]float64{10: relVec(0.82), 20: relVec(0.70)}
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, baseConfig(), xAxis, boardEmbs)
+		mismatch, _ := resultsByBoard(results)
+		require.Len(t, results, 2)
+		require.False(t, mismatch[10], "gap 0.12 < 0.15")
+		require.False(t, mismatch[20], "gap 0.12 < 0.15")
+	})
+
+	t.Run("single-board mount unaffected", func(t *testing.T) {
+		tagAux, boardAux := newFixture(10)
+		boardEmbs := map[uint][]float64{10: relVec(0.60)}
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, baseConfig(), xAxis, boardEmbs)
+		mismatch, _ := resultsByBoard(results)
+		require.Len(t, results, 1)
+		require.False(t, mismatch[10], "gap=0 relative gate passes; 0.6 >= 0.5 absolute gate passes")
+	})
+
+	t.Run("absolute gate still flags independently", func(t *testing.T) {
+		tagAux, boardAux := newFixture(10)
+		boardEmbs := map[uint][]float64{10: relVec(0.30)}
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, baseConfig(), xAxis, boardEmbs)
+		mismatch, _ := resultsByBoard(results)
+		require.True(t, mismatch[10], "cos 0.30 < 0.5 absolute gate")
+	})
+
+	t.Run("direct_hit subject to relative gate", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.DirectHitMinOverlap = 1
+		cfg.DirectHitMinRatio = 0
+		// 共享 aux ID=1 → direct_hit；identity cos 0.81/0.60。
+		tagAux := []models.SemanticLabel{{ID: 1, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.9, 0.1, 0.0}))}}
+		boardAux := []BoardAuxiliaryLabel{
+			{BoardID: 10, AuxiliaryLabelID: 1, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.9, 0.1, 0.0}))},
+			{BoardID: 20, AuxiliaryLabelID: 1, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.9, 0.1, 0.0}))},
+		}
+		boardEmbs := map[uint][]float64{10: relVec(0.81), 20: relVec(0.60)}
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, cfg, xAxis, boardEmbs)
+		mismatch, reason := resultsByBoard(results)
+		require.Len(t, results, 2)
+		require.Equal(t, "direct_hit", reason[10])
+		require.Equal(t, "direct_hit", reason[20])
+		require.False(t, mismatch[10])
+		require.True(t, mismatch[20], "direct_hit drift fix: subject to the relative gate")
+	})
+
+	t.Run("composite_hit exempt", func(t *testing.T) {
+		tagAux, boardAux := newFixture(20)
+		compVec := core.FloatsToPgVector([]float64{0.5, 0.5, 0.0})
+		tagComposites := []models.SemanticLabel{{ID: 500, Embedding: ptrStr(compVec)}}
+		boardComposites := []BoardCompositeLabel{{BoardID: 10, CompositeLabelID: 500, Embedding: ptrStr(compVec)}}
+		// board 10 组合命中且 identity cos 0.20（两门本都会触发）→ 豁免恒 false；
+		// board 20 max_sim cos 0.90 为参照集 best。
+		boardEmbs := map[uint][]float64{10: relVec(0.20), 20: relVec(0.90)}
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, tagComposites, boardComposites, baseConfig(), xAxis, boardEmbs)
+		mismatch, reason := resultsByBoard(results)
+		require.Len(t, results, 2)
+		require.Equal(t, "composite_hit", reason[10])
+		require.False(t, mismatch[10], "composite_hit exempt from both gates")
+		require.False(t, mismatch[20])
+	})
+
+	t.Run("missing tag embedding skips gates", func(t *testing.T) {
+		tagAux, boardAux := newFixture(10, 20)
+		boardEmbs := map[uint][]float64{10: relVec(0.81), 20: relVec(0.10)}
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, baseConfig(), nil, boardEmbs)
+		mismatch, _ := resultsByBoard(results)
+		require.Len(t, results, 2)
+		require.False(t, mismatch[10])
+		require.False(t, mismatch[20], "no identity embedding: both gates skipped")
+	})
+
+	t.Run("missing board embedding skips that mount's gate", func(t *testing.T) {
+		tagAux, boardAux := newFixture(10, 20)
+		// board 20 无 embedding → 其门跳过；参照集只剩 board 10。
+		boardEmbs := map[uint][]float64{10: relVec(0.60)}
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, baseConfig(), xAxis, boardEmbs)
+		mismatch, _ := resultsByBoard(results)
+		require.Len(t, results, 2)
+		require.False(t, mismatch[10])
+		require.False(t, mismatch[20], "board embedding missing: gate skipped for that mount")
+	})
+
+	t.Run("margin zero disables relative gate", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.DirectionRelativeMargin = 0
+		tagAux, boardAux := newFixture(10, 20)
+		boardEmbs := map[uint][]float64{10: relVec(0.81), 20: relVec(0.60)}
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, cfg, xAxis, boardEmbs)
+		mismatch, _ := resultsByBoard(results)
+		require.False(t, mismatch[20], "margin=0: gap 0.21 not flagged, absolute gate only")
+	})
+
+	t.Run("gap equals margin flags mismatch (>= boundary)", func(t *testing.T) {
+		tagAux, boardAux := newFixture(10, 20)
+		best, worst := relVec(0.81), relVec(0.60)
+		boardEmbs := map[uint][]float64{10: best, 20: worst}
+		cfg := baseConfig()
+		// 与门内同一表达式（CosineSimilarity 同输入相减）：margin 精确等值。
+		cfg.DirectionRelativeMargin = CosineSimilarity(xAxis, best) - CosineSimilarity(xAxis, worst)
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, cfg, xAxis, boardEmbs)
+		mismatch, _ := resultsByBoard(results)
+		require.True(t, mismatch[20], "gap == margin triggers (>= semantics)")
+		require.False(t, mismatch[10])
+	})
+
+	t.Run("gap one ulp below margin passes", func(t *testing.T) {
+		tagAux, boardAux := newFixture(10, 20)
+		best, worst := relVec(0.81), relVec(0.60)
+		boardEmbs := map[uint][]float64{10: best, 20: worst}
+		cfg := baseConfig()
+		cfg.DirectionRelativeMargin = math.Nextafter(
+			CosineSimilarity(xAxis, best)-CosineSimilarity(xAxis, worst), math.Inf(1))
+		results := evaluateSemanticBoardMatches(tagAux, boardAux, nil, nil, cfg, xAxis, boardEmbs)
+		mismatch, _ := resultsByBoard(results)
+		require.False(t, mismatch[20], "gap < margin by one ulp: relative gate passes")
 	})
 }

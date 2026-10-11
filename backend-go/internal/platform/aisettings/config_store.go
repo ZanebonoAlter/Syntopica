@@ -20,6 +20,7 @@ const firecrawlConfigKey = "firecrawl_config"
 const bochaConfigKey = "bocha_config"
 const searxngConfigKey = "searxng_config"
 const comtradeConfigKey = "comtrade_config"
+const fredConfigKey = "fred_config"
 const rsshubConfigKey = "rsshub_config"
 const proxyConfigKey = "http_proxy_config"
 const dailyReportTimeKey = "daily_report_time"
@@ -129,6 +130,17 @@ func LoadComtradeConfig() (map[string]interface{}, *models.AISettings, error) {
 // SaveComtradeConfig 写入 comtrade_config。
 func SaveComtradeConfig(config map[string]interface{}, description string) error {
 	return saveConfigByKey(comtradeConfigKey, config, description)
+}
+
+// LoadFredConfig 读取 fred_config（研究数据源 FRED 的 API key + enabled）。
+// 动态读取：取数器/probe/目录 status 每次现读，界面改即时生效（comtrade 同款）。
+func LoadFredConfig() (map[string]interface{}, *models.AISettings, error) {
+	return loadConfigByKey(fredConfigKey)
+}
+
+// SaveFredConfig 写入 fred_config。
+func SaveFredConfig(config map[string]interface{}, description string) error {
+	return saveConfigByKey(fredConfigKey, config, description)
 }
 
 func LoadOpenNotebookConfig() (map[string]interface{}, *models.AISettings, error) {

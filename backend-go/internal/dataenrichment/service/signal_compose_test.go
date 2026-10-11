@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -721,5 +722,142 @@ func TestSignalCompose_ZeroObservationNoDataPeriod(t *testing.T) {
 	user := router.calls[0].Messages[len(router.calls[0].Messages)-1].Content
 	if !strings.Contains(user, "本研究无可用数据观测") || !strings.Contains(user, "研究时点 2026-09-10") {
 		t.Fatalf("zero-observation availability line missing: %s", user)
+	}
+}
+
+// ── 日度源 as-of 适配（add-fast-frequency-datasources tasks 3.1/3.2）────────────
+//
+// ⑩ 混合源（yahoo 日度 + jodi 月度）：「数据可用性」行两源期值并排（日度
+// YYYY-MM-DD、月度 YYYY-MM 原形态），facts 写时间最大者（日度期）按日粒度
+// 精确匹配通过；⑪ 纯日度源：缩写月（跨粒度）拒绝；⑫ 月度报告写编造日度
+// 值拒绝；⑬ 纯月度旧路径字节不变（既有 ⑤⑧ 已钉，此处补单元级四分支断言）。
+
+// scDailyLedger 构造 yahoo（日度）+ jodi（月度）混合账本。
+func scDailyLedger() *signalResearchLedger {
+	l := newSignalResearchLedger(srCutoff)
+	obs := func(ref, callID, tool, period string, value float64) *SignalCalcObservation {
+		v := value
+		return &SignalCalcObservation{Ref: ref, CallID: callID, Tool: tool, SeriesID: "s|" + ref, Period: period, Value: &v}
+	}
+	l.obsIndex = map[string]*SignalCalcObservation{
+		"d1:o1": obs("d1:o1", "d1", "yahoo_chart", "2026-09-27", 65.1),
+		"d1:o2": obs("d1:o2", "d1", "yahoo_chart", "2026-10-01", 66.8),
+		"d2:o1": obs("d2:o1", "d2", "jodi_oil_primary", "2026-07", 101),
+	}
+	l.calls = []*signalResearchCallRecord{
+		{CallID: "d1", Tool: "yahoo_chart", Question: "q", Status: "ok", Observations: []map[string]any{}},
+		{CallID: "d2", Tool: "jodi_oil_primary", Question: "q", Status: "ok", Observations: []map[string]any{}},
+	}
+	return l
+}
+
+// ⑩ 混合源：可用性行并排 + facts「数据截至 2026-10-01」（时间最大者，日度
+// 形态）首次即过；引用反馈点名日粒度精确匹配。
+func TestSignalCompose_MixedDailyMonthlyAsOf(t *testing.T) {
+	ledger := scDailyLedger()
+	sections := scSections("d1:o2")
+	sections[1] = map[string]any{"kind": "facts", "text": "发生了什么。数据截至 2026-10-01。[[data:d1:o2]]"}
+	router := &scStubRouter{replies: []srComposeReply{{content: scDraft(sections, nil)}}}
+	raw, err := scCompose(t, router, scInput(ledger))
+	if err != nil {
+		t.Fatalf("daily as-of must pass: %v", err)
+	}
+	if payload := scParsePayload(t, raw); payload.GenerationMeta.Attempts != 1 {
+		t.Fatalf("must pass on first attempt: %+v", payload.GenerationMeta)
+	}
+	user := router.calls[0].Messages[len(router.calls[0].Messages)-1].Content
+	want := "数据可用性：jodi_oil_primary 最新 2026-07；yahoo_chart 最新 2026-10-01。研究时点 2026-09-10"
+	if !strings.Contains(user, want) {
+		t.Fatalf("mixed availability line missing:\nwant: %s\ngot:  %s", want, user)
+	}
+}
+
+// ⑪ 日度源缩写为月（「数据截至 2026-10」）→ 拒绝并回注（日度期值须原样
+// 带日，不得缩写）；⑫ 月度源报告写编造日度值（「2026-07-15」，账本无此期）→
+// 拒绝（跨粒度编造）。
+func TestSignalCompose_DailyAsOfCrossGranularityRejected(t *testing.T) {
+	cases := []struct {
+		name     string
+		ledger   *signalResearchLedger
+		asOf     string
+		wantFB   string
+		retryAsO string // 第二稿改写的合法期值（按各自账本）
+	}{
+		{"daily source shrunk to month", scDailyLedger(), "2026-10", "原样写全 YYYY-MM-DD", "2026-10-01"},
+		{"monthly report fabricates day", scAsOfFixtureLedger(), "2026-07-15", "日粒度精确匹配", "2026-07-20"},
+	}
+	for _, tc := range cases {
+		sections := scSections()
+		sections[1] = map[string]any{"kind": "facts", "text": "发生了什么。数据截至 " + tc.asOf + "。"}
+		retry := scSections()
+		retry[1] = map[string]any{"kind": "facts", "text": "发生了什么。数据截至 " + tc.retryAsO + "。"}
+		router := &scStubRouter{replies: []srComposeReply{
+			{content: scDraft(sections, nil)},
+			{content: scDraft(retry, nil)},
+		}}
+		raw, err := scCompose(t, router, scInput(tc.ledger))
+		if err != nil {
+			t.Fatalf("%s: corrected draft must pass on retry: %v", tc.name, err)
+		}
+		if payload := scParsePayload(t, raw); payload.GenerationMeta.Attempts != 2 || payload.GenerationMeta.Retries != 1 {
+			t.Fatalf("%s: as-of %q must be rejected on attempt 1: %+v", tc.name, tc.asOf, payload.GenerationMeta)
+		}
+		feedback := router.calls[1].Messages[len(router.calls[1].Messages)-1].Content
+		if !strings.Contains(feedback, tc.wantFB) {
+			t.Fatalf("%s: feedback must mention %q: %s", tc.name, tc.wantFB, feedback)
+		}
+	}
+}
+
+// ⑬ 单元级四分支：validateSignalFactsAsOf 在「仅月度（旧路径）/仅日度/混合/
+// 跨粒度编造」四类账本下的判定（月度旧行为保持：同月即过）。
+func TestSignalCompose_ValidateAsOfGranularityBranches(t *testing.T) {
+	monthlyOnly := scAsOfFixtureLedger() // jodi 2026-07-20 / comtrade 2026-07 / wdi 2024
+	dailyOnly := newSignalResearchLedger(srCutoff)
+	v := 1.0
+	dailyOnly.obsIndex = map[string]*SignalCalcObservation{
+		"e1:o1": {Ref: "e1:o1", CallID: "e1", Tool: "yahoo_chart", SeriesID: "s", Period: "2026-10-01", Value: &v},
+	}
+	dailyOnly.calls = []*signalResearchCallRecord{
+		{CallID: "e1", Tool: "yahoo_chart", Question: "q", Status: "ok", Observations: []map[string]any{}},
+	}
+
+	view := func(l *signalResearchLedger) *signalLedgerView {
+		vv := buildSignalLedgerView(scInput(l))
+		return vv
+	}
+
+	pass := func(l *signalResearchLedger, asOf string) bool {
+		var problems []string
+		validateSignalFactsAsOf("数据截至 "+asOf+"。", view(l), func(f string, a ...any) {
+			problems = append(problems, fmt.Sprintf(f, a...))
+		})
+		return len(problems) == 0
+	}
+
+	// 仅月度（旧路径）：同月过、异月拒。
+	if !pass(monthlyOnly, "2026-07") || !pass(monthlyOnly, "2024") {
+		t.Fatal("monthly-only ledger keeps the legacy month-granular behavior")
+	}
+	if pass(monthlyOnly, "2026-08") {
+		t.Fatal("non-matching month must stay rejected")
+	}
+	// 仅日度：精确日过、缩写月拒、编造日拒。
+	if !pass(dailyOnly, "2026-10-01") {
+		t.Fatal("exact daily as-of must pass")
+	}
+	if pass(dailyOnly, "2026-10") {
+		t.Fatal("daily latest shrunk to month must be rejected")
+	}
+	if pass(dailyOnly, "2026-10-02") {
+		t.Fatal("fabricated later day must be rejected")
+	}
+	// 混合：日度精确过、月度真话（月度源）过、日度源缩写月仍拒。
+	mixed := scDailyLedger()
+	if !pass(mixed, "2026-10-01") || !pass(mixed, "2026-07") {
+		t.Fatal("mixed ledger: exact daily + true monthly must both pass")
+	}
+	if pass(mixed, "2026-10") {
+		t.Fatal("mixed ledger: daily shrunk to month must be rejected")
 	}
 }

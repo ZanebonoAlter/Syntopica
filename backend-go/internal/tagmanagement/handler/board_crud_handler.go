@@ -18,6 +18,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/logging"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service"
@@ -25,6 +26,12 @@ import (
 
 var semanticBoardLabelEmbedder service.AuxiliaryLabelEmbedder = service.DefaultAuxiliaryLabelEmbedder
 var semanticBoardUpgradeLLMFactory = service.NewDefaultSemanticBoardUpgradeLLM
+
+// auxLabelServiceEmbedder allows tests to swap the embedder backing the
+// auxiliary-label service constructed in RegisterSemanticBoardRoutes
+// (nil → DefaultAuxiliaryLabelEmbedder). Same swap pattern as
+// semanticBoardLabelEmbedder above.
+var auxLabelServiceEmbedder service.AuxiliaryLabelEmbedder
 
 type semanticBoardHandler struct {
 	db        *gorm.DB
@@ -110,7 +117,7 @@ type mergeAuxiliaryAliasRequest struct {
 func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 	handler := &semanticBoardHandler{
 		db:        repository.Repo.DB(),
-		auxiliary: service.NewAuxiliaryLabelService(repository.Repo.DB(), nil),
+		auxiliary: service.NewAuxiliaryLabelService(repository.Repo.DB(), auxLabelServiceEmbedder),
 		backfill:  service.NewSemanticBoardBackfillService(repository.Repo.DB()),
 	}
 
@@ -141,6 +148,7 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		boards.GET("/:id/suggest-auxiliaries", handler.suggestAuxiliariesForBoard)
 		boards.GET("/:id/articles", handler.getBoardArticles)
 		boards.GET("/:id/source-breakdown", handler.getBoardSourceBreakdown)
+		boards.GET("/:id/health-checkup", handler.getBoardHealthCheckup)
 		boards.GET("/:id/match-detail/:tagId", handler.getTagMatchDetail)
 		boards.GET("/:id/composition", handler.getBoardComposition)
 		boards.POST("/:id/composition", handler.addBoardComposition)
@@ -152,6 +160,7 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		auxiliary.GET("", handler.listAuxiliaryLabels)
 		auxiliary.GET("/clusters", handler.clusterAuxiliaryLabels)
 		auxiliary.POST("/merge-alias", handler.mergeAuxiliaryAlias)
+		auxiliary.POST("/backfill-embeddings", handler.backfillAuxiliaryLabelEmbeddings)
 		auxiliary.POST("/gc", handler.gcAuxiliaryLabels)
 		auxiliary.POST("/:id/disable", handler.disableAuxiliaryLabel)
 	}
@@ -816,6 +825,34 @@ func (h *semanticBoardHandler) mergeAuxiliaryAlias(c *gin.Context) {
 	respondOK(c, gin.H{"source_id": req.SourceID, "target_id": req.TargetID})
 }
 
+// backfillAuxiliaryLabelEmbeddings rebuilds missing (NULL) embedding /
+// merge_embedding vectors of active auxiliary labels — remediation for the
+// addAlias vector-wipe bug that silently nulled ~1500 rows. Synchronously
+// counts pending rows, kicks off the backfill in a detached goroutine, and
+// returns 202 immediately. Fire-and-forget: re-triggering is idempotent and
+// processes only rows that are still NULL (design D3,
+// fix-alias-save-vector-wipe).
+func (h *semanticBoardHandler) backfillAuxiliaryLabelEmbeddings(c *gin.Context) {
+	pending, err := h.auxiliary.CountMissingEmbeddings(c.Request.Context())
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if pending > 0 {
+		go func() {
+			ctx := context.Background()
+			summary, err := h.auxiliary.BackfillMissingEmbeddings(ctx)
+			if err != nil {
+				logging.Errorf("[auxiliary-labels/backfill-embeddings] failed: %v", err)
+				return
+			}
+			logging.Infof("[auxiliary-labels/backfill-embeddings] done: scanned=%d fixed=%d skipped=%d",
+				summary.Scanned, summary.Fixed, summary.Skipped)
+		}()
+	}
+	c.JSON(http.StatusAccepted, gin.H{"success": true, "data": gin.H{"pending": pending}})
+}
+
 func (h *semanticBoardHandler) getTagAuxiliaryLabels(c *gin.Context) {
 	tagID, ok := parseUintParam(c, "id")
 	if !ok {
@@ -953,7 +990,7 @@ func (h *semanticBoardHandler) getAllConfigs(c *gin.Context) gin.H {
 
 func isSemanticBoardConfigKey(key string) bool {
 	switch key {
-	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards", "semantic_board_match_direct_hit_min_overlap", "semantic_board_match_direction_sim_threshold",
+	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards", "semantic_board_match_direct_hit_min_overlap", "semantic_board_match_direct_hit_min_ratio", "semantic_board_match_direction_sim_threshold",
 		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit", "semantic_board_upgrade_cluster_method":
 		return true
 	default:

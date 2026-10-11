@@ -44,9 +44,9 @@ function makePi() {
 	try {
 		/* ---------- 1. normalizeDecision 白盒：action 白名单 / reasonCode 有界 / target / durationMs ---------- */
 		const { normalizeDecision, logPolicyDecision, UNKNOWN_REASON_CODE } = loadFresh('./.pdec.cjs');
-		for (const a of ['block', 'warn', 'bypass', 'fail-open']) {
+		for (const a of ['block', 'warn', 'bypass', 'fail-open', 'pass']) {
 			const r = normalizeDecision({ policy: 'spec-gate', action: a, reasonCode: 'full-go-test' });
-			check(`四种合法 action 入白名单（${a}）`, r.ok === true && r.payload.action === a);
+			check(`五种合法 action 入白名单（${a}）`, r.ok === true && r.payload.action === a);
 		}
 		check('action 白名单外（"allow"）拒绝 → ok:false', normalizeDecision({ policy: 'x', action: 'allow', reasonCode: 'r' }).ok === false);
 		check('action 空串拒绝', normalizeDecision({ policy: 'x', action: '', reasonCode: 'r' }).ok === false);
@@ -445,21 +445,26 @@ function makePi() {
 
 		/* ---------- 5. 隔离复核（2.4，harden-gate-interop-health 修订；harden-gate-
 		     native-toolchain / harden-subagent-constraint-channel 扩展；attribute-
-		     concurrent-gate-noise 扩展）：quality-gate / entry-gate 只写 gate.check；
-		     quality-gate 例外 = 环境短路 fail-open（interop-down 1 处 + toolchain-down
-		     backend/frontend 2 处）+ 子线程降载 bypass（child-session 1 处）+ 外部失败
-		     归因 warn（foreign-breakage 1 处，spec gate-failure-reporting「外部失败不进
-		     粘性且记 warn 归因」）+ 锁跳过 fail-open（gate-lock-held 1 处）+ 混合归属 warn（concurrent-mixed 1 处，
-		     tune-quality-gate-concurrency D3/D4），且被短路/锁跳过的命令零 gate.check 双写 ---------- */
+		     concurrent-gate-noise 扩展；add-foreign-gate-steer-attribution 扩展）：
+		     quality-gate / entry-gate 只写 gate.check；quality-gate 例外 = 环境短路
+		     fail-open（interop-down 1 处 + toolchain-down backend/frontend 2 处）+ 子线程
+		     降载 bypass（child-session 1 处）+ 外部失败归因 warn（foreign-breakage 1 处，
+		     spec gate-failure-reporting「外部失败不进粘性且记 warn 归因」）+ 锁跳过
+		     fail-open（gate-lock-held 1 处）+ 混合归属 warn（concurrent-mixed 1 处，
+		     tune-quality-gate-concurrency D3/D4）+ 归因降级 warn（attribution-degraded
+		     2 处：①判定异常/解析不出按 (cmd,fp) 边沿 ②基线缺席会话级单发，
+		     add-foreign-gate-steer-attribution D3，与 gate.check 失败事实不双写），且被
+		     短路/锁跳过的命令零 gate.check 双写 ---------- */
 		const qg = fs.readFileSync(path.resolve('../quality-gate.ts'), 'utf8');
 		const eg = fs.readFileSync(path.resolve('../entry-gate.ts'), 'utf8');
-		check('quality-gate 源码 logPolicyDecision 恰七处（interop×1 + toolchain×2 + child-session×1 + foreign-breakage×1 + gate-lock-held×1 + concurrent-mixed×1）',
-			(qg.match(/logPolicyDecision\(/g) ?? []).length === 7 &&
+		check('quality-gate 源码 logPolicyDecision 恰九处（interop×1 + toolchain×2 + child-session×1 + foreign-breakage×1 + gate-lock-held×1 + concurrent-mixed×1 + attribution-degraded×2）',
+			(qg.match(/logPolicyDecision\(/g) ?? []).length === 9 &&
 			qg.includes('reasonCode: "interop-down"') &&
 			qg.includes('reasonCode: "toolchain-down"') &&
 			qg.includes('reasonCode: "child-session"') &&
 			qg.includes('reasonCode: "gate-lock-held"') &&
 			qg.includes('reasonCode: "concurrent-mixed"') &&
+			qg.includes('reasonCode: "attribution-degraded"') &&
 			qg.includes('"quality-gate"'));
 		check('entry-gate 源码无 policy.decision 引用（同裁决无双写）', !eg.includes('policy.decision') && !eg.includes('logPolicyDecision'));
 

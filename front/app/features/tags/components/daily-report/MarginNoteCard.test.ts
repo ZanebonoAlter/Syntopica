@@ -189,4 +189,30 @@ describe('MarginNoteCard（锚点卡交互契约）', () => {
     await wrapper.find('[data-cited-article="102"]').trigger('click')
     expect(on.openCited).toHaveBeenCalledWith(102)
   })
+
+  it('联网降级标记（add-searxng-health-indicator）：仅 empty 渲染，ok/disabled/旧行 NULL 不渲染', () => {
+    // empty：渲染标记 + title 提示去设置面板排查。
+    const { wrapper: emptyWrapper } = mountCard({
+      qas: [{ ...makeNote().qas[0]!, web_search_status: 'empty' }],
+    })
+    const marker = emptyWrapper.find('[data-testid="mn-web-search-empty"]')
+    expect(marker.exists()).toBe(true)
+    expect(marker.text()).toBe('联网搜索无结果')
+    expect(marker.attributes('title')).toContain('设置')
+
+    // ok / disabled / 旧行 NULL（字段缺省）→ 不渲染任何联网标记。
+    for (const status of ['ok', 'disabled', undefined] as const) {
+      const { wrapper } = mountCard({
+        qas: [{ ...makeNote().qas[0]!, web_search_status: status }],
+      })
+      expect(wrapper.find('[data-testid="mn-web-search-empty"]').exists(), `status=${status}`).toBe(false)
+    }
+
+    // 标记与引用/纯模型知识标注互不干扰：empty 且无引用时可两者并存（各自独立信号）。
+    const { wrapper: bothWrapper } = mountCard({
+      qas: [{ ...makeNote().qas[0]!, cited_article_ids: [], cited_web_sources: [], extracted_terms: [], web_search_status: 'empty' }],
+    })
+    expect(bothWrapper.find('[data-testid="mn-web-search-empty"]').exists()).toBe(true)
+    expect(bothWrapper.find('[data-testid="mn-pure-model"]').exists()).toBe(true)
+  })
 })

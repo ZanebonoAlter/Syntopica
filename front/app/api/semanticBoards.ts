@@ -48,6 +48,63 @@ export interface BoardCompositeMount {
   components: string[]
 }
 
+// ── 版块体检（add-board-health-checkup）：GET /semantic-boards/:id/health-checkup ──
+
+/** 体检快照·标签级纯净样本归因行（样本不足时分布字段为 null）。 */
+export interface BoardHealthLabelMetric {
+  aux_id: number
+  label: string
+  samples: number
+  cosine_mean: number | null
+  cosine_median: number | null
+  cosine_p25: number | null
+  cosine_p75: number | null
+  low_sim_ratio: number | null
+  insufficient: boolean
+}
+
+/** 体检快照·版块级指标（全部匹配行口径）。 */
+export interface BoardHealthBoardMetric {
+  matched_tags: number
+  reason_dist: Record<string, number>
+  ghost_matches: number
+  vector_missing: number
+}
+
+export interface BoardHealthMetrics {
+  board: BoardHealthBoardMetric
+  labels: BoardHealthLabelMetric[]
+}
+
+/** 未收编候选（事实画像 diff：成员 tags 高频携带但不在版块构成中）。 */
+export interface BoardHealthCandidate {
+  aux_id: number
+  label: string
+  member_tags: number
+  member_articles: number
+}
+
+export interface BoardHealthSnapshotDTO {
+  id: number
+  semantic_board_id: number
+  checked_at: string
+  metrics: BoardHealthMetrics
+  uncaptured_candidates: BoardHealthCandidate[]
+  llm_score: number | null
+  llm_comment: string | null
+  created_at: string
+}
+
+export interface BoardHealthTrendPoint {
+  checked_at: string
+  llm_score: number | null
+}
+
+export interface BoardHealthCheckupResponse {
+  latest: BoardHealthSnapshotDTO | null
+  trend: BoardHealthTrendPoint[]
+}
+
 export interface BoardCompositionResponse {
   items: AuxiliaryLabelItem[]
   composites?: BoardCompositeMount[]
@@ -342,6 +399,11 @@ export function useSemanticBoardsApi() {
     return apiClient.get<BoardSourceBreakdown>(`/semantic-boards/${id}/source-breakdown?window=${windowDays}`)
   }
 
+  /** 版块体检数据（add-board-health-checkup）：只读 latest+趋势；trend 白名单 1-90 默认 7。 */
+  async function getBoardHealthCheckup(id: number, trend = 7): Promise<ApiResponse<BoardHealthCheckupResponse>> {
+    return apiClient.get<BoardHealthCheckupResponse>(`/semantic-boards/${id}/health-checkup?trend=${trend}`)
+  }
+
   async function getBoardArticles(id: number, params?: Record<string, unknown>): Promise<ApiResponse<BoardArticle[]>> {
     const query = params ? apiClient.buildQueryParams(params) : ''
     return apiClient.get(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
@@ -371,6 +433,7 @@ async function suggestAuxiliariesForBoard(boardId: number, params?: {
     deleteBoard,
     getComposition,
     getBoardSourceBreakdown,
+    getBoardHealthCheckup,
     removeFromComposition,
     addComposition,
     suggestUpgrade,

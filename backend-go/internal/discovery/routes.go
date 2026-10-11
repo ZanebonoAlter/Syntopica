@@ -59,6 +59,8 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		settings.POST("/bocha", handler.SaveBochaSettings)
 		settings.GET("/searxng", handler.GetSearxngSettings)
 		settings.POST("/searxng", handler.SaveSearxngSettings)
+		// SearXNG 连通性主动探测（add-searxng-health-indicator）：按需触发不轮询。
+		settings.GET("/searxng/health", handler.GetSearxngHealth)
 	}
 
 	// 路由参数可选值字典 CRUD（feed-param-options）

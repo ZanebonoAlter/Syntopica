@@ -29,6 +29,9 @@ trap 'rm -rf "$TMP"' EXIT
 # （K 段用带内容的 $TMP/arch，K6 用不存在路径验证兑底）
 export HARNESS_RETRO_ARCHIVE_DIR="$TMP/arch-empty"
 mkdir -p "$HARNESS_RETRO_ARCHIVE_DIR"
+# E 生命周期面隔离：缺省指向空 fixture 目录，防止 E 段误读真实 openspec/changes（M 段注入带内容 fixture）
+export HARNESS_RETRO_CHANGES_DIR="$TMP/chg-empty"
+mkdir -p "$HARNESS_RETRO_CHANGES_DIR"
 
 pass=0
 failn=0
@@ -269,10 +272,26 @@ ins "$FK" session.rollup chg-z '{"turns":4,"tokens":{"total":7000},"cost":0.7,"d
 ins "$FK" session.rollup chg-w '{"turns":1,"tokens":{"total":2000},"cost":0.2,"durationSec":100,"model":"glm-5.3","final":true}' s-main-w
 # s-orphan：change 列空且无 parentSessionId → 不可归因
 ins "$FK" session.rollup '' '{"turns":1,"tokens":{"total":1000},"cost":0.4,"durationSec":50,"model":"glm-5.3","final":true}' s-orphan
-# 归档目录 fixture（HARNESS_RETRO_ARCHIVE_DIR 注入；日期前缀窗口内）
-mkdir -p "$TMP/arch/2026-09-18-chg-x" "$TMP/arch/2026-09-18-chg-z"
-printf '<!-- complexity: simple -->\n\n## Why\ntest\n' >"$TMP/arch/2026-09-18-chg-x/proposal.md"
-printf '# no complexity marker\n' >"$TMP/arch/2026-09-18-chg-z/proposal.md"
+# 归档目录 fixture（HARNESS_RETRO_ARCHIVE_DIR 注入；日期前缀窗口内——动态取 2 天前，防 --days 7 窗口滑出后时间腐烂）
+ARCH_D="$(date -u -d '2 days ago' +%F)"
+mkdir -p "$TMP/arch/$ARCH_D-chg-x" "$TMP/arch/$ARCH_D-chg-z"
+printf '<!-- complexity: simple -->\n\n## Why\ntest\n' >"$TMP/arch/$ARCH_D-chg-x/proposal.md"
+printf '# no complexity marker\n' >"$TMP/arch/$ARCH_D-chg-z/proposal.md"
+
+# ---------- fixture L：混合情报型+纠正型 warn 分开统计（split-retro-warn-classes） ----------
+FL="$TMP/l.db"
+mk_db "$FL"
+for i in 1 2 3 4 5 6; do
+	ins "$FL" policy.decision probe-L '{"policy":"quality-gate","action":"warn","reasonCode":"concurrent-mixed"}'
+done
+# attribution-degraded（add-foreign-gate-steer-attribution）：5 条 = 恰在失效阈值上，
+# 验证情报型登记后不吸入④段失效名单（新词汇不漂移进纠正型）
+for i in 1 2 3 4 5; do
+	ins "$FL" policy.decision probe-L '{"policy":"quality-gate","action":"warn","reasonCode":"attribution-degraded"}'
+done
+for i in 1 2 3 4 5 6; do
+	ins "$FL" policy.decision probe-L '{"policy":"test-scope-guard","action":"warn","reasonCode":"full-go-test"}'
+done
 
 # ---------- K. B' 每任务成本四场景（task-cost-metrics） ----------
 HARNESS_RETRO_ARCHIVE_DIR="$TMP/arch" run_retro --db "$FK" --days 7
@@ -327,14 +346,14 @@ check 0 "K6 目录锚点缺失兑底（仅事件侧 chg-x/chg-y 仍统计，退�
 # ================= A. 主链路 =================
 
 run_retro --db "$FB" --days 7
-check 0 "A1 六段齐备且各带指标" "① 门禁失败聚类" "② 回归翻转" "③ harness 自身故障" "④ 软提醒失效" "⑤ 重复失败热点" "⑥ 注入面健康" "失败条数            : 4" "注入条数 / 字节" "docs/reference/flow/daily-report.md"
+check 0 "A1 六段齐备且各带指标" "① 门禁失败聚类" "② 回归翻转" "③ harness 自身故障" "④ 软提醒失效（纠正型" "⑤ 重复失败热点" "⑥ 注入面健康" "失败条数            : 4" "注入条数 / 字节" "docs/reference/flow/daily-report.md"
 
 # ---------- G. ⑦效能看板 ----------
 run_retro --db "$FG" --days 7
 check 0 "G1 七段齐备：⑦段与覆盖率降级标注" "⑦ 效能看板" "rollup 覆盖率        : 1 / 3 session（33%）⚠ 数据积累中"
 check 0 "G2 rollup 终值取最新快照不累加（tok=5000 非 8000）" "tokens 中位 5000 / P75 5000"
 check 0 "G3 跨域注入命中率=0（注入 ai-summary、编辑落 topicgraph 域，两域不相交）" "注入命中率        : 编辑域命中注入域 0 / 6（0%；"
-check 0 "G4 催修时距 40 分钟计入中位" "门禁催修时距      : 红→绿 中位 40.0 min（n=1）"
+check 0 "G4 催修时距 40 分钟计入中位（分派口径：quality-gate=转绿）" "门禁催修时距      : 中位 40.0 min（n=1；分派：quality-gate=转绿 / ui-design-gate=pass 放行 / quota-gate=成功派发 / spec-gate=归档）"
 check 0 "G5 返工波次清单（3 session 文件）" "跨 session 编辑波次: 1 个文件 ≥3 session" "backend-go/internal/topicgraph/model.go" "×3 session"
 check 0 "G6 pin 复用零值形态" "pin 复用          : write 0 条 / read 0 条（比值 —）"
 "$RETRO" --db "$FG" --days 7 --json >"$TMP/fg.json" 2>/dev/null
@@ -477,6 +496,37 @@ check_absent "B2 block 与 bypass 不入故障段" "archive-check-failed" "expli
 check 0 "B3 超阈值 warn 入段（=5 命中）" "test-scope-guard / full-go-test : 5 次"
 check_absent "B4 低于阈值 warn 不产生噪声" "ui-impact-mismatch"
 
+# ---------- L. 情报型/纠正型分开统计（split-retro-warn-classes） ----------
+
+run_retro --db "$FL" --days 7
+check 0 "L1 失效名单只含纠正型（full-go-test 6 次；标题含纠正型；情报型单列计数含 attribution-degraded）" \
+	"④ 软提醒失效（纠正型；同 policy+reasonCode 的 warn 计数 ≥ 5）" \
+	"test-scope-guard / full-go-test : 6 次" \
+	"情报型 warn（归属/状态告知，不计失效）: 11 条（quality-gate/concurrent-mixed 6 / quality-gate/attribution-degraded 5）"
+check_absent "L2 情报型不进失效名单（失效行格式不含 concurrent-mixed）" "quality-gate / concurrent-mixed"
+check_absent "L2b attribution-degraded 情报型登记不吸入失效名单（恰在阈值 5 上仍单列）" "quality-gate / attribution-degraded : 5 次"
+"$RETRO" --db "$FL" --days 7 --json >"$TMP/fl.json" 2>/dev/null
+if python3 - "$TMP/fl.json" <<'FLPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d['metrics']
+s = d['soft']
+assert m['soft.warn_total'] == 17, m['soft.warn_total']
+assert m['soft.warn_total_corrective'] == 6, m['soft.warn_total_corrective']
+assert m['soft.warn_total_informative'] == 11, m['soft.warn_total_informative']
+assert m['soft.informative_groups'] == 2, m['soft.informative_groups']
+assert m['soft.stale_groups'] == 1, m['soft.stale_groups']
+assert [it['reason'] for it in s['items']] == ['full-go-test'], s['items']
+assert [it['reason'] for it in s['informative']] == ['concurrent-mixed', 'attribution-degraded'], s['informative']
+FLPY
+then
+	echo "  ✓ L3 JSON soft 键=fixture 复算值（12=6+6、stale 1、informative 1 组）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L3 JSON soft 键断言失败"
+	failn=$((failn + 1))
+fi
+
 # ================= C. 库异常、窗口与只读 =================
 
 sha_before="$(hash_of "$FB")"
@@ -569,6 +619,393 @@ else
 	echo "  ✗ D7b 注入生效（行数变化）"
 	failn=$((failn + 1))
 fi
+
+# ================= M. lifecycle 体检卡 + 催修时距分派 + abandon 终态（add-change-lifecycle-retro） =================
+
+# 时间戳助手（相对 now，保证 id 序与 ts 序一致）
+MT() { date -u -d "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+
+FM="$TMP/m.db"
+mk_db "$FM"
+# life-ui（已归档、事件完整）：双锚点（事件+目录）、成本主 1.0+子 0.5、ui 卡点×2→pass、
+# spec-gate 归档重试 30min、lint 红→绿 40min（quality-gate 口径）
+ins "$FM" mode.set life-ui '{"mode":"implementation","boundChange":"life-ui","source":"command"}' s-m1 "$(MT '-200 min')"
+ins "$FM" mode.set life-ui '{"mode":"implementation","boundChange":"life-ui","source":"recover"}' s-m2 "$(MT '-30 min')"
+ins "$FM" constraint.inject life-ui '{"path":"docs/reference/flow/daily-report.md","mode":"section","reason":"declaration","bytes":800}' s-m1 "$(MT '-190 min')"
+ins "$FM" constraint.inject life-ui '{"path":"docs/reference/flow/reading.md","mode":"section","reason":"keyword","bytes":900}' s-m2 "$(MT '-29 min')"
+ins "$FM" pin.write life-ui '{"title":"t","file":"x.md"}' s-m1 "$(MT '-180 min')"
+for i in 1 2 3; do ins "$FM" pin.read life-ui '{"file":"x.md"}' s-m1 "$(MT '-170 min')"; done
+ins "$FM" edit.map life-ui '{"paths":["backend-go/a.go","front/app/b.vue"],"n":2}' s-m1 "$(MT '-100 min')"
+ins "$FM" edit.map life-ui '{"paths":["backend-go/a.go","backend-go/c.go"],"n":2}' s-m2 "$(MT '-20 min')"
+ins "$FM" gate.check life-ui '{"cmd":"lint","ok":false,"diag":"oops"}' s-m1 "$(MT '-80 min')"
+ins "$FM" gate.check life-ui '{"cmd":"lint","ok":true,"flip":1}' s-m1 "$(MT '-40 min')"
+ins "$FM" policy.decision life-ui '{"policy":"ui-design-gate","action":"block","reasonCode":"ui-prototype-missing"}' s-m1 "$(MT '-92 min')"
+ins "$FM" policy.decision life-ui '{"policy":"ui-design-gate","action":"block","reasonCode":"ui-prototype-missing"}' s-m1 "$(MT '-91 min')"
+ins "$FM" policy.decision life-ui '{"policy":"ui-design-gate","action":"pass","reasonCode":"ui-design-satisfied"}' s-m1 "$(MT '-90 min')"
+ins "$FM" policy.decision life-ui '{"policy":"spec-gate","action":"block","reasonCode":"archive-check-failed","target":"doc-impact"}' s-m1 "$(MT '-35 min')"
+ins "$FM" policy.decision life-ui '{"policy":"quality-gate","action":"fail-open","reasonCode":"interop-down"}' s-m1 "$(MT '-60 min')"
+ins "$FM" subagent.dispatch life-ui '{"type":"explore","model":"glm-5.3","ms":100,"status":"completed","isError":false}' s-m1 "$(MT '-10 min')"
+# review 覆盖段 fixture（add-review-trace-gate）：带归属 dispatch 三条——explore(other)/
+# change-review-glm(review 类)/desc 含「修复」(repair 类优先，desc 含 review 不误计)
+ins "$FM" subagent.dispatch life-ui '{"type":"change-review-glm","model":"zai-coding-cn/glm-5.3","desc":"change-review-glm 审查","ms":5000,"status":"completed","isError":false}' s-m1 "$(MT '-9 min')"
+ins "$FM" subagent.dispatch life-ui '{"type":"general-purpose","desc":"修复 review R-1 并归档","ms":3000,"status":"completed","isError":false}' s-m1 "$(MT '-8 min')"
+ins "$FM" session.rollup life-ui '{"turns":8,"toolCalls":30,"cost":1.0,"durationSec":600,"models":{"glm-5.3":{"tokens":{"total":8000},"cost":1.0}},"final":true}' s-m1 "$(MT '-6 min')"
+ins "$FM" session.rollup '' '{"turns":3,"toolCalls":10,"cost":0.5,"durationSec":200,"models":{"glm-5.3":{"tokens":{"total":3000},"cost":0.5}},"parentSessionId":"s-m1","final":true}' s-c1 "$(MT '-5 min')"
+ins "$FM" change.archive life-ui '{"name":"life-ui"}' s-m1 "$(MT '-5 min')"
+# c-q（未归档）：quota block 后无成功派发（89 分钟假慢反例：同 session lint 红→绿 89min
+# 不得归到 quota 头上——quota 样本剔除，89min 样本属 quality-gate 口径）
+ins "$FM" policy.decision c-q '{"policy":"quota-gate","action":"block","reasonCode":"quota-low","target":"zai-coding-cn/glm-5.3"}' s-q "$(MT '-95 min')"
+ins "$FM" gate.check c-q '{"cmd":"lint","ok":false,"diag":"oops-q"}' s-q "$(MT '-94 min')"
+ins "$FM" gate.check c-q '{"cmd":"lint","ok":true,"flip":1}' s-q "$(MT '-5 min')"
+# life-old（未归档、引入前历史）：仅 block 无 pass → 放行态推断口径
+ins "$FM" policy.decision life-old '{"policy":"ui-design-gate","action":"block","reasonCode":"ui-design-missing"}' s-o "$(MT '-1200 min')"
+# life-zombie（已放弃）：有成本归因 + abandon、无归档 → B' 已放弃桶
+ins "$FM" session.rollup life-zombie '{"turns":2,"toolCalls":5,"cost":0.3,"durationSec":100,"final":true}' s-z "$(MT '-300 min')"
+ins "$FM" change.abandon life-zombie '{"name":"life-zombie"}' s-z "$(MT '-280 min')"
+# life-conflict：archive 与 abandon 并存 → 以归档为准 + 冲突提示
+ins "$FM" session.rollup life-conflict '{"turns":2,"toolCalls":5,"cost":0.7,"durationSec":100,"final":true}' s-x "$(MT '-400 min')"
+ins "$FM" change.abandon life-conflict '{"name":"life-conflict"}' s-x "$(MT '-390 min')"
+ins "$FM" change.archive life-conflict '{"name":"life-conflict"}' s-x "$(MT '-50 min')"
+# ④段 fixture：5× 纠正型 warn（pass 词汇不得吸入任何分桶）
+for i in 1 2 3 4 5; do
+	ins "$FM" policy.decision life-ui '{"policy":"test-scope-guard","action":"warn","reasonCode":"full-go-test"}' s-m2 "$(MT '-15 min')"
+done
+
+# 元数据 fixture：changes/（未归档）与 archive/（已归档）两棵树
+MCH="$TMP/mchanges"
+mkdir -p "$MCH/c-q" "$MCH/life-old"
+printf '<!-- ui-impact: minor -->\n<!-- review: waived -->\n\n## Why\nx\n' >"$MCH/c-q/proposal.md"
+printf '<!-- ui-impact: major -->\n<!-- complexity: simple -->\n\n## Why\nx\n' >"$MCH/life-old/proposal.md"
+MARCH="$TMP/march"
+ARCH_DM="$(date -u -d '2 days ago' +%F)"
+mkdir -p "$MARCH/$ARCH_DM-life-ui" "$MARCH/$ARCH_DM-life-conflict"
+printf '<!-- complexity: moderate -->\n<!-- ui-impact: major -->\n<!-- constraint-domains: daily-report, reading -->\n\n## Why\nx\n' >"$MARCH/$ARCH_DM-life-ui/proposal.md"
+printf '# no markers\n' >"$MARCH/$ARCH_DM-life-conflict/proposal.md"
+# 人类反馈段 fixture（design D7/D8）：life-ui（archive 树，归档路径解析 + 真数据：
+# 产品 2 / 流程 1，frontend×2 / process×1，未处置 1）；c-q（changes 树，格式异常 2 条：
+# 词表外归因 + 缺状态行，可解析 1 条 backend）；life-old 无文件（降级标注）
+cat >"$MARCH/$ARCH_DM-life-ui/human-feedback.md" <<'MFBAEOF'
+# Human Feedback — life-ui
+
+## 反馈清单
+
+### FB-1 2026-09-20【产品|frontend】原型布局返工
+
+- **状态**：已消化（原型当日修）
+
+### FB-2 2026-09-21【产品|frontend】暗色对比度不足
+
+- **状态**：待处理
+
+### FB-3 2026-09-22【流程|process】审批流程太绕
+
+- **状态**：已转挂 → add-change-lifecycle-retro
+MFBAEOF
+cat >"$MCH/c-q/human-feedback.md" <<'MFBCEOF'
+# Human Feedback — c-q
+
+## 反馈清单
+
+### FB-1 2026-09-20【产品|backend】超时默认值太短
+
+- **状态**：已消化（当日修复）
+
+### FB-2 2026-09-21【产品|ui】词表外归因条目
+
+- **状态**：已消化
+
+### FB-3 2026-09-22【产品|frontend】缺状态行条目
+
+（正文没有任何状态行）
+MFBCEOF
+# review 建账 fixture（add-review-trace-gate）：life-ui（archive 树，2 条合法 + 1 条
+# 词表外不计入）；c-q 走 waived；life-old / life-conflict 皆无（未归档/已归档两态）
+cat >"$MARCH/$ARCH_DM-life-ui/review.md" <<'MRVEOF'
+# Review — life-ui
+
+## 意见清单
+
+### R-1 2026-10-12【High】成本卡归因子会话错记
+
+- **状态**：已修复
+
+### R-2 2026-10-12【Medium】放行态文案与门禁枚举不一致
+
+- **状态**：已采纳
+
+### R-3 2026-10-12【Critical】词表外等级不计入
+
+- **状态**：已修复
+MRVEOF
+
+Menv() { HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" run_retro --db "$FM" "$@"; }
+
+# ---------- L1-L4：体检卡四段与三态 ----------
+Menv --lifecycle life-ui
+check 0 "L1 已归档 change 四段齐备 + 归档目录声明元数据（日期前缀剥离后拼路径）" \
+	"一、流程规范段" "二、UI 工作流段" "三、成本卡" "四、健康度段" \
+	"声明元数据: ui-impact=major / complexity=moderate / constraint-domains=daily-report, reading" \
+	"终态      : 已归档"
+check 0 "L1b 流程规范段指标（档位/注入/pin/编辑/门禁）" \
+	"档位绑定        : 2 次 mode.set" "约束注入        : 2 条 / 1700 B" "declaration×1" "keyword×1" \
+	"pin 接力        : write 1 条 / read 3 条" "编辑归属        : 2 个路径（edit.map 快照 2 次" "门禁执行        : 1 次执行 / 1 次失败（还原口径；Top：lint 1/1）"
+check 0 "L1c UI 工作流：卡点链 + pass 直读口径" \
+	"卡点链          : ui-prototype-missing ×2" "放行态          : 已放行（pass ui-design-satisfied"
+check 0 "L1d 成本卡：主+子归因合计 + 模型分桶" \
+	"归因会话        : 2 个 rollup 终值会话" "合计            : cost ¥1.50 / turns 11 / toolCalls 40" "按模型分桶      : glm-5.3" "¥1.50"
+check 0 "L1e 健康度：催修时距中位 2min（lifecycle 限定本 change：[1,2,30,40] rn=2）+ 回归/波次" \
+	"催修时距        : 中位 2.0 min（n=4" "回归翻转        : 0 次" "返工波次        : 1 个文件 ≥2 session" "backend-go/a.go" "×2 session"
+
+Menv --lifecycle c-q
+check 0 "L2 未归档不假定终态（最后活动时间，不猜活跃/放弃）" "终态      : 未归档（最后活动" "不假定终态" "声明元数据: ui-impact=minor"
+
+Menv --lifecycle never-started
+check 0 "L3 无事件 change：降级标注而非静默省略，exit 0" "声明元数据: 声明缺席" "无任何事件"
+
+m_rows_before="$(count_rows "$FM")"
+Menv --lifecycle life-ui >/dev/null 2>&1
+if [ "$(count_rows "$FM")" = "$m_rows_before" ]; then
+	echo "  ✓ L4 --lifecycle 只读零写入（行数不变）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L4 --lifecycle 写了账本"
+	failn=$((failn + 1))
+fi
+
+Menv --lifecycle life-old
+check 0 "L5 放行态双口径：无 pass 历史按末 block 推断并标注" "放行态          : 推断（无放行事件）" "ui-design-missing"
+
+Menv --lifecycle life-conflict
+check 0 "L6 abandon×archive 并存以归档为准 + 冲突提示行" "终态      : 已归档" "冲突提示  : 同名 change.archive 与 change.abandon 并存" "以归档为准"
+
+Menv --lifecycle life-zombie
+check 0 "L7 已放弃终态区分（不再算活跃）" "终态      : 已放弃（change.abandon" "声明元数据: 声明缺席"
+
+run_retro --db "$FM" --lifecycle life-ui --change life-ui 2>/dev/null
+check 1 "L8 --lifecycle 与 --change 互斥拒绝" "互斥"
+
+# ---------- L9：lifecycle --json 可解析 ----------
+HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" "$RETRO" --db "$FM" --lifecycle life-ui --json >"$TMP/fm-life.json" 2>/dev/null
+if python3 - "$TMP/fm-life.json" <<'FMLPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d['terminal']['state'] == 'archived', d['terminal']
+assert d['meta']['declaration']['ui_impact'] == 'major', d['meta']
+assert d['meta']['declaration']['complexity'] == 'moderate', d['meta']
+assert abs(d['cost']['cost'] - 1.5) < 1e-6, d['cost']
+assert d['cost']['sessions'] == 2, d['cost']
+assert d['ui']['passes'] and d['ui']['passes'][0]['reason'] == 'ui-design-satisfied', d['ui']
+assert d['health']['repair']['median_sec'] is not None and abs(d['health']['repair']['median_sec'] - 120) < 60, d['health']
+hf = d['human_feedback']
+assert hf['present'] is True, hf
+assert hf['total'] == 3 and hf['types'] == {'产品': 2, '流程': 1}, hf
+assert hf['layers'] == {'frontend': 2, 'process': 1}, hf
+assert hf['open'] == 1 and hf['open_ids'] == ['FB-2'], hf
+assert hf['bad'] == 0, hf
+rv = d['review']
+assert rv['state'] == 'review_md' and rv['entries'] == 2, rv
+assert rv['waived'] is False and rv['no_finding'] is False, rv
+assert rv['dispatch']['dispatch_total'] == 3, rv
+assert rv['dispatch']['review_disp'] == 1 and rv['dispatch']['repair_disp'] == 1, rv
+FMLPY
+then
+	echo "  ✓ L9 lifecycle --json 结构与数值可复算（terminal/cost 1.5/repair 30min/反馈 3 条）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L9 lifecycle --json 断言失败"
+	failn=$((failn + 1))
+fi
+
+# ---------- L12-L14：第五段人类反馈段（design D7/D8，task 8.3） ----------
+Menv --lifecycle life-ui
+check 0 "L12 人类反馈段真数据（archive 路径解析 + 条数/归因分布/未处置）" \
+	"五、人类反馈段" "条目            : 产品 2 / 流程 1（可解析 3/3 条）" \
+	"归因分布        : frontend×2 / process×1" "未处置          : 1 条（待处理/处理中：FB-2）"
+
+Menv --lifecycle c-q
+check 0 "L13 格式异常单列披露不炸段（词表外归因/缺状态行；可解析条目照常统计）" \
+	"五、人类反馈段" "条目            : 产品 1（可解析 1/3 条）" "backend×1" \
+	"格式异常        : 2 条（FB-2、FB-3）——词表外归因/缺状态行，单列披露不炸段"
+
+Menv --lifecycle life-old
+check 0 "L13b 无反馈文件 → 降级标注不静默省略（其余四段不受影响）" \
+	"五、人类反馈段" "反馈记录        : 无反馈记录（或未启用）" "一、流程规范段"
+
+_fbmd5_before="$(md5sum "$MARCH/$ARCH_DM-life-ui/human-feedback.md" | cut -d' ' -f1)"
+Menv --lifecycle life-ui >/dev/null 2>&1
+if [ "$(md5sum "$MARCH/$ARCH_DM-life-ui/human-feedback.md" | cut -d' ' -f1)" = "$_fbmd5_before" ]; then
+	echo "  ✓ L14 反馈文件只读（md5 不变；与 L4 账本只读互补）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L14 反馈文件被修改"
+	failn=$((failn + 1))
+fi
+
+# ---------- L15-L18：第六段 review 覆盖段（add-review-trace-gate 1.4） ----------
+Menv --lifecycle life-ui
+check 0 "L15 建账 change 覆盖段展示（archive 路径 + 条目计数 + 派发分类参考口径）" \
+	"六、review 覆盖段" "痕迹形态        : review.md 建账（2 条）" \
+	"review 类派发   : 1 次（参考口径" "修复类派发      : 1 次（参考口径"
+
+Menv --lifecycle c-q
+check 0 "L16 waived 形态 + 无带归属派发 → 归属改造前无数据（不输出误导性 0）" \
+	"痕迹形态        : waived 显式豁免" "归属改造前无数据"
+
+Menv --lifecycle life-old
+check 0 "L17 皆无未归档 → 归档门禁将对账提示（不记缺口）" \
+	"痕迹形态        : 皆无（未归档"
+
+Menv --lifecycle life-conflict
+check 0 "L18 皆无已归档 → 记缺口（归档前未做 review 也未显式豁免）" \
+	"痕迹形态        : 皆无（已归档——缺口"
+
+# ---------- L10：催修时距分派（design D3，89 分钟假慢反例） ----------
+"$RETRO" --db "$FM" --days 7 --json >"$TMP/fm7.json" 2>/dev/null
+run_retro --db "$FM" --days 7
+check 0 "L10a 分派后中位 30.0 min（样本 n=5）+ 剔除披露（quota 无派发 + life-old 无 pass）" \
+	"门禁催修时距      : 中位 30.0 min（n=5；分派：quality-gate=转绿 / ui-design-gate=pass 放行 / quota-gate=成功派发 / spec-gate=归档；剔除无解除信号 2 条）"
+if python3 - "$TMP/fm7.json" <<'FM7PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d['metrics']
+assert m['m7.repair_samples'] == 5, m['m7.repair_samples']
+assert m['m7.repair_med_sec'] is not None and abs(m['m7.repair_med_sec'] - 1800) < 60, m['m7.repair_med_sec']
+assert m['m7.repair_excluded'] == 2, m['m7.repair_excluded']  # quota 无成功派发 + life-old 无 pass → 均剔除
+bp = {it['policy']: it for it in d['effectiveness']['repair']['by_policy']}
+assert bp['quota-gate']['n'] == 0 and bp['quota-gate']['excluded'] == 1, bp  # 89min 假慢不归 quota（c-q 的 lint 红→绿 89min 属 quality-gate 口径）
+assert bp['quality-gate']['n'] == 2, bp  # 40min(life-ui lint) + 89min(c-q lint) 同键红→绿
+assert bp['ui-design-gate']['n'] == 2 and bp['ui-design-gate']['excluded'] == 1, bp  # 两 block 各以 pass 计（2min/1min）；life-old 无 pass 剔除
+assert bp['spec-gate']['n'] == 1, bp      # archive-check-failed → change.archive 30min
+# B' 已放弃区分 + 冲突
+assert m['m7.task_abandoned'] == 1, m['m7.task_abandoned']
+assert m['m7.task_abandon_conflict'] == 1, m['m7.task_abandon_conflict']
+assert m['m7.task_active_unarchived'] == 0, m['m7.task_active_unarchived']  # life-zombie 已放弃不占活跃
+FM7PY
+then
+	echo "  ✓ L10b 分派口径/剔除数/B' 已放弃=fixture 复算值（quota 89min 不入、abandon 1、冲突 1）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L10b JSON 分派断言失败"
+	failn=$((failn + 1))
+fi
+run_retro --db "$FM" --days 7
+check 0 "L10c B' 文本：已放弃单列 + 终态冲突提示" "已放弃 change     : 1 个" "终态冲突        : 1 个"
+
+# ---------- L11：pass 不入 ③ fail-open 分桶 / ④ 失效 warn 聚类（task 1.2） ----------
+run_retro --db "$FM" --days 7
+check 0 "L11a ③段只计 fail-open（pass 事件不吸入故障分桶）" "故障条数            : 1"
+check_absent "L11b pass reasonCode 不进 ④失效名单" "ui-design-gate / ui-design-satisfied" "ui-design-gate / ui-approval-approved"
+if python3 - "$TMP/fm7.json" <<'FM7BPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+s = d['soft']
+assert s['groups_total'] == 1 and s['warn_total'] == 5, s  # 仅 full-go-test warn；pass 零吸入
+assert d['faults']['fail_open'] == 1, d['faults']
+FM7BPY
+then
+	echo "  ✓ L11c ④段 warn 聚类不含 pass（groups=1/warn=5、fail_open=1）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ L11c ③④分桶断言失败"
+	failn=$((failn + 1))
+fi
+
+# ---------- M：E 生命周期面（add-retro-lifecycle-rollup：反馈覆盖/归因聚合/漏采信号） ----------
+# 隔离：缺省指向空目录（顶部已 export HARNESS_RETRO_CHANGES_DIR=chg-empty；此处用带内容 fixture 注入）
+MCH="$TMP/m-chg"
+mkdir -p "$MCH/chgA" "$MCH/chgB" "$MCH/chgC"
+MARCH="$TMP/m-arch"
+D_IN="$(date -u -d '-2 day' +%Y-%m-%d)"
+D_OUT="$(date -u -d '-9 day' +%Y-%m-%d)"
+mkdir -p "$MARCH/${D_IN}-chgD" "$MARCH/${D_OUT}-chgE"
+cat >"$MCH/chgA/human-feedback.md" <<'MFB'
+# human-feedback
+
+### FB-1 2026-10-10【产品|backend】接口返回不一致
+- **状态**：已消化
+
+### FB-2 2026-10-11【流程|test-gap】变体盲区漏测
+- **状态**：待处理
+MFB
+cat >"$MCH/chgC/human-feedback.md" <<'MFB'
+# human-feedback
+
+### FB-1 2026-10-10【产品|frontend-typo】坏归因
+- **状态**：已消化
+MFB
+cat >"$MARCH/${D_IN}-chgD/human-feedback.md" <<'MFB'
+# human-feedback
+
+### FB-1 2026-10-09【产品|frontend】样式错位
+- **状态**：已消化
+MFB
+cat >"$MARCH/${D_OUT}-chgE/human-feedback.md" <<'MFB'
+# human-feedback
+
+### FB-1 2026-09-30【产品|backend】窗口外条目
+- **状态**：已消化
+MFB
+FM2="$TMP/fm2.db"
+mk_db "$FM2"
+ins "$FM2" edit.map chgA '{"paths":["a/x.go"]}' s-a1
+ins "$FM2" edit.map chgA '{"paths":["a/x.go"]}' s-a2
+ins "$FM2" edit.map chgB '{"paths":["b/y.go"]}' s-b1
+ins "$FM2" edit.map chgB '{"paths":["b/y.go"]}' s-b2
+ins "$FM2" edit.map chgB '{"paths":["b/y.go"]}' s-b3
+ins "$FM2" edit.map chgB '{"paths":["b/y.go"]}' s-b4
+ins "$FM2" edit.map chgD '{"paths":["d/z.go"]}' s-d1
+ins "$FM2" edit.map chgD '{"paths":["d/z.go"]}' s-d2
+ins "$FM2" edit.map chgD '{"paths":["d/z.go"]}' s-d3
+ins "$FM2" edit.map chgF '{"paths":["f/w.go"]}' s-f1
+ins "$FM2" edit.map chgF '{"paths":["f/w.go"]}' s-f2
+ins "$FM2" edit.map chgF '{"paths":["f/w.go"]}' s-f3
+ins "$FM2" edit.map chgF '{"paths":["f/w.go"]}' s-f4
+ins "$FM2" edit.map chgF '{"paths":["f/w.go"]}' s-f5
+
+HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" run_retro --db "$FM2" --days 7
+check 0 "M1 反馈覆盖计数（有账3/无账1，活跃3+归档1，未处置1）" \
+	"有账 3 / 无账 1（窗口 change 4 个：活跃 3 + 窗口内归档 1）；未处置 1 条"
+check 0 "M2 归因分布聚合（backend×1/test-gap×1/frontend×1；坏条目不计入）" \
+	"backend×1 / test-gap×1 / frontend×1"
+check 0 "M3 漏采信号（chgB 4 波次零反馈进名单）" \
+	"1 个 change 波次 ≥3 session 且零反馈" "chgB" "（active，4 session 波次）"
+check 0 "M4 格式异常单列（chgC 词表外归因 1 条）" "格式异常          : 1 条"
+check_absent "M5 窗口外归档排除（chgE 不入清单）与高波次有账不入名单（chgD/chgF）" \
+	"chgE" "chgD（" "chgF（"
+
+HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" "$RETRO" --db "$FM2" --days 7 --json >"$TMP/m6.json" 2>/dev/null
+if python3 - "$TMP/m6.json" <<'M6PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d.get('metrics') or d
+for k in ('m7.lifecycle_changes', 'm7.lifecycle_fb', 'm7.lifecycle_fb_open', 'm7.lifecycle_miss_signals'):
+    assert m.get(k) is not None, ('missing ' + k)
+assert m['m7.lifecycle_changes'] == 4, m['m7.lifecycle_changes']
+assert m['m7.lifecycle_fb'] == 3, m['m7.lifecycle_fb']
+assert m['m7.lifecycle_fb_open'] == 1, m['m7.lifecycle_fb_open']
+assert m['m7.lifecycle_miss_signals'] == 1, m['m7.lifecycle_miss_signals']
+M6PY
+then
+	echo "  ✓ M6 JSON m7.lifecycle_* 键值（4/3/1/1）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ M6 JSON lifecycle 键断言失败"
+	failn=$((failn + 1))
+fi
+
+HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" "$RETRO" --db "$FM2" --days 7 >"$TMP/m7a.txt" 2>&1
+HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" "$RETRO" --db "$FM2" --days 7 >"$TMP/m7b.txt" 2>&1
+if diff -q <(grep -v '^窗口' "$TMP/m7a.txt") <(grep -v '^窗口' "$TMP/m7b.txt") >/dev/null; then
+	echo "  ✓ M7 幂等（连跑两次除窗口时间戳外输出一致，全程零写入）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ M7 幂等断言失败（两次输出 diff 非空）"
+	failn=$((failn + 1))
+fi
+
+HARNESS_RETRO_CHANGES_DIR="$TMP/chg-empty" run_retro --db "$FM2" --days 7
+check 0 "M8 零反馈数据降级（空 changes 目录不静默省略）" \
+	"E 生命周期面" "有账 0 / 无账 0" "无反馈记录（窗口内无 human-feedback.md 条目）"
 
 # ================= 汇总 =================
 echo

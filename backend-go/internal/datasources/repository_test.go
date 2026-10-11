@@ -31,10 +31,10 @@ func TestUpsertCatalogSeedsAllSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(rows) != 4 {
-		t.Fatalf("want 4 sources, got %d", len(rows))
+	if len(rows) != 7 {
+		t.Fatalf("want 7 sources, got %d", len(rows))
 	}
-	want := []string{"eia_wpsr", "jodi_oil_primary", "un_comtrade", "wb_wdi"}
+	want := []string{"eia_wpsr", "fred", "gdelt", "jodi_oil_primary", "un_comtrade", "wb_wdi", "yahoo_finance"}
 	for i, r := range rows {
 		if r.Code != want[i] {
 			t.Fatalf("row %d: want %s got %s", i, want[i], r.Code)
@@ -42,19 +42,23 @@ func TestUpsertCatalogSeedsAllSources(t *testing.T) {
 	}
 }
 
-func TestUpsertCatalogKeyMissingDisablesComtrade(t *testing.T) {
+func TestUpsertCatalogKeyMissingDisablesKeyedSources(t *testing.T) {
 	db := setupTestDB(t)
 	if err := UpsertCatalog(db, func(string) string { return "" }); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	rows, _ := ListCatalog(db)
 	for _, r := range rows {
-		if r.Code == "un_comtrade" {
-			if r.Status != StatusDisabled {
-				t.Fatalf("comtrade without key must be disabled, got %s", r.Status)
+		if r.Code == "un_comtrade" || r.Code == "fred" {
+			wantKey := "COMTRADE_API_KEY"
+			if r.Code == "fred" {
+				wantKey = "FRED_API_KEY"
 			}
-			if !strings.Contains(r.StatusReason, "COMTRADE_API_KEY") {
-				t.Fatalf("reason must name the config key: %q", r.StatusReason)
+			if r.Status != StatusDisabled {
+				t.Fatalf("%s without key must be disabled, got %s", r.Code, r.Status)
+			}
+			if !strings.Contains(r.StatusReason, wantKey) {
+				t.Fatalf("%s reason must name the config key: %q", r.Code, r.StatusReason)
 			}
 			continue
 		}
@@ -64,10 +68,10 @@ func TestUpsertCatalogKeyMissingDisablesComtrade(t *testing.T) {
 	}
 }
 
-func TestUpsertCatalogKeyPresentEnablesComtrade(t *testing.T) {
+func TestUpsertCatalogKeyPresentEnablesKeyedSources(t *testing.T) {
 	db := setupTestDB(t)
 	resolve := func(name string) string {
-		if name == "COMTRADE_API_KEY" {
+		if name == "COMTRADE_API_KEY" || name == "FRED_API_KEY" {
 			return "test-key"
 		}
 		return ""
@@ -99,7 +103,7 @@ func TestUpsertCatalogIdempotentPreservesRuntimeColumns(t *testing.T) {
 		t.Fatalf("second upsert: %v", err)
 	}
 	rows, _ := ListCatalog(db)
-	if len(rows) != 4 {
+	if len(rows) != 7 {
 		t.Fatalf("re-upsert must not duplicate rows, got %d", len(rows))
 	}
 	for _, r := range rows {
