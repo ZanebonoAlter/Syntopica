@@ -449,6 +449,61 @@ func (r *TopicGraphRepository) ListTagSemanticEmbeddings(tagIDs []uint) (map[uin
 	return out, nil
 }
 
+// ListTagIdentityEmbeddings loads the identity-track pgvector embedding for
+// each requested tag from topic_tag_embeddings (embedding_type='identity').
+// The daily-report dedup tiebreak (fix-digest-tag-leak) uses these to keep
+// the tag semantically closer to the reporting board when two tags tie on
+// article_count. Tags without an identity row are absent from the returned
+// map; the caller falls back to the ID tiebreak for those duels.
+func (r *TopicGraphRepository) ListTagIdentityEmbeddings(tagIDs []uint) (map[uint]string, error) {
+	out := make(map[uint]string, len(tagIDs))
+	if len(tagIDs) == 0 {
+		return out, nil
+	}
+	type row struct {
+		TopicTagID uint
+		Embedding  string
+	}
+	var rows []row
+	err := r.db.Raw(`
+		SELECT topic_tag_id, embedding
+		FROM topic_tag_embeddings
+		WHERE embedding_type = 'identity' AND topic_tag_id IN ?
+	`, tagIDs).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("list tag identity embeddings: %w", err)
+	}
+	for _, rw := range rows {
+		if rw.Embedding != "" {
+			out[rw.TopicTagID] = rw.Embedding
+		}
+	}
+	return out, nil
+}
+
+// GetBoardEmbedding returns the pgvector embedding string of an active board
+// label (semantic_labels WHERE label_type='board'). Empty string when the
+// board is missing, inactive, or carries no embedding — callers degrade to
+// the ID tiebreak.
+func (r *TopicGraphRepository) GetBoardEmbedding(boardID uint) (string, error) {
+	type row struct {
+		Embedding *string
+	}
+	var rw row
+	err := r.db.Raw(`
+		SELECT embedding
+		FROM semantic_labels
+		WHERE id = ? AND label_type = 'board' AND status = 'active' AND embedding IS NOT NULL
+	`, boardID).Scan(&rw).Error
+	if err != nil {
+		return "", fmt.Errorf("get board embedding: %w", err)
+	}
+	if rw.Embedding == nil {
+		return "", nil
+	}
+	return *rw.Embedding, nil
+}
+
 // ListSectionsByBoardOrdered returns all sections for a board ordered by date
 // then id, with their embedding and topic assignment. Used by backfill and
 // relation-rebuild identity-edge logic.

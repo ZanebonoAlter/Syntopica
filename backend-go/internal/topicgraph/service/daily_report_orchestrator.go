@@ -40,8 +40,10 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		tagArticleMap[t.ID] = articleCounts[i]
 	}
 
-	// Step 2: Deduplicate
-	tags = DeduplicateTags(ctx, tags, articleCounts)
+	// Step 2: Deduplicate (fix-digest-tag-leak: tiebreak expanded to
+	// article_count > identity×board cosine > id; any embedding load failure
+	// degrades to the legacy ID order — the pipeline must not break).
+	tags = DeduplicateTags(ctx, tags, articleCounts, loadDedupRelevance(boardID, tags))
 
 	// Step 2.5: Quality filter
 	tags = filterTagsByQuality(tags)

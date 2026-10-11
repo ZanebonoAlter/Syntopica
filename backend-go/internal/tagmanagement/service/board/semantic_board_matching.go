@@ -58,6 +58,12 @@ type SemanticBoardMatchConfig struct {
 	DirectHitMinRatio      float64
 	DirectionSimThreshold  float64
 	DirectHitScoreFactor   float64
+	// DirectionRelativeMargin is the relative gate margin for the direction
+	// check: a mount is flagged when bestCos-cos(tagIdentity, board) >=
+	// margin, where bestCos is the highest identity cosine among all boards
+	// the tag matched this run. Zero or negative disables the gate
+	// (absolute threshold only).
+	DirectionRelativeMargin float64
 }
 
 type SemanticBoardMatchResult struct {
@@ -372,10 +378,11 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		allBoards[boardID] = struct{}{}
 	}
 
-	// Direction check applies to every match reason except composite_hit
-	// (a composite hit already implies aligned direction). Missing tag or
-	// board embeddings keep directionMismatch=false, matching the indirect
-	// rules' existing semantics.
+	// Absolute direction gate applies to every match reason except
+	// composite_hit (a composite hit already implies aligned direction).
+	// Missing tag or board embeddings keep directionMismatch=false, matching
+	// the indirect rules' existing semantics. The relative gate runs as a
+	// post-pass over all matched candidates (see applyDirectionRelativeGate).
 	directionMismatch := func(boardID uint) bool {
 		if len(tagEmbedding) == 0 {
 			return false
@@ -460,6 +467,12 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		}
 	}
 
+	// Relative gate (fix-digest-tag-leak): a mount is additionally flagged
+	// when its identity cosine sits DirectionRelativeMargin below the best
+	// cosine among all boards the tag matched this run. Must run after the
+	// per-board loop so the reference set covers every candidate.
+	applyDirectionRelativeGate(matches, tagEmbedding, boardEmbeddings, config)
+
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].Score == matches[j].Score {
 			return matches[i].SemanticBoardID < matches[j].SemanticBoardID
@@ -467,6 +480,52 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		return matches[i].Score > matches[j].Score
 	})
 	return matches
+}
+
+// applyDirectionRelativeGate flags mounts whose identity cosine falls
+// margin below the best cosine among all boards the tag matched this run
+// (the reference set includes candidates that will themselves be flagged —
+// the digest leak case: a tag matches its true board at 0.81 and a distant
+// board at 0.60, gap 0.21). Single-board mounts have gap 0 and always pass;
+// a margin <= 0 disables the gate (absolute threshold only). composite_hit
+// mounts are exempt; mounts without a computable cosine (missing tag or
+// board embedding) skip the gate. The flag only ORs in on top of the
+// absolute gate — it never clears an existing direction_mismatch.
+func applyDirectionRelativeGate(matches []SemanticBoardMatchResult, tagEmbedding []float64, boardEmbeddings map[uint][]float64, config SemanticBoardMatchConfig) {
+	if config.DirectionRelativeMargin <= 0 || len(tagEmbedding) == 0 {
+		return
+	}
+	cosByBoard := make(map[uint]float64, len(matches))
+	bestCos := math.Inf(-1)
+	for _, match := range matches {
+		if match.MatchReason == "composite_hit" {
+			continue
+		}
+		boardEmb, ok := boardEmbeddings[match.SemanticBoardID]
+		if !ok || len(boardEmb) == 0 {
+			continue
+		}
+		cos := CosineSimilarity(tagEmbedding, boardEmb)
+		cosByBoard[match.SemanticBoardID] = cos
+		if cos > bestCos {
+			bestCos = cos
+		}
+	}
+	if len(cosByBoard) == 0 {
+		return
+	}
+	for i := range matches {
+		if matches[i].MatchReason == "composite_hit" {
+			continue
+		}
+		cos, ok := cosByBoard[matches[i].SemanticBoardID]
+		if !ok {
+			continue
+		}
+		if bestCos-cos >= config.DirectionRelativeMargin {
+			matches[i].DirectionMismatch = true
+		}
+	}
 }
 
 // hasCompositeIntersection reports whether any board-mounted composite is
@@ -721,21 +780,22 @@ func (s *SemanticBoardMatchingService) LoadConfig(ctx context.Context) SemanticB
 		return *cached
 	}
 	config := SemanticBoardMatchConfig{
-		SimThreshold:           0.8,
-		DirectHitRate:          0.5,
-		DirectMaxSim:           0.8,
-		DirectMaxSimMinHits:    2,
-		DirectMaxSimMinHitRate: 0.3,
-		MinEffectiveSample:     3,
-		HitRateSimBlend:        0.7,
-		WeightSim:              0.6,
-		WeightDensity:          0.4,
-		WeightedThreshold:      0.6,
-		MaxBoards:              3,
-		DirectHitMinOverlap:    2,
-		DirectHitMinRatio:      0.5,
-		DirectionSimThreshold:  0.5,
-		DirectHitScoreFactor:   0.7,
+		SimThreshold:            0.8,
+		DirectHitRate:           0.5,
+		DirectMaxSim:            0.8,
+		DirectMaxSimMinHits:     2,
+		DirectMaxSimMinHitRate:  0.3,
+		MinEffectiveSample:      3,
+		HitRateSimBlend:         0.7,
+		WeightSim:               0.6,
+		WeightDensity:           0.4,
+		WeightedThreshold:       0.6,
+		MaxBoards:               3,
+		DirectHitMinOverlap:     2,
+		DirectHitMinRatio:       0.5,
+		DirectionSimThreshold:   0.5,
+		DirectHitScoreFactor:    0.7,
+		DirectionRelativeMargin: 0.15,
 	}
 
 	var settings []models.AISettings
@@ -755,6 +815,7 @@ func (s *SemanticBoardMatchingService) LoadConfig(ctx context.Context) SemanticB
 		"semantic_board_match_direct_hit_min_ratio",
 		"semantic_board_match_direction_sim_threshold",
 		"semantic_board_match_direct_hit_score_factor",
+		"semantic_board_match_direction_relative_margin",
 	}).Find(&settings).Error; err != nil {
 		return config
 	}
@@ -793,6 +854,8 @@ func (s *SemanticBoardMatchingService) LoadConfig(ctx context.Context) SemanticB
 			config.DirectionSimThreshold = parseSemanticBoardMatchFloat(setting.Value, config.DirectionSimThreshold)
 		case "semantic_board_match_direct_hit_score_factor":
 			config.DirectHitScoreFactor = parseSemanticBoardMatchFloat(setting.Value, config.DirectHitScoreFactor)
+		case "semantic_board_match_direction_relative_margin":
+			config.DirectionRelativeMargin = parseDirectionRelativeMargin(setting.Value, config.DirectionRelativeMargin)
 		}
 	}
 	s.cache.SetConfig(config)
@@ -818,6 +881,23 @@ func CosineSimilarity(a, b []float64) float64 {
 func parseSemanticBoardMatchFloat(value string, fallback float64) float64 {
 	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil || parsed < 0 || parsed > 1 {
+		return fallback
+	}
+	return parsed
+}
+
+// parseDirectionRelativeMargin keeps the shared parse semantics for invalid
+// input (non-numeric / >1 falls back to the default) but converges negatives
+// to 0: a negative margin means "gate off", same as an explicit 0.
+func parseDirectionRelativeMargin(value string, fallback float64) float64 {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	if parsed < 0 {
+		return 0
+	}
+	if parsed > 1 {
 		return fallback
 	}
 	return parsed
