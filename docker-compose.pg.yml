@@ -45,7 +45,10 @@ services:
       test:
         - CMD-SHELL
         - pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-syntopica}
-      interval: 10s
+      # Pi 5 上每次 exec 都要走一遍 dockerd/containerd/runc 生命周期，10s 频率会
+      # 让 daemon 持续烧 ~0.5 核 CPU；启动期用 start_interval 快检，稳态 60s 一次。
+      interval: 60s
       timeout: 5s
       retries: 10
-      start_period: 10s
+      start_period: 30s
+      start_interval: 5s
