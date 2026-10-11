@@ -17,3 +17,24 @@
   - waive 1 条 `TestInvestigateBoardQuestion_PersistsFullInvestigation`（testcontainer 集成测试，-short 设计性 SKIP，误登记）
   - resolve 1 条 `tagmanagement/service/merge.TestStartFullScan_RejectsConcurrent`（本次修复，context=patrol-20261011）
   - 验收：`bash scripts/harness/test-patrol.sh --report` 显示 open 0 / fixed 170 / waived 1
+
+## 1. 测试
+
+- `cd backend-go && go build ./...` 成功
+- `cd backend-go && go vet ./internal/tagmanagement/...` 无告警
+- `cd backend-go && go test -short -count=10 ./internal/tagmanagement/service/merge/` 连跑全绿（0.006s，flaky 根治）
+- `cd backend-go && go test -short -count=1 ./internal/tagmanagement/...` 全包全绿
+- `cd backend-go && golangci-lint run ./internal/tagmanagement/...` 0 issues
+- `bash scripts/harness/test-patrol.sh --shard be-tagmanagement` 全绿（复巡验证）
+
+## 2. 文档
+
+<!-- doc-impact: none -->
+
+纯测试稳定性修复 + 内部防御分支 + 巡检台账销账：不改业务行为/API/数据模型/配置，flow/standard/api/database 等文档面均无对应内容需同步（doc-impact verify 已通过：声明 none 文件 0 个）。
+
+## 3. 验证
+
+- 台账终态：`bash scripts/harness/test-patrol.sh --report` 显示 open 0 / fixed 170 / waived 1（销 9 条存量 + resolve 本 change 修复的 1 条）
+- 无 delta Scenario（skip_specs: true），scenario-trace 对账直接通过
+- 验收人工项：无（全命令形态验收，见「1. 测试」节）
