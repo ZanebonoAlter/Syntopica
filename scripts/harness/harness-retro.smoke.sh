@@ -29,6 +29,9 @@ trap 'rm -rf "$TMP"' EXIT
 # （K 段用带内容的 $TMP/arch，K6 用不存在路径验证兑底）
 export HARNESS_RETRO_ARCHIVE_DIR="$TMP/arch-empty"
 mkdir -p "$HARNESS_RETRO_ARCHIVE_DIR"
+# E 生命周期面隔离：缺省指向空 fixture 目录，防止 E 段误读真实 openspec/changes（M 段注入带内容 fixture）
+export HARNESS_RETRO_CHANGES_DIR="$TMP/chg-empty"
+mkdir -p "$HARNESS_RETRO_CHANGES_DIR"
 
 pass=0
 failn=0
@@ -906,6 +909,103 @@ else
 	echo "  ✗ L11c ③④分桶断言失败"
 	failn=$((failn + 1))
 fi
+
+# ---------- M：E 生命周期面（add-retro-lifecycle-rollup：反馈覆盖/归因聚合/漏采信号） ----------
+# 隔离：缺省指向空目录（顶部已 export HARNESS_RETRO_CHANGES_DIR=chg-empty；此处用带内容 fixture 注入）
+MCH="$TMP/m-chg"
+mkdir -p "$MCH/chgA" "$MCH/chgB" "$MCH/chgC"
+MARCH="$TMP/m-arch"
+D_IN="$(date -u -d '-2 day' +%Y-%m-%d)"
+D_OUT="$(date -u -d '-9 day' +%Y-%m-%d)"
+mkdir -p "$MARCH/${D_IN}-chgD" "$MARCH/${D_OUT}-chgE"
+cat >"$MCH/chgA/human-feedback.md" <<'MFB'
+# human-feedback
+
+### FB-1 2026-10-10【产品|backend】接口返回不一致
+- **状态**：已消化
+
+### FB-2 2026-10-11【流程|test-gap】变体盲区漏测
+- **状态**：待处理
+MFB
+cat >"$MCH/chgC/human-feedback.md" <<'MFB'
+# human-feedback
+
+### FB-1 2026-10-10【产品|frontend-typo】坏归因
+- **状态**：已消化
+MFB
+cat >"$MARCH/${D_IN}-chgD/human-feedback.md" <<'MFB'
+# human-feedback
+
+### FB-1 2026-10-09【产品|frontend】样式错位
+- **状态**：已消化
+MFB
+cat >"$MARCH/${D_OUT}-chgE/human-feedback.md" <<'MFB'
+# human-feedback
+
+### FB-1 2026-09-30【产品|backend】窗口外条目
+- **状态**：已消化
+MFB
+FM2="$TMP/fm2.db"
+mk_db "$FM2"
+ins "$FM2" edit.map chgA '{"paths":["a/x.go"]}' s-a1
+ins "$FM2" edit.map chgA '{"paths":["a/x.go"]}' s-a2
+ins "$FM2" edit.map chgB '{"paths":["b/y.go"]}' s-b1
+ins "$FM2" edit.map chgB '{"paths":["b/y.go"]}' s-b2
+ins "$FM2" edit.map chgB '{"paths":["b/y.go"]}' s-b3
+ins "$FM2" edit.map chgB '{"paths":["b/y.go"]}' s-b4
+ins "$FM2" edit.map chgD '{"paths":["d/z.go"]}' s-d1
+ins "$FM2" edit.map chgD '{"paths":["d/z.go"]}' s-d2
+ins "$FM2" edit.map chgD '{"paths":["d/z.go"]}' s-d3
+ins "$FM2" edit.map chgF '{"paths":["f/w.go"]}' s-f1
+ins "$FM2" edit.map chgF '{"paths":["f/w.go"]}' s-f2
+ins "$FM2" edit.map chgF '{"paths":["f/w.go"]}' s-f3
+ins "$FM2" edit.map chgF '{"paths":["f/w.go"]}' s-f4
+ins "$FM2" edit.map chgF '{"paths":["f/w.go"]}' s-f5
+
+HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" run_retro --db "$FM2" --days 7
+check 0 "M1 反馈覆盖计数（有账3/无账1，活跃3+归档1，未处置1）" \
+	"有账 3 / 无账 1（窗口 change 4 个：活跃 3 + 窗口内归档 1）；未处置 1 条"
+check 0 "M2 归因分布聚合（backend×1/test-gap×1/frontend×1；坏条目不计入）" \
+	"backend×1 / test-gap×1 / frontend×1"
+check 0 "M3 漏采信号（chgB 4 波次零反馈进名单）" \
+	"1 个 change 波次 ≥3 session 且零反馈" "chgB" "（active，4 session 波次）"
+check 0 "M4 格式异常单列（chgC 词表外归因 1 条）" "格式异常          : 1 条"
+check_absent "M5 窗口外归档排除（chgE 不入清单）与高波次有账不入名单（chgD/chgF）" \
+	"chgE" "chgD（" "chgF（"
+
+HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" "$RETRO" --db "$FM2" --days 7 --json >"$TMP/m6.json" 2>/dev/null
+if python3 - "$TMP/m6.json" <<'M6PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d.get('metrics') or d
+for k in ('m7.lifecycle_changes', 'm7.lifecycle_fb', 'm7.lifecycle_fb_open', 'm7.lifecycle_miss_signals'):
+    assert m.get(k) is not None, ('missing ' + k)
+assert m['m7.lifecycle_changes'] == 4, m['m7.lifecycle_changes']
+assert m['m7.lifecycle_fb'] == 3, m['m7.lifecycle_fb']
+assert m['m7.lifecycle_fb_open'] == 1, m['m7.lifecycle_fb_open']
+assert m['m7.lifecycle_miss_signals'] == 1, m['m7.lifecycle_miss_signals']
+M6PY
+then
+	echo "  ✓ M6 JSON m7.lifecycle_* 键值（4/3/1/1）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ M6 JSON lifecycle 键断言失败"
+	failn=$((failn + 1))
+fi
+
+HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" "$RETRO" --db "$FM2" --days 7 >"$TMP/m7a.txt" 2>&1
+HARNESS_RETRO_CHANGES_DIR="$MCH" HARNESS_RETRO_ARCHIVE_DIR="$MARCH" "$RETRO" --db "$FM2" --days 7 >"$TMP/m7b.txt" 2>&1
+if diff -q <(grep -v '^窗口' "$TMP/m7a.txt") <(grep -v '^窗口' "$TMP/m7b.txt") >/dev/null; then
+	echo "  ✓ M7 幂等（连跑两次除窗口时间戳外输出一致，全程零写入）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ M7 幂等断言失败（两次输出 diff 非空）"
+	failn=$((failn + 1))
+fi
+
+HARNESS_RETRO_CHANGES_DIR="$TMP/chg-empty" run_retro --db "$FM2" --days 7
+check 0 "M8 零反馈数据降级（空 changes 目录不静默省略）" \
+	"E 生命周期面" "有账 0 / 无账 0" "无反馈记录（窗口内无 human-feedback.md 条目）"
 
 # ================= 汇总 =================
 echo

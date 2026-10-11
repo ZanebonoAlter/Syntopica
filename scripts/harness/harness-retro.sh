@@ -328,6 +328,81 @@ ARCHPY
 fi
 ARCH_LIT="'$(printf '%s' "$ARCH_JSON" | sed "s/'/''/g")'"
 
+# E 生命周期面（add-retro-lifecycle-rollup）：change 清单 = 活跃（changes/ 非 archive 子项）+
+# 窗口内归档（ARCH_DIR 日期前缀 ≥ since，同 B' 锚点口径）；每目录解析 human-feedback.md
+# （词表/降级语义与 --lifecycle 模式 parse_feedback 同步：文件缺席=无记录、格式异常单列不炸段）。
+# HARNESS_RETRO_CHANGES_DIR / HARNESS_RETRO_ARCHIVE_DIR 供 smoke 注入 fixture。
+CHG_JSON="[]"
+CHG_DIR="${HARNESS_RETRO_CHANGES_DIR:-openspec/changes}"
+if [ -d "$CHG_DIR" ]; then
+	chg_tmp="$(python3 - "$CHG_DIR" "$ARCH_DIR" "$SINCE_DATE" <<'CHGPY'
+import json, os, re, sys
+root, arch_root, since = sys.argv[1], sys.argv[2], sys.argv[3]
+FB_STATUSES = ('待处理', '处理中', '已消化', '已转挂', '已放弃')
+
+def parse_feedback(change_dir):
+    # 与 --lifecycle 模式 parse_feedback 同词表同降级（design D3：两处口径不漂移）
+    if not change_dir:
+        return None
+    path = change_dir.rstrip('/') + '/human-feedback.md'
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding='utf-8') as fh:
+            content = fh.read()
+    except OSError:
+        return None
+    stat = {'total': 0, 'layers': {}, 'open': 0, 'bad': 0}
+    for blk in re.split(r'(?m)^(?=### FB-\d+)', content):
+        if not re.match(r'^### FB-\d+', blk):
+            continue
+        stat['total'] += 1
+        head = blk.split('\n', 1)[0]
+        hm = re.match(r'^### FB-\d+\s+\S+【(产品|流程)\|(frontend|backend|test-gap|fact-check|process)】', head)
+        sm = re.search(r'(?m)^- \*\*状态\*\*：\s*(.*)$', blk)
+        st_word = next((w for w in FB_STATUSES if sm and sm.group(1).strip().startswith(w)), None)
+        if not hm or st_word is None:
+            stat['bad'] += 1
+            continue
+        stat['layers'][hm.group(2)] = stat['layers'].get(hm.group(2), 0) + 1
+        if st_word in ('待处理', '处理中'):
+            stat['open'] += 1
+    if not stat['total']:
+        return None
+    return stat
+
+out = []
+
+def add(name, d, state):
+    out.append({'name': name, 'state': state, 'fb': parse_feedback(d)})
+
+try:
+    entries = sorted(os.listdir(root))
+except OSError:
+    entries = []
+for e in entries:
+    if e == 'archive' or not os.path.isdir(os.path.join(root, e)):
+        continue
+    add(e, os.path.join(root, e), 'active')
+
+try:
+    arch_entries = sorted(os.listdir(arch_root))
+except OSError:
+    arch_entries = []
+for e in arch_entries:
+    m = re.match(r'^(\d{4}-\d{2}-\d{2})-(.+)$', e)
+    if m and m.group(1) >= since:
+        add(m.group(2), os.path.join(arch_root, e), 'archived')
+
+print(json.dumps(out, ensure_ascii=False))
+CHGPY
+	)"
+	case "$chg_tmp" in
+	'['*']') CHG_JSON="$chg_tmp" ;;
+	esac
+fi
+CHG_LIT="'$(printf '%s' "$CHG_JSON" | sed "s/'/''/g")'"
+
 # 测试欠账巡检（test-debt-patrol）：test_debt 表可能不存在（老库/纯净库）或列结构变动——
 # 只读 SQL 引用缺表会让整段统计报错，故先用 pragma_table_info 探列，再决定用真表还是占位常量（降级不报错）。
 PATROL_DEBT_OK=0
@@ -1049,6 +1124,7 @@ inj_unk AS (SELECT COUNT(*) n FROM inj_raw -- 未识别通道显式计数（口�
 emap_flat AS (SELECT session_id, COALESCE(change,'') chg, je.value p
   FROM win, json_each(json_extract(payload,'$.paths')) je
   WHERE kind='edit.map' AND json_valid(payload)),
+chg_wave AS (SELECT chg, COUNT(DISTINCT session_id) n FROM emap_flat WHERE chg != '' GROUP BY 1), -- E 生命周期面（add-retro-lifecycle-rollup）：change 维度 session 波次
 emap_dom AS (SELECT DISTINCT e.chg, m.domain FROM emap_flat e JOIN dom_map m ON e.p LIKE (m.prefix || '%') OR e.p LIKE (m.prefix || '/%')),
 hit_chg AS (SELECT ed.chg, COUNT(DISTINCT ed.domain) edited,
     COUNT(DISTINCT CASE WHEN idm.domain IS NOT NULL THEN ed.domain END) hit
@@ -1260,6 +1336,13 @@ SELECT json_object(
         'new_in_window', (SELECT n FROM debt_new),
         'fixed_in_window', (SELECT n FROM debt_fix)
       )
+    ),
+    'lifecycle', json_object(
+      'changes', (SELECT json_group_array(json_object('name', j.name, 'state', j.state,
+          'fb', json(j.fb),
+          'waves', IFNULL((SELECT w.n FROM chg_wave w WHERE w.chg = j.name), 0)))
+        FROM (SELECT json_extract(je.value,'$.name') name, json_extract(je.value,'$.state') state,
+              json_extract(je.value,'$.fb') fb FROM json_each(${CHG_LIT}) je) j)
     )
   )
 );
@@ -1408,6 +1491,7 @@ metrics.update({
 
 # B' 每任务成本（task-cost-metrics）：分布 + 分桶 + 不可归因披露；旧库无 task_cost 段时全 None
 _tc = _e('task_cost') or {}
+_lc = _e('lifecycle.changes') or []
 _by_model = {it['model']: it.get('cost') for it in (_tc.get('by_model') or [])}
 if _tc.get('unmodel_cost') is not None:
     _by_model['(未分模型)'] = _tc.get('unmodel_cost')
@@ -1423,6 +1507,10 @@ metrics.update({
     'm7.task_active_unarchived': _tc.get('active_unarchived'),
     'm7.task_abandoned': _tc.get('abandoned'),
     'm7.task_abandon_conflict': _tc.get('abandon_conflicts'),
+'m7.lifecycle_changes': len(_lc),
+'m7.lifecycle_fb': sum(1 for c in _lc if c.get('fb')),
+'m7.lifecycle_fb_open': sum((c.get('fb') or {}).get('open') or 0 for c in _lc),
+'m7.lifecycle_miss_signals': sum(1 for c in _lc if (c.get('waves') or 0) >= 3 and not c.get('fb')),
 })
 
 # ⑧/D 组：测试欠账巡检（test-debt-patrol；patrol.check 流水 + test_debt 台账，缺表/零事件时 None）
@@ -1767,6 +1855,35 @@ else:
                       pd.get('new_in_window') or 0, pd.get('fixed_in_window') or 0))
     else:
         out.append('     台账欠账          : 无巡检数据（test_debt 表不存在或未初始化，跳过）')
+
+    # E 生命周期面（add-retro-lifecycle-rollup）：human-feedback 覆盖 / 归因聚合 / 漏采信号
+    lc = _e('lifecycle.changes') or []
+    out.append('   E 生命周期面（human-feedback 覆盖 / 归因聚合 / 漏采信号）')
+    with_fb = [c for c in lc if c.get('fb')]
+    no_fb_n = len(lc) - len(with_fb)
+    open_n = sum((c.get('fb') or {}).get('open') or 0 for c in lc)
+    bad_n = sum((c.get('fb') or {}).get('bad') or 0 for c in lc)
+    out.append('     反馈覆盖          : 有账 %s / 无账 %s（窗口 change %s 个：活跃 %s + 窗口内归档 %s）；未处置 %s 条'
+               % (len(with_fb), no_fb_n, len(lc),
+                  sum(1 for c in lc if c.get('state') == 'active'),
+                  sum(1 for c in lc if c.get('state') == 'archived'), open_n))
+    layers = {}
+    for c in with_fb:
+        for k, v in ((c.get('fb') or {}).get('layers') or {}).items():
+            layers[k] = layers.get(k, 0) + v
+    if layers:
+        out.append('     归因分布聚合      : %s' % ' / '.join('%s×%s' % (k, v) for k, v in sorted(layers.items(), key=lambda kv: -kv[1])))
+    else:
+        out.append('     归因分布聚合      : 无反馈记录（窗口内无 human-feedback.md 条目）')
+    miss = [c for c in lc if (c.get('waves') or 0) >= 3 and not c.get('fb')]
+    if miss:
+        out.append('     漏采信号          : %s 个 change 波次 ≥3 session 且零反馈（多轮返工没人建账）' % len(miss))
+        for c in miss[:8]:
+            out.append('       - %s（%s，%s session 波次）' % (pad((c.get('name') or '')[:48], 50), c.get('state'), c.get('waves')))
+    else:
+        out.append('     漏采信号          : 无（高波次 change 均有反馈账或无 ≥3 波次 change）')
+    if bad_n:
+        out.append('     格式异常          : %s 条（词表外/缺状态行，单列披露不炸段）' % bad_n)
     out.append('')
 
 if baseline_diff is not None:
