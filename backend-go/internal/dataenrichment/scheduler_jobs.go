@@ -10,6 +10,14 @@ import (
 	"syntopica-backend/internal/platform/scheduler"
 )
 
+// Granularity re-exports for cross-domain consumers（decouple-backend-domains
+// 边界规则：只许 import 本 root 门面包，模型引用经 root re-export）。当前消费
+// 方：admin/scheduler 日报尾部的 lifeline 月/年缺口自愈（daily-report-lifeline-heal）。
+const (
+	GranularityMonth = string(repository.GranularityMonth)
+	GranularityYear  = string(repository.GranularityYear)
+)
+
 // WeeklyLifelineJob creates a scheduler JobFunc that:
 // 1. Runs HealMissing for week granularity (fill missing weeks).
 // 2. Refreshes all active topics' week context for the current week.

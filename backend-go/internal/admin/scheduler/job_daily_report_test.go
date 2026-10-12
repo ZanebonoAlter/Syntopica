@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	adminrepo "syntopica-backend/internal/admin/repository"
+	dataenrichment "syntopica-backend/internal/dataenrichment"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/articlerefs"
 	"syntopica-backend/internal/platform/database"
@@ -726,4 +727,103 @@ func TestManualDailyReportTriggerFiresBoardHealthCheckup(t *testing.T) {
 
 	require.Len(t, stub.snapshot(), 1, "manual path generated the report")
 	require.Equal(t, 1, checkup.count(), "manual path fires the checkup tail step")
+}
+
+// ── lifeline heal 尾步（daily-report-lifeline-heal 2.2/2.3）──
+
+type healCapture struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *healCapture) stub(t *testing.T) {
+	previous := launchLifelineHealAsync
+	launchLifelineHealAsync = func() { c.mu.Lock(); c.calls++; c.mu.Unlock() }
+	t.Cleanup(func() { launchLifelineHealAsync = previous })
+}
+
+func (c *healCapture) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// spec「week SHALL NOT 启用每日补齐」守护：粒度集合恰为 month+year，
+// 防止未来误加 week（或误删 year）而全部测试仍绿（review R-2）。
+func TestLifelineHealGranularitiesExcludeWeek(t *testing.T) {
+	require.Equal(t, []string{
+		dataenrichment.GranularityMonth,
+		dataenrichment.GranularityYear,
+	}, lifelineHealGranularities)
+}
+
+// Scenario「日报成功后补齐月报缺口」：成功路径异步启动 heal 轮恰好一次，
+// JobResult.Data 带 lifeline_heal.triggered 痕迹字段（异步启动即记，不等结果）。
+func TestDailyReportJobTriggersLifelineHealOnSuccess(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11, 22)
+	stub := stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+	heal := &healCapture{}
+	heal.stub(t)
+
+	result, err := DailyReportJob(today)(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, stub.snapshot(), 2)
+	require.Equal(t, 1, heal.count(), "heal tail step launched exactly once on success")
+	require.Equal(t, map[string]interface{}{"triggered": true}, result.Data["lifeline_heal"],
+		"trigger trace recorded in JobResult.Data")
+}
+
+// 主流程失败（failedCount>0）不触发 heal：失败轮无法证明模型通路健康。
+func TestDailyReportJobSkipsLifelineHealOnFailure(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11)
+	stubGenerationBehavior(t, map[uint]string{11: "err"})
+	cap := &notifyCapture{}
+	cap.stub(t)
+	heal := &healCapture{}
+	heal.stub(t)
+
+	result, err := DailyReportJob(today)(context.Background())
+	require.NoError(t, err, "board failure is logged, not a job error")
+	require.Zero(t, heal.count(), "no heal after a failed run")
+	require.NotContains(t, result.Data, "lifeline_heal", "no heal trace without a trigger")
+	require.Equal(t, 1, cap.failCalls(), "failure summary fired (precondition)")
+}
+
+// heal goroutine panic 被 launcher 边界 recover：日报 job 返回值不受污染；
+// 若 recover 缺失，panic 会崩掉整个测试进程，本用例必红。
+func TestDailyReportJobLifelineHealPanicDoesNotPolluteResult(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11)
+	stub := stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	panicked := make(chan struct{})
+	previous := runLifelineHealRound
+	runLifelineHealRound = func() {
+		defer close(panicked)
+		panic("heal blew up")
+	}
+	t.Cleanup(func() { runLifelineHealRound = previous })
+
+	result, err := DailyReportJob(today)(context.Background())
+	require.NoError(t, err, "heal launch is fire-and-forget")
+	require.NotNil(t, result)
+	require.Len(t, stub.snapshot(), 1)
+	require.Equal(t, 1, cap.successCalls())
+
+	select {
+	case <-panicked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("heal goroutine did not run")
+	}
+	time.Sleep(50 * time.Millisecond) // 给 launcher 边界 recover 路径留出执行窗口
 }

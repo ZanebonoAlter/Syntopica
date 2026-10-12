@@ -66,10 +66,12 @@ flowchart TB
 | week | lifeline_weekly | 每周一 03:00 | `NextWeeklyLifelineTime` |
 | month | lifeline_monthly | 每月 1 号 03:30 | `NextMonthlyLifelineTime` |
 | year | lifeline_yearly | 每年 1 月 1 号 04:00 | `NextYearlyLifelineTime` |
+| month+year（每日补齐轮） | daily_report 尾部异步 tail step | 每日日报成功生成后 | `HealMissingTolerant`（挂载 `admin/scheduler` `runLifelineHealRound`，month/year 各一轮） |
 
 - **定时**：按 wall-clock 触发各自 granularity 的汇总刷新。
 - **检查自愈**：每次 Job 执行时扫描所有活跃 topic 的 `as_of_date` 滞后缺口，从 `as_of_date` 次周期起逐块补齐——**补的是遗漏的周期，不是覆盖当前周期**。`as_of_date` 顺序推进。
 - **手动**：CRUD 界面可手动重生成任意 granularity。
+- **每日补齐**（daily-report-lifeline-heal）：month/year 粒度的检查自愈在每日日报成功生成后异步补跑一轮（日报成功即隐含模型通路健康）——月初/年初定时 job 被不健康窗口 skip 的缺口当日即补，断供窗口从一个月/一年缩到一天。逐 (topic, period) 容错（单点失败计数继续不中断）、只补缺行不重写已有、归档行齐全时零 LLM 调用（稳态零成本）、当日没补上次日日报成功后再试（顺延不丢）；goroutine 边界 recover，不阻塞/不延迟日报 job 完成状态。week 粒度不参与每日补齐（weekly job 维持禁用）。
 
 #### 汇总算法
 
@@ -305,7 +307,7 @@ flowchart TB
 ## 代码入口
 
 - **后端编排**：`backend-go/internal/dataenrichment/`（`handler/` 14 条 REST API + `enrichment_enabled` 门槛、`service/orchestrator.go` 循环B 三角色编排、`service/lifeline_context.go` 循环A 汇总 + 自愈、`service/review_judge.go` review 对比、`service/debate_service.go` + `fingenius_client.go` + `debate_distill.go` 个股辩论、`service/tool_registry.go` 数据源工具、`service/airouter_client.go`、`repository/` 三表持久化）。
-- **后端调度**：`backend-go/internal/dataenrichment/scheduler_jobs.go`（lifeline_weekly/monthly/yearly 注册）+ `scheduler_next_run.go`（`NextWeeklyLifelineTime` 等）。
+- **后端调度**：`backend-go/internal/dataenrichment/scheduler_jobs.go`（lifeline_weekly/monthly/yearly 注册 + `GranularityMonth/Year` root re-export）+ `scheduler_next_run.go`（`NextWeeklyLifelineTime` 等）；每日补齐新挂载点：`service/lifeline_context.go` `HealMissingTolerant`（容错版缺口扫描，逐 (topic, period) 失败计数继续）由 `backend-go/internal/admin/scheduler/job_daily_report.go` `runLifelineHealRound`/`launchLifelineHealAsync` 在日报成功尾部异步调用（daily-report-lifeline-heal）。
 - **后端熔接**：`backend-go/internal/app/runtime.go`（注册 scheduler + handler + 15s check interval）。
 - **后端版块级分析**（board-level-deep-analysis）：`service/enrich_board.go`（简报编排入口 `EnrichBoard`）、`service/board_brief.go`（简报 prompt/解析/机械降级）、`service/board_investigation.go`（方法选择+假设生成）、`service/board_investigation_research.go`（共享研究循环+护栏）、`service/board_investigation_synthesis.go`（调查编排入口 `InvestigateBoardQuestion`+综合）、`service/board_brief_review.go` / `board_investigation_review.go`（按 kind 分链 review）、`service/situation_cards.go`（态势卡）、`service/freshness_gate.go`（补全门）、`service/analysis_methods.go` + `method_sanitizer.go`（方法卡组装/固定修辞清洗）、`service/board_interpret.go` + `board_analysis.go` + `evidence.go`（v1 论文链，legacy-only 无调用方）；handler 侧 `handler/board_enrichment_handler.go`（简报/调查 trigger、kind 过滤、详情）、`handler/board_qa_handler.go`（三 kind 板块 QA）、`handler/analysis_method_handler.go`（方法卡 CRUD）、`handler/analysis_runner.go`（job_id/job_kind 同板块互斥轮询）、`handler/reference_role_handler.go`（旧角色只读 + 写 410）。
 
@@ -403,5 +405,6 @@ flowchart TB
 | 2026-09-22 | board-signal-reports | 板块信号解读报告：两阶段人工流程（发现只存候选→逐条点击深入研究，40 轮/40 执行预算）+ `board_signal_discovery`/`board_signal_candidate` 两表与 result kind=signal_report（nullable granularity/period/source_signal_id + CHECK/复合 FK/部分索引，迁移 `20260922_0001`）+ 研究 loop 四源白名单（EIA weeks 1~12/JODI years 1~5 显式历史窗口）与受限计算（difference/percent_change/mean，模型不供数）+ 无评审四段报告（代码生成 appendix、`[[data]]/[[calc]]` 引用可核查、<3000 字符）+ job phase/outcome/error_stage 扩展与候选派生状态（running 位不持久化）+ 前端信号工作台（旧简报/调查/legacy 视图卸载保留、新闻背景保留） | [archive/2026-09-26-board-signal-reports](../../../openspec/changes/archive/2026-09-26-board-signal-reports) |
 | 2026-10-02 | add-fast-frequency-datasources | 研究数据源扩三快频源：yahoo_chart（日度 OHLC，symbol 封闭枚举 15 个，非官方接口）+ fred_series（宏观/价格序列，格式即边界，免费 key 同 Comtrade 动态链）+ gdelt_doc（新闻热度时间线，非事实核查）；研究白名单四源→七源、拦截文案动态生成；as-of 声明适配日度期值（YYYY-MM-DD 日粒度精确匹配、跨粒度缩写拒绝）；设置页七源卡 + FRED key 管理 | [archive 待归档](../../../openspec/changes/add-fast-frequency-datasources) |
 | 2026-09-26 | daily-report-margin-notes | 约束 10 补 SearXNG 先例：页边注问答联网后端为本地 SearXNG 原始结果聚合（`internal/platform/searxng`，`GET /search?format=json` 只取 results[] title/url/content，超时 8s），同样只用原始结果、无 AI 总结模式、失败静默降级；配置 `searxng_config`（endpoint+enabled）对齐 bocha_config 语义，`WebSearcher` 未来薄适配可选 | [archive/2026-09-26-daily-report-margin-notes](../../../openspec/changes/archive/2026-09-26-daily-report-margin-notes) |
+| 2026-10-12 | daily-report-lifeline-heal | 循环 A 触发面增每日补齐：日报成功后异步检查自愈 month/year 归档缺口（有 section 素材但无归档行的 (topic, period)，`HealMissingTolerant`），单话题失败不中断、当日未补完顺延次日、归档行齐全零 LLM 调用、不重写已有行；调度挂载点详见 `flow/scheduler.md` 同日溯源行 | [archive/2026-10-12-daily-report-lifeline-heal](../../../openspec/changes/archive/2026-10-12-daily-report-lifeline-heal) |
 
 > 资料来源：架构设计 `openspec/changes/data-enrichment-orchestration/design.md`（§0 两循环 + §4.2b 个股辩论 + §11 六决策）；概要设计 `openspec/changes/data-enrichment-orchestration/overview.md`（mermaid 流程图 + 6 Operation 速查）。

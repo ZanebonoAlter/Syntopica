@@ -8,6 +8,7 @@ import (
 	"time"
 
 	repository "syntopica-backend/internal/admin/repository"
+	dataenrichment "syntopica-backend/internal/dataenrichment"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/articlerefs"
@@ -64,6 +65,57 @@ func runBoardHealthCheckupTailStep(parent context.Context) {
 	}()
 	runPostReportBoardHealthCheckup(parent)
 }
+
+// ── Lifeline heal tail step（daily-report-lifeline-heal 决策①③⑤）──
+//
+// 日报成功生成本身就证明 LLM 通路健康，是月/年归档缺口自愈的天然挂载点：
+// 断供窗口从「一个月/一年」（定时 job 被不健康窗口 skip 即丢整期）缩到「一天」。
+// 失败语义与 backfillMissingReports 对齐：顺延不丢（当日没补上的缺口次日
+// 日报成功后再试）、不阻塞日报 job、单点失败不扩散（HealMissingTolerant 逐
+// (topic, period) 容错）。稳态零成本：归档行齐全时扫描零缺口零 LLM 调用。
+var (
+	// lifelineHealGranularities 每轮扫描的粒度：month+year 各一轮。week 维持
+	// 禁用不动（Non-Goal），不进每日补齐。
+	lifelineHealGranularities = []string{
+		dataenrichment.GranularityMonth,
+		dataenrichment.GranularityYear,
+	}
+	// runLifelineHealRound 同步跑一轮 month+year 缺口扫描补齐。无全局超时上限
+	// （回填量不定，首轮回填可达 10-30 分钟；单次 LLM 超时由 airouter 自管），
+	// 进程优雅停机中断回填靠「只补缺行」幂等 + 次日重试覆盖（设计决策①④）。
+	// 包级 seam 供测试注入 fake（不接真实 dataenrichment 单例）。
+	runLifelineHealRound = func() {
+		svc := dataenrichment.GetLifelineService()
+		lister := dataenrichment.GetTopicLister()
+		if svc == nil || lister == nil {
+			logging.Warnf("lifeline heal: dataenrichment service/lister not wired; skipping this round")
+			return
+		}
+		now := time.Now()
+		for _, gran := range lifelineHealGranularities {
+			started := time.Now()
+			healed, failed, err := svc.HealMissingTolerant(context.Background(), gran, now, lister)
+			if err != nil {
+				logging.Errorf("lifeline heal: %s sweep aborted after %s: %v", gran, time.Since(started).Round(time.Second), err)
+				continue
+			}
+			logging.Infof("lifeline heal: %s sweep finished in %s (healed=%d failed=%d)", gran, time.Since(started).Round(time.Second), healed, failed)
+		}
+	}
+	// launchLifelineHealAsync 把 heal 轮放进独立 goroutine：recover 在
+	// goroutine 边界兑底，任何 panic 都不影响日报 job 返回值；异步启动即返回，
+	// 不等待结果（设计决策①⑤）。
+	launchLifelineHealAsync = func() {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logging.Errorf("lifeline heal: panicked (daily-report result untouched): %v", r)
+				}
+			}()
+			runLifelineHealRound()
+		}()
+	}
+)
 
 // adjudicateDailyReportTerminal is the single adjudication point for the
 // scheduled daily-report terminal-state notification (白盒 B):
@@ -310,6 +362,7 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 		data, _ := json.Marshal(msg)
 		ws.GetHub().BroadcastRaw(data)
 
+		healTriggered := false
 		// Terminal-state notification (add-notification-center, 白盒 B): the
 		// scheduled run is the 定时日报 users miss overnight — notify here.
 		// The backfill sweep below is deliberately silent (no per-day spam).
@@ -326,6 +379,10 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 			// so the manual path triggers the checkup with no separate wiring.
 			if failedCount == 0 {
 				runBoardHealthCheckupTailStep(baseCtx)
+				// Lifeline heal tail step（daily-report-lifeline-heal 决策①）：
+				// 同步 tail steps 之后异步启动，日报成功=模型通路健康的隐含判断。
+				launchLifelineHealAsync()
+				healTriggered = true
 			}
 		}
 
@@ -350,6 +407,12 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 		}
 		// Set last so the scheduled merge above cannot be overwritten by it.
 		resultData["backfilled_count"] = backfilled
+
+		// 痕迹字段（决策⑤）：异步启动即记 triggered，不等 heal 结果；调度
+		// scheduler_tasks 的 last_execution_result 由此可查当日是否触发过补齐轮。
+		if healTriggered {
+			resultData["lifeline_heal"] = map[string]interface{}{"triggered": true}
+		}
 
 		// Article references dangle when a delete path runs against an already
 		// written report, or when a path nobody wired runs at all. Read-only
