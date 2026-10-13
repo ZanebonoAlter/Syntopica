@@ -20,7 +20,7 @@
 
 ## 4. 文档
 
-<!-- doc-impact: semantic-board, daily-report -->
+<!-- doc-impact: flow -->
 
 - [x] 4.1 `docs/reference/flow/semantic-board.md` 业务约束节：方向校验描述补「绝对+相对双门、margin=0.15 可配、composite_hit 豁免、direct_hit 同样校验」，grep 校验新表述存在
 - [x] 4.2 `docs/reference/flow/daily-report.md` 业务约束节：去重描述补「三级 tiebreak（文章数>版块相关性>ID，embedding 缺失回退）」，grep 校验新表述存在
@@ -31,3 +31,29 @@
 - [x] 5.2 `cd backend-go && go vet ./internal/tagmanagement/... ./internal/topicgraph/...`，期望无输出
 - [x] 5.3 `cd backend-go && go build ./...`，期望编译成功
 - [x] 5.4 `bash scripts/harness/change-scope.sh` 机械判定影响包与执行命令一致，期望命中 tagmanagement/board 与 topicgraph/service
+
+### Scenario → 测试文件映射
+
+| Scenario | 测试文件 |
+| --- | --- |
+| hit_rate match passes direction check | backend-go/internal/tagmanagement/service/board/semantic_board_matching_unit_test.go |
+| hit_rate match fails direction check | backend-go/internal/tagmanagement/service/board/semantic_board_matching_unit_test.go |
+| weighted match fails direction check | backend-go/internal/tagmanagement/service/board/semantic_board_matching_unit_test.go |
+| tag or board embedding unavailable | backend-go/internal/tagmanagement/service/board/semantic_board_matching_unit_test.go |
+| direct_hit match | backend-go/internal/tagmanagement/service/board/semantic_board_matching_test.go |
+| relative gate catches multi-mount cross-domain leak | backend-go/internal/tagmanagement/service/board/semantic_board_matching_unit_test.go |
+| legal dual-mount within margin survives | backend-go/internal/tagmanagement/service/board/semantic_board_matching_unit_test.go |
+| single-board mount unaffected by relative gate | backend-go/internal/tagmanagement/service/board/semantic_board_matching_unit_test.go |
+| composite_hit exempt | backend-go/internal/tagmanagement/service/board/semantic_board_matching_unit_test.go |
+| custom margin | backend-go/internal/tagmanagement/service/board/semantic_board_matching_config_test.go |
+| margin zero disables relative gate | backend-go/internal/tagmanagement/service/board/semantic_board_matching_config_test.go backend-go/internal/tagmanagement/service/board/semantic_board_matching_unit_test.go |
+| no margin row | backend-go/internal/tagmanagement/service/board/semantic_board_matching_config_test.go |
+| 文章集合完全相同的标签去重 | backend-go/internal/topicgraph/service/daily_report_dedup_test.go |
+| 单篇文章标签去重 | backend-go/internal/topicgraph/service/daily_report_dedup_test.go |
+| 同文章双事件标签保留贴近版块者 | backend-go/internal/topicgraph/service/daily_report_dedup_test.go |
+| embedding 缺失回退 ID 顺序 | backend-go/internal/topicgraph/service/daily_report_dedup_test.go |
+| 去重不影响原始数据 | backend-go/internal/topicgraph/service/daily_report_dedup_test.go |
+
+## 6. Review
+
+- [x] 6.1 派子线程聚焦 review（审查制品 + diff），意见按 High/Medium/Low 处置后 review.md 建账

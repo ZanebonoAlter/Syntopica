@@ -50,3 +50,5 @@
 - [x] 7.5 `cd front && pnpm test:unit settings SignalReportView --maxWorkers=2` ——期望：全绿
 - [x] 7.6 `curl -s localhost:5100/api/datasources | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('data',d)), [x['code'] for x in d.get('data',d)])"` ——期望：7 与七源 code 全列（起后端后）
 - [x] 7.7 `openspec validate add-fast-frequency-datasources` ——期望：通过
+
+> 注（2026-10-13，fix-digest-tag-leak 归档审查发现）：`backend-go/internal/platform/aisettings/config_store.go` 的 FRED hunk（`fredConfigKey` 常量 + `LoadFredConfig`/`SaveFredConfig`，+12 行）已随 fix-digest-tag-leak 的实现提交 f7793374 先行落地（当时误混入该 change 辖区）。本 change 后续收口/归档时该文件增量以工作树现状为准，避免重复实现或提交冲突。

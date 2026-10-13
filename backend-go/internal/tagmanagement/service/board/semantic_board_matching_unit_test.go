@@ -387,6 +387,29 @@ func TestEvaluateSemanticBoardMatches_DirectionCheck(t *testing.T) {
 		require.True(t, results[0].DirectionMismatch)
 	})
 
+	// review R-2（fix-digest-tag-leak）：hit_rate 通过向直接断言——方向门与 matchReason
+	// 无关（composite_hit 豁免除外），但 spec Scenario「hit_rate match passes direction
+	// check」值得有真通道落点，避免仅靠等价覆盖推理。
+	t.Run("hit_rate match with aligned embeddings passes", func(t *testing.T) {
+		hrConfig := config
+		hrConfig.DirectHitRate = 0.01
+		tagAuxMulti := []models.SemanticLabel{
+			{ID: 1, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.9, 0.1, 0.0}))},
+			{ID: 2, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.88, 0.12, 0.0}))},
+			{ID: 3, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.86, 0.14, 0.0}))},
+		}
+		boardAuxMulti := []BoardAuxiliaryLabel{
+			{BoardID: 10, AuxiliaryLabelID: 100, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.9, 0.1, 0.0}))},
+			{BoardID: 10, AuxiliaryLabelID: 101, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.88, 0.12, 0.0}))},
+		}
+		tagEmb := []float64{0.9, 0.1, 0.0}
+		boardEmbs := map[uint][]float64{10: {0.9, 0.1, 0.0}}
+		results := evaluateSemanticBoardMatches(tagAuxMulti, boardAuxMulti, nil, nil, hrConfig, tagEmb, boardEmbs)
+		require.Len(t, results, 1)
+		require.Equal(t, "hit_rate", results[0].MatchReason)
+		require.False(t, results[0].DirectionMismatch)
+	})
+
 	t.Run("weighted match with orthogonal embeddings", func(t *testing.T) {
 		wtConfig := config
 		wtConfig.DirectHitRate = 1.0
