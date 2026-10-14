@@ -34,7 +34,7 @@
 ### D2: 查询预处理在服务端 Go 实现四层管线
 
 - L0 空格拆分（unicode 空白，含全角）；L1 词典= `topic_tags.label` 中 3~8 字词（启动加载 + 标签写入时失效重载的内存缓存），正向最大匹配；L2 整串 LIKE；L3 `similarity()` ≥ 0.10（`search_trigram_threshold` 可配）
-- **实现期修订（2026-10-14 真库实测）**：① L3 仅作用于 `title` 列——`description` 列 GIN recheck 需 detoast 数万候选行，单层 5.9~8.5s 而三词实测独占召回 0 行，砍掉后热查询 ~400ms 达 P50<1s（L0-L2 LIKE 仍覆盖 desc，走同一对 GIN 索引无性能问题）；② 词典缓存失效改 stale-while-revalidate——16.5K 标签 DISTINCT 加载 ~2s，打标活跃期同步重载会把失效后首查拖到 2s+，改为旧词立即返回 + 后台单飞重载（`EnsureFresh` 同步版供测试）
+- **实现期修订（2026-10-14 真库实测）**：① L3 仅作用于 `title` 列——`description` 列 GIN recheck 需 detoast 数万候选行，单层 5.9~8.5s 而三词实测独占召回 0 行，砍掉后热查询 ~400ms 达 P50<1s（L0-L2 LIKE 仍覆盖 desc，走同一对 GIN 索引无性能问题）；② 词典缓存失效改 stale-while-revalidate——16.5K 标签 DISTINCT 加载 ~2s，打标活跃期同步重载会把失效后首查拖到 2s+，改为旧词立即返回 + 后台单飞重载（`EnsureFresh` 同步版供测试）；③ HandleSearch 中 LLM 扩展路与语义路同时发车（原串行：语义 join 后才跑扩词）——慢 embedding（3s 封顶）+ 慢 chat（10s 封顶）不再叠加，端到端延迟≈两路最大值而非之和，实测冷查询 11.2s→3.0s、全路热查询 ~600ms；失败静默降级语义不变，扩展路超时上限（review R-1）不变
 - LIKE 通配符（% _ \\）统一转义（复用 discovery 域 `escapeLikePattern` 模式）；查询超 200 字符截断
 - 层间去重合并：同文章多路命中时 hit_reasons 聚合，关键词分数取最高层（整串 1.0 / 词典词 0.85 / trigram 原始分）
 

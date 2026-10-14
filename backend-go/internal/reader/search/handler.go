@@ -153,6 +153,12 @@ type semanticResult struct {
 	err  error
 }
 
+// expandResult 扩展路 goroutine 的回传载体（与语义路并行发车）。
+type expandResult struct {
+	run *expandRun
+	err error
+}
+
 // HandleSearch is the GET /api/search gin handler（spec「混合搜索聚合端点」）。
 // 参数：q（必填，空/纯空白→400）、archived（include|active-only，缺省
 // include，非法回退默认不报错）、expand（off|on，缺省 off，非法回退 off）、
@@ -193,6 +199,18 @@ func (s *Service) HandleSearch(c *gin.Context) {
 		semCh <- semanticResult{hits: hits, tags: tags, err: err}
 	}()
 
+	// LLM 扩展路与语义路同时发车（原串行：语义 join 后才跑扩词，慢 LLM
+	// 时总延迟≈两者之和；并行后≈两者最大值——慢 embedding + 慢 chat
+	// 各自封顶 3s/10s，不再叠加）。失败静默降级语义不变。
+	var expandCh chan expandResult
+	if expandOn {
+		expandCh = make(chan expandResult, 1)
+		go func() {
+			run, err := s.runExpand(ctx, pq, archived)
+			expandCh <- expandResult{run: run, err: err}
+		}()
+	}
+
 	kwHits, err := s.repo.SearchKeyword(ctx, pq, archived)
 	if err != nil {
 		// 关键词路径 SQL 硬错误是真实故障，如实 500（区别于增强层降级）
@@ -210,15 +228,15 @@ func (s *Service) HandleSearch(c *gin.Context) {
 	var expandWords []string
 	var expandEntries []RankEntry
 	expandRows := map[uint]ArticleSearchRow{}
-	if expandOn {
-		run, err := s.runExpand(ctx, pq, archived)
-		if err != nil {
-			logging.Warnf("search: expand path failed, degraded: %v", err)
+	if expandCh != nil {
+		exp := <-expandCh
+		if exp.err != nil {
+			logging.Warnf("search: expand path failed, degraded: %v", exp.err)
 			expandWords = []string{}
 		} else {
-			expandWords = run.words
-			expandEntries = run.entries
-			for id, row := range run.rows {
+			expandWords = exp.run.words
+			expandEntries = exp.run.entries
+			for id, row := range exp.run.rows {
 				expandRows[id] = row
 			}
 		}
