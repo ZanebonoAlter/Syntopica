@@ -1,9 +1,25 @@
-# add-article-search UI 验收报告（任务 3.6 主链路 + 4.2 双视口）
+# add-article-search UI 验收报告（任务 3.6 主链路 + 4.2 双视口 + 6.6 双主题）
 
 - 验收时间：2026-10-14（agent-browser headless，Chromium，静态托管 http://localhost:5100）
 - 断言方式：机械 DOM 断言优先（eval 查询选择器/class/文本），截图为人审证据
-- 视口：主链路 1440×900；4.2 双档 1440×900 / 1920×1080
-- 断言工具：agent-browser session `e2e-search-6d5795ec8cb0`
+- 视口：主链路 1440×900；4.2 双档 1440×900 / 1920×1080；6.6 双主题 editorial/dark
+- 断言工具：agent-browser session `e2e-search-6d5795ec8cb0`（3.6/4.2）、`theme-walk-6d5795ec8cb0`（6.6）
+
+## 零、验收判定条目汇总（归档对账用）
+
+| 条目 | 判定 | 依据 |
+| --- | --- | --- |
+| A1 主链路：侧边栏入口→/search | **pass** | E2E 步骤 1a/1b：DOM 顺序断言「文章搜索」在「发现订阅源」后，URL 变 /search，证据 e2e-1-sidebar-entry-to-search.png |
+| A2 主链路：搜索结果+命中 chip+归档角标 | **pass** | E2E 步骤 2a/2b/2c：12 卡全 keyword chip + 已归档角标，证据 e2e-2-search-results.png |
+| A3 主链路：点卡片开预览+命中词高亮 | **pass** | E2E 步骤 3a/3b：AppDialog 可见且 URL 不变，mark.apm-hit ×3，证据 e2e-3-preview-modal-highlight.png |
+| A4 主链路：阅读全文跳转（缺陷 D1 修复后复验） | **pass** | E2E 步骤 4 复验：preview-read-full → /?article=3170 进阅读路径，证据 e2e-4-readfull-fixed.png；原 fail 详录四节 D1，残留子发现（back 查询不保留）不属 spec Scenario |
+| A5 主链路：Esc 关闭返回原位 | **pass** | E2E 步骤 5：双查询变体输入保留 + scrollTop 精确恢复，证据 e2e-5-esc-restore.png |
+| A6 主链路：仅活跃过滤+空态扩展引导+降级提示条 | **pass** | E2E 步骤 6a/6b/附：active-only 重查 12→0、enable-expand-retry 按钮存在、语义降级提示条展示，证据 e2e-6-filter-active-only.png |
+| A7 双视口 1440×900：contained ≤1120 居中、无横向溢出 | **pass** | offsetWidth=1120 left/right=160 差 0px；scrollWidth=1440=clientWidth，证据 viewport-1440.png |
+| A8 双视口 1920×1080：同上 | **pass** | offsetWidth=1120 left/right=400 差 0px；scrollWidth=1920=clientWidth，证据 viewport-1920.png |
+| A9 双主题 editorial：/search 无未适配区块 | **pass** | elementFromPoint 四角实际绘制均为主题色（topbar 米白/页面暖白）；20 chips+20 badges token 色；无未适配实底块，证据 theme-editorial-search.png |
+| A10 双主题 dark：/search 无未适配区块 | **pass** | 实际绘制 search-page=rgb(8,12,18)、topbar=rgba(17,27,38,0.98)；文本白系 token（card fg 白 0.9、badge 白 0.35）；白底命中均为 ≤6% 半透明覆盖层非实底块；chip teal 系 --color-info 语义色设计上不随主题（dark 段显式 --color-info: var(--raw-info)），证据 theme-dark-search.png |
+| A11 双主题命中 chip 三型配色 token 化 | **pass** | ArticleCard.css 三型全走 --color-info/success/warning token；本环境 embedding 不可用仅 keyword chip 实渲染，semantic/expand 由组件测试断言（ArticleCardView.test.ts）与环境限制说明 |
 
 ## 一、任务 3.6 主链路逐步断言
 

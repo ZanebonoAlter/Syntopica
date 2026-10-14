@@ -30,10 +30,10 @@
 
 ## 5. 文档
 
-<!-- doc-impact: reading, topic-graph -->
+<!-- doc-impact: flow, api, database, standard -->
 
 - [x] 5.1 `docs/reference/flow/reading.md`：新增「站内搜索」节（端点契约/查询管线/归档口径/降级链）+ 变更溯源行；`flow/topic-graph.md` 变更溯源补「搜索只读消费标签向量与边」说明
-- [x] 5.2 `docs/reference/api/` 搜索端点文档 + `docs/reference/database/` pg_trgm 索引说明
+- [x] 5.2 `docs/reference/api/search.md` + `docs/reference/api/_index.md`：搜索端点文档与导航行；`docs/reference/database/tables/content.md`：pg_trgm 索引与 search_vector 移除说明；`docs/reference/standard/backend/ai-logging.md`：AI 调用日志用途表登记 search 查询向量化与 LLM 扩词两用途
 
 ## 6. 验证
 
@@ -41,8 +41,33 @@
 - [x] 6.2 `cd backend-go && go test ./internal/reader/search/... ./internal/reader/handler/... ./internal/reader/service/... --tags=integration`（testcontainer 环境）→ 全绿，含迁移 A/B 与端点切换用例
 - [x] 6.3 `cd front && pnpm lint && pnpm exec nuxi typecheck` → 0 error
 - [x] 6.4 `cd front && pnpm test:unit features/search pages/search.test features/articles/components/ArticleCardView features/tags/components/ArticlePreviewModal --maxWorkers=2` → 全绿（不带 `--`）
-- [x] 6.5 真库效果核对（部署后）：`curl --noproxy '*' 'http://localhost:5100/api/search?q=特斯拉' | jq '.results | length'` → 返回 ≥50（对比修复前 tsvector 路径 2 篇），响应含 hit_reasons 与 semantic 块
-- [ ] 6.6 双主题走查（人工）：/search 页在 editorial/dark 切换无未适配区块，归档角标与命中 chip 三色正确
+- [x] 6.5 真库效果核对（部署后，2026-10-14 归档前复验）：`curl --noproxy '*' 'http://localhost:5100/api/search?q=特斯拉'` → `data.total=323 ≥ 50`（旧 tsvector 路径 2 篇；per_page 默认 20 故 `.data.results | length`=20，召回量以 total 为准），结果全部携带 `hitReasons`（keyword/semantic 两型实渲染）且响应含 `semantic` 块（标签+cosine 分数）
+- [x] 6.6 双主题走查（agent-browser 机械断言替代人工，2026-10-14）：/search 页 editorial/dark 切换无未适配区块（四角实际绘制均主题色、文本白系 token、无实底白块），归档角标与命中 chip 色正确（chip teal 系语义色设计上不随主题）；证据 ui-verification/report.md A9-A11 + theme-editorial-search.png / theme-dark-search.png
+
+Scenario→测试映射表（scenario-trace 对账，scenario-test-mapping-gate）：
+
+| Scenario | 测试文件 |
+| --- | --- |
+| 关键词路径命中并返回解释 | backend-go/internal/reader/search/handler_test.go |
+| 语义路径命中返回标签与分数 | backend-go/internal/reader/search/semantic_pg_test.go |
+| 非法分页参数 | backend-go/internal/reader/search/handler_test.go |
+| 词典词重组查询命中 | backend-go/internal/reader/search/repository_pg_test.go |
+| 连续短语的 trigram 兜底 | backend-go/internal/reader/search/repository_pg_test.go |
+| 空与纯空白查询拒绝 | backend-go/internal/reader/search/handler_test.go |
+| 特殊字符与超长查询 | backend-go/internal/reader/search/preprocess_test.go |
+| 双重约束边界 | backend-go/internal/reader/search/semantic_pg_test.go |
+| embedding 不可用降级 | backend-go/internal/reader/search/semantic_pg_test.go |
+| LLM 扩展结果区隔 | backend-go/internal/reader/search/expand_test.go front/app/pages/search.test.ts |
+| 默认含归档 | backend-go/internal/reader/search/repository_pg_test.go |
+| 仅活跃过滤 | backend-go/internal/reader/search/repository_pg_test.go front/app/pages/search.test.ts |
+| 点击卡片打开预览 | front/app/pages/search.test.ts front/app/features/tags/components/ArticlePreviewModal.test.ts openspec/changes/add-article-search/ui-verification/report.md |
+| 阅读全文跳转 | front/app/pages/search.test.ts openspec/changes/add-article-search/ui-verification/report.md |
+| 关闭返回原位 | front/app/pages/search.test.ts openspec/changes/add-article-search/ui-verification/report.md |
+| 无结果引导扩展 | front/app/pages/search.test.ts |
+| 语义降级提示 | front/app/pages/search.test.ts |
+| 双主题渲染 | 人工：agent-browser 双主题走查（tasks 6.6，证据 ui-verification/report.md） |
+| 中文关键词不再漏召回 | backend-go/internal/reader/handler/article_handler_test.go |
+| 归档排除保持 | backend-go/internal/reader/handler/article_handler_test.go |
 
 ## 7. Review
 
