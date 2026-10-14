@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/reader/repository"
+	"syntopica-backend/internal/reader/search"
 	tagging "syntopica-backend/internal/tagmanagement"
 )
 
@@ -195,12 +197,7 @@ func GetArticles(c *gin.Context) {
 	}
 
 	if search != "" {
-		if repository.Repo.DB().Name() == "postgres" {
-			query = query.Where("articles.search_vector @@ plainto_tsquery('simple', ?)", search)
-		} else {
-			searchTerm := "%" + search + "%"
-			query = query.Where("articles.title LIKE ? OR articles.description LIKE ?", searchTerm, searchTerm)
-		}
+		query = applyArticlesSearchFilter(c.Request.Context(), query, search)
 	}
 
 	if startDate != "" {
@@ -246,12 +243,7 @@ func GetArticles(c *gin.Context) {
 			countQuery = countQuery.Where("articles.favorite = ?", favorite == "true")
 		}
 		if search != "" {
-			if repository.Repo.DB().Name() == "postgres" {
-				countQuery = countQuery.Where("articles.search_vector @@ plainto_tsquery('simple', ?)", search)
-			} else {
-				searchTerm := "%" + search + "%"
-				countQuery = countQuery.Where("articles.title LIKE ? OR articles.description LIKE ?", searchTerm, searchTerm)
-			}
+			countQuery = applyArticlesSearchFilter(c.Request.Context(), countQuery, search)
 		}
 		if startDate != "" {
 			countQuery = countQuery.Where("DATE(articles.pub_date) >= ?", startDate)
@@ -322,6 +314,22 @@ func GetArticles(c *gin.Context) {
 			"pages":    pages,
 		},
 	})
+}
+
+// applyArticlesSearchFilter applies the search filter to an articles-list
+// query (add-article-search 2.8). The retired tsvector path (simple tokenizer,
+// 97% recall loss on Chinese) is replaced by the search package's D2 pipeline
+// fragment (L0/L1/L2 LIKE + L3 similarity, postgres); the sqlite LIKE branch
+// stays as-is（列表端点方言分支先例）。归档口径由调用方查询自身保持。
+func applyArticlesSearchFilter(ctx context.Context, query *gorm.DB, raw string) *gorm.DB {
+	if repository.Repo.DB().Name() == "postgres" {
+		if cond, args, ok := search.ListSearchWhere(ctx, repository.Repo.DB(), search.DefaultDict(), raw); ok {
+			return query.Where(cond, args...)
+		}
+		return query
+	}
+	searchTerm := "%" + raw + "%"
+	return query.Where("articles.title LIKE ? OR articles.description LIKE ?", searchTerm, searchTerm)
 }
 
 // parseAndExpandWatchedTagIDs parses comma-separated tag IDs and recursively expands abstract tag children.

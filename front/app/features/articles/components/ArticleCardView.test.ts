@@ -211,4 +211,58 @@ describe('ArticleCardView 行式渲染', () => {
     await nextTick()
     expect(w.find('.row-cover img').exists()).toBe(false)
   })
+
+  // ===== 搜索命中 chip 与归档角标（add-article-search）：缺省零渲染，传入才生效 =====
+
+  it('搜索三型命中 chip：🔍关键词 info / 🏷语义+分数 success / ✨扩展 warning（内联 meta 行）', () => {
+    const w = mountCard(article(), {
+      hitReasons: [
+        { type: 'keyword', text: '特斯拉', score: 0.24 },
+        { type: 'semantic', text: '新能源车', score: 0.83 },
+        { type: 'expand', text: '起火' },
+      ],
+    })
+    const chips = w.findAll('.hit-chip')
+    expect(chips.length).toBe(3)
+    expect(chips[0]!.classes()).toContain('hit-keyword')
+    expect(chips[0]!.text()).toContain('🔍')
+    expect(chips[0]!.text()).toContain('命中「特斯拉」')
+    expect(chips[1]!.classes()).toContain('hit-semantic')
+    expect(chips[1]!.text()).toContain('🏷')
+    expect(chips[1]!.text()).toContain('标签「新能源车」')
+    // 语义分数保留两位小数回显
+    expect(chips[1]!.find('.hit-chip-score').text()).toBe('0.83')
+    expect(chips[2]!.classes()).toContain('hit-expand')
+    expect(chips[2]!.text()).toContain('✨')
+    expect(chips[2]!.text()).toContain('扩展词「起火」')
+    // chip 落在 meta 行内（不新增行，行高不变）
+    expect(w.find('.row-meta').find('.hit-chip').exists()).toBe(true)
+  })
+
+  it('归档角标：标题尾「已归档」灰描边小标签 + 行降饱和类；语义三色走既有 token 不新造色', () => {
+    const w = mountCard(article(), { archived: true })
+    expect(w.find('article').classes()).toContain('article-row-archived')
+    const badge = w.find('.archived-badge')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('已归档')
+    expect(w.find('.row-title').text()).toContain('已归档')
+
+    // 样式锚（防样式重构丢失）：三型 chip 色 + subtle 变体 + 归档降饱和限定封面/文字（不碰浮层）
+    const css = readCss()
+    expect(css).toContain('.article-row .hit-keyword')
+    expect(css).toContain('color-mix(in srgb, var(--color-info) 12%, transparent)')
+    expect(css).toContain('.article-row .hit-semantic')
+    expect(css).toContain('var(--color-success-subtle)')
+    expect(css).toContain('.article-row .hit-expand')
+    expect(css).toContain('var(--color-warning-subtle)')
+    expect(css).toContain('.article-row.article-row-archived .row-cover img')
+    expect(css).not.toMatch(/\.article-row\.article-row-archived\s*\{[^}]*filter/)
+  })
+
+  it('缺省 props（列表既有用法）：不渲染 chip/角标，模板与现列表一致', () => {
+    const w = mountCard(article())
+    expect(w.findAll('.hit-chip').length).toBe(0)
+    expect(w.find('.archived-badge').exists()).toBe(false)
+    expect(w.find('article').classes()).not.toContain('article-row-archived')
+  })
 })

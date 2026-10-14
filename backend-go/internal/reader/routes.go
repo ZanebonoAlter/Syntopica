@@ -2,11 +2,26 @@ package reader
 
 import (
 	"github.com/gin-gonic/gin"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/reader/handler"
+	"syntopica-backend/internal/reader/search"
 )
 
 // RegisterRoutes registers all reader module routes under the given router group.
 func RegisterRoutes(rg *gin.RouterGroup) {
+	// add-article-search 2.6：搜索聚合端点。Service 在装配层构造——excerpt
+	// 构建器在 reader/handler，search 包反向 import 会成环（2.8 后
+	// handler 消费 search），由本装配点接线。
+	searchRouter := airouter.NewRouter()
+	search.SetDefaultService(search.NewService(
+		database.DB,
+		search.NewSemanticSearcher(database.DB, &search.AirouterEmbedder{Router: searchRouter}),
+		&search.AirouterExpander{Router: searchRouter},
+		handler.BuildArticleSearchExcerpt,
+	))
+	rg.GET("/search", search.HandleSearch)
+
 	categories := rg.Group("/categories")
 	{
 		categories.GET("", handler.GetCategories)

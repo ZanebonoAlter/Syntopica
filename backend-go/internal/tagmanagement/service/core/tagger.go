@@ -11,6 +11,7 @@ import (
 	"syntopica-backend/internal/platform/airouter"
 
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/reader/search"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -143,6 +144,9 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 		if err := repository.Repo.DB().Save(&dbTag).Error; err != nil {
 			return nil, err
 		}
+		// 标签写入失联想词典缓存（add-article-search 2.8 接线：label 变更后
+		// 下次搜索重新装载词典）
+		search.DefaultDict().InvalidateDict()
 		// Backfill embedding if missing (fallback path)
 		if es != nil && category != "event" {
 			go ensureTagEmbedding(es, dbTag.ID)
@@ -167,6 +171,8 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 	if err := repository.Repo.DB().Create(&newTag).Error; err != nil {
 		return nil, err
 	}
+	// 新标签入库 → 搜索词典缓存失效重载（同上接线）
+	search.DefaultDict().InvalidateDict()
 
 	if len(savedCandidates) > 0 {
 		RecordMergeSuggestions(newTag.ID, tag.Label, category, savedCandidates)

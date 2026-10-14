@@ -445,6 +445,9 @@ func (r *Router) ResolvePrimaryModel(capability Capability) (*models.AIModel, *m
 // row costs ~30KB, so they are excluded.
 var embeddingCacheOperations = map[string]struct{}{
 	"tagmanagement.embedding": {},
+	// add-article-search：搜索查询 embedding——同查询重复搜索是常态
+	// （会话内回查/翻页重查），命中缓存免重复 provider 调用（design D3）。
+	"article_search_query": {},
 }
 
 // embeddingCacheable reports whether an operation participates in the

@@ -141,6 +141,27 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 
 **数据库仍存原始外链**（改写只发生在渲染层）——回滚零数据迁移；缓存整目录 `data/image-cache/` 删除即热清。配置见 [configuration.md](../configuration.md)，接口见 [api/system.md](../api/system.md)。
 
+### 站内搜索（add-article-search）
+
+`GET /api/search` 聚合端点 + `/search` 独立页（侧边栏「发现订阅源」下方入口）：关键词、语义、LLM 扩展三路召回 + RRF 融合，解决「找回那篇文章」（中文关键词）与「发现相关文章」（概念词）两个场景。
+
+```text
+查询串 q
+  → 预处理四层管线（服务端 Go，internal/reader/search）
+     L0 空白拆分（含全角，多词 AND）→ L1 标签词典正向最大匹配切词（3~8 字 topic_tags.label 内存缓存，逐词 AND LIKE）
+     → L2 整串子串 LIKE → L3 trigram 模糊（similarity() ≥ 阈值，默认 0.10，ai_settings.search_trigram_threshold 可配，非法回退默认+warn）
+     LIKE 通配符（% _ \）转义；>200 字符截断+warn；空/纯空白 400 拒绝
+  → 三路并行召回：
+     ① 关键词路（纯 SQL，pg_trgm GIN 索引加速，覆盖含归档 100% 文章，永远在线）
+     ② 语义路（query embedding → identity 型 topic_tag_embeddings cosine 双约束：≥ search_semantic_min_cosine（默认 0.55）∧ top search_semantic_top_n（默认 8）
+        → article_topic_tags 召回，文章分取 max cosine；3s 超时或 embedding 不可用即静默跳过，响应 semantic.skipped=true）
+     ③ LLM 扩展路（expand=on 时：LLM 产 5~8 扩词 → 补跑 L1/L2，type=expand 区隔；10min TTL 缓存；失败主结果不受影响）
+  → RRF 融合（k=60）+ 命中层级加权（整串 1.0/词典多词 0.85/单词 0.6/trigram 原始分 × 字段权重 title 1.0/description 0.7）
+  → 分页返回：结果项 = 列表窄投影（同约束 9，无正文大字段）+ archived 标记 + hit_reasons（keyword|semantic|expand 各带命中文本与分数）+ semantic 块 + expand 块
+```
+
+**归档口径与列表端点互不影响**：搜索默认含归档（归档行文本全保留，是找回老文章的主力数据面），`archived=active-only` 才过滤；列表端点 `GET /api/articles?search=` 的中文匹配已从 tsvector（simple 分词器对中文失效，实测漏 97%）切换为同一套 trgm/子串管线，但其归档默认排除契约不变。旧 `search_vector` 列/触发器随迁移 20261013_0002 DROP（列数据可由 title/description 重算，可再生）。
+
 ## 业务约束与不变量
 
 > 本节同时是 constraint-injection extension 的注入数据源——改 `internal/reader/` 或 `internal/admin/`（偏好/行为） 代码前会被自动注入 system prompt，必读。
@@ -171,10 +192,14 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
    - 处理链状态只以工具栏单图标四态呈现（语义同 reading-list-panel），「处理详情」浮层与「更多操作」⋯ 菜单（手动抓取/生成总结/手动打标/内容源切换）都按 feed 能力开关显隐；description 导语只在实质内容（normalize 后 ≥4 字符且与正文不重复）时渲染。
 8. **源/版块命中统计端点必须只读，口径三条硬约束唯一实现在 sourcestats 包，不得复制口径或“顺手”加 archived 过滤**（add-source-board-hit-rate）：`GET /api/feeds/board-hit-stats` 与 `GET /api/semantic-boards/:id/source-breakdown` 只读（不写库、不触发打标或匹配）；口径唯一实现 `internal/tagmanagement/service/sourcestats/`，三条硬约束——按文章去重（`COUNT(DISTINCT id)` + `EXISTS`，不 JOIN 造成行倍增）、含已归档（窗口查询不得过滤 `archived`，高频源命中几乎全在归档区）、限窗口（白名单 {7,30,90}，缺省 7，非法 400 不回退默认）；每源恒等式 `articles == in_board + tagged_no_board + untagged_pending + untagged_settled`。权威口径见 `openspec/specs/source-board-hit-rate/spec.md`，要改口径先改 spec。
 9. **`GET /api/articles` 列表 MUST NOT 携带正文类大字段（content/description/firecrawl_content/ai_content_summary），导语只给 ≤200 字符纯文本 excerpt；正文与完整导语唯一来源是详情接口**（slim-article-list-payload）：列表窄投影只下发扫描-选择字段 + `excerpt`（由 `description` 去 HTML 标签、还原实体、折叠空白生成，抽取为空回退 `content`；源无字母/数字时为空串 `""`，字段恒存在；与正文重复（归一化后相同，或导语 ≥40 字符且被正文包含）也为空串——判据是阅读页去重 guard 的子集，避免首帧导语闪现；导语来自正文兜底（`description` 无实质文本）且无 Firecrawl 正文时同样为空串——展示正文即 `content`，导语必然重复），正文 `displayContent` 仍走详情接口 `GET /api/articles/:article_id`（契约不变，返回全部正文类字段）。阅读页导语按「详情 `description` →（未就绪）列表 `excerpt`」回退；`per_page` 缺省 20、`≤0` 视作 20、`>100` 按 100 返回并记 WARN 日志（含请求值与路径，不静默截断）；自动刷新单调度器串行 + 刷新后只重取当前筛选当前页是配套要求，列表行字段集（title/author/时间/已读/收藏/状态图标）不变为回归红线。
+10. **站内搜索默认覆盖含归档在内的全部文章，`archived=active-only` 才仅活跃，与列表端点的归档默认排除互不影响**（add-article-search）：`GET /api/search` 默认含归档行（归档行 title/description 全保留，是找回老文章的主力数据面），结果项带 `archived` 标记供前端角标；列表端点 `GET /api/articles?search=` 的归档默认排除契约不变。搜索结果项沿用约束 9 的列表窄投影（不带正文大字段，excerpt ≤200）。
+11. **搜索关键词路径（纯 SQL + pg_trgm 索引）必须永远在线，语义路与 LLM 扩展路失败只能静默降级，不得让搜索整体报错**（add-article-search）：语义路 embedding 不可用/3s 超时 → 响应 `semantic.skipped=true`，前端降级提示条不弹窗；LLM 扩展失败 → 主结果正常返回，扩展区缺失提示一次；两者均不影响 HTTP 200。空/纯空白查询串 400 拒绝；LIKE 通配符转义、超长截断 200 字符。
+12. **搜索 MUST 只读消费 topic_tag_embeddings 与 article_topic_tags，零写入、不触发任何打标或向量任务**（add-article-search）：语义路对 identity 型标签向量做 cosine 近邻（双约束：分数 ≥ search_semantic_min_cosine ∧ 排序 top search_semantic_top_n），经边表召回文章取 max cosine；不写库、不入队、不影响标签生命周期（与 topic-graph 域红线 1/4 兼容：搜索不足以为话题并状态变更触发器）。
 
 ## 代码入口
 
 - **后端 reader 域**：`backend-go/internal/reader/handler/`（article/feed/content-completion/firecrawl handler）、`backend-go/internal/reader/service/`（feed_service、content_completion_service、icon_store——feed 图标下载落盘）、`backend-go/internal/reader/repository/`、`backend-go/internal/reader/routes.go`；favicon 两级探测在 `rss_parser.go`（`ProbeFaviconCandidates`）。
+- **后端站内搜索（reader 域，add-article-search）**：`backend-go/internal/reader/search/`（handler：`GET /api/search`；service：四层预处理管线/三路召回编排/RRF 融合；repository：trgm 关键词 SQL + 语义 cosine SQL + 标签词典内存缓存）；路由注册 `internal/reader/routes.go`；列表端点中文匹配同一管线（`article_handler.go`）；迁移 `20261013_0001`（pg_trgm 扩展 + title/description GIN trgm 索引）与 `20261013_0002`（DROP search_vector 列）。
 - **后端阅读行为（admin 域）**：`backend-go/internal/admin/handler/preferences_handler.go`（仅留 reading-behavior handler）、`backend-go/internal/admin/routes.go`（`/reading-behavior/*`）；旧 `preferences_service.go` / `job_preference_update.go` / `/user-preferences/*` 已删除。
 - **后端偏好画像 / 订阅源发现（admin 域）**：`backend-go/internal/admin/service/{preference_profile_service,recommendation_service,catalog_sync_service,catalog_extras,rsshub_config}.go`、`backend-go/internal/admin/handler/{preference_profile_handler,discovery_handler}.go`、`backend-go/internal/admin/scheduler/{job_preference_profile_update,job_rsshub_catalog_sync}.go`，详见 [discovery.md](discovery.md)。
 - **打标签（tagmanagement 域）**：`backend-go/internal/tagmanagement/`（`TagQueue`、article_tagger）。
@@ -208,4 +233,5 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 | 2026-09-22 | add-image-proxy | 外链图片统一经 `GET /api/image-proxy` 加载根治图床防盗链 403 图裂（实测 sspai 禁空 Referer → `deny by referer access rule`）：后端注入 Referer（默认图片自身 origin，per-host 可覆盖）+ 浏览器 UA 转发，磁盘缓存 `data/image-cache/`（sha256 命名、mtime LRU、`IMAGE_CACHE_MAX_MB` 默认 256MB 淘汰到 90% 水位）；前端 6 个加载点（列表封面/预览头图/正文 img/整理稿/侦探墙贴图/外链 favicon）经 `proxiedImageUrl()` 渲染时改写，**库里仍存原始外链零迁移**，破图降级行为不变；删侦探墙 `referrerPolicy=no-referrer`（403 主因），后端自有地址（/icons、同源）不进代理防自指 | [`openspec/changes/archive/2026-09-22-add-image-proxy`](../../../openspec/changes/archive/2026-09-22-add-image-proxy) |
 | 2026-09-24 | slim-article-list-payload | `GET /api/articles` 列表改窄投影：正文类大字段（`content`/`description`/`firecrawl_content`/`ai_content_summary`）不再下发，新增 ≤200 字符纯文本 `excerpt` 供列表首帧导语；正文与完整导语唯一来源收敛到详情接口；`per_page` 超 100 按 100 返回并记 WARN；阅读页导语改「详情 `description` → 列表 `excerpt`」回退、自动刷新单调度器串行错峰 + 刷新后只重取当前筛选当前页（单页体积 834 KB → <100 KB 量级） | [`openspec/changes/archive/2026-09-24-slim-article-list-payload`](../../../openspec/changes/archive/2026-09-24-slim-article-list-payload) |
 | 2026-09-28 | fix-feed-delete-and-sequence-drift | 删源/删分类补 NO ACTION 引用清理（`reading_behaviors` 按 `feed_id`/分类下 feed 集合，`user_preferences` 按 `feed_id`/`category_id`；引用表缺失则跳过不报错）——删除不再被 `fk_user_preferences_feed`/`fk_user_preferences_category` 整体回滚（此前 24 个源中 18 个删不掉）；新增启动期序列漂移自愈（「下一次 nextval ≤ `max(id)`」→ `setval(max+1)`，幂等、单表失败不阻塞启动，修好清库+按表恢复漏 SEQUENCE SET 导致的新增主键冲突）。约束 #6 废止「有子行时删除会因 NO ACTION 外键失败」既有行为 | [`openspec/changes/archive/2026-09-28-fix-feed-delete-and-sequence-drift`](../../../openspec/changes/archive/2026-09-28-fix-feed-delete-and-sequence-drift) |
+| 2026-10-13 | add-article-search | 站内搜索落地：新 `GET /api/search` 三路召回（pg_trgm 关键词/identity 标签向量语义/LLM 查询扩展）+ RRF 融合 + hit_reasons 命中解释，默认含归档；四层预处理管线（空白拆分/标签词典切词/整串/trigram，迁移 20261013_0001 装 pg_trgm 建 title/description GIN 索引）；列表端点中文匹配从 tsvector（漏 97%）切同一管线；旧 search_vector 列随 20261013_0002 DROP；前端新 /search 页 + 侧边栏入口；约束新增 #10-#12 | [`openspec/changes/add-article-search`](../../../openspec/changes/add-article-search) |
 

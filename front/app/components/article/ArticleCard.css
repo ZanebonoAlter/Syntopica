@@ -283,3 +283,69 @@
   font-size: 11px;
   color: var(--color-text-muted);
 }
+
+/* ===== 搜索命中 chip 与归档角标（add-article-search）=====
+   仅在 ArticleCardView 传入 hitReasons/archived props 时渲染/生效；
+   缺省时列表渲染与既有行为完全一致（不占行高：chip 内联在 meta 行，nowrap+overflow 沿用）。
+   降饱和只作用于封面与文字色，不做整行 filter——同「已读行」v5 注：整行透明/滤镜会把
+   覆盖式处理详情浮层一起淡化，下层文字穿透浮层。 */
+.article-row .hit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  line-height: 1.5;
+  padding: 0 9px;
+  border-radius: 999px;
+}
+
+.article-row .hit-chip .hit-chip-score {
+  font-weight: 700;
+}
+
+/* 三型：关键词 info / 语义 success（既有 subtle 变体）/ 扩展 warning（既有 subtle 变体）；dark 主题同 token 自适应 */
+.article-row .hit-keyword {
+  background: color-mix(in srgb, var(--color-info) 12%, transparent);
+  color: var(--color-info);
+}
+
+.article-row .hit-semantic {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+
+.article-row .hit-expand {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+
+.article-row .archived-badge {
+  display: inline-block;
+  margin-left: 8px;
+  vertical-align: 2px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  letter-spacing: 0.5px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 4px;
+  color: var(--color-text-muted);
+}
+
+/* 归档行降饱和：仅封面图与标题/meta 文字色，不碰浮层（见上方注释） */
+.article-row.article-row-archived .row-cover img {
+  filter: saturate(0.4);
+}
+
+.article-row.article-row-archived .row-title {
+  color: var(--color-text-secondary);
+}
+
+.article-row.article-row-archived .row-meta {
+  color: var(--color-text-muted);
+}

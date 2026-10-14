@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="editorial">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syntopica 文章搜索 — 静态原型</title>
+<style>
+  /* ===== 引用应用主题 token（main.css editorial/dark 双主题，纯静态复刻） ===== */
+  :root, [data-theme="editorial"] {
+    --color-bg-base: #faf7f2;
+    --color-bg-elevated: #f3ede3;
+    --color-bg-hover: rgba(255, 255, 255, 0.85);
+    --color-card: #ffffff;
+    --color-text-primary: #1a1a1a;
+    --color-text-secondary: #5a5a5a;
+    --color-text-muted: #8a8a8a;
+    --color-text-inverted: #faf7f2;
+    --color-border-subtle: rgba(26, 26, 26, 0.08);
+    --color-border-medium: rgba(26, 26, 26, 0.15);
+    --color-border-strong: rgba(26, 26, 26, 0.25);
+    --color-accent: #d94a4a;
+    --color-success: #3d8a4a;
+    --color-warning: #c4883c;
+    --color-error: #c42f3c;
+    --color-info: #3d7a8a;
+    --color-success-subtle: rgba(61, 138, 74, 0.12);
+    --color-error-subtle: rgba(196, 47, 60, 0.12);
+    --color-warning-subtle: rgba(196, 136, 60, 0.14);
+    --color-info-subtle: rgba(61, 122, 138, 0.12);
+    --shadow-strong: 0 4px 16px rgba(26, 26, 26, 0.12);
+    --shadow-medium: 0 2px 8px rgba(26, 26, 26, 0.08);
+    --font-body: Georgia, "Times New Roman", serif;
+    --font-ui: -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+  }
+  [data-theme="dark"] {
+    --color-bg-base: #080c12;
+    --color-bg-elevated: rgba(17, 27, 38, 0.98);
+    --color-bg-hover: rgba(255, 255, 255, 0.06);
+    --color-card: rgba(17, 27, 38, 0.98);
+    --color-text-primary: rgba(255, 255, 255, 0.9);
+    --color-text-secondary: rgba(255, 255, 255, 0.6);
+    --color-text-muted: rgba(255, 255, 255, 0.35);
+    --color-text-inverted: #1a1a1a;
+    --color-border-subtle: rgba(255, 255, 255, 0.06);
+    --color-border-medium: rgba(255, 255, 255, 0.10);
+    --color-border-strong: rgba(255, 255, 255, 0.18);
+    --color-accent: rgba(240, 138, 75, 0.85);
+    --color-success: #4ea68f;
+    --color-warning: #f0a24b;
+    --color-error: #c42f3c;
+    --color-info: #63b3ed;
+    --color-success-subtle: rgba(78, 166, 143, 0.14);
+    --color-error-subtle: rgba(196, 47, 60, 0.18);
+    --color-warning-subtle: rgba(240, 162, 75, 0.14);
+    --color-info-subtle: rgba(99, 179, 237, 0.12);
+    --shadow-strong: 0 4px 16px rgba(0, 0, 0, 0.5);
+    --shadow-medium: 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--font-body);
+    background: var(--color-bg-base);
+    color: var(--color-text-primary);
+    min-height: 100vh;
+    transition: background .2s;
+  }
+  .page-mock { max-width: 1440px; margin: 0 auto; }
+  .demo-note {
+    font-family: var(--font-ui); font-size: 12px; color: var(--color-text-muted);
+    background: var(--color-bg-elevated); border: 1px dashed var(--color-border-medium);
+    border-radius: 6px; padding: 10px 14px; margin: 16px; line-height: 1.8;
+    display: flex; gap: 14px; align-items: flex-start;
+  }
+  .demo-note b { color: var(--color-text-secondary); }
+  .theme-toggle { flex-shrink: 0; font-family: var(--font-ui); font-size: 12px; background: var(--color-card); color: var(--color-text-secondary); border: 1px solid var(--color-border-medium); border-radius: 999px; padding: 4px 12px; cursor: pointer; }
+  .theme-toggle:hover { border-color: var(--color-border-strong); color: var(--color-text-primary); }
+
+  /* ===== 整页骨架 ===== */
+  .app-frame { display: flex; min-height: 640px; border: 1px solid var(--color-border-subtle); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow-medium); margin: 0 16px 24px; }
+
+  .sidebar { width: 240px; flex-shrink: 0; background: var(--color-bg-elevated); border-right: 1px solid var(--color-border-medium); padding: 12px 10px; font-family: var(--font-ui); }
+  .sidebar-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; font-size: 14px; color: var(--color-text-primary); margin-bottom: 2px; }
+  .sidebar-item .ico { width: 20px; text-align: center; color: var(--color-text-secondary); }
+  .sidebar-item.active { background: var(--color-info-subtle); color: var(--color-info); font-weight: 600; }
+  .sidebar-item.active .ico { color: var(--color-info); }
+  .sidebar-item .badge-new { font-size: 10px; color: var(--color-accent); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; margin-left: auto; }
+  .sidebar .divider { border-top: 1px solid var(--color-border-subtle); margin: 10px 4px; }
+  .sidebar-sec { font-size: 11px; color: var(--color-text-muted); padding: 6px 10px 4px; }
+
+  .main { flex: 1; min-width: 0; background: var(--color-bg-base); }
+  .page-head { padding: 22px 28px 0; font-family: var(--font-ui); }
+  .page-title { font-family: var(--font-body); font-size: 22px; font-weight: 700; }
+
+  .content-col { max-width: 1120px; margin: 0 auto; padding: 0 28px 32px; font-family: var(--font-ui); }
+
+  /* ===== 搜索工具条 ===== */
+  .search-bar { display: flex; gap: 10px; margin: 18px 0 10px; }
+  .search-input { flex: 1; display: flex; align-items: center; gap: 10px; background: var(--color-card); border: 1px solid var(--color-border-medium); border-radius: 8px; padding: 0 14px; height: 44px; box-shadow: var(--shadow-medium); }
+  .search-input:focus-within { border-color: var(--color-accent); }
+  .search-input .ico { color: var(--color-text-muted); font-size: 15px; }
+  .search-input input { flex: 1; border: none; outline: none; font-size: 15px; font-family: var(--font-ui); background: transparent; color: var(--color-text-primary); }
+  .btn-primary { height: 44px; padding: 0 22px; background: var(--color-accent); color: var(--color-text-inverted); border: none; border-radius: 8px; font-size: 14px; font-family: var(--font-ui); cursor: pointer; }
+  .btn-primary:active { transform: translateY(1px); }
+
+  .tool-row { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; font-size: 13px; color: var(--color-text-secondary); flex-wrap: wrap; }
+  .chip-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border: 1px solid var(--color-border-medium); border-radius: 999px; cursor: pointer; user-select: none; background: var(--color-card); }
+  .chip-toggle.on { background: var(--color-info-subtle); border-color: var(--color-info); color: var(--color-info); }
+  .chip-toggle.off { color: var(--color-text-muted); }
+  .result-summary { margin-left: auto; color: var(--color-text-muted); font-size: 12px; }
+  .result-summary b { color: var(--color-text-secondary); }
+
+  .notice-bar { display: flex; align-items: center; gap: 8px; background: var(--color-warning-subtle); color: var(--color-warning); border: 1px solid rgba(196,136,60,.3); border-radius: 6px; padding: 8px 12px; font-size: 12.5px; margin: 8px 0 12px; }
+
+  /* ===== 结果卡片 ===== */
+  .article-row { display: flex; gap: 14px; padding: 14px 12px; border-radius: 8px; align-items: flex-start; }
+  .article-row:hover { background: var(--color-bg-hover); }
+  .article-row + .article-row { border-top: 1px solid var(--color-border-subtle); }
+
+  /* 封面槽：图片封面（真实实现用 article.image_url → imageProxy；原型用渐变示意） */
+  .row-cover { width: 56px; height: 56px; border-radius: 8px; flex-shrink: 0; overflow: hidden; position: relative; border: 1px solid var(--color-border-subtle); }
+  .row-cover::after { content: "🖼"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 15px; opacity: .8; }
+  .cover-1 { background: linear-gradient(135deg, #b4451f, #d98a3d 55%, #e8c07a); }
+  .cover-2 { background: linear-gradient(135deg, #1e5c74, #2e8fa3 55%, #7ec4b8); }
+  .cover-3 { background: linear-gradient(135deg, #494e66, #6d7391 60%, #a8abc4); }
+  .cover-4 { background: linear-gradient(135deg, #2d6a34, #58a35f 55%, #a3c98a); }
+
+  .row-main { flex: 1; min-width: 0; }
+  .row-title { font-family: var(--font-body); font-size: 15.5px; font-weight: 700; line-height: 1.45; margin-bottom: 5px; }
+  .row-title mark { background: var(--color-warning-subtle); border-radius: 2px; padding: 0 1px; color: inherit; }
+  .row-meta { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--color-text-muted); flex-wrap: wrap; }
+  .row-identity { color: var(--color-text-secondary); }
+  .meta-grow { flex: 1; }
+  .row-favorite { color: var(--color-text-muted); background: none; border: none; cursor: pointer; font-size: 15px; padding: 4px; }
+
+  .hit-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 2px 9px; border-radius: 999px; font-family: var(--font-ui); }
+  .hit-chip .score { font-weight: 700; }
+  .hit-kw { background: var(--color-info-subtle); color: var(--color-info); }
+  .hit-sem { background: var(--color-success-subtle); color: var(--color-success); }
+  .hit-expand { background: var(--color-warning-subtle); color: var(--color-warning); }
+
+  .arch-badge { display: inline-block; font-size: 10.5px; color: var(--color-text-muted); border: 1px solid var(--color-border-medium); border-radius: 4px; padding: 0 6px; vertical-align: 2px; margin-left: 8px; font-family: var(--font-ui); letter-spacing: .5px; }
+  .arch-row .row-title, .arch-row .row-meta { color: var(--color-text-muted); }
+
+  .expand-divider { display: flex; align-items: center; gap: 12px; margin: 14px 0 2px; color: var(--color-warning); font-size: 12px; font-family: var(--font-ui); }
+  .expand-divider::before, .expand-divider::after { content: ""; flex: 1; border-top: 1px dashed rgba(196,136,60,.45); }
+  .expand-hint { text-align: center; font-size: 11.5px; color: var(--color-text-muted); margin-top: 2px; font-family: var(--font-ui); }
+
+  .load-more { display: block; margin: 18px auto 0; padding: 8px 28px; background: none; border: 1px solid var(--color-border-medium); border-radius: 999px; color: var(--color-text-secondary); font-size: 13px; font-family: var(--font-ui); cursor: pointer; }
+  .load-more:hover { border-color: var(--color-border-strong); color: var(--color-text-primary); }
+
+  /* ===== 状态展示区 ===== */
+  .states { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 0 16px 32px; font-family: var(--font-ui); }
+  .state-card { border: 1px solid var(--color-border-medium); border-radius: 8px; overflow: hidden; background: var(--color-card); }
+  .state-card h4 { font-size: 12.5px; color: var(--color-text-secondary); background: var(--color-bg-elevated); padding: 8px 14px; border-bottom: 1px solid var(--color-border-subtle); font-weight: 600; }
+  .state-body { padding: 18px 14px; min-height: 130px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+  .state-body .big-ico { font-size: 30px; color: var(--color-text-muted); margin-bottom: 8px; }
+  .state-body p { font-size: 13px; color: var(--color-text-secondary); line-height: 1.7; }
+  .state-body .sub { font-size: 11.5px; color: var(--color-text-muted); margin-top: 4px; }
+  .link-btn { margin-top: 10px; font-size: 12.5px; color: var(--color-accent); background: none; border: 1px solid currentColor; border-radius: 999px; padding: 4px 14px; cursor: pointer; font-family: var(--font-ui); }
+
+  .skel { width: 100%; }
+  .skel-row { display: flex; gap: 12px; align-items: center; padding: 10px 0; }
+  .skel-box { background: linear-gradient(90deg, var(--color-bg-elevated) 25%, var(--color-bg-hover) 50%, var(--color-bg-elevated) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 6px; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  .skel-cover { width: 48px; height: 48px; flex-shrink: 0; }
+  .skel-lines { flex: 1; }
+  .skel-line { height: 12px; margin: 6px 0; }
+  .skel-line.w60 { width: 60%; } .skel-line.w35 { width: 35%; }
+
+  /* ===== 预览弹窗示意（复用 ArticlePreviewModal：AppDialog 90vw/85vh） ===== */
+  .modal-scene { position: relative; margin: 0 16px 32px; padding: 48px 0; background: var(--color-bg-sunken, var(--color-bg-elevated)); border: 1px solid var(--color-border-subtle); border-radius: 8px; display: flex; justify-content: center; font-family: var(--font-ui); }
+  .modal-overlay-hint { position: absolute; top: 12px; left: 14px; font-size: 11px; color: var(--color-text-muted); }
+  .preview-dialog { width: 90%; max-width: 1100px; background: var(--color-card); border: 1px solid var(--color-border-medium); border-radius: 10px; box-shadow: var(--shadow-strong); overflow: hidden; }
+  .pd-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--color-border-subtle); }
+  .pd-title { flex: 1; font-family: var(--font-body); font-size: 15px; font-weight: 700; }
+  .pd-x { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border-radius: 6px; color: var(--color-text-muted); cursor: pointer; border: none; background: none; }
+  .pd-x:hover { background: var(--color-bg-hover); }
+  .pd-toolbar { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--color-border-subtle); font-size: 12px; }
+  .pd-tab { padding: 4px 14px; border-radius: 999px; border: 1px solid var(--color-border-medium); color: var(--color-text-secondary); cursor: pointer; }
+  .pd-tab.on { background: var(--color-info-subtle); border-color: var(--color-info); color: var(--color-info); }
+  .pd-open { margin-left: auto; color: var(--color-accent); cursor: pointer; padding: 4px 10px; }
+  .pd-body { padding: 16px; height: 200px; overflow: auto; font-size: 13.5px; line-height: 1.9; color: var(--color-text-secondary); font-family: var(--font-body); }
+  .pd-body mark { background: var(--color-warning-subtle); border-radius: 2px; padding: 0 1px; }
+  .pd-foot-hint { text-align: center; font-size: 11px; color: var(--color-text-muted); padding: 8px; }
+
+  h2.sec { font-family: var(--font-ui); font-size: 13px; color: var(--color-text-muted); margin: 0 20px 10px; font-weight: 600; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<div class="page-mock">
+  <div class="demo-note">
+    <div style="flex:1">
+      <b>add-article-search 静态原型（可丢弃）</b> — /search 主形态：侧边栏入口、搜索工具条（含归档 / LLM 扩展开关默认关）、
+      四种结果卡片（关键词模糊命中 / 语义命中标签 / 已归档角标 / 扩展结果）、扩展分隔区；
+      下方四个状态卡 + 预览弹窗示意。查询示例按真实输入习惯用<b>连续中文短语「特斯拉电池自燃」</b>；
+      模糊分数为真实区间（trigram 阈值 0.10，命中分 0.1~0.3）；<b>点击卡片 → 打开文章预览弹窗</b>（复用 ArticlePreviewModal，非跳页）。纯静态 fixture，不连 API。
+    </div>
+    <button class="theme-toggle" onclick="toggleTheme()">🌗 切换深色主题</button>
+  </div>
+
+  <!-- ============ 场景 B：搜索结果（主形态） ============ -->
+  <h2 class="sec">SCENE B — 搜索结果页（主形态，双主题可切换）</h2>
+  <div class="app-frame">
+    <aside class="sidebar">
+      <div class="sidebar-item"><span class="ico">📥</span>全部文章</div>
+      <div class="sidebar-item"><span class="ico">⭐</span>收藏夹</div>
+      <div class="sidebar-item"><span class="ico">🏷</span>叙事工坊</div>
+      <div class="sidebar-item"><span class="ico">🧭</span>发现订阅源</div>
+      <div class="sidebar-item active"><span class="ico">🔍</span>文章搜索 <span class="badge-new">NEW</span></div>
+      <div class="divider"></div>
+      <div class="sidebar-sec">关注标签</div>
+      <div class="sidebar-item"><span class="ico">💗</span>全部关注</div>
+      <div class="sidebar-item"><span class="ico">🏷</span>新能源车</div>
+    </aside>
+
+    <main class="main">
+      <div class="page-head"><div class="page-title">文章搜索</div></div>
+      <div class="content-col">
+        <div class="search-bar">
+          <div class="search-input">
+            <span class="ico">🔍</span>
+            <input value="特斯拉电池自燃" readonly>
+          </div>
+          <button class="btn-primary">搜 索</button>
+        </div>
+        <div class="tool-row">
+          <span class="chip-toggle on">☑ 含归档文章</span>
+          <span class="chip-toggle off">✨ LLM 扩展搜索（默认关）</span>
+          <span class="result-summary"><b>28</b> 条结果 · 语义命中 <b>3</b> 个标签 · 0.42s</span>
+        </div>
+
+        <div class="article-row">
+          <div class="row-cover cover-1"></div>
+          <div class="row-main">
+            <div class="row-title"><mark>特斯拉</mark>Model Y 地下车库<mark>自燃</mark>，官方回应：电池管线老化所致</div>
+            <div class="row-meta">
+              <span>3 小时前</span><span class="row-identity">极客公园</span>
+              <span class="hit-chip hit-kw">🔍 命中标题（模糊 0.24）</span>
+              <span class="meta-grow"></span>
+              <button class="row-favorite">☆</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="article-row">
+          <div class="row-cover cover-2"></div>
+          <div class="row-main">
+            <div class="row-title">宁德时代麒麟Ⅱ代电池针刺实验全程无明火，能量密度提升 15%</div>
+            <div class="row-meta">
+              <span>昨天</span><span class="row-identity">36Kr</span>
+              <span class="hit-chip hit-sem">🏷 命中标签「新能源车」<span class="score">0.83</span></span>
+              <span class="meta-grow"></span>
+              <button class="row-favorite">☆</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="article-row arch-row">
+          <div class="row-cover cover-3"></div>
+          <div class="row-main">
+            <div class="row-title">三元锂<mark>自燃</mark>事故三年数据复盘：热失控仍是核心风险<span class="arch-badge">已归档</span></div>
+            <div class="row-meta">
+              <span>2 个月前</span><span class="row-identity">财新网</span>
+              <span class="hit-chip hit-kw">🔍 命中标题（模糊 0.14）</span>
+              <span class="meta-grow"></span>
+              <button class="row-favorite">☆</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="expand-divider">✨ 以下 6 条来自扩展搜索</div>
+        <div class="expand-hint">已用 LLM 将「特斯拉电池自燃」扩展为：特斯拉 自燃 · 三元锂 · 热失控 · 动力电池召回 …</div>
+
+        <div class="article-row">
+          <div class="row-cover cover-4"></div>
+          <div class="row-main">
+            <div class="row-title">多地报告新能源车充电中起火事故，行业聚焦热管理方案</div>
+            <div class="row-meta">
+              <span>3 周前</span><span class="row-identity">汽车之家</span>
+              <span class="hit-chip hit-expand">✨ 扩展词「起火」命中正文</span>
+              <span class="meta-grow"></span>
+              <button class="row-favorite">☆</button>
+            </div>
+          </div>
+        </div>
+
+        <button class="load-more">加载更多（第 2 / 3 页）</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- ============ 状态卡 ============ -->
+  <h2 class="sec">SCENE A / C / D / E — 状态矩阵</h2>
+  <div class="states">
+    <div class="state-card">
+      <h4>A · 初始空态（未搜索）</h4>
+      <div class="state-body">
+        <div class="big-ico">🔍</div>
+        <p>输入关键词，搜全站文章<br><span class="sub">默认含归档 · 支持语义匹配标签</span></p>
+      </div>
+    </div>
+    <div class="state-card">
+      <h4>B · Loading（搜索中）</h4>
+      <div class="state-body">
+        <div class="skel">
+          <div class="skel-row"><div class="skel-box skel-cover"></div><div class="skel-lines"><div class="skel-box skel-line w60"></div><div class="skel-box skel-line w35"></div></div></div>
+          <div class="skel-row"><div class="skel-box skel-cover"></div><div class="skel-lines"><div class="skel-box skel-line w60"></div><div class="skel-box skel-line w35"></div></div></div>
+          <div class="sub" style="align-self:flex-start">首屏目标 P50 &lt; 1s（关键词即时 + 语义并入）</div>
+        </div>
+      </div>
+    </div>
+    <div class="state-card">
+      <h4>C · 无结果（引导扩展）</h4>
+      <div class="state-body">
+        <div class="big-ico">🫙</div>
+        <p>没有找到「xx」相关文章</p>
+        <button class="link-btn">✨ 开启 LLM 扩展搜索再试</button>
+        <span class="sub">扩展用同义词重查，覆盖无标签老文章</span>
+      </div>
+    </div>
+    <div class="state-card">
+      <h4>D · 语义降级（不报错）</h4>
+      <div class="state-body">
+        <div class="notice-bar" style="margin:0">⚡ 语义搜索暂不可用，已降级为纯关键词结果</div>
+        <span class="sub">embedding 服务不可达时静默跳过 · 关键词路径永远在线</span>
+      </div>
+    </div>
+  </div>
+  <!-- ============ 场景 F：点击卡片 → 预览弹窗 ============ -->
+  <h2 class="sec">SCENE F — 点击结果卡片 → 文章预览弹窗（复用 ArticlePreviewModal，不跳页）</h2>
+  <div class="modal-scene">
+    <span class="modal-overlay-hint">遮罩层 90vw 居中 · 关闭后返回列表原位（查询与滚动位置保留）</span>
+    <div class="preview-dialog">
+      <div class="pd-header">
+        <span class="pd-title"><mark>特斯拉</mark>Model Y 地下车库<mark>自燃</mark>，官方回应：电池管线老化所致</span>
+        <button class="pd-x">✕</button>
+      </div>
+      <div class="pd-toolbar">
+        <span class="pd-tab on">📄 文本预览</span>
+        <span class="pd-tab">🌐 内嵌网页</span>
+        <span class="pd-open">阅读全文 ↗</span>
+      </div>
+      <div class="pd-body">
+        ……4 月 12 日晚，某小区地下车库一辆<mark>特斯拉</mark> Model Y 发生<mark>自燃</mark>事故，无人员伤亡。特斯拉官方回应称初步调查指向电池冷却管线老化导致热失控，并非电芯本体缺陷。该车辆已使用 5 年、行驶 11 万公里，超出电池质保期。业内分析指出，随着早期新能源车陆续出保，动力电池安全检测标准缺失的问题将更加突出……
+      </div>
+      <div class="pd-foot-hint">弹窗内高亮保留命中词 · 「阅读全文」才跳阅读页 · Esc/遮罩点击关闭</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  function toggleTheme() {
+    const el = document.documentElement;
+    const next = el.dataset.theme === 'dark' ? 'editorial' : 'dark';
+    el.dataset.theme = next;
+  }
+</script>
+</body>
+</html>

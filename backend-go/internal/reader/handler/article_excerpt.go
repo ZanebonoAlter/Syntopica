@@ -40,6 +40,16 @@ func buildExcerpt(description, content string, noFirecrawlBody bool) string {
 	return lede
 }
 
+// BuildArticleSearchExcerpt re-exports buildExcerpt for the /api/search
+// handler wiring (add-article-search 2.6). The search package cannot import
+// reader/handler（反向：handler 经 2.8 消费 search，会成环），so its
+// Service takes this builder as an injected ExcerptFunc, wired at route
+// assembly (reader/routes.go). Shares the same ≤200-rune plain-text lede
+// contract as the articles list (article-list-projection).
+func BuildArticleSearchExcerpt(description, content string, noFirecrawlBody bool) string {
+	return buildExcerpt(description, content, noFirecrawlBody)
+}
+
 // excerptRepeatsBody reports whether the candidate lede repeats the article
 // body and would therefore be hidden by the reading page's dedupe guard
 // (front/app/utils/articleContentGuards.ts, shouldShowArticleDescription).

@@ -11,20 +11,18 @@ import (
 )
 
 // setupCleanupTestDB extends setupFeedsTestDB with the ReadingBehavior table
-// (archive cleanup deletes behavior rows), a search_vector column (sqlite has
-// none by default — the archive UPDATE nulls it on Postgres), and the
-// tagmanagement repository global. Archiving no longer removes tag edges or
-// runs CleanupOrphanedTags (orphan cleanup moved to the time-window EdgeGC),
-// but the global stays initialized for tagging-backed code paths.
+// (archive cleanup deletes behavior rows) and the tagmanagement repository
+// global. Archiving no longer removes tag edges or runs CleanupOrphanedTags
+// (orphan cleanup moved to the time-window EdgeGC), but the global stays
+// initialized for tagging-backed code paths. The search_vector stub column
+// was removed with add-article-search migration 20261013_0002 (the archive
+// UPDATE no longer touches the retired column).
 func setupCleanupTestDB(t *testing.T) {
 	t.Helper()
 	setupFeedsTestDB(t)
 	tagging.InitRepository(database.DB)
 	if err := database.DB.AutoMigrate(&models.ReadingBehavior{}); err != nil {
 		t.Fatalf("migrate reading behaviors: %v", err)
-	}
-	if err := database.DB.Exec(`ALTER TABLE articles ADD COLUMN search_vector TEXT`).Error; err != nil {
-		t.Fatalf("add search_vector stub column: %v", err)
 	}
 }
 
@@ -261,15 +259,14 @@ func TestCleanupOldArticlesClearsDerivedData(t *testing.T) {
 		t.Fatalf("create behaviors: %v", err)
 	}
 
-	// Non-NULL search_vector stubs on both rows.
-	if err := database.DB.Exec(`UPDATE articles SET search_vector = 'stub'`).Error; err != nil {
-		t.Fatalf("stub search_vector: %v", err)
-	}
+	// Non-NULL search_vector stub setup removed with add-article-search
+	// migration 20261013_0002 — the archive UPDATE no longer touches the
+	// column (it was dropped on Postgres; sqlite tests simply don't stub it).
 
 	service.CleanupOldArticles(&feed)
 
-	// Victim archived, behaviors gone, search_vector nulled — but its tag edges
-	// survive (late tagging tasks may even have added more).
+	// Victim archived, behaviors gone — but its tag edges survive (late
+	// tagging tasks may even have added more).
 	var victimEdges int64
 	if err := database.DB.Model(&models.ArticleTopicTag{}).Where("article_id = ?", victim.ID).Count(&victimEdges).Error; err != nil {
 		t.Fatalf("count victim edges: %v", err)
@@ -283,23 +280,6 @@ func TestCleanupOldArticlesClearsDerivedData(t *testing.T) {
 	}
 	if victimBehaviors != 0 {
 		t.Fatalf("victim behaviors = %d, want 0", victimBehaviors)
-	}
-
-	type svRow struct {
-		Title        string
-		SearchVector *string
-	}
-	var rows []svRow
-	if err := database.DB.Raw(`SELECT title, search_vector FROM articles WHERE feed_id = ?`, feed.ID).Scan(&rows).Error; err != nil {
-		t.Fatalf("scan search_vector: %v", err)
-	}
-	for _, r := range rows {
-		if r.Title == "victim" && r.SearchVector != nil {
-			t.Fatalf("victim search_vector = %v, want NULL", *r.SearchVector)
-		}
-		if r.Title == "keep" && r.SearchVector == nil {
-			t.Fatalf("keep search_vector must stay untouched")
-		}
 	}
 
 	// Keep article's data intact.

@@ -110,6 +110,7 @@ agent loop 里的**工具调用**（非 LLM 调用）SHALL 留痕，至少记：
 | 日报-合并仲裁 | `daily_report.merge_arbitration` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
 | section 向量化 | `section.embedding` | ✅ | N/A | ✅ | ✅ | 已补齐 |
 | 话题关注评估 | `topic_watch.evaluate` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
+| 日报-关键事件推荐 | `daily_report.key_event_recommend` | ✅ | ✅ | ✅ | ✅ | 已接入（add-topic-key-event-markers：日报尾部异步任务单次调用，候选≤40 指纹去重 + 三块素材 prompt，90s 超时失败不阻塞日报；只写 suggested 行） |
 | 循环A-新闻汇总 | `data_enrichment.summarize_context` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
 | 循环B-解读员 | `data_enrichment.interpret` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
 | 循环B-查询员每轮 | `data_enrichment.tool_use` | ✅ | ✅ | ✅ | ✅ | 已补齐（board-level-deep-analysis 4.4 起版块调查共享研究循环复用同 operation，走调查 session） |
@@ -127,6 +128,8 @@ agent loop 里的**工具调用**（非 LLM 调用）SHALL 留痕，至少记：
 | 报告追问-查询员每轮 | `data_enrichment.qa_tool_use` | ✅ | ✅ | ✅ | ✅ | 已补齐 |
 | 订阅源发现-推荐精排 | `discovery.recommendation_rerank` | ✅ | ✅ | ✅ | N/A | 已接入（手动刷新/问答共用，capability `feed_discovery`） |
 | 订阅源发现-问答 embedding | `discovery.ask` | ✅ | N/A | ✅ | N/A | 已接入（capability `embedding`，单次调用非编排） |
+| 站内搜索-查询向量化 | `article_search_query` | ✅ | N/A | ✅ | N/A | 已接入（add-article-search：语义路查询 embedding，airouter 持久缓存白名单已登记，失败/3s 超时降级纯关键词不报错） |
+| 站内搜索-LLM 扩词 | `article_search_expand` | ✅ | ✅ | ✅ | N/A | 已接入（add-article-search：expand=on 时查询串→5~8 扩词 JSON，10min 内存 TTL 缓存，失败不影响主结果） |
 | 订阅源发现-路由 embedding | `discovery.route_embedding` | ✅ | N/A | ✅ | N/A | 已接入（后台 worker 逐条 embed，capability `embedding`） |
 
 **补齐状态**：以上日报管线 6 处调用已由 [`ai-call-logging-schema`](../../../../openspec/changes/ai-call-logging-schema) change 全部补齐（prompt/token/session_id 落地，operation 升级为一等字段且 airouter 强制校验非空），从"待补齐"转为 ✅。其他调用方（reader/tagmanagement）也已补 operation 字段。
@@ -171,3 +174,4 @@ agent loop 里的**工具调用**（非 LLM 调用）SHALL 留痕，至少记：
 以及 2026-07-04 关于"日报 AI 调用 prompts 看不见 / agent 编排记录缺口"的评审讨论；
 2026-07-07 补 `data_enrichment.debate_distill`（FinGenius 辩论结果提炼）及 Capability 映射表；
 2026-08-31 补版块简报/调查链 4 个 operation、版块 session 规则与 `empty_response` 空响应失败边界（board-level-deep-analysis）。
+2026-10-12 登记日报关键事件推荐 `daily_report.key_event_recommend`（add-topic-key-event-markers：日报尾部异步、非阻塞、AI 只产 suggested）。

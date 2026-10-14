@@ -293,13 +293,10 @@ func (s *FeedService) CleanupOldArticles(feed *models.Feed) {
 			// time-window GC, not by archiving).
 			repository.Repo.DB().Where("article_id IN ?", toArchive).Delete(&models.ReadingBehavior{})
 
-			// Archive the rows. search_vector is Postgres-only (tsvector) —
-			// sqlite test DBs lack the column, so guard the NULL assignment.
-			updates := map[string]interface{}{"archived": true}
-			if repository.Repo.DB().Migrator().HasColumn(&models.Article{}, "search_vector") {
-				updates["search_vector"] = nil
-			}
-			repository.Repo.DB().Model(&models.Article{}).Where("id IN ?", toArchive).Updates(updates)
+			// Archive the rows (search_vector retired with add-article-search
+			// migration 20261013_0002 — nothing else to clear).
+			repository.Repo.DB().Model(&models.Article{}).Where("id IN ?", toArchive).
+				Updates(map[string]interface{}{"archived": true})
 		} else {
 			logging.Infof("[cleanup] feed %d: no articles to archive", feed.ID)
 		}

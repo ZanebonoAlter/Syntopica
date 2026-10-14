@@ -13,6 +13,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/tracing"
+	"syntopica-backend/internal/reader/search"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
@@ -557,6 +558,9 @@ func CleanupOrphanedTags(tagIDs []uint) {
 		logging.Warnf("Failed to delete %d orphaned topic tags: %v", len(orphanIDs), err)
 	} else {
 		logging.Infof("Cleaned up %d orphaned topic tags", len(orphanIDs))
+		// 词典失效（review R-3）：孤儿清理是标签 label 的运行时删除路径，
+		// 不接线则被删词最长驻留词典到下一次任一标签写入。
+		search.DefaultDict().InvalidateDict()
 	}
 
 	// Recount refs for affected auxiliary labels after CASCADE

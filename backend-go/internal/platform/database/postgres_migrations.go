@@ -2438,6 +2438,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, marginNotesWebSourcesMigration())
 	migrations = append(migrations, marginNotesWebSearchStatusMigration())
 	migrations = append(migrations, vendorModelMigration())
+	migrations = append(migrations, pgTrgmMigration(), searchVectorDropMigration())
 	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration())
 }
 
@@ -3965,6 +3966,81 @@ func marginNotesWebSearchStatusMigration() Migration {
 			if err := db.Exec(`ALTER TABLE annotation_qas
 				ADD COLUMN IF NOT EXISTS web_search_status TEXT NULL`).Error; err != nil {
 				return fmt.Errorf("add annotation_qas.web_search_status: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// pgTrgmMigration implements 20261013_0001 (add-article-search design D1):
+// enable the pg_trgm contrib extension and build GIN trigram indexes on
+// articles.title / articles.description. These back the keyword search path
+// (LIKE '%q%' acceleration + similarity()), which replaces the retired
+// tsvector path (its 'simple' tokenizer fails on Chinese — 97% recall loss,
+// see the change proposal). Indexes cover title+description only; content is
+// deliberately left unindexed (write-amplification trade-off, design Non-Goal).
+//
+// Idempotent: IF NOT EXISTS throughout. Reversible in practice: dropping the
+// extension/indexes has no data dependency (Down stays nil per convention).
+func pgTrgmMigration() Migration {
+	return Migration{
+		Version:     "20261013_0001",
+		Description: "add-article-search design D1: enable pg_trgm and add GIN trgm indexes on articles.title/articles.description (LIKE acceleration replacing the tsvector path).",
+		Up: func(db *gorm.DB) error {
+			stmts := []string{
+				`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
+				`CREATE INDEX IF NOT EXISTS idx_articles_title_trgm ON articles USING GIN (title gin_trgm_ops)`,
+				`CREATE INDEX IF NOT EXISTS idx_articles_description_trgm ON articles USING GIN (description gin_trgm_ops)`,
+			}
+			for _, s := range stmts {
+				if err := db.Exec(s).Error; err != nil {
+					return fmt.Errorf("pg_trgm migration: %w", err)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// searchVectorDropMigration implements 20261013_0002 (add-article-search
+// design D7): retire the tsvector full-text apparatus on articles — the
+// Chinese-tokenization-dead search_vector column, its update trigger, the
+// trigger function and the legacy GIN index. The last consumer of the column
+// switches to the pg_trgm path in the same change (20261013_0001 installs the
+// replacement indexes first).
+//
+// The column data is regenerable (recomputable from title/description via the
+// very trigger being dropped), so the drop loses nothing that cannot be
+// rebuilt — design D7 rollback note: with migration A kept, a rolled-back code
+// path simply cannot use full-text search until the column is recreated.
+//
+// Destructive (DROP COLUMN): self-skips unless MIGRATIONS_ALLOW_DESTRUCTIVE=1
+// (production default = skip, by design — see db-migration-safety). Fully
+// idempotent via IF EXISTS; trigger drops before the function so no dependency
+// is left dangling.
+func searchVectorDropMigration() Migration {
+	return Migration{
+		Version:     "20261013_0002",
+		Description: "add-article-search design D7: DROP articles.search_vector column + articles_search_vector_trigger + articles_search_vector_update() + idx_articles_search_vector (tsvector path retired for pg_trgm; column data recomputable from title/description). Destructive — guarded by MIGRATIONS_ALLOW_DESTRUCTIVE. ⚠️ 不可逆 DROP（破坏性，受 `MIGRATIONS_ALLOW_DESTRUCTIVE` 守卫；列数据可再生，生产执行前需备份）",
+		Up: func(db *gorm.DB) error {
+			// Destructive (DROP COLUMN): skip unless MIGRATIONS_ALLOW_DESTRUCTIVE=1.
+			// Production never sets the env — the self-skip there is expected (the
+			// column simply outlives the code that stopped reading it); dev/test
+			// open the gate to complete the retirement.
+			if !IsDestructiveAllowed() {
+				logging.Infof("skipping destructive migration 20261013_0002 (set MIGRATIONS_ALLOW_DESTRUCTIVE=1 to drop articles.search_vector)")
+				return nil
+			}
+			stmts := []string{
+				`DROP TRIGGER IF EXISTS articles_search_vector_trigger ON articles`,
+				`DROP FUNCTION IF EXISTS articles_search_vector_update()`,
+				`DROP INDEX IF EXISTS idx_articles_search_vector`,
+				`ALTER TABLE articles DROP COLUMN IF EXISTS search_vector`,
+			}
+			for _, s := range stmts {
+				if err := db.Exec(s).Error; err != nil {
+					return fmt.Errorf("search_vector drop migration: %w", err)
+				}
 			}
 			return nil
 		},

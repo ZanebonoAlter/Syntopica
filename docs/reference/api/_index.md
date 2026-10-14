@@ -8,6 +8,7 @@
 | [categories.md](categories.md) | 分类 CRUD | `/api/categories` |
 | [feeds.md](feeds.md) | 订阅 CRUD、刷新 | `/api/feeds` |
 | [articles.md](articles.md) | 文章列表、详情、状态 | `/api/articles` |
+| [search.md](search.md) | 站内搜索（三路召回 + RRF 融合） | `/api/search` |
 | [ai-admin.md](ai-admin.md) | AI 设置、Provider、Route | `/api/ai` |
 | [ai-call-logs.md](ai-call-logs.md) | AI 调用日志 | `/api/ai/call-logs` |
 | [ai-sessions.md](ai-sessions.md) | 编排 session 聚合（业务日志 + 链路时间线） | `/api/ai/sessions` |

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -585,3 +586,63 @@ func TestPerPageOverLimit(t *testing.T) {
 }
 
 func ptrTime2(t time.Time) *time.Time { return &t }
+
+// TestGetArticlesSearchChineseKeywordCoversLike covers add-article-search
+// 2.8（test-cases.md 故事 S4 步 1/2，sqlite 分支即 LIKE 口径）：中文
+// search 关键词命中集合与 title/description LIKE 同一活跃集口径一致，
+// 归档默认排除行为与修复前一致（archived=true 视图内搜索同样生效）。
+func TestGetArticlesSearchChineseKeywordCoversLike(t *testing.T) {
+	setupArticlesHandlerTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	feed := models.Feed{Title: "Search Feed", URL: "https://example.com/search"}
+	require.NoError(t, database.DB.Create(&feed).Error)
+
+	activeTitle := models.Article{FeedID: feed.ID, Title: "特斯拉Model Y地下车库自燃", Link: "https://example.com/s1"}
+	activeDesc := models.Article{FeedID: feed.ID, Title: "今日行业动态", Description: "特斯拉发布新电池", Link: "https://example.com/s2"}
+	archived := models.Article{FeedID: feed.ID, Title: "特斯拉历史财报", Link: "https://example.com/s3", Archived: true}
+	unrelated := models.Article{FeedID: feed.ID, Title: "英超冬窗转会关闭", Link: "https://example.com/s4"}
+	for _, a := range []*models.Article{&activeTitle, &activeDesc, &archived, &unrelated} {
+		require.NoError(t, database.DB.Create(a).Error)
+	}
+
+	runGetArticles := func(query string) (int, []uint) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/articles?"+query, http.NoBody)
+		GetArticles(ctx)
+		require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+		var body struct {
+			Success bool `json:"success"`
+			Data    []struct {
+				ID    uint   `json:"id"`
+				Title string `json:"title"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+		require.True(t, body.Success)
+		ids := make([]uint, 0, len(body.Data))
+		for _, row := range body.Data {
+			ids = append(ids, row.ID)
+		}
+		return len(body.Data), ids
+	}
+
+	// 活跃集默认视图：命中 = LIKE 口径（title 或 description 含关键词）∧ 未归档
+	gotCount, gotIDs := runGetArticles("search=" + url.QueryEscape("特斯拉"))
+	var likeIDs []uint
+	require.NoError(t, database.DB.Model(&models.Article{}).
+		Where("archived = ? AND (title LIKE ? OR description LIKE ?)", false, "%特斯拉%", "%特斯拉%").
+		Order("id").Pluck("id", &likeIDs).Error)
+	require.Equal(t, len(likeIDs), gotCount, "命中数须与 LIKE 同口径（中文不再系统性漏召回）")
+	require.ElementsMatch(t, likeIDs, gotIDs)
+	require.Contains(t, gotIDs, activeTitle.ID, "标题命中")
+	require.Contains(t, gotIDs, activeDesc.ID, "导语命中")
+	require.NotContains(t, gotIDs, archived.ID, "归档默认排除（S4 步 2，行为与修复前一致）")
+	require.NotContains(t, gotIDs, unrelated.ID, "无关文章不混入")
+
+	// 归档视图（archived=true）：搜索过滤同样生效，仅命中归档行
+	_, gotIDs = runGetArticles("search=" + url.QueryEscape("特斯拉") + "&archived=true")
+	require.Equal(t, []uint{archived.ID}, gotIDs)
+}

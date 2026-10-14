@@ -178,6 +178,12 @@ const navigateTo = useNuxtApp().$router ? (path: string) => useNuxtApp().$router
         <span v-if="!sidebarCollapsed" class="flex-1 text-left font-medium">发现订阅源</span>
       </button>
 
+      <!-- 站内文章搜索入口（add-article-search）：发现订阅源之后、分隔线之前，同款交互 -->
+      <button class="sidebar-item" data-onboarding="nav-search" @click="navigateTo('/search')">
+        <Icon icon="mdi:magnify" width="20" height="20" class="text-[var(--color-text-secondary)]" />
+        <span v-if="!sidebarCollapsed" class="flex-1 text-left font-medium">文章搜索</span>
+      </button>
+
       <div v-if="!sidebarCollapsed" class="divider" />
 
       <div v-if="!sidebarCollapsed" class="watched-tags-section">
