@@ -95,8 +95,9 @@ artifacts:
       **minor（复用/状态契约）**
       - 必填内容：入口与入口变更；受影响状态（loading/empty/error/success
         中受影响的逐个交代）；复用组件与布局模式（MUST 复用既有基础组件
-        与 layout mode 枚举，不得另写自由宽度）；验收映射（组件测试 /
-        opencli / 人工验证至少其一）。
+        与 layout mode 枚举，不得另写自由宽度）；验收映射指名道姓（组件测试写出
+        真实存在的测试文件路径 / agent-browser 或人工验证在 ui-verification/
+        report.md 建账，见 ui-verification-trace-gate）。
       - approval=`not-required`；prototype 可为 `none`（不强制可视原型）。
 
       **major（完整八节设计 + 可丢弃原型）**
@@ -122,9 +123,10 @@ artifacts:
         原型，只有用户在对话中明确确认后才可改为 `approved`；任何改变
         信息架构、主流程或布局模式的修订 MUST 重置 `pending`（颜色微调/
         文案修正记录差异即可，不重审）。
-      - Acceptance：实现后补 opencli 主交互链路断言 + 1440×900 与
-        1920×1080 两档视觉检查证据 + 与批准原型的差异说明；重大差异需
-        重新审批。
+      - Acceptance：实现后补 agent-browser 主交互链路断言 + 1440×900 与
+        1920×1080 两档视觉检查证据 + 与批准原型的差异说明，以
+        ui-verification/report.md 建账（格式契约见 ui-verification-trace-gate）；
+        重大差异需重新审批。
 
       矛盾处理：ui-design marker 与 proposal 声明不一致、major 缺原型、
       审批 pending 或原型路径越界时，specs/design/tasks 与 apply 会被

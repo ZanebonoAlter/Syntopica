@@ -46,5 +46,8 @@
 
 ## Acceptance
 
-<!-- major：opencli 主链路断言 + 1440×900 / 1920×1080 两档视觉检查 + 与批准原型的差异说明；
-     minor：组件测试 / opencli / 人工验证映射；none：N/A -->
+<!-- major：agent-browser 主链路断言 + 1440×900 / 1920×1080 两档视觉检查 + 与批准原型的差异说明，
+     证据以 ui-verification/report.md 建账（### A-N 场景【pass|fail|未覆盖】+ 依据行，
+     未覆盖写原因；格式契约见 ui-verification-trace-gate）；
+     minor：验收映射指名道姓——组件测试写真实存在的测试文件路径，
+     或 agent-browser/人工验证在 ui-verification/report.md 建账；none：N/A -->

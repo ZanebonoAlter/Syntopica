@@ -132,6 +132,7 @@ After completing all artifacts, summarize:
 **Artifact Creation Guidelines**
 
 - Follow the `instruction` field from `openspec instructions` for each artifact type - it is the authoritative guidance, even for familiar artifact names
+- **Review 节（complex 档 tasks 模板，review-task-frontload）**：proposal 头部机器可读注释区声明 `<!-- complexity: complex -->` 时，tasks.md MUST 固定含「Review」节——至少一条任务行（`- [ ]` 开头且含 review/审查），内容为「派子线程聚焦 review（审查制品 + diff），意见按 High/Medium/Low 处置后 review.md 建账」；纯文字类 change 改在 proposal 头部声明 `<!-- review: waived -->` 豁免（理由写正文），tasks 不加行。机器判定 `bash scripts/harness/check-tasks-tail.sh <change-dir>`（apply 入口与归档门禁③共用，缺行即红）；约定权威源 `docs/reference/开发执行规范.md` §0.6
 - If the `instruction` field directs you to use a specific skill or command to create the artifact, invoke it instead of writing the artifact directly
 - The schema defines what each artifact should contain - follow it
 - Read dependency artifacts for context before creating new ones

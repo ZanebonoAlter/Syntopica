@@ -27,6 +27,8 @@ Implement tasks from an OpenSpec change.
 
    Always announce: "Using change: <name>" and how to override (e.g., `/openspec-apply-change <other>`).
 
+   **Review 任务行前置检查（review-task-frontload）**：选定 change 后先跑 `bash scripts/harness/check-tasks-tail.sh <change-dir>`（change-dir 形如 `openspec/changes/<name>`）——complex 档 tasks.md 缺 review 任务行（或尾三节/doc-impact 缺项）红了先补再实现（补一条 Review 节任务行，或纯文字类 proposal 头部 `<!-- review: waived -->` 豁免）；把缺行暴露从归档提前到 apply 入口，避免实现完才返工。
+
 2. **Check status to understand the schema**
    ```bash
    openspec status --change "<name>" --json

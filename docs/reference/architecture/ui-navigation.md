@@ -1,8 +1,8 @@
-# UI 导航地图（给 opencli 端到端验证用）
+# UI 导航地图（给 agent-browser 端到端验证用）
 
-> 本文档**增量维护**：每验证过一个需要多步导航的界面链路，就把路径 + 选择器 + 断言锚点补进来。供 **opencli 按需交互验证**（见 `.agents/skills/ui-verify/`）复用，避免每次重新踩点。不沉淀固定回归脚本（脆弱）。
+> 本文档**增量维护**：每验证过一个需要多步导航的界面链路，就把路径 + 选择器 + 断言锚点补进来。供 **agent-browser 按需交互验证**（见 `.agents/skills/agent-browser/`）复用，避免每次重新踩点。不沉淀固定回归脚本（脆弱）。
 >
-> 约定：URL 默认 `http://localhost:3000`；后端 `http://localhost:5100/api`（前端直连）。访问性以 opencli `open` 实测为准（见 skill references/network-and-navigation.md）。
+> 约定：URL 默认 `http://localhost:3000`；后端 `http://localhost:5100/api`（前端直连）。访问性以 agent-browser `open` 实测为准（见 skill 自带文档）。
 
 ## 通用前置
 

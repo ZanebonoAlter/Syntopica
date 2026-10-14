@@ -70,7 +70,7 @@ const UI_MINOR_OK = [
 	'## 复用组件与布局模式',
 	'AppSectionHeader + contained shell。',
 	'## 验收映射',
-	'组件测试 + opencli 各一。',
+	'组件测试 + agent-browser 各一。',
 ].join('\n');
 const MAJOR_SECTIONS = [
 	'## User Journey', '## Information Architecture', '## Interaction Contract',
@@ -395,9 +395,13 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 			&& passReasonForRelease(null) === null
 			&& passReasonForRelease('some-unknown-code') === null);
 
-		// D8 归档证据检查纯函数速测（详测在 spec-gate.smoke.cjs）
-		check('D8 missingArchiveUiEvidence：legacy → 空（不硬阻断）', missingArchiveUiEvidence({ schema: 'spec-driven', proposalText: PROP_MAJOR, uiDesignText: null, tasksMd: '', changeDirFiles: [] }).length === 0);
-		check('D8 missingArchiveUiEvidence：major 全齐 → 空', missingArchiveUiEvidence({ schema: UI_SCHEMA, proposalText: PROP_MAJOR, uiDesignText: UI_MAJOR_FULL('approved', 'ui-prototype/index.html') + '\n差异说明见上。', tasksMd: '## 7. 测试\n## 8. 文档\n## 9. 验证\n- opencli 主链路 PASS\n- 1440×900 与 1920×1080 视觉检查通过', changeDirFiles: FILES_WITH_PROTO }).length === 0);
+		// D8 归档证据检查纯函数速测（规划制品保留项；验收实物对账已下放
+		// scripts/harness/ui-verification-trace.sh，详测在 spec-gate.smoke.cjs 8 系真跑真脚本）
+		check('D8 missingArchiveUiEvidence：legacy → 空（不硬阻断）', missingArchiveUiEvidence({ schema: 'spec-driven', proposalText: PROP_MAJOR, uiDesignText: null, changeDirFiles: [] }).length === 0);
+		const UI_MAJOR_NO_DIFF = UI_MAJOR_FULL('approved', 'ui-prototype/index.html').replace('内容（Acceptance 节含实现与原型差异说明）', '只有普通说明，全篇无那两个字');
+		check('D8 missingArchiveUiEvidence：major approved+原型在且无「差异」字样 → 空（tasks 字样/差异字样检查退役）', !UI_MAJOR_NO_DIFF.includes('差异') && missingArchiveUiEvidence({ schema: UI_SCHEMA, proposalText: PROP_MAJOR, uiDesignText: UI_MAJOR_NO_DIFF, changeDirFiles: FILES_WITH_PROTO }).length === 0);
+		check('D8b major 审批 pending → 非空（规划制品检查保留）', missingArchiveUiEvidence({ schema: UI_SCHEMA, proposalText: PROP_MAJOR, uiDesignText: UI_MAJOR_FULL('pending', 'ui-prototype/index.html'), changeDirFiles: FILES_WITH_PROTO }).length > 0);
+		check('D8b minor 档 → 空（映射实物对账全在脚本）', missingArchiveUiEvidence({ schema: UI_SCHEMA, proposalText: '<!-- ui-impact: minor -->\n## Why\nx', uiDesignText: '<!-- ui-impact: minor -->\n<!-- ui-approval: not-required -->\n<!-- ui-prototype: none -->\n\n## Acceptance\n待定', changeDirFiles: [] }).length === 0);
 	} catch (e) {
 		console.error('FAIL', e);
 		check('smoke 执行不抛异常', false);

@@ -12,7 +12,7 @@ This skill guides creation of distinctive, production-grade frontend interfaces 
 
 1. **先读已批准的 UI 合同**：若任务属于某个 openspec change，先读 `openspec/changes/<name>/ui-design.md`（含 `ui-approval: approved` 的原型基线）——交互结构、布局模式、组件复用以该合同为准，**不得另起美术方向**。产品基调固定 editorial/magazine（双主题 Token，见 `docs/reference/standard/frontend/theming.md`）。
 2. **布局必须走 layout 契约**：页面用 `<AppPageShell mode="reader|contained|workspace|split">`（760/1120/全宽/主从栏），弹窗用 `<AppDialog size="sm|md|lg|xl">`（420/560/760/1040，92vw 上限），不自写 max-width/自由 width——见 `docs/reference/standard/frontend/layout.md`。本 skill 的「大胆破格布局」建议只适用于**原型阶段探索**，且探索结论必须回写 ui-design.md 并经用户批准。
-3. **双视口验收**：major UI 完成后须在 1440×900 与 1920×1080 两档视口验证（布局符合所选 layout mode、无横向溢出）；交互断言与视觉判断分流见 skill `ui-verify`。
+3. **双视口验收**：major UI 完成后须在 1440×900 与 1920×1080 两档视口验证（布局符合所选 layout mode、无横向溢出）；交互断言与视觉判断分流见 skill `agent-browser`。
 
 The user provides frontend requirements: a component, page, application, or interface to build. They may include context about the purpose, audience, or technical constraints.
 

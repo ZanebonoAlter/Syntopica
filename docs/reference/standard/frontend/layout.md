@@ -67,7 +67,7 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 1. **样式规则锚**：源码 `<style>` 中 overlay 规则存在（`position: fixed` + `inset: 0` + `z-index`）；
 2. **Teleport 挂载锚**：不 stub teleport 挂载时 overlay 渲染在 `document.body` 而非组件原地。
 
-模板与落地实例见 skill `ui-verify`「浮层展示锚模板」；验收四维度见《开发执行规范》§5.3。
+模板与落地实例见 skill `agent-browser`「浮层展示锚模板」；验收四维度见《开发执行规范》§5.3。
 
 #### Scenario: 重写样式块
 
@@ -78,7 +78,7 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 
 **级别**: MUST
 
-声明 `ui-impact: major` 的 change 验收 SHALL 覆盖 **1440×900** 与 **1920×1080** 两档桌面视口（布局符合所选模式、contained 不超 1120px 居中、workspace 使用可用宽度、dialog 不超 92vw、无横向溢出）；触及窄屏降级路径（主工作台/抽屉/单栏切换）的 change 另加 **375×667** 与 **390×844** 窄屏档。验收方式见《开发执行规范》§5.3（opencli 交互断言 + 视觉子代理分流）。
+声明 `ui-impact: major` 的 change 验收 SHALL 覆盖 **1440×900** 与 **1920×1080** 两档桌面视口（布局符合所选模式、contained 不超 1120px 居中、workspace 使用可用宽度、dialog 不超 92vw、无横向溢出）；触及窄屏降级路径（主工作台/抽屉/单栏切换）的 change 另加 **375×667** 与 **390×844** 窄屏档。验收方式见《开发执行规范》§5.3（agent-browser 交互断言 + 视觉子代理分流；证据以 `ui-verification/report.md` 建账，归档由 `scripts/harness/ui-verification-trace.sh` 实物对账）。
 
 #### Scenario: 宽屏构图验收
 

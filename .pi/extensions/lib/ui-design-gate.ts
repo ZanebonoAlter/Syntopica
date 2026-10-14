@@ -499,24 +499,26 @@ export function buildBlockMessage(
 // 归档证据检查（task 3.5，spec-gate 调用；spec「UI 完成验收必须对照批准基线」）
 // ---------------------------------------------------------------------------
 
-/** 归档 UI 证据检查入参 */
+/** 归档 UI 证据检查入参（验收实物对账已下放脚本，扩展只保留规划制品检查） */
 export interface UiArchiveInput {
 	/** change 绑定 schema；null/legacy → 不检查（旧 change 不硬阻断） */
 	schema: string | null;
 	proposalText: string | null;
 	uiDesignText: string | null;
-	tasksMd: string | null;
 	/** change 目录递归普通文件清单 */
 	changeDirFiles: readonly string[];
 }
 
 /**
- * 归档证据检查（block 级缺项清单；空数组 = 通过）。
+ * 归档证据检查——规划制品完整性项（block 级缺项清单；空数组 = 本函数通过）。
+ * 验收实物对账（report.md 建账/截图/minor 指名道姓）已下放
+ * `scripts/harness/ui-verification-trace.sh`（add-ui-verification-trace-gate：判定单一
+ * 事实源在脚本，spec-gate 检查⑥' 与 archive-readiness 只认其退出码，扩展内不保留
+ * 平行字样匹配），本函数仅保留与验收实物无关的规划制品检查：
  * - legacy schema → 空数组（不硬阻断）
  * - none：N/A 一致性（marker 与 proposal 声明一致 + N/A 节在）
- * - minor：ui-design.md Acceptance/验收节映射到 组件测试|opencli|人工 至少其一
- * - major：approval=approved + 原型存在 + tasks 验证节有 opencli 与 1440×900、1920×1080
- *   证据 + ui-design.md 有差异说明（「差异」字样）
+ * - minor：无（映射实物全在脚本）
+ * - major：approval=approved + 原型文件存在（design D1：属规划制品完整性，与验收实物是两类检查）
  * 前置的合同合法性（marker 缺失等）由 evaluateUiContract 保证——归档时若合同本身
  * 不合法也列缺项（不区分 ui-design-missing/ui-approval-pending，统一
  * ui-verification-missing 语义由调用方记账）。
@@ -541,14 +543,13 @@ export function missingArchiveUiEvidence(input: UiArchiveInput): string[] {
 	}
 
 	if (declared === "minor") {
-		const acc = extractSection(input.uiDesignText, ["Acceptance", "验收"]);
-		if (!/(组件测试|component|opencli|人工)/i.test(acc)) {
-			missing.push("minor 档缺验收映射（ui-design.md 验收节须映射到 组件测试/opencli/人工验证 至少其一）");
-		}
+		// minor 档验收映射实物对账已下放 ui-verification-trace.sh（单一事实源，
+		// add-ui-verification-trace-gate）：扩展内不再保留关键词字样判定
 		return missing;
 	}
 
-	// major
+	// major：仅保留规划制品两项（审批 marker + 原型文件存在，design D1）；
+	// 验收实物（report.md 建账/截图）由 ui-verification-trace.sh 判定
 	const approval = parseUiApprovalMarker(input.uiDesignText);
 	if (approval !== "approved") missing.push("major 档 ui-approval 必须为 approved（原型已获用户确认）");
 	const protoRaw = parseUiPrototypeMarker(input.uiDesignText);
@@ -557,32 +558,5 @@ export function missingArchiveUiEvidence(input: UiArchiveInput): string[] {
 	} else if (validatePrototypePath(protoRaw, input.changeDirFiles) !== null) {
 		missing.push(`major 档原型文件不可用（${protoRaw}）`);
 	}
-	const tasks = input.tasksMd ?? "";
-	const tail = extractTailSections(tasks);
-	if (!/opencli/i.test(tail)) missing.push("tasks.md 验证节缺 opencli 主交互链路断言证据");
-	if (!tail.includes("1440") || !tail.includes("1920")) {
-		missing.push("tasks.md 验证节缺 1440×900 与 1920×1080 两档视觉检查证据");
-	}
-	const accSection = extractSection(input.uiDesignText, ["Acceptance", "验收"]);
-	if (!accSection.includes("差异")) {
-		missing.push("ui-design.md Acceptance 节缺实现与批准原型的差异说明");
-	}
 	return missing;
-}
-
-/** 提取首个命中别名的 `## 节` 正文（到下一个 ## 或文末）；无命中返回空串 */
-function extractSection(text: string, aliases: readonly string[]): string {
-	const re = new RegExp(`^##\\s+.*(?:${aliases.join("|")}).*$`, "im");
-	const m = re.exec(text);
-	if (!m) return "";
-	const start = m.index + m[0].length;
-	const rest = text.slice(start);
-	const next = rest.search(/^##\s+/m);
-	return (next === -1 ? rest : rest.slice(0, next)).trim();
-}
-
-/** 提取 tasks.md 尾部「测试/文档/验证」三节文本（从首个 `## N. 测试` 起到文末；找不到退全文） */
-function extractTailSections(tasksMd: string): string {
-	const m = /^##\s+\d+\.\s*测试/m.exec(tasksMd);
-	return m ? tasksMd.slice(m.index) : tasksMd;
 }

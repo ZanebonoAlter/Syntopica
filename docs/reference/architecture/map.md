@@ -53,6 +53,6 @@ flowchart LR
 ## 前端交互验证怎么跑
 
 - **导航地图**：[ui-navigation.md](ui-navigation.md)（多步导航 + 选择器 + 断言锚点，增量维护）
-- **验证方式**：opencli 按需交互验证 + kimi-coding/k3 视图验证（断言现写现跑，不堆固定回归脚本）；规则见 [开发执行规范.md §5.3](../开发执行规范.md)，派发模板见 `.agents/skills/ui-verify/`
+- **验证方式**：agent-browser 按需交互验证 + kimi-coding/k3 视图验证（断言现写现跑，不堆固定回归脚本）；规则见 [开发执行规范.md §5.3](../开发执行规范.md)，命令用法见 `.agents/skills/agent-browser/`
 - **交互约定**：状态标记左对齐、状态说明不伪装动作、可观测性展示分层 → [`standard/frontend/interaction-conventions.md`](../standard/frontend/interaction-conventions.md)
 - **稳定 smoke**：`front/tests/e2e/{baseline,daily-report-magazine}.spec.ts`（仅页面骨架/响应式，不堆业务交互回归）

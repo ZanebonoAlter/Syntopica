@@ -4,6 +4,8 @@ display_name: 实现档（带扩展）
 tools: read, bash, edit, write, grep, find, ls
 load_skills: true
 load_extensions: true
+codemode: 'on'
+mcp: 'on'
 enabled: true
 inherit_context: false
 run_in_background: false

@@ -6,7 +6,7 @@
 # 其自有 smoke 覆盖，此处不重测。
 #
 # case 清单（对应 archive-readiness spec 的 Scenario）：
-#   ① 全绿通过（stub 五脚本 exit 0 → exit 0，5×✓ + UI 边界行）
+#   ① 全绿通过（stub 六脚本 exit 0 → exit 0，6×✓ + ⑥ 反馈对账绿）
 #   ② 多项红一次性汇总（stub 两红 → exit 1，同时列出两个 ✗ 并透传各自输出）
 #   ③ change 不存在（真跑 → exit 2，指明目录不存在）
 #   ④ 只读安全（真跑本仓库 change → 前后 git status --short 一致）
@@ -15,7 +15,9 @@
 #      → ⚠ 提醒行 + 透传 verify 输出 + exit 0 不阻断（五项 stub 全绿 + 真实 feedback.sh）
 #   ⑦ feedback.sh 缺席 → 跳过提示，不影响五项判定与退出码
 #   ⑧ review 痕迹红项聚合（add-review-trace-gate 1.3）：仅 review-trace 红 → exit 1，
-#      该项红项输出透传 review-trace.sh 的失败原因与修复路径指引，其余四项绿
+#      该项红项输出透传 review-trace.sh 的失败原因与修复路径指引，其余五项绿
+#   ⑨ ⑦ UI 验收痕迹对账在聚合内可见且参与汇总（add-ui-verification-trace-gate 2.4）：
+#      真 ui-verification-trace.sh 红项（major 零痕迹）→ ✗ ⑦ 透传修复路径，其余项绿
 #
 # 用法：bash scripts/harness/archive-readiness.smoke.sh   退出码：0 全过；1 有失败
 set -u
@@ -53,10 +55,10 @@ printf '# stub proposal\n' >"$FIXC/live-stub/proposal.md"
 
 # ① 全绿通过（stub 只接管五项判定 + feedback stub；目录存在性走 fixture）
 S1="$TMP/bin-ok"
-for s in doc-impact.sh check-standards.sh check-tasks-tail.sh scenario-trace.sh review-trace.sh feedback.sh; do mkstub "$S1" "$s" 0; done
+for s in doc-impact.sh check-standards.sh check-tasks-tail.sh scenario-trace.sh review-trace.sh ui-verification-trace.sh feedback.sh; do mkstub "$S1" "$s" 0; done
 out="$(ARCHIVE_READINESS_BIN_DIR="$S1" ARCHIVE_READINESS_CHANGES_DIR="$FIXC" "$READY" live-stub 2>&1)"
 rc=$?
-[ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -Ec '^✓ [①②③④⑤]' | grep -q '^5$' && printf '%s\n' "$out" | grep -Fq 'UI 验收证据项不在自查范围' && printf '%s\n' "$out" | grep -Fq '✓ ⑥ human-feedback 处置对账'; check "① stub 全绿 → exit 0 + 5×✓ + ⑥ 反馈对账绿 + UI 边界行" $?
+[ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -Ec '^✓ [①②③④⑤⑦]' | grep -q '^6$' && printf '%s\n' "$out" | grep -Fq '✓ ⑦ UI 验收痕迹对账' && printf '%s\n' "$out" | grep -Fq '✓ ⑥ human-feedback 处置对账'; check "① stub 全绿 → exit 0 + 6×✓（含⑦）+ ⑥ 反馈对账绿" $?
 
 # ② 多项红一次性汇总（doc-impact 与 trace 红，另两项绿）
 S2="$TMP/bin-mixed"
@@ -65,6 +67,7 @@ mkstub "$S2" check-standards.sh 0
 mkstub "$S2" check-tasks-tail.sh 0
 mkstub "$S2" scenario-trace.sh 1 "MISS trace1"
 mkstub "$S2" review-trace.sh 0
+mkstub "$S2" ui-verification-trace.sh 0
 out="$(ARCHIVE_READINESS_BIN_DIR="$S2" ARCHIVE_READINESS_CHANGES_DIR="$FIXC" "$READY" live-stub 2>&1)"
 rc=$?
 [ "$rc" -eq 1 ] && printf '%s\n' "$out" | grep -Fq '✗ ① doc-impact verify' && printf '%s\n' "$out" | grep -Fq 'MISS doc1' && printf '%s\n' "$out" | grep -Fq '✗ ④ scenario-trace' && printf '%s\n' "$out" | grep -Fq 'MISS trace1' && printf '%s\n' "$out" | grep -Fq '✓ ② check-standards'; check "② 两红两绿 → exit 1，红项与各自输出一次列全" $?
@@ -101,7 +104,7 @@ rc=$?
 # ⑥ ⑥ 反馈对账：fixture 未处置条目 → ⚠ 提醒 + 透传 + 不阻断（add-change-lifecycle-retro 8.4）
 # 五项 stub 全绿 + 真实 feedback.sh（其自有 smoke 覆盖词表/解析；此处测透传与不阻断语义）
 S3="$TMP/bin-fb"
-for s in doc-impact.sh check-standards.sh check-tasks-tail.sh scenario-trace.sh review-trace.sh; do mkstub "$S3" "$s" 0; done
+for s in doc-impact.sh check-standards.sh check-tasks-tail.sh scenario-trace.sh review-trace.sh ui-verification-trace.sh; do mkstub "$S3" "$s" 0; done
 ln -s "$SCRIPT_DIR/feedback.sh" "$S3/feedback.sh"
 FBC="$TMP/fbchanges"
 mkdir -p "$FBC/fb-red"
@@ -112,7 +115,7 @@ cat >"$FBC/fb-red/human-feedback.md" <<'FBRED'
 FBRED
 out="$(ARCHIVE_READINESS_BIN_DIR="$S3" ARCHIVE_READINESS_CHANGES_DIR="$FBC" "$READY" fb-red 2>&1)"
 rc=$?
-[ "$rc" -eq 0 ] && printf '%s' "$out" | grep -Fq '⚠ ⑥ human-feedback 处置对账' && printf '%s' "$out" | grep -Fq 'FB-1 待处理' && printf '%s' "$out" | grep -Fq '提醒不阻断' && printf '%s' "$out" | grep -Fq '✓ 五项全绿'; check "⑥ fixture 未处置反馈条目 → ⚠ 提醒行 + 透传 verify 输出 + exit 0 不阻断" $?
+[ "$rc" -eq 0 ] && printf '%s' "$out" | grep -Fq '⚠ ⑥ human-feedback 处置对账' && printf '%s' "$out" | grep -Fq 'FB-1 待处理' && printf '%s' "$out" | grep -Fq '提醒不阻断' && printf '%s' "$out" | grep -Fq '✓ 六项全绿'; check "⑥ fixture 未处置反馈条目 → ⚠ 提醒行 + 透传 verify 输出 + exit 0 不阻断" $?
 
 # ⑦ feedback.sh 缺席 → 跳过提示（兼容老环境/部分部署；不影响五项判定与退出码）
 out="$(ARCHIVE_READINESS_BIN_DIR="$S2" ARCHIVE_READINESS_CHANGES_DIR="$FIXC" "$READY" live-stub 2>&1)"
@@ -124,12 +127,26 @@ rc=$?
 S4="$TMP/bin-rt"
 for s in doc-impact.sh check-standards.sh check-tasks-tail.sh scenario-trace.sh feedback.sh; do mkstub "$S4" "$s" 0; done
 ln -s "$SCRIPT_DIR/review-trace.sh" "$S4/review-trace.sh"
+ln -s "$SCRIPT_DIR/ui-verification-trace.sh" "$S4/ui-verification-trace.sh"
 RTC="$TMP/rtchanges"
 mkdir -p "$RTC/rt-zero"
 printf '<!-- ui-impact: none -->\n\n## Why\nx\n' >"$RTC/rt-zero/proposal.md"
 out="$(ARCHIVE_READINESS_BIN_DIR="$S4" ARCHIVE_READINESS_CHANGES_DIR="$RTC" "$READY" rt-zero 2>&1)"
 rc=$?
-[ "$rc" -eq 1 ] && printf '%s' "$out" | grep -Fq '✗ ⑤ review-trace' && printf '%s' "$out" | grep -Fq '零痕迹' && printf '%s' "$out" | grep -Fq '修复路径（二选一）' && printf '%s' "$out" | grep -Fq '✓ ① doc-impact verify' && printf '%s' "$out" | grep -Fq '✓ ④ scenario-trace'; check "⑧ 仅 review-trace 红 → exit 1 + 透传失败原因与修复路径，其余四项绿" $?
+[ "$rc" -eq 1 ] && printf '%s' "$out" | grep -Fq '✗ ⑤ review-trace' && printf '%s' "$out" | grep -Fq '零痕迹' && printf '%s' "$out" | grep -Fq '修复路径（二选一）' && printf '%s' "$out" | grep -Fq '✓ ① doc-impact verify' && printf '%s' "$out" | grep -Fq '✓ ④ scenario-trace' && printf '%s' "$out" | grep -Fq '✓ ⑦ UI 验收痕迹对账'; check "⑧ 仅 review-trace 红 → exit 1 + 透传失败原因与修复路径，其余五项绿" $?
+
+# ⑨ ⑦ UI 验收痕迹对账参与汇总（add-ui-verification-trace-gate 2.4）：真脚本红项
+# （major 零痕迹 fixture）→ ✗ ⑦ 透传修复路径；旧 schema fixture 走 fail-open 绿
+S5="$TMP/bin-uiv"
+for s in doc-impact.sh check-standards.sh check-tasks-tail.sh scenario-trace.sh review-trace.sh feedback.sh; do mkstub "$S5" "$s" 0; done
+ln -s "$SCRIPT_DIR/ui-verification-trace.sh" "$S5/ui-verification-trace.sh"
+UIC="$TMP/uichanges"
+mkdir -p "$UIC/ui-zero"
+printf 'schema: syntopica-ui\ncreated: 2026-10-14\n' >"$UIC/ui-zero/.openspec.yaml"
+printf '<!-- ui-impact: major -->\n\n## Why\nx\n' >"$UIC/ui-zero/proposal.md"
+out="$(ARCHIVE_READINESS_BIN_DIR="$S5" ARCHIVE_READINESS_CHANGES_DIR="$UIC" "$READY" ui-zero 2>&1)"
+rc=$?
+[ "$rc" -eq 1 ] && printf '%s' "$out" | grep -Fq '✗ ⑦ UI 验收痕迹对账' && printf '%s' "$out" | grep -Fq '零痕迹' && printf '%s' "$out" | grep -Fq '显式降档'; check "⑨ major 零痕迹 → ✗ ⑦ 透传修复路径 + exit 1（UI 验收入聚合自查）" $?
 
 echo ""
 if [ "$failn" -eq 0 ]; then

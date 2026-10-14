@@ -18,12 +18,15 @@
  *    ⑤' `bash scripts/harness/concurrency-status.sh --check <name>` 退出码 2 → warn 级提醒
  *       （coordinate-concurrent-changes：树上存在归属其他 active change 的未 commit 文件；
  *       exit 3 冷启动/库不可用零输出，绝不 block——归属是启发式，误 block 会卡死正常归档）
- *    ⑥' UI 验收证据检查（make-ui-design-first-class）：新 schema（syntopica-ui）change
- *       归档时按 ui-design.md 影响等级校验验收证据（major：approved+原型存在+opencli
- *       +1440×900/1920×1080+差异说明；minor：组件/opencli/人工映射；none：N/A 一致性），
- *       缺项记 policy=ui-design-gate block ui-verification-missing；旧 schema 零检查不阻断；
- *       此前有未解除的 ui-verification-missing block 而本次证据齐备 → 放行时刻记
- *       action=pass（ui-design-satisfied，add-change-lifecycle-retro design D2）
+ *    ⑥' UI 验收证据检查（make-ui-design-first-class + add-ui-verification-trace-gate）：
+ *       新 schema（syntopica-ui）change 归档时分两层——① 规划制品完整性（lib 快照检查：
+ *       major approval=approved+原型存在 / none N/A 一致性）；② 验收实物对账 spawn
+ *       `bash scripts/harness/ui-verification-trace.sh <changeDir>` 取退出码（判定单一事实源
+ *       在脚本：major 建 report.md+截图实物 / minor 指名道姓映射 / none N/A 节 / 旧 schema
+ *       fail-open），exit 1 记 policy=ui-design-gate block ui-verification-missing；
+ *       spawn 失败沿既有 fail-open 语义 warn 不阻断；此前有未解除的 ui-verification-missing
+ *       block 而本次证据齐备 → 放行时刻记 action=pass（ui-design-satisfied，
+ *       add-change-lifecycle-retro design D2）
  * 3. 失败 → { block: true, reason }：reason 中文，列失败项 + 每项尾部输出（tail 20 行）+
  *    修复指引（含 doc-impact-excuse 豁免机制与 --force / SPEC_GATE_BYPASS=1 逃生口）
  * 4. 豁免：命令带 --force 或环境变量 SPEC_GATE_BYPASS=1 → 放行，但 custom_message 记
@@ -188,7 +191,7 @@ async function gateArchive(
 		console.warn(`[spec-gate] ${why}，豁免放行（检查①-⑥'与⑤未执行）`);
 		warn(
 			pi,
-			`⚠️ [spec-gate] ${why}，openspec archive 已豁免放行；六项归档检查（doc-impact verify / check-standards / tasks.md 尾三节 / scenario-trace 映射对账 / review-trace 痕迹对账 / UI 验收证据）与检查⑤（措辞扫描）均未执行，留痕备查。`,
+			`⚠️ [spec-gate] ${why}，openspec archive 已豁免放行；六项归档检查（doc-impact verify / check-standards / tasks.md 尾三节 / scenario-trace 映射对账 / review-trace 痕迹对账 / UI 验收对账脚本+规划制品）与检查⑤（措辞扫描）均未执行，留痕备查。`,
 		);
 		auditPolicy(ctx, extractChangeName(command) || undefined, {
 			policy: "spec-gate",
@@ -247,8 +250,8 @@ async function gateArchive(
 		failedChecks.push("review");
 	}
 
-	// 2.5 检查⑥'：UI 验收证据（仅新 schema change；缺项记 ui-design-gate block 事件）
-	const uiMissing = checkUiEvidence(changeDir, ctx.cwd ?? process.cwd());
+	// 2.5 检查⑥'：UI 验收（规划制品 lib 检查 + 验收实物脚本对账，单一事实源；缺项记 ui-design-gate block 事件）
+	const uiMissing = await checkUiEvidence(pi, ctx, changeDir, ctx.cwd ?? process.cwd());
 	if (uiMissing.length > 0) {
 		failures.push(`[UI 验收证据] ${uiMissing.join("；")}`);
 		failedChecks.push("ui-evidence");
@@ -404,23 +407,41 @@ async function runScript(
 	}
 }
 
-// ---------- 检查⑥'：UI 验收证据（快照读取 + lib 纯函数判定） ----------
+// ---------- 检查⑥'：UI 验收（规划制品快照检查 + 验收实物脚本对账，add-ui-verification-trace-gate） ----------
 
-/** 读 change 快照并调用 lib/ui-design-gate 的归档证据检查；自身异常返回空数组（fail-open，
- *  legacy schema 恒为空数组——旧 change 不硬阻断） */
-function checkUiEvidence(changeDir: string, cwd: string): string[] {
+/** ⑥' UI 验收检查：① 规划制品完整性（lib/ui-design-gate 纯函数：major approval+原型 / none N/A
+ *  一致性，make-ui-design-first-class 保留项，快照读取异常 fail-open）+ ② 验收实物对账——
+ *  spawn `bash scripts/harness/ui-verification-trace.sh <changeDir>` 取退出码（判定单一事实源
+ *  在脚本：major report.md 建账+截图实物 / minor 指名道姓 / none N/A 节 / 旧 schema fail-open）。
+ *  脚本 exit 1 → 返回失败文案（上层 block，reasonCode 沿用 ui-verification-missing）；
+ *  spawn 失败（code -1）沿既有 fail-open 语义：console.warn 不阻断（脚本缺席/沙箱不可用不误伤）。 */
+async function checkUiEvidence(
+	pi: ExtensionAPI,
+	ctx: GateCtx,
+	changeDir: string,
+	cwd: string,
+): Promise<string[]> {
+	const missing: string[] = [];
 	try {
 		const absDir = join(cwd, changeDir);
-		return missingArchiveUiEvidence({
-			schema: readSchemaLine(safeRead(join(absDir, ".openspec.yaml"))),
-			proposalText: safeRead(join(absDir, "proposal.md")),
-			uiDesignText: safeRead(join(absDir, "ui-design.md")),
-			tasksMd: safeRead(join(absDir, "tasks.md")),
-			changeDirFiles: listRegularFiles(absDir),
-		});
+		missing.push(
+			...missingArchiveUiEvidence({
+				schema: readSchemaLine(safeRead(join(absDir, ".openspec.yaml"))),
+				proposalText: safeRead(join(absDir, "proposal.md")),
+				uiDesignText: safeRead(join(absDir, "ui-design.md")),
+				changeDirFiles: listRegularFiles(absDir),
+			}),
+		);
 	} catch {
-		return [];
+		// 快照读取异常：规划制品检查 fail-open（脚本对账照跑）
 	}
+	const trace = await runScript(pi, ctx, ["scripts/harness/ui-verification-trace.sh", changeDir]);
+	if (trace.code === -1) {
+		console.warn(`[spec-gate] 检查⑥' UI 验收对账脚本执行失败，fail-open 放行该项（不阻断）：${trace.detail}`);
+		return missing;
+	}
+	if (!trace.ok) missing.push(`验收实物对账脚本未通过（ui-verification-trace.sh）：${trace.detail}`);
+	return missing;
 }
 
 /** 从 .openspec.yaml 文本提取 `schema:` 行；提取不到 → null（legacy 兼容） */
@@ -625,7 +646,7 @@ function buildBlockReason(name: string, failures: string[]): string {
 		"- scenario-trace：在 tasks.md「N. 验证」节补 | Scenario | 测试文件 | 映射表（每行一个 delta Scenario 标题 + 仓库根相对测试路径或「人工…」说明）；无 delta Scenario 的 change 直接通过",
 		"- review-trace：review 做了留痕——change 目录建 review.md（### R-1 <日期>【High|Medium|Low】<标题> + 状态行；零发现写「- 审毕无发现（审查范围：…）」）；不做显式豁免——proposal.md 头部声明 <!-- review: waived -->（add-review-trace-gate）",
 		"- 归档撞见非本 change 的红测试：用 `bash scripts/harness/test-patrol.sh --register <test_id> --context <本change名>` 登记台账（或用 --report 确认已在账），在验证节记一句「已记账」后可继续——本 change 影响包内的红不适用该通道，必须修复（test-debt-patrol）",
-		"- UI 验收证据：major 需 ui-approval: approved + 原型存在 + tasks 验证节含 opencli 与 1440×900/1920×1080 证据 + ui-design.md 差异说明；minor 需验收映射；none 需 N/A 一致性",
+		"- UI 验收：按 ui-verification-trace.sh 对账结论补实物——major 需 ui-verification/report.md 建账（### A-N <场景>【pass|fail|未覆盖】+依据行，未覆盖写原因）且点名截图在盘；minor 验收映射须指名道姓（真实测试文件路径或 report.md 建账）；none 需 N/A 一致；规划制品（major approved+原型在）仍由门禁校验（add-ui-verification-trace-gate）",
 		"- 确认要跳过检查：命令加 --force 或设 SPEC_GATE_BYPASS=1（豁免会记 warning 留痕）",
 	].join("\n");
 }

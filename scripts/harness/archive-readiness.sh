@@ -4,19 +4,20 @@
 # 用法：bash scripts/harness/archive-readiness.sh <change>
 #   <change> 为 change 名（kebab-case）；容忍 openspec/changes/<name> 前缀路径（剥离）
 #
-# 与 spec-gate 归档门禁同口径的五项 block 检查聚合自查——五项各自调用门禁同一批
+# 与 spec-gate 归档门禁同口径的六项 block 检查聚合自查——六项各自调用门禁同一批
 # 脚本（单一事实源，不另立判定）：
 #   ① doc-impact verify   ② check-standards   ③ check-tasks-tail   ④ scenario-trace
 #   ⑤ review-trace（add-review-trace-gate：review.md 建账或 proposal 头部 waived 声明）
+#   ⑦ UI 验收痕迹对账（add-ui-verification-trace-gate：ui-verification/ 实物对账，
+#      判定单一事实源 ui-verification-trace.sh，与门禁检查⑥' 同源）
 # 逐项输出 ✓/✗，红项透传该脚本输出尾部 20 行（与门禁 runScript 的 tail 口径一致）。
 # 另顺带 ⑥ human-feedback 处置对账（add-change-lifecycle-retro 8.4）：调用
 # feedback.sh verify 透传结果语义——未处置/状态不明反馈条目 → ⚠ 提醒行，
-# 不计入 fails、不影响退出码（提醒层，区别于五项硬检查，不进 spec-gate 硬门禁）。
+# 不计入 fails、不影响退出码（提醒层，区别于六项硬检查，不进 spec-gate 硬门禁）。
 # 只读判定：不修改仓库文件、不执行测试或编译命令。
-# UI 验收证据项（门禁检查⑥'）不在自查范围（仅归档门禁校验）。
 #
-# 退出码：0 五项全绿；1 存在红项；2 用法错误或 change 目录不存在（⑥ 恒不影响）。
-# 测试缝：ARCHIVE_READINESS_BIN_DIR 指向含同名五个脚本的目录时从该目录解析
+# 退出码：0 六项全绿；1 存在红项；2 用法错误或 change 目录不存在（⑥ 恒不影响）。
+# 测试缝：ARCHIVE_READINESS_BIN_DIR 指向含同名七个脚本的目录时从该目录解析（六项硬检查 + feedback.sh）
 # （仅 smoke 注入用，判定逻辑与真实脚本零差异）；ARCHIVE_READINESS_CHANGES_DIR
 # 替换 changes 目录位置（smoke fixture 注入用，缺省 openspec/changes）。
 set -u
@@ -48,7 +49,9 @@ if [ ! -d "$CHANGE_ABS" ]; then
 	exit 2
 fi
 
-# ---------- 五项聚合（标题|脚本|参数…） ----------
+# ---------- 六项聚合（标题|脚本|参数…）。编号映射：本脚本 ⑦ = spec-gate 归档门禁检查⑥'
+# （两套编号并存：本脚本 ⑥ 已被 human-feedback 提醒项占用，UI 项顺延为 ⑦；
+# spec-gate 侧 ⑥' 为第六项 block 检查，⑤/⑤' 为 warn 级）----------
 
 run_item() { # $1=检查名 剩余=命令；输出 ✓/✗ + 红项尾部 20 行，rc 进 item_rc
 	local label="$1"
@@ -69,7 +72,7 @@ run_item() { # $1=检查名 剩余=命令；输出 ✓/✗ + 红项尾部 20 行
 
 fails=0
 
-echo "归档就绪自查：$CHANGE_DIR（与 spec-gate 归档门禁同口径五项）"
+echo "归档就绪自查：$CHANGE_DIR（与 spec-gate 归档门禁同口径六项）"
 echo ""
 
 run_item "① doc-impact verify" bash "$BIN_DIR/doc-impact.sh" verify "$CHANGE_DIR" || true
@@ -85,6 +88,9 @@ run_item "④ scenario-trace 映射对账" bash "$BIN_DIR/scenario-trace.sh" "$C
 [ "$item_rc" -ne 0 ] && fails=$((fails + 1))
 
 run_item "⑤ review-trace 痕迹对账" bash "$BIN_DIR/review-trace.sh" "$CHANGE_DIR" || true
+[ "$item_rc" -ne 0 ] && fails=$((fails + 1))
+
+run_item "⑦ UI 验收痕迹对账" bash "$BIN_DIR/ui-verification-trace.sh" "$CHANGE_DIR" || true
 [ "$item_rc" -ne 0 ] && fails=$((fails + 1))
 
 # ---------- ⑥ human-feedback 处置对账（add-change-lifecycle-retro 8.4：提醒不阻断） ----------
@@ -109,9 +115,8 @@ else
 fi
 
 echo ""
-echo "UI 验收证据项不在自查范围（仅归档门禁校验）。"
 if [ "$fails" -eq 0 ]; then
-	echo "✓ 五项全绿，可以 openspec archive $name（树上并发脏文件时门禁还会 warn 提醒，不阻断）"
+	echo "✓ 六项全绿，可以 openspec archive $name（树上并发脏文件时门禁还会 warn 提醒，不阻断）"
 	if [ "$fb_remind" -eq 1 ]; then
 		echo "⚠ 反馈对账提醒见上——转新 change 或更新条目状态后再归档更干净（不阻断）"
 	fi

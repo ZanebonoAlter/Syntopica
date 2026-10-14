@@ -60,6 +60,8 @@ Start a new change using the experimental artifact-driven approach.
 
 6. **STOP and wait for user direction**
 
+> **tasks.md Review 节约定（complex 档，review-task-frontload）**：后续创建 tasks.md 时，若 proposal 头部机器可读注释区声明 `<!-- complexity: complex -->`，tasks.md MUST 固定含「Review」节——至少一条任务行（`- [ ]` 开头且含 review/审查），内容为「派子线程聚焦 review（审查制品 + diff），意见按 High/Medium/Low 处置后 review.md 建账」；纯文字类 change 改在 proposal 头部声明 `<!-- review: waived -->` 豁免。机器判定 `bash scripts/harness/check-tasks-tail.sh <change-dir>`（apply 入口与归档门禁③共用，缺行即红）；约定权威源 `docs/reference/开发执行规范.md` §0.6
+
 **Output**
 
 After completing the steps, summarize:

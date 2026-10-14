@@ -170,10 +170,12 @@ try {
 		check('归档检查失败 → 原 block 行为不变（block:true + reason 含失败项）', rA && rA.block === true && /归档门禁未通过/.test(rA.reason));
 		check('block reason 含台账登记指引（撞见域外红 → test-patrol.sh --register）', rA && /test-patrol\.sh --register/.test(rA.reason));
 		check('block reason 含归档就绪自查指引（archive-readiness.sh + 勿逐项试探）', rA && /archive-readiness\.sh/.test(rA.reason) && /勿补一项就试一次/.test(rA.reason));
-		check('block → policy=spec-gate/action=block/reasonCode=archive-check-failed 恰一条',
-			rowsA.length === 1 && rowsA[0].payload.policy === 'spec-gate' && rowsA[0].payload.action === 'block' && rowsA[0].payload.reasonCode === 'archive-check-failed');
-		check('block 事件 change 绑定被归档 change（fake-change）', rowsA[0].change === 'fake-change');
-		check('block 事件 target 只含失败检查名（无输出正文）', rowsA[0].payload.target === 'doc-impact,standards,tasks,trace,review' && !JSON.stringify(rowsA[0].payload).includes('boom'));
+		check('block → 恰两条记账：ui-design-gate block ui-verification-missing + spec-gate block archive-check-failed',
+			rowsA.length === 2
+				&& rowsA[0].payload.policy === 'ui-design-gate' && rowsA[0].payload.action === 'block' && rowsA[0].payload.reasonCode === 'ui-verification-missing'
+				&& rowsA[1].payload.policy === 'spec-gate' && rowsA[1].payload.action === 'block' && rowsA[1].payload.reasonCode === 'archive-check-failed');
+		check('block 事件 change 绑定被归档 change（fake-change）', rowsA.every((r) => r.change === 'fake-change'));
+		check('block 事件 target 只含失败检查名（无输出正文）', rowsA[1].payload.target === 'doc-impact,standards,tasks,trace,review,ui-evidence' && !JSON.stringify(rowsA[1].payload).includes('boom'));
 		check('block 路径不发 custom_message', gA.messages.length === 0);
 
 		// 7b. 显式 bypass（--force）→ 放行 + policy.decision(bypass, explicit-bypass)
@@ -279,152 +281,213 @@ try {
 		const rH = await runGate(gH, 'go build ./...', tH);
 		check('非归档命令 → 零开销放行（不 exec）+ 零 policy.decision', rH === undefined && policyRows(tH).length === 0);
 
-		// ---- 8. UI 验收证据检查④'（make-ui-design-first-class）：none/minor/major + 缺项阻断 + legacy 零检查 ----
-		const writeUiChange = (cwd, name, files) => {
-			const dir = path.join(cwd, 'openspec/changes', name);
-			for (const [rel, content] of Object.entries(files)) {
-				const p = path.join(dir, rel);
-				fs.mkdirSync(path.dirname(p), { recursive: true });
-				fs.writeFileSync(p, content);
-			}
-		};
-		const MAJOR_SECTIONS = ['## User Journey', '## Information Architecture', '## Interaction Contract', '## State Matrix', '## Layout Contract', '## Component Reuse', '## Prototype', '## Acceptance'].join('\n内容\n\n');
-		const majorUi = (approval) => [`<!-- ui-impact: major -->`, `<!-- ui-approval: ${approval} -->`, '<!-- ui-prototype: ui-prototype/index.html -->', '', MAJOR_SECTIONS, '与原型的差异说明：无阻断项。'].join('\n');
-		const TASKS_FULL_EVIDENCE = ['## 7. 测试', '## 8. 文档', '<!-- doc-impact: none -->', '', '## 9. 验证', '- opencli 主链路断言 PASS', '- 1440×900 视觉检查通过', '- 1920×1080 视觉检查通过'].join('\n');
-		const TASKS_NO_EVIDENCE = ['## 7. 测试', '## 8. 文档', '<!-- doc-impact: none -->', '', '## 9. 验证', '- pnpm test:unit 全绿'].join('\n');
+		// ---- 8. 检查⑥' UI 验收（make-ui-design-first-class 规划制品 + add-ui-verification-trace-gate
+	//     验收实物对账）：真跑真脚本 ui-verification-trace.sh + 真 fixture；lib 规划检查读真文件 ----
+	const { spawnSync: spawnSyncUvt } = require('child_process');
+	const REAL_UVT = path.resolve(__dirname, '../../../scripts/harness/ui-verification-trace.sh');
+	/** ui-verification-trace.sh 真跑（绝对路径透传，exit code 直通），其余走 passExec */
+	const uvtRealExec = (t) => async (cmd, args) => {
+		if (cmd === 'bash' && args[0] === 'scripts/harness/ui-verification-trace.sh') {
+			const r = spawnSyncUvt('bash', [REAL_UVT, path.resolve(t, args[1])], { encoding: 'utf8' });
+			return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+		}
+		return passExec(cmd, args);
+	};
+	const writeUiChange = (cwd, name, files) => {
+		const dir = path.join(cwd, 'openspec/changes', name);
+		for (const [rel, content] of Object.entries(files)) {
+			const p = path.join(dir, rel);
+			fs.mkdirSync(path.dirname(p), { recursive: true });
+			fs.writeFileSync(p, content);
+		}
+	};
+	const MAJOR_SECTIONS = ['## User Journey', '## Information Architecture', '## Interaction Contract', '## State Matrix', '## Layout Contract', '## Component Reuse', '## Prototype', '## Acceptance'].join('\n内容\n\n');
+	const majorUi = (approval) => [`<!-- ui-impact: major -->`, `<!-- ui-approval: ${approval} -->`, '<!-- ui-prototype: ui-prototype/index.html -->', '', MAJOR_SECTIONS, '与原型的差异说明：无阻断项。'].join('\n');
+	const minorUi = (acc) => ['<!-- ui-impact: minor -->', '<!-- ui-approval: not-required -->', '<!-- ui-prototype: none -->', '', '## 入口', 'x', '## 状态', 'y', '## 复用', 'z', '## Acceptance', acc].join('\n');
+	/** major 验收实物：report.md 一条标题式合法条目 + 点名截图在盘 */
+const majorEvidence = (dir) => {
+		const vd = path.join(dir, 'ui-verification');
+		fs.mkdirSync(vd, { recursive: true });
+		fs.writeFileSync(path.join(vd, 'ke-shot-1440.png'), 'x');
+		fs.writeFileSync(path.join(vd, 'report.md'), ['### A-1 主链路【pass】', '', '打开→点击→断言到达（证据 `ke-shot-1440.png`）', ''].join('\n'));
+	};
+	const YAML_UI = 'schema: syntopica-ui\ncreated: 2026-09-03\n';
+	// tasks 验证节两种形态：字样齐备（opencli/1440/1920）vs 零字样——新契约下都不再构成判定输入
+	const TASKS_FULL_EVIDENCE = ['## 7. 测试', '## 8. 文档', '<!-- doc-impact: none -->', '', '## 9. 验证', '- opencli 主链路断言 PASS', '- 1440×900 视觉检查通过', '- 1920×1080 视觉检查通过'].join('\n');
+	const TASKS_NO_EVIDENCE = ['## 7. 测试', '## 8. 文档', '<!-- doc-impact: none -->', '', '## 9. 验证', '- pnpm test:unit 全绿'].join('\n');
 
-		// 8a. major 双层验收全齐 → 放行零 UI 事件（四项脚本检查走 passExec mock）
-		const t8a = mktmp(); tmps.push(t8a);
-		writeUiChange(t8a, 'ui-major-ok', {
-			'.openspec.yaml': 'schema: syntopica-ui\ncreated: 2026-09-03\n',
-			'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
-			'ui-design.md': majorUi('approved'),
-			'ui-prototype/index.html': '<html>proto</html>',
-			'tasks.md': TASKS_FULL_EVIDENCE,
-		});
-		const g8a = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8a.pi);
-		const r8a = await runGate(g8a, 'openspec archive ui-major-ok', t8a);
-		check('8a major 证据全齐 → 放行 + 零 policy.decision', r8a === undefined && policyRows(t8a).length === 0);
+	// 8a. major 规划制品齐 + 验收实物齐（tasks 零字样）→ 放行零 UI 事件
+	//     （字样不再是必要条件：实物在，无 opencli/1440/1920 字样也过）
+	const t8a = mktmp(); tmps.push(t8a);
+	writeUiChange(t8a, 'ui-major-ok', {
+		'.openspec.yaml': YAML_UI,
+		'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
+		'ui-design.md': majorUi('approved'),
+		'ui-prototype/index.html': '<html>proto</html>',
+		'tasks.md': TASKS_NO_EVIDENCE,
+	});
+	majorEvidence(path.join(t8a, 'openspec/changes/ui-major-ok'));
+	const g8a = makeGatePi(uvtRealExec(t8a));
+	require('./.sgate.cjs').default(g8a.pi);
+	const r8a = await runGate(g8a, 'openspec archive ui-major-ok', t8a);
+	check('8a major 实物齐（tasks 零字样）→ 放行 + 零 policy.decision', r8a === undefined && policyRows(t8a).length === 0);
 
-		// 8b. major 只有单测无交互/视觉证据 → 阻断 + ui-design-gate block ui-verification-missing
-		const t8b = mktmp(); tmps.push(t8b);
-		writeUiChange(t8b, 'ui-major-gap', {
-			'.openspec.yaml': 'schema: syntopica-ui\ncreated: 2026-09-03\n',
-			'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
-			'ui-design.md': majorUi('approved'),
-			'ui-prototype/index.html': '<html>proto</html>',
-			'tasks.md': TASKS_NO_EVIDENCE,
-		});
-		const g8b = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8b.pi);
-		const r8b = await runGate(g8b, 'openspec archive ui-major-gap', t8b);
-		const rows8b = policyRows(t8b);
-		check('8b major 缺 opencli/双视口证据 → block + reason 列缺失项', r8b && r8b.block === true && /UI 验收证据/.test(r8b.reason) && /1440/.test(r8b.reason) && /opencli/.test(r8b.reason));
-		check('8b 缺项 → policy=ui-design-gate block ui-verification-missing + 聚合 spec-gate block 各一条',
-			rows8b.length === 2 && rows8b.some((r) => r.payload.policy === 'ui-design-gate' && r.payload.action === 'block' && r.payload.reasonCode === 'ui-verification-missing') && rows8b.some((r) => r.payload.policy === 'spec-gate' && r.payload.reasonCode === 'archive-check-failed'));
+	// 8b. major 字样齐备（opencli/1440/1920 全写上）但无实物 → 阻断（脚本结论，字样不再放行）
+	const t8b = mktmp(); tmps.push(t8b);
+	writeUiChange(t8b, 'ui-major-gap', {
+		'.openspec.yaml': YAML_UI,
+		'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
+		'ui-design.md': majorUi('approved'),
+		'ui-prototype/index.html': '<html>proto</html>',
+		'tasks.md': TASKS_FULL_EVIDENCE,
+	});
+	const g8b = makeGatePi(uvtRealExec(t8b));
+	require('./.sgate.cjs').default(g8b.pi);
+	const r8b = await runGate(g8b, 'openspec archive ui-major-gap', t8b);
+	const rows8b = policyRows(t8b);
+	check('8b 字样齐备无实物 → block + reason 透传脚本零痕迹结论（不再因字样放行）',
+		r8b && r8b.block === true && /UI 验收/.test(r8b.reason) && /零痕迹/.test(r8b.reason) && /显式降档/.test(r8b.reason));
+	check('8b 缺实物 → policy=ui-design-gate block ui-verification-missing + 聚合 spec-gate block 各一条',
+		rows8b.length === 2 && rows8b.some((r) => r.payload.policy === 'ui-design-gate' && r.payload.action === 'block' && r.payload.reasonCode === 'ui-verification-missing') && rows8b.some((r) => r.payload.policy === 'spec-gate' && r.payload.reasonCode === 'archive-check-failed'));
 
-		// 8c. major 审批仍 pending → 阻断（ui-verification-missing，不相信孤立 marker）
-		const t8c = mktmp(); tmps.push(t8c);
-		writeUiChange(t8c, 'ui-major-pending', {
-			'.openspec.yaml': 'schema: syntopica-ui\ncreated: 2026-09-03\n',
-			'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
-			'ui-design.md': majorUi('pending'),
-			'ui-prototype/index.html': '<html>proto</html>',
-			'tasks.md': TASKS_FULL_EVIDENCE,
-		});
-		const g8c = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8c.pi);
-		const r8c = await runGate(g8c, 'openspec archive ui-major-pending', t8c);
-		check('8c major pending → block 且 reason 含 approved 要求', r8c && r8c.block === true && /approved/.test(r8c.reason) && policyRows(t8c).some((r) => r.payload.reasonCode === 'ui-verification-missing'));
+	// 8c. major 审批仍 pending（实物齐）→ 阻断（lib 规划制品检查保留，不相信孤立证据）
+	const t8c = mktmp(); tmps.push(t8c);
+	writeUiChange(t8c, 'ui-major-pending', {
+		'.openspec.yaml': YAML_UI,
+		'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
+		'ui-design.md': majorUi('pending'),
+		'ui-prototype/index.html': '<html>proto</html>',
+		'tasks.md': TASKS_NO_EVIDENCE,
+	});
+	majorEvidence(path.join(t8c, 'openspec/changes/ui-major-pending'));
+	const g8c = makeGatePi(uvtRealExec(t8c));
+	require('./.sgate.cjs').default(g8c.pi);
+	const r8c = await runGate(g8c, 'openspec archive ui-major-pending', t8c);
+	check('8c major pending → block 且 reason 含 approved 要求（脚本绿、lib 红）', r8c && r8c.block === true && /approved/.test(r8c.reason) && policyRows(t8c).some((r) => r.payload.reasonCode === 'ui-verification-missing'));
 
-		// 8d. minor 有验收映射 → 放行；无映射 → 阻断
-		const t8d = mktmp(); tmps.push(t8d);
-		const minorUi = (acc) => ['<!-- ui-impact: minor -->', '<!-- ui-approval: not-required -->', '<!-- ui-prototype: none -->', '', '## 入口', 'x', '## 状态', 'y', '## 复用', 'z', '## Acceptance', acc].join('\n');
-		writeUiChange(t8d, 'ui-minor-ok', {
-			'.openspec.yaml': 'schema: syntopica-ui\ncreated: 2026-09-03\n',
-			'proposal.md': '<!-- ui-impact: minor -->\n## Why\nx',
-			'ui-design.md': minorUi('组件测试 AppDialog.test.ts 覆盖。'),
-			'tasks.md': TASKS_NO_EVIDENCE,
-		});
-		const g8d = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8d.pi);
-		const r8d = await runGate(g8d, 'openspec archive ui-minor-ok', t8d);
-		check('8d minor 有组件测试映射 → 放行零 UI 事件', r8d === undefined && policyRows(t8d).length === 0);
-		const t8e = mktmp(); tmps.push(t8e);
-		writeUiChange(t8e, 'ui-minor-gap', {
-			'.openspec.yaml': 'schema: syntopica-ui\ncreated: 2026-09-03\n',
-			'proposal.md': '<!-- ui-impact: minor -->\n## Why\nx',
-			'ui-design.md': minorUi('待定。'),
-			'tasks.md': TASKS_NO_EVIDENCE,
-		});
-		const g8e = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8e.pi);
-		const r8e = await runGate(g8e, 'openspec archive ui-minor-gap', t8e);
-		check('8e minor 无验收映射 → block + ui-verification-missing', r8e && r8e.block === true && /验收映射/.test(r8e.reason) && policyRows(t8e).some((r) => r.payload.policy === 'ui-design-gate' && r.payload.reasonCode === 'ui-verification-missing'));
+	// 8d. minor 指名道姓（agent-browser/人工 → report.md 建账）→ 放行
+	const t8d = mktmp(); tmps.push(t8d);
+	writeUiChange(t8d, 'ui-minor-ok', {
+		'.openspec.yaml': YAML_UI,
+		'proposal.md': '<!-- ui-impact: minor -->\n## Why\nx',
+		'ui-design.md': minorUi('agent-browser 走主链路 + 人工双主题目检。'),
+		'tasks.md': TASKS_NO_EVIDENCE,
+	});
+	writeUiChange(t8d, 'ui-minor-ok', { 'ui-verification/report.md': '| A1 弹窗开合 | **pass** | agent-browser 断言开合与焦点 |' });
+	const g8d = makeGatePi(uvtRealExec(t8d));
+	require('./.sgate.cjs').default(g8d.pi);
+	const r8d = await runGate(g8d, 'openspec archive ui-minor-ok', t8d);
+	check('8d minor agent-browser 建账在案 → 放行零 UI 事件', r8d === undefined && policyRows(t8d).length === 0);
 
-		// 8f. none N/A 一致 → 放行；声明与制品不一致 → 阻断
-		const t8f = mktmp(); tmps.push(t8f);
-		writeUiChange(t8f, 'ui-none-ok', {
-			'.openspec.yaml': 'schema: syntopica-ui\ncreated: 2026-09-03\n',
-			'proposal.md': '<!-- ui-impact: none -->\n## Why\nx',
-			'ui-design.md': '<!-- ui-impact: none -->\n<!-- ui-approval: not-required -->\n<!-- ui-prototype: none -->\n\n## N/A Reason\n纯后端。',
-			'tasks.md': TASKS_NO_EVIDENCE,
-		});
-		const g8f = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8f.pi);
-		const r8f = await runGate(g8f, 'openspec archive ui-none-ok', t8f);
-		check('8f none N/A 一致 → 放行零 UI 事件', r8f === undefined && policyRows(t8f).length === 0);
+	// 8d2. minor 组件测试映射但路径不存在 → 阻断（指名道姓的牙齿：路径必须真实在盘）
+	const t8d2 = mktmp(); tmps.push(t8d2);
+	writeUiChange(t8d2, 'ui-minor-badpath', {
+		'.openspec.yaml': YAML_UI,
+		'proposal.md': '<!-- ui-impact: minor -->\n## Why\nx',
+		'ui-design.md': minorUi('组件测试 front/app/components/NoSuchTest.test.ts 覆盖。'),
+		'tasks.md': TASKS_NO_EVIDENCE,
+	});
+	const g8d2 = makeGatePi(uvtRealExec(t8d2));
+	require('./.sgate.cjs').default(g8d2.pi);
+	const r8d2 = await runGate(g8d2, 'openspec archive ui-minor-badpath', t8d2);
+	check('8d2 minor 测试路径不存在 → block + reason 含脚本结论（ui-verification-missing）',
+		r8d2 && r8d2.block === true && /NoSuchTest\.test\.ts/.test(r8d2.reason) && policyRows(t8d2).some((r) => r.payload.policy === 'ui-design-gate' && r.payload.reasonCode === 'ui-verification-missing'));
 
-		// 8g. legacy schema → UI 检查零介入（不硬阻断）
-		const t8g = mktmp(); tmps.push(t8g);
-		writeUiChange(t8g, 'legacy-chg', { '.openspec.yaml': 'schema: spec-driven\ncreated: 2026-01-01\n', 'proposal.md': '## Why\nx' });
-		const g8g = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8g.pi);
-		const r8g = await runGate(g8g, 'openspec archive legacy-chg', t8g);
-		check('8g legacy schema → UI 证据零检查零事件（旧 change 不卡死）', r8g === undefined && policyRows(t8g).length === 0);
+	// 8e. minor 无验收映射（裸文本）→ 阻断
+	const t8e = mktmp(); tmps.push(t8e);
+	writeUiChange(t8e, 'ui-minor-gap', {
+		'.openspec.yaml': YAML_UI,
+		'proposal.md': '<!-- ui-impact: minor -->\n## Why\nx',
+		'ui-design.md': minorUi('待定。'),
+		'tasks.md': TASKS_NO_EVIDENCE,
+	});
+	const g8e = makeGatePi(uvtRealExec(t8e));
+	require('./.sgate.cjs').default(g8e.pi);
+	const r8e = await runGate(g8e, 'openspec archive ui-minor-gap', t8e);
+	check('8e minor 无验收映射 → block + ui-verification-missing', r8e && r8e.block === true && /指名道姓|验收映射/.test(r8e.reason) && policyRows(t8e).some((r) => r.payload.policy === 'ui-design-gate' && r.payload.reasonCode === 'ui-verification-missing'));
 
-		// 8g2. 归档侧放行锚点（add-change-lifecycle-retro D2）：先 block(ui-verification-missing)，
-		//      补齐证据后归档检查全过 → 放行时刻记 pass(ui-design-satisfied) 恰一条；
-		//      再归档一次（已解除）零新增。首次归档零记录（8a 已覆盖）。
-		const t8g2 = mktmp(); tmps.push(t8g2);
-		writeUiChange(t8g2, 'ui-evidence-retro', {
-			'.openspec.yaml': 'schema: syntopica-ui\ncreated: 2026-09-03\n',
-			'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
-			'ui-design.md': majorUi('approved'),
-			'ui-prototype/index.html': '<html>proto</html>',
-			'tasks.md': TASKS_NO_EVIDENCE,
-		});
-		const g8g2a = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8g2a.pi);
-		const r8g2a = await runGate(g8g2a, 'openspec archive ui-evidence-retro', t8g2);
-		check('8g2a 证据缺失 → block（ui-verification-missing）', r8g2a && r8g2a.block === true && policyRows(t8g2).some((r) => r.payload.policy === 'ui-design-gate' && r.payload.reasonCode === 'ui-verification-missing'));
-		fs.writeFileSync(path.join(t8g2, 'openspec/changes/ui-evidence-retro/tasks.md'), TASKS_FULL_EVIDENCE);
-		const g8g2b = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8g2b.pi);
-		const r8g2b = await runGate(g8g2b, 'openspec archive ui-evidence-retro', t8g2);
-		check('8g2b 补齐后归档放行 → pass ui-design-satisfied 恰一条（绑定 change，不与 block 双写）', (() => {
-			const rows = policyRows(t8g2).filter((r) => r.payload.policy === 'ui-design-gate');
-			return r8g2b === undefined && rows.length === 2 && rows[1].payload.action === 'pass' && rows[1].payload.reasonCode === 'ui-design-satisfied' && rows[1].change === 'ui-evidence-retro';
-		})());
-		const g8g2c = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8g2c.pi);
-		const r8g2c = await runGate(g8g2c, 'openspec archive ui-evidence-retro', t8g2);
-		check('8g2c 已解除后再归档零新增 pass', r8g2c === undefined && policyRows(t8g2).filter((r) => r.payload.action === 'pass').length === 1);
+	// 8f. none N/A 一致 → 放行；声明与制品不一致 → 阻断
+	const t8f = mktmp(); tmps.push(t8f);
+	writeUiChange(t8f, 'ui-none-ok', {
+		'.openspec.yaml': YAML_UI,
+		'proposal.md': '<!-- ui-impact: none -->\n## Why\nx',
+		'ui-design.md': '<!-- ui-impact: none -->\n<!-- ui-approval: not-required -->\n<!-- ui-prototype: none -->\n\n## N/A Reason\n纯后端。',
+		'tasks.md': TASKS_NO_EVIDENCE,
+	});
+	const g8f = makeGatePi(uvtRealExec(t8f));
+	require('./.sgate.cjs').default(g8f.pi);
+	const r8f = await runGate(g8f, 'openspec archive ui-none-ok', t8f);
+	check('8f none N/A 一致 → 放行零 UI 事件', r8f === undefined && policyRows(t8f).length === 0);
 
-		// 8h. --force 仍豁免 UI 检查（逃生口留痕不变）
-		const t8h = mktmp(); tmps.push(t8h);
-		writeUiChange(t8h, 'ui-major-gap', {
-			'.openspec.yaml': 'schema: syntopica-ui\ncreated: 2026-09-03\n',
-			'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
-			'ui-design.md': majorUi('approved'),
-			'ui-prototype/index.html': '<html>proto</html>',
-			'tasks.md': TASKS_NO_EVIDENCE,
-		});
-		const g8h = makeGatePi(passExec);
-		require('./.sgate.cjs').default(g8h.pi);
-		const r8h = await runGate(g8h, 'openspec archive ui-major-gap --force', t8h);
-		check('8h --force → UI 检查同被豁免 + warning 留痕含 UI 项', r8h === undefined && g8h.messages.some((m) => /UI 验收证据/.test(m.content)));
+	// 8g. legacy schema → UI 检查零介入（脚本 fail-open + lib legacy 空，不硬阻断）
+	const t8g = mktmp(); tmps.push(t8g);
+	writeUiChange(t8g, 'legacy-chg', { '.openspec.yaml': 'schema: spec-driven\ncreated: 2026-01-01\n', 'proposal.md': '## Why\nx' });
+	const g8g = makeGatePi(uvtRealExec(t8g));
+	require('./.sgate.cjs').default(g8g.pi);
+	const r8g = await runGate(g8g, 'openspec archive legacy-chg', t8g);
+	check('8g legacy schema → UI 证据零检查零事件（旧 change 不卡死）', r8g === undefined && policyRows(t8g).length === 0);
+
+	// 8g2. 归档侧放行锚点（add-change-lifecycle-retro D2）：先 block(ui-verification-missing)，
+	//      补齐实物（report.md 建账+截图）后归档检查全过 → 放行时刻记 pass(ui-design-satisfied)
+	//      恰一条；再归档一次（已解除）零新增。首次归档零记录（8a 已覆盖）。
+	const t8g2 = mktmp(); tmps.push(t8g2);
+	writeUiChange(t8g2, 'ui-evidence-retro', {
+		'.openspec.yaml': YAML_UI,
+		'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
+		'ui-design.md': majorUi('approved'),
+		'ui-prototype/index.html': '<html>proto</html>',
+		'tasks.md': TASKS_NO_EVIDENCE,
+	});
+	const g8g2a = makeGatePi(uvtRealExec(t8g2));
+	require('./.sgate.cjs').default(g8g2a.pi);
+	const r8g2a = await runGate(g8g2a, 'openspec archive ui-evidence-retro', t8g2);
+	check('8g2a 实物缺失 → block（ui-verification-missing）', r8g2a && r8g2a.block === true && policyRows(t8g2).some((r) => r.payload.policy === 'ui-design-gate' && r.payload.reasonCode === 'ui-verification-missing'));
+	majorEvidence(path.join(t8g2, 'openspec/changes/ui-evidence-retro'));
+	const g8g2b = makeGatePi(uvtRealExec(t8g2));
+	require('./.sgate.cjs').default(g8g2b.pi);
+	const r8g2b = await runGate(g8g2b, 'openspec archive ui-evidence-retro', t8g2);
+	check('8g2b 补齐实物后归档放行 → pass ui-design-satisfied 恰一条（绑定 change，不与 block 双写）', (() => {
+		const rows = policyRows(t8g2).filter((r) => r.payload.policy === 'ui-design-gate');
+		return r8g2b === undefined && rows.length === 2 && rows[1].payload.action === 'pass' && rows[1].payload.reasonCode === 'ui-design-satisfied' && rows[1].change === 'ui-evidence-retro';
+	})());
+	const g8g2c = makeGatePi(uvtRealExec(t8g2));
+	require('./.sgate.cjs').default(g8g2c.pi);
+	const r8g2c = await runGate(g8g2c, 'openspec archive ui-evidence-retro', t8g2);
+	check('8g2c 已解除后再归档零新增 pass', r8g2c === undefined && policyRows(t8g2).filter((r) => r.payload.action === 'pass').length === 1);
+
+	// 8h. --force 仍豁免 UI 检查（逃生口留痕不变）
+	const t8h = mktmp(); tmps.push(t8h);
+	writeUiChange(t8h, 'ui-major-force', {
+		'.openspec.yaml': YAML_UI,
+		'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
+		'ui-design.md': majorUi('approved'),
+		'ui-prototype/index.html': '<html>proto</html>',
+		'tasks.md': TASKS_NO_EVIDENCE,
+	});
+	const g8h = makeGatePi(uvtRealExec(t8h));
+	require('./.sgate.cjs').default(g8h.pi);
+	const r8h = await runGate(g8h, 'openspec archive ui-major-force --force', t8h);
+	check('8h --force → UI 检查同被豁免 + warning 留痕含 UI 项', r8h === undefined && g8h.messages.some((m) => /UI 验收/.test(m.content)));
+
+	// 8i. spawn 失败（脚本不可执行）→ 检查⑥' fail-open 放行该项，不记 ui-verification-missing
+	const t8i = mktmp(); tmps.push(t8i);
+	writeUiChange(t8i, 'ui-spawn-fail', {
+		'.openspec.yaml': YAML_UI,
+		'proposal.md': '<!-- ui-impact: major -->\n## Why\nx',
+		'ui-design.md': majorUi('approved'),
+		'ui-prototype/index.html': '<html>proto</html>',
+		'tasks.md': TASKS_NO_EVIDENCE,
+	});
+	const g8i = makeGatePi(async (cmd, args) => {
+		if (cmd === 'bash' && args[0] === 'scripts/harness/ui-verification-trace.sh') {
+			throw new Error('bash 不可用（模拟 spawn 失败）');
+		}
+		return passExec(cmd, args);
+	});
+	require('./.sgate.cjs').default(g8i.pi);
+	const r8i = await runGate(g8i, 'openspec archive ui-spawn-fail', t8i);
+	check("8i 检查⑥' spawn 失败 → fail-open 放行 + 零 ui-verification-missing 记账（不误伤）",
+		r8i === undefined && !policyRows(t8i).some((r) => r.payload.reasonCode === 'ui-verification-missing'));
 
 		// ---- 7i/7j. 检查⑤ review-trace 痕迹对账（add-review-trace-gate）：真跑真脚本 + 真 fixture ----
 		const { spawnSync } = require('child_process');
