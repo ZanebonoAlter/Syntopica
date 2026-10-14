@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -17,7 +18,6 @@ import (
 	"gorm.io/gorm/clause"
 
 	"syntopica-backend/internal/models"
-	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/logging"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
@@ -1129,75 +1129,80 @@ func (h *semanticBoardHandler) addBoardComposition(c *gin.Context) {
 	respondOK(c, gin.H{"board_id": boardID, "auxiliary_label_id": req.AuxiliaryLabelID})
 }
 
-type scoredAuxiliary struct {
-	label      models.SemanticLabel
-	similarity float64
-}
-
+// computeAuxiliarySuggestions ranks active auxiliary labels by cosine similarity
+// to the query vector. The vector math is pushed into PostgreSQL (embedding is
+// a native pgvector column; <=> is cosine distance, same style as
+// core.FindSimilarTags) so only the requested page crosses the wire. The
+// historical Go-side full scan pulled every label's embedding as text
+// (~24KB × 16k+ rows, twice with merge_embedding) and recomputed cosine per
+// request — multi-second latency for suggest-auxiliaries on the Pi, repeated
+// on every page flip.
 func (h *semanticBoardHandler) computeAuxiliarySuggestions(ctx context.Context, queryVector []float64, search string, excludeBoardID uint, page, pageSize int) (*suggestAuxiliariesResponse, error) {
-	query := h.db.WithContext(ctx).Where("label_type = ? AND status = ?", "auxiliary", "active")
-	if s := strings.TrimSpace(search); s != "" {
-		query = query.Where("LOWER(label) LIKE ? OR LOWER(slug) LIKE ?", "%"+strings.ToLower(s)+"%", "%"+strings.ToLower(service.Slugify(s))+"%")
+	queryVec := service.FloatsToPgVector(queryVector)
+
+	applyFilters := func(q *gorm.DB) *gorm.DB {
+		q = q.Model(&models.SemanticLabel{}).
+			Where("label_type = ? AND status = ? AND embedding IS NOT NULL", "auxiliary", "active")
+		if s := strings.TrimSpace(search); s != "" {
+			q = q.Where("LOWER(label) LIKE ? OR LOWER(slug) LIKE ?", "%"+strings.ToLower(s)+"%", "%"+strings.ToLower(service.Slugify(s))+"%")
+		}
+		// Exclude labels already in the board's composition
+		if excludeBoardID > 0 {
+			q = q.Where("id NOT IN (?)", h.db.Table("board_composition").Select("auxiliary_label_id").Where("board_id = ?", excludeBoardID))
+		}
+		return q
 	}
 
-	// Exclude labels already in the board's composition
-	if excludeBoardID > 0 {
-		query = query.Where("id NOT IN (?)", h.db.Table("board_composition").Select("auxiliary_label_id").Where("board_id = ?", excludeBoardID))
-	}
-
-	var labels []models.SemanticLabel
-	if err := query.Find(&labels).Error; err != nil {
+	var total int64
+	if err := applyFilters(h.db.WithContext(ctx)).Count(&total).Error; err != nil {
 		return nil, err
 	}
 
-	scored := make([]scoredAuxiliary, 0, len(labels))
-	for _, label := range labels {
-		if label.Embedding == nil || *label.Embedding == "" {
-			continue
-		}
-		vec, err := service.ParsePgVector(*label.Embedding)
-		if err != nil {
-			continue
-		}
-		sim, err := airouter.CosineSimilarity(queryVector, vec)
-		if err != nil {
-			continue
-		}
-		scored = append(scored, scoredAuxiliary{label: label, similarity: sim})
+	var rows []auxSuggestionRow
+	if err := applyFilters(h.db.WithContext(ctx)).
+		Select("id, label, slug, aliases, ref_count, 1 - (embedding <=> ?::vector) AS similarity", queryVec).
+		Order("similarity DESC, id ASC").
+		Limit(pageSize).Offset((page - 1) * pageSize).
+		Scan(&rows).Error; err != nil {
+		return nil, err
 	}
 
-	// Sort by similarity descending
-	sort.Slice(scored, func(i, j int) bool {
-		if scored[i].similarity == scored[j].similarity {
-			return scored[i].label.ID < scored[j].label.ID
-		}
-		return scored[i].similarity > scored[j].similarity
-	})
-
-	total := len(scored)
-	start := (page - 1) * pageSize
-	if start > total {
-		start = total
-	}
-	end := start + pageSize
-	if end > total {
-		end = total
-	}
-
-	items := make([]suggestedAuxiliaryDTO, 0, end-start)
-	for i := start; i < end; i++ {
-		s := scored[i]
+	items := make([]suggestedAuxiliaryDTO, 0, len(rows))
+	for _, row := range rows {
 		items = append(items, suggestedAuxiliaryDTO{
-			ID:         s.label.ID,
-			Label:      s.label.Label,
-			Slug:       s.label.Slug,
-			Aliases:    s.label.Aliases,
-			RefCount:   s.label.RefCount,
-			Similarity: roundSimilarity(s.similarity),
+			ID:         row.ID,
+			Label:      row.Label,
+			Slug:       row.Slug,
+			Aliases:    parseAuxAliases(row.Aliases),
+			RefCount:   row.RefCount,
+			Similarity: roundSimilarity(row.Similarity),
 		})
 	}
 
-	return &suggestAuxiliariesResponse{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
+	return &suggestAuxiliariesResponse{Items: items, Total: int(total), Page: page, PageSize: pageSize}, nil
+}
+
+// auxSuggestionRow scans one suggestion row produced by computeAuxiliarySuggestions.
+// Aliases is scanned raw (jsonb) and decoded defensively — a malformed value
+// degrades to an empty list instead of failing the whole request.
+type auxSuggestionRow struct {
+	ID         uint    `gorm:"column:id"`
+	Label      string  `gorm:"column:label"`
+	Slug       string  `gorm:"column:slug"`
+	Aliases    []byte  `gorm:"column:aliases"`
+	RefCount   int     `gorm:"column:ref_count"`
+	Similarity float64 `gorm:"column:similarity"`
+}
+
+func parseAuxAliases(raw []byte) []string {
+	if len(raw) == 0 {
+		return []string{}
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		return []string{}
+	}
+	return out
 }
 
 func parsePaginationParams(c *gin.Context) (page, pageSize int) {
