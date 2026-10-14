@@ -21,6 +21,7 @@
 7. **HTTP 预算与缓存沿用**：三源走既有 fetch.go（host 白名单/45s/32MB）+ cache.go TTL 900s（价格日度数据日内不变，TTL 合理；GDELT 小时级数据 TTL 900s 足够新鲜）；错误不缓存、SCHEMA_CHANGED 驱逐，语义不变。
 8. **probe 扩源**：`POST /api/datasources/{code}/probe` 对三新源自动可用（每源取一次最小参数摘要+耗时）；yahoo/gdelt 匿名 smoke 进 `DATASOURCES_LIVE=1`，fred smoke 仅 key 已配置时执行（照 Comtrade 模式）。
 9. **测试资产反查**：本 change 改两 capability 契约（MODIFIED），实现前跑 `bash scripts/harness/test-assets.sh research-data-sources` 与 `board-signal-reports`，旧断言「四源/仅四源/无价格」的测试按 test-cases.md「继承与调整」表逐行处置。
+10. **限流重试在代码层，不消耗 LLM 轮次（2026-10-14 归因后追加）**：首个生产研究任务实证 GDELT 匿名档限流（官方 1 次/5s，实测惩罚桶 >12s、被限请求挂 12-14s 才回 429，且模型自行换 query 重试仍撞限流白烧一轮+一次预算）。fetch 层通用处理：`FetchBudget.Retry429Backoff`（默认 20s，0 关闭）——拿 429 → ctx-aware 退避 → 代码级重试 1 次（对研究 loop 透明）→ 仍 429 则报显式放弃帧（Message 含「限流/放弃/不要重试」+ StatusCode=429，引导模型立即止损）；退避+两次挂起 ≈50s 在 120s 预算内。同批：传输层错误 Message 带底层 `err.Error()`（研究 ledger 只记 Kind+Message，裸「网络请求失败」不可归因）。comtrade 等其它源免费档同受此逻辑约束，行为无害（重试语义一致）。
 
 ## Risks / Trade-offs
 

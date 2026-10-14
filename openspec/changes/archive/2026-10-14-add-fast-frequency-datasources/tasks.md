@@ -51,4 +51,16 @@
 - [x] 7.6 `curl -s localhost:5100/api/datasources | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('data',d)), [x['code'] for x in d.get('data',d)])"` ——期望：7 与七源 code 全列（起后端后）
 - [x] 7.7 `openspec validate add-fast-frequency-datasources` ——期望：通过
 
+## 8. 限流韧性（2026-10-14 归因后追加）
+
+- [x] 8.1 fetch 层 429 代码级重试：`FetchBudget.Retry429Backoff`（默认 20s，0 关闭），`Get` 拿 429 → ctx-aware 退避 → 重试 1 次，仍 429 → 显式放弃帧（Message 含「限流/放弃/不要重试」，StatusCode=429）——重试不走 LLM 轮次（2026-10-14 ledger 实证：模型自己重试 gdelt 撞限流白烧一轮）——验证：`go test ./internal/datasources/ -run 'TestFetcher429Retry'` 绿（4 子用例：重试成功/恒 429 劝退/零值不重试/退避中 ctx 取消）
+- [x] 8.2 传输层错误透明化：`client.Do` 错误 Message 带底层 `err.Error()`（2026-10-14 实证：裸「网络请求失败」掩盖了限流挂起，且研究 ledger 只记 Kind+Message，Detail 不入库）——验证：`go test ./internal/datasources/ -run 'TestFetcherTransportErrorDetail'` 绿
+
+> 背景：2026-10-14 研究任务 id=74 中 gdelt_doc 两次全败（SOURCE_UNAVAILABLE 网络请求失败），复现实证 GDELT 匿名档限流（官方 1 次/5s，实测惩罚桶 >12s、被限请求挂 12-14s 才回 429）；同任务 yahoo/fred/jodi 六次全成，排除本机网络。归因详见 explore-findings.md「GDELT 源失败根因」。
+
+## 9. 验证（限流韧性追加后复跑）
+
+- [x] 9.1 `cd backend-go && go vet ./... && go test ./internal/datasources/` ——期望：全绿（含新增 2 个测试函数）
+- [x] 9.2 `cd backend-go && golangci-lint run ./internal/datasources/` ——期望：0 issues
+
 > 注（2026-10-13，fix-digest-tag-leak 归档审查发现）：`backend-go/internal/platform/aisettings/config_store.go` 的 FRED hunk（`fredConfigKey` 常量 + `LoadFredConfig`/`SaveFredConfig`，+12 行）已随 fix-digest-tag-leak 的实现提交 f7793374 先行落地（当时误混入该 change 辖区）。本 change 后续收口/归档时该文件增量以工作树现状为准，避免重复实现或提交冲突。

@@ -34,3 +34,15 @@ board 1974「中东地缘政治与美伊关系」信号研究报告（topic_enri
 - FRED key 配置模式照 COMTRADE_API_KEY（config.go mapstructure + env 覆盖，缺 key → 源 disabled + probe 报配置缺失）
 
 <!-- pinned 2026-10-02T07:31:25Z -->
+
+## GDELT 源失败根因：匿名 API 限流
+
+2026-10-14 研究任务（board_signal_research_progress id=74，candidate 9）9 次源调用：jodi×3/fred×2/yahoo×2 全成功，gdelt_doc×2 全失败（query "Bab el-Mandeb" 90d、"Houthi" 30d），错误均为「SOURCE_UNAVAILABLE 网络请求失败」，gaps 按设计如实记缺口不阻断。
+
+根因：GDELT 匿名 DOC API 限流。①官方 429 文案 one every 5 seconds；②2026-10-14 复现：直连/走代理均 429，等 12s、6s 后仍 429——实际限流窗口远超 5s 口径，出口 IP 进了更长惩罚桶（GDELT 收紧或共享 IP 连坐）；③被限请求挂 12-14s 才回 429；④当时错误无状态码 → 走的是 fetch.go:124 client.Do 传输层 error（连 429 都没收到，疑似 Clash 代理 127.0.0.1:7890 掐断挂起连接或 ctx 取消；若收到 429 会走 fetch.go:170 UnavailableStatus 带状态码）。
+
+代码事实：fetch.go Get() 非 200 → UnavailableStatus(带 StatusCode)；传输 error → Unavailable("网络请求失败") 丢弃底层 err.Error()。gdelt.go 用 url.QueryEscape(query) 无编码问题。signal_research.go 无 gdelt 节流；工具调用无独立超时（fetch 预算 120s）。live_smoke_test.go:102 注释已知 429 限流，smoke 遇 429 skip。
+
+影响：七源中仅 gdelt 持续不可用，事件热度类缺口（本 change 三目标之一），gap 纪律兜底不阻断。潜在改进：fetch 层 429 识别+退避、错误带上底层 err.Error()、gdelt 进程级节流（≥5s/次）、工具描述标注限流特征。
+
+<!-- pinned 2026-10-14T12:10:59Z -->

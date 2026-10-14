@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -174,5 +175,109 @@ func TestFetcherSuccessMeta(t *testing.T) {
 	}
 	if doc.RetrievedAt.IsZero() || doc.Bytes != int64(len(payload)) || doc.SHA256 == "" {
 		t.Fatalf("doc metadata incomplete: %+v", doc)
+	}
+}
+
+// TestFetcher429Retry covers the code-level rate-limit retry (design: GDELT
+// anonymous tier throttles and throttled calls hang 12-14s before the 429
+// lands; recovery must stay out of the LLM loop — one backoff retry, then an
+// explicit give-up frame).
+func TestFetcher429Retry(t *testing.T) {
+	new429Server := func(t *testing.T, first429ThenOK, always429 bool) (*httptest.Server, *int32) {
+		t.Helper()
+		var hits int32
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := atomic.AddInt32(&hits, 1)
+			if always429 || (first429ThenOK && n == 1) {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte("Please limit requests to one every 5 seconds"))
+				return
+			}
+			_, _ = w.Write([]byte("a,b\n1,2\n"))
+		}))
+		t.Cleanup(srv.Close)
+		return srv, &hits
+	}
+	host := func(u string) string { return strings.TrimPrefix(u, "https://") }
+
+	t.Run("first 429 then 200: retry succeeds transparently", func(t *testing.T) {
+		srv, hits := new429Server(t, true, false)
+		f := newTestFetcher(t, []string{host(srv.URL)}, FetchBudget{Timeout: 5 * time.Second, MaxBytes: 1 << 20, Retry429Backoff: 10 * time.Millisecond}, srv.URL)
+		doc, err := f.Get(context.Background(), srv.URL+"/x", nil)
+		if err != nil {
+			t.Fatalf("retry should succeed: %v", err)
+		}
+		if string(doc.Payload) != "a,b\n1,2\n" {
+			t.Fatalf("body mismatch: %q", doc.Payload)
+		}
+		if atomic.LoadInt32(hits) != 2 {
+			t.Fatalf("want exactly 2 upstream hits (429+200), got %d", *hits)
+		}
+	})
+
+	t.Run("persistent 429: explicit give-up frame with status", func(t *testing.T) {
+		srv, hits := new429Server(t, false, true)
+		f := newTestFetcher(t, []string{host(srv.URL)}, FetchBudget{Timeout: 5 * time.Second, MaxBytes: 1 << 20, Retry429Backoff: 10 * time.Millisecond}, srv.URL)
+		_, err := f.Get(context.Background(), srv.URL+"/x", nil)
+		se, ok := AsSourceError(err)
+		if !ok || se.Kind != ErrSourceUnavailable {
+			t.Fatalf("want SOURCE_UNAVAILABLE, got %v", err)
+		}
+		if se.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("want StatusCode 429, got %d", se.StatusCode)
+		}
+		if !strings.Contains(se.Message, "放弃") || !strings.Contains(se.Message, "限流") {
+			t.Fatalf("message must carry give-up guidance: %q", se.Message)
+		}
+		if atomic.LoadInt32(hits) != 2 {
+			t.Fatalf("want one retry (2 hits), got %d", *hits)
+		}
+	})
+
+	t.Run("zero backoff disables retry", func(t *testing.T) {
+		srv, hits := new429Server(t, false, true)
+		f := newTestFetcher(t, []string{host(srv.URL)}, FetchBudget{Timeout: 5 * time.Second, MaxBytes: 1 << 20}, srv.URL)
+		_, err := f.Get(context.Background(), srv.URL+"/x", nil)
+		if se, ok := AsSourceError(err); !ok || se.Kind != ErrSourceUnavailable || se.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("want SOURCE_UNAVAILABLE 429, got %v", err)
+		}
+		if atomic.LoadInt32(hits) != 1 {
+			t.Fatalf("no retry expected, got %d hits", *hits)
+		}
+	})
+
+	t.Run("ctx cancelled during backoff aborts", func(t *testing.T) {
+		srv, hits := new429Server(t, false, true)
+		f := newTestFetcher(t, []string{host(srv.URL)}, FetchBudget{Timeout: 5 * time.Second, MaxBytes: 1 << 20, Retry429Backoff: 5 * time.Second}, srv.URL)
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+		_, err := f.Get(ctx, srv.URL+"/x", nil)
+		if se, ok := AsSourceError(err); !ok || se.Kind != ErrSourceUnavailable {
+			t.Fatalf("want SOURCE_UNAVAILABLE on cancelled backoff, got %v", err)
+		} else if !strings.Contains(se.Message, "退避") {
+			t.Fatalf("message should name the aborted backoff: %q", se.Message)
+		}
+		if atomic.LoadInt32(hits) != 1 {
+			t.Fatalf("single hit expected before cancel, got %d", *hits)
+		}
+	})
+}
+
+// TestFetcherTransportErrorDetail pins the 2026-10-14 lesson: a bare
+// 「网络请求失败」 hid the GDELT rate-limit hang; the transport error must ride
+// in the message so the research ledger (Kind+Message) stays diagnosable.
+func TestFetcherTransportErrorDetail(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	host := strings.TrimPrefix(srv.URL, "https://")
+	srv.Close() // listener gone → immediate connection refused
+
+	f := newTestFetcher(t, []string{host}, FetchBudget{Timeout: 5 * time.Second, MaxBytes: 1 << 20}, srv.URL)
+	_, err := f.Get(context.Background(), srv.URL+"/x.csv", nil)
+	se, ok := AsSourceError(err)
+	if !ok || se.Kind != ErrSourceUnavailable {
+		t.Fatalf("want SOURCE_UNAVAILABLE, got %v", err)
+	}
+	if !strings.Contains(se.Message, "connection refused") {
+		t.Fatalf("message must carry the transport cause: %q", se.Message)
 	}
 }
