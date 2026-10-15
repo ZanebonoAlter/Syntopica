@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
-import { useDailyReportsApi, type SectionTimelineNode, type SectionRelation, type DailyReportThread, type BoardTopicListItem } from '~/api/dailyReports'
+import { useDailyReportsApi, type SectionTimelineNode, type SectionRelation, type DailyReportThread, type BoardTopicListItem, type TopicKeyEventMarker } from '~/api/dailyReports'
+import { useTopicKeyEvents } from '../composables/useTopicKeyEvents'
 import { useArticlesApi } from '~/api/articles'
 import { fullComponentHighlight } from '~/utils/graphHighlight'
 import { filterFocusNodes, isDragMove, buildFocusMeta } from './topicFocus'
@@ -467,7 +468,98 @@ async function toggleThreadArticles(thread: DailyReportThread) {
 const emit = defineEmits<{
   openArticle: [articleId: number]
   openDetectiveWall: []
+  /** 来源日报导航（关键注记详情；仅有效来源可定位）。 */
+  openDailyReport: [reportId: number]
 }>()
+
+// --- 关键事件注记（add-topic-key-event-markers 3.4/3.5）----------------------
+// 总览（lanes/timeline DAG）/focus 只读 confirmed：未确认建议不进总览注记层，
+// 对应新闻仍是普通节点（共享缓存的 suggested 不泄漏）。挑选统一在日报。
+const keyEvents = useTopicKeyEvents()
+// 突出关键节点开关：只弱化普通节点展示（opacity），不改坐标/节点集/关系。
+const highlightKeyEvents = ref(false)
+const selectedMarkerId = ref<number | null>(null)
+
+watch([focusedTopicId, days], ([topicId, d]) => {
+  if (topicId != null) void keyEvents.ensureTopicKeyEvents(topicId, d)
+  // 切换泳道/时间窗口：重置局部强调与快照选择（迟到响应按 topicId 分键不串）。
+  highlightKeyEvents.value = false
+  selectedMarkerId.value = null
+}, { immediate: true })
+
+/** 全版块 confirmed 注记（lanes 徽标/弱化判定；跨 topic 汇总只读）。 */
+const boardConfirmedMarkers = computed<TopicKeyEventMarker[]>(() => {
+  // 按 marker.id 去重：同一 marker 可能经多个话题缓存可达（跨入口共享），
+  // 汇总重复会计双 ★n 计数。
+  const seen = new Set<number>()
+  const out: TopicKeyEventMarker[] = []
+  for (const topic of topics.value) {
+    for (const marker of keyEvents.topicEntry(topic.id).markers) {
+      if (seen.has(marker.id)) continue
+      seen.add(marker.id)
+      out.push(marker)
+    }
+  }
+  return out
+})
+
+const boardMarkersBySection = computed(() => {
+  const index = new Map<number, TopicKeyEventMarker[]>()
+  for (const marker of boardConfirmedMarkers.value) {
+    if (marker.source_section_id == null) continue
+    const list = index.get(marker.source_section_id)
+    if (list) list.push(marker)
+    else index.set(marker.source_section_id, [marker])
+  }
+  return index
+})
+
+/** ★n：该来源 section 下的独立 confirmed 注记数（不是整章状态）。 */
+/** 取消失败局部反馈（读写 error SHALL 有反馈；取消按钮即恢复重试入口）。 */
+function markerErrorMessage(marker: TopicKeyEventMarker): string {
+  return keyEvents.markerView(marker.id).error || ''
+}
+
+function sectionMarkerCount(sectionId: number): number {
+  return boardMarkersBySection.value.get(sectionId)?.length ?? 0
+}
+
+/** 该来源 section 的 confirmed 注记（详情/弹窗维护列表）。 */
+function sectionMarkers(sectionId: number): TopicKeyEventMarker[] {
+  return boardMarkersBySection.value.get(sectionId) ?? []
+}
+
+function unmarkMarker(marker: TopicKeyEventMarker) {
+  if (marker.persistent_topic_id != null) void keyEvents.actMarker(marker.persistent_topic_id, marker.id, 'unmark')
+}
+
+// --- focus 视图关键节点（合并列：真实 section + 失效来源快照，同轴按日期排）---
+const focusTopicMarkers = computed<TopicKeyEventMarker[]>(() =>
+  focusedTopicId.value == null ? [] : keyEvents.topicEntry(focusedTopicId.value).markers,
+)
+
+const focusDetachedMarkers = computed<TopicKeyEventMarker[]>(() => {
+  const liveIds = new Set(focusNodes.value.map(n => n.id))
+  return focusTopicMarkers.value
+    .filter(m => m.source_section_id == null || !liveIds.has(m.source_section_id))
+    .sort((a, b) => a.source_period_date < b.source_period_date ? -1 : a.source_period_date > b.source_period_date ? 1 : b.id - a.id)
+})
+
+type FocusColumn =
+  | { kind: 'section', key: string, date: string, node: SectionTimelineNode }
+  | { kind: 'marker', key: string, date: string, marker: TopicKeyEventMarker }
+
+/** 合并列：真实 section 与失效快照同轴（快照不占 section ID、不伪造关系）。 */
+const focusColumns = computed<FocusColumn[]>(() => {
+  const cols: FocusColumn[] = focusNodes.value.map(n => ({
+    kind: 'section', key: `fn-${n.id}`, date: n.period_date, node: n,
+  }))
+  for (const m of focusDetachedMarkers.value) {
+    cols.push({ kind: 'marker', key: `km-${m.id}`, date: m.source_period_date, marker: m })
+  }
+  cols.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.key < b.key ? -1 : 1))
+  return cols
+})
 
 // --- 编排态（切片③）：手动建泳道，就地叠加在 lanes 上（composeMode 布尔态）---
 // composable 负责候选池/勾选/聚合/离群/聚类质量/语义搜索/保存（含移出二次确认）的全部
@@ -607,6 +699,18 @@ const topics = computed<TopicRow[]>(() => {
   })
 })
 
+// lanes/timeline 总览激活时为本版块全部话题拉取 confirmed（fire-and-forget，
+// 各 topic 独立缓存键；失败局部提示，不阻塞图渲染）。放在 topics 声明之后：
+// immediate watch 在 setup 期同步触发，早于声明会 TDZ。依赖含 topics 签名：
+// 时间线异步到达后话题集合从空变非空也要补拉。
+const boardTopicIdsSig = computed(() => topics.value.map(t => t.id).join(','))
+watch([() => props.boardId, viewMode, days, boardTopicIdsSig], ([boardIdVal, mode]) => {
+  if (boardIdVal == null || mode === 'focus') return
+  for (const topic of topics.value) {
+    void keyEvents.ensureTopicKeyEvents(topic.id, days.value)
+  }
+}, { immediate: true })
+
 const topicStats = computed(() => {
   let active = 0, candidate = 0, archived = 0
   for (const t of topics.value) {
@@ -657,7 +761,8 @@ const focusNodes = computed<SectionTimelineNode[]>(() =>
   focusedTopicId.value == null ? [] : filterFocusNodes(sections.value, focusedTopicId.value),
 )
 const focusMeta = computed(() => buildFocusMeta(focusNodes.value))
-const focusTimelineWidth = computed(() => focusNodes.value.length * FOCUS_COL_W + 32)
+const focusTimelineWidth = computed(() => focusColumns.value.length * FOCUS_COL_W + 32)
+const focusMarkerCount = computed(() => focusTopicMarkers.value.length)
 const focusTopicLabel = computed(() => {
   const id = focusedTopicId.value
   if (id == null) return ''
@@ -674,9 +779,22 @@ const focusStatusLabel = computed(() => {
 function enterFocus(topicId: number) {
   focusedTopicId.value = topicId
   selectedNode.value = null
+  selectedMarkerId.value = null
   popupThreads.value = []
   expandedThreadId.value = null
   viewMode.value = 'focus'
+}
+
+/** 点快照节点：原位详情（选择不标记、不研究、无假文章链接）。 */
+const selectedMarker = computed<TopicKeyEventMarker | null>(() => {
+  const id = selectedMarkerId.value
+  if (id == null) return null
+  return focusTopicMarkers.value.find(m => m.id === id) ?? null
+})
+
+function selectFocusMarker(marker: TopicKeyEventMarker) {
+  selectedNode.value = null
+  selectedMarkerId.value = marker.id
 }
 
 // 外部聚焦入口：TagsPage 从话题态势卡片/气泡点击切入本 tab 时聚焦该话题（focus 视图）。
@@ -1034,8 +1152,10 @@ watch(viewMode, () => {
 
     <!-- Focus view (single topic deep read) -->
     <div v-else-if="viewMode === 'focus'" class="btb-focus">
-      <!-- 空话题降级：该话题在当前时间窗口内无节点，不报错 -->
-      <div v-if="focusMeta.empty" class="btb-focus-empty">
+      <!-- 空话题降级：该话题在当前时间窗口内无节点，不报错。
+           但确认快照独立于真实 section（spec：section 空但 markers 非空仍可显示，
+           不被 empty 提前隐藏、不伪造 section）。 -->
+      <div v-if="focusMeta.empty && focusDetachedMarkers.length === 0" class="btb-focus-empty">
         <Icon icon="mdi:bookmark-off-outline" width="22" />
         <p>该话题在当前时间窗口内暂无新动态</p>
         <button class="btb-focus-back" @click="exitFocus">
@@ -1061,8 +1181,23 @@ watch(viewMode, () => {
             <span><b>{{ focusMeta.count }}</b> 个动态</span>
             <span>跨度 <b>{{ focusMeta.spanDays }} 天</b></span>
             <span>最近 <b>{{ focusMeta.lastDate ? formatDateShort(focusMeta.lastDate) : '' }}</b></span>
+            <span v-if="focusMarkerCount > 0"><b>{{ focusMarkerCount }}</b> 个关键节点</span>
+            <button
+              type="button"
+              class="btb-ke-toggle"
+              :aria-pressed="highlightKeyEvents"
+              title="突出关键节点：弱化普通动态的显示，不移除背景、不改变时间位置"
+              @click="highlightKeyEvents = !highlightKeyEvents"
+            >
+              <Icon icon="mdi:star-four-points" width="13" />
+              {{ highlightKeyEvents ? '取消突出' : '突出关键节点' }}
+            </button>
           </div>
         </div>
+        <!-- 突出模式下零确认节点：显式提示（spec：当前窗口无确认节点 SHALL 提示）。 -->
+        <p v-if="highlightKeyEvents && focusMarkerCount === 0" class="btb-ke-empty-hint" role="status">
+          当前窗口内没有已确认关键节点——突出模式不改变内容；再点一次开关可恢复普通显示。
+        </p>
         <!-- 横向时间轴（按住拖拽平移，区分 click/drag）-->
         <div
           ref="focusScrollRef"
@@ -1074,19 +1209,88 @@ watch(viewMode, () => {
           @pointercancel="onPointerCancel"
         >
           <div class="btb-focus-timeline" :style="{ width: focusTimelineWidth + 'px' }">
-            <div v-for="n in focusNodes" :key="'fn-' + n.id" class="btb-focus-col">
-              <div class="btb-focus-col__date"><b>{{ formatDateShort(n.period_date) }}</b></div>
-              <div
-                class="btb-focus-node"
-                :data-section="n.id"
-                :class="{ 'btb-focus-node--selected': selectedNode?.id === n.id }"
-                @click="onFocusNodeClick(n)"
-              >
-                <div class="btb-focus-node__inner" />
-              </div>
-              <div class="btb-focus-node-label">{{ truncateLabel(n.cluster_label) }}</div>
+            <div
+              v-for="col in focusColumns"
+              :key="col.key"
+              class="btb-focus-col"
+              :class="{
+                'btb-focus-col--dimmed': highlightKeyEvents && col.kind === 'section' && sectionMarkerCount(col.node.id) === 0,
+              }"
+            >
+              <div class="btb-focus-col__date"><b>{{ formatDateShort(col.date) }}</b></div>
+              <!-- 真实 section 节点：原状态/坐标/交互不变；★n = 该来源独立 confirmed 注记数 -->
+              <template v-if="col.kind === 'section'">
+                <div
+                  class="btb-focus-node"
+                  :data-section="col.node.id"
+                  :class="{ 'btb-focus-node--selected': selectedNode?.id === col.node.id }"
+                  :title="col.node.cluster_label"
+                  @click="onFocusNodeClick(col.node)"
+                  @keydown.enter.prevent="onFocusNodeClick(col.node)"
+                >
+                  <span
+                    v-if="sectionMarkerCount(col.node.id) > 0"
+                    class="btb-focus-node__ke"
+                    :title="`该来源 ${sectionMarkerCount(col.node.id)} 条已确认关键线索`"
+                  >★{{ sectionMarkerCount(col.node.id) }}</span>
+                  <div class="btb-focus-node__inner" />
+                </div>
+                <div class="btb-focus-node-label" :title="col.node.cluster_label">{{ truncateLabel(col.node.cluster_label) }}</div>
+              </template>
+              <!-- 失效来源快照：同轴独立注记（不占 section ID、不伪造关系/文章链接） -->
+              <template v-else>
+                <div
+                  class="btb-focus-node btb-focus-node--snapshot"
+                  :data-marker="col.marker.id"
+                  :class="{ 'btb-focus-node--selected': selectedMarkerId === col.marker.id }"
+                  :title="col.marker.title_snapshot"
+                  role="button"
+                  tabindex="0"
+                  @click="selectFocusMarker(col.marker)"
+                  @keydown.enter.prevent="selectFocusMarker(col.marker)"
+                >
+                  <span class="btb-focus-node__ke" title="来源已失效的确认快照">★</span>
+                  <div class="btb-focus-node__inner" />
+                </div>
+                <div class="btb-focus-node-label btb-focus-node-label--snapshot" :title="col.marker.title_snapshot">
+                  {{ truncateLabel(col.marker.title_snapshot) }}
+                </div>
+              </template>
             </div>
           </div>
+        </div>
+        <!-- 失效快照原位详情：标题/摘要/来源日期/确认时间 + 取消维护；不造文章链接 -->
+        <div v-if="selectedMarker && !selectedNode" class="btb-focus-inline" data-testid="focus-marker-detail">
+          <div class="btb-focus-inline__head">
+            <span class="btb-focus-inline__date">{{ selectedMarker.source_period_date.slice(0, 10) }}</span>
+            <span class="btb-focus-inline__title">{{ selectedMarker.title_snapshot }}</span>
+            <span class="btb-focus-inline__meta">来源已失效 · 确认于 {{ selectedMarker.confirmed_at?.slice(0, 10) ?? '' }}</span>
+          </div>
+          <div class="btb-ke-detail" data-testid="focus-ke-list">
+            <div class="btb-ke-detail__row">
+              <Icon icon="mdi:star-check" width="13" aria-hidden="true" />
+              <div class="btb-ke-detail__main">
+                <span class="btb-ke-detail__title">{{ selectedMarker.title_snapshot }}</span>
+                <span v-if="selectedMarker.summary_snapshot" class="btb-ke-detail__summary">{{ selectedMarker.summary_snapshot }}</span>
+              </div>
+              <div class="btb-ke-detail__actions">
+                <button
+                  v-if="selectedMarker.source_report_id != null"
+                  type="button"
+                  class="btb-ke-detail__link"
+                  @click="emit('openDailyReport', selectedMarker.source_report_id!)"
+                >来源日报 {{ selectedMarker.source_period_date.slice(0, 10) }}</button>
+                <button
+                  type="button"
+                  class="btb-ke-detail__unmark"
+                  :disabled="keyEvents.markerView(selectedMarker.id).pending != null"
+                  @click="unmarkMarker(selectedMarker)"
+                >取消</button>
+              </div>
+              <span v-if="markerErrorMessage(selectedMarker)" class="btb-ke-detail__error" role="alert">{{ markerErrorMessage(selectedMarker) }}（可重试取消）</span>
+            </div>
+          </div>
+          <p class="btb-ke-detail__hint">原线索已被重生成替换，以上为确认时快照；不提供原文链接。</p>
         </div>
         <!-- 就地展开 thread（accordion，focus 模式 SHALL NOT 弹 popup overlay）-->
         <div v-if="selectedNode" class="btb-focus-inline">
@@ -1094,6 +1298,35 @@ watch(viewMode, () => {
             <span class="btb-focus-inline__date">{{ formatDateShort(selectedNode.period_date) }}</span>
             <span class="btb-focus-inline__title">{{ selectedNode.cluster_label }}</span>
             <span class="btb-focus-inline__meta">{{ selectedNode.article_count }} 篇 · {{ selectedNode.thread_count }} 线索</span>
+          </div>
+          <!-- confirmed 注记维护：仅取消纠错 + 来源日报导航；无新挑选、无 AI 理由 -->
+          <div v-if="sectionMarkers(selectedNode.id).length > 0" class="btb-ke-detail" data-testid="focus-ke-list">
+            <div
+              v-for="marker in sectionMarkers(selectedNode.id)"
+              :key="marker.id"
+              class="btb-ke-detail__row"
+            >
+              <Icon icon="mdi:star-check" width="13" aria-hidden="true" />
+              <div class="btb-ke-detail__main">
+                <span class="btb-ke-detail__title">{{ marker.title_snapshot }}</span>
+                <span v-if="marker.summary_snapshot" class="btb-ke-detail__summary">{{ marker.summary_snapshot }}</span>
+              </div>
+              <div class="btb-ke-detail__actions">
+                <button
+                  v-if="marker.source_report_id != null"
+                  type="button"
+                  class="btb-ke-detail__link"
+                  @click="emit('openDailyReport', marker.source_report_id!)"
+                >来源日报 {{ marker.source_period_date.slice(0, 10) }}</button>
+                <button
+                  type="button"
+                  class="btb-ke-detail__unmark"
+                  :disabled="keyEvents.markerView(marker.id).pending != null"
+                  @click="unmarkMarker(marker)"
+                >取消</button>
+              </div>
+              <span v-if="markerErrorMessage(marker)" class="btb-ke-detail__error" role="alert">{{ markerErrorMessage(marker) }}（可重试取消）</span>
+            </div>
           </div>
           <div class="btb-threads">
             <div v-if="popupThreadsLoading" class="btb-threads-loading">
@@ -1326,7 +1559,17 @@ watch(viewMode, () => {
             @mouseenter="hoveredId = pn.data.id"
             @mouseleave="hoveredId = null"
           >
-            <title>{{ pn.data.cluster_label }}（{{ pn.data.period_date.slice(0, 10) }}）{{ pn.data.persistent_topic ? '\n话题：' + pn.data.persistent_topic.label : '' }}{{ pn.data.topic_match_confidence === 'manual' ? '\n人工归属' : '' }}{{ pn.data.article_count ? '\n' + pn.data.article_count + ' 篇 · ' + pn.data.thread_count + ' 线索' : '' }}</title>
+            <title>{{ pn.data.cluster_label }}（{{ pn.data.period_date.slice(0, 10) }}）{{ pn.data.persistent_topic ? '\n话题：' + pn.data.persistent_topic.label : '' }}{{ pn.data.topic_match_confidence === 'manual' ? '\n人工归属' : '' }}{{ pn.data.article_count ? '\n' + pn.data.article_count + ' 篇 · ' + pn.data.thread_count + ' 线索' : '' }}{{ sectionMarkerCount(pn.data.id) ? '\n★ ' + sectionMarkerCount(pn.data.id) + ' 条已确认关键线索' : '' }}</title>
+            <!-- ★n：lanes 总览的独立 confirmed 注记徽标（不进 timeline DAG；
+                 同轴贴节点上方，不改状态色/坐标/关系）。 -->
+            <text
+              v-if="viewMode === 'lanes' && sectionMarkerCount(pn.data.id) > 0"
+              :x="pn.cx"
+              :y="pn.cy - NODE_R - 5"
+              text-anchor="middle"
+              class="btb-node-ke-badge"
+              :class="{ 'btb-node-ke-badge--hot': highlightKeyEvents }"
+            >★{{ sectionMarkerCount(pn.data.id) }}</text>
             <template v-if="pn.data.topic_match_confidence === 'manual'">
               <!-- manual confidence：双环描边，独立样式，不套算法三态（task 3.9）-->
               <circle
@@ -1460,6 +1703,35 @@ watch(viewMode, () => {
             <span>{{ formatDateShort(selectedNode.period_date) }}</span>
             <span>{{ selectedNode.article_count }} 篇</span>
             <span>{{ selectedNode.thread_count }} 条线索</span>
+          </div>
+          <!-- confirmed 注记维护（总览只读 confirmed：取消纠错 + 来源日报导航） -->
+          <div v-if="sectionMarkers(selectedNode.id).length > 0" class="btb-ke-detail btb-ke-detail--popup" data-testid="popup-ke-list">
+            <div
+              v-for="marker in sectionMarkers(selectedNode.id)"
+              :key="marker.id"
+              class="btb-ke-detail__row"
+            >
+              <Icon icon="mdi:star-check" width="13" aria-hidden="true" />
+              <div class="btb-ke-detail__main">
+                <span class="btb-ke-detail__title">{{ marker.title_snapshot }}</span>
+                <span v-if="marker.summary_snapshot" class="btb-ke-detail__summary">{{ marker.summary_snapshot }}</span>
+              </div>
+              <div class="btb-ke-detail__actions">
+                <button
+                  v-if="marker.source_report_id != null"
+                  type="button"
+                  class="btb-ke-detail__link"
+                  @click="emit('openDailyReport', marker.source_report_id!)"
+                >来源日报</button>
+                <button
+                  type="button"
+                  class="btb-ke-detail__unmark"
+                  :disabled="keyEvents.markerView(marker.id).pending != null"
+                  @click="unmarkMarker(marker)"
+                >取消</button>
+              </div>
+              <span v-if="markerErrorMessage(marker)" class="btb-ke-detail__error" role="alert">{{ markerErrorMessage(marker) }}（可重试取消）</span>
+            </div>
           </div>
 
           <!-- Threads -->
@@ -2106,6 +2378,9 @@ watch(viewMode, () => {
 
 .btb-popup {
   background: var(--color-bg-elevated);
+  /* Teleport 到 body 的 popup 不在页面容器继承链内，body 无主题文字色
+     （UA 默认黑），dark 下会黑底黑字——必须在容器上显式接主题文字色。 */
+  color: var(--color-text-primary);
   border: 1px solid var(--color-border-medium);
   border-radius: 10px;
   padding: 1rem 1.2rem;
@@ -2129,7 +2404,9 @@ watch(viewMode, () => {
   font-weight: 500;
   padding: 0.12rem 0.4rem;
   border-radius: 3px;
-  color: white;
+  /* 状态胶囊文字对比对象是 status 填充色而非页面背景：
+     editorial 填充偏深→inverted 为近白；dark 填充提亮→inverted 为深色，双主题可读。 */
+  color: var(--color-text-inverted);
 }
 
 .btb-popup-close {
@@ -2518,6 +2795,7 @@ watch(viewMode, () => {
 .btb-focus-inline {
   padding: 0.8rem 1rem;
   background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
   border: 1px solid var(--color-border-subtle);
   border-radius: 10px;
 }
@@ -2874,5 +3152,182 @@ watch(viewMode, () => {
   font-size: 0.78rem;
   color: var(--color-text-secondary);
   line-height: 1.7;
+}
+
+/* ── 关键事件注记（add-topic-key-event-markers）──────────────────────────── */
+.btb-ke-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-medium, rgba(127, 127, 127, 0.35));
+  background: transparent;
+  color: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btb-ke-toggle[aria-pressed='true'] {
+  background: var(--color-accent, #d94a4a);
+  border-color: var(--color-accent, #d94a4a);
+  /* accent 填充在 dark 下提亮（橙），近白字对比不够——用主题反色（editorial 近白 / dark 深色）。 */
+  color: var(--color-text-inverted);
+}
+
+/* 突出模式：普通节点仅弱化透明度（不移除、不改坐标）；快照/关键节点保持。 */
+.btb-focus-col--dimmed {
+  opacity: 0.32;
+  transition: opacity 0.15s ease;
+}
+
+.btb-focus-col--dimmed .btb-focus-node,
+.btb-focus-col--dimmed .btb-focus-node-label {
+  cursor: pointer; /* 普通点仍可点（背景可达） */
+}
+
+.btb-focus-node {
+  position: relative;
+}
+
+.btb-focus-node__ke {
+  position: absolute;
+  top: -10px;
+  right: -8px;
+  z-index: 2;
+  min-width: 20px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--color-accent, #d94a4a);
+  color: var(--color-text-inverted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.btb-focus-node--snapshot {
+  outline: 2px dashed var(--color-accent, #d94a4a);
+  outline-offset: 2px;
+}
+
+.btb-focus-node--snapshot .btb-focus-node__inner {
+  opacity: 0.55;
+}
+
+.btb-focus-node-label--snapshot {
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.btb-node-ke-badge {
+  fill: var(--color-accent, #d94a4a);
+  font-size: 10px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.btb-ke-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  border: 1px solid var(--color-border-medium, rgba(127, 127, 127, 0.35));
+  border-radius: 10px;
+  background: var(--color-bg-elevated, rgba(127, 127, 127, 0.06));
+  /* 容器接主题文字色：focus inline 与 Teleport popup 两条挂载链都不依赖外层继承。 */
+  color: var(--color-text-primary);
+}
+
+.btb-ke-detail__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 原型 .event-title 形态：标题列（serif 加粗可换行）+ 摘要，动作列独立在右，不挤标题。 */
+.btb-ke-detail__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.btb-ke-detail__title {
+  font-family: "Noto Serif SC", serif;
+  font-weight: 700;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.btb-ke-detail__summary {
+  margin: 0;
+  color: var(--color-text-muted, #9a8f81);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.btb-ke-detail__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 1px;
+}
+
+.btb-ke-detail__link,
+.btb-ke-detail__unmark {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--color-border-medium, rgba(127, 127, 127, 0.35));
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btb-ke-detail__link:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-strong, rgba(127, 127, 127, 0.5));
+}
+
+.btb-ke-detail__unmark {
+  border-color: var(--color-accent, #d94a4a);
+  color: var(--color-accent, #d94a4a);
+}
+
+.btb-ke-detail__unmark:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btb-ke-detail__error {
+  flex: 1 0 100%;
+  color: var(--color-accent, #d94a4a);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.btb-ke-empty-hint {
+  margin: 4px 0 0;
+  color: var(--color-text-muted, #9a8f81);
+  font-size: 0.74rem;
+}
+
+.btb-ke-detail__hint {
+  margin: 2px 0 0;
+  color: var(--color-text-muted, #9a8f81);
+  font-size: 0.72rem;
 }
 </style>

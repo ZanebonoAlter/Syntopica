@@ -1,10 +1,18 @@
 package service
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/testutil"
+	tgrepo "syntopica-backend/internal/topicgraph/repository"
 )
 
 // Signal period & material helpers (board-signal-reports PC-1..PC-5).
@@ -258,5 +266,268 @@ func TestFilterSignalSectionsIsStatusBlind(t *testing.T) {
 	got := filterSignalSections([]TimelineSectionNode{pcSection(9, time.Date(2026, 1, 10, 0, 0, 0, 0, models.ShanghaiTZ), "inactive lane slice", 6)}, from, cutoff)
 	if len(got) != 1 || got[0].ArticleCount != 6 {
 		t.Fatalf("date-only filter must keep historical slices: %+v", got)
+	}
+}
+
+// ── add-topic-key-event-markers 2.3：信号发现材料纳入同 owner 合窗 confirmed ──
+
+// stubKeyEventLifelineReader serves one lane's in-window sections via the
+// LifelineReader interface (the assembler's only lane-data dependency).
+type stubKeyEventLifelineReader struct {
+	sectionsByTopic map[uint]SectionTimelineData
+}
+
+func (s *stubKeyEventLifelineReader) GetTopicLifeline(topicID uint) (SectionTimelineData, error) {
+	if d, ok := s.sectionsByTopic[topicID]; ok {
+		return d, nil
+	}
+	return SectionTimelineData{}, nil
+}
+
+func (s *stubKeyEventLifelineReader) GetTopicLifelineArchive(topicID uint) ([]LifelineArchiveRow, error) {
+	return nil, nil
+}
+
+// seedSignalKeyEventWorld provisions board/lane/report/section/thread and
+// returns ids. inWindow controls the section's period_date.
+func seedSignalKeyEventWorld(t *testing.T, db *gorm.DB, inWindow bool, threadTitle string, tagIDs, artIDs string) (boardID, laneID, sectionID, threadID uint) {
+	t.Helper()
+	board := models.SemanticLabel{Label: "sig-ke-" + threadTitle, Slug: "sig-ke-" + threadTitle, LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&board).Error)
+	lane := topicgraphRepoBoard(t, db, board.ID)
+	date := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	if !inWindow {
+		date = time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	}
+	report := topicgraphRepoReport(t, db, board.ID, date)
+	section := topicgraphRepoSection(t, db, report, lane)
+	thread := topicgraphRepoThread(t, db, report, section, threadTitle, tagIDs, artIDs)
+	return board.ID, lane, section, thread
+}
+
+func topicgraphRepoBoard(t *testing.T, db *gorm.DB, boardID uint) uint {
+	t.Helper()
+	topic := tgrepo.BoardPersistentTopic{
+		SemanticBoardID: boardID, Label: "信号泳道", Status: tgrepo.TopicStatusActive,
+		FirstSeenDate: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC),
+		LastSeenDate:  time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC),
+	}
+	require.NoError(t, db.Omit("embedding", "centroid").Create(&topic).Error)
+	// Backdate created_at so the lane predates the historical cutoff (the
+	// assembler skips lanes created after cutoff — correct behavior, wrong
+	// for a fresh test row seeded "now").
+	require.NoError(t, db.Exec(`UPDATE board_persistent_topics SET created_at = ? WHERE id = ?`,
+		time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), topic.ID).Error)
+	return topic.ID
+}
+
+func topicgraphRepoReport(t *testing.T, db *gorm.DB, boardID uint, date time.Time) uint {
+	t.Helper()
+	report := tgrepo.BoardDailyReport{
+		SemanticBoardID: boardID, PeriodDate: tgrepo.NormalizeReportDate(date),
+		Status: "completed", Title: "t",
+	}
+	require.NoError(t, db.Create(&report).Error)
+	return report.ID
+}
+
+func topicgraphRepoSection(t *testing.T, db *gorm.DB, reportID, laneID uint) uint {
+	t.Helper()
+	section := tgrepo.DailyReportSection{
+		ReportID: reportID, ClusterLabel: "信号章节", ArticleCount: 1,
+		Embedding: tgrepo.FloatsToPgVector([]float64{0}), PersistentTopicID: &laneID,
+	}
+	require.NoError(t, db.Create(&section).Error)
+	return section.ID
+}
+
+func topicgraphRepoThread(t *testing.T, db *gorm.DB, reportID, sectionID uint, title, tags, arts string) uint {
+	t.Helper()
+	thread := tgrepo.DailyReportThread{
+		ReportID: reportID, SectionID: sectionID, Title: title, Summary: "s-" + title,
+		TagIDs: tgrepo.JSON(tags), RelatedArticleIDs: tgrepo.JSON(arts),
+		Embedding: tgrepo.FloatsToPgVector([]float64{0}),
+	}
+	require.NoError(t, db.Create(&thread).Error)
+	return thread.ID
+}
+
+// kePeriod is a fixed month window: 2026-08 in Shanghai TZ.
+func kePeriod(t *testing.T) SignalPeriod {
+	t.Helper()
+	p, err := ParseSignalPeriod("month", "2026-08", time.Date(2026, 9, 1, 0, 0, 0, 0, models.ShanghaiTZ))
+	require.NoError(t, err)
+	return p
+}
+
+// TestSignalMaterialConfirmedKeyEvents_OnlyInWindowSameOwnerConfirmed covers
+// spec scenarios 只冻结合窗人工关注 / 事后选择不冒充当时预测 / 历史材料隔离.
+func TestSignalMaterialConfirmedKeyEvents_OnlyInWindowSameOwnerConfirmed(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	boardID, laneID, sectionID, threadID := seedSignalKeyEventWorld(t, db, true, "在窗事件", "[31]", "[51,52]")
+	otherBoard, otherLane, _, otherThread := seedSignalKeyEventWorld(t, db, true, "他板事件", "[31]", "[51]")
+
+	cutoff := time.Date(2026, 8, 20, 0, 0, 0, 0, models.ShanghaiTZ)
+
+	// Confirmed, confirmed BEFORE cutoff (当时已知).
+	m1, err := tgrepoApplyThread(t, db, laneID, threadID, cutoff.AddDate(0, 0, -2))
+	require.NoError(t, err)
+	_ = m1
+	// Confirmed AFTER cutoff → retrospective attention (事后选择).
+	m2, err := tgrepoApplyThread(t, db, otherLane, otherThread, cutoff.AddDate(0, 0, +5))
+	require.NoError(t, err)
+	_ = m2
+	// Suggested (unconfirmed) on a second thread → excluded from attention.
+	_, thread2 := seedSignalKeyEventThread2(t, db, boardID, laneID)
+	require.NoError(t, db.Exec(`INSERT INTO topic_key_event_markers
+		(semantic_board_id, source_key, persistent_topic_id, source_thread_id, source_section_id, source_period_date,
+		 title_snapshot, summary_snapshot, state, last_action, revision, created_at, updated_at)
+		VALUES (?, 'k-sugg', ?, ?, ?, DATE '2026-08-12', '未确认建议', 's', 'suggested', 'ai_suggest', 1, now(), now())`,
+		boardID, laneID, thread2, sectionID).Error)
+	// Out-of-window confirmed (July) on the same lane.
+	_, outSection := seedSignalJulySection(t, db, boardID, laneID)
+
+	reader := &stubKeyEventLifelineReader{sectionsByTopic: map[uint]SectionTimelineData{
+		laneID: {Sections: []TimelineSectionNode{{
+			SectionID: sectionID, PeriodDate: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
+			ClusterLabel: "信号章节", ArticleCount: 1, ThreadCount: 1,
+			ThreadTitles: []string{"在窗事件"},
+		}, {
+			SectionID: outSection, PeriodDate: time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+			ClusterLabel: "七月旧闻", ArticleCount: 1,
+		}}},
+	}}
+	builder := NewSignalMaterialBuilder(db, reader)
+	p := kePeriod(t)
+	material, err := builder.AssembleSignalMaterial(t.Context(), boardID, p, cutoff)
+	require.NoError(t, err)
+
+	// Lane survives with its slice.
+	var lane *SignalLaneMaterial
+	for i := range material.Lanes {
+		if material.Lanes[i].LaneID == laneID {
+			lane = &material.Lanes[i]
+		}
+	}
+	require.NotNil(t, lane, "lane material must exist")
+	// Only the in-window confirmed marker enters the attention list.
+	require.Len(t, lane.ConfirmedKeyEvents, 1, "只冻结合窗同owner confirmed：他板/未确认/窗外一律剔除")
+	att := lane.ConfirmedKeyEvents[0]
+	assert.Equal(t, "在窗事件", att.Title)
+	assert.True(t, att.EvidenceVerified, "source section 在白名单 → 证据可核")
+	assert.False(t, att.CurrentRetrospectiveAttention, "cutoff 前确认 → 当时已知，非回顾标记")
+	_, _ = otherBoard, otherLane
+
+	// Retrospective flag: re-confirm after cutoff on a fresh source.
+	boardID2, laneID2, sectionID2, threadID2 := seedSignalKeyEventWorld(t, db, true, "回顾事件", "[31]", "[53]")
+	_, err = tgrepoApplyThread(t, db, laneID2, threadID2, cutoff.AddDate(0, 0, 3))
+	require.NoError(t, err)
+	m2b, _ := builder.collectConfirmedKeyEvents(t.Context(), boardID2, laneID2, "x", []SignalArticleSlice{{
+		SectionID: sectionID2, PeriodDate: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
+	}}, p, cutoff)
+	require.NoError(t, err)
+	require.Len(t, m2b, 1)
+	assert.True(t, m2b[0].CurrentRetrospectiveAttention, "cutoff 后确认 → 本次回顾关注，不冒充当时预测")
+}
+
+// tgrepoApplyThread applies a manual mark via the real repository (needs the
+// topicgraph repo singleton bound to the same DB).
+func tgrepoApplyThread(t *testing.T, db *gorm.DB, topicID, threadID uint, decidedAt time.Time) (*tgrepo.TopicKeyEventMarker, error) {
+	t.Helper()
+	tgrepo.InitRepository(db)
+	m, err := tgrepo.Repo.ApplyThreadKeyEvent(topicID, threadID, tgrepo.KeyEventActionMark, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Pin decision timestamps deterministically for cutoff assertions.
+	require.NoError(t, db.Exec(`UPDATE topic_key_event_markers SET confirmed_at = ?, decided_at = ? WHERE id = ?`,
+		decidedAt, decidedAt, m.ID).Error)
+	return m, nil
+}
+
+func seedSignalKeyEventThread2(t *testing.T, db *gorm.DB, boardID, laneID uint) (sectionID, threadID uint) {
+	t.Helper()
+	report := topicgraphRepoReport(t, db, boardID, time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC))
+	section := topicgraphRepoSection(t, db, report, laneID)
+	thread := topicgraphRepoThread(t, db, report, section, "第二事件", "[31]", "[54]")
+	return section, thread
+}
+
+func seedSignalJulySection(t *testing.T, db *gorm.DB, boardID, laneID uint) (threadID, sectionID uint) {
+	t.Helper()
+	report := topicgraphRepoReport(t, db, boardID, time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
+	section := topicgraphRepoSection(t, db, report, laneID)
+	thread := topicgraphRepoThread(t, db, report, section, "七月确认事件", "[31]", "[55]")
+	m, err := tgrepoApplyThread(t, db, laneID, thread, time.Date(2026, 7, 6, 0, 0, 0, 0, models.ShanghaiTZ))
+	require.NoError(t, err)
+	_ = m
+	return thread, section
+}
+
+// TestSignalMaterialConfirmedKeyEvents_InvalidEvidenceRecordsGap covers
+// spec scenario 失效依据不升级为有效信号：detached snapshot keeps attention
+// but never verifies as evidence; exact-fingerprint threads DO verify.
+func TestSignalMaterialConfirmedKeyEvents_InvalidEvidenceRecordsGap(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	boardID, laneID, sectionID, threadID := seedSignalKeyEventWorld(t, db, true, "会失效的事件", "[31]", "[56,57]")
+	cutoff := time.Date(2026, 8, 20, 0, 0, 0, 0, models.ShanghaiTZ)
+	p := kePeriod(t)
+
+	_, err := tgrepoApplyThread(t, db, laneID, threadID, cutoff.AddDate(0, 0, -1))
+	require.NoError(t, err)
+
+	articles := []SignalArticleSlice{{
+		SectionID: sectionID, PeriodDate: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
+	}}
+	builder := NewSignalMaterialBuilder(db, &stubKeyEventLifelineReader{})
+
+	// ① Live source: verified, no gap.
+	att, gaps := builder.collectConfirmedKeyEvents(t.Context(), boardID, laneID, "l", articles, p, cutoff)
+	require.Len(t, att, 1)
+	assert.True(t, att[0].EvidenceVerified)
+	assert.Empty(t, gaps)
+
+	// ② Detached source (rebuild replaced the thread) + NO fingerprint match
+	// in whitelist → gap recorded, evidence NOT verified (快照不冒充有效原文).
+	// A real rebuild DELETES the thread row; the FK SET NULLs the marker.
+	require.NoError(t, db.Exec(`DELETE FROM daily_report_threads WHERE id = ?`, threadID).Error)
+	att, gaps = builder.collectConfirmedKeyEvents(t.Context(), boardID, laneID, "l", articles, p, cutoff)
+	require.Len(t, att, 1)
+	assert.False(t, att[0].EvidenceVerified, "失效依据不升级为有效信号")
+	require.Len(t, gaps, 1)
+	assert.Contains(t, gaps[0].Reason, "无有效新闻切片")
+
+	// ③ Exact fingerprint match on a whitelisted thread re-verifies — the
+	// rebuilt thread carries identical title/tags/articles/date (reuse the
+	// existing report row: same board+date has a unique slot).
+	var reportID uint
+	require.NoError(t, db.Raw(`SELECT id FROM board_daily_reports WHERE semantic_board_id = ? ORDER BY id LIMIT 1`, boardID).Scan(&reportID).Error)
+	newThread := topicgraphRepoThread(t, db, reportID, sectionID, "会失效的事件", "[31]", "[57,56]")
+	_ = newThread
+	att, gaps = builder.collectConfirmedKeyEvents(t.Context(), boardID, laneID, "l", articles, p, cutoff)
+	require.Len(t, att, 1)
+	assert.True(t, att[0].EvidenceVerified, "指纹严格一致的存续来源可重新映射")
+	assert.Empty(t, gaps)
+}
+
+// TestSignalMaterialLegacyPayloadCompat: lanes without key events serialize
+// WITHOUT the field (omitempty) so old research snapshots stay readable.
+func TestSignalMaterialLegacyPayloadCompat(t *testing.T) {
+	raw, err := json.Marshal(&SignalMaterial{Lanes: []SignalLaneMaterial{{LaneID: 1, Articles: []SignalArticleSlice{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("confirmed_key_events")) {
+		t.Fatalf("legacy payload must omit the attention field: %s", raw)
+	}
+	// And the field round-trips when present.
+	with := &SignalMaterial{Lanes: []SignalLaneMaterial{{LaneID: 1, ConfirmedKeyEvents: []SignalKeyEventAttention{{MarkerID: 9, Title: "x", EvidenceVerified: true}}}}}
+	raw2, _ := json.Marshal(with)
+	var back SignalMaterial
+	if err := json.Unmarshal(raw2, &back); err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Lanes) != 1 || back.Lanes[0].ConfirmedKeyEvents[0].MarkerID != 9 || !back.Lanes[0].ConfirmedKeyEvents[0].EvidenceVerified {
+		t.Fatalf("attention field must round-trip: %+v", back)
 	}
 }

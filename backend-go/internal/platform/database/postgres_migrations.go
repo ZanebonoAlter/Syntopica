@@ -2438,6 +2438,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, marginNotesWebSourcesMigration())
 	migrations = append(migrations, marginNotesWebSearchStatusMigration())
 	migrations = append(migrations, vendorModelMigration())
+	migrations = append(migrations, keyEventMarkersMigration())
 	migrations = append(migrations, pgTrgmMigration(), searchVectorDropMigration())
 	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration())
 }
@@ -3923,6 +3924,92 @@ func inferVendorDialect(name string) (dialect, structured string) {
 		return "deepseek", "json_object"
 	default:
 		return "none", "json_schema"
+	}
+}
+
+// keyEventMarkersMigration implements 20261012_0001
+// (add-topic-key-event-markers design D1): the topic_key_event_markers /
+// key_event_recommendation_runs tables are created by AutoMigrate (with the
+// board+source_key unique index); this migration owns what AutoMigrate cannot
+// express — the state CHECK, the recommendation-run state CHECK, and the FK
+// deletion semantics that keep user choices alive:
+//   - semantic_board_id → semantic_boards(id) ON DELETE CASCADE（板块删除沿用删除语义）
+//   - persistent_topic_id → board_persistent_topics(id) ON DELETE SET NULL
+//     （topic 硬删保留注记，孤立注记不混入别的泳道）
+//   - source_report_id / source_thread_id / source_section_id → SET NULL
+//     （重建/删除只断开引用，不删人工选择；快照正文保留）
+//
+// Idempotent (drop-then-add CHECK + IF NOT EXISTS probes for FKs); skips
+// when the tables are absent (topicgraph-less deployments).
+func keyEventMarkersMigration() Migration {
+	return Migration{
+		Version:     "20261012_0001",
+		Description: "add-topic-key-event-markers: topic_key_event_markers state CHECK + SET NULL/CASCADE FKs; key_event_recommendation_runs state CHECK.",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_key_event_markers") {
+				return nil
+			}
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				statements := []string{
+					`ALTER TABLE topic_key_event_markers DROP CONSTRAINT IF EXISTS ck_topic_key_event_markers_state`,
+					`ALTER TABLE topic_key_event_markers ADD CONSTRAINT ck_topic_key_event_markers_state CHECK (state IN ('suggested','confirmed','dismissed'))`,
+				}
+				for _, stmt := range statements {
+					if err := tx.Exec(stmt).Error; err != nil {
+						return fmt.Errorf("key event markers CHECK: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+			if tableExists(db, "key_event_recommendation_runs") {
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					if err := tx.Exec(`ALTER TABLE key_event_recommendation_runs DROP CONSTRAINT IF EXISTS ck_key_event_recommendation_runs_state`).Error; err != nil {
+						return fmt.Errorf("drop run state CHECK: %w", err)
+					}
+					if err := tx.Exec(`ALTER TABLE key_event_recommendation_runs ADD CONSTRAINT ck_key_event_recommendation_runs_state CHECK (state IN ('running','done','failed'))`).Error; err != nil {
+						return fmt.Errorf("add run state CHECK: %w", err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			fks := []struct{ name, table, column, ref, del string }{
+				// Boards are SemanticLabel rows (label_type='board') — the board FK
+				// references semantic_labels(id), same as every other board-owned table.
+				{"fk_topic_key_event_markers_board", "topic_key_event_markers", "semantic_board_id", "semantic_labels(id)", "CASCADE"},
+				{"fk_topic_key_event_markers_topic", "topic_key_event_markers", "persistent_topic_id", "board_persistent_topics(id)", "SET NULL"},
+				{"fk_topic_key_event_markers_report", "topic_key_event_markers", "source_report_id", "board_daily_reports(id)", "SET NULL"},
+				{"fk_topic_key_event_markers_section", "topic_key_event_markers", "source_section_id", "daily_report_sections(id)", "SET NULL"},
+				{"fk_topic_key_event_markers_thread", "topic_key_event_markers", "source_thread_id", "daily_report_threads(id)", "SET NULL"},
+			}
+			for _, fk := range fks {
+				// Guard: skip when the referenced table is absent on this deploy
+				// (e.g. semantic_boards may be absent on minimal deployments).
+				refTable := strings.TrimSuffix(fk.ref, "(id)")
+				if !tableExists(db, refTable) {
+					continue
+				}
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					if err := tx.Exec(fmt.Sprintf(`DO $$ BEGIN
+						IF NOT EXISTS (
+							SELECT 1 FROM information_schema.table_constraints
+							WHERE constraint_name = '%s' AND table_name = '%s'
+						) THEN
+							ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s ON DELETE %s;
+						END IF;
+					END $$`, fk.name, fk.table, fk.table, fk.name, fk.column, fk.ref, fk.del)).Error; err != nil {
+						return fmt.Errorf("add %s: %w", fk.name, err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 	}
 }
 

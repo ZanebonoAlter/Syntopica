@@ -18,6 +18,8 @@ import { contextCacheKey } from '~/features/tags/composables/useLaneTrendData'
 import type { LaneDynamicsLane, LaneDynamicsResponse } from '~/api/laneDynamics'
 import type { ContextRow } from '~/api/boardEnrichment'
 import { isThreadFitDemoted, threadFitLabel } from '~/utils/threadFit'
+import { useTopicKeyEvents } from '~/features/tags/composables/useTopicKeyEvents'
+import KeyEventMarkerActions from '../KeyEventMarkerActions.vue'
 import type { ArticleTitle, TopicLifelineData } from '~/features/tags/composables/useDailyReportReader'
 import type { DailyReport, DailyReportSection, DailyReportThread } from '~/api/dailyReports'
 
@@ -53,6 +55,21 @@ const expandedTopics = ref(new Set<string>())
 const selectedDayByTopic = ref(new Map<number, string>())
 const expandedThreads = ref(new Set<string>())
 let autoExpandedDate = ''
+
+// 关键事件共享缓存（单例）：当日/历史 thread 的挑选动作经同一份状态跨入口同步。
+const keyEvents = useTopicKeyEvents()
+
+function onKeyEventMark(section: DailyReportSection, thread: DailyReportThread) {
+  if (section.persistent_topic_id != null) keyEvents.actThread(section.persistent_topic_id, thread.id, 'mark')
+}
+function onKeyEventDismiss(section: DailyReportSection, thread: DailyReportThread) {
+  if (section.persistent_topic_id != null) keyEvents.actThread(section.persistent_topic_id, thread.id, 'dismiss')
+}
+function onKeyEventUnmark(section: DailyReportSection, thread: DailyReportThread) {
+  if (section.persistent_topic_id == null) return
+  const marker = keyEvents.threadView(thread.id).marker
+  if (marker != null) keyEvents.actMarker(section.persistent_topic_id, marker.id, 'unmark')
+}
 
 const topicStatusLabel: Record<QualityZone['key'], string> = {
   active: '关心 · 持续追踪',
@@ -274,6 +291,7 @@ watch(() => props.focusSectionId, async (sectionId) => {
                   class="drm-thread"
                   :class="{ 'drm-thread--demoted': isThreadFitDemoted(thread.fit_distance) }"
                 >
+                  <div class="drm-thread-row">
                   <button
                     type="button"
                     class="drm-thread__header"
@@ -302,6 +320,16 @@ watch(() => props.focusSectionId, async (sectionId) => {
                       </span>
                     </span>
                   </button>
+                  <KeyEventMarkerActions
+                    mode="review"
+                    :thread-id="thread.id"
+                    :topic-id="section.persistent_topic_id"
+                    :view="keyEvents.threadView(thread.id)"
+                    @mark="onKeyEventMark(section, thread)"
+                    @dismiss="onKeyEventDismiss(section, thread)"
+                    @unmark="onKeyEventUnmark(section, thread)"
+                  />
+                  </div>
                   <div
                     v-if="expandedThreads.has(threadKey(`current-${section.id}`, thread))"
                     class="drm-articles"
@@ -379,6 +407,7 @@ watch(() => props.focusSectionId, async (sectionId) => {
                     class="drm-thread"
                     :class="{ 'drm-thread--demoted': isThreadFitDemoted(thread.fit_distance) }"
                   >
+                    <div class="drm-thread-row">
                     <button
                       type="button"
                       class="drm-thread__header"
@@ -406,6 +435,16 @@ watch(() => props.focusSectionId, async (sectionId) => {
                         </span>
                       </span>
                     </button>
+                    <KeyEventMarkerActions
+                      mode="history"
+                      :thread-id="thread.id"
+                      :topic-id="section.persistent_topic_id"
+                      :view="keyEvents.threadView(thread.id)"
+                      @mark="onKeyEventMark(section, thread)"
+                      @dismiss="onKeyEventDismiss(section, thread)"
+                      @unmark="onKeyEventUnmark(section, thread)"
+                    />
+                    </div>
                     <div
                       v-if="expandedThreads.has(threadKey(`history-${section.id}`, thread))"
                       class="drm-articles"
@@ -711,6 +750,34 @@ watch(() => props.focusSectionId, async (sectionId) => {
   user-select: text;
 }
 
+/*
+  线索行分区（对齐原型 thread-row）：标题/徽标左列，标记按钮组右列窄纵列
+  （与标题同一视觉行，不独占一行）；AI 理由/错误/无归属说明全宽行（ke-detail）。
+*/
+.drm-thread-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 1rem;
+  row-gap: 7px;
+  align-items: start;
+}
+
+.drm-thread-row > .drm-thread__header {
+  grid-column: 1;
+  margin: 0;
+}
+
+.drm-thread-row > .ke-detail {
+  grid-column: 1 / -1;
+}
+
+.drm-thread-row > .ke-actions {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: start;
+  margin-top: 2px;
+}
+
 .drm-thread__header:not(:disabled) {
   cursor: pointer;
 }
@@ -924,6 +991,19 @@ button.drm-article:focus-visible {
 }
 
 @media (max-width: 720px) {
+  /* 窄屏：标记按钮组回退全宽横排（原型同款），不挤压线索标题 */
+  .drm-thread-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .drm-thread-row > .ke-actions {
+    grid-column: 1;
+    grid-row: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    max-width: none;
+  }
+
   .drm-zone__header {
     align-items: start;
   }

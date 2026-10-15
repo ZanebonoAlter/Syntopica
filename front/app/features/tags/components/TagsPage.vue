@@ -156,6 +156,16 @@ onMounted(() => { void loadWatchCount() })
 const route = useRoute()
 const deepLinkReportId = ref<number | null>(null)
 const deepLinkAnnotationId = ref<number | null>(null)
+// 关键注记「来源日报」导航（add-topic-key-event-markers）：总览跳到对应日报。
+// 时间线的 initial-report-id 只在挂载消费，导航用 key 重挂载时间线定位目标报告。
+const dailyReportNavKey = ref(0)
+function openDailyReportFromOverview(reportId: number) {
+  if (!Number.isFinite(reportId) || reportId <= 0) return
+  deepLinkReportId.value = reportId
+  deepLinkAnnotationId.value = null
+  dailyReportNavKey.value += 1
+  contentTab.value = 'daily-reports'
+}
 onMounted(() => {
   // route 在无 router 插件的测试环境下可能为 undefined，防御性短路（生产恒有值）
   const query = route?.query ?? {}
@@ -293,12 +303,14 @@ onMounted(() => {
           />
 
           <BoardDailyReportTimeline
+            :key="`drt-${dailyReportNavKey}`"
             v-if="contentTab === 'daily-reports'"
             :board-id="selectedBoardId"
             :board-title="selectedBoardLabel"
             :boards="boards"
             :initial-report-id="deepLinkReportId"
             :initial-annotation-id="deepLinkAnnotationId"
+            @open-daily-report="openDailyReportFromOverview"
             @open-article="openArticlePreview"
             @select-board="handleSelectBoard"
           />
@@ -309,6 +321,7 @@ onMounted(() => {
             :focus-topic-id="focusTopicIdInBrowser"
             @open-article="openArticlePreview"
             @open-detective-wall="openTopicOverviewDetectiveWall()"
+            @open-daily-report="openDailyReportFromOverview"
           />
 
           <TopicDetectiveWall

@@ -16,6 +16,10 @@ const api = vi.hoisted(() => ({
   anchorAnnotation: vi.fn(),
   askAnnotation: vi.fn(),
   deleteAnnotation: vi.fn(),
+  getReportKeyEvents: vi.fn().mockResolvedValue({ success: true, data: { status: 'idle', markers: [] } }),
+  getTopicKeyEvents: vi.fn().mockResolvedValue({ success: true, data: { topic_id: 1, days: 14, markers: [] } }),
+  putThreadKeyEvent: vi.fn(),
+  patchKeyEventMarker: vi.fn(),
 }))
 
 vi.mock('~/api/dailyReports', () => ({
@@ -23,6 +27,10 @@ vi.mock('~/api/dailyReports', () => ({
     getBoardDailyReports: api.getBoardDailyReports,
     getDailyReportDetail: api.getDailyReportDetail,
     getTopicLifeline: api.getTopicLifeline,
+    getReportKeyEvents: api.getReportKeyEvents,
+    getTopicKeyEvents: api.getTopicKeyEvents,
+    putThreadKeyEvent: api.putThreadKeyEvent,
+    patchKeyEventMarker: api.patchKeyEventMarker,
   }),
 }))
 
@@ -266,6 +274,17 @@ describe('BoardDailyReportTimeline preserved behavior', () => {
     await nextTick()
 
     expect(wrapper.emitted('openArticle')).toEqual([[99]])
+  })
+
+  it('ke-acceptance P1 修复：内嵌总览的来源日报导航透传 openDailyReport（不再死按钮）', async () => {
+    const wrapper = await mountTimeline()
+    await wrapper.find('.drt-browser-toggle').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-testid="thread-browser"]').exists()).toBe(true)
+    // 模拟内嵌 BoardThreadBrowser 的 @open-daily-report（snapshot 失效行的来源日报入口）。
+    wrapper.findComponent({ name: 'BoardThreadBrowser' }).vm.$emit('openDailyReport', 4321)
+    await nextTick()
+    expect(wrapper.emitted('openDailyReport')).toEqual([[4321]])
   })
 })
 

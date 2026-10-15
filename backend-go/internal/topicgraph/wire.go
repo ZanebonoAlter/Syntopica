@@ -30,6 +30,13 @@ var (
 	GenerateAndSaveReport  = service.GenerateAndSaveReport
 )
 
+// ComputeKeyEventSourceKey re-exports the key-event marker fingerprint
+// (add-topic-key-event-markers): dataenrichment's signal-material assembly
+// verifies evidence by the SAME exact-match algorithm across the domain
+// boundary (deep-path imports are depguard-forbidden; a local copy would
+// drift silently).
+var ComputeKeyEventSourceKey = repository.ComputeKeyEventSourceKey
+
 // Daily report rebuild window (offline-catchup D6). Re-exported so the admin
 // scheduler shares the exact predicate and wording the HTTP handler uses
 // (the handler imports service/ directly — it cannot import this package, which

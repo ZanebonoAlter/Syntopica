@@ -78,6 +78,12 @@ func GenerateAndSaveReport(ctx context.Context, boardID uint, date time.Time) (*
 	// the report (spec red line); retried naturally next report day.
 	spawnLaneSnapshotSettlement(boardID)
 
+	// Key-event recommendation (add-topic-key-event-markers D3): another
+	// detached bounded task AFTER the existing terminal work. Same red line —
+	// failure never changes the report result nor emits a second terminal
+	// notification; reads degrade honestly and the next report retries.
+	SpawnKeyEventRecommendationForReport(boardID, report.ID, sessionID)
+
 	return report, nil
 }
 

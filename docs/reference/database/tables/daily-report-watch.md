@@ -173,6 +173,50 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `rolling_summary` | TEXT | NOT NULL | ≤100 字短版态势句 |
 | `rolling_detail` | TEXT | 可空（模型层空串=缺失） | ≤500 字长版成段叙述，与短版同窗同素材同一次结算生成；纯派生缓存——每日报结算 upsert 覆盖，无迁移动作（AutoMigrate 加列）；存量旧行空=合法，下个结算周期自愈补齐、不回填 |
 | `as_of_date` | DATE | NOT NULL | 汇总截止（=最新报告期） |
+### 9.9 topic_key_event_markers（话题关键事件注记）
+
+人工主权的关键事件注记行：AI 只写 `suggested`，`confirmed`/`dismissed` 只能由用户动作产生；同版块同来源指纹唯一（重建重跑幂等）。来源指针可空——日报重生成删 thread/section 时 DB FK SET NULL 断开引用，确认快照保留（失效来源注记）。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | SERIAL | PK | 主键 |
+| `semantic_board_id` | INTEGER | NOT NULL; UNIQUE `idx_topic_key_events_board_source(semantic_board_id, source_key)`; **FK** `→ semantic_labels(id) ON DELETE CASCADE`（迁移 `20261012_0001`） | 所属版块（boards=semantic_labels 行） |
+| `source_key` | VARCHAR(64) | NOT NULL; 同上复合唯一 | 来源指纹：SHA-256(board\|topic\|上海日期\|空白归一标题\|排序去重 tag+article ID)；任何漂移=新注记 |
+| `persistent_topic_id` | INTEGER | 复合索引 `idx_topic_key_events_topic_state`; **FK** `→ board_persistent_topics(id) ON DELETE SET NULL` | 所属话题（话题删除→失效快照注记） |
+| `source_report_id` | INTEGER | index; **FK** `→ board_daily_reports(id) ON DELETE SET NULL` | 来源日报（导航入口；SET NULL 保快照） |
+| `source_section_id` | INTEGER | **FK** `→ daily_report_sections(id) ON DELETE SET NULL` | 来源分区（重建后失配→NULL=失效快照） |
+| `source_thread_id` | INTEGER | **FK** `→ daily_report_threads(id) ON DELETE SET NULL` | 来源线索（thread 寻址动作的目标） |
+| `source_period_date` | DATE | NOT NULL; 复合索引同上 | 来源报告期（轴定位；快照冻结） |
+| `topic_label_snapshot` | VARCHAR(200) | — | 确认时话题名快照 |
+| `title_snapshot` | TEXT | — | 确认时线索标题快照（展示不得重写新闻） |
+| `summary_snapshot` | TEXT | — | 确认时线索摘要快照 |
+| `tag_ids_snapshot` | JSONB | — | 标签 ID 快照数组 |
+| `article_ids_snapshot` | JSONB | — | 依据文章 ID 快照数组 |
+| `state` | VARCHAR(16) | NOT NULL DEFAULT 'suggested'; 复合索引同上; **CHECK** `ck_topic_key_event_markers_state IN ('suggested','confirmed','dismissed')` | 三态；AI 只写 suggested |
+| `recommendation_reason` | TEXT | —（AI 行才有；手动标记为空） | 建议理由（服务端校验候选与证据归属后才落库） |
+| `recommendation_basis` | JSONB | —（同上） | `{"evidence_article_ids":[...],"new_progress":bool}`；证据必须 ⊆ 线索文章 |
+| `last_action` | VARCHAR(16) | — | 最近动作（mark/dismiss/unmark 审计） |
+| `confirmed_at` | TIMESTAMP | —（可空） | 确认时刻（信号材料回溯标记用） |
+| `decided_at` | TIMESTAMP | —（可空） | 最近人工决定时刻 |
+| `revision` | INTEGER | NOT NULL DEFAULT 1 | 乐观锁版本；409 冲突返回最新行 |
+| `created_at` / `updated_at` | TIMESTAMP | — | 创建 / 更新时间 |
+
+> 幂等语义（add-topic-key-event-markers design D1）：PUT/PATCH 同目标同状态重复提交直接返回已保存行；状态变更必须携带最新 `revision`，冲突 409 附服务端最新行；重建重跑按 `source_key` 精确匹配重挂来源指针，失配即断开为独立快照注记（不伪造 section/关系）。
+
+### 9.10 key_event_recommendation_runs（推荐任务状态）
+
+每报告一行的推荐任务状态（重建覆盖 state/token，迟到任务凭 token 失配整批丢弃）。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | SERIAL | PK | 主键 |
+| `report_id` | INTEGER | NOT NULL; UNIQUE `idx_key_event_runs_report` | 目标日报（一报告一行） |
+| `semantic_board_id` | INTEGER | NOT NULL; index | 所属版块 |
+| `state` | VARCHAR(16) | NOT NULL DEFAULT 'running'; **CHECK** `ck_key_event_recommendation_runs_state IN ('running','done','failed')` | running/done/failed；进程重启后无内存任务对应的 running 行读取降级为 failed |
+| `generation_token` | VARCHAR(64) | NOT NULL | 生成代 token（uuid）：重建换 token，迟到批次对不上即丢弃 |
+| `candidate_count` | INTEGER | — | 本轮候选线索数（≤40） |
+| `suggested_count` | INTEGER | — | 本轮实际写/刷新 suggested 行数 |
+| `error` | TEXT | —（可空） | 失败原因 |
 | `created_at` / `updated_at` | TIMESTAMP | — | 创建 / 更新时间 |
 
 ---
@@ -199,11 +243,14 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `idx_persistent_topics_board_status` | board_persistent_topics | `(semantic_board_id, status)` | `20260619_0001` |
 | `idx_watch_section_report` | topic_watch_hits | UNIQUE `(watch_id, section_id, report_id)` | `20260630_0002` |
 | `idx_board_upgrade_suggestions_status` | board_upgrade_suggestions | `(status)` | `20260717_0001` |
+| `idx_topic_key_events_board_source` | topic_key_event_markers | UNIQUE `(semantic_board_id, source_key)` | gorm tag（AutoMigrate） |
+| `idx_topic_key_events_topic_state` | topic_key_event_markers | `(persistent_topic_id, state, source_period_date)` | gorm tag（AutoMigrate） |
+| `idx_key_event_runs_report` | key_event_recommendation_runs | UNIQUE `(report_id)` | gorm tag（AutoMigrate） |
 
 
 ## 域 ER 图
 
-> 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 6 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。
+> 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 13 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。
 
 ```mermaid
 erDiagram

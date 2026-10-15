@@ -108,6 +108,8 @@
 | `board_persistent_topics` | 板块持久叙事话题 | `topicgraph.BoardPersistentTopic` |
 | `board_topic_watches` | 用户声明的话题 Watch 标签 | `topicgraph.BoardTopicWatch` |
 | `topic_watch_hits` | Watch 命中记录 | `topicgraph.TopicWatchHit` |
+| `topic_key_event_markers` | 话题关键事件注记（人工主权三态 + 来源指纹幂等） | `topicgraph.TopicKeyEventMarker` |
+| `key_event_recommendation_runs` | 关键事件推荐任务状态（每报告一行） | `topicgraph.KeyEventRecommendationRun` |
 
 #### 页边注 → [`tables/margin-notes.md`](tables/margin-notes.md)（flow: `daily-report`）
 

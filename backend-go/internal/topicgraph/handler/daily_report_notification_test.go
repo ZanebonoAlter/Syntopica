@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/notification"
 	"syntopica-backend/internal/platform/testutil"
+	"syntopica-backend/internal/topicgraph/repository"
+	"syntopica-backend/internal/topicgraph/service"
 )
 
 // TestDailyReportNotification covers the terminal-state adjudication
@@ -61,4 +64,118 @@ func mustListNotifications(t *testing.T) []models.Notification {
 	rows, _, err := notification.List(false, 100, 0)
 	require.NoError(t, err)
 	return rows
+}
+
+// ── add-topic-key-event-markers 2.1：推荐失败/迟到/空候选不改日报终态 ────────
+
+// TestDailyReportNotification_KeyEventRecommendationNeverChangesTerminal
+// drives generateSingleBoard with a generateReportEntry stub that mimics the
+// real GenerateAndSaveReport composition: report saved → existing terminal
+// work → recommendation spawned (failing / late / empty-candidates). The
+// terminal notification must stay EXACTLY ONE success row and the report row
+// must remain completed — the recommendation is best-effort by construction
+// and can never emit a second terminal notification.
+func TestDailyReportNotification_KeyEventRecommendationNeverChangesTerminal(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repository.InitRepository(db)
+
+	board := models.SemanticLabel{Label: "ke-term", Slug: "ke-term", LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&board).Error)
+	report := repository.BoardDailyReport{
+		SemanticBoardID: board.ID, PeriodDate: repository.NormalizeReportDate(time.Now()),
+		Status: "completed", Title: "t",
+	}
+	require.NoError(t, db.Create(&report).Error)
+	// One topic-attributed thread so the failing chat path is actually
+	// reached (zero candidates would short-circuit to done/0 — that is the
+	// empty-candidate path, covered by the empty board at the end).
+	topic := repository.BoardPersistentTopic{
+		SemanticBoardID: board.ID, Label: "通知泳道", Status: repository.TopicStatusActive,
+		FirstSeenDate: repository.NormalizeReportDate(time.Now()),
+		LastSeenDate:  repository.NormalizeReportDate(time.Now()),
+	}
+	require.NoError(t, db.Omit("embedding", "centroid").Create(&topic).Error)
+	section := repository.DailyReportSection{
+		ReportID: report.ID, ClusterLabel: "章节", ArticleCount: 1,
+		Embedding: repository.FloatsToPgVector([]float64{0}), PersistentTopicID: &topic.ID,
+	}
+	require.NoError(t, db.Create(&section).Error)
+	thread := repository.DailyReportThread{
+		ReportID: report.ID, SectionID: section.ID, Title: "通知线索", Summary: "s",
+		RelatedArticleIDs: repository.JSON("[42]"), Embedding: repository.FloatsToPgVector([]float64{0}),
+	}
+	require.NoError(t, db.Create(&thread).Error)
+
+	// Recommendation chat hook: always fails (covers the failure path; empty
+	// candidates is exercised by the zero-thread board below).
+	origChat := service.SetKeyEventRecommendationChatForTest(func(ctx context.Context, sessionID, system, user string) (string, error) {
+		return "", context.DeadlineExceeded
+	})
+	t.Cleanup(origChat)
+	// Synchronous spawn: the stubbed generateReportEntry below runs inside
+	// generateSingleBoard's worker goroutine; running the recommendation to
+	// completion there keeps assertions race-free (the default detached
+	// goroutine has the same red-line behavior — see service tests).
+	restoreSpawn := service.SetKeyEventRecommendationSpawnForTest(func(boardID, reportID uint, sessionID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		service.RunKeyEventRecommendationSync(ctx, boardID, reportID, sessionID)
+	})
+	t.Cleanup(restoreSpawn)
+
+	origEntry := generateReportEntry
+	t.Cleanup(func() { generateReportEntry = origEntry })
+	generateReportEntry = func(ctx context.Context, boardID uint, date time.Time) (*repository.BoardDailyReport, error) {
+		// Mirror the real pipeline's spawn AFTER the save + existing terminal
+		// work (synchronous here so the test observes the final state).
+		service.SpawnKeyEventRecommendationForReport(boardID, report.ID, "daily_report_test")
+		return &report, nil
+	}
+
+	rowsBefore := len(mustListNotifications(t))
+	generateSingleBoard(board.ID, report.PeriodDate, "job-ke")
+
+	rows := mustListNotifications(t)
+	require.Equal(t, rowsBefore+1, len(rows), "exactly one terminal notification, never a second")
+	require.Equal(t, "success", rows[0].Type)
+
+	// Report untouched; recommendation run honestly failed; zero markers.
+	var after repository.BoardDailyReport
+	require.NoError(t, db.First(&after, report.ID).Error)
+	require.Equal(t, "completed", after.Status)
+	run, err := repository.Repo.GetKeyEventRecommendationRun(report.ID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	require.Equal(t, repository.KeyEventRunStateFailed, run.State)
+	var markers int64
+	require.NoError(t, db.Model(&repository.TopicKeyEventMarker{}).Count(&markers).Error)
+	require.Zero(t, markers)
+
+	// Late landing after the terminal: a rebuild restarts the run row (new
+	// token); the old task's save drops the batch — notification count still
+	// unchanged and no marker appears.
+	require.NoError(t, repository.Repo.UpsertKeyEventRecommendationRun(report.ID, board.ID, "tok-late"))
+	rowsBefore2 := len(mustListNotifications(t))
+	saved, err := repository.Repo.SaveSuggestedMarkers(board.ID, report.ID, "tok-late", []repository.SuggestedKeyEvent{
+		{SourceThreadID: 12345, Reason: "迟到且无效", EvidenceIDs: []uint{1}},
+	})
+	require.NoError(t, err)
+	require.Zero(t, saved)
+	require.Len(t, mustListNotifications(t), rowsBefore2, "迟到推荐不产生任何通知")
+
+	// Empty-candidate board: zero threads → done, no AI call, one success.
+	emptyBoard := models.SemanticLabel{Label: "ke-empty", Slug: "ke-empty", LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&emptyBoard).Error)
+	emptyReport := repository.BoardDailyReport{
+		SemanticBoardID: emptyBoard.ID, PeriodDate: repository.NormalizeReportDate(time.Now().AddDate(0, 0, -1)),
+		Status: "completed", Title: "t2",
+	}
+	require.NoError(t, db.Create(&emptyReport).Error)
+	generateReportEntry = func(ctx context.Context, boardID uint, date time.Time) (*repository.BoardDailyReport, error) {
+		return &emptyReport, nil // no spawn path calls AI on empty candidates anyway
+	}
+	rowsBefore3 := len(mustListNotifications(t))
+	generateSingleBoard(emptyBoard.ID, emptyReport.PeriodDate, "job-ke2")
+	require.Equal(t, rowsBefore3+1, len(mustListNotifications(t)))
+	require.Equal(t, "success", mustListNotifications(t)[0].Type)
 }

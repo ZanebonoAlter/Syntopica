@@ -176,7 +176,7 @@ UNIQUE(route_id, param_name, value) 复合唯一索引防同参数重复录入�
 
 ## 域 ER 图
 
-> 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 6 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。
+> 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 13 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。
 
 ```mermaid
 erDiagram

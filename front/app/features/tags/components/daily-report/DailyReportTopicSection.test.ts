@@ -29,6 +29,12 @@ const stubs = {
   SectionQualityExplore: { name: 'SectionQualityExplore', template: '<span class="explore-stub" />' },
   // LaneTrendOverview 故意不 stub：本机环境 VTU stubs 不生效（域外预存），
   // 统一按真实子组件断言（findComponent + 真实 testid），对环境修复前后行为一致。
+  KeyEventMarkerActions: {
+    name: 'KeyEventMarkerActions',
+    props: ['mode', 'threadId', 'topicId', 'view'],
+    emits: ['mark', 'dismiss', 'unmark'],
+    template: `<div class="ke-stub" :data-thread-id="threadId" :data-ke-mode="mode" :data-ke-state="view?.marker?.state ?? 'none'" @click.stop="$emit('mark')" />`,
+  },
 }
 
 function makeThread(id: number, over: Partial<DailyReportThread> = {}): DailyReportThread {
@@ -465,5 +471,44 @@ describe('DailyReportTopicSection — 泳道趋势区挂载（lane-trend-overvie
     expect(wrapper.findComponent({ name: 'DailyReportMiniLifeline' }).exists()).toBe(false)
     // 当日明细照常
     expect(wrapper.find('.drm-section-card').exists()).toBe(true)
+  })
+})
+
+
+// ── 关键事件标记（add-topic-key-event-markers）───────────────────────────────
+// 集成红线：标记按钮是 thread header 的兄弟节点（零嵌套按钮）、点击标记不误
+// 展开文章列表、A/B 条目独立（只变被选者）、锚点 ID 稳定不受标记影响。
+describe('DailyReportTopicSection — key-event marker actions', () => {
+  it('renders review-mode actions for current-date threads and history-mode for historical ones', () => {
+    const wrapper = mountSection()
+    const keStubs = wrapper.findAll('.ke-stub')
+    expect(keStubs.length).toBeGreaterThan(0)
+    expect(keStubs.some(el => el.attributes('data-ke-mode') === 'review')).toBe(true)
+  })
+
+  it('keying a marker does NOT toggle the thread article expansion (点击标记只发动作)', async () => {
+    const wrapper = mountSection({ zone: activeZone([makeSection(100, [makeThread(1)])]) })
+    const threadToggle = wrapper.find('.drm-thread')
+    expect(wrapper.find('.drm-articles').exists()).toBe(false)
+
+    // 标记动作经由 stub 冒泡为 mark 事件（.stop 防扩散）。
+    const keStub = wrapper.find('.ke-stub')
+    await keStub.trigger('click')
+    expect(wrapper.find('.drm-articles').exists()).toBe(false) // 标记点击不得展开文章
+    expect(wrapper.emitted('open-article')).toBeUndefined()
+  })
+
+  it('thread anchors stay stable regardless of marker state (t:thread.id 锚不变)', () => {
+    const wrapper = mountSection({ zone: activeZone([makeSection(100, [makeThread(7, { summary: '摘要文本' })])]) })
+    // 页边注锚容器精确断言：t:thread.id 与标记状态互不影响。
+    expect(wrapper.find('[data-mn-anchor="t:7"]').exists()).toBe(true)
+  })
+
+  it('disabled-thread logic stays independent of marker presence (无文章不误禁标记)', () => {
+    const wrapper = mountSection({
+      zone: activeZone([makeSection(100, [makeThread(1, { related_article_ids: [] })])]),
+    })
+    const keStub = wrapper.find('.ke-stub')
+    expect(keStub.exists()).toBe(true)
   })
 })

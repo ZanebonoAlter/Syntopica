@@ -2,6 +2,7 @@ import { computed, ref, watch, type Ref } from 'vue'
 import { useDailyReportsApi } from '~/api/dailyReports'
 import { useArticlesApi } from '~/api/articles'
 import { createRequestCache, type RequestCacheEntry } from '~/features/tags/components/daily-report/dailyReportMagazine'
+import { useTopicKeyEvents } from '~/features/tags/composables/useTopicKeyEvents'
 import type {
   DailyReport,
   DailyReportListItem,
@@ -26,6 +27,9 @@ function responseError(message: string): Error {
 export function useDailyReportReader(boardId: Ref<number>) {
   const { getBoardDailyReports, getDailyReportDetail, getTopicLifeline } = useDailyReportsApi()
   const { getArticle } = useArticlesApi()
+  // 关键事件共享缓存（add-topic-key-event-markers）：日报读端与总览共用；
+  // 读取随详情加载触发，只读不触发推荐（spec：打开页面只读）。
+  const keyEvents = useTopicKeyEvents()
 
   const reports = ref<DailyReportListItem[]>([])
   const days = ref(7)
@@ -81,6 +85,8 @@ export function useDailyReportReader(boardId: Ref<number>) {
       }
       detailCache.value.set(reportId, response.data.report)
       detailCache.value = new Map(detailCache.value)
+      // 只读拉取当期关键事件注记（不触发推荐；历史详情同理）。
+      void keyEvents.ensureReportKeyEvents(reportId)
       return response.data.report
     } finally {
       detailLoading.value = null
@@ -95,6 +101,7 @@ export function useDailyReportReader(boardId: Ref<number>) {
     if (!response.success || !response.data) return undefined
     detailCache.value.set(reportId, response.data.report)
     detailCache.value = new Map(detailCache.value)
+    void keyEvents.ensureReportKeyEvents(reportId)
     return response.data.report
   }
 
@@ -175,6 +182,7 @@ export function useDailyReportReader(boardId: Ref<number>) {
     selectedReport,
     selectedDetail,
     detailCache,
+    keyEvents,
     loadReports,
     ensureDetail,
     ensureHistoricalDetail,

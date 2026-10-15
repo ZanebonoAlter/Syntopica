@@ -54,6 +54,8 @@ const emit = defineEmits<{
   openArticle: [articleId: number]
   /** 就近切换版块（透传给 TagsPage 调 handleSelectBoard）。 */
   selectBoard: [boardId: number]
+  /** 关键注记「来源日报」导航（透传给 TagsPage 的 openDailyReportFromOverview）。 */
+  openDailyReport: [reportId: number]
 }>()
 
 /** 当前转场方向：切版块→纵向，切日期→横向。须在触发 key 变更前同步写入。 */
@@ -444,6 +446,7 @@ onUnmounted(() => {
       :board-id="boardId"
       @open-article="emit('openArticle', $event)"
       @open-detective-wall="openDetectiveWall()"
+      @open-daily-report="emit('openDailyReport', $event)"
     />
 
     <template v-else>

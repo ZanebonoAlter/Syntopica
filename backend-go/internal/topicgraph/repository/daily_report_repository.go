@@ -105,6 +105,11 @@ type SectionRelationResult struct {
 type SectionTimelineResponse struct {
 	Sections  []SectionTimelineNode   `json:"sections"`
 	Relations []SectionRelationResult `json:"relations"`
+	// KeyEvents carries the topic's CONFIRMED key-event markers (lifeline
+	// optional nodes — add-topic-key-event-markers persistent-topic spec).
+	// Optional for backward compatibility: only GetTopicLifeline fills it;
+	// snapshot nodes never occupy real section IDs or alter relations.
+	KeyEvents []TopicKeyEventMarker `json:"key_events,omitempty"`
 }
 
 // DeriveSectionStatuses computes status for each section based on its relation graph.
@@ -299,6 +304,16 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 					return fmt.Errorf("save threads for section %d: %w", secIdx, err)
 				}
 			}
+		}
+
+		// Key-event marker re-anchoring (add-topic-key-event-markers D1): the
+		// rebuild above deleted old threads/sections (marker source FKs went
+		// NULL via ON DELETE SET NULL). Markers whose source fingerprint
+		// matches a newly inserted thread EXACTLY re-anchor onto it; anything
+		// else stays a detached snapshot. Same transaction as the rebuild —
+		// failure aborts the save (no half-linked state).
+		if err := ReAttachKeyEventMarkers(tx, report.SemanticBoardID, report.PeriodDate, sections, threadBatches); err != nil {
+			return fmt.Errorf("re-attach key event markers: %w", err)
 		}
 
 		logging.Infof("daily-report: saved report %d for board %d on %s (%d sections)",
@@ -515,6 +530,17 @@ func (r *TopicGraphRepository) SaveThreads(tx *gorm.DB, reportID, sectionID uint
 	if len(withEmb) > 0 {
 		if err := tx.Create(&withEmb).Error; err != nil {
 			return err
+		}
+		// Copy generated IDs back into the caller's slice (mirrors the
+		// withoutEmb branch below; withEmb holds struct copies after the
+		// split, so Create's back-fill does not reach the caller otherwise —
+		// ReAttachKeyEventMarkers reads the persisted IDs).
+		idx := 0
+		for i := range threads {
+			if threads[i].Embedding != "" {
+				threads[i].ID = withEmb[idx].ID
+				idx++
+			}
 		}
 	}
 	if len(withoutEmb) > 0 {
@@ -976,7 +1002,16 @@ func (r *TopicGraphRepository) GetTopicLifeline(topicID uint) (SectionTimelineRe
 	if relations == nil {
 		relations = []SectionRelationResult{}
 	}
-	return SectionTimelineResponse{Sections: nodes, Relations: relations}, nil
+	// Confirmed key-event nodes (lifeline optional field — add-topic-key-
+	// event-markers persistent-topic spec): snapshots read independently of
+	// live sections so a rebuilt source still returns its confirmed node
+	// (无 section 仍能查确认快照); never fabricated into sections/relations.
+	keyEvents, kerr := r.ListTopicKeyEventMarkers(topicID, 0, KeyEventStateConfirmed)
+	if kerr != nil {
+		logging.Warnf("GetTopicLifeline: load key events for topic %d failed: %v", topicID, kerr)
+		keyEvents = []TopicKeyEventMarker{}
+	}
+	return SectionTimelineResponse{Sections: nodes, Relations: relations, KeyEvents: keyEvents}, nil
 }
 
 // BackfillSectionEmbeddings regenerates section embeddings using the

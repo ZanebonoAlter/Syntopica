@@ -84,6 +84,45 @@ export interface SectionRelation {
   relation_type?: string
 }
 
+// ── 话题关键事件注记（add-topic-key-event-markers）──────────────────────────
+
+/** Marker state: suggested = AI 建议（未处理）；confirmed = 人工已确认；
+ *  dismissed = 不采纳/已取消（仅表示不再选择，原新闻保留）。 */
+export type KeyEventState = 'suggested' | 'confirmed' | 'dismissed'
+
+/** 一次人工选择/建议的独立注记行。快照字段全部来自服务端来源条目；
+ *  source_thread_id 为空表示来源已被重建替换（快照仍可回看）。 */
+export interface TopicKeyEventMarker {
+  id: number
+  semantic_board_id: number
+  persistent_topic_id?: number | null
+  source_report_id?: number | null
+  source_section_id?: number | null
+  source_thread_id?: number | null
+  /** 来源日报日期（非事件发生时间）。 */
+  source_period_date: string
+  topic_label_snapshot: string
+  title_snapshot: string
+  summary_snapshot: string
+  tag_ids_snapshot: number[] | null
+  article_ids_snapshot: number[] | null
+  state: KeyEventState
+  /** AI 建议理由（仅 suggested/被确认前；人工标记为空）。 */
+  recommendation_reason?: string
+  /** {"evidence_article_ids":[...],"new_progress":bool}。 */
+  recommendation_basis?: { evidence_article_ids?: number[], new_progress?: boolean } | null
+  last_action?: string
+  confirmed_at?: string | null
+  decided_at?: string | null
+  revision: number
+}
+
+/** GET /daily-reports/:id/key-events 响应：当期注记 + 推荐任务状态。 */
+export interface ReportKeyEventsData {
+  status: 'idle' | 'running' | 'done' | 'failed'
+  markers: TopicKeyEventMarker[]
+}
+
 // SectionLifecycleNode has the same shape as SectionTimelineNode
 export type SectionLifecycleNode = SectionTimelineNode
 
@@ -231,9 +270,37 @@ export function useDailyReportsApi() {
     return apiClient.get(`/daily-reports/sections/${sectionId}/lifecycle`)
   }
 
-  /** All sections of one persistent topic (no day limit), aggregated by topic id. Identity-key based — survives label drift. */
-  async function getTopicLifeline(topicId: number): Promise<ApiResponse<{ sections: SectionTimelineNode[], relations: SectionRelation[] }>> {
+  /** All sections of one persistent topic (no day limit), aggregated by topic id. Identity-key based — survives label drift.
+   *  key_events：可选已确认关键节点（add-topic-key-event-markers），快照独立于真实 sections。 */
+  async function getTopicLifeline(topicId: number): Promise<ApiResponse<{ sections: SectionTimelineNode[], relations: SectionRelation[], key_events?: TopicKeyEventMarker[] }>> {
     return apiClient.get(`/daily-reports/topics/${topicId}/lifeline`)
+  }
+
+  /** 当期日报的注记与推荐状态（日报读端：可含 suggested 待处理；打开页面只读不触发推荐）。 */
+  async function getReportKeyEvents(reportId: number): Promise<ApiResponse<ReportKeyEventsData>> {
+    return apiClient.get(`/daily-reports/${reportId}/key-events`)
+  }
+
+  /** 话题已确认关键节点（topic 读端：默认且仅 confirmed；days=0 全部，默认 14）。 */
+  async function getTopicKeyEvents(topicId: number, days?: number): Promise<ApiResponse<{ topic_id: number, days: number, markers: TopicKeyEventMarker[] }>> {
+    const query = days != null ? `?days=${days}` : ''
+    return apiClient.get(`/daily-reports/topics/${topicId}/key-events${query}`)
+  }
+
+  /** 按来源线索动作（PUT）：首建可不带 expected_revision；同目标幂等，旧 revision 409 附最新状态。 */
+  async function putThreadKeyEvent(topicId: number, threadId: number, action: 'mark' | 'dismiss', expectedRevision?: number): Promise<ApiResponse<TopicKeyEventMarker>> {
+    return apiClient.put(`/daily-reports/topics/${topicId}/key-events/threads/${threadId}`, {
+      action,
+      ...(expectedRevision != null ? { expected_revision: expectedRevision } : {}),
+    })
+  }
+
+  /** 按注记维护（PATCH）：unmark 可取消来源失效的 confirmed；重新 mark 需来源仍有效。 */
+  async function patchKeyEventMarker(topicId: number, markerId: number, action: 'mark' | 'dismiss' | 'unmark', revision: number): Promise<ApiResponse<TopicKeyEventMarker>> {
+    return apiClient.patch(`/daily-reports/topics/${topicId}/key-events/${markerId}`, {
+      action,
+      revision,
+    })
   }
 
   /** Reconstruct persistent topics from historical sections lacking a topic. Optional boardId scopes to one board. */
@@ -274,6 +341,10 @@ export function useDailyReportsApi() {
     getBoardSectionTimeline,
     getSectionLifecycle,
     getTopicLifeline,
+    getReportKeyEvents,
+    getTopicKeyEvents,
+    putThreadKeyEvent,
+    patchKeyEventMarker,
     backfillPersistentTopics,
     updateTopic,
     deleteTopic,

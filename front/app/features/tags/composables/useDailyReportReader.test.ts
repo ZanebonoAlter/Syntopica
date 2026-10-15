@@ -9,6 +9,10 @@ const api = vi.hoisted(() => ({
   getDailyReportDetail: vi.fn(),
   getTopicLifeline: vi.fn(),
   getArticle: vi.fn(),
+  getReportKeyEvents: vi.fn(),
+  getTopicKeyEvents: vi.fn(),
+  putThreadKeyEvent: vi.fn(),
+  patchKeyEventMarker: vi.fn(),
 }))
 
 vi.mock('~/api/dailyReports', () => ({
@@ -16,6 +20,10 @@ vi.mock('~/api/dailyReports', () => ({
     getBoardDailyReports: api.getBoardDailyReports,
     getDailyReportDetail: api.getDailyReportDetail,
     getTopicLifeline: api.getTopicLifeline,
+    getReportKeyEvents: api.getReportKeyEvents,
+    getTopicKeyEvents: api.getTopicKeyEvents,
+    putThreadKeyEvent: api.putThreadKeyEvent,
+    patchKeyEventMarker: api.patchKeyEventMarker,
   }),
 }))
 
@@ -26,6 +34,8 @@ vi.mock('~/api/articles', () => ({
 describe('useDailyReportReader', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    api.getReportKeyEvents.mockResolvedValue({ success: true, data: { status: 'idle', markers: [] } })
+    api.getTopicKeyEvents.mockResolvedValue({ success: true, data: { topic_id: 1, days: 14, markers: [] } })
     api.getBoardDailyReports.mockResolvedValue({ success: true, data: { reports: [] } })
     api.getTopicLifeline.mockResolvedValue({ success: true, data: { sections: [], relations: [] } })
     api.getArticle.mockImplementation(async (id: number) => ({ success: true, data: { id: String(id), title: `article-${id}` } }))
@@ -118,4 +128,24 @@ describe('useDailyReportReader', () => {
     expect(reader.detailError.value).toBe('')
     expect(reader.detailCache.value.has(7)).toBe(false)
   })
+
+  it('loads key events read-only alongside each cached report detail (打开页面只读拉取)', async () => {
+    api.getDailyReportDetail.mockResolvedValue({
+      success: true,
+      data: { id: 55, board_id: 1974, report_date: '2026-10-09T12:00:00Z', sections: [], highlights: [] },
+    })
+    const reader = useDailyReportReader(ref(1974))
+    await flushPromises()
+
+    await reader.ensureDetail(55)
+    await reader.ensureDetail(55) // 重复读走缓存
+    expect(api.getReportKeyEvents).toHaveBeenCalledTimes(1)
+    expect(api.getReportKeyEvents).toHaveBeenCalledWith(55)
+    expect(api.putThreadKeyEvent).not.toHaveBeenCalled()
+    expect(api.patchKeyEventMarker).not.toHaveBeenCalled()
+
+    await reader.ensureHistoricalDetail(56)
+    expect(api.getReportKeyEvents).toHaveBeenCalledWith(56)
+  })
+
 })

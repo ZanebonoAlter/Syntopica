@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -12,6 +13,7 @@ import (
 
 	"syntopica-backend/internal/dataenrichment/repository"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/topicgraph"
 )
 
 // ── Signal discovery period & material helpers (board-signal-reports) ────────
@@ -100,6 +102,16 @@ func SignalAnalysisMode(p SignalPeriod, cutoff time.Time) string {
 	return repository.SignalAnalysisModeCurrent
 }
 
+// topicThreadSourceKeyForSignal mirrors the marker fingerprint using the
+// SAME exported topicgraph implementation (exact-match semantics; a drifted
+// local copy would silently break evidence verification).
+func topicThreadSourceKeyForSignal(boardID, laneID uint, periodDate time.Time, title string, tagJSON, artJSON []byte) string {
+	var tags, arts []uint
+	_ = json.Unmarshal(tagJSON, &tags)
+	_ = json.Unmarshal(artJSON, &arts)
+	return topicgraph.ComputeKeyEventSourceKey(boardID, laneID, periodDate, title, tags, arts)
+}
+
 // ── period-scoped material (pure core; PC-3/4/5) ─────────────────────────────
 
 // SignalArticleSlice is one dated lane news slice inside the window.
@@ -120,6 +132,29 @@ type SignalBackgroundSummary struct {
 	Content     string `json:"content"`
 }
 
+// SignalKeyEventAttention is one user-confirmed key event inside the window
+// (add-topic-key-event-markers design D4): an ATTENTION hint only — never a
+// signal candidate, never an evidence id. Frozen with the material batch;
+// a later confirm/cancel does NOT rewrite old batches.
+type SignalKeyEventAttention struct {
+	MarkerID uint   `json:"marker_id"`
+	Title    string `json:"title"`
+	Summary  string `json:"summary,omitempty"`
+	// SourcePeriodDate is the SOURCE REPORT date — not a claim about when the
+	// event actually happened.
+	SourcePeriodDate time.Time `json:"source_period_date"`
+	ConfirmedAt      time.Time `json:"confirmed_at"`
+	// CurrentRetrospectiveAttention marks choices made AFTER the cutoff
+	// (e.g. today's confirmation of a past event) — 本次回顾关注，不是当时可得
+	// 的预测信号 (board-signal-reports spec).
+	CurrentRetrospectiveAttention bool `json:"current_retrospective_attention"`
+	// EvidenceVerified: the marker's source thread maps to a whitelisted
+	// slice of THIS material (live section or exact-fingerprint match).
+	// false → the lane records a gap and the snapshot never poses as a valid
+	// news slice (失效依据不升级为有效信号).
+	EvidenceVerified bool `json:"evidence_verified"`
+}
+
 // SignalLaneMaterial is one lane's period-scoped material.
 type SignalLaneMaterial struct {
 	LaneID uint   `json:"lane_id"`
@@ -133,6 +168,9 @@ type SignalLaneMaterial struct {
 	// as-of ≤ cutoff; nil when none (PC-3 / design §2 历史背景不晚于 cutoff).
 	Background *SignalBackgroundSummary `json:"background,omitempty"`
 	Articles   []SignalArticleSlice     `json:"articles"`
+	// ConfirmedKeyEvents are the user's in-window confirmed key events
+	// (attention hints; optional so pre-marker payloads stay readable).
+	ConfirmedKeyEvents []SignalKeyEventAttention `json:"confirmed_key_events,omitempty"`
 }
 
 // SignalMaterialGap records honestly what could not be reconstructed.
@@ -238,6 +276,96 @@ func NewSignalMaterialBuilder(db *gorm.DB, reader LifelineReader) *SignalMateria
 	return &SignalMaterialBuilder{db: db, reader: reader}
 }
 
+// collectConfirmedKeyEvents loads the lane's in-window confirmed key events
+// (add-topic-key-event-markers design D4). Window predicate mirrors
+// filterSignalSections: source report date ∈ [from, cutoff). Only confirmed
+// rows enter (未确认建议不作为用户关注意图)； confirmations made after the
+// cutoff are flagged CurrentRetrospectiveAttention (事后选择不冒充当时预测).
+// Evidence verification: the marker's source must map to a whitelisted slice
+// (live SourceSectionID or an EXACT source fingerprint on a whitelisted
+// thread) — otherwise the lane records an honest gap and the attention keeps
+// evidence_verified=false so the snapshot never poses as a valid news slice.
+func (b *SignalMaterialBuilder) collectConfirmedKeyEvents(ctx context.Context, boardID uint, laneID uint, label string, articles []SignalArticleSlice, p SignalPeriod, cutoff time.Time) ([]SignalKeyEventAttention, []SignalMaterialGap) {
+	var markers []struct {
+		ID            uint      `gorm:"column:id"`
+		Title         string    `gorm:"column:title_snapshot"`
+		Summary       string    `gorm:"column:summary_snapshot"`
+		PeriodDate    time.Time `gorm:"column:source_period_date"`
+		ConfirmedAt   time.Time `gorm:"column:confirmed_at"`
+		SourceKey     string    `gorm:"column:source_key"`
+		SourceSection *uint     `gorm:"column:source_section_id"`
+	}
+	if err := b.db.WithContext(ctx).
+		Table("topic_key_event_markers").
+		Select("id, title_snapshot, summary_snapshot, source_period_date, confirmed_at, source_key, source_section_id").
+		Where("persistent_topic_id = ? AND semantic_board_id = ? AND state = 'confirmed'", laneID, boardID).
+		Order("source_period_date DESC, id DESC").
+		Find(&markers).Error; err != nil {
+		return nil, []SignalMaterialGap{{LaneID: laneID, Reason: fmt.Sprintf("已确认关键节点读取失败：%v", err)}}
+	}
+	if len(markers) == 0 {
+		return nil, nil
+	}
+
+	whitelist := make(map[uint]bool, len(articles))
+	for _, a := range articles {
+		whitelist[a.SectionID] = true
+	}
+	// Exact-fingerprint fallback: compute source keys for the threads of the
+	// whitelisted sections (bounded by window material).
+	fingerprintSet := make(map[string]bool)
+	if len(whitelist) > 0 {
+		sectionIDs := make([]uint, 0, len(whitelist))
+		for id := range whitelist {
+			sectionIDs = append(sectionIDs, id)
+		}
+		var threads []struct {
+			SectionID uint      `gorm:"column:section_id"`
+			Title     string    `gorm:"column:title"`
+			TagIDs    []byte    `gorm:"column:tag_ids"`
+			ArtIDs    []byte    `gorm:"column:related_article_ids"`
+			Period    time.Time `gorm:"column:period_date"`
+		}
+		if err := b.db.WithContext(ctx).
+			Table("daily_report_threads t").
+			Select("t.section_id, t.title, t.tag_ids, t.related_article_ids, r.period_date").
+			Joins("JOIN daily_report_sections s ON s.id = t.section_id").
+			Joins("JOIN board_daily_reports r ON r.id = s.report_id").
+			Where("t.section_id IN ?", sectionIDs).
+			Find(&threads).Error; err == nil {
+			for _, th := range threads {
+				fingerprintSet[topicThreadSourceKeyForSignal(boardID, laneID, th.Period, th.Title, th.TagIDs, th.ArtIDs)] = true
+			}
+		}
+	}
+
+	out := make([]SignalKeyEventAttention, 0, len(markers))
+	var gaps []SignalMaterialGap
+	for _, m := range markers {
+		if m.PeriodDate.Before(p.From) || !m.PeriodDate.Before(cutoff) {
+			continue // 窗外/晚于 cutoff：不进本次关注
+		}
+		// Fingerprint verification subsumes the live-pointer check: a live
+		// source thread inside the whitelist computes the SAME key, while a
+		// detached/replaced source (section alive but thread deleted) does not.
+		verified := fingerprintSet[m.SourceKey]
+		if !verified {
+			gaps = append(gaps, SignalMaterialGap{LaneID: laneID, Reason: fmt.Sprintf("已确认关键节点「%s」在本次材料中无有效新闻切片（来源已失效），仅作关注线索，不作为证据", m.Title)})
+		}
+		confirmedAt := m.ConfirmedAt
+		out = append(out, SignalKeyEventAttention{
+			MarkerID:                      m.ID,
+			Title:                         m.Title,
+			Summary:                       m.Summary,
+			SourcePeriodDate:              m.PeriodDate,
+			ConfirmedAt:                   confirmedAt,
+			CurrentRetrospectiveAttention: confirmedAt.After(cutoff),
+			EvidenceVerified:              verified,
+		})
+	}
+	return out, gaps
+}
+
 // AssembleSignalMaterial collects each lane's in-window slices and summaries.
 // 候选泳道来自周期材料，不只用今天 active 泳道：ALL lanes are inspected (any
 // status); a lane created after the cutoff cannot have been a board member
@@ -291,13 +419,16 @@ func (b *SignalMaterialBuilder) AssembleSignalMaterial(ctx context.Context, boar
 		if len(articles) == 0 && summary == nil {
 			continue // 周期内零材料：不进材料，也不伪造
 		}
+		keyEvents, keyGaps := b.collectConfirmedKeyEvents(ctx, boardID, lane.ID, lane.Label, articles, p, cutoff)
+		material.Gaps = append(material.Gaps, keyGaps...)
 		material.Lanes = append(material.Lanes, SignalLaneMaterial{
-			LaneID:     lane.ID,
-			Label:      lane.Label,
-			Status:     lane.Status,
-			Summary:    summary,
-			Background: background,
-			Articles:   articles,
+			LaneID:             lane.ID,
+			Label:              lane.Label,
+			Status:             lane.Status,
+			Summary:            summary,
+			Background:         background,
+			Articles:           articles,
+			ConfirmedKeyEvents: keyEvents,
 		})
 	}
 

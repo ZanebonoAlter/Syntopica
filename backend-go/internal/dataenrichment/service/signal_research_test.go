@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"syntopica-backend/internal/dataenrichment/repository"
+	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
 )
 
@@ -1594,5 +1596,57 @@ func TestSignalResearch_AvailabilityProbeLeavesLegacyToolsDescUnchanged(t *testi
 	}
 	if strings.Contains(after, "un_comtrade_trade") {
 		t.Fatalf("legacy toolsDesc must not surface research tools")
+	}
+}
+
+// TestSignalResearch_KeyEventAttentionFrozenInSnapshot (add-topic-key-event-
+// markers 2.4)：研究只读发现批次的冻结 input_snapshot——关注字段随批冻结，
+// 后续撤销/新增标记不改变旧研究前提（重新手动发现才用新选择）。
+func TestSignalResearch_KeyEventAttentionFrozenInSnapshot(t *testing.T) {
+	// Two full runs' worth of stub replies (the test researches the frozen
+	// batch twice to prove later marker changes cannot rewrite it).
+	oneRun := []string{
+		srDecision("call_tool", map[string]any{"tool": "eia_wpsr_table1", "args": map[string]any{"section": "s"}, "question": "q"}),
+		srDecision("finish", map[string]any{"summary": "done"}),
+	}
+	router := &srStubRouter{
+		decisions: append(append([]string{}, oneRun...), oneRun...),
+		compose: []srComposeReply{
+			{content: srComposeReplyWithAsOf("数据截至 2026-08-01。", "c1:o1")},
+			{content: srComposeReplyWithAsOf("数据截至 2026-08-01。", "c1:o1")},
+		},
+	}
+	tool := &srToolStub{replies: []srToolReply{
+		{body: srEiaBody(srEiaObs("2026-08-01", 420.0))},
+		{body: srEiaBody(srEiaObs("2026-08-01", 420.0))},
+	}}
+	candidate, discovery := srFixturePair(7)
+	// Bake a confirmed attention into the FROZEN material the batch carries.
+	frozen := srFixtureMaterial()
+	frozen.Lanes[0].ConfirmedKeyEvents = []SignalKeyEventAttention{{
+		MarkerID: 9001, Title: "冻结时刻的确认事件", SourcePeriodDate: time.Date(2026, 8, 10, 0, 0, 0, 0, models.ShanghaiTZ),
+		ConfirmedAt: time.Date(2026, 8, 11, 0, 0, 0, 0, models.ShanghaiTZ), EvidenceVerified: true,
+	}}
+	materialJSON, _ := json.Marshal(frozen)
+	discovery.InputSnapshot = materialJSON
+	store := &srStubStore{candidate: candidate, discovery: discovery}
+	svc := srNewService(router, newSRRegistry(map[string]*srToolStub{"eia_wpsr_table1": tool}), store)
+
+	runResearch(t, svc, store, 7)
+	// Result snapshot = frozen bytes, verbatim.
+	if string(store.results[0].InputSnapshot) != string(materialJSON) {
+		t.Fatalf("research must consume the frozen snapshot verbatim (attention included)")
+	}
+	if !bytes.Contains(store.results[0].InputSnapshot, []byte("冻结时刻的确认事件")) {
+		t.Fatalf("frozen attention must ride into the research result snapshot")
+	}
+	// A LATER unmark happens outside research (no store method exists to touch
+	// markers — compile-level guarantee); re-running research still sees the
+	// same frozen bytes because the discovery row is immutable here.
+	if _, err := svc.ResearchCandidate(t.Context(), 5, 7, "", nil); err != nil {
+		t.Fatalf("second research: %v", err)
+	}
+	if string(store.results[1].InputSnapshot) != string(materialJSON) {
+		t.Fatalf("later marker changes must not rewrite the frozen snapshot")
 	}
 }

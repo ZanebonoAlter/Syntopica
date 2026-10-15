@@ -5,7 +5,7 @@
 ## 阅读约定（全局事实）
 
 1. **表名**：GORM 未自定义 `NamingStrategy`，默认蛇形 + 复数；非默认表名由 struct 的 `TableName()` 显式指定。本文档每张表的真实表名以迁移 SQL 与 struct 为准。
-2. **外键（FK）几乎不存在于 DB 层**：`gorm.Config` 设了 `DisableForeignKeyConstraintWhenMigrating: true`，且迁移 `20260601_0001` 主动 drop 了历史上全部 `fk_*`。**全库真实 DB FK 仅 3 处**：`topic_tags_merged_into_id_fkey`，完整 6 条清单见下方「DB 级外键（全库共 6 条）」。本文档中凡是写「关联 / FK」的地方，除特别注明外均为 GORM 逻辑关联，**不**对应 DB 级外键约束。
+2. **外键（FK）几乎不存在于 DB 层**：`gorm.Config` 设了 `DisableForeignKeyConstraintWhenMigrating: true`，且迁移 `20260601_0001` 主动 drop 了历史上全部 `fk_*`。完整清单见下方「DB 级外键（全库共 13 条）」。本文档中凡是写「关联 / FK」的地方，除特别注明外均为 GORM 逻辑关联，**不**对应 DB 级外键约束。
 3. **向量列维度运行时决定**：除 `topic_tag_embeddings.embedding` 由迁移固定为 `vector(4096)` 外，其余向量列 gorm tag 仅声明 `type:vector`，实际维度由运行时 `embedding_config.embedding_dimension` / `ensureXxxEmbeddingDimension` 设置；HNSW 索引仅当维度 ≤ 2000 时创建。
 4. **字段表列含义**：「类型」= DB 列类型；「约束/默认/索引」= NOT NULL / DEFAULT / 索引 / 唯一 / CHECK 等；「用途」= 业务含义。`string` 无 `size` 时 GORM 默认 256。
 5. **枚举**：除非特别注明「+ CHECK」，枚举取值均为代码层约定，DB 层不强制。
@@ -18,7 +18,7 @@
 
 1. **GORM 全局关闭外键迁移**：`backend-go/internal/platform/database/db.go` 设置 `DisableForeignKeyConstraintWhenMigrating: true`。
 2. **迁移 `20260601_0001` 主动 DROP 了历史上 `embedding_queues` / `merge_reembedding_queues` / `topic_tag_embeddings` / `topic_tag_relations` / `topic_tags` 的全部 `fk_*` 约束**（`postgres_migrations.go:472-520`）。
-3. **全库真实存在的 DB 级外键共 6 条**（历史版本曾误写 1/2/3 条，2026-09 逐条核对迁移代码后修正；完整清单见下方「DB 级外键（全库共 6 条）」权威表）。
+3. **全库真实存在的 DB 级外键共 13 条**（历史版本曾误写 1/2/3/6 条，2026-09 逐条核对迁移代码修正至 8 条、2026-10 `add-topic-key-event-markers` 追加 5 条至 13；完整清单见下方「DB 级外键（全库共 13 条）」权威表）。
 4. 其余所有「关联」都是 **GORM 应用层逻辑关联**（struct 的 `foreignKey` tag），DB 层**没有**对应的外键约束，`constraint_name` 形如 `fk_feeds_articles`、`fk_categories_feeds` **在数据库里并不存在**。
 5. **级联删除（OnDelete:CASCADE）声明很不一致**：只有部分 GORM tag 声明了 `constraint:OnDelete:CASCADE`，很多关联没有任何级联声明。详见下方 [FK 引用矩阵](#fk-引用矩阵)。
 
@@ -101,6 +101,11 @@
 | `fk_composite_components_composite` | `composite_components.composite_id → semantic_labels(id)` | CASCADE | `20260902_0001` |
 | `fk_board_signal_candidate_discovery` | `board_signal_candidate(discovery_id, semantic_board_id, granularity, period) → board_signal_discovery(id, semantic_board_id, granularity, period)`（复合，靶靠唯一约束 `uq_board_signal_discovery_id_owner`） | RESTRICT | `20260922_0001` |
 | `fk_topic_enrichment_result_signal_candidate` | `topic_enrichment_result(source_signal_id, semantic_board_id, granularity, period) → board_signal_candidate(id, semantic_board_id, granularity, period)`（复合，MATCH SIMPLE：`source_signal_id` 为 NULL 的旧行不在 FK 范围内） | RESTRICT | `20260922_0001` |
+| `fk_topic_key_event_markers_board` | `topic_key_event_markers.semantic_board_id → semantic_labels(id)` | CASCADE | `20261012_0001` |
+| `fk_topic_key_event_markers_topic` | `topic_key_event_markers.persistent_topic_id → board_persistent_topics(id)` | SET NULL | `20261012_0001` |
+| `fk_topic_key_event_markers_report` | `topic_key_event_markers.source_report_id → board_daily_reports(id)` | SET NULL | `20261012_0001` |
+| `fk_topic_key_event_markers_section` | `topic_key_event_markers.source_section_id → daily_report_sections(id)` | SET NULL | `20261012_0001` |
+| `fk_topic_key_event_markers_thread` | `topic_key_event_markers.source_thread_id → daily_report_threads(id)` | SET NULL | `20261012_0001` |
 
 > 其余所有表间关联均为 GORM 逻辑关联，**DB 层未强制**（`DisableForeignKeyConstraintWhenMigrating: true`）——**但请对照上方实测修正：存量遗留 FK 仍生效**，本句只描述「新关联不再靠 DB 强制」这一趋势，不能当成「没有 FK」读。
 
@@ -129,7 +134,7 @@
 
 ### Part A — 真实 DB 级外键约束
 
-即上方「DB 级外键（全库共 6 条，权威清单）」，不再重复维护两份。最早一条（`topic_tags_merged_into_id_fkey`，自引用，用于话题合并）由 `postgres_migrations.go` 显式 `ADD CONSTRAINT` 创建；迁移 `20260601_0001` 先 DROP 了所有历史 `fk_*` 后仅重建此 1 条，其余 5 条由后续版本迁移逐条补齐。
+即上方「DB 级外键（全库共 13 条，权威清单）」，不再重复维护两份。最早一条（`topic_tags_merged_into_id_fkey`，自引用，用于话题合并）由 `postgres_migrations.go` 显式 `ADD CONSTRAINT` 创建；迁移 `20260601_0001` 先 DROP 了所有历史 `fk_*` 后仅重建此 1 条，其余条目由后续版本迁移逐条补齐（2026-10 `20261012_0001` 一次补 5 条，全部落在 `topic_key_event_markers`）。
 
 ### Part B — GORM 应用层逻辑关联（foreignKey tag，DB 层未强制外键）
 

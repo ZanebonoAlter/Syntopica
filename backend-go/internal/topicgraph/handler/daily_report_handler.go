@@ -90,6 +90,9 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 
 	// 日报页边注（daily-report-margin-notes）：批注四端点 + 管理页列表
 	RegisterMarginNoteRoutes(api)
+
+	// 话题关键事件注记（add-topic-key-event-markers）：读/写/维护端点
+	RegisterKeyEventRoutes(api)
 }
 
 // triggerGenerateDailyReport handles POST /api/daily-reports/generate
@@ -451,9 +454,15 @@ func getTopicLifeline(c *gin.Context) {
 	if resp.Relations == nil {
 		resp.Relations = []repository.SectionRelationResult{}
 	}
+	// Optional confirmed key-event nodes (add-topic-key-event-markers):
+	// normalized to a non-nil array so the reader can map directly.
+	if resp.KeyEvents == nil {
+		resp.KeyEvents = []repository.TopicKeyEventMarker{}
+	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
-		"sections":  resp.Sections,
-		"relations": resp.Relations,
+		"sections":   resp.Sections,
+		"relations":  resp.Relations,
+		"key_events": resp.KeyEvents,
 	}})
 }
 

@@ -35,6 +35,10 @@
 | PATCH | `/topic-watches/:id` | 更新盯盘 label/status |
 | DELETE | `/topic-watches/:id` | 删除盯盘规则 |
 | GET | `/daily-reports/:id/watch-hits` | 查询日报命中盯盘 |
+| GET | `/daily-reports/:id/key-events` | 日报关键事件读端（推荐状态 + 全部注记行） |
+| GET | `/daily-reports/topics/:id/key-events` | 话题已确认关键事件（总览回看；仅 confirmed） |
+| PUT | `/daily-reports/topics/:id/key-events/threads/:thread_id` | thread 寻址人工动作（mark/dismiss） |
+| PATCH | `/daily-reports/topics/:id/key-events/:marker_id` | 注记寻址维护（mark/dismiss/unmark，含失效快照取消） |
 
 ## POST `/daily-reports/generate`
 
@@ -435,6 +439,61 @@ Response `data`：
 ```json
 { "embedding": [0.0123, -0.0456] }
 ```
+
+## 关键事件注记（Key Event Markers，add-topic-key-event-markers）
+
+人工主权的话题关键事件：AI 只产出 `suggested` 建议，`confirmed`/`dismissed` 仅由用户动作产生；展示文本全部服务端快照派生，客户端只能表达动作与读到的 revision（未知字段忽略，**不接受客户端伪造快照**）。
+
+### GET `/daily-reports/:id/key-events`
+
+日报读端（打开报告页面只读拉取；不触发推荐生成）。返回推荐任务状态与该报告来源的全部注记行（三种 state 都可能出现在读端，由前端区分展示）。
+
+Response `data`：
+
+```json
+{
+  "status": "running",
+  "markers": [ { "id": 11, "state": "suggested", "source_thread_id": 1001, "title_snapshot": "...", "recommendation_reason": "...", "revision": 1 } ]
+}
+```
+
+- `status`：`idle`（无任务行）/ `running`（本进程内存活任务）/ `done` / `failed`。持久化 `running` 行但进程内无任务=重启杀掉了任务，诚实降级读为 `failed`（不自动恢复付费调用）。
+- `markers[].state`：`suggested` / `confirmed` / `dismissed`；`recommendation_reason`/`recommendation_basis` 仅 AI 建议行携带。
+- 报告不存在 → 404；id 非法 → 400。
+
+### GET `/daily-reports/topics/:id/key-events?state=confirmed&days=14`
+
+话题读端（泳道/焦点总览回看）。**只返回 confirmed**——`state` 查询参数省略或必须等于 `confirmed`，传其他值 400（总览不承担待处理状态，建议不泄漏）。
+
+- `days`：默认 14；`0` = 不限窗；负数/非整数 → 400。
+- 话题不存在 → 404。
+- 窗口按 `source_period_date` 过滤；来源已失效（section/thread 被重建删除）的 confirmed 行仍返回（快照回看），前端以独立快照注记呈现、不伪造 section。
+
+### PUT `/daily-reports/topics/:id/key-events/threads/:thread_id`
+
+thread 寻址动作：确认建议 / 手动标记 / 不采纳。Body：
+
+```json
+{ "action": "mark", "expected_revision": 1 }
+```
+
+- `action`：`mark`（→confirmed）/ `dismiss`（→dismissed）；**不接受 unmark**（取消走 PATCH）。
+- `expected_revision`：可选乐观锁；仅在变更状态时校验，冲突返回 409 且 `data` 附服务端最新注记行。
+- 服务端从 thread 反解来源（board/topic/section/report/指纹快照），客户端无法指定快照内容。
+- 语义：同目标同状态重复提交幂等返回已保存行；无归属 topic 的线索 → 404；thread 的 section 已被删除（重建后孤儿）→ 404（此路径只服务在册线索，失效快照维护走 PATCH）。
+
+### PATCH `/daily-reports/topics/:id/key-events/:marker_id`
+
+注记寻址维护：取消确认（含来源失效快照）、失效后重新标记。
+
+```json
+{ "action": "unmark", "revision": 3 }
+```
+
+- `action`：`mark`（→confirmed，需来源仍有效）/ `dismiss`（→dismissed）/ `unmark`（取消确认 → dismissed）。
+- 状态机（DB CHECK 强制）：`suggested →(mark/dismiss)→ confirmed|dismissed`；`confirmed →(unmark)→ dismissed`；`dismissed →(mark)→ confirmed`（死来源拒绝）。
+- `unmark` 只适用于 confirmed/dismissed 行（对 suggested 行 400）；来源已脱离（detached 快照）时仍可用——这是失效快照取消纠错的唯一入口；来源已死且当前 dismissed 的行再 `mark` → 400。
+- `revision`：必填乐观锁（与 PUT 的 `expected_revision` 同义、字段名不同）；冲突 → 409 附最新行；marker 不存在或非该 topic → 404。
 
 ## 话题盯盘（Topic Watches）
 

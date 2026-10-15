@@ -43,7 +43,14 @@ vi.mock('~/components/ui/ThemeToggle.vue', () => ({
 }))
 vi.mock('./BoardThreadBrowser.vue', () => {
   // __esModule 标记：defineAsyncComponent 解包动态 import 命名空间时据此取 default
-  return { __esModule: true, default: { name: 'BoardThreadBrowser', template: '<div data-testid="lazy-panel-topic-overview" />' } }
+  return {
+    __esModule: true,
+    default: {
+      name: 'BoardThreadBrowser',
+      emits: ['openDailyReport'],
+      template: `<div data-testid="lazy-panel-topic-overview"><button class="stub-open-report" @click="$emit('openDailyReport', 42)">nav</button></div>`,
+    },
+  }
 })
 vi.mock('./AddSemanticBoardDialog.vue', () => ({ default: { template: '<span />' } }))
 vi.mock('./BoardHealthPanel.vue', () => ({ default: { name: 'BoardHealthPanel', template: '<div data-testid="eager-panel-composition" />' } }))
@@ -193,5 +200,28 @@ describe('TagsPage — 版块体检治理面板装配（add-board-health-checkup
     expect(bar.text()).toContain('体检发现质量预警')
     await bar.trigger('click')
     expect(scrollIntoView).toHaveBeenCalled()
+  })
+})
+
+// ── 关键注记「来源日报」导航（add-topic-key-event-markers）───────────────────
+describe('TagsPage — key-event source-report navigation', () => {
+  it('switches to the daily-reports tab when the overview emits openDailyReport', async () => {
+    apiMocks.listWatches.mockResolvedValue({ success: true, data: [] })
+    const wrapper = mount(TagsPage, {
+      global: { stubs: { WatchManagePanel: WatchManagePanelStub } },
+    })
+    await flushPromises()
+
+    const tabs = wrapper.findAll('.tags-content-tab')
+    await tabs[1]!.trigger('click') // 话题总览
+    await flushPromises()
+    expect(wrapper.find('[data-testid="lazy-panel-topic-overview"]').exists()).toBe(true)
+
+    await wrapper.find('.stub-open-report').trigger('click')
+    await flushPromises()
+
+    // 断言：离开总览、切到日报页签（时间线面板可见）。
+    expect(wrapper.find('[data-testid="lazy-panel-topic-overview"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="lazy-panel-daily-reports"]').exists()).toBe(true)
   })
 })

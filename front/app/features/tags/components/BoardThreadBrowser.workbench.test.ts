@@ -26,6 +26,10 @@ const deleteTopic = vi.fn()
 const mergeTopics = vi.fn()
 const backfillPersistentTopics = vi.fn()
 const listBoardTopics = vi.fn()
+const getReportKeyEvents = vi.fn().mockResolvedValue({ success: true, data: { status: 'idle', markers: [] } })
+const getTopicKeyEvents = vi.fn().mockResolvedValue({ success: true, data: { topic_id: 1, days: 14, markers: [] } })
+const putThreadKeyEvent = vi.fn()
+const patchKeyEventMarker = vi.fn()
 
 vi.mock('~/api/dailyReports', () => ({
   useDailyReportsApi: () => ({
@@ -36,6 +40,10 @@ vi.mock('~/api/dailyReports', () => ({
     mergeTopics,
     backfillPersistentTopics,
     listBoardTopics,
+    getReportKeyEvents,
+    getTopicKeyEvents,
+    putThreadKeyEvent,
+    patchKeyEventMarker,
   }),
 }))
 vi.mock('~/api/articles', () => ({
