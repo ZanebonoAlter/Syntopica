@@ -25,7 +25,7 @@
 
 <!-- doc-impact: none(纯样式摆放修复，不新增/修订 reference 文档内容；归档时按 §12 补 flow/daily-report.md 变更溯源链接) -->
 
-- [ ] 5.1 归档后按 §12 在 `docs/reference/flow/daily-report.md` 变更溯源节补本 change 链接；`docs/reference/standard/frontend/layout.md` 若线程行分区模式有既有记载则同步一句（先 grep 确认辖区，无则不动）。
+- [x] 5.1 归档后按 §12 在 `docs/reference/flow/daily-report.md` 变更溯源节补本 change 链接；`docs/reference/standard/frontend/layout.md` 若线程行分区模式有既有记载则同步一句（先 grep 确认辖区，无则不动）。
 
 ## 6. 验证（Scenario → 测试文件映射）
 

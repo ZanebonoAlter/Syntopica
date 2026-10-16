@@ -267,6 +267,7 @@ CRUD：POST/GET /api/semantic-boards/:id/topic-watches、PATCH/DELETE /api/topic
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 | ------ | ------ | ------ | ---------- |
+| 2026-10-17 | fix-daily-report-ke-row-layout | 日报线索行关键事件标记布局修复：多根 fragment 组件根节点不继承宿主 scope 属性致宿主摆放规则死代码（标题列被挤成 ≈18% 窄条、建议占 ≈80%），摆放规则移入 KeyEventMarkerActions 自身 scoped 样式 + 50/50 等宽分栏 + 动作组行底右对齐 + 源码守卫测试（防规则回迁死区/断点漂移）；spec topic-key-event-markers「条目标记交互」呈现句修订 | [`openspec/changes/archive/2026-10-17-fix-daily-report-ke-row-layout`](../../../openspec/changes/archive/2026-10-17-fix-daily-report-ke-row-layout) |
 | 2026-10-13 | fix-digest-tag-leak | 事件标签去重 tiebreak 升三级（文章数 > identity×版块 cosine > id，缺失/全零/查询失败回退 ID，红线 29）+ 方向校验相对门（margin 0.15 可配，semantic-board.md 红线 4）；根治 digest 同篇双事件标签抽签存活导致串味可见错误 | [`openspec/changes/archive/2026-10-13-fix-digest-tag-leak`](../../../openspec/changes/archive/2026-10-13-fix-digest-tag-leak) |
 | 2026-10-12 | add-topic-key-event-markers | 话题关键事件注记：AI 建议（非阻塞）+ 人工确认/不采纳/取消（revision 乐观锁）+ 来源指纹幂等（重建重挂/失效快照）+ 话题读端 confirmed 回看 + 信号材料关注注入（data-enrichment.md）；约束 30/31 | [`openspec/changes/add-topic-key-event-markers`](../../../openspec/changes/add-topic-key-event-markers) |
 | 2026-09-17 | add-notification-center | 日报生成终态通知落库（白名单=只日报：完成/一条失败汇总互斥，空版面不算失败）+ WS notification 事件；右上角铃铛通知中心（未读角标/面板/标已读）；header 标签队列进度芯片（活跃量 pending+leased，空闲自动隐藏，失败红态可点击跳队列区）；打标队列排空汇总为候选不实现 | [`openspec/changes/archive/2026-09-17-add-notification-center`](../../../openspec/changes/archive/2026-09-17-add-notification-center) |
