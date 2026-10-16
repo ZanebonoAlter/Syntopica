@@ -751,12 +751,14 @@ watch(() => props.focusSectionId, async (sectionId) => {
 }
 
 /*
-  线索行分区（对齐原型 thread-row）：标题/徽标左列，标记按钮组右列窄纵列
-  （与标题同一视觉行，不独占一行）；AI 理由/错误/无归属说明全宽行（ke-detail）。
+  线索行分区（对齐原型 thread-row）：标题/徽标左列（50%），AI 理由等详情右半等宽列
+  （50%）；动作组全宽底行右对齐（行右下角）。
+  .ke-detail/.ke-actions 的摆放规则住在 KeyEventMarkerActions 自身 scoped 样式：
+  多根 fragment 组件根节点不继承宿主 scope 属性，宿主子选择器永不命中（死代码）。
 */
 .drm-thread-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   column-gap: 1rem;
   row-gap: 7px;
   align-items: start;
@@ -767,16 +769,7 @@ watch(() => props.focusSectionId, async (sectionId) => {
   margin: 0;
 }
 
-.drm-thread-row > .ke-detail {
-  grid-column: 1 / -1;
-}
-
-.drm-thread-row > .ke-actions {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: start;
-  margin-top: 2px;
-}
+/* 摆放规则已移入 KeyEventMarkerActions 自身 scoped 样式（fragment 根不继承宿主 scope，宿主子选择器永不命中） */
 
 .drm-thread__header:not(:disabled) {
   cursor: pointer;
@@ -991,18 +984,14 @@ button.drm-article:focus-visible {
 }
 
 @media (max-width: 720px) {
-  /* 窄屏：标记按钮组回退全宽横排（原型同款），不挤压线索标题 */
+  /* 窄屏回退单列，不挤压线索标题；.ke-detail/.ke-actions 的窄屏摆放
+     （detail r2 全宽、动作组 r3）在 KeyEventMarkerActions 自身 scoped 样式的
+     同断点媒体查询里（断点数值必须与这里同步，两处注释互指锚定）。 */
   .drm-thread-row {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .drm-thread-row > .ke-actions {
-    grid-column: 1;
-    grid-row: auto;
-    flex-direction: row;
-    flex-wrap: wrap;
-    max-width: none;
-  }
+  /* 摆放规则已移入 KeyEventMarkerActions 自身 scoped 样式（fragment 根不继承宿主 scope，宿主子选择器永不命中） */
 
   .drm-zone__header {
     align-items: start;

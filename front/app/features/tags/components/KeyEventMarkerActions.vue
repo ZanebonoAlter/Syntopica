@@ -43,7 +43,7 @@ const showSuggestion = computed(() =>
 
 const basisEvidenceCount = computed(() => props.view.marker?.recommendation_basis?.evidence_article_ids?.length ?? 0)
 
-/** 详情块是否需要渲染（理由/错误/无归属说明任一存在才出全宽行，零内容不占行）。 */
+/** 详情块是否需要渲染（理由/错误/无归属说明任一存在才出右半列详情块，零内容不占行）。 */
 const hasDetail = computed(() =>
   (showSuggestion.value && (props.view.marker?.recommendation_reason != null || basisEvidenceCount.value > 0))
   || props.view.error != null
@@ -58,12 +58,14 @@ function isPending(action: KeyEventPendingAction) {
 <template>
   <!--
     多根 fragment（对齐原型 thread-row 分区）：
-    ① .ke-detail —— 理由/依据/错误/无归属说明，全宽行（宿主 grid column 1/-1）；
-    ② .ke-actions —— 状态徽标 + 按钮组，线索右侧窄纵列（与标题同一视觉行，不独占一行）。
-    宿主用 .drm-thread-row grid（minmax(0,1fr) auto）放置两块。
+    ① .ke-detail —— 理由/依据/错误/无归属说明，右半列（c2/r1，与标题同一视觉行）；
+    ② .ke-actions —— 状态徽标 + 按钮组，全宽底行右对齐（r2，行右下角）。
+    两块由宿主 .drm-thread-row grid（minmax(0,1fr) minmax(0,1fr) 等宽两列）承载，
+    但摆放规则住在本组件自身 scoped 样式：多根 fragment 根节点不继承宿主 scope 属性，
+    宿主的子选择器永不命中（原因详见下方 <style> 注释，与宿主注释互指）。
   -->
   <div v-if="hasDetail" class="ke-detail">
-    <!-- suggested：AI 理由 + 依据数（仅日报挑选模式，全宽行） -->
+    <!-- suggested：AI 理由 + 依据数（仅日报挑选模式，右半列详情块） -->
     <div v-if="showSuggestion" class="ke-detail__suggestion">
       <p v-if="view.marker?.recommendation_reason" class="ke-detail__reason">
         {{ view.marker.recommendation_reason }}
@@ -176,22 +178,27 @@ function isPending(action: KeyEventPendingAction) {
 
 <style scoped>
 /*
-  分区样式（对齐原型）：.ke-actions 是线索右侧窄纵列（grid column 2，
-  由宿主 .drm-thread-row 放置）；.ke-detail 是全宽行（column 1/-1）。
-  窄屏由宿主媒体查询把本组件改回全宽横排（见 DailyReportTopicSection）。
+  摆放规则必须住在自身 scoped 样式：本组件是多根 fragment，根节点只带自家
+  scope 属性、不继承宿主（DailyReportTopicSection）的 scope 属性，宿主
+  .drm-thread-row 下的子选择器永不命中（fix-daily-report-ke-row-layout 根因）。
+  窄屏 ≤720px 媒体查询与宿主 .drm-thread-row 的断点数值同步（两处注释互指锚定）。
 */
 .ke-actions {
+  /* 全宽底行右对齐（行右下角），徽标与按钮横排 */
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
   gap: 6px;
-  min-width: 104px;
-  max-width: 132px;
+  grid-column: 1 / -1;
+  grid-row: 2;
   font-size: 0.78rem;
   line-height: 1.45;
 }
 
 .ke-detail {
+  /* 右半列顶对齐（c2/r1，与标题同一视觉行） */
   display: flex;
   flex-wrap: wrap;
   flex-direction: column;
@@ -200,6 +207,8 @@ function isPending(action: KeyEventPendingAction) {
   padding: 0 0 2px;
   font-size: 0.76rem;
   line-height: 1.5;
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .ke-detail__suggestion {
@@ -308,6 +317,24 @@ function isPending(action: KeyEventPendingAction) {
 @keyframes ke-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/*
+  窄屏 ≤720px：与宿主 DailyReportTopicSection 的 .drm-thread-row 断点数值同步
+  （断点必须两处同改，互指锚定）——宿主该断点回退单列，detail 显式落 r2。
+  动作组用 auto 落轨避免空 r2 轨道的双倍 row-gap：detail 存在时 auto 放置
+  自然落 r3，不存在时落 r2，均紧贴上一行。摆放规则必须住在这里：
+  多根 fragment 根节点不继承宿主 scope 属性。
+*/
+@media (max-width: 720px) {
+  .ke-detail {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .ke-actions {
+    grid-row: auto;
   }
 }
 </style>

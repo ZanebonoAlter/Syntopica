@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
 import KeyEventMarkerActions from './KeyEventMarkerActions.vue'
 import type { TopicKeyEventMarker } from '~/api/dailyReports'
 import type { ThreadKeyEventView } from '~/features/tags/composables/useTopicKeyEvents'
@@ -53,10 +54,11 @@ describe('KeyEventMarkerActions — 日报挑选模式（review/history）', () 
     expect(w.find('[data-ke-state]').attributes('data-ke-state')).toBe('suggested')
   })
 
-  it('splits detail (full-width row) from the action column (按钮不独占一行，对齐原型分区)', () => {
+  it('splits detail (right half column) from the action row (detail 右半列、actions 底行右对齐，对齐原型分区)', () => {
     const w = mountActions('review', view(makeMarker()))
-    // 多根 fragment：详情块（理由/依据）与按钮组是分离的兄弟块——宿主 grid 把
-    // 按钮组放到线索右列（与标题同行），详情落全宽行，不再挤在一行里。
+    // 多根 fragment：详情块（理由/依据）与按钮组是分离的兄弟块——grid 摆放：
+    // 详情落右半列（c2/r1，与标题同一视觉行），动作组落全宽底行右对齐（r2）。
+    // 摆放声明在自身 scoped 样式（见结构红线的源码守卫用例）。
     const detail = w.find('.ke-detail')
     const actions = w.find('.ke-actions')
     expect(detail.exists()).toBe(true)
@@ -64,6 +66,14 @@ describe('KeyEventMarkerActions — 日报挑选模式（review/history）', () 
     expect(detail.classes()).not.toContain('ke-actions')
     expect(actions.find('.ke-detail__reason').exists()).toBe(false)
     expect(detail.find('button').exists()).toBe(false)
+  })
+
+  it('hides the detail block when there is no detail content, actions still render (零内容不占行)', () => {
+    // confirmed 且无 error/无归属说明：hasDetail=false 不渲染 .ke-detail，
+    // .ke-actions 恒渲染（无 detail 行的动作仍落底行）。
+    const w = mountActions('review', view(makeMarker({ state: 'confirmed' })))
+    expect(w.find('.ke-detail').exists()).toBe(false)
+    expect(w.find('.ke-actions').exists()).toBe(true)
   })
 
   it('wraps long reasons with pre-line (长文字可读) and keeps them non-truncated by CSS', () => {
@@ -154,6 +164,26 @@ describe('KeyEventMarkerActions — 结构红线', () => {
     for (const btn of buttons) {
       expect(btn.element.querySelector('button')).toBeNull()
     }
+  })
+
+  it('placement rules live in own scoped style, host has no dead child selectors (scope 断链回归闸)', () => {
+    // 多根 fragment 根节点不继承宿主 scope 属性——grid 摆放规则必须写在本组件
+    // 自身 scoped 样式（根节点带自家 scope attr 才命中）；宿主若再出现
+    // `.drm-thread-row > .ke-detail` / `.drm-thread-row > .ke-actions` 子选择器
+    // 即为永不命中的死代码（fix-daily-report-ke-row-layout 根因）。
+    // 源码守卫先例：UpgradeSuggestionPanel.gen.test.ts 的 readFileSync 锚。
+    const src = readFileSync(`${import.meta.dirname}/KeyEventMarkerActions.vue`, 'utf8')
+    const style = src.slice(src.indexOf('<style'))
+    expect(style).toMatch(/\.ke-detail\s*\{[^}]*grid-column:\s*2/s)
+    expect(style).toMatch(/\.ke-actions\s*\{[^}]*justify-content:\s*flex-end/s)
+
+    const host = readFileSync(`${import.meta.dirname}/daily-report/DailyReportTopicSection.vue`, 'utf8')
+    expect(host).not.toMatch(/\.drm-thread-row\s*>\s*\.ke-detail/)
+    expect(host).not.toMatch(/\.drm-thread-row\s*>\s*\.ke-actions/)
+
+    // 窄屏断点两处同步的机器闸门：两个源文件都必须含同值媒体查询断点
+    expect(src).toContain('max-width: 720px')
+    expect(host).toContain('max-width: 720px')
   })
 
   it('actions are native buttons (keyboard reachable via Enter/Space activation)', async () => {
