@@ -41,7 +41,7 @@
 - [x] 6.7 `cd front && pnpm build`，期望通过（deploy-frontend.sh 构建 + 铺盘 + 重启 + 健康检查成功）
 - [x] 6.8 `bash scripts/harness/scenario-trace.sh openspec/changes/add-search-sort-modes`，期望退出码 0（15/15）
 - [x] 6.9 `bash scripts/harness/check-tasks-tail.sh openspec/changes/add-search-sort-modes`，期望退出码 0
-- [ ] 6.10 `bash scripts/harness/archive-readiness.sh add-search-sort-modes`，期望全绿
+- [x] 6.10 `bash scripts/harness/archive-readiness.sh add-search-sort-modes`，期望全绿（2026-10-23 六项全绿后归档）
 - [ ] 6.11 【域外阻塞登记】`front/app/features/tags/components/SignalReportView.test.ts` 的 7 个 TS 错误归属 redesign-enrichment-research-workbench（`git status` 为 M），本 change 不触碰；待该 change 收口后复跑全量 `nuxi typecheck`
 
 ### Scenario → 测试文件映射
