@@ -32,6 +32,7 @@ function response(over: Partial<SearchResponseData> = {}): SearchResponseData {
     total: 2,
     page: 1,
     perPage: 20,
+    sortBy: 'date',
     tookMs: 312,
     semanticSkipped: false,
     semanticTags: [{ label: '新能源车', score: 0.87 }],
@@ -79,7 +80,7 @@ describe('useSearch — 状态机主链路', () => {
     await vi.waitFor(() => expect(s.status.value).toBe('success'))
     expect(api.search).toHaveBeenCalledTimes(1)
     expect(api.search).toHaveBeenCalledWith({
-      q: '特斯拉', archived: 'include', expand: 'off', page: 1, perPage: 20,
+      q: '特斯拉', archived: 'include', expand: 'off', sortBy: 'date', page: 1, perPage: 20,
     })
     expect(s.hits.value.length).toBe(2)
     expect(s.total.value).toBe(2)
@@ -169,7 +170,7 @@ describe('useSearch — 幂等防护（变体走查）', () => {
     expect(s.loadingMore.value).toBe(true)
     await vi.waitFor(() => expect(s.loadingMore.value).toBe(false))
     expect(api.search).toHaveBeenLastCalledWith({
-      q: '特斯拉', archived: 'include', expand: 'off', page: 2, perPage: 20,
+      q: '特斯拉', archived: 'include', expand: 'off', sortBy: 'date', page: 2, perPage: 20,
     })
     expect(s.hits.value.map(h => h.article.id)).toEqual(['a1', 'a2', 'a3'])
     expect(s.hasMore.value).toBe(false)
@@ -252,5 +253,85 @@ describe('useSearch — 过滤器与降级标记', () => {
     s.submit()
     await vi.waitFor(() => expect(s.semanticSkipped.value).toBe(false))
     expect(s.semanticTags.value.length).toBe(1)
+  })
+})
+
+describe('useSearch — 排序模式', () => {
+  it('默认 sortBy=date：首次请求携带 sortBy=date', async () => {
+    api.search.mockResolvedValue({ success: true, data: response() })
+    const s = useSearch()
+    expect(s.sortBy.value).toBe('date')
+
+    s.query.value = '特斯拉'
+    s.submit()
+    await vi.waitFor(() => expect(s.status.value).toBe('success'))
+    expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ q: '特斯拉', sortBy: 'date' }))
+  })
+
+  it('切换排序：无已执行查询时只改本地状态；有结果时以同查询立即重查并携带新排序', async () => {
+    api.search.mockResolvedValue({ success: true, data: response() })
+    const s = useSearch()
+
+    s.setSortBy('relevance')
+    expect(api.search).not.toHaveBeenCalled()
+    expect(s.sortBy.value).toBe('relevance')
+
+    s.query.value = '特斯拉'
+    s.submit()
+    await vi.waitFor(() => expect(s.status.value).toBe('success'))
+    expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ q: '特斯拉', sortBy: 'relevance' }))
+
+    s.setSortBy('date')
+    await vi.waitFor(() => expect(api.search).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(s.status.value).toBe('success'))
+    expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ q: '特斯拉', sortBy: 'date' }))
+
+    // 同值再设置：不重查
+    s.setSortBy('date')
+    expect(api.search).toHaveBeenCalledTimes(2)
+  })
+
+  it('loadMore 沿用当前排序：切换后在翻页请求中携带新值', async () => {
+    api.search.mockResolvedValueOnce({ success: true, data: response({ hits: [hit('a1')], total: 2, page: 1 }) })
+    const s = useSearch()
+    s.query.value = '特斯拉'
+    s.submit()
+    await vi.waitFor(() => expect(s.status.value).toBe('success'))
+
+    api.search.mockResolvedValueOnce({ success: true, data: response({ hits: [hit('a2')], total: 2, page: 1 }) })
+    s.setSortBy('relevance')
+    await vi.waitFor(() => expect(s.status.value).toBe('success'))
+    expect(api.search).toHaveBeenCalledTimes(2)
+    expect(s.hasMore.value).toBe(true)
+
+    // 再给一页数据，验证翻页参数
+    api.search.mockResolvedValueOnce({ success: true, data: response({ hits: [hit('a3')], total: 3, page: 2 }) })
+    s.loadMore()
+    await vi.waitFor(() => expect(s.loadingMore.value).toBe(false))
+    expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, sortBy: 'relevance' }))
+  })
+
+  it('查询指纹包含排序：切换排序后再 submit 同 q 不重复请求', async () => {
+    api.search.mockResolvedValue({ success: true, data: response() })
+    const s = useSearch()
+    s.query.value = '特斯拉'
+    s.submit()
+    await vi.waitFor(() => expect(s.status.value).toBe('success'))
+
+    s.setSortBy('relevance')
+    await vi.waitFor(() => expect(api.search).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(s.status.value).toBe('success'))
+
+    s.submit()
+    expect(api.search).toHaveBeenCalledTimes(2)
+  })
+
+  it('响应 sortBy 不反向覆盖本地状态（本地是用户意图）', async () => {
+    api.search.mockResolvedValue({ success: true, data: response({ sortBy: 'relevance' }) })
+    const s = useSearch()
+    s.query.value = '特斯拉'
+    s.submit()
+    await vi.waitFor(() => expect(s.status.value).toBe('success'))
+    expect(s.sortBy.value).toBe('date')
   })
 })

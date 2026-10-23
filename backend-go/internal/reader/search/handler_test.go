@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -63,12 +64,20 @@ func seedHandlerFeed(t *testing.T) uint {
 
 func seedHandlerArticle(t *testing.T, feedID uint, title, description string, archived bool) uint {
 	t.Helper()
+	return seedHandlerArticleAt(t, feedID, title, description, archived, nil)
+}
+
+// seedHandlerArticleAt 指定 pub_date 的种子（排序用例：日期分组 / created_at
+// 回退）；pubDate=nil 时入库为 NULL。
+func seedHandlerArticleAt(t *testing.T, feedID uint, title, description string, archived bool, pubDate *time.Time) uint {
+	t.Helper()
 	article := models.Article{
 		FeedID:      feedID,
 		Title:       title,
 		Description: description,
 		Link:        fmt.Sprintf("https://example.com/a/%d", time.Now().UnixNano()),
 		Archived:    archived,
+		PubDate:     pubDate,
 	}
 	require.NoError(t, database.DB.Create(&article).Error)
 	return article.ID
@@ -112,10 +121,11 @@ type searchResponse struct {
 		Expand *struct {
 			Words []string `json:"words"`
 		} `json:"expand"`
-		Total   int   `json:"total"`
-		Page    int   `json:"page"`
-		PerPage int   `json:"perPage"`
-		TookMs  int64 `json:"tookMs"`
+		Total   int    `json:"total"`
+		Page    int    `json:"page"`
+		PerPage int    `json:"perPage"`
+		SortBy  string `json:"sortBy"`
+		TookMs  int64  `json:"tookMs"`
 	} `json:"data"`
 }
 
@@ -124,6 +134,15 @@ func decodeSearchResponse(t *testing.T, recorder *httptest.ResponseRecorder) sea
 	var body searchResponse
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body), "body: %s", recorder.Body.String())
 	return body
+}
+
+// searchResultIDs 响应结果的文章 ID 序列（排序断言用）。
+func searchResultIDs(body searchResponse) []uint {
+	ids := make([]uint, len(body.Data.Results))
+	for i, r := range body.Data.Results {
+		ids[i] = r.ID
+	}
+	return ids
 }
 
 // TestSearchHandlerKeywordHitWithReasons covers S1 步 1：关键词命中 +
@@ -353,6 +372,111 @@ func TestSearchHandlerPaginationSlice(t *testing.T) {
 
 	body = decodeSearchResponse(t, runSearchHandler(t, svc, url.Values{"q": {"国漫"}, "per_page": {"2"}, "page": {"5"}}))
 	require.Equal(t, 3, body.Data.Total)
+	require.Empty(t, body.Data.Results)
+}
+
+// seedSortFixture 排序主链路数据（test-cases 故事步 1）：今天低分、昨天高分、
+// 前天高分。三篇均命中「国漫」（sqlite 无 trigram：标题/描述整串命中——
+// 标题 1.0、描述 0.7 构造层级差）。创建顺序 = ID 升序，使 relevance 顺序
+// （昨天 → 前天 → 今天）与 date 顺序（今天 → 昨天 → 前天）可区分。
+func seedSortFixture(t *testing.T) (todayLow, yesterdayHigh, dayBeforeHigh uint) {
+	t.Helper()
+	now := time.Now()
+	today := now
+	yesterday := now.Add(-24 * time.Hour)
+	dayBefore := now.Add(-48 * time.Hour)
+
+	feedID := seedHandlerFeed(t)
+	todayLow = seedHandlerArticleAt(t, feedID, "行业速递：今日观察", "国漫今日快讯", false, &today)
+	yesterdayHigh = seedHandlerArticleAt(t, feedID, "国漫观察：昨日焦点", "", false, &yesterday)
+	dayBeforeHigh = seedHandlerArticleAt(t, feedID, "国漫报告：前日深度", "", false, &dayBefore)
+	return todayLow, yesterdayHigh, dayBeforeHigh
+}
+
+// TestSearchHandlerSortDefaultsToDate covers test-cases 故事步 1 / spec
+// 「未传排序参数默认时间优先」：响应 sortBy=date，最新日历日分组在前。
+func TestSearchHandlerSortDefaultsToDate(t *testing.T) {
+	svc := setupSearchHandlerTest(t, &handlerFakeSemantic{}, nil)
+	todayLow, yesterdayHigh, dayBeforeHigh := seedSortFixture(t)
+
+	body := decodeSearchResponse(t, runSearchHandler(t, svc, url.Values{"q": {"国漫"}}))
+	require.True(t, body.Success)
+	require.Equal(t, string(SortByDate), body.Data.SortBy)
+	require.Equal(t, 3, body.Data.Total)
+	require.Equal(t, []uint{todayLow, yesterdayHigh, dayBeforeHigh}, searchResultIDs(body),
+		"date 模式：今天（低分）→ 昨天（高分）→ 前天（高分）")
+}
+
+// TestSearchHandlerSortRelevanceRestoresRRFOrder covers 故事步 4 / spec
+// 「相关度排序模式」：sort_by=relevance 恢复旧 RRF 顺序；两种排序同一结果集
+// 与 total（只改顺序，不做过滤）。
+func TestSearchHandlerSortRelevanceRestoresRRFOrder(t *testing.T) {
+	svc := setupSearchHandlerTest(t, &handlerFakeSemantic{}, nil)
+	todayLow, yesterdayHigh, dayBeforeHigh := seedSortFixture(t)
+
+	dateBody := decodeSearchResponse(t, runSearchHandler(t, svc, url.Values{"q": {"国漫"}}))
+	relBody := decodeSearchResponse(t, runSearchHandler(t, svc, url.Values{"q": {"国漫"}, "sort_by": {"relevance"}}))
+	require.Equal(t, string(SortByRelevance), relBody.Data.SortBy)
+	require.Equal(t, []uint{yesterdayHigh, dayBeforeHigh, todayLow}, searchResultIDs(relBody),
+		"relevance 保持旧 RRF 顺序（昨日高分在前）")
+	require.Equal(t, dateBody.Data.Total, relBody.Data.Total, "两种排序 total 相同")
+	require.ElementsMatch(t, searchResultIDs(dateBody), searchResultIDs(relBody), "两种排序同一结果集")
+}
+
+// TestSearchHandlerSortIllegalFallsBackToDate covers 故事步 5 / spec「非法排序值
+// 回退默认」：非法/空/大小写不符 → HTTP 200，sortBy=date，顺序同默认。
+func TestSearchHandlerSortIllegalFallsBackToDate(t *testing.T) {
+	svc := setupSearchHandlerTest(t, &handlerFakeSemantic{}, nil)
+	todayLow, yesterdayHigh, dayBeforeHigh := seedSortFixture(t)
+	want := []uint{todayLow, yesterdayHigh, dayBeforeHigh}
+
+	for _, params := range []url.Values{
+		{"q": {"国漫"}, "sort_by": {"bogus"}},
+		{"q": {"国漫"}, "sort_by": {""}},
+		{"q": {"国漫"}, "sort_by": {"DATE"}},
+	} {
+		recorder := runSearchHandler(t, svc, params)
+		require.Equal(t, http.StatusOK, recorder.Code, params.Encode())
+		body := decodeSearchResponse(t, recorder)
+		require.Equal(t, string(SortByDate), body.Data.SortBy)
+		require.Equal(t, want, searchResultIDs(body))
+	}
+}
+
+// TestSearchHandlerSortPaginationStable covers 故事步 6 / spec「分页顺序稳定」：
+// per_page=1 连续翻页无重复无遗漏；同日同分用 ID 兜底，跨日按日分组。
+func TestSearchHandlerSortPaginationStable(t *testing.T) {
+	svc := setupSearchHandlerTest(t, &handlerFakeSemantic{}, nil)
+	feedID := seedHandlerFeed(t)
+	now := time.Now()
+	today := now
+	yesterday := now.Add(-24 * time.Hour)
+
+	// 同日两组：今天两篇关键词分相同 → 榜内名次不同 → RRF 分差定序；
+	// 昨天一篇标题命中 + 一篇描述命中（描述权重 0.7）。
+	a := seedHandlerArticleAt(t, feedID, "国漫头条甲", "", false, &today)
+	b := seedHandlerArticleAt(t, feedID, "国漫头条乙", "", false, &today)
+	c := seedHandlerArticleAt(t, feedID, "国漫昨日深读", "", false, &yesterday)
+	d := seedHandlerArticleAt(t, feedID, "行业速递：昨日速览", "国漫昨日快讯", false, &yesterday)
+	want := []uint{a, b, c, d}
+
+	var got []uint
+	for page := 1; page <= len(want); page++ {
+		body := decodeSearchResponse(t, runSearchHandler(t, svc, url.Values{
+			"q": {"国漫"}, "sort_by": {"date"}, "per_page": {"1"}, "page": {strconv.Itoa(page)},
+		}))
+		require.Equal(t, len(want), body.Data.Total)
+		require.Len(t, body.Data.Results, 1, "page=%d", page)
+		got = append(got, searchResultIDs(body)...)
+	}
+	require.Equal(t, want, got, "逐页顺序与全量排序一致，无重复无遗漏")
+
+	// 越界页：空结果不报错
+	recorder := runSearchHandler(t, svc, url.Values{
+		"q": {"国漫"}, "per_page": {"1"}, "page": {strconv.Itoa(len(want) + 1)},
+	})
+	require.Equal(t, http.StatusOK, recorder.Code)
+	body := decodeSearchResponse(t, recorder)
 	require.Empty(t, body.Data.Results)
 }
 

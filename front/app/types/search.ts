@@ -9,6 +9,9 @@ import type { Article } from './article'
 /** 命中解释三型：关键词 / 语义标签 / LLM 扩展词 */
 export type SearchHitReasonType = 'keyword' | 'semantic' | 'expand'
 
+/** 结果排序模式：date 时间优先（默认）｜relevance 相关度优先 */
+export type SearchSortMode = 'date' | 'relevance'
+
 export interface SearchHitReason {
   type: SearchHitReasonType
   /** 命中文本（关键词原文 / 标签名 / 扩展词） */
@@ -36,6 +39,8 @@ export interface SearchResponseData {
   total: number
   page: number
   perPage: number
+  /** 实际生效的排序模式（服务端回显；仅用于契约断言，不反向覆盖本地状态） */
+  sortBy: SearchSortMode
   tookMs: number | null
   /** embedding 不可用 → 静默跳过语义路径（降级提示条，不阻塞） */
   semanticSkipped: boolean

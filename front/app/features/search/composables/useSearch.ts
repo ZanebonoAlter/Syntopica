@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { useSearchApi } from '~/api/search'
-import type { SearchHit, SemanticTagHit } from '~/types'
+import type { SearchHit, SearchSortMode, SemanticTagHit } from '~/types'
 
 /**
  * 站内搜索页数据编排（add-article-search）：fetch + 状态机 + 过滤开关 + offset 分页。
@@ -8,7 +8,7 @@ import type { SearchHit, SemanticTagHit } from '~/types'
  * 状态机：initial（未搜索）→ loading（首查骨架屏）→ success | empty | error；
  * 追加分页用独立 loadingMore（不重置已有结果）；semanticSkipped 为语义路径
  * 静默降级标记（黄色提示条，不阻塞结果）。幂等防护两条：
- * - 输入不变（且过滤器不变）不重查（submit 按 q+archived+expand 指纹比对）；
+ * - 输入不变（且过滤器不变）不重查（submit 按 q+archived+expand+sortBy 指纹比对）；
  * - 进行中重复提交直接忽略（loading/loadingMore 期间守卫）。
  */
 
@@ -25,6 +25,8 @@ export function useSearch() {
   const includeArchived = ref(true)
   /** LLM 扩展搜索（默认关：用户手动开启） */
   const expandEnabled = ref(false)
+  /** 结果排序模式（默认 date：最新日期优先，spec「默认最新优先」） */
+  const sortBy = ref<SearchSortMode>('date')
 
   // ---- 状态与结果 ----
   const status = ref<SearchStatus>('initial')
@@ -41,7 +43,7 @@ export function useSearch() {
 
   // 最后一次已提交查询（过滤器变更/重试以此为准，而非当前输入框内容）
   let lastQuery = ''
-  // 已执行查询指纹（q + archived + expand）：submit 幂等判据
+  // 已执行查询指纹（q + archived + expand + sortBy）：submit 幂等判据
   let executedKey = ''
   // 响应序号：新查询使旧响应（含进行中的 loadMore）过期丢弃
   let seq = 0
@@ -54,6 +56,7 @@ export function useSearch() {
       q,
       includeArchived.value ? 'include' : 'active-only',
       expandEnabled.value ? 'on' : 'off',
+      sortBy.value,
     ].join('\u0000')
   }
 
@@ -85,6 +88,7 @@ export function useSearch() {
       q,
       archived: includeArchived.value ? 'include' : 'active-only',
       expand: expandEnabled.value ? 'on' : 'off',
+      sortBy: sortBy.value,
       page: 1,
       perPage: DEFAULT_PER_PAGE,
     })
@@ -126,6 +130,7 @@ export function useSearch() {
       q: lastQuery,
       archived: includeArchived.value ? 'include' : 'active-only',
       expand: expandEnabled.value ? 'on' : 'off',
+      sortBy: sortBy.value,
       page: page.value + 1,
       perPage: DEFAULT_PER_PAGE,
     })
@@ -136,7 +141,8 @@ export function useSearch() {
   }
 
   /** 过滤器变更后立即重查（以最后已提交查询为基准）；空态引导「开启扩展再试」亦经此路径。
-   *  仅首查进行中跳过（重复提交防护）；loadMore 进行中不阻塞 */
+   *  仅首查进行中跳过（重复提交防护）；loadMore 进行中不阻塞。
+   *  loading 中被跳过的变更由下次 submit 的指纹差异兜底（executedKey 仍为旧值）。 */
   function requeryIfExecuted(): void {
     if (!lastQuery || loading.value) return
     executedKey = keyOf(lastQuery)
@@ -155,10 +161,18 @@ export function useSearch() {
     requeryIfExecuted()
   }
 
+  /** 切换排序：变化才重查（与过滤器同路径）；响应里的 sortBy 不回写本地（本地是用户意图） */
+  function setSortBy(mode: SearchSortMode): void {
+    if (sortBy.value === mode) return
+    sortBy.value = mode
+    requeryIfExecuted()
+  }
+
   return {
     query,
     includeArchived,
     expandEnabled,
+    sortBy,
     status,
     loading,
     loadingMore,
@@ -176,5 +190,6 @@ export function useSearch() {
     loadMore,
     setIncludeArchived,
     setExpandEnabled,
+    setSortBy,
   }
 }

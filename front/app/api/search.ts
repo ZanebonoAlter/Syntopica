@@ -1,7 +1,8 @@
 /**
  * 站内文章搜索 API（add-article-search）—— GET /api/search 唯一前端边界。
  *
- * 后端契约：q / archived=include|active-only / expand=off|on / page / per_page。
+ * 后端契约：q / archived=include|active-only / expand=off|on / sort_by=date|relevance /
+ * page / per_page。
  * 响应体按 change 契约为顶层 camelCase（results/semantic/expand/total/perPage/tookMs），
  * 结果项复用 articles 列表窄投影字段。因后端与前端并行开发、且既有 articles 列表在
  * wire 上是 snake_case + success/data 包裹，本层对两种形态与两种命名宽容归一：
@@ -10,12 +11,14 @@
 
 import { apiClient } from './client'
 import { normalizeArticle, type ArticlePayload } from './normalizers/article'
-import type { ApiResponse, SearchHit, SearchHitReason, SearchResponseData, SemanticTagHit } from '~/types'
+import type { ApiResponse, SearchHit, SearchHitReason, SearchResponseData, SearchSortMode, SemanticTagHit } from '~/types'
 
 export interface SearchQueryParams {
   q: string
   archived?: 'include' | 'active-only'
   expand?: 'off' | 'on'
+  /** 排序模式（默认 date，服务端缺省亦为 date） */
+  sortBy?: SearchSortMode
   page?: number
   perPage?: number
 }
@@ -105,6 +108,11 @@ function toSemanticTags(raw: unknown): SemanticTagHit[] {
     .filter(tag => tag.label !== '')
 }
 
+/** 排序模式归一：缺省/非法值回退 date（与后端静默回退口径一致） */
+function toSortMode(raw: unknown): SearchSortMode {
+  return raw === 'relevance' ? 'relevance' : 'date'
+}
+
 export function normalizeSearchResponse(raw: unknown): SearchResponseData {
   const body: WireRecord = isRecord(raw) ? raw : {}
   const semantic = pick(body, 'semantic', 'semantic')
@@ -118,6 +126,7 @@ export function normalizeSearchResponse(raw: unknown): SearchResponseData {
     total: toInt(pick(body, 'total', 'total')) ?? hits.length,
     page: toInt(pick(body, 'page', 'page')) ?? 1,
     perPage: toInt(pick(body, 'perPage', 'per_page')) ?? hits.length,
+    sortBy: toSortMode(pick(body, 'sortBy', 'sort_by')),
     tookMs: toInt(pick(body, 'tookMs', 'took_ms')),
     semanticSkipped: semanticBlock.skipped === true,
     semanticTags: semanticBlock.skipped === true ? [] : toSemanticTags(semanticBlock.tags),
@@ -131,6 +140,7 @@ export function useSearchApi() {
       q: params.q,
       archived: params.archived,
       expand: params.expand,
+      sort_by: params.sortBy,
       page: params.page,
       per_page: params.perPage,
     })

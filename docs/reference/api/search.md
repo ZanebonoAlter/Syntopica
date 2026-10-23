@@ -15,6 +15,7 @@
 | `q` | string | 是 | 查询串；空/纯空白（含全角）→ 400；>200 字符截断（记 warn）；LIKE 通配符（`%` `_` `\`）转义按字面匹配 |
 | `archived` | string | 否 | `include`（默认，含归档行）/ `active-only`（仅活跃） |
 | `expand` | string | 否 | `off`（默认）/ `on`——开启后 LLM 产 5~8 扩词补跑字面召回，结果区隔为扩展命中 |
+| `sort_by` | string | 否 | `date`（默认，按发布日倒序分组、同日内按融合相关度）/ `relevance`（按 RRF 融合相关度）；非法值静默回退 `date` |
 | `page` | int | 否 | 页码（≥1，非法 → 400） |
 | `per_page` | int | 否 | 页大小（≥1，非法 → 400） |
 
@@ -36,8 +37,9 @@
   "expand": { "words": ["电池热失控", "新能源车起火"] },
   "total": 67,
   "page": 1,
-  "per_page": 20,
-  "took_ms": 312
+  "perPage": 20,
+  "sortBy": "date",
+  "tookMs": 312
 }
 ```
 
@@ -45,6 +47,7 @@
 - **`hit_reasons[].type`**：`keyword`（L0-L3 字面管线命中，text 为命中词、score 为层级加权分或 trigram 相似度）/ `semantic`（text 为标签名、score 为 cosine）/ `expand`（LLM 扩展词命中）。
 - **`semantic` 块**：embedding 不可用或 3s 超时 → `{ "skipped": true }`（HTTP 200 不报错，前端降级提示条）；无 identity 向量命中 → `skipped: false` + 空 `tags`。
 - **`expand` 块**：仅 `expand=on` 且 LLM 成功时存在；LLM 失败不影响主结果，扩展区缺失。
+- **排序**：`sort_by=date`（默认）以 `pub_date`（为空回退 `created_at`）的 Asia/Shanghai 日历日倒序分组，同一天内按 RRF 分 → 关键词分 → 语义分 → 精确发布时间 → 文章 ID 的全序排序；`relevance` 保持纯 RRF 融合顺序。两种模式返回相同结果集与 `total`，只改变顺序；响应 `sortBy` 回显实际生效值。
 - **性能**：关键词路径纯 SQL（pg_trgm GIN 索引）永远在线；语义路径并行执行不阻塞首屏（P50 < 1s 目标）。
 
 ### 配置键（ai_settings）

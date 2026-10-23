@@ -99,6 +99,7 @@ function searchResponse(over: Partial<SearchResponseData> = {}): SearchResponseD
     total: 1,
     page: 1,
     perPage: 20,
+    sortBy: 'date',
     tookMs: 312,
     semanticSkipped: false,
     semanticTags: [{ label: '新能源车', score: 0.87 }],
@@ -388,6 +389,76 @@ describe('/search — 预览弹窗与过滤交互', () => {
     // 加载完 → 尾部提示替代按钮
     expect(w.find('[data-test="search-load-more"]').exists()).toBe(false)
     expect(w.find('.search-end-hint').text()).toContain('已显示全部 3 条')
+  })
+})
+
+describe('/search — 排序控件（add-search-sort-modes）', () => {
+  it('默认「最新优先」高亮：控件在初始态即可见，首次搜索携带 sortBy=date', async () => {
+    const w = mountPage()
+    // initial（未搜索）：控件可见，默认高亮
+    expect(w.find('[data-test="search-sort-date"]').exists()).toBe(true)
+    expect(w.find('[data-test="search-sort-relevance"]').exists()).toBe(true)
+    expect(w.find('[data-test="search-sort-date"]').classes()).toContain('search-sort-btn--active')
+    expect(w.find('[data-test="search-sort-relevance"]').classes()).not.toContain('search-sort-btn--active')
+
+    await runSearchAndGetResults(w)
+    expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ sortBy: 'date' }))
+    expect(w.find('[data-test="search-sort-date"]').attributes('aria-pressed')).toBe('true')
+    expect(w.find('[data-test="search-sort-relevance"]').attributes('aria-pressed')).toBe('false')
+  })
+
+  it('点「相关度优先」→ 同查询立即以 sortBy=relevance 重查，active 态切换', async () => {
+    const w = mountPage()
+    await runSearchAndGetResults(w)
+    expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ sortBy: 'date' }))
+
+    api.search.mockResolvedValueOnce({ success: true, data: searchResponse() })
+    await w.find('[data-test="search-sort-relevance"]').trigger('click')
+    await flushPromises()
+
+    expect(api.search).toHaveBeenCalledTimes(2)
+    expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ q: '特斯拉', sortBy: 'relevance' }))
+    expect(w.find('[data-test="search-sort-relevance"]').classes()).toContain('search-sort-btn--active')
+    expect(w.find('[data-test="search-sort-date"]').classes()).not.toContain('search-sort-btn--active')
+  })
+
+  it('首查 loading 期间排序按钮 disabled，响应落地后解禁', async () => {
+    let release: (value: unknown) => void = () => {}
+    api.search.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const w = mountPage()
+    await w.find('input').setValue('特斯拉')
+    await w.find('form.search-bar').trigger('submit')
+
+    expect(w.find('[data-test="search-sort-date"]').attributes('disabled')).toBeDefined()
+    expect(w.find('[data-test="search-sort-relevance"]').attributes('disabled')).toBeDefined()
+
+    release({ success: true, data: searchResponse() })
+    await flushPromises()
+    expect(w.find('[data-test="search-sort-date"]').attributes('disabled')).toBeUndefined()
+    expect(w.find('[data-test="search-sort-relevance"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('empty 与 error 下排序控件仍存在且可用', async () => {
+    const w = mountPage()
+    api.search.mockResolvedValueOnce({ success: true, data: searchResponse({ hits: [], total: 0, semanticTags: [] }) })
+    await w.find('input').setValue('不存在词')
+    await w.find('form.search-bar').trigger('submit')
+    await flushPromises()
+
+    expect(w.find('[data-test="search-no-results"]').exists()).toBe(true)
+    expect(w.find('[data-test="search-sort-date"]').exists()).toBe(true)
+    expect(w.find('[data-test="search-sort-relevance"]').exists()).toBe(true)
+    expect(w.find('[data-test="search-sort-date"]').attributes('disabled')).toBeUndefined()
+
+    // 切换排序 → 重查失败 → error 态，控件仍在
+    api.search.mockResolvedValueOnce({ success: false, error: '网络错误' })
+    await w.find('[data-test="search-sort-relevance"]').trigger('click')
+    await flushPromises()
+
+    expect(w.find('.search-error').exists()).toBe(true)
+    expect(w.find('[data-test="search-sort-date"]').exists()).toBe(true)
+    expect(w.find('[data-test="search-sort-relevance"]').exists()).toBe(true)
+    expect(w.find('[data-test="search-sort-date"]').attributes('disabled')).toBeUndefined()
   })
 })
 

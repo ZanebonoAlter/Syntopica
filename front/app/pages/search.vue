@@ -19,9 +19,9 @@ import type { Article, SearchHit } from '~/types'
  * 全部语义 token，editorial/dark 双主题零特判。
  */
 const {
-  query, includeArchived, expandEnabled, status, loading, loadingMore,
+  query, includeArchived, expandEnabled, sortBy, status, loading, loadingMore,
   hits, total, tookMs, semanticSkipped, semanticTags, expandWords,
-  errorMessage, hasMore, submit, retry, loadMore, setIncludeArchived, setExpandEnabled,
+  errorMessage, hasMore, submit, retry, loadMore, setIncludeArchived, setExpandEnabled, setSortBy,
 } = useSearch()
 
 const articlesApi = useArticlesApi()
@@ -153,6 +153,32 @@ function goReadFull(): void {
         </form>
 
         <div class="search-filters">
+          <!-- 排序分段控件（add-search-sort-modes D6）：视觉同 BoardTimelinePanel 的
+               tags-sort-toggle，不抽公共组件；所有状态下可见，首查 loading 时 disabled -->
+          <div class="search-sort-toggle" role="group" aria-label="结果排序">
+            <button
+              type="button"
+              class="search-sort-btn"
+              :class="{ 'search-sort-btn--active': sortBy === 'date' }"
+              data-test="search-sort-date"
+              :aria-pressed="sortBy === 'date'"
+              :disabled="loading"
+              @click="setSortBy('date')"
+            >
+              <Icon icon="mdi:clock-outline" width="13" height="13" /> 最新优先
+            </button>
+            <button
+              type="button"
+              class="search-sort-btn"
+              :class="{ 'search-sort-btn--active': sortBy === 'relevance' }"
+              data-test="search-sort-relevance"
+              :aria-pressed="sortBy === 'relevance'"
+              :disabled="loading"
+              @click="setSortBy('relevance')"
+            >
+              <Icon icon="mdi:star-outline" width="13" height="13" /> 相关度优先
+            </button>
+          </div>
           <AppToggle
             :model-value="includeArchived"
             label="含归档文章"
@@ -368,6 +394,42 @@ function goReadFull(): void {
   flex-wrap: wrap;
   gap: 10px 18px;
   margin-top: 14px;
+}
+
+/* 排序分段按钮：复用 BoardTimelinePanel 分段形态（accent token），窄屏折行不溢出 */
+.search-sort-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.search-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.search-sort-btn--active {
+  color: var(--color-accent);
+  background: var(--color-accent-subtle);
+}
+
+.search-sort-btn:hover:not(.search-sort-btn--active):not(:disabled) {
+  color: var(--color-text-secondary);
+}
+
+.search-sort-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .search-summary {

@@ -162,7 +162,8 @@ type expandResult struct {
 // HandleSearch is the GET /api/search gin handler（spec「混合搜索聚合端点」）。
 // 参数：q（必填，空/纯空白→400）、archived（include|active-only，缺省
 // include，非法回退默认不报错）、expand（off|on，缺省 off，非法回退 off）、
-// page/per_page（≥1 整数，非法→400；per_page>100 钳 100+warn）。
+// sort_by（date|relevance，缺省 date，非法回退 date 不报错）、page/per_page
+// （≥1 整数，非法→400；per_page>100 钳 100+warn）。
 func (s *Service) HandleSearch(c *gin.Context) {
 	start := time.Now()
 
@@ -172,6 +173,7 @@ func (s *Service) HandleSearch(c *gin.Context) {
 	}
 	archived := parseArchivedParam(c.Query("archived"))
 	expandOn := c.Query("expand") == "on"
+	sortBy := parseSortByParam(c.Query("sort_by"))
 
 	ctx := c.Request.Context()
 
@@ -274,6 +276,10 @@ func (s *Service) HandleSearch(c *gin.Context) {
 		}
 	}
 
+	// 排序：融合后、分页切片前（design D3）。两种模式同一结果集，只改顺序；
+	// relevance 原样返回旧 RRF 顺序。
+	fused = SortFused(fused, rows, sortBy)
+
 	results := make([]map[string]any, 0, pageEnd-offset)
 	for _, fr := range fused[offset:pageEnd] {
 		row, ok := rows[fr.ArticleID]
@@ -299,6 +305,7 @@ func (s *Service) HandleSearch(c *gin.Context) {
 		"total":    total,
 		"page":     page,
 		"perPage":  perPage,
+		"sortBy":   string(sortBy),
 		"tookMs":   time.Since(start).Milliseconds(),
 	}
 	// expand 块仅 expand=on 时携带：成功回显词表，失败空词表（前端区分
@@ -378,6 +385,12 @@ func parseArchivedParam(raw string) string {
 		return ArchiveActiveOnly
 	}
 	return ArchiveInclude
+}
+
+// parseSortByParam 排序模式：缺省 date；非法值静默回退 date 不报错
+// （枚举类回退惯例，与 archived/expand 同款）。解析规则在 sort.go。
+func parseSortByParam(raw string) SortMode {
+	return ParseSortMode(raw)
 }
 
 // ============================================================================
