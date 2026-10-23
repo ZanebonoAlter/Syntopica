@@ -2440,7 +2440,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, vendorModelMigration())
 	migrations = append(migrations, keyEventMarkersMigration())
 	migrations = append(migrations, pgTrgmMigration(), searchVectorDropMigration())
-	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration())
+	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration())
 }
 
 // boardHealthSnapshotMigration implements 20261006_0001
@@ -4128,6 +4128,176 @@ func searchVectorDropMigration() Migration {
 				if err := db.Exec(s).Error; err != nil {
 					return fmt.Errorf("search_vector drop migration: %w", err)
 				}
+			}
+			return nil
+		},
+	}
+}
+
+// questionResearchBriefMigration implements 20261019_0001
+// (add-question-driven-news-research D1): board_signal_candidate gains a
+// nullable research_brief jsonb column ({unknown, verification, source_ids}).
+// Old rows stay NULL — never backfilled, never guessed; absence = legacy
+// frozen-research protocol (seven sources only). AutoMigrate adds the column
+// on fresh DBs; this migration only guards the ADD COLUMN IF NOT EXISTS path
+// for existing deployments. Forward-only, idempotent.
+func questionResearchBriefMigration() Migration {
+	return Migration{
+		Version:     "20261019_0001",
+		Description: "add-question-driven-news-research D1: board_signal_candidate.research_brief nullable jsonb (unknown/verification/source_ids; NULL=legacy protocol, no backfill)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "board_signal_candidate") {
+				return nil
+			}
+			return withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				if err := tx.Exec(`ALTER TABLE board_signal_candidate
+					ADD COLUMN IF NOT EXISTS research_brief jsonb NULL`).Error; err != nil {
+					return fmt.Errorf("board signal candidate research_brief: %w", err)
+				}
+				return nil
+			})
+		},
+	}
+}
+
+// signalDispositionMigration implements 20261015_0001
+// (redesign-enrichment-research-workbench design D1): the ignore marker table
+// board_signal_disposition is created by AutoMigrate (model registered in the
+// dataenrichment repository); AutoMigrate runs with
+// DisableForeignKeyConstraintWhenMigrating, so the candidate FK lives here —
+// same policy as fk_board_signal_research_progress_candidate (20260922_0002).
+// The marker is meaningless without its candidate: ON DELETE CASCADE. No new
+// columns on candidate/report tables; no backfill (absence of a row = not
+// ignored). Idempotent (DROP CONSTRAINT IF EXISTS first; no-op when the
+// table is absent).
+func signalDispositionMigration() Migration {
+	return Migration{
+		Version:     "20261015_0001",
+		Description: "redesign-enrichment-research-workbench design D1: FK board_signal_disposition.candidate_id -> board_signal_candidate(id) ON DELETE CASCADE (AutoMigrate owns the table; migration owns the FK; row present = ignored, no row = normal)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "board_signal_disposition") {
+				return nil
+			}
+			if !tableExists(db, "board_signal_candidate") {
+				return nil
+			}
+			return withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				for _, stmt := range []string{
+					`ALTER TABLE board_signal_disposition
+						DROP CONSTRAINT IF EXISTS fk_board_signal_disposition_candidate`,
+					`ALTER TABLE board_signal_disposition
+						ADD CONSTRAINT fk_board_signal_disposition_candidate
+						FOREIGN KEY (candidate_id)
+						REFERENCES board_signal_candidate (id)
+						ON DELETE CASCADE`,
+				} {
+					if err := tx.Exec(stmt).Error; err != nil {
+						return fmt.Errorf("board signal disposition constraint: %w", err)
+					}
+				}
+				return nil
+			})
+		},
+	}
+}
+
+// TopicTagIdentityHalfvecIndexName 是语义搜索标签召回使用的 halfvec HNSW
+// 部分索引名（optimize-search-semantic-index design D1）。float32 HNSW 有
+// 2000 维硬上限（当前 embedding 列 2560 维建不了），halfvec 支持到 4000 维；
+// 只索引 identity 行（语义路径只查 identity），索引更小更快。
+const TopicTagIdentityHalfvecIndexName = "idx_topic_tag_embeddings_identity_halfvec_hnsw"
+
+// TopicTagIdentityHalfvecIndexDDL 是 halfvec identity 部分 HNSW 索引的单一
+// DDL 事实源（design D1/D4）：启动迁移 20261023_0001 与 tagmanagement 的
+// ensureVectorDimension 共用，避免两处 DDL 漂移。dim 必须是列的实际维度
+// （halfvec 1..4000）；索引表达式把 float32 向量转半精度存储，查询侧用同一
+// 表达式取候选。
+func TopicTagIdentityHalfvecIndexDDL(dim int) string {
+	// 参数是 int（非用户输入），无注入面；gosec 仍按格式化 SQL 报警。
+	return fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON topic_tag_embeddings USING hnsw ((embedding::halfvec(%d)) halfvec_cosine_ops) WHERE embedding_type = 'identity'`, TopicTagIdentityHalfvecIndexName, dim) //nolint:gosec // G201: dim 为已校验的整数，无注入面
+}
+
+// vectorColumnDimension 从 format_type 输出解析 pgvector 列维度：
+// "vector(2560)" → 2560；"vector"（未限定维度）/空串/非法 → 0（调用方据此
+// 跳过建索引）。
+func vectorColumnDimension(typeStr string) int {
+	s := strings.TrimSpace(typeStr)
+	const prefix = "vector("
+	if !strings.HasPrefix(s, prefix) || !strings.HasSuffix(s, ")") {
+		return 0
+	}
+	dim, err := strconv.Atoi(strings.TrimSuffix(s[len(prefix):], ")"))
+	if err != nil || dim <= 0 {
+		return 0
+	}
+	return dim
+}
+
+// searchSemanticHalfvecIndexMigration implements 20261023_0001
+// (optimize-search-semantic-index design D1/D5): build the halfvec identity
+// partial HNSW index that lets semantic tag recall take ANN candidates instead
+// of a full-table cosine scan (真库实测：14,658 行全表扫描 3.74s，索引 top-50
+// 查询 15ms)。维度从列 format_type 解析——部署间 embedding 维度是运行时
+// 配置（当前 2560），不是编译期常量。halfvec 上限 4000：超限跳过并记日志
+// （语义路回退旧精确扫描，行为不中断）。
+//
+// 构建在事务内（默认 in-tx 路径）：SET LOCAL maintenance_work_mem 生效，
+// 失败整体回滚、版本不记录、下次启动重试。同名索引存在但 INVALID（历史
+// 构建中断）时先 DROP 再建，否则 IF NOT EXISTS 会把坏索引当成已完成。
+func searchSemanticHalfvecIndexMigration() Migration {
+	return Migration{
+		Version:     "20261023_0001",
+		Description: "optimize-search-semantic-index D1/D5: halfvec identity partial HNSW index on topic_tag_embeddings (dim parsed from column format_type, skipped above halfvec's 4000-dim limit)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_tag_embeddings") {
+				return nil
+			}
+			var typeStr string
+			if err := db.Raw(`
+SELECT format_type(a.atttypid, a.atttypmod)
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+WHERE c.relname = 'topic_tag_embeddings' AND a.attname = 'embedding'`).Row().Scan(&typeStr); err != nil {
+				return fmt.Errorf("read topic_tag_embeddings.embedding type: %w", err)
+			}
+			dim := vectorColumnDimension(typeStr)
+			if dim <= 0 || dim > 4000 {
+				logging.Infof("Migration 20261023_0001: skip halfvec HNSW index (embedding type %q, dim %d; halfvec supports 1..4000), semantic search falls back to exact scan", typeStr, dim)
+				return nil
+			}
+
+			var invalid bool
+			if err := db.Raw(`
+SELECT EXISTS (
+	SELECT 1 FROM pg_index i
+	JOIN pg_class c ON c.oid = i.indexrelid
+	WHERE c.relname = ?
+	  AND i.indrelid = to_regclass('public.topic_tag_embeddings')
+	  AND NOT i.indisvalid
+)`, TopicTagIdentityHalfvecIndexName).Scan(&invalid).Error; err != nil {
+				return fmt.Errorf("probe halfvec index validity: %w", err)
+			}
+			if invalid {
+				logging.Warnf("Migration 20261023_0001: dropping INVALID index %s before rebuild", TopicTagIdentityHalfvecIndexName)
+				if err := db.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", TopicTagIdentityHalfvecIndexName)).Error; err != nil { //nolint:gosec // G201: 索引名是包内常量
+					return fmt.Errorf("drop invalid halfvec index: %w", err)
+				}
+			}
+
+			// 构建期维护内存：128MB 默认下 14k×2560 行会落盘（实测 64MB=73s，
+			// 256MB=29s）。SET LOCAL 随事务结束复位，不污染连接池。
+			if err := db.Exec(`SET LOCAL maintenance_work_mem = '256MB'`).Error; err != nil {
+				return fmt.Errorf("set maintenance_work_mem for halfvec index build: %w", err)
+			}
+			// 禁用并行维护：Docker 默认 /dev/shm 只有 64MB，HNSW 并行构建会报
+			// "could not resize shared memory segment ... No space left on device"
+			// （真库首次迁移实测，SQLSTATE 53100）。单进程构建只吃
+			// maintenance_work_mem，不依赖 /dev/shm。
+			if err := db.Exec(`SET LOCAL max_parallel_maintenance_workers = 0`).Error; err != nil {
+				return fmt.Errorf("disable parallel maintenance for halfvec index build: %w", err)
+			}
+			if err := db.Exec(TopicTagIdentityHalfvecIndexDDL(dim)).Error; err != nil {
+				return fmt.Errorf("create halfvec identity HNSW index (dim %d): %w", dim, err)
 			}
 			return nil
 		},

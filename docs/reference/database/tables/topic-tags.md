@@ -37,7 +37,7 @@
 | `id` | SERIAL | PK | 主键 |
 | `topic_tag_id` | INTEGER | NOT NULL; 复合唯一 `idx_topic_tag_embeddings_tag_type_hash`; **FK `fk_topic_tag_embeddings_tag` → topic_tags.id ON DELETE CASCADE（迁移 `20260820_0001`）** | 关联标签 ID |
 | `embedding_type` | VARCHAR(20) | NOT NULL DEFAULT 'identity'; 复合唯一同上 | 嵌入类型：`identity` / `semantic` / `event_keyword` |
-| `embedding` | **vector(4096)** | — | pgvector 向量列（**迁移 `20260403_0003` 固定 4096 维**；struct 字段名 `embedding_vec`，列名 `embedding`） |
+| `embedding` | **vector(N)** | — | pgvector 向量列（**运行时维度**：迁移 `20260403_0003` 初建 4096，`ensureVectorDimension` 按 `embedding_config.embedding_dimension` 调整；当前生产 2560；struct 字段名 `embedding_vec`，列名 `embedding`） |
 | `dimension` | INTEGER | NOT NULL | 向量维度 |
 | `model` | VARCHAR(50) | NOT NULL | 生成模型名称 |
 | `text_hash` | VARCHAR(64) | 复合唯一同上 | 标签文本哈希，参与唯一约束（同一 tag+type 可有多行不同 text_hash） |
@@ -46,7 +46,9 @@
 
 唯一约束：`idx_topic_tag_embeddings_tag_type_hash (topic_tag_id, embedding_type, text_hash)`（gorm tag + 迁移 `20260514_0001` 双重声明）。
 
-> ⚠️ `topic_tag_embeddings.embedding` 是唯一维度固定的向量列（4096）。旧文档曾写 `vector(1536)`，错误。
+**语义搜索向量索引（迁移 `20261023_0001`，optimize-search-semantic-index）**：`idx_topic_tag_embeddings_identity_halfvec_hnsw` —— 部分 HNSW 索引，表达式 `((embedding::halfvec(N)) halfvec_cosine_ops)`，谓词 `WHERE embedding_type = 'identity'`；N 从列 `format_type` 动态解析，≤4000 才建（pgvector halfvec 上限）。float32 HNSW 受 2000 维限制（当前 2560 维建不了）；语义搜索先走该索引取 top-128 近似候选，再用原始 float32 `<=>` 精确复算 cosine。维度变更时 `ensureVectorDimension` 会 drop 后按新维度重建；>4000 维跳过、语义路回退全表精确扫描。
+
+> ⚠️ `topic_tag_embeddings.embedding` 维度由运行时配置决定（当前生产 2560），不再是固定 4096。旧文档曾写 `vector(1536)`/`vector(4096)` 为固定值，均已过时。
 > ⚠️ 旧文档曾列 `vector`（TEXT 旧版 JSON 向量）：迁移 `20260601_0001b` 已 `DROP COLUMN`，请勿引用。
 > `TopicTagEmbedding.TopicTag` 声明了 `constraint:OnDelete:CASCADE`（GORM 层）；DB 层 FK 由迁移 `20260820_0001` 补齐（此前仅 GORM 声明、DB 无约束，删 tag 后向量残留成孤儿，2026-08-20 已清理 25.6 万孤儿行）。
 

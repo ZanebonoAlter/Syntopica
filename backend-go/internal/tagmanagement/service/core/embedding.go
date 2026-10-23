@@ -11,6 +11,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/tracing"
 
@@ -458,10 +459,17 @@ func (s *EmbeddingService) SaveEmbedding(embedding *tagmodels.TopicTagEmbedding)
 }
 
 // ensureVectorDimension checks if the embedding column matches the required dimension
-// and alters it (plus the index) if not. Drops index before ALTER, recreates after.
-// For dimensions > 2000, skips index creation (pgvector HNSW limit is 2000);
-// aux-label dedup falls back to Go-side cosine via process cache (see sqlMergeMatcher),
-// not a DB-side ANN index.
+// and alters it (plus the indexes) if not. Drops indexes before ALTER, recreates after.
+//
+// Index policy (optimize-search-semantic-index design D4):
+//   - float32 HNSW idx_topic_tag_embeddings_embedding：dim ≤ 2000（pgvector float32
+//     HNSW 硬上限）才建；aux-label 去重另有 Go 侧余弦缓存兜底（sqlMergeMatcher）。
+//   - halfvec identity 部分 HNSW（database.TopicTagIdentityHalfvecIndexDDL）：语义搜索
+//     标签召回的 ANN 索引，dim ≤ 4000（pgvector halfvec 上限）才建。
+//   - dim > 4000：两个索引都建不了，语义路回退旧的全表精确扫描（行为不中断）。
+//
+// 两个索引的表达式都内嵌列维度（typmod），维度变更后旧索引的表达式与新列类型
+// 不再匹配，所以必须先 drop 再 ALTER，否则 Postgres 报错/留下失效索引。
 func ensureVectorDimension(dim int) error {
 	var typeStr string
 	if err := repository.Repo.DB().Raw(`
@@ -480,8 +488,13 @@ func ensureVectorDimension(dim int) error {
 
 	logging.Infof("Altering embedding column from %s to %s", typeStr, expected)
 
-	// Drop index first — it depends on the column type
-	_ = repository.Repo.DB().Exec("DROP INDEX IF EXISTS idx_topic_tag_embeddings_embedding").Error
+	// Drop indexes first — they depend on the column type (float32 index on the
+	// column, halfvec index on the cast expression with the old dimension).
+	for _, indexName := range []string{"idx_topic_tag_embeddings_embedding", database.TopicTagIdentityHalfvecIndexName} {
+		if err := repository.Repo.DB().Exec("DROP INDEX IF EXISTS " + indexName).Error; err != nil { //nolint:gosec // G202: 索引名来自包内常量/固定字面量
+			logging.Warnf("Failed to drop vector index %s: %v", indexName, err)
+		}
+	}
 
 	if err := repository.Repo.DB().Exec(fmt.Sprintf(
 		"ALTER TABLE topic_tag_embeddings ALTER COLUMN embedding TYPE %s", expected,
@@ -489,7 +502,7 @@ func ensureVectorDimension(dim int) error {
 		return fmt.Errorf("alter embedding column to %s: %w", expected, err)
 	}
 
-	// Recreate index — HNSW supports max 2000 dimensions
+	// Recreate the float32 index — HNSW supports max 2000 dimensions.
 	if dim <= 2000 {
 		if err := repository.Repo.DB().Exec(
 			"CREATE INDEX idx_topic_tag_embeddings_embedding ON topic_tag_embeddings USING hnsw (embedding vector_cosine_ops)",
@@ -497,10 +510,38 @@ func ensureVectorDimension(dim int) error {
 			logging.Warnf("Failed to recreate HNSW index: %v", err)
 		}
 	} else {
-		// No DB-side vector index (>2000 dim exceeds pgvector HNSW limit of 2000).
+		// No float32 DB-side vector index (>2000 dim exceeds pgvector HNSW limit).
 		// aux-label dedup uses Go-side cosine over the process-cached embeddings
 		// (sqlMergeMatcher), so queries still work without an ANN index here.
-		logging.Infof("Dimension %d exceeds pgvector HNSW limit (2000); skipping DB vector index (aux-label dedup falls back to Go-side cosine via cache)", dim)
+		logging.Infof("Dimension %d exceeds pgvector float32 HNSW limit (2000); skipping float32 vector index (aux-label dedup falls back to Go-side cosine via cache)", dim)
+	}
+
+	// Recreate the halfvec identity index used by semantic search tag recall
+	// (design D1/D4). Same DDL as migration 20261023_0001 — single source of truth.
+	if dim > 0 && dim <= 4000 {
+		// Pin one connection for the session-level build GUCs (Connection does not
+		// open a transaction, so plain CREATE INDEX is fine). Disable parallel
+		// maintenance: Docker's default 64MB /dev/shm makes HNSW parallel builds
+		// fail with SQLSTATE 53100 (seen in the production migration).
+		if err := repository.Repo.DB().Connection(func(tx *gorm.DB) error {
+			// Register RESET before the first SET: if the first SET itself fails,
+			// the pinned connection still returns to the pool clean.
+			defer func() {
+				_ = tx.Exec("RESET maintenance_work_mem").Error
+				_ = tx.Exec("RESET max_parallel_maintenance_workers").Error
+			}()
+			if err := tx.Exec("SET maintenance_work_mem = '256MB'").Error; err != nil {
+				return err
+			}
+			if err := tx.Exec("SET max_parallel_maintenance_workers = 0").Error; err != nil {
+				return err
+			}
+			return tx.Exec(database.TopicTagIdentityHalfvecIndexDDL(dim)).Error
+		}); err != nil {
+			logging.Warnf("Failed to recreate halfvec identity HNSW index: %v", err)
+		}
+	} else {
+		logging.Infof("Dimension %d exceeds pgvector halfvec HNSW limit (4000); skipping semantic identity index (semantic search falls back to exact scan)", dim)
 	}
 
 	return nil

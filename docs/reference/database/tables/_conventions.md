@@ -6,7 +6,7 @@
 
 1. **表名**：GORM 未自定义 `NamingStrategy`，默认蛇形 + 复数；非默认表名由 struct 的 `TableName()` 显式指定。本文档每张表的真实表名以迁移 SQL 与 struct 为准。
 2. **外键（FK）几乎不存在于 DB 层**：`gorm.Config` 设了 `DisableForeignKeyConstraintWhenMigrating: true`，且迁移 `20260601_0001` 主动 drop 了历史上全部 `fk_*`。完整清单见下方「DB 级外键（全库共 13 条）」。本文档中凡是写「关联 / FK」的地方，除特别注明外均为 GORM 逻辑关联，**不**对应 DB 级外键约束。
-3. **向量列维度运行时决定**：除 `topic_tag_embeddings.embedding` 由迁移固定为 `vector(4096)` 外，其余向量列 gorm tag 仅声明 `type:vector`，实际维度由运行时 `embedding_config.embedding_dimension` / `ensureXxxEmbeddingDimension` 设置；HNSW 索引仅当维度 ≤ 2000 时创建。
+3. **向量列维度运行时决定**：`topic_tag_embeddings.embedding` 迁移 `20260403_0003` 初建 `vector(4096)`，运行时由 `embedding_config.embedding_dimension` / `ensureVectorDimension` 调整（当前生产 2560）；其余向量列 gorm tag 仅声明 `type:vector`，实际维度由运行时 `embedding_config.embedding_dimension` / `ensureXxxEmbeddingDimension` 设置。索引规则：float32 HNSW 仅当维度 ≤ 2000 时创建；`topic_tag_embeddings` 的 identity 部分索引使用 halfvec HNSW，维度 ≤ 4000（迁移 `20261023_0001`）。
 4. **字段表列含义**：「类型」= DB 列类型；「约束/默认/索引」= NOT NULL / DEFAULT / 索引 / 唯一 / CHECK 等；「用途」= 业务含义。`string` 无 `size` 时 GORM 默认 256。
 5. **枚举**：除非特别注明「+ CHECK」，枚举取值均为代码层约定，DB 层不强制。
 
@@ -54,7 +54,7 @@
 | -------- | ------ | ------ | ------ |
 | `idx_topic_tag_embeddings_tag_type_hash` | topic_tag_embeddings | UNIQUE `(topic_tag_id, embedding_type, text_hash)` | `20260514_0001` |
 
-> 注：`topic_tag_embeddings.embedding` 无独立 HNSW 迁移语句；运行时 HNSW 仅作用于 `daily_report_sections.embedding` 与 `board_persistent_topics.embedding`（dim ≤ 2000 才建）。
+> 注：`topic_tag_embeddings.embedding` 有两类向量索引——运行时 float32 HNSW `idx_topic_tag_embeddings_embedding`（`ensureVectorDimension` 在 dim ≤ 2000 时建，作用于全表）与迁移 `20261023_0001` 的 halfvec identity 部分 HNSW `idx_topic_tag_embeddings_identity_halfvec_hnsw`（dim ≤ 4000，语义搜索用）；`daily_report_sections.embedding` / `board_persistent_topics.embedding` 的运行时 HNSW 仍按 dim ≤ 2000 建。
 
 ### 唯一约束（表级）
 
@@ -115,7 +115,7 @@
 
 | 表.列 | 维度来源 | 说明 |
 | -------- | ------ | ------ |
-| `topic_tag_embeddings.embedding` | **迁移固定 4096** | 唯一维度固定的向量列（迁移 `20260403_0003`） |
+| `topic_tag_embeddings.embedding` | 运行时（初建 4096，当前生产 2560） | `ensureVectorDimension` 按 `embedding_config.embedding_dimension` 调整；float32 HNSW ≤2000；identity 部分索引用 halfvec HNSW ≤4000（迁移 `20261023_0001`） |
 | `semantic_labels.embedding` | 运行时 | `auxlabel.EnsureVectorDimensionOnce` 按 `embedding_config.embedding_dimension` 设置 |
 | `semantic_labels.merge_embedding` | 运行时 | 同上 |
 | `daily_report_sections.embedding` | 运行时 | `ensureSectionEmbeddingDimension` |
@@ -124,7 +124,7 @@
 | `preference_vectors.embedding` | 运行时 | 偏好画像重算时按 `topic_tag_embeddings` semantic 轨维度写入（入库记 `dimension`/`model`，粗筛前校验一致） |
 | `route_embeddings.embedding` | 运行时 | 路由向量，与偏好向量同空间（入库记 `dimension`/`model`） |
 
-> HNSW 索引仅当维度 ≤ 2000 时创建（pgvector 限制）；> 2000 时跳过 HNSW，仅保留向量列。
+> float32 HNSW 索引仅当维度 ≤ 2000 时创建（pgvector 限制）；`topic_tag_embeddings` 的 identity 行另有 halfvec HNSW 部分索引（≤4000 维，迁移 `20261023_0001`），供语义搜索 ANN 候选；>4000 时两类索引都跳过，语义路回退全表精确扫描。
 
 ---
 
