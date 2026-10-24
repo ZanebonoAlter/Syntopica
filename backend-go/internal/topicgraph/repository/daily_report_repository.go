@@ -183,6 +183,21 @@ func DeriveSectionStatuses(sectionIDs []uint, relations []SectionRelationResult,
 // Daily Report Repository
 // =============================================================================
 
+// dailyReportSaveXactKey derives the (board, date)-scoped transaction-level
+// advisory-lock key for SaveReport (fix-daily-report-cross-process-gate
+// D4/D5): boardID<<32 | epochDay. Same board+date serializes (a concurrent
+// writer waits, then takes the Updates-overwrite path); different boards or
+// dates never contend. The key value domain is disjoint in practice from
+// the generation-gate session key (0x1E8AB706E13C7691) — reaching it would
+// require boardID ≈ 5.1e8, far beyond the ~2.5e5 live IDs.
+// Assumes boardID < 2^31 (declared range assumption; enforced by nothing —
+// revisit if board IDs ever approach 2^31).
+func dailyReportSaveXactKey(boardID uint, date time.Time) int64 {
+	epochDay := date.Unix() / 86400
+	//nolint:gosec // G115: boardID < 2^31 (declared range assumption above), so boardID<<32 fits int64
+	return int64(uint64(boardID)<<32 | (uint64(epochDay) & 0xFFFFFFFF))
+}
+
 // SaveReport saves a daily report and its sections, replacing any existing
 // report for the same board and date.
 func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []DailyReportSection, threadBatches [][]DailyReportThread) error {
@@ -192,6 +207,19 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 	// sections) knows which topics changed.
 	var touchedTopicIDs []uint
 	err := r.db.Transaction(func(tx *gorm.DB) error {
+		// (board, date)-scoped serialization (fix-daily-report-cross-process-
+		// gate D4): the generation gate (D1) already prevents double-runs; this
+		// transaction-level advisory lock is defense in depth for the gate's
+		// failure windows (DB-unreachable fallback / crashed-instance overlap)
+		// — a concurrent same-board-same-date writer waits here instead of
+		// racing the find-then-insert below into the unique constraint
+		// (idx_board_daily_reports_board_period, the 2026-10-23 duplicate-key
+		// incident). The lock auto-releases with the transaction commit/roll-
+		// back; different boards/dates never block each other.
+		if lockErr := tx.Exec("SELECT pg_advisory_xact_lock(?)",
+			dailyReportSaveXactKey(report.SemanticBoardID, report.PeriodDate)).Error; lockErr != nil {
+			return fmt.Errorf("acquire save advisory lock: %w", lockErr)
+		}
 		// Upsert report: find existing by (semantic_board_id, period_date)
 		var existing BoardDailyReport
 		findErr := tx.Where("semantic_board_id = ? AND period_date = ?",
