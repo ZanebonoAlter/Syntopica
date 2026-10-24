@@ -222,6 +222,14 @@ func (te *TagExtractor) extractTagsFromSection(ctx context.Context, router tagCh
 			continue
 		}
 
+		// 示例词泄漏护栏（guard-tag-exemplar-leakage）：栏目片提取的 few-shot
+		// 正例同样可能被照抄——命中示例词且本片可见输入无依据的候选丢弃。
+		visibleInput := input.Title + "\n" + sectionTitle + "\n" + sectionText
+		tags, dropped := guardExemplarLeakage(tags, visibleInput, sectionExemplarSlugs)
+		for _, d := range dropped {
+			logging.Warnf("section %d (%s): exemplar leakage guard dropped tag %q (no evidence in visible input)", sectionIndex, sectionTitle, d)
+		}
+
 		return tags, nil
 	}
 	return nil, lastErr

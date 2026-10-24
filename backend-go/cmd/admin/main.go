@@ -7,6 +7,10 @@
 //	fix-event-tag-anchor   scan event tags for stale time anchors and
 //	                       regenerate descriptions (change
 //	                       fix-event-tag-time-anchor)
+//	board-checkup          run one full board-health checkup round over
+//	                       every active board (same entry as the daily-
+//	                       report tail step; change fix-board-direction-
+//	                       gap-exempt task 4.2 manual trigger)
 //
 // Run from backend-go/ so configs/config.yaml resolves:
 //
@@ -15,6 +19,7 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"flag"
 	"fmt"
@@ -24,11 +29,15 @@ import (
 	"strings"
 	"time"
 
+	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/config"
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/logging"
+	tagmgmt "syntopica-backend/internal/tagmanagement"
 	"syntopica-backend/internal/tagmanagement/repository"
 	tagcore "syntopica-backend/internal/tagmanagement/service/core"
+
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -42,6 +51,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "fix-event-tag-anchor: %v\n", err)
 			os.Exit(1)
 		}
+	case "board-checkup":
+		if err := runBoardCheckup(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "board-checkup: %v\n", err)
+			os.Exit(1)
+		}
+	case "tagguard-cleanup":
+		if err := runTagguardCleanup(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "tagguard-cleanup: %v\n", err)
+			os.Exit(1)
+		}
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -49,6 +68,27 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+}
+
+// runBoardCheckup executes one full board-health checkup round with the
+// production airouter-backed LLM — the same entry the daily-report tail
+// step calls (tagmgmt.RunBoardHealthCheckupWrapped). Writes
+// board_health_snapshots + cooldown-gated anomaly notifications only
+// (red line 20: no suggestion rows, no matching-table writes).
+func runBoardCheckup(_ []string) error {
+	if err := config.LoadConfig("./configs"); err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if config.AppConfig != nil {
+		logging.Init(config.AppConfig.Log.Level, logging.FileConfig{Enabled: false})
+	}
+	if err := database.InitDB(config.AppConfig); err != nil {
+		return fmt.Errorf("init db: %w", err)
+	}
+	repository.InitRepository(database.DB)
+	tagmgmt.RunBoardHealthCheckupWrapped(context.Background(), database.DB)
+	fmt.Println("board-checkup: one full round executed over every active board")
+	return nil
 }
 
 func usage() {
@@ -65,6 +105,16 @@ subcommands:
         --apply        regenerate descriptions (requires --ids)
         --ids  list    comma-separated topic tag IDs to regenerate
         --out  path    backup CSV path (default event-tag-anchor-backup-<ts>.csv)
+  tagguard-cleanup
+      Remove article_topic_tags links whose tag label copies a tagging-prompt
+      few-shot exemplar (PostgreSQL, Kubernetes, ...) while the article text
+      (title+content+firecrawl_content) has zero mention of it (change
+      guard-tag-exemplar-leakage). Dry-run by default: prints the leaked-link
+      list and total exemplar-link counts for the record. To delete:
+      --apply (re-running dry-run afterwards must be empty).
+      flags:
+        --apply        delete leaked links, recalc tag_count, cleanup orphans
+        --out  path    backup CSV path (default tagguard-backup-<ts>.csv)
 `)
 }
 
@@ -202,4 +252,183 @@ func writeBackupCSV(path string, candidates []tagcore.EventAnchorCandidate) erro
 		}
 	}
 	return w.Error()
+}
+
+// exemplarLeakCandidate is one article_topic_tags row whose tag label copies a
+// prompt exemplar, plus the article text fields needed for the evidence check.
+type exemplarLeakCandidate struct {
+	LinkID    uint   `gorm:"column:link_id"`
+	ArticleID uint   `gorm:"column:article_id"`
+	TagID     uint   `gorm:"column:tag_id"`
+	Label     string `gorm:"column:label"`
+	Title     string `gorm:"column:title"`
+	Content   string `gorm:"column:content"`
+	Firecrawl string `gorm:"column:firecrawl_content"`
+}
+
+// visibleText is the evidence corpus for the leak check: same fields as the
+// design doc (title + content + firecrawl_content), case-insensitive Contains.
+func (c exemplarLeakCandidate) visibleText() string {
+	return c.Title + "\n" + c.Content + "\n" + c.Firecrawl
+}
+
+// runTagguardCleanup implements the tagguard-cleanup subcommand (change
+// guard-tag-exemplar-leakage): removes stored article_topic_tags links whose
+// tag label copies a tagging-prompt few-shot exemplar while the article text
+// has zero mention of it. Dry-run by default; --apply deletes inside one
+// transaction, recalcs articles.tag_count, then cleans orphaned tags.
+func runTagguardCleanup(args []string) error {
+	fs := flag.NewFlagSet("tagguard-cleanup", flag.ContinueOnError)
+	apply := fs.Bool("apply", false, "delete leaked exemplar tag links (default: dry-run)")
+	out := fs.String("out", "", "backup CSV path (default tagguard-backup-<ts>.csv)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if err := config.LoadConfig("./configs"); err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if config.AppConfig != nil {
+		logging.Init(config.AppConfig.Log.Level, logging.FileConfig{Enabled: false})
+	}
+	if err := database.InitDB(config.AppConfig); err != nil {
+		return fmt.Errorf("init db: %w", err)
+	}
+	repository.InitRepository(database.DB)
+
+	// Candidate superset via SQL (label lower-bound IN exemplar labels), then
+	// the same-source Go judgment as the extraction guard.
+	labels := tagcore.AllPromptExemplarLabels()
+	lowerLabels := make([]string, 0, len(labels))
+	seenLower := make(map[string]struct{}, len(labels))
+	for _, l := range labels {
+		low := strings.ToLower(l)
+		if _, dup := seenLower[low]; dup {
+			continue
+		}
+		seenLower[low] = struct{}{}
+		lowerLabels = append(lowerLabels, low)
+	}
+
+	var candidates []exemplarLeakCandidate
+	if err := repository.Repo.DB().Raw(`
+		SELECT att.id AS link_id, att.article_id, att.topic_tag_id AS tag_id,
+		       tt.label, a.title, a.content, a.firecrawl_content
+		FROM article_topic_tags att
+		JOIN topic_tags tt ON tt.id = att.topic_tag_id
+		JOIN articles a ON a.id = att.article_id
+		WHERE lower(tt.label) IN ?`, lowerLabels).Scan(&candidates).Error; err != nil {
+		return fmt.Errorf("scan exemplar links: %w", err)
+	}
+
+	var leaked []exemplarLeakCandidate
+	for _, c := range candidates {
+		if tagcore.IsPromptExemplarWithoutEvidence(c.Label, c.visibleText()) {
+			leaked = append(leaked, c)
+		}
+	}
+
+	// count(*) 留底：示例词标签关联总数 / 待删 / 保留。
+	fmt.Printf("tagguard-cleanup: exemplar-label links total=%d leaked(no mention)=%d kept(has mention)=%d\n\n",
+		len(candidates), len(leaked), len(candidates)-len(leaked))
+	for _, c := range leaked {
+		fmt.Printf("  [link:%d article:%d tag:%d] %s | %s\n",
+			c.LinkID, c.ArticleID, c.TagID, c.Label, truncateRunes(c.Title, 40))
+	}
+
+	csvPath := *out
+	if csvPath == "" {
+		csvPath = fmt.Sprintf("tagguard-backup-%s.csv", time.Now().Format("20060102-150405"))
+	}
+	if err := writeTagguardBackupCSV(csvPath, leaked); err != nil {
+		return fmt.Errorf("write backup CSV: %w", err)
+	}
+	fmt.Printf("\nbackup CSV written: %s\n", csvPath)
+
+	if !*apply {
+		if len(leaked) == 0 {
+			fmt.Println("dry-run: nothing to delete (already clean)")
+		} else {
+			fmt.Printf("dry-run: %d link(s) would be deleted; re-run with --apply to proceed\n", len(leaked))
+		}
+		return nil
+	}
+	if len(leaked) == 0 {
+		fmt.Println("apply: nothing to delete (already clean)")
+		return nil
+	}
+
+	linkIDs := make([]uint, 0, len(leaked))
+	articleIDs := make([]uint, 0, len(leaked))
+	tagIDSet := make(map[uint]struct{})
+	for _, c := range leaked {
+		linkIDs = append(linkIDs, c.LinkID)
+		articleIDs = append(articleIDs, c.ArticleID)
+		tagIDSet[c.TagID] = struct{}{}
+	}
+
+	err := repository.Repo.DB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id IN ?", linkIDs).Delete(&models.ArticleTopicTag{}).Error; err != nil {
+			return fmt.Errorf("delete links: %w", err)
+		}
+		if err := tx.Exec(`
+			UPDATE articles SET tag_count = (SELECT COUNT(*) FROM article_topic_tags WHERE article_id = articles.id)
+			WHERE id IN ?`, articleIDs).Error; err != nil {
+			return fmt.Errorf("recalc tag_count: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("apply transaction: %w", err)
+	}
+
+	tagIDs := make([]uint, 0, len(tagIDSet))
+	for id := range tagIDSet {
+		tagIDs = append(tagIDs, id)
+	}
+	tagcore.CleanupOrphanedTags(tagIDs)
+
+	fmt.Printf("apply: deleted %d link(s) across %d article(s); orphan cleanup ran for %d tag(s)\n",
+		len(linkIDs), len(articleIDs), len(tagIDs))
+	fmt.Println("verify: re-run dry-run (must report leaked=0)")
+	return nil
+}
+
+func writeTagguardBackupCSV(path string, leaked []exemplarLeakCandidate) error {
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return fmt.Errorf("create dir: %w", err)
+		}
+	}
+	f, err := os.Create(path) //nolint:gosec // G304：一次性运维工具，路径来自本机 CLI flag/默认时间戳名，非外部输入
+	if err != nil {
+		return fmt.Errorf("create: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	if err := w.Write([]string{"link_id", "article_id", "tag_id", "label", "title"}); err != nil {
+		return err
+	}
+	for _, c := range leaked {
+		if err := w.Write([]string{
+			strconv.FormatUint(uint64(c.LinkID), 10),
+			strconv.FormatUint(uint64(c.ArticleID), 10),
+			strconv.FormatUint(uint64(c.TagID), 10),
+			c.Label, c.Title,
+		}); err != nil {
+			return err
+		}
+	}
+	w.Flush()
+	return w.Error()
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }

@@ -429,7 +429,7 @@ func TestExtractTagsMakesExactlyOneMergedCall(t *testing.T) {
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"event_person_tags":[{"label":"OpenAI发布GPT-5","category":"event","auxiliary_labels":[{"label":"OpenAI","description":"人工智能研究公司"},{"label":"GPT-5","description":"大语言模型版本"},{"label":"模型发布","description":"产品发布行为"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库管理系统"}]}`})
 	extractor := &TagExtractor{router: router}
 
-	result, err := extractor.ExtractTags(context.Background(), ExtractionInput{Title: "OpenAI pushes GPT-5", Summary: "OpenAI is shipping GPT-5."})
+	result, err := extractor.ExtractTags(context.Background(), ExtractionInput{Title: "OpenAI pushes GPT-5", Summary: "OpenAI is shipping GPT-5 with a PostgreSQL memory backend."})
 
 	require.NoError(t, err)
 	require.Equal(t, "llm", result.Source)

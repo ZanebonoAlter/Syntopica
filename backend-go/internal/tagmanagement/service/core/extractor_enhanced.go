@@ -55,6 +55,18 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 	// 只记观察信息，不再用 heuristicKeywordCandidates 回填规则词候选
 	// （fix-tagging-pollution：旧回填把分类名「新闻」等泛词顶进 llm 来源结果）。
 	branchErrors := make([]string, 0, 2)
+
+	// 示例词泄漏护栏（guard-tag-exemplar-leakage）：本地小模型会照抄 prompt 的
+	// few-shot 正例——命中示例词集合且模型可见输入（Title+摘要采样）无依据的
+	// 候选在解析出口丢弃，丢弃记入 errors 供观测。
+	visibleInput := input.Title + "\n" + input.Summary
+	var droppedExemplars []string
+	eventPersonTags, droppedEP := guardExemplarLeakage(eventPersonTags, visibleInput, mergedExemplarSlugs)
+	keywordTags, droppedKW := guardExemplarLeakage(keywordTags, visibleInput, mergedExemplarSlugs)
+	droppedExemplars = append(append(droppedExemplars, droppedEP...), droppedKW...)
+	for _, d := range droppedExemplars {
+		branchErrors = append(branchErrors, fmt.Sprintf("exemplar leakage guard dropped %q (no evidence in visible input)", d))
+	}
 	if len(eventPersonTags) == 0 {
 		branchErrors = append(branchErrors, "event/person extraction: empty event/person array (accepted as-is)")
 	}

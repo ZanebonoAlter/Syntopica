@@ -104,9 +104,13 @@ func TestExtractTagsFromSectionSingleCall(t *testing.T) {
 	router.enqueue("tag_extraction_section", fakeTagChatResponse{content: validSectionResponse})
 	extractor := &TagExtractor{router: router}
 
+	// 正文含 fixture 里的示例词提及（Sam Altman/Kubernetes 均为 section prompt
+	// few-shot 正例）：护栏的放行分支需要正文有依据（guard-tag-exemplar-leakage）。
+	sectionBody := "AI缓存技术取得新突破。Sam Altman 团队将其部署到 Kubernetes 集群。"
+
 	tags, err := extractor.extractTagsFromSection(context.Background(), router, ExtractionInput{
 		Title: "科技周刊第100期", Summary: "unused", FeedName: "科技周刊", CategoryName: "科技",
-	}, "科技动态", "AI缓存技术取得新突破。", 0)
+	}, "科技动态", sectionBody, 0)
 
 	require.NoError(t, err)
 	require.Len(t, tags, 3)
@@ -134,7 +138,7 @@ func TestExtractTagsFromSectionCarriesSectionMetadata(t *testing.T) {
 
 	_, err := extractor.extractTagsFromSection(context.Background(), router, ExtractionInput{
 		Title: "科技周刊第100期", FeedName: "科技周刊", CategoryName: "科技", PubDate: "2026-09-01",
-	}, "科技动态", "AI缓存技术取得新突破。", 2)
+	}, "科技动态", "AI缓存技术取得新突破。Sam Altman 团队将其部署到 Kubernetes 集群。", 2)
 
 	require.NoError(t, err)
 	require.Len(t, router.requests, 1)
@@ -181,7 +185,7 @@ func TestExtractTagsFromSectionSucceedsAfterRetry(t *testing.T) {
 	router.enqueue("tag_extraction_section", fakeTagChatResponse{content: validSectionResponse})
 	extractor := &TagExtractor{router: router}
 
-	tags, err := extractor.extractTagsFromSection(context.Background(), router, ExtractionInput{Title: "标题"}, "科技动态", "正文", 0)
+	tags, err := extractor.extractTagsFromSection(context.Background(), router, ExtractionInput{Title: "标题"}, "科技动态", "Sam Altman 的 Kubernetes 部署实践。", 0)
 
 	require.NoError(t, err)
 	require.Len(t, tags, 3)
