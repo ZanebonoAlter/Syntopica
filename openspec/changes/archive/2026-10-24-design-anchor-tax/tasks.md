@@ -32,7 +32,7 @@
 
 ## 7. 文档
 
-<!-- doc-impact: none(纯 harness/工具链变更；改动的 openspec 模板、开发执行规范 与 harness-retro 不属 8 个 flow 域，如 verify 启发式误报再补 excuse) -->
+<!-- doc-impact: none（纯 harness/工具链变更，**无 flow 影响**；改动的 openspec 模板、开发执行规范 与 harness-retro 不属 8 个 flow 域，如 verify 启发式误报再补 excuse） -->
 <!-- doc-impact-excuse: flow=edit.map 归属混入并发 change 的 backend-go/internal/dataenrichment/service/signal_compose_test.go，本 change 未改 flow 域 -->
 
 - [x] 7.1 `docs/reference/开发执行规范.md` §review 执行要点落文（同 3.1）。验证：`grep -n "design 落点复核" docs/reference/开发执行规范.md` 命中
