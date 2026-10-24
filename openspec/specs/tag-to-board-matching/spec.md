@@ -5,14 +5,15 @@ Tag 通过辅助标签匹配 SemanticBoard 的规则和参数，包括间接匹�
 ## Requirements
 
 ### Requirement: Tag 通过辅助标签匹配 Board
-系统 SHALL 按以下优先级判定 tag 与 SemanticBoard 的匹配：组合标签直接命中（composite direct_hit）为最强信号——tag 关联的组合标签与 board composition 挂载的组合标签存在交集时，score=1.0，match_reason="composite_hit"，MUST NOT 标记 direction_mismatch（组合命中即指向一致）。单辅助标签重叠 direct_hit 降级为弱信号：交集数 ≥ direct_hit_min_overlap（默认 2）**且交集数 / tag 的 active 辅助标签总数 ≥ direct_hit_min_ratio（默认 0.5）**时不再给 score=1.0，SHALL 给予 direct_hit_score_factor（默认 0.7，ai_settings 可配）的折扣分并执行方向校验（与间接匹配规则相同的 direction check，低于 direction_sim_threshold 则标记 direction_mismatch=true）。**交集数达标但占比不足时 SHALL NOT 以 direct_hit 挂载，退回相似度匹配流程（hit_rate / max_sim / weighted 规则）判定，且重叠标签 SHALL NOT 作为该版块的相似度证据参与退回判定（同一批标签不得既作直接命中证据、又作相似度证据——自相似恒为 1.0 会变相重新挂载）；剩余无重叠标签的相似度均不达标时该 tag 不挂载该版块**。所有满足条件的 SemanticBoard SHALL 按分数排序后持久化到 topic_tag_board_labels，默认最多挂载 3 个。间接匹配三规则（hit_rate / max_sim / weighted）行为不变。
+
+系统 SHALL 按以下优先级判定 tag 与 SemanticBoard 的匹配：组合标签直接命中（composite direct_hit）为最强信号——tag 关联的组合标签与 board composition 挂载的组合标签存在交集时，score=1.0，match_reason="composite_hit"，MUST NOT 标记 direction_mismatch（组合命中即指向一致）。单辅助标签重叠 direct_hit 降级为弱信号：交集数 ≥ direct_hit_min_overlap（默认 2）**且交集数 / tag 的 active 辅助标签总数 ≥ direct_hit_min_ratio（默认 0.5）**时不再给 score=1.0，SHALL 给予 direct_hit_score_factor（默认 0.7，ai_settings 可配）的折扣分并执行方向校验（与间接匹配规则相同的三层 direction check：全库 gap 豁免 → 绝对门 → 相对门（详见 board-direction-check）；未获豁免且低于 direction_sim_threshold 或相对门 gap 达标时标记 direction_mismatch=true）。**交集数达标但占比不足时 SHALL NOT 以 direct_hit 挂载，退回相似度匹配流程（hit_rate / max_sim / weighted 规则）判定，且重叠标签 SHALL NOT 作为该版块的相似度证据参与退回判定（同一批标签不得既作直接命中证据、又作相似度证据——自相似恒 1.0 会变相重新挂载）；剩余无重叠标签的相似度均不达标时该 tag 不挂载该版块**。所有满足条件的 SemanticBoard SHALL 按分数排序后持久化到 topic_tag_board_labels，默认最多挂载 3 个。间接匹配三规则（hit_rate / max_sim / weighted）行为不变。
 
 #### Scenario: 组合标签直接命中
 - **WHEN** tag「美债收益率创两周新高」关联组合标签「美债收益率」，版块「美债观察」的 composition 挂载同一组合标签
 - **THEN** tag SHALL 挂载到该版块，match_reason="composite_hit"，score=1.0，direction_mismatch=false
 
 #### Scenario: 直接命中 board 构成标签
-- **WHEN** tag 的辅助标签中包含 "AI" 和 "机器学习"，而它们都是 board #100 "AI与机器学习" 的构成标签，交集数 ≥ direct_hit_min_overlap（默认 2）且占比 ≥ direct_hit_min_ratio（默认 0.5，2 个交集落在 tag 全部辅助标签中占比过半），且 tag identity embedding 与 board embedding cosine ≥ direction_sim_threshold
+- **WHEN** tag 的辅助标签中包含 "AI" 和 "机器学习"，而它们都是 board #100 "AI与机器学习" 的构成标签，交集数 ≥ direct_hit_min_overlap（默认 2）且占比 ≥ direct_hit_min_ratio（默认 0.5，2 个交集落在 tag 全部辅助标签中占比过半），且 tag identity embedding 与 board embedding cosine ≥ direction_sim_threshold 或该版块为 tag 全库最优版块
 - **THEN** tag SHALL 在 topic_tag_board_labels 中挂载到 board #100，match_reason="direct_hit"，score=direct_hit_score_factor（默认 0.7），direction_mismatch=false
 
 #### Scenario: 交集数达标但占比不足退回相似度
@@ -21,11 +22,15 @@ Tag 通过辅助标签匹配 SemanticBoard 的规则和参数，包括间接匹�
 
 #### Scenario: direct_hit_min_overlap=1 向后兼容
 - **WHEN** direct_hit_min_overlap 设为 1，tag 的辅助标签与 board 构成标签交集=1，且该交集占比 ≥ direct_hit_min_ratio
-- **THEN** 1 个交集即以 direct_hit 匹配（降级语义：score=direct_hit_score_factor + 强制方向校验），交集判定行为与变更前一致
+- **THEN** 1 个交集即以 direct_hit 匹配（降级语义：score=direct_hit_score_factor + 强制三层方向校验），交集判定行为与变更前一致
 
 #### Scenario: 降级 direct_hit 方向校验不通过
-- **WHEN** tag 的辅助标签 {国债, 收益率}（占比 2/2=1.0）与 board composition 交集=2 ≥ direct_hit_min_overlap，且 tag identity embedding 与 board embedding cosine=0.55 < direction_sim_threshold
+- **WHEN** tag 的辅助标签 {国债, 收益率}（占比 2/2=1.0）与 board composition 交集=2 ≥ direct_hit_min_overlap，该版块非 tag 的全库最优版块，且 tag identity embedding 与 board embedding cosine=0.55 < direction_sim_threshold=0.6
 - **THEN** tag SHALL 以 match_reason="direct_hit"、score=direct_hit_score_factor（默认 0.7）挂载，direction_mismatch=true（前端默认隐藏）
+
+#### Scenario: 降级 direct_hit 全库最优豁免
+- **WHEN** 同上交集条件，但该版块为 tag 对全部 active 版块 identity cosine 的最大者（如具体事件 tag × 宽泛类目版块，cosine=0.55 < 0.6 但全库最高）且未配置地板线或 cosine ≥ 地板线
+- **THEN** tag SHALL 以 direct_hit 挂载，direction_mismatch=false（全库最优豁免，计入日报）
 
 #### Scenario: 组合命中与单标签重叠同时存在
 - **WHEN** tag 同时满足组合命中（board A）与单标签重叠（board A、B），且组合命中的 board 也满足单标签重叠
@@ -33,7 +38,7 @@ Tag 通过辅助标签匹配 SemanticBoard 的规则和参数，包括间接匹�
 
 #### Scenario: 无组合标签时行为
 - **WHEN** 系统中不存在任何组合标签（或该 tag/board 均未关联组合标签）
-- **THEN** 匹配 SHALL 走降级后的单标签 direct_hit 与间接三规则，与变更前相比仅 direct_hit 的占比门槛、分数与 direction_mismatch 行为不同
+- **THEN** 匹配 SHALL 走降级后的单标签 direct_hit 与间接三规则，与变更前相比仅 direct_hit 的占比门槛、分数与 direction_mismatch 判定结构（新增全库 gap 豁免层）不同
 
 #### Scenario: 交集数不足退回相似度匹配
 - **WHEN** tag 的辅助标签中仅 1 个与 board composition 交集，direct_hit_min_overlap=2，且无组合命中
