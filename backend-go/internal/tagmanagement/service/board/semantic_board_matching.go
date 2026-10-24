@@ -64,6 +64,20 @@ type SemanticBoardMatchConfig struct {
 	// the tag matched this run. Zero or negative disables the gate
 	// (absolute threshold only).
 	DirectionRelativeMargin float64
+	// DirectionFloor is the optional fuse under the global gap exemption
+	// (fix-board-ghost-false-positive): a mount on the tag's global-best
+	// board is only exempt when its identity cosine >= DirectionFloor; a
+	// lower cosine falls back to the absolute gate. Zero or negative
+	// disables the floor (default — exemption has no lower bound).
+	DirectionFloor float64
+	// DirectionGapExemptMargin widens the global-best exemption into a
+	// global gap exemption (fix-board-direction-gap-exempt): boards whose
+	// identity cosine sits within this margin of the global best cosine are
+	// exempt too — in the narrow cosine band (0.55-0.65) of long event tags
+	// × short board names, the global #1 is often a semantically overlapping
+	// magnet board and the true home ranks 2-5 with a noise-sized gap. Zero
+	// or negative falls back to tie-only exemption (diff < 1e-9).
+	DirectionGapExemptMargin float64
 }
 
 type SemanticBoardMatchResult struct {
@@ -378,11 +392,20 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		allBoards[boardID] = struct{}{}
 	}
 
-	// Absolute direction gate applies to every match reason except
-	// composite_hit (a composite hit already implies aligned direction).
-	// Missing tag or board embeddings keep directionMismatch=false, matching
-	// the indirect rules' existing semantics. The relative gate runs as a
-	// post-pass over all matched candidates (see applyDirectionRelativeGate).
+	// Direction check (fix-board-ghost-false-positive) runs in layers:
+	// composite_hit mounts skip it entirely (aligned direction by
+	// definition); mounts whose identity cosine sits within
+	// DirectionGapExemptMargin of the global best across ALL active boards
+	// (fix-board-direction-gap-exempt — ties included; margin <= 0 keeps
+	// the tie-only 1e-9 basis) are exempt from both gates, because the
+	// natural low cosine of "specific event × broad category" pairs is not
+	// off-topic; the remaining mounts go through the absolute gate
+	// (DirectionFloor revokes the exemption for near-zero cosines) plus the
+	// relative post-pass over all matched candidates
+	// (see applyDirectionRelativeGate). Missing tag or board embeddings keep
+	// directionMismatch=false, matching the indirect rules' existing
+	// semantics.
+	gapExemptBoards := computeGapExemptBoards(tagEmbedding, boardEmbeddings, config.DirectionGapExemptMargin)
 	directionMismatch := func(boardID uint) bool {
 		if len(tagEmbedding) == 0 {
 			return false
@@ -391,7 +414,12 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		if !ok || len(boardEmb) == 0 {
 			return false
 		}
-		return CosineSimilarity(tagEmbedding, boardEmb) < config.DirectionSimThreshold
+		cos := CosineSimilarity(tagEmbedding, boardEmb)
+		if _, exempt := gapExemptBoards[boardID]; exempt &&
+			(config.DirectionFloor <= 0 || cos >= config.DirectionFloor) {
+			return false
+		}
+		return cos < config.DirectionSimThreshold
 	}
 
 	matches := make([]SemanticBoardMatchResult, 0, len(allBoards))
@@ -471,7 +499,7 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 	// when its identity cosine sits DirectionRelativeMargin below the best
 	// cosine among all boards the tag matched this run. Must run after the
 	// per-board loop so the reference set covers every candidate.
-	applyDirectionRelativeGate(matches, tagEmbedding, boardEmbeddings, config)
+	applyDirectionRelativeGate(matches, tagEmbedding, boardEmbeddings, config, gapExemptBoards)
 
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].Score == matches[j].Score {
@@ -482,16 +510,57 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 	return matches
 }
 
+// computeGapExemptBoards returns the set of board IDs whose identity cosine
+// with the tag sits within gapExemptMargin of the global maximum across ALL
+// active boards (the full boardEmbeddings map, not just this run's
+// candidates — a junk mount's true home often lies outside the matched set).
+// fix-board-direction-gap-exempt: in the narrow cosine band of long event
+// tags × short board names the global #1 is often a magnet board; the true
+// home a few ranks down is separated from it by noise-sized gaps, so any
+// board within the margin joins the exemption set. A margin <= 0 falls
+// back to the tie-only basis (diff < 1e-9, the pre-change behavior);
+// boards without an embedding are excluded. An empty tag embedding yields
+// an empty set (no direction info at all, so nothing can be called
+// "best").
+func computeGapExemptBoards(tagEmbedding []float64, boardEmbeddings map[uint][]float64, gapExemptMargin float64) map[uint]struct{} {
+	best := make(map[uint]struct{})
+	if len(tagEmbedding) == 0 {
+		return best
+	}
+	bestCos := math.Inf(-1)
+	cosByBoard := make(map[uint]float64, len(boardEmbeddings))
+	for boardID, emb := range boardEmbeddings {
+		if len(emb) == 0 {
+			continue
+		}
+		cos := CosineSimilarity(tagEmbedding, emb)
+		cosByBoard[boardID] = cos
+		if cos > bestCos {
+			bestCos = cos
+		}
+	}
+	exemptBand := math.Max(gapExemptMargin, 1e-9)
+	for boardID, cos := range cosByBoard {
+		if bestCos-cos < exemptBand {
+			best[boardID] = struct{}{}
+		}
+	}
+	return best
+}
+
 // applyDirectionRelativeGate flags mounts whose identity cosine falls
 // margin below the best cosine among all boards the tag matched this run
 // (the reference set includes candidates that will themselves be flagged —
 // the digest leak case: a tag matches its true board at 0.81 and a distant
 // board at 0.60, gap 0.21). Single-board mounts have gap 0 and always pass;
 // a margin <= 0 disables the gate (absolute threshold only). composite_hit
-// mounts are exempt; mounts without a computable cosine (missing tag or
-// board embedding) skip the gate. The flag only ORs in on top of the
-// absolute gate — it never clears an existing direction_mismatch.
-func applyDirectionRelativeGate(matches []SemanticBoardMatchResult, tagEmbedding []float64, boardEmbeddings map[uint][]float64, config SemanticBoardMatchConfig) {
+// mounts are exempt, and so are gap-exempt mounts (their gap to this
+// run's best may still be nonzero — the global gap exemption is measured
+// against the whole board universe, not the matched set); mounts
+// without a computable cosine (missing tag or board embedding) skip
+// the gate. The flag only ORs in on top of the absolute gate — it never
+// clears an existing direction_mismatch.
+func applyDirectionRelativeGate(matches []SemanticBoardMatchResult, tagEmbedding []float64, boardEmbeddings map[uint][]float64, config SemanticBoardMatchConfig, gapExemptBoards map[uint]struct{}) {
 	if config.DirectionRelativeMargin <= 0 || len(tagEmbedding) == 0 {
 		return
 	}
@@ -520,6 +589,13 @@ func applyDirectionRelativeGate(matches []SemanticBoardMatchResult, tagEmbedding
 		}
 		cos, ok := cosByBoard[matches[i].SemanticBoardID]
 		if !ok {
+			continue
+		}
+		// Same floor fuse as the directionMismatch closure: a mount whose
+		// exemption was revoked by the floor falls back to BOTH gates here
+		// too (review M2 — spec "回退双门判定").
+		if _, exempt := gapExemptBoards[matches[i].SemanticBoardID]; exempt &&
+			(config.DirectionFloor <= 0 || cos >= config.DirectionFloor) {
 			continue
 		}
 		if bestCos-cos >= config.DirectionRelativeMargin {
@@ -780,22 +856,24 @@ func (s *SemanticBoardMatchingService) LoadConfig(ctx context.Context) SemanticB
 		return *cached
 	}
 	config := SemanticBoardMatchConfig{
-		SimThreshold:            0.8,
-		DirectHitRate:           0.5,
-		DirectMaxSim:            0.8,
-		DirectMaxSimMinHits:     2,
-		DirectMaxSimMinHitRate:  0.3,
-		MinEffectiveSample:      3,
-		HitRateSimBlend:         0.7,
-		WeightSim:               0.6,
-		WeightDensity:           0.4,
-		WeightedThreshold:       0.6,
-		MaxBoards:               3,
-		DirectHitMinOverlap:     2,
-		DirectHitMinRatio:       0.5,
-		DirectionSimThreshold:   0.5,
-		DirectHitScoreFactor:    0.7,
-		DirectionRelativeMargin: 0.15,
+		SimThreshold:             0.8,
+		DirectHitRate:            0.5,
+		DirectMaxSim:             0.8,
+		DirectMaxSimMinHits:      2,
+		DirectMaxSimMinHitRate:   0.3,
+		MinEffectiveSample:       3,
+		HitRateSimBlend:          0.7,
+		WeightSim:                0.6,
+		WeightDensity:            0.4,
+		WeightedThreshold:        0.6,
+		MaxBoards:                3,
+		DirectHitMinOverlap:      2,
+		DirectHitMinRatio:        0.5,
+		DirectionSimThreshold:    0.5,
+		DirectHitScoreFactor:     0.7,
+		DirectionRelativeMargin:  0.15,
+		DirectionFloor:           0,
+		DirectionGapExemptMargin: 0.10,
 	}
 
 	var settings []models.AISettings
@@ -816,6 +894,8 @@ func (s *SemanticBoardMatchingService) LoadConfig(ctx context.Context) SemanticB
 		"semantic_board_match_direction_sim_threshold",
 		"semantic_board_match_direct_hit_score_factor",
 		"semantic_board_match_direction_relative_margin",
+		"semantic_board_match_direction_floor",
+		"semantic_board_match_direction_gap_exempt_margin",
 	}).Find(&settings).Error; err != nil {
 		return config
 	}
@@ -856,6 +936,13 @@ func (s *SemanticBoardMatchingService) LoadConfig(ctx context.Context) SemanticB
 			config.DirectHitScoreFactor = parseSemanticBoardMatchFloat(setting.Value, config.DirectHitScoreFactor)
 		case "semantic_board_match_direction_relative_margin":
 			config.DirectionRelativeMargin = parseDirectionRelativeMargin(setting.Value, config.DirectionRelativeMargin)
+		case "semantic_board_match_direction_floor":
+			config.DirectionFloor = parseSemanticBoardMatchFloat(setting.Value, config.DirectionFloor)
+		case "semantic_board_match_direction_gap_exempt_margin":
+			// Same margin parse semantics as the relative gate: negatives
+			// converge to 0 (exemption off → tie-only basis), >1 or invalid
+			// values are rejected and keep the current setting.
+			config.DirectionGapExemptMargin = parseDirectionRelativeMargin(setting.Value, config.DirectionGapExemptMargin)
 		}
 	}
 	s.cache.SetConfig(config)

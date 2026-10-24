@@ -207,6 +207,9 @@ func TestSemanticBoardMatchingDirectHitDirectionMismatch(t *testing.T) {
 	auxA := createMatchLabel(t, db, "YieldA", "yield-a", "auxiliary", "active", []float64{1, 0, 0})
 	auxB := createMatchLabel(t, db, "YieldB", "yield-b", "auxiliary", "active", []float64{0, 1, 0})
 	board := createMatchLabel(t, db, "Yield Board", "yield-board", "board", "active", []float64{0, 0, 1})
+	// fix-board-ghost-false-positive：候选外真家 board（有 embedding 无
+	// composition，进全库参照系不进挂载）——否则唯一挂载即全库最优，会被豁免。
+	createMatchLabel(t, db, "Yield True Home", "yield-true-home", "board", "active", []float64{1, 0, 0})
 	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxA.ID}).Error)
 	require.NoError(t, db.Create(&tagmodels.TopicTagSemanticLabel{TopicTagID: tag.ID, SemanticLabelID: auxB.ID}).Error)
 	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxA.ID}).Error)
