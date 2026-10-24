@@ -255,6 +255,27 @@ artifacts:
       - **Open Questions**: Unknowns that can safely be answered later without
         changing the specs, the approach, or the task breakdown. Omit if none.
 
+      Every Decision MUST use the three-line shape (machine-checkable landing):
+
+      ```
+      ### D1. <title>
+      - **结论**: what was chosen
+      - **落点**: one of the four landing types below
+      - **取舍**: rejected alternative + why; or "无备选：<constraint>"
+      ```
+
+      Landing types (must resolve against the repository, not just be written down):
+      1. repo file path (full path or unique basename, optionally `:symbol`;
+         the symbol must be findable in the file; ambiguous basenames = unresolved)
+      2. a task id that exists in this change's tasks.md
+      3. a Scenario title that exists in this change's delta specs
+      4. "无代码落点：<承接制品>，因为 <理由>" for process/docs/review decisions
+         with no code landing (bare "无代码落点" does not pass)
+
+      Vague references ("见 tasks", "后续补", "待定") do NOT count as landings.
+      `取舍` is mandatory: write the rejected option and why it lost; when a hard
+      constraint leaves no alternative, write "无备选：<constraint>".
+
       Open questions are for genuinely deferrable unknowns, not decisions you
       skipped. If a question would change the specs, the chosen approach, or
       the task breakdown, resolve it now - ask the user instead of guessing.

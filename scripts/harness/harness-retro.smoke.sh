@@ -1007,6 +1007,181 @@ HARNESS_RETRO_CHANGES_DIR="$TMP/chg-empty" run_retro --db "$FM2" --days 7
 check 0 "M8 零反馈数据降级（空 changes 目录不静默省略）" \
 	"E 生命周期面" "有账 0 / 无账 0" "无反馈记录（窗口内无 human-feedback.md 条目）"
 
+# ================= N. design 决策落点指标（design-anchor-tax 4.2） =================
+# 三态 fixture：空 design（0 decisions）/ 有落点（文件+任务+Scenario+无代码）/ 空泛落点（不计）。
+NDES="$TMP/design"
+NCH="$NDES/chg"; NARCH="$NDES/arch"; NCH_E="$NDES/chg-empty"
+mkdir -p "$NCH/n-empty" "$NCH/n-mixed/specs/design-decision-landing" "$NCH/n-vague" "$NARCH" "$NCH_E/n-empty"
+
+cat >"$NCH/n-empty/design.md" <<'EOF'
+# Design: n-empty
+
+## Decisions
+
+（无决策）
+EOF
+
+cat >"$NCH/n-mixed/design.md" <<'EOF'
+# Design: n-mixed
+
+## Decisions
+
+### D1. 落点指向真实文件
+
+- **结论**：选 X
+- **落点**：`scripts/harness/harness-retro.sh:resolve_file`
+- **取舍**：方案 Y 更贵 → 选 X
+
+### D2. 落点指向任务
+
+- **结论**：选 X
+- **落点**：任务 1.1
+- **取舍**：无备选：只能这样
+
+### D3. 落点指向 Scenario
+
+- **结论**：选 X
+- **落点**：Scenario「空泛落点不算」
+- **取舍**：方案 Y 有歧义 → 选 X
+
+### D4. 无代码落点
+
+- **结论**：选 X
+- **落点**：无代码落点：docs/reference/开发执行规范.md，因为流程规则
+- **取舍**：方案 Y 太贵 → 选 X
+
+### D5. 空泛落点
+
+- **结论**：选 X
+- **落点**：见 tasks
+
+### D6. 旧格式正文含路径（无落点行，走正文兜底）
+
+- **结论**：选 X
+- 参考 `docs/reference/开发执行规范.md`；**替代方案否决**：Y 更贵。
+
+### D7. 无扩展名的唯一 basename
+
+- **结论**：选 X
+- **落点**：Dockerfile
+EOF
+
+cat >"$NCH/n-mixed/tasks.md" <<'EOF'
+# Tasks: n-mixed
+
+- [ ] 1.1 示例任务
+EOF
+
+cat >"$NCH/n-mixed/specs/design-decision-landing/spec.md" <<'EOF'
+## ADDED Requirements
+
+### Requirement: 示例
+
+#### Scenario: 空泛落点不算
+
+- **WHEN** 落点为「见 tasks」
+- **THEN** 视为缺失
+EOF
+
+cat >"$NCH/n-vague/design.md" <<'EOF'
+# Design: n-vague
+
+## Decisions
+
+### D1. 空泛一
+
+- **结论**：选 X
+- **落点**：见 tasks
+
+### D2. 空泛二
+
+- **结论**：选 X
+- **落点**：待定
+
+### D3. 同名歧义（design.md 在仓库内不唯一）
+
+- **结论**：选 X
+- **落点**：design.md
+
+### D4. 只有「无代码落点」没有承接理由
+
+- **结论**：选 X
+- **落点**：无代码落点
+
+### D5. 符号在文件中找不到
+
+- **结论**：选 X
+- **落点**：scripts/harness/harness-retro.sh:NoSuchSymbolXYZ
+
+### D6. 仓库外绝对路径（不算仓库内落点）
+
+- **结论**：选 X
+- **落点**：__OUTSIDE__
+EOF
+
+: >"$NDES/outside.md"
+sed -i "s|__OUTSIDE__|$NDES/outside.md|" "$NCH/n-vague/design.md"
+
+cp "$NCH/n-empty/design.md" "$NCH_E/n-empty/design.md"
+
+FN="$TMP/fn.db"
+mk_db "$FN"
+ins "$FN" gate.check chgA '{"cmd":"go test","ok":true,"domain":"x"}'
+
+Nenv() { HARNESS_RETRO_CHANGES_DIR="$NCH" HARNESS_RETRO_ARCHIVE_DIR="$NARCH" run_retro --db "$FN" "$@"; }
+
+Nenv --days 7
+check 0 "N1 design 三态聚合（3 份 design / 13 条 Decision / 落点率 46% / 取舍率 38%）" \
+	"样本              : 3 份 design / 13 条 Decision" \
+	"落点率            : 46%（可解析 6 / 13" \
+	"取舍率            : 38%（显式取舍行或正文替代方案表述 5 / 13"
+
+HARNESS_RETRO_CHANGES_DIR="$NCH" HARNESS_RETRO_ARCHIVE_DIR="$NARCH" "$RETRO" --db "$FN" --days 7 --json >"$TMP/n2.json" 2>/dev/null
+if python3 - "$TMP/n2.json" <<'N2PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d['metrics']
+ds = d['effectiveness']['design']
+assert ds['designs'] == 3, ds
+assert ds['decisions'] == 13, ds
+assert ds['landed'] == 6, ds
+assert ds['alt'] == 5, ds
+assert m['m7.design_decisions'] == 13, m.get('m7.design_decisions')
+assert m['m7.design_landing_rate'] == 46, m.get('m7.design_landing_rate')
+assert m['m7.design_alt_rate'] == 38, m.get('m7.design_alt_rate')
+assert isinstance(m['m7.design_words_per_decision'], int) and m['m7.design_words_per_decision'] > 0, m.get('m7.design_words_per_decision')
+assert m['m7.design_words_per_decision'] == ds['words_p50']
+N2PY
+then
+	echo "  ✓ N2 JSON m7.design_* 键值（13 / 46% / 38% / words>0；空泛、歧义、坏符号、仓外路径与空壳无代码落点不计）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ N2 JSON design 指标断言失败"
+	failn=$((failn + 1))
+fi
+
+HARNESS_RETRO_CHANGES_DIR="$NCH_E" HARNESS_RETRO_ARCHIVE_DIR="$NARCH" run_retro --db "$FN" --days 7
+check 0 "N3 空 design 降级（0 decisions 不产出落点率/字数伪值）" \
+	"样本              : 1 份 design / 0 条 Decision" \
+	"落点率 / 字数     : —（窗口内无 Decision，不用 0% 冒充）"
+
+HARNESS_RETRO_CHANGES_DIR="$NCH_E" HARNESS_RETRO_ARCHIVE_DIR="$NARCH" "$RETRO" --db "$FN" --days 7 --json >"$TMP/n3.json" 2>/dev/null
+if python3 - "$TMP/n3.json" <<'N3PY'
+import json, sys
+m = json.load(open(sys.argv[1]))['metrics']
+assert m['m7.design_decisions'] == 0, m.get('m7.design_decisions')
+assert m['m7.design_landing_rate'] is None, m.get('m7.design_landing_rate')
+assert m['m7.design_words_per_decision'] is None, m.get('m7.design_words_per_decision')
+assert m['m7.design_alt_rate'] is None, m.get('m7.design_alt_rate')
+N3PY
+then
+	echo "  ✓ N4 空 design JSON 分母为 0 时不伪造 0%"
+	pass=$((pass + 1))
+else
+	echo "  ✗ N4 空 design JSON 断言失败"
+	failn=$((failn + 1))
+fi
+
 # ================= 汇总 =================
 echo
 echo "== 通过 $pass / 失败 $failn =="
