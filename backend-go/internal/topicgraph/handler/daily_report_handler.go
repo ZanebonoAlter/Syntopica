@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -24,6 +25,10 @@ import (
 
 // RegisterDailyReportRoutes registers all daily report routes.
 func RegisterDailyReportRoutes(api *gin.RouterGroup) {
+	// POST /api/daily-reports/:id/rebucket — re-run intra-lane theme bucketing
+	// for one bucket group (add-intra-lane-theme-bucketing).
+	api.POST("/daily-reports/:id/rebucket", rebucketDailyReportSection)
+
 	// POST /api/daily-reports/generate
 	api.POST("/daily-reports/generate", triggerGenerateDailyReport)
 
@@ -322,6 +327,59 @@ func getDailyReport(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"report": report}})
+}
+
+// rebucketDailyReportSection handles POST /api/daily-reports/:id/rebucket
+// (add-intra-lane-theme-bucketing). Body: {"section_id": <id>}. It re-runs the
+// intra-lane theme bucketing for that section's (report, cluster_index) group
+// and returns the group's newest sections + the bucket count.
+//
+// Status mapping mirrors the spec:
+//
+//	404 report / section not found
+//	409 report not completed, or the group changed mid-flight (retry)
+//	400 watch-materialized group (owned by the watch track)
+//	200 buckets=1 when the group cannot be split (no data changed)
+func rebucketDailyReportSection(c *gin.Context) {
+	reportID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid report id"})
+		return
+	}
+	var req struct {
+		SectionID uint `json:"section_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.SectionID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "section_id is required"})
+		return
+	}
+
+	result, err := service.RebucketSectionGroup(c.Request.Context(), uint(reportID), req.SectionID)
+	if err != nil {
+		switch {
+		case errors.Is(err, repository.ErrRebucketReportNotFound),
+			errors.Is(err, repository.ErrRebucketSectionNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "report or section not found"})
+		case errors.Is(err, repository.ErrRebucketReportNotDone),
+			errors.Is(err, repository.ErrRebucketStaleGroup):
+			c.JSON(http.StatusConflict, gin.H{"success": false, "error": "report is not ready for rebucketing"})
+		case errors.Is(err, repository.ErrRebucketWatchGroup):
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "watch-materialized groups cannot be rebucketed"})
+		default:
+			logging.Warnf("daily-report rebucket failed for report %d section %d: %v", reportID, req.SectionID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "rebucket failed"})
+		}
+		return
+	}
+
+	sections := result.Sections
+	if sections == nil {
+		sections = []repository.DailyReportSection{}
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"buckets":  result.Buckets,
+		"sections": sections,
+	}})
 }
 
 // getBoardSectionTimeline handles GET /api/semantic-boards/:id/section-timeline

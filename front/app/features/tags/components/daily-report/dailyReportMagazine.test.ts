@@ -285,3 +285,57 @@ describe('watch-materialized sections sort to zone tail', () => {
     expect(isWatchSection({} as DailyReportSection)).toBe(false)
   })
 })
+
+describe('groupSectionsByTopic — 泳道内主题分桶排序（add-intra-lane-theme-bucketing）', () => {
+  function zone(sections: DailyReportSection[]) {
+    return { key: 'active' as const, label: '关心的话题', eyebrow: 'Following', sections }
+  }
+
+  // 同一话题（topic 7）同一天的兄弟桶 section。
+  function bucketSection(id: number, bucketIndex?: number): DailyReportSection {
+    const sec = section(id, 0, 0.9, 'active', 'active')
+    sec.persistent_topic = {
+      id: 7,
+      label: 'topic-7',
+      status: 'active',
+      color: '#aa0000',
+      consecutive_hits: 1,
+      can_activate: false,
+    }
+    sec.persistent_topic_id = 7
+    sec.cluster_index = 3
+    sec.cluster_label = `方向-${id}`
+    if (bucketIndex != null) sec.bucket_index = bucketIndex
+    return sec
+  }
+
+  it('组内按 bucket_index 升序稳定排序', () => {
+    const groups = groupSectionsByTopic(zone([
+      bucketSection(101, 1),
+      bucketSection(100, 0),
+      bucketSection(102, 2),
+    ]))
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.sections.map(item => item.id)).toEqual([100, 101, 102])
+  })
+
+  it('缺省 bucket_index 视为 0 并保持原有相对顺序', () => {
+    const groups = groupSectionsByTopic(zone([
+      bucketSection(100),
+      bucketSection(101, 0),
+      bucketSection(102, 1),
+    ]))
+
+    expect(groups[0]!.sections.map(item => item.id)).toEqual([100, 101, 102])
+    expect(groups[0]!.sections[0]!.bucket_index).toBeUndefined()
+  })
+
+  it('未分桶的历史 section 顺序不变', () => {
+    const groups = groupSectionsByTopic(zone([
+      bucketSection(100),
+      bucketSection(101),
+    ]))
+    expect(groups[0]!.sections.map(item => item.id)).toEqual([100, 101])
+  })
+})

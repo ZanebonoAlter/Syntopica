@@ -111,3 +111,32 @@ func NewBeginProbeDB(t *testing.T) (*gorm.DB, *BeginProbe) {
 	})
 	return db, probe
 }
+
+// NewIsolatedDB opens an isolated gorm.DB (its own connection pool) against
+// the shared test-container DSN, with NO probe wrapping. Call SetupTestDB(t)
+// first so the schema exists. Use it when a test needs two independent
+// handles against the same server — e.g. simulating two backend instances
+// for cross-instance advisory-lock mutual exclusion
+// (fix-daily-report-cross-process-gate). The returned handle's DB() yields a
+// usable *sql.DB (unlike NewBeginProbeDB, whose pool wrapper breaks that
+// assertion).
+func NewIsolatedDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	if startErr != nil || cachedDSN == "" {
+		t.Fatalf("test container not started; call SetupTestDB first (startErr=%v)", startErr)
+	}
+	db, err := gorm.Open(postgres.Open(cachedDSN), &gorm.Config{
+		DisableForeignKeyConstraintWhenMigrating: true,
+		Logger:                                   database.NewSlowLogger(200 * time.Millisecond),
+	})
+	if err != nil {
+		t.Fatalf("open isolated handle: %v", err)
+	}
+	t.Cleanup(func() {
+		if sqlDB, err := db.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	return db
+}

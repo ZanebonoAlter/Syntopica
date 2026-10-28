@@ -32,7 +32,7 @@
 
 ### 9.2 daily_report_sections（日报分区）
 
-一分区 = 一聚类。承载归属持久话题的字段。
+一分区 = 一聚类；域型泳道的一个聚类可拆成 2-6 个主题方向（兄弟分区共享 `cluster_index`，用 `bucket_index`/`bucket_title` 区分）。承载归属持久话题的字段。
 
 | 字段名 | 类型 | 约束/默认/索引 | 用途 |
 | -------- | ------ | ------ | ------ |
@@ -50,7 +50,9 @@
 | `topic_match_distance` | FLOAT | — | 归属匹配距离 |
 | `topic_match_confidence` | VARCHAR(20) | — | 归属置信度：`anchor_hit` / `auto_new` / `unmatched` / **`manual`** |
 | `topic_status_at_report` | VARCHAR(20) | —（`*string`，可空，迁移 `20260627_0001`） | 报告生成时话题状态快照（`candidate` / `active` / NULL） |
-| `lane_tier` | VARCHAR(16) | —（迁移 `20260727_0001`） | 泳道归属标记：`l1_direct`（质心强挂直归属）/ `l2_llm`（弱区 LLM 留/换）/ `l3_new`（新开 candidate）。NULL = 迁移前历史 section（旧流程产出，不回刷） |
+| `lane_tier` | VARCHAR(16) | —（迁移 `20260727_0001`） | 泳道归属标记：`l1_direct`（质心强挂直归属）/ `l2_llm`（弱区 LLM 留/换）/ `l3_new`（新开 candidate）；物化轨另有 `watch_keyword` / `watch_sentence`。NULL = 迁移前历史 section（旧流程产出，不回刷） |
+| `bucket_title` | VARCHAR(200) | 可空（迁移 `20261024_0001`） | 泳道内主题分桶的方向名（add-intra-lane-theme-bucketing）。NULL = 未分桶/历史行；不参与任何跨天统计 |
+| `bucket_index` | INTEGER | NOT NULL DEFAULT 0（迁移 `20261024_0001`） | 同一 `cluster_index` 内的桶序号（0 起、组内唯一）。未分桶 = 0；`(report_id, cluster_index)` **刻意无唯一约束**（兄弟桶共享） |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 
 > HNSW 索引 `idx_daily_report_sections_embedding`：运行时由 `ensureSectionEmbeddingDimension` 创建（dim ≤ 2000 才建）。

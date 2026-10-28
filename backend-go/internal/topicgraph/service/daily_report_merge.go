@@ -150,6 +150,14 @@ func MergeSimilarSections(
 			if err != nil {
 				continue
 			}
+			// Sibling buckets (same cluster_index) belong to the SAME cluster by
+			// construction and would sit at near-zero distance — merging them
+			// would glue the split back into one card (spec 分桶产物不参与同日合并).
+			// Reject before any edge is created, same as the anchor boundary.
+			if sections[i].ClusterIndex == sections[j].ClusterIndex {
+				logMergeCandidatePair(sections[i], sections[j], dist, "rejected-sibling-bucket")
+				continue
+			}
 			// Anchor boundary: reject cross-anchor pairs before any edge is
 			// created (deterministic band AND gray zone) so the union-find
 			// transitive closure can never bridge different lane adjudications.

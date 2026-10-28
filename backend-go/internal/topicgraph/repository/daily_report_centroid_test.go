@@ -286,3 +286,43 @@ func TestRecomputeVacuumStats_Flagging(t *testing.T) {
 	assert.Equal(t, 0, e.VacuumStrong)
 	assert.Equal(t, 0, e.VacuumMid)
 }
+
+// TestComputeTopicCentroid_CountsEachSiblingSection covers the persistent-topic
+// Scenario「质心按 section 逐条计入」(add-intra-lane-theme-bucketing): three
+// sibling buckets of the same day each contribute their own vector — no
+// same-day dedupe.
+func TestComputeTopicCentroid_CountsEachSiblingSection(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	today := NormalizeReportDate(time.Now())
+	topic := seedLaneDynamicsTopic(t, db, boardID, "质心逐条", TopicStatusActive, 3, today)
+	// Give the topic a first-section embedding that differs from the expected
+	// mean, so a fallback would be detectable.
+	require.NoError(t, db.Model(&BoardPersistentTopic{}).Where("id = ?", topic.ID).
+		Updates(map[string]any{"embedding": FloatsToPgVector([]float64{9, 9, 9})}).Error)
+
+	reportID := seedTestReport(t, db, boardID, today)
+	for i, vec := range [][]float64{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}} {
+		section := DailyReportSection{
+			ReportID:          reportID,
+			ClusterIndex:      0,
+			BucketIndex:       i,
+			BucketTitle:       string(rune('A' + i)),
+			ClusterLabel:      "sibling",
+			ClusterTagIDs:     JSON("[]"),
+			Embedding:         FloatsToPgVector(vec),
+			PersistentTopicID: &topic.ID,
+			LaneTier:          "l1_direct",
+		}
+		require.NoError(t, db.Create(&section).Error)
+	}
+
+	centroid, err := repo.ComputeTopicCentroid(topic.ID)
+	require.NoError(t, err)
+	vec, err := repoParsePgVector(centroid)
+	require.NoError(t, err)
+	assert.InDeltaSlice(t, []float64{1.0 / 3, 1.0 / 3, 1.0 / 3}, vec, 1e-6,
+		"all three sibling sections enter the window (no same-day collapse)")
+}

@@ -2440,7 +2440,33 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, vendorModelMigration())
 	migrations = append(migrations, keyEventMarkersMigration())
 	migrations = append(migrations, pgTrgmMigration(), searchVectorDropMigration())
-	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration())
+	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration())
+}
+
+// intraLaneBucketColumnsMigration implements 20261024_0001
+// (add-intra-lane-theme-bucketing D6): add the two bucket columns to
+// daily_report_sections. AutoMigrate also creates them from the model, but the
+// explicit migration pins the DB defaults (historical rows keep
+// bucket_index=0 / bucket_title NULL — no backfill) and documents the
+// "same cluster_index may repeat" contract. Idempotent (IF NOT EXISTS) and
+// skips when the table is absent (domain models not registered).
+func intraLaneBucketColumnsMigration() Migration {
+	return Migration{
+		Version:     "20261024_0001",
+		Description: "intra-lane-theme-bucketing: add daily_report_sections.bucket_title (nullable) / bucket_index (NOT NULL default 0); sibling bucket sections share cluster_index, no unique constraint added",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "daily_report_sections") {
+				return nil
+			}
+			if err := db.Exec(`ALTER TABLE daily_report_sections ADD COLUMN IF NOT EXISTS bucket_title VARCHAR(200)`).Error; err != nil {
+				return fmt.Errorf("add daily_report_sections.bucket_title: %w", err)
+			}
+			if err := db.Exec(`ALTER TABLE daily_report_sections ADD COLUMN IF NOT EXISTS bucket_index INTEGER NOT NULL DEFAULT 0`).Error; err != nil {
+				return fmt.Errorf("add daily_report_sections.bucket_index: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 // boardHealthSnapshotMigration implements 20261006_0001

@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/testutil"
 	"syntopica-backend/internal/topicgraph/repository"
 )
 
@@ -223,4 +226,48 @@ func TestResolveClusterLabel_LongTitleStaysWithinColumnLimit(t *testing.T) {
 	if l := len([]rune(got)); l != 200 {
 		t.Errorf("resolved label length %d runes, want exactly 200 (column budget)", l)
 	}
+}
+
+// TestFindPreviousReportBrief covers tasks 3.1's alignment with the
+// 「日报关联昨日报告」 Scenario: the previous brief is the most recent
+// COMPLETED report strictly before the target date (a generating/failed report
+// must not become prev_report_id).
+func TestFindPreviousReportBrief(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repository.InitRepository(db)
+	t.Cleanup(func() { repository.Repo = nil })
+
+	board := models.SemanticLabel{Label: "prev-report", Slug: "prev-report", LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&board).Error)
+	today := repository.NormalizeReportDate(time.Now())
+
+	yesterday := repository.BoardDailyReport{
+		SemanticBoardID: board.ID,
+		PeriodDate:      today.AddDate(0, 0, -1),
+		Title:           "yesterday",
+		Status:          "completed",
+	}
+	require.NoError(t, db.Create(&yesterday).Error)
+	// A more recent, non-completed report must be skipped.
+	require.NoError(t, db.Create(&repository.BoardDailyReport{
+		SemanticBoardID: board.ID,
+		PeriodDate:      today,
+		Title:           "today in flight",
+		Status:          "generating",
+	}).Error)
+
+	prev := findPreviousReportBrief(board.ID, today)
+	require.NotNil(t, prev)
+	assert.Equal(t, yesterday.ID, prev.ID, "prev_report_id links the last completed report")
+
+	// A board with only an in-flight report has no previous brief.
+	emptyBoard := models.SemanticLabel{Label: "prev-report-empty", Slug: "prev-report-empty", LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&emptyBoard).Error)
+	require.NoError(t, db.Create(&repository.BoardDailyReport{
+		SemanticBoardID: emptyBoard.ID,
+		PeriodDate:      today,
+		Title:           "only in flight",
+		Status:          "generating",
+	}).Error)
+	assert.Nil(t, findPreviousReportBrief(emptyBoard.ID, today))
 }

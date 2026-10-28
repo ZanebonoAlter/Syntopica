@@ -369,3 +369,94 @@ func TestGenerateSingleBoardReleasesGateOnPanic(t *testing.T) {
 	require.True(t, service.TryAcquireDailyReportGeneration(), "gate must be released after panic unwind — defer FIRST discipline")
 	service.ReleaseDailyReportGeneration()
 }
+
+// ── 重新分桶 API（add-intra-lane-theme-bucketing tasks 4.5）────────────────────
+
+// setupRebucketHandlerTest builds a minimal SQLite world for the rebucket
+// endpoint's gate paths (404 / 409 / 400). The SQLite dialect skips the
+// Postgres advisory lock (LockDailyReportSave), so the gates are exercised
+// without a container; the write path itself is covered by the PG service tests.
+func setupRebucketHandlerTest(t *testing.T) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:rebucket-%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
+	require.NoError(t, err)
+	repository.InitRepository(db)
+	require.NoError(t, db.AutoMigrate(
+		&models.AISettings{},
+		&repository.BoardDailyReport{},
+		&repository.DailyReportSection{},
+		&repository.DailyReportThread{},
+	))
+
+	engine := gin.New()
+	RegisterDailyReportRoutes(engine.Group("/api"))
+	return engine
+}
+
+func postRebucket(t *testing.T, engine *gin.Engine, reportID uint, body map[string]interface{}) (int, map[string]interface{}) {
+	t.Helper()
+	payload, err := json.Marshal(body)
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/daily-reports/%d/rebucket", reportID), bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	var decoded map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &decoded))
+	return w.Code, decoded
+}
+
+// TestRebucketHandler covers tasks 4.5 / Scenarios 拒绝非完成态日报、拒绝 watch 物化组.
+func TestRebucketHandler(t *testing.T) {
+	t.Run("rejects a non-completed report with 409", func(t *testing.T) {
+		engine := setupRebucketHandlerTest(t)
+		db := repository.Repo.DB()
+
+		report := repository.BoardDailyReport{SemanticBoardID: 1, PeriodDate: time.Now(), Title: "t", Status: "generating"}
+		require.NoError(t, db.Create(&report).Error)
+		section := repository.DailyReportSection{ReportID: report.ID, ClusterIndex: 0, ClusterLabel: "s",
+			ClusterTagIDs: []byte("[]"), Embedding: repository.FloatsToPgVector([]float64{0})}
+		require.NoError(t, db.Create(&section).Error)
+
+		status, payload := postRebucket(t, engine, report.ID, map[string]interface{}{"section_id": section.ID})
+		assert.Equal(t, http.StatusConflict, status)
+		assert.Equal(t, false, payload["success"])
+	})
+
+	t.Run("rejects a watch-materialized group with 400", func(t *testing.T) {
+		engine := setupRebucketHandlerTest(t)
+		db := repository.Repo.DB()
+
+		report := repository.BoardDailyReport{SemanticBoardID: 1, PeriodDate: time.Now(), Title: "t", Status: "completed"}
+		require.NoError(t, db.Create(&report).Error)
+		section := repository.DailyReportSection{ReportID: report.ID, ClusterIndex: 0, ClusterLabel: "s",
+			ClusterTagIDs: []byte("[]"), Embedding: repository.FloatsToPgVector([]float64{0}), LaneTier: "watch_sentence"}
+		require.NoError(t, db.Create(&section).Error)
+
+		status, payload := postRebucket(t, engine, report.ID, map[string]interface{}{"section_id": section.ID})
+		assert.Equal(t, http.StatusBadRequest, status)
+		assert.Equal(t, false, payload["success"])
+	})
+
+	t.Run("unknown report or section is 404", func(t *testing.T) {
+		engine := setupRebucketHandlerTest(t)
+		db := repository.Repo.DB()
+
+		status, _ := postRebucket(t, engine, 999, map[string]interface{}{"section_id": 1})
+		assert.Equal(t, http.StatusNotFound, status)
+
+		report := repository.BoardDailyReport{SemanticBoardID: 1, PeriodDate: time.Now(), Title: "t", Status: "completed"}
+		require.NoError(t, db.Create(&report).Error)
+		status, _ = postRebucket(t, engine, report.ID, map[string]interface{}{"section_id": 4242})
+		assert.Equal(t, http.StatusNotFound, status)
+	})
+
+	t.Run("missing section_id is 400", func(t *testing.T) {
+		engine := setupRebucketHandlerTest(t)
+		status, _ := postRebucket(t, engine, 1, map[string]interface{}{})
+		assert.Equal(t, http.StatusBadRequest, status)
+	})
+}

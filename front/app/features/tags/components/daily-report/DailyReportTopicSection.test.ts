@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import DailyReportTopicSection from './DailyReportTopicSection.vue'
 import type {
@@ -10,6 +11,7 @@ import type {
 import type { QualityZone, RequestCacheEntry } from './dailyReportMagazine'
 import type { TopicLifelineData } from '~/features/tags/composables/useDailyReportReader'
 import type { LaneDynamicsResponse } from '~/api/laneDynamics'
+import { useConfirm } from '~/composables/useConfirm'
 import type { ContextRow } from '~/api/boardEnrichment'
 
 // Icon stub — keeps the suite offline (no iconify CDN fetch in happy-dom).
@@ -94,6 +96,8 @@ function mountSection(over: {
   contextEntries?: Map<string, RequestCacheEntry<ContextRow[]>>
   onEnsureLaneDynamics?: (retry?: boolean) => void
   onEnsureContext?: (topicId: number, granularity: 'month' | 'year', retry?: boolean) => void
+  rebucketSectionId?: number | null
+  sectionAliases?: Map<number, number>
 } = {}) {
   return mount(DailyReportTopicSection, {
     props: {
@@ -106,6 +110,8 @@ function mountSection(over: {
       contextEntries: over.contextEntries ?? new Map(),
       ...(over.onEnsureLaneDynamics ? { onEnsureLaneDynamics: over.onEnsureLaneDynamics } : {}),
       ...(over.onEnsureContext ? { onEnsureContext: over.onEnsureContext } : {}),
+      ...(over.rebucketSectionId !== undefined ? { rebucketSectionId: over.rebucketSectionId } : {}),
+      ...(over.sectionAliases ? { sectionAliases: over.sectionAliases } : {}),
     },
     global: { stubs },
   })
@@ -510,5 +516,111 @@ describe('DailyReportTopicSection — key-event marker actions', () => {
     })
     const keStub = wrapper.find('.ke-stub')
     expect(keStub.exists()).toBe(true)
+  })
+})
+
+describe('DailyReportTopicSection — 泳道内主题分桶（add-intra-lane-theme-bucketing）', () => {
+  function bucketedSection(id: number, over: Partial<DailyReportSection> = {}): DailyReportSection {
+    return makeSection(id, [makeThread(id * 10)], {
+      cluster_index: 3,
+      cluster_label: `章节-${id}`,
+      bucket_title: '工具调用',
+      bucket_index: 0,
+      lane_tier: 'l1_direct',
+      ...over,
+    })
+  }
+
+  it('bucket_title 非空时渲染方向徽标', () => {
+    const wrapper = mountSection({ zone: activeZone([bucketedSection(100)]) })
+    const badge = wrapper.find('.drm-section-bucket')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('工具调用')
+    expect(badge.attributes('title')).toBe('工具调用')
+  })
+
+  it('徽标宽度上限用 em（汉字宽）而非 ch——否则 ≤12 字的方向名会被整条截断', () => {
+    // 12ch 只够 6 个汉字（ch = 数字宽 ≈ 汉字一半），2026-10-24 真机实测 6/6 徽标全被截断。
+    const source = readFileSync(`${import.meta.dirname}/DailyReportTopicSection.vue`, 'utf8')
+    const start = source.indexOf('.drm-section-bucket {')
+    const block = source.slice(start, source.indexOf('.drm-section-card__rebucket {', start))
+    expect(block).toContain('max-width: 14em')
+    expect(block).not.toMatch(/max-width:\s*\d+ch/)
+  })
+
+  it('bucket_title 为空时不渲染徽标', () => {
+    const wrapper = mountSection({ zone: activeZone([bucketedSection(100, { bucket_title: null })]) })
+    expect(wrapper.find('.drm-section-bucket').exists()).toBe(false)
+  })
+
+  it('组内只有一条 section 但带桶名时仍渲染章节标题', () => {
+    const wrapper = mountSection({ zone: activeZone([bucketedSection(100)]) })
+    const title = wrapper.find('.drm-section-card__title')
+    expect(title.exists()).toBe(true)
+    expect(title.text()).toBe('章节-100')
+  })
+
+  it('单条未分桶 section 不渲染章节标题（历史行为不变）', () => {
+    const wrapper = mountSection({
+      zone: activeZone([bucketedSection(100, { bucket_title: null, bucket_index: 0 })]),
+    })
+    expect(wrapper.find('.drm-section-card__title').exists()).toBe(false)
+  })
+
+  it('算法桶显示重新分桶按钮，watch 物化组隐藏', () => {
+    const algo = mountSection({ zone: activeZone([bucketedSection(100)]) })
+    expect(algo.find('.drm-section-card__rebucket').exists()).toBe(true)
+
+    for (const tier of ['watch_keyword', 'watch_sentence']) {
+      const watch = mountSection({
+        zone: briefsZone([bucketedSection(100, { lane_tier: tier, bucket_title: null })]),
+      })
+      expect(watch.find('.drm-section-card__rebucket').exists()).toBe(false)
+    }
+  })
+
+  it('重分桶进行中按钮置灰且 aria-busy（重复提交保护）', () => {
+    const wrapper = mountSection({ zone: activeZone([bucketedSection(100)]), rebucketSectionId: 100 })
+    const button = wrapper.find('.drm-section-card__rebucket')
+    expect(button.attributes('disabled')).toBeDefined()
+    expect(button.attributes('aria-busy')).toBe('true')
+  })
+
+  it('点按钮先弹二次确认，确认后才 emit rebucket', async () => {
+    const wrapper = mountSection({ zone: activeZone([bucketedSection(100)]) })
+    await wrapper.find('.drm-section-card__rebucket').trigger('click')
+    await nextTick()
+
+    const { state, settle } = useConfirm()
+    expect(state.value?.open).toBe(true)
+    expect(state.value?.message).toContain('替换该天该泳道的主题分桶')
+    expect(wrapper.emitted('rebucket')).toBeUndefined()
+
+    settle(state.value!.id, false)
+    await nextTick()
+    expect(wrapper.emitted('rebucket')).toBeUndefined()
+
+    await wrapper.find('.drm-section-card__rebucket').trigger('click')
+    await nextTick()
+    settle(useConfirm().state.value!.id, true)
+    await flushPromises()
+    expect(wrapper.emitted('rebucket')).toEqual([[100]])
+  })
+
+  it('焦点锚点失效时回退到别名指向的组头 section', async () => {
+    const wrapper = mountSection({
+      zone: activeZone([bucketedSection(201)]),
+      sectionAliases: new Map([[100, 201]]),
+    })
+    // 组件用 document.getElementById 定位锚点 → 必须真正挂进 document。
+    document.body.appendChild(wrapper.element)
+    const scrollIntoView = vi.fn()
+    const target = wrapper.find('#report-section-201').element as HTMLElement
+    target.scrollIntoView = scrollIntoView
+
+    await wrapper.setProps({ focusSectionId: 100 })
+    await flushPromises()
+    expect(scrollIntoView).toHaveBeenCalled()
+    wrapper.unmount()
   })
 })

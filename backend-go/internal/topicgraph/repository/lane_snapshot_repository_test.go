@@ -2,6 +2,7 @@ package repository
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -161,8 +162,8 @@ func TestGetBoardLaneDynamics_FullMatrix(t *testing.T) {
 	assert.Equal(t, dateStr(now), resp.Candidates[0].LastSeenDate)
 }
 
-// TestGetBoardLaneDynamics_WindowBoundary: 14 天窗口含 14 天前、不含 15 天前
-// （锚定 MAX(period_date)，与 landscape date axis 同口径）。
+// TestGetBoardLaneDynamics_WindowBoundary: 14 天窗口含 13 天前、不含 14 天前
+// （锚定 MAX(period_date)，与前端 14 列日期轴同口径）。
 func TestGetBoardLaneDynamics_WindowBoundary(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
@@ -170,11 +171,11 @@ func TestGetBoardLaneDynamics_WindowBoundary(t *testing.T) {
 	boardID := seedTestBoard(t, db)
 	now := time.Now()
 	reportAnchor := seedTestReport(t, db, boardID, now)
+	report13 := seedTestReport(t, db, boardID, now.AddDate(0, 0, -13))
 	report14 := seedTestReport(t, db, boardID, now.AddDate(0, 0, -14))
-	report15 := seedTestReport(t, db, boardID, now.AddDate(0, 0, -15))
 
 	topic := seedLaneDynamicsTopic(t, db, boardID, "边界话题", TopicStatusActive, 9, now)
-	for _, r := range []uint{reportAnchor, report14, report15} {
+	for _, r := range []uint{reportAnchor, report13, report14} {
 		s := seedTestSection(t, db, r, "boundary-section")
 		assignSection(t, db, s, topic.ID)
 	}
@@ -182,10 +183,10 @@ func TestGetBoardLaneDynamics_WindowBoundary(t *testing.T) {
 	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
 	require.NoError(t, err)
 	require.Len(t, resp.Lanes, 1)
-	assert.Equal(t, 2, resp.Lanes[0].SectionCount14d, "14天前含、15天前不含")
+	assert.Equal(t, 2, resp.Lanes[0].SectionCount14d, "13天前含、14天前不含")
 	require.Len(t, resp.Lanes[0].Timeline, 2)
 	assert.Equal(t, dateStr(now), resp.Lanes[0].Timeline[0].Date, "最新日在最前（倒序）")
-	assert.Equal(t, dateStr(now.AddDate(0, 0, -14)), resp.Lanes[0].Timeline[1].Date)
+	assert.Equal(t, dateStr(now.AddDate(0, 0, -13)), resp.Lanes[0].Timeline[1].Date)
 }
 
 // TestGetBoardLaneDynamics_NoReports: 无日报 → lanes+candidates 空数组非
@@ -282,6 +283,72 @@ func TestListLaneSnapshotMaterial_Top3ThreadsAndWindow(t *testing.T) {
 	// Top-3 threads only, insertion order.
 	require.Len(t, rows[1].ThreadTitles, 3)
 	assert.Equal(t, []string{"线索1", "线索2", "线索3"}, rows[1].ThreadTitles)
+}
+
+// TestListDailyThreadCounts: 量级信号计数（slim-lane-snapshot-trend D1）——
+// 单日多 section 求和、窗口边界日（from/to 闭区间）计入、窗口外排除、
+// 无数据空集；同日另一 topic 的 section 不计入。
+func TestListDailyThreadCounts(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	boardID := seedTestBoard(t, db)
+	now := time.Now()
+	reportAnchor := seedTestReport(t, db, boardID, now)
+	reportMid := seedTestReport(t, db, boardID, now.AddDate(0, 0, -3))
+	reportFrom := seedTestReport(t, db, boardID, now.AddDate(0, 0, -14))
+	reportBefore := seedTestReport(t, db, boardID, now.AddDate(0, 0, -15))
+
+	topic := seedLaneDynamicsTopic(t, db, boardID, "量级话题", TopicStatusActive, 9, now)
+	other := seedLaneDynamicsTopic(t, db, boardID, "邻居话题", TopicStatusActive, 5, now)
+
+	// anchor 日：2 sections × (3+2) threads → 5条·2节。
+	sA1 := seedTestSection(t, db, reportAnchor, "量级-anchor-1")
+	sA2 := seedTestSection(t, db, reportAnchor, "量级-anchor-2")
+	assignSection(t, db, sA1, topic.ID)
+	assignSection(t, db, sA2, topic.ID)
+	for i := 1; i <= 3; i++ {
+		seedLaneThread(t, db, reportAnchor, sA1, "线索"+string(rune('0'+i)))
+	}
+	for i := 1; i <= 2; i++ {
+		seedLaneThread(t, db, reportAnchor, sA2, "线索b"+string(rune('0'+i)))
+	}
+	// 窗首日（from 当日，闭区间边界）：单 section 单 thread。
+	sFrom := seedTestSection(t, db, reportFrom, "量级-from")
+	assignSection(t, db, sFrom, topic.ID)
+	seedLaneThread(t, db, reportFrom, sFrom, "窗首线索")
+	// 窗外日（from 前 1 天）：不计入。
+	sBefore := seedTestSection(t, db, reportBefore, "量级-out")
+	assignSection(t, db, sBefore, topic.ID)
+	seedLaneThread(t, db, reportBefore, sBefore, "窗外线索")
+	// 同日同 board 的邻居 topic section：不计入本 topic。
+	sOther := seedTestSection(t, db, reportMid, "量级-other-topic")
+	assignSection(t, db, sOther, other.ID)
+	seedLaneThread(t, db, reportMid, sOther, "邻居线索")
+
+	anchor, ok, err := repo.GetBoardReportAnchor(boardID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	from := anchor.AddDate(0, 0, -14)
+
+	counts, err := repo.ListDailyThreadCounts(topic.ID, from, anchor)
+	require.NoError(t, err)
+	require.Len(t, counts, 2, "仅窗口内两个有 section 的报告日返回行")
+	// date ASC：窗首日在前。
+	assert.Equal(t, dateStr(now.AddDate(0, 0, -14)), counts[0].PeriodDate.Format("2006-01-02"))
+	assert.Equal(t, 1, counts[0].SectionCnt)
+	assert.Equal(t, 1, counts[0].ThreadCnt, "窗首日（闭区间边界）计入")
+	assert.Equal(t, dateStr(now), counts[1].PeriodDate.Format("2006-01-02"))
+	assert.Equal(t, 2, counts[1].SectionCnt, "单日多 section 计数求和")
+	assert.Equal(t, 5, counts[1].ThreadCnt)
+	// 邻居 topic 独占的报告日（-3d）不在本 topic 计数内。
+	for _, c := range counts {
+		assert.NotEqual(t, dateStr(now.AddDate(0, 0, -3)), c.PeriodDate.Format("2006-01-02"), "邻居 topic 的 section 不计入本 topic")
+	}
+
+	// 无数据 topic：空集非 nil 语义（len==0），调用方补零。
+	empty, err := repo.ListDailyThreadCounts(other.ID+9999, from, anchor)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
 }
 
 // TestUpsertLaneSnapshot_IdempotentOverwriteAndUnique: 结算幂等（同行覆盖）
@@ -425,4 +492,77 @@ func TestGetBoardLaneDynamics_SnapshotDetailLevels(t *testing.T) {
 	assert.NotContains(t, payload, `"detail":null`, "nil detail 必须被 omitempty 隐去而非输出 null")
 	assert.Contains(t, payload, `"snapshot":null`, "无快照泳道是字面 null")
 	assert.Contains(t, payload, `"detail":"`+detailText+`"`, "AG-1 泳道 JSON 携带 detail 键")
+}
+
+// TestLaneDynamicsSortsByDistinctDays covers tasks 6.1 / Scenarios 活跃排序按天计
+// 与 同日多条只计一天：ordering uses DISTINCT in-window anchor DAYS, never the
+// section count (intra-lane theme bucketing would otherwise inflate a lane that
+// simply got split more that day). Ties break on the most recent hit date.
+func TestLaneDynamicsSortsByDistinctDays(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := time.Now()
+	reports := make(map[int]uint) // daysAgo → report id
+	for d := 0; d <= 5; d++ {
+		reports[d] = seedTestReport(t, db, boardID, now.AddDate(0, 0, -d))
+	}
+
+	assign := func(topicID, reportID uint, labels ...string) {
+		for _, label := range labels {
+			sec := seedTestSection(t, db, reportID, label)
+			assignSection(t, db, sec, topicID)
+		}
+	}
+
+	// Lane A: 6 distinct days; day 0 is split into 3 sibling sections → 8
+	// sections but only 6 days.
+	tA := seedLaneDynamicsTopic(t, db, boardID, "六天", TopicStatusActive, 10, now)
+	assign(tA.ID, reports[0], "a0-1", "a0-2", "a0-3")
+	for d := 1; d <= 5; d++ {
+		assign(tA.ID, reports[d], fmt.Sprintf("a%d", d))
+	}
+
+	// Lane B: 3 days, one section each.
+	tB := seedLaneDynamicsTopic(t, db, boardID, "三天", TopicStatusActive, 10, now)
+	for d := 0; d <= 2; d++ {
+		assign(tB.ID, reports[d], fmt.Sprintf("b%d", d))
+	}
+
+	// Lane C: a single day split into 4 sections → count 4, days 1.
+	tC := seedLaneDynamicsTopic(t, db, boardID, "一天四块", TopicStatusActive, 10, now)
+	assign(tC.ID, reports[0], "c1", "c2", "c3", "c4")
+
+	// Lane D: 2 older days (last hit 3 days ago).
+	tD := seedLaneDynamicsTopic(t, db, boardID, "两天较旧", TopicStatusActive, 10, now)
+	assign(tD.ID, reports[3], "d3")
+	assign(tD.ID, reports[4], "d4")
+
+	// Lane E: 2 days, last hit today; Lane F: 2 days, last hit yesterday.
+	tE := seedLaneDynamicsTopic(t, db, boardID, "两天今天", TopicStatusActive, 10, now)
+	assign(tE.ID, reports[0], "e0")
+	assign(tE.ID, reports[5], "e5")
+	tF := seedLaneDynamicsTopic(t, db, boardID, "两天昨天", TopicStatusActive, 10, now)
+	assign(tF.ID, reports[1], "f1")
+	assign(tF.ID, reports[2], "f2")
+
+	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
+	require.NoError(t, err)
+	require.Len(t, resp.Lanes, 6)
+
+	order := make([]uint, len(resp.Lanes))
+	for i, lane := range resp.Lanes {
+		order[i] = lane.TopicID
+	}
+	assert.Equal(t, []uint{tA.ID, tB.ID, tE.ID, tF.ID, tD.ID, tC.ID}, order,
+		"6d > 3d > (2d,last=today) > (2d,last=yesterday) > (2d,older) > 1d — never by section count")
+
+	byID := make(map[uint]LaneDynamicsLane, len(resp.Lanes))
+	for _, lane := range resp.Lanes {
+		byID[lane.TopicID] = lane
+	}
+	assert.Equal(t, 8, byID[tA.ID].SectionCount14d, "section_count_14d stays the raw section count for display")
+	assert.Equal(t, 3, byID[tB.ID].SectionCount14d)
+	assert.Equal(t, 4, byID[tC.ID].SectionCount14d, "C has more sections than D but fewer days")
 }

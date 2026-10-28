@@ -90,3 +90,32 @@ describe('useDailyReportsApi — getBoardSectionTimeline time-range params (task
     expect(getMock).toHaveBeenCalledWith('/semantic-boards/1974/section-timeline')
   })
 })
+
+describe('useDailyReportsApi — rebucketSection（add-intra-lane-theme-bucketing）', () => {
+  beforeEach(() => {
+    postMock.mockReset()
+  })
+
+  it('posts section_id to the rebucket endpoint and returns buckets + sections', async () => {
+    postMock.mockResolvedValue({
+      success: true,
+      data: { buckets: 2, sections: [{ id: 201, cluster_index: 3, bucket_index: 0 }] },
+    })
+
+    const api = useDailyReportsApi()
+    const response = await api.rebucketSection(100, 7149)
+
+    expect(postMock).toHaveBeenCalledWith('/daily-reports/100/rebucket', { section_id: 7149 })
+    expect(response.data?.buckets).toBe(2)
+    expect(response.data?.sections[0]?.bucket_index).toBe(0)
+  })
+
+  it('propagates the no-op response (buckets=1) unchanged', async () => {
+    postMock.mockResolvedValue({ success: true, data: { buckets: 1, sections: [] } })
+
+    const api = useDailyReportsApi()
+    const response = await api.rebucketSection(100, 7149)
+
+    expect(response.data?.buckets).toBe(1)
+  })
+})

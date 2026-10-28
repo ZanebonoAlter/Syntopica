@@ -843,6 +843,13 @@ func AttachTopicBriefsToReport(db *gorm.DB, report *BoardDailyReport) {
 	attachBriefsToSections(db, report.Sections)
 }
 
+// AttachTopicBriefsToSections fills the transient PersistentTopic brief in
+// place for an arbitrary section slice (rebucket responses, which are not a
+// whole report). Mirrors AttachTopicBriefsToReport's read-path contract.
+func AttachTopicBriefsToSections(db *gorm.DB, sections []DailyReportSection) {
+	attachBriefsToSections(db, sections)
+}
+
 // AttachWatchLabelsToReport fills the transient WatchLabel on each
 // materialized (watch_*) section so the UI badge can show the tracking
 // source next to the LLM daily title (watch-materialize-llm-adjudication).

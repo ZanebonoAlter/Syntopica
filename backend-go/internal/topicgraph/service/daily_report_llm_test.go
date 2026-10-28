@@ -70,10 +70,12 @@ func TestHighlightsSystemPrompt_HasFactAnchor(t *testing.T) {
 	}
 }
 
-// TestPromptVersion_Is5 guards the prompt version bump (5.0 = section title decouple).
-func TestPromptVersion_Is5(t *testing.T) {
-	if promptVersion != "5.0" {
-		t.Errorf("promptVersion should be \"5.0\", got %q", promptVersion)
+// TestPromptVersion_Is6 guards the prompt version bump: "5.0" is the section
+// title decouple (2026-08-29), "6.0" is intra-lane theme bucketing
+// (add-intra-lane-theme-bucketing D10 — published versions are never reused).
+func TestPromptVersion_Is6(t *testing.T) {
+	if promptVersion != "6.0" {
+		t.Errorf("promptVersion should be \"6.0\", got %q", promptVersion)
 	}
 }
 

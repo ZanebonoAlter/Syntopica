@@ -225,22 +225,34 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	}
 
 	// Build sections
+	//
+	// Step 5.5 — intra-lane theme bucketing (add-intra-lane-theme-bucketing):
+	// an over-wide cluster's day is split into 2-6 theme directions AFTER its
+	// threads exist (threads are the grouping unit) and BEFORE section
+	// embeddings are computed (each bucket embeds its own tag set). Any failure
+	// or a repair that converges back to one group keeps the current single
+	// section — bucketing never blocks the report (spec 分桶失败不阻断流水线).
+	plans := resolveSectionPlans(ctx, clusters, threadsByCluster, sectionTitleByCluster, tags, topicLabelByID, topicCfg)
+
 	var sections []repository.DailyReportSection
-	for i, cluster := range clusters {
-		threads := threadsByCluster[i]
+	for pi := range plans {
+		plan := &plans[pi]
+		cluster := clusters[plan.clusterIdx]
+		threads := plan.threads
 		// Populate related article IDs
 		populateThreadArticles(threads, tagArticleMap)
-		clusterTags := filterTagsByIDs(tags, cluster.TagIDs)
+		plan.threads = threads
+		clusterTags := filterTagsByIDs(tags, plan.tagIDs)
 		clusterArticleCount := 0
 		for _, t := range clusterTags {
 			clusterArticleCount += t.ArticleCount
 		}
 
-		tagIDsJSON := marshalJSONArray(cluster.TagIDs)
+		tagIDsJSON := marshalJSONArray(plan.tagIDs)
 
 		// Calculate best_tier and avg_score
 		tagIDSet := make(map[uint]bool)
-		for _, tid := range cluster.TagIDs {
+		for _, tid := range plan.tagIDs {
 			tagIDSet[tid] = true
 		}
 		bestTier := 4 // worst possible
@@ -261,26 +273,28 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			avgScore = totalScore / float64(matchCount)
 		}
 
-		breakdownJSON := buildQualityBreakdownJSON(tags, cluster.TagIDs)
+		breakdownJSON := buildQualityBreakdownJSON(tags, plan.tagIDs)
 
-		clusterLabel := resolveClusterLabel(sectionTitleByCluster[i], threadsByCluster[i], cluster, topicLabelByID)
+		clusterLabel := resolveClusterLabel(plan.sectionTitle, threads, cluster, topicLabelByID)
 		sections = append(sections, repository.DailyReportSection{
-			ClusterIndex:     i,
+			ClusterIndex:     plan.clusterIdx,
 			ClusterLabel:     clusterLabel,
 			ClusterTagIDs:    tagIDsJSON,
 			ArticleCount:     clusterArticleCount,
 			BestTier:         bestTier,
 			AvgScore:         avgScore,
 			QualityBreakdown: breakdownJSON,
+			BucketTitle:      plan.bucketTitle,
+			BucketIndex:      plan.bucketIndex,
 			MatchedTopicID:   cluster.MatchedTopicID,
 			LaneTier:         clusterLaneToTier(cluster.Lane),
 		})
 	}
 
-	// Build thread batches (convert []repository.Thread → []repository.DailyReportThread per cluster)
+	// Build thread batches (convert []repository.Thread → []repository.DailyReportThread per section)
 	var threadBatches [][]repository.DailyReportThread
-	for i := range clusters {
-		threads := threadsByCluster[i]
+	for pi := range plans {
+		threads := plans[pi].threads
 		var batch []repository.DailyReportThread
 		for _, th := range threads {
 			tagIDsJSON := marshalJSONArray(th.TagIDs)
@@ -406,6 +420,58 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	filterVanishedArticleRefs(repository.Repo.DB(), threadBatches)
 
 	return report, sections, threadBatches, nil
+}
+
+// sectionPlan is one section the orchestrator will assemble. A regular cluster
+// yields exactly one plan; a bucketed cluster yields one plan per theme
+// direction (same clusterIdx, ascending bucketIndex).
+type sectionPlan struct {
+	clusterIdx   int
+	threads      []repository.Thread
+	tagIDs       []uint
+	bucketTitle  string
+	bucketIndex  int
+	sectionTitle string
+}
+
+// resolveSectionPlans is the Step 5.5 bucket planner: for every cluster it asks
+// BucketCluster whether the day's threads split into theme directions. Any
+// failure (LLM / JSON / repair) degrades to the single-section plan, so the
+// report never fails because of bucketing (spec 分桶失败不阻断流水线).
+//
+// Kept free of DB/airouter side effects apart from the swappable bucketChatFn,
+// so the single-vs-split decision is unit-testable.
+func resolveSectionPlans(ctx context.Context, clusters []repository.ClusterGroup, threadsByCluster map[int][]repository.Thread, sectionTitles map[int]string, tags []repository.TagInput, topicLabels map[uint]string, cfg repository.PersistentTopicConfig) []sectionPlan {
+	plans := make([]sectionPlan, 0, len(clusters))
+	for i, cluster := range clusters {
+		clusterThreads := threadsByCluster[i]
+		// L1/L2 groups arrive with an empty GroupName (assembleLaneGroups keys them
+		// by topic). Fill the lane label so the bucketing prompt sees which lane it
+		// is splitting and the title fallback can use it (spec 兜底链).
+		laneLabel := strings.TrimSpace(cluster.GroupName)
+		if laneLabel == "" && cluster.MatchedTopicID != nil {
+			laneLabel = topicLabels[*cluster.MatchedTopicID]
+		}
+		buckets, bucketErr := BucketCluster(ctx, cluster, clusterThreads, tags, laneLabel, cfg)
+		if bucketErr != nil {
+			logging.Warnf("daily-report: intra-lane bucketing failed for cluster %d '%s' (keeping single section): %v", i, cluster.GroupName, bucketErr)
+		}
+		if len(buckets) < 2 {
+			plans = append(plans, sectionPlan{
+				clusterIdx: i, threads: clusterThreads, tagIDs: cluster.TagIDs,
+				sectionTitle: sectionTitles[i],
+			})
+			continue
+		}
+		for bi, bucket := range buckets {
+			plans = append(plans, sectionPlan{
+				clusterIdx: i, threads: bucket.Threads, tagIDs: bucket.TagIDs,
+				bucketTitle: bucket.Title, bucketIndex: bi,
+				sectionTitle: bucket.SectionTitle,
+			})
+		}
+	}
+	return plans
 }
 
 const (

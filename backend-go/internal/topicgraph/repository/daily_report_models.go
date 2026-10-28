@@ -147,6 +147,14 @@ type DailyReportSection struct {
 	// l1_direct (centroid strong match), l2_llm (LLM keep/switch), l3_new
 	// (new candidate). NULL on historical sections (pre-migration).
 	LaneTier string `gorm:"size:16" json:"lane_tier,omitempty"`
+	// BucketTitle / BucketIndex describe the intra-lane theme bucket
+	// (add-intra-lane-theme-bucketing): when one cluster's daily content is
+	// split into 2-6 theme directions, the sibling sections share
+	// ClusterIndex and are distinguished by BucketIndex (0-based, group
+	// unique) + a human direction name. Un-bucketed sections keep
+	// BucketIndex=0 / BucketTitle=NULL (historical rows need no backfill).
+	BucketTitle string `gorm:"size:200" json:"bucket_title,omitempty"`
+	BucketIndex int    `gorm:"not null;default:0" json:"bucket_index"`
 	// WatchID persists the owning materialized watch for watch_* sections
 	// (filled at materialization since watch-materialize-llm-adjudication —
 	// needed because the LLM daily title overwrites the parseable fixed
@@ -535,7 +543,7 @@ type TopicLaneSnapshot struct {
 	ID                uint      `gorm:"primarykey" json:"id"`
 	PersistentTopicID uint      `gorm:"not null;uniqueIndex:idx_topic_lane_snapshots_topic" json:"persistent_topic_id"`
 	RollingSummary    string    `gorm:"type:text;not null" json:"rolling_summary"` // ≤200字态势句
-	RollingDetail     string    `gorm:"type:text" json:"rolling_detail"`           // ≤1000字长版叙述；空=缺失（存量/生成失败降级）
+	RollingDetail     string    `gorm:"type:text" json:"rolling_detail"`           // 存量历史长版；新结算固定写空（slim-lane-snapshot-trend）
 	AsOfDate          time.Time `gorm:"type:date;not null" json:"as_of_date"`      // 汇总截止（=最近一份已完成报告期）
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`

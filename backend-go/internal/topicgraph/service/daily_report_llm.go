@@ -13,7 +13,13 @@ import (
 	"syntopica-backend/internal/topicgraph/repository"
 )
 
-const promptVersion = "5.0"
+// promptVersion records the generation prompt contract on every report. Chain:
+// "3.0" → "4.0" (L2 prompt history isolation) → "5.0" (section display title
+// content-based, 2026-08-29 daily-report-section-title-decouple) → "6.0"
+// (intra-lane theme bucketing, add-intra-lane-theme-bucketing). Published
+// versions are never reused: ai_call_logs / version audits must be able to tell
+// pre- and post-bucketing reports apart.
+const promptVersion = "6.0"
 
 // ---------------------------------------------------------------------------
 // LLM Call A: GenerateHighlights

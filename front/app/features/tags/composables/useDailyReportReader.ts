@@ -6,6 +6,7 @@ import { useTopicKeyEvents } from '~/features/tags/composables/useTopicKeyEvents
 import type {
   DailyReport,
   DailyReportListItem,
+  DailyReportSection,
   SectionRelation,
   SectionTimelineNode,
 } from '~/api/dailyReports'
@@ -24,15 +25,28 @@ function responseError(message: string): Error {
   return new Error(message)
 }
 
-export function useDailyReportReader(boardId: Ref<number>) {
-  const { getBoardDailyReports, getDailyReportDetail, getTopicLifeline } = useDailyReportsApi()
+/** 重新分桶结果（add-intra-lane-theme-bucketing）：buckets=1 表示未拆动（未达阈值/拆不动）。 */
+export interface RebucketOutcome {
+  ok: boolean
+  buckets: number
+  error?: string
+}
+
+export interface UseDailyReportReaderOptions {
+  /** 首屏载入的日报天数；阅读台右栏是 14 天口径，默认 7 保持旧浮层行为。 */
+  initialDays?: number
+}
+
+export function useDailyReportReader(boardId: Ref<number>, options: UseDailyReportReaderOptions = {}) {
+  const { getBoardDailyReports, getDailyReportDetail, getTopicLifeline, rebucketSection } = useDailyReportsApi()
   const { getArticle } = useArticlesApi()
   // 关键事件共享缓存（add-topic-key-event-markers）：日报读端与总览共用；
   // 读取随详情加载触发，只读不触发推荐（spec：打开页面只读）。
   const keyEvents = useTopicKeyEvents()
 
+  const initialDays = Math.max(7, Math.floor(options.initialDays ?? 7))
   const reports = ref<DailyReportListItem[]>([])
-  const days = ref(7)
+  const days = ref(initialDays)
   const loading = ref(false)
   const currentDayIndex = ref(-1)
   const detailCache = ref(new Map<number, DailyReport>())
@@ -40,6 +54,10 @@ export function useDailyReportReader(boardId: Ref<number>) {
   const detailError = ref('')
   const lifelineEntries = ref(new Map<number, RequestCacheEntry<TopicLifelineData>>())
   const articleEntries = ref(new Map<number, RequestCacheEntry<ArticleTitle>>())
+  /** 正在进行重分桶的 section id（按钮置灰 + 原位 spinner）。 */
+  const rebucketSectionId = ref<number | null>(null)
+  /** 重分桶后失效的旧锚点 → 该组首条 section（深链兼容；只影响本会话内存）。 */
+  const sectionAliases = ref(new Map<number, number>())
 
   const lifelineCache = createRequestCache<number, TopicLifelineData>(async (topicId) => {
     const response = await getTopicLifeline(topicId)
@@ -150,12 +168,63 @@ export function useDailyReportReader(boardId: Ref<number>) {
     await Promise.all(uniqueIds.map(articleId => articleCache.load(articleId, retry)))
   }
 
+  /**
+   * 对某 section 所在的桶组重跑泳道内主题分桶。
+   * 成功时**局部替换**该组 sections（不动其余分区与滚动位置）；失败时不改数据。
+   * 重分桶会删建 section 行：被删掉的旧 id 记入 sectionAliases，深链回退到组头。
+   */
+  async function rebucket(reportId: number, sectionId: number): Promise<RebucketOutcome> {
+    if (rebucketSectionId.value != null) return { ok: false, buckets: 0, error: '正在重新分桶' }
+    rebucketSectionId.value = sectionId
+    try {
+      const response = await rebucketSection(reportId, sectionId)
+      if (!response.success || !response.data) {
+        return { ok: false, buckets: 0, error: response.error || '重新分桶失败' }
+      }
+      const { buckets, sections } = response.data
+      const report = detailCache.value.get(reportId)
+      if (report && buckets > 1) {
+        const target = report.sections.find(section => section.id === sectionId)
+        const clusterIndex = target?.cluster_index
+        const groupSections = clusterIndex == null
+          ? []
+          : report.sections.filter(section => section.cluster_index === clusterIndex)
+        const oldIds = groupSections.map(section => section.id)
+        const headId = sections[0]?.id
+        const nextSections: DailyReportSection[] = [
+          ...report.sections.filter(section => clusterIndex == null || section.cluster_index !== clusterIndex),
+          ...sections,
+        ]
+        if (headId != null) {
+          const aliases = new Map(sectionAliases.value)
+          for (const oldId of oldIds) {
+            if (!sections.some(section => section.id === oldId)) aliases.set(oldId, headId)
+          }
+          sectionAliases.value = aliases
+        }
+        detailCache.value.set(reportId, { ...report, sections: nextSections })
+        detailCache.value = new Map(detailCache.value)
+      }
+      return { ok: true, buckets }
+    } finally {
+      rebucketSectionId.value = null
+    }
+  }
+
+  /** 当前选中日报详情失败后的显式重试（B-6：错误条必须可恢复）。 */
+  async function retryDetail() {
+    const report = selectedReport.value
+    if (!report) return undefined
+    detailError.value = ''
+    return ensureDetail(report.id)
+  }
+
   async function retryArticle(articleId: number) {
     return articleCache.load(articleId, true)
   }
 
   function clearBoardState() {
-    days.value = 7
+    days.value = initialDays
     reports.value = []
     currentDayIndex.value = -1
     detailCache.value = new Map()
@@ -163,6 +232,8 @@ export function useDailyReportReader(boardId: Ref<number>) {
     detailError.value = ''
     lifelineCache.clear()
     articleCache.clear()
+    rebucketSectionId.value = null
+    sectionAliases.value = new Map()
   }
 
   watch(boardId, async () => {
@@ -183,6 +254,9 @@ export function useDailyReportReader(boardId: Ref<number>) {
     selectedDetail,
     detailCache,
     keyEvents,
+    rebucketSectionId,
+    sectionAliases,
+    rebucket,
     loadReports,
     ensureDetail,
     ensureHistoricalDetail,
@@ -195,6 +269,7 @@ export function useDailyReportReader(boardId: Ref<number>) {
     ensureLifeline,
     getArticleTitle,
     ensureArticleTitles,
+    retryDetail,
     retryArticle,
   }
 }

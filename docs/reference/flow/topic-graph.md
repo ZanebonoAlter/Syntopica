@@ -99,6 +99,16 @@ identity（同 persistent_topic）
 - **演进报告 `EvolutionReport.vue`**：由 `BoardEnrichmentPanel.vue` 在板块详情「数据增强」面板的「演进报告」子区块挂载。它消费 boardEnrichment 的 `result` 详情 + `reviews`（`api/boardEnrichment.ts` 的 `EvolutionAnalysis` 复合对象），以报刊式 editorial 呈现话题的演进定位（强化/转折/扩散）、跨泳道引用与证据清单。属「B 分析认知」数据富化循环的展示层（详见 `flow/data-enrichment.md`）。
 - **标签合并对话框 `TopicGraphMergeDialog.vue`**：presentational 组件，提供「搜索目标标签 → 把当前标签的所有文章迁移到目标标签」的交互（emit `doMerge`）。注意它是**标签级**合并 UI（区别于上表的**话题级** merge 端点）；当前该组件未被任何视图引用（预留/orphan）。
 
+### 前端：泳道编排态（新建泳道）
+
+版块矩阵顶栏「新建泳道」进入全屏编排态（`front/app/features/tags/components/console/BoardComposeOverlay.vue` + `useInlineCompose.ts`），只在 ≥768px 可用；窄屏仅提示「新建泳道需要宽屏或横屏」。
+
+- **画布**：14 个连续日期列 × 现有 active 泳道行 + 待确认/未分类行；已归属 section 圆点为「已归属（只读）」，只能聚焦看关系，不能勾选或保存进新泳道（MUST NOT 把已有泳道 section 移出）。
+- **候选**：侧栏 `ComposeSidebar` 按 candidate 话题与语义搜索列出候选；「采纳」只预填名称 + 勾选待确认 section，预勾上限 20，并按日期升序取前 20。
+- **关系**：点画布圆点显示 top-6 相似 section 连线与侧栏距离（3 位小数）；无 relation 时明确「暂时没有关联 section，画布不画线」。
+- **质量指标**：成员数、平均距离（无已知关系显示「—」）、离群数随勾选即时刷新；保存前必须同时有名称与成员，重复点保存只创建一次。
+- **退出**：取消 / Esc 关闭且不落库；保存成功退出并回矩阵选中新泳道。组合建议/候选采纳仍走既有 compose 建议确认事务，不在本画布直接建话题。
+
 ## 业务约束与不变量
 
 > 本节是 constraint-injection extension 的注入数据源：apply 改 `internal/topicgraph/` 或 `internal/tagmanagement/` 代码前会自动注入 system prompt，必须遵守。
@@ -138,4 +148,6 @@ identity（同 persistent_topic）
 | 2026-09-22 | lane-trend-overview | 泳道态势结算产物扩展为长短两版（同窗同素材单次 LLM 出 JSON，解析降级不重试不阻塞日报；存量长版不回填）：`topic_lane_snapshots` 加 `rolling_detail` 长版列、lane-dynamics 聚合 snapshot 增 `detail` 可空字段；日报阅读视图泳道展开体顶部新增「泳道趋势」区（14 天长版/月/年三档），结算口径详见 `flow/daily-report.md` §泳道态势结算 | [`openspec/changes/archive/2026-09-22-lane-trend-overview`](../../../openspec/changes/archive/2026-09-22-lane-trend-overview) |
 | 2026-09-23 | night-window-alignment | 打标队列消费顺序改新任务优先（priority DESC, created_at DESC，退避由 WHERE 保证）；原方案含过期任务 TTL 淘汰（terminal skipped），验收期用户决策取消（既有 7 天归档 GC 已兜底，未合入）； | [`openspec/changes/archive/2026-09-24-night-window-alignment`](../../../openspec/changes/archive/2026-09-24-night-window-alignment) |
 | 2026-10-15 | add-topic-key-event-markers | 话题生命线可选节点扩展：`ListTopicKeyEventMarkers` 按 topic/窗口返回 confirmed 与快照失效注记（`daily_report_topics` 反查归属），总览泳道长轴高亮 confirmed 背景、取消纠错不删背景、来源日报导航；不改变话题归属/生命周期/identity-similarity 关系语义 | [archive/2026-10-15-add-topic-key-event-markers](../../../openspec/changes/archive/2026-10-15-add-topic-key-event-markers) |
+| 2026-10-15 | redesign-enrichment-research-workbench（实施中） | 话题新闻背景管理入口落到话题总览：BoardThreadBrowser focus 头部新增「新闻背景」按钮（AppDialog lg 承载 TopicNewsBackground，话题+粒度+周期独立读写）；不改话题筛选/关键事件/生命周期行为，contexts API 可选 semantic_board_id 归属校验（不传零差异） | [openspec/changes/redesign-enrichment-research-workbench](../../../openspec/changes/redesign-enrichment-research-workbench) |
 | 2026-10-13 | add-article-search | 站内搜索只读消费标签向量与边：语义召回路径对 `topic_tag_embeddings`（identity 型）做 cosine 近邻、经 `article_topic_tags` 召回文章取 max cosine，零写入、不触发打标/向量任务、不影响话题生命周期；搜索行为契约见 `flow/reading.md` §站内搜索与约束 #10-#12 | [`openspec/changes/add-article-search`](../../../openspec/changes/add-article-search) |
+11. **同一话题同一天可以有多条 section（泳道内主题分桶/手动编排/watch 物化）：命中计数按「日」去重、质心按 section 逐条计入（add-intra-lane-theme-bucketing）**：一篇日报内同一 topic 拥有多条 section（兄弟桶共享 `persistent_topic_id`）时，`planLifecycle` 的 `hit_count` / `consecutive_hits` SHALL 只按该篇日报是否命中 +1（实现上 `hitTopicIDs` 是集合，与 section 条数无关），SHALL NOT 按条数累加；`ComputeTopicCentroid` SHALL 按 `persistent_topic_id` 的最近 `centroid_window` 条 section 逐条均权计入，SHALL NOT 对同日同话题的多条 section 做特殊去重（拆得越细质心越纯，是正向副作用）。`topic_status_at_report` 仍是报告期快照，不随后续状态回填。

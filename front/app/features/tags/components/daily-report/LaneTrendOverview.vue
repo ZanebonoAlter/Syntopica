@@ -55,16 +55,12 @@ const eventsExpanded = ref(false)
 
 const trendStyle = computed(() => (props.topicColor ? { '--topic-color': props.topicColor } : undefined))
 
-// ── 14 天档：快照长/短版降级 ────────────────────────────────────────────────
+// ── 14 天档：单版态势句（slim-lane-snapshot-trend）────────────────────────
 
 const lanePending = computed(() => props.laneEntry.status === 'idle' || props.laneEntry.status === 'loading')
 const hasSnapshot = computed(() => !!props.lane?.snapshot)
-/** 长版缺失但短版在（存量快照/生成失败降级）。 */
-const detailMissing = computed(() => {
-  const snapshot = props.lane?.snapshot
-  return !!snapshot && !snapshot.detail
-})
-const summaryText = computed(() => props.lane?.snapshot?.detail || props.lane?.snapshot?.summary || '')
+/** 单内容源：只读 summary；存量 detail 不再消费。 */
+const summaryText = computed(() => props.lane?.snapshot?.summary || '')
 const snapshotAsOf = computed(() => props.lane?.snapshot?.as_of ?? '')
 
 // ── 月/年档：最新归档（period 字典序最大一条） ──────────────────────────────
@@ -165,7 +161,7 @@ function toggleDay(date: string) {
       </div>
     </header>
 
-    <!-- 近 14 天档：长版 / 短版回退 / 待结算占位 + 逐日事件 -->
+    <!-- 近 14 天档：单版态势句 / 待结算占位 + 逐日事件 -->
     <div v-if="activeTab === '14d'" class="lto__panel" data-testid="trend-panel-14d">
       <div v-if="lanePending" class="lto__status" data-testid="trend-loading">
         <Icon icon="mdi:loading" width="13" class="lto__spin" aria-hidden="true" />
@@ -177,11 +173,7 @@ function toggleDay(date: string) {
       </div>
       <template v-else>
         <template v-if="hasSnapshot">
-          <p v-if="!detailMissing" class="lto__text" data-testid="trend-detail">{{ summaryText }}</p>
-          <template v-else>
-            <p class="lto__text" data-testid="trend-summary">{{ summaryText }}</p>
-            <p class="lto__hint" data-testid="trend-detail-hint">长版随下次日报结算生成</p>
-          </template>
+          <p class="lto__text" data-testid="trend-summary">{{ summaryText }}</p>
           <p class="lto__asof" data-testid="trend-asof">汇总截止 {{ snapshotAsOf }}</p>
         </template>
         <div v-else class="lto__status" data-testid="trend-pending">态势待结算 · 可切换月 / 年档查看归档</div>

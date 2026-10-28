@@ -10,10 +10,12 @@
 | ------ | ------ | ------ |
 | POST | `/daily-reports/generate` | 手动触发日报生成（异步） |
 | GET | `/daily-reports/:id` | 查询单篇日报详情 |
+| POST | `/daily-reports/:id/rebucket` | 重新分桶：对某 section 所在的泳道内主题桶组重跑两阶段分桶 |
 | GET | `/semantic-boards/:id/daily-reports` | 查询板块日报列表 |
 | GET | `/semantic-boards/:id/section-timeline` | 板块 section 时间线 |
 | GET | `/semantic-boards/:id/topics` | 列出板块全部持久话题（含归档/孤儿）+ section 计数 |
 | GET | `/semantic-boards/:id/lane-dynamics?days=14` | 板块泳道动态聚合（活跃泳道卡+发展时间线+候选栏，单请求） |
+| GET | `/semantic-boards/overview` | 今日雷达：全部活跃版块的当日/近3日/14天分区密度与最新日报摘要（单请求，5s 降级） |
 | GET | `/daily-reports/sections/:id/lifecycle` | section 连通分量生命周期 |
 | GET | `/daily-reports/topics/:id/lifeline` | 持久话题全量 section |
 | PATCH | `/daily-reports/topics/:id` | 更新话题标题/状态 |
@@ -224,6 +226,39 @@ Response `data`：
 
 `color` 由话题 id 稳定哈希得到；`can_activate` 表示 candidate 是否已达激活门禁。
 
+## GET `/semantic-boards/overview`
+
+今日雷达单次聚合（rework-workshop-into-radar-and-desk 8.2）：只读，返回所有 `status=active` 版块的行；每行含当日/近 3 日/前 3 日分区数、14 天逐日分区数、关注度（`today×2 + last3 + (last3-prev3)`，地板 0）、前 3 条泳道的 14 天分区密度，以及最新日报的日期/标题/文章数/事件数。泳道与分区口径复用 `lane-dynamics`，最新日报取 `board_daily_reports`；无数据版块返回零值行，单版块查询超时返回零值并标 `data_delayed=true`，不阻塞整屏。窗口锚定该版块最新日报日（无日报则无密度），`date` 为全部版块最新日报日的最大值。
+
+```json
+{
+  "date": "2026-10-24",
+  "boards": [{
+    "board_id": 1974,
+    "label": "中东地缘政治与美伊关系",
+    "tag_count": 144,
+    "report_date": "2026-10-24",
+    "report_title": "伊朗警告打击海湾海底电缆",
+    "report_article_count": 14,
+    "report_event_count": 13,
+    "anchor_date": "2026-10-24",
+    "today_sections": 5,
+    "last3_sections": 13,
+    "prev3_sections": 10,
+    "attention": 26,
+    "data_delayed": false,
+    "days": [2, 3, 5, 4, 5, 7, 2, 4, 5, 3, 2, 5, 3, 5],
+    "lanes": [{
+      "topic_id": 1204,
+      "label": "美伊博弈升级：从经济威胁到全面孤立",
+      "section_count_14d": 14,
+      "thread_count_14d": 38,
+      "counts": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    }]
+  }]
+}
+```
+
 ## GET `/semantic-boards/:id/lane-dynamics?days=14`
 
 板块泳道动态聚合：「板块内容」tab 首屏泳道动态视图的单请求数据源（活跃泳道卡 + 滚动态势 + 发展时间线 + 候选栏）。取代已退役的 topic-landscape 端点。
@@ -247,9 +282,9 @@ Response `data`：
       "label": "芯片战",
       "watch_linked": true,
       "section_count_14d": 9,
+      "thread_count_14d": 27,
       "snapshot": {
-        "summary": "近两周围绕出口管制升级与国产替代进展交替演进……",
-        "detail": "出口管制议题近两周持续升温：上周管制清单扩容带动备货，本周国产替代订单放量……",
+        "summary": "近两周围绕出口管制升级与国产替代进展交替演进……（单版演进叙事态势句，slim-lane-snapshot-trend 起 150-200 字；阶段→驱动/转折→当前落点→量级佐证）",
         "as_of": "2026-09-09"
       },
       "timeline": [
@@ -259,6 +294,7 @@ Response `data`：
             {
               "section_id": 341,
               "label": "新规生效首日影响",
+              "thread_count": 2,
               "events": ["厂商A暂停部分订单", "替代供应商订单量抬升"],
               "folded_count": 0
             }
@@ -273,8 +309,8 @@ Response `data`：
 }
 ```
 
-- `snapshot`：滚动 14 天态势（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）。`summary` 为 ≤100 字短版态势句（既有语义不变，板块内容卡片仍只渲染它）；`detail` 为 ≤500 字长版成段叙述（与短版同窗同素材、同一次结算生成，lane-trend-overview 新增）。
-- 两级缺失语义：`snapshot: null` = 快照整体缺失（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染；`snapshot` 存在但 `detail` 缺失/空（omitempty，字段不出现）= 长版缺失——存量快照或该次生成解析失败降级，前端回退展示短版 `summary` 并提示长版随下次日报结算生成。
+- `snapshot`：滚动 14 天态势（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）。`summary` 为单版演进叙事态势句（slim-lane-snapshot-trend 起 150-200 字：阶段→驱动/转折→当前落点→量级佐证；历史语义先后为 ≤100 字短版/≤200 字态势句）；`detail` 字段不再产出（恒空、omitempty 不出现）——存量历史长版仅存量库值随下个日报日结算覆盖自愈，消费方均只读 `summary`。
+- 缺失语义：`snapshot: null` = 快照整体缺失（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染；不存在「长版缺失」二级降级（已随长短两版形态废除）。
 - 月/年趋势档：日报阅读视图泳道趋势区的月/年归档摘要复用既有 `GET /persistent-topics/:topicId/enrichment/contexts?granularity=month|year`（周期归档上下文，详见 `dataenrichment.md`），本端点不新增月/年数据。
 - `timeline[].sections[].events`：该 section 的 thread 标题，最多前 5 条；`folded_count` 为被截断数量（恒输出，0 也带）。`timeline` 按日期倒序（最新日在最前）。
 - `candidates`：达可见门槛（`FilterVisibleTopics`）的 candidate + 最新 section 标题 `recent_hint`；只读提示，转正走话题管理入口。
@@ -340,6 +376,9 @@ Response `data`：
           "can_activate": false
         },
         "topic_status_at_report": "active",
+        "lane_tier": "l1_direct",
+        "bucket_title": "工具调用与编排",
+        "bucket_index": 0,
         "threads": []
       }
     ]
@@ -349,6 +388,39 @@ Response `data`：
 
 当 section 已归属持久话题时，详情响应会附带轻量 `persistent_topic` 描述，供前端按
 `topic_status_at_report` 快照分区（`active` / `candidate` / `null`）。历史未归属 section 返回 `null`。
+
+## POST `/daily-reports/:id/rebucket`
+
+对「某个 section 所在的泳道内主题桶组」（同一 `report_id` + `cluster_index`）重跑两阶段分桶，整组替换 section 行。属于 add-intra-lane-theme-bucketing。
+
+Request body：
+
+```json
+{ "section_id": 7149 }
+```
+
+Response `data`：
+
+```json
+{
+  "buckets": 6,
+  "sections": [
+    { "id": 7149, "cluster_index": 3, "bucket_index": 0, "bucket_title": "工具调用与编排", "cluster_label": "...", "threads": [] }
+  ]
+}
+```
+
+状态码三态：
+
+| 状态 | 条件 | 语义 |
+| ------ | ------ | ------ |
+| 200 + `buckets ≥ 2` | 拆分成功 | 该组 section 已替换；组头 section 行 ID 保留（旧深链仍可用），其余桶可能新建/删除 |
+| 200 + `buckets = 1` | 未达分桶阈值（threads<6 且 tags<10，可经 `ai_settings` 调）或校验后收敛为 1 组 | 合法「拆不动」，**不改任何数据**、不调用分桶 LLM |
+| 409 | 报告 status 非 `completed`，或桶组在过程中被同日重跑替换（重试即可） | 不写库 |
+| 400 | 目标 section 的 `lane_tier` 为 `watch_keyword` / `watch_sentence` | 物化组由关注轨自管，不接受主题分桶 |
+| 404 | 报告不存在 / section 不属于该报告 | — |
+
+服务端保证：与同日重跑（`SaveReport`）取**同键** `(semantic_board_id, period_date)` 事务级 advisory lock 串行化；thread 行只迁移 `section_id` 不删除（关键事件注记、文章引用不丢），`topic_key_event_markers.source_section_id` 按 `source_thread_id` 重派生、`topic_watch_hits.section_id` 与 `report_annotations.section_id` 同步重派生、该组跨天关系双向重建；派生字段（`cluster_label`/`bucket_title`/`bucket_index`/`cluster_tag_ids`/`article_count`/`embedding`/`topic_match_distance`/`best_tier`/`avg_score`/`quality_breakdown`）按新桶重算（`article_count` = 桶内线索 `related_article_ids` 的去重并集；`best_tier`/`avg_score`/`quality_breakdown` 取自报告期冻结快照按桶内 tag 子集重算），`topic_status_at_report` 沿用报告期快照；失败整体回滚。
 
 ## POST `/daily-reports/backfill-embeddings`
 

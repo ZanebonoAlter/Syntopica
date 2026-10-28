@@ -19,6 +19,7 @@ import type { LaneDynamicsLane, LaneDynamicsResponse } from '~/api/laneDynamics'
 import type { ContextRow } from '~/api/boardEnrichment'
 import { isThreadFitDemoted, threadFitLabel } from '~/utils/threadFit'
 import { useTopicKeyEvents } from '~/features/tags/composables/useTopicKeyEvents'
+import { useConfirm } from '~/composables/useConfirm'
 import KeyEventMarkerActions from '../KeyEventMarkerActions.vue'
 import type { ArticleTitle, TopicLifelineData } from '~/features/tags/composables/useDailyReportReader'
 import type { DailyReport, DailyReportSection, DailyReportThread } from '~/api/dailyReports'
@@ -35,6 +36,10 @@ const props = defineProps<{
   contextEntries: Map<string, RequestCacheEntry<ContextRow[]>>
   /** Section id requested by a watch index or timeline preview. */
   focusSectionId?: number | null
+  /** 正在重新分桶的 section id（由 reader 持有；非空时按钮置灰 + spinner）。 */
+  rebucketSectionId?: number | null
+  /** 重分桶后被删除的旧锚点 → 该组首条 section（深链回退，add-intra-lane-theme-bucketing）。 */
+  sectionAliases?: Map<number, number>
 }>()
 
 const emit = defineEmits<{
@@ -48,6 +53,8 @@ const emit = defineEmits<{
   ensureLaneDynamics: [retry?: boolean]
   /** 月/年档切档信号：宿主按 topicId+granularity 按需拉取 contexts。 */
   ensureContext: [topicId: number, granularity: 'month' | 'year', retry?: boolean]
+  /** 重新分桶动作（宿主调 reader.rebucket 并 toast）。 */
+  rebucket: [sectionId: number]
 }>()
 
 const groups = computed(() => groupSectionsByTopic(props.zone))
@@ -58,6 +65,24 @@ let autoExpandedDate = ''
 
 // 关键事件共享缓存（单例）：当日/历史 thread 的挑选动作经同一份状态跨入口同步。
 const keyEvents = useTopicKeyEvents()
+// 重新分桶是弱破坏性但不可逆动作（旧桶分组不保留）→ 先二次确认（复用全局 useConfirm）。
+const { confirm: confirmDialog } = useConfirm()
+
+/** 只有算法桶组可重分桶：watch_* 物化组由关注轨自管（服务端也会 400）。 */
+function canRebucket(section: DailyReportSection): boolean {
+  return !section.lane_tier?.startsWith('watch_')
+}
+
+async function triggerRebucket(section: DailyReportSection) {
+  if (props.rebucketSectionId != null) return
+  const confirmed = await confirmDialog({
+    title: '重新分桶',
+    message: '会替换该天该泳道的主题分桶。事件线索与已确认的关键事件不会丢失，但旧的分桶分组不保留。',
+    confirmText: '重新分桶',
+  })
+  if (!confirmed) return
+  emit('rebucket', section.id)
+}
 
 function onKeyEventMark(section: DailyReportSection, thread: DailyReportThread) {
   if (section.persistent_topic_id != null) keyEvents.actThread(section.persistent_topic_id, thread.id, 'mark')
@@ -186,8 +211,10 @@ watch([groups, () => props.reportDate], ([nextGroups, reportDate]) => {
   }
 }, { immediate: true })
 
-watch(() => props.focusSectionId, async (sectionId) => {
-  if (sectionId == null) return
+watch(() => props.focusSectionId, async (requestedId) => {
+  if (requestedId == null) return
+  // 重分桶会删建 section 行：旧锚点失效时回退到该组首条 section（组也没了则放弃）。
+  const sectionId = props.sectionAliases?.get(requestedId) ?? requestedId
   const group = groups.value.find(item => item.sections.some(section => section.id === sectionId))
   if (!group) return
 
@@ -275,7 +302,30 @@ watch(() => props.focusSectionId, async (sectionId) => {
                   <SectionTierBadge :best-tier="section.best_tier" />
                   <SectionAnchorBadge :tier="topicAnchorTier(section.topic_match_distance, section.topic_match_confidence)" />
                 </span>
-                <h4 v-if="group.sections.length > 1" class="drm-section-card__title">{{ section.cluster_label }}</h4>
+                <span
+                  v-if="section.bucket_title"
+                  class="drm-section-bucket"
+                  :title="section.bucket_title"
+                >{{ section.bucket_title }}</span>
+                <h4
+                  v-if="group.sections.length > 1 || section.bucket_title"
+                  class="drm-section-card__title"
+                >{{ section.cluster_label }}</h4>
+                <button
+                  v-if="canRebucket(section)"
+                  type="button"
+                  class="drm-section-card__rebucket"
+                  :disabled="rebucketSectionId != null"
+                  :aria-busy="rebucketSectionId === section.id"
+                  @click.stop="triggerRebucket(section)"
+                >
+                  <Icon
+                    :icon="rebucketSectionId === section.id ? 'mdi:loading' : 'mdi:shuffle-variant'"
+                    width="14"
+                    :class="{ 'drm-section-card__rebucket--spin': rebucketSectionId === section.id }"
+                  />
+                  <span>重新分桶</span>
+                </button>
                 <SectionQualityExplore
                   :breakdown="section.quality_breakdown"
                   :topic-label="section.persistent_topic?.label || section.cluster_label"
@@ -689,7 +739,64 @@ watch(() => props.focusSectionId, async (sectionId) => {
   transform: translateY(0);
 }
 
+/* 主题方向徽标（bucket_title）：与既有徽标族同尺寸/配色语言，不自造排版。
+   宽度上限用 em（相对自身 0.7rem 字号）而非 ch——ch 是数字字符宽，汉字约占 2ch，
+   12ch 只能放下 6 个汉字，会让 ≤12 字的方向名全部被截断（2026-10-24 真机实测见
+   ui-verification/report.md A-4）。14em ≈ 14 个汉字，覆盖 prompt 的 12 字上限。 */
+.drm-section-bucket {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 14em;
+  padding: 0 0.35rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drm-section-card__rebucket {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  margin-left: auto;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 0.7rem;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.drm-section-card__head:hover .drm-section-card__rebucket,
+.drm-section-card__rebucket:focus-visible {
+  opacity: 1;
+  border-color: var(--color-border-medium);
+  color: var(--color-text-secondary);
+}
+
+.drm-section-card__rebucket:disabled {
+  cursor: progress;
+  opacity: 0.45;
+}
+
+.drm-section-card__rebucket--spin {
+  animation: drm-rebucket-spin 0.9s linear infinite;
+}
+
+@keyframes drm-rebucket-spin {
+  to { transform: rotate(360deg); }
+}
+
 .drm-section-card__title {
+  min-width: 0;
   margin: 0;
   color: var(--color-text-secondary);
   font-family: "Noto Serif SC", serif;

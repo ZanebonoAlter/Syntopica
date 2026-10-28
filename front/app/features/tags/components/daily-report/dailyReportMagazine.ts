@@ -92,6 +92,18 @@ export function buildQualityZones(sections: DailyReportSection[]): QualityZone[]
   ].filter((zone): zone is QualityZone => zone !== null)
 }
 
+/** 组内按 bucket_index 升序稳定排序；缺省（未分桶/历史数据）按 0 处理。 */
+export function sortSectionsByBucketIndex(sections: DailyReportSection[]): DailyReportSection[] {
+  return sections
+    .map((section, index) => ({ section, index }))
+    .sort((a, b) => {
+      const ai = a.section.bucket_index ?? 0
+      const bi = b.section.bucket_index ?? 0
+      return ai === bi ? a.index - b.index : ai - bi
+    })
+    .map(entry => entry.section)
+}
+
 export function groupSectionsByTopic(zone: QualityZone): TopicGroup[] {
   const groups = new Map<string, TopicGroup>()
 
@@ -109,6 +121,7 @@ export function groupSectionsByTopic(zone: QualityZone): TopicGroup[] {
     groups.set(key, {
       key,
       topicId,
+      // 组名仍是当天第一条 section 的标题（父级泳道卡）。
       label: section.cluster_label,
       canonicalLabel: section.persistent_topic?.label,
       color: section.persistent_topic?.color,
@@ -116,6 +129,12 @@ export function groupSectionsByTopic(zone: QualityZone): TopicGroup[] {
       articleCount: section.article_count,
       threadCount: section.threads?.length ?? 0,
     })
+  }
+
+  // 泳道内主题分桶（add-intra-lane-theme-bucketing）：同一话题同一天可能有多条
+  // 兄弟 section，组内按 bucket_index 升序稳定排序（同序保持原始相对顺序）。
+  for (const group of groups.values()) {
+    group.sections = sortSectionsByBucketIndex(group.sections)
   }
 
   return [...groups.values()]

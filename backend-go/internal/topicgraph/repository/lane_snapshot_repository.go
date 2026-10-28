@@ -30,6 +30,37 @@ const (
 	LaneDynamicsDefaultDays = 14
 )
 
+// LaneDailyCount is one report day's magnitude signal for the settlement
+// prompt (slim-lane-snapshot-trend D1): date + anchored section count +
+// thread count. System-computed — the LLM never counts for itself.
+type LaneDailyCount struct {
+	PeriodDate time.Time
+	SectionCnt int
+	ThreadCnt  int
+}
+
+// ListDailyThreadCounts aggregates, per report day in [from, to], how many
+// anchored sections and threads the lane has (slim-lane-snapshot-trend D1:
+// 量级信号由系统计算供给). Days without a report produce no row — the
+// caller renders them explicitly rather than leaving gaps to interpretation.
+// Same inclusive window semantics as ListLaneSnapshotMaterial so the
+// magnitude signal always covers exactly the material window.
+func (r *TopicGraphRepository) ListDailyThreadCounts(topicID uint, from, to time.Time) ([]LaneDailyCount, error) {
+	var rows []LaneDailyCount
+	err := r.db.Table("daily_report_sections AS s").
+		Select("r.period_date AS period_date, COUNT(DISTINCT s.id) AS section_cnt, COUNT(t.id) AS thread_cnt").
+		Joins("JOIN board_daily_reports r ON r.id = s.report_id").
+		Joins("LEFT JOIN daily_report_threads t ON t.section_id = s.id").
+		Where("s.persistent_topic_id = ? AND r.period_date >= ? AND r.period_date <= ?", topicID, from, to).
+		Group("r.period_date").
+		Order("r.period_date ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("lane snapshot: daily thread counts: %w", err)
+	}
+	return rows, nil
+}
+
 // GetBoardReportAnchor returns the board's latest report period_date
 // (normalized noon UTC). ok=false when the board has no reports — the caller
 // uses it to distinguish the no-report empty state (tasks 2.2).
@@ -202,6 +233,7 @@ func (r *TopicGraphRepository) ListActiveWatchLinkedTopicIDs(boardID uint) (map[
 type LaneDynamicsTimelineSection struct {
 	SectionID   uint     `json:"section_id"`
 	Label       string   `json:"label"`
+	ThreadCount int      `json:"thread_count"`
 	Events      []string `json:"events"`
 	FoldedCount int      `json:"folded_count"`
 }
@@ -216,23 +248,29 @@ type LaneDynamicsTimelineDay struct {
 
 // LaneDynamicsSnapshot is the settled rolling summary; nil on the lane means
 // "no snapshot yet" (前端「待结算」占位，时间线照常渲染 — spec).
-// Detail is the ≤500字 long-form narrative; nil means the long form is missing
+// Detail carries the legacy long-form narrative (存量历史值透出; slim-lane-snapshot-trend: 新结算恒空→nil)
 // (legacy rows / degraded generations — lane-trend-overview design D3)，与
 // 整份快照缺失（snapshot=null）两级缺失可区分；空串归一为 nil。
 type LaneDynamicsSnapshot struct {
 	Summary string  `json:"summary"`
 	AsOf    string  `json:"as_of"`            // YYYY-MM-DD
-	Detail  *string `json:"detail,omitempty"` // 长版全文；nil=长版缺失（存量/降级）
+	Detail  *string `json:"detail,omitempty"` // 存量历史长版透出；新结算恒空→nil（omitempty 不出现）
 }
 
 // LaneDynamicsLane is one lane card's full data.
 type LaneDynamicsLane struct {
-	TopicID         uint                      `json:"topic_id"`
-	Label           string                    `json:"label"`
-	WatchLinked     bool                      `json:"watch_linked"`
-	SectionCount14d int                       `json:"section_count_14d"` // 排序键（D4 命名）
-	Snapshot        *LaneDynamicsSnapshot     `json:"snapshot"`
-	Timeline        []LaneDynamicsTimelineDay `json:"timeline"`
+	TopicID     uint   `json:"topic_id"`
+	Label       string `json:"label"`
+	WatchLinked bool   `json:"watch_linked"`
+	// SectionCount14d is the in-window anchored SECTION count, kept for
+	// display only. Ordering uses distinct anchor days (see GetBoardLaneDynamics),
+	// so a day split into several sibling buckets cannot inflate a lane's rank.
+	SectionCount14d int `json:"section_count_14d"`
+	// ThreadCount14d is the in-window clue (thread) count — the heat metric
+	// used by the overview (a bucket split must not masquerade as more heat).
+	ThreadCount14d int                       `json:"thread_count_14d"`
+	Snapshot       *LaneDynamicsSnapshot     `json:"snapshot"`
+	Timeline       []LaneDynamicsTimelineDay `json:"timeline"`
 }
 
 // LaneDynamicsCandidate is one candidate-bar entry (只读提示，转正走话题管理).
@@ -310,8 +348,9 @@ func (r *TopicGraphRepository) listLaneSectionThreads(sectionIDs []uint) (map[ui
 //   - window anchored at the board's MAX(period_date) going back `days` days
 //     (inclusive both ends — same convention as the landscape date axis), NOT
 //     now(), so 态势句素材与时间线同窗 (spec);
-//   - lanes = active ∪ watch-linked (non-archived), ranked by in-window
-//     section count DESC; zero-count (沉寂) lanes are not returned;
+//   - lanes = active ∪ watch-linked (non-archived), ranked by DISTINCT in-window
+//     anchor days DESC (tie: latest hit date DESC, then topic id ASC); zero-day
+//     (沉寂) lanes are not returned;
 //   - candidates = visible-gate candidates (hit_count >= upgrade_threshold,
 //     FilterVisibleTopics 口径) with their latest section title as hint.
 func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*LaneDynamicsResponse, error) {
@@ -333,7 +372,7 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 		return resp, nil
 	}
 	resp.HasReports = true
-	from := anchor.AddDate(0, 0, -days)
+	from := anchor.AddDate(0, 0, -(days - 1))
 
 	watchLinked, err := r.ListActiveWatchLinkedTopicIDs(boardID)
 	if err != nil {
@@ -423,6 +462,11 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 			SectionCount14d: a.count,
 			Timeline:        make([]LaneDynamicsTimelineDay, 0, len(a.dates)),
 		}
+		for _, dateSections := range a.byDate {
+			for _, section := range dateSections {
+				lane.ThreadCount14d += len(threadsBySection[section.ID])
+			}
+		}
 		if snap, ok := snaps[id]; ok {
 			lane.Snapshot = &LaneDynamicsSnapshot{
 				Summary: snap.RollingSummary,
@@ -453,6 +497,7 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 				day.Sections = append(day.Sections, LaneDynamicsTimelineSection{
 					SectionID:   s.ID,
 					Label:       s.ClusterLabel,
+					ThreadCount: len(titles),
 					Events:      events,
 					FoldedCount: folded,
 				})
@@ -462,11 +507,29 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 		resp.Lanes = append(resp.Lanes, lane)
 	}
 
-	// Rank by in-window section count DESC (spec: 活跃排序); tie: id ASC for
-	// deterministic output.
+	// Rank by DISTINCT in-window anchor days DESC (spec 展示范围与排序:
+	// 同日多条只计一次), then most recent hit date DESC, then id ASC for
+	// deterministic output. Sorting by section count is forbidden: intra-lane
+	// theme bucketing splits one day into several sections, so a section-count
+	// sort would reward "content that happened to be split more".
+	distinctDays := func(topicID uint) int {
+		return len(aggs[topicID].dates)
+	}
+	lastHitDate := func(topicID uint) string {
+		dates := aggs[topicID].dates // collected ASC
+		if len(dates) == 0 {
+			return ""
+		}
+		return dates[len(dates)-1]
+	}
 	sort.SliceStable(resp.Lanes, func(i, j int) bool {
-		if resp.Lanes[i].SectionCount14d != resp.Lanes[j].SectionCount14d {
-			return resp.Lanes[i].SectionCount14d > resp.Lanes[j].SectionCount14d
+		di, dj := distinctDays(resp.Lanes[i].TopicID), distinctDays(resp.Lanes[j].TopicID)
+		if di != dj {
+			return di > dj
+		}
+		li, lj := lastHitDate(resp.Lanes[i].TopicID), lastHitDate(resp.Lanes[j].TopicID)
+		if li != lj {
+			return li > lj
 		}
 		return resp.Lanes[i].TopicID < resp.Lanes[j].TopicID
 	})

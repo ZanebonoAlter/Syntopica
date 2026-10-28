@@ -176,6 +176,16 @@ export interface DailyReportSection {
   lane_tier?: string | null
   /** 物化板块归属 watch 名（读路径 transient 透出；LLM 当日标题之外的追踪源装饰）。 */
   watch_label?: string | null
+  /** 泳道内主题分桶的方向名（add-intra-lane-theme-bucketing）；未分桶/历史 section 为 null。 */
+  bucket_title?: string | null
+  /** 同 cluster_index 内的桶序号（0 起、组内唯一）；未分桶为 0。 */
+  bucket_index?: number
+}
+
+/** POST /daily-reports/:id/rebucket 响应：该桶组最新 sections + 桶数（buckets=1 = 未拆动/未达阈值）。 */
+export interface RebucketSectionsResult {
+  buckets: number
+  sections: DailyReportSection[]
 }
 
 export interface DailyReport {
@@ -194,6 +204,14 @@ export interface DailyReport {
   created_at: string
   /** Active watch hits returned with the report detail when available. */
   activeWatchHits?: DailyReportWatchHit[]
+}
+
+export interface TodayReportBrief {
+  report_id: number
+  semantic_board_id: number
+  period_date: string
+  title: string
+  status: string
 }
 
 export interface DailyReportListItem {
@@ -244,6 +262,11 @@ function normalizeReportListItem(payload: DailyReportListItemPayload): DailyRepo
 export function useDailyReportsApi() {
   async function generateDailyReport(params: { date: string; board_id?: number }) {
     return apiClient.post<{ job_id: string; status: string }>('/daily-reports/generate', params)
+  }
+
+  async function getTodayReports(date?: string): Promise<ApiResponse<{ date: string, reports: TodayReportBrief[] }>> {
+    const query = date ? `?date=${encodeURIComponent(date)}` : ''
+    return apiClient.get<{ date: string, reports: TodayReportBrief[] }>(`/daily-reports/today${query}`)
   }
 
   async function getBoardDailyReports(boardId: number, params?: { days?: number }): Promise<ApiResponse<{ reports: DailyReportListItem[] }>> {
@@ -303,6 +326,12 @@ export function useDailyReportsApi() {
     })
   }
 
+  /** 对某个 section 所在的桶组重跑泳道内主题分桶（add-intra-lane-theme-bucketing）。
+   *  section id 变化时服务端复用组头行；未达阈值/拆不动返回 buckets=1 且不改数据。 */
+  async function rebucketSection(reportId: number, sectionId: number): Promise<ApiResponse<RebucketSectionsResult>> {
+    return apiClient.post(`/daily-reports/${reportId}/rebucket`, { section_id: sectionId })
+  }
+
   /** Reconstruct persistent topics from historical sections lacking a topic. Optional boardId scopes to one board. */
   async function backfillPersistentTopics(boardId?: number): Promise<ApiResponse<{ status: string }>> {
     const query = boardId ? `?board_id=${boardId}` : ''
@@ -336,6 +365,7 @@ export function useDailyReportsApi() {
 
   return {
     generateDailyReport,
+    getTodayReports,
     getBoardDailyReports,
     getDailyReportDetail,
     getBoardSectionTimeline,
@@ -345,6 +375,7 @@ export function useDailyReportsApi() {
     getTopicKeyEvents,
     putThreadKeyEvent,
     patchKeyEventMarker,
+    rebucketSection,
     backfillPersistentTopics,
     updateTopic,
     deleteTopic,

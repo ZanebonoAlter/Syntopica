@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"syntopica-backend/internal/platform/testutil"
 )
 
 // helper: build a 3-dim unit-ish vector pgvector string.
@@ -298,4 +300,52 @@ func TestPlanLifecycle_LongGapNeverArchives(t *testing.T) {
 	assert.Equal(t, uint(2), changes[1].topicID)
 	assert.Equal(t, TopicStatusActive, changes[1].status)
 	assert.Equal(t, 0, changes[1].consecutiveHits)
+}
+
+// TestPlanLifecycle_SameDayMultipleSectionsCountOnce covers the persistent-topic
+// Scenario「同日多条 section 只记一次命中」(add-intra-lane-theme-bucketing):
+// three sibling buckets of one cluster count as ONE hit for the day.
+func TestPlanLifecycle_SameDayMultipleSectionsCountOnce(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	Repo = NewTopicGraphRepository(db)
+	t.Cleanup(func() { Repo = nil })
+
+	boardID := seedTestBoard(t, db)
+	today := NormalizeReportDate(time.Now())
+	topic := BoardPersistentTopic{
+		SemanticBoardID: boardID,
+		Label:           "AGENT编程工具相关",
+		Embedding:       FloatsToPgVector([]float64{1, 0, 0}),
+		Status:          TopicStatusActive,
+		Source:          TopicSourceManual,
+		FirstSeenDate:   today.AddDate(0, 0, -3),
+		LastSeenDate:    today.AddDate(0, 0, -1),
+		HitCount:        4,
+		ConsecutiveHits: 2,
+	}
+	require.NoError(t, db.Create(&topic).Error)
+	topicID := topic.ID
+
+	report := &BoardDailyReport{
+		SemanticBoardID: boardID,
+		PeriodDate:      today,
+		Title:           "three siblings, one hit",
+		Status:          ReportStatusCompleted,
+	}
+	sections := []DailyReportSection{
+		{ClusterIndex: 0, BucketIndex: 0, BucketTitle: "A", ClusterLabel: "A", ClusterTagIDs: JSON("[1]"),
+			Embedding: FloatsToPgVector([]float64{1, 0, 0}), LaneTier: "l1_direct", MatchedTopicID: &topicID},
+		{ClusterIndex: 0, BucketIndex: 1, BucketTitle: "B", ClusterLabel: "B", ClusterTagIDs: JSON("[2]"),
+			Embedding: FloatsToPgVector([]float64{0, 1, 0}), LaneTier: "l1_direct", MatchedTopicID: &topicID},
+		{ClusterIndex: 0, BucketIndex: 2, BucketTitle: "C", ClusterLabel: "C", ClusterTagIDs: JSON("[3]"),
+			Embedding: FloatsToPgVector([]float64{0, 0, 1}), LaneTier: "l1_direct", MatchedTopicID: &topicID},
+	}
+	batches := [][]DailyReportThread{{{Title: "a"}}, {{Title: "b"}}, {{Title: "c"}}}
+	require.NoError(t, Repo.SaveReport(report, sections, batches))
+
+	var reloaded BoardPersistentTopic
+	require.NoError(t, db.First(&reloaded, topicID).Error)
+	assert.Equal(t, 5, reloaded.HitCount, "3 sibling sections must add exactly 1 hit")
+	assert.Equal(t, 3, reloaded.ConsecutiveHits, "consecutive_hits also advances only once")
+	assert.Equal(t, NormalizeReportDate(today), NormalizeReportDate(reloaded.LastSeenDate))
 }

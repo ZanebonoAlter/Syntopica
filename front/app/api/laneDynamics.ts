@@ -28,6 +28,8 @@ export interface LaneSnapshot {
 export interface LaneTimelineSection {
   section_id: number
   label: string
+  /** 该 section 的线索总数（后端权威口径；旧响应缺省时用 events+folded 兜底）。 */
+  thread_count?: number
   /** thread 级标题列表（后端每 section 截前 5 条，D4）。 */
   events: string[]
   /** 被后端截断未载入的事件数（「数量可截断但 SHALL 提示被折叠数」，spec）。 */
@@ -48,6 +50,8 @@ export interface LaneDynamicsLane {
   /** watch 关联（该板块 active 的 sentence_topic watch 命中该话题）。 */
   watch_linked: boolean
   section_count_14d: number
+  /** 窗口内线索数（热度口径；与 section 分桶解耦）。旧响应缺省时前端按 events+folded 兜底。 */
+  thread_count_14d?: number
   snapshot: LaneSnapshot | null
   timeline: LaneTimelineDay[]
 }

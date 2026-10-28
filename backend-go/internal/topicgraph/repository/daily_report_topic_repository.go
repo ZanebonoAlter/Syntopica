@@ -41,6 +41,13 @@ type PersistentTopicConfig struct {
 	// attach. When off, both active and candidate direct-attach (legacy
 	// behavior). Runtime kill switch for online rollback without a release.
 	CandidateL1GateEnabled bool // persistent_topic_candidate_l1_gate_enabled: candidate L1 direct-attach gate
+	// Intra-lane theme bucketing (add-intra-lane-theme-bucketing): splits one
+	// over-wide lane cluster's daily threads into 2-6 theme directions. The
+	// thresholds double as a misfire guard — narrative boards (≤5 tags per
+	// section) never reach them, so only domain-type lanes get split.
+	IntraBucketEnabled    bool // daily_report_intra_bucket_enabled: global kill switch (default on)
+	IntraBucketMinThreads int  // daily_report_intra_bucket_min_threads: OR-threshold on the day's thread count
+	IntraBucketMinTags    int  // daily_report_intra_bucket_min_tags: OR-threshold on the cluster's tag count
 }
 
 // DefaultPersistentTopicConfig returns the seed defaults; used when ai_settings
@@ -74,6 +81,11 @@ func DefaultPersistentTopicConfig() PersistentTopicConfig {
 		// candidate-topic-l2-gate: gate on by default — candidate topics are
 		// system guesses and must pass L2 adjudication for every attach.
 		CandidateL1GateEnabled: true,
+		// Intra-lane theme bucketing defaults (measured: 51/621 sections in the
+		// last 14 days reach 6 threads or 10 tags, ~8.2% — domain-type lanes only).
+		IntraBucketEnabled:    true,
+		IntraBucketMinThreads: 6,
+		IntraBucketMinTags:    10,
 	}
 }
 
@@ -155,6 +167,9 @@ func LoadPersistentTopicConfig(db *gorm.DB) PersistentTopicConfig {
 		"persistent_topic_l2_candidate_k",
 		"daily_report_section_merge_enabled",
 		"persistent_topic_candidate_l1_gate_enabled",
+		"daily_report_intra_bucket_enabled",
+		"daily_report_intra_bucket_min_threads",
+		"daily_report_intra_bucket_min_tags",
 	}
 	var rows []models.AISettings
 	if err := db.Where("key IN ?", keys).Find(&rows).Error; err != nil {
@@ -227,6 +242,24 @@ func LoadPersistentTopicConfig(db *gorm.DB) PersistentTopicConfig {
 				cfg.CandidateL1GateEnabled = v
 			} else {
 				logging.Warnf("persistent-topic: invalid candidate l1 gate enabled %q; using default %t", r.Value, cfg.CandidateL1GateEnabled)
+			}
+		case "daily_report_intra_bucket_enabled":
+			if v, err := strconv.ParseBool(r.Value); err == nil {
+				cfg.IntraBucketEnabled = v
+			} else {
+				logging.Warnf("daily-report: invalid intra bucket enabled %q; using default %t", r.Value, cfg.IntraBucketEnabled)
+			}
+		case "daily_report_intra_bucket_min_threads":
+			if v, err := strconv.Atoi(r.Value); err == nil && v > 0 {
+				cfg.IntraBucketMinThreads = v
+			} else {
+				logging.Warnf("daily-report: invalid intra bucket min threads %q; using default %d", r.Value, cfg.IntraBucketMinThreads)
+			}
+		case "daily_report_intra_bucket_min_tags":
+			if v, err := strconv.Atoi(r.Value); err == nil && v > 0 {
+				cfg.IntraBucketMinTags = v
+			} else {
+				logging.Warnf("daily-report: invalid intra bucket min tags %q; using default %d", r.Value, cfg.IntraBucketMinTags)
 			}
 		}
 	}
