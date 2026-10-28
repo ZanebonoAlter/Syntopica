@@ -41,3 +41,9 @@
 ### R-10 2026-10-24【Low】存量 detail 读路径注释陈旧（「降级」概念已废）+ 前端测试 describe 标题沿用「与降级」
 - **状态**：已修复
 - 处置：`LaneDynamicsSnapshot.Detail`、`TopicLaneSnapshot.RollingDetail` 注释改为「仅存量历史值透出，新结算恒空」；前端测试 describe 标题同步 spec 改名（14 天档内容）。
+
+### R-11 2026-10-28【High】真实结算产物 38/38 顶格、37/38 句子被从字中间切断（机械保护变常态路径）
+- **状态**：已修复
+- 依据：归档前人工效果核对（tasks 5.3）拉真库 `topic_lane_snapshots`：10-25/26/27 三个日报日新写 38 条快照，全部 ≥200 rune，37 条以半截词结尾（「…停用并移除DeepSeek」「…OpenAI营收预」「…SK」）。内容判据（阶段/驱动、无逐日罗列、无预测、量级数字）全过，唯一红的形态就是可读性——读者在泳道趋势区看到的是断句。
+- 处置：不改字数口径（不放宽判据），改两处——①`laneSnapshotSystemPrompt` 加篇幅硬约束（总长含标点 ≤200 字、必须以句号收尾、写不下压缩/合并阶段）；②`parseLaneSnapshotOutput` 改走 `clampLaneSnapshotRunes`：超限优先在 200 字窗口内最后一个句末标点（`。！？…`）收口，标点过早（<60% 预算）或整段无标点才退回 rune 硬切。delta spec「机械截断保护」Scenario 同步，新增 `TestParseLaneSnapshotOutput_ClampsAtSentenceBoundary` 三支断言；证据与复验 SQL 落 `effect-check.md`。
+- 未闭环：真实 LLM 复验要等下个日报日结算（tasks 5.5），合格前不归档。

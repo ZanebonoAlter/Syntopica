@@ -32,7 +32,9 @@ const (
 	// laneSnapshotMaxRunes mechanically clamps the LLM short-form output. The
 	// prompt already demands ≤200字 (relax-lane-snapshot-length-caps: 实测
 	// 100 字高频硬切烂尾); this guard protects the card layout from
-	// over-verbose models.
+	// over-verbose models. 2026-10-28 真库效果核对：38/38 条真实快照顶到上限、
+	// 37 条被从字中间切断（页面显示半截话），故 clamp 优先在句末标点收口
+	// （见 clampLaneSnapshotRunes），纯 rune 硬切只作无标点兜底。
 	laneSnapshotMaxRunes = 200
 	// laneSnapshotMaxTokens bounds the single-call output budget
 	// (slim-lane-snapshot-trend D3): 单版 200 字中文 ≈ 400 token 上浮呼吸
@@ -74,6 +76,8 @@ func laneSnapshotSystemPrompt() string {
 		"再给出当前落点与局势判断，最后用量级信号佐证走向。" +
 		"要求：禁止逐日罗列事件；禁止预测未来走向（只描述已发生的变化）；" +
 		"禁止使用清单与量级信号之外的数字；「无报告」日不计入趋势判断。" +
+		"篇幅硬约束：总长（含标点）不得超过200字，并且必须以句号收尾；" +
+		"写不下时压缩阶段描述或合并阶段，宁可少写一个细节，也不得写到一半停下。" +
 		"直接输出这一段纯文本，不要JSON、标题、前后缀或代码块围栏。"
 }
 
@@ -165,20 +169,45 @@ func renderLaneMagnitudeSignal(counts []repository.LaneDailyCount, anchor time.T
 }
 
 // truncateRunes is package-shared (watch_materialize_keyword.go) — rune-safe
-// clamp, reused for the ≤200字 mechanical guard.
+// clamp used by the watch-materialize keyword guards.
 
 // parseLaneSnapshotOutput applies the plain-text three-step guard
 // (slim-lane-snapshot-trend D3): trim → empty/whitespace fails the settlement
-// (snapshot keeps its old value, retried next report day) → rune-safe clamp
-// to laneSnapshotMaxRunes. There is deliberately NO JSON parsing and no
-// degrade branch: the prompt demands a single plain paragraph, and stray
-// fences/quotes (if a model emits them anyway) land in the text as-is.
+// (snapshot keeps its old value, retried next report day) → clamp to
+// laneSnapshotMaxRunes at a sentence boundary. There is deliberately NO JSON
+// parsing and no degrade branch: the prompt demands a single plain paragraph,
+// and stray fences/quotes (if a model emits them anyway) land in the text as-is.
 func parseLaneSnapshotOutput(content string) (string, error) {
-	summary := truncateRunes(strings.TrimSpace(content), laneSnapshotMaxRunes)
+	summary := clampLaneSnapshotRunes(strings.TrimSpace(content), laneSnapshotMaxRunes)
 	if summary == "" {
 		return "", fmt.Errorf("empty llm output")
 	}
 	return summary, nil
+}
+
+// clampLaneSnapshotRunes clamps text to max runes without cutting a sentence
+// in half: when the over-cap window contains a sentence terminator (。！？… or
+// a newline) late enough to keep ≥60% of the budget, the text is cut right
+// after the last such terminator; otherwise it falls back to a plain rune cut.
+//
+// 2026-10-28 真库效果核对（slim-lane-snapshot-trend 5.3）: every settled lane
+// hit the cap and 37/38 sentences were cut mid-word (「…停用并移除DeepSeek」
+// 「…SK」). The prompt now also demands a complete final sentence; this is the
+// mechanical backstop that keeps a dangling fragment off the reading view.
+func clampLaneSnapshotRunes(text string, max int) string {
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	window := runes[:max]
+	floor := max * 3 / 5
+	for i := len(window) - 1; i >= floor; i-- {
+		switch window[i] {
+		case '。', '！', '？', '…', '\n':
+			return strings.TrimSpace(string(window[:i+1]))
+		}
+	}
+	return string(window)
 }
 
 // settleBoardLaneSnapshots settles the rolling snapshot for the board's

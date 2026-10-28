@@ -21,4 +21,5 @@
 ## 验收映射
 
 - 组件测试：`front/app/features/tags/components/daily-report/LaneTrendOverview.test.ts`——改造现有用例：快照仅含 summary（单版）渲染全文；detail 存在的存量快照不再渲染长版；删「长版缺失回退+提示」用例；快照缺失占位用例保留。
-- 人工验证：本地 :5100 打开日报阅读层展开任一泳道，14 天档显示单段态势句、无「长版待生成」提示（ui-verification/report.md 建账）。
+- 真库产物抽查：`openspec/changes/slim-lane-snapshot-trend/effect-check.md` + `ui-verification/report.md`（A-1/A-2/A-3 三条建账，含首轮不合格结论与复验计划）。
+- 浏览器截图：不需要——本 change 不改布局/样式，仅换 14 天档正文数据源；视觉回归由宿主 lane-dynamics 页面自有的布局用例覆盖。

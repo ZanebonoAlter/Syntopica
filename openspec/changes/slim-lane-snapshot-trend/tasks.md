@@ -23,7 +23,9 @@
 
 - [x] 5.1 重写 `backend-go/internal/topicgraph/service/lane_snapshot_test.go`：纯文本解析守卫（空/空白/超长 rune 截断）、prompt 构造含量级信号段与禁止条款、结算写入 detail 置空、失败不阻塞路径；按 test-cases.md「继承与调整」表逐项处置旧双版用例。
 - [x] 5.2 改造 `front/app/features/tags/components/daily-report/LaneTrendOverview.test.ts`：单版渲染全文、存量 detail 非空不渲染不提示、快照缺失占位保留；删长版回退用例。
-- [ ] 5.3 人工效果核对（效果依赖 LLM 行为）：下个日报日结算后抽 ≥5 条真实泳道产物，对照讨论判据（阶段带驱动语义/事件仅转折标记/无逐日罗列/无预测/量级引用准确）记录至 `effect-check.md`；不合格回改 prompt 而非放宽判据。
+- [ ] 5.3 人工效果核对（效果依赖 LLM 行为）：下个日报日结算后抽 ≥5 条真实泳道产物，对照讨论判据（阶段带驱动语义/事件仅转折标记/无逐日罗列/无预测/量级引用准确）记录至 `effect-check.md`；不合格回改 prompt 而非放宽判据。**2026-10-28 首轮已跑（数据源 10-25/26/27 三个日报日的 38 条新结算产物）**：内容判据全过、量级抽查与真库计数一致；但 38/38 顶到 200 字上限、37/38 从字中间切断（读者看到半截话）→ 判不合格，处置见 5.4，复验见 5.5，本项保持未勾
+- [x] 5.4 按 5.3 不合格结论改「形态不达标」而非放宽判据：①`laneSnapshotSystemPrompt` 加篇幅硬约束（总长含标点 ≤200 字、必须以句号收尾、写不下压缩/合并阶段）；②解析端 `clampLaneSnapshotRunes` 改句末收口（窗口内最后一个 `。！？…`，标点过早 <60% 预算或无标点则退回 rune 硬切）；delta spec「机械截断保护」Scenario 同步。验证：`go test ./internal/topicgraph/service -run 'LaneSnapshot'` 全绿（新增 `TestParseLaneSnapshotOutput_ClampsAtSentenceBoundary`，含「190 字正文+句号+尾巴→191 收口」「句号过早→退回硬切」「无标点→硬切」三支）
+- [ ] 5.5 下个日报日（2026-10-29）结算后重跑 `effect-check.md` §3 的只读 SQL：期望「以句末标点收尾」≥ 90% 且字数仍 ≤200；合格后勾 5.3 并归档本 change（复验记录追加至 `effect-check.md`）
 
 ## 6. 文档
 

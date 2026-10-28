@@ -193,11 +193,34 @@ func TestParseLaneSnapshotOutput_Boundaries(t *testing.T) {
 		assert.Equal(t, strings.Repeat("态", want), got, "%d rune 输入", n)
 	}
 
-	// 模型残留围栏/引号 → 不解析不剥壳，原样当文本截断（行为记录用例）。
+	// 模型残留围栏/引号 → 不解析不剥壳，原样当文本入库（行为记录用例）。
 	fenced := "```\n" + strings.Repeat("围", 190) + "\n```"
 	got, err := parseLaneSnapshotOutput(fenced)
 	require.NoError(t, err)
 	assert.Equal(t, truncateRunes(fenced, laneSnapshotMaxRunes), got, "围栏残留原样入库（截断后）")
+}
+
+// 句末收口（2026-10-28 真库效果核对后新增）：超限时优先在句末标点截断，
+// 不在字中间切断；句末标点过早（低于 60% 预算）或整段无标点时退回 rune 硬切。
+func TestParseLaneSnapshotOutput_ClampsAtSentenceBoundary(t *testing.T) {
+	// 190 字正文 + 句号 + 40 字尾巴 → 在句号处收口（191 rune）。
+	body := strings.Repeat("阶", 190) + "。" + strings.Repeat("尾", 40)
+	got, err := parseLaneSnapshotOutput(body)
+	require.NoError(t, err)
+	assert.Equal(t, 191, len([]rune(got)), "在句号处收口，不在字中间切")
+	assert.True(t, strings.HasSuffix(got, "。"))
+
+	// 句号出现太早（第 31 rune，低于 60% 预算）+ 后面无标点 → 退回 rune 硬切。
+	early := strings.Repeat("早", 30) + "。" + strings.Repeat("续", 220)
+	got, err = parseLaneSnapshotOutput(early)
+	require.NoError(t, err)
+	assert.Equal(t, laneSnapshotMaxRunes, len([]rune(got)))
+	assert.False(t, strings.HasSuffix(got, "。"), "过早的句号不作为收口点")
+
+	// 整段无标点 → rune 硬切（保持机械上限）。
+	got, err = parseLaneSnapshotOutput(strings.Repeat("长", 230))
+	require.NoError(t, err)
+	assert.Equal(t, laneSnapshotMaxRunes, len([]rune(got)))
 }
 
 // 窗口锚定 MAX(period_date)（design D3）：14 天前含、15 天前不含；
@@ -418,7 +441,7 @@ func TestSettleLaneSnapshot_PlainTextSingleVersionUpsert(t *testing.T) {
 	assert.Contains(t, rec.users[0], "量级信号", "量级信号段随素材注入（删掉 ListDailyThreadCounts 接线时此断言必红）")
 }
 
-// 主链路4: 超长纯文本 → rune 安全截断至 200，detail 空串。
+// 主链路4: 超长纯文本（无句末标点）→ rune 安全截断至 200，detail 空串。
 func TestSettleLaneSnapshot_OverlongClamped(t *testing.T) {
 	db := laneSnapshotTestDB(t)
 	const boardID = uint(8)
@@ -541,6 +564,8 @@ func TestLaneSnapshotSystemPrompt_NarrativeContractAndMaxTokens(t *testing.T) {
 	assert.Contains(t, sys, "禁止使用清单与量级信号之外的数字")
 	// 长度与输出形态。
 	assert.Contains(t, sys, "150-200字")
+	assert.Contains(t, sys, "不得超过200字", "篇幅硬约束（真库效果核对后新增）")
+	assert.Contains(t, sys, "必须以句号收尾", "禁止写到一半停下")
 	assert.Contains(t, sys, "纯文本")
 	assert.Contains(t, sys, "不要JSON", "明确弃 JSON 输出")
 	assert.NotContains(t, sys, `"summary"`)
