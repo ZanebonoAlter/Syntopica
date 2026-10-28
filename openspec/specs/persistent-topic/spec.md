@@ -46,6 +46,8 @@ embedding 为空时 confidence=unmatched、lane_tier 允许为空、persistent_t
 
 归属判定 SHALL 在 section 生成阶段完成（section 天生挂 topic），不再有事后 section 标题↔topic 匹配环节。
 
+**一篇日报内同一 topic MAY 拥有多条 section**（泳道内主题分桶拆分、手动编排、watch 物化）。此类兄弟 section SHALL 各自独立持有归属列与各自的 `topic_match_distance`；话题命中计数 SHALL 按「该篇日报是否命中」去重（同一日报内多条只算一次），SHALL NOT 按 section 条数累加；质心刷新 SHALL 按 section 逐条计入窗口，SHALL NOT 对同日同话题的多条 section 做特殊去重。
+
 #### Scenario: L1 直挂命中（质心强匹配）
 
 - **GIVEN** board 有 active topic「Claude Code 工具链崛起」，当天 tag「Claude Code 模型选型」到该 topic 质心距离 0.12
@@ -114,6 +116,18 @@ embedding 为空时 confidence=unmatched、lane_tier 允许为空、persistent_t
 - **GIVEN** section #123 的 persistent_topic_id=8（lane_tier=l1_direct, confidence=anchor_hit）
 - **WHEN** 用户在编排态将 section #123 串联进手动新建的 topic #20
 - **THEN** 系统 SHALL 将 persistent_topic_id 改写为 20，topic_match_confidence=manual，lane_tier 保持 l1_direct，topic_match_distance=该 section embedding 到 #20 质心的距离
+
+#### Scenario: 同日多条 section 只记一次命中
+
+- **GIVEN** topic #502 在某篇日报内被拆成 3 条 section（bucket_index 0/1/2），当日该话题再无其他 section
+- **WHEN** 系统执行生命周期更新
+- **THEN** topic #502 的 `hit_count` SHALL 只 +1，`consecutive_hits` SHALL 只 +1，`last_seen_date` SHALL = 该日报日期
+
+#### Scenario: 质心按 section 逐条计入
+
+- **GIVEN** topic #502 在某日报内有 3 条 section（各自 embedding 不同）
+- **WHEN** 系统重算该话题质心
+- **THEN** 3 条 section 的 embedding SHALL 各自计入 `centroid_window` 窗口，SHALL NOT 按当日合并为一条
 
 ### Requirement: ClusterTags 注入历史叙事框架
 

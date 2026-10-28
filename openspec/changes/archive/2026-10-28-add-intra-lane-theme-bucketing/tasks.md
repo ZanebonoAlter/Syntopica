@@ -61,7 +61,7 @@
 - [x] 9.3 `docs/reference/api/daily-reports.md`：新增 `POST /api/daily-reports/:id/rebucket` 契约（409/400/200+buckets=1 三态）与 `bucket_title` / `bucket_index` 字段
 - [x] 9.4 `docs/reference/database/tables/`：补两列定义与默认值（section 所属表文档）
 - [x] 9.5 `docs/reference/configuration.md`：登记 3 个新配置项与默认值
-- [ ] 9.6 归档后按 `开发执行规范.md` §12.2 在 `flow/daily-report.md`「变更溯源」表补本 change 链接
+- [x] 9.6 归档后按 `开发执行规范.md` §12.2 在 `flow/daily-report.md`「变更溯源」表补本 change 链接（已补 daily-report + topic-graph 两处，归档位置 `2026-10-28-add-intra-lane-theme-bucketing`）
 
 ## 10. 验证
 
