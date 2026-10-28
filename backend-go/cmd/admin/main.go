@@ -311,9 +311,13 @@ func runTagguardCleanup(args []string) error {
 	}
 
 	var candidates []exemplarLeakCandidate
+	// content / firecrawl_content are nullable — COALESCE keeps the scan from
+	// failing with "converting NULL to string is unsupported" on articles that
+	// were never enriched (guard-tag-exemplar-leakage R-1).
 	if err := repository.Repo.DB().Raw(`
 		SELECT att.id AS link_id, att.article_id, att.topic_tag_id AS tag_id,
-		       tt.label, a.title, a.content, a.firecrawl_content
+		       tt.label, a.title, COALESCE(a.content, '') AS content,
+		       COALESCE(a.firecrawl_content, '') AS firecrawl_content
 		FROM article_topic_tags att
 		JOIN topic_tags tt ON tt.id = att.topic_tag_id
 		JOIN articles a ON a.id = att.article_id

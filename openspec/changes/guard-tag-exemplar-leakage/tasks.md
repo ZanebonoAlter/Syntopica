@@ -46,3 +46,18 @@
 - [x] V4 `cd backend-go && go build ./...` → 编译通过
 - [x] V5 真库复核（BEGIN/ROLLBACK 只读）：`SELECT count(*) FROM article_topic_tags WHERE topic_tag_id=1556` → 11 ✓
 - [x] V6 抽查 416 期文章：`SELECT topic_tag_id FROM article_topic_tags WHERE article_id=153877` → 不含 1556 ✓
+- [x] V7 归档前复核（2026-10-28）：`go vet ./cmd/admin/` + `go build ./cmd/admin/` → 0；`./admin tagguard-cleanup --out /tmp/...` 真库 dry-run → 正常输出（exemplar 链接 10 / 待删 1 / 保留 9），清理工具 SQL 已补 `COALESCE` 防可空列扫描报错（review R-1）
+
+### Scenario → 测试文件映射
+
+| Scenario | 测试文件 |
+| --- | --- |
+| 无提及文章的示例词 keyword 被丢弃 | backend-go/internal/tagmanagement/service/core/exemplar_guard_test.go |
+| 可见输入确有提及的示例词保留 | backend-go/internal/tagmanagement/service/core/exemplar_guard_test.go |
+| 非示例词候选不受影响 | backend-go/internal/tagmanagement/service/core/exemplar_guard_test.go |
+| auxiliary_labels 泄漏项被过滤 | backend-go/internal/tagmanagement/service/core/exemplar_guard_test.go |
+| section 路径同样生效 | backend-go/internal/tagmanagement/service/core/exemplar_guard_test.go |
+| 大小写变体同样拦截 | backend-go/internal/tagmanagement/service/core/exemplar_guard_test.go |
+| 示例词集合与 prompt 防漂移 | backend-go/internal/tagmanagement/service/core/exemplar_guard_test.go |
+| dry-run 输出误挂清单 | 人工核对（真库 dry-run 清单：2026-10-24 待删 28 行；2026-10-28 复核 10 链接待删 1，输出见 V7） |
+| apply 后误挂关联移除且真实关联保留 | 人工核对（真库 `--apply`：PostgreSQL 关联 36→11、正文提及关联保留、重跑 dry-run leaked=0，见 tasks 3.3） |
