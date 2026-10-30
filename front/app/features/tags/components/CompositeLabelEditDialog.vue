@@ -4,6 +4,7 @@ import { Icon } from '@iconify/vue'
 import { useAuxiliaryLabelsApi, type AuxiliaryLabel } from '~/api/auxiliaryLabels'
 import { useCompositeLabelsApi, type CompositeLabel, type ComponentOption } from '~/api/compositeLabels'
 import { useSemanticBoardsApi } from '~/api/semanticBoards'
+import { Z_INDEX } from '~/components/ui/layout-contract'
 
 /**
  * 手动创建组合标签对话框：label + 描述 + 组件选择器（auxiliary active，2-5 个）。
@@ -13,13 +14,21 @@ import { useSemanticBoardsApi } from '~/api/semanticBoards'
  * 搜索时降级全量模糊；chip 带「挂 N 版块」信号；已选组件命中现有组合时优先展示，
  * 组件集完全一致时预告 L1 复用。组合列表由 Pool props 传入（对话框零额外请求）。
  */
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   visible: boolean
   composites?: CompositeLabel[]
   /** 版块上下文（design D7）：本版块挂载组件置顶 + 创建成功后自动挂载到该版块 */
   boardId?: number
   boardLabel?: string
-}>()
+  /**
+   * 遮罩层级：默认取嵌套浮层档 Z_INDEX.dialogNested（1100）——严格高于宿主弹窗遮罩，
+   * 否则被宿主遮罩整块盖住（standard/frontend/layout.md「浮层层级契约」）。
+   * 宿主弹窗在更高档时，按 nestedOverlayZ(hostZ) 抬升后显式传入。
+   */
+  zIndex?: number
+}>(), {
+  zIndex: Z_INDEX.dialogNested,
+})
 
 const emit = defineEmits<{
   confirm: []
@@ -236,7 +245,7 @@ async function submitCreate() {
 
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="cld-overlay" @click.self="emit('cancel')">
+    <div v-if="visible" class="cld-overlay" :style="{ zIndex }" @click.self="emit('cancel')">
       <div class="cld-card" data-testid="composite-label-dialog">
         <div class="cld-header">
           <h3 class="cld-title">{{ boardLabel ? `为「${boardLabel}」新建组合标签` : '新建组合标签' }}</h3>
@@ -334,7 +343,7 @@ async function submitCreate() {
 </template>
 
 <style scoped>
-.cld-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.45); }
+.cld-overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.45); }
 .cld-card { display: flex; flex-direction: column; width: min(560px, 92vw); max-height: 86vh; border: 1px solid var(--color-border-medium); border-radius: 12px; background: var(--color-bg-elevated); }
 .cld-header { display: flex; align-items: center; justify-content: space-between; padding: 0.85rem 1.1rem; border-bottom: 1px solid var(--color-border-subtle); }
 .cld-title { font-family: serif; font-size: 0.95rem; font-weight: 600; color: var(--color-text-primary); }

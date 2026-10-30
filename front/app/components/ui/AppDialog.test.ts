@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import AppDialog from './AppDialog.vue'
-import { effectiveDialogWidth } from './layout-contract'
+import { effectiveDialogWidth, Z_INDEX } from './layout-contract'
 
 /**
  * 布局契约单元锚点（standard/frontend/layout.md「弹窗拒绝随手宽度」）：
@@ -56,6 +56,39 @@ describe('AppDialog 尺寸档', () => {
     expect(el.classList.contains('is-sized')).toBe(true)
     expect(el.style.getPropertyValue('--dialog-w')).toBe('560px')
     expect(el.style.maxWidth).toBe('')
+  })
+})
+
+describe('AppDialog 浮层层级（浮层层级契约）', () => {
+  it('默认遮罩层级取基础档 Z_INDEX.dialog（1000）', () => {
+    mountDialog()
+    expect(overlayEl().style.zIndex).toBe(String(Z_INDEX.dialog))
+  })
+
+  it('显式传 z-index 时按传入值渲染（高于基础档的宿主用法）', () => {
+    mountDialog({ zIndex: Z_INDEX.readingDialog })
+    expect(overlayEl().style.zIndex).toBe(String(Z_INDEX.readingDialog))
+  })
+})
+
+describe('AppDialog 语义 opt-in（R38）', () => {
+  it('默认不渲染 role/aria/focus（旧调用零行为变化）', () => {
+    mountDialog({ title: '旧弹窗' })
+    const el = dialogEl()
+    expect(el.getAttribute('role')).toBeNull()
+    expect(el.getAttribute('aria-modal')).toBeNull()
+    expect(el.getAttribute('tabindex')).toBeNull()
+  })
+
+  it('semanticDialog=true：role=dialog/aria-modal/label 在 dialog 本体，初始焦点进入', async () => {
+    mountDialog({ semanticDialog: true, dialogLabel: '站内原文阅读', title: '文章预览' })
+    await nextTick()
+    const el = dialogEl()
+    expect(el.getAttribute('role')).toBe('dialog')
+    expect(el.getAttribute('aria-modal')).toBe('true')
+    expect(el.getAttribute('aria-label')).toBe('站内原文阅读')
+    expect(el.getAttribute('tabindex')).toBe('-1')
+    expect(document.activeElement).toBe(el)
   })
 })
 

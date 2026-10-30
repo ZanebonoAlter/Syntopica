@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { DIALOG_SIZES, type DialogSize } from './layout-contract'
+import { DIALOG_SIZES, Z_INDEX, type DialogSize } from './layout-contract'
 
 interface Props {
   modelValue: boolean
@@ -12,6 +12,7 @@ interface Props {
   closeOnOverlay?: boolean
   closeOnEscape?: boolean
   showClose?: boolean
+  /** 遮罩层级：默认取基础档 Z_INDEX.dialog（1000）；高于基础档时显式传入（组件不得手写层级数字） */
   zIndex?: number
 }
 
@@ -21,7 +22,7 @@ const props = withDefaults(defineProps<Props>(), {
   closeOnOverlay: true,
   closeOnEscape: true,
   showClose: true,
-  zIndex: 1000,
+  zIndex: Z_INDEX.dialog,
 })
 
 const emit = defineEmits<{

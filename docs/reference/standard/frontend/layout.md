@@ -58,13 +58,54 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 - **WHEN** 新弹窗可由四档尺寸之一容纳
 - **THEN** 实现 MUST 复用 `<AppDialog size="...">`，不传自由 width
 
+### Requirement: 浮层层级契约
+
+**级别**: MUST
+
+浮层层级 SHALL 取自唯一档位表（代码侧 `front/app/components/ui/layout-contract.ts` 的 `Z_INDEX`），组件 SHALL NOT 手写层级数字（存量例外见本节末「存量例外」与「存量迁移」登记表）：
+
+| 档位 | 值 | 用途 |
+| --- | --- | --- |
+| `dialog` | 1000 | 基础弹窗遮罩（`AppDialog` 默认） |
+| `dialogNested` | 1100 | 弹窗内再开的嵌套浮层 |
+| `readingDialog` | 9100 | 阅读层弹窗 |
+| `readingFullscreen` | 9200 | 弹窗内全屏层 |
+| `toast` | 9999 | 全局提示 / 菜单 |
+
+规则：
+
+1. **弹窗内再开的浮层（嵌套浮层）MUST 严格高于宿主弹窗遮罩**——宿主遮罩与嵌套浮层同为 `body` 直接子节点，绘制顺序只由 z-index 决定，层级低于宿主即被整块盖住（用户点了入口完全看不到浮层）。
+2. 嵌套浮层默认取 `Z_INDEX.dialogNested`；**宿主弹窗在更高档时**（如阅读层 9100）SHALL 用 `nestedOverlayZ(hostZ)` 抬升并显式传给嵌套浮层——返回值 SHALL 严格大于 hostZ，**且不得落在任何已占档位上**（档位表是唯一占用清单）：裸抬升撞上「弹窗内全屏层」9200 时 SHALL 继续抬升跳过该档（落到 9200 与 `toast` 之间的档间空隙，如 9300）；嵌套浮层 SHALL 不越过全局提示档 `toast`（9999）。
+3. 全屏层 SHALL 高于其宿主弹窗遮罩，且低于全局提示层（`Z_INDEX.toast`）。
+4. 层级数字 SHALL 由档位表**内联绑定**注入（`:style="{ zIndex }"`），样式表不再写死第二份——避免双源漂移；「浮层组件展示合理性锚」要求的 overlay 定位规则（`position: fixed` + `inset: 0`）仍 SHALL 保留在 `<style>` 中。
+
+> 事故记述（2026-10-30 用户实机报障）：版块治理工作面（`AppDialog size="xl"`，遮罩 1000）内点「创建并挂载」打开的组合标签创建弹窗，遮罩层级在 CSS 里写死 **60**，被宿主遮罩连同 backdrop blur 整块盖住——按钮点了毫无反应。根因是层级没有契约、随手写数字，修复方式是引入本节档位表并让嵌套浮层取 `dialogNested` 档。
+
+**存量例外**：本契约对**新增与改造**的浮层立即生效；已入库的存量组件仍有手写层级数字（登记表见「存量迁移」节）——**保持现状不迁移**（避免大量用户可见变化混入其它 change），但**主动重构该组件时 SHALL 一并收敛到档位表**。
+
+#### Scenario: 弹窗内嵌套浮层高于宿主遮罩
+
+- **WHEN** 用户在弹窗内打开一个嵌套浮层（治理工作面内打开组合标签创建弹窗）
+- **THEN** 嵌套浮层的 z-index SHALL 严格大于宿主弹窗遮罩的 z-index，渲染在宿主之上，不被宿主遮罩遮挡
+
+#### Scenario: 嵌套浮层档位可按宿主抬升
+
+- **WHEN** 宿主弹窗使用高于基础档的层级（如阅读层弹窗 9100）
+- **THEN** `nestedOverlayZ(hostZ)` SHALL 返回严格大于 hostZ 的层级，供宿主显式传给嵌套浮层
+- **AND** 返回值 SHALL 不等于任何其它已占档位（如 `readingFullscreen` 9200），且 SHALL 不超过 `Z_INDEX.toast`
+
+#### Scenario: 层级档位单一事实源
+
+- **WHEN** 新增或修改任一浮层组件
+- **THEN** 其层级 SHALL 取自 `Z_INDEX` 档位表（组件内不得手写层级数字），且 `AppDialog` 默认层级 SHALL 等于 `Z_INDEX.dialog`
+
 ### Requirement: 浮层组件展示合理性锚
 
 **级别**: MUST
 
 自建浮层/弹窗容器（Teleport + overlay，存量未迁 AppDialog 的组件）与新浮层代码 SHALL 在组件单测中携带「展示合理性」机械锚，防止样式重构丢失定位规则：
 
-1. **样式规则锚**：源码 `<style>` 中 overlay 规则存在（`position: fixed` + `inset: 0` + `z-index`）；
+1. **样式规则锚**：源码 `<style>` 中 overlay 规则存在（`position: fixed` + `inset: 0`；层级按「浮层层级契约」由档位表内联绑定注入时，`<style>` 不再写死 `z-index`）；
 2. **Teleport 挂载锚**：不 stub teleport 挂载时 overlay 渲染在 `document.body` 而非组件原地。
 
 模板与落地实例见 skill `agent-browser`「浮层展示锚模板」；验收四维度见《开发执行规范》§5.3。
@@ -118,12 +159,34 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 - **不迁移**：存量页面的自由宽度与旧 `width` 弹窗保持现状，仅在主动重构该界面时按本契约收敛（避免大量用户可见变化混入其他 change）。
 - 新代码（新页面/新弹窗/重构）一律走本契约；例外必须登记在 change 的 `ui-design.md`。
 
+- **不迁移（层级同款）**：存量浮层组件里手写的层级数字保持现状，仅在主动重构该组件时收敛到 `Z_INDEX` 档位表；新建或改造的浮层 MUST 取档位表，不得手写层级数字。遗留清单见下表。
+- 新代码（新页面/新弹窗/重构）一律走本契约；例外必须登记在 change 的 `ui-design.md`。
+
+### 遗留手写层级登记表
+
+| 组件 | 手写层级值 | 收敛时机 |
+| --- | --- | --- |
+| `MarginNotesRail.vue` | 9100 | 主动重构该批注侧栏时改取 `Z_INDEX.readingDialog` |
+| `ArticlePreviewModal.vue` | 9100 / 9200（本地常量） | 主动重构该预览弹窗时改取 `Z_INDEX.readingDialog` / `Z_INDEX.readingFullscreen` |
+| `AppTooltip.vue` | 9999 | 主动重构该 tooltip 时改取 `Z_INDEX.toast` |
+| `FeedActionMenu.vue` | 9999 | 主动重构该操作菜单时改取 `Z_INDEX.toast` |
+| `NotifyContainer.vue` | 9999（Tailwind `z-[9999]`） | 主动重构该通知容器时改取 `Z_INDEX.toast` |
+| `AppSidebarDrawer.vue` | 1000 / 1001 | 主动重构该抽屉时改取 `Z_INDEX.dialog`（遮罩）与嵌套浮层档 |
+| `DateAssociationMarker.vue` | 1000 | 主动重构该标记时收敛到档位表（`Z_INDEX.dialog`） |
+| `AppDrawer.vue` | 60 / 61 | 主动重构该抽屉时改取 `Z_INDEX.dialog`（遮罩）与嵌套浮层档 |
+| `UpgradeSuggestionPanel.vue` | 100 | 主动重构该面板时改取 `Z_INDEX.dialogNested` |
+| `TagMergePreview.vue` | 78 | 主动重构该预览时改取 `Z_INDEX.dialogNested` |
+| `BoardRadarGovernance.vue` | 60 | 主动重构该治理面时收敛到档位表（浮层取 `Z_INDEX.dialogNested`） |
+
+> 登记表只记「组件 → 手写层级值 → 收敛时机」，不要求逐行改造；新写浮层一律不得再进表。
+
 ## 组件速查
 
 | 场景 | 组件/用法 |
 | --- | --- |
 | 页面骨架 | `<AppPageShell mode="reader\|contained\|workspace\|split">` |
 | 弹窗 | `<AppDialog size="sm\|md\|lg\|xl">`（旧 `width` 勿用于新代码） |
+| 浮层层级 | `Z_INDEX` 档位表（`~/components/ui/layout-contract`）；嵌套浮层默认 `dialogNested`，宿主更高档时 `nestedOverlayZ(hostZ)` 抬升（跳过已占档位、不越过 `toast`） |
 | 窄屏导航抽屉 | `<AppSidebarDrawer :open=".." @close="..">`（仅窄屏容器，宽 min(80vw,320px)，来源 mobile-viewport-stage1） |
 | 窄屏断点 | `useIsNarrowViewport()`（composables/useMediaQuery.ts，断点 767.98px） |
 | 按钮/输入/开关/标题 | `AppButton` / `AppInput` / `AppToggle` / `AppSectionHeader`（见 [theming.md](theming.md)） |
