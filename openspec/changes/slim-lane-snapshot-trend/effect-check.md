@@ -83,6 +83,33 @@
 
 修复只影响**后续结算**；修复前已写入的 37 条快照仍带错窗数字（量级引用段），由下个日报日结算自然覆盖自愈（与 `rolling_detail` 存量自愈同一机制，不做回填——与 spec「存量快照兼容」Scenario 一致）。本 change 的 delta spec 含「量级信号随素材注入」Scenario（近7/上7 合计对比由系统统计计算），故该口径修正在本 change 内闭环，不得带着错位口径归档。
 
+### 4.4 修复后复验 SQL（tasks 5.7 用，2026-10-31 结算后跑）
+
+```sql
+-- ① 形态判据：句末收尾 ≥ 90% 且字数 ≤ 200（复验日替换为结算日）
+select count(*) n,
+       count(*) filter (where right(rolling_summary,1) in ('。','！','？','…')) as ends_clean,
+       max(char_length(rolling_summary)) as max_len,
+       count(*) filter (where char_length(rolling_summary) > 200) as over_200
+from topic_lane_snapshots
+where updated_at > '2026-10-31 00:00';
+
+-- ② 量级引用判据：标称窗口的独立回算（近7天 = [anchor-6, anchor]、上7天 = [anchor-13, anchor-7]）
+--    与结算写入的快照逐条比对：文中引用的数字应等于此处回算值
+select s.persistent_topic_id as topic,
+       r.period_date,
+       count(t.id) as threads
+from daily_report_sections s
+join board_daily_reports r on r.id = s.report_id
+left join daily_report_threads t on t.section_id = s.id
+where s.persistent_topic_id in (/* 取当次结算的 topic 列表 */)
+  and r.period_date between '2026-10-18' and '2026-10-31'
+group by 1, 2
+order by 1, 2;
+```
+
+② 的比对口径：按 `as_of_date` 定位 anchor，对每个 topic 分别求 [anchor-6, anchor] 与 [anchor-13, anchor-7] 两窗合计，与快照正文里引用的「近7天 X 条 / 上个7天 Y 条」逐条核对——应完全相等（R-12 修复后标签区间 = 计入区间）。
+
 ## 5. 复验用 SQL（只读）
 
 ```sql
