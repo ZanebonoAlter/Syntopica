@@ -67,6 +67,7 @@ type SchedulerStatusResponse struct {
 	StaleProcessingArticle interface{}            `json:"stale_processing_article,omitempty"`
 	AIConfigured           bool                   `json:"ai_configured,omitempty"`
 	ScheduleTime           string                 `json:"schedule_time,omitempty"`
+	ScheduleDeadline       string                 `json:"schedule_deadline,omitempty"`
 }
 
 // schedulerConfig returns the scheduler's Config, or the zero value if the
@@ -467,8 +468,13 @@ func enrichStatus(scheduler interface{}, key string, status *SchedulerStatusResp
 			status.ScheduleTime = t
 		}
 	case "daily_report":
-		if t, err := aisettings.LoadDailyReportTimeConfig(); err == nil {
+		// Both moments come from ONE load: the window loader owns the
+		// "deadline earlier than the wall clock falls back to 23:30" rule
+		// (aisettings.LoadDailyReportWindowConfig), so the payload can never
+		// expose an illegal pair (add-radar-pipeline-status D5).
+		if t, d, err := aisettings.LoadDailyReportWindowConfig(); err == nil {
 			status.ScheduleTime = t
+			status.ScheduleDeadline = d
 		}
 	}
 

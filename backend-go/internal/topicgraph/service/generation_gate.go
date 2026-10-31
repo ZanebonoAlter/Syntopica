@@ -108,6 +108,18 @@ func (g *dailyReportGate) tryAcquire() bool {
 		// (review H-1). Terminate the session instead: a dead session releases
 		// its advisory locks, and the pool discards the broken connection.
 		killSession(context.Background(), conn)
+		// Hand the dedicated connection back to the pool — same discipline as
+		// T5 and release(). A *sql.Conn is a CHECKED-OUT pool slot: skipping
+		// Close leaks one slot per failed probe, and a single-connection pool
+		// (the SQLite test DB) then blocks on the next query forever.
+		//
+		// Returning it cannot leak the advisory lock back into the pool: the
+		// session behind the handle was just terminated, and a terminated
+		// session drops its session-level locks with it — that is exactly why
+		// we kill it instead of relying on Close alone (see the DANGER note
+		// above). The dead session is dropped by the pool on its next borrow
+		// (same exposure as the unlock-failure path in release()).
+		_ = conn.Close()
 		logging.Warnf("daily-report gate: advisory lock probe failed (%v); falling back to in-process mutex", err)
 		return true
 	}

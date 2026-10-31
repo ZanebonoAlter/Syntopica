@@ -11,11 +11,11 @@ import (
 
 // GetPollBundle handles GET /api/poll — the single reconciliation endpoint for
 // the frontend's resident status data (scheduler states + tag-queue counters +
-// unread count). One request instead of three independent polling loops
-// (openspec: client-poll-budget / 常驻状态数据由单一合并入口承载).
+// embedding-queue counters + unread count). One request instead of independent
+// polling loops (openspec: client-poll-budget / 常驻状态数据由单一合并入口承载).
 //
-// Reuses the exact queries of the three legacy endpoints (they stay registered
-// for already-open tabs), so the server cost per poll is the sum of three
+// Reuses the exact queries of the legacy endpoints (they stay registered
+// for already-open tabs), so the server cost per poll is the sum of a few
 // cheap reads — no new heavy work.
 func GetPollBundle(c *gin.Context) {
 	schedulers := make([]SchedulerStatusResponse, 0)
@@ -36,6 +36,15 @@ func GetPollBundle(c *gin.Context) {
 		return
 	}
 
+	// embedding 队列计数：日报自动生成要求 tag_jobs 与 embedding_queues
+	// **双队列**清空（lane 分桶依赖 tag embedding），只给标签队列会让人误以为
+	// 「队列已清空」→ 定时任务应该已经出报错了。单位是标签（非文章）。
+	embeddingQueue, err := tagging.EmbeddingQueueStatusSnapshot()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
 	unread, err := notification.UnreadCount()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
@@ -47,9 +56,10 @@ func GetPollBundle(c *gin.Context) {
 	// top-level semantics (analysis_paused / ai_healthy / routes) stay at the
 	// response top level so the frontend distributor reads them unchanged.
 	payload["data"] = gin.H{
-		"schedulers":    payload["data"],
-		"tag_queue":     queue,
-		"notifications": gin.H{"unread": unread},
+		"schedulers":      payload["data"],
+		"tag_queue":       queue,
+		"embedding_queue": embeddingQueue,
+		"notifications":   gin.H{"unread": unread},
 	}
 	payload["server_time"] = time.Now().Format(time.RFC3339)
 

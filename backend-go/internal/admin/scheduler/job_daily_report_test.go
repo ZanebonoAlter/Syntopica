@@ -17,6 +17,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/articlerefs"
 	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/notification"
 	"syntopica-backend/internal/platform/scheduler"
 	tagging "syntopica-backend/internal/tagmanagement"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
@@ -434,53 +435,93 @@ func TestDailyReportJobSucceedsWhenDanglingRefProbeFails(t *testing.T) {
 	require.EqualValues(t, 1, result.Data["report_count"], "the report pass still ran to completion")
 }
 
-// ── add-notification-center 白盒 B：定时路径终态通知判定口径 ──
+// ── add-notification-center 白盒 B + add-radar-pipeline-status D12：
+// 定时路径终态通知的三态计数口径 ──
 //
-// notification seam（notifyDailyReportSuccess / notifyDailyReportFailedSummary）
-// 是包级变量，测试直接 stub 捕获判定结果，无需通知库。四分支：
-// 全成功 / 部分真失败 / 空版面不误报 / 全部失败。互斥不变式（至多一条）由
-// adjudicateDailyReportTerminal 单点保证，这里断言调用侧。
-
+// 定时调度路径与手动 / 集合路径共用三态写入口 notification.DailyReportTerminal，
+// 故 seam 也只有一个：notifyDailyReportTerminal（包级变量）。测试直接 stub
+// 它捕获判定结果与三态计数，无需通知库。四分支：全成功 / 部分真失败 /
+// 空版面不误报 / 全部失败；互斥不变式（至多一条）由写入口单点保证，这里
+// 断言调用侧。
+//
+// 成功 / 失败分类沿用既有白盒 B 语义：notification.DailyReportTerminal 按
+// Failed>0 分流（失败汇总 vs 完成通知），故捕获按同一判据给调用分类——既有
+// 断言（完成通知 / 失败汇总 / 互斥不重复）的语义不变，只是断言对象从「两个
+// 旧入口的调用次数」换成「一个三态入口的调用 + 三态计数」。
 type notifyCapture struct {
-	mu            sync.Mutex
-	successDates  []time.Time
-	successTotal  []int
-	successSaved  []int
-	failDates     []time.Time
-	failSucceeded []int
-	failFailed    []int
+	mu     sync.Mutex
+	dates  []time.Time
+	counts []notification.DailyReportCounts
 }
 
 func (c *notifyCapture) stub(t *testing.T) {
 	t.Helper()
-	prevSuccess := notifyDailyReportSuccess
-	prevFailed := notifyDailyReportFailedSummary
-	notifyDailyReportSuccess = func(date time.Time, totalBoards, totalSaved int) {
+	previous := notifyDailyReportTerminal
+	notifyDailyReportTerminal = func(date time.Time, counts notification.DailyReportCounts) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		c.successDates = append(c.successDates, date)
-		c.successTotal = append(c.successTotal, totalBoards)
-		c.successSaved = append(c.successSaved, totalSaved)
+		c.dates = append(c.dates, date)
+		c.counts = append(c.counts, counts)
 	}
-	notifyDailyReportFailedSummary = func(date time.Time, successCount, failedCount int) {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.failDates = append(c.failDates, date)
-		c.failSucceeded = append(c.failSucceeded, successCount)
-		c.failFailed = append(c.failFailed, failedCount)
-	}
-	t.Cleanup(func() {
-		notifyDailyReportSuccess = prevSuccess
-		notifyDailyReportFailedSummary = prevFailed
-	})
+	t.Cleanup(func() { notifyDailyReportTerminal = previous })
 }
 
+// terminalCalls 返回本次运行写出的终态通知条数（一次运行至多一条）。
+func (c *notifyCapture) terminalCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.counts)
+}
+
+// successCalls 归类为「完成通知」的调用数（Failed==0）。
 func (c *notifyCapture) successCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.successDates)
+	n := 0
+	for _, counts := range c.counts {
+		if counts.Failed == 0 {
+			n++
+		}
+	}
+	return n
 }
-func (c *notifyCapture) failCalls() int { c.mu.Lock(); defer c.mu.Unlock(); return len(c.failDates) }
+
+// failCalls 归类为「失败汇总」的调用数（Failed>0）。
+func (c *notifyCapture) failCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, counts := range c.counts {
+		if counts.Failed > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// completionCounts 返回第一条完成通知的三态计数（没有则返回零值）。
+func (c *notifyCapture) completionCounts() notification.DailyReportCounts {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, counts := range c.counts {
+		if counts.Failed == 0 {
+			return counts
+		}
+	}
+	return notification.DailyReportCounts{}
+}
+
+// failedSummaryCounts 返回第一条失败汇总的三态计数（没有则返回零值）。
+func (c *notifyCapture) failedSummaryCounts() notification.DailyReportCounts {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, counts := range c.counts {
+		if counts.Failed > 0 {
+			return counts
+		}
+	}
+	return notification.DailyReportCounts{}
+}
 
 // stubGenerationBehavior swaps the generation entry point for a behavior table:
 // each boardID maps to "ok" (report) / "empty" (nil, nil) / "err" (error).
@@ -514,6 +555,9 @@ func TestDailyReportTerminalNotificationAdjudication(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1, cap.successCalls(), "exactly one completion notification")
 		require.Equal(t, 0, cap.failCalls(), "mutual exclusion: no failure summary")
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		require.Equal(t, notification.DailyReportCounts{TotalBoards: 2, Saved: 2, Failed: 0, Empty: 0},
+			cap.completionCounts(), "三态计数：2 个版面全部产出日报")
 	})
 
 	t.Run("部分真失败→一条失败汇总", func(t *testing.T) {
@@ -527,8 +571,10 @@ func TestDailyReportTerminalNotificationAdjudication(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1, cap.failCalls(), "ONE failure summary, never per-board")
 		require.Equal(t, 0, cap.successCalls(), "互斥：失败时不发完成通知")
-		require.Equal(t, 2, cap.failSucceeded[0], "2 boards generated")
-		require.Equal(t, 1, cap.failFailed[0], "1 real failure")
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		require.Equal(t, 2, cap.failedSummaryCounts().Saved, "2 boards generated")
+		require.Equal(t, 1, cap.failedSummaryCounts().Failed, "1 real failure")
+		require.Equal(t, 3, cap.failedSummaryCounts().TotalBoards, "总版面数含全部板块")
 	})
 
 	t.Run("空版面不误报为失败", func(t *testing.T) {
@@ -542,6 +588,10 @@ func TestDailyReportTerminalNotificationAdjudication(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 0, cap.failCalls(), "report==nil (当日无内容) must NOT count as failure")
 		require.Equal(t, 1, cap.successCalls(), "terminal state is a completion")
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		// 口径变更（D12）：当日无内容的板块计入总版面数，但既不进成功数也不进失败数。
+		require.Equal(t, notification.DailyReportCounts{TotalBoards: 2, Saved: 1, Failed: 0, Empty: 1},
+			cap.completionCounts(), "「共 2 个版面」含当日无内容的板块，空版面单列")
 	})
 
 	t.Run("全部失败→一条失败汇总", func(t *testing.T) {
@@ -555,8 +605,51 @@ func TestDailyReportTerminalNotificationAdjudication(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1, cap.failCalls(), "ONE failure summary for the run")
 		require.Equal(t, 0, cap.successCalls())
-		require.Equal(t, 0, cap.failSucceeded[0])
-		require.Equal(t, 2, cap.failFailed[0])
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		require.Equal(t, 0, cap.failedSummaryCounts().Saved)
+		require.Equal(t, 2, cap.failedSummaryCounts().Failed)
+		require.Equal(t, 2, cap.failedSummaryCounts().TotalBoards, "总版面数含全部板块")
+	})
+
+	// 定时调度路径的三态口径（与手动 / 集合路径同源，D12）：1 成功 + 1 失败 +
+	// 1 当日无内容 → 「共 3 个版面，1 成功 1 失败，其中 1 个当日无内容」，
+	// 与 WS 终态消息的 total_boards/total_saved/failed_count/empty_count 一一对应。
+	t.Run("定时路径三态：1 成功 + 1 失败 + 1 无内容", func(t *testing.T) {
+		db := setupDailyReportJobTest(t)
+		seedReportBoardsForDate(t, db, today, 11, 22, 33)
+		stubGenerationBehavior(t, map[uint]string{11: "ok", 22: "err", 33: "empty"})
+		cap := &notifyCapture{}
+		cap.stub(t)
+
+		_, err := DailyReportJob(today)(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		require.Equal(t, 1, cap.failCalls(), "有失败 → 一条失败汇总")
+		require.Equal(t, 0, cap.successCalls(), "互斥：失败时不发完成通知")
+		require.Equal(t, notification.DailyReportCounts{TotalBoards: 3, Saved: 1, Failed: 1, Empty: 1},
+			cap.failedSummaryCounts(),
+			"三态恒等式：saved+failed+empty == total_boards == 3（与手动路径 / WS 同口径）")
+	})
+
+	// 收集阶段早退（收集板块失败）：走三态写入口，口径与手动路径的早退一致——
+	// 「共 1 个版面，0 成功 1 失败」（TotalBoards=1 / Saved=0 / Failed=1 / Empty=0）。
+	t.Run("收集阶段失败早退→一条失败汇总（三态口径）", func(t *testing.T) {
+		setupDailyReportJobTest(t)
+		previous := daily_report.CollectBoardIDsForDate
+		daily_report.CollectBoardIDsForDate = func(time.Time) ([]uint, error) {
+			return nil, fmt.Errorf("simulated collect failure")
+		}
+		t.Cleanup(func() { daily_report.CollectBoardIDsForDate = previous })
+		cap := &notifyCapture{}
+		cap.stub(t)
+
+		result, err := DailyReportJob(today)(context.Background())
+		require.Error(t, err, "收集失败仍是作业错误（通知 fail-open 不改变错误返回）")
+		require.Nil(t, result)
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		require.Equal(t, 1, cap.failCalls(), "一条失败汇总")
+		require.Equal(t, notification.DailyReportCounts{TotalBoards: 1, Saved: 0, Failed: 1, Empty: 0},
+			cap.failedSummaryCounts(), "早退口径：共 1 个版面，0 成功 1 失败")
 	})
 }
 

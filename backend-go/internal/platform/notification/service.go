@@ -29,22 +29,71 @@ import (
 // are no read rows at all (test-cases 白盒 A).
 const MaxNotifications = 500
 
+// DailyReportCounts 是日报终态的**三态计数**，与 daily_report_done 终态消息
+// 的字段一一对应（add-radar-pipeline-status D12）：
+//
+//   - TotalBoards: 本次运行涉及的板块总数（== WS 的 total_boards，**含**当日无内容的板块）
+//   - Saved:       产出日报的板块数（== WS 的 total_saved）
+//   - Failed:      生成报错、真正失败的板块数（== WS 的 failed_count）
+//   - Empty:       当日无内容（report == nil）的板块数（== WS 的 empty_count）
+//
+// 三态互斥且穷尽：Saved + Failed + Empty == TotalBoards 恒成立。当日无内容的
+// 板块既不算成功也不算失败——它计入总版面数，但不进成功数、不进失败数。
+type DailyReportCounts struct {
+	TotalBoards int
+	Saved       int
+	Failed      int
+	Empty       int
+}
+
+// DailyReportTerminal 按三态口径写**一条**日报终态通知并广播它：
+// Failed>0 → 一条失败汇总（type=error）；Failed==0 → 一条完成通知（type=success）。
+// 两条通道互斥：一次运行至多一条终态通知（spec 白盒 B）。
+//
+// 文案与 daily_report_done 终态消息同源：「共 N 个版面」的 N 恒等于
+// TotalBoards（含当日无内容的板块），成功数 == Saved、失败数 == Failed；
+// 当日无内容的板块以「其中 M 个当日无内容」显式给出，且不进失败数。
+// Fail-open: errors are logged, not returned.
+func DailyReportTerminal(date time.Time, counts DailyReportCounts) {
+	kind := "success"
+	title := fmt.Sprintf("日报已生成 · %s", date.Format("2006-01-02"))
+	summary := fmt.Sprintf("共 %d 个版面，%d 个版面已产出日报", counts.TotalBoards, counts.Saved)
+	if counts.Failed > 0 {
+		kind = "error"
+		title = fmt.Sprintf("日报生成有失败 · %s", date.Format("2006-01-02"))
+		summary = fmt.Sprintf("共 %d 个版面，%d 成功 %d 失败", counts.TotalBoards, counts.Saved, counts.Failed)
+	}
+	if counts.Empty > 0 {
+		summary += fmt.Sprintf("，其中 %d 个当日无内容", counts.Empty)
+	}
+	createAndBroadcast(kind, title, summary+"。", "daily-report", date.Format("2006-01-02"))
+}
+
 // DailyReportSuccess creates the daily-report completion notification
 // (type=success) and broadcasts it. Fail-open: errors are logged, not returned.
+//
+// totalBoards 是本次运行涉及的板块总数（**含**当日无内容的板块），totalSaved
+// 是**产出日报的板块数**（不是条目数——旧文案写「保存 N 条条目」是误导）。
+// 定时调度路径仍走本函数（无当日无内容计数）；手动 / 集合路径走
+// DailyReportTerminal（三态口径，文案带当日无内容计数）。
 func DailyReportSuccess(date time.Time, totalBoards, totalSaved int) {
-	title := fmt.Sprintf("日报已生成 · %s", date.Format("2006-01-02"))
-	summary := fmt.Sprintf("共 %d 个版面，保存 %d 条条目。", totalBoards, totalSaved)
-	createAndBroadcast("success", title, summary, "daily-report", date.Format("2006-01-02"))
+	DailyReportTerminal(date, DailyReportCounts{TotalBoards: totalBoards, Saved: totalSaved})
 }
 
 // DailyReportFailedSummary creates ONE aggregated failure notification for a
 // daily-report run with at least one failed board (never per-board), and
 // broadcasts it. Mutually exclusive with DailyReportSuccess: when this fires,
 // no completion notification is produced for the same run (spec 白盒 B).
+//
+// 本函数只有「成功数 / 失败数」两个计数，总版面数按 successCount+failedCount
+// 推导（不含当日无内容的板块）——定时调度路径的旧口径。手动 / 集合路径走
+// DailyReportTerminal，那里的总版面数与 WS 的 total_boards 恒等。
 func DailyReportFailedSummary(date time.Time, successCount, failedCount int) {
-	title := fmt.Sprintf("日报生成有失败 · %s", date.Format("2006-01-02"))
-	summary := fmt.Sprintf("共 %d 个版面，%d 成功 %d 失败。", successCount+failedCount, successCount, failedCount)
-	createAndBroadcast("error", title, summary, "daily-report", date.Format("2006-01-02"))
+	DailyReportTerminal(date, DailyReportCounts{
+		TotalBoards: successCount + failedCount,
+		Saved:       successCount,
+		Failed:      failedCount,
+	})
 }
 
 // BoardHealthAlert creates a board-health warning notification for a board

@@ -152,7 +152,7 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 
 **级别**: MUST
 
-核心页面（主工作台/发现/设置/标签/日报）在 375px 宽视口下 SHALL 无横向溢出、交互元素可达；loading/empty/error 各状态同样不破版。存量页面已存在的其他断点值（如 720px/768px 整点）不强制回改，但新代码一律用 767.98px 断点。验收的机械断言清单与标准环境见 [`standard/shared/test-design.md`](shared/test-design.md)「UI 验收机械断言」节（通用，不限窄屏）。
+核心页面（主工作台/发现/设置/标签/日报）在 375px 宽视口下 SHALL 无横向溢出、交互元素可达；loading/empty/error 各状态同样不破版。存量页面已存在的其他断点值（如 720px/768px 整点）不强制回改，但新代码一律用 767.98px 断点。验收的机械断言清单与标准环境见 [`standard/shared/test-design.md`](../shared/test-design.md)「UI 验收机械断言」节（通用，不限窄屏）。
 
 ## 存量迁移
 

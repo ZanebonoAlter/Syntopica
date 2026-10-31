@@ -76,7 +76,9 @@
 
 ### GET /api/poll
 
-前端常驻状态的单一批量对账端点（harden-go-same-origin-serving，client-poll-budget 契约）：一次请求同时返回调度器状态、标签队列计数与通知未读数，替代前端三处独立轮询。复用三个分项端点的既有查询，**三个旧端点保留**（`/api/schedulers/status`、`/api/tag-queue/status`、`/api/notifications/unread-count`）供已打开的旧标签页继续工作。
+前端常驻状态的单一批量对账端点（harden-go-same-origin-serving，client-poll-budget 契约）：一次请求同时返回调度器状态、标签队列计数、Embedding 队列计数与通知未读数，替代前端三处独立轮询。复用分项端点的既有查询，**三个旧端点保留**（`/api/schedulers/status`、`/api/tag-queue/status`、`/api/notifications/unread-count`）供已打开的旧标签页继续工作。
+
+`tag_queue` 与 `embedding_queue` 是日报双队列清空判据的两个环节，**量纲不同**：前者按**文章**（`tag_jobs.article_id`），后者按**标签**（`embedding_queues.tag_id`）——不得合并为同一计数。日报自动生成要求两者均 `pending + processing == 0`；只暴露标签队列会让客户端误判「队列已清空」。
 
 **响应**：
 
@@ -86,6 +88,7 @@
   "data": {
     "schedulers": [],
     "tag_queue": { "pending": 0, "processing": 0, "completed": 0, "failed": 0, "total": 0, "completed_today": 0 },
+    "embedding_queue": { "pending": 0, "processing": 0, "completed": 0, "failed": 0, "total": 0, "completed_today": 0 },
     "notifications": { "unread": 0 }
   },
   "analysis_paused": false,
@@ -95,6 +98,8 @@
   "server_time": "2026-09-24T22:00:00+08:00"
 }
 ```
+
+`embedding_queue` 段缺失（旧后端）时客户端 SHALL 按「未知」处理，不得推断该队列已清空。
 
 | 字段 | 说明 |
 |---|---|

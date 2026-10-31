@@ -34,13 +34,16 @@ var (
 	releaseDailyReportGate    = daily_report.ReleaseDailyReportGeneration
 )
 
-// Notification seams (add-notification-center, 白盒 B): package-level vars so
-// tests can capture adjudication calls without a notification database
-// (same seam as generateAndSaveReport).
-var (
-	notifyDailyReportSuccess       = notification.DailyReportSuccess
-	notifyDailyReportFailedSummary = notification.DailyReportFailedSummary
-)
+// Notification seam (add-notification-center 白盒 B; add-radar-pipeline-status
+// D12 三态口径): package-level var so tests can capture the adjudication call
+// without a notification database (same seam as generateAndSaveReport).
+//
+// 定时调度路径与手动 / 集合路径共用同一个三态写入口
+// notification.DailyReportTerminal：文案里的「共 N 个版面」的 N == 本次运行
+// 涉及的板块总数（**含**当日无内容的板块），成功数 == 产出日报的板块数、
+// 失败数 == 生成报错的板块数；当日无内容的板块既不进成功数也不进失败数，
+// 以「其中 M 个当日无内容」显式给出。
+var notifyDailyReportTerminal = notification.DailyReportTerminal
 
 // runPostReportBoardHealthCheckup is the board-health tail-step seam
 // (add-board-health-checkup design D3): package-level var so tests can
@@ -119,16 +122,17 @@ var (
 
 // adjudicateDailyReportTerminal is the single adjudication point for the
 // scheduled daily-report terminal-state notification (白盒 B):
-// failedCount>0 → ONE failure summary (success/failed counts in the copy);
-// failedCount==0 → one completion notification. Mutually exclusive — never
-// more than one notification per run. 成功口径 = 版面产出报告的计数；空版面
-// (report==nil) 算成功侧、不算失败（对齐 handler 路径口径：版面无内容≠失败）。
-func adjudicateDailyReportTerminal(date time.Time, totalBoards, successCount, failedCount int) {
-	if failedCount > 0 {
-		notifyDailyReportFailedSummary(date, successCount, failedCount)
-		return
-	}
-	notifyDailyReportSuccess(date, totalBoards, successCount)
+// 一次运行至多一条终态通知——有失败板块 → 一条失败汇总，无失败板块 → 一条
+// 完成通知，两条通道互斥（互斥规则由 notification.DailyReportTerminal 按
+// Failed>0 单点实现，调度路径与手动 / 集合路径同一入口）。
+//
+// 计数口径与 daily_report_done 终态消息同源（add-radar-pipeline-status D12）：
+// TotalBoards == 本次运行的板块总数（**含**当日无内容的板块），
+// Saved == 产出日报的板块数、Failed == 生成报错的板块数、
+// Empty == 当日无内容的板块数。当日无内容的板块（report==nil）计入总版面数，
+// 但既不算成功也不算失败（版面无内容≠失败）。
+func adjudicateDailyReportTerminal(date time.Time, counts notification.DailyReportCounts) {
+	notifyDailyReportTerminal(date, counts)
 }
 
 // backfillScanTimeout bounds the backfill pass on its own budget. The main pass
@@ -326,8 +330,16 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 
 		boardIDs, err := daily_report.CollectBoardIDsForDate(date)
 		if err != nil {
-			// 收集阶段即失败：一条失败汇总（fail-open，不改变作业本身的错误返回）
-			notifyDailyReportFailedSummary(date, 0, 1)
+			// 收集阶段即失败：一条失败汇总（fail-open，不改变作业本身的错误返回）。
+			// 三态口径与手动路径同源：这次收集失败记作「共 1 个版面，0 成功
+			// 1 失败」（TotalBoards=1 / Saved=0 / Failed=1 / Empty=0），
+			// 恒等式 Saved+Failed+Empty == TotalBoards 仍成立。
+			notifyDailyReportTerminal(date, notification.DailyReportCounts{
+				TotalBoards: 1,
+				Saved:       0,
+				Failed:      1,
+				Empty:       0,
+			})
 			return nil, fmt.Errorf("failed to collect board IDs: %w", err)
 		}
 
@@ -337,8 +349,13 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 		defer cancel()
 
+		// 三态计数（add-radar-pipeline-status D12）：每个板块恰好落入
+		// saved（产出日报）/ failed（生成报错）/ empty（当日无内容）之一，
+		// 三者互斥且穷尽于本次运行的板块集合——reportCount + failedCount +
+		// emptyCount == len(boardIDs) 恒成立，与终态通知、WS 终态消息同口径。
 		reportCount := 0
 		failedCount := 0
+		emptyCount := 0
 		for _, boardID := range boardIDs {
 			report, genErr := generateAndSaveReport(ctx, boardID, date)
 			if genErr != nil {
@@ -347,12 +364,19 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 				continue
 			}
 			if report == nil {
-				continue // 当日无内容正常返回 (nil, nil)：空版面不算失败（对齐 handler 口径），计入成功侧
+				// 当日无内容正常返回 (nil, nil)：既不算成功也不算失败，
+				// 但计入总版面数（对齐 handler 路径口径：版面无内容≠失败）。
+				emptyCount++
+				continue
 			}
 			reportCount++
 		}
 
-		// Broadcast completion
+		// Broadcast completion.
+		// 协议不变（不扩字段）：report_count == 产出日报的板块数（成功侧），
+		// 与手动路径的 daily_report_done 是两种消息类型（本消息当前无消费方）。
+		// 三态计数只在终态通知里给出——通知与 WS 终态消息的口径已由
+		// notification.DailyReportTerminal 统一（见 adjudicateDailyReportTerminal）。
 		msg := map[string]interface{}{
 			"type":         "daily_report_complete",
 			"report_count": reportCount,
@@ -367,9 +391,15 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 		// scheduled run is the 定时日报 users miss overnight — notify here.
 		// The backfill sweep below is deliberately silent (no per-day spam).
 		// failed 口径 = genErr != nil 的版面数（非 totalBoards-reportCount：
-		// 空版面不是失败）。失败汇总与完成通知互斥（adjudicateDailyReportTerminal）。
+		// 空版面不是失败）。总版面数含当日无内容的板块（== len(boardIDs)），
+		// 失败汇总与完成通知互斥（adjudicateDailyReportTerminal → 三态写入口）。
 		if totalBoards := len(boardIDs); totalBoards > 0 {
-			adjudicateDailyReportTerminal(date, totalBoards, reportCount, failedCount)
+			adjudicateDailyReportTerminal(date, notification.DailyReportCounts{
+				TotalBoards: totalBoards,
+				Saved:       reportCount,
+				Failed:      failedCount,
+				Empty:       emptyCount,
+			})
 
 			// Board-health checkup tail step (add-board-health-checkup design D3):
 			// chained synchronously after the SUCCESS adjudication only — the

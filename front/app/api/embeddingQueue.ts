@@ -7,6 +7,8 @@ export interface EmbeddingQueueStatus {
   completed: number
   failed: number
   total: number
+  /** 今日入队且已完成的标签数（旧后端未合入时可选）。 */
+  completed_today?: number
 }
 
 export interface EmbeddingQueueTask {

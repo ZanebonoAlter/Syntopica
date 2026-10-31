@@ -52,6 +52,15 @@
 | `ai_healthy` | bool | AI 模型层是否健康（后端启动探活后生效，见 `flow/scheduler.md` §业务约束 #7 健康门） |
 | `ai_health_routes` | array | 各路由主 provider 简明通断明细：`[{route_name, capability, primary_provider, reachable}]`，供前端渲染未就绪 banner |
 
+**按调度器的额外字段**（add-radar-pipeline-status）：
+
+| 调度器 | 字段 | 说明 |
+| --- | --- | --- |
+| `daily_report` | `schedule_time` | 每日常规生成时刻（`HH:MM`，默认 `21:00`） |
+| `daily_report` | `schedule_deadline` | 兜底强制生成时刻（`HH:MM`，默认 `23:30`）；配置值早于 `schedule_time` 时回落默认。两个时刻同一次读取产出，不会出现非法组合。旧后端不返回时前端降级到默认 `23:30` |
+
+> 何时出报看的是**双队列清空**（`tag_jobs` 与 `embedding_queues` 均无活跃量），`schedule_time` 只是最早可生成时刻；未清空时等到 `schedule_deadline` 强制出报。
+
 ### GET /api/schedulers/:name/status
 
 返回单个调度器状态，同上结构。`404` 表示调度器不存在。

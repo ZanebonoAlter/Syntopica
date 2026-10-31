@@ -171,6 +171,12 @@ type TagQueueStatusCounts = handler.TagQueueStatusCounts
 
 var TagQueueStatusSnapshot = handler.TagQueueStatusSnapshot
 
+// Embedding queue status snapshot (admin → tagmanagement/handler deep path).
+// 日报生成的双队列清空判据需要第二个队列的计数，与标签队列同口径。
+type EmbeddingQueueStatusCounts = handler.EmbeddingQueueStatusCounts
+
+var EmbeddingQueueStatusSnapshot = handler.EmbeddingQueueStatusSnapshot
+
 // Watched tags expansion (was: reader → tagmanagement/service/watched).
 var GetWatchedTagIDsExpanded = watched.GetWatchedTagIDsExpanded
 

@@ -23,7 +23,7 @@ func TestDailyReportNotification(t *testing.T) {
 	date := time.Date(2026, 9, 17, 4, 0, 0, 0, time.Local)
 
 	// B1：失败版面数 = 0 → 完成通知（success）
-	notifyDailyReportTerminal(date, 6, 6, 0)
+	notifyDailyReportTerminal(date, 6, 6, 0, 0)
 	rows := mustListNotifications(t)
 	require.Len(t, rows, 1)
 	require.Equal(t, "success", rows[0].Type)
@@ -31,30 +31,41 @@ func TestDailyReportNotification(t *testing.T) {
 	require.Contains(t, rows[0].Summary, "6 个版面")
 
 	// B2：6 版面 1 失败 → 仅 1 条失败汇总（含成功/失败口径），不逐版面
-	notifyDailyReportTerminal(date, 6, 5, 1)
+	notifyDailyReportTerminal(date, 6, 5, 1, 0)
 	rows = mustListNotifications(t)
 	require.Len(t, rows, 2, "one failure summary, never per-board rows")
 	require.Equal(t, "error", rows[0].Type)
 	require.Contains(t, rows[0].Summary, "5 成功 1 失败")
-	require.NotContains(t, rows[0].Summary, "7 个版面", "total copy must be success+failed=6")
+	require.NotContains(t, rows[0].Summary, "7 个版面", "total copy must be the run's total_boards=6, never a per-board count")
 
 	// B3：全部失败（6/6 失败）→ 仅 1 条失败汇总
-	notifyDailyReportTerminal(date, 6, 0, 6)
+	notifyDailyReportTerminal(date, 6, 0, 6, 0)
 	rows = mustListNotifications(t)
 	require.Len(t, rows, 3)
 	require.Equal(t, "error", rows[0].Type)
 	require.Contains(t, rows[0].Summary, "0 成功 6 失败")
 
 	// 边界：单版面项目失败 1 = 全部失败 → 1 条失败汇总（B 边界值）
-	notifyDailyReportTerminal(date, 1, 0, 1)
+	notifyDailyReportTerminal(date, 1, 0, 1, 0)
 	rows = mustListNotifications(t)
 	require.Len(t, rows, 4)
 	require.Contains(t, rows[0].Summary, "0 成功 1 失败")
 
+	// B4（口径变更 D12）：6 版面 = 4 成功 + 1 失败 + 1 当日无内容 → 失败汇总
+	// 的「共 N 个版面」含当日无内容的板块（与 WS 的 total_boards 同口径），
+	// 当日无内容的板块不进失败数。
+	notifyDailyReportTerminal(date, 6, 4, 1, 1)
+	rows = mustListNotifications(t)
+	require.Len(t, rows, 5)
+	require.Equal(t, "error", rows[0].Type)
+	require.Contains(t, rows[0].Summary, "共 6 个版面")
+	require.Contains(t, rows[0].Summary, "4 成功 1 失败")
+	require.Contains(t, rows[0].Summary, "1 个当日无内容")
+
 	// 失败汇总与完成通知互斥：失败分支只调 FailedSummary，不产生完成行
-	// （notifyDailyReportTerminal 内部 if/else 已保证——上迹 4 次调用每次
+	// （notifyDailyReportTerminal 内部 if/else 已保证——上迹 5 次调用每次
 	// 恰好新增 1 行即为互斥证据）。
-	require.Len(t, rows, 4, "exactly one row per adjudication call")
+	require.Len(t, rows, 5, "exactly one row per adjudication call")
 }
 
 // mustListNotifications reads the notifications table via the service List

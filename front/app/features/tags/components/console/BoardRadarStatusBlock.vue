@@ -1,0 +1,633 @@
+<script setup lang="ts">
+/**
+ * 雷达右栏底部管线状态块（add-radar-pipeline-status D9/D10 + D14）。
+ *
+ * 五项事实（标签队列 / Embedding 队列 / 生成窗口 / 最新日报落点 / 当日日报状态）
+ * + 手动生成入口：点「立即生成」在**状态块内就地展开**板块勾选清单（默认全选、
+ * 可全选/全不选、可取消勾选），不弹窗、不跳页（D10）。勾选 = 参与本次生成；
+ * 未勾选任何板块时禁止提交。
+ *
+ * 两个队列量纲不同：**标签队列单位是文章**，**Embedding 队列单位是标签**
+ * （embedding_queues 行按 tag_id 排）——各行各带自己的计数与进度条。
+ *
+ * 状态语义（R-17）：
+ * - 对账从未成功 → 各行都呈现「读取中」，**不产出**「今日日报未生成」这类结论；
+ * - 对账失败 → 保留旧值并标注「更新于 HH:mm」，不清零、不转错误态；
+ * - 总览取数失败 → 日报行呈现「读取失败」，**不判定**「今日日报未生成」；
+ * - **双队列**任一有积压（pending + processing > 0）→ 生成按钮禁用 + 缺料说明
+ *   （日报自动生成要求 tag_jobs 与 embedding_queues 双队列清空，D14）；
+ * - embedding 队列计数未知（旧后端无该段）→ 同样挡住生成，不断言「已清空」；
+ * - 双队列均清空 → 生成按钮可用、缺料说明消失；
+ * - 清单展开期间队列复堵 → 确认按钮同样禁用（与入口按钮同款判据，
+ *   不能绕过「队列未清空禁用生成」门槛）；
+ * - 今日已出 → 入口按钮文案改为「重新生成今日日报」，清单内给出替换警示，
+ *   确认按钮文案为「确认替换」（同日替换是破坏性动作，design Risks）。
+ *
+ * 视觉：只用 Layer 2 语义 token（--color-*），底色用 color-mix 派生；
+ * 数字用 --font-mono，标题用 --font-serif（与右栏既有排版一致）。
+ */
+import { computed, ref, watch } from 'vue'
+import AppButton from '~/components/ui/AppButton.vue'
+import { useRadarPipelineStatus, type RadarStatusBoard } from '~/features/tags/composables/useRadarPipelineStatus'
+
+const props = defineProps<{
+  /** 雷达总览载荷的板块行（落点日期与勾选清单的唯一来源；不另发请求）。 */
+  rows: RadarStatusBoard[]
+  /** 总览取数中。 */
+  overviewLoading?: boolean
+  /** 总览取数失败（非空即失败）。 */
+  overviewError?: string
+}>()
+
+const emit = defineEmits<{
+  /** 生成终态到达：父层据此刷新雷达总览数据。 */
+  (e: 'generated'): void
+}>()
+
+const status = useRadarPipelineStatus({
+  rows: () => props.rows,
+  loading: () => props.overviewLoading ?? false,
+  error: () => props.overviewError ?? '',
+})
+
+const {
+  pollReady,
+  updatedAtText,
+  lastReconciledAt,
+  activeCount,
+  completedToday,
+  failedCount,
+  roundTotal,
+  progressPercent,
+  queueBlocked,
+  embeddingActiveCount,
+  embeddingCompletedToday,
+  embeddingFailedCount,
+  embeddingRoundTotal,
+  embeddingProgressPercent,
+  embeddingReady,
+  embeddingBlocked,
+  queuesDrained,
+  scheduleTime,
+  scheduleDeadline,
+  latestReportDate,
+  todayReportCount,
+  todayReady,
+  boardTotal,
+  boards,
+  overviewLoading,
+  overviewError,
+  phase,
+  progressText,
+  result,
+  failureMessage,
+  generate,
+} = status
+
+// ── 板块勾选清单（就地展开，不弹窗）──────────────────────────────────────
+const pickerOpen = ref(false)
+const selected = ref<number[]>([])
+
+const selectedCount = computed(() => selected.value.length)
+const generateDisabled = computed(() => !pollReady.value || !queuesDrained.value || phase.value === 'submitting')
+/**
+ * 确认按钮的禁用判据与入口按钮**同款**（双队列门槛 + 对账就绪）：清单展开
+ * 期间可能有新文章/新标签入队，此时「确认生成」必须跟着入口按钮一起变灰，
+ * 否则能绕过「队列未清空禁用生成」的门槛。
+ */
+const confirmDisabled = computed(() => phase.value === 'submitting'
+  || selectedCount.value === 0
+  || !queuesDrained.value
+  || !pollReady.value)
+
+/** 队列行文案：读取中优先（首次对账未成功不产出结论）；失败任务不算积压（D8）。 */
+const queueText = computed(() => {
+  if (!pollReady.value) return '读取中'
+  if (activeCount.value > 0) return `待打标 ${activeCount.value}`
+  if (completedToday.value > 0) return '队列已清空'
+  return '队列空闲'
+})
+
+/**
+ * embedding 队列行文案（单位：**标签**，不是文章）。
+ * 计数未知（旧后端无该段）→ 「状态未知」，不谎称已清空（R-17）。
+ */
+const embeddingQueueText = computed(() => {
+  if (!pollReady.value) return '读取中'
+  if (!embeddingReady.value) return '状态未知'
+  if (embeddingActiveCount.value > 0) return `待向量化 ${embeddingActiveCount.value}`
+  if (embeddingCompletedToday.value > 0) return '队列已清空'
+  return '队列空闲'
+})
+
+/** 对账从未成功时不展示窗口时刻（默认时刻不是本站真实配置，不当事实呈现）。 */
+const windowReady = computed(() => pollReady.value)
+
+/** 最新日报落点行。 */
+const latestText = computed(() => {
+  if (!pollReady.value) return '读取中'
+  if (overviewLoading.value) return '读取中'
+  if (overviewError.value) return '读取失败'
+  if (!latestReportDate.value) return '暂无'
+  return latestReportDate.value
+})
+
+/** 当日日报状态行：已出 / 未生成 / 读取中 / 读取失败。 */
+const todayText = computed(() => {
+  if (!pollReady.value) return '读取中'
+  if (overviewLoading.value) return '读取中'
+  if (overviewError.value) return '读取失败'
+  if (todayReportCount.value > 0) return `今日日报已出（${todayReportCount.value}/${boardTotal.value} 板块）`
+  return '今日日报未生成'
+})
+
+/** 按钮不可用的原因说明（缺料说明）：双队列任一有积压 / 对账尚未成功。 */
+const shortageText = computed(() => {
+  if (!pollReady.value) return '对账读取中：队列状态未知，暂不可生成。'
+  const parts: string[] = []
+  if (queueBlocked.value) {
+    parts.push(`标签队列仍有 ${activeCount.value} 篇待打标：手动生成不等队列，当日才完成打标的文章不会进入当日日报。`)
+  }
+  if (embeddingBlocked.value) {
+    parts.push(embeddingReady.value
+      ? `Embedding 队列有 ${embeddingActiveCount.value} 个标签待向量化：泳道分桶会退化，文章可能落进「未归位」桶。`
+      : 'Embedding 队列状态未知：无法确认是否已清空，暂不可生成。')
+  }
+  return parts.join(' ')
+})
+
+/**
+ * 当前本地时刻是否还在生成时刻之前。
+ *
+ * 真实时钟（new Date()）不是响应式依赖，页面停驻跨过生成时刻后文案不会
+ * 自己变。把「最近一次对账时刻」当刻度读进来：每次对账成功必变（间隔
+ * ≥30s），下一次对账即可让文案重算——**不为此引入定时器**（client-poll-budget）。
+ */
+const isBeforeSchedule = computed(() => {
+  const tick = lastReconciledAt.value
+  // tick 只作为依赖被读到（tick ≤ now，取 max 不改变比较结果）。
+  const now = new Date(Math.max(Date.now(), tick))
+  const nowMinutes = now.getHours() * 60 + now.getMinutes()
+  const parts = scheduleTime.value.split(':').map(Number)
+  const hour = parts[0]
+  const minute = parts[1]
+  if (hour === undefined || minute === undefined) return false
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return false
+  return nowMinutes < hour * 60 + minute
+})
+
+/**
+ * 「今日未生成」的缺料原因（ui-design 受影响状态 success 行）：
+ * 未到生成时刻 / 已过生成时刻但今日无素材或生成未完成。
+ */
+const notGeneratedHint = computed(() => {
+  if (!pollReady.value) return ''
+  if (overviewLoading.value || overviewError.value) return ''
+  if (todayReportCount.value > 0) return ''
+  return isBeforeSchedule.value
+    ? `尚未到生成时刻（${scheduleTime.value}）`
+    : `已过生成时刻（${scheduleTime.value}）：今日暂无可用素材或生成未完成`
+})
+
+const showQueueProgress = computed(() => pollReady.value && roundTotal.value > 0)
+const showEmbeddingProgress = computed(() => pollReady.value && embeddingReady.value && embeddingRoundTotal.value > 0)
+
+function openPicker(): void {
+  selected.value = boards.value.map(board => board.boardId)
+  pickerOpen.value = true
+}
+
+function closePicker(): void {
+  pickerOpen.value = false
+}
+
+function selectAll(): void {
+  selected.value = boards.value.map(board => board.boardId)
+}
+
+function selectNone(): void {
+  selected.value = []
+}
+
+function toggleBoard(boardId: number): void {
+  selected.value = selected.value.includes(boardId)
+    ? selected.value.filter(id => id !== boardId)
+    : [...selected.value, boardId]
+}
+
+function confirmGenerate(): void {
+  if (confirmDisabled.value) return
+  void generate(selected.value)
+}
+
+watch(phase, (next, prev) => {
+  if (next === 'done' && prev !== 'done') emit('generated')
+})
+</script>
+
+<template>
+  <section class="rs-block" aria-label="管线状态" data-testid="radar-status-block">
+    <div class="rs-rule-title">
+      <h2>管线状态</h2>
+      <span class="rs-rule-tag">PIPELINE</span>
+    </div>
+
+    <div class="rs-facts">
+      <div class="rs-fact">
+        <span class="rs-key">标签队列：</span>
+        <span class="rs-val" data-testid="radar-status-queue">{{ queueText }}</span>
+      </div>
+      <div class="rs-fact">
+        <span class="rs-key">Embedding 队列：</span>
+        <span class="rs-val" data-testid="radar-status-embedding-queue">{{ embeddingQueueText }}</span>
+      </div>
+      <div class="rs-fact">
+        <span class="rs-key">生成窗口：</span>
+        <span class="rs-val">
+          <template v-if="windowReady">
+            <span data-testid="radar-status-schedule-time">生成 {{ scheduleTime }}</span>
+            <span class="rs-sep">·</span>
+            <span data-testid="radar-status-schedule-deadline">兜底 {{ scheduleDeadline }}</span>
+          </template>
+          <span v-else data-testid="radar-status-window-loading">读取中</span>
+        </span>
+      </div>
+      <div class="rs-fact">
+        <span class="rs-key">最新日报：</span>
+        <span class="rs-val" data-testid="radar-status-latest">{{ latestText }}</span>
+      </div>
+      <div class="rs-fact">
+        <span class="rs-key">今日状态：</span>
+        <span class="rs-val" data-testid="radar-status-today">{{ todayText }}</span>
+      </div>
+    </div>
+
+    <div v-if="showQueueProgress" class="rs-progress" data-testid="radar-status-queue-progress">
+      <div class="rs-bar" role="img" :aria-label="`今日完成 ${completedToday} / ${roundTotal}`">
+        <span class="rs-bar-fill" :style="{ width: `${progressPercent}%` }" />
+      </div>
+      <span class="rs-progress-text">今日完成 {{ completedToday }} / {{ roundTotal }}</span>
+    </div>
+
+    <div v-if="showEmbeddingProgress" class="rs-progress" data-testid="radar-status-embedding-progress">
+      <div class="rs-bar" role="img" :aria-label="`今日完成 ${embeddingCompletedToday} / ${embeddingRoundTotal} 个标签`">
+        <span class="rs-bar-fill" :style="{ width: `${embeddingProgressPercent}%` }" />
+      </div>
+      <span class="rs-progress-text">今日完成 {{ embeddingCompletedToday }} / {{ embeddingRoundTotal }} 个标签</span>
+    </div>
+
+    <p v-if="failedCount > 0" class="rs-failed" data-testid="radar-status-queue-failed">
+      <span class="rs-dot" aria-hidden="true" />{{ failedCount }} 个失败
+    </p>
+
+    <p v-if="embeddingFailedCount > 0" class="rs-failed" data-testid="radar-status-embedding-failed">
+      <span class="rs-dot" aria-hidden="true" />Embedding 队列 {{ embeddingFailedCount }} 个失败
+    </p>
+
+    <p v-if="pollReady" class="rs-updated" data-testid="radar-status-updated">更新于 {{ updatedAtText }}</p>
+
+    <p v-if="shortageText" class="rs-shortage" data-testid="radar-status-shortage">{{ shortageText }}</p>
+
+    <p v-if="notGeneratedHint" class="rs-hint" data-testid="radar-status-not-generated-hint">{{ notGeneratedHint }}</p>
+
+    <p v-if="phase === 'submitting'" class="rs-running" data-testid="radar-status-progress">
+      生成中 {{ progressText || '…' }}
+    </p>
+    <p v-if="phase === 'done' && result" class="rs-result" data-testid="radar-status-result">
+      成功 {{ result.successBoards }} 板块 · 失败 {{ result.failedBoards }} 板块
+    </p>
+    <p v-if="phase === 'failed' && failureMessage" class="rs-failed" data-testid="radar-status-error">
+      <span class="rs-dot" aria-hidden="true" />{{ failureMessage }}
+    </p>
+
+    <div class="rs-actions">
+      <AppButton
+        v-if="!pickerOpen"
+        size="sm"
+        data-testid="radar-status-generate"
+        :disabled="generateDisabled"
+        @click="openPicker"
+      >
+        {{ todayReady ? '重新生成今日日报' : '立即生成今日日报' }}
+      </AppButton>
+    </div>
+
+    <div v-if="pickerOpen" class="rs-picker" data-testid="radar-status-picker">
+      <div class="rs-picker-head">
+        <span class="rs-picker-title">生成范围</span>
+        <span class="rs-picker-count" data-testid="radar-status-selected-count">
+          参与 {{ selectedCount }} / {{ boardTotal }}
+        </span>
+      </div>
+
+      <div class="rs-picker-toggles">
+        <button type="button" class="rs-toggle" data-testid="radar-status-select-all" @click="selectAll">全选</button>
+        <button type="button" class="rs-toggle" data-testid="radar-status-select-none" @click="selectNone">全不选</button>
+      </div>
+
+      <ul v-if="boards.length" class="rs-picker-list">
+        <li v-for="board in boards" :key="board.boardId" class="rs-picker-item">
+          <label class="rs-board">
+            <input
+              type="checkbox"
+              :checked="selected.includes(board.boardId)"
+              :data-testid="`radar-status-board-${board.boardId}`"
+              @change="toggleBoard(board.boardId)"
+            >
+            <span class="rs-board-label">{{ board.label }}</span>
+            <span v-if="board.todaySections === 0" class="rs-board-empty">今日无分区</span>
+          </label>
+        </li>
+      </ul>
+      <p v-else class="rs-picker-empty" data-testid="radar-status-picker-empty">暂无可参与的板块</p>
+
+      <p v-if="todayReady" class="rs-replace-warning" data-testid="radar-status-replace-warning">
+        将替换今天的日报（标题、章节、线索全部重写）
+      </p>
+
+      <div class="rs-picker-actions">
+        <AppButton
+          size="sm"
+          data-testid="radar-status-confirm"
+          :disabled="confirmDisabled"
+          :loading="phase === 'submitting'"
+          @click="confirmGenerate"
+        >
+          {{ todayReady ? '确认替换' : '确认生成' }}
+        </AppButton>
+        <button type="button" class="rs-toggle" data-testid="radar-status-cancel" @click="closePicker">取消</button>
+      </div>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.rs-block {
+  flex: 0 0 auto;
+  padding: 0.85rem 0.9rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
+  border-top: 2px solid var(--color-accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  color: var(--color-text-primary);
+}
+
+.rs-rule-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.rs-block h2 {
+  margin: 0;
+  color: var(--color-accent);
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: 0.95rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.rs-rule-tag {
+  color: var(--color-text-muted);
+  font-size: 0.58rem;
+  letter-spacing: 0.16em;
+}
+
+.rs-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  min-width: 0;
+}
+
+.rs-fact {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.rs-key {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.rs-val {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem;
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-family: var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
+
+.rs-sep {
+  color: var(--color-text-muted);
+}
+
+/* 今日完成进度条 */
+.rs-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.45rem;
+}
+
+.rs-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-bg-sunken);
+  overflow: hidden;
+}
+
+.rs-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+}
+
+.rs-progress-text {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.66rem;
+}
+
+/* 状态标记：左侧醒目位（interaction-conventions 第 1 条） */
+.rs-failed {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.4rem 0 0;
+  color: var(--color-error);
+  font-size: 0.68rem;
+}
+
+.rs-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-error);
+}
+
+.rs-updated {
+  margin: 0.3rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.62rem;
+}
+
+/* 缺料说明：状态说明行，不是动作（interaction-conventions 第 2 条） */
+.rs-shortage {
+  margin: 0.4rem 0 0;
+  color: var(--color-warning);
+  font-size: 0.66rem;
+  line-height: 1.6;
+}
+
+.rs-hint {
+  margin: 0.35rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.64rem;
+  line-height: 1.6;
+}
+
+.rs-result {
+  margin: 0.4rem 0 0;
+  color: var(--color-text-secondary);
+  font-size: 0.68rem;
+}
+
+.rs-running {
+  margin: 0.4rem 0 0;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+}
+
+.rs-actions {
+  margin-top: 0.6rem;
+}
+
+/* 勾选清单：就地展开 */
+.rs-picker {
+  margin-top: 0.6rem;
+  padding: 0.6rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 6px;
+  background: var(--color-bg-base);
+}
+
+.rs-picker-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.rs-picker-title {
+  color: var(--color-text-primary);
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: 0.8rem;
+}
+
+.rs-picker-count {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.64rem;
+}
+
+.rs-picker-toggles {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.35rem;
+}
+
+.rs-toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 0.66rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.rs-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rs-picker-item {
+  min-width: 0;
+}
+
+.rs-board {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+  font-size: 0.7rem;
+}
+
+.rs-board input {
+  flex: 0 0 auto;
+  accent-color: var(--color-accent);
+}
+
+.rs-board-label {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.rs-board-empty {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-size: 0.62rem;
+}
+
+.rs-picker-empty {
+  margin: 0.45rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+}
+
+/* 重生成警示：同日替换是破坏性动作，确认按钮附近必须写明后果 */
+.rs-replace-warning {
+  margin: 0.45rem 0 0;
+  color: var(--color-warning);
+  font-size: 0.66rem;
+  line-height: 1.6;
+}
+
+.rs-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+}
+
+/* 窄屏：事实行改单列；清单单列由 flex-direction: column 保证 */
+@media (max-width: 767.98px) {
+  .rs-fact {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+  }
+}
+</style>

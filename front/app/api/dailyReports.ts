@@ -260,7 +260,12 @@ function normalizeReportListItem(payload: DailyReportListItemPayload): DailyRepo
 }
 
 export function useDailyReportsApi() {
-  async function generateDailyReport(params: { date: string; board_id?: number }) {
+  /**
+   * 触发日报生成（add-radar-pipeline-status D1）。
+   * `board_id`（单板）与 `board_ids`（板块集合）**互斥**：同时给会被后端 400 拒绝
+   * （board_id 与 board_ids 不能同时指定）。两者都不给 = 全量。
+   */
+  async function generateDailyReport(params: { date: string; board_id?: number; board_ids?: number[] }) {
     return apiClient.post<{ job_id: string; status: string }>('/daily-reports/generate', params)
   }
 

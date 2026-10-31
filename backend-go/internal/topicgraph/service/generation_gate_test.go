@@ -3,12 +3,15 @@ package service
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"gorm.io/gorm"
 
 	"syntopica-backend/internal/platform/testutil"
 )
@@ -199,4 +202,45 @@ func TestDailyReportGateDBFallback(t *testing.T) {
 		t.Fatal("A6: release frees the fallback gate")
 	}
 	g.release()
+}
+
+// ── D13：闸探测失败路径必须归还连接（不得泄漏池连接）──
+//
+// 契约锚：change add-radar-pipeline-status design.md D13——DB 级闸的探测失败
+// 分支（T4）终止会话后必须 Close 那条专用连接。不归还则每失败一次漏一条池
+// 连接；单连接池（MaxOpenConns(1)，如 internal/admin/scheduler 的 SQLite 测试
+// 库）随即被占满，后续查询永久阻塞——那是该包「测试挂死」的根因。
+//
+// 用 SQLite 触发真实的 T4 路径：没有 pg_try_advisory_lock → 探测必然失败。
+func TestDailyReportGateProbeFailureReturnsConnection(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("sql handle: %v", err)
+	}
+	// 单连接池：漏一条连接即饿死，后续查询直接阻塞。
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	g := newTestGate(sqlDB)
+
+	// SQLite 没有 pg_try_advisory_lock → 探测失败 → T4 分支（fail-open 回退）。
+	if !g.tryAcquire() {
+		t.Fatal("探测失败必须回退进程内闸并成功（fail-open）")
+	}
+	if inUse := sqlDB.Stats().InUse; inUse != 0 {
+		t.Fatalf("探测失败后专用连接必须归还连接池（InUse=%d，期望 0）", inUse)
+	}
+	g.release()
+
+	// 池必须仍然可用：漏连接时下面这条查询会一直阻塞到 ctx 超时。
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var one int
+	if err := sqlDB.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+		t.Fatalf("连接池被饿死——探测失败路径泄漏了连接：%v", err)
+	}
 }

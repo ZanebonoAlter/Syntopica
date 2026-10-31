@@ -37,8 +37,9 @@ func newPollRouter() *gin.Engine {
 }
 
 // TestPollBundle pins the client-poll-budget contract: one request carries
-// all three resident status payloads (schedulers incl. top-level
-// analysis_paused/ai_healthy, tag-queue counters, unread count).
+// all resident status payloads (schedulers incl. top-level
+// analysis_paused/ai_healthy, tag-queue counters, embedding-queue counters,
+// unread count).
 func TestPollBundle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires Postgres (testcontainers)")
@@ -72,6 +73,15 @@ func TestPollBundle(t *testing.T) {
 	notifications, ok := data["notifications"].(map[string]any)
 	require.True(t, ok, "notifications missing from bundle: %v", body)
 	require.Contains(t, notifications, "unread")
+
+	// embedding_queue counters — the second queue of the daily-report
+	// double-drain predicate (unit: tags, not articles). Key set mirrors the
+	// snapshot struct.
+	embeddingQueue, ok := data["embedding_queue"].(map[string]any)
+	require.True(t, ok, "embedding_queue missing from bundle: %v", body)
+	for _, key := range []string{"pending", "processing", "completed", "failed", "total", "completed_today"} {
+		require.Contains(t, embeddingQueue, key)
+	}
 
 	// Top-level semantics preserved for zero-consumer-change distribution.
 	require.Contains(t, body, "analysis_paused")

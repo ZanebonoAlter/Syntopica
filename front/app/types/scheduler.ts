@@ -139,4 +139,6 @@ export interface SchedulerStatus {
 	stale_processing_article?: SchedulerArticleRef | null
 	last_run_summary?: SchedulerLastRunSummary | null
 	schedule_time?: string
+	/** 日报兜底强制生成时刻（HH:MM）；旧后端不返回时前端降级到默认 23:30。 */
+	schedule_deadline?: string
 }

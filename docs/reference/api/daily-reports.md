@@ -46,10 +46,23 @@
 
 手动异步触发日报生成。`board_id` 为空时生成所有当日有事件标签的板块。
 
+作用域参数二选一（add-radar-pipeline-status）：
+
+| 参数 | 语义 |
+| --- | --- |
+| `board_id` | 只生成该板块（既有语义） |
+| `board_ids` | 只生成该集合内的板块；缺省或空数组 = 全部板块 |
+
+`board_id` 与 `board_ids` **互斥**：同时给出返回 `400`，不启动管线、不取执行闸。`board_ids` 内重复 id 折叠（保留首次出现顺序，每板至多生成一次）；任一字段类型非法返回 `400`，**不得**降级为全量作用域。集合生成共享同一把执行闸，一次请求只占一个闸、只返回一个 `job_id`、只广播一次终态、只发一条终态通知；集合内单板失败不中断其余板块。
+
 Request：
 
 ```json
 { "date": "2026-05-26", "board_id": 2849 }
+```
+
+```json
+{ "date": "2026-05-26", "board_ids": [2849, 2850, 2851] }
 ```
 
 Response `data`：
@@ -57,6 +70,8 @@ Response `data`：
 ```json
 { "job_id": "...", "status": "processing" }
 ```
+
+终态消息（`daily_report_done`）携带**三态计数**：`total_saved`（产出日报的板块数）/ `failed_count`（真失败）/ `empty_count`（当日无内容），恒有 `total_saved + failed_count + empty_count == total_boards`（`total_boards` 含当日无内容的板块）。消费方 SHALL 直读 `failed_count` / `empty_count`，不得用 `total_boards - total_saved` 反推失败数（那会把当日无内容的板块错算成失败）。
 
 WebSocket 进度消息：
 

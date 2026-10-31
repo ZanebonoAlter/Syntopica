@@ -31,7 +31,6 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 
 	// POST /api/daily-reports/generate
 	api.POST("/daily-reports/generate", triggerGenerateDailyReport)
-
 	// GET /api/daily-reports/:id
 	api.GET("/daily-reports/:id", getDailyReport)
 
@@ -103,10 +102,41 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 // triggerGenerateDailyReport handles POST /api/daily-reports/generate
 func triggerGenerateDailyReport(c *gin.Context) {
 	var req struct {
-		Date    string `json:"date"`
-		BoardID *uint  `json:"board_id"`
+		Date     string `json:"date"`
+		BoardID  *uint  `json:"board_id"`
+		BoardIDs []uint `json:"board_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		// Any field with an illegal type is rejected outright: a malformed
+		// request SHALL NOT degrade to the all-boards scope. {"board_ids": {...}}
+		// and {"board_id": "5"} used to fall through to the lenient branch below,
+		// leaving BoardID nil → a full-site generation pipeline (one typo would
+		// rebuild every board). A missing `date` is NOT a type error — it stays
+		// on the lenient path.
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) {
+			field := typeErr.Field
+			expected := "the declared field type"
+			switch field {
+			case "board_id":
+				expected = "a number"
+			case "board_ids":
+				expected = "an array of numbers"
+			case "date":
+				expected = "a YYYY-MM-DD string"
+			default:
+				if field == "" {
+					// Not a JSON object at the top level (array / scalar).
+					field = "request body"
+					expected = "a JSON object"
+				}
+			}
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   fmt.Sprintf("invalid %s: expected %s, got %s", field, expected, typeErr.Value),
+			})
+			return
+		}
 		// Date is optional, defaults to today
 		req.Date = ""
 	}
@@ -121,6 +151,20 @@ func triggerGenerateDailyReport(c *gin.Context) {
 		date = parsed
 	} else {
 		date = time.Now()
+	}
+
+	// Scope exclusivity (add-radar-pipeline-status D1): board_id (one board)
+	// and board_ids (a board collection) are two different scopes of the same
+	// endpoint — accepting both is ambiguous. Rejected BEFORE the rebuild
+	// window guard and before the generation gate is touched, so a malformed
+	// request never starts a pipeline nor occupies the pipeline slot.
+	if req.BoardID != nil && len(req.BoardIDs) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "board_id 与 board_ids 不能同时指定：请二选一（单板或板块集合）",
+			"reason":  "conflicting_board_scope",
+		})
+		return
 	}
 
 	// Rebuild window guard (offline-catchup design D6): a date older than the
@@ -153,10 +197,17 @@ func triggerGenerateDailyReport(c *gin.Context) {
 
 	jobID := uuid.New().String()
 
-	if req.BoardID != nil {
+	switch {
+	case len(req.BoardIDs) > 0:
+		// Multi-board collection scope (add-radar-pipeline-status D2/D3): the
+		// requested set is generated as-is — NOT intersected with
+		// CollectBoardIDsForDate, so a board with no content today completes
+		// with 0 entries instead of being silently skipped.
+		go generateSelectedBoards(date, dedupeBoardIDs(req.BoardIDs), jobID)
+	case req.BoardID != nil:
 		// Generate for single board
 		go generateSingleBoard(*req.BoardID, date, jobID)
-	} else {
+	default:
 		// Generate for all boards
 		go generateAllBoards(date, jobID)
 	}
@@ -175,12 +226,19 @@ func triggerGenerateDailyReport(c *gin.Context) {
 // failedCount==0 → one completion notification; failedCount>0 → ONE failure
 // summary (success/failed counts in the copy), mutually exclusive with the
 // completion notification. Never more than one notification per run.
-func notifyDailyReportTerminal(date time.Time, totalBoards, successCount, failedCount int) {
-	if failedCount > 0 {
-		notification.DailyReportFailedSummary(date, successCount, failedCount)
-	} else {
-		notification.DailyReportSuccess(date, totalBoards, successCount)
-	}
+//
+// 计数口径与 daily_report_done 终态消息同源（add-radar-pipeline-status D12）：
+// totalBoards == WS 的 total_boards（**含**当日无内容的板块），
+// successCount == total_saved、failedCount == failed_count、
+// emptyCount == empty_count。当日无内容的板块计入总版面数，但既不进成功数、
+// 也不进失败数——通知与 WS 说的永远是同一件事。
+func notifyDailyReportTerminal(date time.Time, totalBoards, successCount, failedCount, emptyCount int) {
+	notification.DailyReportTerminal(date, notification.DailyReportCounts{
+		TotalBoards: totalBoards,
+		Saved:       successCount,
+		Failed:      failedCount,
+		Empty:       emptyCount,
+	})
 }
 
 // Generation gate seams (guard-daily-report-generate D1/D2): the manual
@@ -200,6 +258,25 @@ var (
 // pipeline.
 var generateReportEntry = service.GenerateAndSaveReport
 
+// dailyReportCounts is the terminal tally of one daily-report run, split into
+// the three mutually exclusive board states:
+//
+//   - saved:  板块生成成功（有日报产出）
+//   - failed: 板块生成失败（生成报错）
+//   - empty:  板块当日无内容（report == nil）——既不是成功也不是失败，
+//     与通知中心口径一致（DailyReportTerminal：无内容的板块不进成功数、
+//     不进失败数，但计入总版面数）
+//
+// 三态互斥且穷尽：本次运行涉及的每个板块恰好落入其中一态，因此
+// saved + failed + empty == total_boards 恒成立。终态 WS 消息直接带这三个
+// 计数，消费方 SHALL NOT 用 total_boards - total_saved 反推失败数（那会把
+// 「当日无内容」的板块错算成失败）。
+type dailyReportCounts struct {
+	saved  int
+	failed int
+	empty  int
+}
+
 func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 	// Gate release (guard-daily-report-generate): this goroutine owns the
 	// generation gate acquired by the handler; deferred FIRST so every exit
@@ -216,22 +293,25 @@ func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 	if err != nil {
 		logging.Errorf("daily-report: generate/save failed for board %d: %v", boardID, err)
 		broadcastProgress(jobID, "failed", boardID, boardName, 0, "1/1")
-		broadcastDone(jobID, 0, 1)
+		// 三态计数与终态通知同口径：失败 1（该板块真失败）· 无内容 0。
+		broadcastDone(jobID, dailyReportCounts{failed: 1}, 1)
 		// 单版面项目：失败 1 = 全部失败 → 1 条失败汇总（白盒 B3/B 边界）
-		notifyDailyReportTerminal(date, 1, 0, 1)
+		notifyDailyReportTerminal(date, 1, 0, 1, 0)
 		return
 	}
 	if report == nil {
 		broadcastProgress(jobID, "completed", boardID, boardName, 0, "1/1")
-		broadcastDone(jobID, 0, 1)
-		// 版面无内容不算失败：终态完成（保存 0 条）
-		notifyDailyReportTerminal(date, 1, 0, 0)
+		// 版面无内容不算失败：终态完成（保存 0 条）——计入 empty，不计失败。
+		broadcastDone(jobID, dailyReportCounts{empty: 1}, 1)
+		// 版面无内容不算失败：终态完成（保存 0 条）；通知走成功类，且
+		// 「共 1 个版面」含这个当日无内容的板块。
+		notifyDailyReportTerminal(date, 1, 0, 0, 1)
 		return
 	}
 
 	broadcastProgress(jobID, "completed", boardID, boardName, 1, "1/1")
-	broadcastDone(jobID, 1, 1)
-	notifyDailyReportTerminal(date, 1, 1, 0)
+	broadcastDone(jobID, dailyReportCounts{saved: 1}, 1)
+	notifyDailyReportTerminal(date, 1, 1, 0, 0)
 }
 
 func generateAllBoards(date time.Time, jobID string) {
@@ -247,20 +327,26 @@ func generateAllBoards(date time.Time, jobID string) {
 	if err != nil {
 		logging.Errorf("daily-report: collect boards failed: %v", err)
 		broadcastProgress(jobID, "failed", 0, "All boards", 0, "0/0")
-		broadcastDone(jobID, 0, 0)
-		// 收集阶段即失败：一次失败汇总（B3 同型，至多一条）
-		notifyDailyReportTerminal(date, 0, 0, 1)
+		// 收集阶段即失败：终态计数与终态通知同口径（通知把这次收集失败
+		// 记作「共 1 个版面，0 成功 1 失败」）——记 1 个失败板块，
+		// 恒等式 saved + failed + empty == total_boards 仍成立。
+		broadcastDone(jobID, dailyReportCounts{failed: 1}, 1)
+		// 收集阶段即失败：一次失败汇总（B3 同型，至多一条）；总版面数与
+		// 终态消息的 total_boards 同为 1。
+		notifyDailyReportTerminal(date, 1, 0, 1, 0)
 		return
 	}
 
 	totalBoards := len(boardIDs)
 	if totalBoards == 0 {
-		broadcastDone(jobID, 0, 0)
+		// 当日无任何可生成板块：只广播终态，不发通知（无可通知的版面）。
+		broadcastDone(jobID, dailyReportCounts{}, 0)
 		return
 	}
 
 	savedCount := 0
 	failedCount := 0
+	emptyCount := 0
 	for idx, boardID := range boardIDs {
 		boardName := dailyReportBoardName(boardID)
 		broadcastProgress(jobID, "generating", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx, totalBoards))
@@ -274,15 +360,91 @@ func generateAllBoards(date time.Time, jobID string) {
 		}
 		if report == nil {
 			broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+			// 当日无内容：既不算成功也不算失败（与通知中心口径一致）
+			emptyCount++
 			continue
 		}
 		savedCount++
 		broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
 	}
 
-	broadcastDone(jobID, savedCount, totalBoards)
+	broadcastDone(jobID, dailyReportCounts{saved: savedCount, failed: failedCount, empty: emptyCount}, totalBoards)
 	// 终态通知（白盒 B1/B2/B3）：failed==0 → 完成通知；≥1 → 一条失败汇总，互斥。
-	notifyDailyReportTerminal(date, totalBoards, savedCount, failedCount)
+	// 计数与上面那次终态广播同源（三态：成功 / 失败 / 当日无内容；总版面数含无内容板块）。
+	notifyDailyReportTerminal(date, totalBoards, savedCount, failedCount, emptyCount)
+}
+
+// dedupeBoardIDs collapses a requested board collection into a set (first
+// occurrence wins, request order preserved). A repeated id would run the same
+// board twice inside one pipeline: the report write is idempotent, but the LLM
+// cost is paid twice and the board would be double-counted in the terminal
+// counts.
+func dedupeBoardIDs(ids []uint) []uint {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[uint]struct{}, len(ids))
+	unique := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
+}
+
+// generateSelectedBoards generates the daily report for an explicit board
+// collection (add-radar-pipeline-status D2/D3/D4). Isomorphic to
+// generateAllBoards: one goroutine, sequential per board, per-board progress
+// broadcast, then ONE terminal broadcast + ONE terminal notification. The
+// board set comes from the request and is NOT filtered by
+// CollectBoardIDsForDate (a board without content today is not a failure —
+// it completes with 0 entries, same as the single-board path).
+func generateSelectedBoards(date time.Time, boardIDs []uint, jobID string) {
+	// Gate release (guard-daily-report-generate): this goroutine owns the
+	// generation gate acquired by the handler; deferred FIRST so every exit
+	// path — success, failure, or panic unwind — releases it.
+	defer releaseGenerationGate()
+
+	ctx, cancel := timeoutCtx(30 * time.Minute)
+	defer cancel()
+
+	totalBoards := len(boardIDs)
+	if totalBoards == 0 {
+		broadcastDone(jobID, dailyReportCounts{}, 0)
+		return
+	}
+
+	savedCount := 0
+	failedCount := 0
+	emptyCount := 0
+	for idx, boardID := range boardIDs {
+		boardName := dailyReportBoardName(boardID)
+		broadcastProgress(jobID, "generating", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx, totalBoards))
+
+		report, genErr := generateReportEntry(ctx, boardID, date)
+		if genErr != nil {
+			logging.Warnf("daily-report: generate/save failed for board %d: %v", boardID, genErr)
+			broadcastProgress(jobID, "failed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+			failedCount++
+			continue
+		}
+		if report == nil {
+			broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+			// 当日无内容：既不算成功也不算失败（与通知中心口径一致）
+			emptyCount++
+			continue
+		}
+		savedCount++
+		broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+	}
+
+	broadcastDone(jobID, dailyReportCounts{saved: savedCount, failed: failedCount, empty: emptyCount}, totalBoards)
+	// 终态通知（白盒 B1/B2/B3）：failed==0 → 完成通知；≥1 → 一条失败汇总，互斥。
+	// 计数与上面那次终态广播同源（三态：成功 / 失败 / 当日无内容；总版面数含无内容板块）。
+	notifyDailyReportTerminal(date, totalBoards, savedCount, failedCount, emptyCount)
 }
 
 // listBoardDailyReports handles GET /api/semantic-boards/:id/daily-reports
@@ -626,15 +788,24 @@ func deleteTopic(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// broadcastProgress sends a WebSocket progress message.
-func broadcastProgress(jobID string, status string, boardID uint, boardName string, saved int, progress string) {
+// broadcastProgress sends a WebSocket progress message. Package-level var so
+// tests can observe the broadcast stream without a live WebSocket client
+// (same seam pattern as generateReportEntry).
+var broadcastProgress = func(jobID string, status string, boardID uint, boardName string, saved int, progress string) {
 	msg := buildProgressMessage(jobID, status, boardID, boardName, saved, progress)
 	data, _ := json.Marshal(msg)
 	ws.GetHub().BroadcastRaw(data)
 }
 
-func broadcastDone(jobID string, totalSaved int, totalBoards int) {
-	msg := buildDoneMessage(jobID, totalSaved, totalBoards)
+// broadcastDone sends the terminal WebSocket message. Package-level var for
+// the same reason as broadcastProgress: the "exactly one terminal broadcast per
+// request" contract must be observable in tests.
+//
+// The terminal message carries the three-state tally (saved / failed / empty)
+// so consumers never have to derive the failure count themselves (deriving it
+// as total_boards - total_saved misclassifies "no content today" boards).
+var broadcastDone = func(jobID string, counts dailyReportCounts, totalBoards int) {
+	msg := buildDoneMessage(jobID, counts, totalBoards)
 	data, _ := json.Marshal(msg)
 	ws.GetHub().BroadcastRaw(data)
 }
@@ -652,12 +823,23 @@ func buildProgressMessage(jobID string, status string, boardID uint, boardName s
 	}
 }
 
-func buildDoneMessage(jobID string, totalSaved int, totalBoards int) map[string]interface{} {
+// buildDoneMessage builds the terminal WebSocket payload.
+//
+// The payload carries the three-state tally explicitly:
+// total_saved (boards that produced a report), failed_count (boards whose
+// generation failed) and empty_count (boards with no content that day).
+// The three states are mutually exclusive and exhaustive over the boards in
+// scope, so total_saved + failed_count + empty_count == total_boards always
+// holds. failed_count / empty_count are additive fields: consumers that only
+// know total_saved / total_boards keep working unchanged.
+func buildDoneMessage(jobID string, counts dailyReportCounts, totalBoards int) map[string]interface{} {
 	return map[string]interface{}{
 		"type":         "daily_report_done",
 		"job_id":       jobID,
-		"total_saved":  totalSaved,
+		"total_saved":  counts.saved,
 		"total_boards": totalBoards,
+		"failed_count": counts.failed,
+		"empty_count":  counts.empty,
 		"timestamp":    time.Now().Format(time.RFC3339),
 	}
 }
