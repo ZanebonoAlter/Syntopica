@@ -168,6 +168,36 @@ func TestRenderLaneMagnitudeSignal_FullWindowAndRollups(t *testing.T) {
 	assert.Contains(t, sig, "近7天（09-02～09-08）合计 21 条｜上个7天（08-26～09-01）合计 7 条")
 }
 
+// 量级信号段专项（PG 形态）：真库 board_daily_reports.period_date 是 PG date
+// 列，扫出来是当日 00:00 UTC；而 anchor 经 NormalizeReportDate 归一化到
+// 12:00 UTC——两者时基不同。slim-lane-snapshot-trend R-12：上条用例的夹具
+// 用 anchor.AddDate 保留了 noon 时点，与 anchor 同基，窗首日恰好落对，
+// 于是 instant 比较的错位被夹具掩盖；真库 midnight 形态下窗首日 00:00 <
+// 边界 12:00 → 被判进前窗（标称「近7天」实算 6 天、「上7天」错位一天）。
+//
+// 本用例锁死 PG 形态：标签区间与计入区间必须恒等，窗首/窗末日各归其窗。
+func TestRenderLaneMagnitudeSignal_PGDateColumnMidnightShape(t *testing.T) {
+	anchor := repository.NormalizeReportDate(time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC))
+	// PG date 列形态：行时间戳为当日 00:00 UTC（不是 anchor 的 noon）。
+	midnight := func(d time.Time) time.Time {
+		return time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC)
+	}
+	counts := []repository.LaneDailyCount{
+		// 近7窗 [09-02, 09-08]：窗首 09-02、窗末 09-08 各一条。
+		{PeriodDate: midnight(anchor), SectionCnt: 1, ThreadCnt: 4},
+		{PeriodDate: midnight(anchor.AddDate(0, 0, -6)), SectionCnt: 3, ThreadCnt: 11}, // 窗首 09-02
+		// 上7窗 [08-26, 09-01]：窗首 08-26、窗末 09-01 各一条（均为独立日期）。
+		{PeriodDate: midnight(anchor.AddDate(0, 0, -7)), SectionCnt: 1, ThreadCnt: 9}, // 窗末 09-01
+		{PeriodDate: midnight(anchor.AddDate(0, 0, -13)), SectionCnt: 1, ThreadCnt: 2}, // 窗首 08-26
+	}
+	sig := renderLaneMagnitudeSignal(counts, anchor)
+
+	// 近窗 = [09-02, 09-08] 合计 = 11 + 4 = 15；上窗 = [08-26, 09-01] 合计 = 2 + 9 = 11。
+	// 若又退回 instant 比较，近窗会漏掉窗首 09-02（实算 4）、上窗会多算 09-02（实算 20）。
+	assert.Contains(t, sig, "近7天（09-02～09-08）合计 15 条｜上个7天（08-26～09-01）合计 11 条",
+		"标签区间与计入区间必须恒等（PG midnight 形态）")
+}
+
 // 纯文本解析三步守卫边界值（白盒附加 P1/P2）：0/1/199/200/201 rune。
 func TestParseLaneSnapshotOutput_Boundaries(t *testing.T) {
 	// P1: 空串与纯空白（含全角空格/tab/换行混合）→ error。

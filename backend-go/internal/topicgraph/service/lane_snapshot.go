@@ -143,14 +143,25 @@ func renderLaneMagnitudeSignal(counts []repository.LaneDailyCount, anchor time.T
 	// Rollups anchored at as_of: near = [anchor-6, anchor], previous =
 	// [anchor-13, anchor-7]. Days-with-report counted per window so an empty
 	// previous window renders as 无报告数据 instead of a misleading 0-total.
+	//
+	// 窗口按「日历日槽位」判定，不按 instant 比较（slim-lane-snapshot-trend
+	// R-12）：period_date 是 PG date 列，扫出来是当日 00:00 UTC，而 anchor
+	// 归一化到 12:00 UTC（NormalizeReportDate）。按 instant 比较时窗首日
+	// 00:00 < 边界 12:00 会被判进前窗——真库实测标称「近7天」实算 6 天、
+	// 「上7天」整体错位一天，与打印的区间标签对不上（LLM 忠实引用错窗
+	// 数字）。此处改为按上方每日行同一套 byDay 日期串遍历，使「标签区间
+	// = 计入区间」由构造保证。缺日不计入也不报负。
 	nearFrom := anchor.AddDate(0, 0, -6)
 	prevFrom := anchor.AddDate(0, 0, -13)
 	nearTotal, prevTotal, prevDays := 0, 0, 0
-	for _, c := range counts {
-		switch {
-		case !c.PeriodDate.Before(nearFrom):
+	for d := prevFrom; !d.After(anchor); d = d.AddDate(0, 0, 1) {
+		c, ok := byDay[d.Format("2006-01-02")]
+		if !ok {
+			continue // 无报告日不计入
+		}
+		if !d.Before(nearFrom) {
 			nearTotal += c.ThreadCnt
-		case !c.PeriodDate.Before(prevFrom):
+		} else {
 			prevTotal += c.ThreadCnt
 			prevDays++
 		}
