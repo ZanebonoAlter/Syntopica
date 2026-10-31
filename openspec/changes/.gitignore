@@ -1,0 +1,24 @@
+# UI 验收 / 原型的二进制证据本体不入库——磁盘保留，账本入 git。
+#
+# 依据：
+#   1. 归档门禁只查文件系统，不查 git——scripts/harness/ui-verification-trace.sh 的实物对账
+#      是「report.md 建账条目 + 点名截图在 ui-verification/ 目录存在」的纯文件检查；
+#      证据本体是否入库不影响门禁判定（见 openspec/changes/<name>/ui-verification/report.md）。
+#   2. 开发执行规范 §0.6「UI 设计工作流」：ui-prototype/ 是可丢弃原型，天然属过程产物。
+#   3. 单个 change 的验证截图可达数十 MB（多批次 + 双视口 + 明暗主题），
+#      二进制灌进 git 会污染仓库体积与 clone 成本；账本（md 建账）、specs、JSON 采样底稿仍入库。
+#
+# 路径写法说明：这里必须用 ** 形式（不能写 */ui-verification/...）——
+# change 归档后目录从 changes/<name>/ 搬到 changes/archive/<date>-<name>/，层级变深，
+# 单层通配会失配，导致归档那次提交把全部证据一次性灌进仓库。
+
+**/ui-verification/**/*.png
+**/ui-verification/**/*.jpg
+**/ui-verification/**/*.jpeg
+**/ui-verification/**/*.gif
+**/ui-verification/**/*.webp
+**/ui-prototype/**/*.png
+**/ui-prototype/**/*.jpg
+**/ui-prototype/**/*.jpeg
+**/ui-prototype/**/*.gif
+**/ui-prototype/**/*.webp
