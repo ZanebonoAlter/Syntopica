@@ -88,3 +88,17 @@ docs/srs/
 
 # 误存的临时截图（来路不明的 PNG）
 --clip
+
+# openspec UI 原型与验收截图：本地留存、不入库（2026-10-30 用户决策）
+# 归档门禁 ui-verification-trace.sh 对账的是本地文件存在性，不查 git 追踪，ignore 不影响流程；
+# ui-prototype/ 规范口径本就是「可丢弃原型」。新 clone 仓库不含这些证据图，需要时在本机查看。
+openspec/changes/**/ui-prototype/
+openspec/**/*.png
+openspec/**/*.jpg
+openspec/**/*.jpeg
+openspec/**/*.webp
+openspec/**/*.gif
+openspec/**/*.svg
+openspec/**/*.bmp
+openspec/**/*.ico
+openspec/**/*.avif
