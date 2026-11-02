@@ -159,7 +159,7 @@ export class RedStringCollection {
    * Show/hide all strings of a given relation type by toggling line.visible.
    * Zero rebuild cost — no geometry/material changes, just visibility. Used by
    * the 3D view-mode switch (timeline = similarity only; lanes = identity
-   * only) to mirror the 2D BoardThreadBrowser filtering without rebuilding
+   * only) to mirror the legacy 2D topic-browser filtering without rebuilding
    * the scene on every toggle.
    */
   setVisibleByRelationType(type: string, visible: boolean): void {

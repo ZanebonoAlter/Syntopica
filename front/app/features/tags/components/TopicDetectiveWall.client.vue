@@ -58,7 +58,7 @@ const lifecycleActive = ref(false)
 const lifecycleLoading = ref(false)
 const lifecycleOriginNode = ref<SectionTimelineNode | null>(null)
 // 视图模式：timeline=仅匈牙利相似度（默认，隐藏 identity）；lanes=仅话题 identity
-// （同话题延续实线）。镜像 2D BoardThreadBrowser 的语义。
+// （同话题延续实线）。镜像旧版 2D 话题浏览器的语义。
 const viewMode = ref<'timeline' | 'lanes'>('timeline')
 
 // 话题泳道分批：话题超过 LANES_PER_BATCH 时按批翻页，每批从桌面上方往上排，
@@ -339,7 +339,7 @@ async function toggleThreadArticles(thread: DailyReportThread) {
 
   threadArticlesLoading.value = thread.id
   try {
-    // Fetch titles for up to 10 articles (mirror BoardThreadBrowser's cap).
+    // Fetch titles for up to 10 articles (与旧版 2D 浏览器同款上限).
     const batch = ids.slice(0, 10)
     const results = await Promise.allSettled(batch.map(id => getArticle(id)))
     const articles = results.map((r, i) => {

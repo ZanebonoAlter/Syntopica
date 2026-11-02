@@ -2,24 +2,27 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useSemanticBoardsApi, type UpgradeGenerateParams, type UpgradeSuggestionRow, type BackfillTask, type MatchingConfig } from '~/api/semanticBoards'
 import { useArticlesApi } from '~/api/articles'
 import { normalizeArticle, type ArticlePayload } from '~/api/normalizers/article'
+import { useArticleFavoriteToggle } from '~/features/articles/composables/useArticleFavoriteToggle'
 import type { Article } from '~/types'
 import { useBoardCRUD } from './useBoardCRUD'
-import { useBoardTimeline } from './useBoardTimeline'
 import { useAuxiliaryLabels } from './useAuxiliaryLabels'
 
+/**
+ * 雷达报头「更多」菜单与站内原文预览的共享状态源（rework-workshop-into-radar-and-desk 8.4：
+ * 旧五 tab 宿主 TagsPage 已退役删除，本 composable 只保留治理动作 + 文章预览；
+ * timeline/五 tab 状态随宿主一并清理）。
+ */
 export function useTagsPage() {
   const boardCRUD = useBoardCRUD()
-  const timeline = useBoardTimeline()
   const auxLabels = useAuxiliaryLabels()
 
   const sbApi = useSemanticBoardsApi()
   const articlesApi = useArticlesApi()
+  const { toggleFavorite } = useArticleFavoriteToggle()
 
-  // Tab / dialog state
-  const contentTab = ref<'composition' | 'daily-reports' | 'articles' | 'enrichment' | 'topic-overview'>('composition')
+  // Dialog state
   const showUpgradeDialog = ref(false)
   const showMatchingConfigDialog = ref(false)
-  const showGenerateDialog = ref(false)
   const showMergePreview = ref(false)
   const showArticlePreview = ref(false)
 
@@ -45,16 +48,6 @@ export function useTagsPage() {
   const matchingConfig = ref<MatchingConfig | null>(null)
   const matchingConfigLoading = ref(false)
 
-  // ---- Integration: boardCRUD + timeline ----
-  function handleSelectBoard(id: number | null) {
-    boardCRUD.handleSelectBoard(id)
-    if (id !== null) {
-      void timeline.loadTimelineArticles(id)
-    } else {
-      timeline.timelineArticles.value = []
-    }
-  }
-
   // ---- Article preview ----
   async function openArticlePreview(articleId: number) {
     loadingPreviewArticle.value = true
@@ -76,15 +69,12 @@ export function useTagsPage() {
     selectedPreviewArticle.value = null
   }
 
+  /** 收藏：乐观翻转（星标即时反馈）+ 失败回滚（此前等接口返回才翻转，点击显得没反应） */
   async function handleArticleFavorite(articleId: string) {
-    const response = await articlesApi.updateArticle(Number(articleId), { favorite: !selectedPreviewArticle.value?.favorite })
-    if (!response.success) return
-    if (selectedPreviewArticle.value?.id === articleId) {
-      selectedPreviewArticle.value = {
-        ...selectedPreviewArticle.value,
-        favorite: !selectedPreviewArticle.value.favorite,
-      }
-    }
+    await toggleFavorite(articleId, {
+      get: () => selectedPreviewArticle.value,
+      apply: (article: Article) => { selectedPreviewArticle.value = article },
+    })
   }
 
   function handleArticleUpdate(articleId: string, updates: Partial<Article>) {
@@ -204,57 +194,12 @@ export function useTagsPage() {
   })
 
   return {
-    // Board CRUD
+    // Board CRUD（只读与列表：治理弹窗刷新用；编辑/增删操作由新壳各自的表单承担）
     boards: boardCRUD.boards,
     selectedBoardId: boardCRUD.selectedBoardId,
     boardsLoading: boardCRUD.boardsLoading,
     boardsError: boardCRUD.boardsError,
-    compositionLabels: boardCRUD.compositionLabels,
-    compositionComposites: boardCRUD.compositionComposites,
-    compositionLoading: boardCRUD.compositionLoading,
-    editingBoard: boardCRUD.editingBoard,
-    editLabel: boardCRUD.editLabel,
-    editDescription: boardCRUD.editDescription,
-    editEnrichmentEnabled: boardCRUD.editEnrichmentEnabled,
-    editRelationAutoDiscoveryEnabled: boardCRUD.editRelationAutoDiscoveryEnabled,
-    editWindowDays: boardCRUD.editWindowDays,
-    editContextLayers: boardCRUD.editContextLayers,
-    editSaving: boardCRUD.editSaving,
-    editError: boardCRUD.editError,
-    showAddDialog: boardCRUD.showAddDialog,
     loadBoards: boardCRUD.loadBoards,
-    loadComposition: boardCRUD.loadComposition,
-    handleSelectBoard,
-    openEditBoard: boardCRUD.openEditBoard,
-    closeEditBoard: boardCRUD.closeEditBoard,
-    handleSaveBoardEdit: boardCRUD.handleSaveBoardEdit,
-    handleAddBoard: boardCRUD.handleAddBoard,
-    handleDeleteBoard: boardCRUD.handleDeleteBoard,
-    handleRemoveComposition: boardCRUD.handleRemoveComposition,
-    sourceIcon: boardCRUD.sourceIcon,
-    sourceTitle: boardCRUD.sourceTitle,
-
-    // Timeline
-    timelineArticles: timeline.timelineArticles,
-    timelineLoading: timeline.timelineLoading,
-    timelineHasMore: timeline.timelineHasMore,
-    activeFilterLabelId: timeline.activeFilterLabelId,
-    filterFeedId: timeline.filterFeedId,
-    startDate: timeline.startDate,
-    endDate: timeline.endDate,
-    showDirectionMismatch: timeline.showDirectionMismatch,
-    timelineSort: timeline.timelineSort,
-    quickRange: timeline.quickRange,
-    timelineDisplayArticles: timeline.timelineDisplayArticles,
-    feedOptions: timeline.feedOptions,
-    selectedTagForDetail: timeline.selectedTagForDetail,
-    handleLoadMore: timeline.handleLoadMore,
-    handleFilterLabel: timeline.handleFilterLabel,
-    handleFilterChange: timeline.handleFilterChange,
-    handleSortChange: timeline.handleSortChange,
-    handleDateInputChange: timeline.handleDateInputChange,
-    applyQuickRange: timeline.applyQuickRange,
-    toggleMatchDetail: timeline.toggleMatchDetail,
 
     // Auxiliary labels
     auxiliaryLabels: auxLabels.auxiliaryLabels,
@@ -271,8 +216,7 @@ export function useTagsPage() {
     handleMergeAuxLabel: auxLabels.handleMergeAuxLabel,
 
     // Additional state
-    contentTab, showUpgradeDialog, showMatchingConfigDialog,
-    showGenerateDialog, showMergePreview, showArticlePreview,
+    showUpgradeDialog, showMatchingConfigDialog, showMergePreview, showArticlePreview,
 
     // Article preview
     selectedPreviewArticle, previewArticles, loadingPreviewArticle,

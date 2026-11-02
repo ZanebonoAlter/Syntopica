@@ -253,7 +253,7 @@ function toggleDay(date: string) {
   font-weight: 700;
 }
 
-/* 分段切换（复用 BoardThreadBrowser .btb-days-btn 同族视觉，原生 button + active 态） */
+/* 分段切换（原生 button + active 态，分段按钮同族视觉） */
 .lto__tabs {
   display: flex;
   gap: 0.25rem;

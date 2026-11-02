@@ -153,8 +153,8 @@ function goReadFull(): void {
         </form>
 
         <div class="search-filters">
-          <!-- 排序分段控件（add-search-sort-modes D6）：视觉同 BoardTimelinePanel 的
-               tags-sort-toggle，不抽公共组件；所有状态下可见，首查 loading 时 disabled -->
+          <!-- 排序分段控件（add-search-sort-modes D6）：分段按钮形态（accent token），
+               不抽公共组件；所有状态下可见，首查 loading 时 disabled -->
           <div class="search-sort-toggle" role="group" aria-label="结果排序">
             <button
               type="button"
@@ -396,7 +396,7 @@ function goReadFull(): void {
   margin-top: 14px;
 }
 
-/* 排序分段按钮：复用 BoardTimelinePanel 分段形态（accent token），窄屏折行不溢出 */
+/* 排序分段按钮：分段形态（accent token），窄屏折行不溢出 */
 .search-sort-toggle {
   display: inline-flex;
   flex: 0 0 auto;
