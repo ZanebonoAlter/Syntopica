@@ -137,4 +137,21 @@
 
 ---
 
+## 链路 4：版块「研究」工作台（redesign-enrichment-research-workbench）
+
+1. `/tags` → 侧栏选板块 → 内容 tab「研究」（旧「数据增强」key=enrichment 不变）。
+2. 主从布局：左栏候选索引（筛选 tab 全部/未研究/可阅读/已忽略 + 行点击进详情 + 「历史研究（只读）」按钮 `data-testid="open-legacy-history"`）；右栏详情（问题/依据/相关话题含「背景预览」/开始研究/阅读报告+版本切换；测试锚 `workbench-detail`）。窄屏（≤767.98px）单栏切换，详情内返回按钮回索引。
+3. 报告阅读：详情点报告 → SignalReportView（reader≤760；标题下分源时效行 `data-testid="signal-asof"`；引用按钮点击展开附录并定位）。
+4. 话题背景：日报 tab 话题总览 focus 头部「新闻背景」按钮（`data-testid="open-topic-news-background"`）→ AppDialog lg；研究详情相关话题「背景预览」→ AppDialog md（只读）。
+5. 旧研究历史：研究索引底部按钮 → AppDialog xl（LegacyResearchHistory，只读，无生成/追问/沉淀按钮）。
+
+## 链路 5：版块矩阵控制台（rework-workshop-into-radar-and-desk 8B.3 G5）
+
+1. `/tags/:boardId`：顶栏「矩阵 / 追踪 / 文章归档 / 研究工作台」；最新日报只从顶部「打开日报 · MM/DD」进 `/tags/:boardId/:date`（版块独立 report 锚，0 active 泳道也有）；「研究工作台」走真实 `/tags/:boardId/research`（`BoardEnrichmentPanel`）。
+2. 时间视窗 `[data-testid="observation-range-controls"]`：独立档按钮 `.orc-tier`（7/14/30/近 1 年）改名单；拖选/输入/键盘只改观察范围，不换档。
+3. 矩阵 `[data-testid="board-matrix"]`：日格 `[data-testid="matrix-cell-{topicId}-{date}"]` 点选共享选中日；下方 `[data-testid="lane-chronicle"]` 就地读完整标题/摘要/相关文章；不打开 SectionDrawer。
+4. 窄屏 `<768` 不渲染矩阵：`[data-testid="board-narrow-summary"]` 列全部可选泳道（休眠折叠）+ `[data-testid="narrow-open-context"]` 进同一单级宽工作面。
+5. 右轨 `[data-testid="board-context-rail"]`：健康→构成候选→话题追踪→来源；`[data-testid="rail-watch-manage"]` 仅以 boardId 打开 WatchManagePanel。全局六项/新建版块只在 `/tags` 总览。健康取 `latest.llm_score`（不是雷达 attention）；来源为独立 7/30/90 滚动统计，不随时间视窗。
+6. 触控限制（375/390 极短 1–2 日窗）：刷选线相距极近时以最近可见端/输入/键盘精调；1px 约 1.15 日的量化不是数据错误，24px 命中区仍生效。
+
 <!-- 新链路按上面格式增量追加 -->

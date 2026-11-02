@@ -1,0 +1,14 @@
+{
+  "cold_hit_layer": {"t0": "no svg/hits/tiers", "t1": "start 24px left 1091.8; end 24px left 1108.41; plot 800.81x88"},
+  "1440_14d": {"hitStart": {"l": 1091.8, "r": 1115.8, "w": 24}, "hitEnd": {"l": 1108.4, "r": 1132.4, "w": 24}, "overlapBand": {"l": 1108.4, "r": 1115.8, "w": 7.4}, "startLineMid": "brush-hit-start", "endLineMid": "brush-handle-end (8px SVG handle; overlay clamped at plot right edge)", "drag_start_mid": {"dx": 10, "start": "10-14→10-19 (+5d)", "end": "unchanged"}, "drag_end_mid": {"dx": -10, "end": "10-27→10-22 (-5d)", "start": "unchanged"}, "drag_overlap_x1112": {"nearest": "start", "attributed": "end", "end": "10-26→10-22"}, "edge_left_1px": {"from": 1092, "days_changed": 0}},
+  "1440_7d": {"merged": {"l": 1095.2, "r": 1132.4, "w": 37.2}, "leftMid_dx10": {"start": "10-21→10-25", "end": "unchanged"}, "rightMid_dx-10": {"end": "10-27→10-22", "start": "unchanged"}, "edge_left_1px": {"days_changed": 0}, "edge_left_5px": {"start": "10-21→10-23 (+2d ≈ 5px×0.45)"}, "edge_right_1px": {"end": "10-27→10-26 (-1d)"}},
+  "1440_single_day": {"region": 24, "upper_y270_dx-10": {"start": "10-20→10-15", "end": "unchanged"}, "lower_y320_dx10": {"end": "10-20→10-25", "start": "unchanged"}},
+  "1440_pool_start": {"region": {"l": 332, "w": 37}, "outward_dx-10": {"start": "2025-10-28 unchanged"}, "inward_dx10": {"start": "2025-10-28→2025-11-02"}},
+  "375_14d": {"lines": 3.2, "merged": {"l": 324.9, "r": 360.2, "w": 35.3}, "leftMid_dx10": {"start": "10-14→10-26", "end": "unchanged"}, "rightMid_dx-10": {"end": "10-27→10-15", "start": "unchanged"}, "edge_1px": {"days_changed": 2, "note": "1px≈1.15日, 量化噪声"}},
+  "375_7d": {"merged": {"l": 331, "r": 360.2, "w": 29.2}, "leftMid_dx6": {"start": "10-21→10-27(clamp)"}, "rightMid_dx-6": {"end": "10-27→10-21(clamp)"}},
+  "375_single_day": {"region": 24, "upper_dx-10": {"start": "10-20→10-08"}, "lower_dx10": {"end": "10-20→10-27(clamp)"}},
+  "390_14d": {"merged": {"l": 339.4, "r": 375.2, "w": 35.8}, "leftMid_dx10": {"start": "10-14→10-25"}, "rightMid_dx-10": {"end": "10-27→10-16"}},
+  "390_7d": {"merged": {"w": 29.4}, "leftMid_dx6": {"start": "10-21→10-27(clamp)"}, "rightMid_dx-6": {"end": "10-27→10-21(clamp)"}},
+  "cancel": {"during": {"start": "10-14→10-23"}, "afterEsc": {"start": "10-14", "end": "10-27"}, "url_unchanged": true},
+  "keyboard": {"arrowLeft": "10-14→10-13", "shiftArrowRight": "→10-20", "focus_retained": true}
+}

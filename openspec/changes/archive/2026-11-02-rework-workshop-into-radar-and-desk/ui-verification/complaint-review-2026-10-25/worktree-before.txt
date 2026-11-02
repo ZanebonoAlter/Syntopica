@@ -1,0 +1,178 @@
+ M .pi/agents/change-review-glm.md
+ M .pi/agents/general-purpose.md
+ M backend-go/internal/dataenrichment/handler/analysis_runner.go
+ M backend-go/internal/dataenrichment/handler/handler.go
+ M backend-go/internal/dataenrichment/handler/handler_test.go
+ M backend-go/internal/dataenrichment/handler/signal_discovery.go
+ M backend-go/internal/dataenrichment/handler/signal_discovery_test.go
+ M backend-go/internal/dataenrichment/handler/signal_research.go
+ M backend-go/internal/dataenrichment/handler/signal_research_test.go
+ M backend-go/internal/dataenrichment/repository/models.go
+ M backend-go/internal/dataenrichment/repository/signal_candidate_test.go
+ M backend-go/internal/dataenrichment/repository/signal_models.go
+ M backend-go/internal/dataenrichment/repository/signal_repository.go
+ M backend-go/internal/dataenrichment/service/board_investigation_persist_test.go
+ M backend-go/internal/dataenrichment/service/signal_compose.go
+ M backend-go/internal/dataenrichment/service/signal_compose_test.go
+ M backend-go/internal/dataenrichment/service/signal_detect.go
+ M backend-go/internal/dataenrichment/service/signal_detect_test.go
+ M backend-go/internal/dataenrichment/service/signal_material.go
+ M backend-go/internal/dataenrichment/service/signal_material_test.go
+ M backend-go/internal/dataenrichment/service/signal_research.go
+ M backend-go/internal/dataenrichment/service/signal_research_test.go
+ M backend-go/internal/dataenrichment/wire.go
+ M backend-go/internal/platform/database/board_signal_migration_test.go
+ M backend-go/internal/platform/database/postgres_migrations.go
+ M backend-go/internal/platform/testutil/txprobe.go
+ M backend-go/internal/tagmanagement/handler/board_match_handler.go
+ M backend-go/internal/tagmanagement/service/core/embedding_queue.go
+ M backend-go/internal/tagmanagement/service/core/merge_reembedding_queue.go
+ M backend-go/internal/tagmanagement/service/service.go
+ M backend-go/internal/topicgraph/handler/daily_report_handler.go
+ M backend-go/internal/topicgraph/handler/daily_report_handler_test.go
+ M backend-go/internal/topicgraph/repository/daily_report_assignment_test.go
+ M backend-go/internal/topicgraph/repository/daily_report_centroid_test.go
+ M backend-go/internal/topicgraph/repository/daily_report_models.go
+ M backend-go/internal/topicgraph/repository/daily_report_repository.go
+ M backend-go/internal/topicgraph/repository/daily_report_repository_test.go
+ M backend-go/internal/topicgraph/repository/daily_report_topic_repository.go
+ M backend-go/internal/topicgraph/repository/lane_snapshot_repository.go
+ M backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go
+ M backend-go/internal/topicgraph/service/daily_report_llm.go
+ M backend-go/internal/topicgraph/service/daily_report_llm_test.go
+ M backend-go/internal/topicgraph/service/daily_report_merge.go
+ M backend-go/internal/topicgraph/service/daily_report_merge_test.go
+ M backend-go/internal/topicgraph/service/daily_report_orchestrator.go
+ M backend-go/internal/topicgraph/service/daily_report_orchestrator_test.go
+ M backend-go/internal/topicgraph/service/lane_snapshot.go
+ M backend-go/internal/topicgraph/service/lane_snapshot_test.go
+ M docs/reference/api/board-signals.md
+ M docs/reference/api/daily-reports.md
+ M docs/reference/api/dataenrichment.md
+ M docs/reference/architecture/ui-navigation.md
+ M docs/reference/configuration.md
+ M docs/reference/database/tables/daily-report-watch.md
+ M docs/reference/database/tables/data-enrichment.md
+ M docs/reference/flow/ai-summary.md
+ M docs/reference/flow/daily-report.md
+ M docs/reference/flow/data-enrichment.md
+ M docs/reference/flow/semantic-board.md
+ M docs/reference/flow/topic-graph.md
+ M docs/reference/standard/frontend/interaction-conventions.md
+ M docs/reference/standard/frontend/layout.md
+ M front/app/api/boardEnrichment.test.ts
+ M front/app/api/boardEnrichment.ts
+ M front/app/api/boardSignals.ts
+ M front/app/api/dailyReports.test.ts
+ M front/app/api/dailyReports.ts
+ M front/app/api/laneDynamics.ts
+ M front/app/api/semanticBoards.ts
+ M front/app/api/tagMergePreview.ts
+ M front/app/assets/css/main.css
+ M front/app/features/ai/composables/useAIRoutes.test.ts
+ M front/app/features/ai/composables/useAIRoutes.ts
+ M front/app/features/tags/components/BoardDailyReportTimeline.test.ts
+ M front/app/features/tags/components/BoardDailyReportTimeline.vue
+ M front/app/features/tags/components/BoardEnrichmentPanel.test.ts
+ M front/app/features/tags/components/BoardEnrichmentPanel.vue
+ M front/app/features/tags/components/BoardHealthPanel.vue
+ M front/app/features/tags/components/BoardSourcePanel.vue
+ M front/app/features/tags/components/BoardThreadBrowser.vue
+ M front/app/features/tags/components/ComposeSidebar.test.ts
+ M front/app/features/tags/components/ComposeSidebar.vue
+ M front/app/features/tags/components/SignalCandidateList.test.ts
+ M front/app/features/tags/components/SignalCandidateList.vue
+ M front/app/features/tags/components/SignalReportView.test.ts
+ M front/app/features/tags/components/SignalReportView.vue
+ M front/app/features/tags/components/TagsPage.vue
+ M front/app/features/tags/components/daily-report/DailyReportMasthead.vue
+ M front/app/features/tags/components/daily-report/DailyReportSidebar.vue
+ M front/app/features/tags/components/daily-report/DailyReportTopicSection.test.ts
+ M front/app/features/tags/components/daily-report/DailyReportTopicSection.vue
+ M front/app/features/tags/components/daily-report/LaneTrendOverview.test.ts
+ M front/app/features/tags/components/daily-report/LaneTrendOverview.vue
+ M front/app/features/tags/components/daily-report/dailyReportMagazine.test.ts
+ M front/app/features/tags/components/daily-report/dailyReportMagazine.ts
+ M front/app/features/tags/components/lane-dynamics/LaneDynamicsCard.test.ts
+ M front/app/features/tags/components/lane-dynamics/LaneDynamicsCard.vue
+ M front/app/features/tags/components/signalReport.ts
+ M front/app/features/tags/composables/useDailyReportReader.test.ts
+ M front/app/features/tags/composables/useDailyReportReader.ts
+ M front/app/features/tags/composables/useInlineCompose.test.ts
+ M front/app/features/tags/composables/useInlineCompose.ts
+ M front/app/features/tags/composables/useMarginNoteSelection.ts
+ M front/app/features/tags/composables/useSignalWorkbench.test.ts
+ M front/app/features/tags/composables/useSignalWorkbench.ts
+ D front/app/pages/tags.vue
+ M openspec/specs/ai-capability-routing/spec.md
+ M scripts/dev/deploy-frontend.sh
+?? --clip
+?? .pi/agents/change-ui-review.md
+?? .pi/reviews/
+?? backend-go/admin
+?? backend-go/cmd/verify-lane-bucketing/
+?? backend-go/internal/dataenrichment/handler/legacy_history_handler.go
+?? backend-go/internal/dataenrichment/handler/topic_context_board_guard_test.go
+?? backend-go/internal/dataenrichment/repository/legacy_history_repository.go
+?? backend-go/internal/dataenrichment/repository/legacy_history_test.go
+?? backend-go/internal/dataenrichment/repository/signal_disposition_test.go
+?? backend-go/internal/dataenrichment/service/signal_page_fetch.go
+?? backend-go/internal/dataenrichment/service/signal_page_fetch_test.go
+?? backend-go/internal/dataenrichment/service/signal_question.go
+?? backend-go/internal/dataenrichment/service/signal_sources.go
+?? backend-go/internal/dataenrichment/service/signal_sources_test.go
+?? backend-go/internal/tagmanagement/handler/board_article_handler_test.go
+?? backend-go/internal/tagmanagement/service/board/archive.go
+?? backend-go/internal/tagmanagement/service/board/archive_test.go
+?? backend-go/internal/tagmanagement/service/core/embedding_queue_orphan_test.go
+?? backend-go/internal/topicgraph/handler/board_radar_handler.go
+?? backend-go/internal/topicgraph/repository/board_radar_repository.go
+?? backend-go/internal/topicgraph/repository/board_radar_repository_test.go
+?? backend-go/internal/topicgraph/repository/daily_report_bucket_columns_test.go
+?? backend-go/internal/topicgraph/repository/daily_report_rebucket.go
+?? backend-go/internal/topicgraph/service/daily_report_bucket.go
+?? backend-go/internal/topicgraph/service/daily_report_bucket_repair_test.go
+?? backend-go/internal/topicgraph/service/daily_report_bucket_test.go
+?? backend-go/internal/topicgraph/service/daily_report_orchestrator_bucket_test.go
+?? backend-go/internal/topicgraph/service/daily_report_rebucket.go
+?? backend-go/internal/topicgraph/service/daily_report_rebucket_test.go
+?? backend-go/server
+?? backend-go/verify-lane-bucketing
+?? desktop/
+?? docs/srs/
+?? front/app/components/ui/AppDrawer.test.ts
+?? front/app/components/ui/AppDrawer.vue
+?? front/app/components/ui/overlayStack.ts
+?? front/app/features/tags/README.md
+?? front/app/features/tags/components/DailyReportReader.test.ts
+?? front/app/features/tags/components/DailyReportReader.vue
+?? front/app/features/tags/components/LegacyResearchHistory.test.ts
+?? front/app/features/tags/components/LegacyResearchHistory.vue
+?? front/app/features/tags/components/TopicNewsBackground.test.ts
+?? front/app/features/tags/components/TopicNewsBackground.vue
+?? front/app/features/tags/components/console/
+?? front/app/features/tags/components/daily-report/DailyReportDeskEvolution.vue
+?? front/app/features/tags/components/daily-report/DailyReportDeskIndex.vue
+?? front/app/features/tags/components/daily-report/DailyReportDeskShell.test.ts
+?? front/app/features/tags/components/daily-report/DailyReportDeskShell.vue
+?? front/app/features/tags/components/daily-report/DeskArticleDrawer.vue
+?? front/app/features/tags/components/daily-report/deskTypes.ts
+?? front/app/features/tags/components/reportPresentation.test.ts
+?? front/app/features/tags/components/reportPresentation.ts
+?? front/app/features/tags/composables/useBoardArchive.test.ts
+?? front/app/features/tags/composables/useBoardArchive.ts
+?? front/app/features/tags/composables/useBoardComposition.test.ts
+?? front/app/features/tags/composables/useBoardComposition.ts
+?? front/app/features/tags/composables/useBoardConsole.test.ts
+?? front/app/features/tags/composables/useBoardConsole.ts
+?? front/app/features/tags/composables/useBoardHealth.ts
+?? front/app/features/tags/composables/useBoardSources.ts
+?? front/app/features/tags/composables/useTopicNewsBackground.ts
+?? front/app/middleware/
+?? front/app/pages/tags/
+?? openspec/changes/add-ghost-mount-unmount/
+?? openspec/changes/add-intra-lane-theme-bucketing/
+?? openspec/changes/add-question-driven-news-research/
+?? openspec/changes/redesign-enrichment-research-workbench/
+?? openspec/changes/rework-workshop-into-radar-and-desk/
+?? openspec/changes/slim-lane-snapshot-trend/

@@ -1,0 +1,42 @@
+[
+  {
+    "file": "01-radar-dom.json",
+    "url": "http://localhost:5100/tags",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "height": 900,
+    "scrollHeight": 900
+  },
+  {
+    "file": "02-console-dom.json",
+    "url": "http://localhost:5100/tags/1974",
+    "width": 1440,
+    "scrollWidth": 1440,
+    "height": 900,
+    "scrollHeight": 900
+  },
+  {
+    "file": "03-50413-dom.json",
+    "url": "http://localhost:5100/tags/50413",
+    "width": 1280,
+    "scrollWidth": 1280,
+    "height": 633,
+    "scrollHeight": 1144
+  },
+  {
+    "file": "07-mobile-console-dom.json",
+    "url": "http://localhost:5100/tags/1974?lane=1204",
+    "width": 375,
+    "scrollWidth": 375,
+    "height": 667,
+    "scrollHeight": 679
+  },
+  {
+    "file": "09-50413-archive-dom.json",
+    "url": "http://localhost:5100/tags/50413",
+    "width": 375,
+    "scrollWidth": 375,
+    "height": 667,
+    "scrollHeight": 667
+  }
+]

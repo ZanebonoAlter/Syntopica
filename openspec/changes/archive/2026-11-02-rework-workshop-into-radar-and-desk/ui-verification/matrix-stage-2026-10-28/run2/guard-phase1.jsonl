@@ -1,0 +1,9 @@
+{"marker":"matrix-s9r2","ts":"2026-10-27T22:13:11.525Z","kind":"ready","url":"ws://127.0.0.1:33299/devtools/browser/5dfe95d1-8a81-4a5a-9f7c-f4a1b290dadd","delayMs":1500,"delayMatch":"/lane-dynamics?days=14"}
+{"marker":"matrix-s9r2","ts":"2026-10-27T22:13:11.555Z","kind":"attach","targetType":"page","sessionId":"9EAD8CE23DAE9D5F9379601EEF0D4231","ok":true}
+{"marker":"matrix-s9r2","ts":"2026-10-27T22:13:11.555Z","kind":"attach","targetType":"page","sessionId":"9C7A97E77D9671E9B52A57252B415FED","ok":true}
+{"marker":"matrix-s9r2","ts":"2026-10-27T22:13:11.558Z","kind":"attach","targetType":"page","sessionId":"B6076EC7DE59646FFF7F868659CC360E","ok":true}
+{"marker":"matrix-s9r2","ts":"2026-10-27T22:13:11.560Z","kind":"attach","targetType":"page","sessionId":"984AC1CB88083E76393EF747527459B4","ok":true}
+{"marker":"matrix-s9r2","ts":"2026-10-27T22:13:11.564Z","kind":"attach","targetType":"iframe","sessionId":"4459EF497814C4B3C73A1DB520CA21D3","ok":true}
+{"marker":"matrix-s9r2","ts":"2026-10-27T22:13:55.638Z","kind":"delayed","method":"GET","url":"http://localhost:5100/api/semantic-boards/1974/lane-dynamics?days=14","ms":1500}
+{"marker":"matrix-s9r2","ts":"2026-10-27T22:13:57.144Z","kind":"delayed","method":"GET","url":"http://localhost:5100/api/semantic-boards/1974/lane-dynamics?days=14","ms":1500}
+{"marker":"matrix-s9r2","ts":"2026-10-27T22:14:30.966Z","kind":"stopped"}

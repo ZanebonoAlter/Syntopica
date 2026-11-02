@@ -1,0 +1,624 @@
+{
+  "base": "http://localhost:5100",
+  "board": "1974",
+  "total": 92,
+  "failed": 0,
+  "results": [
+    {
+      "label": "E1.1 三条候选链渲染",
+      "ok": true
+    },
+    {
+      "label": "E1.2 无默认勾选（组/成员全未选、无半选）",
+      "ok": true
+    },
+    {
+      "label": "E1.3 已有 active 泳道默认隐藏（无只读节点）",
+      "ok": true
+    },
+    {
+      "label": "E1.4 右栏只有三段 + 两 tab",
+      "ok": true
+    },
+    {
+      "label": "E1.5 右栏无关联事件/计算依据/话题泳道参照",
+      "ok": true
+    },
+    {
+      "label": "E1.6 画布默认话题档（话题带标题常显）",
+      "ok": true
+    },
+    {
+      "label": "E1.7 散料点不常显标题",
+      "ok": true
+    },
+    {
+      "label": "E2.1 候选卡显示事件数/连接跨度/首末日期",
+      "ok": true
+    },
+    {
+      "label": "E2.2 候选卡标题是原话题名（真实数据）",
+      "ok": true
+    },
+    {
+      "label": "G1 画布 1:1（点半径属性 = 渲染像素半径）",
+      "ok": true
+    },
+    {
+      "label": "G2 无元素越出画布边界",
+      "ok": true
+    },
+    {
+      "label": "G3 普通点半径 ≥ 3px",
+      "ok": true
+    },
+    {
+      "label": "G4 话题带标题互不重叠",
+      "ok": true
+    },
+    {
+      "label": "E3.1 点候选标题一次补齐该片段全部成员",
+      "ok": true
+    },
+    {
+      "label": "E3.2 组框变 checked",
+      "ok": true
+    },
+    {
+      "label": "E3.3 组计数 3/3 已选",
+      "ok": true
+    },
+    {
+      "label": "E3.4 右栏计数 3 条",
+      "ok": true
+    },
+    {
+      "label": "E3.5 图上 3 个已选（实心点 + 勾号）",
+      "ok": true
+    },
+    {
+      "label": "E3.6 质心推荐出现（不再是空态）",
+      "ok": true
+    },
+    {
+      "label": "E3.7 推荐项未被自动勾选（待选组无 checked）",
+      "ok": true
+    },
+    {
+      "label": "E15.0 相关口径可从接口复算（1 跳 ∪ 可补充推荐）",
+      "ok": true,
+      "extra": {
+        "hop": 3,
+        "rec": 23,
+        "pool": 23,
+        "readonly": 3
+      }
+    },
+    {
+      "label": "E15.1 默认视图：可画的相关节点在节点下出标题（都属于相关集合，且不超上限 12）",
+      "ok": true,
+      "extra": {
+        "got": 12,
+        "want": 12,
+        "pool": 23
+      }
+    },
+    {
+      "label": "E15.2 标题是缩略且对得上真实 cluster_label",
+      "ok": true,
+      "extra": {
+        "sample": [
+          "美媒发文分析伊朗战…",
+          "美情报人士称中俄伊…",
+          "印度军队在边境向巴…"
+        ]
+      }
+    },
+    {
+      "label": "E15.3 只读的相关节点在提示行点名（不逐点画标题）",
+      "ok": true,
+      "extra": {
+        "readonly": 3,
+        "hint": "相关节点（只读 3 个，在已有泳道里（默认隐藏））：以色列大选投票日：…、以色列议会选举后组…、以色列组阁僵局牵动…；另有 11 个可补充的相关节点未标名（列太"
+      }
+    },
+    {
+      "label": "E4.1 取消一个成员后组框 indeterminate",
+      "ok": true
+    },
+    {
+      "label": "E4.2 计数变 2/3",
+      "ok": true
+    },
+    {
+      "label": "E4.3 半选时再点标题 = 补齐全组（不是取消）",
+      "ok": true,
+      "extra": {
+        "c": "3 / 3 已选"
+      }
+    },
+    {
+      "label": "E4.4 全选时再点标题 = 取消整组",
+      "ok": true
+    },
+    {
+      "label": "E4.5 取消整组后组框回 unchecked",
+      "ok": true
+    },
+    {
+      "label": "E4.6 取消整组后右栏计数 0 条",
+      "ok": true,
+      "extra": {
+        "c": "0 条"
+      }
+    },
+    {
+      "label": "E4.7 组外人工补选成功（右栏 1 条）",
+      "ok": true,
+      "extra": {
+        "c": "1 条"
+      }
+    },
+    {
+      "label": "E4.8 取消整组保留组外人工补选",
+      "ok": true
+    },
+    {
+      "label": "E9.1 已选事件 tab 逐条带真实复选框",
+      "ok": true
+    },
+    {
+      "label": "E9.2 取消勾选即移出本次（计数 0 条）",
+      "ok": true
+    },
+    {
+      "label": "E5.0 命名走独立弹窗（工作面内无起名输入框）",
+      "ok": true,
+      "extra": {
+        "nameInputSel": null
+      }
+    },
+    {
+      "label": "E5.1 打开命名弹窗",
+      "ok": true,
+      "extra": {
+        "dlg": {
+          "found": true,
+          "testid": null,
+          "cls": "app-input",
+          "ph": "为你选中的事件命名"
+        }
+      }
+    },
+    {
+      "label": "E5.2 人工名写入成功",
+      "ok": true
+    },
+    {
+      "label": "E5.3 关闭命名弹窗后草稿保留（成员仍在）",
+      "ok": true,
+      "extra": {
+        "cnt": "3 条",
+        "dlgBtns": [
+          {
+            "t": "✕",
+            "ds": null
+          },
+          {
+            "t": "继续编排",
+            "ds": "compose-name-close"
+          },
+          {
+            "t": "确认创建",
+            "ds": "compose-name-confirm"
+          }
+        ]
+      }
+    },
+    {
+      "label": "E5.4 命名弹窗已关闭",
+      "ok": true
+    },
+    {
+      "label": "E5.5 选组/取消组后人工名未被覆盖",
+      "ok": true,
+      "extra": {
+        "nameVal": null
+      }
+    },
+    {
+      "label": "E10.0 日期控件存在",
+      "ok": true,
+      "extra": {
+        "dateSel": "select"
+      }
+    },
+    {
+      "label": "E10.1 有草稿切日期先弹确认",
+      "ok": true,
+      "extra": {
+        "dlgText": "切换日期范围\n✕\n\n切换会清空本次选择和名称，按新范围重算候选与质心推荐；不会修改任何历史数据。\n\n保留当前范围\n清空草稿并切换"
+      }
+    },
+    {
+      "label": "E10.2 取消后旧范围与成员保留",
+      "ok": true,
+      "extra": {
+        "beforeChosen": "0 条",
+        "now": "0 条"
+      }
+    },
+    {
+      "label": "E10.3 确认弹窗已关闭",
+      "ok": true
+    },
+    {
+      "label": "E12.1 显式开启后 active 泳道点出现且标只读",
+      "ok": true,
+      "extra": {
+        "readonlyNodes": 117
+      }
+    },
+    {
+      "label": "E15.4 前置：1984 组已重新选中",
+      "ok": true
+    },
+    {
+      "label": "E15.5 开启只读参照后：只读相关节点仍不进画布标题（宁缺勿叠、不压字）",
+      "ok": true,
+      "extra": {
+        "readonly": 3
+      }
+    },
+    {
+      "label": "E15.6 提示行继续点名只读相关节点",
+      "ok": true,
+      "extra": {
+        "hint": "相关节点（只读 3 个，在已有泳道里）：以色列大选投票日：…、以色列议会选举后组…、以色列组阁僵局牵动…；另有 11 个可补充的相关节点未标名（列太窄或超出上限"
+      }
+    },
+    {
+      "label": "E12.2 只读点的卡片无选入动作",
+      "ok": true,
+      "extra": {
+        "c": {
+          "exists": true,
+          "hidden": false,
+          "text": "× | 迪拜飞特拉维夫客机发生严重事件 | 2026-10-01 · 已有泳道只读 | 5 条原关系，画布上已连出"
+        }
+      }
+    },
+    {
+      "label": "E12.3 取消聚焦不偷关已有泳道开关",
+      "ok": true
+    },
+    {
+      "label": "E12.4 关掉开关后只读点消失",
+      "ok": true
+    },
+    {
+      "label": "E15.7 14 天窗里存在带「可画相关节点」的候选链",
+      "ok": true,
+      "extra": {
+        "key": "1984:7345",
+        "chains": 2
+      }
+    },
+    {
+      "label": "E15.8 14 天窗候选链就位",
+      "ok": true,
+      "extra": {
+        "key": "1984:7345"
+      }
+    },
+    {
+      "label": "E15.9 可画的相关节点都在节点下出标题缩略（不超上限 12，且都属于相关集合）",
+      "ok": true,
+      "extra": {
+        "got": 6,
+        "want": 6,
+        "pool": 6,
+        "cnt": "3 条",
+        "sel": [
+          "7345",
+          "7409",
+          "7514"
+        ]
+      }
+    },
+    {
+      "label": "E15.10 标题是缩略（≤11 字）且在节点下方",
+      "ok": true,
+      "extra": [
+        {
+          "id": "7104",
+          "text": "马克龙批评外国领导…",
+          "x": 378.92857142857144,
+          "y": 180.52,
+          "ny": 150
+        },
+        {
+          "id": "7516",
+          "text": "多国选举结果对特朗…",
+          "x": 743.9285714285714,
+          "y": 360.52,
+          "ny": 330
+        },
+        {
+          "id": "7515",
+          "text": "台军启动第二波三军…",
+          "x": 743.9285714285714,
+          "y": 270.52,
+          "ny": 240
+        }
+      ]
+    },
+    {
+      "label": "E15.11 相关标题互不重叠",
+      "ok": true
+    },
+    {
+      "label": "E15.12 90 天窗里存在带「可画相关节点」的候选链",
+      "ok": true,
+      "extra": {
+        "key": "1984:7345"
+      }
+    },
+    {
+      "label": "E15.13 90 天窗候选链就位",
+      "ok": true,
+      "extra": {
+        "key": "1984:7345"
+      }
+    },
+    {
+      "label": "E15.14 90 天窗：画布上的相关标题不超上限（不淹没画布）",
+      "ok": true,
+      "extra": {
+        "denseTitles": 12
+      }
+    },
+    {
+      "label": "E15.15 90 天窗：没标名的相关节点在提示行里如实说明",
+      "ok": true,
+      "extra": {
+        "denseTitles": 12,
+        "pool": 129,
+        "hint": "相关节点（只读 3 个，在已有泳道里（默认隐藏））：以色列大选投票日：…、以色列议会选举后组…、以色列组阁僵局牵动…；另有 117 个可补充的相关节点未标名（列太窄或超出上限，右栏"
+      }
+    },
+    {
+      "label": "E7.0 未悬停时无卡片",
+      "ok": true
+    },
+    {
+      "label": "E7.1 悬停出卡（标题/日期/关系条数）",
+      "ok": true,
+      "extra": {
+        "exists": true,
+        "hidden": false,
+        "text": "× | 特朗普宣布美军正式撤离伊拉克 | 2026-10-01 | 1 条原关系，画布上已连出 | ＋ 选入本次泳道"
+      }
+    },
+    {
+      "label": "E7.2 点选后卡片钉住",
+      "ok": true,
+      "extra": {
+        "exists": true,
+        "hidden": false,
+        "text": "× | 特朗普宣布美军正式撤离伊拉克 | 2026-10-01 | 1 条原关系，画布上已连出 | ＋ 选入本次泳道"
+      }
+    },
+    {
+      "label": "E7.3 鼠标移开后卡片仍在（跟随选中节点）",
+      "ok": true,
+      "extra": {
+        "exists": true,
+        "hidden": false,
+        "text": "× | 特朗普宣布美军正式撤离伊拉克 | 2026-10-01 | 1 条原关系，画布上已连出 | ＋ 选入本次泳道"
+      }
+    },
+    {
+      "label": "E7.4 卡片贴着节点（横向距离 < 200px）",
+      "ok": true,
+      "extra": {
+        "pos": 167
+      }
+    },
+    {
+      "label": "E7.5 卡内有快捷选入/移出动作",
+      "ok": true,
+      "extra": {
+        "actIdx": 2
+      }
+    },
+    {
+      "label": "E7.6 快捷动作真实改成员并当场翻字",
+      "ok": true,
+      "extra": {
+        "btnBefore": "＋ 选入本次泳道",
+        "btnAfter": "移出本次泳道",
+        "cnt": "1 条"
+      }
+    },
+    {
+      "label": "E7.7 快捷移出真实生效（计数回 0）",
+      "ok": true,
+      "extra": {
+        "cnt": "0 条"
+      }
+    },
+    {
+      "label": "E8.1 × 收起卡片",
+      "ok": true,
+      "extra": {
+        "exists": false
+      }
+    },
+    {
+      "label": "E8.2 × 同时清掉右栏线索",
+      "ok": true
+    },
+    {
+      "label": "E8.3 再点同一节点即取消选中（卡片收起）",
+      "ok": true,
+      "extra": {
+        "on": {
+          "exists": true,
+          "hidden": false,
+          "text": "× | 特朗普宣布美军正式撤离伊拉克 | 2026-10-01 | 1 条原关系，画布上已连出 | ＋ 选入本次泳道"
+        },
+        "off": {
+          "exists": false
+        }
+      }
+    },
+    {
+      "label": "E13.0 命名弹窗自动预填候选话题名",
+      "ok": true,
+      "extra": {
+        "prefilled": "以色列举行第26届议会选举投票，选出120名新议员"
+      }
+    },
+    {
+      "label": "E13.1 缺名称拒绝创建（弹窗仍在 + 显示错误）",
+      "ok": true,
+      "extra": {
+        "nameErr": {
+          "stillOpen": true,
+          "err": true,
+          "text": "给新泳道起个名字"
+        }
+      }
+    },
+    {
+      "label": "E13.2 拒绝时成员保留",
+      "ok": true,
+      "extra": {
+        "cnt": "3 条"
+      }
+    },
+    {
+      "label": "E13.3 未真创建（候选链数量不变、未弹成功）",
+      "ok": true,
+      "extra": {
+        "chainsBefore": 3
+      }
+    },
+    {
+      "label": "G5.1 1920 下画布仍 1:1",
+      "ok": true
+    },
+    {
+      "label": "G5.2 1920 下无元素越界",
+      "ok": true
+    },
+    {
+      "label": "G5.3 1920 下普通点半径仍 ≥3px",
+      "ok": true
+    },
+    {
+      "label": "E16.1 初始缩放读数 100%",
+      "ok": true,
+      "extra": {
+        "zoomBefore": "100%"
+      }
+    },
+    {
+      "label": "E16.2 滚轮放大后读数变大",
+      "ok": true,
+      "extra": {
+        "zoomBefore": "100%",
+        "zoomAfter": "126%"
+      }
+    },
+    {
+      "label": "E16.3 等比缩放：viewBox 不变、SVG 宽变大（日期列不重排）",
+      "ok": true,
+      "extra": {
+        "vbBefore": "0 0 810 604",
+        "vbAfter": "0 0 810 604",
+        "svgWidthBefore": 810,
+        "svgWidthAfter": 1018.1868019008286
+      }
+    },
+    {
+      "label": "E16.4 缩放后普通点渲染半径仍 ≥3px",
+      "ok": true
+    },
+    {
+      "label": "E16.5 缩放后节点卡仍贴着节点（水平距离 <200px）",
+      "ok": true,
+      "extra": {
+        "pos": 168.3214569091797
+      }
+    },
+    {
+      "label": "E16.8 缩放+平移后节点卡不塌成竖条（宽度 ≥240px）",
+      "ok": true,
+      "extra": {
+        "w": 300,
+        "h": 138
+      }
+    },
+    {
+      "label": "E16.6 重置回到 100% 且 SVG 宽复原",
+      "ok": true,
+      "extra": {
+        "now": "100%"
+      }
+    },
+    {
+      "label": "E16.7 滚轮在画布上不触发页面滚动（defaultPrevented）",
+      "ok": true
+    },
+    {
+      "label": "E17.1 拖拽平移：内容跟着指针走（scrollLeft 变化）",
+      "ok": true,
+      "extra": {
+        "panBefore": 112,
+        "panAfter": 212
+      }
+    },
+    {
+      "label": "E17.2 拖拽不误触发节点聚焦（没弹出节点卡）",
+      "ok": true
+    },
+    {
+      "label": "E17.3 拖拽不改选择与计数",
+      "ok": true,
+      "extra": {
+        "before": "0 条",
+        "after": "0 条"
+      }
+    },
+    {
+      "label": "E14.1 375px 显示宽屏提示",
+      "ok": true,
+      "extra": {
+        "wide": true,
+        "noOverflow": true,
+        "sw": 375,
+        "iw": 375
+      }
+    },
+    {
+      "label": "E14.2 375px 无横向溢出",
+      "ok": true,
+      "extra": {
+        "wide": true,
+        "noOverflow": true,
+        "sw": 375,
+        "iw": 375
+      }
+    },
+    {
+      "label": "E14.3 390px 宽屏提示 + 无横向溢出",
+      "ok": true,
+      "extra": {
+        "wide": true,
+        "noOverflow": true
+      }
+    }
+  ]
+}

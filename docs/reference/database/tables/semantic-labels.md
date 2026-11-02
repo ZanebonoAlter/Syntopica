@@ -32,6 +32,7 @@
 
 > ⚠️ `slug` 约束是**单列 UNIQUE**（迁移 `20260521_0001` `UNIQUE(slug)`）。旧文档曾写「唯一约束 `(label_type, slug)`」，错误。
 > ⚠️ `embedding` / `merge_embedding` 均为运行时维度向量列（旧文档曾写 `vector(1536)`，错误）。
+> 描述修复链（§5.6）**只覆盖 `label_type='auxiliary'`**：组合标签（`composite`）在体检分诊里证据照常展示但**没有描述修复入口**（只读），其「建议摘除」仍走既有构成摘除接口；历史快照缺 `label_type` 时按「类型未知」处理，不臆造类型。
 
 ### 5.2 topic_tag_semantic_labels（tag-辅助标签关联，中间表）
 
@@ -95,6 +96,57 @@
 
 主键：`id`。复合索引：`idx_board_health_snapshots_board_checked (semantic_board_id, checked_at)`（趋势查询）。
 
+### 5.6 auxiliary_description_repair_jobs（共享描述修复任务，board-health-triage-advice）
+
+一次用户确认的辅助标签描述重写 = 一条持久任务。任务**只记录请求与进度**，执行靠后台执行器；不依赖内存 map，重启后可查可恢复。
+
+> **无 DB 级外键（刻意）**：`semantic_labels` / `topic_tags` 上**没有**指向本表的 FK。冻结引用的行事后被删（aux 标签 GC 删除模式、topic tag 删除）时，既不能阻塞删除、也不能级联丢掉修复历史——冻结 ID 保留，执行时把该项记为 `not_applicable`（见 §5.7）。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 自增主键 |
+| `auxiliary_label_id` | BIGINT | NOT NULL; index `idx_aux_desc_repair_jobs_label` | 目标辅助标签（逻辑关联 `semantic_labels.id`，**无 DB FK**） |
+| `idempotency_key` | VARCHAR(64) | NOT NULL; **UNIQUE** `uq_aux_desc_repair_jobs_key` | 客户端幂等键（一次确认一键；同键同载荷重发回同一任务，同键异载荷 409） |
+| `expected_version` | VARCHAR(64) | NOT NULL | 确认时看到的**不透明来源版本令牌**（服务端生成与校验，前端不解析） |
+| `old_description` | TEXT | — | 确认时的原描述（审计/核对用） |
+| `new_description` | TEXT | NOT NULL | 确认后的新描述（服务端 trim 后存） |
+| `stage` | VARCHAR(16) | NOT NULL DEFAULT '' | 执行阶段：`embedding` / `saving` / `matching`（`pending` 时可空） |
+| `status` | VARCHAR(20) | NOT NULL DEFAULT 'pending'; index `idx_aux_desc_repair_jobs_status` | 状态闭集：`pending` / `embedding` / `saving` / `matching` / `completed` / `embedding_failed` / `save_failed` / `matching_failed` / `conflict` / `unavailable`（约定，无 CHECK） |
+| `description_committed` | BOOLEAN | NOT NULL DEFAULT false | 描述 + storage 向量是否已**原子提交**（true 不等于匹配全部完成） |
+| `total` | INTEGER | NOT NULL DEFAULT 0 | 冻结范围总数（创建时全部活跃 topic_tags，含未归属者；**不因后续失效而缩小**） |
+| `processed` | INTEGER | NOT NULL DEFAULT 0 | 匹配引擎**实际成功**处理的项数（合法零命中也算成功） |
+| `failed` | INTEGER | NOT NULL DEFAULT 0 | 仍处失败态的项数 |
+| `not_applicable` | INTEGER | DEFAULT 0（**无 NOT NULL**，加列兼容存量行；存量读作 0） | 处理时已失效/删除/合并而**持久跳过**的项数（**不是成功**，不计入 processed） |
+| `error` | TEXT | — | 失败原因（内部可读文本） |
+| `claim_owner` | VARCHAR(64) | NULL | 内部执行所有权（执行器实例标识） |
+| `claimed_at` | TIMESTAMPTZ | NULL | 领取时刻 |
+| `lease_expires_at` | TIMESTAMPTZ | NULL | 租约到期时刻（用 DB 实时时钟 `clock_timestamp()` 判定，不用固定 `now()`） |
+| `committed_version` | VARCHAR(64) | NULL | 已提交的来源版本令牌（内部；**不进任何 HTTP DTO**） |
+| `committed_at` | TIMESTAMPTZ | NULL | 提交时刻（内部；**不进任何 HTTP DTO**） |
+| `phase_token` | VARCHAR(64) | NULL | 本次尝试的阶段执行权（原子 CAS 领取，结束即作废；内部） |
+| `created_at` | TIMESTAMPTZ | — | 创建时间 |
+| `updated_at` | TIMESTAMPTZ | — | 更新时间 |
+
+**部分唯一索引（迁移 `20261028_0001`）**：`uq_aux_desc_repair_jobs_label_active UNIQUE(auxiliary_label_id) WHERE status NOT IN ('completed','conflict','unavailable')`——同一辅助标签同时最多一个**未结束**任务；三种可重试失败态**不是**终态（未结束任务继续持锁，只能走 `retry`）。该索引在每次 AutoMigrate 成功后幂等重建（迁移可能已记录版本但建表未发生的自愈路径）。
+
+**生命周期**：`pending`（创建，只冻结范围）→ `embedding`（事务外生成 storage 向量）→ `saving`（事务内锁行校验来源版本/类型/状态，原子写 description+embedding+阶段）→ `matching`（既有匹配引擎逐项推进 §5.7 条目）→ `completed`（`remaining=0` 且 `failed=0`）。失败落 `embedding_failed` / `save_failed` / `matching_failed`（**等用户显式 retry，不自动无限重跑**）；来源版本变化落 `conflict`、标签非 active/已删落 `unavailable`（终态死路，须重新核对）。计数不变量：`total = processed + failed + not_applicable + remaining`（服务端单源计算，前端不得重算）。
+
+### 5.7 auxiliary_description_repair_items（描述修复任务条目＝冻结匹配范围）
+
+一条任务 = 一个**冻结**的 topic_tag 范围，每 tag 一行。`(job_id, topic_tag_id)` 唯一 → 范围是固定集合：任务创建后新增的 tag **不在**范围内（沿既有实时匹配路径），任务创建后被删/禁用/合并的 tag **不删本行**（见下方「生命周期」）。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 自增主键 |
+| `job_id` | BIGINT | NOT NULL; **UNIQUE** `uq_aux_desc_repair_items_job_tag (job_id, topic_tag_id)` | 所属任务（逻辑关联 `auxiliary_description_repair_jobs.id`，**无 DB FK**） |
+| `topic_tag_id` | BIGINT | NOT NULL | 冻结的 topic_tag（逻辑关联 `topic_tags.id`，**无 DB FK**；含未归属任何版块的标签） |
+| `status` | VARCHAR(16) | NOT NULL DEFAULT 'pending' | 条目状态：`pending` / `succeeded` / `failed` / `not_applicable`（约定，无 CHECK；列是开放字符串，便于后续新增终态） |
+| `error` | TEXT | — | 该项失败原因 |
+| `created_at` | TIMESTAMPTZ | — | 创建时间 |
+| `updated_at` | TIMESTAMPTZ | — | 更新时间 |
+
+**生命周期**：创建任务时一次性冻结当时**全部**活跃 topic_tags（不只枚举 `topic_tag_board_labels`、不只当前版块）；执行时逐项调既有匹配引擎——适用项成功 → `succeeded`（合法零命中也算成功）；报错 → `failed`（可重试）；处理前已删除/禁用/合并 → `not_applicable`（**不调用引擎**，不计成功、不计失败、不缩 `total`）。任务的 `processed` / `failed` / `not_applicable` 三个计数是本表的**单源聚合**（短事务内重算，不靠内存自增）。
+
 
 ### 5.4.1 composite_components（组合标签组件序列，中间表）
 
@@ -153,6 +205,16 @@ add-composite-labels 引入。纯关联表，复合主键，组件按 `position`
 | `idx_board_composition_auxiliary_label_id` | board_composition | `(auxiliary_label_id)` |
 | `idx_board_health_snapshots_board_checked` | board_health_snapshots | `(semantic_board_id, checked_at)` |
 
+### 语义标签 / 板块域索引（描述修复链，迁移 `20261028_0001` + AutoMigrate）
+
+| 索引名 | 表 | 列 | 来源 |
+| -------- | ------ | ------ | ------ |
+| `uq_aux_desc_repair_jobs_key` | auxiliary_description_repair_jobs | UNIQUE `(idempotency_key)` | AutoMigrate（模型 tag） |
+| `idx_aux_desc_repair_jobs_label` | auxiliary_description_repair_jobs | `(auxiliary_label_id)` | AutoMigrate（模型 tag） |
+| `idx_aux_desc_repair_jobs_status` | auxiliary_description_repair_jobs | `(status)` | AutoMigrate（模型 tag） |
+| `uq_aux_desc_repair_jobs_label_active` | auxiliary_description_repair_jobs | UNIQUE `(auxiliary_label_id)` WHERE `status NOT IN ('completed','conflict','unavailable')` | 迁移 `20261028_0001`（部分唯一索引；每次 AutoMigrate 后幂等重建） |
+| `uq_aux_desc_repair_items_job_tag` | auxiliary_description_repair_items | UNIQUE `(job_id, topic_tag_id)` | AutoMigrate（模型 tag） |
+
 
 ## 域 ER 图
 
@@ -166,6 +228,7 @@ erDiagram
     semantic_labels ||--o{ board_persistent_topics : "semantic_board_id"
     semantic_labels ||--o{ board_topic_watches : "semantic_board_id"
     semantic_labels ||--o{ board_upgrade_suggestions : "target_board_id (可空)"
+    semantic_labels ||--o{ auxiliary_description_repair_jobs : "auxiliary_label_id (逻辑)"
     semantic_labels ||--o{ composite_components : "component side (FK CASCADE)" %% 真实DB FK
     semantic_labels ||--o{ composite_components : "composite side (FK CASCADE)" %% 真实DB FK
     semantic_labels ||--o{ cross_board_relation_runs : "source_board_id (逻辑)"
@@ -176,6 +239,8 @@ erDiagram
     topic_tags ||--o{ topic_tag_board_labels : "topic_tag_id"
     topic_tags ||--o{ topic_tag_semantic_labels : "tag side"
     topic_tags ||--o{ topic_tag_semantic_labels : "topic_tag_id"
+    topic_tags ||--o{ auxiliary_description_repair_items : "topic_tag_id (逻辑)"
+    auxiliary_description_repair_jobs ||--o{ auxiliary_description_repair_items : "job_id (逻辑)"
 
     board_composition {
         BIGINT board_id PK "复合主键 (board_id, auxiliary_label_id)"
@@ -192,6 +257,22 @@ erDiagram
     board_upgrade_suggestions {
         SERIAL id PK
         VARCHAR status "pending|confirmed|dismissed"
+    }
+    auxiliary_description_repair_jobs {
+        BIGSERIAL id PK
+        BIGINT auxiliary_label_id "逻辑关联，无 DB FK"
+        VARCHAR idempotency_key "UNIQUE"
+        VARCHAR status "pending|embedding|saving|matching|completed|…"
+        INTEGER total "冻结范围数"
+        INTEGER processed "实际成功数"
+        INTEGER failed "失败数"
+        INTEGER not_applicable "失效跳过数（非成功）"
+    }
+    auxiliary_description_repair_items {
+        BIGSERIAL id PK
+        BIGINT job_id "UNIQUE(job_id,topic_tag_id)"
+        BIGINT topic_tag_id "逻辑关联，无 DB FK"
+        VARCHAR status "pending|succeeded|failed|not_applicable"
     }
     composite_components {
     }

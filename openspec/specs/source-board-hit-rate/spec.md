@@ -1,12 +1,11 @@
 # Source Board Hit Rate
 
 ## Purpose
-
 回答「哪个订阅源在给我喂有用的东西」：把既有正向链路（源 → 文章 → 标签 → 板块）反查为源视角与板块视角的只读聚合，让杂音源可被定位、可被比较，并为处置（降频/关打标/退订）提供依据。
 
 ## Requirements
-### Requirement: 命中口径与统计窗口
 
+### Requirement: 命中口径与统计窗口
 统计 SHALL 以下列口径计算，任何实现（端点、面板、调试脚本）MUST 一致：
 
 - **命中**：一篇文章至少有一个标签经 `topic_tag_board_labels` 挂到 `label_type='board'` 且 `status='active'` 的板块，即为命中。`auxiliary` / `composite` 标签本身不是板块。
@@ -32,7 +31,6 @@
 - **THEN** 统计 SHALL 输出「打标排队中 7、已处理无标签 3」，二者 MUST NOT 合并为单一数字
 
 ### Requirement: 按订阅源聚合端点
-
 系统 SHALL 提供只读端点 `GET /api/feeds/board-hit-stats?window=7`，返回窗口内全部订阅源的统计（不逐源 N+1 查询，单次批量聚合）。每条记录 SHALL 含：`feed_id`、`title`、`tagging_enabled`、`articles`（窗口内文章总数）、`in_board`（命中文章数）、`tagged_no_board`（有标签但未命中）、`untagged_pending`（打标排队中）、`untagged_settled`（已处理无标签）、`hit_rate`（`in_board / articles`，`articles = 0` 时为 0）、`boards`（该源命中板块及篇数列表，同一文章命中多板块时各计一次）。
 
 端点 SHALL 为只读：不写库、不触发打标或匹配、不改变任何源状态。
@@ -50,7 +48,6 @@
 - **THEN** 两次响应 SHALL 一致（除时间戳字段），且 MUST NOT 新增打标任务或修改任何源配置
 
 ### Requirement: 按板块聚合端点
-
 系统 SHALL 提供只读端点 `GET /api/semantic-boards/:id/source-breakdown?window=7`，返回该板块窗口内的来源构成：`total_articles`（该板块窗口内命中文章总数，按文章去重）、`source_count`（来源数）与 `sources[]`，每条含 `feed_id`、`title`、`articles`（该源在本板块的命中篇数）、`share`（`articles / total_articles`，`total_articles = 0` 时为 0）、以及该源的 `feed_articles`（窗口内总量）与 `feed_hit_rate`（该源整体命中率）。
 
 板块不存在或非 `board` 类型时 SHALL 返回 404。
@@ -72,14 +69,17 @@
 - **THEN** 响应 SHALL 为 `total_articles=0`、`sources=[]`（正常结果，非错误）
 
 ### Requirement: 板块页板块内容内的来源构成面板
+来源构成 SHALL 常驻于版块态势页（`/tags/:boardId`）的治理右轨，形态为「前 3 个来源 + 篇数 + 占比条」，并提供「全部 N 个来源」入口打开治理抽屉中的完整来源表。完整表 SHALL 包含：窗口分段控件（7/30/90 天，默认 7）、汇总行（本板块篇数 / 来源数 / 最大来源及其占比）、排序控件（按篇数 ↓ 默认 / 按该源入板块率 ↑）、来源表（订阅源 | 本板块篇数 | 占本板块比例 | 该源入板块率 | 该源窗口内总量）。
 
-`/tags` 板块页主区 tab 栏 SHALL 保持既有五个 tab 不变（不新增「来源」tab）。「板块内容」tab（默认 tab）内、既有板块构成面板之后 SHALL 追加只读「来源构成」面板，内容 SHALL 包含：窗口分段控件（7/30/90 天，默认 7）、汇总行（本板块篇数 / 来源数 / 最大来源及其占比）、排序控件（按篇数 ↓ 默认 / 按该源入板块率 ↑）、来源表（订阅源 | 本板块篇数 | 占本板块比例 | 该源入板块率 | 该源窗口内总量）。
-
-面板 SHALL 随选中板块变化重新拉取数据（与既有板块构成数据并行）；切换到其它 tab 时面板不渲染。面板 SHALL 为只读：MUST NOT 提供降频、关打标、退订等写动作，MUST NOT 因面板操作改变板块或订阅源状态。
+面板 SHALL 随选中板块变化重新拉取数据；旧板块的请求结果 MUST NOT 覆盖新选中板块的面板。面板 SHALL 为只读：MUST NOT 提供降频、关打标、退订等写动作，MUST NOT 因面板操作改变板块或订阅源状态。
 
 #### Scenario: 显示来源构成
-- **WHEN** 用户选中板块 #5，「板块内容」tab 底部展示来源构成面板
-- **THEN** 面板 SHALL 按窗口展示供血源列表，每行显示本板块篇数、占比与该源自身入板块率
+- **WHEN** 用户进入某版块的态势页
+- **THEN** 右轨 SHALL 按窗口展示前 3 个来源的篇数与占比条
+
+#### Scenario: 打开完整来源表
+- **WHEN** 用户点击右轨「全部 N 个来源」
+- **THEN** 治理抽屉 SHALL 打开并定位到来源页签，展示完整来源表与窗口/排序控件
 
 #### Scenario: 切换板块重新拉取
 - **WHEN** 用户从板块 #5 切换到板块 #8

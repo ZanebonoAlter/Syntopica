@@ -1,0 +1,1 @@
+{"mechanism": "CDP Fetch.enable(urlPattern '*', Request) on page/iframe; GET/HEAD/OPTIONS continue, others failRequest(BlockedByClient)", "blocked": [{"method": "POST", "url": "/api/reading-behavior/track-batch", "note": "站内原文打开时的阅读采集意图，被拦不落库"}, {"method": "POST", "url": "/api/__guard_selftest_page", "note": "真实页面自检"}], "allowed_probe": "GET /api/semantic-boards/overview 200"}

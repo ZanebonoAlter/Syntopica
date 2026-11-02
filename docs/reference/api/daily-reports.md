@@ -483,11 +483,12 @@ Response `data`：
 
 ## GET `/semantic-boards/:id/persistent-topics/compose-candidates`
 
-为手动编排 UI（`POST /semantic-boards/:id/persistent-topics/manual`）加载候选 section（带可用向量）及配置的 `match_threshold`，前端据此实时计算聚合锚点与离群距离。
+为手动编排 UI（`POST /semantic-boards/:id/persistent-topics/manual`）加载候选 section（带可用向量）、**窗口内原关系**、**服务端口径的候选链**及配置的 `match_threshold`，前端据此实时计算成员均值质心与补充推荐。
 
 Query：
 
-- `days` 可选，时间窗天数；不传或 `<=0` 取全部历史，`>90` 截断到 90。窗口以该板块最新 completed 日报为终点。
+- `days` 可选，时间窗天数；不传或 `<=0` 取全部历史，`>90` 截断到 90。窗口以该板块最新 completed 日报为终点（含首末报告日）。
+- `from` / `to` 可选，自选起止日（`YYYY-MM-DD`，**闭区间**）；两者必须成对给出，给出时忽略 `days`。校验（任一不满足 → `400`）：只给单边 / `from > to` / 跨度 > 90 天（**不静默截断**）/ `from` 早于「最新 completed 日报 − 89 天」取数窗 / 日期格式非法。`to` 晚于最新 completed 日报**允许**（窗口内本无更晚数据）。
 
 Response `data`：
 
@@ -505,9 +506,35 @@ Response `data`：
       "persistent_topic": { "id": 9, "label": "美伊谈判", "status": "active", "color": "#60a5fa" }
     }
   ],
-  "match_threshold": 0.6
+  "relations": [
+    { "from_id": 101, "to_id": 102, "distance": 0.0651, "relation_type": "identity" }
+  ],
+  "candidate_chains": [
+    {
+      "key": "1984:7345",
+      "topic_id": 1984,
+      "topic_label": "...",
+      "topic_status": "candidate",
+      "section_ids": [7345, 7409, 7514],
+      "first_date": "2026-10-27",
+      "last_date": "2026-10-30",
+      "span_days": 3
+    }
+  ],
+  "match_threshold": 0.3,
+  "window": {
+    "from": "2026-10-01",
+    "to": "2026-10-30",
+    "days": 30,
+    "latest_completed_date": "2026-10-30"
+  }
 }
 ```
+
+- `relations`：**窗口内两端都可见**的原关系全集（`identity` 与 `similarity` 都保留，`relation_type` 原样带出）。**只读、不新增边**。
+- `candidate_chains`：**服务端唯一实现**的候选链口径（见 `flow/daily-report.md` 业务约束）；前端只渲染不重算。
+- `window.days`：**生效**窗口天数（闭区间）。`days` 档：`>90` 回显 90、`<=0` 回显 0；`from`/`to` 档：回显 `to-from+1`。
+- `window.from` / `window.to`：**可能为 `null`**（无已完成日报、或 `days<=0` 全历史档），表示开边界；`window.latest_completed_date` 在该板块**没有已完成日报**时为 `null`。
 
 ## POST `/semantic-boards/:id/persistent-topics/embed-query`
 

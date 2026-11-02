@@ -1,0 +1,13 @@
+- navigation "面包屑" [ref=e1]
+  - link "返回主页" [ref=e4]
+  - link "叙事工坊" [ref=e5]
+- button "矩阵" [ref=e6]
+- button "归档" [ref=e7]
+- combobox "时间窗口" [expanded=false, ref=e8]: 14 天
+  - option "7 天" [ref=e10]
+  - option "14 天" [selected, ref=e11]
+  - option "30 天" [ref=e12]
+  - option "近 1 年" [ref=e13]
+- button "新建泳道" [ref=e2]
+- button "切换为深色模式" [ref=e3]
+- heading "影视作品" [level=2, ref=e9]

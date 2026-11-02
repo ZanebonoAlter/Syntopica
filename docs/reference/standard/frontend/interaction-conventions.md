@@ -52,6 +52,17 @@
 
 **案例**：历史 thread 无 `fit_distance`（本 change 上线前生成的），`isThreadFitDemoted(undefined) === false`，按正常 thread 渲染。见 `app/utils/threadFit.ts`。
 
+## 5. 报告数值/日期呈现：阅读短格式与原值分层（redesign-enrichment-research-workbench）
+
+报告里的数值展示分两层，**不许混**：
+
+- **阅读层短格式**（`formatReadingValue`）：常规值最多两位小数；极小非零保留量级绝不显示成 0；空串/null → 显式「缺失」不转 0；非法/超安全大数保留原样。用于正文引用按钮、证据表单元格。
+- **核查层原值**：源精度 `raw_value`/代码计算原值/公式/precision 在引用 title 与附录逐项保留，原字符串永不变更。
+- 图表横轴按真实日期距离（`buildChartLayout`），null 断点不补零不连线，相邻间隔极不均匀（最大者 >10× 最小者）降离散点并标观测数；对比柱从 0 起。
+- schema3 分源时效（`data_freshness`）按源展示；schema2 派生口径须标注「各源最大期」，零观测如实「无可用数据期」。
+
+案例：`100.19999694824219` → 阅读层 `100.2`、核查区保留原值；`0.0000012` 不得显示成 `0`。落地点：`features/tags/components/signalReport.ts` / `reportPresentation.ts`。
+
 ## 关联
 
 - 可观测性三系列的业务设计 → [daily-report.md](../../flow/daily-report.md) §可观测性

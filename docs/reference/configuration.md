@@ -194,9 +194,34 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `daily_report_intra_bucket_min_threads` | 分桶触发阈值（线索数，OR 条件的左支）：当日 thread 数 ≥ 此值触发。默认 `6` |
 | `daily_report_intra_bucket_min_tags` | 分桶触发阈值（tag 数，OR 条件的右支）：聚类 tag 数 ≥ 此值触发。默认 `10`（叙事型泳道单条 ≤5 tags 永不触发，阈值同时是误伤保护） |
 | `tag_edge_retention_days` | 标签边（`article_topic_tags`）保留窗口天数，默认 `7`；缺失/非数字/≤0 回退默认并记 warn。一个键驱动三处同口径：① `aux_label_cleanup` 的边时间窗 GC（删 `created_at` 早于保留窗口下界日（本地日历天零点 − N 天）的边（仅归档文章）+ 收孤儿）；② 日报自动补档扫描窗口 `[today-N, today)`；③ `POST /api/daily-reports/generate` 与 `TriggerNowWithDate` 的重建守卫下界。见 `flow/daily-report.md` 业务约束 19/20 与 `flow/reading.md` 业务约束 6 |
+| `board_health_magnet_gap` | 版块体检**磁铁信号阈值**（board-health-triage-advice）：构成标签对其「`direction_mismatch` 失败挂载子集」与「全部挂载 tag」的贴合均值差 `all_mean − failed_mean` **≥** 此值才判磁铁嫌疑（磁铁失灵病）。默认 `0.08`；取值须在 0-100（非法值/非数字回退默认）。详见下节「版块体检阈值（`ai_settings`）」 |
+| `board_health_magnet_min_failed` | 版块体检**磁铁信号失败子集最小样本量**：本版块 `direction_mismatch=true` 的挂载 tag 数低于此值时，磁铁信号一律标 `insufficient`（**不硬凑**、不给嫌疑结论）。默认 `5`（必须 ≥ 1，否则回退默认）。详见下节「版块体检阈值（`ai_settings`）」 |
+
 这些设置通过 `aisettings.LoadSummaryConfig()`、`aisettings.LoadFirecrawlConfig()` 等函数加载，在前端设置页面中配置。
 
 文章手动总结会在每次请求时重新读取 AI Provider 配置：优先使用 `summary` capability 的启用路由；未配置该路由时，回退到任一启用且具有 Base URL 和 Model 的 Provider。因此服务启动后新增 Provider 无需重启。API Key 对本地 Ollama、llama.cpp 或无需鉴权的 OpenAI-compatible 服务是可选项。
+
+### 版块体检阈值（`ai_settings`，board-health-triage-advice）
+
+版块体检（每日纯读统计 + 标签级三病分诊）的全部阈值都存在 `ai_settings` 表（`key` / `value` 两列，唯一键 `key`），每轮体检开始时由 `internal/tagmanagement/service/boardhealth.LoadConfig()` 读取——**缺行或非法值一律回退下表默认**（无需重启，下轮体检即生效）。这组键没有专门的设置界面端点（与版块匹配的 `semantic_board_match_*` 走 `PUT /api/semantic-boards/matching-config` 不同），按 `ai_settings` 键值行维护。
+
+| 键 | 默认 | 含义 |
+| --- | --- | --- |
+| `board_health_min_sample_size` | `5` | 标签级贴合度分布的最小样本量；低于此值该标签标 `insufficient`（分布字段置 `null`） |
+| `board_health_alert_threshold` | `60` | LLM 综合评分**低于**此值才发打扰裁决/通知（严格小于语义，`score >= 阈值` 不通知） |
+| `board_health_notify_cooldown_days` | `3` | 同一版块的异常通知冷却天数 |
+| `board_health_member_candidates_top` | `20` | 手动「版块扩充」主路从最新快照未收编清单取候选的条数上限（快照本身固定持久化 top 50） |
+| `board_health_magnet_gap` | `0.08` | **磁铁信号阈值**：`all_mean − failed_mean ≥` 此值才判磁铁嫌疑（float，非法/非 0-100 回退默认） |
+| `board_health_magnet_min_failed` | `5` | **磁铁信号失败子集最小样本量**（int，≤0 回退默认）；不足则信号 `insufficient`，不硬凑 |
+
+**执行边界（改这两个阈值不会触发任何自动动作）**：
+
+- 体检轮次**纯读**：只写 `board_health_snapshots` 快照（含分诊清单）与少量冷却内通知；**不写**匹配结果表、**不落**任何扩充建议 pending 行、**不改**任何标签描述/向量（红线 20）。
+- 阈值只影响**体检信号计算**与喂给 LLM 分诊的**证据强度**，进而影响分诊建议的判据；**不会**自动摘除任何构成标签、**不会**自动重写描述、**不会**自动扩充版块——摘除走既有手动接口，描述修复必须用户逐项确认（新建持久修复任务），版块扩充建议仍必须用户手动触发（红线 10）。
+- 磁铁信号只是**证据**不是判决：即使 `suspicious=true`，LLM 仍需结合失败挂载流向等证据裁决；「短名天花板」（短实体名 cosine 天然低）不算病症，MUST NOT 仅因 cosine 低判摘除。
+- 调整阈值**不回溯**：历史快照原样保留（体检历史不覆盖），新阈值只影响之后的轮次。
+
+链路背景与三病口径见 `docs/reference/flow/semantic-board.md` §版块体检三病分诊与共享描述修复。
 
 ### Provider 思考开关（`enable_thinking`）
 

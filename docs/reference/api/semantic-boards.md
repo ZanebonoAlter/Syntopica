@@ -28,6 +28,10 @@
 | POST | `/auxiliary-labels/backfill-embeddings` | 辅助标签死向量回填（202 异步） |
 | POST | `/auxiliary-labels/gc` | 辅助标签垃圾回收 |
 | POST | `/auxiliary-labels/:id/disable` | 禁用辅助标签 |
+| GET | `/auxiliary-labels/:id/description-repair-context` | 描述修复上下文（实时描述 + 不透明版本 + 直接引用版块 + 活跃标签数 + 最近任务，只读） |
+| POST | `/auxiliary-labels/:id/description-repairs` | 创建共享描述修复任务（202，幂等键 + expected_version） |
+| GET | `/auxiliary-labels/:id/description-repairs/:job_id` | 查询持久化修复任务（只读，校验归属该辅助标签） |
+| POST | `/auxiliary-labels/:id/description-repairs/:job_id/retry` | 显式重试失败/中断的修复任务（202，同一任务） |
 | GET | `/composite-labels` | 查询组合标签（?status=active/disabled） |
 | POST | `/composite-labels` | 手动创建组合标签（source=manual，触发两级去重） |
 | POST | `/composite-labels/:id/disable` | 禁用组合标签（向量置 NULL，组件与别名保留） |
@@ -333,6 +337,131 @@ Response `data`：
 ```
 
 `preview` 在 `dry_run` 模式下列出候选标签。
+
+## 辅助标签描述修复（board-health-triage-advice）
+
+> 体检分诊（🔴 建议摘除 / 🟡 建议重写描述）落到「改共享标签」上时走这条独立链：**人工确认 → 持久任务 → 事务外重嵌 + 事务内原子保存 → 既有匹配引擎逐项更新**。体检轮次本身只读（不写匹配表、不落扩充建议），这四个资源是**修改既有辅助标签** description / storage 向量的唯一 HTTP 入口（组合标签走独立的 composite 接口，且描述修复链不覆盖组合标签）。业务背景与状态机见 `docs/reference/flow/semantic-board.md` §版块体检三病分诊与共享描述修复。
+
+四个资源共用同一个 service 实例（域根单例，与后台执行器同一扇门），路径前缀 `/auxiliary-labels/:id`（`:id` = 辅助标签 ID，`:job_id` = 修复任务 ID）。
+
+**通用约定**：
+
+- ID 在 wire 上是**数字**（前端 API 边界归一为字符串视图消费，模板不得直接消费数字 wire ID）。
+- 任务 `data` 的字段集：`id` / `auxiliary_label_id` / `idempotency_key` / `expected_version` / `old_description` / `new_description` / `stage` / `status` / `description_committed` / `total` / `processed` / `failed` / `not_applicable` / `remaining` / `error` / `created_at` / `updated_at`。
+- **内部执行列不进 wire**：`claim_owner` / `claimed_at` / `lease_expires_at` / `committed_version` / `committed_at` / `phase_token` 只在 DB 与服务端内部使用，任何响应都不透出。
+- 错误一律 `{"success": false, "error": "..."}`；`500` 的 `error` 恒为 `internal server error`（原始 DB 细节只进服务端日志，不外泄）。
+
+**错误码一览**：
+
+| 状态 | 触发条件 | `error` 文案 |
+| --- | --- | --- |
+| `400` | `id` / `job_id` 非法（非数字、0、超过 MaxInt64）；请求体不是**恰好一个** JSON 对象（非法 JSON、第二个对象、尾随垃圾）；`idempotency_key` 缺失或超 64 字符；`expected_version` 缺失或超 64 字符；`description` trim 后为空 / 超 500 字符 / 只重复 label；retry 带了任何参数或第二个对象 | `invalid id` / `invalid job_id` / `invalid request body` / `idempotency_key is required` / `idempotency_key must be at most 64 characters` / `expected_version must be a non-empty string of at most 64 characters` / `description must not be empty` / `description must be at most 500 characters` / `description must not only repeat the label` |
+| `404` | 辅助标签不存在或不是 `label_type='auxiliary'`；任务不存在或**不属于**该辅助标签（不跨标签泄露） | `auxiliary label not found` / `repair job not found` |
+| `409` | ① 标签已 disabled；② 来源版本已变（`expected_version` 与锁定行不符）；③ 幂等键已用于**不同载荷**；④ 同标签已有**未结束**任务（互斥）。**retry 专用**：任务已处 `conflict`/`unavailable` 终态 | ① `auxiliary label is disabled` ② `auxiliary label has changed, reload and confirm again` ③ `idempotency key was already used with a different request` ④ `an unfinished description-repair job already exists for this auxiliary label (job <id>, status <status>)`；retry：`repair task cannot be retried in its current state` |
+| `500` | 服务端内部错误（DB 异常等） | `internal server error`（原始错误只进服务端日志，不外泄） |
+
+> `409` 是**「确定拒绝」**：客户端 MUST NOT 换新幂等键重发同一请求（换键会绕过幂等语义）；应保留用户草稿、按 `error` 指引重新核对（冲突类重新加载最新版本；互斥类对原任务走 `retry`）。
+
+### GET `/auxiliary-labels/:id/description-repair-context`
+
+用户核对修复影响面时的**实时只读上下文**：当前真实描述、不透明版本令牌、直接引用该标签的版块、活跃话题标签覆盖数、最近一次修复任务。**纯读**：不创建任务、不改任何东西（打开页面/看建议 MUST NOT 产生任务）。
+
+Response `200` `data`：
+
+```json
+{
+  "auxiliary_label": {
+    "id": 42,
+    "label": "上海",
+    "description": "上海知名商业综合体",
+    "status": "active",
+    "version": "v1_9f2c1ab7d4e5f60718293a4b5c6d7e8f90a1b2c3d"
+  },
+  "direct_boards": [
+    { "id": 5, "label": "中国国内新闻", "status": "active" },
+    { "id": 9, "label": "长三角经济", "status": "disabled" }
+  ],
+  "active_tag_count": 137,
+  "latest_task": {
+    "id": 3,
+    "auxiliary_label_id": 42,
+    "status": "matching_failed",
+    "stage": "matching",
+    "total": 137,
+    "processed": 120,
+    "failed": 2,
+    "not_applicable": 1,
+    "remaining": 14,
+    "description_committed": true,
+    "created_at": "2026-10-29T10:00:00Z",
+    "updated_at": "2026-10-29T10:03:00Z"
+  }
+}
+```
+
+- `auxiliary_label.version`：**服务端不透明版本令牌**（覆盖 label/description/status/更新时间语义）。前端只透传，**不得自己拼装或解析**；提交修复时原样回填到 `expected_version`。
+- `direct_boards[]`：经 `board_composition` 直接引用该辅助标签的版块（disabled 版块也列出并带 `status`，用于告知影响面）。
+- `active_tag_count`：全库活跃话题标签数（本次修复的匹配覆盖范围量级）。
+- `latest_task`：该标签最近一次任务；从未有过则 `null`（重进恢复的数据源）。
+- `status='disabled'` 的标签**照常返回**（可展示不可执行状态）；标签不存在或不是 `label_type='auxiliary'` → `404`。
+
+### POST `/auxiliary-labels/:id/description-repairs`
+
+把用户确认的新描述落成**一条持久任务**（`202`）。本端点**只记录确认请求**，不做 embedding、不做匹配（那是后台执行器的活）。
+
+Request：
+
+```json
+{
+  "description": "中国东部城市，上海市",
+  "expected_version": "v1_9f2c1ab7d4e5f60718293a4b5c6d7e8f90a1b2c3d",
+  "idempotency_key": "8f3c1d2e-6b7a-4c9d-9e10-2f5a7b3c8d41"
+}
+```
+
+- `description`：trim 后 1..500 个 Unicode 字符，且**不得只重复 label**（纯分隔符等变体在当前三规则下合法，不另加黑名单）。服务端存 trim 后的值。
+- `expected_version`：核对时看到的不透明版本令牌；与事务内锁定行的实时令牌不符 → `409`（来源版本已变）。
+- `idempotency_key`：客户端**每次确认生成一个唯一键**（≤64 字符）；超时/网络失败重发必须复用同键同载荷。
+
+Response `202` `data`：任务对象（同上通用字段集）。
+
+**幂等语义**：
+
+- 同键 **+ 同载荷**（标签 + expected_version + 新描述）→ 返回**同一任务**（不重复重嵌、不重复提交描述）；即使源标签事后被硬删或禁用，重放仍然有效。
+- 同键 **+ 不同载荷** → `409`（绝不默默返回旧任务当成功）。
+- 同标签已存在**未结束**任务（含 `embedding_failed`/`save_failed`/`matching_failed`）→ `409`（同标签互斥；此时只能对该任务走 `retry`）。
+
+### GET `/auxiliary-labels/:id/description-repairs/:job_id`
+
+查询持久化任务的真实阶段与计数。**只读**：不触发执行、不改状态。任务必须属于该辅助标签，否则 `404`（不跨标签泄露）。源标签事后被删的历史任务仍可查。
+
+Response `200` `data`：任务对象（同上通用字段集）。
+
+**状态词表**：`pending` → `embedding` → `saving` → `matching` → `completed`；失败态 `embedding_failed` / `save_failed` / `matching_failed`；终态死路 `conflict`（来源版本变化）/ `unavailable`（标签非 active 或已删）。`stage` 取 `embedding|saving|matching`（`pending` 时可为空）。
+
+**计数字段（服务端单源，前端不得重算）**：
+
+| 字段 | 含义 |
+| --- | --- |
+| `total` | 创建时**冻结**的范围数量（当时全部活跃 topic_tags，含未归属任何版块者）；后续失效也**不缩小** |
+| `processed` | 匹配引擎**实际成功**处理的项数（合法零命中也算成功执行） |
+| `failed` | 仍处于失败态的项数 |
+| `not_applicable` | 处理时已失效/删除/合并而**持久跳过**的项数——**不是成功**，也不计入 `processed` |
+| `remaining` | `total − processed − failed − not_applicable`；四者之和恒等于 `total` |
+
+- 只有 `remaining=0` 且 `failed=0` 才是 `completed`；**部分失败恒为 `matching_failed`**，不得标全完成。
+- `description_committed=true` 只表示「描述 + storage 向量已原子提交」，**不等于匹配全部完成**。
+
+### POST `/auxiliary-labels/:id/description-repairs/:job_id/retry`
+
+对失败或中断的任务发起**显式重试**。**不接受任何参数**（body 可为空或空 JSON 对象 `{}`；非法 JSON / 第二个对象 / 尾随垃圾 / 任何参数一律 `400`）。重试复用**同一任务**：不新建任务、不改 `expected_version`、不改新描述、不改冻结范围、不重嵌已提交的描述。
+
+Response `202` `data`：任务对象（同上通用字段集）。
+
+- 三失败态（`embedding_failed`/`save_failed`/`matching_failed`）→ **同一任务**重新排入队列：描述已提交时**只续匹配**（embedding 调用数不增加），未提交时从 embedding 阶段续跑。
+- 运行中 / 已完成 → `202` + 当前任务的**幂等 no-op**（不重排、不另起 worker、不改计数与时间）。
+- `conflict` / `unavailable` → `409`（终态不可原样重试，必须加载最新版本重新核对）。
+- 后台**不自动无限重跑**失败任务（不自动烧 AI 额度）：三失败态一律等用户显式 `retry`。
 
 ## 升级候选与建议
 
@@ -733,7 +862,7 @@ Response（`data` 为文章数组，`pagination` 与 `data` 同级）：
       "title": "...",
       "feed_name": "...",
       "filtered_tags": [
-        { "id": 42, "label": "...", "category": "...", "match_reason": "hit_rate", "score": 0.84, "downgraded": false, "direction_mismatch": false }
+        { "id": 42, "label": "...", "category": "...", "description": "...", "match_reason": "hit_rate", "score": 0.84, "downgraded": false, "direction_mismatch": false }
       ]
     }
   ],
@@ -741,7 +870,7 @@ Response（`data` 为文章数组，`pagination` 与 `data` 同级）：
 }
 ```
 
-文章字段同 `GET /articles/:id`（`ToDict()`），额外带 `feed_name` 与 `filtered_tags`；无数据时 `data` 为空数组。
+文章字段同 `GET /articles/:id`（`ToDict()`），额外带 `feed_name` 与 `filtered_tags`；`filtered_tags` 每项的 `description` 取 `topic_tags.description`（标签无描述时为空串）；无数据时 `data` 为空数组。
 
 ### GET `/semantic-boards/:id/source-breakdown`
 
@@ -801,19 +930,64 @@ Response `data`：
         "matched_tags": 320,
         "reason_dist": { "direct_hit": 210, "composite_hit": 30 },
         "ghost_matches": 12,
-        "vector_missing": 3
+        "vector_missing": 3,
+        "magnet_flow": {
+          "failed_tags": 12,
+          "flow_tags": 9,
+          "top_board": "中国国内新闻",
+          "top_tags": 6
+        }
       },
       "labels": [
         {
           "aux_id": 42,
           "label": "推理",
+          "label_type": "auxiliary",
           "samples": 18,
           "cosine_mean": 0.81,
           "cosine_median": 0.83,
           "cosine_p25": 0.76,
           "cosine_p75": 0.88,
           "low_sim_ratio": 0.11,
-          "insufficient": false
+          "insufficient": false,
+          "description": "推理能力相关话题",
+          "magnet": {
+            "all_mean": 0.68,
+            "failed_mean": 0.52,
+            "all_samples": 320,
+            "failed_samples": 40,
+            "suspicious": true,
+            "insufficient": false
+          },
+          "neighbors": [
+            { "aux_id": 88, "label": "举办地点", "cosine": 0.796 },
+            { "aux_id": 91, "label": "城市名", "cosine": 0.742 },
+            { "aux_id": 93, "label": "地标建筑", "cosine": 0.701 }
+          ],
+          "desc_flags": []
+        }
+      ],
+      "triage": [
+        {
+          "aux_id": 42,
+          "category": "rewrite",
+          "evidence": "最近邻为实例标签（举办地点 0.796），语义被 description 窄化",
+          "suggestion": "模型推理与推理能力相关主题"
+        },
+        {
+          "aux_id": 77,
+          "category": "remove",
+          "evidence": "磁铁信号成立：失败子集均值 0.52 vs 全体 0.68（差 0.16），失败挂载 40 个且集中流向「中国国内新闻」"
+        },
+        {
+          "aux_id": 91,
+          "category": "keep",
+          "evidence": "短实体名天花板：cosine_mean 0.57 但方向通过率 100%，无磁铁信号"
+        },
+        {
+          "aux_id": 93,
+          "category": "insufficient",
+          "evidence": "失败子集样本仅 2 个，低于最小样本量"
         }
       ]
     },
@@ -833,6 +1007,10 @@ Response `data`：
 
 - `latest`：最新一条快照；从未跑过体检时为 `null`（空态，非错误）。
 - `metrics.board`：版块级指标（全部匹配行口径）；`metrics.labels[]`：标签级贴合度分布（构成标签 embedding × 全部挂载 tags identity embedding 现场重算，不按 aux 挂载数量筛样本），`insufficient=true` 时分布字段全 `null`（样本不足不硬凑）。
+- `metrics.board.magnet_flow`：版块级**流向证据**（失败挂载的有效流向 top-1）；`failed_tags` = 本轮失败挂载数，`flow_tags` = 其中在其他 active 版块有**有效**挂载的数（只用失败挂载的其它 direction_mismatch 挂载不算可靠流向），`top_board` = top-1 目的版块名，`top_tags` = 在该版块有效挂载的失败 tag 数；`top_board=null` = 显式未知（本轮有失败挂载但无可信流向），不得臆造目标。
+- `metrics.labels[]` 新增字段（board-health-triage-advice）：`label_type`（`auxiliary` / `composite`；**历史快照缺该字段 = 类型未知**，消费方不得臆造）、`description`（体检时刻的描述快照，事件性预筛的证据源，omitempty）、`magnet`（磁铁信号：`all_mean`/`failed_mean`/两侧样本数/`suspicious`/`insufficient`；任一侧向量缺失时均值为 `null`、`insufficient=true`）、`neighbors`（全库 active 辅助标签 top-3 最近邻，排除自身；`null` = 自身向量缺失信号不足，非 `null` 空数组 = 已计算但空间内无其他标签）、`desc_flags`（命中的文章式词根，空描述不标记）。
+- `metrics.triage[]`：标签级分诊清单（board-health-triage-advice）；`category` 闭集 `remove`（建议摘除）/ `rewrite`（建议重写描述）/ `keep`（保留澄清）/ `insufficient`（证据不足）；`evidence` 必带（真实信号数值或统计事实）；`suggestion` 仅 `rewrite` 必填（新描述文案），其余可省。**分诊清单是建议不是执行**：摘除走既有 `DELETE /semantic-boards/:id/composition/:auxiliary_label_id`（须用户确认），重写走 `POST /auxiliary-labels/:id/description-repairs`（须人工确认）；`label_type` 非 `auxiliary`（含类型未知）的 `rewrite` 项**不可执行**（描述修复链只覆盖辅助标签），但 `remove` 项不受类型限制。
+- **降级轮**（LLM 坏 JSON/超时）：统计与信号照常返回，`llm_score`/`llm_comment` 为 `null`、`metrics.triage` 为 `null`（= 本轮无分诊，历史快照同样为 `null`，两者靠快照时间/有无评分区分）。
 - `uncaptured_candidates[]`：未收编候选（成员 tags 高频携带但不在构成中的 active aux，按 member_tags 降序 top 50）。
 - `llm_score` / `llm_comment`：LLM 综合评分（0-100）与一句评语；LLM 降级轮为 `null`（统计照常）。
 - `trend[]`：按 `checked_at` **升序**的最近 N 条评分序列；同日多条保留不去重（手动补跑日报是真实数据点）。

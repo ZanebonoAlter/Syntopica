@@ -1,0 +1,29 @@
+{
+  "review_date": "2026-10-25",
+  "scope": "只读UI/产品回归审查；不是实现验收通过",
+  "review_ledger": { "total": 10, "High": 3, "Medium": 7, "unresolved": 10 },
+  "documentation_evidence_consistency": "PASS",
+  "markdown_links_checked": 18,
+  "screenshot_references_checked": 14,
+  "png_dimensions_checked": 18,
+  "readonly_api_json_files": 11,
+  "mechanical_observations": {
+    "board_50413_no_active_lane_text_and_no_report_button": true,
+    "board_50413_has_reports": true,
+    "board_50413_active_lanes": 0,
+    "board_50413_report_1237_sections": 1,
+    "board_50413_report_1237_threads": 2,
+    "board_50413_radar_today_sections": 0,
+    "mobile_article_drawer_rect": { "x": 0, "y": 0, "width": 375, "height": 667 },
+    "mobile_drawer_center_hit_inside_dialog": true
+  },
+  "own_browser_closed": true,
+  "business_write_actions_executed": false,
+  "application_tests_build_or_deploy_executed": false,
+  "limitations": [
+    "03-50413-1440.png实为1280x633，不计1440验收",
+    "05阅读台/11证据抽屉截图是过渡态，不作稳定白屏证据",
+    "只有所列页面和场景的1440/1920/375证据，不声称全页面双主题全覆盖",
+    "话题管理最终对话框、危险操作、完整编排/研究/治理、watch与批注深链尚未实页跑完"
+  ]
+}

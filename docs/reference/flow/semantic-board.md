@@ -1,6 +1,6 @@
 # 语义版块流程（Semantic Board）
 
-<!-- doc-impact-applies: backend-go/internal/tagmanagement/, backend-go/internal/topicgraph/ | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/tagmanagement/, backend-go/internal/topicgraph/, front/app/api/semanticBoards.ts, front/app/api/normalizers/boardRadar, front/app/features/tags/components/console/BoardRadar, front/app/features/tags/components/console/boardRadar, front/app/features/tags/composables/useBoardRadar | section=业务约束与不变量 -->
 > 大功能：辅助标签与组合标签入库、SemanticBoard 匹配/升级/回填、版块治理面板。
 > 跨端。互补：`flow/daily-report.md`、`flow/topic-graph.md`。
 
@@ -12,6 +12,22 @@ SemanticBoard（语义版块）解决「把散装 event 标签组织成持久主
 - **标签去重入库**：LLM 提取的辅助标签经 L1/L2/L3 三级去重，避免近义标签碎片化；组合标签（如「美债收益率」= 美国国债×收益率）按组件集合 L1 + 组合 embedding L2 两级去重。
 - **版块自演进**：升级建议（board upgrade suggestion）按「方向 × 来源」四格生成——创建版块（标签簇→建新版）/ 版块扩充（锁定单版块→挂载候选）/ 创建组合（共现对→组合标签）/ 组合扩充（共现对→组合标签并挂载），每轮 LLM 只做一种判断（单一决策空间），用户确认执行或忽略；创建方向由定时任务自动涌现，扩充方向纯手动（必须选版块触发）。
 - **粒度阶梯**：辅助标签（中性概念）→ 组合标签（指向性主题，匹配最强信号）→ 版块（持久分区）。组合标签是「中性概念无法表达方向」与「建版块太重」之间的中间粒度。
+
+### 工坊视图入口（rework-workshop-into-radar-and-desk）
+
+> **当前实现风险（2026-10-25 投诉复审，尚未修复）**：下述入口设计不代表旧能力已完整迁移。已确认候选版块的日报入口被 active 泳道门槛挡住、删除版块入口漏迁、站内正文阅读承载缩水；完整去向表、证据边界和恢复顺序见 [本 change 的独立 UI-review](../../../openspec/changes/rework-workshop-into-radar-and-desk/review.md)。本轮仅审查，无数据迁移或重生成要求。
+
+```text
+/tags                          L0 今日雷达（BoardRadarView）
+  └ /tags/:boardId             L1 版块态势（BoardConsoleShell：矩阵 / 归档 / 编排 / 治理）
+      └ /tags/:boardId/:date   L3 日报阅读台（DailyReportDeskShell 两栏：索引 + 正文）
+```
+
+- **L0 雷达**：单次 `GET /semantic-boards/overview` 取全部活跃版块；行按关注度降序，≥50 带「热点」分档标记，<15 折叠进「常温」摘要；右栏「今日该读」与「今天可能升温」只读，右栏底部另有「管线状态」块（`add-radar-pipeline-status`）：只读展示标签队列积压、日报生成时刻与兜底时刻、最新日报落点与当日日报状态；该块的**手动生成入口是右栏唯一的写动作**——队列未清空时禁用（手动生成不等队列，当日才完成打标的文章不会进入当日日报），清空后可按板块勾选生成（勾选 = 参与生成，默认全选；同日重生成整份替换，须显式警示）。总览报头「全局治理」承载既有全库动作，首次失败不把右栏空结果当业务结论。报头右上为操作区，依次是统计、返回主页、「全局治理」、新建版块；返回主页紧邻「全局治理」左侧且与其同档（min-height 2rem / 0.7rem 字 / border-medium / hover 变 accent），标题区不另挂返回入口（8F / FB-13）。`/tags?report=&annotation=` 旧深链进入 L0 后反查日报日期并 replace 到 L3 阅读台（8.4 物理清理前旧组件文件保留但不再从入口渲染）。**客户端边界（8A/R-18）**：后端 snake_case JSON 协议不变，仅在 Radar API 分支归一为 camelCase/字符串 ID 读模型（唯一实现在 `front/app/api/normalizers/boardRadar.ts`，`useBoardRadarApi().getOverview` 接线），总览簇组件（`components/console/BoardRadarView.vue` 壳 + `BoardRadarMasthead/Story/Cold/ReadingRail/Governance` + `boardRadarHelpers` + `composables/useBoardRadarOverview`）只消费归一后读模型；首次取数失败不展示业务空态/初始化 0 结论（R-17），有旧数据时刷新失败保留旧值。
+- **L1 版块态势**：`BoardConsoleShell` 三区壳（版块栏 / 主舞台 / 上下文右轨）；顶部视图 seg=矩阵·追踪｜文章归档｜研究工作台，另有唯一「打开日报 · MM/DD」、板块管理与新建泳道。矩阵/演进/编年共享 `?lane=` 与一份选中日；选中日点格后下方就地读，不再开 `SectionDrawer`。右轨顺序=版块体检（真实 `llm_score`，不是雷达 attention）→ 构成候选 → 话题追踪（管理仅 `boardId`）→ 来源构成（独立 7/30/90 滚动窗，不随时间视窗）；全库六项/新建版块唯一入口仍在 L0 总览，不在此重复。窄屏 `<768px` 不渲染矩阵/常驻右轨，改 `BoardNarrowSummary`（全部可选泳道 + 休眠折叠 + 下方同一编年 + 「本板块上下文」入口）；新建泳道提示需要宽屏/横屏。
+- **L1 归档**：日期是主筛选（默认数据锚点当天，可切近 7/14/30 天与任意起止日期）；文章按日期平铺、行内显示全部命中标签，点文章抽屉看逐标签规则/分数/降级/方向校验与是否进入日报；不按话题分组、只读。
+- **L3 阅读台**：独立路由两栏（分区索引 + 正文），日期历史并入索引顶部下拉；删除最左历史栏与右栏演进/本期话题，页边注收为右下抽屉；正文独立滚动；文章抽屉 60vw，窄屏全屏。
+- **热度/缓存口径**：泳道行序键=source 全轴线索（thread）合计；矩阵格值=同日 bucket max，演进/趋势=同日 thread 合计；前端 lane-dynamics 仅当前板块 4 档缓存（365 档与池共用一次请求），报告列表索引 1 份、报告详情 ≤14、文章详情 ≤20，失败不入成功缓存、当前展开对象不因 FIFO 逐出消失。
 
 ## 链路设计
 
@@ -204,19 +220,23 @@ SemanticBoard 管理面板
 
 ### 泳道动态（board-lane-dynamics，取代已退役的话题态势版图）
 
-版块内容 tab 首屏（体检治理面板 `BoardHealthPanel` 下方、由 `TagsPage` 直接渲染）的泳道动态视图，回答「每条关注/追踪的泳道近 14 天发生了什么」——每条泳道一张卡：泳道名 + watch 角标（追踪中）+ 滚动 14 天态势句（一句话，随每日日报异步结算）+ 发展时间线（日期→事件 thread 标题，后端显式携带对应关系，前端不推断）+ 单日超限折叠；点卡片跳「话题总览」tab 聚焦该话题（focus 视图）。底部候选栏只读列出达门槛 candidate（名字+最近动向），转正走话题管理入口。空态两分支：无日报→引导生成（WS 进度，完成后自动刷新）；有日报无活跃泳道→文案提示。接口契约见 `docs/reference/api/daily-reports.md` §`GET /semantic-boards/:id/lane-dynamics`。
+版块态势页 `/tags/:boardId` 当前是**观察窗 A 路线（名单稳定）**：独立 7/14/30/365 档只由档按钮/显式 URL `days` 改变，决定 A 档名单、前端 source 全轴行序（线索合计 DESC → 分区数 DESC → topicId）与休眠分组（≤2 分区，只展示不写 status）；自由 `start/end` 只裁切显示，恰 7/14/30/365 也不换档。可见日跨出档窗时才按需读取 365 池（B），B **只补 A 名单内同 topic ID 的历史内容**，不参与名单/排序/休眠/候选。
 
-- **展示范围**：active ∪ watch 关联泳道（`board_topic_watches.persistent_topic_id`），按窗口内 section 数降序；沉寂（近窗口无 section）不展示；candidate 只进候选栏。
+主舞台：矩阵行=泳道、列=可见日期；日格=**同日各主题桶 thread_count 的峰值（bucket max）**，无分区 `—` 禁用、有分区 0 线索 `0` 可开、历史未取到 `?` 不补 0，无行尾合计列。选中泳道演进节点=**当日线索合计（day sum）**，点径随合计增大；>31 日切趋势图+折叠逐日索引。下方当日编年默认标题收束，单条就地展开真实 summary，相关文章按需，稳定 report/section/thread ID 关联；「打开所选日日报」是带完整日期的历史动作，顶部最新日报入口独立。接口契约见 `docs/reference/api/daily-reports.md` §`GET /semantic-boards/:id/lane-dynamics`。
+
+- **当日其他话题**：矩阵保留折叠组，成员只来自所选日报，沿既有 sectionId/topicId 排除正式与休眠泳道；历史状态取 `topic_status_at_report`，不借当前候选资格。行高/标题/实底热度格/选中与泳道共用视觉，只绘所选日格。选中后，现有日期表头（窄屏复用同源日期条）用黄点标记同 `persistentTopicId` 的可见窗真实记录日，hover/focus 显示当日分区原题；同日多分区只一个点、仍定位原序首 section，不合并正文、不跨新旧 ID 自动补连。点黄点通过 `selectObservedDay` 原子切日期/report/section/topic，普通报日仍走原 `selectDayHeader`；换选更新、清选择/无 ID 清点。**已验证记录日**（黄点当日：观察带里同 ID 的真实分区记录，自带 report/section，证据强于报日索引）在报日索引缺该日（陈旧/不全）时不被选中日普通回落搬走；只保护当前这一个观察目标，普通选行/清场/切泳道/切板块/换日即失效，范围排出（轴外）照旧回落；目标实际无日报时保留日期与目标并显示诚实「所选日没有日报」态，不借旧正文、不退回别日。观察复用 days=0 单份板块缓存，失败/缺 ID 说明及重试留在阅读区，但不再重复日期药丸。正文复用泳道标题/分隔/线索展开，不产滚动态势；0 正式泳道未选其他时只保留选日/选话题方向提示，不画无效选泳道卡。此增量只读、无迁移/重生成/配置，旧无 ID 数据无关联点，缺分区如实提示。
+- **展示范围/休眠**：A 档响应中的 active ∪ watch 关联泳道（`board_topic_watches.persistent_topic_id`）；行序按 A 全轴线索合计，不按可见裁切重算；休眠（source 全窗分区 ≤2）仅折叠展示，不改生命周期；candidate 只进候选区/编排入口，需人工激活，不自动转正。
+- **日期/锚点**：矩阵轴终点 = A 数据锚点（优先版块独立最新日报日期，0 active 泳道版块同样有；否则回退 A 最新有分区日），与后端 `lane-dynamics` 的 `[anchor-(days-1), anchor]` 对齐；今天无日报时列终点不为空白「今天」，另给「数据截止」提示。雷达每行 `anchor_date` 与全局 `date` 分别表达。
 - **态势结算**（日结算异步，见 `flow/daily-report.md` §泳道态势结算）：每日日报生成后为活跃泳道滚动重算 ≤100 字态势句（输入=窗口内「日期+节标题+前3线索」，LLM），存 `topic_lane_snapshots`（每泳道一行覆盖更新）；失败不阻塞日报，下个日报日自愈；快照缺失时卡片「待结算」降级、时间线照常。
-- **代码入口**：后端 `backend-go/internal/topicgraph/repository/lane_snapshot_repository.go`（聚合 `GetBoardLaneDynamics` + 结算侧查询）、`service/lane_snapshot.go`（结算管线，operation=`daily_report.lane_snapshot`）、`handler/lane_dynamics_handler.go`；前端 `front/app/features/tags/components/lane-dynamics/`（`LaneDynamicsPanel.vue` / `LaneDynamicsCard.vue`，由 `TagsPage.vue` 直接渲染）；API client `front/app/api/laneDynamics.ts`。
+- **代码入口**：后端 `backend-go/internal/topicgraph/repository/lane_snapshot_repository.go`（聚合 `GetBoardLaneDynamics` + 结算侧查询）、`service/lane_snapshot.go`（结算管线，operation=`daily_report.lane_snapshot`）、`handler/lane_dynamics_handler.go`；前端观察窗/矩阵/演进/编年 `front/app/features/tags/components/console/{ObservationRangeControls,ObservationMatrix,ObservationLaneEvolution,LaneChronicle}.vue` 与 `composables/{useBoardConsole,useObservationWindow,useLaneDayReading,useOtherTopicObservation}.ts`、同目录组件 `DayOtherTopicsGroup.vue` / `ObservationMatrixDayHeader.vue` / `OtherTopicReading.vue`；API 边界 `front/app/api/laneDynamicsWindow.ts`、`front/app/api/normalizers/laneDynamicsWindow.ts`、`front/app/api/laneDayReading.ts`；旧 `lane-dynamics/LaneDynamicsPanel.vue`/`LaneDynamicsCard.vue` 文件保留但不再作为 `/tags/:boardId` 主路径渲染。
 
 > 退役说明：原话题态势版图（分区卡片墙/活力顶栏/节奏气泡图/mini-lifeline/stance 五态派生）随 overview-lane-dynamics 整体移除（2026-09-10）；stance 派生与 ECharts 图表不再存在，历史设计见归档 change `2026-08-01-board-topic-landscape`。
 
 > 变更溯源见本文件 [§变更溯源](#变更溯源)。
 
-### 板块来源构成（add-source-board-hit-rate，板块内容 tab 底部）
+### 板块来源构成（add-source-board-hit-rate，当前右轨/单级工作面）
 
-供血源视角的只读聚合：`GET /api/semantic-boards/:id/source-breakdown?window=7` 返回该版块窗口内的来源构成——`total_articles`（按文章去重）/ `source_count` / `sources[]`（`feed_id`、本版块篇数 `articles`、占比 `share`、该源窗口总量 `feed_articles`、该源整体命中率 `feed_hit_rate`）。与板块文章列表 `/:id/articles` 的口径差异：articles 是文章列表（分页/过滤、含匹配质量明细），source-breakdown 是按源聚合的命中构成——**含已归档、按文章去重（同版块多标签只计一次、同一文章命中多版块各计一次）、必限窗口**；不变量：`Σ sources[].articles == total_articles`。版块不存在或非 `label_type='board'` → 404；disabled 版块不是 404（按命中口径聚合为 0）。
+供血源视角的只读聚合（当前版块右轨简要 + 单级宽工作面全量；不随观察日期/档重算）：`GET /api/semantic-boards/:id/source-breakdown?window=7` 返回该版块窗口内的来源构成——`total_articles`（按文章去重）/ `source_count` / `sources[]`（`feed_id`、本版块篇数 `articles`、占比 `share`、该源窗口总量 `feed_articles`、该源整体命中率 `feed_hit_rate`）。与板块文章列表 `/:id/articles` 的口径差异：articles 是文章列表（分页/过滤、含匹配质量明细），source-breakdown 是按源聚合的命中构成——**含已归档、按文章去重（同版块多标签只计一次、同一文章命中多版块各计一次）、必限窗口**；不变量：`Σ sources[].articles == total_articles`。版块不存在或非 `label_type='board'` → 404；disabled 版块不是 404（按命中口径聚合为 0）。
 
 ```text
 TagsPage「版块内容」tab（默认）
@@ -237,7 +257,8 @@ TagsPage「版块内容」tab（默认）
 - **事实画像 diff（uncaptured_candidates）**：已挂到版块的 tags 所携带、但不在版块构成中的高频 aux（排除已挂载与 disabled），按 member_tags 降序存 top 50；只存候选不落建议。
 - **member-derived 扩充主路（回退语义）**：手动扩充生成时候选来自最新快照的未收编清单前 `board_health_member_candidates_top`（默认 20，排除已挂载保险滤 + days>0 近期文章过滤）；无快照/清单空/滤后空 → 回退既有相似+共现双路（行为不变）。
 - **LLM 降级**：评分单次调用（operation=`tagmanagement.board_health_checkup`，走 `topic_tagging` 能力路由）；坏 JSON/超时 → 统计照常落快照、score/comment 置 NULL，本轮跳过通知不重试。
-- **配置（ai_settings，均可缺省）**：`board_health_min_sample_size`(5) / `board_health_alert_threshold`(60) / `board_health_notify_cooldown_days`(3) / `board_health_member_candidates_top`(20)。
+- **配置（ai_settings，均可缺省）**：`board_health_min_sample_size`(5) / `board_health_alert_threshold`(60) / `board_health_notify_cooldown_days`(3) / `board_health_member_candidates_top`(20) / `board_health_magnet_gap`(0.08) / `board_health_magnet_min_failed`(5)（后两个是三病分诊的磁铁阈值，见下节）。
+- **三病分诊与共享描述修复**：体检轮次在同一次纯读里多算三类确定性信号并把标签级分诊清单落进快照（`metrics.triage`），用户可据此逐项核对处置——详见下节「版块体检三病分诊与共享描述修复（board-health-triage-advice）」。
 - **只读端点**：`GET /api/semantic-boards/:id/health-checkup?trend=N`（N 白名单 1-90 默认 7，非法 400）：latest + 趋势升序；版块不存在 404，disabled/非 board 返回空态（非 404，同红线 17 端点纪律）。
 - **前端**：板块内容 tab 治理主面板 `BoardHealthPanel.vue`（形态 A：吸收构成管理，BoardCompositionPanel 退役）——评分徽章（好≥70/中 60-69/差<60）+ 评语 + 指标 chips + 质量表（行内移除，无快照「待体检」降级）+ 组合标签区 + 趋势 + 未收编候选（收编快捷动作 = 既有 addComposition 手动挂载，不走 LLM 建议管道）；低分时 tab 顶部警告条（点击滚到面板）。
 
@@ -249,6 +270,42 @@ DailyReportJob 成功裁决（failedCount==0）
 
 手动扩充生成 expand×aux
   → recallExpandAuxCandidates → 最新快照 uncaptured_candidates 非空？主路 top N（保险滤 + days 过滤） ：回退相似+共现双路
+```
+
+### 版块体检三病分诊与共享描述修复（board-health-triage-advice）
+
+体检从「一句笼统评语」升级为**可开药方的标签级分诊**：同一轮纯读里为每个构成标签算三类确定性信号，把证据喂给**同一次** LLM 调用，输出四类分诊清单（🔴 建议摘除 / 🟡 建议重写描述 / 🟢 保留澄清 / ⚪ 证据不足），随快照持久化（`metrics.triage`）。摘除与描述修复都**不在体检轮次内执行**：摘除走既有构成 DELETE 接口，描述修复走独立的持久任务链（人工确认后才创建）。
+
+- **三病口径（唯一实现 `internal/tagmanagement/service/boardhealth/`，同轮同内存算，不重算匹配、不筛样本）**：
+  - **磁铁失灵（磁铁信号 `magnet`）**：构成标签 embedding 对「`direction_mismatch=true` 的挂载 tag 子集」与「全部挂载 tag」的贴合度均值差（gap = all_mean − failed_mean，阈值 `>=`，可配 `board_health_magnet_gap` 默认 0.08）；失败子集样本数达 `board_health_magnet_min_failed`（默认 5）才成立，**任一侧样本不足或构成标签自身向量缺失 → 标 `insufficient`，MUST NOT 按差值硬凑**。只做分组差统计，**不做「哪个标签吸引了哪个 tag」的功劳归因**（与红线 22 同纪律）。
+  - **描述污染（预筛 `desc_flags`）**：构成标签 description 命中固定文章式词根（`此次/本次/该事件/报道/针对/期间/近日`）→ 事件性嫌疑；description 为空不标记。词根集合是闭集常量，不从用户输入拼装。
+  - **泛化漂移（最近邻 `neighbors`）**：构成标签在全库 **active 辅助标签**向量空间的 top-3 最近邻（排除自身）及其 cosine，作为「短概念标签最近邻是实例标签 = 语义窄化/漂移」的证据；自身向量缺失 → insufficient。
+  - **不是第四种病**：「短名天花板」（短实体名 × 长版块名的 cosine 天然低，如 OpenAI 0.57、MySQL 0.45）是**防误杀判据**不是病症——分诊 MUST NOT 仅因 cosine 低归入摘除，评分层也不因此扣分。
+- **体检轮次纯读红线（红线 20 不动）**：体检只写 `board_health_snapshots`（含 `metrics.triage` 附属产物）与少量冷却内异常通知；MUST NOT 新增 `board_upgrade_suggestions` pending 行、MUST NOT 写 `topic_tag_board_labels` 匹配结果、MUST NOT 改任何 description/embedding。**分诊清单是建议不是执行**：🔴 摘除 MUST 经用户确认后调用既有 `DELETE /api/semantic-boards/:id/composition/:auxiliary_label_id`；🟡 重写 MUST 经用户另行核对共享影响并确认后才可创建修复任务。**人工修复与自动扩充的隔离边界不变**：版块扩充建议仍必须用户手动触发（红线 10），体检不自动挂载、不自动摘除、不自动重写。
+- **组合标签在分诊中只读（仅摘除可处理）**：`metrics.labels[]` 逐条携带 `label_type`（`auxiliary` / `composite`；历史快照缺该字段 = 类型未知）。描述修复链全程只认 `label_type='auxiliary'`——**组合标签的 🟡 重写项只读展示**（证据照常展开、不隐藏、不当它健康，不提供修复入口、不拉必然 404 的修复上下文）；**🔴 摘除项不受类型限制**（走既有构成 DELETE 链，组合标签的构成关系同样可摘除）。类型未知按不可执行处理，MUST NOT 臆造类型。
+- **共享描述修复的影响面（人工确认前必须声明）**：辅助标签是**全局共享**标签——改它的 description 会重算该标签的 storage 向量（`embed("label: description")`），并更新**全部活跃 topic_tags** 的版块匹配（冻结范围含未归属任何版块的标签），因此**可能改变其它版块的挂载归属**。确认前界面须声明：这是共享标签 / 直接引用它的版块都受影响 / 匹配更新覆盖全部活跃话题标签；用户取消则零写入。
+- **任务状态机与恢复（持久任务，非内存 job）**：
+  - 状态闭集 `pending → embedding → saving → matching → completed`，失败态 `embedding_failed` / `save_failed` / `matching_failed`，终态死路 `conflict`（来源版本已变）/ `unavailable`（标签非 active 或已删）；`stage` 取 `embedding|saving|matching`（`pending` 可空）。`description_committed` 标记「描述+向量是否已原子提交」。
+  - **幂等键**：客户端每次确认生成唯一 `idempotency_key`；同键同载荷重发返回**同一任务**（不重复重嵌、不重复提交），同键不同载荷 → `409` 冲突（绝不默默返回旧任务当成功）。同标签存在未结束任务（含三种失败态）时新创建 → `409` 互斥。
+  - **原子保存**：storage 向量在**事务外**生成，事务内锁行校验来源版本/类型/状态后**原子写 description+embedding+任务阶段**；失败不清空旧向量、不动 label/aliases/merge_embedding。
+  - **重试语义**：三失败态等用户显式 `retry`（后台不自动无限重跑、不烧 AI 额度）；已提交描述的任务重试**只续匹配**，不重嵌、不重存、不改 expected_version/冻结范围；`conflict`/`unavailable` 不可原样重试（须重新核对）；运行中/已完成的重试是幂等 no-op。
+  - **`not_applicable` 与 `remaining`**：`not_applicable` = 冻结范围内处理时已失效/删除/合并而**持久跳过**的项数（**不是成功**）；`remaining = total − processed − failed − not_applicable`；四类之和恒等于 `total`（`total` 是创建时冻结的范围数量，不因后续失效而缩小）。只有 `remaining=0` 且 `failed=0` 才算 `completed`，部分失败恒为 `matching_failed`。
+  - **恢复**：worker 绑**应用生命周期**（关页面/取消请求不取消已确认任务）；租约+心跳用 DB 实时时钟（`clock_timestamp()`），失租未结束阶段由扫描器重新领取；保存后故障窗恢复**禁再重嵌/再重存**。
+- **旧快照与日报不受影响**：修复**不改写**历史体检快照、既有日报正文与历史评分，也不自动追加体检轮次；「更新完成」的措辞只表示匹配已更新，**效果待下一轮体检验证**（不得把复制成功、已排队、描述已保存或部分完成说成已修好）。
+- **端点**：`GET /api/auxiliary-labels/:id/description-repair-context`（纯读）、`POST /api/auxiliary-labels/:id/description-repairs`（202 建任务）、`GET /api/auxiliary-labels/:id/description-repairs/:job_id`（纯读）、`POST /api/auxiliary-labels/:id/description-repairs/:job_id/retry`（202）；契约见 [api/semantic-boards.md](../api/semantic-boards.md)「辅助标签描述修复」。
+- **代码入口**：后端 `backend-go/internal/tagmanagement/service/auxrepair/`（`auxrepair.go` 读/建任务门面、`embedding.go` 事务外向量生成、`matching.go` 既有匹配引擎调用、`executor.go` claim/心跳/恢复、`retry.go` 显式重试）、`handler/auxiliary_description_repair_handler.go`（四资源，只绑参数/错误/DTO）、`repository/auxiliary_description_repair*.go`（持久化与冻结范围）、`models/auxiliary_description_repair.go`（任务/条目模型）；生产接线 `tagmanagement/wire.go`（`InitDescriptionRepairChain`）+ `tagmanagement/routes.go`（挂四个资源）+ `internal/app/runtime.go`（应用生命周期 ctx + 关停先 cancel 再 join worker）。前端 `front/app/api/normalizers/{boardHealthTriage,auxiliaryRepair}.ts`、`front/app/features/tags/components/console/board-health/`（问题索引 + 单项处理区 + 三阶段进度）。
+
+```text
+体检轮次（纯读）
+  → boardhealth.RunCheckup：统计/画像 diff → 三病信号 → LLM 单调用（score/comment/notify/triage）
+  → 快照落库（metrics 含 triage）→ 通知裁决（冷却）
+
+用户核对问题项（工作面）
+  ├─ 🔴 摘除 → 用户确认 → 既有 DELETE composition → 成功才标「已摘除」（历史匹配不自动回填）
+  └─ 🟡 重写 → GET description-repair-context（实时描述/版本/直接引用版块/活跃标签数）
+             → 用户核对并确认共享影响 → POST description-repairs（幂等键 + expected_version）→ 202
+             → 后台：embedding（事务外）→ saving（事务内锁行原子提交）→ matching（既有引擎逐项）
+             → 三阶段/计数可查；失败显式 retry（只续匹配）；完成 =「更新完成，效果待下一轮体检验证」
 ```
 
 ### 标签级 watched tags（区别于话题级 topic-watch）
@@ -339,6 +396,9 @@ Event 类标签不随入库立即向量化，而是等描述与关键词生成�
 21. **member-derived 扩充主路回退语义：最新快照未收编候选非空时候选 ONLY 来自快照清单 top N（排除已挂载保险滤 + days>0 近期文章过滤），无快照/清单空/滤后空必须回退既有相似+共现双路且行为不变**（add-board-health-checkup）：主路命中时不得触发全库相似/共现扫描；组合路（expand×composite）不受影响；suggestion 管道（hash 幂等/dismiss 冷却/LLM 裁决/逐条勾选）零改动，仅候选来源变化。
 22. **体检统计口径唯一实现于 boardhealth 包（对标 sourcestats 纪律），标签级=构成标签 embedding × 全部挂载 tags identity embedding 的贴合度分布（现场 cosine 重算，不按 aux 挂载数量筛样本），样本不足标 insufficient 不硬凑，端点只读且 disabled 版块不是 404（空态）**（add-board-health-checkup）：`internal/tagmanagement/service/boardhealth/` 是两级指标/画像 diff/低分线（板块内 cosine_mean P25 相对线）/分布分位唯一实现，`GET /api/semantic-boards/:id/health-checkup?trend=N`（N 白名单 1-90 默认 7，非法 400）只读消费同一实现；标签级归因 MUST NOT 按 tag 的 aux 挂载数量筛选样本（不做功劳归因），规则分数 MUST NOT 作相似度统计输入，任一侧向量缺失跳过分布计入 vector_missing（不按 0 计入），LLM 坏 JSON/超时降级 score=NULL 不重试不丢统计。
 23. **event 标签 description 时间锚以首挂文章日期为准：生成/重生成 MUST 以 articleContext 中的 `[日期: …]`（文章发布日期）为参照、MUST NOT 引入 Context 外时间信息（含模型先验知识中的历史事件时间），打标与描述生成的 prompt 示例 MUST 用时间中性/虚构事件（禁真实事件+具体历史年月组合）**（fix-event-tag-time-anchor）：`generateTagDescription` event 分支（`buildEventTagDescriptionPrompt`）与两个 extractor prompt 的正例均不得携带历史时间锚；存量修复走 `cmd/admin fix-event-tag-anchor`（dry-run 默认出清单+备份 CSV，`--apply --ids` 显式圈选，非候选 ID 整批拒绝不触碰，重生成复用首挂文章 articleContext 同一构造口径 `buildArticleContext`）。
+24. **体检三病分诊信号口径唯一实现于 boardhealth 包（磁铁失灵/描述污染/泛化漂移），样本或向量不足 MUST 标 insufficient 不硬凑**（board-health-triage-advice）：磁铁信号 = 构成标签 embedding 对 `direction_mismatch=true` 失败子集与全部挂载 tag 的贴合均值差（gap ≥ `board_health_magnet_gap` 默认 0.08 且失败样本 ≥ `board_health_magnet_min_failed` 默认 5，只做分组差统计，MUST NOT 做「哪个标签吸引哪个 tag」的功劳归因）；最近邻信号 = 全库 active 辅助标签 top-3（排除自身）；描述污染预筛 = 固定文章式词根（此次/本次/该事件/报道/针对/期间/近日）命中，description 为空不标记；任一侧样本不足或构成标签自身向量缺失 MUST 标 `insufficient`，MUST NOT 按差值硬凑；「短名天花板」（短实体名 cosine 天然低）是防误杀判据，MUST NOT 仅因 cosine 低判摘除或扣分。
+25. **体检分诊清单只是建议不得自动执行，组合标签（composite）在分诊中只读仅摘除可处理**（board-health-triage-advice）：分诊四类 `remove|rewrite|keep|insufficient` 均为建议——remove MUST 经用户确认后走既有构成摘除接口，rewrite MUST 经用户另行核对共享影响并明确确认后才可进入独立描述修复任务；体检轮次/查询端点 MUST NOT 改 description/embedding，MUST NOT 写匹配结果表/升级建议表（红线 20 不动）；构成清单逐条带 `label_type`（auxiliary/composite，历史快照缺该字段按类型未知处理，MUST NOT 臆造类型），描述修复链只覆盖 auxiliary——composite 的 rewrite 项只读展示（证据照常展开、不隐藏、不当它健康、无修复入口），remove 项不受类型限制。
+26. **共享描述修复 MUST 人工确认后在同一事务内原子保存 description+storage 向量，任务持久幂等、匹配范围冻结全部活跃 topic_tags，计数四类之和恒等于 total，旧快照与日报不改写**（board-health-triage-advice）：辅助标签是全局共享标签，改其 description 会重算 storage 向量并更新全部活跃 topic_tags 的版块匹配（可能改其它版块归属），确认前 MUST 声明共享影响、取消时零写入；向量生成 MUST 在事务外、事务内锁行校验来源版本/类型/状态后原子写 description+embedding+任务阶段，MUST NOT 清空旧向量绕道，MUST NOT 改 label/aliases/merge_embedding；任务持久化（同幂等键同载荷回同任务、同键异载荷 409、同标签未结束任务互斥、失败态等用户显式 retry 且只续匹配不重嵌），创建时冻结全部 active topic_tags（含未归属者），`total=processed+failed+not_applicable+remaining` 恒成立（`not_applicable` 是失效跳过项 NOT 成功，`total` 不缩小），部分失败 MUST NOT 标完成；修复 MUST NOT 改写旧体检快照/日报/历史评分、不自动追加体检，完成只表示匹配已更新、效果待下一轮体检验证。
 
 ## 代码入口
 
@@ -349,7 +409,8 @@ Event 类标签不随入库立即向量化，而是等描述与关键词生成�
 - **后端标签关注 / 合并预览 / 队列 handler**：同目录下 `watched_tags_handler.go`（标签级 watched tags）、`tag_merge_preview_handler.go`（scan/evaluate SSE + dismiss/merge-with-name）、`tag_queue_handler.go`、`embedding_queue_handler.go`、`merge_reembedding_queue_handler.go`（见下「队列与回填运维」）。
 - **后端 watched/merge service**：`service/watched/watched_tags_service.go`、`service/merge/tag_merge_suggest.go`、`service/core/{merge_suggestions,hard_merge,merge_reembedding_queue,person_metadata_backfill}.go`。
 - **后端源/版块命中统计（sourcestats）**：`backend-go/internal/tagmanagement/service/sourcestats/`（口径唯一实现）、`handler/board_source_breakdown_handler.go`（版块视角端点）；源视角端点在 reader 域 `internal/reader/handler/feed_board_stats_handler.go`。
-- **后端版块体检（boardhealth）**：`backend-go/internal/tagmanagement/service/boardhealth/`（统计口径/画像 diff/LLM 评分降级/通知冷却/RunCheckup 编排唯一实现；`metrics.go` 两级指标、`diff.go` 未收编候选聚合、`llm.go` 合并评分 prompt、`notify.go` 打扰裁决、`run.go` 轮次编排+只读视图）、`handler/board_health_handler.go`（只读端点）；日报尾步挂载 `internal/admin/scheduler/job_daily_report.go`（runPostReportBoardHealthCheckup seam，经 tagmanagement root 门面 re-export）；扩充召回主路 `service/board/semantic_board_expand.go`（recallMemberDerivedCandidates）；快照模型/迁移 `tagmanagement/models/board_health.go` + `database/postgres_migrations.go` 20261006_0001（FK CASCADE）。
+- **后端版块体检（boardhealth）**：`backend-go/internal/tagmanagement/service/boardhealth/`（统计口径/画像 diff/LLM 评分降级/通知冷却/RunCheckup 编排唯一实现；`metrics.go` 两级指标、`signals.go` 三病分诊信号（磁铁分组差/最近邻 top-3/描述词根预筛）、`diff.go` 未收编候选聚合、`llm.go` 合并评分 + 标签级分诊 prompt、`notify.go` 打扰裁决、`run.go` 轮次编排+只读视图）、`handler/board_health_handler.go`（只读端点）；日报尾步挂载 `internal/admin/scheduler/job_daily_report.go`（runPostReportBoardHealthCheckup seam，经 tagmanagement root 门面 re-export）；扩充召回主路 `service/board/semantic_board_expand.go`（recallMemberDerivedCandidates）；快照模型/迁移 `tagmanagement/models/board_health.go` + `database/postgres_migrations.go` 20261006_0001（FK CASCADE）。
+- **后端共享描述修复（auxrepair）**：`backend-go/internal/tagmanagement/service/auxrepair/`（`auxrepair.go` 读/建任务门面与 DTO、`embedding.go` 事务外 storage 向量生成、`matching.go` 调用既有匹配引擎逐项推进、`executor.go` claim/心跳/失租恢复、`retry.go` 显式重试）、`handler/auxiliary_description_repair_handler.go`（四资源，只绑参数/错误/DTO，不写 SQL）、`repository/auxiliary_description_repair*.go`（任务/冻结范围持久化与版本校验）、`models/auxiliary_description_repair.go`（任务/条目模型）；生产接线 `tagmanagement/wire.go`（`InitDescriptionRepairChain`/`StartDescriptionRepairExecutor`）+ `tagmanagement/routes.go`（挂四个资源）+ `internal/app/runtime.go`（应用生命周期 ctx + 关停先 cancel 再 join worker）；表/迁移见 [database/tables/semantic-labels.md](../database/tables/semantic-labels.md) §5.6-§5.7。
 - **后端版块调度**：`backend-go/internal/admin/scheduler/job_board_upgrade_suggest.go`（定时 06:30，仅创建方向两段：{create,aux} → {create,composite}）。
 - **后端版块时间线**：`backend-go/internal/topicgraph/`（`service/daily_report_*.go` 版块时间线、`handler/`）。
 - **前端**：`front/app/features/tags/components/UpgradeSuggestionPanel.vue`（升级建议面板：四格生成入口 + 版块单选 + 持久化建议列表（含 compose 卡片与「组合」过滤 tab）；旧内存探索区已退役）、`CompositeLabelPool.vue` + `CompositeLabelEditDialog.vue`（组合标签治理页，未选版块时「组合标签」tab）、`MatchDetailPanel.vue`（匹配详情，composite_hit 组合链展示）、`BoardSourcePanel.vue`（板块来源构成面板，「板块内容」tab 内体检治理面板之后，只读无写动作）、`BoardHealthPanel.vue`（体检治理主面板，吸收原 BoardCompositionPanel 全部构成管理职能：picker 双模式添加/行内移除/组合创建挂载 + 体检评分/质量表/趋势/未收编候选收编；低分警告条与泳道动态 LaneDynamicsPanel 由 TagsPage 直接渲染）、`TagsPage.vue`、`front/app/features/tags/composables/useTagsPage.ts`。
@@ -404,4 +465,6 @@ handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembed
 | 2026-10-06 | fix-aux-label-idle-tx-cache | 辅助标签入库两阶段化：AI embedding 调用移出事务（N 新标签恰 2 次批量调用），短事务毫秒级纯写保留全有或全无原子性，idle in transaction 4–40s → 0；同模式清理 ConfirmSuggestion（`ConfirmSuggestion` 预计算 + `ApplyCompositeLabel` 纯写）；缓存失效增量维护仅 activeLabels 半边（mergeEmbeddings 原位写曾致 concurrent map fatal 两次宕机，FB-1 修订回退 TTL 重拉，见 callout 与 code-style.md 事务内慢 I/O 硬禁）；PG 防呆 `idle_in_transaction_session_timeout=60s`（recreate 生效） | [archive/2026-10-10-fix-aux-label-idle-tx-cache](../../../openspec/changes/archive/2026-10-10-fix-aux-label-idle-tx-cache) |
 | 2026-10-04 | fix-board-match-cross-domain | direct_hit 占比门槛（交集达标且占比 ≥ 0.5 才命中，不足退回相似度且重叠标签不作相似度证据——拦蹭词挂载，约束 3）+ 匹配配置新 key `semantic_board_match_direct_hit_min_ratio`（matching-config 可调）；存量弱挂载不重算（用户决策），日报侧防线见 daily-report.md 排他约束 | [archive/2026-10-10-fix-board-match-cross-domain](../../../openspec/changes/archive/2026-10-10-fix-board-match-cross-domain) |
 | 2026-10-09 | fix-event-tag-time-anchor | event 标签时间锚污染修复：三处 prompt 捒掉自带「2024年4月」历史时间锚的「伊朗袭击以色列」毒示例（generateTagDescription event 分支重构为 buildEventTagDescriptionPrompt + 两个 extractor 正例全换中性虚构事件「某国央行上调基准利率」），event 描述生成加时间锚纪律三句（锚定 Context `[日期: …]`/禁 Context 外时间/同名历史事件以 Context 为准）；存量还债 CLI `cmd/admin fix-event-tag-anchor`（dry-run 默认出清单+备份 CSV，`--apply --ids` 显式圈选非候选拒碰，重生成复用首挂文章 articleContext 同一口径 buildArticleContext）；真库全量扫候选 321，圈选 4 病态标签 apply 4/4 成功，复扫 321→317 全部不再命中（约束 23） | [archive/2026-10-10-fix-event-tag-time-anchor](../../../openspec/changes/archive/2026-10-10-fix-event-tag-time-anchor) |
+| 2026-10-29 | board-health-triage-advice | 版块体检三病分诊与共享描述修复：体检同轮纯读算三病信号（磁铁失灵=失败子集 vs 全部挂载贴合均值差，阈值 `board_health_magnet_gap` 0.08 / `board_health_magnet_min_failed` 5；描述污染=文章式词根预筛；泛化漂移=全库 active aux top-3 最近邻）→ LLM 单调用输出标签级分诊清单（remove/rewrite/keep/insufficient）落 `metrics.triage`，摘除走既有构成 DELETE、rewrite 走独立人工确认修复链；新增持久修复任务链（原子保存 description+storage 向量、幂等键、冻结全部活跃 topic_tags 范围、四类计数、显式 retry 只续匹配），共享标签影响面（可能改其它版块归属）确认前声明；体检轮次仍纯读不落扩充建议/不写匹配表，旧快照与日报不改写、效果待下一轮体检（红线 24-26） | [`openspec/changes/board-health-triage-advice`](../../../openspec/changes/board-health-triage-advice)（未归档，归档后由编排者补永久链接） |
 | 2026-10-30 | fix-nested-dialog-layering | 治理工作面「组合」页签点「创建并挂载」弹窗被宿主遮罩盖住（嵌套浮层层级写死 60 < 宿主 AppDialog 1000，用户点了按钮完全看不到弹窗）：引入浮层层级契约（`Z_INDEX` 档位表 dialog 1000 / dialogNested 1100 / readingDialog 9100 / readingFullscreen 9200 / toast 9999 + `nestedOverlayZ(hostZ)` 跳过已占档位抬升），组合标签创建弹窗改走嵌套档 1100；契约写入 `standard/frontend/layout.md`（存量手写层级登记豁免，主重构时收敛）；零接口、零数据、零迁移，仅前端层级 | [archive/2026-10-30-fix-nested-dialog-layering](../../../openspec/changes/archive/2026-10-30-fix-nested-dialog-layering) |
+| 2026-11-02 | rework-workshop-into-radar-and-desk | 工坊重构为雷达+版块态势台：`/tags` 首屏改今日雷达（单次聚合端点 overview），五 tab 退役（矩阵/归档视图/编排/阅读台承接，8.4 物理清理旧宿主），新建泳道编排工作面（服务端候选链口径+质心推荐+画布缩放平移），阅读台路由化 `/tags/:boardId/:date` + 旧版三栏恢复 + 页边注/收藏/Esc 语义回归 | [archive/2026-11-02-rework-workshop-into-radar-and-desk](../../../openspec/changes/archive/2026-11-02-rework-workshop-into-radar-and-desk) |

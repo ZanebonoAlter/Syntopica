@@ -1,0 +1,92 @@
+[
+  {
+    "file": "01-radar-1440.png",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "file": "01-radar-loaded-1440.png",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "file": "02-console-1440.png",
+    "width": 1440,
+    "height": 900
+  },
+  {
+    "file": "03-50413-1440.png",
+    "width": 1280,
+    "height": 633
+  },
+  {
+    "file": "04-50413-console-1920.png",
+    "width": 1920,
+    "height": 1080
+  },
+  {
+    "file": "04-50413-report-1920.png",
+    "width": 1920,
+    "height": 1080
+  },
+  {
+    "file": "05-1974-reader-1920.png",
+    "width": 1920,
+    "height": 1080
+  },
+  {
+    "file": "06-1974-reader-stable-1920.png",
+    "width": 1920,
+    "height": 1080
+  },
+  {
+    "file": "06-1974-topic-evolution-1920.png",
+    "width": 1920,
+    "height": 1080
+  },
+  {
+    "file": "07-1974-console-375.png",
+    "width": 375,
+    "height": 667
+  },
+  {
+    "file": "07-1974-reader-375.png",
+    "width": 375,
+    "height": 667
+  },
+  {
+    "file": "08-mobile-radar-expanded-375.png",
+    "width": 375,
+    "height": 667
+  },
+  {
+    "file": "09-50413-archive-375.png",
+    "width": 375,
+    "height": 667
+  },
+  {
+    "file": "09-50413-console-375.png",
+    "width": 375,
+    "height": 667
+  },
+  {
+    "file": "10-50413-archive-7days-375.png",
+    "width": 375,
+    "height": 667
+  },
+  {
+    "file": "10-50413-archive-default-375.png",
+    "width": 375,
+    "height": 667
+  },
+  {
+    "file": "10-50413-article-drawer-375.png",
+    "width": 375,
+    "height": 667
+  },
+  {
+    "file": "11-50413-evidence-only-1440.png",
+    "width": 1440,
+    "height": 900
+  }
+]

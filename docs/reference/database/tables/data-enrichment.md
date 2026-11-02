@@ -277,6 +277,15 @@ detect 产出的单条候选，**落库后不可变**；owner/周期列在写入
 
 **关联**：复合 FK `fk_board_signal_research_progress_candidate (candidate_id, semantic_board_id, granularity, period) → board_signal_candidate(id, …)` `ON DELETE RESTRICT`（迁移 `20260922_0002`）——进展行的 owner/周期永远与候选钉死一致；`job_id` 关联内存 job（重启后 job 404 但进展行仍可查）。
 
+### 10.14 board_signal_disposition（候选忽略标记，redesign-enrichment-research-workbench）
+
+| 列 | 类型 | 约束 | 说明 |
+|------|--------|------|------|
+| `candidate_id` | BIGINT | PK；FK `fk_board_signal_disposition_candidate → board_signal_candidate(id)` `ON DELETE CASCADE`（迁移 `20261015_0001`；AutoMigrate 建表，迁移只管 FK） | 被忽略的候选 |
+| `ignored_at` | TIMESTAMPTZ | NOT NULL | 首次忽略时间（重复忽略保留原值） |
+
+**语义**（D1）：有行即忽略、无行正常。归属从候选取得（不重复存 user/board/period）；候选内容、score、快照、报告均不改。写入与研究启动在同一板块 runner 临界区串行（运行中 409）；恢复即删行（幂等）。
+
 ## 域 ER 图
 
 > 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 13 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。

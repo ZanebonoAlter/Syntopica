@@ -51,6 +51,8 @@
 
 ## 生命周期上下文 Contexts
 
+> **semantic_board_id 可选校验**（redesign-enrichment-research-workbench 4.3）：以下四个端点均接受可选 `semantic_board_id`（GET 为 query 参数；传入时校验话题存在且属于该板块，不符 404 不泄露存在性；**不传行为零变化**，旧客户端兼容）。话题新闻背景在新 UI 从话题总览/研究工作台直接打开，不再依赖旧聚焦选择状态。
+
 ### GET /api/persistent-topics/:topicId/enrichment/contexts
 
 列出某话题的全部周期归档上下文。

@@ -23,7 +23,7 @@
 
 另：[DATA_LIFECYCLE.md](DATA_LIFECYCLE.md)（数据状态字段流转，独立于域文档）。
 
-## 完整表清单（58 业务 + 5 废弃 + 1 框架，按域分组 = 归属速查表；2026-09-02 cross_board 两表补齐；2026-09-24 页边注三表补齐；2026-10 ai-provider-model-overhaul 三张两层表补齐、ai_providers/ai_route_providers 停写废弃）
+## 完整表清单（60 业务 + 5 废弃 + 1 框架，按域分组 = 归属速查表；2026-09-02 cross_board 两表补齐；2026-09-24 页边注三表补齐；2026-10 ai-provider-model-overhaul 三张两层表补齐、ai_providers/ai_route_providers 停写废弃；2026-10-29 board-health-triage-advice 描述修复任务/条目两表补齐）
 
 #### 内容 → [`tables/content.md`](tables/content.md)（flow: `content-enrichment`）
 
@@ -75,6 +75,8 @@
 | `board_composition` | board 构成（中间表；挂载单元可为 aux 或 composite，`auxiliary_label_id` 列复用） | `models.BoardComposition` |
 | `composite_components` | 组合标签组件序列（composite→auxiliary，position 有序） | `models.CompositeComponent` |
 | `board_upgrade_suggestions` | 板块升级建议 | `models.BoardUpgradeSuggestion` |
+| `auxiliary_description_repair_jobs` | 共享描述修复任务（幂等键 + 冻结范围计数 + 租约列，无 DB FK） | `tagmanagement/models.AuxiliaryDescriptionRepairJob` |
+| `auxiliary_description_repair_items` | 描述修复任务条目（冻结的 topic_tag 逐项进度，无 DB FK） | `tagmanagement/models.AuxiliaryDescriptionRepairItem` |
 
 #### 向量 → [`tables/embeddings.md`](tables/embeddings.md)（flow: `topic-graph`）
 

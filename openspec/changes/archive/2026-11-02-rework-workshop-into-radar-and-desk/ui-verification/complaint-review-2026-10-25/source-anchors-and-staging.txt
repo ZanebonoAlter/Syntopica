@@ -1,0 +1,24 @@
+Known source anchors; no app modifications
+front/app/features/tags/composables/useBoardConsole.ts:250:  const latestDataDate = computed<string | null>(() => {
+front/app/features/tags/composables/useBoardConsole.ts:252:    for (const lane of data.value?.lanes ?? []) {
+front/app/features/tags/composables/useBoardArchive.ts:114:export function sortArchiveArticles(articles: ArchiveArticle[]): ArchiveArticle[] {
+front/app/features/tags/composables/useBoardArchive.ts:118:    return b.id - a.id
+front/app/features/tags/composables/useBoardArchive.ts:168:    if (!failed) articles.value = sortArchiveArticles(collected)
+front/app/features/tags/composables/useBoardArchive.ts:172:  const sortedArticles = computed(() => sortArchiveArticles(articles.value))
+front/app/features/tags/components/DailyReportReader.vue:454:  } else if (props.mode !== 'desk' && (event.key === 'ArrowDown' || event.key === 'ArrowRight')) {
+front/app/features/tags/components/DailyReportReader.vue:457:  } else if (props.mode !== 'desk' && (event.key === 'ArrowUp' || event.key === 'ArrowLeft')) {
+front/app/features/tags/components/DailyReportReader.vue:631:                v-if="mode !== 'desk'"
+front/app/features/tags/components/DailyReportReader.vue:637:                  v-if="mode !== 'desk'"
+front/app/features/tags/components/DailyReportReader.vue:718:                <div v-if="mode !== 'desk' && !isNotesNarrow" class="drm-right">
+front/app/features/tags/components/DailyReportReader.vue:786:                  v-if="mode !== 'desk'"
+front/app/features/tags/components/console/BoardConsoleShell.vue:272:function handleViewArchive(): void {
+front/app/features/tags/components/console/BoardConsoleShell.vue:274:  setView('archive')
+front/app/features/tags/components/console/BoardConsoleShell.vue:457:          v-if="latestDataDate"
+front/app/features/tags/components/console/BoardArchiveView.vue:216:          @click="selected = article"
+front/app/features/tags/components/console/BoardArchiveView.vue:254:      testid="archive-article-drawer"
+front/app/features/tags/components/console/BoardArchiveView.vue:325:          打开原文
+front/app/features/tags/components/console/SectionDrawer.vue:32:  viewArchive: []
+front/app/features/tags/components/console/SectionDrawer.vue:183:            @click="emit('viewArchive')"
+
+Staged file count
+0

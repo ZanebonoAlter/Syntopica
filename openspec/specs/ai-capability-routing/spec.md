@@ -113,7 +113,8 @@ AI 能力路由系统：为每个 AI capability（summary、digest_polish、topi
 设置页「能力路由」的每条能力泳道行 SHALL 在能力名下方展示一行「供血对象」说明文案，说明该 capability 的真实 LLM 调用方与对应用户可见功能。全部在册能力（`summary` / `topic_tagging` / `digest_polish` / `embedding` / `open_notebook` / `feed_discovery` / `data_enrichment_news` / `data_enrichment_analysis`）SHALL 均有非空说明；说明文案 SHALL 与该 capability 在后端的实际调用方一致，SHALL NOT 与真实供血关系矛盾。
 
 已验证的关键分工事实（文案必须如实反映）：
-- `digest_polish` 供血日报生成（聚类/要闻/叙事）及泳道动态与泳道趋势「近 14 天」档（`daily_report.lane_snapshot` 等 topicgraph LLM 调用）；
+- `digest_polish` 供血日报生成（聚类/要闻/叙事/关键节点 AI 推荐）及泳道动态与泳道趋势「近 14 天」档（`daily_report.lane_snapshot`、`daily_report.key_event_recommend` 等 topicgraph LLM 调用）；
+- `topic_tagging` 供血标签提取与语义操作，含版块体检 LLM 评分（`tagmanagement.board_health_checkup`，版块评分徽章/评语来源）；
 - `data_enrichment_news` 供血话题生命线周期归档摘要（`data_enrichment.summarize_context`，月/年定时任务生成），即泳道趋势「月」「年」档的数据源——与日报无关。
 
 #### Scenario: 八条能力均有供血说明

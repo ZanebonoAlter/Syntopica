@@ -38,6 +38,24 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 - **WHEN** 少数特殊工作台确需脱离四模式
 - **THEN** change 的 `ui-design.md` Layout Contract 节 MUST 记录理由、目标视口与溢出策略，经 review 允许
 
+### Requirement: 画布类工作面必须按容器真实像素 1:1 绘制
+
+**级别**: MUST
+
+以图形画布为主体的工作面（点线图、关系图、编排画布）SHALL 按**容器真实像素 1:1** 绘制：SVG 坐标系与 CSS 像素 1:1（viewBox 宽 = 容器 `clientWidth`，或干脆不设 viewBox 而用 px 坐标），SHALL NOT 在挂载/开页那刻算死一个宽度后随视口变化被缩放或裁边；窗口尺寸变化 SHALL 重排重绘。
+
+图面上的文字、编号与横条 SHALL NOT 越出画布边界；标签冲突时 SHALL 宁缺勿叠（放不下就不画，不得压字）。点的尺寸 SHALL 以**像素**为下限（普通点 ≥3px 半径），并 SHALL 把「已选」与「相近程度」用**两套独立视觉**表达（实心 + 勾号 vs 大小/深浅），大小 SHALL NOT 同时表达选中。
+
+#### Scenario: 窗口变化后画布比例
+
+- **WHEN** 用户拉宽/拉窄窗口
+- **THEN** 画布 SHALL 按新容器宽度重排重绘，比例仍为 1:1，且无任何元素越出边界
+
+#### Scenario: 图面标签放不下
+
+- **WHEN** 两个标题位置冲突或超出画布
+- **THEN** 实现 SHALL 跳过冲突标题（可悬停看全文），SHALL NOT 互相压字或溢出画布
+
 ### Requirement: 弹窗必须使用统一尺寸档
 
 **级别**: MUST
@@ -154,11 +172,37 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 
 核心页面（主工作台/发现/设置/标签/日报）在 375px 宽视口下 SHALL 无横向溢出、交互元素可达；loading/empty/error 各状态同样不破版。存量页面已存在的其他断点值（如 720px/768px 整点）不强制回改，但新代码一律用 767.98px 断点。验收的机械断言清单与标准环境见 [`standard/shared/test-design.md`](../shared/test-design.md)「UI 验收机械断言」节（通用，不限窄屏）。
 
+### Requirement: UI 复审的全系统与产品任务覆盖
+
+**级别**: MUST
+
+UI 复审 MUST NOT 只覆盖本次 change 新增组件/原型对照；涉及共享壳、导航或任一核心路由时，验收 SHALL 增加「全系统回归」一档：
+
+1. **路由矩阵**：至少覆盖 `/`、`/search`、`/discovery`、`/settings`、`/tags`、`/tags/:boardId`、`/tags/:boardId/:date`、`/tags/:boardId/research`；每路由在 **editorial 与 dark** 两主题下检查，桌面 1440×900 必做，触窄屏的再加 375×667；
+2. **产品任务走查**：按真实任务而非控件清单走一遍（例：只看今天的归档文章、从列表选每天事件、返回主页、冷启动新建版块）；旧版存在的功能 SHALL 先建「旧→新功能对照表」，缺失项要么迁移、要么在报告里显式判定为退役；
+3. **暗色不是附加项**：新增独立路由/全屏页 MUST 提供自己的主题底色（或由全局 `html/body` 承接），不得依赖浏览器默认白底；复审证据须包含暗色截图；
+4. **结论分流**：`pass/fail/未覆盖` 只描述证据，不替代产品判断；发现「功能没了/没法完成任务」时按 fail 处理，不得用「符合原型」放行。
+
+#### Scenario: 共享壳改动后的复审
+- **WHEN** change 改动 `/tags` 及其子路由或全局导航
+- **THEN** `ui-verification/report.md` SHALL 包含全系统路由矩阵与至少 3 条产品任务走查，且含 dark 截图
+- **AND** 若旧功能未迁移且未显式判定退役，归档 SHALL 被 review 阻断
+
+## 已登记例外（固定视口栅格）
+
+「需要自由宽度」条款之外的**固定视口栅格**（无页面级纵向滚动、仅舞台内滚动）属于登记制例外，逐条登记于此；未登记的页面一律按四模式处理。
+
+| change | 界面 | 理由 | 目标视口 | 溢出策略 | 回落规则 |
+| --- | --- | --- | --- | --- | --- |
+| `rework-workshop-into-radar-and-desk`（原始登记） | L0 `/tags` 雷达、L1 `/tags/:boardId` 版块态势（L0 右栏底部新增常驻管线状态块，`add-radar-pipeline-status` 增补） | 观看便利：4K 本地屏一次看全（三栏常驻 + 矩阵不靠滚动寻找），非挂墙数据大屏 | ≥1440×900 / 1920×1080 / 4K（150% 缩放 → 2560×1440 CSS px） | 页面本身 `overflow: hidden`；只有矩阵舞台/归档列表/编排画布内部滚动；版块栏与治理右轨各自独立滚动；L0 右栏改「上滚下驻」两段容器——上段内容区（今日该读 / 今天可能升温）独立滚动、下段管线状态块常驻右栏底部不随之滚动（`add-radar-pipeline-status` 增补） | <1440px 回落 `workspace` + 页面滚动；<768px 按窄屏线性化：L0 雷达单列（隐藏迷你泳道矩阵）、L1 只渲染版块摘要（泳道列表 + 每行 14 天迷你条 + 最新日报入口，矩阵/右轨不渲染）、L3 阅读台单栏（索引收为顶部锚点条），编排入口提示「新建泳道需要宽屏或横屏」 |
+
+登记后如信息架构或布局模式再变（例如新增第五区），MUST 回到该 change 的 `ui-design.md` 重置 `ui-approval` 并更新本表。
+
+**登记项的增补口径**：表内 `change` 列记录**原始登记**该例外的 change；后续 change 若在同一界面上增补实现、且不新增分区、不改四种布局模式枚举，SHALL 在对应单元格内标注增补来源 change 名 + 在本表下方追加一条增补说明，SHALL NOT 为同一界面另起一行重复登记（重复登记会被读成两条互相独立的例外）。**`add-radar-pipeline-status` 的增补**：L0 `/tags` 雷达右栏底部新增常驻管线状态块——右栏改「上滚下驻」两段容器（上段内容区独立滚动 + 下段状态块常驻底部），**不新增第五区、不改布局模式枚举**，页面仍为三栏常驻，故仍属本条固定视口栅格例外、不触发上段的 `ui-approval` 重置条件；窄屏（<768px）该状态块随页面流落到雷达单列下方、板块清单单列（来源：`add-radar-pipeline-status` 的 `ui-design.md` 与 `ui-verification/report.md`）。
+
 ## 存量迁移
 
 - **不迁移**：存量页面的自由宽度与旧 `width` 弹窗保持现状，仅在主动重构该界面时按本契约收敛（避免大量用户可见变化混入其他 change）。
-- 新代码（新页面/新弹窗/重构）一律走本契约；例外必须登记在 change 的 `ui-design.md`。
-
 - **不迁移（层级同款）**：存量浮层组件里手写的层级数字保持现状，仅在主动重构该组件时收敛到 `Z_INDEX` 档位表；新建或改造的浮层 MUST 取档位表，不得手写层级数字。遗留清单见下表。
 - 新代码（新页面/新弹窗/重构）一律走本契约；例外必须登记在 change 的 `ui-design.md`。
 
@@ -188,5 +232,7 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 | 弹窗 | `<AppDialog size="sm\|md\|lg\|xl">`（旧 `width` 勿用于新代码） |
 | 浮层层级 | `Z_INDEX` 档位表（`~/components/ui/layout-contract`）；嵌套浮层默认 `dialogNested`，宿主更高档时 `nestedOverlayZ(hostZ)` 抬升（跳过已占档位、不越过 `toast`） |
 | 窄屏导航抽屉 | `<AppSidebarDrawer :open=".." @close="..">`（仅窄屏容器，宽 min(80vw,320px)，来源 mobile-viewport-stage1） |
+| 右侧详情/治理抽屉 | `<AppDrawer :open=".." width="32rem" label=".." @close="..">`（Teleport + 遮罩 + Esc + body 滚动锁；32rem，窄屏 100vw；来源 rework-workshop-into-radar-and-desk） |
+| 右栏常驻底部状态块 | 「上滚下驻」两段容器（上段内容区独立滚动 + 下段状态块常驻右栏底部、不随之滚动）：`front/app/features/tags/components/console/BoardRadarStatusBlock.vue` + `BoardRadarView.vue` 右栏（L0 `/tags` 雷达专用模式；来源 add-radar-pipeline-status；登记例外见 §已登记例外） |
 | 窄屏断点 | `useIsNarrowViewport()`（composables/useMediaQuery.ts，断点 767.98px） |
 | 按钮/输入/开关/标题 | `AppButton` / `AppInput` / `AppToggle` / `AppSectionHeader`（见 [theming.md](theming.md)） |
