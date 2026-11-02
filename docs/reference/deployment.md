@@ -164,6 +164,38 @@ deploy/compose/docker-compose.yml            deploy/compose/docker-compose.firec
 | Ollama | 本地 LLM 推理，已有模型管理 | 已安装 Ollama 或偏好其模型管理时 |
 | Redis | 持久化任务队列后端 | Topic 分析任务需要持久化队列时 |
 
+## 桌面壳（远程模式）
+
+桌面壳是 Tauri 2 应用（`desktop/shell/`），**当前只实现远程模式**：窗口装载服务端已托管的 SPA，所有请求走同一 origin 的 `/api`，**不启动本地后端、不需要本地数据库**。
+
+| 项 | 说明 |
+|------|------|
+| 适用场景 | 已有可访问的 Syntopica 服务端（本机或局域网），想要一个「双击即用」的窗口而不是浏览器 tab |
+| 不适用场景 | 无网络/服务端不可达时的本地离线使用（需等待 sidecar + embedded PG 形态，尚未实现） |
+| 地址配置 | 启动参数 `--server-url` > 环境变量 `SYNTOPICA_SERVER_URL` > 本地配置 > 默认 `http://127.0.0.1:5100/`；失败页可改地址并持久化。详见[配置指南](configuration.md)「桌面壳」 |
+| 服务端要求 | 无额外要求——沿用现有静态托管与 `/api`；同源访问不涉及 CORS 白名单 |
+| 安全边界 | 仅支持 `http://` / `https://`；明文 HTTP 只应用在可信网络（本机 / 家庭局域网） |
+
+### 构建与打包
+
+开发验证在 Linux 本机（`cargo run -- --server-url http://127.0.0.1:5100/`）；**Windows 安装包在 Windows 本机构建**（官方推荐路径，MSI 亦只能在 Windows 生成）：
+
+```bash
+cd desktop/shell
+cargo tauri build        # 产出 target/release/bundle/nsis/*-setup.exe（per-user，免管理员）
+```
+
+平台前置：Windows 需 Rust（MSVC 目标）+ VS Build Tools C++ + WebView2 Runtime（Win11 自带；缺失时安装包会走 Evergreen 引导）；Linux 需 `libwebkit2gtk-4.1-dev` 等 dev 包。
+
+### 平台差异
+
+- **Linux**：启动时强制 `WEBKIT_DISABLE_DMABUF_RENDERER=1`（壳内置，无需用户设置）——2026-11-02 实测：默认 GL 路径在 Pi/Mesa 上整窗花屏，关闭后阅读页/日报页/矩阵页均正常（62fps、p95 17ms）。
+- **Windows**：WebView2（Chromium）默认渲染，无额外开关；关窗走进程退出（无 SIGTERM 语义）。
+
+### 卸载与回滚
+
+卸载应用即可，服务器与数据完全未涉及：无迁移、无回滚脚本、不产生服务端残留。
+
 ## 构建流水线
 
 没有配置 CI/CD 流水线 — 仓库中没有 `.github/workflows/` 文件。构建和部署为手动步骤。

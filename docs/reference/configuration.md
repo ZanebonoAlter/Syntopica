@@ -27,6 +27,17 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | `COMTRADE_API_KEY` | 否 | *(空)* | UN Comtrade 订阅 key 的**兜底**（研究数据源域，change integrate-research-data-sources）。**首选在设置界面「研究数据源」配**（存 `ai_settings` 表 `comtrade_config`，动态生效免重启，同博查语义）；优先级：界面 DB > env > `configs/config.yaml` `comtrade.api_key`。全空→`un_comtrade` 源在目录中 disabled 且取数报「配置缺失」型 SOURCE_UNAVAILABLE（消息指向配置项），其余三源（EIA/JODI/WDI）匿名可用不受影响。key 获取：comtradedeveloper.un.org 订阅 Free APIs 产品（详见下方「研究数据源」节） |
 | `FRED_API_KEY` | 否 | *(空)* | FRED API key 的**兜底**（研究数据源域，change add-fast-frequency-datasources，同 Comtrade 动态链）。**首选在设置界面「研究数据源」配**（存 `ai_settings` 表 `fred_config`，动态生效免重启）；优先级：界面 DB > env > `configs/config.yaml` `fred.api_key`。全空→`fred` 源在目录中 disabled 且取数报「配置缺失」型 SOURCE_UNAVAILABLE，其余六源匿名可用不受影响。key 获取：stlouisfed.org 免费注册（1 分钟，详见下方「研究数据源」节） |
 
+### 桌面壳（desktop shell）
+
+桌面壳当前是**远程模式**：窗口装载服务端已托管的 SPA（同源 `/api`），不启动本地后端。目标地址按以下优先级解析（`desktop/shell/src/config.rs`）：
+
+| 来源 | 形式 | 说明 |
+|---|---|---|
+| 启动参数 | `--server-url http://host:5100/` 或 `--server-url=...` | 最高优先级；非法值（无 scheme / 非 http(s)）会被忽略并落到下一级 |
+| 环境变量 | `SYNTOPICA_SERVER_URL` | 同上语义 |
+| 本地配置 | Windows `%LOCALAPPDATA%\Syntopica\shell.json`；Linux/macOS `~/.syntopica/shell.json`（字段 `server_url`） | 由失败页「修改地址」写入（临时文件 + rename 原子写）；文件损坏时回退默认且不覆写 |
+| 默认值 | `http://127.0.0.1:5100/` | 全部缺省时使用 |
+
 ### 前端（Nuxt）
 
 通过 `nuxt.config.ts` 的 `runtimeConfig` 设置，可用环境变量覆盖。

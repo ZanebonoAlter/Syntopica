@@ -1,0 +1,12 @@
+[package]
+name = "syntopica-shell"
+version = "0.1.0"
+edition = "2021"
+description = "Syntopica desktop shell (remote mode)"
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

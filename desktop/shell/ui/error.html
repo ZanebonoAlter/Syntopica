@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="editorial">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Syntopica · 无法连接</title>
+<style>
+  /* 主题令牌内联复制自 front/app/assets/css/main.css（editorial / dark 背景色）。
+     改主题色时两侧同步——与 front/app/spa-loading-template.html 同一维护方式。 */
+  :root { --bg: #faf7f2; --fg: #2b2723; --muted: #7a736b; --line: #e4dcd1; --accent: #8b5cf6; --panel: #ffffff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121214; --fg: #e8e6e3; --muted: #9a958f; --line: #2c2c31; --panel: #1a1a1e; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 15px/1.7 "Noto Serif SC", Georgia, "Songti SC", system-ui, serif;
+    display: grid; place-items: center; padding: 32px;
+  }
+  main { width: min(420px, 92vw); text-align: center; }
+  .icon { color: var(--accent); margin-bottom: 18px; }
+  h1 { font-size: 20px; margin: 0 0 10px; font-weight: 600; letter-spacing: .01em; }
+  p.reason { color: var(--muted); margin: 0 0 6px; }
+  code { font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
+  .target { color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: block; margin: 14px 0 20px; }
+  .actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  button { font: inherit; padding: 8px 18px; border-radius: 6px; cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--fg); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .55; cursor: default; }
+  .hint { margin-top: 16px; min-height: 22px; color: var(--muted); font-size: 13px; }
+  .form { display: none; margin-top: 18px; text-align: left; }
+  .form input { width: 100%; font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); }
+  .form .row { margin-top: 10px; display: flex; gap: 10px; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<main>
+  <svg class="icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9"></circle><line x1="12" y1="7.5" x2="12" y2="13"></line><circle cx="12" cy="16.5" r="0.9" fill="currentColor" stroke="none"></circle>
+  </svg>
+  <h1>无法连接服务端</h1>
+  <p class="reason" id="reason">正在读取失败原因…</p>
+  <code class="target" id="target">—</code>
+
+  <div class="actions">
+    <button class="primary" id="retry">重试</button>
+    <button id="edit">修改地址</button>
+  </div>
+
+  <div class="form" id="form">
+    <label for="url">服务端地址（http/https）</label>
+    <input id="url" spellcheck="false" placeholder="http://192.168.1.10:5100/" />
+    <div class="row">
+      <button id="cancel">取消</button>
+      <button class="primary" id="save">保存并连接</button>
+    </div>
+  </div>
+
+  <div class="hint" id="hint" role="status" aria-live="polite"></div>
+</main>
+<script>
+  const qs = new URLSearchParams(location.search);
+  const target = qs.get('target') || '';
+  const reason = qs.get('reason') || '未知错误';
+  const source = qs.get('source') || '';
+  const $ = (id) => document.getElementById(id);
+  $('reason').textContent = source ? `${reason}（当前地址来自${source}）` : reason;
+  $('target').textContent = target || '—';
+
+  const invoke = (cmd, args) => {
+    const ipc = window.__TAURI__ && window.__TAURI__.core;
+    if (!ipc) return Promise.reject(new Error('壳内 IPC 不可用'));
+    return ipc.invoke(cmd, args);
+  };
+
+  let busy = false;
+  const setBusy = (v, text) => { busy = v; $('retry').disabled = v; $('save').disabled = v; $('hint').textContent = text || ''; };
+
+  $('retry').addEventListener('click', () => {
+    if (busy) return;               // 连点保护：并发导航以最后一次生效，先挡掉重复提交
+    setBusy(true, '正在重新连接…');
+    invoke('probe_server', { url: target })
+      .then(() => setBusy(true, ''))
+      .catch((e) => setBusy(false, String(e && e.message ? e.message : e)));
+  });
+
+  $('edit').addEventListener('click', () => {
+    $('form').style.display = 'block';
+    $('url').value = target;
+    $('url').focus();
+    $('hint').textContent = '';
+  });
+
+  $('cancel').addEventListener('click', () => { $('form').style.display = 'none'; $('hint').textContent = ''; });
+
+  $('save').addEventListener('click', () => {
+    if (busy) return;
+    const value = $('url').value.trim();
+    if (!value) { $('hint').textContent = '地址不能为空'; return; }
+    setBusy(true, '正在连接…');
+    invoke('set_server_url', { url: value })
+      .then(() => setBusy(true, ''))
+      .catch((e) => setBusy(false, String(e && e.message ? e.message : e)));
+  });
+</script>
+</body>
+</html>

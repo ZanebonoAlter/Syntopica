@@ -80,8 +80,10 @@ backend-go/admin
 backend-go/server
 backend-go/verify-lane-bucketing
 
-# 桌面壳工程（Tauri 壳 + sidecar 资源，本机迭代中，不入库）
-desktop/
+# 桌面壳工程：源码入库（desktop/shell），运行时数据与编译产物不入库
+desktop/lab/run/
+desktop/shell/target/
+desktop/**/node_modules/
 
 # SRS 需求文档（同 docs/research / docs/experience 口径：探索期文档不入库）
 docs/srs/
