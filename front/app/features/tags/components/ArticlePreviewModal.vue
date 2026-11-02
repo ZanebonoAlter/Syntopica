@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ArticleContentView } from '~/features/articles/public'
+import { popOverlay, pushOverlay } from '~/components/ui/overlayStack'
 import type { Article } from '~/types'
 
 const props = withDefaults(defineProps<{
@@ -11,8 +12,11 @@ const props = withDefaults(defineProps<{
   /** 搜索预览命中词高亮（add-article-search）：传入时正文文本节点包裹 <mark class="apm-hit">；
    *  缺省零行为变化（tags 域既有用法不受影响） */
   highlightTerms?: string[]
+  /** R38：仅 matrix 原文阅读显式 opt-in 对话语义/初始焦点；默认 false 保持旧行为。 */
+  dialogSemantics?: boolean
 }>(), {
   highlightTerms: () => [],
+  dialogSemantics: false,
 })
 const emit = defineEmits<{
   close: []
@@ -25,6 +29,15 @@ const show = computed({
   get: () => props.visible,
   set: (val: boolean) => { if (!val) emit('close') }
 })
+
+/**
+ * 层级约定（2026-10-28 用户反馈修复）：
+ * 弹窗遮罩 9100（同 MarginNotesRail 同源约定）→ 全屏层必须高于它，
+ * 否则弹窗内点「全屏」时全屏层（Teleport 到 body）被遮罩盖住——看起来像没反应；
+ * 全屏层取 9200，仍低于全局 toast（9999），保证全屏中失败提示可见。
+ */
+const DIALOG_Z_INDEX = 9100
+const FULLSCREEN_Z_INDEX = 9200
 
 // ===== 命中词高亮（add-article-search）=====
 // 实现方式：渲染后对 .preview-body 内文本节点包裹 mark（DOM 层，不侵入
@@ -142,6 +155,20 @@ function startHighlightObserver(): void {
   highlightObserver.observe(root, OBSERVE_OPTIONS)
 }
 
+/** Esc 分层锚（daily-report-lead-direct-preview）：阅读台在 document 级监听 Esc 并查 overlayStack 让位
+ * ——本弹窗直达打开（无抽屉宿主代为计数）时 MUST 自登浮层栈，否则 Esc 关弹窗的同一次击键会
+ * 连阅读台一起退（丢阅读台上下文）。对无 Esc 监听的宿主（矩阵页/搜索页）计数无副作用。 */
+let overlayPushed = false
+watch(() => props.visible, (visible) => {
+  if (visible && !overlayPushed) {
+    pushOverlay()
+    overlayPushed = true
+  } else if (!visible && overlayPushed) {
+    popOverlay()
+    overlayPushed = false
+  }
+}, { immediate: true })
+
 watch(
   () => [props.visible, props.selectedPreviewArticle, activeTerms.value.join('\u0000')] as const,
   async () => {
@@ -157,11 +184,25 @@ watch(
   { immediate: true },
 )
 
-onBeforeUnmount(stopHighlightObserver)
+onBeforeUnmount(() => {
+  stopHighlightObserver()
+  if (overlayPushed) {
+    popOverlay()
+    overlayPushed = false
+  }
+})
 </script>
 
 <template>
-  <AppDialog v-model="show" width="90vw" :close-on-overlay="true" :close-on-escape="true" :z-index="9100">
+  <AppDialog
+    v-model="show"
+    width="90vw"
+    :close-on-overlay="true"
+    :close-on-escape="true"
+    :z-index="DIALOG_Z_INDEX"
+    :semantic-dialog="dialogSemantics"
+    dialog-label="站内原文阅读"
+  >
     <template #header>
       <p class="preview-header-text">
         {{ loadingPreviewArticle ? '正在准备文章预览...' : '文章预览' }}
@@ -180,6 +221,7 @@ onBeforeUnmount(stopHighlightObserver)
         v-if="selectedPreviewArticle"
         :article="selectedPreviewArticle"
         :articles="previewArticles"
+        :fullscreen-z-index="FULLSCREEN_Z_INDEX"
         @navigate="(a: Article) => emit('navigate', a)"
         @favorite="(id: string) => emit('favorite', id)"
         @article-update="(id: string, updates: Partial<Article>) => emit('article-update', id, updates)"

@@ -1,5 +1,4 @@
 
-
 ## Purpose
 日报系统替代旧叙事系统，为每个 SemanticBoard 每日生成结构化日报，包含今日重点、板块动态和聚类叙事线索。
 
@@ -407,7 +406,7 @@ mini 生命线 SHALL 按日期列展示真实 section，同日多 section 合并
 
 原「话题总览」入口与 desk 索引里的「在矩阵中查看这条线」入口已于 2026-10-27 复审随新版索引一并撤下；泳道/矩阵聚焦入口保留在版块态势页自身，阅读台不再内嵌该出口。
 
-**thread 文章**：thread 有 `related_article_ids` 时 SHALL 可原位展开文章标题列表。前端只加载尚未缓存的 article id，相同文章跨 thread 复用缓存；单篇失败不阻塞其他文章并提供重试。点击文章 SHALL 打开文章抽屉（60% 宽），并保留阅读台上下文。
+**thread 文章**：thread 有 `related_article_ids` 时 SHALL 可原位展开文章标题列表。前端只加载尚未缓存的 article id，相同文章跨 thread 复用缓存；单篇失败不阻塞其他文章并提供重试。点击文章 SHALL 直接打开站内阅读预览弹窗（详情拉取期间弹窗呈现加载态、失败给出可见错误提示），并保留阅读台上下文。
 
 **section 生命周期**：点击 section header SHALL 继续打开右侧 SectionLifecyclePanel，不因新增 topic mini 生命线而移除 section 维度入口。
 
@@ -456,7 +455,7 @@ mini 生命线 SHALL 按日期列展示真实 section，同日多 section 合并
 #### Scenario: 展开 thread 文章并复用缓存
 - **WHEN** 两个 thread 引用同一个 article id，用户依次展开两个 thread
 - **THEN** 前端 SHALL 只为该 article id 请求一次文章详情
-- **AND** 点击文章 SHALL 打开文章抽屉并保留阅读台上下文
+- **AND** 点击文章 SHALL 直接打开站内阅读预览弹窗并保留阅读台上下文
 
 #### Scenario: 进入完整话题生命线
 - **WHEN** 用户点击 active topic 的「在矩阵中查看这条线」
@@ -900,26 +899,49 @@ JSON schema 中 `summary` / `reason` 字段的 description SHALL 追加「须基
 - **WHEN** 用户在主阅读页（非弹窗宿主）点击「全屏」
 - **THEN** 全屏层 SHALL 保持既有层级行为（不被页面浮层压住）
 
-### Requirement: 阅读台文章抽屉与站内阅读预览的状态同步
-日报阅读台（`/tags/:boardId/:date`）内点开文章 SHALL 打开文章抽屉；抽屉内「站内阅读」SHALL 打开站内原文预览弹窗（复用既有 `ArticlePreviewModal`）。预览弹窗内的收藏等状态动作 SHALL 真实落库并即时反映到界面：收藏 SHALL 采用乐观更新——点击后星标立即翻转，不等待网络往返；请求失败 SHALL 回滚到点击前状态并给出可见错误提示。SHALL NOT 出现「点击无响应」的空转实现（事件被空函数吞掉）或状态长时间不更新。
+### Requirement: 阅读台线索文章直达站内阅读预览
 
-**适用范围**：本 Requirement 覆盖日报阅读台（`DailyReportDeskShell`）与版块矩阵页日报时间线（`useTagsPage.openArticlePreview`）两条预览入口；其他宿主的收藏入口沿用同一乐观更新契约。
+日报阅读台（`/tags/:boardId/:date`）内点击线索引用文章 SHALL **直接打开站内原文预览弹窗**（复用既有 `ArticlePreviewModal`），SHALL NOT 先弹出中间文章抽屉。打开弹窗前 SHALL 拉取文章详情：详情请求进行中弹窗 SHALL 呈现加载态；请求失败 SHALL 给出可见错误提示且不留空弹窗。预览弹窗内的收藏等状态动作 SHALL 真实落库并即时反映到界面：收藏 SHALL 采用乐观更新——点击后星标立即翻转，不等待网络往返；请求失败 SHALL 回滚到点击前状态并给出可见错误提示。SHALL NOT 出现「点击无响应」的空转实现（事件被空函数吞掉）或状态长时间不更新。
+
+**适用范围**：本 Requirement 覆盖日报阅读台（`DailyReportDeskShell`）与版块矩阵页日报时间线（`useTagsPage.openArticlePreview`）两条预览入口；其他宿主的收藏入口沿用同一乐观更新契约。预览弹窗内部的全屏层级、内嵌网页高度等契约由既有 Requirement 承载，本 Requirement 不重复约束。
+
+#### Scenario: 点击线索文章直达预览弹窗
+
+- **WHEN** 用户在阅读台点击线索展开列表中的一篇引用文章
+- **THEN** 系统 SHALL 直接打开站内阅读预览弹窗展示该文章
+- **AND** SHALL NOT 出现中间文章抽屉层级
+
+#### Scenario: 详情加载中呈现加载态
+
+- **WHEN** 用户点击文章且详情请求尚未返回
+- **THEN** 预览弹窗 SHALL 呈现加载态
+- **AND** 请求返回后 SHALL 以完整文章内容替换加载态
+
+#### Scenario: 详情加载失败可见反馈
+
+- **WHEN** 文章详情请求失败
+- **THEN** 系统 SHALL 给出可见的错误提示
+- **AND** SHALL NOT 留下空白无内容的弹窗
 
 #### Scenario: 站内阅读预览收藏即时生效
-- **WHEN** 用户在日报阅读台打开文章抽屉并进入站内阅读预览，点击工具栏的收藏
+
+- **WHEN** 用户在日报阅读台打开的预览弹窗内点击工具栏的收藏
 - **THEN** 星标 SHALL 立即切换为已收藏
 - **AND** 系统 SHALL 调用文章更新接口持久化该收藏状态
 
 #### Scenario: 收藏失败回滚并提示
+
 - **WHEN** 收藏请求失败
 - **THEN** 星标 SHALL 回滚为点击前的状态
 - **AND** 系统 SHALL 给出可见的错误提示
 
 #### Scenario: 连点不丢更新
+
 - **WHEN** 用户在收藏请求返回前再次点击收藏
 - **THEN** 界面 SHALL 以最新一次点击为准展示状态
 - **AND** 迟到的失败响应 SHALL NOT 覆盖更新后的状态
 
 #### Scenario: 预览内文章状态更新回流
+
 - **WHEN** 预览弹窗发出文章状态更新
 - **THEN** 弹窗当前文章 SHALL 应用该更新
