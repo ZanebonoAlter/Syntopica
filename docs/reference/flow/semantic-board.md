@@ -220,7 +220,7 @@ SemanticBoard 管理面板
 
 ### 泳道动态（board-lane-dynamics，取代已退役的话题态势版图）
 
-版块态势页 `/tags/:boardId` 当前是**观察窗 A 路线（名单稳定）**：独立 7/14/30/365 档只由档按钮/显式 URL `days` 改变，决定 A 档名单、前端 source 全轴行序（线索合计 DESC → 分区数 DESC → topicId）与休眠分组（≤2 分区，只展示不写 status）；自由 `start/end` 只裁切显示，恰 7/14/30/365 也不换档。可见日跨出档窗时才按需读取 365 池（B），B **只补 A 名单内同 topic ID 的历史内容**，不参与名单/排序/休眠/候选。
+版块态势页 `/tags/:boardId` 当前是**观察窗 A 路线（名单稳定）**：独立 7/14/30/365 档只由档按钮/显式 URL `days` 改变，决定 A 档名单、前端 source 全轴行序（线索合计 DESC → 分区数 DESC → topicId）与休眠分组（≤2 分区，只展示不写 status）；自由 `start/end` 只裁切显示，恰 7/14/30/365 也不换档。365 池（B）在 A 数据到位且锚点已知即**预取**（顶部时间视窗背景曲线首屏即需整条 365 池曲线，不得只画当前档窗那几天、等用户拖出档窗才补历史；可见日跨出档窗只是复用已取到的池），B **只补 A 名单内同 topic ID 的历史内容**，不参与名单/排序/休眠/候选；池未取到/失败时历史日显示 `?`（不补 0），池提示与「重试历史池」无条件出现（A 侧照常可读、名单/排序不动）。
 
 主舞台：矩阵行=泳道、列=可见日期；日格=**同日各主题桶 thread_count 的峰值（bucket max）**，无分区 `—` 禁用、有分区 0 线索 `0` 可开、历史未取到 `?` 不补 0，无行尾合计列。选中泳道演进节点=**当日线索合计（day sum）**，点径随合计增大；>31 日切趋势图+折叠逐日索引。下方当日编年默认标题收束，单条就地展开真实 summary，相关文章按需，稳定 report/section/thread ID 关联；「打开所选日日报」是带完整日期的历史动作，顶部最新日报入口独立。接口契约见 `docs/reference/api/daily-reports.md` §`GET /semantic-boards/:id/lane-dynamics`。
 
@@ -433,6 +433,7 @@ handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembed
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 | ------ | ------ | ------ | ---------- |
+| 2026-11-02 | fix-observation-pool-curve | 顶部时间视窗折线缩略图首屏只画当前档窗（14 天）、拖一下才出历史——根因：365 池加载被挂在「观察范围跨出档窗」触发线上，首屏池从不加载，档窗外全为未知日（`null` 不补 0）⇒ 曲线残缺。修复：池改为 A 数据到位且锚点已知即**预取**（顶部背景曲线首屏即需整条 365 池曲线；「按需拉池」只管历史日内容解析），365 档仍与池共用一次请求；池未取到/失败的提示条与「重试历史池」不再被「是否跨出档窗」门控；后台零改动（复用既有 `days=365` 读端点） | [`openspec/changes/archive/2026-11-02-fix-observation-pool-curve`](../../../openspec/changes/archive/2026-11-02-fix-observation-pool-curve) |
 | 2026-10-24 | guard-tag-exemplar-leakage | 打标示例词泄漏护栏：两条 LLM 提取出口（mono 融合提取 / aggregate 栏目片）解析后过滤「prompt few-shot 示例词照抄」候选——label Slugify 归一命中示例词集合且模型可见输入无依据（大小写不敏感 Contains）即丢，auxiliary_labels 逐项同规则过滤；示例词集合与 prompt 同源常量 + 防漂移测试锁定；存量清理 CLI `cmd/admin tagguard-cleanup`（dry-run 默认 + --apply 事务删除 + tag_count 重算 + 孤儿清理，备份 CSV 留底）删 28 条误挂（PostgreSQL 26 + 某国央行上调基准利率 2 + kubernetes 1，PostgreSQL 标签挂载 36→11），416 期周刊不再误挂 | [`openspec/changes/archive/2026-10-28-guard-tag-exemplar-leakage`](../../../openspec/changes/archive/2026-10-28-guard-tag-exemplar-leakage) |
 | 2026-10-24 | fix-board-health-llm-misread | 体检 LLM 评分判据三处校准（防系统性误读）：①贴合度分化双条件（相对垫底 low_sim_ratio 大面积偏高 且 多数达标标签 cosine_mean < 0.6，identity 事件句×短名词标签天然带 0.51-0.76）；②短实体标签（人名/地名/技术名词）cosine 低于泛概念属正常形态不扣分；③reason_dist 病征限双条件（弱路径畸高且 ghost 同时偏高，无组合挂载全单标签路径是常态）；实测假低分板全部回归（俄乌 55→92、日本 65→85、卫生 55→72 等） | [`openspec/changes/archive/2026-10-24-fix-board-health-llm-misread`](../../../openspec/changes/archive/2026-10-24-fix-board-health-llm-misread) |
 | 2026-10-22 | fix-board-direction-gap-exempt | 方向校验豁免扩围：全库最优豁免（仅并列第一）升级为全库 gap 豁免带（挂载与全库最优差值 < `semantic_board_match_direction_gap_exempt_margin` 默认 0.10，≤0 回退旧口径）——窄带分布下磁铁板抢走全库第一名致真家排 2-5 名被冤杀（日本新闻 25 冤 22）；重算后全库 ghost 553→229、日本新闻 25→1、美国 216→48；红线 4 同步升级 | [`openspec/changes/archive/2026-10-24-fix-board-direction-gap-exempt`](../../../openspec/changes/archive/2026-10-24-fix-board-direction-gap-exempt) |
