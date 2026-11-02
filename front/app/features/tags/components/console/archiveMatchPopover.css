@@ -1,0 +1,351 @@
+/* 归档匹配 popover 样式（rework-workshop-into-radar-and-desk 8G.3c）。
+   浮层容器规则：position fixed + inset 0（遮罩），层级由 Z_INDEX 档位表内联注入，
+   <style> 不写死 z-index（layout.md「浮层层级契约」）。 */
+
+/* 遮罩：点外关闭（锚定浮层不遮光，保持页面可读） */
+.amp-mask {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+}
+
+/* popover 本体 */
+.amp-pop {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: min(26rem, calc(100vw - 1.6rem));
+  max-height: min(30rem, calc(100vh - 2rem));
+  overflow-y: auto;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 6px;
+  background: var(--color-bg-elevated, var(--color-bg-base));
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-strong, 0 6px 24px rgb(0 0 0 / 0.14));
+}
+
+.amp-pop.is-narrow {
+  left: 0.6rem !important;
+  right: 0.6rem;
+  top: auto !important;
+  bottom: 0.6rem;
+  width: auto;
+  max-height: 78dvh;
+}
+
+/* 头 */
+.amp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.6rem 0.8rem 0.45rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-left: 3px solid var(--color-border-medium);
+}
+
+.amp-name {
+  font-family: var(--font-serif, serif);
+  font-size: 0.95rem;
+  color: var(--color-text-primary);
+}
+
+.amp-cat {
+  padding: 0 0.3rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 3px;
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+}
+
+.amp-rule {
+  padding: 0 0.3rem;
+  border: 1px solid;
+  border-radius: 3px;
+  font-size: 0.68rem;
+}
+
+.amp-score {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.amp-flag {
+  color: var(--color-warning);
+  font-size: 0.68rem;
+}
+
+.amp-flag.is-error {
+  color: var(--color-error);
+}
+
+.amp-close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.amp-close:hover {
+  color: var(--color-accent);
+}
+
+/* 主体分节：栏线分隔，不用卡片墙 */
+.amp-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.amp-sec {
+  padding: 0.5rem 0.8rem 0.55rem;
+  border-bottom: 1px dashed var(--color-border-subtle);
+}
+
+.amp-sec:last-child {
+  border-bottom: 0;
+}
+
+.amp-k {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--color-text-muted);
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+}
+
+.amp-desc {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.amp-note {
+  margin: 0.3rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  line-height: 1.55;
+}
+
+/* 口径标注的警示色（重算值与冻结 score 不一致等） */
+.amp-note.is-warn {
+  color: var(--color-warning);
+}
+
+.amp-missing {
+  margin: 0;
+  padding: 0.45rem 0.8rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-hover);
+  color: var(--color-warning);
+  font-size: 0.7rem;
+}
+
+/* 组合链 */
+.amp-chain {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding: 0.1rem 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.74rem;
+}
+
+/* 本文标签 chips */
+.amp-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.amp-mini-tag {
+  padding: 0.02rem 0.3rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 3px;
+  font-size: 0.7rem;
+}
+
+.amp-mini-tag i {
+  margin-left: 0.2rem;
+  color: var(--color-text-muted);
+  font-size: 0.62rem;
+  font-style: normal;
+}
+
+.amp-mini-tag.is-matched {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+/* 辅助标签 × 版块收编 */
+.amp-aux {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.08rem 0;
+  font-size: 0.76rem;
+}
+
+.amp-aux-mark {
+  width: 0.9rem;
+  text-align: center;
+  font-family: var(--font-mono, monospace);
+}
+
+.amp-aux.is-hit .amp-aux-mark {
+  color: var(--color-success, var(--color-match-direct-hit));
+}
+
+.amp-aux.is-miss .amp-aux-mark {
+  color: var(--color-accent);
+}
+
+.amp-aux.is-unknown {
+  opacity: 0.55;
+}
+
+.amp-aux-pair {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+}
+
+/* 私有判定行 */
+.amp-verdict {
+  margin: 0;
+  padding: 0.45rem 0.8rem;
+  border-bottom: 1px dashed var(--color-border-subtle);
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.6;
+}
+
+/* 判定行内的口径标注小字（实时重算 vs 冻结 score） */
+.amp-verdict-note {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+  line-height: 1.5;
+}
+
+.amp-verdict-note.is-warn {
+  color: var(--color-warning);
+}
+
+/* 规则代入式（默认收起） */
+.amp-calc-btn {
+  align-self: flex-start;
+  margin: 0.5rem 0.8rem;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.amp-calc-btn:hover {
+  color: var(--color-accent);
+}
+
+.amp-calc {
+  margin: 0 0.8rem 0.6rem;
+  padding: 0.4rem 0.6rem;
+  border-left: 2px solid var(--color-border-medium);
+  font-size: 0.78rem;
+}
+
+/* 入板过程：阶段分组 */
+.amp-stage {
+  padding: 0.4rem 0.15rem 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.amp-stage:last-child {
+  border-bottom: 0;
+}
+
+.amp-stage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin-bottom: 0.2rem;
+}
+
+.amp-stage-no {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.amp-stage-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.amp-stage-cnt {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+}
+
+.amp-stage-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.14rem 0 0.14rem 1.4rem;
+  font-size: 0.74rem;
+}
+
+.amp-stage-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.amp-win {
+  padding: 0 0.2rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 3px;
+  color: var(--color-accent);
+  font-size: 0.62rem;
+}
+
+/* 弱证据文章的命中徽标（不入板依据，警示色） */
+.amp-win.is-weak {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+.amp-stage-score {
+  margin-left: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.amp-stage-empty {
+  padding: 0.1rem 0 0.1rem 1.4rem;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+}
+
+.amp-stage-empty.is-skipped {
+  opacity: 0.55;
+}
+
+.amp-stage-why {
+  padding: 0.12rem 0 0.12rem 1.4rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}

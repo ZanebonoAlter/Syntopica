@@ -1,0 +1,129 @@
+/* 正式/休眠泳道与当日其他话题共用同一行高、标题、热度及选中规则。 */
+.omx-lane {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--color-bg-base);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  height: 2.9rem;
+  padding: 0.25rem 0.4rem 0.25rem 0;
+  border: none;
+  color: var(--color-text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.omx-lane-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.86rem;
+}
+
+.omx-lane:hover .omx-lane-name {
+  color: var(--color-text-primary);
+}
+
+.omx-lane.is-selected .omx-lane-name {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.omx-lane.is-selected::before {
+  content: '';
+  width: 2px;
+  height: 1rem;
+  border-radius: 1px;
+  background: var(--color-accent);
+  margin-left: -0.5rem;
+  flex: 0 0 auto;
+}
+
+.omx-lane-watch,
+.omx-lane-dormant-tag {
+  flex: 0 0 auto;
+  font-size: 0.58rem;
+  padding: 0 0.22rem;
+  border-radius: 2px;
+  border: 1px solid var(--color-border-medium);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.omx-lane-watch {
+  color: var(--color-info);
+  border-color: color-mix(in srgb, var(--color-info) 30%, var(--color-bg-base));
+}
+
+.omx-cell {
+  min-width: 0;
+  height: 2.9rem;
+  border: none;
+  border-radius: 3px;
+  display: grid;
+  place-items: center;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-text-primary) 4%, var(--color-bg-base));
+  cursor: pointer;
+}
+
+.omx-cell:hover:not(:disabled) {
+  /* 不用 scale：横向滚动容器会裁掉上下 2–3px；用描边强调 */
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+  z-index: 2;
+}
+
+.omx-cell:disabled {
+  cursor: default;
+}
+
+.omx-cell.is-b1 {
+  background: color-mix(in srgb, var(--color-accent) 13%, var(--color-bg-base));
+  color: var(--color-text-secondary);
+}
+
+.omx-cell.is-b2 {
+  background: color-mix(in srgb, var(--color-accent) 26%, var(--color-bg-base));
+}
+
+.omx-cell.is-b3 {
+  background: color-mix(in srgb, var(--color-accent) 44%, var(--color-bg-base));
+}
+
+.omx-cell.is-b4 {
+  background: color-mix(in srgb, var(--color-accent) 66%, var(--color-bg-base));
+  /* 不覆盖前景色：反白色在 66% accent 上双主题对比度均 <3:1 */
+  font-weight: 600;
+}
+
+.omx-cell.is-today {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 45%, var(--color-bg-base));
+}
+
+.omx-cell.is-gap,
+.omx-cell.is-unknown {
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.omx-cell.is-gap {
+  opacity: 0.7;
+}
+
+.omx-cell.is-selected {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.omx-cell.is-dormant {
+  opacity: 0.55;
+}
+
+.omx-lane.is-dormant {
+  opacity: 0.55;
+}

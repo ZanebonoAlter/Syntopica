@@ -1,0 +1,863 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
+import BoardComposeOverlay from './BoardComposeOverlay.vue'
+import { estimateTextWidth } from '~/features/tags/composables/laneComposeLogic'
+import type { ComposeCandidatesData } from '~/api/persistentTopics'
+
+/**
+ * 编排态组件用例（白盒分支表 §3.5 V1–V16 + delta spec 场景）。
+ * 判据来自主线程 2026-10-31 定稿的 test-cases-lane-compose-implementation.md。
+ */
+
+const { persistentMock } = vi.hoisted(() => ({
+  persistentMock: {
+    getComposeCandidates: vi.fn(),
+    createManualLane: vi.fn(),
+    embedQuery: vi.fn(),
+  },
+}))
+
+const { reportsMock } = vi.hoisted(() => ({
+  reportsMock: {
+    listBoardTopics: vi.fn(),
+    updateTopic: vi.fn(),
+  },
+}))
+
+const { notifyMock } = vi.hoisted(() => ({
+  notifyMock: { success: vi.fn(), error: vi.fn(), warn: vi.fn() },
+}))
+
+vi.mock('~/api/persistentTopics', () => ({ usePersistentTopicsApi: () => persistentMock }))
+vi.mock('~/api/dailyReports', () => ({ useDailyReportsApi: () => reportsMock }))
+vi.mock('~/composables/useNotify', () => ({ useNotify: () => notifyMock }))
+const { narrowState } = vi.hoisted(() => ({ narrowState: { value: false } }))
+vi.mock('~/composables/useMediaQuery', () => ({ useIsNarrowViewport: () => narrowState }))
+
+function section(id: string, periodDate: string, clusterLabel: string, embedding: number[], topicId?: string, status?: string) {
+  return {
+    id,
+    reportId: '1',
+    periodDate,
+    clusterLabel,
+    embedding,
+    persistentTopicId: topicId,
+    persistentTopic: topicId ? { id: topicId, label: topicId === '1984' ? '候选泳道 A' : '已有泳道', status: status ?? 'candidate' } : undefined,
+  }
+}
+
+const SECTIONS = [
+  section('1', '2026-10-27', '候选一', [1, 0], '1984'),
+  section('2', '2026-10-28', '候选二', [0.99, 0.1], '1984'),
+  section('3', '2026-10-30', '候选三', [0.98, 0.2], '1984'),
+  section('4', '2026-10-26', '散料近邻', [0.97, 0.15]),
+  section('5', '2026-10-27', '已有泳道', [1, 0], '2000', 'active'),
+  section('6', '2026-10-29', '归档来源事件', [0.5, 0.5], '3000', 'archived'),
+]
+
+const CHAIN = {
+  key: '1984:1',
+  topicId: '1984',
+  topicLabel: '候选泳道 A',
+  topicStatus: 'candidate',
+  sectionIds: ['1', '2', '3'],
+  firstDate: '2026-10-27',
+  lastDate: '2026-10-30',
+  spanDays: 3,
+}
+
+const RELATIONS = [
+  { fromId: '1', toId: '2', distance: 0.1, relationType: 'identity' },
+  { fromId: '2', toId: '3', distance: 0.12, relationType: 'identity' },
+]
+
+const WINDOW = { from: '2026-10-20', to: '2026-10-30', days: 11, latestCompletedDate: '2026-10-30' }
+
+/** 服务端管理名单（snake_case 原样；可见性已由服务端按累计命中门槛过滤）。 */
+const HISTORY_TOPICS = [
+  {
+    id: 1984,
+    semantic_board_id: 1974,
+    label: '候选泳道 A',
+    description: '',
+    status: 'candidate',
+    first_seen_date: '2026-10-01',
+    last_seen_date: '2026-10-30',
+    hit_count: 5,
+    consecutive_hits: 5,
+    section_count: 3,
+    color: '#abc',
+    can_activate: true,
+  },
+  {
+    id: 1985,
+    semantic_board_id: 1974,
+    label: '未达门槛话题',
+    description: '',
+    status: 'candidate',
+    first_seen_date: '2026-10-05',
+    last_seen_date: '2026-10-12',
+    hit_count: 1,
+    consecutive_hits: 1,
+    section_count: 1,
+    color: '#def',
+    can_activate: false,
+  },
+]
+
+function response(overrides: Partial<ComposeCandidatesData> = {}): ComposeCandidatesData {
+  return {
+    sections: SECTIONS,
+    relations: RELATIONS,
+    candidateChains: [CHAIN],
+    matchThreshold: 0.3,
+    window: WINDOW,
+    ...overrides,
+  }
+}
+
+let wrapper: ReturnType<typeof mount> | null = null
+
+async function mountOverlay() {
+  wrapper = mount(BoardComposeOverlay, {
+    props: { boardId: 1974, boardLabel: '测试版块' },
+    attachTo: document.body,
+    global: { stubs: { teleport: true } },
+  })
+  await flushPromises()
+  await flushPromises()
+  return wrapper
+}
+
+/** 模拟容器真实宽度（画布 1:1 的前提）。 */
+async function setCanvasWidth(w: number): Promise<void> {
+  const el = wrapper!.find('[data-testid="lane-compose-canvas"]').element as HTMLElement
+  Object.defineProperty(el, 'clientWidth', { value: w, configurable: true })
+  window.dispatchEvent(new Event('resize'))
+  await flushPromises()
+}
+
+/** 走右栏「按标题找」人工补选一个组外事件。 */
+async function addManualPick(w: ReturnType<typeof mount>, id: string): Promise<void> {
+  await w.find('[data-testid="lane-compose-tab-find"]').trigger('click')
+  await flushPromises()
+  await w.find(`[data-testid="lane-find-add-${id}"]`).trigger('click')
+  await flushPromises()
+}
+
+beforeEach(() => {
+  narrowState.value = false
+  document.body.innerHTML = ''
+  notifyMock.success.mockReset()
+  notifyMock.error.mockReset()
+  notifyMock.warn.mockReset()
+  persistentMock.getComposeCandidates.mockReset().mockResolvedValue({ success: true, data: response() })
+  persistentMock.createManualLane.mockReset().mockResolvedValue({
+    success: true,
+    data: { topic: { id: '300', label: '新泳道', status: 'active', source: 'manual' }, skipped: [] },
+  })
+  persistentMock.embedQuery.mockReset().mockResolvedValue({ success: true, data: { embedding: [1, 0] } })
+  reportsMock.listBoardTopics.mockReset().mockResolvedValue({ success: true, data: { topics: HISTORY_TOPICS } })
+  reportsMock.updateTopic.mockReset().mockResolvedValue({
+    success: true,
+    data: { id: 1984, semantic_board_id: 1974, label: '候选泳道 A', description: '', status: 'active', first_seen_date: '2026-10-01', last_seen_date: '2026-10-30', hit_count: 5, consecutive_hits: 5 },
+  })
+})
+
+afterEach(() => {
+  wrapper?.unmount()
+  wrapper = null
+  document.body.innerHTML = ''
+})
+
+describe('BoardComposeOverlay — 编排态入口与三栏（S1 / V16）', () => {
+  it('进入编排态：左候选、中央画布、右栏三段都在；已有 active 泳道默认隐藏；无默认勾选', async () => {
+    const w = await mountOverlay()
+    expect(w.find('[data-testid="lane-compose-candidates"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-canvas"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-inspector"]').exists()).toBe(true)
+    // 已有 active 泳道默认隐藏（点不画）
+    expect(w.find('[data-testid="lane-node-5"]').exists()).toBe(false)
+    // 无默认勾选
+    expect(w.findAll('input[type="checkbox"]:checked')).toHaveLength(0)
+    expect(w.find('[data-testid="compose-save"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('V16 窄屏：只提示宽屏/横屏，不画工作台也不取数', async () => {
+    narrowState.value = true
+    const w = await mountOverlay()
+    expect(w.find('[data-testid="board-compose-narrow"]').exists()).toBe(true)
+    expect(w.find('[data-testid="board-compose"]').exists()).toBe(false)
+    expect(persistentMock.getComposeCandidates).not.toHaveBeenCalled()
+    expect(w.emitted('close')).toBeUndefined()
+    narrowState.value = false
+  })
+
+  it('空窗口：候选栏与画布各有空态，保存不可用', async () => {
+    persistentMock.getComposeCandidates.mockResolvedValue({
+      success: true,
+      data: response({ sections: [], relations: [], candidateChains: [] }),
+    })
+    const w = await mountOverlay()
+    expect(w.find('[data-testid="lane-compose-candidates-empty"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-canvas-empty"]').exists()).toBe(true)
+    expect(w.find('[data-testid="compose-save"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('候选栏：每条候选展示原名、真实成员、首末日期、事件数与连接跨度', async () => {
+    const w = await mountOverlay()
+    const card = w.find('[data-testid="lane-candidate-1984:1"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('候选泳道 A')
+    expect(card.text()).toContain('3 个事件')
+    expect(card.text()).toContain('连接跨度 3 天')
+    expect(card.text()).toContain('10-27')
+    expect(card.text()).toContain('10-30')
+    expect(card.findAll('input[type="checkbox"]')).toHaveLength(4) // 1 组框 + 3 成员框
+  })
+
+  it('原生复选框三态：全选 / 半选 / 未选与成员计数同源', async () => {
+    const w = await mountOverlay()
+    const group = () => w.find('[data-testid="lane-group-1984:1"]').element as HTMLInputElement
+    const member = () => w.find('[data-testid="lane-member-2"]').element as HTMLInputElement
+    expect(group().checked).toBe(false)
+    expect(group().indeterminate).toBe(false)
+
+    await member().click()
+    await flushPromises()
+    expect(group().checked).toBe(false)
+    expect(group().indeterminate).toBe(true)
+    expect(w.find('[data-testid="lane-state-1984:1"]').text()).toContain('1 / 3 已选')
+
+    await group().click()
+    await flushPromises()
+    expect(group().checked).toBe(true)
+    expect(group().indeterminate).toBe(false)
+    expect(w.find('[data-testid="lane-state-1984:1"]').text()).toContain('3 / 3 已选')
+    expect(w.find('[data-testid="compose-save"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('点候选标题一次补齐全部成员；再点全选标题取消该组，组外人工补选保留', async () => {
+    const w = await mountOverlay()
+    await addManualPick(w, '4')
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    expect(w.findAll('[data-testid="lane-node-1"], [data-testid="lane-node-2"], [data-testid="lane-node-3"]')).toHaveLength(3)
+    expect((w.find('[data-testid="lane-member-1"]').element as HTMLInputElement).checked).toBe(true)
+
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    expect((w.find('[data-testid="lane-member-1"]').element as HTMLInputElement).checked).toBe(false)
+    // 组外人工补选保留
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('1')
+  })
+
+  it('取消整组：撤销该组全部成员并保留组外选择', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await addManualPick(w, '4')
+    await w.find('[data-testid="lane-cancel-1984:1"]').trigger('click')
+    await flushPromises()
+    expect((w.find('[data-testid="lane-member-1"]').element as HTMLInputElement).checked).toBe(false)
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('1')
+  })
+})
+
+describe('BoardComposeOverlay — 画布（V1–V7、V14、V15）', () => {
+  it('V1/V2 画布按容器真实像素 1:1；宽度变化后重排重绘', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    expect(w.find('[data-testid="lane-compose-canvas-svg"]').attributes('viewBox')).toMatch(/^0 0 900 /)
+    await setCanvasWidth(1200)
+    expect(w.find('[data-testid="lane-compose-canvas-svg"]').attributes('viewBox')).toMatch(/^0 0 1200 /)
+  })
+
+  it('V3 不越界：话题带横条与标题都收在画布内', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    const vbWidth = 900
+    const bars = w.findAll('.lcc-canvas__band-bar')
+    expect(bars.length).toBeGreaterThan(0)
+    for (const bar of bars) {
+      const x = Number(bar.attributes('x'))
+      const width = Number(bar.attributes('width'))
+      expect(x).toBeGreaterThanOrEqual(0)
+      expect(x + width).toBeLessThanOrEqual(vbWidth)
+    }
+    for (const title of w.findAll('.lcc-canvas__band-title')) {
+      const x = Number(title.attributes('x'))
+      const anchor = title.attributes('text-anchor')
+      const textWidth = estimateTextWidth(title.text(), 12)
+      expect(x).toBeGreaterThanOrEqual(0)
+      if (anchor === 'end') expect(x).toBeLessThanOrEqual(vbWidth)
+      else expect(x + textWidth).toBeLessThanOrEqual(vbWidth)
+    }
+  })
+
+  it('V4 半径下限：普通点 ≥3px', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    for (const node of w.findAll('.lcc-canvas__point')) {
+      expect(Number(node.attributes('r'))).toBeGreaterThanOrEqual(3)
+    }
+  })
+
+  it('V5 已选点半径恒严格大于推荐点半径', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    const selected = Number(w.find('[data-testid="lane-node-1"] .lcc-canvas__point').attributes('r'))
+    const recommended = Number(w.find('[data-testid="lane-node-4"] .lcc-canvas__point').attributes('r'))
+    expect(recommended).toBeGreaterThan(0)
+    expect(selected).toBeGreaterThan(recommended)
+    // 推荐点不等于已选（没有勾号）
+    expect(w.find('[data-testid="lane-node-4"]').classes()).not.toContain('is-selected')
+    expect(w.findAll('.lcc-canvas__check')).toHaveLength(3)
+  })
+
+  it('相关节点标题：选中话题后，相关节点在节点下显示标题缩略', async () => {
+    const longLabel = '这是很长很长的一个事件标题需要缩略显示'
+    const sections = SECTIONS.map(s => (s.id === '4' ? { ...s, clusterLabel: longLabel } : s))
+    persistentMock.getComposeCandidates.mockResolvedValue({
+      success: true,
+      data: response({
+        sections,
+        relations: [...RELATIONS, { fromId: '1', toId: '4', distance: 0.2, relationType: 'similarity' }],
+      }),
+    })
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    // 未选中：不画相关节点标题（散料点保持干净）
+    expect(w.findAll('.lcc-canvas__related-title')).toHaveLength(0)
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    const titles = w.findAll('.lcc-canvas__related-title')
+    const ids = titles.map(t => t.attributes('data-testid'))
+    // 相关 = 1 跳原关系 ∪ 质心较近的推荐：节点 4（近邻）、节点 6（归档来源，距离 0.225 ≤ 阈值）
+    expect(ids).toContain('lane-related-title-4')
+    expect(ids).toContain('lane-related-title-6')
+    // 已选成员自己不当自己的相关节点；只读的节点 5 走提示行、不逐点画标题
+    expect(ids).not.toContain('lane-related-title-1')
+    expect(ids).not.toContain('lane-related-title-5')
+    // 标题缩略：比原文短且带省略号，不超上限
+    const t4 = w.find('[data-testid="lane-related-title-4"]')
+    expect(t4.text().length).toBeLessThan(longLabel.length)
+    expect(t4.text().endsWith('…')).toBe(true)
+    expect(t4.text().length).toBeLessThanOrEqual(10)
+    // 位置：在节点下方，且不越出画布
+    const nodeY = Number(w.find('[data-testid="lane-node-4"] .lcc-canvas__point').attributes('cy'))
+    const titleY = Number(t4.attributes('y'))
+    expect(titleY).toBeGreaterThan(nodeY)
+    const vbWidth = Number(/^0 0 (\d+)/.exec(w.find('[data-testid="lane-compose-canvas-svg"]').attributes('viewBox')!)![1])
+    const titleX = Number(t4.attributes('x'))
+    const textWidth = estimateTextWidth(t4.text(), 9)
+    expect(titleX - textWidth / 2).toBeGreaterThanOrEqual(0)
+    expect(titleX + textWidth / 2).toBeLessThanOrEqual(vbWidth)
+  })
+
+  it('相关节点在已有泳道里：只读参照区不压字 → 改为在提示行点名', async () => {
+    persistentMock.getComposeCandidates.mockResolvedValue({
+      success: true,
+      data: response({
+        relations: [...RELATIONS, { fromId: '1', toId: '5', distance: 0.2, relationType: 'similarity' }],
+      }),
+    })
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    // 节点 5 属于已有 active 泳道（只读）→ 不在节点下画标题
+    expect(w.find('[data-testid="lane-related-title-5"]').exists()).toBe(false)
+    const hint = w.find('[data-testid="lane-related-hint"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('1 个')
+    expect(hint.text()).toContain('已有泳道')
+    expect(hint.text()).toContain('已有泳道')
+    // 开启只读参照后：仍在提示行点名（只读梯子里不逐点压字）
+    await (w.find('[data-testid="lane-compose-show-assigned"]').element as HTMLInputElement).click()
+    await flushPromises()
+    expect(w.find('[data-testid="lane-related-title-5"]').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-related-hint"]').exists()).toBe(true)
+  })
+
+  it('相关节点标题：选中话题后，相关节点在节点下显示标题缩略', async () => {
+    const longLabel = '这是很长很长的一个事件标题需要缩略显示'
+    const sections = SECTIONS.map(s => (s.id === '4' ? { ...s, clusterLabel: longLabel } : s))
+    persistentMock.getComposeCandidates.mockResolvedValue({
+      success: true,
+      data: response({
+        sections,
+        relations: [...RELATIONS, { fromId: '1', toId: '4', distance: 0.2, relationType: 'similarity' }],
+      }),
+    })
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    // 未选中：不画相关节点标题（散料点保持干净）
+    expect(w.findAll('.lcc-canvas__related-title')).toHaveLength(0)
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    const titles = w.findAll('.lcc-canvas__related-title')
+    const ids = titles.map(t => t.attributes('data-testid'))
+    // 相关 = 1 跳原关系 ∪ 质心较近的推荐：节点 4（近邻）、节点 6（归档来源，距离 0.225 ≤ 阈值）
+    expect(ids).toContain('lane-related-title-4')
+    expect(ids).toContain('lane-related-title-6')
+    // 已选成员自己不当自己的相关节点；只读的节点 5 走提示行、不逐点画标题
+    expect(ids).not.toContain('lane-related-title-1')
+    expect(ids).not.toContain('lane-related-title-5')
+    // 标题缩略：比原文短且带省略号，不超上限
+    const t4 = w.find('[data-testid="lane-related-title-4"]')
+    expect(t4.text().length).toBeLessThan(longLabel.length)
+    expect(t4.text().endsWith('…')).toBe(true)
+    expect(t4.text().length).toBeLessThanOrEqual(10)
+    // 位置：在节点下方，且不越出画布
+    const nodeY = Number(w.find('[data-testid="lane-node-4"] .lcc-canvas__point').attributes('cy'))
+    const titleY = Number(t4.attributes('y'))
+    expect(titleY).toBeGreaterThan(nodeY)
+    const vbWidth = Number(/^0 0 (\d+)/.exec(w.find('[data-testid="lane-compose-canvas-svg"]').attributes('viewBox')!)![1])
+    const titleX = Number(t4.attributes('x'))
+    const textWidth = estimateTextWidth(t4.text(), 9)
+    expect(titleX - textWidth / 2).toBeGreaterThanOrEqual(0)
+    expect(titleX + textWidth / 2).toBeLessThanOrEqual(vbWidth)
+  })
+
+  it('相关节点标题：既无原关系又离质心远（超阈值）的节点不画标题', async () => {
+    const sections = [...SECTIONS, section('7', '2026-10-21', '毫不相干的事件', [0, 1])]
+    persistentMock.getComposeCandidates.mockResolvedValue({ success: true, data: response({ sections }) })
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-related-title-7"]').exists()).toBe(false)
+  })
+
+
+  it('V6 话题带：每个候选话题一行标题，成员细线指向所属话题', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    expect(w.findAll('.lcc-canvas__band-bar')).toHaveLength(1)
+    expect(w.find('.lcc-canvas__band-title').text()).toBe('候选泳道 A')
+    expect(w.findAll('.lcc-canvas__band-tick')).toHaveLength(3)
+  })
+
+  it('V7 话题多于可读行数：明写「另有 N 个候选话题在左侧候选栏」', async () => {
+    const chains = Array.from({ length: 7 }, (_, i) => ({
+      ...CHAIN,
+      key: `1984:${i + 1}`,
+      sectionIds: [String(i + 1)],
+      topicLabel: `候选话题 ${i + 1}`,
+    }))
+    persistentMock.getComposeCandidates.mockResolvedValue({ success: true, data: response({ candidateChains: chains }) })
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    expect(w.findAll('.lcc-canvas__band-bar')).toHaveLength(6)
+    expect(w.find('.lcc-canvas__band-more').text()).toContain('另有 1 个候选话题在左侧候选栏')
+  })
+
+  it('V14 已有 active 泳道默认隐藏，显式开启才显示且只读', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    expect(w.find('[data-testid="lane-node-5"]').exists()).toBe(false)
+    await (w.find('[data-testid="lane-compose-show-assigned"]').element as HTMLInputElement).click()
+    await flushPromises()
+    const node = w.find('[data-testid="lane-node-5"]')
+    expect(node.exists()).toBe(true)
+    expect(node.classes()).toContain('is-readonly')
+  })
+
+  it('V15 取消聚焦不偷改已有泳道显示偏好', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await (w.find('[data-testid="lane-compose-show-assigned"]').element as HTMLInputElement).click()
+    await flushPromises()
+    await w.find('[data-testid="lane-node-5"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-compose-clear-focus"]').trigger('click')
+    await flushPromises()
+    expect((w.find('[data-testid="lane-compose-show-assigned"]').element as HTMLInputElement).checked).toBe(true)
+    expect(w.find('[data-testid="lane-node-5"]').exists()).toBe(true)
+  })
+
+  it('V13 已有 active 泳道的点只读：节点卡不给选入动作', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await (w.find('[data-testid="lane-compose-show-assigned"]').element as HTMLInputElement).click()
+    await flushPromises()
+    await w.find('[data-testid="lane-node-5"]').trigger('click')
+    await flushPromises()
+    const card = w.find('[data-testid="lane-node-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('已有泳道只读')
+    expect(w.find('[data-testid="lane-node-card-action"]').exists()).toBe(false)
+  })
+})
+
+describe('BoardComposeOverlay — 节点卡（V8–V12）', () => {
+  it('V8 悬停出卡：完整标题、日期、质心距离、原关系条数', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-node-4"]').trigger('mouseenter')
+    await flushPromises()
+    const card = w.find('[data-testid="lane-node-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('散料近邻')
+    expect(card.text()).toContain('2026-10-26')
+    expect(card.text()).toContain('距离')
+    expect(card.text()).toContain('原关系')
+  })
+
+  it('V9 选中后卡片钉住并跟随节点（移开鼠标不消失）', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-node-1"]').trigger('click')
+    await flushPromises()
+    const card = w.find('[data-testid="lane-node-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.classes()).toContain('is-pinned')
+    await w.find('[data-testid="lane-node-1"]').trigger('mouseleave')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card"]').exists()).toBe(true)
+  })
+
+  it('V10/V11 卡内「＋选入 / 移出」真实改成员并当场翻字', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-node-4"]').trigger('click')
+    await flushPromises()
+    const action = w.find('[data-testid="lane-node-card-action"]')
+    expect(action.text()).toContain('选入本次泳道')
+    await action.trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card-action"]').text()).toContain('移出本次泳道')
+    expect(w.find('[data-testid="lane-node-4"]').classes()).toContain('is-selected')
+
+    await w.find('[data-testid="lane-node-card-action"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card-action"]').text()).toContain('选入本次泳道')
+    expect(w.find('[data-testid="lane-node-4"]').classes()).not.toContain('is-selected')
+  })
+
+  it('V12 卡上 × 与再点同一节点 = 取消选中（卡片收起、右栏线索清空）', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-node-1"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card"]').exists()).toBe(true)
+
+    await w.find('[data-testid="lane-node-card-close"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card"]').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-compose-focus"]').text()).toContain('点画布上的点看详情')
+
+    // 再点一次同一节点同样取消选中
+    await w.find('[data-testid="lane-node-1"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card"]').exists()).toBe(true)
+    await w.find('[data-testid="lane-node-1"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card"]').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-compose-focus"]').text()).toContain('点画布上的点看详情')
+  })
+})
+
+describe('BoardComposeOverlay — 右栏三段两 tab（S6）', () => {
+  it('右栏只有三段：当前事件线索、可补充的事件、tab 区（已选事件 / 按标题找）', async () => {
+    const w = await mountOverlay()
+    expect(w.find('[data-testid="lane-compose-focus"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-suggestions"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-tab-chosen"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-tab-find"]').exists()).toBe(true)
+    // 不得出现关联事件清单 / 计算依据 / 话题泳道参照
+    expect(w.text()).not.toContain('查看关联事件')
+    expect(w.text()).not.toContain('计算依据')
+    expect(w.text()).not.toContain('已有泳道参照')
+  })
+
+  it('当前事件线索只叙述，不放选入按钮', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-node-1"]').trigger('click')
+    await flushPromises()
+    const focus = w.find('[data-testid="lane-compose-focus"]')
+    expect(focus.text()).toContain('候选一')
+    expect(focus.find('button').exists()).toBe(false)
+  })
+
+  it('可补充的事件：逐条明确加入，加入后从待选移除并重算', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    const suggest = w.find('[data-testid="lane-compose-suggestions"]')
+    expect(suggest.find('[data-testid="lane-suggest-4"]').exists()).toBe(true)
+    await w.find('[data-testid="lane-suggest-add-4"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-suggest-4"]').exists()).toBe(false)
+  })
+
+  it('已选事件 tab：逐条真实复选框，取消勾选即移出本次', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    expect(w.findAll('[data-testid^="lane-chosen-row-"]')).toHaveLength(3)
+    await (w.find('[data-testid="lane-chosen-check-2"]').element as HTMLInputElement).click()
+    await flushPromises()
+    expect(w.find('[data-testid="lane-chosen-row-2"]').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('2')
+  })
+
+  it('按标题找：只在本窗范围内按标题过滤，不自动勾选', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-compose-tab-find"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-compose-find-input"]').setValue('归档')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-find-6"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-find-1"]').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
+  })
+
+  it('按标题找：无匹配有空态', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-compose-tab-find"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-compose-find-input"]').setValue('不存在的事件')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-panel-find"]').text()).toContain('没有匹配的事件')
+  })
+})
+
+describe('BoardComposeOverlay — 日期共窗与草稿确认（S2）', () => {
+  it('有草稿切日期先确认；取消保留成员与推荐，确认才清草稿重算', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
+
+    await w.find('[data-testid="lane-compose-window-mode"]').setValue('7')
+    await flushPromises()
+    expect(w.find('[data-testid="compose-confirm-ok"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
+
+    await w.find('[data-testid="compose-confirm-cancel"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
+    expect((w.find('[data-testid="lane-compose-window-mode"]').element as HTMLSelectElement).value).toBe('30')
+
+    await w.find('[data-testid="lane-compose-window-mode"]').setValue('7')
+    await flushPromises()
+    await w.find('[data-testid="compose-confirm-ok"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('0')
+    expect(persistentMock.getComposeCandidates).toHaveBeenLastCalledWith(1974, { mode: 7, days: 7 })
+  })
+
+  it('日期非法：报错、保留旧范围与草稿、控件恢复原值', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-compose-window-mode"]').setValue('custom')
+    await flushPromises()
+    await w.find('[data-testid="lane-compose-window-from"]').setValue('2026-10-30')
+    await w.find('[data-testid="lane-compose-window-to"]').setValue('2026-10-01')
+    await w.find('[data-testid="lane-compose-window-apply"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-date-error"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
+    expect((w.find('[data-testid="lane-compose-window-from"]').element as HTMLInputElement).value).toBe('2026-10-20')
+  })
+})
+
+describe('BoardComposeOverlay — 保存与命名（S7）', () => {
+  it('缺名称：拒绝创建并保留成员', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-save"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-name-input"] input').setValue('   ')
+    await w.find('[data-testid="compose-name-confirm"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="compose-name-error"]').exists()).toBe(true)
+    expect(persistentMock.createManualLane).not.toHaveBeenCalled()
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
+  })
+
+  it('保存成功：走既有 manual 端点 → saved + close', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-save"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-name-input"] input').setValue('新泳道')
+    await w.find('[data-testid="compose-name-confirm"]').trigger('click')
+    await flushPromises()
+    expect(persistentMock.createManualLane).toHaveBeenCalledWith(1974, '新泳道', ['1', '2', '3'])
+    expect(w.emitted('saved')?.[0]?.[0]).toMatchObject({ id: '300', label: '新泳道' })
+    expect(w.emitted('close')).toHaveLength(1)
+  })
+
+  it('自动预填名跟随来源组；人工写过的名字不被覆盖', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-save"]').trigger('click')
+    await flushPromises()
+    expect((w.find('[data-testid="compose-name-input"] input').element as HTMLInputElement).value).toBe('候选泳道 A')
+
+    await w.find('[data-testid="compose-name-input"] input').setValue('我手动起的名字')
+    await w.find('[data-testid="compose-name-close"]').trigger('click')
+    await flushPromises()
+    // 取消整组 → 重新整组勾回：人工名不得被任何预填覆盖
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-save"]').trigger('click')
+    await flushPromises()
+    expect((w.find('[data-testid="compose-name-input"] input').element as HTMLInputElement).value).toBe('我手动起的名字')
+  })
+
+  it('取消本次：有草稿先确认，确认后才关闭', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-cancel-draft"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="compose-confirm-ok"]').exists()).toBe(true)
+    expect(w.emitted('close')).toBeUndefined()
+
+    await w.find('[data-testid="compose-confirm-ok"]').trigger('click')
+    await flushPromises()
+    expect(w.emitted('close')).toHaveLength(1)
+  })
+})
+
+describe('BoardComposeOverlay — 历史待启用话题入口（旧编排面能力回归）', () => {
+  it('工作面内有明确入口；点击开弹窗并拉服务端管理名单', async () => {
+    const w = await mountOverlay()
+    expect(w.find('[data-testid="lane-compose-history-open"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-history-search"]').exists()).toBe(false)
+
+    await w.find('[data-testid="lane-compose-history-open"]').trigger('click')
+    await flushPromises()
+    expect(reportsMock.listBoardTopics).toHaveBeenCalledWith(1974)
+    const row = w.find('[data-testid="lane-history-1984"]')
+    expect(row.exists()).toBe(true)
+    expect(row.text()).toContain('候选泳道 A')
+    expect(row.text()).toContain('累计命中 5 次')
+    expect(row.text()).toContain('2026-10-30')
+    // 说明段：管理资格名单 ≠ 本次推荐；未达门槛置灰但仍可带入草稿
+    expect(w.find('.lchd__explainer').text()).toContain('管理资格名单')
+    expect(w.find('.lchd__explainer').text()).toContain('不是本次推荐')
+  })
+
+  it('未达管理门槛：「直接启用原话题」置灰并说明原因，仍可带入草稿', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-compose-history-open"]').trigger('click')
+    await flushPromises()
+    const activate = w.find('[data-testid="lane-history-activate-1985"]')
+    expect(activate.attributes('disabled')).toBeDefined()
+    expect(w.find('[data-testid="lane-history-hint-1985"]').text()).toContain('累计命中未达管理门槛')
+    // 置灰 ≠ 不可带入草稿
+    expect(w.find('[data-testid="lane-history-adopt-1985"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('「带入草稿」：只带该话题在当前窗口内的 owned 成员，不补相似、不改人工名', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-compose-history-open"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-history-adopt-1984"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
+    expect((w.find('[data-testid="lane-member-1"]').element as HTMLInputElement).checked).toBe(true)
+    // 只带 owned 成员：散料（无归属）不得被自动补选
+    expect(w.findAll('[data-testid^="lane-chosen-row-"]')).toHaveLength(3)
+    expect(notifyMock.success).toHaveBeenCalled()
+    expect(String(notifyMock.success.mock.calls[0]![0])).toContain('新增预选 3 条')
+  })
+
+  it('人工写过的名字不被历史带入覆盖（提示「已保留你写的名称」）', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-save"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-name-input"] input').setValue('我手动起的名字')
+    await w.find('[data-testid="compose-name-close"]').trigger('click')
+    await flushPromises()
+
+    await w.find('[data-testid="lane-compose-history-open"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-history-adopt-1984"]').trigger('click')
+    await flushPromises()
+    expect(String(notifyMock.success.mock.calls[0]![0])).toContain('已保留你写的名称，未覆盖')
+
+    await w.find('[data-testid="compose-save"]').trigger('click')
+    await flushPromises()
+    expect((w.find('[data-testid="compose-name-input"] input').element as HTMLInputElement).value).toBe('我手动起的名字')
+  })
+
+  it('「直接启用原话题」：走既有 updateTopic(status=active)，并说清与本次草稿无关', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-compose-history-open"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-history-activate-1984"]').trigger('click')
+    await flushPromises()
+    expect(reportsMock.updateTopic).toHaveBeenCalledWith(1984, { status: 'active' })
+    expect(String(notifyMock.success.mock.calls[0]![0])).toContain('与本次草稿的人工新建无关')
+    // 不建新泳道、不碰编排态保存接口
+    expect(persistentMock.createManualLane).not.toHaveBeenCalled()
+  })
+
+  it('「直接启用原话题」失败：报错、不假装成功', async () => {
+    reportsMock.updateTopic.mockResolvedValueOnce({ success: false, error: '启用被拒' })
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-compose-history-open"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-history-activate-1984"]').trigger('click')
+    await flushPromises()
+    expect(notifyMock.error).toHaveBeenCalled()
+    expect(String(notifyMock.error.mock.calls[0]![0])).toContain('启用被拒')
+    expect(notifyMock.success).not.toHaveBeenCalled()
+  })
+
+  it('浮层展示锚：工作面遮罩 Teleport 到 body + fixed/inset 0 规则存在；历史名单弹窗走 AppDialog 尺寸档', async () => {
+    // 样式规则锚（工作面是自建浮层容器）
+    const source = readFileSync(`${import.meta.dirname}/BoardComposeOverlay.vue`, 'utf8')
+    const style = source.slice(source.indexOf('<style'))
+    expect(style).toMatch(/\.bco,\s*\.bco-narrow\s*\{[^}]*position:\s*fixed/s)
+    expect(style).toMatch(/\.bco,\s*\.bco-narrow\s*\{[^}]*inset:\s*0/s)
+
+    // 弹窗尺寸档锚：新弹窗走 AppDialog size 档，不写自由 width / 手写 z-index
+    const dialogSource = readFileSync(`${import.meta.dirname}/../compose/LaneComposeHistoryDialog.vue`, 'utf8')
+    expect(dialogSource).toContain('size="lg"')
+    expect(dialogSource).not.toMatch(/<AppDialog[^>]*\bwidth=/)
+
+    // Teleport 挂载锚：不 stub teleport 时遮罩渲染在 document.body 而非组件原地
+    const anchor = mount(BoardComposeOverlay, {
+      props: { boardId: 1974, boardLabel: '测试版块' },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    expect(document.body.querySelector(':scope > [data-testid="board-compose"]')).not.toBeNull()
+    anchor.unmount()
+  })
+
+  it('名单搜索：纯前端按名过滤（不调 AI / 不调 embed）', async () => {
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-compose-history-open"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-history-search"] input').setValue('门槛')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-history-1985"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-history-1984"]').exists()).toBe(false)
+    expect(persistentMock.embedQuery).not.toHaveBeenCalled()
+  })
+})
