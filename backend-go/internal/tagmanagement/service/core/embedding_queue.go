@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -165,7 +166,12 @@ func (s *EmbeddingQueueService) GetTasks(status string, limit, offset int) ([]mo
 }
 
 // RetryFailed resets all failed tasks back to pending status.
+// Failed tasks whose tag no longer exists are dropped first — they can never
+// succeed and would otherwise bounce between failed/pending forever.
 func (s *EmbeddingQueueService) RetryFailed() (int64, error) {
+	if err := s.dropOrphanFailedTasks(); err != nil {
+		return 0, err
+	}
 	result := s.db.Model(&models.EmbeddingQueue{}).
 		Where("status = ?", models.EmbeddingQueueStatusFailed).
 		Updates(map[string]interface{}{
@@ -178,6 +184,35 @@ func (s *EmbeddingQueueService) RetryFailed() (int64, error) {
 		return 0, result.Error
 	}
 	return result.RowsAffected, nil
+}
+
+// dropTaskForMissingTag deletes a queue task whose tag no longer exists.
+// Retrying can never succeed, so the row is dropped instead of markFailed.
+func (s *EmbeddingQueueService) dropTaskForMissingTag(taskID, tagID uint) {
+	if err := s.db.Delete(&models.EmbeddingQueue{}, taskID).Error; err != nil {
+		s.logger.Error("failed to drop embedding task for missing tag",
+			zap.Uint("task_id", taskID), zap.Uint("tag_id", tagID), zap.Error(err))
+		return
+	}
+	s.logger.Warn("dropped embedding task: tag no longer exists",
+		zap.Uint("task_id", taskID), zap.Uint("tag_id", tagID))
+}
+
+// dropOrphanFailedTasks deletes failed tasks whose tag is gone (FKs are
+// intentionally dropped by migration, so orphan rows are allowed to exist).
+func (s *EmbeddingQueueService) dropOrphanFailedTasks() error {
+	res := s.db.Where(
+		"status = ? AND NOT EXISTS (SELECT 1 FROM topic_tags t WHERE t.id = embedding_queues.tag_id)",
+		models.EmbeddingQueueStatusFailed,
+	).Delete(&models.EmbeddingQueue{})
+	if res.Error != nil {
+		s.logger.Error("failed to delete orphan failed embedding tasks", zap.Error(res.Error))
+		return res.Error
+	}
+	if res.RowsAffected > 0 {
+		s.logger.Info("deleted failed embedding tasks with missing tag", zap.Int64("count", res.RowsAffected))
+	}
+	return nil
 }
 
 // Start begins the background worker that processes pending embedding tasks.
@@ -285,9 +320,14 @@ func (s *EmbeddingQueueService) processNext() {
 		return // nothing to process
 	}
 
-	// Load the tag
+	// Load the tag. A missing tag is permanent (no soft delete): drop the task
+	// instead of failing it — a retry would never succeed.
 	var tag models.TopicTag
 	if err := s.db.First(&tag, task.TagID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			s.dropTaskForMissingTag(task.ID, task.TagID)
+			return
+		}
 		s.markFailed(task.ID, "failed to load tag: "+err.Error())
 		return
 	}
