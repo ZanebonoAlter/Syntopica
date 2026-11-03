@@ -17,6 +17,8 @@ NO_RESTART=false
 [[ "${1:-}" == "--no-restart" ]] && NO_RESTART=true
 
 echo "==> [1/3] 构建静态产物（NUXT_PUBLIC_API_BASE=/api，内含完整 build）"
+# 2026-10-19：树莓派上默认 2GB Node 堆在 nuxt build 后期 OOM（实测两次），抬到 3.5G 后稳定
+export NODE_OPTIONS="--max-old-space-size=3584"
 ( cd "$FRONT_DIR" && NUXT_PUBLIC_API_BASE=/api pnpm generate )
 
 echo "==> [2/3] 铺到 ${BACKEND_STATIC}/"
