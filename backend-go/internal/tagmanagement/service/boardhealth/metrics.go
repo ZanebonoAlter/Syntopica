@@ -95,15 +95,16 @@ func loadTagIdentityEmbeddings(ctx context.Context, db *gorm.DB, tagIDs []uint) 
 // into vector_missing which is tag-side only).
 func loadCompositionLabels(ctx context.Context, db *gorm.DB, boardID uint) ([]tagmodels.BoardHealthLabelMetrics, map[uint][]float64, error) {
 	var labels []struct {
-		ID        uint   `gorm:"column:id"`
-		Label     string `gorm:"column:label"`
-		LabelType string `gorm:"column:label_type"`
+		ID          uint   `gorm:"column:id"`
+		Label       string `gorm:"column:label"`
+		LabelType   string `gorm:"column:label_type"`
+		Description string `gorm:"column:description"`
 		// pgvector 列名 embedding 与字段蛇形名 embedding_vec 不同，必须显式
 		// column 标签映射；否则永远扫不到值（2026-10-07 回归：全标签 insufficient）。
 		EmbeddingVec *string `gorm:"column:embedding"`
 	}
 	err := db.WithContext(ctx).Raw(`
-		SELECT l.id, l.label, l.label_type, l.embedding
+		SELECT l.id, l.label, l.label_type, l.description, l.embedding
 		FROM board_composition bc
 		JOIN semantic_labels l ON l.id = bc.auxiliary_label_id AND l.status = 'active'
 		WHERE bc.board_id = ?
@@ -114,7 +115,15 @@ func loadCompositionLabels(ctx context.Context, db *gorm.DB, boardID uint) ([]ta
 	metrics := make([]tagmodels.BoardHealthLabelMetrics, 0, len(labels))
 	auxEmb := make(map[uint][]float64, len(labels))
 	for _, label := range labels {
-		metrics = append(metrics, tagmodels.BoardHealthLabelMetrics{AuxID: label.ID, Label: label.Label})
+		metrics = append(metrics, tagmodels.BoardHealthLabelMetrics{
+			AuxID: label.ID,
+			Label: label.Label,
+			// label_type 透传（auxiliary | composite）：构成里混有组合标签，
+			// 前端据此把组合标签的「重写描述」标为不可执行（修复链只认 auxiliary），
+			// 避免用户点进一条永远 404 的修复路径。
+			LabelType:   label.LabelType,
+			Description: label.Description, // 病C 证据源：desc 预筛与 rewrite 判断都要看它
+		})
 		if label.EmbeddingVec == nil || *label.EmbeddingVec == "" {
 			continue
 		}

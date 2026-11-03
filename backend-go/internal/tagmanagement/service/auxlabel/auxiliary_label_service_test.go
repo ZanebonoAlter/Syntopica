@@ -223,6 +223,33 @@ func TestAuxiliaryLabelServiceRemoveBoardCompositionDeletesOnlyRequestedRow(t *t
 	require.Equal(t, int64(1), boardLabelCount)
 }
 
+// 4.1 M1：组合标签也是构成单元（board_composition.auxiliary_label_id 列复用，
+// 挂载侧 addBoardComposition 已受理 auxiliary/composite 两类）——摘除侧必须同样
+// 受理 composite，否则体检分诊里组合标签的「建议摘除」走既有 DELETE 链会 400。
+func TestAuxiliaryLabelServiceRemoveBoardCompositionAcceptsComposite(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	board := models.SemanticLabel{Label: "AI Board", Slug: "ai-board", LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&board).Error)
+	composite := models.SemanticLabel{Label: "OpenAI × GPT", Slug: "openai-x-gpt", LabelType: "composite", Status: "active"}
+	require.NoError(t, db.Create(&composite).Error)
+	auxiliary := models.SemanticLabel{Label: "OpenAI", Slug: "openai", LabelType: "auxiliary", Status: "active"}
+	require.NoError(t, db.Create(&auxiliary).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: composite.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxiliary.ID}).Error)
+	service := NewAuxiliaryLabelService(db, (&recordingAuxiliaryEmbedder{}).embed)
+
+	require.NoError(t, service.RemoveBoardComposition(context.Background(), board.ID, composite.ID))
+
+	var removed int64
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).
+		Where("board_id = ? AND auxiliary_label_id = ?", board.ID, composite.ID).Count(&removed).Error)
+	require.Zero(t, removed, "组合标签的构成关系应被解除")
+	var kept int64
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).
+		Where("board_id = ? AND auxiliary_label_id = ?", board.ID, auxiliary.ID).Count(&kept).Error)
+	require.Equal(t, int64(1), kept, "只摘除请求的那一行")
+}
+
 func TestAuxiliaryLabelServiceL2MergeKeepsHigherRefCountAndAppendsAlias(t *testing.T) {
 	db := setupAuxiliaryLabelTestDB(t)
 	existingVec := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))

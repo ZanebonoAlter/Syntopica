@@ -54,6 +54,8 @@ export interface BoardCompositeMount {
 export interface BoardHealthLabelMetric {
   aux_id: number
   label: string
+  /** 构成标签类型（auxiliary | composite）；缺字段 = 旧快照（类型未知）。 */
+  label_type?: string
   samples: number
   cosine_mean: number | null
   cosine_median: number | null
@@ -61,6 +63,47 @@ export interface BoardHealthLabelMetric {
   cosine_p75: number | null
   low_sim_ratio: number | null
   insufficient: boolean
+  /** 体检时刻的描述快照（病C 描述污染证据源；空 = 该标签无描述）。 */
+  description?: string
+  /** 磁铁信号（磁铁污染嫌疑）；缺字段/null = 未算或信号不足。 */
+  magnet?: BoardHealthMagnetSignal | null
+  /** pgvector top-3 最近邻（排除自身）；null = 自身向量缺失（信号不足）。 */
+  neighbors?: BoardHealthNeighbor[] | null
+  /** 命中的文章式词根（事件性预筛）；缺字段/空 = 未命中。 */
+  desc_flags?: string[] | null
+}
+
+/** 体检快照·磁铁信号（构成标签对失败挂载子集 vs 全部挂载的贴合度差）。 */
+export interface BoardHealthMagnetSignal {
+  all_mean: number | null
+  failed_mean: number | null
+  all_samples: number
+  failed_samples: number
+  suspicious: boolean
+  insufficient: boolean
+}
+
+/** 体检快照·最近邻证据（active 辅助标签 top-3，排除自身）。 */
+export interface BoardHealthNeighbor {
+  aux_id: number
+  label: string
+  cosine: number
+}
+
+/** 体检快照·失败挂载主要流向（top_board 为 null = 未知，不臆造目标）。 */
+export interface BoardHealthMagnetFlow {
+  failed_tags: number
+  flow_tags: number
+  top_board: string | null
+  top_tags: number
+}
+
+/** 体检快照·标签级分诊裁决（category 四值：remove|rewrite|keep|insufficient）。 */
+export interface BoardHealthTriageItem {
+  aux_id: number
+  category: string
+  evidence: string
+  suggestion?: string
 }
 
 /** 体检快照·版块级指标（全部匹配行口径）。 */
@@ -69,11 +112,15 @@ export interface BoardHealthBoardMetric {
   reason_dist: Record<string, number>
   ghost_matches: number
   vector_missing: number
+  /** 失败挂载主要流向证据；缺字段/null = 本轮无失败挂载或未知。 */
+  magnet_flow?: BoardHealthMagnetFlow | null
 }
 
 export interface BoardHealthMetrics {
   board: BoardHealthBoardMetric
   labels: BoardHealthLabelMetric[]
+  /** 标签级分诊清单；缺字段/null = 历史快照/降级轮次（按旧形态展示）。 */
+  triage?: BoardHealthTriageItem[] | null
 }
 
 /** 未收编候选（事实画像 diff：成员 tags 高频携带但不在版块构成中）。 */
@@ -203,6 +250,8 @@ export interface BoardArticleTag {
   id: number
   label: string
   category: string
+  /** 标签描述（topic_tags.description；后端 8G.3a 起随 filtered_tags 返回）。 */
+  description?: string
   match_reason: string
   score: number
   downgraded: boolean
@@ -278,10 +327,16 @@ export interface BoardArticle {
   id: number
   title: string
   url: string
+  /** 原文链接（后端 Article.ToDict 的 `link`，归档「打开原文」用）。 */
+  link?: string
   pub_date: string
   feed_id: number
   feed_name: string
   filtered_tags: BoardArticleTag[]
+  /** 归档口径（D5）：是否出现在查询窗口内任一分区线索的 related_article_ids。 */
+  in_report?: boolean
+  /** 弱证据：无强匹配（无标签 / max_sim / 已降级），后端统一判定。 */
+  weak_evidence?: boolean
   [key: string]: unknown
 }
 
@@ -413,6 +468,14 @@ export function useSemanticBoardsApi() {
     return apiClient.get(`/semantic-boards/${boardId}/match-detail/${tagId}`)
   }
 
+  /**
+   * 标签的辅助标签全集（GET /api/tags/:id/auxiliary-labels）。
+   * 层级视图「事件辅助标签 × 版块收编」逐对核对用；字段对齐后端 semanticBoardAuxiliaryDTO。
+   */
+  async function getTagAuxiliaryLabels(tagId: number): Promise<ApiResponse<{ items: AuxiliaryLabelItem[]; total: number }>> {
+    return apiClient.get(`/tags/${tagId}/auxiliary-labels`)
+  }
+
 async function suggestAuxiliariesForBoard(boardId: number, params?: {
     search?: string
     page?: number
@@ -445,9 +508,27 @@ async function suggestAuxiliariesForBoard(boardId: number, params?: {
     suggestAuxiliariesForBoard,
     getBoardArticles,
     getMatchDetail,
+    getTagAuxiliaryLabels,
     triggerBackfill,
     getBackfillStatus,
     getMatchingConfig,
     updateMatchingConfig,
   }
+}
+
+// ── 今日雷达（rework-workshop-into-radar-and-desk 8.2 + 8A/R-18）─────────────
+// 后端 snake_case JSON 协议不变；仅 Radar 客户端分支在边界归一为 camelCase/
+// 字符串 ID 读模型（raw 契约与转换唯一实现在 api/normalizers/boardRadar.ts，
+// 组件层不散落映射，也不扩展到 semanticBoards 其它 API）。
+
+export type { RadarBoard, RadarLane, RadarOverview, BoardRadarRawOverview, RadarOverviewResponse } from '~/api/normalizers/boardRadar'
+
+import { mapRadarOverviewResponse, type BoardRadarRawOverview, type RadarOverviewResponse } from '~/api/normalizers/boardRadar'
+
+export function useBoardRadarApi() {
+  async function getOverview(): Promise<RadarOverviewResponse> {
+    const res = await apiClient.get<BoardRadarRawOverview>('/semantic-boards/overview')
+    return mapRadarOverviewResponse(res)
+  }
+  return { getOverview }
 }

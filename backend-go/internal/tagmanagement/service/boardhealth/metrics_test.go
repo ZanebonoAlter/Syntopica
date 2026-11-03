@@ -192,3 +192,185 @@ func labelMetricsByAuxID(labels []tagmodels.BoardHealthLabelMetrics) map[uint]*t
 	}
 	return out
 }
+
+// ── 磁铁信号（board-health-triage-advice seam A 1.2，spec「标签分诊信号计算」）──
+// 用例来源：test-cases 主链路 A1 + 白盒「磁铁」组（gap=0.08±ε、失败样本 4/5、
+// 任侧 0/NULL）。口径：同一组版块级 mismatch 行对每个构成标签分别算两侧均值，
+// 不做单标签吸引归因；样本不足/向量缺失不硬凑。
+
+// magnetRows builds nOK aligned + nFailed orthogonal mounted rows (all with
+// identity embeddings); the label embedding is aligned, so all_mean stays
+// high while failed_mean drops to 0.
+func magnetRows(tagEmb map[uint][]float64, nOK, nFailed int) []matchedRow {
+	rows := make([]matchedRow, 0, nOK+nFailed)
+	id := uint(1)
+	for i := 0; i < nOK; i++ {
+		tagEmb[id] = []float64{1, 0}
+		rows = append(rows, matchedRow{TopicTagID: id})
+		id++
+	}
+	for i := 0; i < nFailed; i++ {
+		tagEmb[id] = []float64{0, 1}
+		rows = append(rows, matchedRow{TopicTagID: id, DirectionMismatch: true})
+		id++
+	}
+	return rows
+}
+
+func TestComputeMagnetSignalsSuspicious(t *testing.T) {
+	// spec Scenario「磁铁信号失败子集贴合差成立」：全体均值 0.68 vs 失败子集
+	// 0.52、失败样本 40 ≥ 5 → 嫌疑成立，携带两侧均值与样本数。
+	// 用正交基模拟：10 aligned + 5 orthogonal → all_mean=0.667、failed_mean=0。
+	tagEmb := map[uint][]float64{}
+	rows := magnetRows(tagEmb, 10, 5)
+	auxEmb := map[uint][]float64{101: {1, 0}}
+	labels := labelFixture(101)
+	computeMagnetSignals(labels, auxEmb, rows, tagEmb, Config{MinSampleSize: 5, MagnetGap: 0.08, MagnetMinFailed: 5})
+
+	m := labels[0].Magnet
+	require.NotNil(t, m)
+	require.False(t, m.Insufficient)
+	require.True(t, m.Suspicious)
+	require.InDelta(t, 10.0/15.0, *m.AllMean, 1e-9)
+	require.InDelta(t, 0.0, *m.FailedMean, 1e-9)
+	require.Equal(t, 15, m.AllSamples)
+	require.Equal(t, 5, m.FailedSamples)
+}
+
+func TestComputeMagnetSignalsGapBoundary(t *testing.T) {
+	// 白盒「gap=0.08±ε」：阈值 >= 语义。夹具精确可算：5 个失败子集向量
+	// cos=0.6（{0.6,0.8} 基），另加 5 个对齐向量 cos=1.0 → all_mean=0.8、
+	// failed_mean=0.6、gap=0.2；用计算出的 gap 卡阈值两侧。
+	tagEmb := map[uint][]float64{}
+	rows := make([]matchedRow, 0, 10)
+	id := uint(1)
+	for i := 0; i < 5; i++ {
+		tagEmb[id] = []float64{1, 0}
+		rows = append(rows, matchedRow{TopicTagID: id})
+		id++
+	}
+	for i := 0; i < 5; i++ {
+		tagEmb[id] = []float64{0.6, 0.8} // 单位向量，与 {1,0} 的 cosine=0.6
+		rows = append(rows, matchedRow{TopicTagID: id, DirectionMismatch: true})
+		id++
+	}
+	auxEmb := map[uint][]float64{201: {1, 0}}
+	labels := labelFixture(201)
+	computeMagnetSignals(labels, auxEmb, rows, tagEmb, Config{MinSampleSize: 5, MagnetMinFailed: 5, MagnetGap: 0.08})
+	m := labels[0].Magnet
+	require.InDelta(t, 0.8, *m.AllMean, 1e-9)
+	require.InDelta(t, 0.6, *m.FailedMean, 1e-9)
+	gap := *m.AllMean - *m.FailedMean
+	require.InDelta(t, 0.2, gap, 1e-9)
+	require.True(t, m.Suspicious, "gap 0.2 ≥ 0.08 → suspicious")
+
+	// 阈值恰等于 gap → 成立（>= 语义）；阈值高一丝 → 不成立。
+	computeMagnetSignals(labels, auxEmb, rows, tagEmb, Config{MinSampleSize: 5, MagnetMinFailed: 5, MagnetGap: gap})
+	require.True(t, labels[0].Magnet.Suspicious, "gap == threshold → suspicious (>=)")
+	computeMagnetSignals(labels, auxEmb, rows, tagEmb, Config{MinSampleSize: 5, MagnetMinFailed: 5, MagnetGap: gap + 1e-9})
+	require.False(t, labels[0].Magnet.Suspicious, "gap < threshold → not suspicious")
+}
+
+func TestComputeMagnetSignalsFailedSamplesBoundary(t *testing.T) {
+	// 白盒「失败样本 4/5」：failed=4 < min_failed=5 → insufficient、不判嫌疑。
+	tagEmb := map[uint][]float64{}
+	rows := magnetRows(tagEmb, 10, 4)
+	labels := labelFixture(301)
+	computeMagnetSignals(labels, map[uint][]float64{301: {1, 0}}, rows, tagEmb, Config{MinSampleSize: 5, MagnetGap: 0.08, MagnetMinFailed: 5})
+	m := labels[0].Magnet
+	require.True(t, m.Insufficient, "failed samples 4 < 5 → insufficient")
+	require.False(t, m.Suspicious, "样本不足不硬凑结论")
+	require.NotNil(t, m.AllMean, "观测均值仍记录（真实观测，非结论）")
+
+	// failed=5 恰达标 → 可判。
+	tagEmb = map[uint][]float64{}
+	rows = magnetRows(tagEmb, 10, 5)
+	labels = labelFixture(301)
+	computeMagnetSignals(labels, map[uint][]float64{301: {1, 0}}, rows, tagEmb, Config{MinSampleSize: 5, MagnetGap: 0.08, MagnetMinFailed: 5})
+	require.False(t, labels[0].Magnet.Insufficient)
+	require.True(t, labels[0].Magnet.Suspicious)
+}
+
+func TestComputeMagnetSignalsInsufficientScenarios(t *testing.T) {
+	// spec Scenario「失败子集样本不足不强判」：全板仅 2 个 mismatch 行 →
+	// 全部构成标签磁铁信号 insufficient。
+	tagEmb := map[uint][]float64{}
+	rows := magnetRows(tagEmb, 8, 2)
+	labels := labelFixture(401, 402)
+	computeMagnetSignals(labels, map[uint][]float64{401: {1, 0}, 402: {1, 0}}, rows, tagEmb, Config{MinSampleSize: 5, MagnetGap: 0.08, MagnetMinFailed: 5})
+	for _, l := range labels {
+		require.True(t, l.Magnet.Insufficient)
+		require.False(t, l.Magnet.Suspicious)
+	}
+
+	// spec Scenario「向量缺失信号不硬算」：标签自身 embedding 缺失 → 两侧
+	// 均值不可算（nil），insufficient。
+	tagEmb2 := map[uint][]float64{}
+	rows2 := magnetRows(tagEmb2, 10, 5)
+	labels2 := labelFixture(501)
+	computeMagnetSignals(labels2, map[uint][]float64{}, rows2, tagEmb2, Config{MinSampleSize: 5, MagnetGap: 0.08, MagnetMinFailed: 5})
+	m := labels2[0].Magnet
+	require.True(t, m.Insufficient)
+	require.Nil(t, m.AllMean)
+	require.Nil(t, m.FailedMean)
+	require.False(t, m.Suspicious, "缺向量不按 0 参与嫌疑判定")
+
+	// 白盒「任侧 0」：全部挂载 tag 无 identity 向量 → all_n=0，两侧样本
+	// 皆 0（nil 均值），insufficient；tag 侧缺向量对信号不可见。
+	rows3 := []matchedRow{{TopicTagID: 1}, {TopicTagID: 2, DirectionMismatch: true}}
+	labels3 := labelFixture(601)
+	computeMagnetSignals(labels3, map[uint][]float64{601: {1, 0}}, rows3, map[uint][]float64{}, Config{MinSampleSize: 5, MagnetGap: 0.08, MagnetMinFailed: 5})
+	m3 := labels3[0].Magnet
+	require.Equal(t, 0, m3.AllSamples)
+	require.Equal(t, 0, m3.FailedSamples)
+	require.Nil(t, m3.AllMean)
+	require.True(t, m3.Insufficient)
+
+	// 白盒「all 侧不足」：全体向量样本 3 < MinSampleSize 5 → 不足
+	//（即使 failed 侧达标也不可能：failed ⊆ all）。
+	tagEmb4 := map[uint][]float64{}
+	rows4 := magnetRows(tagEmb4, 0, 3)
+	labels4 := labelFixture(701)
+	computeMagnetSignals(labels4, map[uint][]float64{701: {1, 0}}, rows4, tagEmb4, Config{MinSampleSize: 5, MagnetGap: 0.08, MagnetMinFailed: 5})
+	require.True(t, labels4[0].Magnet.Insufficient)
+}
+
+func TestComputeMagnetSignalsVectorMissingTagSkipped(t *testing.T) {
+	// 白盒：tag 侧向量缺失的 mismatch 行不进失败子集（与分布口径一致：
+	// 缺向量行对所有标签不可见，计入 vector_missing 而非按 0 硬算）。
+	tagEmb := map[uint][]float64{1: {1, 0}, 2: {1, 0}, 3: {1, 0}, 4: {1, 0}, 5: {1, 0}}
+	rows := []matchedRow{
+		{TopicTagID: 1}, {TopicTagID: 2}, {TopicTagID: 3}, {TopicTagID: 4}, {TopicTagID: 5},
+		{TopicTagID: 6, DirectionMismatch: true}, // 无向量
+		{TopicTagID: 7, DirectionMismatch: true}, // 无向量
+	}
+	labels := labelFixture(801)
+	computeMagnetSignals(labels, map[uint][]float64{801: {1, 0}}, rows, tagEmb, Config{MinSampleSize: 5, MagnetGap: 0.08, MagnetMinFailed: 5})
+	m := labels[0].Magnet
+	require.Equal(t, 5, m.AllSamples)
+	require.Equal(t, 0, m.FailedSamples, "vector-less mismatch rows are invisible")
+	require.True(t, m.Insufficient)
+	require.NotNil(t, m.AllMean)
+}
+
+// ── description 事件性词根预筛（spec「描述污染预筛」，纯函数）──
+
+func TestScreenDescription(t *testing.T) {
+	// spec Scenario「description 事件性词根命中」。
+	require.Equal(t, []string{"此次"}, screenDescription("位于中东的阿拉伯国家，此次派遣代表团前往伊朗进行外交磋商"))
+	// 空 desc 不标记。
+	require.Nil(t, screenDescription(""))
+	// 未命中。
+	require.Nil(t, screenDescription("伊朗首都"))
+	// 多个词根、重复命中去重。
+	require.Equal(t, []string{"此次", "报道", "期间"}, screenDescription("此次报道了该活动，期间又有新报道"))
+	require.Equal(t, []string{"本次", "期间", "近日"}, screenDescription("本次期间近日"))
+}
+
+// 防护栏：固定闭集词根，不得从用户输入拼接（变体「正则元字符注入不适用」的
+// 前半句——正则本身是常量，输入里的元字符不构成注入面）。
+func TestScreenDescriptionPatternIsFixed(t *testing.T) {
+	require.Equal(t, `此次|本次|该事件|报道|针对|期间|近日`, descEventPattern.String())
+	// 纯正则元字符文本不命中词根（不命中即 nil，不 panic）。
+	require.Nil(t, screenDescription(".*+?()[]{}|^$"))
+}

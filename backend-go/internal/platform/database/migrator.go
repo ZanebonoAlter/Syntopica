@@ -96,6 +96,16 @@ func RunAutoMigrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(allModels...); err != nil {
 		return err
 	}
+	// board-health-triage-advice B-P2-2 self-heal: migration 20261028_0001 may
+	// have run (and recorded its version) on a boot whose AutoMigrate had not
+	// yet created the repair tables — its no-op would then never re-run. Re-ensure
+	// the partial unique mutex index right after a successful model sync, BEFORE
+	// the discovery backfill (which may error and would mask the heal). Only this
+	// change's new-job index is healed; idempotent and table-absent/no-postgres
+	// no-ops, so boot behavior is otherwise unchanged.
+	if err := ensureAuxiliaryDescriptionRepairMutexIndex(db); err != nil {
+		return err
+	}
 	// improve-discovery-recommendations：PG-only 迁移收尾（design.md Migration Plan
 	// 步骤 2/3——pending 部分唯一索引切换 + 候选/关联/旧种子/冷却回填）。sqlite（模型
 	// 单测）跳过；每步幂等，随每次启动重跑只补缺。

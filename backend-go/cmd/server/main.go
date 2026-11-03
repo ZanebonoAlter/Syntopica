@@ -62,6 +62,16 @@ func main() {
 	// singleton and panics if Init hasn't run. StartRuntime is too late.
 	dataenrichment.Init(database.DB)
 
+	// Wire the auxiliary-label description-repair chain (board-health-triage-
+	// advice tasks 2.6): the repair service AND its background executor, over
+	// the ready database (AutoMigrate + migrations already ran). BEFORE
+	// SetupRoutes — the repair routes and the worker must use the SAME
+	// service instance. A failure here is fatal: it must not degrade into a
+	// nil service or silently missing routes.
+	if err := taggingdomain.InitDescriptionRepairChain(database.DB); err != nil {
+		logging.Fatalf("Failed to initialize the description-repair chain: %v", err)
+	}
+
 	// Seed the research data sources catalog (idempotent upsert; non-fatal —
 	// a failure logs a warning and the endpoints degrade to an empty catalog).
 	// The LIVE key resolver (UI DB > env/config) decides status seeding: a

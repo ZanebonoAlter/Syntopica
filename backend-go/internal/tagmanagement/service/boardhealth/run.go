@@ -2,7 +2,6 @@ package boardhealth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -93,6 +92,7 @@ func CheckupBoard(ctx context.Context, db *gorm.DB, llm BoardHealthLLM, config C
 			c := result.Comment
 			score, comment = &s, &c
 			notifyVerdict = result.Notify
+			metrics.Triage = convertTriage(result.Triage) // degraded rounds keep triage nil (JSON null)
 		}
 	}
 
@@ -114,8 +114,14 @@ func CheckupBoard(ctx context.Context, db *gorm.DB, llm BoardHealthLLM, config C
 
 // collectBoardStatistics gathers the pure-read part: board-level metrics over
 // all matched rows + label-level affinity distributions (composition-label
-// embedding × every mounted tag identity embedding) + the factual profile
-// diff.
+// embedding × every mounted tag identity embedding) + the three triage
+// signals (board-health-triage-advice seam A) + the factual profile diff.
+// Signal computation is same-round same-memory (design D1): magnet grouping
+// reuses the loaded matchedRows/tagEmbeddings; neighbors add one pgvector
+// query per vector-bearing label; the flow adds one aggregation per board
+// with failed mounts. A signal query error fails this board's round (the
+// round moves on to siblings) rather than persisting a half-signaled
+// snapshot.
 func collectBoardStatistics(ctx context.Context, db *gorm.DB, boardID uint, config Config) (*tagmodels.BoardHealthMetrics, []tagmodels.BoardHealthCandidate, error) {
 	rows, err := loadMatchedRows(ctx, db, boardID)
 	if err != nil {
@@ -140,6 +146,19 @@ func collectBoardStatistics(ctx context.Context, db *gorm.DB, boardID uint, conf
 	labels, vectorMissing := computeLabelAttribution(rows, compositions, auxEmb, tagEmb, config)
 	boardMetrics.VectorMissing = vectorMissing
 
+	for i := range labels {
+		labels[i].DescFlags = screenDescription(labels[i].Description)
+	}
+	computeMagnetSignals(labels, auxEmb, rows, tagEmb, config)
+	if err := loadNeighborsForLabels(ctx, db, labels, auxEmb); err != nil {
+		return nil, nil, fmt.Errorf("load neighbors: %w", err)
+	}
+	flow, err := loadFailedFlow(ctx, db, boardID, failedTagIDs(rows))
+	if err != nil {
+		return nil, nil, fmt.Errorf("load failed flow: %w", err)
+	}
+	boardMetrics.MagnetFlow = flow
+
 	candidates, err := UncapturedCandidates(ctx, db, boardID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("uncaptured candidates: %w", err)
@@ -147,15 +166,36 @@ func collectBoardStatistics(ctx context.Context, db *gorm.DB, boardID uint, conf
 	return &tagmodels.BoardHealthMetrics{Board: boardMetrics, Labels: labels}, candidates, nil
 }
 
+// convertTriage maps the validated LLM triage items onto the persisted
+// model shape (design D3/D4). A-L2（review Low）：suggestion 仅 rewrite
+// 语义持有——其它类别携带的多余文案在持久化转换时清空，不因此丢弃合法
+// 分类/证据，也不改写输入的 LLM 结果（新 slice，输入 slice 原值保持）。
+func convertTriage(items []TriageItem) []tagmodels.BoardHealthTriageItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]tagmodels.BoardHealthTriageItem, 0, len(items))
+	for _, item := range items {
+		converted := tagmodels.BoardHealthTriageItem{
+			AuxID:    item.AuxID,
+			Category: item.Category,
+			Evidence: item.Evidence,
+		}
+		if item.Category == "rewrite" {
+			converted.Suggestion = item.Suggestion
+		}
+		out = append(out, converted)
+	}
+	return out
+}
+
 // adjudicateBoardHealth renders the prompt and calls the LLM. Errors degrade
 // upstream; a nil result with nil error is treated as degraded too. The
-// score range check lives HERE (the persistence gate) so every LLM
-// implementation — production or test fake — is bounded the same way.
+// score range check and the triage contract check live HERE (the persistence
+// gate) so every LLM implementation — production or test fake — is bounded
+// the same way: an invalid triage list degrades the whole verdict
+// (score/comment/triage all empty), never a partially surfaced advice list.
 func adjudicateBoardHealth(ctx context.Context, llm BoardHealthLLM, board *models.SemanticLabel, metrics *tagmodels.BoardHealthMetrics, candidates []tagmodels.BoardHealthCandidate) (*BoardHealthLLMResult, error) {
-	metricsJSON, err := json.Marshal(metrics)
-	if err != nil {
-		return nil, fmt.Errorf("marshal metrics: %w", err)
-	}
 	candidateLines := make([]string, 0, len(candidates))
 	for i, c := range candidates {
 		if i >= scorePromptCandidates {
@@ -163,12 +203,15 @@ func adjudicateBoardHealth(ctx context.Context, llm BoardHealthLLM, board *model
 		}
 		candidateLines = append(candidateLines, fmt.Sprintf("%s（成员 tags=%d，文章覆盖=%d）", c.Label, c.MemberTags, c.MemberArticles))
 	}
-	result, err := llm.ScoreBoardHealth(ctx, buildScorePrompt(board, string(metricsJSON), candidateLines))
+	result, err := llm.ScoreBoardHealth(ctx, buildScorePrompt(board, metrics, candidateLines))
 	if err != nil {
 		return nil, err
 	}
 	if result == nil || result.Score < 0 || result.Score > 100 {
 		return nil, fmt.Errorf("llm score out of range")
+	}
+	if err := validateTriage(result.Triage, metrics.Labels); err != nil {
+		return nil, fmt.Errorf("llm triage invalid: %w", err)
 	}
 	return result, nil
 }

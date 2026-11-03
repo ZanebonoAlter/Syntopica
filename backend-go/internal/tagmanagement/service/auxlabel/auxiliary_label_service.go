@@ -580,8 +580,11 @@ func (s *AuxiliaryLabelService) RemoveBoardComposition(ctx context.Context, boar
 	if err := s.db.WithContext(ctx).Where("id = ? AND label_type = ?", boardID, "board").First(&board).Error; err != nil {
 		return err
 	}
+	// 构成单元可为 auxiliary 或 composite（board_composition.auxiliary_label_id 列复用，
+	// 挂载侧 addBoardComposition 已按两类受理）——摘除侧同样受理两类，否则组合标签
+	// 的挂载关系无法解除（体检分诊里的组合标签「建议摘除」会走这条既有 DELETE 链）。
 	var auxiliary models.SemanticLabel
-	if err := s.db.WithContext(ctx).Where("id = ? AND label_type = ?", auxiliaryLabelID, "auxiliary").First(&auxiliary).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("id = ? AND label_type IN ?", auxiliaryLabelID, []string{"auxiliary", "composite"}).First(&auxiliary).Error; err != nil {
 		return err
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

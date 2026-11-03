@@ -7,6 +7,7 @@ package service
 
 import (
 	"syntopica-backend/internal/tagmanagement/service/auxlabel"
+	"syntopica-backend/internal/tagmanagement/service/auxrepair"
 	"syntopica-backend/internal/tagmanagement/service/board"
 	"syntopica-backend/internal/tagmanagement/service/core"
 	"syntopica-backend/internal/tagmanagement/service/merge"
@@ -215,4 +216,63 @@ const (
 	UpgradeDirectionExpand = board.UpgradeDirectionExpand
 	UpgradeSourceAux       = board.UpgradeSourceAux
 	UpgradeSourceComposite = board.UpgradeSourceComposite
+)
+
+// ============================================================================
+// Type aliases from auxrepair/ (auxiliary-label description repair)
+// ============================================================================
+
+// The description-repair seam (board-health-triage-advice task 2.2) keeps its
+// own service package: the repair chain must not live in boardhealth (no
+// boardhealth → board cycle). The handler talks to this facade only, so it
+// never imports the auxrepair sub-package directly.
+type (
+	AuxRepairService       = auxrepair.Service
+	AuxRepairContext       = auxrepair.RepairContext
+	AuxRepairJobView       = auxrepair.JobView
+	AuxRepairCreateRequest = auxrepair.CreateJobRequest
+	// AuxRepairOption customizes the repair service at construction time
+	// (embedding unit, match-cache invalidation, clock). NewAuxRepairService(db)
+	// stays valid — every option is optional.
+	AuxRepairOption = auxrepair.Option
+)
+
+var NewAuxRepairService = auxrepair.NewService
+
+// Execution-phase collaborators (task 2.3). Production uses the defaults
+// (auxlabel.DefaultAuxiliaryLabelEmbedder → airouter, board.InvalidateMatchCache,
+// time.Now); tests inject stubs.
+var (
+	WithAuxRepairEmbedder         = auxrepair.WithEmbedder
+	WithAuxRepairCacheInvalidator = auxrepair.WithCacheInvalidator
+	WithAuxRepairClock            = auxrepair.WithClock
+	// WithAuxRepairMatcher replaces the EXISTING board matching engine the
+	// matching phase calls (task 2.4). Production keeps the real engine bound
+	// to the service's DB; tests inject a stub.
+	WithAuxRepairMatcher = auxrepair.WithMatcher
+)
+
+// ============================================================================
+// Execution lifecycle (task 2.5)
+// ============================================================================
+
+// The executor drives the repair phases: it scans the database for claimable
+// tasks, claims them (DB CAS), renews the lease with a heartbeat and recovers
+// the tasks whose attempt died. NewService never starts it — the application
+// starts it explicitly with its OWN (application-lifetime) context.
+type (
+	AuxRepairExecutorConfig = auxrepair.ExecutorConfig
+	// AuxRepairExecutor is the background worker of the repair chain (the
+	// domain root owns its lifecycle).
+	AuxRepairExecutor = auxrepair.Executor
+)
+
+var (
+	// DefaultAuxRepairExecutorConfig returns the production defaults.
+	DefaultAuxRepairExecutorConfig = auxrepair.DefaultExecutorConfig
+	// NewAuxRepairExecutor builds an executor; it starts nothing.
+	NewAuxRepairExecutor = auxrepair.NewExecutor
+	// AuxRepairRetryNotAllowed is returned when a task ended in
+	// conflict/unavailable and cannot be retried as-is (HTTP 409).
+	AuxRepairRetryNotAllowed = auxrepair.ErrStageRetryNotAllowed
 )

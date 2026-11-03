@@ -50,7 +50,7 @@ func TestBoardHealthSnapshotMigration(t *testing.T) {
 		Metrics: tagmodels.BoardHealthMetrics{
 			Board: tagmodels.BoardHealthBoardMetrics{
 				MatchedTags: 3,
-				ReasonDist: map[string]int{"direct_hit": 3}, GhostMatches: 1, VectorMissing: 0,
+				ReasonDist:  map[string]int{"direct_hit": 3}, GhostMatches: 1, VectorMissing: 0,
 			},
 			Labels: []tagmodels.BoardHealthLabelMetrics{{AuxID: 9, Label: "推理", Samples: 3, Insufficient: true}},
 		},

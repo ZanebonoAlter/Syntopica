@@ -57,17 +57,19 @@ func TestCheckupBoardLLMSuccessAndDegrade(t *testing.T) {
 	require.InDelta(t, 78.0, *snapshot.LLMScore, 1e-9)
 	require.NotNil(t, snapshot.LLMComment)
 	require.Equal(t, "构成清晰", *snapshot.LLMComment)
+	require.Nil(t, snapshot.Metrics.Triage, "零构成标签的合法空 triage 落库为 null")
 	require.Equal(t, 1, okLLM.calls, "one merged adjudication call per board per round")
 	require.Contains(t, okLLM.prompts[0], "AI前沿")
 	require.Contains(t, okLLM.prompts[0], "体检统计数据")
 
-	// 降级路：LLM 失败 → 统计照常落快照，score/comment 为 NULL，不重试。
+	// 降级路：LLM 失败 → 统计照常落快照，score/comment/triage 为 NULL，不重试。
 	badLLM := &fakeBoardHealthLLM{err: errors.New("timeout")}
 	require.NoError(t, CheckupBoard(context.Background(), db, badLLM, config, &board, time.Now()))
 	var degraded tagmodels.BoardHealthSnapshot
 	require.NoError(t, db.Where("semantic_board_id = ? AND llm_score IS NULL", board.ID).First(&degraded).Error)
 	require.Nil(t, degraded.LLMScore)
 	require.Nil(t, degraded.LLMComment)
+	require.Nil(t, degraded.Metrics.Triage, "triage 与 score 同降级（超时/坏 JSON 路径）")
 	require.Equal(t, 1, badLLM.calls, "degraded round must not retry")
 	// 两轮两条快照（同日多条并存，spec: 历史快照不被覆盖）。
 	var count int64

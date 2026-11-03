@@ -2474,7 +2474,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, vendorModelMigration())
 	migrations = append(migrations, keyEventMarkersMigration())
 	migrations = append(migrations, pgTrgmMigration(), searchVectorDropMigration())
-	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration(), embeddingModelColumnWidthMigration(), embeddingModelNotNullMigration())
+	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration(), auxiliaryDescriptionRepairMigration(), embeddingModelColumnWidthMigration(), embeddingModelNotNullMigration())
 }
 
 // intraLaneBucketColumnsMigration implements 20261024_0001
