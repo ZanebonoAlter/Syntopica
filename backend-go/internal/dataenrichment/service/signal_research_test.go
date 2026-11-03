@@ -329,7 +329,7 @@ func TestSignalResearch_FinishAtSeventeenRounds(t *testing.T) {
 	if len(tool.calls) != 16 {
 		t.Fatalf("tool executions=%d", len(tool.calls))
 	}
-	if payload.SchemaVersion != 2 || payload.Report.Title == "" || len(payload.Report.Sections) != 4 {
+	if payload.SchemaVersion != 3 || payload.Report.Title == "" || len(payload.Report.Sections) != 4 {
 		t.Fatalf("payload shape: %+v", payload.Report)
 	}
 	// 独立 session + operation 区分。

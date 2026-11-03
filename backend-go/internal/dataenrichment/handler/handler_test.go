@@ -1144,3 +1144,162 @@ func (m *mockOrchestrator) ReResolveRelation(ctx context.Context, boardID, relat
 	}
 	return &service.RelationReResolveOutput{RelationID: relationID, NewStatus: "unresolved", Outcome: "no_match"}, nil
 }
+
+// ── 旧研究历史只读列表（redesign-enrichment-research-workbench D2 GET /history）
+
+// decodeLegacyHistory parses the {success,data:[...]} envelope into rows.
+func decodeLegacyHistory(t *testing.T, w *httptest.ResponseRecorder) []map[string]any {
+	t.Helper()
+	var env struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("parse history response: %v body=%s", err, w.Body.String())
+	}
+	return env.Data
+}
+
+// seedLegacyHistoryFixtures plants one archived topic + one board_brief + one
+// topic_analysis on the board (SQLite in-memory DB per test, no cleanup need).
+// Returns the brief result id, the TOPIC id (board_persistent_topics row) and
+// the topic-analysis result id — three different id spaces.
+func seedLegacyHistoryFixtures(t *testing.T, db *gorm.DB, boardID uint) (briefID, topicID, topicRowID uint) {
+	t.Helper()
+	if err := db.Exec(`INSERT INTO board_persistent_topics
+		(semantic_board_id, label, status, first_seen_date, last_seen_date, created_at, updated_at)
+		VALUES (?, '历史话题', 'archived', '2026-08-01', '2026-08-31', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, boardID).Error; err != nil {
+		t.Fatalf("seed topic: %v", err)
+	}
+	var foundTopicID uint
+	if err := db.Raw(`SELECT id FROM board_persistent_topics WHERE semantic_board_id = ? LIMIT 1`, boardID).Scan(&foundTopicID).Error; err != nil || foundTopicID == 0 {
+		t.Fatalf("read topic id: %v", err)
+	}
+	repo := repository.NewRepository(db)
+	brief := &repository.TopicEnrichmentResult{
+		SemanticBoardID: repository.BoardIDPtr(boardID),
+		AnalysisScope:   "board",
+		ResultKind:      repository.ResultKindBoardBrief,
+		Sectors:         json.RawMessage(`{"legacy":true}`),
+		SessionID:       "legacy_history_handler_seed",
+	}
+	if err := repo.CreateTopicEnrichmentResult(context.Background(), brief); err != nil {
+		t.Fatalf("seed brief: %v", err)
+	}
+	topicRow := &repository.TopicEnrichmentResult{
+		PersistentTopicID: repository.TopicIDPtr(foundTopicID),
+		AnalysisScope:     "topic",
+		ResultKind:        repository.ResultKindTopicAnalysis,
+		Sectors:           json.RawMessage(`{"legacy":"topic"}`),
+		SessionID:         "legacy_history_handler_seed",
+	}
+	if err := repo.CreateTopicEnrichmentResult(context.Background(), topicRow); err != nil {
+		t.Fatalf("seed topic analysis: %v", err)
+	}
+	return brief.ID, foundTopicID, topicRow.ID
+}
+
+// TestLegacyHistoryHandler_RowShapeIsolationAndSwitchIndependent locks the
+// read-only list contract at the HTTP layer: 200 row shape (identity fields,
+// no sectors payload), cross-board isolation by routing, archived topic
+// included, and enrichment-switch failure does not block reading (零 LLM、不
+// 做开关预检——mock 编排器直接报「未开启」也照样 200).
+func TestLegacyHistoryHandler_RowShapeIsolationAndSwitchIndependent(t *testing.T) {
+	db := setupHandlerTestDB(t)
+	const boardID = uint(96601)
+	briefID, topicID, topicRowID := seedLegacyHistoryFixtures(t, db, boardID)
+
+	// 编排器/开关直接处于「未开启」态：只读历史不受影响。
+	orch := &mockOrchestrator{boardErr: fmt.Errorf("enrichment not enabled for this board")}
+	h := newTestHandler(db, &mockLifelineService{}, orch, &alwaysEnabledBoardConfig{})
+	r := newTestRouter(h)
+
+	w := doRequest(t, r, "GET", fmt.Sprintf("/api/semantic-boards/%d/enrichment/analysis/history", boardID), "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("history list: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	rows := decodeLegacyHistory(t, w)
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows (brief+archived topic analysis), got %d: %s", len(rows), w.Body.String())
+	}
+	seenKinds := map[string]bool{}
+	for _, row := range rows {
+		seenKinds[row["result_kind"].(string)] = true
+		// 行形状：七个身份字段齐全；不带 sectors 大载荷（详情走既有 GET）。
+		for _, key := range []string{"id", "result_kind", "analysis_scope", "persistent_topic_id", "semantic_board_id", "created_at", "session_id"} {
+			if _, ok := row[key]; !ok {
+				t.Fatalf("row missing %q: %v", key, row)
+			}
+		}
+		if _, has := row["sectors"]; has {
+			t.Fatalf("list row must not carry sectors payload: %v", row)
+		}
+	}
+	if !seenKinds["board_brief"] || !seenKinds["topic_analysis"] {
+		t.Fatalf("want brief+topic_analysis kinds, got %v", seenKinds)
+	}
+
+	// kind 过滤 + topic_id 过滤：各自收窄到 1 行，不存在的 topic 过滤为空。
+	w = doRequest(t, r, "GET", fmt.Sprintf("/api/semantic-boards/%d/enrichment/analysis/history?kind=board_brief", boardID), "")
+	filtered := decodeLegacyHistory(t, w)
+	if w.Code != http.StatusOK || len(filtered) != 1 || filtered[0]["result_kind"] != "board_brief" {
+		t.Fatalf("kind=board_brief: %d %s", w.Code, w.Body.String())
+	}
+	w = doRequest(t, r, "GET", fmt.Sprintf("/api/semantic-boards/%d/enrichment/analysis/history?topic_id=%d", boardID, topicID), "")
+	byTopic := decodeLegacyHistory(t, w)
+	if w.Code != http.StatusOK || len(byTopic) != 1 || byTopic[0]["result_kind"] != "topic_analysis" {
+		t.Fatalf("topic_id filter: %d %s", w.Code, w.Body.String())
+	}
+	w = doRequest(t, r, "GET", fmt.Sprintf("/api/semantic-boards/%d/enrichment/analysis/history?topic_id=%d", boardID, topicID+1), "")
+	if w.Code != http.StatusOK || len(decodeLegacyHistory(t, w)) != 0 {
+		t.Fatalf("unknown topic_id must filter to empty: %d %s", w.Code, w.Body.String())
+	}
+
+	// 跨板块路由隔离：他板 id 查不到本板任何行。
+	w = doRequest(t, r, "GET", fmt.Sprintf("/api/semantic-boards/%d/enrichment/analysis/history", boardID+1), "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("foreign board: %d %s", w.Code, w.Body.String())
+	}
+	if foreign := decodeLegacyHistory(t, w); len(foreign) != 0 {
+		t.Fatalf("foreign board must see nothing, got %d rows", len(foreign))
+	}
+
+	// 排序 id DESC：topic 行后种（id 更大）在前，brief 在后。
+	w = doRequest(t, r, "GET", fmt.Sprintf("/api/semantic-boards/%d/enrichment/analysis/history", boardID), "")
+	rows = decodeLegacyHistory(t, w)
+	if rows[0]["id"].(float64) <= rows[1]["id"].(float64) {
+		t.Fatalf("rows must be id DESC: %v", rows)
+	}
+	if rows[0]["id"].(float64) != float64(topicRowID) || rows[1]["id"].(float64) != float64(briefID) {
+		t.Fatalf("newest=topic row (%d), oldest=brief (%d): %v", topicRowID, briefID, rows)
+	}
+}
+
+// TestLegacyHistoryHandler_ParamValidation locks the 400 contract: unknown/
+// signal kind, garbage topic_id/before_id/limit and bad board id.
+func TestLegacyHistoryHandler_ParamValidation(t *testing.T) {
+	db := setupHandlerTestDB(t)
+	h := newTestHandler(db, &mockLifelineService{}, &mockOrchestrator{}, &alwaysEnabledBoardConfig{})
+	r := newTestRouter(h)
+	base := "/api/semantic-boards/96602/enrichment/analysis/history"
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"signal_report is not a legacy kind", base + "?kind=signal_report"},
+		{"garbage kind", base + "?kind=nope"},
+		{"garbage topic_id", base + "?topic_id=abc"},
+		{"zero topic_id", base + "?topic_id=0"},
+		{"garbage before_id", base + "?before_id=xyz"},
+		{"zero before_id", base + "?before_id=0"},
+		{"zero limit", base + "?limit=0"},
+		{"negative limit", base + "?limit=-3"},
+		{"garbage board id", "/api/semantic-boards/abc/enrichment/analysis/history"},
+	}
+	for _, tc := range cases {
+		w := doRequest(t, r, "GET", tc.path, "")
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: want 400, got %d body=%s", tc.name, w.Code, w.Body.String())
+		}
+	}
+}

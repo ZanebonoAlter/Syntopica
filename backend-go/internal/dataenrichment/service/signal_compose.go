@@ -48,22 +48,71 @@ const signalReportMaxVisibleRunes = 3000
 
 const signalComposeMaxAttempts = 3
 
-// 引用占位符：[[data:c1:o2]] / [[calc:k1]] / [[news:31]]。
-var signalRefTokenRe = regexp.MustCompile(`\[\[(data|calc|news):([^\]]+)\]\]`)
+// 引用占位符：[[data:c1:o2]] / [[calc:k1]] / [[news:31]] / [[source:n1|w1]]
+// （source = question-v1 已读文字证据，独立命名空间，不参与数值计算/图表）。
+var signalRefTokenRe = regexp.MustCompile(`\[\[(data|calc|news|source):([^\]]+)\]\]`)
 
 // ── payload 形状（sectors jsonb，design §7）──────────────────────────────────
 
-// SignalReportSection 是报告的一节。thesis/facts/causal 只有 text；
+// SignalReportSection 是报告的一节。schema2：thesis/facts/causal 只有 text；
 // implication 额外携带五个结构化字段（非空校验 + direction 枚举，SV-2）。
+// schema3（redesign-enrichment-research-workbench D4）：text 为代码生成的兼容
+// 四段文本（旧 reader 可读），模型产出存 Blocks；implication 条件字段不变。
 type SignalReportSection struct {
 	Kind string `json:"kind"`
 	Text string `json:"text"`
+	// Blocks 是 schema3 的受控块序列（paragraph|evidence_table|chart，扁平
+	// 不嵌套）；schema2 载荷无此字段（旧行不回填）。
+	Blocks []SignalReportBlock `json:"blocks,omitempty"`
 
 	Verdict          string `json:"verdict,omitempty"`
 	Direction        string `json:"direction,omitempty"` // up|down|diverge|conditional
 	Horizon          string `json:"horizon,omitempty"`
 	TriggerCondition string `json:"trigger_condition,omitempty"`
 	SelfDoubt        string `json:"self_doubt,omitempty"`
+}
+
+// schema3 受控块的三种平面类型（design D4：白名单直接分支，不设计插件注册、
+// 任意嵌套或新的 DSL 引擎）。
+const (
+	SignalBlockParagraph     = "paragraph"
+	SignalBlockEvidenceTable = "evidence_table"
+	SignalBlockChart         = "chart"
+)
+
+// SignalReportEvidenceRow is one evidence-table row: a label plus same-unit
+// observation/calculation refs — values are rendered by the reader from the
+// appendix, the model never copies them into the label.
+type SignalReportEvidenceRow struct {
+	Label string   `json:"label"`
+	Refs  []string `json:"refs"`
+}
+
+// SignalReportBlock is one controlled block. Unknown types/fields are
+// rejected at validation (回注)， not silently dropped.
+type SignalReportBlock struct {
+	Type    string                    `json:"type"`
+	Text    string                    `json:"text,omitempty"`
+	Title   string                    `json:"title,omitempty"`
+	Rows    []SignalReportEvidenceRow `json:"rows,omitempty"`
+	ChartID string                    `json:"chart_id,omitempty"`
+}
+
+// SignalReportDataFreshness is the code-generated per-source freshness
+// statement (schema3 only; design §10.3 新口径：系统机械计算分源时效，模型不再
+// 被要求重复全局「数据截至」句；写了期值仍校验不得编造).
+type SignalReportDataFreshness struct {
+	Sources         []SignalReportSourceFreshness `json:"sources"`
+	Cutoff          string                        `json:"cutoff"`
+	GeneratedAt     string                        `json:"generated_at"`
+	HasObservations bool                          `json:"has_observations"`
+}
+
+// SignalReportSourceFreshness is one tool's mechanically computed latest
+// available period (empty latest = no observations from that tool).
+type SignalReportSourceFreshness struct {
+	Tool   string `json:"tool"`
+	Latest string `json:"latest,omitempty"`
 }
 
 // SignalReportChart 存 LLM 声明的形状 {chart_id,kind,claim,refs}；refs 由代码
@@ -98,7 +147,28 @@ type SignalReportAppendix struct {
 	Calls        []*signalResearchCallRecord `json:"calls"`
 	Calculations []*SignalCalculationResult  `json:"calculations"`
 	Gaps         []signalResearchGap         `json:"gaps"`
+	// Sources/TextCalls 是 question-v1 增量：已读文字证据与检索/读取流水
+	// （旧 schema2/schema3 载荷无此字段，缺省兼容读取）。
+	Sources   []*signalResearchSourceRecord `json:"sources,omitempty"`
+	TextCalls []*signalTextCallRecord       `json:"text_calls,omitempty"`
 }
+
+// SignalReportAnswer 是 question-v1 的答题范围（D6）：模型基于本次证据给出
+// 的回答程度声明，经结构校验——不是系统认证的真实性，也不是 job 状态。
+// explained=窄范围内已解释；partial=主问题有未答部分；unresolved=尚不能判断。
+type SignalReportAnswer struct {
+	Status     string   `json:"status"`
+	Reason     string   `json:"reason"`
+	Unanswered []string `json:"unanswered,omitempty"`
+}
+
+// answer 状态枚举与字段预算（D6：reason ≤400rune；unanswered ≤5 项、每项
+// ≤300rune，计入 3000 可见字符总量）。
+const (
+	SignalAnswerExplained  = "explained"
+	SignalAnswerPartial    = "partial"
+	SignalAnswerUnresolved = "unresolved"
+)
 
 // SignalReportPayload is the immutable sectors payload for kind=signal_report.
 type SignalReportPayload struct {
@@ -107,6 +177,12 @@ type SignalReportPayload struct {
 	Report         SignalReportBody           `json:"report"`
 	Appendix       SignalReportAppendix       `json:"appendix"`
 	GenerationMeta SignalReportGenerationMeta `json:"generation_meta"`
+	// DataFreshness 是 schema3 的机械分源时效（schema2 载荷无此字段）。
+	DataFreshness *SignalReportDataFreshness `json:"data_freshness,omitempty"`
+	// ResearchContract/Answer 是 question-v1 增量（旧 schema2/schema3 缺省可
+	// 读，不把展示 schema 当研究协议）。
+	ResearchContract string              `json:"research_contract,omitempty"`
+	Answer           *SignalReportAnswer `json:"answer,omitempty"`
 }
 
 // ── 输入与编排 ────────────────────────────────────────────────────────────────
@@ -143,7 +219,7 @@ func (c *SignalComposer) Compose(ctx context.Context, in SignalComposeInput) (js
 			Capability:  c.capability,
 			Operation:   signalComposeOperation,
 			SessionID:   in.SessionID,
-			Messages:    []airouter.Message{{Role: "system", Content: signalComposeSystemPrompt}, {Role: "user", Content: userMsg}},
+			Messages:    []airouter.Message{{Role: "system", Content: signalComposeSystemPromptOf(ledgerView.contract)}, {Role: "user", Content: userMsg}},
 			Temperature: floatPtr(0.2),
 			JSONMode:    true,
 		})
@@ -152,11 +228,12 @@ func (c *SignalComposer) Compose(ctx context.Context, in SignalComposeInput) (js
 			continue
 		}
 		draft, perr := parseSignalComposeDraft(resp.Content)
+		var normalized [][]signalComposeBlock
 		if perr == nil {
-			perr = validateSignalReportDraft(draft, ledgerView)
+			normalized, perr = validateSignalReportDraft(draft, ledgerView)
 		}
 		if perr == nil {
-			payload, berr := buildSignalReportPayload(in, draft, attempt)
+			payload, berr := buildSignalReportPayload(in, draft, normalized, ledgerView, attempt)
 			if berr != nil {
 				lastChatErr = berr
 				continue
@@ -192,11 +269,20 @@ const signalComposeSystemPrompt = `你是一位给普通读者写解读的分析
 - 每个图表的 claim 里如出现数据量，同样只能用引用占位符。
 
 时效纪律：
-- facts 段必须出现「数据截至」四个字并给出数据最新期：从用户消息「数据可用性」行取各源最新可得期中的最新者原样写入（月度/年度源写「数据截至 2026-07」/「数据截至 2024」，日度源（价格/事件热度）最新期为 YYYY-MM-DD 形态，必须原样带日写入如「数据截至 2026-10-01」，不得缩写为月）；零观测（「数据可用性」行注明本研究无可用数据观测）时写「数据截至：无可用数据期」。
-- 「数据截至」后的期间必须原样取自「数据可用性」行，不得自己编造或推断更新的期间。
+- 系统会机械计算并排展示各源时效与研究时点，你不必在正文写「数据截至」句；如果你确实写到某个数据期，期值必须原样取自用户消息「数据可用性」行（不得编造或推断更新的期间）；零观测时只能写「数据截至：无可用数据期」。
+
+结构纪律（受控块，schema3）：
+- 每段的正文放在 blocks 里，只有三种平面块，不嵌套、不自造类型、不加额外字段：
+  {"type":"paragraph","text":"…（引用占位符表达数据）"}
+  {"type":"evidence_table","title":"关键观测","rows":[{"label":"同口径观测组","refs":["c1:o1","c1:o2"]}]}
+  {"type":"chart","chart_id":"ch1"}
+- thesis 与 implication 的 blocks 只放一个 paragraph；证据表和 chart 引用块只能出现在 facts/causal。
+- 证据表同一行的 refs 必须同单位同口径（不暗示跨源可算价差）；行 label 不写数值，数值由系统从账本渲染。
+- chart 块只能挂已定义的 chart_id，每张图最多挂一处；图表本身仍在 charts 数组里声明。
+- 未知块类型/未知字段会被整稿拒绝。
 
 图表纪律：
-- 0~3 张图，每张只讲一个论点（claim）；没有可画的数据就 0 张，不要硬凑。
+- 0~3 张图，每张只讲一个论点（claim）；没有可画的数据就 0 张，不要硬凑；正文要用到哪张图，就在 facts/causal 里放对应 chart 块。
 - kind=line：同一系列的多个期间，系统会按时间排序；缺失期间保持断线，不补零。
 - kind=comparison：同源同单位的一组值的对比。
 - refs 只能填观测 id 或已成功计算的 id；折线至少两个非空点。
@@ -205,13 +291,56 @@ const signalComposeSystemPrompt = `你是一位给普通读者写解读的分析
 
 输出严格 JSON（不要 markdown 包裹、不要任何其他内容）：
 {"title":"判断式标题","sections":[
- {"kind":"thesis","text":"先说结论（引用占位符表达数据）"},
- {"kind":"facts","text":"发生了什么（引用占位符表达数据）"},
- {"kind":"causal","text":"这意味着什么：机制与竞争解释"},
- {"kind":"implication","text":"接下来怎么看（含自我质疑）","verdict":"一句话判断","direction":"up|down|diverge|conditional","horizon":"看多久","trigger_condition":"什么信号会出现说明判断错了/对了","self_doubt":"我怎么知道自己可能错了"}
+ {"kind":"thesis","blocks":[{"type":"paragraph","text":"先说结论（引用占位符表达数据）"}]},
+ {"kind":"facts","blocks":[
+   {"type":"paragraph","text":"发生了什么（引用占位符表达数据）"},
+   {"type":"evidence_table","title":"关键观测","rows":[{"label":"同口径观测组","refs":["c1:o1","c1:o2"]}]},
+   {"type":"chart","chart_id":"ch1"}
+ ]},
+ {"kind":"causal","blocks":[{"type":"paragraph","text":"这意味着什么：机制与竞争解释"}]},
+ {"kind":"implication","blocks":[{"type":"paragraph","text":"接下来怎么看（含自我质疑）"}],"verdict":"一句话判断","direction":"up|down|diverge|conditional","horizon":"看多久","trigger_condition":"什么信号会出现说明判断错了/对了","self_doubt":"我怎么知道自己可能错了"}
 ],"charts":[{"chart_id":"ch1","kind":"line","claim":"这张图说明什么","refs":["c1:o1","c1:o2"]}]}
 
-sections 四段必须齐、按上面顺序、各出现一次。`
+sections 四段必须齐、按上面顺序、各出现一次；每段必有 blocks；implication 的五个结构化字段放在段上（不放块里）。`
+
+// isForeignCandidateGap 报告一行冻结缺口是否属于「其它候选」：freeze gap 由
+// 代码生成、前缀形状稳定（候选「<signal>：…）；批次快照共享，本候选报告与
+// prompt 不携带他候选的截断/超期缺口（E1 真实样本发现的跨候选噪音）。
+func isForeignCandidateGap(reason, candidateSignal string) bool {
+	const prefix = "候选「"
+	if !strings.HasPrefix(reason, prefix) {
+		return false
+	}
+	end := strings.Index(reason, "」：")
+	if end < 0 {
+		return false
+	}
+	return reason[len(prefix):end] != candidateSignal
+}
+
+// signalComposeAnswerPrompt 是 question-v1 专用增补（旧协议 system prompt 逐字
+// 不变）：E1 真实样本发现模型无从得知 answer 契约——要么把 unanswered 写成字
+// 符串，要么被拒后干脆丢字段。显式给出 JSON 形状与类型，缺 answer 整稿拒收。
+const signalComposeAnswerPrompt = `
+
+答题范围（本次必填，缺 answer 字段整稿拒收）：
+- 顶层必须带 answer 字段，形状如下（unanswered 是字符串数组，不是字符串）：
+{"answer":{"status":"explained|partial|unresolved","reason":"一句话说明对研究问题的回答程度与依据边界（不超过400字符）","unanswered":["还没回答的部分（每条不超过300字符）"]}}
+- status 三选一：explained=问题已解释清楚；partial=只答了一部分；unresolved=暂无法判断。
+- explained 时 unanswered 可为空数组 []；partial/unresolved 必填 1~5 条。
+- answer 说的是「回答了研究问题的多少」，不是可信度、不是任务状态；没取得证据就如实写未取得，不把「没取到」写成「没有影响」。
+
+引用纪律补充（本次适用）：
+- 引用已读文字证据用 [[source:n1]] / [[source:w1]] 占位，由系统渲染为可核查来源片段；只能用研究笔记/已读文字证据清单里列出的 ID，搜索摘要不是正文证据、不可引用。`
+
+// signalComposeSystemPromptOf 按协议返回 system prompt：question-v1 追加答题
+// 范围纪律；旧协议（空 contract）返回原样，行为零变化。
+func signalComposeSystemPromptOf(contract string) string {
+	if contract == SignalResearchContractQuestionV1 {
+		return signalComposeSystemPrompt + signalComposeAnswerPrompt
+	}
+	return signalComposeSystemPrompt
+}
 
 // assembleSignalComposePrompt builds the compose user message; prevError 非空
 // 时作为回注反馈附在末尾（有界重试的修正输入）。
@@ -364,6 +493,12 @@ type signalLedgerView struct {
 	calcByID map[string]*SignalCalculationResult
 	newsRefs map[string]bool
 	userText string
+	// sourcesByID 是 question-v1 的可引用文字证据索引（已读本地 nN 与
+	// 时间合格的外部 wN；搜索摘要永不进入）。
+	sourcesByID map[string]*signalResearchSourceRecord
+	// contract 是发现时冻结的研究协议（question-v1 / 空=旧协议）：answer 与
+	// source 引用只在 question-v1 下要求/放行。
+	contract string
 	// sourceLatest 是机械计算的数据可用性（各源最新可得期），注入行与期值
 	// 校验共用同一份结果，避免两处口径漂移（review M1）。
 	sourceLatest []signalSourceLatest
@@ -371,9 +506,13 @@ type signalLedgerView struct {
 
 func buildSignalLedgerView(in SignalComposeInput) *signalLedgerView {
 	view := &signalLedgerView{
-		obsByID:  in.Ledger.obsIndex,
-		calcByID: map[string]*SignalCalculationResult{},
-		newsRefs: map[string]bool{},
+		obsByID:     in.Ledger.obsIndex,
+		calcByID:    map[string]*SignalCalculationResult{},
+		newsRefs:    map[string]bool{},
+		sourcesByID: in.Ledger.sourceIndex(),
+	}
+	if in.Material != nil {
+		view.contract = in.Material.ResearchContract
 	}
 	for _, ref := range repository.SignalEvidenceRefs(in.Candidate.EvidenceRefs) {
 		view.newsRefs[ref] = true
@@ -409,6 +548,9 @@ func buildSignalLedgerView(in SignalComposeInput) *signalLedgerView {
 	}
 	if in.Material != nil {
 		for _, g := range in.Material.Gaps {
+			if isForeignCandidateGap(g.Reason, in.Candidate.Signal) {
+				continue
+			}
 			gapLines = append(gapLines, "- "+g.Reason)
 		}
 	}
@@ -431,6 +573,27 @@ func buildSignalLedgerView(in SignalComposeInput) *signalLedgerView {
 		sb.WriteString("（无）\n")
 	} else {
 		sb.WriteString(strings.Join(gapLines, "\n") + "\n")
+	}
+	if len(view.sourcesByID) > 0 {
+		sb.WriteString("\n已读文字证据（question 协议：可用 [[source:ID]] 引用，不能进 calculate/图表）：\n")
+		for _, rec := range view.sourcesByID {
+			meta := rec.Title
+			if rec.URL != "" {
+				meta += " " + rec.URL
+			}
+			if rec.PublishedAt != nil {
+				meta += " 发布:" + rec.PublishedAt.Format("2006-01-02")
+			} else {
+				meta += " 发布:未知"
+			}
+			at := ""
+			if rec.FetchedAt != nil {
+				at = " 取回:" + rec.FetchedAt.UTC().Format(time.RFC3339)
+			} else if rec.CapturedAt != nil {
+				at = " 冻结:" + rec.CapturedAt.UTC().Format(time.RFC3339)
+			}
+			fmt.Fprintf(&sb, "- %s | %s |%s | 片段%d字\n", rec.ID, meta, at, len([]rune(rec.Text)))
+		}
 	}
 	view.sourceLatest = signalSourceLatestPeriods(in, view)
 	view.userText = sb.String()
@@ -468,7 +631,81 @@ func trimSignalFloat(v float64) string {
 	return formatSignalDecimal(bigRatFromFloat(v))
 }
 
+// ── question-v1 答题范围与 source 引用校验（D6）───────────────────────────────
+
+// validateSignalAnswerShape 校验 answer 形状：status 枚举、reason 非空
+// ≤400rune、unanswered ≤5 项且每项非空 ≤300rune（partial/unresolved 必须
+// 非空 unanswered——主问题未答部分要写明）。
+func validateSignalAnswerShape(a *SignalReportAnswer) error {
+	if a == nil {
+		return fmt.Errorf("answer 缺失")
+	}
+	switch a.Status {
+	case SignalAnswerExplained, SignalAnswerPartial, SignalAnswerUnresolved:
+	default:
+		return fmt.Errorf("status 必须是 explained|partial|unresolved，收到 %q", a.Status)
+	}
+	reason := strings.TrimSpace(a.Reason)
+	if reason == "" {
+		return fmt.Errorf("reason 不能为空")
+	}
+	if len([]rune(reason)) > 400 {
+		return fmt.Errorf("reason 长度 %d 超过上限 400 字符", len([]rune(reason)))
+	}
+	if (a.Status == SignalAnswerPartial || a.Status == SignalAnswerUnresolved) && len(a.Unanswered) == 0 {
+		return fmt.Errorf("%s 的 unanswered 必须非空（列出未答部分）", a.Status)
+	}
+	if len(a.Unanswered) > 5 {
+		return fmt.Errorf("unanswered 最多 5 项，收到 %d 项", len(a.Unanswered))
+	}
+	for i, u := range a.Unanswered {
+		t := strings.TrimSpace(u)
+		if t == "" {
+			return fmt.Errorf("unanswered[%d] 不能为空", i)
+		}
+		if len([]rune(t)) > 300 {
+			return fmt.Errorf("unanswered[%d] 长度 %d 超过上限 300 字符", i, len([]rune(t)))
+		}
+	}
+	return nil
+}
+
+// validateSignalAnswerEvidence 校验 answer 与证据的一致性：explained 必须有
+// 至少一条成功读取的文字证据或有效数值依据（结构校验，非真实性认证）；
+// partial/unresolved 允许只有缺口。
+func validateSignalAnswerEvidence(a *SignalReportAnswer, hasEvidence bool) error {
+	if a == nil {
+		return fmt.Errorf("answer 缺失")
+	}
+	if a.Status == SignalAnswerExplained && !hasEvidence {
+		return fmt.Errorf("explained 需要至少一条成功读取的文字证据或有效数值依据；没有证据请改用 unresolved 并说明缺口")
+	}
+	return nil
+}
+
+// hasAnyEvidence 报告本次研究是否存在任何可引用证据（文字来源或数值观测）。
+func (v *signalLedgerView) hasAnyEvidence() bool {
+	return len(v.sourcesByID) > 0 || len(v.obsByID) > 0
+}
+
+// draftAnswerOrNil 把草稿 answer 映射为载荷字段（仅 question-v1；旧协议
+// 载荷不带 answer，即使模型画蛇添足也不保存）。
+func draftAnswerOrNil(draft *signalComposeDraft, view *signalLedgerView) *SignalReportAnswer {
+	if view.contract != SignalResearchContractQuestionV1 || draft.Answer == nil {
+		return nil
+	}
+	return &SignalReportAnswer{Status: draft.Answer.Status, Reason: draft.Answer.Reason, Unanswered: draft.Answer.Unanswered}
+}
+
 // ── draft 解析与校验（SV-1..SV-7）────────────────────────────────────────────
+
+// signalComposeAnswerDraft 是 answer 字段的原始 JSON（question-v1 必填；
+// 结构校验经 validateSignalAnswerShape/Evidence）。
+type signalComposeAnswerDraft struct {
+	Status     string   `json:"status"`
+	Reason     string   `json:"reason"`
+	Unanswered []string `json:"unanswered"`
+}
 
 type signalComposeSectionDraft struct {
 	Kind             string `json:"kind"`
@@ -478,6 +715,9 @@ type signalComposeSectionDraft struct {
 	Horizon          string `json:"horizon"`
 	TriggerCondition string `json:"trigger_condition"`
 	SelfDoubt        string `json:"self_doubt"`
+	// Blocks 是 schema3 受控块的原始 JSON；解析后严格校验（未知类型/字段
+	// 拒绝）。缺省时 text 归一为单 paragraph（兼容旧稿形状，不再另发 schema2）。
+	Blocks []json.RawMessage `json:"blocks"`
 }
 
 type signalComposeChartDraft struct {
@@ -487,10 +727,132 @@ type signalComposeChartDraft struct {
 	Refs    []string `json:"refs"`
 }
 
+// signalComposeBlock is one strictly-decoded draft block (design D4：三种平
+// 面类型的白名单分支).
+type signalComposeBlock struct {
+	Type    string
+	Text    string
+	Title   string
+	Rows    []SignalReportEvidenceRow
+	ChartID string
+}
+
+// decodeSignalComposeBlock strictly decodes one raw block: unknown type or
+// any unknown field → error（回注聚合，不静默丢弃）.
+func decodeSignalComposeBlock(raw json.RawMessage) (*signalComposeBlock, error) {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, fmt.Errorf("块不是对象")
+	}
+	var allowedKeys []string
+	switch probe.Type {
+	case SignalBlockParagraph:
+		allowedKeys = []string{"type", "text"}
+	case SignalBlockEvidenceTable:
+		allowedKeys = []string{"type", "title", "rows"}
+	case SignalBlockChart:
+		allowedKeys = []string{"type", "chart_id"}
+	default:
+		return nil, fmt.Errorf("未知块类型 %q（只接受 paragraph|evidence_table|chart）", probe.Type)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return nil, fmt.Errorf("块不可解析")
+	}
+	for k := range keys {
+		known := false
+		for _, f := range allowedKeys {
+			if k == f {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return nil, fmt.Errorf("%s 块含未知字段 %q", probe.Type, k)
+		}
+	}
+	switch probe.Type {
+	case SignalBlockParagraph:
+		var b struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return nil, fmt.Errorf("paragraph.text 必须是字符串")
+		}
+		return &signalComposeBlock{Type: probe.Type, Text: b.Text}, nil
+	case SignalBlockEvidenceTable:
+		var envelope struct {
+			Title string            `json:"title"`
+			Rows  []json.RawMessage `json:"rows"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return nil, fmt.Errorf("evidence_table 形状非法")
+		}
+		block := &signalComposeBlock{Type: probe.Type, Title: envelope.Title}
+		for _, rawRow := range envelope.Rows {
+			var keys map[string]json.RawMessage
+			if err := json.Unmarshal(rawRow, &keys); err != nil {
+				return nil, fmt.Errorf("行不是对象")
+			}
+			for k := range keys {
+				if k != "label" && k != "refs" {
+					return nil, fmt.Errorf("行含未知字段 %q", k)
+				}
+			}
+			var row SignalReportEvidenceRow
+			if err := json.Unmarshal(rawRow, &row); err != nil {
+				return nil, fmt.Errorf("行形状非法（label/refs）")
+			}
+			block.Rows = append(block.Rows, row)
+		}
+		return block, nil
+	default: // chart
+		var b struct {
+			ChartID string `json:"chart_id"`
+		}
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return nil, fmt.Errorf("chart.chart_id 必须是字符串")
+		}
+		return &signalComposeBlock{Type: probe.Type, ChartID: b.ChartID}, nil
+	}
+}
+
+// normalizeSignalComposeSections strictly decodes every section's blocks;
+// text-only sections (schema2-era shape) normalize to a single paragraph —
+// new runs still persist as schema3. Decode errors are collected via add.
+func normalizeSignalComposeSections(draft *signalComposeDraft, add func(string, ...any)) [][]signalComposeBlock {
+	normalized := make([][]signalComposeBlock, len(draft.Sections))
+	for i, s := range draft.Sections {
+		var blocks []signalComposeBlock
+		if len(s.Blocks) == 0 {
+			if strings.TrimSpace(s.Text) == "" {
+				add("sections[%d]（%s）的 text/blocks 不能同时为空", i, s.Kind)
+				continue
+			}
+			blocks = []signalComposeBlock{{Type: SignalBlockParagraph, Text: s.Text}}
+		} else {
+			for j, raw := range s.Blocks {
+				b, derr := decodeSignalComposeBlock(raw)
+				if derr != nil {
+					add("sections[%d]（%s）blocks[%d]：%v", i, s.Kind, j, derr)
+					continue
+				}
+				blocks = append(blocks, *b)
+			}
+		}
+		normalized[i] = blocks
+	}
+	return normalized
+}
+
 type signalComposeDraft struct {
 	Title    string                      `json:"title"`
 	Sections []signalComposeSectionDraft `json:"sections"`
 	Charts   []signalComposeChartDraft   `json:"charts"`
+	// Answer 是 question-v1 的答题范围（旧协议缺省）。
+	Answer *signalComposeAnswerDraft `json:"answer"`
 }
 
 func parseSignalComposeDraft(content string) (*signalComposeDraft, error) {
@@ -584,9 +946,10 @@ func validateSignalFactsAsOf(text string, view *signalLedgerView, add func(strin
 	}
 }
 
-// validateSignalReportDraft enforces the full §6 contract and returns one
-// aggregate feedback message（回注重试用）。零错误 → nil。
-func validateSignalReportDraft(draft *signalComposeDraft, view *signalLedgerView) error {
+// validateSignalReportDraft enforces the full §6 contract（schema3 受控块）and
+// returns the normalized blocks plus one aggregate feedback message（回注重试
+// 用）。零错误 → nil。
+func validateSignalReportDraft(draft *signalComposeDraft, view *signalLedgerView) ([][]signalComposeBlock, error) {
 	var problems []string
 	add := func(format string, args ...any) {
 		problems = append(problems, fmt.Sprintf(format, args...))
@@ -607,21 +970,102 @@ func validateSignalReportDraft(draft *signalComposeDraft, view *signalLedgerView
 			}
 		}
 	}
+	normalized := normalizeSignalComposeSections(draft, add)
+
+	// 受控块校验（schema3 / D4）：放置、形状、引用、口径、复制值、图挂载。
+	mountedCharts := map[string]bool{}
+	ledgerValues := signalLedgerValueStrings(view)
 	for i, s := range draft.Sections {
-		if strings.TrimSpace(s.Text) == "" {
-			add("sections[%d]（%s）的 text 不能为空", i, s.Kind)
-		}
-	}
-	// 数据时效声明（design §10.3，tasks 4.9；review M1）：facts 段必须出现
-	// 「数据截至」，且所写期值必须月粒度等于各源最新期之一——编造/不可解析
-	// 期值一律回注重试。段缺失本身已由四段唯一序校验兜住，不重复报。
-	for _, s := range draft.Sections {
-		if s.Kind != "facts" {
+		blocks := normalized[i]
+		if i < len(signalReportSectionOrder) && len(blocks) == 0 && s.Kind == signalReportSectionOrder[i] {
+			// 已由归一化分支报过空段问题，不重复报。
 			continue
 		}
-		validateSignalFactsAsOf(s.Text, view, add)
-		break
+		paragraphCount := 0
+		var factsParagraphs []string
+		for j, b := range blocks {
+			switch b.Type {
+			case SignalBlockParagraph:
+				paragraphCount++
+				if strings.TrimSpace(b.Text) == "" {
+					add("sections[%d]（%s）blocks[%d] 的 text 不能为空", i, s.Kind, j)
+				}
+				if s.Kind == "facts" {
+					factsParagraphs = append(factsParagraphs, b.Text)
+				}
+			case SignalBlockEvidenceTable:
+				if s.Kind == "thesis" || s.Kind == "implication" {
+					add("sections[%d]（%s）不能放证据表（thesis/implication 只用段落；表置于 facts/causal）", i, s.Kind)
+				}
+				if strings.TrimSpace(b.Title) == "" {
+					add("sections[%d]（%s）blocks[%d] 证据表缺 title", i, s.Kind, j)
+				}
+				if len(b.Rows) == 0 {
+					add("sections[%d]（%s）blocks[%d] 证据表不能没有行", i, s.Kind, j)
+					continue
+				}
+				for k, row := range b.Rows {
+					if strings.TrimSpace(row.Label) == "" {
+						add("sections[%d]（%s）blocks[%d] 第 %d 行缺 label", i, s.Kind, j, k+1)
+					}
+					if signalLabelCopiesLedgerValue(row.Label, ledgerValues) {
+						add("sections[%d]（%s）blocks[%d] 第 %d 行 label 疑似复制了账本数值；表格只放 label 与引用 ID，数值由系统从账本渲染", i, s.Kind, j, k+1)
+					}
+					if len(row.Refs) == 0 {
+						add("sections[%d]（%s）blocks[%d] 第 %d 行 refs 不能为空", i, s.Kind, j, k+1)
+						continue
+					}
+					unitSet := map[string]bool{}
+					for _, ref := range row.Refs {
+						if strings.HasPrefix(ref, "news") || strings.Contains(ref, ":") && strings.HasPrefix(ref, "news") {
+							add("sections[%d]（%s）blocks[%d] 第 %d 行引用了新闻切片 %s；表格只收观测/计算 id", i, s.Kind, j, k+1, ref)
+							continue
+						}
+						if err := resolveSignalRef(signalRefToken{kind: refKindOf(ref), id: ref}, view); err != nil {
+							add("sections[%d]（%s）blocks[%d] 第 %d 行引用 %s 无法解析：%v", i, s.Kind, j, k+1, ref, err)
+							continue
+						}
+						_, unit, _, _, _, attrErr := signalRefChartAttributes(ref, view)
+						if attrErr != nil {
+							continue // 已由 resolveSignalRef 报过
+						}
+						unitSet[unit] = true
+					}
+					if len(unitSet) > 1 {
+						add("sections[%d]（%s）blocks[%d] 第 %d 行混用了多个单位 %v；同一行并列观测须同口径，不暗示跨源可算价差", i, s.Kind, j, k+1, keysOfSet(unitSet))
+					}
+				}
+			case SignalBlockChart:
+				if s.Kind == "thesis" || s.Kind == "implication" {
+					add("sections[%d]（%s）不能挂图表块（thesis/implication 只用段落；图置于 facts/causal）", i, s.Kind)
+				}
+				if b.ChartID == "" {
+					add("sections[%d]（%s）blocks[%d] chart 块缺 chart_id", i, s.Kind, j)
+					continue
+				}
+				if !signalChartDefined(draft, b.ChartID) {
+					add("sections[%d]（%s）blocks[%d] 挂载了未定义的 chart %q；图表必须先在 charts 数组里声明", i, s.Kind, j, b.ChartID)
+					continue
+				}
+				if mountedCharts[b.ChartID] {
+					add("sections[%d]（%s）blocks[%d] 重复挂载 chart %q；每张图最多挂一处", i, s.Kind, j, b.ChartID)
+					continue
+				}
+				mountedCharts[b.ChartID] = true
+			}
+		}
+		if s.Kind == "thesis" || s.Kind == "implication" {
+			if paragraphCount != 1 || len(blocks) != 1 {
+				add("sections[%d]（%s）的 blocks 必须恰好一个 paragraph", i, s.Kind)
+			}
+		}
+		// 数据时效声明（schema3 新口径）：不强制「数据截至」短语（系统已机械
+		// 生成分源时效）；若模型自己写了，期值仍不得编造。
+		if s.Kind == "facts" && strings.Contains(strings.Join(factsParagraphs, "\n"), "数据截至") {
+			validateSignalFactsAsOf(strings.Join(factsParagraphs, "\n"), view, add)
+		}
 	}
+
 	// implication 结构化字段（SV-2）。
 	for _, s := range draft.Sections {
 		if s.Kind != "implication" {
@@ -640,12 +1084,48 @@ func validateSignalReportDraft(draft *signalComposeDraft, view *signalLedgerView
 		}
 	}
 
-	// 篇幅（SV-3）：标题+正文+图题+后果段结构化字段的非空白 rune 总数。
-	// 结构化字段（触发条件/自我质疑等）在前端是可见句，计入预算；附录/UI
-	// 元信息不计。
+	// question-v1 答题范围（D6）：answer 必填、形状与证据门校验；reason/
+	// unanswered 计入可见字符总量（与四段共用 3000 预算）。
+	var answer *SignalReportAnswer
+	if view.contract == SignalResearchContractQuestionV1 {
+		if draft.Answer == nil {
+			add("缺 answer 字段（question-v1 必填：status=explained|partial|unresolved、reason、unanswered）")
+		} else {
+			answer = &SignalReportAnswer{Status: draft.Answer.Status, Reason: draft.Answer.Reason, Unanswered: draft.Answer.Unanswered}
+			if err := validateSignalAnswerShape(answer); err != nil {
+				add("answer 不合格：%v", err)
+				answer = nil
+			} else if err := validateSignalAnswerEvidence(answer, view.hasAnyEvidence()); err != nil {
+				add("answer 不合格：%v", err)
+				answer = nil
+			}
+		}
+	}
+
+	// 篇幅（SV-3）：标题 + 段落文本 + 证据表标题/行标签 + 图题 + 后果段结构化
+	// 字段的非空白 rune 总数。兼容 text 不重复计数（它在校验后由代码生成）；
+	// 表格 refs/附录/UI 元信息不计。answer 可见文案同预算。
 	visible := countNonSpaceRunes(draft.Title)
+	if answer != nil {
+		visible += countNonSpaceRunes(answer.Reason)
+		for _, u := range answer.Unanswered {
+			visible += countNonSpaceRunes(u)
+		}
+	}
+	for _, blocks := range normalized {
+		for _, b := range blocks {
+			switch b.Type {
+			case SignalBlockParagraph:
+				visible += countNonSpaceRunes(b.Text)
+			case SignalBlockEvidenceTable:
+				visible += countNonSpaceRunes(b.Title)
+				for _, row := range b.Rows {
+					visible += countNonSpaceRunes(row.Label)
+				}
+			}
+		}
+	}
 	for _, s := range draft.Sections {
-		visible += countNonSpaceRunes(s.Text)
 		if s.Kind == "implication" {
 			for _, v := range []string{s.Verdict, s.Direction, s.Horizon, s.TriggerCondition, s.SelfDoubt} {
 				visible += countNonSpaceRunes(v)
@@ -659,10 +1139,14 @@ func validateSignalReportDraft(draft *signalComposeDraft, view *signalLedgerView
 		add("可见标题/正文/图题合计 %d 个非空白字符，达到上限 %d；请压缩后重交", visible, signalReportMaxVisibleRunes)
 	}
 
-	// 引用可解析（SV-4）：正文/标题/图题中的全部占位符。
+	// 引用可解析（SV-4）：标题与段落文本中的全部占位符（表格 refs 已单独校验）。
 	refs := collectSignalRefs(draft.Title)
-	for _, s := range draft.Sections {
-		refs = append(refs, collectSignalRefs(s.Text)...)
+	for _, blocks := range normalized {
+		for _, b := range blocks {
+			if b.Type == SignalBlockParagraph {
+				refs = append(refs, collectSignalRefs(b.Text)...)
+			}
+		}
 	}
 	for _, ref := range refs {
 		if err := resolveSignalRef(ref, view); err != nil {
@@ -749,9 +1233,9 @@ func validateSignalReportDraft(draft *signalComposeDraft, view *signalLedgerView
 	}
 
 	if len(problems) == 0 {
-		return nil
+		return normalized, nil
 	}
-	return fmt.Errorf("报告不合格：%s", strings.Join(problems, "；"))
+	return nil, fmt.Errorf("报告不合格：%s", strings.Join(problems, "；"))
 }
 
 type signalChartSortKey struct {
@@ -816,6 +1300,10 @@ func resolveSignalRef(ref signalRefToken, view *signalLedgerView) error {
 		if !view.newsRefs[ref.id] {
 			return fmt.Errorf("新闻切片 %s 不在候选依据白名单内", ref.id)
 		}
+	case "source":
+		if _, ok := view.sourcesByID[ref.id]; !ok {
+			return fmt.Errorf("文字来源 %s 不在本次已读证据内（搜索摘要/未读来源/跨 run 引用不可用）", ref.id)
+		}
 	default:
 		return fmt.Errorf("未知引用类型 %s", ref.kind)
 	}
@@ -859,6 +1347,60 @@ func signalRefChartAttributes(ref string, view *signalLedgerView) (series, unit,
 	return obs.SeriesID, obs.Unit, obs.Tool, obs.Period, hasValue, nil
 }
 
+// signalLedgerValueStrings 收集本次账本的可渲染数值字符串（观测格式化值 +
+// 成功计算值），供「复制值检测」用；短值（<3 rune）不收，避免 "1"/"42" 这类
+// 年份/序号误伤。
+func signalLedgerValueStrings(view *signalLedgerView) []string {
+	out := make([]string, 0, len(view.obsByID)+len(view.calcByID))
+	for _, obs := range view.obsByID {
+		if obs == nil || obs.Value == nil {
+			continue
+		}
+		if s := trimSignalFloat(*obs.Value); countNonSpaceRunes(s) >= 3 {
+			out = append(out, s)
+		}
+	}
+	for _, calc := range view.calcByID {
+		if calc.Status != SignalCalcStatusOK || calc.Value == "" {
+			continue
+		}
+		if countNonSpaceRunes(calc.Value) >= 3 {
+			out = append(out, calc.Value)
+		}
+	}
+	return out
+}
+
+// signalLabelCopiesLedgerValue reports whether label contains a ledger value
+// verbatim（块内引用必须核查：模型不得把数值复制造表格 label）。
+func signalLabelCopiesLedgerValue(label string, values []string) bool {
+	for _, v := range values {
+		if strings.Contains(label, v) {
+			return true
+		}
+	}
+	return false
+}
+
+// refKindOf 判定表格 refs 的引用类型：k 前缀（无冒号）= 计算，其余 = 观测。
+func refKindOf(ref string) string {
+	if strings.HasPrefix(ref, "k") && !strings.Contains(ref, ":") {
+		return "calc"
+	}
+	return "data"
+}
+
+// signalChartDefined reports whether chartID is declared in the draft's
+// charts array（挂载前必须先定义）。
+func signalChartDefined(draft *signalComposeDraft, chartID string) bool {
+	for _, ch := range draft.Charts {
+		if ch.ChartID == chartID {
+			return true
+		}
+	}
+	return false
+}
+
 func keysOfSet(set map[string]bool) []string {
 	out := make([]string, 0, len(set))
 	for k := range set {
@@ -885,10 +1427,73 @@ func countNonSpaceRunes(s string) int {
 
 // ── payload 组装（appendix 代码生成；LLM 无_appendix 入口）────────────────────
 
-func buildSignalReportPayload(in SignalComposeInput, draft *signalComposeDraft, attempt int) (json.RawMessage, error) {
+// signalSectionCompatText generates the schema3 section's reader-compatible
+// four-段 text: paragraphs verbatim, tables rendered as labelled ref lines
+// (placeholders intact so old readers still resolve values from the
+// appendix), charts as a mount anchor. Compat text is NOT part of the model
+// budget (design D4).
+func signalSectionCompatText(blocks []signalComposeBlock) string {
+	parts := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		switch b.Type {
+		case SignalBlockParagraph:
+			parts = append(parts, b.Text)
+		case SignalBlockEvidenceTable:
+			lines := make([]string, 0, len(b.Rows)+1)
+			lines = append(lines, "【证据表】"+b.Title)
+			for _, row := range b.Rows {
+				tokens := make([]string, 0, len(row.Refs))
+				for _, ref := range row.Refs {
+					tokens = append(tokens, "[["+refKindOf(ref)+":"+ref+"]]")
+				}
+				lines = append(lines, "- "+row.Label+"："+strings.Join(tokens, "、"))
+			}
+			parts = append(parts, strings.Join(lines, "\n"))
+		case SignalBlockChart:
+			parts = append(parts, "【图】"+b.ChartID)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// signalReportDataFreshness mechanically derives the schema3 freshness
+// statement from the compose view (same source as the prompt's 可用性行).
+func signalReportDataFreshness(in SignalComposeInput, view *signalLedgerView) *SignalReportDataFreshness {
+	sources := make([]SignalReportSourceFreshness, 0, len(view.sourceLatest))
+	for _, s := range view.sourceLatest {
+		sources = append(sources, SignalReportSourceFreshness(s))
+	}
+	return &SignalReportDataFreshness{
+		Sources:         sources,
+		Cutoff:          in.Cutoff.UTC().Format(time.RFC3339),
+		GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+		HasObservations: len(view.obsByID) > 0,
+	}
+}
+
+func buildSignalReportPayload(in SignalComposeInput, draft *signalComposeDraft, normalized [][]signalComposeBlock, view *signalLedgerView, attempt int) (json.RawMessage, error) {
 	sections := make([]SignalReportSection, 0, len(draft.Sections))
-	for _, s := range draft.Sections {
-		sections = append(sections, SignalReportSection(s))
+	for i, s := range draft.Sections {
+		var blocks []SignalReportBlock
+		if i < len(normalized) {
+			for _, b := range normalized[i] {
+				blocks = append(blocks, SignalReportBlock{
+					Type: b.Type, Text: b.Text, Title: b.Title,
+					Rows:    append([]SignalReportEvidenceRow(nil), b.Rows...),
+					ChartID: b.ChartID,
+				})
+			}
+		}
+		sections = append(sections, SignalReportSection{
+			Kind:             s.Kind,
+			Text:             signalSectionCompatText(normalized[i]),
+			Blocks:           blocks,
+			Verdict:          s.Verdict,
+			Direction:        s.Direction,
+			Horizon:          s.Horizon,
+			TriggerCondition: s.TriggerCondition,
+			SelfDoubt:        s.SelfDoubt,
+		})
 	}
 	charts := make([]SignalReportChart, 0, len(draft.Charts))
 	for _, ch := range draft.Charts {
@@ -901,6 +1506,9 @@ func buildSignalReportPayload(in SignalComposeInput, draft *signalComposeDraft, 
 	gaps := make([]signalResearchGap, 0, len(in.Ledger.gaps)+4)
 	if in.Material != nil {
 		for _, g := range in.Material.Gaps {
+			if isForeignCandidateGap(g.Reason, in.Candidate.Signal) {
+				continue
+			}
 			gaps = append(gaps, signalResearchGap{Reason: g.Reason})
 		}
 	}
@@ -927,7 +1535,7 @@ func buildSignalReportPayload(in SignalComposeInput, draft *signalComposeDraft, 
 	}
 
 	payload := SignalReportPayload{
-		SchemaVersion:  2,
+		SchemaVersion:  3,
 		SignalSnapshot: snapshotJSON,
 		Report: SignalReportBody{
 			Title:    draft.Title,
@@ -938,6 +1546,8 @@ func buildSignalReportPayload(in SignalComposeInput, draft *signalComposeDraft, 
 			Calls:        in.Ledger.calls,
 			Calculations: in.Ledger.calcs,
 			Gaps:         gaps,
+			Sources:      in.Ledger.sources,
+			TextCalls:    in.Ledger.textCalls,
 		},
 		GenerationMeta: SignalReportGenerationMeta{
 			SessionID:        in.SessionID,
@@ -950,7 +1560,12 @@ func buildSignalReportPayload(in SignalComposeInput, draft *signalComposeDraft, 
 			AnalysisMode:     in.AnalysisMode,
 			Cutoff:           in.Cutoff.UTC().Format(time.RFC3339),
 		},
+		DataFreshness: signalReportDataFreshness(in, view),
 	}
+	if in.Material != nil {
+		payload.ResearchContract = in.Material.ResearchContract
+	}
+	payload.Answer = draftAnswerOrNil(draft, view)
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)

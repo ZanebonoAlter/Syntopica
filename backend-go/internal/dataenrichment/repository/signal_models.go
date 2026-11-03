@@ -73,9 +73,13 @@ type BoardSignalCandidate struct {
 	// snapshot whitelist (stage-2 contract); the repository only enforces the
 	// array shape, whitelist membership is detect's job.
 	EvidenceRefs json.RawMessage `gorm:"type:jsonb" json:"evidence_refs"`
-	Score        int             `gorm:"not null" json:"score"`
-	Rationale    string          `gorm:"type:text;not null" json:"rationale"`
-	CreatedAt    time.Time       `json:"created_at"`
+	// ResearchBrief 是 question-v1 的版本化研究简要说明（unknown/verification/
+	// source_ids；source_ids 由代码核实填写，禁止信任模型自报）。旧行 NULL
+	// 不猜填；一次写入后不可变。
+	ResearchBrief json.RawMessage `gorm:"type:jsonb" json:"research_brief,omitempty"`
+	Score         int             `gorm:"not null" json:"score"`
+	Rationale     string          `gorm:"type:text;not null" json:"rationale"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 func (BoardSignalCandidate) TableName() string { return "board_signal_candidate" }
@@ -120,6 +124,47 @@ type BoardSignalResearchProgress struct {
 }
 
 func (BoardSignalResearchProgress) TableName() string { return "board_signal_research_progress" }
+
+// BoardSignalDisposition is the user's independent per-candidate ignore marker
+// (redesign-enrichment-research-workbench D1): 有行即忽略，无行正常。候选内容、
+// score、快照与报告均不改；归属从候选取得，不重复存 user/board/period。重复
+// 忽略保留首次 ignored_at，恢复即删除标记行（幂等）。
+type BoardSignalDisposition struct {
+	// CandidateID is the ignored candidate (PK = FK → board_signal_candidate.id;
+	// ON DELETE CASCADE added by migration 20261015_0001 — marker is meaningless
+	// without its candidate).
+	CandidateID uint      `gorm:"primarykey" json:"candidate_id"`
+	IgnoredAt   time.Time `gorm:"not null" json:"ignored_at"`
+}
+
+func (BoardSignalDisposition) TableName() string { return "board_signal_disposition" }
+
+// Signal candidate list visibility (redesign-enrichment-research-workbench D2):
+// visible = 无忽略标记；ignored = 有标记；all = 不筛（旧客户端省略参数的兼容语义）。
+const (
+	SignalVisibilityVisible = "visible"
+	SignalVisibilityIgnored = "ignored"
+	SignalVisibilityAll     = "all"
+)
+
+// ValidSignalVisibility reports whether v is a listable visibility filter.
+func ValidSignalVisibility(v string) bool {
+	return v == SignalVisibilityVisible || v == SignalVisibilityIgnored || v == SignalVisibilityAll
+}
+
+// Signal candidate view 筛选（D2：在分页前生效）：pending = 无成功报告（live
+// 研究候选由 handler 传入排除），readable = 存在成功报告（重研中仍返回），
+// all = 不筛（省略时兼容旧客户端）。
+const (
+	SignalCandidateViewAll      = "all"
+	SignalCandidateViewPending  = "pending"
+	SignalCandidateViewReadable = "readable"
+)
+
+// ValidSignalCandidateView reports whether v is a listable view filter.
+func ValidSignalCandidateView(v string) bool {
+	return v == SignalCandidateViewAll || v == SignalCandidateViewPending || v == SignalCandidateViewReadable
+}
 
 // ValidSignalGranularity reports whether g is a signal-capable granularity.
 func ValidSignalGranularity(g string) bool {

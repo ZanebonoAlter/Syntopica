@@ -31,6 +31,13 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 
 	// POST /api/daily-reports/generate
 	api.POST("/daily-reports/generate", triggerGenerateDailyReport)
+
+	// GET /api/semantic-boards/overview — 今日雷达单次聚合（8.2）。
+	api.GET("/semantic-boards/overview", getBoardRadarOverview)
+
+	// GET /api/daily-reports/today — reading-desk queue: boards with a report today.
+	api.GET("/daily-reports/today", listTodayReports)
+
 	// GET /api/daily-reports/:id
 	api.GET("/daily-reports/:id", getDailyReport)
 
@@ -472,6 +479,24 @@ func listBoardDailyReports(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"reports": reports}})
+}
+
+// listTodayReports handles GET /api/daily-reports/today.
+func listTodayReports(c *gin.Context) {
+	date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid date"})
+		return
+	}
+	rows, err := repository.Repo.ListTodayReportBriefs(date)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	if rows == nil {
+		rows = []repository.TodayReportBrief{}
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"date": date, "reports": rows}})
 }
 
 // getDailyReport handles GET /api/daily-reports/:id
@@ -1030,11 +1055,51 @@ func createManualTopic(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// composeWindowMaxDays is the supported window length of the compose
+// workbench (both ends included): an explicit from/to range may span at most
+// 90 days.
+const composeWindowMaxDays = 90
+
+// parseComposeWindowParams parses the optional from/to window parameters of
+// the compose-candidates endpoint. Both bounds are inclusive YYYY-MM-DD days
+// (UTC). Giving only one of them, an inverted range or an over-long range is
+// an error — the request is never silently corrected.
+func parseComposeWindowParams(c *gin.Context) (*time.Time, *time.Time, error) {
+	fromRaw := strings.TrimSpace(c.Query("from"))
+	toRaw := strings.TrimSpace(c.Query("to"))
+	if fromRaw == "" && toRaw == "" {
+		return nil, nil, nil
+	}
+	if fromRaw == "" || toRaw == "" {
+		return nil, nil, errors.New("from and to must be provided together")
+	}
+	from, err := time.Parse("2006-01-02", fromRaw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid from date %q: expected YYYY-MM-DD", fromRaw)
+	}
+	to, err := time.Parse("2006-01-02", toRaw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid to date %q: expected YYYY-MM-DD", toRaw)
+	}
+	if from.After(to) {
+		return nil, nil, errors.New("from must not be later than to")
+	}
+	if int(to.Sub(from)/(24*time.Hour))+1 > composeWindowMaxDays {
+		return nil, nil, fmt.Errorf("date range must not exceed %d days", composeWindowMaxDays)
+	}
+	return &from, &to, nil
+}
+
 // composeCandidates handles GET
-// /api/semantic-boards/:id/persistent-topics/compose-candidates?days=N.
+// /api/semantic-boards/:id/persistent-topics/compose-candidates?days=N&from=&to=.
 // Returns the in-window sections that carry a usable embedding (parsed to a
-// float slice) plus the configured match_threshold, so the compose UI can
-// compute aggregate anchors / outlier distances client-side in real time.
+// float slice), the window relations, the server-side candidate chains and
+// the configured match_threshold, so the compose UI can compute aggregate
+// anchors / outlier distances client-side in real time without re-deriving
+// the chain semantics.
+//
+// days is the shortcut window (anchored to the board's latest completed
+// report); from/to are an explicit inclusive range and override days.
 func composeCandidates(c *gin.Context) {
 	boardID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -1047,7 +1112,40 @@ func composeCandidates(c *gin.Context) {
 			days = d
 		}
 	}
-	resp, err := repository.Repo.GetComposeCandidates(uint(boardID), days)
+	from, to, err := parseComposeWindowParams(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	// An explicit range must stay inside the fetchable window: the board's
+	// latest completed report minus (composeWindowMaxDays−1) days. Older data
+	// is not served, so the request is rejected instead of silently trimmed.
+	// A `to` beyond the latest completed report is fine — that window simply
+	// holds no later data.
+	if from != nil && to != nil {
+		latest, err := repository.Repo.LatestCompletedReportDate(uint(boardID))
+		if err != nil {
+			logging.Errorf("compose candidates: latest completed date board=%d: %v", boardID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "failed to load compose candidates"})
+			return
+		}
+		if latest != nil {
+			earliest := latest.AddDate(0, 0, -(composeWindowMaxDays - 1))
+			if from.Before(earliest) {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": fmt.Sprintf(
+					"from is outside the fetchable window (earliest %s)", earliest.UTC().Format("2006-01-02"))})
+				return
+			}
+		}
+	}
+
+	resp, err := repository.Repo.GetComposeCandidates(repository.ComposeCandidatesQuery{
+		BoardID: uint(boardID),
+		Days:    days,
+		From:    from,
+		To:      to,
+	})
 	if err != nil {
 		logging.Errorf("compose candidates: board=%d: %v", boardID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "failed to load compose candidates"})
@@ -1055,6 +1153,12 @@ func composeCandidates(c *gin.Context) {
 	}
 	if resp.Sections == nil {
 		resp.Sections = []repository.ComposeCandidateSection{}
+	}
+	if resp.Relations == nil {
+		resp.Relations = []repository.ComposeRelation{}
+	}
+	if resp.CandidateChains == nil {
+		resp.CandidateChains = []repository.ComposeCandidateChain{}
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": resp})
 }

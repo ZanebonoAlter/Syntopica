@@ -2,7 +2,9 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -530,4 +532,108 @@ func TestSignalMaterialLegacyPayloadCompat(t *testing.T) {
 	if len(back.Lanes) != 1 || back.Lanes[0].ConfirmedKeyEvents[0].MarkerID != 9 || !back.Lanes[0].ConfirmedKeyEvents[0].EvidenceVerified {
 		t.Fatalf("attention field must round-trip: %+v", back)
 	}
+}
+
+// ── 候选依据 → 话题关联（redesign-enrichment-research-workbench 2.3 / S10）────
+
+func TestMapSignalEvidenceToLanes_MultiLaneAndUnknownRef(t *testing.T) {
+	material := &SignalMaterial{Lanes: []SignalLaneMaterial{
+		{LaneID: 11, Label: "甲", Articles: []SignalArticleSlice{{SectionID: 101}, {SectionID: 102}}},
+		{LaneID: 22, Label: "乙", Articles: []SignalArticleSlice{{SectionID: 201}}},
+	}}
+	byLane, gaps := MapSignalEvidenceToLanes(material, []string{"101", " 201 ", "201", "999", "not-a-number", ""})
+	require.Len(t, byLane, 2, "多话题依据各归各泳道（重复/空白引用去重）")
+	require.Equal(t, []uint{101}, byLane[11])
+	require.Equal(t, []uint{201}, byLane[22])
+	require.Len(t, gaps, 2, "未知切片与非法引用如实记 gap，不猜泳道")
+}
+
+func TestSignalRelatedTopics_MultiTopicArchivedAndInvalid(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	boardA, laneA, sectionA, _ := seedSignalKeyEventWorld(t, db, true, "关联甲", "[31]", "[71]")
+	// 同板块第二个话题 + 它的切片（多话题关联必须在同一 board 内验证）。
+	laneB := topicgraphRepoBoard(t, db, boardA)
+	reportB := topicgraphRepoReport(t, db, boardA, time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC))
+	sectionB := topicgraphRepoSection(t, db, reportB, laneB)
+
+	material := SignalMaterial{
+		Granularity: "month", Period: "2026-08", AnalysisMode: "retrospective",
+		Lanes: []SignalLaneMaterial{
+			{LaneID: laneA, Label: "冻结名甲", Status: "active", Articles: []SignalArticleSlice{
+				{SectionID: sectionA, PeriodDate: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)},
+			}},
+			{LaneID: laneB, Label: "冻结名乙", Status: "active", Articles: []SignalArticleSlice{
+				{SectionID: sectionB, PeriodDate: time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)},
+			// ConfirmedKeyEvents 只是相邻 change 的 attention 提示：
+			// 不因它的存在给乙造出关联，也不进任何证据白名单。
+			}, ConfirmedKeyEvents: []SignalKeyEventAttention{{MarkerID: 7, Title: "仅关注事件", EvidenceVerified: true}}},
+		},
+	}
+	snapshot, err := json.Marshal(material)
+	require.NoError(t, err)
+	refs := json.RawMessage(fmt.Sprintf(`["%d","%d","%d"]`, sectionA, sectionB, 999999))
+
+	// 多话题关联（含归档话题）+ 未知切片 gap。
+	related, gaps, err := ResolveSignalRelatedTopics(ctx, db, boardA, refs, snapshot)
+	require.NoError(t, err)
+	require.Len(t, related, 2, "两条可验证关联")
+	byTopic := map[uint]SignalRelatedTopic{}
+	for _, r := range related {
+		byTopic[r.TopicID] = r
+	}
+	require.Equal(t, "冻结名甲", byTopic[laneA].FrozenLabel)
+	require.Equal(t, []uint{sectionA}, byTopic[laneA].SectionIDs)
+	require.Len(t, gaps, 1)
+	require.Contains(t, gaps[0], "999999")
+
+	// 归档话题仍可验证（不只限今天 active）：甲标 archived 后照常返回，
+	// 当前名来自话题表、冻结字段保持历史来源。
+	require.NoError(t, db.Exec(`UPDATE board_persistent_topics SET status = 'archived' WHERE id = ?`, laneA).Error)
+	related, _, err = ResolveSignalRelatedTopics(ctx, db, boardA, refs, snapshot)
+	require.NoError(t, err)
+	require.Len(t, related, 2, "归档话题不丢关联")
+
+	// ConfirmedKeyEvents 仅 attention：refs 只指甲时，乙即使带已验证
+	// attention 也不产生关联。
+	onlyA, _, err := ResolveSignalRelatedTopics(ctx, db, boardA, json.RawMessage(fmt.Sprintf(`["%d"]`, sectionA)), snapshot)
+	require.NoError(t, err)
+	require.Len(t, onlyA, 1)
+	require.Equal(t, laneA, onlyA[0].TopicID)
+
+	// 话题删除 → gap（不可验证归属，不猜回填）。
+	require.NoError(t, db.Exec(`DELETE FROM board_persistent_topics WHERE id = ?`, laneB).Error)
+	related, gaps, err = ResolveSignalRelatedTopics(ctx, db, boardA, refs, snapshot)
+	require.NoError(t, err)
+	require.Len(t, related, 1)
+	require.Equal(t, laneA, related[0].TopicID)
+	require.NotEmpty(t, gaps)
+	require.Contains(t, gaps[0], "不可验证")
+}
+
+func TestSignalRelatedTopics_CrossBoardAndCorruptSnapshot(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := context.Background()
+	boardA, _, sectionA, _ := seedSignalKeyEventWorld(t, db, true, "本板候选", "[31]", "[73]")
+	boardB, laneB, _, _ := seedSignalKeyEventWorld(t, db, true, "他板话题", "[31]", "[74]")
+
+	// 快照里的泳道实际属于另一板块（旧数据迁移/手工拼接）→ 归属不可验证。
+	crossBoard := SignalMaterial{Lanes: []SignalLaneMaterial{
+		{LaneID: laneB, Label: "他板冻结名", Articles: []SignalArticleSlice{{SectionID: sectionA}}},
+	}}
+	snapshot, err := json.Marshal(crossBoard)
+	require.NoError(t, err)
+	related, gaps, err := ResolveSignalRelatedTopics(ctx, db, boardA, json.RawMessage(fmt.Sprintf(`["%d"]`, sectionA)), snapshot)
+	require.NoError(t, err)
+	require.Empty(t, related, "跨板块话题不得作为本板关联返回")
+	require.NotEmpty(t, gaps)
+	require.Contains(t, gaps[0], "不可验证")
+	_ = boardB
+
+	// 坏快照：单条兼容错误（gap），不伪装空关联、不报错中断。
+	related, gaps, err = ResolveSignalRelatedTopics(ctx, db, boardA, json.RawMessage(fmt.Sprintf(`["%d"]`, sectionA)), json.RawMessage(`{"lanes":[`))
+	require.NoError(t, err)
+	require.Empty(t, related)
+	require.NotEmpty(t, gaps)
+	require.Contains(t, gaps[0], "解析失败")
 }

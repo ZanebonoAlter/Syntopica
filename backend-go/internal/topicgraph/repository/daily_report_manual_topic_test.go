@@ -92,7 +92,7 @@ func TestGetComposeCandidates_ParsesEmbeddingsAndExcludesEmpty(t *testing.T) {
 	require.NoError(t, repo.db.Create(&s2).Error)
 	require.NoError(t, repo.db.Omit("embedding").Create(&s3).Error)
 
-	resp, err := repo.GetComposeCandidates(boardID, 14)
+	resp, err := repo.GetComposeCandidates(ComposeCandidatesQuery{BoardID: boardID, Days: 14})
 	require.NoError(t, err)
 	// Default MatchThreshold from DefaultPersistentTopicConfig (no ai_settings row).
 	assert.InDelta(t, 0.30, resp.MatchThreshold, 1e-9)
@@ -130,7 +130,7 @@ func TestGetComposeCandidates_AttachesTopicBrief(t *testing.T) {
 	}
 	require.NoError(t, repo.db.Create(&sec).Error)
 
-	resp, err := repo.GetComposeCandidates(boardID, 14)
+	resp, err := repo.GetComposeCandidates(ComposeCandidatesQuery{BoardID: boardID, Days: 14})
 	require.NoError(t, err)
 	require.Len(t, resp.Sections, 1)
 	got := resp.Sections[0]
@@ -158,7 +158,7 @@ func TestGetComposeCandidates_DaysWindowOutOfScope(t *testing.T) {
 	require.NoError(t, repo.db.Create(&sOld).Error)
 
 	// 14-day window anchored to the latest report (06-29) → the 2025 section is out.
-	resp, err := repo.GetComposeCandidates(boardID, 14)
+	resp, err := repo.GetComposeCandidates(ComposeCandidatesQuery{BoardID: boardID, Days: 14})
 	require.NoError(t, err)
 	require.Len(t, resp.Sections, 1)
 	assert.Equal(t, "recent", resp.Sections[0].ClusterLabel)
@@ -169,7 +169,7 @@ func TestGetComposeCandidates_EmptyBoard(t *testing.T) {
 	boardID := seedTestBoard(t, repo.db)
 	// No reports at all → graceful fallback (zero latest → cutoff far in past →
 	// returns empty slice, never errors).
-	resp, err := repo.GetComposeCandidates(boardID, 14)
+	resp, err := repo.GetComposeCandidates(ComposeCandidatesQuery{BoardID: boardID, Days: 14})
 	require.NoError(t, err)
 	assert.Empty(t, resp.Sections)
 	assert.InDelta(t, 0.30, resp.MatchThreshold, 1e-9)

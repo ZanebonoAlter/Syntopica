@@ -163,6 +163,14 @@ func Init(db *gorm.DB) {
 	// 克隆期现算——UI 保存 key 后研究 prompt 即时生效、不用重启；probe 判定与
 	// datasources.StatusFor 同源（RequiresKey+空 key）。
 	signalResearch.SetToolAvailabilityProbe(wiring.UnavailableNoticeProbe(wiring.DataSourcesKeyResolver()))
+	// question-v1 受限来源后端（add-question-driven-news-research D3/D4）：
+	// 复用既有 BochaWebSearcher（动态 DB>env>config 取 key）；网页读取走
+	// signal 专用安全适配（safefetch 边界 + readability bytes 解析）——旧
+	// ReaderPageFetcher/调查/QA 的授权与行为不变。
+	signalResearch.SetQuestionSourceBackends(
+		service.NewBochaWebSearcher(bochaProvider),
+		service.NewSignalSafePageFetcher(),
+	)
 
 	// HTTP handler singleton consumed by handler.RegisterRoutes.
 	handler.InitHandler(repo, lifelineSvc, orchestrator, boardConfigReader, debateSvc, qaAgent, db)

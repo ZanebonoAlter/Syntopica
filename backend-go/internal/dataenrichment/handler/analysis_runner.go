@@ -224,16 +224,52 @@ func (r *analysisRunner) StartSignal(scope string, id uint, kind string, timeout
 	})
 }
 
+// StartSignalGuarded is StartSignal with a precondition evaluated inside the
+// runner's critical section, AFTER the slot-conflict check but BEFORE job
+// registration（redesign-enrichment-research-workbench D1：忽略写入与研究启动
+// 在同一允许性边界串行判定——守卫拒绝时不注册任务、返回原错误）.
+func (r *analysisRunner) StartSignalGuarded(scope string, id uint, kind string, timeout time.Duration, guard func() error, fn func(ctx context.Context, report func(SignalJobPatch)) error) (AnalysisStatus, error) {
+	return r.launchGuarded(scope, id, kind, timeout, guard, func(ctx context.Context, report func(SignalJobPatch)) (uint, error) {
+		return 0, fn(ctx, report)
+	})
+}
+
+// MutateBoardExclusively runs fn while holding the runner's lock, after
+// asserting no job is running for (scope, id)（D1：忽略写入与研究启动共用同一
+// 板块临界区——研究已启动则忽略拿不到锁内无 running 的窗口，返 409；忽略写入
+// 本身是单行 upsert/delete，锁内执行不会阻塞 StartSignal 的可感知时间）.
+func (r *analysisRunner) MutateBoardExclusively(scope string, id uint, fn func() error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if job, exists := r.jobs[jobKey(scope, id)]; exists && !job.done {
+		return &RunningJobError{Current: job.snapshot()}
+	}
+	return fn()
+}
+
 // launch is the shared spawn path: slot conflict check → job registration →
 // detached run. The legacy Start keeps its exact signature and fn shape; the
 // reporter parameter is the only addition on this path.
 func (r *analysisRunner) launch(scope string, id uint, kind string, timeout time.Duration, fn func(ctx context.Context, report func(SignalJobPatch)) (uint, error)) (AnalysisStatus, error) {
+	return r.launchGuarded(scope, id, kind, timeout, nil, fn)
+}
+
+// launchGuarded is launch with an optional precondition (guard) evaluated
+// under the runner lock between the slot check and registration; a guard
+// error aborts the launch without registering any job.
+func (r *analysisRunner) launchGuarded(scope string, id uint, kind string, timeout time.Duration, guard func() error, fn func(ctx context.Context, report func(SignalJobPatch)) (uint, error)) (AnalysisStatus, error) {
 	k := jobKey(scope, id)
 	r.mu.Lock()
 	if job, exists := r.jobs[k]; exists && !job.done {
 		cur := job.snapshot()
 		r.mu.Unlock()
 		return AnalysisStatus{}, &RunningJobError{Current: cur}
+	}
+	if guard != nil {
+		if err := guard(); err != nil {
+			r.mu.Unlock()
+			return AnalysisStatus{}, err
+		}
 	}
 	job := &analysisJob{
 		jobID:     r.newJobIDLocked(),

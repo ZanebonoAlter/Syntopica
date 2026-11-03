@@ -67,6 +67,8 @@ func sdSignal(signal string, score int, refs ...string) map[string]any {
 		"signal":            signal,
 		"why_it_matters":    "w:" + signal,
 		"research_question": "q:" + signal,
+		"unknown":           "u:" + signal,
+		"verification":      "v:" + signal,
 		"evidence_refs":     refs,
 		"score":             score,
 		"rationale":         "r:" + signal,

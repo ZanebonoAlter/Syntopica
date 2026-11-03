@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -195,10 +196,16 @@ func (h *EnrichmentHandler) RegisterRoutes(rg *gin.RouterGroup) {
 		// research (2b): 手动逐条深入研究与报告查询，同一互斥组。
 		boardAnalysis.POST("/signal-discoveries", h.triggerSignalDiscovery)
 		boardAnalysis.GET("/signals", h.listSignalCandidates)
+		boardAnalysis.GET("/signals/:candidateId", h.getSignalCandidate)
+		boardAnalysis.PUT("/signals/:candidateId/disposition", h.putSignalDisposition)
 		boardAnalysis.GET("/signals/:candidateId/research-progress", h.getSignalResearchProgress)
 		boardAnalysis.POST("/signals/:candidateId/research", h.triggerSignalResearch)
 		boardAnalysis.GET("/signal-reports", h.listSignalReports)
 		boardAnalysis.GET("/signal-reports/:rid", h.getSignalReport)
+
+		// Legacy research history (redesign-enrichment-research-workbench D2):
+		// 只读分页列表，与 signal 路由同级；零 LLM、不做增强开关预检。
+		boardAnalysis.GET("/history", h.listLegacyHistory)
 	}
 
 	// ── Board data source bindings (board dimension) ────────────────────────
@@ -254,6 +261,44 @@ func parseIDParam(c *gin.Context, name string) (uint, bool) {
 	return uint(parsed), true
 }
 
+// parseOptionalBoardID reads the optional semantic_board_id validation hint
+// shared by the topic context endpoints (redesign-enrichment-research-workbench
+// D2: the new multi-scope UI passes it for owner checks; legacy clients omit it
+// and behavior is unchanged). Absent/empty → (0, true) = skip the check;
+// non-numeric or 0 → 400.
+func parseOptionalBoardID(c *gin.Context) (uint, bool) {
+	raw := strings.TrimSpace(c.Query("semantic_board_id"))
+	if raw == "" {
+		return 0, true
+	}
+	parsed, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || parsed == 0 {
+		respondError(c, http.StatusBadRequest, "invalid semantic_board_id")
+		return 0, false
+	}
+	return uint(parsed), true
+}
+
+// ensureTopicBoardMatch validates that persistent topic topicID exists and
+// belongs to boardID (D2 optional semantic_board_id guard). A missing topic and
+// a board mismatch are the same 404 so existence is not leaked. Returns false
+// after writing the error response.
+func (h *EnrichmentHandler) ensureTopicBoardMatch(c *gin.Context, topicID, boardID uint) bool {
+	var matched int64
+	if err := h.db.WithContext(c.Request.Context()).
+		Table("board_persistent_topics").
+		Where("id = ? AND semantic_board_id = ?", topicID, boardID).
+		Count(&matched).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, err.Error())
+		return false
+	}
+	if matched == 0 {
+		respondError(c, http.StatusNotFound, "topic not found in board")
+		return false
+	}
+	return true
+}
+
 // ── Table 1: topic_lifeline_context ─────────────────────────────────────────
 
 // listContexts returns all contexts for a topic, optionally filtered by ?granularity=.
@@ -261,6 +306,15 @@ func parseIDParam(c *gin.Context, name string) (uint, bool) {
 func (h *EnrichmentHandler) listContexts(c *gin.Context) {
 	topicID, ok := parseTopicID(c)
 	if !ok {
+		return
+	}
+
+	// Optional owner validation (D2): no parameter → legacy behavior.
+	boardID, ok := parseOptionalBoardID(c)
+	if !ok {
+		return
+	}
+	if boardID != 0 && !h.ensureTopicBoardMatch(c, topicID, boardID) {
 		return
 	}
 
@@ -295,6 +349,14 @@ func (h *EnrichmentHandler) getContext(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Optional owner validation (D2): no parameter → legacy behavior.
+	boardID, ok := parseOptionalBoardID(c)
+	if !ok {
+		return
+	}
+	if boardID != 0 && !h.ensureTopicBoardMatch(c, topicID, boardID) {
+		return
+	}
 	granularity := c.Param("granularity")
 	period := c.Param("period")
 	if !isValidGranularity(granularity) {
@@ -324,6 +386,14 @@ func (h *EnrichmentHandler) getContext(c *gin.Context) {
 func (h *EnrichmentHandler) updateContext(c *gin.Context) {
 	topicID, ok := parseTopicID(c)
 	if !ok {
+		return
+	}
+	// Optional owner validation (D2): no parameter → legacy behavior.
+	boardID, ok := parseOptionalBoardID(c)
+	if !ok {
+		return
+	}
+	if boardID != 0 && !h.ensureTopicBoardMatch(c, topicID, boardID) {
 		return
 	}
 	granularity := c.Param("granularity")
@@ -369,6 +439,14 @@ func (h *EnrichmentHandler) updateContext(c *gin.Context) {
 func (h *EnrichmentHandler) regenerateContext(c *gin.Context) {
 	topicID, ok := parseTopicID(c)
 	if !ok {
+		return
+	}
+	// Optional owner validation (D2): no parameter → legacy behavior.
+	boardID, ok := parseOptionalBoardID(c)
+	if !ok {
+		return
+	}
+	if boardID != 0 && !h.ensureTopicBoardMatch(c, topicID, boardID) {
 		return
 	}
 	granularity := c.Param("granularity")

@@ -46,6 +46,31 @@ type ReportListItem struct {
 
 // ListReports returns recent reports for a board.
 
+// TodayReportBrief is a light projection for the reading-desk left queue
+// ("今天已有日报的版块") — no sections/threads payload.
+type TodayReportBrief struct {
+	ReportID        uint   `json:"report_id"`
+	SemanticBoardID uint   `json:"semantic_board_id"`
+	PeriodDate      string `json:"period_date"`
+	Title           string `json:"title"`
+	Status          string `json:"status"`
+}
+
+// ListTodayReportBriefs returns one row per board that has a report on `date`
+// (YYYY-MM-DD, local calendar day). Read-only.
+func (r *TopicGraphRepository) ListTodayReportBriefs(date string) ([]TodayReportBrief, error) {
+	var rows []TodayReportBrief
+	err := r.db.Model(&BoardDailyReport{}).
+		Select("id AS report_id, semantic_board_id, to_char(period_date, 'YYYY-MM-DD') AS period_date, title, status").
+		Where("period_date = ?", date).
+		Order("semantic_board_id ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("list today report briefs: %w", err)
+	}
+	return rows, nil
+}
+
 // ListReportsForAllBoards returns reports for all boards within a date range.
 
 func NormalizeReportDate(date time.Time) time.Time {

@@ -261,5 +261,6 @@ func init() {
 		&BoardSignalDiscovery{},
 		&BoardSignalCandidate{},
 		&BoardSignalResearchProgress{},
+		&BoardSignalDisposition{},
 	)
 }

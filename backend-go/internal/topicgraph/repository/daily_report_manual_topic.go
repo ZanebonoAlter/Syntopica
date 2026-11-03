@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -84,36 +85,132 @@ type ComposeCandidateSection struct {
 	PersistentTopic      *PersistentTopicBrief `json:"persistent_topic,omitempty"`
 }
 
+// ComposeCandidatesQuery describes the window of the compose-candidates
+// endpoint. From/To are an inclusive YYYY-MM-DD range; when both are set they
+// override Days (the handler rejects a half-specified range up front).
+type ComposeCandidatesQuery struct {
+	BoardID uint
+	// Days is the shortcut window length (7/14/30/90), anchored to the
+	// board's latest completed report. days<=0 means "approximately all
+	// history", days>90 is capped at 90.
+	Days int
+	// From/To are the explicit window bounds (UTC midnight). Both are set
+	// together or both are nil.
+	From *time.Time
+	To   *time.Time
+}
+
+// ComposeWindow echoes the resolved window back to the client so the frontend
+// can label the canvas without recomputing the server-side window.
+type ComposeWindow struct {
+	// From/To are "YYYY-MM-DD" strings. A nil bound means "open" — no
+	// completed report yet (nothing to anchor on) or all-history mode.
+	From *string `json:"from"`
+	To   *string `json:"to"`
+	// Days is the effective window length in days (inclusive, both ends
+	// included); 0 means "all history".
+	Days int `json:"days"`
+	// LatestCompletedDate is the board's latest completed report day, or
+	// null when the board has no completed report yet.
+	LatestCompletedDate *string `json:"latest_completed_date"`
+}
+
 // ComposeCandidatesResponse is the payload for GET
 // /api/semantic-boards/:id/persistent-topics/compose-candidates.
 type ComposeCandidatesResponse struct {
-	Sections       []ComposeCandidateSection `json:"sections"`
-	MatchThreshold float64                   `json:"match_threshold"`
+	Sections []ComposeCandidateSection `json:"sections"`
+	// Relations are the original section relations whose two endpoints are
+	// both visible in the window (identity + similarity, verbatim).
+	Relations []ComposeRelation `json:"relations"`
+	// CandidateChains is the server-side single source of truth for the
+	// candidate chain semantics (see BuildComposeCandidateChains).
+	CandidateChains []ComposeCandidateChain `json:"candidate_chains"`
+	MatchThreshold  float64                 `json:"match_threshold"`
+	Window          ComposeWindow           `json:"window"`
 }
 
-// GetComposeCandidates loads the sections in the time window that carry a usable
-// embedding, exposing the vector (parsed from the pgvector column) for the
-// compose UI. days<=0 means all history; days>90 is capped at 90, matching the
-// section-timeline window contract. The date window anchors to the latest
-// completed report (same semantics as GetBoardSectionTimeline); it is computed
-// in Go so the query stays portable across SQLite (tests) and Postgres (prod),
-// avoiding a PG-only INTERVAL literal.
-func (r *TopicGraphRepository) GetComposeCandidates(boardID uint, days int) (ComposeCandidatesResponse, error) {
-	if days <= 0 {
-		days = 100000
-	} else if days > 90 {
-		days = 90
+// LatestCompletedReportDate returns the period_date of the board's latest
+// completed daily report. It returns (nil, nil) when the board has no
+// completed report yet — the compose window then has no anchor and the
+// endpoint answers with empty collections instead of a 404.
+func (r *TopicGraphRepository) LatestCompletedReportDate(boardID uint) (*time.Time, error) {
+	var rep BoardDailyReport
+	err := r.db.Where("semantic_board_id = ? AND status = 'completed'", boardID).
+		Order("period_date DESC").Select("period_date").First(&rep).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("latest completed report date: %w", err)
+	}
+	day := time.Date(rep.PeriodDate.UTC().Year(), rep.PeriodDate.UTC().Month(), rep.PeriodDate.UTC().Day(), 0, 0, 0, 0, time.UTC)
+	return &day, nil
+}
+
+// resolveComposeWindow resolves the effective query window.
+//
+//   - An explicit from/to range wins over days (inclusive on both ends).
+//   - The shortcut path keeps the legacy semantics: the window is anchored to
+//     the board's latest completed report and spans days−1 days before it
+//     (so days=30 covers 30 report days, both ends included). days<=0 keeps
+//     the legacy "approximately all history" behaviour — both bounds open
+//     (from/to reported as null), days>90 is capped at 90 (section-timeline
+//     window contract).
+//
+// The bounds are computed in Go so the query stays portable across SQLite
+// (tests) and Postgres (prod), avoiding a PG-only INTERVAL literal.
+func resolveComposeWindow(q ComposeCandidatesQuery, latest *time.Time) (cutoff, upper time.Time, from, to *time.Time, effectiveDays int) {
+	if q.From != nil && q.To != nil {
+		from, to = q.From, q.To
+		cutoff, upper = *q.From, *q.To
+		// Inclusive span in days.
+		effectiveDays = int(q.To.Sub(*q.From)/(24*time.Hour)) + 1
+		return cutoff, upper, from, to, effectiveDays
 	}
 
-	// Anchor window to the latest completed report; no report → zero time →
-	// cutoff far in the past → effectively "all history" (graceful fallback).
-	var latest time.Time
-	var rep BoardDailyReport
-	if err := r.db.Where("semantic_board_id = ? AND status = 'completed'", boardID).
-		Order("period_date DESC").Select("period_date").First(&rep).Error; err == nil {
-		latest = rep.PeriodDate
+	effectiveDays = q.Days
+	if effectiveDays > 90 {
+		effectiveDays = 90
 	}
-	cutoff := latest.AddDate(0, 0, -(days - 1))
+	if effectiveDays < 0 {
+		effectiveDays = 0
+	}
+	if latest == nil {
+		// No completed report: the window is empty, but keep the query
+		// harmless (lower bound far in the past, upper bound far ahead).
+		return time.Time{}.AddDate(0, 0, -99999), time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC), nil, nil, effectiveDays
+	}
+	upper = *latest
+	if effectiveDays > 0 {
+		// Shortcut window: bounded on both ends — the latest completed
+		// report minus (days−1) days … the latest completed report.
+		start := latest.AddDate(0, 0, -(effectiveDays - 1))
+		from = &start
+		to = latest
+		cutoff = start
+	} else {
+		// All-history mode: no day count, both bounds open — from/to stay
+		// nil and the window is reported as unbounded (contract §1.1). The
+		// query still stops at the latest completed report (no completed
+		// report can be later), so the returned data set is unchanged.
+		cutoff = latest.AddDate(0, 0, -99999)
+	}
+	return cutoff, upper, from, to, effectiveDays
+}
+
+// GetComposeCandidates loads the sections in the time window that carry a
+// usable embedding, exposing the vector (parsed from the pgvector column) for
+// the compose UI, plus the window relations and the server-side candidate
+// chains of the compose workbench.
+//
+// The window is either the explicit from/to range (inclusive) or the
+// days-based shortcut anchored to the board's latest completed report.
+func (r *TopicGraphRepository) GetComposeCandidates(q ComposeCandidatesQuery) (ComposeCandidatesResponse, error) {
+	latest, err := r.LatestCompletedReportDate(q.BoardID)
+	if err != nil {
+		return ComposeCandidatesResponse{}, fmt.Errorf("GetComposeCandidates: %w", err)
+	}
+	cutoff, upper, windowFrom, windowTo, effectiveDays := resolveComposeWindow(q, latest)
 
 	type secRow struct {
 		ID                   uint
@@ -133,9 +230,10 @@ func (r *TopicGraphRepository) GetComposeCandidates(boardID uint, days int) (Com
 		WHERE bdr.semantic_board_id = ?
 		  AND bdr.status = 'completed'
 		  AND bdr.period_date >= ?
+		  AND bdr.period_date <= ?
 		  AND ds.embedding IS NOT NULL
 		ORDER BY bdr.period_date ASC, ds.id ASC
-	`, boardID, cutoff).Scan(&rows).Error; err != nil {
+	`, q.BoardID, cutoff, upper).Scan(&rows).Error; err != nil {
 		return ComposeCandidatesResponse{}, fmt.Errorf("GetComposeCandidates: query sections: %w", err)
 	}
 
@@ -178,10 +276,70 @@ func (r *TopicGraphRepository) GetComposeCandidates(boardID uint, days int) (Com
 		}
 	}
 
+	// Relations of the window: the original edges whose two endpoints are
+	// both visible (i.e. both endpoints are in the returned section set).
+	// Identity and similarity edges are kept verbatim — no edge is invented.
+	relations := make([]ComposeRelation, 0)
+	if len(out) > 0 {
+		ids := make([]uint, len(out))
+		visible := make(map[uint]bool, len(out))
+		for i, s := range out {
+			ids[i] = s.ID
+			visible[s.ID] = true
+		}
+		var rels []ComposeRelation
+		if err := r.db.Raw(`
+			SELECT from_section_id AS from_id, to_section_id AS to_id, distance, relation_type
+			FROM daily_report_section_relations
+			WHERE from_section_id IN ? OR to_section_id IN ?
+		`, ids, ids).Scan(&rels).Error; err != nil {
+			return ComposeCandidatesResponse{}, fmt.Errorf("GetComposeCandidates: query relations: %w", err)
+		}
+		for _, rel := range rels {
+			if visible[rel.FromID] && visible[rel.ToID] {
+				relations = append(relations, rel)
+			}
+		}
+	}
+
+	// Candidate chains: server-side single source of truth (contract §2.1).
+	chainSections := make([]ComposeChainSection, 0, len(out))
+	for _, s := range out {
+		cs := ComposeChainSection{
+			ID:                s.ID,
+			PeriodDate:        s.PeriodDate,
+			PersistentTopicID: s.PersistentTopicID,
+		}
+		if s.PersistentTopic != nil {
+			cs.TopicLabel = s.PersistentTopic.Label
+			cs.TopicStatus = s.PersistentTopic.Status
+		}
+		chainSections = append(chainSections, cs)
+	}
+	chains := BuildComposeCandidateChains(chainSections, relations)
+
 	return ComposeCandidatesResponse{
-		Sections:       out,
-		MatchThreshold: LoadPersistentTopicConfig(r.db).MatchThreshold,
+		Sections:        out,
+		Relations:       relations,
+		CandidateChains: chains,
+		MatchThreshold:  LoadPersistentTopicConfig(r.db).MatchThreshold,
+		Window: ComposeWindow{
+			From:                formatComposeDate(windowFrom),
+			To:                  formatComposeDate(windowTo),
+			Days:                effectiveDays,
+			LatestCompletedDate: formatComposeDate(latest),
+		},
 	}, nil
+}
+
+// formatComposeDate renders a day-granular bound as "YYYY-MM-DD" (UTC).
+// A nil bound stays nil so the JSON carries an explicit null.
+func formatComposeDate(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.UTC().Format("2006-01-02")
+	return &s
 }
 
 // CreateManualTopic creates a new persistent topic with source=manual and

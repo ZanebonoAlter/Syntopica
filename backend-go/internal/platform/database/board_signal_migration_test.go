@@ -257,6 +257,55 @@ func runSignalDispositionMigration(t *testing.T, db *gorm.DB) {
 // table itself is AutoMigrate's job; the migration owns only the candidate
 // FK — dangling candidate ids are rejected, repeated Up runs are a no-op,
 // and candidate/report rows are never touched (no backfill, no column).
+// TestQuestionBriefMigrationLegacyNullNoBackfill 验证 20261019_0001
+// (add-question-driven-news-research D1)：research_brief 列存在、旧行 NULL
+// 不回填、迁移幂等、新行可写合法 brief。验证只在隔离 testcontainer（红线：
+// 禁真库试 DDL）。
+func TestQuestionBriefMigrationLegacyNullNoBackfill(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires testcontainer Postgres")
+	}
+	db := testutil.OpenTestDB(t)
+	boardID := uint(95510)
+	require.NoError(t, db.Exec(`DELETE FROM board_signal_candidate WHERE semantic_board_id = ?`, boardID).Error)
+	require.NoError(t, db.Exec(`DELETE FROM board_signal_discovery WHERE semantic_board_id = ?`, boardID).Error)
+	t.Cleanup(func() {
+		_ = db.Exec(`DELETE FROM board_signal_candidate WHERE semantic_board_id = ?`, boardID).Error
+		_ = db.Exec(`DELETE FROM board_signal_discovery WHERE semantic_board_id = ?`, boardID).Error
+	})
+
+	// 模拟旧行：先摘列，写入旧形状候选，再跑迁移。
+	require.NoError(t, db.Exec(`ALTER TABLE board_signal_candidate DROP COLUMN IF EXISTS research_brief`).Error)
+	legacyCandidate := seedBoardSignalDiscovery(t, db, boardID)
+
+	var migration *database.Migration
+	for _, m := range database.ExportedPostgresMigrations() {
+		if m.Version == "20261019_0001" {
+			mm := m
+			migration = &mm
+			break
+		}
+	}
+	require.NotNil(t, migration, "migration 20261019_0001 not found")
+	require.Nil(t, migration.Down, "forward-only")
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return migration.Up(tx) }))
+	// 幂等：二次 Up 不报错。
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return migration.Up(tx) }))
+
+	// 旧行 research_brief 仍 NULL（不猜填、不回填）。
+	var brief *string
+	require.NoError(t, db.Raw(`SELECT research_brief::text FROM board_signal_candidate WHERE id = ?`, legacyCandidate).Row().Scan(&brief))
+	require.Nil(t, brief, "legacy candidate must keep NULL research_brief (never backfilled)")
+
+	// 新行可写合法 brief（question-v1 形状），非法 owner 仍被复合 FK 拒绝。
+	require.NoError(t, db.Exec(`UPDATE board_signal_candidate SET research_brief = ?::jsonb WHERE id = ?`,
+		`{"unknown":"口径未确认","verification":"先读原文","source_ids":["n1"]}`, legacyCandidate).Error)
+	require.Error(t, db.Exec(`INSERT INTO board_signal_candidate
+		(discovery_id, semantic_board_id, granularity, period, signal, why_it_matters, research_question, evidence_refs, score, rationale)
+		VALUES (?, 99999, 'month', '2026-08', 'x', 'y', 'z', '[]'::jsonb, 7, 'r')`, legacyCandidate+1).Error,
+		"illegal owner/period must still be rejected by the composite FK")
+}
+
 func TestSignalDispositionMigrationFKAndIdempotent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test: requires testcontainer Postgres")

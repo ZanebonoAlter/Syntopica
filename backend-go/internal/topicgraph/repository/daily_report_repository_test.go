@@ -24,6 +24,20 @@ func TestNormalizeReportDateKeepsRequestedDate(t *testing.T) {
 	require.Equal(t, 12, got.Hour())
 }
 
+func TestListTodayReportBriefs(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	boardID := seedTestBoard(t, db)
+	today := time.Now().Format("2006-01-02")
+	seedTestReport(t, db, boardID, NormalizeReportDate(time.Now()))
+
+	briefs, err := repo.ListTodayReportBriefs(today)
+	require.NoError(t, err)
+	require.Len(t, briefs, 1)
+	require.Equal(t, boardID, briefs[0].SemanticBoardID)
+	require.Equal(t, today, briefs[0].PeriodDate)
+}
+
 func TestListReports_DefaultDays(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)

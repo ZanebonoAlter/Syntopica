@@ -282,7 +282,10 @@ type signalResearchCallRecord struct {
 }
 
 // signalResearchLedger 累积一次研究运行的取数/计算/缺口账本与观测索引。
-// 单 goroutine 读写（循环体 + 包装层同序执行），无需加锁。
+// question-v1 另累积文字证据（sources）与检索/读取流水（textCalls）——仅成
+// 功 read_source / 合格 fetch_page 的正文进入可引用集合；搜索只在调用记录，
+// 不伪造 observations。单 goroutine 读写（循环体 + 包装层同序执行），无需
+// 加锁。
 type signalResearchLedger struct {
 	cutoff   time.Time
 	nextCall int
@@ -291,6 +294,9 @@ type signalResearchLedger struct {
 	calcs    []*SignalCalculationResult
 	gaps     []signalResearchGap
 	obsIndex map[string]*SignalCalcObservation
+	// question-v1 增量（D6）：文字证据与工具流水。
+	sources   []*signalResearchSourceRecord
+	textCalls []*signalTextCallRecord
 }
 
 func newSignalResearchLedger(cutoff time.Time) *signalResearchLedger {
@@ -494,10 +500,77 @@ func (l *signalResearchLedger) nextCalcID() string {
 	return fmt.Sprintf("k%d", l.nextCalc)
 }
 
+// ── question-v1 文字证据与工具流水（D6）────────────────────────────────────
+
+// signalResearchSourceRecord 是附录 sources[] 的一行：已成功读取的本地/外
+// 部文字证据（含实际文本、取回/冻结时间、截取与时间说明）。搜索摘要永不
+// 进入此集合。
+type signalResearchSourceRecord struct {
+	ID            string     `json:"id"`   // n1 / w1
+	Kind          string     `json:"kind"` // local_article | web_page
+	Title         string     `json:"title"`
+	URL           string     `json:"url,omitempty"`
+	FinalURL      string     `json:"final_url,omitempty"`
+	PublishedAt   *time.Time `json:"published_at,omitempty"`
+	PublishedFrom string     `json:"published_from,omitempty"` // 字段出处（可核查）
+	CapturedAt    *time.Time `json:"captured_at,omitempty"`    // 本地冻结时间
+	FetchedAt     *time.Time `json:"fetched_at,omitempty"`     // 外部取回时间
+	Text          string     `json:"text"`                     // 模型看到的同一片段
+	Hash          string     `json:"hash"`
+	Truncated     bool       `json:"truncated"`
+	OriginalRunes int        `json:"original_runes"`
+	TemporalNote  string     `json:"temporal_note,omitempty"`
+}
+
+// signalTextCallRecord 是检索/读取调用的流水行（区别于数值源 calls[]）：
+// web_search / read_source / fetch_page 的调用、状态与失败原因；错误不冒
+// 充成功。
+type signalTextCallRecord struct {
+	Tool   string `json:"tool"`             // web_search | read_source | fetch_page
+	Kind   string `json:"kind"`             // query | source_id | url
+	Target string `json:"target,omitempty"` // query 文本 / source_id / URL
+	Status string `json:"status"`           // ok | error | rejected
+	Error  string `json:"error,omitempty"`
+	At     string `json:"at"`
+}
+
+// addSourceRecord 登记一份可引用文字证据（运行时 read_source/fetchPage 成
+// 功后调用）。重复 ID 不重复登记。
+func (l *signalResearchLedger) addSourceRecord(rec *signalResearchSourceRecord) {
+	for _, s := range l.sources {
+		if s.ID == rec.ID {
+			return
+		}
+	}
+	l.sources = append(l.sources, rec)
+}
+
+// recordTextCall 登记一次检索/读取流水。
+func (l *signalResearchLedger) recordTextCall(tool, kind, target, status, errMsg string) {
+	l.textCalls = append(l.textCalls, &signalTextCallRecord{
+		Tool: tool, Kind: kind, Target: target, Status: status, Error: errMsg, At: time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// appendGap 登记一行缺口（question 工具层共用）。
+func (l *signalResearchLedger) appendGap(g signalResearchGap) { l.gaps = append(l.gaps, g) }
+
+// sourceIndex 返回可引用文字证据索引（成文校验的 source 引用宇宙）。
+func (l *signalResearchLedger) sourceIndex() map[string]*signalResearchSourceRecord {
+	out := make(map[string]*signalResearchSourceRecord, len(l.sources))
+	for _, s := range l.sources {
+		out[s.ID] = s
+	}
+	return out
+}
+
 // ── 研究 policy（toolLoopPolicy + toolLoopActionRunner + toolLoopFeedbackProvider）────────────
 
 type signalResearchPolicy struct {
 	ledger *signalResearchLedger
+	// q 是 question-v1 运行时（nil=旧协议，七源原语义零变化）：CheckCall 放
+	// 行 read_source/web_search/fetch_page 并执行先读门；calculate 同门。
+	q *signalQuestionRuntime
 	// seenCalcKey 去重相同计算请求（重复动作不执行但计轮）。
 	seenCalcKey map[string]bool
 	// lastStep 记录最后一次真实做出的决策轮（CheckCall/RunLoopAction/
@@ -556,13 +629,33 @@ func (p *signalResearchPolicy) notifyProgress() {
 func (p *signalResearchPolicy) CheckCall(step int, decision map[string]any) toolCallVerdict {
 	p.markStep(step)
 	toolName, _ := decision["tool"].(string)
-	if !isSignalSourceTool(toolName) {
+	// question-v1：三个受限来源动作放行（先读门唯一入口在此），其余动作仍
+	// 限七源（旧协议 allowedTools 不变）。先读门同时把守七源（H1）：有可读
+	// 冻结正文且未读前，数值取证同样不得先于原文（spec「先核前提再补证」
+	// 明文含数值源）。
+	switch {
+	case p.q != nil && p.q.authorizesTool(toolName):
+		// question-v1 受限来源动作：先读门唯一入口在此。
+		if err := p.q.gateTool(toolName); err != nil {
+			p.notifyProgress()
+			return toolCallVerdict{Blocked: true, BlockedReason: "question_read_first", Feedback: err.Error()}
+		}
+	case !isSignalSourceTool(toolName):
 		p.notifyProgress()
 		return toolCallVerdict{
 			Blocked:       true,
 			BlockedReason: "tool_not_in_research_whitelist",
 			Feedback: fmt.Sprintf("%q 不在本次研究的工具白名单内；只能调用 %d 个研究数据源工具：%s。与研究无关的源不要乱调凑数量，白名单源都不相关时请直接 finish。",
 				toolName, len(signalResearchToolNames), strings.Join(signalResearchToolNames, " / ")),
+		}
+	default:
+		// 白名单七源：question-v1 下同样过先读门（H1：spec「先核前提再补证」
+		// 明文含数值源；read_source 恒放行）；旧协议（p.q==nil）语义不变。
+		if p.q != nil {
+			if err := p.q.gateTool(toolName); err != nil {
+				p.notifyProgress()
+				return toolCallVerdict{Blocked: true, BlockedReason: "question_read_first", Feedback: err.Error()}
+			}
 		}
 	}
 	question, _ := decision["question"].(string)
@@ -622,6 +715,12 @@ func (p *signalResearchPolicy) RunLoopAction(step int, action string, decision m
 		return rec, fmt.Sprintf("第%d步: 动作 %q — 被拦[%s]: %s", step, action, reason, feedback), true
 	}
 
+	if p.q != nil {
+		if err := p.q.gateTool(action); err != nil {
+			p.notifyProgress()
+			return blocked("question_read_first", err.Error())
+		}
+	}
 	if action != signalResearchActionCalculate {
 		p.notifyProgress()
 		return blocked("invalid_action",
@@ -800,12 +899,61 @@ func buildSignalResearchRegistry(base *Registry, cutoff time.Time, ledger *signa
 	return sub
 }
 
+// attachSignalQuestionTools 把 question-v1 的三个受限动作装进研究子注册表：
+// read_source/web_search/fetch_page（旧协议调用不进此分支，注册表与
+// allowedTools 均不含它们）。工具失败按注册表约定转 error JSON（nil Go 错
+// 误，循环继续）；预算/未授权拒绝与 typed gap 同通道反馈给模型。
+func attachSignalQuestionTools(sub *Registry, rt *signalQuestionRuntime) {
+	if sub == nil || rt == nil {
+		return
+	}
+	sub.tools["read_source"] = &Tool{
+		Name:        "read_source",
+		Description: "读取候选冻结原文（先核实前提）：参数 source_id（如 \"n1\"），返回冻结片段与来源元数据",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"source_id": map[string]any{"type": "string"}}, "required": []string{"source_id"}},
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			id, _ := args["source_id"].(string)
+			out, err := rt.readSource(strings.TrimSpace(id))
+			if err != nil {
+				return jsonError("read_source 被拒: " + err.Error()), nil
+			}
+			return out, nil
+		},
+	}
+	sub.tools["web_search"] = &Tool{
+		Name:        "web_search",
+		Description: "外部搜索（受限）：参数 query（公开主题短查询）；最多 3 次（含失败）；结果仅作导航，摘要不是正文证据",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}, "required": []string{"query"}},
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			query, _ := args["query"].(string)
+			out, err := rt.webSearch(ctx, query)
+			if err != nil {
+				return jsonError("web_search 失败: " + err.Error()), nil
+			}
+			return out, nil
+		},
+	}
+	sub.tools["fetch_page"] = &Tool{
+		Name:        "fetch_page",
+		Description: "安全读取网页（受限）：参数 url；只可请求候选来源 URL 或本次搜索登记的 URL，最多 5 次（含失败）；正文按研究截止时间核验",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"url": map[string]any{"type": "string"}}, "required": []string{"url"}},
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			rawURL, _ := args["url"].(string)
+			out, err := rt.fetchPage(ctx, strings.TrimSpace(rawURL))
+			if err != nil {
+				return jsonError("fetch_page 失败: " + err.Error()), nil
+			}
+			return out, nil
+		},
+	}
+}
+
 // ── prompt ───────────────────────────────────────────────────────────────────
 
 // assembleSignalResearchPrompt builds the research system prompt（纯函数，可
 // 无 LLM 契约测试）。输入只有候选快照与冻结材料——没有方法卡、没有最新材料
 // 的入口（结构上保证 PC-5）。
-func assembleSignalResearchPrompt(candidate *repository.BoardSignalCandidate, material *SignalMaterial, toolsDesc string) string {
+func assembleSignalResearchPrompt(candidate *repository.BoardSignalCandidate, material *SignalMaterial, toolsDesc string, qRuntime *signalQuestionRuntime) string {
 	candidateJSON, _ := json.Marshal(map[string]any{
 		"signal":            candidate.Signal,
 		"why_it_matters":    candidate.WhyItMatters,
@@ -814,7 +962,10 @@ func assembleSignalResearchPrompt(candidate *repository.BoardSignalCandidate, ma
 		"rationale":         candidate.Rationale,
 		"evidence_refs":     repository.SignalEvidenceRefs(candidate.EvidenceRefs),
 	})
-	materialJSON, _ := json.Marshal(material)
+	// question-v1（D3）：不得直接 marshal 含正文的新快照——剥离 Sources 只带
+	// 聚合材料，来源以目录形式另行注入（不泄漏其它候选专属原文）。
+	materialView := signalQuestionMaterialView(material)
+	materialJSON, _ := json.Marshal(&materialView)
 
 	var sb strings.Builder
 	sb.WriteString("你是一位严谨的数据研究员。新闻板块在一个周期内发现了一个候选信号，你的任务是围绕它的问题驱动地做数据研究：每一步取数或计算都对应一个理解问题，寻找能支持或推翻候选信号解释的官方数据证据。研究不预选结论；主动寻找可能推翻主要解释的事实，并记录未能排除的其他解释。\n\n")
@@ -824,6 +975,9 @@ func assembleSignalResearchPrompt(candidate *repository.BoardSignalCandidate, ma
 	sb.Write(materialJSON)
 	sb.WriteString("\n\n---\n可用数据源工具：\n")
 	sb.WriteString(toolsDesc)
+	if qRuntime != nil {
+		sb.WriteString(qRuntime.questionPromptSection())
+	}
 	sb.WriteString(`
 
 工作纪律：
@@ -868,7 +1022,15 @@ func (l *signalResearchLedger) progressLedgerJSON() json.RawMessage {
 	if gaps == nil {
 		gaps = []signalResearchGap{}
 	}
-	b, err := json.Marshal(SignalReportAppendix{Calls: calls, Calculations: calcs, Gaps: gaps})
+	sources := l.sources
+	if sources == nil {
+		sources = []*signalResearchSourceRecord{}
+	}
+	textCalls := l.textCalls
+	if textCalls == nil {
+		textCalls = []*signalTextCallRecord{}
+	}
+	b, err := json.Marshal(SignalReportAppendix{Calls: calls, Calculations: calcs, Gaps: gaps, Sources: sources, TextCalls: textCalls})
 	if err != nil {
 		return json.RawMessage("{}")
 	}
@@ -1003,6 +1165,11 @@ type SignalResearchService struct {
 	// 能追加也能移除启动期旧标注；nil = 不触碰描述。外部经
 	// SetToolAvailabilityProbe 注入——service 包不 import datasources/wiring。
 	unavailableNotice func(toolName string) string
+	// webSearcher/pageFetcher 是 question-v1 的受限来源后端（D3/D4）：nil =
+	// 未配置（外搜/抓页降级 typed gap，本地解释不受影响）；wire.go 注入
+	// BochaWebSearcher 与 SignalSafePageFetcher。
+	webSearcher SignalWebSearchAdapter
+	pageFetcher SignalPageFetchAdapter
 }
 
 // NewSignalResearchService wires the research service. registry is the shared
@@ -1024,6 +1191,13 @@ func NewSignalResearchService(router AirRouter, capability airouter.Capability, 
 // construction wiring, same pattern as the handler runners).
 func (s *SignalResearchService) SetSignalProgressStore(store SignalProgressStore) {
 	s.progress = store
+}
+
+// SetQuestionSourceBackends attaches the question-v1 web/page backends
+// (post-construction wiring；nil 适配=未配置降级 typed gap).
+func (s *SignalResearchService) SetQuestionSourceBackends(searcher SignalWebSearchAdapter, fetcher SignalPageFetchAdapter) {
+	s.webSearcher = searcher
+	s.pageFetcher = fetcher
 }
 
 // SetToolAvailabilityProbe attaches the optional live source-availability
@@ -1078,11 +1252,27 @@ func (s *SignalResearchService) ResearchCandidate(ctx context.Context, boardID, 
 	// 且在返回值定型（result 已落库 / 错误已包装）之后执行。
 	recorder := s.newSignalProgressRecorder(jobID, candidate)
 
+	// question-v1 协议路由（D1/D3）：空协议=旧冻结研究协议（仅七源，字节不变）；
+	// question-v1=追加受限来源工具；未知协议拒绝研究（不默认放开工具）。
+	brief, berr := ParseSignalResearchBrief(candidate.ResearchBrief)
+	if berr != nil {
+		return 0, &SignalStageError{Stage: SignalStageResearch, Err: fmt.Errorf("候选 %d research_brief 损坏: %w", candidateID, berr)}
+	}
+	qRuntime, qerr := newSignalQuestionRuntime(&material, brief, s.webSearcher, s.pageFetcher)
+	if qerr != nil {
+		return 0, &SignalStageError{Stage: SignalStageResearch, Err: qerr}
+	}
+
 	sessionID := GenerateSignalResearchSessionID(candidateID)
 	cutoff := discovery.Cutoff
 	ledger := newSignalResearchLedger(cutoff)
+	if qRuntime != nil {
+		qRuntime.bindLedger(ledger)
+	}
 	filteredRegistry := buildSignalResearchRegistry(s.registry, cutoff, ledger, s.unavailableNotice)
+	attachSignalQuestionTools(filteredRegistry, qRuntime)
 	policy := newSignalResearchPolicy(ledger)
+	policy.q = qRuntime
 	if recorder != nil {
 		policy.progressHook = func(roundsDone int) {
 			recorder.saveRunning(ctx, roundsDone, ledger)
@@ -1096,10 +1286,13 @@ func (s *SignalResearchService) ResearchCandidate(ctx context.Context, boardID, 
 		}()
 	}
 	allowedTools := append([]string{}, signalResearchToolNames...)
+	if qRuntime != nil {
+		allowedTools = append(allowedTools, signalQuestionToolNames...)
+	}
 
 	loop, err := runToolLoop(ctx, s.router, filteredRegistry, s.capability, toolLoopParams{
 		sessionID:    sessionID,
-		systemPrompt: assembleSignalResearchPrompt(candidate, &material, buildToolsDesc(filteredRegistry, allowedTools)),
+		systemPrompt: assembleSignalResearchPrompt(candidate, &material, buildToolsDesc(filteredRegistry, allowedTools), qRuntime),
 		taskLine:     "研究问题: " + candidate.ResearchQuestion,
 		operation:    signalResearchOperation,
 		allowedTools: allowedTools,
