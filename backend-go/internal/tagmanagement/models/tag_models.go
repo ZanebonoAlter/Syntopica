@@ -23,7 +23,7 @@ type TopicTagEmbedding struct {
 	EmbeddingType string    `gorm:"size:20;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"embedding_type"`
 	EmbeddingVec  string    `gorm:"type:vector;column:embedding" json:"-"`
 	Dimension     int       `json:"dimension"`                                                                   // Vector dimension (e.g., 2048 for text-embedding-3-large)
-	Model         string    `gorm:"size:50" json:"model"`                                                        // Model used: "text-embedding-ada-002"
+	Model         string    `gorm:"size:100" json:"model"`                                                       // Model used: "text-embedding-ada-002"
 	TextHash      string    `gorm:"size:64;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"text_hash"` // Hash of (label + aliases + category) for re-embedding detection
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`

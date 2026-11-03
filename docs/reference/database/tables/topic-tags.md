@@ -39,12 +39,14 @@
 | `embedding_type` | VARCHAR(20) | NOT NULL DEFAULT 'identity'; 复合唯一同上 | 嵌入类型：`identity` / `semantic` / `event_keyword` |
 | `embedding` | **vector(N)** | — | pgvector 向量列（**运行时维度**：迁移 `20260403_0003` 初建 4096，`ensureVectorDimension` 按 `embedding_config.embedding_dimension` 调整；当前生产 2560；struct 字段名 `embedding_vec`，列名 `embedding`） |
 | `dimension` | INTEGER | NOT NULL | 向量维度 |
-| `model` | VARCHAR(50) | NOT NULL | 生成模型名称 |
+| `model` | VARCHAR(100) | NOT NULL | 生成模型名称（= `ai_models.name`，列宽**不得窄于**模型注册表，见下方不变式） |
 | `text_hash` | VARCHAR(64) | 复合唯一同上 | 标签文本哈希，参与唯一约束（同一 tag+type 可有多行不同 text_hash） |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
 
 唯一约束：`idx_topic_tag_embeddings_tag_type_hash (topic_tag_id, embedding_type, text_hash)`（gorm tag + 迁移 `20260514_0001` 双重声明）。
+
+**模型名列宽不变式（迁移 `20261103_0001`，fix-embedding-model-column-width）**：`model` 列宽 **MUST NOT 窄于**模型注册表 `ai_models.name`（两者均为 100）——模型名在注册表里存得下，在任何落库处就必须存得下。违反后果实测过：本地 llama.cpp / GGUF 模型把模型文件绝对路径当名字注册（61 字符）→ 超限 → Postgres 报 `SQLSTATE 22001`（value too long for type character varying）→ 整条 embedding 任务失败（向量已算出却存不进去）；命中 embedding 缓存时返回的是缓存行里存的模型名，所以**主路由是短名模型也挡不住**。gorm tag 与 DDL 必须同批改（`size:50` → `size:100`），否则 AutoMigrate 会把列改回窄列。同族不变式覆盖 discovery 域四张向量表（见 [`preference-discovery.md`](preference-discovery.md)）。
 
 **语义搜索向量索引（迁移 `20261023_0001`，optimize-search-semantic-index）**：`idx_topic_tag_embeddings_identity_halfvec_hnsw` —— 部分 HNSW 索引，表达式 `((embedding::halfvec(N)) halfvec_cosine_ops)`，谓词 `WHERE embedding_type = 'identity'`；N 从列 `format_type` 动态解析，≤4000 才建（pgvector halfvec 上限）。float32 HNSW 受 2000 维限制（当前 2560 维建不了）；语义搜索先走该索引取 top-128 近似候选，再用原始 float32 `<=>` 精确复算 cosine。维度变更时 `ensureVectorDimension` 会 drop 后按新维度重建；>4000 维跳过、语义路回退全表精确扫描。
 

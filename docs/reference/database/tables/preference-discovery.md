@@ -30,7 +30,7 @@
 | `source` | VARCHAR(20) | `uniqueIndex:idx_preference_vectors_board_source` | `behavior` \| `seed` |
 | `embedding` | vector | type:vector; column:embedding | 偏好向量（运行时维度） |
 | `dimension` | INTEGER | — | 向量维度 |
-| `model` | VARCHAR(50) | — | 生成模型 |
+| `model` | VARCHAR(100) | — | 生成模型（= `ai_models.name`，列宽**不得窄于**模型注册表，见下方不变式） |
 | `tag_weights` | JSONB | default `'{}'`（MetadataMap serializer） | 画像可视化用 `{tag_label: weight}` top 列表 |
 | `last_computed_at` | TIMESTAMP | — | 最后计算时间 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
@@ -70,7 +70,7 @@
 | `route_id` | INTEGER | `uniqueIndex:idx_route_embeddings_route` | 关联 `rsshub_routes`（OnDelete CASCADE） |
 | `embedding` | vector | type:vector; column:embedding | 路由向量（运行时维度） |
 | `dimension` | INTEGER | — | 向量维度 |
-| `model` | VARCHAR(50) | — | 生成模型 |
+| `model` | VARCHAR(100) | — | 生成模型（= `ai_models.name`，列宽**不得窄于**模型注册表，见下方不变式） |
 | `text_hash` | VARCHAR(64) | index | 源文本 hash（变更检测） |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
@@ -122,7 +122,7 @@ UNIQUE(route_id, param_name, value) 复合唯一索引防同参数重复录入�
 
 ### 11.8 discovery_interest_entries（问答兴趣逐条独立，v2）
 
-每条问答独立一行（**不合成单条平均向量**，v1 seed 合并语义已废弃）：`query_text`(≤500 rune)、`embedding`(vector)、`dimension`/`model`、`board_id`（阈值+margin 双条件匹配真实版块，失败保持 NULL）、`status`(active\|inactive\|legacy, default active)。参与推荐的种子按 seed policy（窗口/半衰期/成熟度/预算）取前 K，超窗置 inactive。`idx_discovery_interest_run` UNIQUE 防同 run 重复写入。
+每条问答独立一行（**不合成单条平均向量**，v1 seed 合并语义已废弃）：`query_text`(≤500 rune)、`embedding`(vector)、`dimension`/`model`(VARCHAR(100))、`board_id`（阈值+margin 双条件匹配真实版块，失败保持 NULL）、`status`(active\|inactive\|legacy, default active)。参与推荐的种子按 seed policy（窗口/半衰期/成熟度/预算）取前 K，超窗置 inactive。`idx_discovery_interest_run` UNIQUE 防同 run 重复写入。
 
 ### 11.9 feed_candidates（候选源库，v2；入库 ≠ 订阅）
 
@@ -145,7 +145,9 @@ UNIQUE(route_id, param_name, value) 复合唯一索引防同参数重复录入�
 
 | 表 | 关键字段 | 约束/索引 | 说明 |
 | -------- | ------ | ------ | ------ |
-| `candidate_embeddings` | `candidate_id` / `model` / `dimension` / `text_hash` / `embedding`(vector) | `idx_candidate_embedding_uniq` UNIQUE(candidate_id, model, dimension)；`text_hash` index | 有效介绍向量：文本 = 名称/网站/分类组/说明四段清洗限长（≤500 rune）拼装，指纹 = sha256(生成器版本+文本)，变化才重嵌（20 条/批）；不同模型旧行不删除也不得参与检索 |
+| `candidate_embeddings` | `candidate_id` / `model`(VARCHAR(100)) / `dimension` / `text_hash` / `embedding`(vector) | `idx_candidate_embedding_uniq` UNIQUE(candidate_id, model, dimension)；`text_hash` index | 有效介绍向量：文本 = 名称/网站/分类组/说明四段清洗限长（≤500 rune）拼装，指纹 = sha256(生成器版本+文本)，变化才重嵌（20 条/批）；不同模型旧行不删除也不得参与检索 |
+
+> **模型名列宽不变式（迁移 `20261103_0001`，fix-embedding-model-column-width）**：discovery 域四张向量表（`candidate_embeddings` / `preference_vectors` / `route_embeddings` / `discovery_interest_entries`）的 `model` 列宽 **MUST NOT 窄于**模型注册表 `ai_models.name`（均为 100）。这四张表存的是同一个值（embedding 模型名），窄列会让 discovery 链路复现 `SQLSTATE 22001` 写入失败；gorm tag（`size:50` → `size:100`）与 DDL 必须同批改，否则 AutoMigrate 会把列改回窄列。同族不变式见 [`topic-tags.md`](topic-tags.md) §4.2。
 | `candidate_availability` | `candidate_id` / `status`(unknown\|ok\|broken\|requires_parameters) / `next_check_at` / `last_error_code` / `last_endpoint_key` | `idx_candidate_availability_candidate` UNIQUE(candidate_id) | 实际端点可用性状态机：无记录=unknown 明示未验证不伪造时间；检查按实际配置地址发请求，单次超时不判坏 |
 
 ### 11.11 candidate_preferences（推荐生命周期，v2）

@@ -137,6 +137,7 @@ identity（同 persistent_topic）
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
+| 2026-11-03 | fix-embedding-model-column-width | `topic_tag_embeddings.model` 由 `VARCHAR(50)` 加宽到 `VARCHAR(100)`（与 `ai_models.name` 对齐）：本地 llama.cpp / GGUF embedding 模型以文件绝对路径注册（61 字符）超限 → `SQLSTATE 22001` → 标签向量落库被拒、embedding 队列批量失败（689 条）；建立「存 embedding 模型名列宽 MUST NOT 窄于模型注册表」不变式（数据驱动测试）；连带恢复被 GORM AutoMigrate 顺带 `DROP NOT NULL` 的 `model` 列约束（迁移 `20261103_0002`） | [`openspec/changes/archive/2026-11-03-fix-embedding-model-column-width`](../../../openspec/changes/archive/2026-11-03-fix-embedding-model-column-width) |
 | 2026-10-24 | add-intra-lane-theme-bucketing | 同一话题同一天可有多条 section（泳道内主题分桶/手动编排/watch 物化）：`planLifecycle` 命中按日去重、质心按 section 逐条均权计入（约束 11） | [`openspec/changes/archive/2026-10-28-add-intra-lane-theme-bucketing`](../../../openspec/changes/archive/2026-10-28-add-intra-lane-theme-bucketing) |
 | 2026-10-12 | add-topic-key-event-markers | 话题关键事件注记（人工主权层）：生命线/总览回看只透 confirmed（约束 10）、lanes ★n 徽标与焦点视图合并轴/失效快照注记；注记不参与生命周期状态机 | [`openspec/changes/add-topic-key-event-markers`](../../../openspec/changes/add-topic-key-event-markers) |
 | 2026-07-05 | manual-topic-lane | 手动建泳道：用户主动建 active topic（`source=manual`），次期接入 AND-gate；新增 `board_persistent_topics.source` 列 + `topic_match_confidence=manual` 第四态 | [`openspec/changes/archive/2026-07-05-manual-topic-lane`](../../../openspec/changes/archive/2026-07-05-manual-topic-lane) |

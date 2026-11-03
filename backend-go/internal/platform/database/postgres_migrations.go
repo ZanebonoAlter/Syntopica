@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -79,6 +80,39 @@ func columnIsNullable(db *gorm.DB, table, column string) bool {
 		return true
 	}
 	return nullable == "YES"
+}
+
+// columnExists reports whether a column exists on a table in the public schema.
+// Callers use it to skip DDL on columns that were never created (or were
+// dropped) — without the guard "column ... does not exist" aborts startup.
+func columnExists(db *gorm.DB, table, column string) bool {
+	var exists bool
+	if err := db.Raw(
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=? AND column_name=?)`,
+		table, column,
+	).Row().Scan(&exists); err != nil {
+		return false
+	}
+	return exists
+}
+
+// columnMaxLength reads the character length limit of a column
+// (information_schema.columns.character_maximum_length) — the same lookup
+// shape as columnIsNullable. Returns (limit, true) when the column exists AND
+// has a length limit; returns (0, false) when the column is missing or has no
+// limit at all (text and friends — nothing to widen there).
+func columnMaxLength(db *gorm.DB, table, column string) (int, bool) {
+	var maxLen sql.NullInt64
+	if err := db.Raw(
+		`SELECT character_maximum_length FROM information_schema.columns WHERE table_schema='public' AND table_name=? AND column_name=?`,
+		table, column,
+	).Row().Scan(&maxLen); err != nil {
+		return 0, false
+	}
+	if !maxLen.Valid {
+		return 0, false
+	}
+	return int(maxLen.Int64), true
 }
 
 // ensureNotNullDefault backfills NULL rows with a literal default value, then
@@ -2440,7 +2474,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, vendorModelMigration())
 	migrations = append(migrations, keyEventMarkersMigration())
 	migrations = append(migrations, pgTrgmMigration(), searchVectorDropMigration())
-	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration())
+	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration(), embeddingModelColumnWidthMigration(), embeddingModelNotNullMigration())
 }
 
 // intraLaneBucketColumnsMigration implements 20261024_0001
@@ -4326,6 +4360,117 @@ SELECT EXISTS (
 				return fmt.Errorf("create halfvec identity HNSW index (dim %d): %w", dim, err)
 			}
 			return nil
+		},
+	}
+}
+
+// embeddingModelNameTables 列出存 embedding 模型名的表——模型名取自模型注册表
+// ai_models.name。这五张表同病同源（注册表能放下 ⇒ 落库处必须放得下，
+// fix-embedding-model-column-width D1/D2），一次全修不分批。
+var embeddingModelNameTables = []string{
+	"topic_tag_embeddings",
+	"candidate_embeddings",
+	"preference_vectors",
+	"route_embeddings",
+	"discovery_interest_entries",
+}
+
+// embeddingModelNameColumnWidth 是 embedding 模型名列的目标宽度，与
+// ai_models.name（VARCHAR(100)）等宽——取注册表的实际列宽而非另取一个
+// 「够用」的数字，好让不变式可机械断言（D1）。
+const embeddingModelNameColumnWidth = 100
+
+// embeddingModelColumnWidthMigration implements 20261103_0001
+// (fix-embedding-model-column-width D1/D4): 把五张 embedding 表的 model 列
+// 从 VARCHAR(50) 加宽到 VARCHAR(100)，与模型注册表 ai_models.name 对齐。
+// 症状：本地 llama.cpp embedding 模型注册时「名字」是 GGUF 文件绝对路径
+// （61 字符），超限 11 字符 → SQLSTATE 22001 → 落库被拒 → embedding 队列
+// 批量失败（缓存命中时返回的 cached.Model 同值，同样炸）。
+//
+// 加宽是同类型 typmod 变更：不截断数据、不重写表体、存量向量零改动；
+// 含 model 的唯一索引（idx_candidate_embedding_uniq）随列宽重建。
+//
+// 幂等口径：列宽已达目标（或更宽）时**完全不动**——不 ALTER、不取锁、
+// 不重建索引。PG 实测：对已经是 varchar(100) 的列再执行
+// ALTER COLUMN model TYPE VARCHAR(100)，表体不重写（relfilenode 不变），
+// 但该列上的索引会被重建（索引 oid 变化），还白拿一次 ACCESS EXCLUSIVE
+// 锁——生产 Phase 1 的 AutoMigrate 已经先加宽过，这一步是纯浪费。
+// 跳过条件：表不存在（域模型未注册的部署）/ 列不存在 / 列无长度上限
+// （text 等）/ 列宽 ≥ 目标宽度。
+func embeddingModelColumnWidthMigration() Migration {
+	return Migration{
+		Version:     "20261103_0001",
+		Description: "fix-embedding-model-column-width: widen embedding model name columns to VARCHAR(100) to match ai_models.name (skips missing table/column, unlimited-width columns, and columns already at/beyond the target width — no ALTER, no lock, no index rebuild in that case)",
+		Up: func(db *gorm.DB) error {
+			// 先做便宜的 catalog 判定，只有真需要加宽的窄列才进 DDL 分支。
+			for _, table := range embeddingModelNameTables {
+				if !tableExists(db, table) {
+					continue // 域模型未注册的部署：跳过该表
+				}
+				width, ok := columnMaxLength(db, table, "model")
+				if !ok {
+					continue // 列不存在或无长度上限（text）：无从加宽
+				}
+				if width >= embeddingModelNameColumnWidth {
+					continue // 已是目标宽度或更宽：真 no-op
+				}
+				// ALTER COLUMN TYPE 拿 AccessExclusiveLock——用 lock_timeout 守卫，
+				// 抢不到锁就快速失败而不是无限阻塞写入（code-style 迁移规范）。
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN model TYPE VARCHAR(%d)", table, embeddingModelNameColumnWidth)
+					if err := tx.Exec(stmt).Error; err != nil {
+						return fmt.Errorf("widen %s.model to VARCHAR(%d): %w", table, embeddingModelNameColumnWidth, err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// embeddingModelNotNullMigration implements 20261103_0002
+// (fix-embedding-model-column-width 回归修复): 恢复 topic_tag_embeddings.model
+// 的 NOT NULL 约束——本 change 的上一版实现把它弄丢了。
+//
+// 事故链（已实证）：20260723_0001 用 ensureNotNullDefault 把
+// topic_tag_embeddings.model 固化为 NOT NULL（{"topic_tag_embeddings",
+// "model", "", true}）。本 change 把 gorm tag 从 size:50 改成 size:100 后，
+// Phase 1 的 GORM AutoMigrate 判定列宽不符 → 发出 ALTER COLUMN；
+// gorm.io/driver/postgres v1.5.11 的 AlterColumn 在 field.NotNull == false
+// （本仓库约定「not null 不写进 model tag」）时执行
+// ALTER COLUMN ... DROP NOT NULL → 把 20260723_0001 固化的约束静默丢弃。
+// 结果：生产库该列变成可空，而仓库自己的 constraints_test 断言它是 notNull
+// （该断言跑在全新 testcontainer 上，测不到生产这条路径）。
+//
+// 为什么必须是**第二个**迁移版本而不是改 0001 的 body：0001 已经在生产
+// 记录过，改 body 不会在生产重跑。
+// 为什么不给 gorm tag 加 not null：本仓库约定「not null 不写进 model tag、
+// 由显式迁移固化」（见 20260723_0001 的 Description），加 tag 会让
+// AutoMigrate 与显式迁移重新竞争。
+// 其余四张表（candidate_embeddings / preference_vectors / route_embeddings
+// / discovery_interest_entries）的 model 列本来就是可空，不动它们的空值性。
+//
+// 幂等：ensureNotNullDefault 只在列当前可空时回填 + SET NOT NULL；生产库
+// 当前 NULL 行数为 0，回填是空操作。
+func embeddingModelNotNullMigration() Migration {
+	return Migration{
+		Version:     "20261103_0002",
+		Description: "fix-embedding-model-column-width: restore NOT NULL on topic_tag_embeddings.model (silently dropped by AutoMigrate's ALTER COLUMN when the gorm tag width changed 50->100; NOT NULL stays owned by explicit migrations, never by model tags)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_tag_embeddings") {
+				return nil // 域模型未注册的部署：跳过
+			}
+			if !columnExists(db, "topic_tag_embeddings", "model") {
+				return nil // 列不存在：无从恢复
+			}
+			// SET NOT NULL 拿 AccessExclusiveLock 并全表扫描校验——用
+			// lock_timeout 守卫（code-style 迁移规范）。
+			return withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				return ensureNotNullDefault(tx, "topic_tag_embeddings", "model", "''")
+			})
 		},
 	}
 }

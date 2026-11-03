@@ -21,7 +21,7 @@ type PreferenceVector struct {
 	Source         string             `gorm:"size:20;uniqueIndex:idx_preference_vectors_board_source" json:"source"` // behavior | seed
 	EmbeddingVec   string             `gorm:"type:vector;column:embedding" json:"-"`
 	Dimension      int                `json:"dimension"`
-	Model          string             `gorm:"size:50" json:"model"`
+	Model          string             `gorm:"size:100" json:"model"`
 	TagWeights     models.MetadataMap `gorm:"type:jsonb;serializer:json;default:'{}'" json:"tag_weights"` // {tag_label: weight} top 列表
 	LastComputedAt time.Time          `json:"last_computed_at"`
 	CreatedAt      time.Time          `json:"created_at"`

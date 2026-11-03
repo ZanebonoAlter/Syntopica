@@ -62,7 +62,7 @@ type DiscoveryInterestEntry struct {
 	BoardID           *uint     `gorm:"index" json:"board_id,omitempty"`
 	EmbeddingVec      string    `gorm:"type:vector;column:embedding" json:"-"`
 	Dimension         int       `json:"dimension"`
-	Model             string    `gorm:"size:50" json:"model"`
+	Model             string    `gorm:"size:100" json:"model"`
 	EmbeddingConfigID *uint     `json:"embedding_config_id,omitempty"`
 	Status            string    `gorm:"size:20;default:'active'" json:"status"` // active | inactive | legacy_inactive
 	LegacyRef         string    `gorm:"size:128" json:"legacy_ref,omitempty"`   // 迁移溯源：旧 seed 行引用，可空
@@ -97,7 +97,7 @@ func (CandidatePreference) TableName() string { return "candidate_preferences" }
 type CandidateEmbedding struct {
 	ID                uint      `gorm:"primaryKey" json:"id"`
 	CandidateID       uint      `gorm:"uniqueIndex:idx_candidate_embedding_uniq" json:"candidate_id"`
-	Model             string    `gorm:"size:50;uniqueIndex:idx_candidate_embedding_uniq" json:"model"`
+	Model             string    `gorm:"size:100;uniqueIndex:idx_candidate_embedding_uniq" json:"model"`
 	Dimension         int       `gorm:"uniqueIndex:idx_candidate_embedding_uniq" json:"dimension"`
 	EmbeddingConfigID *uint     `json:"embedding_config_id,omitempty"`
 	TextHash          string    `gorm:"size:64;index" json:"text_hash"`

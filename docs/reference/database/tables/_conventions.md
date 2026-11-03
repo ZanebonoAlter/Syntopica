@@ -128,6 +128,26 @@
 
 ---
 
+## 模型名列宽规则总述
+
+embedding 模型名只有一个来源语义：`airouter.EmbeddingResult.Model` = 路由绑定的 `ai_models.name`。凡落库该值的列，列宽 **MUST NOT 窄于** `ai_models.name`（VARCHAR(100)）——注册表存得下的名字，任何落库处都必须存得下。
+
+| 表.列 | 列宽 | 说明 |
+| -------- | ------ | ------ |
+| `ai_models.name` | VARCHAR(100) | **基准**：模型注册表（vendor 内唯一） |
+| `ai_call_logs.model` | VARCHAR(100) | 调用日志快照 |
+| `ai_embedding_cache.model` | VARCHAR(100) | embedding 缓存行 |
+| `topic_tag_embeddings.model` | VARCHAR(100) | 标签向量（迁移 `20261103_0001` 由 50 加宽） |
+| `candidate_embeddings.model` | VARCHAR(100) | 候选向量（同迁移加宽） |
+| `preference_vectors.model` | VARCHAR(100) | 偏好向量（同迁移加宽） |
+| `route_embeddings.model` | VARCHAR(100) | 路由向量（同迁移加宽） |
+| `discovery_interest_entries.model` | VARCHAR(100) | 兴趣条目向量（同迁移加宽） |
+
+> 违反后果实测（2026-11-03，fix-embedding-model-column-width）：本地 llama.cpp / GGUF 模型把模型文件绝对路径当名字注册（61 字符）→ 超限 → Postgres 报 `SQLSTATE 22001`（value too long for type character varying）→ 整条 embedding 任务失败（向量已算出却存不进去）；且命中 embedding 缓存时返回的是缓存行里存的模型名，**主路由是短名模型也挡不住**。
+> 两条维护纪律：① gorm tag 与 DDL 必须同批改（`size:50` → `size:100`），否则 AutoMigrate 会把列改回窄列；② 列宽不变式由 `backend-go/internal/platform/database/embedding_model_column_width_test.go` 守住（新增窄列即红）。
+
+---
+
 ## FK 引用矩阵
 
 > **关键纠正**：本矩阵历史上的 30 行 `constraint_name`（如 `fk_feeds_articles`、`fk_categories_feeds`）**绝大多数在 DB 层并不存在**。下面拆成两部分——「真实 DB 级外键」与「GORM 应用层逻辑关联」。
