@@ -16,7 +16,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import SignalCandidateList from './SignalCandidateList.vue'
-import type { SignalCandidateRow, SignalResearchProgress } from '~/api/boardSignals'
+import type { SignalCandidateRow, SignalReportRow, SignalResearchProgress } from '~/api/boardSignals'
 
 vi.mock('@iconify/vue', () => ({
   Icon: { name: 'Icon', inheritAttrs: true, template: '<span class="icon-stub" aria-hidden="true" />' },
@@ -52,6 +52,23 @@ interface MountOptions {
   researchError?: string | null
   researchProgressLabel?: string
   researchProgress?: SignalResearchProgress | null
+  reports?: SignalReportRow[]
+  visibility?: 'visible' | 'ignored' | 'all'
+}
+
+function makeReport(id: number, sourceSignalId: number): SignalReportRow {
+  return {
+    id,
+    analysis_scope: 'board',
+    result_kind: 'signal_report',
+    semantic_board_id: 9,
+    granularity: 'month',
+    period: '2026-09',
+    source_signal_id: sourceSignalId,
+    sectors: {} as SignalReportRow['sectors'],
+    session_id: `s-${id}`,
+    created_at: '2026-09-23T12:00:00Z',
+  }
 }
 
 function makeProgress(overrides: Partial<SignalResearchProgress> = {}): SignalResearchProgress {
@@ -79,6 +96,11 @@ function mountList(opts: MountOptions = {}) {
     onResearch: vi.fn(),
     onOpenReport: vi.fn(),
     onOpenProgress: vi.fn(),
+    onSelect: vi.fn(),
+    onIgnore: vi.fn(),
+    onRestore: vi.fn(),
+    onSetVisibility: vi.fn(),
+    onSelectView: vi.fn(),
   }
   const wrapper = mount(SignalCandidateList, {
     props: {
@@ -95,6 +117,8 @@ function mountList(opts: MountOptions = {}) {
       researchError: opts.researchError ?? null,
       researchProgressLabel: opts.researchProgressLabel ?? '正在研究 · 决策上限 40 轮 · 可离开页面',
       researchProgress: opts.researchProgress ?? null,
+      reports: opts.reports ?? [],
+      visibility: opts.visibility ?? 'visible',
     },
     attrs: handlers,
   })
@@ -179,32 +203,36 @@ describe('SignalCandidateList 候选行（FE-2/FE-3）', () => {
   it('FE-2：只发被点候选的 research（其余行不跟跑）', async () => {
     const { wrapper, handlers } = mountList({ candidates: rows })
     const buttons = wrapper.findAll('[data-testid="signal-research"]')
-    expect(buttons).toHaveLength(2) // researching/reported 行不出现「深入分析」
+    expect(buttons).toHaveLength(1) // 只有 pending 行有「深入分析」；researching/reported 不出现
     await buttons[0]!.trigger('click')
     expect(handlers.onResearch).toHaveBeenCalledTimes(1)
     expect(handlers.onResearch).toHaveBeenCalledWith(31, { regenerate: false })
     wrapper.unmount()
   })
 
-  it('reported 行：主按钮「阅读报告」发 open-report(latest_result_id)，次级显式「重新研究」发 regenerate=true', async () => {
-    const { wrapper, handlers } = mountList({ candidates: rows })
+  it('reported 行：「阅读」发 open-report(latest_result_id)；版本数按 source_signal_id 统计；重研入口不在行内（在报告阅读视图）', async () => {
+    const { wrapper, handlers } = mountList({
+      candidates: rows,
+      reports: [makeReport(501, 33), makeReport(502, 33), makeReport(503, 31)],
+    })
     const row = wrapper.find('[data-candidate-id="33"]')
+    expect(row.text()).toContain('报告 ×2') // 版本数只统计本候选（503 属候选 31）
     await row.find('[data-testid="signal-open-report"]').trigger('click')
     expect(handlers.onOpenReport).toHaveBeenCalledTimes(1)
     expect(handlers.onOpenReport).toHaveBeenCalledWith(501)
-    await row.find('[data-testid="signal-regenerate"]').trigger('click')
-    expect(handlers.onResearch).toHaveBeenCalledTimes(1)
-    expect(handlers.onResearch).toHaveBeenCalledWith(33, { regenerate: true })
+    // 重新研究入口随列表退役：由报告阅读视图承接（确认预算后追加版本）
+    expect(row.find('[data-testid="signal-regenerate"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
-  it('发现中/研究中期间：深入分析按钮禁用（服务端 409 互斥的前端表现）', () => {
+  it('发现中/研究中期间：深入分析与忽略按钮禁用（服务端 409 互斥的前端表现）', () => {
     const { wrapper } = mountList({ candidates: rows, discoveryRunning: true })
     for (const btn of wrapper.findAll('[data-testid="signal-research"]')) {
       expect((btn.element as HTMLButtonElement).disabled).toBe(true)
     }
-    const regen = wrapper.find('[data-testid="signal-regenerate"]')
-    expect((regen.element as HTMLButtonElement).disabled).toBe(true)
+    const ignore = wrapper.find('[data-testid="signal-ignore"]')
+    expect((ignore.element as HTMLButtonElement).disabled).toBe(true)
+    expect(ignore.attributes('title')).toContain('结束后')
     wrapper.unmount()
   })
 
@@ -414,6 +442,100 @@ describe('SignalCandidateList 历史研究进展入口（4.8）', () => {
     expect(wrapper.find('[data-testid="signal-history-progress"]').exists()).toBe(false)
     // 失败区恰一个 trace
     expect(wrapper.findAll('[data-testid="signal-research-trace"]').length).toBe(1)
+    wrapper.unmount()
+  })
+})
+
+describe('SignalCandidateList 索引筛选 tab（4.1）', () => {
+  const rows = [
+    makeCandidate({ id: 31, status: 'pending' }),
+    makeCandidate({ id: 32, status: 'researching', signal: '产量两周没增加，是不想多生产，还是做不到？' }),
+    makeCandidate({ id: 33, status: 'reported', latest_result_id: 501 }),
+  ]
+
+  it('筛选 tab 全部服务端化（R-2）：行集不客户端过滤，tab 点击 emit select-view（view 分页前生效）', async () => {
+    const { wrapper, handlers } = mountList({ candidates: rows })
+    expect(wrapper.findAll('[data-candidate-id]')).toHaveLength(3)
+
+    await wrapper.find('[data-testid="signal-tab-pending"]').trigger('click')
+    expect(handlers.onSelectView).toHaveBeenCalledWith({ visibility: 'visible', view: 'pending' })
+    // 行集由服务端 view 决定，组件不做客户端 status 过滤
+    expect(wrapper.findAll('[data-candidate-id]')).toHaveLength(3)
+
+    await wrapper.find('[data-testid="signal-tab-readable"]').trigger('click')
+    expect(handlers.onSelectView).toHaveBeenLastCalledWith({ visibility: 'visible', view: 'readable' })
+
+    await wrapper.find('[data-testid="signal-tab-all"]').trigger('click')
+    expect(handlers.onSelectView).toHaveBeenLastCalledWith({ visibility: 'visible', view: 'all' })
+    expect(wrapper.findAll('[data-candidate-id]')).toHaveLength(3)
+    wrapper.unmount()
+  })
+
+  it('切「已忽略」tab emit select-view(ignored, all)（服务端视图重拉）；未研究 tab emit visible+pending', async () => {
+    const { wrapper, handlers } = mountList({ candidates: rows })
+    await wrapper.find('[data-testid="signal-tab-ignored"]').trigger('click')
+    expect(handlers.onSelectView).toHaveBeenCalledWith({ visibility: 'ignored', view: 'all' })
+    await wrapper.find('[data-testid="signal-tab-pending"]').trigger('click')
+    expect(handlers.onSelectView).toHaveBeenLastCalledWith({ visibility: 'visible', view: 'pending' })
+    // 组件不发任何研究/忽略请求——视图切换只重拉列表（FE-1 边界）
+    expect(handlers.onResearch).not.toHaveBeenCalled()
+    expect(handlers.onIgnore).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('空态区分：默认空=本周期无候选；已忽略视图空=没有已忽略的候选', async () => {
+    const { wrapper } = mountList()
+    expect(wrapper.find('[data-testid="signal-candidates-empty"]').text()).toContain('本周期还没有候选信号')
+    await wrapper.find('[data-testid="signal-tab-ignored"]').trigger('click')
+    expect(wrapper.find('[data-testid="signal-candidates-empty"]').text()).toContain('没有已忽略的候选')
+    wrapper.unmount()
+  })
+
+  it('索引底部显示「已加载 N 条」（当前实际加载条数，不冒充周期总数）', () => {
+    const { wrapper } = mountList({ candidates: rows })
+    expect(wrapper.find('[data-testid="signal-loaded-count"]').text()).toBe('已加载 3 条')
+    wrapper.unmount()
+  })
+})
+
+describe('SignalCandidateList 忽略/恢复与行选中（4.1/S9）', () => {
+  it('visible 视图行显示忽略按钮：点击只 emit ignore，不触发 research/open-report/行选中', async () => {
+    const { wrapper, handlers } = mountList({ candidates: [makeCandidate({ id: 31 })] })
+    const ignore = wrapper.find('[data-testid="signal-ignore"]')
+    expect(ignore.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="signal-restore"]').exists()).toBe(false)
+    await ignore.trigger('click')
+    expect(handlers.onIgnore).toHaveBeenCalledTimes(1)
+    expect(handlers.onIgnore).toHaveBeenCalledWith(31)
+    expect(handlers.onResearch).not.toHaveBeenCalled()
+    expect(handlers.onOpenReport).not.toHaveBeenCalled()
+    expect(handlers.onSelect).not.toHaveBeenCalled() // 动作按钮不冒泡触发行选中
+    wrapper.unmount()
+  })
+
+  it('已忽略视图行显示恢复按钮：切 tab 后点击 emit restore（不触发研究）', async () => {
+    const { wrapper, handlers } = mountList({
+      candidates: [makeCandidate({ id: 41, ignored_at: '2026-09-23T00:00:00Z', status: 'reported', latest_result_id: 501 })],
+      visibility: 'ignored',
+    })
+    await wrapper.find('[data-testid="signal-tab-ignored"]').trigger('click')
+    const restore = wrapper.find('[data-testid="signal-restore"]')
+    expect(restore.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="signal-ignore"]').exists()).toBe(false)
+    // 已忽略候选的既有报告仍可读（阅读按钮保留）
+    expect(wrapper.find('[data-testid="signal-open-report"]').exists()).toBe(true)
+    await restore.trigger('click')
+    expect(handlers.onRestore).toHaveBeenCalledTimes(1)
+    expect(handlers.onRestore).toHaveBeenCalledWith(41)
+    expect(handlers.onResearch).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('行点击选中：emit select（窄屏进详情/宽屏开详情由父级决定）', async () => {
+    const { wrapper, handlers } = mountList({ candidates: [makeCandidate({ id: 31 })] })
+    await wrapper.find('[data-testid="signal-candidate-row"]').trigger('click')
+    expect(handlers.onSelect).toHaveBeenCalledTimes(1)
+    expect(handlers.onSelect).toHaveBeenCalledWith(31)
     wrapper.unmount()
   })
 })

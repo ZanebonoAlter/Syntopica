@@ -21,7 +21,7 @@
  *
  * 设计依据：section-lifecycle spec「编排态候选池语义搜索」「候选话题引导」Requirement。
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import AppInput from '~/components/ui/AppInput.vue'
 import AppButton from '~/components/ui/AppButton.vue'
 import type { Recommendations, SidebarCandidateItem } from '~/features/tags/composables/useInlineCompose'
@@ -58,6 +58,12 @@ const brokenGroup = computed(() => props.items.filter(i => i.brokenStreak))
 
 /** 「已中断」组默认折叠（让位主组 + section 推荐），点标题展开。 */
 const brokenCollapsed = ref(true)
+
+// 没有「正在连续命中」候选时，「已中断」就是唯一可用候选，默认展开，
+// 否则真实数据下侧栏只剩一个计数按钮（S3 主链路不可达）。
+watch(mainGroup, (group) => {
+  if (group.length === 0) brokenCollapsed.value = false
+}, { immediate: true })
 
 /** 推荐区可见性：两组皆空（无勾选/无匹配）→ 隐藏。 */
 const hasRecommendations = computed(() =>
@@ -161,6 +167,7 @@ function onQuery(value: string | number): void {
           </div>
           <p class="cs-card__meta">
             连续 {{ item.topic.consecutive_hits }} 天 · 含 {{ item.topic.section_count }} 条 section
+            <template v-if="item.topic.last_seen_date"> · 最近 {{ item.topic.last_seen_date.slice(0, 10) }}</template>
           </p>
           <div class="cs-card__actions">
             <div class="cs-card__activate">
@@ -219,7 +226,10 @@ function onQuery(value: string | number): void {
               <span class="cs-card__label">{{ item.topic.label }}</span>
               <span class="cs-card__streak">近期未命中</span>
             </div>
-            <p class="cs-card__meta">含 {{ item.topic.section_count }} 条 section</p>
+            <p class="cs-card__meta">
+              含 {{ item.topic.section_count }} 条 section
+              <template v-if="item.topic.last_seen_date"> · 最近 {{ item.topic.last_seen_date.slice(0, 10) }}</template>
+            </p>
             <div class="cs-card__actions">
               <AppButton size="sm" variant="secondary" @click="emit('adopt', item)">
                 采纳

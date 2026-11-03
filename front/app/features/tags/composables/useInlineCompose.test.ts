@@ -336,15 +336,16 @@ describe('adopt（采纳预填名并预勾相关 section）', () => {
     expect(c.selectedIds.value.has('p2')).toBe(true)
     expect(c.selectedIds.value.has('p3')).toBe(false)
     expect(c.selectedIds.value.has('p4')).toBe(false)
-    // owned（有 persistentTopicId）不被预勾
-    expect(c.selectedIds.value.has('o1')).toBe(false)
-    expect(c.selectedIds.value.size).toBe(2)
+    // 该候选自己的全部 section 先进入成员（spec adopt 场景），再补相似待确认
+    expect(c.selectedIds.value.has('o1')).toBe(true)
+    expect(c.selectedIds.value.has('o2')).toBe(true)
+    expect(c.selectedIds.value.size).toBe(4)
     // 纯前端：不调任何 API
     expect(api.createManualLane).not.toHaveBeenCalled()
     expect(api.updateTopic).not.toHaveBeenCalled()
   })
 
-  it('截断到 adoptPreselectCap（取最近者）', async () => {
+  it('截断到 adoptPreselectCap（owned 优先，再取最近相似）', async () => {
     const pool = [
       cand('o1', { embedding: [1, 0], persistentTopicId: '20', persistentTopic: { id: '20', label: '美伊博弈', status: 'active' } }),
       cand('p1', { embedding: [1, 0] }),       // 距 centroid 0
@@ -366,7 +367,7 @@ describe('adopt（采纳预填名并预勾相关 section）', () => {
     await c.adopt(c.sidebarItems.value[0]!)
     await nextTick()
     expect(c.selectedIds.value.size).toBe(1)
-    expect(c.selectedIds.value.has('p1')).toBe(true) // 最近者
+    expect(c.selectedIds.value.has('o1')).toBe(true) // owned 优先
   })
 
   it('在已有勾选基础上追加（不替换）', async () => {
@@ -384,6 +385,7 @@ describe('adopt（采纳预填名并预勾相关 section）', () => {
     await nextTick()
     expect(c.selectedIds.value.has('p2')).toBe(true) // 原有保留
     expect(c.selectedIds.value.has('p1')).toBe(true) // 新增
+    expect(c.selectedIds.value.has('o1')).toBe(true) // owned 并入
     expect(c.selectedIds.value.has('p3')).toBe(false)
   })
 })

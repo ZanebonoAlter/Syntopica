@@ -2,6 +2,7 @@ import { ref, computed, onUnmounted } from "vue";
 import { useNotify } from "~/composables/useNotify";
 import {
   useBoardSignalsApi,
+  type SignalCandidateDetail,
   type SignalCandidateRow,
   type SignalGranularity,
   type SignalReportDetail,
@@ -46,6 +47,12 @@ export function useSignalWorkbench() {
   const reportsLoading = ref(false);
   const reportsError = ref<string | null>(null);
 
+  // ── 候选处理筛选（redesign-enrichment-research-workbench D2）：新工作台显式
+  // 用 visible；已忽略视图读 ignored；all 保留旧客户端兼容语义。─────
+  const candidateVisibility = ref<"visible" | "ignored" | "all">("visible");
+  // view 筛选（R-2）：pending/readable 在服务端分页前生效；省略 all 兼容旧客户端。
+  const candidateView = ref<"all" | "pending" | "readable">("all");
+
   // ── discovery 任务态（同板块同时最多一个 discovery job）────────────────
   const discoveryRunning = ref(false);
   const discoveryPhase = ref<string | null>(null);
@@ -60,12 +67,81 @@ export function useSignalWorkbench() {
   // 计算y」契约）：进行中每轮轮询顺带拉取；失败/404 终态保留供全程回看；
   // 成功清空（报告 appendix 接管每步链路展示）。
   const researchProgress = ref<SignalResearchProgress | null>(null);
+  // 任务所属周期快照（D6 任务可找回）：startResearchPoll 时冻结。
+  const researchTaskPeriod = ref<string>("");
+  const researchTaskGranularity = ref<SignalGranularity>("month");
 
   // ── 报告阅读视图 ───────────────────────────────────────────────────────
   const activeReportId = ref<number | null>(null);
   const activeReport = ref<SignalReportDetail | null>(null);
   const activeReportLoading = ref(false);
   const activeReportError = ref<string | null>(null);
+
+  // ── 候选详情（分页外选中项 + 相关话题；redesign 2.2/2.3）：独立加载，
+  // 不清后台 job，epoch 守卫防跨 scope 晚响应串台。────────────────
+  const activeCandidateId = ref<number | null>(null);
+  const activeCandidate = ref<SignalCandidateDetail | null>(null);
+  const activeCandidateLoading = ref(false);
+  const activeCandidateError = ref<string | null>(null);
+
+  async function openCandidate(boardId: number, candidateId: number): Promise<void> {
+    bindBoard(boardId);
+    const epoch = viewEpoch;
+    activeCandidateId.value = candidateId;
+    activeCandidateLoading.value = true;
+    activeCandidateError.value = null;
+    try {
+      const res = await api.getSignalCandidate(boardId, candidateId);
+      if (!stillCurrent(epoch, boardId)) return; // 晚响应不串台
+      if (res.success && res.data) {
+        activeCandidate.value = res.data;
+      } else {
+        activeCandidate.value = null;
+        activeCandidateError.value = res.error || "候选详情加载失败";
+      }
+    } finally {
+      if (stillCurrent(epoch, boardId)) activeCandidateLoading.value = false;
+    }
+  }
+
+  function closeCandidate() {
+    activeCandidateId.value = null;
+    activeCandidate.value = null;
+    activeCandidateLoading.value = false;
+    activeCandidateError.value = null;
+  }
+
+  // ── 忽略/恢复（S9）：PUT disposition；成功后重拉列表 + 刷新已打开的详情。
+  // 运行中 409 由服务端裁决，前端提示不重试。失败不部分改数据（列表原状）。
+  async function ignoreCandidate(boardId: number, candidateId: number): Promise<boolean> {
+    const epoch = viewEpoch;
+    const res = await api.putSignalDisposition(boardId, candidateId, true);
+    if (!stillCurrent(epoch, boardId)) return false; // R-6：切板块后到达的续体丢弃，不写旧板块视图
+    if (res.success) {
+      if (activeCandidateId.value === candidateId) await openCandidate(boardId, candidateId);
+      await loadCandidates(boardId);
+      return true;
+    }
+    if (res.status === 409) {
+      notifyWarn("任务运行中的候选不能忽略，请等任务结束");
+      return false;
+    }
+    notifyError(res.error || "忽略失败，现场未变更");
+    return false;
+  }
+
+  async function restoreCandidate(boardId: number, candidateId: number): Promise<boolean> {
+    const epoch = viewEpoch;
+    const res = await api.putSignalDisposition(boardId, candidateId, false);
+    if (!stillCurrent(epoch, boardId)) return false; // R-6：同上
+    if (res.success) {
+      if (activeCandidateId.value === candidateId) await openCandidate(boardId, candidateId);
+      await loadCandidates(boardId);
+      return true;
+    }
+    notifyError(res.error || "恢复失败，现场未变更");
+    return false;
+  }
 
   // ── 视图守卫（切板块隔离：epoch+boardId，迟到响应全数丢弃）────────────
   let viewBoardId: number | null = null;
@@ -101,6 +177,8 @@ export function useSignalWorkbench() {
     researchCandidateId.value = null;
     researchJobId.value = null;
     researchProgress.value = null;
+    researchTaskPeriod.value = "";
+    closeCandidate();
     closeReport();
   }
 
@@ -131,14 +209,21 @@ export function useSignalWorkbench() {
     bindBoard(boardId);
     if (!period.value) return;
     const epoch = viewEpoch;
+    // 请求级参数快照（R-9 补）：响应到达时筛选已变 → 丢弃，防止慢的旧筛选响应
+    // 覆盖新筛选结果（epoch 只防跨板块，不防同板块内连点筛选的乱序）。
+    const reqVisibility = candidateVisibility.value;
+    const reqView = candidateView.value;
     candidatesLoading.value = true;
     candidatesError.value = null;
     try {
       const res = await api.listSignalCandidates(boardId, {
         granularity: granularity.value,
         period: period.value,
+        visibility: reqVisibility,
+        view: reqView,
       });
       if (!stillCurrent(epoch, boardId)) return; // 迟到响应丢弃
+      if (reqVisibility !== candidateVisibility.value || reqView !== candidateView.value) return;
       if (res.success && Array.isArray(res.data)) {
         candidates.value = res.data;
       } else {
@@ -148,6 +233,23 @@ export function useSignalWorkbench() {
     } finally {
       if (stillCurrent(epoch, boardId)) candidatesLoading.value = false;
     }
+  }
+
+  /** 切换可见性筛选（visible/ignored/all）：只重拉列表，不动任务身份。 */
+  async function setCandidateVisibility(boardId: number, visibility: "visible" | "ignored" | "all"): Promise<void> {
+    if (candidateVisibility.value === visibility) return;
+    candidateVisibility.value = visibility;
+    await loadCandidates(boardId);
+  }
+
+  /** 切换筛选 tab（R-2）：visibility + view 一起提交，服务端分页前筛选。 */
+  async function selectCandidateView(
+    boardId: number,
+    payload: { visibility: "visible" | "ignored" | "all"; view: "all" | "pending" | "readable" },
+  ): Promise<void> {
+    candidateVisibility.value = payload.visibility;
+    candidateView.value = payload.view;
+    await loadCandidates(boardId);
   }
 
   async function loadReports(boardId: number): Promise<void> {
@@ -191,7 +293,13 @@ export function useSignalWorkbench() {
       const kind = res.data.job_kind;
       if (kind === "board_signal_report" && researchCandidateId.value === null) {
         notifyWarn("研究进行中，已恢复进度显示");
-        startResearchPoll(boardId, res.data.job_id, res.data.candidate_id ?? 0, epoch);
+        // R-16 连带：恢复时任务周期用 job 自带的（当前视图可能停在别的周期）。
+        const jobGran = (res.data.granularity as SignalGranularity | undefined) ?? granularity.value;
+        const jobPeriod = (res.data.period as string | undefined) ?? period.value;
+        startResearchPoll(boardId, res.data.job_id, res.data.candidate_id ?? 0, epoch, {
+          granularity: jobGran,
+          period: jobPeriod,
+        });
       } else if (kind === "board_signal_discovery" && discoveryRunning.value === false) {
         notifyWarn("信号发现进行中，已恢复进度显示");
         startDiscoveryPoll(boardId, res.data.job_id, epoch);
@@ -389,18 +497,46 @@ export function useSignalWorkbench() {
       notifyWarn("该板块的旧版任务（简报/调查）正在运行，完成后才能深入研究");
       return false;
     }
+    // R-7：409 candidate_ignored 出中文提示（不误轮询——无 job_id 不会恢复任务）。
+    if (res.status === 409 && res.data && typeof res.data === "object" && "reason" in res.data) {
+      const reason = (res.data as { reason?: string }).reason;
+      if (reason === "candidate_ignored") {
+        notifyWarn("该线索已忽略，请先在已忽略视图恢复后再研究");
+        researchError.value = "该线索已忽略，请先恢复后再研究";
+        return false;
+      }
+    }
     researchError.value = res.error || "深入研究失败";
     return false;
   }
 
-  function startResearchPoll(boardId: number, jobId: string, candidateId: number, epoch: number) {
+  function startResearchPoll(
+    boardId: number,
+    jobId: string,
+    candidateId: number,
+    epoch: number,
+    taskPeriod?: { granularity: SignalGranularity; period: string },
+  ) {
     stopResearchPoll();
     researchJobId.value = jobId;
     researchCandidateId.value = candidateId;
+    // 任务身份快照（D6）：切周期/候选后任务可找回——入口可返回任务所属周期。
+    // 恢复场景（R-16）传 job 自带周期；新启动用当前视图周期。
+    researchTaskPeriod.value = taskPeriod?.period ?? period.value;
+    researchTaskGranularity.value = taskPeriod?.granularity ?? granularity.value;
     researchPhase.value = "research";
     researchProgress.value = null;
     const gen = researchPollGen;
     scheduleResearchPoll(boardId, jobId, candidateId, epoch, gen, 0);
+  }
+
+  /** 返回任务所属周期（任务入口）：不同周期先切过去（拉取后由调用方选中候选）。 */
+  async function returnToResearchTask(boardId: number): Promise<boolean> {
+    if (researchCandidateId.value === null) return false;
+    if (researchTaskPeriod.value && researchTaskPeriod.value !== period.value) {
+      return changePeriod(boardId, researchTaskGranularity.value, researchTaskPeriod.value);
+    }
+    return true;
   }
 
   function scheduleResearchPoll(boardId: number, jobId: string, candidateId: number, epoch: number, gen: number, delayMs: number) {
@@ -532,12 +668,17 @@ export function useSignalWorkbench() {
     granularity, period, changePeriod,
     // 列表
     candidates, candidatesLoading, candidatesError, loadCandidates,
+    candidateVisibility, setCandidateVisibility, candidateView, selectCandidateView,
     reports, reportsLoading, reportsError, loadReports, loadPeriod,
     // 发现
     discoveryRunning, discoveryPhase, discoveryError, discover,
     // 研究
     researchCandidateId, researchPhase, researchError, researchJobId,
     research, researchProgressLabel, researchProgress, openProgressHistory,
+    researchTaskPeriod, researchTaskGranularity, returnToResearchTask,
+    // 候选详情与忽略/恢复（redesign 2.2/S9）
+    activeCandidateId, activeCandidate, activeCandidateLoading, activeCandidateError,
+    openCandidate, closeCandidate, ignoreCandidate, restoreCandidate,
     // 报告阅读
     activeReportId, activeReport, activeReportLoading, activeReportError,
     openReport, closeReport,

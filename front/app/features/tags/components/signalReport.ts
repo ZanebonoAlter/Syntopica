@@ -3,6 +3,7 @@
 import type {
   SignalAppendixCall,
   SignalAppendixObservation,
+  SignalAppendixSource,
   SignalCandidateStatus,
   SignalCalculation,
   SignalGranularity,
@@ -13,9 +14,11 @@ import type {
 export type {
   SignalAppendixCall,
   SignalAppendixObservation,
+  SignalAppendixSource,
   SignalCandidateStatus,
   SignalCalculation,
   SignalGranularity,
+  SignalReportAnswer,
   SignalReportChart,
   SignalReportPayload,
 } from "~/api/boardSignals";
@@ -29,13 +32,14 @@ export type {
 export type SignalRefToken =
   | { type: "data"; ref: string }
   | { type: "calc"; ref: string }
-  | { type: "news"; ref: string };
+  | { type: "news"; ref: string }
+  | { type: "source"; ref: string };
 
 export type SignalTextSegment =
   | { kind: "text"; text: string }
   | { kind: "ref"; token: SignalRefToken };
 
-const REF_TOKEN_RE = /\[\[(data|calc|news):([^\]]+)\]\]/g;
+const REF_TOKEN_RE = /\[\[(data|calc|news|source):([^\]]+)\]\]/g;
 
 /** 把一段含引用 token 的正文切成纯文本段与引用段（无 token 时返回单文本段）。 */
 export function parseSignalReferenceTokens(text: string): SignalTextSegment[] {
@@ -50,6 +54,7 @@ export function parseSignalReferenceTokens(text: string): SignalTextSegment[] {
     const ref = (match[2] ?? "").trim();
     if (kind === "data") segments.push({ kind: "ref", token: { type: "data", ref } });
     else if (kind === "calc") segments.push({ kind: "ref", token: { type: "calc", ref } });
+    else if (kind === "source") segments.push({ kind: "ref", token: { type: "source", ref } });
     else segments.push({ kind: "ref", token: { type: "news", ref } });
     cursor = index + match[0].length;
   }
@@ -102,6 +107,26 @@ export function formatObservationValue(obs: SignalAppendixObservation): string {
   return String(obs.value);
 }
 
+/**
+ * 阅读短格式（redesign-enrichment-research-workbench D5）：常规值最多两位小数；
+ * 极小非零保留量级绝不显示成 0；空串/null → 缺失；非法/超安全大数保留原样。
+ * raw 字符串本身永不变更——核查区（附录/标题）展示源精度原值。
+ */
+export function formatReadingValue(raw: string | null | undefined): string {
+  if (raw === null || raw === undefined) return "缺失";
+  const trimmed = String(raw).trim();
+  if (trimmed === "") return "缺失";
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) return trimmed;
+  if (value === 0) return "0";
+  if (Math.abs(value) < 0.01) {
+    const precise = value.toPrecision(2);
+    if (precise.includes("e")) return precise;
+    return precise.replace(/0+$/, "").replace(/\.$/, "");
+  }
+  return String(Math.round(value * 100) / 100);
+}
+
 /** 查 [[data:cN:oM]]：在 appendix.calls 的观测全集里找观测行。 */
 export function resolveDataRef(
   ref: string,
@@ -148,6 +173,11 @@ export function resolveCalcRef(
 }
 
 /** 附录锚点 DOM id（ref 里的冒号换成连字符，保证选择器安全）。 */
+/** question-v1 文字来源的附录锚点（appendix.sources 行）。 */
+export function sourceAnchorId(id: string): string {
+  return `signal-source-${id}`;
+}
+
 export function appendixAnchorId(ref: string): string {
   return `signal-app-${ref.replace(/:/g, "-").replace(/[^a-zA-Z0-9_-]/g, "")}`;
 }
@@ -415,6 +445,7 @@ export function buildSegmentViews(
   text: string,
   calls: SignalAppendixCall[],
   calculations: SignalCalculation[],
+  sources?: SignalAppendixSource[],
 ): TextSegmentView[] {
   return parseSignalReferenceTokens(text).map((seg) => {
     if (seg.kind === "text") return seg;
@@ -422,12 +453,14 @@ export function buildSegmentViews(
     if (token.type === "data") {
       const obs = resolveDataRef(token.ref, calls);
       if (!obs) return { kind: "ref", view: null };
+      // 阅读层短格式（D5）：显示值用阅读短格式；原值/raw 在标题与附录核查区。
+      const display = formatReadingValue(obs.display);
       return {
         kind: "ref",
         view: {
           token,
-          label: obs.unit ? `${obs.display} ${obs.unit}` : obs.display,
-          title: `${obs.seriesLabel} · ${obs.period}${obs.missing ? " · 值缺失" : ""}${obs.question ? ` · 查询问题：${obs.question}` : ""}`,
+          label: obs.unit ? `${display} ${obs.unit}` : display,
+          title: `${obs.seriesLabel} · ${obs.period}${obs.missing ? " · 值缺失" : " · 原值 " + obs.display}${obs.question ? ` · 查询问题：${obs.question}` : ""}`,
           anchor: appendixAnchorId(token.ref),
           clickable: true,
         },
@@ -436,13 +469,29 @@ export function buildSegmentViews(
     if (token.type === "calc") {
       const calc = resolveCalcRef(token.ref, calculations);
       if (!calc) return { kind: "ref", view: null };
+      const display = formatReadingValue(calc.display);
       return {
         kind: "ref",
         view: {
           token,
-          label: calc.unit ? `${calc.display} ${calc.unit}` : calc.display,
-          title: `${calc.op}：${calc.expression}（代码计算，最多 ${calc.precision} 位小数）${calc.notOkReason ? ` · ${calc.notOkReason}` : ""}`,
+          label: calc.unit ? `${display} ${calc.unit}` : display,
+          title: `${calc.op}：${calc.expression}（代码计算，最多 ${calc.precision} 位小数；原值 ${calc.display}）${calc.notOkReason ? ` · ${calc.notOkReason}` : ""}`,
           anchor: appendixAnchorId(token.ref),
+          clickable: true,
+        },
+      };
+    }
+    if (token.type === "source") {
+      // question-v1 文字来源：只在本次已读证据集内解析（悬空=占位不崩）。
+      const src = sources?.find((x) => x.id === token.ref);
+      if (!src) return { kind: "ref", view: null };
+      return {
+        kind: "ref",
+        view: {
+          token,
+          label: `〔${src.title || token.ref}〕`,
+          title: `文字来源 ${token.ref}：${src.title}${src.url ? ` · ${src.url}` : ""}（点击定位核查区片段）`,
+          anchor: sourceAnchorId(token.ref),
           clickable: true,
         },
       };
@@ -466,12 +515,50 @@ export function buildParagraphViews(
   text: string,
   calls: SignalAppendixCall[],
   calculations: SignalCalculation[],
+  sources?: SignalAppendixSource[],
 ): TextSegmentView[][] {
   return text
     .split(/\n+/)
     .map((p) => p.trim())
     .filter((p) => p !== "")
-    .map((p) => buildSegmentViews(p, calls, calculations));
+    .map((p) => buildSegmentViews(p, calls, calculations, sources));
+}
+
+/** question-v1 答题范围的中文短标签（非可信度、非任务状态）。 */
+export function answerStatusLabel(status?: string): string {
+  switch (status) {
+    case "explained":
+      return "已解释";
+    case "partial":
+      return "部分回答";
+    case "unresolved":
+      return "暂无法判断";
+    default:
+      return "";
+  }
+}
+
+/** 来源时间行：发布时间（未知如实标注）+ 取回/冻结时间 + 事后核查说明。 */
+export function sourceTemporalLine(src: SignalAppendixSource): string {
+  const published = src.published_at ? new Date(src.published_at).toISOString().slice(0, 10) : "日期未知";
+  const retrieved = src.fetched_at
+    ? `取回 ${src.fetched_at.slice(0, 10)}`
+    : src.captured_at
+      ? `冻结 ${src.captured_at.slice(0, 10)}`
+      : "";
+  const tag = src.kind === "web_page" ? "（事后核查材料）" : "";
+  return [published ? `发布 ${published}` : "", retrieved, tag].filter(Boolean).join(" · ").trim();
+}
+
+/** 外链安全检查：仅 http(s) 且无 userinfo；其余不渲染为链接（纯文本展示）。 */
+export function isSafeHttpUrl(raw?: string): boolean {
+  if (!raw) return false;
+  try {
+    const u = new URL(raw);
+    return (u.protocol === "http:" || u.protocol === "https:") && u.username === "" && u.password === "";
+  } catch {
+    return false;
+  }
 }
 
 // ── 附录表行（观测全集 / 计算全集）─────────────────────────────────────

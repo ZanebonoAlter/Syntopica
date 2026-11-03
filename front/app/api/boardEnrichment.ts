@@ -598,6 +598,39 @@ export interface BoardAnalysisResultRow {
 	[key: string]: unknown;
 }
 
+// ── 旧研究历史只读列表（redesign-enrichment-research-workbench 5.2）─────────
+
+/** 旧研究历史列表行（后端 repository.LegacyHistoryRow 镜像）：仅身份字段、
+ * 无正文——正文走既有单结果详情接口（board 档 GET /analysis/results/:id，
+ * topic 档 GET /persistent-topics/:tid/enrichment/results/:id）。
+ * signal_report 永不出现在此集合（新报告走独立列表）。 */
+export interface LegacyHistoryRow {
+	id: number;
+	result_kind: ResultKind;
+	analysis_scope: "board" | "topic" | string;
+	persistent_topic_id?: number | null;
+	semantic_board_id?: number | null;
+	created_at?: string;
+	session_id?: string;
+}
+
+/** 旧研究历史 kind（后端 ValidLegacyHistoryKind 白名单）。 */
+export type LegacyHistoryKind =
+	| "board_brief"
+	| "board_investigation"
+	| "legacy_board_analysis"
+	| "topic_analysis";
+
+/** listLegacyHistory 查询参数（驼峰，封装层转后端下划线 query）。 */
+export interface LegacyHistoryQuery {
+	kind?: LegacyHistoryKind;
+	topicId?: number;
+	/** 排他 id 游标：只取 id < beforeId（0/缺省 = 从头开始）。 */
+	beforeId?: number;
+	/** 页大小：后端默认 20、上限 100。 */
+	limit?: number;
+}
+
 // ── analysis body（按 form 多态：每个 variant 形状不同）────────────────────
 /** event_chain 的 analysis 体：事实层 + 时间线 + 洞察层（+ 可选深度层）。 */
 export interface AnalysisEventChain {
@@ -856,15 +889,25 @@ export interface AskQAResponse {
 // ── API factory ─────────────────────────────────────────────────────────────
 
 export function useBoardEnrichmentApi() {
+	// contexts 可选归属校验参数（redesign-enrichment-research-workbench D2）：
+	// 新多 scope 界面传 semanticBoardId 供后端校验 topic 归属；不传省略 → 旧客户端行为不变。
+	function contextQuery(granularity?: ContextGranularity, semanticBoardId?: number): string {
+		const params = new URLSearchParams();
+		if (granularity) params.set("granularity", granularity);
+		if (semanticBoardId !== undefined) params.set("semantic_board_id", String(semanticBoardId));
+		const qs = params.toString();
+		return qs ? `?${qs}` : "";
+	}
+
 	// ── Table 1: contexts (period-archival: keyed by granularity+period) ────
 	/** 拉所有 contexts；传 granularity 则按粒度过滤（用于周期筛选器翻历史）。 */
 	async function listContexts(
 		topicId: number,
 		granularity?: ContextGranularity,
+		semanticBoardId?: number,
 	): Promise<ApiResponse<ContextRow[]>> {
-		const qs = granularity ? `?granularity=${granularity}` : "";
 		return apiClient.get(
-			`/persistent-topics/${topicId}/enrichment/contexts${qs}`,
+			`/persistent-topics/${topicId}/enrichment/contexts${contextQuery(granularity, semanticBoardId)}`,
 		);
 	}
 
@@ -873,9 +916,10 @@ export function useBoardEnrichmentApi() {
 		topicId: number,
 		granularity: ContextGranularity,
 		period: string,
+		semanticBoardId?: number,
 	): Promise<ApiResponse<ContextRow>> {
 		return apiClient.get(
-			`/persistent-topics/${topicId}/enrichment/contexts/${granularity}/${period}`,
+			`/persistent-topics/${topicId}/enrichment/contexts/${granularity}/${period}${contextQuery(undefined, semanticBoardId)}`,
 		);
 	}
 
@@ -885,9 +929,10 @@ export function useBoardEnrichmentApi() {
 		granularity: ContextGranularity,
 		period: string,
 		body: { content: string },
+		semanticBoardId?: number,
 	): Promise<ApiResponse<ContextRow>> {
 		return apiClient.put(
-			`/persistent-topics/${topicId}/enrichment/contexts/${granularity}/${period}`,
+			`/persistent-topics/${topicId}/enrichment/contexts/${granularity}/${period}${contextQuery(undefined, semanticBoardId)}`,
 			body,
 		);
 	}
@@ -897,10 +942,14 @@ export function useBoardEnrichmentApi() {
 		topicId: number,
 		granularity: ContextGranularity,
 		period?: string,
+		semanticBoardId?: number,
 	): Promise<ApiResponse<ContextRow>> {
-		const qs = period ? `?period=${period}` : "";
+		const qs = period ? `period=${period}` : "";
+		const board = semanticBoardId !== undefined ? `semantic_board_id=${semanticBoardId}` : "";
+		const sep = qs && board ? "&" : "";
+		const suffix = qs || board ? `?${qs}${sep}${board}` : "";
 		return apiClient.post(
-			`/persistent-topics/${topicId}/enrichment/contexts/${granularity}/regenerate${qs}`,
+			`/persistent-topics/${topicId}/enrichment/contexts/${granularity}/regenerate${suffix}`,
 		);
 	}
 
@@ -1060,6 +1109,24 @@ export function useBoardEnrichmentApi() {
 	): Promise<ApiResponse<BoardAnalysisResultRow>> {
 		return apiClient.get(
 			`/semantic-boards/${boardId}/enrichment/analysis/results/${id}`,
+		);
+	}
+
+	/** 旧研究历史只读列表（redesign-enrichment-research-workbench 5.2）：
+	 * 按 board 可验证归属、kind/topic 过滤、id 排他游标分页。纯读取零 LLM，
+	 * 增强开关关闭不阻止访问；详情复用既有单结果 GET，不在此新增历史详情口。 */
+	async function listLegacyHistory(
+		boardId: number,
+		params: LegacyHistoryQuery = {},
+	): Promise<ApiResponse<LegacyHistoryRow[]>> {
+		const search = new URLSearchParams();
+		if (params.kind) search.set("kind", params.kind);
+		if (params.topicId) search.set("topic_id", String(params.topicId));
+		if (params.beforeId) search.set("before_id", String(params.beforeId));
+		if (params.limit) search.set("limit", String(params.limit));
+		const qs = search.toString() ? `?${search.toString()}` : "";
+		return apiClient.get(
+			`/semantic-boards/${boardId}/enrichment/analysis/history${qs}`,
 		);
 	}
 
@@ -1233,6 +1300,7 @@ export function useBoardEnrichmentApi() {
 		reResolveBoardRelation,
 		listBoardAnalysisResults,
 		getBoardAnalysisResult,
+		listLegacyHistory,
 		listReviews,
 		createReview,
 		updateReviewDeviation,

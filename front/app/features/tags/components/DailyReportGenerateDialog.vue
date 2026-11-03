@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useSemanticBoardsApi, type SemanticBoard } from '~/api/semanticBoards'
 import { useDailyReportsApi } from '~/api/dailyReports'
@@ -12,6 +12,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   cancel: []
+  /** 生成真实完成（进度 done 首次为 true）；壳层据此刷新元信息与 A 档。 */
+  completed: []
 }>()
 
 const show = computed({
@@ -21,6 +23,10 @@ const show = computed({
 
 const { generateDailyReport } = useDailyReportsApi()
 const { progress, done, totalSaved, totalBoards, reset } = useDailyReportProgress()
+
+watch(done, (value, previous) => {
+  if (value && !previous) emit('completed')
+})
 
 const selectedDate = ref(new Date().toISOString().slice(0, 10))
 const selectedBoardId = ref<number | null>(null) // null = all

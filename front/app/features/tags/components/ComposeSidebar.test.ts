@@ -184,11 +184,12 @@ describe('ComposeSidebar — 相似 section 推荐', () => {
   })
 })
 
-describe('ComposeSidebar — 已中断组默认折叠', () => {
+describe('ComposeSidebar — 已中断组折叠', () => {
   const broken = makeItem({ id: 9, consecutive_hits: 0, can_activate: false, label: '断连续' })
+  const main = makeItem({ id: 10, consecutive_hits: 3, can_activate: true, label: '连续命中' })
 
-  it('默认折叠：标题带计数、aria-expanded=false、内容隐藏', () => {
-    const wrapper = mountSidebar({ items: [broken] })
+  it('有主组时默认折叠：标题带计数、aria-expanded=false、内容隐藏', () => {
+    const wrapper = mountSidebar({ items: [main, broken] })
     const title = wrapper.find('.cs-group__title--btn')
     expect(title.exists()).toBe(true)
     expect(title.text()).toContain('已中断·近期未命中（1）')
@@ -197,9 +198,16 @@ describe('ComposeSidebar — 已中断组默认折叠', () => {
   })
 
   it('点标题展开 → aria-expanded=true、内容可见', async () => {
-    const wrapper = mountSidebar({ items: [broken] })
+    const wrapper = mountSidebar({ items: [main, broken] })
     const title = wrapper.find('.cs-group__title--btn')
     await title.trigger('click')
+    expect(title.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('.cs-card.is-broken').exists()).toBe(true)
+  })
+
+  it('只有已中断候选时默认展开，避免真实数据下侧栏空白', () => {
+    const wrapper = mountSidebar({ items: [broken] })
+    const title = wrapper.find('.cs-group__title--btn')
     expect(title.attributes('aria-expanded')).toBe('true')
     expect(wrapper.find('.cs-card.is-broken').exists()).toBe(true)
   })

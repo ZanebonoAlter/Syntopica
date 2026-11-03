@@ -12,7 +12,6 @@ import {
   directionLabel,
   findSection,
   isRetrospectiveReport,
-  latestObservationPeriod,
   resolveDataRef,
   splitLineSegments,
   type AppendixCalcRow,
@@ -22,6 +21,24 @@ import {
   type SignalChartPoint,
   type SignalReportPayload,
   type TextSegmentView,
+} from './signalReport'
+import {
+  buildChartLayout,
+  formatReadingValue,
+  buildEvidenceTableRows,
+  buildSourceFreshness,
+  type ChartLayout,
+  type EvidenceCellView,
+  type EvidenceRowView,
+  type SourceFreshnessSummary,
+} from './reportPresentation'
+import {
+  answerStatusLabel,
+  isSafeHttpUrl,
+  sourceAnchorId,
+  sourceTemporalLine,
+  type SignalAppendixSource,
+  type SignalReportAnswer,
 } from './signalReport'
 
 /**
@@ -77,15 +94,66 @@ const cutoffLabel = computed(() => (snapshot.value?.cutoff ? snapshot.value.cuto
 
 const calls = computed(() => payload.value?.appendix?.calls ?? [])
 const calculations = computed<SignalCalculation[]>(() => payload.value?.appendix?.calculations ?? [])
+// question-v1：已读文字证据（appendix.sources；旧载荷缺省=空）。
+const sources = computed<SignalAppendixSource[]>(() => payload.value?.appendix?.sources ?? [])
+const answer = computed<SignalReportAnswer | null>(() => payload.value?.answer ?? null)
+const answerLabel = computed(() => (answer.value ? answerStatusLabel(answer.value.status) : ''))
 
 /** 段文本 → 段落渲染模型（引用查表；纯函数委托 ./signalReport）。 */
 function paragraphs(text: string): TextSegmentView[][] {
-  return buildParagraphViews(text, calls.value, calculations.value)
+  return buildParagraphViews(text, calls.value, calculations.value, sources.value)
 }
 
-// ── as-of 机械行（5.5）：数据截至 = appendix 观测期规范化全局最大；研究时点 = cutoff ──
+// ── schema3 受控块渲染（3.2）：facts/causal 支持 paragraph/evidence_table/
+// chart 三类块；thesis/implication 恒为单段落，继续走兼容 text 模板分支。────
 
-const asOfPeriod = computed(() => latestObservationPeriod(calls.value) ?? '无可用数据期')
+interface SectionBlockView {
+  paragraph?: TextSegmentView[][]
+  table?: { title: string; rows: EvidenceRowView[] }
+  chartId?: string
+}
+
+function sectionBlockViews(kind: 'facts' | 'causal'): SectionBlockView[] | null {
+  const section = sections.value[kind]
+  const blocks = section?.blocks
+  if (!blocks || blocks.length === 0) return null
+  const out: SectionBlockView[] = []
+  for (const b of blocks) {
+    if (b.type === 'paragraph') {
+      out.push({ paragraph: paragraphs(b.text ?? '') })
+    } else if (b.type === 'evidence_table') {
+      out.push({
+        table: {
+          title: b.title ?? '',
+          rows: buildEvidenceTableRows(b, calls.value, calculations.value) ?? [],
+        },
+      })
+    } else if (b.type === 'chart' && b.chart_id) {
+      out.push({ chartId: b.chart_id })
+    }
+    // 未知块类型：后端已拒绝；防御性跳过（兼容 text 分支仍可读）。
+  }
+  return out
+}
+
+const factsBlockViews = computed(() => sectionBlockViews('facts'))
+const causalBlockViews = computed(() => sectionBlockViews('causal'))
+
+function onCellClick(cell: EvidenceCellView) {
+  void focusRef({ anchor: cell.anchor, clickable: cell.clickable, token: { ref: cell.ref } })
+}
+
+// ── as-of 机械行（3.2 D5）：分源时效（schema3 直读 data_freshness；schema2 从
+// appendix 派生「各源最大期」并标注）；研究时点 = cutoff，不混生成时间 ──
+
+const freshness = computed<SourceFreshnessSummary | null>(() =>
+  payload.value ? buildSourceFreshness(payload.value) : null,
+)
+const freshnessLabel = computed(() => {
+  const f = freshness.value
+  if (!f || f.sources.length === 0) return '无可用数据期'
+  return f.sources.map((s) => `${s.tool} ${s.latest || '无观测'}`).join(' · ')
+})
 const researchCutoff = computed(() => (meta.value?.cutoff ?? snapshot.value?.cutoff ?? '').slice(0, 10) || '—')
 
 // ── 附录定位（点击引用 → 展开附录 + 高亮行）─────────────────────────────
@@ -125,6 +193,8 @@ interface ChartSvgGeometry {
   height: number
   bottom: number
   kind: 'line' | 'comparison'
+  /** discrete = 连续性不明：只画点/柱不连线（figcaption 标观测数）。 */
+  mode: 'line' | 'discrete'
   /** 折线分段 path（null 断点切分；段内 ≥2 点才连线，非空点画圆点）。 */
   paths: string[]
   dots: { x: number; y: number; display: string }[]
@@ -145,57 +215,51 @@ function shortPeriod(period: string): string {
 }
 
 function fmtAxis(v: number): string {
-  return String(Math.round(v * 100) / 100)
+  // R-3：轴刻度走阅读短格式——小量级（0.001~0.002）不得显示成 0（D5）。
+  return formatReadingValue(String(v))
 }
 
-/** 数据点 → SVG 几何。折线 y 域不强制从 0 起（看变化），对比柱从 0 起。 */
+/**
+ * 数据点 → SVG 几何。x 用真实日期距离（buildChartLayout）；y 域：折线看变化
+ * （域内 min/max 加边距），对比柱从 0 起。离散模式不产 path（连续性不明不连线）。
+ */
 function chartGeometry(data: SignalChartData): ChartSvgGeometry | null {
   const points: SignalChartPoint[] = data.points
   const valid = points.filter((p): p is SignalChartPoint & { value: number } => p.value !== null)
   if (valid.length === 0) return null
-  const values = valid.map((p) => p.value)
-  let min = Math.min(...values)
-  let max = Math.max(...values)
-  const isComparison = data.kind === 'comparison'
-  if (isComparison) min = 0
-  if (min === max) {
-    min -= 1
-    max += 1
-  } else if (!isComparison) {
-    const padY = (max - min) * 0.12
-    min -= padY
-    max += padY
-  }
+  const layout: ChartLayout = buildChartLayout(points, data.kind)
   const plotW = W - PAD.left - PAD.right
   const plotH = H - PAD.top - PAD.bottom
-  const yOf = (v: number) => PAD.top + (1 - (v - min) / (max - min)) * plotH
-  const n = points.length
-  const xOf = (i: number) => (n <= 1 ? PAD.left + plotW / 2 : PAD.left + (i / (n - 1)) * plotW)
+  const xOf = (i: number) => PAD.left + layout.x[i]! * plotW
+  const yOfNorm = (norm: number) => PAD.top + (1 - norm) * plotH
   const yLabels = [
-    { x: 4, y: PAD.top + 4, text: fmtAxis(max) },
-    { x: 4, y: H - PAD.bottom + 4, text: fmtAxis(min) },
+    { x: 4, y: PAD.top + 4, text: fmtAxis(layout.yMax) },
+    { x: 4, y: H - PAD.bottom + 4, text: fmtAxis(layout.yMin) },
   ]
+  const isComparison = data.kind === 'comparison'
 
   if (isComparison) {
-    const slot = plotW / Math.max(n, 1)
+    const slot = plotW / Math.max(points.length, 1)
     const barW = Math.min(54, slot * 0.55)
     return {
       width: W,
       height: H,
       bottom: H - PAD.bottom,
       kind: 'comparison',
+      mode: 'line',
       paths: [],
       dots: [],
       valueLabels: [],
       xLabels: [],
       yLabels,
       bars: points.map((p, i) => {
-        const v = p.value ?? 0
+        const norm = layout.y[i] ?? 0
+        const y = yOfNorm(norm)
         return {
           x: PAD.left + slot * i + (slot - barW) / 2,
-          y: yOf(v),
+          y,
           width: barW,
-          height: Math.max(H - PAD.bottom - yOf(v), 0),
+          height: Math.max(H - PAD.bottom - y, 0),
           display: p.display,
           xLabel: shortPeriod(p.period),
         }
@@ -203,28 +267,33 @@ function chartGeometry(data: SignalChartData): ChartSvgGeometry | null {
     }
   }
 
-  // 折线：null 断点分段，段内连续点连线；非空点画圆点 + 数值标签
+  // 折线：null 断点分段，段内连续点连线；离散模式只画点不产 path。
   const segments = splitLineSegments(points)
-  const paths = segments
-    .filter((seg) => seg.length >= 2)
-    .map((seg) =>
-      seg
-        .map((p, i) => {
-          const cmd = i === 0 ? 'M' : 'L'
-          return `${cmd}${xOf(points.indexOf(p)).toFixed(1)} ${yOf(p.value as number).toFixed(1)}`
-        })
-        .join(' '),
-    )
-  const dots = valid.map((p) => ({
-    x: xOf(points.indexOf(p)),
-    y: yOf(p.value),
-    display: p.display,
-  }))
+  const indexOf = new Map(points.map((p, i) => [p, i]))
+  const paths =
+    layout.mode === 'line'
+      ? segments
+          .filter((seg) => seg.length >= 2)
+          .map((seg) =>
+            seg
+              .map((p, i) => {
+                const cmd = i === 0 ? 'M' : 'L'
+                const idx = indexOf.get(p) ?? 0
+                return `${cmd}${xOf(idx).toFixed(1)} ${yOfNorm(layout.y[idx] ?? 0).toFixed(1)}`
+              })
+              .join(' '),
+          )
+      : []
+  const dots = valid.map((p) => {
+    const idx = indexOf.get(p) ?? 0
+    return { x: xOf(idx), y: yOfNorm(layout.y[idx] ?? 0), display: p.display }
+  })
   return {
     width: W,
     height: H,
     bottom: H - PAD.bottom,
     kind: 'line',
+    mode: layout.mode,
     paths,
     dots,
     valueLabels: dots.map((d) => ({ x: d.x, y: d.y - 8, text: d.display })),
@@ -280,7 +349,9 @@ function onRefClick(view: Parameters<typeof focusRef>[0]) {
     <template v-else>
       <p class="sr-kicker">信号解读报告</p>
       <h1 class="sr-title">{{ payload.report.title }}</h1>
-      <p class="sr-asof" data-testid="signal-asof">数据截至 {{ asOfPeriod }} · 研究时点 {{ researchCutoff }}</p>
+      <p class="sr-asof" data-testid="signal-asof">
+        数据截至 {{ freshnessLabel }} · 研究时点 {{ researchCutoff }}<template v-if="freshness?.derived && freshness.sources.length > 0">（各源最大期）</template><template v-if="freshness?.generatedAt"> · 报告生成 {{ freshness.generatedAt }}</template>
+      </p>
       <div class="sr-meta">
         <span>目标周期 {{ snapshot.period }}</span>
         <span>数据截止 {{ cutoffLabel }}</span>
@@ -296,6 +367,15 @@ function onRefClick(view: Parameters<typeof focusRef>[0]) {
         重新研究进行中（{{ regeneratePhase === 'compose' ? '成文' : '研究' }}阶段）· 决策上限 40 轮 · 可返回列表查看候选
       </div>
       <hr class="sr-sep" />
+
+      <!-- question-v1 答题范围（非可信度、非任务状态；旧报告缺省不显示） -->
+      <div v-if="answer" class="sr-answer" :data-answer="answer.status" data-testid="signal-answer">
+        <span class="sr-answer-badge">{{ answerLabel }}</span>
+        <span class="sr-answer-reason">{{ answer.reason }}</span>
+        <ul v-if="answer.unanswered?.length" class="sr-answer-unanswered" data-testid="signal-answer-unanswered">
+          <li v-for="(u, ui) in answer.unanswered" :key="`u${ui}`">{{ u }}</li>
+        </ul>
+      </div>
 
       <!-- 先说结论（thesis，lede 版式） -->
       <p v-for="(para, pi) in paragraphs(sections.thesis?.text ?? '')" :key="`t${pi}`" class="sr-lede">
@@ -313,23 +393,66 @@ function onRefClick(view: Parameters<typeof focusRef>[0]) {
         </template>
       </p>
 
-      <!-- 发生了什么（facts） -->
+      <!-- 发生了什么（facts）：schema3 块分支；无块回退兼容 text 段落 -->
       <section class="sr-section">
         <h2 class="sr-h2">发生了什么</h2>
-        <p v-for="(para, pi) in paragraphs(sections.facts?.text ?? '')" :key="`f${pi}`" class="sr-para">
-          <template v-for="(seg, si) in para" :key="`f${pi}-${si}`">
-            <span v-if="seg.kind === 'text'">{{ seg.text }}</span>
-            <button
-              v-else-if="seg.view?.clickable"
-              type="button"
-              class="sr-ref"
-              :title="seg.view.title"
-              @click="onRefClick(seg.view)"
-            >{{ seg.view.label }}</button>
-            <span v-else-if="seg.view" class="sr-ref sr-ref--news" :title="seg.view.title">{{ seg.view.label }}</span>
-            <span v-else class="sr-ref sr-ref--missing" title="引用无法解析（数据缺失）">数据引用缺失</span>
+        <template v-if="factsBlockViews">
+          <template v-for="(bv, bi) in factsBlockViews" :key="`fb${bi}`">
+            <p v-if="bv.paragraph" v-for="(para, pi) in bv.paragraph" :key="`fbp${bi}-${pi}`" class="sr-para">
+              <template v-for="(seg, si) in para" :key="`fbp${bi}-${pi}-${si}`">
+                <span v-if="seg.kind === 'text'">{{ seg.text }}</span>
+                <button
+                  v-else-if="seg.view?.clickable"
+                  type="button"
+                  class="sr-ref"
+                  :title="seg.view.title"
+                  @click="onRefClick(seg.view)"
+                >{{ seg.view.label }}</button>
+                <span v-else-if="seg.view" class="sr-ref sr-ref--news" :title="seg.view.title">{{ seg.view.label }}</span>
+                <span v-else class="sr-ref sr-ref--missing" title="引用无法解析（数据缺失）">数据引用缺失</span>
+              </template>
+            </p>
+            <div v-else-if="bv.table" class="sr-etable" data-testid="signal-evidence-table">
+              <p class="sr-etable-title">{{ bv.table.title }}</p>
+              <table class="sr-etable-table">
+                <tbody>
+                  <tr v-for="(row, ri) in bv.table.rows" :key="`fr${bi}-${ri}`">
+                    <th scope="row">{{ row.label }}</th>
+                    <td>
+                      <template v-for="(cell, ci) in row.cells" :key="`fc${bi}-${ri}-${ci}`">
+                        <button
+                          v-if="cell.clickable"
+                          type="button"
+                          class="sr-ref"
+                          :title="cell.title"
+                          @click="onCellClick(cell)"
+                        >{{ cell.display }}<template v-if="cell.unit"> {{ cell.unit }}</template></button>
+                        <span v-else class="sr-ref sr-ref--missing" :title="cell.title">{{ cell.display }}</span>
+                      </template>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else-if="bv.chartId" class="sr-chart-anchor">📊 见图 {{ bv.chartId }}（下方图表）</p>
           </template>
-        </p>
+        </template>
+        <template v-else>
+          <p v-for="(para, pi) in paragraphs(sections.facts?.text ?? '')" :key="`f${pi}`" class="sr-para">
+            <template v-for="(seg, si) in para" :key="`f${pi}-${si}`">
+              <span v-if="seg.kind === 'text'">{{ seg.text }}</span>
+              <button
+                v-else-if="seg.view?.clickable"
+                type="button"
+                class="sr-ref"
+                :title="seg.view.title"
+                @click="onRefClick(seg.view)"
+              >{{ seg.view.label }}</button>
+              <span v-else-if="seg.view" class="sr-ref sr-ref--news" :title="seg.view.title">{{ seg.view.label }}</span>
+              <span v-else class="sr-ref sr-ref--missing" title="引用无法解析（数据缺失）">数据引用缺失</span>
+            </template>
+          </p>
+        </template>
 
         <!-- 图表（轻量 SVG；0 图合法不渲染区块） -->
         <div v-if="chartGeometries.length" class="sr-charts" data-testid="signal-charts">
@@ -363,29 +486,72 @@ function onRefClick(view: Parameters<typeof focusRef>[0]) {
               </template>
             </svg>
             <figcaption>
-              图{{ ci + 1 }} · {{ chart.data.claim }}<template v-if="chart.data.unit">；单位：{{ chart.data.unit }}</template><template v-if="chart.data.points.some((p) => p.origin === 'calc')">；数值由代码计算</template><template v-if="chart.data.points.some((p) => p.value === null)">；缺失期间断开显示</template>。
+              图{{ ci + 1 }} · {{ chart.data.claim }}<template v-if="chart.data.unit">；单位：{{ chart.data.unit }}</template><template v-if="chart.data.points.some((p) => p.origin === 'calc')">；数值由代码计算</template><template v-if="chart.data.points.some((p) => p.value === null)">；缺失期间断开显示</template><template v-if="chart.mode === 'discrete'">；连续性不明，按 {{ chart.dots.length }} 个观测点展示不连线</template>。
             </figcaption>
           </figure>
         </div>
       </section>
 
-      <!-- 这意味着什么（causal） -->
+      <!-- 这意味着什么（causal）：schema3 块分支；无块回退兼容 text 段落 -->
       <section class="sr-section">
         <h2 class="sr-h2">这意味着什么</h2>
-        <p v-for="(para, pi) in paragraphs(sections.causal?.text ?? '')" :key="`c${pi}`" class="sr-para">
-          <template v-for="(seg, si) in para" :key="`c${pi}-${si}`">
-            <span v-if="seg.kind === 'text'">{{ seg.text }}</span>
-            <button
-              v-else-if="seg.view?.clickable"
-              type="button"
-              class="sr-ref"
-              :title="seg.view.title"
-              @click="onRefClick(seg.view)"
-            >{{ seg.view.label }}</button>
-            <span v-else-if="seg.view" class="sr-ref sr-ref--news" :title="seg.view.title">{{ seg.view.label }}</span>
-            <span v-else class="sr-ref sr-ref--missing" title="引用无法解析（数据缺失）">数据引用缺失</span>
+        <template v-if="causalBlockViews">
+          <template v-for="(bv, bi) in causalBlockViews" :key="`cb${bi}`">
+            <p v-if="bv.paragraph" v-for="(para, pi) in bv.paragraph" :key="`cbp${bi}-${pi}`" class="sr-para">
+              <template v-for="(seg, si) in para" :key="`cbp${bi}-${pi}-${si}`">
+                <span v-if="seg.kind === 'text'">{{ seg.text }}</span>
+                <button
+                  v-else-if="seg.view?.clickable"
+                  type="button"
+                  class="sr-ref"
+                  :title="seg.view.title"
+                  @click="onRefClick(seg.view)"
+                >{{ seg.view.label }}</button>
+                <span v-else-if="seg.view" class="sr-ref sr-ref--news" :title="seg.view.title">{{ seg.view.label }}</span>
+                <span v-else class="sr-ref sr-ref--missing" title="引用无法解析（数据缺失）">数据引用缺失</span>
+              </template>
+            </p>
+            <div v-else-if="bv.table" class="sr-etable" data-testid="signal-evidence-table">
+              <p class="sr-etable-title">{{ bv.table.title }}</p>
+              <table class="sr-etable-table">
+                <tbody>
+                  <tr v-for="(row, ri) in bv.table.rows" :key="`cr${bi}-${ri}`">
+                    <th scope="row">{{ row.label }}</th>
+                    <td>
+                      <template v-for="(cell, ci) in row.cells" :key="`cc${bi}-${ri}-${ci}`">
+                        <button
+                          v-if="cell.clickable"
+                          type="button"
+                          class="sr-ref"
+                          :title="cell.title"
+                          @click="onCellClick(cell)"
+                        >{{ cell.display }}<template v-if="cell.unit"> {{ cell.unit }}</template></button>
+                        <span v-else class="sr-ref sr-ref--missing" :title="cell.title">{{ cell.display }}</span>
+                      </template>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else-if="bv.chartId" class="sr-chart-anchor">📊 见图 {{ bv.chartId }}（上方图表）</p>
           </template>
-        </p>
+        </template>
+        <template v-else>
+          <p v-for="(para, pi) in paragraphs(sections.causal?.text ?? '')" :key="`c${pi}`" class="sr-para">
+            <template v-for="(seg, si) in para" :key="`c${pi}-${si}`">
+              <span v-if="seg.kind === 'text'">{{ seg.text }}</span>
+              <button
+                v-else-if="seg.view?.clickable"
+                type="button"
+                class="sr-ref"
+                :title="seg.view.title"
+                @click="onRefClick(seg.view)"
+              >{{ seg.view.label }}</button>
+              <span v-else-if="seg.view" class="sr-ref sr-ref--news" :title="seg.view.title">{{ seg.view.label }}</span>
+              <span v-else class="sr-ref sr-ref--missing" title="引用无法解析（数据缺失）">数据引用缺失</span>
+            </template>
+          </p>
+        </template>
       </section>
 
       <!-- 接下来怎么看（implication + 结构化字段） -->
@@ -435,6 +601,36 @@ function onRefClick(view: Parameters<typeof focusRef>[0]) {
             <ul class="sr-gaps">
               <li v-for="(gap, gi) in appendixGaps" :key="`g${gi}`">
                 <template v-if="gap.tool">[{{ gap.tool }}] </template>{{ gap.reason }}
+              </li>
+            </ul>
+          </template>
+
+          <!-- question-v1 文字来源核查区：标题/URL/时间/使用片段（旧报告无此节） -->
+          <template v-if="sources.length">
+            <h3 class="sr-appendix-h">文字来源（本次研究实际读取的原文片段）</h3>
+            <ul class="sr-sources" data-testid="signal-appendix-sources">
+              <li
+                v-for="src in sources"
+                :id="sourceAnchorId(src.id)"
+                :key="src.id"
+                :class="{ 'sr-row-target': highlightRef === src.id }"
+                class="sr-source"
+              >
+                <div class="sr-source-head">
+                  <strong>{{ src.id }} · {{ src.title || '（无标题）' }}</strong>
+                  <span class="sr-source-meta">{{ sourceTemporalLine(src) }}<template v-if="src.truncated"> · 片段 {{ src.original_runes }} 字符已截取</template></span>
+                </div>
+                <a
+                  v-if="isSafeHttpUrl(src.final_url || src.url)"
+                  :href="src.final_url || src.url"
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                  class="sr-source-url"
+                  data-testid="signal-source-link"
+                >{{ src.final_url || src.url }}</a>
+                <span v-else-if="src.url || src.final_url" class="sr-source-url sr-source-url--plain">{{ src.final_url || src.url }}</span>
+                <p class="sr-source-text" data-testid="signal-source-text">{{ src.text }}</p>
+                <p v-if="src.temporal_note" class="sr-source-note">{{ src.temporal_note }}</p>
               </li>
             </ul>
           </template>
@@ -588,12 +784,18 @@ function onRefClick(view: Parameters<typeof focusRef>[0]) {
 
 /* 小倍图（flex wrap，无边框无卡片） */
 .sr-charts { display: flex; flex-wrap: wrap; gap: 1.4rem; margin: 1.4rem 0; }
-.sr-chart { flex: 1 1 240px; margin: 0; min-width: 0; }
+.sr-chart { flex: 1 1 240px; margin: 0; min-width: 0; max-width: 420px; }
 .sr-chart svg { width: 100%; height: auto; display: block; }
 .sr-chart-axis { stroke: var(--color-border-medium); stroke-width: 1; }
 .sr-chart-line { stroke: var(--color-accent); stroke-width: 1.8; fill: none; }
 .sr-chart-dot { fill: var(--color-accent); }
 .sr-chart-bar { fill: var(--color-text-muted); opacity: 0.75; }
+.sr-etable { margin: 1rem 0; }
+.sr-etable-title { font-size: 0.9rem; font-weight: 600; color: var(--color-text-muted); margin: 0 0 0.35rem; }
+.sr-etable-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.sr-etable-table th { text-align: left; font-weight: 500; color: var(--color-text-muted); padding: 0.3rem 0.6rem 0.3rem 0; vertical-align: top; white-space: nowrap; }
+.sr-etable-table td { padding: 0.3rem 0; vertical-align: top; }
+.sr-chart-anchor { color: var(--color-text-muted); font-size: 0.88rem; margin: 0.4rem 0; }
 .sr-chart-bar:last-of-type { fill: var(--color-accent); opacity: 1; }
 .sr-chart-text { font-size: 10px; fill: var(--color-text-muted); }
 .sr-chart figcaption { font-size: 0.72rem; color: var(--color-text-secondary); line-height: 1.6; margin-top: 0.4rem; }
@@ -637,5 +839,77 @@ function onRefClick(view: Parameters<typeof focusRef>[0]) {
   .sr-lede { font-size: 0.92rem; }
   .sr-para { font-size: 0.88rem; }
   .sr-field { flex-direction: column; gap: 0.1rem; }
+}
+
+/* ── question-v1 答题范围与文字来源核查区（add-question-driven-news-research）── */
+.sr-answer {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--tone-accent, #8a7a4f);
+  background: var(--tone-surface-muted, rgba(0, 0, 0, 0.04));
+  display: grid;
+  gap: 6px;
+}
+.sr-answer-badge {
+  font-weight: 600;
+  font-size: 13px;
+}
+.sr-answer-reason {
+  font-size: 13px;
+  opacity: 0.9;
+}
+.sr-answer-unanswered {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  opacity: 0.85;
+}
+.sr-sources {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.sr-source {
+  padding: 8px 10px;
+  border: 1px solid var(--tone-border, rgba(0, 0, 0, 0.12));
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+}
+.sr-source-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.sr-source-meta {
+  font-size: 12px;
+  opacity: 0.75;
+}
+.sr-source-url {
+  font-size: 12px;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  color: var(--tone-link, #4a6fa5);
+}
+.sr-source-url--plain {
+  color: inherit;
+  opacity: 0.8;
+}
+.sr-source-text {
+  margin: 0;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.sr-source-note {
+  margin: 0;
+  font-size: 11.5px;
+  opacity: 0.7;
 }
 </style>

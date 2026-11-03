@@ -89,6 +89,79 @@ describe('usePersistentTopicsApi — 手动建泳道编排态（切片③）', (
     })
   })
 
+  describe('getComposeCandidates — 编排窗口与候选链（12.2.1）', () => {
+    it('自选起止：请求带 from/to（成对给出），并归一化 relations / candidate_chains / window', async () => {
+      getMock.mockResolvedValue({
+        success: true,
+        data: {
+          sections: [],
+          relations: [
+            { from_id: 7345, to_id: 7409, distance: 0.12, relation_type: 'identity' },
+            { from_id: 7409, to_id: 7514, distance: 0.2, relation_type: 'similarity' },
+          ],
+          candidate_chains: [
+            {
+              key: '1984:7345',
+              topic_id: 1984,
+              topic_label: '以色列议会选举',
+              topic_status: 'candidate',
+              section_ids: [7345, 7409, 7514],
+              first_date: '2026-10-27',
+              last_date: '2026-10-30',
+              span_days: 3,
+            },
+          ],
+          match_threshold: 0.3,
+          window: { from: '2026-10-27', to: '2026-10-30', days: 4, latest_completed_date: '2026-10-30' },
+        },
+      })
+
+      const api = usePersistentTopicsApi()
+      const res = await api.getComposeCandidates(1974, { from: '2026-10-27', to: '2026-10-30' })
+
+      expect(getMock).toHaveBeenCalledWith(
+        '/semantic-boards/1974/persistent-topics/compose-candidates?from=2026-10-27&to=2026-10-30',
+      )
+      const data = res.data!
+      // relations：id 字符串化 + camelCase
+      expect(data.relations).toEqual([
+        { fromId: '7345', toId: '7409', distance: 0.12, relationType: 'identity' },
+        { fromId: '7409', toId: '7514', distance: 0.2, relationType: 'similarity' },
+      ])
+      // candidate_chains：服务端唯一口径，前端只渲染
+      expect(data.candidateChains).toEqual([
+        {
+          key: '1984:7345',
+          topicId: '1984',
+          topicLabel: '以色列议会选举',
+          topicStatus: 'candidate',
+          sectionIds: ['7345', '7409', '7514'],
+          firstDate: '2026-10-27',
+          lastDate: '2026-10-30',
+          spanDays: 3,
+        },
+      ])
+      expect(data.window).toEqual({ from: '2026-10-27', to: '2026-10-30', days: 4, latestCompletedDate: '2026-10-30' })
+    })
+
+    it('快捷档：对象形态的 days 与数字形态等价', async () => {
+      getMock.mockResolvedValue({ success: true, data: { sections: [], match_threshold: 0.3 } })
+      const api = usePersistentTopicsApi()
+      await api.getComposeCandidates(1974, { days: 30 })
+      expect(getMock).toHaveBeenLastCalledWith('/semantic-boards/1974/persistent-topics/compose-candidates?days=30')
+    })
+
+    it('后端未升级（无 relations/chains/window）时降级为空，不炸', async () => {
+      getMock.mockResolvedValue({ success: true, data: { sections: [], match_threshold: 0.3 } })
+      const api = usePersistentTopicsApi()
+      const res = await api.getComposeCandidates(1974, 30)
+      expect(res.success).toBe(true)
+      expect(res.data!.relations).toEqual([])
+      expect(res.data!.candidateChains).toEqual([])
+      expect(res.data!.window).toBeNull()
+    })
+  })
+
   describe('createManualLane', () => {
     it('POSTs {label, section_ids:number[]} and normalizes the topic + skipped ids', async () => {
       postMock.mockResolvedValue({

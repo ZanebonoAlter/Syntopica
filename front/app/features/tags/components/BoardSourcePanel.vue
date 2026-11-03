@@ -7,78 +7,29 @@
  * 切窗口时重取（seq 竞态防护：旧请求结果不得覆盖新板块/新窗口）；排序纯前端。
  * 只读硬约定：行内 MUST NOT 出现任何写动作控件（处置入口仍在设置 → 订阅源）。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { toRef } from 'vue'
 import { Icon } from '@iconify/vue'
-import { useSemanticBoardsApi } from '~/api/semanticBoards'
 import FeedSourceQualityPill from '~/features/settings/components/FeedSourceQualityPill.vue'
-import type { BoardSourceBreakdown, BoardSourceBreakdownSource } from '~/types'
-import { STATS_WINDOWS, formatPercent, type StatsWindowDays } from '~/features/settings/utils/sourceQuality'
+import { useBoardSources } from '../composables/useBoardSources'
 
 const props = defineProps<{
   boardId: number
 }>()
 
-const api = useSemanticBoardsApi()
-
-const windowDays = ref<StatsWindowDays>(7)
-/** 按篇数 ↓（默认，后端同序）/ 按该源入板块率 ↑（纯前端重排） */
-const sortMode = ref<'articles' | 'hit_rate'>('articles')
-
-const breakdown = ref<BoardSourceBreakdown | null>(null)
-const loading = ref(false)
-const error = ref<string | null>(null)
-
-/** 竞态防护：快速切板块/连切窗口时，过期请求结果直接丢弃。 */
-let requestSeq = 0
-
-async function load(): Promise<void> {
-  const seq = ++requestSeq
-  loading.value = true
-  error.value = null
-  const res = await api.getBoardSourceBreakdown(props.boardId, windowDays.value)
-  if (seq !== requestSeq) return // 过期请求：放弃（不覆盖新板块/新窗口的数据）
-  if (res.success && res.data) {
-    breakdown.value = res.data
-  } else {
-    error.value = res.error || '统计加载失败'
-  }
-  loading.value = false
-}
-
-watch(() => props.boardId, () => { void load() })
-watch(windowDays, () => { void load() })
-onMounted(() => { void load() })
-
-function retry(): void {
-  void load()
-}
-
-const sortedSources = computed<BoardSourceBreakdownSource[]>(() => {
-  const sources = [...(breakdown.value?.sources ?? [])]
-  if (sortMode.value === 'hit_rate') {
-    sources.sort((a, b) =>
-      (a.feed_hit_rate - b.feed_hit_rate) || (b.articles - a.articles),
-    )
-  } else {
-    sources.sort((a, b) => b.articles - a.articles)
-  }
-  return sources
-})
-
-/** 最大来源及其占比（固定按篇数取，不随排序切换变化）。 */
-const topSource = computed(() => {
-  const sources = [...(breakdown.value?.sources ?? [])].sort((a, b) => b.articles - a.articles)
-  return sources[0] ?? null
-})
-
-function shareText(share: number): string {
-  const pct = Math.round(share * 100)
-  return share > 0 && pct === 0 ? '<1%' : `${pct}%`
-}
-
-function initialOf(title: string): string {
-  return title ? title.slice(0, 1) : '?'
-}
+const {
+  STATS_WINDOWS,
+  windowDays,
+  /** 按篇数 ↓（默认，后端同序）/ 按该源入板块率 ↑（纯前端重排） */
+  sortMode,
+  breakdown,
+  loading,
+  error,
+  retry,
+  sortedSources,
+  topSource,
+  shareText,
+  initialOf,
+} = useBoardSources(toRef(props, 'boardId'), { window: 7 })
 </script>
 
 <template>
