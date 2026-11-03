@@ -81,11 +81,25 @@
   --color-border-medium: rgba(26, 26, 26, 0.15);
   --color-border-strong: rgba(26, 26, 26, 0.25);
 
+  /* 字族：正文衬线（阅读/日报/控制台标题） */
+  --font-serif: "Noto Serif SC", Georgia, serif;
+
   /* Shadow variables - sharp print-like shadows */
   --shadow-subtle: 0 1px 3px rgba(26, 26, 26, 0.06);
   --shadow-medium: 0 2px 8px rgba(26, 26, 26, 0.08);
   --shadow-strong: 0 4px 16px rgba(26, 26, 26, 0.12);
   --shadow-print: 0 1px 0 rgba(26, 26, 26, 0.1), 0 2px 4px rgba(26, 26, 26, 0.06);
+}
+
+/* 根背景：独立路由页（/tags、/tags/:id 等）没有页面级底色时也不露出浏览器白底，
+   否则 dark 主题下白字直接落在白底上不可读。 */
+html {
+  background: var(--color-bg-base, #faf7f2);
+}
+
+body {
+  background: var(--color-bg-base, #faf7f2);
+  color: var(--color-text-primary);
 }
 
 /* === Layer 2: Semantic Tokens (Editorial — 印刷厂暖白) === */
@@ -150,13 +164,15 @@
   --color-tag-keyword-bg:     rgba(74, 93, 138, 0.12);
   --color-tag-keyword-border: rgba(74, 93, 138, 0.25);
 
-  /* Match-quality tiers (direct_hit / hit_rate / max_sim / weighted).
+  /* Match-quality tiers (direct_hit / hit_rate / max_sim / weighted / composite_hit).
      Shared by TagsPage chips, daily-report explore panel and section tier badge.
-     Downgraded indicators halve opacity at the call site via color-mix. */
+     Downgraded indicators halve opacity at the call site via color-mix.
+     composite_hit = 组合命中（2026-10-31 用户拍板紫色，与 MatchDetailPanel 现状一致）。 */
   --color-match-direct-hit: #22c55e;
   --color-match-hit-rate:   #3b82f6;
   --color-match-max-sim:    #f59e0b;
   --color-match-weighted:   #94a3b8;
+  --color-match-composite:  #a855f7;
 
   /* Thread lifecycle status (BoardThreadBrowser) */
   --color-thread-status-emerging:  #16a34a;
@@ -240,6 +256,7 @@
   --color-match-hit-rate:   #60a5fa;
   --color-match-max-sim:    #fbbf24;
   --color-match-weighted:   #94a3b8;
+  --color-match-composite:  #c084fc;
 
   /* Thread lifecycle status (BoardThreadBrowser) — brighter on dark bg */
   --color-thread-status-emerging:  #34d399;

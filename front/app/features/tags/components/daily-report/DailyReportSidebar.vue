@@ -16,13 +16,18 @@ defineProps<{
   currentIndex: number
   boards?: BoardOption[]
   boardId?: number
+  /** 今天已经有日报的版块（阅读台左队列，spec 6.1）。 */
+  todayBoards?: { id: number, label: string, date: string }[]
+  /** 阅读台：历史列表只载入近 N 天，允许继续向前取（B-5）。 */
+  canLoadMore?: boolean
 }>()
 
 const emit = defineEmits<{
   scrollTo: [target: string]
   selectReport: [index: number]
-  openTopicOverview: []
+  loadMore: []
   selectBoard: [boardId: number]
+  selectToday: [payload: { boardId: number, date: string }]
 }>()
 </script>
 
@@ -32,9 +37,19 @@ const emit = defineEmits<{
       <h2>本期目录</h2>
       <button type="button" @click="emit('scrollTo', 'report-lead')">头条</button>
       <button v-if="zones.length" type="button" @click="emit('scrollTo', `report-zone-${zones[0]?.key}`)">话题正文</button>
-      <button type="button" @click="emit('openTopicOverview')">
-        话题总览
-        <Icon icon="mdi:arrow-top-right" width="13" />
+    </section>
+
+    <section v-if="todayBoards?.length" class="drm-sidebar__section">
+      <h2>今天有日报</h2>
+      <button
+        v-for="board in todayBoards"
+        :key="`today-${board.id}`"
+        type="button"
+        :class="{ 'is-active': board.id === boardId }"
+        @click="emit('selectToday', { boardId: board.id, date: board.date })"
+      >
+        <span>{{ board.label }}</span>
+        <Icon icon="mdi:newspaper-variant-outline" width="13" />
       </button>
     </section>
 
@@ -63,6 +78,15 @@ const emit = defineEmits<{
       >
         <span>{{ formatMagazineDate(report.period_date) }}</span>
         <Icon v-if="index === currentIndex" icon="mdi:circle-small" width="18" />
+      </button>
+      <button
+        v-if="canLoadMore"
+        type="button"
+        class="drm-sidebar__more"
+        data-testid="desk-load-more"
+        @click="emit('loadMore')"
+      >
+        加载更早
       </button>
     </section>
 

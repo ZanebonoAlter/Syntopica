@@ -17,6 +17,8 @@ export interface ArticleTagPayload {
   article_count?: number
   articleCount?: number
   is_watched?: boolean
+  /** 标签描述（topic_tags.description）：归档标签卡 popover 的「{类别}描述」区用。 */
+  description?: string
 }
 
 export interface ArticlePayload {
@@ -70,6 +72,7 @@ function normalizeArticleTags(tags: ArticleTagPayload[] | undefined): ArticleTag
           ? tag.articleCount
           : undefined,
       isWatched: typeof tag.is_watched === 'boolean' ? tag.is_watched : undefined,
+      description: typeof tag.description === 'string' ? tag.description : undefined,
     }))
 }
 

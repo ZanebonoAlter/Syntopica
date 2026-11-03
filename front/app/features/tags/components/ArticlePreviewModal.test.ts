@@ -16,7 +16,7 @@ vi.mock('~/features/articles/public', async () => {
   return {
     ArticleContentView: {
       name: 'ArticleContentView',
-      props: ['article', 'articles'],
+      props: ['article', 'articles', 'fullscreenZIndex'],
       // R-6（review）：正文经 innerHTML 回显——等价真组件 v-html 的重渲染语义
       // （article 引用替换触发重渲染时，Vue 对 innerHTML 无条件重设、注入 mark 被
       // 丢弃），使「响应式更新后 mark 自动重施」回归测试可复现真实丢弃路径
@@ -37,9 +37,13 @@ vi.mock('~/features/articles/public', async () => {
 // 保留 v-if(modelValue) 开关语义与两个插槽。
 const AppDialogStub = {
   name: 'AppDialog',
-  props: { modelValue: { type: Boolean, default: false } },
+  props: {
+    modelValue: { type: Boolean, default: false },
+    semanticDialog: { type: Boolean, default: false },
+    zIndex: { type: Number, default: 1000 },
+  },
   emits: ['update:modelValue'],
-  template: `<div v-if="modelValue" data-test="app-dialog-stub"><div data-test="app-dialog-header"><slot name="header" /></div><button data-test="app-dialog-close" @click="$emit('update:modelValue', false)">×</button><div data-test="app-dialog-body"><slot /></div></div>`,
+  template: `<div v-if="modelValue" data-test="app-dialog-stub" :data-semantic="String(semanticDialog)"><div data-test="app-dialog-header"><slot name="header" /></div><button data-test="app-dialog-close" @click="$emit('update:modelValue', false)">×</button><div data-test="app-dialog-body"><slot /></div></div>`,
 }
 
 function articleFixture(over: Partial<Article> = {}): Article {
@@ -234,5 +238,36 @@ describe('ArticlePreviewModal — header-actions 插槽（add-article-search）'
     expect(header.find('.preview-header-actions').exists()).toBe(false)
     expect(header.findAll('p.preview-header-text').length).toBe(1)
     expect(header.text()).toContain('文章预览')
+  })
+})
+
+
+// ===== 全屏层级契约（2026-10-28 用户反馈修复）：弹窗内点「全屏」不能被遮罩盖住 =====
+
+describe('ArticlePreviewModal — 全屏层级（fix-preview-fullscreen-zindex）', () => {
+  it('弹窗遮罩层级 9100；全屏层层级高于遮罩（否则全屏被盖住，点击像没反应）', () => {
+    const w = mountModal()
+    const dialogZ = Number(w.findComponent({ name: 'AppDialog' }).props('zIndex'))
+    const fullscreenZ = Number(w.findComponent({ name: 'ArticleContentView' }).props('fullscreenZIndex'))
+    expect(dialogZ).toBe(9100)
+    expect(fullscreenZ).toBeGreaterThan(dialogZ)
+  })
+
+  it('全屏层层级仍低于全局 toast（9999）——全屏中的失败提示要能看到', () => {
+    const w = mountModal()
+    const fullscreenZ = Number(w.findComponent({ name: 'ArticleContentView' }).props('fullscreenZIndex'))
+    expect(fullscreenZ).toBeLessThan(9999)
+  })
+})
+
+describe('ArticlePreviewModal — R38 matrix 语义 opt-in', () => {
+  it('默认不启用；matrix 显式 dialogSemantics=true 才转发给 AppDialog', () => {
+    const normal = mountModal()
+    expect(normal.find('[data-test="app-dialog-stub"]').attributes('data-semantic')).toBe('false')
+    normal.unmount()
+
+    const matrix = mountModal({ dialogSemantics: true })
+    expect(matrix.find('[data-test="app-dialog-stub"]').attributes('data-semantic')).toBe('true')
+    matrix.unmount()
   })
 })

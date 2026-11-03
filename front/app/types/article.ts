@@ -43,6 +43,8 @@ export interface ArticleTag {
   score?: number
   articleCount?: number
   isWatched?: boolean
+  /** 标签描述（topic_tags.description）：归档标签卡 popover 的「{类别}描述」区用。 */
+  description?: string
 }
 
 export interface ArticleFilters {

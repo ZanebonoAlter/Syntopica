@@ -117,6 +117,8 @@ type (
 	ConfirmSemanticBoardUpgradeRequest = board.ConfirmSemanticBoardUpgradeRequest
 	BoardAuxiliaryLabel                = board.BoardAuxiliaryLabel
 	MatchDetailPair                    = board.MatchDetailPair
+	ReportWindow                       = board.ReportWindow
+	ReportMembership                   = board.ReportMembership
 )
 
 var (
@@ -126,6 +128,11 @@ var (
 	NewDefaultSemanticBoardUpgradeLLM     = board.NewDefaultSemanticBoardUpgradeLLM
 	ComputeMatchDetail                    = board.ComputeMatchDetail
 	CosineSimilarity                      = board.CosineSimilarity
+	LoadReportMembership                  = board.LoadReportMembership
+	ApplyWeakEvidenceFilter               = board.ApplyWeakEvidenceFilter
+	IsWeakEvidence                        = board.IsWeakEvidence
+	ArchiveEvidenceRank                   = board.ArchiveEvidenceRank
+	SortArticleIDs                        = board.SortArticleIDs
 	BuildSemanticBoardUpgradeSystemPrompt = board.BuildSemanticBoardUpgradeSystemPrompt
 	ParsePgVector                         = auxlabel.ParsePgVector
 )

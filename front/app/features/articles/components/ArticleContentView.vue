@@ -17,12 +17,19 @@ interface Props {
   article: Article | null
   articles?: Article[]
   highlightedTagSlugs?: string[]
+  /**
+   * 全屏层（Teleport 到 body）的 z-index。默认 100 = 阅读页原地全屏（不被页面浮层压住即可）；
+   * 在弹窗内全屏时，宿主须传入**高于弹窗遮罩**的值（如 AppDialog 9100 → 9200），
+   * 否则全屏层被遮罩盖住——表现为「点了全屏像没反应」。
+   */
+  fullscreenZIndex?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
   article: null,
   articles: () => [],
   highlightedTagSlugs: () => [],
+  fullscreenZIndex: 100,
 })
 
 const emit = defineEmits<{
@@ -170,7 +177,7 @@ const previewProps = computed(() => ({
 
   <!-- Fullscreen mode -->
   <Teleport v-else to="body">
-    <div class="fullscreen-article fixed inset-0 z-[100] flex flex-col" style="background: var(--color-bg-base)">
+    <div class="fullscreen-article fixed inset-0 flex flex-col" :style="{ zIndex: fullscreenZIndex, background: 'var(--color-bg-base)' }">
       <ArticleContentToolbar
         :feed="feed"
         :article-title="article.title ?? ''" :article-favorite="article.favorite ?? false"
