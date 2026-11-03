@@ -23,7 +23,43 @@ export interface MatchFlowStep {
   title: string
   desc: string
   result: string
-  state: 'matched' | 'failed' | 'compute' | 'pending'
+  state: 'matched' | 'failed' | 'compute' | 'pending' | 'skipped'
+  /** 编号（⓪→⑤），来自 RULE_COPY 单一常量源。 */
+  no: string
+  /** 规则名（不含编号），来自 RULE_COPY。 */
+  name: string
+  /** 人话问法（不含阈值，阈值由消费方按真实 config 代入），来自 RULE_COPY。 */
+  question: string
+  /** 是否走到本步（matched/failed/compute=true，skipped=false；generic 说明步一律 false）。 */
+  reached: boolean
+}
+
+/** 规则元数据单一常量源（D5）：popover 判定过程、工具行「匹配流程」弹窗、入板阶段名共用，编号/规则名/问法/短名不得在别处另写一套。 */
+export interface RuleCopyEntry {
+  id: string
+  /** 编号（⓪→⑤）。 */
+  no: string
+  /** 规则名（不含编号）。 */
+  name: string
+  /** 人话问法（阈值由消费方按真实 config 代入）。 */
+  question: string
+  /** 短名（入板过程五阶段、列表 chip 用）。 */
+  short: string
+}
+
+/** 规则元数据常量（顺序 ⓪→①→②→③→④→⑤，② 为中间计算步）。 */
+export const RULE_COPY: readonly RuleCopyEntry[] = [
+  { id: 'composite_hit', no: '⓪', name: '组合命中', question: '事件与版块挂载了同一组合标签？', short: '组合命中' },
+  { id: 'direct_hit', no: '①', name: '精确匹配', question: '事件和版块有多少个辅助标签完全相同？', short: '精确匹配' },
+  { id: 'similarity', no: '②', name: '算余弦相似度', question: '把事件的辅助标签和版块标签两两比较「有多像」', short: '算余弦相似度' },
+  { id: 'hit_rate', no: '③', name: '命中率规则', question: '「几分之几」的标签像版块的？', short: '命中率' },
+  { id: 'max_sim', no: '④', name: '最高相似度规则', question: '最像的那一对有多像？需同时满足三个条件（Smax / 命中数 / R）', short: '最高相似度' },
+  { id: 'weighted', no: '⑤', name: '综合加权', question: '整体看像不像？把相似度和命中率加权', short: '综合加权' },
+]
+
+/** 按 id 取规则元数据（RULE_COPY 的唯一查询口）。 */
+export function ruleOf(id: string): RuleCopyEntry | undefined {
+  return RULE_COPY.find(rule => rule.id === id)
 }
 
 /** 五个命中阶段的规则顺序（②余弦相似度是中间计算步，不产出判定规则）。 */
@@ -49,6 +85,12 @@ export interface MatchFlowConfig {
 
 function num(value: number | undefined | null, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+/** ① 交集数（口径=direct_hit_auxiliaries 的 tag_auxiliary_id 去重计数，唯一实现，组件/结论行共用）。 */
+export function overlapOf(detail: MatchDetailResponse | null): number {
+  if (!detail) return 0
+  return new Set(detail.direct_hit_auxiliaries?.map(d => d.tag_auxiliary_id) ?? []).size
 }
 
 /** 分数格式化（非有限值回退 '--'，不伪造 0.00）。 */
@@ -98,51 +140,30 @@ export function flowConfigFromDetail(config: MatchDetailConfig | null | undefine
  *
  * 对所有构成标签一致：每步「做了什么 / 阈值（全局配置真实值）」；命中即停。
  * state 一律 pending/compute——这是「说明」不是「某次判定结果」，不冒充命中态。
+ * 规则名 / 编号 / 问法一律取自 RULE_COPY（与 popover 判定过程同源，D5）。
  */
 export function buildGenericFlowSteps(config: MatchFlowConfig): MatchFlowStep[] {
+  const by = (id: string, descExtra: string, result: string, state: MatchFlowStep['state'] = 'pending'): MatchFlowStep => {
+    const rule = ruleOf(id)!
+    return {
+      id,
+      title: `${rule.no} ${rule.name}`,
+      desc: rule.question + descExtra,
+      result,
+      state,
+      no: rule.no,
+      name: rule.name,
+      question: rule.question,
+      reached: false,
+    }
+  }
   return [
-    {
-      id: 'composite_hit',
-      title: '⓪ 组合命中',
-      desc: '事件与版块挂载了同一组合标签？',
-      result: '组合标签交集非空 → 直接命中（免方向校验）',
-      state: 'pending',
-    },
-    {
-      id: 'direct_hit',
-      title: '① 精确匹配',
-      desc: '事件和版块有多少个辅助标签完全相同？',
-      result: `交集 ≥ ${config.directHitMinOverlap} 个 → 命中`,
-      state: 'pending',
-    },
-    {
-      id: 'similarity',
-      title: '② 算余弦相似度',
-      desc: `把事件的辅助标签和版块标签两两比较「有多像」，相似度 ≥ ${formatScore(config.simThreshold)} 算命中`,
-      result: `中间计算步：产出命中数 / 标签总数 → 命中率 R、最高相似度 Smax（最小样本量 ${config.minEffectiveSample}）`,
-      state: 'compute',
-    },
-    {
-      id: 'hit_rate',
-      title: '③ 命中率规则',
-      desc: `「几分之几」的标签像版块的？超过 ${(config.directHitRate * 100).toFixed(0)}% 就挂载`,
-      result: `R > ${formatScore(config.directHitRate)} → 命中`,
-      state: 'pending',
-    },
-    {
-      id: 'max_sim',
-      title: '④ 最高相似度规则',
-      desc: '最像的那一对有多像？需同时满足三个条件（Smax / 命中数 / R）',
-      result: `Smax ≥ ${formatScore(config.directMaxSim)} 且命中 ≥ ${config.directMaxSimMinHits} 且 R ≥ ${formatScore(config.directMaxSimMinHitRate)} → 命中`,
-      state: 'pending',
-    },
-    {
-      id: 'weighted',
-      title: '⑤ 综合加权',
-      desc: '整体看像不像？把相似度和命中率加权',
-      result: `${formatScore(config.weightSim)}×Smax + ${formatScore(config.weightDensity)}×R ≥ ${formatScore(config.weightedThreshold)} → 命中`,
-      state: 'pending',
-    },
+    by('composite_hit', '', '组合标签交集非空 → 直接命中（免方向校验）'),
+    by('direct_hit', '', `交集 ≥ ${config.directHitMinOverlap} 个 → 命中`),
+    by('similarity', `，相似度 ≥ ${formatScore(config.simThreshold)} 算命中`, `中间计算步：产出命中数 / 标签总数 → 命中率 R、最高相似度 Smax（最小样本量 ${config.minEffectiveSample}）`, 'compute'),
+    by('hit_rate', `，超过 ${(config.directHitRate * 100).toFixed(0)}% 就挂载`, `R > ${formatScore(config.directHitRate)} → 命中`),
+    by('max_sim', '', `Smax ≥ ${formatScore(config.directMaxSim)} 且命中 ≥ ${config.directMaxSimMinHits} 且 R ≥ ${formatScore(config.directMaxSimMinHitRate)} → 命中`),
+    by('weighted', '', `${formatScore(config.weightSim)}×Smax + ${formatScore(config.weightDensity)}×R ≥ ${formatScore(config.weightedThreshold)} → 命中`),
   ]
 }
 
@@ -154,134 +175,102 @@ export function directionCheckNote(config: MatchFlowConfig): string {
 /** 命中即停说明（通用流程末尾的一行真话）。 */
 export const HIT_AND_STOP_NOTE = '命中即停：按 ⓪→①→②→③→④→⑤ 顺序判定，首个满足的规则决定结果，后面的规则不再看。'
 
-/** 逐标签的匹配流程步骤（真实数值可得时给数值，否则如实标「需实时计算」）。 */
+/**
+ * 逐标签判定过程（供 popover「判定过程」块逐条消费，D1/D2/A2）。
+ *
+ * 全集输出：走过的步给真实数值（matched/failed/compute），命中步之后的步标
+ * skipped（reached=false，组件合并成一排「未走到」）；⓪ 仅 composite_hit 时产出。
+ * direct_hit 命中时仍补产 ② compute 参照步（指标行需要 R/Smax 参照）；
+ * composite_hit 命中不产 ②（组合交集即命中、免相似度计算）。
+ * 真实数值不可得时（match-detail 缺失）给规则 + 阈值 + 「需实时拉取」，不伪造。
+ * 口径：① 交集标「（完全相同）」，② 参照行标「相似达标 x/N」——与收编口径分家。
+ */
 export function buildTagFlowSteps(
   reason: string,
   config: MatchFlowConfig,
   detail: MatchDetailResponse | null,
   tagAuxCount: number,
 ): MatchFlowStep[] {
-  const needLive = '（该标签命中数值需 getMatchDetail 实时计算）'
+  const needLive = '（该标签命中数值需实时拉取）'
   const real = detail !== null
   const N = real ? detail.tag_auxiliary_count : tagAuxCount
-  const overlap = real ? (detail.direct_hit_auxiliaries?.length ?? 0) : 0
-  const steps: MatchFlowStep[] = []
+  const overlap = overlapOf(detail)
+
+  const descOf = (id: string): string => {
+    const q = ruleOf(id)!.question
+    if (id === 'similarity') return `把事件的 ${N} 个辅助标签和版块标签两两比较「有多像」，相似度 ≥ ${formatScore(config.simThreshold)} 算命中`
+    if (id === 'hit_rate') return `${q}，超过 ${(config.directHitRate * 100).toFixed(0)}% 就挂载`
+    return q
+  }
+  const step = (id: string, result: string, state: MatchFlowStep['state']): MatchFlowStep => {
+    const rule = ruleOf(id)!
+    return { id, title: `${rule.no} ${rule.name}`, desc: descOf(id), result, state, no: rule.no, name: rule.name, question: rule.question, reached: state !== 'skipped' }
+  }
+  const skippedFrom = (id: string): MatchFlowStep => step(id, '未走到', 'skipped')
 
   if (reason === 'composite_hit') {
-    steps.push({
-      id: 'composite_hit',
-      title: '⓪ 组合命中',
-      desc: '事件与版块挂载了同一组合标签？',
-      result: real && (detail.composite_hits?.length ?? 0) > 0
-        ? `${detail.composite_hits!.map(h => h.label).join('、')} → 直接命中（免方向校验）`
-        : '组合标签交集非空 → 直接命中（免方向校验）',
-      state: 'matched',
-    })
-    return steps
+    const chain = real && (detail.composite_hits?.length ?? 0) > 0
+      ? `${detail.composite_hits!.map(h => h.label).join('、')} → 直接命中（免方向校验）`
+      : `组合标签交集非空 → 直接命中（免方向校验）${real ? '' : needLive}`
+    return [step('composite_hit', chain, 'matched'), skippedFrom('direct_hit'), skippedFrom('similarity'), skippedFrom('hit_rate'), skippedFrom('max_sim'), skippedFrom('weighted')]
   }
+
+  const steps: MatchFlowStep[] = []
+
+  // ① 精确匹配（口径：交集 = 辅助标签 ID 完全相同，与收编「相似达标」分家）
+  steps.push(reason === 'direct_hit'
+    ? step('direct_hit', real
+      ? `交集 ${overlap} 个（完全相同）≥ ${config.directHitMinOverlap} → 满足`
+      : `需交集 ≥ ${config.directHitMinOverlap} 个（完全相同）${needLive}`, 'matched')
+    : step('direct_hit', real
+      ? `交集 ${overlap} 个（完全相同）< ${config.directHitMinOverlap}，不够 → 继续`
+      : `需交集 ≥ ${config.directHitMinOverlap} 个（完全相同）${needLive}`, 'failed'))
+
+  // ② 算余弦相似度（中间计算步：走到 ③ 及之后必需；direct_hit 命中时作指标参照保留）
+  steps.push(step('similarity', real
+    ? `相似达标 ${detail.hits}/${N} · R ${formatScore(detail.hit_rate)} · Smax ${formatScore(detail.max_similarity)}`
+    : `相似达标数 / R / Smax${needLive}`, 'compute'))
 
   if (reason === 'direct_hit') {
-    steps.push({
-      id: 'direct_hit',
-      title: '① 精确匹配',
-      desc: '事件和版块有多少个辅助标签完全相同？',
-      result: real
-        ? `交集 ${overlap} 个 ≥ ${config.directHitMinOverlap} → 满足！score=${formatScore(detail.score)}`
-        : `需交集 ≥ ${config.directHitMinOverlap}${needLive}`,
-      state: 'matched',
-    })
+    steps.push(skippedFrom('hit_rate'), skippedFrom('max_sim'), skippedFrom('weighted'))
     return steps
   }
-
-  steps.push({
-    id: 'direct_hit',
-    title: '① 精确匹配',
-    desc: '事件和版块有多少个辅助标签完全相同？',
-    result: real
-      ? `交集 ${overlap} 个 < ${config.directHitMinOverlap}，不够 → 继续`
-      : `交集未达 ${config.directHitMinOverlap}${needLive}`,
-    state: 'failed',
-  })
-
-  steps.push({
-    id: 'similarity',
-    title: '② 算余弦相似度',
-    desc: `把事件的 ${N} 个辅助标签和版块标签两两比较「有多像」，相似度 ≥ ${formatScore(config.simThreshold)} 算命中`,
-    result: real
-      ? `命中 ${detail.hits}/${N}，R=${formatScore(detail.hit_rate, 3)}，Smax=${formatScore(detail.max_similarity, 3)}`
-      : needLive,
-    state: 'compute',
-  })
 
   if (reason === 'hit_rate') {
-    steps.push({
-      id: 'hit_rate',
-      title: '③ 命中率规则',
-      desc: `「几分之几」的标签像版块的？超过 ${(config.directHitRate * 100).toFixed(0)}% 就挂载`,
-      result: real
-        ? `R=${formatScore(detail.hit_rate, 3)} > ${formatScore(config.directHitRate)} → 满足！score=${formatScore(detail.score)}`
-        : needLive,
-      state: 'matched',
-    })
+    steps.push(step('hit_rate', real
+      ? `R=${formatScore(detail.hit_rate, 3)} > ${formatScore(config.directHitRate)} → 满足`
+      : `需 R > ${formatScore(config.directHitRate)}${needLive}`, 'matched'))
+    steps.push(skippedFrom('max_sim'), skippedFrom('weighted'))
     return steps
   }
 
-  steps.push({
-    id: 'hit_rate',
-    title: '③ 命中率规则',
-    desc: `「几分之几」的标签像版块的？超过 ${(config.directHitRate * 100).toFixed(0)}% 就挂载`,
-    result: real
-      ? `R=${formatScore(detail.hit_rate, 3)} ≤ ${formatScore(config.directHitRate)} → 不够`
-      : needLive,
-    state: 'failed',
-  })
+  steps.push(step('hit_rate', real
+    ? `R=${formatScore(detail.hit_rate, 3)} ≤ ${formatScore(config.directHitRate)} → 不够，继续`
+    : `需 R > ${formatScore(config.directHitRate)}${needLive}`, 'failed'))
 
   const minHits = Math.min(config.directMaxSimMinHits, N || 1)
   if (reason === 'max_sim') {
-    steps.push({
-      id: 'max_sim',
-      title: '④ 最高相似度规则',
-      desc: '最像的那一对有多像？需同时满足三个条件（Smax / 命中数 / R）',
-      result: real
-        ? `Smax=${formatScore(detail.max_similarity, 3)} ≥ ${formatScore(config.directMaxSim)}，${detail.hits}≥${minHits}，R=${formatScore(detail.hit_rate, 3)} → 满足！${detail.downgraded ? ' ⚠降级匹配' : ''}`
-        : needLive,
-      state: 'matched',
-    })
+    steps.push(step('max_sim', real
+      ? `Smax=${formatScore(detail.max_similarity, 3)} ≥ ${formatScore(config.directMaxSim)}，${detail.hits} ≥ ${minHits}，R=${formatScore(detail.hit_rate, 3)} → 满足${detail.downgraded ? ' ⚠降级匹配' : ''}`
+      : `需 Smax ≥ ${formatScore(config.directMaxSim)} 且命中 ≥ ${minHits} 且 R ≥ ${formatScore(config.directMaxSimMinHitRate)}${needLive}`, 'matched'))
+    steps.push(skippedFrom('weighted'))
     return steps
   }
 
-  steps.push({
-    id: 'max_sim',
-    title: '④ 最高相似度规则',
-    desc: '最像的那一对有多像？需同时满足三个条件（Smax / 命中数 / R）',
-    result: real
-      ? `Smax=${formatScore(detail.max_similarity, 3)}、${detail.hits}/${minHits}、R=${formatScore(detail.hit_rate, 3)} → 未全满足，继续`
-      : needLive,
-    state: 'failed',
-  })
+  steps.push(step('max_sim', real
+    ? `Smax=${formatScore(detail.max_similarity, 3)}、${detail.hits}/${minHits}、R=${formatScore(detail.hit_rate, 3)} → 未全满足，继续`
+    : `需三条件全满足${needLive}`, 'failed'))
 
   if (reason === 'weighted') {
-    steps.push({
-      id: 'weighted',
-      title: '⑤ 综合加权',
-      desc: '整体看像不像？相似度和命中率加权',
-      result: real
-        ? `${formatScore(config.weightSim)}×${formatScore(detail.max_similarity, 3)}+${formatScore(config.weightDensity)}×${formatScore(detail.hit_rate, 3)}=${formatScore(detail.score, 3)} ≥ ${formatScore(config.weightedThreshold)} → 满足！`
-        : needLive,
-      state: 'matched',
-    })
+    steps.push(step('weighted', real
+      ? `${formatScore(config.weightSim)}×${formatScore(detail.max_similarity, 3)}+${formatScore(config.weightDensity)}×${formatScore(detail.hit_rate, 3)}=${formatScore(detail.score, 3)} ≥ ${formatScore(config.weightedThreshold)} → 满足`
+      : `需加权分 ≥ ${formatScore(config.weightedThreshold)}${needLive}`, 'matched'))
   } else {
-    steps.push({
-      id: 'weighted',
-      title: '⑤ 综合加权',
-      desc: '整体看像不像？相似度和命中率加权',
-      result: real
-        ? `加权分 ${formatScore(detail.score, 3)} < ${formatScore(config.weightedThreshold)} → 不匹配`
-        : needLive,
-      state: 'failed',
-    })
+    // 未知 reason：如实标未匹配（不伪造 skipped / 命中态）
+    steps.push(step('weighted', real
+      ? `加权分 ${formatScore(detail.score, 3)} < ${formatScore(config.weightedThreshold)} → 不匹配`
+      : `需加权分 ≥ ${formatScore(config.weightedThreshold)}${needLive}`, 'failed'))
   }
-
   return steps
 }
 

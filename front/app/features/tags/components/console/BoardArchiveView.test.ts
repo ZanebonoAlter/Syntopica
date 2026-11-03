@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import type { BoardArticleTag } from '~/api/semanticBoards'
 import BoardArchiveView from './BoardArchiveView.vue'
+import { RULE_COPY } from './archiveMatchFlow'
 import type { ArchiveArticle } from '../../composables/useBoardArchive'
 
 vi.mock('@iconify/vue', () => ({
@@ -361,7 +362,7 @@ describe('BoardArchiveView — 筛选与排序', () => {
 })
 
 describe('BoardArchiveView — 匹配流程说明', () => {
-  it('「匹配流程」弹窗给出六步通用说明与真实阈值', async () => {
+  it('「匹配流程」弹窗给出六步通用说明与真实阈值，步骤名/问法与 popover 同源 RULE_COPY', async () => {
     const wrapper = mountView()
     await flushPromises()
     await wrapper.find('[data-testid="archive-flow-open"]').trigger('click')
@@ -369,15 +370,17 @@ describe('BoardArchiveView — 匹配流程说明', () => {
     const dialog = document.body.querySelector('.app-dialog')
     expect(dialog).not.toBeNull()
     const text = dialog!.textContent ?? ''
-    expect(text).toContain('⓪ 组合命中')
-    expect(text).toContain('① 精确匹配')
-    expect(text).toContain('② 算余弦相似度')
-    expect(text).toContain('③ 命中率规则')
-    expect(text).toContain('④ 最高相似度规则')
-    expect(text).toContain('⑤ 综合加权')
+    // 步骤名 / 编号 / 问法全部来自单一常量源（同源断言取常量值，不硬编码）
+    for (const rule of RULE_COPY) {
+      expect(text).toContain(`${rule.no} ${rule.name}`)
+      expect(text).toContain(rule.question)
+    }
+    // 弹窗只讲规则与阈值，不给单次判定结果
     expect(text).toContain('交集 ≥ 2')
     expect(text).toContain('方向校验')
     expect(text).toContain('0.55')
+    expect(text).not.toContain('未走到')
+    expect(text).not.toContain('→ 满足')
   })
 })
 

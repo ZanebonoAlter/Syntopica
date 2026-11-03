@@ -215,16 +215,118 @@
 }
 
 /* 私有判定行 */
-.amp-verdict {
+/* 头区指标行（口径=相似达标 hits，与 ① 交集「完全相同」分家） */
+.amp-metric {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+}
+
+/* 结论行（一句话因果，替代旧长判定句） */
+.amp-verdict-line {
   margin: 0;
   padding: 0.45rem 0.8rem;
   border-bottom: 1px dashed var(--color-border-subtle);
-  color: var(--color-text-secondary);
-  font-size: 0.72rem;
+  color: var(--color-text-primary);
+  font-size: 0.74rem;
   line-height: 1.6;
 }
 
-/* 判定行内的口径标注小字（实时重算 vs 冻结 score） */
+/* 判定过程（逐条：已试过未通过 + 命中步 + ② 参照；命中步之后合并一排） */
+.amp-flow-step {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.35rem 0.5rem;
+  border-left: 2px solid transparent;
+}
+
+.amp-flow-step.is-matched {
+  border-left-color: var(--color-accent);
+  background: var(--color-bg-subtle, transparent);
+}
+
+.amp-flow-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.amp-flow-mark {
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.amp-flow-step.is-matched .amp-flow-mark {
+  color: var(--color-accent);
+}
+
+.amp-flow-step.is-failed .amp-flow-mark {
+  color: var(--color-text-muted);
+}
+
+.amp-flow-no {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.amp-flow-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.amp-flow-state {
+  font-size: 0.64rem;
+  padding: 0 0.28rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 3px;
+}
+
+.amp-flow-state.is-hit {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.amp-flow-state.is-miss {
+  color: var(--color-text-muted);
+}
+
+.amp-flow-state.is-ref {
+  color: var(--color-text-muted);
+  border-style: dashed;
+}
+
+.amp-flow-q {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.amp-flow-result {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+/* 命中步之后的合并排（未走到） */
+.amp-flow-skipped {
+  margin: 0.2rem 0 0;
+  padding: 0.18rem 0.5rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+  opacity: 0.65;
+}
+
+/* 判定过程脚注的口径标注小字（实时重算 vs 冻结 score，全 popover 唯一一处） */
 .amp-verdict-note {
   display: block;
   margin-top: 0.2rem;
@@ -237,10 +339,10 @@
   color: var(--color-warning);
 }
 
-/* 规则代入式（默认收起） */
+/* 命中步就地展开的计算明细（默认收起，按钮挂在命中步下） */
 .amp-calc-btn {
   align-self: flex-start;
-  margin: 0.5rem 0.8rem;
+  margin: 0.15rem 0 0;
   border: 0;
   background: transparent;
   padding: 0;
@@ -256,10 +358,45 @@
 }
 
 .amp-calc {
-  margin: 0 0.8rem 0.6rem;
-  padding: 0.4rem 0.6rem;
+  margin: 0.3rem 0 0;
+  padding: 0.35rem 0.6rem;
   border-left: 2px solid var(--color-border-medium);
   font-size: 0.78rem;
+}
+
+/* 当前匹配参数（12 项明细，折叠） */
+.amp-config {
+  padding: 0.4rem 0.8rem 0.6rem;
+  font-size: 0.7rem;
+}
+
+.amp-config summary {
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.amp-config dl {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.18rem;
+  margin: 0.4rem 0 0;
+}
+
+.amp-config dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.amp-config dt {
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+}
+
+.amp-config dd {
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.66rem;
 }
 
 /* 入板过程：阶段分组 */
@@ -348,4 +485,22 @@
   font-family: var(--font-mono, monospace);
   font-size: 0.7rem;
   line-height: 1.5;
+}
+
+/* 窄屏（<768px 底部全宽档）：判定过程行两行折行（主行 + 问法/结果行），不横向滚动 */
+@media (max-width: 767.98px) {
+  .amp-flow-head {
+    flex-wrap: wrap;
+  }
+
+  .amp-flow-q,
+  .amp-flow-result {
+    word-break: break-all;
+    white-space: normal;
+  }
+
+  .amp-config dl div {
+    flex-direction: column;
+    gap: 0;
+  }
 }
