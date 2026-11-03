@@ -131,7 +131,7 @@ function onSelect() {
         <Icon icon="mdi:eye-outline" width="11" aria-hidden="true" />
         追踪中
       </span>
-      <span class="ldc-count">{{ windowDays }}天 · {{ lane.section_count_14d }} section</span>
+      <span class="ldc-count">{{ windowDays }}天 · {{ lane.thread_count_14d ?? lane.section_count_14d }} 线索</span>
     </div>
 
     <!-- 态势句 / 待结算占位（snapshot=null 降级：时间线照常，卡片不置灰） -->

@@ -25,6 +25,7 @@ function makeLane(overrides: Partial<LaneDynamicsLane> = {}): LaneDynamicsLane {
     label: '美联储利率路径',
     watch_linked: false,
     section_count_14d: 3,
+    thread_count_14d: 7,
     snapshot: {
       summary: '近两周围绕降息节奏反复拉锯。',
       as_of: '2026-09-09',
@@ -149,8 +150,8 @@ describe('LaneDynamicsCard', () => {
     expect(wrapper.emitted('select')).toEqual([[101]])
   })
 
-  it('计数小字：windowDays 与 section_count_14d', () => {
-    const wrapper = mountCard(makeLane({ section_count_14d: 12 }))
-    expect(wrapper.find('.ldc-count').text()).toBe('14天 · 12 section')
+  it('计数小字：windowDays 与线索数（热度口径）', () => {
+    const wrapper = mountCard(makeLane({ section_count_14d: 12, thread_count_14d: 31 }))
+    expect(wrapper.find('.ldc-count').text()).toBe('14天 · 31 线索')
   })
 })

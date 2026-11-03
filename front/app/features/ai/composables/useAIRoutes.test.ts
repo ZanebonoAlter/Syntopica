@@ -108,5 +108,9 @@ describe('useAIRoutes', () => {
     // digest_polish 两个消费方：日报生成 + 泳道趋势近14天档（lane_snapshot）
     expect(routeDescriptions.digest_polish).toContain('日报')
     expect(routeDescriptions.digest_polish).toContain('14')
+    // 日报侧另有关键节点 AI 推荐（daily_report.key_event_recommend，同一 digest_polish 路由）
+    expect(routeDescriptions.digest_polish).toContain('关键节点')
+    // 版块体检评分（tagmanagement.board_health_checkup）走 topic_tagging 路由
+    expect(routeDescriptions.topic_tagging).toContain('版块体检')
   })
 })

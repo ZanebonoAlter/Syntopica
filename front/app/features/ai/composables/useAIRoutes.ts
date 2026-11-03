@@ -21,14 +21,17 @@ export const capabilityOrder = ['summary', 'topic_tagging', 'digest_polish', 'em
 // routeDescriptions：泳道行「供血对象」说明小字（与 routeLabels 同源维护，
 // 缺省不渲染说明行）。口径必须与后端真实调用方一致，勿凭名字猜：
 // - digest_polish 供血日报生成 + 泳道动态/泳道趋势「近 14 天」档
-//   （topicgraph daily_report.* / lane_snapshot LLM 调用）；
+//   （topicgraph daily_report.* / lane_snapshot LLM 调用），含日报关键节点
+//   AI 推荐（daily_report.key_event_recommend）；
+// - topic_tagging 供血标签提取与语义操作，含版块体检 LLM 评分
+//   （tagmanagement.board_health_checkup，版块评分徽章/评语来源）；
 // - data_enrichment_news 供血话题生命线周期归档摘要
 //   （data_enrichment.summarize_context，月/年定时任务生成）=
 //   泳道趋势「月」「年」档数据源，与日报无关。
 export const routeDescriptions: Record<string, string> = {
   summary: '阅读流文章自动总结',
-  topic_tagging: '标签提取与语义操作',
-  digest_polish: '日报生成（聚类/要闻/叙事）与泳道趋势「近 14 天」档',
+  topic_tagging: '标签提取与语义操作（含版块体检评分）',
+  digest_polish: '日报生成（聚类/要闻/叙事/关键节点 AI 推荐）与泳道趋势「近 14 天」档',
   embedding: '文章向量嵌入（语义检索）',
   open_notebook: '日报页边注问答（含搜索词生成）',
   feed_discovery: '订阅源发现推荐精排',
