@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ui-verification-trace.sh — UI 验收痕迹归档对账门禁（add-ui-verification-trace-gate 引入）
 #
-# 用法：bash scripts/harness/ui-verification-trace.sh <change-dir>
-#   <change-dir> 形如 openspec/changes/<name>（仓库根相对或绝对路径均可）
+# 用法：bash scripts/harness/ui-verification-trace.sh <change-dir> [--delivery]
+#   <change-dir> 形如 openspec/changes/<name>（仓库根相对或绝对路径均可）；--delivery 为可选交付模式
 #
 # 只读对账（不执行测试/构建、不修改仓库文件），UI 验收证据判定的单一事实源：
 # spec-gate 检查⑥' 与 archive-readiness 聚合自查只认本脚本退出码，判定逻辑不在扩展内二次耦合。
@@ -20,6 +20,21 @@
 #      · 两词表都无 / 关键词后无实物 → 红（裸关键词不构成验收证据）
 #   ③ major 档：`ui-verification/` 目录 + report.md 存在 + ≥1 条合法判定条目 +
 #      条目/清单点名截图文件真实存在于目录 + 未覆盖条目带原因
+#
+# --delivery 交付模式（harden-ui-delivery-acceptance D1–D4，先跑证据对账再跑结果判定，单次解析）：
+#   ④' 合同适用性：ui-design.md 头部注释区唯一 <!-- ui-acceptance-contract: v1 --> 启用 v1；
+#       正文/引用之后的实际合同注释＝位置错误（存量 major 也红，不降级为未迁移）；围栏/行内代码示例
+#       不是声明；无 marker 时按 .openspec.yaml 的 created 边界：≥2026-10-27 或日期缺失/非法 → 红；
+#       更早 → 明确输出「仅证据齐备，未迁移交付合同」按证据结果放行；不新增环境变量绕过口
+#   ⑤' v1 结果判定：Acceptance 节内唯一 ### Delivery Contract 表（A-ID | 必验故事与打开状态 |
+#       必验视口；视口＝逗号分隔正整数 宽x高；空表/重复/空故事/畸形视口/非法行红）；条目域＝根级
+#       ### A… 场景标题 + 首列 A 编号位置的表格行（含畸形占用候选；表头/分隔/引用/列表/散文/围栏
+#       代码不算条目，域内畸形＝非法条目红、不回退旧 pass 洗绿）；A数字/A-数字 规范化为同一锚点，
+#       按文件行序保留历史、取每锚最新：任意最新 fail 红；必验缺失/最新非 pass 红；非必验未覆盖
+#       逐条提醒原因；旧非 pass 后追加 pass 须依据以「复验」开头＋实际结果描述＋点名新截图；必验
+#       最新 pass 的视口只认本条依据内的引用（Markdown 链接/角括号含空格目标/无空格裸相对路径），
+#       读真实 PNG IHDR 宽高精确匹配（不信文件名、非 PNG 不计视口），路径须相对 ui-verification/
+#       且真实解析后仍在目录内（拒绝绝对路径/../越界/符号链接逃逸），不借其他 A-ID/旧记录/全局清单
 #
 # report.md 建账格式契约（design D4，自 add-topic-key-event-markers 实战形态归纳，双形态合法）：
 #   标题式：### A-<N> <场景标题>【pass|fail|未覆盖】（编号自 A-1 自增，判定词表封闭三值）
@@ -44,9 +59,23 @@ set -u
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+MODE="default"
 CHANGE_DIR="${1:-}"
 if [ -z "$CHANGE_DIR" ]; then
-	echo "用法: bash scripts/harness/ui-verification-trace.sh <change-dir>  （如 openspec/changes/<name>）"
+	echo "用法: bash scripts/harness/ui-verification-trace.sh <change-dir> [--delivery]  （如 openspec/changes/<name>）"
+	exit 1
+fi
+case "${2:-}" in
+	"") ;;
+	--delivery) MODE="delivery" ;;
+	*)
+		echo "用法: 未知参数 ${2}（可选参数仅支持 --delivery）"
+		echo "用法: bash scripts/harness/ui-verification-trace.sh <change-dir> [--delivery]  （如 openspec/changes/<name>）"
+		exit 1
+		;;
+esac
+if [ -n "${3:-}" ]; then
+	echo "用法: 参数过多（仅接受 <change-dir> 与可选 --delivery）"
 	exit 1
 fi
 CHANGE_DIR="${CHANGE_DIR%/}"
@@ -65,8 +94,9 @@ PATH_ROOT="${UI_VERIFICATION_TRACE_REPO_ROOT:-$REPO_ROOT}"
 
 # ---------- 格式契约正则（与 spec 词表封闭值同步） ----------
 
-# 标题式条目：### A-<N> <非空标题>【pass|fail|未覆盖】（标注括号可选）
-HEADING_RE='^### A-[0-9]+ .+【(pass|fail|未覆盖)】(（[^）]*）)?[[:space:]]*$'
+# 标题式条目：### A-<N> <非空标题>【pass|fail|未覆盖】（标注括号可选）；A<N> 与 A-<N> 规范化为
+# 同一稳定锚点（design D1，两形态共用一条解析路径）；捕获组：1=锚 2=判定 3=标注
+HEADING_RE='^### (A-?[0-9]+) .+【(pass|fail|未覆盖)】(（[^）]*）)?[[:space:]]*$'
 # 组件测试词表（-i）与 agent-browser/人工词表（opencli 历史口径按人工同通道）
 COMP_RE='组件测试|component|单测|单元测试'
 MANUAL_RE='agent-browser|人工|opencli'
@@ -81,6 +111,23 @@ utf8_charlen() {
 	local n
 	n="$(printf '%s' "$1" | iconv -f UTF-8 -t UTF-32LE 2>/dev/null | wc -c)"
 	echo $(( ${n:-0} / 4 ))
+}
+
+# A-ID 规范化锚点（design D1：A数字与 A-数字 同锚）：'A-55'/'A55'/'A-05 标题' → 'A-55'
+# （首 token 去杠、数值化去前导零）；非纯数字 → rc1
+# 交付模式（--delivery）共享状态：条目历史/非法条目（scan_report 同源填充，仅 delivery+major 消费）
+E_COUNT=0
+EA_KEY=(); EA_VERDICT=(); EA_ANNOT=(); EA_BASIS=()
+ILLEGAL=(); ILLEGAL_N=0
+STRICT=0
+canon_anchor() { # $1=原始 A-ID（可带尾随标题文本）→ stdout 'A-<N>'；非法 rc1
+	local a="${1%%[[:space:]]*}"
+	a="${a#A}"
+	a="${a#-}"
+	case "$a" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	printf 'A-%s' "$((10#$a))"
 }
 
 # proposal.md / ui-design.md 头部机器可读注释区：文件开头连续的 <!-- ... --> 行（空行可穿插），
@@ -135,10 +182,10 @@ count_entry() {
 }
 
 # 表格行形态判定：| A<N> <标题> | **verdict**（标注可选） | 依据 |（≥3 列且依据列非空）
-# 成功时设 TRV（verdict）/ TRA（annot）/ TRB（basis）
-TRV=""; TRA=""; TRB=""
+# 成功时设 TRV（verdict）/ TRA（annot）/ TRB（basis）/ TR_KEY（规范化锚）
+TRV=""; TRA=""; TRB=""; TR_KEY=""
 is_table_row() { # $1=line
-	TRV=""; TRA=""; TRB=""
+	TRV=""; TRA=""; TRB=""; TR_KEY=""
 	local line="$1"
 	[[ "$line" =~ ^[[:space:]]*\|.*\|[[:space:]]*$ ]] || return 1
 	local cells
@@ -149,6 +196,7 @@ is_table_row() { # $1=line
 	c2="$(trim "${cells[2]}")"
 	[[ "$c1" =~ ^A-?[0-9]+([[:space:]].+)?$ ]] || return 1
 	[[ "$c2" =~ ^\*{0,2}(pass|fail|未覆盖)(（[^）]*）)?\*{0,2}$ ]] || return 1
+	TR_KEY="$(canon_anchor "${c1%%[[:space:]]*}")"
 	TRV="${BASH_REMATCH[1]}"
 	TRA="${BASH_REMATCH[2]:-}"
 	local i rest=""
@@ -171,8 +219,8 @@ scan_report() { # $1=report.md
 			if [ -n "$pending" ]; then
 				DROPPED_NOTES+="  ⚠ 未计入合法条目（标题式）：条目缺紧随依据行"$'\n'
 			fi
-			pending="${BASH_REMATCH[1]}"
-			pending_annot="${BASH_REMATCH[2]:-}"
+			pending="${BASH_REMATCH[2]}"
+			pending_annot="${BASH_REMATCH[3]:-}"
 			continue
 		fi
 		if is_table_row "$line"; then

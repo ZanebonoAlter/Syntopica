@@ -305,6 +305,153 @@ check 1 "⑮ 缺参 → 用法" "用法:"
 run_trace "$TMP/no-such-dir"
 check 1 "⑯ 目录不存在" "目录不存在"
 
+# ---------- harden-ui-delivery-acceptance D01–D24：真实 PNG + v1 合同 ----------
+# 完整的单色 PNG（含 IDAT/IEND 和 CRC），不是仅伪造尺寸的文件名/头。
+png_fixture() {
+	case "$2" in
+		1440) printf '%s' 'iVBORw0KGgoAAAANSUhEUgAABaAAAAOEAQAAAAB/Nqt/AAAAtUlEQVR4nO3BMQEAAADCoPVPbQsvoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAhwF8cgABzwpMvAAAAABJRU5ErkJggg==' ;;
+		2560) printf '%s' 'iVBORw0KGgoAAAANSUhEUgAACgAAAAWgAQAAAAC6eydyAAAB10lEQVR4nO3BMQEAAADCoPVPbQ0PoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIB3Aw4JAAGh8xlHAAAAAElFTkSuQmCC' ;;
+		1280) printf '%s' 'iVBORw0KGgoAAAANSUhEUgAABQAAAAJ5AQAAAADZFaDdAAAAd0lEQVR4nO3BAQEAAACAkP6v7ggKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABojigAAbqZ3ZMAAAAASUVORK5CYII=' ;;
+	esac | base64 -d > "$1"
+}
+v1_reset() {
+	V="$(mkchg delivery major)"
+	mkdir -p "$V/ui-verification/子目录"
+	png_fixture "$V/ui-verification/a.png" 1440
+	png_fixture "$V/ui-verification/b.png" 2560
+	cp "$V/ui-verification/a.png" "$V/ui-verification/子目录/有 空格.png"
+	cp "$V/ui-verification/b.png" "$V/ui-verification/子目录/宽屏.png"
+	cat > "$V/ui-design.md" <<'EOF'
+<!-- ui-impact: major -->
+
+<!-- ui-acceptance-contract: v1 -->
+
+## Acceptance
+### Delivery Contract
+| A-ID | 必验故事与打开状态 | 必验视口 |
+| --- | --- | --- |
+| A-55 | 打开选择面板并返回正文 | 1440x900,2560x1440 |
+EOF
+	printf '| A55 故事 | **pass** | 打开态断言通过 a.png b.png |\n' > "$V/ui-verification/report.md"
+}
+vcheck() { run_trace "$V" --delivery; check "$@"; }
+v1_reset
+vcheck 0 'D02/D18 v1逐故事两视口通过' '交付结果' 'A-55'
+first="$out"; vcheck 0 '幂等：同fixture重复通过' '交付结果'
+[ "$first" = "$out" ] || { echo '✗ 幂等输出不一致'; failn=$((failn + 1)); }
+printf '| A9 旁支 | **fail** | 转挂 existing-change，问题仍在 a.png |\n| A10 旁支 | **未覆盖** | 环境缺少真实建议数据 |\n' >> "$V/ui-verification/report.md"
+mkdir -p "$TMP/existing-change"
+run_trace "$V"; check 0 'D01 默认只检查证据不阻断fail' '仅证据' 'fail 1'
+vcheck 1 'D03 非必验最新fail不能转挂洗绿' 'A-9' 'fail'
+v1_reset
+printf '| A55 故事 | **未覆盖** | 环境缺少真实建议数据 |\n' > "$V/ui-verification/report.md"
+vcheck 1 'D04 核心未覆盖' 'A-55' '未覆盖'
+printf '| A1 别的故事 | pass | 检查状态通过 a.png b.png |\n' > "$V/ui-verification/report.md"
+vcheck 1 'D04 必验从未记录' 'A-55' '缺失'
+v1_reset
+printf '| A9 旁支 | 未覆盖 | 环境缺少真实建议数据 |\n' >> "$V/ui-verification/report.md"
+vcheck 0 'D05 非必验未覆盖逐条提醒' 'A-9' '环境缺少真实建议数据'
+v1_reset
+cp "$V/ui-verification/a.png" "$V/ui-verification/new.png"
+printf '| A55 故事 | fail | 面板遮挡 a.png |\n### A-55 同场景【pass】\n\n复验：面板可见且点击命中 new.png b.png\n' > "$V/ui-verification/report.md"
+vcheck 0 'D06 混排同号复验保留历史' '建账 2 条' 'fail 1'
+printf '| A55 故事 | 未覆盖 | 环境缺少真实建议数据 |\n| A-55 故事 | pass | 面板可见且点击命中 new.png b.png |\n' > "$V/ui-verification/report.md"
+vcheck 1 'D07 无复验标识不解除' 'A-55' '复验'
+printf '| A55 故事 | fail | 面板遮挡 a.png b.png |\n| A-55 故事 | pass | 复验：面板可见且点击命中 a.png b.png |\n' > "$V/ui-verification/report.md"
+vcheck 1 'D08 旧图不解除' 'A-55' '新截图'
+sed -i 's/复验：面板可见且点击命中 a.png b.png/复验 a.png b.png/' "$V/ui-verification/report.md"
+vcheck 1 'D08 只有复验和图无实际结果' 'A-55' '实际结果'
+for bad in '| A55 故事 | 搞定 | 状态通过 a.png |' '| A55 故事 | pass | |' '| A? 故事 | pass | 状态通过 a.png |' '### A-0 故事【pass】' '| a55 故事 | pass | 状态通过 a.png |'; do
+	v1_reset; printf '%s\n' "$bad" >> "$V/ui-verification/report.md"
+	vcheck 1 "D09 非法候选阻断：$bad" '非法条目'
+	done
+v1_reset
+cat >> "$V/ui-verification/report.md" <<'EOF'
+> A43 旧失败仍保留说明
+- A55 是说明，不是新记录
+A43 和 A55 的历史说明散文
+| A-ID | 判定 | 依据 |
+| --- | --- | --- |
+```markdown
+| A? | 搞定 | 假依据 |
+### A55 假场景【fail】
+```
+EOF
+vcheck 0 'D09b/c 引用列表散文表头围栏都不是条目' '建账 1 条'
+printf '```markdown\n| A55 假场景 | pass | 状态通过 a.png b.png |\n```\n| A1 别的故事 | pass | 状态通过 a.png |\n' > "$V/ui-verification/report.md"
+vcheck 1 'D09c 代码里的pass不能满足必验' 'A-55' '缺失'
+for row in '' '| A55 | 重复 | 1440x900 |' '| A-0 | 故事 | 1440x900 |' '| A--1 | 故事 | 1440x900 |' '| | 故事 | 1440x900 |' '| A55 | | 1440x900 |' '| A55 | 故事 | 0x900 |' '| A55 | 故事 | -1x900 |' '| A55 | 故事 | 1440 |' '| A55 | 故事 | 1x2x3 |' '| A55 | 故事 | 1440x900提示 |' '| A55 | 故事 | |' '| A55 | 故事 | 1440x900, |'; do
+	v1_reset
+	if [[ "$row" == *重复* ]]; then printf '%s\n' "$row" >> "$V/ui-design.md"; else sed -i '/^| A-55 /d' "$V/ui-design.md"; printf '%s\n' "$row" >> "$V/ui-design.md"; fi
+	vcheck 1 "D10–D12 合同坏行：$row" '合同'
+done
+v1_reset; printf '\n### Delivery Contract\n' >> "$V/ui-design.md"
+vcheck 1 'D10 重复合同节' '唯一'
+v1_reset; sed -i '/### Delivery Contract/d' "$V/ui-design.md"
+vcheck 1 'D10 缺合同节' 'Delivery Contract'
+for marker in '<!-- ui-acceptance-contract: v2 -->' '<!-- ui-acceptance-contract: -->'; do
+	v1_reset; sed -i "s/<!-- ui-acceptance-contract: v1 -->/$marker/" "$V/ui-design.md"
+	vcheck 1 "D13 非法版本：$marker" '合同 marker'
+done
+v1_reset; printf '\n<!-- ui-acceptance-contract: v1 -->\n' >> "$V/ui-design.md"
+vcheck 1 'D13 重复且正文marker' '合同 marker'
+v1_reset; sed -i '/ui-acceptance-contract/d' "$V/ui-design.md"; printf '\n> 引用说明之后\n<!-- ui-acceptance-contract: v1 -->\n' >> "$V/ui-design.md"
+vcheck 1 'D13 老major正文marker不能降级' '位置'
+v1_reset
+cat >> "$V/ui-design.md" <<'EOF'
+`<!-- ui-acceptance-contract: v2 -->` 是行内示例
+~~~markdown
+<!-- ui-acceptance-contract: v2 -->
+~~~
+EOF
+vcheck 0 'D13b 开头可穿空行，围栏行内示例忽略' '交付结果'
+for date in 2026-10-26 2026-10-27 2026-10-28 missing 2026-02-30 garbage; do
+	v1_reset; sed -i '/ui-acceptance-contract/d' "$V/ui-design.md"
+	cat >> "$V/ui-design.md" <<'EOF'
+`<!-- ui-acceptance-contract: v1 -->`
+```
+<!-- ui-acceptance-contract: v1 -->
+```
+EOF
+	printf 'schema: syntopica-ui\ncreated: %s\n' "$date" > "$V/.openspec.yaml"
+	if [ "$date" = missing ]; then sed -i '/created/d' "$V/.openspec.yaml"; fi
+	if [ "$date" = 2026-10-26 ]; then vcheck 0 'D14 老major明确降级' '仅证据齐备，未迁移交付合同'; else vcheck 1 "D14/D16 新major或坏日期：$date" '合同'; fi
+done
+v1_reset; printf '| A55 故事 | fail | 面板遮挡 a.png |\n' > "$V/ui-verification/report.md"
+vcheck 1 'D15 老日期显式v1仍查fail' 'A-55' 'fail'
+for c in "$C6" "$C8" "$C9" "$C10"; do run_trace "$c" --delivery; check 0 "D17 兼容非major/旧schema：$c"; done
+v1_reset
+printf '| A55 故事 | pass | 状态通过 a.png |\n| A57 另一页 | pass | 状态通过 b.png |\n清单 b.png\n' > "$V/ui-verification/report.md"
+vcheck 1 'D19 其他A/全局图不能借用' 'A-55' '2560x1440'
+printf '| A55 故事 | pass | 状态通过 a.png b.png |\n| A55 故事 | pass | 最新通过 a.png |\n' > "$V/ui-verification/report.md"
+vcheck 1 'D19 旧记录图不能借用' 'A-55' '2560x1440'
+v1_reset; png_fixture "$V/ui-verification/a.png" 1280
+vcheck 1 'D20 文件名不等于真实尺寸' 'A-55' '1440x900'
+for kind in missing text signature truncated zero; do
+	v1_reset
+	case "$kind" in
+		missing) rm "$V/ui-verification/a.png" ;;
+		text) printf 'not PNG' > "$V/ui-verification/a.png" ;;
+		signature) printf 'bad signxxxxIHDR12345678' > "$V/ui-verification/a.png" ;;
+		truncated) head -c 20 "$V/ui-verification/b.png" > "$V/ui-verification/a.png" ;;
+		zero) printf '\211PNG\r\n\032\n\000\000\000\015IHDR\000\000\000\000\000\000\000\000\001\000\000\000\000\000\000\000\000' > "$V/ui-verification/a.png" ;;
+	esac
+	vcheck 1 "D21 缺失或坏PNG：$kind" 'a.png'
+done
+v1_reset
+printf '| A55 故事 | pass | 打开态通过 [普通](a.png) [宽屏](子目录/宽屏.png) [空格](<子目录/有 空格.png>) |\n' > "$V/ui-verification/report.md"
+vcheck 0 'D22 Markdown中文子目录空格目标' '交付结果'
+printf '| A55 故事 | pass | 打开态通过 子目录/宽屏.png a.png |\n' > "$V/ui-verification/report.md"
+vcheck 0 'D22 裸相对子目录中文' '交付结果'
+cp "$V/ui-verification/a.png" "$TMP/outside.png"
+for path in '子目录/不存在.png' '../outside.png' "$TMP/outside.png" 'escape.png'; do
+	v1_reset; ln -sf "$TMP/outside.png" "$V/ui-verification/escape.png"
+	printf '| A55 故事 | pass | 打开态通过 a.png b.png [%s](<%s>) |\n' "$path" "$path" > "$V/ui-verification/report.md"
+	vcheck 1 "D22/D23 非法路径：$path" "$path"
+done
+v1_reset; printf '| A55 故事 | fail | 复验后仍遮挡 a.png |\n' >> "$V/ui-verification/report.md"
+vcheck 1 'D24 最后再次fail仍红' 'A-55' 'fail'
+
 echo ""
 if [ "$failn" -eq 0 ]; then
 	echo "✓ ui-verification-trace.smoke 全过（$pass case）"
