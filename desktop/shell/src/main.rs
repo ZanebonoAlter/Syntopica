@@ -15,6 +15,11 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const WINDOW_LABEL: &str = "main";
 
+/// 首帧背景色 = 前端主题令牌（`front/app/assets/css/main.css` 的 --color-bg-base），改令牌需同步。
+/// 深色模式冷启动不白闪：建窗后探测系统主题，深色则先换底色再 show（spec: 首帧不出现白闪且与主题一致）。
+const THEME_BG_LIGHT: tauri::window::Color = tauri::window::Color(0xfa, 0xf7, 0xf2, 0xff); // editorial 浅色 --raw-stone-50
+const THEME_BG_DARK: tauri::window::Color = tauri::window::Color(0x08, 0x0c, 0x12, 0xff); // dark --color-bg-base
+
 #[tauri::command]
 fn probe_server(window: tauri::WebviewWindow, url: String) -> Result<(), String> {
     match nav::probe(&url, PROBE_TIMEOUT) {
@@ -31,12 +36,6 @@ fn set_server_url(window: tauri::WebviewWindow, url: String) -> Result<(), Strin
     let normalized = config::normalize(&url)?.ok_or_else(|| "地址不能为空".to_string())?;
     config::save(&normalized)?;
     probe_server(window, normalized)
-}
-
-#[tauri::command]
-fn current_target() -> config::Resolved {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    config::resolve(&args, std::env::var(config::ENV_VAR).ok(), config::load_saved())
 }
 
 fn initial_url(resolved: &config::Resolved) -> WebviewUrl {
@@ -78,14 +77,22 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
-        .invoke_handler(tauri::generate_handler![probe_server, set_server_url, current_target])
+        .invoke_handler(tauri::generate_handler![probe_server, set_server_url])
         .setup(move |app| {
             let url = initial_url(&resolved);
-            WebviewWindowBuilder::new(app, WINDOW_LABEL, url)
+            let window = WebviewWindowBuilder::new(app, WINDOW_LABEL, url)
                 .title("Syntopica")
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(900.0, 600.0)
+                // 隐窗创建→按系统主题定底色→再显示，避免深色系统白闪首帧（design D7）。
+                .visible(false)
+                .background_color(THEME_BG_LIGHT)
                 .build()?;
+            let prefers_dark = window.theme().map(|t| t == tauri::Theme::Dark).unwrap_or(false);
+            if prefers_dark {
+                window.set_background_color(Some(THEME_BG_DARK))?;
+            }
+            window.show()?;
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -96,15 +103,20 @@ fn main() {
 /// 安装包默认走 Evergreen bootstrapper，正常情况下此检查不会触发；它兜住「装完后被卸载/精简系统」的情况。
 #[cfg(target_os = "windows")]
 fn ensure_webview2() {
-    const KEY: &str = r"HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+    // Evergreen 有两种安装形态：机器级（HKLM WOW6432Node）与每用户（HKCU），任一存在即可。
+    const GUID: &str = r"\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+    let hklm = format!(r"HKLM\SOFTWARE\WOW6432Node{GUID}");
+    let hkcu = format!(r"HKCU\SOFTWARE{GUID}");
 
-    let found = std::process::Command::new("reg")
-        .args(["query", KEY, "/v", "pv"])
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(true); // 查询本身失败时不阻断启动
+    let reg_hit = |key: &str| {
+        std::process::Command::new("reg")
+            .args(["query", key, "/v", "pv"])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(true) // 查询本身失败时不阻断启动
+    };
 
-    if !found {
+    if !(reg_hit(&hklm) || reg_hit(&hkcu)) {
         message_box(
             "Syntopica 需要 Microsoft Edge WebView2 运行时。\n\n请安装后重新启动：\nhttps://developer.microsoft.com/microsoft-edge/webview2/",
             "Syntopica · 缺少 WebView2 运行时",

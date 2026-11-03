@@ -113,21 +113,32 @@ pub fn probe(raw: &str, timeout: Duration) -> Probe {
         return Probe::BadResponse(format!("写入请求失败：{e}"));
     }
 
-    let mut buf = [0u8; 512];
-    let n = match stream.read(&mut buf) {
-        Ok(n) => n,
-        Err(e) => {
-            return if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock {
-                Probe::Timeout
-            } else {
-                Probe::BadResponse(format!("读取响应失败：{e}"))
-            }
+    // 循环读至出现行结束符或缓冲上限：慢服务器可能分段吐字节，单次 read 未必含完整状态行。
+    let mut head = Vec::with_capacity(256);
+    let mut chunk = [0u8; 256];
+    loop {
+        if head.windows(2).any(|w| w == b"\r\n") || head.len() >= 1024 {
+            break;
         }
-    };
-    if n == 0 {
+        let n = match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => {
+                return if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock
+                {
+                    Probe::Timeout
+                } else {
+                    Probe::BadResponse(format!("读取响应失败：{e}"))
+                }
+            }
+        };
+        head.extend_from_slice(&chunk[..n]);
+    }
+    if head.is_empty() {
         return Probe::BadResponse("连接被关闭且无响应".to_string());
     }
-    let head = String::from_utf8_lossy(&buf[..n]);
+    let head = String::from_utf8_lossy(&head);
     match head.lines().next().and_then(parse_status_line) {
         Some(code) => classify_status(code),
         None => Probe::BadResponse("响应不是 HTTP".to_string()),
