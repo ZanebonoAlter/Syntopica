@@ -107,6 +107,7 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 
 ## AI Behavior Rules
 
+- 避免不必要的次要标签和描述，让布局本身来传达信息。
 - Do not add linters, formatters, or tooling unless asked.
 - Do not assume Python backend; the product backend is Go.
 - Ignore unrelated dirty-worktree changes. Verify smallest relevant command after edits.
@@ -120,6 +121,7 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 - Backend edits → `golangci-lint run ./...` / targeted `go test` first, then `go test ./...` / `go build ./...`。
 - Docs-only edits: consistency check unless behavior changed.
 - **pi harness 扩展（自动，无需手动跑）**：constraint-injection 注入约束（管"知道"）、quality-gate 挂 `turn_end` 增量跑 lint/vet/build/影响包测试（管"做到"）、quota-gate 派发前查额度、spec-gate / ui-design-gate 硬拦截归档与 UI 审批等共 10 个扩展，源码 `.pi/extensions/`（已入库）。日常只需配合四点：① 门禁 **[回归]** steer 必须修不得忽略（**[中间态]** 可继续、回合末复检，归档前全绿）；② quota-gate block 后按 reason 换有额度 provider **全称**重试；③ 逃生口（`--force` / `SPEC_GATE_BYPASS=1` / `UI_DESIGN_GATE_BYPASS=1`）仅显式留痕使用；④ **dev 服务起停必须走 `scripts/dev/start-dev.sh`（写 pidfile 白名单），禁止手提 `nohup setsid`——dev-process-guard 会在会话结束时自动清理无 pidfile 的 dev 进程组与浏览器自动化残留（agent-browser/chromium）**（机制见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md) §孤儿 dev 进程治理）。机制全貌（扩展全景表 / 注入通道 / 门禁分层 / 记账口径）见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md)；事件考古查 skill `harness-facts`，改进复盘查 skill `harness-retro`。
+- **子线程模型偏好（2026-10-30 用户指定）**：后续新派发子线程默认使用 MiniMax M3.1 Flash、思考档 max；当前本机精确标识为 `minimax-cn/MiniMax-M3.1-Flash:max`。用户当场另有指定时从其指令；不可用或额度阻断时先说明，不静默换模型。
 - **子线程派发 model 硬规则**：Agent 的 `model` 参数必须用 `provider/modelId` 全称（如 `zai-coding-cn/glm-5.3`），**禁止 fuzzy 名**（会按字母序落到错误供应商）；想用默认供应商省略 `model` 即可。fuzzy 名黑名单与派发纪律见开发执行规范 §0.6「供应商与模型选择」。
 - **子线程档位（2026-10-13 项目覆盖三档上线）**：实现/验证用 `implementer` 档；通用任务用 `general-purpose`（覆盖档：codemode/skills/插件全开）；只读探索用 `explore`/`plan`（覆盖档：skills/插件开、无写工具、不开 codemode）。三档均以 `.pi/agents/` 同名文件覆盖 pi-web 内置档（内置默认全关，删覆盖文件会静默退回盲区）。**AGENTS.md 不注入子线程（pi-web 硬编码 `noContextFiles`），派发任务文本 MUST 带必读文件清单 + 相关域红线摘要**（覆盖档 addendum 已写「开工先自读 AGENTS.md」兑底）。机制与漂移观测见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md)「子线程通道矩阵」。
 - Keep code changes minimal and scoped. Match existing code style.

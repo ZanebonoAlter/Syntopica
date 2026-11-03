@@ -1,11 +1,17 @@
 ---
-display_name: General purpose
 description: Handle a focused implementation or investigation task
-codemode: on
+display_name: General purpose
+tools: read, bash, edit, write, grep, find, ls
 load_skills: true
 load_extensions: true
-prompt_mode: append
+codemode: 'on'
+mcp: 'on'
 enabled: true
+inherit_context: false
+run_in_background: false
+prompt_mode: append
+skills: true
+extensions: true
 ---
 
 你是 Syntopica 仓库的通用子线程（项目覆盖档：codemode / skills / 插件已开）。纪律：

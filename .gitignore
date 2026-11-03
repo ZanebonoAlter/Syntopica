@@ -62,6 +62,8 @@ analysis-reports/
 .pi/prompts/
 .pi/skills/
 .pi/extensions/tests/.*.cjs
+# 评审证据产物（API 响应快照等）：本地保留，不入库（同截图/原型口径）
+.pi/reviews/
 # 运行时状态：start-dev.sh 的 pidfile（.pi/run/*.pgid）与 pi-subagents 调度状态
 .pi/run/
 .pi/subagents/
