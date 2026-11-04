@@ -98,8 +98,8 @@
 | 忽略后重进与恢复 | backend-go/internal/dataenrichment/repository/signal_disposition_test.go backend-go/internal/dataenrichment/handler/signal_research_test.go front/app/features/tags/components/SignalCandidateList.test.ts |
 | 运行中的忽略不可达 | backend-go/internal/dataenrichment/repository/signal_disposition_test.go backend-go/internal/dataenrichment/handler/signal_research_test.go front/app/features/tags/components/SignalCandidateList.test.ts |
 | 处理写入故障与越权 | backend-go/internal/dataenrichment/repository/signal_disposition_test.go backend-go/internal/dataenrichment/handler/signal_research_test.go front/app/features/tags/components/SignalCandidateList.test.ts |
-| 多话题和历史话题关联 | backend-go/internal/dataenrichment/service/signal_material_test.go front/app/features/tags/components/BoardThreadBrowser.focus.test.ts |
-| 无法验证的归属 | backend-go/internal/dataenrichment/service/signal_material_test.go front/app/features/tags/components/BoardThreadBrowser.focus.test.ts |
+| 多话题和历史话题关联 | backend-go/internal/dataenrichment/service/signal_material_test.go |
+| 无法验证的归属 | backend-go/internal/dataenrichment/service/signal_material_test.go |
 | 展示不发明状态和质量 | front/app/features/tags/components/BoardEnrichmentPanel.test.ts front/app/features/tags/components/SignalReportView.test.ts |
 | 版本选择按真实结果 | front/app/features/tags/components/BoardEnrichmentPanel.test.ts front/app/features/tags/components/SignalReportView.test.ts |
 | 工作台呈现候选与报告 | front/app/features/tags/components/BoardEnrichmentPanel.test.ts |
@@ -112,15 +112,18 @@
 | 追问复用探索工具 | front/app/features/tags/components/QAPanel.test.ts front/app/api/boardEnrichment.test.ts front/app/features/tags/components/LegacyResearchHistory.test.ts |
 | 多轮追问持久化 | front/app/features/tags/components/QAPanel.test.ts front/app/api/boardEnrichment.test.ts front/app/features/tags/components/LegacyResearchHistory.test.ts |
 | 追问发现手动沉淀 | front/app/features/tags/components/QAPanel.test.ts front/app/api/boardEnrichment.test.ts front/app/features/tags/components/LegacyResearchHistory.test.ts |
-| 从话题直接查看背景 | front/app/features/tags/components/TopicNewsBackground.test.ts front/app/features/tags/components/BoardThreadBrowser.focus.test.ts |
-| 背景编辑与研究隔离 | front/app/features/tags/components/TopicNewsBackground.test.ts front/app/features/tags/components/BoardThreadBrowser.focus.test.ts |
-| 补生成必须明确确认 | front/app/features/tags/components/TopicNewsBackground.test.ts front/app/features/tags/components/BoardThreadBrowser.focus.test.ts |
-| 背景失效与晚响应 | front/app/features/tags/components/TopicNewsBackground.test.ts front/app/features/tags/components/BoardThreadBrowser.focus.test.ts |
-| 从简报观察下钻 | front/app/features/tags/components/LegacyResearchHistory.test.ts front/app/features/tags/components/BoardThreadBrowser.focus.test.ts |
-| 从调查证据下钻 | front/app/features/tags/components/LegacyResearchHistory.test.ts front/app/features/tags/components/BoardThreadBrowser.focus.test.ts |
+| 从话题直接查看背景 | front/app/features/tags/components/TopicNewsBackground.test.ts |
+| 背景编辑与研究隔离 | front/app/features/tags/components/TopicNewsBackground.test.ts |
+| 补生成必须明确确认 | front/app/features/tags/components/TopicNewsBackground.test.ts |
+| 背景失效与晚响应 | front/app/features/tags/components/TopicNewsBackground.test.ts |
+| 从简报观察下钻 | front/app/features/tags/components/BoardBriefReport.test.ts front/app/features/tags/components/LegacyResearchHistory.test.ts |
+| 从调查证据下钻 | front/app/features/tags/components/BoardInvestigationReport.test.ts front/app/features/tags/components/LegacyResearchHistory.test.ts |
 | 查看旧报告 | front/app/features/tags/components/LegacyResearchHistory.test.ts backend-go/internal/dataenrichment/handler/handler_test.go |
-| 单一下拉选择泳道 | front/app/features/tags/components/BoardEnrichmentPanel.test.ts front/app/features/tags/components/BoardThreadBrowser.focus.test.ts |
-| 新闻背景入口保留 | front/app/features/tags/components/BoardEnrichmentPanel.test.ts front/app/features/tags/components/BoardThreadBrowser.focus.test.ts |
+| 单一下拉选择泳道 | front/app/features/tags/components/BoardEnrichmentPanel.test.ts |
+| 新闻背景入口保留 | front/app/features/tags/components/BoardEnrichmentPanel.test.ts front/app/features/tags/components/TopicNewsBackground.test.ts |
 | 旧结果与所有子产物可读 | backend-go/internal/dataenrichment/repository/legacy_history_test.go backend-go/internal/dataenrichment/handler/handler_test.go front/app/features/tags/components/LegacyResearchHistory.test.ts |
 | 历史归属与损坏隔离 | backend-go/internal/dataenrichment/repository/legacy_history_test.go backend-go/internal/dataenrichment/handler/handler_test.go front/app/features/tags/components/LegacyResearchHistory.test.ts |
 | 历史分页与开关无关 | backend-go/internal/dataenrichment/repository/legacy_history_test.go backend-go/internal/dataenrichment/handler/handler_test.go front/app/features/tags/components/LegacyResearchHistory.test.ts |
+
+> 映射表订正（2026-11-04 归档前）：原表 10 行指向 `front/app/features/tags/components/BoardThreadBrowser.focus.test.ts`，该文件已由 **后归档**的 change `rework-workshop-into-radar-and-desk`（2026-11-02，工坊旧宿主物理清理，提交 eb5c9077）连同 `BoardThreadBrowser.vue` 一并退役删除，故 scenario-trace 对账判「映射文件不存在」。订正按**当前实际承载该场景断言的现存文件**重指：泳道引用下钻（简报观察/调查证据）现由 `BoardBriefReport.test.ts` / `BoardInvestigationReport.test.ts` 锁 emit 契约、`LegacyResearchHistory.test.ts` 锁 `drill-lane → open-topic` 只读转换（宿主已退役，不打开聚焦表单、不发起分析）；话题新闻背景四场景由 `TopicNewsBackground.test.ts` 承载；话题关联两场景由后端 `signal_material_test.go` 承载；工作台信息架构两场景由 `BoardEnrichmentPanel.test.ts` 承载（退役区块不渲染断言）。场景语义与 delta spec 未改。
+> 9.4 验证命令原文保留（含已删除的 `BoardThreadBrowser.focus.test.ts`）——那是 2026-10-16 实施期实测记录，文件当时存在，不作追溯性改写。

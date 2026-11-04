@@ -3,7 +3,9 @@
 数据增强（data enrichment）：持久话题的认知分析能力。以分层上下文为输入，经「解读员 → 探索/查询 agent → 分析员 → review judge」角色链产出分析结果，并支持报告追问。本 capability 由两个 change 合并建立：`data-enrichment-orchestration`（骨架：三表分离 / agent loop 三防御 / 可观测性 / 循环A 新闻汇总 / 板块配置）+ `causal-analysis-agent`（分析主线：话题形态判断 / 视角选择 / 分层见解 / 见解依据与确定性 / 报告追问）。
 
 > 变更溯源：data-enrichment-orchestration（2026-07，骨架）+ causal-analysis-agent（2026-07，分析主线接管）。后者推翻前者的「金融走向预测」与「演进定位」两版主线，重定为「探索判断 agent——形态随话题变 + 见解为核心」。
+
 ## Requirements
+
 ### Requirement: 板块数据源绑定
 
 系统 SHALL 提供 `board_data_sources` 表，存储 SemanticBoard 与数据源的绑定关系。每行 SHALL 包含：`semantic_board_id`（外键）、`source_type`（系统已注册的数据源类型枚举）、`config`（板块级参数 jsonb）、`enabled`（默认 true）、时间戳。`(semantic_board_id, source_type)` SHALL 受唯一约束（同板块同源只绑一次）。`source_type` SHALL 受 CHECK 约束为系统已注册的数据源类型。`source_type` 枚举 SHALL 可扩展（未来接入结构化外部源时新增），但内置 SHALL NOT 包含任何金融行情类源（`etf_quote` / `exchange_rate` / `gdelt_event` 等已被移除）。建表 SHALL 通过显式迁移完成（开发执行规范 §10）。
@@ -276,9 +278,9 @@ review 的 `applied` 标记 SHALL NOT 触发对 `topic_lifeline_context` 的任�
 
 ### Requirement: 板块 tab 「认知工作台」界面
 
-数据增强默认工作台 SHALL 为候选信号列表与已生成报告，保留month/year周期选择、新闻背景折叠/历史翻阅/叙事内联编辑。顶部「发现信号」只生成候选，每条「深入分析」才研究，已有报告可阅读或显式重新研究。旧简报/调查/legacy产出及绑定管理入口不再挂载，旧数据仅API兼容。本次新报告 SHALL NOT 有评审/采纳按钮、徽标或judge阶段。
+既有版块数据增强tab SHALL 展示为「研究」，保留旧tab key与可达链接。主视图为候选索引+问题/进展/报告详情，保留月/年周期查询；发现只保存候选，逐条研究才取数，已有报告显式重研。新工作台不挂旧聚焦、金融辩论、新增追问/沉淀、数据源绑定管理或新闻背景大折叠区；全部旧结果经独立只读历史入口访问，旧API保持兼容。新报告不设评审/采纳链；候选忽略是独立处理动作，不是报告忽略评审。
 
-候选显示异常、值得查原因、研究问题、新闻依据、发现时间和派生状态；报告显示目标周期/实际生成时间/真实取数次数，历史标事后回顾。详情reader≤760px，精确数据/计算引用、可降级图表、机械附录。提供双主题和loading/empty/error，不将故障冒充无信号。
+新闻背景 SHALL 以话题为上下文独立可达，保留周期历史、编辑和显式补生成，不依赖旧聚焦选择器；事实记忆不混入研究判断。报告呈现遵守主从/正文宽度及双主题，loading/empty/error不混淆；浏览、原值核查、相关话题和历史不发模型请求。
 
 #### Scenario: 工作台呈现候选与报告
 
@@ -287,33 +289,33 @@ review 的 `applied` 标记 SHALL NOT 触发对 `topic_lifeline_context` 的任�
 
 #### Scenario: 周期筛选翻历史
 
-- **WHEN** 在新闻背景选择月粒度并翻到历史period
-- **THEN** 展示该period新闻与候选/报告，历史研究明确标事后回顾，不被当前周期覆盖
+- **WHEN** 在研究工作台或话题背景选择各自的粒度/period
+- **THEN** 各自读取明确scope；背景不改研究周期，研究不改背景选择；历史研究仍标事后回顾
 
 #### Scenario: 证据链 tooltip 不跳转
 
-- **WHEN** 用户查看新报告新闻依据或数据/计算引用
-- **THEN** 原地tooltip/展开显示来源，引用可定位附录；旧news/web/page/lane字段由API原样保留，不承诺已退役legacy UI入口
+- **WHEN** 查看报告新闻、观测或计算依据
+- **THEN** 原地核查并可定位原始记录；相关话题可显式打开背景；旧web/page/lane等字段只读兼容，不执行嵌入HTML
 
 #### Scenario: 兑现度复盘可见
 
-- **WHEN** 旧客户端读取带hit/part/miss的legacy报告
-- **THEN** API仍返回历史字段；新工作台不挂legacy视图，也不为新报告生成兑现评审（本change明确收缩原UI范围）
+- **WHEN** 用户从历史读取带hit/part/miss等字段的旧结果
+- **THEN** 已有记录只读可见；不为新signal_report新增评审，不触发新旧judge
 
 #### Scenario: 契约为侦探墙铺路
 
-- **WHEN** 客户端消费新候选/报告或旧brief/investigation/review
-- **THEN** 新信号、依据ID、观测/计算和条件判断均为结构字段；旧观察/关系/假设结构不变，不依赖长文反解析
+- **WHEN** 读取新受控报告或旧brief/investigation/review
+- **THEN** 新证据仍为结构化ID与程序账本；旧载荷原样兼容，不用长文猜测或重写历史
 
 #### Scenario: 简报到调查由用户确认
 
-- **WHEN** 新候选发现结束或旧兼容API完成简报
-- **THEN** 不自动研究/调查；新候选须用户点击深入分析，旧调查须显式调用，报告后追问本次不做
+- **WHEN** 发现结束或旧兼容API完成简报
+- **THEN** 不自动研究/调查；新工作台不暴露旧生成与追问入口，旧API显式调用行为兼容
 
 #### Scenario: 报告阅读无需评审
 
-- **WHEN** 信号报告成功生成
-- **THEN** 直接可读，无通过/驳回/采纳/忽略按钮，新闻背景仍可编辑
+- **WHEN** 新信号报告成功生成
+- **THEN** 直接可读，无报告采纳/驳回/judge步骤；候选可独立忽略，背景在话题上下文可编辑
 
 ### Requirement: 话题形态判断
 
@@ -381,6 +383,7 @@ review 的 `applied` 标记 SHALL NOT 触发对 `topic_lifeline_context` 的任�
 
 - **WHEN** 话题为任意形态（含金融相关）
 - **THEN** 系统 SHALL NOT 注册金融行情工具，agent 全程不可见
+
 ### Requirement: 分层见解产出
 
 系统 SHALL 产出分层分析：**事实层**（梳理 + 验证，铺垫）+ **见解层**（推演/假设/提问/视角，★产出主体）+ **深度层**（非 sparse 形态强制，见『分析深度层产出』）。见解层 SHALL 发挥 AI 多层推演 + 跨领域联想 + 假设性提问优势。产出结构 SHALL 随形态变（事件链=因果链+推演见解 / 脉络=平行线索+跨线索洞察 / 单点=影响评估 / 结构=演化叙述 / 骨感=诚实标注）。
@@ -463,22 +466,22 @@ review 的 `applied` 标记 SHALL NOT 触发对 `topic_lifeline_context` 的任�
 
 ### Requirement: 报告追问交互
 
-系统 SHALL 支持用户在分析报告页针对报告内容多轮追问。追问 agent SHALL 复用探索 agent 循环（多级入口 + web_search），上下文 SHALL 带报告本身（analysis + 依据 + 视角 + 形态）。回答 SHALL 带双类引用 + 确定性标注。追问会话 SHALL 持久化（多轮历史）。追问新依据 SHALL 支持用户手动沉淀回报告（标记来源），不自动改报告。
+已有报告问答会话、回答依据及来源标记 SHALL 保留可读，新的研究工作台与只读历史不提供新增追问、沉淀或重新生成旧回答的控件。旧兼容客户端显式调用原有追问/沉淀API的行为与权限校验保持不变；迁移不得删会话、自动重答或把QA沉淀到新的不可变signal_report。历史QA和评审元数据不能被误当新报告的审批流程。
 
 #### Scenario: 追问复用探索工具
 
-- **WHEN** 用户问"这条见解还有别的证据吗"
-- **THEN** 追问 agent SHALL 调 web_search/get_lane_detail 补充，回答带新依据引用
+- **WHEN** 旧兼容客户端显式向原话题报告追问API提交问题
+- **THEN** 原工具与引用契约保留；新工作台仅查看历史，不因阅读调用web_search或LLM
 
 #### Scenario: 多轮追问持久化
 
-- **WHEN** 用户在同一报告下连续追问
-- **THEN** 系统 SHALL 保存多轮问答历史（topic_enrichment_qa），支持回看
+- **WHEN** 打开已有topic或board报告的多轮问答历史
+- **THEN** 按原顺序和引用只读展示，保留原存储；空问答与加载失败分开
 
 #### Scenario: 追问发现手动沉淀
 
-- **WHEN** 追问中产生有价值的新依据
-- **THEN** 系统 SHALL 支持用户手动沉淀回报告（标记 source=qa），不自动改报告
+- **WHEN** 旧兼容客户端显式调用原有沉淀API，或新工作台显示历史沉淀记录
+- **THEN** 旧API原目标与来源标记规则不变；新UI无沉淀按钮，不把记录写进新的signal_report
 
 ### Requirement: web 搜索与正文抓取数据源
 
@@ -598,6 +601,7 @@ review 的 `applied` 标记 SHALL NOT 触发对 `topic_lifeline_context` 的任�
 
 - **WHEN** 某粒度没有任何 section 数据可形成周期
 - **THEN** 系统跳过该粒度，不为无数据创建空档案
+
 ### Requirement: 证据适配与反证纪律
 
 系统 SHALL 以证据与研究问题的直接相关性、可核查性和来源质量为优先级，MUST NOT 为满足固定数量或类型配额而强行加入历史类比、报告或数据序列。`board_investigation` SHALL 分别记录支持证据、反证与缺口；单泳道结果无需改成多假设 schema，但其 prompt 同样不得以“至少三类证据”驱动牵强取材，并应保留发现的冲突材料。外部原文仍应优先经 fetch_page 核查。
@@ -651,3 +655,27 @@ review 的 `applied` 标记 SHALL NOT 触发对 `topic_lifeline_context` 的任�
 #### Scenario: 调查失败不改写父数据
 - **WHEN** 动态探索后验证或综合阶段失败
 - **THEN** 系统不创建半成品调查结果，也不修改父简报、泳道 lifeline 或关系建议状态
+
+### Requirement: 话题新闻背景独立上下文
+
+新闻背景 SHALL 在话题总览选中可验证话题后独立打开，并从相关研究提供只读预览/到话题管理的入口；数据键为topic+granularity+period，不再依赖聚焦分析选择状态。浏览保留周/月/年历史，既有all API兼容；编辑只保存目标话题周期，补生成/重算显示可能消耗模型与覆盖背景的确认。没有记忆不自动生成，研究开关关闭不阻止背景读取，不把研究结论回写背景。未保存草稿离开时需确认或保留，不静默丢失；话题/周期切换时晚响应不得串台。
+
+#### Scenario: 从话题直接查看背景
+
+- **WHEN** 用户在话题总览选中话题并打开背景，或从研究进入只读预览
+- **THEN** 显示该话题明确周期的新闻记忆；无须展开聚焦分析，不触发研究/生成；原话题浏览器筛选与关键事件行为不变
+
+#### Scenario: 背景编辑与研究隔离
+
+- **WHEN** 用户保存某话题周期的人工编辑
+- **THEN** 只更新指定新闻记忆并保留来源，研究报告、其他topic/period和冻结快照不变；保存失败保留草稿
+
+#### Scenario: 补生成必须明确确认
+
+- **WHEN** 目标周期无记忆或已有记忆，用户只浏览、取消确认或确认重算
+- **THEN** 前两者零生成调用，确认后才显式生成；已有内容先告知覆盖，失败保留旧内容和错误，不伪装空态
+
+#### Scenario: 背景失效与晚响应
+
+- **WHEN** 话题不存在/不属目标board、GET失败，或切换topic后旧请求迟到
+- **THEN** owner不符拒绝、加载错误可重试；不显示另一话题内容、不自动修复、不丢未保存草稿
