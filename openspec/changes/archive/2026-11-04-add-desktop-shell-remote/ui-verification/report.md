@@ -45,14 +45,14 @@ Windows 装机验收（2026-11-03）：用户经失败页「修改地址」配�
 ### B-8 关闭无残留【pass】
 关闭窗口后 `pgrep -c -x syntopica-shell` = 0；Windows 侧关窗后任务管理器无 `syntopica` 残留进程（用户装机确认）。
 
-### A-1 Windows 非管理员安装【pass，用户确认】
+### A-1 Windows 非管理员安装【pass】（用户确认）
 `Syntopica_0.1.0_x64-setup.exe`（1,944,840 字节，sha256 `66d82bb6a29ad76965ab4fbd4bf304c5b97c63e39f616a26f4d5446d0c3fb0b0`，NSIS per-user / currentUser）双击安装无管理员弹窗，开始菜单入口正常，首启进入应用。构建链路：SSH→mcode exec 遥控 `tauri build`（tauri-cli 2.12.4，rsproxy 镜像拉依赖，NSIS 工具走 `TAURI_BUNDLER_TOOLS_GITHUB_MIRROR`）。
 
-### A-2 Windows 首启+断网失败页【pass，用户确认】
+### A-2 Windows 首启+断网失败页【pass】（用户确认）
 首启默认地址无本地后端 → 失败页正常（文案 + 重试 + 修改地址），符合「无服务端时降级为失败页」的契约。
 
-### A-3 Windows 关窗无残留【pass，用户确认】
+### A-3 Windows 关窗无残留【pass】（用户确认）
 任务管理器无 `Syntopica`/`syntopica-shell` 残留进程。
 
-### A-4 Windows 缺 WebView2 引导【N/A 本轮，代码路径已实现】
+### A-4 Windows 缺 WebView2 引导【未覆盖】（本轮验收机已装 WebView2 Evergreen 156.0.4314.58，无法触发缺失场景）
 验收机已装 WebView2 Evergreen 156.0.4314.58，无法触发缺失场景。兜底代码 `desktop/shell/src/main.rs` `ensure_webview2()`（reg 检查 + `MessageBoxW` 引导安装链接 + exit(2)）已随 A-1 的安装包编译在内；该分支对已装运行时的机器零影响（检查通过即继续）。真缺失场景留待未来遇裸机时补验。

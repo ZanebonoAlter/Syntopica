@@ -39,6 +39,7 @@
 - [x] 7.1 `desktop/README.md` 补「远程壳」章节：定位、构建/打包命令、地址配置、平台差异（Linux DMABUF / Windows WebView2）、已知限制（断网不可用、明文 HTTP 仅限可信网络），验证：`grep -c "远程壳" desktop/README.md` ≥1
 - [x] 7.2 `docs/reference/deployment.md` 增加「桌面壳（远程模式）」小节，含安装包获取、首次配置地址、卸载回滚，验证：`grep -n "桌面壳（远程模式）" docs/reference/deployment.md` 有命中
 - [x] 7.3 `docs/reference/configuration.md` 增加壳的地址配置项（`--server-url` / `SYNTOPICA_SERVER_URL` / 本地配置文件路径），验证：`grep -n "SYNTOPICA_SERVER_URL" docs/reference/configuration.md` 有命中
+- 无 flow 影响：本 change 只新增桌面壳（Tauri 远程装载，`desktop/shell/`），不改任何业务 flow 的生成/编排流程（`backend-go/`、`front/` 业务链路零改动），按《开发执行规范》§12.2 豁免 flow 变更溯源
 
 ## 8. 验证
 
