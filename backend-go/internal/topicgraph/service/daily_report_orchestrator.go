@@ -145,10 +145,15 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		}(i, cluster)
 	}
 
-	// Collect highlights
+	// Collect highlights. A highlights failure degrades to an empty list: the
+	// sections / threads / statistics are already computed, so voiding the
+	// whole report over 2-3 highlights is a bad trade (design D3 of
+	// fix-daily-report-highlights-null). The degraded state is reported through
+	// a Warn log and an empty highlights payload — never a fabricated one.
 	hr := <-highlightsCh
-	if hr.err != nil {
-		return nil, nil, nil, fmt.Errorf("generate highlights: %w", hr.err)
+	highlightsJSON, highlightsDegraded := resolveHighlightsPayload(hr.data, hr.err)
+	if highlightsDegraded {
+		logging.Warnf("daily-report: highlights failed for board %d: %v (falling back to empty highlights)", boardID, hr.err)
 	}
 
 	// Collect threads
@@ -177,7 +182,8 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	}
 
 	// Step 6: Assemble report
-	highlightsJSON, _ := json.Marshal(hr.data)
+	// highlightsJSON comes from resolveHighlightsPayload (already normalized to
+	// a JSON array — an empty report persists "[]", never a JSON null scalar).
 
 	// Calculate article count
 	totalArticles := 0
@@ -420,6 +426,23 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	filterVanishedArticleRefs(repository.Repo.DB(), threadBatches)
 
 	return report, sections, threadBatches, nil
+}
+
+// resolveHighlightsPayload maps the highlights generation result to the value
+// persisted in board_daily_reports.highlights.
+//
+// A failed generation degrades to an empty JSON array — NEVER a JSON null
+// scalar (a null scalar breaks jsonb_array_elements_text and makes the
+// frontend hide the whole "今日重点" block). The second return value reports
+// whether the report degraded, so the caller can log it. Degradation never
+// fabricates highlight content out of other fields.
+//
+// Pure function (no DB / airouter access) so the mapping is unit-testable.
+func resolveHighlightsPayload(data []repository.Highlight, err error) ([]byte, bool) {
+	if err != nil {
+		return marshalJSONArray(nil), true
+	}
+	return marshalJSONArray(data), false
 }
 
 // sectionPlan is one section the orchestrator will assemble. A regular cluster

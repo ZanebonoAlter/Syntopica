@@ -754,6 +754,12 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 
 跨报告管理页列表，按日期倒序；`q` 命中划词/提问/术语；`board_id` 版块筛选。Response `data.rows` 每行含 `board_id`/`board_label`（join semantic_labels）、`terms`（跨轮去重后的术语对象数组）与 `qas`（同上形状）。`data.total` 供分页。
 
+## `highlights` 字段契约
+
+`highlights` 是**恒为数组**的字段：`GET /daily-reports/:id` 返回的 `report.highlights` SHALL 是 JSON 数组，元素为 `{title: string, reason: string, tag_ids: number[]}`；空时返回 `[]`，**SHALL NOT** 返回 `null`。
+
+> 历史存量（2026-11-04 修复前落库的 14 行）曾因 LLM 把 JSON schema 原样回抄、解析层静默放过而落成 JSON `null` 标量。修复后读路径统一归一为 `[]`（`backend-go/internal/topicgraph/repository/daily_report_repository.go` 的 `normalizeHighlightsArray`），新生成日报落库时写 `[]` 而非 `null`。
+
 ## 前端消费约定
 
 日报阅读层不新增 API：列表和详情分别消费 `GET /semantic-boards/:id/daily-reports` 与 `GET /daily-reports/:id`，按 `topic_status_at_report` 快照分区：
@@ -762,6 +768,8 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 - `"candidate"` / `null`（含旧数据缺失）→ "其他动态"
 
 前端不再读取 `persistent_topic.status` 做历史日报分区，避免 topic 后续状态变化改变历史归位。masthead 顶部使用板块标题，日报 `title` / `summary` 映射为头条；highlights 最多展示三项。
+
+`highlights` 为空（`[]` 或 `null`）时，刊头 SHALL 渲染**可见的空态占位**（「本期暂无重点」，`data-testid="highlights-empty"`），SHALL NOT 整块隐藏——空即消失会让「本期没有重点」与「接口出错」在界面上无法区分。占位为纯静态文本：无按钮、无跳转、无批注锚点；与正常态互斥渲染（`id="report-highlights"` 任一时刻只存在一个）。
 
 active 话题展开时按 `persistent_topic.id` 懒加载 `GET /daily-reports/topics/:id/lifeline`。前端只截取当前日报向前七个自然日，同日多个 section 聚合为一个带数量角标的节点；连线只消费 `relation_type=identity`，`similarity` 不进入 mini 泳道。节点点击按 `report_id` 复用日报详情缓存，在时间线模块内原位展示当日 section/thread。
 

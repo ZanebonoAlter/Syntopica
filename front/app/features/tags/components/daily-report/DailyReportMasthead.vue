@@ -34,12 +34,18 @@ const highlights = computed(() => (props.report.highlights || []).slice(0, 3))
       <p v-if="lead.summary" class="drm-lead__summary" data-mn-anchor="lead">{{ lead.summary }}</p>
     </section>
 
+    <!-- 今日重点：正常态（≥1 条）与空态（null / [] / 字段缺失）互斥渲染，
+         任一时刻只有一个分支存在 → id="report-highlights" 不会重复。 -->
     <section v-if="highlights.length" id="report-highlights" class="drm-highlights" aria-label="今日重点">
       <article v-for="(highlight, index) in highlights" :key="`${highlight.title}-${index}`" class="drm-highlight">
         <span class="drm-highlight__index">N°{{ String(index + 1).padStart(2, '0') }}</span>
         <h3>{{ highlight.title }}</h3>
         <p>{{ highlight.reason }}</p>
       </article>
+    </section>
+    <section v-else id="report-highlights" class="drm-highlights drm-highlights--empty" aria-label="今日重点">
+      <!-- 空态占位：纯静态文本（无按钮 / 无跳转 / 无 data-mn-anchor），不进划选批注、不进目录。 -->
+      <p class="drm-highlights__empty" data-testid="highlights-empty">本期暂无重点</p>
     </section>
   </header>
 </template>
@@ -210,6 +216,22 @@ const highlights = computed(() => (props.report.highlights || []).slice(0, 3))
   color: var(--color-text-secondary);
   font-size: 0.78rem;
   line-height: 1.7;
+}
+
+/* 空态（highlights 为 null / [] / 字段缺失）：单列弱化文字，占据原三栏区域的位置。
+   边框语言沿用 .drm-highlights（上下双线），只复用既有 CSS 变量，不引入新色值。 */
+.drm-highlights--empty {
+  grid-template-columns: 1fr;
+}
+
+.drm-highlights__empty {
+  margin: 0;
+  padding: 1.5rem clamp(1rem, 2vw, 2rem);
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+  font-style: italic;
+  letter-spacing: 0.08em;
+  text-align: center;
 }
 
 @media (max-width: 720px) {

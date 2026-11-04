@@ -421,6 +421,10 @@ func (r *TopicGraphRepository) GetReportByID(id uint) (*BoardDailyReport, error)
 			report.Sections[i].Threads = []DailyReportThread{}
 		}
 	}
+	// Same contract for highlights: rows written before the array contract
+	// (2026-11-03 and earlier) hold a JSON null scalar or SQL NULL, which the
+	// frontend reads as "no content" and hides the whole "今日重点" block.
+	normalizeHighlightsArray(&report.Highlights)
 	return &report, nil
 }
 
@@ -442,6 +446,11 @@ func (r *TopicGraphRepository) ListReports(boardID uint, days int) ([]ReportList
 	if err != nil {
 		return nil, fmt.Errorf("list reports for board %d: %w", boardID, err)
 	}
+	// NOTE: no highlights normalization here — this read path projects into
+	// ReportListItem, which carries no Highlights field at all, so normalizing
+	// the discarded BoardDailyReport copy would be a no-op. The highlights
+	// contract ("always an array") is enforced on the two read paths that
+	// actually expose highlights: GetReportByID and ListReportsForAllBoards.
 
 	summariesByReport := make(map[uint][]ActiveWatchSummary, len(reports))
 	if len(reports) > 0 {
@@ -528,8 +537,25 @@ func (r *TopicGraphRepository) ListReportsForAllBoards(days int) ([]BoardDailyRe
 				reports[i].Sections[j].Threads = []DailyReportThread{}
 			}
 		}
+		// Keep the API contract "highlights is always an array" (see GetReportByID).
+		normalizeHighlightsArray(&reports[i].Highlights)
 	}
 	return reports, nil
+}
+
+// normalizeHighlightsArray rewrites a highlights column holding a JSON null
+// scalar (4 bytes "null") or SQL NULL into an empty JSON array. Rows written
+// before the highlights array contract store a bare "null", which the frontend
+// treats as "no content" and silently hides the whole "今日重点" block.
+// Non-null arrays pass through untouched (the stored content is never rewritten).
+func normalizeHighlightsArray(highlights *JSON) {
+	if highlights == nil {
+		return
+	}
+	switch strings.TrimSpace(string(*highlights)) {
+	case "", "null":
+		*highlights = JSON("[]")
+	}
 }
 
 // CollectBoardIDsForDate returns all board IDs that have active event tags on a date.

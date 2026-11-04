@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -270,4 +271,53 @@ func TestFindPreviousReportBrief(t *testing.T) {
 		Status:          "generating",
 	}).Error)
 	assert.Nil(t, findPreviousReportBrief(emptyBoard.ID, today))
+}
+
+// ---- highlights payload resolution (fix-daily-report-highlights-null) ----
+
+// TestResolveHighlightsPayload_DegradesToEmptyArray (B12): a failed highlights
+// generation degrades to an empty JSON array — the payload is exactly "[]",
+// never the JSON null scalar that used to hide the whole "今日重点" block.
+func TestResolveHighlightsPayload_DegradesToEmptyArray(t *testing.T) {
+	payload, degraded := resolveHighlightsPayload(nil, errors.New("highlights AI call failed: schema echo"))
+
+	assert.True(t, degraded, "a failed highlights generation must report degradation")
+	assert.Equal(t, []byte("[]"), payload)
+	assert.NotEqual(t, []byte("null"), payload, "highlights must never persist a JSON null scalar")
+
+	// The payload must decode as an empty array (jsonb contract).
+	var decoded []map[string]any
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+	assert.Empty(t, decoded)
+}
+
+// TestResolveHighlightsPayload_Normal (B13): a successful generation persists
+// the highlights array unchanged and is NOT flagged as degraded.
+func TestResolveHighlightsPayload_Normal(t *testing.T) {
+	data := []repository.Highlight{
+		{Title: "要闻一", Reason: "理由一", TagIDs: []uint{1}},
+		{Title: "要闻二", Reason: "理由二", TagIDs: []uint{2}},
+		{Title: "要闻三", Reason: "理由三", TagIDs: []uint{1, 2}},
+	}
+
+	payload, degraded := resolveHighlightsPayload(data, nil)
+
+	assert.False(t, degraded, "a successful generation must not report degradation")
+	require.NotEqual(t, []byte("null"), payload)
+
+	var decoded []repository.Highlight
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+	require.Len(t, decoded, 3)
+	assert.Equal(t, "要闻一", decoded[0].Title)
+	assert.Equal(t, "理由二", decoded[1].Reason)
+	assert.Equal(t, []uint{1, 2}, decoded[2].TagIDs)
+}
+
+// TestResolveHighlightsPayload_EmptyButLegalIsNotDegraded (B6/B13 seam): a
+// legal empty response is a normal (non-degraded) report with "[]" persisted.
+func TestResolveHighlightsPayload_EmptyButLegalIsNotDegraded(t *testing.T) {
+	payload, degraded := resolveHighlightsPayload([]repository.Highlight{}, nil)
+
+	assert.False(t, degraded)
+	assert.Equal(t, []byte("[]"), payload)
 }

@@ -731,3 +731,62 @@ func TestListReports_AttachesUniqueActiveWatchSummaries(t *testing.T) {
 	assert.Equal(t, ActiveWatchSummary{WatchID: active.ID, Label: "ASML", Type: WatchTypeKeyword}, items[0].ActiveWatchSummaries[0])
 	assert.Empty(t, items[1].ActiveWatchSummaries)
 }
+
+// ---- highlights read-path normalization (fix-daily-report-highlights-null) ----
+
+// TestGetReportByID_NormalizesNullHighlights (B14): historical rows hold a
+// JSON null scalar (or SQL NULL) in the highlights column. The read path
+// normalizes both shapes to an empty array — the API must never answer
+// "highlights": null (the frontend would hide the whole "今日重点" block).
+func TestGetReportByID_NormalizesNullHighlights(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
+
+	// Row 1: highlights holds the JSON null scalar (the pre-2026-11-04 write
+	// path marshalled a nil slice into "null").
+	nullScalarID := seedTestReport(t, db, boardID, now)
+	require.NoError(t, db.Exec(
+		"UPDATE board_daily_reports SET highlights = 'null'::jsonb WHERE id = ?", nullScalarID).Error)
+
+	// Row 2: highlights column left empty → SQL NULL.
+	nullColumnID := seedTestReport(t, db, boardID, now.AddDate(0, 0, -1))
+
+	for _, id := range []uint{nullScalarID, nullColumnID} {
+		report, err := repo.GetReportByID(id)
+		require.NoError(t, err)
+		assert.Equal(t, JSON("[]"), report.Highlights, "report %d: highlights must be normalized to []", id)
+
+		data, err := json.Marshal(report)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"highlights":[]`)
+		assert.NotContains(t, string(data), `"highlights":null`)
+	}
+}
+
+// TestGetReportByID_KeepsHighlightsArray (B15): a real highlights array passes
+// through the read path untouched (same content, same length).
+func TestGetReportByID_KeepsHighlightsArray(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
+	reportID := seedTestReport(t, db, boardID, now)
+
+	highlights := `[{"title":"要闻一","reason":"理由一","tag_ids":[1]},` +
+		`{"title":"要闻二","reason":"理由二","tag_ids":[2]},` +
+		`{"title":"要闻三","reason":"理由三","tag_ids":[1,2]}]`
+	require.NoError(t, db.Exec(
+		"UPDATE board_daily_reports SET highlights = ?::jsonb WHERE id = ?", highlights, reportID).Error)
+
+	report, err := repo.GetReportByID(reportID)
+	require.NoError(t, err)
+	assert.JSONEq(t, highlights, string(report.Highlights), "non-null highlights must pass through untouched")
+
+	var decoded []Highlight
+	require.NoError(t, json.Unmarshal(report.Highlights, &decoded))
+	assert.Len(t, decoded, 3)
+}
