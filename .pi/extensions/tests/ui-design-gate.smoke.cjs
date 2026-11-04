@@ -7,7 +7,11 @@
 //    approved/none 放行、requirements 静默、legacy 每 session/change 一次、断链 symlink、
 //    bypass 留痕、fail-open 记账）；
 // §D telemetry —— block/warn/bypass/fail-open 四类 policy=ui-design-gate 事件、健康放行零记录、
-//    reasonCode 白名单对齐 spec。
+//    reasonCode 白名单对齐 spec；
+// §E 派发放行与写侧不放宽（add-ui-prototype-editor-agent）—— 只读档/原型编辑档派发在合同未就绪时
+//    放行并留痕 ui-dispatch-allowed、写能力档仍 block、子线程越界写入仍 block、白名单漂移防护
+//    （正向：白名单项均有同名 profile；反向：无写工具的 profile 必须在白名单内）、原型编辑档 profile
+//    前提断言（load_extensions: true + tools 含 edit/write）。
 // 由 run-harness-smoke.sh 调用（先 esbuild 产出 .uig.cjs / .uige.cjs）。断言失败 exit 1。
 const fs = require('fs');
 const os = require('os');
@@ -27,6 +31,7 @@ const {
 	UI_SCHEMA,
 	UI_REASON_CODES,
 	UI_PASS_REASON_CODES,
+	UI_DISPATCH_ALLOWED_AGENTS,
 	passReasonForRelease,
 	evaluateUiContract,
 	decideUiToolGate,
@@ -147,8 +152,9 @@ check('A13 超长自由文本输入不抛异常', (() => { try { const big = 'x'
 
 // ---------- §B 工具动作分支表（4.2） ----------
 
-const TOOL = { agent: { kind: 'agent-dispatch', targetPath: null }, read: { kind: 'other', targetPath: null } };
+const TOOL = { agent: { kind: 'agent-dispatch', subagentType: null }, read: { kind: 'other', targetPath: null } };
 const mut = (p) => ({ kind: 'mutation', targetPath: p });
+const dispatch = (t) => ({ kind: 'agent-dispatch', subagentType: t });
 const gate = (over = {}) => ({
 	schema: UI_SCHEMA, mode: 'implementation', boundChange: 'chg',
 	proposalText: PROP_MAJOR, tasksMd: TASKS_CLEAN,
@@ -170,6 +176,14 @@ check('B7 合同 block + 普通读取/验证/bash（other）→ 放行', decideU
 check('B8 legacy + front mutation → warn-legacy（ui-design-missing）', (() => { const d = decideUiToolGate(gate({ schema: 'spec-driven', proposalText: '<!-- ui-impact: none -->', uiDesignText: null, tool: mut('front/app/pages/x.vue') })); return d.action === 'warn-legacy' && d.reasonCode === 'ui-design-missing'; })());
 check('B8 legacy + 非 front mutation → 放行', decideUiToolGate(gate({ schema: 'spec-driven', uiDesignText: null, proposalText: '<!-- ui-impact: none -->', tool: mut('backend-go/x.go') })).action === 'allow');
 check('B9 阻断文案三要素：change 名 + reasonCode + 修复路径', (() => { const d = decideUiToolGate(gate()); return d.action === 'block' && d.message.includes('chg') && d.message.includes('ui-approval-pending') && d.message.includes('openspec/changes/chg/ui-design.md'); })());
+// B10~B14 派发放行（add-ui-prototype-editor-agent design D2/D3）：只读档与原型编辑档在合同
+// block 态放行（dispatch-allowed + ui-dispatch-allowed）；写能力档/未指定档位维持 block
+check('B10 合同 block + 只读档（explore/plan/change-review）派发 → dispatch-allowed ui-dispatch-allowed', ['explore', 'plan', 'change-review'].every((t) => { const d = decideUiToolGate(gate({ tool: dispatch(t) })); return d.action === 'dispatch-allowed' && d.reasonCode === 'ui-dispatch-allowed'; }));
+check('B11 合同 block + 原型编辑档（ui-design）派发 → dispatch-allowed ui-dispatch-allowed', (() => { const d = decideUiToolGate(gate({ tool: dispatch('ui-design') })); return d.action === 'dispatch-allowed' && d.reasonCode === 'ui-dispatch-allowed'; })());
+check('B12 合同 block + 写能力档（general-purpose）派发 → 维持 block', (() => { const d = decideUiToolGate(gate({ tool: dispatch('general-purpose') })); return d.action === 'block' && d.reasonCode === 'ui-approval-pending'; })());
+check('B13 合同 block + 未指定档位的派发（默认 general-purpose）→ 维持 block', decideUiToolGate(gate({ tool: dispatch(null) })).action === 'block');
+check('B14 合同 block + 档位名大小写不敏感（Explore ≡ explore）→ 同样放行', decideUiToolGate(gate({ tool: dispatch('Explore') })).action === 'dispatch-allowed');
+check('B15 放行不改变写侧判定：越出 change 目录的 mutation 仍 block / change 目录内仍放行', decideUiToolGate(gate({ tool: mut('front/app/pages/x.vue') })).action === 'block' && decideUiToolGate(gate({ tool: mut('openspec/changes/chg/ui-prototype/index.html') })).action === 'allow');
 
 // ---------- §C/§D extension 集成 + telemetry ----------
 
@@ -243,11 +257,12 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 (async () => {
 	const tmps = [];
 	try {
-		// C1 major pending：Agent 派发被阻断 + block 事件（change 绑定）
+		// C1 major pending：具备写能力的实现子线程派发被阻断 + block 事件（change 绑定）
+		// （add-ui-prototype-editor-agent 后只读档/原型编辑档派发放行，阻断用例改用写能力档 general-purpose）
 		const t1 = mktmp(); tmps.push(t1);
 		writeChange(t1, 'major-chg', MAJOR_PENDING_FILES);
 		seedModeSet(t1, 's1', 'implementation', 'major-chg');
-		const r1 = await runTool(loadFresh('./.uige.cjs'), t1, 's1', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
+		const r1 = await runTool(loadFresh('./.uige.cjs'), t1, 's1', 'Agent', { prompt: 'x', subagent_type: 'general-purpose' });
 		check('C1 major pending Agent 派发 → block:true + 文案含 reasonCode/修复路径', r1.result && r1.result.block === true && r1.result.reason.includes('ui-approval-pending') && r1.result.reason.includes('major-chg'));
 		check('D1 阻断 → policy=ui-design-gate block ui-approval-pending 绑定 change', (() => { const rows = policyRows(t1, 'ui-design-gate'); return rows.length === 1 && rows[0].payload.action === 'block' && rows[0].payload.reasonCode === 'ui-approval-pending' && rows[0].change === 'major-chg'; })());
 
@@ -286,7 +301,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		fs.rmSync(path.join(t3b, 'openspec/changes/proto-chg/ui-prototype/broken.html'));
 		seedModeSet(t3b, 's-block', 'implementation', 'proto-chg');
 		seedModeSet(t3b, 's-release', 'implementation', 'proto-chg');
-		const r3c = await runTool(loadFresh('./.uige.cjs'), t3b, 's-block', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
+		const r3c = await runTool(loadFresh('./.uige.cjs'), t3b, 's-block', 'Agent', { prompt: 'x', subagent_type: 'general-purpose' }); // 写能力档：合同 block 态仍阻断
 		check('C3.5a 原型缺失 → block ui-prototype-missing', r3c.result && r3c.result.block === true && r3c.result.reason.includes('ui-prototype-missing'));
 		// 用户补齐原型（change 目录内 mutation 放行，不触发 pass——verdict 仍为 block）
 		fs.writeFileSync(path.join(t3b, 'openspec/changes/proto-chg/ui-prototype/broken.html'), '<html>fixed</html>');
@@ -336,7 +351,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		fs.mkdirSync(path.join(d7, 'ui-prototype'), { recursive: true });
 		fs.symlinkSync('/nonexistent/target', path.join(d7, 'ui-prototype/broken.html'));
 		seedModeSet(t7, 's7', 'implementation', 'sym-chg');
-		const r7 = await runTool(loadFresh('./.uige.cjs'), t7, 's7', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
+		const r7 = await runTool(loadFresh('./.uige.cjs'), t7, 's7', 'Agent', { prompt: 'x', subagent_type: 'general-purpose' });
 		check('C7 断链 symlink 原型 → block ui-prototype-missing', r7.result && r7.result.block === true && r7.result.reason.includes('ui-prototype-missing'));
 
 		// C8 内部异常 → fail-open 放行 + 显式告警 + fail-open 记账（不伪装成功）；
@@ -379,9 +394,9 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		const r10 = await runTool(loadFresh('./.uige.cjs'), t10, 's10', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
 		check('C10 无 mode.set 记录 → 静默放行零记账', r10.result === undefined && policyRows(t10).length === 0);
 
-		// D7 reasonCode 白名单与 spec 八值对齐
-		const expected = ['ui-impact-missing', 'ui-impact-mismatch', 'ui-design-missing', 'ui-prototype-missing', 'ui-approval-pending', 'ui-verification-missing', 'explicit-bypass', 'ui-gate-check-failed'];
-		check('D7 UI_REASON_CODES 与 spec 八值对齐', expected.every((c) => UI_REASON_CODES.includes(c)) && UI_REASON_CODES.length === 8);
+		// D7 reasonCode 白名单与 spec 九值对齐
+		const expected = ['ui-impact-missing', 'ui-impact-mismatch', 'ui-design-missing', 'ui-prototype-missing', 'ui-approval-pending', 'ui-verification-missing', 'ui-dispatch-allowed', 'explicit-bypass', 'ui-gate-check-failed'];
+		check('D7 UI_REASON_CODES 与 spec 九值对齐', expected.every((c) => UI_REASON_CODES.includes(c)) && UI_REASON_CODES.length === 9);
 		// D7b 放行侧 pass 词汇稳定集（add-change-lifecycle-retro）：两码有界、推导纯函数四分支
 		check('D7b UI_PASS_REASON_CODES 稳定集 = ui-approval-approved / ui-design-satisfied',
 			UI_PASS_REASON_CODES.length === 2 && UI_PASS_REASON_CODES.includes('ui-approval-approved') && UI_PASS_REASON_CODES.includes('ui-design-satisfied'));
@@ -402,6 +417,78 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		check('D8 missingArchiveUiEvidence：major approved+原型在且无「差异」字样 → 空（tasks 字样/差异字样检查退役）', !UI_MAJOR_NO_DIFF.includes('差异') && missingArchiveUiEvidence({ schema: UI_SCHEMA, proposalText: PROP_MAJOR, uiDesignText: UI_MAJOR_NO_DIFF, changeDirFiles: FILES_WITH_PROTO }).length === 0);
 		check('D8b major 审批 pending → 非空（规划制品检查保留）', missingArchiveUiEvidence({ schema: UI_SCHEMA, proposalText: PROP_MAJOR, uiDesignText: UI_MAJOR_FULL('pending', 'ui-prototype/index.html'), changeDirFiles: FILES_WITH_PROTO }).length > 0);
 		check('D8b minor 档 → 空（映射实物对账全在脚本）', missingArchiveUiEvidence({ schema: UI_SCHEMA, proposalText: '<!-- ui-impact: minor -->\n## Why\nx', uiDesignText: '<!-- ui-impact: minor -->\n<!-- ui-approval: not-required -->\n<!-- ui-prototype: none -->\n\n## Acceptance\n待定', changeDirFiles: [] }).length === 0);
+
+		// §E 派发放行与写侧不放宽（add-ui-prototype-editor-agent）
+		//  E1 只读档派发在合同未就绪时放行并记 ui-dispatch-allowed（explore/plan/change-review）
+		//  E2 原型编辑档（ui-design）派发放行并留痕
+		//  E3 写能力档（general-purpose / 未指定档位）派发仍 block
+		//  E4 原型档在子线程会话内 edit front/ 下文件 → 仍 block（写侧不放宽）
+		//  E5 白名单漂移防护：每一项在 .pi/agents/ 有同名文件；通用实现档不在白名单
+		//  E5c 原型编辑档 profile 前提断言（load_extensions: true + tools 含 edit/write）
+		//  E6 反向漂移防护：.pi/agents/ 中无写工具的 profile 必须都在白名单内
+		const tE = mktmp(); tmps.push(tE);
+		writeChange(tE, 'major-chg', MAJOR_PENDING_FILES);
+		seedModeSet(tE, 'sE', 'implementation', 'major-chg');
+		const mE = loadFresh('./.uige.cjs');
+		const rE1 = await runTool(mE, tE, 'sE', 'Agent', { prompt: 'x', subagent_type: 'explore' });
+		check('E1a 只读档 explore 派发（合同未就绪）→ 放行并留痕 ui-dispatch-allowed', rE1.result === undefined && (() => { const rows = policyRows(tE, 'ui-design-gate'); return rows.length === 1 && rows[0].payload.action === 'warn' && rows[0].payload.reasonCode === 'ui-dispatch-allowed' && rows[0].change === 'major-chg'; })());
+		const rE1b = await runTool(mE, tE, 'sE', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
+		check('E1b 只读档派发大小写不敏感（Explore ≡ explore）→ 同样放行留痕', rE1b.result === undefined && policyRows(tE, 'ui-design-gate').length === 2);
+		const rE1c = await runTool(mE, tE, 'sE', 'Agent', { prompt: 'x', subagent_type: 'change-review' });
+		check('E1c 只读档 change-review 派发 → 放行并留痕', rE1c.result === undefined && policyRows(tE, 'ui-design-gate').length === 3);
+		const rE2 = await runTool(mE, tE, 'sE', 'Agent', { prompt: 'x', subagent_type: 'ui-design' });
+		check('E2 原型编辑档 ui-design 派发 → 放行并留痕 ui-dispatch-allowed', rE2.result === undefined && (() => { const rows = policyRows(tE, 'ui-design-gate'); return rows.length === 4 && rows[3].payload.action === 'warn' && rows[3].payload.reasonCode === 'ui-dispatch-allowed' && rows[3].change === 'major-chg'; })());
+		const rE3 = await runTool(mE, tE, 'sE', 'Agent', { prompt: 'x', subagent_type: 'general-purpose' });
+		check('E3 写能力档 general-purpose 派发（合同未就绪）→ 仍 block', rE3.result && rE3.result.block === true && rE3.result.reason.includes('ui-approval-pending'));
+		const rE3b = await runTool(mE, tE, 'sE', 'Agent', { prompt: 'x' }); // 未指定档位 = 默认 general-purpose
+		check('E3b 未指定档位的派发（默认 general-purpose）→ 仍 block', rE3b.result && rE3b.result.block === true);
+		// 子线程会话（档位继承 parent）：原型编辑档的越界写入仍被门禁逐个阻断（写侧不放宽）
+		seedModeSet(tE, 'sE-child', 'implementation', 'major-chg');
+		const rE4 = await runTool(mE, tE, 'sE-child', 'edit', { path: path.join(tE, 'front/app/pages/x.vue'), edits: [] });
+		check('E4 原型档子线程会话内 edit front/ 下文件 → 仍 block（写侧不放宽）', rE4.result && rE4.result.block === true && rE4.result.reason.includes('major-chg'));
+		const rE4b = await runTool(mE, tE, 'sE-child', 'edit', { path: path.join(tE, 'openspec/changes/major-chg/ui-prototype/index.html'), edits: [] });
+		check('E4b 原型档子线程会话内改当前 change 的 ui-prototype/** → 放行', rE4b.result === undefined);
+		// 漂移防护：白名单每一项在 .pi/agents/ 有同名文件
+		const agentsDir = path.join(__dirname, '..', '..', 'agents');
+		const agentFiles = fs.readdirSync(agentsDir);
+		check('E5 白名单每一项在 .pi/agents/ 有同名文件（漂移防护）', UI_DISPATCH_ALLOWED_AGENTS.length > 0 && UI_DISPATCH_ALLOWED_AGENTS.every((a) => agentFiles.includes(`${a}.md`)));
+		check('E5b 通用实现档 general-purpose 不在放行白名单（写能力档仍被拦）', !UI_DISPATCH_ALLOWED_AGENTS.includes('general-purpose'));
+
+		// E5c 原型编辑档 profile 前提断言（delta spec 场景「原型编辑档带扩展派发后写入受门禁校验」的前提）：
+		// profile 必须声明 load_extensions: true 且 tools 含 edit/write——删掉任一项，子线程就不再加载
+		// UI 门禁扩展，写侧零执行，核心安全命题静默失效（字段名漂移须以实测暴露而非静默）。
+		const profileFrontmatter = (name) => {
+			try {
+				const text = fs.readFileSync(path.join(agentsDir, `${name}.md`), 'utf8');
+				return /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? '';
+			} catch {
+				return '';
+			}
+		};
+		const profileTools = (name) => {
+			const m = /^\s*tools:\s*(.+)$/m.exec(profileFrontmatter(name));
+			return m ? m[1].split(',').map((t) => t.trim()).filter(Boolean) : [];
+		};
+		const uiDesignFm = profileFrontmatter('ui-design');
+		const uiDesignTools = profileTools('ui-design');
+		const missingProfileBits = [];
+		if (!agentFiles.includes('ui-design.md')) missingProfileBits.push('.pi/agents/ui-design.md 存在');
+		if (!/^\s*load_extensions:\s*true\s*$/m.test(uiDesignFm)) missingProfileBits.push('load_extensions: true');
+		if (!uiDesignTools.includes('edit')) missingProfileBits.push('tools 含 edit');
+		if (!uiDesignTools.includes('write')) missingProfileBits.push('tools 含 write');
+		check(`E5c 原型编辑档 profile（.pi/agents/ui-design.md）声明 load_extensions: true 且 tools 含 edit/write${missingProfileBits.length ? `——缺：${missingProfileBits.join('、')}` : ''}`, missingProfileBits.length === 0);
+
+		// E6 反向漂移防护：.pi/agents/ 中「无写工具」的 profile 必须都在放行白名单内——
+		// 后续新增只读档忘记同步白名单会被误拦（fail-closed 方向，但与本 change 要解决的「误伤」同类）。
+		// 豁免：白名单内的写能力档（ui-design 含 edit/write）按设计豁免——写边界由写侧门禁逐个兜住（D4）。
+		const WRITE_CAPABLE_EXEMPT = ['ui-design'];
+		const readOnlyProfiles = agentFiles
+			.filter((f) => f.endsWith('.md'))
+			.map((f) => f.replace(/\.md$/, ''))
+			.filter((n) => !WRITE_CAPABLE_EXEMPT.includes(n))
+			.filter((n) => !profileTools(n).some((t) => t === 'edit' || t === 'write'));
+		const notWhitelisted = readOnlyProfiles.filter((n) => !UI_DISPATCH_ALLOWED_AGENTS.includes(n));
+		check(`E6 反向漂移防护：.pi/agents/ 中无写工具的档位（${readOnlyProfiles.join('、') || '无'}）都在放行白名单内${notWhitelisted.length ? `——待同步档名：${notWhitelisted.join('、')}` : ''}`, notWhitelisted.length === 0);
 	} catch (e) {
 		console.error('FAIL', e);
 		check('smoke 执行不抛异常', false);

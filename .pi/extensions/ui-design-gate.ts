@@ -11,18 +11,23 @@
  * 3. 每次检查**重新读磁盘**（.openspec.yaml / proposal.md / ui-design.md / tasks.md /
  *    change 目录递归普通文件清单）——用户批准后不沿用旧 pending 缓存；判定全在
  *    lib/ui-design-gate.ts 纯函数（不读文件/不抛异常）。
- * 4. 新 schema（syntopica-ui）合同 block 时：Agent 派发与越出当前 change 目录的
- *    mutation 阻断；当前 change 目录内修改（ui-design.md / ui-prototype/** 等）放行。
+ * 4. 新 schema（syntopica-ui）合同 block 时：**具备写能力的** Agent 派发与越出当前 change 目录的
+ *    mutation 阻断；只读档（explore/plan/change-review）与原型编辑档（ui-design）派发放行并留痕
+ *    （policy warn，reasonCode=ui-dispatch-allowed——放行的是「派发」这个动作，子线程经 edit/write
+ *    工具的每次写入仍逐个过本门禁，写侧边界不放宽；shell 类通道不在本门禁覆盖范围——既有边界）；
+ *    当前 change 目录内修改（ui-design.md / ui-prototype/** 等）放行。
  * 5. legacy schema：不硬阻断；mutation 触及 front/** 时每 session/change 提醒一次
  *    （warn-legacy + policy warn），其余静默。
  * 6. 逃生口 UI_DESIGN_GATE_BYPASS=1：仅在原本会 block 时生效，放行必须留痕
  *    （policy bypass + 显式 warning），不静默。
  * 7. 记账（lib/policy-decision）：block/warn/bypass/fail-open 全记
- *    （policy=ui-design-gate，reasonCode 白名单 8 值）；健康放行零记录，**例外**：
- *    此前有未解除的 block 且本次合同健康放行 → 记一条 action=pass
+ *    （policy=ui-design-gate，reasonCode 白名单 9 值）；健康放行零记录，**例外**：
+ *    ① 此前有未解除的 block 且本次合同健康放行 → 记一条 action=pass
  *    （ui-approval-approved / ui-design-satisfied，add-change-lifecycle-retro design D2，
  *    与 change.archive 同族的低频高价值成功锚点；账本查「最近未解除 block」判定，
- *    跨 session 可靠）。归档侧 ui-verification-missing 的解除由 spec-gate 归档路径记。
+ *    跨 session 可靠）。② 合同未就绪时放行只读档/原型编辑档派发 → 记一条 action=warn
+ *    （ui-dispatch-allowed，add-ui-prototype-editor-agent design D5）。
+ *    归档侧 ui-verification-missing 的解除由 spec-gate 归档路径记。
  *    记账失败不改变裁决。
  * 8. 全程 fail-open：扩展自身异常 → 放行 + console.warn + steer 告警 +
  *    policy fail-open（ui-gate-check-failed），绝不把 agent 卡死。
@@ -97,7 +102,15 @@ function classifyTool(
 	toolName: string,
 	input: unknown,
 ): UiToolAction | null {
-	if (toolName === "Agent") return { kind: "agent-dispatch", targetPath: null };
+	if (toolName === "Agent") {
+		// 派发档位名（pi-web 的 Agent 工具参数 subagent_type；缺省 = general-purpose = 写能力档）
+		const st = (input as { subagent_type?: unknown } | null | undefined)
+			?.subagent_type;
+		return {
+			kind: "agent-dispatch",
+			subagentType: typeof st === "string" ? st : null,
+		};
+	}
 	if (toolName === "edit" || toolName === "write") {
 		const p = (input as { path?: unknown } | null | undefined)?.path;
 		return typeof p === "string" ? { kind: "mutation", targetPath: p } : null;
@@ -143,6 +156,17 @@ async function check(
 		if (decision.verdict?.kind === "pass") {
 			recordReleasePass(ctx, boundChange);
 		}
+		return;
+	}
+
+	if (decision.action === "dispatch-allowed") {
+		// 合同未就绪时放行只读档/原型编辑档派发（add-ui-prototype-editor-agent D5）：
+		// 留痕一条 warn（不改裁决、不打断会话），供事后回检「未就绪期间派了什么档」。
+		auditPolicy(ctx, boundChange, {
+			policy: "ui-design-gate",
+			action: "warn",
+			reasonCode: "ui-dispatch-allowed",
+		});
 		return;
 	}
 

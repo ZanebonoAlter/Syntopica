@@ -16,7 +16,7 @@
 /** 新 UI 工作流 schema 名（openspec/schemas/syntopica-ui）；其余（含 spec-driven/null）视为 legacy */
 export const UI_SCHEMA = "syntopica-ui";
 
-/** spec 声明的 reasonCode 白名单（八个，稳定有界值；顺序即文档序） */
+/** spec 声明的 reasonCode 白名单（九个，稳定有界值；顺序即文档序） */
 export const UI_REASON_CODES = [
 	"ui-impact-missing",
 	"ui-impact-mismatch",
@@ -24,6 +24,7 @@ export const UI_REASON_CODES = [
 	"ui-prototype-missing",
 	"ui-approval-pending",
 	"ui-verification-missing",
+	"ui-dispatch-allowed",
 	"explicit-bypass",
 	"ui-gate-check-failed",
 ] as const;
@@ -407,13 +408,37 @@ export function scanImpactMismatch(
 // 工具动作层（test-cases.md §4.2 分支表）——extension 逐 tool_call 调用
 // ---------------------------------------------------------------------------
 
-/** 工具动作分类（extension 侧从 event 归纳；bash 不做写盘判定，归 other） */
-export interface UiToolAction {
-	/** agent 子线程派发（Agent 工具） */
-	kind: "agent-dispatch" | "mutation" | "other";
-	/** mutation 的仓库根相对目标路径（正斜杠）；其他动作为 null */
-	targetPath: string | null;
+/**
+ * 合同未就绪时放行的子线程档位白名单（add-ui-prototype-editor-agent design D2）：
+ * 只读档（explore/plan：无写工具；change-review：只读工具 + shell，shell 通道为既有边界）
+ * + 原型编辑档（ui-design：带 edit/write，写边界由写侧门禁逐个兜住）。
+ * 白名单划分依据是**档位语义**而非工具集（design D2）——change-review 带 shell，不满足
+ * 「无写工具」的严格定义，但其用途限定为审查，故仍放行。
+ * 取舍：显式常量而非「读档位文件的 tools 字段」动态判定——门禁热路径必须零 I/O（D2）；
+ * 代价是档位改名/新增须同步本常量与 `.pi/agents/`（smoke 用例做双向漂移防护）。
+ */
+export const UI_DISPATCH_ALLOWED_AGENTS: readonly string[] = [
+	"explore",
+	"plan",
+	"change-review",
+	"ui-design",
+];
+
+/** 派发档位是否命中放行白名单（大小写不敏感——pi-web 档位解析本身大小写不敏感） */
+export function isDispatchAllowedAgent(
+	subagentType: string | null | undefined,
+): boolean {
+	if (typeof subagentType !== "string") return false;
+	const t = subagentType.trim().toLowerCase();
+	if (t.length === 0) return false;
+	return UI_DISPATCH_ALLOWED_AGENTS.includes(t);
 }
+
+/** 工具动作分类（extension 侧从 event 归纳；bash 不做写盘判定，归 other） */
+export type UiToolAction =
+	| { kind: "agent-dispatch"; subagentType: string | null }
+	| { kind: "mutation"; targetPath: string | null }
+	| { kind: "other"; targetPath: null };
 
 /** decideUiToolGate 入参 */
 export interface UiToolGateInput extends UiContractInput {
@@ -428,7 +453,8 @@ export interface UiToolGateInput extends UiContractInput {
 export type UiToolDecision =
 	| { action: "allow"; silent: true; verdict?: UiContractVerdict }
 	| { action: "block"; reasonCode: UiReasonCode; message: string }
-	| { action: "warn-legacy"; reasonCode: "ui-design-missing"; message: string };
+	| { action: "warn-legacy"; reasonCode: "ui-design-missing"; message: string }
+	| { action: "dispatch-allowed"; reasonCode: "ui-dispatch-allowed"; message: string };
 
 /**
  * 工具动作门禁（§4.2）：
@@ -438,20 +464,24 @@ export type UiToolDecision =
  * - 新 schema 合同 block：
  *   · other（读/验证/bash）→ allow
  *   · mutation 且目标在当前 change 目录内（修 ui-design.md / ui-prototype/** 等规划制品）→ allow
- *   · mutation 越出当前 change 目录 / Agent 派发 → block
+ *   · mutation 越出当前 change 目录 → block
+ *   · agent 派发：只读档与原型编辑档（UI_DISPATCH_ALLOWED_AGENTS）→ dispatch-allowed（放行并留痕，
+ *     add-ui-prototype-editor-agent design D2/D3/D5）；其余（写能力档如 general-purpose）→ block
+ *     （放行的是「派发」这个动作，子线程经 edit/write 工具的每次写入仍逐个过门禁——写侧边界不放宽，D4）
  * bypass 与 fail-open 由 extension 层处理（本函数不感知环境变量/异常）。
  */
 export function decideUiToolGate(input: UiToolGateInput): UiToolDecision {
 	if (input.mode !== "implementation" || !input.boundChange) {
 		return { action: "allow", silent: true };
 	}
+	const tool = input.tool;
 	const verdict = evaluateUiContract(input);
 
 	if (verdict.kind === "legacy") {
 		if (
-			input.tool.kind === "mutation" &&
-			input.tool.targetPath !== null &&
-			input.tool.targetPath.startsWith("front/")
+			tool.kind === "mutation" &&
+			tool.targetPath !== null &&
+			tool.targetPath.startsWith("front/")
 		) {
 			return {
 				action: "warn-legacy",
@@ -467,11 +497,28 @@ export function decideUiToolGate(input: UiToolGateInput): UiToolDecision {
 	}
 
 	// block 裁决 → 按工具动作分流
-	if (input.tool.kind === "other") return { action: "allow", silent: true };
+	if (tool.kind === "other") return { action: "allow", silent: true };
+	if (tool.kind === "agent-dispatch") {
+		// 只读档与原型编辑档放行（design D2/D3）：只读档（explore/plan 无写工具；change-review
+		// 只读工具 + shell，shell 通道为既有边界）不产生前端实现；原型编辑档服务于
+		// 「修改当前 change 的 UI 设计与原型」这一被 spec 明确允许的路径。放行的是「派发」
+		// 这个动作——子线程经 edit/write 工具的每次写入仍逐个过本门禁，越出 change 目录照常阻断（D4）。
+		if (isDispatchAllowedAgent(tool.subagentType)) {
+			return {
+				action: "dispatch-allowed",
+				reasonCode: "ui-dispatch-allowed",
+				message: `「${input.boundChange}」UI 设计合同未就绪：本次派发（${tool.subagentType}）属只读/原型编辑档，已放行并留痕（reasonCode: ui-dispatch-allowed）；子线程经 edit/write 工具的每次写入仍逐个过门禁，越出当前 change 目录者照常阻断（shell 类通道不在本门禁覆盖范围——既有边界）`,
+			};
+		}
+		return {
+			action: "block",
+			reasonCode: verdict.reasonCode,
+			message: buildBlockMessage(input.boundChange, verdict.reasonCode, verdict.detail),
+		};
+	}
 	if (
-		input.tool.kind === "mutation" &&
-		input.tool.targetPath !== null &&
-		input.tool.targetPath.startsWith(`openspec/changes/${input.boundChange}/`)
+		tool.targetPath !== null &&
+		tool.targetPath.startsWith(`openspec/changes/${input.boundChange}/`)
 	) {
 		return { action: "allow", silent: true }; // 修当前 change 的 UI 合同/原型/规划制品
 	}
