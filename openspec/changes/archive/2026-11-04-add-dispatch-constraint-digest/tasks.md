@@ -30,7 +30,7 @@
 ## 3. 派发记账（append-only）
 
 - [x] 3.1 `.pi/extensions/harness-telemetry.ts` `tool_result(Agent)` 分支：`subagent.dispatch` payload 追加 `constraintDigest`（`present`/`absent`）与 `constraintDomains`（`string[]`）；既有 **15 个固定字段 + 可选 `failure`** 语义与类型不变
-- [x] 3.2 解析实现为可导出的纯函数 `parseConstraintBrief`；段在无域 → `present` + `[]`；解析失败 MUST NOT 阻断派发
+- [x] 3.2 约束段抽取实现为可导出的纯函数 `parseConstraintBrief`；段在无域 → `present` + `[]`；抽取失败 MUST NOT 阻断派发
 - [x] 3.3 扩展 `.pi/extensions/tests/telemetry-dispatch.smoke.cjs`：带约束段 / 无约束段 / 段在无源路径 / 多域去重 / 空输入 / dispatch 集成 六类用例；验证：`bash .pi/extensions/tests/run-harness-smoke.sh` → 退出码 0
 - [x] 3.4 （review M2）收域正则收紧为 `docs/reference/flow/([a-z0-9-]+)\.md`（要求目录前缀），`present + []` 语义保留（视为格式异常，不阻断派发）
 
@@ -68,6 +68,7 @@
 - [x] 8.3 `docs/reference/constraints-index.md` 已加取数指针
 - [x] 8.4 `AGENTS.md` 已加派发取数指针（仓库根文件，不在 `docs/` 下但计入本 change 文档面）
 - [x] 8.5 `docs/reference/standard/shared/doc-authoring.md` 提取器实现指针改到 `.pi/extensions/lib/constraint-redlines.ts`（双引同一实现），doc-impact 声明相应改为 `standard`
+- 无 flow 影响：本 change 只动 harness 工具链与规范文档（`scripts/harness/`、`.pi/extensions/`、`docs/reference/harness/`、`docs/reference/standard/`、`docs/reference/constraints-index.md`、`docs/reference/开发执行规范.md`、`AGENTS.md`），不改任何业务 flow 的生成/编排流程（`docs/reference/flow/**` 与 `backend-go/`、`front/` 业务链路零改动），按《开发执行规范》§12.2 豁免 flow 变更溯源
 
 ## 9. 验证
 

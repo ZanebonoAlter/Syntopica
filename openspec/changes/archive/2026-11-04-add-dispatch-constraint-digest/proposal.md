@@ -1,4 +1,4 @@
-<!-- complexity: standard -->
+<!-- complexity: simple -->
 <!-- ui-impact: none -->
 
 # Proposal: add-dispatch-constraint-digest
