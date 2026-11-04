@@ -1,7 +1,7 @@
 # pi harness 扩展机制（全景 + 注入 + 门禁）
 
 <!--
-doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json, .pi/harness.json, scripts/harness/harness-retro.sh, scripts/harness/change-scope.sh, scripts/harness/change-abandon.sh
+doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json, .pi/harness.json, scripts/harness/harness-retro.sh, scripts/harness/constraint-digest.sh, scripts/harness/change-scope.sh, scripts/harness/change-abandon.sh
 -->
 
 > **权威源**：本文件是 pi harness 扩展**机制参考**的唯一权威——扩展全景表、约束注入/质量门禁的工作原理、事件账本入口。改 harness 相关代码或排查「为什么注入了/为什么被拦」先读这里。agent 日常行为红线（[回归]必修、测试范围、平台分流）在 AGENTS.md，流程编排在《开发执行规范》§0.6，两文互引不重复。事件考古查 skill `harness-facts`，改进复盘查 skill `harness-retro`。
@@ -24,6 +24,17 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 | tool-output-spill | `tool_result` | 工具输出 >32KB（`.pi/harness.json`） | 落盘替换+有界预览 | fail-open（spill 失败原样通过） | spill.write |
 | dev-process-guard | `session_start`/`turn_end`/`session_shutdown` | 会话结束扫描仓库内泄漏类 dev 进程（go run/pnpm dev/nuxt dev 等且无终端、非 pidfile 白名单）：窗口内自动清，遗留软提醒 | 自动清（仅 session_shutdown，组杀 TERM→2s→KILL）+ 软 steer 提醒（每会话一次） | fail-open（扫描/杀/记账异常逐目标跳过）；非 Linux no-op | policy.decision（orphan-killed / orphan-warn；健康路径零记录） |
 | harness-telemetry | `session_start`/`turn_end`/`tool_call`/`tool_result` | 通用事实采集（不干预）；turn_end 节流写 session.rollup 效能快照（轮次/token/成本/时长/**逐模型 models map**/**子会话 parentSessionId**，每 5 turn 或 token 增量>20%；同 session 取最新一条即终值）；session_start 回填 prev 终值（**自扫 sessions 目录**定位 prev——pi 事件从不携带 previousSessionFile，task-cost-metrics）；tool_result 配对 bash 归档命令成功 → `change.archive`（归档成功锚点，成功侧记账例外之一）；tool_result(Agent) → `subagent.dispatch` **携带 change 归属**（与 session.rollup 快照同源 detectActiveChange 判定，一次判定两用 agentChangeBindings + 事件 change 列，add-review-trace-gate；历史无归属行不回填——事件追加不可变约束） | — | fail-safe（断链不伪造，jsonl 缺失/坏行零写入；归档提取不到名零记录；change 解析不到记 null 不阻断派发） | session.start / session.rollup / subagent.* / change.archive |
+
+## 派发期红线取数（constraint-digest.sh）
+
+`scripts/harness/constraint-digest.sh` 是**派发期**取数入口——**它不是扩展**（不在上方扩展全景表内，是主线程派发前手工跑的脚本）：扩展管会话内注入，脚本管派发前取数。
+
+- `--paths <路径>[,<路径>...]`：按文档头部 `doc-impact-applies` 标签反查受影响文档 → 导出域清单；反查语义与 constraint-injection 的 `scanAppliesTags` 一致（只扫文档头部 15 行、同一正则、纯子串匹配、单文档首个匹配行即止）。
+- `--domains <域>[,<域>...]`：直接指定业务域（域名 MUST 取域唯一真相源里的名字，未知域名非零退出并列出可用域名）。
+- 输出形态：「域标题 + 源文档相对路径 + 逐行红线句 + 细节层 read 指引」，单域红线正文 ≤8 行——供主线程**原样**粘进派发任务文本的 `## 约束（红线，源 docs/reference/flow/<域>.md）` 段（该段落格式是 telemetry 解析契约，取数三步与模板见《开发执行规范》§0.6 步骤 3）。
+- **红线提取复用 constraint-injection 的同一实现**（`.pi/extensions/lib/constraint-redlines.ts` 的 `extractRedlines()`），MUST NOT 在脚本内重写第二份正则；**域清单唯一真相源 = `docs/reference/flow/*.md` basename**——`.pi/constraint-injection.json` 的 `keywordDocs` 是别名/子集、`docs/reference/constraints-index.md` 域表是面向模型的人读索引、`scripts/harness/doc-impact.sh menu` 的 8 项是**文档目录轴**（flow/api/database/…）不是业务域轴，三处禁止混用。
+
+**可观测（append-only）**：`subagent.dispatch` 事件追加两个字段——`constraintDigest`（`present`/`absent`：任务文本有无 `## 约束` 段）与 `constraintDomains`（`string[]`，从该段 `源 docs/reference/flow/<域>.md` 收域；段存在但收不到域名记 `present` + `[]`，不猜域、不阻断派发）。改造前的历史记录无这两个字段 → `harness-retro` 计「未知」并从带域比例分母剔除（**不回溯**记 `absent`，否则把历史数据算成遗漏），报告显式标注未知条数。
 
 ## 约束注入（constraint-injection，自动，管"知道"）
 
@@ -85,7 +96,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 > **原型编辑档的模型选择**：`ui-design` 档**不绑模型**（原型审美质量对模型敏感，固定默认会锁死）——模型由派发时按 AGENTS.md「子线程模型偏好」指定，**原型审美任务建议用强模型**；档位定义不代替用户拍板模型。
 
 1. **AGENTS.md 不自动进 pi-web 子线程**：`noContextFiles` 恒真（包硬编码）——约束注入补的是 harness 层，项目上下文仍靠派发任务文本（必读文件清单）。
-2. **内置档默认是盲区，已由项目覆盖档修复（覆盖可被 pi-web 升级冲掉）**：pi-web 内置三档写死 codemode off / loadSkills false / loadExtensions false；项目以 `.pi/agents/` 同名覆盖档（2026-10-13）开启 codemode/skills/插件，AGENTS.md 仍不注入（限制 1 不可改），覆盖档 addendum 写「开工先自读 AGENTS.md」兑底。pi-web 升级若改 profile 字段名或覆盖机制，子线程会静默退回内置盲区（可观测：事件库三事件消失、探针报告无 codemode/插件）；前台派发须任务文本带红线（编排纪律兑底）。
+2. **内置档默认是盲区，已由项目覆盖档修复（覆盖可被 pi-web 升级冲掉）**：pi-web 内置三档写死 codemode off / loadSkills false / loadExtensions false；项目以 `.pi/agents/` 同名覆盖档（2026-10-13）开启 codemode/skills/插件，AGENTS.md 仍不注入（限制 1 不可改），覆盖档 addendum 写「开工先自读 AGENTS.md」兑底。pi-web 升级若改 profile 字段名或覆盖机制，子线程会静默退回内置盲区（可观测：事件库三事件消失、探针报告无 codemode/插件）；前台派发须任务文本带红线（编排纪律兑底——取数三步与 brief 模板见《开发执行规范》§0.6 步骤 3；带没带可观测：`subagent.dispatch` 的 `constraintDigest`/`constraintDomains` 字段，见上「派发期红线取数」）。
 3. **pi-web 升级漂移依赖点**：profile 字段白名单（snake_case `load_extensions` 等）与扫描目录（`.pi/agents/`）；漂移表现为子线程退化无扩展（事件库三事件消失），可观测。
 
 ## 孤儿 dev 进程治理（dev-process-guard）
@@ -144,6 +155,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 ## 变更记录
 
 | 日期 | 变更 | 摘要 | 归档位置 |
+| 2026-11-04 | add-dispatch-constraint-digest | 补「派发期红线取数（constraint-digest.sh）」节：派发期红线取数脚本定位（红线提取复用 `.pi/extensions/lib/constraint-redlines.ts` 的 `extractRedlines()`，与 constraint-injection 注入同一实现；`--paths` 反查语义与 `scanAppliesTags` 一致）+ 域清单唯一真相源=flow basename（`keywordDocs`/constraints-index 域表/`doc-impact.sh menu` 是别名或不同轴，禁止混用）+ `subagent.dispatch` 追加 `constraintDigest`/`constraintDomains` 两字段（append-only，历史计「未知」并剔除分母）；配套《开发执行规范》§0.6 步骤 3 三步取数 + brief 模板、AGENTS.md 取数指针 | ../../../openspec/changes/add-dispatch-constraint-digest（待归档） |
 | 2026-10-12 | review-task-frontload | review 前移三层：check-tasks-tail.sh 扩展 complex 档 review 任务行判定（proposal 头部 marker 分档 + waived 豁免同检查⑤词表，单一事实源）；openspec-propose/new-change skill 注入 Review 节建档约定；openspec-apply-change skill 入口先跑 check-tasks-tail（缺行实现前暴露）；存量 in-flight complex change 不豁免 | ../../../openspec/changes/review-task-frontload（待归档） |
 | 2026-09-28 | add-change-lifecycle-retro | harness-retro 新增 `--lifecycle <change>` 单 change 体检卡（四段 + proposal 声明元数据）；⑦段 A 组催修时距按 policy 分派解除信号（quota 89 分钟假慢修正）；ui-design-gate 放行侧 action=pass 两码（ui-approval-approved / ui-design-satisfied）显式记账；新增 change.abandon 终态事件与 `scripts/harness/change-abandon.sh` 登记脚本（B' 幸存者偏差区分已放弃） | ../../../openspec/changes/add-change-lifecycle-retro（待归档） |
 | 2026-09-28 | split-retro-warn-classes | harness-retro ④ 段按情报型白名单（concurrent-mixed / concurrent-dirty-tree / foreign-breakage）拆分纠正型/情报型：失效名单只含纠正型、情报型单列计数不进失效判定；metrics 新增 soft.warn_total_corrective / soft.warn_total_informative / soft.informative_groups（stale_groups 键名不变、语义收窄；本周失效名单 3 组→0 全为口径修正） | ../../../openspec/changes/archive/2026-09-28-split-retro-warn-classes（已归档） |

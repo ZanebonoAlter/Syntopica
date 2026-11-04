@@ -19,6 +19,10 @@
 # 六段故障视角 + ⑦效能看板（harness-effectiveness-metrics）：① 门禁失败聚类 ② 回归翻转 ③ harness 自身故障 ④ 软提醒失效 ⑤ 重复失败热点 ⑥ 注入面健康 ⑦ 效能看板（A 插件 ROI / B 效率基线（session.rollup 驱动）/ C 返工信号；分布为 nearest-rank 分位，禁止综合总分）
 # ⑦ 另含 D 测试欠账巡检子组（test-debt-patrol）：patrol.check 流水频次 + test_debt 台账 open/fixed/waived 趋势；
 #   窗口内无 patrol.check 或库内无 test_debt 表（老库/未初始化）时降级为「无巡检数据」，不影响退出码。
+# ⑦ 另含 G 派发带域子组（add-dispatch-constraint-digest）：subagent.dispatch 的 constraintDigest 三态
+#   （present / absent / 未知）；比例分母 = present + absent，改造前无该字段的历史记录计「未知」并剔除分母
+#   （不回溯记 absent，否则把改造前数据算成遗漏）；统计窗口内全部派发记录（含失败派发）；
+#   无可判定派发时不除零，显式输出「无可判定派发」。
 #
 # 分母口径（与 harness-fact-log 的 gate.check 采样记账协议一致）：
 #   ok=false 计 1；ok=true 无采样标记（会话首成功/转绿锚点）计 1；
@@ -1343,6 +1347,19 @@ sub_one AS (SELECT aid, (SELECT x.t FROM sub_pairs x WHERE x.aid=s.aid AND x.t I
       ORDER BY CASE WHEN x.kind='subagent.complete' THEN 1 ELSE 0 END DESC, x.id DESC LIMIT 1) t
   FROM (SELECT DISTINCT aid FROM sub_pairs) s),
 sub_sum AS (SELECT IFNULL(SUM(t),0) s, COUNT(t) n FROM sub_one WHERE t IS NOT NULL),
+/* 派发带域比例（add-dispatch-constraint-digest D5/D7）：present/(present+absent)。
+   三态解析：payload 非法 / 缺 constraintDigest 键 / 值不在枚举内 → 一律计「未知」并剔除分母，
+   绝不回溯记 absent（否则把改造前的历史派发算成「遗漏」）；ratio 与报告其余百分比同口径（整数百分比）。 */
+disp_dig_raw AS (SELECT CASE WHEN json_valid(payload) THEN json_extract(payload,'\$.constraintDigest') END AS digest
+  FROM win WHERE kind='subagent.dispatch'),
+disp_dig AS (SELECT
+    IFNULL(SUM(CASE WHEN digest='present' THEN 1 ELSE 0 END),0) AS present,
+    IFNULL(SUM(CASE WHEN digest='absent' THEN 1 ELSE 0 END),0) AS absent,
+    IFNULL(SUM(CASE WHEN digest IS NULL OR digest NOT IN ('present','absent') THEN 1 ELSE 0 END),0) AS unknown
+  FROM disp_dig_raw),
+disp_dig_x AS (SELECT present, absent, unknown, (present+absent) AS decidable,
+    CASE WHEN (present+absent) > 0 THEN (present*200 + (present+absent)) / (2*(present+absent)) END AS ratio
+  FROM disp_dig),
 ru_sum AS (SELECT IFNULL(SUM(tok),0) s FROM ru_t),
 ru_chg AS (SELECT chg, SUM(tok) tok, SUM(cost) cost, SUM(turns) turns FROM ru_t WHERE chg != '' GROUP BY 1),
 top_chg AS (SELECT chg, tok, cost FROM ru_chg ORDER BY tok DESC LIMIT 5),
@@ -1499,6 +1516,13 @@ SELECT json_object(
       'tokens', (SELECT s FROM sub_sum),
       'samples', (SELECT n FROM sub_sum),
       'rollup_tokens', (SELECT s FROM ru_sum)
+    ),
+    'dispatch_digest', json_object(
+      'present', (SELECT present FROM disp_dig_x),
+      'absent', (SELECT absent FROM disp_dig_x),
+      'unknown', (SELECT unknown FROM disp_dig_x),
+      'decidable', (SELECT decidable FROM disp_dig_x),
+      'ratio', (SELECT ratio FROM disp_dig_x)
     ),
     'waves', json_object(
       'items', (SELECT json_group_array(json_object('path', p, 'sessions', n)) FROM wave)
@@ -1692,6 +1716,18 @@ metrics.update({
     'm7.sub_samples': _e('subagent.samples'),
     'm7.wave_files': len(_e('waves.items') or []),
     'm7.archive_retry_changes': len(_e('archive_retry.items') or []),
+})
+
+# 派发带域比例（add-dispatch-constraint-digest D5/D7）：分母=present+absent，未知剔除分母；
+# 嵌套键 m7.dispatch_digest 含 present/absent/unknown/decidable/ratio，另出扁平标量键供基线差值可比。
+_ddg = _e('dispatch_digest') or {}
+metrics.update({
+    'm7.dispatch_digest': _ddg if _ddg else None,
+    'm7.dispatch_digest_present': _ddg.get('present'),
+    'm7.dispatch_digest_absent': _ddg.get('absent'),
+    'm7.dispatch_digest_unknown': _ddg.get('unknown'),
+    'm7.dispatch_digest_decidable': _ddg.get('decidable'),
+    'm7.dispatch_digest_ratio': _ddg.get('ratio'),
 })
 
 # B' 每任务成本（task-cost-metrics）：分布 + 分桶 + 不可归因披露；旧库无 task_cost 段时全 None
@@ -2112,6 +2148,26 @@ else:
         out.append('     落点率 / 字数     : —（窗口内无 Decision，不用 0% 冒充）')
     out.append('     回检键            : m7.design_decisions / m7.design_landing_rate / m7.design_words_per_decision / m7.design_alt_rate')
     out.append('     口径              : 落点=文件（全路径/唯一 basename，符号可检索）/任务 id/Scenario 标题/无代码落点+承接理由；只用于准 A/B，不合成 KPI')
+
+    # G 派发带域比例（add-dispatch-constraint-digest D7）：present/(present+absent)，未知剔除分母
+    _dp = _ddg.get('present') or 0
+    _da = _ddg.get('absent') or 0
+    _du = _ddg.get('unknown') or 0
+    _dd = _ddg.get('decidable')
+    if _dd is None:
+        _dd = _dp + _da
+    _dr = _ddg.get('ratio')
+    if _dr is None and _dd:
+        _dr = _pct(_dp, _dd)
+    out.append('   G 派发带域比例（subagent.dispatch 约束摘要 present / absent / 未知 三态）')
+    if _dd:
+        out.append('     派发带域比例        : %d%%（present %s / 可判定 %s，未知 %s 条）'
+                   % (_dr, _dp, _dd, _du))
+    else:
+        out.append('     派发带域比例        : 无可判定派发（present %s / 可判定 %s，未知 %s 条）'
+                   % (_dp, _dd, _du))
+    out.append('     口径                : 窗口内全部 subagent.dispatch 记录（含失败派发）；分母=present+absent（未知不计分母）；未知=改造前无 constraintDigest 字段的历史记录')
+    out.append('     回检键            : m7.dispatch_digest_ratio / m7.dispatch_digest_present / m7.dispatch_digest_unknown')
     out.append('')
 
 if baseline_diff is not None:

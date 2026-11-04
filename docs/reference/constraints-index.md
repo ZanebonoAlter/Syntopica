@@ -22,6 +22,8 @@
 
 **change 涉及哪些域，在 proposal.md 头部用 `<!-- constraint-domains: 域名, ... -->` 显式声明**（域名=上表 flow 文档 basename）；档位激活后 constraint-injection 按声明注入对应约束节（**声明域=红线层**：顶层列表项首个加粗红线句逐行，细节层经关键词/JIT 全节命中或自行 read 补取；红线层提取失败回退全节），代码编辑路径由 flow/standard 文档头部 `doc-impact-applies` 标签 JIT 兜底（**关键词/JIT 命中=全节注入**，各域辖区见标签声明）。红线句格式规范见 [`standard/shared/doc-authoring.md`](standard/shared/doc-authoring.md)「约束节红线句格式」。
 
+> **派发前取域红线**：派发子线程前跑 `bash scripts/harness/constraint-digest.sh --brief --paths <目标路径>`（或 `--brief --domains <域>`）取红线，**`--brief` 输出原样**粘进任务文本（单个 `## 约束（红线，源 …）` 段，其下每域 `### <域>（源 …）` 子标题；不带 `--brief` 的人读形态含旁注段，不可直接粘）。取数三步与 brief 模板见 [`开发执行规范.md`](开发执行规范.md) §0.6 步骤 3。**域清单唯一真相源 = `docs/reference/flow/*.md` basename**（脚本 `--domains` 只认它）；本文件域表是面向模型的人读索引（可能少于真相源），仅作 `--paths` 未命中时的**回退入口**；`scripts/harness/doc-impact.sh menu` 的 8 项是**文档目录轴**（flow/api/database/…）不是业务域轴——三处禁止混用。
+
 ## 流程规范
 
 openspec 编排（§0.6 六步）、门禁分层（§4）、归档纪律（§11/§12）：[`开发执行规范.md`](开发执行规范.md)。

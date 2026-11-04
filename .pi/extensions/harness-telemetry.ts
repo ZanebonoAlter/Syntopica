@@ -20,7 +20,10 @@
  *   tool_result(Agent)         → subagent.dispatch（类型/模型/摘要/耗时/token/change 归属；
  *                               失败附白名单 failure；后台派发时暂存 agentId→change 绑定
  *                               供完成回填复用——add-review-trace-gate D2：change 列与
- *                               session.rollup 同源 detectActiveChange，历史无归属行不回填）
+ *                               session.rollup 同源 detectActiveChange，历史无归属行不回填；
+ *                               add-dispatch-constraint-digest D5：append-only 追加
+ *                               constraintDigest/constraintDomains（派发文本约束段派生值，
+ *                               只落派生值不落任务正文）
  *   tool_result(get_subagent_result) → subagent.complete（后台子线程完成回填，
  *                               harness-observability-fixes D3：解析结果摘要首两行；
  *                               13/17 条 dispatch 永停 background 态的审计断链修复）
@@ -139,6 +142,44 @@ export function parseSubagentSummary(text: string): SubagentSummary | null {
 		tokens: tokenMatch ? parseTokenCount(`${tokenMatch[1]}${tokenMatch[2]}`) : null,
 		ms: durMatch ? Math.round(Number.parseFloat(durMatch[1]) * 1000) : null,
 	};
+}
+
+/** 派发任务文本的约束段解析结果（add-dispatch-constraint-digest D5）。
+ *  digest=present：文本里有 `## 约束` 段（段内收不到域名也算 present）；
+ *  digest=absent：没有该段（输入为空/非字符串同样落到 absent）。 */
+export interface ConstraintBrief {
+	digest: "present" | "absent";
+	domains: string[];
+}
+
+/** 从派发任务文本解析「约束（红线，源 docs/reference/flow/<域>.md）」段。
+ *
+ *  解析规则（与 brief 模板构成契约，add-dispatch-constraint-digest design D5）：
+ *   1. 定位 `^## 约束` 标题行（标题行本身含源路径，属于段内容）；找不到 → absent + []
+ *   2. 段内（到下一个 `## ` 标题或文末）用 /docs\/reference\/flow\/([a-z0-9-]+)\.md/ 全局收域
+ *      —— **必须带 `docs/reference/flow/` 目录前缀**（与「业务域唯一真相源 = flow basename」
+ *      口径一致：路径里任意出现的 `flow/<x>.md` 不算业务域源路径，review R-3）
+ *   3. 段存在但收不到域名 → present + []（不猜域、不阻断派发）
+ *
+ *  纯函数、不抛异常（输入非字符串/空 → absent + []）；只产派生值，不落任务正文。
+ *  域名去重后按字典序排序——同输入恒定输出，跨派发可比。
+ */
+export function parseConstraintBrief(prompt: string): ConstraintBrief {
+	if (typeof prompt !== "string" || prompt.length === 0) {
+		return { digest: "absent", domains: [] };
+	}
+	const heading = /^##[ \t]*约束[^\n]*$/m.exec(prompt);
+	if (!heading) return { digest: "absent", domains: [] };
+	const tail = prompt.slice(heading.index);
+	const rest = tail.slice(heading[0].length);
+	const nextHeading = /^##[ \t]+/m.exec(rest);
+	const section = nextHeading
+		? tail.slice(0, heading[0].length + nextHeading.index)
+		: tail;
+	const domains = [...new Set(
+		[...section.matchAll(/docs\/reference\/flow\/([a-z0-9-]+)\.md/g)].map((m) => m[1]),
+	)].sort();
+	return { digest: "present", domains };
 }
 
 /* ---- task-cost-metrics D4：归档成功记账纯函数（正则语义同 spec-gate extractChangeName，
@@ -407,6 +448,18 @@ export default function (pi: ExtensionAPI) {
 			});
 		}
 
+		// 派发文本里的约束段解析（add-dispatch-constraint-digest D5）：append-only 追加两字段，
+		// 只落派生值（present/absent + 域名数组）不落任务正文；解析异常一律降级 absent，
+		// 绝不影响派发本身落账。
+		let brief: ConstraintBrief = { digest: "absent", domains: [] };
+		try {
+			brief = parseConstraintBrief(input.prompt ?? "");
+		} catch (e) {
+			console.error(
+				`[harness-telemetry] constraint brief parse failed: ${(e as Error).message}`,
+			);
+		}
+
 		guardedLog(ctx.cwd, ctx, {
 			kind: "subagent.dispatch",
 			sessionId,
@@ -428,6 +481,8 @@ export default function (pi: ExtensionAPI) {
 				turnCount: details?.turnCount ?? null,
 				isError: event.isError === true,
 				...(failure ? { failure } : {}),
+				constraintDigest: brief.digest,
+				constraintDomains: brief.domains,
 			},
 		});
 	});

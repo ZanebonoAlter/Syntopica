@@ -90,6 +90,7 @@ import {
 import { join, dirname } from "node:path";
 import { logEvent, queryBySession, type HarnessEventRow } from "./lib/harness-log";
 import { isChildSession, parentSessionId } from "./lib/child-session";
+import { extractRedlines } from "./lib/constraint-redlines";
 import {
 	listChangeDirs,
 	detectActiveChange,
@@ -701,32 +702,10 @@ function extractSection(content: string, sectionName: string): string | null {
 }
 
 /* ---------- 红线层提取（@constraint-declaration-redline design D1/D2/D4） ---------- */
-
-/** 红线层提取结果：lines 为「原文列表标记 + 加粗块」逐行序列，bytes 为 \n 拼接字节数 */
-export interface RedlineLayer {
-	lines: string[]; // 形如 `3. **红线句**`（保留原文顺序与编号）
-	bytes: number;
-}
-
-/**
- * 提取约束节的红线层：顶层列表项（行首无缩进的 `N. ` / `- `）行取首个 `**...**`
- * 加粗块为一条红线句（保留原文顺序与编号）；无加粗块的列表项不取首行文本凑数
- * （细节句冒充红线比回退全节更糟）；引用块 / 自由段落 / 嵌套列表项不属红线层。
- * 0 条提取返回 null；bytes 低于节级最小字节下限时由调用方回退全节（同族 fail-safe）。
- * 纯函数：同一节文本 → 同一输出字节序列（smoke 直跑）。
- */
-export function extractRedlines(sectionText: string): RedlineLayer | null {
-	const lines: string[] = [];
-	for (const line of sectionText.split(/\r?\n/)) {
-		const m = line.match(/^(\d+\.|-)\s+(.*)$/);
-		if (!m) continue; // 非顶层列表项（嵌套项/引用块/自由段落/标题）
-		const bold = m[2].match(/\*\*(.+?)\*\*/);
-		if (!bold) continue; // 无加粗块：不凑数，该条不进红线层
-		lines.push(`${m[1]} **${bold[1]}**`);
-	}
-	if (!lines.length) return null;
-	return { lines, bytes: Buffer.byteLength(lines.join("\n"), "utf8") };
-}
+/* 实现已下沉到 lib/constraint-redlines.ts（单一真相源：extension 与取数脚本
+   scripts/harness/constraint-digest.sh 双引，规则一字不改 —— design D2 / R1）。
+   此处 re-export 保持对外导出面不变（smoke 由 bundle 调 ext.extractRedlines）。 */
+export { extractRedlines, type RedlineLayer } from "./lib/constraint-redlines";
 
 /* ---------- 大文档二级注入（硬规则速览 + 全文目录；本仓文档暂无速览节，路径备用） ---------- */
 

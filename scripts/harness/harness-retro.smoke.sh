@@ -15,6 +15,8 @@
 #   H1 巡检段数字正确 / H2 JSON effectiveness.patrol 键 / H3 无表无巡检事件降级 / H4 有台账零巡检事件降级
 #   I1 截断域名修复后 join 命中（substr 差一回归，harness-retro-sql-fixes）/ I2 jit-path 通道计入命中率 / I3 未识别通道显式计数且非 flow-doc 合法通道不误标 / I4 命中率=fixture 复算值（2/3=67%）
 #   J1 diag 含 command not found 归环境族（先于 %lint% 关键词族）/ J2 真实 lint 失败仍归 lint 族（两族并存各归各族）
+#   P1 派发带域比例：全 present / 全 absent / 混合历史（未知剔除分母）/ 无派发不除零 + JSON 键值
+#     （add-dispatch-constraint-digest 5.2）
 #
 # 用法：bash scripts/harness/harness-retro.smoke.sh   退出码：0 全过；1 有失败
 set -u
@@ -292,6 +294,34 @@ done
 for i in 1 2 3 4 5 6; do
 	ins "$FL" policy.decision probe-L '{"policy":"test-scope-guard","action":"warn","reasonCode":"full-go-test"}'
 done
+
+# ---------- fixture P：派发约束摘要三态（add-dispatch-constraint-digest 5.2） ----------
+# P1 全 present / P2 全 absent / P3 混合历史（含改造前无键记录 + 非法 payload）/ P4 窗口内无派发
+FP1="$TMP/p1.db"
+mk_db "$FP1"
+for i in 1 2 3; do
+	ins "$FP1" subagent.dispatch cP '{"desc":"d","promptChars":120,"constraintDigest":"present","constraintDomains":["daily-report"]}' sP
+done
+
+FP2="$TMP/p2.db"
+mk_db "$FP2"
+for i in 1 2; do
+	ins "$FP2" subagent.dispatch cP '{"desc":"d","promptChars":120,"constraintDigest":"absent","constraintDomains":[]}' sP
+done
+
+FP3="$TMP/p3.db"
+mk_db "$FP3"
+ins "$FP3" subagent.dispatch cP '{"desc":"d","promptChars":120,"constraintDigest":"present","constraintDomains":["daily-report"]}' sP
+ins "$FP3" subagent.dispatch cP '{"desc":"d","promptChars":120,"constraintDigest":"present","constraintDomains":["ai-summary"]}' sP
+ins "$FP3" subagent.dispatch cP '{"desc":"d","promptChars":120,"constraintDigest":"absent","constraintDomains":[]}' sP
+# 改造前历史：无 constraintDigest 键 → 未知（不计 absent，不入分母）
+ins "$FP3" subagent.dispatch cP '{"desc":"d","promptChars":120}' sP
+# payload 非法 → 未知（同上，抽取失败不得回退成 absent）
+ins "$FP3" subagent.dispatch cP '{not json' sP
+
+FP4="$TMP/p4.db"
+mk_db "$FP4"
+ins "$FP4" gate.check cP '{"cmd":"go test","ok":true}'
 
 # ---------- K. B' 每任务成本四场景（task-cost-metrics） ----------
 HARNESS_RETRO_ARCHIVE_DIR="$TMP/arch" run_retro --db "$FK" --days 7
@@ -1180,6 +1210,66 @@ then
 	pass=$((pass + 1))
 else
 	echo "  ✗ N4 空 design JSON 断言失败"
+	failn=$((failn + 1))
+fi
+
+# ================= P. 派发带域比例（add-dispatch-constraint-digest 5.2） =================
+# 口径：比例 = present/(present+absent)；改造前无 constraintDigest 键的记录计「未知」并剔除分母
+run_retro --db "$FP1" --days 7
+check 0 "P1 全 present：比例 100%、未知 0 条（分母=3）" \
+	"G 派发带域比例" "派发带域比例        : 100%（present 3 / 可判定 3，未知 0 条）"
+
+run_retro --db "$FP2" --days 7
+check 0 "P2 全 absent：比例 0%、未知 0 条（分母=2，全是 absent）" \
+	"派发带域比例        : 0%（present 0 / 可判定 2，未知 0 条）"
+
+run_retro --db "$FP3" --days 7
+check 0 "P3 混合历史：未知剔除分母（present 2 / 可判定 3 → 67%），未知 2 条显式标注" \
+	"派发带域比例        : 67%（present 2 / 可判定 3，未知 2 条）" "未知 2 条"
+
+run_retro --db "$FP4" --days 7
+check 0 "P4 窗口内无派发：不除零，显式「无可判定派发」" \
+	"派发带域比例        : 无可判定派发（present 0 / 可判定 0，未知 0 条）"
+
+"$RETRO" --db "$FP3" --days 7 --json >"$TMP/fp3.json" 2>/dev/null
+if python3 - "$TMP/fp3.json" <<'FPPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d['metrics']
+dd = d['effectiveness']['dispatch_digest']
+# 三态：present 2 / absent 1 / unknown 2（无键 + 非法 payload 各 1）
+assert dd['present'] == 2 and dd['absent'] == 1 and dd['unknown'] == 2, dd
+assert dd['decidable'] == 3, dd
+# ratio=2/3=67%：若把 unknown 当 absent 计入分母会算成 2/5=40% → 67% 即证明未知被剔除
+assert dd['ratio'] == 67, dd
+assert m['m7.dispatch_digest']['present'] == 2, m.get('m7.dispatch_digest')
+assert m['m7.dispatch_digest']['unknown'] == 2, m.get('m7.dispatch_digest')
+assert m['m7.dispatch_digest_present'] == 2, m.get('m7.dispatch_digest_present')
+assert m['m7.dispatch_digest_absent'] == 1, m.get('m7.dispatch_digest_absent')
+assert m['m7.dispatch_digest_unknown'] == 2, m.get('m7.dispatch_digest_unknown')
+assert m['m7.dispatch_digest_decidable'] == 3, m.get('m7.dispatch_digest_decidable')
+assert m['m7.dispatch_digest_ratio'] == 67, m.get('m7.dispatch_digest_ratio')
+FPPY
+then
+	echo "  ✓ P5 JSON m7.dispatch_digest 键值（2/1/2/可判定 3/ratio 67%——未知剔除分母）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ P5 JSON 派发带域断言失败"
+	failn=$((failn + 1))
+fi
+
+"$RETRO" --db "$FP4" --days 7 --json >"$TMP/fp4.json" 2>/dev/null
+if python3 - "$TMP/fp4.json" <<'FP4PY'
+import json, sys
+m = json.load(open(sys.argv[1]))['metrics']
+assert m['m7.dispatch_digest_ratio'] is None, m.get('m7.dispatch_digest_ratio')
+assert m['m7.dispatch_digest_decidable'] == 0, m.get('m7.dispatch_digest_decidable')
+FP4PY
+then
+	echo "  ✓ P6 JSON 无可判定派发时 ratio=null（不伪造 0%）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ P6 JSON 无可判定派发断言失败"
 	failn=$((failn + 1))
 fi
 

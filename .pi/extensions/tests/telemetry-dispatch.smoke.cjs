@@ -10,6 +10,13 @@
  *   2. 无非 archive 目录（只有 archive/）→ change=null，事件照常落库不阻断
  *   3. 既有行不可变：先无归属记一条（null）→ 造目录再记一条（带值）→ 旧行仍 null、
  *      行数追加为 2（不改写）
+ * 追加（add-dispatch-constraint-digest 3.3）：派发约束段解析纯函数 parseConstraintBrief
+ *   + payload 追加 constraintDigest/constraintDomains（append-only 派生值，不落任务正文）：
+ *   4. 带约束段 → present + ["daily-report"]；无约束段 → absent + []
+ *   5. 段在但无 flow/ 源路径 → present + []（不猜域）
+ *   6. 多域去重 + 顺序稳定 + 段边界（下一个 `## ` 之后的源路径不计入）
+ *   7. brief 形态（constraint-digest.sh --brief 真实输出）→ present + 多域
+ *   8. 源路径缺 docs/reference/ 前缀 → 不收域（present + []，review R-3 收紧口径）
  * harness-telemetry.ts 直接 require（相对导入无扩展名）会失败 → 现场 esbuild bundle
  * 再加载（与 run-harness-smoke.sh 的 .tel.cjs 同产物，此处独立生成保证单跑自足）。
  * 跑法：node .pi/extensions/tests/telemetry-dispatch.smoke.cjs */
@@ -36,18 +43,43 @@ const ok = (name, fn) => {
 	console.log(`  ✓ ${name}`);
 };
 
-/* 现场 bundle（相对导入无扩展名，直接 require 会失败） */
+/* 现场 bundle（相对导入无扩展名，直接 require 会失败）
+ * esbuild 解析离线优先（review R-13）：本仓已装 → npx 缓存 → 最后才 npx -y（需联网） */
+const REPO_ROOT = path.resolve(__dirname, "../../..");
+const cmdWorks = (c) => {
+	try {
+		execSync(c, { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+};
+function esbuildCmd() {
+	const tries = [
+		{ cmd: "esbuild", probe: () => cmdWorks("esbuild --version") },
+		{
+			cmd: JSON.stringify(path.join(REPO_ROOT, "node_modules/.bin/esbuild")),
+			probe: () => fs.existsSync(path.join(REPO_ROOT, "node_modules/.bin/esbuild")),
+		},
+		{ cmd: "npx --no-install esbuild", probe: () => cmdWorks("npx --no-install esbuild --version") },
+	];
+	for (const t of tries) if (t.probe()) return t.cmd;
+	return "npx -y esbuild";
+}
+
 const TMP_BUNDLE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "tdisp-")), "tel-bundle.cjs");
 execSync(
-	`npx -y esbuild ${JSON.stringify(path.resolve(__dirname, "../harness-telemetry.ts"))} --bundle --platform=node --format=cjs --outfile=${JSON.stringify(TMP_BUNDLE)}`,
+	`${esbuildCmd()} ${JSON.stringify(path.resolve(__dirname, "../harness-telemetry.ts"))} --bundle --platform=node --format=cjs --outfile=${JSON.stringify(TMP_BUNDLE)}`,
 	{ cwd: __dirname, stdio: ["ignore", "ignore", "ignore"] },
 );
 const telemetry = require(TMP_BUNDLE);
 
-/** dispatch 一次 Agent 子线程（tool_call 暂存起点 + tool_result 落账），返回触发的 handlers */
-const dispatchAgent = (handlers, ctx, id) => {
+/** dispatch 一次 Agent 子线程（tool_call 暂存起点 + tool_result 落账），返回触发的 handlers
+ *  prompt 可选（add-dispatch-constraint-digest：约束段记账用例需要真实任务文本） */
+const dispatchAgent = (handlers, ctx, id, prompt = "x".repeat(10)) => {
+	const input = { subagent_type: "explore", description: `派发 ${id}`, prompt };
 	handlers["tool_call"](
-		{ toolName: "Agent", toolCallId: `tc-${id}`, input: { subagent_type: "explore", description: `派发 ${id}`, prompt: "x".repeat(10) } },
+		{ toolName: "Agent", toolCallId: `tc-${id}`, input },
 		ctx,
 	);
 	handlers["tool_result"](
@@ -55,7 +87,7 @@ const dispatchAgent = (handlers, ctx, id) => {
 			toolName: "Agent",
 			toolCallId: `tc-${id}`,
 			isError: false,
-			input: { subagent_type: "explore", description: `派发 ${id}`, prompt: "x".repeat(10) },
+			input,
 			details: { tokens: "12.3k", durationMs: 4567, status: "completed", agentId: `ab12cd3-${id}` },
 		},
 		ctx,
@@ -176,6 +208,126 @@ ok("后台派发 agentChangeBindings 复用同一次判定（complete 回填 cha
 		db.close();
 		assert.equal(disp.change, "bind-change", "dispatch 行带 change");
 		assert.equal(comp.change, "bind-change", "complete 回填与 dispatch 同源同值");
+	} finally {
+		fs.rmSync(tmp, { recursive: true, force: true });
+	}
+});
+
+/* ---- add-dispatch-constraint-digest D5：约束段解析纯函数 + dispatch 记账 ---- */
+
+ok("parseConstraintBrief：带约束段 → present + 域名数组", () => {
+	const brief = telemetry.parseConstraintBrief(
+		[
+			"## 任务",
+			"做点事",
+			"## 约束（红线，源 docs/reference/flow/daily-report.md）",
+			"- 日报生成必须幂等：同日重复触发不得产生重复记录",
+			"- 生成失败必须落失败态并保留原因，禁止静默吞错",
+		].join("\n"),
+	);
+	assert.equal(brief.digest, "present");
+	assert.deepEqual(brief.domains, ["daily-report"]);
+});
+
+ok("parseConstraintBrief：无约束段 → absent + []", () => {
+	const brief = telemetry.parseConstraintBrief("## 任务\n只做事，无约束段\n");
+	assert.equal(brief.digest, "absent");
+	assert.deepEqual(brief.domains, []);
+});
+
+ok("parseConstraintBrief：段在但无 flow/ 源路径 → present + []（不猜域）", () => {
+	const brief = telemetry.parseConstraintBrief(
+		"## 约束\n- 凭经验办，别问\n- 不指定源文档\n",
+	);
+	assert.equal(brief.digest, "present");
+	assert.deepEqual(brief.domains, []);
+});
+
+ok("parseConstraintBrief：多域去重 + 顺序稳定 + 段边界（下一个 ## 之后不算）", () => {
+	const text = [
+		"## 约束（红线，源 docs/reference/flow/daily-report.md）",
+		"- 日报生成必须幂等",
+		"- 另见 docs/reference/flow/ai-summary.md",
+		"- 重复提到 docs/reference/flow/daily-report.md",
+		"## 任务",
+		"- 下面这段不在约束段内：docs/reference/flow/topic-graph.md",
+	].join("\n");
+	const brief = telemetry.parseConstraintBrief(text);
+	assert.equal(brief.digest, "present");
+	assert.deepEqual(
+		brief.domains,
+		["ai-summary", "daily-report"],
+		"去重 + 字典序稳定 + 不越过段边界",
+	);
+	// 顺序稳定：同输入重复解析结果一致
+	assert.deepEqual(telemetry.parseConstraintBrief(text), brief);
+});
+
+ok("parseConstraintBrief：空/非字符串输入 → absent + []（不抛异常）", () => {
+	assert.deepEqual(telemetry.parseConstraintBrief(""), { digest: "absent", domains: [] });
+	assert.deepEqual(telemetry.parseConstraintBrief(undefined), { digest: "absent", domains: [] });
+	assert.deepEqual(telemetry.parseConstraintBrief(null), { digest: "absent", domains: [] });
+});
+
+ok("parseConstraintBrief：brief 形态（constraint-digest.sh --brief 真实输出）→ present + 多域", () => {
+	// 与 constraint-digest.sh --brief 的真实输出形态逐行对齐（title 源路径逗号分隔 +
+	// 每域一个 ### 子标题 + 细节层 + 段末兜底行）
+	const brief = telemetry.parseConstraintBrief(
+		[
+			"## 约束（红线，源 docs/reference/flow/daily-report.md, docs/reference/flow/scheduler.md）",
+			"### daily-report（源 docs/reference/flow/daily-report.md）",
+			"1. **日报生成必须幂等**",
+			"细节层：read `docs/reference/flow/daily-report.md`「业务约束与不变量」",
+			"### scheduler（源 docs/reference/flow/scheduler.md）",
+			"1. **定时任务不得重入**",
+			"细节层：read `docs/reference/flow/scheduler.md`「业务约束与不变量」",
+			"> 目标路径与本清单冲突时以 `--paths <你的目标>` 输出为准",
+		].join("\n"),
+	);
+	assert.equal(brief.digest, "present");
+	assert.deepEqual(brief.domains, ["daily-report", "scheduler"]);
+});
+
+ok("parseConstraintBrief：源路径缺 docs/reference/ 前缀 → 不收域（present + []）", () => {
+	// review R-3：只认 docs/reference/flow/ 前缀，路径里任意出现的 flow/<x>.md 不算业务域
+	const brief = telemetry.parseConstraintBrief(
+		"## 约束（红线，源 flow/daily-report.md）\n- 凭经验办\n",
+	);
+	assert.equal(brief.digest, "present");
+	assert.deepEqual(brief.domains, [], "缺目录前缀的源路径不收域");
+});
+
+ok("dispatch 落 constraintDigest/constraintDomains（append-only 派生值）", () => {
+	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tdisp-e-"));
+	try {
+		fs.mkdirSync(path.join(tmp, "openspec", "changes", "digest-change"), { recursive: true });
+		fs.writeFileSync(path.join(tmp, "openspec", "changes", "digest-change", "proposal.md"), "<!-- ui-impact: none -->\n");
+		const { handlers, ctx } = makeTelemetry(tmp);
+		// 带约束段 → present + 域名
+		const withBrief = [
+			"## 任务",
+			"实现日记",
+			"## 约束（红线，源 docs/reference/flow/daily-report.md）",
+			"- 日报生成必须幂等",
+		].join("\n");
+		dispatchAgent(handlers, ctx, 5, withBrief);
+		// 无约束段 → absent + []
+		const withoutBrief = "## 任务\n没有约束段\n";
+		dispatchAgent(handlers, ctx, 6, withoutBrief);
+
+		const rows = dispatchRows(tmp);
+		assert.equal(rows.length, 2, `应两条 dispatch（实际 ${rows.length}）`);
+		const p1 = JSON.parse(rows[0].payload);
+		assert.equal(p1.constraintDigest, "present");
+		assert.deepEqual(p1.constraintDomains, ["daily-report"]);
+		const p2 = JSON.parse(rows[1].payload);
+		assert.equal(p2.constraintDigest, "absent");
+		assert.deepEqual(p2.constraintDomains, []);
+		// 既有字段语义不变 + 不落任务正文
+		assert.equal(p1.promptChars, withBrief.length, "promptChars 仍是原 prompt 长度");
+		assert.equal(p1.isError, false);
+		assert.ok(!("prompt" in p1), "payload 不落任务正文");
+		assert.ok(!JSON.stringify(p1).includes("日报生成必须幂等"), "payload 不含 prompt 原文");
 	} finally {
 		fs.rmSync(tmp, { recursive: true, force: true });
 	}

@@ -79,7 +79,7 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 - 无加粗块的列表项不进红线层（提取器跳过该条，不取首行文本凑数）；引用块（`>`）与自由段落不属红线层；嵌套列表项属细节层。
 - 红线层提取失败（0 条）或拼接低于 `minSectionBytes`（缺省 512B）时，声明域注入回退全节（fail-safe）——不遵循本格式 = 该域恒定全量注入，丢失瘦身收益。
 
-提取器实现：`.pi/extensions/constraint-injection.ts` 的 `extractRedlines()`（顶层列表项行取首个 `**...**` 块，保留原文顺序与编号）；格式规范与提取器语义同步演进，改一处必改另一处。
+提取器实现：`.pi/extensions/lib/constraint-redlines.ts` 的 `extractRedlines()`（顶层列表项行取首个 `**...**` 块，保留原文顺序与编号）——constraint-injection 扩展与 `scripts/harness/constraint-digest.sh` **双引同一实现**，红线提取只有这一份，脚本侧禁止另写正则；格式规范与提取器语义同步演进，改一处必改另一处。
 
 ## 最佳实践案例（照这些抄）
 
