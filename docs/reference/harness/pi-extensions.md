@@ -74,9 +74,8 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 | 通道 × 模式 | 扩展加载 | 约束可达 | 门禁行为 |
 | --- | --- | --- | --- |
-| pi-web Agent × 项目覆盖三档（`.pi/agents/{general-purpose,explore,plan}.md` 同名覆盖内置档，2026-10-13 上线） | 是（`load_extensions: true`；general-purpose 另开 `codemode: on`） | **是**（constraint-injection 注入 + 档位继承 + 事实库记账，探针实测 2026-10-13：codemode/ctx 工具/`<skills>` 节/约束注入块全在） | 同 implementer 行（turn_end 降载 + child-session 记账） |
+| pi-web Agent × 项目覆盖三档（`.pi/agents/{general-purpose,explore,plan}.md` 同名覆盖内置档，2026-10-13 上线；general-purpose 已兼实现档职能——implementer 档 2026-11-03 并入退役，见下） | 是（`load_extensions: true`；general-purpose 另开 `codemode: on`） | **是**（constraint-injection 注入 + 档位继承 + 事实库记账，探针实测 2026-10-13：codemode/ctx 工具/`<skills>` 节/约束注入块全在；档位继承 `mode.set source=inherit`） | turn_end 降载：零重命令放行 + `policy.decision(bypass, child-session)` 记账 |
 | pi-web Agent × 内置档默认值（无项目覆盖时的 pi-web 内置 general-purpose/explore/plan，留作漂移诊断基准） | 否（profile 写死 `codemode:"off"` / `loadSkills:false` / `loadExtensions:false`） | 否（盲区） | 无（扩展不在） |
-| pi-web Agent × `implementer` 档（`.pi/agents/implementer.md`，`load_extensions: true`） | 是 | **是**（档位继承 `mode.set source=inherit` + 注入 + 事实库记账） | turn_end 降载：零重命令放行 + `policy.decision(bypass, child-session)` 记账 |
 | pi-subagents × 前台 | 默认否（agent 定义 frontmatter `extensions:` 可显式挂载） | 挂载后可达 | 挂载后同降载语义 |
 | pi-subagents × 后台（独立 runner） | 是（ambient 默认加载，`extensions: []` 可覆盖关） | 是 | 同降载语义 |
 

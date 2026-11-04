@@ -645,9 +645,10 @@ ins "$FM" policy.decision life-ui '{"policy":"ui-design-gate","action":"pass","r
 ins "$FM" policy.decision life-ui '{"policy":"spec-gate","action":"block","reasonCode":"archive-check-failed","target":"doc-impact"}' s-m1 "$(MT '-35 min')"
 ins "$FM" policy.decision life-ui '{"policy":"quality-gate","action":"fail-open","reasonCode":"interop-down"}' s-m1 "$(MT '-60 min')"
 ins "$FM" subagent.dispatch life-ui '{"type":"explore","model":"glm-5.3","ms":100,"status":"completed","isError":false}' s-m1 "$(MT '-10 min')"
-# review 覆盖段 fixture（add-review-trace-gate）：带归属 dispatch 三条——explore(other)/
-# change-review-glm(review 类)/desc 含「修复」(repair 类优先，desc 含 review 不误计)
+# review 覆盖段 fixture（add-review-trace-gate）：带归属 dispatch 四条——explore(other)/
+# change-review-glm + change-review(新旧两代 review 档名，均 review 类)/desc 含「修复」(repair 类优先，desc 含 review 不误计)
 ins "$FM" subagent.dispatch life-ui '{"type":"change-review-glm","model":"zai-coding-cn/glm-5.3","desc":"change-review-glm 审查","ms":5000,"status":"completed","isError":false}' s-m1 "$(MT '-9 min')"
+ins "$FM" subagent.dispatch life-ui '{"type":"change-review","model":"minimax-cn/MiniMax-M3.1-Flash","desc":"change-review 审查","ms":4000,"status":"completed","isError":false}' s-m1 "$(MT '-9 min')"
 ins "$FM" subagent.dispatch life-ui '{"type":"general-purpose","desc":"修复 review R-1 并归档","ms":3000,"status":"completed","isError":false}' s-m1 "$(MT '-8 min')"
 ins "$FM" session.rollup life-ui '{"turns":8,"toolCalls":30,"cost":1.0,"durationSec":600,"models":{"glm-5.3":{"tokens":{"total":8000},"cost":1.0}},"final":true}' s-m1 "$(MT '-6 min')"
 ins "$FM" session.rollup '' '{"turns":3,"toolCalls":10,"cost":0.5,"durationSec":200,"models":{"glm-5.3":{"tokens":{"total":3000},"cost":0.5}},"parentSessionId":"s-m1","final":true}' s-c1 "$(MT '-5 min')"
@@ -805,8 +806,8 @@ assert hf['bad'] == 0, hf
 rv = d['review']
 assert rv['state'] == 'review_md' and rv['entries'] == 2, rv
 assert rv['waived'] is False and rv['no_finding'] is False, rv
-assert rv['dispatch']['dispatch_total'] == 3, rv
-assert rv['dispatch']['review_disp'] == 1 and rv['dispatch']['repair_disp'] == 1, rv
+assert rv['dispatch']['dispatch_total'] == 4, rv
+assert rv['dispatch']['review_disp'] == 2 and rv['dispatch']['repair_disp'] == 1, rv
 FMLPY
 then
 	echo "  ✓ L9 lifecycle --json 结构与数值可复算（terminal/cost 1.5/repair 30min/反馈 3 条）"
@@ -845,7 +846,7 @@ fi
 Menv --lifecycle life-ui
 check 0 "L15 建账 change 覆盖段展示（archive 路径 + 条目计数 + 派发分类参考口径）" \
 	"六、review 覆盖段" "痕迹形态        : review.md 建账（2 条）" \
-	"review 类派发   : 1 次（参考口径" "修复类派发      : 1 次（参考口径"
+	"review 类派发   : 2 次（参考口径" "修复类派发      : 1 次（参考口径"
 
 Menv --lifecycle c-q
 check 0 "L16 waived 形态 + 无带归属派发 → 归属改造前无数据（不输出误导性 0）" \

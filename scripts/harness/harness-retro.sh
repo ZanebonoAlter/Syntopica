@@ -745,7 +745,7 @@ q_rep AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (
 rv_disp AS (SELECT json_extract(payload,'$.type') typ, json_extract(payload,'$.desc') dsc
   FROM ev WHERE kind='subagent.dispatch' AND json_valid(payload)),
 rv_cls AS (SELECT CASE WHEN dsc IS NOT NULL AND dsc LIKE '%修复%' THEN 'repair'
-    WHEN typ = 'change-review-glm' OR (dsc LIKE '%review%' OR dsc LIKE '%审查%') THEN 'review'
+    WHEN typ IN ('change-review-glm', 'change-review') OR (dsc LIKE '%review%' OR dsc LIKE '%审查%') THEN 'review'
     ELSE 'other' END cls FROM rv_disp)
 SELECT json_object(
   'name', ${NAME_LIT},

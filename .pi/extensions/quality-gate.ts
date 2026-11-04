@@ -50,7 +50,7 @@
  *    isToolNotFound 特征兑底（探测后 PATH 内文件被删的窗口期），不进粘性不分级。
  *    windows 模式不参与（用 Windows 绝对路径执行，不经 bash PATH 查找）。
  * 15. 子线程降载（harden-subagent-constraint-channel D4，2026-09）：带扩展子线程（pi-web
- *     implementer 档 / pi-subagents 后台）的 turn_end 会在共享工作树上与主会话叠加跑全量
+ *     implementer 档（已并入 general-purpose，2026-11-03）/ pi-subagents 后台）的 turn_end 会在共享工作树上与主会话叠加跑全量
  *     门禁——N 子线程并发即 N 倍重命令（4 核树莓派红线）。turn_end 入口先做子线程判定
  *     （lib/child-session isChildSession，与 constraint-injection 继承同源证据）：父子可证
  *     → 本回合整体短路（git 快照/interop 探测/门禁命令一个不跑，gate.check 零记账），
