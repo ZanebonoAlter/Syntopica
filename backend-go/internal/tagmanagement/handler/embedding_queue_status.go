@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"database/sql"
 	"sync"
 	"time"
 
@@ -40,6 +41,11 @@ type EmbeddingQueueStatusCounts struct {
 	Failed         int64 `json:"failed"`
 	Total          int64 `json:"total"`
 	CompletedToday int64 `json:"completed_today"`
+	// OldestPendingAgeSeconds：最老 pending 任务年龄（秒）；无 pending 时为
+	// null（前端空态不炸）。ThroughputPerMin：最近 60s 完成数。
+	// （speed-up-tag-embedding D5）
+	OldestPendingAgeSeconds *int64 `json:"oldest_pending_age_seconds"`
+	ThroughputPerMin        int64  `json:"throughput_per_min"`
 }
 
 // EmbeddingQueueStatusSnapshot queries the current embedding-queue counters.
@@ -85,6 +91,21 @@ func EmbeddingQueueStatusSnapshot() (EmbeddingQueueStatusCounts, error) {
 	if err := reader.db.Model(&models.EmbeddingQueue{}).
 		Where("status = ? AND created_at >= ?", models.EmbeddingQueueStatusCompleted, startOfToday).
 		Count(&counts.CompletedToday).Error; err != nil {
+		return EmbeddingQueueStatusCounts{}, err
+	}
+
+	// D5 可观测字段：与 service.GetStatus 同口径（最老 pending 年龄、60s 吞吐）。
+	var oldest sql.NullFloat64
+	if err := reader.db.Raw(
+		`SELECT EXTRACT(EPOCH FROM (now() - MIN(created_at))) FROM embedding_queues WHERE status = ?`,
+		models.EmbeddingQueueStatusPending,
+	).Row().Scan(&oldest); err == nil && oldest.Valid {
+		age := int64(oldest.Float64)
+		counts.OldestPendingAgeSeconds = &age
+	}
+	if err := reader.db.Model(&models.EmbeddingQueue{}).
+		Where("status = ? AND completed_at >= ?", models.EmbeddingQueueStatusCompleted, time.Now().Add(-time.Minute)).
+		Count(&counts.ThroughputPerMin).Error; err != nil {
 		return EmbeddingQueueStatusCounts{}, err
 	}
 	return counts, nil

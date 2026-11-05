@@ -88,6 +88,33 @@ func (s *Store) LookupEmbeddingCache(_ context.Context, key string) (*models.AIE
 	return &rec, nil
 }
 
+// LookupEmbeddingCacheBatch fetches cached embeddings for a set of cache_keys
+// in one query (WHERE cache_key IN). Returns a map keyed by cache_key; keys
+// not present in the map are misses. Empty/nil keys return an empty map.
+func (s *Store) LookupEmbeddingCacheBatch(_ context.Context, keys []string) (map[string]*models.AIEmbeddingCache, error) {
+	out := make(map[string]*models.AIEmbeddingCache, len(keys))
+	if s.db == nil || len(keys) == 0 {
+		return out, nil
+	}
+	var recs []models.AIEmbeddingCache
+	if err := s.db.Where("cache_key IN ?", keys).Find(&recs).Error; err != nil {
+		return nil, err
+	}
+	for i := range recs {
+		out[recs[i].CacheKey] = &recs[i]
+	}
+	return out, nil
+}
+
+// SaveEmbeddingCacheBatch persists multiple embedding cache rows in batches
+// with ON CONFLICT DO NOTHING semantics (same as SaveEmbeddingCache).
+func (s *Store) SaveEmbeddingCacheBatch(_ context.Context, recs []*models.AIEmbeddingCache) error {
+	if s.db == nil || len(recs) == 0 {
+		return nil
+	}
+	return s.db.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(recs, 100).Error
+}
+
 func encodeMeta(v any) string {
 	if v == nil {
 		return ""

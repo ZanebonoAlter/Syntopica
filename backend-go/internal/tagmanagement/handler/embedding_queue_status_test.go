@@ -139,3 +139,43 @@ func TestEmbeddingQueueStatusSnapshot_DrainPredicate(t *testing.T) {
 		t.Fatal("queue with a pending row must not be drained")
 	}
 }
+
+// TestEmbeddingQueueStatusSnapshot_ObservabilityFields pins the D5 fields:
+// oldest_pending_age_seconds is the age of the oldest pending row (nil when
+// none), throughput_per_min counts completions in the last 60s.
+func TestEmbeddingQueueStatusSnapshot_ObservabilityFields(t *testing.T) {
+	db := setupEmbeddingQueueStatusTestDB(t)
+
+	// 空队列：oldest_pending_age_seconds 必须为 null（前端空态不炸），吞吐 0。
+	counts, err := EmbeddingQueueStatusSnapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if counts.OldestPendingAgeSeconds != nil {
+		t.Fatalf("oldest_pending_age_seconds = %v, want nil on empty queue", *counts.OldestPendingAgeSeconds)
+	}
+	if counts.ThroughputPerMin != 0 {
+		t.Fatalf("throughput_per_min = %d, want 0", counts.ThroughputPerMin)
+	}
+
+	now := time.Now()
+	seedEmbeddingQueueAt(t, db, 501, models.EmbeddingQueueStatusPending, now.Add(-90*time.Second))
+	completed := models.EmbeddingQueue{TagID: 502, Status: models.EmbeddingQueueStatusCompleted, CompletedAt: &now}
+	if err := db.Create(&completed).Error; err != nil {
+		t.Fatalf("seed completed row: %v", err)
+	}
+
+	counts, err = EmbeddingQueueStatusSnapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if counts.OldestPendingAgeSeconds == nil {
+		t.Fatal("oldest_pending_age_seconds must be set with a pending row")
+	}
+	if age := *counts.OldestPendingAgeSeconds; age < 80 || age > 120 {
+		t.Fatalf("oldest_pending_age_seconds = %d, want ~90", age)
+	}
+	if counts.ThroughputPerMin != 1 {
+		t.Fatalf("throughput_per_min = %d, want 1", counts.ThroughputPerMin)
+	}
+}

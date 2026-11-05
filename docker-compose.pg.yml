@@ -3,6 +3,9 @@ services:
     image: pgvector/pgvector:pg18-trixie
     container_name: syntopica-postgres
     restart: unless-stopped
+    # halfvec HNSW 索引构建/查询需要较大共享内存（默认 64MB 不够，
+    # 维护期并行建 2560 维索引会要 ~534MB）。2026-11-04 tag-embedding-slow 验证加。
+    shm_size: 1g
     # autovacuum tuning (optimize-pg-storage): tighten vacuum triggers for the
     # high-churn tables (otel_spans ~820k inserts+deletes/day; embedding cache
     # churn) and raise cost limit so vacuum keeps up with write volume.

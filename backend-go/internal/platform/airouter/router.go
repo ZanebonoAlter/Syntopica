@@ -497,6 +497,12 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 		return nil, err
 	}
 
+	// 批量请求（input>1，speed-up-tag-embedding D3）：按单条 key 批查/批调/批写，
+	// 单条路径（else 分支及下方）key 口径完全不变（历史缓存兼容）。
+	if embeddingCacheable(req.Operation) && len(req.Input) > 1 {
+		return r.embedBatch(ctx, req, capability, route, bindings)
+	}
+
 	// Cache lookup happens BEFORE the semaphore: a hit is a local DB read and
 	// must neither queue behind real provider calls nor consume a slot.
 	// Operations outside embeddingCacheOperations skip the lookup entirely
@@ -552,6 +558,177 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 		}
 	}
 
+	return r.embedSingle(ctx, req, capability, route, bindings)
+}
+
+// embedSingle is the pre-batch Embed path for single-input (and
+// non-cacheable) requests — behavior and cache-key口径 unchanged.
+func (r *Router) embedSingle(ctx context.Context, req EmbeddingRequest, capability Capability, route *models.AIRoute, bindings []RouteModelBinding) (*EmbeddingResult, error) {
+	// Cache lookup happens BEFORE the semaphore: a hit is a local DB read and
+	// must neither queue behind real provider calls nor consume a slot.
+	// Operations outside embeddingCacheOperations skip the lookup entirely
+	// (their rows are never written, so lookup would always miss) and go
+	// straight to the provider below.
+	// The cache key intentionally uses the route binding's Model name, not
+	// req.Model: no call site sets req.Model today, and the client layer
+	// falls back to the binding's model when req.Model is empty. If a future
+	// call site starts setting req.Model, normalize the effective model before
+	// it participates in the key, otherwise the cached Model field observability
+	// becomes inaccurate.
+	var lookupStart time.Time
+	var cacheKey string
+	var cached *models.AIEmbeddingCache
+	var lookupErr error
+	if embeddingCacheable(req.Operation) {
+		lookupStart = time.Now()
+		cacheKey = embeddingCacheKey(bindings[0].Model.Name, req.Input)
+		cached, lookupErr = r.store.LookupEmbeddingCache(ctx, cacheKey)
+	}
+	if lookupErr != nil {
+		// A broken cache (e.g. table missing) must never block real calls.
+		logging.Warnf("airouter: embedding cache lookup failed (key=%s): %v", cacheKey, lookupErr)
+	} else if cached != nil {
+		vectors, err := models.DecodeEmbeddingVectors(cached.Embedding)
+		if err != nil {
+			logging.Warnf("airouter: embedding cache decode failed (key=%s): %v", cacheKey, err)
+		} else {
+			hitMeta := map[string]any{}
+			for k, v := range req.Metadata {
+				hitMeta[k] = v
+			}
+			// Set after copying so upstream metadata can never shadow the marker.
+			hitMeta["cache_hit"] = true
+			r.store.LogCall(ctx, &models.AICallLog{
+				Operation:    req.Operation,
+				Capability:   string(capability),
+				RouteName:    route.Name,
+				ProviderName: bindings[0].Vendor.Name,
+				Model:        cached.Model,
+				Success:      true,
+				IsFallback:   false,
+				LatencyMs:    int(time.Since(lookupStart).Milliseconds()),
+				RequestMeta:  encodeMeta(hitMeta),
+				SessionID:    req.SessionID,
+			})
+			return &EmbeddingResult{
+				Embeddings: vectors,
+				Model:      cached.Model,
+				Dimensions: cached.Dimensions,
+				Provider:   bindings[0].Vendor.Name,
+			}, nil
+		}
+	}
+
+	return r.embedViaBindings(ctx, req, capability, route, bindings, func(model string, res *EmbeddingResult) {
+		r.saveEmbeddingCache(req, model, res)
+	})
+}
+
+// embedBatch handles multi-input cacheable requests (speed-up-tag-embedding
+// design D3): per-item cache keys (same single-item key derivation) are looked
+// up in one IN query, only misses go to the provider in one batch call, and
+// results are written back under per-item keys. Cache failures degrade to
+// miss and never block the real call.
+func (r *Router) embedBatch(ctx context.Context, req EmbeddingRequest, capability Capability, route *models.AIRoute, bindings []RouteModelBinding) (*EmbeddingResult, error) {
+	model := bindings[0].Model.Name
+	keys := make([]string, len(req.Input))
+	for i, input := range req.Input {
+		keys[i] = embeddingCacheKey(model, []string{input})
+	}
+
+	lookupStart := time.Now()
+	hits, lookupErr := r.store.LookupEmbeddingCacheBatch(ctx, keys)
+	if lookupErr != nil {
+		// A broken cache must never block real calls: treat as all-miss.
+		logging.Warnf("airouter: embedding batch cache lookup failed: %v", lookupErr)
+		hits = nil
+	}
+
+	out := make([][]float64, len(req.Input))
+	dims := 0
+	cachedModel := ""
+	hitCount := 0
+	var missIdx []int
+	for i, key := range keys {
+		rec, ok := hits[key]
+		if !ok {
+			missIdx = append(missIdx, i)
+			continue
+		}
+		vectors, err := models.DecodeEmbeddingVectors(rec.Embedding)
+		if err != nil || len(vectors) == 0 {
+			logging.Warnf("airouter: embedding cache decode failed (key=%s): %v", key, err)
+			missIdx = append(missIdx, i)
+			continue
+		}
+		out[i] = vectors[0]
+		dims = rec.Dimensions
+		cachedModel = rec.Model
+		hitCount++
+	}
+
+	if hitCount > 0 {
+		hitMeta := map[string]any{"cache_hit": true, "batch_hits": hitCount, "batch_size": len(req.Input)}
+		for k, v := range req.Metadata {
+			hitMeta[k] = v
+		}
+		r.store.LogCall(ctx, &models.AICallLog{
+			Operation:    req.Operation,
+			Capability:   string(capability),
+			RouteName:    route.Name,
+			ProviderName: bindings[0].Vendor.Name,
+			Model:        model,
+			Success:      true,
+			IsFallback:   false,
+			LatencyMs:    int(time.Since(lookupStart).Milliseconds()),
+			RequestMeta:  encodeMeta(hitMeta),
+			SessionID:    req.SessionID,
+		})
+	}
+
+	if len(missIdx) == 0 {
+		return &EmbeddingResult{Embeddings: out, Model: cachedModel, Dimensions: dims, Provider: bindings[0].Vendor.Name}, nil
+	}
+
+	missReq := req
+	missReq.Input = make([]string, len(missIdx))
+	for j, idx := range missIdx {
+		missReq.Input[j] = req.Input[idx]
+	}
+
+	res, err := r.embedViaBindings(ctx, missReq, capability, route, bindings, func(m string, provRes *EmbeddingResult) {
+		// 按单条 key 批写 miss 部分（单条路径的 key 口径，历史缓存兼容）。
+		recs := make([]*models.AIEmbeddingCache, len(missIdx))
+		for j, idx := range missIdx {
+			recs[j] = &models.AIEmbeddingCache{
+				CacheKey:     keys[idx],
+				Model:        m,
+				Operation:    req.Operation,
+				Embedding:    models.EncodeEmbeddingVectors([][]float64{provRes.Embeddings[j]}),
+				Dimensions:   provRes.Dimensions,
+				InputPreview: truncateRunes(req.Input[idx], maxCachePreviewRunes),
+				CreatedAt:    time.Now(),
+			}
+		}
+		if err := r.store.SaveEmbeddingCacheBatch(context.Background(), recs); err != nil {
+			logging.Warnf("airouter: embedding batch cache write failed: %v", err)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	for j, idx := range missIdx {
+		out[idx] = res.Embeddings[j]
+	}
+	return &EmbeddingResult{Embeddings: out, Model: res.Model, Dimensions: res.Dimensions, Provider: res.Provider}, nil
+}
+
+// embedViaBindings runs the ordered provider fallback loop with semaphore
+// limiting and per-attempt audit logging. onSuccess is invoked once with the
+// winning binding's model name and result (used to persist the cache).
+// ProviderError.Retryable=true gets one 200ms backoff retry per binding
+// (speed-up-tag-embedding D4) before falling through to the next binding.
+func (r *Router) embedViaBindings(ctx context.Context, req EmbeddingRequest, capability Capability, route *models.AIRoute, bindings []RouteModelBinding, onSuccess func(model string, res *EmbeddingResult)) (*EmbeddingResult, error) {
 	sem := r.getSemaphore(capability, route)
 	if err := r.acquireSem(ctx, sem); err != nil {
 		return nil, err
@@ -568,6 +745,16 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 
 		start := time.Now()
 		res, callErr := client.Embed(ctx, b.Vendor, b.Model, req)
+		if callErr != nil {
+			// D4：可重试 provider 错误（限流/瞬时故障）退避一次再试，仍失败才降级。
+			if retryableEmbedError(callErr) {
+				select {
+				case <-ctx.Done():
+				case <-time.After(embedProviderRetryBackoff):
+				}
+				res, callErr = client.Embed(ctx, b.Vendor, b.Model, req)
+			}
+		}
 		latencyMs := int(time.Since(start).Milliseconds())
 		if callErr == nil {
 			r.store.LogCall(ctx, &models.AICallLog{
@@ -583,7 +770,7 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 				RequestMeta:  encodeMeta(req.Metadata),
 				SessionID:    req.SessionID,
 			})
-			r.saveEmbeddingCache(req, b.Model.Name, res)
+			onSuccess(b.Model.Name, res)
 			return res, nil
 		}
 
@@ -612,4 +799,15 @@ func (r *Router) Embed(ctx context.Context, req EmbeddingRequest, capability Cap
 	}
 
 	return nil, errors.Join(attemptErrors...)
+}
+
+// embedProviderRetryBackoff is the single backoff before retrying a
+// ProviderError.Retryable=true failure (speed-up-tag-embedding design D4).
+const embedProviderRetryBackoff = 200 * time.Millisecond
+
+// retryableEmbedError reports whether err is a ProviderError flagged Retryable
+// (e.g. 429/timeout class) — those get one backoff retry per binding.
+func retryableEmbedError(err error) bool {
+	pe := &ProviderError{}
+	return errors.As(err, &pe) && pe.Retryable
 }

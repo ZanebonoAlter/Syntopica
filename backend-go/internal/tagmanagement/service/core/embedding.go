@@ -137,6 +137,57 @@ func (s *EmbeddingService) GenerateEmbeddingForText(ctx context.Context, tagID u
 	return embedding, result.Embeddings[0], nil
 }
 
+// GenerateEmbeddingsBatch embeds the given tags' texts of one embedding type
+// in a single provider call (speed-up-tag-embedding D2/D3: 同类型攞批 ≤32).
+// Returned embeddings are in the same order as tags. Router.Embed handles the
+// per-item cache lookup/write for multi-input requests.
+func (s *EmbeddingService) GenerateEmbeddingsBatch(ctx context.Context, tags []*models.TopicTag, embeddingType string) ([]*tagmodels.TopicTagEmbedding, error) {
+	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "EmbeddingService.GenerateEmbeddingsBatch")
+	defer span.End()
+	if len(tags) == 0 {
+		return nil, nil
+	}
+
+	texts := make([]string, len(tags))
+	for i, tag := range tags {
+		texts[i] = buildTagEmbeddingText(tag, embeddingType)
+	}
+
+	req := airouter.EmbeddingRequest{
+		Input:     texts,
+		Operation: "tagmanagement.embedding",
+		Metadata: map[string]any{
+			"batch":          true,
+			"batch_size":     len(tags),
+			"embedding_type": embeddingType,
+		},
+	}
+	result, err := s.router.Embed(ctx, req, airouter.CapabilityEmbedding)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrEmbeddingFailed, err)
+	}
+	if len(result.Embeddings) < len(texts) {
+		return nil, fmt.Errorf("%w: provider returned %d embeddings for %d inputs", ErrEmbeddingFailed, len(result.Embeddings), len(texts))
+	}
+
+	embs := make([]*tagmodels.TopicTagEmbedding, len(tags))
+	for i, tag := range tags {
+		if len(result.Embeddings[i]) == 0 {
+			return nil, fmt.Errorf("%w: empty embedding for tag %d", ErrEmbeddingFailed, tag.ID)
+		}
+		text := texts[i]
+		embs[i] = &tagmodels.TopicTagEmbedding{
+			TopicTagID:    tag.ID,
+			EmbeddingType: embeddingType,
+			EmbeddingVec:  FloatsToPgVector(result.Embeddings[i]),
+			Dimension:     result.Dimensions,
+			Model:         result.Model,
+			TextHash:      hashText(embeddingType + "\n" + text),
+		}
+	}
+	return embs, nil
+}
+
 func getEventKeywords(tag *models.TopicTag) []string {
 	if tag.Metadata == nil {
 		return nil
@@ -170,28 +221,112 @@ func (s *EmbeddingService) FindSimilarTags(ctx context.Context, tag *models.Topi
 
 	pgVecStr := FloatsToPgVector(rawFloats)
 
-	// Use pgvector SQL cosine distance (<=>) for similarity search
-	// Filter out merged tags (only match active tags)
+	candidates, err := s.findSimilarByVector(pgVecStr, category, embeddingType, limit, len(rawFloats))
+	if err != nil {
+		return nil, err
+	}
+	return candidates, nil
+}
+
+// similarCandidatePool / similarEfSearch tune the two-stage similarity search:
+// HNSW candidate-pool size and hnsw.ef_search (must be ≥ pool so the index
+// returns a full pool; pgvector default ef_search=40 would truncate LIMIT 50).
+const (
+	similarCandidatePool = 50
+	similarEfSearch      = 120
+)
+
+// findSimilarByVector is the two-stage similarity search behind
+// FindSimilarTags (speed-up-tag-embedding design D1):
+//
+//  1. candidate pool: ORDER BY embedding::halfvec(N) <=> $1::halfvec(N)
+//     LIMIT 50 — takes the partial halfvec HNSW index per embedding_type
+//     (typmod MUST carry the dimension; a bare ::halfvec cast never uses the
+//     index — production EXPLAIN verified).
+//  2. rerank: within the candidate pool, exact float32 `embedding <=> $1::vector`
+//     ordering — identical ranking semantics to the old full-table scan, so
+//     the cosine verification口径 / 0.92 / 0.95 / 0.8 thresholds are unchanged.
+//
+// hnsw.ef_search is set with SET LOCAL inside the query transaction so it
+// resets when the tx ends and never pollutes pooled connections. When dim is
+// unknown/over 4000 (no halfvec index possible) or the pool already covers
+// everything, stage 2 alone produces the exact same result (seq scan fallback,
+// slow but correct — pinned by test-cases typmod-fallback variant).
+func (s *EmbeddingService) findSimilarByVector(pgVecStr, category, embeddingType string, limit, dim int) ([]TagCandidate, error) {
 	type simRow struct {
 		TagID    uint    `gorm:"column:tag_id"`
 		Distance float64 `gorm:"column:distance"`
 	}
 	var rows []simRow
-	query := `
-		SELECT t.id AS tag_id, e.embedding <=> ?::vector AS distance
-		FROM topic_tag_embeddings e
-		JOIN topic_tags t ON t.id = e.topic_tag_id
-		WHERE t.category = ?
-		  AND (t.status = 'active' OR t.status = '' OR t.status IS NULL)
-		  AND e.embedding IS NOT NULL
-		  AND e.embedding_type = ?
-		ORDER BY e.embedding <=> ?::vector
-		LIMIT ?
-	`
-	if err := repository.Repo.DB().Raw(query, pgVecStr, category, embeddingType, pgVecStr, limit).Scan(&rows).Error; err != nil {
-		return nil, fmt.Errorf("failed to query similar tags: %w", err)
+
+	pool := similarCandidatePool
+	if limit > pool {
+		pool = limit
 	}
 
+	// Exact float32 rerank over a candidate id set (stage 2). Also used as the
+	// no-index fallback when the candidate ids cover the whole filtered table.
+	rerank := func(tx *gorm.DB, ids []uint) error {
+		q := `
+			SELECT t.id AS tag_id, e.embedding <=> ?::vector AS distance
+			FROM topic_tag_embeddings e
+			JOIN topic_tags t ON t.id = e.topic_tag_id
+			WHERE t.category = ?
+			  AND (t.status = 'active' OR t.status = '' OR t.status IS NULL)
+			  AND e.embedding IS NOT NULL
+			  AND e.embedding_type = ?
+			  AND e.topic_tag_id IN ?
+			ORDER BY e.embedding <=> ?::vector
+			LIMIT ?
+		`
+		return tx.Raw(q, pgVecStr, category, embeddingType, ids, pgVecStr, limit).Scan(&rows).Error
+	}
+
+	err := repository.Repo.DB().Transaction(func(tx *gorm.DB) error {
+		if dim <= 0 || dim > 4000 {
+			// No halfvec HNSW possible (>4000 dims): exact full scan, semantics
+			// identical to the pre-change query.
+			q := `
+				SELECT t.id AS tag_id, e.embedding <=> ?::vector AS distance
+				FROM topic_tag_embeddings e
+				JOIN topic_tags t ON t.id = e.topic_tag_id
+				WHERE t.category = ?
+				  AND (t.status = 'active' OR t.status = '' OR t.status IS NULL)
+				  AND e.embedding IS NOT NULL
+				  AND e.embedding_type = ?
+				ORDER BY e.embedding <=> ?::vector
+				LIMIT ?
+			`
+			return tx.Raw(q, pgVecStr, category, embeddingType, pgVecStr, limit).Scan(&rows).Error
+		}
+		// SET LOCAL scopes ef_search to this transaction — pooled connections
+		// are unaffected once the tx commits/rolls back.
+		if err := tx.Exec(fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", similarEfSearch)).Error; err != nil {
+			return fmt.Errorf("set hnsw.ef_search: %w", err)
+		}
+		candSQL := fmt.Sprintf(`
+			SELECT e.topic_tag_id AS tag_id
+			FROM topic_tag_embeddings e
+			JOIN topic_tags t ON t.id = e.topic_tag_id
+			WHERE t.category = ?
+			  AND (t.status = 'active' OR t.status = '' OR t.status IS NULL)
+			  AND e.embedding IS NOT NULL
+			  AND e.embedding_type = ?
+			ORDER BY e.embedding::halfvec(%d) <=> ?::halfvec(%d)
+			LIMIT ?
+		`, dim, dim)
+		var candIDs []uint
+		if err := tx.Raw(candSQL, category, embeddingType, pgVecStr, pool).Scan(&candIDs).Error; err != nil {
+			return fmt.Errorf("failed to query similar tag candidates: %w", err)
+		}
+		if len(candIDs) == 0 {
+			return nil
+		}
+		return rerank(tx, candIDs)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query similar tags: %w", err)
+	}
 	if len(rows) == 0 {
 		return nil, nil
 	}
