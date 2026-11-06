@@ -1,6 +1,6 @@
 # 主阅读页流程（Reading）
 
-<!-- doc-impact-applies: backend-go/internal/reader/, backend-go/internal/admin/service/, backend-go/internal/admin/handler/ | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/reader/, backend-go/internal/admin/repository/, backend-go/internal/admin/handler/preferences_handler.go, front/app/features/articles/, front/app/features/feeds/, front/app/features/preferences/, front/app/features/search/, front/app/features/shell/, front/app/components/article/, front/app/components/feed/, front/app/features/settings/components/SettingsSectionFeeds.vue, front/app/features/settings/composables/useFeedSourceQuality.ts, front/app/pages/index.vue, front/app/pages/search.vue | section=业务约束与不变量 -->
 > 大功能：应用启动 → 切分类 → 切 feed → 打开文章 → 记录阅读行为。
 > 阅读行为是「偏好向量画像」的权重源（画像与订阅源发现见 [discovery.md](discovery.md)）。
 > 跨端。互补：`architecture/frontend.md` §页面骨架、§数据映射规则。
@@ -214,6 +214,7 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
+| 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-08-23 | fix-quality-audit-p0 | 修复前端 AI 摘要开关字段错读：stores/api.ts 改读后端真实返回的 `article_summary_enabled`（缺省按 gorm default:false），清理 `aiSummaryEnabled`/`ai_summary_enabled` 死字段与死 key；开关展示从「恒开启」变为真实值 | [`openspec/changes/archive/2026-08-23-fix-quality-audit-p0`](../../../openspec/changes/archive/2026-08-23-fix-quality-audit-p0) |
 | 2026-05-13 | backend-package-restructure | 后端按域拆包：`feeds/articles/categories` → `reader/` 域，`preferences`/reading-behavior → `admin/` 域；本 flow「代码入口」的包路径即来自此次重组（旧 user-guide 的 `internal/domain/*`、`internal/jobs/` 路径已失效） | [`openspec/changes/archive/2026-05-13-backend-package-restructure`](../../../openspec/changes/archive/2026-05-13-backend-package-restructure) |
 | 2026-07-25 | preference-vector-feed-discovery | 旧「偏好分数」(`user_preferences` 表 / `preference_update` 调度器 / `/api/user-preferences/*` / `usePreferencesStore` / `ReadingPreferencesPanel`) 整体废弃删除；`reading_behaviors` 采集保留并改为偏好**向量画像**权重源；约束迁至 [discovery.md](discovery.md) | [`openspec/changes/archive/2026-07-25-preference-vector-feed-discovery`](../../../openspec/changes/archive/2026-07-25-preference-vector-feed-discovery) |

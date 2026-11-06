@@ -1,6 +1,6 @@
 # 话题图谱流程（Topic Graph）
 
-<!-- doc-impact-applies: backend-go/internal/topicgraph/, backend-go/internal/tagmanagement/ | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/topicgraph/, backend-go/internal/tagmanagement/, front/app/features/tags/components/daily-report/, front/app/features/tags/components/TopicGraphMergeDialog.vue | section=业务约束与不变量 -->
 > 大功能：PersistentTopic 日报归属、展示，关系双轨。
 > 跨端。互补：`flow/daily-report.md`（叙事生成驱动话题）、`architecture/backend.md`。
 
@@ -137,6 +137,7 @@ identity（同 persistent_topic）
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
+| 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-11-03 | fix-embedding-model-column-width | `topic_tag_embeddings.model` 由 `VARCHAR(50)` 加宽到 `VARCHAR(100)`（与 `ai_models.name` 对齐）：本地 llama.cpp / GGUF embedding 模型以文件绝对路径注册（61 字符）超限 → `SQLSTATE 22001` → 标签向量落库被拒、embedding 队列批量失败（689 条）；建立「存 embedding 模型名列宽 MUST NOT 窄于模型注册表」不变式（数据驱动测试）；连带恢复被 GORM AutoMigrate 顺带 `DROP NOT NULL` 的 `model` 列约束（迁移 `20261103_0002`） | [`openspec/changes/archive/2026-11-03-fix-embedding-model-column-width`](../../../openspec/changes/archive/2026-11-03-fix-embedding-model-column-width) |
 | 2026-10-24 | add-intra-lane-theme-bucketing | 同一话题同一天可有多条 section（泳道内主题分桶/手动编排/watch 物化）：`planLifecycle` 命中按日去重、质心按 section 逐条均权计入（约束 11） | [`openspec/changes/archive/2026-10-28-add-intra-lane-theme-bucketing`](../../../openspec/changes/archive/2026-10-28-add-intra-lane-theme-bucketing) |
 | 2026-10-12 | add-topic-key-event-markers | 话题关键事件注记（人工主权层）：生命线/总览回看只透 confirmed（约束 10）、lanes ★n 徽标与焦点视图合并轴/失效快照注记；注记不参与生命周期状态机 | [`openspec/changes/add-topic-key-event-markers`](../../../openspec/changes/add-topic-key-event-markers) |

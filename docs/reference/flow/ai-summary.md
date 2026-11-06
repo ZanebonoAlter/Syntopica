@@ -1,6 +1,6 @@
 # AI 调用路由流程（AI Router / AI Summary）
 
-<!-- doc-impact-applies: backend-go/internal/platform/airouter/, backend-go/internal/platform/aihealth/, backend-go/internal/admin/handler/ai_handler.go, backend-go/internal/admin/handler/ai_health_handler.go | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/platform/airouter/, backend-go/internal/platform/aihealth/, backend-go/internal/platform/aisettings/, backend-go/internal/admin/repository/, backend-go/internal/admin/handler/ai_handler.go, backend-go/internal/admin/handler/ai_health_handler.go, front/app/features/ai/, front/app/api/aiAdmin.ts, front/app/features/settings/components/SettingsSectionAiHealth.vue, front/app/features/settings/components/SettingsSectionCapabilityRoutes.vue | section=业务约束与不变量 -->
 > 大功能：统一 AI 调用路由——按 capability 选模型（vendor/model 两层注册表）、失败自动降级、per-capability 并发限流、思考七档与结构化输出适配、全量调用审计。
 > 跨端（后端 airouter + 前端 AI 设置页）。互补：`flow/content-enrichment.md`（文章级整理稿走 `CapabilitySummary`）、`flow/daily-report.md`（日报管线走 `CapabilityDigestPolish`）。
 
@@ -99,6 +99,7 @@ AI 设置页 (front/app/features/ai/ + front/app/features/settings/)
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
+| 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-07-05 | ai-call-logging-schema | `AICallLog` 补 4 列（`operation` / `prompt` / `token_usage` / `session_id`），把 prompt 真正落库、补查询 API 与前端视图，让 AI 调用可观测/可回放/可审计 | [`openspec/changes/archive/2026-07-05-ai-call-logging-schema`](../../../openspec/changes/archive/2026-07-05-ai-call-logging-schema) |
 | 2026-08-04 | ai-model-health-gate | AI provider 增 `model_kind`（llm/embedding）区分 + `start_command`（本地模型自动拉起配置）；路由绑定按 capability 校验 provider 类型（embedding 路由只接 embedding provider，llm 路由只接 llm），冲突拒绝；启动探针与健康门禁见 scheduler 流程 | [`openspec/changes/archive/2026-08-04-ai-model-health-gate`](../../../openspec/changes/archive/2026-08-04-ai-model-health-gate) |
 | 2026-08-21 | nightly-throughput-embedding-cache-parallel-crawl | `Router.Embed` 增持久化缓存（白名单制，仅 `tagmanagement.embedding`；TTL 14 天，命中不占信号量，`ai_call_logs` 记 cache_hit）；firecrawl 队列串行→3 worker 并行（atomic 计数+500ms 限速），夜间窗口吞吐 ×3 | [`openspec/changes/archive/2026-08-21-nightly-throughput-embedding-cache-parallel-crawl`](../../../openspec/changes/archive/2026-08-21-nightly-throughput-embedding-cache-parallel-crawl) |

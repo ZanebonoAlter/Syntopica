@@ -30,9 +30,13 @@
  *      pi.sendMessage(deliverAs:"steer", triggerTurn:false) 即时送达。
  *    - compaction 后（session_compact）下一注入时机重发一次约束快照（消息会被摘要掉）。
  *    - 配置 channel="legacy" 可回退旧的「每 turn 全量进 system prompt」行为。
- *    未激活档（无 mode）：仅注入约束索引（docs/reference/constraints-index.md），
+ *    未激活档（无 mode）：**稳定层**仅注入约束索引（docs/reference/constraints-index.md），
  *    不做 change 文本关键词命中——避免「最近活跃 change」的静态文本让无关规范
  *    全文常驻所有会话
+ *    @enable-unbound-jit-injection D1/D2：编辑路径命中（write/edit 命中文档头部
+ *    doc-impact-applies 标签）不再以档位为闸——未激活档同样把命中文档追加进动态层
+ *    并经 steer 消息送达完整约束节（路径标签是文件系统事实，零歧义；关键词通道
+ *    与 change 绑定仍以档位为开关）
  *    - 档位与设置时绑定的活跃 change 关联：change 归档/切换后自动回落未激活档
  *    - 业务域显式声明（constraint-domain-declaration / constraint-declaration-redline）：
  *      proposal.md 头部 `<!-- constraint-domains: daily-report, ... -->` 声明涉及域
@@ -926,6 +930,16 @@ interface PinReadEntry {
 	digested: boolean;
 }
 
+/**
+ * 注入档位（@enable-unbound-jit-injection D5；append-only 记账字段）：
+ * 注入器自报当前会话档位——none=未激活 / requirements / implementation。
+ * 与 InjectedDocEntry.mode（**文档形态** section/digest/full）语义不同，MUST NOT 复用；
+ * 历史记录无 tier → 统计计「未知」并剔除分母。
+ */
+type InjectionTier = "none" | "requirements" | "implementation";
+
+const tierOf = (mode: Mode | null): InjectionTier => mode ?? "none";
+
 interface InjectionPlan {
 	mode: Mode | null;
 	modeLabel: string;
@@ -970,8 +984,11 @@ function planInjection(
 	const analysisChange =
 		mode === "implementation" ? (bound ?? fallbackChange) : bound;
 
-	// 未激活档（无 mode）：仅注入索引文档，不做 change 文本分析。
+	// 未激活档（无 mode）：稳定层仅注入索引文档，不做 change 文本分析。
 	// 否则「最近活跃 change」的静态文本会让命中的规范全文常驻本仓库所有会话（命中源错位）。
+	// @enable-unbound-jit-injection D2：编辑路径 JIT 命中（state.jitDocHits）**不**以 mode
+	// 为闸——无档会话编辑命中 doc-impact-applies 标签路径时同样追加（走动态层，
+	// 稳定层快照键仍为 none|none，字节不变）；关键词命中源与域限定仍以 mode 为闸。
 	// 关键词命中源 = 仅最近 N 条用户输入（@constraint-domain-declaration：change 产物全文
 	// 退出命中源——harness/AI 类 change 的正当词汇与业务域关键词本质重叠，整会话误注入；
 	// change 文本仅保留给 detectStacks 栈判定，栈信号为路径类词无误伤面）
@@ -1664,6 +1681,7 @@ function logConstraintInjects(
 	sessionId: string | undefined,
 	changeName: string | null,
 	entries: InjectedDocEntry[],
+	tier: InjectionTier,
 	source?: string,
 ): void {
 	if (!sessionId) return;
@@ -1672,7 +1690,7 @@ function logConstraintInjects(
 			kind: "constraint.inject",
 			sessionId,
 			change: changeName,
-			payload: source ? { ...d, source } : { ...d },
+			payload: source ? { ...d, tier, source } : { ...d, tier },
 		});
 	}
 }
@@ -1734,6 +1752,7 @@ function deliverDynamic(
 			bytes: Buffer.byteLength(it.body, "utf8"),
 			...(it.degraded ? { degraded: true } : {}),
 		})),
+		tierOf(state.mode),
 		force ? "compact-resend" : undefined,
 	);
 	return increments.length;
@@ -1776,6 +1795,7 @@ function deliverChildInitStable(
 		realSessionId(state),
 		plan.changeName,
 		stable.map(itemToDocEntry),
+		tierOf(state.mode),
 		"child-init",
 	);
 }
@@ -1943,10 +1963,13 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		// JIT 栈细化（design D3 单一真相源）：写/编辑路径命中文档头部 doc-impact-applies
-		// 标签的 pathSignals → 对应文档会话内追加注入。仅档激活时生效：未激活会话写代码
-		// 不追加（保「未激活=仅索引」不变量，模型按需自读）
+		// 标签的 pathSignals → 对应文档会话内追加注入。
+		// @enable-unbound-jit-injection D2：写入端不再以 state.mode 为闸——未激活档
+		// （mode=null）会话编辑命中标签路径同样进 jitDocHits（路径标签是文件系统事实，
+		// 零歧义；关键词通道 matchText/allowedKeywordDocs 仍以档位为开关）。
+		// 稳定层仍只注索引（快照键 none|none 不变）——JIT 只走动态层。
 		let jitAdded = false;
-		if (state.mode && (event.toolName === "write" || event.toolName === "edit")) {
+		if (event.toolName === "write" || event.toolName === "edit") {
 			for (const [doc, tag] of scanAppliesTags(ctx.cwd)) {
 				if (tag.signals.some((s) => p.includes(s))) {
 					if (!state.jitDocHits.has(doc)) {
@@ -1980,7 +2003,9 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		// JIT 命中即时投递（D3 turn 中途通道）：新命中 → 立即算增量并经 steer 送出
-		if (jitAdded && state.mode && cfg.channel !== "legacy") {
+		// @enable-unbound-jit-injection D2：投递端同样去掉 state.mode 闸——否则无档下
+		// 命中只记 map、不投递，等于白改。legacy 通道保持「不即时 steer」。
+		if (jitAdded && cfg.channel !== "legacy") {
 			const plan = planInjection(
 				ctx.cwd,
 				cfg,
@@ -2050,7 +2075,13 @@ export default function (pi: ExtensionAPI) {
 		// —— legacy 回退：全量进 system prompt + 每 turn 记账（应急开关，D8）——
 		if (cfg.channel === "legacy") {
 			if (sessionId) {
-				logConstraintInjects(ctx, sessionId, plan.changeName, plan.docEntries);
+				logConstraintInjects(
+					ctx,
+					sessionId,
+					plan.changeName,
+					plan.docEntries,
+					tierOf(state.mode),
+				);
 				for (const p of plan.pinReads) {
 					// 去重集已按会话隔离 → key 用标题即可（不再拼 sessionId）
 					if (state.pinReadSeen.has(p.title)) continue;
@@ -2104,6 +2135,7 @@ export default function (pi: ExtensionAPI) {
 				sessionId,
 				plan.changeName,
 				stable.map(itemToDocEntry),
+				tierOf(state.mode),
 			);
 		} else {
 			// 快照冻结（字节恒定）；稳定层内容后来的变化（如 proposal 新增声明域）

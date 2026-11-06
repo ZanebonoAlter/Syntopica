@@ -1,6 +1,6 @@
 # 日报 / Digest 流程（Daily Report）
 
-<!-- doc-impact-applies: backend-go/internal/topicgraph/, backend-go/internal/admin/scheduler/ | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/topicgraph/, backend-go/internal/admin/scheduler/, backend-go/internal/platform/ws/, backend-go/internal/platform/notification/, backend-go/internal/admin/handler/scheduler_handler.go, backend-go/internal/admin/handler/poll_handler.go, backend-go/internal/admin/handler/notification_handler.go, front/app/features/tags/components/daily-report/, front/app/features/tags/components/DailyReportGenerateDialog.vue, front/app/features/tags/components/DailyReportReader.vue, front/app/features/tags/components/KeyEventMarkerActions.vue, front/app/features/tags/components/topic-watch/, front/app/features/tags/composables/useDailyReportReader.ts, front/app/composables/useDailyReportProgress.ts, front/app/api/dailyReports.ts, front/app/api/topicWatches.ts, front/app/api/persistentTopics.ts | section=业务约束与不变量 -->
 > 大功能：每日日报生成（后端）+ Digest 预览/查看（前端）+ Section 可视化。
 > 跨端。互补：`flow/topic-graph.md`（持久话题生命周期、关系双轨）、`flow/semantic-board.md`（版块）、`architecture/tracing.md`。
 
@@ -293,6 +293,7 @@ CRUD：POST/GET /api/semantic-boards/:id/topic-watches、PATCH/DELETE /api/topic
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 | ------ | ------ | ------ | ---------- |
+| 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-10-24 | fix-daily-report-cross-process-gate | 生成闸升级数据库级跨实例互斥（`pg_try_advisory_lock` 会话锁+独占连接，崩溃自动释放、DB 故障回退进程内）+ `SaveReport` 补 `(board, date)` 事务级 advisory 锁消 TOCTOU；堵 2026-10-23 临时第二实例双跑事故（AI 双份+23505）；约束 1/26 升级 | [`openspec/changes/archive/2026-10-24-fix-daily-report-cross-process-gate`](../../../openspec/changes/archive/2026-10-24-fix-daily-report-cross-process-gate) |
 | 2026-10-17 | fix-daily-report-ke-row-layout | 日报线索行关键事件标记布局修复：多根 fragment 组件根节点不继承宿主 scope 属性致宿主摆放规则死代码（标题列被挤成 ≈18% 窄条、建议占 ≈80%），摆放规则移入 KeyEventMarkerActions 自身 scoped 样式 + 50/50 等宽分栏 + 动作组行底右对齐 + 源码守卫测试（防规则回迁死区/断点漂移）；spec topic-key-event-markers「条目标记交互」呈现句修订 | [`openspec/changes/archive/2026-10-17-fix-daily-report-ke-row-layout`](../../../openspec/changes/archive/2026-10-17-fix-daily-report-ke-row-layout) |
 | 2026-10-13 | fix-digest-tag-leak | 事件标签去重 tiebreak 升三级（文章数 > identity×版块 cosine > id，缺失/全零/查询失败回退 ID，红线 29）+ 方向校验相对门（margin 0.15 可配，semantic-board.md 红线 4）；根治 digest 同篇双事件标签抽签存活导致串味可见错误 | [`openspec/changes/archive/2026-10-13-fix-digest-tag-leak`](../../../openspec/changes/archive/2026-10-13-fix-digest-tag-leak) |

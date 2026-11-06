@@ -405,6 +405,85 @@ check "F2c 只匹配第二条标签 → 不产生命中信号" \
 	"$(printf '%s' "$out" | grep -q '信号：zz-fixture-multi' && echo 1 || echo 0)"
 
 # ---------------------------------------------------------------------------
+# G 补标签后路径命中断言（enable-unbound-jit-injection 任务 7.3）
+#   5 条真实路径按输入顺序逐条等于 reading / semantic-board / discovery /
+#   semantic-board / ai-summary；且无「未命中任何」字样。
+# ---------------------------------------------------------------------------
+PROBE_PATHS="front/app/features/articles/components/ArticleCardView.vue,front/app/pages/tags/,front/app/features/discovery/,front/app/features/tags/components/,backend-go/internal/platform/airouter/embedding.go"
+out="$(bash "$DIGEST" --paths "$PROBE_PATHS" 2>"$TMP/g.err")"
+rc=$?
+check "G 探针取数退出码 0" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)" "实际 exit=$rc"
+check "G 探针无「未命中任何」字样" \
+	"$(printf '%s' "$out" | grep -q '未命中任何 doc-impact-applies 标签' && echo 1 || echo 0)"
+# 逐条解析「命中来源」：每条路径 → flow 域集合（输入顺序）
+probe_hits="$(printf '%s\n' "$out" | awk -F' → ' '
+	/^- .* → docs\/reference\/flow\/.*（信号：/ {
+		path = $1; sub(/^- /, "", path);
+		doc = $2; sub(/（信号：.*/, "", doc);
+		dom = doc; sub(/^docs\/reference\/flow\//, "", dom); sub(/\.md$/, "", dom);
+		if (!(path in seen)) { order[++n] = path; seen[path] = 1; }
+		doms[path] = (doms[path] == "" ? dom : doms[path] "," dom);
+	}
+	END { for (i = 1; i <= n; i++) print order[i] "\t" doms[order[i]]; }')"
+EXPECTED_PROBE="front/app/features/articles/components/ArticleCardView.vue	reading
+front/app/pages/tags/	semantic-board
+front/app/features/discovery/	discovery
+front/app/features/tags/components/	semantic-board
+backend-go/internal/platform/airouter/embedding.go	ai-summary"
+check "G 探针 5 条路径按输入顺序命中预期业务域（逐条等于）" \
+	"$([ "$probe_hits" = "$EXPECTED_PROBE" ] && echo 0 || echo 1)" \
+	"实际：$(printf '%s' "$probe_hits" | tr '\n' '；')"
+
+# ---------------------------------------------------------------------------
+# H 覆盖盘点脚本（enable-unbound-jit-injection 任务 2.1 / 4.4）
+#   H1 临时夹具矩阵输出（稳定；不依赖仓内标签现状）
+#   H2 仓内真实盘点：样本清单全部命中且期望域集合一致（标签改动必须同步改期望）
+# ---------------------------------------------------------------------------
+COV="$HERE/constraint-coverage.sh"
+COV_ROOT="$TMP/cov-docs"
+mkdir -p "$COV_ROOT/flow" "$COV_ROOT/standard"
+cat >"$COV_ROOT/flow/covdom.md" <<'MD'
+# covdom
+
+<!-- doc-impact-applies: backend-go/internal/covmod/ | section=业务约束与不变量 -->
+
+## 业务约束与不变量
+
+覆盖盘点夹具域。
+MD
+cat >"$COV_ROOT/standard/covstd.md" <<'MD'
+# covstd
+
+<!-- doc-impact-applies: front/app/features/covfeat/ | section=Requirements -->
+
+## Requirements
+
+req.
+MD
+printf '%s\n' \
+	"backend-go/internal/covmod/|covdom" \
+	"front/app/features/covfeat/|" \
+	"backend-go/internal/covnomod/|" >"$TMP/cov-samples"
+out="$(CONSTRAINT_COVERAGE_DOC_ROOT="$COV_ROOT" CONSTRAINT_COVERAGE_SAMPLES="$TMP/cov-samples" \
+	bash "$COV" 2>"$TMP/h.err")"
+rc=$?
+check "H1 覆盖盘点夹具退出码 0" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)" "实际 exit=$rc"
+check "H1 覆盖盘点夹具矩阵含样本路径" \
+	"$(printf '%s' "$out" | grep -q 'backend-go/internal/covmod/' && echo 0 || echo 1)"
+check "H1 覆盖盘点夹具命中 flow 域" \
+	"$(printf '%s' "$out" | grep -q 'covdom' && echo 0 || echo 1)"
+check "H1 覆盖盘点夹具负样本标「预期未覆盖」" \
+	"$(printf '%s' "$out" | grep -q '预期未覆盖' && echo 0 || echo 1)"
+check "H1 覆盖盘点夹具输出覆盖率汇总行" \
+	"$(printf '%s' "$out" | grep -q '覆盖率：' && echo 0 || echo 1)"
+
+out="$(bash "$COV" --quiet 2>"$TMP/h2.err")"
+rc=$?
+check "H2 仓内覆盖盘点退出码 0（未覆盖 0 + 期望不符 0）" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)" "实际 exit=$rc"
+check "H2 仓内覆盖盘点输出覆盖率汇总行" \
+	"$(printf '%s' "$out" | grep -q '覆盖率：' && echo 0 || echo 1)" "实际：$(printf '%s' "$out" | tail -n 3)"
+
+# ---------------------------------------------------------------------------
 # 汇总
 # ---------------------------------------------------------------------------
 echo

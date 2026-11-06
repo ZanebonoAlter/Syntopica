@@ -28,7 +28,7 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 
 | 注释 | 放哪 | 语法 | 仓库实例 | 写错的后果 |
 | --- | --- | --- | --- | --- |
-| `doc-impact-applies` | flow/standard 文档**头部 15 行内** | `doc-impact-applies: 路径前缀, ... \| section=节名`（裸行或 `<!-- -->` 包裹皆可；section 可选） | `flow/daily-report.md`：`doc-impact-applies: backend-go/internal/topicgraph/, ... \| section=业务约束与不变量`；`standard/backend/ai-logging.md`：块注释裸行 + `section=Requirements` | 超出 15 行=扫不到；路径不匹配编辑路径（前缀包含判定）=JIT 不命中；无任何报错。漏写 `section=` 则注入整文档（更大更贵）。仅档位激活时生效（有意设计） |
+| `doc-impact-applies` | flow/standard 文档**头部 15 行内** | `doc-impact-applies: 路径前缀, ... \| section=节名`（裸行或 `<!-- -->` 包裹皆可；section 可选） | `flow/daily-report.md`：`doc-impact-applies: backend-go/internal/topicgraph/, ... \| section=业务约束与不变量`；`standard/backend/ai-logging.md`：块注释裸行 + `section=Requirements` | 超出 15 行=扫不到；路径不匹配编辑路径（前缀包含判定）=JIT 不命中；无任何报错。漏写 `section=` 则注入整文档（更大更贵）。**档位激活时全量生效 + 未激活档按编辑路径 JIT 追加**（enable-unbound-jit-injection） |
 | `constraint-domains` | change 的 **proposal.md 头部** | `<!-- constraint-domains: 域名, ... -->`（域名=flow 文档 basename） | `<!-- constraint-domains: daily-report, topic-graph -->` | 域名≠flow basename=域声明注入不命中（widget 显示「无域声明」）；纯工具链 change 可不写。每回合重解析，改 proposal 即时生效 |
 | `<!-- doc-impact: ... -->` | change 的 **tasks.md 文档节第一行** | `<!-- doc-impact: 域列表 -->`，域固定 8 选：flow / api / database / architecture / standard / configuration / deployment / none(附理由) | `<!-- doc-impact: standard -->` | 域不在 8 选项=verify 失败；「声明了未更新文档」→ verify FAIL 被 spec-gate ①拦；启发式疑似遗漏误报可加 `<!-- doc-impact-excuse: domain=理由 -->` 豁免（只豁免疑似遗漏，不豁免真没改） |
 | `<!-- ui-front-path-excuse: 理由 -->` | change 的 **ui-design.md** | `<!-- ui-front-path-excuse: 前端路径为他人 change 脏文件示例，与本 change 无关 -->`（存在即豁免，理由不解析；fix-doc-impact-misattribution 引入） | `archive/2026-09-08-coordinate-concurrent-changes/ui-design.md`：豁免 tasks 历史豁免声明中的 `front/app/api/dailyReports.ts` 他人脏文件路径 | ui-design-gate 的 ui-impact-mismatch block 照常（该注释放行 none 档纯工具链 change 的前端路径误报；不写注释无任何报错） |
@@ -41,7 +41,7 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 
 | 注释 | 干嘛的 | 为什么这么设计 |
 | --- | --- | --- |
-| `doc-impact-applies` | 声明文档的**代码辖区**：编辑命中这些路径前缀时，本文档（section 指定的节）被 JIT 注入 | 辖区声明放文档头部而非中心配置——文档自描述，新增文档零中心注册；头部 15 行限制 + mtime 缓存让扫描开销固定；「仅档位激活时生效」保「未激活=仅索引」不变量（未激活会话不硬塞，模型按需自读） |
+| `doc-impact-applies` | 声明文档的**代码辖区**：编辑命中这些路径前缀时，本文档（section 指定的节）被 JIT 注入 | 辖区声明放文档头部而非中心配置——文档自描述，新增文档零中心注册；头部 15 行限制 + mtime 缓存让扫描开销固定；**档位激活时全量生效 + 未激活档也按编辑路径 JIT 追加**（路径标签是文件系统事实、零歧义；未激活档的**稳定层**仍只注索引，JIT 只走动态层，关键词通道仍以档位为开关） |
 | `constraint-domains` | change **声明涉哪些业务域**，档位激活后注入对应 flow 约束节（声明为主，关键词/编辑路径命中兑底） | 9 个 flow 约束节全量 43K 塞不下，域声明让注入范围显式可审计（widget 可见「无域声明」）；每回合重解析＝proposal 改了即时生效且不进粘性集合（防旧域残留）；域名＝flow basename 免维护映射表 |
 | `<!-- doc-impact: -->` | 声明本 change **动了哪些文档域/文件**，归档前 verify 对账 | 文档更新靠自觉必漏（本标准存在的理由）——机器可读声明把「别忘了更新文档」变成机械校验；excuse 只豁免「疑似遗漏」（多 change 并行脏树误报），不豁免「声明了未更新」（真没改文档，必须真改） |
 

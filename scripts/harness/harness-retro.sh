@@ -1282,6 +1282,35 @@ inj_raw AS (SELECT COALESCE(change,'') chg,
 inj_sess AS (SELECT session_id, IFNULL(SUM(CAST(CASE WHEN json_valid(payload) THEN json_extract(payload,'$.bytes') END AS INTEGER)),0) b
   FROM win WHERE kind='constraint.inject' GROUP BY 1), -- 混合通道下同 path 不重复记，直接求和（win 直取：inj CTE 无 session_id 列）
 inj_deg AS (SELECT COUNT(*) n FROM win WHERE kind='constraint.inject' AND json_valid(payload) AND json_extract(payload,'$.degraded')=1),
+/* ⑦H 无档 JIT（enable-unbound-jit-injection D5）：reason=jit-path 且 tier=none 的编辑路径命中注入。
+   口径：按 tier 分组不与有档 JIT 混算；历史无 tier 字段计「未知」并剔除分母；
+   compact 重发（source=compact-resend）计入注入条数但不重复计会话；
+   域名只取 path 以 docs/reference/flow/ 开头的条目（standard 文档计非业务域）；
+   同一会话同一 path 只计一次（去重后算域数）；bytes 为**送达字节**（不统计原始字节）。 */
+uj_raw AS (
+  SELECT session_id,
+         CASE WHEN json_valid(payload) THEN json_extract(payload,'$.path') END     AS path,
+         CASE WHEN json_valid(payload) THEN json_extract(payload,'$.bytes') END    AS bytes,
+         CASE WHEN json_valid(payload) THEN json_extract(payload,'$.degraded') END AS degraded,
+         CASE WHEN json_valid(payload) THEN json_extract(payload,'$.source') END   AS source,
+         CASE WHEN json_valid(payload) THEN json_extract(payload,'$.tier') END     AS tier
+  FROM win WHERE kind='constraint.inject' AND json_valid(payload)
+    AND json_extract(payload,'$.reason')='jit-path'
+),
+uj_none AS (SELECT * FROM uj_raw WHERE tier='none'),
+uj_sum AS (SELECT COUNT(*) n FROM uj_none),
+uj_sess AS (SELECT COUNT(DISTINCT session_id) n FROM uj_none),
+uj_bytes AS (SELECT IFNULL(SUM(CAST(bytes AS INTEGER)),0) b FROM uj_none),
+uj_deg AS (SELECT COUNT(*) n FROM uj_none WHERE degraded IN (1,'true')),
+uj_unknown AS (SELECT COUNT(*) n FROM uj_raw WHERE tier IS NULL OR tier=''),
+uj_tier AS (SELECT COALESCE(NULLIF(tier,''),'(未知)') tier, COUNT(*) n FROM uj_raw GROUP BY 1),
+uj_sess_dom AS (
+  SELECT s.session_id, COUNT(DISTINCT u.path) n
+  FROM (SELECT DISTINCT session_id FROM uj_none) s
+  LEFT JOIN uj_none u ON u.session_id=s.session_id AND u.path LIKE 'docs/reference/flow/%'
+  GROUP BY s.session_id
+),
+uj_dom_avg AS (SELECT CASE WHEN COUNT(*)>0 THEN SUM(n)*1.0/COUNT(*) ELSE 0 END v FROM uj_sess_dom),
 pw AS (SELECT COUNT(*) n FROM win WHERE kind='pin.write'),
 prd AS (SELECT COUNT(*) n FROM win WHERE kind='pin.read'),
 gseq AS (SELECT session_id, cmd, ok, ts,
@@ -1572,6 +1601,16 @@ SELECT json_object(
         FROM (SELECT json_extract(je.value,'$.name') name, json_extract(je.value,'$.state') state,
               json_extract(je.value,'$.fb') fb FROM json_each(${CHG_LIT}) je) j)
     ),
+    'unbound_jit', json_object(
+      'injects', (SELECT IFNULL(n,0) FROM uj_sum),
+      'sessions', (SELECT IFNULL(n,0) FROM uj_sess),
+      'avg_domains', (SELECT IFNULL(v,0) FROM uj_dom_avg),
+      'bytes', (SELECT IFNULL(b,0) FROM uj_bytes),
+      'degraded', (SELECT IFNULL(n,0) FROM uj_deg),
+      'degraded_pct', (SELECT CASE WHEN (SELECT IFNULL(n,0) FROM uj_sum)>0 THEN ((SELECT IFNULL(n,0) FROM uj_deg)*100.0)/(SELECT IFNULL(n,0) FROM uj_sum) ELSE 0 END),
+      'unknown_tier', (SELECT IFNULL(n,0) FROM uj_unknown),
+      'by_tier', (SELECT json_group_array(json_object('tier', tier, 'n', n)) FROM (SELECT tier, n FROM uj_tier ORDER BY tier))
+    ),
     'design', json(${DESIGN_LIT})
   )
 );
@@ -1716,6 +1755,13 @@ metrics.update({
     'm7.sub_samples': _e('subagent.samples'),
     'm7.wave_files': len(_e('waves.items') or []),
     'm7.archive_retry_changes': len(_e('archive_retry.items') or []),
+    # ⑦H 无档 JIT（enable-unbound-jit-injection D5）：按 tier 分组的无档编辑路径命中
+    'm7.unbound_jit_injects': _e('unbound_jit.injects'),
+    'm7.unbound_jit_sessions': _e('unbound_jit.sessions'),
+    'm7.unbound_jit_avg_domains': _e('unbound_jit.avg_domains'),
+    'm7.unbound_jit_bytes': _e('unbound_jit.bytes'),
+    'm7.unbound_jit_degraded_pct': _e('unbound_jit.degraded_pct'),
+    'm7.unbound_jit_unknown_tier': _e('unbound_jit.unknown_tier'),
 })
 
 # 派发带域比例（add-dispatch-constraint-digest D5/D7）：分母=present+absent，未知剔除分母；
@@ -2168,6 +2214,25 @@ else:
                    % (_dp, _dd, _du))
     out.append('     口径                : 窗口内全部 subagent.dispatch 记录（含失败派发）；分母=present+absent（未知不计分母）；未知=改造前无 constraintDigest 字段的历史记录')
     out.append('     回检键            : m7.dispatch_digest_ratio / m7.dispatch_digest_present / m7.dispatch_digest_unknown')
+
+    # H 无档 JIT（enable-unbound-jit-injection D5）：未激活档按编辑路径自愈的注入面
+    _uj = _e('unbound_jit') or {}
+    _uj_n = _uj.get('injects') or 0
+    _uj_deg = _uj.get('degraded') or 0
+    _uj_pct = _uj.get('degraded_pct') or 0
+    out.append('   H 无档 JIT（reason=jit-path 且 tier=none 的编辑路径命中注入）')
+    out.append('     注入条数            : %d 条' % _uj_n)
+    out.append('     会话数              : %d 个' % (_uj.get('sessions') or 0))
+    out.append('     平均域数            : %s 域/会话' % (_uj.get('avg_domains') or 0))
+    out.append('     送达字节            : %d B' % (_uj.get('bytes') or 0))
+    out.append('     降级占比            : %d%%（%d / %d 条）' % (int(_uj_pct), _uj_deg, _uj_n))
+    out.append(
+        '     口径                : 按 tier 分组不与有档 JIT 混算；历史无 tier 计「未知」并剔除分母（本窗口 %s 条）；'
+        'compact 重发计入条数不重计会话；域数只算 path 以 docs/reference/flow/ 开头的条目（standard 计非业务域），'
+        '同一会话同一 path 只计一次；字节为**送达字节**（payload bytes，非原始字节）'
+        % (_uj.get('unknown_tier') or 0)
+    )
+    out.append('     回检键            : m7.unbound_jit_injects / m7.unbound_jit_sessions / m7.unbound_jit_avg_domains / m7.unbound_jit_bytes / m7.unbound_jit_degraded_pct')
     out.append('')
 
 if baseline_diff is not None:

@@ -1,6 +1,6 @@
 # 语义版块流程（Semantic Board）
 
-<!-- doc-impact-applies: backend-go/internal/tagmanagement/, backend-go/internal/topicgraph/, front/app/api/semanticBoards.ts, front/app/api/normalizers/boardRadar, front/app/features/tags/components/console/BoardRadar, front/app/features/tags/components/console/boardRadar, front/app/features/tags/composables/useBoardRadar | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/tagmanagement/, backend-go/internal/topicgraph/, front/app/api/semanticBoards.ts, front/app/api/normalizers/boardRadar.ts, front/app/features/tags/, front/app/pages/tags/ | section=业务约束与不变量 -->
 > 大功能：辅助标签与组合标签入库、SemanticBoard 匹配/升级/回填、版块治理面板。
 > 跨端。互补：`flow/daily-report.md`、`flow/topic-graph.md`。
 
@@ -440,6 +440,7 @@ handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembed
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 | ------ | ------ | ------ | ---------- |
+| 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-11-05 | speed-up-tag-embedding | 标签向量链路提速：`FindSimilarTags` 改两段式（halfvec HNSW 索引召回 + float32 精确重排，1366ms→9.9ms；cast 必须带 `::halfvec(2560)` typmod 否则不走索引，`hnsw.ef_search≥120`）；embedding 队列 worker 去 2s 轮询 + 4 并发 SKIP LOCKED 批领 + 同类型批量 ≤32 调 provider（缓存 key 按单条拆分，单条路径兼容）；失败自动重试（<3 次指数退避）+ 修 Stop/Start stopCh 竞态 + worker 真实 logger + status 增 `oldest_pending_age_seconds`/`throughput_per_min`；索引 SQL `scripts/db/tag-embedding-halfvec-hnsw-20261104.sql`（低负载窗口手动执行，docker-compose `shm_size: 1g` 为前置）。语义红线零改动（阈值/cosine 校验/三级去重不变） | [`openspec/changes/archive/2026-11-05-speed-up-tag-embedding`](../../../openspec/changes/archive/2026-11-05-speed-up-tag-embedding) |
 | 2026-11-03 | fix-embedding-model-column-width | embedding 模型名列宽根治：`topic_tag_embeddings.model`（及 discovery 四张向量表）由 `VARCHAR(50)` 加宽到 `VARCHAR(100)`，与模型注册表 `ai_models.name` 对齐——本地 llama.cpp / GGUF 模型把模型文件绝对路径当名字注册（61 字符）超限 → Postgres `SQLSTATE 22001` → 标签向量落库被拒、embedding 队列批量失败（689 条 failed，且命中 embedding 缓存时返回的 `cached.Model` 同值故主路由是短名模型也挡不住）；建立不变式「存 embedding 模型名的列宽 MUST NOT 窄于 `ai_models.name`」（数据驱动测试守住，新增窄列即红）；连带修复本 change 自身引入的约束回归（gorm tag 变更触发 GORM AutoMigrate 对存量列发 ALTER → postgres driver 顺带 `DROP NOT NULL`，丢失 `20260723_0001` 固化的 `topic_tag_embeddings.model` NOT NULL，迁移 `20261103_0002` 幂等恢复） | [`openspec/changes/archive/2026-11-03-fix-embedding-model-column-width`](../../../openspec/changes/archive/2026-11-03-fix-embedding-model-column-width) |
 | 2026-11-02 | fix-observation-pool-curve | 顶部时间视窗折线缩略图首屏只画当前档窗（14 天）、拖一下才出历史——根因：365 池加载被挂在「观察范围跨出档窗」触发线上，首屏池从不加载，档窗外全为未知日（`null` 不补 0）⇒ 曲线残缺。修复：池改为 A 数据到位且锚点已知即**预取**（顶部背景曲线首屏即需整条 365 池曲线；「按需拉池」只管历史日内容解析），365 档仍与池共用一次请求；池未取到/失败的提示条与「重试历史池」不再被「是否跨出档窗」门控；后台零改动（复用既有 `days=365` 读端点） | [`openspec/changes/archive/2026-11-02-fix-observation-pool-curve`](../../../openspec/changes/archive/2026-11-02-fix-observation-pool-curve) |

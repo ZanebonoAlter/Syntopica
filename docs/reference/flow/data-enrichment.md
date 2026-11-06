@@ -1,6 +1,6 @@
 # 数据增强认知闭环流程（Data Enrichment）
 
-<!-- doc-impact-applies: backend-go/internal/dataenrichment/ | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/dataenrichment/, front/app/features/tags/components/BoardEnrichmentPanel.vue, front/app/api/boardEnrichment.ts | section=业务约束与不变量 -->
 > 大功能：持久话题的数据增强认知闭环——两个独立循环 + 三表关注点分离。
 > 跨端。互补：`flow/daily-report.md`（持久话题归属）、`architecture/runtime.md`（scheduler 装配）。
 
@@ -405,6 +405,7 @@ flowchart TB
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
+| 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-10-12 | add-topic-key-event-markers | 信号材料关键事件关注注入（约束 36）：confirmed 注记并入 SignalLaneMaterial 仅作 LLM attention 提示、回溯确认诚实标记、指纹核验不匹配即 gap；注记永不入证据链/计算输入 | [`openspec/changes/add-topic-key-event-markers`](../../../openspec/changes/add-topic-key-event-markers) |
 | 2026-09-27 | restructure-settings-navigation | 两套画像体系全链移除：参考角色（reference_roles，service 注入点已于 2026-09-04 摘除，本次清路由/handler/仓储/模型/表）+ 分析方法卡（analysis_methods：选卡/清洗/注入/仓储/模型/表，事实零启用零注入，删除无行为损失）；调查链前置阶段收敛为「假设生成」单步（H0 纪律/重试/机械补 H0 保留）；DB 迁移 20260926_0001 drop 两表 | [`openspec/changes/archive/2026-09-27-restructure-settings-navigation`](../../../openspec/changes/archive/2026-09-27-restructure-settings-navigation) |
 | 2026-07-23 | data-enrichment-orchestration | 两独立循环（A新闻记忆 + B分析认知）+ 三表关注点分离 + FinGenius 可选辩论；6 个 LLM Operation + 2 个 Capability；stock_debate_result 表 + debate_distill 提炼；详见本 flow 文档及 tables/data-enrichment.md（原 DATABASE_FIELDS.md §16，已按域切分）/ ai-logging.md | [`openspec/changes/archive/2026-07-23-data-enrichment-orchestration`](../../../openspec/changes/archive/2026-07-23-data-enrichment-orchestration) |

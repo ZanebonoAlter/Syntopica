@@ -1,6 +1,6 @@
 # 定时任务流程（Scheduler）
 
-<!-- doc-impact-applies: backend-go/internal/admin/scheduler/, backend-go/internal/platform/aihealth/, backend-go/internal/platform/analysispause/ | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/admin/scheduler/, backend-go/internal/platform/scheduler/, backend-go/internal/platform/aihealth/, backend-go/internal/platform/analysispause/, backend-go/internal/admin/repository/, backend-go/internal/admin/handler/scheduler_handler.go, backend-go/internal/admin/handler/ai_health_handler.go, backend-go/internal/admin/handler/analysis_pause_handler.go, front/app/pages/settings.vue, front/app/features/settings/components/SettingsSectionSchedulers.vue, front/app/features/settings/components/SettingsSectionRuntimeStatus.vue, front/app/features/shell/components/AppHeaderView.vue, front/app/api/scheduler.ts, front/app/composables/useSchedulerStatus.ts, front/app/composables/useAnalysisPauseFavicon.ts, front/app/composables/useNotifications.ts, front/app/components/dialog/SchedulerStatusPanel.vue, front/app/components/ui/NotificationBell.vue, front/app/components/ui/NotificationPanel.vue | section=业务约束与不变量 -->
 > 大功能：横切的调度器集合（feed 刷新、内容增强、AI 总结、Digest/日报、标签、状态回传、手动 trigger）。
 > 跨端。互补：`architecture/runtime.md` §Scheduler 状态、§优雅退出。
 
@@ -123,6 +123,7 @@ auto_refresh scheduler
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
+| 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-09-28 | ai-health-gate-tagging-required | 健康门加硬条件：判定由「宽松双类各一条」改为「核心路由硬条件」——embedding 主通 **且** topic_tagging 主通，打标路由缺失/未绑定/不可达一律 NOT 健康（fail-closed，文章入库前置拦截）；其余非核心路由退出判定（不含探测机制改动） | [`openspec/changes/archive/2026-09-28-ai-health-gate-tagging-required`](../../../openspec/changes/archive/2026-09-28-ai-health-gate-tagging-required) |
 | 2026-09-24 | auto-sync-demo-seed | 演示环境每周自动同步（非项目内调度器）：用户级 systemd timer 每周凌晨串联 dump-sanitizer 脱敏导出 → 三重安全断言（禁 ai_call_logs/schema_migrations INSERT 与 api_key 非空）→ deploy-remote.sh --demo 构建推送；断言失败不归档不推送 | [`openspec/changes/archive/2026-09-24-auto-sync-demo-seed`](../../../openspec/changes/archive/2026-09-24-auto-sync-demo-seed) |
 | 2026-09-26 | decouple-backend-domains | 后端包结构解耦（纯重构零行为变化）：调度器框架（base/registry/pause/persistence + SchedulerTask 模型）迁 `internal/platform/scheduler`，域内 job 定义 `job_*.go` 留 `internal/admin/scheduler` 只改 import；`dataenrichment→admin` 反向依赖边消除；AutoMigrate 静态清单改 RegisterModels 注入 | [`openspec/changes/archive/2026-09-26-decouple-backend-domains`](../../../openspec/changes/archive/2026-09-26-decouple-backend-domains) |

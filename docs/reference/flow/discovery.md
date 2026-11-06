@@ -1,6 +1,6 @@
 # 偏好向量画像与订阅源发现（Discovery）
 
-<!-- doc-impact-applies: backend-go/internal/discovery/, backend-go/internal/admin/scheduler/job_discovery_v2.go, backend-go/internal/admin/scheduler/job_rsshub_catalog_sync.go, backend-go/internal/admin/scheduler/job_preference_profile_update.go | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/discovery/, backend-go/internal/admin/scheduler/job_discovery_v2.go, backend-go/internal/admin/scheduler/job_rsshub_catalog_sync.go, backend-go/internal/admin/scheduler/job_preference_profile_update.go, front/app/features/discovery/, front/app/pages/discovery.vue, front/app/api/discovery.ts, front/app/api/preferenceProfile.ts, front/app/api/rsshub.ts, front/app/features/settings/components/SettingsSectionPreferences.vue, front/app/features/settings/components/SettingsSectionRsshub.vue, front/app/features/settings/composables/usePreferenceProfile.ts | section=业务约束与不变量 -->
 > 大功能：阅读行为 → 偏好向量画像（按 SemanticBoard 聚合）→ 驱动 RSSHub 订阅源发现（向量粗筛 + LLM 精排 + 卡片状态机）→ 一键/填参订阅落地；问答式交互做冷启动。
 > 跨端。互补：`flow/reading.md`（阅读行为采集，本 flow 的权重源）、`flow/scheduler.md`（`preference_profile_update` / `rsshub_catalog_sync` 两 job）。
 >
@@ -140,6 +140,7 @@ accept：选定值/输入值走原 accept parameters 路径（直订/填参验�
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
+| 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-11-03 | fix-embedding-model-column-width | discovery 域四张向量表（`candidate_embeddings` / `preference_vectors` / `route_embeddings` / `discovery_interest_entries`）的 `model` 列由 `VARCHAR(50)` 加宽到 `VARCHAR(100)`（与 `ai_models.name` 对齐）：本地 llama.cpp / GGUF embedding 模型以文件绝对路径注册（61 字符）超限 → `SQLSTATE 22001` → 向量落库被拒；建立「存 embedding 模型名列宽 MUST NOT 窄于模型注册表」不变式（数据驱动测试，新增窄列即红）；与 `topic_tag_embeddings` 同批根治，避免 discovery 链路复现同一错误 | [`openspec/changes/archive/2026-11-03-fix-embedding-model-column-width`](../../../openspec/changes/archive/2026-11-03-fix-embedding-model-column-width) |
 | 2026-09-26 | decouple-backend-domains | discovery 拆独立域 `internal/discovery/`（service 43 文件 + handler + models 12 模型 + routes/wire root 门面，自 admin 整体迁出）：API 路径 `/api/discovery/*` 与 DB schema 不变（62 条路由字符串 diff 空）；归属调整——preference_profile_service + PreferenceVector + `/api/preference-profile` 路由随迁 discovery（与向量 helper/seed 常量同包耦合）；AutoMigrate 经 RegisterModels 自注册 | [`openspec/changes/archive/2026-09-26-decouple-backend-domains`](../../../openspec/changes/archive/2026-09-26-decouple-backend-domains) |
 | 2026-07-25 | preference-vector-feed-discovery | 新增偏好向量画像（替代旧偏好分数）+ RSSHub 路由目录同步 + 订阅源发现（向量粗筛 + LLM 精排 + 卡片状态机）+ 问答冷启动；废弃删除旧 `user_preferences` / `preference_update` / `/api/user-preferences/*` / `ReadingPreferencesPanel` | [`openspec/changes/archive/2026-07-25-preference-vector-feed-discovery`](../../../openspec/changes/archive/2026-07-25-preference-vector-feed-discovery) |

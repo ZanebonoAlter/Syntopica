@@ -1,6 +1,6 @@
 # 文章内容增强流程（Content Enrichment）
 
-<!-- doc-impact-applies: backend-go/internal/reader/ | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/reader/, backend-go/internal/platform/ws/, front/app/features/articles/components/ArticleContentView.vue, front/app/features/articles/composables/useContentCompletion.ts | section=业务约束与不变量 -->
 > 大功能：文章正文抓取（readability 主力 / Firecrawl 兜底）/ 内容补全（文章级 AI 整理稿）/ 手动触发。
 > 跨端。互补：`architecture/backend.md` §具体数据链路示例、`flow/reading.md` §Article 打标签时机。
 
@@ -143,6 +143,7 @@ article 级状态：`firecrawl_status`（`pending`/`processing`/`completed`/`fai
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 | ------ | ------ | ------ | ---------- |
+| 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-05-10 | global-settings-feed-controls | feed 级新增 `tagging_enabled` 开关与 Firecrawl / 内容补全 toggle 并列；Firecrawl 完成回调也检查 `tagging_enabled` 决定是否入 tag 队列 | [`openspec/changes/archive/2026-05-10-global-settings-feed-controls`](../../../openspec/changes/archive/2026-05-10-global-settings-feed-controls) |
 | 2026-05-13 | backend-package-restructure | `contentprocessing/` → `reader/` 域（content_completion / firecrawl 归入 reader service）；旧 user-guide 的 `internal/domain/*`、`internal/jobs/` 路径已失效 | [`openspec/changes/archive/2026-05-13-backend-package-restructure`](../../../openspec/changes/archive/2026-05-13-backend-package-restructure) |
 | 2026-07-11 | lightweight-crawler-fallback | readability 进程内主力 + Firecrawl 兜底降级链，消除树莓派单点 | [`openspec/changes/archive/2026-07-11-lightweight-crawler-fallback`](../../../openspec/changes/archive/2026-07-11-lightweight-crawler-fallback) |

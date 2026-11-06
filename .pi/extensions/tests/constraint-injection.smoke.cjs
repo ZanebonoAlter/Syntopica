@@ -123,6 +123,19 @@ function makeTempScenario() {
 		path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'smoke-fixture-temp', 'explore-findings.md'),
 		'## 临时发现A\n\n内容A。\n\n## 临时发现B <!-- pin:ab12cd34 -->\n\n内容B。\n',
 	);
+	// 无档位 JIT 记账夹具（enable-unbound-jit-injection）：域文档 + 标签信号。
+	// 信号指向一个仓内不存在的路径（backend-go/internal/unboundmod/）——只在夹具里
+	// 存在，用于断言「未激活档按编辑路径自愈」而不污染真实仓路径。
+	const unboundItems = Array.from(
+		{ length: 6 },
+		(_, i) =>
+			`${i + 1}. **UNBOUND-REDLINE-${i + 1} 该约束的自含红线句必须满足边界条件与例外说明**：细节层内容 DETAIL-UNBOUND-${i + 1}（不进入注入正文）。`,
+	).join('\n');
+	fs.writeFileSync(
+		path.join(tmp, 'docs/reference/flow', 'unbound-dom.md'),
+		'# unbound dom\n\n<!-- doc-impact-applies: backend-go/internal/unboundmod/ | section=业务约束与不变量 -->\n\n' +
+			'## 业务约束与不变量\n\n' + unboundItems + '\n\n## 代码入口\n\n入口说明。\n',
+	);
 	return tmp;
 }
 
@@ -275,14 +288,17 @@ const present = (sp, marker, heading) =>
 		check('session_start 后关键词命中清空', !sp.includes('auxiliary_label_dedupe_sim'));
 		check('session_start 后 JIT 命中清空', !sp.includes('### ai-logging.md'));
 
-		// 8. JIT 门控：未激活会话写 airouter 不追加（保「未激活=仅索引」不变量）
+		// 8. JIT 门控（enable-unbound-jit-injection 反转）：未激活会话写 airouter →
+		//    **追加注入**（稳定层仍只索引；JIT 只走动态层）。旧断言「不注入」已作废——
+		//    路径标签是文件系统事实，零歧义；关键词通道仍以档位为开关（见 unbound-jit-5）。
 		await emit('tool_execution_start', {
 			toolName: 'write',
 			args: { path: 'backend-go/internal/platform/airouter/router.go' },
 		});
 		sp = await systemPrompt();
-		check('JIT 门控: 未激活时写 airouter 不注入 ai-logging', !sp.includes('### ai-logging.md'));
-		check('JIT 门控: 未激活时写 airouter 不注入 ai-summary', !sp.includes('### ai-summary.md'));
+		check('JIT 门控反转: 未激活时写 airouter 注入 ai-summary', sp.includes('### ai-summary.md'));
+		check('JIT 门控反转: 未激活时写 airouter 注入 ai-logging（standard 文档同走 JIT）', sp.includes('### ai-logging.md'));
+		check('JIT 门控反转: 稳定层仍只索引（未激活档不注 flow 声明域）', /档位：未激活/.test(sp) && sp.includes('### constraints-index.md'));
 
 		// 9. pin_finding：无档位（research 语境）带 topic → docs/research/<topic>/
 		const pinF = await invokePin({ title: 'pin-smoke-research', finding: 'research pin 内容。', topic: RESEARCH_TOPIC });
@@ -1271,6 +1287,290 @@ const present = (sp, marker, heading) =>
 			!dynamicText().includes('📎') && !dynamicText().includes('FULLDOC-MARKER'),
 		);
 		markMessages();
+
+		// 21. 无档位编辑路径 JIT（enable-unbound-jit-injection）
+		//     契约：「未激活档 = 稳定层仅索引 + 编辑路径命中经动态层追加」；
+		//     关键词通道（matchText / allowedKeywordDocs）、change 绑定仍以档位为开关。
+		//     落点 = test-cases.md 主链路表步 1~12（unbound-jit-1..12）。
+		// 21.1 步 1 + 步 7：未激活档 edit airouter → 动态层送达 ai-summary 全节；
+		//      稳定层（system prompt）字节完全不变（快照键 none|none）。
+		await emit('session_start', { reason: 'new' });
+		markMessages();
+		const uSp0 = await systemPromptOnly();
+		const uStableBytes = Buffer.byteLength(uSp0, 'utf8');
+		check(
+			'unbound-jit-7: 未激活档稳定层仅索引（仅索引文档，无域节）',
+			uSp0.includes('### constraints-index.md') && /档位：未激活/.test(uSp0),
+		);
+		markMessages();
+		await emit('tool_execution_start', {
+			toolName: 'edit',
+			args: { path: 'backend-go/internal/platform/airouter/embedding.go' },
+		});
+		const uJit = dynamicText();
+		markMessages();
+		check('unbound-jit-1: 未激活档 edit airouter 送达 ai-summary 约束节', uJit.includes('### ai-summary.md'));
+		check(
+			'unbound-jit-1: 注入内容为该域完整节（细节层可达）',
+			present(uJit, 'capability 枚举固定为六类', '### ai-summary.md'),
+		);
+		check('unbound-jit-1: standard 文档同样走 JIT（ai-logging Requirements 节）', uJit.includes('### ai-logging.md'));
+		check(
+			'unbound-jit-1: 动态层走 steer 通道（不进 system prompt）',
+			messages.length > 0 && messages[messages.length - 1].opts?.deliverAs === 'steer',
+		);
+		const uSp1 = await systemPromptOnly();
+		check(
+			'unbound-jit-7: JIT 注入前后稳定层字节完全一致',
+			uSp1 === uSp0 && Buffer.byteLength(uSp1, 'utf8') === uStableBytes,
+		);
+
+		// 21.2 步 2：standard 文档辖区（非 flow 域）同样走 JIT
+		await emit('session_start', { reason: 'new' });
+		markMessages();
+		await emit('tool_execution_start', { toolName: 'edit', args: { path: 'front/app/app.vue' } });
+		const uStd = dynamicText();
+		markMessages();
+		check(
+			'unbound-jit-2: 未激活档 edit front/app/app.vue 送达 standard 文档（loading-experience）',
+			uStd.includes('### loading-experience.md'),
+		);
+
+		// 21.3 步 3：未映射路径 → 零动态层发送
+		await emit('session_start', { reason: 'new' });
+		markMessages();
+		await emit('tool_execution_start', {
+			toolName: 'edit',
+			args: { path: 'front/app/composables/useOnboarding.ts' },
+		});
+		const uNone = dynamicText();
+		markMessages();
+		check('unbound-jit-3: 未映射路径零动态层发送', uNone.trim() === '');
+
+		// 21.4 步 4：同域多次编辑只注一次（粘性集合 + 指纹去重）
+		await emit('session_start', { reason: 'new' });
+		markMessages();
+		await emit('tool_execution_start', {
+			toolName: 'edit',
+			args: { path: 'backend-go/internal/platform/airouter/embedding.go' },
+		});
+		const uFirst = dynamicText();
+		markMessages();
+		await emit('tool_execution_start', {
+			toolName: 'edit',
+			args: { path: 'backend-go/internal/platform/airouter/router.go' },
+		});
+		const uSecond = dynamicText();
+		markMessages();
+		check(
+			'unbound-jit-4: 同域多次编辑只注一次（第二条零投递）',
+			uFirst.includes('### ai-summary.md') && uSecond.trim() === '',
+		);
+
+		// 21.5 步 5：关键词通道保持关闭（未激活档仍不按对话文本注域）
+		await emit('session_start', { reason: 'new' });
+		markMessages();
+		await emit('input', { text: '日报与定时任务的展示要调整' });
+		const uKw = await systemPrompt();
+		check(
+			'unbound-jit-5: 未激活档关键词通道保持关闭（不注 daily-report / scheduler）',
+			!uKw.includes('### daily-report.md') && !uKw.includes('### scheduler.md'),
+		);
+
+		// 21.6 步 8：命中巨域（daily-report 47KB）→ 预算降级为占位行
+		await emit('session_start', { reason: 'new' });
+		markMessages();
+		await emit('tool_execution_start', {
+			toolName: 'edit',
+			args: { path: 'backend-go/internal/topicgraph/service/daily_report_orchestrator.go' },
+		});
+		const uDeg = dynamicText();
+		markMessages();
+		check(
+			'unbound-jit-8: 巨域超预算 → 降级为占位行（标题 + read 路径保留）',
+			uDeg.includes('### daily-report.md') && uDeg.includes('read docs/reference/flow/daily-report.md'),
+		);
+		check(
+			'unbound-jit-8: 消息头列出已降级路径（模型可见省略通知）',
+			/预算降级/.test(uDeg) && uDeg.includes('daily-report.md'),
+		);
+
+		// 21.7 步 12a：主会话 compact → 下一注入时机重发 JIT 集合
+		await emit('session_start', { reason: 'new' });
+		markMessages();
+		await emit('tool_execution_start', {
+			toolName: 'edit',
+			args: { path: 'backend-go/internal/platform/airouter/embedding.go' },
+		});
+		markMessages();
+		await emit('session_compact', { reason: 'manual' });
+		const uCompact = await systemPrompt();
+		check(
+			'unbound-jit-12: 无档主会话 compact 后重发 JIT 集合',
+			uCompact.includes('约束快照（compact 后重发）') && uCompact.includes('### ai-summary.md'),
+		);
+
+		// 21.8 步 12b：reload → 命中集清零（后续编辑可重新命中）
+		await emit('session_start', { reason: 'reload' });
+		markMessages();
+		await emit('tool_execution_start', {
+			toolName: 'edit',
+			args: { path: 'backend-go/internal/platform/airouter/embedding.go' },
+		});
+		const uReload = dynamicText();
+		markMessages();
+		check('unbound-jit-12: reload 后命中集清零（重新编辑可再命中）', uReload.includes('### ai-summary.md'));
+
+		// 21.9 步 9：子线程（父未激活档）按**自身**编辑路径自愈（不依赖主线程 brief）
+		//      跑在 tmp 夹具 cwd（真实事件库落 tmp，不写真仓库事实库）
+		const uParent = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: { getSessionId: () => 'ci-smoke-unbound-parent' },
+		};
+		await emit('session_start', { reason: 'new' }, uParent);
+		markMessages();
+		const uChild = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-unbound-child',
+				getHeader: () => ({
+					parentSession: '/x/2026-01-01T00-00-00-000Z_ci-smoke-unbound-parent.jsonl',
+				}),
+			},
+		};
+		await emit('session_start', { reason: 'startup' }, uChild);
+		markMessages();
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'edit', args: { path: 'backend-go/internal/unboundmod/child.go' } },
+			uChild,
+		);
+		const uChildJit = dynamicText();
+		markMessages();
+		check(
+			'unbound-jit-9: 子线程（父未激活档）按自身路径自愈（收到约束节 steer）',
+			uChildJit.includes('### unbound-dom.md'),
+		);
+
+		// 21.10 步 12c：同进程 fork 继承命中集 → 父已送达节不重投
+		const uParent2 = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: { getSessionId: () => 'ci-smoke-unbound-p2' },
+		};
+		await emit('session_start', { reason: 'new' }, uParent2);
+		markMessages();
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'edit', args: { path: 'backend-go/internal/unboundmod/parent.go' } },
+			uParent2,
+		);
+		markMessages();
+		const uChild2 = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-unbound-c2',
+				getHeader: () => ({
+					parentSession: '/x/2026-01-01T00-00-00-000Z_ci-smoke-unbound-p2.jsonl',
+				}),
+			},
+		};
+		await emit('session_start', { reason: 'startup' }, uChild2);
+		markMessages();
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'edit', args: { path: 'backend-go/internal/unboundmod/child2.go' } },
+			uChild2,
+		);
+		const uForkJit = dynamicText();
+		markMessages();
+		check(
+			'unbound-jit-12: 同进程 fork 继承命中集 → 父已送达内容不重投',
+			uForkJit.trim() === '',
+		);
+		const uForkSp = await systemPrompt(uChild2);
+		check(
+			'unbound-jit-12: fork 子会话首 turn 不重投父已送达节',
+			!uForkSp.includes('### unbound-dom.md'),
+		);
+		// 21.11 步 12d：无 before_agent_start 的子线程 compact → 不重发（不伪造通道）
+		await emit('session_compact', { reason: 'manual' }, uChild2);
+		const uChildCompact = dynamicText();
+		markMessages();
+		check(
+			'unbound-jit-12: 无 before_agent_start 的子线程 compact 不重发',
+			uChildCompact.trim() === '',
+		);
+
+		// 21.12 步 10 + 步 6：记账归因（tier=none）+ 不绑定 change（无 mode.set）
+		//      夹具场景（tmp cwd，真实事件库落盘）：无档位 edit 命中夹具域标签。
+		writeCfg({ ...bigCfg, channel: 'split' }, 12);
+		const uCtx = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: { getSessionId: () => 'ci-smoke-unbound' },
+		};
+		await emit('session_start', { reason: 'new' }, uCtx);
+		markMessages();
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'edit', args: { path: 'backend-go/internal/unboundmod/service.go' } },
+			uCtx,
+		);
+		const uFixtureJit = dynamicText();
+		markMessages();
+		check(
+			'unbound-jit-1: 夹具域命中（未激活档追加注入夹具域约束节）',
+			uFixtureJit.includes('### unbound-dom.md'),
+		);
+		const uDb = new EvDb(path.join(tmp, '.pi', 'harness', 'events.db'), { readOnly: true });
+		const uInjectRows = uDb
+			.prepare("SELECT payload FROM events WHERE kind='constraint.inject' AND session_id='ci-smoke-unbound'")
+			.all()
+			.map((r) => JSON.parse(r.payload));
+		check(
+			'unbound-jit-10: 记账 reason=jit-path + tier=none + mode 仍为文档形态',
+			uInjectRows.some(
+				(p) =>
+					p.reason === 'jit-path' &&
+					p.tier === 'none' &&
+					(p.mode === 'section' || p.mode === 'full') &&
+					String(p.path).endsWith('unbound-dom.md') &&
+					typeof p.bytes === 'number',
+			),
+		);
+		const uModeSetCount = uDb
+			.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='mode.set' AND session_id='ci-smoke-unbound'")
+			.get().n;
+		check('unbound-jit-6: 未激活档 JIT 不绑定 change（无 mode.set 记账）', uModeSetCount === 0);
+		uDb.close();
+
+		// 21.13 步 11：legacy 通道不即时投递（下一 turn 落 system prompt）
+		writeCfg({ ...bigCfg, channel: 'legacy' }, 14);
+		const uLegacyCtx = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: { getSessionId: () => 'ci-smoke-unbound-legacy' },
+		};
+		await emit('session_start', { reason: 'new' }, uLegacyCtx);
+		markMessages();
+		await emit(
+			'tool_execution_start',
+			{ toolName: 'edit', args: { path: 'backend-go/internal/unboundmod/other.go' } },
+			uLegacyCtx,
+		);
+		const uLegacyJit = dynamicText();
+		markMessages();
+		check('unbound-jit-11: legacy 通道本 turn 零 steer', uLegacyJit.trim() === '');
+		const uLegacySp = await systemPrompt(uLegacyCtx);
+		check(
+			'unbound-jit-11: legacy 下一 turn system prompt 含该文档',
+			uLegacySp.includes('### unbound-dom.md'),
+		);
+		writeCfg(bigCfg, 16); // 还原默认配置（split 通道）
 
 		let fail = 0;
 		for (const [name, ok] of checks) {
