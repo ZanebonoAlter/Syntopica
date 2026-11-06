@@ -315,3 +315,185 @@ B1独立审查、后续B2/C的API/持久恢复/真实UI故事、文档与部署�
 
 - 外部阻塞解除：另一 change `add-question-driven-news-research` 的 `SignalReportView.test.ts` 7 处类型错（TS18048/TS2532）经用户授权由本会话代修——4 处非空断言（sections[0]!、items[1]!、links[0]!×4、plain[0]!），纯测试类型守卫、零逻辑改动，均有 toHaveLength 前置保证。该文件 `pnpm test:unit SignalReportView.test.ts --maxWorkers=2` → 37 例全 PASS。
 - 门禁：typecheck 退出 0 零 error；lint 退出 0；受影响单测（BoardHealthPanel/BoardWideWorkface/BoardContextRail + 全部新增 API/normalizer/composable/board-health 文件）190 例全 PASS。tasks 5.2/7.2 已勾。
+
+## 归档对账台账（R-N 汇总，2026-11-06 整理）
+
+> **本节做什么**：把上文各小节**已经真实记录过**的 review 发现整理成 `scripts/harness/review-trace.sh` 可解析的合法条目（`### R-N 日期【等级】标题` + 紧随的 `- **状态**：<词表值>`），供归档门禁对账。**未改动上文任何正文、未新增任何发现**：等级/日期/处置全部取自来源小节原文，每条状态行的括号里写明来源小节与修复落点。上文小节仍是事实主账；若与本表有出入，以上文原文为准。
+>
+> **整理口径（三处披露）**：
+> 1. §Seam B1 表头写「审查级别」列为 `P2`（P 系仅此一档，原文无 P1/P3 对照），按 `P2 → Medium` 映射进封闭词表 High/Medium/Low。
+> 2. §Seam B1 小节未标审查日期，其三条取 **2.2 批修复复验日 2026-10-29**（§Seam B2 与 `seam-b2-review-fixes.md` 均记 2026-10-29）；其余条目日期按来源小节原文（Seam A = 2026-10-28，B2/B3/B5/B6/C1/C2/C3/4.1 = 2026-10-29，见各节标题与其修复文件）。
+> 3. 别名不一致（原文如此，未改）：§4.1 台账的「评审 L3」（JobView 暴露内部列）在 `review-4.1-fixes.md` 里记作 `C3-L3`；而 §4.1 台账的 `C3-L3`（双 `useBoardHealth` 实例）另有所指。本表按 §4.1 台账正文编号，两条分别立 R-49 / R-47。
+>
+> **未立 R-N 的原账记录（原文未给审查级别，不擅自补级别）**：① §Seam B1 末尾「报告令牌长度 44 是文档笔误，实际 43」（已在 `seam-b1-handoff.md` §3 与 `seam-b2-api-handoff.md` 校正）；② §5.1 首跑红的 `TestShutdownSequence_SummaryLineContract`（本 change 回归，已由编排者修）。另：`C2-OK*` / `C3-OK*` 是交付记录不是发现；§5.1 `TestSourceStatsPostgres` 抖动与外部测试欠账（test-patrol 已登记）非本 change 发现，均不入表。
+>
+> **本表不代表最终放行**：§「最终审查待办」仍有效（3.5 几何/截图、5.3 真机 agent-browser 故事、7.5 doc-impact architecture 裁定未完成，整个 change 未审毕）。
+>
+> **2026-11-06 归档前补记**：上述三项已在归档门禁实跑中收口——3.5/5.3 真机双视口 + 双主题 + 粘性动作实测（详 `ui-verification/report.md` A-1~A-12，未覆盖项已写明原因）；7.5 `archive-readiness.sh` 六项全绿（doc-impact architecture 经回代码核实为**真遗漏**，已补 6.4 文档），5.4 真库一轮体检抽检也已完成。R-1~R-49 的处置状态未因此变动。
+
+**来源 §Seam A — 独立审查（2026-10-28）**
+
+### R-1 2026-10-28【Low】parseFloatDefault 放行 NaN，新磁铁阈值可能静默失效（A-L1）
+- **状态**：已修复（依据：§Seam A 表 A-L1；落点 `backend-go/internal/tagmanagement/service/boardhealth/boardhealth.go` 非有限值回退默认，PG/单测证据见 `seam-a2-handoff.md`）
+
+### R-2 2026-10-28【Low】convertTriage 原样复制非 rewrite suggestion，违背接缝口径（A-L2）
+- **状态**：已修复（依据：§Seam A 表 A-L2；落点 `backend-go/internal/tagmanagement/service/boardhealth/run.go` 转换持久化时清空，证据见 `seam-a2-handoff.md`）
+
+**来源 §Seam B1 存储底座（3 项 P2，原文明列「接受并在 2.2 小批修复」，修复复验 2026-10-29）**
+
+### R-3 2026-10-29【Medium】aux 硬删后同 key 原请求在锁行前 404，未回放已存任务（B-P2-1）
+- **状态**：已修复（依据：§Seam B1 表 B-P2-1 + §Seam B2 表同名行；落点 `tagmanagement/repository/auxiliary_description_repair.go` 幂等预查询前置到活体锁行前，证据见 `seam-b2-review-fixes.md` / `seam-b2-api-handoff.md` §4）
+
+### R-4 2026-10-29【Medium】首次 AutoMigrate 失败记迁移完成，重启补表后永缺部分唯一索引（B-P2-2）
+- **状态**：已修复（依据：§Seam B1 表 B-P2-2 + §Seam B2 表同名行；落点 `platform/database/auxiliary_description_repair_migration.go` 自愈 helper（与迁移 Up 共用），证据见 `seam-b2-api-handoff.md` §4）
+
+### R-5 2026-10-29【Medium】幂等键超 64 字符落到 DB 22001，缺 4xx 边界校验（B-P2-3）
+- **状态**：已修复（依据：§Seam B1 表 B-P2-3 + §Seam B2 表同名行；落点 service/handler 入参侧先拒 + sentinel，证据见 `seam-b2-review-fixes.md` / `seam-b2-api-handoff.md` §4）
+
+**来源 §Seam B2 — API 接缝独立 review（BLOCK 后修复，2026-10-29）**
+
+### R-6 2026-10-29【Medium】POST 尾随第二个 JSON 对象/非空垃圾仍创建任务（B2 复审①）
+- **状态**：已修复（依据：§Seam B2 独立 review ①（原文 1 项 Medium + 2 项 Low，按列举序对应）；落点 `tagmanagement/handler/auxiliary_description_repair_handler.go` `decodeSingleJSONObject`，证据见 `seam-b2-review-fixes.md` §1 R-1）
+
+### R-7 2026-10-29【Low】parseUintParam 接受完整 uint64，越界 id 落成 500（B2 复审②）
+- **状态**：已修复（依据：同上 ②；落点 `auxiliary_description_repair_handler.go` `parsePositiveBigIntParam`（不改共享 `parseUintParam`），证据见 `seam-b2-review-fixes.md` §1 R-2）
+
+### R-8 2026-10-29【Low】repository 测试拿 topic_tag.id 比 label.id 的假阳性，未证明冻结项正确（B2 复审③）
+- **状态**：已修复（依据：同上 ③；落点 `tagmanagement/repository/auxiliary_description_repair_p2_test.go` 断言改与 `label.ID` 比并让两种 id 故意不等，证据见 `seam-b2-review-fixes.md` §1 R-3）
+
+**来源 §Seam B3 — 事务外 embedding + 事务内原子保存独立 review（BLOCK 后四项全修，2026-10-29）**
+
+### R-9 2026-10-29【Medium】租约用事务开始固定的 now() 且锁前校验，跨过期仍可保存（B3-R1）
+- **状态**：已修复（依据：§Seam B3 表 R1；落点 `service/auxrepair` `CommitDescription` 全锁后用实时 `clock_timestamp()` 复核 + 提交标记查 RowsAffected，证据见 `seam-b3-review-fixes.md`）
+
+### R-10 2026-10-29【Medium】同有效 owner 并发两个 ExecuteEmbeddingPhase 都会 embed（B3-R2）
+- **状态**：已修复（依据：§Seam B3 表 R2；落点新增阶段执行权原子 CAS `AcquireRepairPhase`，失败方 busy 且不写状态，证据见 `seam-b3-review-fixes.md`）
+
+### R-11 2026-10-29【Low】开始新尝试与成功提交未清空旧 error（B3-R3）
+- **状态**：已修复（依据：§Seam B3 表 R3；落点 `service/auxrepair` 领取阶段权与成功提交均写 `error=''`，证据见 `seam-b3-review-fixes.md`）
+
+### R-12 2026-10-29【Low】桩新旧 storage 用同一向量，漏测「根本没更新」（B3-R4）
+- **状态**：已修复（依据：§Seam B3 表 R4；落点 `service/auxrepair` 提交用例改不同同维向量 + 断言 `CommittedVersion ==` 回读标签算出的 token，证据见 `seam-b3-review-fixes.md`）
+
+**来源 §独立复审台账（B3-fixed / B4 / B5，run db933a23，2026-10-29）**
+
+### R-13 2026-10-29【Medium】执行期 panic 未隔离（阶段/执行器/心跳三层）（R5-1）
+- **状态**：已修复（依据：§独立复审台账 R5-1「已修」；落点 `service/auxrepair` 三层 recover + 失败落库守卫，证据见 `seam-b5-review-fixes.md` §1 R5-1）
+
+### R-14 2026-10-29【Low】租约期限由应用时钟写入（R5-2）
+- **状态**：已修复（依据：§独立复审台账 R5-2「已修」；落点领取与心跳续租统一 `clock_timestamp() + make_interval`，证据见 `seam-b5-review-fixes.md` §1 R5-2）
+
+### R-15 2026-10-29【Low】阶段 CAS 未查 RowsAffected（R5-3）
+- **状态**：已修复（依据：§独立复审台账 R5-3「已修」；落点 0 行 → `ErrRepairJobBusy`，证据见 `seam-b5-review-fixes.md` §1 R5-3）
+
+### R-16 2026-10-29【Low】retry 接受 JSON null（R5-4）
+- **状态**：已修复（依据：§独立复审台账 R5-4「已修」；落点 handler 区分真空体 EOF 与 `null` → 400，证据见 `seam-b5-review-fixes.md` §1 R5-4）
+
+### R-17 2026-10-29【Low】逐项聚合 O(N²)（R5-5）
+- **状态**：已驳回（依据：§独立复审台账 R5-5 处置「驳回（不采纳）」：逐项结果与计数**同事务**是 implementation-contract §1 + data-map「计数字段来源」的明示合同，改「每 K 项再刷新」会静默弱化它；当前无量化瓶颈证据，本轮不新增实现、不另起 change）
+
+**来源 §B6 独立复审台账（run db933a23，2026-10-29，四项 Low 全部采纳并已修）**
+
+### R-18 2026-10-29【Low】service 预检仍用应用时钟，领先 DB 时误判失权致任务活锁（B6-F1）
+- **状态**：已修复（依据：§B6 台账 F1；落点 `service/auxrepair` 预检只判 owner、租约交 SQL `clock_timestamp()`，证据见 `seam-b6-review-fixes.md`）
+
+### R-19 2026-10-29【Low】关停 repair 步 Stop() 无有界超时（B6-F2）
+- **状态**：已修复（依据：§B6 台账 F2；落点 `repairShutdownTimeout`（10s，单测 200ms）超时只告警不谎称已 join，证据见 `seam-b6-review-fixes.md`）
+
+### R-20 2026-10-29【Low】app→域真实 Start 绑定无用例（B6-F3）
+- **状态**：已修复（依据：§B6 台账 F3；落点新增 `TestRepairWorkerRealDomainBinding` 真绑定回归，证据见 `seam-b6-review-fixes.md`）
+
+### R-21 2026-10-29【Low】InstallDescriptionRepairChain 允许注册后替换，旧 router/新 worker 两扇门（B6-F4）
+- **状态**：已修复（依据：§B6 台账 F4「已修（不重构）」；落点 API 文档注释写顺序约束 + `TestDescriptionRepairWiringOrderContract`，证据见 `seam-b6-review-fixes.md`）
+
+**来源 §Seam C1 — 前端 API/归一器/有界轮询独立审查（BLOCK 后修复，2026-10-29）**
+
+### R-22 2026-10-29【High】loadContext 静默解冻换键并把他键任务当本次结果（C1-H1）
+- **状态**：已修复（依据：§Seam C1 表 C1-H1；落点 `front/app/features/tags/composables/useAuxiliaryDescriptionRepair.ts` 解冻凭据收窄为同键同 payload 归属一致，证据见 `seam-c1-review-fixes.md` §1 H1）
+
+### R-23 2026-10-29【High】卸载后迟到 POST/retry 仍写 refs 并重启轮询（C1-H2）
+- **状态**：已修复（依据：§Seam C1 表 C1-H2；落点显式生命周期 `dispose()`/`reset()`/onScopeDispose + await 后查 disposed/epoch，证据见 `seam-c1-review-fixes.md` §1 H2）
+
+### R-24 2026-10-29【High】同 aux 矛盾类别 first-wins 保留可执行项（C1-H3）
+- **状态**：已修复（依据：§Seam C1 表 C1-H3；落点 `front/app/api/normalizers/boardHealthTriage.ts` 按 aux 分组、任何矛盾整组丢弃并计 dropped，证据见 `seam-c1-review-fixes.md` §1 H3）
+
+### R-25 2026-10-29【Medium】408 等超时类 4xx 被当「确定拒绝」解冻（C1-M1）
+- **状态**：已修复（依据：§Seam C1 表 C1-M1；落点 `isDefiniteRejection(status)`（无 status/5xx/408/499 = 结果未知），证据见 `seam-c1-review-fixes.md` §1 M1）
+
+### R-26 2026-10-29【Medium】retryTask 无本地并发锁，双击双发（C1-M2）
+- **状态**：已修复（依据：§Seam C1 表 C1-M2；落点新增 `retrying` 闸门与 `submitting` 互斥，证据见 `seam-c1-review-fixes.md` §1 M2）
+
+### R-27 2026-10-29【Medium】前端「终态」≠ 后端「未结束互斥」（C1-M3）
+- **状态**：已修复（依据：§Seam C1 表 C1-M3；落点 `front/app/api/normalizers/auxiliaryRepair.ts` 拆停止轮询/互斥释放/可重试三集合，证据见 `seam-c1-review-fixes.md` §1 M3）
+
+### R-28 2026-10-29【Medium】迟到响应跨标签污染全局 ref（C1-M4）
+- **状态**：已修复（依据：§Seam C1 表 C1-M4；落点迟到响应只维护该标签冻结记录、`submitUncertain` 改按当前标签派生，证据见 `seam-c1-review-fixes.md` §1 M4）
+
+### R-29 2026-10-29【Medium】scope 外使用无生命周期兜底（C1-M5）
+- **状态**：已修复（依据：§Seam C1 表 C1-M5（并入 H2 生命周期段）；落点 scope 外 dev 提示 + 显式 dispose 契约，证据见 `seam-c1-review-fixes.md` §1 M5/H2）
+
+### R-30 2026-10-29【Low】unknown 状态未停轮询（C1-L1）
+- **状态**：已修复（依据：§Seam C1 表 C1-L1..L6 逐项第 1 条；落点 `AUXILIARY_REPAIR_POLL_STOP_STATUSES` 含 unknown，证据见 `seam-c1-review-fixes.md` §1 Low L1）
+
+### R-31 2026-10-29【Low】reset() 清 uncertain 却保留冻结，二者不同生同死（C1-L2）
+- **状态**：已修复（依据：同上第 2 条；落点 `submitUncertain` 改按冻结派生 computed，证据见 `seam-c1-review-fixes.md` §1 Low L2）
+
+### R-32 2026-10-29【Low】冻结键与解冻 ID 形态不一致，字符串不一致时永不解冻（C1-L3）
+- **状态**：已修复（依据：同上第 3 条；落点新增 `canonicalAuxiliaryId()` 统一冻结/解除/路径/归属校验，证据见 `seam-c1-review-fixes.md` §1 Low L3）
+
+### R-33 2026-10-29【Low】计数缺字段被捏造为 0（C1-L4）
+- **状态**：已修复（依据：同上第 4 条；落点 total/processed/failed 改 `number | null`，`not_applicable` 维持 0、`remaining` 维持 null，证据见 `seam-c1-review-fixes.md` §1 Low L4）
+
+### R-34 2026-10-29【Low】409 四种语义被统一写成「版本变化」（C1-L5）
+- **状态**：已修复（依据：同上第 5 条；落点 409 分支透传服务端 `message`，证据见 `seam-c1-review-fixes.md` §1 Low L5）
+
+### R-35 2026-10-29【Low】测试缺口 + 恒定 key 掩盖换键（C1-L6）
+- **状态**：已修复（依据：同上第 6 条；落点幂等键改递增工厂 + 断言调用次数 + 新增故事，证据见 `seam-c1-review-fixes.md` §1 Low L6 / §2）
+
+### R-36 2026-10-29【Low】提示「或加载最新版本重新核对」误导（加载版本不解冻）（C1-L7）
+- **状态**：已修复（依据：§Seam C1 复审新提 1 条 Low；落点文案改写 + `resendFrozen()` 严格用冻结键与冻结 payload、与新确认共用发送管线，证据见 `seam-c1-review-fixes.md`）
+
+**来源 §Seam C2 — 组件批独立复审（修复后放行，2026-10-29）**
+
+### R-37 2026-10-29【Medium】降级轮被误标「历史快照」，degraded 分支真 wire 不可达（C2-M1）
+- **状态**：已修复（依据：§Seam C2 复审表 C2-M1；落点 `BoardHealthWorkspace.vue` `workspaceState` 判定顺序 + 夹具改真 wire，证据见 `seam-c2-review-fixes.md` §1 M1）
+
+### R-38 2026-10-29【Medium】正常轮缺「本轮体检依据」折叠区，评分/统计/趋势不可达（C2-M2）
+- **状态**：已修复（依据：§Seam C2 复审表 C2-M2；落点 `showBasis` 改「快照存在即渲染」（默认折叠，内容仍复用 `BoardHealthSignal`），证据见 `seam-c2-review-fixes.md` §1 M2）
+
+### R-39 2026-10-29【Medium】remove 项处理区无证据（C2-M3）
+- **状态**：已修复（依据：§Seam C2 复审表 C2-M3；落点证据 `<details>` 移到四形态共用位置，证据见 `seam-c2-review-fixes.md` §1 M3）
+
+### R-40 2026-10-29【Medium】非 409 提交失败被吞 / 范围未知仍可确认 / 行内确认静默关闭（C2-M4）
+- **状态**：已修复（依据：§Seam C2 复审表 C2-M4；落点根保存 `submitRepair()` error 独立错误行、失败不收起行内确认、范围未知禁用确认，证据见 `seam-c2-review-fixes.md` §1 M4）
+
+### R-41 2026-10-29【Low】切项瞬间编辑器闪现上一项草稿（C2-L1）
+- **状态**：已修复（依据：§Seam C2 复审表 C2-L1；落点切项在 `await loadContext()` 前 `setDraft('')`，证据见 `seam-c2-review-fixes.md` §1 L1）
+
+### R-42 2026-10-29【Low】stale 用例未断言提示行（C2-L2）
+- **状态**：已修复（依据：§Seam C2 复审表 C2-L2；落点测试真触发刷新失败 + `defineExpose({ reload })`，证据见 `seam-c2-review-fixes.md` §1 L2）
+
+### R-43 2026-10-29【Low】404/403 带旧快照被当 stale，旧清单仍可操作（C2-L7）
+- **状态**：已修复（依据：§C2 复审新提 Low C2-L7；落点 `useBoardHealth` 透出 `errorStatus`、纯函数 404/403 判 `gone`，证据见 `seam-c2-review-fixes.md`）
+
+**来源 §4.1 正式评审（全 change，2026-10-29，0 High / 1 Medium / 3 Low）**
+
+### R-44 2026-10-29【Medium】composite 的 rewrite 项 actionable=true 但修复链 404 死路（4.1-M1）
+- **状态**：已修复（依据：§4.1 台账 M1「已修（5 项一并落地）」；落点 `BoardHealthLabelMetrics.LabelType` 透传 + normalizer `label_type` 接管 + 摘除侧对齐挂载侧，证据见 `review-4.1-fixes.md` §2）
+
+### R-45 2026-10-29【Low】removedAuxIds 只增不减，重挂后徽标仍在、按钮仍灰（C3-L1）
+- **状态**：已修复（依据：§4.1 台账 C3-L1；落点 `BoardWideWorkface.vue` `effectiveRemovedAuxIds` = 会话摘除记录 ∩ 不在当前构成（未动壳层），证据见 `review-4.1-fixes.md` §2.4 / `seam-c3-host-handoff.md` §8）
+
+### R-46 2026-10-29【Low】matching_failed 在 failed=null 时渲染「有 未知 项匹配失败」（C3-L2 / 评审 L2）
+- **状态**：已修复（依据：§4.1 台账 C3-L2 与「评审 L2」同源合并（原文标注同一条）；落点 `boardHealthProgressText` + `BoardHealthRepairProgress.vue` 统一「有匹配更新失败项（数量未知）」，证据见 `review-4.1-fixes.md` §1）
+
+### R-47 2026-10-29【Low】工作面与右轨各持一个 useBoardHealth，同一只读端点请求两次（C3-L3）
+- **状态**：已采纳（依据：§4.1 台账 C3-L3「记录为已知行为（doc-only）」：两次都是只读幂等的同一 GET、无副作用无状态分歧，合并需跨宿主/工作面缓存共享（属另一 seam 的结构改动），本批不改；记录见 `seam-c3-host-handoff.md` §8）
+
+### R-48 2026-10-29【Low】degraded 形态无法区分「LLM 之前的历史快照」（评审 L1）
+- **状态**：已驳回（依据：§4.1 台账「评审 L1」记录不改：两者 wire 同形（score/comment 均 null），存量快照均有 LLM、实际影响近零，真机若遇远古快照文案误导再补文案兜底）
+
+### R-49 2026-10-29【Low】JobView 对外含 idempotency_key / expected_version（评审 L3）
+- **状态**：已驳回（依据：§4.1 台账「评审 L3」记录备查、不改：单用户无风险、合同未禁；注意 `review-4.1-fixes.md` 把同一条记作 C3-L3（别名不一致，见本节整理口径 3））
+
+**统计**：本表 49 条（High 3 / Medium 17 / Low 29）；状态分布 已修复 45 / 已采纳 1 / 已驳回 3 / 待处理 0 / 误报丢弃 0。原文没有任何一条记录处于「处置未定」，故无 `待处理` 条目。

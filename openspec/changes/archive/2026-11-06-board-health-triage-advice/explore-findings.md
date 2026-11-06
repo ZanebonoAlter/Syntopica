@@ -112,3 +112,79 @@ B5尚缺dispatcher/heartbeat/restart/retry。父线程已在contract/spec定下�
 **引用**：openspec/changes/board-health-triage-advice/seam-b6-wiring-handoff.md、openspec/changes/board-health-triage-advice/seam-b5-review-fixes.md、openspec/changes/board-health-triage-advice/implementation-contract.md、backend-go/internal/tagmanagement/service/auxrepair/auxrepair.go:JobView、backend-go/internal/tagmanagement/wire.go、backend-go/internal/app/runtime.go、front/AGENTS.md
 
 <!-- pinned 2026-10-29T09:54:04Z -->
+
+## 体检触发链只有两个入口（日报主轮尾步 + CLI），回填与公开手动端点不触发
+
+【体检触发链（2026-11-04 核实）】
+
+入口只有 2 处（全仓 grep RunCheckup / RunBoardHealthCheckupWrapped）：
+1) backend-go/internal/admin/scheduler/job_daily_report.go:57 —— 日报 job 主轮尾步，调用点 :411（`runBoardHealthCheckupTailStep(baseCtx)`），前置条件 :396 `len(boardIDs)>0` 且 :410 `failedCount==0`（任一板块生成失败 → 整轮体检不跑）。
+2) backend-go/cmd/admin/main.go:89 —— CLI `admin board-checkup`。
+
+**不触发的路径（关键）**：
+- 日报回填扫尾（backfill sweep，job_daily_report.go:427 起）：只有主轮调体检，回填不调。
+- 公开手动端点 POST /api/daily-reports/generate（internal/topicgraph/handler/daily_report_handler.go:110 → generateSingleBoard:287 / generateAllBoards:324 / generateSelectedBoards:412）：**不调体检**（该 handler 包内 0 处 boardhealth 引用）。
+- job_daily_report.go:408 注释说的「Manual TriggerNowWithDate flows through DailyReportJob」指 scheduler wrapper 的强制触发（internal/admin/scheduler/job_daily_report.go:597），**不是**上面那个 HTTP 端点 —— 注释有误导性。
+
+预算：job_daily_report.go:54-57 自带 `context.WithTimeout(parent, 10*time.Minute)`；超时板块只报 WARN「checkup failed ... context deadline exceeded」（2026-10-30 实例，backend-go/logs/app-2026-11-03T14-01-39.129.log.gz）。
+
+实际运行记录：
+- 2026-10-31 21:00 ~ 2026-11-02 21:10：日报调度整段被停（149+151+11 条「Daily Report: skipped: model_unhealthy」）→ 这三晚既无日报也无体检。
+- 2026-11-03 21:00：日报 job 跑通（scheduler_tasks id=4 daily_report：last_execution_time=2026-11-03 21:21:48，backfill_window 2026-10-27~11-02，backfilled_count=29）→ 主轮产 10 份 11-03 日报 → 体检跑一轮 21:05:02~21:12:51（12 板 = 12 快照）。
+- 2026-11-03 21:16~21:21 回填补出 11-01/11-02 日报 —— 用户所谓「这两天有日报生成」正是这批回填产物，而回填不触发体检。
+- 11-04 白天无新快照（board_health_snapshots max(created_at)=2026-11-03 21:12:51），当前 app.log 0 条 board-health 行。
+
+**引用**：backend-go/internal/admin/scheduler/job_daily_report.go:54-70、backend-go/internal/admin/scheduler/job_daily_report.go:396-417、backend-go/internal/topicgraph/handler/daily_report_handler.go:110、backend-go/cmd/admin/main.go:78-92
+
+<!-- pinned 2026-11-04T03:48:26Z -->
+
+## 根因：validateTriage 硬要求 1:1 覆盖 → 45+ 构成标签的大板整轮降级（triage/score/评语全丢）
+
+【根因：triage 覆盖硬校验把「LLM 漏裁决几个标签」判成整轮非法】
+
+代码链：
+- backend-go/internal/tagmanagement/service/boardhealth/llm.go:334-337 `validateTriage`：`if len(triage) != len(labels) { return fmt.Errorf("triage covers %d items but board has %d composition labels", ...) }` —— 要求 **1:1 全覆盖**，差一个就整轮非法。
+- llm.go:213-215 `adjudicateBoardHealth`：validateTriage 失败 → 返回 error。
+- backend-go/internal/tagmanagement/service/boardhealth/run.go:86-97 `CheckupBoard`：llmErr → 只记 WARN「[board-health] board %d LLM adjudication degraded (score=NULL, no retry)」，**score / comment / triage 全部丢弃**（metrics.Triage 只在 result!=nil 分支赋值）。
+- 结果：快照落库 llm_score=NULL、llm_comment=NULL、metrics.triage=JSON null。
+
+实测（2026-11-03 21:05~21:12 那一轮，12 板；ai_call_logs 与 board_health_snapshots 按时间戳配对）：
+| board | 构成标签数 | 模型实际给出 aux_id 数 | 结果 |
+|---|---|---|---|
+|3122/2165/246030/2242/2128/50413|7/13/24/27/30/41|7/13/24/27/30/41|全 OK|
+|1974|47|45|降级|
+|2197|50|40|降级|
+|15220|54|51|降级|
+|2272|58|48|降级|
+|1980|96|≥68(片段封顶)|降级|
+|3030|98|≥72(片段封顶)|降级|
+
+**不是 token 截断**：completion tokens 1050~6456 远低于 max_tokens 默认 16384（airouter/openai_compatible.go:391），response_snippet 尾部是完整的 `]` + ``` 围栏；是本地小模型 `Qwen3.5-4B-UD-Q8_K_XL.gguf` 在 ~45+ 标签规模**漏裁决**。
+日志原文（2026-10-30T22:31~22:33，backend-go/logs/app-2026-11-03T14-01-39.129.log.gz）：board 1980「triage covers 95 items but board has 96 composition labels」、2128「29 vs 30」、2197「46 vs 50」、2272「51 vs 58」。
+
+DB 侧对照（只读）：board_health_snapshots 2026-11-03 12 条中 6 条 llm_score IS NULL 且 metrics->'triage' 为 JSON null；全库 triage 分布 = array 15 / null 15 / 无该键 300（300 条是 triage 上线前的旧快照）。
+
+修复方向（待实现）：覆盖不全 ≠ 非法输出。缺失标签补 category=insufficient（spec.md:84「证据不足…下轮再判」语义），保留 score/comment/已覆盖 triage；只有非法 category / 未知 aux_id / 重复 / evidence 空 / rewrite 缺 suggestion 才整轮降级。同步要改 spec.md:77「LLM 返回非法时 SHALL 降级」与 implementation-contract.md:30 的措辞（后者本就允许「整个裁决降级或合法性处理」二选一，只需显式化）。
+
+**引用**：backend-go/internal/tagmanagement/service/boardhealth/llm.go:334-364、backend-go/internal/tagmanagement/service/boardhealth/llm.go:99-127、backend-go/internal/tagmanagement/service/boardhealth/run.go:77-113、backend-go/internal/platform/airouter/openai_compatible.go:391
+
+<!-- pinned 2026-11-04T03:48:32Z -->
+
+## 前端与静态托管不是问题；降级板用户看到「本轮未生成评分与分诊/待评分」
+
+【前端/契约/静态托管（已排除「看的是旧前端」）】
+
+- 静态托管产物 backend-go/frontend/（构建 2026-11-03 13:29）**含新 UI**：_nuxt/QDgtuQFw.js 里 triage ×7、建议摘除 ×1、建议重写 ×2、待核对 ×3；源码 board-health/* mtime 2026-10-29 22:25 < 产物时间 → 产物是新的，不是旧版。
+- 接口契约一致，无字段名错位：GET /api/semantic-boards/:id/health-checkup（backend-go/internal/tagmanagement/handler/board_crud_handler.go:151）→ `{data:{latest:{metrics:{labels,triage}, llm_score, llm_comment, checked_at}, trend}}`（snake_case 不改）；前端 app/api/normalizers/boardHealthTriage.ts:128-131 归一：`if (!Array.isArray(raw)) return { available:false, items:[], dropped:0 }`。
+- **降级板用户实际看到的文案**：
+  - 体检工作面：app/features/tags/components/console/board-health/boardHealthWorkspace.ts:281 `if (snapshot.llm_score===null && snapshot.llm_comment===null) return 'degraded'` → :306-310 标题「**本轮未生成评分与分诊**」，正文「统计与信号已保留，但本轮没有评分与分诊；不能据此推断当前标签健康。」；triiageAvailable=false 且 llm_score 非 null 时则是 :301「历史快照 / 这份快照没有分诊字段」。
+  - 右轨常驻卡：app/features/tags/components/console/RailHealthBrief.vue:62 徽章「**待评分**」，评语取 snapshot.comment（降级板为空 → 空白）。
+- 实测 API（curl --noproxy '*'）：board 2128 → llm_score=82、triage 30/30（依据在）；board 246030 → llm_score=78、triage 24/24（依据在）；board 1974 → llm_score=null、llm_comment=null、metrics.triage=null、labels 47（无依据）。
+- 结论：前端与契约无缺陷；用户看不到依据是**后端把整轮裁决作废**造成的，不是渲染问题。
+
+【change 并入状态】git merge-base --is-ancestor 85206187 HEAD → true（commit 8520618799fe65a67b067f00f70e3973f32856b9，2026-11-03 15:56:26，49 files/10489 insertions）；工作树干净。迁移表 auxiliary_description_repair_jobs 已存在。
+未完成任务：tasks.md 3.5（桌面/窄屏可达）、5.3（静态 5100 agent-browser 故事）、**5.4（LLM 效果核对 —— 安全触发体检并抽检、短名误判 remove=0、真污染有证据）**、7.5（doc-impact/check-standards）。5.4 正是本次缺陷的漏网点。
+
+**引用**：front/app/api/normalizers/boardHealthTriage.ts:128、front/app/features/tags/components/console/board-health/boardHealthWorkspace.ts:263-315、front/app/features/tags/components/console/RailHealthBrief.vue:62、backend-go/internal/tagmanagement/handler/board_crud_handler.go:151
+
+<!-- pinned 2026-11-04T03:48:38Z -->
