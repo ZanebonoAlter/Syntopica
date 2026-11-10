@@ -1,3 +1,5 @@
+> 本 change 于规划阶段放弃实现（理由见 proposal.md「归档说明」）。以下任务全部未执行、随放弃作废；尾三节与 Scenario 映射表为规划期产物，如实保留备查。
+
 ## 1. 结果合同与同源解析
 
 - [ ] 1.1 按 test-cases.md D01–D24 补临时fixture与分支断言，使用真实可读PNG验证尺寸，运行 `bash scripts/harness/ui-verification-trace.smoke.sh`；不得只按文件名制造阳性
@@ -30,7 +32,7 @@
 
 ## 6. 文档
 
-<!-- doc-impact: standard -->
+<!-- doc-impact: 无（放弃实现：规划期计划的 4 项文档同步全部作废，未改任何文档） -->
 
 - [ ] 6.1 同步 `docs/reference/开发执行规范.md` §0.6/§5.3/§11：作用域/宿主/旧信息语义、修复复验、证据与结果职责及同源命令；无flow影响（纯开发工具链，不改业务流程）
 - [ ] 6.2 同步 `docs/reference/standard/frontend/layout.md` 与 `standard/shared/test-design.md`（含JIT摘要）：打开态、逐场景视口、旧能力去向与复验留痕，不新增平行规范文件
