@@ -427,34 +427,40 @@ func TestCollectBoardStatisticsSignals(t *testing.T) {
 	neighbor := createAuxLabel(t, db, "举办地点", "active")
 	require.NoError(t, db.Exec(`UPDATE semantic_labels SET embedding = ?::vector WHERE id = ?`, blendVecLiteral(dim, 0.96, 0.28), neighbor.ID).Error)
 
-	// 6 个对齐挂载（cos=1）+ 5 个正交失败挂载（cos=0, mismatch=true）。
+	// 6 个正交挂载（cos=0）+ 5 个对齐失败挂载（cos=1, mismatch=true）——
+	// 新口径下失败子集均值高于健康子集（磁铁形态）。
 	for i := 0; i < 6; i++ {
 		tag := createTopicTagRow(t, db, fmt.Sprintf("ok-tag-%d", i))
-		seedIdentityEmbedding(t, db, tag.ID, unitVecLiteral(dim, 0))
+		seedIdentityEmbedding(t, db, tag.ID, unitVecLiteral(dim, 1))
 		matchTagToBoardMismatch(t, db, tag.ID, board.ID, false)
 	}
 	rival := createBoardRow(t, db, "流向板", "active")
 	for i := 0; i < 5; i++ {
 		tag := createTopicTagRow(t, db, fmt.Sprintf("failed-tag-%d", i))
-		seedIdentityEmbedding(t, db, tag.ID, unitVecLiteral(dim, 1))
+		seedIdentityEmbedding(t, db, tag.ID, unitVecLiteral(dim, 0))
 		matchTagToBoardMismatch(t, db, tag.ID, board.ID, true)
 		matchTagToBoardMismatch(t, db, tag.ID, rival.ID, false) // 失败 tag 在对手板有效挂载
 	}
 
-	metrics, candidates, err := collectBoardStatistics(ctx, db, board.ID,
+	metrics, candidates, err := collectBoardStatistics(ctx, db, &board,
 		Config{MinSampleSize: 5, MagnetGap: 0.08, MagnetMinFailed: 5})
 	require.NoError(t, err)
 	require.Empty(t, candidates)
 
 	byID := labelMetricsByAuxID(metrics.Labels)
 	a := byID[auxA.ID]
-	// 磁铁：all_mean=6/11、failed_mean=0、failed_n=5 ≥ 5 → 嫌疑成立。
+	// 磁铁（新口径）：good_mean=0（6 个方向通过挂载）、failed_mean=1（5 个失败
+	// 挂载）→ 失败侧显著高于健康侧 → 嫌疑成立。
 	require.NotNil(t, a.Magnet)
 	require.False(t, a.Magnet.Insufficient)
 	require.True(t, a.Magnet.Suspicious)
-	require.InDelta(t, 6.0/11.0, *a.Magnet.AllMean, 1e-9)
-	require.InDelta(t, 0.0, *a.Magnet.FailedMean, 1e-9)
+	require.InDelta(t, 0.0, *a.Magnet.GoodMean, 1e-9)
+	require.InDelta(t, 1.0, *a.Magnet.FailedMean, 1e-9)
+	require.Equal(t, 6, a.Magnet.GoodSamples)
 	require.Equal(t, 5, a.Magnet.FailedSamples)
+	// all 侧保留但退出判定。
+	require.InDelta(t, 5.0/11.0, *a.Magnet.AllMean, 1e-9)
+	require.Equal(t, 11, a.Magnet.AllSamples)
 	// 近邻：active aux 空间 top-3（排除自身；缺向量 aux 不在向量空间）。
 	require.Len(t, a.Neighbors, 1)
 	require.Equal(t, neighbor.ID, a.Neighbors[0].AuxID)
@@ -556,4 +562,48 @@ func TestCheckupRoundPersistsSignalsAndTriage(t *testing.T) {
 	var snapCount int64
 	require.NoError(t, db.Model(&tagmodels.BoardHealthSnapshot{}).Where("semantic_board_id = ?", board.ID).Count(&snapCount).Error)
 	require.Equal(t, int64(2), snapCount)
+}
+
+// TestCheckupRoundPersistsFilledTriage —— 补齐后的 triage 落库可读
+// （fix-board-health-triage-degrade 6.6）：LLM 漏判的构成标签以
+// insufficient 落库（不伪造可执行建议），清单长度 == 构成标签数。
+func TestCheckupRoundPersistsFilledTriage(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	board := createBoardRow(t, db, "补齐板", "active")
+
+	auxIDs := make([]uint, 0, 3)
+	for i := 0; i < 3; i++ {
+		aux := createAuxLabel(t, db, fmt.Sprintf("补齐%d", i), "active")
+		require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: aux.ID}).Error)
+		auxIDs = append(auxIDs, aux.ID)
+	}
+
+	// LLM 只回 2 条（2/3 = 66.7% ≥ 下限）→ 补 1 条。
+	llm := &fakeBoardHealthLLM{result: &BoardHealthLLMResult{
+		Score: 66, Comment: "部分证据不足",
+		Triage: []TriageItem{
+			{AuxID: auxIDs[0], Category: "keep", Evidence: "cosine_mean=0.71"},
+			{AuxID: auxIDs[2], Category: "remove", Evidence: "magnet failed=0.72 good=0.52 failed_n=40"},
+		},
+	}}
+	require.NoError(t, CheckupBoard(ctx, db, llm, Config{}, &board, time.Now()))
+
+	var snapshot tagmodels.BoardHealthSnapshot
+	require.NoError(t, db.Where("semantic_board_id = ?", board.ID).Order("id DESC").First(&snapshot).Error)
+	require.NotNil(t, snapshot.LLMScore, "漏判不得作废整轮裁决")
+	require.Len(t, snapshot.Metrics.Triage, 3, "补齐后 triage 长度 == 构成标签数")
+
+	categories := map[string]int{}
+	for _, item := range snapshot.Metrics.Triage {
+		categories[item.Category]++
+		if item.Category == "insufficient" {
+			require.Empty(t, item.Suggestion, "补齐项不得携带建议文案")
+		}
+	}
+	// 两条 insufficient：① 漏判补齐项；② 摘除项被 G2 降级（本板构成标签
+	// 无向量 → 磁铁信号不足，摘除 MUST NOT 成立）。
+	require.Equal(t, 2, categories["insufficient"])
+	require.Equal(t, 1, categories["keep"])
+	require.Zero(t, categories["remove"], "无成立磁铁信号的摘除建议不得原样落库")
 }

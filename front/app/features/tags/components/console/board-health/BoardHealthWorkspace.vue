@@ -26,6 +26,7 @@ import {
   normalizeBoardHealthLabelSignals,
   normalizeBoardHealthMagnetFlow,
   normalizeBoardHealthTriage,
+  normalizeBoardHealthTriageGuard,
 } from '~/api/normalizers/boardHealthTriage'
 import { validateRepairDescription, type AuxiliaryRepairContextView } from '~/api/normalizers/auxiliaryRepair'
 import BoardHealthWorkspaceHead from './BoardHealthWorkspaceHead.vue'
@@ -82,6 +83,8 @@ const detailView = ref(false)
 const triage = computed(() => normalizeBoardHealthTriage(health.snapshot.value))
 const signals = computed(() => normalizeBoardHealthLabelSignals(health.snapshot.value))
 const magnetFlow = computed(() => normalizeBoardHealthMagnetFlow(health.snapshot.value))
+/** 分诊合理性闸门结论（服务端已算好占比/阈值/原因）；null = 无闸门记录。 */
+const guard = computed(() => normalizeBoardHealthTriageGuard(health.snapshot.value))
 
 const labelOf = computed(() => {
   const map = new Map<string, string>()
@@ -318,6 +321,7 @@ watch(() => props.boardId, () => {
           :others="others"
           :selected-aux-id="selectedAuxId"
           :removed-aux-ids="props.removedAuxIds"
+          :guard="guard"
           @select="selectIssue"
         />
       </aside>

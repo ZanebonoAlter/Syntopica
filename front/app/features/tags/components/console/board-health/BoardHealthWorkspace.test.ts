@@ -75,7 +75,7 @@ function snapshotFixture(overrides: Record<string, unknown> = {}) {
       labels: [
         labelMetric(11, '上海', {
           description: '上海知名商业综合体',
-          magnet: { all_mean: 0.68, failed_mean: 0.52, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false },
+          magnet: { good_mean: 0.7, all_mean: 0.68, failed_mean: 0.52, good_samples: 284, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false, caliber: 'healthy_subset' },
           neighbors: [{ aux_id: 21, label: '举办地点', cosine: 0.796 }],
           desc_flags: ['此次'],
         }),
@@ -566,5 +566,191 @@ describe('组合标签（composite）在分诊里的边界', () => {
     await wrapper.find('[data-testid="bhw-remove-confirm-yes"]').trigger('click')
     await flush()
     expect(wrapper.emitted('remove-composition')).toEqual([['15']])
+  })
+})
+
+// fix-board-health-magnet-signal（ui-design 三处信息级变化）：
+// 磁铁对比口径 / 核心主体徽标 / 闸门降级警示条。
+describe('磁铁口径与核心主体标记（fix-board-health-magnet-signal）', () => {
+  it('核心主体：索引行与详情头部都带「核心主体」徽标', async () => {
+    const base = snapshotFixture()
+    apiMocks.getBoardHealthCheckup.mockResolvedValue({
+      success: true,
+      data: {
+        latest: {
+          ...base,
+          metrics: {
+            ...base.metrics,
+            labels: base.metrics.labels.map((label) => (
+              label.aux_id === 11 || label.aux_id === 12 ? { ...label, core_subject: true } : label
+            )),
+          },
+        },
+        trend: [],
+      },
+    })
+    const wrapper = await mountWorkspace()
+
+    // 索引行：需核对项（11）与「其余标签」折叠项（12）都带徽标
+    expect(wrapper.find('[data-testid="bhw-core-subject-11"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="bhw-core-subject-11"]').text()).toContain('核心主体')
+    expect(wrapper.find('[data-testid="bhw-core-subject-12"]').exists()).toBe(true)
+    // 非核心主体不带徽标
+    expect(wrapper.find('[data-testid="bhw-core-subject-13"]').exists()).toBe(false)
+
+    // 详情头部
+    await wrapper.find('[data-testid="bhw-task-11"]').trigger('click')
+    await flush()
+    const badge = wrapper.find('[data-testid="bhw-core-subject"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('核心主体')
+  })
+
+  it('旧快照（无 core_subject）：不显示核心主体徽标', async () => {
+    const wrapper = await mountWorkspace()
+    await wrapper.find('[data-testid="bhw-task-11"]').trigger('click')
+    await flush()
+    expect(wrapper.find('[data-testid="bhw-core-subject"]').exists()).toBe(false)
+  })
+
+  it('新快照：磁铁对比用「失败子集 vs 健康子集」口径（不再拿全体均值作对比）', async () => {
+    const wrapper = await mountWorkspace()
+    await wrapper.find('[data-testid="bhw-task-11"]').trigger('click')
+    await flush()
+    const evidence = wrapper.find('[data-testid="bhw-evidence"]').text()
+    expect(evidence).toContain('失败子集 0.520（6 项）')
+    expect(evidence).toContain('健康子集 0.700（284 项）')
+    expect(evidence).not.toContain('全体贴合均值')
+    expect(evidence).not.toContain('旧口径快照')
+  })
+
+  it('旧快照（缺 good_mean）：回退旧口径对比并标注「旧口径快照」', async () => {
+    const base = snapshotFixture()
+    apiMocks.getBoardHealthCheckup.mockResolvedValue({
+      success: true,
+      data: {
+        latest: {
+          ...base,
+          metrics: {
+            ...base.metrics,
+            labels: base.metrics.labels.map((label) => (
+              label.aux_id === 11
+                ? { ...label, magnet: { all_mean: 0.68, failed_mean: 0.52, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false } }
+                : label
+            )),
+          },
+        },
+        trend: [],
+      },
+    })
+    const wrapper = await mountWorkspace()
+    await wrapper.find('[data-testid="bhw-task-11"]').trigger('click')
+    await flush()
+    const evidence = wrapper.find('[data-testid="bhw-evidence"]').text()
+    expect(evidence).toContain('全体 0.680（40 项）')
+    expect(evidence).toContain('旧口径快照')
+    expect(evidence).not.toContain('健康子集')
+  })
+
+  // R-4 / R-13：口径判定改按服务端 caliber 标记；旧快照的磁铁结论带口径标记。
+  it('旧口径快照：磁铁结论带口径标记（旧公式语义与新口径相反，勿据此操作）', async () => {
+    const base = snapshotFixture()
+    apiMocks.getBoardHealthCheckup.mockResolvedValue({
+      success: true,
+      data: {
+        latest: {
+          ...base,
+          metrics: {
+            ...base.metrics,
+            labels: base.metrics.labels.map((label) => (
+              label.aux_id === 11
+                ? { ...label, magnet: { all_mean: 0.68, failed_mean: 0.52, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false } }
+                : label
+            )),
+          },
+        },
+        trend: [],
+      },
+    })
+    const wrapper = await mountWorkspace()
+    await wrapper.find('[data-testid="bhw-task-11"]').trigger('click')
+    await flush()
+    const verdict = wrapper.find('[data-testid="bhw-magnet-verdict"]').text()
+    expect(verdict).toContain('旧口径快照的磁铁结论')
+    expect(verdict).toContain('口径已反转，勿据此操作')
+    expect(verdict).toContain('差值显著，疑似磁铁污染')
+  })
+
+  it('新口径快照：磁铁结论不带口径标记', async () => {
+    const wrapper = await mountWorkspace()
+    await wrapper.find('[data-testid="bhw-task-11"]').trigger('click')
+    await flush()
+    const verdict = wrapper.find('[data-testid="bhw-magnet-verdict"]').text()
+    expect(verdict).toBe('差值显著，疑似磁铁污染')
+    expect(verdict).not.toContain('旧口径')
+  })
+})
+
+describe('闸门降级警示条（fix-board-health-magnet-signal）', () => {
+  it('闸门降级：顶部警示条出现，文案含「本轮信号可能不可用、不得按此批量操作」+ 服务端占比/阈值', async () => {
+    const base = snapshotFixture()
+    apiMocks.getBoardHealthCheckup.mockResolvedValue({
+      success: true,
+      data: {
+        latest: {
+          ...base,
+          metrics: {
+            ...base.metrics,
+            triage_guard: {
+              actionable: 47,
+              total: 47,
+              ratio: 1,
+              threshold: 0.8,
+              degraded: true,
+              reason: '可执行占比 47/47（100%）超过阈值 0.8，本轮信号不可用',
+            },
+            triage: [
+              { aux_id: 11, category: 'insufficient', evidence: '可执行占比 47/47（100%）超过阈值 0.8，本轮信号不可用' },
+            ],
+          },
+        },
+        trend: [],
+      },
+    })
+    const wrapper = await mountWorkspace()
+    const notice = wrapper.find('[data-testid="bhw-guard-notice"]')
+    expect(notice.exists()).toBe(true)
+    expect(notice.text()).toContain('本轮信号可能不可用、不得按此批量操作')
+    expect(notice.text()).toContain('100%')
+    expect(notice.text()).toContain('80%')
+    // 被降级的项不进待核对索引
+    expect(wrapper.find('[data-testid="bhw-task-11"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="bhw-issue-count"]').text()).toContain('本轮需核对 0 项')
+  })
+
+  it('未降级（degraded=false）/ 无闸门记录：不出现警示条', async () => {
+    const base = snapshotFixture()
+    apiMocks.getBoardHealthCheckup.mockResolvedValue({
+      success: true,
+      data: {
+        latest: {
+          ...base,
+          metrics: {
+            ...base.metrics,
+            triage_guard: { actionable: 1, total: 3, ratio: 0.333, threshold: 0.8, degraded: false, reason: '' },
+          },
+        },
+        trend: [],
+      },
+    })
+    const wrapper = await mountWorkspace()
+    expect(wrapper.find('[data-testid="bhw-guard-notice"]').exists()).toBe(false)
+
+    apiMocks.getBoardHealthCheckup.mockResolvedValue({
+      success: true,
+      data: { latest: snapshotFixture(), trend: [] },
+    })
+    const noGuard = await mountWorkspace()
+    expect(noGuard.find('[data-testid="bhw-guard-notice"]').exists()).toBe(false)
   })
 })

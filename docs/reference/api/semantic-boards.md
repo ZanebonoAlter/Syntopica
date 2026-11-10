@@ -913,6 +913,8 @@ Response `data`：
 
 查询版块 `:id` 的体检数据（add-board-health-checkup）：最新体检快照（两级统计 + 未收编候选 + LLM 评分/评语）与评分趋势序列。**只读**：不写库、不触发体检执行（体检由日报生成成功路径尾步自动跑，见 `docs/reference/flow/semantic-board.md` §版块体检；收编/添加/移除复用既有 composition 接口）。统计口径唯一实现 `internal/tagmanagement/service/boardhealth/`。
 
+> 磁铁信号口径（fix-board-health-magnet-signal）：`suspicious = failed_mean − good_mean ≥ 阈值`（**方向对齐「磁铁把跑题的挂载吸过来」**；旧口径 `all_mean − failed_mean` 已废止，因其把与本板方向不符的失败挂载当成「越不像越有嫌疑」，导致核心主体被系统性点名）。`all_mean`/`all_samples` 保留供历史对比展示（**含**失败行，且 `all_mean ≡ cosine_mean`），不参与判定。`caliber` 为口径标记：`healthy_subset` = 新口径，空 = 历史快照旧口径——消费方 MUST 按此区分「旧口径快照」与「新快照但健康侧不可算」，MUST NOT 把新快照误标为旧口径。
+
 Query：
 
 - `trend` 可选，整数白名单 `[1, 90]`，缺省 `7`；非法值（0/91/负数/非整数）返回 `400`。
@@ -943,6 +945,7 @@ Response `data`：
           "aux_id": 42,
           "label": "推理",
           "label_type": "auxiliary",
+          "core_subject": false,
           "samples": 18,
           "cosine_mean": 0.81,
           "cosine_median": 0.83,
@@ -954,9 +957,12 @@ Response `data`：
           "magnet": {
             "all_mean": 0.68,
             "failed_mean": 0.52,
+            "good_mean": 0.70,
             "all_samples": 320,
+            "good_samples": 280,
             "failed_samples": 40,
-            "suspicious": true,
+            "caliber": "healthy_subset",
+            "suspicious": false,
             "insufficient": false
           },
           "neighbors": [
@@ -967,6 +973,14 @@ Response `data`：
           "desc_flags": []
         }
       ],
+      "triage_guard": {
+        "actionable": 2,
+        "total": 4,
+        "ratio": 0.5,
+        "threshold": 0.8,
+        "degraded": false,
+        "reason": ""
+      },
       "triage": [
         {
           "aux_id": 42,
@@ -977,7 +991,7 @@ Response `data`：
         {
           "aux_id": 77,
           "category": "remove",
-          "evidence": "磁铁信号成立：失败子集均值 0.52 vs 全体 0.68（差 0.16），失败挂载 40 个且集中流向「中国国内新闻」"
+          "evidence": "磁铁信号成立：失败子集均值 0.72 vs 健康子集均值 0.52（差 0.20），失败挂载 40 个且集中流向「中国国内新闻」"
         },
         {
           "aux_id": 91,
@@ -1009,6 +1023,8 @@ Response `data`：
 - `metrics.board`：版块级指标（全部匹配行口径）；`metrics.labels[]`：标签级贴合度分布（构成标签 embedding × 全部挂载 tags identity embedding 现场重算，不按 aux 挂载数量筛样本），`insufficient=true` 时分布字段全 `null`（样本不足不硬凑）。
 - `metrics.board.magnet_flow`：版块级**流向证据**（失败挂载的有效流向 top-1）；`failed_tags` = 本轮失败挂载数，`flow_tags` = 其中在其他 active 版块有**有效**挂载的数（只用失败挂载的其它 direction_mismatch 挂载不算可靠流向），`top_board` = top-1 目的版块名，`top_tags` = 在该版块有效挂载的失败 tag 数；`top_board=null` = 显式未知（本轮有失败挂载但无可信流向），不得臆造目标。
 - `metrics.labels[]` 新增字段（board-health-triage-advice）：`label_type`（`auxiliary` / `composite`；**历史快照缺该字段 = 类型未知**，消费方不得臆造）、`description`（体检时刻的描述快照，事件性预筛的证据源，omitempty）、`magnet`（磁铁信号：`all_mean`/`failed_mean`/两侧样本数/`suspicious`/`insufficient`；任一侧向量缺失时均值为 `null`、`insufficient=true`）、`neighbors`（全库 active 辅助标签 top-3 最近邻，排除自身；`null` = 自身向量缺失信号不足，非 `null` 空数组 = 已计算但空间内无其他标签）、`desc_flags`（命中的文章式词根，空描述不标记）。
+- `metrics.labels[]` 口径更新（fix-board-health-magnet-signal）：`magnet.good_mean`/`magnet.good_samples` = 健康挂载子集（`direction_mismatch=false`）的贴合均值与样本数，是磁铁判定的**健康侧**（`suspicious = failed_mean − good_mean ≥ 阈值`）；`magnet.caliber` = 口径标记（`healthy_subset` = 新口径，空 = 历史快照旧口径）；`labels[].core_subject` = 核心主体标记（版块 description/aliases 命中，或标题命中且标签名 ≥ 3 字符；历史快照缺该字段 = `false`）。核心主体 MUST NOT 作为摘除/重写对象（分诊层规则强制改判 `keep`）。
+- `metrics.triage_guard`（fix-board-health-magnet-signal，板级闸门结论）：`actionable`/`total`/`ratio` 取 **LLM 原始裁决**的可执行条数与占比（不是降级后的值），`threshold` = 配置阈值（默认 0.8），`degraded` = 本轮是否因占比超限把可执行项统一降级为 `insufficient`，`reason` = 降级原因；闸门不改评分与评语。
 - `metrics.triage[]`：标签级分诊清单（board-health-triage-advice）；`category` 闭集 `remove`（建议摘除）/ `rewrite`（建议重写描述）/ `keep`（保留澄清）/ `insufficient`（证据不足）；`evidence` 必带（真实信号数值或统计事实）；`suggestion` 仅 `rewrite` 必填（新描述文案），其余可省。**分诊清单是建议不是执行**：摘除走既有 `DELETE /semantic-boards/:id/composition/:auxiliary_label_id`（须用户确认），重写走 `POST /auxiliary-labels/:id/description-repairs`（须人工确认）；`label_type` 非 `auxiliary`（含类型未知）的 `rewrite` 项**不可执行**（描述修复链只覆盖辅助标签），但 `remove` 项不受类型限制。
 - **降级轮**（LLM 坏 JSON/超时）：统计与信号照常返回，`llm_score`/`llm_comment` 为 `null`、`metrics.triage` 为 `null`（= 本轮无分诊，历史快照同样为 `null`，两者靠快照时间/有无评分区分）。
 - `uncaptured_candidates[]`：未收编候选（成员 tags 高频携带但不在构成中的 active aux，按 member_tags 降序 top 50）。

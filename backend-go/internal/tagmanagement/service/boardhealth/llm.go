@@ -24,8 +24,8 @@ type BoardHealthLLM interface {
 // BoardHealthLLMResult is the merged adjudication output (0-100 score, one
 // sentence comment, notify verdict, and — board-health-triage-advice D3 —
 // the per-label triage list produced by the SAME single call). Triage is
-// validated against the composition labels before persistence
-// (validateTriage); an invalid list degrades the whole verdict.
+// normalized against the composition labels before persistence
+// (normalizeTriage): 结构性非法项整轮降级，漏判项补「证据不足」。
 type BoardHealthLLMResult struct {
 	Score   int          `json:"score"`
 	Comment string       `json:"comment"`
@@ -69,10 +69,11 @@ const boardHealthSystemPrompt = `你是一个语义板块治理助手，任务�
 - low_sim_ratio 按板块内相对低分线（达标标签 cosine_mean 的 P25）计算：它只说明该标签在板块内的相对位次，P25 相对线的固有性质决定相当比例标签天然在线下；单独的高 low_sim_ratio 不是跑题证据，须结合 cosine_mean 绝对值判断（< 0.6 才视为不健康）
 - 短实体标签（人名/地名/技术名词等 2-4 字短语）语义聚焦，其 cosine_mean 天然低于泛概念标签 0.05-0.10（identity 事件句 × 短名词标签的 cosine 天然带 0.51-0.76），不构成扣分或「跑题」评语依据
 - insufficient=true 表示样本量不足以评估（板块太小或向量缺失，不硬凑分布），不表示标签失效、更不表示板块内容匮乏；全部标签 insufficient 的板块按剩余真实指标（ghost 占比、matched_tags 规模、reason_dist）定档，证据缺失本身不得进入评语或作为降档理由
-- labels[].magnet 是磁铁信号：all_mean/failed_mean 为该标签对全部挂载与方向失败子集的贴合均值，failed_samples 为失败子集样本数；suspicious=true 才是磁铁嫌疑成立；insufficient=true 表示样本不足或向量缺失，不硬凑，不作为判病依据
+- labels[].magnet 是磁铁信号：good_mean/failed_mean 为该标签对健康挂载子集（direction_mismatch=false）与方向失败子集（direction_mismatch=true）的贴合均值，good_samples/failed_samples 为两侧样本数；只有 failed_mean 显著高于 good_mean（差值达阈值）才是磁铁嫌疑成立——语义是「磁铁把跑题的挂载吸过来」；all_mean/all_samples 是全体挂载均值（**含**失败行，仅供历史口径对比展示，不参与判定，且 all_mean 与 cosine_mean 恒等）；insufficient=true 表示任一侧样本不足或向量缺失，不硬凑，不作为判病依据
 - labels[].neighbors 是最近邻证据：全库 active 辅助标签向量空间 top-3（排除自身）；null 表示该标签缺自身向量（信号不足）
 - labels[].desc_flags 是 description 文章式词根预筛命中（事件性嫌疑）；空或缺失表示未命中
-- board.magnet_flow 是失败挂载的主要流向：failed_tags 个方向失败挂载中 flow_tags 个在其他版块有有效挂载，top_board 为 top1 流向版块；null 表示无可靠流向（未知）
+- labels[].core_subject=true 表示该标签是本版块的核心主体（标签名出现在版块描述/别名中，或仅出现在标题中且标签名 ≥ 3 字符；2 字短词不据标题推断），它就是版块自身要谈论的对象：一律禁止判 remove 或 rewrite，必须归 keep
+- board.magnet_flow 是失败挂载的主要流向：failed_tags 个方向失败挂载中 flow_tags 个在其他版块有有效挂载，top_board 为 top1 流向版块；null 表示无可靠流向（未知）；它是板级证据，只能佐证，不得充当单个标签的摘除证据
 
 评分锚定（必须遵守）：
 - 只基于给定指标打分，不要虚构未提供的信号；同一组指标应得到同一档分数
@@ -83,12 +84,14 @@ const boardHealthSystemPrompt = `你是一个语义板块治理助手，任务�
 
 标签分诊（triage，与 score 同一次调用产出）：
 - triage 数组对体检数据中的每一个构成标签恰好给出一条裁决（aux_id 与 labels 清单一一对齐，不得遗漏、不得重复、不得虚构不存在的 aux_id）
+- 核心主体保护：core_subject=true 的标签是版块自身要谈论的对象，MUST NOT 判 remove 或 rewrite，只能归 keep（判据见下方 category 说明）
+- 板级证据只可佐证、不得当单标签证据：board.magnet_flow 的失败挂载流向与版块级共享的失败子集对每一个标签都成立（同一组行、只有余弦值不同），不构成标签级归因，MUST NOT 当作某个标签判 remove/rewrite 的必要证据
 - category 四值判据：
-  - "remove"（建议摘除）：必须有磁铁信号成立（magnet.suspicious=true：failed 均值显著低于全体 + failed_samples 达标）或等价强证据，可结合 board.magnet_flow 的主要流向佐证；仅凭 low_sim_ratio 相对位次、低 cosine_mean、或弱命中路径占比都不得判 remove；短实体标签（人名/地名/技术名词等）即使 cosine_mean 低也禁止判 remove（归 keep）
-  - "rewrite"（建议重写描述）：须有最近邻漂移/窄化证据（neighbors 显示最近邻是实例/机构/地点类标签而非同域概念标签）或 desc_flags 事件性词根命中；必须给出 suggestion=新的百科式描述文案（定义式、时间中性，不含事件叙述）
-  - "keep"（保留澄清）：cosine 天然低但贴合分布正常（短名天花板）、或绝对健康（cosine_mean ≥ 0.6）、或合理多归属：失败挂载集中流向语义重叠的对手版块属边界重叠，是版块定义问题而非标签污染，应归 keep（必要时 rewrite 版块定义），多归属不是摘除的充分依据
+  - "remove"（建议摘除）：必须有磁铁信号成立（magnet.suspicious=true：失败子集均值显著高于健康子集均值 good_mean，且 good_samples 与 failed_samples 各自达标）或等价强证据；仅凭 low_sim_ratio 相对位次、低 cosine_mean、或弱命中路径占比都不得判 remove；短实体标签（人名/地名/技术名词等）即使 cosine_mean 低也禁止判 remove（归 keep）；core_subject=true 的标签禁止判 remove
+  - "rewrite"（建议重写描述）：须有最近邻漂移/窄化证据（neighbors 显示最近邻是实例/机构/地点类标签而非同域概念标签）或 desc_flags 事件性词根命中；必须给出 suggestion=新的百科式描述文案（定义式、时间中性，不含事件叙述）；国家/地区/城市/机构/人物等实体类标签的同类最近邻（如「伊朗」的最近邻是「中东地区」「中东国家」）是健康形态，MUST NOT 记为漂移/窄化证据、不得据此判 rewrite；core_subject=true 的标签禁止判 rewrite
+  - "keep"（保留澄清）：cosine 天然低但贴合分布正常（短名天花板）、或绝对健康（cosine_mean ≥ 0.6）、或该标签被标记为核心主体（core_subject=true）、或合理多归属：失败挂载集中流向语义重叠的对手版块属边界重叠，是版块定义问题而非标签污染，应归 keep（必要时 rewrite 版块定义），多归属不是摘除的充分依据
   - "insufficient"（证据不足下轮再判）：magnet/neighbors 信号 insufficient、样本低于最小样本量、或必要证据缺失；证据缺失不得虚构结论
-- evidence 必须引用给定信号数值或统计事实（如 magnet failed=0.52 all=0.68 failed_n=40、最近邻 cosine 0.796、desc_flags 命中此次），禁止编造未提供的数字/事件/因果
+- evidence 必须引用给定信号数值或统计事实（如 magnet good=0.52 failed=0.72 good_n=284 failed_n=40、最近邻 cosine 0.796、desc_flags 命中此次），禁止编造未提供的数字/事件/因果
 - 评分判据的防误读条款（分化双条件/短实体不扣分/composite 常态保护）在分诊层同步生效
 
 只返回 JSON：{"score": <0-100>, "comment": "<一句话评语>", "notify": <true|false>, "triage": [{"aux_id": <构成标签id>, "category": "remove|rewrite|keep|insufficient", "evidence": "<证据摘要，引用真实数值>", "suggestion": "<新描述文案，仅 category=rewrite 时必填，其余可为空串>"}]}`
@@ -155,6 +158,9 @@ type promptLabelMetrics struct {
 	CosineP75    *float64 `json:"cosine_p75"`
 	LowSimRatio  *float64 `json:"low_sim_ratio"`
 	Insufficient bool     `json:"insufficient"`
+	// CoreSubject 也进完整清单：证据块只渲染前 60 个标签，尾部标签若不带
+	// 标记，「核心主体不得判 remove/rewrite」这条硬约束就管不到它们。
+	CoreSubject bool `json:"core_subject"`
 }
 
 // maxEvidenceLabels caps the per-label signal evidence block (design D6:
@@ -165,11 +171,18 @@ const maxEvidenceLabels = 60
 // label-level metrics (complete label list, distributions only), the
 // triage-signal evidence block (truncated to maxEvidenceLabels suspects
 // first), and the top uncaptured candidates.
-func buildScorePrompt(board *models.SemanticLabel, metrics *tagmodels.BoardHealthMetrics, candidates []string) string {
+//
+// magnetGap 是磁铁判定阈值（config.MagnetGap）——模型要引用证据就得知道
+// 差值门槛。
+func buildScorePrompt(board *models.SemanticLabel, metrics *tagmodels.BoardHealthMetrics, candidates []string, magnetGap float64) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "板块：%s\n", board.Label)
 	if desc := strings.TrimSpace(board.Description); desc != "" {
 		fmt.Fprintf(&b, "描述：%s\n", desc)
+	} else {
+		// 板块无描述文本时显式声明：核心主体只能依据 core_subject 标记判定，
+		// 不让模型自行臆断板块范围（spec「LLM 综合评分与降级」）。
+		b.WriteString("描述：（本板无描述文本，核心主体只能依据 core_subject 标记判定）\n")
 	}
 
 	projection := promptMetrics{Board: promptBoardMetrics{
@@ -186,6 +199,7 @@ func buildScorePrompt(board *models.SemanticLabel, metrics *tagmodels.BoardHealt
 			CosineMean: l.CosineMean, CosineMedian: l.CosineMedian,
 			CosineP25: l.CosineP25, CosineP75: l.CosineP75,
 			LowSimRatio: l.LowSimRatio, Insufficient: l.Insufficient,
+			CoreSubject: l.CoreSubject,
 		})
 	}
 	metricsJSON, err := json.Marshal(projection)
@@ -196,7 +210,7 @@ func buildScorePrompt(board *models.SemanticLabel, metrics *tagmodels.BoardHealt
 	b.Write(metricsJSON)
 	b.WriteString("\n")
 
-	renderEvidenceBlock(&b, metrics)
+	renderEvidenceBlock(&b, metrics, magnetGap)
 
 	// Coverage explainer: without it the model reads all-insufficient labels as
 	// dead content (口径②覆盖面 ≠ 质量，见 system prompt 口径节).
@@ -214,11 +228,14 @@ func buildScorePrompt(board *models.SemanticLabel, metrics *tagmodels.BoardHealt
 }
 
 // renderEvidenceBlock writes the per-label triage-signal evidence (贴合分布
-// 摘要 + 磁铁两侧均值 + 最近邻 top-3 + desc 预筛标记，design D6 四行),
-// suspect-first, capped at maxEvidenceLabels. Missing sides render as
-// explicit 不足/未知 — never as a silent pass (描述/邻居缺失需显式不足).
-func renderEvidenceBlock(b *strings.Builder, metrics *tagmodels.BoardHealthMetrics) {
-	b.WriteString("\n三病信号证据（每标签：贴合/磁铁/最近邻/描述预筛）：\n")
+// 摘要 + 磁铁两侧均值 + 最近邻 top-3 + desc 预筛标记 + 核心主体标记，
+// design D6 四行 + core_subject 行), suspect-first, capped at
+// maxEvidenceLabels. Missing sides render as explicit 不足/未知 — never as a
+// silent pass (描述/邻居缺失需显式不足).
+//
+// magnetGap 是磁铁判定阈值，写进证据行让模型能自己判断差值是否达门槛。
+func renderEvidenceBlock(b *strings.Builder, metrics *tagmodels.BoardHealthMetrics, magnetGap float64) {
+	b.WriteString("\n三病信号证据（每标签：贴合/磁铁/最近邻/描述预筛/核心主体）：\n")
 	if len(metrics.Labels) == 0 {
 		b.WriteString("（该版块暂无构成标签）\n")
 		return
@@ -236,19 +253,21 @@ func renderEvidenceBlock(b *strings.Builder, metrics *tagmodels.BoardHealthMetri
 				formatOptFloat(l.CosineP75), formatOptFloat(l.LowSimRatio))
 		}
 
-		// 磁铁两侧均值
+		// 磁铁两侧均值（新口径：失败子集 vs 健康子集）
 		switch {
 		case l.Magnet == nil:
 			b.WriteString("  磁铁: 无信号\n")
 		case l.Magnet.Insufficient:
-			fmt.Fprintf(b, "  磁铁: 不足（all_n=%d, failed_n=%d；样本不足或向量缺失，不硬凑）\n",
-				l.Magnet.AllSamples, l.Magnet.FailedSamples)
+			fmt.Fprintf(b, "  磁铁: 不足（good_n=%d, failed_n=%d；样本不足或向量缺失，不硬凑）\n",
+				l.Magnet.GoodSamples, l.Magnet.FailedSamples)
 		case l.Magnet.Suspicious:
-			fmt.Fprintf(b, "  磁铁: 嫌疑成立 all=%s failed=%s failed_n=%d\n",
-				formatOptFloat(l.Magnet.AllMean), formatOptFloat(l.Magnet.FailedMean), l.Magnet.FailedSamples)
+			fmt.Fprintf(b, "  磁铁: 嫌疑成立 good=%s failed=%s good_n=%d failed_n=%d 阈值=%.3f\n",
+				formatOptFloat(l.Magnet.GoodMean), formatOptFloat(l.Magnet.FailedMean),
+				l.Magnet.GoodSamples, l.Magnet.FailedSamples, magnetGap)
 		default:
-			fmt.Fprintf(b, "  磁铁: 无嫌疑 all=%s failed=%s failed_n=%d\n",
-				formatOptFloat(l.Magnet.AllMean), formatOptFloat(l.Magnet.FailedMean), l.Magnet.FailedSamples)
+			fmt.Fprintf(b, "  磁铁: 无嫌疑 good=%s failed=%s good_n=%d failed_n=%d 阈值=%.3f\n",
+				formatOptFloat(l.Magnet.GoodMean), formatOptFloat(l.Magnet.FailedMean),
+				l.Magnet.GoodSamples, l.Magnet.FailedSamples, magnetGap)
 		}
 
 		// 最近邻 top-3
@@ -274,6 +293,13 @@ func renderEvidenceBlock(b *strings.Builder, metrics *tagmodels.BoardHealthMetri
 			fmt.Fprintf(b, "  desc: %s 预筛命中:%s\n", desc, strings.Join(l.DescFlags, ","))
 		} else {
 			fmt.Fprintf(b, "  desc: %s 预筛未命中\n", desc)
+		}
+
+		// 核心主体标记（判据硬约束的输入）：是 → 禁止判 remove/rewrite。
+		if l.CoreSubject {
+			b.WriteString("  core_subject: 是（核心主体：出现在版块描述/别名中，或仅出现在标题中且标签名 ≥ 3 字符；禁止判 remove/rewrite，只能归 keep）\n")
+		} else {
+			b.WriteString("  core_subject: 否\n")
 		}
 	}
 	if len(metrics.Labels) > maxEvidenceLabels {
@@ -324,17 +350,29 @@ func formatOptFloat(v *float64) string {
 	return fmt.Sprintf("%.3f", *v)
 }
 
-// validateTriage enforces the triage contract (implementation-contract §3)
-// before anything is persisted: closed category set, evidence required on
-// every item, rewrite requires a suggestion, aux ids must reference real
-// composition labels exactly once, and every composition label must be
-// covered. Any violation degrades the WHOLE verdict (task 1.3: 优先整个
-// 裁决降级，不伪造补齐) — a bad item must never surface as actionable
-// advice.
-func validateTriage(triage []TriageItem, labels []tagmodels.BoardHealthLabelMetrics) error {
-	if len(triage) != len(labels) {
-		return fmt.Errorf("triage covers %d items but board has %d composition labels", len(triage), len(labels))
-	}
+// minTriageCoverage 是分诊清单的覆盖率下限：低于该值视为「模型输出崩了」
+// （截断 / 格式坏），整轮降级。
+//
+// 实证依据（2026-11-03 体检）：本地 LLM 在 47/50/54/58/96/98 标签的板块上
+// 分别只回 45/40/51/48/≥68/≥72 条 —— 漏判 2–28 条，实测覆盖率 71%–96%。
+// 0.5 的下限用来挡「只回几条」的崩溃输出（那种情况补齐会变成满屏「证据
+// 不足」的假象），同时把正常的漏判（≥50%）留给补齐路径处理。
+const minTriageCoverage = 0.5
+
+// normalizeTriage 校验并归一分诊清单（fix-board-health-triage-degrade D1）。
+//
+// 致命集（返回 error → 整轮裁决降级，score/comment/triage 全空）：
+//   - category 不在闭集 {remove,rewrite,keep,insufficient}；
+//   - aux_id 未知（不指向真实构成标签）或重复；
+//   - evidence 去空白后为空（无证据的建议比没有建议更危险）；
+//   - category=rewrite 但缺 suggestion（界面上是空白可编辑框）。
+//
+// 可补齐：合法但漏判的构成标签补一条 category=insufficient 的「证据不足」
+// 条目 —— MUST NOT 猜 keep/remove/rewrite（补「证据不足」是承认本轮没
+// 证据，不是伪造可执行建议）。覆盖率低于 minTriageCoverage 时整轮降级。
+//
+// 返回顺序：先保留 LLM 给出的条目顺序，再按 labels 顺序追加缺失项。
+func normalizeTriage(triage []TriageItem, labels []tagmodels.BoardHealthLabelMetrics) ([]TriageItem, int, error) {
 	known := make(map[uint]bool, len(labels))
 	for i := range labels {
 		known[labels[i].AuxID] = true
@@ -344,21 +382,171 @@ func validateTriage(triage []TriageItem, labels []tagmodels.BoardHealthLabelMetr
 		switch item.Category {
 		case "remove", "rewrite", "keep", "insufficient":
 		default:
-			return fmt.Errorf("triage aux %d: invalid category %q", item.AuxID, item.Category)
+			return nil, 0, fmt.Errorf("triage aux %d: invalid category %q", item.AuxID, item.Category)
 		}
 		if !known[item.AuxID] {
-			return fmt.Errorf("triage references unknown aux id %d", item.AuxID)
+			return nil, 0, fmt.Errorf("triage references unknown aux id %d", item.AuxID)
 		}
 		if seen[item.AuxID] {
-			return fmt.Errorf("triage duplicate aux id %d", item.AuxID)
+			return nil, 0, fmt.Errorf("triage duplicate aux id %d", item.AuxID)
 		}
 		seen[item.AuxID] = true
 		if strings.TrimSpace(item.Evidence) == "" {
-			return fmt.Errorf("triage aux %d (%s): evidence required", item.AuxID, item.Category)
+			return nil, 0, fmt.Errorf("triage aux %d (%s): evidence required", item.AuxID, item.Category)
 		}
 		if item.Category == "rewrite" && strings.TrimSpace(item.Suggestion) == "" {
-			return fmt.Errorf("triage aux %d: rewrite requires a suggestion", item.AuxID)
+			return nil, 0, fmt.Errorf("triage aux %d: rewrite requires a suggestion", item.AuxID)
 		}
 	}
-	return nil
+
+	// 覆盖率 = 合法唯一条目数 / 构成标签数。labels 为空时 triage 必须为空
+	// （否则上面的未知 aux 判定已经报错）。
+	m := len(labels)
+	if m == 0 {
+		return nil, 0, nil
+	}
+	covered := len(seen)
+	coverage := float64(covered) / float64(m)
+	if coverage < minTriageCoverage {
+		// 覆盖率不足也要回传真实 covered —— 否则降级板的轮次日志只能打
+		// covered=0，与同一行 reason 里的 covered=68/96 自相矛盾（review M-2）。
+		return nil, covered, fmt.Errorf("triage covers %d/%d (%.1f%%) below min coverage %.0f%%",
+			covered, m, coverage*100, minTriageCoverage*100)
+	}
+
+	// 补齐缺失标签：category 恒为 insufficient，suggestion 留空。
+	filled := make([]TriageItem, 0, m)
+	filled = append(filled, triage...)
+	for i := range labels {
+		if seen[labels[i].AuxID] {
+			continue
+		}
+		filled = append(filled, TriageItem{
+			AuxID:    labels[i].AuxID,
+			Category: "insufficient",
+			Evidence: fmt.Sprintf("本轮 LLM 未覆盖该标签（返回 %d/%d 条），下轮再判", covered, m),
+		})
+	}
+	return filled, covered, nil
+}
+
+// ── 分诊合理性闸门（fix-board-health-magnet-signal design D4/D5/D6）───────
+//
+// 三道闸门顺序执行、彼此独立，且只依据确定性信号与版块文本判定——MUST NOT
+// 依赖 LLM 自觉（提示词层已被实证会翻转：同一证据 11-06 判 keep、11-09 判
+// rewrite）。
+//
+//	G1 核心主体拦截：core_subject 标签被判 remove/rewrite → 改判 keep，
+//	   evidence 标注「核心主体保护」+ 保留原判，suggestion 清空；
+//	G2 摘除证据校验：remove 必须有成立的磁铁信号（新口径），不成立或信号
+//	   不足 → 降级 insufficient + 注明原因；
+//	G3 占比闸门：可执行占比（remove+rewrite）/总数 超过阈值 → 本轮全部可
+//	   执行项降级 insufficient + 注明原因，并在快照记录闸门结论。
+//
+// 闸门 MUST NOT 改写评分与评语（它们由调用方单独持有），也不丢弃分诊证据
+// 本身——降级只改类别并在证据里追加原因。
+//
+// 返回的闸门记录为 nil = 本轮无闸门结论（分诊清单为空）；非 nil 时
+// Actionable/Ratio 取自 **LLM 原始裁决**（G1/G2 之前的状态）——那是触发闸门
+// 的证据（若取降级后状态，remove 主导轮次会被 G2 清零、触发原因被抹掉）。
+func applyTriageGuards(items []TriageItem, labels []tagmodels.BoardHealthLabelMetrics, config Config) ([]TriageItem, *tagmodels.BoardHealthTriageGuard) {
+	if len(items) == 0 {
+		return items, nil // 无分诊可降级 → 不写闸门记录
+	}
+	byAux := make(map[uint]*tagmodels.BoardHealthLabelMetrics, len(labels))
+	for i := range labels {
+		byAux[labels[i].AuxID] = &labels[i]
+	}
+	guarded := make([]TriageItem, len(items))
+	copy(guarded, items) // 输入切片不被就地改写（调用方的 LLM 结果保持原值）
+
+	// G1 核心主体拦截：改判 keep（证据其实充分，只是「不允许动核心主体」——
+	// 判 insufficient 会让下轮再来一遍同样的拦截）。
+	for i := range guarded {
+		item := &guarded[i]
+		if item.Category != "remove" && item.Category != "rewrite" {
+			continue
+		}
+		label := byAux[item.AuxID]
+		if label == nil || !label.CoreSubject {
+			continue
+		}
+		original := item.Category
+		item.Category = "keep"
+		item.Suggestion = ""
+		item.Evidence = fmt.Sprintf("核心主体保护：该标签出现在板块描述/别名中（或标题中且标签名 ≥ 3 字），不作为摘除或重写对象（原判：%s，原证据：%s）",
+			original, item.Evidence)
+	}
+
+	// G2 摘除证据校验：摘除是破坏性建议，必须有成立的磁铁信号（新口径：
+	// 失败子集均值显著高于健康子集均值）。rewrite 的证据形态多样，规则层
+	// 难以可靠机器化，不做同等硬校验（门槛可低一档）。
+	for i := range guarded {
+		item := &guarded[i]
+		if item.Category != "remove" {
+			continue
+		}
+		label := byAux[item.AuxID]
+		switch {
+		case label == nil || label.Magnet == nil:
+			item.Category = "insufficient"
+			item.Suggestion = ""
+			item.Evidence = fmt.Sprintf("%s；磁铁信号缺失，摘除建议降级为证据不足", item.Evidence)
+		case label.Magnet.Insufficient:
+			item.Category = "insufficient"
+			item.Suggestion = ""
+			item.Evidence = fmt.Sprintf("%s；磁铁信号不足（good_n=%d, failed_n=%d，样本不足或向量缺失），摘除建议降级为证据不足",
+				item.Evidence, label.Magnet.GoodSamples, label.Magnet.FailedSamples)
+		case !label.Magnet.Suspicious:
+			item.Category = "insufficient"
+			item.Suggestion = ""
+			item.Evidence = fmt.Sprintf("%s；磁铁信号不成立（failed 均值未显著高于健康子集均值），摘除建议降级为证据不足",
+				item.Evidence)
+		}
+	}
+
+	// G3 占比闸门：可执行占比超限 → 本轮全部可执行项降级（47/47 的坏轮次
+	// 会被拦住；已知正确轮次最高 72%，阈值 0.8 留余量）。
+	//
+	// 占比取 **LLM 原始裁决**（G1/G2 之前统计，review R-5）：如实反映「本轮
+	// 模型有多激进」。若取降级后的状态，remove 主导轮次里 G2 先把 47 条摘除
+	// 降为证据不足，G3 再数 actionable 会得到 0 —— 闸门痕迹被抹掉、记录失真。
+	// 降级动作仍作用于当前（已被 G1/G2 改过的）清单。
+	total := len(items)
+	actionable := 0
+	for i := range items {
+		if items[i].Category == "remove" || items[i].Category == "rewrite" {
+			actionable++
+		}
+	}
+	threshold := config.MaxActionableRatio
+	if threshold <= 0 {
+		// 零值 Config{}（未显式赋值 / 老调用方）按默认阈值——0 阈值会把任何
+		// 可执行项都降级，不是「缺省值有固定默认」的语义。
+		threshold = DefaultMaxActionableRatio
+	}
+	ratio := float64(actionable) / float64(total)
+	guard := &tagmodels.BoardHealthTriageGuard{
+		Actionable: actionable,
+		Total:      total,
+		Ratio:      ratio,
+		Threshold:  threshold,
+	}
+	if ratio <= threshold {
+		return guarded, guard // 未超限：不降级（占比恰等于阈值也不降级）
+	}
+	reason := fmt.Sprintf("可执行占比 %d/%d（%.1f%%）超过阈值 %.0f%%，本轮信号可能不可用",
+		actionable, total, ratio*100, threshold*100)
+	for i := range guarded {
+		item := &guarded[i]
+		if item.Category != "remove" && item.Category != "rewrite" {
+			continue
+		}
+		item.Category = "insufficient"
+		item.Suggestion = ""
+		item.Evidence = fmt.Sprintf("%s；%s", item.Evidence, reason)
+	}
+	guard.Degraded = true
+	guard.Reason = reason
+	return guarded, guard
 }

@@ -16,7 +16,7 @@ import type { AuxiliaryRepairContextView, AuxiliaryRepairJobView } from '~/api/n
 import type { BoardHealthLabelSignalView, BoardHealthMagnetFlowView } from '~/api/normalizers/boardHealthTriage'
 import BoardHealthRepairEditor from './BoardHealthRepairEditor.vue'
 import BoardHealthRepairProgress from './BoardHealthRepairProgress.vue'
-import type { BoardHealthIssueItem } from './boardHealthWorkspace'
+import { boardHealthMagnetComparisonText, boardHealthMagnetVerdictText, type BoardHealthIssueItem } from './boardHealthWorkspace'
 
 const props = defineProps<{
   issue: BoardHealthIssueItem | null
@@ -101,6 +101,19 @@ const magnet = computed(() => props.signal?.magnet ?? null)
 const neighbors = computed(() => props.signal?.neighbors ?? null)
 const descFlags = computed(() => props.signal?.descFlags ?? [])
 
+/**
+ * 磁铁证据对比文案（纯派生）：按服务端口径标记 `caliber` 分支——
+ * 新口径用「失败子集 vs 健康子集」，旧口径快照回退并标注「旧口径快照」。
+ * 前端不重算任何口径。
+ */
+const magnetComparison = computed(() => boardHealthMagnetComparisonText(magnet.value))
+
+/**
+ * 磁铁结论（纯派生）：服务端已判，不重算；旧口径快照的结论带口径标记
+ * （旧公式语义与新口径相反，不可读成新口径结论）。
+ */
+const magnetVerdict = computed(() => boardHealthMagnetVerdictText(magnet.value))
+
 function fmtCos(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '未知'
   return value.toFixed(3)
@@ -124,7 +137,10 @@ function fmtCos(value: number | null | undefined): string {
     </p>
 
     <template v-else>
-      <p class="bhid-kicker">{{ issueKicker }}</p>
+      <p class="bhid-kicker">
+        {{ issueKicker }}
+        <span v-if="issue.coreSubject" class="bhid-core-badge" data-testid="bhw-core-subject">核心主体</span>
+      </p>
       <h3 class="bhid-title">{{ issueTitle }}</h3>
       <p class="bhid-lead">
         {{ issueText }}
@@ -226,9 +242,7 @@ function fmtCos(value: number | null | undefined): string {
         <summary>为什么建议处理 · 展开证据</summary>
         <p class="bhid-evidence-line">{{ issue.evidence }}</p>
         <p v-if="magnet" class="bhid-evidence-line">
-          磁铁信号：全体贴合均值 {{ fmtCos(magnet.allMean) }}（{{ magnet.allSamples }} 项）·
-          失败挂载子集 {{ fmtCos(magnet.failedMean) }}（{{ magnet.failedSamples }} 项）·
-          {{ magnet.insufficient ? '样本不足，不作判断' : (magnet.suspicious ? '差值显著，疑似磁铁污染' : '差值未达阈值') }}
+          磁铁信号：{{ magnetComparison }} · <span data-testid="bhw-magnet-verdict">{{ magnetVerdict }}</span>
         </p>
         <p v-else class="bhid-evidence-line">磁铁信号：未知（样本不足或向量缺失，本轮未算）。</p>
         <p v-if="neighbors === null" class="bhid-evidence-line">最近邻：未知（该标签自身向量缺失）。</p>
@@ -287,6 +301,23 @@ function fmtCos(value: number | null | undefined): string {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--color-text-muted);
+}
+
+/* 核心主体徽标：沿用面板内 chip 语汇（细边框 + 沉底 + 弱化文字） */
+.bhid-core-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.3rem;
+  padding: 0 0.35rem;
+  height: 16px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-sunken);
+  color: var(--color-text-muted);
+  font-size: 0.62rem;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
 }
 
 .bhid-title {

@@ -13,9 +13,12 @@ import type {
   AuxiliaryRepairJobView,
 } from '~/api/normalizers/auxiliaryRepair'
 import type {
+  BoardHealthMagnetView,
   BoardHealthTriageCategory,
+  BoardHealthTriageGuardView,
   BoardHealthTriageItemView,
 } from '~/api/normalizers/boardHealthTriage'
+import { BOARD_HEALTH_MAGNET_CALIBER_HEALTHY_SUBSET } from '~/api/normalizers/boardHealthTriage'
 
 /** 问题项的处置状态（只反映**真实**已知任务，不臆造进度）。 */
 export type BoardHealthIssueStatus =
@@ -59,6 +62,11 @@ export interface BoardHealthIssueItem {
    * 组合标签（composite）无描述修复入口（服务端修复链只认 auxiliary）。
    */
   notExecutableReason: string | null
+  /**
+   * 核心主体标记（服务端按版块标题/描述/别名文本判定）。
+   * false = 非核心主体，或旧快照缺该字段（按「非核心主体」处理，不臆造）。
+   */
+  coreSubject: boolean
   /** 该项当前状态（只反映真实任务）。 */
   status: BoardHealthIssueStatus
 }
@@ -69,6 +77,8 @@ export interface BoardHealthOtherItem {
   label: string
   category: Extract<BoardHealthTriageCategory, 'keep' | 'insufficient'>
   evidence: string
+  /** 核心主体标记（服务端判定；旧快照缺字段 = false）。 */
+  coreSubject: boolean
 }
 
 /**
@@ -86,7 +96,13 @@ export function boardHealthRepairUnsupportedReason(labelType: string): string | 
   return '标签类型未知，无法执行描述修复'
 }
 
-/** 把分诊项拆成「需核对项」与「其余标签」两类。 */
+/**
+ * 把分诊项拆成「需核对项」与「其余标签」两类。
+ *
+ * 分流口径：remove / rewrite → 需核对；keep / insufficient → 其余标签。
+ * 闸门降级项（服务端已落为 insufficient）因此**不进需核对索引**——不新增分类、
+ * 不新增前端过滤逻辑（fix-board-health-magnet-signal D8）。
+ */
 export function splitTriageItems(
   items: BoardHealthTriageItemView[],
   labelOf: (auxId: string) => string,
@@ -109,13 +125,91 @@ export function splitTriageItems(
         suggestion: item.suggestion,
         actionable: item.actionable && !notExecutableReason,
         notExecutableReason,
+        coreSubject: item.coreSubject,
         status: statusOf(item.auxId),
       })
     } else {
-      others.push({ auxId: item.auxId, label, category: item.category, evidence: item.evidence })
+      others.push({ auxId: item.auxId, label, category: item.category, evidence: item.evidence, coreSubject: item.coreSubject })
     }
   }
   return { issues, others }
+}
+
+/** 贴合均值展示（null = 未知，不补 0）。 */
+function formatAffinity(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return '未知'
+  return value.toFixed(3)
+}
+
+/**
+ * 磁铁证据对比文案（纯派生；口径与数值都由服务端给）。
+ *
+ * 分支**按服务端口径标记 `caliber`**（fix-board-health-magnet-signal D12 / R-4），
+ * 不再拿 `goodMean === null` 当旧快照判据——`good_mean` 无 `omitempty`，新快照在
+ * 健康侧不可算时同样是 null，两者不可区分：
+ *
+ * - 新口径（`caliber = 'healthy_subset'`）且健康侧可算：
+ *   「失败子集 X vs 健康子集 Y」——与磁铁判定口径一致；
+ * - 新口径但健康侧不可算（`goodMean === null`）：「健康子集不可算（样本不足或
+ *   向量缺失）」+ 失败子集数值，**不回退**全体均值、**不标**旧口径快照；
+ * - 旧口径快照（`caliber` 为空）：回退「失败子集 X vs 全体 Y」并标注「旧口径快照」；
+ * - `caliber` 为其它非空值（协议外的未来取值）：同样走旧口径分支——保守处理，
+ *   宁可标成旧口径，也不冒充新口径结论。
+ */
+export function boardHealthMagnetComparisonText(magnet: BoardHealthMagnetView | null): string {
+  if (!magnet) return '未知（样本不足或向量缺失，本轮未算）'
+  const failed = `失败子集 ${formatAffinity(magnet.failedMean)}（${magnet.failedSamples} 项）`
+  if (magnet.caliber === BOARD_HEALTH_MAGNET_CALIBER_HEALTHY_SUBSET) {
+    if (magnet.goodMean === null) {
+      return `${failed} · 健康子集不可算（样本不足或向量缺失）`
+    }
+    return `${failed} vs 健康子集 ${formatAffinity(magnet.goodMean)}（${magnet.goodSamples} 项）`
+  }
+  return `${failed} vs 全体 ${formatAffinity(magnet.allMean)}（${magnet.allSamples} 项）· 旧口径快照`
+}
+
+/**
+ * 磁铁结论文案（纯派生；服务端已判，不重算差值）。
+ *
+ * - 新口径快照：照搬服务端结论（「差值显著，疑似磁铁污染」/「差值未达阈值」/
+ *   「样本不足，不作判断」）；
+ * - 旧口径快照（`caliber` 为空）：服务端的 `suspicious` 是**旧公式**
+ *   （`all_mean − failed_mean`）算的，语义与新口径**相反**（旧的「suspicious」
+ *   其实是「失败比全体低」）→ 结论文案必须带口径标记，不让用户读成新口径结论。
+ */
+export function boardHealthMagnetVerdictText(magnet: BoardHealthMagnetView | null): string {
+  if (!magnet) return ''
+  const base = magnet.insufficient
+    ? '样本不足，不作判断'
+    : magnet.suspicious
+      ? '差值显著，疑似磁铁污染'
+      : '差值未达阈值'
+  if (magnet.caliber === BOARD_HEALTH_MAGNET_CALIBER_HEALTHY_SUBSET) return base
+  return `旧口径快照的磁铁结论（口径已反转，勿据此操作）：${base}`
+}
+
+/** 闸门占比展示（只格式化服务端给的占比，前端不重算）。 */
+function formatGuardRatio(value: number): string {
+  return `${(value * 100).toFixed(0)}%`
+}
+
+/**
+ * 闸门降级警示文案（纯派生）。
+ *
+ * 占比 / 阈值 / 原因一律取服务端 `triage_guard` 的值——前端不自己除法、不自己判超限。
+ * 未降级（`degraded !== true`）或无闸门记录 → null（不显示警示条）。
+ */
+export function boardHealthTriageGuardNotice(guard: BoardHealthTriageGuardView | null): string | null {
+  if (!guard || !guard.degraded) return null
+  const parts: string[] = ['本轮信号可能不可用、不得按此批量操作。']
+  if (guard.ratio !== null && guard.threshold !== null) {
+    parts.push(`可执行占比 ${formatGuardRatio(guard.ratio)} 超过阈值 ${formatGuardRatio(guard.threshold)}。`)
+  } else if (guard.ratio !== null) {
+    parts.push(`可执行占比 ${formatGuardRatio(guard.ratio)}。`)
+  }
+  const reason = guard.reason.trim()
+  if (reason) parts.push(reason)
+  return parts.join('')
 }
 
 /** 任务状态 → 工作面处置状态。 */

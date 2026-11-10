@@ -56,6 +56,12 @@ export interface BoardHealthLabelMetric {
   label: string
   /** 构成标签类型（auxiliary | composite）；缺字段 = 旧快照（类型未知）。 */
   label_type?: string
+  /**
+   * 核心主体标记（fix-board-health-magnet-signal D3）：标签名出现在版块标题 /
+   * description / aliases 任一文本中。核心主体是版块自身要谈论的对象，
+   * MUST NOT 作为摘除或重写对象。缺字段 = 旧快照（按「非核心主体」处理，不臆造）。
+   */
+  core_subject?: boolean
   samples: number
   cosine_mean: number | null
   cosine_median: number | null
@@ -73,14 +79,60 @@ export interface BoardHealthLabelMetric {
   desc_flags?: string[] | null
 }
 
-/** 体检快照·磁铁信号（构成标签对失败挂载子集 vs 全部挂载的贴合度差）。 */
+/**
+ * 体检快照·磁铁信号（构成标签对失败挂载子集 vs 健康挂载子集的贴合度差）。
+ *
+ * 判定口径（fix-board-health-magnet-signal D1）：`failed_mean - good_mean ≥ 阈值`
+ * 才成立——「磁铁」的语义是「把跑题的挂载吸过来」，失败侧贴合均值必须**高于**健康侧。
+ *
+ * `good_mean` / `good_samples` 是判定用的健康侧；`all_mean` / `all_samples` **保留
+ * 但退出嫌疑判定**（历史快照解析 + 旧口径回退展示）。
+ *
+ * 口径标记 `caliber`（fix-board-health-magnet-signal D12 / review R-4）：
+ *  - `'healthy_subset'` = 新口径（本轮由后端写入；**与样本是否充足无关**——
+ *    健康侧不可算时照样写这个值）；
+ *  - 空串 / 缺字段 = 旧口径快照（历史快照或该字段写入之前的快照）。
+ *
+ * 消费方 MUST 按 `caliber` 区分「旧口径快照」与「新快照但健康侧不可算」——
+ * `good_mean` 无 `omitempty`，新快照在健康侧不可算时同样是 null，两者不可区分。
+ */
 export interface BoardHealthMagnetSignal {
-  all_mean: number | null
+  /** 健康挂载子集（direction_mismatch=false）贴合均值；缺字段/null = 旧快照或该侧无样本。 */
+  good_mean?: number | null
+  /**
+   * 磁铁口径标记：`healthy_subset` = 新口径（失败子集 vs 健康子集）；
+   * 空串 / 缺字段 = 旧口径快照（全体口径）。
+   */
+  caliber?: string
   failed_mean: number | null
-  all_samples: number
+  all_mean: number | null
+  /** 健康挂载子集样本数；缺字段 = 旧快照（按 0 处理，不臆造）。 */
+  good_samples?: number
   failed_samples: number
+  all_samples: number
   suspicious: boolean
   insufficient: boolean
+}
+
+/**
+ * 体检快照·分诊合理性闸门结论（fix-board-health-magnet-signal D6/G3）。
+ *
+ * `actionable` / `ratio` 描述的是**降级前**的状态（= 闸门触发原因），
+ * 不是降级后的条数；`degraded` = 本轮可执行项是否被整轮降级为证据不足。
+ */
+export interface BoardHealthTriageGuard {
+  /** 降级前的可执行项条数（remove + rewrite）。 */
+  actionable: number
+  /** 分诊清单总条数。 */
+  total: number
+  /** 可执行占比（0-1）；降级前的状态。 */
+  ratio: number
+  /** 闸门阈值（0-1，默认 0.8）。 */
+  threshold: number
+  /** 本轮是否被闸门降级。 */
+  degraded: boolean
+  /** 降级原因（服务端文案）。 */
+  reason: string
 }
 
 /** 体检快照·最近邻证据（active 辅助标签 top-3，排除自身）。 */
@@ -121,6 +173,10 @@ export interface BoardHealthMetrics {
   labels: BoardHealthLabelMetric[]
   /** 标签级分诊清单；缺字段/null = 历史快照/降级轮次（按旧形态展示）。 */
   triage?: BoardHealthTriageItem[] | null
+  /**
+   * 分诊合理性闸门结论；缺字段/null = 无闸门记录（旧快照，或本轮未产生闸门结论）。
+   */
+  triage_guard?: BoardHealthTriageGuard | null
 }
 
 /** 未收编候选（事实画像 diff：成员 tags 高频携带但不在版块构成中）。 */

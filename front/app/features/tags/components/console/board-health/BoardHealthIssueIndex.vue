@@ -8,15 +8,21 @@
  * 交互约定（standard/frontend/interaction-conventions）：
  *  - 状态标记在**标题左侧**同一行（图标 + aria-label），不塞进右侧 meta；
  *  - 状态说明行是纯说明（不可交互），不伪装成动作。
+ *
+ * fix-board-health-magnet-signal（ui-design 三处信息级变化之②③）：
+ *  - 核心主体徽标（只读标记，紧跟状态标记之后、标题文字之前）；
+ *  - 闸门降级警示条（`triage_guard.degraded === true` 时出现在索引顶部）。
  */
 import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import {
   BOARD_HEALTH_ISSUE_STATUS_LABEL,
+  boardHealthTriageGuardNotice,
   type BoardHealthIssueItem,
   type BoardHealthIssueStatus,
   type BoardHealthOtherItem,
 } from './boardHealthWorkspace'
+import type { BoardHealthTriageGuardView } from '~/api/normalizers/boardHealthTriage'
 
 const props = defineProps<{
   issues: BoardHealthIssueItem[]
@@ -24,6 +30,8 @@ const props = defineProps<{
   selectedAuxId: string | null
   /** 已由宿主确认真实摘除成功的标签（canonical ID）；未收到反馈前不标"已摘除"。 */
   removedAuxIds?: string[]
+  /** 分诊合理性闸门结论（服务端已算好）；null = 无闸门记录。 */
+  guard?: BoardHealthTriageGuardView | null
 }>()
 
 const emit = defineEmits<{
@@ -31,6 +39,9 @@ const emit = defineEmits<{
 }>()
 
 const removed = computed(() => new Set(props.removedAuxIds ?? []))
+
+/** 闸门警示文案（纯派生；无闸门记录 / 未降级 → null，不显示警示条）。 */
+const guardNotice = computed(() => boardHealthTriageGuardNotice(props.guard ?? null))
 
 function statusLabel(item: BoardHealthIssueItem): string {
   if (removed.value.has(item.auxId)) return '已摘除'
@@ -71,6 +82,12 @@ function otherCategoryLabel(item: BoardHealthOtherItem): string {
 
 <template>
   <div class="bhw-index" data-testid="bhw-index">
+    <!-- 闸门降级警示条：服务端判定本轮信号不可用（占比/阈值/原因均取服务端值） -->
+    <p v-if="guardNotice" class="bhw-guard" role="alert" data-testid="bhw-guard-notice">
+      <Icon icon="mdi:shield-alert-outline" width="14" class="bhw-guard-icon" />
+      <span>{{ guardNotice }}</span>
+    </p>
+
     <nav class="bhw-tasks" aria-label="待核对问题">
       <p v-if="issues.length === 0" class="bhw-empty" data-testid="bhw-index-empty">
         本轮没有需核对的项。
@@ -93,6 +110,11 @@ function otherCategoryLabel(item: BoardHealthOtherItem): string {
             class="bhw-task-flag"
             :aria-label="statusLabel(item)"
           />
+          <span
+            v-if="item.coreSubject"
+            class="bhw-core-badge"
+            :data-testid="`bhw-core-subject-${item.auxId}`"
+          >核心主体</span>
           <strong class="bhw-task-name">{{ item.label }}</strong>
           <span class="bhw-task-status">{{ statusLabel(item) }}</span>
         </span>
@@ -107,6 +129,7 @@ function otherCategoryLabel(item: BoardHealthOtherItem): string {
       <div v-for="item in others" :key="item.auxId" class="bhw-other-item" :data-testid="`bhw-other-${item.auxId}`">
         <p class="bhw-other-head">
           <b>{{ item.label }}</b>
+          <span v-if="item.coreSubject" class="bhw-core-badge" :data-testid="`bhw-core-subject-${item.auxId}`">核心主体</span>
           <span class="bhw-other-kind">{{ otherCategoryLabel(item) }}</span>
         </p>
         <p class="bhw-other-evidence">{{ item.evidence }}</p>
@@ -127,6 +150,43 @@ function otherCategoryLabel(item: BoardHealthOtherItem): string {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+}
+
+/* 闸门降级警示条：醒目（警示色边框 + 底色），纯说明不伪装成动作 */
+.bhw-guard {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--color-warning);
+  border-radius: 8px;
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+  font-size: 0.72rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.bhw-guard-icon {
+  flex: none;
+  margin-top: 0.1rem;
+}
+
+/* 核心主体徽标：沿用面板内 chip 语汇（细边框 + 沉底 + 弱化文字） */
+.bhw-core-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 0 0.35rem;
+  height: 16px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-sunken);
+  color: var(--color-text-muted);
+  font-size: 0.62rem;
+  letter-spacing: normal;
+  white-space: nowrap;
 }
 
 .bhw-task {

@@ -14,7 +14,9 @@
  *    rewrite 项不可执行**（描述修复链只覆盖辅助标签 → 没有修复入口），证据照常
  *    展示、不隐藏、不当它健康；remove 项不受类型影响；类型未知（旧快照缺字段）
  *    同样按不可执行处理，不臆造类型；
- *  - 历史快照缺 triage 字段 = 旧形态（available=false），不拿现有统计反推诊断。
+ *  - 历史快照缺 triage 字段 = 旧形态（available=false），不拿现有统计反推诊断；
+ *  - 磁铁口径标记 `caliber` 只搬运不判定：新口径 = `healthy_subset`、旧口径 = 空串；
+ *    缺失或非字符串一律归空串（旧口径），**不臆造**新口径标记。
  */
 import type { BoardHealthSnapshotDTO } from '~/api/semanticBoards'
 
@@ -40,6 +42,13 @@ export interface BoardHealthTriageItemView {
    * 展示，不隐藏、不当它健康）。摘除不受影响（走既有 DELETE 链）。
    */
   labelType: string
+  /**
+   * 核心主体标记（服务端按版块标题/描述/别名文本判定）。
+   *
+   * 核心主体是版块自身要谈论的对象，MUST NOT 作为摘除或重写对象。旧快照缺
+   * 该字段 → false（按「非核心主体」处理，不臆造）。
+   */
+  coreSubject: boolean
 }
 
 /** 本轮分诊整体视图（available=false = 历史快照/无分诊，按旧形态展示）。 */
@@ -52,14 +61,58 @@ export interface BoardHealthTriageView {
   dropped: number
 }
 
+/**
+ * 磁铁口径标记：新口径（判定用「失败子集 vs 健康子集」）。
+ *
+ * 空串 = 旧口径快照（全体口径 / 该字段写入之前的历史快照）。
+ */
+export const BOARD_HEALTH_MAGNET_CALIBER_HEALTHY_SUBSET = 'healthy_subset'
+
 /** 磁铁信号只读视图（服务端口径，前端不重算 gap）。 */
 export interface BoardHealthMagnetView {
+  /**
+   * 健康挂载子集（direction_mismatch=false）贴合均值。
+   *
+   * null = 旧快照缺该字段（回退旧口径展示并标注）或该侧无样本。
+   */
+  goodMean: number | null
+  /** 健康挂载子集样本数（旧快照按 0 处理，不臆造）。 */
+  goodSamples: number
   allMean: number | null
   failedMean: number | null
   allSamples: number
   failedSamples: number
   suspicious: boolean
   insufficient: boolean
+  /**
+   * 磁铁口径标记（服务端写入）。
+   *
+   * `'healthy_subset'` = 新口径；空串 = 旧口径快照。**与样本是否充足无关**——
+   * 新快照在健康侧不可算时照样是新口径，因此消费方 MUST NOT 用
+   * `goodMean === null` 判定旧快照（fix-board-health-magnet-signal D12 / R-4）。
+   */
+  caliber: string
+}
+
+/**
+ * 分诊合理性闸门只读视图（服务端已算好占比与阈值，前端不重算）。
+ *
+ * `actionable` / `ratio` 描述的是**降级前**的状态（= 闸门触发原因），
+ * 不是降级后的条数；`degraded` = 本轮可执行项是否被整轮降级为证据不足。
+ */
+export interface BoardHealthTriageGuardView {
+  /** 降级前的可执行项条数（remove + rewrite）。 */
+  actionable: number
+  /** 分诊清单总条数。 */
+  total: number
+  /** 可执行占比（0-1）；null = 服务端未给有效数值（不补 0、不臆造）。 */
+  ratio: number | null
+  /** 闸门阈值（0-1）；null = 服务端未给有效数值。 */
+  threshold: number | null
+  /** 本轮是否被闸门降级（只认显式 true）。 */
+  degraded: boolean
+  /** 降级原因（服务端文案；空串 = 服务端未给原因）。 */
+  reason: string
 }
 
 /** 最近邻证据只读视图（字符串 auxId）。 */
@@ -80,6 +133,12 @@ export interface BoardHealthLabelSignalView {
   neighbors: BoardHealthNeighborView[] | null
   /** 命中的文章式词根（空 = 未命中）。 */
   descFlags: string[]
+  /**
+   * 核心主体标记（服务端按版块标题/描述/别名文本判定）。
+   *
+   * 旧快照缺该字段 → false（按「非核心主体」处理，不臆造）。
+   */
+  coreSubject: boolean
 }
 
 /**
@@ -113,6 +172,17 @@ function optNum(value: unknown): number | null {
 }
 
 /**
+ * 磁铁口径标记归一化（服务端 `magnet.caliber`）。
+ *
+ * - `'healthy_subset'` → 原样（新口径）；
+ * - 空串 → 空串（旧口径快照）；
+ * - 缺失 / 非字符串 → 空串（按旧口径处理，**不臆造**新口径标记）。
+ */
+function magnetCaliber(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/**
  * 归一化本轮分诊清单。
  *
  * 逐项校验：aux 引用必须是本轮构成标签（metrics.labels）、分类必须在闭集内、
@@ -131,13 +201,16 @@ export function normalizeBoardHealthTriage(snapshot: BoardHealthSnapshotDTO | nu
   if (!Array.isArray(raw)) return { available: false, items: [], dropped: 0 }
 
   // 分诊只能指向本轮构成标签：metrics.labels 是构成标签全集（服务端同轮落库）。
-  // 同时记下每个标签的 label_type——修复链只认 auxiliary（4.1 M1）。
+  // 同时记下每个标签的 label_type——修复链只认 auxiliary（4.1 M1），
+  // 以及 core_subject（核心主体标记，旧快照缺字段按 false 处理）。
   const known = new Set<number>()
   const labelTypeByID = new Map<number, string>()
+  const coreSubjectByID = new Map<number, boolean>()
   for (const label of snapshot.metrics?.labels ?? []) {
     if (typeof label?.aux_id !== 'number') continue
     known.add(label.aux_id)
     labelTypeByID.set(label.aux_id, str(label?.label_type).trim())
+    coreSubjectByID.set(label.aux_id, label?.core_subject === true)
   }
 
   interface Group {
@@ -203,6 +276,7 @@ export function normalizeBoardHealthTriage(snapshot: BoardHealthSnapshotDTO | nu
       suggestion: isRewrite ? group.suggestion : '',
       actionable: isRewrite ? (group.suggestion !== '' && repairSupported) : group.category === 'remove',
       labelType,
+      coreSubject: coreSubjectByID.get(group.auxId) === true,
     })
   }
 
@@ -227,6 +301,26 @@ export function normalizeBoardHealthMagnetFlow(snapshot: BoardHealthSnapshotDTO 
 }
 
 /**
+ * 归一化分诊合理性闸门结论（服务端已算好占比与阈值，前端只搬运）。
+ *
+ * - 快照缺 `triage_guard` / 无快照 → null（**无闸门记录**，不臆造结论）；
+ * - `ratio` / `threshold` 非法或缺失 → null（未知；不补 0 冒充占比）；
+ * - `degraded` 只认显式 true（'true' / 1 之类都不认）。
+ */
+export function normalizeBoardHealthTriageGuard(snapshot: BoardHealthSnapshotDTO | null): BoardHealthTriageGuardView | null {
+  const guard = snapshot?.metrics?.triage_guard
+  if (!guard || typeof guard !== 'object') return null
+  return {
+    actionable: num(guard.actionable),
+    total: num(guard.total),
+    ratio: optNum(guard.ratio),
+    threshold: optNum(guard.threshold),
+    degraded: guard.degraded === true,
+    reason: str(guard.reason).trim(),
+  }
+}
+
+/**
  * 归一化标签级分诊信号（磁铁 / 最近邻 / 描述事件性预筛 + 描述快照）。
  *
  * 只搬运服务端信号：magnet 的 gap/阈值判定、neighbors 的 top-k、desc_flags 的
@@ -245,12 +339,17 @@ export function normalizeBoardHealthLabelSignals(snapshot: BoardHealthSnapshotDT
       description: str(label?.description),
       magnet: magnet
         ? {
+            // 健康侧：旧快照缺 good_mean → null（上层按 caliber 决定回退旧口径并标注）。
+            goodMean: optNum(magnet.good_mean),
+            goodSamples: num(magnet.good_samples),
             allMean: optNum(magnet.all_mean),
             failedMean: optNum(magnet.failed_mean),
             allSamples: num(magnet.all_samples),
             failedSamples: num(magnet.failed_samples),
             suspicious: magnet.suspicious === true,
             insufficient: magnet.insufficient === true,
+            // 口径标记：缺失/非字符串 → 空串（不臆造 healthy_subset）。
+            caliber: magnetCaliber(magnet.caliber),
           }
         : null,
       neighbors: neighbors
@@ -261,6 +360,7 @@ export function normalizeBoardHealthLabelSignals(snapshot: BoardHealthSnapshotDT
           }))
         : null,
       descFlags: Array.isArray(label?.desc_flags) ? label.desc_flags.filter((flag): flag is string => typeof flag === 'string') : [],
+      coreSubject: label?.core_subject === true,
     }
   })
 }

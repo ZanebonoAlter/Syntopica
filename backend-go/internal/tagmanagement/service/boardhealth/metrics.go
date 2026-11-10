@@ -4,9 +4,13 @@ import (
 	"context"
 	"math"
 	"sort"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
+	"syntopica-backend/internal/models"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/service/auxlabel"
 )
@@ -132,6 +136,81 @@ func loadCompositionLabels(ctx context.Context, db *gorm.DB, boardID uint) ([]ta
 		}
 	}
 	return metrics, auxEmb, nil
+}
+
+// computeCoreSubjects marks the composition labels that ARE the board's own
+// subject (核心主体) — fix-board-health-magnet-signal design D3（review
+// R-6 收紧后的规则）:
+//
+//   - 标签名（空白/大小写归一后）出现在版块 **description** 或任一
+//     **alias** 中 → 核心主体成立（不限字数）；
+//   - **仅**出现在版块 **标题**（board.Label）中 → 还需标签名归一后 ≥ 3 个
+//     字符（rune 计）才成立：2 字短词既可能是简称（「美伊」之于「伊朗」），
+//     也可能是泛化地域词（「中东」）——只凭标题不足以判定，更不得据简称推断
+//     全名；
+//   - 三处均不出现 → 非核心主体。
+//
+// 纯字面匹配（归一后子串），MUST NOT 用向量相似度或语义推断：判定要可核、
+// 可解释。命中即 CoreSubject=true —— 规则层闸门 G1 会把 LLM 给核心主体的
+// remove/rewrite 改判 keep（提示词层也禁判，但提示词已被实证会翻转，规则层
+// 才是唯一不依赖模型听话的防线）。
+//
+// 边界：board 为 nil、三个文本全空、标签名为空/纯空白 → 不标记且不 panic。
+func computeCoreSubjects(board *models.SemanticLabel, labels []tagmodels.BoardHealthLabelMetrics) {
+	if board == nil {
+		return
+	}
+	title := normalizeSubjectText(board.Label)
+	description := normalizeSubjectText(board.Description)
+	aliases := make([]string, 0, len(board.Aliases))
+	for _, alias := range board.Aliases {
+		if normalized := normalizeSubjectText(alias); normalized != "" {
+			aliases = append(aliases, normalized)
+		}
+	}
+	for i := range labels {
+		name := normalizeSubjectText(labels[i].Label)
+		if name == "" {
+			continue // 空名 / 纯空白名不参与匹配（构成标签名不会为空，防御）
+		}
+		// description / aliases 命中即成立（不限字数）。
+		if description != "" && strings.Contains(description, name) {
+			labels[i].CoreSubject = true
+			continue
+		}
+		for _, alias := range aliases {
+			if strings.Contains(alias, name) {
+				labels[i].CoreSubject = true
+				break
+			}
+		}
+		if labels[i].CoreSubject {
+			continue
+		}
+		// 仅标题命中：需标签名 ≥ 3 字符（简称/泛化词不据标题推断）。
+		if title != "" && strings.Contains(title, name) && utf8.RuneCountInString(name) >= coreSubjectTitleMinRunes {
+			labels[i].CoreSubject = true
+		}
+	}
+}
+
+// coreSubjectTitleMinRunes 是「仅标题命中」时标签名的最小字符数（归一后按
+// rune 计）。2 字短词可能是简称（「美伊」之于「伊朗」）也可能是泛化地域词
+// （「中东」）——两者都不足以据标题认定核心主体（design D3 / review R-6）。
+const coreSubjectTitleMinRunes = 3
+
+// normalizeSubjectText lowercases the text and drops every whitespace rune
+// (含全角空格) so the substring match ignores spacing and case differences.
+func normalizeSubjectText(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	return b.String()
 }
 
 // ComputeBoardMetrics produces the board-level aggregate (口径①：全部匹配行).

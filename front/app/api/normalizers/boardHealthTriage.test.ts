@@ -4,6 +4,10 @@
  * 覆盖：旧快照缺 triage / 新快照四类分诊 / 非法分类 / 非法 aux 引用 / 重复记录 /
  * 无证据 / keep-insufficient 不带可执行建议 / 字符串 ID 与 camelCase /
  * magnet·neighbors·desc_flags 信号搬运（前端不重算口径）。
+ *
+ * fix-board-health-magnet-signal：健康子集口径（good_mean/good_samples）、
+ * 核心主体标记（core_subject）、分诊合理性闸门（triage_guard）的新增字段搬运，
+ * 以及旧快照缺这些字段时的容错（null / false / 0，不报错、不臆造）。
  */
 import { describe, expect, it } from 'vitest'
 import type { BoardHealthLabelMetric, BoardHealthSnapshotDTO } from '~/api/semanticBoards'
@@ -11,6 +15,7 @@ import {
   normalizeBoardHealthLabelSignals,
   normalizeBoardHealthMagnetFlow,
   normalizeBoardHealthTriage,
+  normalizeBoardHealthTriageGuard,
 } from './boardHealthTriage'
 
 function labelMetric(overrides: Partial<BoardHealthLabelMetric> = {}): BoardHealthLabelMetric {
@@ -94,10 +99,11 @@ describe('normalizeBoardHealthTriage', () => {
         suggestion: '中国的超大城市',
         actionable: true,
         labelType: 'auxiliary',
+        coreSubject: false,
       },
-      { auxId: '12', category: 'keep', evidence: '方向通过率 100%，短名天花板', suggestion: '', actionable: false, labelType: 'auxiliary' },
-      { auxId: '13', category: 'remove', evidence: '磁铁信号成立：失败子集 0.52 vs 全体 0.68', suggestion: '', actionable: true, labelType: 'auxiliary' },
-      { auxId: '14', category: 'insufficient', evidence: '失败子集样本 2 条，低于最小样本量', suggestion: '', actionable: false, labelType: 'auxiliary' },
+      { auxId: '12', category: 'keep', evidence: '方向通过率 100%，短名天花板', suggestion: '', actionable: false, labelType: 'auxiliary', coreSubject: false },
+      { auxId: '13', category: 'remove', evidence: '磁铁信号成立：失败子集 0.52 vs 全体 0.68', suggestion: '', actionable: true, labelType: 'auxiliary', coreSubject: false },
+      { auxId: '14', category: 'insufficient', evidence: '失败子集样本 2 条，低于最小样本量', suggestion: '', actionable: false, labelType: 'auxiliary', coreSubject: false },
     ])
   })
 
@@ -124,7 +130,7 @@ describe('normalizeBoardHealthTriage', () => {
       { aux_id: 11, category: 'rewrite', evidence: '第一条', suggestion: '新描述 A' },
     ]))
     expect(view.items).toEqual([
-      { auxId: '11', category: 'rewrite', evidence: '第一条', suggestion: '新描述 A', actionable: true, labelType: 'auxiliary' },
+      { auxId: '11', category: 'rewrite', evidence: '第一条', suggestion: '新描述 A', actionable: true, labelType: 'auxiliary', coreSubject: false },
     ])
     expect(view.dropped).toBe(1)
   })
@@ -159,7 +165,7 @@ describe('normalizeBoardHealthTriage', () => {
       { aux_id: 11, category: 'rewrite', evidence: '描述偏窄' },
     ]))
     expect(view.items).toEqual([
-      { auxId: '11', category: 'rewrite', evidence: '描述偏窄', suggestion: '', actionable: false, labelType: 'auxiliary' },
+      { auxId: '11', category: 'rewrite', evidence: '描述偏窄', suggestion: '', actionable: false, labelType: 'auxiliary', coreSubject: false },
     ])
   })
 
@@ -168,7 +174,7 @@ describe('normalizeBoardHealthTriage', () => {
       { aux_id: 12, category: 'keep', evidence: '短名天花板', suggestion: '不该出现的建议' },
     ]))
     expect(view.items).toEqual([
-      { auxId: '12', category: 'keep', evidence: '短名天花板', suggestion: '', actionable: false, labelType: 'auxiliary' },
+      { auxId: '12', category: 'keep', evidence: '短名天花板', suggestion: '', actionable: false, labelType: 'auxiliary', coreSubject: false },
     ])
   })
 
@@ -194,6 +200,7 @@ describe('normalizeBoardHealthTriage', () => {
         suggestion: '展会举办地',
         actionable: false,
         labelType: 'composite',
+        coreSubject: false,
       },
     ])
   })
@@ -242,7 +249,7 @@ describe('normalizeBoardHealthLabelSignals', () => {
         labels: [
           labelMetric({
             description: '上海知名商业综合体',
-            magnet: { all_mean: 0.68, failed_mean: 0.52, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false },
+            magnet: { good_mean: 0.7, all_mean: 0.68, failed_mean: 0.52, good_samples: 284, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false, caliber: 'healthy_subset' },
             neighbors: [
               { aux_id: 21, label: '举办地点', cosine: 0.796 },
               { aux_id: 22, label: '小商品城', cosine: 0.709 },
@@ -261,18 +268,22 @@ describe('normalizeBoardHealthLabelSignals', () => {
         label: '上海',
         description: '上海知名商业综合体',
         magnet: {
+          goodMean: 0.7,
+          goodSamples: 284,
           allMean: 0.68,
           failedMean: 0.52,
           allSamples: 40,
           failedSamples: 6,
           suspicious: true,
           insufficient: false,
+          caliber: 'healthy_subset',
         },
         neighbors: [
           { auxId: '21', label: '举办地点', cosine: 0.796 },
           { auxId: '22', label: '小商品城', cosine: 0.709 },
         ],
         descFlags: ['此次', '期间'],
+        coreSubject: false,
       },
       // 缺信号的历史快照：磁铁/最近邻为 null（信号不足），词根空数组
       {
@@ -282,8 +293,79 @@ describe('normalizeBoardHealthLabelSignals', () => {
         magnet: null,
         neighbors: null,
         descFlags: [],
+        coreSubject: false,
       },
     ])
+  })
+
+  // fix-board-health-magnet-signal：旧快照没有健康侧口径 → 不臆造，回退信号。
+  it('旧快照缺 good_mean/good_samples：goodMean=null、goodSamples=0（不报错、不臆造）', () => {
+    const withOldMagnet: BoardHealthSnapshotDTO = {
+      ...snapshot(),
+      metrics: {
+        ...snapshot().metrics,
+        labels: [
+          labelMetric({
+            magnet: { all_mean: 0.68, failed_mean: 0.52, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false },
+          }),
+        ],
+      },
+    }
+    const views = normalizeBoardHealthLabelSignals(withOldMagnet)
+    expect(views[0]?.magnet?.goodMean).toBeNull()
+    expect(views[0]?.magnet?.goodSamples).toBe(0)
+    // 旧字段仍在（历史兼容）
+    expect(views[0]?.magnet?.allMean).toBe(0.68)
+    expect(views[0]?.magnet?.failedMean).toBe(0.52)
+    // 旧快照无口径标记 → 空串（旧口径），不臆造新口径
+    expect(views[0]?.magnet?.caliber).toBe('')
+  })
+
+  // fix-board-health-magnet-signal D12 / R-4：口径标记只搬运，不判定。
+  it('口径标记归一化：healthy_subset 原样；缺失 / 空串 / 非字符串 → 空串（不臆造新口径）', () => {
+    function magnetOf(magnet: unknown): string {
+      const withMagnet: BoardHealthSnapshotDTO = {
+        ...snapshot(),
+        metrics: {
+          ...snapshot().metrics,
+          labels: [labelMetric({ magnet: magnet as never })],
+        },
+      }
+      return normalizeBoardHealthLabelSignals(withMagnet)[0]?.magnet?.caliber ?? ''
+    }
+
+    expect(magnetOf({ good_mean: 0.7, all_mean: 0.68, failed_mean: 0.52, good_samples: 284, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false, caliber: 'healthy_subset' })).toBe('healthy_subset')
+    // 旧口径快照：字段存在但为空串
+    expect(magnetOf({ all_mean: 0.68, failed_mean: 0.52, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false, caliber: '' })).toBe('')
+    // 字段缺失（该字段写入之前的历史快照）
+    expect(magnetOf({ all_mean: 0.68, failed_mean: 0.52, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false })).toBe('')
+    // 非字符串 → 空串（不臆造 healthy_subset）
+    expect(magnetOf({ all_mean: 0.68, failed_mean: 0.52, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false, caliber: 42 })).toBe('')
+    expect(magnetOf({ all_mean: 0.68, failed_mean: 0.52, all_samples: 40, failed_samples: 6, suspicious: true, insufficient: false, caliber: { value: 'healthy_subset' } })).toBe('')
+  })
+
+  it('核心主体标记：core_subject 透出；缺字段按 false（不臆造）', () => {
+    const withCore: BoardHealthSnapshotDTO = {
+      ...snapshot(),
+      metrics: {
+        ...snapshot().metrics,
+        labels: [
+          labelMetric({ aux_id: 11, label: '伊朗', core_subject: true }),
+          labelMetric({ aux_id: 12, label: '卡塔尔' }),
+        ],
+        triage: [
+          { aux_id: 11, category: 'keep', evidence: '核心主体保护：该标签出现在板块标题/描述/别名中' },
+          { aux_id: 12, category: 'keep', evidence: '方向通过率 100%' },
+        ],
+      },
+    }
+    const views = normalizeBoardHealthLabelSignals(withCore)
+    expect(views[0]?.coreSubject).toBe(true)
+    expect(views[1]?.coreSubject).toBe(false)
+
+    const triage = normalizeBoardHealthTriage(withCore)
+    expect(triage.items[0]?.coreSubject).toBe(true)
+    expect(triage.items[1]?.coreSubject).toBe(false)
   })
 
   it('无快照：空数组，不补造信号', () => {
@@ -330,5 +412,69 @@ describe('normalizeBoardHealthMagnetFlow', () => {
   it('缺该字段 / 无快照：null（未知，不补 0）', () => {
     expect(normalizeBoardHealthMagnetFlow(snapshot())).toBeNull()
     expect(normalizeBoardHealthMagnetFlow(null)).toBeNull()
+  })
+})
+
+describe('normalizeBoardHealthTriageGuard', () => {
+  function withGuard(guard: unknown): BoardHealthSnapshotDTO {
+    const base = snapshot()
+    return {
+      ...base,
+      metrics: { ...base.metrics, triage_guard: guard } as BoardHealthSnapshotDTO['metrics'],
+    }
+  }
+
+  it('服务端已算好的闸门结论：只搬运（占比/阈值/降级原因原样透出）', () => {
+    const view = normalizeBoardHealthTriageGuard(withGuard({
+      actionable: 47,
+      total: 47,
+      ratio: 1,
+      threshold: 0.8,
+      degraded: true,
+      reason: '可执行占比 47/47（100%）超过阈值 0.8，本轮信号不可用',
+    }))
+    expect(view).toEqual({
+      actionable: 47,
+      total: 47,
+      ratio: 1,
+      threshold: 0.8,
+      degraded: true,
+      reason: '可执行占比 47/47（100%）超过阈值 0.8，本轮信号不可用',
+    })
+  })
+
+  it('未降级轮：degraded=false 也照常搬运（占比/阈值可见）', () => {
+    const view = normalizeBoardHealthTriageGuard(withGuard({
+      actionable: 34,
+      total: 47,
+      ratio: 0.7234,
+      threshold: 0.8,
+      degraded: false,
+      reason: '',
+    }))
+    expect(view?.degraded).toBe(false)
+    expect(view?.ratio).toBe(0.7234)
+    expect(view?.reason).toBe('')
+  })
+
+  it('非法数值：ratio/threshold 回落为 null（不补 0 冒充占比），degraded 只认显式 true', () => {
+    const view = normalizeBoardHealthTriageGuard(withGuard({
+      actionable: '47',
+      total: 47,
+      ratio: 'not-a-number',
+      threshold: Number.NaN,
+      degraded: 'true',
+      reason: 42,
+    }))
+    expect(view?.ratio).toBeNull()
+    expect(view?.threshold).toBeNull()
+    expect(view?.degraded).toBe(false)
+    expect(view?.actionable).toBe(0)
+    expect(view?.reason).toBe('')
+  })
+
+  it('缺该字段 / 无快照：null（无闸门记录，不臆造结论）', () => {
+    expect(normalizeBoardHealthTriageGuard(snapshot())).toBeNull()
+    expect(normalizeBoardHealthTriageGuard(null)).toBeNull()
   })
 })

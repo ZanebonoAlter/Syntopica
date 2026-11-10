@@ -16,6 +16,11 @@ import (
 // collectBoardStatistics, plus one pgvector top-K query per composition
 // label and one flow aggregation per board. No matching recomputation, no
 // writes (红线 20/22: 口径唯一实现于 boardhealth，体检零写).
+//
+// 磁铁信号口径（fix-board-health-magnet-signal D1/D2，2026-11-09 反转）：
+// 判定用「失败子集均值显著高于健康子集均值」（语义：磁铁把跑题的挂载吸了
+// 过来），不再是「失败子集均值显著低于全体均值」——旧口径与语义相反，会把
+// 核心主体系统性点成名。全体均值（all 侧）保留但退出判定。
 
 // neighborTopK is the pgvector top-K of the neighbor signal (spec: top-3).
 const neighborTopK = 3
@@ -51,19 +56,30 @@ func screenDescription(desc string) []string {
 
 // computeMagnetSignals fills every composition label's Magnet field from the
 // same-round in-memory data, grouping the board's mounted rows by
-// direction_mismatch (design D2):
-//   - all side = every vector-bearing mounted tag (口径 identical to the
-//     affinity distribution — 不筛样本); failed side = the direction_mismatch
-//     subset of those;
-//   - suspicious = all_mean - failed_mean >= MagnetGap AND failed samples
-//     >= MagnetMinFailed AND all samples >= MinSampleSize;
+// direction_mismatch (fix-board-health-magnet-signal design D1):
+//   - healthy side (good) = direction_mismatch=false mounts; failed side =
+//     direction_mismatch=true mounts; all side = both (口径 identical to the
+//     affinity distribution — 不筛样本);
+//   - suspicious = failed_mean - good_mean >= MagnetGap AND good samples
+//     >= MinSampleSize AND failed samples >= MagnetMinFailed;
+//   - 语义：「磁铁」= 把跑题的挂载吸过来 —— 失败侧的贴合均值必须**高于**
+//     健康侧。旧口径（all_mean - failed_mean）与语义相反，2026-11-09 真库
+//     实证：失败挂载按定义就与本板方向不符、与核心主体天然不相似，旧口径
+//     于是「越是核心主体 gap 越大、越像污染源」，全板 41/47 成立、信号
+//     失去区分度；
 //   - either side short on samples, or the label's own embedding missing →
 //     Insufficient, never a suspicion verdict (样本不足/向量缺失不硬凑);
+//   - the all side is still computed（展示 + 历史快照兼容）but MUST NOT take
+//     part in the verdict (all_mean ≡ cosine_mean, 见 models 注释);
+//   - 每个信号都带 caliber 口径标记（"healthy_subset" = 本轮新口径；空串 =
+//     旧口径/历史快照），让消费方能区分「旧快照」与「新快照但健康侧不可算」
+//     ——good_mean 为 nil 无法承担这个区分（design D12 / review R-4）;
 //   - no per-label attribution of which tag was "attracted" by which label
 //     (红线: 不做单标签吸引归因 — the failed subset is the same board-level
 //     rows for every label, only the cosine values differ).
 func computeMagnetSignals(labels []tagmodels.BoardHealthLabelMetrics, auxEmb map[uint][]float64, rows []matchedRow, tagEmb map[uint][]float64, config Config) {
 	allVectors := make([][]float64, 0, len(rows))
+	goodVectors := make([][]float64, 0, len(rows))
 	failedVectors := make([][]float64, 0)
 	for _, row := range rows {
 		vector, ok := tagEmb[row.TopicTagID]
@@ -73,13 +89,21 @@ func computeMagnetSignals(labels []tagmodels.BoardHealthLabelMetrics, auxEmb map
 		allVectors = append(allVectors, vector)
 		if row.DirectionMismatch {
 			failedVectors = append(failedVectors, vector)
+		} else {
+			goodVectors = append(goodVectors, vector)
 		}
 	}
 	for i := range labels {
 		entry := &labels[i]
 		signal := &tagmodels.BoardHealthMagnetSignal{
 			AllSamples:    len(allVectors),
+			GoodSamples:   len(goodVectors),
 			FailedSamples: len(failedVectors),
+			// 口径标记无条件写：caliber 标记的是**磁铁口径**（本轮用哪个公式
+			// 判定），与两侧样本是否充足无关——健康侧样本不足（insufficient）
+			// 时照样写新口径，消费方才能区分「旧快照」与「新快照但健康侧不可
+			// 算」（design D12 / review R-4）。
+			Caliber: tagmodels.BoardHealthMagnetCaliberHealthySubset,
 		}
 		entry.Magnet = signal
 		labelVector, ok := auxEmb[entry.AuxID]
@@ -91,15 +115,20 @@ func computeMagnetSignals(labels []tagmodels.BoardHealthLabelMetrics, auxEmb map
 			mean := meanCosine(labelVector, allVectors)
 			signal.AllMean = &mean
 		}
+		if len(goodVectors) > 0 {
+			mean := meanCosine(labelVector, goodVectors)
+			signal.GoodMean = &mean
+		}
 		if len(failedVectors) > 0 {
 			mean := meanCosine(labelVector, failedVectors)
 			signal.FailedMean = &mean
 		}
-		signal.Insufficient = signal.AllSamples < config.MinSampleSize ||
+		// 两侧各自达标才判：健康侧不足说明「相对谁更高」无从谈起。
+		signal.Insufficient = signal.GoodSamples < config.MinSampleSize ||
 			signal.FailedSamples < config.MagnetMinFailed
 		signal.Suspicious = !signal.Insufficient &&
-			signal.AllMean != nil && signal.FailedMean != nil &&
-			*signal.AllMean-*signal.FailedMean >= config.MagnetGap
+			signal.GoodMean != nil && signal.FailedMean != nil &&
+			*signal.FailedMean-*signal.GoodMean >= config.MagnetGap
 	}
 }
 

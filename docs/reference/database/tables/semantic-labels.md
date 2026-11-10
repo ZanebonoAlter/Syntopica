@@ -88,7 +88,7 @@
 | `id` | BIGSERIAL | PK | 自增主键 |
 | `semantic_board_id` | BIGINT | NOT NULL; FK→semantic_labels(id) ON DELETE CASCADE | 目标版块（迁移 `20261006_0001` 建 FK；AutoMigrate 建表不建 FK） |
 | `checked_at` | TIMESTAMPTZ | NOT NULL | 体检轮次时间 |
-| `metrics` | JSONB | NOT NULL | 两级统计（版块级全部匹配行 + 标签级贴合度分布〔构成标签 × 全部挂载 tags，不按 aux 挂载数量筛样本〕，分布字段样本不足为 null） |
+| `metrics` | JSONB | NOT NULL | 两级统计（版块级全部匹配行 + 标签级贴合度分布〔构成标签 × 全部挂载 tags，不按 aux 挂载数量筛样本〕，分布字段样本不足为 null）；另含 `triage[]`（标签级分诊清单）、`triage_guard`（板级闸门结论：actionable/total/ratio/threshold/degraded/reason，占比取 LLM 原始裁决）、`labels[].magnet`（磁铁信号，含 `good_mean`/`good_samples`/`caliber`：`healthy_subset`=新口径、空=历史快照旧口径）、`labels[].core_subject`（核心主体标记，缺字段=false） |
 | `uncaptured_candidates` | JSONB | NOT NULL DEFAULT '[]' | 未收编候选 `[{aux_id,label,member_tags,member_articles}]`（member_tags 降序 top 50，扩充召回主路数据源） |
 | `llm_score` | DOUBLE PRECISION | NULL | LLM 评分（0-100）；降级轮为 NULL（统计照常） |
 | `llm_comment` | TEXT | NULL | LLM 一句评语 |

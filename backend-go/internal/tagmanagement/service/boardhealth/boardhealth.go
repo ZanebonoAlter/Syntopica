@@ -53,6 +53,8 @@ const (
 	memberCandidatesKey = "board_health_member_candidates_top"
 	magnetGapKey        = "board_health_magnet_gap"
 	magnetMinFailedKey  = "board_health_magnet_min_failed"
+	// maxActionableRatioKey 是分诊合理性闸门 G3 的阈值（可执行占比上限）。
+	maxActionableRatioKey = "board_health_max_actionable_ratio"
 )
 
 // Default configuration values (design D8; magnet defaults from
@@ -64,6 +66,12 @@ const (
 	DefaultMemberCandidatesTop = 20
 	DefaultMagnetGap           = 0.08
 	DefaultMagnetMinFailed     = 5
+	// DefaultMaxActionableRatio 是 G3 占比闸门的默认阈值（80%）。
+	//
+	// 取值依据（fix-board-health-magnet-signal design D6）：已知**正确**轮次
+	// 的可执行占比最高到 72%（快照 357：34 rewrite / 47），0.8 留出余量避免
+	// 误杀好轮次；坏轮次是 100%（快照 370 / 410），必被拦。
+	DefaultMaxActionableRatio = 0.8
 )
 
 // maxUncapturedCandidates caps the persisted candidate list (design D4 top 50).
@@ -75,12 +83,21 @@ type Config struct {
 	AlertThreshold      float64
 	NotifyCooldownDays  int
 	MemberCandidatesTop int
-	// MagnetGap is the magnet-signal suspicion threshold: all_mean minus
-	// failed_mean must reach it (design D2, >= semantics).
+	// MagnetGap is the magnet-signal suspicion threshold: **failed_mean −
+	// good_mean** must reach it (>= semantics, fix-board-health-magnet-signal
+	// D1/D2). 语义：磁铁把跑题的挂载吸过来——失败侧贴合均值必须**高于**
+	// 健康侧才算嫌疑；健康侧与失败侧样本各自达标才判（任一侧不足 →
+	// insufficient，不硬凑）。all_mean ≡ cosine_mean（同集合同算法），
+	// 仅供历史兼容展示，不参与判定。
 	MagnetGap float64
 	// MagnetMinFailed is the minimum failed-subset sample count below which
 	// the magnet signal is insufficient (never a suspicion verdict).
 	MagnetMinFailed int
+	// MaxActionableRatio is the G3 gate threshold: the actionable share of the
+	// triage list (remove+rewrite) must not exceed it (design D6, > 语义).
+	// 0 = unset → DefaultMaxActionableRatio (never a 0 threshold that would
+	// degrade every actionable item).
+	MaxActionableRatio float64
 }
 
 // LoadConfig reads the board-health keys from ai_settings, falling back to
@@ -94,10 +111,11 @@ func LoadConfig(ctx context.Context, db *gorm.DB) Config {
 		MemberCandidatesTop: DefaultMemberCandidatesTop,
 		MagnetGap:           DefaultMagnetGap,
 		MagnetMinFailed:     DefaultMagnetMinFailed,
+		MaxActionableRatio:  DefaultMaxActionableRatio,
 	}
 	var settings []models.AISettings
 	if err := db.WithContext(ctx).
-		Where("key IN ?", []string{minSampleSizeKey, alertThresholdKey, notifyCooldownKey, memberCandidatesKey, magnetGapKey, magnetMinFailedKey}).
+		Where("key IN ?", []string{minSampleSizeKey, alertThresholdKey, notifyCooldownKey, memberCandidatesKey, magnetGapKey, magnetMinFailedKey, maxActionableRatioKey}).
 		Find(&settings).Error; err != nil {
 		return config
 	}
@@ -115,6 +133,8 @@ func LoadConfig(ctx context.Context, db *gorm.DB) Config {
 			config.MagnetGap = parseFloatDefault(setting.Value, config.MagnetGap)
 		case magnetMinFailedKey:
 			config.MagnetMinFailed = parseIntDefault(setting.Value, config.MagnetMinFailed)
+		case maxActionableRatioKey:
+			config.MaxActionableRatio = parseRatioDefault(setting.Value, config.MaxActionableRatio)
 		}
 	}
 	return config
@@ -134,6 +154,17 @@ func parseFloatDefault(value string, fallback float64) float64 {
 	// false，会绕过下方 0..100 边界被静默当作阈值；±Inf 虽会被边界拦住，
 	// 一并显式拒收。正常数值（含 0 与 100 边界）行为不变。
 	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed > 100 {
+		return fallback
+	}
+	return parsed
+}
+
+// parseRatioDefault parses a ratio-shaped setting (0, 1]: 非有限值、≤0 与
+// >1 一律回退 fallback。与 parseFloatDefault（0..100 的百分比/阈值量纲）
+// 分开——占比阈值用错量纲会让 1.5 这种值被当成合法阈值，闸门形同虚设。
+func parseRatioDefault(value string, fallback float64) float64 {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= 0 || parsed > 1 {
 		return fallback
 	}
 	return parsed
