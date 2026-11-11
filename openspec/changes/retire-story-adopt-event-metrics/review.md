@@ -5,7 +5,7 @@
 > 未审：基线 `96f83315`（存量收编提交，按任务书排除）；`cmd/calibrate-heat` 等未改动文件。
 
 ### R-1 2026-11-11【High】停写开关默认 true 与 spec/红线「新日报 story_id 恒 NULL」矛盾，部署清单漏了「关闭开关」动作
-- **状态**：已修复（本修复 commit 由主会话补录哈希）
+- **状态**：已修复（commit `e8aba010`）
 - **处置**：用户 2026-11-11 拍板选「删开关改硬停写」（非 review 建议的文档级修复）：删除 `repository/story_attribution_settings.go` 与 `ai_settings.story_attribution_enabled`，`boundedReportAttribution` 及其在日报尾段的调用一并摘除，归属判定函数库与写端实现保留；测试改 `TestStoryAttributionHardStop`（硬停写下日报尾段恒零 story 写入）；proposal（What Changes + 部署节：回滚 = `git revert`）/ design D1/D2/Migration / `event-story` delta Migration / `flow/daily-report.md` 红线 43 / `flow/topic-graph.md` 红线 14 / `configuration.md` 同步删除或改写；矛盾面（制品说停写、默认行为继续写）随开关删除消失。
 - **位置**：`specs/daily-report-system/spec.md`（ADDED「日报数据模型」：「新生成或重建的日报 SHALL 恒为 NULL，归属判定链 SHALL NOT 再写入该列」）；`docs/reference/flow/daily-report.md` 红线 42 同句式；`backend-go/internal/topicgraph/repository/story_attribution_settings.go:23`（`DefaultStoryAttributionEnabled = true`）；`backend-go/internal/topicgraph/service/daily_report_story_highlights_test.go:70`（开关开=照常进入归属判定并写 story_id）；`proposal.md`「部署后影响与需要的操作」（只列候选权重一项，无停写开关动作）。
 - **问题**：实现按 design D2 默认开（灰度兼容，回滚=删键），开关开启期间 `boundedReportAttribution → AttachThreadToBoardStory` 会给**新日报**写 `story_id`（含 `is_development`）。而 delta 与红线 42 无条件断言「新日报恒 NULL、归属判定链 SHALL NOT 再写入」；proposal 的部署清单又没有把「关闭 `story_attribution_enabled`」列为上线后必做动作。三份制品拼起来的净效果：按文档原样部署且无人操作时，系统**继续写 story**（读端已全部退役，写入变无人消费的僵尸写入），归档进主 spec 的却是「已停写」契约——未来 Agent 与审计都会按「不再写入」理解，与默认行为直接冲突。
