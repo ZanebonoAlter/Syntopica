@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -26,8 +27,13 @@ type PersistentTopicConfig struct {
 	LaneL2Threshold float64 // persistent_topic_lane_l2_threshold: weak-zone upper bound
 	VacuumRatio     float64 // persistent_topic_vacuum_ratio: is_vacuum trigger
 	CentroidWindow  int     // persistent_topic_centroid_window: # recent sections averaged
-	VacuumWindow    int     // persistent_topic_vacuum_window: attraction stats span (days)
-	L2CandidateK    int     // persistent_topic_l2_candidate_k: top-K candidates for L2 LLM
+	// CentroidAnchorWeight (persistent_topic_centroid_anchor_weight) is the
+	// weight of the topic's 首义向量 in the centroid blend:
+	// centroid = α·首义 + (1-α)·滚动窗口均值. α=0 keeps the legacy pure
+	// rolling mean, α=1 freezes the topic on its creation-time definition.
+	CentroidAnchorWeight float64
+	VacuumWindow         int // persistent_topic_vacuum_window: attraction stats span (days)
+	L2CandidateK         int // persistent_topic_l2_candidate_k: top-K candidates for L2 LLM
 	// SectionMergeEnabled (daily_report_section_merge_enabled) gates the
 	// same-day two-stage section merge (fix-section-merge-blackhole). The
 	// content-based section embedding changed the distance geometry so the
@@ -71,13 +77,16 @@ func DefaultPersistentTopicConfig() PersistentTopicConfig {
 		// (docs/experience/cluster-bias-investigation.md): L1<0.18 lifts
 		// strong-attach from 14% to 62%, L2[0.18,0.30] leaves ~51% to the
 		// LLM, L3>0.30 is the ~1.3% new-narrative tail.
-		LaneL1Threshold:     0.18,
-		LaneL2Threshold:     0.30,
-		VacuumRatio:         0.20,
-		CentroidWindow:      30,
-		VacuumWindow:        7,
-		L2CandidateK:        5,
-		SectionMergeEnabled: false,
+		LaneL1Threshold: 0.18,
+		LaneL2Threshold: 0.30,
+		VacuumRatio:     0.20,
+		CentroidWindow:  30,
+		// anchor-topic-centroid-with-embedding: 首义与滚动均值各占一半，
+		// 话题质心因此只做有界漂移（α=0.5 → 移动幅度 ≤ 纯滚动位移的一半）。
+		CentroidAnchorWeight: 0.5,
+		VacuumWindow:         7,
+		L2CandidateK:         5,
+		SectionMergeEnabled:  false,
 		// candidate-topic-l2-gate: gate on by default — candidate topics are
 		// system guesses and must pass L2 adjudication for every attach.
 		CandidateL1GateEnabled: true,
@@ -163,6 +172,7 @@ func LoadPersistentTopicConfig(db *gorm.DB) PersistentTopicConfig {
 		"persistent_topic_lane_l2_threshold",
 		"persistent_topic_vacuum_ratio",
 		"persistent_topic_centroid_window",
+		"persistent_topic_centroid_anchor_weight",
 		"persistent_topic_vacuum_window",
 		"persistent_topic_l2_candidate_k",
 		"daily_report_section_merge_enabled",
@@ -218,6 +228,12 @@ func LoadPersistentTopicConfig(db *gorm.DB) PersistentTopicConfig {
 				cfg.CentroidWindow = v
 			} else {
 				logging.Warnf("persistent-topic: invalid centroid window %q; using default %d", r.Value, cfg.CentroidWindow)
+			}
+		case "persistent_topic_centroid_anchor_weight":
+			if v, err := strconv.ParseFloat(r.Value, 64); err == nil && v >= 0 && v <= 1 {
+				cfg.CentroidAnchorWeight = v
+			} else {
+				logging.Warnf("persistent-topic: invalid centroid anchor weight %q; using default %v", r.Value, cfg.CentroidAnchorWeight)
 			}
 		case "persistent_topic_vacuum_window":
 			if v, err := strconv.Atoi(r.Value); err == nil && v > 0 {
@@ -874,6 +890,36 @@ func meanPgVectors(vectors [][]float64) []float64 {
 	return mean
 }
 
+// blendCentroidWithAnchor mixes the rolling window mean with the topic's
+// 首义向量 (creation-time definition embedding):
+//
+//	centroid = α·anchor + (1-α)·mean
+//
+// The blend is element-wise. No L2 normalisation is applied: matching is
+// cosine-based (direction only), so the magnitude of the mixed vector is
+// irrelevant and normalising would only add a failure mode.
+//
+// It returns false when the blend is impossible — empty mean, empty anchor
+// (NULL / unparseable 首义) or a dimension mismatch (e.g. the 首义 was written
+// by an older embedding model) — so the caller can fall back to the pure
+// rolling mean instead of persisting a broken centroid.
+//
+// Extracted as a pure helper so the blend rule is unit-testable without a
+// database (acceptance rail for spec scenario 「质心按近期 section 计算」).
+func blendCentroidWithAnchor(mean, anchor []float64, alpha float64) ([]float64, bool) {
+	if len(mean) == 0 || len(anchor) == 0 {
+		return nil, false
+	}
+	if len(mean) != len(anchor) {
+		return nil, false
+	}
+	blended := make([]float64, len(mean))
+	for i := range mean {
+		blended[i] = alpha*anchor[i] + (1-alpha)*mean[i]
+	}
+	return blended, true
+}
+
 // computeVacuumFlag is the pure vacuum test extracted from
 // RecomputeVacuumStats: a topic is flagged is_vacuum when
 // strong/(strong+mid) < vacuumRatio. strong+mid == 0 returns false (no data
@@ -888,12 +934,25 @@ func computeVacuumFlag(strong, mid int, ratio float64) bool {
 }
 
 // ComputeTopicCentroid recomputes the centroid for one topic from its recent
-// sections' embeddings. It selects the most recent cfg.CentroidWindow sections
-// (by report period_date) whose persistent_topic_id = topicID, parses each
-// embedding, and takes the equal-weight element-wise mean. When fewer than 2
-// sections have a parseable embedding — the spec's "section不足退化首义向量" case
-// — the centroid falls back to the topic's existing Embedding (the first-
-// section 首义向量). The returned string is a pgvector literal usable in
+// sections' embeddings, blended with the topic's 首义向量:
+//
+//	centroid = α·首义 embedding + (1-α)·最近 centroid_window 条命中 section embedding 等权均值
+//
+// α = persistent_topic_centroid_anchor_weight (default 0.5). It selects the
+// most recent cfg.CentroidWindow sections (by report period_date) whose
+// persistent_topic_id = topicID, parses each embedding, and takes the
+// equal-weight element-wise mean; the 首义 (the topic's creation-time
+// embedding) then pulls the result back so the anchor drifts only in a
+// bounded way (a wide topic can no longer turn into a "news magnet").
+//
+// When fewer than 2 sections have a parseable embedding — the spec's
+// "section不足退化首义向量" case — the centroid falls back to the topic's
+// existing Embedding (the first-section 首义向量). When the 首义 is
+// unavailable (NULL / unparseable) or its dimension differs from the rolling
+// mean's, the centroid falls back to the pure rolling mean and a warning is
+// logged — an unusable anchor never blocks a refresh.
+//
+// The returned string is a pgvector literal usable in
 // UPDATE ... SET centroid = ?.
 func (r *TopicGraphRepository) ComputeTopicCentroid(topicID uint) (string, error) {
 	cfg := LoadPersistentTopicConfig(r.db)
@@ -935,7 +994,38 @@ func (r *TopicGraphRepository) ComputeTopicCentroid(topicID uint) (string, error
 	if mean == nil {
 		return r.topicEmbeddingFallback(topicID)
 	}
-	return FloatsToPgVector(mean), nil
+	// 首义锚定混合：滚动均值 + α·首义。首义不可用（空 / 解析失败 / 维度不符）
+	// → 回退纯滚动均值并告警，不阻塞质心刷新。
+	anchor, err := r.topicEmbeddingVector(topicID)
+	if err != nil {
+		return "", err
+	}
+	blended, ok := blendCentroidWithAnchor(mean, anchor, cfg.CentroidAnchorWeight)
+	if !ok {
+		logging.Warnf("persistent-topic: topic %d centroid anchor unusable (anchor_dim=%d, mean_dim=%d); using pure rolling mean",
+			topicID, len(anchor), len(mean))
+		return FloatsToPgVector(mean), nil
+	}
+	return FloatsToPgVector(blended), nil
+}
+
+// topicEmbeddingVector loads the topic's 首义向量 (the embedding column) and
+// parses it into a float slice. An empty or unparseable column yields an empty
+// slice with a nil error: the anchor is then unusable and the caller degrades
+// to the pure rolling mean (an unusable anchor must never fail a refresh).
+func (r *TopicGraphRepository) topicEmbeddingVector(topicID uint) ([]float64, error) {
+	var topic BoardPersistentTopic
+	if err := r.db.Select("embedding").First(&topic, topicID).Error; err != nil {
+		return nil, fmt.Errorf("load topic %d embedding: %w", topicID, err)
+	}
+	if strings.TrimSpace(topic.Embedding) == "" {
+		return nil, nil
+	}
+	v, err := repoParsePgVector(topic.Embedding)
+	if err != nil {
+		return nil, nil
+	}
+	return v, nil
 }
 
 // topicEmbeddingFallback loads the topic's existing Embedding column (the
@@ -968,6 +1058,50 @@ func (r *TopicGraphRepository) UpdateCentroidOnSectionChange(tx *gorm.DB, topicI
 		return fmt.Errorf("update topic %d centroid: %w", topicID, err)
 	}
 	return nil
+}
+
+// ListTopicsForCentroidRecompute returns the topics taking part in a one-off
+// centroid recompute: every non-archived topic (candidate + active),
+// optionally scoped to one board. Archived topics are excluded — they are not
+// anchorable, so their centroid is never consumed by matching.
+func (r *TopicGraphRepository) ListTopicsForCentroidRecompute(ctx context.Context, boardID *uint) ([]BoardPersistentTopic, error) {
+	q := r.db.WithContext(ctx).Where("status != ?", TopicStatusArchived)
+	if boardID != nil {
+		q = q.Where("semantic_board_id = ?", *boardID)
+	}
+	var topics []BoardPersistentTopic
+	if err := q.Order("id ASC").Find(&topics).Error; err != nil {
+		return nil, fmt.Errorf("list topics for centroid recompute: %w", err)
+	}
+	return topics, nil
+}
+
+// RecomputeTopicCentroids recomputes the centroid of every non-archived topic
+// (optionally scoped to one board) with the current formula and config. It is
+// the storage side of POST /api/daily-reports/recompute-topic-centroids — the
+// one-off correction after the centroid formula changed.
+//
+// Per-topic failures are logged and skipped: one broken topic must not abort
+// the rest of the run. Returns the number of topics updated and the number
+// that failed.
+//
+// Watch-materialized topics (sentence_topic) keep their seeded centroid: their
+// sections carry no embedding, so the <2-section degradation path writes the
+// same query-vector anchor back.
+func (r *TopicGraphRepository) RecomputeTopicCentroids(ctx context.Context, boardID *uint) (updated, failed int, err error) {
+	topics, err := r.ListTopicsForCentroidRecompute(ctx, boardID)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, topic := range topics {
+		if cerr := r.UpdateCentroidOnSectionChange(nil, topic.ID); cerr != nil {
+			failed++
+			logging.Errorf("persistent-topic: recompute centroid for topic %d failed: %v", topic.ID, cerr)
+			continue
+		}
+		updated++
+	}
+	return updated, failed, nil
 }
 
 // RecomputeVacuumStats recomputes the vacuum attraction statistics for every

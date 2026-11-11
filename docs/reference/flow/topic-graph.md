@@ -74,6 +74,23 @@ candidate 与 active 的归档**完全由用户在话题管理界面手动操作
 
 ClusterTags 注入与双重确认归属共享同一个选择器（`ListAnchorableTopicsByBoard`）：全部 active 无条件入选，窗口内 candidate 按 `last_seen_date DESC, hit_count DESC, id ASC` 排序最多取 `persistent_topic_candidate_prompt_limit`（默认 20）条。窗口外 / 被截断的 candidate 两侧一致排除。
 
+### 话题质心（首义锚定 + 滚动均值混合）
+
+话题的匹配锚点是 `board_persistent_topics.centroid`，它 **不再**是纯滚动窗口均值，而是「首义 + 滚动」的加权混合（anchor-topic-centroid-with-embedding）：
+
+```text
+centroid = α·首义 embedding + (1-α)·最近 centroid_window 条命中 section embedding 等权均值
+```
+
+- **首义向量** = `board_persistent_topics.embedding`（manual 话题 = 创建时所选 section 的均值；auto 话题 = 首条命中 section 的内容 embedding；watch 物化话题 = 检索句向量）。创建后不可变，是话题的「定义面」。
+- **滚动均值** = 最近 `persistent_topic_centroid_window`（默认 30）条命中 section 的 embedding 等权平均（同日多条 section 逐条计入，不去重）。
+- **α** = `persistent_topic_centroid_anchor_weight`（默认 **0.5**，`ai_settings` 可配；非法值回退默认并告警）：`0` = 退化纯滚动（旧行为），`1` = 纯首义（话题冻结）。
+- **不做 L2 归一化**：匹配全走 cosine（只看方向），混合后模长无意义。
+- **退化路径**：可解析 section < 2 → 质心 = 首义向量（不变）；首义为空 / 不可解析 / 与滚动均值维度不一致 → 质心 = 纯滚动均值 + 警告日志（不阻塞刷新）。
+- **漂移有界**：质心仍随真实内容自适应（打破标题回声闭环），但滑出窗口的历史 section 不再让锚点脱离创建定义——移动幅度不超过纯滚动位移的 `(1-α)`，宽口径话题不会漂成「泛新闻磁铁」。
+
+**存量重算端点**：`POST /api/daily-reports/recompute-topic-centroids?board_id=<可选>` —— 按当前公式与配置把既有话题质心重算一遍（幂等可重跑、单话题失败不中断其余话题），异步执行（返回 `{"success":true,"data":{"status":"processing"}}`，`board_id` 非法返 `400 invalid board_id`）。用途：公式升级后一次性纠正存量漂移（部署后手动调一次，全局无 `board_id` 即全站）。
+
 ### 关系双轨
 
 ```text
@@ -150,13 +167,14 @@ identity（同 persistent_topic）
 15. **全局实体身份层已存在但本期不参与聚簇与重点候选：实体 ID（`entity_registry`）不进当天同事件聚簇、不改写任何标签指纹、话题归属或热度口径**（normalize-event-subject-entities + retire-story-adopt-event-metrics）：实体主体归一是与话题/聚簇并行的另一套身份——`entity_registry`/`entity_mentions`/`entity_aux_links` 三表承载全局稳定实体 ID，默认 `off`（2026-11-10 决策：影子实验后不接线）；影子态下只写实体三表 + 审计 + `metadata.entity_subject` 惰性键，标签/日报/话题/界面字段零变化；显式 `off` 则第一轮提示与 schema 与调用数逐字不变、零二轮调用、零写入；`active` 本期显式报错拒绝。实体层可整层删除而不影响任何既有功能。
 
 16. **事件线建线召回向量为历史口径：存量 `board_stories.embedding` / `daily_report_threads.embedding` 只读保留，新线不再产生，回填 CLI 写模式已拒绝**（enable-story-cross-day-continuation D13 + retire-story-adopt-event-metrics D3）：原口径为建线时现算标题 embedding、召回 `embedding <=> ?` dist ≤0.5 top10、存量补齐走 `cmd/backfill-stories --fill-story-embeddings` / `--fill-thread-embeddings`；停写后这些写模式一律非零退出，只读 / `--dry-run` 保留用于核对存量。
+17. **话题质心 SHALL 为「首义锚定 + 滚动均值」的加权混合，质心漂移 SHALL 有界**（anchor-topic-centroid-with-embedding）：质心 = `α·首义 embedding + (1-α)·最近 persistent_topic_centroid_window（默认 30）条命中 section embedding 等权均值`，α = `persistent_topic_centroid_anchor_weight`（默认 `0.5`，`ai_settings` 可配；值域外/解析失败回退默认并告警）。首义 = `board_persistent_topics.embedding`（创建时写入、之后不可变）。SHALL NOT 回退为纯滚动均值的全量漂移（宽口径话题会漂成「泛新闻磁铁」）；混合不做 L2 归一化（匹配走 cosine，只看方向）。退化路径：可解析 section < 2 → 质心 = 首义；首义为空/不可解析/维度与滚动均值不符 → 质心 = 纯滚动均值 + 警告日志（不阻塞刷新）。存量质心纠正走 `POST /api/daily-reports/recompute-topic-centroids`（可选 `board_id`，异步、幂等、单话题失败不中断其余话题）。
 
 ## 代码入口
 
 - **后端生命周期与归属**：`backend-go/internal/topicgraph/repository/daily_report_assignment.go`（`planLifecycle` 命中计数、`planTopicAssignments` 双重确认锚定）、`repository/daily_report_topic_repository.go`（status 状态机 `candidate|active|archived`、可锚定选择器 `ListAnchorableTopicsByBoard`）、`repository/daily_report_manual_topic.go`（手动建泳道）。
 - **后端事件指纹与主体归一化（add-event-story-heat）**：`backend-go/internal/topicgraph/service/story_fingerprint.go`（`ParseEventFingerprint` 指纹解析 + `ValidateEventFingerprint` 一致性校验，产出 `fingerprint_trusted`）、`story_subject_normalize.go`（`ResolveSubjectKey` 三层归一化）；提取侧 schema `backend-go/internal/tagmanagement/service/core/extractor_section.go`（+`extractor_enhanced.go` 同步）；事件线归属/去重/热度的完整入口见 `flow/daily-report.md` §事件线归属与跨期去重。
 - **后端关系双轨 / 聚类**：`backend-go/internal/topicgraph/service/daily_report_cluster.go`（ClusterTags 聚类 + 概念 bootstrap）、`service/daily_report_orchestrator.go`（`GenerateDailyReport` 管线、`RebuildBoardRelations` 关系双轨）、`service/daily_report_merge.go`。
-- **后端 handler**：`backend-go/internal/topicgraph/handler/topic_watch_handler.go`（话题 watch）、`handler/daily_report_handler.go`（话题管理列表 + PATCH rename/status、DELETE 硬删、POST merge/split、手动建泳道、backfill-embeddings/relations/topics）。
+- **后端 handler**：`backend-go/internal/topicgraph/handler/topic_watch_handler.go`（话题 watch）、`handler/daily_report_handler.go`（话题管理列表 + PATCH rename/status、DELETE 硬删、POST merge/split、手动建泳道、backfill-embeddings/relations/topics、recompute-topic-centroids 存量质心重算）。
 - **标签提取 / 去重 / 层级**（话题聚类的输入源）：`backend-go/internal/tagmanagement/`（`service/` 抽象标签层级与合并、`handler/` 标签管理、`repository/` 持久化）；文章打标执行点 `service/core/article_tagger.go`（`tagArticle` / `RetagArticle` / `reuseTagsFromSiblingArticle` 跨 feed 复用）。
 - **关键事件注记（回看侧）**：`backend-go/internal/topicgraph/repository/key_event_markers.go`（注记模型与人工动作，状态机与指纹详见 `flow/daily-report.md` §关键事件注记）、`handler/key_event_handler.go`（话题读端 confirmed + 注记维护端点）、`GetTopicLifeline`（生命线 `key_events` 字段装配）；前端 `BoardThreadBrowser.vue`（lanes ★n / 焦点合并轴 + 失效快照同轴注记 + 突出开关只弱化透明度不改坐标背景）、`useTopicKeyEvents.ts`（共享缓存单例）。
 - **前端**：`front/app/features/tags/components/daily-report/`（SectionLifecyclePanel、话题锚定展示）、`front/app/features/tags/components/BoardThreadBrowser.vue`（话题总览泳道）、`front/tests/e2e/topic-graph.spec.ts`。

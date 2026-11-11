@@ -83,6 +83,11 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 	// from historical sections. Optional ?board_id scopes to one board.
 	api.POST("/daily-reports/backfill-topics", triggerBackfillTopics)
 
+	// POST /api/daily-reports/recompute-topic-centroids — one-off recompute of
+	// every topic centroid with the current formula (首义锚定 + 滚动均值混合).
+	// Optional ?board_id scopes to one board.
+	api.POST("/daily-reports/recompute-topic-centroids", triggerRecomputeTopicCentroids)
+
 	// POST /api/semantic-boards/:id/persistent-topics/manual
 	// Create a manual persistent topic (user-curated lane) from selected sections.
 	api.POST("/semantic-boards/:id/persistent-topics/manual", createManualTopic)
@@ -1034,6 +1039,55 @@ func triggerBackfillTopics(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"status": "processing"}})
+}
+
+// triggerRecomputeTopicCentroids handles POST
+// /api/daily-reports/recompute-topic-centroids?board_id=<optional>.
+//
+// One-off correction of the existing topic centroids after the anchor-blend
+// formula (首义锚定 + 滚动均值混合) replaced the pure rolling mean: a topic
+// whose centroid drifted over months is pulled back towards its creation-time
+// definition. Optional ?board_id scopes the run to one board; without it every
+// board is processed.
+//
+// Async by design (same shape as triggerBackfillEmbeddings): the response
+// returns immediately with status=processing while the work runs in a
+// background goroutine, so a full-site run never blocks the HTTP call.
+// Idempotent — rerunning it with the same data yields the same centroids.
+func triggerRecomputeTopicCentroids(c *gin.Context) {
+	var boardID *uint
+	if v := c.Query("board_id"); v != "" {
+		id, err := strconv.ParseUint(v, 10, 64)
+		if err != nil || id == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid board_id"})
+			return
+		}
+		uid := uint(id)
+		boardID = &uid
+	}
+
+	// WithTimeout only after validation: the 400 path never spawns the
+	// goroutine, so the context must not be created before it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	go func() {
+		// cancel must live inside the worker goroutine: a handler-scoped
+		// `defer cancel()` fires the moment this handler returns (right after
+		// the "processing" JSON) and would kill the run immediately.
+		defer cancel()
+		updated, failed, err := repository.Repo.RecomputeTopicCentroids(ctx, boardID)
+		if err != nil {
+			logging.Errorf("daily-report: recompute topic centroids failed: %v", err)
+			return
+		}
+		logging.Infof("daily-report: recompute topic centroids complete: %d topics updated, %d failed", updated, failed)
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"status": "processing",
+		},
+	})
 }
 
 func dailyReportBoardName(boardID uint) string {

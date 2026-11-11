@@ -18,8 +18,9 @@ import (
 //
 //	① L1 sections persist lane_tier=l1_direct + anchor_hit + owning topic
 //	② L3 sections persist lane_tier=l3_new + auto_new + a freshly created candidate
-//	④ the owning topic's centroid is incrementally refreshed (mean of the 2
-//	   assigned sections, distinct from the initial centroid)
+//	④ the owning topic's centroid is incrementally refreshed (the α-blend of
+//	   the 首义 vector and the mean of the 2 assigned sections, distinct from
+//	   the initial centroid)
 //	⑤ vacuum stats are recomputed post-commit from the recorded distances
 func TestSaveReport_LaneDrivenCentroidRefresh(t *testing.T) {
 	db := testutil.SetupTestDB(t)
@@ -36,10 +37,12 @@ func TestSaveReport_LaneDrivenCentroidRefresh(t *testing.T) {
 	boardID := seedTestBoard(t, db)
 	now := NormalizeReportDate(time.Now())
 	reportID := seedTestReport(t, db, boardID, now)
+	setAnchorWeight(t, db, "0.5")
 
 	// Active topic with an initial centroid [1,0,0] (embedding is the 首义
 	// fallback). After 2 sections are assigned, ComputeTopicCentroid averages
-	// them → [0.9,0.3,0], distinct from the initial value.
+	// them → [0.9,0.3,0] and blends it with the 首义 (α=0.5) → [0.95,0.15,0],
+	// distinct from the initial value.
 	topic := BoardPersistentTopic{
 		SemanticBoardID: boardID, Label: "T", Status: TopicStatusActive,
 		Embedding: vecStr(1, 0, 0), Centroid: vecStr(1, 0, 0),
@@ -74,13 +77,14 @@ func TestSaveReport_LaneDrivenCentroidRefresh(t *testing.T) {
 	require.NotNil(t, gotC.PersistentTopicID)
 	assert.NotEqual(t, tid, *gotC.PersistentTopicID, "L3 opens a new candidate, not the existing topic")
 
-	// ④ centroid incremental refresh: mean([1,0,0],[0.8,0.6,0]) = [0.9,0.3,0].
+	// ④ centroid incremental refresh: 0.5·首义[1,0,0] + 0.5·mean([1,0,0],
+	// [0.8,0.6,0]) = 0.5·[1,0,0] + 0.5·[0.9,0.3,0] = [0.95,0.15,0].
 	var refreshed BoardPersistentTopic
 	require.NoError(t, db.First(&refreshed, tid).Error)
 	cv, err := repoParsePgVector(refreshed.Centroid)
 	require.NoError(t, err)
-	assert.InDeltaSlice(t, []float64{0.9, 0.3, 0}, cv, 1e-6,
-		"centroid refreshed to the mean of the 2 assigned sections")
+	assert.InDeltaSlice(t, []float64{0.95, 0.15, 0}, cv, 1e-6,
+		"centroid refreshed to the blend of the 首义 vector and the mean of the 2 assigned sections")
 
 	// ⑤ vacuum recompute ran: stats populated from recorded distances
 	// (secA dist 0.0 → strong, secB dist 0.2 → mid against the pre-refresh

@@ -1,9 +1,14 @@
 package repository
 
 import (
+	"context"
+	"fmt"
+	"math"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -60,6 +65,91 @@ func TestComputeVacuumFlag(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, computeVacuumFlag(tc.strong, tc.mid, tc.ratio))
+		})
+	}
+}
+
+// TestBlendCentroidWithAnchor covers the pure blend rule
+// centroid = α·首义 + (1-α)·滚动均值 (anchor-topic-centroid-with-embedding):
+// the α endpoints, the dimension guard and the empty-anchor degradation.
+//
+// Pure function → runs without a database (also under -short).
+func TestBlendCentroidWithAnchor(t *testing.T) {
+	mean := []float64{1, 0, 0}
+	anchor := []float64{0, 1, 0}
+
+	t.Run("alpha 0 degenerates to the pure rolling mean", func(t *testing.T) {
+		got, ok := blendCentroidWithAnchor(mean, anchor, 0)
+		require.True(t, ok)
+		assert.InDeltaSlice(t, []float64{1, 0, 0}, got, 1e-9)
+	})
+	t.Run("alpha 0.5 mixes element-wise", func(t *testing.T) {
+		got, ok := blendCentroidWithAnchor(mean, anchor, 0.5)
+		require.True(t, ok)
+		assert.InDeltaSlice(t, []float64{0.5, 0.5, 0}, got, 1e-9)
+	})
+	t.Run("alpha 1 degenerates to the pure first-meaning vector", func(t *testing.T) {
+		got, ok := blendCentroidWithAnchor(mean, anchor, 1)
+		require.True(t, ok)
+		assert.InDeltaSlice(t, []float64{0, 1, 0}, got, 1e-9)
+	})
+	t.Run("dimension mismatch is refused", func(t *testing.T) {
+		got, ok := blendCentroidWithAnchor([]float64{1, 0}, anchor, 0.5)
+		assert.False(t, ok, "a different embedding model must not be blended in")
+		assert.Nil(t, got)
+	})
+	t.Run("empty anchor is refused", func(t *testing.T) {
+		got, ok := blendCentroidWithAnchor(mean, nil, 0.5)
+		assert.False(t, ok)
+		assert.Nil(t, got)
+	})
+	t.Run("empty mean is refused", func(t *testing.T) {
+		got, ok := blendCentroidWithAnchor(nil, anchor, 0.5)
+		assert.False(t, ok)
+		assert.Nil(t, got)
+	})
+}
+
+// TestLoadPersistentTopicConfig_CentroidAnchorWeight covers the α config
+// boundary (spec scenarios 「读取默认配置」/「自定义锚定权重」/「锚定权重配置
+// 边界」): the default is 0.5, a custom value is honoured, the range
+// endpoints are legal and an illegal value falls back to the default.
+//
+// Runs on in-memory SQLite (no Docker) so it also runs under -short.
+func TestLoadPersistentTopicConfig_CentroidAnchorWeight(t *testing.T) {
+	name := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", name)), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&models.AISettings{}))
+
+	const key = "persistent_topic_centroid_anchor_weight"
+	setWeight := func(t *testing.T, value string) {
+		t.Helper()
+		require.NoError(t, db.Where("key = ?", key).Delete(&models.AISettings{}).Error)
+		if value == "" {
+			return
+		}
+		require.NoError(t, db.Create(&models.AISettings{Key: key, Value: value}).Error)
+	}
+
+	cases := []struct {
+		name  string
+		value string
+		want  float64
+	}{
+		{"key absent -> default 0.5", "", 0.5},
+		{"custom 0.3 honoured", "0.3", 0.3},
+		{"lower bound 0 -> pure rolling mean", "0", 0},
+		{"upper bound 1 -> pure first-meaning vector", "1", 1},
+		{"negative -> default 0.5", "-0.5", 0.5},
+		{"above 1 -> default 0.5", "1.5", 0.5},
+		{"not a number -> default 0.5", "abc", 0.5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setWeight(t, tc.value)
+			cfg := LoadPersistentTopicConfig(db)
+			assert.InDelta(t, tc.want, cfg.CentroidAnchorWeight, 1e-9)
 		})
 	}
 }
@@ -177,17 +267,42 @@ func TestMigration_AddLaneCentroidColumns_Idempotent(t *testing.T) {
 	assert.Equal(t, before, after, "check-existing seed must not duplicate the row")
 }
 
+// setAnchorWeight pins the α config row so the blend assertions do not depend
+// on the seeded default.
+func setAnchorWeight(t *testing.T, db *gorm.DB, value string) {
+	t.Helper()
+	const key = "persistent_topic_centroid_anchor_weight"
+	require.NoError(t, db.Where("key = ?", key).Delete(&models.AISettings{}).Error)
+	require.NoError(t, db.Create(&models.AISettings{Key: key, Value: value}).Error)
+}
+
+// vecDistance is the Euclidean distance between two vectors — the movement
+// measure used by the bounded-drift assertions (direction-only blending means
+// the magnitudes stay comparable).
+func vecDistance(a, b []float64) float64 {
+	var sum float64
+	for i := range a {
+		if i >= len(b) {
+			break
+		}
+		d := a[i] - b[i]
+		sum += d * d
+	}
+	return math.Sqrt(sum)
+}
+
 // TestComputeTopicCentroid_WindowAndFallback covers the three spec scenarios
-// for the centroid representation: equal-weight mean of recent sections,
-// degradation to the first-section vector when <2 sections, and window
-// truncation to centroid_window.
+// for the centroid representation: the α-blend of the first-meaning vector and
+// the equal-weight mean of recent sections, degradation to the first-section
+// vector when <2 sections, and window truncation to centroid_window.
 func TestComputeTopicCentroid_WindowAndFallback(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 	Repo = repo
 	boardID := seedTestBoard(t, db)
+	setAnchorWeight(t, db, "0.5")
 
-	t.Run("mean of recent sections", func(t *testing.T) {
+	t.Run("blend of first-meaning vector and recent-section mean", func(t *testing.T) {
 		topic := makeTopic(t, db, boardID, vecStr(0, 0, 0))
 		for _, e := range []string{vecStr(1, 0, 0), vecStr(0, 1, 0), vecStr(0, 0, 1)} {
 			r := seedTestReport(t, db, boardID, time.Now())
@@ -197,7 +312,8 @@ func TestComputeTopicCentroid_WindowAndFallback(t *testing.T) {
 		require.NoError(t, err)
 		v, err := repoParsePgVector(centroid)
 		require.NoError(t, err)
-		assert.InDeltaSlice(t, []float64{1.0 / 3, 1.0 / 3, 1.0 / 3}, v, 1e-6)
+		// α=0.5：0.5·首义[0,0,0] + 0.5·均值[1/3,1/3,1/3] = [1/6,1/6,1/6]
+		assert.InDeltaSlice(t, []float64{1.0 / 6, 1.0 / 6, 1.0 / 6}, v, 1e-6)
 	})
 
 	t.Run("fewer than 2 sections degrades to first-section", func(t *testing.T) {
@@ -228,9 +344,166 @@ func TestComputeTopicCentroid_WindowAndFallback(t *testing.T) {
 		require.NoError(t, err)
 		v, err := repoParsePgVector(centroid)
 		require.NoError(t, err)
-		assert.InDeltaSlice(t, []float64{1, 0, 0}, v, 1e-6,
-			"centroid should be mean of recent 30 [1,0,0], excluding the 10 old [0,1,0]")
+		// α=0.5：0.5·首义[0,0,0] + 0.5·均值[1,0,0] = [0.5,0,0]
+		assert.InDeltaSlice(t, []float64{0.5, 0, 0}, v, 1e-6,
+			"centroid should be the blend of the first-meaning vector and the mean of the recent 30 [1,0,0]")
 	})
+}
+
+// TestComputeTopicCentroid_BoundedDrift covers spec scenario 「质心随内容漂移」:
+// the centroid still follows the recent content (the drift is NOT frozen), but
+// the movement away from the first-meaning vector stays bounded — at most
+// (1-α) of the pure rolling displacement.
+func TestComputeTopicCentroid_BoundedDrift(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	Repo = repo
+	boardID := seedTestBoard(t, db)
+	setAnchorWeight(t, db, "0.5")
+
+	anchor := []float64{1, 0, 0}
+	noise := []float64{0, 1, 0}
+	topic := makeTopic(t, db, boardID, FloatsToPgVector(anchor))
+	r := seedTestReport(t, db, boardID, time.Now())
+	for i := 0; i < 4; i++ {
+		seedSectionAssigned(t, db, r, topic.ID, FloatsToPgVector(noise), 0.1)
+	}
+
+	centroid, err := repo.ComputeTopicCentroid(topic.ID)
+	require.NoError(t, err)
+	got, err := repoParsePgVector(centroid)
+	require.NoError(t, err)
+
+	// 4 identical sections → the pure rolling mean is the noise vector itself.
+	pureMean := noise
+	assert.InDeltaSlice(t, []float64{0.5, 0.5, 0}, got, 1e-6,
+		"centroid = 0.5·首义 + 0.5·滚动均值")
+
+	drift := vecDistance(got, anchor)
+	pureDrift := vecDistance(pureMean, anchor)
+	assert.Less(t, drift, pureDrift, "blended drift must stay below the pure rolling drift")
+	assert.LessOrEqual(t, drift, 0.5*pureDrift+1e-9,
+		"drift must not exceed (1-α) of the pure rolling displacement")
+}
+
+// TestComputeTopicCentroid_Idempotent: recomputing twice yields the same
+// centroid (no randomness, no time dependence) — the recompute endpoint can be
+// rerun safely.
+func TestComputeTopicCentroid_Idempotent(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	Repo = repo
+	boardID := seedTestBoard(t, db)
+	setAnchorWeight(t, db, "0.5")
+
+	topic := makeTopic(t, db, boardID, vecStr(1, 0, 0))
+	r := seedTestReport(t, db, boardID, time.Now())
+	seedSectionAssigned(t, db, r, topic.ID, vecStr(0, 1, 0), 0.1)
+	seedSectionAssigned(t, db, r, topic.ID, vecStr(0, 1, 0), 0.1)
+
+	first, err := repo.ComputeTopicCentroid(topic.ID)
+	require.NoError(t, err)
+	second, err := repo.ComputeTopicCentroid(topic.ID)
+	require.NoError(t, err)
+	assert.Equal(t, first, second)
+}
+
+// TestComputeTopicCentroid_MalformedAnchorFallsBack: a 首义 written by another
+// embedding model (dimension mismatch) must not break the refresh — the
+// centroid degrades to the pure rolling mean (spec scenario 「首义不可用时回退
+// 纯滚动」).
+func TestComputeTopicCentroid_MalformedAnchorFallsBack(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	Repo = repo
+	boardID := seedTestBoard(t, db)
+	setAnchorWeight(t, db, "0.5")
+
+	topic := makeTopic(t, db, boardID, vecStr(1, 0)) // 2-dim 首义 vs 3-dim sections
+	r := seedTestReport(t, db, boardID, time.Now())
+	seedSectionAssigned(t, db, r, topic.ID, vecStr(1, 0, 0), 0.1)
+	seedSectionAssigned(t, db, r, topic.ID, vecStr(0, 1, 0), 0.1)
+
+	centroid, err := repo.ComputeTopicCentroid(topic.ID)
+	require.NoError(t, err, "an unusable anchor must not fail the refresh")
+	v, err := repoParsePgVector(centroid)
+	require.NoError(t, err)
+	assert.InDeltaSlice(t, []float64{0.5, 0.5, 0}, v, 1e-6,
+		"must fall back to the pure rolling mean")
+}
+
+// TestRecomputeTopicCentroids_CoversAllBoards covers the storage side of the
+// recompute endpoint: every non-archived topic is recomputed with the current
+// formula, archived ones are skipped, and a board filter narrows the scope.
+func TestRecomputeTopicCentroids_CoversAllBoards(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	Repo = repo
+	boardA := seedTestBoard(t, db)
+	// A second board needs its own slug (idx_semantic_labels_slug is unique).
+	boardB := models.SemanticLabel{
+		Label:     "test-board-2",
+		Slug:      "test-board-2",
+		LabelType: "board",
+		Status:    "active",
+	}
+	require.NoError(t, db.Create(&boardB).Error)
+	setAnchorWeight(t, db, "0.5")
+
+	seedTopicWithSections := func(t *testing.T, boardID uint, label string, status string) uint {
+		t.Helper()
+		topic := makeTopic(t, db, boardID, vecStr(1, 0, 0))
+		require.NoError(t, db.Model(&BoardPersistentTopic{}).Where("id = ?", topic.ID).
+			Updates(map[string]any{"status": status, "label": label}).Error)
+		r := seedTestReport(t, db, boardID, time.Now())
+		seedSectionAssigned(t, db, r, topic.ID, vecStr(0, 1, 0), 0.1)
+		seedSectionAssigned(t, db, r, topic.ID, vecStr(0, 1, 0), 0.1)
+		return topic.ID
+	}
+
+	topicA := seedTopicWithSections(t, boardA, "a", TopicStatusActive)
+	topicB := seedTopicWithSections(t, boardB.ID, "b", TopicStatusCandidate)
+	archived := seedTopicWithSections(t, boardA, "archived", TopicStatusArchived)
+	// A topic whose 首义 was written by another embedding model (dimension
+	// mismatch): it degrades to the pure rolling mean and MUST NOT break the
+	// run for the other topics.
+	malformed := makeTopic(t, db, boardA, vecStr(1, 0)) // 2-dim 首义 vs 3-dim sections
+	require.NoError(t, db.Model(&BoardPersistentTopic{}).Where("id = ?", malformed.ID).
+		Update("label", "malformed").Error)
+	malformedReport := seedTestReport(t, db, boardA, time.Now())
+	seedSectionAssigned(t, db, malformedReport, malformed.ID, vecStr(1, 0, 0), 0.1)
+	seedSectionAssigned(t, db, malformedReport, malformed.ID, vecStr(0, 1, 0), 0.1)
+
+	updated, failed, err := repo.RecomputeTopicCentroids(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, 3, updated, "only non-archived topics are recomputed")
+	assert.Equal(t, 0, failed)
+
+	centroidOf := func(t *testing.T, topicID uint) string {
+		t.Helper()
+		var topic BoardPersistentTopic
+		require.NoError(t, db.First(&topic, topicID).Error)
+		return topic.Centroid
+	}
+	assert.NotEmpty(t, centroidOf(t, topicA))
+	assert.NotEmpty(t, centroidOf(t, topicB))
+	assert.Empty(t, centroidOf(t, archived), "archived topics are skipped")
+	// The malformed topic still got a centroid — the pure rolling mean.
+	malformedCentroid, err := repoParsePgVector(centroidOf(t, malformed.ID))
+	require.NoError(t, err)
+	assert.InDeltaSlice(t, []float64{0.5, 0.5, 0}, malformedCentroid, 1e-6,
+		"a malformed 首义 degrades to the pure rolling mean without breaking the run")
+
+	// Board filter: only board A's topics are touched.
+	require.NoError(t, db.Model(&BoardPersistentTopic{}).Where("id = ?", topicB).
+		Update("centroid", nil).Error)
+	boardAID := boardA
+	updated, failed, err = repo.RecomputeTopicCentroids(context.Background(), &boardAID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, updated, "board A holds the active topic and the malformed one")
+	assert.Equal(t, 0, failed)
+	assert.NotEmpty(t, centroidOf(t, topicA))
+	assert.Empty(t, centroidOf(t, topicB), "the other board must not be touched")
 }
 
 // TestRecomputeVacuumStats_Flagging covers spec scenario 「吸尘器 topic 识别」:
@@ -323,6 +596,7 @@ func TestComputeTopicCentroid_CountsEachSiblingSection(t *testing.T) {
 	require.NoError(t, err)
 	vec, err := repoParsePgVector(centroid)
 	require.NoError(t, err)
-	assert.InDeltaSlice(t, []float64{1.0 / 3, 1.0 / 3, 1.0 / 3}, vec, 1e-6,
+	// α=0.5：0.5·首义[9,9,9] + 0.5·均值[1/3,1/3,1/3]（三条兄弟 section 均计入）
+	assert.InDeltaSlice(t, []float64{0.5*9 + 0.5/3, 0.5*9 + 0.5/3, 0.5*9 + 0.5/3}, vec, 1e-6,
 		"all three sibling sections enter the window (no same-day collapse)")
 }
