@@ -178,7 +178,7 @@ describe('ObservationLaneEvolution — 态势句与长窗（EV-5/6）', () => {
     expect(wrapper.find('[data-testid="lane-evolution-ribbon"]').exists()).toBe(false)
     const chart = wrapper.find('[data-testid="lane-trend-chart"]')
     expect(chart.exists()).toBe(true)
-    expect(chart.text()).toContain('所选泳道 · 所示日期内当日事件线数')
+    expect(chart.text()).toContain('所选泳道 · 所示日期内当日线索数')
     // gap 日（10-20）series 值 0 → 图上有 data-value=0 的点；unavailable 日（10-19）无点
     expect(chart.find('[data-date="2026-10-20"]').attributes('data-value')).toBe('0')
     expect(chart.find('[data-date="2026-10-19"]').exists()).toBe(false)
@@ -225,7 +225,7 @@ describe('ObservationLaneEvolution — 交互与状态', () => {
     expect(wrapper.find('.oev-name').text()).toBe('主线 A')
     expect(wrapper.find('.oev-watch').text()).toBe('追踪')
     expect(wrapper.find('.oev-meta').text()).toContain('可见 14 日')
-    expect(wrapper.find('.oev-meta').text()).toContain('14 日档全窗 12 条事件线')
+    expect(wrapper.find('.oev-meta').text()).toContain('14 日档全窗 12 条线索')
     expect(wrapper.find('[data-testid="evolution-node-2026-10-23"]').find('.oev-node-date').text()).toBe('今天')
   })
 

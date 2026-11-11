@@ -1,15 +1,16 @@
 /**
- * observationLanes 纯模型测试（矩阵阶段 G3 + add-event-story-heat 5.4 story 口径）。
+ * observationLanes 纯模型测试（矩阵阶段 G3 + retire-story-adopt-event-metrics 3.1 线索口径）。
  *
- *  - source 全轴行序/休眠唯一基准：lane_heat 降序 → 事件线数降序 → ID 升序（与后端一致）；
+ *  - source 全轴行序/休眠唯一基准：lane_heat 降序 → 全窗线索合计降序 → ID 升序（与后端一致）；
  *    休眠分组仍用 sectionTotal 阈值
  *  - B 池独有 ID 不入名单；观察轴宽度变化永不重算名单/休眠/候选
- *  - 矩阵格视图三态（content 事件线数/回退/0、gap '—'、unavailable '?'）与来源数颜色分档
- *  - 演进点径公式 / 节点投影（节点数字 = 当日事件线数）/ series 值（gap=已知 0、未知=null 不补 0）
+ *  - 矩阵格视图三态（content = 当日线索合计 / 未知 '?'、gap '—'、unavailable '?'）；
+ *    颜色通道与最热事件线点名整体退役（D5）
+ *  - 演进点径公式 / 节点投影（节点数字 = 当日线索合计）/ series 值（gap=已知 0、未知=null 不补 0）
  */
 import { describe, expect, it } from 'vitest'
 import type { LaneDynamicsResponse } from '~/api/laneDynamics'
-import { normalizeLaneDynamicsWindow, type DayCellMetrics, type LaneDynamicsWindowData, type WindowLaneDay, type WindowSection } from '~/api/normalizers/laneDynamicsWindow'
+import { normalizeLaneDynamicsWindow, type LaneDynamicsWindowData, type WindowLaneDay, type WindowSection } from '~/api/normalizers/laneDynamicsWindow'
 import { buildDayAxis } from '~/features/tags/composables/laneMatrixModel'
 import {
   buildObservationRows,
@@ -17,7 +18,6 @@ import {
   evolutionDotSize,
   evolutionSeriesValue,
   firstThreadTitle,
-  HOTTEST_STORY_TITLE_MAX,
   matrixCellView,
   projectEvolutionNodes,
   projectMatrixCell,
@@ -35,7 +35,7 @@ function sectionRaw(id: number, overrides: Record<string, unknown> = {}): Record
   return { section_id: id, label: `桶${id}`, events: [`事件${id}`], ...overrides }
 }
 
-function laneRaw(topicId: number, label: string, timeline: { date: string, sections: Record<string, unknown>[] }[], overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function laneRaw(topicId: number, label: string, timeline: { date: string, sections: Record<string, unknown>[], clue_count?: number }[], overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return { topic_id: topicId, label, watch_linked: false, section_count_14d: 0, snapshot: null, timeline, ...overrides }
 }
 
@@ -74,10 +74,10 @@ function makeResolver(tier: LaneDynamicsWindowData, pool?: LaneDynamicsWindowDat
 }
 
 describe('observationLanes — source 全轴行模型', () => {
-  it('行序 = lane_heat 降序 → 事件线数降序 → ID 升序（add-event-story-heat 5.4，与后端一致）', () => {
+  it('行序 = lane_heat 降序 → 全窗线索合计降序 → ID 升序（与后端一致）', () => {
     const source = normalize([
-      // 事件线 10 / 无 heat；事件线 10 / heat 2；事件线 4 / heat 7（heat 最高在前）；
-      // heat 2 并列 → 事件线多者在前；再并列（10/10）→ ID 升序
+      // 线索 10 / 无 heat；线索 10 / heat 2；线索 4 / heat 7（heat 最高在前）；
+      // heat 2 并列 → 线索多者在前；再并列（线索 10/10）→ ID 升序
       laneRaw(11, 'B', [{ date: '2026-10-23', sections: [sectionRaw(1, { thread_count: 10 })] }]),
       laneRaw(10, 'A', [
         { date: '2026-10-22', sections: [sectionRaw(2, { thread_count: 3 }), sectionRaw(3, { thread_count: 3 })] },
@@ -92,7 +92,7 @@ describe('observationLanes — source 全轴行模型', () => {
     expect(rows.map(row => row.topicId)).toEqual(['12', '10', '9', '11'])
   })
 
-  it('lane_heat 全缺（旧后端）：事件线数降序 → ID 升序；storyTotal 缺省回退非综合稿线程合计', () => {
+  it('lane_heat 全缺（旧后端）：线索合计降序 → ID 升序；clueTotal 回退各桶已知线索合计', () => {
     const source = normalize([
       laneRaw(1, '回退', [{ date: '2026-10-23', sections: [
         sectionRaw(1, { events: ['a', 'b'], folded_count: 1 }),
@@ -101,48 +101,39 @@ describe('observationLanes — source 全轴行模型', () => {
       laneRaw(2, '更大', [{ date: '2026-10-23', sections: [sectionRaw(3, { thread_count: 6 })] }]),
     ])
     const rows = buildObservationRows(source, AXIS14)
-    expect(rows[0]).toMatchObject({ topicId: '2', storyTotal: 6, laneHeat: 0 })
-    expect(rows[1]).toMatchObject({ topicId: '1', storyTotal: 5 })
+    expect(rows[0]).toMatchObject({ topicId: '2', clueTotal: 6, laneHeat: 0 })
+    expect(rows[1]).toMatchObject({ topicId: '1', clueTotal: 5 })
   })
 
-  it('story_count 优先于线程合计；participant/unassigned 逐日映射', () => {
-    const source = normalize([
-      laneRaw(3, '显式', [{
-        date: '2026-10-23',
-        sections: [sectionRaw(1, { thread_count: 9 })],
-      }]),
-    ])
-    // 直接在归一结果上注入 wire 字段重归一：用 raw 形态更直接
+  it('当日线索合计优先消费 clue_count（各桶 thread 合计不覆盖）；lane_heat 透传', () => {
     const raw = {
       topic_id: 3, label: '显式', watch_linked: false, section_count_14d: 1, snapshot: null,
       lane_heat: 1.5,
       timeline: [{
         date: '2026-10-23',
-        story_count: 2,
-        max_participant_count: 6,
-        unassigned_event_count: 3,
+        clue_count: 2,
         sections: [sectionRaw(1, { thread_count: 9 })],
       }],
     }
-    const rows = buildObservationRows(normalize([raw]), AXIS14)
+    const source = normalize([raw])
+    expect(source.lanes[0]!.timeline[0]!.clueCount).toBe(2)
+    const rows = buildObservationRows(source, AXIS14)
     expect(rows[0]).toMatchObject({
       topicId: '3',
       laneHeat: 1.5,
-      storyTotal: 2,
-      storyCounts: { '2026-10-23': 2 },
-      participantCounts: { '2026-10-23': 6 },
-      unassignedCounts: { '2026-10-23': 3 },
+      clueTotal: 2,
+      clueCounts: { '2026-10-23': 2 },
     })
-    expect(source.lanes[0]!.timeline[0]!.storyCount).toBeNull()
   })
 
-  it('全窗事件线数优先消费 story_count_14d，显式 0 不被逐日线程合计覆盖', () => {
+  it('全窗线索合计优先消费 clue_count，显式 0 不被各桶线索合计覆盖', () => {
     const source = normalize([
-      laneRaw(2, '零事件线', [{ date: ANCHOR, sections: [sectionRaw(1, { thread_count: 99 })] }], { lane_heat: 1, story_count_14d: 0 }),
-      laneRaw(1, '两条', [{ date: ANCHOR, sections: [sectionRaw(2, { thread_count: 1 })] }], { lane_heat: 1, story_count_14d: 2 }),
+      laneRaw(2, '零线索', [{ date: ANCHOR, clue_count: 0, sections: [sectionRaw(1, { thread_count: 99 })] }], { lane_heat: 1 }),
+      laneRaw(1, '两条', [{ date: ANCHOR, clue_count: 2, sections: [sectionRaw(2, { thread_count: 1 })] }], { lane_heat: 1 }),
     ])
     const rows = buildObservationRows(source, AXIS14)
-    expect(rows.map(row => [row.topicId, row.storyTotal])).toEqual([['1', 2], ['2', 0]])
+    expect(rows.map(row => [row.topicId, row.clueTotal])).toEqual([['1', 2], ['2', 0]])
+    expect(rows[1]!.clueCounts).toEqual({ [ANCHOR]: 0 })
   })
 
   it('休眠边界：source 全窗分区 ≤2 休眠、=3 活跃（阈值含等号）', () => {
@@ -206,14 +197,12 @@ describe('observationLanes — source 全轴行模型', () => {
   })
 })
 
-describe('observationLanes — 矩阵格视图（MX 组，story 口径）', () => {
+describe('observationLanes — 矩阵格视图（MX 组，线索口径）', () => {
   const resolve: LaneDayResolver = (topicId, date) =>
     topicId === '10' && date === '2026-10-23'
       ? {
           kind: 'content', source: 'tier',
-          day: windowDay(date, [{ threadCount: 3 }, { threadCount: 7 }, { threadCount: 1 }], {
-            storyCount: 2, maxParticipantCount: 6, unassignedEventCount: 3,
-          }),
+          day: windowDay(date, [{ threadCount: 3 }, { threadCount: 7 }, { threadCount: 1 }], { clueCount: 11 }),
         }
       : topicId === '10' && date === '2026-10-22'
         ? { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: null, fallbackClueCount: 3 }]) }
@@ -221,79 +210,79 @@ describe('observationLanes — 矩阵格视图（MX 组，story 口径）', () =
           ? { kind: 'gap' }
           : { kind: 'unavailable' }
 
-  it('MX-1：格值 = 当日事件线数（同日多桶合并，非桶峰值/合计）；四指标 aria；颜色档 = 来源数', () => {
+  it('MX-1：格值 = 当日线索合计（同日多桶合并，非桶峰值）；aria 给「N 条线索 · M 个主题桶」', () => {
     const view = matrixCellView(projectMatrixCell(resolve, '10', '2026-10-23'), { laneLabel: '主线', date: '2026-10-23' })
-    expect(view.text).toBe('2')
+    expect(view.text).toBe('11')
     expect(view.openable).toBe(true)
-    expect(view.bucket).toBe('is-p3')
-    expect(view.aria).toContain('2 个事件线')
-    expect(view.aria).toContain('最热 6 个来源')
-    expect(view.aria).toContain('未归组 3 个事件')
+    expect(view.aria).toContain('11 条线索')
     expect(view.aria).toContain('3 个主题桶')
+    expect(view.aria).not.toContain('事件线')
+    expect(view.aria).not.toContain('个来源')
+    expect(view.title).toBe(view.aria)
   })
 
-  // ── 展示降级口径（matrix-clue-fallback-and-rail-merge D2）─────────────────
-  it('MX-5：历史未回填日按线索合计兜底——格值 132、aria 明示「0 条事件线，按线索合计兜底」', () => {
+  // ── 展示口径（retire-story-adopt-event-metrics D4/D5）────────────────────
+  it('MX-5：历史日无 clue_count 时直接显示各桶线索合计，无「兜底」降级说明', () => {
     const degradedResolve: LaneDayResolver = (topicId, date) =>
       topicId === '10' && date === '2026-10-23'
-        ? {
-            kind: 'content', source: 'tier',
-            day: windowDay(date, [{ threadCount: 100 }, { threadCount: 32 }], {
-              storyCount: 0, maxParticipantCount: 0, unassignedEventCount: 132,
-            }),
-          }
+        ? { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: 100 }, { threadCount: 32 }]) }
         : { kind: 'gap' }
     const view = matrixCellView(projectMatrixCell(degradedResolve, '10', '2026-10-23'), { laneLabel: '主线', date: '2026-10-23' })
     expect(view.text).toBe('132')
     expect(view.openable).toBe(true)
     expect(view.aria).toContain('132 条线索')
-    expect(view.aria).toContain('0 条事件线')
-    expect(view.aria).toContain('兜底')
-    expect(view.aria).not.toContain('132 个事件线')
+    expect(view.aria).not.toContain('兜底')
+    expect(view.aria).not.toContain('事件线')
   })
 
-  it('MX-6：真零事件（story 0 且线索 0）格值 0、无降级尾注，不与断档混淆', () => {
+  it('MX-6：真零线索格值 0、可开、无降级尾注，不与断档混淆', () => {
     const zeroResolve: LaneDayResolver = (topicId, date) =>
       topicId === '10' && date === '2026-10-23'
-        ? { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: 0 }], { storyCount: 0 }) }
+        ? { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: 0 }], { clueCount: 0 }) }
         : { kind: 'gap' }
     const view = matrixCellView(projectMatrixCell(zeroResolve, '10', '2026-10-23'), { laneLabel: '主线', date: '2026-10-23' })
     expect(view.text).toBe('0')
-    expect(view.aria).toContain('0 个事件线')
+    expect(view.kind).toBe('content')
+    expect(view.openable).toBe(true)
+    expect(view.aria).toContain('0 条线索')
     expect(view.aria).not.toContain('兜底')
   })
 
-  it('MX-7：事件线数 > 0 的格子格值仍为事件线数（线索再多不用兜底、不混加）', () => {
-    const normalResolve: LaneDayResolver = (topicId, date) =>
+  it('MX-7：桶峰值不冒充展示值（各桶 100/32 但当日线索合计 5 → 格值 5，峰值只作 aria 辅助）', () => {
+    const peakResolve: LaneDayResolver = (topicId, date) =>
       topicId === '10' && date === '2026-10-23'
-        ? { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: 132 }], { storyCount: 3 }) }
+        ? { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: 100 }, { threadCount: 32 }], { clueCount: 5 }) }
         : { kind: 'gap' }
-    const view = matrixCellView(projectMatrixCell(normalResolve, '10', '2026-10-23'), { laneLabel: '主线', date: '2026-10-23' })
-    expect(view.text).toBe('3')
-    expect(view.aria).toContain('3 个事件线')
-    expect(view.aria).not.toContain('降级')
+    const view = matrixCellView(projectMatrixCell(peakResolve, '10', '2026-10-23'), { laneLabel: '主线', date: '2026-10-23' })
+    expect(view.text).toBe('5')
+    expect(view.aria).toContain('5 条线索')
+    // 峰值只以「最多一天桶」辅助说明出现，不进入格值
+    expect(view.aria).toContain('最多一天桶 100 条')
   })
 
-  it('MX-2：story_count 缺省回退当日非综合稿线程合计（不用桶数冒充）；线索全未知时 aria 注明', () => {
+  it('MX-2：线索数未知显示「?」不造 0；旧响应回退 events+folded 合计', () => {
     const fallback = matrixCellView(projectMatrixCell(resolve, '10', '2026-10-22'), { laneLabel: '主线', date: '2026-10-22' })
     expect(fallback.text).toBe('3')
+    expect(fallback.aria).toContain('3 条线索')
+
     const bare = matrixCellView(
       {
         kind: 'content',
-        metrics: { storyCount: null, displayCount: null, degradedFromClue: false, maxParticipantCount: 0, hottestStoryId: null, hottestStoryTitle: '', unassignedEventCount: 0, peak: null, total: 0, sectionCount: 2, hasUnknown: true },
+        metrics: { clueCount: null, total: 0, peak: null, sectionCount: 2, hasUnknown: true },
       },
       { laneLabel: '主线', date: '2026-10-22' },
     )
-    // 旧响应连回退计数都未知时不冒充真实 0，但仍可进入已有分区。
+    // 有分区即可开；但数字未知时不冒充真实 0。
     expect(bare.text).toBe('?')
     expect(bare.openable).toBe(true)
-    expect(bare.aria).toContain('未知')
-    expect(bare.bucket).toBe('')
+    expect(bare.aria).toContain('线索数未知')
+    expect(bare.aria).not.toContain('0 条线索')
+    expect(bare.aria).toContain('2 个主题桶')
   })
 
-  it('MX-3/MX-4：有分区 0 事件线 = 已知 0 可开；gap = 「—」 禁用；unavailable = 「?」 禁用', () => {
+  it('MX-3/MX-4：有分区 0 线索 = 已知 0 可开；gap = 「—」 禁用；unavailable = 「?」 禁用', () => {
     const zero = matrixCellView(
-      { kind: 'content', metrics: { storyCount: 0, displayCount: 0, degradedFromClue: false, maxParticipantCount: 0, hottestStoryId: null, hottestStoryTitle: '', unassignedEventCount: 0, peak: 0, total: 0, sectionCount: 1, hasUnknown: false } },
+      { kind: 'content', metrics: { clueCount: 0, total: 0, peak: 0, sectionCount: 1, hasUnknown: false } },
       { laneLabel: '主线', date: '2026-10-21' },
     )
     expect(zero.text).toBe('0')
@@ -310,86 +299,51 @@ describe('observationLanes — 矩阵格视图（MX 组，story 口径）', () =
     expect(unknown.aria).toContain('未取到')
   })
 
-  it('颜色档：来源数 0 无色 / 1-2 浅 / 3-5 中 / 6+ 深（颜色非唯一信息载体，数字在 title/aria）', () => {
-    const view = (participants: number) => matrixCellView(
-      {
-        kind: 'content',
-        metrics: { storyCount: 1, displayCount: 1, degradedFromClue: false, maxParticipantCount: participants, hottestStoryId: null, hottestStoryTitle: '', unassignedEventCount: 0, peak: 1, total: 1, sectionCount: 1, hasUnknown: false },
-      },
-      { laneLabel: '主线', date: '2026-10-23' },
-    )
-    expect(view(0).bucket).toBe('')
-    expect(view(1).bucket).toBe('is-p1')
-    expect(view(2).bucket).toBe('is-p1')
-    expect(view(3).bucket).toBe('is-p2')
-    expect(view(5).bucket).toBe('is-p2')
-    expect(view(6).bucket).toBe('is-p3')
+  it('颜色通道退役（D5）：格视图无 bucket/来源数分档，信息全在数值 + title/aria', () => {
+    const view = matrixCellView(projectMatrixCell(resolve, '10', '2026-10-23'), { laneLabel: '主线', date: '2026-10-23' })
+    expect(Object.keys(view).sort()).toEqual(['aria', 'kind', 'openable', 'text', 'title'])
+    expect(view.title).not.toContain('最热')
+    expect(view.title).not.toContain('个来源')
   })
 })
 
-// ── 最热事件线点名（surface-story-heat-in-report-top）─────────────────────
+// ── 最热事件线点名整体退役（负向断言，D4/D5）──────────────────────────────
 
-describe('observationLanes — 最热事件线点名（surface-story-heat-in-report-top）', () => {
+describe('observationLanes — 事件线量纲与点名退役', () => {
   const ctx = { laneLabel: '主线', date: '2026-10-23' }
-  const metrics = (over: Partial<DayCellMetrics> = {}): DayCellMetrics => ({
-    storyCount: 2, displayCount: 2, degradedFromClue: false, maxParticipantCount: 4, unassignedEventCount: 1, peak: 2, total: 4, sectionCount: 3, hasUnknown: false,
-    hottestStoryId: 55, hottestStoryTitle: '美伊博弈升级',
-    ...over,
-  } as DayCellMetrics)
+  const RETIRED_WORDS = ['最热', '个来源', '事件线', '未归组', '兜底']
 
-  it('点名：id+title → 「最热：标题（N 个来源）」；title 与 aria 同源；四数字顺序不变', () => {
-    const view = matrixCellView({ kind: 'content', metrics: metrics() }, ctx)
-    expect(view.title).toBe('主线 2026-10-23：2 个事件线 · 最热：美伊博弈升级（4 个来源） · 未归组 1 个事件 · 3 个主题桶')
-    expect(view.aria).toBe(view.title)
-    const positions = ['2 个事件线', '4 个来源', '未归组 1 个事件', '3 个主题桶'].map(seg => view.title!.indexOf(seg))
-    expect(positions.every(index => index >= 0)).toBe(true)
-    expect(positions).toEqual([...positions].sort((a, b) => a - b))
-  })
-
-  it('无身份（id null / 旧响应缺字段）：不追加点名段、无空括号/undefined；标注「最热事件线暂不可识别」不冒名', () => {
-    for (const over of [{ hottestStoryId: null, hottestStoryTitle: '' }, { hottestStoryId: undefined, hottestStoryTitle: undefined }]) {
-      const view = matrixCellView({ kind: 'content', metrics: metrics(over) }, ctx)
-      expect(view.title).toContain('最热 4 个来源')
-      expect(view.title).toContain('最热事件线暂不可识别')
-      expect(view.title).not.toContain('最热：')
-      expect(view.title).not.toContain('（）')
-      expect(view.title).not.toContain('undefined')
-    }
-  })
-
-  it('空/纯空白标题回退「事件线 #ID」；0 来源照常点名（0 是已知合法值，不当断档）', () => {
-    const blank = matrixCellView({ kind: 'content', metrics: metrics({ hottestStoryTitle: '　 ' }) }, ctx)
-    expect(blank.title).toContain('最热：事件线 #55（4 个来源）')
-    const zero = matrixCellView({ kind: 'content', metrics: metrics({ maxParticipantCount: 0 }) }, ctx)
-    expect(zero.title).toContain('最热：美伊博弈升级（0 个来源）')
-  })
-
-  it(`超长标题截断 ≤${HOTTEST_STORY_TITLE_MAX} 字 + 省略号（防 title 属性爆炸）；恰满不截`, () => {
-    const long = '甲'.repeat(HOTTEST_STORY_TITLE_MAX + 10)
-    const view = matrixCellView({ kind: 'content', metrics: metrics({ hottestStoryTitle: long }) }, ctx)
-    expect(view.title).toContain(`最热：${'甲'.repeat(HOTTEST_STORY_TITLE_MAX)}…（4 个来源）`)
-    expect(view.title).not.toContain(long)
-    const edge = matrixCellView({ kind: 'content', metrics: metrics({ hottestStoryTitle: '乙'.repeat(HOTTEST_STORY_TITLE_MAX) }) }, ctx)
-    expect(edge.title).toContain(`最热：${'乙'.repeat(HOTTEST_STORY_TITLE_MAX)}（4 个来源）`)
-  })
-
-  it('resolver 链路：raw hottest_story_id/title 经 normalizer 透传 → projectMatrixCell 后同名段', () => {
+  it('旧 story 响应字段即使出现也不进入格值或文案（格值只认当日线索合计）', () => {
     const raw = {
       topic_id: 10, label: '主线', watch_linked: false, section_count_14d: 1, snapshot: null,
       timeline: [{
-        date: '2026-10-23', story_count: 2, max_participant_count: 4,
+        date: '2026-10-23', story_count: 2, max_participant_count: 6, unassigned_event_count: 3,
         hottest_story_id: 55, hottest_story_title: '美伊博弈升级',
         sections: [sectionRaw(1, { thread_count: 4 })],
       }],
     }
-    const resolve = makeResolver(normalize([raw]))
-    const view = matrixCellView(projectMatrixCell(resolve, '10', '2026-10-23'), ctx)
-    expect(view.title).toContain('最热：美伊博弈升级（4 个来源）')
-    // 显式 null（新后端无最热线）→ 同旧响应降级，不点名
-    const nullRaw = { ...raw, timeline: [{ ...raw.timeline[0]!, hottest_story_id: null, hottest_story_title: '' }] }
-    const nullView = matrixCellView(projectMatrixCell(makeResolver(normalize([nullRaw])), '10', '2026-10-23'), ctx)
-    expect(nullView.title).not.toContain('最热：')
-    expect(nullView.title).toContain('最热事件线暂不可识别')
+    const view = matrixCellView(projectMatrixCell(makeResolver(normalize([raw])), '10', '2026-10-23'), ctx)
+    expect(view.text).toBe('4')
+    for (const word of RETIRED_WORDS) {
+      expect(view.aria).not.toContain(word)
+      expect(view.title).not.toContain(word)
+    }
+  })
+
+  it('空标题 / 零来源情形整体退役：不渲染「事件线 #ID（0 个来源）」，也不当作断档', () => {
+    const raw = {
+      topic_id: 10, label: '主线', watch_linked: false, section_count_14d: 1, snapshot: null,
+      timeline: [{
+        date: '2026-10-23', hottest_story_id: 10, hottest_story_title: '　 ', max_participant_count: 0,
+        sections: [sectionRaw(1, { thread_count: 0 })],
+      }],
+    }
+    const view = matrixCellView(projectMatrixCell(makeResolver(normalize([raw])), '10', '2026-10-23'), ctx)
+    expect(view.text).toBe('0')
+    expect(view.kind).toBe('content')
+    expect(view.openable).toBe(true)
+    expect(view.title).not.toContain('事件线 #')
+    expect(view.title).not.toContain('个来源')
   })
 })
 
@@ -404,12 +358,12 @@ describe('observationLanes — 演进投影（EV 组）', () => {
     expect(evolutionDotSize(36)).toBe(24)
   })
 
-  it('EV-2/EV-3：节点数字 = 当日事件线数（story_count 优先，缺省回退线程合计）；标签阈值 ≥3；gap=0/unavailable=null', () => {
+  it('EV-2/EV-3：节点数字 = 当日线索合计（clue_count 优先，缺省回退各桶合计）；标签阈值 ≥3；gap=0/unavailable=null', () => {
     const resolve: LaneDayResolver = (topicId, date) => {
       if (topicId !== '10') return { kind: 'gap' }
       if (date === '2026-10-23') return {
         kind: 'content', source: 'tier',
-        day: windowDay(date, [{ threadCount: 3 }, { threadCount: 1 }], { storyCount: 4, maxParticipantCount: 5 }),
+        day: windowDay(date, [{ threadCount: 3 }, { threadCount: 1 }], { clueCount: 4 }),
       }
       if (date === '2026-10-22') return { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: 2 }]) }
       if (date === '2026-10-21') return { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: null, fallbackClueCount: null }]) }
@@ -419,7 +373,7 @@ describe('observationLanes — 演进投影（EV 组）', () => {
     const nodes = projectEvolutionNodes('10', ['2026-10-23', '2026-10-22', '2026-10-21', '2026-10-20', '2026-10-19'], resolve, '2026-10-23')
     expect(nodes[0]).toMatchObject({ kind: 'content', total: 4, showLabel: true, isToday: true })
     expect(nodes[1]).toMatchObject({ kind: 'content', total: 2, showLabel: false })
-    // 旧数据缺事件线及回退计数，保留未知。
+    // 旧数据缺当日线索合计及回退计数，保留未知。
     expect(nodes[2]).toMatchObject({ kind: 'content', total: null, showLabel: false })
     expect(nodes[3]).toMatchObject({ kind: 'gap', total: 0 })
     expect(nodes[4]).toMatchObject({ kind: 'unavailable', total: null })
@@ -431,10 +385,10 @@ describe('observationLanes — 演进投影（EV 组）', () => {
     expect(firstThreadTitle(windowDay('d', []))).toBe('')
   })
 
-  it('series 优先事件线数，不把线程合计用于长窗趋势', () => {
-    const day = windowDay('d', [{ threadCount: 9 }, { threadCount: 8 }], { storyCount: 2 })
+  it('series 优先当日线索合计（clue_count），不把桶峰值用于长窗趋势', () => {
+    const day = windowDay('d', [{ threadCount: 9 }, { threadCount: 8 }], { clueCount: 2 })
     expect(evolutionSeriesValue({ kind: 'content', source: 'tier', day })).toBe(2)
-    const explicitZero = { ...day, storyCount: 0 }
+    const explicitZero = { ...day, clueCount: 0 }
     expect(evolutionSeriesValue({ kind: 'content', source: 'pool', day: explicitZero })).toBe(0)
   })
 

@@ -4,12 +4,13 @@
  *
  * L0：/tags 未选版块时的跨版块决策面。本组件为总览壳：数据/派生/导航在
  * useBoardRadarOverview（API 边界已归一 camelCase/字符串 ID），报头、故事行、
- * 常温区、阅读右栏、治理宿主各自拆分为子组件。分档临时采用 ≥10 热点 / ≥3 关注 /
- * 其余常温（lane_heat 量纲临时阈值，标定待 5.3），升温沿用「当日事件线 ≥3 且事件线热度
- * ≥ 近 3 日均值 2 倍」，不造新公式；
+ * 常温区、阅读右栏、治理宿主各自拆分为子组件。分档按版块关注度（Σ 泳道当天热度）
+ * 的 P80/P20 阈值（见 boardRadarHelpers）；矩阵/小矩阵/3 日窗口统一为当日线索合计，
+ * 事件线量与颜色通道已退役（retire-story-adopt-event-metrics D4/D5/D10）。
  * 首次取数失败不把初始化 0 当业务结论（R-17），有旧数据时刷新失败保留旧值。
- * 右栏契约（matrix-clue-fallback-and-rail-merge）：一块清单「今日该读」+ 行内徽标
- * （新起 / 升温 N×）+ 跨天延续脚注；管线状态块默认折叠、异常自展开。
+ * 右栏契约：一块「当天线索最多的泳道」清单（服务端归并/排序/截断，上限 8）+
+ * partial/滞后诚实标记；旧后端缺该段时回退版块级日报标题列表。
+ * 管线状态块默认折叠、异常自展开。
  */
 import { onMounted, ref } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -31,15 +32,12 @@ const {
   coldRows,
   visibleRows,
   todayRead,
-  warming,
-  hasStoryFeed,
-  topStories,
-  crossDayBuilding,
-  unbackfilledBoardCount,
-  partialStories,
+  hasLaneFeed,
+  laneItems,
+  partialLanes,
   degradedBoardCount,
   laggingBoardCount,
-  warmingCount,
+  todayClueTotal,
   firstLoadFailed,
   subKind,
   dateText,
@@ -49,7 +47,6 @@ const {
   openBoard,
   openReport,
   openLane,
-  openStory,
 } = useBoardRadarOverview()
 
 const showAddBoard = ref(false)
@@ -82,7 +79,7 @@ function handleGenerated(): void {
         :sub="subKind"
         :hot-count="hotRows.length"
         :rows-count="rows.length"
-        :warming-count="warmingCount"
+        :today-clue-total="todayClueTotal"
         :stats-visible="!firstLoadFailed"
         :creating-board="governanceRef?.creatingBoard ?? false"
         @advanced="handleAdvanced"
@@ -106,7 +103,7 @@ function handleGenerated(): void {
               <span>序</span>
               <span>关注板块 · 最新日报</span>
               <span class="rd-mini-caption">
-                <span>泳道活跃 · 每格事件线数（斜纹格按分区数兜底）</span>
+                <span>泳道活跃 · 每格线索数（未知格标「线索数未知」）</span>
                 <span>{{ miniRange }}</span>
               </span>
               <span>关注强度</span>
@@ -139,7 +136,7 @@ function handleGenerated(): void {
             <div v-if="!error && !rows.length" class="rd-empty" data-testid="radar-empty">
               <Icon icon="mdi:white-balance-sunny" width="26" />
               <p>今天没有需要看的版块。</p>
-              <small>日报生成后，这里会按事件线热度自动排序。</small>
+              <small>日报生成后，这里会按关注度自动排序。</small>
               <button type="button" class="rd-empty-add" data-testid="radar-empty-add" @click="showAddBoard = true">
                 <Icon icon="mdi:plus" width="14" />
                 新建第一个版块
@@ -149,26 +146,22 @@ function handleGenerated(): void {
         </main>
 
         <!-- 右栏改「上滚下驻」两段容器（add-radar-pipeline-status D9）：
-             上段 = 今日该读 / 今天可能升温（独立滚动），下段 = 管线状态块（常驻底部）。
-             R-17：首次取数失败（从未成功拿到数据）不渲染阅读右栏内容，避免「今天还没有日报/
-             暂未触发升温条件」等业务空结论与失败态混排；有旧数据时可保留，成功空集照旧。
+             上段 = 当天线索最多的泳道清单（独立滚动），下段 = 管线状态块（常驻底部）。
+             R-17：首次取数失败（从未成功拿到数据）不渲染阅读右栏内容，避免「今天没有可排的泳道」
+             等业务空结论与失败态混排；有旧数据时可保留，成功空集照旧。
              状态块始终常驻（它自己用「读取中 / 读取失败」表达未知态，不产出业务结论）。 -->
         <div class="rd-rail-col">
           <div class="rd-rail-scroll">
             <BoardRadarReadingRail
               v-if="!firstLoadFailed"
-              :story-mode="hasStoryFeed"
-              :top-stories="topStories"
-              :cross-day-building="crossDayBuilding"
-              :unbackfilled-count="unbackfilledBoardCount"
-              :partial="partialStories"
+              :lane-mode="hasLaneFeed"
+              :lane-items="laneItems"
+              :partial="partialLanes"
               :degraded-count="degradedBoardCount"
               :lagging-count="laggingBoardCount"
               :today-read="todayRead"
-              :warming="warming"
-              @open-story="openStory"
+              @open-lane="openLane"
               @open-report="openReport"
-              @open-board="openBoard"
             />
           </div>
           <BoardRadarStatusBlock

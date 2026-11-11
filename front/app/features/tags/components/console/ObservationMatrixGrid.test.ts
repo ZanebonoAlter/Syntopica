@@ -131,8 +131,8 @@ describe('ObservationMatrixGrid — 报日列头三态', () => {
   })
 })
 
-describe('ObservationMatrixGrid — 格值与颜色档（story 口径，add-event-story-heat 5.4）', () => {
-  const STORY_DAY: LaneDayResolution = {
+describe('ObservationMatrixGrid — 格值与颜色通道退役（线索口径，retire-story-adopt-event-metrics D4/D5）', () => {
+  const CLUE_DAY: LaneDayResolution = {
     kind: 'content',
     source: 'tier',
     day: {
@@ -141,11 +141,7 @@ describe('ObservationMatrixGrid — 格值与颜色档（story 口径，add-even
         { sectionId: '1', label: '桶1', threadCount: 3, fallbackClueCount: null, foldedCount: 0, eventTitles: ['事件一'] },
         { sectionId: '2', label: '桶2', threadCount: 1, fallbackClueCount: null, foldedCount: 0, eventTitles: [] },
       ],
-      storyCount: 2,
-      maxParticipantCount: 6,
-      unassignedEventCount: 4,
-      hottestStoryId: 55,
-      hottestStoryTitle: '美伊博弈升级',
+      clueCount: 7,
     },
   }
   const FALLBACK_DAY: LaneDayResolution = {
@@ -157,44 +153,40 @@ describe('ObservationMatrixGrid — 格值与颜色档（story 口径，add-even
     },
   }
   const resolver = (topicId: string, date: string): LaneDayResolution => {
-    if (date === '2026-10-23') return STORY_DAY
+    if (date === '2026-10-23') return CLUE_DAY
     if (date === '2026-10-22') return FALLBACK_DAY
     return { kind: 'unavailable' }
   }
 
-  it('格值 = story_count（同日多桶合并）；颜色档 = 来源数（6+ → is-p3）；title/aria 点名最热线（surface-story-heat-in-report-top）', () => {
+  it('格值 = 当日线索合计（clue_count 优先，多桶合并）；无颜色档；title/aria 给「N 条线索 · M 个主题桶」', () => {
     const wrapper = mountGrid({ resolveDay: resolver })
     const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-23"]')
-    expect(cell.text()).toBe('2')
-    expect(cell.classes()).toContain('is-p3')
-    expect(cell.attributes('title')).toContain('2 个事件线')
-    expect(cell.attributes('title')).toContain('最热：美伊博弈升级（6 个来源）')
-    expect(cell.attributes('title')).toContain('未归组 4 个事件')
+    expect(cell.text()).toBe('7')
+    expect(cell.classes()).not.toContain('is-p1')
+    expect(cell.classes()).not.toContain('is-p2')
+    expect(cell.classes()).not.toContain('is-p3')
+    expect(cell.attributes('title')).toContain('7 条线索')
+    expect(cell.attributes('title')).toContain('2 个主题桶')
+    expect(cell.attributes('title')).not.toContain('事件线')
+    expect(cell.attributes('title')).not.toContain('个来源')
+    expect(cell.attributes('title')).not.toContain('最热')
     expect(cell.attributes('aria-label')).toBe(cell.attributes('title'))
     expect(cell.attributes('disabled')).toBeUndefined()
   })
 
-  it('无最热线身份（旧响应缺字段）：负向断言——不追点名段，标注「最热事件线暂不可识别」不冒名', () => {
-    const wrapper = mountGrid({ resolveDay: resolver })
-    const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-22"]')
-    expect(cell.text()).toBe('3')
-    expect(cell.attributes('title')).toContain('最热 0 个来源')
-    expect(cell.attributes('title')).toContain('最热事件线暂不可识别')
-    expect(cell.attributes('title')).not.toContain('最热：')
-    expect(cell.attributes('title')).not.toContain('undefined')
-    expect(cell.attributes('title')).not.toContain('（）')
-  })
-
-  it('story_count 缺省回退非综合稿线程合计（3，非桶数 1）；无来源数不着色', () => {
+  it('旧响应缺 clue_count：回退各桶已知线索合计（3，非桶数 1），仍无颜色档/无点名段', () => {
     const wrapper = mountGrid({ resolveDay: resolver })
     const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-22"]')
     expect(cell.text()).toBe('3')
     expect(cell.classes()).not.toContain('is-p1')
     expect(cell.classes()).not.toContain('is-p2')
     expect(cell.classes()).not.toContain('is-p3')
+    expect(cell.attributes('title')).toContain('3 条线索')
+    expect(cell.attributes('title')).not.toContain('最热')
+    expect(cell.attributes('title')).not.toContain('undefined')
   })
 
-  it('三态保持：断档「—」禁用不可开；历史未取到「?」禁用；0 事件线可开', async () => {
+  it('三态保持：断档「—」禁用不可开；历史未取到「?」禁用；0 线索可开', async () => {
     const gapResolver = (_topicId: string, date: string): LaneDayResolution =>
       date === '2026-10-21' ? { kind: 'gap' } : resolver(_topicId, date)
     const zeroDay: LaneDayResolution = {
@@ -203,6 +195,7 @@ describe('ObservationMatrixGrid — 格值与颜色档（story 口径，add-even
       day: {
         date: '2026-10-22',
         sections: [{ sectionId: '9', label: '桶9', threadCount: 0, fallbackClueCount: 0, foldedCount: 0, eventTitles: [] }],
+        clueCount: 0,
       },
     }
     const mixed = (topicId: string, date: string): LaneDayResolution => {

@@ -41,32 +41,25 @@ export interface LaneTimelineDay {
   /** YYYY-MM-DD。 */
   date: string
   sections: LaneTimelineSection[]
-  /** 当日事件线数（add-event-story-heat 3b；缺省 = 旧后端，前端回退非综合稿线程数合计）。 */
-  story_count?: number
-  /** 当日最热事件线的独立来源数；缺省按 0（颜色不深）。 */
-  max_participant_count?: number
-  /** 当日最热事件线的存活 id（surface-story-heat-in-report-top；与 max 同一获胜线）；
- *  null/缺省 = 无可识别身份（旧后端/未回填），展示不点名、不冒名。 */
-  hottest_story_id?: number | null
-  /** 当日最热事件线标题（同 hottest_story_id 获胜线）；缺省空串，空标题用「事件线 #ID」回退。 */
-  hottest_story_title?: string
-  /** 当日未归组到泳道的事件数；缺省按 0。 */
-  unassigned_event_count?: number
+  /**
+   * 当日线索合计（retire-story-adopt-event-metrics D4）：该泳道该日各主题桶
+   * 非综合稿 thread 数之和（矩阵日格 / 演进节点 / 顶部曲线唯一量纲）。
+   * 缺省 = 旧后端，前端回退各桶 thread_count（再回退 events+folded）合计。
+   */
+  clue_count?: number
 }
 
-/** 主卡区单条泳道（active ∪ watch 关联，按 section_count_14d DESC 排序）。 */
+/** 主卡区单条泳道（active ∪ watch 关联）。 */
 export interface LaneDynamicsLane {
   topic_id: number
   label: string
   /** watch 关联（该板块 active 的 sentence_topic watch 命中该话题）。 */
   watch_linked: boolean
   section_count_14d: number
-  /** 窗口内线索数（热度口径；与 section 分桶解耦）。旧响应缺省时前端按 events+folded 兜底。 */
+  /** 窗口内线索数（全窗线索合计；次级排序键）。旧响应缺省时前端按各桶合计兜底。 */
   thread_count_14d?: number
-  /** 全窗事件线热度（半衰期求和，add-event-story-heat 3b）；缺省按 0（旧后端）。 */
+  /** 泳道当天热度（heat-v2-lane-clues-1d：当天线索数按话题状态加权）；缺省按 0。 */
   lane_heat?: number
-  /** 全窗事件线数；缺省时前端按窗口内逐日 story_count（再回退非综合稿线程数）合计兜底。 */
-  story_count_14d?: number
   snapshot: LaneSnapshot | null
   timeline: LaneTimelineDay[]
 }
@@ -78,6 +71,12 @@ export interface LaneDynamicsCandidate {
   last_seen_date: string
   /** 最近动向摘要（最新 section 标题）。 */
   recent_hint: string
+  /** 锚点日（该版块自己的最新日报日，YYYY-MM-DD）；缺省 = 旧后端。 */
+  anchor_date?: string
+  /** 候选泳道锚点日的线索合计；缺省 = 旧后端（未知，不造 0）。 */
+  clue_count?: number
+  /** 候选泳道热度（clue_count × lane_heat_candidate_weight）；缺省按 0。 */
+  lane_heat?: number
 }
 
 /** GET /lane-dynamics 响应 data。 */
@@ -87,14 +86,8 @@ export interface LaneDynamicsResponse {
   has_reports: boolean
   lanes: LaneDynamicsLane[]
   candidates: LaneDynamicsCandidate[]
-  /** 事件身份是否已回填（add-event-story-heat 3b）；缺省 = 旧后端（未知，不提示降级）。 */
-  stories_backfilled?: boolean
-  /** 热度公式版本（如 heat-v1-48h-hl24h）；缺省 = 旧后端。 */
+  /** 热度口径版本（heat-v2-lane-clues-1d）；缺省 = 旧后端。 */
   heat_rule_version?: string
-  /** 落后源导致热度证据不全；缺省 = 旧后端（按 false 处理）。 */
-  heat_incomplete?: boolean
-  /** 落后 feed id 列表；缺省 = 旧后端。 */
-  heat_stale_feed_ids?: number[]
 }
 
 export function useLaneDynamicsApi() {

@@ -33,9 +33,7 @@ const emit = defineEmits<{
 
 /** 行头用 source 全窗指标；不随可见日期裁切重算排序或统计。 */
 function rowTitle(): string {
-  const participants = Math.max(0, ...Object.values(props.row.participantCounts ?? {}))
-  const unassigned = Object.values(props.row.unassignedCounts ?? {}).reduce((sum, count) => sum + count, 0)
-  return `${props.row.label}：${props.row.storyTotal ?? '?'} 个事件线 · 最热 ${participants} 个来源 · 未归组 ${unassigned} 个事件 · ${props.row.sectionTotal} 个主题桶`
+  return `${props.row.label}：${props.row.clueTotal} 条线索 · ${props.row.sectionTotal} 个主题桶`
 }
 
 function isToday(date: string): boolean {
@@ -44,7 +42,6 @@ function isToday(date: string): boolean {
 
 function cellClass(cell: MatrixCellView, date: string): unknown[] {
   return [
-    cell.bucket,
     {
       'is-today': isToday(date),
       'is-gap': cell.kind === 'gap',

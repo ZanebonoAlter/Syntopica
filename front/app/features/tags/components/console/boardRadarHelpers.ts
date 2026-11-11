@@ -1,20 +1,27 @@
 /**
- * 雷达总览纯函数（rework-workshop-into-radar-and-desk 8A.1 + R-18 归一化读模型）。
- * 关注分档（阈值见下方常量）、3 日热度环比（无 heat 回退旧 sections 口径）、
- * 数据延迟判定、14 日小矩阵日期轴与行内四档分档在此唯一实现；输入为 API 边界归一后的
- * camelCase/字符串 ID 读模型（RadarBoard/RadarLane），展示组件只消费结果，
- * 不再各自复制口径（分档与环比语义见 ui-design.md「权威数据与口径」）。
+ * 雷达总览纯函数（rework-workshop-into-radar-and-desk 8A.1 + R-18 归一化读模型；
+ * retire-story-adopt-event-metrics 3.2 换当天线索口径）。
+ *
+ * 关注分档（阈值见下方常量）、3 日线索环比、数据延迟判定与 14 日小矩阵日期轴在此
+ * 唯一实现；输入为 API 边界归一后的 camelCase/字符串 ID 读模型（RadarBoard/RadarLane），
+ * 展示组件只消费结果，不再各自复制口径（分档与环比语义见 ui-design.md「权威数据与口径」）。
+ *
+ * 量纲（D4/D5）：一切展示量都是「当日线索合计」；事件线数、分区数、来源数与颜色分档
+ * （`laneLevel` / `laneDegradedLevel`）已整体退役——数值 + title/aria 承载全部信息。
  */
 import type { RadarBoard } from '~/api/normalizers/boardRadar'
 
-// 来源：calibrate-heat --days 14 --board 0；样本：全版块 14d 正值 lane_heat（734 个）。
-// P80/P20 四舍五入至一位小数；标定日期：2026-11-06。
-export const RADAR_HOT_ATTENTION = 3.3
-export const RADAR_WARM_ATTENTION = 0.7
+// 来源：真库 SELECT 实测新口径「版块关注度」（Σ 泳道当天热度，含候选权重，一位小数）：
+// 样本 = 近 14 个报告日内全部版块×日的关注度正值（154 个样本 / 13 个版块），
+// 采样日期 2026-11-11，P20 = 2.3 / P80 = 14.5（一位小数）；
+// 30 日窗复算 P20 = 2.0 / P80 = 14.0（口径稳定）。
+// 旧值 3.3 / 0.7（lane_heat 量纲）与更早的 50 / 15（分区量纲）均已失效，见 design.md D9。
+export const RADAR_HOT_ATTENTION = 14.5
+export const RADAR_WARM_ATTENTION = 2.3
 
 export type RadarTier = '热点' | '关注' | '常温'
 
-/** 关注强度分档标签（lane_heat 量纲）：≥P80 热点、≥P20 关注、其余常温。 */
+/** 关注强度分档标签（版块关注度 = Σ 泳道当天热度）：≥P80 热点、≥P20 关注、其余常温。 */
 export function tierLabel(attention: number): RadarTier {
   if (attention >= RADAR_HOT_ATTENTION) return '热点'
   if (attention >= RADAR_WARM_ATTENTION) return '关注'
@@ -26,18 +33,11 @@ export interface RadarTrend {
   dir: 'up' | 'down' | 'flat'
 }
 
-/** API 边界明确区分缺字段与真实 0；未经过 normalizer 的兼容读模型仍按热度信号判定。 */
-export function hasHeatSignal(row: Partial<Pick<RadarBoard, 'hasHeatData' | 'todayHeat' | 'last3Heat' | 'prev3Heat'>>): boolean {
-  return row.hasHeatData ?? ((row.todayHeat ?? 0) > 0 || (row.last3Heat ?? 0) > 0 || (row.prev3Heat ?? 0) > 0)
-}
-
-/** 近 3 日 / 前 3 日环比文案（热度口径优先，无 heat 回退旧 sections）；前 3 日为 0 时区分「新出现」与「—」。 */
-export function trendOf(
-  row: Pick<RadarBoard, 'last3Heat' | 'prev3Heat' | 'last3Sections' | 'prev3Sections'> & Partial<Pick<RadarBoard, 'hasHeatData' | 'todayHeat'>>,
-): RadarTrend {
-  const heat = hasHeatSignal(row)
-  const last3 = heat ? row.last3Heat : row.last3Sections
-  const prev3 = heat ? row.prev3Heat : row.prev3Sections
+/** 近 3 日 / 前 3 日线索合计环比；任一侧未知（旧后端缺字段）→ 「—」，不造 0 断言。 */
+export function trendOf(row: Pick<RadarBoard, 'last3Clues' | 'prev3Clues'>): RadarTrend {
+  const last3 = row.last3Clues
+  const prev3 = row.prev3Clues
+  if (last3 === null || prev3 === null) return { text: '—', dir: 'flat' }
   if (!prev3) {
     return last3
       ? { text: '新出现', dir: 'up' }
@@ -72,22 +72,4 @@ export function miniAxis(anchor: string, days: number): string[] {
     value.setUTCDate(value.getUTCDate() - (days - 1 - i))
     return value.toISOString().slice(0, 10)
   })
-}
-
-/** 小矩阵行内四档 0–4：0=无分区，其余按该泳道行内最大值分档。 */
-export function laneLevel(count: number, max: number): number {
-  if (!count || max <= 0) return 0
-  return Math.max(1, Math.ceil((count / max) * 4))
-}
-
-/**
- * 小矩阵**降级格（代理值）**档位 1–4：基准 = 该泳道**代理值自己**的行内最大值
- * （分区数），不与已确证事件线数共用分母——两种量纲不挤在一条色阶上：
- * 代理值既不稀释已确证格的对比度，也不冒充事件线峰值。
- * 档数仍为 4（与 `.b1..b4` 同构，「按 4 着档」契约不变），但视觉色强封顶在
- * `.b3` 之下（最深实心档只留给已确证的事件线峰值——身份缺失不得画成最热的一天）。
- */
-export function laneDegradedLevel(count: number, max: number): number {
-  if (!count || max <= 0) return 0
-  return Math.max(1, Math.min(4, Math.ceil((count / max) * 4)))
 }

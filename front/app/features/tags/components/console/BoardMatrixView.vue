@@ -2,8 +2,9 @@
 /**
  * 版块态势矩阵（rework-workshop-into-radar-and-desk 2.1/2.2/2.5）。
  *
- * 泳道 × 日期网格：格值 = 当日 section 数（不是 thread 数）；空格 = 断档（不显示 0）；
- * 行尾 = 窗口内线索总数（排序键，title 里保留分区数）、今天列高亮；窗口内分区数 ≤2 的活跃泳道折叠进「休眠」组（纯前端展示规则）。
+ * 泳道 × 日期网格：格值 = 当日线索合计（各主题桶非综合稿 thread 数之和；retire-story-adopt-event-metrics D4）；
+ * 空格 = 断档（不显示 0）；行尾 = 窗口内线索总数（排序键，title 里保留分区数）、今天列高亮；
+ * 窗口内分区数 ≤2 的活跃泳道折叠进「休眠」组（纯前端展示规则）。
  *
  * 只读红线：格内与泳道行不提供归档/合并/转正等生命周期写操作；
  * 点格只 emit（抽屉由宿主开），空格给提示。
@@ -51,7 +52,7 @@ function isToday(date: string): boolean {
 }
 
 function cellCount(row: LaneMatrixRow, date: string): number {
-  return row.counts[date] ?? 0
+  return row.clueCounts[date] ?? 0
 }
 
 /** 密度分档：1/2/3/≥4（≥4 同档）。 */
@@ -78,7 +79,7 @@ const showError = computed(() => !props.loading && props.error !== null && !show
   <section class="mx" data-testid="board-matrix">
     <div class="mx-head">
       <span class="mx-kicker">泳道 × 日期</span>
-      <span class="mx-hint">格内数字 = 当天该泳道的分区数；空白 = 断档；窗口内 ≤2 个分区的泳道折叠进「休眠」</span>
+      <span class="mx-hint">格内数字 = 当天该泳道的线索合计；空白 = 断档；窗口内 ≤2 个分区的泳道折叠进「休眠」</span>
       <span v-if="dataAsOf && dataAsOf < today" class="mx-asof" data-testid="matrix-data-asof">
         数据截止 {{ dataAsOf }}（之后没有新日报）
       </span>

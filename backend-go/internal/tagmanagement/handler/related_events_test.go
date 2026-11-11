@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/testutil"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
@@ -304,4 +305,76 @@ func TestRelatedEventsHonoursUpdatedThreshold(t *testing.T) {
 	data = body["data"].(map[string]any)
 	require.InDelta(t, 0.5, data["threshold"].(float64), 1e-9)
 	require.Len(t, data["items"].([]any), 1)
+}
+
+// TestMatchingConfigLaneHeatCandidateWeight（retire-story-adopt-event-metrics 3.4）：
+// 「匹配规则」配置面接入 lane_heat_candidate_weight（默认 0.5、域 [0,1] 有限数）——
+// 缺项回退默认、合法保存后重读生效、非法整体拒绝且不覆盖旧值、与相关事件阈值互不影响。
+func TestMatchingConfigLaneHeatCandidateWeight(t *testing.T) {
+	db, r := setupRelatedEventsHandlerTest(t)
+
+	t.Run("缺项返回默认 0.5", func(t *testing.T) {
+		require.NoError(t, db.Where("key = ?", aisettings.LaneHeatCandidateWeightKey).Delete(&models.AISettings{}).Error)
+		w, body := doJSON(t, r, http.MethodGet, "/api/semantic-boards/matching-config", nil)
+		require.Equal(t, http.StatusOK, w.Code)
+		data := body["data"].(map[string]any)
+		require.InDelta(t, aisettings.DefaultLaneHeatCandidateWeight, data[aisettings.LaneHeatCandidateWeightKey].(float64), 1e-9)
+	})
+
+	t.Run("合法保存后重读生效，相关事件阈值不变", func(t *testing.T) {
+		_, before := doJSON(t, r, http.MethodGet, "/api/semantic-boards/matching-config", nil)
+		beforeData := before["data"].(map[string]any)
+
+		w, _ := doJSON(t, r, http.MethodPut, "/api/semantic-boards/matching-config", map[string]any{
+			aisettings.LaneHeatCandidateWeightKey: 0.8,
+		})
+		require.Equal(t, http.StatusOK, w.Code)
+
+		_, after := doJSON(t, r, http.MethodGet, "/api/semantic-boards/matching-config", nil)
+		afterData := after["data"].(map[string]any)
+		require.InDelta(t, 0.8, afterData[aisettings.LaneHeatCandidateWeightKey].(float64), 1e-9)
+		// 与相关事件阈值互不影响（同一 GET 面，但键各自独立）
+		require.Equal(t, beforeData[related.ThresholdKey], afterData[related.ThresholdKey])
+		require.Equal(t, beforeData["semantic_board_match_sim_threshold"], afterData["semantic_board_match_sim_threshold"])
+	})
+
+	t.Run("边界 0 与 1 合法（0 = 候选不计入热度）", func(t *testing.T) {
+		for _, value := range []float64{0, 1} {
+			w, _ := doJSON(t, r, http.MethodPut, "/api/semantic-boards/matching-config", map[string]any{aisettings.LaneHeatCandidateWeightKey: value})
+			require.Equal(t, http.StatusOK, w.Code)
+			_, body := doJSON(t, r, http.MethodGet, "/api/semantic-boards/matching-config", nil)
+			require.InDelta(t, value, body["data"].(map[string]any)[aisettings.LaneHeatCandidateWeightKey].(float64), 1e-9)
+		}
+	})
+
+	t.Run("非法值拒绝且不覆盖旧值", func(t *testing.T) {
+		require.NoError(t, db.Where("key = ?", aisettings.LaneHeatCandidateWeightKey).Delete(&models.AISettings{}).Error)
+		_, _ = doJSON(t, r, http.MethodPut, "/api/semantic-boards/matching-config", map[string]any{aisettings.LaneHeatCandidateWeightKey: 0.6})
+
+		cases := []struct {
+			name    string
+			payload map[string]any
+		}{
+			{name: "空白", payload: map[string]any{aisettings.LaneHeatCandidateWeightKey: "  "}},
+			{name: "范围外", payload: map[string]any{aisettings.LaneHeatCandidateWeightKey: 1.5}},
+			{name: "负数", payload: map[string]any{aisettings.LaneHeatCandidateWeightKey: -0.1}},
+			{name: "NaN 字符串", payload: map[string]any{aisettings.LaneHeatCandidateWeightKey: "NaN"}},
+			{name: "Infinity 字符串", payload: map[string]any{aisettings.LaneHeatCandidateWeightKey: "Inf"}},
+			{name: "非数字", payload: map[string]any{aisettings.LaneHeatCandidateWeightKey: "abc"}},
+		}
+		for _, tc := range cases {
+			w, body := doJSON(t, r, http.MethodPut, "/api/semantic-boards/matching-config", tc.payload)
+			require.Equal(t, http.StatusBadRequest, w.Code, tc.name)
+			require.False(t, body["success"].(bool), tc.name)
+			_, cfg := doJSON(t, r, http.MethodGet, "/api/semantic-boards/matching-config", nil)
+			require.InDelta(t, 0.6, cfg["data"].(map[string]any)[aisettings.LaneHeatCandidateWeightKey].(float64), 1e-9, tc.name+" 不得覆盖原值")
+		}
+	})
+
+	t.Run("坏存量值读取回退默认（不静默 0、不影响渲染）", func(t *testing.T) {
+		require.NoError(t, db.Where("key = ?", aisettings.LaneHeatCandidateWeightKey).Delete(&models.AISettings{}).Error)
+		require.NoError(t, db.Create(&models.AISettings{Key: aisettings.LaneHeatCandidateWeightKey, Value: "NaN"}).Error)
+		_, body := doJSON(t, r, http.MethodGet, "/api/semantic-boards/matching-config", nil)
+		require.InDelta(t, aisettings.DefaultLaneHeatCandidateWeight, body["data"].(map[string]any)[aisettings.LaneHeatCandidateWeightKey].(float64), 1e-9)
+	})
 }

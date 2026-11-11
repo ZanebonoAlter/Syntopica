@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 雷达总览报头（rework-workshop-into-radar-and-desk 8A/R-18 拆分）。
- * 纯展示：eyebrow 日期、大标题与动态副注、活跃/热点/升温统计、「全局治理」菜单
+ * 纯展示：eyebrow 日期、大标题与动态副注、活跃/热点/当日线索统计、「全局治理」菜单
  * （对齐已批准原型措辞，原「更多」）与唯一「新建版块」入口。统计与业务文案在首次
  * 取数失败时（statsVisible=false / sub=failed）不得把初始化 0 呈现为业务结论（R-17）。
  * 治理动作经 advanced 事件交 BoardRadarGovernance 承接，本组件零数据依赖。
@@ -17,7 +17,8 @@ defineProps<{
   sub: RadarSubKind
   hotCount: number
   rowsCount: number
-  warmingCount: number
+  /** 全版块当日线索合计；null = 旧后端缺该字段（未知，不显示统计项）。 */
+  todayClueTotal: number | null
   /** 首次取数失败时隐藏统计（0/0/0 是未知不是结论）。 */
   statsVisible: boolean
   creatingBoard: boolean
@@ -62,7 +63,7 @@ function pick(kind: AdvancedKind, event: MouseEvent): void {
       <div v-if="statsVisible" class="rd-meta">
         <span>活跃板块 <b>{{ rowsCount }}</b></span>
         <span>热点 <b>{{ hotCount }}</b></span>
-        <span>升温 <b>{{ warmingCount }}</b></span>
+        <span v-if="todayClueTotal !== null">今日线索 <b>{{ todayClueTotal }}</b></span>
       </div>
       <NuxtLink to="/" class="rd-home rd-action-btn" aria-label="返回主页" data-testid="radar-home">
         <Icon icon="mdi:home-outline" width="14" />

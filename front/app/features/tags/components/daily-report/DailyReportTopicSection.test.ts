@@ -625,21 +625,18 @@ describe('DailyReportTopicSection — 泳道内主题分桶（add-intra-lane-the
   })
 })
 
-// ── surface-story-heat-in-report-top：重点定位锚点 / 展开定位 / 2s 单高亮 ──
+// ── retire-story-adopt-event-metrics 3.3：聚簇定位锚点 / 展开定位 / 2s 单高亮 ──
 
-describe('DailyReportTopicSection — 重点定位锚点与高亮（surface-story-heat-in-report-top）', () => {
-  it('当前正文分支：thread 容器带稳定锚点 report-thread-{id}、存活 story 标识与程序聚焦 tabindex', async () => {
-    const wrapper = mountSection({ zone: activeZone([makeSection(100, [makeThread(1, { story_id: 55 })])]) })
+describe('DailyReportTopicSection — 聚簇定位锚点与高亮（D14）', () => {
+  it('当前正文分支：thread 容器带稳定锚点 report-thread-{id} 与程序聚焦 tabindex；事件线标识已退役', async () => {
+    const wrapper = mountSection({ zone: activeZone([makeSection(100, [makeThread(1, { tag_ids: [55] })])]) })
     await nextTick() // active 首组挂载即自动展开
     const anchor = wrapper.find('#report-thread-1')
     expect(anchor.exists()).toBe(true)
     expect(anchor.classes()).toContain('drm-thread')
-    expect(anchor.attributes('data-story-id')).toBe('55')
     expect(anchor.attributes('tabindex')).toBe('-1')
-    // 无 story_id（旧数据/综合稿）不渲染标识，锚点仍在
-    const legacy = mountSection({ zone: activeZone([makeSection(100, [makeThread(2)])]) })
-    await nextTick()
-    expect(legacy.find('#report-thread-2').attributes('data-story-id')).toBeUndefined()
+    // 事件线身份不再外透（D14）：thread 容器无 data-story-id
+    expect(anchor.attributes('data-story-id')).toBeUndefined()
   })
 
   it('历史分支：历史 section 的 thread 同样带稳定锚点（与当前分支同契约）', async () => {
@@ -658,7 +655,7 @@ describe('DailyReportTopicSection — 重点定位锚点与高亮（surface-stor
       event_tag_count: 0,
       highlights: [],
       dynamics: '',
-      sections: [makeSection(sectionId, [makeThread(21, { story_id: 55 })], { report_id: reportId } as never)],
+      sections: [makeSection(sectionId, [makeThread(21, { tag_ids: [55] })], { report_id: reportId } as never)],
       created_at: `${dayKey}T12:00:00Z`,
     }
     const lifelineEntries = new Map<number, RequestCacheEntry<TopicLifelineData>>([
@@ -676,10 +673,10 @@ describe('DailyReportTopicSection — 重点定位锚点与高亮（surface-stor
     await nextTick()
     const anchor = wrapper.find('.drm-history__section #report-thread-21')
     expect(anchor.exists()).toBe(true)
-    expect(anchor.attributes('data-story-id')).toBe('55')
+    expect(anchor.attributes('tabindex')).toBe('-1')
   })
 
-  it('locateThread：折叠组先展开，滚到/聚焦/点亮 DOM 首条对应线程（非最小 thread id）；2s 边界清理', async () => {
+  it('locateThread：折叠组先展开，滚到/聚焦/点亮 DOM 首条属于该聚簇的线程（非最小 thread id）；2s 边界清理', async () => {
     vi.useFakeTimers()
     const scrollIntoView = vi.fn()
     const focus = vi.spyOn(HTMLElement.prototype, 'focus')
@@ -687,14 +684,14 @@ describe('DailyReportTopicSection — 重点定位锚点与高亮（surface-stor
     Element.prototype.scrollIntoView = scrollIntoView as never
     let wrapper: ReturnType<typeof mountSection> | undefined
     try {
-      // briefs 分区无自动展开；同线两条线程 DOM 序 30 → 20，定位 30 而非最小 id 20
-      const zone = briefsZone([makeSection(100, [makeThread(30, { story_id: 55 }), makeThread(20, { story_id: 55 })])])
+      // briefs 分区无自动展开；同簇两条线程 DOM 序 30 → 20，定位 30 而非最小 id 20
+      const zone = briefsZone([makeSection(100, [makeThread(30, { tag_ids: [55] }), makeThread(20, { tag_ids: [55] })])])
       wrapper = mountSection({ zone })
       // 组件用 document.getElementById 定位锚点 → 必须真正挂进 document（同 focusSectionId 用例）。
       document.body.appendChild(wrapper.element)
       expect(wrapper.find('#report-thread-30').exists()).toBe(false)
 
-      await wrapper.setProps({ locateThread: { storyId: 55, nonce: 1 } })
+      await wrapper.setProps({ locateThread: { clusterId: 55, nonce: 1 } })
       await nextTick()
       await nextTick()
       expect(wrapper.find('#report-thread-30').exists()).toBe(true)
@@ -718,15 +715,15 @@ describe('DailyReportTopicSection — 重点定位锚点与高亮（surface-stor
   })
 
   it('重复定位：后一次替换高亮，始终至多一个点亮目标', async () => {
-    const zone = briefsZone([makeSection(100, [makeThread(30, { story_id: 55 }), makeThread(31, { story_id: 66 })])])
+    const zone = briefsZone([makeSection(100, [makeThread(30, { tag_ids: [55] }), makeThread(31, { tag_ids: [66] })])])
     const wrapper = mountSection({ zone })
     document.body.appendChild(wrapper.element)
-    await wrapper.setProps({ locateThread: { storyId: 55, nonce: 1 } })
+    await wrapper.setProps({ locateThread: { clusterId: 55, nonce: 1 } })
     await nextTick()
     await nextTick()
     expect(wrapper.find('#report-thread-30').classes()).toContain('drm-thread--lit')
 
-    await wrapper.setProps({ locateThread: { storyId: 66, nonce: 2 } })
+    await wrapper.setProps({ locateThread: { clusterId: 66, nonce: 2 } })
     await nextTick()
     await nextTick()
     expect(wrapper.find('#report-thread-31').classes()).toContain('drm-thread--lit')
@@ -735,10 +732,10 @@ describe('DailyReportTopicSection — 重点定位锚点与高亮（surface-stor
   })
 
   it('切 report：清理高亮与计时器（无旧报回跳）', async () => {
-    const zone = briefsZone([makeSection(100, [makeThread(30, { story_id: 55 })])])
+    const zone = briefsZone([makeSection(100, [makeThread(30, { tag_ids: [55] })])])
     const wrapper = mountSection({ zone })
     document.body.appendChild(wrapper.element)
-    await wrapper.setProps({ locateThread: { storyId: 55, nonce: 1 } })
+    await wrapper.setProps({ locateThread: { clusterId: 55, nonce: 1 } })
     await nextTick()
     await nextTick()
     expect(wrapper.find('#report-thread-30').classes()).toContain('drm-thread--lit')
@@ -749,14 +746,14 @@ describe('DailyReportTopicSection — 重点定位锚点与高亮（surface-stor
     wrapper.unmount()
   })
 
-  it('本分区无对应线（目标在其它 zone）：静默不动作，不展开不滚动', async () => {
+  it('本分区无对应簇（目标在其它 zone）：静默不动作，不展开不滚动', async () => {
     const scrollIntoView = vi.fn()
     const originalScroll = Element.prototype.scrollIntoView
     Element.prototype.scrollIntoView = scrollIntoView as never
     try {
-      const zone = briefsZone([makeSection(100, [makeThread(30, { story_id: 55 })])])
+      const zone = briefsZone([makeSection(100, [makeThread(30, { tag_ids: [55] })])])
       const wrapper = mountSection({ zone })
-      await wrapper.setProps({ locateThread: { storyId: 999, nonce: 1 } })
+      await wrapper.setProps({ locateThread: { clusterId: 999, nonce: 1 } })
       await nextTick()
       await nextTick()
       expect(wrapper.find('#report-thread-30').exists()).toBe(false) // 仍折叠
@@ -771,9 +768,9 @@ describe('DailyReportTopicSection — 重点定位锚点与高亮（surface-stor
   it('卸载清理计时器（不留迟到高亮回调）', async () => {
     vi.useFakeTimers()
     try {
-      const zone = briefsZone([makeSection(100, [makeThread(30, { story_id: 55 })])])
+      const zone = briefsZone([makeSection(100, [makeThread(30, { tag_ids: [55] })])])
       const wrapper = mountSection({ zone })
-      await wrapper.setProps({ locateThread: { storyId: 55, nonce: 1 } })
+      await wrapper.setProps({ locateThread: { clusterId: 55, nonce: 1 } })
       await nextTick()
       await nextTick()
       wrapper.unmount()

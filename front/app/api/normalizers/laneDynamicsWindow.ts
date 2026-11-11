@@ -1,13 +1,18 @@
 /**
- * 泳道动态观察窗 normalizer（rework-workshop-into-radar-and-desk 矩阵阶段 G1）。
+ * 泳道动态观察窗 normalizer（rework-workshop-into-radar-and-desk 矩阵阶段 G1；
+ * retire-story-adopt-event-metrics 1.4/3.1 换口径）。
  *
  * 后端 `GET /semantic-boards/:id/lane-dynamics?days=N` 的 snake_case 协议**完全不改**
  * （api/laneDynamics.ts 既有约定）；仅在新数据面（观察窗 A/B 双通道）客户端边界归一为
  * camelCase 读模型并把数字 ID 字符串化（code-style §9：转换只在 API 层，组件/状态层
- * 不散落 raw 映射）。未迁移的旧矩阵/演进/抽屉消费者继续消费 `legacy` 原始响应
- * （api/laneDynamicsWindow.ts 配对携带），G5 收口后再移除。
+ * 不散落 raw 映射）。
  *
- * 零值语义（矩阵阶段合同 §1）：
+ * 量纲（D4）：日格 / 演进节点 / 顶部曲线统一为「当日线索合计」= 该泳道该日各主题桶
+ * 非综合稿 thread 数之和（后端 `clue_count`）。事件线量纲（story_count / 最热事件线
+ * 身份 / 未归组事件数 / 来源数颜色通道）随 story 退役整体退场；旧后端缺 `clue_count`
+ * 时回退各桶 `thread_count`（缺省再用 events+folded）合计，全未知仍是 null（不造 0）。
+ *
+ * 零值语义：
  *  - `thread_count` 缺省（旧响应）→ `threadCount: null`，展示回退 `fallbackClueCount`
  *    （= events 数 + folded_count）；连 events/folded 都缺 → `fallbackClueCount: null`
  *    （未知，显示 '?'，不得拿桶数补数）。
@@ -29,20 +34,12 @@ export interface WindowSection {
   eventTitles: string[]
 }
 
-/** 归一后的单日节点：该日全部主题桶。 */
+/** 归一后的单日节点：该日全部主题桶 + 当日线索合计。 */
 export interface WindowLaneDay {
   date: string
   sections: WindowSection[]
-  /** 当日事件线数（raw story_count）；null = 旧响应缺省（展示回退当日非综合稿线程数合计）。 */
-  storyCount?: number | null
-  /** 当日最热事件线独立来源数（raw max_participant_count）；null = 缺省（按 0，颜色不深）。 */
-  maxParticipantCount?: number | null
-  /** 当日最热事件线存活 id（raw hottest_story_id，与 max 同一获胜线）；null = 缺省/无身份（不点名）。 */
-  hottestStoryId?: number | null
-  /** 当日最热事件线标题（raw hottest_story_title）；缺省空串（点名时空标题回退 #ID）。 */
-  hottestStoryTitle?: string
-  /** 当日未归组事件数（raw unassigned_event_count）；null = 缺省（按 0）。 */
-  unassignedEventCount?: number | null
+  /** 当日线索合计（raw clue_count，已排除综合稿）；null/缺省 = 旧响应（按各桶合计派生）。 */
+  clueCount?: number | null
 }
 
 export interface WindowLaneSnapshot {
@@ -62,10 +59,8 @@ export interface WindowLane {
   sectionCountWindow: number
   /** 窗口内线索数（raw thread_count_14d）；null = 旧响应缺省。 */
   threadCountWindow: number | null
-  /** 全窗事件线热度（raw lane_heat，半衰期求和）；缺省/旧后端按 0（排序回退事件线数）。 */
+  /** 泳道当天热度（raw lane_heat，heat-v2-lane-clues-1d 当天口径）；缺省按 0。 */
   laneHeat?: number
-  /** 全窗事件线数（raw story_count_14d）；null/缺省 = 旧响应（回退逐日 story_count 合计）。 */
-  storyCountWindow?: number | null
   snapshot: WindowLaneSnapshot | null
   timeline: WindowLaneDay[]
 }
@@ -75,6 +70,12 @@ export interface WindowCandidate {
   label: string
   lastSeenDate: string
   recentHint: string
+  /** 候选泳道的锚点日（raw anchor_date）；缺省 null。 */
+  anchorDate: string | null
+  /** 锚点日当天线索合计（raw clue_count）；缺省 null（未知，不造 0）。 */
+  clueCount: number | null
+  /** 候选加权热度（raw lane_heat）；缺省 null。 */
+  laneHeat: number | null
 }
 
 /** 归一后的 lane-dynamics 读模型（新数据面消费）。 */
@@ -85,14 +86,8 @@ export interface LaneDynamicsWindowData {
   candidates: WindowCandidate[]
   /** 窗内最新有分区日（= 数据轴锚点候选；与报告锚点分清，见 useBoardConsole anchorDate）。 */
   anchorDate: string | null
-  /** 事件身份是否已回填（raw stories_backfilled）；null/缺省 = 旧响应（未知，不提示降级）。 */
-  storiesBackfilled?: boolean | null
-  /** 热度公式版本；缺省空串。 */
+  /** 热度口径版本（heat-v2-lane-clues-1d）；缺省空串。 */
   heatRuleVersion?: string
-  /** 落后源热度证据不全；缺省按 false。 */
-  heatIncomplete?: boolean
-  /** 落后 feed id 列表；缺省空数组。 */
-  heatStaleFeedIds?: number[]
 }
 
 function normalizeSection(section: LaneTimelineSection): WindowSection {
@@ -115,11 +110,7 @@ export function normalizeLaneDynamicsWindow(raw: LaneDynamicsResponse): LaneDyna
     const timeline = (lane.timeline ?? []).map(day => ({
       date: day.date,
       sections: (day.sections ?? []).map(normalizeSection),
-      storyCount: day.story_count ?? null,
-      maxParticipantCount: day.max_participant_count ?? null,
-      hottestStoryId: day.hottest_story_id ?? null,
-      hottestStoryTitle: day.hottest_story_title ?? '',
-      unassignedEventCount: day.unassigned_event_count ?? null,
+      clueCount: day.clue_count ?? null,
     }))
     for (const day of timeline) {
       if (anchorDate === null || day.date > anchorDate) anchorDate = day.date
@@ -131,7 +122,6 @@ export function normalizeLaneDynamicsWindow(raw: LaneDynamicsResponse): LaneDyna
       sectionCountWindow: lane.section_count_14d,
       threadCountWindow: lane.thread_count_14d ?? null,
       laneHeat: lane.lane_heat ?? 0,
-      storyCountWindow: lane.story_count_14d ?? null,
       snapshot: lane.snapshot
         ? { summary: lane.snapshot.summary, asOf: lane.snapshot.as_of, detail: lane.snapshot.detail ?? null }
         : null,
@@ -147,43 +137,34 @@ export function normalizeLaneDynamicsWindow(raw: LaneDynamicsResponse): LaneDyna
       label: candidate.label,
       lastSeenDate: candidate.last_seen_date,
       recentHint: candidate.recent_hint,
+      anchorDate: candidate.anchor_date ?? null,
+      clueCount: candidate.clue_count ?? null,
+      laneHeat: candidate.lane_heat ?? null,
     })),
     anchorDate,
-    storiesBackfilled: raw.stories_backfilled ?? null,
     heatRuleVersion: raw.heat_rule_version ?? '',
-    heatIncomplete: raw.heat_incomplete === true,
-    heatStaleFeedIds: Array.isArray(raw.heat_stale_feed_ids) ? raw.heat_stale_feed_ids : [],
   }
 }
 
-/** 日格多口径派生（MX 组）：事件线数 / 桶峰值 / 当日合计 / 主题桶数 + 是否存在未知值。 */
+/**
+ * 日格派生（D4）：展示值 = 当日线索合计（raw clue_count 优先；旧响应回退各桶
+ * 已知线索合计）。峰值只留作 title/aria 的辅助说明，不再作展示值；事件线数、
+ * 最热事件线身份、未归组事件数、来源数分档全部退役。
+ */
 export interface DayCellMetrics {
-  /** 当日事件线数（raw story_count；缺省回退当日非综合稿线程数合计，不用桶数冒充）。 */
-  storyCount: number | null
-  /** 展示降级口径（matrix-clue-fallback-and-rail-merge D2）：矩阵格值与顶部时间视窗曲线共用
-   *  ——事件线数 > 0 用事件线数，否则线索合计兜底；null = 事件线数未知且合计不可得（'?'，不造 0）。 */
-  displayCount: number | null
-  /** displayCount 是否走了线索合计兜底（事件线 0 且线索 > 0）：title/aria 降级标注的数据源。 */
-  degradedFromClue: boolean
-  /** 当日最热事件线独立来源数（颜色分档口径）；缺省 0。 */
-  maxParticipantCount: number
-  /** 当日最热事件线存活 id（surface-story-heat-in-report-top 点名用）；null = 无身份/旧响应，不点名。 */
-  hottestStoryId: number | null
-  /** 当日最热事件线标题；缺省空串（matrixCellView 空标题回退「事件线 #ID」）。 */
-  hottestStoryTitle: string
-  /** 当日未归组事件数；缺省 0。 */
-  unassignedEventCount: number
-  /** 同日各桶线索数最大值；null = 全部未知（显示 '?'，不拿桶数补数）。 */
-  peak: number | null
-  /** 当日各桶线索数之和（已知值合计，演进节点/趋势图口径）。 */
+  /** 展示值：当日线索合计；null = 全部桶未知（显示 '?'，不造 0）。 */
+  clueCount: number | null
+  /** 各桶已知线索数合计（clue_count 缺省时的回退源，同时是 aria 的辅助数）。 */
   total: number
+  /** 同日各桶线索数最大值；null = 全部未知。 */
+  peak: number | null
   sectionCount: number
   hasUnknown: boolean
 }
 
 export function dayCellMetrics(day: WindowLaneDay | null | undefined): DayCellMetrics {
   if (!day || day.sections.length === 0) {
-    return { storyCount: 0, displayCount: 0, degradedFromClue: false, maxParticipantCount: 0, hottestStoryId: null, hottestStoryTitle: '', unassignedEventCount: 0, peak: null, total: 0, sectionCount: 0, hasUnknown: false }
+    return { clueCount: 0, total: 0, peak: null, sectionCount: 0, hasUnknown: false }
   }
   let peak: number | null = null
   let total = 0
@@ -197,28 +178,8 @@ export function dayCellMetrics(day: WindowLaneDay | null | undefined): DayCellMe
     total += value
     if (peak === null || value > peak) peak = value
   }
-  // story_count 缺省（旧后端/未回填）→ 回退非综合稿线程数合计（thread_count ?? events+folded）
-  const storyCount = day.storyCount ?? (peak === null ? null : total)
-  // 展示降级口径（D2）：事件线数 > 0 用事件线数；事件线 0（历史未回填日）而线索 > 0
-  // 时按线索合计兜底（真零事件 0 是合法已知值）；未知维持 null 不造 0——事件线 0
-  // 且**线索全未知**时无法区分「真零」与「未回填空白」，归未知（hasUnknown 同时标出）。
-  const displayCount = storyCount === null
-    ? null
-    : storyCount > 0
-      ? storyCount
-      : (total > 0 ? total : (hasUnknown ? null : 0))
-  const degradedFromClue = storyCount === 0 && total > 0
-  return {
-    storyCount,
-    displayCount,
-    degradedFromClue,
-    maxParticipantCount: day.maxParticipantCount ?? 0,
-    hottestStoryId: day.hottestStoryId ?? null,
-    hottestStoryTitle: day.hottestStoryTitle ?? '',
-    unassignedEventCount: day.unassignedEventCount ?? 0,
-    peak,
-    total,
-    sectionCount: day.sections.length,
-    hasUnknown,
-  }
+  // 后端 clue_count 是唯一权威的「当日线索合计」（已排除综合稿）；旧响应缺省时
+  // 回退各桶已知合计：全未知 → null（不造 0），否则用已知部分求和。
+  const clueCount = day.clueCount ?? (hasUnknown && peak === null ? null : total)
+  return { clueCount, total, peak, sectionCount: day.sections.length, hasUnknown }
 }

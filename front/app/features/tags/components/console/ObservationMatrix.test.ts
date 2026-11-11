@@ -32,50 +32,54 @@ vi.mock('@iconify/vue', () => ({
   Icon: { name: 'Icon', template: '<span class="icon-stub" />' },
 }))
 
-describe('ObservationMatrix — 矩阵派生（MX 组，story 口径）', () => {
+describe('ObservationMatrix — 矩阵派生（MX 组，线索口径）', () => {
   beforeEach(() => notifyWarn.mockReset())
 
-  it('MX-1：格值 = 当日事件线数（同日多桶合并，非桶峰值）；aria/title 带事件线/最热点名/未归组/桶数四指标', () => {
+  it('MX-1：格值 = 当日线索合计（同日多桶合并，非桶峰值）；aria 给「N 条线索 · M 个主题桶」', () => {
     const wrapper = mountMatrix()
     const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-23"]')
-    expect(cell.text()).toBe('2')
-    expect(cell.attributes('aria-label')).toContain('2 个事件线')
-    expect(cell.attributes('aria-label')).toContain('最热：美伊博弈升级（6 个来源）')
-    expect(cell.attributes('aria-label')).toContain('未归组 3 个事件')
+    expect(cell.text()).toBe('11')
+    expect(cell.attributes('aria-label')).toContain('11 条线索')
     expect(cell.attributes('aria-label')).toContain('3 个主题桶')
+    // 事件线量纲与点名整体退役（D4/D5）：不出现事件线/最热/未归组文案
+    expect(cell.attributes('aria-label')).not.toContain('事件线')
+    expect(cell.attributes('aria-label')).not.toContain('最热')
+    expect(cell.attributes('aria-label')).not.toContain('未归组')
     expect(cell.attributes('disabled')).toBeUndefined()
   })
 
-  it('MX-1c：无最热线身份（11 的 10-22 日缺字段）→ 不追点名段，标注「最热事件线暂不可识别」（spec「无身份不伪造标题」）', () => {
+  it('MX-1c：无事件线身份时也不渲染任何点名段（该量纲已整体退役）', () => {
     const wrapper = mountMatrix()
     const cell = wrapper.find('[data-testid="matrix-cell-11-2026-10-22"]')
-    expect(cell.attributes('aria-label')).toContain('最热 0 个来源')
-    expect(cell.attributes('aria-label')).toContain('最热事件线暂不可识别')
-    expect(cell.attributes('aria-label')).not.toContain('最热：')
+    expect(cell.attributes('aria-label')).not.toContain('最热')
+    expect(cell.attributes('aria-label')).not.toContain('事件线')
+    expect(cell.attributes('aria-label')).not.toContain('个来源')
+    expect(cell.attributes('aria-label')).toContain('4 条线索')
   })
 
-  it('MX-1b：颜色档 = 最热事件线来源数（6+ → is-p3）；颜色不是唯一信息载体（数字同在 title/aria）', () => {
+  it('MX-1b：颜色通道退役（D5）：格上无 is-p1/is-p2/is-p3 档位类，数字全在 title/aria', () => {
     const wrapper = mountMatrix()
-    const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-23"]')
-    expect(cell.classes()).toContain('is-p3')
-    // 11 的 10-22 日：story_count=1、无 participant 字段 → 0 来源不着色
-    const noParticipant = wrapper.find('[data-testid="matrix-cell-11-2026-10-22"]')
-    expect(noParticipant.classes()).not.toContain('is-p1')
-    expect(noParticipant.classes()).not.toContain('is-p2')
-    expect(noParticipant.classes()).not.toContain('is-p3')
+    for (const testid of ['matrix-cell-10-2026-10-23', 'matrix-cell-11-2026-10-22']) {
+      const cell = wrapper.find(`[data-testid="${testid}"]`)
+      expect(cell.classes()).not.toContain('is-p1')
+      expect(cell.classes()).not.toContain('is-p2')
+      expect(cell.classes()).not.toContain('is-p3')
+      expect(cell.attributes('aria-label')).toMatch(/条线索/)
+    }
   })
 
-  it('MX-2：story_count 缺省回退当日非综合稿线程合计（11 的 10-21 日 → 1+2=3，非桶数 2）', () => {
+  it('MX-2：clue_count 缺省回退各桶线索合计（11 的 10-21 日 → 1+2=3，非桶数 2）', () => {
     const wrapper = mountMatrix()
     const cell = wrapper.find('[data-testid="matrix-cell-11-2026-10-21"]')
     expect(cell.text()).toBe('3')
+    expect(cell.attributes('aria-label')).toContain('3 条线索')
     expect(cell.attributes('disabled')).toBeUndefined()
   })
 
-  it('MX-2b：线索全未知日（旧数据）→ 事件线上界 0 可开，aria 注明线索未知', () => {
+  it('MX-2b：线索全未知日（旧数据）→ 「?」不造 0，aria 注明线索数未知，有分区仍可开', () => {
     const source = fixtureSource()
     source.lanes[0]!.timeline.push(windowDay('2026-10-22', [
-      { threadCount: null, fallbackClueCount: 3 },
+      { threadCount: null, fallbackClueCount: null },
       { threadCount: null, fallbackClueCount: null },
     ]))
     const wrapper = mountMatrix({
@@ -84,8 +88,8 @@ describe('ObservationMatrix — 矩阵派生（MX 组，story 口径）', () => 
       dormantRows: [],
     })
     const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-22"]')
-    expect(cell.text()).toBe('3')
-    expect(cell.attributes('aria-label')).toContain('未知')
+    expect(cell.text()).toBe('?')
+    expect(cell.attributes('aria-label')).toContain('线索数未知')
     expect(cell.attributes('disabled')).toBeUndefined()
   })
 
@@ -207,29 +211,24 @@ describe('ObservationMatrix — 名单稳定与三态', () => {
     expect(pool.find('[data-testid="matrix-tier-note"]').text()).toContain('历史由 365 日池补充（不改名单）')
   })
 
-  it('图例可见：颜色 = 当天被报道最多的那条事件线的来源数（新措辞指代明确）+ 4 档区间（spec「图例可见」+ surface-story-heat-in-report-top）', () => {
+  it('图例可见：口径说明 = 「数字 = 当日线索合计」+ 断档/未知标记；无颜色图例', () => {
     const wrapper = mountMatrix()
     const legend = wrapper.find('[data-testid="matrix-legend"]')
     expect(legend.exists()).toBe(true)
-    expect(legend.text()).toContain('数字 = 当日事件线数')
-    expect(legend.text()).toContain('颜色 = 当天被报道最多的那条事件线的来源数')
-    // 4 档区间（0 / 1-2 / 3-5 / 6+）来自 participantBucket 同一常量来源，颜色不是唯一信息载体
-    expect(legend.text()).toContain('0 / 1-2 / 3-5 / 6+')
+    expect(legend.text()).toContain('数字 = 当日线索合计')
+    expect(legend.text()).toContain('无分区')
+    expect(legend.text()).toContain('未取到')
+    expect(legend.text()).not.toContain('颜色')
+    expect(legend.text()).not.toContain('事件线')
     const header = wrapper.find('[data-testid="matrix-lane-10"]')
-    expect(header.attributes('title')).toContain('2 个事件线')
-    expect(header.attributes('title')).toContain('最热 6 个来源')
-    expect(header.attributes('title')).toContain('未归组 3 个事件')
+    expect(header.attributes('title')).toContain('11 条线索')
     expect(header.attributes('title')).toContain('4 个主题桶')
+    expect(header.attributes('title')).not.toContain('事件线')
     expect(header.attributes('aria-label')).toBe(header.attributes('title'))
   })
 
-  it('事件身份未回填（stories_backfilled=false）：footnote 明示上界口径；null/true 不提示', () => {
-    const degraded = mountMatrix({ storiesBackfilled: false })
-    const note = degraded.find('[data-testid="matrix-backfill-note"]')
-    expect(note.exists()).toBe(true)
-    expect(note.text()).toContain('事件身份未回填')
-    expect(note.text()).toContain('非综合稿事件数上界')
-
+  it('事件身份未回填 footnote 整体退役（D4）：无论旧 props 取值都不再渲染', () => {
+    expect(mountMatrix({ storiesBackfilled: false }).find('[data-testid="matrix-backfill-note"]').exists()).toBe(false)
     expect(mountMatrix().find('[data-testid="matrix-backfill-note"]').exists()).toBe(false)
     expect(mountMatrix({ storiesBackfilled: true }).find('[data-testid="matrix-backfill-note"]').exists()).toBe(false)
     expect(mountMatrix({ storiesBackfilled: null }).find('[data-testid="matrix-backfill-note"]').exists()).toBe(false)

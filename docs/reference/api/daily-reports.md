@@ -243,145 +243,71 @@ Response `data`：
 
 ## GET `/semantic-boards/overview`
 
-今日雷达单次聚合（rework-workshop-into-radar-and-desk 8.2；add-event-story-heat 起热度换事件线量纲）：只读，返回所有 `status=active` 版块的行。**关注度 `attention` = 该版块各泳道 `lane_heat` 之和（保留一位小数）**——lane_heat 按事件线热度证据（story_signals，半衰期 72h / 窗口 14 天）独立衰减，不是 story_heat（24h/48h）的直接相加，也**不再是旧 section 数加权公式**（`today×2 + last3 + (last3-prev3)` 已废止）；量纲由整数变为浮点，分档阈值按 lane_heat 分布重新标定（前端临时 10/3，待全量分布 P80/P20 定稿），不沿用旧 50/15。
+今日雷达单次聚合（rework-workshop-into-radar-and-desk 8.2；retire-story-adopt-event-metrics 1.5/3.2 换当天线索口径）：只读，返回所有 `status=active` 版块的行。**关注度 `attention` = 该版块各泳道当天热度之和（含候选泳道按 `lane_heat_candidate_weight` 加权，保留一位小数）**——泳道当天热度 = 当天线索数按话题状态加权（`heat-v2-lane-clues-1d`：active × 1.0 + candidate × 权重），只表达当天、不衰减不跨天；不再是事件线热度（`heat-v1-48h-hl24h`）之和，也不是旧 section 数加权公式。分档阈值按新关注度真实分布标定（前端 14.5 / 2.3 = P80/P20，实测记录见 change design D9），不沿用旧 3.3/0.7 或 50/15。
 
-新增事件线/热度字段：`today_stories`/`last3_stories`/`prev3_stories`（同轴窗口的事件线数）、`today_heat`/`last3_heat`/`prev3_heat`（同轴窗口的日末 story_heat 合计，48h/24h 口径，保留一位小数；版块行的 `today_heat`/`last3_heat` 仍是**版块合计**，事件线级的升温判定见下方顶层 `stories` 段）、`heat_days`（14 天逐日日末 story_heat）、`lanes[].story_counts`（14 天逐日事件线数）、`heat_rule_version`（热度公式版本，初始 `heat-v1-48h-hl24h`）、`heat_incomplete`（落后源：热度证据可能缺最新报道）。旧 section 口径字段（`today_sections`/`last3_sections`/`prev3_sections`/`days`/`lanes[].counts`）**保留向后兼容**，不得再作排序/分档输入。事件身份未回填版块按「非综合稿事件数上界 + feed 去重参与者」保守降级（lane-dynamics 的 `stories_backfilled` 同款口径）。泳道与分区口径复用 `lane-dynamics`，最新日报取 `board_daily_reports`；无数据版块返回零值行，单版块查询超时返回零值并标 `data_delayed=true`，不阻塞整屏。窗口锚定该版块最新日报日（无日报则无密度），`date` 为全部版块最新日报日的最大值；heat_by_day 计算失败降级全零并告警不阻断。雷达事件线清单另有**板级**回填判定 `story_identity_state`（`backfilled` / `unbackfilled` / `no_candidate`；只看该版块自己的报告线程带不带 `story_id`，**不依赖话题是否锚定到活跃话题**）——它决定版块是否进入下方 `stories` 段清单，与版块行的 `stories_backfilled`（lane-dynamics 样本口径，只管事件数上界标注）是两回事。
+字段变更（相对事件线口径）：**移除** `today_sections` / `last3_sections` / `prev3_sections` / `days` / `today_stories` / `last3_stories` / `prev3_stories` / `today_heat` / `last3_heat` / `prev3_heat` / `heat_days` / `stories_backfilled` / `story_identity_state` / `heat_incomplete` / `heat_stale_feed_ids`；**新增** `today_clues` / `last3_clues` / `prev3_clues`（同轴窗口的当天线索合计）与 `clue_days`（14 天逐日线索合计，oldest → newest，未知不补 0）、`lanes[].clue_counts`（14 天逐日线索合计）；`heat_rule_version` 恒 `heat-v2-lane-clues-1d`。泳道移除 `counts` / `story_counts` / `section_count_14d`，保留 `thread_count_14d`（全窗线索合计，排序次键）。泳道与分区口径复用 `lane-dynamics`，最新日报取 `board_daily_reports`；无数据版块返回零值行，单版块查询超时返回零值并标 `data_delayed=true`，不阻塞整屏。窗口锚定该版块最新日报日（无日报则无密度），`date` 为全部版块最新日报日的最大值。
 
 ```json
 {
-  "date": "2026-11-05",
+  "date": "2026-11-10",
   "boards": [{
     "board_id": 1974,
     "label": "中东地缘政治与美伊关系",
     "tag_count": 144,
-    "report_date": "2026-11-05",
+    "report_date": "2026-11-10",
     "report_title": "伊朗警告打击海湾海底电缆",
     "report_article_count": 14,
     "report_event_count": 13,
-    "anchor_date": "2026-11-05",
-    "today_sections": 5,
-    "last3_sections": 13,
-    "prev3_sections": 10,
-    "today_stories": 4,
-    "last3_stories": 11,
-    "prev3_stories": 9,
-    "attention": 8.3,
-    "today_heat": 6.0,
-    "last3_heat": 13.5,
-    "prev3_heat": 9.2,
-    "heat_days": [0.0, 1.2, 2.4, 1.8, 2.0, 3.1, 0.8, 1.9, 2.2, 1.4, 0.9, 2.5, 1.1, 2.3],
-    "heat_rule_version": "heat-v1-48h-hl24h",
-    "heat_incomplete": false,
-    "story_identity_state": "backfilled",
+    "anchor_date": "2026-11-10",
+    "today_clues": 7,
+    "last3_clues": 13,
+    "prev3_clues": 10,
+    "attention": 7.5,
+    "heat_rule_version": "heat-v2-lane-clues-1d",
+    "clue_days": [0, 1, 2, 1, 0, 3, 1, 2, 0, 1, 2, 1, 0, 7],
     "data_delayed": false,
-    "days": [2, 3, 5, 4, 5, 7, 2, 4, 5, 3, 2, 5, 3, 5],
     "lanes": [{
       "topic_id": 1204,
       "label": "美伊博弈升级：从经济威胁到全面孤立",
-      "section_count_14d": 14,
       "thread_count_14d": 38,
-      "counts": [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-      "story_counts": [0, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1]
+      "clue_counts": [0, 1, 1, 0, 0, 2, 1, 1, 0, 1, 1, 0, 0, 3]
     }]
-  }]
-}
-```
-
-- `attention` 为 float（Σ lane_heat，1 位小数）；行按 attention 降序（平手 board_id 升序）。旧客户端把 attention 当 section 计数解读会误读，需同批发布。
-- `days`/`counts`/`today_sections` 等旧字段保留（旧 section 口径，向后兼容）；`story_counts` 缺省（旧后端）时前端回退 `counts` 兜底（回退值是**分区数**，界面按「N 个分区」措辞，不得写成事件线数——normalizer 用 `storyCountsKnown=false` 记住已知性）。
-- `heat_*` 字段缺失或全零 = 热度证据未回填/计算降级，前端按升温清单降级展示，不伪造热度。
-
-### 顶层 `stories` 段（事件线清单，surface-story-events-in-radar + matrix-clue-fallback-and-rail-merge）
-
-响应新增**顶层 `stories` 段**：雷达右栏「今日该读」的**条目单位是事件线**（`board_stories`），不是版块日报标题、也不是分区（section）。跨版块归并、排序、截断全部在服务端完成，客户端不做二次合并或重排。**该段缺失** = 旧后端响应，客户端 SHALL 回退既有的版块级列表（不渲染成业务空态）。
-
-> **2026-11-09 单清单合并**（matrix-clue-fallback-and-rail-merge）：右栏收敛为**一块清单 + 行内徽标**——`warming` / `new_stories` 两个清单数组与 `new_count` / `new_total_count` 计数字段**已移除**（徽标判定所需 `has_baseline`/`ratio`/`has_today_evidence` 随 `top_stories` 条目自带；独立清单与三态摘要失去消费方，留着即死契约）。`warming_count` 保留（报头「N 处出现升温」），`cross_day_story_count` 保留（「跨天延续建设中」脚注判据）。
-
-- **条目单位**：每条是一个事件线，带其所属版块名；「今日该读」= 跨版块全局 Top N（**当前 N=8**：原 5 条该读 + 3 条新起屏位合并）条，按「原始热度降序 → 来源数降序 → 存活事件线 id 升序」排序（排序前不四舍五入）。
-- **行内徽标**（客户端由条目字段派生，不在服务端分档）：`has_baseline = false` 且 `has_today_evidence = true` → 「新起」徽标（不显示倍率）；`has_baseline = true` 且 `ratio ≥ 2` 且 `has_today_evidence = true` → 「升温 N×」徽标；两者均不满足 = 无徽标条目——其中 `has_today_evidence = false`（锚点日只剩 48h 残热、当天没有报道证据的旧线）客户端 SHALL 在条目 meta 行标注「今日无报道证据」（与普通当日事件线区分开；不新增徽标档位、不改判据）。徽标只在存在时出现。
-- **测量时刻**：每条在**该版块自己的最新日报日**（它自己的「今天」）的 CST 日终 23:59:59 测量——该口径与 lane-dynamics 的 14 天轴末日**解耦**（轴末日只覆盖 active ∪ watch-linked 话题锚定的 section；最新一期日报没锚定到活跃话题的版块，其轴末日可能为空或更早，但事件线仍以自己的最新日报日测量并出条目）。顶层 `stories.anchor_date`（= 顶层 `date`）只是全局锚点，仅用于「有 N 个版块滞后」提示。滞后版块**照常出条目**，条目上带的是它自己的锚点日。
-- **升温判定（事件线级）**：`ratio = heat / baseline_heat ≥ 2` **且** `has_today_evidence = true`（该事件线在锚点日当天至少有一条报道证据，signal 落在锚点日 CST 日内）。`baseline_heat` = 锚点日**之前** 3 个 CST 日终日均（不含锚点日）；`has_baseline = false`（近 3 日无任何热度证据）且 `has_today_evidence = true` 的条目带「新起」徽标，**不显示倍率**（不按 0 倍或 ∞ 倍硬凑）。热度来源不变：只从 `story_signals` 派生（`heat_rule_version = heat-v1-48h-hl24h`）。
-- **截断上限**：`top_stories` ≤ **8**（唯一清单）；`warming_count` 是升温事件线的**全量计数**（非截断数），供报头计数用。第 9 名及以后不展示，**不再附**「另有 N 条」类剩余计数摘要（徽标化单清单里，第 9+ 名与普通未上榜事件线同权）。
-- **单清单不重复**：全局排序后截 Top 8，同一事件线只出现一次（徽标与条目一一对应）；不再存在「新起档与今日该读互斥」这类跨块去重契约（结构性保证）。
-- **跨天延续脚注**：`cross_day_story_count == 0` → 界面出**一行脚注**「跨天延续事件线建设中」（不占卡片）；`> 0`（有跨天线但今天都没到 2 倍）→ **不出任何空态**（徽标已表达）；字段缺失（旧后端）→ 同样不出脚注，不断言成因。前端 SHALL NOT 凭条目反推（条目被截断）。
-
-`stories` 段字段：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `anchor_date` | string | 全局锚点日（= 顶层 `date`，各版块最新日报日的最大值；无版块有日报时回退今天）；仅用于「有 N 个版块滞后」提示 |
-| `heat_rule_version` | string | 热度公式版本，当前 `heat-v1-48h-hl24h` |
-| `top_stories` | array | 「今日该读」：跨版块全局 Top N 事件线（当前上限 **8**；条目自带徽标判定字段） |
-| `warming_count` | int | 升温事件线**全量**计数（非截断数；清单数组已移除，此计数供报头） |
-| `cross_day_story_count` | int | **既有锚点日之前 3 日基线窗口内的证据、又在锚点日当天有证据**的事件线条数（全量候选，不受截断影响）。`0` = 不存在跨天延续的事件线 → 界面出一行脚注「跨天延续事件线建设中」。断档超出基线窗的线按「新起」徽标处理（已知口径边界）。旧后端无此字段时前端须按「无法判定」保守回退（不出脚注），不得当成 0 |
-| `unbackfilled_board_ids` | array[int] | 事件身份未回填的版块 id（**板级**判定：板内有事件候选线程却都不带 `story_id`；不产任何条目） |
-| `unbackfilled_board_count` | int | 上述版块数 |
-| `no_story_board_ids` | array[int] | **无可回填对象**的版块 id（板内没有任何事件候选——本来就没有事件身份可回填）：不计入未回填数、不产条目，也不得呈现为「今天没有事件」 |
-| `no_story_board_count` | int | 上述版块数 |
-| `lagging_board_ids` | array[int] | 自身最新日报日落后于全局锚点日的版块 id（数据滞后，非缺失） |
-| `partial` | bool | true = 有版块未在端点预算内完成，本次事件线排序**不完整** |
-| `degraded_board_ids` | array[int] | 降级的版块 id（超时 `data_delayed` 或该版块事件线计算失败；不参与全局排序） |
-
-`RadarStoryItem` 字段：
-
-| 字段 | 类型 | 可空 | 说明 |
-| --- | --- | --- | --- |
-| `board_id` | uint | 否 | 条目所属版块 id |
-| `board_label` | string | 否 | 版块名（「今日该读」条目上的来源标注） |
-| `story_id` | uint | 否 | 存活事件线 id（`board_stories` 全局主键，跨版块可比） |
-| `story_title` | string | 否（可为空串） | 事件线标题；空串时客户端回退「事件线 #ID」——**标题不承担身份** |
-| `participants` | int | 否 | 来源数：该版块锚点日日终 48h 窗内去重 `participant_key` 数（每个参与者只计一次） |
-| `heat` | float | 否 | 该版块锚点日日终的 `story_heat`（原始精度；展示保留一位小数） |
-| `baseline_heat` | float | 否 | 该版块近 3 日（不含锚点日）日均；`has_baseline = false` 时为 0 |
-| `ratio` | float | 否 | `heat / baseline_heat`；**无基线时为 0** 且客户端不展示倍率 |
-| `has_baseline` | bool | 否 | 近 3 日是否有热度证据（false 且当日有证据 ⇒ 行内「新起」徽标） |
-| `has_today_evidence` | bool | 否 | 锚点日当天是否有报道证据（升温/新起两档的必需下界） |
-| `anchor_date` | string | 否 | **该条目所属版块自己的锚点日**（滞后版块 ≠ 全局 `stories.anchor_date`，界面必须显示自己的日期） |
-| `report_date` | string | 否（可为空串） | 落点报告日期（锚点日之前最近一期含该事件线正文 thread 的日报）；**空串 = 无正文落点，条目不可点** |
-
-降级与口径说明：
-
-- **未回填（板级三态判定）**：事件身份回填状态由**雷达侧自算的板级判定**给出（只看该版块自己的报告线程带不带 `story_id`，**不依赖话题是否锚定到活跃话题**——候选话题锚定的版块同样有真实事件线，不得被误判成「未回填」）：① **已回填**（`story_identity_state=backfilled`）→ 照常出条目；② **未回填**（`unbackfilled`，板内有非综合稿候选线程却都没带 `story_id`）→ **不产生任何条目**，也不按 0/空态冒充无事件，客户端 SHALL 明示「N 个版块事件身份未回填，未纳入事件线排序」（回填是手动动作：`cmd/backfill-stories`，幂等可重跑）；③ **无可回填对象**（`no_candidate`，板内没有任何事件候选）→ **不计入未回填数**（本来就没有事件身份可回填），也不产条目。版块行的 `stories_backfilled` 仍是 lane-dynamics 同源口径（样本 = active ∪ watch-linked 话题锚定的 section），只用于版块行「非综合稿事件数上界」标注，**不得**用来判雷达事件线是否上榜。
-- **滞后**：滞后版块**不整板缺席**，照常出条目并带自己的 `anchor_date`（= 它的最新日报日）；跨版块混排存在「滞后版块少一天累积」的系统性偏差（其 48h 窗内少累积约一天），此为**已知口径如实呈现**，服务端不做人为补偿。
-- **降级（两类，语义不同）**：端点预算内未完成的版块（`data_delayed=true`）与**该版块事件线计算失败**的版块**都不参与全局排序**、条目缺席，`partial` 置 `true` 且进 `degraded_board_ids`，客户端 SHALL 明示「本次事件线排序不完整」（计算失败不是「整板数据延迟」，不得复用 `data_delayed` 的语义标记）。
-- **落后源**：`heat_incomplete` 标记照旧随行透出，不影响条目照出。
-- **排序不完整 ≠ 无事件**：单清单为空时只渲染「今天没有可识别的事件线。」；`cross_day_story_count == 0` 时脚注一行「跨天延续事件线建设中。」（`> 0` 不显示任何空态；旧响应缺字段不出脚注）。已删除的独立升温/新起卡片与「暂未触发升温条件。」「N 条均已列入今日该读」「今天没有新起的事件线。」三态摘要 SHALL NOT 再渲染——「新起/升温 N×」只在存在时以行内徽标出现。SHALL NOT 写成「今天没有事件」（未回填 / 超时是另一回事，须由上述标记单独说明）。
-
-响应示例（节选 `data`）：
-
-```json
-{
-  "date": "2026-11-06",
-  "boards": [ ... ],
-  "stories": {
-    "anchor_date": "2026-11-06",
-    "heat_rule_version": "heat-v1-48h-hl24h",
-    "top_stories": [{
+  }],
+  "top_lanes": {
+    "anchor_date": "2026-11-10",
+    "lanes": [{
       "board_id": 1974,
       "board_label": "中东地缘政治与美伊关系",
-      "story_id": 4211,
-      "story_title": "美伊博弈升级",
-      "participants": 4,
-      "heat": 5.0,
-      "baseline_heat": 1.2,
-      "ratio": 4.2,
-      "has_baseline": true,
-      "has_today_evidence": true,
-      "anchor_date": "2026-11-05",
-      "report_date": "2026-11-05"
+      "topic_id": 1204,
+      "topic_label": "美伊博弈升级：从经济威胁到全面孤立",
+      "clue_count": 3,
+      "anchor_date": "2026-11-10"
     }],
-    "warming_count": 6,
-    "cross_day_story_count": 3,
-    "unbackfilled_board_ids": [12],
-    "unbackfilled_board_count": 1,
-    "no_story_board_ids": [77],
-    "no_story_board_count": 1,
-    "lagging_board_ids": [3122],
     "partial": false,
-    "degraded_board_ids": []
+    "degraded_board_ids": [],
+    "lagging_board_ids": []
   }
 }
 ```
+
+- `attention` 为 float（Σ 泳道当天热度，1 位小数）；行按 attention 降序（平手 board_id 升序）。
+- `today_clues` / `last3_clues` / `prev3_clues` / `clue_days` / `lanes[].clue_counts` 缺省（旧后端）时归一为 `null`，前端标「线索数未知」，**不造 0、不拿分区数冒充**；`clue_count` 已排除综合稿（`scope=composite`）。
+- `heat_rule_version` 恒 `heat-v2-lane-clues-1d`（与 lane-dynamics 同源）；旧热度字段不再下发。
+
+### 顶层 `top_lanes` 段（当天线索最多的泳道，D10）
+
+响应新增**顶层 `top_lanes` 段**：雷达右栏清单的**条目单位是泳道**（版块 + 话题），不是事件线、也不是版块日报标题。跨版块归并、排序（泳道当天线索数降序 → 版块名 → 泳道名 → 泳道 id）、截断（**上限 8**，第 9 名不展示）全部在服务端完成，客户端不做二次合并或重排。**该段缺失** = 旧后端响应，客户端 SHALL 回退既有的版块级日报标题列表（不渲染成业务空态）。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `anchor_date` | string | 全局锚点日（= 响应 `date`），仅用于「N 个版块滞后」提示 |
+| `lanes[]` | array | 条目：`board_id` / `board_label` / `topic_id` / `topic_label` / `clue_count`（该泳道在**它自己版块锚点日**的线索合计）/ `anchor_date`（条目所属版块自己的锚点日） |
+| `partial` | bool | true = 部分版块超时或泳道数据计算失败，本次排序不完整 |
+| `degraded_board_ids` | array[int] | 降级版块 id（不产条目） |
+| `lagging_board_ids` | array[int] | 自身锚点日落后于全局锚点日的版块 id（仍照常出条目，按自己的日期计） |
+
+- 当天线索为 0 的泳道不进清单；清单为空时前端渲染空态（不得说成「今天没有事件」）。
+- 事件线清单段（`stories` / `unbackfilled_board_ids` / `warming_count` / `cross_day_story_count` 等）随事件线退役整体移除；条目不再提供 `?story=` 深链，点击进既有控制台 `?lane=`。
 
 ## GET `/semantic-boards/:id/lane-dynamics?days=14`
 
@@ -392,18 +318,17 @@ Response `data`：
 - `id`：semantic_board_id。
 - `days`：时间线与统计窗口天数，默认 14；非正值或非法值回落 14。窗口锚定该板块最新一份已完成日报的 `period_date`（`[anchor-(days-1), anchor]` 双端闭区间，非 now()——避免日报未跑时窗口漂移）。
 
-**泳道集合与排序**：`lanes` = 该板块 active 泳道 ∪ watch 关联泳道（`board_topic_watches.persistent_topic_id` 非空且 watch active），按 **`lane_heat` 降序（平手依次 `story_count_14d` 降序、`topic_id` 升序）**——add-event-story-heat 起不再按窗口内锚定 section 数排序（同日拆桶多不得抬高行序）；近窗口无 section 的 active（沉寂）不返回；candidate 不进 `lanes`（只在 `candidates`）。
+**泳道集合与排序**：`lanes` = 该板块 active 泳道 ∪ watch 关联泳道，按 **`lane_heat` 降序（平手依次全窗线索合计 `thread_count_14d` 降序、`topic_id` 升序）**；近窗口无 section 的 active（沉寂）不返回；candidate 不进 `lanes`（只在 `candidates`）。
 
-Response `data`（add-event-story-heat 新增字段已标 ◆，surface-story-heat-in-report-top 新增字段已标 ◇）：
+**量纲（retire-story-adopt-event-metrics 1.4）**：`lane_heat` = 当天线索数按话题状态加权（`heat-v2-lane-clues-1d`，active × 1.0 + candidate × `lane_heat_candidate_weight`）；逐日 `clue_count` = 该泳道该日各主题桶**非综合稿** thread 数之和（矩阵日格 / 演进节点 / 顶部曲线唯一量纲）。事件线量纲（`story_count` / `max_participant_count` / `hottest_story_id` / `hottest_story_title` / `unassigned_event_count` / `story_count_14d` / `stories_backfilled`）与热度元数据 `heat_incomplete` / `heat_stale_feed_ids` 整体移除。
+
+Response `data`：
 
 ```json
 {
   "window_days": 14,
   "has_reports": true,
-  "stories_backfilled": true,
-  "heat_rule_version": "heat-v1-48h-hl24h",
-  "heat_incomplete": false,
-  "heat_stale_feed_ids": [],
+  "heat_rule_version": "heat-v2-lane-clues-1d",
   "lanes": [
     {
       "topic_id": 12,
@@ -412,19 +337,14 @@ Response `data`（add-event-story-heat 新增字段已标 ◆，surface-story-he
       "section_count_14d": 9,
       "thread_count_14d": 27,
       "lane_heat": 6.8,
-      "story_count_14d": 22,
       "snapshot": {
-        "summary": "近两周围绕出口管制升级与国产替代进展交替演进……（单版演进叙事态势句，slim-lane-snapshot-trend 起 150-200 字；阶段→驱动/转折→当前落点→量级佐证）",
+        "summary": "近两周围绕出口管制升级与国产替代进展交替演进……",
         "as_of": "2026-09-09"
       },
       "timeline": [
         {
           "date": "2026-09-08",
-          "story_count": 2,
-          "max_participant_count": 6,
-          "hottest_story_id": 1234,
-          "hottest_story_title": "美伊博弈再度升级",
-          "unassigned_event_count": 1,
+          "clue_count": 7,
           "sections": [
             {
               "section_id": 341,
@@ -439,22 +359,26 @@ Response `data`（add-event-story-heat 新增字段已标 ◆，surface-story-he
     }
   ],
   "candidates": [
-    { "topic_id": 55, "label": "稀土出口博弈", "last_seen_date": "2026-09-08", "recent_hint": "稀土出口博弈：管制清单扩容传闻" }
+    {
+      "topic_id": 55,
+      "label": "稀土出口博弈",
+      "last_seen_date": "2026-09-08",
+      "recent_hint": "稀土出口博弈：管制清单扩容传闻",
+      "anchor_date": "2026-09-08",
+      "clue_count": 2,
+      "lane_heat": 1.0
+    }
   ]
 }
 ```
 
-- ◆ `stories_backfilled`：窗口内是否有任何 thread 携带 `story_id`——false ⇒ 逐日事件线数按「非综合稿 thread 数上界」保守降级，矩阵 footnote 须标「事件身份未回填」（不得伪装成 0）。
-- ◆ `heat_rule_version` / `heat_incomplete` / `heat_stale_feed_ids`：热度公式版本（初始 `heat-v1-48h-hl24h`）与落后源元数据（feed 超过 max(3×refresh_interval, 90min) 未采集 ⇒ 热度证据可能缺最新报道；coverage 查询失败降级 false/空不阻断响应）。
-- ◆ `lanes[].lane_heat`：该泳道事件线热度之和（72h 半衰期 / 14 天窗口，story_signals 证据，锚定窗口末端；无证据为 0）——排序唯一热度输入，section/thread 计数不得参与。◆ `lanes[].story_count_14d`：全窗逐日事件线数之和（去重；降级版块为非综合稿上界之和）。`section_count_14d`/`thread_count_14d` 保留展示兼容。
-- ◆ `timeline[].story_count`：当日该泳道**去重后事件线数**（thread 的 story_id 经 merged_into 存活者解析——同一事件线拆进兄弟桶只计一次，不是桶峰值）；降级 = 当日非综合稿 thread 数上界。◆ `timeline[].max_participant_count`：当日最热事件线的 `participant_count`（降级 = 当日非综合稿 thread 的去重 feed 数）；矩阵格颜色分档输入。◆ `timeline[].unassigned_event_count`：当日 story_id 为 NULL 的非综合稿 thread 数（title/aria 展示专用，不是热度/排序输入）。
-- ◇ `timeline[].hottest_story_id` / `timeline[].hottest_story_title`：当日颜色所指最热事件线的存活 id 与标题（`lane_snapshot_repository.go` `hottestStory`）——与 `max_participant_count` **同一获胜者**（当日格事件线聚合中 `participant_count` 最大者；同分按存活 id 升序取小，不借 title 字典序破同分，id/title/max 同一行绑定、禁止分别 MAX）。与 `story_count` 的关系：`story_count` 是当日去重事件线总数（格内数字），`hottest_story_*` 三元组只在其中点名被报道最多的那一条（颜色/提示语消费）；无事件线或未回填降级（当日无 story_id 线程）时为 `null` / 空串 `""`，客户端保留原格值/颜色与「最热事件线暂不可识别」降级，不得用泳道或 section 标题冒充。
-
-- `snapshot`：滚动 14 天态势（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）。`summary` 为单版演进叙事态势句（slim-lane-snapshot-trend 起 150-200 字：阶段→驱动/转折→当前落点→量级佐证；历史语义先后为 ≤100 字短版/≤200 字态势句）；`detail` 字段不再产出（恒空、omitempty 不出现）——存量历史长版仅存量库值随下个日报日结算覆盖自愈，消费方均只读 `summary`。
-- 缺失语义：`snapshot: null` = 快照整体缺失（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染；不存在「长版缺失」二级降级（已随长短两版形态废除）。
-- 月/年趋势档：日报阅读视图泳道趋势区的月/年归档摘要复用既有 `GET /persistent-topics/:topicId/enrichment/contexts?granularity=month|year`（周期归档上下文，详见 `dataenrichment.md`），本端点不新增月/年数据。
+- `heat_rule_version` 恒 `heat-v2-lane-clues-1d`（与 overview 同源）。
+- `lanes[].lane_heat`：该泳道当天线索数按话题状态加权（含候选权重；无线索为 0）——排序唯一热度输入，section/thread 计数不得参与。`lanes[].thread_count_14d`：全窗线索合计（排序次键）；`section_count_14d` 保留展示兼容。
+- `timeline[].clue_count`：当日线索合计（**已排除综合稿**）；矩阵日格/演进节点/曲线统一消费它；展示值 MUST NOT 用各桶 `thread_count` 合计替代（section 的 `thread_count` 未排除综合稿，只能作 aria 辅助/旧响应回退）。
 - `timeline[].sections[].events`：该 section 的 thread 标题，最多前 5 条；`folded_count` 为被截断数量（恒输出，0 也带）。`timeline` 按日期倒序（最新日在最前）。
-- `candidates`：达可见门槛（`FilterVisibleTopics`）的 candidate + 最新 section 标题 `recent_hint`；只读提示，转正走话题管理入口。
+- `candidates`：达可见门槛（`FilterVisibleTopics`）的 candidate + 最新 section 标题 `recent_hint`；新增 `anchor_date`（该版块最新日报日）、`clue_count`（锚点日当天线索合计）、`lane_heat`（= clue_count × 候选权重，已含在版块 `attention` 内，前端勿重复相加）；只读提示，转正走话题管理入口。
+- `snapshot`：滚动 14 天态势（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）。`detail` 不再产出（存量历史长版仅随下个日报日结算覆盖自愈）。
+- 缺失语义：`snapshot: null` = 快照整体缺失（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染。
 - `has_reports: false` 表示板块无任何日报（前端空态引导生成日报）。
 
 ## GET `/semantic-boards/:id/daily-reports?days=7`
@@ -884,34 +808,30 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 
 ## `highlights` 字段契约
 
-`highlights` 是**恒为数组**的字段：`GET /daily-reports/:id` 返回的 `report.highlights` SHALL 是 JSON 数组，空时返回 `[]`，**SHALL NOT** 返回 `null`。元素基础字段为 `{title: string, reason: string, tag_ids: number[]}`；故事模式条目（surface-story-heat-in-report-top 起）追加事件身份与服务端快照字段（服务端计算、模型不填数字）：
+`highlights` 是**恒为数组**的字段：`GET /daily-reports/:id` 返回的 `report.highlights` SHALL 是 JSON 数组，空时返回 `[]`，**SHALL NOT** 返回 `null`。元素基础字段为 `{title: string, reason: string, tag_ids: number[]}`；聚簇模式条目（retire-story-adopt-event-metrics 2.3/3.3 起）追加聚簇身份与服务端快照字段（服务端计算、模型不填数字）：
 
 ```json
 {
-  "title": "美伊博弈再度升级",
-  "reason": "多国使馆发布旅行警示，多家媒体报道撤离安排……",
-  "tag_ids": [456, 789],
-  "story_id": 1234,
-  "participant_count": 6,
-  "story_heat": 4.2,
-  "heat_rule_version": "heat-v1-48h-hl24h",
-  "heat_as_of": "2026-11-07T23:59:59+08:00",
-  "heat_incomplete": false,
-  "is_progress": true
+  "title": "黄仁勋风波与英伟达调查",
+  "reason": "多家媒体报道指控、当事方回应与市场反应……",
+  "tag_ids": [267178, 267275, 267597],
+  "cluster_id": 267178,
+  "article_count": 3,
+  "cluster_mode": "向量聚簇",
+  "data_as_of": "2026-11-10",
+  "research_at": "2026-11-10T21:32:11+08:00"
 }
 ```
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `story_id` | number \| null，可缺省 | 事件线存活 id（详情读路径已按 `merged_into` 一跳归一，坏引用置空）；**标签回退模式为空/缺省**——缺省 = 无事件身份（无定位按钮、无进展徽标），不得猜 tag→story |
-| `participant_count` | number \| null，可缺省 | 服务端快照：独立来源数（生成时刻、feed 去重）；真实 0 是合法值。缺省不显示，不得用 0 冒充 |
-| `story_heat` | number \| null，可缺省 | 服务端快照：48h 热度（展示保留一位小数；t=报日北京时间 23:59:59）。缺省不显示 |
-| `heat_rule_version` | string，可缺省 | 快照公式版本（当前 `heat-v1-48h-hl24h`） |
-| `heat_as_of` | string，可缺省 | 快照截止时刻（报日北京时间 23:59:59，ISO 8601 带时区） |
-| `heat_incomplete` | boolean，可缺省 | 快照不完整标记（落后 feed）；缺省按 false 处理 |
-| `is_progress` | boolean | **读取时派生**：今日线在前一日（北京时间日历日）同板块重点中出现过（两侧经一跳归一比较）；非线程 `is_development`，不回写历史。恒输出；旧报告/回退条目为 false |
+| `cluster_id` | number \| null，可缺省 | 聚簇代表 event 标签 id（= 本期正文定位键：DOM 顺序第一条 `tag_ids` 含该 id 的 thread）；**标签回退模式为空/缺省**——缺省 = 无聚簇身份（无定位按钮），不得猜 tag→cluster |
+| `article_count` | number \| null，可缺省 | 服务端快照：簇内文章数（内容身份去重后的篇数）；真实 0 是合法值。缺省不显示，不得用 0 冒充 |
+| `cluster_mode` | string，可缺省 | 聚簇口径中文标签：`向量聚簇` / `语义向量兜底` / `主体近似`（降级链逐级如实标注，不混用） |
+| `data_as_of` | string，可缺省 | 数据截至日（YYYY-MM-DD） |
+| `research_at` | string，可缺省 | 研究时点（RFC3339，生成时刻） |
 
-快照数字保持生成时刻值，读旧报不用今日热度替换；旧报告（本 change 前）与标签回退条目缺省全部新字段（`omitempty`）——前端缺字段不显示来源数/热度/徽标，不伪造 0。详情读路径同时把条目/线程 `story_id` 归一为同板块存活 id（`report_story_highlights.go` `resolveReportHighlightIdentities`），不回写历史 JSON。选题/时序/回退口径见 `flow/daily-report.md` §今日重点的选题与热度。
+快照字段保持生成时刻值；旧报告与标签回退条目缺省全部新字段（`omitempty`）——前端缺字段就省略对应文案（「N 篇来源 / 聚簇口径 / 数据截至日 / 研究时点」），不伪造 0。事件线字段（`story_id` / `participant_count` / `story_heat` / `heat_rule_version` / `heat_as_of` / `heat_incomplete` / `is_progress`）与线程 `story_id` 随事件线退役整体移除。选题/时序/回退口径见 `flow/daily-report.md` 红线 46-47。
 
 > 历史存量（2026-11-04 修复前落库的 14 行）曾因 LLM 把 JSON schema 原样回抄、解析层静默放过而落成 JSON `null` 标量。修复后读路径统一归一为 `[]`（`backend-go/internal/topicgraph/repository/daily_report_repository.go` 的 `normalizeHighlightsArray`），新生成日报落库时写 `[]` 而非 `null`。
 

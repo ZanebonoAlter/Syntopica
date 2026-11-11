@@ -33,7 +33,7 @@ function sectionRaw(id: number, overrides: Record<string, unknown> = {}): Record
   return { section_id: id, label: `桶${id}`, events: [`事件${id}`], ...overrides }
 }
 
-function laneRaw(topicId: number, label: string, timeline: { date: string, sections: Record<string, unknown>[], story_count?: number }[]): Record<string, unknown> {
+function laneRaw(topicId: number, label: string, timeline: { date: string, sections: Record<string, unknown>[], clue_count?: number }[]): Record<string, unknown> {
   return { topic_id: topicId, label, watch_linked: false, section_count_14d: 0, snapshot: null, timeline }
 }
 
@@ -187,35 +187,35 @@ describe('laneConsoleView — 刷选区 series（G2 LaneTrendPoint）', () => {
     expect(series[1]).toEqual({ date: '2026-10-23', value: 5 })
   })
 
-  // ── 展示降级口径（matrix-clue-fallback-and-rail-merge D2）：曲线与矩阵格同口径 ──
-  it('曲线与矩阵格同口径：story_count=0 的日子用线索合计兜底，story_count>0 用事件线数（不混加）', () => {
+  // ── 量纲（retire-story-adopt-event-metrics D4）：曲线与矩阵格同为当日线索合计 ──
+  it('曲线与矩阵格同口径：当日线索合计（clue_count 优先，缺省回退各桶合计）', () => {
     const tier = normalize([
       laneRaw(1, 'A', [
-        // 历史未回填日：事件线 0、线索 132 → 曲线 132（与矩阵格一致）
-        { date: '2026-10-22', sections: [sectionRaw(1, { thread_count: 100 }), sectionRaw(2, { thread_count: 32 })], story_count: 0 },
-        // 已回填日：事件线 3、线索 132 → 曲线 3（不用线索合计）
-        { date: '2026-10-23', sections: [sectionRaw(3, { thread_count: 132 })], story_count: 3 },
+        // 旧响应日：无 clue_count → 回退各桶合计 100+32 = 132（与矩阵格一致）
+        { date: '2026-10-22', sections: [sectionRaw(1, { thread_count: 100 }), sectionRaw(2, { thread_count: 32 })] },
+        // 新响应日：clue_count 5（已排除综合稿）→ 曲线 5，不取各桶合计 132
+        { date: '2026-10-23', sections: [sectionRaw(3, { thread_count: 132 })], clue_count: 5 },
       ]),
     ])
     const series = buildPoolSeries({ start: '2026-10-22', end: '2026-10-23' }, ['1'], makeResolver(tier))
     expect(series[0]).toEqual({ date: '2026-10-22', value: 132 })
-    expect(series[1]).toEqual({ date: '2026-10-23', value: 3 })
+    expect(series[1]).toEqual({ date: '2026-10-23', value: 5 })
   })
 
-  it('story_count=0 且线索全未知：曲线该日仍未知（null 不补 0，不造兜底数）', () => {
+  it('线索全未知：曲线该日仍未知（null 不补 0，不造兜底数）', () => {
     const tier = normalize([
       laneRaw(1, 'A', [
-        { date: '2026-10-23', sections: [sectionRaw(1, { events: null })], story_count: 0 },
+        { date: '2026-10-23', sections: [sectionRaw(1, { events: null })] },
       ]),
     ])
     const series = buildPoolSeries({ start: '2026-10-23', end: '2026-10-23' }, ['1'], makeResolver(tier))
     expect(series[0]).toEqual({ date: '2026-10-23', value: null })
   })
 
-  it('story_count 已知而桶线索未知：该日照常计入（值可判即不算未知日）', () => {
+  it('clue_count 已知而桶线索未知：该日照常计入（值可判即不算未知日）', () => {
     const tier = normalize([
       laneRaw(1, 'A', [
-        { date: '2026-10-23', sections: [sectionRaw(1, { events: null })], story_count: 7 },
+        { date: '2026-10-23', sections: [sectionRaw(1, { events: null })], clue_count: 7 },
       ]),
     ])
     const series = buildPoolSeries({ start: '2026-10-23', end: '2026-10-23' }, ['1'], makeResolver(tier))

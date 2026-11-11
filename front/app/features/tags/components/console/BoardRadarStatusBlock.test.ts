@@ -46,7 +46,7 @@ function row(over: Partial<RadarStatusBoard> = {}): RadarStatusBoard {
     boardId: '1',
     label: '中东地缘政治与美伊关系',
     reportDate: '2026-10-24',
-    todaySections: 8,
+    todayClues: 8,
     ...over,
   }
 }
@@ -495,12 +495,12 @@ describe('BoardRadarStatusBlock — 勾选交互', () => {
     expect(isDisabled(wrapper, 'radar-status-confirm')).toBe(false)
   })
 
-  it('今日无分区的板块标注出来（提示哪些板今天没料）', async () => {
+  it('今日无线索的板块标注出来（提示哪些板今天没料）', async () => {
     const wrapper = await mountBlock({
-      rows: [row({ boardId: '1', todaySections: 8 }), row({ boardId: '2', label: '板块二', todaySections: 0 })],
+      rows: [row({ boardId: '1', todayClues: 8 }), row({ boardId: '2', label: '板块二', todayClues: 0 })],
     })
     await wrapper.find('[data-testid="radar-status-generate"]').trigger('click')
-    expect(wrapper.find('[data-testid="radar-status-board-2"]').element.closest('label')?.textContent).toContain('今日无分区')
+    expect(wrapper.find('[data-testid="radar-status-board-2"]').element.closest('label')?.textContent).toContain('今日无线索')
   })
 })
 

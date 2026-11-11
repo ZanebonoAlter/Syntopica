@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * 泳道日事件线数趋势图（rework-workshop-into-radar-and-desk 矩阵阶段 G2，EV-6 长窗形态）。
+ * 泳道日线索数趋势图（rework-workshop-into-radar-and-desk 矩阵阶段 G2，EV-6 长窗形态）。
  *
- * 纯 series 绘图：时间 X 轴 + 事件线数（条）Y 轴/真实比例刻度/0 基线，数据由上层提供
+ * 纯 series 绘图：时间 X 轴 + 线索数（条）Y 轴/真实比例刻度/0 基线，数据由上层提供
  * （G3 BoardLaneEvolution 在可见日 >31 时挂载），无 topic/board API 读取、不做 raw 字段
  * 映射或主排序。系列契约 `{date, value: number|null}`：
  *  - null = 未取到/未知：不画点、不补 0、不跨未知段桥接成假实线；
@@ -99,7 +99,7 @@ const ariaSummary = computed(() => {
   const peak = known.length > 0
     ? `峰值 ${Math.max(...known.map(point => point.value ?? 0))} 条`
     : '暂无已知值'
-  return `日事件线数趋势，${span}，${peak}${unknown > 0 ? `，另有 ${unknown} 日未知不补 0` : ''}`
+  return `日线索数趋势，${span}，${peak}${unknown > 0 ? `，另有 ${unknown} 日未知不补 0` : ''}`
 })
 </script>
 
@@ -110,10 +110,10 @@ const ariaSummary = computed(() => {
     <div v-if="loading" class="ltc-state" data-testid="lane-trend-loading">逐日数据加载中…</div>
     <div v-else-if="count === 0" class="ltc-state" data-testid="lane-trend-empty">{{ emptyText }}</div>
     <div v-else-if="!hasKnown" class="ltc-state" data-testid="lane-trend-unknown">
-      本区间事件线数未知（未取到，不补 0）。
+      本区间线索数未知（未取到，不补 0）。
     </div>
 
-    <TrendAxes v-else unit-label="事件线数（条）" :y-ticks="yTicks" :x-ticks="xTicks">
+    <TrendAxes v-else unit-label="线索数（条）" :y-ticks="yTicks" :x-ticks="xTicks">
       <svg
         class="ltc-plot"
         viewBox="0 0 480 74"
@@ -141,10 +141,10 @@ const ariaSummary = computed(() => {
             :data-date="point.date"
             :data-value="point.value"
             role="button"
-            :aria-label="`${point.date} 当日事件线数 ${point.value} 条`"
+            :aria-label="`${point.date} 当日线索数 ${point.value} 条`"
             @click="onSelectPoint(point)"
           >
-            <title>{{ point.date }} · 当日事件线数 {{ point.value }} 条</title>
+            <title>{{ point.date }} · 当日线索数 {{ point.value }} 条</title>
           </circle>
         </template>
         <line

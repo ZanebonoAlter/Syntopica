@@ -52,10 +52,12 @@ const props = withDefaults(defineProps<{
   /** 列表点追踪命中进入时，定位对应 section。 */
   initialWatchId?: string | null
   /**
-   * `?story=` 深链（surface-story-events-in-radar）：定位本期正文 DOM 顺序中
-   * 该事件线第一条 thread；本期正文无该事件线时不滚动、给提示。
+   * `?cluster=` 深链（D14）：定位本期正文 DOM 顺序中该聚簇的第一条 thread
+   * （命中条件 = thread.tag_ids 含聚簇代表标签 id）；本期正文无对应线索时不滚动、给提示。
    */
-  initialStoryId?: number | null
+  initialClusterId?: number | null
+  /** 旧 `?story=` 深链已下线（D14）：解析后忽略，只提示一次，不定位、不报错。 */
+  initialLegacyStory?: boolean
   /** desk=路由页内静态四区；overlay=旧列表浮层（阶段④前兼容）。 */
   mode?: 'overlay' | 'desk'
   /** 阅读台今日（Asia/Shanghai 本地日期），用于演进带「今」标记。 */
@@ -66,7 +68,8 @@ const props = withDefaults(defineProps<{
   initialAnnotationId: null,
   initialDate: null,
   initialWatchId: null,
-  initialStoryId: null,
+  initialClusterId: null,
+  initialLegacyStory: false,
   mode: 'overlay',
   today: '',
 })
@@ -116,8 +119,8 @@ async function handleRebucket(sectionId: number) {
 const watchesApi = useTopicWatchesApi()
 const watchHitsByReport = ref(new Map<number, TopicWatchHit[]>())
 const focusSectionId = ref<number | null>(null)
-/** 重点定位请求（surface-story-heat-in-report-top）：nonce 使重复点击同线重触发；切 report 清空。 */
-const locateRequest = ref<{ storyId: number, nonce: number } | null>(null)
+/** 重点定位请求（D14）：nonce 使重复点击同簇重触发；切 report 清空。 */
+const locateRequest = ref<{ clusterId: number, nonce: number } | null>(null)
 let locateNonce = 0
 const showReader = ref(true)
 const showDetectiveWall = ref(false)
@@ -308,11 +311,15 @@ onMounted(async () => {
     }
   }
   await nextTick()
-  // 深链定位（雷达事件线 → 日报正文）：复用刊头重点的同一路径；本期正文无该
-  // 事件线时不滚动、不跳近似位置，只给「本期正文暂无对应事件」提示。
+  // 深链定位（`?cluster=` → 日报正文）：复用刊头重点的同一路径；本期正文无该
+  // 聚簇线索时不滚动、不跳近似位置，只给「本期正文暂无对应线索」提示。
   // 放在 nextTick 之后：正文分区组件已挂载，定位意图才会被各分区接收。
-  if (props.initialStoryId != null && reader.selectedDetail.value) {
-    handleLocateHighlight(props.initialStoryId)
+  if (props.initialClusterId != null && reader.selectedDetail.value) {
+    handleLocateHighlight(props.initialClusterId)
+  }
+  // 旧 `?story=` 深链（D14）：解析后忽略，只提示该定位方式已下线，不定位、不报错。
+  if (props.initialLegacyStory) {
+    notify.warn('事件线定位已下线，请从「今日重点」进入正文')
   }
 })
 
@@ -348,19 +355,19 @@ function locateWatchSection(sectionId: string | number) {
   })
 }
 
-/** 刊头重点定位（surface-story-heat-in-report-top）：先按当前 report 正文预判目标——
+/** 刊头重点定位（D14）：先按当前 report 正文预判目标（thread.tag_ids 含聚簇代表标签 id）——
  *  点击时目标已消失则原地轻提示、不下发定位（不跳近似位置）；有目标则转发给各正文分区，
- *  由持有目标的分区展开并滚动/聚焦/高亮。 */
-function handleLocateHighlight(storyId: number) {
+ *  由持有目标的分区展开并滚动/聚焦/高亮 2s（reduced-motion 不平滑滚动）。 */
+function handleLocateHighlight(clusterId: number) {
   const detail = reader.selectedDetail.value
   const hasTarget = (detail?.sections ?? []).some(section =>
-    (section.threads ?? []).some(thread => thread.story_id === storyId),
+    (section.threads ?? []).some(thread => (thread.tag_ids ?? []).includes(clusterId)),
   )
   if (!hasTarget) {
-    notify.warn('本期正文暂无对应事件')
+    notify.warn('本期正文暂无对应线索')
     return
   }
-  locateRequest.value = { storyId, nonce: ++locateNonce }
+  locateRequest.value = { clusterId, nonce: ++locateNonce }
 }
 
 async function closeReader() {

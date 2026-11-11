@@ -2,10 +2,10 @@
 /**
  * 观察矩阵（rework-workshop-into-radar-and-desk 矩阵阶段 G3，矩阵阶段批准版面）。
  *
- * 本组件 = 头部说明（事件线数/来源数颜色图例/未回填降级提示/数据截止/查看所选日）+ 状态分层
+ * 本组件 = 头部说明（口径说明/数据截止/查看所选日）+ 状态分层
  * （loading 骨架 / 首次错误 / 刷新失败 stale / 无日报 / 有日报无泳道）+ 网格挂载
- * （`ObservationMatrixGrid`：行×日格、休眠折叠、日格三态；格值 = 当日事件线数，
- *  颜色 = 最热事件线来源数分档，add-event-story-heat 5.4）。
+ * （`ObservationMatrixGrid`：行×日格、休眠折叠、日格三态；格值 = 当日线索合计，
+ *  颜色通道退役——数值 + title/aria 承载全部信息，retire-story-adopt-event-metrics D4/D5）。
  *
  * 受控契约：数据全由父（G5）经 props 注入，组件不自建网络/日期/选中状态；
  * 点格只转发 selectDate（父就地更新选中日与下方阅读；不开弹层、不强滚——
@@ -25,10 +25,9 @@ import { Icon } from '@iconify/vue'
 import ObservationMatrixGrid from './ObservationMatrixGrid.vue'
 import { shiftDate } from './observationRange'
 import type { OtherTopicsView } from './dayOtherTopics'
-import { PARTICIPANT_TIER_LABELS } from './observationLanes'
 import type { LaneDayResolver, ObservationLaneRow } from './observationLanes'
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   /** 可见观察轴（升序 date-only；显示裁切，行序/休眠不随它重算）。 */
   axis: string[]
   /** 当前其他话题的同 ID 可见窗记录日（壳层 gate 后下发）。 */
@@ -42,8 +41,6 @@ const props = withDefaults(defineProps<{
   sourceDays: number
   /** 数据锚点（YYYY-MM-DD）：档窗起点派生 + 早于今天时提示数据截止。 */
   anchorDate: string | null
-  /** 事件身份是否已回填（lane-dynamics stories_backfilled；null = 旧响应未知，不提示降级）。 */
-  storiesBackfilled?: boolean | null
   /** 单日内容解析（G1 resolveLaneDay 注入；content/gap/unavailable 三态）。 */
   resolveDay: LaneDayResolver
   expandedDormant: boolean
@@ -63,7 +60,7 @@ const props = withDefaults(defineProps<{
   othersOpen?: boolean
   /** 当前阅读槽选中的其他分区（高亮用）。 */
   selectedOtherSectionId?: string | null
-}>(), { storiesBackfilled: null })
+}>()
 
 const emit = defineEmits<{
   selectLane: [topicId: string]
@@ -96,19 +93,13 @@ const showError = computed(
     props.activeRows.length === 0 &&
     props.dormantRows.length === 0,
 )
-/** 事件身份未回填降级（stories_backfilled === false）：格值按非综合稿事件数上界，明示不冒充。 */
-const storiesNotBackfilled = computed(() => props.storiesBackfilled === false)
-
-/** 图例 4 档区间（0 / 1-2 / 3-5 / 6+）：与格子颜色分档（participantBucket）同一常量来源。 */
-const participantTierLegend = PARTICIPANT_TIER_LABELS.join(' / ')
 </script>
 
 <template>
   <section class="omx" data-testid="board-matrix">
     <div class="omx-head">
       <span class="omx-kicker">泳道 × 日期</span>
-      <span class="omx-hint" data-testid="matrix-legend">数字 = 当日事件线数；颜色 = 当天被报道最多的那条事件线的来源数（{{ participantTierLegend }}）· '—' 无分区 · '?' 未取到</span>
-      <span v-if="storiesNotBackfilled" class="omx-hint is-warn" data-testid="matrix-backfill-note">事件身份未回填，格值按非综合稿事件数上界</span>
+      <span class="omx-hint" data-testid="matrix-legend">数字 = 当日线索合计（该泳道当天各主题桶的非综合稿线索数之和）· '—' 无分区 · '?' 未取到</span>
       <span class="omx-note" data-testid="matrix-tier-note">
         名单/排序/休眠按 {{ sourceDays }} 日档<span v-if="usesPoolHistory"> · 历史由 365 日池补充（不改名单）</span>
       </span>

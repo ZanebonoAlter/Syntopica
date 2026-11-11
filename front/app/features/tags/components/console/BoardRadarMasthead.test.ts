@@ -24,11 +24,11 @@ function mountMasthead() {
   return mount(BoardRadarMasthead, {
     props: {
       dateText: '2026-10-29',
-      headline: '4 个板块值得关注，暂未出现升温',
+      headline: '4 个板块值得关注',
       sub: 'no-hot' as const,
       hotCount: 0,
       rowsCount: 12,
-      warmingCount: 0,
+      todayClueTotal: 12,
       statsVisible: true,
       creatingBoard: false,
     },

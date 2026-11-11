@@ -25,9 +25,16 @@ const show = computed({
 
 const form = ref<Partial<MatchingConfig>>({})
 
+/** 候选泳道权重的文档默认值（缺项/旧后端未下发时回退）。 */
+const LANE_HEAT_CANDIDATE_WEIGHT_DEFAULT = 0.5
+
 watch([() => props.visible, () => props.config], ([v, c]) => {
   if (v && c) {
-    form.value = { ...c }
+    form.value = {
+      ...c,
+      // 缺项回退默认（不把 undefined 留在输入框里，也不伪造 0）。
+      lane_heat_candidate_weight: c.lane_heat_candidate_weight ?? LANE_HEAT_CANDIDATE_WEIGHT_DEFAULT,
+    }
   }
 })
 
@@ -48,11 +55,23 @@ const relatedThresholdError = computed(() => {
   return ''
 })
 
+/** 候选泳道权重：默认 0.5、域 [0,1] 有限数；与相关事件阈值各自独立校验（互不影响）。 */
+const laneHeatWeightError = computed(() => {
+  const parsed = toFiniteNumber(form.value.lane_heat_candidate_weight)
+  if (parsed === null) return '请填写 0 到 1 之间的数值'
+  if (parsed < 0 || parsed > 1) return '取值范围 0 ~ 1'
+  return ''
+})
+
+const hasFormError = computed(() => Boolean(relatedThresholdError.value) || Boolean(laneHeatWeightError.value))
+
 function handleSave() {
-  if (relatedThresholdError.value) return
+  // 非法输入整体拒绝：不发 PUT，旧值不被覆盖（后端同样按整体拒绝处理）。
+  if (hasFormError.value) return
   emit('save', {
     ...form.value,
     related_event_similarity_threshold: toFiniteNumber(form.value.related_event_similarity_threshold) ?? undefined,
+    lane_heat_candidate_weight: toFiniteNumber(form.value.lane_heat_candidate_weight) ?? undefined,
   })
 }
 </script>
@@ -238,6 +257,30 @@ function handleSave() {
         </div>
       </div>
 
+      <!-- ===== 当天线索热度（lane-heat-metric D8：只进热度，不进生命周期） ===== -->
+      <div class="mc-rule-block" data-testid="mc-lane-heat">
+        <div class="mc-rule-title">
+          <span class="mc-rule-badge mc-rule-badge--related">热度</span>
+          <span>当天线索热度</span>
+        </div>
+        <p class="mc-rule-desc">版块关注度 = 各泳道当天线索数按话题状态加权求和；候选泳道按此权重计入。只影响热度与雷达分档，不参与入板匹配，也不影响话题生命周期（candidate 转正门槛不变）。</p>
+        <div class="mc-grid">
+          <label class="mc-field">
+            <span class="mc-label">候选泳道权重</span>
+            <span class="mc-hint">默认 0.5；0 = 候选不计入版块关注度，1 = 与 active 泳道同权。取值范围 0 ~ 1</span>
+            <AppInput
+              v-model="form.lane_heat_candidate_weight"
+              type="number"
+              step="0.05"
+              min="0"
+              max="1"
+              :error="laneHeatWeightError"
+              data-testid="mc-lane-heat-weight"
+            />
+          </label>
+        </div>
+      </div>
+
       <!-- ===== 升级建议 ===== -->
       <div class="mc-rule-block">
         <div class="mc-rule-title">
@@ -295,7 +338,7 @@ function handleSave() {
         variant="primary"
         size="sm"
         :loading="saving"
-        :disabled="!!relatedThresholdError || saving"
+        :disabled="hasFormError || saving"
         @click="handleSave"
       >保存</AppButton>
     </template>

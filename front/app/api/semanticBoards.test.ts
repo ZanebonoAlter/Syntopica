@@ -112,14 +112,14 @@ describe('useBoardRadarApi - Radar 客户端边界归一（8A/R-18）', () => {
             report_article_count: 14,
             report_event_count: 13,
             anchor_date: '2026-10-22',
-            today_sections: 8,
-            last3_sections: 13,
-            prev3_sections: 10,
+            today_clues: 8,
+            last3_clues: 13,
+            prev3_clues: 10,
             attention: 26,
             data_delayed: true,
-            days: Array.from({ length: 14 }, () => 1),
+            clue_days: Array.from({ length: 14 }, () => 1),
             lanes: [
-              { topic_id: 1204, label: '美伊博弈', section_count_14d: 15, thread_count_14d: 40, counts: Array.from({ length: 14 }, () => 1) },
+              { topic_id: 1204, label: '美伊博弈', thread_count_14d: 40, clue_counts: Array.from({ length: 14 }, () => 1) },
             ],
           },
           {
@@ -130,12 +130,12 @@ describe('useBoardRadarApi - Radar 客户端边界归一（8A/R-18）', () => {
             report_title: '本周剧集与行业动向',
             report_article_count: 3,
             report_event_count: 2,
-            today_sections: 0,
-            last3_sections: 0,
-            prev3_sections: 0,
+            today_clues: 0,
+            last3_clues: 0,
+            prev3_clues: 0,
             attention: 0,
             data_delayed: false,
-            days: [],
+            clue_days: [],
             lanes: [],
           },
         ],
@@ -149,12 +149,12 @@ describe('useBoardRadarApi - Radar 客户端边界归一（8A/R-18）', () => {
     if (!res.success) throw new Error('预期成功响应')
     const [board, coldBoard] = res.data.boards
     expect(board?.boardId).toBe('1974')
-    expect(board?.todaySections).toBe(8)
-    expect(board?.last3Sections).toBe(13)
+    expect(board?.todayClues).toBe(8)
+    expect(board?.last3Clues).toBe(13)
     expect(board?.anchorDate).toBe('2026-10-22')
     expect(board?.dataDelayed).toBe(true)
     expect(board?.lanes[0]?.topicId).toBe('1204')
-    expect(board?.lanes[0]?.sectionCount14d).toBe(15)
+    expect(board?.lanes[0]?.clueCounts).toHaveLength(14)
     // 0 值/无锚日版块（影视形态）仍归一为合法读模型
     expect(coldBoard?.boardId).toBe('50413')
     expect(coldBoard?.anchorDate).toBeUndefined()

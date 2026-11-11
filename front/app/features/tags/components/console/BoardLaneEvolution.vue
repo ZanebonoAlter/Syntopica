@@ -2,8 +2,8 @@
 /**
  * 选中泳道演进带（rework-workshop-into-radar-and-desk 2.4）。
  *
- * 与矩阵共用同一份 lane-dynamics 响应：按日期渲染节点（大小/数字 = 当日事件线数，
- * ≥3 条事件线显示事件标签），并给出「今天这条线发生的事」「最密集的三天」与
+ * 与矩阵共用同一份 lane-dynamics 响应：按日期渲染节点（大小/数字 = 当日线索合计，
+ * ≥3 条线索显示事件标签），并给出「今天这条线发生的事」「最密集的三天」与
  * 滚动态势句（长句折叠，标注 as_of）。
  *
  * 红线：前端不推断/补造节点——无 section 的日期只画空心节点；事件与日期映射
@@ -33,7 +33,7 @@ const emit = defineEmits<{
 
 const { warn: notifyWarn } = useNotify()
 
-/** 密集日标签阈值：当日事件线数 ≥3 才显示事件标签（story 口径，add-event-story-heat 5.4）。 */
+/** 密集日标签阈值：当日线索合计 ≥3 才显示事件标签。 */
 const DENSE_LABEL_THRESHOLD = 3
 /** 长态势句折叠阈值（字符数）。 */
 const SUMMARY_FOLD_LENGTH = 80
@@ -55,8 +55,6 @@ interface RibbonNode {
   date: string
   count: number
   clueCount: number
-  storyCount: number
-  participants: number
   labels: string[]
   isToday: boolean
   sizeClass: string
@@ -65,16 +63,13 @@ interface RibbonNode {
 const nodes = computed<RibbonNode[]>(() => props.axis.map((date) => {
   const count = props.row?.counts[date] ?? 0
   const clueCount = props.row?.clueCounts[date] ?? 0
-  const storyCount = props.row?.storyCounts[date] ?? 0
   return {
     date,
     count,
     clueCount,
-    storyCount,
-    participants: props.row?.participantCounts[date] ?? 0,
     labels: sectionsByDate.value.get(date) ?? [],
     isToday: date === props.today,
-    sizeClass: storyCount >= DENSE_LABEL_THRESHOLD ? 'is-big' : storyCount > 0 ? 'is-mid' : 'is-hollow',
+    sizeClass: clueCount >= DENSE_LABEL_THRESHOLD ? 'is-big' : clueCount > 0 ? 'is-mid' : 'is-hollow',
   }
 }))
 
@@ -91,11 +86,11 @@ const todayEvents = computed(() => {
     .find((day) => day.date === node.date)?.sections.flatMap((s) => s.events) ?? []
 })
 
-/** 最密集的三天：事件线数降序，并列取更晚日期（spec 只约束「最密集」，并列口径按此固定）。 */
+/** 最密集的三天：当日线索合计降序，并列取更晚日期（spec 只约束「最密集」，并列口径按此固定）。 */
 const densestDays = computed(() => {
   const withData = nodes.value.filter((node) => node.count > 0)
   return [...withData]
-    .sort((a, b) => b.storyCount - a.storyCount || (a.date < b.date ? 1 : -1))
+    .sort((a, b) => b.clueCount - a.clueCount || (a.date < b.date ? 1 : -1))
     .slice(0, 3)
 })
 
@@ -150,7 +145,7 @@ function openNode(node: RibbonNode): void {
       <header class="ev-head">
         <span class="ev-name" :title="row.label">{{ row.label }}</span>
         <span v-if="row.watchLinked" class="ev-watch">追踪</span>
-        <span class="ev-meta">{{ windowDays }} 天 {{ row.storyTotal }} 条事件线 · 今日 {{ row.storyCounts[today] ?? 0 }}</span>
+        <span class="ev-meta">{{ windowDays }} 天 {{ row.clueTotal }} 条线索 · 今日 {{ row.clueCounts[today] ?? 0 }}</span>
       </header>
 
       <!-- 态势句：有快照 → summary + as_of（长句折叠）；无快照 → 待结算占位 -->
@@ -186,14 +181,14 @@ function openNode(node: RibbonNode): void {
           class="ev-node"
           :class="[node.sizeClass, { 'is-today': node.isToday }]"
           :data-testid="`evolution-node-${node.date}`"
-          :title="node.count > 0 ? `${node.date} ${node.storyCount} 条事件线 · 最热 ${node.participants} 个来源 · ${node.labels.join(' / ')}` : `${node.date} 无分区`"
-          :aria-label="node.count > 0 ? `${node.date} ${node.storyCount} 条事件线 · 最热 ${node.participants} 个来源` : `${node.date} 无分区`"
+          :title="node.count > 0 ? `${node.date} ${node.clueCount} 条线索 · ${node.labels.join(' / ')}` : `${node.date} 无分区`"
+          :aria-label="node.count > 0 ? `${node.date} ${node.clueCount} 条线索` : `${node.date} 无分区`"
           @click="openNode(node)"
         >
           <span class="ev-dot" />
-          <span class="ev-node-count">{{ node.count > 0 ? node.storyCount : '—' }}</span>
+          <span class="ev-node-count">{{ node.count > 0 ? node.clueCount : '—' }}</span>
           <span class="ev-node-date">{{ node.isToday ? '今天' : node.date.slice(5) }}</span>
-          <span v-if="node.storyCount >= DENSE_LABEL_THRESHOLD && node.labels.length" class="ev-node-label">
+          <span v-if="node.clueCount >= DENSE_LABEL_THRESHOLD && node.labels.length" class="ev-node-label">
             {{ clip(node.labels.join(' / '), 26) }}
           </span>
         </button>
@@ -222,7 +217,7 @@ function openNode(node: RibbonNode): void {
             <div v-for="day in densestDays" :key="day.date" class="ev-peak">
               <span class="ev-peak-date">{{ day.date.slice(5) }}</span>
               <span class="ev-peak-label" :title="day.labels.join(' / ')">{{ clip(day.labels.join(' / '), 30) }}</span>
-              <span class="ev-peak-count">{{ day.storyCount }}</span>
+              <span class="ev-peak-count">{{ day.clueCount }}</span>
             </div>
           </div>
           <div v-else class="ev-hint">这个窗口没有分区。</div>

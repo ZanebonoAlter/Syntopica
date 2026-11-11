@@ -294,6 +294,12 @@ export interface MatchingConfig {
    * 与入板匹配参数彼此独立：只影响「相关事件」列表，不重算向量、不参与命中即停顺序。
    */
   related_event_similarity_threshold: number
+  /**
+   * 候选泳道在版块关注度里的权重（lane-heat-metric D8；默认 0.5、范围 [0,1] 有限数）。
+   * 只进「当天线索热度」计算，SHALL NOT 参与话题生命周期与入板匹配。
+   * 缺省 = 旧后端未下发（前端回退默认 0.5）。
+   */
+  lane_heat_candidate_weight?: number
 }
 
 /** 相关事件条目的可读来源（候选标签在该版块的最新文章；无来源如实为 null）。 */
@@ -626,7 +632,7 @@ async function suggestAuxiliariesForBoard(boardId: number, params?: {
 // 字符串 ID 读模型（raw 契约与转换唯一实现在 api/normalizers/boardRadar.ts，
 // 组件层不散落映射，也不扩展到 semanticBoards 其它 API）。
 
-export type { RadarBoard, RadarLane, RadarOverview, RadarStoryFeed, RadarStoryItem, BoardRadarRawOverview, BoardRadarRawStoryFeed, BoardRadarRawStoryItem, RadarOverviewResponse } from '~/api/normalizers/boardRadar'
+export type { RadarBoard, RadarLane, RadarOverview, RadarTopLaneItem, RadarTopLanes, BoardRadarRawOverview, BoardRadarRawTopLanes, BoardRadarRawTopLaneItem, RadarOverviewResponse } from '~/api/normalizers/boardRadar'
 
 import { mapRadarOverviewResponse, type BoardRadarRawOverview, type RadarOverviewResponse } from '~/api/normalizers/boardRadar'
 

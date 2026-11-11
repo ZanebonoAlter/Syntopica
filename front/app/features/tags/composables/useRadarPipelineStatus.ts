@@ -37,7 +37,7 @@ import { todayKey } from '~/utils/todayKey'
 /**
  * 状态块消费的**板块行最小结构**——只包含四项事实与勾选清单实际用到的字段。
  *
- * 上游雷达总览行携带更多字段（`todaySections` / `reportTitle` / `days` / `lanes` …），
+ * 上游雷达总览行携带更多字段（`todayClues` / `reportTitle` / `clueDays` / `lanes` …），
  * 它在结构上可直接传进来；这里收窄声明的目的是让状态块只依赖自己真正需要的
  * 契约，而不是捆住整个雷达读模型。
  */
@@ -47,8 +47,8 @@ export interface RadarStatusBoard {
   label: string
   /** 该板块最新日报日期（`YYYY-MM-DD`；无日报为空串）。 */
   reportDate: string
-  /** 该板块当日报纸分区数（0 = 今日无分区，勾选清单给提示）。 */
-  todaySections: number
+  /** 该板块当日线索合计（0 = 今日无线索，勾选清单给提示；null = 旧后端未知）。 */
+  todayClues: number | null
 }
 
 /** 兜底生成时刻（后端 `daily_report_time` 默认值；旧后端不返回时的降级）。 */
@@ -64,8 +64,8 @@ export interface RadarPipelineBoard {
   /** 数字板块 ID（API 边界要求数字 ID；读模型里的字符串 ID 在此归一）。 */
   boardId: number
   label: string
-  /** 当日分区数：0 表示该板今天还没有料（生成出来是 0 篇，不算失败）。 */
-  todaySections: number
+  /** 当日线索合计：0 表示该板今天还没有料（生成出来是 0 篇，不算失败）；null = 未知。 */
+  todayClues: number | null
   reportDate: string
 }
 
@@ -178,7 +178,7 @@ export function useRadarPipelineStatus(options: RadarPipelineStatusOptions = {})
     .map((row) => ({
       boardId: Number(row.boardId),
       label: row.label,
-      todaySections: row.todaySections,
+      todayClues: row.todayClues,
       reportDate: row.reportDate,
     }))
     .filter((row) => Number.isFinite(row.boardId)))

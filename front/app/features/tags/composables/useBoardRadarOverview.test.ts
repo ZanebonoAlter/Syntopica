@@ -1,11 +1,12 @@
 /**
- * useBoardRadarOverview 测试（rework-workshop-into-radar-and-desk 8A/R-18 拆分）。
- * 取数/分档/今日该读/升温/报头文案/首次失败语义与去向导航在 composable 层验证；
+ * useBoardRadarOverview 测试（rework-workshop-into-radar-and-desk 8A/R-18 拆分；
+ * retire-story-adopt-event-metrics 3.2 换当天线索口径）。
+ * 取数/分档/旧响应回退/泳道清单段标记/报头文案/首次失败语义与去向导航在 composable 层验证；
  * API 归一在 api 层测试，本层 mock useBoardRadarApi 只喂归一后读模型。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useBoardRadarOverview } from './useBoardRadarOverview'
-import type { RadarBoard, RadarStoryFeed } from '~/api/semanticBoards'
+import type { RadarBoard, RadarTopLanes } from '~/api/semanticBoards'
 
 const getOverview = vi.fn()
 const push = vi.fn()
@@ -24,31 +25,22 @@ function board(over: Partial<RadarBoard> = {}): RadarBoard {
     reportTitle: '伊朗警告打击海湾海底电缆',
     reportArticleCount: 14,
     reportEventCount: 13,
-    todaySections: 8,
-    last3Sections: 13,
-    prev3Sections: 10,
+    todayClues: 8,
+    last3Clues: 13,
+    prev3Clues: 10,
     attention: 26,
+    heatRuleVersion: 'heat-v2-lane-clues-1d',
+    clueDays: Array.from({ length: 14 }, () => 1),
     dataDelayed: false,
-    days: Array.from({ length: 14 }, () => 1),
     lanes: [],
-    todayStories: 0,
-    last3Stories: 0,
-    prev3Stories: 0,
-    storiesBackfilled: null,
-    todayHeat: 0,
-    last3Heat: 0,
-    prev3Heat: 0,
-    heatDays: [],
-    heatRuleVersion: '',
-    heatIncomplete: false,
     ...over,
   }
 }
 
-async function setup(data: { date?: string, boards: RadarBoard[], stories?: RadarStoryFeed | null }, success = true) {
+async function setup(data: { date?: string, boards: RadarBoard[], topLanes?: RadarTopLanes | null }, success = true) {
   getOverview.mockResolvedValue({
     success,
-    data: success ? { date: data.date ?? '2026-10-24', boards: data.boards, stories: data.stories ?? null } : undefined,
+    data: success ? { date: data.date ?? '2026-10-24', boards: data.boards, topLanes: data.topLanes ?? null } : undefined,
     error: success ? undefined : '接口挂了',
   })
   const overview = useBoardRadarOverview()
@@ -56,36 +48,31 @@ async function setup(data: { date?: string, boards: RadarBoard[], stories?: Rada
   return overview
 }
 
-/** 事件线清单段夹具（新版后端响应形状）。 */
-function feed(over: Partial<RadarStoryFeed> = {}): RadarStoryFeed {
+/** 泳道清单段夹具（新版后端响应形状，服务端已排序/截断）。 */
+function feed(over: Partial<RadarTopLanes> = {}): RadarTopLanes {
   return {
-    anchorDate: '2026-11-06',
-    heatRuleVersion: 'heat-v1-48h-hl24h',
-    topStories: [{
-      boardId: '1974',
-      boardLabel: '中东地缘政治与美伊关系',
-      storyId: '4211',
-      storyTitle: '美伊博弈升级',
-      participants: 4,
-      heat: 5.0123,
-      baselineHeat: 1.2,
-      ratio: 4.1769,
-      hasBaseline: true,
-      hasTodayEvidence: true,
-      anchorDate: '2026-11-05',
-      reportDate: '2026-11-06',
-    }],
-    // matrix-clue-fallback-and-rail-merge：单清单化——warming/newStories 派生
-    // 与 newCount/newTotalCount 透出随徽标化移除；topStories 条目自带徽标字段。
-    warmingCount: 6,
-    crossDayStoryCount: 1,
-    unbackfilledBoardIds: ['12'],
-    unbackfilledBoardCount: 1,
-    noStoryBoardIds: ['77'],
-    noStoryBoardCount: 1,
-    laggingBoardIds: ['3122'],
+    anchorDate: '2026-10-24',
+    lanes: [
+      {
+        boardId: '1974',
+        boardLabel: '中东地缘政治与美伊关系',
+        topicId: '1204',
+        topicLabel: '美伊博弈',
+        clueCount: 12,
+        anchorDate: '2026-10-24',
+      },
+      {
+        boardId: '3122',
+        boardLabel: '能源价格',
+        topicId: '88',
+        topicLabel: '原油出口',
+        clueCount: 5,
+        anchorDate: '2026-10-23',
+      },
+    ],
     partial: false,
     degradedBoardIds: [],
+    laggingBoardIds: ['3122'],
     ...over,
   }
 }
@@ -95,12 +82,12 @@ beforeEach(() => {
 })
 
 describe('useBoardRadarOverview — 取数与分档', () => {
-  it('分档：≥3.3 热点、≥0.7 关注、<0.7 常温（lane_heat 标定阈值）；可见行热点在前', async () => {
+  it('分档：≥14.5 热点、≥2.3 关注、<2.3 常温（版块关注度 = Σ 泳道当天热度）；可见行热点在前', async () => {
     const overview = await setup({
       boards: [
-        board({ boardId: '2', label: '关注', attention: 0.7 }),
-        board({ boardId: '1', label: '热点', attention: 3.3 }),
-        board({ boardId: '3', label: '常温', attention: 0.6 }),
+        board({ boardId: '2', label: '关注', attention: 2.3 }),
+        board({ boardId: '1', label: '热点', attention: 14.5 }),
+        board({ boardId: '3', label: '常温', attention: 2.2 }),
       ],
     })
     expect(overview.hotRows.value.map(row => row.boardId)).toEqual(['1'])
@@ -110,49 +97,7 @@ describe('useBoardRadarOverview — 取数与分档', () => {
     expect(overview.loading.value).toBe(false)
   })
 
-  it('升温（热度口径，workshop-radar 契约）：todayStories ≥3 且 todayHeat/last3Heat ≥2 倍才列入', async () => {
-    const overview = await setup({
-      boards: [
-        // 3 条事件线、热度 6.0 vs 日均 2.0 → 3× 入选
-        board({ boardId: '4', todayStories: 3, todayHeat: 6, last3Heat: 6, last3Stories: 6, todaySections: 1, last3Sections: 30 }),
-        // 事件线 <3 → 不入选（分区数再多也不冒充）
-        board({ boardId: '5', todayStories: 2, todayHeat: 6, last3Heat: 6, todaySections: 8 }),
-        // 事件线够但热度不达 2 倍 → 不入选
-        board({ boardId: '6', todayStories: 4, todayHeat: 3, last3Heat: 6, todaySections: 8 }),
-      ],
-    })
-    expect(overview.warming.value).toHaveLength(1)
-    expect(overview.warming.value[0]!.row.boardId).toBe('4')
-    expect(overview.warming.value[0]!.ratio).toBeCloseTo(3, 5)
-    expect(overview.warming.value[0]!.todayCount).toBe(3)
-    expect(overview.warming.value[0]!.baselineAvg).toBeCloseTo(2, 5)
-  })
-
-  it('升温边界：3 条且恰好 2 倍入选；真实零热度与零基线不借分区数制造升温', async () => {
-    const overview = await setup({ boards: [
-      board({ boardId: '1', hasHeatData: true, todayStories: 3, todayHeat: 4, last3Heat: 6 }),
-      board({ boardId: '2', hasHeatData: true, todayStories: 0, todayHeat: 0, last3Heat: 0, prev3Heat: 0, todaySections: 9, last3Sections: 3 }),
-      board({ boardId: '3', hasHeatData: true, todayStories: 4, todayHeat: 8, last3Heat: 0 }),
-    ] })
-    expect(overview.warming.value.map(item => [item.row.boardId, item.ratio])).toEqual([['1', 2]])
-  })
-
-  it('升温（旧响应回退）：无 heat 字段时沿用当日分区 ≥3 且 ≥ 近 3 日均值 2 倍，按倍数降序', async () => {
-    const overview = await setup({
-      boards: [
-        board({ boardId: '4', todaySections: 8, last3Sections: 9 }),
-        board({ boardId: '5', todaySections: 3, last3Sections: 6, prev3Sections: 3 }),
-        board({ boardId: '6', todaySections: 2, last3Sections: 1 }),
-      ],
-    })
-    expect(overview.warming.value).toHaveLength(1)
-    expect(overview.warming.value[0]!.row.boardId).toBe('4')
-    expect(overview.warming.value[0]!.ratio).toBeCloseTo(8 / 3, 5)
-    expect(overview.warming.value[0]!.todayCount).toBe(8)
-    expect(overview.warming.value[0]!.baselineAvg).toBeCloseTo(3, 5)
-  })
-
-  it('今日该读：有标题才列、按关注度降序、最多 5 条', async () => {
+  it('今日该读（旧响应回退）：有标题才列、按关注度降序、最多 5 条', async () => {
     const overview = await setup({
       boards: [
         ...Array.from({ length: 6 }, (_, i) => board({ boardId: String(i + 1), attention: 20 + i })),
@@ -163,72 +108,65 @@ describe('useBoardRadarOverview — 取数与分档', () => {
     expect(overview.todayRead.value[0]!.boardId).toBe('6')
   })
 
-  it('报头：正常标题句带关注数与升温数', async () => {
+  it('报头：标题句带关注数与热点数（不再有升温口径）', async () => {
     const overview = await setup({
       boards: [
-        board({ attention: 12 }),
-        board({ boardId: '4', todaySections: 8, last3Sections: 9, attention: 5 }),
+        board({ attention: 20 }),
+        board({ boardId: '4', attention: 5 }),
       ],
     })
-    expect(overview.headline.value).toBe('2 个板块值得关注，1 处出现升温')
+    expect(overview.headline.value).toBe('2 个板块值得关注，其中 1 个达到热点阈值')
     expect(overview.subKind.value).toBe('hot')
     expect(overview.dateText.value).toContain('10月24日')
   })
+
+  it('报头：无热点时只给关注数，不造「0 处升温」类结论', async () => {
+    const overview = await setup({ boards: [board({ attention: 5 })] })
+    expect(overview.headline.value).toBe('1 个板块值得关注')
+    expect(overview.subKind.value).toBe('no-hot')
+  })
+
+  it('当日线索合计：全行已知才给总数；任一行缺字段（旧后端）→ null，不造 0', async () => {
+    const known = await setup({
+      boards: [board({ todayClues: 8 }), board({ boardId: '2', todayClues: 5 })],
+    })
+    expect(known.todayClueTotal.value).toBe(13)
+    const legacy = await setup({
+      boards: [board({ todayClues: 8 }), board({ boardId: '2', todayClues: null })],
+    })
+    expect(legacy.todayClueTotal.value).toBeNull()
+  })
 })
 
-describe('useBoardRadarOverview — 事件线清单（surface-story-events-in-radar）', () => {
-  it('单清单直接消费服务端事件线段（前端不合并、不重排）；徽标字段随条目透出', async () => {
-    const overview = await setup({ boards: [board()], stories: feed() })
-    expect(overview.hasStoryFeed.value).toBe(true)
-    expect(overview.topStories.value).toHaveLength(1)
-    expect(overview.topStories.value[0]!.storyTitle).toBe('美伊博弈升级')
-    // 徽标判定字段（D3）：无基线/倍率/当日证据由条目自带
-    expect(overview.topStories.value[0]!.hasBaseline).toBe(true)
-    expect(overview.topStories.value[0]!.ratio).toBeCloseTo(4.1769, 4)
-    expect(overview.topStories.value[0]!.hasTodayEvidence).toBe(true)
+describe('useBoardRadarOverview — 当天线索最多的泳道清单段', () => {
+  it('直接消费服务端清单（前端不合并、不重排）：条目与锚点日透出', async () => {
+    const overview = await setup({ boards: [board()], topLanes: feed() })
+    expect(overview.hasLaneFeed.value).toBe(true)
+    expect(overview.laneItems.value).toHaveLength(2)
+    expect(overview.laneItems.value[0]!.topicLabel).toBe('美伊博弈')
+    expect(overview.laneItems.value[0]!.clueCount).toBe(12)
+    // 滞后版块按自己的锚点日计
+    expect(overview.laneItems.value[1]!.anchorDate).toBe('2026-10-23')
   })
 
-  it('降级标记透出：未回填版块数与排序不完整', async () => {
-    const overview = await setup({ boards: [board()], stories: feed({ partial: true }) })
-    expect(overview.unbackfilledBoardCount.value).toBe(1)
-    expect(overview.partialStories.value).toBe(true)
-  })
-
-  it('滞后 / 降级版块数透出（右栏提示消费：N 个版块滞后、降级计数）', async () => {
-    const overview = await setup({ boards: [board()], stories: feed({ partial: true, degradedBoardIds: ['9', '10'] }) })
+  it('降级 / 滞后标记透出（右栏提示消费：N 个版块滞后、降级计数）', async () => {
+    const overview = await setup({ boards: [board()], topLanes: feed({ partial: true, degradedBoardIds: ['9', '10'] }) })
+    expect(overview.partialLanes.value).toBe(true)
     expect(overview.laggingBoardCount.value).toBe(1)
     expect(overview.degradedBoardCount.value).toBe(2)
   })
 
-  it('报头升温计数用服务端全量计数（非截断数）', async () => {
-    const overview = await setup({ boards: [board()], stories: feed({ warmingCount: 6 }) })
-    expect(overview.warmingCount.value).toBe(6)
-    expect(overview.headline.value).toContain('6 处出现升温')
-  })
-
-  it('旧响应回退：响应缺 stories 段 → 回退版块级列表（不渲染业务空态）', async () => {
-    const overview = await setup({
-      boards: [board({ boardId: '4', todayStories: 3, todayHeat: 6, last3Heat: 6, last3Stories: 6 })],
-      stories: null,
-    })
-    expect(overview.hasStoryFeed.value).toBe(false)
-    expect(overview.topStories.value).toEqual([])
-    // 回退分支仍是版块级口径
+  it('旧响应回退：响应缺 top_lanes 段 → hasLaneFeed=false，回退版块级列表（不渲染业务空态）', async () => {
+    const overview = await setup({ boards: [board()], topLanes: null })
+    expect(overview.hasLaneFeed.value).toBe(false)
+    expect(overview.laneItems.value).toEqual([])
     expect(overview.todayRead.value).toHaveLength(1)
-    expect(overview.warming.value).toHaveLength(1)
-    expect(overview.warmingCount.value).toBe(1)
   })
 
-  it('openStory：跳落点报告日并带 ?story= 参数；无落点不跳', async () => {
-    const overview = await setup({ boards: [board()], stories: feed() })
-    overview.openStory(overview.topStories.value[0]!)
-    expect(push).toHaveBeenCalledWith({
-      path: '/tags/1974/2026-11-06',
-      query: { story: '4211' },
-    })
-    push.mockClear()
-    overview.openStory({ ...overview.topStories.value[0]!, reportDate: '' })
-    expect(push).not.toHaveBeenCalled()
+  it('成功但清单为空：hasLaneFeed=true 且条目为空（真实空态，与旧响应区分）', async () => {
+    const overview = await setup({ boards: [board()], topLanes: feed({ lanes: [] }) })
+    expect(overview.hasLaneFeed.value).toBe(true)
+    expect(overview.laneItems.value).toEqual([])
   })
 })
 
@@ -247,11 +185,11 @@ describe('useBoardRadarOverview — 失败语义（R-17）', () => {
     expect(overview.error.value).toBe('')
     expect(overview.firstLoadFailed.value).toBe(false)
     expect(overview.subKind.value).toBe('empty')
-    expect(overview.headline.value).toBe('0 个板块值得关注，暂未出现升温')
+    expect(overview.headline.value).toBe('0 个板块值得关注')
   })
 
   it('有旧数据时刷新失败：保留旧值可读 + 记录错误', async () => {
-    getOverview.mockResolvedValue({ success: true, data: { date: '2026-10-24', boards: [board()] } })
+    getOverview.mockResolvedValue({ success: true, data: { date: '2026-10-24', boards: [board()], topLanes: null } })
     const overview = useBoardRadarOverview()
     await overview.load()
     getOverview.mockResolvedValue({ success: false, data: undefined, error: '刷新失败' })
@@ -279,25 +217,10 @@ describe('useBoardRadarOverview — 去向导航', () => {
     expect(push).toHaveBeenLastCalledWith('/tags/1974')
   })
 
-  // ── 跨天线脚注判据（matrix-clue-fallback-and-rail-merge D3）────────────────
-  // 升温卡片删除后，「无跨天线」的表达收敛为单行脚注：只在服务端判据为 0 时
-  // 出现（crossDayBuilding）；>0（有跨天线但没升温）与 null（旧响应缺字段）
-  // 都不出脚注——无法判定时不得断言成因。
-
-  describe('crossDayBuilding：跨天线脚注判据三态', () => {
-    it('crossDayStoryCount = 0 → true（脚注出现：跨天延续建设中）', async () => {
-      const state = await setup({ boards: [board()], stories: feed({ crossDayStoryCount: 0 }) })
-      expect(state.crossDayBuilding.value).toBe(true)
-    })
-
-    it('crossDayStoryCount > 0 → false（有跨天线但没升温：无任何空态，徽标已表达）', async () => {
-      const state = await setup({ boards: [board()], stories: feed({ crossDayStoryCount: 2 }) })
-      expect(state.crossDayBuilding.value).toBe(false)
-    })
-
-    it('缺字段 → false（无法判定，不出脚注、不断言成因）', async () => {
-      const state = await setup({ boards: [board()], stories: feed({ crossDayStoryCount: null }) })
-      expect(state.crossDayBuilding.value).toBe(false)
-    })
+  it('openLane 缺 id 不跳（不产生假深链）', async () => {
+    const overview = await setup({ boards: [board()] })
+    overview.openLane({ boardId: '', topicId: '1204' })
+    overview.openLane({ boardId: '1974', topicId: '' })
+    expect(push).not.toHaveBeenCalled()
   })
 })

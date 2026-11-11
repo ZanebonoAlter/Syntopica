@@ -37,7 +37,7 @@ vi.mock('../ArticlePreviewModal.vue', () => ({
 
 const readerStub = {
   name: 'DailyReportReader',
-  props: ['boardId', 'boardTitle', 'boards', 'initialDate', 'initialAnnotationId', 'initialStoryId', 'mode'],
+  props: ['boardId', 'boardTitle', 'boards', 'initialDate', 'initialAnnotationId', 'initialClusterId', 'initialLegacyStory', 'mode'],
   emits: ['close', 'selectDate', 'openLane', 'openArticle', 'selectBoard'],
   template: '<div data-testid="reader-stub" />',
 }
@@ -98,19 +98,28 @@ describe('DailyReportDeskShell — 阅读台路由（6.1/6.4/6.5）', () => {
     expect(wrapper.findComponent(readerStub).props('initialAnnotationId')).toBe(8)
   })
 
-  it('?story= 深链透传 initialStoryId（雷达事件线 → 日报正文定位）', async () => {
+  it('?cluster= 深链透传 initialClusterId（今日重点聚簇 → 日报正文定位）', async () => {
+    routeState.query = { cluster: '42' }
+    const wrapper = mountShell()
+    await flushPromises()
+    expect(wrapper.findComponent(readerStub).props('initialClusterId')).toBe(42)
+    expect(wrapper.findComponent(readerStub).props('initialLegacyStory')).toBe(false)
+  })
+
+  it('旧 ?story= 深链：仍被解析但只标记已下线（不定位、不报错）', async () => {
     routeState.query = { story: '42' }
     const wrapper = mountShell()
     await flushPromises()
-    expect(wrapper.findComponent(readerStub).props('initialStoryId')).toBe(42)
+    expect(wrapper.findComponent(readerStub).props('initialClusterId')).toBeNull()
+    expect(wrapper.findComponent(readerStub).props('initialLegacyStory')).toBe(true)
   })
 
-  it('?story= 非法值忽略（非数字 / 0 / 负数 → null，不报错阻断阅读）', async () => {
+  it('?cluster= 非法值忽略（非数字 / 0 / 负数 → null，不报错阻断阅读）', async () => {
     for (const raw of ['abc', '0', '-1', '1.5', '']) {
-      routeState.query = { story: raw }
+      routeState.query = { cluster: raw }
       const wrapper = mountShell()
       await flushPromises()
-      expect(wrapper.findComponent(readerStub).props('initialStoryId')).toBeNull()
+      expect(wrapper.findComponent(readerStub).props('initialClusterId')).toBeNull()
       wrapper.unmount()
     }
   })

@@ -194,7 +194,6 @@ function scrollToChronicle(): void {
         :today="today"
         :source-days="sourceDays"
         :anchor-date="anchorDate"
-        :stories-backfilled="storiesBackfilled"
         :resolve-day="resolveLaneDay"
         :expanded-dormant="expandedDormant"
         :loading="loading"

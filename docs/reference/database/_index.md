@@ -122,8 +122,8 @@
 | `topic_watch_hits` | Watch 命中记录 | `topicgraph.TopicWatchHit` |
 | `topic_key_event_markers` | 话题关键事件注记（人工主权三态 + 来源指纹幂等） | `topicgraph.TopicKeyEventMarker` |
 | `key_event_recommendation_runs` | 关键事件推荐任务状态（每报告一行） | `topicgraph.KeyEventRecommendationRun` |
-| `board_stories` | 事件线（跨天同一事件聚合，结构化指纹 + 合并链；add-event-story-heat） | `topicgraph.BoardStory` |
-| `story_signals` | 热度证据（参与者×文章×信源时间，复合主键；add-event-story-heat） | `topicgraph.StorySignal` |
+| `board_stories` | 事件线（跨天同一事件聚合，结构化指纹 + 合并链；add-event-story-heat）。**只读保留**：change `retire-story-adopt-event-metrics` 起停写，不删表不迁移 | `topicgraph.BoardStory` |
+| `story_signals` | 热度证据（参与者×文章×信源时间，复合主键；add-event-story-heat）。**只读保留**：停写后无新行，现行泳道热度不读本表 | `topicgraph.StorySignal` |
 
 #### 页边注 → [`tables/margin-notes.md`](tables/margin-notes.md)（flow: `daily-report`）
 

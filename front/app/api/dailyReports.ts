@@ -1,26 +1,29 @@
 import { apiClient } from './client'
 import type { ApiResponse } from '~/types'
 
-/** 日报重点条目（surface-story-heat-in-report-top 扩展：story 模式携带 story_id 与服务端快照；
- *  标签回退/历史数据缺省这些字段——缺失不显示数字/徽标/按钮，不伪造 0）。 */
+/**
+ * 日报重点条目（retire-story-adopt-event-metrics 2.3/3.3：候选源换成当天同事件聚簇）。
+ *
+ * `cluster_id` 是聚簇代表 event 标签 id，也是本期正文的定位键（DOM 顺序第一条
+ * `tag_ids` 含该 id 的 thread）；`article_count` / `cluster_mode` / `data_as_of` /
+ * `research_at` 都是服务端快照（模型不输出数字）。标签回退/历史数据缺省这些字段——
+ * 缺失就省略对应文案，不伪造 0；事件线字段（story_id、participant_count、story_heat、
+ * heat_rule_version、heat_as_of、heat_incomplete、is_progress）已整体退役。
+ */
 export interface DailyReportHighlight {
   title: string
   reason: string
   tag_ids: number[]
-  /** 事件线存活 id（后端读取时已按 merged_into 一跳归一）；缺省 = 旧标签回退重点（无定位/进展）。 */
-  story_id?: number | null
-  /** 服务端快照：独立来源数；缺省不显示（真实 0 是合法值，显示「0 个来源」）。 */
-  participant_count?: number | null
-  /** 服务端快照：48h 热度（展示保留一位小数）；缺省不显示。 */
-  story_heat?: number | null
-  /** 热度公式版本快照。 */
-  heat_rule_version?: string
-  /** 热度截止时刻（report.period_date 北京时间 23:59:59）。 */
-  heat_as_of?: string | null
-  /** 热度证据不全标记（落后 feed）；缺省按 false。 */
-  heat_incomplete?: boolean | null
-  /** 昨日重点再次入选（服务端派生，非线程 is_development）；缺省按 false。 */
-  is_progress?: boolean | null
+  /** 聚簇代表 event 标签 id；缺省 = 旧标签回退重点（无定位/无聚簇快照）。 */
+  cluster_id?: number | null
+  /** 簇内文章数（内容身份去重后的篇数）；缺省省略（真实 0 是合法值）。 */
+  article_count?: number | null
+  /** 聚簇口径（中文：向量聚簇 / 语义向量兜底 / 主体近似）；缺省省略。 */
+  cluster_mode?: string
+  /** 数据截至日（YYYY-MM-DD）；缺省省略。 */
+  data_as_of?: string
+  /** 研究时点（RFC3339）；缺省省略。 */
+  research_at?: string | null
 }
 
 export interface DailyReportThread {
@@ -35,8 +38,6 @@ export interface DailyReportThread {
    *  nil = 无信号；有值时为 0.0~2.0 的距离，越小越贴合（0.0 = 完美贴合）。
    *  embedding 字段绝不在此声明（后端 json:"-" 不外泄到前端）。 */
   fit_distance?: number
-  /** 所属事件线存活 id（surface-story-heat-in-report-top；后端读路径已归一；缺省 = 未归属/综合稿/旧数据）。 */
-  story_id?: number | null
   related_article_ids: number[]
   created_at: string
 }

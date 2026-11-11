@@ -476,7 +476,7 @@ watch(phase, (next, prev) => {
               @change="toggleBoard(board.boardId)"
             >
             <span class="rs-board-label">{{ board.label }}</span>
-            <span v-if="board.todaySections === 0" class="rs-board-empty">今日无分区</span>
+            <span v-if="board.todayClues === 0" class="rs-board-empty">今日无线索</span>
           </label>
         </li>
       </ul>

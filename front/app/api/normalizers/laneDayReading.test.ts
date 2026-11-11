@@ -17,6 +17,7 @@ import type { WindowLaneDay } from './laneDynamicsWindow'
 function day(sections: Partial<WindowLaneDay['sections'][number]>[]): WindowLaneDay {
   return {
     date: '2026-10-22',
+    clueCount: null,
     sections: sections.map((section, index) => ({
       sectionId: section.sectionId ?? String(index + 1),
       label: section.label ?? `桶${index + 1}`,

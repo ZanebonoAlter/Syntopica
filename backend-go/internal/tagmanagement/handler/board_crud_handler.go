@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/logging"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
@@ -992,6 +993,8 @@ func (h *semanticBoardHandler) getAllConfigs(c *gin.Context) gin.H {
 	// 相关事件阈值与入板匹配参数相互独立（design D6）：缺项回退默认，坏存量
 	// 值告警后回退，GET 始终返回实际生效值。
 	merged[related.ThresholdKey] = related.LoadThreshold(h.db)
+	// 候选泳道权重（lane-heat-metric D8）：缺项 0.5、坏存量值告警回退，GET 返回实际生效值。
+	merged[aisettings.LaneHeatCandidateWeightKey] = aisettings.LoadLaneHeatCandidateWeight(h.db)
 	return merged
 }
 
@@ -999,7 +1002,10 @@ func isSemanticBoardConfigKey(key string) bool {
 	switch key {
 	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards", "semantic_board_match_direct_hit_min_overlap", "semantic_board_match_direct_hit_min_ratio", "semantic_board_match_direction_sim_threshold",
 		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit", "semantic_board_upgrade_cluster_method",
-		related.ThresholdKey:
+		related.ThresholdKey,
+		// 候选泳道权重（lane-heat-metric D8）：只进当天线索热度，不参与话题生命周期；
+		// 取值校验走默认分支（有限数 [0,1]，NaN/Inf 显式拒绝）。
+		aisettings.LaneHeatCandidateWeightKey:
 		return true
 	default:
 		return false

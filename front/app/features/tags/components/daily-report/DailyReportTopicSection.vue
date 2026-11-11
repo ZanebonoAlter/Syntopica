@@ -37,9 +37,9 @@ const props = defineProps<{
   contextEntries: Map<string, RequestCacheEntry<ContextRow[]>>
   /** Section id requested by a watch index or timeline preview. */
   focusSectionId?: number | null
-  /** 重点定位意图（surface-story-heat-in-report-top）：{ storyId, nonce }，nonce 变化重触发；
- *  本分区只处理自己的目标（按当前 report 正文 DOM 序第一条），无线程则静默不动作。 */
-  locateThread?: { storyId: number, nonce: number } | null
+  /** 定位请求（D14）：clusterId = 聚簇代表 event 标签 id，nonce 变化重触发；
+   *  本分区只处理自己的目标（按当前 report 正文 DOM 序第一条），无线程则静默不动作。 */
+  locateThread?: { clusterId: number, nonce: number } | null
   /** 正在重新分桶的 section id（由 reader 持有；非空时按钮置灰 + spinner）。 */
   rebucketSectionId?: number | null
   /** 重分桶后被删除的旧锚点 → 该组首条 section（深链回退，add-intra-lane-theme-bucketing）。 */
@@ -219,13 +219,14 @@ function clearThreadLit(): void {
   litThreadId.value = null
 }
 
-/** 按当前正文数据序（= 渲染 DOM 序）找第一条对应线线程；范围限本分区当前 report 的
- *  body 线程（历史节点是别的 report，不参与）；不是最小 thread id。 */
-function findThreadByStory(storyId: number): { groupKey: string, topicId?: number, threadId: number } | null {
+/** 按当前正文数据序（= 渲染 DOM 序）找第一条属于该聚簇的线程：命中条件 = 线程
+ *  `tag_ids` 含聚簇代表标签 id；范围限本分区当前 report 的 body 线程（历史节点是别的
+ *  report，不参与）；不是最小 thread id。 */
+function findThreadByCluster(clusterId: number): { groupKey: string, topicId?: number, threadId: number } | null {
   for (const group of groups.value) {
     for (const section of group.sections) {
       for (const thread of section.threads ?? []) {
-        if (thread.story_id === storyId) {
+        if ((thread.tag_ids ?? []).includes(clusterId)) {
           return { groupKey: group.key, topicId: group.topicId, threadId: thread.id }
         }
       }
@@ -236,7 +237,7 @@ function findThreadByStory(storyId: number): { groupKey: string, topicId?: numbe
 
 watch(() => props.locateThread, async (request) => {
   if (!request) return
-  const hit = findThreadByStory(request.storyId)
+  const hit = findThreadByCluster(request.clusterId)
   if (!hit) return // 目标在其它分区/已消失：本组件静默（阅读容器已按数据预判轻提示，不跳近似位置）
   if (!expandedTopics.value.has(hit.groupKey)) {
     const next = new Set(expandedTopics.value)
@@ -408,7 +409,6 @@ watch(() => props.focusSectionId, async (requestedId) => {
                   :key="thread.id"
                   class="drm-thread"
                   :class="{ 'drm-thread--demoted': isThreadFitDemoted(thread.fit_distance), 'drm-thread--lit': litThreadId === thread.id }"
-                  :data-story-id="thread.story_id ?? undefined"
                   tabindex="-1"
                 >
                   <div class="drm-thread-row">
@@ -527,8 +527,7 @@ watch(() => props.focusSectionId, async (requestedId) => {
                     :key="thread.id"
                     class="drm-thread"
                     :class="{ 'drm-thread--demoted': isThreadFitDemoted(thread.fit_distance), 'drm-thread--lit': litThreadId === thread.id }"
-                    :data-story-id="thread.story_id ?? undefined"
-                    tabindex="-1"
+                      tabindex="-1"
                   >
                     <div class="drm-thread-row">
                     <button

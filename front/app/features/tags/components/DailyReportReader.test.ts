@@ -115,7 +115,7 @@ const reports: DailyReportListItem[] = [
 function makeDetail(id: number): DailyReport {
   return {
     ...reports.find(report => report.id === id)!,
-    highlights: [{ title: '头条', reason: '值得关注', tag_ids: [], story_id: 10, is_progress: false }],
+    highlights: [{ title: '头条', reason: '值得关注', tag_ids: [10], cluster_id: 10 }],
     dynamics: '',
     sections: [{
       id: 366,
@@ -142,10 +142,9 @@ function makeDetail(id: number): DailyReport {
         section_id: 366,
         title: '通行量逐步恢复',
         summary: '航运风险开始回落。',
-        tag_ids: [],
+        tag_ids: [10],
         confidence: 0.9,
         related_article_ids: [99],
-        story_id: 10,
         created_at: '2026-06-21T12:00:00Z',
       }],
     }],
@@ -169,7 +168,7 @@ async function mountReader(overrides: Record<string, unknown> = {}) {
           name: 'DailyReportTopicSection',
           props: ['locateThread'],
           emits: ['rebucket'],
-          template: '<div><span data-testid="stub-locate">{{ locateThread ? `${locateThread.storyId}:${locateThread.nonce}` : \'none\' }}</span><button data-testid="stub-rebucket" @click="$emit(\'rebucket\', 366)">rebucket</button></div>',
+          template: '<div><span data-testid="stub-locate">{{ locateThread ? `${locateThread.clusterId}:${locateThread.nonce}` : \'none\' }}</span><button data-testid="stub-rebucket" @click="$emit(\'rebucket\', 366)">rebucket</button></div>',
         },
       },
     },
@@ -221,9 +220,9 @@ describe('DailyReportReader — 阅读台（6.x）', () => {
     expect(masthead.findAll('.drm-highlight').length).toBeGreaterThan(0)
   })
 
-  // ── surface-story-heat-in-report-top：刊头重点定位意图转发 ──
+  // ── retire-story-adopt-event-metrics 3.3：刊头重点定位意图转发（cluster_id） ──
 
-  it('重点定位：正文有目标 → 刊头按钮下发定位意图给正文分区（storyId+nonce）', async () => {
+  it('重点定位：正文有目标 → 刊头按钮下发定位意图给正文分区（clusterId+nonce）', async () => {
     const wrapper = await mountReader()
     const button = wrapper.find('[data-testid="highlight-locate-0"]')
     expect(button.exists()).toBe(true)
@@ -235,7 +234,7 @@ describe('DailyReportReader — 阅读台（6.x）', () => {
   it('重点定位：点击时目标已不在当前正文 → 不下发定位请求（原地轻提示，不跳近似位置）', async () => {
     const wrapper = await mountReader()
     expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
-    // 模拟渲染后目标消失（数据变更/过滤）：直接从刊头发外部 story id
+    // 模拟渲染后目标消失（数据变更/过滤）：直接从刊头发外部 cluster id
     wrapper.findComponent({ name: 'DailyReportMasthead' }).vm.$emit('locate', 999)
     await flushPromises()
     expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
@@ -280,30 +279,38 @@ describe('DailyReportReader — 阅读台（6.x）', () => {
     expect(wrapper.emitted('selectDate')?.at(-1)).toEqual(['2026-06-20'])
   })
 
-  // ── surface-story-events-in-radar：?story= 深链定位 ──
+  // ── ?cluster= 深链定位（D14；旧 ?story= 已下线） ──
 
-  it('深链定位：正文有该事件线 → 下发定位意图给正文分区（storyId+nonce）', async () => {
-    const wrapper = await mountReader({ initialStoryId: 10 })
+  it('深链定位：正文有该聚簇线索 → 下发定位意图给正文分区（clusterId+nonce）', async () => {
+    const wrapper = await mountReader({ initialClusterId: 10 })
     expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('10:1')
   })
 
-  it('深链落空：本期正文无该事件线 → 不下发定位请求（不跳近似位置）+ 原地提示', async () => {
-    const wrapper = await mountReader({ initialStoryId: 999 })
+  it('深链落空：本期正文无该聚簇线索 → 不下发定位请求（不跳近似位置）+ 原地提示', async () => {
+    const wrapper = await mountReader({ initialClusterId: 999 })
     expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
-    expect(notify.warn).toHaveBeenCalledWith('本期正文暂无对应事件')
+    expect(notify.warn).toHaveBeenCalledWith('本期正文暂无对应线索')
   })
 
   it('翻页/切报告清参：定位请求随报告切换清空（不在别的报告重复定位）', async () => {
-    const wrapper = await mountReader({ initialStoryId: 10 })
+    const wrapper = await mountReader({ initialClusterId: 10 })
     expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('10:1')
     await wrapper.findAll('.drm-sidebar__archive button')[1]!.trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
   })
 
-  it('无 ?story= 参数：不下发任何定位请求', async () => {
+  it('无 ?cluster= 参数：不下发任何定位请求', async () => {
     const wrapper = await mountReader()
     expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
+  })
+
+  it('旧 ?story= 深链：解析后忽略，不定位、不报错，只提示该定位方式已下线', async () => {
+    const wrapper = await mountReader({ initialLegacyStory: true })
+    expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
+    expect(notify.warn).toHaveBeenCalledWith('事件线定位已下线，请从「今日重点」进入正文')
+    expect(notify.error).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="daily-report-masthead"]').exists()).toBe(true)
   })
 
   it('保留泳道内主题分桶：section rebucket 事件调用 rebucket API', async () => {

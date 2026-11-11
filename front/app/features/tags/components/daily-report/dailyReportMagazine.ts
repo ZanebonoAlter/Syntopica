@@ -140,51 +140,63 @@ export function groupSectionsByTopic(zone: QualityZone): TopicGroup[] {
   return [...groups.values()]
 }
 
-// ── surface-story-heat-in-report-top：重点依据与正文定位的展示派生 ──
+// ── 重点依据与正文定位的展示派生（retire-story-adopt-event-metrics 3.3）──
 
-/** 重点条目的展示证据（全部可缺省：旧数据/标签回退不显示数字/徽标/按钮，不伪造）。 */
+/** 重点条目的展示证据（全部可缺省：旧数据/标签回退不显示数字/口径/按钮，不伪造）。 */
 export interface HighlightEvidence {
-  /** 存活事件线 id；null = 旧标签回退重点（无定位/进展/来源快照）。 */
-  storyId: number | null
-  /** 来源数快照；null = 缺失不显示（真实 0 是合法值，显示「0 个来源」）。 */
-  sourceCount: number | null
-  /** 可读热度提示（48h 热度/截止/不完整）；null = 无热度快照。 */
-  heatHint: string | null
-  /** 昨日重点再次入选（服务端派生）。 */
-  isProgress: boolean
-  /** 定位状态：'none' = 无 story_id（静态文案）；'ready' = 正文有目标可定位；
- *  'missing' = 有 id 但本期正文无对应线程（提示不跳转，不猜 tag→story）。 */
+  /** 聚簇代表 event 标签 id；null = 旧标签回退重点（无定位/无聚簇快照）。 */
+  clusterId: number | null
+  /** 簇内文章数快照；null = 缺失不显示（真实 0 是合法值，显示「0 篇来源」）。 */
+  articleCount: number | null
+  /** 聚簇口径（中文）；null = 缺失不显示。 */
+  clusterMode: string | null
+  /** 数据截至日（YYYY-MM-DD）；null = 缺失不显示。 */
+  dataAsOf: string | null
+  /** 研究时点（可读文本）；null = 缺失不显示。 */
+  researchAt: string | null
+  /** 定位状态：'none' = 无 cluster_id（静态文案）；'ready' = 正文有目标可定位；
+   *  'missing' = 有 id 但本期正文无对应线程（提示不跳转，不猜近似位置）。 */
   locate: 'none' | 'ready' | 'missing'
 }
 
-/** 正文定位目标判定：范围限当前 report 的 body 线程（后端已过滤 display_tier 并归一存活 id）。 */
-export function reportHasStoryThread(report: Pick<DailyReport, 'sections'>, storyId: number): boolean {
+/** 正文定位目标判定（D14）：范围限当前 report 的 body 线程，命中条件 = 线程 `tag_ids`
+ *  含聚簇代表标签 id（DOM 顺序第一条由正文分区在渲染时决定）。 */
+export function reportHasClusterThread(report: Pick<DailyReport, 'sections'>, clusterId: number): boolean {
   return (report.sections ?? []).some(section =>
-    (section.threads ?? []).some(thread => thread.story_id === storyId),
+    (section.threads ?? []).some(thread => (thread.tag_ids ?? []).includes(clusterId)),
   )
 }
 
-/** 单条重点的展示证据：快照字段缺失一律降级，不因缺字段整体崩或显示占位符。 */
+/** 研究时点（RFC3339）→ 北京时间可读文本（`MM/DD HH:mm`）；非法值返回 null（省略不伪造）。 */
+export function formatResearchAt(value: string | null | undefined): string | null {
+  if (!value) return null
+  const parsed = new Date(value)
+  if (!Number.isFinite(parsed.getTime())) return null
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(parsed)
+  const partValue = (type: string) => parts.find(part => part.type === type)?.value ?? ''
+  return `${partValue('month')}/${partValue('day')} ${partValue('hour')}:${partValue('minute')}`
+}
+
+/** 单条重点的展示证据：快照字段缺失一律省略（不显示占位符、不伪造 0）。 */
 export function highlightEvidence(
   highlight: DailyReportHighlight,
   report: Pick<DailyReport, 'sections'>,
 ): HighlightEvidence {
-  const storyId = typeof highlight.story_id === 'number' ? highlight.story_id : null
-  const sourceCount = typeof highlight.participant_count === 'number' ? highlight.participant_count : null
-  const heat = typeof highlight.story_heat === 'number' ? highlight.story_heat : null
-  const heatHint = heat !== null
-    ? [
-        `48h 热度 ${heat.toFixed(1)}`,
-        typeof highlight.heat_as_of === 'string' && highlight.heat_as_of ? `截止 ${highlight.heat_as_of.slice(0, 10)}` : '',
-        highlight.heat_incomplete === true ? '热度证据不全' : '',
-      ].filter(Boolean).join('，')
-    : null
+  const clusterId = typeof highlight.cluster_id === 'number' ? highlight.cluster_id : null
   return {
-    storyId,
-    sourceCount,
-    heatHint,
-    isProgress: highlight.is_progress === true,
-    locate: storyId === null ? 'none' : reportHasStoryThread(report, storyId) ? 'ready' : 'missing',
+    clusterId,
+    articleCount: typeof highlight.article_count === 'number' ? highlight.article_count : null,
+    clusterMode: typeof highlight.cluster_mode === 'string' && highlight.cluster_mode ? highlight.cluster_mode : null,
+    dataAsOf: typeof highlight.data_as_of === 'string' && highlight.data_as_of ? highlight.data_as_of.slice(0, 10) : null,
+    researchAt: formatResearchAt(highlight.research_at),
+    locate: clusterId === null ? 'none' : reportHasClusterThread(report, clusterId) ? 'ready' : 'missing',
   }
 }
 

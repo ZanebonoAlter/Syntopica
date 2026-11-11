@@ -9,24 +9,37 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  /** 重点定位意图（surface-story-heat-in-report-top）：仅可定位条目发出，滚动/高亮由阅读容器承接。 */
-  locate: [storyId: number]
+  /** 重点定位意图（D14）：仅可定位条目发出 cluster_id，滚动/高亮由正文分区承接。 */
+  locate: [clusterId: number]
 }>()
 
 const lead = computed(() => selectLeadStory(props.report))
 const highlights = computed(() => (props.report.highlights || []).slice(0, 3))
 
-/** 每条重点的展示证据（来源数/进展/定位状态；旧数据全缺省 → 保持现状外观）。 */
+/** 每条重点的展示证据（篇来源/聚簇口径/数据截至/研究时点/定位状态；旧数据全缺省 → 保持现状外观）。 */
 const evidence = computed<HighlightEvidence[]>(() =>
   highlights.value.map(highlight => highlightEvidence(highlight, props.report)),
 )
 
+/** 依据行文案：缺字段的项整体省略（不显示空括号/0/占位符）。 */
+function metaText(index: number): string {
+  const item = evidence.value[index]
+  if (!item) return ''
+  return [
+    item.articleCount !== null ? `${item.articleCount} 篇来源` : '',
+    item.clusterMode ? `聚簇口径 ${item.clusterMode}` : '',
+    item.dataAsOf ? `数据截至 ${item.dataAsOf}` : '',
+    item.researchAt ? `研究时点 ${item.researchAt}` : '',
+    item.locate === 'missing' ? '本期正文暂无对应线索' : '',
+  ].filter(Boolean).join(' · ')
+}
+
 /** 划选文案不触发定位（保留既有划选纪律：非折叠选区时点击只当文本操作）。 */
-function onLocate(storyId: number | null | undefined): void {
-  if (typeof storyId !== 'number') return
+function onLocate(clusterId: number | null | undefined): void {
+  if (typeof clusterId !== 'number') return
   const selection = typeof window !== 'undefined' ? window.getSelection() : null
   if (selection && !selection.isCollapsed) return
-  emit('locate', storyId)
+  emit('locate', clusterId)
 }
 </script>
 
@@ -54,8 +67,8 @@ function onLocate(storyId: number | null | undefined): void {
 
     <!-- 今日重点：正常态（≥1 条）与空态（null / [] / 字段缺失）互斥渲染，
          任一时刻只有一个分支存在 → id="report-highlights" 不会重复。
-         surface-story-heat-in-report-top：可定位条目标题为键盘可达文字按钮（仅可定位时才有按钮），
-         标题旁「进展」徽标 + 来源数快照；快照缺失不显示，旧数据外观不变。 -->
+         retire-story-adopt-event-metrics 3.3：可定位条目标题为键盘可达文字按钮（仅可定位时才有按钮），
+         依据行给「N 篇来源 / 聚簇口径 / 数据截至日 / 研究时点」快照；缺字段整体省略，旧数据外观不变。 -->
     <section v-if="highlights.length" id="report-highlights" class="drm-highlights" aria-label="今日重点">
       <article v-for="(highlight, index) in highlights" :key="`${highlight.title}-${index}`" class="drm-highlight">
         <span class="drm-highlight__index">N°{{ String(index + 1).padStart(2, '0') }}</span>
@@ -66,26 +79,18 @@ function onLocate(storyId: number | null | undefined): void {
             class="drm-highlight__locate"
             :data-testid="`highlight-locate-${index}`"
             :aria-label="`定位正文：${highlight.title}`"
-            title="定位到本期正文中该事件线的第一条线索"
-            @click="onLocate(highlight.story_id)"
+            title="定位到本期正文中该聚簇的第一条线索"
+            @click="onLocate(highlight.cluster_id)"
           >{{ highlight.title }}</button>
           <template v-else>{{ highlight.title }}</template>
-          <span
-            v-if="evidence[index]!.isProgress"
-            class="drm-highlight__progress"
-            :data-testid="`highlight-progress-${index}`"
-            title="昨日重点再次入选"
-          >进展</span>
         </h3>
         <p>{{ highlight.reason }}</p>
         <p
-          v-if="evidence[index]!.sourceCount !== null || evidence[index]!.locate === 'missing'"
+          v-if="metaText(index)"
           class="drm-highlight__meta"
           :data-testid="`highlight-meta-${index}`"
-          :title="evidence[index]!.heatHint ?? undefined"
         >
-          <span v-if="evidence[index]!.sourceCount !== null">{{ evidence[index]!.sourceCount }} 个来源</span>
-          <span v-if="evidence[index]!.locate === 'missing'">本期正文暂无对应事件</span>
+          {{ metaText(index) }}
         </p>
       </article>
     </section>

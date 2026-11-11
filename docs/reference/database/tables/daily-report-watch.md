@@ -75,11 +75,11 @@
 | `related_article_ids` | JSONB | 保序、去重（首个为准） | 关联文章 ID 列表（逻辑引用 `articles.id`，无 FK）。**写入时只允许存在的 id**：日报生成写库前过一次存在性校验；空引用写 `[]`，**不得**写 JSON `null`（`jsonb_array_elements_text` 遇 null 抛 22023）。**删除路径必须维护**：`articles` 行被删时同事务内改指保留条或剔除（详见 `flow/daily-report.md` 约束 21） |
 | `embedding` | vector | —（运行时维度） | 线程向量 |
 | `fit_distance` | FLOAT | —（`*float64`，**无 default**，刻意区分 nil 与 0.0） | 与所属分区的契合距离（nil = 无信号，0.0 = 完美契合） |
-| `story_id` | BIGINT | —（`*uint` 可空；index `daily_report_threads_story_idx`；迁移 `20261105_0001` 建真实 FK → `board_stories(id) ON DELETE SET NULL`） | 事件线归属（add-event-story-heat）：指向存活事件线或经 `merged_into` 一跳解析；NULL = 未归属/综合稿/人工拆分，照常展示 |
+| `story_id` | BIGINT | —（`*uint` 可空；index `daily_report_threads_story_idx`；迁移 `20261105_0001` 建真实 FK → `board_stories(id) ON DELETE SET NULL`） | **历史列（retire-story-adopt-event-metrics 起停写）**：新生成/重建的日报恒 NULL，历史值只读保留且读路径不再对外返回；事件线链路已停写，该列只作回滚与存量核对依据 |
 | `scope` | TEXT | NOT NULL DEFAULT 'single'; **CHECK** `chk_daily_report_threads_scope IN ('single','composite')`（迁移 `20261105_0001`） | 由 `tag_ids` 中 event 标签数推导：≥2 = composite（综合稿，永不建/挂事件线），否则 single |
-| `is_development` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261105_0001`） | 「同一事件线的不同阶段（进展）」判定标记；只驱动跨期去重的进展分支，永不作热度输入 |
-| `story_manual` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261105_0001`） | 人工「独立事件」标记：人工指派（story_id+true）/人工拆分（NULL+true）后，自动归属与回填一律跳过，永不改写 |
-| `display_tier` | TEXT | NOT NULL DEFAULT 'body'; **CHECK** `chk_daily_report_threads_display_tier IN ('body','flash','hidden')`（迁移 `20261105_0001`） | 跨期去重展示层载体：body=正文（默认）/ flash=快讯（重述降级，本期读路径丢弃）/ hidden=未展示（预留，自动判定不写）。身份/signals/热度永不读该列 |
+| `is_development` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261105_0001`） | **历史列**：「同一事件线不同阶段（进展）」标记；跨期去重已退役，新报不再写该语义（默认 false），只读保留 |
+| `story_manual` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261105_0001`） | **历史列**：新报恒 false；历史人工标记只读保留，自动归属已停写故不再有「跳过人工标记」路径 |
+| `display_tier` | TEXT | NOT NULL DEFAULT 'body'; **CHECK** `chk_daily_report_threads_display_tier IN ('body','flash','hidden')`（迁移 `20261105_0001`） | 展示层载体：**新报恒 body**（跨期去重退役，不再产生 flash）；历史 flash/hidden 只读保留，读路径仍只回 body。身份/signals/热度永不读该列 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 
 > **已删列**：`status`、`prev_thread_id`（迁移 `20260603_0001`）。
@@ -226,7 +226,9 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `error` | TEXT | —（可空） | 失败原因 |
 | `created_at` / `updated_at` | TIMESTAMP | — | 创建 / 更新时间 |
 
-### 9.11 board_stories（事件线，add-event-story-heat）
+### 9.11 board_stories（事件线，add-event-story-heat；**只读保留**）
+
+> ⚠️ **本表自 change `retire-story-adopt-event-metrics`（2026-11-11）起只读保留**：在线生产已停写（`ai_settings.story_attribution_enabled`），回填 CLI 写模式拒绝，不删表不迁移；下列字段/索引描述为历史口径与回滚依据。现行「今日重点」用当天同事件聚簇（不落库），见 `flow/daily-report.md` 红线 46-47。
 
 跨天同一事件的聚合体（一条线贯穿多天的多个 `daily_report_threads`），承载结构化指纹与热度汇总计数；热度证据在 `story_signals`，热度由 signals 实时计算不落本表。挂在版块下（`board_id`），可选关联首次归属话题（`lane_id` 仅展示分组用，不参与身份判定）。迁移 `20261105_0001`。
 
@@ -245,14 +247,16 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `first_seen_date` / `last_seen_date` | DATE | NOT NULL | 活跃区间（date 非时间戳），随新事件挂入滚动更新 |
 | `thread_count` | INTEGER | NOT NULL DEFAULT 0 | 挂入事件数（composite 不计） |
 | `article_count` | INTEGER | NOT NULL DEFAULT 0 | 关联文章数 |
-| `participant_count` | INTEGER | NOT NULL DEFAULT 0 | 独立参与者数（按内容身份去重，feed 兜底）；矩阵格颜色分档输入 |
+| `participant_count` | INTEGER | NOT NULL DEFAULT 0 | 独立参与者数（按内容身份去重，feed 兜底）；**历史字段**（矩阵颜色通道已退役，不再有消费方） |
 | `embedding` | vector | —（**无维度限定**，运行时维度） | 召回向量（title 级，只召回不判定） |
 | `subject_embedding` | vector | —（**无维度限定**） | 主体归一化兑底向量（subject_key 的 embedding，cos ≥ 0.92）；仅为已建立事件线算一次 |
 | `merged_into` | BIGINT | —（可空；FK → board_stories(id)）；index `board_stories_recall_idx` 为部分索引 `WHERE merged_into IS NULL AND status='active'` ON `(board_id, last_seen_date DESC)` | 指向合并后存活事件线；读取一跳解析（不允许两层链） |
 | `origin` | TEXT | NOT NULL DEFAULT 'rule'; **CHECK** `chk_board_stories_origin IN ('rule','model','manual')` | rule（确定性判定）/ model（LLM 兕底，单分类器置信度 ≥0.75）/ manual（人工创建/合并，永不被自动判定覆盖） |
 | `created_at` / `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 创建 / 更新 |
 
-### 9.12 story_signals（热度证据，add-event-story-heat）
+### 9.12 story_signals（热度证据，add-event-story-heat；**只读保留**）
+
+> ⚠️ **本表自 change `retire-story-adopt-event-metrics` 起只读保留**：不再有新写入（归属停写），历史行供回滚与存量核对；现行泳道热度不读本表（`heat-v2-lane-clues-1d` 按当天线索数现算）。
 
 一行 = 一条报道证据在信源时间讨论过一条事件线；身份（事件归属）与热度（signals）分离，去重只作用于身份层。**参与者身份 = 内容身份优先、feed 兜底**：去重键 = `COALESCE(NULLIF(content_key,''), participant_key)`——同一篇内容（规范化链接相同）被多个 feed 各抓一份只算 1 个参与者，`participant_count` / 来源数 / 热度同源于此（fix-duplicate-article-heat）。热度只读本表计算（`story_heat = Σ 0.5^(Δt/24h)` 窗口 48h；`lane_heat` 72h/14d 独立衰减），不从日报派生。迁移 `20261105_0001`（+ `20261110_0001` 加 `content_key`）。**存量回填入口**：`cmd/backfill-stories --backfill-content-keys`（按 `articles.link` 规范化回填 `content_key` 并重算受影响事件线的参与者计数，幂等；迁移本身不做数据回填）。
 

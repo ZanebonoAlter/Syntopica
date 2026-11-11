@@ -22,7 +22,6 @@ export interface BoardConsoleStageProps {
   latestReportDate: string | null
   anchorDate: string | null
   /** 事件身份是否已回填（lane-dynamics stories_backfilled；null = 旧响应未知，不提示降级）。 */
-  storiesBackfilled: boolean | null
   loading: boolean
   error: string | null
   staleNotice: boolean

@@ -1,11 +1,19 @@
 /**
- * 今日雷达总览 normalizer（rework-workshop-into-radar-and-desk 8A/R-18）。
+ * 今日雷达总览 normalizer（rework-workshop-into-radar-and-desk 8A/R-18；
+ * retire-story-adopt-event-metrics 3.2 换当天线索口径）。
  *
  * 后端 `GET /semantic-boards/overview` 的 snake_case JSON 协议**完全不改**；
  * 仅在 Radar 客户端边界归一为 camelCase 读模型并把数字 ID 字符串化
  * （code-style §9：转换只在 API/store 层，组件不散落映射）。raw 载荷类型
  * 与后端 handler 输出一一对应（零值语义：无日报版块 report_* 为空/0，
- * anchor_date 可缺省，days/lanes 恒为数组）。
+ * anchor_date 可缺省，lanes 恒为数组）。
+ *
+ * 量纲（D4/D5/D10）：版块行关注度 = Σ 泳道当天热度（后端算好，一位小数）；
+ * 泳道小矩阵与 3 日窗口统一为「当日线索合计」（`clue_counts` / `today_clues`），
+ * 事件线数、分区数、来源数与颜色分档整体退役。旧后端缺 `clue_counts` /
+ * `today_clues` 时归一为 `null`（未知，不造 0），由展示层标「线索数未知」。
+ * 顶层清单段由事件线换成「当天线索最多的泳道」（`top_lanes`）；旧后端缺该段时
+ * `topLanes = null`，右栏回退版块级日报标题列表（不渲染成业务空态）。
  */
 import type { ApiResponse, PaginationMeta } from '~/types'
 
@@ -13,10 +21,13 @@ import type { ApiResponse, PaginationMeta } from '~/types'
 export interface BoardRadarRawLane {
   topic_id: number
   label: string
-  section_count_14d: number
-  thread_count_14d: number
-  counts: number[]
-  /** 14 天逐日事件线数（add-event-story-heat 3b）；缺省 = 旧后端（mini-matrix 回退 counts）。 */
+  /** 14 天逐日线索合计（oldest→newest）；缺省 = 旧后端（未知，不造 0）。 */
+  clue_counts?: number[]
+  /** 全窗线索合计（次级排序键，后端已排序）。 */
+  thread_count_14d?: number
+  /** 退役字段（旧后端仍可能下发，前端不再消费）：分区数与事件线数逐日轴。 */
+  section_count_14d?: number
+  counts?: number[]
   story_counts?: number[]
 }
 
@@ -30,104 +41,83 @@ export interface BoardRadarRawBoard {
   report_event_count: number
   /** 版块自身最新数据日；缺省表示后端未提供（UI 不标延迟）。 */
   anchor_date?: string
-  today_sections: number
-  last3_sections: number
-  prev3_sections: number
+  /** 当日 / 近 3 日 / 前 3 日线索合计；缺省 = 旧后端（未知，不造 0）。 */
+  today_clues?: number
+  last3_clues?: number
+  prev3_clues?: number
+  /** 关注度 = Σ 泳道当天热度（含候选权重，一位小数）。 */
   attention: number
+  /** 热度口径版本（heat-v2-lane-clues-1d）。 */
+  heat_rule_version?: string
+  /** 14 天逐日线索轴（oldest→newest）；缺省 = 旧后端。 */
+  clue_days?: number[]
   data_delayed: boolean
-  days: number[]
   lanes: BoardRadarRawLane[]
-  /** 当日/近3日/前3日事件线数（add-event-story-heat 3b）；缺省 = 旧后端（回退 sections 口径）。 */
+
+  /**
+   * 退役字段（旧后端仍可能下发，前端不再消费——留着只为响应类型兼容）：
+   * `today_sections`/`last3_sections`/`prev3_sections`/`days`（分区口径）、
+   * `today_stories`/`last3_stories`/`prev3_stories`（事件线口径）、
+   * `today_heat`/`last3_heat`/`prev3_heat`/`heat_days`（旧半衰期热度）、
+   * `stories_backfilled`/`story_identity_state`/`heat_incomplete`/`heat_stale_feed_ids`。
+   */
+  today_sections?: number
+  last3_sections?: number
+  prev3_sections?: number
+  days?: number[]
   today_stories?: number
   last3_stories?: number
   prev3_stories?: number
-  /** 当日/近3日/前3日事件线热度合计；缺省 = 旧后端（回退 sections 口径）。 */
   today_heat?: number
   last3_heat?: number
   prev3_heat?: number
-  /** 14 天逐日热度（供后续曲线消费；本批仅透传）。 */
   heat_days?: number[]
-  heat_rule_version?: string
-  heat_incomplete?: boolean
-  /** 窗口内是否有 thread 携带 story_id（回填标记，与 lane-dynamics 同源）；false ⇒ *_stories 为非综合稿事件数上界；缺省 = 旧后端（未知）。 */
   stories_backfilled?: boolean
+  story_identity_state?: string
+  heat_incomplete?: boolean
+  heat_stale_feed_ids?: number[]
 }
 
 export interface BoardRadarRawOverview {
   date: string
   boards: BoardRadarRawBoard[]
   /**
-   * 事件线清单段（surface-story-events-in-radar）：跨版块归并后的今日该看 /
-   * 升温 / 新起三档 + 未回填 / 滞后 / 降级标记。缺省 = 旧后端（客户端回退
-   * 版块级日报标题列表与版块级升温清单，不渲染成业务空态）。
+   * 泳道清单段（D10）：跨版块归并后的「当天线索最多的泳道」（上限 8，服务端截断）
+   * + 不完整/滞后标记。缺省 = 旧后端（客户端回退版块级日报标题列表）。
    */
-  stories?: BoardRadarRawStoryFeed
+  top_lanes?: BoardRadarRawTopLanes
 }
 
-/** 后端原始事件线条目（snake_case wire 契约，勿在前端消费）。 */
-export interface BoardRadarRawStoryItem {
+/** 后端原始泳道清单条目（snake_case wire 契约，勿在前端消费）。 */
+export interface BoardRadarRawTopLaneItem {
   board_id: number
   board_label: string
-  story_id: number
-  story_title: string
-  /** 锚点日日终 48h 窗内去重来源数；缺字段 → null（前端省略数字，不伪造 0）。 */
-  participants?: number
-  heat: number
-  baseline_heat: number
-  ratio: number
-  has_baseline: boolean
-  has_today_evidence: boolean
-  /** 该条目所属版块自己的锚点日（滞后版块 ≠ 全局日）。 */
+  topic_id: number
+  topic_label: string
+  /** 该泳道在**它自己版块锚点日**的线索合计。 */
+  clue_count: number
+  /** 条目所属版块自己的锚点日（滞后版块 ≠ 全局日）。 */
   anchor_date: string
-  /** 落点报告日期；空串 = 无正文落点（条目不可点）。 */
-  report_date: string
 }
 
-/** 后端原始事件线清单段。 */
-export interface BoardRadarRawStoryFeed {
+/** 后端原始泳道清单段。 */
+export interface BoardRadarRawTopLanes {
   anchor_date: string
-  heat_rule_version: string
-  top_stories: BoardRadarRawStoryItem[]
-  /** 升温事件线**全量**计数（非截断数）——报头「N 处出现升温」用它。
-   *  独立 warming 清单数组已随右栏徽标化移除（matrix-clue-fallback-and-rail-merge）。 */
-  warming_count: number
-  /** 既有锚点日之前 3 日基线窗口内热度证据、又有锚点日当天证据的事件线条数（全部候选，不受截断）；
-   *  0 = 无跨天延续事件线（右栏脚注出现）。旧后端无此字段 → 归一为 null（区分「0」与「无法判定」）。 */
-  cross_day_story_count?: number
-  unbackfilled_board_ids: number[]
-  unbackfilled_board_count: number
-  /** 无可回填对象的版块 id（本期没有任何事件身份可回填——不计入未回填数，也不产生条目）。 */
-  no_story_board_ids?: number[]
-  no_story_board_count?: number
-  lagging_board_ids: number[]
-  /** true = 部分版块降级，本次排序不完整。 */
+  lanes: BoardRadarRawTopLaneItem[]
+  /** true = 部分版块延迟或降级，本次排序不完整。 */
   partial: boolean
   degraded_board_ids: number[]
-
-  /**
-   * 退役字段（旧后端仍可能下发，前端不再消费——留着只为响应类型兼容）：
-   * `warming`/`new_stories` 清单与 `new_count`/`new_total_count` 去 Top 计数
-   * 随单清单徽标化移除（matrix-clue-fallback-and-rail-merge D4）。
-   */
-  warming?: BoardRadarRawStoryItem[]
-  new_stories?: BoardRadarRawStoryItem[]
-  new_count?: number
-  new_total_count?: number
+  lagging_board_ids: number[]
 }
 
 /** 归一化后的客户端读模型（camelCase + 字符串 ID，组件只消费此形态）。 */
 export interface RadarLane {
   topicId: string
   label: string
-  sectionCount14d: number
+  /** 14 天逐日线索合计；null = 旧后端缺该字段（未知，不造 0）。 */
+  clueCounts: number[] | null
+  /** 全窗线索合计（raw thread_count_14d）。 */
   threadCount14d: number
-  counts: number[]
-  /** 14 天逐日事件线数（raw story_counts）；raw 缺省时回退 counts 兜底（mini-matrix 口径）。
-   *  注：计数为 0 时前端逐格按 counts 降级（见 BoardRadarStory laneCells）。
-   *  `storyCountsKnown=false` 表示旧后端未下发 story_counts——此时回退的是**分区数**，
-   *  展示必须按「N 个分区」措辞，不得写成条事件线（matrix-clue R-2）。 */
-  storyCounts: number[]
-  storyCountsKnown: boolean
 }
 
 export interface RadarBoard {
@@ -139,80 +129,58 @@ export interface RadarBoard {
   reportArticleCount: number
   reportEventCount: number
   anchorDate?: string
-  todaySections: number
-  last3Sections: number
-  prev3Sections: number
+  /** 当日 / 近 3 日 / 前 3 日线索合计；null = 旧后端缺字段（未知，不造 0）。 */
+  todayClues: number | null
+  last3Clues: number | null
+  prev3Clues: number | null
+  /** 关注度 = Σ 泳道当天热度（含候选权重，一位小数）。 */
   attention: number
-  dataDelayed: boolean
-  days: number[]
-  lanes: RadarLane[]
-  /** 当日/近3日/前3日事件线数；raw 缺省按 0（消费方按 hasHeatData 回退 sections 口径）。 */
-  todayStories: number
-  last3Stories: number
-  prev3Stories: number
-  /** 事件线窗口是否已回填：false ⇒ today/last3/prev3Stories 为非综合稿事件数上界（「今日该读」须标注降级）；null = 老 payload 缺字段（未知，回落日报事件数）。 */
-  storiesBackfilled: boolean | null
-  /** 热度字段完整可用；区分真实全零热度与旧响应缺字段。 */
-  hasHeatData?: boolean
-  /** 当日/近3日/前3日事件线热度合计；raw 缺省按 0，是否可用由 hasHeatData 判定。 */
-  todayHeat: number
-  last3Heat: number
-  prev3Heat: number
-  /** 14 天逐日热度（透传，缺省空数组）。 */
-  heatDays: number[]
   heatRuleVersion: string
-  heatIncomplete: boolean
+  /** 14 天逐日线索轴；null = 旧后端缺字段。 */
+  clueDays: number[] | null
+  dataDelayed: boolean
+  lanes: RadarLane[]
+}
+
+export interface RadarTopLaneItem {
+  boardId: string
+  boardLabel: string
+  topicId: string
+  topicLabel: string
+  /** 该泳道在自己版块锚点日的线索合计。 */
+  clueCount: number
+  /** 条目所属版块自己的锚点日。 */
+  anchorDate: string
+}
+
+/** 归一化后的泳道清单段（服务端已归并/排序/截断，前端不改口径）。 */
+export interface RadarTopLanes {
+  anchorDate: string
+  lanes: RadarTopLaneItem[]
+  partial: boolean
+  degradedBoardIds: string[]
+  laggingBoardIds: string[]
 }
 
 export interface RadarOverview {
   date: string
   boards: RadarBoard[]
-  /** 事件线清单段；null = 响应没有该段（旧后端）→ 回退版块级列表。 */
-  stories: RadarStoryFeed | null
-}
-
-/** 归一化后的事件线条目（camelCase + 字符串 ID）。 */
-export interface RadarStoryItem {
-  boardId: string
-  boardLabel: string
-  storyId: string
-  /** 事件线标题（可能为空串——前端回退「事件线 #ID」，身份不用标题）。 */
-  storyTitle: string
-  /** 来源数；null = 字段缺失（省略数字，不伪造 0）。 */
-  participants: number | null
-  heat: number
-  baselineHeat: number
-  ratio: number
-  hasBaseline: boolean
-  hasTodayEvidence: boolean
-  anchorDate: string
-  /** 落点报告日期；空串 = 无正文落点（条目不可点）。 */
-  reportDate: string
-}
-
-/** 归一化后的事件线清单段（单清单 + 行内徽标；matrix-clue-fallback-and-rail-merge D4）。 */
-export interface RadarStoryFeed {
-  anchorDate: string
-  heatRuleVersion: string
-  /** 「今日该读」单清单（服务端已截断到上限 8；条目自带徽标判定字段）。 */
-  topStories: RadarStoryItem[]
-  /** 升温事件线全量计数（报头消费）。 */
-  warmingCount: number
-  /** 既有锚点日之前 3 日基线窗口内证据、又有锚点日当天证据的事件线条数；
-   *  null = 旧响应缺该字段，无法判定（不得当成 0 断言）。0 = 无跨天线（脚注出现）。 */
-  crossDayStoryCount: number | null
-  unbackfilledBoardIds: string[]
-  unbackfilledBoardCount: number
-  /** 无可回填对象的版块 id（不计入未回填数；客户端不展示，只作诊断）。 */
-  noStoryBoardIds: string[]
-  noStoryBoardCount: number
-  laggingBoardIds: string[]
-  partial: boolean
-  degradedBoardIds: string[]
+  /** 泳道清单段；null = 响应没有该段（旧后端）→ 回退版块级日报标题列表。 */
+  topLanes: RadarTopLanes | null
 }
 
 function num(value: unknown, fallback = 0): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+/** 数值或 null（缺字段 ≠ 真实 0：旧后端缺口径时展示「未知」而不是 0）。 */
+function numOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/** 数字数组或 null（缺字段 ≠ 全 0 轴）。 */
+function numArrayOrNull(value: unknown): number[] | null {
+  return Array.isArray(value) ? value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item)) : null
 }
 
 function str(value: unknown): string {
@@ -224,17 +192,12 @@ function id(value: unknown): string {
 }
 
 export function normalizeRadarLane(lane: BoardRadarRawLane): RadarLane {
-  const counts = Array.isArray(lane?.counts) ? lane.counts : []
   return {
     topicId: id(lane?.topic_id),
     label: str(lane?.label),
-    sectionCount14d: num(lane?.section_count_14d),
+    // clue_counts 缺省（旧后端）→ null：小矩阵逐格标「线索数未知」，不拿分区数冒充。
+    clueCounts: numArrayOrNull(lane?.clue_counts),
     threadCount14d: num(lane?.thread_count_14d),
-    counts,
-    // story_counts 缺省（旧后端）→ counts 兜底（同为逐日计数口径；不拿桶数冒充）；
-    // storyCountsKnown 记住「这是分区数不是事件线数」，展示层据此改用分区措辞。
-    storyCounts: Array.isArray(lane?.story_counts) ? lane.story_counts : counts,
-    storyCountsKnown: Array.isArray(lane?.story_counts),
   }
 }
 
@@ -248,65 +211,36 @@ export function normalizeRadarBoard(board: BoardRadarRawBoard): RadarBoard {
     reportArticleCount: num(board?.report_article_count),
     reportEventCount: num(board?.report_event_count),
     anchorDate: board?.anchor_date ? str(board.anchor_date) : undefined,
-    todaySections: num(board?.today_sections),
-    last3Sections: num(board?.last3_sections),
-    prev3Sections: num(board?.prev3_sections),
+    todayClues: numOrNull(board?.today_clues),
+    last3Clues: numOrNull(board?.last3_clues),
+    prev3Clues: numOrNull(board?.prev3_clues),
     attention: num(board?.attention),
-    dataDelayed: board?.data_delayed === true,
-    days: Array.isArray(board?.days) ? board.days : [],
-    lanes: Array.isArray(board?.lanes) ? board.lanes.map(normalizeRadarLane) : [],
-    todayStories: num(board?.today_stories),
-    last3Stories: num(board?.last3_stories),
-    prev3Stories: num(board?.prev3_stories),
-    storiesBackfilled: typeof board?.stories_backfilled === 'boolean' ? board.stories_backfilled : null,
-    hasHeatData: [board?.today_heat, board?.last3_heat, board?.prev3_heat, board?.today_stories].every(value => typeof value === 'number' && Number.isFinite(value)),
-    todayHeat: num(board?.today_heat),
-    last3Heat: num(board?.last3_heat),
-    prev3Heat: num(board?.prev3_heat),
-    heatDays: Array.isArray(board?.heat_days) ? board.heat_days : [],
     heatRuleVersion: str(board?.heat_rule_version),
-    heatIncomplete: board?.heat_incomplete === true,
+    clueDays: numArrayOrNull(board?.clue_days),
+    dataDelayed: board?.data_delayed === true,
+    lanes: Array.isArray(board?.lanes) ? board.lanes.map(normalizeRadarLane) : [],
   }
 }
 
-export function normalizeRadarStoryItem(item: BoardRadarRawStoryItem): RadarStoryItem {
+export function normalizeRadarTopLaneItem(item: BoardRadarRawTopLaneItem): RadarTopLaneItem {
   return {
     boardId: id(item?.board_id),
     boardLabel: str(item?.board_label),
-    storyId: id(item?.story_id),
-    storyTitle: str(item?.story_title),
-    participants: typeof item?.participants === 'number' && Number.isFinite(item.participants) ? item.participants : null,
-    heat: num(item?.heat),
-    baselineHeat: num(item?.baseline_heat),
-    ratio: num(item?.ratio),
-    hasBaseline: item?.has_baseline === true,
-    hasTodayEvidence: item?.has_today_evidence === true,
+    topicId: id(item?.topic_id),
+    topicLabel: str(item?.topic_label),
+    clueCount: num(item?.clue_count),
     anchorDate: str(item?.anchor_date),
-    reportDate: str(item?.report_date),
   }
 }
 
-/** 事件线清单段归一：缺字段安全默认（旧响应无该段时返回空清单而非报错）。
- *  退役字段（warming/new_stories/new_count/new_total_count）不读——旧后端下发了也忽略。 */
-export function normalizeRadarStoryFeed(raw?: BoardRadarRawStoryFeed): RadarStoryFeed {
+/** 泳道清单段归一：缺字段安全默认（旧响应无该段时返回 null 而非空清单）。 */
+export function normalizeRadarTopLanes(raw?: BoardRadarRawTopLanes): RadarTopLanes {
   return {
     anchorDate: str(raw?.anchor_date),
-    heatRuleVersion: str(raw?.heat_rule_version),
-    topStories: Array.isArray(raw?.top_stories) ? raw.top_stories.map(normalizeRadarStoryItem) : [],
-    warmingCount: num(raw?.warming_count),
-    // 0 是有效值（= 没有跨天线），缺失才是「无法判定」——两者语义不同，
-    // 归一成同一个值会让新前端 + 旧后端时断言一句没依据的话。
-    crossDayStoryCount:
-      typeof raw?.cross_day_story_count === 'number' && Number.isFinite(raw.cross_day_story_count)
-        ? raw.cross_day_story_count
-        : null,
-    unbackfilledBoardIds: Array.isArray(raw?.unbackfilled_board_ids) ? raw.unbackfilled_board_ids.map(id) : [],
-    unbackfilledBoardCount: num(raw?.unbackfilled_board_count),
-    noStoryBoardIds: Array.isArray(raw?.no_story_board_ids) ? raw.no_story_board_ids.map(id) : [],
-    noStoryBoardCount: num(raw?.no_story_board_count),
-    laggingBoardIds: Array.isArray(raw?.lagging_board_ids) ? raw.lagging_board_ids.map(id) : [],
+    lanes: Array.isArray(raw?.lanes) ? raw.lanes.map(normalizeRadarTopLaneItem) : [],
     partial: raw?.partial === true,
     degradedBoardIds: Array.isArray(raw?.degraded_board_ids) ? raw.degraded_board_ids.map(id) : [],
+    laggingBoardIds: Array.isArray(raw?.lagging_board_ids) ? raw.lagging_board_ids.map(id) : [],
   }
 }
 
@@ -314,8 +248,8 @@ export function normalizeRadarOverview(raw: BoardRadarRawOverview): RadarOvervie
   return {
     date: str(raw?.date),
     boards: Array.isArray(raw?.boards) ? raw.boards.map(normalizeRadarBoard) : [],
-    // 该段缺席 = 旧后端：交回 null 让调用方回退版块级列表（旧响应 ≠ 没有事件）。
-    stories: raw?.stories ? normalizeRadarStoryFeed(raw.stories) : null,
+    // 该段缺席 = 旧后端：交回 null 让调用方回退版块级日报列表（旧响应 ≠ 没有泳道）。
+    topLanes: raw?.top_lanes ? normalizeRadarTopLanes(raw.top_lanes) : null,
   }
 }
 

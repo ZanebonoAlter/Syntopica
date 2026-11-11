@@ -92,7 +92,7 @@ function board(over: Partial<RadarStatusBoard> = {}): RadarStatusBoard {
     boardId: '1',
     label: '中东地缘政治与美伊关系',
     reportDate: '2026-10-24',
-    todaySections: 8,
+    todayClues: 8,
     ...over,
   }
 }

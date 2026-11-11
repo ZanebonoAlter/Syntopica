@@ -693,11 +693,14 @@ Response `data`：
   "semantic_board_match_direct_hit_min_overlap": 2,
   "semantic_board_match_direct_hit_min_ratio": 0.5,
   "semantic_board_match_direction_sim_threshold": 0.5,
-  "related_event_similarity_threshold": 0.86
+  "related_event_similarity_threshold": 0.86,
+  "lane_heat_candidate_weight": 0.5
 }
 ```
 
 `related_event_similarity_threshold`（enable-story-cross-day-continuation）与入板匹配参数**互相独立**：它只影响「相关事件」列表的过滤，缺项回退默认 **0.86**（2026-11-10 S3 实测后由 0.82 上调），存量坏值（非有限数/越界）告警后同样回退默认；改它**不需要重算向量**。
+
+`lane_heat_candidate_weight`（retire-story-adopt-event-metrics D8）是候选泳道在「当天线索热度」里的权重：默认 **0.5**、域 `[0,1]` 有限数，缺项回退默认、坏存量值告警回退；它**只进热度**（版块关注度 = Σ 泳道当天热度），不参与入板匹配，也**不影响话题生命周期**（命中计数 / 转正门槛不变）。
 
 ### PUT `/semantic-boards/matching-config`
 
@@ -717,8 +720,9 @@ Response `data`：返回更新后的完整配置。
 约束（enable-story-cross-day-continuation）：
 
 - 所有给到的键先全部校验、再在同一事务内写入 —— 任一键非法 → 整体 400、**不部分落库**；
-- 数值键拒绝空白、非数字、`NaN`/`Infinity`、范围外（`related_event_similarity_threshold` 为 `[0,1]`，0 与 1 合法）；
-- 白名单外的键 → 400 `unsupported config key`。
+- 数值键拒绝空白、非数字、`NaN`/`Infinity`、范围外（`related_event_similarity_threshold` 与 `lane_heat_candidate_weight` 均为 `[0,1]`，0 与 1 合法）；
+- 白名单外的键 → 400 `unsupported config key`；
+- `lane_heat_candidate_weight` 与相关事件阈值各自独立校验、互不影响：任一键非法即整体 400，不部分落库。
 
 ## 相关事件
 

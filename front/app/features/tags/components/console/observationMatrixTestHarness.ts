@@ -30,7 +30,7 @@ function normalize(lanes: Record<string, unknown>[]): LaneDynamicsWindowData {
   return normalizeLaneDynamicsWindow({ window_days: 14, has_reports: true, lanes, candidates: [] } as unknown as LaneDynamicsResponse)
 }
 
-/** 主 fixture（add-event-story-heat 5.4 story 口径）：10=双日多桶（当日 2 条事件线/最热 6 来源，热 4.5）、
+/** 主 fixture（retire-story-adopt-event-metrics D4/D5 线索口径）：10=双日多桶（当日 3+7+1=11 条线索，热 4.5）、
  * 11=单日（热 7.2，行序反超 10）、12=休眠（1 桶，热 0）。 */
 export function fixtureSource(): LaneDynamicsWindowData {
   return normalize([
@@ -38,8 +38,7 @@ export function fixtureSource(): LaneDynamicsWindowData {
       topic_id: 10, label: '主线 A', watch_linked: true, section_count_14d: 2, snapshot: null, lane_heat: 4.5,
       timeline: [
         {
-          date: '2026-10-23', story_count: 2, max_participant_count: 6, unassigned_event_count: 3,
-          hottest_story_id: 55, hottest_story_title: '美伊博弈升级',
+          date: '2026-10-23', clue_count: 11,
           sections: [sectionRaw(1, { thread_count: 3 }), sectionRaw(2, { thread_count: 7 }), sectionRaw(3, { thread_count: 1 })],
         },
         { date: '2026-10-21', sections: [sectionRaw(4, { thread_count: 0 })] },
@@ -48,7 +47,7 @@ export function fixtureSource(): LaneDynamicsWindowData {
     {
       topic_id: 11, label: '主线 B', watch_linked: false, section_count_14d: 3, snapshot: null, lane_heat: 7.2,
       timeline: [
-        { date: '2026-10-22', story_count: 1, sections: [sectionRaw(5, { thread_count: 4 })] },
+        { date: '2026-10-22', clue_count: 4, sections: [sectionRaw(5, { thread_count: 4 })] },
         { date: '2026-10-21', sections: [sectionRaw(7, { thread_count: 1 }), sectionRaw(8, { thread_count: 2 })] },
       ],
     },
