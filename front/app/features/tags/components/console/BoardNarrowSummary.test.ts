@@ -103,7 +103,7 @@ function otherView(overrides: Partial<OtherTopicsView> = {}): OtherTopicsView {
         statusText: '当次未归属',
       },
     ],
-    count: 2,
+    clueCount: 3,
     statusText: null,
     note: null,
     retryable: false,
@@ -284,7 +284,7 @@ describe('8C G3 — 其他话题组与 0 休眠 summary（独立折叠）', () =
     const failed = otherView({
       state: 'index-error',
       rows: [],
-      count: null,
+      clueCount: null,
       statusText: '报日索引未取到，暂不能读取当日分区',
       retryable: true,
       note: '列表 500',

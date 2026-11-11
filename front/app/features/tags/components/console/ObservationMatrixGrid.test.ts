@@ -52,7 +52,7 @@ function otherView(): OtherTopicsView {
         statusText: '当次未归属',
       },
     ],
-    count: 1,
+    clueCount: 2,
     statusText: null,
     note: null,
     retryable: false,

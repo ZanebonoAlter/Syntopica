@@ -142,6 +142,13 @@ export function groupSectionsByTopic(zone: QualityZone): TopicGroup[] {
 
 // ── 重点依据与正文定位的展示派生（retire-story-adopt-event-metrics 3.3）──
 
+/** 刊头重点的定位意图：`clusterId` = 聚簇代表标签 id（`?cluster=` 与标题点击）；
+ *  `threadId` = 展开区具体线索（精确定位，null/缺省 = 该聚簇正文 DOM 首条）。 */
+export interface LocateRequest {
+  clusterId: number | null
+  threadId: number | null
+}
+
 /** 重点条目的展示证据（全部可缺省：旧数据/标签回退不显示数字/口径/按钮，不伪造）。 */
 export interface HighlightEvidence {
   /** 聚簇代表 event 标签 id；null = 旧标签回退重点（无定位/无聚簇快照）。 */
@@ -165,6 +172,57 @@ export function reportHasClusterThread(report: Pick<DailyReport, 'sections'>, cl
   return (report.sections ?? []).some(section =>
     (section.threads ?? []).some(thread => (thread.tag_ids ?? []).includes(clusterId)),
   )
+}
+
+/** 簇内标签全集：`highlight.tag_ids`（服务端给的聚簇本期标签）优先；
+ *  缺失时回退代表标签 `cluster_id`（代表标签必属簇内，属回退而非编造）。 */
+export function clusterTagIds(highlight: DailyReportHighlight): number[] {
+  const tags = (highlight.tag_ids ?? []).filter(id => typeof id === 'number')
+  if (tags.length) return tags
+  return typeof highlight.cluster_id === 'number' ? [highlight.cluster_id] : []
+}
+
+/** 展开区的簇内线索行（纯前端现算，不改后端契约、不依赖快照字段）。 */
+export interface ClusterThreadRow {
+  threadId: number
+  title: string
+  sectionId: number
+  /** 所属话题名（当天 section 标题，缺省回退组名 = 首个 section 标题）。 */
+  sectionLabel: string
+  /** 命中聚簇代表标签（cluster_id）的线索：排最前并标注「代表线索」。 */
+  representative: boolean
+}
+
+/** 今日重点可展开的簇内全部线索：按正文分区渲染序（= DOM 序，与定位语义一致）
+ *  取 thread `tag_ids` 与簇内标签集有交集的全部线索，代表线索置顶、组内保持 DOM 序。
+ *  无交集返回空数组（调用方显示「本期正文未找到对应线索」，不硬造线索）。 */
+export function collectClusterThreads(
+  highlight: DailyReportHighlight,
+  report: Pick<DailyReport, 'sections'>,
+): ClusterThreadRow[] {
+  const tagSet = new Set(clusterTagIds(highlight))
+  if (tagSet.size === 0) return []
+  const clusterId = typeof highlight.cluster_id === 'number' ? highlight.cluster_id : null
+  const rows: ClusterThreadRow[] = []
+  // 走与 DailyReportTopicSection 相同的分区/分组派生：zone 顺序 + 话题组顺序 + 桶序 = DOM 序。
+  for (const zone of buildQualityZones(report.sections ?? [])) {
+    for (const group of groupSectionsByTopic(zone)) {
+      for (const section of group.sections) {
+        for (const thread of section.threads ?? []) {
+          const threadTags = thread.tag_ids ?? []
+          if (!threadTags.some(id => tagSet.has(id))) continue
+          rows.push({
+            threadId: thread.id,
+            title: thread.title,
+            sectionId: section.id,
+            sectionLabel: section.cluster_label || group.label,
+            representative: clusterId !== null && threadTags.includes(clusterId),
+          })
+        }
+      }
+    }
+  }
+  return [...rows.filter(row => row.representative), ...rows.filter(row => !row.representative)]
 }
 
 /** 研究时点（RFC3339）→ 北京时间可读文本（`MM/DD HH:mm`）；非法值返回 null（省略不伪造）。 */

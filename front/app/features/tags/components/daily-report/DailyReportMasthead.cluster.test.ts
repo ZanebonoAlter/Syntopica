@@ -137,7 +137,7 @@ describe('DailyReportMasthead × 正文 — 聚簇定位主链路', () => {
     const button = masthead.find('[data-testid="highlight-locate-0"]')
     expect(button.exists()).toBe(true)
     await button.trigger('click')
-    expect(masthead.emitted('locate')).toEqual([[55]])
+    expect(masthead.emitted('locate')).toEqual([[{ clusterId: 55, threadId: null }]])
 
     // 阅读容器把定位意图转给正文分区：DOM 序 30 → 20，点亮 30
     const scrollIntoView = vi.fn()
@@ -215,6 +215,125 @@ describe('DailyReportMasthead × 正文 — 聚簇定位主链路', () => {
       else delete (Element.prototype as never as Record<string, unknown>).scrollIntoView
       vi.useRealTimers()
     }
+  })
+})
+
+describe('DailyReportMasthead — 今日重点簇内线索展开（2026-11-11 用户反馈）', () => {
+  /** 真库样本（report 1461 今日重点 top1）：簇内标签 [268150, 268178]，正文里两条线索分居两个 section，
+   *  第三篇（268169）虽在同一 section 但不在簇内 → 交集匹配要把它排除。 */
+  const CLUSTER = { tag_ids: [268150, 268178], cluster_id: 268150 }
+
+  function clusterReport(): DailyReport {
+    return makeReport({
+      sections: [
+        makeSection(366, [makeThread(17684, [268169]), makeThread(17683, [268178])]),
+        makeSection(367, [makeThread(17682, [268150])]),
+      ],
+      highlights: [highlight({ ...CLUSTER, article_count: 2, cluster_mode: '向量聚簇' })],
+    })
+  }
+
+  it('默认收起；展开后按 tag_ids 交集列出簇内全部线索，代表线索置顶并标注', async () => {
+    const masthead = mount(DailyReportMasthead, { props: { report: clusterReport() } })
+    const toggle = masthead.find('[data-testid="highlight-expand-0"]')
+    expect(toggle.exists()).toBe(true)
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.text()).toBe('展开簇内线索（2）')
+    expect(masthead.find('[data-testid="highlight-cluster-0"]').exists()).toBe(false)
+
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(toggle.text()).toBe('收起簇内线索')
+    const ids = masthead.findAll('[data-testid^="highlight-cluster-thread-"]')
+      .map(node => node.attributes('data-testid'))
+    // 交集匹配：17684（tag 268169）不属于该簇 → 不列；代表标签 268150 的 17682 置顶（DOM 序里它在 367）
+    expect(ids).toEqual(['highlight-cluster-thread-17682', 'highlight-cluster-thread-17683'])
+    expect(masthead.find('[data-testid="highlight-cluster-thread-17682"]').text()).toContain('代表线索')
+    expect(masthead.find('[data-testid="highlight-cluster-thread-17683"]').text()).not.toContain('代表线索')
+    // 每行带所属话题名（section 当天标题），供展开区读出线索归属
+    expect(masthead.find('[data-testid="highlight-cluster-thread-17682"]').text()).toContain('分区367')
+    expect(masthead.find('[data-testid="highlight-cluster-thread-17683"]').text()).toContain('分区366')
+  })
+
+  it('行内点击下发 { clusterId, threadId }；正文分区按 threadId 精确定位（不是簇内 DOM 首条）', async () => {
+    const report = clusterReport()
+    const masthead = mount(DailyReportMasthead, { props: { report } })
+    await masthead.find('[data-testid="highlight-expand-0"]').trigger('click')
+    await masthead.find('[data-testid="highlight-cluster-thread-17683"]').trigger('click')
+    expect(masthead.emitted('locate')).toEqual([[{ clusterId: 268150, threadId: 17683 }]])
+
+    // 正文分区：两条线索都含代表标签 268150（DOM 首条 = 30），但线程指定 20 → 只点亮 20
+    const scrollIntoView = vi.fn()
+    const originalScroll = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrollIntoView as never
+    const section = mountSection(briefsZone([makeSection(366, [makeThread(30, [268150]), makeThread(20, [268178])])]))
+    document.body.appendChild(section.element)
+    try {
+      await section.setProps({ locateThread: { clusterId: 268150, threadId: 20, nonce: 1 } })
+      await nextTick()
+      await nextTick()
+      expect(section.find('#report-thread-20').classes()).toContain('drm-thread--lit')
+      expect(section.find('#report-thread-30').classes()).not.toContain('drm-thread--lit')
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    } finally {
+      section.unmount()
+      if (originalScroll) Element.prototype.scrollIntoView = originalScroll
+      else delete (Element.prototype as never as Record<string, unknown>).scrollIntoView
+    }
+  })
+
+  it('簇内无正文匹配：仍可展开，显示「本期正文未找到对应线索」，不硬造线索', async () => {
+    const masthead = mount(DailyReportMasthead, {
+      props: {
+        report: makeReport({
+          sections: [makeSection(366, [makeThread(10, [55])])],
+          highlights: [highlight({ tag_ids: [999], cluster_id: 999 })],
+        }),
+      },
+    })
+    const toggle = masthead.find('[data-testid="highlight-expand-0"]')
+    // 无线索时不带条数（不伪造 0 条）
+    expect(toggle.text()).toBe('展开簇内线索')
+    await toggle.trigger('click')
+    expect(masthead.findAll('[data-testid^="highlight-cluster-thread-"]')).toHaveLength(0)
+    expect(masthead.find('[data-testid="highlight-cluster-empty-0"]').text()).toBe('本期正文未找到对应线索')
+  })
+
+  it('无 tag_ids 的聚簇回退代表标签 cluster_id 匹配；无任何簇内标签的旧重点不渲染展开入口', async () => {
+    const fallback = mount(DailyReportMasthead, {
+      props: {
+        report: makeReport({
+          sections: [makeSection(366, [makeThread(11, [77, 88])])],
+          highlights: [{ title: '聚簇重点', reason: '理由', tag_ids: [], cluster_id: 88 }],
+        }),
+      },
+    })
+    await fallback.find('[data-testid="highlight-expand-0"]').trigger('click')
+    const rows = fallback.findAll('[data-testid^="highlight-cluster-thread-"]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.attributes('data-testid')).toBe('highlight-cluster-thread-11')
+    expect(rows[0]!.text()).toContain('代表线索')
+
+    const legacy = mount(DailyReportMasthead, {
+      props: {
+        report: makeReport({
+          sections: [makeSection(366, [makeThread(11, [88])])],
+          highlights: [{ title: '旧重点', reason: '理由', tag_ids: [] }],
+        }),
+      },
+    })
+    expect(legacy.find('[data-testid="highlight-expand-0"]').exists()).toBe(false)
+
+    // 有 tag_ids 但无 cluster_id 且正文无交集（旧标签回退）→ 不产无信息的展开入口
+    const unmatchedLegacy = mount(DailyReportMasthead, {
+      props: {
+        report: makeReport({
+          sections: [makeSection(366, [makeThread(11, [88])])],
+          highlights: [{ title: '旧重点', reason: '理由', tag_ids: [999] }],
+        }),
+      },
+    })
+    expect(unmatchedLegacy.find('[data-testid="highlight-expand-0"]').exists()).toBe(false)
   })
 })
 

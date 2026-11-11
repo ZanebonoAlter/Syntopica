@@ -240,6 +240,8 @@ pages/tags/[boardId]/[date].vue
 
 `useDailyReportReader.ts` 负责拉取/分节/导航；阅读台初始 `days=14`，左栏「加载更早」每次 +7；旧浮层 `BoardDailyReportTimeline` 继续作为列表面板 + overlay 宿主（`mode="overlay"`），行为与 7 天增量保持不变。**2026-10-27 用户复审**：撤下 2026-10-25 的「两栏 + 日期下拉 + 页边注抽屉」方案（`DailyReportDeskIndex.vue` / `DailyReportDeskEvolution.vue` 不再挂载），恢复旧版三栏与宽屏正文；四件事（页边注常驻、宽屏适配、其他动态、今日重点 top3）为验收基线。
 
+**今日重点簇内展开（2026-11-11 用户反馈）**：今日重点每条默认收起，带簇内标签的条目多一个「展开簇内线索」开关；展开列表由前端现算——用 `highlight.tag_ids`（缺失时回退 `cluster_id`）与正文 thread 的 `tag_ids` 求交集（thread 含任一簇内标签即属该簇），按正文 DOM 序（zone → 话题组 → 桶序，与定位语义一致）列出，每行显示 thread 标题 + 所属话题名，命中 `cluster_id` 的代表线索排最前并标注「代表线索」。行点击下发 `{clusterId, threadId}` 精确定位该条 thread（必要时展开所在容器，滚动/聚焦/高亮 2s，reduced-motion 不平滑滚动）；条目主体点击与 `?cluster=` 深链行为不变（仍定位 DOM 首条），划选文案不触发定位。交集为空显示「本期正文未找到对应线索」，不编造线索、不跳近似位置；纯前端现算，不改后端契约、不加快照字段（历史 highlights 同样可展开）。
+
 **站内阅读预览的状态同步**（2026-10-28 用户反馈修复）：预览弹窗的收藏等状态动作走**乐观更新**（`front/app/features/articles/composables/useArticleFavoriteToggle.ts`：点击即翻转星标 → `PUT /api/articles/:id` → 失败回滚 + 错误提示；回滚只在宿主当前值仍是本次乐观值时执行，迟到的失败响应不覆盖后续点击）。同一契约用于矩阵页/态势页预览（`useTagsPage.handleArticleFavorite`）。此前 `DailyReportDeskShell.vue` 把 `@favorite` / `@article-update` 接成空函数——点收藏既不落库也不改界面，表现为「点了没反应」（见约束 32）。弹窗内「全屏」的层级契约（弹窗内全屏层 SHALL 盖过遮罩 9100，否则点了像没反应）见 [reading.md](reading.md) 约束 14。
 
 > 旧文档描述的 `DigestListView` / `getPreview(daily|weekly)` / `runNow` 链路对应的组件**已不存在**（周报能力已下线，仅留日报）。手动生成走 `POST /api/daily-reports/generate`，矩阵无日报空态直接开生成对话框。

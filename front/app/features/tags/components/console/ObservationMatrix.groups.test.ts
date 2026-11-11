@@ -69,7 +69,7 @@ describe('ObservationMatrix — 组顺序与折叠独立性（GRP-1/3/4）', () 
   it('收起其他组：自身行离 DOM，summary 仍显示真实计数', () => {
     const wrapper = mountMatrix({ selectedDate: '2026-10-23', otherTopics: otherView(), othersOpen: false })
     expect(wrapper.find('[data-testid^="other-topic-row-"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toContain('2')
+    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toContain('1 条线索')
     expect(wrapper.find('[data-testid="other-topics-note"]').text()).toContain('未入泳道')
   })
 
@@ -85,13 +85,13 @@ describe('ObservationMatrix — 组顺序与折叠独立性（GRP-1/3/4）', () 
   })
 
   it('非 ready 不冒 0：不给计数、summary 给状态文案、不可展开', () => {
-    const loadingView = otherView({ state: 'loading', rows: [], count: null, statusText: '正在读取当日报告…' })
+    const loadingView = otherView({ state: 'loading', rows: [], clueCount: null, statusText: '正在读取当日报告…' })
     const wrapper = mountMatrix({ selectedDate: '2026-10-23', otherTopics: loadingView, othersOpen: false })
     expect(wrapper.find('[data-testid="other-topics-count"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="other-topics-note"]').text()).toBe('正在读取当日报告…')
     expect(wrapper.find('[data-testid="other-topics-toggle"]').find('button').attributes('disabled')).toBeDefined()
 
-    const noReport = otherView({ state: 'no-report', rows: [], count: null, statusText: '所选日没有日报（不是 0 条其他话题）' })
+    const noReport = otherView({ state: 'no-report', rows: [], clueCount: null, statusText: '所选日没有日报（不是 0 条其他话题）' })
     expect(mountMatrix({ selectedDate: '2026-10-23', otherTopics: noReport })
       .find('[data-testid="other-topics-note"]').text()).toContain('不是 0 条其他话题')
   })

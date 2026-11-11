@@ -84,6 +84,8 @@
 
 前端 SHALL 在今日重点旁显示服务端快照「N 篇来源」（0 是合法值，按内容身份去重后的簇内文章数），可读提示附数据截至日、研究时点与聚簇口径标记。字段缺失 SHALL 省略数字而非伪造 0。带有效 `cluster_id` 且有正文目标的重点 SHALL 可键盘激活，定位本 report 当前正文 DOM 顺序中该聚簇第一条 thread；必要时展开目标所在正文容器，滚动、聚焦并高亮 2s。锚点 SHALL 为 `report-thread-{thread.id}`，聚簇只读解析。
 
+带簇内标签的重点 SHALL 可展开（默认收起）列出本期正文中该簇的全部线索：前端用 `tag_ids`（缺失时回退 `cluster_id`）与本 report 正文 thread 的 `tag_ids` 求交集现算，按正文 DOM 顺序列出，每行标注所属话题名；命中代表标签（`cluster_id`）的线索 SHALL 排最前并显式标注「代表线索」。行点击 SHALL 精确定位该条 thread（必要时展开所在正文容器，滚动/聚焦/高亮 2s，语义同重点定位）。展开 SHALL 纯前端现算，SHALL NOT 依赖后端新增字段或快照补齐（历史 highlights 同样可展开）；交集为空 SHALL 显示「本期正文未找到对应线索」，SHALL NOT 编造线索或跳到近似位置。重点条目主体点击与 `cluster` 深链的定位语义不变（仍为正文 DOM 顺序首条）。
+
 无 `cluster_id` 的重点 SHALL 仅展示文案、不猜标签归属。无目标 SHALL 禁用定位并提示「本期正文暂无对应内容」；点击时目标消失 SHALL 原地轻提示，SHALL NOT 打开新详情页、近似跳 section 或自动重建。重复激活 SHALL 替换单个高亮与计时器，切 report/卸载清理；reduced-motion SHALL 不平滑滚动，划选 SHALL NOT 触发定位。
 
 跨页寻址 SHALL 通过日报阅读台路由的 `cluster` 查询参数（`/tags/:boardId/:date?cluster=<cluster_id>`）：参数 SHALL 在该期日报详情就绪后，按聚簇身份解析并定位本 report 当前正文 DOM 顺序中该聚簇第一条 thread，展开/滚动/聚焦/高亮 2s，与刊头重点定位同一路径。参数所指聚簇在本期正文无落点时 SHALL NOT 滚动、SHALL NOT 跳到近似位置，SHALL 提示「本期正文暂无对应内容」。旧的 `story` 查询参数 SHALL 继续被解析但 SHALL 被忽略，并提示该定位方式已下线，SHALL NOT 报错、SHALL NOT 定位到任何内容。翻页或切换 report 后 SHALL 清理该参数，SHALL NOT 在其它报告重复定位；无效或非法的参数值 SHALL 忽略且 SHALL NOT 报错阻断阅读。

@@ -132,7 +132,7 @@ export function otherView(overrides: Partial<OtherTopicsView> = {}): OtherTopics
         statusText: '当时已转正',
       },
     ],
-    count: 2,
+    clueCount: 1,
     statusText: null,
     note: null,
     retryable: false,

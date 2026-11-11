@@ -112,7 +112,7 @@ describe('otherTopicSelection — 选择/清场', () => {
       reportDay: readyDay(DATE, [section('601', 0, '10', 3)]),
     })
     await nextTick()
-    expect(none.selection.otherTopics.value).toMatchObject({ state: 'ready', count: 0, rows: [] })
+    expect(none.selection.otherTopics.value).toMatchObject({ state: 'ready', clueCount: 0, rows: [] })
     none.selection.selectOther({ sectionId: '601', date: DATE, topicId: '10' })
     expect(none.selection.selectedOther.value).toBeNull()
     none.scope.stop()

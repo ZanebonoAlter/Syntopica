@@ -29,7 +29,10 @@ const emit = defineEmits<{
 }>()
 
 const rows = computed<OtherTopicRow[]>(() => (props.view?.state === 'ready' ? props.view.rows : []))
-const count = computed<string | null>(() => (typeof props.view?.count === 'number' ? String(props.view.count) : null))
+// 组计数 = 组内线索合计（与矩阵主行格值同口径）；分区数只在下方说明文案里出现。
+const count = computed<string | null>(() => (
+  typeof props.view?.clueCount === 'number' ? `${props.view.clueCount} 条线索` : null
+))
 
 const note = computed<string>(() => {
   const view = props.view

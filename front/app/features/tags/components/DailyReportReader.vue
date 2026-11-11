@@ -22,6 +22,7 @@ import {
   formatMagazineDate,
   groupSectionsByTopic,
   selectLeadStory,
+  type LocateRequest,
 } from './daily-report/dailyReportMagazine'
 import { useDailyReportReader } from '~/features/tags/composables/useDailyReportReader'
 import { todayInShanghai } from '~/features/tags/composables/useBoardConsole'
@@ -119,8 +120,9 @@ async function handleRebucket(sectionId: number) {
 const watchesApi = useTopicWatchesApi()
 const watchHitsByReport = ref(new Map<number, TopicWatchHit[]>())
 const focusSectionId = ref<number | null>(null)
-/** 重点定位请求（D14）：nonce 使重复点击同簇重触发；切 report 清空。 */
-const locateRequest = ref<{ clusterId: number, nonce: number } | null>(null)
+/** 重点定位请求（D14）：clusterId = 聚簇代表标签 id；threadId = 展开区具体线索（null = DOM 首条）；
+ *  nonce 使重复点击同簇/同线索重触发；切 report 清空。 */
+const locateRequest = ref<{ clusterId: number | null, threadId: number | null, nonce: number } | null>(null)
 let locateNonce = 0
 const showReader = ref(true)
 const showDetectiveWall = ref(false)
@@ -355,19 +357,25 @@ function locateWatchSection(sectionId: string | number) {
   })
 }
 
-/** 刊头重点定位（D14）：先按当前 report 正文预判目标（thread.tag_ids 含聚簇代表标签 id）——
- *  点击时目标已消失则原地轻提示、不下发定位（不跳近似位置）；有目标则转发给各正文分区，
- *  由持有目标的分区展开并滚动/聚焦/高亮 2s（reduced-motion 不平滑滚动）。 */
-function handleLocateHighlight(clusterId: number) {
+/** 刊头重点定位（D14）：先按当前 report 正文预判目标（threadId 精确命中，或 thread.tag_ids 含
+ *  聚簇代表标签 id）——点击时目标已消失则原地轻提示、不下发定位（不跳近似位置）；有目标则转发给
+ *  各正文分区，由持有目标的分区展开并滚动/聚焦/高亮 2s（reduced-motion 不平滑滚动）。 */
+function handleLocateHighlight(payload: number | LocateRequest) {
+  const request: LocateRequest = typeof payload === 'number'
+    ? { clusterId: payload, threadId: null }
+    : payload
   const detail = reader.selectedDetail.value
-  const hasTarget = (detail?.sections ?? []).some(section =>
-    (section.threads ?? []).some(thread => (thread.tag_ids ?? []).includes(clusterId)),
-  )
+  const threads = (detail?.sections ?? []).flatMap(section => section.threads ?? [])
+  const targetThreadId = request.threadId
+  const clusterId = request.clusterId
+  const hasTarget = targetThreadId != null
+    ? threads.some(thread => thread.id === targetThreadId)
+    : clusterId != null && threads.some(thread => (thread.tag_ids ?? []).includes(clusterId))
   if (!hasTarget) {
     notify.warn('本期正文暂无对应线索')
     return
   }
-  locateRequest.value = { clusterId, nonce: ++locateNonce }
+  locateRequest.value = { clusterId, threadId: targetThreadId ?? null, nonce: ++locateNonce }
 }
 
 async function closeReader() {

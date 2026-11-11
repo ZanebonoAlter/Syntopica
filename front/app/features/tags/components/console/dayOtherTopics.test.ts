@@ -152,7 +152,7 @@ describe('OTH — 成员身份排除', () => {
     const view = build([], { lanes: [laneRow('10')] })
     expect(view.state).toBe('ready')
     expect(view.rows).toEqual([])
-    expect(view.count).toBe(0)
+    expect(view.clueCount).toBe(0)
     expect(view.statusText).toBe(OTHER_TOPICS_EMPTY_TEXT)
   })
 
@@ -196,7 +196,16 @@ describe('OTH — 行序与计数', () => {
     expect(rows.get('777')?.threadCount).toBe(0)
     const full = build([section('501', { threadIds: ['t1', 't2', 't3'] })])
     expect(full.rows[0]!.threadCount).toBe(3)
-    expect(full.count).toBe(1)
+    expect(full.clueCount).toBe(3)
+  })
+
+  it('OTH-5b 组计数 = 组内线索合计（一个分区 3 条线索 → 3，不是分区数 1；2026-11-11 用户反馈）', () => {
+    const view = build([
+      section('8312', { clusterIndex: 4, threadIds: ['17682', '17683', '17684'] }),
+    ])
+    expect(view.rows).toHaveLength(1)
+    expect(view.rows[0]!.threadCount).toBe(3)
+    expect(view.clueCount).toBe(3)
   })
 
   it('OTH-8 全部分区被覆盖：ready + 0 行 + 「都已可在泳道读到」', () => {
@@ -206,7 +215,7 @@ describe('OTH — 行序与计数', () => {
     })
     expect(view.state).toBe('ready')
     expect(view.rows).toEqual([])
-    expect(view.count).toBe(0)
+    expect(view.clueCount).toBe(0)
     expect(view.statusText).toBe(OTHER_TOPICS_EMPTY_TEXT)
     expect(view.retryable).toBe(false)
   })
@@ -280,7 +289,7 @@ describe('OTH — 组状态机（不冒 0、不互相冒充）', () => {
   it('未选日：no-date（有报日可选 / 窗内无报日 两种文案）', () => {
     const waiting = build([], { selectedDate: null, windowReportDayCount: 8 })
     expect(waiting.state).toBe('no-date')
-    expect(waiting.count).toBeNull()
+    expect(waiting.clueCount).toBeNull()
     expect(waiting.statusText).not.toBeNull()
 
     const noReports = build([], { selectedDate: null, windowReportDayCount: 0 })
@@ -291,12 +300,12 @@ describe('OTH — 组状态机（不冒 0、不互相冒充）', () => {
   it('索引加载中 → index-loading；加载失败 → index-error 可重试（不冒无日报）', () => {
     const loadingView = build([], { selectedDate: null, indexLoading: true })
     expect(loadingView.state).toBe('index-loading')
-    expect(loadingView.count).toBeNull()
+    expect(loadingView.clueCount).toBeNull()
 
     const failed = build([], { selectedDate: null, indexError: '列表挂了' })
     expect(failed.state).toBe('index-error')
     expect(failed.retryable).toBe(true)
-    expect(failed.count).toBeNull()
+    expect(failed.clueCount).toBeNull()
     expect(failed.note).toContain('列表挂了')
   })
 
@@ -304,13 +313,13 @@ describe('OTH — 组状态机（不冒 0、不互相冒充）', () => {
     const view = build([], { day: { status: 'loading', reportId: null } })
     expect(view.state).toBe('loading')
     expect(view.rows).toEqual([])
-    expect(view.count).toBeNull()
+    expect(view.clueCount).toBeNull()
   })
 
   it('OTH-9 无报日 → no-report（不是 0 条其他话题，不给 0）', () => {
     const view = build([], { day: { status: 'no-report', reportId: null } })
     expect(view.state).toBe('no-report')
-    expect(view.count).toBeNull()
+    expect(view.clueCount).toBeNull()
     expect(view.statusText).not.toBe(OTHER_TOPICS_EMPTY_TEXT)
   })
 
@@ -318,7 +327,7 @@ describe('OTH — 组状态机（不冒 0、不互相冒充）', () => {
     const detailFailed = build([], { day: { status: 'error', error: '详情挂了', errorSource: 'detail' } })
     expect(detailFailed.state).toBe('error')
     expect(detailFailed.retryable).toBe(true)
-    expect(detailFailed.count).toBeNull()
+    expect(detailFailed.clueCount).toBeNull()
     expect(detailFailed.note).toContain('详情挂了')
 
     const indexFailed = build([], { day: { status: 'error', error: '列表挂了', errorSource: 'index' } })
@@ -339,6 +348,6 @@ describe('OTH — 组状态机（不冒 0、不互相冒充）', () => {
     })
     expect(view.state).toBe('loading')
     expect(view.rows).toEqual([])
-    expect(view.count).toBeNull()
+    expect(view.clueCount).toBeNull()
   })
 })

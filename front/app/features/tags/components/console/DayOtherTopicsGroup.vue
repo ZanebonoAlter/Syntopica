@@ -45,8 +45,10 @@ const emit = defineEmits<{
 const open = computed(() => props.expanded === true)
 const ready = computed(() => props.view?.state === 'ready')
 const rows = computed<OtherTopicRow[]>(() => (ready.value ? props.view?.rows ?? [] : []))
-/** 计数只在 ready 出现（0 合法）；其余状态不给数字（不冒 0）。 */
-const countText = computed(() => (typeof props.view?.count === 'number' ? String(props.view.count) : null))
+/** 计数只在 ready 出现（0 合法）；取**组内线索合计**（与矩阵主行格值同口径），不是分区数。 */
+const countText = computed(() => (
+  typeof props.view?.clueCount === 'number' ? `${props.view.clueCount} 条线索` : null
+))
 /** 只有 ready 可展开：非 ready 没有可读行，展开也无内容。 */
 const toggleable = computed(() => ready.value)
 

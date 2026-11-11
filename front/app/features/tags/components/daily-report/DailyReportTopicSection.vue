@@ -37,9 +37,9 @@ const props = defineProps<{
   contextEntries: Map<string, RequestCacheEntry<ContextRow[]>>
   /** Section id requested by a watch index or timeline preview. */
   focusSectionId?: number | null
-  /** 定位请求（D14）：clusterId = 聚簇代表 event 标签 id，nonce 变化重触发；
-   *  本分区只处理自己的目标（按当前 report 正文 DOM 序第一条），无线程则静默不动作。 */
-  locateThread?: { clusterId: number, nonce: number } | null
+  /** 定位请求（D14）：clusterId = 聚簇代表 event 标签 id，threadId = 展开区指定线索（null = DOM 首条），
+   *  nonce 变化重触发；本分区只处理自己的目标，无线程则静默不动作。 */
+  locateThread?: { clusterId?: number | null, threadId?: number | null, nonce: number } | null
   /** 正在重新分桶的 section id（由 reader 持有；非空时按钮置灰 + spinner）。 */
   rebucketSectionId?: number | null
   /** 重分桶后被删除的旧锚点 → 该组首条 section（深链回退，add-intra-lane-theme-bucketing）。 */
@@ -235,9 +235,27 @@ function findThreadByCluster(clusterId: number): { groupKey: string, topicId?: n
   return null
 }
 
+/** 按 thread id 精确定位（今日重点展开区的行点击）：同一条数据序，换取所属分组供展开。 */
+function findThreadById(threadId: number): { groupKey: string, topicId?: number, threadId: number } | null {
+  for (const group of groups.value) {
+    for (const section of group.sections) {
+      for (const thread of section.threads ?? []) {
+        if (thread.id === threadId) {
+          return { groupKey: group.key, topicId: group.topicId, threadId: thread.id }
+        }
+      }
+    }
+  }
+  return null
+}
+
 watch(() => props.locateThread, async (request) => {
   if (!request) return
-  const hit = findThreadByCluster(request.clusterId)
+  const hit = request.threadId != null
+    ? findThreadById(request.threadId)
+    : request.clusterId != null
+      ? findThreadByCluster(request.clusterId)
+      : null
   if (!hit) return // 目标在其它分区/已消失：本组件静默（阅读容器已按数据预判轻提示，不跳近似位置）
   if (!expandedTopics.value.has(hit.groupKey)) {
     const next = new Set(expandedTopics.value)

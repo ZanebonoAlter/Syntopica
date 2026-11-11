@@ -58,7 +58,7 @@ describe('BoardConsoleShell 集成 — 报日轴与当日其他话题组（真�
     expect(toggle.attributes('aria-expanded')).toBe('true')
     expect(wrapper.find('[data-testid="other-topic-row-1200"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="other-topic-row-1200"]').text()).toContain('别的分区甲')
-    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toContain('3')
+    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toContain('4 条线索')
 
     // 0 泳道且未选其他：阅读槽给方向提示（诚实空态，不是无路可走）
     expect(wrapper.find('[data-testid="console-reading-empty"]').text()).toContain('当日其他话题')
@@ -77,7 +77,7 @@ describe('BoardConsoleShell 集成 — 报日轴与当日其他话题组（真�
 
     const toggle = wrapper.find('[data-testid="other-topics-toggle"] button')
     expect(toggle.attributes('aria-expanded')).toBe('false')
-    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toContain('2')
+    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toContain('3 条线索')
     expect(wrapper.find('[data-testid="other-topic-row-1200"]').exists()).toBe(false)
     const detailCallsAfterMount = getDailyReportDetail.mock.calls.length
 

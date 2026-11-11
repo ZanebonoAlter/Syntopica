@@ -121,7 +121,7 @@ describe('otherTopicSelection — 组视图由 G1 buildOtherTopics 派生', () =
     expect(view.state).toBe('ready')
     expect(view.rows.map(row => row.sectionId)).toEqual(['603', '602'])
     expect(view.rows.map(row => row.threadCount)).toEqual([0, 4])
-    expect(view.count).toBe(2)
+    expect(view.clueCount).toBe(4)
     h.scope.stop()
   })
 

@@ -55,7 +55,7 @@ function readyView(overrides: Partial<OtherTopicsView> = {}): OtherTopicsView {
         statusText: '当时已转正',
       },
     ],
-    count: 2,
+    clueCount: 1,
     statusText: null,
     note: null,
     retryable: false,
@@ -64,7 +64,7 @@ function readyView(overrides: Partial<OtherTopicsView> = {}): OtherTopicsView {
 }
 
 function passiveView(state: OtherTopicsView['state'], statusText: string, extra: Partial<OtherTopicsView> = {}): OtherTopicsView {
-  return { state, rows: [], count: null, statusText, note: null, retryable: false, ...extra }
+  return { state, rows: [], clueCount: null, statusText, note: null, retryable: false, ...extra }
 }
 
 function mountGroup(overrides: Record<string, unknown> = {}) {
@@ -86,11 +86,32 @@ describe('DayOtherTopicsGroup — summary 与展开态（GRP-2/4）', () => {
     const summary = wrapper.find('[data-testid="other-topics-toggle"]')
     expect(summary.exists()).toBe(true)
     expect(summary.classes()).toContain('omx-group-summary')
-    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toContain('2')
+    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toContain('1 条线索')
     expect(wrapper.find('[data-testid="other-topics-note"]').text()).toBe('2 个分区未入泳道')
     expect(summary.find('button').attributes('aria-expanded')).toBe('false')
     expect(summary.find('button').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('[data-testid^="other-topic-row-"]').exists()).toBe(false)
+  })
+
+  it('组计数 = 组内线索合计（一个分区 3 条线索 → 3 条线索，不是分区数 1；2026-11-11 用户反馈）', () => {
+    const wrapper = mountGroup({
+      view: readyView({
+        rows: [{
+          sectionId: '8312',
+          label: '财政部发布十五五会计规划，强化监督与造假治理',
+          clusterIndex: 4,
+          threadCount: 3,
+          persistentTopicId: '2250',
+          statusKind: 'candidate',
+          statusText: '当时待观察',
+        }],
+        clueCount: 3,
+      }),
+    })
+    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toContain('3 条线索')
+    expect(wrapper.find('[data-testid="other-topics-count"]').text()).not.toContain('1 条线索')
+    // 分区数只在说明文案里（1 个分区不放徽标冒充线索数）
+    expect(wrapper.find('[data-testid="other-topics-note"]').text()).toBe('1 个分区未入泳道')
   })
 
   it('展开（expanded=true）：summary 在前、自身行紧随其后；aria-expanded=true', () => {
@@ -117,8 +138,8 @@ describe('DayOtherTopicsGroup — summary 与展开态（GRP-2/4）', () => {
   })
 
   it('ready + 0 行：0 是合法计数（可展开看「都已可在泳道读到」），不是加载失败', () => {
-    const wrapper = mountGroup({ view: readyView({ rows: [], count: 0, statusText: OTHER_TOPICS_EMPTY_TEXT }), expanded: true })
-    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toContain('0')
+    const wrapper = mountGroup({ view: readyView({ rows: [], clueCount: 0, statusText: OTHER_TOPICS_EMPTY_TEXT }), expanded: true })
+    expect(wrapper.find('[data-testid="other-topics-count"]').text()).toBe('· 0 条线索')
     expect(wrapper.find('[data-testid="other-topics-note"]').text()).toBe(OTHER_TOPICS_EMPTY_TEXT)
     expect(wrapper.find('[data-testid="other-topics-note-row"]').text()).toBe(OTHER_TOPICS_EMPTY_TEXT)
     expect(wrapper.find('[data-testid^="other-topic-row-"]').exists()).toBe(false)

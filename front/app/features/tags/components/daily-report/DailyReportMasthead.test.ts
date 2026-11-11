@@ -149,7 +149,7 @@ describe('DailyReportMasthead — 重点依据（聚簇快照）与正文定位'
     expect(article.text()).not.toContain('研究时点')
   })
 
-  it('点击定位：有 cluster_id 且正文有对应线索 → 键盘可达按钮，点击 emit locate(clusterId)', async () => {
+  it('点击定位：有 cluster_id 且正文有对应线索 → 键盘可达按钮，点击 emit locate({ clusterId, threadId: null })', async () => {
     const wrapper = mountMasthead({
       highlights: [clusterHighlight()],
       sections: [makeSection(366, [{ id: 10, tag_ids: [55] }])],
@@ -158,7 +158,7 @@ describe('DailyReportMasthead — 重点依据（聚簇快照）与正文定位'
     expect(button.element.tagName).toBe('BUTTON')
     expect(button.attributes('title')).toContain('聚簇')
     await button.trigger('click')
-    expect(wrapper.emitted('locate')).toEqual([[55]])
+    expect(wrapper.emitted('locate')).toEqual([[{ clusterId: 55, threadId: null }]])
   })
 
   it('划选非折叠选区时点击不定位（只当文本操作）', async () => {
