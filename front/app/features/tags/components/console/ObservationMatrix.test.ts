@@ -57,15 +57,24 @@ describe('ObservationMatrix — 矩阵派生（MX 组，线索口径）', () => 
     expect(cell.attributes('aria-label')).toContain('4 条线索')
   })
 
-  it('MX-1b：颜色通道退役（D5）：格上无 is-p1/is-p2/is-p3 档位类，数字全在 title/aria', () => {
+  it('MX-1b：色深按当日线索行内归一（无事件线 is-p* 分档），数值仍全在 title/aria', () => {
     const wrapper = mountMatrix()
     for (const testid of ['matrix-cell-10-2026-10-23', 'matrix-cell-11-2026-10-22']) {
       const cell = wrapper.find(`[data-testid="${testid}"]`)
+      // 两行各自的峰值都是 66%（行内归一只，冷泳道不被热门泳道压白）
+      expect(cell.attributes('style')).toContain('--omx-clue-mix: 66%')
+      expect(cell.classes()).toContain('is-clue-depth')
       expect(cell.classes()).not.toContain('is-p1')
       expect(cell.classes()).not.toContain('is-p2')
       expect(cell.classes()).not.toContain('is-p3')
       expect(cell.attributes('aria-label')).toMatch(/条线索/)
     }
+    // 第二深的 3/4 → 50%（线性插值）；0 线索日不着色（无变量、无档位类）
+    expect(wrapper.find('[data-testid="matrix-cell-11-2026-10-21"]').attributes('style')).toContain('--omx-clue-mix: 50%')
+    const zero = wrapper.find('[data-testid="matrix-cell-10-2026-10-21"]')
+    expect(zero.text()).toBe('0')
+    expect(zero.attributes('style')).toBeUndefined()
+    expect(zero.classes()).not.toContain('is-clue-depth')
   })
 
   it('MX-2：clue_count 缺省回退各桶线索合计（11 的 10-21 日 → 1+2=3，非桶数 2）', () => {
@@ -211,14 +220,13 @@ describe('ObservationMatrix — 名单稳定与三态', () => {
     expect(pool.find('[data-testid="matrix-tier-note"]').text()).toContain('历史由 365 日池补充（不改名单）')
   })
 
-  it('图例可见：口径说明 = 「数字 = 当日线索合计」+ 断档/未知标记；无颜色图例', () => {
+  it('图例可见：口径说明 = 「数字 = 当日线索合计」+ 断档/未知标记；色深是冗余通道不进图例', () => {
     const wrapper = mountMatrix()
     const legend = wrapper.find('[data-testid="matrix-legend"]')
     expect(legend.exists()).toBe(true)
     expect(legend.text()).toContain('数字 = 当日线索合计')
     expect(legend.text()).toContain('无分区')
     expect(legend.text()).toContain('未取到')
-    expect(legend.text()).not.toContain('颜色')
     expect(legend.text()).not.toContain('事件线')
     const header = wrapper.find('[data-testid="matrix-lane-10"]')
     expect(header.attributes('title')).toContain('11 条线索')

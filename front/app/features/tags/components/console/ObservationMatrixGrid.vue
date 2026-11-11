@@ -2,10 +2,11 @@
 /**
  * 观察矩阵网格（rework-workshop-into-radar-and-desk 矩阵阶段 G3 + 8C G2）。
  *
- * 泳道 × 日期网格本体：格值 = 当日事件线数（story_count，缺省回退非综合稿线程合计）、
- * 颜色 = 最热事件线来源数分档（add-event-story-heat 5.4）；无分区 = '—' 禁用；历史未取到 =
- * '?' 禁用；有分区 0 事件线 = '0' 可开；**无行尾合计列**。名单/行序/休眠由父注入的 rows 携带，
- * 本组件只做逐可见日投影（resolveDay）与渲染；>31 列容器内横滚、标签列 sticky。
+ * 泳道 × 日期网格本体：格值 = 当日线索合计（旧响应回退各桶已知线索合计）、
+ * 色深 = 该值在本行可见窗内的归一深浅（`clueDepth`，行内归一只；颜色只是冗余强化通道）；
+ * 无分区 = '—' 禁用；历史未取到 = '?' 禁用；有分区 0 线索 = '0' 可开；**无行尾合计列**。
+ * 名单/行序/休眠由父注入的 rows 携带，本组件只做逐可见日投影（resolveDay）与渲染；
+ * >31 列容器内横滚、标签列 sticky。
  *
  * 8C G2 增量（日报日驱动的日期轴 + 当日其他话题组，纯受控）：
  *  - **日期列头**：`reportDates` 三态——省略 = 未接线（全不可点，旧调用零改动）；
@@ -25,6 +26,7 @@ import ObservationMatrixDayHeader from './ObservationMatrixDayHeader.vue'
 import ObservationMatrixLaneRow from './ObservationMatrixLaneRow.vue'
 import { OTHER_TOPICS_INDEX_LOADING_TEXT, type OtherTopicsView } from './dayOtherTopics'
 import {
+  clueRowMax,
   matrixCellView,
   projectMatrixCell,
   type LaneDayResolver,
@@ -81,11 +83,14 @@ interface RenderEntry {
 }
 
 function project(row: ObservationLaneRow, dormant: boolean): RenderEntry {
+  // 两遍：先把本行可见窗投影成原始格（拿 clueCount）→ 取行内归一分母 → 再出展示视图（色深行内归一）
+  const rawCells = props.axis.map(date => projectMatrixCell(props.resolveDay, row.topicId, date))
+  const rowMax = clueRowMax(rawCells.map(cell => (cell.kind === 'content' ? cell.metrics.clueCount : null)))
   return {
     row,
     dormant,
-    cells: props.axis.map(date =>
-      matrixCellView(projectMatrixCell(props.resolveDay, row.topicId, date), { laneLabel: row.label, date }),
+    cells: rawCells.map((cell, index) =>
+      matrixCellView(cell, { laneLabel: row.label, date: props.axis[index]!, rowMax }),
     ),
   }
 }

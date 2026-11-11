@@ -102,20 +102,11 @@
   font-weight: 600;
 }
 
-/* ── 来源数分档（add-event-story-heat 5.4）：矩阵格颜色 = 当日最热事件线独立来源数，
-   0 不着色 / 1-2 浅 / 3-5 中 / 6+ 深；单一色相只改 mix 比例，不引入新色相；
-   颜色不是唯一信息载体（格 title/aria 同时带三个数字）。 */
-.omx-cell.is-p1 {
-  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-base));
-}
-
-.omx-cell.is-p2 {
-  background: color-mix(in srgb, var(--color-accent) 32%, var(--color-bg-base));
-}
-
-.omx-cell.is-p3 {
-  background: color-mix(in srgb, var(--color-accent) 58%, var(--color-bg-base));
-  font-weight: 600;
+/* 色深（2026-11-11 用户看版后修订，tasks 3.5）：底色的深浅 = 该格当日线索合计在本行可见窗内的
+   归一比例（0 = 底色不着色、行内峰值 = 66% accent，线性插值）；跨行不归一，冷泳道不被热门泳道压白。
+   颜色只是冗余强化通道——格值数字 + title/aria 仍承载全部信息（无颜色仍完全可用）。 */
+.omx-cell.is-clue-depth {
+  background: color-mix(in srgb, var(--color-accent) var(--omx-clue-mix, 0%), var(--color-bg-base));
 }
 
 .omx-cell.is-today {

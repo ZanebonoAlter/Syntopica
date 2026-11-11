@@ -131,7 +131,7 @@ describe('ObservationMatrixGrid — 报日列头三态', () => {
   })
 })
 
-describe('ObservationMatrixGrid — 格值与颜色通道退役（线索口径，retire-story-adopt-event-metrics D4/D5）', () => {
+describe('ObservationMatrixGrid — 格值与色深（线索口径，retire-story-adopt-event-metrics D4/D5 + 3.5 修订）', () => {
   const CLUE_DAY: LaneDayResolution = {
     kind: 'content',
     source: 'tier',
@@ -158,10 +158,13 @@ describe('ObservationMatrixGrid — 格值与颜色通道退役（线索口径�
     return { kind: 'unavailable' }
   }
 
-  it('格值 = 当日线索合计（clue_count 优先，多桶合并）；无颜色档；title/aria 给「N 条线索 · M 个主题桶」', () => {
+  it('格值 = 当日线索合计（clue_count 优先，多桶合并）；色深行内归一；title/aria 给「N 条线索 · M 个主题桶」', () => {
     const wrapper = mountGrid({ resolveDay: resolver })
     const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-23"]')
     expect(cell.text()).toBe('7')
+    // 本行可见窗最大值 = 7 → 峰值格 66%；无事件线来源数分档类
+    expect(cell.attributes('style')).toContain('--omx-clue-mix: 66%')
+    expect(cell.classes()).toContain('is-clue-depth')
     expect(cell.classes()).not.toContain('is-p1')
     expect(cell.classes()).not.toContain('is-p2')
     expect(cell.classes()).not.toContain('is-p3')
@@ -174,10 +177,11 @@ describe('ObservationMatrixGrid — 格值与颜色通道退役（线索口径�
     expect(cell.attributes('disabled')).toBeUndefined()
   })
 
-  it('旧响应缺 clue_count：回退各桶已知线索合计（3，非桶数 1），仍无颜色档/无点名段', () => {
+  it('旧响应缺 clue_count：回退各桶已知线索合计（3，非桶数 1），色深按 3/7 = 28%，无点名段', () => {
     const wrapper = mountGrid({ resolveDay: resolver })
     const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-22"]')
     expect(cell.text()).toBe('3')
+    expect(cell.attributes('style')).toContain('--omx-clue-mix: 28%')
     expect(cell.classes()).not.toContain('is-p1')
     expect(cell.classes()).not.toContain('is-p2')
     expect(cell.classes()).not.toContain('is-p3')

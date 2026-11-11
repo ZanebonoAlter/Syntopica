@@ -12,8 +12,12 @@
  *    unavailable=历史未取到（'?' / null，不补 0、不假定无日报）。
  *
  * 量纲（retire-story-adopt-event-metrics D4/D5）：格值、演进节点、顶部曲线统一为
- * 「当日线索合计」（非综合稿 thread 数之和）；颜色通道整体退役——数值 + title/aria
- * 承载全部信息。
+ * 「当日线索合计」（非综合稿 thread 数之和）。
+ *
+ * 色深（2026-11-11 用户看版后修订，tasks 3.5）：矩阵日格与雷达小矩阵共用 `clueDepth`
+ * ——按当日线索合计在**本行可见窗**内归一（0 = 底色、行内峰值 = 最深、线性插值；
+ * 跨行不归一，冷泳道不被热门泳道压白）。颜色只是冗余强化通道：数值 + title/aria
+ * 仍是唯一信息承载（无障碍下颜色消失仍完全可用）；线索数未知（null）不造 0 也不着色。
  *
  * ID 契约：直接消费 API 边界归一后的 `sourceWindow.lanes`（topicId 已 string、camelCase），
  * 组件/本模型不再出现 raw snake_case 或散落 String(id) 映射。
@@ -133,14 +137,17 @@ export function projectMatrixCell(resolve: LaneDayResolver, topicId: string, dat
   return resolution.kind === 'gap' ? { kind: 'gap' } : { kind: 'unavailable' }
 }
 
-/** 矩阵格展示视图（D4/D5）：格值 = 当日线索合计；颜色通道退役（数值 + title/aria 承载全部信息）；
- *  '—'=gap；'?'=未知。aria/title 给出「N 条线索 · M 个主题桶」。 */
+/** 矩阵格展示视图（D4/D5）：格值 = 当日线索合计（数值 + title/aria 承载全部信息）；
+ *  '—'=gap；'?'=未知。aria/title 给出「N 条线索 · M 个主题桶」。
+ *  `depth` = 色深 0~1（调用方传入本行可见窗最大值做行内归一；不传/无已知分母 → 0 不着色）。 */
 export interface MatrixCellView {
   kind: 'content' | 'gap' | 'unavailable'
   /** 格内数字：当日线索合计 / '—' / '?'。 */
   text: string
   /** 有分区即可开（已知 0 线索合法可读）；gap/unavailable 不可开。 */
   openable: boolean
+  /** 色深 0~1（`clueDepth`）：0 = 不着色（零线索 / 未知 / 断档）。 */
+  depth: number
   aria: string
   title: string
 }
@@ -151,12 +158,13 @@ function contentLabel(metrics: DayCellMetrics): string {
   return `${clueText} · ${metrics.sectionCount} 个主题桶${peakNote}`
 }
 
-export function matrixCellView(cell: MatrixCell, context: { laneLabel: string, date: string }): MatrixCellView {
+export function matrixCellView(cell: MatrixCell, context: { laneLabel: string, date: string, rowMax?: number }): MatrixCellView {
   if (cell.kind === 'gap') {
     return {
       kind: 'gap',
       text: '—',
       openable: false,
+      depth: 0,
       aria: `${context.laneLabel} ${context.date}：无分区`,
       title: '这一天这条泳道没有分区',
     }
@@ -166,6 +174,7 @@ export function matrixCellView(cell: MatrixCell, context: { laneLabel: string, d
       kind: 'unavailable',
       text: '?',
       openable: false,
+      depth: 0,
       aria: `${context.laneLabel} ${context.date}：未取到（历史数据未加载或加载失败）`,
       title: '该日历史数据未取到，不补 0',
     }
@@ -176,9 +185,41 @@ export function matrixCellView(cell: MatrixCell, context: { laneLabel: string, d
     kind: 'content',
     text: metrics.clueCount === null ? '?' : String(metrics.clueCount),
     openable: true,
+    depth: clueDepth(metrics.clueCount, context.rowMax ?? 0),
     aria: label,
     title: label,
   }
+}
+
+// ── 矩阵色深（2026-11-11 用户看版后修订：颜色按当日线索数回归） ──────────────
+
+/** 色阶上限：行内峰值格的 accent 混入比例。66% 沿用旧最深档强度（`observationMatrixRows.css`
+ *  的 `.is-b4`），保证最深格上数字仍有足够对比度；两处矩阵共用同一上限。 */
+export const CLUE_DEPTH_MAX_MIX = 66
+
+/** 矩阵色深 0~1 = 当日线索合计 / 本行可见窗最大值（**行内归一只，跨行不归一**）。
+ *  0 线索、null（线索数未知 / 非 content 格）与非正分母 → 0（不着色）；
+ *  行内峰值 = 1，其余线性插值——连续刻度，不是旧事件线四档分档。 */
+export function clueDepth(clueCount: number | null | undefined, rowMax: number): number {
+  if (typeof clueCount !== 'number' || !Number.isFinite(clueCount) || clueCount <= 0) return 0
+  if (!Number.isFinite(rowMax) || rowMax <= 0) return 0
+  return Math.min(1, clueCount / rowMax)
+}
+
+/** 行内归一分母：本行可见窗内已知线索数的最大值；null（未知格）不参与，不造 0。
+ *  全行未知/全 0 → 0（整行不着色）。 */
+export function clueRowMax(counts: Iterable<number | null | undefined>): number {
+  let max = 0
+  for (const count of counts) {
+    if (typeof count === 'number' && Number.isFinite(count) && count > max) max = count
+  }
+  return max
+}
+
+/** 色深 → `color-mix` 混入比例（`NN%`）；0 返回空串 = 不着色（调用方不注入样式，保持底色/未知态）。 */
+export function clueMix(depth: number): string {
+  if (!Number.isFinite(depth) || depth <= 0) return ''
+  return `${Math.round(Math.min(1, depth) * CLUE_DEPTH_MAX_MIX)}%`
 }
 
 // ── 演进带投影（EV 组） ─────────────────────────────────────────────────────

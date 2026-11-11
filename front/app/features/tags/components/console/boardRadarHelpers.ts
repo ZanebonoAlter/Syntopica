@@ -6,8 +6,10 @@
  * 唯一实现；输入为 API 边界归一后的 camelCase/字符串 ID 读模型（RadarBoard/RadarLane），
  * 展示组件只消费结果，不再各自复制口径（分档与环比语义见 ui-design.md「权威数据与口径」）。
  *
- * 量纲（D4/D5）：一切展示量都是「当日线索合计」；事件线数、分区数、来源数与颜色分档
- * （`laneLevel` / `laneDegradedLevel`）已整体退役——数值 + title/aria 承载全部信息。
+ * 量纲（D4/D5）：一切展示量都是「当日线索合计」；事件线数、分区数与 `laneLevel` /
+ * `laneDegradedLevel` 四档分档已整体退役。色深不在这里：改由 `observationLanes.clueDepth`
+ * 按当日线索数做行内归一连续深浅（2026-11-11 看版后修订，tasks 3.5），数值 + title/aria
+ * 仍是唯一信息承载。
  */
 import type { RadarBoard } from '~/api/normalizers/boardRadar'
 

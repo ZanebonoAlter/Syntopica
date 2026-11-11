@@ -5,7 +5,9 @@
  *    休眠分组仍用 sectionTotal 阈值
  *  - B 池独有 ID 不入名单；观察轴宽度变化永不重算名单/休眠/候选
  *  - 矩阵格视图三态（content = 当日线索合计 / 未知 '?'、gap '—'、unavailable '?'）；
- *    颜色通道与最热事件线点名整体退役（D5）
+ *    事件线量纲与最热事件线点名整体退役（D5）
+ *  - 矩阵色深（2026-11-11 用户看版后修订）：当日线索合计在本行可见窗内归一（0 = 不着色、
+ *    行内峰值 = 1、线性插值）；跨行不归一，0/null/非正分母不着色；混入比例单调
  *  - 演进点径公式 / 节点投影（节点数字 = 当日线索合计）/ series 值（gap=已知 0、未知=null 不补 0）
  */
 import { describe, expect, it } from 'vitest'
@@ -13,7 +15,11 @@ import type { LaneDynamicsResponse } from '~/api/laneDynamics'
 import { normalizeLaneDynamicsWindow, type LaneDynamicsWindowData, type WindowLaneDay, type WindowSection } from '~/api/normalizers/laneDynamicsWindow'
 import { buildDayAxis } from '~/features/tags/composables/laneMatrixModel'
 import {
+  CLUE_DEPTH_MAX_MIX,
   buildObservationRows,
+  clueDepth,
+  clueMix,
+  clueRowMax,
   compareTopicId,
   evolutionDotSize,
   evolutionSeriesValue,
@@ -299,11 +305,63 @@ describe('observationLanes — 矩阵格视图（MX 组，线索口径）', () =
     expect(unknown.aria).toContain('未取到')
   })
 
-  it('颜色通道退役（D5）：格视图无 bucket/来源数分档，信息全在数值 + title/aria', () => {
-    const view = matrixCellView(projectMatrixCell(resolve, '10', '2026-10-23'), { laneLabel: '主线', date: '2026-10-23' })
-    expect(Object.keys(view).sort()).toEqual(['aria', 'kind', 'openable', 'text', 'title'])
+  it('格视图只带数值/深度/aria（无 bucket）：色深由 rowMax 行内归一，不在视图里塞归属类名', () => {
+    const cell = projectMatrixCell(resolve, '10', '2026-10-23')
+    const view = matrixCellView(cell, { laneLabel: '主线', date: '2026-10-23', rowMax: 11 })
+    expect(Object.keys(view).sort()).toEqual(['aria', 'depth', 'kind', 'openable', 'text', 'title'])
+    expect(view.depth).toBe(1)
+    expect(matrixCellView(cell, { laneLabel: '主线', date: '2026-10-23', rowMax: 22 }).depth).toBe(0.5)
     expect(view.title).not.toContain('最热')
     expect(view.title).not.toContain('个来源')
+    // 未知/断档格 depth 恒 0（不造 0、不着色），即使传了分母
+    const unknown = matrixCellView({ kind: 'content', metrics: { clueCount: null, total: 0, peak: null, sectionCount: 2, hasUnknown: true } }, { laneLabel: '主线', date: '2026-10-22', rowMax: 11 })
+    expect(unknown.depth).toBe(0)
+    const gap = matrixCellView({ kind: 'gap' }, { laneLabel: '主线', date: '2026-10-15', rowMax: 11 })
+    expect(gap.depth).toBe(0)
+  })
+})
+
+// ── 矩阵色深（2026-11-11 用户看版后修订，tasks 3.5）───────────────────────
+
+describe('observationLanes — 矩阵色深（行内归一连续深浅）', () => {
+  it('线性单调：同格线索越多越深；行内峰值 = 1，其余按比例插值', () => {
+    const rowMax = 10
+    const depths = [1, 4, 7, 10].map(count => clueDepth(count, rowMax))
+    expect(depths).toEqual([0.1, 0.4, 0.7, 1])
+    for (let i = 1; i < depths.length; i++) expect(depths[i]!).toBeGreaterThan(depths[i - 1]!)
+  })
+
+  it('0 线索与 null（未知）都不着色，不造 0 也不拿未知拉低分母', () => {
+    expect(clueDepth(0, 10)).toBe(0)
+    expect(clueDepth(null, 10)).toBe(0)
+    expect(clueDepth(undefined, 10)).toBe(0)
+    expect(clueDepth(-3, 10)).toBe(0)
+    expect(clueDepth(Number.NaN, 10)).toBe(0)
+    expect(clueRowMax([null, undefined, 3, null])).toBe(3)
+    expect(clueRowMax([null, null])).toBe(0)
+    expect(clueDepth(3, 0)).toBe(0)
+  })
+
+  it('行内归一不受其它行影响：冷泳道的峰值仍是最深，不被热门泳道的绝对数压白', () => {
+    const coldRow = [1, 2, 4]
+    const hotRow = [50, 100, 200]
+    const coldDepths = coldRow.map(count => clueDepth(count, clueRowMax(coldRow)))
+    const hotDepths = hotRow.map(count => clueDepth(count, clueRowMax(hotRow)))
+    expect(coldDepths).toEqual([0.25, 0.5, 1])
+    expect(coldDepths).toEqual(hotDepths)
+    // 同样的 4 条线索：冷行峰值、热行只有 2%，证明分母只取本行
+    expect(clueDepth(4, clueRowMax(coldRow))).toBe(1)
+    expect(clueDepth(4, clueRowMax(hotRow))).toBeCloseTo(0.02, 10)
+  })
+
+  it('混入比例：0 返回空串（不注入样式），峰值 = 66%，中间整数百分比且单调不减', () => {
+    expect(clueMix(0)).toBe('')
+    expect(clueMix(-0.5)).toBe('')
+    expect(clueMix(1)).toBe('66%')
+    expect(clueMix(0.5)).toBe('33%')
+    expect(CLUE_DEPTH_MAX_MIX).toBe(66)
+    const mixes = [0.1, 0.4, 0.7, 1].map(depth => Number(clueMix(depth).replace('%', '')))
+    expect(mixes).toEqual([7, 26, 46, 66])
   })
 })
 

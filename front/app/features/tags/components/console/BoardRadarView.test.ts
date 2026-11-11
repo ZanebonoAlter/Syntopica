@@ -357,13 +357,44 @@ describe('BoardRadarView — 8A.1 报刊式总览（已批准原型）', () => {
     expect(push).toHaveBeenLastCalledWith({ path: '/tags/1974', query: { lane: '1' } })
   })
 
-  it('小矩阵颜色通道退役（D5）：只有「有线索/无线索」两态底色，不构成数值色阶', async () => {
+  it('小矩阵色深（2026-11-11 修订）：按本行 14 天线索数行内归一连续深浅，0 不着色', async () => {
+    const wrapper = await mountRadar([row({
+      lanes: [{ topicId: '1', label: '美伊博弈', threadCount14d: 40, clueCounts: [1, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }],
+    })])
+    const cells = wrapper.findAll('[data-testid="radar-row-1974"] .rd-mini-cell')
+    // 行内最大值 = 4 → 1/4 = 17%、2/4 = 33%、4/4 = 66%（线性插值，单调递增）
+    expect(cells[0]!.attributes('style')).toContain('--rd-clue-mix: 17%')
+    expect(cells[1]!.attributes('style')).toContain('--rd-clue-mix: 33%')
+    expect(cells[2]!.attributes('style')).toContain('--rd-clue-mix: 66%')
+    // 0 线索不着色：不注入色深变量、无档位类（仍保留「0 条线索」可读文本）
+    expect(cells[3]!.attributes('style')).toBeUndefined()
+    expect(cells[3]!.classes()).not.toContain('is-clue-depth')
+    expect(cells[2]!.classes()).toContain('is-clue-depth')
+    // 数值 + title/aria 仍是唯一信息承载，不因颜色回来而改变
+    expect(cells[0]!.attributes('title')).toContain('1 条线索')
+    expect(cells[3]!.attributes('title')).toContain('0 条线索')
+  })
+
+  it('小矩阵色深行内归一：不同行各自峰值都最深，不受其它泳道绝对数影响', async () => {
+    const wrapper = await mountRadar([row({
+      lanes: [
+        { topicId: '1', label: '冷泳道', threadCount14d: 3, clueCounts: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+        { topicId: '2', label: '热泳道', threadCount14d: 400, clueCounts: [100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+      ],
+    })])
+    const rows = wrapper.findAll('[data-testid="radar-row-1974"] .rd-mini-lane')
+    const cold = rows[0]!.findAll('.rd-mini-cell')[0]!
+    const hot = rows[1]!.findAll('.rd-mini-cell')[0]!
+    expect(cold.attributes('style')).toContain('--rd-clue-mix: 66%')
+    expect(hot.attributes('style')).toContain('--rd-clue-mix: 66%')
+    expect(cold.attributes('title')).toContain('1 条线索')
+    expect(hot.attributes('title')).toContain('100 条线索')
+  })
+
+  it('小矩阵不再有事件线来源数分档类（is-p1/is-p2/is-p3 与 is-active 均退役）', async () => {
     const wrapper = await mountRadar([row()])
     const cells = wrapper.findAll('[data-testid="radar-row-1974"] .rd-mini-cell')
-    // 今天有线索 → is-active；其余 0 → 无档位类
-    expect(cells[13]!.classes()).toContain('is-active')
-    expect(cells[12]!.classes()).not.toContain('is-active')
-    for (const retired of ['b1', 'b2', 'b3', 'b4', 'd1', 'd2', 'd3', 'd4', 'is-degraded']) {
+    for (const retired of ['is-p1', 'is-p2', 'is-p3', 'is-active', 'is-degraded']) {
       expect(cells[13]!.classes()).not.toContain(retired)
       expect(cells[12]!.classes()).not.toContain(retired)
     }

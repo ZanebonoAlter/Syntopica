@@ -11,13 +11,15 @@
  * 保持一致（父组件列定义仅限定其自有 .rd-labels，不命中本组件根，避免覆盖移动端
  * 列定义，R-20），改断点须两处同步。
  *
- * 小矩阵（D5）：格值 = 该泳道该日线索合计（`clue_counts`）；**颜色通道退役**，
- * 数值 + title/aria 承载全部信息。旧后端缺 `clue_counts` 的格子标「线索数未知」，
- * SHALL NOT 造 0，也不拿分区数/事件数冒充线索数。
+ * 小矩阵（D5）：格值 = 该泳道该日线索合计（`clue_counts`）；**颜色 = 该数在本泳道 14 天窗口内的
+ * 归一深浅**（2026-11-11 用户看版后修订，tasks 3.5：行内归一只，0/未知不着色，行内峰值最深）。
+ * 颜色只是冗余强化通道，数值 + title/aria 仍是唯一信息承载；旧后端缺 `clue_counts` 的格子标
+ * 「线索数未知」，SHALL NOT 造 0，也不拿分区数/事件数冒充线索数。
  */
 import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { RADAR_HOT_ATTENTION, isDelayed, miniAxis, shortDate, tierLabel, trendOf } from './boardRadarHelpers'
+import { clueDepth, clueMix, clueRowMax } from './observationLanes'
 import type { RadarBoard, RadarLane } from '~/api/semanticBoards'
 
 const props = defineProps<{
@@ -48,10 +50,13 @@ const miniDates = computed(() => miniAxis(props.globalDate || props.row.anchorDa
 /** 单格线索数；null = 该日未知（旧后端缺 clue_counts），展示为「线索数未知」。 */
 interface LaneCell { count: number | null }
 
-function laneCells(lane: RadarLane): LaneCell[] {
-  if (!lane.clueCounts) return Array.from({ length: 14 }, () => ({ count: null }))
-  return lane.clueCounts.map(count => ({ count: typeof count === 'number' && Number.isFinite(count) ? count : null }))
-}
+/** 每行（泳道）的 14 天格子 + 行内归一分母（色深只看本行，跨行不归一）。 */
+const miniRows = computed(() => props.row.lanes.map((lane) => {
+  const cells: LaneCell[] = lane.clueCounts
+    ? lane.clueCounts.map(count => ({ count: typeof count === 'number' && Number.isFinite(count) ? count : null }))
+    : Array.from({ length: 14 }, () => ({ count: null }))
+  return { lane, cells, rowMax: clueRowMax(cells.map(cell => cell.count)) }
+}))
 
 /** 格子可读文本：已知写「N 条线索」，未知写「线索数未知」——不造 0、不拿分区数冒充。 */
 function cellTitle(cell: LaneCell, dayIndex: number): string {
@@ -59,9 +64,15 @@ function cellTitle(cell: LaneCell, dayIndex: number): string {
   return `${date} · ${cell.count === null ? '线索数未知' : `${cell.count} 条线索`}`
 }
 
-/** 已知线索格有值时加一档底色（无值 = 零线索/未知都用底色），仅此一档、不构成色阶。 */
-function cellClass(cell: LaneCell): string {
-  return cell.count ? 'is-active' : ''
+/** 已知线索格有值时按行内归一比例着色（0/未知 = 底色，不构成信息）；颜色只是冗余强化通道。 */
+function cellClass(cell: LaneCell, rowMax: number): string {
+  return clueDepth(cell.count, rowMax) > 0 ? 'is-clue-depth' : ''
+}
+
+/** 色深经 CSS 变量交给主题色阶（`--color-accent` mix `--color-bg-hover`），不新增第二份色板。 */
+function cellStyle(cell: LaneCell, rowMax: number): Record<string, string> {
+  const mix = clueMix(clueDepth(cell.count, rowMax))
+  return mix === '' ? {} : { '--rd-clue-mix': mix }
 }
 
 function laneTitle(lane: RadarLane): string {
@@ -102,26 +113,27 @@ function openLane(lane: RadarLane): void {
     </div>
 
     <div class="rd-mini rd-grid-mini">
-      <div v-for="lane in row.lanes" :key="lane.topicId" class="rd-mini-lane">
+      <div v-for="entry in miniRows" :key="entry.lane.topicId" class="rd-mini-lane">
         <button
           type="button"
           class="rd-mini-name"
-          :title="laneTitle(lane)"
-          @click.stop="openLane(lane)"
+          :title="laneTitle(entry.lane)"
+          @click.stop="openLane(entry.lane)"
         >
-          {{ lane.label }}
+          {{ entry.lane.label }}
         </button>
         <div class="rd-mini-cells">
           <button
-            v-for="(cell, dayIndex) in laneCells(lane)"
+            v-for="(cell, dayIndex) in entry.cells"
             :key="dayIndex"
             type="button"
             class="rd-mini-cell"
-            :class="cellClass(cell)"
+            :class="cellClass(cell, entry.rowMax)"
+            :style="cellStyle(cell, entry.rowMax)"
             :data-known="cell.count === null ? 'false' : 'true'"
             :title="cellTitle(cell, dayIndex)"
-            :aria-label="`${lane.label} · ${cellTitle(cell, dayIndex)}，进入泳道`"
-            @click.stop="openLane(lane)"
+            :aria-label="`${entry.lane.label} · ${cellTitle(cell, dayIndex)}，进入泳道`"
+            @click.stop="openLane(entry.lane)"
           />
         </div>
       </div>
@@ -293,8 +305,8 @@ function openLane(lane: RadarLane): void {
   height: 0.6rem;
 }
 
-/* 颜色通道退役（D5）：只有「有线索 / 无线索或未知」两态底色，不构成表达数值的色阶；
- * 具体数字全在 title/aria。 */
+/* 色深（2026-11-11 用户看版后修订，tasks 3.5）：行内归一的连续深浅（0/未知 = 底色，
+ * 本行峰值 = 66% accent），跨行不归一；颜色只是冗余强化通道，数字仍在 title/aria。 */
 .rd-mini-cell {
   min-width: 0;
   padding: 0;
@@ -304,8 +316,8 @@ function openLane(lane: RadarLane): void {
   cursor: pointer;
 }
 
-.rd-mini-cell.is-active {
-  background: var(--color-accent);
+.rd-mini-cell.is-clue-depth {
+  background: color-mix(in srgb, var(--color-accent) var(--rd-clue-mix, 0%), var(--color-bg-hover));
 }
 
 .rd-mini-empty {

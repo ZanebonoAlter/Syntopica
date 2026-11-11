@@ -6,7 +6,7 @@
  * useBoardRadarOverview（API 边界已归一 camelCase/字符串 ID），报头、故事行、
  * 常温区、阅读右栏、治理宿主各自拆分为子组件。分档按版块关注度（Σ 泳道当天热度）
  * 的 P80/P20 阈值（见 boardRadarHelpers）；矩阵/小矩阵/3 日窗口统一为当日线索合计，
- * 事件线量与颜色通道已退役（retire-story-adopt-event-metrics D4/D5/D10）。
+ * 事件线量已退役，小矩阵色深按线索数行内归一（retire-story-adopt-event-metrics D4/D5/D10 + 3.5 修订）。
  * 首次取数失败不把初始化 0 当业务结论（R-17），有旧数据时刷新失败保留旧值。
  * 右栏契约：一块「当天线索最多的泳道」清单（服务端归并/排序/截断，上限 8）+
  * partial/滞后诚实标记；旧后端缺该段时回退版块级日报标题列表。

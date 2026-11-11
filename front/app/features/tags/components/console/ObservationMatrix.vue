@@ -5,7 +5,8 @@
  * 本组件 = 头部说明（口径说明/数据截止/查看所选日）+ 状态分层
  * （loading 骨架 / 首次错误 / 刷新失败 stale / 无日报 / 有日报无泳道）+ 网格挂载
  * （`ObservationMatrixGrid`：行×日格、休眠折叠、日格三态；格值 = 当日线索合计，
- *  颜色通道退役——数值 + title/aria 承载全部信息，retire-story-adopt-event-metrics D4/D5）。
+ *  色深 = 该值在本行可见窗内的归一连续深浅（冗余强化通道，数值 + title/aria 仍承载全部信息），
+ *  retire-story-adopt-event-metrics D4/D5 + 2026-11-11 看版后修订 tasks 3.5）。
  *
  * 受控契约：数据全由父（G5）经 props 注入，组件不自建网络/日期/选中状态；
  * 点格只转发 selectDate（父就地更新选中日与下方阅读；不开弹层、不强滚——
