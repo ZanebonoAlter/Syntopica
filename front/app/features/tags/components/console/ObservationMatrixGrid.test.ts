@@ -131,6 +131,107 @@ describe('ObservationMatrixGrid — 报日列头三态', () => {
   })
 })
 
+describe('ObservationMatrixGrid — 格值与颜色档（story 口径，add-event-story-heat 5.4）', () => {
+  const STORY_DAY: LaneDayResolution = {
+    kind: 'content',
+    source: 'tier',
+    day: {
+      date: '2026-10-23',
+      sections: [
+        { sectionId: '1', label: '桶1', threadCount: 3, fallbackClueCount: null, foldedCount: 0, eventTitles: ['事件一'] },
+        { sectionId: '2', label: '桶2', threadCount: 1, fallbackClueCount: null, foldedCount: 0, eventTitles: [] },
+      ],
+      storyCount: 2,
+      maxParticipantCount: 6,
+      unassignedEventCount: 4,
+      hottestStoryId: 55,
+      hottestStoryTitle: '美伊博弈升级',
+    },
+  }
+  const FALLBACK_DAY: LaneDayResolution = {
+    kind: 'content',
+    source: 'tier',
+    day: {
+      date: '2026-10-22',
+      sections: [{ sectionId: '3', label: '桶3', threadCount: null, fallbackClueCount: 3, foldedCount: 0, eventTitles: ['a', 'b', 'c'] }],
+    },
+  }
+  const resolver = (topicId: string, date: string): LaneDayResolution => {
+    if (date === '2026-10-23') return STORY_DAY
+    if (date === '2026-10-22') return FALLBACK_DAY
+    return { kind: 'unavailable' }
+  }
+
+  it('格值 = story_count（同日多桶合并）；颜色档 = 来源数（6+ → is-p3）；title/aria 点名最热线（surface-story-heat-in-report-top）', () => {
+    const wrapper = mountGrid({ resolveDay: resolver })
+    const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-23"]')
+    expect(cell.text()).toBe('2')
+    expect(cell.classes()).toContain('is-p3')
+    expect(cell.attributes('title')).toContain('2 个事件线')
+    expect(cell.attributes('title')).toContain('最热：美伊博弈升级（6 个来源）')
+    expect(cell.attributes('title')).toContain('未归组 4 个事件')
+    expect(cell.attributes('aria-label')).toBe(cell.attributes('title'))
+    expect(cell.attributes('disabled')).toBeUndefined()
+  })
+
+  it('无最热线身份（旧响应缺字段）：负向断言——不追点名段，标注「最热事件线暂不可识别」不冒名', () => {
+    const wrapper = mountGrid({ resolveDay: resolver })
+    const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-22"]')
+    expect(cell.text()).toBe('3')
+    expect(cell.attributes('title')).toContain('最热 0 个来源')
+    expect(cell.attributes('title')).toContain('最热事件线暂不可识别')
+    expect(cell.attributes('title')).not.toContain('最热：')
+    expect(cell.attributes('title')).not.toContain('undefined')
+    expect(cell.attributes('title')).not.toContain('（）')
+  })
+
+  it('story_count 缺省回退非综合稿线程合计（3，非桶数 1）；无来源数不着色', () => {
+    const wrapper = mountGrid({ resolveDay: resolver })
+    const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-22"]')
+    expect(cell.text()).toBe('3')
+    expect(cell.classes()).not.toContain('is-p1')
+    expect(cell.classes()).not.toContain('is-p2')
+    expect(cell.classes()).not.toContain('is-p3')
+  })
+
+  it('三态保持：断档「—」禁用不可开；历史未取到「?」禁用；0 事件线可开', async () => {
+    const gapResolver = (_topicId: string, date: string): LaneDayResolution =>
+      date === '2026-10-21' ? { kind: 'gap' } : resolver(_topicId, date)
+    const zeroDay: LaneDayResolution = {
+      kind: 'content',
+      source: 'tier',
+      day: {
+        date: '2026-10-22',
+        sections: [{ sectionId: '9', label: '桶9', threadCount: 0, fallbackClueCount: 0, foldedCount: 0, eventTitles: [] }],
+      },
+    }
+    const mixed = (topicId: string, date: string): LaneDayResolution => {
+      if (date === '2026-10-22') return zeroDay
+      return gapResolver(topicId, date)
+    }
+    const wrapper = mountGrid({ resolveDay: mixed })
+
+    const gap = wrapper.find('[data-testid="matrix-cell-10-2026-10-21"]')
+    expect(gap.text()).toBe('—')
+    expect(gap.attributes('disabled')).toBeDefined()
+    expect(gap.attributes('aria-label')).toContain('无分区')
+    await gap.trigger('click')
+    expect(wrapper.emitted('selectDate')).toBeUndefined()
+
+    const unavailableGrid = mountGrid({ resolveDay: () => ({ kind: 'unavailable' }) })
+    const unavailable = unavailableGrid.find('[data-testid="matrix-cell-10-2026-10-23"]')
+    expect(unavailable.text()).toBe('?')
+    expect(unavailable.attributes('disabled')).toBeDefined()
+    expect(unavailable.attributes('aria-label')).toContain('未取到')
+
+    const zero = wrapper.find('[data-testid="matrix-cell-10-2026-10-22"]')
+    expect(zero.text()).toBe('0')
+    expect(zero.attributes('disabled')).toBeUndefined()
+    await zero.trigger('click')
+    expect(wrapper.emitted('selectDate')![0]).toEqual([{ topicId: '10', date: '2026-10-22' }])
+  })
+})
+
 describe('ObservationMatrixGrid — 组顺序与旧事件保留', () => {
   it('DOM 顺序：正式行 → 其他组 summary/行 → 休眠 summary → 休眠行', () => {
     const wrapper = mountGrid({ otherTopics: otherView(), othersOpen: true, expandedDormant: true })

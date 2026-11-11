@@ -16,6 +16,9 @@ import (
 	"syntopica-backend/internal/tagmanagement/service/boardhealth"
 	"syntopica-backend/internal/tagmanagement/service/sourcestats"
 	"syntopica-backend/internal/tagmanagement/service/watched"
+	// 实体主体归一 hook（normalize-event-subject-entities）：blank import 触发
+	// init 挂 core.EntitySubjectHook（off 态在 hook 内部零开销短路）。
+	_ "syntopica-backend/internal/tagmanagement/service/entity"
 )
 
 // Register domain-owned models with AutoMigrate via the injection registry.
@@ -51,6 +54,7 @@ func init() {
 		&tagmodels.CompositeComponent{},
 		&tagmodels.EmbeddingConfig{},
 		&tagmodels.MergeReembeddingQueue{},
+		&tagmodels.RelatedEventEmbedding{},
 		&tagmodels.TagCategoryMeta{},
 		&tagmodels.TopicTagAnalysis{},
 		&tagmodels.TopicTagBoardLabel{},
@@ -58,6 +62,9 @@ func init() {
 		&tagmodels.TopicTagSemanticLabel{},
 		&tagmodels.TagMergeSuggestion{},
 	)
+	// 实体主体身份层三表（normalize-event-subject-entities T1：模型清单由
+	// models/entity_subject.go 自带；约束/FK 由迁移 20261112_0001 钉死）。
+	database.RegisterModels(tagmodels.EntitySubjectModels()...)
 }
 
 // ============================================================================
@@ -221,6 +228,12 @@ var (
 // of tagmanagement subpackages are forbidden from admin).
 type BoardHealthLLM = boardhealth.BoardHealthLLM
 
+// BoardHealthOptions 是体检入口的参数（板块范围 + 新鲜度守卫窗口）。
+type BoardHealthOptions = boardhealth.Options
+
+// BoardHealthDefaultMinInterval 是体检新鲜度守卫的默认窗口（6h）。
+const BoardHealthDefaultMinInterval = boardhealth.DefaultMinInterval
+
 var (
 	RunBoardHealthCheckup    = boardhealth.RunCheckup
 	NewDefaultBoardHealthLLM = boardhealth.NewDefaultBoardHealthLLM
@@ -228,8 +241,18 @@ var (
 
 // RunBoardHealthCheckupWrapped runs a full checkup round with the production
 // airouter-backed LLM — the exact entry the daily-report tail step calls.
+// Zero guard: every call runs a full round (CLI / tail-step behaviour is
+// unchanged).
 func RunBoardHealthCheckupWrapped(ctx context.Context, db *gorm.DB) {
 	boardhealth.RunCheckup(ctx, db, boardhealth.NewDefaultBoardHealthLLM())
+}
+
+// RunBoardHealthCheckupWithOptions runs one checkup round with an explicit
+// scope (opts.BoardIDs) and the freshness guard (opts.MinInterval, default
+// 6h) — the entry the backfill trigger and the manual daily-report endpoint
+// use, so a repeated trigger costs one SQL instead of a full LLM round.
+func RunBoardHealthCheckupWithOptions(ctx context.Context, db *gorm.DB, opts BoardHealthOptions) {
+	boardhealth.RunCheckupWithOptions(ctx, db, boardhealth.NewDefaultBoardHealthLLM(), opts)
 }
 
 // ============================================================================

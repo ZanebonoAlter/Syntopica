@@ -7,6 +7,10 @@ const props = defineProps<{
   visible: boolean
   config: MatchingConfig | null
   loading: boolean
+  /** 保存中（防重复提交）。 */
+  saving?: boolean
+  /** 保存失败信息（父层 API 结果回传；有值时保留输入并提示重试）。 */
+  saveError?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -27,13 +31,34 @@ watch([() => props.visible, () => props.config], ([v, c]) => {
   }
 })
 
+/**
+ * 数值字段归一：空串 / null / NaN / Infinity 一律视为非法（不是 0）。
+ * 相关事件阈值是「相似度」而非身份置信度，范围固定 [0,1]（design D6）。
+ */
+function toFiniteNumber(value: unknown): number | null {
+  if (value === '' || value === null || value === undefined) return null
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const relatedThresholdError = computed(() => {
+  const parsed = toFiniteNumber(form.value.related_event_similarity_threshold)
+  if (parsed === null) return '请填写 0 到 1 之间的数值'
+  if (parsed < 0 || parsed > 1) return '取值范围 0 ~ 1'
+  return ''
+})
+
 function handleSave() {
-  emit('save', form.value)
+  if (relatedThresholdError.value) return
+  emit('save', {
+    ...form.value,
+    related_event_similarity_threshold: toFiniteNumber(form.value.related_event_similarity_threshold) ?? undefined,
+  })
 }
 </script>
 
 <template>
-  <AppDialog v-model="show" title="参数配置" width="740px">
+  <AppDialog v-model="show" title="参数配置" size="lg">
     <div v-if="loading" class="loading-text">加载中...</div>
 
     <div v-else class="mc-body">
@@ -189,6 +214,30 @@ function handleSave() {
         </div>
       </div>
 
+      <!-- ===== 相关事件（独立于入板规则：按事件语义推荐，不合并事件） ===== -->
+      <div class="mc-rule-block" data-testid="mc-related-events">
+        <div class="mc-rule-title">
+          <span class="mc-rule-badge mc-rule-badge--related">相关</span>
+          <span>相关事件</span>
+        </div>
+        <p class="mc-rule-desc">按事件名称、描述与辅助标签的语义相似度，推荐同版块「值得一起看」的其他事件。只是相关推荐，不合并事件、不判定同一事实，也不参与入板命中顺序。</p>
+        <div class="mc-grid">
+          <label class="mc-field">
+            <span class="mc-label">相关事件相似度阈值</span>
+            <span class="mc-hint">两条事件描述的余弦相似度达到此值才列为相关。默认 0.86；调高更严格、调低更宽松，改动后无需重算向量，下次展开即生效</span>
+            <AppInput
+              v-model="form.related_event_similarity_threshold"
+              type="number"
+              step="0.01"
+              min="0"
+              max="1"
+              :error="relatedThresholdError"
+              data-testid="mc-related-threshold"
+            />
+          </label>
+        </div>
+      </div>
+
       <!-- ===== 升级建议 ===== -->
       <div class="mc-rule-block">
         <div class="mc-rule-title">
@@ -240,8 +289,15 @@ function handleSave() {
     </div>
 
     <template #footer>
+      <span v-if="saveError" class="mc-save-error" data-testid="mc-save-error">{{ saveError }}（输入已保留，可重试）</span>
       <AppButton variant="ghost" size="sm" @click="emit('cancel')">取消</AppButton>
-      <AppButton variant="primary" size="sm" @click="handleSave">保存</AppButton>
+      <AppButton
+        variant="primary"
+        size="sm"
+        :loading="saving"
+        :disabled="!!relatedThresholdError || saving"
+        @click="handleSave"
+      >保存</AppButton>
     </template>
   </AppDialog>
 </template>
@@ -269,6 +325,12 @@ function handleSave() {
 
 .mc-desc strong {
   color: var(--color-text-secondary);
+}
+
+.mc-save-error {
+  margin-right: auto;
+  font-size: 0.72rem;
+  color: var(--color-danger, #dc2626);
 }
 
 .mc-rule-block {
@@ -332,6 +394,11 @@ function handleSave() {
 .mc-rule-badge--post {
   background: rgba(255, 80, 80, 0.12);
   color: rgba(255, 120, 120, 0.85);
+}
+
+.mc-rule-badge--related {
+  background: rgba(120, 200, 120, 0.12);
+  color: rgba(140, 220, 140, 0.85);
 }
 
 .mc-rule-badge--upgrade {

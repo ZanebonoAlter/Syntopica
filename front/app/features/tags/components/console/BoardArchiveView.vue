@@ -667,6 +667,7 @@ const advancedActive = computed(() => feedId.value !== null || labelId.value !==
       :tag="pop.mode === 'tag' ? pop.tag : null"
       :anchor="pop.anchor"
       @close="pop = null"
+      @open-article="id => emit('open-article', id)"
     />
   </section>
 </template>

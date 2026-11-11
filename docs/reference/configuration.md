@@ -103,6 +103,30 @@ database:
 - **server** — 控制 HTTP 服务器端口和 Gin 运行模式。`release` 模式下 Gin 会抑制调试输出。
 - **database** — 配置持久化层。`driver` 字段始终为 `"postgres"`。PostgreSQL 有独立的连接池调优参数。
 - **cors** — 跨域请求的允许来源、HTTP 方法和请求头。来源是列表形式；通过 `CORS_ORIGINS` 环境变量覆盖时，解析为逗号分隔的字符串。
+- **entity_subject** — 全局实体主体归一身份层开关（`entity_subject.mode`，normalize-event-subject-entities）。**默认 `off`**（2026-11-10 决策：影子实验结束，实体层不接入事件线判定；避免实体注册表只增不减成为黑洞。代码与数据都保留，可通过配置切到 `shadow` 继续跑实验态）。本轮只实现 `off` / `shadow`，`active` **显式报错拒绝**。详见下方「实体主体归一（`entity_subject.mode`）」。
+
+### 实体主体归一（`entity_subject.mode`）
+
+事件标签的主体提及可以被归一到一套**全局稳定实体 ID**（`entity_registry` / `entity_mentions` / `entity_aux_links` 三表，见 [`database/tables/entity-subjects.md`](database/tables/entity-subjects.md)）。本开关控制这条链是否跑、写到哪：
+
+| 模式 | 行为 | 部署后可见行为变化 |
+| --- | --- | --- |
+| `off`（默认） | 第一轮提示与 schema 与调用数**逐字不变**（不发 `subject_desc` 字段）；零二轮模型调用；零实体层写入；**不写** `topic_tags.metadata.entity_subject` 键 | **零变化**（= 上线前行为） |
+| `shadow`（实验态） | 第一轮同一次调用额外产出主体原文与**稳定短身份说明**（零新增调用）；写入**限定三处**：实体层三表、正常 AI 审计（`ai_call_logs`）、`topic_tags.metadata.entity_subject` 独立惰性键 | 标签、事件线、日报、话题与界面可见字段全部不变；新字段当前**无读路径** |
+| `active` | **本期未实现**：服务层返回明确错误（`entity_subject.mode=active 本期未实现…不会静默按 shadow 执行`），不静默降级为影子态 | 该链每次被调用时报错日志并跳过（启动阶段不校验、不阻断）；生产启用待有界评测达标后另开 change |
+
+开启影子态（只改部署配置，不改代码）：
+
+```yaml
+entity_subject:
+  mode: "shadow"   # off（默认）| shadow（实验态）| active（本期拒绝）
+```
+
+- 非法的 `entity_subject.mode` 值（如 `on`、`enable`）按 `off` 处理**并返回带原始值的错误**：错误写 error 日志后跳过该次归一，不会静默当 `shadow` 跑；
+- **`shadow` 的延迟代价（同步执行，无异步）**：归一在打标管线内**同步**执行（`article_tagger.go:persistArticleTags` 的 event 分支直接调 `EntitySubjectHook`，**无 goroutine、无排队**），因此单篇打标耗时会叠加归一时长：**单个 event 标签最坏有界 ≤5 分钟**（`DefaultResolverConfig.TotalTimeout`；闸门等待 120s、单次模型调用 60s 各另有上限），**3 个 event 标签的文章最坏约 15 分钟**；且全局单键会话闸门（`entity_gate`）**串行**，吞吐 ≈ 1/闸内时长。**默认是 off，所以这段延迟默认不生效**；切到 `shadow` 才会生效——本地小模型（如 Qwen3.5-4B）单次二判可达数十秒，吞吐会明显下降；需要放开吞吐时保持 `entity_subject.mode` 为 `off`，或后续 change 做成异步；耗时数字是本期明确代价（design Risks），不承诺高并发；
+- 回滚 = 配置改回 `off`（本就是默认）：归一链立即停写（存量数据全程零改动，三张实体表可整层删除，不被任何既有表引用）；
+- 零改动不变量与写入边界见 `flow/topic-graph.md` 红线 13/14/15、`flow/semantic-board.md`、`flow/ai-summary.md`、`flow/daily-report.md` 对应红线；
+- 评测入口 `cmd/entity-resolve-eval` **不受本开关控制**：它走显式影子路径、不写标签业务表，且需单独的真实模型额度授权。
 
 ## 必填与可选设置
 
@@ -135,6 +159,7 @@ database:
 | Tracing instrument GORM | `true` | `tracing.DefaultConfig()` / viper `tracing.instrument_gorm` |
 | Tracing instrument HTTP | `true` | `tracing.DefaultConfig()` / viper `tracing.instrument_http` |
 | Image cache max MB | `256`（`IMAGE_CACHE_MAX_MB` env） | `imageproxy.maxBytesFromEnv`（目录固定 `data/image-cache/`） |
+| Entity subject mode | `"off"` | `viper.SetDefault("entity_subject.mode", "off")` in `config.go`，`configs/config.yaml` 的 `entity_subject.mode` 可覆盖（2026-11-10 决策：影子实验后默认关闭，实体层不接入事件线判定；`shadow` = 实验态，需显式配置开启；`active` 本期显式拒绝） |
 
 ### 前端默认值
 
@@ -207,10 +232,33 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `tag_edge_retention_days` | 标签边（`article_topic_tags`）保留窗口天数，默认 `7`；缺失/非数字/≤0 回退默认并记 warn。一个键驱动三处同口径：① `aux_label_cleanup` 的边时间窗 GC（删 `created_at` 早于保留窗口下界日（本地日历天零点 − N 天）的边（仅归档文章）+ 收孤儿）；② 日报自动补档扫描窗口 `[today-N, today)`；③ `POST /api/daily-reports/generate` 与 `TriggerNowWithDate` 的重建守卫下界。见 `flow/daily-report.md` 业务约束 19/20 与 `flow/reading.md` 业务约束 6 |
 | `board_health_magnet_gap` | 版块体检**磁铁信号阈值**（board-health-triage-advice）：构成标签对其「`direction_mismatch` 失败挂载子集」与「全部挂载 tag」的贴合均值差 `all_mean − failed_mean` **≥** 此值才判磁铁嫌疑（磁铁失灵病）。默认 `0.08`；取值须在 0-100（非法值/非数字回退默认）。详见下节「版块体检阈值（`ai_settings`）」 |
 | `board_health_magnet_min_failed` | 版块体检**磁铁信号失败子集最小样本量**：本版块 `direction_mismatch=true` 的挂载 tag 数低于此值时，磁铁信号一律标 `insufficient`（**不硬凑**、不给嫌疑结论）。默认 `5`（必须 ≥ 1，否则回退默认）。详见下节「版块体检阈值（`ai_settings`）」 |
+| `related_event_similarity_threshold` | **相关事件相似度阈值**（enable-story-cross-day-continuation，默认 `0.86`，有效闭区间 `[0,1]` 有限数）。在既有「匹配规则」弹窗里与入板匹配参数并列编辑（`GET/PUT /api/semantic-boards/matching-config`），**与入板阈值完全独立**：只决定「相关事件」列表的过滤，不参与命中即停顺序、不影响挂载。改它**不需重算向量**，下次展开即生效；缺行回退 0.86（2026-11-10 S3 实测后由 0.82 上调），存量非法值（非数字/NaN/Inf/越界）告警后同样回退。见下节「相关事件索引（`ai_settings`，related-events）」 |
+| `related_event_index_generation` | **相关事件索引 generation**（默认 `g1`；不在 UI 暴露，由刷新 CLI `--generation` 写入）。`space_key` 的组成部分：供应商原地更换权重（模型名不变）时必须显式换 generation 并重建索引，否则旧向量仍被当作同空间使用。见下节「相关事件索引（`ai_settings`，related-events）」 |
 
 这些设置通过 `aisettings.LoadSummaryConfig()`、`aisettings.LoadFirecrawlConfig()` 等函数加载，在前端设置页面中配置。
 
 文章手动总结会在每次请求时重新读取 AI Provider 配置：优先使用 `summary` capability 的启用路由；未配置该路由时，回退到任一启用且具有 Base URL 和 Model 的 Provider。因此服务启动后新增 Provider 无需重启。API Key 对本地 Ollama、llama.cpp 或无需鉴权的 OpenAI-compatible 服务是可选项。
+
+### 相关事件索引（`ai_settings`，related-events）
+
+相关事件（`related-events` 能力）的派生向量索引不参与日常拉取，**必须显式刷新**：
+
+```bash
+cd backend-go
+go run ./cmd/related-events --refresh --board <boardId>                # 只补缺失/失效项，可重复跑
+go run ./cmd/related-events --refresh --board <boardId> --generation g2 # 换模型权重后显式换 generation
+go run ./cmd/related-events --experiment --board <boardId>              # 只读历史试验（不写缓存）
+```
+
+- `--refresh`：按版块扫描当前有效 event 标签 → 用确定性文本（名称 + 描述 + 当前有效辅助标签，版本 `related-event-v1`）调 `embedding` 路由（operation `tagmanagement.related_event.embedding`，真实审计行）→ 每批 ≤32 条、30s 超时、串行。文本未变且同空间的行直接复用；失败项**不覆盖**旧有效行，重跑即可恢复。失败原因逐条输出（`invalid_source` / `text_too_long` / `embed_failed` / `space_mismatch` / 空向量/维度/非有限/零范数）。
+- 查询端 `GET /api/semantic-boards/:id/tags/:tagId/related-events` **纯读**：不调模型、不写库；`ready/partial/not_ready` 如实返回覆盖状态（缺索引不会伪装成「没有相关事件」）。
+- 空间解析：`space_key = provider=<vendor>|model=<model>|gen=<generation>`；解析取 `ai_routes(capability=embedding)` 首位可用绑定，只读 DB 不调模型。后备供应商返回**不同模型**时该批按 `space_mismatch` 拒绝写入（同维不同空间不混算）。
+- 换模型/换 generation 后旧行不会参与计算，需重跑 `--refresh`；该表可随时清空重建（派生缓存，删掉只影响相关事件可用性）。
+
+| 键 | 默认 | 含义 |
+| --- | --- | --- |
+| `related_event_similarity_threshold` | `0.86` | 相似度阈值（`[0,1]` 有限数）；缺行/非法回退默认，告警一次 |
+| `related_event_index_generation` | `g1` | 显式索引 generation（`space_key` 组成）；由 `--refresh --generation` 写入 |
 
 ### 版块体检阈值（`ai_settings`，board-health-triage-advice）
 

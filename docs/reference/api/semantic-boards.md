@@ -46,6 +46,7 @@
 | GET | `/semantic-boards/backfill/:id` | 查询回填进度 |
 | POST | `/semantic-boards/backfill-embeddings` | 版块向量回填 |
 | POST | `/semantic-boards/rematch-all` | 全量重新匹配 |
+| GET | `/semantic-boards/:id/tags/:tagId/related-events` | 同版块相关事件（只读派生向量索引，enable-story-cross-day-continuation） |
 | GET | `/semantic-boards/matching-config` | 读取匹配参数 |
 | PUT | `/semantic-boards/matching-config` | 更新匹配参数 |
 | GET | `/tags/:id/auxiliary-labels` | tag 关联辅助标签 |
@@ -691,9 +692,12 @@ Response `data`：
   "semantic_board_match_max_boards": 3,
   "semantic_board_match_direct_hit_min_overlap": 2,
   "semantic_board_match_direct_hit_min_ratio": 0.5,
-  "semantic_board_match_direction_sim_threshold": 0.5
+  "semantic_board_match_direction_sim_threshold": 0.5,
+  "related_event_similarity_threshold": 0.86
 }
 ```
+
+`related_event_similarity_threshold`（enable-story-cross-day-continuation）与入板匹配参数**互相独立**：它只影响「相关事件」列表的过滤，缺项回退默认 **0.86**（2026-11-10 S3 实测后由 0.82 上调），存量坏值（非有限数/越界）告警后同样回退默认；改它**不需要重算向量**。
 
 ### PUT `/semantic-boards/matching-config`
 
@@ -709,6 +713,68 @@ Request：
 ```
 
 Response `data`：返回更新后的完整配置。
+
+约束（enable-story-cross-day-continuation）：
+
+- 所有给到的键先全部校验、再在同一事务内写入 —— 任一键非法 → 整体 400、**不部分落库**；
+- 数值键拒绝空白、非数字、`NaN`/`Infinity`、范围外（`related_event_similarity_threshold` 为 `[0,1]`，0 与 1 合法）；
+- 白名单外的键 → 400 `unsupported config key`。
+
+## 相关事件
+
+### GET `/semantic-boards/:id/tags/:tagId/related-events`
+
+读取某个 event 标签在**同一版块**内的直接相关事件（enable-story-cross-day-continuation，能力 `related-events`）。用于归档文章 event 标签卡的「相关事件」按需展开。
+
+口径：
+
+- **只读**：不调用模型、不写任何表（含派生缓存）；索引由显式刷新 `cmd/related-events --refresh --board <id>` 生成。
+- **输入**：`tag_id` + `board_id`；比较对象是 event 标签的确定性文本表示（名称 + 描述 + 当前有效辅助标签，版本 `related-event-v1`）。**不读** `subject_key`、实体 ID、`fingerprint_trusted`、thread 向量。
+- **范围**：同版块当前有效（`topic_tags.status='active'` 且入板未 `direction_mismatch`）的 event 标签，`topic_tags.created_at` 落在 `[as_of-30d, as_of]`（含两端；`as_of` = 请求开始时服务端 UTC 时间）。**这是标签收录时间，不是事件发生时间。**
+- **打分**：在当前 `space_key`（vendor + model + 显式 index generation）内用精确 pgvector 余弦距离算全部候选，`score >= 生效阈值` 过滤后按 `score` 降序、`tag_id` 升序取前 **10**；阈值前不做无关 top-K 截断；**不传递**（A≈B、B≈C 不会让 A 返回 C）。
+- **来源文章**：每条结果取该候选标签在本版块的最新一篇可读文章（`pub_date` 降序、`id` 降序）；已归档文章按既有「站内阅读可读」策略**不排除**；无来源为 `null`（前端禁用入口，不伪造 ID）。
+
+Query：无。
+
+Response `data`：
+
+```json
+{
+  "board_id": 1980,
+  "tag_id": 267115,
+  "status": "ready",
+  "reason": "",
+  "threshold": 0.86,
+  "window_days": 30,
+  "window_start": "2026-10-11T17:17:03Z",
+  "window_end": "2026-11-10T17:17:03Z",
+  "candidate_count": 543,
+  "indexed_count": 543,
+  "representation_version": "related-event-v1",
+  "space_key": "provider=qwen3-embedding|model=qwen3-embedding|gen=g1",
+  "items": [
+    {
+      "tag_id": 251798,
+      "label": "Anthropic 推出 AI 智能体 Claude Duet",
+      "description": "2026 年 10 月 22 日，Anthropic 推出基于 Opus 5.5 模型构建的 AI 智能体 Claude Duet…",
+      "similarity": 0.9044,
+      "source_article": { "id": 163601, "title": "Anthropic 推出 AI 智能体 Claude Duet" }
+    }
+  ]
+}
+```
+
+覆盖状态（**缺索引不得冒充空结果**）：
+
+| `status` | 含义 | `reason` |
+| --- | --- | --- |
+| `ready` | 源与全部窗口内候选都在当前空间/表示版本下有有效向量（`items` 可为空） | — |
+| `partial` | 源就绪，但部分候选缺有效向量；`items` 只含已就绪结果 | — |
+| `not_ready` | 源自身没有有效向量，或没有可用 embedding 路由 | `source_not_indexed` / `route_unavailable` / `invalid_source` / `text_too_long` |
+
+`candidate_count` = 窗口内有效候选数（不含自身）；`indexed_count` = 其中在当前空间可用数。
+
+错误：版块不存在/非 board → **404**；标签不是该版块的有效 event 成员 → **404**；参数非法 → 400。
 
 ## 匹配详情
 

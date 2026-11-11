@@ -2,22 +2,22 @@
 /**
  * 趋势图共享外置轴（rework-workshop-into-radar-and-desk 矩阵阶段 G2）。
  *
- * 批准原型 matrix-graphics.js `trendFrame` 的产品化：Y 刻度（线索合计）与 X 日期刻度
+ * 批准原型 matrix-graphics.js `trendFrame` 的产品化：Y 刻度（事件线数）与 X 日期刻度
  * 全部放在**绘图区 SVG 之外**，保证指针→日期映射只消费绘图区 rect（不被轴占据的像素
  * 挤歪）。ObservationRangeControls 的 brush 背景曲线与 LaneTrendChart 共用本组件，
- * 两处「外置日期/线索合计轴」视觉与口径一致。
+ * 两处「外置日期/事件线数轴」视觉与口径一致。
  *
  * 纯展示：刻度值/定位百分比由调用方（laneTrendSeries 纯函数）算好传入，本组件不算业务。
  */
 withDefaults(defineProps<{
-  /** Y 轴单位标签（如「线索合计（条）」）。 */
+  /** Y 轴单位标签（默认事件线数——曲线与矩阵格同口径：事件线数 > 0 用事件线数，否则线索合计兜底）。 */
   unitLabel?: string
   /** Y 刻度：value + 顶部定位百分比（0=轴底、100=轴顶）。空数组 = 全未知（不伪造量级）。 */
   yTicks?: { value: number, topPercent: number }[]
   /** X 日期刻度：文本 + 左侧定位百分比 + 对齐（首端 start / 中段 center / 末端 end）。 */
   xTicks?: { label: string, leftPercent: number, align: 'start' | 'center' | 'end' }[]
 }>(), {
-  unitLabel: '线索合计（条）',
+  unitLabel: '事件线数（条）',
   yTicks: () => [],
   xTicks: () => [],
 })

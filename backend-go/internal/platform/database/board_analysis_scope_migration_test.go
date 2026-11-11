@@ -16,7 +16,7 @@ import (
 // drops constraints). The migration must backfill analysis_scope='topic' for
 // NULL rows and drop NOT NULL on both enrichment id columns so board-scoped
 // rows (NULL topic) can be inserted. reference_roles 断言已对齐退役现实
-//（20260926_0001 DROP，详见断言 3/5）。
+// （20260926_0001 DROP，详见断言 3/5）。
 //
 // Docker required. Skipped under -short.
 func TestBoardLevelAnalysisScopeMigration(t *testing.T) {

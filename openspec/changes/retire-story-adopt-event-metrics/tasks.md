@@ -1,0 +1,176 @@
+# Tasks：退役事件线，改用 event 标签与当天线索热度
+
+> 四个交付故事（见 test-cases.md）：S1 看矩阵当天的线索数与热度、S2 日报当天同事件聚簇上今日重点、S3 story 停写后一切照旧、S4 调候选权重。变体就地走查，不为每个分支另开任务。
+> **本轮只出规划制品**：下列任务全部为待实施状态，测试文件路径是计划路径（当前不存在），验证命令须在 apply 阶段实跑并把结果写进 8.1。
+
+## 1. 后端：story 停写与口径替换
+
+- [ ] 1.1 在 `ai_settings` 增加布尔键 `story_attribution_enabled`（缺项回退默认=写 story，坏值告警回退），并在 `service/daily_report_story_highlights.go:boundedReportAttribution` 前置判断：关闭时不产生 `board_stories` / `story_signals` / `daily_report_threads.story_id`；不改判定链其余代码、不删表、不删列。验证：扩写 `backend-go/internal/topicgraph/service/daily_report_story_highlights_test.go`，执行 `cd backend-go && go test ./internal/topicgraph/service -run TestStoryAttributionSwitch` → PASS（开关开=行为不变、开关关=零写入、坏值回退三态各一例）。
+- [ ] 1.2 把 `backend-go/cmd/backfill-stories/main.go` 的写模式（`--reattribute` / `--restore` / `--rebuild-signals` / `--backfill-content-keys` / `--fill-story-embeddings` / `--fill-thread-embeddings`）改为直接拒绝：非零退出 + 打印「事件线已退役」说明；`--dry-run` 与只读 / 实验模式保留可用且零写入。验证：扩写 `backend-go/cmd/backfill-stories/main_test.go`，执行 `cd backend-go && go test ./cmd/backfill-stories` → PASS（每个写模式一例拒绝、只读一例可用）。
+- [ ] 1.3 新写泳道当天热度纯函数（泳道热度 = active 当天线索数 × 1.0 + candidate 当天线索数 × `lane_heat_candidate_weight`；版块关注度 = Σ 泳道热度，保留一位小数；口径版本另立），并新增一条按 `persistent_topic_id` 聚合当天 thread 数的查询（覆盖 active + candidate 两类泳道）；权重读 `ai_settings`，缺项 0.5、坏值告警回退、域 [0,1]。验证：新增 `backend-go/internal/topicgraph/repository/lane_heat_repository_test.go`，执行 `cd backend-go && go test ./internal/topicgraph/repository -run TestLaneHeat` → PASS（隔离 PG，不用 SQLite；用例清单：active/candidate 权重、权重为 0、权重为 1、综合稿不计、桶合并不取峰值、坏值回退、确定性重复计算同值）。
+- [ ] 1.4 `repository/lane_snapshot_repository.go:GetBoardLaneDynamics` 的负载换口径：逐日下发「当天线索合计」（不再下发 `story_count` / `hottest_story_id` / `hottest_story_title` / `unassigned_event_count`），`lane_heat` 换成 1.3 的新口径，候选条目补锚点日当天线索数，行序改为「泳道当天热度降序 → 全窗线索合计降序 → topic id 升序」。验证：扩写 `backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go`，执行 `cd backend-go && go test ./internal/topicgraph/repository -run TestLaneDynamics` → PASS。
+- [ ] 1.5 `repository/board_radar_repository.go:GetBoardRadarOverview` 换口径：关注度 = Σ 泳道新热度；顶层的故事线条目段替换为「当天线索最多的泳道」清单段（上限 8，条目带版块 id/名、泳道 id/名、当天线索数、所属版块锚点日）；移除 `today_heat` / `last3_heat` / `prev3_heat` / `heat_days` / `story_counts` / 回填状态等已无消费方的字段，版块无数据仍返回零值而非 404。验证：扩写 `backend-go/internal/topicgraph/repository/board_radar_repository_test.go`，执行 `cd backend-go && go test ./internal/topicgraph/repository -run TestBoardRadar` → PASS。
+
+## 2. 后端：日报当天同事件聚簇与今日重点
+
+- [ ] 2.1 实现日报当天同事件聚簇服务：取该版块当天命中的 event 标签 → 用 `related.BuildRepresentation` 构造 `related-event-v1` 文本 → 批量 embedding（capability=embedding、operation 非空且与索引刷新 operation 区分、每批 32、单批 30s，与索引刷新同口径）→ 内存两两聚簇（阈值 `related_event_similarity_threshold`，默认 0.86）；降级链 = 语义向量兜底 → 主体近似兜底，并输出本次聚簇口径标记；全程不写 `related_event_embeddings` 与任何业务表 / 缓存 / 身份 / 关系表；每次调用尝试无论成败写 `ai_call_logs`（成功另记 prompt 与 response_snippet，按 10000 / 20000 runes 截断）。验证：新增 `backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go`，执行 `cd backend-go && go test ./internal/topicgraph/service -run TestDailyReportEventCluster` → PASS（stub embedder，不调真实模型；用例清单：阈值边界三态、同分破序、跨天不入簇、批量不逐标签调用、审计落库、零写入、三级降级与口径标记、综合稿不入簇）。
+- [ ] 2.2 把今日重点候选源从事件线换成聚簇：`repository/report_story_highlights.go:ReportStoryCandidates` 与 `service/daily_report_story_highlights.go:GenerateStoryHighlights` 取聚簇 Top 8（簇内文章数降序 → 簇内 event 标签数降序 → 代表标签 id 升序），重写选题 prompt（只从候选白名单选、禁止编造事实与数字），模型返回的 `cluster_id` 必须在候选白名单内、`tag_ids` 必须在该聚簇的本期标签白名单内，非法按既有语义同参重试一次、合法 `[]` 不重试、最终失败落空数组；簇内文章数、聚簇口径、数据截至日、研究时点由服务端补快照。验证：新增 `backend-go/internal/topicgraph/service/daily_report_highlights_cluster_test.go`，执行 `cd backend-go && go test ./internal/topicgraph/service -run TestHighlightsCluster` → PASS。
+- [ ] 2.3 日报数据模型收口：新生成 / 重建的日报 `story_id` 恒 NULL、`story_manual` 恒 false、`display_tier` 恒 body（历史值只读保留、对外不透出）；`scope` 仍由 `tag_ids` 中 event 标签数推导且 composite 不进聚簇；`highlights` 增加 `cluster_id` / `article_count` / `cluster_mode` / `data_as_of` / `research_at` 快照字段，落库恒为数组、读出把历史 `null` 归一为 `[]`。验证：扩写 `backend-go/internal/topicgraph/repository/daily_report_repository_test.go`，执行 `cd backend-go && go test ./internal/topicgraph/repository -run TestDailyReport` → PASS。
+
+## 3. 前端：矩阵 / 雷达 / 日报口径替换
+
+- [ ] 3.1 矩阵与顶部曲线换口径：`front/app/api/normalizers/laneDynamicsWindow.ts:dayCellMetrics` 的展示值主源从事件线数改为当日线索合计（`total`），退役「事件线为 0 时按线索合计兜底」这层与 `degradedFromClue` 标记；`observationLanes.ts:matrixCellView` 与 `ObservationMatrixLaneRow.vue` 停用颜色通道（`laneLevel` / `laneDegradedLevel` 退场），格值与行头 / 格 aria 改为「N 条线索 · M 个主题桶」；矩阵口径说明改为「数字 = 当日线索合计」；`BoardLaneEvolution.vue` 文案「N 条事件线」改「N 条线索」。验证：扩写 `front/app/features/tags/components/console/observationLanes.test.ts` 与 `front/app/api/normalizers/laneDynamicsWindow.test.ts`，执行 `cd front && pnpm test:unit app/features/tags/components/console/observationLanes.test.ts app/api/normalizers/laneDynamicsWindow.test.ts --maxWorkers=2` → PASS。
+- [ ] 3.2 雷达首屏换内容：`BoardRadarReadingRail.vue` 的故事线条目段换成「当天线索最多的泳道」清单（版块名 + 泳道名 + 当天线索数，上限 8），移除「升温 N×」「新起」徽标与「跨天延续事件线建设中」脚注，保留空态占位与「本次清单不完整」标注；`BoardRadarStory.vue` 的行内小矩阵改当天线索数（未知标「线索数未知」，不造 0）并去掉色阶；`front/app/api/normalizers/boardRadar.ts` 同步字段增删与旧后端兼容分支；`useBoardRadarOverview.ts` 移除 `warming` / `topStories` / `crossDayBuilding` 派生。验证：新增 `front/app/features/tags/components/console/BoardRadarReadingRail.lanes.test.ts`、扩写 `front/app/features/tags/components/console/BoardRadarView.test.ts`，执行 `cd front && pnpm test:unit app/features/tags/components/console/BoardRadarReadingRail.lanes.test.ts app/features/tags/components/console/BoardRadarView.test.ts --maxWorkers=2` → PASS。
+- [ ] 3.3 日报刊头换口径与定位：`DailyReportMasthead.vue` 的今日重点改按 `cluster_id` 定位本期正文首条 thread（高亮 2s、reduced-motion 不平滑滚动），依据文案改「N 篇来源 / 聚簇口径 / 数据截至日 / 研究时点」，缺字段省略数字不伪造 0；`DailyReportReader.vue` 的跨页寻址参数改 `?cluster=`，旧 `?story=` 解析后忽略并提示该定位方式已下线（不报错、不定位）。验证：新增 `front/app/features/tags/components/daily-report/DailyReportMasthead.cluster.test.ts`、扩写 `front/app/features/tags/components/DailyReportReader.test.ts`，执行 `cd front && pnpm test:unit app/features/tags/components/daily-report/DailyReportMasthead.cluster.test.ts app/features/tags/components/DailyReportReader.test.ts --maxWorkers=2` → PASS。
+- [ ] 3.4 在既有「匹配规则」配置面接入 `lane_heat_candidate_weight`（默认 0.5、域 [0,1] 有限数、非法拒绝且不覆盖旧值、缺项回退默认），后端键白名单与取值校验同步加该键，且与 `related_event_similarity_threshold` 互不影响。验证：新增 `front/app/features/tags/components/MatchingConfigDialog.laneHeat.test.ts`、扩写 `backend-go/internal/tagmanagement/handler/related_events_test.go`，执行 `cd front && pnpm test:unit app/features/tags/components/MatchingConfigDialog.laneHeat.test.ts --maxWorkers=2` 与 `cd backend-go && go test ./internal/tagmanagement/handler -run TestMatchingConfig` → PASS。
+
+## 4. 关注度分档阈值重标定
+
+- [ ] 4.1 用真库分布实测新关注度的分位点（P80 / P20），把结果写回 `front/app/features/tags/components/console/boardRadarHelpers.ts` 的 `RADAR_HOT_ATTENTION` / `RADAR_WARM_ATTENTION`，并在 design.md 的 D9 留痕（样本范围、采样日期、分位点、原始分布摘要）。验证：人工：把实测命令与数字记入本任务与 design.md D9；执行 `cd front && pnpm test:unit app/features/tags/components/console/boardRadarHelpers.test.ts --maxWorkers=2` → PASS（分档边界用例按新阈值断言）。
+- [ ] 4.2 把「新口径下不得沿用旧 3.3 / 0.7，也不得沿用更早的 50 / 15」写成可执行断言（常量值与旧值不相等，且分档边界用例按新值判定）。验证：同 4.1 的定点 vitest 命令 → PASS（该断言为该文件内一条独立用例）。
+
+## 5. 测试
+
+- [ ] 5.1 按 test-cases.md 的 S1 / S2 / S3 / S4 主链路与变体落自动化用例：后端只测影响包（`./internal/topicgraph/repository`、`./internal/topicgraph/service`、`./internal/tagmanagement/handler`、`./cmd/backfill-stories`），SQL 一律走 testcontainer PG，前端 `--maxWorkers=2`；白盒附加节的分支表 A / B / C 与边界值清单逐条落断言。验证：1.x–4.x 各条定点命令 → PASS；无全量测试。
+- [ ] 5.2 效果核对：取真库一个版块的当天 event 标签，按 test-cases.md S2 的口径人工审核若干簇对「是否值得一起看」，记录聚类覆盖率与簇内篇数分布，并把可复算的数字与结论写回 test-cases.md S2「效果核对」节。验证：人工：test-cases.md 该节填入数字与结论，不留「待实测」字样。
+- [ ] 5.3 停写完整性核对：全仓 grep 事件线写路径调用点，确认每个命中要么在测试文件内、要么被 1.1 的开关拦住，不存在第二条在线写入口。验证：执行 `grep -rn "CreateBoardStory\|AttachThreadToBoardStory\|MergeBoardStories\|RecomputeSignalsForStory\|RecomputeBoardStoryCounts" backend-go/internal backend-go/cmd --include=*.go` → 逐条列出并判定（无未拦截的在线写入）；结果写进本任务。
+
+## 6. Review
+
+- [ ] 6.1 派子线程聚焦 review（审查制品 + diff），重点查三处：停写是否仍有旁路写入口；前后端是否各写了一份等价口径；聚簇降级链的口径标注是否如实（不得把主体近似呈现为向量聚簇）；意见按 High/Medium/Low 处置后 review.md 建账。验证：执行 `bash scripts/harness/review-trace.sh openspec/changes/retire-story-adopt-event-metrics` → 通过；不得用本轮制品审查冒充代码审查。
+
+## 7. 文档
+<!-- doc-impact: flow, api, database, configuration -->
+
+- [ ] 7.1 更新 `docs/reference/flow/semantic-board.md`（红线 28/29/30 改写：矩阵量纲改当日线索合计、颜色通道退役、关注度与分档换口径、事件身份未回填三态退役、事件线清单段退场）、`docs/reference/flow/daily-report.md`（红线 42–49 改写：事件身份列退为只读历史列、跨期去重退役、今日重点候选源换当天聚簇、内容身份去重口径保留）、`docs/reference/flow/topic-graph.md`（涉及事件线身份判定的表述改写，并明确候选权重不进话题生命周期判定）、`docs/reference/database/tables/daily-report-watch.md` 与 `docs/reference/database/_index.md`（事件线两表标注只读保留、`story_id` 退为历史列）、`docs/reference/api/`（总览端点与 lane-dynamics 的字段变更）、`docs/reference/configuration.md`（`story_attribution_enabled` 与 `lane_heat_candidate_weight` 两个 `ai_settings` 键）；归档时按 §12.2 补 `docs/reference/flow/` 的变更溯源链接。验证：执行 `bash scripts/harness/doc-impact.sh verify openspec/changes/retire-story-adopt-event-metrics` → 通过。
+
+## 8. 验证
+
+- [ ] 8.1 跑本 change 的门禁与影响范围验证：openspec strict、scenario-trace、check-tasks-tail、review-trace、doc-impact verify、check-standards，以及 1.x–5.x 各条定点 go test / vitest；把实际命令与结果写进本节执行记录表（含失败项的处置）。验证：逐条命令 + 期望结果；本轮规划阶段不跑代码测试、不连真库、不执行 git 命令。
+
+### 8.1 规划阶段自检记录（2026-11-11，规划线程实跑）
+
+| 命令 | 结果 |
+| --- | --- |
+| `openspec validate retire-story-adopt-event-metrics --strict` | ✅ 通过：`Change 'retire-story-adopt-event-metrics' is valid`（初稿曾报 5 处 MODIFIED 漏抄原 spec 场景，已按仓库先例 `matrix-clue-fallback-and-rail-merge` 的做法——保留原场景标题、改写场景正文——修正后复跑通过） |
+| `bash scripts/harness/check-tasks-tail.sh openspec/changes/retire-story-adopt-event-metrics` | ✅ 通过：`✓ tasks.md 尾三节与 doc-impact 声明标记齐全` |
+| `bash scripts/harness/scenario-trace.sh openspec/changes/retire-story-adopt-event-metrics` | ❌ 未通过（**计划态预期为红**）：`103 个待对账 Scenario，33 项失败`，33 项全部为「映射文件不存在」——指向 6 个尚未创建的计划测试文件（`lane_heat_repository_test.go` 6 行 / `daily_report_event_cluster_test.go` 10 行 / `daily_report_highlights_cluster_test.go` 7 行 / `MatchingConfigDialog.laneHeat.test.ts` 1 行 / `BoardRadarReadingRail.lanes.test.ts` 6 行 / `DailyReportMasthead.cluster.test.ts` 3 行）。**未创建空壳测试、未把未建文件伪改为人工**；apply 阶段建文件后重跑应转绿 |
+| `bash scripts/harness/review-trace.sh openspec/changes/retire-story-adopt-event-metrics` | ❌ 未通过（**计划态预期为红**）：`✗ 未通过：缺 review.md 建账与 <!-- review: waived --> 豁免声明（零痕迹）`。本 change 是 complex 档且未声明 waived，review 为必做项，review.md 在 apply 阶段由 tasks 6.1 建账 |
+| `bash scripts/harness/doc-impact.sh verify openspec/changes/retire-story-adopt-event-metrics` | ✅ 通过：`通过（声明: flow, api, database, configuration  文件:6 个 启发式:fallback）` |
+| `bash scripts/harness/check-standards.sh --change retire-story-adopt-event-metrics` | ✅ 通过：`通过 280 / 失败 0` |
+| ui-design-gate 特征词扫描（proposal + tasks） | ✅ 无命中：ui-design-gate 的 10 个 major 特征词（词表见 `.pi/extensions/lib/ui-design-gate.ts` 的 `MAJOR_UI_KEYWORDS`）均未出现在 proposal.md 与 tasks.md |
+| 代码测试 / 真库核对 / git | **未跑**：本轮只出规划制品，不实现代码、不连真库；且用户禁止本轮执行 git 命令（doc-impact 的归属轨因此走全树回退，已按脚本输出如实标注） |
+
+> 场景计数说明：delta spec 当前 103 个待对账 Scenario（MODIFIED 需求保留了原 spec 的全部场景标题，故计数高于初稿）。REMOVED 节下的 Scenario 不参与对账。
+>
+> 规划期外部事件（如实记录）：2026-11-11 11:00 左右，另一会话把 `normalize-event-subject-entities` 归档，其 delta 同步进主 spec（新增 `openspec/specs/entity-subject-resolution/spec.md`，并向 `event-story` 的「主体归一化」补了一条场景）。该新能力原文以「事件线身份判定仍只使用 `subject_key` 三层匹配」描述零改动边界，事件线退役后该引用悬空，故本 change 补了 `entity-subject-resolution` 的 MODIFIED delta（只改措辞与边界，实体层行为与写入面一字不动）。本 change 未改动任何主 spec。
+
+### Scenario 映射表（计划路径，测试文件尚未创建）
+
+> 下表是实现计划，不是现有自动化覆盖：所列测试文件当前不存在（计划路径），因此 `scenario-trace.sh` 在本轮预期为红；不生成空壳测试、不把未建文件伪改为人工以骗过门禁。REMOVED 节下的 Scenario 不参与对账。
+
+| Scenario | 测试文件 |
+| --- | --- |
+| 活跃与候选按不同权重计 | backend-go/internal/topicgraph/repository/lane_heat_repository_test.go |
+| 候选权重在线调整后立即生效 | backend-go/internal/topicgraph/repository/lane_heat_repository_test.go, front/app/features/tags/components/MatchingConfigDialog.laneHeat.test.ts |
+| 热度不因分桶或事件标签数量变化而变 | backend-go/internal/topicgraph/repository/lane_heat_repository_test.go |
+| 只表达当天不跨天累积 | backend-go/internal/topicgraph/repository/lane_heat_repository_test.go |
+| 坏权重存量回退默认 | backend-go/internal/tagmanagement/handler/related_events_test.go |
+| 候选权重不影响话题状态机 | backend-go/internal/topicgraph/repository/lane_heat_repository_test.go |
+| 关注度为泳道热度之和 | backend-go/internal/topicgraph/repository/lane_heat_repository_test.go |
+| 分档阈值按新分布标定 | 人工：真库分布实测重标定并留痕（tasks 4.1） |
+| 分档可读不靠颜色 | front/app/features/tags/components/console/boardRadarHelpers.test.ts |
+| 同一内容多 feed 只算一篇 | backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go |
+| 内容身份不可判定时退化为 feed 粒度 | backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go |
+| 不同消费面口径一致 | backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go |
+| 同版块当天同事件聚成一簇 | backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go |
+| 聚簇不跨天不做身份 | backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go |
+| 聚簇不落库不改索引 | backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go |
+| 批量调用并留审计 | backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go |
+| 阈值在线可调且与相关事件同源 | backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go |
+| 向量不可得时如实降级 | backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go |
+| 综合稿不进聚簇 | backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go |
+| 创建日报记录 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 日报记录唯一性 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 并发落库同板同日不炸唯一约束 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 日报关联昨日报告 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 线程存储在独立表中 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 兄弟桶共享聚类序号 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 未分桶 section 取默认桶序号 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| highlights 落库恒为数组 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 历史 null highlights 读出归一为数组 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 事件落库时 scope 由事件标签数推导 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 新日报不写事件身份 | backend-go/internal/topicgraph/service/daily_report_story_highlights_test.go |
+| 旧事件身份只读保留 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 事件未归组不影响日报 | backend-go/internal/topicgraph/repository/daily_report_repository_test.go |
+| 点击第一条可见正文线程 | front/app/features/tags/components/daily-report/DailyReportMasthead.cluster.test.ts |
+| 失去目标与旧重点 | front/app/features/tags/components/daily-report/DailyReportMasthead.cluster.test.ts |
+| 重复定位与减弱动画 | front/app/features/tags/components/daily-report/DailyReportMasthead.cluster.test.ts |
+| 展示筛选不改变热度 | backend-go/internal/topicgraph/service/daily_report_highlights_cluster_test.go |
+| 深链参数定位与失去目标 | front/app/features/tags/components/DailyReportReader.test.ts |
+| 旧 story 深链被忽略不报错 | front/app/features/tags/components/DailyReportReader.test.ts |
+| 候选按簇内文章数截断 | backend-go/internal/topicgraph/service/daily_report_highlights_cluster_test.go |
+| 同分与精度不反转 | backend-go/internal/topicgraph/service/daily_report_highlights_cluster_test.go |
+| 只可从候选事实写文案 | backend-go/internal/topicgraph/service/daily_report_highlights_cluster_test.go |
+| 无聚簇走标签回退 | backend-go/internal/topicgraph/service/daily_report_highlights_cluster_test.go |
+| 少量候选与合法空返回 | backend-go/internal/topicgraph/service/daily_report_highlights_cluster_test.go |
+| 重点快照与旧数据兼容 | backend-go/internal/topicgraph/service/daily_report_highlights_cluster_test.go |
+| 打开工坊首屏 | front/app/features/tags/components/console/BoardRadarView.test.ts |
+| 从雷达进入版块 | front/app/features/tags/components/console/BoardRadarView.test.ts |
+| 热点行带理由与密度 | front/app/features/tags/components/console/BoardRadarView.test.ts |
+| 常温版块折叠 | front/app/features/tags/components/console/BoardRadarView.test.ts |
+| 关注度不因分区数虚高 | front/app/features/tags/components/console/boardRadarHelpers.test.ts |
+| 小矩阵按线索数显示 | front/app/features/tags/components/console/BoardRadarView.test.ts |
+| 线索数未知不造零 | front/app/features/tags/components/console/BoardRadarView.test.ts |
+| 一次请求渲染雷达 | front/app/features/tags/composables/useBoardRadarOverview.test.ts |
+| 无数据版块 | front/app/features/tags/components/console/BoardRadarView.test.ts |
+| 事件线清单随行同响 | backend-go/internal/topicgraph/repository/board_radar_repository_test.go |
+| 徽标判定信息随条目自带 | backend-go/internal/topicgraph/repository/board_radar_repository_test.go |
+| 按当天线索数跨版块混排 | front/app/features/tags/components/console/BoardRadarReadingRail.lanes.test.ts |
+| 线索数相同则稳定排序 | front/app/features/tags/components/console/BoardRadarReadingRail.lanes.test.ts |
+| 清单上限 8 且无徽标 | front/app/features/tags/components/console/BoardRadarReadingRail.lanes.test.ts |
+| 按各版块自己的锚点日而非自然今天 | front/app/features/tags/components/console/BoardRadarReadingRail.lanes.test.ts |
+| 清单为空渲染空态 | front/app/features/tags/components/console/BoardRadarReadingRail.lanes.test.ts |
+| 部分版块延迟时明示不完整 | front/app/features/tags/components/console/BoardRadarReadingRail.lanes.test.ts |
+| 同日分桶不冒充分区热度 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 矩阵格值是桶峰值 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 线索数未知不造零 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 真零事件不兜底成非零 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 颜色表达参与者数 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 渲染矩阵 | front/app/features/tags/components/console/ObservationMatrixGrid.test.ts |
+| 图例可见 | front/app/features/tags/components/console/ObservationMatrixGrid.test.ts |
+| 断档可读 | front/app/features/tags/components/console/ObservationMatrixGrid.test.ts |
+| 零线索可开 | front/app/features/tags/components/console/ObservationMatrix.test.ts |
+| 历史未回填日按线索合计兜底 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 多线格点名获胜线 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 来源同分稳定点名 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 无身份不伪造标题 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 空标题与零来源 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 小矩阵历史未回填日按分区数兜底 | front/app/features/tags/components/console/BoardRadarView.test.ts |
+| 拖选不重排 | front/app/features/tags/composables/useLaneTrendData.test.ts |
+| 精确档回切 | front/app/features/tags/composables/useLaneTrendData.test.ts |
+| 明确切独立档 | front/app/features/tags/composables/useLaneTrendData.test.ts |
+| 档池分层失败 | front/app/features/tags/composables/useLaneTrendData.test.ts |
+| 首屏曲线即含历史 | front/app/api/normalizers/laneDynamicsWindow.test.ts |
+| 曲线与矩阵格同口径 | front/app/api/normalizers/laneDynamicsWindow.test.ts |
+| 池未取到有提示可重试 | front/app/features/tags/composables/useLaneTrendData.test.ts |
+| 池失败后切 365 档不残留误述 | front/app/features/tags/composables/useLaneTrendData.test.ts |
+| 非法日期反馈 | front/app/features/tags/composables/useLaneTrendData.test.ts |
+| 深链恢复 | front/app/middleware/tags-deep-link.test.ts |
+| 发展时间线结构 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 一句话态势展示 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 单日多事件 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 矩阵格与演进节点同量纲 | front/app/features/tags/components/console/observationLanes.test.ts |
+| 活跃排序 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 同日多条只计一天 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| watch 标识 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 沉寂不展示 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 候选不进主区 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 单请求聚合 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 存量长版透出 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 无态势快照降级 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 逐日负载为线索合计 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 候选泳道带当天线索数 | backend-go/internal/topicgraph/repository/lane_snapshot_repository_test.go |
+| 默认关闭态逐字不变 | backend-go/internal/tagmanagement/service/entity/entity_mode_test.go |
+| 影子态写入限定三处 | backend-go/internal/tagmanagement/service/entity/entity_mode_test.go |
+| 事件线身份判定不读实体 ID | backend-go/internal/tagmanagement/service/entity/entity_mode_test.go |

@@ -56,3 +56,12 @@ cross_board_rel:
   # 单次 run 总超时。scout plan/extract + resolve + verify 两步都是 LLM 调用，
   # glm-5.3-flash 单步可达 150s+，默认 300s 会在 verify 阶段撞墙 → 900s。
   run_timeout_seconds: 900
+
+# 实体主体归一（normalize-event-subject-entities）
+# off    = 完全关闭：第一轮提示/schema/调用数逐字不变、零二轮调用、零实体层写入
+# shadow = 影子态（实验态，2026-11-10 决策默认 off）：第一轮同次多产出稳定短身份说明，
+#          写入仅限实体层（entity_registry/entity_mentions/entity_aux_links）、
+#          正常 AI 审计、topic_tags.metadata.entity_subject 惰性键
+# active = 本期未实现，显式报错拒绝（不会静默按 shadow 执行）
+entity_subject:
+  mode: off

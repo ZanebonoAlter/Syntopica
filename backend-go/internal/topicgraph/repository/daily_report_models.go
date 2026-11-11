@@ -202,13 +202,49 @@ type DailyReportThread struct {
 	// field, conflating the best possible fit with no signal. nil is omitted by
 	// omitempty; a non-nil 0.0 is serialized as `"fit_distance":0`. No DB
 	// default so historical rows stay NULL per spec.
-	FitDistance *float64  `json:"fit_distance,omitempty"`
+	FitDistance *float64 `json:"fit_distance,omitempty"`
+	// Story identity (add-event-story-heat). StoryID points at the surviving
+	// board_stories row (or the one-hop merged_into survivor); nullable —
+	// unattributed / composite threads keep NULL and stay fully functional.
+	// The FK (ON DELETE SET NULL) + index live in migration 20261105_0001.
+	StoryID *uint `gorm:"index:daily_report_threads_story_idx" json:"story_id,omitempty"`
+	// Scope derives from the thread's event-tag count: >=2 event tags in
+	// tag_ids => composite (综合稿，不建事件身份), else single. Tag stays
+	// size-less (text) to match migration DDL exactly — a size here makes
+	// AutoMigrate re-ALTER every startup and silently drop the migration-owned
+	// NOT NULL (20261103_0002 incident chain).
+	Scope string `gorm:"default:single" json:"scope"`
+	// IsDevelopment marks "同一事件线的不同阶段（进展）" verdicts (design §5.2
+	// layer 3); drives the dedup 进展 branch, never a heat input.
+	IsDevelopment bool `gorm:"default:false" json:"is_development"`
+	// StoryManual records a human "独立事件" verdict: the thread was manually
+	// detached from its story (story_id forced NULL) and MUST NOT be re-hooked
+	// by any later automatic attribution or backfill (event-story spec 人工拆分
+	// 后不回滚). NOT NULL stays owned by migration 20261105_0001.
+	StoryManual bool `gorm:"not null;default:false" json:"story_manual"`
+	// DisplayTier is the cross-period dedup's display-layer carrier
+	// (add-event-story-heat tasks 6.1-6.3): body=正文（默认）、flash=快讯
+	// （重述降级）、hidden=未展示（预留）。Identity (story_id), signals and
+	// heat NEVER read this column — 降级只改展示层. The read path (report
+	// detail) keeps body-only this cycle (spec 允许快讯或丢弃，本期丢弃);
+	// flash/hidden rows stay queryable for a future flash lane. Size-less
+	// text, same AutoMigrate discipline as Scope (20261103_0002 incident
+	// chain); NOT NULL owned by migration 20261105_0001.
+	DisplayTier string    `gorm:"not null;default:body" json:"display_tier"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
 func (DailyReportThread) TableName() string {
 	return "daily_report_threads"
 }
+
+// Thread display-tier values (specs/daily-report-system 跨期重复降级；CHECK
+// chk_daily_report_threads_display_tier owned by migration 20261105_0001).
+const (
+	ThreadDisplayTierBody   = "body"   // 正文（默认；进展/新来源/未归组均落这里）
+	ThreadDisplayTierFlash  = "flash"  // 快讯（重述降级；本期读路径丢弃，字段留作未来快讯 UI）
+	ThreadDisplayTierHidden = "hidden" // 未展示（预留位，自动判定不写）
+)
 
 // TopicRecentBrief captures a section's recent content for context injection
 // (Slice D: lane context injection). The content is the section's actual tag
@@ -308,9 +344,16 @@ type ClusterGroup struct {
 
 // Highlight represents a key highlight in the daily report.
 type Highlight struct {
-	Title  string `json:"title"`
-	Reason string `json:"reason"`
-	TagIDs []uint `json:"tag_ids"`
+	StoryID          *uint      `json:"story_id,omitempty"`
+	ParticipantCount *int       `json:"participant_count,omitempty"`
+	StoryHeat        *float64   `json:"story_heat,omitempty"`
+	HeatRuleVersion  string     `json:"heat_rule_version,omitempty"`
+	HeatAsOf         *time.Time `json:"heat_as_of,omitempty"`
+	HeatIncomplete   *bool      `json:"heat_incomplete,omitempty"`
+	IsProgress       bool       `json:"is_progress"`
+	Title            string     `json:"title"`
+	Reason           string     `json:"reason"`
+	TagIDs           []uint     `json:"tag_ids"`
 }
 
 // Thread represents a narrative thread within a cluster section.

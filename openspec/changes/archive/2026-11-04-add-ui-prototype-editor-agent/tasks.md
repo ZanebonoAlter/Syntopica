@@ -26,7 +26,7 @@
 
 ## 4. 文档
 
-<!-- doc-impact: none(纯 agent 工具链调整：不触 flow/api/database/architecture/standard/configuration/deployment 任一业务域；改动的 harness 机制文档与档位定义在本节显式列出) -->
+<!-- doc-impact: none(纯 agent 工具链调整：无 flow 影响，不触 flow/api/database/architecture/standard/configuration/deployment 任一业务域；改动的 harness 机制文档与档位定义在本节显式列出) -->
 
 - [x] 4.1 `docs/reference/harness/pi-extensions.md`：子线程通道矩阵补 `ui-design` 档行；门禁表补 `ui-dispatch-allowed` reasonCode
 - [x] 4.2 `docs/reference/开发执行规范.md` §0.6 档位选择表补 `ui-design` 档用途与放行边界

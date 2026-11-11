@@ -102,6 +102,22 @@
   font-weight: 600;
 }
 
+/* ── 来源数分档（add-event-story-heat 5.4）：矩阵格颜色 = 当日最热事件线独立来源数，
+   0 不着色 / 1-2 浅 / 3-5 中 / 6+ 深；单一色相只改 mix 比例，不引入新色相；
+   颜色不是唯一信息载体（格 title/aria 同时带三个数字）。 */
+.omx-cell.is-p1 {
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-base));
+}
+
+.omx-cell.is-p2 {
+  background: color-mix(in srgb, var(--color-accent) 32%, var(--color-bg-base));
+}
+
+.omx-cell.is-p3 {
+  background: color-mix(in srgb, var(--color-accent) 58%, var(--color-bg-base));
+  font-weight: 600;
+}
+
 .omx-cell.is-today {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 45%, var(--color-bg-base));
 }

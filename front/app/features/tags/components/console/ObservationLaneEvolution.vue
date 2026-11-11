@@ -109,7 +109,7 @@ function onChartSelect(date: string): void {
         <span class="oev-name" :title="lane.label">{{ lane.label }}</span>
         <span v-if="lane.watchLinked" class="oev-watch">追踪</span>
         <span class="oev-meta">
-          可见 {{ axis.length }} 日<span v-if="sourceDays"> · {{ sourceDays }} 日档全窗 {{ lane.clueTotal }} 条线索</span> · 今日 {{ todayTotal ?? '—' }} 条
+          可见 {{ axis.length }} 日<span v-if="sourceDays"> · {{ sourceDays }} 日档全窗 {{ lane.storyTotal ?? lane.clueTotal }} 条事件线</span> · 今日 {{ todayTotal ?? '—' }} 条事件线
         </span>
       </header>
 
@@ -131,7 +131,7 @@ function onChartSelect(date: string): void {
         <LaneTrendChart
           :series="series"
           :selected-date="selectedDate"
-          label="所选泳道 · 所示日期内日合计（非矩阵桶峰值）"
+          label="所选泳道 · 所示日期内当日事件线数"
           @select-date="onChartSelect"
         />
         <LaneEvolutionDayIndex :nodes="nodes" @select-date="date => emit('selectDate', date)" />

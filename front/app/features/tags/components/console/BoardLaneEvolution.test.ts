@@ -92,14 +92,29 @@ describe('BoardLaneEvolution — 节点与事件', () => {
     expect(wrapper.find('[data-testid="evolution-node-2026-10-20"]').find('.ev-node-label').exists()).toBe(false)
   })
 
-  it('节点大小按当日线索数而非 section 数（热度口径）', () => {
+  it('节点大小按当日事件线数而非线索/section 数（story 口径，5.4）', () => {
+    // thread 合计 6 但 story_count=2 → mid（非 big）；story_count=4 → big
     const wrapper = mountEvolution({
-      timeline: [{
-        date: TODAY,
-        sections: [{ section_id: 1, label: '一个大桶', events: [], thread_count: 6 }],
-      }],
+      timeline: [
+        {
+          date: TODAY,
+          story_count: 2,
+          max_participant_count: 5,
+          sections: [{ section_id: 1, label: '一个大桶', events: [], thread_count: 6 }],
+        },
+        {
+          date: '2026-10-22',
+          story_count: 4,
+          sections: [{ section_id: 2, label: '另一桶', events: [], thread_count: 1 }],
+        },
+      ],
     })
-    expect(wrapper.find(`[data-testid="evolution-node-${TODAY}"]`).classes()).toContain('is-big')
+    expect(wrapper.find(`[data-testid="evolution-node-${TODAY}"]`).classes()).toContain('is-mid')
+    expect(wrapper.find(`[data-testid="evolution-node-${TODAY}"]`).attributes('aria-label')).toContain('2 条事件线')
+    expect(wrapper.find(`[data-testid="evolution-node-${TODAY}"]`).attributes('title')).toContain('最热 5 个来源')
+    expect(wrapper.find(`[data-testid="evolution-node-${TODAY}"]`).find('.ev-node-count').text()).toBe('2')
+    expect(wrapper.find('[data-testid="evolution-node-2026-10-22"]').classes()).toContain('is-big')
+    expect(wrapper.find('[data-testid="evolution-node-2026-10-22"]').attributes('aria-label')).toContain('4 条事件线')
   })
 
   it('今天事件：列出今日全部（截 4 条）事件；无今天数据提示不伪造（E-4）', () => {

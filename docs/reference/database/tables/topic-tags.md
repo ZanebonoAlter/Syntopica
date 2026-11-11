@@ -22,13 +22,22 @@
 | `is_watched` | BOOLEAN | DEFAULT false | 是否为用户关注标签 |
 | `watched_at` | TIMESTAMP | —（`*time.Time`） | 关注时间 |
 | `quality_score` | FLOAT | DEFAULT 0 | 质量评分 |
-| `metadata` | JSONB | DEFAULT '{}'（serializer:json） | 扩展元数据 |
+| `metadata` | JSONB | DEFAULT '{}'（serializer:json） | 扩展元数据（见下方 metadata 结构约定） |
 | `kind` | VARCHAR(20) | DEFAULT 'keyword' | **已废弃**，映射到 `category`，保留兼容 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
 
 > ⚠️ `(category, slug)` 是**普通复合索引**（gorm tag `index:idx_topic_tags_category_slug`，**非 unique**），不强制唯一。
 > ⚠️ 旧文档曾列 `concept_id`：迁移 `20260522_0001` 已 `DROP COLUMN`，struct 无此字段，请勿引用。
+
+**`metadata` 结构约定**（add-event-story-heat 起）：`category='event'` 的标签在打标同一次 LLM 调用内产出结构化指纹，写在该列，**不新增列**（其余 category 不产出）：
+
+| 键 | 类型 | 说明 |
+| --- | --- | --- |
+| `event_fingerprint` | OBJECT | 嵌套结构：`subject` / `subject_key`（`类型:规范名`，如 `person:trump`）/ `action` / `object` / `occurred_at`（可空，缺失时由关联文章最早 `pub_date` 代替） |
+| `fingerprint_trusted` | BOOLEAN | 平铺（非嵌套）；与已有 `metadata.event_keywords` + `topic_tags.aliases` 做纯字符串一致性校验的结果。`false` = 指纹不可信，归属判定走降级路径（不阻断标签入库） |
+
+> 写入先写者赢（已存在非空 `event_fingerprint` 不覆盖），读侧以 DB 真值为准（`event_keywords` 是异步生成的，校验只能在归属时读库做）。解析/校验唯一实现 `topicgraph/service/story_fingerprint.go`；格式契约见 `flow/topic-graph.md` 约束 12。
 
 ### 4.2 topic_tag_embeddings（主题标签向量）
 

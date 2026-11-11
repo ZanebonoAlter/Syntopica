@@ -30,21 +30,29 @@ function normalize(lanes: Record<string, unknown>[]): LaneDynamicsWindowData {
   return normalizeLaneDynamicsWindow({ window_days: 14, has_reports: true, lanes, candidates: [] } as unknown as LaneDynamicsResponse)
 }
 
-/** 主 fixture：10=双日多桶（峰值 7）、11=单日、12=休眠（1 桶）。 */
+/** 主 fixture（add-event-story-heat 5.4 story 口径）：10=双日多桶（当日 2 条事件线/最热 6 来源，热 4.5）、
+ * 11=单日（热 7.2，行序反超 10）、12=休眠（1 桶，热 0）。 */
 export function fixtureSource(): LaneDynamicsWindowData {
   return normalize([
     {
-      topic_id: 10, label: '主线 A', watch_linked: true, section_count_14d: 2, snapshot: null,
+      topic_id: 10, label: '主线 A', watch_linked: true, section_count_14d: 2, snapshot: null, lane_heat: 4.5,
       timeline: [
-        { date: '2026-10-23', sections: [sectionRaw(1, { thread_count: 3 }), sectionRaw(2, { thread_count: 7 }), sectionRaw(3, { thread_count: 1 })] },
+        {
+          date: '2026-10-23', story_count: 2, max_participant_count: 6, unassigned_event_count: 3,
+          hottest_story_id: 55, hottest_story_title: '美伊博弈升级',
+          sections: [sectionRaw(1, { thread_count: 3 }), sectionRaw(2, { thread_count: 7 }), sectionRaw(3, { thread_count: 1 })],
+        },
         { date: '2026-10-21', sections: [sectionRaw(4, { thread_count: 0 })] },
       ],
     },
-    { topic_id: 11, label: '主线 B', watch_linked: false, section_count_14d: 3, snapshot: null, timeline: [
-      { date: '2026-10-22', sections: [sectionRaw(5, { thread_count: 4 })] },
-      { date: '2026-10-21', sections: [sectionRaw(7, { thread_count: 1 }), sectionRaw(8, { thread_count: 2 })] },
-    ] },
-    { topic_id: 12, label: '休眠线 C', watch_linked: false, section_count_14d: 1, snapshot: null, timeline: [
+    {
+      topic_id: 11, label: '主线 B', watch_linked: false, section_count_14d: 3, snapshot: null, lane_heat: 7.2,
+      timeline: [
+        { date: '2026-10-22', story_count: 1, sections: [sectionRaw(5, { thread_count: 4 })] },
+        { date: '2026-10-21', sections: [sectionRaw(7, { thread_count: 1 }), sectionRaw(8, { thread_count: 2 })] },
+      ],
+    },
+    { topic_id: 12, label: '休眠线 C', watch_linked: false, section_count_14d: 1, snapshot: null, lane_heat: 0, timeline: [
       { date: '2026-10-20', sections: [sectionRaw(6, { thread_count: 1 })] },
     ] },
   ])
@@ -54,7 +62,7 @@ export function fixtureRows(source = fixtureSource()) {
   return splitObservationRows(buildObservationRows(source, AXIS14))
 }
 
-export function windowDay(date: string, sections: Partial<WindowSection>[]): WindowLaneDay {
+export function windowDay(date: string, sections: Partial<WindowSection>[], day: Partial<WindowLaneDay> = {}): WindowLaneDay {
   return {
     date,
     sections: sections.map((section, index) => ({
@@ -65,6 +73,7 @@ export function windowDay(date: string, sections: Partial<WindowSection>[]): Win
       foldedCount: section.foldedCount ?? 0,
       eventTitles: section.eventTitles ?? [],
     })),
+    ...day,
   }
 }
 

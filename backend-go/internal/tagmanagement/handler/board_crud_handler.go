@@ -22,6 +22,7 @@ import (
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service"
+	"syntopica-backend/internal/tagmanagement/service/related"
 )
 
 var semanticBoardLabelEmbedder service.AuxiliaryLabelEmbedder = service.DefaultAuxiliaryLabelEmbedder
@@ -150,6 +151,9 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		boards.GET("/:id/source-breakdown", handler.getBoardSourceBreakdown)
 		boards.GET("/:id/health-checkup", handler.getBoardHealthCheckup)
 		boards.GET("/:id/match-detail/:tagId", handler.getTagMatchDetail)
+		// 相关事件（enable-story-cross-day-continuation）：event 标签卡按需展开时
+		// 读派生向量索引；只读、同版块、不调模型。
+		boards.GET("/:id/tags/:tagId/related-events", handler.getRelatedEvents)
 		boards.GET("/:id/composition", handler.getBoardComposition)
 		boards.POST("/:id/composition", handler.addBoardComposition)
 		boards.DELETE("/:id/composition/:auxiliary_label_id", handler.removeBoardComposition)
@@ -978,20 +982,24 @@ func auxiliaryToDTO(label models.SemanticLabel) semanticBoardAuxiliaryDTO {
 func (h *semanticBoardHandler) getAllConfigs(c *gin.Context) gin.H {
 	matchConfig := semanticBoardMatchConfigToMap(service.NewSemanticBoardMatchingService(h.db).LoadConfig(c.Request.Context()))
 	upgradeConfig := semanticBoardUpgradeConfigToMap(service.NewSemanticBoardUpgradeService(h.db, nil, nil).LoadUpgradeConfig(c.Request.Context()))
-	merged := make(gin.H, len(matchConfig)+len(upgradeConfig))
+	merged := make(gin.H, len(matchConfig)+len(upgradeConfig)+1)
 	for k, v := range matchConfig {
 		merged[k] = v
 	}
 	for k, v := range upgradeConfig {
 		merged[k] = v
 	}
+	// 相关事件阈值与入板匹配参数相互独立（design D6）：缺项回退默认，坏存量
+	// 值告警后回退，GET 始终返回实际生效值。
+	merged[related.ThresholdKey] = related.LoadThreshold(h.db)
 	return merged
 }
 
 func isSemanticBoardConfigKey(key string) bool {
 	switch key {
 	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards", "semantic_board_match_direct_hit_min_overlap", "semantic_board_match_direct_hit_min_ratio", "semantic_board_match_direction_sim_threshold",
-		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit", "semantic_board_upgrade_cluster_method":
+		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit", "semantic_board_upgrade_cluster_method",
+		related.ThresholdKey:
 		return true
 	default:
 		return false
@@ -1013,8 +1021,10 @@ func validateSemanticBoardConfigValue(key string, value string) error {
 		return nil
 	default:
 		parsed, err := strconv.ParseFloat(value, 64)
-		if err != nil || parsed < 0 || parsed > 1 {
-			return fmt.Errorf("%s must be a number between 0 and 1", key)
+		// NaN/Inf 会通过 < 0 / > 1 的比较（两者恒 false），必须显式判为非法——
+		// 相关事件阈值明确要求「有限数」，存量坏值同样不得进入生效路径。
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed > 1 {
+			return fmt.Errorf("%s must be a finite number between 0 and 1", key)
 		}
 		return nil
 	}

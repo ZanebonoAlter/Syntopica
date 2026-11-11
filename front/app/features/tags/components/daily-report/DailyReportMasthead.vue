@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { formatMagazineDate, selectLeadStory } from './dailyReportMagazine'
+import { formatMagazineDate, highlightEvidence, selectLeadStory, type HighlightEvidence } from './dailyReportMagazine'
 import type { DailyReport } from '~/api/dailyReports'
 
 const props = defineProps<{
@@ -8,8 +8,26 @@ const props = defineProps<{
   boardTitle?: string
 }>()
 
+const emit = defineEmits<{
+  /** 重点定位意图（surface-story-heat-in-report-top）：仅可定位条目发出，滚动/高亮由阅读容器承接。 */
+  locate: [storyId: number]
+}>()
+
 const lead = computed(() => selectLeadStory(props.report))
 const highlights = computed(() => (props.report.highlights || []).slice(0, 3))
+
+/** 每条重点的展示证据（来源数/进展/定位状态；旧数据全缺省 → 保持现状外观）。 */
+const evidence = computed<HighlightEvidence[]>(() =>
+  highlights.value.map(highlight => highlightEvidence(highlight, props.report)),
+)
+
+/** 划选文案不触发定位（保留既有划选纪律：非折叠选区时点击只当文本操作）。 */
+function onLocate(storyId: number | null | undefined): void {
+  if (typeof storyId !== 'number') return
+  const selection = typeof window !== 'undefined' ? window.getSelection() : null
+  if (selection && !selection.isCollapsed) return
+  emit('locate', storyId)
+}
 </script>
 
 <template>
@@ -35,12 +53,40 @@ const highlights = computed(() => (props.report.highlights || []).slice(0, 3))
     </section>
 
     <!-- 今日重点：正常态（≥1 条）与空态（null / [] / 字段缺失）互斥渲染，
-         任一时刻只有一个分支存在 → id="report-highlights" 不会重复。 -->
+         任一时刻只有一个分支存在 → id="report-highlights" 不会重复。
+         surface-story-heat-in-report-top：可定位条目标题为键盘可达文字按钮（仅可定位时才有按钮），
+         标题旁「进展」徽标 + 来源数快照；快照缺失不显示，旧数据外观不变。 -->
     <section v-if="highlights.length" id="report-highlights" class="drm-highlights" aria-label="今日重点">
       <article v-for="(highlight, index) in highlights" :key="`${highlight.title}-${index}`" class="drm-highlight">
         <span class="drm-highlight__index">N°{{ String(index + 1).padStart(2, '0') }}</span>
-        <h3>{{ highlight.title }}</h3>
+        <h3>
+          <button
+            v-if="evidence[index]!.locate === 'ready'"
+            type="button"
+            class="drm-highlight__locate"
+            :data-testid="`highlight-locate-${index}`"
+            :aria-label="`定位正文：${highlight.title}`"
+            title="定位到本期正文中该事件线的第一条线索"
+            @click="onLocate(highlight.story_id)"
+          >{{ highlight.title }}</button>
+          <template v-else>{{ highlight.title }}</template>
+          <span
+            v-if="evidence[index]!.isProgress"
+            class="drm-highlight__progress"
+            :data-testid="`highlight-progress-${index}`"
+            title="昨日重点再次入选"
+          >进展</span>
+        </h3>
         <p>{{ highlight.reason }}</p>
+        <p
+          v-if="evidence[index]!.sourceCount !== null || evidence[index]!.locate === 'missing'"
+          class="drm-highlight__meta"
+          :data-testid="`highlight-meta-${index}`"
+          :title="evidence[index]!.heatHint ?? undefined"
+        >
+          <span v-if="evidence[index]!.sourceCount !== null">{{ evidence[index]!.sourceCount }} 个来源</span>
+          <span v-if="evidence[index]!.locate === 'missing'">本期正文暂无对应事件</span>
+        </p>
       </article>
     </section>
     <section v-else id="report-highlights" class="drm-highlights drm-highlights--empty" aria-label="今日重点">
@@ -209,6 +255,55 @@ const highlights = computed(() => (props.report.highlights || []).slice(0, 3))
   font-size: 1rem;
   font-weight: 600;
   line-height: 1.55;
+}
+
+/* 重点定位文字按钮（surface-story-heat-in-report-top）：继承标题排版，只加克制可点暗示；
+   不新增色值，复用主题 token；焦点轮廓走浏览器默认（不抹除）。 */
+.drm-highlight__locate {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--color-border-strong);
+  text-underline-offset: 3px;
+}
+
+.drm-highlight__locate:hover,
+.drm-highlight__locate:focus-visible {
+  color: var(--color-accent);
+}
+
+/* 「进展」徽标：昨日重点再次入选（服务端派生）；克制边框胶囊，非颜色唯一载体（文字可读）。 */
+.drm-highlight__progress {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.6rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
+
+/* 来源数快照 + 降级提示行：真实 0 显示 0，快照缺失整行不渲染（不伪造 undefined/占位）。 */
+.drm-highlight p.drm-highlight__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.45rem 0 0;
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
 }
 
 .drm-highlight p {

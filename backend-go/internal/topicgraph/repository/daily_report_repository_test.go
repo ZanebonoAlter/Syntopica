@@ -767,7 +767,10 @@ func TestGetReportByID_NormalizesNullHighlights(t *testing.T) {
 }
 
 // TestGetReportByID_KeepsHighlightsArray (B15): a real highlights array passes
-// through the read path untouched (same content, same length).
+// through the read path with content untouched (same entries, same length);
+// surface-story-heat-in-report-top adds the DERIVED is_progress:false on read
+// (story-less legacy entries are never marked progress) — the stored JSON is
+// not rewritten (pinned by TestStoryHighlightsYesterdayAndRevision).
 func TestGetReportByID_KeepsHighlightsArray(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
@@ -776,17 +779,23 @@ func TestGetReportByID_KeepsHighlightsArray(t *testing.T) {
 	now := NormalizeReportDate(time.Now())
 	reportID := seedTestReport(t, db, boardID, now)
 
-	highlights := `[{"title":"要闻一","reason":"理由一","tag_ids":[1]},` +
+	highlights := `[{"title":"要闻一","reason":"理由一","tag_ids":[1],"is_progress":false},` +
+		`{"title":"要闻二","reason":"理由二","tag_ids":[2],"is_progress":false},` +
+		`{"title":"要闻三","reason":"理由三","tag_ids":[1,2],"is_progress":false}]`
+	storedHighlights := `[{"title":"要闻一","reason":"理由一","tag_ids":[1]},` +
 		`{"title":"要闻二","reason":"理由二","tag_ids":[2]},` +
 		`{"title":"要闻三","reason":"理由三","tag_ids":[1,2]}]`
 	require.NoError(t, db.Exec(
-		"UPDATE board_daily_reports SET highlights = ?::jsonb WHERE id = ?", highlights, reportID).Error)
+		"UPDATE board_daily_reports SET highlights = ?::jsonb WHERE id = ?", storedHighlights, reportID).Error)
 
 	report, err := repo.GetReportByID(reportID)
 	require.NoError(t, err)
-	assert.JSONEq(t, highlights, string(report.Highlights), "non-null highlights must pass through untouched")
+	assert.JSONEq(t, highlights, string(report.Highlights), "non-null highlights keep their content; only the derived is_progress joins on read")
 
 	var decoded []Highlight
 	require.NoError(t, json.Unmarshal(report.Highlights, &decoded))
 	assert.Len(t, decoded, 3)
+	for _, h := range decoded {
+		assert.False(t, h.IsProgress, "story-less legacy entries are never progress")
+	}
 }

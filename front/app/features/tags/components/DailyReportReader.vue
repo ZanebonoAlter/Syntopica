@@ -51,6 +51,11 @@ const props = withDefaults(defineProps<{
   initialDate?: string | null
   /** 列表点追踪命中进入时，定位对应 section。 */
   initialWatchId?: string | null
+  /**
+   * `?story=` 深链（surface-story-events-in-radar）：定位本期正文 DOM 顺序中
+   * 该事件线第一条 thread；本期正文无该事件线时不滚动、给提示。
+   */
+  initialStoryId?: number | null
   /** desk=路由页内静态四区；overlay=旧列表浮层（阶段④前兼容）。 */
   mode?: 'overlay' | 'desk'
   /** 阅读台今日（Asia/Shanghai 本地日期），用于演进带「今」标记。 */
@@ -61,6 +66,7 @@ const props = withDefaults(defineProps<{
   initialAnnotationId: null,
   initialDate: null,
   initialWatchId: null,
+  initialStoryId: null,
   mode: 'overlay',
   today: '',
 })
@@ -110,6 +116,9 @@ async function handleRebucket(sectionId: number) {
 const watchesApi = useTopicWatchesApi()
 const watchHitsByReport = ref(new Map<number, TopicWatchHit[]>())
 const focusSectionId = ref<number | null>(null)
+/** 重点定位请求（surface-story-heat-in-report-top）：nonce 使重复点击同线重触发；切 report 清空。 */
+const locateRequest = ref<{ storyId: number, nonce: number } | null>(null)
+let locateNonce = 0
 const showReader = ref(true)
 const showDetectiveWall = ref(false)
 const detectiveTopicId = ref<number | undefined>()
@@ -299,6 +308,12 @@ onMounted(async () => {
     }
   }
   await nextTick()
+  // 深链定位（雷达事件线 → 日报正文）：复用刊头重点的同一路径；本期正文无该
+  // 事件线时不滚动、不跳近似位置，只给「本期正文暂无对应事件」提示。
+  // 放在 nextTick 之后：正文分区组件已挂载，定位意图才会被各分区接收。
+  if (props.initialStoryId != null && reader.selectedDetail.value) {
+    handleLocateHighlight(props.initialStoryId)
+  }
 })
 
 async function ensureWatchHits(reportId: number, detail?: { activeWatchHits?: DailyReportWatchHit[] }) {
@@ -333,12 +348,28 @@ function locateWatchSection(sectionId: string | number) {
   })
 }
 
+/** 刊头重点定位（surface-story-heat-in-report-top）：先按当前 report 正文预判目标——
+ *  点击时目标已消失则原地轻提示、不下发定位（不跳近似位置）；有目标则转发给各正文分区，
+ *  由持有目标的分区展开并滚动/聚焦/高亮。 */
+function handleLocateHighlight(storyId: number) {
+  const detail = reader.selectedDetail.value
+  const hasTarget = (detail?.sections ?? []).some(section =>
+    (section.threads ?? []).some(thread => thread.story_id === storyId),
+  )
+  if (!hasTarget) {
+    notify.warn('本期正文暂无对应事件')
+    return
+  }
+  locateRequest.value = { storyId, nonce: ++locateNonce }
+}
+
 async function closeReader() {
   emit('close')
 }
 
 async function selectReport(index: number) {
   focusSectionId.value = null
+  locateRequest.value = null
   await reader.selectReport(index)
   const detail = reader.selectedDetail.value
   if (detail) await ensureWatchHits(detail.id, detail)
@@ -347,6 +378,7 @@ async function selectReport(index: number) {
 
 async function shiftReport(offset: number) {
   focusSectionId.value = null
+  locateRequest.value = null
   await reader.shiftReport(offset)
   const detail = reader.selectedDetail.value
   if (detail) await ensureWatchHits(detail.id, detail)
@@ -583,6 +615,7 @@ onUnmounted(() => {
               <DailyReportMasthead
                 :report="reader.selectedDetail.value"
                 :board-title="boardTitle"
+                @locate="handleLocateHighlight"
               />
               <div class="drm-layout">
                 <DailyReportSidebar
@@ -617,6 +650,7 @@ onUnmounted(() => {
                     :lane-dynamics-entry="getLaneDynamicsEntry()"
                     :context-entries="contextEntries"
                     :focus-section-id="focusSectionId"
+                    :locate-thread="locateRequest"
                     :rebucket-section-id="reader.rebucketSectionId.value"
                     :section-aliases="reader.sectionAliases.value"
                     @rebucket="handleRebucket"

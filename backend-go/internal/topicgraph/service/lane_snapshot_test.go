@@ -187,7 +187,7 @@ func TestRenderLaneMagnitudeSignal_PGDateColumnMidnightShape(t *testing.T) {
 		{PeriodDate: midnight(anchor), SectionCnt: 1, ThreadCnt: 4},
 		{PeriodDate: midnight(anchor.AddDate(0, 0, -6)), SectionCnt: 3, ThreadCnt: 11}, // 窗首 09-02
 		// 上7窗 [08-26, 09-01]：窗首 08-26、窗末 09-01 各一条（均为独立日期）。
-		{PeriodDate: midnight(anchor.AddDate(0, 0, -7)), SectionCnt: 1, ThreadCnt: 9}, // 窗末 09-01
+		{PeriodDate: midnight(anchor.AddDate(0, 0, -7)), SectionCnt: 1, ThreadCnt: 9},  // 窗末 09-01
 		{PeriodDate: midnight(anchor.AddDate(0, 0, -13)), SectionCnt: 1, ThreadCnt: 2}, // 窗首 08-26
 	}
 	sig := renderLaneMagnitudeSignal(counts, anchor)

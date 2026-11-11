@@ -86,10 +86,16 @@ func matchKeywordArticles(expr string, articles []repository.WatchScanArticle) [
 // (spec: 无命中不产空 section). Returns the appended count; failures of
 // individual watches are logged and skipped (design §D1: degradation, never
 // blocking).
+//
+// date is the report day (period_date) — REQUIRED, never derived from the
+// execution clock: rebuilding a historical report must scan that day's
+// publication window, not today's (fix-duplicate-article-heat D1). A zero
+// value is a programming error and fails loudly (see scanBoardDayArticles).
 func MaterializeKeywordWatches(
 	ctx context.Context,
 	boardID uint,
 	watches []repository.BoardTopicWatch,
+	date time.Time,
 	nextClusterIndex int,
 	matCfg WatchMaterializeConfig,
 	chat watchChatFunc,
@@ -101,8 +107,8 @@ func MaterializeKeywordWatches(
 		return nil, nil, nil
 	}
 
-	// Shared scan: one query per day serves every keyword_topic watch.
-	articles, err := scanBoardDayArticles(boardID, time.Time{})
+	// Shared scan: one query per report day serves every keyword_topic watch.
+	articles, err := scanBoardDayArticles(boardID, date)
 	if err != nil {
 		return nil, nil, fmt.Errorf("scan day articles: %w", err)
 	}
@@ -236,12 +242,18 @@ func localDayWindow(date time.Time) (time.Time, time.Time) {
 }
 
 // scanBoardDayArticles loads the keyword-scan pool: all unarchived articles
-// published in the local day window of date (zero value means today). Summary preference is coalesced in SQL
-// (AIContentSummary > FirecrawlContent > Content > Description, empty-string
-// NULLIF'd away) mirroring buildArticleContextForTag's precedence.
+// published in the local day window of date. Summary preference is coalesced
+// in SQL (AIContentSummary > FirecrawlContent > Content > Description,
+// empty-string NULLIF'd away) mirroring buildArticleContextForTag's precedence.
+//
+// date is REQUIRED — it is the report day the materialization belongs to.
+// The former zero-value fallback (date = time.Now()) silently scanned
+// "today" while rebuilding a historical report, so the same articles leaked
+// into several consecutive daily reports (fix-duplicate-article-heat D1:
+// explicit failure beats silently wrong data).
 func scanBoardDayArticles(boardID uint, date time.Time) ([]repository.WatchScanArticle, error) {
 	if date.IsZero() {
-		date = time.Now()
+		return nil, fmt.Errorf("report date is required")
 	}
 	start, end := localDayWindow(date)
 	articles, err := repository.Repo.ListWatchScanArticles(start, end, KeywordArticleScanLimit)

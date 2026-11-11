@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import DailyReportMiniLifeline from './DailyReportMiniLifeline.vue'
 import SectionWatchBadge from './SectionWatchBadge.vue'
@@ -20,6 +20,7 @@ import type { ContextRow } from '~/api/boardEnrichment'
 import { isThreadFitDemoted, threadFitLabel } from '~/utils/threadFit'
 import { useTopicKeyEvents } from '~/features/tags/composables/useTopicKeyEvents'
 import { useConfirm } from '~/composables/useConfirm'
+import { useMediaQuery } from '~/composables/useMediaQuery'
 import KeyEventMarkerActions from '../KeyEventMarkerActions.vue'
 import type { ArticleTitle, TopicLifelineData } from '~/features/tags/composables/useDailyReportReader'
 import type { DailyReport, DailyReportSection, DailyReportThread } from '~/api/dailyReports'
@@ -36,6 +37,9 @@ const props = defineProps<{
   contextEntries: Map<string, RequestCacheEntry<ContextRow[]>>
   /** Section id requested by a watch index or timeline preview. */
   focusSectionId?: number | null
+  /** 重点定位意图（surface-story-heat-in-report-top）：{ storyId, nonce }，nonce 变化重触发；
+ *  本分区只处理自己的目标（按当前 report 正文 DOM 序第一条），无线程则静默不动作。 */
+  locateThread?: { storyId: number, nonce: number } | null
   /** 正在重新分桶的 section id（由 reader 持有；非空时按钮置灰 + spinner）。 */
   rebucketSectionId?: number | null
   /** 重分桶后被删除的旧锚点 → 该组首条 section（深链回退，add-intra-lane-theme-bucketing）。 */
@@ -200,6 +204,69 @@ function historicalPending(group: TopicGroup): boolean {
   return nodes.some(node => !props.reportDetails.has(node.report_id))
 }
 
+// ── 重点定位（surface-story-heat-in-report-top）──
+
+const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+/** 当前点亮的定位目标线程 id；同一时刻至多一个（重复定位替换）。 */
+const litThreadId = ref<number | null>(null)
+let litTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearThreadLit(): void {
+  if (litTimer) {
+    clearTimeout(litTimer)
+    litTimer = null
+  }
+  litThreadId.value = null
+}
+
+/** 按当前正文数据序（= 渲染 DOM 序）找第一条对应线线程；范围限本分区当前 report 的
+ *  body 线程（历史节点是别的 report，不参与）；不是最小 thread id。 */
+function findThreadByStory(storyId: number): { groupKey: string, topicId?: number, threadId: number } | null {
+  for (const group of groups.value) {
+    for (const section of group.sections) {
+      for (const thread of section.threads ?? []) {
+        if (thread.story_id === storyId) {
+          return { groupKey: group.key, topicId: group.topicId, threadId: thread.id }
+        }
+      }
+    }
+  }
+  return null
+}
+
+watch(() => props.locateThread, async (request) => {
+  if (!request) return
+  const hit = findThreadByStory(request.storyId)
+  if (!hit) return // 目标在其它分区/已消失：本组件静默（阅读容器已按数据预判轻提示，不跳近似位置）
+  if (!expandedTopics.value.has(hit.groupKey)) {
+    const next = new Set(expandedTopics.value)
+    next.add(hit.groupKey)
+    expandedTopics.value = next
+    if (hit.topicId != null && props.zone.key === 'active') {
+      emit('ensureLifeline', hit.topicId)
+      emit('ensureLaneDynamics')
+    }
+  }
+  await nextTick()
+  const target = document.getElementById(`report-thread-${hit.threadId}`)
+  if (!target) return
+  clearThreadLit()
+  litThreadId.value = hit.threadId
+  if (typeof target.scrollIntoView === 'function') {
+    // reduced-motion 不平滑滚动（焦点轮廓仍可见，高亮不只靠颜色——有点亮类与焦点双重表达）。
+    target.scrollIntoView({ behavior: prefersReducedMotion.value ? 'auto' : 'smooth', block: 'center' })
+  }
+  target.focus({ preventScroll: true })
+  litTimer = setTimeout(clearThreadLit, 2000)
+})
+
+onUnmounted(clearThreadLit)
+
+watch(() => props.reportDate, () => {
+  // 切 report：清理定位高亮与计时器，无旧报回跳（spec「重复定位与减弱动画」）。
+  clearThreadLit()
+})
+
 watch([groups, () => props.reportDate], ([nextGroups, reportDate]) => {
   if (props.zone.key !== 'active' || autoExpandedDate === reportDate || !nextGroups[0]) return
   autoExpandedDate = reportDate
@@ -337,9 +404,12 @@ watch(() => props.focusSectionId, async (requestedId) => {
               <div class="drm-section-card__threads">
                 <article
                   v-for="thread in section.threads"
+                  :id="`report-thread-${thread.id}`"
                   :key="thread.id"
                   class="drm-thread"
-                  :class="{ 'drm-thread--demoted': isThreadFitDemoted(thread.fit_distance) }"
+                  :class="{ 'drm-thread--demoted': isThreadFitDemoted(thread.fit_distance), 'drm-thread--lit': litThreadId === thread.id }"
+                  :data-story-id="thread.story_id ?? undefined"
+                  tabindex="-1"
                 >
                   <div class="drm-thread-row">
                   <button
@@ -453,9 +523,12 @@ watch(() => props.focusSectionId, async (requestedId) => {
                   <h3>{{ section.cluster_label }}</h3>
                   <article
                     v-for="thread in section.threads"
+                    :id="`report-thread-${thread.id}`"
                     :key="thread.id"
                     class="drm-thread"
-                    :class="{ 'drm-thread--demoted': isThreadFitDemoted(thread.fit_distance) }"
+                    :class="{ 'drm-thread--demoted': isThreadFitDemoted(thread.fit_distance), 'drm-thread--lit': litThreadId === thread.id }"
+                    :data-story-id="thread.story_id ?? undefined"
+                    tabindex="-1"
                   >
                     <div class="drm-thread-row">
                     <button
@@ -838,6 +911,17 @@ watch(() => props.focusSectionId, async (requestedId) => {
 }
 
 .drm-thread:hover::before {
+  background: var(--color-accent);
+}
+
+/* 重点定位点亮（surface-story-heat-in-report-top）：刊头点击后 2s 单目标高亮。
+   不只靠颜色：目标线程同时被程序聚焦（焦点轮廓）；reduced-motion 由 JS 侧关平滑滚动。 */
+.drm-thread--lit {
+  border-left-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.drm-thread--lit::before {
   background: var(--color-accent);
 }
 

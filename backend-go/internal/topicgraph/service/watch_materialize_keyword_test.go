@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -102,4 +104,23 @@ func TestMustMarshalUintArray(t *testing.T) {
 	assert.Equal(t, repository.JSON("[]"), mustMarshalUintArray(nil))
 	assert.Equal(t, repository.JSON("[7]"), mustMarshalUintArray([]uint{7}))
 	assert.Equal(t, repository.JSON("[1,2,3]"), mustMarshalUintArray([]uint{1, 2, 3}))
+}
+
+// ── report date is mandatory (fix-duplicate-article-heat D1/D7) ──
+//
+// The zero-value fallback (date = time.Now()) silently scanned "today" while
+// rebuilding a historical report, leaking the same articles into several
+// consecutive daily reports. A missing report date must fail loudly instead.
+
+func TestScanBoardDayArticles_ZeroDateReturnsError(t *testing.T) {
+	_, err := scanBoardDayArticles(1, time.Time{})
+	require.Error(t, err, "zero report date must fail, never degrade to today")
+	assert.Contains(t, err.Error(), "report date is required")
+}
+
+func TestMaterializeKeywordWatches_ZeroDateReturnsError(t *testing.T) {
+	watches := []repository.BoardTopicWatch{{ID: 1, Label: "harness", Type: repository.WatchTypeKeywordTopic}}
+	_, _, err := MaterializeKeywordWatches(context.Background(), 1, watches, time.Time{}, 0, WatchMaterializeConfig{Enabled: false}, nil)
+	require.Error(t, err, "keyword materialization must refuse a missing report date")
+	assert.Contains(t, err.Error(), "scan day articles: report date is required")
 }

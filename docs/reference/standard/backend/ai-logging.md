@@ -131,6 +131,7 @@ agent loop 里的**工具调用**（非 LLM 调用）SHALL 留痕，至少记：
 | 站内搜索-查询向量化 | `article_search_query` | ✅ | N/A | ✅ | N/A | 已接入（add-article-search：语义路查询 embedding，airouter 持久缓存白名单已登记，失败/3s 超时降级纯关键词不报错） |
 | 站内搜索-LLM 扩词 | `article_search_expand` | ✅ | ✅ | ✅ | N/A | 已接入（add-article-search：expand=on 时查询串→5~8 扩词 JSON，10min 内存 TTL 缓存，失败不影响主结果） |
 | 订阅源发现-路由 embedding | `discovery.route_embedding` | ✅ | N/A | ✅ | N/A | 已接入（后台 worker 逐条 embed，capability `embedding`） |
+| 相关事件索引刷新 | `tagmanagement.related_event.embedding` | ✅ | N/A | ✅ | N/A | 已接入（enable-story-cross-day-continuation：显式 CLI `cmd/related-events --refresh`/`--experiment` 批量 ≤32 条，capability `embedding`；**不在 embedding 缓存白名单**，每次刷新都是真实调用行；单次 CLI 运行不构成编排，session_id N/A） |
 
 **补齐状态**：以上日报管线 6 处调用已由 [`ai-call-logging-schema`](../../../../openspec/changes/ai-call-logging-schema) change 全部补齐（prompt/token/session_id 落地，operation 升级为一等字段且 airouter 强制校验非空），从"待补齐"转为 ✅。其他调用方（reader/tagmanagement）也已补 operation 字段。
 

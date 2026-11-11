@@ -11,6 +11,7 @@
 | [tables/ai-routing.md](tables/ai-routing.md) | AI 路由域 | ai-summary |
 | [tables/topic-tags.md](tables/topic-tags.md) | 主题标签域 | topic-graph |
 | [tables/semantic-labels.md](tables/semantic-labels.md) | 语义标签 / 板块域 | semantic-board |
+| [tables/entity-subjects.md](tables/entity-subjects.md) | 实体主体身份层（身份 / 名称证据 / aux 溯源） | topic-graph, semantic-board |
 | [tables/research-data-sources.md](tables/research-data-sources.md) | 研究数据源域 | research-data-sources |
 | [tables/embeddings.md](tables/embeddings.md) | 向量域 | topic-graph |
 | [tables/job-queues.md](tables/job-queues.md) | 任务队列域 | content-enrichment |
@@ -21,9 +22,9 @@
 | [tables/tracing.md](tables/tracing.md) | 链路追踪域 | — |
 | [tables/deprecated-framework.md](tables/deprecated-framework.md) | 已废弃 / 预留 / 框架表 | — |
 
-另：[DATA_LIFECYCLE.md](DATA_LIFECYCLE.md)（数据状态字段流转，独立于域文档）。
+另：[DATA_LIFECYCLE.md](DATA_LIFECYCLE.md)（数据状态字段流转，独立于域文档）、[RESTORE.md](RESTORE.md)（灾备恢复流程：备份档恢复契约 + 可照做步骤 + 已知失败模式 + 实测耗时）、[RESTORE_DRILL.md](RESTORE_DRILL.md)（恢复演练留痕：演练时间/档来源/count 校验/迁移对账/耗时）。
 
-## 完整表清单（60 业务 + 5 废弃 + 1 框架，按域分组 = 归属速查表；2026-09-02 cross_board 两表补齐；2026-09-24 页边注三表补齐；2026-10 ai-provider-model-overhaul 三张两层表补齐、ai_providers/ai_route_providers 停写废弃；2026-10-29 board-health-triage-advice 描述修复任务/条目两表补齐）
+## 完整表清单（65 业务 + 5 废弃 + 1 框架，按域分组 = 归属速查表；2026-09-02 cross_board 两表补齐；2026-09-24 页边注三表补齐；2026-10 ai-provider-model-overhaul 三张两层表补齐、ai_providers/ai_route_providers 停写废弃；2026-10-29 board-health-triage-advice 描述修复任务/条目两表补齐；2026-11 add-event-story-heat 事件线/热度证据两表补齐；2026-11 normalize-event-subject-entities 实体主体身份层三表补齐）
 
 #### 内容 → [`tables/content.md`](tables/content.md)（flow: `content-enrichment`）
 
@@ -78,6 +79,14 @@
 | `auxiliary_description_repair_jobs` | 共享描述修复任务（幂等键 + 冻结范围计数 + 租约列，无 DB FK） | `tagmanagement/models.AuxiliaryDescriptionRepairJob` |
 | `auxiliary_description_repair_items` | 描述修复任务条目（冻结的 topic_tag 逐项进度，无 DB FK） | `tagmanagement/models.AuxiliaryDescriptionRepairItem` |
 
+#### 实体主体身份层 → [`tables/entity-subjects.md`](tables/entity-subjects.md)（flow: `topic-graph`, `semantic-board`）
+
+| 表名 | 说明 | 对应模型 |
+| ------ | ------ | ---------- |
+| `entity_registry` | 实体身份行（稳定 ID / entity_key / 规范名无唯一约束 / 稳定短身份说明 / 两套检索向量及空间三元组；**无类型列**） | `tagmanagement/models.EntityRegistry` |
+| `entity_mentions` | 名称与证据行（提及原文 + 规范化提及键 + 来源标签/文章；叫法允许歧义） | `tagmanagement/models.EntityMention` |
+| `entity_aux_links` | 辅助标签溯源行（aux 硬删只掉本行、绝不级联删实体；GC 置 disabled 时读取态过滤） | `tagmanagement/models.EntityAuxLink` |
+
 #### 向量 → [`tables/embeddings.md`](tables/embeddings.md)（flow: `topic-graph`）
 
 | 表名 | 说明 | 对应模型 |
@@ -85,6 +94,7 @@
 | `embedding_config` | 向量配置（键值对） | `models.EmbeddingConfig` |
 | `embedding_queues` | 向量生成队列 | `models.EmbeddingQueue` |
 | `merge_reembedding_queues` | 合并后重算向量队列 | `models.MergeReembeddingQueue` |
+| `related_event_embeddings` | 相关事件派生向量缓存（可丢弃索引，`related-events` 能力） | `tagmanagement/models.RelatedEventEmbedding` |
 
 #### 任务队列 → [`tables/job-queues.md`](tables/job-queues.md)（flow: `content-enrichment`）
 
@@ -112,6 +122,8 @@
 | `topic_watch_hits` | Watch 命中记录 | `topicgraph.TopicWatchHit` |
 | `topic_key_event_markers` | 话题关键事件注记（人工主权三态 + 来源指纹幂等） | `topicgraph.TopicKeyEventMarker` |
 | `key_event_recommendation_runs` | 关键事件推荐任务状态（每报告一行） | `topicgraph.KeyEventRecommendationRun` |
+| `board_stories` | 事件线（跨天同一事件聚合，结构化指纹 + 合并链；add-event-story-heat） | `topicgraph.BoardStory` |
+| `story_signals` | 热度证据（参与者×文章×信源时间，复合主键；add-event-story-heat） | `topicgraph.StorySignal` |
 
 #### 页边注 → [`tables/margin-notes.md`](tables/margin-notes.md)（flow: `daily-report`）
 

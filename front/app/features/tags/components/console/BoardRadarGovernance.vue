@@ -56,6 +56,8 @@ const {
   showMergePreview,
   matchingConfig,
   matchingConfigLoading,
+  matchingConfigSaving,
+  matchingConfigError,
   backfillTask,
   handleUpgradeSuggest,
   loadPersistedSuggestions,
@@ -132,6 +134,8 @@ async function handleAddBoard(data: {
     :visible="showMatchingConfigDialog"
     :config="matchingConfig"
     :loading="matchingConfigLoading"
+    :saving="matchingConfigSaving"
+    :save-error="matchingConfigError"
     @save="handleSaveMatchingConfig"
     @cancel="showMatchingConfigDialog = false"
   />

@@ -59,23 +59,45 @@ export interface LaneMatrixRow {
   topicId: number
   label: string
   watchLinked: boolean
-  /** date → 当日 section 数（只在轴内的日期；矩阵格值与抽屉入口）。 */
+  /** date → 当日 section 数（只在轴内的日期；断档判定/兼容，不再作格值/排序）。 */
   counts: Record<string, number>
-  /** date → 当日线索数（热度口径，演进带节点大小/排序用）。 */
+  /** date → 当日线索数（thread 口径，兼容保留）。 */
   clueCounts: Record<string, number>
-  /** 轴内分区总数（行尾合计）。 */
+  /** date → 当日事件线数（story_count；缺省回退非综合稿线程数合计）。 */
+  storyCounts: Record<string, number>
+  /** date → 当日最热事件线独立来源数；缺省 0。 */
+  participantCounts: Record<string, number>
+  /** date → 当日未归组事件数；缺省 0。 */
+  unassignedCounts: Record<string, number>
+  /** 轴内分区总数（休眠分组阈值口径，不改）。 */
   total: number
-  /** 轴内线索总数（泳道热度排序口径）。 */
+  /** 轴内线索总数（thread 口径，兼容保留）。 */
   clueTotal: number
+  /** 全窗事件线热度（lane_heat）；缺省 0（行序主键）。 */
+  laneHeat: number
+  /** 轴内事件线总数（行序次键）。 */
+  storyTotal: number
   /** 轴内最后一次有分区的日期下标；-1 = 窗口内无分区。 */
   lastActiveIndex: number
 }
 
-/** 单条泳道在给定轴上的矩阵行（格值 = 当日 section 数；热度另存 clueCounts）。 */
+/** 单日事件线数：story_count 缺省（旧后端/未回填）→ 回退非综合稿线程数合计（不用桶数冒充）。 */
+function dayStoryCount(day: LaneDynamicsLane['timeline'][number]): number {
+  if (day.story_count != null) return day.story_count
+  return (day.sections ?? []).reduce((sum, section) => {
+    const fallback = (section.events?.length ?? 0) + (section.folded_count ?? 0)
+    return sum + (section.thread_count ?? fallback)
+  }, 0)
+}
+
+/** 单条泳道在给定轴上的矩阵行（格值 = 当日事件线数；断档判定仍用 counts）。 */
 export function buildLaneRow(lane: LaneDynamicsLane, axis: string[]): LaneMatrixRow {
   const axisSet = new Set(axis)
   const counts: Record<string, number> = {}
   const clueCounts: Record<string, number> = {}
+  const storyCounts: Record<string, number> = {}
+  const participantCounts: Record<string, number> = {}
+  const unassignedCounts: Record<string, number> = {}
   for (const day of lane.timeline ?? []) {
     if (!axisSet.has(day.date)) continue
     const sections = day.sections ?? []
@@ -84,14 +106,19 @@ export function buildLaneRow(lane: LaneDynamicsLane, axis: string[]): LaneMatrix
       const fallback = (section.events?.length ?? 0) + (section.folded_count ?? 0)
       return sum + (section.thread_count ?? fallback)
     }, 0)
+    storyCounts[day.date] = dayStoryCount(day)
+    participantCounts[day.date] = day.max_participant_count ?? 0
+    unassignedCounts[day.date] = day.unassigned_event_count ?? 0
   }
   let total = 0
   let clueTotal = 0
+  let storyTotal = 0
   let lastActiveIndex = -1
   axis.forEach((date, index) => {
     const count = counts[date] ?? 0
     total += count
     clueTotal += clueCounts[date] ?? 0
+    storyTotal += storyCounts[date] ?? 0
     if (count > 0) lastActiveIndex = index
   })
   return {
@@ -101,17 +128,22 @@ export function buildLaneRow(lane: LaneDynamicsLane, axis: string[]): LaneMatrix
     watchLinked: lane.watch_linked,
     counts,
     clueCounts,
+    storyCounts,
+    participantCounts,
+    unassignedCounts,
     total,
     clueTotal,
+    laneHeat: lane.lane_heat ?? 0,
+    storyTotal: lane.story_count_14d ?? storyTotal,
     lastActiveIndex,
   }
 }
 
-/** 全部泳道行：热度=轴内线索总数降序（分桶数只做次级），并列按 topic_id 升序。 */
+/** 全部泳道行：行序 = lane_heat 降序 → 事件线数降序 → topic_id 升序（与后端一致；休眠分组仍用 total 阈值）。 */
 export function buildLaneRows(lanes: LaneDynamicsLane[], axis: string[]): LaneMatrixRow[] {
   return lanes
     .map((lane) => buildLaneRow(lane, axis))
-    .sort((a, b) => b.clueTotal - a.clueTotal || b.total - a.total || a.topicId - b.topicId)
+    .sort((a, b) => b.laneHeat - a.laneHeat || b.storyTotal - a.storyTotal || a.topicId - b.topicId)
 }
 
 /** 休眠分组：total ≤ threshold 归休眠（阈值含等号），其余留主矩阵。 */
@@ -141,7 +173,7 @@ export function parseLaneParam(raw: unknown): number | null {
 /**
  * 选中泳道解析：
  *  ① query lane 命中现有泳道 → 用它；
- *  ② 否则取窗口内线索数最多的泳道（rows 已按 clueTotal 降序，并列 topic_id 升序）；
+ *  ② 否则取排序最前的泳道（rows 已按 laneHeat → storyTotal → id 降序，首行即默认选中）；
  *  ③ 无泳道 → null。
  */
 export function resolveLaneSelection(rows: LaneMatrixRow[], rawLane: unknown): number | null {

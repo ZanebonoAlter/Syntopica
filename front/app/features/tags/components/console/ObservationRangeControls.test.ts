@@ -397,3 +397,20 @@ describe('ObservationRangeControls — 状态', () => {
     expect(wrapper.emitted('commit')![1]).toEqual([zoomRange(RANGE, 2, BOUNDS)])
   })
 })
+
+// ── 曲线口径标注（matrix-clue-fallback-and-rail-merge D2）────────────────────
+// 曲线值与矩阵格同口径（事件线数 > 0 用事件线数，否则线索合计兜底）——
+// 用户可见标注与 Y 轴单位文案须表达该口径，不再称「线索合计」。
+describe('ObservationRangeControls — 曲线口径标注', () => {
+  it('曲线标注表达事件线数口径与线索兜底；Y 轴单位为「事件线数（条）」', async () => {
+    const { wrapper } = mountControls()
+    const caption = wrapper.find('.orc-caption')
+    expect(caption.exists()).toBe(true)
+    expect(caption.text()).toContain('日事件线数')
+    expect(caption.text()).toContain('按线索合计兜底')
+    expect(caption.text()).not.toContain('日线索合计')
+    const axes = wrapper.findComponent({ name: 'TrendAxes' })
+    expect(axes.exists()).toBe(true)
+    expect(axes.props('unitLabel')).toBe('事件线数（条）')
+  })
+})

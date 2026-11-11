@@ -31,6 +31,13 @@ const emit = defineEmits<{
   selectCell: [payload: { row: ObservationLaneRow, cell: MatrixCellView, date: string }]
 }>()
 
+/** 行头用 source 全窗指标；不随可见日期裁切重算排序或统计。 */
+function rowTitle(): string {
+  const participants = Math.max(0, ...Object.values(props.row.participantCounts ?? {}))
+  const unassigned = Object.values(props.row.unassignedCounts ?? {}).reduce((sum, count) => sum + count, 0)
+  return `${props.row.label}：${props.row.storyTotal ?? '?'} 个事件线 · 最热 ${participants} 个来源 · 未归组 ${unassigned} 个事件 · ${props.row.sectionTotal} 个主题桶`
+}
+
 function isToday(date: string): boolean {
   return date === props.today
 }
@@ -53,7 +60,8 @@ function cellClass(cell: MatrixCellView, date: string): unknown[] {
     type="button"
     class="omx-lane"
     :class="{ 'is-selected': row.topicId === selectedLaneId, 'is-dormant': dormant }"
-    :title="row.label"
+    :title="rowTitle()"
+    :aria-label="rowTitle()"
     :aria-pressed="row.topicId === selectedLaneId"
     :data-testid="`matrix-lane-${row.topicId}`"
     :data-lane-id="row.topicId"

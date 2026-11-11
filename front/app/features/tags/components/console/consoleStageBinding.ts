@@ -20,6 +20,8 @@ export interface ConsoleStageBindingDeps {
   emptyState: 'no-reports' | 'no-lanes' | null
   latestReportDate: string | null
   anchorDate: string | null
+  /** 事件身份是否已回填（lane-dynamics stories_backfilled；null = 旧响应未知）。 */
+  storiesBackfilled: boolean | null
   loading: boolean
   error: string | null
   staleNotice: boolean
@@ -54,6 +56,7 @@ export function buildConsoleStageProps(deps: ConsoleStageBindingDeps): BoardCons
     emptyState: deps.emptyState,
     latestReportDate: deps.latestReportDate,
     anchorDate: deps.anchorDate,
+    storiesBackfilled: deps.storiesBackfilled,
     loading: deps.loading,
     error: deps.error,
     staleNotice: deps.staleNotice,

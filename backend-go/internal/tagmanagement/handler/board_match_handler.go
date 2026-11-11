@@ -712,12 +712,21 @@ func (h *semanticBoardHandler) updateMatchingConfig(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, fmt.Errorf("invalid request body"))
 		return
 	}
-	for key, raw := range body {
+	// 先校验全部字段、再在同一事务内写入：任一键非法 → 整体拒绝且不部分落库
+	// （enable-story-cross-day-continuation：相关事件阈值与其他匹配参数必须同
+	// 事务生效；旧实现边校验边写，map 迭代顺序还把「哪些写进去了」变成随机）。
+	keys := make([]string, 0, len(body))
+	for key := range body {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	pending := make([]models.AISettings, 0, len(keys))
+	for _, key := range keys {
 		if !isSemanticBoardConfigKey(key) {
 			respondError(c, http.StatusBadRequest, fmt.Errorf("unsupported config key %q", key))
 			return
 		}
-		value := strings.TrimSpace(fmt.Sprint(raw))
+		value := strings.TrimSpace(fmt.Sprint(body[key]))
 		if value == "" {
 			respondError(c, http.StatusBadRequest, fmt.Errorf("config value for %s is required", key))
 			return
@@ -726,11 +735,18 @@ func (h *semanticBoardHandler) updateMatchingConfig(c *gin.Context) {
 			respondError(c, http.StatusBadRequest, err)
 			return
 		}
-		setting := models.AISettings{Key: key, Value: value, Description: "SemanticBoard matching config"}
-		if err := h.db.WithContext(c.Request.Context()).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoUpdates: clause.AssignmentColumns([]string{"value", "description", "updated_at"})}).Create(&setting).Error; err != nil {
-			respondError(c, http.StatusInternalServerError, err)
-			return
+		pending = append(pending, models.AISettings{Key: key, Value: value, Description: "SemanticBoard matching config"})
+	}
+	if err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		for i := range pending {
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoUpdates: clause.AssignmentColumns([]string{"value", "description", "updated_at"})}).Create(&pending[i]).Error; err != nil {
+				return err
+			}
 		}
+		return nil
+	}); err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
 	}
 	// Invalidate config cache so LoadConfig reads fresh values from DB
 	service.InvalidateMatchingConfigCache()

@@ -20,7 +20,7 @@ import { useArticlesApi } from '~/api/articles'
 import { useSemanticBoardsApi } from '~/api/semanticBoards'
 import { normalizeArticle, type ArticlePayload } from '~/api/normalizers/article'
 import type { ArticleTag } from '~/types'
-import type { AuxiliaryLabelItem, BoardArticleTag, MatchDetailResponse } from '~/api/semanticBoards'
+import type { AuxiliaryLabelItem, BoardArticleTag, MatchDetailResponse, RelatedEventsResponse } from '~/api/semanticBoards'
 import { catLabel, matchReasonColor } from '~/utils/matchQuality'
 import { useIsNarrowViewport } from '~/composables/useMediaQuery'
 import { Z_INDEX, nestedOverlayZ } from '~/components/ui/layout-contract'
@@ -54,7 +54,11 @@ const props = defineProps<{
   anchor: HTMLElement | null
 }>()
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{
+  close: []
+  /** 相关事件「查看来源」：交给宿主既有阅读链路（ArticlePreviewModal），不在此另开弹窗。 */
+  'open-article': [articleId: number]
+}>()
 
 const sbApi = useSemanticBoardsApi()
 const articlesApi = useArticlesApi()
@@ -266,6 +270,87 @@ const articleTagViews = computed(() => {
     }))
 })
 
+// ── 相关事件（只有 event 标签卡才请求；按需展开、迟到响应丢弃）───────────────
+//
+// 契约（enable-story-cross-day-continuation ui-design.md）：
+//  - 非 event 标签 / 入板过程模式 → 一个请求都不发；
+//  - 展开才查询，一次展开一次请求；关闭或切换标签后迟到响应不得覆盖新状态；
+//  - ready 空集 / partial / not_ready / 查询失败分别有可区分的文案，缺索引不冒充空集；
+//  - 条目只用接口给的顺序，展示原名称/描述/相似度；来源走既有文章预览，无来源明示禁用。
+
+const relatedOpen = ref(false)
+const relatedLoading = ref(false)
+const relatedError = ref<string | null>(null)
+const relatedData = ref<RelatedEventsResponse | null>(null)
+const expandedRelatedIds = ref<Set<number>>(new Set())
+let relatedSeq = 0
+
+const isEventTagCard = computed(() => props.mode === 'tag' && props.tag?.category === 'event')
+
+const relatedItems = computed(() => relatedData.value?.items ?? [])
+
+const relatedCoverageText = computed(() => {
+  const data = relatedData.value
+  if (!data) return ''
+  return `候选 ${data.candidate_count} · 已索引 ${data.indexed_count} · 阈值 ${formatScore(data.threshold)}`
+})
+
+function resetRelated(): void {
+  relatedSeq++
+  relatedOpen.value = false
+  relatedLoading.value = false
+  relatedError.value = null
+  relatedData.value = null
+  expandedRelatedIds.value = new Set()
+}
+
+async function toggleRelated(): Promise<void> {
+  if (!isEventTagCard.value || !props.tag) return
+  if (relatedOpen.value) {
+    relatedOpen.value = false
+    return
+  }
+  relatedOpen.value = true
+  await loadRelated()
+}
+
+async function loadRelated(): Promise<void> {
+  const tag = props.tag
+  if (!isEventTagCard.value || !tag) return
+  const seq = ++relatedSeq
+  relatedLoading.value = true
+  relatedError.value = null
+  try {
+    const res = await sbApi.getRelatedEvents(props.boardId, tag.id)
+    if (seq !== relatedSeq) return
+    if (!res?.success || !res.data) {
+      // 成败都用可读中文（底层 fetch 的 "Failed to fetch" 不直接给用户看）。
+      relatedData.value = null
+      relatedError.value = '相关事件查询失败，请重试'
+      return
+    }
+    relatedData.value = res.data
+  } catch {
+    if (seq !== relatedSeq) return
+    relatedData.value = null
+    relatedError.value = '相关事件查询失败，请重试'
+  } finally {
+    if (seq === relatedSeq) relatedLoading.value = false
+  }
+}
+
+function toggleRelatedDescription(tagId: number): void {
+  const next = new Set(expandedRelatedIds.value)
+  if (next.has(tagId)) next.delete(tagId)
+  else next.add(tagId)
+  expandedRelatedIds.value = next
+}
+
+function openRelatedSource(articleId: number | undefined): void {
+  if (typeof articleId !== 'number') return
+  emit('open-article', articleId)
+}
+
 // ── 数据按需拉取（打开才请求；序号保护竞态）────────────────────────────────
 
 let requestSeq = 0
@@ -287,6 +372,7 @@ async function load(): Promise<void> {
   detail.value = null
   flowConfig.value = null
   missingParts.value = []
+  resetRelated()
 
   const missing: string[] = []
   const articleTask = articlesApi.getArticle(articleId)
@@ -399,7 +485,11 @@ async function syncPosition(): Promise<void> {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') emit('close')
+  if (event.key !== 'Escape') return
+  // 上层阅读弹窗（ArticlePreviewModal，aria-modal=true）打开时，Esc 属于它：
+  // 关闭预览后回到本卡（ui-design 合同），不能被同一个 Esc 连带关掉卡片。
+  if (document.querySelector('[aria-modal="true"]')) return
+  emit('close')
 }
 
 watch([() => props.mode, () => props.tag?.id, () => props.article?.id], () => {
@@ -416,6 +506,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  relatedSeq++
   document.removeEventListener('keydown', onKeydown)
   window.removeEventListener('resize', reposition)
   window.removeEventListener('scroll', reposition, true)
@@ -533,6 +624,65 @@ onUnmounted(() => {
             <p class="amp-desc" data-testid="archive-pop-desc">
               {{ tag.description || '（该标签暂无描述——真实数据来自 topic_tags.description，后端未返回）' }}
             </p>
+          </section>
+
+          <section v-if="isEventTagCard" class="amp-sec" data-testid="archive-pop-related">
+            <button
+              type="button"
+              class="amp-related-toggle"
+              data-testid="archive-pop-related-toggle"
+              :aria-expanded="relatedOpen"
+              @click="toggleRelated"
+            >
+              相关事件 {{ relatedOpen ? '▾' : '▸' }}
+            </button>
+            <p class="amp-note amp-related-hint">按名称、描述与辅助标签的语义相似度，找同版块值得一起看的事件；只是相关推荐，不合并事件。</p>
+
+            <template v-if="relatedOpen">
+              <p v-if="relatedLoading" class="amp-note" data-testid="archive-pop-related-loading">正在查询相关事件…</p>
+              <template v-else-if="relatedError">
+                <p class="amp-missing" data-testid="archive-pop-related-error">{{ relatedError }}</p>
+                <button type="button" class="amp-related-retry" data-testid="archive-pop-related-retry" @click="loadRelated">重试</button>
+              </template>
+              <template v-else-if="relatedData">
+                <p class="amp-related-meta" data-testid="archive-pop-related-meta">{{ relatedCoverageText }}</p>
+                <p v-if="relatedData.status === 'not_ready'" class="amp-missing" data-testid="archive-pop-related-not-ready">
+                  相关事件索引尚未就绪（{{ relatedData.reason === 'source_not_indexed' ? '本条事件还没有向量' : '当前模型空间没有可用索引' }}），刷新索引后可再查。
+                </p>
+                <p v-else-if="relatedData.status === 'partial'" class="amp-note" data-testid="archive-pop-related-partial">
+                  部分事件尚未索引（已就绪 {{ relatedData.indexed_count }}/{{ relatedData.candidate_count }}），下面是当前能算出的结果。
+                </p>
+                <p v-if="relatedData.status === 'ready' && relatedItems.length === 0" class="amp-note" data-testid="archive-pop-related-empty">
+                  当前阈值与近 30 天范围内暂无相关事件。
+                </p>
+                <div
+                  v-for="item in relatedItems"
+                  :key="item.tag_id"
+                  class="amp-related-item"
+                  data-testid="archive-pop-related-item"
+                >
+                  <button type="button" class="amp-related-name" :title="item.label" @click="toggleRelatedDescription(item.tag_id)">
+                    <span class="amp-related-label">{{ item.label }}</span>
+                    <span class="amp-related-sim" data-testid="archive-pop-related-sim">{{ formatScore(item.similarity) }}</span>
+                  </button>
+                  <p v-if="expandedRelatedIds.has(item.tag_id)" class="amp-related-desc" data-testid="archive-pop-related-desc">
+                    {{ item.description || '（该事件暂无描述）' }}
+                  </p>
+                  <div class="amp-related-actions">
+                    <button
+                      type="button"
+                      class="amp-related-source"
+                      data-testid="archive-pop-related-source"
+                      :disabled="!item.source_article"
+                      @click="openRelatedSource(item.source_article?.id)"
+                    >
+                      {{ item.source_article ? '查看来源' : '暂无可读来源' }}
+                    </button>
+                    <span v-if="item.source_article" class="amp-related-source-title" :title="item.source_article.title">{{ item.source_article.title }}</span>
+                  </div>
+                </div>
+              </template>
+            </template>
           </section>
 
           <section class="amp-sec">

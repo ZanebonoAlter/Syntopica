@@ -624,3 +624,163 @@ describe('DailyReportTopicSection — 泳道内主题分桶（add-intra-lane-the
     wrapper.unmount()
   })
 })
+
+// ── surface-story-heat-in-report-top：重点定位锚点 / 展开定位 / 2s 单高亮 ──
+
+describe('DailyReportTopicSection — 重点定位锚点与高亮（surface-story-heat-in-report-top）', () => {
+  it('当前正文分支：thread 容器带稳定锚点 report-thread-{id}、存活 story 标识与程序聚焦 tabindex', async () => {
+    const wrapper = mountSection({ zone: activeZone([makeSection(100, [makeThread(1, { story_id: 55 })])]) })
+    await nextTick() // active 首组挂载即自动展开
+    const anchor = wrapper.find('#report-thread-1')
+    expect(anchor.exists()).toBe(true)
+    expect(anchor.classes()).toContain('drm-thread')
+    expect(anchor.attributes('data-story-id')).toBe('55')
+    expect(anchor.attributes('tabindex')).toBe('-1')
+    // 无 story_id（旧数据/综合稿）不渲染标识，锚点仍在
+    const legacy = mountSection({ zone: activeZone([makeSection(100, [makeThread(2)])]) })
+    await nextTick()
+    expect(legacy.find('#report-thread-2').attributes('data-story-id')).toBeUndefined()
+  })
+
+  it('历史分支：历史 section 的 thread 同样带稳定锚点（与当前分支同契约）', async () => {
+    const reportId = 60
+    const sectionId = 366
+    const dayKey = '2026-06-20'
+    const report: DailyReport = {
+      id: reportId,
+      semantic_board_id: 1974,
+      period_date: `${dayKey}T12:00:00Z`,
+      title: '历史日报',
+      summary: '',
+      status: 'done',
+      cluster_count: 1,
+      article_count: 0,
+      event_tag_count: 0,
+      highlights: [],
+      dynamics: '',
+      sections: [makeSection(sectionId, [makeThread(21, { story_id: 55 })], { report_id: reportId } as never)],
+      created_at: `${dayKey}T12:00:00Z`,
+    }
+    const lifelineEntries = new Map<number, RequestCacheEntry<TopicLifelineData>>([
+      [5, {
+        status: 'success',
+        data: {
+          sections: [{ id: sectionId, report_id: reportId, period_date: `${dayKey}T12:00:00Z` }],
+          relations: [],
+        } as never,
+      }],
+    ])
+    const wrapper = mountSection({ lifelineEntries, reportDetails: new Map([[reportId, report]]) })
+    const lifeline = wrapper.findComponent({ name: 'DailyReportMiniLifeline' })
+    lifeline.vm.$emit('selectDay', dayKey)
+    await nextTick()
+    const anchor = wrapper.find('.drm-history__section #report-thread-21')
+    expect(anchor.exists()).toBe(true)
+    expect(anchor.attributes('data-story-id')).toBe('55')
+  })
+
+  it('locateThread：折叠组先展开，滚到/聚焦/点亮 DOM 首条对应线程（非最小 thread id）；2s 边界清理', async () => {
+    vi.useFakeTimers()
+    const scrollIntoView = vi.fn()
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    const originalScroll = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrollIntoView as never
+    let wrapper: ReturnType<typeof mountSection> | undefined
+    try {
+      // briefs 分区无自动展开；同线两条线程 DOM 序 30 → 20，定位 30 而非最小 id 20
+      const zone = briefsZone([makeSection(100, [makeThread(30, { story_id: 55 }), makeThread(20, { story_id: 55 })])])
+      wrapper = mountSection({ zone })
+      // 组件用 document.getElementById 定位锚点 → 必须真正挂进 document（同 focusSectionId 用例）。
+      document.body.appendChild(wrapper.element)
+      expect(wrapper.find('#report-thread-30').exists()).toBe(false)
+
+      await wrapper.setProps({ locateThread: { storyId: 55, nonce: 1 } })
+      await nextTick()
+      await nextTick()
+      expect(wrapper.find('#report-thread-30').exists()).toBe(true)
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+      expect(focus).toHaveBeenCalledWith(expect.objectContaining({ preventScroll: true }))
+      expect(wrapper.find('#report-thread-30').classes()).toContain('drm-thread--lit')
+      expect(wrapper.find('#report-thread-20').classes()).not.toContain('drm-thread--lit')
+
+      vi.advanceTimersByTime(1999)
+      expect(wrapper.find('#report-thread-30').classes()).toContain('drm-thread--lit')
+      vi.advanceTimersByTime(1)
+      await nextTick()
+      expect(wrapper.find('#report-thread-30').classes()).not.toContain('drm-thread--lit')
+    } finally {
+      wrapper?.unmount()
+      if (originalScroll) Element.prototype.scrollIntoView = originalScroll
+      else delete (Element.prototype as never as Record<string, unknown>).scrollIntoView
+      focus.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('重复定位：后一次替换高亮，始终至多一个点亮目标', async () => {
+    const zone = briefsZone([makeSection(100, [makeThread(30, { story_id: 55 }), makeThread(31, { story_id: 66 })])])
+    const wrapper = mountSection({ zone })
+    document.body.appendChild(wrapper.element)
+    await wrapper.setProps({ locateThread: { storyId: 55, nonce: 1 } })
+    await nextTick()
+    await nextTick()
+    expect(wrapper.find('#report-thread-30').classes()).toContain('drm-thread--lit')
+
+    await wrapper.setProps({ locateThread: { storyId: 66, nonce: 2 } })
+    await nextTick()
+    await nextTick()
+    expect(wrapper.find('#report-thread-31').classes()).toContain('drm-thread--lit')
+    expect(wrapper.find('#report-thread-30').classes()).not.toContain('drm-thread--lit')
+    wrapper.unmount()
+  })
+
+  it('切 report：清理高亮与计时器（无旧报回跳）', async () => {
+    const zone = briefsZone([makeSection(100, [makeThread(30, { story_id: 55 })])])
+    const wrapper = mountSection({ zone })
+    document.body.appendChild(wrapper.element)
+    await wrapper.setProps({ locateThread: { storyId: 55, nonce: 1 } })
+    await nextTick()
+    await nextTick()
+    expect(wrapper.find('#report-thread-30').classes()).toContain('drm-thread--lit')
+
+    await wrapper.setProps({ reportDate: '2026-06-27T12:00:00Z' })
+    await nextTick()
+    expect(wrapper.find('#report-thread-30').classes()).not.toContain('drm-thread--lit')
+    wrapper.unmount()
+  })
+
+  it('本分区无对应线（目标在其它 zone）：静默不动作，不展开不滚动', async () => {
+    const scrollIntoView = vi.fn()
+    const originalScroll = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrollIntoView as never
+    try {
+      const zone = briefsZone([makeSection(100, [makeThread(30, { story_id: 55 })])])
+      const wrapper = mountSection({ zone })
+      await wrapper.setProps({ locateThread: { storyId: 999, nonce: 1 } })
+      await nextTick()
+      await nextTick()
+      expect(wrapper.find('#report-thread-30').exists()).toBe(false) // 仍折叠
+      expect(scrollIntoView).not.toHaveBeenCalled()
+      expect(wrapper.findAll('.drm-thread--lit')).toHaveLength(0)
+    } finally {
+      if (originalScroll) Element.prototype.scrollIntoView = originalScroll
+      else delete (Element.prototype as never as Record<string, unknown>).scrollIntoView
+    }
+  })
+
+  it('卸载清理计时器（不留迟到高亮回调）', async () => {
+    vi.useFakeTimers()
+    try {
+      const zone = briefsZone([makeSection(100, [makeThread(30, { story_id: 55 })])])
+      const wrapper = mountSection({ zone })
+      await wrapper.setProps({ locateThread: { storyId: 55, nonce: 1 } })
+      await nextTick()
+      await nextTick()
+      wrapper.unmount()
+      expect(() => vi.advanceTimersByTime(3000)).not.toThrow()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

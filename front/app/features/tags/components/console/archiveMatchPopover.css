@@ -504,3 +504,109 @@
     gap: 0;
   }
 }
+
+/* ── 相关事件（enable-story-cross-day-continuation）：既有卡片内按需展开 ────── */
+.amp-related-toggle {
+  border: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.amp-related-toggle:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-strong, var(--color-border-subtle));
+}
+
+.amp-related-hint {
+  margin-top: 0.3rem;
+}
+
+.amp-related-meta {
+  margin: 0.25rem 0 0.35rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.66rem;
+  color: var(--color-text-muted);
+}
+
+.amp-related-item {
+  padding: 0.35rem 0;
+  border-top: 1px dashed var(--color-border-subtle);
+}
+
+.amp-related-name {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-text-primary);
+  font-size: 0.76rem;
+  min-width: 0;
+}
+
+.amp-related-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.amp-related-sim {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.amp-related-desc {
+  margin-top: 0.25rem;
+  font-size: 0.7rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.amp-related-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+  min-width: 0;
+}
+
+.amp-related-source,
+.amp-related-retry {
+  border: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.amp-related-source:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.amp-related-source-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.66rem;
+  color: var(--color-text-muted);
+}

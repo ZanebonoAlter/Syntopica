@@ -1,10 +1,26 @@
 import { apiClient } from './client'
 import type { ApiResponse } from '~/types'
 
+/** 日报重点条目（surface-story-heat-in-report-top 扩展：story 模式携带 story_id 与服务端快照；
+ *  标签回退/历史数据缺省这些字段——缺失不显示数字/徽标/按钮，不伪造 0）。 */
 export interface DailyReportHighlight {
   title: string
   reason: string
   tag_ids: number[]
+  /** 事件线存活 id（后端读取时已按 merged_into 一跳归一）；缺省 = 旧标签回退重点（无定位/进展）。 */
+  story_id?: number | null
+  /** 服务端快照：独立来源数；缺省不显示（真实 0 是合法值，显示「0 个来源」）。 */
+  participant_count?: number | null
+  /** 服务端快照：48h 热度（展示保留一位小数）；缺省不显示。 */
+  story_heat?: number | null
+  /** 热度公式版本快照。 */
+  heat_rule_version?: string
+  /** 热度截止时刻（report.period_date 北京时间 23:59:59）。 */
+  heat_as_of?: string | null
+  /** 热度证据不全标记（落后 feed）；缺省按 false。 */
+  heat_incomplete?: boolean | null
+  /** 昨日重点再次入选（服务端派生，非线程 is_development）；缺省按 false。 */
+  is_progress?: boolean | null
 }
 
 export interface DailyReportThread {
@@ -19,6 +35,8 @@ export interface DailyReportThread {
    *  nil = 无信号；有值时为 0.0~2.0 的距离，越小越贴合（0.0 = 完美贴合）。
    *  embedding 字段绝不在此声明（后端 json:"-" 不外泄到前端）。 */
   fit_distance?: number
+  /** 所属事件线存活 id（surface-story-heat-in-report-top；后端读路径已归一；缺省 = 未归属/综合稿/旧数据）。 */
+  story_id?: number | null
   related_article_ids: number[]
   created_at: string
 }

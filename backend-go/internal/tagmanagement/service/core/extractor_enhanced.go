@@ -9,6 +9,7 @@ import (
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/jsonutil"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/platform/textutil"
 	"syntopica-backend/internal/platform/tracing"
 )
 
@@ -117,7 +118,7 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 func (te *TagExtractor) extractMergedCandidates(ctx context.Context, input ExtractionInput) ([]ExtractedTag, []ExtractedTag, error) {
 	userPrompt := buildExtractionUserPrompt(input)
 
-	maxTokens := 2048
+	maxTokens := extractionMaxOutputTokens
 	temperature := 0.2
 	metadata := map[string]any{
 		"operation": "tag_extraction_merged",
@@ -134,20 +135,28 @@ func (te *TagExtractor) extractMergedCandidates(ctx context.Context, input Extra
 	}
 
 	const maxRetries = 3
+	// 影子模式（normalize-event-subject-entities D2）：同一次调用额外请求
+	// subject_desc；off 态 prompt/schema 逐字不变、零新增字段。
+	systemPrompt := buildMergedExtractionPrompt()
+	schema := mergedTagExtractionSchema()
+	if EntitySubjectShadowEnabled() {
+		systemPrompt = buildMergedExtractionPromptShadow()
+		schema = mergedTagExtractionSchemaShadow()
+	}
 	var lastErr error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		result, err := te.router.Chat(ctx, airouter.ChatRequest{
 			Operation:  "tagmanagement.extractor_enhanced",
 			Capability: airouter.CapabilityTopicTagging,
 			Messages: []airouter.Message{
-				{Role: "system", Content: buildMergedExtractionPrompt()},
+				{Role: "system", Content: systemPrompt},
 				{Role: "user", Content: userPrompt},
 			},
 			Temperature: &temperature,
 			MaxTokens:   &maxTokens,
 			Metadata:    metadata,
 			JSONMode:    true,
-			JSONSchema:  mergedTagExtractionSchema(),
+			JSONSchema:  schema,
 		})
 		if err != nil {
 			lastErr = fmt.Errorf("AI extraction failed (attempt %d/%d): %w", attempt, maxRetries, err)
@@ -240,6 +249,8 @@ func (te *TagExtractor) resolveCandidate(ctx context.Context, candidate Extracte
 		Score:           defaultTagExtractionScore,
 		Description:     strings.TrimSpace(candidate.Description),
 		AuxiliaryLabels: candidate.AuxiliaryLabels,
+		Fingerprint:     candidate.Fingerprint,
+		SubjectDesc:     candidate.SubjectDesc,
 	}, false, nil
 }
 
@@ -303,9 +314,17 @@ description 要求：每个 keyword 必须输出 description，中文1句话不�
 - 拒绝日期/时间词、过于宽泛的通用词、未展开讨论的附带提及词
 - 标签按优先级从高到低排序，最重要的放前面
 
+【事件指纹】仅 event 标签必输出以下五项，person/keyword 不输出：
+- subject：事件主体原文（公司/机构/人物/组织）
+- subject_key：归一化实体键，格式"类型:规范名"，类型限 person/company/org/product/other；同一实体不同写法必须归并为同一键，如 Trump/川普/特朗普 → "person:trump"、字节跳动/ByteDance → "company:bytedance"
+- action：动作动词短语（发布/宣布/涨价/回应/下架/召回）
+- object：动作对象（产品/政策/资产/事项）
+- occurred_at：发生日期（YYYY-MM-DD），未给出则省略
+- subject 必须是具体专有名词，禁止把泛称/角色/载体当主体（用户/作者/开发者/文章/公司/机构/平台/市场/技术/系统等）；找不到具体主体就不输出这五项
+
 【输出格式】
 正例：
-{"event_person_tags":[{"label":"某国央行上调基准利率","category":"event","description":"某国央行上调基准利率的政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"货币政策利率"},{"label":"利率上调","description":"提高利率的举措"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库"}]}
+{"event_person_tags":[{"label":"某国央行上调基准利率","category":"event","description":"某国央行上调基准利率的政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"货币政策利率"},{"label":"利率上调","description":"提高利率的举措"}],"subject":"某国央行","subject_key":"org:central_bank","action":"上调","object":"基准利率"}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库"}]}
 反例：
 - keyword 标签放进 event/person 数组（串放）
 - auxiliary_labels 写成字符串数组（必须是含 label/description 的对象数组）
@@ -337,6 +356,38 @@ type rawExtractedTag struct {
 	Aliases         []string        `json:"aliases"`
 	Description     string          `json:"description"`
 	AuxiliaryLabels json.RawMessage `json:"auxiliary_labels"`
+	// 事件指纹（add-event-story-heat）：仅 event 标签使用，person/keyword 忽略。
+	Subject    string `json:"subject"`
+	SubjectKey string `json:"subject_key"`
+	Action     string `json:"action"`
+	Object     string `json:"object"`
+	OccurredAt string `json:"occurred_at"`
+	// 主体稳定短身份说明（normalize-event-subject-entities D2）：仅影子态
+	// 第一轮同次调用产出；off 响应无此字段（零值）。不进 event_fingerprint。
+	SubjectDesc string `json:"subject_desc"`
+}
+
+// eventFingerprintFromRaw assembles the structured event fingerprint from raw
+// extraction fields for event tags only (person/keyword return nil). Missing
+// fields never drop the tag: an all-empty result returns nil, a partial one
+// returns an incomplete fingerprint (callers warn once and keep the tag —
+// trust validation happens in a later batch). SubjectKey is normalized via
+// textutil.NormalizeSubjectKey (lower / 空白与连字符→下划线 / 保留类型前缀)。
+func eventFingerprintFromRaw(t rawExtractedTag, cat string) *EventFingerprint {
+	if cat != "event" {
+		return nil
+	}
+	fp := &EventFingerprint{
+		Subject:    strings.TrimSpace(t.Subject),
+		SubjectKey: textutil.NormalizeSubjectKey(t.SubjectKey),
+		Action:     strings.TrimSpace(t.Action),
+		Object:     strings.TrimSpace(t.Object),
+		OccurredAt: strings.TrimSpace(t.OccurredAt),
+	}
+	if fp.Subject == "" && fp.SubjectKey == "" && fp.Action == "" && fp.Object == "" && fp.OccurredAt == "" {
+		return nil
+	}
+	return fp
 }
 
 func parseRawTagObjects(content string) ([]rawExtractedTag, error) {
@@ -373,12 +424,23 @@ func parseEventPersonTagObjects(raw []rawExtractedTag) ([]ExtractedTag, error) {
 			logging.Warnf("event/person extraction: dropping invalid auxiliary labels for %q (category=%s): %v", t.Label, cat, err)
 			auxiliaryLabels = nil
 		}
+		fingerprint := eventFingerprintFromRaw(t, cat)
+		if fingerprint != nil && !fingerprint.Complete() {
+			logging.Warnf("event/person extraction: event tag %q has incomplete fingerprint (subject=%q subject_key=%q action=%q object=%q) — tag kept", t.Label, fingerprint.Subject, fingerprint.SubjectKey, fingerprint.Action, fingerprint.Object)
+		}
+		// 主体稳定短身份说明（仅影子态产出；仅 event 携带，off 响应无此字段）。
+		subjectDesc := ""
+		if cat == "event" {
+			subjectDesc = strings.TrimSpace(t.SubjectDesc)
+		}
 		result = append(result, ExtractedTag{
 			Label:           strings.TrimSpace(t.Label),
 			Category:        cat,
 			Aliases:         t.Aliases,
 			Description:     truncateDescription(strings.TrimSpace(t.Description), maxTagDescriptionRunes),
 			AuxiliaryLabels: auxiliaryLabels,
+			Fingerprint:     fingerprint,
+			SubjectDesc:     subjectDesc,
 		})
 	}
 
@@ -620,6 +682,13 @@ func mergedTagExtractionSchema() *airouter.JSONSchema {
 							},
 							Description: "3-5个带description的具体语义锚点",
 						},
+						// 事件指纹（add-event-story-heat）：仅 event 输出；不设 required，
+						// person 与旧模型不应被 schema 拒绝，由 prompt + parser 兕底。
+						"subject":     {Type: "string", Description: "事件主体原文（仅 event 输出）；必须是具体专有名词，泛称一律不得作为主体"},
+						"subject_key": {Type: "string", Description: "归一化实体键 类型:规范名，类型限 person/company/org/product/other（仅 event 输出）；规范名必须是具体专有名词，泛称一律不得作为主体"},
+						"action":      {Type: "string", Description: "动作动词短语（仅 event 输出）"},
+						"object":      {Type: "string", Description: "动作对象（仅 event 输出）"},
+						"occurred_at": {Type: "string", Description: "发生日期 YYYY-MM-DD，可空（仅 event 输出）"},
 					},
 					Required: []string{"label", "category", "auxiliary_labels"},
 				},
@@ -640,4 +709,29 @@ func mergedTagExtractionSchema() *airouter.JSONSchema {
 		},
 		Required: []string{"event_person_tags", "keyword_tags"},
 	}
+}
+
+// mergedTagExtractionSchemaShadow is the SHADOW-mode schema for the merged
+// mono-path extraction: legacy schema plus one optional subject_desc property
+// on event_person tags. EventFingerprintSchema() is NOT touched — subject_desc
+// never enters event_fingerprint (normalize-event-subject-entities D2).
+func mergedTagExtractionSchemaShadow() *airouter.JSONSchema {
+	schema := mergedTagExtractionSchema()
+	schema.Properties["event_person_tags"].Items.Properties["subject_desc"] = airouter.SchemaProperty{
+		Type:        "string",
+		Description: "主体稳定短身份说明（仅 event 额外输出）：只描述主体自身身份（类别/国别/角色/所属组织），不含当次事件、动作、对象或时间",
+	}
+	return schema
+}
+
+// buildMergedExtractionPromptShadow appends the shadow-mode subject_desc
+// block to the legacy merged prompt; the legacy prefix stays byte-identical
+// (off mode keeps calling buildMergedExtractionPrompt directly).
+func buildMergedExtractionPromptShadow() string {
+	return buildMergedExtractionPrompt() + `
+
+【主体稳定短身份说明】仅影子模式、仅 event 标签额外输出 subject_desc，person/keyword 不输出：
+- 只描述主体自身的稳定身份：类别、国别、角色、所属组织等（如"美国第45任总统"、"美国芯片设计公司"）
+- 不得包含当次事件、动作、对象或时间（说明随事件漂移会退化成事件检索）
+- 不确定时留空，不要编造`
 }

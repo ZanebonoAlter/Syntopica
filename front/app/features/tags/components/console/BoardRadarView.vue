@@ -4,9 +4,12 @@
  *
  * L0：/tags 未选版块时的跨版块决策面。本组件为总览壳：数据/派生/导航在
  * useBoardRadarOverview（API 边界已归一 camelCase/字符串 ID），报头、故事行、
- * 常温区、阅读右栏、治理宿主各自拆分为子组件。分档沿用 ≥50 热点 / ≥15 关注 /
- * 其余常温，升温沿用「当日分区 ≥3 且 ≥ 近 3 日均值 2 倍」，不造新公式；
+ * 常温区、阅读右栏、治理宿主各自拆分为子组件。分档临时采用 ≥10 热点 / ≥3 关注 /
+ * 其余常温（lane_heat 量纲临时阈值，标定待 5.3），升温沿用「当日事件线 ≥3 且事件线热度
+ * ≥ 近 3 日均值 2 倍」，不造新公式；
  * 首次取数失败不把初始化 0 当业务结论（R-17），有旧数据时刷新失败保留旧值。
+ * 右栏契约（matrix-clue-fallback-and-rail-merge）：一块清单「今日该读」+ 行内徽标
+ * （新起 / 升温 N×）+ 跨天延续脚注；管线状态块默认折叠、异常自展开。
  */
 import { onMounted, ref } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -29,6 +32,14 @@ const {
   visibleRows,
   todayRead,
   warming,
+  hasStoryFeed,
+  topStories,
+  crossDayBuilding,
+  unbackfilledBoardCount,
+  partialStories,
+  degradedBoardCount,
+  laggingBoardCount,
+  warmingCount,
   firstLoadFailed,
   subKind,
   dateText,
@@ -38,6 +49,7 @@ const {
   openBoard,
   openReport,
   openLane,
+  openStory,
 } = useBoardRadarOverview()
 
 const showAddBoard = ref(false)
@@ -70,7 +82,7 @@ function handleGenerated(): void {
         :sub="subKind"
         :hot-count="hotRows.length"
         :rows-count="rows.length"
-        :warming-count="warming.length"
+        :warming-count="warmingCount"
         :stats-visible="!firstLoadFailed"
         :creating-board="governanceRef?.creatingBoard ?? false"
         @advanced="handleAdvanced"
@@ -94,7 +106,7 @@ function handleGenerated(): void {
               <span>序</span>
               <span>关注板块 · 最新日报</span>
               <span class="rd-mini-caption">
-                <span>泳道活跃 · 每格分区数</span>
+                <span>泳道活跃 · 每格事件线数（斜纹格按分区数兜底）</span>
                 <span>{{ miniRange }}</span>
               </span>
               <span>关注强度</span>
@@ -127,7 +139,7 @@ function handleGenerated(): void {
             <div v-if="!error && !rows.length" class="rd-empty" data-testid="radar-empty">
               <Icon icon="mdi:white-balance-sunny" width="26" />
               <p>今天没有需要看的版块。</p>
-              <small>日报生成后，这里会按当天分区密度自动排序。</small>
+              <small>日报生成后，这里会按事件线热度自动排序。</small>
               <button type="button" class="rd-empty-add" data-testid="radar-empty-add" @click="showAddBoard = true">
                 <Icon icon="mdi:plus" width="14" />
                 新建第一个版块
@@ -145,8 +157,16 @@ function handleGenerated(): void {
           <div class="rd-rail-scroll">
             <BoardRadarReadingRail
               v-if="!firstLoadFailed"
+              :story-mode="hasStoryFeed"
+              :top-stories="topStories"
+              :cross-day-building="crossDayBuilding"
+              :unbackfilled-count="unbackfilledBoardCount"
+              :partial="partialStories"
+              :degraded-count="degradedBoardCount"
+              :lagging-count="laggingBoardCount"
               :today-read="todayRead"
               :warming="warming"
+              @open-story="openStory"
               @open-report="openReport"
               @open-board="openBoard"
             />

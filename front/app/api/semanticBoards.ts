@@ -289,6 +289,46 @@ export interface MatchingConfig {
   semantic_board_upgrade_cotag_dedupe_sim_threshold: number
   semantic_board_upgrade_cotag_hard_limit: number
   semantic_board_upgrade_cluster_method: string
+  /**
+   * 相关事件相似度阈值（enable-story-cross-day-continuation；默认 0.86、范围 [0,1]）。
+   * 与入板匹配参数彼此独立：只影响「相关事件」列表，不重算向量、不参与命中即停顺序。
+   */
+  related_event_similarity_threshold: number
+}
+
+/** 相关事件条目的可读来源（候选标签在该版块的最新文章；无来源如实为 null）。 */
+export interface RelatedEventSourceArticle {
+  id: number
+  title: string
+}
+
+export interface RelatedEventItem {
+  tag_id: number
+  label: string
+  description: string
+  /** 语义相似度（cosine），不是「同一事件概率」。 */
+  similarity: number
+  source_article: RelatedEventSourceArticle | null
+}
+
+/**
+ * 相关事件只读响应（GET /semantic-boards/:id/tags/:tagId/related-events）。
+ * status 三态如实上报索引覆盖：ready / partial / not_ready —— 缺索引不得当作空结果。
+ */
+export interface RelatedEventsResponse {
+  board_id: number
+  tag_id: number
+  status: 'ready' | 'partial' | 'not_ready'
+  reason?: string
+  threshold: number
+  window_days: number
+  window_start: string
+  window_end: string
+  candidate_count: number
+  indexed_count: number
+  representation_version: string
+  space_key?: string
+  items: RelatedEventItem[]
 }
 
 export interface SuggestedAuxiliaryLabel extends AuxiliaryLabelItem {
@@ -525,6 +565,14 @@ export function useSemanticBoardsApi() {
   }
 
   /**
+   * 同版块「相关事件」（按需展开才请求；服务端只读，不调模型不写库）。
+   * 阈值取 ai_settings.related_event_similarity_threshold，返回实际生效值。
+   */
+  async function getRelatedEvents(boardId: number, tagId: number): Promise<ApiResponse<RelatedEventsResponse>> {
+    return apiClient.get(`/semantic-boards/${boardId}/tags/${tagId}/related-events`)
+  }
+
+  /**
    * 标签的辅助标签全集（GET /api/tags/:id/auxiliary-labels）。
    * 层级视图「事件辅助标签 × 版块收编」逐对核对用；字段对齐后端 semanticBoardAuxiliaryDTO。
    */
@@ -564,6 +612,7 @@ async function suggestAuxiliariesForBoard(boardId: number, params?: {
     suggestAuxiliariesForBoard,
     getBoardArticles,
     getMatchDetail,
+    getRelatedEvents,
     getTagAuxiliaryLabels,
     triggerBackfill,
     getBackfillStatus,
@@ -577,7 +626,7 @@ async function suggestAuxiliariesForBoard(boardId: number, params?: {
 // 字符串 ID 读模型（raw 契约与转换唯一实现在 api/normalizers/boardRadar.ts，
 // 组件层不散落映射，也不扩展到 semanticBoards 其它 API）。
 
-export type { RadarBoard, RadarLane, RadarOverview, BoardRadarRawOverview, RadarOverviewResponse } from '~/api/normalizers/boardRadar'
+export type { RadarBoard, RadarLane, RadarOverview, RadarStoryFeed, RadarStoryItem, BoardRadarRawOverview, BoardRadarRawStoryFeed, BoardRadarRawStoryItem, RadarOverviewResponse } from '~/api/normalizers/boardRadar'
 
 import { mapRadarOverviewResponse, type BoardRadarRawOverview, type RadarOverviewResponse } from '~/api/normalizers/boardRadar'
 

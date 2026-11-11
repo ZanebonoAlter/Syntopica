@@ -21,6 +21,21 @@ type Config struct {
 	Fred          FredConfig
 	Searxng       SearxngConfig
 	CrossBoardRel CrossBoardRelationConfig
+	EntitySubject EntitySubjectConfig
+}
+
+// EntitySubjectConfig is the three-mode switch of the global entity-subject
+// identity layer (normalize-event-subject-entities D10):
+//   - off     (default): first-round prompt/schema byte-identical to pre-change,
+//     zero second-round calls, zero entity-layer writes, no entity_subject key.
+//   - shadow: first round additionally produces the stable short identity
+//     description; writes limited to the entity layer, normal AI audit and the
+//     topic_tags.metadata.entity_subject lazy key.
+//   - active: NOT implemented this iteration — the service EXPLICITLY errors
+//     (never silently behaves as shadow). Production enablement is decided by
+//     the bounded evaluation and a follow-up change.
+type EntitySubjectConfig struct {
+	Mode string `mapstructure:"mode"` // off | shadow | active (active → explicit error)
 }
 
 // CrossBoardRelationConfig holds the global budget and thresholds for
@@ -183,6 +198,13 @@ func LoadConfig(configPath string) error {
 	viper.SetDefault("cross_board_rel.confirmed_ttl_hours", 720)
 	viper.SetDefault("cross_board_rel.brief_max_relations", 3)
 	viper.SetDefault("cross_board_rel.brief_max_relation_runes", 1200)
+
+	// 实体主体身份层三模式（normalize-event-subject-entities）：默认 off。
+	// 2026-11-10 决策：影子实验结束，实体层不接入事件线判定；避免实体注册表
+	// 只增不减成为黑洞。代码保留、数据保留，可通过配置开启（shadow）。
+	// off = 完全关闭（第一轮提示逐字不变、零写入）；active 本期显式拒绝
+	// （服务层返回错误，不静默按 shadow 执行）。
+	viper.SetDefault("entity_subject.mode", "off")
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {

@@ -18,10 +18,11 @@ import (
 // promptVersion records the generation prompt contract on every report. Chain:
 // "3.0" → "4.0" (L2 prompt history isolation) → "5.0" (section display title
 // content-based, 2026-08-29 daily-report-section-title-decouple) → "6.0"
-// (intra-lane theme bucketing, add-intra-lane-theme-bucketing). Published
+// (intra-lane theme bucketing, add-intra-lane-theme-bucketing) → "7.0"
+// (story-heat highlights after bounded attribution). Published
 // versions are never reused: ai_call_logs / version audits must be able to tell
 // pre- and post-bucketing reports apart.
-const promptVersion = "6.0"
+const promptVersion = "7.0" // Story-heat candidates after bounded attribution.
 
 // ---------------------------------------------------------------------------
 // LLM Call A: GenerateHighlights
@@ -163,6 +164,9 @@ func buildHighlightsPrompt(tags []repository.TagInput, clusters []repository.Clu
 	sb.WriteString("## 事件标签\n\n")
 	for _, t := range tags {
 		fmt.Fprintf(&sb, "- [ID:%d] %s (文章数:%d)\n", t.ID, t.Label, t.ArticleCount)
+		if t.Description != "" {
+			fmt.Fprintf(&sb, "  事实描述: %s\n", t.Description)
+		}
 		if t.ArticleContext != "" {
 			fmt.Fprintf(&sb, "  代表文章: %s\n", t.ArticleContext)
 		}
@@ -225,6 +229,14 @@ func parseHighlightsResponse(content string, tags []repository.TagInput) ([]repo
 			}
 		}
 		h.TagIDs = validIDs
+		// Tag mode never trusts identity or numeric snapshots supplied by a model.
+		h.StoryID = nil
+		h.ParticipantCount = nil
+		h.StoryHeat = nil
+		h.HeatAsOf = nil
+		h.HeatRuleVersion = ""
+		h.HeatIncomplete = nil
+		h.IsProgress = false
 		result = append(result, h)
 	}
 	return result, nil

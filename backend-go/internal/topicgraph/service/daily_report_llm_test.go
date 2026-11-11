@@ -77,12 +77,14 @@ func TestHighlightsSystemPrompt_HasFactAnchor(t *testing.T) {
 	}
 }
 
-// TestPromptVersion_Is6 guards the prompt version bump: "5.0" is the section
+// TestPromptVersion_Is7 guards the prompt version bump: "5.0" is the section
 // title decouple (2026-08-29), "6.0" is intra-lane theme bucketing
-// (add-intra-lane-theme-bucketing D10 — published versions are never reused).
-func TestPromptVersion_Is6(t *testing.T) {
-	if promptVersion != "6.0" {
-		t.Errorf("promptVersion should be \"6.0\", got %q", promptVersion)
+// (add-intra-lane-theme-bucketing D10 — published versions are never reused),
+// "7.0" is story-heat candidates after bounded attribution
+// (surface-story-heat-in-report-top).
+func TestPromptVersion_Is7(t *testing.T) {
+	if promptVersion != "7.0" {
+		t.Errorf("promptVersion should be \"7.0\", got %q", promptVersion)
 	}
 }
 

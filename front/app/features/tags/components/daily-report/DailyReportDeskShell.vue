@@ -39,6 +39,17 @@ const annotationId = computed(() => {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
 })
 
+/**
+ * `?story=` 深链参数（surface-story-events-in-radar）：雷达右栏点事件线 →
+ * 本期日报定位正文对应 thread。非数字 / 0 / 负数的非法值忽略（不报错阻断阅读）。
+ */
+const storyId = computed(() => {
+  const raw = Array.isArray(route.query.story) ? route.query.story[0] : route.query.story
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return null
+  const parsed = Number(raw)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+})
+
 const boards = ref<{ id: number, label: string }[]>([])
 const boardTitle = ref('')
 const previewOpen = ref(false)
@@ -143,6 +154,7 @@ function switchBoard(nextBoardId: number): void {
         :boards="boards"
         :initial-date="date"
         :initial-annotation-id="annotationId"
+        :initial-story-id="storyId"
         @close="backToMatrix"
         @select-date="replaceDate"
         @open-lane="openLane"

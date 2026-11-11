@@ -32,20 +32,47 @@ vi.mock('@iconify/vue', () => ({
   Icon: { name: 'Icon', template: '<span class="icon-stub" />' },
 }))
 
-describe('ObservationMatrix — 矩阵派生（MX 组）', () => {
+describe('ObservationMatrix — 矩阵派生（MX 组，story 口径）', () => {
   beforeEach(() => notifyWarn.mockReset())
 
-  it('MX-1：格值 = 当日各桶线索峰值（3/7/1 → 7）；aria/title 三指标', () => {
+  it('MX-1：格值 = 当日事件线数（同日多桶合并，非桶峰值）；aria/title 带事件线/最热点名/未归组/桶数四指标', () => {
     const wrapper = mountMatrix()
     const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-23"]')
-    expect(cell.text()).toBe('7')
-    expect(cell.attributes('aria-label')).toContain('桶峰值 7 条')
+    expect(cell.text()).toBe('2')
+    expect(cell.attributes('aria-label')).toContain('2 个事件线')
+    expect(cell.attributes('aria-label')).toContain('最热：美伊博弈升级（6 个来源）')
+    expect(cell.attributes('aria-label')).toContain('未归组 3 个事件')
     expect(cell.attributes('aria-label')).toContain('3 个主题桶')
-    expect(cell.attributes('aria-label')).toContain('当日合计 11 条')
     expect(cell.attributes('disabled')).toBeUndefined()
   })
 
-  it('MX-2：thread_count 缺省回退 events+folded；皆缺显示 ?（未知仍可开、aria 注明未知）', () => {
+  it('MX-1c：无最热线身份（11 的 10-22 日缺字段）→ 不追点名段，标注「最热事件线暂不可识别」（spec「无身份不伪造标题」）', () => {
+    const wrapper = mountMatrix()
+    const cell = wrapper.find('[data-testid="matrix-cell-11-2026-10-22"]')
+    expect(cell.attributes('aria-label')).toContain('最热 0 个来源')
+    expect(cell.attributes('aria-label')).toContain('最热事件线暂不可识别')
+    expect(cell.attributes('aria-label')).not.toContain('最热：')
+  })
+
+  it('MX-1b：颜色档 = 最热事件线来源数（6+ → is-p3）；颜色不是唯一信息载体（数字同在 title/aria）', () => {
+    const wrapper = mountMatrix()
+    const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-23"]')
+    expect(cell.classes()).toContain('is-p3')
+    // 11 的 10-22 日：story_count=1、无 participant 字段 → 0 来源不着色
+    const noParticipant = wrapper.find('[data-testid="matrix-cell-11-2026-10-22"]')
+    expect(noParticipant.classes()).not.toContain('is-p1')
+    expect(noParticipant.classes()).not.toContain('is-p2')
+    expect(noParticipant.classes()).not.toContain('is-p3')
+  })
+
+  it('MX-2：story_count 缺省回退当日非综合稿线程合计（11 的 10-21 日 → 1+2=3，非桶数 2）', () => {
+    const wrapper = mountMatrix()
+    const cell = wrapper.find('[data-testid="matrix-cell-11-2026-10-21"]')
+    expect(cell.text()).toBe('3')
+    expect(cell.attributes('disabled')).toBeUndefined()
+  })
+
+  it('MX-2b：线索全未知日（旧数据）→ 事件线上界 0 可开，aria 注明线索未知', () => {
     const source = fixtureSource()
     source.lanes[0]!.timeline.push(windowDay('2026-10-22', [
       { threadCount: null, fallbackClueCount: 3 },
@@ -178,6 +205,43 @@ describe('ObservationMatrix — 名单稳定与三态', () => {
 
     const pool = mountMatrix({ axis: buildDayAxis(TODAY, 30) })
     expect(pool.find('[data-testid="matrix-tier-note"]').text()).toContain('历史由 365 日池补充（不改名单）')
+  })
+
+  it('图例可见：颜色 = 当天被报道最多的那条事件线的来源数（新措辞指代明确）+ 4 档区间（spec「图例可见」+ surface-story-heat-in-report-top）', () => {
+    const wrapper = mountMatrix()
+    const legend = wrapper.find('[data-testid="matrix-legend"]')
+    expect(legend.exists()).toBe(true)
+    expect(legend.text()).toContain('数字 = 当日事件线数')
+    expect(legend.text()).toContain('颜色 = 当天被报道最多的那条事件线的来源数')
+    // 4 档区间（0 / 1-2 / 3-5 / 6+）来自 participantBucket 同一常量来源，颜色不是唯一信息载体
+    expect(legend.text()).toContain('0 / 1-2 / 3-5 / 6+')
+    const header = wrapper.find('[data-testid="matrix-lane-10"]')
+    expect(header.attributes('title')).toContain('2 个事件线')
+    expect(header.attributes('title')).toContain('最热 6 个来源')
+    expect(header.attributes('title')).toContain('未归组 3 个事件')
+    expect(header.attributes('title')).toContain('4 个主题桶')
+    expect(header.attributes('aria-label')).toBe(header.attributes('title'))
+  })
+
+  it('事件身份未回填（stories_backfilled=false）：footnote 明示上界口径；null/true 不提示', () => {
+    const degraded = mountMatrix({ storiesBackfilled: false })
+    const note = degraded.find('[data-testid="matrix-backfill-note"]')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('事件身份未回填')
+    expect(note.text()).toContain('非综合稿事件数上界')
+
+    expect(mountMatrix().find('[data-testid="matrix-backfill-note"]').exists()).toBe(false)
+    expect(mountMatrix({ storiesBackfilled: true }).find('[data-testid="matrix-backfill-note"]').exists()).toBe(false)
+    expect(mountMatrix({ storiesBackfilled: null }).find('[data-testid="matrix-backfill-note"]').exists()).toBe(false)
+  })
+
+  it('行序由 lane_heat 决定（11 热 7.2 在 10 热 4.5 前），不因分桶/线索更多而反转', () => {
+    const wrapper = mountMatrix()
+    // fixture：10 分桶/线索更多（3+7+1），但 11 的 lane_heat 更高 → 11 在前
+    expect(wrapper.findAll('[data-testid^="matrix-lane-"]').map(node => node.attributes('data-lane-id')))
+      .toEqual(['11', '10'])
+    const rows = fixtureRows()
+    expect(rows.active.map(row => [row.topicId, row.laneHeat])).toEqual([['11', 7.2], ['10', 4.5]])
   })
 })
 

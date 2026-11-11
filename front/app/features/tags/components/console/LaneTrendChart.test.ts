@@ -35,6 +35,8 @@ describe('LaneTrendChart — 轴与刻度（EV-6）', () => {
     const wrapper = mountChart({ series: seriesOf([0, 5, 1, 9, 2, 4]) })
     const yTexts = wrapper.findAll('[data-testid="trend-axis-y"] span').map(span => span.text())
     expect(yTexts).toEqual(['9', '4', '0'])
+    expect(wrapper.find('.ta-unit').text()).toBe('事件线数（条）')
+    expect(wrapper.find('[data-testid="lane-trend-plot"]').attributes('aria-label')).toContain('日事件线数趋势')
     const xTexts = wrapper.findAll('[data-testid="trend-axis-x"] span').map(span => span.text())
     expect(xTexts).toEqual(['2026-10-01', '2026-10-03', '2026-10-06'])
   })
@@ -98,7 +100,7 @@ describe('LaneTrendChart — 受控选择与点选', () => {
 
   it('点带 title 读日期/实际数；不进 Tab 序（无 tabindex）', () => {
     const wrapper = mountChart({ series: seriesOf([7]) })
-    expect(wrapper.find('.ltc-dot').element.textContent).toContain('2026-10-01 · 当日合计 7 条')
+    expect(wrapper.find('.ltc-dot').element.textContent).toContain('2026-10-01 · 当日事件线数 7 条')
     expect(wrapper.find('.ltc-dot').attributes('tabindex')).toBeUndefined()
   })
 })

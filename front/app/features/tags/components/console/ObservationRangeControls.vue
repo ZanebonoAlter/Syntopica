@@ -9,7 +9,7 @@
  *  - 拖/输/缩放至恰 7/14/30/365 日不切档（OX-1）；只有独立档按钮 emit `source-change`。
  *  - 刷选：拖空白（反向合法）/拖选区平移/双端手柄（rangeBrush 纯状态机）；键盘逐日/
  *    Shift 逐周/Home/End；pointercancel/Esc 恢复起始选区不提交，一次手势恰一次 commit。
- *  - 坐标映射只消费绘图区真实 rect；日期/线索合计轴外置（TrendAxes）；
+ *  - 坐标映射只消费绘图区真实 rect；日期/事件线数轴外置（TrendAxes）；
  *    series null=未取到（不补 0 不桥接），已知 0 画基线；无数据不造今天。
  */
 import { computed, onBeforeUnmount, ref } from 'vue'
@@ -45,7 +45,8 @@ const props = withDefaults(defineProps<{
   range: ObservationRange | null
   /** 当前档（A 通道 days），仅用于档按钮激活态。 */
   sourceDays: number
-  /** 365 池「已返回泳道日线索合计」曲线；null = 未取到（刷选仍可用）。 */
+  /** 365 池「已返回泳道日展示降级口径」曲线（事件线数 > 0 用事件线数，否则线索合计兜底；
+   *  与矩阵格同口径）；null = 未取到（刷选仍可用）。 */
   series: LaneTrendPoint[] | null
   /** 池曲线加载中。 */
   loading?: boolean
@@ -231,8 +232,8 @@ const feedback = computed(() => {
       />
 
       <div class="orc-caption">
-        <span>365 日池 · 已返回泳道的日线索合计</span>
-        <span>所示成员 · 非文章数</span>
+        <span>365 日池 · 已返回泳道的日事件线数</span>
+        <span>无事件线日按线索合计兜底 · 非文章数</span>
       </div>
 
       <TrendAxes v-if="curve" :y-ticks="curve.yTicks" :x-ticks="curve.xTicks">

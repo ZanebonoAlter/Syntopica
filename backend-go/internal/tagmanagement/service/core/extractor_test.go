@@ -283,7 +283,9 @@ func TestParseExtractedTagsWithUnescapedQuotes(t *testing.T) {
 func TestBuildExtractionSystemPromptLimitsAndOrdersTags(t *testing.T) {
 	prompt := buildMergedExtractionPrompt()
 
-	require.LessOrEqual(t, len([]rune(prompt)), 1500, "merged system prompt must stay within the 1500-rune budget")
+	// 2000 = 旧 1500 基线 + add-event-story-heat 事件指纹节与正例扩展（design §3.1
+	// 预算 token 增量；指纹字段随标签同一次调用产出，不新增第二次调用）
+	require.LessOrEqual(t, len([]rune(prompt)), 2000, "merged system prompt must stay within the 2000-rune budget")
 	require.Contains(t, prompt, "最多返回 3 个 keyword")
 	require.Contains(t, prompt, "按优先级从高到低排序")
 }

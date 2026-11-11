@@ -504,10 +504,11 @@ PostgreSQL 数据通过 `./data/` 目录挂载持久化（`deploy/compose/docker
 
 **定时备份（每日自动，add-pg-key-tables-backup）**：
 
-- 脚本：`scripts/db/backup-key-tables.sh`（也可手动跑）；输出 `backups/pg-key-<timestamp>.dump`（`pg_dump -Fc` 自定义格式，单份约 580MB）
-- 范围：**排除法**——排除日志/追踪/缓存/队列等可再生表（`ai_call_logs`、`otel_spans`、`ai_embedding_cache`、`firecrawl_jobs`、`tag_jobs`、`embedding_queues`、`merge_reembedding_queues`、`notifications`、`discovery_runs`、`discovery_run_items`、`cross_board_relation_runs`、`topic_watch_hits`、`scheduler_tasks`、`reading_behaviors`、`schema_migrations`），其余表全部自动纳入；**新加日志/缓存类表须手动补进脚本内 `EXCLUDED` 清单**。已知边界：排除表的 serial 序列（如 `ai_call_logs_id_seq`）会作为空壳进档（pg_dump 18 无序列级排除），恢复无害——PG 对同名序列直接复用，AutoMigrate 建表不受影响（已实测）
+- 脚本：`scripts/db/backup-key-tables.sh`（也可手动跑）；输出 `backups/pg-key-<timestamp>.dump`（`pg_dump -Fc` 自定义格式，单份约 1GB）+ 同时间戳的行数基线 `backups/pg-key-<timestamp>.dump.counts.tsv`（每行「表名\t行数」，覆盖档内全部表，供恢复侧逐表比对）
+- 范围：**排除法**——排除日志/追踪/缓存/队列等可再生表（`ai_call_logs`、`otel_spans`、`ai_embedding_cache`、`firecrawl_jobs`、`tag_jobs`、`embedding_queues`、`merge_reembedding_queues`、`notifications`、`discovery_runs`、`discovery_run_items`、`cross_board_relation_runs`、`topic_watch_hits`、`scheduler_tasks`、`reading_behaviors`），其余表全部自动纳入；**新加日志/缓存类表须手动补进脚本内 `EXCLUDED` 清单**。已知边界：排除表的 serial 序列（如 `ai_call_logs_id_seq`）会作为空壳进档（pg_dump 18 无序列级排除），恢复无害——PG 对同名序列直接复用，AutoMigrate 建表不受影响（已实测）
+- ⚠️ **`schema_migrations`（迁移历史）必须随档走**（不在排除清单里）：它不是可再生数据，而是**恢复保真的必要输入**——档内缺它，恢复后的库会在**有数据的库上**从零重放整条版本迁移链（DDL 落在存量数据上 ⇒ 维度/约束冲突风险）。历史表述「恢复时 AutoMigrate 自动重跑」不成立：AutoMigrate 只建表/加列，重放版本迁移的是 Phase 2 `runDatabaseMigrations`
 - 定时：crontab 每日 04:00（Asia/Shanghai），日志追加 `logs/db-backup.log`；同一时刻至多一个备份进程（flock）
-- 保留：仅成功备份后轮转，按档名时间戳保留最近 7 份；失败不删旧档、不留残档
+- 保留：仅成功备份后轮转，按档名时间戳保留最近 7 份（行数基线随对应档一并删除，不留孤儿）；失败不删旧档、不留残档
 
 重装/检查 crontab 条目（幂等）：
 
@@ -522,20 +523,25 @@ crontab -l | grep backup-key-tables || \
 docker exec syntopica-postgres pg_dump -U postgres syntopica > backup.sql
 ```
 
-**恢复（`-Fc` 定时备份档）**：恢复用同一容器镜像执行（保证 pg_restore 与 dump 版本一致）：
+**恢复（`-Fc` 定时备份档）**：
+
+⛔ **恢复是灾备通道里最容易造成不可逆后果的操作**——下面这条命令直接把档写回**生产库** `syntopica`，绕过了落库闸门、扩展预装、count 校验与迁移对账。**日常恢复一律用下面的脚本**：
 
 ```bash
-# 1. 校验档完整性（列出目录）
-docker exec -i syntopica-postgres pg_restore -l < backups/pg-key-<timestamp>.dump > /dev/null && echo OK
-
-# 2a. 整库恢复到空库（--clean 先删后建，覆盖现有库；--if-exists 防止对象不存在报错）
-docker exec -i syntopica-postgres pg_restore -U postgres -d syntopica --clean --if-exists < backups/pg-key-<timestamp>.dump
-
-# 2b. 只恢复单表（示例：articles 及其数据）
-docker exec -i syntopica-postgres pg_restore -U postgres -d syntopica --clean --if-exists -t articles < backups/pg-key-<timestamp>.dump
+# ✅ 推荐：恢复到一次性独立库（默认新建），带 count 校验 + 迁移对账 + 人读报告
+bash scripts/db/restore-key-tables.sh \
+  --dump backups/pg-key-<timestamp>.dump \
+  --report /tmp/restore-report.md
 ```
 
-恢复后 `schema_migrations` 无需手工补：后端启动时 GORM AutoMigrate 会自动重跑迁移。
+```bash
+# ⚠️ 高危：直接覆盖生产库（无闸门/无校验）——仅在真正的灾难现场、且已确认档可用时使用
+docker exec -i syntopica-postgres pg_restore -U postgres -d syntopica --clean --if-exists < backups/pg-key-<timestamp>.dump
+```
+
+恢复后 `schema_migrations` **随档恢复**（L1 起 `schema_migrations` 在备份档内），**无需也不应**手工补；档内确有该表时后端启动不会重放已应用的版本迁移。
+
+完整恢复流程（前置条件 → 分步命令 → 每步期望结果 → 验证清单 → 失败时的回滚/换档路径）、已知失败模式与对策、实测耗时量级见 **[`database/RESTORE.md`](database/RESTORE.md)**；演练留痕见 [`database/RESTORE_DRILL.md`](database/RESTORE_DRILL.md)。
 
 ### feed 图标目录（运行时资产，`data/icons/`）
 

@@ -594,9 +594,9 @@ func TestMergeSearchResults(t *testing.T) {
 		{Title: "dup", URL: "https://a.example.com/1"},  // 单 query 内重复
 	}
 	q2 := []searxng.Result{
-		{Title: "b1", URL: "https://a.example.com/1"},  // 跨 query 重复（丢弃）
-		{Title: "b2", URL: "https://a.example.com/2"},  // trim 匹配 q1 的带空格 URL（丢弃）
-		{Title: "b3", URL: ""},                         // 空 URL 跳过
+		{Title: "b1", URL: "https://a.example.com/1"}, // 跨 query 重复（丢弃）
+		{Title: "b2", URL: "https://a.example.com/2"}, // trim 匹配 q1 的带空格 URL（丢弃）
+		{Title: "b3", URL: ""},                        // 空 URL 跳过
 	}
 	got := mergeMarginNoteSearchResults([][]searxng.Result{q1, q2})
 	require.Len(t, got, 2, "首次出现位次保序，重复/空 URL 剔除")

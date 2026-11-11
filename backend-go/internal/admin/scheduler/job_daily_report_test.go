@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,6 +96,12 @@ func setupDailyReportJobTest(t *testing.T) *gorm.DB {
 	prevPoll := dailyReportPollInterval
 	dailyReportPollInterval = time.Millisecond
 	t.Cleanup(func() { dailyReportPollInterval = prevPoll })
+
+	// 回填触发的新体检缝（fix-board-health-triage-degrade D3）：默认换成空实现
+	// —— 真实实现会跑真体检（生产 LLM），单测不接受；需要断言的用例自己覆盖。
+	prevBackfillCheckup := runPostBackfillBoardHealthCheckup
+	runPostBackfillBoardHealthCheckup = func(ctx context.Context) {}
+	t.Cleanup(func() { runPostBackfillBoardHealthCheckup = prevBackfillCheckup })
 
 	return db
 }
@@ -810,7 +817,9 @@ func TestManualDailyReportTriggerFiresBoardHealthCheckup(t *testing.T) {
 
 	bs := scheduler.New(scheduler.Config{
 		Name: "daily-report-manual-checkup",
-		Job:  func(ctx context.Context) (*scheduler.JobResult, error) { return &scheduler.JobResult{Summary: "noop"}, nil },
+		Job: func(ctx context.Context) (*scheduler.JobResult, error) {
+			return &scheduler.JobResult{Summary: "noop"}, nil
+		},
 	})
 	wrapper := NewDailyReportSchedulerWrapper(bs)
 
@@ -820,6 +829,83 @@ func TestManualDailyReportTriggerFiresBoardHealthCheckup(t *testing.T) {
 
 	require.Len(t, stub.snapshot(), 1, "manual path generated the report")
 	require.Equal(t, 1, checkup.count(), "manual path fires the checkup tail step")
+}
+
+// ── fix-board-health-triage-degrade：尾步预算 + 回填触发 ──
+
+// TestDailyReportJobCheckupTailStepBudget —— 尾步 ctx deadline ≈ 30min
+// （design D4：10min 硬编在「12 板耗 7.8min」的实测面前太紧，10-30 出现过
+// context deadline exceeded 把后面的板直接砍掉）。
+func TestDailyReportJobCheckupTailStepBudget(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11)
+	stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	var deadline time.Time
+	previous := runPostReportBoardHealthCheckup
+	runPostReportBoardHealthCheckup = func(ctx context.Context) {
+		deadline, _ = ctx.Deadline()
+	}
+	t.Cleanup(func() { runPostReportBoardHealthCheckup = previous })
+
+	_, err := DailyReportJob(today)(context.Background())
+	require.NoError(t, err)
+	require.False(t, deadline.IsZero(), "尾步必须拿到带 deadline 的 ctx")
+	remaining := time.Until(deadline)
+	require.Greater(t, remaining, 29*time.Minute, "尾步预算必须 ≈30min")
+	require.LessOrEqual(t, remaining, 30*time.Minute)
+}
+
+// TestDailyReportJobBackfillTriggersGuardedCheckup —— 回填补出日报后追加一次
+// 带守卫的体检（fix-board-health-triage-degrade D3）。
+func TestDailyReportJobBackfillTriggersGuardedCheckup(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	// 只有昨天有内容 → 昨天的日报缺失 → 被回填补出。
+	seedReportBoardsForDate(t, db, today.AddDate(0, 0, -1), 11)
+	stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	var calls int32
+	previous := runPostBackfillBoardHealthCheckup
+	runPostBackfillBoardHealthCheckup = func(ctx context.Context) { atomic.AddInt32(&calls, 1) }
+	t.Cleanup(func() { runPostBackfillBoardHealthCheckup = previous })
+
+	result, err := DailyReportJob()(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, result.Data["backfilled_count"], "昨天那一板被补出")
+	// 回填触发是异步的（spec：回填与手动触发 SHALL 异步执行，不阻塞 job 返回），
+	// 所以这里等 goroutine 落地而不是立即断言。
+	require.Eventually(t, func() bool { return atomic.LoadInt32(&calls) == 1 }, 2*time.Second, 10*time.Millisecond,
+		"回填补出日报 → 追加一次体检")
+}
+
+// TestDailyReportJobNoBackfillDoesNotTriggerCheckup —— 没有补出任何日报时
+// 不追加体检（零成本口径）。
+func TestDailyReportJobNoBackfillDoesNotTriggerCheckup(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	// 只有今天有内容 → 主轮生成今天的日报，回填窗口内无缺口。
+	seedReportBoardsForDate(t, db, today, 11)
+	stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	var calls int32
+	previous := runPostBackfillBoardHealthCheckup
+	runPostBackfillBoardHealthCheckup = func(ctx context.Context) { atomic.AddInt32(&calls, 1) }
+	t.Cleanup(func() { runPostBackfillBoardHealthCheckup = previous })
+
+	result, err := DailyReportJob()(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 0, result.Data["backfilled_count"])
+	// 负向断言：给异步路径足够窗口确认「确实没触发」。
+	time.Sleep(200 * time.Millisecond)
+	require.Zero(t, atomic.LoadInt32(&calls), "没有补出 → 不触发体检")
 }
 
 // ── lifeline heal 尾步（daily-report-lifeline-heal 2.2/2.3）──

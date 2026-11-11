@@ -103,11 +103,45 @@ describe('normalizeLaneDynamicsWindow', () => {
     })
   })
 
+  it('事件线/来源/热度与回填证据字段映射，显式 0 不走旧口径', () => {
+    const raw = makeRaw()
+    Object.assign(raw, { stories_backfilled: false, heat_rule_version: 'v1', heat_incomplete: true, heat_stale_feed_ids: [42] })
+    Object.assign(raw.lanes[0]!, { lane_heat: 3.5, story_count_14d: 4 })
+    Object.assign(raw.lanes[0]!.timeline[0]!, { story_count: 0, max_participant_count: 6, unassigned_event_count: 2 })
+    const data = normalizeLaneDynamicsWindow(raw)
+    expect(data).toMatchObject({ storiesBackfilled: false, heatRuleVersion: 'v1', heatIncomplete: true, heatStaleFeedIds: [42] })
+    expect(data.lanes[0]).toMatchObject({ laneHeat: 3.5, storyCountWindow: 4 })
+    expect(dayCellMetrics(data.lanes[0]!.timeline[0])).toMatchObject({ storyCount: 0, maxParticipantCount: 6, unassignedEventCount: 2, sectionCount: 2 })
+    expect(data.lanes[1]!.timeline[0]!.storyCount).toBeNull()
+    expect(dayCellMetrics(data.lanes[1]!.timeline[0]).storyCount).toBeNull()
+    expect(normalizeLaneDynamicsWindow(makeRaw())).toMatchObject({ storiesBackfilled: null, heatRuleVersion: '', heatIncomplete: false, heatStaleFeedIds: [] })
+  })
+
   it('anchorDate = 窗内最新有分区日；无泳道为 null', () => {
     const data = normalizeLaneDynamicsWindow(makeRaw())
     expect(data.anchorDate).toBe('2026-10-23')
     const empty = normalizeLaneDynamicsWindow({ window_days: 14, has_reports: true, lanes: [], candidates: [] })
     expect(empty.anchorDate).toBeNull()
+  })
+
+  it('最热线字段映射（surface-story-heat-in-report-top）：透传 id/title 进 dayCellMetrics；缺省/显式 null 降级 null/空串不崩', () => {
+    const raw = makeRaw()
+    Object.assign(raw.lanes[0]!.timeline[0]!, { hottest_story_id: 55, hottest_story_title: '美伊博弈升级' })
+    const data = normalizeLaneDynamicsWindow(raw)
+    const named = data.lanes[0]!.timeline[0]!
+    expect(named.hottestStoryId).toBe(55)
+    expect(named.hottestStoryTitle).toBe('美伊博弈升级')
+    expect(dayCellMetrics(named)).toMatchObject({ hottestStoryId: 55, hottestStoryTitle: '美伊博弈升级' })
+    // 旧响应缺字段 → null/空串（不点名、不占位）
+    const missing = data.lanes[0]!.timeline[1]!
+    expect(missing.hottestStoryId).toBeNull()
+    expect(missing.hottestStoryTitle).toBe('')
+    expect(dayCellMetrics(missing)).toMatchObject({ hottestStoryId: null, hottestStoryTitle: '' })
+    // 新后端显式 null（无最热线）→ 同缺省降级；标题空串不抵 #ID（点名判断只看 id）
+    Object.assign(raw.lanes[0]!.timeline[1]!, { hottest_story_id: null, hottest_story_title: '' })
+    const explicitNull = normalizeLaneDynamicsWindow(raw).lanes[0]!.timeline[1]!
+    expect(explicitNull.hottestStoryId).toBeNull()
+    expect(dayCellMetrics(explicitNull).hottestStoryId).toBeNull()
   })
 })
 
@@ -146,8 +180,8 @@ describe('dayCellMetrics', () => {
     expect(metrics.sectionCount).toBe(1)
   })
 
-  it('空日 / 有分区零线索：0 是合法已知值', () => {
-    expect(dayCellMetrics(null)).toEqual({ peak: null, total: 0, sectionCount: 0, hasUnknown: false })
+  it('空日 / 有分区零线索：0 是合法已知值；空日无最热线身份（null/空串，不点名）', () => {
+    expect(dayCellMetrics(null)).toEqual({ storyCount: 0, displayCount: 0, degradedFromClue: false, maxParticipantCount: 0, hottestStoryId: null, hottestStoryTitle: '', unassignedEventCount: 0, peak: null, total: 0, sectionCount: 0, hasUnknown: false })
     expect(dayCellMetrics({ date: 'd', sections: [] }).sectionCount).toBe(0)
     const zero = {
       date: 'd', sections: [
@@ -155,6 +189,8 @@ describe('dayCellMetrics', () => {
       ],
     }
     expect(dayCellMetrics(zero).peak).toBe(0)
+    expect(dayCellMetrics(zero).hottestStoryId).toBeNull()
+    expect(dayCellMetrics(zero).hottestStoryTitle).toBe('')
   })
 })
 
@@ -175,5 +211,74 @@ describe('mapLaneDynamicsWindowResponse', () => {
     expect(res.error).toBe('网络错误')
     expect(res.status).toBe(500)
     expect('data' in res && res.data).toBeFalsy()
+  })
+})
+
+// ── 展示降级口径（matrix-clue-fallback-and-rail-merge D2）───────────────────
+// displayCount = 矩阵格值/顶部时间视窗曲线共用：事件线数 > 0 用事件线数，
+// 否则线索合计兜底；storyCount null 维持未知（不造 0）；degradedFromClue
+// 只在「事件线 0 且线索 > 0」为真（诚实降级标注的数据源）。
+describe('dayCellMetrics — 展示降级口径 displayCount/degradedFromClue', () => {
+  const day = (sections: { threadCount?: number | null, fallbackClueCount?: number | null }[], storyCount?: number | null) => {
+    const raw = {
+      date: '2026-10-25',
+      sections: sections.map((s, i) => ({
+        section_id: i + 1,
+        label: `桶${i + 1}`,
+        // raw 是 snake_case 协议：threadCount 必须映射回 thread_count
+        thread_count: s.threadCount,
+        events: s.fallbackClueCount === undefined ? [] : null,
+        // null = 该桶全未知（events 与 folded_count 都缺）；数字 = events 折叠后的回退数
+        folded_count: s.fallbackClueCount === null ? null : (s.fallbackClueCount ?? 0),
+      })),
+    }
+    const payload = storyCount === undefined
+      ? raw
+      : { ...raw, story_count: storyCount }
+    return normalizeLaneDynamicsWindow({
+      window_days: 14,
+      has_reports: true,
+      lanes: [{ topic_id: 1, label: 'L', watch_linked: false, section_count_14d: 1, snapshot: null, timeline: [payload] }],
+      candidates: [],
+    } as unknown as LaneDynamicsResponse).lanes[0]!.timeline[0]!
+  }
+
+  it('事件线数 > 0：displayCount = 事件线数（不用线索合计混加），非降级', () => {
+    const metrics = dayCellMetrics(day([{ threadCount: 132 }], 3))
+    expect(metrics.displayCount).toBe(3)
+    expect(metrics.degradedFromClue).toBe(false)
+  })
+
+  it('事件线数 0 且线索 > 0（历史未回填日）：displayCount = 线索合计，标降级', () => {
+    const metrics = dayCellMetrics(day([{ threadCount: 100 }, { threadCount: 32 }], 0))
+    expect(metrics.storyCount).toBe(0)
+    expect(metrics.displayCount).toBe(132)
+    expect(metrics.degradedFromClue).toBe(true)
+  })
+
+  it('事件线数 0 且线索 0（真零事件）：displayCount = 0，不标降级（零是合法已知值）', () => {
+    const metrics = dayCellMetrics(day([{ threadCount: 0 }], 0))
+    expect(metrics.displayCount).toBe(0)
+    expect(metrics.degradedFromClue).toBe(false)
+  })
+
+  it('story_count 缺省（旧响应）桶已知：displayCount 与现状 storyCount 回退值相同（现状兼容）', () => {
+    const metrics = dayCellMetrics(day([{ threadCount: 3 }, { threadCount: 2 }]))
+    expect(metrics.storyCount).toBe(5)
+    expect(metrics.displayCount).toBe(5)
+    expect(metrics.degradedFromClue).toBe(false)
+  })
+
+  it('story_count 缺省且全桶未知：displayCount = null（不造 0）', () => {
+    const metrics = dayCellMetrics(day([{ threadCount: null, fallbackClueCount: null }]))
+    expect(metrics.storyCount).toBeNull()
+    expect(metrics.displayCount).toBeNull()
+    expect(metrics.degradedFromClue).toBe(false)
+  })
+
+  it('story_count 0 且部分桶未知：displayCount 用已知部分求和兜底', () => {
+    const metrics = dayCellMetrics(day([{ threadCount: 5 }, { threadCount: null, fallbackClueCount: null }], 0))
+    expect(metrics.displayCount).toBe(5)
+    expect(metrics.degradedFromClue).toBe(true)
   })
 })

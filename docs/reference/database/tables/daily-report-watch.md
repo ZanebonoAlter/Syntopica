@@ -3,7 +3,7 @@
 > 真相源 = 代码（GORM struct + `postgres_migrations.go`），本文件是投影。全局约定（FK 真相 / 向量维度 / 枚举 / 唯一与 CHECK 约束）见 [_conventions.md](_conventions.md)；完整表清单与导航见 [_index.md](../_index.md)。
 
 
-> 本域 8 张表由 `internal/topicgraph` 的 `RegisterModels` 注册（`init()`），部署若未引入该包则表不存在；迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
+> 本域 10 张表由 `internal/topicgraph` 的 `RegisterModels` 注册（`init()`），部署若未引入该包则表不存在；迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
 
 ### 9.1 board_daily_reports（板块日报主表）
 
@@ -75,6 +75,11 @@
 | `related_article_ids` | JSONB | 保序、去重（首个为准） | 关联文章 ID 列表（逻辑引用 `articles.id`，无 FK）。**写入时只允许存在的 id**：日报生成写库前过一次存在性校验；空引用写 `[]`，**不得**写 JSON `null`（`jsonb_array_elements_text` 遇 null 抛 22023）。**删除路径必须维护**：`articles` 行被删时同事务内改指保留条或剔除（详见 `flow/daily-report.md` 约束 21） |
 | `embedding` | vector | —（运行时维度） | 线程向量 |
 | `fit_distance` | FLOAT | —（`*float64`，**无 default**，刻意区分 nil 与 0.0） | 与所属分区的契合距离（nil = 无信号，0.0 = 完美契合） |
+| `story_id` | BIGINT | —（`*uint` 可空；index `daily_report_threads_story_idx`；迁移 `20261105_0001` 建真实 FK → `board_stories(id) ON DELETE SET NULL`） | 事件线归属（add-event-story-heat）：指向存活事件线或经 `merged_into` 一跳解析；NULL = 未归属/综合稿/人工拆分，照常展示 |
+| `scope` | TEXT | NOT NULL DEFAULT 'single'; **CHECK** `chk_daily_report_threads_scope IN ('single','composite')`（迁移 `20261105_0001`） | 由 `tag_ids` 中 event 标签数推导：≥2 = composite（综合稿，永不建/挂事件线），否则 single |
+| `is_development` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261105_0001`） | 「同一事件线的不同阶段（进展）」判定标记；只驱动跨期去重的进展分支，永不作热度输入 |
+| `story_manual` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261105_0001`） | 人工「独立事件」标记：人工指派（story_id+true）/人工拆分（NULL+true）后，自动归属与回填一律跳过，永不改写 |
+| `display_tier` | TEXT | NOT NULL DEFAULT 'body'; **CHECK** `chk_daily_report_threads_display_tier IN ('body','flash','hidden')`（迁移 `20261105_0001`） | 跨期去重展示层载体：body=正文（默认）/ flash=快讯（重述降级，本期读路径丢弃）/ hidden=未展示（预留，自动判定不写）。身份/signals/热度永不读该列 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 
 > **已删列**：`status`、`prev_thread_id`（迁移 `20260603_0001`）。
@@ -221,6 +226,49 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `error` | TEXT | —（可空） | 失败原因 |
 | `created_at` / `updated_at` | TIMESTAMP | — | 创建 / 更新时间 |
 
+### 9.11 board_stories（事件线，add-event-story-heat）
+
+跨天同一事件的聚合体（一条线贯穿多天的多个 `daily_report_threads`），承载结构化指纹与热度汇总计数；热度证据在 `story_signals`，热度由 signals 实时计算不落本表。挂在版块下（`board_id`），可选关联首次归属话题（`lane_id` 仅展示分组用，不参与身份判定）。迁移 `20261105_0001`。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 主键 |
+| `board_id` | BIGINT | NOT NULL; index `board_stories_subject_idx` (priority 1)；迁移建真实 FK → `semantic_labels(id)`（boards 是 `label_type='board'` 的 SemanticLabel 行）ON DELETE CASCADE | 所属版块 |
+| `lane_id` | BIGINT | —（可空；FK ON DELETE SET NULL） | 首次归属话题（board_persistent_topics.id）；可空——话题归档/删除不影响身份 |
+| `title` | TEXT | NOT NULL | 事件线标题 |
+| `subject` | TEXT | — | 主体原文（展示用，可能是「特朗普」也可能是「Trump」） |
+| `subject_key` | TEXT | —; index `board_stories_subject_idx` (priority 2) | 归一化实体键（`person:trump` / `company:bytedance` / `org:pboc` / `product:gpt-5` / `other:*`）；主体归一化主判据 |
+| `action` | TEXT | — | 动作（发布/宣布/涨价/回应/下架）；阶段判定与反向动作表输入 |
+| `object` | TEXT | — | 对象（产品/政策/资产/事项） |
+| `occurred_at` | TIMESTAMPTZ | —（可空） | 事件发生时间 |
+| `status` | TEXT | NOT NULL DEFAULT 'active'; **CHECK** `chk_board_stories_status IN ('active','settled','merged')` | active（参与召回与热度）/ settled（已收束）/ merged（已合并，merged_into 指向存活者） |
+| `first_seen_date` / `last_seen_date` | DATE | NOT NULL | 活跃区间（date 非时间戳），随新事件挂入滚动更新 |
+| `thread_count` | INTEGER | NOT NULL DEFAULT 0 | 挂入事件数（composite 不计） |
+| `article_count` | INTEGER | NOT NULL DEFAULT 0 | 关联文章数 |
+| `participant_count` | INTEGER | NOT NULL DEFAULT 0 | 独立参与者数（按内容身份去重，feed 兜底）；矩阵格颜色分档输入 |
+| `embedding` | vector | —（**无维度限定**，运行时维度） | 召回向量（title 级，只召回不判定） |
+| `subject_embedding` | vector | —（**无维度限定**） | 主体归一化兑底向量（subject_key 的 embedding，cos ≥ 0.92）；仅为已建立事件线算一次 |
+| `merged_into` | BIGINT | —（可空；FK → board_stories(id)）；index `board_stories_recall_idx` 为部分索引 `WHERE merged_into IS NULL AND status='active'` ON `(board_id, last_seen_date DESC)` | 指向合并后存活事件线；读取一跳解析（不允许两层链） |
+| `origin` | TEXT | NOT NULL DEFAULT 'rule'; **CHECK** `chk_board_stories_origin IN ('rule','model','manual')` | rule（确定性判定）/ model（LLM 兕底，单分类器置信度 ≥0.75）/ manual（人工创建/合并，永不被自动判定覆盖） |
+| `created_at` / `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 创建 / 更新 |
+
+### 9.12 story_signals（热度证据，add-event-story-heat）
+
+一行 = 一条报道证据在信源时间讨论过一条事件线；身份（事件归属）与热度（signals）分离，去重只作用于身份层。**参与者身份 = 内容身份优先、feed 兜底**：去重键 = `COALESCE(NULLIF(content_key,''), participant_key)`——同一篇内容（规范化链接相同）被多个 feed 各抓一份只算 1 个参与者，`participant_count` / 来源数 / 热度同源于此（fix-duplicate-article-heat）。热度只读本表计算（`story_heat = Σ 0.5^(Δt/24h)` 窗口 48h；`lane_heat` 72h/14d 独立衰减），不从日报派生。迁移 `20261105_0001`（+ `20261110_0001` 加 `content_key`）。**存量回填入口**：`cmd/backfill-stories --backfill-content-keys`（按 `articles.link` 规范化回填 `content_key` 并重算受影响事件线的参与者计数，幂等；迁移本身不做数据回填）。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `story_id` | BIGINT | NOT NULL; PK (1/2)；FK → board_stories(id) ON DELETE CASCADE；index `story_signals_story_idx` ON `(story_id, participant_key, observed_at DESC)` | 所属事件线 |
+| `article_id` | BIGINT | NOT NULL; PK (2/2)；FK → articles(id) ON DELETE CASCADE | 报道文章（同一篇对同一条线只计一次证据） |
+| `feed_id` | BIGINT | NOT NULL | 来源 feed |
+| `participant_key` | TEXT | NOT NULL | 参与者键的 **feed 兜底值**（`feed:<id>`）；`content_key` 为空（内容身份不可判定）时按它去重，同参与者多篇只计一次 |
+| `content_key` | TEXT | 可空（迁移 `20261110_0001` 新增）；index `story_signals_story_content_idx` ON `(story_id, content_key)` | 内容身份键 = `NormalizeArticleLink(articles.link)`（去 `#fragment`、去 `?query`、scheme/host 小写、path 原样；空 link → 空串 = 不可判定）；同一内容的多 feed 副本共用一个键，去重时优先于 `participant_key` |
+| `kind` | TEXT | NOT NULL DEFAULT 'editorial'; **CHECK** `chk_story_signals_kind IN ('editorial','signal')` | editorial（信源报道，本期唯一写入值）/ signal（社媒等外部信号，预留位，写入路径未开放） |
+| `observed_at` | TIMESTAMPTZ | NOT NULL; index `story_signals_time_idx` ON `(observed_at DESC)` | 信源时间 = `articles.pub_date`；热度衰减的 Δt 基准 |
+| `observed_at_source` | TEXT | NOT NULL DEFAULT 'pub_date'; **CHECK** `chk_story_signals_observed_at_source IN ('pub_date','fallback')` | pub_date（信源时间，优先）/ fallback（文章缺 pub_date 时回退 created_at） |
+
+> 写入幂等：复合主键 `(story_id, article_id)` 收敛（重复写入保留最新 observed_at）；归属变更时旧线 signal 删除、新线写入（`RecomputeSignalsForStory`）。证据不按 `archived` 过滤——归档只是轮转出 feed 活跃窗口（MaxArticles），不是撤回，归档报道照常计入热度（红线同 sourcestats 包「窗口查询不得过滤 archived」）；将来若需排除「撤回/恶意」须新增专用列，不得复用 `archived`。
+
 ---
 
 
@@ -248,6 +296,12 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `idx_topic_key_events_board_source` | topic_key_event_markers | UNIQUE `(semantic_board_id, source_key)` | gorm tag（AutoMigrate） |
 | `idx_topic_key_events_topic_state` | topic_key_event_markers | `(persistent_topic_id, state, source_period_date)` | gorm tag（AutoMigrate） |
 | `idx_key_event_runs_report` | key_event_recommendation_runs | UNIQUE `(report_id)` | gorm tag（AutoMigrate） |
+| `daily_report_threads_story_idx` | daily_report_threads | `(story_id)` | `20261105_0001` |
+| `board_stories_recall_idx` | board_stories | 部分索引 `(board_id, last_seen_date DESC) WHERE merged_into IS NULL AND status='active'` | `20261105_0001` |
+| `board_stories_subject_idx` | board_stories | `(board_id, subject_key)` | `20261105_0001` |
+| `story_signals_time_idx` | story_signals | `(observed_at DESC)` | `20261105_0001` |
+| `story_signals_story_idx` | story_signals | `(story_id, participant_key, observed_at DESC)` | `20261105_0001` |
+| `story_signals_story_content_idx` | story_signals | `(story_id, content_key)` | `20261110_0001` |
 
 
 ## 域 ER 图

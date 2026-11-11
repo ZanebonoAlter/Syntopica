@@ -402,3 +402,37 @@ func TestTagArticleAggregatePartialSuccessNoFallback(t *testing.T) {
 	require.Equal(t, 7, router.callCount("tag_extraction_section"))
 	require.Equal(t, 0, router.callCount("tag_extraction_merged"), "partial aggregate output must NOT trigger mono fallback")
 }
+
+// add-event-story-heat：聚合路径 ExtractedTag.Fingerprint 拷贝到 TopicTag，
+// 持久化前的候选链路不断链（persistEventFingerprint 在 tagger 层接手）。
+func TestTagAggregateArticleCarriesEventFingerprint(t *testing.T) {
+	router := &sectionAwareFakeRouter{responses: []fakeTagChatResponse{
+		{content: `{"tags":[{"label":"阳光电源股价因业绩预期上调而暴涨","category":"event","description":"阳光电源股价暴涨的市场事件","auxiliary_labels":[{"label":"阳光电源","description":"光伏逆变器公司"},{"label":"业绩预期","description":"市场对公司业绩的预测"},{"label":"股价暴涨","description":"股价大幅上涨"}],"subject":"阳光电源","subject_key":"company:sungrow","action":"暴涨","object":"股价","occurred_at":"2026-11-03"},{"label":"Kubernetes","category":"keyword","description":"开源容器编排系统"}]}`},
+		{content: aggregateSection1Response},
+		{content: aggregateSection2Response},
+	}}
+	extractor := &TagExtractor{router: router}
+	article := &models.Article{Title: "科技周刊第100期", AIContentSummary: aggregateMarkdownSummary(), ContentForm: "aggregate"}
+
+	tags, handled, err := tagAggregateArticle(context.Background(), article, ExtractionInput{
+		Title: "科技周刊第100期", FeedName: "科技周刊", CategoryName: "科技",
+	}, extractor)
+
+	require.NoError(t, err)
+	require.True(t, handled)
+
+	var eventTag *TopicTag
+	for i := range tags {
+		if tags[i].Category == "event" {
+			eventTag = &tags[i]
+		} else {
+			require.Nil(t, tags[i].Fingerprint, "non-event tags never carry a fingerprint")
+		}
+	}
+	require.NotNil(t, eventTag, "event tag must survive the aggregate path")
+	require.NotNil(t, eventTag.Fingerprint)
+	require.True(t, eventTag.Fingerprint.Complete())
+	require.Equal(t, "company:sungrow", eventTag.Fingerprint.SubjectKey)
+	require.Equal(t, "暴涨", eventTag.Fingerprint.Action)
+	require.Equal(t, "2026-11-03", eventTag.Fingerprint.OccurredAt)
+}

@@ -485,6 +485,9 @@ func runTestMigrations(t *testing.T, db *gorm.DB) error {
 			&tagmodels.TopicTagAnalysis{}, &tagmodels.TopicTagBoardLabel{},
 			&tagmodels.TopicTagEmbedding{}, &tagmodels.TopicTagSemanticLabel{},
 			&tagmodels.TagMergeSuggestion{},
+			// 相关事件派生缓存（enable-story-cross-day-continuation）：
+			// tagmanagement/wire.go 的同一份注册清单（此处不能 blank import 域根，会循环）。
+			&tagmodels.RelatedEventEmbedding{},
 		)
 	}
 

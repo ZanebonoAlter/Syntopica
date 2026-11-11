@@ -5,7 +5,7 @@ Syntopica 桌面装法（Tauri 壳）的工程家。
 - **一份代码两种装法**：产品代码共享 `backend-go/` 与 `front/`，本目录只放桌面壳特有的东西。
 - **当前只实现远程模式**（change `add-desktop-shell-remote`）：窗口装载服务端已托管的 SPA，同源 `/api`，不启动本地后端。
 - `shell/`：Tauri 2 应用（Rust）。
-- `lab/`：迭代 0 的验证区——sidecar 进程协议（0-3）的模拟壳与时序实测脚本，可复跑。
+- `lab/`：迭代 0 的验证区——sidecar 进程协议（0-3）的模拟壳与时序实测脚本、embedded PG 真实负载验证实验台（0-7，结论见 `docs/srs/syntopica-client/iter0-findings.md`），均可复跑。
 - 运行时数据目录不在仓库：Linux/macOS `~/.syntopica/`、Windows `%LOCALAPPDATA%\Syntopica\`（见 `docs/srs/syntopica-client/iter0-findings.md`）。
 
 ## 远程壳（remote mode）

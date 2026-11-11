@@ -231,6 +231,10 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 	// centroid/vacuum refresh (which reads via r.db and must see committed
 	// sections) knows which topics changed.
 	var touchedTopicIDs []uint
+	// affectedStoryIDs are story lines whose threads are deleted by a rerun
+	// of this report; their counters must be recomputed after commit (an
+	// increment-only model would keep stale counts — pinned in 2c).
+	var affectedStoryIDs []uint
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		// (board, date)-scoped serialization (fix-daily-report-cross-process-
 		// gate D4): the generation gate (D1) already prevents double-runs; this
@@ -278,6 +282,13 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 		}
 
 		if findErr == nil {
+			// Collect story lines about to lose their threads before deleting
+			// them: the post-commit recompute uses this list.
+			if err := tx.Model(&DailyReportThread{}).
+				Where("report_id = ? AND story_id IS NOT NULL", existing.ID).
+				Distinct("story_id").Pluck("story_id", &affectedStoryIDs).Error; err != nil {
+				logging.Warnf("SaveReport: collect affected story ids failed for report %d: %v", existing.ID, err)
+			}
 			// Delete old threads
 			if err := tx.Where("report_id = ?", existing.ID).Delete(&DailyReportThread{}).Error; err != nil {
 				return fmt.Errorf("delete old threads: %w", err)
@@ -369,12 +380,35 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 			return fmt.Errorf("re-attach key event markers: %w", err)
 		}
 
+		var revision struct{ UpdatedAt time.Time }
+		if err := tx.Model(&BoardDailyReport{}).Select("updated_at").Where("id = ?", report.ID).Take(&revision).Error; err != nil {
+			return err
+		}
+		report.UpdatedAt = revision.UpdatedAt
+
 		logging.Infof("daily-report: saved report %d for board %d on %s (%d sections)",
 			report.ID, report.SemanticBoardID, report.PeriodDate.Format("2006-01-02"), len(sections))
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+
+	// Rebuild evidence AND counters for lines whose threads were deleted above.
+	// Signals FIRST: without rebuilding evidence, stale story_signals keep
+	// feeding heat and participant_count from articles no surviving thread
+	// covers anymore (重建后旧 signals 残留 — pinned by
+	// TestStorySignalsSaveReportRebuildRemovesOldEvidence). Counts afterwards
+	// re-derive thread/article counters from the surviving threads. Best-effort:
+	// a failure leaves a stale value (the next attribution run recomputes
+	// again) but must not fail the report save.
+	for _, storyID := range affectedStoryIDs {
+		if rerr := r.RecomputeSignalsForStory(storyID); rerr != nil {
+			logging.Warnf("SaveReport: recompute story %d signals failed: %v", storyID, rerr)
+		}
+		if rerr := recomputeBoardStoryCountsWith(r.db, storyID); rerr != nil {
+			logging.Warnf("SaveReport: recompute story %d counts failed: %v", storyID, rerr)
+		}
 	}
 
 	// Post-commit refresh: centroids + vacuum stats. Both read via r.db, so they
@@ -393,11 +427,22 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 }
 
 // GetReportByID retrieves a single daily report by its primary key.
+//
+// Threads preload is body-only (add-event-story-heat tasks 6.2: 本期选择
+// 「丢弃」): cross-period 重述 threads carry display_tier='flash' and stay
+// out of the body render — spec allows 快讯或丢弃, the flash lane UI is
+// future work, the column stays queryable for it. Callers were audited
+// before filtering here: the report detail handler (the reader this filter
+// targets), key-event markers handler + margin-notes handler (existence
+// checks only, threads unused), and tests. Threads read by OTHER paths
+// (matrix / heat / key-event recommendation via their own SQL, watch text
+// lookups) are deliberately NOT tier-filtered — identity and heat never
+// depend on the display tier.
 func (r *TopicGraphRepository) GetReportByID(id uint) (*BoardDailyReport, error) {
 	var report BoardDailyReport
 	err := r.db.Where("id = ?", id).
 		Preload("Sections.Threads", func(db *gorm.DB) *gorm.DB {
-			return db.Order("id ASC")
+			return db.Where("display_tier = ?", ThreadDisplayTierBody).Order("id ASC")
 		}).
 		Preload("Sections", func(db *gorm.DB) *gorm.DB {
 			return db.Order("cluster_index ASC")
@@ -425,6 +470,9 @@ func (r *TopicGraphRepository) GetReportByID(id uint) (*BoardDailyReport, error)
 	// (2026-11-03 and earlier) hold a JSON null scalar or SQL NULL, which the
 	// frontend reads as "no content" and hides the whole "今日重点" block.
 	normalizeHighlightsArray(&report.Highlights)
+	if err := r.resolveReportHighlightIdentities(&report); err != nil {
+		return nil, err
+	}
 	return &report, nil
 }
 
@@ -560,6 +608,16 @@ func normalizeHighlightsArray(highlights *JSON) {
 
 // CollectBoardIDsForDate returns all board IDs that have active event tags on a date.
 func (r *TopicGraphRepository) CollectBoardIDsForDate(date time.Time) ([]uint, error) {
+	// SQLite test databases that migrate only the daily-report tables have no
+	// tag/article tables (same degradation contract as SaveThreads' scope
+	// derivation in story_repository.go): a missing dependency table means
+	// "no event tags today" — return empty instead of failing the whole
+	// generation path with a raw SQL error.
+	for _, table := range []string{"topic_tags", "topic_tag_board_labels", "article_topic_tags", "articles"} {
+		if !r.db.Migrator().HasTable(table) {
+			return []uint{}, nil
+		}
+	}
 	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
@@ -588,11 +646,15 @@ func (r *TopicGraphRepository) CollectBoardIDsForDate(date time.Time) ([]uint, e
 
 // SaveThreads persists a batch of DailyReportThread rows using the given DB handle.
 // Accepts *gorm.DB so it can participate in an outer transaction.
+// Scope is derived HERE — the single point (add-event-story-heat task 3.2):
+// >=2 event tags in tag_ids => composite (综合稿，不建事件身份), else single.
+// Every caller (orchestrator / watch materialization / rebuild) inherits it.
 func (r *TopicGraphRepository) SaveThreads(tx *gorm.DB, reportID, sectionID uint, threads []DailyReportThread) error {
 	for i := range threads {
 		threads[i].ReportID = reportID
 		threads[i].SectionID = sectionID
 	}
+	deriveThreadScope(tx, threads)
 	// Watch-materialized threads carry no embedding: GORM's zero-value "" is
 	// an invalid pgvector literal, so blank-embedding threads insert with the
 	// column omitted (NULL) — same treatment as blank-embedding sections

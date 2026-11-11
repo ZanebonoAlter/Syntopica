@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"gorm.io/gorm"
+
+	"syntopica-backend/internal/models"
 )
 
 // ============================================================================
@@ -30,3 +32,16 @@ var BoardMatcherFactory func() BoardMatcher
 type BoardMatcher interface {
 	MatchTopicTag(ctx context.Context, topicTagID uint) (interface{}, error)
 }
+
+// EntitySubjectHook resolves ONE event tag's subject mention against the
+// global entity identity layer (normalize-event-subject-entities). Set by
+// the tagmanagement/service/entity package during init(); nil when that
+// package is not linked (tests, minimal binaries) — the tagging pipeline
+// then skips entity resolution entirely. Off mode is a no-op INSIDE the hook
+// as well, so the bridge stays wired in every deployment without changing
+// off-mode behavior.
+//
+// The hook NEVER blocks or fails tag persistence: it owns its error path,
+// logging and swallowing everything (technical failures leave the mention
+// 未归一, the tag itself is unaffected — spec「不阻断标签入库」).
+var EntitySubjectHook func(ctx context.Context, tag TopicTag, dbTag *models.TopicTag, articleID uint, articleContext string)

@@ -1039,8 +1039,11 @@ func TestCollectFailureNotificationMatchesTerminalBroadcast(t *testing.T) {
 	scopeDate := boardScopeDate()
 	dateStr := scopeDate.Format("2006-01-02")
 
-	// 让板块收集阶段直接失败（缺表 → SQL 报错）
+	// 让板块收集阶段直接失败：CollectBoardIDsForDate 现带表存在性守卫
+	//（缺表 = 当日无事件标签，不再报错），改为建缺列的 articles 空表让
+	// collect 查询仍 SQL 报错（守卫只认表存在性，不校验 schema）。
 	require.NoError(t, repository.Repo.DB().Exec(`DROP TABLE articles`).Error)
+	require.NoError(t, repository.Repo.DB().Exec(`CREATE TABLE articles (id INTEGER PRIMARY KEY)`).Error)
 
 	gate := &gateCounter{}
 	gate.stub(t)
@@ -1161,4 +1164,167 @@ func TestTriggerGenerateDailyReportRejectsInvalidFieldTypes(t *testing.T) {
 			require.Empty(t, notificationsForDate(t, dateStr), "类型非法不产生任何终态通知")
 		})
 	}
+}
+
+// ── fix-board-health-triage-degrade：手动日报产出后触发体检 ──
+
+// checkupScopeRecorder 捕获体检触发缝的 scope（异步触发，调用顺序不保证）。
+type checkupScopeRecorder struct {
+	mu     sync.Mutex
+	scopes [][]uint
+}
+
+func (r *checkupScopeRecorder) stub(t *testing.T) {
+	t.Helper()
+	prev := triggerBoardHealthCheckup
+	triggerBoardHealthCheckup = func(scope []uint) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.scopes = append(r.scopes, append([]uint(nil), scope...))
+	}
+	t.Cleanup(func() { triggerBoardHealthCheckup = prev })
+}
+
+func (r *checkupScopeRecorder) calls() [][]uint {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]uint(nil), r.scopes...)
+}
+
+// Scenario「手动产出日报后体检跟着跑」：单板路径 → scope = {该板}。
+func TestManualGenerateTriggersBoardHealthCheckup(t *testing.T) {
+	engine := setupBoardScopeTest(t)
+	scopeDate := boardScopeDate()
+	seedBoardScopeDay(t, 777, scopeDate)
+	seedBoardLabels(t, 777)
+
+	gate := &gateCounter{}
+	gate.stub(t)
+	gen := newGenerationRecorder()
+	gen.stub(t)
+	bcasts := &broadcastRecorder{}
+	bcasts.stub(t)
+	checkups := &checkupScopeRecorder{}
+	checkups.stub(t)
+
+	status, payload := postGenerateDailyReportBody(t, engine, map[string]interface{}{
+		"date":     scopeDate.Format("2006-01-02"),
+		"board_id": 777,
+	})
+	require.Equal(t, http.StatusOK, status, "手动生成必须受理: %v", payload)
+	data, ok := payload["data"].(map[string]interface{})
+	require.True(t, ok)
+	jobID, ok := data["job_id"].(string)
+	require.True(t, ok)
+
+	waitForPipelineEnd(t, gate)
+	require.Eventually(t, func() bool { return len(checkups.calls()) == 1 },
+		5*time.Second, 10*time.Millisecond, "产出日报后必须异步触发体检")
+	require.Equal(t, [][]uint{{777}}, checkups.calls(), "单板路径 scope = {该板}")
+
+	done := bcasts.doneFor(jobID)
+	require.Len(t, done, 1, "体检触发不影响终态广播")
+	require.Equal(t, 1, done[0].totalSaved)
+}
+
+// Scenario「集合路径 scope = 本次板块集合」。
+func TestManualGenerateSelectedBoardsTriggersCheckupWithBoardSet(t *testing.T) {
+	engine := setupBoardScopeTest(t)
+	scopeDate := boardScopeDate()
+	seedBoardScopeDay(t, 777, scopeDate)
+	seedBoardLabels(t, 777, 3, 7, 9)
+
+	gate := &gateCounter{}
+	gate.stub(t)
+	gen := newGenerationRecorder()
+	gen.stub(t)
+	bcasts := &broadcastRecorder{}
+	bcasts.stub(t)
+	checkups := &checkupScopeRecorder{}
+	checkups.stub(t)
+
+	status, payload := postGenerateDailyReportBody(t, engine, map[string]interface{}{
+		"date":      scopeDate.Format("2006-01-02"),
+		"board_ids": []int{3, 7, 9},
+	})
+	require.Equal(t, http.StatusOK, status, "集合生成必须受理: %v", payload)
+	waitForPipelineEnd(t, gate)
+
+	require.Eventually(t, func() bool { return len(checkups.calls()) == 1 },
+		5*time.Second, 10*time.Millisecond, "产出日报后必须异步触发体检")
+	require.Equal(t, [][]uint{{3, 7, 9}}, checkups.calls(), "集合路径 scope = 本次板块集合")
+}
+
+// Scenario「没有产出不触发」：当日无内容（report==nil）→ 不体检。
+func TestManualGenerateWithoutReportDoesNotTriggerCheckup(t *testing.T) {
+	engine := setupBoardScopeTest(t)
+	scopeDate := boardScopeDate()
+	seedBoardScopeDay(t, 777, scopeDate)
+	seedBoardLabels(t, 777)
+
+	gate := &gateCounter{}
+	gate.stub(t)
+	gen := newGenerationRecorder().withEmpty(777)
+	gen.stub(t)
+	bcasts := &broadcastRecorder{}
+	bcasts.stub(t)
+	checkups := &checkupScopeRecorder{}
+	checkups.stub(t)
+
+	status, payload := postGenerateDailyReportBody(t, engine, map[string]interface{}{
+		"date":     scopeDate.Format("2006-01-02"),
+		"board_id": 777,
+	})
+	require.Equal(t, http.StatusOK, status, "手动生成必须受理: %v", payload)
+	waitForPipelineEnd(t, gate)
+
+	// 体检是异步的：给 goroutine 一个执行窗口再断言「没有触发」。
+	time.Sleep(100 * time.Millisecond)
+	require.Empty(t, checkups.calls(), "无产出 → 不触发体检")
+}
+
+// Scenario「体检 panic 不影响完成广播」：体检缝 panic 被 goroutine 边界
+// recover，只记日志，日报终态广播与通知不受影响。
+func TestManualGenerateCheckupPanicDoesNotBreakCompletion(t *testing.T) {
+	engine := setupBoardScopeTest(t)
+	scopeDate := boardScopeDate()
+	seedBoardScopeDay(t, 777, scopeDate)
+	seedBoardLabels(t, 777)
+
+	gate := &gateCounter{}
+	gate.stub(t)
+	gen := newGenerationRecorder()
+	gen.stub(t)
+	bcasts := &broadcastRecorder{}
+	bcasts.stub(t)
+
+	called := make(chan struct{}, 1)
+	prev := triggerBoardHealthCheckup
+	triggerBoardHealthCheckup = func(scope []uint) {
+		called <- struct{}{}
+		panic("checkup blew up")
+	}
+	t.Cleanup(func() { triggerBoardHealthCheckup = prev })
+
+	status, payload := postGenerateDailyReportBody(t, engine, map[string]interface{}{
+		"date":     scopeDate.Format("2006-01-02"),
+		"board_id": 777,
+	})
+	require.Equal(t, http.StatusOK, status, "手动生成必须受理: %v", payload)
+	data, ok := payload["data"].(map[string]interface{})
+	require.True(t, ok)
+	jobID, ok := data["job_id"].(string)
+	require.True(t, ok)
+
+	waitForPipelineEnd(t, gate)
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("体检 seam 未被调用")
+	}
+	time.Sleep(50 * time.Millisecond) // 给 goroutine 边界 recover 留执行窗口
+
+	done := bcasts.doneFor(jobID)
+	require.Len(t, done, 1, "体检 panic 不得影响终态广播")
+	require.Equal(t, 1, done[0].totalSaved)
 }

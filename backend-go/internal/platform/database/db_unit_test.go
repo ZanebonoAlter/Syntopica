@@ -3,27 +3,62 @@ package database
 import (
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
-func TestPostgresMigrationsDocumentStagedEmbeddingCutover(t *testing.T) {
+// TestPostgresMigrationsDocumentDimensionAgnosticEmbeddingColumn 护栏：
+// 20260403_0003 描述必须写明「向量列存在且维度无关」，且迁移正文里不得再出现
+// 硬编码维度的目标类型（vector(N)）。
+//
+// 为什么改：灾备恢复时若备份档不带 schema_migrations，整条版本迁移链会在有数据的
+// 库上从零重放；目标类型写死 vector(4096) 而存量列是 vector(2560) 时，重放即维度
+// 冲突，恢复直接失败（fix-disaster-recovery-channel design D2）。
+func TestPostgresMigrationsDocumentDimensionAgnosticEmbeddingColumn(t *testing.T) {
 	migrations := postgresMigrations()
 	if len(migrations) < 3 {
 		t.Fatalf("postgres migrations count = %d, want at least 3", len(migrations))
 	}
 
 	migration := mustFindMigration(t, migrations, "20260403_0003")
-	if !strings.Contains(strings.ToLower(migration.Description), "staged") {
-		t.Fatalf("expected staged rollout description, got %q", migration.Description)
-	}
-	if !strings.Contains(strings.ToLower(migration.Description), "vector") {
+	if !strings.Contains(migration.Description, "向量列") {
 		t.Fatalf("expected vector column description, got %q", migration.Description)
 	}
-	if !strings.Contains(strings.ToLower(migration.Description), "json") {
-		t.Fatalf("expected runtime json note, got %q", migration.Description)
+	if !strings.Contains(migration.Description, "维度") {
+		t.Fatalf("expected dimension-agnostic description, got %q", migration.Description)
+	}
+
+	source, err := os.ReadFile("postgres_migrations.go")
+	if err != nil {
+		t.Fatalf("read postgres_migrations.go: %v", err)
+	}
+	// 定位 20260403_0003 的迁移块：Version 行 → 下一个 Version 行（或文件尾）。
+	lines := strings.Split(string(source), "\n")
+	start, end := -1, len(lines)
+	for i, line := range lines {
+		if start == -1 {
+			if strings.Contains(line, `"20260403_0003"`) {
+				start = i
+			}
+			continue
+		}
+		if strings.Contains(line, "Version:") {
+			end = i
+			break
+		}
+	}
+	if start == -1 {
+		t.Fatal("migration 20260403_0003 not found in source")
+	}
+	block := strings.Join(lines[start:end], "\n")
+	if regexp.MustCompile(`vector\(\s*\d+\s*\)`).MatchString(block) {
+		t.Fatalf("migration 20260403_0003 must not hardcode a vector dimension:\n%s", block)
+	}
+	if !strings.Contains(block, "TYPE vector") {
+		t.Fatalf("migration 20260403_0003 must alter to undimensioned vector:\n%s", block)
 	}
 }
 

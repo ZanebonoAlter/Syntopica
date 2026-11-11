@@ -288,6 +288,11 @@ func persistArticleTags(ctx context.Context, article *models.Article, tags []Top
 		}
 
 		if dbTag.Category == "event" {
+			// 实体主体归一（normalize-event-subject-entities）：仅影子态真正
+			// 干活；hook 内部自判模式（off 零写入零调用），失败只记日志不阻断。
+			if EntitySubjectHook != nil {
+				EntitySubjectHook(ctx, tag, dbTag, article.ID, articleContext)
+			}
 			qs := getEmbeddingQueueService()
 			if qs != nil {
 				if err := qs.Enqueue(dbTag.ID); err != nil {

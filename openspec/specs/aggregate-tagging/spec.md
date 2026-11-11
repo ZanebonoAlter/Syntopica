@@ -52,8 +52,13 @@
 - **THEN** 聚合路径放弃切片，回落到 mono 路径处理该文章
 
 ### Requirement: 逐片融合提取标签
-
 聚合路径 SHALL 对每个栏目片发起恰好 1 次 LLM 调用，使用 event/person/keyword 三分类融合的单一 prompt（每片产出上限 4 个标签候选），SHALL NOT 对单篇文章发起超过 8 次提取调用。
+
+每个 `category='event'` 的标签 SHALL 在同一次调用内同时产出结构化指纹 `subject` / `subject_key` / `action` / `object`，`occurred_at` MAY 产出。指纹字段 SHALL NOT 触发额外调用，SHALL NOT 由第二条提取链路补取。`keyword` 与 `person` 标签 SHALL NOT 产出这几项。
+
+`subject_key` SHALL 为归一化实体键，格式 `类型:规范名`（类型限于 `person` / `company` / `org` / `product` / `other`，规范名用小写英文或拼音），由模型在同一次调用内完成别名归并（如 Trump / 川普 / 特朗普 → `person:trump`）。`subject_key` SHALL NOT 依赖 `topic_tags.aliases` 生成——实测 person/event 的 aliases 覆盖率为 0%、keyword 仅 7.3%。
+
+指纹 SHALL 与标签的 `metadata.event_keywords` 做一致性校验：`subject` 与 `object` 均 SHALL 能在关键词集合中找到（允许包含关系与别名展开）。校验不通过或关键词缺失时，标签 SHALL 照常入库并参与既有流程，指纹 SHALL 标记为不可信并记录 warning（含标签名与不一致字段）。
 
 单片调用失败时 SHALL 记录 warning 并跳过该片继续处理其余片，SHALL NOT 因单片失败丢弃整篇或整篇重试。
 
@@ -63,6 +68,26 @@
 
 - **WHEN** 切片器产出 5 个栏目片
 - **THEN** 发起 5 次融合 prompt 提取调用，每次调用的输入仅含对应片文本
+
+#### Scenario: 同一次调用产出事件指纹
+
+- **WHEN** 某片返回 3 个 event 标签与 1 个 keyword 标签
+- **THEN** 3 个 event 标签 SHALL 各自携带 subject/subject_key/action/object，keyword 标签 SHALL NOT 携带；该片调用次数 SHALL 仍为 1
+
+#### Scenario: 跨语言别名归一为同一主体键
+
+- **WHEN** 两次提取分别返回 subject=`特朗普` 与 subject=`Trump`
+- **THEN** 两次的 `subject_key` SHALL 相同（如 `person:trump`），SHALL NOT 因原文字面不同而产出不同键
+
+#### Scenario: 指纹校验失败不阻断
+
+- **WHEN** 某 event 标签的 subject 不在 `event_keywords` 中且无法通过别名匹配
+- **THEN** 该标签 SHALL 照常入库，指纹标记不可信并记录 warning，同片其余标签不受影响
+
+#### Scenario: 关键词缺失时指纹不可信
+
+- **WHEN** 某 event 标签的 `metadata.event_keywords` 为空或缺失
+- **THEN** 该标签 SHALL 入库，指纹 SHALL 标记不可信，SHALL NOT 因缺少校验依据丢弃标签
 
 #### Scenario: 单片失败不影响其余片
 
@@ -78,6 +103,29 @@
 
 - **WHEN** 某片返回的 keyword 标签 description 为空
 - **THEN** 该 keyword 标签被跳过并记录 warning，同片其余标签正常进入 reduce 阶段
+
+### Requirement: 事件主体稳定身份说明随同一次提取产出
+
+事件标签的提取 SHALL 在产出该标签的**同一次模型调用**内，额外产出该标签主体的原文提及（`subject`）与**稳定短身份说明**（`subject_desc`）；SHALL NOT 为该说明发起额外模型调用。该字段 SHALL **仅在影子模式下请求**：关闭态下第一轮的提示与 schema SHALL 与上线前逐字一致，SHALL NOT 新增字段输出或模型请求。
+
+- 稳定短身份说明 SHALL 只描述主体自身的身份（类别 / 国别 / 角色 / 所属组织等），SHALL NOT 包含当次事件、动作、对象或时间；第一轮提示 SHALL 显式声明该约束。
+- 稳定短身份说明 SHALL NOT 写入事件指纹 `event_fingerprint`，SHALL NOT 改变既有指纹完整性判定与关键词一致性校验结论；SHALL 落在独立 metadata 键。
+- `keyword` 与 `person` 类别的标签 SHALL NOT 产出稳定短身份说明。
+- 稳定短身份说明为空时 SHALL 照常产出标签并照常入库；SHALL NOT 因缺该说明降级、报错或丢弃标签。
+
+#### Scenario: 影子态同一次调用产出主体原文与稳定短身份说明
+
+- **WHEN** 影子模式下某栏目片返回 3 个 event 标签
+- **THEN** 3 个标签 SHALL 各自带上主体原文与稳定短身份说明，该片的模型调用次数 SHALL 仍为 1
+- **AND** `event_fingerprint` SHALL 与未产出该说明时结构相同，指纹完整性与关键词一致性校验结论 SHALL 不变
+- **AND** keyword 与 person 类别的标签 SHALL NOT 携带该说明
+- **AND** 某 event 标签的稳定短身份说明为空时，该标签 SHALL 照常入库，SHALL NOT 因缺该说明报错或丢弃
+
+#### Scenario: 关闭态第一轮提示与字段输出不变
+
+- **WHEN** 系统以关闭态（默认）运行提取
+- **THEN** 第一轮提示与 schema SHALL 与上线前逐字一致
+- **AND** SHALL NOT 因本能力新增字段输出或模型请求
 
 ### Requirement: 跨片去重与文章级上限
 

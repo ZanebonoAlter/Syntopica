@@ -6,7 +6,8 @@
  *    `splitObservationRows`，壳层只缓存 computed 结果，不另算排序/休眠。
  *  - **选中态边界**：G1 legacy 数字 `selectedLaneId` ↔ G3 字符串 `topicId` 的换算各收在
  *    一处（组件层不散落 `String()/Number()`）；CH-1 默认选日只看 content（有分区，0 线索合法）。
- *  - **刷选区系列**：365 池逐日「A 名单同 ID 桶线索合计」（G2 `LaneTrendPoint` 契约；
+ *  - **刷选区系列**：365 池逐日「A 名单同 ID 泳道展示降级口径之和」（事件线数 > 0
+ *    用事件线数，否则线索合计兜底，与矩阵格同口径；G2 `LaneTrendPoint` 契约；
  *    unknown=null 不补 0，断档=已知 0）。
  */
 import type { LaneDynamicsWindowData, WindowLaneDay } from '~/api/normalizers/laneDynamicsWindow'
@@ -143,11 +144,13 @@ export function reconcileSelectedDate(
 }
 
 /**
- * 刷选区（G2 `series`）：池界逐日 = A 名单同 ID 桶线索合计。
- *  - 有分区且线索数已知 → 合计（0 是合法已知值，画基线）；
+ * 刷选区（G2 `series`）：池界逐日 = A 名单同 ID 泳道展示降级口径之和
+ * （matrix-clue-fallback-and-rail-merge D2：与矩阵格同一条规则——事件线数 > 0
+ * 用事件线数，否则当日线索合计兜底；曲线与格子数字同口径）。
+ *  - 该日值已知（displayCount ≠ null）→ 求和（0 是合法已知值，画基线）；
  *  - 该日全部 A 泳道均无分区（断档）→ 0（池窗口已知，无需补造）；
  *  - 池未取到（任一泳道该日 unavailable 且无其它泳道内容）→ null，不补 0；
- *  - 部分桶线索数未知 → 只用已知部分求和，全未知（合计无法成立）→ null。
+ *  - 部分泳道日值未知 → 只用已知部分求和，全未知（合计无法成立）→ null。
  */
 export function buildPoolSeries(
   bounds: DateBounds,
@@ -171,8 +174,8 @@ function poolDayTotal(date: string, laneIds: readonly string[], resolve: LaneDay
     if (resolution.kind !== 'content') continue
     contentLanes += 1
     const metrics = dayCellMetrics(resolution.day)
-    if (metrics.peak === null) continue
-    total += metrics.total
+    if (metrics.displayCount === null) continue
+    total += metrics.displayCount
     knownBuckets += metrics.sectionCount
   }
   // 断档（有窗口数据但该日谁都没分区）= 已知 0；否则只要还有泳道未取到就不冒 0

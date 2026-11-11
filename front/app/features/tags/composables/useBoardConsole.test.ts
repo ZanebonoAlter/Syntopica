@@ -146,6 +146,55 @@ describe('useBoardConsole — 纯函数', () => {
     expect(rows[0]!.clueTotal).toBe(8)
   })
 
+  it('buildLaneRow：story_count/max_participant_count/unassigned_event_count/lane_heat 映射；缺省回退非综合稿线程合计', () => {
+    const axis = buildDayAxis('2026-10-23', 14)
+    const lane = {
+      ...makeLane(10, 'A', { '2026-10-23': 1 }),
+      lane_heat: 7.5,
+      timeline: [
+        {
+          date: '2026-10-23',
+          story_count: 2,
+          max_participant_count: 6,
+          unassigned_event_count: 3,
+          sections: [
+            { section_id: 1, label: 'a', events: [], thread_count: 9 },
+          ],
+        },
+        {
+          // 旧响应日：无 story 字段 → 回退 thread_count（4），participant/unassigned 按 0
+          date: '2026-10-22',
+          sections: [{ section_id: 2, label: 'b', events: [], thread_count: 4 }],
+        },
+      ],
+    }
+    const row = buildLaneRow(lane, axis)
+    expect(row.laneHeat).toBe(7.5)
+    expect(row.storyCounts['2026-10-23']).toBe(2)
+    expect(row.participantCounts['2026-10-23']).toBe(6)
+    expect(row.unassignedCounts['2026-10-23']).toBe(3)
+    expect(row.storyCounts['2026-10-22']).toBe(4)
+    expect(row.participantCounts['2026-10-22']).toBe(0)
+    expect(row.unassignedCounts['2026-10-22']).toBe(0)
+    expect(row.storyTotal).toBe(6)
+    // counts（section 数）保留：断档判定/兼容口径不变
+    expect(row.counts['2026-10-23']).toBe(1)
+    expect(row.total).toBe(2)
+  })
+
+  it('buildLaneRows：行序 = lane_heat 降序 → 事件线数降序 → id 升序（与后端一致）；无 heat 回退事件线数', () => {
+    const axis = buildDayAxis('2026-10-23', 14)
+    const rows = buildLaneRows([
+      // 事件线 5 无 heat；事件线 2 heat 9（最高在前）；事件线 5 heat 1；并列 heat 0 事件线 3/3 → id 升序
+      makeLane(40, 'D', { '2026-10-23': 5 }),
+      { ...makeLane(10, 'A', { '2026-10-23': 2 }), lane_heat: 9 },
+      { ...makeLane(20, 'B', { '2026-10-23': 5 }), lane_heat: 1 },
+      makeLane(31, 'E', { '2026-10-23': 3 }),
+      makeLane(30, 'C', { '2026-10-23': 3 }),
+    ], axis)
+    expect(rows.map(row => row.topicId)).toEqual([10, 20, 40, 30, 31])
+  })
+
   it('splitDormantRows：阈值 0/2 归休眠、3 留主矩阵（MD-1..MD-3）', () => {
     const axis = buildDayAxis('2026-10-23', 14)
     const rows = [

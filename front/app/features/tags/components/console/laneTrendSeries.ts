@@ -8,7 +8,7 @@
  * 几何与刻度派生；组件层不得在此复制业务口径。
  *
  * 刻度契约（批准原型 matrix-graphics.js trendFrame / test-cases EV-6）：
- *  - Y 轴（线索合计）：max > 1 → [max, ⌊max/2⌋, 0]；max ≤ 1 → [max, 0]；无已知值 → 无刻度（不伪造量级）。
+ *  - Y 轴（事件线数）：max > 1 → [max, ⌊max/2⌋, 0]；max ≤ 1 → [max, 0]；无已知值 → 无刻度（不伪造量级）。
  *  - X 轴（日期）：跨度 ≤ DATE_TICK_FULL_MAX 逐日全标，否则首/中/末抽样（去重保序）。
  */
 import { daysBetweenInclusive, shiftDate } from './observationRange'

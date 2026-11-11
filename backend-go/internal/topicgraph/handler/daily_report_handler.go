@@ -265,6 +265,35 @@ var (
 // pipeline.
 var generateReportEntry = service.GenerateAndSaveReport
 
+// boardHealthCheckupTimeout 是手动日报产出后异步体检的整轮预算（design D4）。
+// 生成 goroutine 的 ctx 此时已结束（不得复用），体检自派生 30 分钟预算。
+const boardHealthCheckupTimeout = 30 * time.Minute
+
+// triggerBoardHealthCheckup 是体检调用的包级 seam（测试可替换）：真实实现
+// 走生产 LLM 体检入口，scope = 本次产出日报的板块集合。
+var triggerBoardHealthCheckup = func(scope []uint) {
+	ctx, cancel := context.WithTimeout(context.Background(), boardHealthCheckupTimeout)
+	defer cancel()
+	tagging.RunBoardHealthCheckupWithOptions(ctx, repository.Repo.DB(), tagging.BoardHealthOptions{BoardIDs: scope})
+}
+
+// launchBoardHealthCheckup 异步触发体检：goroutine 边界 recover，任何 panic
+// 只记日志，绝不影响 HTTP 响应与日报 job（design D3）。新鲜度守卫在体检
+// 入口内（默认 6h），重复触发零成本。
+func launchBoardHealthCheckup(scope []uint) {
+	if len(scope) == 0 {
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("daily-report: board-health checkup panicked (report untouched): %v", r)
+			}
+		}()
+		triggerBoardHealthCheckup(scope)
+	}()
+}
+
 // dailyReportCounts is the terminal tally of one daily-report run, split into
 // the three mutually exclusive board states:
 //
@@ -319,6 +348,9 @@ func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 	broadcastProgress(jobID, "completed", boardID, boardName, 1, "1/1")
 	broadcastDone(jobID, dailyReportCounts{saved: 1}, 1)
 	notifyDailyReportTerminal(date, 1, 1, 0, 0)
+	// 产出日报 → 体检该板块（异步、范围限本板）。体检是体检依据的产出面：
+	// 用户手动补出日报后必须能看到新依据（fix-board-health-triage-degrade D3）。
+	launchBoardHealthCheckup([]uint{boardID})
 }
 
 func generateAllBoards(date time.Time, jobID string) {
@@ -379,6 +411,10 @@ func generateAllBoards(date time.Time, jobID string) {
 	// 终态通知（白盒 B1/B2/B3）：failed==0 → 完成通知；≥1 → 一条失败汇总，互斥。
 	// 计数与上面那次终态广播同源（三态：成功 / 失败 / 当日无内容；总版面数含无内容板块）。
 	notifyDailyReportTerminal(date, totalBoards, savedCount, failedCount, emptyCount)
+	// 产出日报 → 体检本次板块集合（异步）。
+	if savedCount > 0 {
+		launchBoardHealthCheckup(boardIDs)
+	}
 }
 
 // dedupeBoardIDs collapses a requested board collection into a set (first
@@ -452,6 +488,10 @@ func generateSelectedBoards(date time.Time, boardIDs []uint, jobID string) {
 	// 终态通知（白盒 B1/B2/B3）：failed==0 → 完成通知；≥1 → 一条失败汇总，互斥。
 	// 计数与上面那次终态广播同源（三态：成功 / 失败 / 当日无内容；总版面数含无内容板块）。
 	notifyDailyReportTerminal(date, totalBoards, savedCount, failedCount, emptyCount)
+	// 产出日报 → 体检本次板块集合（异步）。
+	if savedCount > 0 {
+		launchBoardHealthCheckup(boardIDs)
+	}
 }
 
 // listBoardDailyReports handles GET /api/semantic-boards/:id/daily-reports

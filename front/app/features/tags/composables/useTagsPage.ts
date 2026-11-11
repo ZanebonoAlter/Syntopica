@@ -23,6 +23,8 @@ export function useTagsPage() {
   // Dialog state
   const showUpgradeDialog = ref(false)
   const showMatchingConfigDialog = ref(false)
+  const matchingConfigSaving = ref(false)
+  const matchingConfigError = ref<string | null>(null)
   const showMergePreview = ref(false)
   const showArticlePreview = ref(false)
 
@@ -163,6 +165,7 @@ export function useTagsPage() {
   // ---- Matching config ----
   async function handleOpenMatchingConfig() {
     matchingConfigLoading.value = true
+    matchingConfigError.value = null
     showMatchingConfigDialog.value = true
     const res = await sbApi.getMatchingConfig()
     if (res.success && res.data) {
@@ -172,8 +175,16 @@ export function useTagsPage() {
   }
 
   async function handleSaveMatchingConfig(data: Partial<MatchingConfig>) {
+    matchingConfigSaving.value = true
+    matchingConfigError.value = null
     const res = await sbApi.updateMatchingConfig(data)
-    if (res.success) showMatchingConfigDialog.value = false
+    matchingConfigSaving.value = false
+    if (res.success) {
+      showMatchingConfigDialog.value = false
+      return
+    }
+    // 保存失败：保留用户输入与弹窗，就地提示重试（不谎称已保存）。
+    matchingConfigError.value = res.error || res.message || '保存失败，请重试'
   }
 
   // ---- Aux label actions ----
@@ -234,7 +245,7 @@ export function useTagsPage() {
     backfillTask, handleTriggerBackfill,
 
     // Matching config
-    matchingConfig, matchingConfigLoading,
+    matchingConfig, matchingConfigLoading, matchingConfigSaving, matchingConfigError,
     handleOpenMatchingConfig, handleSaveMatchingConfig,
 
     // Composite methods

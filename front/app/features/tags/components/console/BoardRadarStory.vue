@@ -3,16 +3,22 @@
  * 雷达总览故事行（rework-workshop-into-radar-and-desk 8A.1，已批准报刊式总览）。
  *
  * 一行完整横比：序号 / 板块名 + 最新日报（标题·日期·文章事件元信息）/ 逐泳道
- * 14 日分区小矩阵 / 关注强度分档 / 近 3 日环比 / 进入。纯展示组件：输入为 API
+ * 14 日事件线数小矩阵 / 关注强度分档（lane_heat 量纲）/ 近 3 日热度环比 / 进入。纯展示组件：输入为 API
  * 边界归一后的 camelCase/字符串 ID 读模型（RadarBoard），分档、环比、延迟与
  * 小矩阵口径来自 boardRadarHelpers，跳转由父级承接（进版块 / 进阅读台 /
  * 进 ?lane= 控制台）。本行网格列宽与总览表头 `.rd-labels` 保持一致（父组件列定义
  * 仅限定其自有 .rd-labels，不命中本组件根，避免覆盖移动端列定义，R-20），
  * 改断点须两处同步。
+ *
+ * 小矩阵**色阶语义**（修复「矩阵格子颜色没修复」）：已确证事件线格走 `.b1..b4`
+ * （基准 = 行内事件线数最大值），降级格（事件线身份未回填、按分区数兜底）走
+ * 独立的 `.d1..d4`（基准 = 行内分区数最大值）+ `.is-degraded` 斜纹形态——两种量纲
+ * 不共用一条色阶，代理值不冒充已确证值、更不占最深实心档。颜色只影响展示：
+ * MUST NOT 进 lane_heat / 行序 / 关注分档。
  */
 import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
-import { RADAR_HOT_ATTENTION, isDelayed, laneLevel, miniAxis, shortDate, tierLabel, trendOf } from './boardRadarHelpers'
+import { RADAR_HOT_ATTENTION, hasHeatSignal, isDelayed, laneDegradedLevel, laneLevel, miniAxis, shortDate, tierLabel, trendOf } from './boardRadarHelpers'
 import type { RadarBoard, RadarLane } from '~/api/semanticBoards'
 
 const props = defineProps<{
@@ -31,21 +37,76 @@ const emit = defineEmits<{
 const tier = computed(() => tierLabel(props.row.attention))
 const trend = computed(() => trendOf(props.row))
 const delayed = computed(() => isDelayed(props.row, props.globalDate))
+/** 有 heat 口径（add-event-story-heat 3b）：无 heat（旧响应）回退 sections 旧口径展示。 */
+const heat = computed(() => hasHeatSignal(props.row))
+/** 当日事件线数（无 heat 回退当日分区数；同一数字不再叫两个名字）。 */
+const todayCount = computed(() => (heat.value ? props.row.todayStories : props.row.todaySections))
 const anchorText = computed(() => {
   const asOf = delayed.value ? shortDate(props.row.anchorDate) : '今日'
-  return `${asOf} ${props.row.todaySections} 个分区`
+  return `${asOf} · 当日事件线数 ${todayCount.value}`
 })
 const reportFallback = computed(() => (props.row.reportDate ? '查看已有日报' : '今天暂无日报'))
 /** 小矩阵格子 title 的日期轴（无全局日期时退回板块自身锚日）。 */
 const miniDates = computed(() => miniAxis(props.globalDate || props.row.anchorDate || '', 14))
 
-function laneMax(lane: RadarLane): number {
-  return Math.max(1, ...lane.counts)
+/** 小矩阵逐格降级（matrix-clue-fallback-and-rail-merge D1）：事件线数 > 0 用事件线数，
+ *  否则按该日**分区数**兜底——雷达行实际可得的口径就是分区数（`counts[i] =
+ *  len(day.Sections)`，雷达行不带逐日线索合计；控制台矩阵可得线索合计，那边用线索）。
+ *  降级只影响展示：MUST NOT 进 lane_heat / 行序 / 关注分档。
+ *  旧后端未下发 story_counts（`storyCountsKnown=false`）时回退值本身就是分区数，走
+ *  `sections` 口子按「N 个分区」措辞，不得静默当成事件线数（matrix-clue R-2）。 */
+type LaneCellMode = 'story' | 'degraded' | 'sections'
+
+function laneCells(lane: RadarLane): { count: number, mode: LaneCellMode }[] {
+  const known = lane.storyCountsKnown !== false
+  const stories = lane.storyCounts ?? lane.counts
+  const sections = lane.counts ?? []
+  return stories.map((story, i) => {
+    const sectionCount = sections[i] ?? 0
+    if (!known) return { count: story, mode: 'sections' as const }
+    const degraded = story === 0 && sectionCount > 0
+    return { count: degraded ? sectionCount : story, mode: degraded ? 'degraded' as const : 'story' as const }
+  })
 }
 
-function cellTitle(count: number, dayIndex: number): string {
+/**
+ * 两条**互不共用**的分档基准（色阶语义，修复「矩阵格子颜色没修复」）：
+ * - `confirmedMax`：行内**已确证事件线数**最大值 —— 已确证格（`.b*`）专用；
+ *   旧后端 sections 口径下 `storyCounts = counts`，此时该基准 = 行内分区数
+ *   最大值（沿用现状口径，整行同量纲、档位与改动前一致）。
+ * - `proxyMax`：行内**代理值（分区数）**最大值 —— 降级格（`.d*`）专用。
+ *
+ * 为什么要分开：事件线数与分区数是**两种量纲**（一个事件线可能落多个分区，
+ * 一个分区也可能没有事件线），共用一条色阶会让「1 个分区」和「1 条事件线」
+ * 同色同档（代理值与确证值不可区分），还会让代理值稀释已确证格的对比度、
+ * 在行内事件线都很少时独占最深档（零事件线的一天被画成最热的一天）。
+ */
+function confirmedMax(lane: RadarLane): number {
+  return Math.max(1, ...laneCells(lane).filter(cell => cell.mode !== 'degraded').map(cell => cell.count))
+}
+
+function proxyMax(lane: RadarLane): number {
+  return Math.max(1, ...laneCells(lane).filter(cell => cell.mode === 'degraded').map(cell => cell.count))
+}
+
+/** 格子色阶层名：已确证事件线格走 `.b1..b4`（基准=行内事件线最大值）；降级格走
+ *  `.d1..d4`（基准=行内代理值最大值）并带 `.is-degraded` 形态标记（斜纹）；
+ *  旧后端分区口径沿用 `.b*`（整行同量纲）。 */
+function cellClass(lane: RadarLane, cell: { count: number, mode: LaneCellMode }): string {
+  if (cell.mode === 'degraded') return `is-degraded d${laneDegradedLevel(cell.count, proxyMax(lane))}`
+  return `b${laneLevel(cell.count, confirmedMax(lane))}`
+}
+
+/** 格子可读文本：降级格明示「无事件线（按分区数 N 显示）」，旧后端分区口径写「N 个分区」，
+ *  不得静默冒充事件线数。 */
+function cellTitle(cell: { count: number, mode: LaneCellMode }, dayIndex: number): string {
   const date = miniDates.value[dayIndex] || '日期未知'
-  return `${date} · ${count} 个分区`
+  const label = cell.mode === 'degraded'
+    ? `无事件线（按分区数 ${cell.count} 显示）`
+    : cell.mode === 'sections'
+      ? `${cell.count} 个分区`
+      : `${cell.count} 条事件线`
+  return `${date} · ${label}`
 }
 
 function openLane(lane: RadarLane): void {
@@ -93,13 +154,13 @@ function openLane(lane: RadarLane): void {
         </button>
         <div class="rd-mini-cells">
           <button
-            v-for="(count, dayIndex) in lane.counts"
+            v-for="(cell, dayIndex) in laneCells(lane)"
             :key="dayIndex"
             type="button"
             class="rd-mini-cell"
-            :class="`b${laneLevel(count, laneMax(lane))}`"
-            :title="cellTitle(count, dayIndex)"
-            :aria-label="`${lane.label} · ${cellTitle(count, dayIndex)}，进入泳道`"
+            :class="cellClass(lane, cell)"
+            :title="cellTitle(cell, dayIndex)"
+            :aria-label="`${lane.label} · ${cellTitle(cell, dayIndex)}，进入泳道`"
             @click.stop="openLane(lane)"
           />
         </div>
@@ -108,14 +169,14 @@ function openLane(lane: RadarLane): void {
     </div>
 
     <div class="rd-attention-wrap">
-      <span class="rd-attention">{{ row.attention }}</span>
+      <span class="rd-attention">{{ row.attention.toFixed(1) }}</span>
       <small class="rd-tier">关注强度 · {{ tier }}</small>
     </div>
 
     <div class="rd-trend">
       <b class="rd-trend-value" :class="`is-${trend.dir}`">{{ trend.text }}</b>
       <small class="rd-trend-base">
-        近 3 日 {{ row.last3Sections }} / 前 3 日 {{ row.prev3Sections }}<br>
+        近 3 日 {{ heat ? row.last3Heat : row.last3Sections }} / 前 3 日 {{ heat ? row.prev3Heat : row.prev3Sections }}<br>
         {{ anchorText }}
       </small>
     </div>
@@ -285,6 +346,24 @@ function openLane(lane: RadarLane): void {
 .rd-mini-cell.b2 { background: color-mix(in srgb, var(--color-accent) 47%, var(--color-bg-base)); }
 .rd-mini-cell.b3 { background: color-mix(in srgb, var(--color-accent) 72%, var(--color-bg-base)); }
 .rd-mini-cell.b4 { background: var(--color-accent); }
+
+/* 降级格（事件线身份未回填、按分区数兜底）：与已确证事件线格**量纲不同**，
+   故走独立色阶 `.d1..d4`（基准 = 行内分区数最大值）——色阶随兜底值变化，
+   且不与任何 `.b*` 档同色；色强封顶在 `.b3` 之下（最深实心档只留给已确证的
+   事件线峰值：身份缺失不得画成最热的一天）。再叠斜纹形态，与实心的已确证格
+   一眼可辨（形状差异 = 第二信息通道，颜色不是唯一信息载体）。 */
+.rd-mini-cell.d1 { background: color-mix(in srgb, var(--color-accent) 6%, var(--color-bg-base)); }
+.rd-mini-cell.d2 { background: color-mix(in srgb, var(--color-accent) 18%, var(--color-bg-base)); }
+.rd-mini-cell.d3 { background: color-mix(in srgb, var(--color-accent) 36%, var(--color-bg-base)); }
+.rd-mini-cell.d4 { background: color-mix(in srgb, var(--color-accent) 58%, var(--color-bg-base)); }
+
+.rd-mini-cell.is-degraded {
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0 2px,
+    color-mix(in srgb, var(--color-text-primary) 22%, transparent) 2px 3px
+  );
+}
 
 .rd-mini-empty {
   color: var(--color-text-muted);

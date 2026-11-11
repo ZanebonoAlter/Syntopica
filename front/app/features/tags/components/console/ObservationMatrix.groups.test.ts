@@ -37,8 +37,8 @@ describe('ObservationMatrix — 组顺序与折叠独立性（GRP-1/3/4）', () 
       '[data-testid^="matrix-lane-"], [data-testid="other-topics-toggle"], [data-testid^="other-topic-row-"], [data-testid="dormant-toggle"]',
     )].map(node => node.getAttribute('data-testid'))
     expect(order).toEqual([
-      'matrix-lane-10',
       'matrix-lane-11',
+      'matrix-lane-10',
       'other-topics-toggle',
       'other-topic-row-701',
       'other-topic-row-702',

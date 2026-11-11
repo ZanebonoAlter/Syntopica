@@ -273,6 +273,7 @@ const stageBinding = computed<BoardConsoleStageProps>(() => buildConsoleStagePro
   emptyState: emptyState.value,
   latestReportDate: latestReportDate.value,
   anchorDate: anchorDate.value,
+  storiesBackfilled: sourceWindow.value?.storiesBackfilled ?? null,
   loading: loading.value,
   error: error.value,
   staleNotice: staleNotice.value,

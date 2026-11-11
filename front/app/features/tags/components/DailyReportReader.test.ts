@@ -24,6 +24,12 @@ const api = vi.hoisted(() => ({
   patchKeyEventMarker: vi.fn(),
 }))
 
+const notify = vi.hoisted(() => ({ error: vi.fn(), warn: vi.fn(), success: vi.fn() }))
+
+vi.mock('~/composables/useNotify', () => ({
+  useNotify: () => notify,
+}))
+
 vi.mock('~/api/dailyReports', () => ({
   useDailyReportsApi: () => ({
     getBoardDailyReports: api.getBoardDailyReports,
@@ -109,7 +115,7 @@ const reports: DailyReportListItem[] = [
 function makeDetail(id: number): DailyReport {
   return {
     ...reports.find(report => report.id === id)!,
-    highlights: [{ title: '头条', reason: '值得关注', tag_ids: [] }],
+    highlights: [{ title: '头条', reason: '值得关注', tag_ids: [], story_id: 10, is_progress: false }],
     dynamics: '',
     sections: [{
       id: 366,
@@ -139,6 +145,7 @@ function makeDetail(id: number): DailyReport {
         tag_ids: [],
         confidence: 0.9,
         related_article_ids: [99],
+        story_id: 10,
         created_at: '2026-06-21T12:00:00Z',
       }],
     }],
@@ -160,8 +167,9 @@ async function mountReader(overrides: Record<string, unknown> = {}) {
       stubs: {
         DailyReportTopicSection: {
           name: 'DailyReportTopicSection',
+          props: ['locateThread'],
           emits: ['rebucket'],
-          template: '<button data-testid="stub-rebucket" @click="$emit(\'rebucket\', 366)">rebucket</button>',
+          template: '<div><span data-testid="stub-locate">{{ locateThread ? `${locateThread.storyId}:${locateThread.nonce}` : \'none\' }}</span><button data-testid="stub-rebucket" @click="$emit(\'rebucket\', 366)">rebucket</button></div>',
         },
       },
     },
@@ -213,6 +221,26 @@ describe('DailyReportReader — 阅读台（6.x）', () => {
     expect(masthead.findAll('.drm-highlight').length).toBeGreaterThan(0)
   })
 
+  // ── surface-story-heat-in-report-top：刊头重点定位意图转发 ──
+
+  it('重点定位：正文有目标 → 刊头按钮下发定位意图给正文分区（storyId+nonce）', async () => {
+    const wrapper = await mountReader()
+    const button = wrapper.find('[data-testid="highlight-locate-0"]')
+    expect(button.exists()).toBe(true)
+    await button.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('10:1')
+  })
+
+  it('重点定位：点击时目标已不在当前正文 → 不下发定位请求（原地轻提示，不跳近似位置）', async () => {
+    const wrapper = await mountReader()
+    expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
+    // 模拟渲染后目标消失（数据变更/过滤）：直接从刊头发外部 story id
+    wrapper.findComponent({ name: 'DailyReportMasthead' }).vm.$emit('locate', 999)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
+  })
+
   it('desk 首屏按 14 天取数，并可加载更早（B-5）', async () => {
     const wrapper = await mountReader()
     expect(api.getBoardDailyReports).toHaveBeenCalledWith(1974, { days: 14 })
@@ -250,6 +278,32 @@ describe('DailyReportReader — 阅读台（6.x）', () => {
     await flushPromises()
     expect(api.getDailyReportDetail).toHaveBeenCalledWith(52)
     expect(wrapper.emitted('selectDate')?.at(-1)).toEqual(['2026-06-20'])
+  })
+
+  // ── surface-story-events-in-radar：?story= 深链定位 ──
+
+  it('深链定位：正文有该事件线 → 下发定位意图给正文分区（storyId+nonce）', async () => {
+    const wrapper = await mountReader({ initialStoryId: 10 })
+    expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('10:1')
+  })
+
+  it('深链落空：本期正文无该事件线 → 不下发定位请求（不跳近似位置）+ 原地提示', async () => {
+    const wrapper = await mountReader({ initialStoryId: 999 })
+    expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
+    expect(notify.warn).toHaveBeenCalledWith('本期正文暂无对应事件')
+  })
+
+  it('翻页/切报告清参：定位请求随报告切换清空（不在别的报告重复定位）', async () => {
+    const wrapper = await mountReader({ initialStoryId: 10 })
+    expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('10:1')
+    await wrapper.findAll('.drm-sidebar__archive button')[1]!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
+  })
+
+  it('无 ?story= 参数：不下发任何定位请求', async () => {
+    const wrapper = await mountReader()
+    expect(wrapper.find('[data-testid="stub-locate"]').text()).toBe('none')
   })
 
   it('保留泳道内主题分桶：section rebucket 事件调用 rebucket API', async () => {

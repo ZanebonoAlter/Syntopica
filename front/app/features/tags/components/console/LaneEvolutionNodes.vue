@@ -2,8 +2,8 @@
 /**
  * 泳道逐日节点带（rework-workshop-into-radar-and-desk 矩阵阶段 G3，短窗 ≤31 日形态）。
  *
- * 逐日节点：点径 = min(24, 6+√日合计×5)、节点数字 = 当日合计（非桶峰值）、
- * 合计 ≥3 显示首线索标题（截断）。三态纪律：content=有分区可开（已知 0 合法、
+ * 逐日节点：点径 = min(24, 6+√日合计×5)、节点数字 = 当日事件线数（story 口径，非桶峰值/thread 数）、
+ * 事件线数 ≥3 显示首线索标题（截断），提示带最热事件线来源数（add-event-story-heat 5.4）。三态纪律：content=有分区可开（已知 0 合法、
  * 全未知显示 '?'）；gap=无分区空心禁用（曲线值 0 但不可开）；unavailable='?' 禁用。
  * 禁用节点真实点击不可达（aria/title 已带说明）；合成事件兜底只提示不 emit。
  */
@@ -41,7 +41,8 @@ function nodeCount(node: EvolutionNode): string {
 function nodeTitle(node: EvolutionNode): string {
   if (node.kind === 'gap') return `${node.date} 无分区`
   if (node.kind === 'unavailable') return `${node.date} 未取到`
-  return `${node.date} · 当日合计 ${node.total ?? '?'} 条${node.firstTitle ? ` · ${node.firstTitle}` : ''}`
+  const participants = node.metrics?.maxParticipantCount ?? 0
+  return `${node.date} · 当日 ${node.total ?? '?'} 条事件线${participants > 0 ? ` · 最热 ${participants} 个来源` : ''}${node.firstTitle ? ` · ${node.firstTitle}` : ''}`
 }
 
 function onNodeClick(node: EvolutionNode): void {

@@ -45,28 +45,69 @@ var (
 // 以「其中 M 个当日无内容」显式给出。
 var notifyDailyReportTerminal = notification.DailyReportTerminal
 
+// boardHealthCheckupBudget 是体检尾步的整轮预算（design D4）：10 分钟硬编
+// 在 12 板 7.8 分钟的实测面前太紧（10-30 出现过 context deadline exceeded
+// 把后面的板直接砍掉），放宽到 30 分钟。
+const boardHealthCheckupBudget = 30 * time.Minute
+
 // runPostReportBoardHealthCheckup is the board-health tail-step seam
 // (add-board-health-checkup design D3): package-level var so tests can
 // capture the call / inject failures without a real checkup. The real
-// implementation bounds the checkup with its own 10-minute budget carved
-// from the caller's context so a slow LLM cannot eat the backfill sweep's
-// budget.
-var runPostReportBoardHealthCheckup = func(parent context.Context) {
-	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
-	defer cancel()
+// implementation runs a full round with zero freshness guard (the tail step
+// is the day's primary checkup). The 30-minute budget is carved by the
+// CALLER (runBoardHealthCheckupTailStep) so it is observable in tests.
+var runPostReportBoardHealthCheckup = func(ctx context.Context) {
 	tagging.RunBoardHealthCheckupWrapped(ctx, repository.Repo.DB())
+}
+
+// runPostBackfillBoardHealthCheckup is the backfill-triggered checkup seam
+// (fix-board-health-triage-degrade D3): package-level var so tests can
+// capture the call / inject failures. Unlike the tail step it carries the
+// freshness guard, so a night whose main round already checked every board
+// costs one SQL instead of a second LLM round.
+var runPostBackfillBoardHealthCheckup = func(ctx context.Context) {
+	tagging.RunBoardHealthCheckupWithOptions(ctx, repository.Repo.DB(), tagging.BoardHealthOptions{
+		MinInterval: tagging.BoardHealthDefaultMinInterval,
+	})
 }
 
 // runBoardHealthCheckupTailStep invokes the seam with panic isolation AT THE
 // CALL SITE: even a replaced/panicking seam must never take down the
 // daily-report job (design D3 — 体检 panic 仅日志不影响日报 job 返回值).
+// The 30-minute round budget is derived here (from the caller's context, not
+// the generation budget) so the tail step never inherits an exhausted
+// deadline.
 func runBoardHealthCheckupTailStep(parent context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			logging.Errorf("board-health: post-report checkup panicked (daily-report result untouched): %v", r)
 		}
 	}()
-	runPostReportBoardHealthCheckup(parent)
+	ctx, cancel := context.WithTimeout(parent, boardHealthCheckupBudget)
+	defer cancel()
+	runPostReportBoardHealthCheckup(ctx)
+}
+
+// runBoardHealthCheckupAfterBackfill invokes the backfill checkup seam with
+// the same panic isolation + budget discipline as the tail step, but in its
+// own goroutine (spec: 「手动端点与回填的触发 SHALL 异步执行」——回填触发
+// MUST NOT 把日报 job 的返回拖住：主轮有失败版面时尾步被跳过，回填这一轮
+// 会真跑最多 30 分钟 LLM，不能算在 job 时长里）。
+func runBoardHealthCheckupAfterBackfill(parent context.Context) {
+	// parent 仅用于日志/测试注入；goroutine 内自派生 budget，避免继承
+	// 已结束的 job ctx。
+	_ = parent
+	//nolint:gosec // G118: 体检是跨请求的后台任务，必须活过 job ctx（回填写完 job 就返回）
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("board-health: post-backfill checkup panicked (daily-report result untouched): %v", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), boardHealthCheckupBudget)
+		defer cancel()
+		runPostBackfillBoardHealthCheckup(ctx)
+	}()
 }
 
 // ── Lifeline heal tail step（daily-report-lifeline-heal 决策①③⑤）──
@@ -405,8 +446,12 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 			// chained synchronously after the SUCCESS adjudication only — the
 			// daily report owns this run's outcome, the checkup is a best-effort
 			// follow-up whose errors/panics are logged and never alter the job
-			// result. Manual TriggerNowWithDate flows through DailyReportJob too,
-			// so the manual path triggers the checkup with no separate wiring.
+			// result.
+			//
+			// 口径边界（fix-board-health-triage-degrade 4.6）：本尾步只覆盖
+			// 「调度器触发的日报主轮」。HTTP 手动端点 POST
+			// /api/daily-reports/generate 走的是 topicgraph handler 的
+			// generate* 路径（不经过本尾步），它在自己的路径上异步触发体检。
 			if failedCount == 0 {
 				runBoardHealthCheckupTailStep(baseCtx)
 				// Lifeline heal tail step（daily-report-lifeline-heal 决策①）：
@@ -434,6 +479,13 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 				resultData[key] = value
 			}
 			summary = fmt.Sprintf("%s (backfilled %d)", summary, backfilled)
+			// 回填补出日报 → 追加一次体检（fix-board-health-triage-degrade D3）：
+			// 补出来的日报是用户可见的新依据，体检必须跟上。该触发带新鲜度
+			// 守卫 —— 同一晚主轮已经体检过的板全部跳过（成本≈一次 SQL），
+			// 没体检过的板才真跑一轮。
+			if backfilled > 0 {
+				runBoardHealthCheckupAfterBackfill(baseCtx)
+			}
 		}
 		// Set last so the scheduled merge above cannot be overwritten by it.
 		resultData["backfilled_count"] = backfilled

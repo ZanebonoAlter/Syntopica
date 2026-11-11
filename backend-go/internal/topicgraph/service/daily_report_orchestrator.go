@@ -113,14 +113,15 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		return nil, nil, nil, fmt.Errorf("cluster tags (lane): %w", err)
 	}
 
+	if inputs, ok := ctx.Value(reportHighlightInputsKey{}).(*reportHighlightInputs); ok {
+		inputs.tags = tags
+		inputs.clusters = clusters
+	}
+
 	// Step 4: Query yesterday's report for continuity
 	prevReport := findPreviousReportBrief(boardID, startOfDay)
 
-	// Step 5: Generate in parallel (A + C×K)
-	type highlightsResult struct {
-		data []repository.Highlight
-		err  error
-	}
+	// Step 5: Generate threads in parallel (C×K). Highlights wait for saved identities.
 	type threadsResult struct {
 		clusterIdx   int
 		data         []repository.Thread
@@ -128,14 +129,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		err          error
 	}
 
-	highlightsCh := make(chan highlightsResult, 1)
 	threadsCh := make(chan threadsResult, len(clusters))
-
-	// Call A: Highlights
-	go func() {
-		data, err := GenerateHighlights(ctx, tags, clusters)
-		highlightsCh <- highlightsResult{data: data, err: err}
-	}()
 
 	// Call C×K: Threads per cluster
 	for i, cluster := range clusters {
@@ -143,17 +137,6 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			data, sectionTitle, err := GenerateClusterThreads(ctx, c, tags)
 			threadsCh <- threadsResult{clusterIdx: idx, data: data, sectionTitle: sectionTitle, err: err}
 		}(i, cluster)
-	}
-
-	// Collect highlights. A highlights failure degrades to an empty list: the
-	// sections / threads / statistics are already computed, so voiding the
-	// whole report over 2-3 highlights is a bad trade (design D3 of
-	// fix-daily-report-highlights-null). The degraded state is reported through
-	// a Warn log and an empty highlights payload — never a fabricated one.
-	hr := <-highlightsCh
-	highlightsJSON, highlightsDegraded := resolveHighlightsPayload(hr.data, hr.err)
-	if highlightsDegraded {
-		logging.Warnf("daily-report: highlights failed for board %d: %v (falling back to empty highlights)", boardID, hr.err)
 	}
 
 	// Collect threads
@@ -181,9 +164,8 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		threadsByCluster[tr.clusterIdx] = tr.data
 	}
 
-	// Step 6: Assemble report
-	// highlightsJSON comes from resolveHighlightsPayload (already normalized to
-	// a JSON array — an empty report persists "[]", never a JSON null scalar).
+	// Step 6: Assemble with a temporary title and empty highlights. The saved
+	// report is finalized only after bounded attribution and display dedup.
 
 	// Calculate article count
 	totalArticles := 0
@@ -191,17 +173,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		totalArticles += t.ArticleCount
 	}
 
-	// Title: use first highlight if available, else board name + date
 	title := fmt.Sprintf("日报 %s", startOfDay.Format("2006-01-02"))
-	if len(hr.data) > 0 {
-		title = hr.data[0].Title
-	}
-
-	// Summary: use first highlight reason as summary fallback
-	summary := ""
-	if len(hr.data) > 0 {
-		summary = hr.data[0].Reason
-	}
 
 	clustersJSON, _ := json.Marshal(clusters)
 
@@ -209,8 +181,8 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		SemanticBoardID:         boardID,
 		PeriodDate:              startOfDay,
 		Title:                   title,
-		Summary:                 summary,
-		Highlights:              highlightsJSON,
+		Summary:                 "",
+		Highlights:              []byte("[]"),
 		Dynamics:                "",
 		ArticleCount:            totalArticles,
 		EventTagCount:           len(tags),
@@ -408,7 +380,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			}
 		}
 		if len(kwWatches) > 0 {
-			kwSections, kwBatches, kErr := MaterializeKeywordWatches(ctx, boardID, kwWatches, nextIdx+appended, matCfg, router.Chat)
+			kwSections, kwBatches, kErr := MaterializeKeywordWatches(ctx, boardID, kwWatches, date, nextIdx+appended, matCfg, router.Chat)
 			if kErr != nil {
 				logging.Warnf("daily-report: keyword materialization failed for board %d (skipped): %v", boardID, kErr)
 			} else {

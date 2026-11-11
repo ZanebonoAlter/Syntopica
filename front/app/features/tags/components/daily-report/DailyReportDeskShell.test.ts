@@ -37,7 +37,7 @@ vi.mock('../ArticlePreviewModal.vue', () => ({
 
 const readerStub = {
   name: 'DailyReportReader',
-  props: ['boardId', 'boardTitle', 'boards', 'initialDate', 'initialAnnotationId', 'mode'],
+  props: ['boardId', 'boardTitle', 'boards', 'initialDate', 'initialAnnotationId', 'initialStoryId', 'mode'],
   emits: ['close', 'selectDate', 'openLane', 'openArticle', 'selectBoard'],
   template: '<div data-testid="reader-stub" />',
 }
@@ -96,6 +96,31 @@ describe('DailyReportDeskShell — 阅读台路由（6.1/6.4/6.5）', () => {
     const wrapper = mountShell()
     await flushPromises()
     expect(wrapper.findComponent(readerStub).props('initialAnnotationId')).toBe(8)
+  })
+
+  it('?story= 深链透传 initialStoryId（雷达事件线 → 日报正文定位）', async () => {
+    routeState.query = { story: '42' }
+    const wrapper = mountShell()
+    await flushPromises()
+    expect(wrapper.findComponent(readerStub).props('initialStoryId')).toBe(42)
+  })
+
+  it('?story= 非法值忽略（非数字 / 0 / 负数 → null，不报错阻断阅读）', async () => {
+    for (const raw of ['abc', '0', '-1', '1.5', '']) {
+      routeState.query = { story: raw }
+      const wrapper = mountShell()
+      await flushPromises()
+      expect(wrapper.findComponent(readerStub).props('initialStoryId')).toBeNull()
+      wrapper.unmount()
+    }
+  })
+
+  it('翻页/切报告清参：切日期的 URL 不再带 ?story=（不在别的报告重复定位）', async () => {
+    routeState.query = { lane: '1204', story: '42' }
+    const wrapper = mountShell()
+    await flushPromises()
+    wrapper.findComponent(readerStub).vm.$emit('selectDate', '2026-10-22')
+    expect(router.replace).toHaveBeenCalledWith({ path: '/tags/1974/2026-10-22', query: { lane: '1204' } })
   })
 
   it('返回矩阵：恢复进入前选中泳道', async () => {

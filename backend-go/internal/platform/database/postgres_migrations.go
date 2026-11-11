@@ -293,16 +293,22 @@ func postgresMigrations() []Migration {
 		// ── Column type adjustments ─────────────────────────────────
 		{
 			Version:     "20260403_0003",
-			Description: "Staged rollout: set topic_tag_embeddings.embedding column type to vector(4096); runtime dimension configured via embedding_config JSON (embedding_dimension).",
+			Description: "确保向量列存在且维度无关（目标类型无维度限定）。",
 			Up: func(db *gorm.DB) error {
-				if err := db.Exec("ALTER TABLE topic_tag_embeddings ADD COLUMN IF NOT EXISTS embedding vector(4096)").Error; err != nil {
+				// 目标类型写「无维度限定的 vector」而非 vector(N)：维度由运行时 embedding
+				// 模型的实际输出决定（逐行存于 Dimension 字段），不属于 schema 契约。
+				// 写成 vector(N) 会让本迁移在「库中维度 ≠ 硬编码维度」时直接失败——
+				// 灾备恢复场景下（历史备份档没有迁移历史 → 迁移链在有数据的库上从零重放）
+				// 这会把恢复变成一颗地雷。去掉 typmod 是放宽而非收紧约束，任意维度的
+				// 存量数据都能安全 ALTER。
+				if err := db.Exec("ALTER TABLE topic_tag_embeddings ADD COLUMN IF NOT EXISTS embedding vector").Error; err != nil {
 					return fmt.Errorf("add topic_tag_embeddings.embedding column: %w", err)
 				}
-				// ALTER COLUMN TYPE rewrites the whole table under an
-				// AccessExclusiveLock — guard with lock_timeout so a large table
-				// fails fast instead of blocking writers indefinitely.
+				// ALTER COLUMN TYPE 在有存量数据时会拿 AccessExclusiveLock ——
+				// 套 lock_timeout 守卫，大表快速失败而不是无限期阻塞写入。
+				// 列已是无限定 vector 时该语句是幂等 no-op（不重写表、不改列类型）。
 				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
-					if err := tx.Exec("ALTER TABLE topic_tag_embeddings ALTER COLUMN embedding TYPE vector(4096)").Error; err != nil {
+					if err := tx.Exec("ALTER TABLE topic_tag_embeddings ALTER COLUMN embedding TYPE vector").Error; err != nil {
 						return fmt.Errorf("set topic_tag_embeddings.embedding dimensions: %w", err)
 					}
 					return nil
@@ -429,6 +435,11 @@ func postgresMigrations() []Migration {
 			Version:     "20260417_0002",
 			Description: "Add GIN index for article full-text search using tsvector.",
 			Up: func(db *gorm.DB) error {
+				// 回填 search_vector：只更新「算出来与存量不同」的行。
+				// 无条件 UPDATE 会把 59152 行全部重写一遍（含 ~1GB 的 GIN 索引重建），
+				// 在 SD 卡上要 2 小时以上——灾备恢复（档内无迁移历史 → 迁移链从零重放）
+				// 会卡在这里。存量行本来就由同一个表达式算过（迁移或触发器），
+				// 加 IS DISTINCT FROM 守卫后终态完全相同，但重复执行是零写入。
 				stmts := []string{
 					`ALTER TABLE articles ADD COLUMN IF NOT EXISTS search_vector tsvector`,
 					`CREATE INDEX IF NOT EXISTS idx_articles_search_vector ON articles USING GIN (search_vector)`,
@@ -445,6 +456,9 @@ func postgresMigrations() []Migration {
 						BEFORE INSERT OR UPDATE OF title, description ON articles
 						FOR EACH ROW EXECUTE FUNCTION articles_search_vector_update()`,
 					`UPDATE articles SET search_vector =
+						setweight(to_tsvector('simple', COALESCE(title, '')), 'A') ||
+						setweight(to_tsvector('simple', COALESCE(description, '')), 'B')
+					WHERE search_vector IS DISTINCT FROM
 						setweight(to_tsvector('simple', COALESCE(title, '')), 'A') ||
 						setweight(to_tsvector('simple', COALESCE(description, '')), 'B')`,
 				}
@@ -2474,7 +2488,9 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, vendorModelMigration())
 	migrations = append(migrations, keyEventMarkersMigration())
 	migrations = append(migrations, pgTrgmMigration(), searchVectorDropMigration())
-	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration(), auxiliaryDescriptionRepairMigration(), embeddingModelColumnWidthMigration(), embeddingModelNotNullMigration())
+	migrations = append(migrations, entitySubjectMigration())
+	migrations = append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration(), auxiliaryDescriptionRepairMigration(), embeddingModelColumnWidthMigration(), embeddingModelNotNullMigration(), storyHeatTablesMigration())
+	return append(migrations, storySignalContentKeyMigration())
 }
 
 // intraLaneBucketColumnsMigration implements 20261024_0001
@@ -2524,19 +2540,25 @@ func boardHealthSnapshotMigration() Migration {
 			if !tableExists {
 				return nil
 			}
+			// 约束已存在时不得靠「报错后再查」来兼底：PG 里任何一条语句报错都会中止
+			// 当前事务（后续语句只会拿到 25P02），迁移闭包在事务内跑，事后补救无效。
+			// 正确做法是**先查后加**（幂等且不产生事务中止）。
+			// 并发首跑（AutoMigrate + 迁移竞争同一进程）仍可能撞名——那种情况让迁移
+			// 失败重试即可（下一次启动先查到约束存在 → 直接跳过）。
+			var constraintExists bool
+			if err := db.Raw(`SELECT EXISTS (
+				SELECT 1 FROM information_schema.table_constraints
+				WHERE constraint_name = 'fk_board_health_snapshots_board'
+				  AND table_name = 'board_health_snapshots')`).Scan(&constraintExists).Error; err != nil {
+				return fmt.Errorf("check fk_board_health_snapshots_board: %w", err)
+			}
+			if constraintExists {
+				return nil
+			}
 			if err := db.Exec(`ALTER TABLE board_health_snapshots
 				ADD CONSTRAINT fk_board_health_snapshots_board
 				FOREIGN KEY (semantic_board_id) REFERENCES semantic_labels(id)
 				ON DELETE CASCADE`).Error; err != nil {
-				// Idempotent guard: a concurrent first-run (AutoMigrate + migration
-				// racing a second process) may have added the constraint already.
-				var constraintExists bool
-				if cErr := db.Raw(`SELECT EXISTS (
-					SELECT 1 FROM information_schema.table_constraints
-					WHERE constraint_name = 'fk_board_health_snapshots_board'
-					  AND table_name = 'board_health_snapshots')`).Scan(&constraintExists).Error; cErr == nil && constraintExists {
-					return nil
-				}
 				return fmt.Errorf("add fk_board_health_snapshots_board: %w", err)
 			}
 			return nil
@@ -2704,11 +2726,20 @@ func boardSignalMigration() Migration {
 						`ALTER TABLE board_signal_discovery
 							ADD CONSTRAINT uq_board_signal_discovery_id_owner
 							UNIQUE (id, semantic_board_id, granularity, period)`,
-						`ALTER TABLE board_signal_candidate
-							DROP CONSTRAINT IF EXISTS uq_board_signal_candidate_id_owner`,
-						`ALTER TABLE board_signal_candidate
-							ADD CONSTRAINT uq_board_signal_candidate_id_owner
-							UNIQUE (id, semantic_board_id, granularity, period)`,
+						// 复合唯一约束**不能**先 DROP 再 ADD：它被
+						// fk_board_signal_research_progress_candidate（另一个迁移建的
+						// 复合外键）引用，PG 会拒绝 DROP（2BP01 dependent objects）。
+						// 改为 DO 块守卫：不存在才添加，已存在则原样保留（约束内容已冻结）。
+						`DO $$
+						BEGIN
+							IF NOT EXISTS (SELECT 1 FROM pg_constraint
+								WHERE conname = 'uq_board_signal_candidate_id_owner'
+								  AND conrelid = 'public.board_signal_candidate'::regclass) THEN
+								ALTER TABLE board_signal_candidate
+									ADD CONSTRAINT uq_board_signal_candidate_id_owner
+									UNIQUE (id, semantic_board_id, granularity, period);
+							END IF;
+						END $$`,
 						// A candidate can never disagree with its batch's owner/period.
 						`ALTER TABLE board_signal_candidate
 							ADD CONSTRAINT fk_board_signal_candidate_discovery
@@ -3279,25 +3310,63 @@ func crossBoardRelationMigration() Migration {
 				return nil
 			}
 			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				// 约束内容已冻结，重放时**不得**先 DROP 再 ADD：
+				// ① PG 里 ADD CONSTRAINT 撞名会报错「already exists」，而任何一条语句
+				//    报错都会中止当前事务——「吞掉 already exists 继续往下走」在事务内
+				//    根本不成立（下一条只会拿到 25P02 current transaction is aborted）；
+				// ② DROP 复合唯一约束还会被引用它的外键挡住（2BP01）。
+				// 改为 DO 块守卫：约束不存在才添加，已存在则原样保留。
 				statements := []string{
-					`ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_status CHECK (status IN ('unresolved','proposed','confirmed','dismissed','expired'))`,
-					`ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_type CHECK (relation_type IN ('causal','common_driver','divergence','correlated','contextual','unclear'))`,
-					`ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_verdict CHECK (verification_verdict IN ('supported','contested','insufficient','rejected'))`,
-					`ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_grade CHECK (quality_grade IN ('high','medium','low'))`,
-					`ALTER TABLE cross_board_relation_runs ADD CONSTRAINT ck_cross_board_relation_runs_status CHECK (status IN ('queued','running','succeeded','partial','failed'))`,
-					`ALTER TABLE cross_board_relation_runs ADD CONSTRAINT ck_cross_board_relation_runs_trigger CHECK (trigger_kind IN ('manual','auto'))`,
+					`DO $$
+					BEGIN
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relations_status'
+							  AND conrelid = 'public.cross_board_relations'::regclass) THEN
+							ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_status
+								CHECK (status IN ('unresolved','proposed','confirmed','dismissed','expired'));
+						END IF;
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relations_type'
+							  AND conrelid = 'public.cross_board_relations'::regclass) THEN
+							ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_type
+								CHECK (relation_type IN ('causal','common_driver','divergence','correlated','contextual','unclear'));
+						END IF;
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relations_verdict'
+							  AND conrelid = 'public.cross_board_relations'::regclass) THEN
+							ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_verdict
+								CHECK (verification_verdict IN ('supported','contested','insufficient','rejected'));
+						END IF;
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relations_grade'
+							  AND conrelid = 'public.cross_board_relations'::regclass) THEN
+							ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_grade
+								CHECK (quality_grade IN ('high','medium','low'));
+						END IF;
+					END $$`,
 					// Idempotent open-row uniqueness: one pending suggestion per hash.
 					`CREATE UNIQUE INDEX IF NOT EXISTS uq_cross_board_relations_open ON cross_board_relations (suggestion_hash) WHERE status IN ('unresolved','proposed')`,
 					`CREATE INDEX IF NOT EXISTS idx_cross_board_relations_confirmed_active ON cross_board_relations (source_board_id, target_board_id, quality_grade DESC, confirmed_at DESC) WHERE status = 'confirmed'`,
 				}
+				if tableExists(tx, "cross_board_relation_runs") {
+					statements = append(statements, `DO $$
+					BEGIN
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relation_runs_status'
+							  AND conrelid = 'public.cross_board_relation_runs'::regclass) THEN
+							ALTER TABLE cross_board_relation_runs ADD CONSTRAINT ck_cross_board_relation_runs_status
+								CHECK (status IN ('queued','running','succeeded','partial','failed'));
+						END IF;
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relation_runs_trigger'
+							  AND conrelid = 'public.cross_board_relation_runs'::regclass) THEN
+							ALTER TABLE cross_board_relation_runs ADD CONSTRAINT ck_cross_board_relation_runs_trigger
+								CHECK (trigger_kind IN ('manual','auto'));
+						END IF;
+					END $$`)
+				}
 				for _, stmt := range statements {
-					// CREATE INDEX IF NOT EXISTS is idempotent; ADD CONSTRAINT is not,
-					// so drop-then-add keeps re-runs safe (constraint content is frozen).
 					if err := tx.Exec(stmt).Error; err != nil {
-						if strings.Contains(err.Error(), "already exists") {
-							// tolerate re-run on a constraint that already exists
-							continue
-						}
 						return fmt.Errorf("cross-board relation migration: %w", err)
 					}
 				}
@@ -4471,6 +4540,247 @@ func embeddingModelNotNullMigration() Migration {
 			return withLockTimeout(db, "5s", func(tx *gorm.DB) error {
 				return ensureNotNullDefault(tx, "topic_tag_embeddings", "model", "''")
 			})
+		},
+	}
+}
+
+// storyHeatTablesMigration implements 20261105_0001
+// (add-event-story-heat design §6.1)：事件线与热度证据两张新表 +
+// daily_report_threads 三列。
+//
+// 建表/加列/索引全部幂等（IF NOT EXISTS），无表重写。标准路径上两张新表
+// 已由 Phase 1 AutoMigrate 从注册模型建出（无 CHECK、无 FK、无部分索引），
+// 因此 CHECK 除了写在 CREATE TABLE 内（裸重放路径自含），还用 DO 块守卫
+// 重复确保；FK 统一由本迁移所有（AutoMigrate 跑在
+// DisableForeignKeyConstraintWhenMigrating 下不建 FK，同 20260910_0001 /
+// 20261012_0001 的「迁移所有 FK」政策），被引用表缺席时跳过。
+//
+// embedding / subject_embedding 刻意写**无维度限定的 vector**：维度由运行时
+// embedding 模型决定，不属于 schema 契约（同 20260403_0003 口径；写
+// vector(N) 会与 unify-vector-column-dimension 的去限定迁移冲突）。
+//
+// board FK 指向 semantic_labels(id)：boards are SemanticLabel rows
+// (label_type='board')，design §6.1 的 semantic_boards 是业务名。
+func storyHeatTablesMigration() Migration {
+	return Migration{
+		Version:     "20261105_0001",
+		Description: "add-event-story-heat: create board_stories (story identity) + story_signals (heat evidence, composite PK) + daily_report_threads story_id/scope/is_development/story_manual/display_tier (scope/is_development/story_manual/display_tier NOT NULL pinned via ensureNotNullDefault for the AutoMigrate-first path); recall/subject/time indexes; CHECKs & FKs re-ensured idempotently (embedding columns dimension-less vector)",
+		Up: func(db *gorm.DB) error {
+			// ── board_stories（事件线）──────────────────────────────
+			// CHECK 写在 CREATE TABLE 内；FK 另用 DO 块确保（见上）。
+			if err := db.Exec(`CREATE TABLE IF NOT EXISTS board_stories (
+				id                bigserial PRIMARY KEY,
+				board_id          bigint NOT NULL,
+				lane_id           bigint,
+				title             text NOT NULL,
+				subject           text,
+				subject_key       text,
+				action            text,
+				object            text,
+				occurred_at       timestamptz,
+				status            text NOT NULL DEFAULT 'active'
+				                  CHECK (status IN ('active','settled','merged')),
+				first_seen_date   date NOT NULL,
+				last_seen_date    date NOT NULL,
+				thread_count      integer NOT NULL DEFAULT 0,
+				article_count     integer NOT NULL DEFAULT 0,
+				participant_count integer NOT NULL DEFAULT 0,
+				embedding         vector,
+				subject_embedding vector,
+				merged_into       bigint,
+				origin            text NOT NULL DEFAULT 'rule'
+				                  CHECK (origin IN ('rule','model','manual')),
+				created_at        timestamptz NOT NULL DEFAULT now(),
+				updated_at        timestamptz NOT NULL DEFAULT now()
+			)`).Error; err != nil {
+				return fmt.Errorf("create board_stories: %w", err)
+			}
+
+			// ── story_signals（热度证据）────────────────────────────
+			// 复合主键 (story_id, article_id)：同一篇文章对同一条事件线只计
+			// 一次证据；身份（事件归属）与热度分离，去重只作用于身份层。
+			if err := db.Exec(`CREATE TABLE IF NOT EXISTS story_signals (
+				story_id           bigint NOT NULL,
+				article_id         bigint NOT NULL,
+				feed_id            bigint NOT NULL,
+				participant_key    text NOT NULL,
+				kind               text NOT NULL DEFAULT 'editorial'
+				                   CHECK (kind IN ('editorial','signal')),
+				observed_at        timestamptz NOT NULL,
+				observed_at_source text NOT NULL DEFAULT 'pub_date'
+				                   CHECK (observed_at_source IN ('pub_date','fallback')),
+				PRIMARY KEY (story_id, article_id)
+			)`).Error; err != nil {
+				return fmt.Errorf("create story_signals: %w", err)
+			}
+
+			// ── daily_report_threads 五列（存量事件挂事件线 + 展示层）──
+			// display_tier：跨期去重的展示层载体（tasks 6.1-6.3）——只改
+			// 展示，身份/signals/热度永不读它；存量行落默认 body（未降级）。
+			// 存量行不回填：story_id 保持 NULL（未归属事件降级为「当日独立
+			// 事件」，不阻塞现有功能）；scope/is_development/story_manual 按默认值生效。
+			// story_manual：人工「独立事件」标记（event-story spec 人工拆分后不
+			// 回滚）——回填与自动判定遇到 true 必须跳过该事件。
+			if tableExists(db, "daily_report_threads") {
+				if err := db.Exec(`ALTER TABLE daily_report_threads
+					ADD COLUMN IF NOT EXISTS story_id bigint,
+					ADD COLUMN IF NOT EXISTS scope text NOT NULL DEFAULT 'single',
+					ADD COLUMN IF NOT EXISTS is_development boolean NOT NULL DEFAULT false,
+					ADD COLUMN IF NOT EXISTS story_manual boolean NOT NULL DEFAULT false,
+					ADD COLUMN IF NOT EXISTS display_tier text NOT NULL DEFAULT 'body'`).Error; err != nil {
+					return fmt.Errorf("add daily_report_threads story columns: %w", err)
+				}
+				// 正常启动路径上 RunAutoMigrate 已按模型建出这几列（可空带默认），
+				// ADD COLUMN IF NOT EXISTS 是 no-op——NOT NULL 必须在这里固化
+				// （幂等：已 NOT NULL 时 ensureNotNullDefault 直接跳过；回填值与
+				// 列默认一致，存量行不改变语义）。
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					for _, col := range []struct{ name, def string }{
+						{"scope", "'single'"},
+						{"is_development", "false"},
+						{"story_manual", "false"},
+						{"display_tier", "'body'"},
+					} {
+						if err := ensureNotNullDefault(tx, "daily_report_threads", col.name, col.def); err != nil {
+							return fmt.Errorf("pin daily_report_threads.%s NOT NULL: %w", col.name, err)
+						}
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+
+			// ── 索引 ─────────────────────────────────────────────
+			// recall 部分索引：只覆盖可召回的存活事件线（归属判定的 14 天窗口
+			// 扫描面）；subject 索引支撑主体归一化第一层（subject_key 精确匹配）。
+			indexes := []string{
+				`CREATE INDEX IF NOT EXISTS board_stories_recall_idx
+					ON board_stories (board_id, last_seen_date DESC)
+					WHERE merged_into IS NULL AND status = 'active'`,
+				`CREATE INDEX IF NOT EXISTS board_stories_subject_idx ON board_stories (board_id, subject_key)`,
+				`CREATE INDEX IF NOT EXISTS story_signals_time_idx ON story_signals (observed_at DESC)`,
+				`CREATE INDEX IF NOT EXISTS story_signals_story_idx ON story_signals (story_id, participant_key, observed_at DESC)`,
+			}
+			for _, stmt := range indexes {
+				if err := db.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("story heat index: %w", err)
+				}
+			}
+			// daily_report_threads 由 topicgraph 模型 AutoMigrate 注册创建；不
+			// import topicgraph 的测试二进制（如 tagmanagement/service/core 的
+			// golden schema）里该表不存在，索引需同款 tableExists 守卫（与上方
+			// 旧 daily_report_threads 索引迁移惯例一致）。
+			if tableExists(db, "daily_report_threads") {
+				if err := db.Exec(`CREATE INDEX IF NOT EXISTS daily_report_threads_story_idx ON daily_report_threads (story_id)`).Error; err != nil {
+					return fmt.Errorf("story heat index: %w", err)
+				}
+			}
+
+			// ── CHECK 确保块（AutoMigrate 先建裸表时补约束）────────────
+			// DO 块先查后加（幂等且不产生事务中止）；列不存在时跳过——
+			// 表缺席/列缺席的部署无从校验。
+			checks := []struct{ name, table, column, expr string }{
+				{"chk_board_stories_status", "board_stories", "status", "CHECK (status IN ('active','settled','merged'))"},
+				{"chk_board_stories_origin", "board_stories", "origin", "CHECK (origin IN ('rule','model','manual'))"},
+				{"chk_story_signals_kind", "story_signals", "kind", "CHECK (kind IN ('editorial','signal'))"},
+				{"chk_story_signals_observed_at_source", "story_signals", "observed_at_source", "CHECK (observed_at_source IN ('pub_date','fallback'))"},
+				{"chk_daily_report_threads_scope", "daily_report_threads", "scope", "CHECK (scope IN ('single','composite'))"},
+				{"chk_daily_report_threads_display_tier", "daily_report_threads", "display_tier", "CHECK (display_tier IN ('body','flash','hidden'))"},
+			}
+			for _, c := range checks {
+				if !tableExists(db, c.table) || !columnExists(db, c.table, c.column) {
+					continue
+				}
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					if err := tx.Exec(fmt.Sprintf(`DO $$ BEGIN
+						IF NOT EXISTS (
+							SELECT 1 FROM information_schema.table_constraints
+							WHERE constraint_name = '%s' AND table_name = '%s'
+						) THEN
+							ALTER TABLE %s ADD CONSTRAINT %s %s;
+						END IF;
+					END $$`, c.name, c.table, c.table, c.name, c.expr)).Error; err != nil { //nolint:gosec // G201: 约束名/表达式是包内常量表
+						return fmt.Errorf("ensure %s: %w", c.name, err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+
+			// ── FK 确保块（迁移所有 FK；被引用表缺席时跳过）──────────
+			// story_id 用 SET NULL 而非 CASCADE：事件线被删除/合并时事件保
+			// 留、退回未归属状态（spec：SHALL NOT 外键级联删除）。
+			fks := []struct{ name, table, column, ref, del string }{
+				{"fk_board_stories_board", "board_stories", "board_id", "semantic_labels(id)", "CASCADE"},
+				{"fk_board_stories_lane", "board_stories", "lane_id", "board_persistent_topics(id)", "SET NULL"},
+				{"fk_board_stories_merged_into", "board_stories", "merged_into", "board_stories(id)", "NO ACTION"},
+				{"fk_story_signals_story", "story_signals", "story_id", "board_stories(id)", "CASCADE"},
+				{"fk_story_signals_article", "story_signals", "article_id", "articles(id)", "CASCADE"},
+				{"fk_daily_report_threads_story", "daily_report_threads", "story_id", "board_stories(id)", "SET NULL"},
+			}
+			for _, fk := range fks {
+				if !tableExists(db, fk.table) {
+					continue
+				}
+				refTable := strings.TrimSuffix(fk.ref, "(id)")
+				if !tableExists(db, refTable) {
+					continue // 最小部署（域模型未注册）：跳过该 FK
+				}
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					if err := tx.Exec(fmt.Sprintf(`DO $$ BEGIN
+						IF NOT EXISTS (
+							SELECT 1 FROM information_schema.table_constraints
+							WHERE constraint_name = '%s' AND table_name = '%s'
+						) THEN
+							ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s ON DELETE %s;
+						END IF;
+					END $$`, fk.name, fk.table, fk.table, fk.name, fk.column, fk.ref, fk.del)).Error; err != nil { //nolint:gosec // G201: 约束名/列名是包内常量表
+						return fmt.Errorf("add %s: %w", fk.name, err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// storySignalContentKeyMigration implements 20261110_0001
+// (fix-duplicate-article-heat design D2/D5)：story_signals 落「内容身份」列。
+//
+// 同一篇内容被两个 feed 各抓一份会存两行 articles（articles 唯一键是
+// (feed_id, link)，跨 feed 不去重），而 story_signals 的 participant_key 按
+// feed 计参与者 → 一篇内容被算成 2 个参与者、热度虚高。content_key 存规范化
+// 后的链接（内容身份键），供下一步统一去重键使用：content_key 非空即按内容
+// 去重，空串（内容身份不可判定）时回退 participant_key。
+//
+// 列可空（存量行不改语义：空/NULL 都表示「内容身份待回填」，消费者退化为
+// participant_key）；**本迁移不做数据回填**——回填走
+// cmd/backfill-stories --backfill-content-keys（分批、可重入）；迁移里做
+// 全量回填会在树莓派上变成长事务、且失败不可重试（design D5）。
+//
+// 幂等：ADD COLUMN IF NOT EXISTS + CREATE INDEX IF NOT EXISTS，可重入。
+func storySignalContentKeyMigration() Migration {
+	return Migration{
+		Version:     "20261110_0001",
+		Description: "fix-duplicate-article-heat: add story_signals.content_key (nullable text, normalized article link = content identity) + (story_id, content_key) index; no data backfill (cmd/backfill-stories --backfill-content-keys owns it)",
+		Up: func(db *gorm.DB) error {
+			// 表缺席时跳过（最小部署：域模型未注册，story_signals 不存在）。
+			if !tableExists(db, "story_signals") {
+				return nil
+			}
+			if err := db.Exec(`ALTER TABLE story_signals ADD COLUMN IF NOT EXISTS content_key text`).Error; err != nil {
+				return fmt.Errorf("add story_signals.content_key: %w", err)
+			}
+			if err := db.Exec(`CREATE INDEX IF NOT EXISTS story_signals_story_content_idx
+				ON story_signals (story_id, content_key)`).Error; err != nil {
+				return fmt.Errorf("create story_signals_story_content_idx: %w", err)
+			}
+			return nil
 		},
 	}
 }
