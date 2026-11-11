@@ -374,9 +374,13 @@ func finalizeRadar(out *RadarOverview) *RadarOverview {
 // 「当天线索最多的泳道」 list (design D10):
 //   - one entry per lane of every active board, each carrying its OWN board's
 //     anchor day (a lagging board shows its own date);
-//   - sorted by the lane's same-day clue count desc, tie-broken by a stable key
-//     (board label → lane label → lane id) so rendering order / map iteration
-//     can never flip two equal entries;
+//   - sorted in two levels (2026-11-11 看版后修订, tasks 3.6): ① anchor-day
+//     freshness — entries whose anchor day IS the global anchor day come first
+//     and lagging entries sink to the bottom; ② same-day clue count desc,
+//     tie-broken by a stable key (board label → lane label → lane id) so
+//     rendering order / map iteration can never flip two equal entries.
+//     Sinking is NOT a discount: a lagging entry keeps its raw clue count in the
+//     secondary key (no decay / no half-life — heat only ever expresses one day);
 //   - truncated to radarTopLaneLimit (the 9th entry is not shown);
 //   - boards that missed the endpoint budget (data_delayed) or whose lane data
 //     failed contribute NO entries and turn the list into「partial」— an
@@ -425,6 +429,14 @@ func finalizeRadarTopLanes(out *RadarOverview, results map[uint]radarBoardLanes)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
+		// 一级：锚点日新鲜度——与全局锚点日一致的条目优先，滞后条目整体沉底。
+		// 「今天」不同的数据不该与今天的数据排在同一序列里，但也不打折：
+		// 滞后条目仍进清单，其 clue_count 原值参与二级排序。
+		aFresh := a.AnchorDate == out.Date
+		bFresh := b.AnchorDate == out.Date
+		if aFresh != bFresh {
+			return aFresh
+		}
 		if a.ClueCount != b.ClueCount {
 			return a.ClueCount > b.ClueCount
 		}

@@ -6,7 +6,9 @@
  *  - 每条带版块名 + 泳道名 + 当天线索数 + 该版块自己的锚点日；
  *  - 上限 8 由服务端截断，前端不另设屏高逻辑；
  *  - 无「新起 / 升温 N×」徽标、无跨天延续脚注；
- *  - 空态与「本次排序不完整」标注保留；旧响应（无 top_lanes）回退版块级日报列表。
+ *  - 空态与「本次排序不完整」标注保留；旧响应（无 top_lanes）回退版块级日报列表；
+ *  - 滞后弱化（2026-11-11 看版后修订，tasks 3.6）：条目锚点日 ≠ 全局锚点日时灰显并标
+ *    「数据至 MM/DD」（沉底由服务端排序保证，本组件不改顺序）。
  */
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -51,6 +53,7 @@ function mountRail(overrides: Record<string, unknown> = {}) {
     props: {
       laneMode: true,
       laneItems: [lane('1974', '1204', { clueCount: 12 })],
+      globalAnchorDate: '2026-11-10',
       partial: false,
       degradedCount: 0,
       laggingCount: 0,
@@ -124,6 +127,36 @@ describe('BoardRadarReadingRail — 当天线索最多的泳道清单', () => {
     expect(empty.exists()).toBe(true)
     expect(empty.text()).toContain('今天没有可排的泳道')
     expect(wrapper.text()).not.toContain('今天没有事件')
+  })
+
+  it('滞后条目灰显并标「数据至 MM/DD」：旧数据不与今日数据平起平坐', () => {
+    const wrapper = mountRail({
+      laneItems: [
+        lane('1', '11', { anchorDate: '2026-11-10' }),
+        lane('2', '22', { anchorDate: '2026-11-07', clueCount: 9 }),
+      ],
+    })
+    const fresh = wrapper.find('[data-testid="radar-lane-1-11"]')
+    const stale = wrapper.find('[data-testid="radar-lane-2-22"]')
+    expect(stale.classes()).toContain('is-lagging')
+    expect(fresh.classes()).not.toContain('is-lagging')
+    // 日期读法分明：滞后写「数据至」、今天写「截至」
+    expect(stale.text()).toContain('数据至 11/07')
+    expect(stale.text()).not.toContain('截至')
+    expect(fresh.text()).toContain('截至 11/10')
+    expect(stale.attributes('aria-label')).toContain('数据至 11/07')
+    // 线索数照实（沉底 ≠ 折扣）
+    expect(stale.text()).toContain('9 条线索')
+  })
+
+  it('全局锚点日缺失：不判滞后（未知不伪造）', () => {
+    const wrapper = mountRail({
+      globalAnchorDate: '',
+      laneItems: [lane('1', '11', { anchorDate: '2026-11-07' })],
+    })
+    const item = wrapper.find('[data-testid="radar-lane-1-11"]')
+    expect(item.classes()).not.toContain('is-lagging')
+    expect(item.text()).toContain('截至 11/07')
   })
 
   it('部分版块延迟/降级：明示「本次泳道排序不完整」并带降级版块数', () => {

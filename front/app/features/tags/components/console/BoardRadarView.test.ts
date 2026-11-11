@@ -173,8 +173,12 @@ describe('BoardRadarView — 当天线索最多的泳道清单右栏（D10）', 
     expect(item.text()).toContain('美伊博弈')
     expect(item.text()).toContain('12 条线索')
     expect(item.text()).toContain('10/24')
-    // 滞后版块条目按自己的锚点日计（不冒充全局日）
-    expect(wrapper.find('[data-testid="radar-lane-3122-88"]').text()).toContain('10/23')
+    // 滞后版块条目按自己的锚点日计（不冒充全局日），并灰显标「数据至」
+    const laggingItem = wrapper.find('[data-testid="radar-lane-3122-88"]')
+    expect(laggingItem.text()).toContain('10/23')
+    expect(laggingItem.text()).toContain('数据至')
+    expect(laggingItem.classes()).toContain('is-lagging')
+    expect(wrapper.find('[data-testid="radar-lane-1974-1204"]').classes()).not.toContain('is-lagging')
     // 版块行的「最新日报标题」入口保持不变；右栏不再列日报标题
     expect(wrapper.find('[data-testid="radar-read-1974"]').exists()).toBe(false)
   })
@@ -221,6 +225,19 @@ describe('BoardRadarView — 当天线索最多的泳道清单右栏（D10）', 
 })
 
 describe('BoardRadarView — 雷达列表', () => {
+  it('滞后版块不挂分档徽标（阈值按今日分布标定）：中性「数据至 MM/DD」，关注度数值照实', async () => {
+    const wrapper = await mountRadar([
+      row({ boardId: '9', label: '断更版块', attention: 20, anchorDate: '2026-10-19' }),
+    ])
+    const story = wrapper.find('[data-testid="radar-row-9"]')
+    const tier = story.find('.rd-tier')
+    expect(tier.text()).toContain('数据至 10/19')
+    expect(tier.text()).not.toContain('热点')
+    expect(tier.text()).not.toContain('关注强度')
+    // 数值不隐藏、不打折（沉底/弱化不是折扣）
+    expect(story.find('.rd-attention').text()).toBe('20.0')
+  })
+
   it('热点行分「热点」档（新标定阈值 ≥14.5），常温折叠不展开；点行进 L1', async () => {
     const wrapper = await mountRadar([
       row({ boardId: '1', label: '热点版块', attention: 20 }),

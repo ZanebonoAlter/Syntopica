@@ -236,8 +236,9 @@ func TestBoardRadarTopLanesFilterByClueCount(t *testing.T) {
 }
 
 // TestBoardRadarTopLanesSortLimitAndDegradation 覆盖清单段的纯函数规则：
-// 线索数降序 → 稳定键（版块名 → 泳道名 → 泳道 id）→ 上限 8；滞后版块保留
-// 自己的锚点日；延迟 / 计算失败的版块缺席并把清单标记为不完整。
+// 锚点日新鲜度优先（今日条目整体先于滞后条目）→ 线索数降序 → 稳定键（版块名 →
+// 泳道名 → 泳道 id）→ 上限 8；滞后版块保留自己的锚点日并沉底（2026-11-11 看版后
+// 修订，tasks 3.6）；延迟 / 计算失败的版块缺席并把清单标记为不完整。
 func TestBoardRadarTopLanesSortLimitAndDegradation(t *testing.T) {
 	rows := []RadarBoardRow{
 		{BoardID: 1, Label: "乙版块", ReportDate: "2026-11-06", AnchorDate: "2026-11-06"},
@@ -266,12 +267,16 @@ func TestBoardRadarTopLanesSortLimitAndDegradation(t *testing.T) {
 	assert.Equal(t, []uint{2}, out.TopLanes.LaggingBoardIDs)
 
 	require.Len(t, out.TopLanes.Lanes, 3)
-	assert.Equal(t, uint(21), out.TopLanes.Lanes[0].TopicID, "12 条线索最多")
-	assert.Equal(t, "甲版块", out.TopLanes.Lanes[0].BoardLabel)
-	assert.Equal(t, "2026-11-05", out.TopLanes.Lanes[0].AnchorDate, "滞后版块显示自己的锚点日")
+	// 一级：锚点日新鲜度——滞后条目即使线索更多也沉底（12 > 8 仍排最后）。
+	assert.Equal(t, uint(11), out.TopLanes.Lanes[0].TopicID, "今日条目整体先于滞后条目")
+	assert.Equal(t, "乙版块", out.TopLanes.Lanes[0].BoardLabel)
+	assert.Equal(t, "2026-11-06", out.TopLanes.Lanes[0].AnchorDate)
 	// 同为 8 条线索：稳定键按版块名（同为乙版块）→ 泳道名升序（乙一 < 乙二）。
-	assert.Equal(t, uint(11), out.TopLanes.Lanes[1].TopicID)
-	assert.Equal(t, uint(12), out.TopLanes.Lanes[2].TopicID)
+	assert.Equal(t, uint(12), out.TopLanes.Lanes[1].TopicID)
+	assert.Equal(t, uint(21), out.TopLanes.Lanes[2].TopicID, "滞后条目沉底但仍进清单")
+	assert.Equal(t, "甲版块", out.TopLanes.Lanes[2].BoardLabel)
+	assert.Equal(t, 12, out.TopLanes.Lanes[2].ClueCount, "沉底不是折扣：线索数原值参与次级排序")
+	assert.Equal(t, "2026-11-05", out.TopLanes.Lanes[2].AnchorDate, "滞后版块显示自己的锚点日")
 
 	// 上限 8：第 9 名不展示。
 	many := make([]RadarLane, 0, 9)
@@ -287,4 +292,56 @@ func TestBoardRadarTopLanesSortLimitAndDegradation(t *testing.T) {
 	assert.Equal(t, uint(1), out.TopLanes.Lanes[0].TopicID)
 	assert.Equal(t, 19, out.TopLanes.Lanes[0].ClueCount)
 	assert.False(t, out.TopLanes.Partial)
+}
+
+// TestBoardRadarTopLanesLaggingSinks covers the two-level ordering the 2026-11-11
+// user report asked for (tasks 3.6): a board that stopped updating 4 days ago must
+// not outrank today's data, but it still appears (data stays honest) and keeps its
+// raw clue count as the secondary key (sinking ≠ discount, no time decay).
+func TestBoardRadarTopLanesLaggingSinks(t *testing.T) {
+	day := func(clues int) []int { return append(make([]int, 13), clues) }
+
+	// 一级：今日条目整体先于滞后条目；次级：滞后内部仍按 clue_count 降序。
+	out := finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
+		{BoardID: 1, Label: "今日版块", ReportDate: "2026-11-11"},
+		{BoardID: 2, Label: "滞后版块", ReportDate: "2026-11-07"},
+	}})
+	finalizeRadarTopLanes(out, map[uint]radarBoardLanes{
+		1: {anchorDate: "2026-11-11", lanes: []RadarLane{
+			{TopicID: 11, Label: "今日泳道", ClueCounts: day(3)},
+		}},
+		2: {anchorDate: "2026-11-07", lanes: []RadarLane{
+			{TopicID: 21, Label: "滞后大", ClueCounts: day(20)},
+			{TopicID: 22, Label: "滞后小", ClueCounts: day(9)},
+		}},
+	})
+	require.Len(t, out.TopLanes.Lanes, 3)
+	assert.Equal(t, uint(11), out.TopLanes.Lanes[0].TopicID, "今日 3 条也排在滞后 20 条之前")
+	assert.Equal(t, uint(21), out.TopLanes.Lanes[1].TopicID, "滞后内部仍按线索数降序")
+	assert.Equal(t, uint(22), out.TopLanes.Lanes[2].TopicID)
+	assert.Equal(t, []uint{2}, out.TopLanes.LaggingBoardIDs)
+	assert.False(t, out.TopLanes.Partial, "滞后是口径偏差，不是数据缺失")
+
+	// 全滞后退化：没有任何条目锚定在全局锚点日时仍正常排序、不清空、不 panic。
+	out = finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
+		{BoardID: 1, Label: "无泳道版块", ReportDate: "2026-11-11"},
+	}})
+	finalizeRadarTopLanes(out, map[uint]radarBoardLanes{
+		1: {anchorDate: "2026-11-11"},
+	})
+	assert.Empty(t, out.TopLanes.Lanes, "无条目时给空清单（前端渲染空态）")
+
+	out = finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
+		{BoardID: 1, Label: "今日版块", ReportDate: "2026-11-11"},
+		{BoardID: 2, Label: "全部滞后", ReportDate: "2026-11-07"},
+	}})
+	finalizeRadarTopLanes(out, map[uint]radarBoardLanes{
+		2: {anchorDate: "2026-11-07", lanes: []RadarLane{
+			{TopicID: 21, Label: "滞后小", ClueCounts: day(4)},
+			{TopicID: 22, Label: "滞后大", ClueCounts: day(7)},
+		}},
+	})
+	require.Len(t, out.TopLanes.Lanes, 2)
+	assert.Equal(t, uint(22), out.TopLanes.Lanes[0].TopicID)
+	assert.Equal(t, uint(21), out.TopLanes.Lanes[1].TopicID)
 }

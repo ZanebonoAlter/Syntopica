@@ -61,6 +61,20 @@ export function isDelayed(
     || (Boolean(row.anchorDate) && Boolean(globalDate) && row.anchorDate !== globalDate)
 }
 
+/**
+ * 滞后判定（2026-11-11 看版后修订，tasks 3.6）：锚点日 ≠ 全局锚点日即滞后。
+ *
+ * 「滞后」不是「延迟」（`isDelayed` 的 dataDelayed 分支）：数据是齐的，只是这个版块的
+ * 「今天」更早。分档阈值按今日分布标定，旧数据不可比 → 滞后版块不挂分档徽标、右栏条目沉底
+ * 灰显；但热度数值与线索数照旧如实显示，不伪造同日可比性。任一侧日期缺失 → 不判滞后（未知不伪造）。
+ */
+export function isLaggingAnchor(anchorDate?: string, globalDate?: string): boolean {
+  const anchor = anchorDate ? anchorDate.slice(0, 10) : ''
+  const global = globalDate ? globalDate.slice(0, 10) : ''
+  if (!anchor || !global) return false
+  return anchor !== global
+}
+
 /** `2026-10-24` → `10/24`（报表式短日期；缺失时给占位而不是空串）。 */
 export function shortDate(date?: string): string {
   return date ? date.slice(0, 10).slice(5).replace('-', '/') : '日期未提供'

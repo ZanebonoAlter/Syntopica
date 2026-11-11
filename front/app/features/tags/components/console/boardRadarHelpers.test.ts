@@ -5,7 +5,7 @@
  * 线索环比、延迟判定与 14 日轴都在最便宜层验证；输入为 API 边界归一后的 camelCase 读模型字段。
  */
 import { describe, expect, it } from 'vitest'
-import { RADAR_HOT_ATTENTION, RADAR_WARM_ATTENTION, isDelayed, miniAxis, shortDate, tierLabel, trendOf } from './boardRadarHelpers'
+import { RADAR_HOT_ATTENTION, RADAR_WARM_ATTENTION, isDelayed, isLaggingAnchor, miniAxis, shortDate, tierLabel, trendOf } from './boardRadarHelpers'
 
 describe('boardRadarHelpers — 雷达总览纯函数', () => {
   it('阈值常量：真库新口径版块关注度 P80/P20（一位小数）', () => {
@@ -62,6 +62,17 @@ describe('boardRadarHelpers — 雷达总览纯函数', () => {
     expect(isDelayed({ dataDelayed: false, anchorDate: '2026-10-22' }, '2026-10-24')).toBe(true)
     expect(isDelayed({ dataDelayed: false, anchorDate: '2026-10-24' }, '2026-10-24')).toBe(false)
     expect(isDelayed({ dataDelayed: false, anchorDate: '2026-10-22' }, '')).toBe(false)
+  })
+
+  it('isLaggingAnchor：锚点日 ≠ 全局锚点日才滞后（任务 3.6 沉底/弱化判据）', () => {
+    expect(isLaggingAnchor('2026-11-07', '2026-11-11')).toBe(true)
+    expect(isLaggingAnchor('2026-11-11', '2026-11-11')).toBe(false)
+    // datetime 后缀不影响日期比较
+    expect(isLaggingAnchor('2026-11-07T00:00:00Z', '2026-11-11')).toBe(true)
+    // 任一侧缺失 → 未知不伪造（不判滞后，不把旧数据尬成今天）
+    expect(isLaggingAnchor(undefined, '2026-11-11')).toBe(false)
+    expect(isLaggingAnchor('', '2026-11-11')).toBe(false)
+    expect(isLaggingAnchor('2026-11-07', '')).toBe(false)
   })
 
   it('shortDate：YYYY-MM-DD → MM/DD；缺失给占位；兼容 datetime 后缀', () => {

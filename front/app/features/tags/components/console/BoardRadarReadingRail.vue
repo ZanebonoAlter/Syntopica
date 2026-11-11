@@ -8,15 +8,21 @@
  * 「今天可能升温」独立卡片整体退场（判据全部依赖事件线热度环比）。
  * 诚实标记保留：`partial`（部分版块延迟/降级 → 本次排序不完整，带降级版块数）与
  * 滞后版块数（各条目按自己的锚点日计）。
+ *
+ * 滞后弱化（2026-11-11 看版后修订，tasks 3.6）：锚点日 ≠ 全局锚点日的条目灰显并标
+ * 「数据至 MM/DD」——旧数据不该与今天的数据平起平坐；沉底由服务端排序保证，本组件
+ * 只负责视觉弱化与诚实日期，不改顺序、不重算线索数。
  * 旧后端响应（无 `top_lanes` 段）回退版块级日报标题列表；本组件不改口径。
  */
-import { shortDate } from './boardRadarHelpers'
+import { isLaggingAnchor, shortDate } from './boardRadarHelpers'
 import type { RadarBoard, RadarTopLaneItem } from '~/api/semanticBoards'
 
-defineProps<{
+const props = defineProps<{
   /** 泳道清单可用（新版后端带 top_lanes 段）；false = 旧响应回退版块级列表。 */
   laneMode: boolean
   laneItems: RadarTopLaneItem[]
+  /** 全局锚点日（`top_lanes.anchor_date`）：条目锚点日与它不同即滞后 → 灰显。 */
+  globalAnchorDate: string
   /** 部分版块降级 → 本次泳道排序不完整。 */
   partial: boolean
   /** 降级版块数（超时或泳道数据计算失败——提示里带上数量）。 */
@@ -32,9 +38,19 @@ const emit = defineEmits<{
   (e: 'openReport', row: RadarBoard): void
 }>()
 
-/** 条目可读全名（title/aria）：版块名 · 泳道名 · N 条线索 · 锚点日。 */
+/** 条目是否滞后：锚点日 ≠ 全局锚点日（旧数据沉底 + 灰显 + 标「数据至」）。 */
+function isLagging(item: RadarTopLaneItem): boolean {
+  return isLaggingAnchor(item.anchorDate, props.globalAnchorDate)
+}
+
+/** 条目日期读法：滞后写「数据至」、今日写「截至」（分量不伪装成今天）。 */
+function asOfText(item: RadarTopLaneItem): string {
+  return `${isLagging(item) ? '数据至' : '截至'} ${shortDate(item.anchorDate)}`
+}
+
+/** 条目可读全名（title/aria）：版块名 · 泳道名 · N 条线索 · 日期。 */
 function laneAria(item: RadarTopLaneItem): string {
-  return [item.boardLabel, item.topicLabel, `${item.clueCount} 条线索`, `截至 ${shortDate(item.anchorDate)}`]
+  return [item.boardLabel, item.topicLabel, `${item.clueCount} 条线索`, asOfText(item)]
     .filter(Boolean)
     .join(' · ')
 }
@@ -72,6 +88,7 @@ function readEventText(row: RadarBoard): string {
           :key="`lane-${item.boardId}-${item.topicId}`"
           type="button"
           class="rd-read"
+          :class="{ 'is-lagging': isLagging(item) }"
           :data-testid="`radar-lane-${item.boardId}-${item.topicId}`"
           :title="laneAria(item)"
           :aria-label="laneAria(item)"
@@ -80,14 +97,14 @@ function readEventText(row: RadarBoard): string {
           <span class="rd-read-board">{{ item.boardLabel }}</span>
           <span class="rd-read-title">{{ item.topicLabel }}</span>
           <small class="rd-read-meta">
-            {{ item.clueCount }} 条线索 · 截至 {{ shortDate(item.anchorDate) }}
+            {{ item.clueCount }} 条线索 · {{ asOfText(item) }}
           </small>
         </button>
         <p v-if="!laneItems.length" class="rd-rail-empty" data-testid="radar-no-lane">
           今天没有可排的泳道。
         </p>
         <p class="rd-warm-note" data-testid="radar-lane-caption">
-          清单 = 跨版块按泳道当天线索数降序，最多 8 条；线索数按各版块自己的锚点日计。
+          清单 = 跨版块按泳道当天线索数降序，最多 8 条；当天与全局锚点日一致的版块在前，滞后版块沉底并标注自己的日期。
         </p>
       </template>
 
@@ -165,6 +182,21 @@ function readEventText(row: RadarBoard): string {
 
 .rd-read:hover .rd-read-title {
   color: var(--color-accent);
+}
+
+/* 滞后条目灰显（2026-11-11 看版后修订，tasks 3.6）：旧数据不与今日数据平起平坐，
+ * 但仍如实可读（线索数与日期照常展示，悬浮恢复对比度以便点开）。 */
+.rd-read.is-lagging {
+  opacity: 0.58;
+}
+
+.rd-read.is-lagging:hover,
+.rd-read.is-lagging:focus-visible {
+  opacity: 1;
+}
+
+.rd-read.is-lagging .rd-read-board {
+  color: var(--color-text-muted);
 }
 
 .rd-read-board {

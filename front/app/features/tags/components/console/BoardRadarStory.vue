@@ -11,6 +11,10 @@
  * 保持一致（父组件列定义仅限定其自有 .rd-labels，不命中本组件根，避免覆盖移动端
  * 列定义，R-20），改断点须两处同步。
  *
+ * 分档徽标滞后弱化（2026-11-11 看版后修订，tasks 3.6）：版本锚点日 ≠ 总览全局锚点日时
+ * 不挂「热点 / 关注」分档徽标（阈值按今日分布标定，旧数据不可比），改为中性小标注
+ * 「数据至 MM/DD」；关注度数值照旧如实显示、不被隐藏也不被打折。
+ *
  * 小矩阵（D5）：格值 = 该泳道该日线索合计（`clue_counts`）；**颜色 = 该数在本泳道 14 天窗口内的
  * 归一深浅**（2026-11-11 用户看版后修订，tasks 3.5：行内归一只，0/未知不着色，行内峰值最深）。
  * 颜色只是冗余强化通道，数值 + title/aria 仍是唯一信息承载；旧后端缺 `clue_counts` 的格子标
@@ -18,7 +22,7 @@
  */
 import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
-import { RADAR_HOT_ATTENTION, isDelayed, miniAxis, shortDate, tierLabel, trendOf } from './boardRadarHelpers'
+import { RADAR_HOT_ATTENTION, isDelayed, isLaggingAnchor, miniAxis, shortDate, tierLabel, trendOf } from './boardRadarHelpers'
 import { clueDepth, clueMix, clueRowMax } from './observationLanes'
 import type { RadarBoard, RadarLane } from '~/api/semanticBoards'
 
@@ -38,6 +42,8 @@ const emit = defineEmits<{
 const tier = computed(() => tierLabel(props.row.attention))
 const trend = computed(() => trendOf(props.row))
 const delayed = computed(() => isDelayed(props.row, props.globalDate))
+/** 滞后 = 本行锚点日 ≠ 总览全局锚点日（分档徽标不挂，改「数据至」）。 */
+const lagging = computed(() => isLaggingAnchor(props.row.anchorDate, props.globalDate))
 const todayText = computed(() => (props.row.todayClues === null ? '当日线索未知' : `当日线索 ${props.row.todayClues}`))
 const anchorText = computed(() => {
   const asOf = delayed.value ? shortDate(props.row.anchorDate) : '今日'
@@ -142,7 +148,11 @@ function openLane(lane: RadarLane): void {
 
     <div class="rd-attention-wrap">
       <span class="rd-attention">{{ row.attention.toFixed(1) }}</span>
-      <small class="rd-tier">关注强度 · {{ tier }}</small>
+      <!-- 滞后行不挂分档徽标（阈值按今日分布标定，旧数据不可比），改中性「数据至」。 -->
+      <small v-if="lagging" class="rd-tier rd-tier-stale" data-testid="radar-lagging-tier">
+        数据至 {{ shortDate(row.anchorDate) }}
+      </small>
+      <small v-else class="rd-tier">关注强度 · {{ tier }}</small>
     </div>
 
     <div class="rd-trend">
@@ -348,6 +358,13 @@ function openLane(lane: RadarLane): void {
 
 .rd-story.is-hot .rd-tier {
   color: var(--color-accent);
+}
+
+/* 滞后行分档徽标退场后的中性标注（不分档、不抢跟；数值仍在左侧如实可见）。 */
+.rd-story .rd-tier-stale,
+.rd-story.is-hot .rd-tier-stale {
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }
 
 .rd-trend {

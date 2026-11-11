@@ -34,6 +34,7 @@ const {
   todayRead,
   hasLaneFeed,
   laneItems,
+  laneAnchorDate,
   partialLanes,
   degradedBoardCount,
   laggingBoardCount,
@@ -156,6 +157,7 @@ function handleGenerated(): void {
               v-if="!firstLoadFailed"
               :lane-mode="hasLaneFeed"
               :lane-items="laneItems"
+              :global-anchor-date="laneAnchorDate"
               :partial="partialLanes"
               :degraded-count="degradedBoardCount"
               :lagging-count="laggingBoardCount"

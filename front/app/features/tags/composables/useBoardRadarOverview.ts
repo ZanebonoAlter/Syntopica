@@ -64,6 +64,8 @@ export function useBoardRadarOverview() {
   const hasLaneFeed = computed(() => topLanes.value !== null)
   /** 「当天线索最多的泳道」清单（≤ 8，服务端截断）。 */
   const laneItems = computed(() => topLanes.value?.lanes ?? [])
+  /** 全局锚点日（右栏滞后判定的基准）：清单段自带，缺段回退总览日期。 */
+  const laneAnchorDate = computed(() => topLanes.value?.anchorDate || date.value)
   /** 排序不完整（部分版块延迟或降级）。 */
   const partialLanes = computed(() => topLanes.value?.partial === true)
   /** 降级版块数（超时或泳道数据计算失败）——右栏提示带上数量。 */
@@ -142,6 +144,7 @@ export function useBoardRadarOverview() {
     todayRead,
     hasLaneFeed,
     laneItems,
+    laneAnchorDate,
     partialLanes,
     degradedBoardCount,
     laggingBoardCount,
