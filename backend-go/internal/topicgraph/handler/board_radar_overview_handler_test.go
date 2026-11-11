@@ -30,53 +30,40 @@ type radarOverviewPayload struct {
 	Data    struct {
 		Date   string `json:"date"`
 		Boards []struct {
-			BoardID            uint   `json:"board_id"`
-			Label              string `json:"label"`
-			TagCount           int64  `json:"tag_count"`
-			ReportDate         string `json:"report_date"`
-			ReportTitle        string `json:"report_title"`
-			ReportArticle      int    `json:"report_article_count"`
-			ReportEvent        int    `json:"report_event_count"`
-			StoriesBackfilled  bool   `json:"stories_backfilled"`
-			StoryIdentityState string `json:"story_identity_state"`
-			AnchorDate         string `json:"anchor_date"`
-			TodaySections      int    `json:"today_sections"`
-			Last3Sections      int    `json:"last3_sections"`
-			Prev3Sections      int    `json:"prev3_sections"`
-			Attention          int    `json:"attention"`
-			DataDelayed        bool   `json:"data_delayed"`
-			Days               []int  `json:"days"`
-			Lanes              []struct {
+			BoardID       uint    `json:"board_id"`
+			Label         string  `json:"label"`
+			TagCount      int64   `json:"tag_count"`
+			ReportDate    string  `json:"report_date"`
+			ReportTitle   string  `json:"report_title"`
+			ReportArticle int     `json:"report_article_count"`
+			ReportEvent   int     `json:"report_event_count"`
+			AnchorDate    string  `json:"anchor_date"`
+			TodayClues    int     `json:"today_clues"`
+			Last3Clues    int     `json:"last3_clues"`
+			Prev3Clues    int     `json:"prev3_clues"`
+			Attention     float64 `json:"attention"`
+			HeatRule      string  `json:"heat_rule_version"`
+			DataDelayed   bool    `json:"data_delayed"`
+			ClueDays      []int   `json:"clue_days"`
+			Lanes         []struct {
 				TopicID uint `json:"topic_id"`
 			} `json:"lanes"`
 		} `json:"boards"`
-		Stories *struct {
-			AnchorDate      string `json:"anchor_date"`
-			HeatRuleVersion string `json:"heat_rule_version"`
-			TopStories      []struct {
-				BoardID          uint    `json:"board_id"`
-				BoardLabel       string  `json:"board_label"`
-				StoryID          uint    `json:"story_id"`
-				StoryTitle       string  `json:"story_title"`
-				Participants     int     `json:"participants"`
-				Heat             float64 `json:"heat"`
-				Ratio            float64 `json:"ratio"`
-				HasBaseline      bool    `json:"has_baseline"`
-				HasTodayEvidence bool    `json:"has_today_evidence"`
-				AnchorDate       string  `json:"anchor_date"`
-				ReportDate       string  `json:"report_date"`
-			} `json:"top_stories"`
-			// matrix-clue-fallback-and-rail-merge：warming/new_stories 清单与
-			// new_count/new_total_count 已随右栏徽标化移除；warming_count 保留。
-			WarmingCount           int    `json:"warming_count"`
-			UnbackfilledBoardIDs   []uint `json:"unbackfilled_board_ids"`
-			UnbackfilledBoardCount int    `json:"unbackfilled_board_count"`
-			NoStoryBoardIDs        []uint `json:"no_story_board_ids"`
-			NoStoryBoardCount      int    `json:"no_story_board_count"`
-			LaggingBoardIDs        []uint `json:"lagging_board_ids"`
-			Partial                bool   `json:"partial"`
-			DegradedBoardIDs       []uint `json:"degraded_board_ids"`
-		} `json:"stories"`
+		// 顶层清单段：事件线条目段整体替换为「当天线索最多的泳道」清单。
+		TopLanes *struct {
+			AnchorDate string `json:"anchor_date"`
+			Lanes      []struct {
+				BoardID    uint   `json:"board_id"`
+				BoardLabel string `json:"board_label"`
+				TopicID    uint   `json:"topic_id"`
+				TopicLabel string `json:"topic_label"`
+				ClueCount  int    `json:"clue_count"`
+				AnchorDate string `json:"anchor_date"`
+			} `json:"lanes"`
+			Partial          bool   `json:"partial"`
+			DegradedBoardIDs []uint `json:"degraded_board_ids"`
+			LaggingBoardIDs  []uint `json:"lagging_board_ids"`
+		} `json:"top_lanes"`
 	} `json:"data"`
 }
 
@@ -132,12 +119,12 @@ func TestGetBoardRadarOverviewNoActiveBoardsEmptyList(t *testing.T) {
 	require.NotNil(t, payload.Data.Boards, "boards 必须是数组（可为空），不是 null")
 	assert.Empty(t, payload.Data.Boards)
 	assert.NotEmpty(t, payload.Data.Date, "空版块时 date 回退今天，不为空串")
-	// 事件线清单随行同响：段必须在（缺失时前端会回退版块级旧列表）。
-	require.NotNil(t, payload.Data.Stories, "stories 段不得缺席")
-	assert.NotEmpty(t, payload.Data.Stories.HeatRuleVersion)
-	assert.Empty(t, payload.Data.Stories.TopStories)
-	assert.Zero(t, payload.Data.Stories.WarmingCount)
-	assert.False(t, payload.Data.Stories.Partial)
+	// 泳道清单随行同响（事件线条目段已退役）：段必须在，空态是 [] 不是 null。
+	require.NotNil(t, payload.Data.TopLanes, "top_lanes 段不得缺席")
+	require.NotNil(t, payload.Data.TopLanes.Lanes, "lanes 必须是数组")
+	assert.Empty(t, payload.Data.TopLanes.Lanes)
+	assert.Equal(t, payload.Data.Date, payload.Data.TopLanes.AnchorDate)
+	assert.False(t, payload.Data.TopLanes.Partial)
 }
 
 func TestGetBoardRadarOverviewBoardWithoutDataZeroRow(t *testing.T) {
@@ -152,14 +139,15 @@ func TestGetBoardRadarOverviewBoardWithoutDataZeroRow(t *testing.T) {
 	assert.Equal(t, int64(0), row.TagCount)
 	assert.Empty(t, row.ReportDate, "无日报 → report_date 空串")
 	assert.Empty(t, row.AnchorDate)
-	assert.Equal(t, 0, row.TodaySections)
-	assert.Equal(t, 0, row.Attention)
+	assert.Equal(t, 0, row.TodayClues)
+	assert.Zero(t, row.Attention)
 	assert.False(t, row.DataDelayed, "无数据版块是真实零值，不是超时降级")
-	require.Len(t, row.Days, 14, "days 恒为 14 档")
-	for i, v := range row.Days {
-		assert.Zero(t, v, "days[%d] 应为 0", i)
+	require.Len(t, row.ClueDays, 14, "clue_days 恒为 14 档")
+	for i, v := range row.ClueDays {
+		assert.Zero(t, v, "clue_days[%d] 应为 0", i)
 	}
 	assert.Empty(t, row.Lanes)
+	assert.Equal(t, repository.LaneHeatRuleVersion, row.HeatRule, "口径版本另立（heat-v2-lane-clues-1d）")
 }
 
 func TestGetBoardRadarOverviewAttachesLatestReportBrief(t *testing.T) {
@@ -175,26 +163,45 @@ func TestGetBoardRadarOverviewAttachesLatestReportBrief(t *testing.T) {
 	assert.Equal(t, "新日报标题", row.ReportTitle)
 	assert.Equal(t, 12, row.ReportArticle)
 	assert.Equal(t, 7, row.ReportEvent)
-	assert.False(t, row.StoriesBackfilled, "无泳道线程：窗口内无 story_id → 未回填（字段上链）")
 	assert.Equal(t, "2026-10-30", payload.Data.Date, "顶层 date 取各版块最新日报日期")
 }
 
-// TestGetBoardRadarOverviewStoryIdentityState：事件身份回填状态是**板级**三态
-// （wire 契约）：有日报但无任何线程的版块 = 无可回填对象（不计入未回填数），
-// 不得被说成「事件身份未回填」（对用户是假话）。
-func TestGetBoardRadarOverviewStoryIdentityState(t *testing.T) {
+// TestGetBoardRadarOverviewTopLanesWireShape：顶层清单段带版块名 + 泳道名 +
+// 当天线索数 + 所属版块锚点日；版块无泳道数据时清单为空、partial=false。
+func TestGetBoardRadarOverviewTopLanesWireShape(t *testing.T) {
 	r, db := setupRadarOverviewTest(t)
-	boardID := seedRadarBoard(t, db, "identity-board")
-	seedRadarReport(t, db, boardID, "2026-10-30", "有日报无线程", 3, 5)
+	boardID := seedRadarBoard(t, db, "lanes-board")
+	date := time.Now()
+	report := repository.BoardDailyReport{
+		SemanticBoardID: boardID,
+		PeriodDate:      repository.NormalizeReportDate(date),
+		Title:           "有泳道的日报", Status: "completed",
+	}
+	require.NoError(t, db.Create(&report).Error)
+	topic := repository.BoardPersistentTopic{
+		SemanticBoardID: boardID, Label: "热搜泳道", Embedding: repository.FloatsToPgVector([]float64{0}),
+		Status: repository.TopicStatusActive, FirstSeenDate: report.PeriodDate, LastSeenDate: report.PeriodDate,
+		HitCount: 9, ConsecutiveHits: 9,
+	}
+	require.NoError(t, db.Create(&topic).Error)
+	section := repository.DailyReportSection{ReportID: report.ID, ClusterLabel: "桶", Embedding: repository.FloatsToPgVector([]float64{0}), PersistentTopicID: &topic.ID}
+	require.NoError(t, db.Create(&section).Error)
+	for i := 0; i < 3; i++ {
+		require.NoError(t, db.Create(&repository.DailyReportThread{
+			ReportID: report.ID, SectionID: section.ID, Title: "线索", Scope: repository.ThreadScopeSingle,
+			Embedding: repository.FloatsToPgVector([]float64{0}),
+		}).Error)
+	}
 
 	payload := getRadarOverview(t, r)
-	require.Len(t, payload.Data.Boards, 1)
-	row := payload.Data.Boards[0]
-	assert.Equal(t, "no_candidate", row.StoryIdentityState, "板级判定：板内无任何事件候选 → 无可回填对象")
-
-	require.NotNil(t, payload.Data.Stories)
-	assert.Contains(t, payload.Data.Stories.NoStoryBoardIDs, boardID, "无可回填对象单列")
-	assert.Equal(t, 1, payload.Data.Stories.NoStoryBoardCount)
-	assert.NotContains(t, payload.Data.Stories.UnbackfilledBoardIDs, boardID, "不得计入未回填数")
-	assert.Equal(t, 0, payload.Data.Stories.UnbackfilledBoardCount)
+	require.NotNil(t, payload.Data.TopLanes)
+	require.Len(t, payload.Data.TopLanes.Lanes, 1)
+	item := payload.Data.TopLanes.Lanes[0]
+	assert.Equal(t, boardID, item.BoardID)
+	assert.Equal(t, "lanes-board", item.BoardLabel)
+	assert.Equal(t, topic.ID, item.TopicID)
+	assert.Equal(t, "热搜泳道", item.TopicLabel)
+	assert.Equal(t, 3, item.ClueCount)
+	assert.NotEmpty(t, item.AnchorDate, "条目自带所属版块锚点日")
+	assert.False(t, payload.Data.TopLanes.Partial)
 }

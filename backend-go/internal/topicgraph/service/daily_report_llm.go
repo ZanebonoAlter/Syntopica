@@ -229,14 +229,14 @@ func parseHighlightsResponse(content string, tags []repository.TagInput) ([]repo
 			}
 		}
 		h.TagIDs = validIDs
-		// Tag mode never trusts identity or numeric snapshots supplied by a model.
-		h.StoryID = nil
-		h.ParticipantCount = nil
-		h.StoryHeat = nil
-		h.HeatAsOf = nil
-		h.HeatRuleVersion = ""
-		h.HeatIncomplete = nil
-		h.IsProgress = false
+		// Tag mode never trusts identity or numeric snapshots supplied by a
+		// model (retire-story-adopt-event-metrics: cluster_id / article_count /
+		// cluster_mode / data_as_of / research_at are server-only snapshots).
+		h.ClusterID = nil
+		h.ArticleCount = nil
+		h.ClusterMode = ""
+		h.DataAsOf = ""
+		h.ResearchAt = nil
 		result = append(result, h)
 	}
 	return result, nil

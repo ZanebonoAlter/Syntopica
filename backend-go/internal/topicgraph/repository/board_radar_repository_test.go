@@ -2,18 +2,18 @@ package repository
 
 import (
 	"context"
-	"fmt"
-	"math"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
 )
 
-func TestRadarAxisEndsAtAnchor(t *testing.T) {
+func TestBoardRadarAxisEndsAtAnchor(t *testing.T) {
 	axis := radarAxis("2026-10-24")
 	if len(axis) != LaneDynamicsDefaultDays {
 		t.Fatalf("axis len=%d", len(axis))
@@ -26,7 +26,7 @@ func TestRadarAxisEndsAtAnchor(t *testing.T) {
 	}
 }
 
-func TestFinalizeRadarSortsByAttentionAndKeepsZeroRows(t *testing.T) {
+func TestBoardRadarSortsByAttentionAndKeepsZeroRows(t *testing.T) {
 	out := finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
 		{BoardID: 3, Attention: 0, ReportDate: "2026-10-24"},
 		{BoardID: 1, Attention: 30, ReportDate: "2026-10-24"},
@@ -46,7 +46,7 @@ func TestFinalizeRadarSortsByAttentionAndKeepsZeroRows(t *testing.T) {
 
 // tasks 9.4：所有版块均无日报时顶层 date 回退今天（不冒空串），
 // 雷达报头不会拿到空日期。
-func TestFinalizeRadarDateFallsBackToToday(t *testing.T) {
+func TestBoardRadarDateFallsBackToToday(t *testing.T) {
 	out := finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
 		{BoardID: 1, Attention: 0},
 	}})
@@ -56,251 +56,235 @@ func TestFinalizeRadarDateFallsBackToToday(t *testing.T) {
 	}
 }
 
-// cstMorning returns 08:00 CST on `now`'s CST calendar day minus daysAgo —
-// a fixed distance to the 23:59:59 CST day end so expected heats are
-// deterministic regardless of when the test runs.
-func cstMorning(now time.Time, daysAgo int) time.Time {
-	day := now.In(storyHeatZone).AddDate(0, 0, -daysAgo)
-	return time.Date(day.Year(), day.Month(), day.Day(), 8, 0, 0, 0, storyHeatZone)
-}
-
-// TestRadarAttentionFollowsLaneHeatNotSectionCount（task 5.2 / test-cases
-// 步 8 / spec「关注度不因分区数虚高」）：A 8 sections/1 事件线/2 源，
-// B 2 sections/2 事件线/6 源 → B 的 lane_heat 高于 A，雷达排序 B 前 A 后，
-// 不得因 A 的 section 数更多而反转；Attention 为一位小数。
-func TestRadarAttentionFollowsLaneHeatNotSectionCount(t *testing.T) {
+// TestBoardRadarAttentionFollowsLaneHeat（task 1.5 / spec「关注度不因
+// 分区数虚高」）：A 8 个 section 但只 2 条线索，B 2 个 section 但有 6 条线索 →
+// B 的关注度（泳道当天热度之和）必须高于 A，雷达排序 B 前 A 后；候选泳道按
+// lane_heat_candidate_weight 计入关注度。
+func TestBoardRadarAttentionFollowsLaneHeat(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 	now := time.Now()
-	morning := cstMorning(now, 0)
 
-	// Board A：8 sections 全挂同一事件线（2 源）。
-	boardA := seedTestBoardNamed(t, db, "radar-heat-a")
+	// Board A：8 sections，其中只有 2 条线索（4 条 section 无 thread）。
+	boardA := seedTestBoardNamed(t, db, "radar-clue-a")
 	reportA := seedTestReport(t, db, boardA, now)
 	topicA := seedLaneDynamicsTopic(t, db, boardA, "A泳道", TopicStatusActive, 9, now)
-	storyA := seedLaneStoryLine(t, db, boardA, "a", 2, &topicA.ID)
 	for i := 0; i < 8; i++ {
-		sec := seedTestSection(t, db, reportA, fmt.Sprintf("a-sec-%d", i))
+		sec := seedTestSection(t, db, reportA, "a-sec")
 		assignSection(t, db, sec, topicA.ID)
-		seedLaneStoryThread(t, db, reportA, sec, "A事件", uintPtr(storyA), ThreadScopeSingle, nil)
+		if i < 2 {
+			seedLaneThread(t, db, reportA, sec, "A线索")
+		}
 	}
-	seedHeatSignal(t, db, storyA, 101, morning)
-	seedHeatSignal(t, db, storyA, 102, morning)
+	// 候选泳道 A：当天 4 条线索 → 关注度 +4×0.5 = 2.0。
+	topicACand := seedLaneDynamicsTopic(t, db, boardA, "A候选", TopicStatusCandidate, 3, now)
+	candSec := seedTestSection(t, db, reportA, "a-cand-sec")
+	assignSection(t, db, candSec, topicACand.ID)
+	for i := 0; i < 4; i++ {
+		seedLaneThread(t, db, reportA, candSec, "候选线索")
+	}
 
-	// Board B：2 sections、2 条事件线（共 6 源）。
-	boardB := seedTestBoardNamed(t, db, "radar-heat-b")
+	// Board B：2 sections，各 3 条线索 = 6。
+	boardB := seedTestBoardNamed(t, db, "radar-clue-b")
 	reportB := seedTestReport(t, db, boardB, now)
 	topicB := seedLaneDynamicsTopic(t, db, boardB, "B泳道", TopicStatusActive, 9, now)
-	storyB1 := seedLaneStoryLine(t, db, boardB, "b1", 4, &topicB.ID)
-	storyB2 := seedLaneStoryLine(t, db, boardB, "b2", 2, &topicB.ID)
-	secB1 := seedTestSection(t, db, reportB, "b-sec-1")
-	secB2 := seedTestSection(t, db, reportB, "b-sec-2")
-	assignSection(t, db, secB1, topicB.ID)
-	assignSection(t, db, secB2, topicB.ID)
-	seedLaneStoryThread(t, db, reportB, secB1, "B事件一", uintPtr(storyB1), ThreadScopeSingle, nil)
-	seedLaneStoryThread(t, db, reportB, secB2, "B事件二", uintPtr(storyB2), ThreadScopeSingle, nil)
-	for feed := uint(201); feed <= 204; feed++ {
-		seedHeatSignal(t, db, storyB1, feed, morning)
-	}
-	for feed := uint(205); feed <= 206; feed++ {
-		seedHeatSignal(t, db, storyB2, feed, morning)
+	for i := 0; i < 2; i++ {
+		sec := seedTestSection(t, db, reportB, "b-sec")
+		assignSection(t, db, sec, topicB.ID)
+		for j := 0; j < 3; j++ {
+			seedLaneThread(t, db, reportB, sec, "B线索")
+		}
 	}
 
 	overview, err := repo.GetBoardRadarOverview(context.Background())
 	require.NoError(t, err)
 	require.Len(t, overview.Boards, 2)
 
-	// 排序：B（lane_heat 高）在前，不因 A 的 8 个 section 反转。
-	assert.Equal(t, boardB, overview.Boards[0].BoardID, "B 关注度更高必须排前")
-	assert.Equal(t, boardA, overview.Boards[1].BoardID)
 	rowB, rowA := overview.Boards[0], overview.Boards[1]
-	assert.Greater(t, rowB.Attention, rowA.Attention)
+	assert.Equal(t, boardB, rowB.BoardID, "B 关注度更高必须排前，不因 A 的 8 个 section 反转")
+	assert.Equal(t, boardA, rowA.BoardID)
+	assert.InDelta(t, 6.0, rowB.Attention, 1e-9)
+	assert.InDelta(t, 4.0, rowA.Attention, 1e-9, "活跃 2 条线索 + 候选 4×0.5 = 4.0")
+	assert.Equal(t, LaneHeatRuleVersion, rowA.HeatRuleVersion)
 
-	// Attention = Σ lane_heat（同一衰减权重 w=0.5^(Δt/72)，A=2w，B=6w），
-	// 保留一位小数。
-	weight := math.Pow(0.5, laneHeatAnchorEnd(NormalizeReportDate(now)).Sub(morning).Hours()/72)
-	assert.InDelta(t, math.Round(2*weight*10)/10, rowA.Attention, 1e-9)
-	assert.InDelta(t, math.Round(6*weight*10)/10, rowB.Attention, 1e-9)
-	assert.Equal(t, rowA.Attention, math.Round(rowA.Attention*10)/10, "Attention 一位小数")
+	// 当天 / 近 3 日 / 前三日线索窗与 14 天轴。
+	assert.Equal(t, 6, rowB.TodayClues)
+	assert.Equal(t, 2, rowA.TodayClues, "候选泳道不计入版块线索窗（只有活跃泳道进 lane 轴）")
+	assert.Equal(t, 2, rowA.Last3Clues, "近 3 日窗含当天")
+	assert.Zero(t, rowA.Prev3Clues)
+	require.Len(t, rowA.ClueDays, LaneDynamicsDefaultDays)
+	assert.Equal(t, 2, rowA.ClueDays[LaneDynamicsDefaultDays-1])
 
-	// 事件线窗口与 legacy section 窗口并存。
-	assert.Equal(t, 8, rowA.TodaySections)
-	assert.Equal(t, 2, rowB.TodaySections)
-	assert.Equal(t, 1, rowA.TodayStories)
-	assert.Equal(t, 2, rowB.TodayStories)
-	assert.Equal(t, HeatRuleVersion, rowA.HeatRuleVersion)
-	assert.False(t, rowA.HeatIncomplete)
-	assert.True(t, rowA.StoriesBackfilled, "窗口内线程带 story_id：事件线口径，雷达行无降级标注")
+	// RadarLane 逐日线索密度与 14 天轴对齐。
+	require.Len(t, rowB.Lanes, 1)
+	require.Len(t, rowB.Lanes[0].ClueCounts, LaneDynamicsDefaultDays)
+	assert.Equal(t, 6, rowB.Lanes[0].ClueCounts[LaneDynamicsDefaultDays-1])
+	assert.Equal(t, 6, rowB.Lanes[0].ThreadCount14d)
 
-	// RadarLane.story_counts 与 14 天轴对齐：最后一天 = 当日事件线数。
-	require.Len(t, rowA.Lanes, 1)
-	require.Len(t, rowA.Lanes[0].StoryCounts, 14)
-	assert.Equal(t, 1, rowA.Lanes[0].StoryCounts[13])
-	assert.Equal(t, 2, rowB.Lanes[0].StoryCounts[13])
-	// legacy counts（section 口径）保留。
-	assert.Equal(t, 8, rowA.Lanes[0].Counts[13])
-	assert.Equal(t, 2, rowB.Lanes[0].Counts[13])
+	// 顶层清单：只有活跃泳道条目，带各自版块锚点日与当天线索数。
+	require.NotNil(t, overview.TopLanes)
+	require.Len(t, overview.TopLanes.Lanes, 2)
+	assert.Equal(t, boardB, overview.TopLanes.Lanes[0].BoardID, "线索多的泳道排前")
+	assert.Equal(t, 6, overview.TopLanes.Lanes[0].ClueCount)
+	assert.Equal(t, 2, overview.TopLanes.Lanes[1].ClueCount)
+	assert.Equal(t, dateStr(now), overview.TopLanes.Lanes[0].AnchorDate)
+	assert.False(t, overview.TopLanes.Partial)
+
+	// 权重在线调整立即生效：候选 4 × 0.2 = 0.8 → A 关注度 2.8。
+	require.NoError(t, db.Create(&models.AISettings{Key: LaneHeatCandidateWeightKey, Value: "0.2"}).Error)
+	overview, err = repo.GetBoardRadarOverview(context.Background())
+	require.NoError(t, err)
+	require.Len(t, overview.Boards, 2)
+	assert.InDelta(t, 2.8, overview.Boards[1].Attention, 1e-9)
 }
 
-// TestRadarStoryHeatByDayWindowsAndCoverage（task 5.2）：today/last3/prev3
-// 热度与 ComputeBoardStoryHeatByDay 逐日求和一致、heat_days 与 14 天轴同
-// 序、无 signals 的版块热度全 0 不报错、落后源透出 heat_incomplete。
-func TestRadarStoryHeatByDayWindowsAndCoverage(t *testing.T) {
+// TestBoardRadarClueWindowsAndHeatRule（task 1.5 口径）：三窗线索数来自逐日线索
+// 合计（不掺事件线数），14 天轴与泳道密度同源；事件线热度字段整体退役。
+func TestBoardRadarClueWindowsAndHeatRule(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 	now := time.Now()
 
-	board := seedTestBoardNamed(t, db, "radar-heatday")
+	board := seedTestBoardNamed(t, db, "radar-clue-window")
 	reportToday := seedTestReport(t, db, board, now)
 	report1d := seedTestReport(t, db, board, now.AddDate(0, 0, -1))
 	report2d := seedTestReport(t, db, board, now.AddDate(0, 0, -2))
 
-	topic := seedLaneDynamicsTopic(t, db, board, "热度轴泳道", TopicStatusActive, 9, now)
-	s1 := seedLaneStoryLine(t, db, board, "d1", 2, &topic.ID)
-	s2 := seedLaneStoryLine(t, db, board, "d2", 1, &topic.ID)
-	s3 := seedLaneStoryLine(t, db, board, "d3", 1, &topic.ID)
+	topic := seedLaneDynamicsTopic(t, db, board, "轴泳道", TopicStatusActive, 9, now)
+	seedClues := func(reportID uint, label string, clues int) {
+		sec := seedTestSection(t, db, reportID, label)
+		assignSection(t, db, sec, topic.ID)
+		for i := 0; i < clues; i++ {
+			seedLaneThread(t, db, reportID, sec, "线索")
+		}
+	}
+	seedClues(reportToday, "today-sec", 5)
+	seedClues(report1d, "d1-sec", 3)
+	seedClues(report2d, "d2-sec", 2)
 
-	secToday := seedTestSection(t, db, reportToday, "today-sec")
-	assignSection(t, db, secToday, topic.ID)
-	seedLaneStoryThread(t, db, reportToday, secToday, "今日甲", uintPtr(s1), ThreadScopeSingle, nil)
-	seedLaneStoryThread(t, db, reportToday, secToday, "今日乙", uintPtr(s2), ThreadScopeSingle, nil)
-	sec1d := seedTestSection(t, db, report1d, "d1-sec")
-	assignSection(t, db, sec1d, topic.ID)
-	seedLaneStoryThread(t, db, report1d, sec1d, "昨日甲", uintPtr(s1), ThreadScopeSingle, nil)
-	sec2d := seedTestSection(t, db, report2d, "d2-sec")
-	assignSection(t, db, sec2d, topic.ID)
-	seedLaneStoryThread(t, db, report2d, sec2d, "前日丙", uintPtr(s3), ThreadScopeSingle, nil)
-
-	// 信号：s1 今晨 08:00（新鲜）；s3 两天前 08:00 + 从未刷新的 feed →
-	// 热度不完整标记。
-	seedHeatSignal(t, db, s1, 301, cstMorning(now, 0))
-	staleFeed := seedCoverageFeed(t, db, "radar-stale", 60, "idle", nil)
-	seedHeatSignal(t, db, s3, staleFeed, cstMorning(now, 2))
-
-	row := repo.buildRadarRow(board)
-	require.NotEmpty(t, row.AnchorDate)
+	result := repo.buildRadarRow(board)
+	require.False(t, result.degraded)
+	row := result.row
 	assert.Equal(t, dateStr(now), row.AnchorDate)
+	assert.Equal(t, 5, row.TodayClues)
+	assert.Equal(t, 10, row.Last3Clues, "5+3+2")
+	assert.Zero(t, row.Prev3Clues)
+	assert.Equal(t, LaneHeatRuleVersion, row.HeatRuleVersion)
+	assert.InDelta(t, 5.0, row.Attention, 1e-9, "关注度 = 泳道当天热度（5 条线索）")
 
-	// 事件线三窗。
-	assert.Equal(t, 2, row.TodayStories)
-	assert.Equal(t, 4, row.Last3Stories)
-	assert.Zero(t, row.Prev3Stories)
-
-	// 热度三窗 + heat_days：与 ComputeBoardStoryHeatByDay 同轴逐日一致。
-	axis := radarAxis(dateStr(now))
-	byDay, err := repo.ComputeBoardStoryHeatByDay(board, radarHeatDays(axis))
-	require.NoError(t, err)
-	require.Len(t, row.HeatDays, 14)
-	for i, date := range axis {
-		assert.Equal(t, math.Round(byDay[date]*10)/10, row.HeatDays[i], "heat_days[%d] (%s)", i, date)
-	}
-	assert.Equal(t, math.Round(byDay[axis[13]]*10)/10, row.TodayHeat)
-	last3 := byDay[axis[13]] + byDay[axis[12]] + byDay[axis[11]]
-	assert.Equal(t, math.Round(last3*10)/10, row.Last3Heat)
-	prev3 := byDay[axis[10]] + byDay[axis[9]] + byDay[axis[8]]
-	assert.Equal(t, math.Round(prev3*10)/10, row.Prev3Heat)
-	assert.Greater(t, row.TodayHeat, 0.0)
-
-	// 落后源透出。
-	assert.True(t, row.HeatIncomplete)
-	assert.Equal(t, HeatRuleVersion, row.HeatRuleVersion)
-
-	// RadarLane.story_counts 与 timeline story_count 对齐（轴最后三天
-	// = 今日 2、昨日 1、前日 1）。
 	require.Len(t, row.Lanes, 1)
-	counts := row.Lanes[0].StoryCounts
-	assert.Equal(t, 2, counts[13])
-	assert.Equal(t, 1, counts[12])
-	assert.Equal(t, 1, counts[11])
+	counts := row.Lanes[0].ClueCounts
+	assert.Equal(t, 5, counts[13])
+	assert.Equal(t, 3, counts[12])
+	assert.Equal(t, 2, counts[11])
 	assert.Zero(t, counts[10])
+	assert.Equal(t, 10, row.Lanes[0].ThreadCount14d)
 
-	// 无 signals 的版块：热度全 0 不报错。
-	coldBoard := seedTestBoardNamed(t, db, "radar-cold")
-	coldReport := seedTestReport(t, db, coldBoard, now)
-	coldTopic := seedLaneDynamicsTopic(t, db, coldBoard, "冷泳道", TopicStatusActive, 9, now)
-	coldSec := seedTestSection(t, db, coldReport, "cold-sec")
-	assignSection(t, db, coldSec, coldTopic.ID)
-	seedLaneStoryThread(t, db, coldReport, coldSec, "冷事件", nil, ThreadScopeSingle, nil)
-	coldRow := repo.buildRadarRow(coldBoard)
-	for i, v := range coldRow.HeatDays {
-		assert.Zero(t, v, "heat_days[%d] 无 signals 应为 0", i)
+	// 退役字段不再出现在雷达响应里。
+	overview, err := repo.GetBoardRadarOverview(context.Background())
+	require.NoError(t, err)
+	data, err := json.Marshal(overview)
+	require.NoError(t, err)
+	payload := string(data)
+	for _, retired := range []string{"today_stories", "last3_stories", "prev3_stories", "today_heat", "last3_heat", "prev3_heat", "heat_days", "story_counts", "stories_backfilled", "story_identity_state", "heat_incomplete", "top_stories", "warming_count", "cross_day_story_count", "\"stories\""} {
+		assert.NotContains(t, payload, retired, "退役字段不得再下发：%s", retired)
 	}
-	assert.Zero(t, coldRow.TodayHeat)
-	assert.Zero(t, coldRow.Last3Heat)
-	assert.Zero(t, coldRow.Prev3Heat)
-	assert.Zero(t, coldRow.Attention)
-	assert.False(t, coldRow.HeatIncomplete)
-	assert.Equal(t, 1, coldRow.TodayStories, "未回填降级：非综合稿线程数作上界")
-	assert.False(t, coldRow.StoriesBackfilled, "未回填降级：today_stories 为非综合稿上界，UI 须标注")
 }
 
-// TestRadarTopLanesFilterByStoryCountNotThreadCount（review R-3 /
-// specs/workshop-radar 行构成「前 3 条泳道的 14 天事件线密度」）：泳道
-// 筛选键是事件线数（StoryCounts 之和），不再是线索数——线索多但事件线
-// 少的泳道不得把「线索少但事件线多」的泳道挤出前 3。
-// 泳道 A：4 线索全挂同一条事件线（thread=4、story=1）；泳道 B：2 线索
-// 挂 2 条事件线（thread=2、story=2）——按线索数 B 排第 4 被截，按事件线
-// 数 B 排第 1 在列；C/D 各 3 线索 1 事件线填充截断位。
-func TestRadarTopLanesFilterByStoryCountNotThreadCount(t *testing.T) {
+// TestBoardRadarTopLanesFilterByClueCount（task 1.5 / specs/workshop-radar 行构成）：
+// 前 3 条泳道按 14 天线索合计筛选（与 lane-dynamics 次键同口径），section 数
+// 不参与——section 多但线索少的泳道不得挤掉线索多的泳道。
+func TestBoardRadarTopLanesFilterByClueCount(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 	now := time.Now()
 	board := seedTestBoardNamed(t, db, "radar-toplane")
 	report := seedTestReport(t, db, board, now)
 
-	// seedTopLane 建 `sections` 条 section 各 1 线索，threads 轮流挂
-	// stories——线索数=sections、事件线数=len(stories)。
-	seedTopLane := func(label string, sections int, stories ...uint) BoardPersistentTopic {
+	seedTopLane := func(label string, sections, threadsPerSection int) BoardPersistentTopic {
 		topic := seedLaneDynamicsTopic(t, db, board, label, TopicStatusActive, 9, now)
 		for i := 0; i < sections; i++ {
-			sec := seedTestSection(t, db, report, fmt.Sprintf("%s-sec-%d", label, i))
+			sec := seedTestSection(t, db, report, label+"-sec")
 			assignSection(t, db, sec, topic.ID)
-			seedLaneStoryThread(t, db, report, sec, label, uintPtr(stories[i%len(stories)]), ThreadScopeSingle, nil)
+			for j := 0; j < threadsPerSection; j++ {
+				seedLaneThread(t, db, report, sec, "线索")
+			}
 		}
 		return topic
 	}
 
-	// 创建顺序 A→B→C→D ⇒ topic id ASC，同值稳定次序可预期。
-	storyA := seedLaneStoryLine(t, db, board, "top-a", 1, nil)
-	topicA := seedTopLane("A泳道", 4, storyA)
-	storyB1 := seedLaneStoryLine(t, db, board, "top-b1", 1, nil)
-	storyB2 := seedLaneStoryLine(t, db, board, "top-b2", 1, nil)
-	topicB := seedTopLane("B泳道", 2, storyB1, storyB2)
-	storyC := seedLaneStoryLine(t, db, board, "top-c", 1, nil)
-	seedTopLane("C泳道", 3, storyC)
-	storyD := seedLaneStoryLine(t, db, board, "top-d", 1, nil)
-	topicD := seedTopLane("D泳道", 3, storyD)
+	topicA := seedTopLane("A泳道", 4, 1) // 4 线索 / 4 section
+	topicB := seedTopLane("B泳道", 2, 3) // 6 线索 / 2 section
+	topicC := seedTopLane("C泳道", 3, 1) // 3 线索
+	topicD := seedTopLane("D泳道", 1, 2) // 2 线索
 
-	row := repo.buildRadarRow(board)
-	require.Len(t, row.Lanes, 3, "4 条泳道截前 3")
-
-	// B（线索 2 事件线 2）必须在列且居首；A 在列；D（线索 3 事件线 1）被截。
-	assert.Equal(t, topicB.ID, row.Lanes[0].TopicID, "事件线最多的泳道居首")
-	assert.Equal(t, 2, sumRadar(row.Lanes[0].StoryCounts), "B 泳道 14 天事件线密度 = 2")
+	result := repo.buildRadarRow(board)
+	require.False(t, result.degraded)
+	require.Len(t, result.row.Lanes, 3, "4 条泳道截前 3")
+	assert.Equal(t, topicB.ID, result.row.Lanes[0].TopicID, "线索最多的泳道居首")
+	assert.Equal(t, topicA.ID, result.row.Lanes[1].TopicID)
+	assert.Equal(t, topicC.ID, result.row.Lanes[2].TopicID)
 	inLane := func(topicID uint) bool {
-		for _, lane := range row.Lanes {
+		for _, lane := range result.row.Lanes {
 			if lane.TopicID == topicID {
 				return true
 			}
 		}
 		return false
 	}
-	assert.True(t, inLane(topicA.ID), "A（线索多事件线少）仍在列")
-	assert.False(t, inLane(topicD.ID), "D 被截：同事件线数时保持传入稳定次序")
+	assert.False(t, inLane(topicD.ID), "线索最少的泳道被截")
+}
 
-	// 交叉验证线索数关系：A 线索 4 > B 线索 2——旧 ThreadCount14d 排序
-	// 会把 B 挤出前 3，本测试的排序键不得再是它。
-	dynamics, err := repo.GetBoardLaneDynamics(board, LaneDynamicsDefaultDays)
-	require.NoError(t, err)
-	var threadA, threadB int
-	for _, lane := range dynamics.Lanes {
-		switch lane.TopicID {
-		case topicA.ID:
-			threadA = lane.ThreadCount14d
-		case topicB.ID:
-			threadB = lane.ThreadCount14d
-		}
+// TestBoardRadarTopLanesSortLimitAndDegradation 覆盖清单段的纯函数规则：
+// 线索数降序 → 稳定键（版块名 → 泳道名 → 泳道 id）→ 上限 8；滞后版块保留
+// 自己的锚点日；延迟 / 计算失败的版块缺席并把清单标记为不完整。
+func TestBoardRadarTopLanesSortLimitAndDegradation(t *testing.T) {
+	rows := []RadarBoardRow{
+		{BoardID: 1, Label: "乙版块", ReportDate: "2026-11-06", AnchorDate: "2026-11-06"},
+		{BoardID: 2, Label: "甲版块", ReportDate: "2026-11-05", AnchorDate: "2026-11-05"}, // 滞后
+		{BoardID: 3, Label: "丙版块", ReportDate: "2026-11-06", DataDelayed: true},
+		{BoardID: 4, Label: "丁版块", ReportDate: "2026-11-06"},
 	}
-	assert.Equal(t, 4, threadA, "fixture：A 泳道 4 线索")
-	assert.Equal(t, 2, threadB, "fixture：B 泳道仅 2 线索（旧排序会把它挤出前 3）")
+	results := map[uint]radarBoardLanes{
+		1: {anchorDate: "2026-11-06", lanes: []RadarLane{
+			{TopicID: 11, Label: "乙一", ClueCounts: append(make([]int, 13), 8)},
+			{TopicID: 12, Label: "乙二", ClueCounts: append(make([]int, 13), 8)},
+		}},
+		2: {anchorDate: "2026-11-05", lanes: []RadarLane{
+			{TopicID: 21, Label: "甲一", ClueCounts: append(make([]int, 13), 12)},
+		}},
+		3: {degraded: true},
+		4: {anchorDate: "2026-11-06", degraded: true},
+	}
+	out := finalizeRadar(&RadarOverview{Boards: rows})
+	out.Boards = rows
+	finalizeRadarTopLanes(out, results)
+
+	require.NotNil(t, out.TopLanes)
+	assert.True(t, out.TopLanes.Partial, "延迟 / 计算失败的版块让清单不完整")
+	assert.Equal(t, []uint{3, 4}, out.TopLanes.DegradedBoardIDs)
+	assert.Equal(t, []uint{2}, out.TopLanes.LaggingBoardIDs)
+
+	require.Len(t, out.TopLanes.Lanes, 3)
+	assert.Equal(t, uint(21), out.TopLanes.Lanes[0].TopicID, "12 条线索最多")
+	assert.Equal(t, "甲版块", out.TopLanes.Lanes[0].BoardLabel)
+	assert.Equal(t, "2026-11-05", out.TopLanes.Lanes[0].AnchorDate, "滞后版块显示自己的锚点日")
+	// 同为 8 条线索：稳定键按版块名（同为乙版块）→ 泳道名升序（乙一 < 乙二）。
+	assert.Equal(t, uint(11), out.TopLanes.Lanes[1].TopicID)
+	assert.Equal(t, uint(12), out.TopLanes.Lanes[2].TopicID)
+
+	// 上限 8：第 9 名不展示。
+	many := make([]RadarLane, 0, 9)
+	for i := 1; i <= 9; i++ {
+		clues := make([]int, 14)
+		clues[13] = 20 - i
+		many = append(many, RadarLane{TopicID: uint(i), Label: "泳道", ClueCounts: clues})
+	}
+	out = finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{{BoardID: 9, Label: "版块", ReportDate: "2026-11-06"}}})
+	out.Boards = []RadarBoardRow{{BoardID: 9, Label: "版块", ReportDate: "2026-11-06"}}
+	finalizeRadarTopLanes(out, map[uint]radarBoardLanes{9: {anchorDate: "2026-11-06", lanes: many}})
+	require.Len(t, out.TopLanes.Lanes, radarTopLaneLimit)
+	assert.Equal(t, uint(1), out.TopLanes.Lanes[0].TopicID)
+	assert.Equal(t, 19, out.TopLanes.Lanes[0].ClueCount)
+	assert.False(t, out.TopLanes.Partial)
 }

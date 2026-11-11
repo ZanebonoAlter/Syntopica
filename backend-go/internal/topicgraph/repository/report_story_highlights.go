@@ -2,200 +2,64 @@ package repository
 
 import (
 	"encoding/json"
-	"errors"
-	"math"
-	"sort"
 	"time"
 
-	"gorm.io/gorm"
+	"syntopica-backend/internal/models"
 )
 
-// ReportStoryCandidate is a current-report identity, not an alternative heat source.
-type ReportStoryCandidate struct {
-	StoryID          uint      `json:"story_id"`
-	StoryTitle       string    `json:"story_title"`
-	ParticipantCount int       `json:"participant_count"`
-	StoryHeat        float64   `json:"story_heat"`
-	TagIDs           []uint    `json:"tag_ids"`
-	HeatAsOf         time.Time `json:"-"`
-	HeatIncomplete   bool      `json:"-"`
-}
+// 今日重点（highlights）的读/写与聚簇快照解析
+// （retire-story-adopt-event-metrics D13/D14）。
+//
+// 候选源已从「事件线 Top 8」换成「当天同事件聚簇 Top 8」：聚簇在 service 层
+// 现算（不落库），本文件只负责快照落库、数组归一与 cluster_id 的同版块一跳
+// 解析。事件线候选 / 昨日重点徽标 / story_heat 快照整体退役。
 
-// highlightStorySurvivors rejects broken, cross-board (not loaded), cyclic and
-// multi-hop references. It never changes stored identity or manual assignment.
-func highlightStorySurvivors(stories []BoardStory) map[uint]uint {
-	edges := make([]storyIdentityEdge, 0, len(stories))
-	for _, s := range stories {
-		edges = append(edges, storyIdentityEdge{ID: s.ID, MergedInto: s.MergedInto, Status: s.Status})
-	}
-	return strictStorySurvivors(edges)
-}
-
-func (r *TopicGraphRepository) reportStoryIdentities(boardID uint) ([]BoardStory, map[uint]uint, error) {
-	var stories []BoardStory
-	err := r.db.Select("id", "title", "merged_into", "status").Where("board_id = ?", boardID).Find(&stories).Error
-	return stories, highlightStorySurvivors(stories), err
-}
-
-// YesterdayHighlightStoryIDs uses the exact preceding Beijing calendar day,
-// never prev_report_id or the nearest report. Old JSON naturally yields no ids.
-func (r *TopicGraphRepository) YesterdayHighlightStoryIDs(boardID uint, date time.Time) (map[uint]bool, error) {
-	day := date.In(storyHeatZone).AddDate(0, 0, -1).Format("2006-01-02")
-	var report BoardDailyReport
-	out := make(map[uint]bool)
-	err := r.db.Select("highlights").Where("semantic_board_id = ? AND period_date = ? AND status IN ?", boardID, day, []string{"completed", "done"}).Take(&report).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return out, nil
-	}
-	if err != nil {
-		return nil, err
-	}
+// resolveReportHighlightClusters validates every highlight's cluster_id with ONE
+// hop in the same board: the id must resolve to an event tag that is a member of
+// this board. Broken / cross-board / retired references are nulled out (never
+// rewritten in the DB — the stored JSON keeps its generation-time snapshot).
+func (r *TopicGraphRepository) resolveReportHighlightClusters(report *BoardDailyReport) error {
+	normalizeHighlightsArray(&report.Highlights)
 	var highlights []Highlight
-	if err = json.Unmarshal(report.Highlights, &highlights); err != nil {
-		return out, nil
+	if err := json.Unmarshal(report.Highlights, &highlights); err != nil {
+		return nil // unparseable historical payload: keep the normalized [] as-is
 	}
-	_, ids, err := r.reportStoryIdentities(boardID)
-	if err != nil {
-		return nil, err
-	}
-	for _, h := range highlights {
-		if h.StoryID != nil {
-			if id := ids[*h.StoryID]; id != 0 {
-				out[id] = true
-			}
+	ids := make([]uint, 0, len(highlights))
+	for _, highlight := range highlights {
+		if highlight.ClusterID != nil {
+			ids = appendUniqueUint(ids, *highlight.ClusterID)
 		}
 	}
-	return out, nil
-}
-
-func (r *TopicGraphRepository) resolveReportHighlightIdentities(report *BoardDailyReport) error {
-	_, ids, err := r.reportStoryIdentities(report.SemanticBoardID)
+	valid := make(map[uint]bool, len(ids))
+	if len(ids) > 0 {
+		var rows []struct {
+			ID uint
+		}
+		if err := r.db.Table("topic_tags AS tt").
+			Select("tt.id").
+			Joins("JOIN topic_tag_board_labels AS tbl ON tbl.topic_tag_id = tt.id AND tbl.semantic_board_id = ?", report.SemanticBoardID).
+			Where("tt.id IN ? AND tt.category = ?", ids, models.TagCategoryEvent).
+			Scan(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			valid[row.ID] = true
+		}
+	}
+	for i := range highlights {
+		if highlights[i].ClusterID != nil && !valid[*highlights[i].ClusterID] {
+			highlights[i].ClusterID = nil
+		}
+	}
+	if highlights == nil {
+		highlights = []Highlight{}
+	}
+	payload, err := json.Marshal(highlights)
 	if err != nil {
 		return err
 	}
-	yesterday, err := r.YesterdayHighlightStoryIDs(report.SemanticBoardID, report.PeriodDate)
-	if err != nil {
-		return err
-	}
-	var highlights []Highlight
-	if json.Unmarshal(report.Highlights, &highlights) == nil {
-		for i := range highlights {
-			h := &highlights[i]
-			h.IsProgress = false
-			if h.StoryID != nil {
-				id := ids[*h.StoryID]
-				h.StoryID = nil
-				if id != 0 {
-					h.StoryID = &id
-					h.IsProgress = yesterday[id]
-				}
-			}
-		}
-		if highlights == nil {
-			highlights = []Highlight{}
-		}
-		report.Highlights, _ = json.Marshal(highlights)
-	}
-	for i := range report.Sections {
-		for j := range report.Sections[i].Threads {
-			t := &report.Sections[i].Threads[j]
-			if t.StoryID != nil {
-				id := ids[*t.StoryID]
-				t.StoryID = nil
-				if id != 0 {
-					t.StoryID = &id
-				}
-			}
-		}
-	}
+	report.Highlights = payload
 	return nil
-}
-
-func rankReportStoryCandidates(candidates []ReportStoryCandidate, evidence boardHeatEvidence, at time.Time) []ReportStoryCandidate {
-	heat, _ := evidence.compute(at)
-	participants := make(map[storyParticipant]bool)
-	counts := make(map[uint]int)
-	for _, s := range evidence.signals {
-		id := evidence.survivors[s.StoryID]
-		if id == 0 || s.ObservedAt.After(at) || s.ObservedAt.Before(at.Add(-StoryHeatWindowHours*time.Hour)) {
-			continue
-		}
-		key := storyParticipant{id, heatParticipantKey(s.ContentKey, s.ParticipantKey)}
-		if !participants[key] {
-			participants[key] = true
-			counts[id]++
-		}
-	}
-	for i := range candidates {
-		candidates[i].StoryHeat = heat[candidates[i].StoryID]
-		candidates[i].ParticipantCount = counts[candidates[i].StoryID]
-		candidates[i].HeatAsOf = at
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		a, b := candidates[i], candidates[j]
-		if a.StoryHeat != b.StoryHeat {
-			return a.StoryHeat > b.StoryHeat
-		}
-		if a.ParticipantCount != b.ParticipantCount {
-			return a.ParticipantCount > b.ParticipantCount
-		}
-		return a.StoryID < b.StoryID
-	})
-	// No top-8 truncation here: the service confirms usable facts first and
-	// only then caps the prompt set (surface-story-heat-in-report-top defect
-	// fix — 先确认有可用事实再截 top 8，前 8 全无事实时后续有事实的候选补入).
-	return candidates
-}
-
-// ReportStoryCandidates filters only display eligibility; flash/hidden evidence
-// still contributes to the independent heat query.
-func (r *TopicGraphRepository) ReportStoryCandidates(boardID, reportID uint, date time.Time) ([]ReportStoryCandidate, error) {
-	stories, ids, err := r.reportStoryIdentities(boardID)
-	if err != nil {
-		return nil, err
-	}
-	titles := make(map[uint]string)
-	for _, s := range stories {
-		titles[s.ID] = s.Title
-	}
-	var threads []DailyReportThread
-	if err = r.db.Select("story_id", "tag_ids").Where("report_id = ? AND scope = ? AND display_tier = ? AND story_id IS NOT NULL", reportID, ThreadScopeSingle, ThreadDisplayTierBody).Find(&threads).Error; err != nil {
-		return nil, err
-	}
-	byID := make(map[uint]ReportStoryCandidate)
-	for _, thread := range threads {
-		id := ids[*thread.StoryID]
-		if id == 0 {
-			continue
-		}
-		c := byID[id]
-		c.StoryID = id
-		c.StoryTitle = titles[id]
-		for _, tag := range jsonUintIDs(thread.TagIDs) {
-			c.TagIDs = appendUniqueUint(c.TagIDs, tag)
-		}
-		byID[id] = c
-	}
-	candidates := make([]ReportStoryCandidate, 0, len(byID))
-	for _, c := range byID {
-		candidates = append(candidates, c)
-	}
-	at := laneHeatAnchorEnd(date)
-	evidence, err := r.loadBoardHeatEvidence(boardID, at.Add(-StoryHeatWindowHours*time.Hour), at)
-	if err != nil {
-		return nil, err
-	}
-	// Use the strict one-hop identity map for candidate evidence as well.
-	evidence.survivors = ids
-	candidates = rankReportStoryCandidates(candidates, evidence, at)
-	coverage, err := r.BoardHeatCoverage(boardID, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	for i := range candidates {
-		candidates[i].HeatIncomplete = coverage.Incomplete
-	}
-	return candidates, nil
 }
 
 // FinalizeReportHighlights is one conditional SQL write (an implicit short
@@ -228,7 +92,22 @@ func (r *TopicGraphRepository) FinalizeReportHighlights(report *BoardDailyReport
 	return true, nil
 }
 
-func (c ReportStoryCandidate) Highlight(title, reason string, tags []uint) Highlight {
-	id, p, h, incomplete, at := c.StoryID, c.ParticipantCount, math.Round(c.StoryHeat*10)/10, c.HeatIncomplete, c.HeatAsOf
-	return Highlight{StoryID: &id, Title: title, Reason: reason, TagIDs: tags, ParticipantCount: &p, StoryHeat: &h, HeatRuleVersion: HeatRuleVersion, HeatAsOf: &at, HeatIncomplete: &incomplete}
+// EventHighlight builds the persisted highlight snapshot of one cluster:
+// cluster_id (representative tag id), content-identity article count, the real
+// clustering mode label, the data cutoff day and the research instant. All of
+// these values are server-computed — the model never supplies numbers.
+func EventHighlight(cluster EventCluster, title, reason string, tags []uint) Highlight {
+	id := cluster.ClusterID
+	count := cluster.ArticleCount
+	researchAt := cluster.ResearchAt
+	return Highlight{
+		ClusterID:    &id,
+		ArticleCount: &count,
+		ClusterMode:  EventClusterModeLabel(cluster.Mode),
+		DataAsOf:     cluster.DataAsOf.Format(time.DateOnly),
+		ResearchAt:   &researchAt,
+		Title:        title,
+		Reason:       reason,
+		TagIDs:       tags,
+	}
 }

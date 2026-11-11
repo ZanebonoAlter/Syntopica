@@ -342,8 +342,11 @@ func TestFillThreadEmbeddingsDateFilter(t *testing.T) {
 	})()
 
 	now := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
-	opts, err := parseOptions([]string{"--fill-thread-embeddings", "--from", "2026-11-01", "--to", "2026-11-10"}, now)
+	// CLI 的写模式在停写后已被 parseOptions 拒绝（task 1.2）；这里直接测回填
+	// 实现本身，所以先用 --dry-run 解析出日期范围再清掉 dry-run。
+	opts, err := parseOptions([]string{"--fill-thread-embeddings", "--from", "2026-11-01", "--to", "2026-11-10", "--dry-run"}, now)
 	require.NoError(t, err)
+	opts.DryRun = false
 	require.True(t, opts.ExplicitFrom)
 	require.True(t, opts.ExplicitTo)
 
@@ -362,8 +365,9 @@ func TestFillThreadEmbeddingsDefaultDateWindowNotApplied(t *testing.T) {
 	seedFillThread(t, db, 1, 1, "窗口内的线程", "")
 
 	now := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
-	opts, err := parseOptions([]string{"--fill-thread-embeddings"}, now)
+	opts, err := parseOptions([]string{"--fill-thread-embeddings", "--dry-run"}, now)
 	require.NoError(t, err)
+	opts.DryRun = false // 同上：直接测回填实现
 	require.False(t, opts.ExplicitFrom)
 	require.False(t, opts.ExplicitTo)
 

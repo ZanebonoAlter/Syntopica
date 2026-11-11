@@ -3,13 +3,11 @@ package repository
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"time"
 
 	"gorm.io/gorm/clause"
 
 	"syntopica-backend/internal/platform/logging"
-	"syntopica-backend/internal/platform/textutil"
 )
 
 // ── 泳道动态（overview-lane-dynamics）────────────────────────────────────────
@@ -246,24 +244,19 @@ type LaneDynamicsTimelineSection struct {
 // chronological order; the date↔event mapping comes from the backend so the
 // frontend never infers it — spec).
 //
-// Story aggregates (add-event-story-heat task 5.1): StoryCount is the day's
-// DEDUPLICATED event-line count across ALL of the lane's sections (thread
-// story_id resolved through merged_into survivors — the same story split into
-// sibling buckets counts once, never a bucket max). Degraded boards
-// (stories_backfilled=false) report the day's non-composite thread count as
-// an upper bound instead of masquerading as zero. MaxParticipantCount is the
-// hottest survivor's board_stories.participant_count (degraded: distinct
-// feeds behind the day's non-composite threads). UnassignedEventCount counts
-// story_id-NULL non-composite threads — title/aria payload only, never a
-// heat or ordering input.
+// ClueCount is the day's clue (thread) total across ALL of the lane's sections
+// — the sum over theme buckets, never a bucket peak. It is the ONE quantity the
+// matrix day cell, the evolution node and the top time-window curve display
+// (retire-story-adopt-event-metrics D4), and it is the input of the same-day
+// lane heat. Composite (综合稿) threads are excluded — a multi-event piece must
+// not inflate any single lane's count. Event-line aggregates (story count,
+// hottest story identity, unassigned events, participant max) are retired: no
+// new event identity is produced any more (spec: SHALL NOT 再下发).
 type LaneDynamicsTimelineDay struct {
-	Date                 string                        `json:"date"` // YYYY-MM-DD
-	Sections             []LaneDynamicsTimelineSection `json:"sections"`
-	StoryCount           int                           `json:"story_count"`
-	MaxParticipantCount  int                           `json:"max_participant_count"`
-	HottestStoryID       *uint                         `json:"hottest_story_id"`
-	HottestStoryTitle    string                        `json:"hottest_story_title"`
-	UnassignedEventCount int                           `json:"unassigned_event_count"`
+	Date     string                        `json:"date"` // YYYY-MM-DD
+	Sections []LaneDynamicsTimelineSection `json:"sections"`
+	// ClueCount = 当日线索合计（各主题桶非综合稿 thread 数之和）。
+	ClueCount int `json:"clue_count"`
 }
 
 // LaneDynamicsSnapshot is the settled rolling summary; nil on the lane means
@@ -286,48 +279,51 @@ type LaneDynamicsLane struct {
 	// display only. Ordering uses lane_heat (see GetBoardLaneDynamics),
 	// so a day split into several sibling buckets cannot inflate a lane's rank.
 	SectionCount14d int `json:"section_count_14d"`
-	// ThreadCount14d is the in-window clue (thread) count — kept for display /
-	// compatibility (a bucket split must not masquerade as more heat).
+	// ThreadCount14d is the in-window clue total (sum of the daily clue counts)
+	// — the ordering tie-breaker after lane heat (a bucket split or a section
+	// count must not masquerade as more heat).
 	ThreadCount14d int `json:"thread_count_14d"`
-	// LaneHeat is ComputeBoardHeat's laneHeat[topic_id] at the window's
-	// anchorEnd (72h half-life / 14d window — story-heat evidence, never
-	// report geometry). Zero when the lane has no signal evidence.
-	LaneHeat float64 `json:"lane_heat"`
-	// StoryCount14d sums the window's daily StoryCount (deduplicated event
-	// lines; degraded boards: sum of non-composite upper bounds).
-	StoryCount14d int                       `json:"story_count_14d"`
-	Snapshot      *LaneDynamicsSnapshot     `json:"snapshot"`
-	Timeline      []LaneDynamicsTimelineDay `json:"timeline"`
+	// LaneHeat is the same-day heat from lane_heat_repository.go
+	// (heat-v2-lane-clues-1d): anchor-day clue count × 1.0 for active lanes,
+	// × lane_heat_candidate_weight for candidates. No half-life, no cross-day
+	// accumulation — it only expresses today.
+	LaneHeat float64                   `json:"lane_heat"`
+	Snapshot *LaneDynamicsSnapshot     `json:"snapshot"`
+	Timeline []LaneDynamicsTimelineDay `json:"timeline"`
 }
 
 // LaneDynamicsCandidate is one candidate-bar entry (只读提示，转正走话题管理).
+// The anchor-day clue count and its weighted heat travel with the entry so the
+// board attention can include candidate lanes at lane_heat_candidate_weight
+// without any consumer re-deriving the formula (design D7/D8).
 type LaneDynamicsCandidate struct {
 	TopicID      uint   `json:"topic_id"`
 	Label        string `json:"label"`
 	LastSeenDate string `json:"last_seen_date"`
 	RecentHint   string `json:"recent_hint"` // 最新 section 标题
+	// AnchorDate is the board's own anchor day the clue count was measured on.
+	AnchorDate string `json:"anchor_date"`
+	// ClueCount is that lane's clue total on the anchor day (0 is a real zero).
+	ClueCount int `json:"clue_count"`
+	// LaneHeat = ClueCount × lane_heat_candidate_weight.
+	LaneHeat float64 `json:"lane_heat"`
 }
 
 // LaneDynamicsResponse is the GET /semantic-boards/:id/lane-dynamics payload.
 // Empty states (tasks 2.2): no reports → HasReports=false + empty non-nil
 // lanes/candidates; reports but no active lanes → HasReports=true + empty lanes.
 //
-// Heat meta (add-event-story-heat task 5.1): StoriesBackfilled tells whether
-// ANY in-window thread carries a story_id — false ⇒ every day degrades to
-// non-composite upper bounds and the matrix must flag 「事件身份未回填」.
-// HeatRuleVersion pins the deterministic formula behind lane_heat.
-// HeatIncomplete / HeatStaleFeedIDs mirror BoardHeatCoverage (stale feeds ⇒
-// heat evidence may lag); coverage failure degrades to false/empty with a
-// warning and never blocks the response.
+// HeatRuleVersion pins the deterministic formula behind lane_heat
+// (heat-v2-lane-clues-1d). The story-identity meta (stories_backfilled) and the
+// story-signal coverage markers (heat_incomplete / heat_stale_feed_ids) are
+// retired with the story heat they described: the new heat is report geometry,
+// it has no feed-freshness dependency and no “unbackfilled” state.
 type LaneDynamicsResponse struct {
-	WindowDays        int                     `json:"window_days"`
-	HasReports        bool                    `json:"has_reports"`
-	StoriesBackfilled bool                    `json:"stories_backfilled"`
-	HeatRuleVersion   string                  `json:"heat_rule_version"`
-	HeatIncomplete    bool                    `json:"heat_incomplete"`
-	HeatStaleFeedIDs  []uint                  `json:"heat_stale_feed_ids"`
-	Lanes             []LaneDynamicsLane      `json:"lanes"`
-	Candidates        []LaneDynamicsCandidate `json:"candidates"`
+	WindowDays      int                     `json:"window_days"`
+	HasReports      bool                    `json:"has_reports"`
+	HeatRuleVersion string                  `json:"heat_rule_version"`
+	Lanes           []LaneDynamicsLane      `json:"lanes"`
+	Candidates      []LaneDynamicsCandidate `json:"candidates"`
 }
 
 // laneSectionRow mirrors the windowed anchored-section projection shared by
@@ -358,262 +354,44 @@ func (r *TopicGraphRepository) listLaneWindowSections(boardID uint, from, to tim
 	return rows, nil
 }
 
+// laneSectionThreads is one section's thread projection: the titles used for
+// the top-N / folded display, plus the clue count (non-composite threads) that
+// feeds the day total and the same-day heat.
+type laneSectionThreads struct {
+	Titles []string
+	Clues  int
+}
+
 // listLaneSectionThreads batch-loads thread titles for the given sections in
-// generation order (id ASC) so the top-N + fold split is deterministic.
-func (r *TopicGraphRepository) listLaneSectionThreads(sectionIDs []uint) (map[uint][]string, error) {
-	out := make(map[uint][]string, len(sectionIDs))
+// generation order (id ASC) so the top-N + fold split is deterministic. The
+// clue count excludes composite (综合稿) threads — the same exclusion the clue
+// query and the heat formula apply (spec: 综合稿不计线索数).
+func (r *TopicGraphRepository) listLaneSectionThreads(sectionIDs []uint) (map[uint]laneSectionThreads, error) {
+	out := make(map[uint]laneSectionThreads, len(sectionIDs))
 	if len(sectionIDs) == 0 {
 		return out, nil
 	}
 	var ths []struct {
 		SectionID uint
 		Title     string
+		Scope     string
 	}
 	if err := r.db.Table("daily_report_threads").
-		Select("section_id, title").
+		Select("section_id, title, scope").
 		Where("section_id IN ?", sectionIDs).
 		Order("id ASC").
 		Scan(&ths).Error; err != nil {
 		return nil, fmt.Errorf("lane dynamics: section threads: %w", err)
 	}
 	for _, th := range ths {
-		out[th.SectionID] = append(out[th.SectionID], th.Title)
+		entry := out[th.SectionID]
+		entry.Titles = append(entry.Titles, th.Title)
+		if th.Scope != ThreadScopeComposite {
+			entry.Clues++
+		}
+		out[th.SectionID] = entry
 	}
 	return out, nil
-}
-
-// laneThreadStat is one thread's story-identity projection — everything the
-// day-level story aggregates (task 5.1) need beyond the title list.
-type laneThreadStat struct {
-	StoryID           *uint
-	Scope             string
-	RelatedArticleIDs JSON
-}
-
-// listLaneSectionThreadStats batch-loads the story/scope/evidence columns of
-// the given sections' threads in generation order (id ASC). Standard GORM
-// scan — PG/SQLite compatible.
-func (r *TopicGraphRepository) listLaneSectionThreadStats(sectionIDs []uint) (map[uint][]laneThreadStat, error) {
-	out := make(map[uint][]laneThreadStat, len(sectionIDs))
-	if len(sectionIDs) == 0 {
-		return out, nil
-	}
-	var rows []struct {
-		SectionID         uint
-		StoryID           *uint
-		Scope             string
-		RelatedArticleIDs JSON
-	}
-	if err := r.db.Table("daily_report_threads").
-		Select("section_id, story_id, scope, related_article_ids").
-		Where("section_id IN ?", sectionIDs).
-		Order("id ASC").
-		Scan(&rows).Error; err != nil {
-		return nil, fmt.Errorf("lane dynamics: section thread stats: %w", err)
-	}
-	for _, row := range rows {
-		out[row.SectionID] = append(out[row.SectionID], laneThreadStat{
-			StoryID:           row.StoryID,
-			Scope:             row.Scope,
-			RelatedArticleIDs: row.RelatedArticleIDs,
-		})
-	}
-	return out, nil
-}
-
-// laneStoryRow is the survivor-resolution projection of one board_stories row.
-type laneStoryRow struct {
-	Title            string
-	ID               uint
-	MergedInto       *uint
-	ParticipantCount int
-}
-
-// laneStoryAggregates carries the board-window story evidence shared by every
-// per-day fold (task 5.1). Backfilled boards resolve thread story ids through
-// merged_into to distinct survivors; un-backfilled boards degrade to
-// non-composite counts + content-identity participants (articles lookup).
-type laneStoryAggregates struct {
-	backfilled bool
-	// survivors: thread story id → survivor id (merged_into resolved, cycle-guarded).
-	survivors map[uint]uint
-	// participants: survivor id → board_stories.participant_count.
-	participants map[uint]int
-	titles       map[uint]string
-	// participantByArticle: article id → 参与者去重键（降级模式的证据文章），
-	// 内容身份优先（规范化链接）、feed 兜底——与 story_signals 的
-	// COALESCE(NULLIF(content_key,''), participant_key) 同一口径
-	// （fix-duplicate-article-heat design D3）。
-	participantByArticle map[uint]string
-}
-
-// loadLaneStoryAggregates prepares the fold evidence from the window's thread
-// stats. Survivor resolution loads ALL of the board's stories (same precedent
-// as loadBoardHeatEvidence) so merge chains resolve regardless of which ids
-// the window happens to reference; the merge invariant is one hop, so deeper
-// chains are anomalies — resolved best-effort, warned, cycle-guarded.
-func (r *TopicGraphRepository) loadLaneStoryAggregates(boardID uint, statsBySection map[uint][]laneThreadStat) (laneStoryAggregates, error) {
-	agg := laneStoryAggregates{
-		survivors:            make(map[uint]uint),
-		participants:         make(map[uint]int),
-		titles:               make(map[uint]string),
-		participantByArticle: make(map[uint]string),
-	}
-	articleIDs := make([]uint, 0)
-	for _, stats := range statsBySection {
-		for _, st := range stats {
-			if st.StoryID != nil {
-				agg.backfilled = true
-				continue
-			}
-			if st.Scope != ThreadScopeComposite {
-				for _, id := range jsonUintIDs(st.RelatedArticleIDs) {
-					articleIDs = appendUniqueUint(articleIDs, id)
-				}
-			}
-		}
-	}
-	if agg.backfilled {
-		var stories []laneStoryRow
-		if err := r.db.Table("board_stories").
-			Select("id, title, merged_into, participant_count").
-			Where("board_id = ?", boardID).
-			Scan(&stories).Error; err != nil {
-			return agg, fmt.Errorf("lane dynamics: board stories: %w", err)
-		}
-		byID := make(map[uint]laneStoryRow, len(stories))
-		for _, s := range stories {
-			byID[s.ID] = s
-		}
-		for _, story := range stories {
-			cur, hops, valid := story, 0, true
-			seen := map[uint]bool{cur.ID: true}
-			for cur.MergedInto != nil {
-				next, ok := byID[*cur.MergedInto]
-				if !ok || seen[next.ID] {
-					valid = false
-					break
-				}
-				seen[next.ID] = true
-				cur = next
-				hops++
-			}
-			if !valid {
-				logging.Warnf("lane dynamics: board %d skips unresolvable story %d", boardID, story.ID)
-				continue
-			}
-			if hops > 1 {
-				logging.Warnf("lane dynamics: board %d story %d resolved an unexpected %d-hop merge chain", boardID, story.ID, hops)
-			}
-			agg.survivors[story.ID] = cur.ID
-			agg.participants[cur.ID] = cur.ParticipantCount
-			agg.titles[cur.ID] = cur.Title
-		}
-	} else if len(articleIDs) > 0 {
-		// 未回填降级（design §8.3）：参与者按当日非综合稿 thread 的证据文章
-		// 取「内容身份优先」的去重键——不要用事件行数冒充。
-		// 口径与 story_signals 一致（design D3）：规范化链接相同 → 1 个参与者；
-		// link 为空（内容身份不可判定）→ 退化为 feed:<id>，不同 feed 不合并。
-		// 规范化只在 Go 侧做（textutil.NormalizeArticleLink，链接清洗的唯一
-		// 实现），SQL 侧不再实现一遍。
-		var arts []struct {
-			ID     uint
-			FeedID uint
-			Link   string
-		}
-		if err := r.db.Table("articles").
-			Select("id, feed_id, link").
-			Where("id IN ?", articleIDs).
-			Scan(&arts).Error; err != nil {
-			return agg, fmt.Errorf("lane dynamics: fallback article participants: %w", err)
-		}
-		for _, a := range arts {
-			agg.participantByArticle[a.ID] = heatParticipantKey(
-				textutil.NormalizeArticleLink(a.Link),
-				"feed:"+strconv.FormatUint(uint64(a.FeedID), 10))
-		}
-	}
-	return agg, nil
-}
-
-// hottestStory binds the winner to the same batched evidence as foldDay.
-func (a laneStoryAggregates) hottestStory(sections []laneSectionRow, stats map[uint][]laneThreadStat) (*uint, string) {
-	var winner uint
-	for _, section := range sections {
-		for _, thread := range stats[section.ID] {
-			if thread.StoryID == nil {
-				continue
-			}
-			id := a.survivors[*thread.StoryID]
-			if id != 0 && (winner == 0 || a.participants[id] > a.participants[winner] || (a.participants[id] == a.participants[winner] && id < winner)) {
-				winner = id
-			}
-		}
-	}
-	if winner == 0 {
-		return nil, ""
-	}
-	return &winner, a.titles[winner]
-}
-
-// foldDay turns one lane-day's sections + thread stats into the day-level
-// story aggregates. Backfilled mode counts DISTINCT survivors across sections
-// and takes the max participant_count over them; degraded mode counts
-// non-composite threads (upper bound) and distinct content-identity keys
-// (participants, feed as fallback).
-// Unassigned (non-composite, story_id NULL) is counted in both modes.
-func (a laneStoryAggregates) foldDay(sections []laneSectionRow, statsBySection map[uint][]laneThreadStat) (storyCount, maxParticipants, unassigned int) {
-	daySurvivors := make(map[uint]bool)
-	for _, s := range sections {
-		for _, st := range statsBySection[s.ID] {
-			if st.StoryID == nil {
-				if st.Scope == ThreadScopeComposite {
-					continue // 综合稿不建事件身份，也不算未归组
-				}
-				unassigned++
-				if !a.backfilled {
-					// 降级模式下每个非综合稿 thread 当作一条独立事件线：
-					// 参与者取「该事件自身」的 distinct 内容身份键（feed 兜底），
-					// 再对事件取最大；不能把当天所有事件的键并集当成最热事件
-					// （会虚高颜色）。
-					storyCount++
-					threadParticipants := make(map[string]bool)
-					for _, articleID := range jsonUintIDs(st.RelatedArticleIDs) {
-						if key, ok := a.participantByArticle[articleID]; ok {
-							threadParticipants[key] = true
-						}
-					}
-					if len(threadParticipants) > maxParticipants {
-						maxParticipants = len(threadParticipants)
-					}
-				}
-				continue
-			}
-			survivor, ok := a.survivors[*st.StoryID]
-			if !ok {
-				continue // broken story link — warned at load, never counted
-			}
-			if daySurvivors[survivor] {
-				continue
-			}
-			daySurvivors[survivor] = true
-			if p := a.participants[survivor]; p > maxParticipants {
-				maxParticipants = p
-			}
-		}
-	}
-	if a.backfilled {
-		storyCount = len(daySurvivors)
-	}
-	return storyCount, maxParticipants, unassigned
-}
-
-// laneHeatAnchorEnd converts the window anchor (noon UTC of the latest report
-// day) into that day's CST 23:59:59 — the heat instant lane_heat is computed
-// at (same zone convention as story_heat.go).
-func laneHeatAnchorEnd(anchor time.Time) time.Time {
-	local := anchor.In(storyHeatZone)
-	return time.Date(local.Year(), local.Month(), local.Day(), 23, 59, 59, 0, storyHeatZone)
 }
 
 // GetBoardLaneDynamics is the single-shot aggregate behind
@@ -621,23 +399,26 @@ func laneHeatAnchorEnd(anchor time.Time) time.Time {
 //   - window anchored at the board's MAX(period_date) going back `days` days
 //     (inclusive both ends — same convention as the landscape date axis), NOT
 //     now(), so 态势句素材与时间线同窗 (spec);
-//   - lanes = active ∪ watch-linked (non-archived), ranked by lane_heat DESC
-//     (tie: story_count_14d DESC, then topic id ASC) — the distinct-day /
-//     section-count orderings are retired: bucketing geometry must never
-//     decide rank (add-event-story-heat spec 行序); zero-day (沉寂) lanes are
-//     not returned;
+//   - lanes = active ∪ watch-linked (non-archived), ranked by the same-day
+//     lane heat DESC → in-window clue total DESC → topic id ASC
+//     (retire-story-adopt-event-metrics D4/D6). Section counts, day counts and
+//     event-line counts never decide rank; zero-day (沉寂) lanes are not
+//     returned;
+//   - per-day payload = that day's clue total (buckets summed, composite
+//     threads excluded) — no story count, no hottest-story identity;
 //   - candidates = visible-gate candidates (hit_count >= upgrade_threshold,
-//     FilterVisibleTopics 口径) with their latest section title as hint.
+//     FilterVisibleTopics 口径) with their latest section title as hint, their
+//     anchor-day clue count and its weighted heat (candidates contribute to the
+//     board attention at lane_heat_candidate_weight).
 func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*LaneDynamicsResponse, error) {
 	if days <= 0 {
 		days = LaneDynamicsDefaultDays
 	}
 	resp := &LaneDynamicsResponse{
-		WindowDays:       days,
-		HeatRuleVersion:  HeatRuleVersion,
-		HeatStaleFeedIDs: []uint{},
-		Lanes:            []LaneDynamicsLane{},
-		Candidates:       []LaneDynamicsCandidate{},
+		WindowDays:      days,
+		HeatRuleVersion: LaneHeatRuleVersion,
+		Lanes:           []LaneDynamicsLane{},
+		Candidates:      []LaneDynamicsCandidate{},
 	}
 
 	anchor, ok, err := r.GetBoardReportAnchor(boardID)
@@ -645,22 +426,11 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 		return nil, err
 	}
 	if !ok {
-		// 无日报：空数组非 null（tasks 2.2）。热度字段保持默认（未回填/完
-		// 整/空 stale 列表），不额外探库。
+		// 无日报：空数组非 null（tasks 2.2）。
 		return resp, nil
 	}
 	resp.HasReports = true
 	from := anchor.AddDate(0, 0, -(days - 1))
-
-	// Heat coverage：落后源标记一次取全板，失败降级不阻断（task 5.1）。
-	if coverage, err := r.BoardHeatCoverage(boardID, time.Now()); err != nil {
-		logging.Warnf("lane dynamics: board %d heat coverage degraded: %v", boardID, err)
-	} else {
-		resp.HeatIncomplete = coverage.Incomplete
-		if coverage.StaleFeedIDs != nil {
-			resp.HeatStaleFeedIDs = coverage.StaleFeedIDs
-		}
-	}
 
 	watchLinked, err := r.ListActiveWatchLinkedTopicIDs(boardID)
 	if err != nil {
@@ -736,25 +506,19 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 	if err != nil {
 		return nil, err
 	}
-	statsBySection, err := r.listLaneSectionThreadStats(sectionIDs)
-	if err != nil {
-		return nil, err
-	}
-	storyAgg, err := r.loadLaneStoryAggregates(boardID, statsBySection)
-	if err != nil {
-		return nil, err
-	}
-	resp.StoriesBackfilled = storyAgg.backfilled
 
-	// lane_heat：全板一次取（task 5.1 实现要点 4——不逐 lane 调），锚定窗口
-	// 最新日报日的 CST 23:59:59；时间线为空（无 lane）时跳过探库，热度默认。
+	// 当天热度：口径唯一实现见 lane_heat_repository.go（heat-v2-lane-clues-1d）。
+	// 全板一次聚合锚点日线索数（覆盖 active + candidate），不逐 lane 探库；
+	// 失败降级为 0 热并告警，不阻断响应。
+	candidateWeight := LoadLaneHeatCandidateWeight(r.db)
+	clueByTopic, err := r.CountLaneCluesByDate(boardID, anchor)
+	if err != nil {
+		logging.Warnf("lane dynamics: board %d clue counts degraded: %v", boardID, err)
+		clueByTopic = map[uint]int{}
+	}
 	laneHeat := make(map[uint]float64, len(laneIDs))
-	if len(laneIDs) > 0 {
-		if _, heat, err := r.ComputeBoardHeat(boardID, laneHeatAnchorEnd(anchor)); err != nil {
-			logging.Warnf("lane dynamics: board %d heat compute degraded: %v", boardID, err)
-		} else {
-			laneHeat = heat
-		}
+	for _, id := range laneIDs {
+		laneHeat[id] = ComputeLaneHeat(topicByID[id].Status, clueByTopic[id], candidateWeight)
 	}
 
 	snaps, err := r.GetLaneSnapshotsByTopicIDs(laneIDs)
@@ -771,11 +535,6 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 			SectionCount14d: a.count,
 			LaneHeat:        laneHeat[id],
 			Timeline:        make([]LaneDynamicsTimelineDay, 0, len(a.dates)),
-		}
-		for _, dateSections := range a.byDate {
-			for _, section := range dateSections {
-				lane.ThreadCount14d += len(threadsBySection[section.ID])
-			}
 		}
 		if snap, ok := snaps[id]; ok {
 			lane.Snapshot = &LaneDynamicsSnapshot{
@@ -795,44 +554,40 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 			dateKey := a.dates[i]
 			day := LaneDynamicsTimelineDay{Date: dateKey, Sections: []LaneDynamicsTimelineSection{}}
 			for _, s := range a.byDate[dateKey] {
-				titles := threadsBySection[s.ID]
-				events := titles
+				entry := threadsBySection[s.ID]
+				events := entry.Titles
 				if len(events) > LaneTimelineEventsPerSection {
 					events = events[:LaneTimelineEventsPerSection]
 				}
 				if events == nil {
 					events = []string{}
 				}
-				folded := len(titles) - len(events)
+				folded := len(entry.Titles) - len(events)
 				day.Sections = append(day.Sections, LaneDynamicsTimelineSection{
 					SectionID:   s.ID,
 					Label:       s.ClusterLabel,
-					ThreadCount: len(titles),
+					ThreadCount: len(entry.Titles),
 					Events:      events,
 					FoldedCount: folded,
 				})
+				// 当日线索合计 = 各主题桶非综合稿线索数之和（不取桶峰值）。
+				day.ClueCount += entry.Clues
 			}
-			day.StoryCount, day.MaxParticipantCount, day.UnassignedEventCount =
-				storyAgg.foldDay(a.byDate[dateKey], statsBySection)
-			lane.StoryCount14d += day.StoryCount
-			day.HottestStoryID, day.HottestStoryTitle = storyAgg.hottestStory(a.byDate[dateKey], statsBySection)
+			lane.ThreadCount14d += day.ClueCount
 			lane.Timeline = append(lane.Timeline, day)
 		}
 		resp.Lanes = append(resp.Lanes, lane)
 	}
 
-	// Rank by lane_heat DESC (72h/14d story-signal decay — the only heat
-	// ordering), then story_count_14d DESC, then topic id ASC for
-	// deterministic output (add-event-story-heat spec 行序). The former
-	// distinct-anchor-day / last-hit-date ordering is retired: intra-lane
-	// theme bucketing splits one day into several sections, so any day/section
-	// geometry sort would reward "content that happened to be split more".
+	// 行序：泳道当天热度降序 → 全窗线索合计降序 → topic id 升序（spec）。
+	// section 条数 / 出现天数 / 事件线数一律不参与排序——泳道内主题分桶会把
+	// 同一天拆成多条 section，任何几何排序都会奖励「当天拆得多」的泳道。
 	sort.SliceStable(resp.Lanes, func(i, j int) bool {
 		if resp.Lanes[i].LaneHeat != resp.Lanes[j].LaneHeat {
 			return resp.Lanes[i].LaneHeat > resp.Lanes[j].LaneHeat
 		}
-		if resp.Lanes[i].StoryCount14d != resp.Lanes[j].StoryCount14d {
-			return resp.Lanes[i].StoryCount14d > resp.Lanes[j].StoryCount14d
+		if resp.Lanes[i].ThreadCount14d != resp.Lanes[j].ThreadCount14d {
+			return resp.Lanes[i].ThreadCount14d > resp.Lanes[j].ThreadCount14d
 		}
 		return resp.Lanes[i].TopicID < resp.Lanes[j].TopicID
 	})
@@ -863,13 +618,18 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 				hintByTopic[h.TopicID] = h.ClusterLabel
 			}
 		}
+		anchorDate := NormalizeReportDate(anchor).Format("2006-01-02")
 		for _, id := range candIDs {
 			t := topicByID[id]
+			clues := clueByTopic[id]
 			resp.Candidates = append(resp.Candidates, LaneDynamicsCandidate{
 				TopicID:      id,
 				Label:        t.Label,
 				LastSeenDate: NormalizeReportDate(t.LastSeenDate).Format("2006-01-02"),
 				RecentHint:   hintByTopic[id],
+				AnchorDate:   anchorDate,
+				ClueCount:    clues,
+				LaneHeat:     ComputeLaneHeat(TopicStatusCandidate, clues, candidateWeight),
 			})
 		}
 		// Stable order: most recently seen first (tie: id ASC).

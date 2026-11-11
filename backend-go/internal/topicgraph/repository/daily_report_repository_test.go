@@ -3,6 +3,7 @@ package repository
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/testutil"
+	tagmodels "syntopica-backend/internal/tagmanagement/models"
 )
 
 func TestNormalizeReportDateKeepsRequestedDate(t *testing.T) {
@@ -766,36 +768,159 @@ func TestGetReportByID_NormalizesNullHighlights(t *testing.T) {
 	}
 }
 
-// TestGetReportByID_KeepsHighlightsArray (B15): a real highlights array passes
-// through the read path with content untouched (same entries, same length);
-// surface-story-heat-in-report-top adds the DERIVED is_progress:false on read
-// (story-less legacy entries are never marked progress) — the stored JSON is
-// not rewritten (pinned by TestStoryHighlightsYesterdayAndRevision).
-func TestGetReportByID_KeepsHighlightsArray(t *testing.T) {
+// TestGetReportByID_KeepsHighlightsArray：真实 highlights 数组原样透出（条数
+// 与内容不变）；read path 只补历史 null→[] 归一，不回写、不改写快照数值。
+// 事件线身份（story_id / story_heat / is_progress）整体退役，读取时不再解析。
+func TestDailyReportHighlightsSnapshotRead(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 
 	boardID := seedTestBoard(t, db)
 	now := NormalizeReportDate(time.Now())
 	reportID := seedTestReport(t, db, boardID, now)
+	// 合法聚簇引用 = 本版块的一个 event 标签（cluster_id 是代表标签 id）。
+	eventTag := models.TopicTag{Label: "同事件标签", Category: models.TagCategoryEvent, Status: "active"}
+	require.NoError(t, db.Create(&eventTag).Error)
+	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: eventTag.ID, SemanticBoardID: boardID}).Error)
 
-	highlights := `[{"title":"要闻一","reason":"理由一","tag_ids":[1],"is_progress":false},` +
-		`{"title":"要闻二","reason":"理由二","tag_ids":[2],"is_progress":false},` +
-		`{"title":"要闻三","reason":"理由三","tag_ids":[1,2],"is_progress":false}]`
 	storedHighlights := `[{"title":"要闻一","reason":"理由一","tag_ids":[1]},` +
-		`{"title":"要闻二","reason":"理由二","tag_ids":[2]},` +
+		`{"cluster_id":` + fmt.Sprint(eventTag.ID) + `,"article_count":3,"cluster_mode":"向量聚簇","data_as_of":"2026-11-06","title":"要闻二","reason":"理由二","tag_ids":[2]},` +
 		`{"title":"要闻三","reason":"理由三","tag_ids":[1,2]}]`
 	require.NoError(t, db.Exec(
 		"UPDATE board_daily_reports SET highlights = ?::jsonb WHERE id = ?", storedHighlights, reportID).Error)
 
 	report, err := repo.GetReportByID(reportID)
 	require.NoError(t, err)
-	assert.JSONEq(t, highlights, string(report.Highlights), "non-null highlights keep their content; only the derived is_progress joins on read")
-
 	var decoded []Highlight
 	require.NoError(t, json.Unmarshal(report.Highlights, &decoded))
-	assert.Len(t, decoded, 3)
-	for _, h := range decoded {
-		assert.False(t, h.IsProgress, "story-less legacy entries are never progress")
+	require.Len(t, decoded, 3)
+
+	// 首条历史（无 cluster）重点保持无快照 —— 不伪造聚簇身份或篇数。
+	require.Nil(t, decoded[0].ClusterID)
+	require.Nil(t, decoded[0].ArticleCount)
+	require.Empty(t, decoded[0].ClusterMode)
+	// 新重点的快照逐字保留。
+	require.NotNil(t, decoded[1].ClusterID)
+	require.Equal(t, eventTag.ID, *decoded[1].ClusterID)
+	require.NotNil(t, decoded[1].ArticleCount)
+	require.Equal(t, 3, *decoded[1].ArticleCount)
+	require.Equal(t, "向量聚簇", decoded[1].ClusterMode)
+	require.Equal(t, "2026-11-06", decoded[1].DataAsOf)
+
+	// 退役的事件线字段不再出现在响应里。
+	payload := string(report.Highlights)
+	require.NotContains(t, payload, "story_id")
+	require.NotContains(t, payload, "story_heat")
+	require.NotContains(t, payload, "is_progress")
+}
+
+// TestGetReportByID_RetiresThreadStoryIdentity（2.3）：历史 thread 的 story_id
+// 只读保留在库中，API SHALL NOT 对外透出事件线身份；坏 cluster 引用读取时
+// 置空（同版块一跳解析），且不回写历史 JSON。
+func TestDailyReportRetiresThreadStoryIdentity(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
+	reportID := seedTestReport(t, db, boardID, now)
+	sectionID := seedTestSection(t, db, reportID, "section")
+	story := BoardStory{BoardID: boardID, Title: "历史事件线", FirstSeenDate: now, LastSeenDate: now}
+	require.NoError(t, db.Omit("Embedding", "SubjectEmbedding").Create(&story).Error)
+	storyID := story.ID
+	require.NoError(t, db.Omit("Embedding").Create(&DailyReportThread{
+		ReportID: reportID, SectionID: sectionID, Title: "历史事件",
+		StoryID: &storyID, StoryManual: true, DisplayTier: ThreadDisplayTierFlash,
+	}).Error)
+	// 坏 cluster 引用（标签不存在）+ 合法引用（本版块 event 标签）。
+	require.NoError(t, db.Exec(
+		"UPDATE board_daily_reports SET highlights = ?::jsonb WHERE id = ?",
+		`[{"cluster_id":999999,"title":"坏引用","reason":"r","tag_ids":[]},{"cluster_id":0,"title":"零","reason":"r","tag_ids":[]}]`, reportID).Error)
+
+	report, err := repo.GetReportByID(reportID)
+	require.NoError(t, err)
+
+	// thread 的 story_id 不出现在 JSON 里（结构体 json:"-"）。
+	data, err := json.Marshal(report)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "story_id")
+
+	// 历史值仍在库中（只读保留，不被清空）。
+	var stored DailyReportThread
+	require.NoError(t, db.Where("report_id = ?", reportID).First(&stored).Error)
+	require.NotNil(t, stored.StoryID)
+	require.Equal(t, storyID, *stored.StoryID)
+	require.True(t, stored.StoryManual)
+	require.Equal(t, ThreadDisplayTierFlash, stored.DisplayTier)
+
+	// 坏 cluster 引用读取时置空。
+	var highlights []Highlight
+	require.NoError(t, json.Unmarshal(report.Highlights, &highlights))
+	require.Len(t, highlights, 2)
+	require.Nil(t, highlights[0].ClusterID, "不存在的聚簇引用必须置空")
+	require.Nil(t, highlights[1].ClusterID, "0 不是合法聚簇身份")
+}
+
+// TestDailyReportSaveThreadsRetiresStoryIdentity（2.3）：新生成 / 重建的日报
+// 恒写 story_id=NULL、story_manual=false、display_tier=body——即使调用方传入
+// 残留值也不得落库；scope 仍由 tag_ids 中 event 标签数推导（≥2 = composite）。
+func TestDailyReportSaveThreadsRetiresStoryIdentity(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	Repo = repo
+	t.Cleanup(func() { Repo = nil })
+
+	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
+	report := &BoardDailyReport{SemanticBoardID: boardID, PeriodDate: now, Title: "t", Status: "completed", Highlights: JSON("[]")}
+
+	eventA := models.TopicTag{Label: "事件甲", Category: models.TagCategoryEvent, Status: "active"}
+	eventB := models.TopicTag{Label: "事件乙", Category: models.TagCategoryEvent, Status: "active"}
+	require.NoError(t, db.Create(&eventA).Error)
+	require.NoError(t, db.Create(&eventB).Error)
+
+	// 调用方显式传入历史残留值：插入路径必须清零。
+	staleStoryID := uint(777)
+	threads := [][]DailyReportThread{{
+		{
+			Title:       "残留身份线程",
+			TagIDs:      JSON(mustJSONIDs([]uint{eventA.ID})),
+			StoryID:     &staleStoryID,
+			StoryManual: true,
+			DisplayTier: ThreadDisplayTierFlash,
+		},
+		{
+			Title:  "综合稿",
+			TagIDs: JSON(mustJSONIDs([]uint{eventA.ID, eventB.ID})),
+		},
+	}}
+	require.NoError(t, repo.SaveReport(report, []DailyReportSection{{ClusterLabel: "s"}}, threads))
+
+	var stored []DailyReportThread
+	require.NoError(t, db.Where("report_id = ?", report.ID).Order("id ASC").Find(&stored).Error)
+	require.Len(t, stored, 2)
+	for _, thread := range stored {
+		require.Nil(t, thread.StoryID, "新日报的 story_id 恒 NULL")
+		require.False(t, thread.StoryManual, "story_manual 恒 false")
+		require.Equal(t, ThreadDisplayTierBody, thread.DisplayTier, "display_tier 恒 body")
 	}
+	require.Equal(t, ThreadScopeSingle, stored[0].Scope, "单 event 标签 = single")
+	require.Equal(t, ThreadScopeComposite, stored[1].Scope, "≥2 event 标签 = composite")
+
+	// highlights 落库恒为数组（空重点写 []，不写 null）。
+	updated, err := repo.FinalizeReportHighlights(report, nil)
+	require.NoError(t, err)
+	require.True(t, updated)
+	var payload string
+	require.NoError(t, db.Raw("SELECT highlights::text FROM board_daily_reports WHERE id = ?", report.ID).Scan(&payload).Error)
+	require.JSONEq(t, `[]`, payload)
+}
+
+// mustJSONIDs renders a uint slice as a JSON array literal for jsonb columns.
+func mustJSONIDs(ids []uint) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = fmt.Sprint(id)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
 }

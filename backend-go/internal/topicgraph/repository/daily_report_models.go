@@ -203,11 +203,12 @@ type DailyReportThread struct {
 	// omitempty; a non-nil 0.0 is serialized as `"fit_distance":0`. No DB
 	// default so historical rows stay NULL per spec.
 	FitDistance *float64 `json:"fit_distance,omitempty"`
-	// Story identity (add-event-story-heat). StoryID points at the surviving
-	// board_stories row (or the one-hop merged_into survivor); nullable —
-	// unattributed / composite threads keep NULL and stay fully functional.
+	// Story identity (add-event-story-heat) is RETIRED as a read/write field
+	// (retire-story-adopt-event-metrics): StoryID stays as a historical,
+	// read-only column — new/rebuilt reports always write NULL and the API
+	// SHALL NOT expose event-line identity any more (json:"-").
 	// The FK (ON DELETE SET NULL) + index live in migration 20261105_0001.
-	StoryID *uint `gorm:"index:daily_report_threads_story_idx" json:"story_id,omitempty"`
+	StoryID *uint `gorm:"index:daily_report_threads_story_idx" json:"-"`
 	// Scope derives from the thread's event-tag count: >=2 event tags in
 	// tag_ids => composite (综合稿，不建事件身份), else single. Tag stays
 	// size-less (text) to match migration DDL exactly — a size here makes
@@ -343,17 +344,29 @@ type ClusterGroup struct {
 }
 
 // Highlight represents a key highlight in the daily report.
+//
+// retire-story-adopt-event-metrics：来源从「事件线」改为「当天同事件聚簇」。
+// cluster_id 是聚簇代表标签 id（同版块一跳可解析，无需新表）；article_count /
+// cluster_mode / data_as_of / research_at 都是服务端快照（模型不输出数字）。
+// 旧的 story_id / story_heat / heat_* / is_progress 字段随事件线退役：历史
+// JSON 里的旧键读取时被忽略、写回时不再落库，SHALL NOT 对外透出事件线身份。
 type Highlight struct {
-	StoryID          *uint      `json:"story_id,omitempty"`
-	ParticipantCount *int       `json:"participant_count,omitempty"`
-	StoryHeat        *float64   `json:"story_heat,omitempty"`
-	HeatRuleVersion  string     `json:"heat_rule_version,omitempty"`
-	HeatAsOf         *time.Time `json:"heat_as_of,omitempty"`
-	HeatIncomplete   *bool      `json:"heat_incomplete,omitempty"`
-	IsProgress       bool       `json:"is_progress"`
-	Title            string     `json:"title"`
-	Reason           string     `json:"reason"`
-	TagIDs           []uint     `json:"tag_ids"`
+	// ClusterID is the cluster's representative event-tag id (null on the tag
+	// fallback path / historical rows).
+	ClusterID *uint `json:"cluster_id,omitempty"`
+	// ArticleCount is the content-identity-deduped article count of the
+	// cluster (0 is a legal value; nil means "no snapshot", never fabricated 0).
+	ArticleCount *int `json:"article_count,omitempty"`
+	// ClusterMode is the real 口径 label of the generation run
+	// （向量聚簇 / 语义向量兜底 / 主体近似）.
+	ClusterMode string `json:"cluster_mode,omitempty"`
+	// DataAsOf is the report day the snapshot covers (YYYY-MM-DD).
+	DataAsOf string `json:"data_as_of,omitempty"`
+	// ResearchAt is the generation instant of the snapshot.
+	ResearchAt *time.Time `json:"research_at,omitempty"`
+	Title      string     `json:"title"`
+	Reason     string     `json:"reason"`
+	TagIDs     []uint     `json:"tag_ids"`
 }
 
 // Thread represents a narrative thread within a cluster section.

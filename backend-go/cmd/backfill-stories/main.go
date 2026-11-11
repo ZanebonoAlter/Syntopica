@@ -1,60 +1,28 @@
-// Command backfill-stories fills historical story identity/evidence only.
-// Run from backend-go after the server has applied the schema migrations:
+// Command backfill-stories was the story (事件线) backfill/repair CLI. Story
+// online production is retired (retire-story-adopt-event-metrics D3): every
+// WRITE mode is refused here with a non-zero exit, so "停写" cannot be bypassed
+// by one command. The implementation files are kept on purpose — a code-level
+// rollback re-enables them together with ai_settings.story_attribution_enabled.
 //
-//	go run ./cmd/backfill-stories --from 2026-10-01 --to 2026-11-01 --dry-run
+// What still works is the READ-ONLY surface, which operators use to audit the
+// retained historical data:
 //
-// To repair evidence for already-attributed stories without changing identity:
-//
-//	go run ./cmd/backfill-stories --board 7 --from 2026-10-30 --to 2026-11-05 --rebuild-signals --dry-run
-//
-// To backfill the content-identity key of heat evidence (fix-duplicate-article-heat):
-//
-//	go run ./cmd/backfill-stories --backfill-content-keys --dry-run
-//
-// To backfill the recall vector of story lines that have none (D13):
-//
+//	go run ./cmd/backfill-stories --dry-run                  # preview the retired backfill plan
+//	go run ./cmd/backfill-stories --reattribute --dry-run     # preview a story-identity recompute
+//	go run ./cmd/backfill-stories --rebuild-signals --dry-run # count evidence rows to rebuild
 //	go run ./cmd/backfill-stories --fill-story-embeddings --dry-run
-//
-// To backfill the recall vector of report threads that have none (D13):
-//
 //	go run ./cmd/backfill-stories --fill-thread-embeddings --dry-run
 //
-// To backfill threads of one board inside an explicit date window:
+// Every write mode (--reattribute / --restore / --rebuild-signals /
+// --backfill-content-keys / --fill-story-embeddings / --fill-thread-embeddings
+// and the default no-flag backfill) is rejected with「事件线已退役」.
 //
-//	go run ./cmd/backfill-stories --fill-thread-embeddings --board 1980 --from 2026-10-01 --to 2026-11-01
-//
-// watch-materialized threads (lane_tier 'watch_*') carry no embedding by design and
-// are skipped unless --include-watch-threads is given.
-//
-// To preview an explicit story-identity recompute (read-only, no writes):
-//
-//	go run ./cmd/backfill-stories --board 1980 --from 2026-10-12 --to 2026-11-11 --reattribute --dry-run
-//
-// To recompute the story identity of a board (a snapshot is mandatory — the
-// write is irreversible without it):
-//
-//	go run ./cmd/backfill-stories --board 1980 --from 2026-10-12 --to 2026-11-11 --reattribute --snapshot /tmp/story-identity.jsonl
-//
-// To restore the story identity from such a snapshot (standalone mode, the
-// date range is ignored):
-//
-//	go run ./cmd/backfill-stories --restore /tmp/story-identity.jsonl
-//
-// --backfill-content-keys fills story_signals.content_key from articles.link
-// (normalized), then recomputes the participant count of every affected story
-// line (source counts fall back to reality: one article copied by several feeds
-// counts once). It is idempotent (only rows whose key differs are written; a
-// story whose count already matches its evidence is not recomputed) and
-// orthogonal to --rebuild-signals: rebuild rewrites whole evidence lines (and
-// carries content_key along), this backfill covers the historical rows outside
-// the rebuilt range.
-//
-// Remove --dry-run only after reviewing selected story counts. The date range
-// selects stories through their reports; each selected story's entire evidence
-// union is rebuilt. signals counts rebuilt rows (zero during dry-run).
-//
-// Dry-run verdicts use persisted candidates only; they do not simulate earlier
-// would-be creates/merges. No report generation or display-tier dedup is run.
+// Historical note on the retired write modes: the date range selected stories
+// through their reports; each selected story's entire evidence union was
+// rebuilt. Dry-run verdicts used persisted candidates only and never simulated
+// earlier would-be creates/merges. --backfill-content-keys filled
+// story_signals.content_key from the normalized article link; --reattribute
+// required a snapshot because the write was irreversible without it.
 package main
 
 import (
@@ -114,6 +82,56 @@ type commandOptions struct {
 	ExplicitTo   bool
 }
 
+// storyRetiredNotice is the operator-facing explanation printed when a write
+// mode is refused. Story online production is retired; the code stays for
+// rollback, but no command may write story identity/evidence any more.
+const storyRetiredNotice = "事件线已退役（retire-story-adopt-event-metrics）：停写后本命令的写模式一律拒绝。"
+
+// retiredWriteModes lists the write modes requested by the operator. --restore
+// has no read-only variant (it always writes), so it is refused even with
+// --dry-run; the other modes keep their documented read-only preview when
+// --dry-run is present (zero writes). The default no-flag mode is the original
+// backfill writer and is therefore refused too — otherwise one bare command
+// would bypass the ai_settings stop-write switch.
+func retiredWriteModes(opts commandOptions) []string {
+	modes := make([]string, 0, 7)
+	if strings.TrimSpace(opts.RestorePath) != "" {
+		modes = append(modes, "--restore")
+	}
+	if opts.DryRun {
+		return modes // --reattribute/--rebuild-signals/... --dry-run 是只读预览
+	}
+	if opts.Reattribute {
+		modes = append(modes, "--reattribute")
+	}
+	if opts.RebuildSignals {
+		modes = append(modes, "--rebuild-signals")
+	}
+	if opts.BackfillContentKeys {
+		modes = append(modes, "--backfill-content-keys")
+	}
+	if opts.FillStoryEmbeddings {
+		modes = append(modes, "--fill-story-embeddings")
+	}
+	if opts.FillThreadEmbeddings {
+		modes = append(modes, "--fill-thread-embeddings")
+	}
+	if len(modes) == 0 {
+		modes = append(modes, "默认回填")
+	}
+	return modes
+}
+
+// rejectRetiredWriteModes turns every write request into a non-zero exit with
+// the retirement notice. Read-only / dry-run runs pass through untouched.
+func rejectRetiredWriteModes(opts commandOptions) error {
+	if modes := retiredWriteModes(opts); len(modes) > 0 {
+		return fmt.Errorf("%s 拒绝的写模式：%s。只读预览仍可用：为上述开关加 --dry-run（--restore 无只读模式）。",
+			storyRetiredNotice, strings.Join(modes, "、"))
+	}
+	return nil
+}
+
 func parseOptions(args []string, now time.Time) (commandOptions, error) {
 	opts := commandOptions{}
 	loc, err := time.LoadLocation("Asia/Shanghai")
@@ -149,6 +167,10 @@ func parseOptions(args []string, now time.Time) (commandOptions, error) {
 			opts.ExplicitTo = true
 		}
 	})
+	// 停写后写模式一律拒绝（非零退出 + 退役说明）；只读 / --dry-run 预览保留。
+	if err := rejectRetiredWriteModes(opts); err != nil {
+		return opts, err
+	}
 	restoreMode := strings.TrimSpace(opts.RestorePath) != ""
 	opts.From, err = time.ParseInLocation(time.DateOnly, *from, loc)
 	if err != nil {

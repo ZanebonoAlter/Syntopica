@@ -54,9 +54,19 @@ func dateStr(d time.Time) string {
 	return NormalizeReportDate(d).Format("2006-01-02")
 }
 
-// TestGetBoardLaneDynamics_FullMatrix covers tasks 2.1: 活跃排序、沉寂排除、
+// seedLaneCompositeThread appends one composite (综合稿) thread to a section —
+// the 口径 requires composite threads to stay out of every clue count and heat.
+func seedLaneCompositeThread(t *testing.T, db *gorm.DB, reportID, sectionID uint) {
+	t.Helper()
+	require.NoError(t, db.Create(&DailyReportThread{
+		ReportID: reportID, SectionID: sectionID, Title: "综合稿",
+		Scope: ThreadScopeComposite, Embedding: FloatsToPgVector([]float64{0}),
+	}).Error)
+}
+
+// TestLaneDynamicsFullMatrix covers tasks 2.1: 活跃排序、沉寂排除、
 // watch 标识、待结算 null、候选门槛、时间线折叠计数。
-func TestGetBoardLaneDynamics_FullMatrix(t *testing.T) {
+func TestLaneDynamicsFullMatrix(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 
@@ -163,9 +173,9 @@ func TestGetBoardLaneDynamics_FullMatrix(t *testing.T) {
 	assert.Equal(t, dateStr(now), resp.Candidates[0].LastSeenDate)
 }
 
-// TestGetBoardLaneDynamics_WindowBoundary: 14 天窗口含 13 天前、不含 14 天前
+// TestLaneDynamicsWindowBoundary: 14 天窗口含 13 天前、不含 14 天前
 // （锚定 MAX(period_date)，与前端 14 列日期轴同口径）。
-func TestGetBoardLaneDynamics_WindowBoundary(t *testing.T) {
+func TestLaneDynamicsWindowBoundary(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 
@@ -190,9 +200,9 @@ func TestGetBoardLaneDynamics_WindowBoundary(t *testing.T) {
 	assert.Equal(t, dateStr(now.AddDate(0, 0, -13)), resp.Lanes[0].Timeline[1].Date)
 }
 
-// TestGetBoardLaneDynamics_NoReports: 无日报 → lanes+candidates 空数组非
+// TestLaneDynamicsNoReports: 无日报 → lanes+candidates 空数组非
 // null + has_reports=false（tasks 2.2 第一态）。
-func TestGetBoardLaneDynamics_NoReports(t *testing.T) {
+func TestLaneDynamicsNoReports(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 	boardID := seedTestBoard(t, db)
@@ -217,9 +227,9 @@ func TestGetBoardLaneDynamics_NoReports(t *testing.T) {
 	assert.Contains(t, string(data), `"has_reports":false`)
 }
 
-// TestGetBoardLaneDynamics_ReportsNoActiveLanes: 有日报无活跃泳道 →
+// TestLaneDynamicsReportsNoActiveLanes: 有日报无活跃泳道 →
 // has_reports=true + lanes 空（tasks 2.2 第二态；候选栏照常返回）。
-func TestGetBoardLaneDynamics_ReportsNoActiveLanes(t *testing.T) {
+func TestLaneDynamicsReportsNoActiveLanes(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 	boardID := seedTestBoard(t, db)
@@ -424,13 +434,13 @@ func TestLaneSnapshotDeleteCascades(t *testing.T) {
 	assert.EqualValues(t, 1, count, "sibling snapshot untouched")
 }
 
-// TestGetBoardLaneDynamics_SnapshotDetailLevels: 快照 detail 的两级缺失语义
+// TestLaneDynamicsSnapshotDetailLevels: 快照 detail 的两级缺失语义
 // （lane-trend-overview design D3，test-cases AG-1~AG-4）：
 // AG-1 detail 入库 → 聚合携带长版全文；
 // AG-2 存量空串 → Detail=nil（空串归一缺失）；
 // AG-3 无快照 → snapshot=null（既有语义不变）；
 // AG-4 detail=nil 与 snapshot=null 同板共存，JSON 形状可区分。
-func TestGetBoardLaneDynamics_SnapshotDetailLevels(t *testing.T) {
+func TestLaneDynamicsSnapshotDetailLevels(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 
@@ -495,11 +505,10 @@ func TestGetBoardLaneDynamics_SnapshotDetailLevels(t *testing.T) {
 	assert.Contains(t, payload, `"detail":"`+detailText+`"`, "AG-1 泳道 JSON 携带 detail 键")
 }
 
-// TestLaneDynamicsSortsByLaneHeatThenStoryCountThenID covers task 5.1 行序：
-// lane_heat 降序 → story_count_14d 降序 → topic id 升序（add-event-story-heat
-// spec；旧「活跃天数→最近命中日→id」排序已退役，section/天几何不得决定
-// 行序）。热度泳道（1 section）必须排在多 section 无热度泳道之前。
-func TestLaneDynamicsSortsByLaneHeatThenStoryCountThenID(t *testing.T) {
+// TestLaneDynamicsSortsByLaneHeatThenClueCountThenID（task 1.4 行序）：
+// 泳道当天热度降序 → 全窗线索合计降序 → topic id 升序。section 条数、
+// 出现天数、事件线数一律不参与排序。
+func TestLaneDynamicsSortsByLaneHeatThenClueCountThenID(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 
@@ -507,46 +516,35 @@ func TestLaneDynamicsSortsByLaneHeatThenStoryCountThenID(t *testing.T) {
 	now := time.Now()
 	reportToday := seedTestReport(t, db, boardID, now)
 
-	// Heat morning instant (CST 08:00 today): fixed distance to the CST
-	// 23:59:59 anchor end, so the expected lane_heat is deterministic
-	// regardless of when the test runs.
-	todayCST := now.In(storyHeatZone)
-	morning := time.Date(todayCST.Year(), todayCST.Month(), todayCST.Day(), 8, 0, 0, 0, storyHeatZone)
-
-	// Lane HOT: 1 section, 1 story, 2 feed signals → lane_heat > 0.
-	tHot := seedLaneDynamicsTopic(t, db, boardID, "热度泳道", TopicStatusActive, 10, now)
+	// HOT：当天 5 条线索（多点热度）；RICH：当天 2 条线索但 1 条由两个桶
+	// 共同贡献（section 多、线索少）；POOR：当天 1 条线索。
+	tHot := seedLaneDynamicsTopic(t, db, boardID, "热搜泳道", TopicStatusActive, 10, now)
 	secHot := seedTestSection(t, db, reportToday, "hot-sec")
 	assignSection(t, db, secHot, tHot.ID)
-	storyHot := seedLaneStoryLine(t, db, boardID, "hot", 2, &tHot.ID)
-	seedLaneStoryThread(t, db, reportToday, secHot, "热度事件", &storyHot, ThreadScopeSingle, nil)
-	seedHeatSignal(t, db, storyHot, 51, morning)
-	seedHeatSignal(t, db, storyHot, 52, morning)
-
-	// Lane RICH: 2 sections, 2 distinct stories, no signals → heat 0,
-	// story_count_14d = 2. More sections than HOT — must NOT outrank it.
-	tRich := seedLaneDynamicsTopic(t, db, boardID, "双事件泳道", TopicStatusActive, 10, now)
-	storyR1 := seedLaneStoryLine(t, db, boardID, "r1", 1, &tRich.ID)
-	storyR2 := seedLaneStoryLine(t, db, boardID, "r2", 1, &tRich.ID)
-	for i, story := range []uint{storyR1, storyR2} {
-		sec := seedTestSection(t, db, reportToday, fmt.Sprintf("rich-sec-%d", i))
-		assignSection(t, db, sec, tRich.ID)
-		seedLaneStoryThread(t, db, reportToday, sec, "rich事件", &story, ThreadScopeSingle, nil)
+	for i := 0; i < 5; i++ {
+		seedLaneThread(t, db, reportToday, secHot, "热度线索")
 	}
 
-	// Lane POOR: 1 section, 1 story → story_count_14d = 1.
-	tPoor := seedLaneDynamicsTopic(t, db, boardID, "单事件泳道", TopicStatusActive, 10, now)
+	// 4 个 section 但只有 2 条线索（section 多 ≠ 线索多）。
+	tRich := seedLaneDynamicsTopic(t, db, boardID, "多桶泳道", TopicStatusActive, 10, now)
+	for i := 0; i < 4; i++ {
+		sec := seedTestSection(t, db, reportToday, fmt.Sprintf("rich-sec-%d", i))
+		assignSection(t, db, sec, tRich.ID)
+		if i < 2 {
+			seedLaneThread(t, db, reportToday, sec, "多桶线索")
+		}
+	}
+
+	tPoor := seedLaneDynamicsTopic(t, db, boardID, "单线泳道", TopicStatusActive, 10, now)
 	secPoor := seedTestSection(t, db, reportToday, "poor-sec")
 	assignSection(t, db, secPoor, tPoor.ID)
-	storyPoor := seedLaneStoryLine(t, db, boardID, "p1", 1, &tPoor.ID)
-	seedLaneStoryThread(t, db, reportToday, secPoor, "单事件", &storyPoor, ThreadScopeSingle, nil)
+	seedLaneThread(t, db, reportToday, secPoor, "单线索")
 
-	// Two zero-story lanes (sections without threads) → tie → id ASC.
+	// 无 thread 的泳道：热度 0、全窗线索 0 → 同值按 id 升序（先建者在前）。
 	tZeroA := seedLaneDynamicsTopic(t, db, boardID, "零甲", TopicStatusActive, 10, now)
-	secZeroA := seedTestSection(t, db, reportToday, "zero-a")
-	assignSection(t, db, secZeroA, tZeroA.ID)
+	assignSection(t, db, seedTestSection(t, db, reportToday, "zero-a"), tZeroA.ID)
 	tZeroB := seedLaneDynamicsTopic(t, db, boardID, "零乙", TopicStatusActive, 10, now)
-	secZeroB := seedTestSection(t, db, reportToday, "zero-b")
-	assignSection(t, db, secZeroB, tZeroB.ID)
+	assignSection(t, db, seedTestSection(t, db, reportToday, "zero-b"), tZeroB.ID)
 
 	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
 	require.NoError(t, err)
@@ -557,251 +555,96 @@ func TestLaneDynamicsSortsByLaneHeatThenStoryCountThenID(t *testing.T) {
 		order[i] = lane.TopicID
 	}
 	assert.Equal(t, []uint{tHot.ID, tRich.ID, tPoor.ID, tZeroA.ID, tZeroB.ID}, order,
-		"lane_heat 高者在前；无热度按 story_count_14d；再按 id —— 与 section 数无关")
+		"热度降序 → 全窗线索降序 → id；section 数不参与（RICH 有 4 个 section 仍排第二）")
 
 	byID := make(map[uint]LaneDynamicsLane, len(resp.Lanes))
 	for _, lane := range resp.Lanes {
 		byID[lane.TopicID] = lane
 	}
-	// lane_heat：热度泳道 > 0 且不超过两位参与者当日贡献；其余为 0。
-	assert.Greater(t, byID[tHot.ID].LaneHeat, 0.0)
-	assert.LessOrEqual(t, byID[tHot.ID].LaneHeat, 2.0)
-	for _, id := range []uint{tRich.ID, tPoor.ID, tZeroA.ID, tZeroB.ID} {
-		assert.Zero(t, byID[id].LaneHeat, "无 signals 的泳道 lane_heat 为 0")
-	}
-	assert.Equal(t, 1, byID[tHot.ID].StoryCount14d)
-	assert.Equal(t, 2, byID[tRich.ID].StoryCount14d)
-	assert.Equal(t, 1, byID[tPoor.ID].StoryCount14d)
-	// section 计数仅展示：RICH(2) > HOT(1) 但排名靠后。
-	assert.Equal(t, 1, byID[tHot.ID].SectionCount14d)
-	assert.Equal(t, 2, byID[tRich.ID].SectionCount14d)
+	assert.InDelta(t, 5.0, byID[tHot.ID].LaneHeat, 1e-9)
+	assert.InDelta(t, 2.0, byID[tRich.ID].LaneHeat, 1e-9)
+	assert.InDelta(t, 1.0, byID[tPoor.ID].LaneHeat, 1e-9)
+	assert.Zero(t, byID[tZeroA.ID].LaneHeat)
+	assert.Equal(t, 5, byID[tHot.ID].ThreadCount14d)
+	assert.Equal(t, 2, byID[tRich.ID].ThreadCount14d)
+	assert.Equal(t, 4, byID[tRich.ID].SectionCount14d)
+	assert.Equal(t, 1, byID[tPoor.ID].ThreadCount14d)
 }
 
-// seedLaneStoryLine creates a board_stories row with explicit participant
-// count and lane attribution (task 5.1 fixtures).
-func seedLaneStoryLine(t *testing.T, db *gorm.DB, boardID uint, subjectKey string, participants int, laneID *uint) uint {
-	t.Helper()
-	today := NormalizeReportDate(time.Now())
-	story := BoardStory{
-		BoardID:          boardID,
-		LaneID:           laneID,
-		Title:            "story-" + subjectKey,
-		Subject:          subjectKey,
-		SubjectKey:       subjectKey,
-		Status:           StoryStatusActive,
-		FirstSeenDate:    today,
-		LastSeenDate:     today,
-		Origin:           StoryOriginRule,
-		ParticipantCount: participants,
-	}
-	require.NoError(t, db.Omit("embedding", "subject_embedding", "occurred_at").Create(&story).Error)
-	return story.ID
-}
-
-// seedLaneStoryThread appends a thread carrying story-identity fields
-// (story_id / scope / related_article_ids) — the projection the day-level
-// story aggregates read.
-func seedLaneStoryThread(t *testing.T, db *gorm.DB, reportID, sectionID uint, title string, storyID *uint, scope string, articleIDs []uint) uint {
-	t.Helper()
-	thread := DailyReportThread{
-		ReportID:          reportID,
-		SectionID:         sectionID,
-		Title:             title,
-		Embedding:         FloatsToPgVector([]float64{0}),
-		StoryID:           storyID,
-		Scope:             scope,
-		RelatedArticleIDs: mustStoryJSON(articleIDs),
-	}
-	require.NoError(t, db.Create(&thread).Error)
-	return thread.ID
-}
-
-func seedLaneArticle(t *testing.T, db *gorm.DB, feedID uint) uint {
-	t.Helper()
-	article := models.Article{FeedID: feedID, Title: "lane-evidence"}
-	require.NoError(t, db.Create(&article).Error)
-	return article.ID
-}
-
-func uintPtr(v uint) *uint { return &v }
-
-// TestGetBoardLaneDynamics_StoryCountDedupAndParticipants（task 5.1 / test-cases
-// 步 7）：同日多 section 的事件线去重合计（非桶峰值）、merged_into 一跳解析后
-// 同一 survivor 只计一次、max_participant_count 取 survivor 的
-// board_stories.participant_count 最大值、unassigned 只数非综合稿且
-// story_id NULL、stories_backfilled=true。
-func TestGetBoardLaneDynamics_StoryCountDedupAndParticipants(t *testing.T) {
+// TestLaneDynamicsDayClueCountAndCandidateHeat（task 1.4 口径）：
+// 逐日 clue_count = 各主题桶非综合稿 thread 数之和（不取桶峰值）；
+// 候选条目带锚点日线索数与其加权热度；候选权重在线可调即时生效；
+// 事件线数 / 最热事件线 / 未归组事件字段彻底不再下发。
+func TestLaneDynamicsDayClueCountAndCandidateHeat(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repo := NewTopicGraphRepository(db)
 
 	boardID := seedTestBoard(t, db)
 	now := time.Now()
 	reportToday := seedTestReport(t, db, boardID, now)
-	report1d := seedTestReport(t, db, boardID, now.AddDate(0, 0, -1))
+	reportYesterday := seedTestReport(t, db, boardID, now.AddDate(0, 0, -1))
 
-	topic := seedLaneDynamicsTopic(t, db, boardID, "事件泳道", TopicStatusActive, 9, now)
-	story1 := seedLaneStoryLine(t, db, boardID, "s1", 3, &topic.ID)
-	story2 := seedLaneStoryLine(t, db, boardID, "s2", 6, &topic.ID)
-	storyMerged := seedLaneStoryLine(t, db, boardID, "sm", 1, &topic.ID)
-	// storyMerged 合入 story2：线程指向 merged 行 → 一跳解析到 story2。
-	require.NoError(t, db.Model(&BoardStory{}).Where("id = ?", storyMerged).
-		Updates(map[string]any{"merged_into": story2, "status": StoryStatusMerged}).Error)
+	topic := seedLaneDynamicsTopic(t, db, boardID, "线索泳道", TopicStatusActive, 9, now)
+	bucketA := seedTestSection(t, db, reportToday, "桶A")
+	bucketB := seedTestSection(t, db, reportToday, "桶B")
+	assignSection(t, db, bucketA, topic.ID)
+	assignSection(t, db, bucketB, topic.ID)
+	for i := 0; i < 3; i++ {
+		seedLaneThread(t, db, reportToday, bucketA, "线索")
+	}
+	for i := 0; i < 4; i++ {
+		seedLaneThread(t, db, reportToday, bucketB, "线索")
+	}
+	// 综合稿不计入线索合计。
+	seedLaneCompositeThread(t, db, reportToday, bucketB)
+	// 昨日：2 条线索（历史日可回算）。
+	oldBucket := seedTestSection(t, db, reportYesterday, "昨日桶")
+	assignSection(t, db, oldBucket, topic.ID)
+	seedLaneThread(t, db, reportYesterday, oldBucket, "昨日线索")
+	seedLaneThread(t, db, reportYesterday, oldBucket, "昨日线索")
 
-	// 今日两个 section：s1 桶(story1 + story2)、s2 桶(story2 重复 + merged 行)。
-	sec1 := seedTestSection(t, db, reportToday, "桶一")
-	sec2 := seedTestSection(t, db, reportToday, "桶二")
-	assignSection(t, db, sec1, topic.ID)
-	assignSection(t, db, sec2, topic.ID)
-	seedLaneStoryThread(t, db, reportToday, sec1, "事件甲", uintPtr(story1), ThreadScopeSingle, nil)
-	seedLaneStoryThread(t, db, reportToday, sec1, "事件乙", uintPtr(story2), ThreadScopeSingle, nil)
-	seedLaneStoryThread(t, db, reportToday, sec2, "事件乙叉桶", uintPtr(story2), ThreadScopeSingle, nil)
-	seedLaneStoryThread(t, db, reportToday, sec2, "事件乙合并侧", uintPtr(storyMerged), ThreadScopeSingle, nil)
-	// 未归组：非综合稿 1 条计入 unassigned；综合稿不计。
-	seedLaneStoryThread(t, db, reportToday, sec2, "未归组事件", nil, ThreadScopeSingle, nil)
-	seedLaneStoryThread(t, db, reportToday, sec2, "综合稿", nil, ThreadScopeComposite, nil)
-	// 昨日单事件：验证逐日独立计数与 story_count_14d 求和。
-	sec1d := seedTestSection(t, db, report1d, "昨日桶")
-	assignSection(t, db, sec1d, topic.ID)
-	seedLaneStoryThread(t, db, report1d, sec1d, "昨日事件", uintPtr(story1), ThreadScopeSingle, nil)
+	// 可见候选（hit 达阈值）带锚点日线索数。
+	cand := seedLaneDynamicsTopic(t, db, boardID, "候选泳道", TopicStatusCandidate, 3, now)
+	candSec := seedTestSection(t, db, reportToday, "候选桶")
+	assignSection(t, db, candSec, cand.ID)
+	for i := 0; i < 4; i++ {
+		seedLaneThread(t, db, reportToday, candSec, "候选线索")
+	}
 
 	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
 	require.NoError(t, err)
+	assert.Equal(t, LaneHeatRuleVersion, resp.HeatRuleVersion, "口径版本另立（heat-v2-lane-clues-1d）")
+
 	require.Len(t, resp.Lanes, 1)
 	lane := resp.Lanes[0]
-
-	assert.True(t, resp.StoriesBackfilled, "窗口内存在带 story_id 的线程")
-	assert.Equal(t, HeatRuleVersion, resp.HeatRuleVersion)
-	assert.False(t, resp.HeatIncomplete)
-	assert.Empty(t, resp.HeatStaleFeedIDs)
-
-	// Timeline 倒序：今日在前。
 	require.Len(t, lane.Timeline, 2)
-	today := lane.Timeline[0]
-	assert.Equal(t, dateStr(now), today.Date)
-	assert.Equal(t, 2, today.StoryCount, "去重后 {story1, story2} = 2，非桶峰值 1，也非桶内合计 4")
-	assert.Equal(t, 6, today.MaxParticipantCount, "最热事件线 story2 的 participant_count")
-	assert.Equal(t, 1, today.UnassignedEventCount, "仅非综合稿且 story_id NULL 的线程计入")
+	assert.Equal(t, dateStr(now), lane.Timeline[0].Date)
+	assert.Equal(t, 7, lane.Timeline[0].ClueCount, "3+4 合并计数，不取桶峰值 4；综合稿不计")
+	assert.Equal(t, 2, lane.Timeline[1].ClueCount)
+	assert.Equal(t, 9, lane.ThreadCount14d, "全窗线索合计 = 7+2")
+	assert.InDelta(t, 7.0, lane.LaneHeat, 1e-9, "活跃泳道当天线索数 × 1.0")
 
-	yesterday := lane.Timeline[1]
-	assert.Equal(t, dateStr(now.AddDate(0, 0, -1)), yesterday.Date)
-	assert.Equal(t, 1, yesterday.StoryCount)
-	assert.Equal(t, 3, yesterday.MaxParticipantCount)
-	assert.Zero(t, yesterday.UnassignedEventCount)
-
-	assert.Equal(t, 3, lane.StoryCount14d, "窗口内各日 story_count 求和：2+1")
-}
-
-// TestGetBoardLaneDynamics_FallbackWhenNotBackfilled（design §8.3 降级 2）：
-// 窗口内无任何 story_id → story_count 用当日非综合稿线程数作上界、
-// max_participant_count 按当日非综合稿线程证据文章的 distinct feed 计算、
-// unassigned 与 story_count 同值、stories_backfilled=false（不得显示 0 冒充
-// 无事件）。
-func TestGetBoardLaneDynamics_FallbackWhenNotBackfilled(t *testing.T) {
-	db := testutil.SetupTestDB(t)
-	repo := NewTopicGraphRepository(db)
-
-	boardID := seedTestBoard(t, db)
-	now := time.Now()
-	reportToday := seedTestReport(t, db, boardID, now)
-
-	topic := seedLaneDynamicsTopic(t, db, boardID, "未回填泳道", TopicStatusActive, 9, now)
-	a1 := seedLaneArticle(t, db, 11)
-	a2 := seedLaneArticle(t, db, 12)
-	a3 := seedLaneArticle(t, db, 11)
-	a4 := seedLaneArticle(t, db, 13)
-	a5 := seedLaneArticle(t, db, 99) // 综合稿的证据文章：不参与降级参与者
-
-	sec1 := seedTestSection(t, db, reportToday, "桶一")
-	sec2 := seedTestSection(t, db, reportToday, "桶二")
-	assignSection(t, db, sec1, topic.ID)
-	assignSection(t, db, sec2, topic.ID)
-	seedLaneStoryThread(t, db, reportToday, sec1, "未归组一", nil, ThreadScopeSingle, []uint{a1, a2})
-	seedLaneStoryThread(t, db, reportToday, sec1, "未归组二", nil, ThreadScopeSingle, []uint{a3, a4})
-	seedLaneStoryThread(t, db, reportToday, sec2, "综合稿", nil, ThreadScopeComposite, []uint{a5})
-
-	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
+	// 逐日载荷不再携带事件线字段（JSON 形状层面确认退役）。
+	data, err := json.Marshal(resp)
 	require.NoError(t, err)
-	require.Len(t, resp.Lanes, 1)
-	lane := resp.Lanes[0]
+	payload := string(data)
+	for _, retired := range []string{"story_count", "hottest_story_id", "hottest_story_title", "unassigned_event_count", "max_participant_count", "stories_backfilled", "heat_incomplete", "heat_stale_feed_ids"} {
+		assert.NotContains(t, payload, retired, "退役字段不得再下发：%s", retired)
+	}
+	assert.Contains(t, payload, `"clue_count":7`)
 
-	assert.False(t, resp.StoriesBackfilled)
-	require.Len(t, lane.Timeline, 1)
-	day := lane.Timeline[0]
-	assert.Equal(t, 2, day.StoryCount, "降级上界：非综合稿线程数（同日两桶合并不取峰值）")
-	assert.Equal(t, 2, day.MaxParticipantCount, "降级参与者：每条事件自身 distinct feed 后取最大（{11,12}=2 / {11,13}=2），不是当天并集 3")
-	assert.Equal(t, 2, day.UnassignedEventCount)
-	assert.Equal(t, 2, lane.StoryCount14d)
-	assert.Zero(t, lane.LaneHeat, "无 signals 时 lane_heat 为 0")
-	assert.Equal(t, HeatRuleVersion, resp.HeatRuleVersion)
-}
+	// 候选条目：锚点日线索数 + 候选权重热度。
+	require.Len(t, resp.Candidates, 1)
+	candidate := resp.Candidates[0]
+	assert.Equal(t, dateStr(now), candidate.AnchorDate)
+	assert.Equal(t, 4, candidate.ClueCount)
+	assert.InDelta(t, 2.0, candidate.LaneHeat, 1e-9, "4 × 默认权重 0.5")
 
-// TestGetBoardLaneDynamics_HeatMetaFields（task 5.1）：heat_rule_version /
-// heat_incomplete / heat_stale_feed_ids 透出——落后源（从未刷新的 feed）
-// 把窗口热度标为不完整。
-func TestGetBoardLaneDynamics_HeatMetaFields(t *testing.T) {
-	db := testutil.SetupTestDB(t)
-	repo := NewTopicGraphRepository(db)
-
-	boardID := seedTestBoard(t, db)
-	now := time.Now()
-	reportToday := seedTestReport(t, db, boardID, now)
-
-	topic := seedLaneDynamicsTopic(t, db, boardID, "覆盖泳道", TopicStatusActive, 9, now)
-	story := seedLaneStoryLine(t, db, boardID, "cov", 1, &topic.ID)
-	sec := seedTestSection(t, db, reportToday, "cov-sec")
-	assignSection(t, db, sec, topic.ID)
-	seedLaneStoryThread(t, db, reportToday, sec, "覆盖事件", uintPtr(story), ThreadScopeSingle, nil)
-	staleFeed := seedCoverageFeed(t, db, "lane-stale", 60, "idle", nil)
-	seedHeatSignal(t, db, story, staleFeed, now)
-
-	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
+	// 权重在线调整后立即生效；活跃泳道不变。
+	require.NoError(t, db.Create(&models.AISettings{Key: LaneHeatCandidateWeightKey, Value: "0.2"}).Error)
+	resp, err = repo.GetBoardLaneDynamics(boardID, 14)
 	require.NoError(t, err)
-	assert.Equal(t, HeatRuleVersion, resp.HeatRuleVersion)
-	assert.True(t, resp.HeatIncomplete, "从未刷新的 feed 在贡献热度证据 → incomplete")
-	assert.Equal(t, []uint{staleFeed}, resp.HeatStaleFeedIDs)
-	require.Len(t, resp.Lanes, 1)
-	assert.Greater(t, resp.Lanes[0].LaneHeat, 0.0, "signal 仍在窗口内参与 lane_heat")
-}
-
-// seedLaneArticleWithLink 落一篇带链接的证据文章（降级模式的参与者去重用）。
-func seedLaneArticleWithLink(t *testing.T, db *gorm.DB, feedID uint, link string) uint {
-	t.Helper()
-	article := models.Article{FeedID: feedID, Title: "lane-evidence", Link: link}
-	require.NoError(t, db.Create(&article).Error)
-	return article.ID
-}
-
-// TestGetBoardLaneDynamics_FallbackParticipantUsesContentIdentity（fix-duplicate-article-heat
-// 2.4）：未回填降级模式的参与者按内容身份去重（与 story_signals 同一口径）——
-// 同一篇内容的两个 feed 副本算 1 个参与者；两篇独立内容算 2 个（取事件最大值）。
-func TestGetBoardLaneDynamics_FallbackParticipantUsesContentIdentity(t *testing.T) {
-	db := testutil.SetupTestDB(t)
-	repo := NewTopicGraphRepository(db)
-
-	boardID := seedTestBoard(t, db)
-	now := time.Now()
-	reportToday := seedTestReport(t, db, boardID, now)
-
-	topic := seedLaneDynamicsTopic(t, db, boardID, "未回填泳道", TopicStatusActive, 9, now)
-	// 同一篇内容的两个 feed 副本（只在 query / fragment 上不同）→ 1 个参与者。
-	dup1 := seedLaneArticleWithLink(t, db, 11, "https://example.com/p/1?utm=x")
-	dup2 := seedLaneArticleWithLink(t, db, 12, "https://example.com/p/1#comments")
-	// 两篇独立内容 → 2 个参与者。
-	other1 := seedLaneArticleWithLink(t, db, 13, "https://example.com/p/2")
-	other2 := seedLaneArticleWithLink(t, db, 14, "https://example.com/p/3")
-
-	sec1 := seedTestSection(t, db, reportToday, "桶一")
-	assignSection(t, db, sec1, topic.ID)
-	seedLaneStoryThread(t, db, reportToday, sec1, "副本事件", nil, ThreadScopeSingle, []uint{dup1, dup2})
-	seedLaneStoryThread(t, db, reportToday, sec1, "独立事件", nil, ThreadScopeSingle, []uint{other1, other2})
-
-	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
-	require.NoError(t, err)
-	require.Len(t, resp.Lanes, 1)
-	lane := resp.Lanes[0]
-	assert.False(t, resp.StoriesBackfilled)
-	require.Len(t, lane.Timeline, 1)
-	day := lane.Timeline[0]
-	assert.Equal(t, 2, day.StoryCount, "降级上界：非综合稿线程数")
-	assert.Equal(t, 2, day.MaxParticipantCount, "副本事件 1 个参与者 / 独立事件 2 个 → 取最大 2")
+	require.Len(t, resp.Candidates, 1)
+	assert.InDelta(t, 0.8, resp.Candidates[0].LaneHeat, 1e-9, "4 × 0.2 = 0.8")
+	assert.InDelta(t, 7.0, resp.Lanes[0].LaneHeat, 1e-9, "活跃泳道热度不变")
 }

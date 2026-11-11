@@ -248,3 +248,28 @@ func LoadThreshold(db *gorm.DB) float64 {
 func validThreshold(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= 1
 }
+
+// LoadAuxLabels returns the CURRENT effective auxiliary-label texts per tag id —
+// the exact input shape BuildRepresentation expects. It is the read-only entry
+// point for callers outside this package (the daily report's same-day
+// clustering reuses the related-event-v1 representation, so it must reuse the
+// same auxiliary-label source). It never writes and never calls a model.
+func LoadAuxLabels(ctx context.Context, db *gorm.DB, tagIDs []uint) (map[uint][]string, error) {
+	out := make(map[uint][]string, len(tagIDs))
+	if len(tagIDs) == 0 {
+		return out, nil
+	}
+	tags := make([]SourceTag, len(tagIDs))
+	for i, id := range tagIDs {
+		tags[i] = SourceTag{ID: id}
+	}
+	if err := attachAuxLabels(ctx, db, tags); err != nil {
+		return nil, err
+	}
+	for _, tag := range tags {
+		if len(tag.AuxLabels) > 0 {
+			out[tag.ID] = tag.AuxLabels
+		}
+	}
+	return out, nil
+}

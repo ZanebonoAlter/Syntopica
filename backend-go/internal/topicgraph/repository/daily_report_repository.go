@@ -470,7 +470,7 @@ func (r *TopicGraphRepository) GetReportByID(id uint) (*BoardDailyReport, error)
 	// (2026-11-03 and earlier) hold a JSON null scalar or SQL NULL, which the
 	// frontend reads as "no content" and hides the whole "今日重点" block.
 	normalizeHighlightsArray(&report.Highlights)
-	if err := r.resolveReportHighlightIdentities(&report); err != nil {
+	if err := r.resolveReportHighlightClusters(&report); err != nil {
 		return nil, err
 	}
 	return &report, nil
@@ -653,6 +653,14 @@ func (r *TopicGraphRepository) SaveThreads(tx *gorm.DB, reportID, sectionID uint
 	for i := range threads {
 		threads[i].ReportID = reportID
 		threads[i].SectionID = sectionID
+		// retire-story-adopt-event-metrics 2.3：新生成 / 重建的日报恒为
+		// story_id=NULL、story_manual=false、display_tier=body。归属判定是唯一
+		// 合法的 story_id 写入方（行插入之后的 UPDATE），跨期去重是唯一合法的
+		// display_tier 写入方；两者停写后，插入路径本身就是这些列的收口点。
+		// 历史行只读保留（重建 = 删旧行 + 建新行，旧值不会回填到新行）。
+		threads[i].StoryID = nil
+		threads[i].StoryManual = false
+		threads[i].DisplayTier = ThreadDisplayTierBody
 	}
 	deriveThreadScope(tx, threads)
 	// Watch-materialized threads carry no embedding: GORM's zero-value "" is

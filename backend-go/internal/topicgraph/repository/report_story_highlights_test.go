@@ -1,73 +1,78 @@
 package repository
 
+// 「今日重点」候选排序与快照（retire-story-adopt-event-metrics 2.2）。
+// 事件线候选 / 热度排序整体退役，候选源改为当天同事件聚簇。
+
 import (
-	"github.com/stretchr/testify/require"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestLaneHottestStoryIdentity(t *testing.T) {
-	one, two := uint(1), uint(2)
-	a := laneStoryAggregates{backfilled: true, survivors: map[uint]uint{1: 1, 2: 2}, participants: map[uint]int{1: 4, 2: 4}, titles: map[uint]string{1: "winner", 2: "other"}}
-	sections := []laneSectionRow{{ID: 10}}
-	stats := map[uint][]laneThreadStat{10: {{StoryID: &two}, {StoryID: &one}, {StoryID: &one}}}
-	id, title := a.hottestStory(sections, stats)
-	require.Equal(t, &one, id)
-	require.Equal(t, "winner", title)
-	count, max, missing := a.foldDay(sections, stats)
-	require.Equal(t, 2, count)
-	require.Equal(t, 4, max)
-	require.Zero(t, missing)
-	id, title = a.hottestStory(sections, nil)
-	require.Nil(t, id)
-	require.Empty(t, title)
-	a.participants[1], a.participants[2] = 0, 0
-	id, _ = a.hottestStory(sections, stats)
-	require.Equal(t, &one, id)
+// TestRankEventClusterCandidatesOrderAndLimit：簇内文章数降序 → 簇内 event
+// 标签数降序 → 代表标签 id 升序；不按四舍五入后的篇数排序；最多 8 条。
+func TestRankEventClusterCandidatesOrderAndLimit(t *testing.T) {
+	clusters := []EventCluster{
+		{ClusterID: 30, TagIDs: []uint{30}, ArticleCount: 5},
+		{ClusterID: 10, TagIDs: []uint{10}, ArticleCount: 5},
+		{ClusterID: 20, TagIDs: []uint{20, 21, 22}, ArticleCount: 5},
+		{ClusterID: 40, TagIDs: []uint{40}, ArticleCount: 9},
+	}
+	ranked := RankEventClusterCandidates(clusters, 8)
+	require.Len(t, ranked, 4)
+	require.Equal(t, uint(40), ranked[0].ClusterID, "篇数最多者居首")
+	// 同篇数：标签数多者优先（20 有 3 个标签），其余按代表标签 id 升序。
+	require.Equal(t, uint(20), ranked[1].ClusterID)
+	require.Equal(t, uint(10), ranked[2].ClusterID)
+	require.Equal(t, uint(30), ranked[3].ClusterID)
+
+	// 上限 8：第 9 名不进候选，且不按 section 数 / 泳道热度替代。
+	many := make([]EventCluster, 0, 10)
+	for i := 1; i <= 10; i++ {
+		many = append(many, EventCluster{ClusterID: uint(i), TagIDs: []uint{uint(i)}, ArticleCount: 100 - i})
+	}
+	ranked = RankEventClusterCandidates(many, 8)
+	require.Len(t, ranked, 8)
+	require.Equal(t, uint(1), ranked[0].ClusterID)
+	require.Equal(t, uint(8), ranked[7].ClusterID)
+
+	// 零候选：空列表（调用方据此走标签回退）。
+	require.Empty(t, RankEventClusterCandidates(nil, 8))
 }
 
-func TestHighlightStorySurvivorsOneHop(t *testing.T) {
-	two, three, four := uint(2), uint(3), uint(4)
-	stories := []BoardStory{{ID: 1, MergedInto: &two}, {ID: 2}, {ID: 3, MergedInto: &four}, {ID: 4, MergedInto: &three}, {ID: 5, MergedInto: &three}}
-	ids := highlightStorySurvivors(stories)
-	require.Equal(t, uint(2), ids[1])
-	require.Equal(t, uint(2), ids[2])
-	require.Zero(t, ids[3])
-	require.Zero(t, ids[4])
-	require.Zero(t, ids[5])
-}
+// TestEventHighlightSnapshot：快照字段由服务端补齐——cluster_id、篇数、
+// 口径中文标签、数据截至日与研究时点；模型不参与这些数值。
+func TestEventHighlightSnapshot(t *testing.T) {
+	at := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
+	cluster := EventCluster{
+		ClusterID: 11, TagIDs: []uint{11, 12}, ArticleCount: 4,
+		Mode: EventClusterModeSubjectApprox, DataAsOf: time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC), ResearchAt: at,
+	}
+	highlight := EventHighlight(cluster, "标题", "理由", []uint{11})
+	require.NotNil(t, highlight.ClusterID)
+	require.Equal(t, uint(11), *highlight.ClusterID)
+	require.NotNil(t, highlight.ArticleCount)
+	require.Equal(t, 4, *highlight.ArticleCount)
+	require.Equal(t, "主体近似", highlight.ClusterMode, "降级口径必须如实标注，不得冒充向量聚簇")
+	require.Equal(t, "2026-11-06", highlight.DataAsOf)
+	require.NotNil(t, highlight.ResearchAt)
+	require.Equal(t, at, *highlight.ResearchAt)
+	require.Equal(t, []uint{11}, highlight.TagIDs)
 
-func TestHighlightHeatCandidateRanking(t *testing.T) {
-	at := time.Date(2026, 11, 6, 23, 59, 59, 0, storyHeatZone)
-	e := boardHeatEvidence{survivors: map[uint]uint{1: 1, 2: 2, 3: 3}, signals: []storyHeatSignal{
-		{StoryID: 1, ParticipantKey: "a", ObservedAt: at.Add(-24 * time.Hour)},
-		{StoryID: 1, ParticipantKey: "b", ObservedAt: at.Add(-24 * time.Hour)},
-		{StoryID: 2, ParticipantKey: "a", ObservedAt: at},
-		{StoryID: 3, ParticipantKey: "a", ObservedAt: at.Add(time.Second)},
-	}}
-	candidates := rankReportStoryCandidates([]ReportStoryCandidate{{StoryID: 2}, {StoryID: 3}, {StoryID: 1}}, e, at)
-	require.Equal(t, uint(1), candidates[0].StoryID)
-	require.Equal(t, 2, candidates[0].ParticipantCount)
-	require.Equal(t, uint(2), candidates[1].StoryID)
-	require.Zero(t, candidates[2].StoryHeat)
-}
+	// 0 篇是合法快照值（不是缺省）。
+	zero := EventHighlight(EventCluster{ClusterID: 12, Mode: EventClusterModeVector, DataAsOf: at}, "t", "r", []uint{12})
+	require.NotNil(t, zero.ArticleCount)
+	require.Zero(t, *zero.ArticleCount)
+	require.Equal(t, "向量聚簇", zero.ClusterMode)
 
-// TestHighlightHeatCandidateRankingUsesContentIdentity（fix-duplicate-article-heat
-// 2.4）：高亮的「来源数」按内容身份去重——同一篇内容的两个 feed 副本算 1 个
-// 来源（与 board_stories.participant_count 同一口径）；content_key 为空的
-// 证据退化为 feed 粒度，不与有内容身份的证据合并。
-func TestHighlightHeatCandidateRankingUsesContentIdentity(t *testing.T) {
-	at := time.Date(2026, 11, 6, 23, 59, 59, 0, storyHeatZone)
-	e := boardHeatEvidence{survivors: map[uint]uint{1: 1, 2: 2}, signals: []storyHeatSignal{
-		{StoryID: 1, ParticipantKey: "feed:10", ContentKey: "https://example.com/p/1", ObservedAt: at},
-		{StoryID: 1, ParticipantKey: "feed:20", ContentKey: "https://example.com/p/1", ObservedAt: at},
-		{StoryID: 2, ParticipantKey: "feed:30", ContentKey: "https://example.com/p/2", ObservedAt: at},
-		{StoryID: 2, ParticipantKey: "feed:40", ContentKey: "", ObservedAt: at},
-	}}
-	candidates := rankReportStoryCandidates([]ReportStoryCandidate{{StoryID: 1}, {StoryID: 2}}, e, at)
-	// 事件线 2 有 2 个参与者（1 份内容 + 1 个退化 feed）→ 热度更高，排在前。
-	require.Equal(t, uint(2), candidates[0].StoryID)
-	require.Equal(t, 2, candidates[0].ParticipantCount, "有内容身份 + 退化 feed = 2 个来源")
-	require.Equal(t, uint(1), candidates[1].StoryID)
-	require.Equal(t, 1, candidates[1].ParticipantCount, "同一篇内容的两个 feed 副本 = 1 个来源")
+	// 口径标签映射。
+	for mode, want := range map[string]string{
+		EventClusterModeVector:           "向量聚簇",
+		EventClusterModeSemanticFallback: "语义向量兜底",
+		EventClusterModeSubjectApprox:    "主体近似",
+	} {
+		require.Equal(t, want, EventClusterModeLabel(mode), fmt.Sprintf("mode=%s", mode))
+	}
 }

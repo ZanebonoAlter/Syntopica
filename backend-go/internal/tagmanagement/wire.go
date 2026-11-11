@@ -14,6 +14,7 @@ import (
 	"syntopica-backend/internal/tagmanagement/service"
 	"syntopica-backend/internal/tagmanagement/service/board"
 	"syntopica-backend/internal/tagmanagement/service/boardhealth"
+	"syntopica-backend/internal/tagmanagement/service/related"
 	"syntopica-backend/internal/tagmanagement/service/sourcestats"
 	"syntopica-backend/internal/tagmanagement/service/watched"
 	// 实体主体归一 hook（normalize-event-subject-entities）：blank import 触发
@@ -363,3 +364,26 @@ func StopDescriptionRepairExecutor() {
 	}
 	exec.Stop()
 }
+
+// ── related-events 表示与阈值的门面再导出（retire-story-adopt-event-metrics）
+//
+// 日报「当天同事件聚簇」必须复用 related-events 的 related-event-v1 表示与
+// related_event_similarity_threshold 阈值（spec: SHALL NOT 为聚簇另立表示或
+// 另立阈值）。topicgraph 域按 backend-package-boundaries 只许 import 本域根
+// 门面，故这里把纯函数与常量再导出一次。
+const (
+	// RelatedEventRepresentationVersion 是聚簇文本的表示版本（related-event-v1）。
+	RelatedEventRepresentationVersion = related.RepresentationVersion
+	// RelatedEventThresholdKey 是聚簇与相关事件共用的在线阈值键。
+	RelatedEventThresholdKey     = related.ThresholdKey
+	RelatedEventDefaultThreshold = related.DefaultThreshold
+)
+
+var (
+	// BuildRelatedEventRepresentation 构造 related-event-v1 文本（纯函数）。
+	BuildRelatedEventRepresentation = related.BuildRepresentation
+	// LoadRelatedEventThreshold 读在线阈值（缺项回退默认、坏值告警回退）。
+	LoadRelatedEventThreshold = related.LoadThreshold
+	// LoadRelatedEventAuxLabels 读标签当前有效辅助标签（聚簇表示的输入）。
+	LoadRelatedEventAuxLabels = related.LoadAuxLabels
+)
