@@ -29,4 +29,4 @@
 - [x] 5.1 `cd backend-go && golangci-lint run ./internal/topicgraph/... && go vet ./internal/topicgraph/...` → 0 error
 - [x] 5.2 `cd backend-go && go test ./internal/topicgraph/repository ./internal/topicgraph/handler -count=1` → 全绿（含 testcontainer PG 用例）
 - [x] 5.3 真库只读模拟（效果核对）：α=0.5 混合质心 → tag 268293 距离 0.1661→0.1868（>0.18 出直连区降级 L2）、创建时 5 条 section 0.1016→0.0351（拉回锚定）、tag 268151 0.1112→0.1247（仍 L1 未误伤）
-- [ ] 5.4 部署后（见完工汇报）：记录基线（1009 质心到 268293/创建5条/最近5条距离）→ `curl --noproxy '*' -X POST localhost:5100/api/daily-reports/recompute-topic-centroids` → psql 复查三组距离符合 5.3 预期
+- [x] 5.4 部署后（见完工汇报）：记录基线（1009 质心到 268293/创建5条/最近5条距离）→ `curl --noproxy '*' -X POST localhost:5100/api/daily-reports/recompute-topic-centroids` → psql 复查三组距离符合 5.3 预期（实测 23:12:02 全站 1915 topics 0 failed；1009：陈杰 0.166→0.187、创建5条 0.214→0.156、最近5条 0.084→0.109）
