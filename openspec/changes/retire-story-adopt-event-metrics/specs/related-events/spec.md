@@ -6,7 +6,7 @@
 
 聚簇 SHALL 为**当天口径**：候选集 SHALL 为该版块当天日报中命中的 event 标签（去重后），SHALL NOT 跨天、不引入前一日标签，SHALL NOT 做事件身份归并、合并、传递扩展或阶段判定。聚簇结果 SHALL 只在内存中计算，SHALL NOT 写入 `related_event_embeddings` 或任何业务表、缓存、身份表与关系表。
 
-聚簇 SHALL 产生向量时走标准 AI 路由（capability 为 embedding），请求 SHALL 携带非空 operation（与索引刷新 operation 区分），每次调用尝试无论成败 SHALL 落 `ai_call_logs` 审计，成功额外记 prompt 与 response_snippet 并受截断保护。同一版块同一天的向量 SHALL 以批量调用取得（分批上限与单批超时沿用既有索引刷新口径），SHALL NOT 逐标签单独调用，也 SHALL NOT 为同一批标签重复计算。
+聚簇 SHALL 产生向量时走标准 AI 路由（capability 为 embedding），请求 SHALL 携带非空 operation（与索引刷新 operation 区分），每次调用尝试无论成败 SHALL 落 `ai_call_logs` 审计（operation / capability / token / latency / metadata；embedding 路径按仓内 N/A 惯例不记 prompt / response_snippet，截断保护只适用 chat 路径）。同一版块同一天的向量 SHALL 以批量调用取得（分批上限与单批超时沿用既有索引刷新口径），SHALL NOT 逐标签单独调用，也 SHALL NOT 为同一批标签重复计算。
 
 每个聚簇 SHALL 给出：成员 event 标签集合、簇内文章数（按内容身份去重，见 `lane-heat-metric`「线索计数的内容身份去重口径」）、代表标签与描述。综合稿（`scope=composite`）的 thread SHALL NOT 进入聚簇，也不 SHALL NOT 计入簇内文章数。
 

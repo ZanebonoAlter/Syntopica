@@ -669,7 +669,7 @@ func SetAttributeStoriesSpawnForTest(spawn func(boardID, reportID uint, periodDa
 }
 
 // SpawnAttributeStoriesForReport retains the detached attribution entry point.
-// Online daily reports instead use boundedReportAttribution before highlights;
+// Online daily reports no longer attribute at all (review R-1: hard stop), and
 // this helper must not be dispatched again for the same generation.
 func SpawnAttributeStoriesForReport(boardID, reportID uint, periodDate time.Time) {
 	spawnAttributeStories(boardID, reportID, periodDate)

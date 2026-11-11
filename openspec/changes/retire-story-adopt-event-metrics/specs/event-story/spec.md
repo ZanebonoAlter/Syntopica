@@ -8,12 +8,12 @@
 ### Requirement: 事件线数据模型
 
 **Reason**: `board_stories` 事件线模型、`daily_report_threads.story_id` 归属列与 `merged_into` 合并链的在线写入路径整体退役：归属判定停写后不再产生新的事件线、不再挂载事件、不再合并。保留「新建/合并事件线」的 SHALL 契约会让实现与规范分叉。
-**Migration**: 表与列全部保留且只读：`board_stories`、`story_signals`、`daily_report_threads.story_id` 不删表、不删列、不迁移数据，GORM 模型继续注册以维持 AutoMigrate 兜底。新生成与重建的日报 `story_id` 恒为 NULL、恒不出现在对外响应里。回滚只需把停写开关与读端口径改回去，不需要数据修复。
+**Migration**: 表与列全部保留且只读：`board_stories`、`story_signals`、`daily_report_threads.story_id` 不删表、不删列、不迁移数据，GORM 模型继续注册以维持 AutoMigrate 兜底。新生成与重建的日报 `story_id` 恒为 NULL、恒不出现在对外响应里。停写是硬停写（review R-1：没有 `ai_settings` 开关），回滚只能以 `git revert` 本 change 的提交恢复在线入口，不需要数据修复。
 
 ### Requirement: 事件归属判定顺序
 
 **Reason**: 五层归属判定（`subject_key` 一票否决 → 精确相等 → 同次发生 → 阶段推进 → 合并闸门 → 模型四分类兜底）唯一的产出是事件线归属与合并，属已退役能力。指纹全同的跨天挂载本有通路，实际死在召回盲区与信任闸门，继续修判定顺序是在补三个各自独立的漏而非补主路。
-**Migration**: 归属判定链整体停写（开关在日报链尾部的在线归属判定入口）。死代码 `SpawnAttributeStoriesForReport`（当前只有测试调用、无生产调用方）保留但不接线。历史归属结果保留在 `daily_report_threads.story_id`，只读。读者侧的「是不是同一件事」改由 `related-events` 的直接相关与日报当天的同事件聚簇承担。
+**Migration**: 归属判定链整体硬停写——日报链尾部的在线入口 `boundedReportAttribution` 及其调用一并摘除，不存在开关态（review R-1）；判定函数库与写端实现保留供 CLI 编译与历史口径阅读。死代码 `SpawnAttributeStoriesForReport`（当前只有测试调用、无生产调用方）保留但不接线。历史归属结果保留在 `daily_report_threads.story_id`，只读。读者侧的「是不是同一件事」改由 `related-events` 的直接相关与日报当天的同事件聚簇承担。
 
 ### Requirement: 综合稿不建立事件身份
 

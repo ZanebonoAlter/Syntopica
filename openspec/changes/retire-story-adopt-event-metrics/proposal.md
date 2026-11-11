@@ -20,7 +20,7 @@ story（事件线）这一层把「今天有几件事、哪件事几个来源在
 
 ## What Changes
 
-- **story 停写（不删代码不删表）**：日报链尾部的在线归属判定入口 `boundedReportAttribution` 加 `ai_settings` 布尔开关，开关关闭时不再产生 `board_stories` / `story_signals` / `daily_report_threads.story_id`；开关可回滚灰度，不删实现、不删表、不做数据迁移。
+- **story 硬停写（不删实现库、不删表）**：日报链尾部的在线归属判定入口及其调用整体摘除（review R-1 用户拍板：删除 `story_attribution_enabled` 开关，不再有灰度态），新生成 / 重建的日报恒不产生 `board_stories` / `story_signals` / `daily_report_threads.story_id`；归属判定函数库与写端实现完整保留（`attributeStoriesForReportWithStats` 及 story 写方法仍在，CLI 仍可编译），不删表、不做数据迁移。回滚 = `git revert` 本 change 的提交，不是切换配置键。
 - **回填与重算入口锁写**：`cmd/backfill-stories` 的写模式（`--reattribute` / `--restore` / `--rebuild-signals` / `--backfill-content-keys` / `--fill-story-embeddings` / `--fill-thread-embeddings`）退役后直接拒绝，只读 / 实验模式保留，防止「停写」被一条命令绕过。
 - **矩阵日格 = 当日线索合计**：矩阵日格、演进节点、顶部时间视窗曲线统一改回 thread 量纲（该泳道该日各主题桶线索数之和），不再取事件线数、不再取桶峰值；**颜色通道整体退役**，数值 + title/aria 承载全部信息。
 - **热度换口径**：泳道当天热度 = 活跃泳道当天线索数 × 1.0 + 候选泳道当天线索数 × `lane_heat_candidate_weight`（默认 0.5，域 [0,1] 可在线调）；版块关注度 = 各泳道当天热度之和。只表达当天热度，废半衰期、废跨天累积；候选权重**不参与**话题生命周期判定。
@@ -48,9 +48,9 @@ story（事件线）这一层把「今天有几件事、哪件事几个来源在
 - `entity-subject-resolution`：「影子接入与既有判定零改动」一条改写措辞——该能力（2026-11-11 归档的 `normalize-event-subject-entities`）原文以「事件线身份判定仍只使用 `subject_key` 三层匹配」描述零改动边界，事件线退役后该引用悬空；本 change 只改措辞与边界，实体层行为与写入面一字不动。
 ## Impact
 
-- **后端写入端**：`backend-go/internal/topicgraph/service/daily_report_story_highlights.go:boundedReportAttribution`（唯一在线归属判定入口）、`service/daily_report_story_dedup.go:applyStoryDedupForReport`、`repository/daily_report_repository.go:SaveReport`（重建日报时的 affectedStoryIDs 重算，随停写自然空转）。
+- **后端写入端**：`backend-go/internal/topicgraph/service/daily_report_story_highlights.go`（在线归属判定入口与其调用整体摘除；`applyStoryDedupForReport` 依赖 `story_id`，随之自然 no-op）、`repository/daily_report_repository.go:SaveReport`（重建日报时的 `affectedStoryIDs` 派生计数重算路径一并摘除，review R-2）。读端死代码随字段退场删除（`board_radar_stories.go` 与 2 个 story 身份集成测试），写端实现与表全部保留（review R-4）。
 - **后端读端**：`repository/board_radar_repository.go:GetBoardRadarOverview` / `buildRadarRow` / `finalizeRadarStories`（事件线清单段与 heat 字段）、`repository/lane_snapshot_repository.go:GetBoardLaneDynamics`（lane_heat 与逐日字段）、`repository/story_heat.go:ComputeBoardHeat`（旧半衰期热度）、`repository/report_story_highlights.go:ReportStoryCandidates`（今日重点候选源）。
-- **新增**：日报尾段内联聚簇（embedding 调用 + 内存聚簇 + 审计）；新热度纯函数（泳道当天线索数聚合，含 candidate 泳道单独查询）；`ai_settings` 新键 `lane_heat_candidate_weight` 与 story 停写布尔键。
+- **新增**：日报尾段内联聚簇（embedding 调用 + 内存聚簇 + 审计）；新热度纯函数（泳道当天线索数聚合，含 candidate 泳道单独查询）；`ai_settings` 新键 `lane_heat_candidate_weight`（story 停写不再有配置键）。
 - **前端**：`front/app/features/tags/components/console/`（BoardRadarStory / BoardRadarReadingRail / ObservationMatrixLaneRow / observationLanes / boardRadarHelpers / BoardLaneEvolution）、`front/app/api/normalizers/boardRadar.ts` 与 `laneDynamicsWindow.ts`、`front/app/api/dailyReports.ts`、`front/app/features/tags/components/daily-report/`（DailyReportMasthead / dailyReportMagazine）、`front/app/features/tags/composables/useBoardRadarOverview.ts`。
 - **CLI**：`backend-go/cmd/backfill-stories/main.go` 写模式退役、只读 / 实验模式保留。
 - **数据**：无新增表、无 DDL 迁移、无数据回填；`board_stories` / `story_signals` 只读保留。`ai_settings` 新键走既有 upsert 模式。
@@ -64,4 +64,6 @@ story（事件线）这一层把「今天有几件事、哪件事几个来源在
 - 将来实现后：矩阵日格与雷达关注度改按当天线索数；雷达右栏换成泳道清单；日报「今日重点」候选改自当天同事件聚簇；日报生成每日每版块多 1 批 embedding 调用。
 - 旧 story 数据（`board_stories` / `story_signals` / 历史 `story_id`）保留且只读，用户不需要清理标签、重生成日报或执行任何回填。
 - 需要用户执行的只有一项（若希望候选泳道热度权重不同于默认）：在既有「匹配规则」配置里调 `lane_heat_candidate_weight`；默认 0.5 无需操作。
+- **story 停写是硬停写，没有开关要关**（review R-1）：上线即生效，不需要改 `ai_settings`、不需要跑任何回填或清理。
+- **回滚路径 = `git revert`**（review R-1）：原设计的「把 `story_attribution_enabled` 改回 true」已随开关删除失效；回滚即 revert 本 change 的提交，代码级恢复在线归属入口后重新部署即可，旧数据全程未改、不需要数据修复。
 - 关注度分档阈值需在实现阶段用真库分布实测重标（重标定任务见 tasks.md），重标前不得对外宣称新量纲的热点 / 关注分档已定型。

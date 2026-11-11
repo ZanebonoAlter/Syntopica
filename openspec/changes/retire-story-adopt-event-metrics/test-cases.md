@@ -93,25 +93,25 @@
 
 | 步 | 动作 | 来源 Scenario | 期望 | 层 | 落点（测试/人工） |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 关停写开关，生成一期日报 | 新日报不写事件身份 | 所有 thread 的 `story_id` 为 NULL、`story_manual` 为 false、`display_tier` 为 `body`；不新建 / 合并 / 改写 `board_stories` 与 `story_signals` | service + 隔离 PG | planned: `backend-go/internal/topicgraph/service/daily_report_story_highlights_test.go` |
+| 1 | 生成一期日报（硬停写，无开关） | 新日报不写事件身份 | 所有 thread 的 `story_id` 为 NULL、`story_manual` 为 false、`display_tier` 为 `body`；不新建 / 合并 / 改写 `board_stories` 与 `story_signals` | service + 隔离 PG | planned: `backend-go/internal/topicgraph/service/daily_report_story_highlights_test.go` |
 | 2 | 读旧日报 | 旧事件身份只读保留 | 历史 `story_id` 原样保留、不被清空；对外响应不透出事件线身份字段 | repository（隔离 PG） | planned: `backend-go/internal/topicgraph/repository/daily_report_repository_test.go` |
 | 3 | 跑 `cmd/backfill-stories` 的写模式 | 回填幂等（旧）已废止；本步验锁写 | `--reattribute` / `--restore` / `--rebuild-signals` / `--backfill-content-keys` / `--fill-story-embeddings` / `--fill-thread-embeddings` 直接拒绝、非零退出并打印退役说明；只读 / `--dry-run` 仍可用 | CLI 单测 | planned: `backend-go/cmd/backfill-stories/main_test.go` |
 | 4 | 打开雷达 / 矩阵 / 日报 | 打开工坊首屏；从雷达进入版块；一次请求渲染雷达 | 三处读端正常；单次总览请求仍给全部版块行与泳道清单；无事件线概念的字段与文案残留 | 组件 + 浏览器 | planned: `front/app/features/tags/components/console/BoardRadarView.test.ts`；人工：浏览器实链路留痕（实现阶段写 `ui-verification/report.md`） |
 
 ### 变体走查
 
-- **输入变体**：开关值为 `true`（默认，行为不变：仍写 story）｜`false`（停写）｜缺项（回退默认）｜坏值（告警回退默认，不阻断日报）｜大小写 / 空白变体（解析为布尔）。
+- **输入变体**（review R-1 后）：无配置输入可影响停写——`ai_settings` 中不存在 `story_attribution_enabled`，误写同名键也不被任何代码读取；日报生成与重建两条入口行为一致。
 - **前置变体**：当期无日报（不产生 story 写入也无聚簇）｜日报生成失败（不产生 story）｜重建日报（不产生 story，且不残留旧聚簇快照）。
-- **时间窗口变体**：停写开关当天切换（当日剩余日报走新行为）｜跨天切换（次日日报行为一致）。
-- **幂等变体**：同一天重复生成日报（不产生新 story 行）｜开关反复开合（幂等，不产生脏数据）。
-- **可用性变体**：停写开关误关时的用户可见后果（雷达 / 矩阵 / 日报读端照常，只是口径变了）｜CLI 拒绝时的退出码与文案（明确说明「事件线已退役」而非崩溃）｜历史日报打开（`story_id` 不透出但正文照常）。
+- **时间窗口变体**：上线当日与次日生成的日报行为一致（无过渡态）｜重建上线前的历史日报不产生新身份。
+- **幂等变体**：同一天重复生成日报（不产生新 story 行）｜重跑上线前历史日报（不重算 `story_signals` / `participant_count`，见 R-2）。
+- **可用性变体**：后台没有任何开关可关时用户可见行为（雷达 / 矩阵 / 日报读端照常）｜CLI 拒绝时的退出码与文案（明确说明「事件线已退役」而非崩溃）｜历史日报打开（`story_id` 不透出但正文照常）。
 
 ### 效果核对
 
-- 触发原因：停写的完整性不能只看开关本身——「还有没有别的写入口」。
-- 核对方法：全仓 grep 写路径（`CreateBoardStory` / `AttachThreadToBoardStory` / `MergeBoardStories` / `RecomputeSignalsForStory` / `RecomputeBoardStoryCounts`）的调用点，逐个确认只剩测试调用或已被开关拦住。
-- 量化结果（2026-11-11 执行 `grep -rn ... backend-go/internal backend-go/cmd --include=*.go`，命中 100 行）：按文件归类——① **测试文件**（`story_repository_test.go` / `story_signals_test.go` / `story_signals_content_key_test.go` / `story_heat_test.go` / `story_attribute_test.go`）只做仓储单测；② **定义处**（`story_repository.go` / `story_signals_repository.go`）无调用；③ **唯一在线入口** `service/story_attribute.go` 的实现在 `daily_report_story_highlights.go:boundedReportAttribution` 内，开关关闭即提前返回（1.1 已测三态）；④ `service/story_reattribute.go` 只被 CLI `--reattribute` 调用，CLI 写模式在 `main.go:171` 前置拒绝；⑤ `cmd/backfill-stories/*.go` 的写路径同上被拒；⑥ **一条遗留维护路径**：`repository/daily_report_repository.go:406`（`SaveReport` 提交后对「本次重建删掉了 thread 的旧事件线」重算 `story_signals` 与计数）。判定：它不是建线/挂线/合并入口（无 `CreateBoardStory`/`AttachThreadToBoardStory`/`MergeBoardStories` 能力），开关关闭后新报不再写 `story_id`，重跑时 `affectedStoryIDs` 为空 → 自然 no-op；只有「重跑开关上线前生成的历史报」这一情形会刷新旧线派生计数（不清空 `story_id`、不新建身份）。
-- 结论：**不存在第二条在线写入口**；遗留的 `SaveReport` 派生计数重算属历史数据维护，不作新建线，列为 review（6.1）关注点如实留痕。
+- 触发原因：硬停写没有开关兜底，完整性只能靠代码面核对——「还有没有别的写入口」。
+- 核对方法：全仓 grep 写路径（`CreateBoardStory` / `AttachThreadToBoardStory` / `MergeBoardStories` / `RecomputeSignalsForStory` / `RecomputeBoardStoryCounts`）的调用点，逐个确认只剩测试调用 / 已被硬停写摘除 / 仅 CLI 只读。
+- 量化结果（2026-11-11 执行 `grep -rn ... backend-go/internal backend-go/cmd --include=*.go`，命中 100 行）：按文件归类——① **测试文件**（`story_repository_test.go` / `story_signals_test.go` / `story_signals_content_key_test.go` / `story_heat_test.go` / `story_attribute_test.go`）只做仓储单测；② **定义处**（`story_repository.go` / `story_signals_repository.go`）无调用；③ **在线入口已整体摘除**（review R-1）：`boundedReportAttribution` 与其在 `finalizeDailyReportHighlights` 的调用删除，日报链零故事写入；④ `service/story_reattribute.go` 只被 CLI `--reattribute` 调用，CLI 写模式在 `main.go:171` 前置拒绝；⑤ `cmd/backfill-stories/*.go` 的写路径同上被拒；⑥ **原本的遗留路径已摘除**（review R-2）：`SaveReport` 不再收集 `affectedStoryIDs`、不再提交后重算 `story_signals` / `participant_count`。
+- 结论：**不存在任何在线写入口**；重跑上线前历史报也不得改写已退役的派生存量（`TestDailyReportRerunKeepsRetiredStoryData`）。
 
 ### 继承与调整（问句⓪）
 
@@ -186,17 +186,16 @@
 | 同一文章被 3 个 feed 抓取 | 簇内篇数 +1（内容身份去重） | service |
 | 同文章链接为空 | 按 feed 粒度计 1 篇，不丢弃 | service |
 | thread 为 composite | 不进簇、不计篇数 | service |
-| 聚簇总预算超限 | 截断到前 N 个标签并标注截断，不阻断日报 | service |
+| 聚簇总预算超限（>500 标签） | 截断到前 N 个标签（按当天命中数降序、同分 id 升序）并标注 `Truncated`，不阻断日报 | service（`TestDailyReportEventClusterTruncatesOverBudget`，review R-8） |
 | LLM 返回集外 `cluster_id` / 越界 `tag_ids` / 空白标题 | 判非法 → 同参重试一次 → 仍非法则 `[]` | service |
 | LLM 返回合法 `[]` | 不重试，直接落空数组 | service |
 
-### 分支表 C：停写开关与 CLI 锁写
+### 分支表 C：硬停写与 CLI 锁写
 
 | 分支 | 期望 | 层 |
 | --- | --- | --- |
-| 开关缺项 | 回退默认（写 story），行为不变 | service |
-| 开关 `false` | 不产生 `board_stories` / `story_signals` / `story_id` | service + 隔离 PG |
-| 开关值非法 | 告警回退默认，不阻断日报 | service |
+| 日报生成尾段（硬停写，review R-1） | 不新建 / 合并 / 挂载事件线，不写 `story_id`；归属判定链一步都不被调用 | service + 隔离 PG（`TestStoryAttributionHardStop`） |
+| 重建上线前历史日报（review R-2） | 不重算 `story_signals` / `participant_count`，派生存量原样保留 | repository + 隔离 PG（`TestDailyReportRerunKeepsRetiredStoryData`） |
 | CLI `--reattribute` / `--restore` / `--rebuild-signals` / `--backfill-content-keys` / `--fill-story-embeddings` / `--fill-thread-embeddings` | 全部拒绝、非零退出、打印退役说明 | CLI |
 | CLI `--dry-run` / 只读模式 | 仍可运行、零写入 | CLI |
 | 同日重建日报 | 不残留旧聚簇快照、不写 story | service + 隔离 PG |
@@ -212,7 +211,7 @@
 
 ### 不适用划除留痕
 
-- **状态机循环（≥3 状态）**：本 change 不引入新状态机；停写开关是布尔闸、聚类是单向计算、热度是纯函数——无循环状态，划除。
+- **状态机循环（≥3 状态）**：本 change 不引入新状态机；停写是编译期硬停写（review R-1 删开关）、聚类是单向计算、热度是纯函数——无循环状态，划除。
 - **多模块交互协议**：本 change 不新增对外协议（`GET /api/semantic-boards/overview` 与 `GET /semantic-boards/:id/lane-dynamics` 的既有路径不变，仅字段语义变更）——协议本身未改，划除。
 - **并发**：本 change 不声称任何新写入路径线程安全；聚簇与热度均为读路径计算，不引入并发写——并发变体划除（除 CLI 拒绝路径外）。
 - **纯函数 × SQLite**：本 change 无纯函数用例依赖 SQLite；repository 层用例一律走 testcontainer PG（禁 SQLite），划除。

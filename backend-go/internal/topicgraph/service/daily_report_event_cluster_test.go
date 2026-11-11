@@ -344,3 +344,44 @@ func TestDailyReportEventClusterBatchSplitsAndRepresentationFailure(t *testing.T
 	require.Len(t, set.Clusters[0].TagIDs, indexable)
 	require.NotContains(t, set.Clusters[0].TagIDs, blank.ID)
 }
+
+// TestDailyReportEventClusterTruncatesOverBudget（review R-8）：候选 event 标签
+// 超过单次聚簇预算（500）时按当天命中数取前 N（同分 id 升序）并标记截断；
+// 截断只影响「今日重点」候选，不阻断日报（函数返回结果而非错误）。
+func TestDailyReportEventClusterTruncatesOverBudget(t *testing.T) {
+	fx := newClusterFixture(t)
+	// 500 个高频标签（各 2 条当天线索）+ 1 个低频标签（1 条线索）：命中数
+	// 降序后低频标签排第 501 位，必须被截断在候选集之外。数据落库走批量
+	// 插入（2000 行逐条 INSERT 在树茴派上要跑半分钟，批量只是快照准备）。
+	tags := make([]models.TopicTag, 0, dailyReportClusterMaxTags)
+	for i := 0; i < dailyReportClusterMaxTags; i++ {
+		label := fmt.Sprintf("高频事件%03d", i)
+		tags = append(tags, models.TopicTag{Label: label, Description: "描述", Category: models.TagCategoryEvent, Status: "active", Metadata: models.MetadataMap{}})
+		fx.stub.vectors["名称\n"+label+"\n\n描述\n描述"] = []float64{1, 0}
+	}
+	require.NoError(t, fx.db.CreateInBatches(&tags, 200).Error)
+	labels := make([]tagmodels.TopicTagBoardLabel, 0, len(tags))
+	threads := make([]repository.DailyReportThread, 0, len(tags)*2)
+	for _, tag := range tags {
+		labels = append(labels, tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: fx.boardID})
+		for hit := 0; hit < 2; hit++ {
+			threads = append(threads, repository.DailyReportThread{
+				ReportID: fx.report.ID, SectionID: fx.sectionID, Title: "线索", Scope: repository.ThreadScopeSingle,
+				TagIDs: repository.JSON(mustJSONIDs([]uint{tag.ID})), Embedding: repository.FloatsToPgVector([]float64{0}),
+			})
+		}
+	}
+	require.NoError(t, fx.db.CreateInBatches(&labels, 200).Error)
+	require.NoError(t, fx.db.CreateInBatches(&threads, 200).Error)
+	low := seedClusterEventTag(t, fx.db, fx.boardID, "低频事件", "描述", nil)
+	seedClusterThread(t, fx.db, fx.report.ID, fx.sectionID, repository.ThreadScopeSingle, []uint{low.ID}, nil)
+
+	set, err := buildDailyReportEventClusters(context.Background(), fx.boardID, fx.report.ID, fx.report.PeriodDate)
+	require.NoError(t, err, "截断只影响候选，不阻断日报")
+	require.True(t, set.Truncated, "超预算必须如实标注截断")
+	require.Equal(t, dailyReportClusterMaxTags, set.TagCount, "候选截断到前 500 个命中数最高的标签")
+	require.Equal(t, repository.EventClusterModeVector, set.Mode)
+	require.Len(t, set.Clusters, 1)
+	require.Len(t, set.Clusters[0].TagIDs, dailyReportClusterMaxTags)
+	require.NotContains(t, set.Clusters[0].TagIDs, low.ID, "低频标签（命中数最低）不得进入候选")
+}

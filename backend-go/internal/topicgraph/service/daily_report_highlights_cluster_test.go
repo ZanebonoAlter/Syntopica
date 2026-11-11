@@ -160,10 +160,9 @@ func TestHighlightsClusterDuplicatesKeepFirst(t *testing.T) {
 // 模式，cluster_id 为空且不伪造快照。
 func TestHighlightsClusterFinalizeAndTagFallback(t *testing.T) {
 	fx := newClusterFixture(t)
-	oldChat, oldSwitch := highlightsChatFn, storyAttributionEnabled
-	defer func() { highlightsChatFn, storyAttributionEnabled = oldChat, oldSwitch }()
-	// 停写态：归属判定不写事件身份（生产停写后的真实状态）。
-	storyAttributionEnabled = func() bool { return false }
+	oldChat := highlightsChatFn
+	defer func() { highlightsChatFn = oldChat }()
+	// 硬停写态（review R-1）：日报尾段不再有归属判定，故无需任何开关覆写。
 
 	eventTag := seedClusterEventTag(t, fx.db, fx.boardID, "甲公司发布芯片", "发布新一代芯片", nil)
 	plainTag := models.TopicTag{Label: "辅助事实", Category: "keyword", Status: "active"}

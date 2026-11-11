@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/jsonutil"
@@ -159,59 +158,16 @@ func parseClusterHighlightsResponse(content string, candidates []repository.Even
 	return out, nil
 }
 
-const reportAttributionBudget = 60 * time.Second
-
-// Synchronous on purpose: ctx reaches DB, embedding and classifier; there is
-// no timeout-race goroutine that can outlive this report's attribution budget.
-var attributeReportOnline = func(ctx context.Context, boardID, reportID uint, date time.Time) error {
-	var store storyStore
-	if storyStoreForTest != nil {
-		store = storyStoreForTest
-	} else {
-		store = storyStore(repoStoryStore{repository.NewTopicGraphRepository(repository.Repo.DB().WithContext(ctx))})
-	}
-	_, err := attributeStoriesForReportWithStats(ctx, store, boardID, reportID, date, false, true)
-	return err
-}
-
-var reportAttributionTimeout = reportAttributionBudget
-
-// storyAttributionEnabled is the stop-write switch reader. A nil repository (or
-// a test double) keeps the documented default: attribution still runs, so
-// deployments that never touched ai_settings behave exactly as before.
-var storyAttributionEnabled = func() bool {
-	if repository.Repo == nil {
-		return repository.DefaultStoryAttributionEnabled
-	}
-	return repository.Repo.StoryAttributionEnabled()
-}
-
-// boundedReportAttribution is the ONLY online story-attribution entry point.
-// With the stop-write switch off it returns immediately: no board_stories /
-// story_signals row and no daily_report_threads.story_id is written. The
-// implementation below is kept intact so flipping the key back to true restores
-// production without a rollout (design D1/D2 — 不删代码不删表).
-func boundedReportAttribution(ctx context.Context, report *repository.BoardDailyReport) (err error) {
-	if !storyAttributionEnabled() {
-		logging.Infof("daily-report: story attribution disabled report=%d (ai_settings.%s=false), nothing written",
-			report.ID, repository.StoryAttributionEnabledKey)
-		return nil
-	}
-	started := time.Now()
-	budget, cancel := context.WithTimeout(ctx, reportAttributionTimeout)
-	defer cancel()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("story attribution panic: %v", recovered)
-		}
-		logging.Infof("daily-report: attribution report=%d elapsed=%s timeout=%t error=%v", report.ID, time.Since(started), budget.Err() == context.DeadlineExceeded, err)
-	}()
-	err = attributeReportOnline(budget, report.SemanticBoardID, report.ID, report.PeriodDate)
-	if err == nil {
-		err = budget.Err()
-	}
-	return err
-}
+// Story attribution is PERMANENTLY stopped (retire-story-adopt-event-metrics
+// review R-1): the ai_settings switch was deleted and the online entry point
+// (formerly boundedReportAttribution) is gone, so the report chain can never
+// write board_stories / story_signals / daily_report_threads.story_id again.
+//
+// What stays is the decision library itself — attributeStoriesForReportWithStats
+// and the story writers are kept intact because the retired CLI
+// (cmd/backfill-stories) still compiles against them and they document the
+// historical contract. Rollback is a git revert of this change, not a settings
+// key (design D1/D2 / proposal 部署后影响).
 
 type reportHighlightInputsKey struct{}
 type reportHighlightInputs struct {
@@ -219,21 +175,20 @@ type reportHighlightInputs struct {
 	clusters []repository.ClusterGroup
 }
 
-// finalizeDailyReportHighlights runs the report's tail: store attribution (if
-// the stop-write switch allows it), the retired dedup no-op, then the highlights.
+// finalizeDailyReportHighlights runs the report's tail: the retired dedup no-op,
+// then the highlights. Story attribution is NOT called — it is permanently
+// stopped (review R-1), so this function can only ever read today's clusters.
 //
 // The 「今日重点」candidate source is the day's same-event clusters (top 8 by
 // article count → tag count → representative tag id). Clustering failure only
 // degrades the highlights to the existing tag-fallback mode — it never blocks the
 // report body (spec: 降级不阻断日报).
 func finalizeDailyReportHighlights(ctx context.Context, report *repository.BoardDailyReport, inputs *reportHighlightInputs) {
-	attributionErr := boundedReportAttribution(ctx, report)
-	// applyStoryDedupForReport depends on story_id and is a natural no-op while
-	// attribution is stopped; it is kept wired so a rollback (switch back on)
-	// restores the former behavior without touching the orchestrator.
-	_, dedupErr := applyStoryDedupForReport(report.ID, report.PeriodDate)
-	if attributionErr != nil || dedupErr != nil {
-		logging.Warnf("daily-report: story tail degraded report=%d attribution=%v dedup=%v", report.ID, attributionErr, dedupErr)
+	// applyStoryDedupForReport depends on story_id, which this chain never writes
+	// anymore, so it stays a natural no-op. It is kept wired (not deleted) so the
+	// historical behavior is readable next to the requirement it replaced.
+	if _, dedupErr := applyStoryDedupForReport(report.ID, report.PeriodDate); dedupErr != nil {
+		logging.Warnf("daily-report: story dedup no-op degraded report=%d error=%v", report.ID, dedupErr)
 	}
 	tags, fallbackClusters := inputs.tags, inputs.clusters
 

@@ -228,7 +228,7 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 
 ### 9.11 board_stories（事件线，add-event-story-heat；**只读保留**）
 
-> ⚠️ **本表自 change `retire-story-adopt-event-metrics`（2026-11-11）起只读保留**：在线生产已停写（`ai_settings.story_attribution_enabled`），回填 CLI 写模式拒绝，不删表不迁移；下列字段/索引描述为历史口径与回滚依据。现行「今日重点」用当天同事件聚簇（不落库），见 `flow/daily-report.md` 红线 46-47。
+> ⚠️ **本表自 change `retire-story-adopt-event-metrics`（2026-11-11）起只读保留**：在线生产已硬停写（归属入口与其调用已摘除，无 `ai_settings` 开关；review R-1），重建历史报也不再重算派生计数（review R-2），回填 CLI 写模式拒绝，不删表不迁移；下列字段/索引描述为历史口径与回滚（`git revert`）依据。现行「今日重点」用当天同事件聚簇（不落库），见 `flow/daily-report.md` 红线 46-47。
 
 跨天同一事件的聚合体（一条线贯穿多天的多个 `daily_report_threads`），承载结构化指纹与热度汇总计数；热度证据在 `story_signals`，热度由 signals 实时计算不落本表。挂在版块下（`board_id`），可选关联首次归属话题（`lane_id` 仅展示分组用，不参与身份判定）。迁移 `20261105_0001`。
 

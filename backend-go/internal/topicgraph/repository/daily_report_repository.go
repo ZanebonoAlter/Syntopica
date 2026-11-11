@@ -231,10 +231,11 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 	// centroid/vacuum refresh (which reads via r.db and must see committed
 	// sections) knows which topics changed.
 	var touchedTopicIDs []uint
-	// affectedStoryIDs are story lines whose threads are deleted by a rerun
-	// of this report; their counters must be recomputed after commit (an
-	// increment-only model would keep stale counts — pinned in 2c).
-	var affectedStoryIDs []uint
+	// Story identity is permanently retired (retire-story-adopt-event-metrics
+	// review R-1/R-2): this path no longer collects the story lines whose
+	// threads disappear on a rebuild, and no longer recomputes story_signals /
+	// participant_count after commit. board_stories / story_signals are read-only
+	// history now — a rerun of a pre-retirement report must not touch them.
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		// (board, date)-scoped serialization (fix-daily-report-cross-process-
 		// gate D4): the generation gate (D1) already prevents double-runs; this
@@ -282,13 +283,6 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 		}
 
 		if findErr == nil {
-			// Collect story lines about to lose their threads before deleting
-			// them: the post-commit recompute uses this list.
-			if err := tx.Model(&DailyReportThread{}).
-				Where("report_id = ? AND story_id IS NOT NULL", existing.ID).
-				Distinct("story_id").Pluck("story_id", &affectedStoryIDs).Error; err != nil {
-				logging.Warnf("SaveReport: collect affected story ids failed for report %d: %v", existing.ID, err)
-			}
 			// Delete old threads
 			if err := tx.Where("report_id = ?", existing.ID).Delete(&DailyReportThread{}).Error; err != nil {
 				return fmt.Errorf("delete old threads: %w", err)
@@ -394,22 +388,10 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 		return err
 	}
 
-	// Rebuild evidence AND counters for lines whose threads were deleted above.
-	// Signals FIRST: without rebuilding evidence, stale story_signals keep
-	// feeding heat and participant_count from articles no surviving thread
-	// covers anymore (重建后旧 signals 残留 — pinned by
-	// TestStorySignalsSaveReportRebuildRemovesOldEvidence). Counts afterwards
-	// re-derive thread/article counters from the surviving threads. Best-effort:
-	// a failure leaves a stale value (the next attribution run recomputes
-	// again) but must not fail the report save.
-	for _, storyID := range affectedStoryIDs {
-		if rerr := r.RecomputeSignalsForStory(storyID); rerr != nil {
-			logging.Warnf("SaveReport: recompute story %d signals failed: %v", storyID, rerr)
-		}
-		if rerr := recomputeBoardStoryCountsWith(r.db, storyID); rerr != nil {
-			logging.Warnf("SaveReport: recompute story %d counts failed: %v", storyID, rerr)
-		}
-	}
+	// Retired (review R-2): the post-commit story_signals / participant_count
+	// recompute for lines whose threads were deleted by this rebuild is gone.
+	// It was the last non-test writer of story-derived data; keeping it would let
+	// a rerun of a pre-retirement report rewrite the read-only history.
 
 	// Post-commit refresh: centroids + vacuum stats. Both read via r.db, so they
 	// must run AFTER the transaction commits (sections + persistent_topic_id

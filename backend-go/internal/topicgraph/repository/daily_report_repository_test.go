@@ -916,6 +916,49 @@ func TestDailyReportSaveThreadsRetiresStoryIdentity(t *testing.T) {
 	require.JSONEq(t, `[]`, payload)
 }
 
+// TestDailyReportRerunKeepsRetiredStoryData（review R-1/R-2）：硬停写后重跑一期
+// 历史日报不得改写已退役的派生数据——story_signals 照旧保留、
+// board_stories.participant_count 不被重算（旧实现会在提交后重算这两项）。
+func TestDailyReportRerunKeepsRetiredStoryData(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	Repo = repo
+	t.Cleanup(func() { Repo = nil })
+
+	boardID := seedTestBoard(t, db)
+	day := NormalizeReportDate(time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC))
+	reportID := seedTestReport(t, db, boardID, day)
+	sectionID := seedTestSection(t, db, reportID, "section")
+
+	// 历史身份与派生存量：一条真事件线 + 一行证据 + 一个与其证据不相符的
+	// participant_count（旧实现重算后会把它改成 0 并删掉证据）。
+	story := BoardStory{BoardID: boardID, Title: "历史事件线", FirstSeenDate: day, LastSeenDate: day, ParticipantCount: 7}
+	require.NoError(t, db.Omit("Embedding", "SubjectEmbedding").Create(&story).Error)
+	storyID := story.ID
+	require.NoError(t, db.Omit("Embedding").Create(&DailyReportThread{
+		ReportID: reportID, SectionID: sectionID, Title: "历史事件", StoryID: &storyID,
+	}).Error)
+	// story_signals.article_id 有外键，证据文章必须真实存在。
+	evidence := models.Article{FeedID: 9, Title: "历史证据", Link: "https://example.com/history"}
+	require.NoError(t, db.Create(&evidence).Error)
+	require.NoError(t, db.Create(&StorySignal{
+		StoryID: storyID, ArticleID: evidence.ID, FeedID: 9, ParticipantKey: "feed:9",
+		Kind: StorySignalKindEditorial, ObservedAt: day, ObservedAtSource: "fallback",
+	}).Error)
+
+	// 同日重跑：整份覆盖重建（threads/sections 删后重插）。
+	report := &BoardDailyReport{SemanticBoardID: boardID, PeriodDate: day, Title: "重建", Status: "completed", Highlights: JSON("[]")}
+	require.NoError(t, repo.SaveReport(report, []DailyReportSection{{ClusterLabel: "s"}}, [][]DailyReportThread{{{Title: "重建线索"}}}))
+	require.Equal(t, reportID, report.ID)
+
+	var signals int64
+	require.NoError(t, db.Model(&StorySignal{}).Where("story_id = ?", storyID).Count(&signals).Error)
+	require.EqualValues(t, 1, signals, "重建历史报不得删除 / 重写 story_signals")
+	var reloaded BoardStory
+	require.NoError(t, db.First(&reloaded, storyID).Error)
+	require.Equal(t, 7, reloaded.ParticipantCount, "重建历史报不得重算 participant_count")
+}
+
 // mustJSONIDs renders a uint slice as a JSON array literal for jsonb columns.
 func mustJSONIDs(ids []uint) string {
 	parts := make([]string, len(ids))

@@ -56,46 +56,25 @@ func TestAttributeOnlineStopsAtFirstThreadError(t *testing.T) {
 	assertStoryAttributeNoWrites(t, store)
 }
 
-// TestStoryAttributionSwitch covers retire-story-adopt-event-metrics task 1.1:
-// 开关开 = 行为不变（归属判定照常进入）、开关关 = 零写入（不新建 / 合并 /
-// 挂载任何事件线，也不写 story_id）、坏值 = 回退默认（行为不变）。
-func TestStoryAttributionSwitch(t *testing.T) {
-	oldSwitch, oldTimeout, oldOnline := storyAttributionEnabled, reportAttributionTimeout, attributeReportOnline
-	t.Cleanup(func() {
-		storyAttributionEnabled, reportAttributionTimeout, attributeReportOnline = oldSwitch, oldTimeout, oldOnline
-	})
-	reportAttributionTimeout = reportAttributionBudget
-
-	// 开关开（缺项回退默认）：归属判定照常进入，行为不变。
+// TestStoryAttributionHardStop covers retire-story-adopt-event-metrics review
+// R-1（用户拍板：删开关改硬停写）：日报尾段永久不进入归属判定——即使 store
+// 里备着一批可归属的 thread，也不新建 / 合并 / 挂载任何事件线，不写
+// story_id，不产生 story_signals。回滚路径是 git revert，不是改配置键。
+func TestStoryAttributionHardStop(t *testing.T) {
 	store, _ := storyAttributeFixture(t)
-	attributeReportOnline = func(ctx context.Context, boardID, reportID uint, date time.Time) error {
-		_, err := attributeStoriesForReportWithStats(ctx, store, boardID, reportID, date, false)
-		return err
-	}
-	storyAttributionEnabled = func() bool { return repository.DefaultStoryAttributionEnabled }
-	report := &repository.BoardDailyReport{ID: 21, SemanticBoardID: 7, PeriodDate: storyAttributeDay()}
-	require.NoError(t, boundedReportAttribution(context.Background(), report))
-	require.NotEmpty(t, store.listReports, "开关开时归属判定必须照常进入（行为不变）")
+	fx := newClusterFixture(t)
 
-	// 开关关：零写入——连归属判定都不进入，更不会产生 board_stories /
-	// story_signals / story_id。
-	store, _ = storyAttributeFixture(t)
-	storyAttributionEnabled = func() bool { return false }
-	require.NoError(t, boundedReportAttribution(context.Background(), report))
-	require.Empty(t, store.listReports, "开关关时不得进入归属判定")
-	require.Empty(t, store.created)
-	require.Empty(t, store.attached)
-	require.Empty(t, store.merged)
+	finalizeDailyReportHighlights(context.Background(), fx.report, &reportHighlightInputs{})
 
-	// 坏值：告警回退默认（写 story，行为不变）。
-	enabled, ok := repository.ParseStoryAttributionEnabled("maybe")
-	require.False(t, ok)
-	require.Equal(t, repository.DefaultStoryAttributionEnabled, enabled)
-	// 大小写 / 空白变体按布尔解析。
-	enabled, ok = repository.ParseStoryAttributionEnabled(" FALSE ")
-	require.True(t, ok)
-	require.False(t, enabled)
-	enabled, ok = repository.ParseStoryAttributionEnabled("true")
-	require.True(t, ok)
-	require.True(t, enabled)
+	require.Empty(t, store.listReports, "硬停写后日报尾段不得再进入归属判定（连查询都不发生）")
+	require.Empty(t, store.created, "不得新建 board_stories")
+	require.Empty(t, store.attached, "不得把 thread 挂到事件线（即不写 story_id）")
+	require.Empty(t, store.merged, "不得合并事件线")
+	require.Empty(t, store.calls, "归属判定链的任何一步都不得被调用")
+
+	var stories, signals int64
+	require.NoError(t, fx.db.Model(&repository.BoardStory{}).Count(&stories).Error)
+	require.NoError(t, fx.db.Model(&repository.StorySignal{}).Count(&signals).Error)
+	require.Zero(t, stories, "新日报恒零 board_stories 写入")
+	require.Zero(t, signals, "新日报恒零 story_signals 写入")
 }

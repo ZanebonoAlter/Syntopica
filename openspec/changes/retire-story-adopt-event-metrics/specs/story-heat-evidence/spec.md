@@ -3,7 +3,7 @@
 ### Requirement: 热度证据数据模型
 
 **Reason**: `story_signals` 热度证据表以「一个参与者在某个信源时间讨论过某条事件线」为行，事件线退役后不再有新的事件线，也就不会再产生新的证据行；`observed_at` 取信源时间、半衰期衰减、`heat-v1-48h-hl24h` 版本号这一整套都是围绕事件线时间轴设计的。
-**Migration**: 表与列保留且只读，不再有写入方（`RecomputeSignalsForStory` 随停写空转）。新的「当天热度」由 `lane-heat-metric` 定义：输入是泳道当天的线索数，不是证据行。历史 `story_signals` 数据不迁移、不清理。
+**Migration**: 表与列保留且只读，不再有在线写入方：日报尾段的归属入口已摘除（硬停写，review R-1），`SaveReport` 不再重算派生计数（review R-2），`RecomputeSignalsForStory` 仅被已拒绝的 CLI 写模式引用。新的「当天热度」由 `lane-heat-metric` 定义：输入是泳道当天的线索数，不是证据行。历史 `story_signals` 数据不迁移、不清理。
 
 ### Requirement: 参与者身份与去重
 

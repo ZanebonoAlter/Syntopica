@@ -53,7 +53,7 @@
 | --- | --- | --- |
 | S1 看矩阵线索数与当天热度 | 格值 = 当天线索合计；演进节点同值；行序按新热度降序；颜色通道不渲染；aria 含「N 条线索」；线索全未知显示 `?` | planned: `front/app/features/tags/components/console/observationLanes.metrics.test.ts`；`front/app/features/tags/components/console/BoardLaneEvolution.test.ts`；人工：浏览器实链路留痕（实现阶段写 `ui-verification/report.md`） |
 | S2 日报同事件聚簇上今日重点 | 候选 = 当天聚簇 Top 8；簇内文章数按内容身份去重；LLM 只能选候选白名单内条目；聚簇降级时注明口径；零候选走合法空返回 | planned: `backend-go/internal/topicgraph/service/daily_report_event_cluster_test.go`；`front/app/features/tags/components/daily-report/DailyReportMasthead.cluster.test.ts` |
-| S3 story 停写后一切照旧 | 停写开关关闭后不再产生 `board_stories` / `story_signals` / `story_id`；旧数据只读可查；CLI 写模式被拒；雷达 / 日报 / 矩阵读端正常 | planned: `backend-go/internal/topicgraph/service/daily_report_story_highlights_test.go`；`backend-go/cmd/backfill-stories/main_test.go` |
+| S3 story 停写后一切照旧 | 硬停写（无开关，review R-1）下不再产生 `board_stories` / `story_signals` / `story_id`；旧数据只读可查；CLI 写模式被拒；雷达 / 日报 / 矩阵读端正常 | planned: `backend-go/internal/topicgraph/service/daily_report_story_highlights_test.go`；`backend-go/cmd/backfill-stories/main_test.go` |
 | S4 调热度权重 | 保存候选权重后重开仍为保存值；非法值（越界 / 空 / 非有限数）拒绝且不覆盖；新值立即影响泳道热度而不影响话题状态 | planned: `front/app/features/tags/components/MatchingConfigDialog.laneHeat.test.ts`；`backend-go/internal/tagmanagement/handler/board_crud_handler_test.go` |
 | 布局与三视口 | 1440×900、1920×1080、390×844 下矩阵与雷达右栏无横溢；长泳道名 ellipsis + title；刊头重点定位命中当前浮层 | 人工：实现阶段按 `ui-verification/report.md` 建账（A-N 场景【pass\|fail\|未覆盖】+ 依据行）；本轮尚未执行，不得当作已完成 |
 

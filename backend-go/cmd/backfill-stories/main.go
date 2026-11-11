@@ -1,8 +1,10 @@
 // Command backfill-stories was the story (事件线) backfill/repair CLI. Story
 // online production is retired (retire-story-adopt-event-metrics D3): every
 // WRITE mode is refused here with a non-zero exit, so "停写" cannot be bypassed
-// by one command. The implementation files are kept on purpose — a code-level
-// rollback re-enables them together with ai_settings.story_attribution_enabled.
+// by one command. The implementation files are kept on purpose: the story
+// writers still compile and document the historical contract, while online
+// production is permanently stopped (no settings switch — rolling back is a git
+// revert of the retiring change, not flipping an ai_settings key).
 //
 // What still works is the READ-ONLY surface, which operators use to audit the
 // retained historical data:

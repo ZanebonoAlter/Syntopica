@@ -6,7 +6,7 @@
 
 - **story 无独立调度任务**：`internal/app/runtime.go` 注册的 19 个 job 里没有 story 相关项，story 全部是日报生成链的同步派生动作（`service/daily_report_watch.go:GenerateAndSaveReport` → `repository/daily_report_repository.go:SaveReport` → `service/daily_report_story_highlights.go:finalizeDailyReportHighlights`）。因此「停写」不需要动 scheduler.Registry（scheduler 红线 1：调度器清单由 Registry 自动发现，不得维护第二份 descriptor 列表）。
 - **在线写入入口只有一个**：`service/daily_report_story_highlights.go:boundedReportAttribution` → `service/story_attribute.go:attributeStoriesForReportWithStats` → `repository/story_repository.go:AttachThreadToBoardStory` / `CreateBoardStory` / `MergeBoardStories` / `story_signals_repository.go:RecomputeSignalsForStory`。掐断它即停写。
-- **唯一旁路是 CLI**：`backend-go/cmd/backfill-stories/main.go` 的写模式可绕过停写开关直接写 `board_stories` / `story_signals`。
+- **唯一旁路是 CLI**：`backend-go/cmd/backfill-stories/main.go` 的写模式可绕过日报链直接写 `board_stories` / `story_signals`。
 - **读端三处**：`GET /api/semantic-boards/overview`（雷达总览，含事件线清单段）、`GET /semantic-boards/:id/lane-dynamics`（矩阵数据底座）、`GET /api/daily-reports/:id`（今日重点 + `story_id`）。
 - **量纲现成**：矩阵需要的「当日线索合计」在 `front/app/api/normalizers/laneDynamicsWindow.ts:dayCellMetrics` 里已经同时算出（`total` = 各桶线索数之和，`peak` = 桶峰值，`storyCount` = 事件线数），换口径不需要新 SQL、不需要新表列。
 - **热度无落库历史表**：`repository/story_heat.go:ComputeBoardHeat` 每次请求现算，半衰期写在 `story_heat.go:13-19` 的常量里（`HeatRuleVersion = "heat-v1-48h-hl24h"`），新公式同样不落历史表，旧数据也无需迁移。
@@ -17,27 +17,30 @@
 
 **Goals:** ① story 在线生产停写、旧数据只读保留、不删表不迁移；② 矩阵 / 演进 / 曲线 / 泳道行序统一为 thread 量纲（当日线索合计）；③ 用一个可在线调的当天热度公式替代半衰期热度，并让版块关注度与分档跟着换口径；④ 雷达右栏换成「当天线索最多的泳道」；⑤ 日报「今日重点」候选源换成当天同事件聚簇（方案 D：内联现算向量 + 内存聚簇 + 不落库）；⑥ 全部口径有唯一落点，不在前端或多个包各写一份等价式。
 
-**Non-Goals:** 不删 `board_stories` / `story_signals` 表与列，不删任何实现代码（只停写）；不做数据回填与迁移；不把候选权重接进话题生命周期判定；不做跨天事件聚类与跨天重点延续；不新建事件身份或合并关系；不改 topic-graph 的话题生命周期、命中计数与转正门槛；不承诺新口径的关注度分档阈值「已定型」（必须实测重标）；不改 related-events 的既有关联查询能力，只新增日报侧的聚簇用法。
+**Non-Goals:** 不删 `board_stories` / `story_signals` 表与列，不删归属判定的实现库与写端实现（只停在线调用）；读端死代码随字段退场一起删除（`board_radar_stories.go` 与 2 个 story 身份集成测试，见 D1）；不做数据回填与迁移；不把候选权重接进话题生命周期判定；不做跨天事件聚类与跨天重点延续；不新建事件身份或合并关系；不改 topic-graph 的话题生命周期、命中计数与转正门槛；不承诺新口径的关注度分档阈值「已定型」（必须实测重标）；不改 related-events 的既有关联查询能力，只新增日报侧的聚簇用法。
 
 ## Decisions
 
-### D1. story 停写点在归属判定入口加开关，不删代码不删表
+### D1. story 硬停写：摘除在线归属判定入口，实现库与表保留（review R-1 修订）
 
-- **结论**：在 `service/daily_report_story_highlights.go:boundedReportAttribution`（唯一在线归属判定入口）前置一个开关判断，开关关闭时直接返回，不产生 `board_stories` / `story_signals` / `daily_report_threads.story_id`。`applyStoryDedupForReport`（依赖 `story_id`）随之自然 no-op，无需单独关停。死代码 `SpawnAttributeStoriesForReport`（当前只有测试调用、无生产调用方）保留但不接线。
-- **落点**：`backend-go/internal/topicgraph/service/daily_report_story_highlights.go:boundedReportAttribution`
-- **取舍**：否决「从日报编排里摘掉整段归属判定」——那会连带删掉死代码之外仍被 `finalizeDailyReportHighlights` 复用的编排骨架，回滚要改回代码；否决「删表 + 删列」——不可逆且回滚需要数据修复，违反「旧数据只读保留」。开关方案改动面最小、回滚成本最低。
+- **结论**：在线归属判定入口 `service/daily_report_story_highlights.go:boundedReportAttribution` 与其在 `finalizeDailyReportHighlights` 里的调用一并删除——日报链**永久**不产生 `board_stories` / `story_signals` / `daily_report_threads.story_id`，不存在开关态。归属判定函数库（`attributeStoriesForReportWithStats` 与 `storyStore` 写方法）完整保留：`cmd/backfill-stories` 仍编译、仍可读，写模式照旧拒绝。`applyStoryDedupForReport`（依赖 `story_id`）保留但永为 no-op。死代码 `SpawnAttributeStoriesForReport`（当前只有测试调用、无生产调用方）保留但不接线。
+- **落点**：`backend-go/internal/topicgraph/service/daily_report_story_highlights.go:finalizeDailyReportHighlights`
+- **取舍**：否决「保留开关默认关」——制品宣称停写、默认行为却取决于一个可被改回的键，审计与未来 Agent 无法据代码判断稳态（R-1 的矛盾根源）；否决「删表 + 删列」——不可逆且回滚需要数据修复，违反「旧数据只读保留」；否决「保留入口函数只留断言」——成为无调用方的死代码，lint 也会报 unused。
+- **读端删除留痕（review R-4）**：「不删代码」承诺的范围是**实现库与写端**；读端死代码（`repository/board_radar_stories.go` 及其单测、2 个 story 身份集成测试）是「事件线清单段退场」的字段退场连带删除，不构成能力回退。读端恢复与前端口径回滚一并随 `git revert` 完成。
+- **回滚**：`git revert` 本 change 的提交即恢复在线入口与读端代码，旧数据全程未改、不需要数据修复。
 
-### D2. 停写开关落在 `ai_settings` 布尔键，可在线灰度回滚
+### D2. 决策修订（review R-1，用户拍板 2026-11-11）：删除停写开关，改硬停写
 
-- **结论**：新增 `ai_settings` 键 `story_attribution_enabled`（布尔，默认开启以保持兼容，关闭即停写），读法沿用既有 `models.AISettings` upsert + 缺项回退默认的先例；键值变更即时生效，不需要发版。回滚 = 把键改回 true 或删键。
-- **落点**：`backend-go/internal/models/ai_models.go:AISettings`
-- **取舍**：否决「编译期常量」——回滚要重新发版，灰度不可行；否决「环境变量」——部署形态不保证进程内可改、且与既有配置面（`ai_settings`）割裂。`ai_settings` 既有先例见 `related/representation.go:LoadThreshold`（缺项→默认、坏值→告警回退）。
+- **原设计**：`ai_settings` 布尔键 `story_attribution_enabled`（默认开启以保持兼容），关闭即停写、改回 true 即恢复，作为灰度与回滚手段。
+- **修订后结论**：该键整体删除（`repository/story_attribution_settings.go` 不存在），停写从「可灰度开关」变为**编译期硬停写**；`docs/reference/configuration.md` 不再登记该键。设计评审 R-1 指出的矛盾（delta 与红线断言「新日报恒 NULL」，而默认开关开着会让系统继续写）以删开关消除，而不是在文档里加限定语。
+- **落点**：无配置面（删除 `backend-go/internal/topicgraph/repository/story_attribution_settings.go`）。
+- **取舍**：否决 review 建议的「文档级修复」（补部署动作 / 给 SHALL 加开关限定 / 默认改 false）——三者都保留了一个「制品说停写、行为可被配置改回」的分叉面；用户拍板直接消除分叉。代价是失去在线灰度：上线即停写、回滚需 `git revert` 重新部署（不是改键），与 D3 的 CLI 拒绝同属代码级约束。
 
 ### D3. 回填 CLI 写模式改为直接拒绝，只读 / 实验模式保留
 
 - **结论**：`cmd/backfill-stories` 的 `--reattribute` / `--restore` / `--rebuild-signals` / `--backfill-content-keys` / `--fill-story-embeddings` / `--fill-thread-embeddings` 在停写后一律拒绝并打印退役说明（退出码非 0）；`--dry-run` 预览与任何只读 / 实验模式保留。CLI 本身不删除，便于回滚时重新启用。
 - **落点**：`backend-go/cmd/backfill-stories/main.go`
-- **取舍**：否决「直接删除 CLI」——回滚时无法恢复，且用户可能仍想用只读模式核对存量；否决「只加警告不拒绝」——一条命令就能绕过 D1 的停写开关，等于停写没有约束力。
+- **取舍**：否决「直接删除 CLI」——回滚时无法恢复，且用户可能仍想用只读模式核对存量；否决「只加警告不拒绝」——一条命令就能绕过 D1 的硬停写，等于停写没有约束力。
 
 ### D4. 矩阵日格 / 演进节点 / 顶部曲线统一为「当日线索合计」
 
@@ -124,7 +127,7 @@
 
 ### D16. 新增 embedding 调用必须带 operation 并留审计
 
-- **结论**：日报聚簇的 embedding 调用走标准 airouter 路由，capability 为 `embedding`，operation 另立（与索引刷新的 `tagmanagement.related_event.embedding` 区分，便于按操作审计与统计），非空；每次调用尝试无论成败都写 `ai_call_logs`，成功额外记 prompt 与 response_snippet 并受截断保护（response_snippet 截 10000 runes、prompt 截 20000 runes 保头尾）。该 operation SHALL NOT 进 embedding 持久化缓存白名单，避免把日报的当天向量当成可复用的通用缓存命中。
+- **结论**：日报聚簇的 embedding 调用走标准 airouter 路由，capability 为 `embedding`，operation 另立（`topicgraph.daily_report.event_cluster.embedding`，与索引刷新的 `tagmanagement.related_event.embedding` 区分，便于按操作审计与统计），非空；每次调用尝试无论成败都写 `ai_call_logs`，token/latency 成败均记。**embedding 路径按仓内 N/A 惯例不记 prompt / response_snippet**（airouter 的 embedding `LogCall` 只带 operation/capability/token/latency/metadata，prompt/response_snippet 截断（10000 / 20000 runes）只适用于 chat 路径，review R-7），`Metadata` 带 `board_id` / `report_id` / `batch_size` / `representation_version`。该 operation SHALL NOT 进 embedding 持久化缓存白名单，避免把日报的当天向量当成可复用的通用缓存命中。
 - **落点**：`backend-go/internal/tagmanagement/service/related/refresh.go:RefreshBoard`
 - **取舍**：否决「复用索引刷新的 operation 名」——两者频次与语义不同（一次性 vs 每日每板），混在一起会让审计统计失真、也让缓存白名单决策混淆；否决「不进审计」——ai-summary 红线要求每次调用尝试都留痕。
 
@@ -143,9 +146,9 @@
 ## Migration / Rollback
 
 - **无 DDL 迁移、无数据回填**：新热度从既有日报几何算，聚簇在内存算，`ai_settings` 新键走既有 upsert。
-- **上线顺序**：① 先上后端停写开关（默认开启，行为不变）+ 新热度 / 新聚簇（双跑：仍返回旧口径供对比，不删旧字段）；② 上前端口径切换；③ 实测重标分档阈值；④ 关闭停写开关（此时旧读端已无消费方），CLI 写模式同步拒绝。
-- **回滚**：把 `story_attribution_enabled` 改回 true 即恢复 story 在线生产；前端口径回滚到旧 commit 即可；旧数据全程未改，回滚**不需要数据修复**。CLI 写模式是代码级拒绝，回滚随代码回退。
-- **灰度**：停写开关与新口径都可按版块 / 全局两级灰度；关闭停写开关前旧读端仍在，关闭后旧读端数据不再更新——这正是预期。
+- **上线顺序**：① 后端上线即硬停写（无开关、无灰度态，review R-1）+ 新热度 / 新聚簇；② 前端切换口径（旧读端随之失去消费方）；③ 实测重标分档阈值（实现阶段完成，见 D9）；④ CLI 写模式一并拒绝。
+- **回滚**：`git revert` 本 change 的提交后重新部署——在线入口与读端代码一并恢复；旧数据全程未改，回滚**不需要数据修复**。已无 `story_attribution_enabled` 可切（review R-1：开关删除，回滚是代码级而非配置级）。
+- **灰度**：新口径可按版块观察数据，但 story 停写**不可灰度**：没有开关，上线即全量停写——这是用户拍板的取舍（R-1）。
 
 ## Open Questions
 
