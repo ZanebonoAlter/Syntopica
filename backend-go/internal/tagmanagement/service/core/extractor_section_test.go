@@ -242,38 +242,24 @@ const sectionFingerprintResponse = `{"tags":[` +
 	`{"label":"李飞飞谈空间智能","category":"person","description":"","auxiliary_labels":[{"label":"空间智能","description":"三维世界理解技术"},{"label":"World Labs","description":"空间智能公司"},{"label":"李飞飞","description":"人工智能学者"}],"subject":"李飞飞","subject_key":"person:feifei_li","action":"谈","object":"空间智能"},` +
 	`{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库","subject":"PostgreSQL","subject_key":"product:postgresql","action":"发布","object":"新版本"}]}`
 
-func TestParseSectionTagsEventFingerprint(t *testing.T) {
+// 指纹解析已于 2026-11-12 摘除：响应携带的指纹字段一律被解析层忽略。
+func TestParseSectionTagsIgnoresFingerprintFields(t *testing.T) {
 	tags, err := parseSectionTags(sectionFingerprintResponse)
 
 	require.NoError(t, err)
 	require.Len(t, tags, 3)
-
-	// event：五字段解析，subject_key 归一化（大小写 + 连字符 → 下划线）。
-	fp := tags[0].Fingerprint
-	require.NotNil(t, fp)
-	require.True(t, fp.Complete())
-	require.Equal(t, "特朗普", fp.Subject)
-	require.Equal(t, "person:donald_trump", fp.SubjectKey)
-	require.Equal(t, "宣布", fp.Action)
-	require.Equal(t, "参加总统选举", fp.Object)
-	require.Equal(t, "2026-11-01", fp.OccurredAt)
-
-	// person：指纹字段被忽略，不构造。
-	require.Nil(t, tags[1].Fingerprint)
-	// keyword：指纹字段被忽略，不构造。
-	require.Nil(t, tags[2].Fingerprint)
+	for i := range tags {
+		require.Nil(t, tags[i].Fingerprint, "标签 %d 不得携带指纹", i)
+	}
 }
 
-func TestParseSectionTagsIncompleteFingerprintKeepsTag(t *testing.T) {
+func TestParseSectionTagsIncompleteFingerprintFieldsIgnored(t *testing.T) {
 	tags, err := parseSectionTags(`{"tags":[{"label":"某公司产品涨价","category":"event","description":"某公司产品涨价事件","auxiliary_labels":[{"label":"某公司","description":"商业公司"},{"label":"产品","description":"商品"},{"label":"涨价","description":"提高价格"}],"subject":"某公司","action":"涨价"}]}`)
 
-	// 缺 subject_key/object：标签照常保留，指纹不完整但不丢弃。
+	// 残留的不完整指纹字段照常被忽略，标签本身保留。
 	require.NoError(t, err)
 	require.Len(t, tags, 1)
-	require.NotNil(t, tags[0].Fingerprint)
-	require.False(t, tags[0].Fingerprint.Complete())
-	require.Equal(t, "某公司", tags[0].Fingerprint.Subject)
-	require.Equal(t, "涨价", tags[0].Fingerprint.Action)
+	require.Nil(t, tags[0].Fingerprint)
 }
 
 func TestParseSectionTagsEventWithoutFingerprintFields(t *testing.T) {
@@ -285,7 +271,7 @@ func TestParseSectionTagsEventWithoutFingerprintFields(t *testing.T) {
 	require.Nil(t, tags[0].Fingerprint)
 }
 
-func TestExtractTagsFromSectionSingleCallWithFingerprint(t *testing.T) {
+func TestExtractTagsFromSectionSingleCallFingerprintRemoved(t *testing.T) {
 	router := newFakeTagChatRouter()
 	router.enqueue("tag_extraction_section", fakeTagChatResponse{content: sectionFingerprintResponse})
 	extractor := &TagExtractor{router: router}
@@ -296,29 +282,26 @@ func TestExtractTagsFromSectionSingleCallWithFingerprint(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, tags, 3)
-	require.NotNil(t, tags[0].Fingerprint)
-	require.True(t, tags[0].Fingerprint.Complete())
-	// 指纹与标签同一次调用产出：调用次数仍为 1。
+	// 指纹已摘除（2026-11-12）：响应残留的指纹字段被解析层忽略，恒为 nil。
+	require.Nil(t, tags[0].Fingerprint)
 	require.Equal(t, 1, router.callCount("tag_extraction_section"))
 }
 
-func TestSectionExtractionSchemaAndPromptCarryFingerprintFields(t *testing.T) {
+// 指纹五字段已于 2026-11-12 摘除（4B 模型融合任务过重致 parse_error 潮）：
+// schema 与 prompt 均不得再出现指纹字段/指令，恢复纯标签提取。
+func TestSectionExtractionSchemaAndPromptFingerprintRemoved(t *testing.T) {
 	schema := sectionExtractionSchema()
 	tags := schema.Properties["tags"]
 	require.NotNil(t, tags.Items)
 	for _, prop := range []string{"subject", "subject_key", "action", "object", "occurred_at"} {
-		require.Contains(t, tags.Items.Properties, prop)
-		require.Equal(t, "string", tags.Items.Properties[prop].Type)
+		require.NotContains(t, tags.Items.Properties, prop)
 	}
-	// 指纹四项不设 required：keyword/person 与旧模型不应被 schema 拒绝。
 	require.ElementsMatch(t, []string{"label", "category"}, tags.Items.Required)
 
 	prompt := buildSectionExtractionPrompt()
-	require.Contains(t, prompt, "事件指纹")
-	require.Contains(t, prompt, "subject_key")
-	require.Contains(t, prompt, "person:trump")
-	require.Contains(t, prompt, "company:bytedance")
-	require.Contains(t, prompt, "person/keyword 不输出这五项")
+	require.NotContains(t, prompt, "事件指纹")
+	require.NotContains(t, prompt, "subject_key")
+	require.NotContains(t, prompt, "主体禁则")
 }
 
 // ---- normalize-event-subject-entities：影子态第一轮（D2/D10）----
@@ -350,8 +333,9 @@ func TestSectionExtraction_OffPromptAndSchemaUnchanged(t *testing.T) {
 	// 改措辞时须同步更新本 golden（design Risks 已声明的已知代价）。
 	prompt := buildSectionExtractionPrompt()
 	require.True(t, strings.HasPrefix(prompt, "你是一个专业的新闻分析助手，负责从聚合型文章（如科技周刊、排行榜合集）的一个栏目片中提取 event、person、keyword 三类标签。"))
-	require.Contains(t, prompt, "事件指纹（仅 event 标签输出，person/keyword 不输出这五项）")
-	require.Contains(t, prompt, `subject_key：主体归一化实体键，格式"类型:规范名"`)
+	require.NotContains(t, prompt, "事件指纹", "指纹指令已摘除")
+	require.NotContains(t, prompt, "subject_key", "指纹字段指令已摘除")
+	require.NotContains(t, prompt, "主体禁则", "主体禁则随指纹一并摘除")
 	require.True(t, strings.HasSuffix(prompt, `{"label":"Kubernetes","category":"keyword","aliases":["K8s"],"description":"开源容器编排系统"}]}`))
 	require.NotContains(t, prompt, "subject_desc", "off 态提示不得出现影子字段")
 	require.NotContains(t, prompt, "影子模式", "off 态提示不得出现影子段")
@@ -360,15 +344,10 @@ func TestSectionExtraction_OffPromptAndSchemaUnchanged(t *testing.T) {
 	schema := sectionExtractionSchema()
 	props := schema.Properties["tags"].Items.Properties
 	require.ElementsMatch(t,
-		[]string{"label", "category", "aliases", "description", "auxiliary_labels", "subject", "subject_key", "action", "object", "occurred_at"},
+		[]string{"label", "category", "aliases", "description", "auxiliary_labels"},
 		mapKeys(props))
 	require.NotContains(t, props, "subject_desc")
 	require.Equal(t, []string{"label", "category"}, schema.Properties["tags"].Items.Required)
-
-	// EventFingerprintSchema 是五字段真相源：不因影子态扩容。
-	require.ElementsMatch(t,
-		[]string{"subject", "subject_key", "action", "object", "occurred_at"},
-		mapKeys(EventFingerprintSchema().Properties))
 
 	// 行为守卫：off 态发出的请求 prompt/schema 与 golden 相同、调用数为 1。
 	router := newRecordingTagChatRouter()
@@ -424,9 +403,8 @@ func TestSectionExtraction_ShadowAddsSubjectDescSameCall(t *testing.T) {
 	}
 	require.NotNil(t, event)
 	require.Equal(t, "中东地区国家", event.SubjectDesc)
-	require.NotNil(t, event.Fingerprint)
-	require.Equal(t, "org:iran", event.Fingerprint.SubjectKey)
-	require.True(t, event.Fingerprint.Complete())
+	// 指纹已摘除（2026-11-12）：影子响应残留的指纹字段被解析层忽略。
+	require.Nil(t, event.Fingerprint)
 	require.NotNil(t, person)
 	require.Empty(t, person.SubjectDesc, "person 不携带短说明")
 	require.Nil(t, person.Fingerprint)
@@ -439,7 +417,7 @@ func TestSectionExtraction_ShadowAddsSubjectDescSameCall(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, parsed, 1)
 	require.Empty(t, parsed[0].SubjectDesc, "缺说明 → 空，不编造")
-	require.NotNil(t, parsed[0].Fingerprint)
+	require.Nil(t, parsed[0].Fingerprint)
 
 	// off 响应（无 subject_desc 字段）在影子解析器下也安全：字段缺省为空。
 	parsedOff, err := parseSectionTags(validSectionResponse)

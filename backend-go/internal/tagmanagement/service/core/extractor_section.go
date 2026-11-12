@@ -53,18 +53,6 @@ keyword（关键词）：专业术语、技术概念、产品名称、组织机�
 - 拒绝纯年份/日期/时间词、过于宽泛的通用词、本片中未展开讨论的附带提及词
 - 标签按优先级从高到低排序
 
-事件指纹（仅 event 标签输出，person/keyword 不输出这五项）：
-- subject：事件主体原文（公司/机构/人物/组织）
-- subject_key：主体归一化实体键，格式"类型:规范名"，类型限 person/company/org/product/other；同一实体的不同语言/别名写法必须归并为同一个键，如 Trump/川普/特朗普 → "person:trump"、字节跳动/ByteDance → "company:bytedance"
-- action：核心动作动词短语（发布/宣布/涨价/回应/下架/召回）
-- object：动作对象（产品/政策/资产/事项）
-- occurred_at：发生日期（YYYY-MM-DD），本片未给出则省略
-
-主体禁则（泛化主体不作数）：
-- subject 必须是具体专有名词：人名、机构名、公司名、产品名、品牌名、地名+机构
-- 禁止把泛称/角色/载体当主体：文章、用户、作者、开发者、记者、编辑、网友、媒体、博主、专家、分析师、业内人士、消息人士、团队、公司、机构、组织、平台、市场、行业、产品、技术、系统、应用、工具、服务、内容、信息、新闻、报告、公告、数据、事件、项目
-- 找不到具体主体时：不要输出这五项（该 event 标签仍正常入库）
-
 辅助标签要求：
 - event/person 标签必须输出 auxiliary_labels，数量 3-5 个，每项包含 label 和 description
 - auxiliary_labels 应是具体语义锚点（关键实体、人物、地点、动作、技术名词）
@@ -77,22 +65,12 @@ description 要求：
 - person：可留空
 
 输出格式正例：
-{"tags":[{"label":"某国央行上调基准利率","category":"event","aliases":["央行加息"],"description":"某国央行上调基准利率的政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"货币政策利率"},{"label":"利率上调","description":"提高利率的举措"}],"subject":"某国央行","subject_key":"org:central_bank","action":"上调","object":"基准利率"},{"label":"Kubernetes","category":"keyword","aliases":["K8s"],"description":"开源容器编排系统"}]}`
+{"tags":[{"label":"某国央行上调基准利率","category":"event","aliases":["央行加息"],"description":"某国央行上调基准利率的政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"货币政策利率"},{"label":"利率上调","description":"提高利率的举措"}]},{"label":"Kubernetes","category":"keyword","aliases":["K8s"],"description":"开源容器编排系统"}]}`
 }
 
-// EventFingerprintSchema is the single source of truth for the five fingerprint
-// fields, shared by the extractor and historical fingerprint backfill CLI.
-// Extraction keeps these optional for non-event tags; backfill checks completeness
-// using the persisted-fingerprint parser.
-func EventFingerprintSchema() *airouter.JSONSchema {
-	return &airouter.JSONSchema{Type: "object", Properties: map[string]airouter.SchemaProperty{
-		"subject":     {Type: "string", Description: "事件主体原文（仅 event 输出）；必须是具体专有名词，泛称一律不得作为主体"},
-		"subject_key": {Type: "string", Description: "归一化实体键 类型:规范名，类型限 person/company/org/product/other（仅 event 输出）；规范名必须是具体专有名词，泛称一律不得作为主体"},
-		"action":      {Type: "string", Description: "动作动词短语（仅 event 输出）"},
-		"object":      {Type: "string", Description: "动作对象（仅 event 输出）"},
-		"occurred_at": {Type: "string", Description: "发生日期 YYYY-MM-DD，可空（仅 event 输出）"},
-	}}
-}
+// EventFingerprintSchema 已于 2026-11-12 随事件指纹抽取一并摘除：融合任务
+// 过重致 4B 模型 JSON 输出大面积发散（parse_error 潮），恢复纯标签提取。
+// 存量 topic_tags.metadata.event_fingerprint 仍可由 topicgraph 侧解析读取。
 
 // sectionExtractionSchema is the fused JSON schema for per-section extraction.
 // Only label/category are required here; the 3-5 auxiliary_labels constraint is
@@ -129,9 +107,6 @@ func sectionExtractionSchema() *airouter.JSONSchema {
 		},
 		Required: []string{"tags"},
 	}
-	for name, property := range EventFingerprintSchema().Properties {
-		schema.Properties["tags"].Items.Properties[name] = property
-	}
 	return schema
 }
 
@@ -160,7 +135,7 @@ func buildSectionExtractionPromptShadow() string {
 - 只描述主体自身的稳定身份：类别、国别、角色、所属组织等（如“美国第45任总统”、“美国芯片设计公司”）
 - 不得包含当次事件、动作、对象或时间（说明随事件漂移会退化成事件检索）
 - 不确定时留空，不要编造
-- 影子模式 event 标签输出示例：{"label":"某国央行上调基准利率","category":"event",...,"subject":"某国央行","subject_key":"org:central_bank","action":"上调","object":"基准利率","subject_desc":"某国货币当局"}`
+- 影子模式 event 标签输出示例：{"label":"某国央行上调基准利率","category":"event",...,"subject":"某国央行","subject_key":"org:central_bank","subject_desc":"某国货币当局"}`
 }
 
 // buildSectionUserPrompt renders the user prompt for one section slice. It keeps
@@ -227,10 +202,6 @@ func parseSectionTags(content string) ([]ExtractedTag, error) {
 		if len(result) >= maxSectionTags {
 			continue
 		}
-		fingerprint := eventFingerprintFromRaw(t, cat)
-		if fingerprint != nil && !fingerprint.Complete() {
-			logging.Warnf("section extraction: event tag %q has incomplete fingerprint (subject=%q subject_key=%q action=%q object=%q) — tag kept", label, fingerprint.Subject, fingerprint.SubjectKey, fingerprint.Action, fingerprint.Object)
-		}
 		// 主体稳定短身份说明（仅影子态同次调用产出；off 响应无此字段 → 空）。
 		// 仅 event 携带；keyword/person 不产出（prompt 已声明，解析层再兑底一次）。
 		subjectDesc := ""
@@ -243,7 +214,6 @@ func parseSectionTags(content string) ([]ExtractedTag, error) {
 			Aliases:         t.Aliases,
 			Description:     truncateDescription(description, maxTagDescriptionRunes),
 			AuxiliaryLabels: auxiliaryLabels,
-			Fingerprint:     fingerprint,
 			SubjectDesc:     subjectDesc,
 		})
 	}

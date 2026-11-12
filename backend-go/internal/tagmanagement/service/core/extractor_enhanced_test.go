@@ -59,9 +59,8 @@ func TestExtractTagsReturnsZeroCandidatesWhenBothArraysEmpty(t *testing.T) {
 	require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 }
 
-// add-event-story-heat：merged 提取路径的事件指纹。event 解析五字段
-// （subject_key 归一化），person 与 keyword 即使带指纹字段也不构造。
-func TestParseMergedExtractionTagsEventFingerprint(t *testing.T) {
+// 指纹已摘除（2026-11-12）：merged 响应残留的指纹字段一律被解析层忽略。
+func TestParseMergedExtractionTagsIgnoresFingerprint(t *testing.T) {
 	content := `{"event_person_tags":[` +
 		`{"label":"字节跳动发布AI视频模型","category":"event","description":"字节跳动发布AI视频模型的产品事件","auxiliary_labels":[{"label":"字节跳动","description":"中国科技公司"},{"label":"AI视频模型","description":"生成视频的AI模型"},{"label":"模型发布","description":"产品发布行为"}],"subject":"字节跳动","subject_key":"Company:Byte-Dance","action":"发布","object":"AI视频模型","occurred_at":"2026-11-02"},` +
 		`{"label":"Sam Altman","category":"person","description":"","auxiliary_labels":[{"label":"OpenAI","description":"人工智能研究公司"},{"label":"ChatGPT","description":"对话式AI产品"},{"label":"GPT-5","description":"大语言模型版本"}],"subject":"Sam Altman","subject_key":"person:sam_altman","action":"执掌","object":"OpenAI"}],` +
@@ -73,17 +72,9 @@ func TestParseMergedExtractionTagsEventFingerprint(t *testing.T) {
 	require.Len(t, eventPersonTags, 2)
 	require.Len(t, keywordTags, 1)
 
-	fp := eventPersonTags[0].Fingerprint
-	require.NotNil(t, fp)
-	require.True(t, fp.Complete())
-	require.Equal(t, "字节跳动", fp.Subject)
-	require.Equal(t, "company:byte_dance", fp.SubjectKey)
-	require.Equal(t, "发布", fp.Action)
-	require.Equal(t, "AI视频模型", fp.Object)
-	require.Equal(t, "2026-11-02", fp.OccurredAt)
-
-	// person 不产指纹；keyword 分支忽略指纹字段。
-	require.Nil(t, eventPersonTags[1].Fingerprint)
+	for i := range eventPersonTags {
+		require.Nil(t, eventPersonTags[i].Fingerprint, "残留指纹字段被忽略")
+	}
 	require.Nil(t, keywordTags[0].Fingerprint)
 }
 
@@ -117,31 +108,27 @@ func TestExtractTagsCarriesEventFingerprintToTopicTag(t *testing.T) {
 		}
 	}
 	require.NotNil(t, eventTag, "event tag must survive to TopicTag")
-	require.NotNil(t, eventTag.Fingerprint)
-	require.True(t, eventTag.Fingerprint.Complete())
-	require.Equal(t, "org:federal_reserve", eventTag.Fingerprint.SubjectKey)
+	// 指纹已摘除（2026-11-12）：响应残留的指纹字段被解析层忽略，恒为 nil。
+	require.Nil(t, eventTag.Fingerprint)
 	require.NotNil(t, keywordTag)
 	require.Nil(t, keywordTag.Fingerprint, "keyword tags never carry a fingerprint")
-	// 指纹与标签同一次调用产出：merged 调用次数仍为 1。
 	require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 }
 
-// merged schema 与 prompt 同步携带指纹字段（不设 required，由 parser 兜底）。
-func TestMergedExtractionSchemaAndPromptCarryFingerprintFields(t *testing.T) {
+// 指纹五字段已于 2026-11-12 摘除（4B 模型融合任务过重致 parse_error 潮）：
+// schema 与 prompt 均不得再出现指纹字段/指令。
+func TestMergedExtractionSchemaAndPromptFingerprintRemoved(t *testing.T) {
 	schema := mergedTagExtractionSchema()
 	eventPerson := schema.Properties["event_person_tags"]
 	require.NotNil(t, eventPerson.Items)
 	for _, prop := range []string{"subject", "subject_key", "action", "object", "occurred_at"} {
-		require.Contains(t, eventPerson.Items.Properties, prop)
-		require.Equal(t, "string", eventPerson.Items.Properties[prop].Type)
+		require.NotContains(t, eventPerson.Items.Properties, prop)
 	}
 	require.ElementsMatch(t, []string{"label", "category", "auxiliary_labels"}, eventPerson.Items.Required)
 
 	prompt := buildMergedExtractionPrompt()
-	require.Contains(t, prompt, "事件指纹")
-	require.Contains(t, prompt, "subject_key")
-	require.Contains(t, prompt, "person:trump")
-	require.Contains(t, prompt, "company:bytedance")
+	require.NotContains(t, prompt, "事件指纹")
+	require.NotContains(t, prompt, "subject_key")
 }
 
 // mergedOffResponse — off 态的 merged 响应（无 subject_desc 字段）。
@@ -172,8 +159,8 @@ func TestEnhancedExtraction_OffPromptAndSchemaUnchanged(t *testing.T) {
 	// 措辞变更需同步本 golden（不是本 change 回归）。
 	prompt := buildMergedExtractionPrompt()
 	require.True(t, strings.HasPrefix(prompt, "你是新闻分析助手，一次性从新闻摘要提取 event/person 与 keyword 标签，同时输出两个数组。"))
-	require.Contains(t, prompt, "【事件指纹】仅 event 标签必输出以下五项，person/keyword 不输出：")
-	require.Contains(t, prompt, `subject_key：归一化实体键，格式"类型:规范名"`)
+	require.NotContains(t, prompt, "【事件指纹】", "指纹指令已摘除")
+	require.NotContains(t, prompt, "subject_key", "指纹字段指令已摘除")
 	require.True(t, strings.HasSuffix(prompt, `{"label":"技术","category":"keyword","description":"技术"}（标签与描述都过于泛化）`))
 	require.NotContains(t, prompt, "subject_desc", "off 态提示不得出现影子字段")
 	require.NotContains(t, prompt, "影子模式", "off 态提示不得出现影子段")
@@ -182,7 +169,7 @@ func TestEnhancedExtraction_OffPromptAndSchemaUnchanged(t *testing.T) {
 	schema := mergedTagExtractionSchema()
 	items := schema.Properties["event_person_tags"].Items
 	require.ElementsMatch(t,
-		[]string{"label", "category", "aliases", "description", "auxiliary_labels", "subject", "subject_key", "action", "object", "occurred_at"},
+		[]string{"label", "category", "aliases", "description", "auxiliary_labels"},
 		mapKeys(items.Properties))
 	require.NotContains(t, items.Properties, "subject_desc")
 	require.Equal(t, []string{"label", "category", "auxiliary_labels"}, items.Required)
@@ -210,8 +197,7 @@ func TestEnhancedExtraction_OffPromptAndSchemaUnchanged(t *testing.T) {
 	}
 	require.NotNil(t, event)
 	require.Empty(t, event.SubjectDesc, "off 态不产短身份说明")
-	require.NotNil(t, event.Fingerprint)
-	require.Equal(t, "org:federal_reserve", event.Fingerprint.SubjectKey)
+	require.Nil(t, event.Fingerprint, "指纹已摘除")
 }
 
 // 场景：影子态同一次调用产出主体原文与稳定短身份说明（aggregate-tagging
@@ -257,8 +243,7 @@ func TestEnhancedExtraction_ShadowAddsSubjectDescSameCall(t *testing.T) {
 	}
 	require.NotNil(t, event)
 	require.Equal(t, "美国中央银行", event.SubjectDesc)
-	require.NotNil(t, event.Fingerprint)
-	require.Equal(t, "org:federal_reserve", event.Fingerprint.SubjectKey)
+	require.Nil(t, event.Fingerprint, "指纹已摘除")
 	require.NotNil(t, person)
 	require.Empty(t, person.SubjectDesc, "person 不携带短说明")
 	require.Nil(t, person.Fingerprint)
@@ -269,5 +254,5 @@ func TestEnhancedExtraction_ShadowAddsSubjectDescSameCall(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, eventPersonTags, 2)
 	require.Empty(t, eventPersonTags[0].SubjectDesc)
-	require.NotNil(t, eventPersonTags[0].Fingerprint)
+	require.Nil(t, eventPersonTags[0].Fingerprint, "指纹已摘除，残留字段被忽略")
 }
