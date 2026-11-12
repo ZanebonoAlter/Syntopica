@@ -52,7 +52,6 @@ const hasBreakdown = computed(() => !!props.breakdown && props.breakdown.length 
         v-for="entry in breakdown"
         :key="entry.tag_id"
         class="section-quality-explore__chip"
-
         :data-tag-id="entry.tag_id"
         :style="{ borderColor: matchReasonColor(entry.match_reason) }"
       >

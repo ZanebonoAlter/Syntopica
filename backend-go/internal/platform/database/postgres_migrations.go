@@ -1555,7 +1555,7 @@ func postgresMigrations() []Migration {
 					{"semantic_labels", "aliases", "'[]'::jsonb", false},
 					{"semantic_labels", "context_layers", `'["week","month","year","all"]'::jsonb`, false},
 					{"topic_tag_board_labels", "score", "0", true},
-					{"topic_tag_board_labels", "downgraded", "false", true},
+					// downgraded 列已于 2026-11-12 随 retire-downgraded-mount 退役删除
 					{"topic_tag_board_labels", "direction_mismatch", "false", true},
 				}
 				for _, c := range cols {

@@ -432,9 +432,6 @@
 .ar-tag-mark {
   font-size: 0.66rem;
 }
-.ar-tag.is-deg {
-  opacity: 0.55;
-}
 .ar-tag.is-mismatch {
   border-style: dashed;
 }

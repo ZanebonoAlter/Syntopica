@@ -28,4 +28,11 @@
 
 ## Review
 
-- [ ] 13. 派子线程聚焦 review（审查制品 + diff），意见按 High/Medium/Low 处置后 review.md 建账
+- [x] 13. 派子线程聚焦 review（审查制品 + diff），意见按 High/Medium/Low 处置后 review.md 建账
+  - 审查结论：High 5 / Medium 4 / Low 4；**核心承诺「挂载行为完全不变」核实成立**（downgraded 从来不是写入条件，逐分支核对无行因删标记而少写；min(2,N) 与 max_sim 判定条件逐字未动；N=1 单 aux 仍挂载有测试守）
+  - 处置：H1-H5 全部修（M1/M2 改承诺口径文档不改代码）、M1-M4 修、L1-L3 修、L4 观察（不修）
+  - 连带修出 2 个既有 bug：`cmd/dump-sanitizer` 的 `analysis_methods` / `reference_roles` stale 表条目（表已被迁移 DROP，工具此前必然报 `relation does not exist`）、`demo/seed/seed.sql` 按新列清单重新生成
+
+## 复检
+
+- [x] 14. 处置后全量门禁复检：openspec validate --strict / go build / go vet / golangci-lint 0 issues / tagmanagement+topicgraph 测试 / platform-database testcontainer 集成测试 / pnpm lint + typecheck + 8 文件受影响单测（112 passed）/ doc-impact verify —— 全绿（check-standards 唯一失败为 11-09 别 change 的既有溯源欠账）

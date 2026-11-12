@@ -27,17 +27,26 @@
   - `archiveMatchFlow.ts`：max_sim 判定文案的「⚠降级匹配」后缀删除。
   - `useBoardArchive.ts`：弱文章判定 `!tag.downgraded` 条项移除。
   - 相关测试断言同步。
-- **文档**：`docs/reference/flow/semantic-board.md` 业务约束与不变量节对齐（min(2,N) 放宽准入保留、降级标记退役；红线 5 措辞不涉及行为变化仅去 downgraded 引用）。
+- **文档**：`docs/reference/flow/semantic-board.md` 业务约束与不变量节对齐（min(2,N) 放宽准入保留、降级标记退役；红线 5 措辞不涉及行为变化仅去 downgraded 引用）；`docs/reference/api/semantic-boards.md` 示例 JSON 去 `downgraded` 键；`docs/reference/database/tables/semantic-labels.md` 与 `_conventions.md` 的列描述清理。
+- **构建产物**：`backend-go/cmd/dump-sanitizer/tables.go` 的 `topic_tag_board_labels` 列清单去 `downgraded`（否则演示 seed 导出在新 schema 上报列不存在）；同步移除已被迁移 `restructure-settings-navigation` 删除的 `analysis_methods` / `reference_roles` 两条 stale 表条目；`demo/seed/seed.sql` 按新列清单重新生成。
 
 ## Capabilities
 
 ### Modified Capabilities
 
-- `semantic-board`（`openspec/specs/semantic-board/spec.md`）：挂载判定的 requirement 中 downgraded 相关 Scenario 删除；MatchTier 档位与归档弱证据口径 requirement 更新。
+- `tag-to-board-matching`（`openspec/specs/tag-to-board-matching/spec.md`）：挂载判定的三规则与多 board 挂载 requirement——min(2,N) 放宽准入保留，downgraded 标记与字段描述删除。
+- `match-detail-ondemand`（`openspec/specs/match-detail-ondemand/spec.md`）：匹配详情响应不再返回 `downgraded` 字段（`effective_min_hits` 保留）。
+- `board-article-api`（`openspec/specs/board-article-api/spec.md`）：`filtered_tags` 匹配证据字段去 `downgraded`；弱证据过滤口径去「已降级」类别。
+- `match-score-visualization`（`openspec/specs/match-score-visualization/spec.md`）：chip 淡化色与 "↓" 后缀删除；`matchReasonColor` 单参化；匹配详情面板不再显示「⚠ 降级匹配」。
+- `workshop-article-archive`（`openspec/specs/workshop-article-archive/spec.md`）：归档行标签带去「降级半透明」；弱证据筛选与 popover「已降级 ↓」徽标删除。
+- `daily-report-system`（`openspec/specs/daily-report-system/spec.md`）：质量筛选与 `BestTier` 映射不再读降级标记（max_sim 统一 tier=2）。
 
 ## Impact
 
-- **代码**：后端 5 个文件（models/tag_models、semantic_board_matching、archive、board_match_handler、topicgraph 3 处）+ 前端 3 个文件 + 各自测试；一处 DDL 迁移脚本。
-- **迁移**：`ALTER TABLE topic_tag_board_labels DROP COLUMN IF EXISTS downgraded`（幂等）；上线顺序 = 先发代码（停写停读）→ 后跑迁移，或迁移先行（GORM 模型删字段后读写均不再触碰该列，两序皆安全）。
-- **行为**：版块挂载、日报、聚类、归档**全部不变**；唯一用户可见变化 = 前端「已降级」徽标消失。
+- **代码**：后端 8 个文件（models/tag_models、semantic_board_matching、archive、board_match_handler、topicgraph 3 处、cmd/dump-sanitizer）+ `backend-go/internal/platform/database/constraints_test.go`（golden schema 用例）；前端 9 个文件（ArchiveMatchPopover、archiveMatchFlow、useBoardArchive、BoardArchiveView、MatchDetailPanel、SectionQualityExplore、utils/matchQuality、api/semanticBoards、api/dailyReports）+ 各自测试；一处 DDL 迁移脚本。
+- **迁移**：`ALTER TABLE topic_tag_board_labels DROP COLUMN IF EXISTS downgraded`（幂等）；**上线顺序 = 先发代码并重启（停写停读）→ 后跑迁移**——老进程残留连接写已删列会报错，不接受迁移先行。
+- **行为（分两层，必须区分）**：
+  - **不变**：版块挂载集合、匹配分数、文章可见性、日报入选文章、归档弱证据**成员**（降级只在 max_sim 分支置位 ⇒ 原「已降级」行本就属 max_sim 弱证据类，删标记不改变成员）、标签弱文章判定结果。
+  - **变（派生排序口径，随标记档位合并连带发生）**：① 版块文章列表 `match_best_tier` 质量序与分页——原「降级 max_sim」由 tier 3 升 tier 2，位置前移；② 日报 top-30 标签截断集合——原降级 max_sim 独占末档，现入 tier 2 参与竞争，入选标签集合可能变化（进而影响 LLM 聚类输入）；③ `daily_report_sections.best_tier`（3→2）→ 前端 section 排序；④ 归档行内标签次序——`ArchiveEvidenceRank` 原降级 max_sim 落末档 rank 5，现与普通 max_sim 同为 rank 4，改由 score/id tiebreak。
+  - 用户可见的**唯一结构性变化**是前端「已降级 ↓」徽标消失；其余为排序/分页/截断的口径位移，无文章消失、无分数变化。
 - **回滚**：`git revert` + 恢复列（`ALTER TABLE ... ADD COLUMN downgraded boolean`，历史值已随 DROP 丢失，重算挂载后按新逻辑不再置位——可接受，标记本就无功能）。

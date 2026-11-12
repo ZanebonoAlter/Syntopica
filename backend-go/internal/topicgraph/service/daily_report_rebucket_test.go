@@ -76,7 +76,8 @@ func seedRebucketWorld(t *testing.T, db *gorm.DB, threadCount, tagCount int, lan
 			"label":        fmt.Sprintf("标签%d", i+1),
 			"match_reason": "direct_hit",
 			"score":        0.8 + float64(i)*0.01,
-			"downgraded":   false,
+			// downgraded 是历史 JSON 快照遗留键（2026-11-12 退役），保留以验证读取端兼容
+			"downgraded": false,
 		})
 	}
 	breakdownJSON, err := json.Marshal(breakdown)

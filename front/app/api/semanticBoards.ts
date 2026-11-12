@@ -435,7 +435,7 @@ export interface BoardArticle {
   filtered_tags: BoardArticleTag[]
   /** 归档口径（D5）：是否出现在查询窗口内任一分区线索的 related_article_ids。 */
   in_report?: boolean
-  /** 弱证据：无强匹配（无标签 / max_sim / 已降级），后端统一判定。 */
+  /** 弱证据：无强匹配（无标签 / max_sim），后端统一判定。 */
   weak_evidence?: boolean
   [key: string]: unknown
 }

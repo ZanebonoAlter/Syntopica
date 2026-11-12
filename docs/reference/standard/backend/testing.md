@@ -168,7 +168,7 @@ SQLite（内存单测）对 GROUP BY 语义、类型、约束都宽松；Postgre
 **硬约束**：
 - 凡改动涉及 ① SELECT 新列 + GROUP BY，② 复杂 JOIN/聚合，③ 手写 raw SQL——**门禁必须包含一条真正调用该查询的 testcontainer PG 集成测试**（seed 多行数据触发 GROUP BY/聚合），SQLite 单测**不算**覆盖。
 - 判定法：改的 SQL 换成 PG 跑会不会和 SQLite 表现不同？会 → 必须补 PG 集成测试。
-- 回归守卫样本：`TestCollectBoardTags_PGHonorsDowngradedColumn`（`internal/topicgraph/service/collect_board_tags_test.go`）。
+- 回归守卫样本：`TestCollectBoardTags_PGHonorsGroupBy`（`internal/topicgraph/service/collect_board_tags_test.go`；原名含 Downgraded 的用例已于 2026-11-12 随 retire-downgraded-mount 改名为 GroupBy）。
 
 ### ⚠️ JSONB 列空串陷阱（token_usage 事故）
 

@@ -43,6 +43,8 @@ func TestQualityBreakdownWriteReadRoundtrip(t *testing.T) {
 	now := NormalizeReportDate(time.Now())
 	reportID := seedTestReport(t, db, boardID, now)
 
+	// downgraded 键是历史 JSON 快照的遗留字段（2026-11-12 已退役，新报告不再写入）；
+	// 这里刻意保留它，验证读取端对历史键的兼容解析不受影响。
 	breakdown := []map[string]any{
 		{"tag_id": float64(1), "label": "AI芯片", "match_reason": "direct_hit", "score": float64(1.0), "downgraded": false},
 		{"tag_id": float64(2), "label": "GPT-5发布", "match_reason": "max_sim", "score": float64(0.85), "downgraded": false},

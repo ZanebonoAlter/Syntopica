@@ -49,7 +49,7 @@ type archiveFixture struct {
 	router  *gin.Engine
 	boardID uint
 	// weakIDs 是两条弱证据文章（未打标 / max_sim）。downgraded 标记已退役
-	// （2026-11-12）：hit_rate 一律强证据，原 downTag（hit_rate+降级，现实中
+	// （2026-11-12）：hit_rate 一律强证据，原降级标记行（hit_rate+降级，现实中
 	// 不存在的组合）不再算弱。
 	weakIDs []uint
 	// allIDs 按创建顺序。
@@ -106,7 +106,7 @@ func setupArchiveFixture(t *testing.T) *archiveFixture {
 	}
 	strongTag := seedTag("strong", archiveStrongTagDescription, tagmodels.TopicTagBoardLabel{Score: 0.9, MatchReason: "direct_hit"})
 	simTag := seedTag("sim", "", tagmodels.TopicTagBoardLabel{Score: 0.55, MatchReason: "max_sim"})
-	downTag := seedTag("down", "", tagmodels.TopicTagBoardLabel{Score: 0.4, MatchReason: "hit_rate"})
+	hitRateTag := seedTag("hitrate", "", tagmodels.TopicTagBoardLabel{Score: 0.4, MatchReason: "hit_rate"})
 	mismatchTag := seedTag("mismatch", "", tagmodels.TopicTagBoardLabel{Score: 0.3, MatchReason: "direct_hit", DirectionMismatch: true})
 
 	fixture := &archiveFixture{db: db, boardID: board.ID}
@@ -130,10 +130,10 @@ func setupArchiveFixture(t *testing.T) *archiveFixture {
 		return article.ID
 	}
 
-	// 1 未打标（仅方向未通过标签）；2 max_sim；3 降级；4..20 强证据。
+	// 1 未打标（仅方向未通过标签）；2 max_sim；3 hit_rate 命中；4..20 强证据。
 	fixture.weakIDs = append(fixture.weakIDs, makeArticle("untagged", mismatchTag))
 	fixture.weakIDs = append(fixture.weakIDs, makeArticle("sim", simTag))
-	makeArticle("downgraded", downTag) // hit_rate：强证据，不进 weak 列表
+	makeArticle("hitrate", hitRateTag) // hit_rate：强证据，不进 weak 列表
 	for i := 4; i <= 20; i++ {
 		makeArticle(fmt.Sprintf("a-%d", i), strongTag)
 	}
