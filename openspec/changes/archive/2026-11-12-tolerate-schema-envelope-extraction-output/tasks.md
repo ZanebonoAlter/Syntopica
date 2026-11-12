@@ -22,3 +22,32 @@
 
 - [ ] 11. 本 change 落地后，重打 2488 篇无标签文章（1142 篇本次受影响 + 1345 篇本来无标签），分批观察成功率
 - [ ] 12. 重打后核对：board 1980 挂载标签构成、日报文章数恢复、抽样确认拿到真 event 标签
+
+## 13. 测试
+
+- [x] 13.1 `go test -short ./internal/tagmanagement/...` 全绿（13 包）
+- [x] 13.2 外壳容错 6 例 + prompt 一致性守护 1 例，全绿；非外壳六种形态不误伤
+- [x] 13.3 `go build ./...` / `go vet ./...` / `golangci-lint run ./internal/tagmanagement/...` → 0 issues
+
+## 14. 文档
+
+<!-- doc-impact: none(纯后端解析层修复与 prompt 措辞对齐，无对外行为契约变化——标签语义零变化) -->
+
+- [x] 14.1 `docs/reference/flow/semantic-board.md` 打标契约节补「响应形态容错 + prompt 指令须与 schema 一致」纪律
+- [x] 14.2 `docs/reference/flow/semantic-board.md` 变更溯源表补本 change 行
+- [x] 14.3 `doc-impact.sh verify` 通过（声明 none）；`check-standards.sh` 通过
+
+## 15. 验证
+
+| Scenario | 测试文件 |
+| --- | --- |
+| 双数组被包在 schema 外壳内 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| 单数组被包在 schema 外壳内 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| 外壳内目标键缺失仍判解析错误 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| 非外壳响应不被误解 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| 提取 prompt 输出指令与 schema 一致 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| section 提取 prompt 指令保持单数组 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+
+- [x] 15.1 `openspec validate tolerate-schema-envelope-extraction-output --strict` 通过
+- [x] 15.2 真库效果核对（20 篇试验批）：失败 14→0、拿到标签 6→19、含 event 1→18（5%→90%）
+- [x] 15.3 后端重启 + `/health` 200；批量重打 2502 篇已入队
