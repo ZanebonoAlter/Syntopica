@@ -82,7 +82,41 @@
 
 清理后这批文章处于「无标签」态。批量 retag 走既有 `POST /api/tag-jobs/retag-today`（`handler/tag_queue_handler.go:274`）或逐篇 `RetagArticle`（`article_tagger.go:107`，Force=true 不复用 sibling 标签）。
 
-**注意**：重打要调 LLM（本地 4B 模型）。1724 篇按当前吞吐需要一段时间，**分批跑、观察失败率**——若 4B 仍大面积 parse_error，重打会再次产生零标签文章（此时是「合法零结果」而非泛词污染，但仍拿不到 event 标签 → 日报仍缺）。**根因（事件指纹）已在 `3ecdf3b7` 摘除，重打前应先验证单篇调用成功率**。
+**注意**：重打要调 LLM（本地 4B 模型）。**根因（事件指纹）已在 `3ecdf3b7` 摘除，重打前应先验证单篇调用成功率**——这是本 change 的效果核对前置条件。
+
+### D3.1 执行期发现的两处问题（已修，留痕）
+
+**① 无 FK 表的历史孤儿导致清理脚本超时**——`auxiliary_description_repair_items` / `tag_merge_suggestions` / `embedding_queues` 对 `topic_tags` **无外键**，初版脚本用 `NOT EXISTS (SELECT 1 FROM topic_tags ...)` 全表扫，命中**存量历史孤儿**（repair_items 53488 行、merge_suggestions 10802 行）→ 740M 次比较 → 演练卡死 >180s。
+修正：先用临时表 `_deleted_heur_tags` 锁定本次待删的 14 个标签 id，清理语句只针对该小集合（`IN (SELECT id FROM _deleted_heur_tags)`）→ 演练秒级完成，**存量孤儿不越界清理**（那是另一笔账）。
+
+**② `articles.tag_count` 的批量 UPDATE 极慢**——`articles` 行含 `content` / `ai_content_summary` 等宽列，UPDATE 整行重写 → WAL 刷盘；1142 行相关子查询形态在本机实测 200 行就要 7s（且与后台 quality_score 作业抢 WAL/IO，load 飙到 13）。
+修正：① 改两段式（先置 0、再按剩余关联用一次聚合回填）；② **清理期间停后端**（`scripts/dev/start-dev.sh stop back`），消除并发写。
+另注：`article_tagger.go:404` 的打标路径**本来就会重算 tag_count**（`UPDATE articles SET tag_count = (SELECT COUNT(*) ...)`），所以重打会顺带修正受影响文章的计数——清理阶段的显式重算只是让状态立即一致。
+
+### D3.2 重打阻塞：模型输出「schema 外壳」形态（独立根因，另案）
+
+20 篇试验批（11-11 无标签文章）实测：**模型 82% 的响应是 schema 外壳**——
+
+```json
+{"type":"object","properties":{"event_person_tags":[...],"keyword_tags":[...]},"required":["event_person_tags","keyword_tags"]}
+```
+
+数组被塞在 `properties` 里，而解析器只认顶层键 → `merged extraction object has neither event_person_tags nor keyword_tags keys` → 任务失败。
+
+`ai_call_logs` 的形态分布（按天）：
+
+| 日期 | 调用数 | schema 外壳 | 顶层双数组（正常） |
+| --- | --- | --- | --- |
+| 11-05 | 2168 | 0 | 1011 |
+| 11-06 | 17519 | 0 | 1164 |
+| 11-09 | 5388 | 0 | 1918 |
+| 11-10 | 5248 | 1774 | 547 |
+| 11-11 | 3659 | 2902 | 229 |
+| 11-12 | 1423 | 1168 | 112 |
+
+**结论**：模型输出形态问题**早于**本 change 且**独立于** heuristic 兜底——即便兜底还在，这些文章也只是得到泛词而非 event 标签（日报一样缺）。本 change 的价值是让失败**可见 + 可重试**，而非掩盖。
+**处置**：解析器容错（识别 schema 外壳并取 `properties` 内的双数组）属**另一个 change**（`tolerate-schema-envelope-extraction-output`）；修好后统一重打这 2488 篇（1142 篇本次受影响 + 1345 篇本来无标签），否则重打无产出、白烧本地 4B 算力。
+本次试验批（20 篇）已置 `failed` 暂停，不继续消耗。
 
 ## D4. 明确不做
 

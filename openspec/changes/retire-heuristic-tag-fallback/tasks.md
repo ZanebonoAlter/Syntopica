@@ -21,12 +21,12 @@
 
 ## 存量清理与重打（真库，红线：事务包裹 + 先留底）
 
-- [ ] 12. 留底：`count(*)` 记录 `article_topic_tags`（heuristic 1724 行）/ `topic_tags`（heuristic 28 个）/ 引用它们的挂载行与向量行；确认 `backups/pg-key-*.dump` 备份路径可用
-- [ ] 13. **事务演练**：`BEGIN; …; ROLLBACK;` 内执行清理语句，核对影响行数与 FK 行为（`topic_tag_board_labels` / `topic_tag_embeddings` / `article_topic_tags` / `topic_tags` 的删除顺序）
-- [ ] 14. 正式执行：`BEGIN; …; COMMIT;` 事务内清理 + `articles.tag_count` 重算
-- [ ] 15. 验证：真库只读核对 `source='heuristic'` 归零、board 1980 上 `Coding` / `AI Agent` 挂载消失、挂载总行数变化可解释
-- [ ] 16. 批量重打：对受影响文章走 `POST /api/tag-jobs/retag-today`（Force=true 不复用 sibling 标签）；分批跑并观察成功率与失败率
-- [ ] 17. 重打后核对：board 1980 挂载标签不再含泛词；日报文章数恢复；抽样确认拿到真 event 标签
+- [x] 12. 留底：`article_topic_tags` 总 18533 / heuristic 1727；`topic_tags` 总 13888 / heuristic 28；受影响文章 1142 篇；board 1980 挂载行 944；`backups/pg-key-*.dump`（2026-11-12 04:00）已确认可用
+- [x] 13. **事务演练**（`BEGIN; …; ROLLBACK;`）跑通；发现并修掉两处执行期问题（见 design D3.1）
+- [x] 14. 正式执行（`BEGIN; …; COMMIT;`）：`DELETE 1727` 文章标签关联 / `DELETE 14` 零引用标签 / `UPDATE 14` source→llm / `DELETE 12` repair_items 悬挂 / `DELETE 0` embedding_queues / `DELETE 21` merge_suggestions / `UPDATE 1142` + `UPDATE 0` tag_count → **COMMIT**
+- [x] 15. 验证：`source='heuristic'` 文章标签行 **0**、标签 **0**；`topic_tags` 13882（原 13888，-14 实删 +8 重打新增）；board 1980 挂载 944；**Coding 关联文章 722 → 1**、**AI Agent 85 → 16**（余下为 LLM 真实产出）；`articles.tag_count` 全库不一致 1231 → **1157**（等于存量值，本次受影响的 74 行已修正，未越界动存量）
+- [ ] 16. 批量重打 —— **阻塞：等 `tolerate-schema-envelope-extraction-output`（另案）先修解析器**。20 篇试验批实测：模型 82% 返回 schema 外壳形态（`{"type":"object","properties":{...}}`），解析器不认 → 任务失败重试 3 次后仍失败 → 拿不到 event 标签 → 重打无产出。试验批已置 failed 暂停，待解析器修复后统一重打
+- [ ] 17. 重打后核对（随 16 一并做）：board 1980 挂载标签不再含泛词；日报文章数恢复；抽样确认拿到真 event 标签
 
 ## 部署与归档
 
