@@ -96,7 +96,7 @@ DATA_LIFECYCLE.md  = "数据怎么变的"（哪些表被写入、状态字段怎
 
 ## 主题标签生命周期
 
-从 LLM 提取标签到 SemanticBoard 匹配的完整链路。统一术语：**Tag** = 事件/关键词/人物标签 (source='llm'/'heuristic')，**Auxiliary Label** = 辅助标签 (semantic_labels.label_type='auxiliary')，**SemanticBoard** = 语义板块 (semantic_labels.label_type='board')。
+从 LLM 提取标签到 SemanticBoard 匹配的完整链路。统一术语：**Tag** = 事件/关键词/人物标签 (source='llm'；'heuristic' 已于 2026-11-12 退役)，**Auxiliary Label** = 辅助标签 (semantic_labels.label_type='auxiliary')，**SemanticBoard** = 语义板块 (semantic_labels.label_type='board')。
 
 ```
 ┌─ LLM 标签提取 ───────────────────────────────────────────────────────────┐

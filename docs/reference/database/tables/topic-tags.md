@@ -15,7 +15,7 @@
 | `aliases` | TEXT | — | 别名列表（JSON 数组） |
 | `description` | TEXT | — | LLM 生成的标签描述 |
 | `is_canonical` | BOOLEAN | DEFAULT false | 是否为规范标签 |
-| `source` | VARCHAR(20) | DEFAULT 'llm' | 来源：`llm` / `heuristic` / `manual` |
+| `source` | VARCHAR(20) | DEFAULT 'llm' | 来源：`llm` / `manual`（`heuristic` 已于 2026-11-12 随 retire-heuristic-tag-fallback 退役，存量值由该 change 的清理清零） |
 | `feed_count` | INTEGER | DEFAULT 0 | 引用此标签的不重复 Feed 数；打标路径不增量维护，由 TagQualityScoreJob 周期对账重算 |
 | `status` | VARCHAR(20) | NOT NULL DEFAULT 'active'; index | 状态：`active` / `merged` |
 | `merged_into_id` | INTEGER | index | 合并目标标签 ID（**唯一真实 DB FK**：`topic_tags_merged_into_id_fkey ... ON DELETE CASCADE`） |
@@ -74,7 +74,7 @@
 | `anchor_date` | TIMESTAMP | 复合唯一同上 | 锚点日期 |
 | `article_count` | INTEGER | — | 覆盖的文章数量 |
 | `payload_json` | TEXT | — | 分析结果 JSON |
-| `source` | string(256) | — | 来源：`ai` / `heuristic` / `cached` |
+| `source` | string(256) | — | 来源：`ai` / `cached`（`heuristic` 已于 2026-11-12 退役） |
 | `version` | INTEGER | — | 分析版本号 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
