@@ -483,3 +483,66 @@ func TestParseKeywordTagsToleratesTrailingCommas(t *testing.T) {
 	require.Len(t, keywordParsed, 1)
 	require.Equal(t, "PostgreSQL", keywordParsed[0].Label)
 }
+
+// ── schema 外壳形态容错（tolerate-schema-envelope-extraction-output）──
+//
+// 本地小模型在 JSON-schema 引导下有时把 schema 骨架当输出：数组值被塞进
+// "properties" 下。解析器必须能解包，且不得把缺目标键的坏数据当合法结果。
+
+func TestParseMergedExtractionTagsAcceptsSchemaEnvelope(t *testing.T) {
+	content := `{"type":"object","properties":{"event_person_tags":[{"label":"某国央行上调基准利率","category":"event","description":"政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"政策利率"},{"label":"加息","description":"利率上调"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库"}]},"required":["event_person_tags","keyword_tags"]}`
+
+	eventParsed, keywordParsed, err := parseMergedExtractionTags(content)
+	require.NoError(t, err)
+	require.Len(t, eventParsed, 1)
+	require.Equal(t, "某国央行上调基准利率", eventParsed[0].Label)
+	require.Len(t, eventParsed[0].AuxiliaryLabels, 3)
+	require.Len(t, keywordParsed, 1)
+	require.Equal(t, "PostgreSQL", keywordParsed[0].Label)
+}
+
+func TestParseMergedExtractionTagsSchemaEnvelopeWithEmptyArraysIsLegalZero(t *testing.T) {
+	content := `{"type":"object","properties":{"event_person_tags":[],"keyword_tags":[]},"required":["event_person_tags","keyword_tags"]}`
+
+	eventParsed, keywordParsed, err := parseMergedExtractionTags(content)
+	require.NoError(t, err, "外壳解开后双数组皆空是合法零结果，不是解析错误")
+	require.Empty(t, eventParsed)
+	require.Empty(t, keywordParsed)
+}
+
+func TestParseMergedExtractionTagsSchemaEnvelopeMissingTargetKeysStillFails(t *testing.T) {
+	content := `{"type":"object","properties":{"other":[{"label":"x"}]},"required":["other"]}`
+
+	_, _, err := parseMergedExtractionTags(content)
+	require.Error(t, err, "外壳解开后缺目标键必须报解析错误触发重试，不得当合法结果")
+}
+
+func TestParseRawTagObjectsAcceptsSchemaEnvelope(t *testing.T) {
+	content := `{"type":"object","properties":{"tags":[{"label":"某事件","category":"event","description":"事件描述"}]},"required":["tags"]}`
+
+	raw, err := parseRawTagObjects(content)
+	require.NoError(t, err)
+	require.Len(t, raw, 1)
+	require.Equal(t, "某事件", raw[0].Label)
+}
+
+func TestUnwrapSchemaEnvelopeLeavesNonEnvelopeContentUnchanged(t *testing.T) {
+	cases := []string{
+		`{"event_person_tags":[],"keyword_tags":[]}`,     // 规范双数组
+		`{"tags":[{"label":"x","category":"event"}]}`,    // 既有 wrapper
+		`[{"label":"x","category":"event"}]`,             // legacy 裸数组
+		`{"properties":{"a":1}}`,                         // 有 properties 但无 schema 特征
+		`{"type":"object","properties":"not-an-object"}`, // properties 不是对象
+		`not json at all`,                                // 非 JSON
+	}
+	for _, c := range cases {
+		require.Equal(t, c, unwrapSchemaEnvelope(c), "非外壳内容必须原样返回")
+	}
+}
+
+func TestUnwrapSchemaEnvelopeIsIdempotent(t *testing.T) {
+	envelope := `{"type":"object","properties":{"event_person_tags":[],"keyword_tags":[]},"required":["event_person_tags","keyword_tags"]}`
+	once := unwrapSchemaEnvelope(envelope)
+	require.JSONEq(t, `{"event_person_tags":[],"keyword_tags":[]}`, once)
+	require.Equal(t, once, unwrapSchemaEnvelope(once), "解包必须幂等")
+}

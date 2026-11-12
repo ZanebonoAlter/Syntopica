@@ -310,7 +310,7 @@ func buildExtractionUserPrompt(input ExtractionInput) string {
 摘要内容:
 %s
 
-请返回JSON对象格式: {"tags": [标签列表]}。`, input.Summary)
+请返回 JSON 对象，包含 event_person_tags 与 keyword_tags 两个数组（格式见系统提示【输出格式】正例）。`, input.Summary)
 	return b.String()
 }
 
@@ -327,6 +327,9 @@ type rawExtractedTag struct {
 
 func parseRawTagObjects(content string) ([]rawExtractedTag, error) {
 	content = jsonutil.SanitizeLLMJSON(content)
+	// Schema envelope (single "tags" array nested under "properties" for the
+	// section path) — unwrap before the bare-array / wrapper probes.
+	content = unwrapSchemaEnvelope(content)
 
 	var raw []rawExtractedTag
 
@@ -430,7 +433,48 @@ func parseMergedExtractionTags(content string) ([]ExtractedTag, []ExtractedTag, 
 	return eventPersonTags, keywordTags, nil
 }
 
+// unwrapSchemaEnvelope strips the JSON-Schema envelope some models emit when
+// decoding against a schema: the schema skeleton itself comes back as the
+// answer, with the real arrays nested under "properties", e.g.
+// {"type":"object","properties":{"event_person_tags":[...],"keyword_tags":[...]},"required":[...]}.
+//
+// An envelope is recognised only when all three hold: the top level is an
+// object, it carries a "properties" key whose value is an object, and it
+// carries a schema keyword ("type" or "required"). Anything else — including
+// a plain response that merely happens to have a "properties" field — is
+// returned unchanged so the regular parse path reports it as before.
+//
+// Idempotent: once unwrapped the top level no longer carries the schema
+// keywords, so a second call returns the content unchanged.
+func unwrapSchemaEnvelope(content string) string {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &probe); err != nil {
+		return content
+	}
+	if len(probe) == 0 {
+		return content
+	}
+	rawProps, ok := probe["properties"]
+	if !ok {
+		return content
+	}
+	var props map[string]json.RawMessage
+	if err := json.Unmarshal(rawProps, &props); err != nil {
+		return content
+	}
+	_, hasType := probe["type"]
+	_, hasRequired := probe["required"]
+	if !hasType && !hasRequired {
+		return content
+	}
+	return string(rawProps)
+}
+
 func unmarshalMergedExtraction(content string) (*rawMergedExtraction, error) {
+	// Schema envelope: the model returned the schema skeleton with the real
+	// arrays nested under "properties" — unwrap before the shape probes.
+	content = unwrapSchemaEnvelope(content)
+
 	// {"tags": ...} wrapper: either the double arrays again or a legacy array.
 	var wrapped struct {
 		Tags json.RawMessage `json:"tags"`

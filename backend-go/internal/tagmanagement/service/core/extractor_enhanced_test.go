@@ -253,3 +253,18 @@ func TestEnhancedExtraction_ShadowAddsSubjectDescSameCall(t *testing.T) {
 	require.Empty(t, eventPersonTags[0].SubjectDesc)
 	require.Nil(t, eventPersonTags[0].Fingerprint, "指纹已摘除，残留字段被忽略")
 }
+
+// TestBuildExtractionUserPromptFormatMatchesSchema 守护：user prompt 末句的输出
+// 格式指令必须与下发模型的 JSON Schema 一致（merged 路径是双数组）。
+// 旧写法 `{"tags": [标签列表]}` 是 merge-tag-extraction-branches 之前的单数组形态，
+// 与双数组 schema 矛盾，会让小模型吐出「schema 骨架 + 值塞 properties」的混合体。
+func TestBuildExtractionUserPromptFormatMatchesSchema(t *testing.T) {
+	prompt := buildExtractionUserPrompt(ExtractionInput{
+		Title:   "某国央行上调基准利率",
+		Summary: "正文摘要",
+	})
+
+	require.NotContains(t, prompt, `{"tags": [标签列表]}`, "prompt 不得再指向已废弃的单数组写法")
+	require.Contains(t, prompt, "event_person_tags")
+	require.Contains(t, prompt, "keyword_tags")
+}
