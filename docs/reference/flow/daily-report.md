@@ -376,6 +376,7 @@ CRUD：POST/GET /api/semantic-boards/:id/topic-watches、PATCH/DELETE /api/topic
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 | ------ | ------ | ------ | ---------- |
+| 2026-11-12 | anchor-topic-centroid-with-embedding | 话题匹配锚点（质心）改为首义锚定+滚动均值混合（α 黈认 0.5），lane 分桶/三态置信/lane_tier 语义逐字不变；存量重算端点 `POST /daily-reports/recompute-topic-centroids`；错挂陈杰寻人类杂闻的动机案例与实测见 change | [`openspec/changes/archive/2026-11-12-anchor-topic-centroid-with-embedding`](../../../openspec/changes/archive/2026-11-12-anchor-topic-centroid-with-embedding) |
 | 2026-11-11 | normalize-event-subject-entities | 实体身份层影子落地：本期不参与事件线归属判定（判定路径不读实体 ID）、`story_manual` 人工归属不被归一结果覆盖、composite 标签不产实体提及、热度口径不变；存量不迁移不回填，默认 off/shadow | [`openspec/changes/archive/2026-11-11-normalize-event-subject-entities`](../../../openspec/changes/archive/2026-11-11-normalize-event-subject-entities) |
 | 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-10-24 | fix-daily-report-cross-process-gate | 生成闸升级数据库级跨实例互斥（`pg_try_advisory_lock` 会话锁+独占连接，崩溃自动释放、DB 故障回退进程内）+ `SaveReport` 补 `(board, date)` 事务级 advisory 锁消 TOCTOU；堵 2026-10-23 临时第二实例双跑事故（AI 双份+23505）；约束 1/26 升级 | [`openspec/changes/archive/2026-10-24-fix-daily-report-cross-process-gate`](../../../openspec/changes/archive/2026-10-24-fix-daily-report-cross-process-gate) |
