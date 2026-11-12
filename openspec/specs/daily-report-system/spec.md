@@ -107,16 +107,16 @@
 
 1. **跨版块排他**：同一 tag 在其他版块存在 `score ≥ 本版块 score + exclusive_gap`（`semantic_board_report_exclusive_gap`，默认 0.3，ai_settings 可配；设为 0 时排他关闭）的挂载时，本版块 SHALL NOT 收该标签。排他剔除的标签 SHALL NOT 参与后续任何保底回捞（「有更强归属」是确定性判断，与弱规则保底语义不同）。主查询与 fallback 路径（现场计算匹配后择本版块结果）SHALL 应用同一规则。
 2. 过滤 `direction_mismatch = true`
-3. 保留 `match_reason ∈ {direct_hit, hit_rate, max_sim}`（含 downgraded）
+3. 保留 `match_reason ∈ {direct_hit, hit_rate, max_sim}`
 4. 过滤 `weighted`（最弱规则）
 5. 如果剩余 < 10 个标签，把 weighted 也拉回来（保底；被排他剔除的标签不回捞）
 6. 如果剩余 > 30 个标签，按 `(tier, score)` 排序后截断到 top-30
 
-Fallback 标签同等对待：fallback 路径产生的标签也携带 `match_reason`/`score`，筛选规则完全一致（含跨版块排他）。
+Fallback 标签同等对待：fallback 路径产生的标签也携带 `match_reason`/`score`，筛选规则完全一致（含跨版块排他）。**【2026-11-12 本 change 起生效】筛选不再读取降级标记**（`downgraded` 列已退役）——保留的 max_sim 标签不再分「降级/非降级」两档。
 
 #### Scenario: 跨版块排他剔除弱归属标签
 - **WHEN** tag「美国非农数据超预期降温」挂载「美国新闻」score=1.0（max_sim）与「中国国内新闻」score=0.7（direct_hit），分差 0.3 ≥ exclusive_gap=0.3，生成「中国国内新闻」日报
-- **THEN** 该标签 SHALL NOT 进入「中国国内新闻」日报的聚类候选（「美国新闻」日报不受影响）
+- **THEN** 「中国国内新闻」SHALL NOT 收该标签
 
 #### Scenario: 排他不影响分差不足的双挂载
 - **WHEN** tag「中美贸易谈判」挂载「美国新闻」score=0.8 与「中国国内新闻」score=0.7，分差 0.1 < exclusive_gap=0.3
@@ -167,10 +167,10 @@ Fallback 标签同等对待：fallback 路径产生的标签也携带 `match_rea
 
 ### Requirement: 聚类排序字段
 生成报告时，系统 SHALL 为每个 DailyReportSection 计算：
-- `BestTier int`：该 section 中所有 tag 的最高 tier（match_reason + downgraded 映射）
+- `BestTier int`：该 section 中所有 tag 的最高 tier（按 match_reason 映射：direct_hit=0 / hit_rate=1 / max_sim=2 / weighted=3）
 - `AvgScore float64`：该 section 中所有 tag 的 score 平均值
 
-前端用 `best_tier ASC, avg_score DESC` 排序聚类。
+前端用 `best_tier ASC, avg_score DESC` 排序聚类。**【2026-11-12 本 change 起生效】tier 映射不再考虑降级标记**（`downgraded` 列已退役）——原「降级 max_sim」档并入普通 max_sim 档（tier 2），max_sim 的 tier 不再因降级而后移。
 
 #### Scenario: 计算 best_tier
 - **WHEN** section 的 tags 包含 direct_hit(tier=0) 和 weighted(tier=3)

@@ -227,21 +227,62 @@
 
 ## 7. 处置栏（主线程回填，2026-11-12）
 
-| 编号 | 处置 | 修复 commit | 备注 |
-| --- | --- | --- | --- |
-| H1 | **修** | 本次提交 | openspec 的 MODIFIED 块按**场景名**对齐，无 scenario 级 RENAMED 机制 → delta 场景名改回主 spec 原名（「N=1 时降级匹配」「加权综合分挂载（无降级概念）」「多视角挂载含降级标记」），正文改为「无标记」语义；历史命名保留作为身份锚，Requirement 正文加一句说明标题沿用历史命名。`openspec validate --strict` 通过。 |
-| H2 | **修** | 本次提交 | 补 5 个 capability 的 delta：`match-detail-ondemand` / `board-article-api` / `match-score-visualization` / `workshop-article-archive` / `daily-report-system`。全部 MODIFIED 块场景名与主 spec 逐一对齐（机械脚本校验 14/14 通过），仅改正文去 downgraded 条款。 |
-| H3 | **修** | 本次提交 | proposal 的 Modified Capabilities 改为真实 capability 全集 6 项（原 `semantic-board` 是 constraints-index 的 flow 域 basename，非 openspec capability 名）。 |
-| H4 | **修** | 本次提交 | `constraints_test.go:109` 删 `topic_tag_board_labels.downgraded` golden schema 行（列已不存在 → information_schema 0 行 → `no rows in result set`）。`go test ./internal/platform/database/ -count=1` 通过（43.5s，testcontainer PG）。 |
-| H5 | **修** | 本次提交 | ①`cmd/dump-sanitizer/tables.go` 的 `topic_tag_board_labels` 列清单去 `downgraded`；②顺带移除已被迁移 `restructure-settings-navigation` DROP 的 `analysis_methods` / `reference_roles` 两条 stale 表条目（该工具此前必然报 `relation does not exist`，是本项的真正阻断点）；③`demo/seed/seed.sql` 按新列清单重新生成（311525 行）；④静态校验：seed.sql 全部 INSERT 列清单对照真库 information_schema —— 零缺失。 |
-| M1 | **修（改口径文档，不改代码）** | 本次提交 | proposal Impact 拆成「不变」与「变」两层：挂载集合/分数/文章可见性/日报入选文章/归档弱证据**成员**不变；派生排序口径变（版块文章质量序与分页、日报 top-30 标签截断集合、section best_tier 排序、归档行内标签次序）。design 新增 D2.1 影响面清单表 + D2.2 归档档位重排 + D2.3 真库核对。代码不改——档位合并本身是本 change 的既定决策。 |
-| M2 | **修（文档）** | 本次提交 | design D2.2 明确 `ArchiveEvidenceRank` 由「`max_sim && !downgraded` → rank 4 / default 5」改为「`max_sim` → rank 4 / default 5」：行成员不变，仅行内次序由 score/id tiebreak 决定。proposal Impact 同步。 |
-| M3 | **修** | 本次提交 | `docs/reference/standard/backend/testing.md` 的回归守卫样本名改为 `TestCollectBoardTags_PGHonorsGroupBy`（并注明原名含 Downgraded 的用例已随本 change 改名）。 |
-| M4 | **修** | 本次提交 | ①`postgres_migrations.go` 约束表死条目删（`constrain` 有存在性守卫，不报错但是死代码）；②`daily_report_quality_breakdown_test.go` / `daily_report_rebucket_test.go` 的 fixture 保留 `downgraded` 键但加注释说明是历史 JSON 快照遗留键（读取端兼容用例，语义不再漂移）；③`board_article_handler_test.go` 的 slug `downgraded` → `hitrate`，变量 `downTag` → `hitRateTag`。 |
-| L1 | **修** | 本次提交 | `MatchDetailPanel.vue` 转回 CRLF 行尾（原文件是 CRLF，Python 编辑把整文件转成 LF 造成 644 行噪音 diff）。现在相对 `4c40fb74^` 的净改动 = 1 行（真实改动行）。 |
-| L2 | **修** | 本次提交 | `boardArchiveView.css` 的 `.ar-tag.is-deg` 死 CSS 删；`SectionQualityExplore.vue` 删 `:class` 后遗留的空行删。 |
-| L3 | **修** | 本次提交 | design D1 表补全：后端加 `cmd/dump-sanitizer/tables.go` 与 `internal/platform/database/constraints_test.go`；前端加 `BoardArchiveView.vue` / `MatchDetailPanel.vue` / `SectionQualityExplore.vue` / `utils/matchQuality.ts` / `api/semanticBoards.ts` / `api/dailyReports.ts`。 |
-| L4 | **不修（观察）** | — | `effective_min_hits` 仍由 `board_match_handler.go` 返回、前端类型仍声明，但生产消费方已改为前端自算门槛（`archiveMatchFlow.ts:251`）。保留字段（无功能危害、且是判定口径的可追溯线索），待 `match-detail-ondemand` 能力后续单独退役。 |
+### R-1 2026-11-12【High】openspec validate --strict 不通过，delta 改了场景名致 change 无法归档
+- **状态**：已修复
+- openspec 的 MODIFIED 块按**场景名**对齐（无 scenario 级 RENAMED 机制），delta 把「N=1 时降级匹配」「加权综合分挂载（无降级概念）」「多视角挂载含降级标记」改名即等于删旧增新。
+- 处置：delta 场景名改回主 spec 原名作身份锚，正文改为「无标记」语义；Requirement 正文加一句说明「本 requirement 下部分 Scenario 标题沿用历史命名含『降级』字样，判定语义以正文为准」。`openspec validate --strict` 通过。
+
+### R-2 2026-11-12【High】5 个其它 capability 的主 spec 仍以 downgraded 为规范条款，归档后与实现双轨漂移
+- **状态**：已修复
+- 对应实现已删（DTO 单参化、MatchDetailPanel ④ 步骤文案、MatchTier 档位合并），但 delta 只覆盖 `tag-to-board-matching` 一个 capability。
+- 处置：补 5 份 delta——`match-detail-ondemand` / `board-article-api` / `match-score-visualization` / `workshop-article-archive` / `daily-report-system`；机械脚本校验 14/14 个 Requirement 的场景名与主 spec 逐一对齐，仅改正文去 downgraded 条款。
+
+### R-3 2026-11-12【High】proposal 的 Modified Capabilities 指向不存在的 capability
+- **状态**：已修复
+- 原声明 `semantic-board` 是 constraints-index 的 flow 域 basename，openspec capability 目录下无此目录（delta 实际在 `specs/tag-to-board-matching/`）。
+- 处置：改为真实 capability 全集 6 项。
+
+### R-4 2026-11-12【High】internal/platform/database/constraints_test.go 集成测试失败（-short 门禁双重漏检）
+- **状态**：已修复
+- golden schema 用例仍期望 `topic_tag_board_labels.downgraded` 列，列已删 → `information_schema` 查 0 行 → `sql: no rows in result set`。该用例 `testing.Short()` 跳过，且不在 tagmanagement 包内，`-short` 门禁扫不到。
+- 处置：删该行用例；`go test ./internal/platform/database/ -count=1` 通过（testcontainer PG，43.5s）。
+
+### R-5 2026-11-12【High】cmd/dump-sanitizer 仍 SELECT 已删列，演示 seed 链路断裂
+- **状态**：已修复
+- `tables.go` 的 `topic_tag_board_labels` 列清单含 `downgraded` → 真库报列不存在；`demo/seed/seed.sql` 回放同样报错，`openspec/specs/demo-seed-sync` 的每周同步链路断。
+- 处置：列清单清理；顺带修出该工具的真正阻断点——`analysis_methods` / `reference_roles` 两条 stale 表条目（两表已被迁移 `restructure-settings-navigation` DROP，工具此前必然报 `relation does not exist`），一并移除；`demo/seed/seed.sql` 按新列清单重新生成（311525 行），并做静态校验：全部 INSERT 列清单对照真库 `information_schema` 零缺失。
+
+### R-6 2026-11-12【Medium】MatchTier 归并带来用户可见的排序/分页/截断变化，与「行为全部不变」承诺冲突
+- **状态**：已采纳
+- 处置（改口径文档，不改代码——档位合并本身是本 change 的既定决策）：proposal Impact 拆成「不变」与「变」两层；design 新增 D2.1 影响面清单（版块文章质量序与分页 / 日报 top-30 标签截断集合 / section best_tier 排序 / 归档行内标签次序）、D2.2 归档档位重排、D2.3 真库核对。
+
+### R-7 2026-11-12【Medium】ArchiveEvidenceRank 档位重排未在 design/tasks 中披露
+- **状态**：已修复
+- 处置：design D2.2 明确「`max_sim && !downgraded` → rank 4 / default 5」改为「`max_sim` → rank 4 / default 5」——行成员不变，仅行内次序改由 score/id tiebreak 决定；proposal Impact 同步。
+
+### R-8 2026-11-12【Medium】docs/reference/standard/backend/testing.md 指向已重命名的测试
+- **状态**：已修复
+- 处置：回归守卫样本名改为 `TestCollectBoardTags_PGHonorsGroupBy`，并注明原名含 Downgraded 的用例已随本 change 改名。
+
+### R-9 2026-11-12【Medium】残留引用未闭环
+- **状态**：已修复
+- 处置：①`postgres_migrations.go` 约束表死条目删（`constrain` 有存在性守卫，不报错但是死代码）；②`daily_report_quality_breakdown_test.go` / `daily_report_rebucket_test.go` 的 fixture 保留 `downgraded` 键但加注释说明是历史 JSON 快照遗留键（读取端兼容用例，语义不再漂移）；③`board_article_handler_test.go` 的 slug `downgraded` → `hitrate`，变量 `downTag` → `hitRateTag`。
+
+### R-10 2026-11-12【Low】MatchDetailPanel.vue 整文件 CRLF→LF，644 行 diff 噪音淹没 1 行真实改动
+- **状态**：已修复
+- 处置：转回 CRLF 行尾（原文件即 CRLF），相对 `4c40fb74^` 的净改动 = 1 行。
+
+### R-11 2026-11-12【Low】前端死代码残留
+- **状态**：已修复
+- 处置：`boardArchiveView.css` 的 `.ar-tag.is-deg` 死 CSS 删；`SectionQualityExplore.vue` 删 `:class` 后遗留的空行删。
+
+### R-12 2026-11-12【Low】design D1 的删除范围表不完整
+- **状态**：已修复
+- 处置：D1 表补全——后端加 `cmd/dump-sanitizer/tables.go` 与 `internal/platform/database/constraints_test.go`；前端加 `BoardArchiveView.vue` / `MatchDetailPanel.vue` / `SectionQualityExplore.vue` / `utils/matchQuality.ts` / `api/semanticBoards.ts` / `api/dailyReports.ts`。
+
+### R-13 2026-11-12【Low】effective_min_hits 已无生产消费方
+- **状态**：已采纳
+- 处置：保留字段（无功能危害，且是判定门槛口径的可追溯线索），待 `match-detail-ondemand` 能力后续单独退役；本 change 只在 delta 中保留其契约描述（不再是「降级」信号）。
 
 ### 处置后门禁复检（2026-11-12）
 

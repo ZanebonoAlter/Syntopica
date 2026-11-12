@@ -192,6 +192,36 @@ describe('buildTagFlowSteps — 逐标签判定过程（全集输出）', () => 
     expect(steps.slice(1).every(step => step.reached === false)).toBe(true)
   })
 
+  // retire-downgraded-mount：④ max_sim 命中步不再带「⚠降级匹配」后缀
+  it('max_sim 命中步：给真实三条件数值，且不含任何降级文案', () => {
+    const steps = buildTagFlowSteps('max_sim', config, detail({
+      match_reason: 'max_sim',
+      tag_auxiliary_count: 1,
+      hits: 1,
+      hit_rate: 0.333,
+      max_similarity: 0.85,
+    }), 1)
+    const step = steps.find(s => s.id === 'max_sim')!
+    expect(step.state).toBe('matched')
+    expect(step.result).toContain('Smax=0.850')
+    expect(step.result).toContain('1 ≥ 1')
+    expect(step.result).toContain('→ 满足')
+    expect(step.result).not.toContain('降级')
+  })
+
+  it('max_sim 命中步：N=1 放宽门槛时也不出现降级标记语义', () => {
+    const steps = buildTagFlowSteps('max_sim', config, detail({
+      match_reason: 'max_sim',
+      tag_auxiliary_count: 1,
+      hits: 1,
+      hit_rate: 0.333,
+      max_similarity: 0.85,
+    }), 1)
+    const text = steps.map(s => s.result).join(' ')
+    expect(text).not.toContain('↓')
+    expect(text).not.toContain('降级')
+  })
+
   it('match-detail 缺失：命中步标「需实时拉取」，① 仍给真实阈值与口径词，不伪造数值', () => {
     const steps = buildTagFlowSteps('direct_hit', config, null, 5)
     const direct = steps[0]!
