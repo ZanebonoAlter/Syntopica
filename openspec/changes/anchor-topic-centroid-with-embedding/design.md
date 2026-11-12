@@ -5,7 +5,7 @@
 - 质心刷新链路：日报保存/改挂/rebucket → `UpdateCentroidOnSectionChange`（`daily_report_topic_repository.go:957`）→ `ComputeTopicCentroid`（:898，最近 `CentroidWindow=30` 条命中 section 等权均值）→ 写 `board_persistent_topics.centroid`。
 - 匹配锚点：`topicAnchorVec`（centroid 优先，无则首义 embedding）；lane 分桶与 `planTopicAssignments` 只消费锚点，**不感知质心怎么算**——改公式不需要动 lane 层。
 - 首义向量：manual 话题 = 创建时所选 section 均值（`CreateManualTopic`）；auto 话题 = 首条命中 section 的内容 embedding（L3 新建 candidate 时写入）。两者都存 `embedding` 列，创建后不可变。
-- 配置：`LoadPersistentTopicConfig` 读 `embedding_config` 表，switch-case 解析 `persistent_topic_*` key。
+- 配置：`LoadPersistentTopicConfig` 读 `ai_settings` 表（`models.AISettings`），switch-case 解析 `persistent_topic_*` key。
 
 ## 决策
 
@@ -26,7 +26,7 @@ centroid = α · embedding首义 + (1-α) · mean(最近 centroid_window 条命�
 
 ### D3 新配置项
 
-`PersistentTopicConfig` 增 `CentroidAnchorWeight float64`（默认 0.5）。`LoadPersistentTopicConfig` 增 case `persistent_topic_centroid_anchor_weight`：ParseFloat，值域 [0,1] 外或解析失败 → 回退默认 + Warnf（与 `centroid_window` 惯例一致）。存量真库 `embedding_config` 只有 2 个无关 key，无迁移。
+`PersistentTopicConfig` 增 `CentroidAnchorWeight float64`（默认 0.5）。`LoadPersistentTopicConfig` 增 case `persistent_topic_centroid_anchor_weight`：ParseFloat，值域 [0,1] 外或解析失败 → 回退默认 + Warnf（与 `centroid_window` 惯例一致）。真库 `ai_settings` 无此 key，缺省即 0.5，无迁移。α 为线性混合权重（匹配走 cosine 角度，滚动均值模长系统性收缩，实际锚定效果略强于标称比例）。
 
 ### D4 存量重算入口：HTTP 端点，不做启动迁移
 

@@ -4,7 +4,7 @@
 
 ### Requirement: PersistentTopic 质心表示
 
-PersistentTopic 的 embedding 匹配锚点 SHALL 为「首义向量与滚动质心的加权混合」：`centroid = α·首义 embedding + (1-α)·最近 centroid_window 条命中 section embedding 等权均值`。α = `persistent_topic_centroid_anchor_weight`（默认 0.5，embedding_config 可配，见配置项）。manual 话题的首义为创建时所选 section 的均值向量，auto 话题的首义为首条命中 section 的内容 embedding——两者均持久化于 `board_persistent_topics.embedding`，创建后不可变。
+PersistentTopic 的 embedding 匹配锚点 SHALL 为「首义向量与滚动质心的加权混合」：`centroid = α·首义 embedding + (1-α)·最近 centroid_window 条命中 section embedding 等权均值`。α = `persistent_topic_centroid_anchor_weight`（默认 0.5，ai_settings 可配，见配置项）。manual 话题的首义为创建时所选 section 的均值向量，auto 话题的首义为首条命中 section 的内容 embedding——两者均持久化于 `board_persistent_topics.embedding`，创建后不可变。
 
 质心 SHALL 物化存储于 `board_persistent_topics.centroid` 列（与 embedding 同维度），section 新增或归属变更时增量更新。漂移 SHALL 有界：质心随话题下 section 的实际内容自适应移动（保留内容漂移打破标题回声闭环的能力），但首义以 α 权重持续锚定，滑出窗口的历史 section 不再使锚点脱离话题创建定义——防止宽口径话题质心漂移为「泛新闻磁铁」。
 
@@ -46,7 +46,7 @@ section embedding SHALL 基于 section 实际聚合内容生成（见 section-co
 
 #### Scenario: 锚定权重配置边界
 
-- **WHEN** embedding_config 设置 persistent_topic_centroid_anchor_weight=0（或 1）
+- **WHEN** ai_settings 设置 persistent_topic_centroid_anchor_weight=0（或 1）
 - **THEN** 质心 SHALL 分别退化为纯滚动均值（旧行为）/ 纯首义（话题冻结）
 
 #### Scenario: 存量质心重算
@@ -57,24 +57,24 @@ section embedding SHALL 基于 section 实际聚合内容生成（见 section-co
 
 ### Requirement: 配置项
 
-系统 SHALL 在 embedding_config 新增/维护以下配置项（含默认值）：
+系统 SHALL 在 ai_settings 新增/维护以下配置项（含默认值；α 为线性混合权重，匹配走 cosine 角度，实际锚定效果因滚动均值模长收缩而略强于标称比例）：
 - `persistent_topic_match_threshold`：0.30（section 命中 topic 的 embedding distance 上限）
 - `persistent_topic_upgrade_threshold`：3（candidate 连续命中天数转 active）
-- `persistent_topic_decay_window`：30（active 无命中转 archived 的天数）
+- `persistent_topic_decay_window`：30（active 无命中转 archived 的天数；迁移种子遗留 key，代码实际读 `persistent_topic_candidate_decay_window`，仅作 prompt 候选过滤）
 - `persistent_topic_cluster_threshold`：0.30（回刷时历史 section 聚类成 topic 的阈值）
 - `persistent_topic_centroid_anchor_weight`：0.5（质心混合的首义权重 α；0=纯滚动旧行为，1=纯首义冻结；非法值回退默认并告警）
 
 #### Scenario: 读取默认配置
 
-- **WHEN** embedding_config 未设置上述 key
+- **WHEN** ai_settings 未设置上述 key
 - **THEN** 系统 SHALL 使用默认值
 
 #### Scenario: 自定义升级阈值
 
-- **WHEN** embedding_config 设置 persistent_topic_upgrade_threshold=5
+- **WHEN** ai_settings 设置 persistent_topic_upgrade_threshold=5
 - **THEN** candidate 连续命中 5 天才转 active
 
 #### Scenario: 自定义锚定权重
 
-- **WHEN** embedding_config 设置 persistent_topic_centroid_anchor_weight=0.3
+- **WHEN** ai_settings 设置 persistent_topic_centroid_anchor_weight=0.3
 - **THEN** 质心混合 SHALL 采用 α=0.3（首义 30% + 滚动均值 70%）

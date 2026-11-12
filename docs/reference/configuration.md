@@ -222,7 +222,7 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `persistent_topic_lane_l2_threshold` | Lane L2 弱区上限：距离在 `[l1, l2]` 的 tag 交 LLM 在 top-K 候选上做「留/换/新」三选一。默认 `0.30` |
 | `persistent_topic_vacuum_ratio` | 吸尘器判定：topic 近窗口 `strong/(strong+mid)` < 此值则 `is_vacuum=true`，挂到它的 tag 从 L1 降级 L2 交 LLM 裁决。默认 `0.20` |
 | `persistent_topic_centroid_window` | 质心计算取最近 N 条 section embedding 做均权平均（滚动均值侧）；section<2 退化首义向量。默认 `30` |
-| `persistent_topic_centroid_anchor_weight` | 质心混合的**首义权重** α：`centroid = α·首义 embedding + (1-α)·滚动窗口均值`。默认 `0.5`——质心因此只做有界漂移（移动幅度 ≤ 纯滚动位移的 `1-α`），宽口径话题不会漂成「泛新闻磁铁」。`0` = 纯滚动（旧行为），`1` = 纯首义（话题冻结）；值域外或解析失败回退默认 `0.5` 并告警。见 `flow/topic-graph.md` §话题质心 |
+| `persistent_topic_centroid_anchor_weight` | 质心混合的**首义权重** α：`centroid = α·首义 embedding + (1-α)·滚动窗口均值`。默认 `0.5`——质心因此只做有界漂移（移动幅度 ≤ 纯滚动位移的 `1-α`），宽口径话题不会漂成「泛新闻磁铁」。α 为线性混合权重（匹配走 cosine 角度，滚动均值模长收缩，实际锚定效果略强于标称比例）。`0` = 纯滚动（旧行为），`1` = 纯首义（话题冻结）；值域外或解析失败回退默认 `0.5` 并告警。见 `flow/topic-graph.md` §话题质心 |
 | `persistent_topic_vacuum_window` | 吸尘器吸引统计窗口（天）：按近 N 天归属该 topic 的 section 统计 strong/mid。默认 `7` |
 | `persistent_topic_l2_candidate_k` | L2 LLM prompt 注入的 top-K 候选 topic 数（按质心距离排序）。默认 `5` |
 | `daily_report_section_merge_enabled` | 同日 section 两阶段合并（确定性 <0.20 + 灰区 LLM 仲裁）总开关。默认 `false`（关）——关闭时 section 按lane 管线原始分组落库；开启时合并仍受锚定边界约束（不同 `persistent_topic_id` / 新叙事↔锚定跨界禁止合并）。见 `flow/daily-report.md` 业务约束 12 |

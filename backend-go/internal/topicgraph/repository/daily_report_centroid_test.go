@@ -474,10 +474,18 @@ func TestRecomputeTopicCentroids_CoversAllBoards(t *testing.T) {
 	seedSectionAssigned(t, db, malformedReport, malformed.ID, vecStr(1, 0, 0), 0.1)
 	seedSectionAssigned(t, db, malformedReport, malformed.ID, vecStr(0, 1, 0), 0.1)
 
+	// A topic that truly FAILS (not degrades): zero sections + empty 首义 →
+	// topicEmbeddingFallback returns "" → UPDATE centroid='' violates the
+	// vector column type → the failed++ branch. The run must continue for the
+	// rest (spec scenario 「存量质心重算」单话题失败不中断).
+	broken := makeTopic(t, db, boardA, vecStr(1, 0, 0))
+	require.NoError(t, db.Model(&BoardPersistentTopic{}).Where("id = ?", broken.ID).
+		Updates(map[string]any{"label": "broken", "embedding": nil}).Error)
+
 	updated, failed, err := repo.RecomputeTopicCentroids(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 3, updated, "only non-archived topics are recomputed")
-	assert.Equal(t, 0, failed)
+	assert.Equal(t, 1, failed, "the broken topic (no sections, empty 首义) fails without aborting the run")
 
 	centroidOf := func(t *testing.T, topicID uint) string {
 		t.Helper()
@@ -494,14 +502,14 @@ func TestRecomputeTopicCentroids_CoversAllBoards(t *testing.T) {
 	assert.InDeltaSlice(t, []float64{0.5, 0.5, 0}, malformedCentroid, 1e-6,
 		"a malformed 首义 degrades to the pure rolling mean without breaking the run")
 
-	// Board filter: only board A's topics are touched.
+	// Board filter: only board A's topics are touched (active + malformed + broken).
 	require.NoError(t, db.Model(&BoardPersistentTopic{}).Where("id = ?", topicB).
 		Update("centroid", nil).Error)
 	boardAID := boardA
 	updated, failed, err = repo.RecomputeTopicCentroids(context.Background(), &boardAID)
 	require.NoError(t, err)
 	assert.Equal(t, 2, updated, "board A holds the active topic and the malformed one")
-	assert.Equal(t, 0, failed)
+	assert.Equal(t, 1, failed, "the broken topic still fails inside the scoped run")
 	assert.NotEmpty(t, centroidOf(t, topicA))
 	assert.Empty(t, centroidOf(t, topicB), "the other board must not be touched")
 }

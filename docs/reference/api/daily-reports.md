@@ -30,6 +30,7 @@
 | POST | `/daily-reports/backfill-embeddings` | 回填 section 向量 |
 | POST | `/daily-reports/backfill-relations` | 回填话题关系 |
 | POST | `/daily-reports/backfill-topics` | 历史重建持久话题 |
+| POST | `/daily-reports/recompute-topic-centroids` | 按当前公式重算话题质心 |
 | GET | `/semantic-boards/:id/persistent-topics/compose-candidates` | 手动编排候选 section |
 | POST | `/semantic-boards/:id/persistent-topics/embed-query` | 自然语言向量化 |
 | POST | `/semantic-boards/:id/topic-watches` | 新建话题盯盘 |
@@ -528,6 +529,20 @@ Query：
 - `board_id` 可选，限定单个板块。
 
 Response `data`：
+
+```json
+{ "status": "processing" }
+```
+
+## POST `/daily-reports/recompute-topic-centroids`
+
+异步按当前公式与配置重算持久话题质心（`centroid = α·首义 embedding + (1-α)·滚动窗口均值`，anchor-topic-centroid-with-embedding）。用于公式/参数升级后的一次性存量纠正；幂等可重跑。
+
+Query：
+
+- `board_id` 可选，限定单个板块；缺省全部板块的非 archived（active+candidate）话题。非法值（非数字/≤0）返回 `400 {"error": "invalid board_id"}`。
+
+无需请求体。行为：逐话题重算（首义不可用回退纯滚动均值+告警），单话题失败记日志不中断其余；完成写日志 `recompute topic centroids complete: N topics updated, M failed`。Response `data`：
 
 ```json
 { "status": "processing" }
