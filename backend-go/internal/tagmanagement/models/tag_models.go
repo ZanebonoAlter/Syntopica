@@ -75,7 +75,6 @@ type TopicTagBoardLabel struct {
 	SemanticBoardID   uint      `gorm:"primaryKey" json:"semantic_board_id"`
 	Score             float64   `json:"score"`
 	MatchReason       string    `gorm:"type:text" json:"match_reason"`
-	Downgraded        bool      `json:"downgraded"`
 	DirectionMismatch bool      `json:"direction_mismatch"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`

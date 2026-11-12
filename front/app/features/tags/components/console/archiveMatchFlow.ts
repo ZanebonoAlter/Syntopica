@@ -251,7 +251,7 @@ export function buildTagFlowSteps(
   const minHits = Math.min(config.directMaxSimMinHits, N || 1)
   if (reason === 'max_sim') {
     steps.push(step('max_sim', real
-      ? `Smax=${formatScore(detail.max_similarity, 3)} ≥ ${formatScore(config.directMaxSim)}，${detail.hits} ≥ ${minHits}，R=${formatScore(detail.hit_rate, 3)} → 满足${detail.downgraded ? ' ⚠降级匹配' : ''}`
+      ? `Smax=${formatScore(detail.max_similarity, 3)} ≥ ${formatScore(config.directMaxSim)}，${detail.hits} ≥ ${minHits}，R=${formatScore(detail.hit_rate, 3)} → 满足`
       : `需 Smax ≥ ${formatScore(config.directMaxSim)} 且命中 ≥ ${minHits} 且 R ≥ ${formatScore(config.directMaxSimMinHitRate)}${needLive}`, 'matched'))
     steps.push(skippedFrom('weighted'))
     return steps

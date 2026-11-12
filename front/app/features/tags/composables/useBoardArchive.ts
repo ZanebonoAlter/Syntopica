@@ -80,7 +80,8 @@ export function isWeakArticle(article: ArchiveArticle): boolean {
   const tags = article.filtered_tags ?? []
   if (tags.length === 0) return true
   // 与后端 ApplyWeakEvidenceFilter 对齐：没有「强匹配」才算弱（任一强即不弱）。
-  return !tags.some((tag) => tag.match_reason !== 'max_sim' && !tag.downgraded)
+  // downgraded 标记已退役（2026-11-12）：强 = 非 max_sim。
+  return !tags.some((tag) => tag.match_reason !== 'max_sim')
 }
 
 export function filterArchiveArticles(articles: ArchiveArticle[], filter: ArchiveFilter): ArchiveArticle[] {

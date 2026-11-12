@@ -48,7 +48,9 @@ type archiveFixture struct {
 	db      *gorm.DB
 	router  *gin.Engine
 	boardID uint
-	// weakIDs 是三条弱证据文章（未打标 / max_sim / downgraded）。
+	// weakIDs 是两条弱证据文章（未打标 / max_sim）。downgraded 标记已退役
+	// （2026-11-12）：hit_rate 一律强证据，原 downTag（hit_rate+降级，现实中
+	// 不存在的组合）不再算弱。
 	weakIDs []uint
 	// allIDs 按创建顺序。
 	allIDs []uint
@@ -104,7 +106,7 @@ func setupArchiveFixture(t *testing.T) *archiveFixture {
 	}
 	strongTag := seedTag("strong", archiveStrongTagDescription, tagmodels.TopicTagBoardLabel{Score: 0.9, MatchReason: "direct_hit"})
 	simTag := seedTag("sim", "", tagmodels.TopicTagBoardLabel{Score: 0.55, MatchReason: "max_sim"})
-	downTag := seedTag("down", "", tagmodels.TopicTagBoardLabel{Score: 0.4, MatchReason: "hit_rate", Downgraded: true})
+	downTag := seedTag("down", "", tagmodels.TopicTagBoardLabel{Score: 0.4, MatchReason: "hit_rate"})
 	mismatchTag := seedTag("mismatch", "", tagmodels.TopicTagBoardLabel{Score: 0.3, MatchReason: "direct_hit", DirectionMismatch: true})
 
 	fixture := &archiveFixture{db: db, boardID: board.ID}
@@ -131,7 +133,7 @@ func setupArchiveFixture(t *testing.T) *archiveFixture {
 	// 1 未打标（仅方向未通过标签）；2 max_sim；3 降级；4..20 强证据。
 	fixture.weakIDs = append(fixture.weakIDs, makeArticle("untagged", mismatchTag))
 	fixture.weakIDs = append(fixture.weakIDs, makeArticle("sim", simTag))
-	fixture.weakIDs = append(fixture.weakIDs, makeArticle("downgraded", downTag))
+	makeArticle("downgraded", downTag) // hit_rate：强证据，不进 weak 列表
 	for i := 4; i <= 20; i++ {
 		makeArticle(fmt.Sprintf("a-%d", i), strongTag)
 	}
@@ -229,7 +231,7 @@ func TestBoardArticles_NotInReportFilter(t *testing.T) {
 func TestBoardArticles_WeakFilter(t *testing.T) {
 	f := setupArchiveFixture(t)
 	rows := f.get(t, archiveWindowQuery+"&report_status=weak")
-	require.Len(t, rows, 3)
+	require.Len(t, rows, 2)
 	got := make([]uint, 0, len(rows))
 	for _, row := range rows {
 		got = append(got, uint(row["id"].(float64)))
@@ -279,19 +281,19 @@ func TestBoardArticles_QualitySortGlobalOrder(t *testing.T) {
 	feed := models.Feed{Title: "排序源", URL: fmt.Sprintf("https://example.com/qsort-%d.xml", time.Now().UnixNano())}
 	require.NoError(t, db.Create(&feed).Error)
 
-	seed := func(slug, reason string, score float64, downgraded bool) models.TopicTag {
+	seed := func(slug, reason string, score float64) models.TopicTag {
 		tag := models.TopicTag{Slug: fmt.Sprintf("%s-%d", slug, time.Now().UnixNano()), Label: slug, Status: "active", IsCanonical: true}
 		require.NoError(t, db.Create(&tag).Error)
-		require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: board.ID, Score: score, MatchReason: reason, Downgraded: downgraded}).Error)
+		require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tag.ID, SemanticBoardID: board.ID, Score: score, MatchReason: reason}).Error)
 		return tag
 	}
-	directA := seed("direct-a", "direct_hit", 0.9, false)
-	directB := seed("direct-b", "direct_hit", 0.8, false)
-	rateTag := seed("rate", "hit_rate", 0.85, false)
-	simA := seed("sim-a", "max_sim", 0.7, false)
-	simB := seed("sim-b", "max_sim", 0.6, false)
-	weightHigh := seed("weight-high", "weighted", 0.95, false) // 高分但 tier 最差：锁 tier 优先于分数
-	weightLow := seed("weight-low", "weighted", 0.5, false)
+	directA := seed("direct-a", "direct_hit", 0.9)
+	directB := seed("direct-b", "direct_hit", 0.8)
+	rateTag := seed("rate", "hit_rate", 0.85)
+	simA := seed("sim-a", "max_sim", 0.7)
+	simB := seed("sim-b", "max_sim", 0.6)
+	weightHigh := seed("weight-high", "weighted", 0.95) // 高分但 tier 最差：锁 tier 优先于分数
+	weightLow := seed("weight-low", "weighted", 0.5)
 
 	base := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
 	makeArticle := func(title string, offsetHours int, tags ...models.TopicTag) uint {

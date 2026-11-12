@@ -139,14 +139,14 @@ func decodeArchiveRefIDs(raw []byte) ([]uint, bool) {
 
 // ApplyWeakEvidenceFilter 把弱证据口径作用到文章查询上（articles 表别名固定
 // 为 articles，handler 的主查询与计数查询共用）。弱证据 = 该文章在本版块
-// 没有任何「强」匹配：强 = 非 max_sim 且未降级；未通过方向校验的匹配默认
+// 没有任何「强」匹配：强 = 非 max_sim；未通过方向校验的匹配默认
 // 不算强（与 filtered_tags 默认隐藏一致），调用方要求展示方向未通过时
-// includeDirectionMismatch=true。
+// includeDirectionMismatch=true。（downgraded 标记已于 2026-11-12 退役）
 //
 // 无匹配标签的文章同样落入弱证据（NOT EXISTS 对空集为真），这样归档的
 // 「未打标」组与 `report_status=weak` 口径一致。
 func ApplyWeakEvidenceFilter(q *gorm.DB, boardID uint, includeDirectionMismatch bool) *gorm.DB {
-	strong := "NOT COALESCE(wtbl.downgraded, false) AND COALESCE(wtbl.match_reason, '') <> 'max_sim'"
+	strong := "COALESCE(wtbl.match_reason, '') <> 'max_sim'"
 	if !includeDirectionMismatch {
 		strong += " AND NOT COALESCE(wtbl.direction_mismatch, false)"
 	}
@@ -160,20 +160,21 @@ func ApplyWeakEvidenceFilter(q *gorm.DB, boardID uint, includeDirectionMismatch 
 }
 
 // ArchiveEvidenceRank 是归档「首条标签」的强度序（0 最强）：
-// direct_hit > composite_hit > hit_rate > weighted > max_sim > 降级/未知。
+// direct_hit > composite_hit > hit_rate > weighted > max_sim/未知。
 // 与 MatchTier 分开维护：MatchTier 服务于日报生成/旧工坊排序，改动会波及
 // report 管线；归档只在自己的查询里用本函数，避免跨域口径漂移。
-func ArchiveEvidenceRank(matchReason string, downgraded bool) int {
-	switch {
-	case matchReason == "direct_hit":
+// downgraded 标记已于 2026-11-12 退役，max_sim 统一档。
+func ArchiveEvidenceRank(matchReason string) int {
+	switch matchReason {
+	case "direct_hit":
 		return 0
-	case matchReason == "composite_hit":
+	case "composite_hit":
 		return 1
-	case matchReason == "hit_rate":
+	case "hit_rate":
 		return 2
-	case matchReason == "weighted":
+	case "weighted":
 		return 3
-	case matchReason == "max_sim" && !downgraded:
+	case "max_sim":
 		return 4
 	default:
 		return 5
@@ -182,8 +183,8 @@ func ArchiveEvidenceRank(matchReason string, downgraded bool) int {
 
 // IsWeakEvidence 是弱证据口径的单条匹配版本（handler 组装 weak_evidence
 // 字段用），必须与 ApplyWeakEvidenceFilter 的「强」定义同步。
-func IsWeakEvidence(matchReason string, downgraded bool) bool {
-	return strings.TrimSpace(matchReason) == "max_sim" || downgraded
+func IsWeakEvidence(matchReason string) bool {
+	return strings.TrimSpace(matchReason) == "max_sim"
 }
 
 // SortArticleIDs 把 ID 集转成稳定升序切片（IN/NOT IN 参数顺序可复现）。

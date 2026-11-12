@@ -103,7 +103,7 @@ const liveCalcNote = computed(() => (detail.value ? LIVE_CALC_NOTE : ''))
 const driftNote = computed(() => scoreDriftNote(detail.value))
 
 const ruleEntry = computed(() => (props.tag ? ruleOf(props.tag.match_reason) : undefined))
-const ruleColor = computed(() => (props.tag ? matchReasonColor(props.tag.match_reason, props.tag.downgraded) : 'var(--color-text-muted)'))
+const ruleColor = computed(() => (props.tag ? matchReasonColor(props.tag.match_reason) : 'var(--color-text-muted)'))
 const scoreText = computed(() => (props.tag ? formatScore(props.tag.score) : '--'))
 
 /** 头区规则名：第①步 精确匹配 命中（同源 RULE_COPY，不用旧「直接命中」标签）。 */
@@ -532,7 +532,6 @@ onUnmounted(() => {
           <span class="amp-cat">{{ catLabel(tag.category) }}</span>
           <span class="amp-rule" :style="{ color: ruleColor, borderColor: ruleColor }" data-testid="archive-pop-head-step">{{ headStepText }}</span>
           <span class="amp-score" :style="{ color: ruleColor }">{{ scoreText }}</span>
-          <span v-if="tag.downgraded" class="amp-flag">已降级 ↓</span>
           <span v-if="tag.direction_mismatch" class="amp-flag is-error">方向校验未通过 ⊘</span>
           <button type="button" class="amp-close" data-testid="archive-pop-close" @click="emit('close')">关闭 Esc</button>
           <p class="amp-metric" data-testid="archive-pop-metric">{{ metricText }}</p>
@@ -732,7 +731,6 @@ onUnmounted(() => {
                 data-testid="archive-pop-stage-item"
               >
                 <span class="amp-stage-label">{{ item.label }}</span>
-                <span v-if="item.downgraded" class="amp-flag">↓</span>
                 <span v-if="item.id === bestTagId" class="amp-win" :class="{ 'is-weak': weakArticle }">{{ bestTagBadge }}</span>
                 <span class="amp-stage-score" :style="{ color: matchReasonColor(stage.reason) }">{{ formatScore(item.score) }}</span>
               </div>

@@ -356,7 +356,6 @@ export interface BoardArticleTag {
   description?: string
   match_reason: string
   score: number
-  downgraded: boolean
   direction_mismatch: boolean
 }
 
@@ -411,7 +410,6 @@ export interface MatchDetailResponse {
   semantic_board_id: number
   match_reason: string
   score: number
-  downgraded: boolean
   direction_mismatch?: boolean
   direction_sim: number | null
   effective_min_hits: number

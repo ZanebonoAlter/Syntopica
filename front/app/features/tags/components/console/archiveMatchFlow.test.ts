@@ -41,7 +41,6 @@ function detail(overrides: Partial<MatchDetailResponse> = {}): MatchDetailRespon
     semantic_board_id: 1974,
     match_reason: 'direct_hit',
     score: 0.7,
-    downgraded: false,
     direction_mismatch: false,
     direction_sim: 0.8,
     effective_min_hits: 2,

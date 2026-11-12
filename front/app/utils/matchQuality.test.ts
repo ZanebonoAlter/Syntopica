@@ -15,20 +15,9 @@ describe('matchReasonColor', () => {
     expect(matchReasonColor('')).toBe('var(--color-match-weighted)')
   })
 
-  it('returns the bare token when not downgraded', () => {
-    expect(matchReasonColor('max_sim', false)).toBe('var(--color-match-max-sim)')
+  // downgraded 淡化色已随标记退役（2026-11-12）：matchReasonColor 单参、恒返回裸 token。
+  it('returns the bare token for every reason (downgraded retired)', () => {
     expect(matchReasonColor('max_sim')).toBe('var(--color-match-max-sim)')
-  })
-
-  it('halves the token opacity via color-mix when downgraded', () => {
-    // tokens cannot take a hex alpha suffix, so a downgraded match mixes the
-    // token to 50% — preserving the prior `color + '80'` visual.
-    expect(matchReasonColor('max_sim', true)).toBe(
-      'color-mix(in srgb, var(--color-match-max-sim) 50%, transparent)',
-    )
-    expect(matchReasonColor('direct_hit', true)).toBe(
-      'color-mix(in srgb, var(--color-match-direct-hit) 50%, transparent)',
-    )
   })
 })
 
@@ -41,9 +30,7 @@ describe('matchInfoLabel', () => {
     expect(matchInfoLabel({ match_reason: 'composite_hit', score: 1 })).toBe('组合命中 1.00')
   })
 
-  it('appends the downgrade marker only when downgraded', () => {
-    expect(matchInfoLabel({ match_reason: 'max_sim', score: 0.82, downgraded: true })).toBe('相似度 0.82↓')
-    expect(matchInfoLabel({ match_reason: 'max_sim', score: 0.82, downgraded: false })).toBe('相似度 0.82')
+  it('never appends the downgrade marker (retired 2026-11-12)', () => {
     expect(matchInfoLabel({ match_reason: 'max_sim', score: 0.82 })).toBe('相似度 0.82')
   })
 

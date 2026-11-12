@@ -238,7 +238,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		matchCount := 0
 		for _, t := range tags {
 			if tagIDSet[t.ID] {
-				tier := tagging.MatchTier(t.MatchReason, t.Downgraded)
+				tier := tagging.MatchTier(t.MatchReason)
 				if tier < bestTier {
 					bestTier = tier
 				}
@@ -576,7 +576,6 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 		Source       string  `json:"source"`
 		MatchReason  string  `json:"match_reason"`
 		Score        float64 `json:"score"`
-		Downgraded   bool    `json:"downgraded"`
 		ArticleCount int     `json:"article_count"`
 	}
 
@@ -589,7 +588,6 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 			topic_tags.source AS source,
 			topic_tag_board_labels.match_reason AS match_reason,
 			topic_tag_board_labels.score AS score,
-			topic_tag_board_labels.downgraded AS downgraded,
 			COUNT(DISTINCT articles.id) AS article_count`).
 		Joins("JOIN topic_tag_board_labels ON topic_tag_board_labels.topic_tag_id = topic_tags.id").
 		Joins("JOIN article_topic_tags ON article_topic_tags.topic_tag_id = topic_tags.id").
@@ -610,7 +608,7 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 			collectCfg.ExclusiveGap)
 	}
 	err := boardTagsQuery.
-		Group("topic_tags.id, topic_tags.label, topic_tags.category, topic_tags.description, topic_tags.source, topic_tag_board_labels.match_reason, topic_tag_board_labels.score, topic_tag_board_labels.downgraded").
+		Group("topic_tags.id, topic_tags.label, topic_tags.category, topic_tags.description, topic_tags.source, topic_tag_board_labels.match_reason, topic_tag_board_labels.score").
 		Order("article_count DESC, topic_tags.id ASC").
 		Scan(&rows).Error
 	if err != nil {
@@ -633,7 +631,6 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 			Source:         row.Source,
 			MatchReason:    row.MatchReason,
 			Score:          row.Score,
-			Downgraded:     row.Downgraded,
 			ArticleContext: buildArticleContextForTag(row.ID, startOfDay, endOfDay),
 		})
 
@@ -707,7 +704,6 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 				ArticleCount:   len(artIDs),
 				MatchReason:    boardMatch.MatchReason,
 				Score:          boardMatch.Score,
-				Downgraded:     boardMatch.Downgraded,
 				ArticleContext: buildArticleContextForTag(t.ID, startOfDay, endOfDay),
 			})
 			articleIDSets = append(articleIDSets, artIDs)
@@ -728,7 +724,8 @@ func findPreviousReportBrief(boardID uint, date time.Time) *repository.BoardDail
 }
 
 // buildQualityBreakdownJSON builds the quality_breakdown JSON from tags filtered by tagIDs.
-// Each entry carries per-tag match detail: tag_id, label, match_reason, score, downgraded.
+// Each entry carries per-tag match detail: tag_id, label, match_reason, score.
+// downgraded 键已于 2026-11-12 随标记退役移除；历史 JSON 中的残留键读取端忽略。
 func buildQualityBreakdownJSON(tags []repository.TagInput, tagIDs []uint) []byte {
 	tagIDSet := make(map[uint]bool, len(tagIDs))
 	for _, tid := range tagIDs {
@@ -739,7 +736,6 @@ func buildQualityBreakdownJSON(tags []repository.TagInput, tagIDs []uint) []byte
 		Label       string  `json:"label"`
 		MatchReason string  `json:"match_reason"`
 		Score       float64 `json:"score"`
-		Downgraded  bool    `json:"downgraded"`
 	}
 	entries := make([]qEntry, 0, len(tagIDs))
 	for _, t := range tags {
@@ -749,7 +745,6 @@ func buildQualityBreakdownJSON(tags []repository.TagInput, tagIDs []uint) []byte
 				Label:       t.Label,
 				MatchReason: t.MatchReason,
 				Score:       t.Score,
-				Downgraded:  t.Downgraded,
 			})
 		}
 	}
@@ -777,8 +772,8 @@ func filterTagsByQuality(tags []repository.TagInput) []repository.TagInput {
 	// If kept > 30, truncate by quality (截断)
 	if len(kept) > 30 {
 		sort.SliceStable(kept, func(i, j int) bool {
-			ti := tagging.MatchTier(kept[i].MatchReason, kept[i].Downgraded)
-			tj := tagging.MatchTier(kept[j].MatchReason, kept[j].Downgraded)
+			ti := tagging.MatchTier(kept[i].MatchReason)
+			tj := tagging.MatchTier(kept[j].MatchReason)
 			if ti != tj {
 				return ti < tj
 			}

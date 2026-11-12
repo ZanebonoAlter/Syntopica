@@ -9,7 +9,6 @@ function entry(over: Partial<DailyReportQualityEntry> = {}): DailyReportQualityE
     label: 'AI芯片',
     match_reason: 'direct_hit',
     score: 1.0,
-    downgraded: false,
     ...over,
   }
 }
@@ -38,18 +37,16 @@ describe('SectionQualityExplore', () => {
     expect(wrapper.text()).toContain('0.85')
   })
 
-  it('marks a downgraded tag and appends ↓', () => {
+  it('renders no downgrade marker (retired 2026-11-12)', () => {
     const wrapper = mount(SectionQualityExplore, {
       props: {
-        breakdown: [entry({ tag_id: 9, label: 'X', match_reason: 'max_sim', score: 0.82, downgraded: true })],
+        breakdown: [entry({ tag_id: 9, label: 'X', match_reason: 'max_sim', score: 0.82 })],
       },
     })
 
     const chip = wrapper.find('.section-quality-explore__chip')
-    expect(chip.classes()).toContain('section-quality-explore__chip--downgraded')
-    // matchReasonColor(reason, true) emits a 50%-opacity color-mix — verified in
-    // the util spec; here we assert the downgrade marker reaches the reader.
-    expect(wrapper.text()).toContain('0.82↓')
+    expect(chip.classes()).not.toContain('section-quality-explore__chip--downgraded')
+    expect(wrapper.text()).not.toContain('↓')
   })
 
   it('shows the placeholder when breakdown is null (historical section)', () => {

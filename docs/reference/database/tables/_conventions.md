@@ -231,7 +231,7 @@ embedding 模型名只有一个来源语义：`airouter.EmbeddingResult.Model` =
 以下三张桥接表**均无 `id` 列**，使用复合主键（代码权威）：
 
 - **`topic_tag_semantic_labels`**：连接 `topic_tags` ↔ `semantic_labels`（auxiliary）。复合主键 `(topic_tag_id, semantic_label_id)`，无 `created_at`，两端 `OnDelete:CASCADE`。
-- **`topic_tag_board_labels`**：连接 `topic_tags` ↔ `semantic_labels`（board），含 `score` / `match_reason` / `downgraded` / `direction_mismatch`。复合主键 `(topic_tag_id, semantic_board_id)`，两端 `OnDelete:CASCADE`。
+- **`topic_tag_board_labels`**：连接 `topic_tags` ↔ `semantic_labels`（board），含 `score` / `match_reason` / `direction_mismatch`（`downgraded` 列 2026-11-12 退役）。复合主键 `(topic_tag_id, semantic_board_id)`，两端 `OnDelete:CASCADE`。
 - **`board_composition`**：连接 `semantic_labels`（board）↔ `semantic_labels`（auxiliary）。复合主键 `(board_id, auxiliary_label_id)`，无时间戳列，两端 `OnDelete:CASCADE`。
 
 > ⚠️ 旧版本文档曾把这三张表写成 `BIGSERIAL id PK`，与代码不符，已纠正。

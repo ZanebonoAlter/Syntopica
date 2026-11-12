@@ -28,7 +28,6 @@ type boardArticleTagDTO struct {
 	Description       string  `json:"description"`
 	MatchReason       string  `json:"match_reason"`
 	Score             float64 `json:"score"`
-	Downgraded        bool    `json:"downgraded"`
 	DirectionMismatch bool    `json:"direction_mismatch"`
 }
 type matchDetailConfigDTO struct {
@@ -66,7 +65,6 @@ type matchDetailResponse struct {
 	SemanticBoardID      uint                    `json:"semantic_board_id"`
 	MatchReason          string                  `json:"match_reason"`
 	Score                float64                 `json:"score"`
-	Downgraded           bool                    `json:"downgraded"`
 	DirectionMismatch    bool                    `json:"direction_mismatch"`
 	EffectiveMinHits     int                     `json:"effective_min_hits"`
 	DirectionSim         *float64                `json:"direction_sim"`
@@ -246,12 +244,11 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 		Description       string  `gorm:"column:description"`
 		MatchReason       string  `gorm:"column:match_reason"`
 		Score             float64 `gorm:"column:score"`
-		Downgraded        bool    `gorm:"column:downgraded"`
 		DirectionMismatch bool    `gorm:"column:direction_mismatch"`
 	}
 	var tagRows []filteredTagRow
 	tagQuery := h.db.WithContext(ctx).Table("article_topic_tags att").
-		Select("att.article_id, tt.id, tt.label, tt.category, tt.description, tbl.match_reason, tbl.score, tbl.downgraded, tbl.direction_mismatch").
+		Select("att.article_id, tt.id, tt.label, tt.category, tt.description, tbl.match_reason, tbl.score, tbl.direction_mismatch").
 		Joins("JOIN topic_tags tt ON tt.id = att.topic_tag_id").
 		Joins("JOIN topic_tag_board_labels tbl ON tbl.topic_tag_id = tt.id AND tbl.semantic_board_id = ?", boardID).
 		Where("att.article_id IN ?", articleIDs).
@@ -275,15 +272,14 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 			Description:       tr.Description,
 			MatchReason:       tr.MatchReason,
 			Score:             tr.Score,
-			Downgraded:        tr.Downgraded,
 			DirectionMismatch: tr.DirectionMismatch,
 		})
 	}
 	for id := range tagMap {
 		tags := tagMap[id]
 		sort.SliceStable(tags, func(i, j int) bool {
-			ti := service.ArchiveEvidenceRank(tags[i].MatchReason, tags[i].Downgraded)
-			tj := service.ArchiveEvidenceRank(tags[j].MatchReason, tags[j].Downgraded)
+			ti := service.ArchiveEvidenceRank(tags[i].MatchReason)
+			tj := service.ArchiveEvidenceRank(tags[j].MatchReason)
 			if ti != tj {
 				return ti < tj
 			}
@@ -295,7 +291,7 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 	}
 	strongEvidence := make(map[uint]bool, len(tagRows))
 	for _, tr := range tagRows {
-		if service.IsWeakEvidence(tr.MatchReason, tr.Downgraded) {
+		if service.IsWeakEvidence(tr.MatchReason) {
 			continue
 		}
 		if !showDirectionMismatch && tr.DirectionMismatch {
@@ -418,7 +414,6 @@ func (h *semanticBoardHandler) getTagMatchDetail(c *gin.Context) {
 		SemanticBoardID:      boardID,
 		MatchReason:          stored.MatchReason,
 		Score:                stored.Score,
-		Downgraded:           stored.Downgraded,
 		DirectionMismatch:    stored.DirectionMismatch,
 		EffectiveMinHits:     effectiveMinHits,
 		DirectionSim:         directionSim,
@@ -618,7 +613,7 @@ func boardArticleQualitySortJoin(boardID uint, showDirectionMismatch bool, start
 					CASE
 						WHEN tbl.match_reason = 'direct_hit' THEN 0
 						WHEN tbl.match_reason = 'hit_rate' THEN 1
-						WHEN tbl.match_reason = 'max_sim' AND NOT COALESCE(tbl.downgraded, false) THEN 2
+						WHEN tbl.match_reason = 'max_sim' THEN 2
 						ELSE 3
 					END AS tier,
 					COALESCE(tbl.score, 0) AS score
@@ -638,15 +633,17 @@ func boardArticleQualitySortJoin(boardID uint, showDirectionMismatch bool, start
 	return sortJoin, args
 }
 
-func MatchTier(matchReason string, downgraded bool) int {
-	switch {
-	case matchReason == "direct_hit":
+// MatchTier 是挂载证据的强度档（0 最强）。downgraded 标记已于 2026-11-12
+// 退役：max_sim 统一为 2 档（原降级 max_sim 与 weighted 同 3 档是低估）。
+func MatchTier(matchReason string) int {
+	switch matchReason {
+	case "direct_hit":
 		return 0
-	case matchReason == "hit_rate":
+	case "hit_rate":
 		return 1
-	case matchReason == "max_sim" && !downgraded:
+	case "max_sim":
 		return 2
-	default: // max_sim(downgraded) or weighted
+	default: // weighted
 		return 3
 	}
 }

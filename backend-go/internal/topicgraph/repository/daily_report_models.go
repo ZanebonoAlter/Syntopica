@@ -321,7 +321,6 @@ type TagInput struct {
 	Source       string  `json:"source"`
 	MatchReason  string  `json:"match_reason"`
 	Score        float64 `json:"score"`
-	Downgraded   bool    `json:"downgraded"`
 	// ArticleContext carries representative article titles + summaries for the LLM prompt so
 	// highlights/threads are grounded in actual event content, not just tag names. Populated in
 	// collectBoardTags from up to 3 representative articles per tag.

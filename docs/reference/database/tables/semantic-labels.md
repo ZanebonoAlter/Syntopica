@@ -57,12 +57,11 @@
 | `semantic_board_id` | BIGINT | PK; NOT NULL | 关联 SemanticBoard ID |
 | `score` | FLOAT | NOT NULL DEFAULT 0 | 匹配分数 |
 | `match_reason` | TEXT | —（自由文本，无 size/CHECK） | 匹配原因说明（如 `direct_hit` / `hit_rate` / `max_sim` / `weighted`，仅约定非强制） |
-| `downgraded` | BOOLEAN | NOT NULL DEFAULT false | 是否被降级（命中后人工/规则下调） |
 | `direction_mismatch` | BOOLEAN | NOT NULL DEFAULT false | 方向不匹配标记 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
 
-主键：`(topic_tag_id, semantic_board_id)`。索引：`idx_topic_tag_board_labels_topic_tag_id`、`idx_topic_tag_board_labels_semantic_board_id`（迁移 `20260521_0001`）。
+主键：`(topic_tag_id, semantic_board_id)`。索引：`idx_topic_tag_board_labels_topic_tag_id`、`idx_topic_tag_board_labels_semantic_board_id`（迁移 `20260521_0001`）。`downgraded` 列已于 2026-11-12 随 retire-downgraded-mount 退役删除（挂载行为不变，迁移 `scripts/db/drop-downgraded-20261112.sql`）。
 
 > ⚠️ 旧文档曾列 `id BIGSERIAL PK` 且 `match_reason VARCHAR(20)`：代码无 `id`，`match_reason` 为 `type:text` 自由文本。
 

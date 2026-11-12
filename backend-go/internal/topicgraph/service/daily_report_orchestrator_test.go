@@ -17,10 +17,10 @@ import (
 
 func TestBuildQualityBreakdownJSON(t *testing.T) {
 	tags := []repository.TagInput{
-		{ID: 1, Label: "AI芯片", MatchReason: "direct_hit", Score: 1.0, Downgraded: false},
-		{ID: 2, Label: "GPT-5发布", MatchReason: "max_sim", Score: 0.85, Downgraded: false},
-		{ID: 3, Label: "AI竞赛", MatchReason: "weighted", Score: 0.59, Downgraded: false},
-		{ID: 4, Label: "GPU短缺", MatchReason: "max_sim", Score: 0.72, Downgraded: true},
+		{ID: 1, Label: "AI芯片", MatchReason: "direct_hit", Score: 1.0},
+		{ID: 2, Label: "GPT-5发布", MatchReason: "max_sim", Score: 0.85},
+		{ID: 3, Label: "AI竞赛", MatchReason: "weighted", Score: 0.59},
+		{ID: 4, Label: "GPU短缺", MatchReason: "max_sim", Score: 0.72},
 	}
 
 	// Test with 3 tag IDs
@@ -38,7 +38,7 @@ func TestBuildQualityBreakdownJSON(t *testing.T) {
 		assert.NotNil(t, e["label"])
 		assert.NotNil(t, e["match_reason"])
 		assert.NotNil(t, e["score"])
-		assert.NotNil(t, e["downgraded"])
+		assert.NotContains(t, e, "downgraded", "downgraded 键已随标记退役移除")
 	}
 
 	// Verify first entry (direct_hit)
@@ -46,7 +46,6 @@ func TestBuildQualityBreakdownJSON(t *testing.T) {
 	assert.Equal(t, "AI芯片", entries[0]["label"])
 	assert.Equal(t, "direct_hit", entries[0]["match_reason"])
 	assert.Equal(t, float64(1), entries[0]["score"])
-	assert.Equal(t, false, entries[0]["downgraded"])
 
 	// Test empty tag IDs
 	raw2 := buildQualityBreakdownJSON(tags, []uint{})
@@ -57,9 +56,10 @@ func TestBuildQualityBreakdownJSON(t *testing.T) {
 	assert.Len(t, emptyEntries, 0)
 }
 
-func TestBuildQualityBreakdownJSON_DowngradedFlag(t *testing.T) {
+func TestBuildQualityBreakdownJSON_NoDowngradedKey(t *testing.T) {
+	// downgraded 标记已于 2026-11-12 退役：breakdown 不再写 downgraded 键。
 	tags := []repository.TagInput{
-		{ID: 10, Label: "降级标签", MatchReason: "max_sim", Score: 0.82, Downgraded: true},
+		{ID: 10, Label: "标签", MatchReason: "max_sim", Score: 0.82},
 	}
 
 	raw := buildQualityBreakdownJSON(tags, []uint{10})
@@ -67,7 +67,7 @@ func TestBuildQualityBreakdownJSON_DowngradedFlag(t *testing.T) {
 	err := json.Unmarshal(raw, &entries)
 	require.NoError(t, err)
 	assert.Len(t, entries, 1)
-	assert.Equal(t, true, entries[0]["downgraded"])
+	assert.NotContains(t, entries[0], "downgraded")
 	assert.Equal(t, "max_sim", entries[0]["match_reason"])
 	assert.Equal(t, float64(0.82), entries[0]["score"])
 }
@@ -107,40 +107,24 @@ func TestFilterTagsByQuality_TruncatesAbove30(t *testing.T) {
 	assert.Len(t, result, 30)
 }
 
-func TestFilterTagsByQuality_DowngradedMaxSimSortedToEnd(t *testing.T) {
-	// Build >30 tags, with one downgraded max_sim that should sort lower
+func TestFilterTagsByQuality_TierTruncation(t *testing.T) {
+	// downgraded 已退役：max_sim 统一 tier 2。30 条 direct_hit（tier 0）+
+	// max_sim/weighted 追加项 → 截断只保 30 条 tier 0。
 	tags := make([]repository.TagInput, 0, 35)
 	for i := 0; i < 30; i++ {
 		tags = append(tags, repository.TagInput{
 			ID: uint(i + 1), MatchReason: "direct_hit", Score: float64(100 - i),
 		})
 	}
-	// Add downgraded max_sim entries — they should be sorted to end
-	tags = append(tags, repository.TagInput{ID: 31, MatchReason: "max_sim", Score: 0.99, Downgraded: true})
-	tags = append(tags, repository.TagInput{ID: 32, MatchReason: "max_sim", Score: 0.95, Downgraded: true})
-	tags = append(tags, repository.TagInput{ID: 33, MatchReason: "max_sim", Score: 0.90, Downgraded: false})
-	tags = append(tags, repository.TagInput{ID: 34, MatchReason: "max_sim", Score: 0.85, Downgraded: false})
+	tags = append(tags, repository.TagInput{ID: 31, MatchReason: "max_sim", Score: 0.99})
+	tags = append(tags, repository.TagInput{ID: 32, MatchReason: "max_sim", Score: 0.95})
 	tags = append(tags, repository.TagInput{ID: 35, MatchReason: "weighted", Score: 0.5})
 
 	result := filterTagsByQuality(tags)
 	assert.Len(t, result, 30)
-
-	// The last entries should be the lowest-quality ones
-	// Downgraded max_sim (tier 3) should be behind non-downgraded max_sim (tier 2)
-	// All direct_hit (tier 0) should be first
-	hasDowngraded := false
 	for _, r := range result {
-		if r.Downgraded {
-			hasDowngraded = true
-		}
+		assert.Equal(t, "direct_hit", r.MatchReason, "tier 0 满额时低档不得挤占")
 	}
-	// With 30 direct_hit entries at tier 0, the 2 downgraded max_sim (tier 3),
-	// 2 non-downgraded max_sim (tier 2), and 1 weighted (tier 3) should not
-	// displace any direct_hit entries. Since we only keep 30 and have 30 direct_hit,
-	// none of the max_sim or weighted entries should appear.
-	// This is correct: all kept entries are direct_hit (tier 0).
-	// Downgraded entries correctly don't sneak in.
-	_ = hasDowngraded
 }
 
 // TestBuildQualityBreakdownJSON_MergedSections covers the spec scenario
@@ -151,10 +135,10 @@ func TestFilterTagsByQuality_DowngradedMaxSimSortedToEnd(t *testing.T) {
 // union semantics the merge path relies on.
 func TestBuildQualityBreakdownJSON_MergedSections(t *testing.T) {
 	tags := []repository.TagInput{
-		{ID: 1, Label: "AI芯片", MatchReason: "direct_hit", Score: 1.0, Downgraded: false},
-		{ID: 2, Label: "GPT-5发布", MatchReason: "max_sim", Score: 0.85, Downgraded: false},
-		{ID: 3, Label: "AI竞赛", MatchReason: "weighted", Score: 0.59, Downgraded: false},
-		{ID: 4, Label: "GPU短缺", MatchReason: "max_sim", Score: 0.72, Downgraded: true},
+		{ID: 1, Label: "AI芯片", MatchReason: "direct_hit", Score: 1.0},
+		{ID: 2, Label: "GPT-5发布", MatchReason: "max_sim", Score: 0.85},
+		{ID: 3, Label: "AI竞赛", MatchReason: "weighted", Score: 0.59},
+		{ID: 4, Label: "GPU短缺", MatchReason: "max_sim", Score: 0.72},
 	}
 
 	// Merged tagIDSet = union of section A {1,2} and section B {3,4}.
@@ -178,7 +162,7 @@ func TestBuildQualityBreakdownJSON_MergedSections(t *testing.T) {
 		assert.NotNil(t, e["label"])
 		assert.NotNil(t, e["match_reason"])
 		assert.NotNil(t, e["score"])
-		assert.NotNil(t, e["downgraded"])
+		assert.NotContains(t, e, "downgraded", "downgraded 键已随标记退役移除")
 	}
 	// All four merged tag IDs are present (union, no drops).
 	assert.True(t, seenIDs[1] && seenIDs[2] && seenIDs[3] && seenIDs[4])

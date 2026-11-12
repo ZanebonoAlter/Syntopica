@@ -30,7 +30,6 @@ function tag(overrides: Partial<BoardArticleTag> = {}): BoardArticleTag {
     category: 'event',
     match_reason: 'direct_hit',
     score: 0.9,
-    downgraded: false,
     direction_mismatch: false,
     ...overrides,
   }
@@ -133,7 +132,8 @@ describe('筛选、统计与弱证据', () => {
 
   it('弱证据回退：无字段时按标签判断', () => {
     expect(isWeakArticle(article(1, { tags: [] }))).toBe(true)
-    expect(isWeakArticle(article(2, { tags: [tag({ downgraded: true })] }))).toBe(true)
+    // downgraded 已退役（2026-11-12）：direct_hit 恒强证据
+    expect(isWeakArticle(article(2, { tags: [tag({})] }))).toBe(false)
     expect(isWeakArticle(article(3, { tags: [tag()] }))).toBe(false)
     expect(isWeakArticle(article(4, { tags: [tag({ match_reason: 'weighted' })], weak_evidence: false }))).toBe(false)
     expect(isWeakArticle(article(5, { tags: [tag(), tag({ match_reason: 'max_sim' })] }))).toBe(false)

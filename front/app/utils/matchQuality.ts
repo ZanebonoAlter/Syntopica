@@ -3,10 +3,8 @@
  * the daily-report quality explore panel.
  *
  * Colours are derived from theme tokens so they follow the editorial/dark
- * themes. A downgraded match halves the token's opacity via `color-mix` — this
- * preserves the existing 50%-opacity visual (previously `color + '80'` hex
- * alpha) without hard-coded hex, since alpha can no longer be appended to a
- * `var()` token.
+ * themes. downgraded 标记已于 2026-11-12 退役（retire-downgraded-mount）：
+ * 相关淡化色与 ↓ 后缀一并移除。
  */
 
 /** Structural shape for a matched tag. Accepts both {@link BoardArticleTag}
@@ -14,7 +12,6 @@
 export interface MatchInfoEntry {
   match_reason: string
   score: number
-  downgraded?: boolean
 }
 
 const MATCH_REASON_TOKENS: Record<string, string> = {
@@ -25,13 +22,9 @@ const MATCH_REASON_TOKENS: Record<string, string> = {
   composite_hit: 'var(--color-match-composite)',
 }
 
-/** Theme-token colour for a match reason. Pass `downgraded` for a 50%-opacity
- *  variant (used for downgraded chip borders / labels). */
-export function matchReasonColor(reason: string, downgraded?: boolean): string {
-  const token = MATCH_REASON_TOKENS[reason] ?? 'var(--color-match-weighted)'
-  return downgraded
-    ? `color-mix(in srgb, ${token} 50%, transparent)`
-    : token
+/** Theme-token colour for a match reason. */
+export function matchReasonColor(reason: string): string {
+  return MATCH_REASON_TOKENS[reason] ?? 'var(--color-match-weighted)'
 }
 
 /** Human-readable label + score for a matched tag, e.g. "相似度 0.85↓". */
@@ -43,7 +36,7 @@ export function matchInfoLabel(tag: MatchInfoEntry): string {
     weighted: '综合',
     composite_hit: '组合命中',
   }
-  return `${labels[tag.match_reason] || tag.match_reason} ${tag.score.toFixed(2)}${tag.downgraded ? '↓' : ''}`
+  return `${labels[tag.match_reason] || tag.match_reason} ${tag.score.toFixed(2)}`
 }
 
 /**

@@ -154,7 +154,6 @@ interface TagView {
   score: string
   color: string
   title: string
-  downgraded: boolean
   mismatch: boolean
   /** 原始标签对象（popover 入口要原样传下去）。 */
   raw: BoardArticleTag
@@ -215,7 +214,6 @@ function tagView(tag: BoardArticleTag): TagView {
     score: tagScore(tag),
     color: tagColor(tag),
     title: tagTitle(tag),
-    downgraded: tag.downgraded,
     mismatch: tag.direction_mismatch,
     raw: tag,
   }
@@ -546,7 +544,7 @@ const advancedActive = computed(() => feedId.value !== null || labelId.value !==
                   :key="tag.id"
                   type="button"
                   class="ar-tag"
-                  :class="{ 'is-deg': tag.downgraded, 'is-mismatch': tag.mismatch }"
+                  :class="{ 'is-mismatch': tag.mismatch }"
                   :style="{ borderColor: tag.color }"
                   :title="tag.title"
                   :data-testid="`archive-tag-${row.id}-${tag.id}`"
@@ -554,7 +552,6 @@ const advancedActive = computed(() => feedId.value !== null || labelId.value !==
                 >
                   <span class="ar-tag-label">{{ tag.label }}</span>
                   <span class="ar-tag-score" :style="{ color: tag.color }">{{ tag.score }}</span>
-                  <span v-if="tag.downgraded" class="ar-tag-mark">↓</span>
                   <span v-if="tag.mismatch" class="ar-tag-mark">⊘</span>
                 </button>
                 <button

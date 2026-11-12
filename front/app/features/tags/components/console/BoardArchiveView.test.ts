@@ -40,7 +40,6 @@ function tag(overrides: Partial<BoardArticleTag> = {}): BoardArticleTag {
     description: '伊朗与美国之间的双边关系。',
     match_reason: 'direct_hit',
     score: 0.92,
-    downgraded: false,
     direction_mismatch: false,
     ...overrides,
   }
@@ -67,7 +66,7 @@ const ARTICLES: ArchiveArticle[] = [
     in_report: false,
     pub_date: '2026-10-22 08:00:00',
     weak_evidence: true,
-    filtered_tags: [tag({ id: 8, label: '霍尔木兹', match_reason: 'max_sim', score: 0.62, downgraded: true, direction_mismatch: true })],
+    filtered_tags: [tag({ id: 8, label: '霍尔木兹', match_reason: 'max_sim', score: 0.62, direction_mismatch: true })],
   }),
   article(4, { in_report: false, pub_date: '2026-10-22 09:00:00', weak_evidence: true, filtered_tags: [] }),
   article(5, {
@@ -198,9 +197,9 @@ describe('BoardArchiveView — 行渲染（四列 / 标签带 / 入板 chip）',
     expect(row.find('[data-testid="archive-tag-5-10"]').text()).toContain('0.50')
     expect(row.find('[data-testid="archive-tag-5-10"]').attributes('title')).toContain('命中率')
     expect(row.find('[data-testid="archive-tag-5-10"]').attributes('style')).toContain('border-color')
-    // 降级标签半透明、方向不符虚线边
+    // 降级样式已随标记退役（2026-11-12）；方向不符虚线边保留
     const mismatch = wrapper.find('[data-testid="archive-tag-3-8"]')
-    expect(mismatch.classes()).toContain('is-deg')
+    expect(mismatch.classes()).not.toContain('is-deg')
     expect(mismatch.classes()).toContain('is-mismatch')
     expect(mismatch.text()).toContain('⊘')
     // 最强匹配列：规则名 + 分数（规则色），取后端组内首条（filtered_tags[0]）

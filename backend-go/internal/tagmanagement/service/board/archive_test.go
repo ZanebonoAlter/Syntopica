@@ -59,30 +59,20 @@ func TestDecodeArchiveRefIDs(t *testing.T) {
 }
 
 func TestArchiveEvidenceRank(t *testing.T) {
-	order := []struct {
-		reason     string
-		downgraded bool
-	}{
-		{"direct_hit", false},
-		{"composite_hit", false},
-		{"hit_rate", false},
-		{"weighted", false},
-		{"max_sim", false},
-		{"max_sim", true},
-	}
+	// downgraded 标记已于 2026-11-12 退役：max_sim 统一档。
+	order := []string{"direct_hit", "composite_hit", "hit_rate", "weighted", "max_sim"}
 	for i := 1; i < len(order); i++ {
-		prev := ArchiveEvidenceRank(order[i-1].reason, order[i-1].downgraded)
-		cur := ArchiveEvidenceRank(order[i].reason, order[i].downgraded)
-		require.Greater(t, cur, prev, "%s 应弱于 %s", order[i].reason, order[i-1].reason)
+		prev := ArchiveEvidenceRank(order[i-1])
+		cur := ArchiveEvidenceRank(order[i])
+		require.Greater(t, cur, prev, "%s 应弱于 %s", order[i], order[i-1])
 	}
-	require.Equal(t, 5, ArchiveEvidenceRank("unknown", false))
+	require.Equal(t, 5, ArchiveEvidenceRank("unknown"))
 }
 
 func TestIsWeakEvidence(t *testing.T) {
-	require.True(t, IsWeakEvidence("max_sim", false))
-	require.True(t, IsWeakEvidence("direct_hit", true))
-	require.False(t, IsWeakEvidence("direct_hit", false))
-	require.False(t, IsWeakEvidence("hit_rate", false))
+	require.True(t, IsWeakEvidence("max_sim"))
+	require.False(t, IsWeakEvidence("direct_hit"))
+	require.False(t, IsWeakEvidence("hit_rate"))
 }
 
 func TestSortArticleIDs(t *testing.T) {

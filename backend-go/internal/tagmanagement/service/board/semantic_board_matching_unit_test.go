@@ -443,7 +443,7 @@ func TestEvaluateSemanticBoardMatches_DirectionCheck(t *testing.T) {
 	})
 }
 
-func TestEvaluateSemanticBoardMatches_DowngradedMark(t *testing.T) {
+func TestEvaluateSemanticBoardMatches_MinHitsRelaxNoMark(t *testing.T) {
 	config := SemanticBoardMatchConfig{
 		SimThreshold:           0.5,
 		DirectHitRate:          0.5,
@@ -459,7 +459,7 @@ func TestEvaluateSemanticBoardMatches_DowngradedMark(t *testing.T) {
 		DirectHitMinOverlap:    2,
 	}
 
-	t.Run("N=1 tag → minHits=1 < 2 → downgraded", func(t *testing.T) {
+	t.Run("N=1 tag → minHits=1 放宽准入，无标记", func(t *testing.T) {
 		tagAux1 := []models.SemanticLabel{
 			{ID: 1, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.9, 0.1, 0.0}))},
 		}
@@ -467,13 +467,13 @@ func TestEvaluateSemanticBoardMatches_DowngradedMark(t *testing.T) {
 			{BoardID: 10, AuxiliaryLabelID: 100, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.85, 0.15, 0.0}))},
 		}
 
+		// downgraded 标记已退役（2026-11-12）：N=1 放宽准入保留，与多 aux 命中无字段差异。
 		results := evaluateSemanticBoardMatches(tagAux1, boardAux, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
 		require.Equal(t, "max_sim", results[0].MatchReason)
-		require.True(t, results[0].Downgraded, "expected downgraded=true for N=1 tag with minHits=1 < DirectMaxSimMinHits=2")
 	})
 
-	t.Run("N=3 tag → minHits=2 → NOT downgraded", func(t *testing.T) {
+	t.Run("N=3 tag → minHits=2 正常命中", func(t *testing.T) {
 		tagAux3 := []models.SemanticLabel{
 			{ID: 1, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.9, 0.1, 0.0}))},
 			{ID: 2, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.88, 0.12, 0.0}))},
@@ -483,9 +483,10 @@ func TestEvaluateSemanticBoardMatches_DowngradedMark(t *testing.T) {
 			{BoardID: 10, AuxiliaryLabelID: 100, Embedding: ptrStr(core.FloatsToPgVector([]float64{0.85, 0.15, 0.0}))},
 		}
 
+		// 3 个 aux 全部相似 → hitRate=1 > 0.5，hit_rate 分支优先于 max_sim。
 		results := evaluateSemanticBoardMatches(tagAux3, boardAux, nil, nil, config, nil, nil)
 		require.Len(t, results, 1)
-		require.False(t, results[0].Downgraded, "expected downgraded=false for N=3 tag")
+		require.Equal(t, "hit_rate", results[0].MatchReason)
 	})
 }
 

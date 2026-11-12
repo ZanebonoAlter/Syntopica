@@ -84,7 +84,6 @@ type SemanticBoardMatchResult struct {
 	SemanticBoardID   uint
 	Score             float64
 	MatchReason       string
-	Downgraded        bool
 	DirectionMismatch bool
 }
 
@@ -474,7 +473,6 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		matchReason := ""
 		hits := int(math.Round(hitRate * float64(max(len(tagAuxiliaries), config.MinEffectiveSample))))
 		minHits := min(config.DirectMaxSimMinHits, len(tagAuxiliaries))
-		downgraded := false
 		switch {
 		case hitRate > config.DirectHitRate:
 			score = config.HitRateSimBlend*maxSimilarity + (1-config.HitRateSimBlend)*hitRate
@@ -482,16 +480,13 @@ func evaluateSemanticBoardMatches(tagAuxiliaries []models.SemanticLabel, boardAu
 		case maxSimilarity >= config.DirectMaxSim && hits >= minHits && hitRate >= config.DirectMaxSimMinHitRate:
 			score = maxSimilarity
 			matchReason = "max_sim"
-			if minHits < config.DirectMaxSimMinHits {
-				downgraded = true
-			}
 		case weighted >= config.WeightedThreshold:
 			score = weighted
 			matchReason = "weighted"
 		}
 
 		if matchReason != "" {
-			matches = append(matches, SemanticBoardMatchResult{SemanticBoardID: boardID, Score: score, MatchReason: matchReason, Downgraded: downgraded, DirectionMismatch: directionMismatch(boardID)})
+			matches = append(matches, SemanticBoardMatchResult{SemanticBoardID: boardID, Score: score, MatchReason: matchReason, DirectionMismatch: directionMismatch(boardID)})
 		}
 	}
 
@@ -842,7 +837,7 @@ func (s *SemanticBoardMatchingService) replaceTopicTagBoardLabels(ctx context.Co
 			return err
 		}
 		for _, match := range matches {
-			row := tagmodels.TopicTagBoardLabel{TopicTagID: topicTagID, SemanticBoardID: match.SemanticBoardID, Score: match.Score, MatchReason: match.MatchReason, Downgraded: match.Downgraded, DirectionMismatch: match.DirectionMismatch}
+			row := tagmodels.TopicTagBoardLabel{TopicTagID: topicTagID, SemanticBoardID: match.SemanticBoardID, Score: match.Score, MatchReason: match.MatchReason, DirectionMismatch: match.DirectionMismatch}
 			if err := tx.Create(&row).Error; err != nil {
 				return err
 			}

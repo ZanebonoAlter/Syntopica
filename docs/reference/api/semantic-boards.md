@@ -932,7 +932,7 @@ Response（`data` 为文章数组，`pagination` 与 `data` 同级）：
       "title": "...",
       "feed_name": "...",
       "filtered_tags": [
-        { "id": 42, "label": "...", "category": "...", "description": "...", "match_reason": "hit_rate", "score": 0.84, "downgraded": false, "direction_mismatch": false }
+        { "id": 42, "label": "...", "category": "...", "description": "...", "match_reason": "hit_rate", "score": 0.84, "direction_mismatch": false }
       ]
     }
   ],

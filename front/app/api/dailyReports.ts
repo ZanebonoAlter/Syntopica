@@ -154,7 +154,6 @@ export interface DailyReportQualityEntry {
   label: string
   match_reason: string
   score: number
-  downgraded: boolean
 }
 
 export interface ActiveWatchSummary {

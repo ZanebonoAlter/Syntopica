@@ -43,7 +43,6 @@ function tag(overrides: Partial<BoardArticleTag> = {}): BoardArticleTag {
     description: '伊朗与美国之间的双边关系与对抗线。',
     match_reason: 'direct_hit',
     score: 0.92,
-    downgraded: false,
     direction_mismatch: false,
     ...overrides,
   }

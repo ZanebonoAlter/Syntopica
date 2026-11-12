@@ -40,7 +40,6 @@ function tag(overrides: Partial<BoardArticleTag> = {}): BoardArticleTag {
     description: '伊朗与美国之间的双边关系与对抗线。',
     match_reason: 'direct_hit',
     score: 0.92,
-    downgraded: false,
     direction_mismatch: false,
     ...overrides,
   }
@@ -53,7 +52,6 @@ function detail(overrides: Partial<MatchDetailResponse> = {}): MatchDetailRespon
     semantic_board_id: 1974,
     match_reason: 'direct_hit',
     score: 0.92,
-    downgraded: false,
     direction_mismatch: false,
     direction_sim: 0.8,
     effective_min_hits: 2,
@@ -522,7 +520,7 @@ describe('ArchiveMatchPopover — 入板过程模式', () => {
   it('弱证据文章：头区标「仅弱证据」，徽标为「弱证据命中」且不给「入板依据」', async () => {
     const weakArticle = article({
       weak_evidence: true,
-      filtered_tags: [tag({ id: 9, label: '沙特', match_reason: 'max_sim', score: 0.5, downgraded: true })],
+      filtered_tags: [tag({ id: 9, label: '沙特', match_reason: 'max_sim', score: 0.5 })],
     })
     mountPopover({ mode: 'article', tag: null, article: weakArticle })
     await flushPromises()

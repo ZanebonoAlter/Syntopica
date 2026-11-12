@@ -46,23 +46,23 @@ func TestCollectBoardTags_CrossBoardExclusivity(t *testing.T) {
 
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagBorrowed.ID, SemanticBoardID: boardWeak.ID,
-		MatchReason: "direct_hit", Score: 0.7, Downgraded: false,
+		MatchReason: "direct_hit", Score: 0.7,
 	}).Error)
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagBorrowed.ID, SemanticBoardID: boardHome.ID,
-		MatchReason: "max_sim", Score: 1.0, Downgraded: false,
+		MatchReason: "max_sim", Score: 1.0,
 	}).Error)
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagCrossGenuine.ID, SemanticBoardID: boardWeak.ID,
-		MatchReason: "weighted", Score: 0.7, Downgraded: false,
+		MatchReason: "weighted", Score: 0.7,
 	}).Error)
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagCrossGenuine.ID, SemanticBoardID: boardHome.ID,
-		MatchReason: "weighted", Score: 0.8, Downgraded: false,
+		MatchReason: "weighted", Score: 0.8,
 	}).Error)
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagSolo.ID, SemanticBoardID: boardWeak.ID,
-		MatchReason: "direct_hit", Score: 0.7, Downgraded: false,
+		MatchReason: "direct_hit", Score: 0.7,
 	}).Error)
 
 	now := time.Now()
@@ -117,11 +117,11 @@ func TestCollectBoardTags_ExclusivityDisabledAtZeroGap(t *testing.T) {
 	require.NoError(t, db.Create(&tagBorrowed).Error)
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagBorrowed.ID, SemanticBoardID: boardWeak.ID,
-		MatchReason: "direct_hit", Score: 0.7, Downgraded: false,
+		MatchReason: "direct_hit", Score: 0.7,
 	}).Error)
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagBorrowed.ID, SemanticBoardID: boardHome.ID,
-		MatchReason: "max_sim", Score: 1.0, Downgraded: false,
+		MatchReason: "max_sim", Score: 1.0,
 	}).Error)
 
 	now := time.Now()
@@ -220,7 +220,7 @@ func TestCollectBoardTags_FallbackCrossBoardExclusivity(t *testing.T) {
 	for _, b := range []models.SemanticLabel{boardHome, boardWeak} {
 		require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 			TopicTagID: seed.ID, SemanticBoardID: b.ID,
-			MatchReason: "direct_hit", Score: 0.7, Downgraded: false,
+			MatchReason: "direct_hit", Score: 0.7,
 		}).Error)
 	}
 

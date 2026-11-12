@@ -188,7 +188,6 @@ func groupBreakdownEntries(sections []repository.DailyReportSection) map[uint]re
 			Label       string  `json:"label"`
 			MatchReason string  `json:"match_reason"`
 			Score       float64 `json:"score"`
-			Downgraded  bool    `json:"downgraded"`
 		}
 		if err := json.Unmarshal(sec.QualityBreakdown, &entries); err != nil {
 			continue
@@ -202,7 +201,6 @@ func groupBreakdownEntries(sections []repository.DailyReportSection) map[uint]re
 				Label:       e.Label,
 				MatchReason: e.MatchReason,
 				Score:       e.Score,
-				Downgraded:  e.Downgraded,
 			}
 		}
 	}
@@ -346,7 +344,6 @@ func loadRebucketTags(tx *gorm.DB, clusterTagIDs []uint, breakdown map[uint]repo
 			}
 			tag.MatchReason = entry.MatchReason
 			tag.Score = entry.Score
-			tag.Downgraded = entry.Downgraded
 		}
 		tags = append(tags, tag)
 	}
@@ -367,7 +364,7 @@ func bucketQualityScores(tags []repository.TagInput, tagIDs []uint) (int, float6
 		if !idSet[tag.ID] {
 			continue
 		}
-		if tier := tagging.MatchTier(tag.MatchReason, tag.Downgraded); tier < bestTier {
+		if tier := tagging.MatchTier(tag.MatchReason); tier < bestTier {
 			bestTier = tier
 		}
 		totalScore += tag.Score
