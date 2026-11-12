@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,48 +17,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestExtractTopicsFindsCanonicalAITopicsAndEntities(t *testing.T) {
-	result := ExtractTopics(ExtractionInput{
-		Title:        "OpenAI pushes GPT-5 agent workflow",
-		Summary:      "OpenAI is shipping a new AI agent workflow around GPT-5 with multimodal planning and coding automation.",
-		FeedName:     "Latent Space",
-		CategoryName: "AI",
+// retire-heuristic-tag-fallback 守护：规则词（heuristic）兜底打标整体退役——
+// 规则词表文件必须不存在，tagmanagement 域内生产代码不得再出现
+// source="heuristic" 写入点。兜底吞掉错误会让打标任务被误标 completed、
+// 文章永不重打，正是本次报障的病根。
+func TestNoHeuristicFallbackPathRemains(t *testing.T) {
+	require.NoFileExists(t, "extractor_heuristic.go", "规则词表文件必须随本 change 整文件删除")
+
+	// 从本包出发扫 tagmanagement 域（internal/tagmanagement）全部生产 .go 文件。
+	err := filepath.WalkDir(filepath.Join("..", ".."), func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), `"heuristic"`) {
+			t.Errorf("生产代码不得再出现 heuristic 来源写入点：%s", path)
+		}
+		return nil
 	})
-
-	require.GreaterOrEqual(t, len(result), 3)
-	require.Contains(t, topicLabels(result), "OpenAI")
-	require.Contains(t, topicLabels(result), "AI Agent")
-	require.Contains(t, topicLabels(result), "GPT-5")
-	require.Contains(t, topicSlugs(result), "openai")
-	require.Contains(t, topicSlugs(result), "ai-agent")
-	require.Contains(t, topicSlugs(result), "gpt-5")
-}
-
-func TestExtractTopicsDeduplicatesAliases(t *testing.T) {
-	result := ExtractTopics(ExtractionInput{
-		Title:        "OpenAI API update",
-		Summary:      "OpenAI says the Open AI API now supports agent memory. OPENAI tooling remains the focus.",
-		FeedName:     "OpenAI Blog",
-		CategoryName: "AI",
-	})
-
-	labels := topicLabels(result)
-	require.Equal(t, 1, countMatches(labels, "OpenAI"))
-	openAI := findTopic(result, "OpenAI")
-	require.NotNil(t, openAI)
-	require.Greater(t, openAI.Score, 0.0)
-}
-
-func TestExtractTopicsFallsBackToFeedAndCategoryWhenTextIsSparse(t *testing.T) {
-	result := ExtractTopics(ExtractionInput{
-		Title:        "Daily Brief",
-		Summary:      "Short update.",
-		FeedName:     "NVIDIA Research",
-		CategoryName: "Infra",
-	})
-
-	require.Contains(t, topicLabels(result), "NVIDIA")
-	require.Contains(t, topicLabels(result), "Infra")
+	require.NoError(t, err)
 }
 
 func TestParseMergedExtractionTagsAcceptsWrappedDoubleArrays(t *testing.T) {
@@ -141,8 +127,9 @@ func TestParseMergedExtractionTagsRejectsObjectWithoutTargetKeys(t *testing.T) {
 	}
 }
 
-func TestExtractTagsRetriesThenFallsBackToHeuristicOnUnparsableResponse(t *testing.T) {
-	// parse err 分支：错形态响应 ×3 重试耗尽 → heuristic 兜底（区别于 router err 分支）。
+func TestExtractTagsReturnsErrorAfterRetriesOnUnparsableResponse(t *testing.T) {
+	// parse err 分支：错形态响应 ×3 重试耗尽 → 返回错误、不产出任何标签
+	// （retire-heuristic-tag-fallback：规则词兜底整体退役，失败即失败）。
 	router := newFakeTagChatRouter()
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"foo":"bar"}`})
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"foo":"bar"}`})
@@ -154,10 +141,9 @@ func TestExtractTagsRetriesThenFallsBackToHeuristicOnUnparsableResponse(t *testi
 		Summary: "OpenAI is shipping a new AI agent workflow around GPT-5 with coding automation.",
 	})
 
-	require.NoError(t, err)
-	require.Equal(t, "heuristic", result.Source)
-	require.NotEmpty(t, result.Tags)
-	require.Contains(t, strings.Join(result.Errors, "\n"), "parse extraction result failed")
+	require.Error(t, err, "extraction failure must be surfaced, not swallowed")
+	require.Nil(t, result, "failed extraction must not produce any result (no fallback candidates)")
+	require.Contains(t, err.Error(), "parse extraction result failed")
 	require.Equal(t, 3, router.callCount("tag_extraction_merged"))
 }
 
@@ -233,33 +219,6 @@ func topicLabels(items []TopicTag) []string {
 		labels = append(labels, item.Label)
 	}
 	return labels
-}
-
-func topicSlugs(items []TopicTag) []string {
-	slugs := make([]string, 0, len(items))
-	for _, item := range items {
-		slugs = append(slugs, item.Slug)
-	}
-	return slugs
-}
-
-func countMatches(items []string, needle string) int {
-	count := 0
-	for _, item := range items {
-		if item == needle {
-			count++
-		}
-	}
-	return count
-}
-
-func findTopic(items []TopicTag, label string) *TopicTag {
-	for _, item := range items {
-		if item.Label == label {
-			return &item
-		}
-	}
-	return nil
 }
 
 func TestParseExtractedTagsFromRealOllamaResponse(t *testing.T) {
@@ -383,7 +342,7 @@ func TestMergeExtractedTagsKeepsHigherPriorityDuplicate(t *testing.T) {
 }
 
 func TestExtractTagsKeepsKeywordBranchWhenEventPersonFails(t *testing.T) {
-	// 单次调用成功但 event/person 数组为空 → 数组级缺失：保 keyword、不触发 heuristic。
+	// 单次调用成功但 event/person 数组为空 → 数组级缺失：保 keyword、不回填规则词。
 	router := newFakeTagChatRouter()
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{
 		content: `{"event_person_tags":[],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库管理系统"}]}`,
@@ -393,7 +352,6 @@ func TestExtractTagsKeepsKeywordBranchWhenEventPersonFails(t *testing.T) {
 	result, err := extractor.ExtractTags(context.Background(), ExtractionInput{Title: "PostgreSQL update", Summary: "PostgreSQL releases a new version."})
 
 	require.NoError(t, err)
-	require.Equal(t, "llm", result.Source)
 	require.Len(t, result.Tags, 1)
 	require.Equal(t, "PostgreSQL", result.Tags[0].Label)
 	require.Contains(t, strings.Join(result.Errors, "\n"), "event/person extraction: empty event/person array (accepted as-is)")
@@ -401,12 +359,13 @@ func TestExtractTagsKeepsKeywordBranchWhenEventPersonFails(t *testing.T) {
 }
 
 // 旧用例 TestExtractTagsFallsBackToHeuristicKeywordWhenKeywordBranchFails（空
-// keyword 数组→heuristic 回填）已随 fix-tagging-pollution 契约变更删除：新契约
-// 下空 keyword 是合法结论、不回填，改由 extractor_enhanced_test.go 的
+// keyword 数组→规则词回填）已随 fix-tagging-pollution 契约变更删除；空 keyword
+// 是合法结论、不回填，由 extractor_enhanced_test.go 的
 // TestExtractTagsKeepsLLMResultWhenKeywordArrayEmpty 守护。
 
-func TestExtractTagsFallsBackToHeuristicWhenMergedCallFails(t *testing.T) {
-	// spec Scenario: 单次调用重试耗尽仍失败 → 整体回退 heuristic，错误信息保留。
+func TestExtractTagsReturnsErrorWhenMergedCallFails(t *testing.T) {
+	// spec Scenario（改）：单次调用重试耗尽仍失败 → 返回错误、不产出任何标签，
+	// 错误信息保留（retire-heuristic-tag-fallback：失败即失败，不回退规则词）。
 	router := newFakeTagChatRouter()
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{err: errors.New("model down")})
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{err: errors.New("model down")})
@@ -418,10 +377,9 @@ func TestExtractTagsFallsBackToHeuristicWhenMergedCallFails(t *testing.T) {
 		Summary: "OpenAI is shipping a new AI agent workflow around GPT-5 with coding automation.",
 	})
 
-	require.NoError(t, err)
-	require.Equal(t, "heuristic", result.Source)
-	require.NotEmpty(t, result.Tags)
-	require.Contains(t, strings.Join(result.Errors, "\n"), "AI extraction failed")
+	require.Error(t, err, "extraction failure must be surfaced, not swallowed")
+	require.Nil(t, result, "failed extraction must not produce any result (no fallback candidates)")
+	require.Contains(t, err.Error(), "AI extraction failed")
 	require.Equal(t, 3, router.callCount("tag_extraction_merged"))
 }
 
@@ -434,7 +392,6 @@ func TestExtractTagsMakesExactlyOneMergedCall(t *testing.T) {
 	result, err := extractor.ExtractTags(context.Background(), ExtractionInput{Title: "OpenAI pushes GPT-5", Summary: "OpenAI is shipping GPT-5 with a PostgreSQL memory backend."})
 
 	require.NoError(t, err)
-	require.Equal(t, "llm", result.Source)
 	require.Len(t, result.Tags, 2)
 	require.Equal(t, 1, router.callCount("tag_extraction_merged"), "merged extraction must make exactly one Chat call")
 	require.Equal(t, "tagmanagement.extractor_enhanced", router.lastOperation)

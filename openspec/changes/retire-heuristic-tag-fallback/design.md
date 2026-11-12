@@ -6,7 +6,7 @@
 
 | 文件 | 位置 | 动作 |
 | --- | --- | --- |
-| `internal/tagmanagement/service/core/extractor_heuristic.go` | 全文件（124 行） | **整文件删除**。含 `topicRule` 类型、`topicRules` 7 条规则、`productTokenPattern`、`heuristicPunctPattern`、`ExtractTopics`、`extractFeedEntity`、`slugify`。已核实：`slugify`（小写）与 `Slugify`（导出）是两个不同函数，本文件的 `slugify` **无他处调用方**；`extractFeedEntity` / `productTokenPattern` / `heuristicPunctPattern` / `topicRules` 均为本文件私有 |
+| `internal/tagmanagement/service/core/extractor_heuristic.go` | 全文件（124 行） | **整文件删除**。含 `topicRule` 类型、`topicRules` 7 条规则、`productTokenPattern`、`heuristicPunctPattern`、`ExtractTopics`、`extractFeedEntity`、`slugify`。已核实：`slugify`（小写）与 `Slugify`（导出）是两个不同函数，本文件的 `slugify` **无他处调用方**；`extractFeedEntity` / `productTokenPattern` / `heuristicPunctPattern` / `topicRules` 均为本文件私有。**实施时发现设计漏记**：同包测试有 3 个用例直接调用 `ExtractTopics`（`extractor_test.go` 的 `TestExtractTopicsFindsCanonicalAITopicsAndEntities` / `...DeduplicatesAliases` / `...FallsBackToFeedAndCategoryWhenTextIsSparse`）——函数随文件退役，这 3 条**只能删除**（不是改断言），连带删掉只剩它们使用的 helper `topicSlugs` / `countMatches` / `findTopic`（`unused` linter 会红）；`topicLabels` 被 `extractor_enhanced_test.go` 使用，保留 |
 | `internal/tagmanagement/service/core/extractor_enhanced.go` | :256-281 `extractWithHeuristic` | 函数删除 |
 | 同上 | :50-52 `ExtractTags` 的失败分支 | `return te.extractWithHeuristic(input, err)` → `return nil, err`（错误上抛给编排层） |
 | 同上 | :38 `ExtractionResult.Source` 字段 | 删除（删除后恒为 `"llm"`，字段无存在价值；:82/:107 两处构造同步去字段） |
@@ -24,10 +24,18 @@
 | `internal/tagmanagement/service/core/extractor_enhanced_test.go` | :38-56 零候选用例断言 `result.Source == "llm"` → 字段删除后改为断言零标签 + 不触发降级；:13 注释更新 |
 | `internal/tagmanagement/service/core/article_tagger_test.go` | :119-162 「零 → 文章不写入任何行、不产生 heuristic 来源标签」用例保留并反向强化；:158 `link.Source == "heuristic"` 断言 → 改为「任务返回错误且文章无任何标签行」 |
 | `internal/tagmanagement/service/core/sampling_path_test.go` | :19 注释「让 tagArticle 走 heuristic fallback 并把标签 persist 进测试 DB」→ 该用例整体意图失效，改为「抽样路径下提取失败 → 任务失败、文章无标签」 |
-| `internal/tagmanagement/service/core/hard_merge_test.go` | 仅注释提及 heuristic → 注释同步 |
+| `internal/tagmanagement/service/core/hard_merge_test.go` | :79 fixture 的 `ArticleTopicTag{Source: "heuristic"}` **是种子数据不是注释** → 改为 `Source: "reuse"`（保「多来源 link 迁移」覆盖，值取合法来源） |
 | `internal/tagmanagement/service/core/extractor_generic_subject_test.go` | 仅注释提及 heuristic → 注释同步 |
 
 **不改**：`internal/platform/analysispause/health_gate_compose_test.go`（命中的是无关英文词 "heuristics"，非本链路）。
+
+### 顺带清理的注释残留（非本 change 的行为面，但注释里的取值集合已失真）
+
+| 文件 | 位置 | 动作 |
+| --- | --- | --- |
+| `internal/models/topic_graph.go` | :28 / :97 `// llm, heuristic, manual` | → `// llm, manual（heuristic 已于 2026-11-12 退役）` |
+| `internal/tagmanagement/models/tag_models.go` | :59 `// ai, heuristic, cached` | → `// ai, cached（heuristic 已于 2026-11-12 退役）` |
+| `internal/platform/aihealth/aihealth.go` | :65 健康门理由「文章只会带 heuristic 降级标签入库，污染下游」 | → 「文章只能以无标签入库（规则词兜底已退役）」——门禁本身不变 |
 
 ## D2. 失败语义变更（队列重试链路）
 

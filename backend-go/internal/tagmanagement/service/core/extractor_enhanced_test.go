@@ -9,8 +9,8 @@ import (
 )
 
 // fix-tagging-pollution spec「快讯类文章 keyword 为空时保持 LLM 原样」：
-// LLM 返回 1 个 event + 空 keyword 数组 → 结果仅含该 event、来源 llm，
-// 不得注入分类名/规则词候选（旧契约 :59-61 heuristicKeywordCandidates 回填）。
+// LLM 返回 1 个 event + 空 keyword 数组 → 结果仅含该 event，
+// 不得注入分类名/规则词候选（旧契约 :59-61 规则词回填）。
 func TestExtractTagsKeepsLLMResultWhenKeywordArrayEmpty(t *testing.T) {
 	router := newFakeTagChatRouter()
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{
@@ -27,7 +27,6 @@ func TestExtractTagsKeepsLLMResultWhenKeywordArrayEmpty(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, "llm", result.Source)
 	require.Len(t, result.Tags, 1, "empty keyword array is a legal outcome: result keeps the event tag only")
 	require.Equal(t, "美联储宣布维持利率不变", result.Tags[0].Label)
 	require.NotContains(t, topicLabels(result.Tags), "新闻", "category-name backfill must not appear")
@@ -35,8 +34,8 @@ func TestExtractTagsKeepsLLMResultWhenKeywordArrayEmpty(t *testing.T) {
 }
 
 // fix-tagging-pollution spec「空摘要文章两个数组均为空」：两数组均空 → 原样返回
-// 零候选（Tags=[]、Source=llm、Errors 照记），不触发 heuristic 降级。旧契约 :67
-// 在 candidates==0 时调 extractWithHeuristic 返回非空 heuristic 结果（err=nil），
+// 零候选（Tags=[]、Errors 照记），不触发任何规则词降级。旧契约 :67
+// 在 candidates==0 时调规则词兜底返回非空结果（err=nil），
 // 使 tagger 层兜底收窄形同虚设——本用例守住该分支。
 func TestExtractTagsReturnsZeroCandidatesWhenBothArraysEmpty(t *testing.T) {
 	router := newFakeTagChatRouter()
@@ -53,8 +52,7 @@ func TestExtractTagsReturnsZeroCandidatesWhenBothArraysEmpty(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, "llm", result.Source, "zero candidates must stay source=llm, not downgrade to heuristic")
-	require.Empty(t, result.Tags)
+	require.Empty(t, result.Tags, "zero candidates must stay a legal zero result, not degrade to rule-word tags")
 	require.NotEmpty(t, result.Errors, "branch notes for both empty arrays must still be recorded")
 	require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 }
@@ -95,7 +93,6 @@ func TestExtractTagsCarriesEventFingerprintToTopicTag(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, "llm", result.Source)
 	require.Len(t, result.Tags, 2)
 
 	var eventTag, keywordTag *TopicTag

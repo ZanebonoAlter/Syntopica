@@ -2,6 +2,42 @@
 
 ## MODIFIED Requirements
 
+### Requirement: Tagging domain package structure
+
+系统 SHALL 将标签相关代码组织为 `internal/tagmanagement/` 域，包含以下子包：
+
+- `tagging/` 根层：`routes.go`（路由注册）、`wire.go`（依赖装配）
+- `tagging/models/`：标签域数据模型
+- `tagging/repository/`：仓储与队列持久化
+- `tagging/handler/`：HTTP 处理器
+- `tagging/service/`：业务服务，含下列子包
+  - `service/core/`：标签生命周期编排（`article_tagger.go`、`tag_queue.go`）、标签提取（`extractor_enhanced.go`、`extractor_section.go`）、向量与合并队列、共享 helper
+  - `service/board/`：辅助标签入库、SemanticBoard 匹配、升级建议、回填
+  - `service/merge/`：标签合并、聚类、清理
+  - `service/watched/`：关注标签管理
+  - `service/entity/`：实体身份层（影子态）
+  - `service/auxlabel/`、`service/auxrepair/`：辅助标签描述生成与修复
+  - `service/boardhealth/`、`service/sourcestats/`、`service/related/`：体检、来源构成、相关事件
+
+**【2026-11-12 本 change 起生效】`tagging/extraction/` 子包已不存在**——提取逻辑并入 `service/core/`，规则词兜底函数 `ExtractTopics` 随 `retire-heuristic-tag-fallback` 退役删除（本 requirement 的包结构描述此前仍停留在 `internal/domain/tagging/` 时代的旧布局，本次一并拉回实际结构）。
+
+编排层（`service/core/article_tagger.go`）SHALL 在进入提取前按 `articles.content_form` 分流：`aggregate` 走栏目切片 map-reduce 聚合路径，`mono` 与空值走原有提取路径。聚合路径的切片器为纯代码（无 LLM 调用），其逐片 LLM 提取与跨片去重属于编排层职责；提取逻辑只做单次纯文本提取。
+
+#### Scenario: 依赖方向全部单向
+
+- **WHEN** 检查 tagging 域内的 import 关系
+- **THEN** 依赖方向为 `handler → service/<子包> → service/core`、`repository → models`；`service/core` 不反向依赖任何 `service` 子包，不存在反向依赖或循环依赖
+
+#### Scenario: extraction 子包只做文本提取
+
+- **WHEN** 标签提取函数（`service/core/extractor_enhanced.go` 的 `ExtractTags`）被调用
+- **THEN** 返回单次 LLM 调用的解析结果，不执行 embedding 匹配、标签合并或层级放置
+
+#### Scenario: 按 content_form 分流
+
+- **WHEN** 一篇 `content_form = 'aggregate'` 的文章进入打标编排
+- **THEN** 走聚合路径（切片 → 逐片融合提取 → 跨片去重），`mono` 或空值文章走原有提取路径
+
 ### Requirement: LLM 空 keyword 结果不触发规则回填
 
 mono 路径的融合提取 SHALL 原样接受 LLM 返回的空 `keyword_tags` 数组：不得调用启发式规则匹配（分类名、feed 名、模式词表）生成候选关键词回填结果。空 keyword 数组是提示词「宁缺毋滥」约束下的合法结论。事件/人物数组与 keyword 数组 SHALL 独立评判，一方为空不使另一方失效。

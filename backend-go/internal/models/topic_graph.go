@@ -25,7 +25,7 @@ type TopicTag struct {
 	Aliases      string      `gorm:"type:text" json:"aliases"`                                   // JSON array of alias strings
 	Description  string      `gorm:"type:text" json:"description"`                               // LLM-generated tag description
 	IsCanonical  bool        `json:"is_canonical"`                                               // true if this is a canonical tag (not merged)
-	Source       string      `gorm:"size:20" json:"source"`                                      // llm, heuristic, manual
+	Source       string      `gorm:"size:20" json:"source"`                                      // llm, manual（heuristic 已于 2026-11-12 退役）
 	FeedCount    int         `json:"feed_count"`                                                 // distinct feed count referencing this tag
 	Status       string      `gorm:"size:20;default:active;index" json:"status"`                 // active, merged
 	MergedIntoID *uint       `gorm:"index" json:"merged_into_id,omitempty"`                      // points to target tag when merged
@@ -94,7 +94,7 @@ type ArticleTopicTag struct {
 	ArticleID  uint      `gorm:"index:idx_article_topic_tag_article;uniqueIndex:idx_article_topic_tags_link" json:"article_id"`
 	TopicTagID uint      `gorm:"index:idx_article_topic_tag_topic;uniqueIndex:idx_article_topic_tags_link" json:"topic_tag_id"`
 	Score      float64   `json:"score"`
-	Source     string    `gorm:"size:20" json:"source"` // llm, heuristic, manual
+	Source     string    `gorm:"size:20" json:"source"` // llm, manual（heuristic 已于 2026-11-12 退役）
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 

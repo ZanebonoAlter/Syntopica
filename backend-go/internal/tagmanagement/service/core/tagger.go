@@ -37,24 +37,6 @@ func getEmbeddingQueueService() *EmbeddingQueueService {
 	return embeddingQueueService
 }
 
-// legacyExtractTopics is the old heuristic-based extraction (for fallback)
-func legacyExtractTopics(input ExtractionInput) []TopicTag {
-	// Use the existing extractor.go logic
-	rawTags := ExtractTopics(input)
-	result := make([]TopicTag, len(rawTags))
-	for i, t := range rawTags {
-		category := NormalizeDisplayCategory(t.Kind, t.Category)
-		result[i] = TopicTag{
-			Label:    t.Label,
-			Slug:     t.Slug,
-			Category: category,
-			Kind:     t.Kind, // Keep for backward compat
-			Score:    t.Score,
-		}
-	}
-	return result
-}
-
 // findOrCreateTag finds an existing tag or creates a new one
 // Uses three-level matching: exact/alias → embedding similarity → create new
 func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleContext string, articleID uint) (*models.TopicTag, error) {

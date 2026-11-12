@@ -8,7 +8,8 @@ import (
 
 // 事件指纹（subject/subject_key/action/object/occurred_at）已于 2026-11-12
 // 从提取链路整体摘除：融合任务过重导致 4B 本地模型 JSON 输出大面积发散
-// （parse_error 潮 → heuristic 兜底 → 版块全是降级泛词标签、日报断粮）。
+// （parse_error 潮 → 规则词兜底 → 版块全是降级泛词标签、日报断粮；该兜底路径
+// 已随 retire-heuristic-tag-fallback 整体退役，提取失败即失败）。
 // 本文件是摘除的反向守卫：prompt 与 schema 均不得再出现指纹指令/字段。
 // 主体禁则（泛称黑名单）随指纹一并退役；存量 topic_tags.metadata.
 // event_fingerprint 仍可由 topicgraph 侧只读解析。

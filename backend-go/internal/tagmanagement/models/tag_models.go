@@ -56,7 +56,7 @@ type TopicTagAnalysis struct {
 	AnchorDate   time.Time `gorm:"index:idx_tag_analysis_date,unique" json:"anchor_date"`
 	ArticleCount int       `json:"article_count"`
 	PayloadJSON  string    `gorm:"type:text" json:"payload_json"` // 首批 Postgres 切换阶段继续保留为文本 JSON 载荷，不做结构化拆分。
-	Source       string    `json:"source"`                        // ai, heuristic, cached
+	Source       string    `json:"source"`                        // ai, cached（heuristic 已于 2026-11-12 退役）
 	Version      int       `json:"version"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`

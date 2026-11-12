@@ -76,7 +76,7 @@ func TestHardMergeTags_ArticleMigration(t *testing.T) {
 		ArticleID: art1.ID, TopicTagID: source.ID, Score: 0.9, Source: "llm",
 	}).Error)
 	require.NoError(t, db.Create(&models.ArticleTopicTag{
-		ArticleID: art2.ID, TopicTagID: source.ID, Score: 0.7, Source: "heuristic",
+		ArticleID: art2.ID, TopicTagID: source.ID, Score: 0.7, Source: "reuse",
 	}).Error)
 
 	err := HardMergeTags(db, source.ID, target.ID)

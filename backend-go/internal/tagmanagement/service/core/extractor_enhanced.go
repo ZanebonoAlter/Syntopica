@@ -35,7 +35,6 @@ type ExtractionResult struct {
 	Tags    []TopicTag
 	Skipped []string // Tags that were skipped during validation
 	Errors  []string
-	Source  string // "llm" or "heuristic"
 }
 
 const defaultTagExtractionScore = 0.7
@@ -48,11 +47,14 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 
 	eventPersonTags, keywordTags, err := te.extractMergedCandidates(ctx, input)
 	if err != nil {
-		return te.extractWithHeuristic(input, err)
+		// 提取失败不降级（retire-heuristic-tag-fallback）：规则词兜底路径已整体
+		// 退役，错误直接上抛编排层 → 打标任务失败 → 队列退避重试。绝不产出
+		// 任何兜底候选，避免失败被伪装成成功、文章永不再重打。
+		return nil, err
 	}
 
 	// 空 keyword / 空 event-person 数组是「宁缺毋滥」提示词下的合法结论：
-	// 只记观察信息，不再用 heuristicKeywordCandidates 回填规则词候选
+	// 只记观察信息，不做任何规则词回填
 	// （fix-tagging-pollution：旧回填把分类名「新闻」等泛词顶进 llm 来源结果）。
 	branchErrors := make([]string, 0, 2)
 
@@ -77,12 +79,11 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 	candidates := mergeExtractedTags(eventPersonTags, keywordTags)
 
 	if len(candidates) == 0 {
-		// 零候选同样原样返回（Source=llm）：不降级 heuristic——旧降级会让
+		// 零候选同样原样返回：不降级规则词——旧降级会让
 		// 空结果文章顶上规则词标签，使 tagger 层兜底收窄形同虚设。
 		return &ExtractionResult{
 			Tags:   []TopicTag{},
 			Errors: branchErrors,
-			Source: "llm",
 		}, nil
 	}
 
@@ -108,7 +109,6 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 		Tags:    tags,
 		Skipped: skipped,
 		Errors:  errs,
-		Source:  "llm",
 	}, nil
 }
 
@@ -251,33 +251,6 @@ func (te *TagExtractor) resolveCandidate(ctx context.Context, candidate Extracte
 		Fingerprint:     candidate.Fingerprint,
 		SubjectDesc:     candidate.SubjectDesc,
 	}, false, nil
-}
-
-// extractWithHeuristic falls back to rule-based extraction
-func (te *TagExtractor) extractWithHeuristic(input ExtractionInput, originalErr error) (*ExtractionResult, error) {
-	tags := ExtractTopics(input)
-	result := make([]TopicTag, len(tags))
-	for i, t := range tags {
-		// Map old 'kind' to new 'category'
-		category := "keyword"
-		if t.Kind == "entity" {
-			// Entities default to keyword category (organizations, products go here)
-			// Future: could add heuristics to detect person/event
-			category = "keyword"
-		}
-		result[i] = TopicTag{
-			Label:    t.Label,
-			Slug:     t.Slug,
-			Category: category,
-			Score:    t.Score,
-			IsNew:    true,
-		}
-	}
-	return &ExtractionResult{
-		Tags:   result,
-		Source: "heuristic",
-		Errors: []string{originalErr.Error()},
-	}, nil
 }
 
 // Helper functions
