@@ -27,7 +27,7 @@
 | `internal/tagmanagement/service/core/hard_merge_test.go` | :79 fixture 的 `ArticleTopicTag{Source: "heuristic"}` **是种子数据不是注释** → 改为 `Source: "reuse"`（保「多来源 link 迁移」覆盖，值取合法来源） |
 | `internal/tagmanagement/service/core/extractor_generic_subject_test.go` | 仅注释提及 heuristic → 注释同步 |
 
-**不改**：`internal/platform/analysispause/health_gate_compose_test.go`（命中的是无关英文词 "heuristics"，非本链路）。
+**改注释（review L2 更正）**：`internal/platform/analysispause/health_gate_compose_test.go:310` 原文「producing heuristic-degraded tags」**就是本链路**（原文设计判其「命中无关英文词 heuristics」有误）；注释改为「landing untagged（规则词兜底已退役）」，测试行为不变。
 
 ### 顺带清理的注释残留（非本 change 的行为面，但注释里的取值集合已失真）
 
@@ -51,7 +51,7 @@
   LLM 失败（重试耗尽）→ ExtractTags 返回 err
            → article_tagger 返回 err（不写任何标签）
            → tag_queue.go:304 MarkFailed(job, msg, failureBackoff(attempt))
-           → status=pending, available_at=now+backoff（1min→30min）
+           → status=pending, available_at=now+backoff（1→2→4→8→16 分钟；max_attempts=5 时 30 分钟档不可达）
            → attempt_count 累加；>= max_attempts(5) → status=failed（终态，可人工/批量 retag）
 ```
 
@@ -134,4 +134,7 @@
 | `openspec/specs/auxiliary-label/spec.md` | Requirement「Tag 提取单次调用输出 event/person 与 keyword 双数组」：「整体失败回退 heuristic」→ 「整体失败即失败，任务失败重试」；「keyword 空时用 heuristic keyword 展示兜底」→ 「不生成 heuristic keyword 兜底」（该条款**早已与代码脱节**：`mergeExtractedTags` 从未实现） |
 | `docs/reference/flow/semantic-board.md` | 顶部红线段与红线 19：「仅提取调用 err != nil 时降级 heuristic」→ 「不降级，失败即失败交队列重试」 |
 | `docs/reference/flow/scheduler.md` | 健康门理由：「文章只会带 heuristic 降级标签入库，污染下游」→ 「文章无标签入库，不污染下游」 |
-| `docs/reference/database/tables/topic-tags.md` | `source` 枚举去 `heuristic`（历史值由 D3 清理清零） |
+| `docs/reference/database/tables/topic-tags.md` | `topic_tags.source` 与 `analyses.source` 枚举去 `heuristic`（历史值由 D3 清理清零） |
+| `docs/reference/flow/reading.md` | 提取容错节：`aggregate → mono` 回落链路去「含 heuristic 兜底」表述 |
+| `docs/reference/database/DATA_LIFECYCLE.md` | Tag 术语口径的 `source` 取值去 `heuristic` |
+| `openspec/specs/tagging-domain/spec.md`（包结构 requirement） | 该 requirement 停在 `internal/domain/tagging/` 旧布局且引用已删除的 `extraction.ExtractTopics`；本 change 拉回实际结构并修正「依赖方向全部单向」场景断言 |

@@ -250,7 +250,7 @@ heuristic 兜底降级 SHALL 仅在提取调用失败（`err != nil`，含网络
 
 ### Requirement: 泛词标签黑名单拦截
 
-所有文章标签写入路径（mono、aggregate、heuristic 兜底、跨 feed 标签复用）SHALL 在持久化前拦截黑名单泛词标签：黑名单至少包含「新闻、论坛、要闻、快讯、文章、内容、技术、发展」，被拦截候选不落库、不进入辅助标签池。黑名单为代码内常量，不要求可配置。
+所有文章标签写入路径（mono、aggregate、跨 feed 标签复用；heuristic 兜底路径已于 2026-11-12 随 retire-heuristic-tag-fallback 退役）SHALL 在持久化前拦截黑名单泛词标签：黑名单至少包含「新闻、论坛、要闻、快讯、文章、内容、技术、发展」，被拦截候选不落库、不进入辅助标签池。黑名单为代码内常量，不要求可配置。
 
 #### Scenario: 分类名回填词被拦截
 
@@ -307,7 +307,7 @@ event 类标签的 LLM 描述生成 SHALL 遵守时间锚纪律：描述中的�
 
 ### Requirement: 示例词泄漏护栏
 
-两条 LLM 提取路径（mono 融合提取、aggregate 栏目片提取）SHALL 在响应解析出口过滤「prompt 示例词泄漏」候选：候选标签 label 经 Slugify 归一后命中该路径 system prompt 的示例词集合，且模型可见输入（mono：Title+摘要采样文本；section：Title+栏目标题+栏目片正文）中不包含该 label（大小写不敏感）时，该候选 MUST 在持久化前丢弃。候选主标签的 auxiliary_labels 项 SHALL 按同一规则独立过滤（主标签被丢弃时其全部 auxiliary_labels 一并丢弃）。示例词集合 SHALL 以代码常量与 prompt 文本同源维护，并 SHALL 有防漂移测试断言集合中每个词原文出现在对应 prompt 文本中。被护栏丢弃的候选 SHALL 记入观测通道（mono 记入 ExtractionResult 的 errors 尾注，section 记入 warn 日志），不静默丢弃。heuristic 兜底与跨 feed 标签复用路径不经 LLM 解析出口，不受本护栏影响。
+两条 LLM 提取路径（mono 融合提取、aggregate 栏目片提取）SHALL 在响应解析出口过滤「prompt 示例词泄漏」候选：候选标签 label 经 Slugify 归一后命中该路径 system prompt 的示例词集合，且模型可见输入（mono：Title+摘要采样文本；section：Title+栏目标题+栏目片正文）中不包含该 label（大小写不敏感）时，该候选 MUST 在持久化前丢弃。候选主标签的 auxiliary_labels 项 SHALL 按同一规则独立过滤（主标签被丢弃时其全部 auxiliary_labels 一并丢弃）。示例词集合 SHALL 以代码常量与 prompt 文本同源维护，并 SHALL 有防漂移测试断言集合中每个词原文出现在对应 prompt 文本中。被护栏丢弃的候选 SHALL 记入观测通道（mono 记入 ExtractionResult 的 errors 尾注，section 记入 warn 日志），不静默丢弃。跨 feed 标签复用路径不经 LLM 解析出口，不受本护栏影响（heuristic 兜底路径已于 2026-11-12 随 retire-heuristic-tag-fallback 退役，不再存在）。
 
 #### Scenario: 无提及文章的示例词 keyword 被丢弃
 

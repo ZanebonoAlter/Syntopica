@@ -365,52 +365,52 @@
 ## 5. review-trace
 
 ### R-1 2026-11-12【High】board 1980 仍挂 Coding / AI Agent，核心验收条款被真库证伪
-- **状态**：待处理
+- **状态**：已修复（口径修正为真话：test-cases 节拍6/§3 + tasks 15/17 改为「文章数塌缩 722→1、85→16；挂载行未解；Coding 若要彻底消失需另开标签退役 change，AI Agent 建议保留」）
 
 ### R-2 2026-11-12【High】工作树混入未提交的 tolerate-schema-envelope 代码，部署与门禁口径失真
-- **状态**：待处理
+- **状态**：已修复（已提交另案 `tolerate-schema-envelope-extraction-output`（过完 build/vet/lint/13 包测试后独立 commit）；工作树已干净）
 
 ### R-3 2026-11-12【Medium】aggregate-tagging capability 缺 delta，归档后主 spec 与实现冲突
-- **状态**：待处理
+- **状态**：已修复（补 `specs/aggregate-tagging/spec.md` delta（MODIFIED「跨片去重与文章级上限」，场景 3/3 对齐）；主 spec 正文与场景同步去兜底）
 
 ### R-4 2026-11-12【Medium】tagging-domain exemplar-guard requirement 未随 delta 接管
-- **状态**：待处理
+- **状态**：已修复（主 spec exemplar-guard 末句改为「跨 feed 复用不受影响（heuristic 兜底已退役）」）
 
 ### R-5 2026-11-12【Medium】「失败→退避重试→failed 态」链路零守护用例
-- **状态**：待处理
+- **状态**：已修复（补 `tag_job_queue_test.go` 两例：`TestMarkFailedBelowMaxGoesBackToPendingWithBackoff`（pending+退避+lease 释放+退避期不可 lease）/ `TestMarkFailedAtMaxAttemptsStopsAtFailed`（failed 终态+原因保留+不再 lease），实跑通过）
 
 ### R-6 2026-11-12【Medium】语义板红线 19 同一行仍写「heuristic 三路径」
-- **状态**：待处理
+- **状态**：已修复（红线 19 改「mono/aggregate 两路径」；同段「1→30 分钟」改为实际 1/2/4/8/16）
 
 ### R-7 2026-11-12【Medium】design D5 同步点表漏 3 处实际改动
-- **状态**：待处理
+- **状态**：已修复（design D5 表补 3 行（reading.md / DATA_LIFECYCLE.md / tagging-domain 包结构））
 
 ### R-8 2026-11-12【Medium】存量数字口径四处不一致（1724/1727、删 28/删 14+改 14）
-- **状态**：待处理
+- **状态**：已修复（proposal 清理口径改为「删 14 个零引用标签 + 14 个 LLM 认领者改 source（不删）」并说明按字面删 28 会误删真标签；编号重排修正）
 
 ### R-9 2026-11-12【Medium】tasks 1–11 / 18–24 未勾选，test-cases §3 效果核对表未回填
-- **状态**：待处理
+- **状态**：已修复（tasks 1–11 勾选；test-cases §3 四行回填实测值）
 
 ### R-10 2026-11-12【Medium】Force retag 先删后提无回滚，与任务 16 重打计划叠加会清空存量好标签
-- **状态**：待处理
+- **状态**：已修复（tasks 17 补执行硬前置：解析器修复并验证单篇成功率前，禁止对已有标签文章跑 Force=true；只对无标签文章走 Force=false）
 
 ### R-11 2026-11-12【Low】「退避 1→30 分钟」口径与实际曲线（1/2/4/8/16）不符
 - **状态**：已采纳
 
 ### R-12 2026-11-12【Low】health_gate_compose_test.go:310 注释失真，design D1 判断有误
-- **状态**：待处理
+- **状态**：已修复（health_gate 注释改为 landing untagged；design D1 更正「命中无关英文词 heuristics」的误判）
 
 ### R-13 2026-11-12【Low】auxiliary-label delta 场景标题「单次调用整体失败回退 heuristic」未改名
-- **状态**：待处理
+- **状态**：已修复（delta 与主 spec 场景标题均改为「单次调用整体失败不回退 heuristic」）
 
 ### R-14 2026-11-12【Low】守护用例扫描范围窄于 test-cases「代码库级」口径
-- **状态**：待处理
+- **状态**：已修复（test-cases 守护范围口径按实现改写（tagmanagement 域，理由与上提条件写明））
 
 ### R-15 2026-11-12【Low】proposal 的 Capabilities / 规范与文档清单不全
-- **状态**：待处理
+- **状态**：已修复（proposal 清单补 reading.md / DATA_LIFECYCLE.md / 包结构 requirement）
 
 ### R-16 2026-11-12【Low】TagArticles 批量 API 吞错（无生产调用方）
 - **状态**：已驳回
 
 ### R-17 2026-11-12【Low】test-cases §0 把失败兜底断言误记为跨 feed reuse 用例
-- **状态**：待处理
+- **状态**：已修复（test-cases §0 更正归属：失败兜底用例内的断言 vs 真·reuse 用例（`article_tagger_reuse_test.go`，未改））

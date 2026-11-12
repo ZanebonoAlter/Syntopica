@@ -307,7 +307,7 @@ func TestHealthGate_EmbeddingUp_TaggingDown_NotHealthy(t *testing.T) {
 // the cloud llm routes (digest_polish / data_enrichment_analysis) answer fine
 // (reachable mock servers standing in for api.deepseek.com). Under the old
 // lenient rule those cloud routes held the gate open and the tag worker kept
-// leasing — producing heuristic-degraded tags. The core-route hard condition
+// leasing — landing untagged (the rule-word fallback that used to give them generic tags is retired). The core-route hard condition
 // must keep it closed (spec: 云端 LLM 可达不救命).
 func TestHealthGate_CloudLLMReachable_NoRescue(t *testing.T) {
 	resetHealthForTest(t)

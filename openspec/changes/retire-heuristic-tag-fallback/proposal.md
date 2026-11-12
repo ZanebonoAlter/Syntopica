@@ -45,9 +45,10 @@
 ### 存量清理与重打
 
 1. 删 `article_topic_tags` 中 `source='heuristic'` 的 **1724 行**；
-2. 删 `topic_tags` 中 `source='heuristic'` 的 **28 个**标签及其 `topic_tag_board_labels` 挂载行、`topic_tag_embeddings` 向量行；
-3. 重算受影响文章的 `articles.tag_count`；
-4. 这批文章回到「无标签」态 → 批量 retag 重新 AI 打标 → 拿到真 event 标签 → 能进日报。
+2. 删「**无任何非-heuristic 引用**」的 heuristic 标签（实测 **14 个**，如 `ai新闻` / `游戏相关` / `技术` / `Infra` / `Multimodal` / `HackerNews`）及其挂载行、向量行（FK 全 CASCADE）；
+3. 对「**已被 LLM 认领**」的 14 个 heuristic 标签（`Coding` / `AI Agent` / `OpenAI` / `Anthropic` / `Steam` / `NVIDIA` / `GPT-6` 等）只把 `source` 改为 `llm`，**保留标签本身**——它们已由 LLM 独立产出过，按字面删 28 个会误删真标签；
+4. 只重算受影响文章的 `articles.tag_count`（全库存量另有约 1157 行历史不一致，不属本次范围，不动）；
+5. 这批文章回到「无标签」态 → 批量 retag 重新 AI 打标 → 拿到真 event 标签 → 能进日报。
 
 **清理必须在事务内执行**（`BEGIN; …; COMMIT;`），执行前 `count(*)` 留底并确认 `backups/pg-key-*.dump` 备份路径（红线：`standard/backend/testing.md` §🛑）。
 
@@ -57,7 +58,10 @@
 - `openspec/specs/auxiliary-label/spec.md`：Requirement「Tag 提取单次调用输出 event/person 与 keyword 双数组」中两条 heuristic 条款（整体失败回退 heuristic / keyword 空时用 heuristic 展示兜底——后者**早已与代码脱节**，`mergeExtractedTags` 从未实现该兜底）一并改写；
 - `docs/reference/flow/semantic-board.md`：红线 19 与顶部红线段（「仅提取调用 err != nil 时降级」）改为「不降级，失败即失败」；
 - `docs/reference/flow/scheduler.md`：健康门理由（「打标不可用时文章只会带 heuristic 降级标签入库，污染下游」）改为「文章无标签入库，不污染下游」；
-- `docs/reference/database/tables/topic-tags.md`：`source` 枚举去 `heuristic`。
+- `docs/reference/database/tables/topic-tags.md`：`topic_tags.source` 与 `analyses.source` 枚举去 `heuristic`；
+- `docs/reference/flow/reading.md`：提取容错节的「回落 mono（含 heuristic 兜底）」去兜底表述；
+- `docs/reference/database/DATA_LIFECYCLE.md`：Tag 术语口径的 source 取值去 `heuristic`；
+- `openspec/specs/tagging-domain/spec.md` 的 `Tagging domain package structure`：该 requirement 此前仍停留在 `internal/domain/tagging/` 旧布局且引用已删除的 `extraction.ExtractTopics`，本 change 一并拉回实际目录结构（`internal/tagmanagement/` + `service/<子包>`）。
 
 ## Capabilities
 

@@ -116,7 +116,7 @@ description SHALL 非空、长度不超过 500 字符，且不能只重复 label
 - **WHEN** 同一次调用的 event/person 数组输出 person tag "Sam Altman"，keyword 数组也输出 keyword tag "Sam Altman"
 - **THEN** 系统 SHALL 保留 person tag，并丢弃重复的 keyword tag
 
-#### Scenario: 单次调用整体失败回退 heuristic
+#### Scenario: 单次调用整体失败不回退 heuristic
 
 - **WHEN** 单次提取调用重试耗尽仍失败
 - **THEN** 系统 SHALL 回退 heuristic keyword 提取（结果 source=heuristic），失败原因记录在提取结果错误信息中

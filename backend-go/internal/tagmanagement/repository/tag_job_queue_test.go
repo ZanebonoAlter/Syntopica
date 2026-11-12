@@ -144,3 +144,89 @@ func jobIDs(jobs []models.TagJob) []uint {
 	}
 	return ids
 }
+
+// ── MarkFailed 两分支（retire-heuristic-tag-fallback：失败语义的唯一落点）──
+//
+// 本 change 把「提取失败」从「吞掉 + 写泛词」改成「上抛 + 任务失败」。任务失败
+// 之后能不能被自动重试、重试次数耗尽后会不会停在终态，全由 MarkFailed 决定——
+// 此前它零用例守护，是这条契约的单点。
+
+// attempt < max_attempts：回到 pending 并推后 available_at（退避），不丢任务。
+func TestMarkFailedBelowMaxGoesBackToPendingWithBackoff(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	InitRepository(db)
+
+	availableAt := time.Now().Add(-time.Hour)
+	jobID := seedTagJobRaw(t, 401, string(models.JobStatusPending), 0, time.Now(), availableAt)
+	var job models.TagJob
+	if err := Repo.DB().First(&job, jobID).Error; err != nil {
+		t.Fatalf("load job: %v", err)
+	}
+	job.AttemptCount = 1
+	job.MaxAttempts = 5
+
+	if err := Repo.NewTagJobQueue().MarkFailed(job, "parse extraction result failed", 2*time.Minute); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+
+	var got models.TagJob
+	if err := Repo.DB().First(&got, jobID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Status != string(models.JobStatusPending) {
+		t.Fatalf("status = %q, want pending（未达上限必须可重试）", got.Status)
+	}
+	if got.LastError != "parse extraction result failed" {
+		t.Fatalf("last_error = %q, want the failure reason preserved", got.LastError)
+	}
+	if !got.AvailableAt.After(availableAt) {
+		t.Fatalf("available_at = %v, want pushed past the original %v（退避）", got.AvailableAt, availableAt)
+	}
+	if got.LeasedAt != nil || got.LeaseExpiresAt != nil {
+		t.Fatalf("lease must be released on failure, got leased_at=%v lease_expires_at=%v", got.LeasedAt, got.LeaseExpiresAt)
+	}
+
+	// 退避期内不得被再次 lease。
+	if jobs, err := Repo.NewTagJobQueue().Claim(10, time.Minute); err != nil {
+		t.Fatalf("claim: %v", err)
+	} else if len(jobs) != 0 {
+		t.Fatalf("claimed %d job(s) during backoff window, want 0", len(jobs))
+	}
+}
+
+// attempt >= max_attempts：停在 failed 终态（不再被 lease），失败原因可读——
+// 这是「失败不得被伪装成成功」的最终保障。
+func TestMarkFailedAtMaxAttemptsStopsAtFailed(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	InitRepository(db)
+
+	jobID := seedTagJobRaw(t, 402, string(models.JobStatusPending), 0, time.Now(), time.Now().Add(-time.Hour))
+	var job models.TagJob
+	if err := Repo.DB().First(&job, jobID).Error; err != nil {
+		t.Fatalf("load job: %v", err)
+	}
+	job.AttemptCount = 5
+	job.MaxAttempts = 5
+
+	if err := Repo.NewTagJobQueue().MarkFailed(job, "merged extraction object has neither event_person_tags nor keyword_tags keys", 8*time.Minute); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+
+	var got models.TagJob
+	if err := Repo.DB().First(&got, jobID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Status != string(models.JobStatusFailed) {
+		t.Fatalf("status = %q, want failed（达上限必须停在终态）", got.Status)
+	}
+	if got.LastError == "" {
+		t.Fatal("last_error must keep the failure reason so the queue panel can show it")
+	}
+
+	// 终态任务不得再被 lease。
+	if jobs, err := Repo.NewTagJobQueue().Claim(10, time.Minute); err != nil {
+		t.Fatalf("claim: %v", err)
+	} else if len(jobs) != 0 {
+		t.Fatalf("claimed %d failed job(s), want 0", len(jobs))
+	}
+}

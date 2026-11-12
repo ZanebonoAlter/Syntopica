@@ -25,7 +25,7 @@
 - **WHEN** 单次调用成功返回，同一 slug 同时出现在 event/person 数组与 keyword 数组
 - **THEN** 系统 SHALL 按 person > event > keyword 的优先级保留更具体的分类，丢弃低优先级重复项
 
-#### Scenario: 单次调用整体失败回退 heuristic
+#### Scenario: 单次调用整体失败不回退 heuristic
 
 - **WHEN** 单次提取调用重试耗尽仍失败
 - **THEN** 系统 SHALL 返回失败并把错误上抛给编排层（不产出任何标签、不回退 heuristic keyword 提取），使打标任务标记为失败并进入队列重试

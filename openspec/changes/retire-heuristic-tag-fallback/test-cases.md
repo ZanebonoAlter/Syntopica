@@ -12,7 +12,8 @@
 | auxiliary-label「单次调用整体失败回退 heuristic」 | **作废**（行为被删） | `extractor_test.go:145-158`（parse err → `Source=="heuristic"`） | 改为断言：返回错误 + `result == nil` |
 | auxiliary-label「keyword 数组为空但 event/person 有产出」 | **保留但改条款** | `extractor_enhanced_test.go` 零候选用例（断言 `Source=="llm"`） | `ExtractionResult.Source` 字段删除 → 改为断言零标签 + 不触发降级 |
 | tagging-domain「泛词标签黑名单拦截」 | **保留**（仅路径清单措辞） | `article_tagger_test.go` 泛词拦截用例 | 保留不动 |
-| 跨 feed reuse 路径 | **保留** | `article_tagger_test.go:158`（`link.Source == "heuristic"`） | 改为：提取失败 → 任务返错 + 文章无任何标签行 |
+| 失败兜底用例内的 `link.Source == "heuristic"` 断言 | **改** | `article_tagger_test.go:158`（该断言在**失败兜底**用例内，不是 reuse 用例） | 改为：提取失败 → 任务返错 + 文章无任何标签行 |
+| **跨 feed reuse 路径**（真·reuse） | **保留，未改** | `article_tagger_reuse_test.go`（8 例，断言 `tagSourceReuse`） | 本 change 不动；真库实测 `article_topic_tags.source` 仍为 `llm=16802` / `reuse=11` |
 
 **反查命令**：`bash scripts/harness/test-assets.sh tagging-domain` / `auxiliary-label`。
 
@@ -24,8 +25,8 @@
 | 2 | 编排层拿到提取层错误 | tagging-domain「编排层不兜底规则词并把错误上抛」（新） | 编排返回错误；**不调用任何规则词兜底**；文章无任何 `article_topic_tags` 行；无 `source='heuristic'` 的 `topic_tags` | 纯逻辑单测 | `article_tagger_test.go` |
 | 3 | 打标任务因提取失败被标记失败 | tagging-domain「失败任务进入队列重试」（新） | 任务以退避策略回到待处理态并被重新领取；达上限后停在 `failed` 态，失败原因可读 | 组件/集成单测 | `tag_queue.go` + `tag_job_queue.go`（既有机制，需守护用例） |
 | 4 | 提取成功但零候选 | tagging-domain「提取成功但零标签仍是合法结论」（新） | 文章不写任何标签行；任务视为完成，**不触发失败重试** | 纯逻辑单测 | `extractor_test.go` / `extractor_enhanced_test.go` |
-| 5 | 规则词词表整体退役 | — | `extractor_heuristic.go` 不存在；代码库无 `source='heuristic'` 写入点 | 静态守护 | 反向守卫单测（grep 式断言或编译期不可达） |
-| 6 | 存量清理 | — | 真库 `source='heuristic'` 归零；board 1980 不再挂 `Coding`/`AI Agent` | 真库量化核对 | tasks 12-15 |
+| 5 | 规则词词表整体退役 | — | `extractor_heuristic.go` 不存在；**`internal/tagmanagement/` 域内生产代码无 `"heuristic"` 字面量**（守护范围=该域，理由：全部写入点均在此域内，已实测无例外；若未来域外出现写入点，需把守护上提到 `internal/`） | 静态守护 | `TestNoHeuristicFallbackPathRemains`（已实测 /tmp 探针会红） |
+| 6 | 存量清理 | — | 真库 `source='heuristic'` 归零；**已被 LLM 认领的标签保留挂载**（`Coding`/`AI Agent` 仍在 board 1980，但关联文章数从 722/85 塌到 1/16——挂载行本身不解、不解即随时可被匹配作业重挂） | 真库量化核对 | tasks 12-15 |
 | 7 | 批量重打 | — | 受影响文章拿到真 event 标签、能进日报 | 真库量化核对 | tasks 16-17 |
 
 ## 2. 变体走查（五组固定清单）
@@ -84,8 +85,9 @@
 | 核对项 | 触发原因 | 方法 | 量化结果 | 结论 |
 | --- | --- | --- | --- | --- |
 | 污染面清零 | 代码删除不作用于存量 | 真库只读查询 | `article_topic_tags` heuristic 行数 / `topic_tags` heuristic 标签数 | 待 tasks 15 填 |
-| 版块泛词消失 | 28 个 heuristic 标签曾挂 9 个到 board 1980 | 真库只读查询 board 1980 挂载标签 | `Coding`/`AI Agent` 是否仍在挂载列表 | 待 tasks 15 填 |
-| 日报文章数恢复 | 重打拿到 event 标签 | 重打后查日报 | 11-11/11-12 日报文章数 vs 修复前（30/11/4） | 待 tasks 17 填 |
+| 版块泛词**文章数**塌缩 | 28 个 heuristic 标签曾挂 9 个到 board 1980 | 真库只读查询标签关联文章数 | 已实测：`Coding` 722→**1** 篇、`AI Agent` 85→**16** 篇（余下为 LLM 真实产出）；board 1980 挂载标签 Top20 全是真标签（英伟达 47 / 人工智能 41 / codex 40 …），`Coding` 已跌出前 20 | 症状基本消除；**挂载行未解**（见下） |
+| 日报文章数恢复 | 重打拿到 event 标签 | 重打后查日报 | 11-11/11-12 日报文章数 vs 修复前（30/11/4） | 待 tasks 17 填（阻塞于解析器修复） |
+| 挂载行是否需要解挂 | `Coding`(id=27) aux 仅 1 条 → `min(2,1)=1`、max_sim 0.8811≥0.8 → **匹配作业可随时把它重新挂回**；`AI Agent`(id=185089) 有 16 篇 LLM 真实文章，属正常 AI 主题词 | 真库只读核对 | 二者挂载行、aux、embedding 全部存活 | **本 change 不解挂**（超出「删兜底」范围）。`Coding` 若要彻底消失需另开 change 做标签退役（清 aux/embedding + 解挂 + 置 merged 或删除）；`AI Agent` 建议保留 |
 | 重打成功率 | 本地 4B 模型可能仍 parse_error | 重打过程统计 | 失败率 | 待 tasks 16 填 |
 
 > **判据**：若重打失败率仍高，说明模型侧问题未清（指纹已摘除），此时零标签是「合法零结果」而非污染，但日报仍缺文章——**须如实报告，不得掩盖**。
