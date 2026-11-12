@@ -38,7 +38,49 @@
 - [ ] 21. 归档门禁六项自查全绿 → `openspec archive retire-heuristic-tag-fallback` → 补 `docs/reference/flow/semantic-board.md` 变更溯源行
 - [ ] 22. 汇报部署后影响 + 需要的用户操作 + 旧数据降级路径
 
-## 测试
+## 24. 测试
 
 - [ ] 23. 按 `test-cases.md` 逐条核对：主链路表 + 变体走查五组 + 效果核对 + 白盒附加
 - [ ] 24. 队列重试链路验证：注入一次提取失败 → 观察任务从 failed→pending（退避）→ 重领 → 终态 failed
+## 25. 文档
+
+<!-- doc-impact: flow, database -->
+
+- [x] 25.1 `docs/reference/flow/semantic-board.md`：顶部红线段 + 红线 19 改为「不降级，失败即失败交队列重试」
+- [x] 25.2 `docs/reference/flow/scheduler.md`：健康门理由改为「文章只能以无标签入库」
+- [x] 25.3 `docs/reference/flow/reading.md`：aggregate→mono 回落链路去「含 heuristic 兜底」
+- [x] 25.4 `docs/reference/database/tables/topic-tags.md` / `DATA_LIFECYCLE.md`：source 取值去 heuristic
+- [x] 25.5 `doc-impact.sh verify` 通过；`check-standards.sh` 通过
+
+## 26. 验证
+
+| Scenario | 测试文件 |
+| --- | --- |
+| 依赖方向全部单向 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| extraction 子包只做文本提取 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| 按 content_form 分流 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 快讯类文章 keyword 为空时保持 LLM 原样 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 空摘要文章两个数组均为空 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 分类名回填词被拦截 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 跨 feed 复用不复制泛词标签 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| 黑名单不误伤正常标签 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| 提取失败不产出任何标签 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| 编排层不兜底规则词并把错误上抛 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 失败任务进入队列重试 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 提取成功但零标签仍是合法结论 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| 同名标签跨片去重 | backend-go/internal/tagmanagement/service/core/extractor_test.go |
+| 文章级上限截断 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 全片失败回落 mono 路径 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| event/person 数组为空但 keyword 有产出 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| keyword 数组为空但 event/person 有产出 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 双数组间去重 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| 单次调用整体失败不回退 heuristic | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+| mono 文章提取调用数为 1 | backend-go/internal/tagmanagement/service/core/article_tagger_test.go |
+
+- [x] 26.1 `openspec validate retire-heuristic-tag-fallback --strict` 通过
+- [x] 26.2 `go build ./...` / `go vet ./...` / `golangci-lint run ./...` → 0 issues
+- [x] 26.3 `go test -short ./internal/tagmanagement/... ./internal/platform/analysispause/...` 全绿
+- [x] 26.4 `TestNoHeuristicFallbackPathRemains` 实测探针会红（非空断言）
+- [x] 26.5 `MarkFailed` 两分支守护用例实跑通过
+- [x] 26.6 真库量化核对：heuristic 归零、Coding 722→1 / AI Agent 85→16、tag_count 不一致 1231→1157（存量值）
+- [x] 26.7 重打链路已验证：外壳修复后 20 篇失败 0 / 含 event 18（90%），2502 篇批量入队

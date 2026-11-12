@@ -28,27 +28,34 @@ TopicTag / TagMergeSuggestion 的 `Status` 字段 SHALL 保留 GORM `default:` t
 
 ### Requirement: Tagging domain package structure
 
-系统 SHALL 将标签相关代码组织为 `internal/domain/tagging/` 域，包含以下子包：
+系统 SHALL 将标签相关代码组织为 `internal/tagmanagement/` 域，包含以下子包：
 
-- `tagging/` 根层：标签生命周期编排（tagger.go）、共享类型（types.go）、共享 helper（helpers.go）、queue 入口（workers.go、tag_queue.go）
-- `tagging/extraction/`：纯文本标签提取，输入文章文本，输出 `[]TopicTag`
-- `tagging/analysis/`：主题分析 CRUD + 分析队列
-- `tagging/embedding/`：向量化服务 + embedding/merge 队列
-- `tagging/merge/`：标签合并、聚类、清理
-- `tagging/watched/`：关注标签管理
-- `tagging/semantic/`：辅助标签入库、SemanticBoard 匹配、升级建议、回填
+- `tagging/` 根层：`routes.go`（路由注册）、`wire.go`（依赖装配）
+- `tagging/models/`：标签域数据模型
+- `tagging/repository/`：仓储与队列持久化
+- `tagging/handler/`：HTTP 处理器
+- `tagging/service/`：业务服务，含下列子包
+  - `service/core/`：标签生命周期编排（`article_tagger.go`、`tag_queue.go`）、标签提取（`extractor_enhanced.go`、`extractor_section.go`）、向量与合并队列、共享 helper
+  - `service/board/`：辅助标签入库、SemanticBoard 匹配、升级建议、回填
+  - `service/merge/`：标签合并、聚类、清理
+  - `service/watched/`：关注标签管理
+  - `service/entity/`：实体身份层（影子态）
+  - `service/auxlabel/`、`service/auxrepair/`：辅助标签描述生成与修复
+  - `service/boardhealth/`、`service/sourcestats/`、`service/related/`：体检、来源构成、相关事件
 
-编排层（tagger.go）SHALL 在进入提取前按 `articles.content_form` 分流：`aggregate` 走栏目切片 map-reduce 聚合路径，`mono` 与空值走原有提取路径。聚合路径的切片器为纯代码（无 LLM 调用），其逐片 LLM 提取与跨片去重属于编排层职责；`extraction/` 子包继续只做单次纯文本提取。
+**【2026-11-12 本 change 起生效】`tagging/extraction/` 子包已不存在**——提取逻辑并入 `service/core/`，规则词兜底函数 `ExtractTopics` 随 `retire-heuristic-tag-fallback` 退役删除（本 requirement 的包结构描述此前仍停留在 `internal/domain/tagging/` 时代的旧布局，本次一并拉回实际结构）。
+
+编排层（`service/core/article_tagger.go`）SHALL 在进入提取前按 `articles.content_form` 分流：`aggregate` 走栏目切片 map-reduce 聚合路径，`mono` 与空值走原有提取路径。聚合路径的切片器为纯代码（无 LLM 调用），其逐片 LLM 提取与跨片去重属于编排层职责；提取逻辑只做单次纯文本提取。
 
 #### Scenario: 依赖方向全部单向
 
-- **WHEN** 检查 tagging 域内所有子包的 import 关系
-- **THEN** 依赖方向为：`extraction → helpers/embedding`、`merge → helpers/embedding`、`semantic → helpers/embedding`、`watched → helpers`；不存在任何反向依赖或循环依赖
+- **WHEN** 检查 tagging 域内的 import 关系
+- **THEN** 依赖方向为 `handler → service/<子包> → service/core`、`repository → models`；`service/core` 不反向依赖任何 `service` 子包，不存在反向依赖或循环依赖
 
 #### Scenario: extraction 子包只做文本提取
 
-- **WHEN** `extraction.ExtractTopics(input)` 被调用
-- **THEN** 返回 `[]TopicTag` 原始标签列表，不执行 embedding 匹配、LLM 判断、合并或层级放置
+- **WHEN** 标签提取函数（`service/core/extractor_enhanced.go` 的 `ExtractTags`）被调用
+- **THEN** 返回单次 LLM 调用的解析结果，不执行 embedding 匹配、标签合并或层级放置
 
 #### Scenario: 按 content_form 分流
 
@@ -223,6 +230,8 @@ mono 路径（含 content_form 为空的存量文章）SHALL 将摘要输入采�
 
 mono 路径的融合提取 SHALL 原样接受 LLM 返回的空 `keyword_tags` 数组：不得调用启发式规则匹配（分类名、feed 名、模式词表）生成候选关键词回填结果。空 keyword 数组是提示词「宁缺毋滥」约束下的合法结论。事件/人物数组与 keyword 数组 SHALL 独立评判，一方为空不使另一方失效。
 
+**【2026-11-12 本 change 起生效】系统 SHALL NOT 存在任何规则词（heuristic）回填或兜底路径**：规则词词表（分类名、feed 名、模式词表）已随 `retire-heuristic-tag-fallback` 整体删除。
+
 #### Scenario: 快讯类文章 keyword 为空时保持 LLM 原样
 
 - **WHEN** 一篇华尔街见闻快讯（分类名「新闻」）经融合提取返回 1 个 event 标签且 `keyword_tags` 为空数组
@@ -234,23 +243,11 @@ mono 路径的融合提取 SHALL 原样接受 LLM 返回的空 `keyword_tags` �
 - **WHEN** 一篇文章的摘要输入为空串或纯空白，LLM 返回 `{"event_person_tags":[],"keyword_tags":[]}`
 - **THEN** 提取结果为零候选，不产生任何规则词候选
 
-### Requirement: heuristic 兜底仅限提取调用失败
-
-heuristic 兜底降级 SHALL 仅在提取调用失败（`err != nil`，含网络/HTTP/超时错误）时触发——无论降级判定位于提取层（extractor 内部零候选降级）还是编排层（tagger 兜底分支）；提取调用成功但结果为零标签时，SHALL 保持文章无标签状态（不写入任何行），等待后续重打流程。原「`len(result.Tags) == 0` 即降级 heuristic」与「extractor 内部零候选即降级 heuristic」的判定 SHALL 移除。
-
-#### Scenario: LLM 调用成功但零标签
-
-- **WHEN** 融合提取成功返回且候选总数为零
-- **THEN** 文章不写入任何 `article_topic_tags` 行，不产生 heuristic 来源标签
-
-#### Scenario: LLM 调用失败降级 heuristic
-
-- **WHEN** 融合提取因连接拒绝/超时等返回错误且重试耗尽
-- **THEN** 编排按既有行为降级 heuristic 提取，来源标记 `heuristic`
-
 ### Requirement: 泛词标签黑名单拦截
 
-所有文章标签写入路径（mono、aggregate、跨 feed 标签复用；heuristic 兜底路径已于 2026-11-12 随 retire-heuristic-tag-fallback 退役）SHALL 在持久化前拦截黑名单泛词标签：黑名单至少包含「新闻、论坛、要闻、快讯、文章、内容、技术、发展」，被拦截候选不落库、不进入辅助标签池。黑名单为代码内常量，不要求可配置。
+所有文章标签写入路径（mono、aggregate、跨 feed 标签复用）SHALL 在持久化前拦截黑名单泛词标签：黑名单至少包含「新闻、论坛、要闻、快讯、文章、内容、技术、发展」，被拦截候选不落库、不进入辅助标签池。黑名单为代码内常量，不要求可配置。
+
+**【2026-11-12 本 change 起生效】写入路径清单已无 `heuristic 兜底` 一项**（该路径随 `retire-heuristic-tag-fallback` 退役删除）；黑名单本身保留——LLM 侧仍可能产出泛词候选。
 
 #### Scenario: 分类名回填词被拦截
 
@@ -398,3 +395,37 @@ event 类标签的 LLM 描述生成 SHALL 遵守时间锚纪律：描述中的�
 #### Scenario: section 提取 prompt 指令保持单数组
 - **WHEN** section/aggregate 提取路径构造 user prompt
 - **THEN** 末句输出格式指令 SHALL 维持 `{"tags": [...]}` 单数组（其 schema 本就是单数组），MUST NOT 被改成双数组
+
+### Requirement: 提取失败不降级，直接判任务失败
+
+系统 SHALL NOT 存在任何规则词（heuristic）兜底打标路径。LLM 提取调用失败（含网络/HTTP/超时错误、响应解析失败、重试耗尽）时：
+
+1. 提取层 SHALL 向调用方返回错误，SHALL NOT 产出任何规则词候选；
+2. 编排层 SHALL 向上返回错误，文章 SHALL NOT 写入任何 `article_topic_tags` 行、SHALL NOT 产生 `source='heuristic'` 的 `topic_tags`；
+3. 打标任务 SHALL 标记为失败，并进入既有队列重试机制（退避重试，超过 `max_attempts` 后停在 `failed` 态，等待人工或批量 retag）——失败 SHALL NOT 被伪装成成功。
+
+提取调用成功但结果为零标签，仍是合法结论：文章保持无标签状态（不写入任何行），任务视为完成，等待后续重打流程。
+
+#### Scenario: 提取失败不产出任何标签
+
+- **WHEN** 融合提取因连接拒绝/超时等返回错误且重试耗尽
+- **THEN** 提取 SHALL 返回错误且不产出任何标签候选
+- **AND** 文章 SHALL 不写入任何 `article_topic_tags` 行
+
+#### Scenario: 编排层不兜底规则词并把错误上抛
+
+- **WHEN** 编排层拿到提取层的错误
+- **THEN** 编排 SHALL 返回错误（不调用任何规则词兜底函数），使打标任务进入失败态
+- **AND** 数据库 SHALL 不出现 `source='heuristic'` 的标签行
+
+#### Scenario: 失败任务进入队列重试
+
+- **WHEN** 打标任务因提取失败被标记为失败
+- **THEN** 任务 SHALL 以退避策略回到待处理态并被重新领取重试
+- **AND** 重试次数达上限后 SHALL 停在 `failed` 态且失败原因可被读取
+
+#### Scenario: 提取成功但零标签仍是合法结论
+
+- **WHEN** 融合提取成功返回且候选总数为零
+- **THEN** 文章 SHALL 不写入任何 `article_topic_tags` 行
+- **AND** 任务 SHALL 视为完成，SHALL NOT 触发失败重试
