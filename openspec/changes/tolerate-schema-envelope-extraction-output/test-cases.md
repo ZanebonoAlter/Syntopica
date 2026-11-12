@@ -64,3 +64,13 @@
 | 同上 | 非 JSON | `not json` | 原样返回 |
 | `unmarshalMergedExtraction` | 外壳解开后缺两键 | `{"type":"object","properties":{"x":1}}` | 解析错误（触发重试） |
 | `parseRawTagObjects` | 外壳解开后是 `{"tags":[...]}` | section 形态 | 正常解析 |
+
+## 5. 实测结果（2026-11-12，20 篇试验批 Force=false）
+
+| 指标 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 任务失败 | 14 / 20 | **0 / 20** |
+| 拿到标签 | 6 / 20 | **19 / 20** |
+| 含 event 标签 | **1 / 20（5%）** | **18 / 20（90%）** |
+
+失败原因从 `merged extraction object has neither event_person_tags nor keyword_tags keys` 变为无失败。结论：schema 外壳容错 + prompt 指令对齐**双双生效**；外壳形态已被解析器吃掉，剩余 1 篇未拿到 event 是模型正常零产出（合法结论）。
