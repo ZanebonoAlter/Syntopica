@@ -1,0 +1,26 @@
+# agent-browser 无主浏览器栈定时回收（用户级 oneshot，由 syntopica-browser-leak-guard.timer 触发）
+# 机制见 scripts/harness/browser-leak-guard.sh 头注释（与 dev-process-guard 的分工：扩展管会话窗口内，
+# 本单元补位「窗口外常驻无主栈」）。默认 dry-run，unit 里才带 --apply；--quiet 保证无泄漏时零 journal 噪音。
+#
+# 装：      bash scripts/harness/browser-leak-guard.sh --install
+# 调周期：  改 .timer 的 OnUnitActiveSec 后
+#           systemctl --user daemon-reload && systemctl --user restart syntopica-browser-leak-guard.timer
+# 查日志：  journalctl --user -u syntopica-browser-leak-guard.service -n 50
+# 卸：      bash scripts/harness/browser-leak-guard.sh --uninstall
+[Unit]
+Description=Syntopica 无主 agent-browser 浏览器栈回收（10 分钟周期）
+# 定时器扫描在负载高峰本来也该失败得温和：脚本内部逐目标 fail-open，不会挂住
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/software/Syntopica
+# close 步骤（agent-browser close 15s 超时 + 宽限 5s + TERM/KILL 各 2s）叠加多个目标最坏约 8s/个，
+# 给足余量，避免 systemd 半路 SIGKILL 掉正在做「进程全退后 rm -rf profile」的收尾
+TimeoutStartSec=10min
+ExecStart=/bin/bash %h/software/Syntopica/scripts/harness/browser-leak-guard.sh --apply --quiet
+# agent-browser CLI 装在 nvm 的 node 安装位（~/.nvm/versions/node/<ver>/bin），用户管理器默认 PATH
+# 不含它——优雅 close 找不到命令时会退化成纯信号回收。这里**不写死 node 版本**（写死的路径在
+# 升级 node 后会静默失效，本文件曾硬编码 v26.8.2）：脚本内 resolve_close_cmd 用
+# ~/.nvm/versions/node/*/bin/agent-browser glob 兜底解析，升级 node 无需改 unit。
+# 若要显式钉某个 node 版本，请用用户级 override（systemctl --user edit）加 Environment=PATH=…
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

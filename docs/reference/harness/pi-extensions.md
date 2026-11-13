@@ -23,6 +23,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 | sql-safety-guard | `tool_call` | bash + `ctx_execute`(仅 shell) + `ctx_batch_execute` 命中 psql 入口 ∧ TRUNCATE/DROP（判定基于命令原文、不掩蔽引号，`-f`/`--file` 形态读文件扫两词、不可读保守拦） | 硬 block（`SQL_SAFETY_GUARD` hard 默认 / soft 提醒 / off 关；逃生口：`# allow-truncate-drop` 注释、BEGIN+ROLLBACK 事务包裹、一次性容器放行；仅拦 TRUNCATE/DROP，DELETE/UPDATE/ALTER/INSERT 不拦） | fail-open（判定异常放行） | policy.decision（sql-safety：block/warn、逃生=bypass；off/未命中、事务与容器放行零记录） |
 | tool-output-spill | `tool_result` | 工具输出 >32KB（`.pi/harness.json`） | 落盘替换+有界预览 | fail-open（spill 失败原样通过） | spill.write |
 | dev-process-guard | `session_start`/`turn_end`/`session_shutdown` | 会话结束扫描仓库内泄漏类 dev 进程（go run/pnpm dev/nuxt dev 等且无终端、非 pidfile 白名单）：窗口内自动清，遗留软提醒 | 自动清（仅 session_shutdown，组杀 TERM→2s→KILL）+ 软 steer 提醒（每会话一次） | fail-open（扫描/杀/记账异常逐目标跳过）；非 Linux no-op | policy.decision（orphan-killed / orphan-warn；健康路径零记录） |
+| （非门禁）browser-leak-guard | 用户级 systemd timer（10 分钟） | `bash scripts/harness/browser-leak-guard.sh --apply --quiet`：回收窗口外无主 agent-browser 栈（跨轮次冻结 × 无客户端 × 年龄 ≥1800s × 组首自证） | 自动回收（优雅 close 优先，失败降级组杀）；手动跑默认 dry-run | fail-open（状态目录不可写/单目标异常 → 只跳过不回收） | journal（不写 events.db，D7） |
 | harness-telemetry | `session_start`/`turn_end`/`tool_call`/`tool_result` | 通用事实采集（不干预）；turn_end 节流写 session.rollup 效能快照（轮次/token/成本/时长/**逐模型 models map**/**子会话 parentSessionId**，每 5 turn 或 token 增量>20%；同 session 取最新一条即终值）；session_start 回填 prev 终值（**自扫 sessions 目录**定位 prev——pi 事件从不携带 previousSessionFile，task-cost-metrics）；tool_result 配对 bash 归档命令成功 → `change.archive`（归档成功锚点，成功侧记账例外之一）；tool_result(Agent) → `subagent.dispatch` **携带 change 归属**（与 session.rollup 快照同源 detectActiveChange 判定，一次判定两用 agentChangeBindings + 事件 change 列，add-review-trace-gate；历史无归属行不回填——事件追加不可变约束） | — | fail-safe（断链不伪造，jsonl 缺失/坏行零写入；归档提取不到名零记录；change 解析不到记 null 不阻断派发） | session.start / session.rollup / subagent.* / change.archive |
 
 ## 派发期红线取数（constraint-digest.sh）
@@ -114,6 +115,16 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 - **窗口归因**：session_start 记窗口起点（按 sessionId 隔离，子线程只扫自己的窗口）；session_shutdown 只自动清「窗口内」spawn；历史遗留孤儿（无法安全归因）由 turn_end 每会话一次的软提醒交人工处置，升级落地不误杀在用服务。
 - **平台与 fail 策略**：仅 Linux /proc 实现，其他平台 no-op；扫描/组杀/记账任一异常逐目标跳过，不阻断会话关闭。
 
+## 无主浏览器栈定时回收（browser-leak-guard.sh，add-browser-leak-guard）
+
+`scripts/harness/browser-leak-guard.sh` + 用户级 `syntopica-browser-leak-guard.timer`（10 分钟周期）补 `dev-process-guard` 的时序缺口：扩展只清「会话窗口内」且只在会话结束，**跨会话累积 / 窗口外无主 / 会话还在但忘了 close** 的 agent-browser 栈没人管——2026-11-13 实测堆了 3 套 39 进程 2.6 GB，压得 swap 满、load 34。
+
+- **只盯浏览器栈，窄锚点**：daemon = cmdline 含 `agent-browser/bin/agent-browser-` 且 environ 带 `AGENT_BROWSER_DAEMON=1`；chromium = daemon 后代里带 `--user-data-dir=/tmp/agent-browser-chrome-` 的那个进程组；session 名从 `/proc/<daemon>/environ` 的 `AGENT_BROWSER_SESSION` 读。用户自起 chromium、后端/前端 dev 服务一律不命中（后者归 dev-process-guard）。
+- **安全五条件（合取，缺一即跳过）**：① 年龄 ≥ `--min-age`（默认 1800s = 上游客 daemon 1h idle 自关的一半）；② 本轮两次采样栈内 CPU 时间冻结；③ **跨轮次冻结**（状态文件 `$XDG_RUNTIME_DIR/syntopica-browser-leak-guard/state` 里上轮已见同 `session+starttime+ticks`，首见只记账标 `first-seen`）——纯 1 秒窗分不清「真死」与「LLM 在两次 CLI 调用之间思考」；④ 无活客户端（`AGENT_BROWSER_SESSION` env **或** `--session <名>` argv，且 cmdline 含 `agent-browser`；动手前即时快照重算）；⑤ 进程组非 1/非自身/组首自证（不自证只 kill 单 PID）。
+- **回收**：`agent-browser close --session <名>`（15s）→ 复核自退 → TERM 组 → 2s → KILL；进程全退后删 `/tmp/agent-browser-chrome-<uuid>`（前缀/`..`/引用复核）与 `$XDG_RUNTIME_DIR/agent-browser/<session>.*` 残留 socket。默认 dry-run，`--apply` 才动手；`flock` 单实例防定时器与人工并发。
+- **账本**：journal（`journalctl --user -u syntopica-browser-leak-guard`）+ 退出码（0 干净/跳过、1 报告模式有可回收或回收失败、2 参数错误）；**不写 events.db**（D7，需要机器可读记账另开 change）。
+- **安装/卸载**：`bash scripts/harness/browser-leak-guard.sh --install|--uninstall`（幂等；unit 源文件在 `scripts/harness/systemd/`）。手动排查 **不要**带 `--apply`。
+
 ## 派发额度门禁（quota-gate）
 
 `.pi/extensions/quota-gate.ts` 在每次 Agent 派发前自动查目标 provider 剩余额度：GLM/Kimi 查 5h/周窗口（GLM 老套餐仅 5h 窗口，MCP 的 TIME_LIMIT 不参与判定）；DeepSeek 查余额；opencode-go 无 API 直接放行。窗口剩余 <10% 或余额 <¥1 时派发被 **block**。阈值可用环境变量 `QUOTA_GATE_WINDOW_PCT` / `QUOTA_GATE_MIN_BALANCE` 调整；查询失败一律 fail-open 放行。收到 block 后的操作纪律（换 provider 全称重试）见开发执行规范 §0.6「子线程并行派发」。
@@ -161,6 +172,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 ## 变更记录
 
 | 日期 | 变更 | 摘要 | 归档位置 |
+| 2026-11-13 | add-browser-leak-guard | 新增无主浏览器栈定时回收（脚本 + 用户级 systemd timer，10 分钟）：窄锚点识别 agent-browser daemon/chromium，安全五条件（年龄 1800s / 本轮 CPU 冻结 / 跨轮次冻结 first-seen / 无活客户端含 argv `--session` / 组首自证），优雅 `close --session` 优先，失败降级组杀 + profile/runtime 清理；手动默认 dry-run，`--apply` 仅供定时器 | ../../../openspec/changes/add-browser-leak-guard（待归档） |
 | 2026-11-04 | add-dispatch-constraint-digest | 补「派发期红线取数（constraint-digest.sh）」节：派发期红线取数脚本定位（红线提取复用 `.pi/extensions/lib/constraint-redlines.ts` 的 `extractRedlines()`，与 constraint-injection 注入同一实现；`--paths` 反查语义与 `scanAppliesTags` 一致）+ 域清单唯一真相源=flow basename（`keywordDocs`/constraints-index 域表/`doc-impact.sh menu` 是别名或不同轴，禁止混用）+ `subagent.dispatch` 追加 `constraintDigest`/`constraintDomains` 两字段（append-only，历史计「未知」并剔除分母）；配套《开发执行规范》§0.6 步骤 3 三步取数 + brief 模板、AGENTS.md 取数指针 | ../../../openspec/changes/add-dispatch-constraint-digest（待归档） |
 | 2026-10-12 | review-task-frontload | review 前移三层：check-tasks-tail.sh 扩展 complex 档 review 任务行判定（proposal 头部 marker 分档 + waived 豁免同检查⑤词表，单一事实源）；openspec-propose/new-change skill 注入 Review 节建档约定；openspec-apply-change skill 入口先跑 check-tasks-tail（缺行实现前暴露）；存量 in-flight complex change 不豁免 | ../../../openspec/changes/review-task-frontload（待归档） |
 | 2026-09-28 | add-change-lifecycle-retro | harness-retro 新增 `--lifecycle <change>` 单 change 体检卡（四段 + proposal 声明元数据）；⑦段 A 组催修时距按 policy 分派解除信号（quota 89 分钟假慢修正）；ui-design-gate 放行侧 action=pass 两码（ui-approval-approved / ui-design-satisfied）显式记账；新增 change.abandon 终态事件与 `scripts/harness/change-abandon.sh` 登记脚本（B' 幸存者偏差区分已放弃） | ../../../openspec/changes/add-change-lifecycle-retro（待归档） |
