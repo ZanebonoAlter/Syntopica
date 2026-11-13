@@ -2,7 +2,7 @@
 
 > 本 change 于原型阶段放弃实现（原因见 proposal.md「归档说明」）。本文件是归档时的**如实状态记录**，非执行计划。
 
-<!-- doc-impact: 无（零代码改动：未改 front/、backend-go/、docs/reference/ 任何文件，无文档辖域受影响） -->
+<!-- doc-impact: 无（零代码改动：未改 front/、backend-go/、docs/reference/ 任何文件，无文档辖域受影响；无 flow 影响，按 §12.2 豁免变更溯源） -->
 
 ## 1. 原型阶段（已完成）
 
