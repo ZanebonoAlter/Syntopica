@@ -2,6 +2,7 @@ package repository
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -157,6 +158,202 @@ func TestGetReportByID_SectionWithoutThreadsMarshalsEmptyArray(t *testing.T) {
 	require.Contains(t, string(data), `"threads":[]`)
 	require.NotNil(t, report.Sections[0].Threads)
 	require.Empty(t, report.Sections[0].Threads)
+}
+
+// ---- 读路径折叠同内容副本（dedupe-thread-article-copies） ----
+
+// seedThreadCopyArticle 落一篇带 link 的文章（feedID 只作跨 feed 副本的区分，
+// articles.feed_id 无外键约束）。
+func seedThreadCopyArticle(t *testing.T, db *gorm.DB, feedID uint, title, link string) uint {
+	t.Helper()
+	article := models.Article{FeedID: feedID, Title: title, Link: link}
+	require.NoError(t, db.Create(&article).Error)
+	return article.ID
+}
+
+// seedThreadCopyThread 落一条线索（related_article_ids 直接给数组字面量）。
+func seedThreadCopyThread(t *testing.T, db *gorm.DB, reportID, sectionID uint, title string, articleIDs []uint) uint {
+	t.Helper()
+	refs, err := json.Marshal(articleIDs)
+	require.NoError(t, err)
+	thread := DailyReportThread{
+		ReportID:          reportID,
+		SectionID:         sectionID,
+		Title:             title,
+		Summary:           "summary",
+		RelatedArticleIDs: JSON(refs),
+		Embedding:         FloatsToPgVector([]float64{0}),
+	}
+	require.NoError(t, db.Create(&thread).Error)
+	return thread.ID
+}
+
+// storedThreadArticleIDs 回查 daily_report_threads.related_article_ids 的落库值。
+func storedThreadArticleIDs(t *testing.T, db *gorm.DB, threadID uint) []uint {
+	t.Helper()
+	var raw string
+	require.NoError(t, db.Raw("SELECT related_article_ids::text FROM daily_report_threads WHERE id = ?", threadID).Scan(&raw).Error)
+	var ids []uint
+	require.NoError(t, json.Unmarshal([]byte(raw), &ids))
+	return ids
+}
+
+// TestGetReportByID_FoldsSameLinkArticleCopies 覆盖 spec「线索下同 link 副本
+// 折叠」：同一篇内容被两个 feed 各抓一份时，响应里的 related_article_ids 只留
+// 首个出现的 id、顺序不变；落库值不得被改写（红线 45）。
+func TestGetReportByID_FoldsSameLinkArticleCopies(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
+	reportID := seedTestReport(t, db, boardID, now)
+	sectionID := seedTestSection(t, db, reportID, "copies section")
+
+	// 跨 feed 的同 link 副本 + 一篇不同内容 + 一篇空 link。
+	copyA := seedThreadCopyArticle(t, db, 9001, "特朗普与内塔尼亚胡激烈争吵", "https://example.com/same-story")
+	copyB := seedThreadCopyArticle(t, db, 9002, "特朗普与内塔尼亚胡激烈争吵", "https://example.com/same-story")
+	other := seedThreadCopyArticle(t, db, 9003, "另一篇稿件", "https://example.com/other-story")
+	noLink := seedThreadCopyArticle(t, db, 9004, "没有链接的稿件", "")
+	threadID := seedThreadCopyThread(t, db, reportID, sectionID, "同 link 副本线索",
+		[]uint{copyA, copyB, other, noLink})
+
+	report, err := repo.GetReportByID(reportID)
+	require.NoError(t, err)
+	require.Len(t, report.Sections, 1)
+	require.Len(t, report.Sections[0].Threads, 1)
+	// 副本被折叠、其余原位保留：空 link 的文章不参与折叠。
+	require.Equal(t, []uint{copyA, other, noLink},
+		jsonUintIDs(report.Sections[0].Threads[0].RelatedArticleIDs))
+
+	// 落库值仍是未折叠的四个 id（红线 45：存储口径不变）。
+	require.Equal(t, []uint{copyA, copyB, other, noLink}, storedThreadArticleIDs(t, db, threadID))
+}
+
+// TestGetReportByID_FoldsSameLinkArticleCopies_IgnoresQueryAndFragment 覆盖
+// spec「归一后 link 相同也折叠」：link 仅差 query / fragment 判为同一内容。
+func TestGetReportByID_FoldsSameLinkArticleCopies_IgnoresQueryAndFragment(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
+	reportID := seedTestReport(t, db, boardID, now)
+	sectionID := seedTestSection(t, db, reportID, "normalized section")
+
+	first := seedThreadCopyArticle(t, db, 9101, "稿件", "https://Example.com/story?utm_source=rss")
+	second := seedThreadCopyArticle(t, db, 9102, "稿件", "https://example.com/story#reply12")
+	threadID := seedThreadCopyThread(t, db, reportID, sectionID, "归一后同内容线索",
+		[]uint{first, second})
+
+	report, err := repo.GetReportByID(reportID)
+	require.NoError(t, err)
+	require.Len(t, report.Sections, 1)
+	require.Len(t, report.Sections[0].Threads, 1)
+	require.Equal(t, []uint{first}, jsonUintIDs(report.Sections[0].Threads[0].RelatedArticleIDs))
+	require.Equal(t, []uint{first, second}, storedThreadArticleIDs(t, db, threadID))
+}
+
+// TestGetReportByID_LinkQueryFailureKeepsOriginalIDs 覆盖可用性变体「错误态」：
+// 折叠所需的 link 查询失败时降级为原样返回——详情接口不报错、不折叠。
+func TestGetReportByID_LinkQueryFailureKeepsOriginalIDs(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
+	reportID := seedTestReport(t, db, boardID, now)
+	sectionID := seedTestSection(t, db, reportID, "degraded section")
+
+	copyA := seedThreadCopyArticle(t, db, 9201, "稿件", "https://example.com/same-story")
+	copyB := seedThreadCopyArticle(t, db, 9202, "稿件", "https://example.com/same-story")
+	seedThreadCopyThread(t, db, reportID, sectionID, "降级线索", []uint{copyA, copyB})
+
+	// 只让折叠用的 articles 查询失败（GetReportByID 的其它读路径不查 articles）。
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register("test:injected_articles_query_fail", func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "articles" {
+			_ = tx.AddError(errors.New("injected article link query failure"))
+		}
+	}))
+	defer func() {
+		require.NoError(t, db.Callback().Query().Remove("test:injected_articles_query_fail"))
+	}()
+
+	report, err := repo.GetReportByID(reportID)
+	require.NoError(t, err)
+	require.Len(t, report.Sections, 1)
+	require.Len(t, report.Sections[0].Threads, 1)
+	require.Equal(t, []uint{copyA, copyB}, jsonUintIDs(report.Sections[0].Threads[0].RelatedArticleIDs))
+}
+
+// TestGetReportByID_KeepsDanglingArticleIDReference 覆盖变体 #11 的集成层
+// （越界引用）：thread 的 related_article_ids 含一个库里查不到的 article id
+// 时，该 id 原样保留在响应里、详情接口不报错，其余元素照常折叠。
+func TestGetReportByID_KeepsDanglingArticleIDReference(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
+	reportID := seedTestReport(t, db, boardID, now)
+	sectionID := seedTestSection(t, db, reportID, "dangling section")
+
+	copyA := seedThreadCopyArticle(t, db, 9301, "稿件", "https://example.com/same-story")
+	copyB := seedThreadCopyArticle(t, db, 9302, "稿件", "https://example.com/same-story")
+	dangling := uint(987654) // 库里不存在的 article id（越界引用）
+	threadID := seedThreadCopyThread(t, db, reportID, sectionID, "越界引用线索",
+		[]uint{dangling, copyA, copyB})
+
+	report, err := repo.GetReportByID(reportID)
+	require.NoError(t, err)
+	require.Len(t, report.Sections, 1)
+	require.Len(t, report.Sections[0].Threads, 1)
+	// 越界 id 原样保留（内容身份不可判定 → 不参与折叠）；同 link 副本照常折叠。
+	require.Equal(t, []uint{dangling, copyA},
+		jsonUintIDs(report.Sections[0].Threads[0].RelatedArticleIDs))
+	// 落库值仍是原始三个 id（读路径折叠不改库，红线 45）。
+	require.Equal(t, []uint{dangling, copyA, copyB}, storedThreadArticleIDs(t, db, threadID))
+}
+
+// TestGetReportByID_LinkQueryFailureThenRetryFolds 覆盖变体 #16「部分失败后重试」：
+// link 查询失败的那一次降级为不折叠；移除注入后重试必须恢复正常折叠——失败
+// 不污染状态（折叠无共享可变状态，每次读路径都重新加载）。
+func TestGetReportByID_LinkQueryFailureThenRetryFolds(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
+	reportID := seedTestReport(t, db, boardID, now)
+	sectionID := seedTestSection(t, db, reportID, "retry section")
+
+	copyA := seedThreadCopyArticle(t, db, 9401, "稿件", "https://example.com/same-story")
+	copyB := seedThreadCopyArticle(t, db, 9402, "稿件", "https://example.com/same-story")
+	seedThreadCopyThread(t, db, reportID, sectionID, "重试线索", []uint{copyA, copyB})
+
+	// 第一次调用：只让折叠用的 articles 查询失败 → 降级为不折叠。
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register("test:injected_articles_query_fail_retry", func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "articles" {
+			_ = tx.AddError(errors.New("injected article link query failure"))
+		}
+	}))
+
+	degraded, err := repo.GetReportByID(reportID)
+	require.NoError(t, err)
+	require.Len(t, degraded.Sections, 1)
+	require.Len(t, degraded.Sections[0].Threads, 1)
+	require.Equal(t, []uint{copyA, copyB},
+		jsonUintIDs(degraded.Sections[0].Threads[0].RelatedArticleIDs))
+
+	// 移除注入后重试：行为恢复正常（已折叠）。
+	require.NoError(t, db.Callback().Query().Remove("test:injected_articles_query_fail_retry"))
+
+	retried, err := repo.GetReportByID(reportID)
+	require.NoError(t, err)
+	require.Len(t, retried.Sections, 1)
+	require.Len(t, retried.Sections[0].Threads, 1)
+	require.Equal(t, []uint{copyA},
+		jsonUintIDs(retried.Sections[0].Threads[0].RelatedArticleIDs))
 }
 
 func seedTestBoard(t *testing.T, db *gorm.DB) uint {

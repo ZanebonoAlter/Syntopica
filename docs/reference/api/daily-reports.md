@@ -457,6 +457,8 @@ Response `data`：
 
 > **threads 的 display_tier 读取口径（add-event-story-heat）**：thread 落库携带 `display_tier`（`body`=正文默认 / `flash`=快讯（跨期重述降级） / `hidden`=预留）；本端点的 threads 只返回 **`body`** 行——`flash`/`hidden` 本期丢弃不渲染（快讯 UI 是未来工作，列仍可查）。降级只影响展示：flash 行照常落库、signals 照常写、热度不变（详见 `flow/daily-report.md` 约束 44/45）。
 
+> **`related_article_ids` 的折叠语义（dedupe-thread-article-copies）**：本端点返回的每条 thread 的 `related_article_ids` 是**读路径投影**——同一篇内容被两个 feed 各抓一份（同 `link`）时只保留**首个出现**的一条，数组顺序不变；`link` 为空（或归一后为空）、以及库里查不到的 id **不参与折叠**、原样保留。归一口径 = `textutil.NormalizeArticleLink`（去 fragment、去 query、scheme/host 小写），只认「归一 link 相同」这一条信号——同标题不同 URL 的多源转载**不折叠**。落库值 `daily_report_threads.related_article_ids` 不变（仍是该 thread `tag_ids` 对应文章的并集），故响应数组长度可能短于落库值；折叠所需的 link 取不到时降级为原样返回（本端点仍 200）。详见 `flow/daily-report.md` 约束 45。
+
 ## POST `/daily-reports/:id/rebucket`
 
 对「某个 section 所在的泳道内主题桶组」（同一 `report_id` + `cluster_index`）重跑两阶段分桶，整组替换 section 行。属于 add-intra-lane-theme-bucketing。

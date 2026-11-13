@@ -448,6 +448,11 @@ func (r *TopicGraphRepository) GetReportByID(id uint) (*BoardDailyReport, error)
 			report.Sections[i].Threads = []DailyReportThread{}
 		}
 	}
+	// 读路径折叠同内容副本（dedupe-thread-article-copies D1/D4）：同一篇内容
+	// 被两个 feed 各抓一份时，线索的 related_article_ids 会挂两行，读者看到
+	// 「同一篇稿出现两次」。折叠只作用于响应投影，落库值仍是 tag_ids 对应文章
+	// 的并集（红线 45）。
+	report.Sections = r.foldSectionArticleCopies(report.Sections)
 	// Same contract for highlights: rows written before the array contract
 	// (2026-11-03 and earlier) hold a JSON null scalar or SQL NULL, which the
 	// frontend reads as "no content" and hides the whole "今日重点" block.
@@ -456,6 +461,71 @@ func (r *TopicGraphRepository) GetReportByID(id uint) (*BoardDailyReport, error)
 		return nil, err
 	}
 	return &report, nil
+}
+
+// foldSectionArticleCopies 把各 section 线索下的「同一篇内容副本」折叠掉
+// （dedupe-thread-article-copies D1/D4）：一次批量取回本报告引用的全部文章
+// link，在内存里按归一 link 折叠，只留首个出现（保序）。
+//
+// link 取不到时降级为原样返回（不折叠、不阻断详情接口）——详情页宁可多显示
+// 一条重复，也不整页失败。
+func (r *TopicGraphRepository) foldSectionArticleCopies(sections []DailyReportSection) []DailyReportSection {
+	articleIDs := collectThreadArticleIDs(sections)
+	if len(articleIDs) == 0 {
+		return sections
+	}
+	linkByArticleID, err := loadArticleLinksByID(r.db, articleIDs)
+	if err != nil {
+		logging.Warnf("GetReportByID: load article links for thread copy folding failed: %v", err)
+		return sections
+	}
+	for i := range sections {
+		sections[i].Threads = FoldThreadArticleCopies(sections[i].Threads, linkByArticleID)
+	}
+	return sections
+}
+
+// loadArticleLinksByID 批量取文章的 link（折叠键的来源）。
+//
+// 按 ID 反查豁免 archived 过滤（红线 10）：归档只是 feed 活跃窗口轮转，不是
+// 撤回——日报线索引用的文章必须永久可读。
+func loadArticleLinksByID(db *gorm.DB, articleIDs []uint) (map[uint]string, error) {
+	links := make(map[uint]string, len(articleIDs))
+	if len(articleIDs) == 0 {
+		return links, nil
+	}
+	var articles []models.Article
+	if err := db.Model(&models.Article{}).
+		Select("id, link").
+		Where("id IN ?", articleIDs).
+		Find(&articles).Error; err != nil {
+		return nil, fmt.Errorf("load article links: %w", err)
+	}
+	for _, article := range articles {
+		links[article.ID] = article.Link
+	}
+	return links, nil
+}
+
+// collectThreadArticleIDs 收集本报告全部线索引用过的文章 id（去重、升序）。
+func collectThreadArticleIDs(sections []DailyReportSection) []uint {
+	seen := make(map[uint]bool)
+	for _, section := range sections {
+		for _, thread := range section.Threads {
+			for _, id := range jsonUintIDs(thread.RelatedArticleIDs) {
+				seen[id] = true
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	ids := make([]uint, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }
 
 // ListReports returns recent reports for a board.
