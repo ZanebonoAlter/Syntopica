@@ -10,12 +10,16 @@ PersistentTopic（持久叙事话题）：在 SemanticBoard（板块）和 Daily
 
 `status` SHALL 受 CHECK 约束为 candidate/active/archived 三态。`source` SHALL 受 CHECK 约束为 auto/manual 二态，默认 auto（历史数据与自动涌现的 topic 均为 auto）。表 SHALL 在 `(semantic_board_id, status)` 上建 BTree 索引、在 `embedding` 上建 HNSW 索引。
 
+`embedding`（首义向量）SHALL NOT 被算法改写——质心滚动刷新只写 `centroid` 列，SHALL NOT 触碰 `embedding` 列。首义 SHALL 允许**人工显式改写**（用户主权声明），改写 SHALL 留痕于 `topic_anchor_overrides` 追加表（`topic_id`、改写前向量、改写后向量、输入模式、输入摘要、操作者、时间），SHALL NOT 被后续改写覆盖或删除。
+
+表 SHALL 新增 `centroid_pending_recompute`（boolean，非空，默认 false）列，标记该话题的质心需在下一次日报生成时强制重算。标记 SHALL 在该话题质心重算成功后清空，重算失败 SHALL 保留标记以待下次重试。
+
 建表 SHALL 通过显式数据库迁移完成（按开发执行规范 §10），不依赖 gorm AutoMigrate。
 
 #### Scenario: 候选话题创建
 
-- **WHEN** 归属算法判定某 section 无法归属到已有 topic，需新建 PersistentTopic
-- **THEN** 系统 SHALL 创建一行，status=candidate，source=auto，first_seen_date=last_seen_date=当天，hit_count=1，consecutive_hits=1
+- **WHEN** L3 自动新建 candidate topic
+- **THEN** 系统 SHALL 写入首义 embedding（首条命中 section 的内容 embedding）、status=candidate、source=auto、hit_count=1、consecutive_hits=1，且 `centroid_pending_recompute` SHALL 为 false
 
 #### Scenario: 话题状态约束
 
@@ -32,6 +36,17 @@ PersistentTopic（持久叙事话题）：在 SemanticBoard（板块）和 Daily
 - **WHEN** 迁移执行后，历史已存在的 topic 行
 - **THEN** 其 source SHALL 为 auto（迁移默认值），不报错
 
+#### Scenario: 待重算标记默认值与迁移
+
+- **WHEN** 迁移新增 `centroid_pending_recompute` 列
+- **THEN** 历史 topic 行该列 SHALL 为 false（无需回填，不触发额外重算）
+
+#### Scenario: 首义改写留痕追加
+
+- **GIVEN** topic #7 首义为 E0
+- **WHEN** 用户人工改写首义为 E1
+- **THEN** `topic_anchor_overrides` SHALL 追加一行（改前 E0、改后 E1、时间、操作者），历史留痕行 SHALL 保持不变
+
 ### Requirement: DailyReportSection 强制归属 PersistentTopic
 
 `daily_report_sections` SHALL 包含 `persistent_topic_id`（外键到 board_persistent_topics）、`topic_match_distance`、`topic_match_confidence`、`lane_tier` 四列。`topic_match_confidence` SHALL 取值 anchor_hit / auto_new / unmatched / manual。`lane_tier` SHALL 取值 l1_direct / l2_llm / l3_new，标识该 section 的分桶来源。
@@ -44,6 +59,8 @@ PersistentTopic（持久叙事话题）：在 SemanticBoard（板块）和 Daily
 
 embedding 为空时 confidence=unmatched、lane_tier 允许为空、persistent_topic_id 允许为 NULL（仅此例外）。`persistent_topic_id` 列 SHALL NOT 加 NOT NULL 约束。`topic_match_confidence=manual` 表示用户手动改写（非算法判定），lane_tier 保持改写前的值，`topic_match_distance` 为该 section embedding 到所属话题质心的距离。
 
+**人工改写归属 SHALL 同时支持「新建话题」与「归属变更（解除归属 / 加回）」两种路径**（后者见 lane-manual-correction 能力）。解除归属时，`persistent_topic_id` / `topic_match_distance` / `topic_match_confidence` / `topic_status_at_report` SHALL 写为 NULL（不再归属任何泳道）；加回时 `persistent_topic_id` 写为目标话题、`topic_match_confidence` 写为 `manual`、`topic_match_distance` 为到目标话题锚点的实算距离、`topic_status_at_report` 写为 NULL。两种方向的 `lane_tier` SHALL 保持原值。归属变更 SHALL NOT 变更任何话题的命中计数与状态，SHALL 在事务末尾触发 `RebuildBoardRelations`，并 SHALL 将受影响的话题标记为待重算质心。
+
 归属判定 SHALL 在 section 生成阶段完成（section 天生挂 topic），不再有事后 section 标题↔topic 匹配环节。
 
 **一篇日报内同一 topic MAY 拥有多条 section**（泳道内主题分桶拆分、手动编排、watch 物化）。此类兄弟 section SHALL 各自独立持有归属列与各自的 `topic_match_distance`；话题命中计数 SHALL 按「该篇日报是否命中」去重（同一日报内多条只算一次），SHALL NOT 按 section 条数累加；质心刷新 SHALL 按 section 逐条计入窗口，SHALL NOT 对同日同话题的多条 section 做特殊去重。
@@ -51,65 +68,67 @@ embedding 为空时 confidence=unmatched、lane_tier 允许为空、persistent_t
 #### Scenario: L1 直挂命中（质心强匹配）
 
 - **GIVEN** board 有 active topic「Claude Code 工具链崛起」，当天 tag「Claude Code 模型选型」到该 topic 质心距离 0.12
-- **WHEN** 系统执行三层分桶
-- **THEN** 该 tag 所属 section SHALL 归属该 topic，lane_tier=l1_direct，topic_match_confidence=anchor_hit，不调用 LLM
+- **WHEN** 系统做泳道分桶
+- **THEN** 该 section SHALL 归属该 topic，topic_match_confidence=anchor_hit，lane_tier=l1_direct
 
 #### Scenario: candidate 近距离降级 L2（观察期门禁）
 
 - **GIVEN** board 有 candidate topic「伊朗议长透露凌晨应急决断」（一次性新闻标题），当天 tag「伊朗代防长发表强硬言论」到该 topic 质心距离 0.08，门禁开关启用
-- **WHEN** 系统执行三层分桶
-- **THEN** 该 tag SHALL 进入 L2 band 交 LLM 裁决，SHALL NOT 直挂；LLM 判「新」时转 L3，当日该 candidate 无其他命中时不刷新 last_seen_date
+- **WHEN** 系统做泳道分桶
+- **THEN** 该 tag SHALL 进入 L2 band，SHALL NOT 直挂该 candidate topic
 
 #### Scenario: 门禁开关关闭回退旧行为
 
-- **GIVEN** 同上场景但 `persistent_topic_candidate_l1_gate_enabled=false`
-- **WHEN** 系统执行三层分桶
-- **THEN** candidate topic 近距离 tag SHALL 按 L1 直挂（旧行为）
+- **GIVEN** `persistent_topic_candidate_l1_gate_enabled=false`
+- **WHEN** 某 tag 到 candidate topic 质心距离小于 L1 阈值
+- **THEN** 系统 SHALL 允许直挂该 candidate topic（回退旧行为）
 
 #### Scenario: vacuum active 不直挂（既有规则保持）
 
 - **GIVEN** active topic X 被标记 is_vacuum，某 tag 到 X 质心距离 0.10
-- **WHEN** 系统执行三层分桶
-- **THEN** 该 tag SHALL 进入 L2 band（vacuum 降级规则不变）
+- **WHEN** 系统做泳道分桶
+- **THEN** 该 tag SHALL NOT 直挂 X，SHALL 降级进入 L2 band
 
 #### Scenario: L2 弱区 LLM 裁决留/换/新
 
 - **GIVEN** 当天 tag「特斯拉工业扩张」到最近 topic 质心距离 0.25（落在 L2 弱区）
-- **WHEN** 系统将 tag 与 top-K 候选 topic 交 LLM
-- **THEN** LLM SHALL 输出留/换/新三选一；选「留」归属候选 topic（anchor_hit），选「换」归属指定 topic（须在候选集内），选「新」转 L3
+- **WHEN** 系统交 LLM 裁决
+- **THEN** 系统 SHALL 依据 LLM 的留/换/新输出归属，confidence=anchor_hit
 
 #### Scenario: L2 裁决中观察中话题从严判断
 
-- **GIVEN** L2 裁决 prompt 含 candidate topic「伊朗议长透露凌晨应急决断」（状态标注"观察中"）及其近期 section 的实际 tag 标签（与当日 tag 语义无关）
-- **WHEN** LLM 裁决当日 tag 的归属
-- **THEN** prompt SHALL 已指示 LLM 依据候选话题近期实际内容从严判断；无近期内容支撑的一次性标题话题不应仅凭域相近 keep
+- **GIVEN** 候选集中含 candidate 话题
+- **WHEN** LLM 裁决
+- **THEN** 系统 SHALL 对观察中话题从严判断
 
 #### Scenario: L2 keep 显式指定候选集内话题尊重归属
 
-- **GIVEN** 某 tag 最近候选为 candidate topic #1032（距离 0.10），候选集含 active topic #1151（距离 0.12）
-- **WHEN** LLM 输出 `{"decision":"keep","target_topic_id":1151}`
-- **THEN** 系统 SHALL 将该 tag 归属 #1151（尊重 LLM 显式指定），SHALL NOT 改写回最近候选 #1032
+- **GIVEN** LLM 输出 keep 且显式给出候选集内另一 target_topic_id
+- **WHEN** 系统解析裁决结果
+- **THEN** 系统 SHALL 归属该显式指定话题，SHALL NOT 无条件吸附回最近候选
 
 #### Scenario: L2 keep 集外/空 target 维持最近候选
 
-- **WHEN** LLM 输出 keep 但 target_topic_id 为空或指向候选集外话题
-- **THEN** 系统 SHALL 归属最近候选（安全网），SHALL NOT 降级 new（不同于集外 switch 的降级规则）
+- **GIVEN** LLM 输出 keep 但 target 为空或不在候选集内
+- **WHEN** 系统解析裁决结果
+- **THEN** 系统 SHALL 归属最近候选话题，SHALL NOT 降级为新建
 
 #### Scenario: L3 新建候选（质心挂不上）
 
 - **GIVEN** 当天 tag「商务部出口管制清单」到所有 topic 质心距离均 > 0.30
-- **WHEN** 系统执行三层分桶
-- **THEN** 系统 SHALL 新建 candidate topic 归属，lane_tier=l3_new，topic_match_confidence=auto_new
+- **WHEN** 系统做泳道分桶
+- **THEN** 系统 SHALL 新建 candidate topic 归属，topic_match_confidence=auto_new
 
 #### Scenario: L2 LLM 指定 topic 超出候选集降级
 
-- **WHEN** L2 裁决中 LLM 输出「换」且目标 topic 不在预筛候选集
-- **THEN** 系统 SHALL 将其视为「新」，转 L3 新建 candidate，并在 section 元数据标注 `llm_target_off_shortlist=true`
+- **GIVEN** LLM 输出的 target_topic_id 不在候选集内
+- **WHEN** 系统解析裁决结果
+- **THEN** 系统 SHALL 降级处理，SHALL NOT 归属集外话题
 
 #### Scenario: embedding 为空标记未匹配
 
 - **WHEN** section embedding 为空
-- **THEN** 系统 SHALL 设置 topic_match_confidence=unmatched，lane_tier 为空，persistent_topic_id 保持 NULL
+- **THEN** topic_match_confidence=unmatched，lane_tier 为空，persistent_topic_id 为 NULL
 
 #### Scenario: 手动改写归属
 
@@ -117,11 +136,22 @@ embedding 为空时 confidence=unmatched、lane_tier 允许为空、persistent_t
 - **WHEN** 用户在编排态将 section #123 串联进手动新建的 topic #20
 - **THEN** 系统 SHALL 将 persistent_topic_id 改写为 20，topic_match_confidence=manual，lane_tier 保持 l1_direct，topic_match_distance=该 section embedding 到 #20 质心的距离
 
+#### Scenario: 手动解除归属
+
+- **GIVEN** section #123 的 persistent_topic_id=8（lane_tier=l1_direct, confidence=anchor_hit）
+- **WHEN** 用户将 section #123 从 #8 移除
+- **THEN** 系统 SHALL 将 persistent_topic_id / topic_match_distance / topic_match_confidence / topic_status_at_report 写为 NULL，lane_tier 保持 l1_direct，SHALL 记录归属变更留痕，SHALL 在事务末尾触发 RebuildBoardRelations，SHALL 将 #8 标记为待重算质心
+
+#### Scenario: 手动加回被移除的节点
+
+- **GIVEN** section #123 当前不归属任何泳道（曾被从 #8 移除）
+- **WHEN** 用户把 #123 加回 topic #8
+- **THEN** 系统 SHALL 将 persistent_topic_id 写为 8、topic_match_confidence 写为 manual、topic_match_distance 写为 #123 embedding 到 #8 锚点的实算距离、topic_status_at_report 写为 NULL，lane_tier 保持原值，SHALL 记录归属变更留痕（动作 attach），SHALL 将 #8 标记为待重算质心
+
 #### Scenario: 同日多条 section 只记一次命中
 
-- **GIVEN** topic #502 在某篇日报内被拆成 3 条 section（bucket_index 0/1/2），当日该话题再无其他 section
-- **WHEN** 系统执行生命周期更新
-- **THEN** topic #502 的 `hit_count` SHALL 只 +1，`consecutive_hits` SHALL 只 +1，`last_seen_date` SHALL = 该日报日期
+- **WHEN** 同一日报内同一 topic 命中多条 section
+- **THEN** 命中计数 SHALL 只按该日报计一次，SHALL NOT 按 section 条数累加
 
 #### Scenario: 质心按 section 逐条计入
 
@@ -294,11 +324,12 @@ section 的 emerging/continuing/split/merge/ending 状态 SHALL 只由 similarit
 
 ### Requirement: 配置项
 
-系统 SHALL 在 ai_settings 新增以下配置项（含默认值）：
+系统 SHALL 在 ai_settings 新增/维护以下配置项（含默认值；α 为线性混合权重，匹配走 cosine 角度，实际锚定效果因滚动均值模长收缩而略强于标称比例）：
 - `persistent_topic_match_threshold`：0.30（section 命中 topic 的 embedding distance 上限）
 - `persistent_topic_upgrade_threshold`：3（candidate 连续命中天数转 active）
-- `persistent_topic_decay_window`：30（active 无命中转 archived 的天数）
+- `persistent_topic_decay_window`：30（active 无命中转 archived 的天数；迁移种子遗留 key，代码实际读 `persistent_topic_candidate_decay_window`，仅作 prompt 候选过滤）
 - `persistent_topic_cluster_threshold`：0.30（回刷时历史 section 聚类成 topic 的阈值）
+- `persistent_topic_centroid_anchor_weight`：0.5（质心混合的首义权重 α；0=纯滚动旧行为，1=纯首义冻结；非法值回退默认并告警）
 
 #### Scenario: 读取默认配置
 
@@ -309,6 +340,11 @@ section 的 emerging/continuing/split/merge/ending 状态 SHALL 只由 similarit
 
 - **WHEN** ai_settings 设置 persistent_topic_upgrade_threshold=5
 - **THEN** candidate 连续命中 5 天才转 active
+
+#### Scenario: 自定义锚定权重
+
+- **WHEN** ai_settings 设置 persistent_topic_centroid_anchor_weight=0.3
+- **THEN** 质心混合 SHALL 采用 α=0.3（首义 30% + 滚动均值 70%）
 
 ### Requirement: 手动建持久化话题
 
@@ -429,25 +465,29 @@ candidate→active 的激活门禁 SHALL 基于**累计命中次数**（`hit_cou
 
 ### Requirement: PersistentTopic 质心表示
 
-PersistentTopic 的 embedding 匹配锚点 SHALL 为「历史 section embedding 质心」，而非首条 section 标题继承的首义向量。质心 SHALL 按 `centroid_window`（默认最近 30 条 section，ai_settings 可配）加权计算，section 新增或归属变更时增量更新。质心 SHALL 物化存储于 `board_persistent_topics.centroid` 列（与 embedding 同维度），首次部署按历史 section embedding 离线构建一次。
+PersistentTopic 的 embedding 匹配锚点 SHALL 为「首义向量与滚动质心的加权混合」：`centroid = α·首义 embedding + (1-α)·最近 centroid_window 条命中 section embedding 等权均值`。α = `persistent_topic_centroid_anchor_weight`（默认 0.5，ai_settings 可配，见配置项）。manual 话题的首义为创建时所选 section 的均值向量，auto 话题的首义为首条命中 section 的内容 embedding——两者均持久化于 `board_persistent_topics.embedding`。
 
-section embedding SHALL 基于 section 实际聚合内容生成（见 section-content-embedding 能力），因此质心 SHALL 随话题下 section 的实际内容漂移：当被归因的 section 内容偏离话题标题语义时，质心 SHALL 被拉向实际内容方向，使后续与该内容无关的 tag 匹配距离增大，脱离 L1/L2 匹配带。
+**首义 SHALL NOT 被算法改写**（算法只写 `centroid` 列）；首义 SHALL 允许**人工显式改写并留痕**（见「PersistentTopic 持久化数据模型」）。质心 SHALL 物化存储于 `board_persistent_topics.centroid` 列（与 embedding 同维度），section 新增或归属变更时增量更新。漂移 SHALL 有界：质心随话题下 section 的实际内容自适应移动（保留内容漂移打破标题回声闭环的能力），但首义以 α 权重持续锚定，滑出窗口的历史 section 不再使锚点脱离话题创建定义——防止宽口径话题质心漂移为「泛新闻磁铁」。
 
-新建 candidate 话题的首义 embedding（`board_persistent_topics.embedding`）SHALL 取该 section 的内容化 embedding（L3 归因时 section embedding 即内容向量），不再继承标题文本向量。
+质心刷新范围 SHALL 为「当日 touched 话题」∪「`centroid_pending_recompute=true` 的话题」。后者保证人工修正（重设首义、移除节点、加回节点）在该话题**当日无新内容命中**时同样生效。
 
-历史 section 数 < 2 的 topic，质心退化为首义向量（等价于现有 embedding 列语义）。
+首义 embedding 与滚动均值维度不一致、或首义为空/不可解析时，质心 SHALL 回退为纯滚动均值（记警告日志，不阻塞刷新）。历史 section 数 <2 的 topic，质心退化为首义向量（等价于现有 embedding 列语义）。
+
+系统 SHALL 提供存量质心重算入口（`POST /api/daily-reports/recompute-topic-centroids`，可选 board_id 过滤，异步执行、幂等可重跑），按当前公式与配置重算既有话题质心；用于公式升级后的一次性存量纠正。该入口 SHALL 是唯一的质心重算触发方式——系统 SHALL NOT 提供「立即重算某话题质心」的人工触发端点。
+
+section embedding SHALL 基于 section 实际聚合内容生成（见 section-content-embedding 能力）。
 
 #### Scenario: 质心按近期 section 计算
 
-- **GIVEN** topic「Claude Code 工具链崛起」有历史 section 40 条
+- **GIVEN** topic「Claude Code 工具链崛起」有历史 section 40 条，首义 embedding 为 E0，最近 30 条 section 均值为 M，α=0.5
 - **WHEN** 系统计算其质心
-- **THEN** 系统 SHALL 取最近 30 条 section embedding 加权平均作为 centroid，centroid_window 之外的 section 不参与
+- **THEN** centroid SHALL = 0.5·E0 + 0.5·M（按元素加权），centroid_window 之外的 section 不参与 M
 
 #### Scenario: 质心随内容漂移
 
-- **GIVEN** topic「美军机从以色列境内基地起飞对伊朗实施打击」质心原锚定标题语义，连续两日被归因了「阿联酋与伊朗贸易」相关 section（内容 embedding 与标题语义距离约 0.24）
+- **GIVEN** topic「美军机从以色列境内基地起飞对伊朗实施打击」质心原锚定首义方向，连续两日被归因了「阿联酋与伊朗贸易」相关 section（内容 embedding 与首义语义距离约 0.24），α=0.5
 - **WHEN** 质心重算
-- **THEN** 新质心 SHALL 向阿联酋贸易内容方向移动，后续「美军机打击伊朗」类 tag 到该质心的距离 SHALL 大于原值（标题回声闭环被打破）
+- **THEN** 新质心 SHALL 向阿联酋贸易内容方向移动（内容漂移仍生效、标题回声闭环仍被打破），但移动幅度 SHALL 不超过纯滚动均值位移的 (1-α)，质心到首义的距离 SHALL 保持有界
 
 #### Scenario: section 不足退化首义向量
 
@@ -459,7 +499,48 @@ section embedding SHALL 基于 section 实际聚合内容生成（见 section-co
 
 - **GIVEN** 新 section 归属 topic「X」
 - **WHEN** section 持久化
-- **THEN** topic X 的 centroid SHALL 增量重算（纳入新 section，窗口溢出的旧 section 淘汰）
+- **THEN** topic X 的 centroid SHALL 增量重算（新公式混合，纳入新 section，窗口溢出的旧 section 淘汰）
+
+#### Scenario: 首义不可用时回退纯滚动
+
+- **GIVEN** topic 的 embedding 列为 NULL 或与滚动均值维度不一致，有 5 条可解析历史 section
+- **WHEN** 系统计算其质心
+- **THEN** centroid SHALL 等于滚动窗口均值（无首义混合），并 SHALL 记录警告日志
+
+#### Scenario: 锚定权重配置边界
+
+- **WHEN** ai_settings 设置 persistent_topic_centroid_anchor_weight=0（或 1）
+- **THEN** 质心 SHALL 分别退化为纯滚动均值（旧行为）/ 纯首义（话题冻结）
+
+#### Scenario: 存量质心重算
+
+- **GIVEN** 部署混合公式后，存量话题质心仍为旧公式（纯滚动）产物
+- **WHEN** 调用 POST /api/daily-reports/recompute-topic-centroids
+- **THEN** 全部（或指定 board）话题质心 SHALL 按新公式与当前配置重算；重复调用 SHALL 幂等（同输入同输出）；单个话题重算失败 SHALL 不中断其余话题
+
+#### Scenario: 待重算标记强制纳入刷新范围
+
+- **GIVEN** topic #7 的 `centroid_pending_recompute=true`，但当日无任何 section 命中 #7
+- **WHEN** 当日日报生成后的质心刷新轮执行
+- **THEN** #7 SHALL 被纳入刷新范围并按当前首义与滚动窗口重算，SHALL NOT 因不在 touched 集合而漏算
+
+#### Scenario: 重算成功后清标记
+
+- **GIVEN** topic #7 的 `centroid_pending_recompute=true`
+- **WHEN** #7 质心重算成功
+- **THEN** `centroid_pending_recompute` SHALL 被置为 false
+
+#### Scenario: 重算失败保留标记
+
+- **GIVEN** topic #7 的 `centroid_pending_recompute=true`
+- **WHEN** #7 质心重算失败
+- **THEN** `centroid_pending_recompute` SHALL 保持 true，SHALL NOT 静默清除，SHALL NOT 中断其余话题的刷新
+
+#### Scenario: 首义不被算法改写
+
+- **GIVEN** topic #7 的 `embedding` 列为 E
+- **WHEN** 质心刷新轮执行
+- **THEN** 系统 SHALL 只更新 `centroid` 列，SHALL NOT 修改 `embedding` 列
 
 ### Requirement: 吸尘器 topic 检测
 
