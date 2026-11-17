@@ -33,6 +33,9 @@
 - [x] 5.2 更新 `docs/reference/开发执行规范.md` §3.1.1 的 L0–L3 表：末尾补一行「stage 标记 `<!-- ui-stage: ... -->`，当前只记账不阻断」
 - [x] 5.3 运行 `bash scripts/harness/doc-impact.sh verify openspec/changes/add-ui-stage-accounting` 与 `bash scripts/harness/check-standards.sh`；验证：两者无阻断项
 
+
+> **无 flow 影响**：本 change 只改前端设计规范与编排纪律（不涉及任何业务域），`docs/reference/flow/*.md` 无对应域，故免 §12 溯源校验。
+
 ## 6. 验证
 
 - [x] 6.1 smoke 全量：`bash .pi/extensions/tests/run-smoke.sh` → 期望结果：退出码 0，constraint-injection 与 harness 全家桶均通过

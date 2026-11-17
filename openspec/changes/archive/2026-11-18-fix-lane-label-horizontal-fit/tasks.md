@@ -33,7 +33,7 @@
 ## 6. 验证
 
 - [x] 6.1 `bash scripts/dev/deploy-frontend.sh` 构建并铺盘（产物 13:43），后端重启后 `/health` 200
-- [ ] 6.2 用户实机确认横向滚动与标签可读性
+- [x] 6.2 用户实机确认横向方案通过（「可以」），并据此另开 `make-range-controls-collapsible` 处理时间视窗占位
 
 | Scenario | 测试文件 |
 | --- | --- |

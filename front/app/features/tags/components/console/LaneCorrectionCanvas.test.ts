@@ -430,6 +430,25 @@ describe('LaneCorrectionCanvas · 成员区行距按节点占高（fix-lane-row-
 
   const dayList = (n: number) => Array.from({ length: n }, (_, i) => `2026-11-${String(i + 1).padStart(2, '0')}`)
 
+  it('4.8 同一天两个成员：两条标签都在场（标签框不得碰到同列下一个圆）', () => {
+    const w = mountCanvas({
+      dates: ['2026-11-10'],
+      memberNodes: [
+        node('m1', '2026-11-10', '第一个成员的长标题'),
+        node('m2', '2026-11-10', '第二个成员的长标题'),
+      ],
+      candidateNodes: [],
+      readonlyNodes: [],
+      foldNodes: [],
+    })
+    // 两个成员各渲染自己的标签；若行距不足，上方标签会被 circleHit 判成压住
+    // 下方圆而整条跳过（review A-R-1 的回归锚）
+    const texts = w.findAll('text.lcc-label').map(el => el.text() ?? '')
+    expect(texts.length).toBeGreaterThanOrEqual(2)
+    expect(texts.some(v => v.includes('第一个'))).toBe(true)
+    expect(texts.some(v => v.includes('第二个'))).toBe(true)
+  })
+
   it('4.6 列宽有下限：天数多时撑宽画布横向滚动，而不是继续压缩列宽', () => {
     const seven = mountCanvas({
       dates: dayList(7),

@@ -301,3 +301,78 @@ TBD - created by archiving change lane-manual-correction-loop. Update Purpose af
 - **WHEN** 用户滚轮放大到 200%
 - **THEN** 坐标间距与节点尺寸 SHALL 同比放大（比值不变），重叠若在 100% 存在则放大后仍存在
 - **AND** 100% 缩放下 MUST 已无重叠（由「同一日期的成员节点不得重叠」保证）
+
+### Requirement: 修正画布标签不得越出所在列
+
+修正画布 SHALL 保证**每个标题标签的横向宽度不超过它所在列的列宽**，从而不可能
+压到其它列的节点圆或标签：
+
+- 列宽 SHALL 有下限（`MIN_COLUMN_WIDTH` = 64px）；当天数多到均分低于下限时，画布
+  宽度 SHALL 按「下限 × 天数 + 边距」撑开，由容器**横向滚动**承接，SHALL NOT 继续
+  压缩列宽。
+- 标签每行字数 SHALL 由列宽推导（`floor((列宽 − 内边距) / 字号)`，上限 10 字、下限
+  2 字（防御性，列宽 ≥64px 时不可达）），SHALL NOT 使用与列宽无关的固定字数。
+- 标签落位 SHALL 另外检测与其它节点圆的相交，冲突时跳过（宁缺勿叠）。
+- 画布缩放 SHALL NOT 被当作解决横向拥挤的手段：缩放在列宽与标签上同比生效，
+  比值不变。
+
+#### Scenario: 天数多时撑宽画布而非压缩列宽
+
+- **WHEN** 容器宽 900px、可见天数 30（均分列宽仅 ≈24px，低于 64px 下限）
+- **THEN** 画布宽度 SHALL 撑到 `150 + 64×30 + 28 ≈ 2098px`，由容器横向滚动承接
+- **AND** 7 天档（均分 ≈103px ≥ 下限）画布宽 SHALL 仍等于视口宽 900px，不出现横向滚动
+
+#### Scenario: 标签宽度不超过所在列宽
+
+- **WHEN** 列宽 64px、标签字号 11px
+- **THEN** 每行字数 SHALL ≤ `floor((64−6)/11) = 5`，标签框宽 ≈61px ≤ 64px
+- **AND** 因此任一标签的横向范围 SHALL 落在自身列内，不得与他人列相交
+
+#### Scenario: 标签不压其它列节点圆
+
+- **WHEN** 某标签框与另一个节点圆（圆心 ± 半径）相交
+- **THEN** 该标签 SHALL 被跳过不渲染（宁缺勿叠），SHALL NOT 压在圆上
+
+#### Scenario: 放大不改变横向拥挤比值
+
+- **WHEN** 用户滚轮放大 1.1 倍
+- **THEN** 列宽与标签宽度 SHALL 同比 ×1.1，二者比值不变
+- **AND** 因此放大 SHALL NOT 被依赖为横向解拥挤手段（与纵向行距同一结论）
+
+### Requirement: 时间视窗可折叠为一行摘要
+
+时间视窗控件 SHALL 提供折叠/展开能力：
+
+- 标题行 SHALL 是可点击的折叠开关，带 `aria-expanded` 与方向指示（▾ 展开 / ▸ 收起）。
+- 折叠时 SHALL 只渲染一行摘要，内容为「时间视窗 · <当前档位> · <起始 MM-DD>~<结束 MM-DD>」；
+  档位按钮、日期表单、图注、趋势曲线、操作说明、反馈行 SHALL 全部隐藏。
+- 默认态 SHALL 为：**窄视口（<768px）收起、宽屏展开**。
+- 用户手动切换后 SHALL 记住该选择（`localStorage`），且手动选择 SHALL 优先于窄屏默认。
+- 折叠 SHALL NOT 改变受控语义：`range` / `sourceDays` / `series` 仍由上层给定，
+  折叠只是视觉收起，SHALL NOT 触发任何 `preview` / `commit` / `source-change` 事件。
+
+#### Scenario: 折叠后只留一行摘要
+
+- **WHEN** 用户在宽屏点击标题行收起
+- **THEN** 控件高度 SHALL 从约 260–300px 降为单行（约 32–36px）
+- **AND** 该行 SHALL 显示当前档位与起止日（如「时间视窗 · 近 30 天 · 10-19~11-17」）
+- **AND** 档位按钮、日期表单、趋势曲线 SHALL 不可见且不可 Tab 聚焦
+
+#### Scenario: 窄屏默认收起、宽屏默认展开
+
+- **WHEN** 视口宽度 < 768px 且用户未做过手动选择
+- **THEN** 控件 SHALL 默认处于收起态
+- **WHEN** 视口宽度 ≥ 768px 且用户未做过手动选择
+- **THEN** 控件 SHALL 默认处于展开态
+
+#### Scenario: 手动选择覆盖默认并持久化
+
+- **WHEN** 用户在窄屏手动展开控件
+- **THEN** 刷新页面后 SHALL 仍保持展开（手动选择优先于窄屏默认）
+- **AND** 切到宽屏后 SHALL 同样保持该选择
+
+#### Scenario: 折叠不触发范围变更
+
+- **WHEN** 用户点击标题行切换折叠态
+- **THEN** SHALL NOT 触发 `preview` / `commit` / `source-change`
+- **AND** 当前 `range` 与 `sourceDays` SHALL 保持不变

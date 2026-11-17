@@ -125,7 +125,7 @@ const LABEL_TOP_GAP = 5
 /** 节点卡宽度固定（绝对定位卡片量宽会形成塌缩反馈环）。 */
 const CARD_WIDTH = 264
 /** 标题每行字数 / 最多行数（两行截断，title 属性给全名）。 */
-/** 每行最多多少字（上限；实际按列宽收窄，见 labelPerLine）。 */
+/** 每行最多多少字（硬上限；实际按列宽收窄，见 labelPerLine）。 */
 const LABEL_PER_LINE_MAX = 10
 /** 标签字号（px）；须与 `.lcc-label { font-size }` 一致。 */
 const LABEL_FONT_SIZE = 11
@@ -136,7 +136,14 @@ const LABEL_LINE_H = 12
  * 行距必须≥它，否则上一个节点的标签会压在下一个节点的圆上——
  * 这才是“同一天多节点拥挤”的真因（半径 5.5 直径 11 本身不重叠）。
  */
-const NODE_BLOCK_H = MEMBER_BASE_RADIUS * 2 + LABEL_TOP_GAP + LABEL_MAX_LINES * LABEL_LINE_H
+/**
+ * 单个节点纵向占高（圆顶 → 标签**框**底）。
+ * 必须含标签框自带的 4px 内边距（`labels` 里 height = lines*LINE_H + 4），
+ * 否则行距会让标签框底与下一圆顶**恰好相切**，`circleHit` 的 >= 判断
+ * 进而把同列下一个圆判成相交，把标题整套吞掉（review A-R-1）。
+ */
+const LABEL_BOX_PAD = 4
+const NODE_BLOCK_H = MEMBER_BASE_RADIUS * 2 + LABEL_TOP_GAP + LABEL_MAX_LINES * LABEL_LINE_H + LABEL_BOX_PAD
 
 const containerRef = ref<HTMLElement | null>(null)
 const containerWidth = ref(0)
@@ -529,6 +536,7 @@ function wrapTitle(text: string, perLine: number): string[] {
  */
 const labelPerLine = computed(() => {
   const usable = columnWidth.value - 6 // 留 3px/侧 内边距
+  // 下限 2 是防御性兜底：columnWidth 恒 ≥ MIN_COLUMN_WIDTH(64)，实际最少得 5，此分支不可达。
   return Math.max(2, Math.min(LABEL_PER_LINE_MAX, Math.floor(usable / LABEL_FONT_SIZE)))
 })
 
@@ -569,7 +577,7 @@ const labels = computed<PlacedLabel[]>(() => {
     const lines = wrapTitle(node.title, labelPerLine.value)
     if (!lines.length) continue
     const width = estimateTextWidth(lines[0] ?? '', LABEL_FONT_SIZE) + 6
-    const height = lines.length * LABEL_LINE_H + 4
+    const height = lines.length * LABEL_LINE_H + LABEL_BOX_PAD
     const box = {
       x1: point.x - width / 2,
       x2: point.x + width / 2,
@@ -580,10 +588,11 @@ const labels = computed<PlacedLabel[]>(() => {
     if (box.y2 > canvasHeight.value - 8) continue
     const hit = placed.some(other => !(box.x2 < other.x1 || box.x1 > other.x2 || box.y2 < other.y1 || box.y1 > other.y2))
     if (hit) continue
+    // 严格相交才算冲突（相切 0px 不压字，避免边界值把正常标签判掉）
     const circleHit = circles.some(c =>
       c.id !== node.id
-      && box.x2 >= c.x - c.r && box.x1 <= c.x + c.r
-      && box.y2 >= c.y - c.r && box.y1 <= c.y + c.r)
+      && box.x2 > c.x - c.r && box.x1 < c.x + c.r
+      && box.y2 > c.y - c.r && box.y1 < c.y + c.r)
     if (circleHit) continue
     placed.push(box)
     out.push({ id: node.id, lines, x: point.x, y: box.y1 })
@@ -1391,13 +1400,24 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
 }
 
 .lcc-zoom button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
   border: 1px solid var(--color-border-medium);
-  border-radius: 3px;
+  border-radius: 4px;
   background: transparent;
   color: inherit;
-  font-size: 11px;
-  padding: 0 6px;
+  font-size: 17px;
+  line-height: 1;
+  padding: 0 4px;
   cursor: pointer;
+}
+
+.lcc-zoom button:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .lcc-zoom__readout {

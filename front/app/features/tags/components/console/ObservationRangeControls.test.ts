@@ -492,6 +492,14 @@ describe('ObservationRangeControls 折叠', () => {
     expect(summaryOf(w).exists()).toBe(false)
   })
 
+  it('C6 展开态仍有「时间视窗」标题，且开关按钮只写「收起」（不吞标题）', () => {
+    const w = mountControls().wrapper
+    expect(w.text()).toContain('时间视窗')
+    const toggle = toggleOf(w)
+    expect(toggle.text()).toContain('收起')
+    expect(toggle.text()).not.toContain('时间视窗')
+  })
+
   it('C2 点击收起源：摘要含档位与起止日（MM-DD），主体不可见', async () => {
     const w = mountControls().wrapper
     await toggleOf(w).trigger('click')

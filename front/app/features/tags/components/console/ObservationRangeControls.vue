@@ -294,33 +294,43 @@ const feedback = computed(() => {
     data-testid="observation-range-controls"
   >
     <div class="orc-head">
+      <template v-if="!collapsed">
+        <span class="orc-title">时间视窗</span>
+        <div class="orc-tiers" role="group" aria-label="独立数据档（决定名单与排序）">
+          <button
+            v-for="days in tiers"
+            :key="days"
+            type="button"
+            class="orc-chip orc-tier"
+            :class="{ 'is-active': days === sourceDays }"
+            :aria-pressed="days === sourceDays"
+            :disabled="disabled"
+            @click="emit('source-change', days)"
+          >{{ days === 365 ? '近 1 年' : `${days} 天` }}</button>
+        </div>
+        <span class="orc-sub">Asia/Shanghai · 含起止日</span>
+      </template>
+      <!-- 折叠开关：始终是同一个元素（切换不销毁 → 焦点不丢）；
+           折叠态独占整行（左侧 template 不渲染，带上标题与摘要），
+           展开态靠 margin-left:auto 推到最右。 -->
       <button
         type="button"
         class="orc-toggle"
-        :aria-expanded="!collapsed"
+        :class="{ 'orc-toggle--collapsed': collapsed }"
+        :aria-expanded="String(!collapsed)"
         :aria-controls="bodyId"
         data-testid="observation-range-toggle"
         @click="toggleCollapsed"
       >
-        <span class="orc-title">时间视窗</span>
-        <span v-if="collapsed" class="orc-summary" data-testid="observation-range-summary">{{ rangeSummary }}</span>
-        <span class="orc-chevron" aria-hidden="true">{{ collapsed ? '▸' : '▾' }}</span>
+        <template v-if="collapsed">
+          <span class="orc-title">时间视窗</span>
+          <span class="orc-summary" data-testid="observation-range-summary">{{ rangeSummary }}</span>
+          <span class="orc-chevron" aria-hidden="true">▸</span>
+        </template>
+        <template v-else>
+          收起<span class="orc-chevron" aria-hidden="true">▴</span>
+        </template>
       </button>
-      <template v-if="!collapsed">
-      <div class="orc-tiers" role="group" aria-label="独立数据档（决定名单与排序）">
-        <button
-          v-for="days in tiers"
-          :key="days"
-          type="button"
-          class="orc-chip orc-tier"
-          :class="{ 'is-active': days === sourceDays }"
-          :aria-pressed="days === sourceDays"
-          :disabled="disabled"
-          @click="emit('source-change', days)"
-        >{{ days === 365 ? '近 1 年' : `${days} 天` }}</button>
-      </div>
-      <span class="orc-sub">Asia/Shanghai · 含起止日</span>
-      </template>
     </div>
 
     <div :id="bodyId" v-show="!collapsed">
@@ -414,7 +424,6 @@ const feedback = computed(() => {
       <p v-else-if="!series || series.length === 0" class="orc-series-state" data-testid="observation-range-no-series">
         365 日池趋势未取到（不影响日期选择，不补 0）。
       </p>
-      <p class="orc-instruction">日期轴 · 拖动选区 / 两端 · 方向键逐日，Shift 逐周</p>
       <p class="orc-feedback" role="status" data-testid="observation-range-feedback">{{ feedback }}</p>
     </template>
     </div>
@@ -431,14 +440,38 @@ const feedback = computed(() => {
 .orc-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0;
-  border: 0;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
   background: none;
   color: inherit;
   font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.72;
   cursor: pointer;
   text-align: left;
+  white-space: nowrap;
+}
+
+.orc-toggle:hover {
+  opacity: 1;
+}
+
+/* 展开态：推到最右，不与标题/档位挤在一起 */
+.orc-toggle {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* 折叠态：整行即开关（去掉按钮外观，保留可点与焦点环） */
+.orc-toggle--collapsed {
+  margin-left: 0;
+  padding: 0;
+  border: 0;
+  font-size: inherit;
+  opacity: 1;
 }
 
 .orc-toggle:focus-visible {
@@ -456,9 +489,9 @@ const feedback = computed(() => {
 }
 
 .orc-chevron {
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
-  opacity: 0.6;
+  opacity: 0.75;
 }
 
 .orc.is-collapsed {
@@ -586,12 +619,6 @@ const feedback = computed(() => {
 }
 
 .orc-series-state,
-.orc-instruction {
-  margin: 6px 0 0;
-  font-size: 12px;
-  color: var(--color-text-muted);
-}
-
 .orc-feedback {
   margin-top: 10px;
   line-height: 1.6;

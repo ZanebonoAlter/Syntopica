@@ -84,8 +84,32 @@ function zoomBy(factor: number): void {
     <div class="orf-nav">
       <button type="button" class="orf-chip" aria-label="向前平移一个视窗" @click="panBy(-1)">← 平移</button>
       <button type="button" class="orf-chip" aria-label="向后平移一个视窗" @click="panBy(1)">平移 →</button>
-      <button type="button" class="orf-chip" aria-label="放大视窗（宽度减半）" @click="zoomBy(0.5)">放大 ＋</button>
-      <button type="button" class="orf-chip" aria-label="缩小视窗（宽度加倍）" @click="zoomBy(2)">缩小 −</button>
+      <button
+        type="button"
+        class="orf-chip orf-chip--icon"
+        aria-label="放大视窗（宽度减半）"
+        title="放大视窗（宽度减半）"
+        @click="zoomBy(0.5)"
+      >
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+          <circle cx="8.5" cy="8.5" r="5.6" fill="none" stroke="currentColor" stroke-width="1.7" />
+          <path d="M8.5 5.9v5.2M5.9 8.5h5.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+          <path d="M12.9 12.9 17.2 17.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        class="orf-chip orf-chip--icon"
+        aria-label="缩小视窗（宽度加倍）"
+        title="缩小视窗（宽度加倍）"
+        @click="zoomBy(2)"
+      >
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+          <circle cx="8.5" cy="8.5" r="5.6" fill="none" stroke="currentColor" stroke-width="1.7" />
+          <path d="M5.9 8.5h5.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+          <path d="M12.9 12.9 17.2 17.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+        </svg>
+      </button>
     </div>
   </form>
 </template>
@@ -134,6 +158,20 @@ function zoomBy(factor: number): void {
   font-size: 0.85em;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.orf-chip--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  line-height: 0;
+}
+
+.orf-chip--icon svg {
+  width: 20px;
+  height: 20px;
+  display: block;
 }
 
 .orf-chip:hover {

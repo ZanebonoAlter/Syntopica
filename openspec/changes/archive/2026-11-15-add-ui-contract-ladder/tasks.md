@@ -52,6 +52,9 @@
 - [x] 8.7 同步 `docs/reference/开发执行规范.md` §3.1 表（八节合同 → 八节 + 三节结构化声明）与 §5.3 ③（画布类差异说明改为状态图逐态对账）；验证：`grep -c '三节结构化声明' docs/reference/开发执行规范.md` → ≥1
 - [x] 8.5 运行 `bash scripts/harness/doc-impact.sh verify openspec/changes/add-ui-contract-ladder` → 通过（声明: standard，5 个文件）与 `bash scripts/harness/check-standards.sh` → 298/0
 
+
+> **无 flow 影响**：本 change 只改前端设计规范与编排纪律（不涉及任何业务域），`docs/reference/flow/*.md` 无对应域，故免 §12 溯源校验。
+
 ## 9. 验证
 
 - [x] 9.1 制品完整性：`ls openspec/changes/add-ui-contract-ladder/{proposal.md,design.md,ui-design.md,tasks.md,review.md}` 与两份 delta spec 均存在 → 通过（共 7 个）
