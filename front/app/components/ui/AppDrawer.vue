@@ -8,7 +8,7 @@
  * - 头部由 `#head` 插槽承载（kicker/title/sub 由调用方决定），关闭按钮与滚动容器由本组件提供；
  * - `#footer` 可选，固定在抽屉底部（动作条不随正文滚动）。
  *
- * 消费者：`SectionDrawer`（32rem 分区抽屉）、`BoardGovernanceDrawer`（32rem 治理抽屉）。
+ * 消费者：`SectionDrawer`（32rem 分区抽屉）。
  */
 import { onUnmounted, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'

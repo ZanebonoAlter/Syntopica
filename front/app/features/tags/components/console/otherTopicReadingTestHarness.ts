@@ -29,7 +29,7 @@ export const DATE = '2026-10-22'
 export function thread(
   threadId: string,
   title: string,
-  options: { summary?: string, related?: string[] } = {},
+  options: { summary?: string, related?: string[], scope?: string } = {},
 ): LaneDayThread {
   return {
     threadId,
@@ -39,6 +39,7 @@ export function thread(
     confidence: 0.8,
     relatedArticleIds: options.related ?? [],
     fitDistance: null,
+    scope: options.scope ?? null,
     createdAt: '',
   }
 }

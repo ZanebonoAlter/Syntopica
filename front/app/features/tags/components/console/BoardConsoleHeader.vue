@@ -6,7 +6,7 @@
  *  - 面包屑（主页 / 叙事工坊 / 当前版块）；
  *  - 视图 seg：矩阵 / 追踪（active）｜文章归档｜研究工作台（真实 /tags/:boardId/research）；
  *  - 唯一「最新日报」主按钮（日期来自版块独立 report 元信息，不是 active 泳道最大日）；
- *  - 板块管理（设置 / 构成治理 / 话题管理 / 研究工作台）与新建泳道；
+ *  - 板块管理（设置 / 构成治理 / 泳道管理 / 研究工作台）与新建泳道；
  *  - 中等宽度「本板块上下文」入口（右轨隐藏时的替代路径，打开同一单级工作面）。
  *
  * 全局治理六项/新建版块唯一入口在总览（BoardRadarGovernance），本顶栏不再重复。
@@ -148,7 +148,7 @@ function pickManage(kind: 'settings' | 'composition' | 'topics', event: MouseEve
         <div class="console-manage-menu">
           <button type="button" data-testid="console-manage-settings" @click="pickManage('settings', $event)">板块设置 / 删除</button>
           <button type="button" data-testid="console-manage-composition" @click="pickManage('composition', $event)">构成与治理</button>
-          <button type="button" data-testid="console-manage-topics" @click="pickManage('topics', $event)">话题管理（候选人工激活）</button>
+          <button type="button" data-testid="console-manage-topics" @click="pickManage('topics', $event)">泳道管理</button>
           <button type="button" data-testid="console-manage-research" @click="closeManage($event); emit('openResearch')">研究工作台</button>
         </div>
       </details>

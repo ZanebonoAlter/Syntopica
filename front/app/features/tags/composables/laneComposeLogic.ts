@@ -107,17 +107,29 @@ export interface LaneRelation {
  * - 只认原关系（`identity` 与 `similarity` 都算「原关系」），**不新增、不推断**语义边；
  * - **1 跳**：与已选直接相连的节点，不做传递闭包（否则整张图会被点亮成一片）；
  * - 已选成员本身不在结果里（用户要的是「**其他**相关节点」）；
- * - 传入的 relations SHALL 已过滤到「两端都在画布可见集合」的边（调用方负责）。
+ * - 传入的 relations SHALL 已过滤到「两端都在画布可见集合」的边（调用方负责）；
+ * - `recommendedIds`（可选，unify-lane-workbench D6）：**已算出的推荐 ID**（质心口径，
+ *   由调用方按各自可选资格过滤后传入）——相关集合 = 一跳原关系 ∪ 推荐，
+ *   去重、排除种子；这是两画布「相关节点」的唯一并集实现入口。焦点高亮传
+ *   种子 `{focusId}`、推荐仍用成员质心那批；已选标题入口传已选集做种子。
  */
-export function relatedNodeIds(relations: LaneRelation[], selectedIds: Set<string>): Set<string> {
+export function relatedNodeIds(relations: LaneRelation[], selectedIds: Set<string>, recommendedIds?: Iterable<string>): Set<string> {
   const out = new Set<string>()
-  if (!selectedIds.size) return out
-  for (const rel of relations) {
-    const from = String(rel?.fromId ?? '')
-    const to = String(rel?.toId ?? '')
-    if (!from || !to) continue
-    if (selectedIds.has(from) && !selectedIds.has(to)) out.add(to)
-    else if (selectedIds.has(to) && !selectedIds.has(from)) out.add(from)
+  if (selectedIds.size) {
+    for (const rel of relations) {
+      const from = String(rel?.fromId ?? '')
+      const to = String(rel?.toId ?? '')
+      if (!from || !to) continue
+      if (selectedIds.has(from) && !selectedIds.has(to)) out.add(to)
+      else if (selectedIds.has(to) && !selectedIds.has(from)) out.add(from)
+    }
+  }
+  if (recommendedIds) {
+    for (const id of recommendedIds) {
+      const key = String(id ?? '')
+      if (!key) continue
+      if (!selectedIds.has(key)) out.add(key)
+    }
   }
   return out
 }
@@ -206,6 +218,33 @@ export interface LanePointAppearance {
   proximity: number | null
   /** 填色强度百分比（仅表达接近程度，不是置信度）。 */
   strength: number
+  /** 成员实心（实心＋✓表达选中；尺寸不编码接近度）。 */
+  solid: boolean
+  /** 正交标志（unify-lane-workbench D7）：移出划除 / 首义虚线 / 焦点环 / 相关高亮 / 弱化。 */
+  removed: boolean
+  anchor: boolean
+  focus: boolean
+  related: boolean
+  dimmed: boolean
+}
+
+/**
+ * 点形正交标志（unify-lane-workbench D7）：身份（成员/候选/只读）由位置参数表达，
+ * 移出/首义/焦点/相关/弱化是**正交标志**——互不顶掉，由调用方叠加渲染。
+ */
+export interface LanePointFlags {
+  /** 已移出（本次）：划除线标志。 */
+  removed?: boolean
+  /** 首义节点：虚线标志。 */
+  anchor?: boolean
+  /** 焦点节点：焦点环标志。 */
+  focus?: boolean
+  /** 相关高亮（焦点的一跳/推荐并集命中）。 */
+  related?: boolean
+  /** 弱化（画布有焦点时的非相关节点）。 */
+  dimmed?: boolean
+  /** 成员固定半径覆盖（两画布布局密度不同；缺省用 cap 档位公式）。 */
+  memberRadius?: number
 }
 
 /** id 升序比较：数字 id 按数值升序，非数字 id 按字典序（原型用 Number()，此处补兜底）。 */
@@ -367,17 +406,36 @@ export function pointAppearance(
   readonly: boolean,
   baseRadius: number,
   columnWidth: number,
+  flags: LanePointFlags = {},
 ): LanePointAppearance {
   const cap = Math.max(3, Math.min(16, columnWidth * 0.46))
   const proximity = !readonly && Number.isFinite(distance) && Number.isFinite(threshold) && threshold > 0 && distance! <= threshold
     ? Math.max(0, Math.min(1, 1 - distance! / threshold))
     : null
   const ordinary = readonly ? Math.max(2.5, baseRadius * 0.65) : Math.max(3, Math.min(8, baseRadius * 0.8))
+  // 成员基准半径**不读接近度**（尺寸不编码成员远近）；memberRadius 允许修正画布
+  // 按自己的布局密度给固定尺寸（缺省用 cap 档位公式，编排画布视觉不变）。
+  const memberBase = Number.isFinite(flags.memberRadius) && flags.memberRadius! > 0
+    ? Math.max(3, flags.memberRadius!)
+    : Math.max(Math.min(cap, 10), cap * 0.85)
   // 推荐点半径恒小于已选点半径：大小只表达「接近程度」，选中只由实心＋✓表达。
-  const recommendCap = cap * 0.72
-  const recommend = proximity === null ? ordinary : Math.min(recommendCap, baseRadius * (0.9 + 1.0 * proximity))
-  const radius = selected ? Math.max(Math.min(cap, 10), cap * 0.85) : recommend
-  return { radius, proximity, strength: proximity === null ? 0 : 12 + 55 * proximity }
+  // memberRadius 覆盖时同步压 recommendCap（否则固定小尺寸成员会被大候选压过）。
+  const recommendCap = Math.min(cap * 0.72, memberBase - 0.5)
+  const recommend = proximity === null
+    ? ordinary
+    : Math.max(3, Math.min(recommendCap, baseRadius * (0.9 + 1.0 * proximity)))
+  const radius = selected ? memberBase : recommend
+  return {
+    radius,
+    proximity,
+    strength: proximity === null ? 0 : 12 + 55 * proximity,
+    solid: selected,
+    removed: Boolean(flags.removed),
+    anchor: Boolean(flags.anchor),
+    focus: Boolean(flags.focus),
+    related: Boolean(flags.related),
+    dimmed: Boolean(flags.dimmed),
+  }
 }
 
 // ── 画布缩放（2026-11-01 用户补充） ───────────────────────────────────────
@@ -434,4 +492,161 @@ export function scaledPointRadius(radius: number, zoom: number, minRendered = 3)
   if (!Number.isFinite(radius) || radius <= 0) return radius
   const z = Number.isFinite(zoom) && zoom > 0 ? zoom : 1
   return Math.max(radius, minRendered / z)
+}
+
+// ── unify-lane-workbench：接近度方向统一 + 工作面曲线纯函数 ─────────────────
+/**
+ * 接近度展示换算（D7）：`接近度 = 1 − 距离`（= cos），数值越大越近。
+ *
+ * - 内部排序仍用距离（越小越近），**展示**统一换算成本函数；
+ * - null / 非有限 → null（不伪造数字）；0 距离 → 1；距离 1 → 接近度 0（保留 0，
+ *   不吞成 null）；
+ * - 只做数值换算，不区分来源——快照（归属距离）与估算（质心距离）的分名分形
+ *   由调用方标注，两者不得变成同一来源。
+ */
+export function proximityOf(distance: number | null | undefined): number | null {
+  if (distance === null || distance === undefined || !Number.isFinite(distance)) return null
+  return 1 - distance
+}
+
+/** 工作面曲线日点（与矩阵 ObservationRangeControls 消费的 series 同形）。 */
+export interface WorkbenchTrendPoint {
+  date: string
+  /** null = 该日未知（未取到 / 应计项缺计数）；0 = 已知零。 */
+  value: number | null
+}
+
+/** 编辑泳道曲线取数用的 lane-dynamics 泳道最小形态。 */
+export interface WorkbenchDynamicsLane {
+  topicId: string
+  timeline: readonly { date: string, clueCount?: number | null }[]
+}
+
+/**
+ * 编辑泳道曲线：从 lane-dynamics 归一读模型里选**目标泳道**的逐日线索数
+ * （ui-design「编辑泳道」曲线口径；其它泳道增减不影响该曲线）。
+ *
+ * - 返回 `null` = 目标泳道未出现在响应里（未知，不造全 0 曲线）；
+ * - 返回的 series 只含 timeline 里出现的日期，`clueCount` 缺失/非法 → 该日 null；
+ *   未出现的日期由调用方在 bounds 轴上映射为 null（断档 = 未知，不补 0）。
+ */
+export function laneSeriesFromDynamics(
+  lanes: readonly WorkbenchDynamicsLane[],
+  topicId: string,
+): WorkbenchTrendPoint[] | null {
+  const lane = lanes.find(entry => entry.topicId === String(topicId))
+  if (!lane) return null
+  return lane.timeline
+    .filter(day => typeof day?.date === 'string' && day.date)
+    .map(day => ({
+      date: String(day.date).slice(0, 10),
+      value: typeof day.clueCount === 'number' && Number.isFinite(day.clueCount) ? day.clueCount : null,
+    }))
+}
+
+/** 新增泳道曲线聚合的 section 最小形态（compose-candidates 归一后）。 */
+export interface PoolCurveSection {
+  id: string
+  /** YYYY-MM-DD（前 10 位）。 */
+  periodDate: string
+  /** 该 section 的非综合稿线索数；null/缺省 = 未知（旧后端）。 */
+  clueCount?: number | null
+  persistentTopicId?: string
+  persistentTopic?: { status?: string } | null
+}
+
+/** 归属状态对可选池的计入判定。 */
+type PoolCountKind = 'include' | 'exclude' | 'unknown'
+
+function poolCountKind(section: PoolCurveSection): PoolCountKind {
+  const status = section.persistentTopic?.status ?? ''
+  if (!section.persistentTopicId) return 'include' // 无归属：可选池的一部分
+  if (status === 'active') return 'exclude' // 不含当前 active 泳道
+  if (status === 'candidate') return 'include' // 动态泳道：可选（改挂）
+  if (status === 'archived' || status === 'disabled') return 'exclude' // 归档/禁用不计入
+  return 'unknown' // 带归属但状态未知：不假定可选，也不假定排除
+}
+
+/**
+ * 新增泳道曲线：**全部可选线索数**（不含 active）逐日聚合（D2 / lane-correction
+ * delta「新增泳道曲线只计可选池」）。
+ *
+ * - 计入 = 无归属 + candidate 来源；排除 = active / archived / disabled；
+ * - 带归属但缺状态 → 该日未知（不把已知子集冒充合计）；
+ * - 任一应计 section 缺 `clueCount` → 该日未知；已知 0 保留；
+ * - 该日无应计 section → 已知 0（可选池为空是合法结论）；
+ * - 按 section id 去重（同 ID 重复行不双计）；草稿勾选不扣减（调用方不传已选集）。
+ */
+export function candidatePoolDayTotals(sections: readonly PoolCurveSection[]): Map<string, number | null> {
+  const days = new Map<string, { total: number, hasUnknown: boolean, hasIncluded: boolean }>()
+  const seen = new Set<string>()
+  for (const section of sections) {
+    if (!section || seen.has(section.id)) continue
+    seen.add(section.id)
+    const date = String(section.periodDate ?? '').slice(0, 10)
+    if (!date) continue
+    const kind = poolCountKind(section)
+    if (kind === 'exclude') continue
+    const entry = days.get(date) ?? { total: 0, hasUnknown: false, hasIncluded: false }
+    if (kind === 'unknown') {
+      entry.hasUnknown = true
+      days.set(date, entry)
+      continue
+    }
+    entry.hasIncluded = true
+    if (typeof section.clueCount === 'number' && Number.isFinite(section.clueCount)) {
+      entry.total += section.clueCount
+    } else {
+      entry.hasUnknown = true
+    }
+    days.set(date, entry)
+  }
+  const out = new Map<string, number | null>()
+  for (const [date, entry] of days) {
+    out.set(date, entry.hasUnknown ? null : entry.total)
+  }
+  return out
+}
+
+const WORKBENCH_DAY_MS = 86_400_000
+
+function parseUtcDayStrict(value: string): number | null {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+  const ts = Date.parse(`${value}T00:00:00Z`)
+  if (!Number.isFinite(ts)) return null
+  return new Date(ts).toISOString().slice(0, 10) === value ? ts : null
+}
+
+/**
+ * 工作面自选起止校验（D3/D4 + OQ-2 定案 365）：非法一律报错，不静默纠正、不截断。
+ *
+ * - 起止必须成对、YYYY-MM-DD 真实日历日、开始不晚于结束；
+ * - 闭区间最多 `maxDays` 天（首末日差 ≤ maxDays − 1）；
+ * - `latestCompleted` 给出时，开始不得早于「最新 completed 日 − (maxDays − 1)」
+ *   （取数下界，与后端 `parseComposeWindowParams` 同口径）。
+ */
+export function validateWorkbenchRange(
+  from: string,
+  to: string,
+  maxDays: number,
+  latestCompleted?: string | null,
+): string | null {
+  const span = Math.max(1, Math.floor(maxDays) || 1)
+  const fromTs = parseUtcDayStrict(from)
+  const toTs = parseUtcDayStrict(to)
+  if (fromTs === null || toTs === null) return '请选择有效的起止日期'
+  if (fromTs > toTs) return '开始日期不能晚于结束日期'
+  if (Math.round((toTs - fromTs) / WORKBENCH_DAY_MS) > span - 1) {
+    return `日期范围不能超过 ${span} 天`
+  }
+  if (latestCompleted) {
+    const latestTs = parseUtcDayStrict(latestCompleted)
+    if (latestTs !== null) {
+      const earliest = latestTs - (span - 1) * WORKBENCH_DAY_MS
+      if (fromTs < earliest) {
+        return `开始日期早于支持的取数窗（${new Date(earliest).toISOString().slice(0, 10)} 起）`
+      }
+    }
+  }
+  return null
 }

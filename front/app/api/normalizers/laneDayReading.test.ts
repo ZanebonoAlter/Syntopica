@@ -22,7 +22,11 @@ function day(sections: Partial<WindowLaneDay['sections'][number]>[]): WindowLane
       sectionId: section.sectionId ?? String(index + 1),
       label: section.label ?? `桶${index + 1}`,
       threadCount: section.threadCount ?? null,
-      fallbackClueCount: section.fallbackClueCount ?? null,
+      compositeCount: section.compositeCount ?? 0,
+      clueCount: section.clueCount
+        ?? (section.threadCount === undefined || section.threadCount === null
+          ? null
+          : Math.max(0, section.threadCount - (section.compositeCount ?? 0))),
       foldedCount: section.foldedCount ?? 0,
       eventTitles: section.eventTitles ?? [],
     })),

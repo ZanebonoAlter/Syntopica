@@ -22,6 +22,12 @@
 | DELETE | `/daily-reports/topics/:id` | 硬删话题（解绑 section） |
 | POST | `/daily-reports/topics/:id/merge` | 合并源话题到目标 |
 | POST | `/daily-reports/topics/:id/split` | 拆分 section 为新话题 |
+| PATCH | `/daily-reports/topics/:id/anchor` | 人工重设泳道首义（选定节点范围；lane-manual-correction-loop） |
+| GET | `/daily-reports/topics/:id/anchor` | 读当前泳道首义状态（来源 + 节点集；纯读） |
+| GET | `/daily-reports/topics/:id/anchor/history` | 首义改写完整历史（append-only 留痕，按时间升序；纯读） |
+| PATCH | `/daily-reports/sections/:id/assignment` | 泳道节点归属变更（`topic_id` 为 null = 移除，为 id = 加回） |
+| GET | `/daily-reports/sections/:id/assignment/history` | 节点归属变更完整历史（append-only 留痕，按时间升序；纯读） |
+| POST | `/daily-reports/topics/:id/detach-date` | 批量移除某泳道某一天的全部归属 |
 | GET | `/daily-reports/:id/annotations` | 日报页边注批注列表（含问答轮） |
 | POST | `/daily-reports/:id/annotations` | 落锚批注 |
 | DELETE | `/annotations/:id` | 删除批注（连带问答） |
@@ -147,6 +153,8 @@ Response `data`：
 
 按 `persistent_topic_id` 查询一个持久话题的全部 section 与内部关系，不受时间窗限制。
 
+Response 的 `sections[].topic_match_distance` = 该 section 到话题质心的归属距离（float，**恒下发**）：距离恰为 `0` 是合法结果（完美锚定），不得被省略（fix-lane-metric-provenance）——省略会让客户端把接近度读成「未知」而不是 `1 − 0 = 1.00`。
+
 ## PATCH `/daily-reports/topics/:id`
 
 更新话题标题或状态，`label` 与 `status` 均为可选，省略的字段保持不变。`status` 仅接受 `active` / `archived`：candidate 只有在 `hit_count >= persistent_topic_upgrade_threshold` 后才允许人工更新为 active，未达门禁返回 400；active 才进入独立持久话题泳道。
@@ -209,6 +217,235 @@ Request：
 - `label` 新话题展示名。
 
 Response `data`：新建的话题对象（结构同 PATCH）。
+
+## 泳道人工修正（lane-manual-correction-loop）
+
+> 四个写 / 读端点 + 两个只读历史端点共同构成「人工修正闭环」：首义只由**选定节点范围**定义（不收自然语言描述），归属变更是双向的（移除 / 加回，不接受改挂），一切修正只写**事实层**，派生缓存（质心 / 吸尘器标记 / 泳道快照）由算法在**下一次日报生成**统一重算——不存在「立即重算」端点。
+
+### PATCH `/daily-reports/topics/:id/anchor`
+
+人工重设泳道首义（`board_persistent_topics.embedding`）：把用户选定的节点范围按 mean pooling 聚合（与手动建话题同口径）写成新首义。
+
+Request：
+
+```json
+{ "section_ids": [101, 105, 110] }
+```
+
+- `section_ids` 必填：选定的泳道节点（section）id 列表；空数组 → `400`。
+- **只接受节点 id 列表**：传自然语言描述字符串 → `400`（首义只有一种输入模式，不做向量化）。
+- 每个选中节点必须同时满足：属于同一 board、当前归属该话题、embedding 存在且维度一致；任一不满足 → **整体拒绝**（不静默跳过、不落库）。
+
+Response `data`：
+
+```json
+{
+  "topic_id": 7,
+  "source": "selected_sections",
+  "selected_sections": [101, 105, 110],
+  "override_count": 2,
+  "effective_from": "next_report"
+}
+```
+
+- `source` 恒为 `selected_sections`（首义的输入模式）。
+- `selected_sections` = 去重后的选定节点 id。
+- `override_count` = 该话题首义被人工改写的累计次数（`topic_anchor_overrides` 行数）。
+- `effective_from` 恒为 `next_report`：事实层立即改，匹配锚点（质心）由下一次日报生成重算。
+
+副作用（单事务）：写 `board_persistent_topics.embedding` + 追加一行 `topic_anchor_overrides` 留痕（改前向量 / 改后向量 / 输入模式 / 选定节点 id / 操作者 / 时间，只追加）+ 置 `centroid_pending_recompute=true`。**不改写质心**（`centroid` 列只由下一次日报生成刷新）。
+
+错误码：
+
+| 状态 | 条件 |
+| ---- | ---- |
+| 400 | body 不是 id 数组 / `section_ids` 缺失或为空 / 节点不存在 / 节点属其它版块 / 节点不属该话题 / 节点无可用向量 / 节点向量维度与其它节点不一致 |
+| 404 | 话题不存在 |
+| 409 | 话题已归档（archived 泳道不可改首义） |
+
+### GET `/daily-reports/topics/:id/anchor`
+
+读当前泳道首义状态。**纯读端点**：不产生任何写入、不重算任何派生值。
+
+Response `data`：
+
+```json
+{
+  "topic_id": 7,
+  "source": "manual",
+  "section_ids": [101, 109],
+  "override_count": 2,
+  "effective_from": "next_report"
+}
+```
+
+- `source`：`auto` = 首义是创建话题时写入的（无节点集）/ `manual` = 首义由人工选定的节点范围定义。
+- `section_ids`：当前首义节点集（取 `topic_anchor_overrides` 最新一行反解，可能含当前取数窗口之外的节点）；`source=auto` 时**恒为空数组**——自动首义只有一条向量，没有对应节点列表，接口不得虚构。
+- `override_count`：人工改写次数。
+- `effective_from`：`manual` 为 `next_report`；`auto` 为空串（已在用）。
+
+错误码：`404` 话题不存在；`500` 读取失败。
+
+### GET `/daily-reports/topics/:id/anchor/history`
+
+首义改写的**完整历史**（只读）。`GET .../anchor` 只回答「当前首义是什么」，本端点回答「这条泳道的定义面什么时候被谁改过」。
+
+留痕表 `topic_anchor_overrides` 是 append-only 的：每次人工改写追加一行，既有行既不改也不删。
+
+Response `data`：
+
+```json
+{
+  "topic_id": 7,
+  "overrides": [
+    {
+      "id": 1,
+      "topic_id": 7,
+      "source": "selected_sections",
+      "section_ids": [101, 105, 110],
+      "old_vector": { "dimension": 768, "head": [0.0123, -0.0456], "norm": 1.02 },
+      "new_vector": { "dimension": 768, "head": [0.0311, -0.0222], "norm": 1.04 },
+      "operator": "user",
+      "created_at": "2026-11-15T09:00:00Z"
+    }
+  ]
+}
+```
+
+- `overrides` 按**时间升序**返回（`created_at ASC, id ASC`——同毫秒追加的行靠 id 兜底排序）。
+- `old_vector` / `new_vector` 是向量**摘要**（维度 + 前 8 个分量 + 模长），不是整条向量；改前无向量时 `old_vector` 为 `null`。
+- `section_ids` = 该次改写选定的节点 id；摘要读不出来时为空数组（不虚构节点列表）。
+- `operator` = 操作者（单用户部署恒为 `user`）。
+- 留痕**不随话题硬删而消失**：话题已被硬删但留痕仍在时，本端点照常返回留痕。
+
+错误码：`404` 话题不存在且无留痕；`500` 读取失败。
+
+### PATCH `/daily-reports/sections/:id/assignment`
+
+泳道节点归属变更，双向共用一个端点。移除不指定去处（用户表达的是「它不该在这儿」），加回接受当前无归属的节点；**已归属的节点只在来源泳道为 candidate（动态）时允许改挂**（来源为 active 已转正泳道 → `409`，已转正泳道的素材不因人工编辑而流动）。
+
+Request（移除）：
+
+```json
+{ "topic_id": null }
+```
+
+Request（加回）：
+
+```json
+{ "topic_id": 7 }
+```
+
+- `topic_id` 必填且必须显式给出：`null` = 移除，正整数 = 加回到该话题；字段缺失 / 字符串 / 负数 / 0 → `400`。
+
+快照口径（两向都保留 `lane_tier`）：
+
+| 方向 | 写入列 |
+| ---- | ------ |
+| 移除（detach） | `persistent_topic_id` / `topic_match_distance` / `topic_match_confidence` / `topic_status_at_report` 四列置 NULL |
+| 加回（attach） | `persistent_topic_id` = 目标话题、`topic_match_confidence` = `manual`、`topic_match_distance` = 到目标锚点（centroid 优先、embedding 兜底）的实算距离（节点无可用向量时写 NULL）、`topic_status_at_report` = NULL |
+| 改挂（来源为 candidate 泳道） | 同「加回」，但 `manual_assignment_from_topic_id` = 来源泳道；留痕追加 `from=来源话题, to=目标话题`；来源与目标**两条泳道**均置 `centroid_pending_recompute=true` |
+
+两向都写留痕三列：`manual_assignment_at`（时间）/ `manual_assignment_from_topic_id`（变更前所属话题）/ `manual_assignment_action`（`detach` / `attach`）。这三列的语义是「**最近一次**人工归属变更的快照」——下一次人工变更会覆盖它们；**完整历史**在 append-only 的 `section_assignment_overrides` 表（见下方历史端点）。
+
+Response `data`：
+
+```json
+{
+  "section_id": 42,
+  "topic_id": 7,
+  "previous_topic_id": null,
+  "action": "attach",
+  "changed": true,
+  "topic_match_distance": 0.183,
+  "board_id": 3
+}
+```
+
+- `action`：`detach` / `attach`。
+- `changed`：是否真的写了行；「已属该话题」的幂等加回返回 `changed=false`（不写列、不追加留痕）。
+- `board_id`：被重建关系图的版块。
+
+副作用（单事务）：置受影响话题 `centroid_pending_recompute=true` + 调 `RebuildBoardRelations(tx, board_id)`；重建失败整体回滚（归属与留痕一并撤销）。**不动**话题的命中计数与状态（`hit_count` / `consecutive_hits` / `status` / `first_seen_date` / `last_seen_date` 均不变）。
+
+错误码：
+
+| 状态 | 条件 |
+| ---- | ---- |
+| 400 | body 非法（`topic_id` 缺失 / 非数字 / 非正数 / 字符串）/ 目标泳道属其它版块 |
+| 404 | section 不存在 / 目标话题不存在 |
+| 409 | 该节点无归属可移除 / 该节点已属其它泳道（改挂被拒）/ 目标泳道已归档 |
+| 500 | 其它失败（含关系重建失败 → 整体回滚） |
+
+### GET `/daily-reports/sections/:id/assignment/history`
+
+节点泳道归属变更的**完整历史**（只读）。「移除 → 加回」两步各留一行：加回不会把先前的 detach 痕迹抹掉。
+
+留痕表 `section_assignment_overrides` 是 append-only 的：每次人工归属变更追加一行，既有行既不改也不删。
+
+Response `data`：
+
+```json
+{
+  "section_id": 501,
+  "entries": [
+    {
+      "id": 1,
+      "section_id": 501,
+      "topic_id_from": 8,
+      "topic_id_to": null,
+      "action": "detach",
+      "operator": "user",
+      "created_at": "2026-11-15T09:00:00Z"
+    },
+    {
+      "id": 2,
+      "section_id": 501,
+      "topic_id_from": null,
+      "topic_id_to": 8,
+      "action": "attach",
+      "operator": "user",
+      "created_at": "2026-11-15T09:05:00Z"
+    }
+  ]
+}
+```
+
+- `entries` 按**时间升序**返回（`created_at ASC, id ASC`）。
+- `topic_id_from` = 变更前所属话题（`null` = 此前无归属）；`topic_id_to` = 变更后所属话题（`null` = 移除）。
+- `action` = `detach`（移除）/ `attach`（加回）。
+- 留痕**不随节点硬删而消失**：节点已被硬删但留痕仍在时，本端点照常返回留痕。
+
+错误码：`404` 节点不存在且无留痕；`500` 读取失败。
+
+### POST `/daily-reports/topics/:id/detach-date`
+
+批量移除某泳道某一天的全部归属（逐条同「移除」口径，事务末尾只重建一次整板关系）。
+
+Request：
+
+```json
+{ "period_date": "2026-11-10" }
+```
+
+- `period_date` 必填，`YYYY-MM-DD`；格式非法 → `400`。
+
+Response `data`：
+
+```json
+{
+  "topic_id": 7,
+  "period_date": "2026-11-10",
+  "detached": 3,
+  "section_ids": [42, 43, 44],
+  "board_id": 3
+}
+```
+
+- `detached` = 被释放的节点数；该日无归属节点时返回 `detached: 0` 与空 `section_ids`（不是错误）。
+- `section_ids` = 被释放的节点 id（升序）。
+
+错误码：`400` `period_date` 格式非法；`404` 话题不存在；`500` 其它失败（含关系重建失败 → 整体回滚）。
 
 ## GET `/semantic-boards/:id/topics`
 
@@ -317,7 +554,7 @@ Response `data`：
 **参数：**
 
 - `id`：semantic_board_id。
-- `days`：时间线与统计窗口天数，默认 14；非正值或非法值回落 14。窗口锚定该板块最新一份已完成日报的 `period_date`（`[anchor-(days-1), anchor]` 双端闭区间，非 now()——避免日报未跑时窗口漂移）。
+- `days`：时间线与统计窗口天数，默认 14；非正值或非法值回落 14。窗口锚定该板块最新一份**已完成**日报的 `period_date`（`[anchor-(days-1), anchor]` 双端闭区间，非 now()——避免日报未跑时窗口漂移；未完成日报（`status != 'completed'`）不作锚点，其分区也不进窗口内容，与 compose-candidates 窗口同口径，fix-lane-metric-provenance）。
 
 **泳道集合与排序**：`lanes` = 该板块 active 泳道 ∪ watch 关联泳道，按 **`lane_heat` 降序（平手依次全窗线索合计 `thread_count_14d` 降序、`topic_id` 升序）**；近窗口无 section 的 active（沉寂）不返回；candidate 不进 `lanes`（只在 `candidates`）。
 
@@ -329,6 +566,7 @@ Response `data`：
 {
   "window_days": 14,
   "has_reports": true,
+  "anchor_date": "2026-09-09",
   "heat_rule_version": "heat-v2-lane-clues-1d",
   "lanes": [
     {
@@ -351,6 +589,7 @@ Response `data`：
               "section_id": 341,
               "label": "新规生效首日影响",
               "thread_count": 2,
+              "composite_count": 0,
               "events": ["厂商A暂停部分订单", "替代供应商订单量抬升"],
               "folded_count": 0
             }
@@ -377,6 +616,8 @@ Response `data`：
 - `lanes[].lane_heat`：该泳道当天线索数按话题状态加权（含候选权重；无线索为 0）——排序唯一热度输入，section/thread 计数不得参与。`lanes[].thread_count_14d`：全窗线索合计（排序次键）；`section_count_14d` 保留展示兼容。
 - `timeline[].clue_count`：当日线索合计（**已排除综合稿**）；矩阵日格/演进节点/曲线统一消费它；展示值 MUST NOT 用各桶 `thread_count` 合计替代（section 的 `thread_count` 未排除综合稿，只能作 aria 辅助/旧响应回退）。
 - `timeline[].sections[].events`：该 section 的 thread 标题，最多前 5 条；`folded_count` 为被截断数量（恒输出，0 也带）。`timeline` 按日期倒序（最新日在最前）。
+- `timeline[].sections[].composite_count`（fix-lane-metric-provenance）：该桶**综合稿**条数（thread 的 event 标签数 ≥ 2）。桶级线索数 = `thread_count − composite_count`（客户端唯一公式；两者缺任一 → 该桶线索数未知，显示 `?`）。客户端 SHALL NOT 把 `thread_count` 当线索数——它是含综合稿的 thread 总数。
+- `anchor_date`：窗口锚点日 = 该板块最新**已完成**日报的 `period_date`（YYYY-MM-DD）；无已完成日报时为空串。前端矩阵轴末日与泳道工作面窗口末日统一取它（compose-candidates 的 `window.latest_completed_date` 同值）。
 - `candidates`：达可见门槛（`FilterVisibleTopics`）的 candidate + 最新 section 标题 `recent_hint`；新增 `anchor_date`（该版块最新日报日）、`clue_count`（锚点日当天线索合计）、`lane_heat`（= clue_count × 候选权重，已含在版块 `attention` 内，前端勿重复相加）；只读提示，转正走话题管理入口。
 - `snapshot`：滚动 14 天态势（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）。`detail` 不再产出（存量历史长版仅随下个日报日结算覆盖自愈）。
 - 缺失语义：`snapshot: null` = 快照整体缺失（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染。
@@ -557,6 +798,7 @@ Query：
 Query：
 
 - `days` 可选，时间窗天数；不传或 `<=0` 取全部历史，`>90` 截断到 90。窗口以该板块最新 completed 日报为终点（含首末报告日）。
+- `all_members_topic_id`（可选，uint，修正模式专用）：传入时响应追加 `early_members` 数组——该话题成员中报告期早于窗口首日的 section（升序，与 `sections` 同形）；话题不属该版块 404；**不传时字段整个缺席**（编排画布行为不变）。来源 lane-manual-correction-loop 方案 A。**成员集合对称**（fix-lane-metric-provenance）：窗口内 `sections` 与窗口外 `early_members` 用**同一向量可用性判据**（都要求 `embedding IS NOT NULL` 且向量可解析）——因此「窗口内成员数 + 窗口外成员数 = 全部成员数」恒成立、窗口内集合恒是全部集合的真子集（无可用向量的成员两侧都不入集）。`early_members` = **窗口外**的本话题成员：档位窗口（`days`）下它们都在窗口首日之前；显式 `from`/`to` 且 `to` 早于最新 completed 日时，上界之后的成员也归入此集合（保证成员总数完整，不出现「两侧都不算」的成员）。
 - `from` / `to` 可选，自选起止日（`YYYY-MM-DD`，**闭区间**）；两者必须成对给出，给出时忽略 `days`。校验（任一不满足 → `400`）：只给单边 / `from > to` / 跨度 > 90 天（**不静默截断**）/ `from` 早于「最新 completed 日报 − 89 天」取数窗 / 日期格式非法。`to` 晚于最新 completed 日报**允许**（窗口内本无更晚数据）。
 
 Response `data`：

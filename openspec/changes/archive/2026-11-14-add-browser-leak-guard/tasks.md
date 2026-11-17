@@ -26,6 +26,8 @@
 ## 4. 文档
 
 <!-- doc-impact: none(harness 工具链 change：仅改 docs/reference/harness/pi-extensions.md 与 AGENTS.md，均不在 8 个 flow 域路径内；无 flow 业务域变更) -->
+
+> 无 flow 影响：本 change 为 harness 运维机制（无主浏览器栈定时回收），不触及任何业务 flow；溯源落在 `docs/reference/harness/pi-extensions.md`（§12 变更溯源表）。
 - [x] 4.1 `docs/reference/harness/pi-extensions.md`：全景表旁补「browser-leak-guard（systemd timer）」机制小节——栈识别窄锚点、安全四条件、优雅 close 优先、dry-run/`--apply`、与 `dev-process-guard` 分工（窗口内 vs 窗口外常驻）
 - [x] 4.2 `AGENTS.md` harness 要点补一句：无主浏览器栈由 10 分钟定时器自动回收，排查 `journalctl --user -u syntopica-browser-leak-guard`，手动看用脚本不带 `--apply`
 

@@ -398,19 +398,71 @@ describe('ObservationRangeControls — 状态', () => {
   })
 })
 
-// ── 曲线口径标注（matrix-clue-fallback-and-rail-merge D2）────────────────────
-// 曲线值与矩阵格同口径（事件线数 > 0 用事件线数，否则线索合计兜底）——
-// 用户可见标注与 Y 轴单位文案须表达该口径，不再称「线索合计」。
+// ── 曲线口径标注（fix-lane-metric-provenance）───────────────────────────────
+// 曲线值与矩阵格同口径（非综合稿线索数）；单位文案直接表达「线索数（非文章数）」，
+// MUST NOT 出现已退役的事件线量纲字样（「事件线」「兜底」）。
 describe('ObservationRangeControls — 曲线口径标注', () => {
-  it('曲线标注表达事件线数口径与线索兜底；Y 轴单位为「事件线数（条）」', async () => {
+  it('曲线标注表达线索数（非文章数）口径；不出现已退役的事件线/兜底字样', async () => {
     const { wrapper } = mountControls()
     const caption = wrapper.find('.orc-caption')
     expect(caption.exists()).toBe(true)
-    expect(caption.text()).toContain('日事件线数')
-    expect(caption.text()).toContain('按线索合计兜底')
-    expect(caption.text()).not.toContain('日线索合计')
+    expect(caption.text()).toContain('日线索数')
+    expect(caption.text()).toContain('线索数（非文章数）')
+    expect(caption.text()).not.toContain('事件线')
+    expect(caption.text()).not.toContain('兜底')
     const axes = wrapper.findComponent({ name: 'TrendAxes' })
     expect(axes.exists()).toBe(true)
-    expect(axes.props('unitLabel')).toBe('事件线数（条）')
+    expect(axes.props('unitLabel')).toBe('线索数（非文章数）')
+  })
+})
+
+describe('ObservationRangeControls — 配置化扩展（unify-lane-workbench 6.1 / OQ-1）', () => {
+  it('缺省档位 = 矩阵页 7/14/30/365（零变化）', () => {
+    const { wrapper } = mountControls()
+    const labels = wrapper.findAll('.orc-tier').map(b => b.text())
+    expect(labels).toEqual(['7 天', '14 天', '30 天', '近 1 年'])
+  })
+
+  it('tiers 传工作面档位清单：按钮按清单渲染并 emit 对应档', async () => {
+    const { wrapper } = mountControls({ tiers: [7, 14, 30, 365] })
+    const labels = wrapper.findAll('.orc-tier').map(b => b.text())
+    expect(labels).toEqual(['7 天', '14 天', '30 天', '近 1 年'])
+    await wrapper.findAll('.orc-tier')[3]!.trigger('click')
+    expect(wrapper.emitted('source-change')).toEqual([[365]])
+  })
+
+  it('maxSpanDays：手势跨度被限界（保末端前移起点）；不传时不受影响', async () => {
+    // 池 365 日；限 30 天：从 index 0 拖到 100 → 起点被顶到 end-29
+    const { wrapper } = mountControls({ maxSpanDays: 30 })
+    await drag(wrapper, [0, 100])
+    await wrapper.find('[data-testid="observation-range-plot"]').trigger('pointerup')
+    const commits = wrapper.emitted('commit')
+    expect(commits).toBeTruthy()
+    const range = commits!.at(-1)![0] as { start: string, end: string }
+    expect(range).toEqual({ start: dateAt(100 - 29), end: dateAt(100) })
+    // 不传 maxSpanDays：同一手势全程可用（矩阵现状）
+    const plain = mountControls()
+    await drag(plain.wrapper, [0, 100])
+    await plain.wrapper.find('[data-testid="observation-range-plot"]').trigger('pointerup')
+    const plainCommits = plain.wrapper.emitted('commit')
+    expect(plainCommits!.at(-1)![0]).toEqual({ start: dateAt(0), end: dateAt(100) })
+  })
+
+  it('caption 传工作面口径文案：标注按传入渲染；缺省为矩阵文案', () => {
+    const { wrapper } = mountControls({ caption: ['365 日 · 可选线索数（不含 active 泳道）', '线索数（非文章数）· 不含 active 泳道'] })
+    const caption = wrapper.find('.orc-caption')
+    expect(caption.text()).toContain('不含 active 泳道')
+    const plain = mountControls()
+    expect(plain.wrapper.find('.orc-caption').text()).toContain('已返回泳道的日线索数')
+  })
+
+  it('selectableBounds：表单以可选界校验（不越可选界提交）', async () => {
+    const selectable = { start: '2026-09-01', end: '2026-10-23' }
+    const { wrapper } = mountControls({ selectableBounds: selectable })
+    await wrapper.find('#orc-start').setValue('2026-08-01') // 在池内、在可选界外
+    await wrapper.find('#orc-end').setValue('2026-10-20')
+    await wrapper.find('form').trigger('submit')
+    expect(wrapper.emitted('commit')).toBeUndefined()
+    expect(wrapper.text()).toContain('日期超出可取数范围')
   })
 })

@@ -318,3 +318,68 @@ describe('LaneComposeCanvas — 节点卡宽度固定（防塌成竖条）', () 
     expect(src).toMatch(/\.lcc-card \{[^}]*max-height: calc\(100% - 12px\)/)
   })
 })
+
+describe('LaneComposeCanvas · 焦点相关高亮与接近度（unify-lane-workbench 5.2 / 4.3）', () => {
+  it('焦点的一跳原关系相关高亮，非相关弱化；推荐命中也相关（D6）', async () => {
+    const w = await mountCanvas()
+    // 种子 = {focusId:'2'}：一跳 1/3 相关；4 是散料近邻（对质心近 → 推荐命中）也相关
+    expect(w.find('[data-testid="lane-node-1"]').classes()).toContain('is-related')
+    expect(w.find('[data-testid="lane-node-3"]').classes()).toContain('is-related')
+    expect(w.find('[data-testid="lane-node-4"]').classes()).toContain('is-related')
+    // 已选成员自己不进相关集合（种子/成员排除）；无其它可弱化节点时无断言对象
+    expect(w.find('[data-testid="lane-node-2"]').classes()).not.toContain('is-related')
+  })
+
+  it('无焦点不弱化不残留；切换焦点重算、取消恢复默认', async () => {
+    const w = await mountCanvas()
+    await w.setProps({ focusId: null })
+    for (const id of ['1', '2', '3', '4']) {
+      expect(w.find(`[data-testid="lane-node-${id}"]`).classes()).not.toContain('is-related')
+      expect(w.find(`[data-testid="lane-node-${id}"]`).classes()).not.toContain('is-dimmed')
+    }
+  })
+
+  it('焦点不参与质心（推荐仍用已选成员均值，焦点向量不改变推荐集）', async () => {
+    const w = await mountCanvas()
+    // 4 与已选质心（≈[0.99,0.1]）距离小 → 推荐命中（与 focusId 无关）
+    expect(w.find('[data-testid="lane-node-4"]').attributes('data-distance')).not.toBe('')
+    await w.setProps({ focusId: '4' })
+    // 焦点换到 4：4 仍是推荐（不因成为焦点而被排除/加入质心）
+    expect(w.find('[data-testid="lane-node-4"]').classes()).not.toContain('is-related')
+  })
+
+  it('节点卡接近度方向统一：distance=0.2 显示估算接近度 0.80（不再显示距离）', async () => {
+    const w = await mountCanvas()
+    await w.setProps({ focusId: '4' })
+    await flushPromises()
+    const card = w.find('[data-testid="lane-node-card"]')
+    expect(card.exists()).toBe(true)
+    // 散料近邻 embedding [0.97,0.15] vs 质心 [0.99,0.1] → cos 距离 ≈ 0.0002 → 接近度 ≈ 1.00
+    expect(card.text()).toContain('估算接近度')
+    expect(card.text()).not.toContain('距离')
+  })
+
+  it('两工作面接近度同向（B4/S2.3）：distance=0.2 样本显示 0.80', async () => {
+    // 直接构造距离样本：embedding 与质心夹角使 cos = 0.8（distance = 0.2）
+    const sample = section('9', '2026-10-26', '方向样本', [0.8, 0.6])
+    const w2 = mount(LaneComposeCanvas, {
+      props: {
+        sections: [section('m', '2026-10-26', '成员', [1, 0]), sample],
+        relations: [],
+        chains: [],
+        selectedIds: new Set(['m']),
+        focusId: null,
+        matchThreshold: 0.3,
+        showAssigned: false,
+        dates: DATES,
+      },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    // 质心 = [1,0]；样本 [0.8,0.6] → cos = 0.8 → 距离 0.2 → 接近度 0.80
+    await w2.setProps({ focusId: '9' })
+    await flushPromises()
+    expect(w2.find('[data-testid="lane-node-card"]').text()).toContain('估算接近度 0.80')
+    w2.unmount()
+  })
+})

@@ -38,7 +38,8 @@ export function windowData(lanes: { topicId: string, days?: { date: string, sect
           sectionId,
           label: `桶${sectionId}`,
           threadCount: null,
-          fallbackClueCount: 1,
+          compositeCount: null,
+          clueCount: null,
           foldedCount: 0,
           eventTitles: ['事件'],
         })),
@@ -77,6 +78,7 @@ export function section(
       confidence: 0.8,
       relatedArticleIds: [],
       fitDistance: null,
+      scope: null,
       createdAt: '',
     })),
   }

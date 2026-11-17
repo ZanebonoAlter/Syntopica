@@ -11,6 +11,8 @@
 | 双主题 / 设计系统 / Token 架构 | `frontend/theming.md` |
 | 页面布局模式 / 弹窗尺寸档 / 双视口验收 | `frontend/layout.md` |
 | 交互友好性 / 可观测性展示分层（状态标记左对齐、状态说明不伪装动作） | `frontend/interaction-conventions.md` |
+| 交互模式选择判据（7 模式词表 + P1–P5）/ 界面文字三职责 / 原型预算与数据血缘 / 画布状态图形态 | `frontend/interaction.md` |
+| 原型内容质量（占位 vs 伪造 / 四态文案 / 视觉与动效最低否决项 V1–V6） | `frontend/prototype-content.md` |
 | SPA 加载体验（首屏模板/字体自托管/路由进度条/错误兑底） | `frontend/loading-experience.md` |
 | Lint 工具配置（ESLint / golangci-lint） | `frontend/lint.md` / `backend/lint.md` |
 | 测试框架、运行方式、编写约定 | `frontend/testing.md` / `backend/testing.md` |
@@ -30,6 +32,8 @@ standard/
 │   ├── theming.md             # 双主题三层 Token
 │   ├── layout.md              # 页面 shell 四模式 + dialog 尺寸档 + 双视口验收
 │   ├── interaction-conventions.md # 交互友好性/可观测性展示分层
+│   ├── interaction.md        # 交互模式词表 + 界面文字纪律 + 原型预算
+│   ├── prototype-content.md  # 占位/伪造界线 + 四态文案 + 视觉动效否决项
 │   ├── code-style.md          # 目录归属/API归一化/Store/事件流/拆分
 │   ├── lint.md                # ESLint 配置
 │   └── testing.md             # Vitest + Playwright

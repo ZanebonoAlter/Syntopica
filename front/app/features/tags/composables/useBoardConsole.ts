@@ -14,7 +14,8 @@
  *    laneDynamicsWindow façade（camelCase/字符串 ID 归一，legacy 原样携带）。
  *  - 观察范围/B 池/query 同步在 useObservationWindow（相邻状态机）；
  *    任何日期动作不切档，明确切档只经 setSourceDays（OX-1/OX-7）。
- *  - anchorDate = 注入的报告锚点（deps.reportAnchor，壳层日报列表，G5 接线）
+ *  - anchorDate = lane-dynamics 响应的 completed 锚点日（anchor_date）
+ *    ?? 注入的报告锚点（deps.reportAnchor，壳层日报列表，G5 接线）
  *    ?? A 数据最新日；与 today 分清（0 泳道版块仍有日报锚点）。
  *
  * 纯函数全部导出（axis / row / dormant / 深链解析），组件只做渲染。
@@ -134,7 +135,23 @@ export function useBoardConsole(boardId: Ref<number>, deps: BoardConsoleDeps = {
     const raw = deps.reportAnchor?.()
     return typeof raw === 'string' && raw.trim() !== '' ? raw.trim().slice(0, 10) : null
   })
-  const anchorDate = computed<string | null>(() => reportAnchor.value ?? latestDataDate.value)
+  /**
+   * 窗口锚点（末日）：**后端下发的 completed 锚点日优先**——lane-dynamics 的
+   * `anchor_date` = 该版块最新 completed 日报日，与泳道工作面（compose-candidates）
+   * 的窗口末日同源同值（fix-lane-metric-provenance：两个窗口末日必须一致，不得
+   * 相差一天）。
+   *
+   * 回退链：后端 anchor_date（显式字段，新后端恒有）→ 壳层注入的报告锚点（旧后端
+   * / 0 泳道版块仍要有锚点）→ A 响应最新日。读的是**原始响应**的 anchor_date
+   * （而非归一层的回退值），否则旧后端下「归一回退的最新日」会盖掉壳层注入锚点。
+   */
+  const sourceAnchorDate = computed<string | null>(() => {
+    const raw = data.value?.anchor_date
+    return typeof raw === 'string' && raw.trim() !== '' ? raw.trim().slice(0, 10) : null
+  })
+  const anchorDate = computed<string | null>(() =>
+    sourceAnchorDate.value ?? reportAnchor.value ?? latestDataDate.value,
+  )
 
   // 轴终点跟数据锚点一致：今天无日报时不再多画一个空「今天」列，
   // 同时保证 14 天矩阵与后端 14 天窗口逐日对齐。

@@ -6,9 +6,10 @@
  *    与「persistentTopicId ∈ A 名单（active+dormant）」的并集；候选池/watch/辅助标签/当前话题名
  *    根本不进入本模型入参（不得拿它们凑行）。
  *  - 行序 = 报告 `cluster_index` 升序（当日原序，不按线索数/名称重排）。
- *  - 行计数 = 该 section 详情 `threads.length`（0 合法）；未 ready 的状态不给数字（不冒 0）。
- *  - 组计数 = 组内线索合计（= 各行 `threadCount` 之和，与矩阵主行格值同口径）；分区数只在
- *    说明文案里出现（`rows.length`）。
+ *  - 行计数 = 该 section 详情里的**非综合稿**线索数（0 合法）；综合稿单独记在
+ *    `compositeCount`（不计入合计）。未 ready 的状态不给数字（不冒 0）。
+ *  - 组计数 = 组内**非综合稿**线索数合计（= 各行 `threadCount` 之和，与矩阵日格
+ *    同一口径）；分区数只在说明文案里出现（`rows.length`）。
  *  - 状态只读生成时快照 `topic_status_at_report`（active/candidate/archived/null/未知枚举），
  *    无 `persistent_topic_id` → 当次未归属；MUST NOT 读当前 topic.status。
  *  - 只标所选日由组件按本模型 rows 渲染所选日列实现；本模型不产跨日序列。
@@ -50,8 +51,10 @@ export interface OtherTopicRow {
   /** 当日报告分区原题（逐字；两行 clamp 由组件做）。 */
   label: string
   clusterIndex: number | null
-  /** 该 section 详情线索数（0 合法）。 */
+  /** 该 section 详情的**非综合稿**线索数（0 合法；与矩阵日格同一口径）。 */
   threadCount: number
+  /** 该 section 详情里的综合稿条数（不计入合计；展示层可标出）。 */
+  compositeCount: number
   persistentTopicId: string | null
   statusKind: OtherTopicStatusKind
   statusText: string
@@ -74,7 +77,7 @@ export interface OtherTopicsInput {
 export interface OtherTopicsView {
   state: OtherTopicsState
   rows: OtherTopicRow[]
-  /** 组计数 = 组内线索合计（与矩阵主行格值同口径）；仅 ready 给数字（0 合法），其余 null（不冒 0）。 */
+  /** 组计数 = 组内**非综合稿**线索数合计（与矩阵日格同一口径）；仅 ready 给数字（0 合法），其余 null（不冒 0）。 */
   clueCount: number | null
   /** 组 summary 状态文案：ready 且有行时为 null（标题+计数由组件拼）。 */
   statusText: string | null
@@ -116,11 +119,15 @@ function statusKindOf(section: LaneDayReportSection): OtherTopicStatusKind {
 
 function toRow(section: LaneDayReportSection): OtherTopicRow {
   const statusKind = statusKindOf(section)
+  // 线索数口径：综合稿（thread 的 event 标签数 ≥ 2）不计入线索数——
+  // 与矩阵日格同一口径（fix-lane-metric-provenance）。
+  const compositeCount = section.threads.filter(thread => thread.scope === 'composite').length
   return {
     sectionId: section.sectionId,
     label: section.clusterLabel,
     clusterIndex: typeof section.clusterIndex === 'number' ? section.clusterIndex : null,
-    threadCount: section.threads.length,
+    threadCount: section.threads.length - compositeCount,
+    compositeCount,
     persistentTopicId: section.persistentTopicId ?? null,
     statusKind,
     statusText: OTHER_TOPIC_STATUS_TEXT[statusKind],
@@ -205,7 +212,8 @@ export function buildOtherTopics(input: OtherTopicsInput): OtherTopicsView {
   return {
     state: 'ready',
     rows,
-    // 组计数取线索合计（与矩阵主行格值同口径）：一个分区里 3 条线索就显示 3，不是分区数 1。
+    // 组计数取**非综合稿**线索合计（与矩阵日格同一口径）：一个分区里 3 条非综合稿
+    // 线索就显示 3，不是分区数 1，也不是含综合稿的 thread 总数。
     clueCount: rows.reduce((sum, row) => sum + row.threadCount, 0),
     statusText: rows.length === 0 ? OTHER_TOPICS_EMPTY_TEXT : null,
     note,

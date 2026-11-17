@@ -54,7 +54,7 @@
 
 **提交语义**：泳道工作面是模态层，SHALL NOT 写 URL query（避免污染矩阵页的 `days`/`start`/`end` 深链），走模态内本地状态。
 
-**档位对齐**：泳道侧取数端点 `compose-candidates` 后端上限 90 天（`composeWindowMaxDays`），矩阵侧的「近 1 年」(365) 档在泳道侧取不到数据。SHALL 明确二选一（见 design D3）：泳道侧砍掉 365 档，或后端放宽并评估成本。
+**档位对齐**：泳道侧取数端点 `compose-candidates` 原上限 90 天（`composeWindowMaxDays`）。**用户 2026-11-16 裁决：放宽到 365**，使新增泳道能看到一年真实可选池。实测（最大版块）90 天 620 条 section / ≈6.2 MB → 365 天 1,035 条 / ≈10.4 MB，成本可接受；但曲线路径 SHALL 走**不带向量的轻量取数**（可压到 ≈200 KB），不得为画曲线拉全量向量。详见 design OQ-2 定案。
 
 ## Capabilities
 

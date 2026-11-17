@@ -50,7 +50,7 @@ HOTSPOT_DEFAULT_THR=5
 # 发现误归类时修白名单，不放宽缺省）。
 # attribution-degraded（add-foreign-gate-steer-attribution）：归因信号缺席/判定异常而保守
 # 回退本会话失败的告知性记账——考古"为何判 mine"用，不构成催修指令。
-INFORMATIVE_REASONS="concurrent-mixed concurrent-dirty-tree foreign-breakage attribution-degraded"
+INFORMATIVE_REASONS="concurrent-mixed concurrent-dirty-tree foreign-breakage attribution-degraded ui-stage-missing ui-stage-invalid ui-stage-scope-out"
 # SQL IN 字面量（仅含 [a-z0-9-]，无需引号转义）：'concurrent-mixed','…','…'
 INFORMATIVE_SQL_LIST="$(printf "'%s'," $INFORMATIVE_REASONS | sed 's/,$//')"
 
@@ -728,7 +728,8 @@ disp_e AS (SELECT d.id, d.ts, d.session_id FROM events d JOIN chg_sess s ON d.se
 arch_e AS (SELECT id, ts FROM events WHERE kind='change.archive' AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) = ${NAME_LIT}),
 pb AS (SELECT id, ts, session_id, json_extract(payload,'$.policy') policy FROM ev WHERE kind='policy.decision' AND json_valid(payload)
   AND json_extract(payload,'$.action') IN ('block','warn')
-  AND json_extract(payload,'$.policy') IN ('ui-design-gate','quota-gate','spec-gate')),
+  AND json_extract(payload,'$.policy') IN ('ui-design-gate','quota-gate','spec-gate')
+  AND COALESCE(json_extract(payload,'$.reasonCode'),'') NOT IN ('ui-stage-missing','ui-stage-invalid','ui-stage-scope-out')),
 uipass AS (SELECT id, ts FROM uip WHERE action='pass'),
 pr AS (SELECT b.policy,
     CASE b.policy
@@ -1325,7 +1326,8 @@ repair_gate AS (SELECT (julianday(nts)-julianday(ts))*86400.0 AS sec FROM gseq W
 pb AS (SELECT id, ts, session_id, change, json_extract(payload,'$.policy') policy
   FROM win WHERE kind='policy.decision' AND json_valid(payload)
   AND json_extract(payload,'$.action') IN ('block','warn')
-  AND json_extract(payload,'$.policy') IN ('ui-design-gate','quota-gate','spec-gate')),
+  AND json_extract(payload,'$.policy') IN ('ui-design-gate','quota-gate','spec-gate')
+  AND COALESCE(json_extract(payload,'$.reasonCode'),'') NOT IN ('ui-stage-missing','ui-stage-invalid','ui-stage-scope-out')),
 pass_e AS (SELECT id, ts, change FROM win WHERE kind='policy.decision' AND json_valid(payload)
   AND json_extract(payload,'$.policy')='ui-design-gate' AND json_extract(payload,'$.action')='pass'),
 disp_e AS (SELECT id, ts, session_id FROM win WHERE kind='subagent.dispatch' AND json_valid(payload)

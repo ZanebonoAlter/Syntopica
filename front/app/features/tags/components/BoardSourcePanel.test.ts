@@ -4,8 +4,7 @@
  * 组件层：竞态防护（旧板块请求不覆盖新选中板块）、汇总行/5 列来源表/只读无写动作、
  * 空态引导切窗口、排序纯前端重排、失败重试自愈。
  * 装配层（旧 TagsPage 宿主已随 8.4 退役删除）：新宿主断言由
- * `console/BoardGovernanceDrawer.test.ts`（来源 tab 渲染）与
- * `console/BoardWideWorkface.test.ts` 承接。
+ * `console/BoardWideWorkface.test.ts`（宽工作面里的来源面板渲染）承接。
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'

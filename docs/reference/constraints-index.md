@@ -12,6 +12,8 @@
 | 后端代码风格 / lint / 包布局 | [`standard/backend/`](standard/backend/) |
 | 前端代码风格 / 交互约定 / 测试 / 主题 | [`standard/frontend/`](standard/frontend/) |
 | 页面布局模式 / 弹窗尺寸档 / major UI 双视口验收 | [`standard/frontend/layout.md`](standard/frontend/layout.md) |
+| 交互模式选择判据 / 界面文字职责 / 原型预算与数据来源声明 | [`standard/frontend/interaction.md`](standard/frontend/interaction.md) |
+| 原型内容质量（占位 vs 伪造 / 四态文案 / 视觉与动效下限 V1–V6） | [`standard/frontend/prototype-content.md`](standard/frontend/prototype-content.md) |
 | 执行规范（how，写对代码）之外——pi harness 扩展机制（扩展全景/注入通道/门禁分层/记账口径） | [`harness/pi-extensions.md`](harness/pi-extensions.md) |
 | 提交与 PR | [`standard/shared/commit-pr.md`](standard/shared/commit-pr.md) |
 | reference 文档新增/修订标准（目录职责、头部注释、注册点 checklist） | [`standard/shared/doc-authoring.md`](standard/shared/doc-authoring.md) |

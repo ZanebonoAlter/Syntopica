@@ -64,6 +64,31 @@ func seedLaneCompositeThread(t *testing.T, db *gorm.DB, reportID, sectionID uint
 	}).Error)
 }
 
+// seedLaneReportWithStatus creates a report with an explicit status (the
+// default in the model is 'generating' — the completed anchor cases need both).
+func seedLaneReportWithStatus(t *testing.T, db *gorm.DB, boardID uint, date time.Time, status string) uint {
+	t.Helper()
+	day := NormalizeReportDate(date)
+	for {
+		var taken int64
+		require.NoError(t, db.Model(&BoardDailyReport{}).
+			Where("semantic_board_id = ? AND period_date = ?", boardID, day.Format("2006-01-02")).
+			Count(&taken).Error)
+		if taken == 0 {
+			break
+		}
+		day = day.AddDate(0, 0, 1)
+	}
+	report := BoardDailyReport{
+		SemanticBoardID: boardID,
+		PeriodDate:      day,
+		Title:           "Test Report",
+		Status:          status,
+	}
+	require.NoError(t, db.Create(&report).Error)
+	return report.ID
+}
+
 // TestLaneDynamicsFullMatrix covers tasks 2.1: 活跃排序、沉寂排除、
 // watch 标识、待结算 null、候选门槛、时间线折叠计数。
 func TestLaneDynamicsFullMatrix(t *testing.T) {
@@ -171,6 +196,80 @@ func TestLaneDynamicsFullMatrix(t *testing.T) {
 	assert.Equal(t, "待激活", resp.Candidates[0].Label)
 	assert.Equal(t, "candidate-latest", resp.Candidates[0].RecentHint)
 	assert.Equal(t, dateStr(now), resp.Candidates[0].LastSeenDate)
+}
+
+// TestLaneDynamicsSectionCompositeCount（fix-lane-metric-provenance 1.1/1.2）：
+// 桶级 composite_count 下发——同桶 5 条线索（2 条综合稿）时，section 的
+// thread_count = 5（含综合稿的 thread 总数）、composite_count = 2，
+// 该日 clue_count 仍 = 3（综合稿不计入线索合计）。
+func TestLaneDynamicsSectionCompositeCount(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := time.Now()
+	reportToday := seedTestReport(t, db, boardID, now)
+
+	topic := seedLaneDynamicsTopic(t, db, boardID, "综合稿泳道", TopicStatusActive, 9, now)
+	bucket := seedTestSection(t, db, reportToday, "综合稿桶")
+	assignSection(t, db, bucket, topic.ID)
+	for i := 0; i < 3; i++ {
+		seedLaneThread(t, db, reportToday, bucket, "普通线索")
+	}
+	seedLaneCompositeThread(t, db, reportToday, bucket)
+	seedLaneCompositeThread(t, db, reportToday, bucket)
+
+	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
+	require.NoError(t, err)
+	require.Len(t, resp.Lanes, 1)
+	day := resp.Lanes[0].Timeline[0]
+	require.Len(t, day.Sections, 1)
+	assert.Equal(t, 5, day.Sections[0].ThreadCount, "thread 总数含综合稿")
+	assert.Equal(t, 2, day.Sections[0].CompositeCount, "桶内综合稿数")
+	assert.Equal(t, 3, day.ClueCount, "当日线索合计仍排除综合稿")
+
+	// JSON 形状：字段名与 snake_case 约定一致。
+	data, err := json.Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"composite_count":2`)
+}
+
+// TestLaneDynamicsAnchorIgnoresUnfinishedReport（fix-lane-metric-provenance
+// 1.3/1.4）：「最新日报」锚点统一为 completed 口径——版块有 completed(11-10)
+// 与 generating(11-11) 两份日报时，窗口末日 = completed 日，generating
+// 报告的分区不进时间线，响应 anchor_date = completed 日。
+func TestLaneDynamicsAnchorIgnoresUnfinishedReport(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := time.Now()
+	completedDay := NormalizeReportDate(now).AddDate(0, 0, -1)
+	unfinishedDay := NormalizeReportDate(now)
+
+	completed := seedLaneReportWithStatus(t, db, boardID, completedDay, ReportStatusCompleted)
+	unfinished := seedLaneReportWithStatus(t, db, boardID, unfinishedDay, "generating")
+
+	topic := seedLaneDynamicsTopic(t, db, boardID, "锚点泳道", TopicStatusActive, 9, now)
+	finishedSection := seedTestSection(t, db, completed, "已完成分区")
+	assignSection(t, db, finishedSection, topic.ID)
+	seedLaneThread(t, db, completed, finishedSection, "已完成线索")
+
+	pendingSection := seedTestSection(t, db, unfinished, "未完成分区")
+	assignSection(t, db, pendingSection, topic.ID)
+	seedLaneThread(t, db, unfinished, pendingSection, "未完成线索")
+
+	anchor, ok, err := repo.GetBoardReportAnchor(boardID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, dateStr(completedDay), anchor.Format("2006-01-02"), "锚点只认 completed 日报")
+
+	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
+	require.NoError(t, err)
+	assert.Equal(t, dateStr(completedDay), resp.AnchorDate, "响应显式下发 completed 锚点日")
+	require.Len(t, resp.Lanes, 1)
+	require.Len(t, resp.Lanes[0].Timeline, 1)
+	assert.Equal(t, dateStr(completedDay), resp.Lanes[0].Timeline[0].Date, "未完成日报的分区不进时间线")
 }
 
 // TestLaneDynamicsWindowBoundary: 14 天窗口含 13 天前、不含 14 天前

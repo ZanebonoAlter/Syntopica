@@ -47,6 +47,7 @@ function otherView(): OtherTopicsView {
         label: '其他分区一',
         clusterIndex: 0,
         threadCount: 2,
+        compositeCount: 0,
         persistentTopicId: null,
         statusKind: 'unattributed',
         statusText: '当次未归属',
@@ -138,8 +139,8 @@ describe('ObservationMatrixGrid — 格值与色深（线索口径，retire-stor
     day: {
       date: '2026-10-23',
       sections: [
-        { sectionId: '1', label: '桶1', threadCount: 3, fallbackClueCount: null, foldedCount: 0, eventTitles: ['事件一'] },
-        { sectionId: '2', label: '桶2', threadCount: 1, fallbackClueCount: null, foldedCount: 0, eventTitles: [] },
+        { sectionId: '1', label: '桶1', threadCount: 3, compositeCount: 0, clueCount: 3, foldedCount: 0, eventTitles: ['事件一'] },
+        { sectionId: '2', label: '桶2', threadCount: 1, compositeCount: 0, clueCount: 1, foldedCount: 0, eventTitles: [] },
       ],
       clueCount: 7,
     },
@@ -149,7 +150,7 @@ describe('ObservationMatrixGrid — 格值与色深（线索口径，retire-stor
     source: 'tier',
     day: {
       date: '2026-10-22',
-      sections: [{ sectionId: '3', label: '桶3', threadCount: null, fallbackClueCount: 3, foldedCount: 0, eventTitles: ['a', 'b', 'c'] }],
+      sections: [{ sectionId: '3', label: '桶3', threadCount: 3, compositeCount: 0, clueCount: 3, foldedCount: 0, eventTitles: ['a', 'b', 'c'] }],
     },
   }
   const resolver = (topicId: string, date: string): LaneDayResolution => {
@@ -198,7 +199,7 @@ describe('ObservationMatrixGrid — 格值与色深（线索口径，retire-stor
       source: 'tier',
       day: {
         date: '2026-10-22',
-        sections: [{ sectionId: '9', label: '桶9', threadCount: 0, fallbackClueCount: 0, foldedCount: 0, eventTitles: [] }],
+        sections: [{ sectionId: '9', label: '桶9', threadCount: 0, compositeCount: 0, clueCount: 0, foldedCount: 0, eventTitles: [] }],
         clueCount: 0,
       },
     }

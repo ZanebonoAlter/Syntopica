@@ -33,6 +33,8 @@ export interface LaneDayThread {
   confidence: number
   relatedArticleIds: string[]
   fitDistance: number | null
+  /** thread 范围：'composite' = 综合稿（不计入线索数）；缺省 = 未知（旧响应）。 */
+  scope: string | null
   createdAt: string
 }
 
@@ -68,6 +70,7 @@ function normalizeThread(thread: DailyReportThread): LaneDayThread {
     summary: thread.summary ?? '',
     confidence: thread.confidence ?? 0,
     relatedArticleIds: (thread.related_article_ids ?? []).map(id => String(id)),
+    scope: typeof thread.scope === 'string' && thread.scope !== '' ? thread.scope : null,
     fitDistance: typeof thread.fit_distance === 'number' ? thread.fit_distance : null,
     createdAt: thread.created_at ?? '',
   }

@@ -38,6 +38,9 @@ export interface DailyReportThread {
    *  nil = 无信号；有值时为 0.0~2.0 的距离，越小越贴合（0.0 = 完美贴合）。
    *  embedding 字段绝不在此声明（后端 json:"-" 不外泄到前端）。 */
   fit_distance?: number
+  /** Thread 范围：'single' = 单事件稿；'composite' = 综合稿（event 标签数 ≥ 2）。
+   *  综合稿不计入线索数/热度/行序，但可在展示层标出（fix-lane-metric-provenance）。 */
+  scope?: string
   related_article_ids: number[]
   created_at: string
 }
@@ -72,6 +75,77 @@ export interface BoardTopicListItem extends PersistentTopic {
   section_count: number
   color: string
   can_activate: boolean
+}
+
+/**
+ * 当前首义状态（GET /daily-reports/topics/:id/anchor）。
+ *
+ * `source`：`auto` = 创建话题时写入（**无节点集**）；`manual` = 人工选定的节点范围。
+ * `section_ids` 只在人工首义下有值（人工选定的节点，可能含当前取数窗口之外的节点）。
+ */
+export interface TopicAnchorState {
+  topic_id: number
+  source: 'auto' | 'manual'
+  section_ids: number[]
+  /** 人工改写次数（留痕条数）。 */
+  override_count: number
+  /** 生效时机；人工改写为 `next_report`，自动首义为空串。 */
+  effective_from: string
+}
+
+/**
+ * 人工重设首义的写入结果（PATCH /daily-reports/topics/:id/anchor）。
+ *
+ * 与后端 `AnchorFromSectionsResult` 的 json tag 逐字对齐（review R-12）。
+ */
+export interface TopicAnchorWriteResult {
+  topic_id: number
+  /** 输入模式；当前恒为 `selected_sections`。 */
+  source: string
+  /** 去重后的选定节点 id。 */
+  selected_sections: number[]
+  /** 该话题首义被人工改写的累计次数（留痕行数）。 */
+  override_count: number
+  /** 生效时机；恒为 `next_report`。 */
+  effective_from: string
+}
+
+/**
+ * 泳道归属变更的结果（PATCH /daily-reports/sections/:id/assignment）。
+ *
+ * 与后端 `AssignmentChangeResult` 的 json tag 逐字对齐（review R-12）。
+ */
+export interface AssignmentChangeResult {
+  section_id: number
+  /** 变更后的归属；null = 游离节点（不归属任何泳道）。 */
+  topic_id: number | null
+  /** 变更前的归属；null = 此前无归属。 */
+  previous_topic_id: number | null
+  /** `detach`（移除）/ `attach`（加回）。 */
+  action: 'detach' | 'attach'
+  /** 是否真的写了行；幂等加回返回 false（不写列、不追加留痕）。 */
+  changed: boolean
+  /** 加回到目标锚点的实算距离；节点无可用向量时缺失。 */
+  topic_match_distance?: number
+  /** 被重建关系图的版块。 */
+  board_id: number
+}
+
+/**
+ * 批量移除某天的结果（POST /daily-reports/topics/:id/detach-date）。
+ *
+ * 与后端 `BatchDetachResult` 的 json tag 逐字对齐（review R-12）。
+ */
+export interface BatchDetachResult {
+  topic_id: number
+  /** 被释放的日期（`YYYY-MM-DD`）。 */
+  period_date: string
+  /** 被释放的节点数。 */
+  detached: number
+  /** 被释放的节点 id（升序）。 */
+  section_ids: number[]
+  /** 被重建关系图的版块。 */
+  board_id: number
 }
 
 export interface SectionTimelineNode {
@@ -366,6 +440,42 @@ export function useDailyReportsApi() {
     return apiClient.patch(`/daily-reports/topics/${topicId}`, params)
   }
 
+  /**
+   * 人工重设首义范围（lane-manual-correction-loop）：写入该话题的**人工首义节点集**。
+   *
+   * 语义边界（契约见 `specs/lane-manual-correction`）：首义 = 一组被选中的节点的 embedding 均值；
+   * 改首义改的是**事实**，派生的重心 / 真空标记 / 泳道快照由算法次日重算，前端不做立即重算。
+   */
+  async function updateTopicAnchor(topicId: number, sectionIds: number[]): Promise<ApiResponse<TopicAnchorWriteResult>> {
+    return apiClient.patch(`/daily-reports/topics/${topicId}/anchor`, { section_ids: sectionIds })
+  }
+
+  /**
+   * 读当前首义（lane-manual-correction-loop）：首义来源 + 人工首义的节点集。
+   *
+   * `source = "auto"` = 首义是创建话题时写入的（**无节点集**，界面不得虚构节点列表）；
+   * `source = "manual"` = 首义由人工选定的节点范围定义，节点集在 `section_ids` 里
+   * （可能含窗口外节点 → 画布「更早」折叠带）。
+   */
+  async function getTopicAnchor(topicId: number): Promise<ApiResponse<TopicAnchorState>> {
+    return apiClient.get(`/daily-reports/topics/${topicId}/anchor`)
+  }
+
+  /**
+   * 改归属（双向，lane-manual-correction-loop）：把某个 section 归到目标话题。
+   *
+   * `topicId = null` = **解除归属**（该内容不再归属任何泳道；内容仍在，以后仍可再参与候选），
+   * 不是删除内容。
+   */
+  async function setSectionAssignment(sectionId: number, topicId: number | null): Promise<ApiResponse<AssignmentChangeResult>> {
+    return apiClient.patch(`/daily-reports/sections/${sectionId}/assignment`, { topic_id: topicId })
+  }
+
+  /** 从某话题的某个报告期摘掉该日归属（lane-manual-correction-loop）：该日内容不再归属本泳道，内容仍在。 */
+  async function detachTopicDate(topicId: number, periodDate: string): Promise<ApiResponse<BatchDetachResult>> {
+    return apiClient.post(`/daily-reports/topics/${topicId}/detach-date`, { period_date: periodDate })
+  }
+
   /** Hard-delete a topic. Sections keep their content; only the topic assignment is cleared. Irreversible. */
   async function deleteTopic(topicId: number): Promise<ApiResponse<null>> {
     return apiClient.delete(`/daily-reports/topics/${topicId}`)
@@ -401,6 +511,10 @@ export function useDailyReportsApi() {
     rebucketSection,
     backfillPersistentTopics,
     updateTopic,
+    updateTopicAnchor,
+    getTopicAnchor,
+    setSectionAssignment,
+    detachTopicDate,
     deleteTopic,
     listBoardTopics,
     mergeTopics,

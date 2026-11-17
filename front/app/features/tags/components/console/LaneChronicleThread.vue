@@ -5,6 +5,10 @@
  * 标题默认收束按钮；展开 = 该 thread 真实 summary 逐字 + 次级区（置信/关联篇数，
  * interaction-conventions：分数只进探究区，不堆在标题行）+ 相关文章按需块
  * （LaneRelatedArticles）。同名不同 threadId 各自独立渲染（父按 threadId keyed）。
+ *
+ * 综合稿标记（fix-lane-metric-provenance）：`scope='composite'` 的线索（event
+ * 标签数 ≥ 2）带只读徽标「综合稿」——它不计入当日线索合计，徽标文案不得暗示
+ * 它被计入。
  */
 import { Icon } from '@iconify/vue'
 import type { LaneDayThread } from '~/api/normalizers/laneDayReading'
@@ -22,6 +26,9 @@ const emit = defineEmits<{
   toggle: [threadId: string]
   openArticle: [articleId: string]
 }>()
+
+/** 综合稿（多事件稿）：不计入线索合计，徽标只作身份标记。 */
+const isComposite = (thread: { scope?: string | null }): boolean => thread.scope === 'composite'
 </script>
 
 <template>
@@ -35,6 +42,12 @@ const emit = defineEmits<{
     >
       <Icon :icon="expanded ? 'mdi:chevron-down' : 'mdi:chevron-right'" width="13" class="lct-caret" />
       <span class="lct-title" :title="thread.title">{{ thread.title || '(无标题线索)' }}</span>
+      <span
+        v-if="isComposite(thread)"
+        class="lct-composite"
+        data-testid="lane-chronicle-composite-tag"
+        title="综合稿（多个事件的同一篇稿）：不计入当日线索合计"
+      >综合稿</span>
     </button>
     <div v-if="expanded" class="lct-body">
       <p v-if="thread.summary" class="lct-summary">{{ thread.summary }}</p>
@@ -83,6 +96,17 @@ const emit = defineEmits<{
   font-size: 0.84rem;
   line-height: 1.55;
   overflow-wrap: break-word;
+}
+
+/* 综合稿徽标：只读身份标记（不暗示计入线索合计），复用泳道工作面「首义」徽标那一档。 */
+.lct-composite {
+  flex: none;
+  font-size: 10px;
+  color: var(--color-text-muted);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
 }
 
 .lct-body {

@@ -17,11 +17,33 @@
 }
 
 .omx-lane-name {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.86rem;
+}
+
+/* 行头容器内的名称按钮（lane-manual-correction-loop 6.3）：行头改为 div 容器，
+   名称与「⋯」入口各自是独立按钮（嵌套 button 非法）；按钮占满剩余宽度，名称超长省略。 */
+.omx-lane-name-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.omx-lane-name-btn:focus-visible {
+  outline: none;
 }
 
 .omx-lane:hover .omx-lane-name {

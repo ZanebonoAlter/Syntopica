@@ -28,8 +28,16 @@ export interface LaneSnapshot {
 export interface LaneTimelineSection {
   section_id: number
   label: string
-  /** 该 section 的线索总数（后端权威口径；旧响应缺省时用 events+folded 兜底）。 */
+  /**
+   * 该 section 的 thread 总数（**含**综合稿）——不是线索数。
+   * 线索数 = thread_count − composite_count（两者都已知时）；旧响应缺任一 → 未知。
+   */
   thread_count?: number
+  /**
+   * 该 section 内的综合稿（多事件稿）条数（fix-lane-metric-provenance）。
+   * 缺省 = 旧后端 → 桶内线索数不可数（不拿 thread_count 冒充线索数）。
+   */
+  composite_count?: number
   /** thread 级标题列表（后端每 section 截前 5 条，D4）。 */
   events: string[]
   /** 被后端截断未载入的事件数（「数量可截断但 SHALL 提示被折叠数」，spec）。 */
@@ -84,6 +92,11 @@ export interface LaneDynamicsResponse {
   window_days: number
   /** 板块是否存在日报（tasks 2.2 空数据两态契约：无日报引导生成 vs 有日报无泳道文案）。 */
   has_reports: boolean
+  /**
+   * 窗口锚点日 = 板块**最新 completed 日报**日（YYYY-MM-DD）；缺省 = 旧后端
+   * （fix-lane-metric-provenance：矩阵窗口与泳道工作面窗口必须同一天）。
+   */
+  anchor_date?: string
   lanes: LaneDynamicsLane[]
   candidates: LaneDynamicsCandidate[]
   /** 热度口径版本（heat-v2-lane-clues-1d）；缺省 = 旧后端。 */

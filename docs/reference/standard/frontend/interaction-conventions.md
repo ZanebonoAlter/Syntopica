@@ -1,7 +1,7 @@
 # 前端交互约定（Interaction Conventions）
 
 > **权威源**：本文件是前端"交互友好性 / 可观测性展示分层"约定的唯一权威。`front/AGENTS.md` 速查深链指向本文件。
-> 互补：[theming.md](./theming.md)（视觉 token）、[code-style.md](./code-style.md)（代码结构）。
+> 互补：[theming.md](./theming.md)（视觉 token）、[code-style.md](./code-style.md)（代码结构）、[interaction.md](./interaction.md)（交互模式选择判据 / 界面文字职责边界 / 原型预算）。分工：本文件管「状态与数字怎么摆」，`interaction.md` 管「选哪个模式」。
 >
 > 这些约定源自真实评审踩坑，非凭空设计——每条都附案例。
 

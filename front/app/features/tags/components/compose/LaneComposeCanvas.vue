@@ -26,6 +26,7 @@ import {
   placeLabels,
   placeRelatedTitles,
   pointAppearance,
+  proximityOf,
   relatedNodeIds,
   scaledPointRadius,
   truncateText,
@@ -173,6 +174,17 @@ const relatedIds = computed(() => {
   for (const item of recommendations.value.unassigned) out.add(item.section.id)
   for (const id of props.selectedIds) out.delete(id)
   return out
+})
+
+/**
+ * 焦点的相关集合（unify-lane-workbench 5.2 / D6）：种子 = {focusId}（不是已选集），
+ * 推荐仍用成员质心那批（焦点不参与质心）；无焦点 → null（默认呈现，不残留高亮）。
+ * 与已选标题入口共享 relatedNodeIds 实现、种子不同——标题故事不变。
+ */
+const focusRelatedIds = computed<Set<string> | null>(() => {
+  if (!props.focusId) return null
+  const recommended = recommendations.value.unassigned.map(item => item.section.id)
+  return relatedNodeIds(edges.value, new Set([props.focusId]), recommended)
 })
 
 /**
@@ -400,7 +412,7 @@ const canvasHeight = computed(() => (props.showAssigned
   ? Math.max(600, activeRowOffsets.value.cursor + 30)
   : Math.max(430, poolBottom.value + 70)))
 
-/** 每个点的视觉参数（半径 / 接近程度）。 */
+/** 每个点的视觉参数（半径 / 接近程度；相关/弱化为正交标志）。 */
 const appearances = computed(() => {
   const map = new Map<string, ReturnType<typeof pointAppearance>>()
   for (const section of drawable.value) {
@@ -412,6 +424,11 @@ const appearances = computed(() => {
       readonly,
       baseRadius.value,
       columnWidth.value,
+      {
+        focus: props.focusId === section.id,
+        related: focusRelatedIds.value?.has(section.id) ?? false,
+        dimmed: focusRelatedIds.value !== null && !focusRelatedIds.value.has(section.id),
+      },
     ))
   }
   return map
@@ -882,6 +899,8 @@ watch(() => props.focusId, (now, prev) => {
             'is-readonly': isReadonly(section),
             'is-focus': focusId === section.id,
             'is-recommended': recommendedDistance.has(section.id),
+            'is-related': appearances.get(section.id)?.related,
+            'is-dimmed': appearances.get(section.id)?.dimmed,
           }"
           :data-node="section.id"
           :data-proximity="appearances.get(section.id)?.proximity ?? ''"
@@ -940,7 +959,7 @@ watch(() => props.focusId, (now, prev) => {
         <button type="button" class="lcc-card__close" aria-label="关闭节点卡" data-testid="lane-node-card-close" @click="closeCard">×</button>
         <strong class="lcc-card__title">{{ cardSection.clusterLabel }}</strong>
         <span class="lcc-card__meta">
-          {{ cardSection.periodDate.slice(0, 10) }}<template v-if="cardReadonly"> · 已有泳道只读</template><template v-if="cardDistance !== null"> · 距离 {{ cardDistance.toFixed(3) }}</template>
+          {{ cardSection.periodDate.slice(0, 10) }}<template v-if="cardReadonly"> · 已有泳道只读</template><template v-if="cardDistance !== null"> · 估算接近度 {{ proximityOf(cardDistance)?.toFixed(2) }}</template>
         </span>
         <span v-if="cardArchivedOrigin" class="lcc-card__origin">来自已归档泳道：{{ cardArchivedOrigin }}</span>
         <span class="lcc-card__meta">{{ cardRelationCount ? `${cardRelationCount} 条原关系，画布上已连出` : '暂无原关系，可人工选入' }}</span>
@@ -1118,6 +1137,20 @@ watch(() => props.focusId, (now, prev) => {
 
 .lcc-canvas__node.is-focus .lcc-canvas__focus-ring {
   opacity: 1;
+}
+
+/* 相关高亮 / 弱化（焦点在场时；取消聚焦恢复默认，不残留）。 */
+.lcc-canvas__node.is-related .lcc-canvas__point {
+  stroke: var(--color-accent);
+  stroke-width: 2;
+}
+
+.lcc-canvas__node.is-related .lcc-canvas__related-title {
+  fill: var(--color-text-primary);
+}
+
+.lcc-canvas__node.is-dimmed {
+  opacity: 0.35;
 }
 
 .lcc-canvas__number {

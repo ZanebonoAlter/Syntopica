@@ -94,8 +94,12 @@ type SectionTimelineNode struct {
 	QualityBreakdown json.RawMessage `json:"quality_breakdown"`
 	// Persistent topic assignment. All optional so historical / unmatched
 	// sections (persistent_topic_id IS NULL) still serialize cleanly.
-	PersistentTopicID    *uint                 `json:"persistent_topic_id,omitempty"`
-	TopicMatchDistance   float64               `json:"topic_match_distance,omitempty"`
+	PersistentTopicID *uint `json:"persistent_topic_id,omitempty"`
+	// TopicMatchDistance is the anchor distance to the topic centroid. It is
+	// NOT omitempty: a distance of exactly 0 is a legal result (perfect
+	// anchor), and dropping the field would turn it into “unknown” on the
+	// client side (fix-lane-metric-provenance D11).
+	TopicMatchDistance   float64               `json:"topic_match_distance"`
 	TopicMatchConfidence string                `json:"topic_match_confidence,omitempty"`
 	PersistentTopic      *PersistentTopicBrief `json:"persistent_topic,omitempty"`
 }
@@ -397,10 +401,13 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 	// must run AFTER the transaction commits (sections + persistent_topic_id
 	// are otherwise invisible to ComputeTopicCentroid's r.db query). Best-effort:
 	// a failure degrades to a stale centroid/vacuum flag, not a save failure.
-	for _, tid := range touchedTopicIDs {
-		if cerr := r.UpdateCentroidOnSectionChange(nil, tid); cerr != nil {
-			logging.Warnf("SaveReport: centroid refresh failed for topic %d: %v", tid, cerr)
-		}
+	//
+	// 质心刷新范围 =「当日 touched 话题 ∪ centroid_pending_recompute=true 的话题」
+	// （lane-manual-correction D2）：人工修正过的泳道即使当天没有新内容命中，
+	// 也会被纳入本轮重算——否则改了首义/剔除了节点的泳道永远等不到重算，
+	// 修正落不下去。重算成功清标记，失败保留待下次重试，单话题失败不中断其余。
+	if updated, failed := r.RefreshBoardCentroids(report.SemanticBoardID, touchedTopicIDs); failed > 0 {
+		logging.Warnf("SaveReport: centroid refresh failed for %d of %d topic(s) on board %d", failed, updated+failed, report.SemanticBoardID)
 	}
 	if verr := r.RecomputeVacuumStats(report.SemanticBoardID); verr != nil {
 		logging.Warnf("SaveReport: vacuum stats recompute failed for board %d: %v", report.SemanticBoardID, verr)

@@ -1,13 +1,14 @@
 /**
  * 版块来源构成数据源（rework-workshop-into-radar-and-desk task 3.1/3.2）。
  *
- * 治理右轨（top 3 占比条）与治理抽屉 / 旧来源面板（全量表格）共用同一套取数、窗口、
+ * 右轨来源卡（top 3 占比条）与全量来源面板（全量表格）共用同一套取数、窗口、
  * 排序与占比派生，避免两处口径漂移：
  *  - 取数：GET /semantic-boards/:id/source-breakdown?window=N（只读）；
  *  - 竞态：请求序号丢弃旧版块/旧窗口的迟到响应（切版块时不得覆盖）；
  *  - 派生的 `shareText/initialOf` 只做展示格式化，不改后端口径。
  *
- * 组件只渲染：`BoardSourcePanel`（阶段④退役）与 `BoardGovernanceRail` 共用本 composable。
+ * 组件只渲染：`RailSourcesBrief`（右轨来源卡）与 `BoardSourcePanel`（宽工作面里的
+ * 全量来源表）共用本 composable。
  */
 import { computed, onMounted, ref, watch, type Ref } from 'vue'
 import { useSemanticBoardsApi } from '~/api/semanticBoards'

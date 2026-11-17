@@ -237,6 +237,22 @@ SemanticBoard 管理面板
 
 > 变更溯源见本文件 [§变更溯源](#变更溯源)。
 
+### 泳道工作面（unify-lane-workbench：三栏 / 节点卡显式写操作 / 模态本地时间窗）
+
+版块态势页顶栏「新建泳道」与矩阵行入口打开的 `console/BoardComposeOverlay.vue` 同时承载两个模式；**修正模式（编辑既有泳道）为三栏工作面**：
+
+```text
+左栏 380px（已选侧）         中心画布（自适应）                右栏 300px（待选侧）
+成员 / 更早成员 / 已移出      时间轴 + 节点散点 + 节点卡        关联推荐（估算接近度 + 「＋加入」）
+首义范围（sticky 按钮）       点节点只 = 选中查看，不改成员    pending / 空态 / 错误态
+```
+
+- **左右不重复**：推荐只在右栏（`LaneRecommendationList.vue`），左栏（`LaneMemberList.vue`）收窄为成员/更早成员/本次已移出三组 + 首义（`LaneAnchorScope.vue`）；两侧各自独立纵向不均匀截断（块内滚动、操作按钮不被裁掉）。
+- **显式卡片写入**：节点卡（跟随选中节点）上直接给「＋加入本泳道 / ⊘移出本泳道 / 加回来」，右栏「＋加入」与卡上按钮走**同一** `useLaneCorrection` 的 `addMember/removeMember/restoreMember`，一次显式动作 = 一次既有归属 PATCH；点画布本体/Enter 只改选中态（查看与选入分离）。写操作只写事实层：不动 `hit_count` / `consecutive_hits` / `status`（红线 20），移出不弹二次确认，首义仍只由左栏发起（次日生效）。
+- **时间窗是模态本地态**：新建/修正各自持已提交范围 + 控件草稿 + 手势预览 + 请求序号，**不写 router/query**（矩阵深链 `days/start/end` 不被覆盖）；`preview` 不取数，`commit` 校验通过才取候选，失败恢复旧范围并保留草稿/旧清单；修正档 7/14/30/365（可编排上限 365，与后端 `ComposeWindowMaxDays` 同源）。
+- **曲线口径（两条不混用）**：编辑曲线 = **本泳道逐日线索数**（`lane-dynamics?days=365` 目标 topicId）；新增曲线 = **全部可选线索数**（`compose-candidates?days=365&omit_embeddings=1` 后按日聚合非 active/无归属 section 的 `clue_count`，含无归属节点、不扣草稿已选）。两者都是 365 天历史参考，**不是**可编排范围；曲线未知不补 0（缺字段 / null = 未知，已知 0 照画）。轻量参数与窗口错误码见 [api/semantic-boards.md](../api/semantic-boards.md) §编排 / 修正工作面的候选读取。
+- **修正质心含窗口外成员**：推荐质心 = 窗口内有效成员 + `early_members[].embedding`（后端全量成员口径），否则窗口内成员为 0 时质心为空、候选区全空；更早成员本身不上画布（只在左栏分组与节点卡可见）。
+
 ### 板块来源构成（add-source-board-hit-rate，当前右轨/单级工作面）
 
 供血源视角的只读聚合（当前版块右轨简要 + 单级宽工作面全量；不随观察日期/档重算）：`GET /api/semantic-boards/:id/source-breakdown?window=7` 返回该版块窗口内的来源构成——`total_articles`（按文章去重）/ `source_count` / `sources[]`（`feed_id`、本版块篇数 `articles`、占比 `share`、该源窗口总量 `feed_articles`、该源整体命中率 `feed_hit_rate`）。与板块文章列表 `/:id/articles` 的口径差异：articles 是文章列表（分页/过滤、含匹配质量明细），source-breakdown 是按源聚合的命中构成——**含已归档、按文章去重（同版块多标签只计一次、同一文章命中多版块各计一次）、必限窗口**；不变量：`Σ sources[].articles == total_articles`。版块不存在或非 `label_type='board'` → 404；disabled 版块不是 404（按命中口径聚合为 0）。
@@ -475,6 +491,7 @@ handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembed
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 | ------ | ------ | ------ | ---------- |
+| 2026-11-16 | unify-lane-workbench | 泳道修正工作面三栏化（左 380 已选 / 中画布 / 右 300 待选，推荐不再在左栏）+ 节点卡显式写操作（加入/移出/加回走同一 `useLaneCorrection`） + 时间窗归模态本地态（不写 router，preview 不取数） + 两条 365 曲线分口径（编辑=本泳道逐日线索数；新增=全部可选线索数，轻量 `omit_embeddings=1`）+ 两画布共享 `pointAppearance`/`relatedNodeIds`（接近度统一 1−距离）；后端只补 `section.clue_count` 运行时投影与 `early_members[].embedding`，无 DDL | [`openspec/changes/unify-lane-workbench`](../../../openspec/changes/unify-lane-workbench) |
 | 2026-11-14 | lane-manual-correction-loop | 泳道人工修正闭环（批 E1 文档收口）：① 修正过期组件指代——`BoardHealthPanel.vue` 已随 rework-workshop-into-radar-and-desk 8.4 物理删除，职能拆入治理工作面 `console/BoardWideWorkface.vue`（页签 构成/组合/候选/来源/设置）+ `console/board-health/BoardHealthWorkspace.vue` + `console/BoardHealthDetail.vue` + `console/RailHealthBrief.vue`；② 版块编辑入口现状 = L0 雷达行尾「⋯」（编辑/归档）+ L1 顶栏「板块管理 → 板块设置 / 删除」→ 治理工作面「设置」页签 `console/BoardSettingsForm.vue`，旧 `BoardEditDialog`/`BoardGovernanceDrawer`/`BoardGovernanceRail` 三套僵尸实现已删；③ 新增红线 35：版块 label/description 变更后同请求内失效 board embeddings 缓存（无 TTL），且不自动重跑匹配表 | [`openspec/changes/lane-manual-correction-loop`](../../../openspec/changes/lane-manual-correction-loop) |
 | 2026-11-12 | retire-heuristic-tag-fallback | **删除 heuristic 规则词兜底打标**（用户报障「board 1980 满屏 Coding/AI Agent」的真病根）：删 `extractor_heuristic.go` 整文件（7 条硬编码规则 AI Agent/OpenAI/Anthropic/Multimodal/Coding/Infra/NVIDIA + 产品型号 token + feed 名 + 分类名，`Coding` 含子串 "code"）+ 提取层 `extractWithHeuristic` + 编排层 `legacyExtractTopics`；**失败语义改为「失败即失败」**——抽取失败不再写任何标签，任务标 failed 进既有队列退避重试（1/2/4/8/16 分钟，上限 5 次），仍失败停在 failed 态可批量 retag（旧兜底吞掉错误致任务误标 completed、文章永不重打，这才是泛词刷版块 + event 标签断粮的根因）。存量清理：删 1727 行 heuristic 文章关联 + 14 个零引用标签（FK CASCADE）+ 14 个 LLM 认领者改 source=llm（**按字面删 28 个会误删 OpenAI/NVIDIA 等真标签**）+ 悬挂引用 33 行 + 重算 1142 篇 tag_count；效果：heuristic 归零、**Coding 关联文章 722→1、AI Agent 85→16**（余为 LLM 真实产出），board 1980 挂载 Top20 全是真标签。**挂载行未解**——要彻底移除 Coding 需另开标签退役 change | [`openspec/changes/archive/2026-11-12-retire-heuristic-tag-fallback`](../../../openspec/changes/archive/2026-11-12-retire-heuristic-tag-fallback) |
 | 2026-11-12 | tolerate-schema-envelope-extraction-output | 修复模型「schema 外壳」输出导致的打标解析失败：本地 4B 模型在 JSON-schema 引导下把 schema 骨架当输出（数组塞进 `properties`，11-12 占 82% 调用），解析器只认顶层键 → 解析失败 → 任务 failed。双管齐下：① **根因**——merged 路径 user prompt 末句仍写 merge-tag-branches 之前的旧单数组 `{"tags": [标签列表]}`，与 system prompt 正例/下发 schema 的双数组矛盾，改为指向双数组（section 路径 schema 本就是单数组，不动）；② **兜底**——新增 `unwrapSchemaEnvelope` 识别外壳取 `properties`，判定三条件（顶层对象 ∧ properties 是对象 ∧ 含 type/required）、幂等、非外壳原样返回；解包后缺目标键仍报错触发重试。接入 `unmarshalMergedExtraction` 与 `parseRawTagObjects`（section/legacy 同享）；标签语义零变化（aux/description/上限/黑名单/示例词护栏全照旧） | [`openspec/changes/archive/2026-11-12-tolerate-schema-envelope-extraction-output`](../../../openspec/changes/archive/2026-11-12-tolerate-schema-envelope-extraction-output) |

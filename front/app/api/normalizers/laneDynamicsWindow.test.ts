@@ -15,6 +15,7 @@ function makeRaw(): LaneDynamicsResponse {
   return {
     window_days: 14,
     has_reports: true,
+    anchor_date: '2026-10-23',
     heat_rule_version: 'heat-v2-lane-clues-1d',
     lanes: [
       {
@@ -28,17 +29,18 @@ function makeRaw(): LaneDynamicsResponse {
         timeline: [
           {
             date: '2026-10-22',
-            clue_count: 8,
+            clue_count: 9,
             sections: [
-              { section_id: 101, label: '桶1', thread_count: 3, events: ['t1'], folded_count: 1 },
-              { section_id: 102, label: '桶2', thread_count: 7, events: ['t2', 't3'] },
+              // 桶线索数 = thread_count − composite_count：桶1 = 3−1 = 2，桶2 = 7−0 = 7
+              { section_id: 101, label: '桶1', thread_count: 3, composite_count: 1, events: ['t1'], folded_count: 1 },
+              { section_id: 102, label: '桶2', thread_count: 7, composite_count: 0, events: ['t2', 't3'] },
             ],
           },
           {
             date: '2026-10-23',
             sections: [
-              // thread_count 缺省（旧响应）→ 回退 events.length + folded_count = 3
-              { section_id: 103, label: '旧桶', events: ['e1', 'e2'], folded_count: 1 },
+              // 旧响应缺 composite_count → 桶线索数不可数（不得用 thread_count 冒充）
+              { section_id: 103, label: '旧桶', thread_count: 3, events: ['e1', 'e2'], folded_count: 1 },
             ],
           },
         ],
@@ -100,16 +102,21 @@ describe('normalizeLaneDynamicsWindow', () => {
     })
   })
 
-  it('thread_count 缺省三级：已知数 / 回退 events+folded / 全未知（MX-2 变体）', () => {
+  it('桶线索数唯一公式：thread_count − composite_count；缺任一 → 未知（不冒充）', () => {
     const data = normalizeLaneDynamicsWindow(makeRaw())
     const lane = data.lanes[0]!
-    expect(lane.timeline[0]!.sections[0]!.threadCount).toBe(3)
+    const counted = lane.timeline[0]!.sections[0]!
+    expect(counted.threadCount).toBe(3)
+    expect(counted.compositeCount).toBe(1)
+    expect(counted.clueCount).toBe(2)
+    // 旧响应缺 composite_count → 桶线索数不可数（不得拿 thread_count 冒充线索数）
     const legacySection = lane.timeline[1]!.sections[0]!
-    expect(legacySection.threadCount).toBeNull()
-    expect(legacySection.fallbackClueCount).toBe(3)
+    expect(legacySection.threadCount).toBe(3)
+    expect(legacySection.compositeCount).toBeNull()
+    expect(legacySection.clueCount).toBeNull()
     const unknown = data.lanes[1]!.timeline[0]!.sections[0]!
     expect(unknown.threadCount).toBeNull()
-    expect(unknown.fallbackClueCount).toBeNull()
+    expect(unknown.clueCount).toBeNull()
   })
 
   it('snapshot null = 待结算（不影响 timeline）；detail 缺省归 null（两级可区分）', () => {
@@ -125,7 +132,7 @@ describe('normalizeLaneDynamicsWindow', () => {
 
   it('逐日 clue_count 透传；候选缺省字段降级 null（不造 0）', () => {
     const raw = makeRaw()
-    expect(normalizeLaneDynamicsWindow(raw).lanes[0]!.timeline[0]!.clueCount).toBe(8)
+    expect(normalizeLaneDynamicsWindow(raw).lanes[0]!.timeline[0]!.clueCount).toBe(9)
     // 旧响应缺 clue_count → null（展示层按各桶合计派生）
     expect(normalizeLaneDynamicsWindow(raw).lanes[0]!.timeline[1]!.clueCount).toBeNull()
 
@@ -138,9 +145,13 @@ describe('normalizeLaneDynamicsWindow', () => {
     })
   })
 
-  it('anchorDate = 窗内最新有分区日；无泳道为 null', () => {
+  it('anchorDate 优先取后端 completed 锚点日；缺省回退窗内最新有分区日', () => {
     const data = normalizeLaneDynamicsWindow(makeRaw())
     expect(data.anchorDate).toBe('2026-10-23')
+    // 旧后端无 anchor_date → 回退数据最新日
+    const legacy = makeRaw()
+    delete legacy.anchor_date
+    expect(normalizeLaneDynamicsWindow(legacy).anchorDate).toBe('2026-10-23')
     const empty = normalizeLaneDynamicsWindow({ window_days: 14, has_reports: true, lanes: [], candidates: [] })
     expect(empty.anchorDate).toBeNull()
   })
@@ -158,7 +169,7 @@ describe('normalizeLaneDynamicsWindow', () => {
 
 describe('dayCellMetrics — 当日线索合计', () => {
   const day = (
-    sections: { threadCount?: number | null, fallbackClueCount?: number | null }[],
+    sections: { threadCount?: number | null, compositeCount?: number | null }[],
     clueCount?: number | null,
   ) => {
     const raw = {
@@ -166,11 +177,12 @@ describe('dayCellMetrics — 当日线索合计', () => {
       sections: sections.map((s, i) => ({
         section_id: i + 1,
         label: `桶${i + 1}`,
-        // raw 是 snake_case 协议：threadCount 必须映射回 thread_count
+        // raw 是 snake_case 协议：threadCount/compositeCount 必须映射回 snake_case
         thread_count: s.threadCount,
-        events: s.fallbackClueCount === undefined ? [] : null,
-        // null = 该桶全未知（events 与 folded_count 都缺）；数字 = events 折叠后的回退数
-        folded_count: s.fallbackClueCount === null ? null : (s.fallbackClueCount ?? 0),
+        // composite_count 默认 0（无综合稿）；null = 缺省（旧响应 → 桶线索数不可数）
+        composite_count: s.compositeCount === null ? undefined : (s.compositeCount ?? 0),
+        events: [],
+        folded_count: 0,
       })),
     }
     const payload = clueCount === undefined ? raw : { ...raw, clue_count: clueCount }
@@ -182,46 +194,75 @@ describe('dayCellMetrics — 当日线索合计', () => {
     } as unknown as LaneDynamicsResponse).lanes[0]!.timeline[0]!
   }
 
-  it('桶峰值 = max、total = 各桶合计、sectionCount 与未知标记（MX-1）', () => {
+  it('桶峰值 = max、total = 各桶非综合稿合计、sectionCount 与未知标记（MX-1）', () => {
     const metrics = dayCellMetrics(day([{ threadCount: 3 }, { threadCount: 7 }, { threadCount: 1 }]))
     expect(metrics.peak).toBe(7)
     expect(metrics.total).toBe(11)
     expect(metrics.sectionCount).toBe(3)
     expect(metrics.hasUnknown).toBe(false)
     expect(metrics.clueCount).toBe(11)
+    expect(metrics.bucketClues).toEqual([3, 7, 1])
+  })
+
+  it('综合稿不计入线索数：桶线索数 = thread_count − composite_count', () => {
+    const metrics = dayCellMetrics(day([{ threadCount: 5, compositeCount: 2 }, { threadCount: 4, compositeCount: 0 }]))
+    expect(metrics.clueCount).toBe(7)
+    expect(metrics.total).toBe(7)
+    expect(metrics.bucketClues).toEqual([3, 4])
+    expect(metrics.compositeCount).toBe(2)
+    expect(metrics.clueCountSource).toBe('buckets')
   })
 
   it('后端 clue_count 优先于各桶合计（综合稿已排除，权威值）', () => {
-    const metrics = dayCellMetrics(day([{ threadCount: 3 }, { threadCount: 7 }], 8))
+    const metrics = dayCellMetrics(day([{ threadCount: 3, compositeCount: 0 }, { threadCount: 7, compositeCount: 0 }], 8))
     expect(metrics.clueCount).toBe(8)
-    expect(metrics.total).toBe(10)
+    expect(metrics.total).toBe(8)
+    expect(metrics.clueCountSource).toBe('backend')
   })
 
   it('clue_count 显式 0 是合法已知值（真零线索，不回落合计）', () => {
-    const metrics = dayCellMetrics(day([{ threadCount: 0 }], 0))
+    const metrics = dayCellMetrics(day([{ threadCount: 0, compositeCount: 0 }], 0))
     expect(metrics.clueCount).toBe(0)
   })
 
-  it('旧响应缺 clue_count：回退各桶已知合计；全未知 → null（不造 0）', () => {
-    expect(dayCellMetrics(day([{ threadCount: 3 }, { threadCount: 2 }])).clueCount).toBe(5)
-    expect(dayCellMetrics(day([{ threadCount: null, fallbackClueCount: null }])).clueCount).toBeNull()
-    // 部分桶未知：用已知部分求和
-    expect(dayCellMetrics(day([{ threadCount: 5 }, { threadCount: null, fallbackClueCount: null }])).clueCount).toBe(5)
+  it('缺 clue_count：回退各桶已知非综合稿合计；全未知 → null（不造 0）', () => {
+    expect(dayCellMetrics(day([{ threadCount: 3, compositeCount: 0 }, { threadCount: 2, compositeCount: 0 }])).clueCount).toBe(5)
+    expect(dayCellMetrics(day([{ threadCount: null, compositeCount: null }])).clueCount).toBeNull()
+    // 部分桶未知：已知部分求和，且明确标为下界（不冒充完整合计）
+    const partial = dayCellMetrics(day([{ threadCount: 5, compositeCount: 0 }, { threadCount: null, compositeCount: null }]))
+    expect(partial.clueCount).toBe(5)
+    expect(partial.isLowerBound).toBe(true)
+  })
+
+  it('差值为负（综合稿数 > thread 总数，后端统计异常）→ 不可数，不抹成合法 0', () => {
+    const metrics = dayCellMetrics(day([{ threadCount: 1, compositeCount: 2 }]))
+    expect(metrics.clueCount).toBeNull()
+    expect(metrics.hasUnknown).toBe(true)
+    expect(metrics.clueCountSource).toBe('none')
+  })
+
+  it('旧响应缺 composite_count → 桶线索数不可数（不拿 thread_count 冒充线索数）', () => {
+    const metrics = dayCellMetrics(day([{ threadCount: 3, compositeCount: null }]))
+    expect(metrics.clueCount).toBeNull()
+    expect(metrics.hasUnknown).toBe(true)
+    expect(metrics.compositeCount).toBeNull()
+    expect(metrics.clueCountSource).toBe('none')
   })
 
   it('空日 / 有分区零线索：空集返回 0（与 gap 由 resolver 区分）；零是合法已知值', () => {
-    expect(dayCellMetrics(null)).toEqual({ clueCount: 0, total: 0, peak: null, sectionCount: 0, hasUnknown: false })
+    expect(dayCellMetrics(null)).toEqual({
+      clueCount: 0, total: 0, peak: null, sectionCount: 0,
+      hasUnknown: false, compositeCount: 0, bucketClues: [],
+      clueCountSource: 'backend', isLowerBound: false,
+    })
     expect(dayCellMetrics({ date: 'd', sections: [], clueCount: null }).sectionCount).toBe(0)
-    const zero = dayCellMetrics(day([{ threadCount: 0, fallbackClueCount: 0 }]))
+    const zero = dayCellMetrics(day([{ threadCount: 0, compositeCount: 0 }]))
     expect(zero.peak).toBe(0)
     expect(zero.clueCount).toBe(0)
   })
 
-  it('events+folded 回退 3；全未知 → peak null + hasUnknown（MX-2）', () => {
-    const fallback = dayCellMetrics(day([{ threadCount: null, fallbackClueCount: 3 }]))
-    expect(fallback.peak).toBe(3)
-    expect(fallback.clueCount).toBe(3)
-    const unknown = dayCellMetrics(day([{ threadCount: null, fallbackClueCount: null }]))
+  it('全未知日：peak null + hasUnknown（MX-2）', () => {
+    const unknown = dayCellMetrics(day([{ threadCount: null, compositeCount: null }]))
     expect(unknown.peak).toBeNull()
     expect(unknown.hasUnknown).toBe(true)
     expect(unknown.sectionCount).toBe(1)

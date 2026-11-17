@@ -30,7 +30,8 @@ const AXIS14 = buildDayAxis(ANCHOR, 14)
 const TIER_START = AXIS14[0]!
 
 function sectionRaw(id: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return { section_id: id, label: `桶${id}`, events: [`事件${id}`], ...overrides }
+  // composite_count 默认 0（无综合稿）：桶线索数 = thread_count − composite_count。
+  return { section_id: id, label: `桶${id}`, events: [`事件${id}`], composite_count: 0, ...overrides }
 }
 
 function laneRaw(topicId: number, label: string, timeline: { date: string, sections: Record<string, unknown>[], clue_count?: number }[]): Record<string, unknown> {

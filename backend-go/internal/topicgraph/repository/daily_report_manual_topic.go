@@ -69,6 +69,13 @@ func detectOutliers(distances []float64, threshold float64) []bool {
 
 // (formatPgVector removed — use the existing FloatsToPgVector helper in daily_report_models.go.)
 
+// ComposeWindowMaxDays is the supported window length of the compose
+// workbench (both ends included). unify-lane-workbench OQ-2（2026-11-16
+// 用户裁决）：由 90 放宽到 365——新增泳道可看一年真实可选池。三处必须一致：
+// 本常量（repository 钳位 + handler 校验共用）、parseComposeWindowParams 的
+// 报错文案（引用本常量）、前端 validateCustomRange 的上限。
+const ComposeWindowMaxDays = 365
+
 // ComposeCandidateSection is a section with its embedding exposed as a float
 // slice, dedicated to the manual-compose workbench. The regular timeline node
 // never serializes the 4096-dim vector; this struct is the only payload that
@@ -79,10 +86,15 @@ type ComposeCandidateSection struct {
 	ReportID             uint                  `json:"report_id"`
 	PeriodDate           time.Time             `json:"period_date"`
 	ClusterLabel         string                `json:"cluster_label"`
-	Embedding            []float64             `json:"embedding"`
+	Embedding            []float64             `json:"embedding,omitempty"`
 	PersistentTopicID    *uint                 `json:"persistent_topic_id,omitempty"`
 	TopicMatchConfidence string                `json:"topic_match_confidence,omitempty"`
 	PersistentTopic      *PersistentTopicBrief `json:"persistent_topic,omitempty"`
+	// ClueCount is the section's non-composite (非综合稿) thread count
+	// (unify-lane-workbench D2)：曲线与可选池的线索数口径，与
+	// listLaneSectionThreads 的 Clues 同源（综合稿不计入）；无 thread 的
+	// section 为已知 0（必序列化，不加 omitempty），不是文章总数。
+	ClueCount int `json:"clue_count"`
 }
 
 // ComposeCandidatesQuery describes the window of the compose-candidates
@@ -90,14 +102,28 @@ type ComposeCandidateSection struct {
 // override Days (the handler rejects a half-specified range up front).
 type ComposeCandidatesQuery struct {
 	BoardID uint
-	// Days is the shortcut window length (7/14/30/90), anchored to the
+	// Days is the shortcut window length, anchored to the
 	// board's latest completed report. days<=0 means "approximately all
-	// history", days>90 is capped at 90.
+	// history", days over ComposeWindowMaxDays is capped at that bound
+	// (unify-lane-workbench OQ-2: 90 → 365).
 	Days int
 	// From/To are the explicit window bounds (UTC midnight). Both are set
 	// together or both are nil.
 	From *time.Time
 	To   *time.Time
+	// AllMembersTopicID opts into the 「全量成员」 mode of the lane
+	// correction workbench: when set, the members of that topic whose report
+	// period precedes the window's first day are returned in EarlyMembers
+	// (the in-window members stay in Sections). A nil pointer keeps the
+	// compose workbench behaviour untouched — the response is byte-identical
+	// and carries no early_members field at all.
+	AllMembersTopicID *uint
+	// OmitEmbeddings drops the per-section embedding vectors from the
+	// response (unify-lane-workbench OQ-2：曲线走轻量取数). The curve only
+	// needs period_date + persistent_topic_id + clue_count; skipping the
+	// 10,244 B-per-row vectors shrinks a 365-day response from ≈10 MB to the
+	// ≈200 KB range. The compose canvas path leaves it unset.
+	OmitEmbeddings bool
 }
 
 // ComposeWindow echoes the resolved window back to the client so the frontend
@@ -115,6 +141,27 @@ type ComposeWindow struct {
 	LatestCompletedDate *string `json:"latest_completed_date"`
 }
 
+// ComposeEarlyMember is one member of a persistent topic whose report period
+// precedes the compose window's first day — the 「更早成员」 of the lane
+// correction workbench (数据全量、展示分层).
+//
+// The shape mirrors ComposeCandidateSection (same fact columns, no vector:
+// the early members are not drawn on the canvas, so their embedding is not
+// shipped).
+type ComposeEarlyMember struct {
+	ID                   uint      `json:"id"`
+	ReportID             uint      `json:"report_id"`
+	PeriodDate           time.Time `json:"period_date"`
+	ClusterLabel         string    `json:"cluster_label"`
+	PersistentTopicID    *uint     `json:"persistent_topic_id,omitempty"`
+	TopicMatchDistance   *float64  `json:"topic_match_distance,omitempty"`
+	TopicMatchConfidence string    `json:"topic_match_confidence,omitempty"`
+	// Embedding 是该 section 的内容向量：修正工作面的关联推荐质心需要窗口外成员
+	// 参与（否则窗口内成员为 0 时质心为空、候选区全空）。无可用向量的成员不入集
+	// （与窗口内 sections 同一向量可用性判据，fix-lane-metric-provenance D9）。
+	Embedding []float64 `json:"embedding,omitempty"`
+}
+
 // ComposeCandidatesResponse is the payload for GET
 // /api/semantic-boards/:id/persistent-topics/compose-candidates.
 type ComposeCandidatesResponse struct {
@@ -127,6 +174,15 @@ type ComposeCandidatesResponse struct {
 	CandidateChains []ComposeCandidateChain `json:"candidate_chains"`
 	MatchThreshold  float64                 `json:"match_threshold"`
 	Window          ComposeWindow           `json:"window"`
+	// EarlyMembers are the topic's members whose report period is earlier
+	// than the window's first day (ascending by period date, then id).
+	//
+	// A nil pointer means the request did not ask for the full member set —
+	// the field is then absent from the response (the compose workbench
+	// behaviour is unchanged). A non-nil pointer always carries an array
+	// (possibly empty), so the client can tell "no early members" apart from
+	// "this build does not know the full member set".
+	EarlyMembers *[]ComposeEarlyMember `json:"early_members,omitempty"`
 }
 
 // LatestCompletedReportDate returns the period_date of the board's latest
@@ -169,8 +225,8 @@ func resolveComposeWindow(q ComposeCandidatesQuery, latest *time.Time) (cutoff, 
 	}
 
 	effectiveDays = q.Days
-	if effectiveDays > 90 {
-		effectiveDays = 90
+	if effectiveDays > ComposeWindowMaxDays {
+		effectiveDays = ComposeWindowMaxDays
 	}
 	if effectiveDays < 0 {
 		effectiveDays = 0
@@ -258,6 +314,32 @@ func (r *TopicGraphRepository) GetComposeCandidates(q ComposeCandidatesQuery) (C
 		})
 	}
 
+	// 每条 section 的非综合稿线索数（unify-lane-workbench D2）：对已筛出的有效
+	// section 一次批量复用 listLaneSectionThreads（Clues 排除 composite）；无
+	// thread 的 section 为已知 0（零值即 0，必序列化）；查询失败使请求失败，
+	// 不伪造 0。
+	if len(out) > 0 {
+		ids := make([]uint, len(out))
+		for i := range out {
+			ids[i] = out[i].ID
+		}
+		threadsBySection, err := r.listLaneSectionThreads(ids)
+		if err != nil {
+			return ComposeCandidatesResponse{}, fmt.Errorf("GetComposeCandidates: section threads: %w", err)
+		}
+		for i := range out {
+			out[i].ClueCount = threadsBySection[out[i].ID].Clues
+		}
+	}
+
+	// 轻量取数（OQ-2）：曲线只需要日期/归属/线索数，每条向量实占 10,244 B——
+	// 365 天含向量 ≈10 MB，省略后压到 ≈200 KB 量级。画布路径不传该参数。
+	if q.OmitEmbeddings {
+		for i := range out {
+			out[i].Embedding = nil
+		}
+	}
+
 	// Attach topic briefs (id/label/status/colour) in one batch, mirroring
 	// attachTopicBriefs but against the compose candidate slice shape.
 	if len(topicIDs) > 0 {
@@ -318,7 +400,7 @@ func (r *TopicGraphRepository) GetComposeCandidates(q ComposeCandidatesQuery) (C
 	}
 	chains := BuildComposeCandidateChains(chainSections, relations)
 
-	return ComposeCandidatesResponse{
+	resp := ComposeCandidatesResponse{
 		Sections:        out,
 		Relations:       relations,
 		CandidateChains: chains,
@@ -329,7 +411,95 @@ func (r *TopicGraphRepository) GetComposeCandidates(q ComposeCandidatesQuery) (C
 			Days:                effectiveDays,
 			LatestCompletedDate: formatComposeDate(latest),
 		},
-	}, nil
+	}
+
+	// 「全量成员」 mode (lane correction workbench): the topic's members
+	// whose report period precedes the window's first day. Only loaded when
+	// the caller asks for it — the compose workbench response stays
+	// byte-identical.
+	if q.AllMembersTopicID != nil {
+		// 窗口外成员 = 窗口 [cutoff, upper] 之外的**全部**本话题成员。显式 from/to 且
+		// to < 最新 completed 日时，上界之后还有成员——不取它们会让「窗口 N + 窗口外数」
+		// 少于成员总数（review R-3）。
+		early, err := r.getComposeEarlyMembers(q.BoardID, *q.AllMembersTopicID, cutoff, upper)
+		if err != nil {
+			return ComposeCandidatesResponse{}, fmt.Errorf("GetComposeCandidates: query early members: %w", err)
+		}
+		resp.EarlyMembers = &early
+	}
+
+	return resp, nil
+}
+
+// getComposeEarlyMembers loads the members of one persistent topic that fall
+// OUTSIDE the compose window [cutoff, upper] (window bounds inclusive, same as
+// the sections query).
+//
+// 两个集合互补（fix-lane-metric-provenance D9 / review R-3）：`sections` 取窗口内、
+// 本函数取窗口外（早于 from 的「更早成员」，以及显式 from/to 且 `to < 最新 completed 日`
+// 时晚于 to 的成员）；两侧同判据（都只算 completed 报告 + 向量可用），因此
+// 「窗口 N + 窗口外数 = 全部 M」恒成立、窗口内集合恒是全部集合的真子集。
+// 只取 `period_date < cutoff` 会让上界之后的成员两侧都不出现，M 就不等于成员总数了。
+//
+// Ordering: period date ascending, then section id ascending.
+func (r *TopicGraphRepository) getComposeEarlyMembers(boardID, topicID uint, cutoff, upper time.Time) ([]ComposeEarlyMember, error) {
+	out := make([]ComposeEarlyMember, 0)
+	var rows []struct {
+		ID                   uint
+		ReportID             uint
+		PeriodDate           time.Time
+		ClusterLabel         string
+		PersistentTopicID    *uint
+		TopicMatchDistance   *float64
+		TopicMatchConfidence string
+		Embedding            string
+	}
+	if err := r.db.Raw(`
+		SELECT ds.id, ds.report_id, bdr.period_date, ds.cluster_label,
+		       ds.persistent_topic_id, ds.topic_match_distance, ds.topic_match_confidence,
+		       ds.embedding
+		FROM daily_report_sections ds
+		JOIN board_daily_reports bdr ON bdr.id = ds.report_id
+		WHERE bdr.semantic_board_id = ?
+		  AND bdr.status = 'completed'
+		  AND ds.persistent_topic_id = ?
+		  AND (bdr.period_date < ? OR bdr.period_date > ?)
+		  AND ds.embedding IS NOT NULL
+		ORDER BY bdr.period_date ASC, ds.id ASC
+	`, boardID, topicID, cutoff, upper).Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("get compose early members: %w", err)
+	}
+	for _, rw := range rows {
+		vec, err := repoParsePgVector(rw.Embedding)
+		if err != nil || len(vec) == 0 {
+			// 无可用向量 → 不入集（与 sections 侧同一判据）。
+			continue
+		}
+		out = append(out, ComposeEarlyMember{
+			ID:                   rw.ID,
+			ReportID:             rw.ReportID,
+			PeriodDate:           rw.PeriodDate,
+			ClusterLabel:         rw.ClusterLabel,
+			PersistentTopicID:    rw.PersistentTopicID,
+			TopicMatchDistance:   rw.TopicMatchDistance,
+			TopicMatchConfidence: rw.TopicMatchConfidence,
+			Embedding:            vec,
+		})
+	}
+	return out, nil
+}
+
+// PersistentTopicBoard returns the board a persistent topic belongs to.
+// ok is false when the topic does not exist.
+func (r *TopicGraphRepository) PersistentTopicBoard(topicID uint) (boardID uint, ok bool, err error) {
+	var topic BoardPersistentTopic
+	if err := r.db.Select("id", "semantic_board_id").First(&topic, topicID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("persistent topic board: %w", err)
+	}
+	return topic.SemanticBoardID, true, nil
 }
 
 // formatComposeDate renders a day-granular bound as "YYYY-MM-DD" (UTC).

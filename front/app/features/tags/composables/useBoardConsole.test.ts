@@ -44,6 +44,9 @@ function makeLane(topicId: number, label: string, days: Record<string, number>, 
         section_id: topicId * 100 + i,
         label: `${label} ${date} 分区${i}`,
         events: [`${label} ${date} 事件${i}`],
+        // 桶线索数 = thread_count − composite_count（composite_count 0 → 1 条线索/桶）
+        thread_count: 1,
+        composite_count: 0,
       })),
     })),
   }
@@ -128,9 +131,9 @@ describe('useBoardConsole — 纯函数', () => {
       timeline: [{
         date: '2026-10-23',
         sections: [
-          { section_id: 1, label: 'a', events: [], thread_count: 1 },
-          { section_id: 2, label: 'b', events: [], thread_count: 0 },
-          { section_id: 3, label: 'c', events: [], thread_count: 0 },
+          { section_id: 1, label: 'a', events: [], thread_count: 1 , composite_count: 0 },
+          { section_id: 2, label: 'b', events: [], thread_count: 0 , composite_count: 0 },
+          { section_id: 3, label: 'c', events: [], thread_count: 0 , composite_count: 0 },
         ],
       }],
     }
@@ -138,7 +141,7 @@ describe('useBoardConsole — 纯函数', () => {
       ...makeLane(2, '线索多', { '2026-10-23': 1 }),
       timeline: [{
         date: '2026-10-23',
-        sections: [{ section_id: 4, label: 'd', events: [], thread_count: 8 }],
+        sections: [{ section_id: 4, label: 'd', events: [], thread_count: 8 , composite_count: 0 }],
       }],
     }
     const rows = buildLaneRows([manyBucketsFewClues, fewBucketsManyClues], axis)
@@ -156,13 +159,13 @@ describe('useBoardConsole — 纯函数', () => {
           date: '2026-10-23',
           clue_count: 2,
           sections: [
-            { section_id: 1, label: 'a', events: [], thread_count: 9 },
+            { section_id: 1, label: 'a', events: [], thread_count: 9 , composite_count: 0 },
           ],
         },
         {
           // 旧响应日：无 clue_count → 回退各桶 thread_count（4）
           date: '2026-10-22',
-          sections: [{ section_id: 2, label: 'b', events: [], thread_count: 4 }],
+          sections: [{ section_id: 2, label: 'b', events: [], thread_count: 4 , composite_count: 0 }],
         },
       ],
     }

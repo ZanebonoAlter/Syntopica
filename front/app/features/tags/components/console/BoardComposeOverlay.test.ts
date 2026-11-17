@@ -495,7 +495,7 @@ describe('BoardComposeOverlay — 画布（V1–V7、V14、V15）', () => {
 })
 
 describe('BoardComposeOverlay — 节点卡（V8–V12）', () => {
-  it('V8 悬停出卡：完整标题、日期、质心距离、原关系条数', async () => {
+  it('V8 悬停出卡：完整标题、日期、估算接近度（与编辑工作面同向）、原关系条数', async () => {
     const w = await mountOverlay()
     await setCanvasWidth(900)
     await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
@@ -506,7 +506,9 @@ describe('BoardComposeOverlay — 节点卡（V8–V12）', () => {
     expect(card.exists()).toBe(true)
     expect(card.text()).toContain('散料近邻')
     expect(card.text()).toContain('2026-10-26')
-    expect(card.text()).toContain('距离')
+    // 两工作面接近度方向一致（S2.3）：不再显示「距离」，统一「估算接近度」（越大越近）。
+    expect(card.text()).toContain('估算接近度')
+    expect(card.text()).not.toContain('距离')
     expect(card.text()).toContain('原关系')
   })
 
@@ -636,11 +638,15 @@ describe('BoardComposeOverlay — 右栏三段两 tab（S6）', () => {
 describe('BoardComposeOverlay — 日期共窗与草稿确认（S2）', () => {
   it('有草稿切日期先确认；取消保留成员与推荐，确认才清草稿重算', async () => {
     const w = await mountOverlay()
+    await flushPromises()
     await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
     await flushPromises()
     expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
 
-    await w.find('[data-testid="lane-compose-window-mode"]').setValue('7')
+    // 时间视窗改为 ObservationRangeControls（档位按钮组；不再用 select）
+    const tiers = w.findAll('.orc-tier')
+    expect(tiers.map(b => b.text())).toEqual(['7 天', '14 天', '30 天', '近 1 年'])
+    await tiers[0]!.trigger('click')
     await flushPromises()
     expect(w.find('[data-testid="compose-confirm-ok"]').exists()).toBe(true)
     expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
@@ -648,9 +654,10 @@ describe('BoardComposeOverlay — 日期共窗与草稿确认（S2）', () => {
     await w.find('[data-testid="compose-confirm-cancel"]').trigger('click')
     await flushPromises()
     expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
-    expect((w.find('[data-testid="lane-compose-window-mode"]').element as HTMLSelectElement).value).toBe('30')
+    // 取消后档位激活态回到生效档（30 天）
+    expect(w.findAll('.orc-tier')[2]!.classes()).toContain('is-active')
 
-    await w.find('[data-testid="lane-compose-window-mode"]').setValue('7')
+    await w.findAll('.orc-tier')[0]!.trigger('click')
     await flushPromises()
     await w.find('[data-testid="compose-confirm-ok"]').trigger('click')
     await flushPromises()
@@ -658,19 +665,26 @@ describe('BoardComposeOverlay — 日期共窗与草稿确认（S2）', () => {
     expect(persistentMock.getComposeCandidates).toHaveBeenLastCalledWith(1974, { mode: 7, days: 7 })
   })
 
-  it('日期非法：报错、保留旧范围与草稿、控件恢复原值', async () => {
+  it('日期非法：行内报错、保留旧范围与草稿（表单就地拒绝，不静默截断）', async () => {
     const w = await mountOverlay()
+    await flushPromises()
     await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
     await flushPromises()
-    await w.find('[data-testid="lane-compose-window-mode"]').setValue('custom')
+    // 表单倒置：控件自己拦下（issue 反馈行），不提交 commit、不改成员
+    await w.find('#orc-start').setValue('2026-10-30')
+    await w.find('#orc-end').setValue('2026-10-01')
+    await w.find('.orc form').trigger('submit')
     await flushPromises()
-    await w.find('[data-testid="lane-compose-window-from"]').setValue('2026-10-30')
-    await w.find('[data-testid="lane-compose-window-to"]').setValue('2026-10-01')
-    await w.find('[data-testid="lane-compose-window-apply"]').trigger('click')
-    await flushPromises()
-    expect(w.find('[data-testid="lane-compose-date-error"]').exists()).toBe(true)
+    expect(w.find('[data-testid="observation-range-feedback"]').text()).toContain('起始日期不能晚于截止日期')
     expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
-    expect((w.find('[data-testid="lane-compose-window-from"]').element as HTMLInputElement).value).toBe('2026-10-20')
+    const calls = persistentMock.getComposeCandidates.mock.calls.length
+    await w.find('#orc-start').setValue('2026-01-01') // 池外
+    await w.find('#orc-end').setValue('2026-01-20')
+    await w.find('.orc form').trigger('submit')
+    await flushPromises()
+    expect(w.find('[data-testid="observation-range-feedback"]').text()).toContain('超出可取数范围')
+    expect(persistentMock.getComposeCandidates.mock.calls.length).toBe(calls) // 非法不重取
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
   })
 })
 
@@ -859,5 +873,46 @@ describe('BoardComposeOverlay — 历史待启用话题入口（旧编排面能�
     expect(w.find('[data-testid="lane-history-1985"]').exists()).toBe(true)
     expect(w.find('[data-testid="lane-history-1984"]').exists()).toBe(false)
     expect(persistentMock.embedQuery).not.toHaveBeenCalled()
+  })
+})
+
+describe('BoardComposeOverlay — 时间视窗与可选池曲线（unify 7.1–7.4 / OQ-2）', () => {
+  it('顶部时间视窗在场：档位 7/14/30/365 + 曲线口径明示「不含 active 泳道」', async () => {
+    const w = await mountOverlay()
+    await flushPromises()
+    const range = w.find('[data-testid="lane-compose-range"]')
+    expect(range.exists()).toBe(true)
+    expect(w.findAll('.orc-tier').map(b => b.text())).toEqual(['7 天', '14 天', '30 天', '近 1 年'])
+    expect(range.text()).toContain('不含 active 泳道')
+    expect(range.text()).toContain('线索数（非文章数）')
+  })
+
+  it('可选池曲线走轻量取数（omit_embeddings=1），失败给单独重试入口', async () => {
+    // 初始池取数失败（第二次调用 = 挂载时的 loadPoolCurve）：曲线错误在场但工作面不清空
+    const real = persistentMock.getComposeCandidates.getMockImplementation()
+    persistentMock.getComposeCandidates.mockImplementation(async (boardId: number, query: Record<string, unknown>) => {
+      if (query && (query as { omitEmbeddings?: boolean }).omitEmbeddings) {
+        return { success: false, error: '池未取到' }
+      }
+      return real!(boardId, query)
+    })
+    const w = await mountOverlay()
+    await flushPromises()
+    expect(persistentMock.getComposeCandidates).toHaveBeenCalledWith(1974, { days: 365, omitEmbeddings: true })
+    expect(w.find('[data-testid="lane-compose-curve-error"]').text()).toContain('池未取到')
+    expect(w.find('[data-testid="lane-compose-canvas"]').exists()).toBe(true)
+    // 重试：恢复成功后错误清空
+    persistentMock.getComposeCandidates.mockImplementation(real!)
+    await w.find('[data-testid="lane-compose-curve-retry"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-curve-error"]').exists()).toBe(false)
+  })
+
+  it('档位切 365 可用（OQ-2 裁决）：无草稿直接取数', async () => {
+    const w = await mountOverlay()
+    await flushPromises()
+    await w.findAll('.orc-tier')[3]!.trigger('click')
+    await flushPromises()
+    expect(persistentMock.getComposeCandidates).toHaveBeenLastCalledWith(1974, { mode: 365, days: 365 })
   })
 })

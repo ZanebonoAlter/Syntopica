@@ -46,6 +46,10 @@ const emit = defineEmits<{
   selectBoard: [boardId: number]
   retryBoards: []
   selectLane: [topicId: string]
+  /** 「编辑泳道」→ 泳道修正工作面（lane-manual-correction-loop）。 */
+  editLane: [topicId: string]
+  /** 「归档泳道」→ 归档弹窗（sm 档 + 二次确认）。 */
+  archiveLane: [topicId: string]
   selectCell: [payload: { topicId: string, date: string }]
   selectDate: [date: string]
   toggleDormant: []
@@ -130,6 +134,8 @@ defineExpose({ getStageElement })
       <BoardConsoleStage
         v-bind="stage"
         @select-lane="id => emit('selectLane', id)"
+        @edit-lane="id => emit('editLane', id)"
+        @archive-lane="id => emit('archiveLane', id)"
         @select-cell="payload => emit('selectCell', payload)"
         @select-date="date => emit('selectDate', date)"
         @select-day-header="date => emit('selectDayHeader', date)"

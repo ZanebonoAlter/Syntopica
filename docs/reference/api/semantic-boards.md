@@ -11,7 +11,7 @@
 | GET | `/semantic-boards` | 查询 active 版块列表 |
 | GET | `/semantic-boards/:id` | 查询单个版块 |
 | POST | `/semantic-boards` | 创建版块 |
-| PUT | `/semantic-boards/:id` | 更新版块 |
+| PUT | `/semantic-boards/:id` | 更新版块（label/description 变更会重算向量并失效匹配缓存） |
 | DELETE | `/semantic-boards/:id` | 软删除版块（status→disabled） |
 | GET | `/semantic-boards/:id/composition` | 查看版块构成辅助标签 |
 | POST | `/semantic-boards/:id/composition` | 新增 composition 辅助标签 |
@@ -52,6 +52,7 @@
 | GET | `/tags/:id/auxiliary-labels` | tag 关联辅助标签 |
 | GET | `/tags/:id/semantic-boards` | tag 所属版块 |
 | POST | `/semantic-boards/:id/persistent-topics/manual` | 手动新建持久话题 |
+| GET | `/semantic-boards/:id/persistent-topics/compose-candidates` | 编排态候选池（section + 向量 + 线索数 + 关系/候选链/窗口；`omit_embeddings=1` 轻量档） |
 | POST | `/semantic-boards/:id/topic-watches` | 创建版块级关注（label / keyword / keyword_topic / sentence_topic） |
 | GET | `/semantic-boards/:id/topic-watches` | 列出该版块全部关注（含 paused） |
 | PATCH | `/topic-watches/:id` | 更新关注 label / query 或 active / paused 状态 |
@@ -122,7 +123,7 @@ Response `data`：
 
 ### PUT `/semantic-boards/:id`
 
-更新 SemanticBoard。`label` 变更时会重新生成 embedding。
+更新 SemanticBoard。`label` 或 `description` 变更时会重新生成 embedding，并**在同一请求内失效 board embeddings 匹配缓存**（lane-manual-correction-loop board-match-cache）。
 
 Request：
 
@@ -146,6 +147,8 @@ Response `data`：
 ```json
 { "id": 1 }
 ```
+
+**缓存失效（lane-manual-correction-loop board-match-cache）**：`loadBoardEmbeddings` 缓存**无 TTL**（只靠显式失效），故 `label` / `description` 任一变化并重算出版块向量后，后端 SHALL 在同一请求内调 `InvalidateMatchCache()` 清缓存——SHALL NOT 让方向校验继续拿旧向量判定（缓存无 TTL 场景下尤其致命）。失效**只清缓存**，SHALL NOT 自动重跑 `topic_tag_board_labels`（匹配表保持旧结果，重跑/回填是用户的显式动作）。
 
 ### DELETE `/semantic-boards/:id`
 
@@ -1103,6 +1106,68 @@ Response `data`：
 - 版块不存在返回 `404`；disabled / 非 board 版块返回空态（`latest=null`、`trend=[]`，非 404）。
 
 ## 持久话题手动编排
+
+### GET `/semantic-boards/:id/persistent-topics/compose-candidates`
+
+编排态候选池（unify-lane-workbench 后同时为「泳道编排 / 泳道修正」两个工作面的唯一取数端点）：返回窗口内 **有可用向量** 的 section（含向量本体）、窗口内两端可见的原关系（identity + similarity）、服务端唯一口径的候选链、`match_threshold`、回显窗口，以及可选的「更早成员」。前端据此实时算聚合锚点 / 离群 / 质心推荐，不在每次勾选时往返。
+
+Query：
+
+| 参数 | 说明 |
+| --- | --- |
+| `days` | 快捷档窗口长度（以该版块**最新 completed 日报**为末日、含首末）。上限 `ComposeWindowMaxDays = 365`（unify-lane-workbench OQ-2；此前 90），超过按 365 钳位；`from`/`to` 给出时忽略。 |
+| `from` / `to` | 自选起止（闭区间 `YYYY-MM-DD`，UTC）。**必须成对**给出；给出时覆盖 `days`。 |
+| `all_members_topic_id` | 泳道修正模式（全量成员口径）：给出时额外返回该话题在窗口外成员的 `early_members`；不给 = 编排画布口径（响应无该字段）。话题须属本版块，否则 404。 |
+| `omit_embeddings` | `1` = 轻量取数，**不返回每条 section 的 `embedding`**（见下方「轻量取数」）。仅曲线/可选池统计路径使用，画布取数必须保留向量。 |
+
+Response `data`（节选关键字段）：
+
+```json
+{
+  "sections": [
+    {
+      "id": 7345,
+      "report_id": 311,
+      "period_date": "2026-11-02T00:00:00Z",
+      "cluster_label": "霍尔木兹油轮遇袭",
+      "embedding": [0.0123, "..."],
+      "persistent_topic_id": 103,
+      "topic_match_confidence": "anchor_hit",
+      "persistent_topic": { "id": 103, "label": "中东局势", "status": "active" },
+      "clue_count": 2
+    }
+  ],
+  "relations": [{ "from_id": 7345, "to_id": 7409, "distance": 0.12, "relation_type": "identity" }],
+  "candidate_chains": [{ "key": "1984:7345", "topic_id": 1984, "topic_status": "candidate", "section_ids": [7345, 7409], "first_date": "2026-10-27", "last_date": "2026-10-30", "span_days": 3 }],
+  "match_threshold": 0.3,
+  "window": { "from": "2026-10-27", "to": "2026-11-02", "days": 7, "latest_completed_date": "2026-11-02" },
+  "early_members": [{ "id": 6102, "period_date": "2026-09-30T00:00:00Z", "cluster_label": "…", "persistent_topic_id": 103, "embedding": [0.0088, "..."] }]
+}
+```
+
+- **`sections[].clue_count`**（unify-lane-workbench D2）：该 section 的**非综合稿（非 composite）线索数**，与 `listLaneSectionThreads().Clues` 同源——`scope=composite` 的综合稿不计入，**不是**文章数也不是 section 数。无 thread 的 section 为**已知 0**，因此该字段**不加 omitempty、0 也必定返回**（`"clue_count": 0`）。前端只把「字段缺失 / `null` / 非有限数 / 负数」判为**未知**（显示未知而不是 0），0 是合法值原样保留；旧后端无该字段时前端降级为未知，不补 0。查询失败使整个请求失败，不以 0 冒充。
+- **`early_members[]`**：仅 `all_members_topic_id` 给出时出现，为该话题报告期早于窗口首日的成员（升序，同样只算向量可用者），带 `embedding` 供修正工作面的质心把窗口外成员算进去；**字段整体缺失**（= 前端未请求全量口径，与「空数组」不同）时前端计数回退只显示窗口数。
+- **`window`**：服务端实际生效的窗口回显（`from`/`to` 可为 `null` = 无锚点 / 全历史档），前端不自行推算末日。
+
+**轻量取数（`omit_embeddings=1`）**：曲线/可选池只需要 `period_date + persistent_topic_id + clue_count`，而每条 section 的向量实占 10,244 B，为画一条曲线拉全年向量不划算。该档位下 `sections[].embedding` 缺省（前端归一为「无向量」，不参与质心）。
+
+实测（2026-11-16，版块 15220，`days=365`）：含向量 `25,772,225 B / 1.45 s`；`omit_embeddings=1` `553,570 B / 0.55 s` —— **压缩约 46.8 倍**。曲线路径 MUST 走轻量档；含向量档 365 天已逼近 30 MB 预算，只允许画布按需使用。
+
+**窗口上限与错误码**（`composeWindowMaxDays = repository.ComposeWindowMaxDays = 365`，前后端三处同源）：
+
+| 情形 | 状态码 | `error` |
+| --- | --- | --- |
+| `from`/`to` 只给一个 | 400 | `from and to must be provided together` |
+| 日期格式非法 | 400 | `invalid from date "…": expected YYYY-MM-DD`（`to` 同形） |
+| 起晚于止 | 400 | `from must not be later than to` |
+| 跨度超过 365 天（含首末） | 400 | `date range must not exceed 365 days` |
+| `from` 早于取数下界（最新 completed 日 − 364 天） | 400 | `from is outside the fetchable window (earliest YYYY-MM-DD)` |
+| `all_members_topic_id` 非法 | 400 | `invalid all_members_topic_id` |
+| `all_members_topic_id` 指别的版块的话题 | 404 | `topic not found on this board` |
+
+超限一律报错，**不静默截断**（前端自选起止同一口径，见 `standard/frontend` 与 `useLaneCompose.ts`）。
+
+> **没有单独的「365 天可选池端点」**：新增泳道的 365 日可选池曲线与编辑泳道的本泳道曲线，各自复用本端点（前者 `days=365&omit_embeddings=1` 后在前端按非 active section 逐日聚合，后者走 `GET /semantic-boards/:id/lane-dynamics?days=365`）。不要为该用途新增端点或迁移。
 
 ### POST `/semantic-boards/:id/persistent-topics/manual`
 

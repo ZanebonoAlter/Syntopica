@@ -65,6 +65,27 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 
 	// PATCH /api/daily-reports/topics/:id — manual rename / archive / reactivate.
 	api.PATCH("/daily-reports/topics/:id", updateTopic)
+	// PATCH /api/daily-reports/topics/:id/anchor — manual re-anchoring of a
+	// lane's 首义 from a chosen node range (lane-manual-correction D3). The
+	// body carries section_ids only; free text is rejected.
+	api.PATCH("/daily-reports/topics/:id/anchor", updateTopicAnchor)
+	// GET /api/daily-reports/topics/:id/anchor — read side of the same
+	// contract: the current 首义 source (auto / manual) and, for a manual
+	// one, the node set that defines it (lane-manual-correction-loop).
+	api.GET("/daily-reports/topics/:id/anchor", getTopicAnchor)
+	// GET /api/daily-reports/topics/:id/anchor/history — the full append-only
+	// 首义 rewrite trail, oldest first (review R-2).
+	api.GET("/daily-reports/topics/:id/anchor/history", getTopicAnchorHistory)
+	// PATCH /api/daily-reports/sections/:id/assignment — manual lane
+	// membership change (lane-manual-correction D4): {"topic_id": null}
+	// removes the node from its lane, {"topic_id": N} attaches it to lane N.
+	api.PATCH("/daily-reports/sections/:id/assignment", updateSectionAssignment)
+	// GET /api/daily-reports/sections/:id/assignment/history — the full
+	// append-only lane-membership trail, oldest first (review R-2).
+	api.GET("/daily-reports/sections/:id/assignment/history", getSectionAssignmentHistory)
+	// POST /api/daily-reports/topics/:id/detach-date — release every node of
+	// that lane on one day ({"period_date": "YYYY-MM-DD"}).
+	api.POST("/daily-reports/topics/:id/detach-date", detachTopicByDate)
 	// DELETE /api/daily-reports/topics/:id — hard-delete (irreversible; clears
 	// the topic assignment on sections, sections themselves are kept).
 	api.DELETE("/daily-reports/topics/:id", deleteTopic)
@@ -1151,8 +1172,10 @@ func createManualTopic(c *gin.Context) {
 
 // composeWindowMaxDays is the supported window length of the compose
 // workbench (both ends included): an explicit from/to range may span at most
-// 90 days.
-const composeWindowMaxDays = 90
+// 365 days (unify-lane-workbench OQ-2，2026-11-16 用户裁决由 90 放宽；与
+// repository.ComposeWindowMaxDays 同源，三处上限之一，另两处：报错文案引用
+// 本常量、前端 useLaneCompose.validateCustomRange)。
+const composeWindowMaxDays = repository.ComposeWindowMaxDays
 
 // parseComposeWindowParams parses the optional from/to window parameters of
 // the compose-candidates endpoint. Both bounds are inclusive YYYY-MM-DD days
@@ -1194,6 +1217,13 @@ func parseComposeWindowParams(c *gin.Context) (*time.Time, *time.Time, error) {
 //
 // days is the shortcut window (anchored to the board's latest completed
 // report); from/to are an explicit inclusive range and override days.
+//
+// all_members_topic_id is the lane-correction mode: when given, the members
+// of that topic whose report period precedes the window's first day are
+// appended as early_members (数据全量、展示分层 — the compose canvas draws
+// the window only, the left column lists the rest). Omitting the parameter
+// keeps the compose workbench response unchanged (no early_members field at
+// all).
 func composeCandidates(c *gin.Context) {
 	boardID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -1209,6 +1239,11 @@ func composeCandidates(c *gin.Context) {
 	from, to, err := parseComposeWindowParams(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	allMembersTopicID, status, msg := parseAllMembersTopicID(c, uint(boardID))
+	if status != 0 {
+		c.JSON(status, gin.H{"success": false, "error": msg})
 		return
 	}
 
@@ -1235,10 +1270,14 @@ func composeCandidates(c *gin.Context) {
 	}
 
 	resp, err := repository.Repo.GetComposeCandidates(repository.ComposeCandidatesQuery{
-		BoardID: uint(boardID),
-		Days:    days,
-		From:    from,
-		To:      to,
+		BoardID:           uint(boardID),
+		Days:              days,
+		From:              from,
+		To:                to,
+		AllMembersTopicID: allMembersTopicID,
+		// 轻量取数（unify-lane-workbench OQ-2）：曲线路径省略每条 section 的
+		// embedding 向量（每条 10,244 B），只留日期/归属/clue_count。
+		OmitEmbeddings: c.Query("omit_embeddings") == "1",
 	})
 	if err != nil {
 		logging.Errorf("compose candidates: board=%d: %v", boardID, err)
@@ -1254,7 +1293,41 @@ func composeCandidates(c *gin.Context) {
 	if resp.CandidateChains == nil {
 		resp.CandidateChains = []repository.ComposeCandidateChain{}
 	}
+	if resp.EarlyMembers != nil && *resp.EarlyMembers == nil {
+		empty := []repository.ComposeEarlyMember{}
+		resp.EarlyMembers = &empty
+	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": resp})
+}
+
+// parseAllMembersTopicID parses the optional all_members_topic_id parameter of
+// the compose-candidates endpoint (the lane-correction 「全量成员」 mode).
+//
+// The parameter must name a topic of the requested board: a topic of another
+// board is rejected (404) instead of answering with an empty member list that
+// would read as "this topic has no earlier members".
+//
+// The second return value is the HTTP status to answer with (0 = no error);
+// the third is the error message.
+func parseAllMembersTopicID(c *gin.Context, boardID uint) (*uint, int, string) {
+	raw := strings.TrimSpace(c.Query("all_members_topic_id"))
+	if raw == "" {
+		return nil, 0, ""
+	}
+	parsed, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || parsed == 0 {
+		return nil, http.StatusBadRequest, "invalid all_members_topic_id"
+	}
+	topicID := uint(parsed)
+	owner, ok, err := repository.Repo.PersistentTopicBoard(topicID)
+	if err != nil {
+		logging.Errorf("compose candidates: load topic %d: %v", topicID, err)
+		return nil, http.StatusInternalServerError, "failed to load the topic of all_members_topic_id"
+	}
+	if !ok || owner != boardID {
+		return nil, http.StatusNotFound, "topic not found on this board"
+	}
+	return &topicID, 0, ""
 }
 
 // embedText encodes a natural-language query with the global CapabilityEmbedding

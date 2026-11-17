@@ -2,7 +2,8 @@
 /**
  * 观察矩阵网格（rework-workshop-into-radar-and-desk 矩阵阶段 G3 + 8C G2）。
  *
- * 泳道 × 日期网格本体：格值 = 当日线索合计（旧响应回退各桶已知线索合计）、
+ * 泳道 × 日期网格本体：格值 = 当日线索合计（旧响应回退各桶已知**非综合稿**线索合计，
+ * 部分桶不可数时写下界「≥N」不冒充完整值）、
  * 色深 = 该值在本行可见窗内的归一深浅（`clueDepth`，行内归一只；颜色只是冗余强化通道）；
  * 无分区 = '—' 禁用；历史未取到 = '?' 禁用；有分区 0 线索 = '0' 可开；**无行尾合计列**。
  * 名单/行序/休眠由父注入的 rows 携带，本组件只做逐可见日投影（resolveDay）与渲染；
@@ -63,6 +64,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   selectLane: [topicId: string]
+  /** 「编辑泳道」→ 泳道修正工作面（lane-manual-correction-loop 6.3；画布接线由上层壳层做）。 */
+  editLane: [topicId: string]
+  /** 「归档泳道」→ 归档弹窗（sm 档 + 二次确认）。 */
+  archiveLane: [topicId: string]
   /** 点有分区格：就地选日（父更新 selectedDate/下方阅读；不弹日期 modal、不强滚）。 */
   selectDate: [payload: { topicId: string, date: string }]
   /** 点报日列头：与日格同一 `selectedDate` 的第三处入口（壳层统一写状态）。 */
@@ -162,6 +167,8 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
           :dormant="false"
           @select-lane="emit('selectLane', $event)"
           @select-cell="onSelectCell"
+          @edit-lane="emit('editLane', $event)"
+          @archive-lane="emit('archiveLane', $event)"
         />
 
         <!-- 当日其他话题组（summary + 自身行；display:contents 参与本网格） -->
@@ -206,6 +213,8 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
             :dormant="true"
             @select-lane="emit('selectLane', $event)"
             @select-cell="onSelectCell"
+            @edit-lane="emit('editLane', $event)"
+            @archive-lane="emit('archiveLane', $event)"
           />
         </template>
       </div>

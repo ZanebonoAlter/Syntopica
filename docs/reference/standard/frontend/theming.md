@@ -1,7 +1,7 @@
 # 前端双主题系统（Theming）
 
 > **权威源**：本文件是双主题/设计系统的唯一权威。`front/AGENTS.md` 顶部「Frontend-Specific Conventions」的红线要点深链指向本文件。
-> 互补：`architecture/frontend.md` §设计系统 描述设计系统的架构定位。
+> 互补：`architecture/frontend.md` §设计系统 描述设计系统的架构定位；[prototype-content.md](prototype-content.md) V1/V2 定义 token 组合的可读性下限（对比度 4.5:1 / 3:1）——本文件管「取值」，那边管「够不够看清」，token 组合不达标须回本文件修 token。
 
 ## 视觉基调
 

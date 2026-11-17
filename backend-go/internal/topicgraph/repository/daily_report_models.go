@@ -105,16 +105,90 @@ type BoardPersistentTopic struct {
 	// anchor. IsVacuum flags over-broad topics that attract tags without
 	// strong matches; VacuumStrong/VacuumMid snapshot the attraction stats
 	// over vacuum_window for the vacuum_ratio test.
-	Centroid     string    `gorm:"type:vector;default:NULL" json:"-"`
-	IsVacuum     bool      `gorm:"not null;default:false" json:"is_vacuum"`
-	VacuumStrong int       `gorm:"not null;default:0" json:"vacuum_strong"`
-	VacuumMid    int       `gorm:"not null;default:0" json:"vacuum_mid"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	Centroid     string `gorm:"type:vector;default:NULL" json:"-"`
+	IsVacuum     bool   `gorm:"not null;default:false" json:"is_vacuum"`
+	VacuumStrong int    `gorm:"not null;default:0" json:"vacuum_strong"`
+	VacuumMid    int    `gorm:"not null;default:0" json:"vacuum_mid"`
+	// CentroidPendingRecompute marks the topic as "the centroid must be
+	// recomputed in the next daily-report refresh round"
+	// (lane-manual-correction D2). Manual corrections (re-anchoring the 首义 /
+	// detaching / re-attaching a node) set it; a successful centroid refresh
+	// clears it. The refresh scope is 「当日 touched 话题 ∪ 本列为 true 的话题」
+	// — without the flag a lane without new hits that day would never pick up
+	// the correction. The column is owned by explicit migration
+	// 20261113_0001 (history rows stay false, no backfill, no extra recompute).
+	CentroidPendingRecompute bool      `gorm:"not null;default:false" json:"centroid_pending_recompute"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 func (BoardPersistentTopic) TableName() string {
 	return "board_persistent_topics"
+}
+
+// TopicAnchorOverride is an append-only audit row for a manual 首义 rewrite
+// (lane-manual-correction D7 / task 1.4). Every manual re-anchoring appends
+// one row; earlier rows are never updated nor deleted, so "who changed this
+// lane's definition surface, when, and from what" stays answerable.
+//
+// The table is created by explicit migration 20261113_0002 (建表不依赖 gorm
+// AutoMigrate), so this model is deliberately NOT registered for AutoMigrate.
+type TopicAnchorOverride struct {
+	ID uint `gorm:"primarykey" json:"id"`
+	// TopicID points at the rewritten topic. No FK on purpose: the audit
+	// trail must outlive a hard-deleted topic (append-only red line — a
+	// cascade delete would silently drop history).
+	TopicID uint `gorm:"not null;index:idx_topic_anchor_overrides_topic" json:"topic_id"`
+	// OldEmbedding is the pre-rewrite 首义 vector; NULL when the topic had
+	// no usable vector yet. NewEmbedding is the vector the rewrite wrote.
+	OldEmbedding *string `gorm:"type:vector" json:"-"`
+	NewEmbedding string  `gorm:"type:vector" json:"-"`
+	// Source records the input mode. Only "selected_sections" exists today:
+	// the 首义 is defined by a chosen node range, never by free text (D3).
+	Source string `gorm:"size:32;not null" json:"source"`
+	// InputSummary is the JSON array of the chosen section ids.
+	InputSummary string `gorm:"type:text" json:"input_summary"`
+	// Operator records who made the change. The deployment is single-user
+	// without auth (AGENTS.md), so every manual correction is attributed to
+	// the local user.
+	Operator  string    `gorm:"size:64;not null;default:''" json:"operator"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (TopicAnchorOverride) TableName() string {
+	return "topic_anchor_overrides"
+}
+
+// SectionAssignmentOverride is an append-only audit row for one manual lane
+// membership change (review R-2). The three trace columns on
+// daily_report_sections only keep the **latest** change (they are overwritten
+// by the next one), so a 「移除 → 加回」 pair used to erase the detach trail.
+// This table keeps every change: what moved, from which lane to which lane,
+// when and by whom.
+//
+// The table is created by explicit migration 20261113_0004 (建表不依赖 gorm
+// AutoMigrate), so this model is deliberately NOT registered for AutoMigrate.
+type SectionAssignmentOverride struct {
+	ID uint `gorm:"primarykey" json:"id"`
+	// SectionID points at the moved node. No FK on purpose: the audit trail
+	// must outlive a hard-deleted section (append-only red line — a cascade
+	// delete would silently drop history).
+	SectionID uint `gorm:"not null;index:idx_section_assignment_overrides_section" json:"section_id"`
+	// TopicIDFrom is the lane the node came from (NULL = 此前无归属).
+	TopicIDFrom *uint `json:"topic_id_from"`
+	// TopicIDTo is the lane the node went to (NULL = 移除，不再归属任何泳道).
+	TopicIDTo *uint `json:"topic_id_to"`
+	// Action is "detach" or "attach"（同 daily_report_sections 的留痕三列口径）.
+	Action string `gorm:"size:16;not null" json:"action"`
+	// Operator records who made the change. The deployment is single-user
+	// without auth (AGENTS.md), so every manual correction is attributed to
+	// the local user.
+	Operator  string    `gorm:"size:64;not null;default:''" json:"operator"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (SectionAssignmentOverride) TableName() string {
+	return "section_assignment_overrides"
 }
 
 // DailyReportSection — one section per cluster
@@ -139,14 +213,27 @@ type DailyReportSection struct {
 	// layer to tolerate the backfill window and historical rows; the assignment
 	// algorithm guarantees new sections are always assigned (except the
 	// unmatched branch when Embedding is empty).
-	PersistentTopicID    *uint   `gorm:"index" json:"persistent_topic_id,omitempty"`
-	TopicMatchDistance   float64 `json:"topic_match_distance,omitempty"`
+	PersistentTopicID *uint `gorm:"index" json:"persistent_topic_id,omitempty"`
+	// TopicMatchDistance is the anchor distance to the topic centroid. NOT
+	// omitempty: distance 0 is a legal value (perfect anchor), and omitting it
+	// would read as “unknown” on the client side (fix-lane-metric-provenance
+	// D11).
+	TopicMatchDistance   float64 `json:"topic_match_distance"`
 	TopicMatchConfidence string  `gorm:"size:20" json:"topic_match_confidence,omitempty"`
 	TopicStatusAtReport  *string `gorm:"size:20" json:"topic_status_at_report"`
 	// LaneTier records which lane produced this section's topic assignment:
 	// l1_direct (centroid strong match), l2_llm (LLM keep/switch), l3_new
 	// (new candidate). NULL on historical sections (pre-migration).
 	LaneTier string `gorm:"size:16" json:"lane_tier,omitempty"`
+	// Manual assignment trace (lane-manual-correction D7): the last manual
+	// change of this section's lane membership — when it happened, which topic
+	// it came from, and whether the action was detach or attach. All three
+	// columns are nullable: NULL on historical rows and on algorithm-assigned
+	// sections (=「no manual membership change」). Owned by explicit migration
+	// 20261113_0003; never backfilled (历史快照不得回填).
+	ManualAssignmentAt          *time.Time `json:"manual_assignment_at,omitempty"`
+	ManualAssignmentFromTopicID *uint      `json:"manual_assignment_from_topic_id,omitempty"`
+	ManualAssignmentAction      string     `gorm:"size:16" json:"manual_assignment_action,omitempty"`
 	// BucketTitle / BucketIndex describe the intra-lane theme bucket
 	// (add-intra-lane-theme-bucketing): when one cluster's daily content is
 	// split into 2-6 theme directions, the sibling sections share

@@ -23,7 +23,8 @@ export const AXIS14 = buildDayAxis(TODAY, 14)
 export const TIER_START = '2026-10-10'
 
 function sectionRaw(id: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return { section_id: id, label: `桶${id}`, events: [`事件${id}`], ...overrides }
+  // composite_count 默认 0（无综合稿）：桶线索数 = thread_count − composite_count = thread_count。
+  return { section_id: id, label: `桶${id}`, events: [`事件${id}`], composite_count: 0, ...overrides }
 }
 
 function normalize(lanes: Record<string, unknown>[]): LaneDynamicsWindowData {
@@ -68,7 +69,12 @@ export function windowDay(date: string, sections: Partial<WindowSection>[], day:
       sectionId: section.sectionId ?? String(index + 1),
       label: section.label ?? `桶${index + 1}`,
       threadCount: section.threadCount ?? null,
-      fallbackClueCount: section.fallbackClueCount ?? null,
+      compositeCount: section.compositeCount ?? 0,
+      // 桶线索数 = thread_count − composite_count（唯一公式）；夹具未给 threadCount 时未知。
+      clueCount: section.clueCount
+        ?? (section.threadCount === undefined || section.threadCount === null
+          ? null
+          : Math.max(0, section.threadCount - (section.compositeCount ?? 0))),
       foldedCount: section.foldedCount ?? 0,
       eventTitles: section.eventTitles ?? [],
     })),
@@ -118,6 +124,7 @@ export function otherView(overrides: Partial<OtherTopicsView> = {}): OtherTopics
         label: '乌干达因过境旅客确诊加德满都口岸加强防疫',
         clusterIndex: 0,
         threadCount: 1,
+        compositeCount: 0,
         persistentTopicId: null,
         statusKind: 'unattributed',
         statusText: '当次未归属',
@@ -127,6 +134,7 @@ export function otherView(overrides: Partial<OtherTopicsView> = {}): OtherTopics
         label: '第二条其他分区（零线索）',
         clusterIndex: 1,
         threadCount: 0,
+        compositeCount: 0,
         persistentTopicId: '88',
         statusKind: 'active',
         statusText: '当时已转正',

@@ -86,6 +86,15 @@ func ComputeBoardAttention(laneHeats []float64) float64 {
 // clue count, and candidates never appear in the lane set (design D7).
 // Composite (综合稿) threads are excluded — a multi-event piece must not inflate
 // any single lane's heat (spec: 综合稿的 thread SHALL NOT 计入线索数).
+//
+// NULL scope 判据（fix-lane-metric-provenance D13，**有意**如此）：判据的语义是
+// 「只排除综合稿」——`COALESCE(t.scope, 空串) <> 'composite'` 把「不是综合稿」一律
+// 计入（含 scope 为 NULL / 空串的防御性情形），而不是把「判不出来」的行丢掉。
+// 事实：`daily_report_threads.scope` 在当前 schema 下是 NOT NULL +
+// CHECK (scope IN ('single','composite'))（迁移 ensureNotNullDefault + CHECK
+// 确保块），故 NULL 分支在当前 schema 下不可达；该 COALESCE 是防御性写法，
+// 不得改成排除 NULL / 改成 `scope = 'single'` 之外的窄口径——一旦列约束被放开，
+// 窄口径会让历史日的线索数与热度凭空归零。也不得回填历史 scope（派生数据不回填）。
 func (r *TopicGraphRepository) CountLaneCluesByDate(boardID uint, date time.Time) (map[uint]int, error) {
 	day := NormalizeReportDate(date).Format(time.DateOnly)
 	var rows []struct {

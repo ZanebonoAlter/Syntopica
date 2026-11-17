@@ -53,7 +53,8 @@ func (r *TopicGraphRepository) ListDailyThreadCounts(topicID uint, from, to time
 		Select("r.period_date AS period_date, COUNT(DISTINCT s.id) AS section_cnt, COUNT(t.id) AS thread_cnt").
 		Joins("JOIN board_daily_reports r ON r.id = s.report_id").
 		Joins("LEFT JOIN daily_report_threads t ON t.section_id = s.id").
-		Where("s.persistent_topic_id = ? AND r.period_date >= ? AND r.period_date <= ?", topicID, from, to).
+		Where("s.persistent_topic_id = ? AND r.status = ? AND r.period_date >= ? AND r.period_date <= ?",
+			topicID, ReportStatusCompleted, from, to).
 		Group("r.period_date").
 		Order("r.period_date ASC").
 		Scan(&rows).Error
@@ -63,9 +64,13 @@ func (r *TopicGraphRepository) ListDailyThreadCounts(topicID uint, from, to time
 	return rows, nil
 }
 
-// GetBoardReportAnchor returns the board's latest report period_date
-// (normalized noon UTC). ok=false when the board has no reports — the caller
-// uses it to distinguish the no-report empty state (tasks 2.2).
+// GetBoardReportAnchor returns the board's latest **completed** report
+// period_date (normalized noon UTC). ok=false when the board has no completed
+// report — the caller uses it to distinguish the no-report empty state (tasks 2.2).
+//
+// completed 口径（fix-lane-metric-provenance D10）：未完成的日报（status =
+// 'generating' 等）不是「已发布的日报」，不参与任何窗口锚点——矩阵观察窗、
+// 泳道结算素材窗、compose-candidates 窗口三处必须落在同一天上。
 // Uses the GORM struct-scan path (not sql.Row.Scan) so time columns coming
 // back as strings (SQLite driver in service tests) are converted the same
 // way every other period_date scan in this package is.
@@ -75,7 +80,7 @@ func (r *TopicGraphRepository) GetBoardReportAnchor(boardID uint) (time.Time, bo
 	}
 	err := r.db.Model(&BoardDailyReport{}).
 		Select("period_date").
-		Where("semantic_board_id = ?", boardID).
+		Where("semantic_board_id = ? AND status = ?", boardID, ReportStatusCompleted).
 		Order("period_date DESC").
 		Limit(1).
 		Scan(&row).Error
@@ -126,10 +131,14 @@ func (r *TopicGraphRepository) ListLaneSnapshotMaterial(topicID uint, from, to t
 		ClusterLabel string
 		PeriodDate   time.Time
 	}
+	// completed 口径（fix-lane-metric-provenance D10 / review R-2）：未完成日报不是已发布
+	// 日报，其分区不得进结算素材（否则同日重跑中的 generating 行会被当成素材重复计入，
+	// 且与锚点 GetBoardReportAnchor 的 completed 口径不一致）。
 	err := r.db.Table("daily_report_sections AS s").
 		Select("s.id, s.cluster_label, r.period_date").
 		Joins("JOIN board_daily_reports r ON r.id = s.report_id").
-		Where("s.persistent_topic_id = ? AND r.period_date >= ? AND r.period_date <= ?", topicID, from, to).
+		Where("s.persistent_topic_id = ? AND r.status = ? AND r.period_date >= ? AND r.period_date <= ?",
+			topicID, ReportStatusCompleted, from, to).
 		Order("r.period_date ASC, s.id ASC").
 		Scan(&secs).Error
 	if err != nil {
@@ -233,11 +242,20 @@ func (r *TopicGraphRepository) ListActiveWatchLinkedTopicIDs(boardID uint) (map[
 // section label + up to LaneTimelineEventsPerSection thread titles
 // (events) + folded_count for the rest (spec: 数量可截断但 SHALL 提示被折叠数).
 type LaneDynamicsTimelineSection struct {
-	SectionID   uint     `json:"section_id"`
-	Label       string   `json:"label"`
-	ThreadCount int      `json:"thread_count"`
-	Events      []string `json:"events"`
-	FoldedCount int      `json:"folded_count"`
+	SectionID uint   `json:"section_id"`
+	Label     string `json:"label"`
+	// ThreadCount is the bucket's thread TOTAL (综合稿 included) — it is NOT
+	// the clue count. The clue count of the day lives on LaneDynamicsTimelineDay
+	// (ClueCount); the frontend derives the per-bucket non-composite count as
+	// ThreadCount - CompositeCount.
+	ThreadCount int `json:"thread_count"`
+	// CompositeCount is the number of composite (综合稿) threads in this
+	// bucket (fix-lane-metric-provenance D1). The frontend needs the
+	// difference to state "另有 N 条综合稿未计入" without exposing a second
+	// clue-count口径 in the same sentence.
+	CompositeCount int      `json:"composite_count"`
+	Events         []string `json:"events"`
+	FoldedCount    int      `json:"folded_count"`
 }
 
 // LaneDynamicsTimelineDay groups one report date's sections (ascending
@@ -319,8 +337,14 @@ type LaneDynamicsCandidate struct {
 // retired with the story heat they described: the new heat is report geometry,
 // it has no feed-freshness dependency and no “unbackfilled” state.
 type LaneDynamicsResponse struct {
-	WindowDays      int                     `json:"window_days"`
-	HasReports      bool                    `json:"has_reports"`
+	WindowDays int  `json:"window_days"`
+	HasReports bool `json:"has_reports"`
+	// AnchorDate is the board's latest COMPLETED report day (YYYY-MM-DD) the
+	// window is anchored on — the same anchor the compose-candidates window
+	// uses (fix-lane-metric-provenance D10). Empty string when the board has
+	// no completed report yet. The frontend uses it as the matrix axis end so
+	// both windows end on the same day.
+	AnchorDate      string                  `json:"anchor_date"`
 	HeatRuleVersion string                  `json:"heat_rule_version"`
 	Lanes           []LaneDynamicsLane      `json:"lanes"`
 	Candidates      []LaneDynamicsCandidate `json:"candidates"`
@@ -338,12 +362,18 @@ type laneSectionRow struct {
 // listLaneWindowSections loads all sections anchored to topics of this board
 // within [from, anchor] (inclusive), ordered oldest-first. GORM-safe standard
 // SQL (JOIN sections↔reports), PG/SQLite compatible.
+//
+// Only COMPLETED reports contribute (fix-lane-metric-provenance D10): an
+// unfinished report is not a published daily report, so its sections must not
+// show up in the matrix timeline nor shift the window anchor. The
+// compose-candidates window filters the same way — both windows then describe
+// the same set of report days.
 func (r *TopicGraphRepository) listLaneWindowSections(boardID uint, from, to time.Time, topicIDs []uint) ([]laneSectionRow, error) {
 	q := r.db.Table("daily_report_sections AS s").
 		Select("s.id, s.persistent_topic_id AS topic_id, s.cluster_label, r.period_date").
 		Joins("JOIN board_daily_reports r ON r.id = s.report_id").
-		Where("r.semantic_board_id = ? AND r.period_date >= ? AND r.period_date <= ? AND s.persistent_topic_id IS NOT NULL",
-			boardID, from, to)
+		Where("r.semantic_board_id = ? AND r.status = ? AND r.period_date >= ? AND r.period_date <= ? AND s.persistent_topic_id IS NOT NULL",
+			boardID, ReportStatusCompleted, from, to)
 	if topicIDs != nil {
 		q = q.Where("s.persistent_topic_id IN ?", topicIDs)
 	}
@@ -356,16 +386,20 @@ func (r *TopicGraphRepository) listLaneWindowSections(boardID uint, from, to tim
 
 // laneSectionThreads is one section's thread projection: the titles used for
 // the top-N / folded display, plus the clue count (non-composite threads) that
-// feeds the day total and the same-day heat.
+// feeds the day total and the same-day heat, plus the composite count the
+// frontend needs to state the "另有 N 条综合稿未计入" difference.
 type laneSectionThreads struct {
 	Titles []string
 	Clues  int
+	// Composite counts the 综合稿 threads of this bucket (excluded from Clues).
+	Composite int
 }
 
 // listLaneSectionThreads batch-loads thread titles for the given sections in
 // generation order (id ASC) so the top-N + fold split is deterministic. The
 // clue count excludes composite (综合稿) threads — the same exclusion the clue
-// query and the heat formula apply (spec: 综合稿不计线索数).
+// query and the heat formula apply (spec: 综合稿不计线索数). The composite
+// count comes from the same scan (the `scope` column is already selected).
 func (r *TopicGraphRepository) listLaneSectionThreads(sectionIDs []uint) (map[uint]laneSectionThreads, error) {
 	out := make(map[uint]laneSectionThreads, len(sectionIDs))
 	if len(sectionIDs) == 0 {
@@ -388,6 +422,8 @@ func (r *TopicGraphRepository) listLaneSectionThreads(sectionIDs []uint) (map[ui
 		entry.Titles = append(entry.Titles, th.Title)
 		if th.Scope != ThreadScopeComposite {
 			entry.Clues++
+		} else {
+			entry.Composite++
 		}
 		out[th.SectionID] = entry
 	}
@@ -430,6 +466,7 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 		return resp, nil
 	}
 	resp.HasReports = true
+	resp.AnchorDate = NormalizeReportDate(anchor).Format("2006-01-02")
 	from := anchor.AddDate(0, 0, -(days - 1))
 
 	watchLinked, err := r.ListActiveWatchLinkedTopicIDs(boardID)
@@ -564,11 +601,12 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 				}
 				folded := len(entry.Titles) - len(events)
 				day.Sections = append(day.Sections, LaneDynamicsTimelineSection{
-					SectionID:   s.ID,
-					Label:       s.ClusterLabel,
-					ThreadCount: len(entry.Titles),
-					Events:      events,
-					FoldedCount: folded,
+					SectionID:      s.ID,
+					Label:          s.ClusterLabel,
+					ThreadCount:    len(entry.Titles),
+					CompositeCount: entry.Composite,
+					Events:         events,
+					FoldedCount:    folded,
 				})
 				// 当日线索合计 = 各主题桶非综合稿线索数之和（不取桶峰值）。
 				day.ClueCount += entry.Clues
@@ -607,7 +645,7 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 		if err := r.db.Table("daily_report_sections AS s").
 			Select("s.id, s.persistent_topic_id AS topic_id, s.cluster_label, r.period_date").
 			Joins("JOIN board_daily_reports r ON r.id = s.report_id").
-			Where("s.persistent_topic_id IN ?", candIDs).
+			Where("s.persistent_topic_id IN ? AND r.status = ?", candIDs, ReportStatusCompleted).
 			Order("r.period_date DESC, s.id ASC").
 			Scan(&hintRows).Error; err != nil {
 			return nil, fmt.Errorf("lane dynamics: candidate hints: %w", err)

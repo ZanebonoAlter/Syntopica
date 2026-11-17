@@ -56,6 +56,7 @@ function section(
       confidence: 0,
       relatedArticleIds: [],
       fitDistance: null,
+      scope: null,
       createdAt: '',
     })),
     ...rest,
@@ -89,7 +90,8 @@ function resolverFor(table: Record<string, string[] | 'gap' | 'unavailable'>): L
         sectionId,
         label: `桶${sectionId}`,
         threadCount: null,
-        fallbackClueCount: null,
+        compositeCount: null,
+        clueCount: null,
         foldedCount: 0,
         eventTitles: [],
       })),
@@ -205,6 +207,27 @@ describe('OTH — 行序与计数', () => {
     ])
     expect(view.rows).toHaveLength(1)
     expect(view.rows[0]!.threadCount).toBe(3)
+    expect(view.clueCount).toBe(3)
+  })
+
+  it('OTH-5c 组计数与行计数改非综合稿口径（综合稿不计入；fix-lane-metric-provenance）', () => {
+    const composite = section('8313', {
+      clusterIndex: 5,
+      threadIds: ['c1', 'c2'],
+      threads: [
+        { threadId: 'c1', sectionId: '8313', title: '综合稿一', summary: '', confidence: 0, relatedArticleIds: [], fitDistance: null, scope: 'composite', createdAt: '' },
+        { threadId: 'c2', sectionId: '8313', title: '综合稿二', summary: '', confidence: 0, relatedArticleIds: [], fitDistance: null, scope: 'composite', createdAt: '' },
+      ],
+    })
+    const view = build([
+      section('8312', { clusterIndex: 4, threadIds: ['17682', '17683', '17684'] }),
+      composite,
+    ])
+    expect(view.rows).toHaveLength(2)
+    // 综合稿 2 条不计入：行计数 0、组计数 3（与矩阵日格同一口径）
+    const compositeRow = view.rows.find(row => row.sectionId === '8313')!
+    expect(compositeRow.threadCount).toBe(0)
+    expect(compositeRow.compositeCount).toBe(2)
     expect(view.clueCount).toBe(3)
   })
 

@@ -446,6 +446,19 @@ describe('useBoardConsole — 观察窗（G1）', () => {
     expect(harness.state.observation.value).toEqual({ start: '2026-10-10', end: '2026-10-23' })
   })
 
+  it('窗口末日统一：响应 anchor_date（最新 completed 日报日）优先于壳层注入锚点', async () => {
+    // 后端锚点 = 最新 completed 日报日（2026-10-22）；壳层注入的是「任意状态最新日报」
+    // （2026-10-23，有未完成日报）——两个窗口必须落在同一天。
+    getLaneDynamics.mockResolvedValueOnce({
+      success: true,
+      data: makeResponse({ anchor_date: '2026-10-22' }),
+    })
+    harness = mountConsole({}, 1974, () => '2026-10-23')
+    await flushPromises()
+    expect(harness.state.anchorDate.value).toBe('2026-10-22')
+    expect(harness.state.axis.value.at(-1)).toBe('2026-10-22')
+  })
+
   it('R35：异步 router 延迟提交 + 源缓存立即命中切档，仍重置目标档默认范围', async () => {
     harness = mountConsole({}, 1974, undefined, 365)
     await flushPromises()

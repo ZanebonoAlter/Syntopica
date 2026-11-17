@@ -9,7 +9,7 @@
  *  - 拖/输/缩放至恰 7/14/30/365 日不切档（OX-1）；只有独立档按钮 emit `source-change`。
  *  - 刷选：拖空白（反向合法）/拖选区平移/双端手柄（rangeBrush 纯状态机）；键盘逐日/
  *    Shift 逐周/Home/End；pointercancel/Esc 恢复起始选区不提交，一次手势恰一次 commit。
- *  - 坐标映射只消费绘图区真实 rect；日期/事件线数轴外置（TrendAxes）；
+ *  - 坐标映射只消费绘图区真实 rect；日期/线索数轴外置（TrendAxes）；
  *    series null=未取到（不补 0 不桥接），已知 0 画基线；无数据不造今天。
  */
 import { computed, onBeforeUnmount, ref } from 'vue'
@@ -23,6 +23,7 @@ import {
   SOURCE_TIER_DAYS,
   daysBetweenInclusive,
   edgeToBound,
+  shiftDate,
   stepRangeEdge,
   type DateBounds,
   type ObservationRange,
@@ -45,16 +46,40 @@ const props = withDefaults(defineProps<{
   range: ObservationRange | null
   /** 当前档（A 通道 days），仅用于档按钮激活态。 */
   sourceDays: number
-  /** 365 池「已返回泳道日展示降级口径」曲线（事件线数 > 0 用事件线数，否则线索合计兜底；
-   *  与矩阵格同口径）；null = 未取到（刷选仍可用）。 */
+  /** 365 池「已返回泳道的当日线索数合计」曲线（与矩阵格同口径：非综合稿线索数，
+   *  非文章数）；null = 未取到（刷选仍可用）。 */
   series: LaneTrendPoint[] | null
   /** 池曲线加载中。 */
   loading?: boolean
   /** 上层提示文案（G1 rangeNotice）。 */
   notice?: string | null
+  /**
+   * 档位清单（unify-lane-workbench OQ-1 已批准的最小向后兼容配置扩展）：
+   * 缺省 = 矩阵页现状 7/14/30/365；工作面传自己的档位清单，矩阵页零变化。
+   */
+  tiers?: readonly SourceTierDays[]
+  /**
+   * 可选界（表单/键盘可提交的日期界）；缺省 = bounds（矩阵页现状）。
+   * 刷选轴仍以 bounds 为准（曲线是全轴背景）。
+   */
+  selectableBounds?: DateBounds | null
+  /**
+   * 单次可选最大跨度（含两端天）；缺省 = 不额外限（bounds 全宽，矩阵页现状）。
+   * 只作用于手势/键盘（限界不扩后端上限）；表单非法输入由父校验拒绝，不静默截断。
+   */
+  maxSpanDays?: number | null
+  /**
+   * 曲线口径标注（两行：标题行 / 单位行）；缺省 = 矩阵页现状文案。
+   * 工作面按曲线来源传自己的口径（如「可选线索数（不含 active 泳道）」）。
+   */
+  caption?: [string, string] | null
 }>(), {
   loading: false,
   notice: null,
+  tiers: () => [...SOURCE_TIER_DAYS],
+  selectableBounds: null,
+  maxSpanDays: null,
+  caption: null,
 })
 
 const emit = defineEmits<{
@@ -65,6 +90,24 @@ const emit = defineEmits<{
 
 const disabled = computed(() => props.bounds === null || props.range === null)
 const plotRef = ref<SVGSVGElement | null>(null)
+
+/** 表单/键盘的可选界（缺省 = bounds，矩阵页行为不变）。 */
+const formBounds = computed<DateBounds | null>(() => props.selectableBounds ?? props.bounds)
+
+/** 手势/键盘跨度上限（缺省 = bounds 全宽，矩阵页行为不变）。 */
+const spanLimit = computed<number>(() => {
+  if (props.maxSpanDays != null && Number.isFinite(props.maxSpanDays) && props.maxSpanDays >= 1) {
+    return Math.floor(props.maxSpanDays)
+  }
+  return props.bounds ? daysBetweenInclusive(props.bounds.start, props.bounds.end) : 365
+})
+
+/** 超跨度时限界（保末端、前移起点）；不超限原样返回（矩阵页不受影响）。 */
+function enforceSpan(range: ObservationRange): ObservationRange {
+  const width = daysBetweenInclusive(range.start, range.end)
+  if (width <= spanLimit.value) return range
+  return { start: shiftDate(range.end, -(spanLimit.value - 1)), end: range.end }
+}
 
 const curve = computed(() => (props.bounds ? buildBrushCurve(props.bounds, props.series) : null))
 const axis = computed(() => curve.value?.axis ?? [])
@@ -83,7 +126,7 @@ const rangeEndIndex = computed(() => {
 const gesture = ref<BrushGesture | null>(null)
 
 function gestureRange(g: BrushGesture): ObservationRange {
-  return { start: axis.value[g.start] ?? '', end: axis.value[g.end] ?? '' }
+  return enforceSpan({ start: axis.value[g.start] ?? '', end: axis.value[g.end] ?? '' })
 }
 
 function plotIndexAt(clientX: number): number {
@@ -154,18 +197,18 @@ onBeforeUnmount(removeDocumentListeners)
 
 /** 键盘端点调整（手柄 slider）：逐日/Shift 逐周/Home/End，每次按键即一次完成动作。 */
 function onHandleKeydown(event: KeyboardEvent, edge: 'start' | 'end'): void {
-  if (disabled.value || !props.bounds || !props.range) return
+  if (disabled.value || !formBounds.value || !props.range) return
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
   event.preventDefault()
   let next: ObservationRange
   if (event.key === 'Home' || event.key === 'End') {
-    next = edgeToBound(props.range, edge, event.key === 'Home' ? 'start' : 'end', props.bounds)
+    next = edgeToBound(props.range, edge, event.key === 'Home' ? 'start' : 'end', formBounds.value)
   }
   else {
     const delta = (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? 7 : 1)
-    next = stepRangeEdge(props.range, edge, delta, props.bounds)
+    next = stepRangeEdge(props.range, edge, delta, formBounds.value)
   }
-  emit('commit', next)
+  emit('commit', enforceSpan(next))
 }
 
 /** 手势草稿（渲染 selection/handle 位置）；无手势时用 props.range。 */
@@ -206,7 +249,7 @@ const feedback = computed(() => {
       <h3 class="orc-title">时间视窗</h3>
       <div class="orc-tiers" role="group" aria-label="独立数据档（决定名单与排序）">
         <button
-          v-for="days in SOURCE_TIER_DAYS"
+          v-for="days in tiers"
           :key="days"
           type="button"
           class="orc-chip orc-tier"
@@ -225,18 +268,18 @@ const feedback = computed(() => {
 
     <template v-else>
       <RangeDateForm
-        :bounds="bounds!"
+        :bounds="formBounds!"
         :range="range!"
         @commit="emit('commit', $event)"
         @issue="formIssue = $event"
       />
 
       <div class="orc-caption">
-        <span>365 日池 · 已返回泳道的日事件线数</span>
-        <span>无事件线日按线索合计兜底 · 非文章数</span>
+        <span>{{ caption?.[0] ?? '365 日池 · 已返回泳道的日线索数' }}</span>
+        <span>{{ caption?.[1] ?? '线索数（非文章数）· 综合稿不计入' }}</span>
       </div>
 
-      <TrendAxes v-if="curve" :y-ticks="curve.yTicks" :x-ticks="curve.xTicks">
+      <TrendAxes v-if="curve" unit-label="线索数（非文章数）" :y-ticks="curve.yTicks" :x-ticks="curve.xTicks">
         <div class="orc-plot-wrap">
         <svg
           ref="plotRef"

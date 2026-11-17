@@ -38,9 +38,29 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 - **WHEN** 少数特殊工作台确需脱离四模式
 - **THEN** change 的 `ui-design.md` Layout Contract 节 MUST 记录理由、目标视口与溢出策略，经 review 允许
 
+### Requirement: 交互模式选择判据先于布局定稿
+
+**级别**: MUST
+
+布局模式（本文件：`reader` / `contained` / `workspace` / `split`）只决定**容器宽度与栏数**，不决定操作以什么形态发生。同一页面可以是 `split` 布局 + `inline-edit` 交互。交互模式的词表、选择判据与禁止组合见 [interaction.md](interaction.md)（`page` / `panel` / `drawer` / `dialog` / `inline-edit` / `canvas` / `command`），本文件不重复判据。
+
+`ui-design.md` 的 `## Interaction Decisions` 台账 MUST 先于 Layout Contract 定稿——布局是为已选定的交互模式提供容器，反序会诱导「先挑一个好写的容器、再往里塞操作」。视觉与动效的下限（对比度、焦点可见、`prefers-reduced-motion`、glass/glow 剂量）见 [interaction.md](interaction.md)。
+
+#### Scenario: 单字段修改被塞进弹窗
+
+- **WHEN** 某操作只需改一个名称，`ui-design.md` 却把它定为 `dialog`
+- **THEN** review SHALL 依 `interaction.md` 判据 P2 要求改为 `inline-edit`，布局随之调整（不因此更换布局模式）
+
+#### Scenario: 用弹窗尺寸档反推交互模式
+
+- **WHEN** 设计理由是「这个内容 `md` 档装得下」
+- **THEN** SHALL 判定为理由无效——尺寸档解决的是尺寸，不构成选弹窗的理由
+
 ### Requirement: 画布类工作面必须按容器真实像素 1:1 绘制
 
 **级别**: MUST
+
+> 本节约束的是**渲染保真**（选定了画布之后要画对），SHALL NOT 被读作「推荐使用画布」；是否该用画布见 [interaction.md](interaction.md) 判据 P1。
 
 以图形画布为主体的工作面（点线图、关系图、编排画布）SHALL 按**容器真实像素 1:1** 绘制：SVG 坐标系与 CSS 像素 1:1（viewBox 宽 = 容器 `clientWidth`，或干脆不设 viewBox 而用 px 坐标），SHALL NOT 在挂载/开页那刻算死一个宽度后随视口变化被缩放或裁边；窗口尺寸变化 SHALL 重排重绘。
 
@@ -59,6 +79,8 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 ### Requirement: 弹窗必须使用统一尺寸档
 
 **级别**: MUST
+
+> 本节只解决「弹窗该多宽」。**是否该用弹窗**不在本节判定，见 [interaction.md](interaction.md) 判据 P1–P5——尺寸档装得下不构成使用弹窗的理由。
 
 新弹窗 SHALL 使用 `AppDialog` 的 `size` 属性四档之一，受可视区宽度约束（**92vw 上限**）：
 

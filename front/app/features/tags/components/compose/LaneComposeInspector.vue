@@ -10,7 +10,7 @@
  * - 「按标题找」只在本窗范围内按标题过滤，不调 AI、不自动勾选。
  */
 import { computed, ref } from 'vue'
-import type { LaneRecommendations } from '~/features/tags/composables/laneComposeLogic'
+import { proximityOf, type LaneRecommendations } from '~/features/tags/composables/laneComposeLogic'
 import type { ComposeCandidate } from '~/api/persistentTopics'
 
 const props = defineProps<{
@@ -105,7 +105,7 @@ function onChosenToggle(section: ComposeCandidate, event: Event): void {
             <button type="button" class="lci__suggest-title" @click="emit('focus', item.section.id)">{{ item.section.clusterLabel }}</button>
             <p v-if="archivedOrigin(item.section)" class="lci__origin">来自已归档泳道：{{ archivedOrigin(item.section) }}</p>
             <div class="lci__suggest-foot">
-              <small>{{ item.section.periodDate.slice(5) }} · 距离 {{ item.distance.toFixed(3) }}</small>
+              <small>{{ item.section.periodDate.slice(5) }} · 估算接近度 {{ proximityOf(item.distance)?.toFixed(2) }}</small>
               <button type="button" class="lci__suggest-add" :data-testid="`lane-suggest-add-${item.section.id}`" @click="emit('add', item.section.id)">＋ 加入</button>
             </div>
           </li>

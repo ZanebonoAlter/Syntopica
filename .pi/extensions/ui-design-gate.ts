@@ -36,11 +36,15 @@
  * UI_DESIGN_GATE_BYPASS=1（显式逃生口）。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { logPolicyDecision, type PolicyDecisionInput } from "./lib/policy-decision";
 import { queryByChange, queryBySession } from "./lib/harness-log";
 import {
+	changeNameFromPath,
+	checkStageScope,
+	parseUiStage,
+	relInsideChange,
 	decideUiToolGate,
 	passReasonForRelease,
 	type UiToolAction,
@@ -56,6 +60,9 @@ const BYPASS = process.env.UI_DESIGN_GATE_BYPASS === "1";
 
 /** 本会话已 legacy 提醒过的 change（`${sessionId}|${change}` 去重） */
 const legacyWarned = new Set<string>();
+
+/** stage 记账去重（`${sessionId}|${change}|${reasonCode}`）；键含 session 故无需清空 */
+const stageWarned = new Set<string>();
 
 /** 本扩展只用到的 ExtensionContext 子集（结构兼容，见 quota-gate GateCtx） */
 type GateCtx = {
@@ -128,6 +135,10 @@ async function check(
 	const sessionId = ctx.sessionManager?.getSessionId?.();
 	if (!sessionId) return;
 	const cwd = ctx.cwd ?? process.cwd();
+
+	// 0. 按写入路径触发的 stage 记账（add-ui-stage-accounting D1/D4）：不看 mode、不改裁夺。
+	if (tool.kind === "mutation") accountStageScope(ctx, normalizeTarget(tool, cwd));
+
 	const modeInfo = readLatestMode(cwd, sessionId);
 	if (!modeInfo || modeInfo.mode !== "implementation" || !modeInfo.boundChange) {
 		return;
@@ -327,6 +338,55 @@ function recordReleasePass(ctx: GateCtx, change: string): void {
 }
 
 /** policy.decision 旁路记账（同 spec-gate：无 cwd/sessionId 不记；失败不影响裁决） */
+/**
+ * 按写入路径触发的 stage 记账（add-ui-stage-accounting design D1/D4）：
+ * **不看 mode**——原型工作在 requirements / 无档位发生，而 `ui-approval` 的 mode 触发
+ * 完全看不见它（实测 34 次 ui-design 派发 100% 落在门外）。本函数只记账、不返回裁决，
+ * 也不读写 decideUiToolGate 的任何输出。
+ *
+ * 低噪声口径：只对 `ui-prototype/` 内的写入与 `ui-design.md` 本身记账，其余路径直接返回。
+ */
+function accountStageScope(ctx: GateCtx, tool: UiToolAction): void {
+	try {
+		if (tool.kind !== "mutation" || !tool.targetPath || !ctx.cwd) return;
+		const change = changeNameFromPath(tool.targetPath);
+		if (!change) return;
+		const rel = relInsideChange(tool.targetPath, change);
+		if (!rel) return;
+
+		// 只对原型目录记账（其余路径零噪声）。
+		if (rel !== "ui-prototype" && !rel.startsWith("ui-prototype/")) return;
+
+		// 基线事实 1：change 目录必须真实存在——纯正则能把仓库外路径
+		// （如 /tmp/x/openspec/changes/ghost/…）解析成一个不存在的 change。
+		if (!existsSync(join(ctx.cwd, "openspec/changes", change))) return;
+
+		const uiDesignText = safeRead(
+			join(ctx.cwd, "openspec/changes", change, "ui-design.md"),
+		);
+		const parsed = parseUiStage(uiDesignText);
+
+		let reasonCode: string | null = null;
+		if (parsed.kind === "missing") reasonCode = "ui-stage-missing";
+		else if (parsed.kind === "invalid") reasonCode = "ui-stage-invalid";
+		else if (checkStageScope(parsed.stage, rel) !== null) reasonCode = "ui-stage-scope-out";
+		if (!reasonCode) return;
+
+		// 去重键不带 sessionId：子线程与主线程共用模块实例，带 session 会让
+		// 一次派发乘出 N 条，「低噪声」目标在主场景反而落空。
+		const key = `${change}|${reasonCode}`;
+		if (stageWarned.has(key)) return;
+		stageWarned.add(key);
+		auditPolicy(ctx, change, {
+			policy: "ui-design-gate",
+			action: "warn",
+			reasonCode,
+		});
+	} catch (err) {
+		console.warn(`[ui-design-gate] stage 记账异常（旁路忽略）：${String(err)}`);
+	}
+}
+
 function auditPolicy(
 	ctx: GateCtx,
 	change: string | null | undefined,

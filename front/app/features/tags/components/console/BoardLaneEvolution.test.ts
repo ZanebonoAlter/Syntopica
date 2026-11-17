@@ -36,32 +36,32 @@ function makeLane(overrides: Partial<LaneDynamicsLane> = {}): LaneDynamicsLane {
       {
         date: '2026-10-18',
         sections: [
-          { section_id: 1, label: '分区一', events: ['事件一'] },
-          { section_id: 2, label: '分区二', events: ['事件二'] },
-          { section_id: 3, label: '分区三', events: ['事件三'] },
+          { section_id: 1, label: '分区一', events: ['事件一'], thread_count: 1, composite_count: 0 },
+          { section_id: 2, label: '分区二', events: ['事件二'], thread_count: 1, composite_count: 0 },
+          { section_id: 3, label: '分区三', events: ['事件三'], thread_count: 1, composite_count: 0 },
         ],
       },
       {
         date: '2026-10-19',
         sections: [
-          { section_id: 4, label: '分区四', events: ['事件四'] },
-          { section_id: 5, label: '分区五', events: ['事件五'] },
-          { section_id: 6, label: '分区六', events: ['事件六'] },
+          { section_id: 4, label: '分区四', events: ['事件四'], thread_count: 1, composite_count: 0 },
+          { section_id: 5, label: '分区五', events: ['事件五'], thread_count: 1, composite_count: 0 },
+          { section_id: 6, label: '分区六', events: ['事件六'], thread_count: 1, composite_count: 0 },
         ],
       },
       {
         date: '2026-10-20',
         sections: [
-          { section_id: 7, label: '分区七', events: ['事件七'] },
-          { section_id: 8, label: '分区八', events: ['事件八'] },
+          { section_id: 7, label: '分区七', events: ['事件七'], thread_count: 1, composite_count: 0 },
+          { section_id: 8, label: '分区八', events: ['事件八'], thread_count: 1, composite_count: 0 },
         ],
       },
       {
         date: TODAY,
         sections: [
-          { section_id: 9, label: '今日分区一', events: ['今天事件一', '今天事件二'] },
-          { section_id: 10, label: '今日分区二', events: ['今天事件三'] },
-          { section_id: 11, label: '今日分区三', events: ['今天事件四'] },
+          { section_id: 9, label: '今日分区一', events: ['今天事件一', '今天事件二'], thread_count: 1, composite_count: 0 },
+          { section_id: 10, label: '今日分区二', events: ['今天事件三'], thread_count: 1, composite_count: 0 },
+          { section_id: 11, label: '今日分区三', events: ['今天事件四'], thread_count: 1, composite_count: 0 },
         ],
       },
     ],
@@ -99,12 +99,12 @@ describe('BoardLaneEvolution — 节点与事件', () => {
         {
           date: TODAY,
           clue_count: 2,
-          sections: [{ section_id: 1, label: '一个大桶', events: [], thread_count: 6 }],
+          sections: [{ section_id: 1, label: '一个大桶', events: [], thread_count: 6 , composite_count: 0 }],
         },
         {
           date: '2026-10-22',
           clue_count: 4,
-          sections: [{ section_id: 2, label: '另一桶', events: [], thread_count: 1 }],
+          sections: [{ section_id: 2, label: '另一桶', events: [], thread_count: 1 , composite_count: 0 }],
         },
       ],
     })
@@ -124,7 +124,7 @@ describe('BoardLaneEvolution — 节点与事件', () => {
 
     const noToday = mountEvolution({
       timeline: [
-        { date: '2026-10-20', sections: [{ section_id: 1, label: '旧分区', events: ['旧事件'] }] },
+        { date: '2026-10-20', sections: [{ section_id: 1, label: '旧分区', events: ['旧事件'] , composite_count: 0 }] },
       ],
     })
     expect(noToday.find('[data-testid="lane-evolution-no-today"]').exists()).toBe(true)

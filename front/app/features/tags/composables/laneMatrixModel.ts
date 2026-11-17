@@ -6,6 +6,7 @@
  */
 import type { LocationQuery, Router } from 'vue-router'
 import type { LaneDynamicsLane } from '~/api/laneDynamics'
+import { laneSectionClueCount } from '~/api/normalizers/laneDynamicsWindow'
 
 export type ConsoleView = 'matrix' | 'archive'
 export type MatrixWindowKey = '7d' | '14d' | '30d' | 'all'
@@ -61,7 +62,7 @@ export interface LaneMatrixRow {
   watchLinked: boolean
   /** date → 当日 section 数（只在轴内的日期；断档判定/兼容，不再作格值/排序）。 */
   counts: Record<string, number>
-  /** date → 当日线索合计（各主题桶非综合稿 thread 数之和；矩阵格值口径）。 */
+  /** date → 当日线索合计（各主题桶**非综合稿**线索数之和；矩阵格值口径）。 */
   clueCounts: Record<string, number>
   /** 轴内分区总数（休眠分组阈值口径，不改）。 */
   total: number
@@ -82,9 +83,13 @@ export function buildLaneRow(lane: LaneDynamicsLane, axis: string[]): LaneMatrix
     if (!axisSet.has(day.date)) continue
     const sections = day.sections ?? []
     counts[day.date] = sections.length
+    // 当日线索合计 = 后端 clue_count 优先；缺省时回退各桶**非综合稿**线索数
+    // （thread_count − composite_count，唯一公式在 API 归一层）——不得拿含综合稿的
+    // thread_count / events+folded 冒充线索数。桶线索数不可数（旧响应缺
+    // composite_count）时该桶不贡献合计。
     clueCounts[day.date] = day.clue_count ?? sections.reduce((sum, section) => {
-      const fallback = (section.events?.length ?? 0) + (section.folded_count ?? 0)
-      return sum + (section.thread_count ?? fallback)
+      const value = laneSectionClueCount(section)
+      return value === null ? sum : sum + value
     }, 0)
   }
   let total = 0

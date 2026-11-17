@@ -45,7 +45,11 @@ function windowDay(date: string, sections: Partial<WindowSection>[]): WindowLane
       sectionId: section.sectionId ?? String(index + 1),
       label: section.label ?? `桶${index + 1}`,
       threadCount: section.threadCount ?? null,
-      fallbackClueCount: section.fallbackClueCount ?? null,
+      compositeCount: section.compositeCount ?? 0,
+      clueCount: section.clueCount
+        ?? (section.threadCount === undefined || section.threadCount === null
+          ? null
+          : Math.max(0, section.threadCount - (section.compositeCount ?? 0))),
       foldedCount: section.foldedCount ?? 0,
       eventTitles: section.eventTitles ?? [],
     })),
@@ -61,7 +65,7 @@ function fixtureResolver(lane: ObservationLaneRow = laneRow()) {
     if (topicId !== lane.topicId) return { kind: 'gap' }
     if (date === '2026-10-23') return { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: 3, eventTitles: ['甲事件标题'] }, { threadCount: 1, eventTitles: [] }]) }
     if (date === '2026-10-22') return { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: 0, eventTitles: ['零线索日标题'] }]) }
-    if (date === '2026-10-21') return { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: null, fallbackClueCount: null }]) }
+    if (date === '2026-10-21') return { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: null }]) }
     if (date === '2026-10-20') return { kind: 'gap' }
     if (date === '2026-10-19') return { kind: 'unavailable' }
     return { kind: 'gap' }

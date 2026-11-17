@@ -26,21 +26,41 @@
 
 项目 OpenSpec workflow SHALL 在 proposal 之后、specs 与技术 design 之前生成 `ui-design.md`，且 tasks MUST 依赖 specs、技术 design 与 UI 设计均完成。`ui-design.md` MUST 记录 UI 影响等级、页面入口、用户主任务、交互状态、布局类型、组件复用、响应式范围、原型路径和审批状态；`none` 可用带理由的最小 N/A 记录，`minor` MUST 写清现有模式的复用点与状态变化，`major` MUST 写完整信息架构、操作流程和状态矩阵。
 
+在 `major` 与 `minor` 两个档位上，`ui-design.md` 除上述内容外 MUST 另含三节结构化声明，缺任一节即视为制品不完整：
+
+- `## Interaction Decisions` — 交互决策台账，每条决策一行，列含 `ID` / `决策` / `模式` / `forbidden` / `状态`；`模式` MUST 取自 `docs/reference/standard/frontend/interaction.md` 的模式词表；`状态` 取 `pinned` 或 `open`；
+- `## Data Provenance` — 每个用户可见数据项一行，列含 `数据项` / `source` / 说明；`source` MUST 取 `api <path>`、`表.字段`、`派生 <公式>`、`none` 之一；取 `none` 者 MUST 标注 `needs-approval` 并在对话中获得用户确认后方可进入实现；
+- `## 明确不做` — 显式排除项列表，每条 MUST 可被读成「不出现在本界面里的具体东西」，SHALL NOT 写成「暂不支持」这类无对象措辞。
+
+`pinned` 决策 SHALL NOT 被实现或原型替换、简化或合并；实现阶段若认为必须偏离，MUST 返回 requirements 档向用户提出，SHALL NOT 自行改写台账。
+
 #### Scenario: none 产生最小制品
 - **WHEN** proposal 声明 `ui-impact: none`
-- **THEN** `ui-design.md` SHALL 记录 N/A 理由、`ui-approval: not-required` 与 `ui-prototype: none`，无需制作原型
+- **THEN** `ui-design.md` SHALL 记录 N/A 理由、`ui-approval: not-required` 与 `ui-prototype: none`，无需制作原型，三节结构化声明 SHALL NOT 被要求
 
 #### Scenario: minor 复用既有交互
 - **WHEN** change 声明 `ui-impact: minor`
-- **THEN** `ui-design.md` SHALL 指明所复用的页面、组件和布局模式，并覆盖 loading、empty、error、success 中受影响的状态，无需强制可视原型
+- **THEN** `ui-design.md` SHALL 指明所复用的页面、组件和布局模式，覆盖 loading、empty、error、success 中受影响的状态，并 MUST 补齐 `## Interaction Decisions` 与 `## Data Provenance` 两节
 
 #### Scenario: major 形成完整 UI 契约
 - **WHEN** change 声明 `ui-impact: major`
-- **THEN** `ui-design.md` MUST 包含页面入口、主次任务、信息层级、主次/危险操作、完整状态矩阵、布局模式、目标视口、组件复用映射和可丢弃原型引用
+- **THEN** `ui-design.md` MUST 包含页面入口、主次任务、信息层级、主次/危险操作、完整状态矩阵、布局模式、目标视口、组件复用映射、可丢弃原型引用，以及 `## Interaction Decisions`、`## Data Provenance`、`## 明确不做` 三节
+
+#### Scenario: 决策台账缺模式词表取值
+- **WHEN** `## Interaction Decisions` 中某行的 `模式` 不在 `interaction.md` 词表内（如自创「侧边浮窗」「轻量面板」）
+- **THEN** 制品 SHALL 判定为不完整，review MUST 要求改用词表取值或先提案扩展词表
+
+#### Scenario: pinned 决策被实现阶段改写
+- **WHEN** 实现阶段为赶进度把 `pinned` 的 `canvas` 改成 `dialog` 并更新了台账
+- **THEN** 该改写 MUST 被判定为违反契约；正确做法是停止实现并在 requirements 档向用户提出偏离
 
 ### Requirement: major UI 原型必须获得用户确认
 
 major UI change MUST 在 change 目录的 `ui-prototype/` 中提供与真实接口解耦的可丢弃原型，并在 `ui-design.md` 使用机器可读 `<!-- ui-approval: pending|approved -->` 与 `<!-- ui-prototype: <relative-path> -->` 记录状态。只有用户在对话中明确确认后，agent 才可将审批改为 `approved`；任何改变信息架构、主流程或布局模式的修订 MUST 将审批重新置为 `pending`。审批 pending、原型文件不存在或引用越出 change 目录时，前端实现 MUST 被阻止。
+
+原型形态 SHALL 按交互模式分流：以 `canvas` 为主要模式的界面，原型形态 MUST 为 `states/` 下的状态图（至少空态、编辑中、已确认三态）加一份 `interaction-table.md`（列含 `操作` / `触发` / `前置` / `结果` / `反馈` / `失败`）；其余模式 SHOULD 提供可点 HTML。两类形态均 SHALL 可丢弃，SHALL NOT 引入构建依赖。
+
+`canvas` 类的审批展示与验收比对 MUST 降级为「逐张状态图走查 + `interaction-table.md` 六列逐行对账」，SHALL NOT 要求可交互页面；差异说明的比对基准同此口径。
 
 #### Scenario: 原型待确认时暂停规划
 - **WHEN** major change 已生成原型但 `ui-approval` 仍为 `pending`
@@ -53,6 +73,10 @@ major UI change MUST 在 change 目录的 `ui-prototype/` 中提供与真实接�
 #### Scenario: 重大修订使审批失效
 - **WHEN** 已批准原型的信息架构、主流程或布局模式发生变化
 - **THEN** `ui-approval` MUST 重置为 `pending`，直至用户重新确认
+
+#### Scenario: 画布类界面强行用可点 HTML 模拟
+- **WHEN** `## Interaction Decisions` 把某操作钉为 `canvas`，而原型提供的是一个「点击打开弹窗逐条编辑」的可点 HTML
+- **THEN** 该原型 MUST 被判定为偏离契约：弹窗模拟既不是画布的结构表达，也不是状态图形态
 
 ### Requirement: 页面布局与弹窗尺寸采用统一契约
 
@@ -142,3 +166,47 @@ UI 设计门禁的显著裁决 SHALL 写入 harness `policy.decision`，`policy=
 #### Scenario: 健康放行零记录
 - **WHEN** UI 规划与审批均满足要求且实现正常放行
 - **THEN** 事实库 MUST NOT 产生 `policy.decision`
+
+### Requirement: 原型生产阶段必须可机器识别且按阶段限制写入域
+
+`ui-design.md` SHALL 支持机器可读标记 `<!-- ui-stage: l0|skeleton|interaction|data|approved -->`，与 `ui-impact` / `ui-approval` / `ui-prototype` 三条 marker 同层同形。标记缺失 SHALL 视为 legacy，SHALL NOT 因此阻断任何写入。
+
+阶段语义为单调阶梯，`approved` 等价「全放行」：
+
+| stage | 允许写入（相对 change 根） |
+|---|---|
+| `l0` | change 根下任意路径，**除 `ui-prototype/`** |
+| `skeleton` | 同上，另放行 `ui-prototype/skeleton/` |
+| `interaction` | 全部 |
+| `data` | 全部（与 `interaction` 写域相同；区别只在记账意图：表示进入填数阶段） |
+| `approved` | 全部，且不记账 |
+
+阶段检查 SHALL 由**写入路径**触发，SHALL NOT 依赖会话档位（`mode`）或 change 绑定：目标路径落在 `openspec/changes/<name>/` 下即 SHALL 触发，change 身份 SHALL 由路径本身解析。
+
+本能力当前 SHALL 只记账、不阻断：标记缺失、取值非法、写入越域三类事件 MUST 记为 `policy=ui-design-gate`、`action=warn` 的事实库事件，SHALL NOT 改变任何既有 `block` / `pass` 裁决。同一会话 × change × reasonCode SHALL 至多记账一次。
+
+将越域记录升级为阻断 SHALL 作为该能力的独立变更处理，并同步扩充阻断码白名单。
+
+#### Scenario: requirements 档写入原型目录也会被记账
+- **WHEN** 会话处于 `requirements` 档（或无档位），向 `openspec/changes/<name>/ui-prototype/index.html` 写入
+- **THEN** 系统 SHALL 按路径解析出 change 名并记录一条 `action=warn` 事件
+- **AND** SHALL NOT 阻断该写入
+
+#### Scenario: 缺少 stage 标记视为 legacy
+- **WHEN** change 的 `ui-design.md` 没有 `ui-stage` 标记
+- **THEN** 系统 SHALL 记 `reasonCode=ui-stage-missing` 一次
+- **AND** SHALL NOT 阻断，SHALL NOT 要求该 change 补标记
+
+#### Scenario: 骨架阶段写业务数据越域
+- **WHEN** `ui-stage: skeleton` 的 change 向 `ui-prototype/fixture.json` 写入
+- **THEN** 系统 SHALL 记 `reasonCode=ui-stage-scope-out`
+- **AND** 本阶段 SHALL NOT 阻断
+
+#### Scenario: 已批准阶段不再记账
+- **WHEN** `ui-stage: approved` 的 change 向任意 change 内路径写入
+- **THEN** 系统 SHALL NOT 产生 stage 相关事件
+
+#### Scenario: marker 取值非法
+- **WHEN** `ui-design.md` 的标记写成 `<!-- ui-stage: design -->` 或同一文件出现两条 `ui-stage`
+- **THEN** 系统 SHALL 记 `reasonCode=ui-stage-invalid` 一次
+- **AND** SHALL NOT 阻断

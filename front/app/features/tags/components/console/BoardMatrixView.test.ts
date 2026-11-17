@@ -37,6 +37,9 @@ function lane(topicId: number, label: string, days: Record<string, number>): Lan
         section_id: topicId * 100 + i,
         label: `${label} ${date} 分区${i}`,
         events: [`${label} 事件${i}`],
+        // 桶线索数 = thread_count − composite_count（composite_count 0 → 1 条线索/桶）
+        thread_count: 1,
+        composite_count: 0,
       })),
     })),
   }
@@ -171,12 +174,12 @@ describe('BoardMatrixView — 状态矩阵（2.5）', () => {
   it('行尾用线索总数、title 保留分区合计；排序键可见（热度口径）', () => {
     const rows = buildLaneRows([
       { ...lane(1, '分桶多', { '2026-10-23': 3 }), timeline: [{ date: '2026-10-23', sections: [
-        { section_id: 1, label: 'a', events: [], thread_count: 1 },
-        { section_id: 2, label: 'b', events: [], thread_count: 0 },
-        { section_id: 3, label: 'c', events: [], thread_count: 0 },
+        { section_id: 1, label: 'a', events: [], thread_count: 1 , composite_count: 0 },
+        { section_id: 2, label: 'b', events: [], thread_count: 0 , composite_count: 0 },
+        { section_id: 3, label: 'c', events: [], thread_count: 0 , composite_count: 0 },
       ] }] },
       { ...lane(2, '线索多', { '2026-10-23': 1 }), timeline: [{ date: '2026-10-23', sections: [
-        { section_id: 4, label: 'd', events: [], thread_count: 8 },
+        { section_id: 4, label: 'd', events: [], thread_count: 8 , composite_count: 0 },
       ] }] },
     ], AXIS)
     const wrapper = mountMatrix({ activeRows: rows, dormantRows: [], selectedLaneId: 2 })

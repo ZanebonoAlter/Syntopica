@@ -9,27 +9,47 @@
  *
  * 量纲（D4）：日格 / 演进节点 / 顶部曲线统一为「当日线索合计」= 该泳道该日各主题桶
  * 非综合稿 thread 数之和（后端 `clue_count`）。事件线量纲（story_count / 最热事件线
- * 身份 / 未归组事件数 / 来源数颜色通道）随 story 退役整体退场；旧后端缺 `clue_count`
- * 时回退各桶 `thread_count`（缺省再用 events+folded）合计，全未知仍是 null（不造 0）。
+ * 身份 / 未归组事件数 / 来源数颜色通道）随 story 退役整体退场。
+ *
+ * 桶线索数的唯一公式（fix-lane-metric-provenance）：**桶线索数 = thread_count −
+ * composite_count**（综合稿不计入线索数）。任一字段缺失 → 该桶线索数未知（null），
+ * 不得拿含综合稿的 thread_count 或 events+folded 冒充线索数。旧后端缺
+ * `composite_count` 时各桶线索数不可数 → 当日合计显示 `?`（诚实降级，不造 0）。
  *
  * 零值语义：
- *  - `thread_count` 缺省（旧响应）→ `threadCount: null`，展示回退 `fallbackClueCount`
- *    （= events 数 + folded_count）；连 events/folded 都缺 → `fallbackClueCount: null`
- *    （未知，显示 '?'，不得拿桶数补数）。
+ *  - `thread_count` / `composite_count` 缺省（旧响应）→ 桶线索数 null（未知）。
  *  - `snapshot: null` = 待结算（合法态，不影响 timeline）。
  *  - 窗内零分区的日期后端不返回 → timeline 无该日 = 断档（'gap'），与「历史未取到」
  *    （'unavailable'，池未加载/失败）由 useObservationWindow 的 resolveLaneDay 区分。
  */
 import type { LaneDynamicsResponse, LaneTimelineSection } from '../laneDynamics'
 
+/**
+ * 桶线索数（唯一公式）：`thread_count − composite_count`；任一未知 → null。
+ *
+ * 综合稿（thread 的 event 标签数 ≥ 2）不计入线索数，因此**不得**直接拿
+ * `thread_count` 当线索数（那是含综合稿的 thread 总数）。
+ */
+export function laneSectionClueCount(section: LaneTimelineSection): number | null {
+  if (typeof section.thread_count !== 'number' || !Number.isFinite(section.thread_count)) return null
+  if (typeof section.composite_count !== 'number' || !Number.isFinite(section.composite_count)) return null
+  const clue = section.thread_count - section.composite_count
+  // 差值为负 = 后端统计异常（综合稿数 > thread 总数）：按「不可数」处理，不抹成合法的 0
+  // （fix-lane-metric-provenance review R-6）。
+  if (clue < 0) return null
+  return clue
+}
+
 /** 归一后的单日主题桶（section）。 */
 export interface WindowSection {
   sectionId: string
   label: string
-  /** 桶线索数（raw thread_count）；null = 该桶线索数未知。 */
+  /** 桶内 thread 总数（**含**综合稿）；null = 未知。 */
   threadCount: number | null
-  /** threadCount 未知时的展示回退（events.length + folded_count）；null = 无法推导。 */
-  fallbackClueCount: number | null
+  /** 桶内综合稿数（raw composite_count）；null = 未知（旧后端）。 */
+  compositeCount: number | null
+  /** 桶线索数 = threadCount − compositeCount；任一未知 → null（不可数）。 */
+  clueCount: number | null
   foldedCount: number
   eventTitles: string[]
 }
@@ -84,7 +104,11 @@ export interface LaneDynamicsWindowData {
   hasReports: boolean
   lanes: WindowLane[]
   candidates: WindowCandidate[]
-  /** 窗内最新有分区日（= 数据轴锚点候选；与报告锚点分清，见 useBoardConsole anchorDate）。 */
+  /**
+   * 窗内最新有分区日（= 数据轴锚点候选；与报告锚点分清，见 useBoardConsole anchorDate）。
+   * 后端显式下发 `anchor_date`（最新 completed 日报日）时以它为准——
+   * 矩阵窗口末日与泳道工作面窗口末日必须同一天（fix-lane-metric-provenance）。
+   */
   anchorDate: string | null
   /** 热度口径版本（heat-v2-lane-clues-1d）；缺省空串。 */
   heatRuleVersion?: string
@@ -93,19 +117,19 @@ export interface LaneDynamicsWindowData {
 function normalizeSection(section: LaneTimelineSection): WindowSection {
   const events = section.events ?? []
   const foldedCount = section.folded_count ?? 0
-  const canFallback = section.events != null || section.folded_count != null
   return {
     sectionId: String(section.section_id),
     label: section.label,
     threadCount: section.thread_count ?? null,
-    fallbackClueCount: canFallback ? events.length + foldedCount : null,
+    compositeCount: section.composite_count ?? null,
+    clueCount: laneSectionClueCount(section),
     foldedCount,
     eventTitles: events,
   }
 }
 
 export function normalizeLaneDynamicsWindow(raw: LaneDynamicsResponse): LaneDynamicsWindowData {
-  let anchorDate: string | null = null
+  let latestDay: string | null = null
   const lanes: WindowLane[] = (raw.lanes ?? []).map(lane => {
     const timeline = (lane.timeline ?? []).map(day => ({
       date: day.date,
@@ -113,7 +137,7 @@ export function normalizeLaneDynamicsWindow(raw: LaneDynamicsResponse): LaneDyna
       clueCount: day.clue_count ?? null,
     }))
     for (const day of timeline) {
-      if (anchorDate === null || day.date > anchorDate) anchorDate = day.date
+      if (latestDay === null || day.date > latestDay) latestDay = day.date
     }
     return {
       topicId: String(lane.topic_id),
@@ -141,45 +165,89 @@ export function normalizeLaneDynamicsWindow(raw: LaneDynamicsResponse): LaneDyna
       clueCount: candidate.clue_count ?? null,
       laneHeat: candidate.lane_heat ?? null,
     })),
-    anchorDate,
+    // 后端锚点（最新 completed 日报日）优先；旧后端缺该字段时回退数据最新日。
+    anchorDate: raw.anchor_date ?? latestDay,
     heatRuleVersion: raw.heat_rule_version ?? '',
   }
 }
 
 /**
  * 日格派生（D4）：展示值 = 当日线索合计（raw clue_count 优先；旧响应回退各桶
- * 已知线索合计）。峰值只留作 title/aria 的辅助说明，不再作展示值；事件线数、
+ * 已知**非综合稿**线索合计）。桶峰值只作辅助说明（已是同口径）；事件线数、
  * 最热事件线身份、未归组事件数、来源数分档全部退役。
  */
 export interface DayCellMetrics {
   /** 展示值：当日线索合计；null = 全部桶未知（显示 '?'，不造 0）。 */
   clueCount: number | null
-  /** 各桶已知线索数合计（clue_count 缺省时的回退源，同时是 aria 的辅助数）。 */
+  /** 当日合计（同口径）；未知时为已知部分之和（配合 hasUnknown 表达「≥N」）。 */
   total: number
   /** 同日各桶线索数最大值；null = 全部未知。 */
   peak: number | null
   sectionCount: number
   hasUnknown: boolean
+  /** 当日综合稿条数（各桶之和）；null = 未知（某桶 composite_count 缺失）。 */
+  compositeCount: number | null
+  /** 各已知桶的非综合稿线索数（按桶序；供 title/aria 的分桶明细）。 */
+  bucketClues: number[]
+  /**
+   * 当日线索合计的来源：
+   *  - `backend` = 后端 `clue_count`（权威完整值，即使各桶明细有未知也照常用）；
+   *  - `buckets` = 旧响应回退各桶合计（`hasUnknown` 时为下界，展示应写 `≥N`）；
+   *  - `none` = 无法成立（显示 `?`）。
+   */
+  clueCountSource: 'backend' | 'buckets' | 'none'
+  /**
+   * `clueCount` 是否是**下界**（旧响应回退各桶合计且有桶不可数）。为 true 时展示层
+   * SHALL 写 `≥N`，MUST NOT 把已知部分之和当成完整合计（review R-1）。
+   */
+  isLowerBound: boolean
 }
 
 export function dayCellMetrics(day: WindowLaneDay | null | undefined): DayCellMetrics {
   if (!day || day.sections.length === 0) {
-    return { clueCount: 0, total: 0, peak: null, sectionCount: 0, hasUnknown: false }
+    return {
+      clueCount: 0, total: 0, peak: null, sectionCount: 0,
+      hasUnknown: false, compositeCount: 0, bucketClues: [], clueCountSource: 'backend', isLowerBound: false,
+    }
   }
   let peak: number | null = null
-  let total = 0
+  let knownTotal = 0
+  let composite = 0
+  let compositeKnown = true
   let hasUnknown = false
+  const bucketClues: number[] = []
   for (const section of day.sections) {
-    const value = section.threadCount ?? section.fallbackClueCount
+    const value = section.clueCount
     if (value === null) {
       hasUnknown = true
+      compositeKnown = false
       continue
     }
-    total += value
+    bucketClues.push(value)
+    knownTotal += value
     if (peak === null || value > peak) peak = value
+    if (section.compositeCount === null) compositeKnown = false
+    else composite += section.compositeCount
   }
-  // 后端 clue_count 是唯一权威的「当日线索合计」（已排除综合稿）；旧响应缺省时
-  // 回退各桶已知合计：全未知 → null（不造 0），否则用已知部分求和。
-  const clueCount = day.clueCount ?? (hasUnknown && peak === null ? null : total)
-  return { clueCount, total, peak, sectionCount: day.sections.length, hasUnknown }
+  // 后端 clue_count 是唯一权威的「当日线索合计」（已排除综合稿）；缺省时回退
+  // 各桶已知合计（同一公式派生，不含综合稿）：全未知 → null（不造 0）。
+  const backendCount = typeof day.clueCount === 'number' && Number.isFinite(day.clueCount)
+    ? day.clueCount
+    : null
+  const derived = hasUnknown && peak === null ? null : knownTotal
+  const clueCount = backendCount ?? derived
+  const clueCountSource: DayCellMetrics['clueCountSource'] = backendCount !== null
+    ? 'backend'
+    : (derived === null ? 'none' : 'buckets')
+  return {
+    clueCount,
+    total: clueCount ?? knownTotal,
+    peak,
+    sectionCount: day.sections.length,
+    hasUnknown,
+    compositeCount: compositeKnown ? composite : null,
+    bucketClues,
+    clueCountSource,
+    isLowerBound: clueCountSource === 'buckets' && hasUnknown,
+  }
 }

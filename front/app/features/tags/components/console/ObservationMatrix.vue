@@ -65,6 +65,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   selectLane: [topicId: string]
+  /** 「编辑泳道」→ 泳道修正工作面（lane-manual-correction-loop 6.3）。 */
+  editLane: [topicId: string]
+  /** 「归档泳道」→ 归档弹窗。 */
+  archiveLane: [topicId: string]
   selectDate: [payload: { topicId: string, date: string }]
   /** 点报日列头（与日格共用同一 selectedDate；壳层统一写状态）。 */
   selectDayHeader: [date: string]
@@ -116,6 +120,12 @@ const showError = computed(
         @click="emit('gotoSelected')"
       >查看所选日 ↓</button>
     </div>
+
+    <!-- 常驻口径说明（fix-lane-metric-provenance）：数字 = 当日线索合计 / 综合稿不计入。
+         只读文本行，不是入口；复用 muted 小字样式，不做强调色、不可交互。 -->
+    <p class="omx-basis" data-testid="matrix-basis-note">
+      数字 = 当日线索合计（各主题桶非综合稿线索数之和；综合稿不计入，避免一条稿给多条泳道各灌热度）
+    </p>
 
     <!-- 刷新失败但保留旧数据：顶部提示条（状态矩阵 error 行） -->
     <div v-if="staleNotice && error" class="omx-stale" data-testid="matrix-stale-notice">
@@ -172,6 +182,8 @@ const showError = computed(
         :others-open="othersOpen === true"
         :selected-other-section-id="selectedOtherSectionId ?? null"
         @select-lane="id => emit('selectLane', id)"
+        @edit-lane="id => emit('editLane', id)"
+        @archive-lane="id => emit('archiveLane', id)"
         @select-date="payload => emit('selectDate', payload)"
         @select-day-header="date => emit('selectDayHeader', date)"
         @select-observed-day="node => emit('selectObservedDay', node)"
@@ -214,6 +226,14 @@ const showError = computed(
 .omx-hint.is-warn {
   color: var(--color-warning);
   opacity: 1;
+}
+
+/* 常驻口径说明行：muted 小字、不可交互（与图例同档，不用强调色）。 */
+.omx-basis {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  opacity: 0.8;
 }
 
 .omx-note {

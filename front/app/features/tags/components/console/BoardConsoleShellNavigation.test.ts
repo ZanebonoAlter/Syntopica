@@ -47,7 +47,7 @@ describe('BoardConsoleShell — 入口/管理/真实路由', () => {
     expect(parsed).not.toHaveProperty('annotation')
   })
 
-  it('板块管理菜单：设置/构成进入单级宽工作面；话题管理打开既有面板', async () => {
+  it('板块管理菜单：设置/构成进入单级宽工作面；泳道管理打开既有面板', async () => {
     const wrapper = mountShell()
     await flushPromises()
     await wrapper.find('[data-testid="console-manage-settings"]').trigger('click')
@@ -57,7 +57,10 @@ describe('BoardConsoleShell — 入口/管理/真实路由', () => {
     await wrapper.find('[data-testid="console-manage-composition"]').trigger('click')
     expect(wrapper.find('[data-testid="workface-stub"]').attributes('data-tab')).toBe('quality')
 
-    await wrapper.find('[data-testid="console-manage-topics"]').trigger('click')
+    // 泳道实体管理项显示为「泳道管理」（lane-manual-correction-loop 6.4）
+    const manageTopics = wrapper.find('[data-testid="console-manage-topics"]')
+    expect(manageTopics.text()).toBe('泳道管理')
+    await manageTopics.trigger('click')
     expect(wrapper.find('[data-testid="topic-manage-stub"]').attributes('data-open')).toBe('true')
   })
 

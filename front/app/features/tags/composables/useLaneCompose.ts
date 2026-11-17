@@ -34,15 +34,19 @@ import type {
   ManualTopicResult,
 } from '~/api/persistentTopics'
 import {
+  candidatePoolDayTotals,
   candidateSelection,
   centroidRecommendations,
   laneSelectionState,
+  validateWorkbenchRange,
   type LaneRecommendations,
   type LaneSelectionState,
+  type WorkbenchTrendPoint,
 } from './laneComposeLogic'
+import type { DateBounds, ObservationRange } from '../components/console/observationRange'
 
-/** 取数窗口档位：快捷 7/14/30/90 或自选起止。 */
-export type LaneWindowMode = 7 | 14 | 30 | 90 | 'custom'
+/** 取数窗口档位：快捷 7/14/30/90/365（OQ-2 后新增 365 档）或自选起止。 */
+export type LaneWindowMode = 7 | 14 | 30 | 90 | 365 | 'custom'
 
 /** 生效中的窗口（服务端回显为准，前端不自推末日）。 */
 export interface LaneWindowState {
@@ -114,8 +118,12 @@ export interface UseLaneComposeOptions {
   onSaved?: (topic?: ManualTopicResult) => void | Promise<void>
 }
 
-/** 契约 §1.1：自选范围最多 90 天（含首末）→ 首末日差 ≤ 89。 */
-const MAX_WINDOW_SPAN_DAYS = 89
+/**
+ * 自选范围最多 365 天（含首末日）——与后端 `repository.ComposeWindowMaxDays`、
+ * `parseComposeWindowParams` 报错文案同源（unify-lane-workbench OQ-2，2026-11-16
+ * 用户裁决由 90 放宽）。校验本身委托 `validateWorkbenchRange`，不在这里重复实现。
+ */
+const COMPOSE_WINDOW_MAX_DAYS = 365
 /** 契约 §1.1：快捷档默认 30 天。 */
 const DEFAULT_WINDOW_DAYS = 30
 /** 服务端未回传 match_threshold 时的兜底阈值。 */
@@ -152,6 +160,11 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
   const controlMode = ref<LaneWindowMode>(DEFAULT_WINDOW_DAYS)
   const controlFrom = ref('')
   const controlTo = ref('')
+  /**
+   * 控件展示的观察范围（unify-lane-workbench D4）：preview 直写（仅显示）；
+   * commit 成功后由服务端回显接管。模态内本地 state，不写 URL query。
+   */
+  const observationRange = ref<ObservationRange | null>(null)
 
   // ── 草稿状态 ─────────────────────────────────────────────────────────────
   const selectedIds = ref<Set<string>>(new Set())
@@ -239,11 +252,16 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
   })
 
   // ── 取数 ─────────────────────────────────────────────────────────────────
+  /** 请求序号：只有最新一次取数能提交（迟到响应丢弃，B9）。 */
+  let loadSeq = 0
+
   async function loadWindow(query: ComposeCandidatesQuery & { mode: LaneWindowMode }): Promise<boolean> {
+    const seq = ++loadSeq
     loading.value = true
     error.value = null
     try {
       const res = await getComposeCandidates(opts.boardId.value, query)
+      if (seq !== loadSeq) return false // 迟到响应丢弃：不改范围/清单/query
       if (!res.success || !res.data) {
         error.value = res.error || '加载候选失败'
         return false
@@ -259,12 +277,17 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
         to: res.data.window?.to ?? '',
         days: res.data.window?.days ?? query.days ?? DEFAULT_WINDOW_DAYS,
       }
+      // 控件观察范围跟随服务端回显（模态本地，不写 URL query）。
+      observationRange.value = appliedWindow.value.from && appliedWindow.value.to
+        ? { start: appliedWindow.value.from, end: appliedWindow.value.to }
+        : null
       return true
     } catch (e) {
+      if (seq !== loadSeq) return false
       error.value = e instanceof Error ? e.message : '加载候选失败'
       return false
     } finally {
-      loading.value = false
+      if (seq === loadSeq) loading.value = false
     }
   }
 
@@ -290,29 +313,12 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
     restoreDateControls()
   }
 
-  /** 自选起止校验：与契约 §1.1 同口径（非法一律报错，不静默纠正、不截断）。 */
+  /**
+   * 自选起止校验：委托共享纯函数 `validateWorkbenchRange`（与泳道修正工作面同一实现，
+   * 非法一律报错、不静默纠正、不截断）。
+   */
   function validateCustomRange(from: string, to: string): string | null {
-    const fmt = /^\d{4}-\d{2}-\d{2}$/
-    if (!fmt.test(from) || !fmt.test(to)) return '请选择有效的起止日期'
-    const fromTs = parseUtcDay(from)
-    const toTs = parseUtcDay(to)
-    if (!Number.isFinite(fromTs) || !Number.isFinite(toTs)) return '请选择有效的起止日期'
-    if (formatUtcDay(fromTs) !== from || formatUtcDay(toTs) !== to) return '请选择有效的起止日期'
-    if (from > to) return '开始日期不能晚于结束日期'
-    if (Math.round((toTs - fromTs) / DAY_MS) > MAX_WINDOW_SPAN_DAYS) {
-      return `日期范围不能超过 ${MAX_WINDOW_SPAN_DAYS + 1} 天`
-    }
-    const latest = serverWindow.value?.latestCompletedDate
-    if (latest) {
-      const latestTs = parseUtcDay(latest)
-      if (Number.isFinite(latestTs)) {
-        const earliest = latestTs - MAX_WINDOW_SPAN_DAYS * DAY_MS
-        if (fromTs < earliest) {
-          return `开始日期早于支持的取数窗（${formatUtcDay(earliest)} 起）`
-        }
-      }
-    }
-    return null
+    return validateWorkbenchRange(from, to, COMPOSE_WINDOW_MAX_DAYS, serverWindow.value?.latestCompletedDate)
   }
 
   /** 清草稿：成员、名称、焦点全清（切窗口确认后才走这里）。 */
@@ -324,7 +330,7 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
     focusId.value = null
   }
 
-  /** 切窗口（有草稿先确认；失败保留旧范围与草稿）。 */
+  /** 切窗口（有草稿先确认；失败保留旧范围与草稿；迟到响应丢弃）。 */
   async function switchWindow(query: ComposeCandidatesQuery & { mode: LaneWindowMode }): Promise<boolean> {
     dateError.value = null
     if (hasDraft.value) {
@@ -337,6 +343,9 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
       })
       if (!ok) {
         restoreControls(query.mode)
+        observationRange.value = appliedWindow.value.from && appliedWindow.value.to
+          ? { start: appliedWindow.value.from, end: appliedWindow.value.to }
+          : null
         return false
       }
     }
@@ -344,6 +353,9 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
     if (!loaded) {
       // 取数失败：保留旧范围与草稿，控件恢复原值
       restoreControls(query.mode)
+      observationRange.value = appliedWindow.value.from && appliedWindow.value.to
+        ? { start: appliedWindow.value.from, end: appliedWindow.value.to }
+        : null
       return false
     }
     clearDraft()
@@ -353,8 +365,8 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
     return true
   }
 
-  /** 快捷档切换（7/14/30/90）。 */
-  async function setQuickDays(days: 7 | 14 | 30 | 90): Promise<void> {
+  /** 快捷档切换（7/14/30/365；OQ-2 后 365 可用）。 */
+  async function setQuickDays(days: 7 | 14 | 30 | 90 | 365): Promise<void> {
     controlMode.value = days
     await switchWindow({ mode: days, days })
   }
@@ -382,6 +394,94 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
       return
     }
     await switchWindow({ mode: 'custom', from, to })
+  }
+
+  // ── 时间视窗控制（ObservationRangeControls 宿主；模态本地，不写 router） ────
+  /** 控件当前档（档按钮激活态；非 7/14/30/365 时无激活档）。 */
+  const tierDays = computed<number>(() => {
+    const mode = appliedWindow.value.mode
+    return typeof mode === 'number' && [7, 14, 30, 365].includes(mode) ? mode : 0
+  })
+
+  /** 手势/键盘预览：只更新选区显示，不请求（松手 commit 才取数）。 */
+  function previewObservation(range: ObservationRange): void {
+    observationRange.value = range
+  }
+
+  /** 表单/刷选/键盘 commit：校验（非法保旧）后一次取数。 */
+  async function commitObservation(range: ObservationRange): Promise<boolean> {
+    return applyObservationRange(range.start, range.end)
+  }
+
+  /** 应用观察范围（同值不重取，J1）。 */
+  async function applyObservationRange(from: string, to: string): Promise<boolean> {
+    dateError.value = null
+    const problem = validateCustomRange(from, to)
+    if (problem) {
+      dateError.value = problem
+      observationRange.value = appliedWindow.value.from && appliedWindow.value.to
+        ? { start: appliedWindow.value.from, end: appliedWindow.value.to }
+        : null
+      return false
+    }
+    if (from === appliedWindow.value.from && to === appliedWindow.value.to) return true
+    return switchWindow({ mode: 'custom', from, to })
+  }
+
+  // ── 365 日可选池曲线（7.1 / 7.4；轻量取数，不拉向量） ───────────────────
+  /** 365 日池曲线（null = 未取到/未知，不补 0 冒充）。 */
+  const poolCurve = ref<WorkbenchTrendPoint[] | null>(null)
+  const poolCurveLoading = ref(false)
+  const poolCurveError = ref<string | null>(null)
+  /** 曲线日期轴（服务端回显窗口；与候选窗口独立）。 */
+  const poolBounds = ref<DateBounds | null>(null)
+  let poolSeq = 0
+
+  /**
+   * 拉取 365 日可选池曲线（轻量：`omit_embeddings=1`，不拉每条 10 KB 向量）。
+   *
+   * - 口径：非 active 可选 section 的 clueCount 逐日聚合（含无归属与 candidate，
+   *   排 active/archived/disabled；未知传播见 `candidatePoolDayTotals`）；
+   * - 与当前候选窗口/草稿已选**独立**：不因切窗口重取，不受勾选扣减；
+   * - 迟到响应丢弃（B9）；失败保旧曲线并可单独重试。
+   */
+  async function loadPoolCurve(): Promise<boolean> {
+    const seq = ++poolSeq
+    poolCurveLoading.value = true
+    poolCurveError.value = null
+    try {
+      const res = await getComposeCandidates(opts.boardId.value, { days: 365, omitEmbeddings: true })
+      if (seq !== poolSeq) return false
+      if (!res.success || !res.data) {
+        poolCurveError.value = res.error || '可选池曲线加载失败'
+        return false
+      }
+      const from = (res.data.window?.from ?? '').slice(0, 10)
+      const to = (res.data.window?.to ?? '').slice(0, 10)
+      if (!from || !to) {
+        poolCurveError.value = '可选池窗口未知（无已完成日报锚点）'
+        return false
+      }
+      const totals = candidatePoolDayTotals(res.data.sections)
+      const out: WorkbenchTrendPoint[] = []
+      const startTs = parseUtcDay(from)
+      const endTs = parseUtcDay(to)
+      // 轴上无条目的日子 = 已知 0（该日可选池为空是合法结论，不是未知）；
+      // 有条目但为 null = 未知（不吞成 0）。
+      for (let ts = startTs; ts <= endTs && out.length <= 400; ts += DAY_MS) {
+        const date = formatUtcDay(ts)
+        out.push({ date, value: totals.has(date) ? totals.get(date) ?? null : 0 })
+      }
+      poolBounds.value = { start: from, end: to }
+      poolCurve.value = out
+      return true
+    } catch (e) {
+      if (seq !== poolSeq) return false
+      poolCurveError.value = e instanceof Error ? e.message : '可选池曲线加载失败'
+      return false
+    } finally {
+      if (seq === poolSeq) poolCurveLoading.value = false
+    }
   }
 
   // ── 选择 ─────────────────────────────────────────────────────────────────
@@ -669,10 +769,21 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
     controlMode,
     controlFrom,
     controlTo,
+    observationRange,
+    tierDays,
+    previewObservation,
+    commitObservation,
+    applyObservationRange,
     load,
     setQuickDays,
     startCustomRange,
     applyCustomRange,
+    // 365 日可选池曲线
+    poolCurve,
+    poolCurveLoading,
+    poolCurveError,
+    poolBounds,
+    loadPoolCurve,
     // 草稿
     selectedIds,
     selectedSections,

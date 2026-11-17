@@ -38,7 +38,8 @@ const TIER_START = '2026-10-10'
 // ── fixtures：raw 响应 → 真实 normalizer 归一（链路与 G1 对齐） ──
 
 function sectionRaw(id: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return { section_id: id, label: `桶${id}`, events: [`事件${id}`], ...overrides }
+  // composite_count 默认 0（无综合稿）：桶线索数 = thread_count − composite_count = thread_count。
+  return { section_id: id, label: `桶${id}`, events: [`事件${id}`], composite_count: 0, ...overrides }
 }
 
 function laneRaw(topicId: number, label: string, timeline: { date: string, sections: Record<string, unknown>[], clue_count?: number }[], overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -56,7 +57,12 @@ function windowDay(date: string, sections: Partial<WindowSection>[], day: Partia
       sectionId: section.sectionId ?? String(index + 1),
       label: section.label ?? `桶${index + 1}`,
       threadCount: section.threadCount ?? null,
-      fallbackClueCount: section.fallbackClueCount ?? null,
+      compositeCount: section.compositeCount ?? 0,
+      // 桶线索数 = thread_count − composite_count（唯一公式）；threadCount 缺失 → 未知。
+      clueCount: section.clueCount
+        ?? (section.threadCount === undefined || section.threadCount === null
+          ? null
+          : Math.max(0, section.threadCount - (section.compositeCount ?? 0))),
       foldedCount: section.foldedCount ?? 0,
       eventTitles: section.eventTitles ?? [],
     })),
@@ -98,17 +104,18 @@ describe('observationLanes — source 全轴行模型', () => {
     expect(rows.map(row => row.topicId)).toEqual(['12', '10', '9', '11'])
   })
 
-  it('lane_heat 全缺（旧后端）：线索合计降序 → ID 升序；clueTotal 回退各桶已知线索合计', () => {
+  it('lane_heat 全缺（旧后端）：线索合计降序 → ID 升序；clueTotal 回退各桶已知非综合稿线索合计', () => {
     const source = normalize([
       laneRaw(1, '回退', [{ date: '2026-10-23', sections: [
-        sectionRaw(1, { events: ['a', 'b'], folded_count: 1 }),
+        // 缺 thread_count 的桶不可数（不拿 events+folded 冒充线索数）
+        sectionRaw(1, { events: ['a', 'b'], folded_count: 1, thread_count: undefined, composite_count: undefined }),
         sectionRaw(2, { thread_count: 2 }),
       ] }]),
       laneRaw(2, '更大', [{ date: '2026-10-23', sections: [sectionRaw(3, { thread_count: 6 })] }]),
     ])
     const rows = buildObservationRows(source, AXIS14)
     expect(rows[0]).toMatchObject({ topicId: '2', clueTotal: 6, laneHeat: 0 })
-    expect(rows[1]).toMatchObject({ topicId: '1', clueTotal: 5 })
+    expect(rows[1]).toMatchObject({ topicId: '1', clueTotal: 2 })
   })
 
   it('当日线索合计优先消费 clue_count（各桶 thread 合计不覆盖）；lane_heat 透传', () => {
@@ -182,17 +189,26 @@ describe('observationLanes — source 全轴行模型', () => {
     expect(source.candidates.map(candidate => candidate.topicId)).toEqual(candidatesBefore)
   })
 
-  it('thread_count 缺省回退 events+folded，再缺按 0 计（clueTotal 兼容口径保留）', () => {
+  it('桶线索数 = thread_count − composite_count（综合稿不计）；缺 composite_count → 不可数', () => {
     const source = normalize([
-      laneRaw(1, '回退', [{ date: '2026-10-23', sections: [
-        sectionRaw(1, { events: ['a', 'b'], folded_count: 1 }),
-        sectionRaw(2, { thread_count: 2 }),
+      laneRaw(1, '含综合稿', [{ date: '2026-10-23', sections: [
+        sectionRaw(1, { thread_count: 5, composite_count: 2 }),
+        sectionRaw(2, { thread_count: 2, composite_count: 0 }),
       ] }]),
       laneRaw(2, '更大', [{ date: '2026-10-23', sections: [sectionRaw(3, { thread_count: 6 })] }]),
     ])
     const rows = buildObservationRows(source, AXIS14)
     expect(rows[0]).toMatchObject({ topicId: '2', clueTotal: 6 })
     expect(rows[1]).toMatchObject({ topicId: '1', clueTotal: 5 })
+
+    // 旧响应缺 composite_count → 桶线索数不可数（不拿 thread_count 冒充）。
+    const legacy = normalize([
+      laneRaw(1, '旧响应', [{ date: '2026-10-23', sections: [
+        sectionRaw(1, { thread_count: 3, composite_count: undefined }),
+      ] }]),
+    ])
+    const legacyRows = buildObservationRows(legacy, AXIS14)
+    expect(legacyRows[0]!.clueTotal).toBe(0)
   })
 
   it('compareTopicId：数字串按数值升序（9 < 10），非数字回退字典序', () => {
@@ -211,7 +227,7 @@ describe('observationLanes — 矩阵格视图（MX 组，线索口径）', () =
           day: windowDay(date, [{ threadCount: 3 }, { threadCount: 7 }, { threadCount: 1 }], { clueCount: 11 }),
         }
       : topicId === '10' && date === '2026-10-22'
-        ? { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: null, fallbackClueCount: 3 }]) }
+        ? { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: null }]) }
         : date >= TIER_START
           ? { kind: 'gap' }
           : { kind: 'unavailable' }
@@ -254,27 +270,33 @@ describe('observationLanes — 矩阵格视图（MX 组，线索口径）', () =
     expect(view.aria).not.toContain('兜底')
   })
 
-  it('MX-7：桶峰值不冒充展示值（各桶 100/32 但当日线索合计 5 → 格值 5，峰值只作 aria 辅助）', () => {
+  it('MX-7：伴生数字与格值同口径（综合稿只以差额出现，thread 总数不得当线索数）', () => {
     const peakResolve: LaneDayResolver = (topicId, date) =>
       topicId === '10' && date === '2026-10-23'
-        ? { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: 100 }, { threadCount: 32 }], { clueCount: 5 }) }
+        ? {
+            kind: 'content', source: 'tier',
+            day: windowDay(date, [{ threadCount: 5, compositeCount: 2 }], { clueCount: 3 }),
+          }
         : { kind: 'gap' }
     const view = matrixCellView(projectMatrixCell(peakResolve, '10', '2026-10-23'), { laneLabel: '主线', date: '2026-10-23' })
-    expect(view.text).toBe('5')
-    expect(view.aria).toContain('5 条线索')
-    // 峰值只以「最多一天桶」辅助说明出现，不进入格值
-    expect(view.aria).toContain('最多一天桶 100 条')
+    expect(view.text).toBe('3')
+    expect(view.aria).toContain('3 条线索')
+    expect(view.aria).toContain('1 个主题桶')
+    // 综合稿只以差额形式说明；含综合稿的 thread 总数 5 不得表述为「线索条数」。
+    expect(view.aria).toContain('另有 2 条综合稿未计入')
+    expect(view.aria).not.toContain('5 条线索')
+    expect(view.aria).not.toContain('最多一天桶')
   })
 
-  it('MX-2：线索数未知显示「?」不造 0；旧响应回退 events+folded 合计', () => {
+  it('MX-2：线索数未知显示「?」不造 0；旧响应缺 composite_count 时桶线索数不可数', () => {
     const fallback = matrixCellView(projectMatrixCell(resolve, '10', '2026-10-22'), { laneLabel: '主线', date: '2026-10-22' })
-    expect(fallback.text).toBe('3')
-    expect(fallback.aria).toContain('3 条线索')
+    expect(fallback.text).toBe('?')
+    expect(fallback.aria).toContain('线索数未知')
 
     const bare = matrixCellView(
       {
         kind: 'content',
-        metrics: { clueCount: null, total: 0, peak: null, sectionCount: 2, hasUnknown: true },
+        metrics: { clueCount: null, total: 0, peak: null, sectionCount: 2, hasUnknown: true, compositeCount: null, bucketClues: [], clueCountSource: 'none', isLowerBound: false },
       },
       { laneLabel: '主线', date: '2026-10-22' },
     )
@@ -286,9 +308,27 @@ describe('observationLanes — 矩阵格视图（MX 组，线索口径）', () =
     expect(bare.aria).toContain('2 个主题桶')
   })
 
+  it('MX-9：旧响应回退 + 部分桶不可数 → 格值与 aria 都写下界「≥N」，不冒充完整合计', () => {
+    const partialResolve: LaneDayResolver = (topicId, date) =>
+      topicId === '10' && date === '2026-10-23'
+        ? {
+            kind: 'content', source: 'tier',
+            // 桶1 已知 3、桶2 缺 composite_count（不可数）
+            day: windowDay(date, [{ threadCount: 3 }, { threadCount: null, clueCount: null }]),
+          }
+        : { kind: 'gap' }
+    const view = matrixCellView(projectMatrixCell(partialResolve, '10', '2026-10-23'), { laneLabel: '主线', date: '2026-10-23' })
+    expect(view.text).toBe('≥3')
+    expect(view.aria).toContain('≥3 条线索')
+    // 有未知桶时不列「各桶 …」（否则与合计/桶数对不上）
+    expect(view.aria).not.toContain('各桶')
+    expect(view.aria).toContain('2 个主题桶')
+    expect(view.openable).toBe(true)
+  })
+
   it('MX-3/MX-4：有分区 0 线索 = 已知 0 可开；gap = 「—」 禁用；unavailable = 「?」 禁用', () => {
     const zero = matrixCellView(
-      { kind: 'content', metrics: { clueCount: 0, total: 0, peak: 0, sectionCount: 1, hasUnknown: false } },
+      { kind: 'content', metrics: { clueCount: 0, total: 0, peak: 0, sectionCount: 1, hasUnknown: false, compositeCount: 0, bucketClues: [0], clueCountSource: 'backend', isLowerBound: false } },
       { laneLabel: '主线', date: '2026-10-21' },
     )
     expect(zero.text).toBe('0')
@@ -314,7 +354,7 @@ describe('observationLanes — 矩阵格视图（MX 组，线索口径）', () =
     expect(view.title).not.toContain('最热')
     expect(view.title).not.toContain('个来源')
     // 未知/断档格 depth 恒 0（不造 0、不着色），即使传了分母
-    const unknown = matrixCellView({ kind: 'content', metrics: { clueCount: null, total: 0, peak: null, sectionCount: 2, hasUnknown: true } }, { laneLabel: '主线', date: '2026-10-22', rowMax: 11 })
+    const unknown = matrixCellView({ kind: 'content', metrics: { clueCount: null, total: 0, peak: null, sectionCount: 2, hasUnknown: true, compositeCount: null, bucketClues: [], clueCountSource: 'none', isLowerBound: false } }, { laneLabel: '主线', date: '2026-10-22', rowMax: 11 })
     expect(unknown.depth).toBe(0)
     const gap = matrixCellView({ kind: 'gap' }, { laneLabel: '主线', date: '2026-10-15', rowMax: 11 })
     expect(gap.depth).toBe(0)
@@ -424,7 +464,7 @@ describe('observationLanes — 演进投影（EV 组）', () => {
         day: windowDay(date, [{ threadCount: 3 }, { threadCount: 1 }], { clueCount: 4 }),
       }
       if (date === '2026-10-22') return { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: 2 }]) }
-      if (date === '2026-10-21') return { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: null, fallbackClueCount: null }]) }
+      if (date === '2026-10-21') return { kind: 'content', source: 'tier', day: windowDay(date, [{ threadCount: null }]) }
       if (date === '2026-10-20') return { kind: 'gap' }
       return { kind: 'unavailable' }
     }
@@ -452,7 +492,7 @@ describe('observationLanes — 演进投影（EV 组）', () => {
 
   it('series 值：content=已知合计（全未知 null）、gap=已知 0、unavailable=null（不补 0）', () => {
     expect(evolutionSeriesValue({ kind: 'content', source: 'tier', day: windowDay('d', [{ threadCount: 3 }, { threadCount: 4 }]) })).toBe(7)
-    expect(evolutionSeriesValue({ kind: 'content', source: 'tier', day: windowDay('d', [{ threadCount: null, fallbackClueCount: null }]) })).toBeNull()
+    expect(evolutionSeriesValue({ kind: 'content', source: 'tier', day: windowDay('d', [{ threadCount: null }]) })).toBeNull()
     expect(evolutionSeriesValue({ kind: 'content', source: 'pool', day: windowDay('d', [{ threadCount: 0 }]) })).toBe(0)
     expect(evolutionSeriesValue({ kind: 'gap' })).toBe(0)
     expect(evolutionSeriesValue({ kind: 'unavailable' })).toBeNull()

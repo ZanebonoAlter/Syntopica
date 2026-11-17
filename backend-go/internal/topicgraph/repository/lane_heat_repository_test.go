@@ -98,6 +98,44 @@ func TestLaneHeatBoardAttention(t *testing.T) {
 	assert.Zero(t, ComputeBoardAttention(nil))
 }
 
+// TestLaneHeatScopeJudgmentExcludeCompositeOnly（fix-lane-metric-provenance
+// 1.9）：`lane_heat` 的线索计数判据只排除综合稿——`scope='single'` 计入、
+// `scope='composite'` 不计入。
+//
+// 关于 NULL：`daily_report_threads.scope` 在当前 schema 下是 NOT NULL +
+// CHECK (scope IN ('single','composite'))（迁移 20260607_0001 的
+// ensureNotNullDefault + CHECK 确保块），因此「历史行 scope 为 NULL」在当前
+// schema 下**不可达**，无法用 PG 集成测试构造——`COALESCE(t.scope, ”)` 是防御性
+// 写法：万一出现 NULL / 空串，按「非综合稿」计入（排除会让历史日线索数与热度
+// 凭空归零）。该意图写进代码注释与 `docs/reference/flow/semantic-board.md`。
+// 本用例同时钉住「scope 列 NOT NULL」这条 schema 事实（若将来放开 NOT NULL，
+// 用例失败 → 提醒同步更新判据注释与文档）。
+func TestLaneHeatScopeJudgmentExcludeCompositeOnly(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	today := NormalizeReportDate(time.Now())
+	reportToday := seedTestReport(t, db, boardID, today)
+
+	active := seedLaneHeatTopic(t, db, boardID, "判据泳道", TopicStatusActive)
+	section := seedLaneHeatSection(t, db, reportToday, active.ID, "判据桶")
+	seedLaneHeatThread(t, db, reportToday, section, ThreadScopeSingle)
+	seedLaneHeatThread(t, db, reportToday, section, ThreadScopeComposite)
+
+	clues, err := repo.CountLaneCluesByDate(boardID, today)
+	require.NoError(t, err)
+	assert.Equal(t, 1, clues[active.ID], "只排除综合稿：single 计入、composite 不计入")
+
+	// schema 事实：scope 列 NOT NULL（NULL 分支在当前 schema 下不可达）。
+	var nullable string
+	require.NoError(t, db.Raw(`
+		SELECT is_nullable FROM information_schema.columns
+		WHERE table_name = 'daily_report_threads' AND column_name = 'scope'
+	`).Scan(&nullable).Error)
+	assert.Equal(t, "NO", nullable, "scope 列 NOT NULL：NULL 分支不可达，判据注释需随之更新")
+}
+
 // TestLaneHeatCountsCoverCandidateAndExcludeComposite（task 1.3 查询层）：
 // 覆盖 active + candidate 两类泳道；综合稿不计；分桶合并取合计不取峰值；
 // 只算当天（前一天线索不混入）。

@@ -34,6 +34,7 @@ import { useConsoleShellActions } from './useConsoleShellActions'
 import BoardConsoleBody from './BoardConsoleBody.vue'
 import BoardWideWorkface from './BoardWideWorkface.vue'
 import BoardComposeOverlay from './BoardComposeOverlay.vue'
+import LaneArchiveDialog from '~/components/dialog/LaneArchiveDialog.vue'
 import DailyReportGenerateDialog from '../DailyReportGenerateDialog.vue'
 import TopicManageDialog from '~/components/dialog/TopicManageDialog.vue'
 import WatchManagePanel from '../topic-watch/WatchManagePanel.vue'
@@ -184,6 +185,12 @@ const {
   composeOpen,
   topicManageOpen,
   watchOpen,
+  correctionTopicId,
+  archiveTopicId,
+  openLaneCorrection,
+  closeLaneCorrection,
+  openLaneArchive,
+  closeLaneArchive,
   showArticlePreview,
   selectedPreviewArticle,
   previewArticles,
@@ -196,6 +203,28 @@ const {
   openContext,
   closeWorkface,
 } = overlays
+
+/** 泳道显示名（修正工作面标题 / 归档弹窗文案用；名单里没有该泳道时留空）。 */
+function laneLabelOf(topicId: string): string {
+  return allLanes.value.find(row => row.topicId === topicId)?.label ?? ''
+}
+
+/** 修正工作面的泳道名。 */
+const correctionLaneLabel = computed(() => (correctionTopicId.value ? laneLabelOf(correctionTopicId.value) : ''))
+
+/** 归档弹窗的泳道名。 */
+const archiveLaneLabel = computed(() => (archiveTopicId.value ? laneLabelOf(String(archiveTopicId.value)) : ''))
+
+/** 就地改名后刷新名单（泳道名来自 A 档名单，不刷新会显示旧名）。 */
+async function handleLaneRenamed(): Promise<void> {
+  await load()
+}
+
+/** 归档后关闭弹窗并刷新名单。 */
+async function handleLaneArchived(): Promise<void> {
+  closeLaneArchive()
+  await load()
+}
 
 // ── 共享描述修复：摘除反馈（board-health-triage-advice seam C3 / tasks 3.4）──
 // 只有宿主**真实**摘除成功才回填；失败不谎称已摘除（工作面据此显示状态）。
@@ -345,6 +374,8 @@ watch(boardIdRef, () => {
       @select-board="selectBoard"
       @retry-boards="loadBoards"
       @select-lane="wiring.selectLaneFromStage"
+      @edit-lane="overlays.openLaneCorrection"
+      @archive-lane="overlays.openLaneArchive"
       @select-cell="wiring.selectCellFromStage"
       @select-date="wiring.selectDateFromStage"
       @select-day-header="wiring.selectDayHeader"
@@ -411,6 +442,28 @@ watch(boardIdRef, () => {
       @close="composeOpen = false"
     />
 
+    <!-- 泳道修正工作面（修正模式：两栏全屏画布；窄屏由壳层禁用入口） -->
+    <BoardComposeOverlay
+      v-if="correctionTopicId"
+      mode="correction"
+      :board-id="boardId"
+      :board-label="boardLabel"
+      :topic-id="Number(correctionTopicId)"
+      :lane-label="correctionLaneLabel"
+      @renamed="handleLaneRenamed"
+      @close="closeLaneCorrection"
+    />
+
+    <!-- 泳道归档（sm 档 + 二次确认） -->
+    <LaneArchiveDialog
+      v-if="archiveTopicId"
+      :model-value="archiveTopicId !== null"
+      :topic-id="archiveTopicId"
+      :lane-label="archiveLaneLabel"
+      @update:model-value="value => { if (!value) closeLaneArchive() }"
+      @archived="handleLaneArchived"
+    />
+
     <DailyReportGenerateDialog
       :visible="generateOpen"
       :boards="boards"
@@ -422,6 +475,7 @@ watch(boardIdRef, () => {
       v-model="topicManageOpen"
       :board-id="boardId"
       @changed="load()"
+      @edit-lane="topicId => openLaneCorrection(String(topicId))"
     />
 
     <WatchManagePanel

@@ -29,6 +29,10 @@ export function useConsoleShellOverlays(deps: ConsoleShellOverlaysDeps) {
   const composeOpen = ref(false)
   const topicManageOpen = ref(false)
   const watchOpen = ref(false)
+  /** 泳道修正工作面（修正模式）的目标泳道 id；null = 未打开。 */
+  const correctionTopicId = ref<string | null>(null)
+  /** 泳道归档弹窗的目标泳道 id；null = 未打开。 */
+  const archiveTopicId = ref<number | null>(null)
 
   // ── 站内原文阅读（复用既有 ArticlePreviewModal，输入框焦点回落） ───────────
   const {
@@ -77,6 +81,33 @@ export function useConsoleShellOverlays(deps: ConsoleShellOverlaysDeps) {
     topicManageOpen.value = true
   }
 
+  /**
+   * 进泳道修正工作面（矩阵行头「⋯」/ 泳道管理列表的「编辑」入口）。
+   * 窄屏禁用画布：只提示宽屏/横屏，不画残缺两栏（契约：窄屏 SHALL NOT 画残缺工作面）。
+   */
+  function openLaneCorrection(topicId: string): void {
+    if (deps.isNarrow.value) {
+      deps.notifyWarn('泳道修正需要宽屏或横屏')
+      return
+    }
+    correctionTopicId.value = topicId
+  }
+
+  function closeLaneCorrection(): void {
+    correctionTopicId.value = null
+  }
+
+  /** 进泳道归档弹窗（sm 档 + 二次确认）。 */
+  function openLaneArchive(topicId: string): void {
+    const id = Number(topicId)
+    if (!Number.isSafeInteger(id) || id <= 0) return
+    archiveTopicId.value = id
+  }
+
+  function closeLaneArchive(): void {
+    archiveTopicId.value = null
+  }
+
   function openWatchManage(): void {
     closeWorkface()
     watchOpen.value = true
@@ -99,6 +130,8 @@ export function useConsoleShellOverlays(deps: ConsoleShellOverlaysDeps) {
     composeOpen.value = false
     generateOpen.value = false
     archiveInitialDate.value = null
+    correctionTopicId.value = null
+    archiveTopicId.value = null
   }
 
   return {
@@ -114,6 +147,12 @@ export function useConsoleShellOverlays(deps: ConsoleShellOverlaysDeps) {
     composeOpen,
     topicManageOpen,
     watchOpen,
+    correctionTopicId,
+    archiveTopicId,
+    openLaneCorrection,
+    closeLaneCorrection,
+    openLaneArchive,
+    closeLaneArchive,
     showArticlePreview,
     selectedPreviewArticle,
     previewArticles,

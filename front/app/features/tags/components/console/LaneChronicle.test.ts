@@ -40,11 +40,17 @@ const LANE: ObservationLaneRow = {
 }
 
 function section(id: string, overrides: Partial<WindowSection> = {}): WindowSection {
+  const threadCount = 'threadCount' in overrides ? overrides.threadCount! : 1
+  const compositeCount = 'compositeCount' in overrides ? overrides.compositeCount! : 0
   return {
     sectionId: id,
     label: `桶${id}`,
-    threadCount: 'threadCount' in overrides ? overrides.threadCount! : 1,
-    fallbackClueCount: 'fallbackClueCount' in overrides ? overrides.fallbackClueCount! : null,
+    threadCount,
+    compositeCount,
+    // 桶线索数 = thread_count − composite_count（唯一公式）；threadCount 缺失 → 未知。
+    clueCount: 'clueCount' in overrides
+      ? overrides.clueCount!
+      : (threadCount === null ? null : Math.max(0, threadCount - compositeCount)),
     foldedCount: overrides.foldedCount ?? 0,
     eventTitles: overrides.eventTitles ?? ['聚合标题'],
   }
@@ -72,7 +78,7 @@ function threads(count: number, sectionId: string) {
   return Array.from({ length: count }, (_, i) => ({
     threadId: `t${i + 1}`, sectionId, title: i < 2 ? '同名线索标题' : `线索${i + 1}`,
     summary: i < 2 ? (i === 0 ? '第一条的独立摘要' : '同名但不同 ID 的摘要') : `第${i + 1}条摘要`,
-    confidence: 0.8, relatedArticleIds: i === 0 ? ['11', '12', '13'] : [], fitDistance: null, createdAt: '',
+    confidence: 0.8, relatedArticleIds: i === 0 ? ['11', '12', '13'] : [], fitDistance: null, scope: null, createdAt: '',
   }))
 }
 
@@ -89,7 +95,7 @@ const REPORT_1210_MISSING: LaneDayReportDetail = {
 }
 const REPORT_1209: LaneDayReportDetail = {
   reportId: '1209', boardId: '1974', periodDate: '2026-10-18',
-  sections: [{ sectionId: '504', clusterLabel: '桶504', bucketTitle: null, threads: [{ threadId: 'u1', sectionId: '504', title: '早期线索', summary: '早期摘要', confidence: 0.7, relatedArticleIds: [], fitDistance: null, createdAt: '' }] }],
+  sections: [{ sectionId: '504', clusterLabel: '桶504', bucketTitle: null, threads: [{ threadId: 'u1', sectionId: '504', title: '早期线索', summary: '早期摘要', confidence: 0.7, relatedArticleIds: [], fitDistance: null, scope: null, createdAt: '' }] }],
 }
 
 function mockHappyPath(): void {
@@ -148,11 +154,35 @@ describe('CH-2 — 阅读终态信号（R34）', () => {
   })
 })
 
+describe('当日工作面 — 综合稿标记（fix-lane-metric-provenance）', () => {
+  it('综合稿条目带可辨识标记；普通条目不带（且不暗示计入线索合计）', async () => {
+    const compositeThread = {
+      threadId: 'comp1', sectionId: '501', title: '综合稿线索', summary: '综合稿摘要',
+      confidence: 0.9, relatedArticleIds: [], fitDistance: null, scope: 'composite', createdAt: '',
+    }
+    api.loadReportDetail.mockResolvedValue({
+      success: true,
+      data: {
+        ...REPORT_1211,
+        sections: [{ ...REPORT_1211.sections[0]!, threads: [compositeThread, ...threads(2, '501')] }],
+      },
+    })
+    const loaded = mountChronicle()
+    await flushPromises()
+    const compositeRow = loaded.find('[data-testid="lane-chronicle-thread-comp1"]')
+    expect(compositeRow.find('[data-testid="lane-chronicle-composite-tag"]').exists()).toBe(true)
+    expect(compositeRow.find('[data-testid="lane-chronicle-composite-tag"]').text()).toBe('综合稿')
+    // 普通条目不带该标记
+    const normalRow = loaded.find('[data-testid="lane-chronicle-thread-t1"]')
+    expect(normalRow.find('[data-testid="lane-chronicle-composite-tag"]').exists()).toBe(false)
+  })
+})
+
 describe('CH-2 — 空摘要文案（N3）', () => {
   it('loaded 真实 thread.summary="" 展开显示「暂无摘要记录」；未取到报告不冒空态', async () => {
     const emptyThread = {
       threadId: 'empty1', sectionId: '501', title: '空摘要线索', summary: '',
-      confidence: 1, relatedArticleIds: [], fitDistance: null, createdAt: '',
+      confidence: 1, relatedArticleIds: [], fitDistance: null, scope: null, createdAt: '',
     }
     api.loadReportDetail.mockResolvedValue({
       success: true,
@@ -330,7 +360,7 @@ describe('CH-8/9/10 — 保留动作、caption 口径、只读', () => {
   it('R26：未知不能冒完整总量——全未知标 ?，部分未知标 ≥已知部分', async () => {
     const allUnknown: LaneDayResolution = {
       kind: 'content', source: 'tier',
-      day: { date: '2026-10-22', sections: [section('501', { threadCount: null, fallbackClueCount: null, eventTitles: [] })] },
+      day: { date: '2026-10-22', sections: [section('501', { threadCount: null, eventTitles: [] })] },
     }
     const wrapper = mountChronicle({ resolveDay: () => allUnknown })
     await flushPromises()
@@ -340,7 +370,7 @@ describe('CH-8/9/10 — 保留动作、caption 口径、只读', () => {
 
     const partialUnknown: LaneDayResolution = {
       kind: 'content', source: 'tier',
-      day: { date: '2026-10-22', sections: [section('501', { threadCount: 3 }), section('502', { threadCount: null, fallbackClueCount: null, eventTitles: [] })] },
+      day: { date: '2026-10-22', sections: [section('501', { threadCount: 3 }), section('502', { threadCount: null, eventTitles: [] })] },
     }
     const wrapper2 = mountChronicle({ resolveDay: () => partialUnknown })
     await flushPromises()
@@ -414,7 +444,7 @@ describe('状态分层 — error/stale/gap/unavailable', () => {
       success: true,
       data: {
         reportId: '1210', boardId: '1974', periodDate: '2026-10-20',
-        sections: [{ sectionId: '503', clusterLabel: '桶503', bucketTitle: null, threads: [{ threadId: 'd1', sectionId: '503', title: '降级日的命中线索', summary: '命中摘要', confidence: 0.7, relatedArticleIds: [], fitDistance: null, createdAt: '' }] }],
+        sections: [{ sectionId: '503', clusterLabel: '桶503', bucketTitle: null, threads: [{ threadId: 'd1', sectionId: '503', title: '降级日的命中线索', summary: '命中摘要', confidence: 0.7, relatedArticleIds: [], fitDistance: null, scope: null, createdAt: '' }] }],
       } as LaneDayReportDetail,
     }))
     const wrapper = mountChronicle({ selectedDate: '2026-10-20' })

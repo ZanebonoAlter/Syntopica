@@ -38,6 +38,12 @@ const {
 	parseUiImpactDeclaration,
 	validatePrototypePath,
 	missingArchiveUiEvidence,
+	UI_STAGES,
+	UI_STAGE_WARN_REASON_CODES,
+	parseUiStage,
+	changeNameFromPath,
+	relInsideChange,
+	checkStageScope,
 } = require('./.uig.cjs');
 
 const checks = [];
@@ -86,6 +92,10 @@ const UI_MAJOR_FULL = (approval, proto) => [
 	`<!-- ui-impact: major -->`,
 	`<!-- ui-approval: ${approval} -->`,
 	`<!-- ui-prototype: ${proto} -->`,
+	// §F 引入 stage 记账后，本 fixture 显式声明 interaction 阶段：
+	// 让 §A–§E 的断言只测审批/派发通道，不被 stage warn 行污染
+	// （stage 通道自带 §F 专用用例，含 l0/skeleton 越域与 legacy 缺失）。
+	`<!-- ui-stage: interaction -->`,
 	'',
 	MAJOR_SECTIONS,
 	'内容（Acceptance 节含实现与原型差异说明）',
@@ -489,11 +499,193 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 			.filter((n) => !profileTools(n).some((t) => t === 'edit' || t === 'write'));
 		const notWhitelisted = readOnlyProfiles.filter((n) => !UI_DISPATCH_ALLOWED_AGENTS.includes(n));
 		check(`E6 反向漂移防护：.pi/agents/ 中无写工具的档位（${readOnlyProfiles.join('、') || '无'}）都在放行白名单内${notWhitelisted.length ? `——待同步档名：${notWhitelisted.join('、')}` : ''}`, notWhitelisted.length === 0);
+	// §G stage 记账集成（add-ui-stage-accounting D1/D4）：按路径触发 + 只 warn 不 block
+	{
+		const UI_STAGE_DOC = (stage) =>
+			[
+				'<!-- ui-impact: major -->',
+				'<!-- ui-approval: pending -->',
+				'<!-- ui-prototype: ui-prototype/index.html -->',
+				`<!-- ui-stage: ${stage} -->`,
+				'',
+				MAJOR_SECTIONS,
+			].join('\n');
+
+		// G1 requirements 档（无 implementation）写 ui-prototype → 按路径记账且不阻断
+		const tG = mktmp();
+		tmps.push(tG);
+		writeChange(tG, 'stage-chg', {
+			'.openspec.yaml': SCHEMA_UI,
+			'proposal.md': PROP_MAJOR,
+			'ui-design.md': UI_STAGE_DOC('skeleton'),
+			'ui-prototype/skeleton/a.html': '<html>s</html>',
+		});
+		seedModeSet(tG, 'sG', 'requirements', 'stage-chg');
+		// 同一模块实例代表真实会话内的扩展进程（loadFresh 每次会重置内存去重集合）
+		const extG = loadFresh('./.uige.cjs');
+		const g1 = await runTool(extG, tG, 'sG', 'write', {
+			path: 'openspec/changes/stage-chg/ui-prototype/index.html',
+			content: 'x',
+		});
+		const gRows = policyRows(tG, 'ui-design-gate');
+		check(
+			'G1 requirements 档写原型越域（stage=skeleton）→ ui-stage-scope-out warn 且不阻断',
+			g1.result === undefined &&
+				gRows.length === 1 &&
+				gRows[0].payload.action === 'warn' &&
+				gRows[0].payload.reasonCode === 'ui-stage-scope-out' &&
+				gRows[0].change === 'stage-chg',
+		);
+
+		const g2 = await runTool(extG, tG, 'sG', 'write', {
+			path: 'openspec/changes/stage-chg/ui-prototype/skeleton/b.html',
+			content: 'x',
+		});
+		check('G2 skeleton 合规写入 → 零新增记账', g2.result === undefined && policyRows(tG, 'ui-design-gate').length === 1);
+
+		const g3 = await runTool(extG, tG, 'sG', 'write', {
+			path: 'openspec/changes/stage-chg/ui-prototype/x.html',
+			content: 'x',
+		});
+		check('G3 同 session × change × 码 去重 → 仍 1 条', g3.result === undefined && policyRows(tG, 'ui-design-gate').length === 1);
+
+		// G4 legacy：无 marker → ui-stage-missing，不要求补标记
+		const tL = mktmp();
+		tmps.push(tL);
+		writeChange(tL, 'legacy-stage', {
+			'.openspec.yaml': SCHEMA_UI,
+			'proposal.md': PROP_MAJOR,
+			'ui-design.md': UI_MAJOR_FULL('pending', 'ui-prototype/index.html').replace(/<!-- ui-stage: [a-z]+ -->\n/, ''),
+			'ui-prototype/index.html': '<html>p</html>',
+		});
+		seedModeSet(tL, 'sL', 'requirements', 'legacy-stage');
+		const g4 = await runTool(loadFresh('./.uige.cjs'), tL, 'sL', 'write', {
+			path: 'openspec/changes/legacy-stage/ui-prototype/i.html',
+			content: 'x',
+		});
+		const lRows = policyRows(tL, 'ui-design-gate');
+		check(
+			'G4 无 ui-stage marker → ui-stage-missing warn 且不阻断',
+			g4.result === undefined && lRows.length === 1 && lRows[0].payload.reasonCode === 'ui-stage-missing',
+		);
+
+		// G5 非法取值 → ui-stage-invalid
+		const tI = mktmp();
+		tmps.push(tI);
+		writeChange(tI, 'bad-stage', {
+			'.openspec.yaml': SCHEMA_UI,
+			'proposal.md': PROP_MAJOR,
+			'ui-design.md': UI_STAGE_DOC('design'),
+			'ui-prototype/index.html': '<html>p</html>',
+		});
+		seedModeSet(tI, 'sI', 'requirements', 'bad-stage');
+		const g5 = await runTool(loadFresh('./.uige.cjs'), tI, 'sI', 'write', {
+			path: 'openspec/changes/bad-stage/ui-prototype/i.html',
+			content: 'x',
+		});
+		const iRows = policyRows(tI, 'ui-design-gate');
+		check(
+			'G5 非法 stage 取值 → ui-stage-invalid warn',
+			g5.result === undefined && iRows.length === 1 && iRows[0].payload.reasonCode === 'ui-stage-invalid',
+		);
+
+		// G6 approved 阶段：全放行且零 stage 记账
+		const tA = mktmp();
+		tmps.push(tA);
+		writeChange(tA, 'ok-stage', {
+			'.openspec.yaml': SCHEMA_UI,
+			'proposal.md': PROP_MAJOR,
+			'ui-design.md': UI_STAGE_DOC('approved'),
+			'ui-prototype/index.html': '<html>p</html>',
+		});
+		seedModeSet(tA, 'sA', 'requirements', 'ok-stage');
+		const g6 = await runTool(loadFresh('./.uige.cjs'), tA, 'sA', 'write', {
+			path: 'openspec/changes/ok-stage/ui-prototype/i.html',
+			content: 'x',
+		});
+		check('G6 approved 阶段 → 零 stage 记账', g6.result === undefined && policyRows(tA, 'ui-design-gate').length === 0);
+
+		// G7 防假阳性①：写 ui-design.md 本身不记账（补 marker 的写入读到的是旧内容）
+		const g7 = await runTool(extG, tG, 'sG', 'write', {
+			path: 'openspec/changes/stage-chg/ui-design.md',
+			content: '<!-- ui-stage: interaction -->',
+		});
+		check('G7 写 ui-design.md（补 marker）→ 零假阳性记账', g7.result === undefined && policyRows(tG, 'ui-design-gate').length === 1);
+
+		// G8 防假阳性②：路径纯正则能解析、但 change 目录不存在 → 不记账
+		const tP = mktmp();
+		tmps.push(tP);
+		const g8 = await runTool(extG, tP, 'sG', 'write', {
+			path: '/nonexistent-root/openspec/changes/ghost/ui-prototype/a.html',
+			content: 'x',
+		});
+		check('G8 仓库外路径（ghost change 不存在）→ 不记账', g8.result === undefined && policyRows(tP, 'ui-design-gate').length === 0);
+
+		// G9 去重跨 session（子线程共用模块实例）：换 session 不新增
+		seedModeSet(tG, 'sG2', 'requirements', 'stage-chg');
+		const g9 = await runTool(extG, tG, 'sG2', 'write', {
+			path: 'openspec/changes/stage-chg/ui-prototype/y.html',
+			content: 'x',
+		});
+		check('G9 换 session 同 change 同码 → 仍 1 条（去重键不含 sessionId）', g9.result === undefined && policyRows(tG, 'ui-design-gate').length === 1);
+	}
+
 	} catch (e) {
 		console.error('FAIL', e);
 		check('smoke 执行不抛异常', false);
 	} finally {
 		for (const t of tmps) fs.rmSync(t, { recursive: true, force: true });
+	}
+
+	// §F ui-stage 记账（add-ui-stage-accounting D1–D4）：纯函数三件套 + warn 码不相交
+	{
+		check('F1 无 ui-stage marker → missing', parseUiStage('<!-- ui-impact: major -->').kind === 'missing');
+		check('F1 非法入参（null/空串）→ missing', parseUiStage(null).kind === 'missing' && parseUiStage('').kind === 'missing');
+		check(
+			'F1 五档取值均合法',
+			UI_STAGES.every((s) => {
+				const r = parseUiStage(`<!-- ui-stage: ${s} -->`);
+				return r.kind === 'ok' && r.stage === s;
+			}),
+		);
+		check('F1 词表外取值 → invalid', parseUiStage('<!-- ui-stage: design -->').kind === 'invalid');
+		check('F1 重复 marker → invalid（歧义）', parseUiStage('<!-- ui-stage: l0 -->\n<!-- ui-stage: data -->').kind === 'invalid');
+		check('F1 marker 内空白容忍', (() => { const r = parseUiStage('前\n<!--  ui-stage :  skeleton  -->\n后'); return r.kind === 'ok' && r.stage === 'skeleton'; })());
+
+		check('F2 posix 路径解析 change 名', changeNameFromPath('openspec/changes/x/ui-prototype/index.html') === 'x');
+		check('F2 windows 分隔符同等解析', changeNameFromPath('openspec\\changes\\y\\ui-design.md') === 'y');
+		check('F2 绝对路径解析', changeNameFromPath('/home/u/repo/openspec/changes/z/tasks.md') === 'z');
+		check('F2 archive 目录 → null（不记账）', changeNameFromPath('openspec/changes/archive/2026-01-01-x/tasks.md') === null);
+		check('F2 非 change 路径 → null', changeNameFromPath('openspec/specs/foo/spec.md') === null && changeNameFromPath('front/app/x.vue') === null);
+
+		check('F3 change 内相对路径', relInsideChange('openspec/changes/x/ui-prototype/a.html', 'x') === 'ui-prototype/a.html');
+		check('F3 绝对路径下的相对段', relInsideChange('/r/openspec/changes/x/ui-design.md', 'x') === 'ui-design.md');
+		check('F3 属别的 change → null', relInsideChange('openspec/changes/y/a.md', 'x') === null);
+
+		const scopeCases = [
+			['l0', 'ui-design.md', true],
+			['l0', 'tasks.md', true],
+			['l0', 'human-feedback.md', true],
+			['l0', 'ui-prototype/index.html', false],
+			['l0', 'ui-prototype/skeleton/a.html', false],
+			['skeleton', 'tasks.md', true],
+			['skeleton', 'ui-prototype/skeleton/a.html', true],
+			['skeleton', 'ui-prototype/index.html', false],
+			['skeleton', 'ui-prototype/fixture.json', false],
+			['interaction', 'ui-prototype/index.html', true],
+			['interaction', 'ui-prototype/fixture.json', true],
+			['data', 'ui-prototype/fixture.json', true],
+			['approved', 'ui-prototype/index.html', true],
+		];
+		const scopeBad = scopeCases
+			.filter(([s, p, ok]) => (checkStageScope(s, p) === null) !== ok)
+			.map(([s, p]) => `${s}:${p}`);
+		check(`F4 stage 写域表驱动（${scopeCases.length} 组）${scopeBad.length ? `——不符：${scopeBad.join('、')}` : ''}`, scopeBad.length === 0);
+
+		const overlap = UI_STAGE_WARN_REASON_CODES.filter((c) => UI_REASON_CODES.includes(c));
+		check(`F5 三个 stage warn 码不与阻断码白名单相交${overlap.length ? `——交叠：${overlap.join('、')}` : ''}`, overlap.length === 0);
+		check('F5 阻断码仍是九个（本 change 不扩容阻断白名单）', UI_REASON_CODES.length === 9);
+		check('F5 warn 码恰为三个', UI_STAGE_WARN_REASON_CODES.length === 3);
 	}
 
 	let fail = 0;

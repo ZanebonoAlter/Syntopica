@@ -35,6 +35,14 @@ export interface ComposeCandidate {
   persistentTopicId?: string
   topicMatchConfidence?: string
   persistentTopic?: CandidateTopicBrief
+  /**
+   * 该 section 的非综合稿（非 composite）线索数（unify-lane-workbench D2）。
+   *
+   * - 旧后端缺字段 / null / 非有限数 → null（未知，不冒充 0）；
+   * - 0 是合法已知值，保留不吞；
+   * - 只由 `clue_count` 归一化产生，不用 section 数 / thread 总数替代。
+   */
+  clueCount?: number | null
 }
 
 /** 窗口内两端可见的原关系（identity / similarity 都保留，画布只画这批边）。 */
@@ -83,18 +91,52 @@ export interface ComposeCandidatesData {
   candidateChains: ComposeCandidateChain[]
   matchThreshold: number
   window: ComposeWindow | null
+  /**
+   * 「更早成员」：该话题里报告期早于窗口首日的全部成员（升序）。
+   *
+   * null / 缺省 = 后端未提供该字段（旧后端 / 编排画布不传参数）→ 计数回退只显示
+   * 窗口数；数组（可为空）= 后端给了全量口径。
+   */
+  earlyMembers?: ComposeEarlyMember[] | null
+}
+
+/** 「更早成员」行（与候选 section 同形；更早成员不上画布，但向量仍随行下发）。 */
+export interface ComposeEarlyMember {
+  /**
+   * 内容向量（缺省 = 后端未给/解析失败）：修正工作面的关联推荐质心需要窗口外
+   * 成员参与，否则窗口内成员为 0 时质心为空、候选区全空。
+   */
+  embedding?: number[]
+  id: string
+  reportId?: string
+  periodDate: string
+  clusterLabel: string
+  persistentTopicId?: string
+  /** 锚定距离快照；接近度 = 1 − 该值。缺失 = 无距离口径（不伪造）。 */
+  topicMatchDistance?: number
 }
 
 /**
  * 编排态取数窗口参数。
  *
- * - `days`：快捷档（7/14/30/90），以最新已完成日报为末日、含首末报告日。
+ * - `days`：快捷档（7/14/30/365，OQ-2 后上限 365），以最新已完成日报为末日、含首末报告日。
  * - `from`/`to`：自选起止（闭区间），给出时 `days` 被忽略；必须成对给出。
+ * - `allMembersTopicId`：泳道修正模式的全量成员口径（独立参数，不影响窗口）。
+ * - `omitEmbeddings`：轻量取数（unify-lane-workbench 2.4）——曲线只需要
+ *   `period_date + persistent_topic_id + clue_count`，跳过每条 10,244 B 的向量；
+ *   该形态下 `sections[].embedding` 缺省，归一为 `[]`（无向量，不参与质心）。
  */
 export interface ComposeCandidatesQuery {
   days?: number
   from?: string
   to?: string
+  /**
+   * 泳道修正模式：取该话题的**全量成员**（窗口外的成员一并返回）。
+   * 不给 = 编排画布口径（行为不变）。
+   */
+  allMembersTopicId?: number
+  /** 曲线路径专用（不画点就不拉向量）；不传 = 既有带向量行为不变。 */
+  omitEmbeddings?: boolean
 }
 
 /** 手动建泳道保存后返回的新话题。 */
@@ -123,10 +165,13 @@ interface ComposeCandidatePayload {
   report_id: number
   period_date: string
   cluster_label: string
-  embedding: number[]
+  /** 轻量取数（omit_embeddings=1）时缺省 → 归一为 []（无向量，不参与质心）。 */
+  embedding?: number[]
   persistent_topic_id?: number
   topic_match_confidence?: string
   persistent_topic?: { id: number, label: string, status: string, color: string }
+  /** 后端补字段（unify-lane-workbench）；旧后端缺省 → 归一化为 null（未知）。 */
+  clue_count?: number | null
 }
 
 interface ComposeRelationPayload {
@@ -155,12 +200,25 @@ interface ComposeWindowPayload {
   latest_completed_date: string | null
 }
 
+interface ComposeEarlyMemberPayload {
+  id: number
+  report_id?: number
+  period_date: string
+  cluster_label: string
+  /** 内容向量：缺省（旧后端 / 无向量成员）→ 归一为 undefined，不塞 []。 */
+  embedding?: number[]
+  persistent_topic_id?: number
+  topic_match_distance?: number | null
+}
+
 interface ComposeCandidatesPayload {
   sections: ComposeCandidatePayload[]
   relations?: ComposeRelationPayload[]
   candidate_chains?: ComposeCandidateChainPayload[]
   match_threshold: number
   window?: ComposeWindowPayload
+  /** 缺失 = 后端未提供全量成员口径（与「空数组」不同）。 */
+  early_members?: ComposeEarlyMemberPayload[]
 }
 
 interface ManualTopicPayload {
@@ -187,7 +245,9 @@ function normalizeCandidate(p: ComposeCandidatePayload): ComposeCandidate {
     reportId: String(p.report_id),
     periodDate: p.period_date,
     clusterLabel: p.cluster_label,
-    embedding: p.embedding,
+    embedding: p.embedding ?? [],
+    // 0 保留；缺字段 / null / 非有限数（NaN、Infinity）/ 负数（非非负整数）→ null 未知。
+    clueCount: typeof p.clue_count === 'number' && Number.isFinite(p.clue_count) && p.clue_count >= 0 ? p.clue_count : null,
   }
   if (p.persistent_topic_id != null) out.persistentTopicId = String(p.persistent_topic_id)
   if (p.topic_match_confidence) out.topicMatchConfidence = p.topic_match_confidence
@@ -227,6 +287,22 @@ function normalizeWindow(p?: ComposeWindowPayload): ComposeWindow | null {
   }
 }
 
+function normalizeEarlyMember(p: ComposeEarlyMemberPayload): ComposeEarlyMember {
+  const out: ComposeEarlyMember = {
+    id: String(p.id),
+    periodDate: p.period_date,
+    clusterLabel: p.cluster_label,
+  }
+  if (p.report_id != null) out.reportId = String(p.report_id)
+  if (p.persistent_topic_id != null) out.persistentTopicId = String(p.persistent_topic_id)
+  if (typeof p.topic_match_distance === 'number' && Number.isFinite(p.topic_match_distance)) {
+    out.topicMatchDistance = p.topic_match_distance
+  }
+  // 与 sections 侧同一个向量透传口径：有值才拷贝（空数组不是向量，归一为 undefined）。
+  if (p.embedding?.length) out.embedding = p.embedding
+  return out
+}
+
 function normalizeManualLane(p: ManualLanePayload): ManualLaneResult {
   return {
     topic: {
@@ -247,8 +323,10 @@ export function usePersistentTopicsApi() {
    *
    * `query` 兼容两种形态：
    * - 数字 = 旧的 `?days=N` 调用（`useInlineCompose` 仍在用，语义不变）；
-   * - 对象 = 新编排态窗口参数 `{days?, from?, to?}`；`from`/`to` 必须成对给出，
-   *   给出时 `days` 被忽略；都不给按 `days=30`。
+   * - 对象 = 新编排态窗口参数 `{days?, from?, to?, allMembersTopicId?}`；
+   *   `from`/`to` 必须成对给出，给出时 `days` 被忽略；都不给按 `days=30`；
+   *   `allMembersTopicId` 走独立的 `all_members_topic_id` 参数（泳道修正模式
+   *   的全量成员口径；不给 = 编排画布行为不变）。
    *
    * 归一化在本层完成：id 一律字符串化、字段一律 camelCase，`relations` /
    * `candidate_chains` / `window` 缺省时降级为空（后端未升级也不炸）。
@@ -260,13 +338,21 @@ export function usePersistentTopicsApi() {
     const params = new URLSearchParams()
     if (typeof query === 'number') {
       params.set('days', String(query))
-    } else if (query.from && query.to) {
-      params.set('from', query.from)
-      params.set('to', query.to)
-    } else if (query.days != null) {
-      params.set('days', String(query.days))
     } else {
-      params.set('days', String(DEFAULT_COMPOSE_DAYS))
+      if (query.from && query.to) {
+        params.set('from', query.from)
+        params.set('to', query.to)
+      } else if (query.days != null) {
+        params.set('days', String(query.days))
+      } else {
+        params.set('days', String(DEFAULT_COMPOSE_DAYS))
+      }
+      if (query.allMembersTopicId != null) {
+        params.set('all_members_topic_id', String(query.allMembersTopicId))
+      }
+      if (query.omitEmbeddings) {
+        params.set('omit_embeddings', '1')
+      }
     }
     const res = await apiClient.get<ComposeCandidatesPayload>(
       `/semantic-boards/${boardId}/persistent-topics/compose-candidates?${params.toString()}`,
@@ -278,6 +364,8 @@ export function usePersistentTopicsApi() {
       candidateChains: (res.data.candidate_chains ?? []).map(normalizeChain),
       matchThreshold: typeof res.data.match_threshold === 'number' ? res.data.match_threshold : DEFAULT_MATCH_THRESHOLD,
       window: normalizeWindow(res.data.window),
+      // null = 后端没给这个字段（全量口径不可得 → 计数回退只显示窗口数）。
+      earlyMembers: res.data.early_members ? res.data.early_members.map(normalizeEarlyMember) : null,
     }
     return mapApiResponse(res, data)
   }

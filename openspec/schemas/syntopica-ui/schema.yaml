@@ -100,7 +100,7 @@ artifacts:
         report.md 建账，见 ui-verification-trace-gate）。
       - approval=`not-required`；prototype 可为 `none`（不强制可视原型）。
 
-      **major（完整八节设计 + 可丢弃原型）**
+      **major（八节设计 + 三节结构化声明 + 可丢弃原型）**
       - 必填八节（与模板同序）：User Journey / Information Architecture /
         Interaction Contract / State Matrix / Layout Contract /
         Component Reuse / Prototype / Acceptance。
@@ -115,16 +115,27 @@ artifacts:
         MUST 写理由与目标视口。
       - Component Reuse：映射到既有基础组件（AppPageShell / AppDialog /
         AppButton / AppInput 等）；需要新组件时列明。
+      - 三节结构化声明（**用 `##` 标题**，与上述八节平级，不替代任何一节）：
+        `## Interaction Decisions`（决策台账：ID / 决策 / 模式 / forbidden /
+        状态，模式 MUST 取自 `docs/reference/standard/frontend/interaction.md` 词表，pinned
+        不可被实现替换）、`## Data Provenance`（每项用户可见数据一行：
+        api <path> / 表.字段 / 派生 / none，取 none 需 needs-approval）、
+        `## 明确不做`（每条能读成「不出现在本界面里的具体东西」，禁「暂不支持」）。
       - Prototype：在 change 目录 `ui-prototype/` 产出静态可丢弃原型
         （独立 HTML/静态资源，不连接真实 API、不修改产品代码、引用布局
         token 与现有主题方向）；prototype marker 指向 change 根内相对
-        路径（如 `ui-prototype/index.html`）。
+        路径（如 `ui-prototype/index.html`）。**按主模式分流**：主要模式为
+        `canvas` 的界面 MUST 用 `states/` 三态图（空/编辑中/已确认）+
+        `interaction-table.md`，marker 指向 `ui-prototype/states/` 首张图，
+        SHALL NOT 用可点 HTML 模拟；其余模式用可点 HTML。
       - 审批流：major 初始 approval=`pending`。agent 用浏览器向用户展示
-        原型，只有用户在对话中明确确认后才可改为 `approved`；任何改变
+        原型（canvas 类展示逐张状态图 + 操作表走查，无浏览器可交互形态），
+        只有用户在对话中明确确认后才可改为 `approved`；任何改变
         信息架构、主流程或布局模式的修订 MUST 重置 `pending`（颜色微调/
         文案修正记录差异即可，不重审）。
       - Acceptance：实现后补 agent-browser 主交互链路断言 + 1440×900 与
-        1920×1080 两档视觉检查证据 + 与批准原型的差异说明，以
+        1920×1080 两档视觉检查证据 + 与批准原型的差异说明（canvas 类的比对
+        基准为三张状态图逐态对账 + `interaction-table.md` 逐行对账），以
         ui-verification/report.md 建账（格式契约见 ui-verification-trace-gate）；
         重大差异需重新审批。
 

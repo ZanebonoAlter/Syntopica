@@ -21,7 +21,8 @@ const ANCHOR = '2026-10-24'
 const AXIS = buildDayAxis(ANCHOR, 14)
 
 function sectionRaw(id: number): Record<string, unknown> {
-  return { section_id: id, label: `桶${id}`, events: [`事件${id}`] }
+  // composite_count 默认 0（无综合稿）：桶线索数 = thread_count − composite_count = 1。
+  return { section_id: id, label: `桶${id}`, events: [`事件${id}`], thread_count: 1, composite_count: 0 }
 }
 
 function laneRaw(topicId: number, label: string, timeline: { date: string, sections: Record<string, unknown>[] }[]): Record<string, unknown> {
@@ -245,7 +246,8 @@ describe('useConsoleSelection — 池曲线 series（顶部时间视窗背景曲
         sectionId: '1001',
         label: '历史桶',
         threadCount: 6,
-        fallbackClueCount: 6,
+        compositeCount: 0,
+        clueCount: 6,
         foldedCount: 0,
         eventTitles: ['历史事件'],
       }],

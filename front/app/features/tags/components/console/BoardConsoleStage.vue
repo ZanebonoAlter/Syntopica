@@ -21,6 +21,10 @@ import BoardArchiveView from './BoardArchiveView.vue'
 
 const emit = defineEmits<{
   selectLane: [topicId: string]
+  /** 「编辑泳道」→ 泳道修正工作面（lane-manual-correction-loop 6.3；画布接线由壳层做）。 */
+  editLane: [topicId: string]
+  /** 「归档泳道」→ 归档弹窗（sm 档 + 二次确认）。 */
+  archiveLane: [topicId: string]
   selectCell: [payload: { topicId: string, date: string }]
   selectDate: [date: string]
   toggleDormant: []
@@ -208,6 +212,8 @@ function scrollToChronicle(): void {
         :others-open="othersOpen"
         :selected-other-section-id="selectedOtherSectionId"
         @select-lane="id => emit('selectLane', id)"
+        @edit-lane="id => emit('editLane', id)"
+        @archive-lane="id => emit('archiveLane', id)"
         @select-date="payload => emit('selectCell', payload)"
         @select-day-header="date => emit('selectDayHeader', date)"
         @select-observed-day="selectObservedDay"

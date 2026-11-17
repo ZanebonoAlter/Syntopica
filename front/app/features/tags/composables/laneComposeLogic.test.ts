@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   boxesOverlap,
+  candidatePoolDayTotals,
   candidateSelection,
   centroidOf,
   centroidRecommendations,
@@ -8,14 +9,17 @@ import {
   cosineFor,
   estimateTextWidth,
   laneSelectionState,
+  laneSeriesFromDynamics,
   isDragBeyond,
   panScroll,
   placeLabels,
   placeRelatedTitles,
   pointAppearance,
+  proximityOf,
   relatedNodeIds,
   scaledPointRadius,
   truncateText,
+  validateWorkbenchRange,
   zoomAnchorScroll,
   zoomStep,
   LANE_ZOOM_DEFAULT,
@@ -379,5 +383,165 @@ describe('laneComposeLogic · 画布缩放（档位 / 步进 / 锚点 / 半径�
     expect(scaledPointRadius(3, 2)).toBe(3)
     // 只读参照的下限是 2.5px
     expect(scaledPointRadius(2.5, 0.5, 2.5)).toBeCloseTo(5, 10)
+  })
+})
+
+describe('laneComposeLogic · unify-lane-workbench 点形统一（B1 / E8 / E13）', () => {
+  it('memberAppearanceIgnoresDistance：成员半径固定，不随距离/接近度变', () => {
+    const near = pointAppearance(0.01, 0.3, true, false, 5, 30)
+    const far = pointAppearance(0.29, 0.3, true, false, 5, 30)
+    const noDistance = pointAppearance(null, 0.3, true, false, 5, 30)
+    expect(near.radius).toBe(far.radius)
+    expect(far.radius).toBe(noDistance.radius)
+    // 成员实心（实心＋✓表达选中）
+    expect(near.solid).toBe(true)
+  })
+
+  it('memberRadius 覆盖：修正画布的固定成员尺寸仍不读接近度', () => {
+    const a = pointAppearance(0.01, 0.3, true, false, 3, 120, { memberRadius: 5.5 })
+    const b = pointAppearance(0.29, 0.3, true, false, 3, 120, { memberRadius: 5.5 })
+    expect(a.radius).toBe(5.5)
+    expect(b.radius).toBe(5.5)
+  })
+
+  it('候选半径随接近度单调，且仍小于成员半径；缩放下限保留', () => {
+    const near = pointAppearance(0.02, 0.3, false, false, 5, 30)
+    const far = pointAppearance(0.28, 0.3, false, false, 5, 30)
+    expect(near.radius).toBeGreaterThan(far.radius)
+    expect(far.radius).toBeGreaterThanOrEqual(3)
+    const member = pointAppearance(0.02, 0.3, true, false, 5, 30)
+    expect(member.radius).toBeGreaterThan(near.radius)
+    // 渲染半径下限：缩小时逻辑半径补偿（E13）
+    expect(scaledPointRadius(far.radius, 0.5) * 0.5).toBeGreaterThanOrEqual(3)
+  })
+
+  it('independentNodeFlags：移出/首义/焦点/相关/弱化是正交标志，不相互顶掉', () => {
+    const app = pointAppearance(null, 0.3, true, false, 5, 30, { removed: true, anchor: true, focus: true, related: false, dimmed: false })
+    expect(app.removed).toBe(true)
+    expect(app.anchor).toBe(true)
+    expect(app.focus).toBe(true)
+    expect(app.related).toBe(false)
+    expect(app.dimmed).toBe(false)
+    // 只读更弱更小：半径下限 2.5、无接近度
+    const readonlyApp = pointAppearance(0.1, 0.3, false, true, 5, 30, { dimmed: true })
+    expect(readonlyApp.radius).toBeGreaterThanOrEqual(2.5)
+    expect(readonlyApp.radius).toBeLessThan(pointAppearance(0.1, 0.3, false, false, 5, 30).radius)
+    expect(readonlyApp.proximity).toBeNull()
+    expect(readonlyApp.dimmed).toBe(true)
+    expect(readonlyApp.solid).toBe(false)
+  })
+
+  it('E8：distance=0 接近度 1；阈值含等号；阈值+ε 不进推荐；null 不显示', () => {
+    expect(pointAppearance(0, 0.3, false, false, 5, 30).proximity).toBe(1)
+    expect(pointAppearance(0.3, 0.3, false, false, 5, 30).proximity).not.toBeNull()
+    expect(pointAppearance(0.3 + 1e-6, 0.3, false, false, 5, 30).proximity).toBeNull()
+    expect(pointAppearance(null, 0.3, false, false, 5, 30).proximity).toBeNull()
+  })
+})
+
+describe('laneComposeLogic · relatedNodeIds 推荐并集（B2 / B3）', () => {
+  const relations = [
+    { fromId: 'A', toId: 'D' },
+    { fromId: 'D', toId: 'E' },
+    { fromId: 'A', toId: 'A2' },
+  ]
+
+  it('focusedRelatedUnionIsOneHop：一跳 ∪ 推荐，去重、排除种子、不传递到两跳', () => {
+    const related = relatedNodeIds(relations, new Set(['A']), ['F', 'F', 'A', 'E'])
+    expect([...related].sort()).toEqual(['A2', 'D', 'E', 'F'])
+    // E 只因推荐进入（它同时是两跳节点——并集口径下允许；但无推荐时不进入：
+    expect(relatedNodeIds(relations, new Set(['A'])).has('E')).toBe(false)
+  })
+
+  it('clearFocusRestoresDefault：无焦点（空种子）时只剩推荐集；空推荐不造高亮', () => {
+    expect([...relatedNodeIds(relations, new Set(), ['F'])]).toEqual(['F'])
+    expect(relatedNodeIds(relations, new Set(['A'])).size).toBe(2)
+    expect(relatedNodeIds(relations, new Set(), []).size).toBe(0)
+  })
+
+  it('不改所选：并集只读，不碰种子集合', () => {
+    const seeds = new Set(['A'])
+    relatedNodeIds(relations, seeds, ['F'])
+    expect([...seeds]).toEqual(['A'])
+  })
+})
+
+describe('laneComposeLogic · 接近度换算（B4）', () => {
+  it('距离 0 / 0.2 / null → 接近度 1 / 0.8 / null；0 保留', () => {
+    expect(proximityOf(0)).toBe(1)
+    expect(proximityOf(0.2)).toBeCloseTo(0.8, 12)
+    expect(proximityOf(null)).toBeNull()
+    expect(proximityOf(undefined)).toBeNull()
+    expect(proximityOf(Number.NaN)).toBeNull()
+    expect(proximityOf(1)).toBe(0)
+  })
+})
+
+describe('laneComposeLogic · 工作面曲线纯函数（B7 / B8、E1 / E2 / E5 / E6 / E7 / E15）', () => {
+  it('laneSeriesFromDynamics：只取目标泳道，缺泳道为 null 不造全 0（S3.2 / E2）', () => {
+    const lanes = [
+      { topicId: '7', timeline: [{ date: '2026-11-01', clueCount: 3 }, { date: '2026-11-02' }] },
+      { topicId: '8', timeline: [{ date: '2026-11-01', clueCount: 99 }] },
+    ]
+    const series = laneSeriesFromDynamics(lanes, '7')!
+    expect(series).toEqual([
+      { date: '2026-11-01', value: 3 },
+      { date: '2026-11-02', value: null },
+    ])
+    // 其它泳道增减不影响目标曲线（B7 编辑侧）
+    const grown = laneSeriesFromDynamics([...lanes, { topicId: '9', timeline: [{ date: '2026-11-01', clueCount: 50 }] }], '7')!
+    expect(grown).toEqual(series)
+    expect(laneSeriesFromDynamics(lanes, '404')).toBeNull()
+  })
+
+  it('candidatePoolDayTotals：排 active、含无归属与 candidate、同日求和、ID 去重（B7 / E15）', () => {
+    const sections = [
+      { id: '1', periodDate: '2026-11-01T00:00:00Z', clueCount: 5 },
+      { id: '2', periodDate: '2026-11-01', clueCount: 3, persistentTopicId: '9', persistentTopic: { status: 'candidate' } },
+      { id: '1', periodDate: '2026-11-01', clueCount: 5 }, // 重复 ID 不双计
+      { id: '3', periodDate: '2026-11-01', clueCount: 12, persistentTopicId: '7', persistentTopic: { status: 'active' } }, // active 排除
+      { id: '4', periodDate: '2026-11-02', clueCount: 2, persistentTopicId: '11', persistentTopic: { status: 'archived' } }, // 归档排除
+    ]
+    const totals = candidatePoolDayTotals(sections)
+    expect(totals.get('2026-11-01')).toBe(8)
+    expect(totals.get('2026-11-02')).toBeUndefined() // 全被排除的日期不造 0 条目？——该日无应计项
+  })
+
+  it('poolSeriesPropagatesUnknown：缺 clueCount / 归属状态未知 → 该日 null；已知 0 保留（B8 / E1）', () => {
+    const sections = [
+      { id: '1', periodDate: '2026-11-01', clueCount: 0 }, // 已知 0
+      { id: '2', periodDate: '2026-11-02', clueCount: 2 },
+      { id: '3', periodDate: '2026-11-02' }, // 应计项缺计数 → 整日未知
+      { id: '4', periodDate: '2026-11-03', clueCount: 2, persistentTopicId: '9' }, // 带归属但状态未知
+      { id: '5', periodDate: '2026-11-04', clueCount: 1, persistentTopicId: '7', persistentTopic: { status: 'active' } },
+    ]
+    const totals = candidatePoolDayTotals(sections)
+    expect(totals.get('2026-11-01')).toBe(0)
+    expect(totals.get('2026-11-02')).toBeNull()
+    expect(totals.get('2026-11-03')).toBeNull()
+    expect(totals.has('2026-11-04')).toBe(false) // 全排除日：无条目（调用方在轴上映射为已知 0 池
+  })
+
+  it('E5：空池 / 只有 active → 可选总量 0，active 参照不计曲线', () => {
+    expect(candidatePoolDayTotals([]).size).toBe(0)
+    const onlyActive = [{ id: '1', periodDate: '2026-11-01', clueCount: 20, persistentTopicId: '7', persistentTopic: { status: 'active' } }]
+    expect(candidatePoolDayTotals(onlyActive).has('2026-11-01')).toBe(false)
+  })
+
+  it('validateWorkbenchRange：闭区间上限、下界与倒置（E6 / E7 / I1）', () => {
+    // 1 天与 365 天闭区间可用；366 天拒绝（三处上限一致的前端半边）
+    expect(validateWorkbenchRange('2026-01-01', '2026-01-01', 365)).toBeNull()
+    expect(validateWorkbenchRange('2025-12-17', '2026-12-16', 365)).toBeNull()
+    expect(validateWorkbenchRange('2025-12-16', '2026-12-16', 365)).toContain('不能超过 365 天')
+    // 非法：倒置 / 格式 / 非真实日历日
+    expect(validateWorkbenchRange('2026-12-02', '2026-12-01', 365)).toContain('不能晚于')
+    expect(validateWorkbenchRange('2026-2-1', '2026-12-01', 365)).toContain('有效')
+    expect(validateWorkbenchRange('2026-02-30', '2026-12-01', 365)).toContain('有效')
+    // 取数下界：latest − 364 可用、−365 拒绝（E7）
+    expect(validateWorkbenchRange('2025-12-17', '2026-12-16', 365, '2026-12-16')).toBeNull()
+    const late = validateWorkbenchRange('2025-12-16', '2025-12-20', 365, '2026-12-16')
+    expect(late).toContain('早于支持的取数窗')
+    // 跨月/闰日合法（E7）
+    expect(validateWorkbenchRange('2024-02-29', '2024-03-01', 365, null)).toBeNull()
   })
 })

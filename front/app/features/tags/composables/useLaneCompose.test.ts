@@ -304,21 +304,36 @@ describe('useLaneCompose · 日期范围与草稿确认', () => {
     expect(compose.controlTo.value).toBe('2026-10-30')
   })
 
-  it('日期非法（超 90 天）：报错且不截断成 90 天', async () => {
+  it('日期非法（超 365 天）：报错且不截断（366 天拒绝）', async () => {
     const { compose } = await setup()
     compose.startCustomRange()
-    compose.controlFrom.value = '2026-01-01'
+    compose.controlFrom.value = '2025-10-30' // 366 天（含首末）
     compose.controlTo.value = '2026-10-30'
     await compose.applyCustomRange()
-    expect(compose.dateError.value).toContain('90')
+    expect(compose.dateError.value).toContain('365')
     expect(apiMock.getComposeCandidates).toHaveBeenCalledTimes(1)
+  })
+
+  it('日期范围 365 天（含首末）可用：OQ-2 后上限内合法', async () => {
+    const { compose } = await setup()
+    apiMock.getComposeCandidates.mockResolvedValue({
+      success: true,
+      data: response({ window: { from: '2025-10-31', to: '2026-10-30', days: 365, latestCompletedDate: '2026-10-30' } }),
+    })
+    compose.startCustomRange()
+    compose.controlFrom.value = '2025-10-31' // 365 天边界
+    compose.controlTo.value = '2026-10-30'
+    await compose.applyCustomRange()
+    expect(compose.dateError.value).toBeNull()
+    expect(apiMock.getComposeCandidates).toHaveBeenLastCalledWith(1974, { mode: 'custom', from: '2025-10-31', to: '2026-10-30' })
+    expect(compose.appliedWindow.value.from).toBe('2025-10-31')
   })
 
   it('日期非法（窗外起点）：报错并保留旧范围', async () => {
     const { compose } = await setup()
     compose.startCustomRange()
-    compose.controlFrom.value = '2026-01-01'
-    compose.controlTo.value = '2026-01-20'
+    compose.controlFrom.value = '2025-09-01' // 早于取数下界（latest−364 = 2025-10-31）
+    compose.controlTo.value = '2025-09-20'
     await compose.applyCustomRange()
     expect(compose.dateError.value).toBeTruthy()
     expect(compose.appliedWindow.value.from).toBe('2026-10-01')
@@ -494,5 +509,158 @@ describe('useLaneCompose · 历史待启用话题（管理名单）', () => {
     expect(res.message).toBe('启用被拒')
     expect(compose.historyError.value).toBe('启用被拒')
     expect(compose.memberCount.value).toBe(0)
+  })
+})
+
+describe('useLaneCompose · 时间视窗控制与 365 可选池曲线（unify-lane-workbench 7.1–7.4）', () => {
+  function poolSection(id: string, periodDate: string, clueCount: number | null, topicId?: string, status?: string) {
+    return {
+      id,
+      reportId: '1',
+      periodDate,
+      clusterLabel: `池${id}`,
+      embedding: [],
+      persistentTopicId: topicId,
+      persistentTopic: topicId ? { id: topicId, label: '来源', status: status ?? 'candidate' } : undefined,
+      clueCount,
+    }
+  }
+
+  it('B7 池曲线口径：轻量取数（omit_embeddings=1）、排 active、含无归属与 candidate、0 保留', async () => {
+    const { compose } = await setup()
+    apiMock.getComposeCandidates.mockResolvedValueOnce({
+      success: true,
+      data: response({
+        sections: [
+          poolSection('a', '2026-10-01', 2), // 无归属 → 计入
+          poolSection('b', '2026-10-01', 3, '9', 'candidate'), // 动态泳道 → 计入
+          poolSection('c', '2026-10-01', 100, '10', 'active'), // active → 排除
+          poolSection('d', '2026-10-02', 0, '9', 'candidate'), // 已知 0 保留
+          poolSection('e', '2026-10-03', null), // 缺计数 → 该日未知
+          poolSection('f', '2026-10-04', null, '11', 'archived'), // 归档 → 排除（未知也不污染该日）
+        ],
+        window: { from: '2026-10-01', to: '2026-10-04', days: 4, latestCompletedDate: '2026-10-04' },
+      }),
+    })
+    const ok = await compose.loadPoolCurve()
+    expect(ok).toBe(true)
+    expect(apiMock.getComposeCandidates).toHaveBeenLastCalledWith(1974, { days: 365, omitEmbeddings: true })
+    expect(compose.poolCurveError.value).toBeNull()
+    expect(compose.poolBounds.value).toEqual({ start: '2026-10-01', end: '2026-10-04' })
+    // 逐日：10-01 = 2+3（active 的 100 不计）；10-02 = 已知 0；10-03 = 未知；10-04 = 已知 0（无应计 section）
+    expect(compose.poolCurve.value).toEqual([
+      { date: '2026-10-01', value: 5 },
+      { date: '2026-10-02', value: 0 },
+      { date: '2026-10-03', value: null },
+      { date: '2026-10-04', value: 0 },
+    ])
+  })
+
+  it('B8 勾选不减池总量：草稿已选不影响曲线（poolCurve 不消费已选集）', async () => {
+    const { compose } = await setup()
+    compose.setChainSelected('1984:1', true)
+    apiMock.getComposeCandidates.mockResolvedValueOnce({
+      success: true,
+      data: response({
+        sections: [poolSection('a', '2026-10-01', 4), poolSection('b', '2026-10-01', 1)],
+        window: { from: '2026-10-01', to: '2026-10-01', days: 1, latestCompletedDate: '2026-10-01' },
+      }),
+    })
+    await compose.loadPoolCurve()
+    expect(compose.poolCurve.value).toEqual([{ date: '2026-10-01', value: 5 }])
+  })
+
+  it('池曲线失败：保旧曲线并可单独重试', async () => {
+    const { compose } = await setup()
+    apiMock.getComposeCandidates.mockResolvedValueOnce({
+      success: true,
+      data: response({
+        sections: [poolSection('a', '2026-10-01', 2)],
+        window: { from: '2026-10-01', to: '2026-10-01', days: 1, latestCompletedDate: '2026-10-01' },
+      }),
+    })
+    await compose.loadPoolCurve()
+    expect(compose.poolCurve.value).toEqual([{ date: '2026-10-01', value: 2 }])
+    apiMock.getComposeCandidates.mockResolvedValueOnce({ success: false, error: '池未取到' })
+    await compose.loadPoolCurve()
+    expect(compose.poolCurveError.value).toBe('池未取到')
+    expect(compose.poolCurve.value).toEqual([{ date: '2026-10-01', value: 2 }]) // 保旧
+  })
+
+  it('B9 池曲线迟到响应丢弃：旧请求回来不覆盖新曲线', async () => {
+    const { compose } = await setup()
+    let resolveSlow!: (value: unknown) => void
+    apiMock.getComposeCandidates.mockImplementationOnce(() => new Promise(resolve => { resolveSlow = resolve }))
+    const first = compose.loadPoolCurve()
+    apiMock.getComposeCandidates.mockResolvedValueOnce({
+      success: true,
+      data: response({
+        sections: [poolSection('new', '2026-10-01', 7)],
+        window: { from: '2026-10-01', to: '2026-10-01', days: 1, latestCompletedDate: '2026-10-01' },
+      }),
+    })
+    await compose.loadPoolCurve()
+    expect(compose.poolCurve.value).toEqual([{ date: '2026-10-01', value: 7 }])
+    resolveSlow({ success: true, data: response() }) // 旧响应（30 天窗口）
+    await first
+    expect(compose.poolCurve.value).toEqual([{ date: '2026-10-01', value: 7 }]) // 不被旧响应覆盖
+  })
+
+  it('B10 preview/commit 分离：preview 只改显示不请求；commit 才取候选', async () => {
+    const { compose } = await setup()
+    const callsBefore = apiMock.getComposeCandidates.mock.calls.length
+    compose.previewObservation({ start: '2026-10-02', end: '2026-10-09' })
+    expect(compose.observationRange.value).toEqual({ start: '2026-10-02', end: '2026-10-09' })
+    expect(apiMock.getComposeCandidates.mock.calls.length).toBe(callsBefore) // preview 0 请求
+    apiMock.getComposeCandidates.mockResolvedValueOnce({
+      success: true,
+      data: response({ window: { from: '2026-10-02', to: '2026-10-09', days: 8, latestCompletedDate: '2026-10-30' } }),
+    })
+    const ok = await compose.commitObservation({ start: '2026-10-02', end: '2026-10-09' })
+    expect(ok).toBe(true)
+    expect(apiMock.getComposeCandidates).toHaveBeenLastCalledWith(1974, { mode: 'custom', from: '2026-10-02', to: '2026-10-09' })
+    expect(compose.observationRange.value).toEqual({ start: '2026-10-02', end: '2026-10-09' }) // 回显接管
+  })
+
+  it('J1 同值 commit 不重取；非法 commit 保旧并回显生效范围', async () => {
+    const { compose } = await setup()
+    const callsBefore = apiMock.getComposeCandidates.mock.calls.length
+    const ok = await compose.commitObservation({ start: '2026-10-01', end: '2026-10-30' }) // 与生效窗口同值
+    expect(ok).toBe(true)
+    expect(apiMock.getComposeCandidates.mock.calls.length).toBe(callsBefore)
+    compose.previewObservation({ start: '2025-01-01', end: '2026-12-31' }) // 超界预览
+    const bad = await compose.commitObservation({ start: '2025-01-01', end: '2026-12-31' })
+    expect(bad).toBe(false)
+    expect(compose.dateError.value).toBeTruthy()
+    expect(compose.observationRange.value).toEqual({ start: '2026-10-01', end: '2026-10-30' }) // 回滚到生效值
+  })
+
+  it('S3.5 档位切换：365 档可用，控件范围跟随服务端回显', async () => {
+    const { compose } = await setup()
+    apiMock.getComposeCandidates.mockResolvedValueOnce({
+      success: true,
+      data: response({ window: { from: '2025-11-01', to: '2026-10-30', days: 365, latestCompletedDate: '2026-10-30' } }),
+    })
+    await compose.setQuickDays(365)
+    expect(apiMock.getComposeCandidates).toHaveBeenLastCalledWith(1974, { mode: 365, days: 365 })
+    expect(compose.tierDays.value).toBe(365)
+    expect(compose.observationRange.value).toEqual({ start: '2025-11-01', end: '2026-10-30' })
+  })
+
+  it('E5 空池：曲线为已知 0（不是错误、不是未知）', async () => {
+    const { compose } = await setup()
+    apiMock.getComposeCandidates.mockResolvedValueOnce({
+      success: true,
+      data: response({
+        sections: [],
+        window: { from: '2026-10-01', to: '2026-10-02', days: 2, latestCompletedDate: '2026-10-02' },
+      }),
+    })
+    await compose.loadPoolCurve()
+    expect(compose.poolCurveError.value).toBeNull()
+    expect(compose.poolCurve.value).toEqual([
+      { date: '2026-10-01', value: 0 },
+      { date: '2026-10-02', value: 0 },
+    ])
   })
 })

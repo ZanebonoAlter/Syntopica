@@ -83,18 +83,20 @@ export function buildObservationRows(
       for (const day of lane.timeline) {
         if (!axisSet.has(day.date)) continue
         sectionTotal += day.sections.length
-        // 当日线索合计：后端 clue_count 优先；旧响应回退各桶已知 thread 数合计。
+        // 当日线索合计：后端 clue_count 优先；旧响应回退各桶已知**非综合稿**线索数
+        // （桶线索数 = thread_count − composite_count，API 归一层唯一公式）——
+        // 不得拿含综合稿的 thread_count 冒充线索数。
         let dayClues = 0
         let unknown = false
         for (const section of day.sections) {
-          const value = section.threadCount ?? section.fallbackClueCount
+          const value = section.clueCount
           if (value === null) {
             unknown = true
             continue
           }
           dayClues += value
         }
-        const total = day.clueCount ?? (unknown && day.sections.every(s => (s.threadCount ?? s.fallbackClueCount) === null) ? 0 : dayClues)
+        const total = day.clueCount ?? (unknown && day.sections.every(s => s.clueCount === null) ? 0 : dayClues)
         clueCounts[day.date] = total
         clueTotal += total
       }
@@ -152,10 +154,28 @@ export interface MatrixCellView {
   title: string
 }
 
+/**
+ * 格子的可读文本（fix-lane-metric-provenance）：只出现**格值口径**（非综合稿线索数）
+ * 的数字——当日线索合计 + 各桶非综合稿线索数；综合稿以差额形式显式说明
+ * （「另有 N 条综合稿未计入」），MUST NOT 让同一句里出现两个口径的线索数
+ * （旧实现的「最多一天桶 N 条」来自含综合稿的 thread_count，已退役）。
+ * 为下界时（旧响应回退 + 部分桶不可数）写「≥N」，MUST NOT 把已知部分之和冒充完整值。
+ */
 function contentLabel(metrics: DayCellMetrics): string {
-  const clueText = metrics.clueCount === null ? '线索数未知' : `${metrics.clueCount} 条线索`
-  const peakNote = metrics.peak === null ? '' : `（最多一天桶 ${metrics.peak} 条）`
-  return `${clueText} · ${metrics.sectionCount} 个主题桶${peakNote}`
+  const prefix = metrics.isLowerBound ? '≥' : ''
+  const clueText = metrics.clueCount === null
+    ? '线索数未知'
+    : `${prefix}${metrics.clueCount} 条线索`
+  const notes: string[] = []
+  // 各桶明细只在全部桶都可数时给：有未知桶时列「各桶 …」会与合计/桶数对不上。
+  if (!metrics.hasUnknown && metrics.bucketClues.length > 1) {
+    notes.push(`各桶 ${metrics.bucketClues.join(' / ')} 条`)
+  }
+  if (metrics.compositeCount !== null && metrics.compositeCount > 0) {
+    notes.push(`另有 ${metrics.compositeCount} 条综合稿未计入`)
+  }
+  const detail = notes.length > 0 ? `（${notes.join('；')}）` : ''
+  return `${clueText} · ${metrics.sectionCount} 个主题桶${detail}`
 }
 
 export function matrixCellView(cell: MatrixCell, context: { laneLabel: string, date: string, rowMax?: number }): MatrixCellView {
@@ -183,7 +203,10 @@ export function matrixCellView(cell: MatrixCell, context: { laneLabel: string, d
   const label = `${context.laneLabel} ${context.date}：${contentLabel(metrics)}`
   return {
     kind: 'content',
-    text: metrics.clueCount === null ? '?' : String(metrics.clueCount),
+    // 下界写「≥N」（不冒充完整值）；未知写「?」；否则写格值。
+    text: metrics.clueCount === null
+      ? '?'
+      : (metrics.isLowerBound ? `≥${metrics.clueCount}` : String(metrics.clueCount)),
     openable: true,
     depth: clueDepth(metrics.clueCount, context.rowMax ?? 0),
     aria: label,

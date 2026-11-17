@@ -7,6 +7,9 @@
  * 统一从今日雷达（总览）的版块治理入口或当前板块「板块管理」进入；设置页完整迁移另立变更。
  *
  * 保存成功后 emit `saved`，壳层刷新版块列表（面包屑/名称同步）。
+ *
+ * 名称 / 描述的字段元数据（文案、长度上限、占位符）取自共用模块 `boardEditFields.ts`
+ * ——与雷达行轻编辑弹窗 `BoardQuickEditDialog.vue` 同源（lane-manual-correction-loop 6.2）。
  */
 import { computed, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -15,6 +18,7 @@ import AppInput from '~/components/ui/AppInput.vue'
 import AppToggle from '~/components/ui/AppToggle.vue'
 import { useSemanticBoardsApi, type SemanticBoard } from '~/api/semanticBoards'
 import { useNotify } from '~/composables/useNotify'
+import { BOARD_DESCRIPTION_FIELD, BOARD_LABEL_FIELD } from './boardEditFields'
 
 const props = defineProps<{
   board: SemanticBoard | null
@@ -35,7 +39,7 @@ const LAYERS: Array<{ key: string, label: string }> = [
   { key: 'all', label: '全部' },
 ]
 
-/** 与旧 BoardEditDialog 一致：窗口 1..90 天；清空/非法不发请求（后端 *int 会 400）。 */
+/** 窗口 1..90 天（沿用旧版块编辑弹窗的口径）；清空/非法不发请求（后端 *int 会 400）。 */
 const WINDOW_MIN = 1
 const WINDOW_MAX = 90
 
@@ -66,7 +70,7 @@ function resetFromBoard(board: SemanticBoard | null): void {
 
 watch(() => props.board, resetFromBoard, { immediate: true })
 
-// 关系自动发现依赖数据增强（旧 BoardEditDialog 的禁用联动）：关闭增强时一并清掉
+// 关系自动发现依赖数据增强（禁用联动）：关闭增强时一并清掉
 watch(enrichmentEnabled, (enabled) => {
   if (!enabled) relationEnabled.value = false
 })
@@ -154,19 +158,19 @@ async function removeBoard(): Promise<void> {
     <div v-if="!board" class="gsf-empty">版块尚未加载。</div>
     <template v-else>
       <label class="gsf-field">
-        <span class="gsf-label">版块名称</span>
-        <AppInput v-model="label" data-testid="gov-settings-label" :maxlength="60" />
+        <span class="gsf-label">{{ BOARD_LABEL_FIELD.label }}</span>
+        <AppInput v-model="label" data-testid="gov-settings-label" :maxlength="BOARD_LABEL_FIELD.maxlength" />
       </label>
 
       <label class="gsf-field">
-        <span class="gsf-label">描述</span>
+        <span class="gsf-label">{{ BOARD_DESCRIPTION_FIELD.label }}</span>
         <textarea
           v-model="description"
           class="gsf-textarea"
           rows="3"
-          maxlength="500"
+          :maxlength="BOARD_DESCRIPTION_FIELD.maxlength"
           data-testid="gov-settings-description"
-          placeholder="这个版块收什么、边界在哪"
+          :placeholder="BOARD_DESCRIPTION_FIELD.placeholder"
         />
       </label>
 

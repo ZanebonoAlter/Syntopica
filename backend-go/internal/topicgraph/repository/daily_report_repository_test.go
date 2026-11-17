@@ -1164,3 +1164,39 @@ func mustJSONIDs(ids []uint) string {
 	}
 	return "[" + strings.Join(parts, ",") + "]"
 }
+
+// TestTopicLifelineKeepsZeroMatchDistance（fix-lane-metric-provenance 1.7/1.8）：
+// 归属距离恰为 0 是合法结果（完美锚定），生命线响应不得因为 `omitempty` 把
+// 该字段省略——省略后前端会把接近度读成「未知」而不是 1.00。
+func TestTopicLifelineKeepsZeroMatchDistance(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
+	reportID := seedTestReport(t, db, boardID, now)
+
+	topic := BoardPersistentTopic{
+		SemanticBoardID: boardID, Label: "零距离话题", Status: TopicStatusActive, Source: TopicSourceAuto,
+		Embedding:     FloatsToPgVector([]float64{0}),
+		FirstSeenDate: now, LastSeenDate: now,
+	}
+	require.NoError(t, db.Create(&topic).Error)
+
+	section := seedTestSection(t, db, reportID, "零距离分区")
+	require.NoError(t, db.Model(&DailyReportSection{}).
+		Where("id = ?", section).
+		Update("persistent_topic_id", topic.ID).Error)
+	require.NoError(t, db.Model(&DailyReportSection{}).
+		Where("id = ?", section).
+		Update("topic_match_distance", 0.0).Error)
+
+	resp, err := repo.GetTopicLifeline(topic.ID)
+	require.NoError(t, err)
+	require.Len(t, resp.Sections, 1)
+	assert.Zero(t, resp.Sections[0].TopicMatchDistance)
+
+	data, err := json.Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"topic_match_distance":0`, "距离 0 必须显式下发，不得被省略")
+}

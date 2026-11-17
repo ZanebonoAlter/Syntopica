@@ -130,6 +130,116 @@ export function parseUiPrototypeMarker(
 	return matches[0][1];
 }
 
+// ---------------------------------------------------------------------------
+// 原型生产阶段（ui-stage）—— add-ui-stage-accounting design D1–D4
+// 触发条件按写入路径，不依赖 mode；本阶段只记账不阻断（design D4）。
+// ---------------------------------------------------------------------------
+
+/** 原型生产阶段五档（单调阶梯，approved = 全放行且不记账） */
+export const UI_STAGES = [
+	"l0",
+	"skeleton",
+	"interaction",
+	"data",
+	"approved",
+] as const;
+export type UiStage = (typeof UI_STAGES)[number];
+
+/**
+ * stage 记账侧 reasonCode（三个）。**不进 `UI_REASON_CODES` 阻断码白名单**——对齐
+ * `UI_PASS_REASON_CODES` 的既有先例：非阻断码属 harness 事实库词汇表，升为阻断码时
+ * 须作为独立变更扩充 spec 的「九个稳定有界值」。
+ */
+export const UI_STAGE_WARN_REASON_CODES = [
+	"ui-stage-missing",
+	"ui-stage-invalid",
+	"ui-stage-scope-out",
+] as const;
+export type UiStageWarnReasonCode = (typeof UI_STAGE_WARN_REASON_CODES)[number];
+
+/** parseUiStage 三态：missing（无 marker = legacy）/ invalid（非法值或重复）/ ok */
+export type UiStageParse =
+	| { kind: "missing" }
+	| { kind: "invalid" }
+	| { kind: "ok"; stage: UiStage };
+
+/** 解析 `<!-- ui-stage: ... -->`；缺失 → missing；重复或非五档取值 → invalid */
+export function parseUiStage(
+	uiDesignText: string | null | undefined,
+): UiStageParse {
+	if (typeof uiDesignText !== "string" || uiDesignText.length === 0) {
+		return { kind: "missing" };
+	}
+	const matches = [
+		...uiDesignText.matchAll(/<!--\s*ui-stage\s*:\s*([^>]*?)\s*-->/g),
+	];
+	if (matches.length === 0) return { kind: "missing" };
+	if (matches.length > 1) return { kind: "invalid" };
+	const v = matches[0][1].trim();
+	return (UI_STAGES as readonly string[]).includes(v)
+		? { kind: "ok", stage: v as UiStage }
+		: { kind: "invalid" };
+}
+
+/**
+ * 从写入路径解析 change 名：`openspec/changes/<name>/...` → name。
+ * `\` 与 `/` 均接受；`openspec/changes/archive/...` 返回 null（已归档不记账）。
+ */
+export function changeNameFromPath(
+	targetPath: string | null | undefined,
+): string | null {
+	if (typeof targetPath !== "string" || targetPath.length === 0) return null;
+	const p = targetPath.replaceAll("\\", "/");
+	const probe = p.endsWith("/") ? p : `${p}/`;
+	const m = /(?:^|\/)openspec\/changes\/([^/]+)\//.exec(probe);
+	if (!m) return null;
+	const name = m[1];
+	if (name === "archive") return null;
+	if (!/^[A-Za-z0-9._-]+$/.test(name)) return null;
+	return name;
+}
+
+/** 写入路径相对 change 根的路径（`openspec/changes/<change>/` 之后的部分）；不在该 change 内 → null */
+export function relInsideChange(
+	targetPath: string | null | undefined,
+	change: string,
+): string | null {
+	if (typeof targetPath !== "string" || targetPath.length === 0) return null;
+	const p = targetPath.replaceAll("\\", "/");
+	const lead = `openspec/changes/${change}/`;
+	const idx = p.indexOf(`/${lead}`);
+	if (idx >= 0) return p.slice(idx + lead.length + 1);
+	return p.startsWith(lead) ? p.slice(lead.length) : null;
+}
+
+/**
+ * stage 写域判定（design D3，采用「非原型目录一律放行」的低噪声口径）：
+ * - `l0`：除 `ui-prototype/` 外任意路径放行；
+ * - `skeleton`：同上，但 `ui-prototype/skeleton/` 放行；
+ * - `interaction` / `data` / `approved`：全部放行（data 与 interaction 写域相同，
+ *   区别只在记账意图：表示进入填数阶段）。
+ * 返回 null = 合规；否则返回人类可读越域说明。
+ */
+export function checkStageScope(
+	stage: UiStage,
+	relPathFromChangeRoot: string,
+): string | null {
+	if (stage !== "l0" && stage !== "skeleton") return null;
+	const p = relPathFromChangeRoot.replaceAll("\\", "/").replace(/^\.\//, "");
+	if (p !== "ui-prototype" && !p.startsWith("ui-prototype/")) return null;
+	if (
+		stage === "skeleton" &&
+		(p === "ui-prototype/skeleton" || p.startsWith("ui-prototype/skeleton/"))
+	) {
+		return null;
+	}
+	const allowed =
+		stage === "l0"
+			? "l0 阶段不允许写 ui-prototype/（契约未定稿）"
+			: "skeleton 阶段只允许写 ui-prototype/skeleton/";
+	return `${allowed}，本次目标 ${p}`;
+}
+
 /** 解析 `<!-- ui-impact: ... -->`（ui-design.md 内）；多次出现/非法值 → null */
 export function parseUiImpactMarker(
 	uiDesignText: string | null | undefined,

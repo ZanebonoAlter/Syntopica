@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -1169,4 +1171,858 @@ func (r *TopicGraphRepository) RecomputeVacuumStats(boardID uint) error {
 		}
 		return nil
 	})
+}
+
+// ── 人工重设首义（lane-manual-correction D3） ──────────────────────────────
+
+// TopicAnchorSourceSelectedSections is the only accepted input mode for a
+// manual 首义 rewrite: the user picks a range of lane nodes and the server
+// aggregates their embeddings (D3). Free text is NOT an input mode — a
+// natural-language description is rejected, never vectorized.
+const TopicAnchorSourceSelectedSections = "selected_sections"
+
+// AnchorEffectiveFromNextReport is the effective-time marker returned to the
+// client. The rewrite lands in the fact layer immediately, but the centroid
+// (and therefore the matching behaviour) only moves on the next daily report
+// (D1: there is no "recompute now" endpoint).
+const AnchorEffectiveFromNextReport = "next_report"
+
+// AnchorOperatorUser is the operator recorded for manual corrections. The
+// deployment is single-user without auth (AGENTS.md), so every manual
+// correction is attributed to the local user.
+const AnchorOperatorUser = "user"
+
+var (
+	// ErrTopicNotFound means the addressed topic does not exist.
+	ErrTopicNotFound = errors.New("topic not found")
+	// ErrTopicArchived means the addressed topic is archived — archived lanes
+	// are not anchorable.
+	ErrTopicArchived = errors.New("topic is archived")
+)
+
+// AnchorSelectionError explains why a chosen node range was rejected. It
+// carries the offending section id so the UI can point at the node the user
+// has to fix — silently skipping a node would make "N nodes selected" a lie.
+type AnchorSelectionError struct {
+	SectionID uint
+	// Reason is a stable machine-readable code: section_not_found /
+	// other_board / not_in_topic / no_embedding / dim_mismatch.
+	Reason  string
+	Message string
+}
+
+func (e *AnchorSelectionError) Error() string { return e.Message }
+
+// AnchorFromSectionsResult is the outcome of a manual 首义 rewrite.
+type AnchorFromSectionsResult struct {
+	TopicID uint `json:"topic_id"`
+	// Source is the input mode ("selected_sections").
+	Source string `json:"source"`
+	// SectionIDs are the chosen nodes (deduplicated).
+	SectionIDs []uint `json:"selected_sections"`
+	// OverrideCount is how many times the topic's 首义 has been rewritten by
+	// hand (the number of audit rows).
+	OverrideCount int `json:"override_count"`
+	// EffectiveFrom marks when the change takes effect on the matching side.
+	EffectiveFrom string `json:"effective_from"`
+}
+
+// SetTopicAnchorFromSections rewrites a topic's 首义 vector from a chosen
+// range of lane nodes (lane-manual-correction D3 / task 2.1).
+//
+// One transaction, three writes (design 图 4):
+//  1. board_persistent_topics.embedding ← mean pooling of the chosen
+//     sections' embeddings (the same 口径 as CreateManualTopic);
+//  2. topic_anchor_overrides ← one appended audit row (previous vector, new
+//     vector, input mode, chosen section ids, operator, timestamp);
+//  3. board_persistent_topics.centroid_pending_recompute ← true.
+//
+// The centroid column is NOT touched: recomputing it belongs to the next
+// daily-report refresh round (D1 — there is no "recompute now" path).
+//
+// Validation is all-or-nothing: every chosen section must belong to this
+// topic, sit on the same board and carry a parseable embedding of a
+// consistent dimension. One bad node rejects the whole write — silently
+// skipping it would make the reported node count a lie.
+func (r *TopicGraphRepository) SetTopicAnchorFromSections(topicID uint, sectionIDs []uint, operator string) (*AnchorFromSectionsResult, error) {
+	unique := dedupeSectionIDs(sectionIDs)
+	if len(unique) == 0 {
+		return nil, fmt.Errorf("SetTopicAnchorFromSections: no sections provided")
+	}
+
+	var topic BoardPersistentTopic
+	if err := r.db.Select("id", "semantic_board_id", "embedding", "status").First(&topic, topicID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrTopicNotFound
+		}
+		return nil, fmt.Errorf("load topic %d: %w", topicID, err)
+	}
+	if topic.Status == TopicStatusArchived {
+		return nil, ErrTopicArchived
+	}
+
+	vectors, err := r.loadAnchorSectionVectors(topicID, topic.SemanticBoardID, unique)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mean pooling — the same 口径 as CreateManualTopic (aggregateEmbeddings).
+	mean, skipped := aggregateEmbeddings(vectors)
+	if len(mean) == 0 || skipped > 0 {
+		// aggregateEmbeddings skips unusable vectors; the validation above
+		// already rejected every one of them, so a skip here means the input
+		// changed under us — refuse rather than write a partial aggregate.
+		return nil, fmt.Errorf("SetTopicAnchorFromSections: selected sections did not aggregate cleanly")
+	}
+	newEmbedding := FloatsToPgVector(mean)
+	oldEmbedding := strings.TrimSpace(topic.Embedding)
+
+	err = r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&BoardPersistentTopic{}).Where("id = ?", topicID).Updates(map[string]interface{}{
+			"embedding":                  newEmbedding,
+			"centroid_pending_recompute": true,
+			"updated_at":                 time.Now(),
+		}).Error; err != nil {
+			return fmt.Errorf("write topic %d anchor: %w", topicID, err)
+		}
+		override := TopicAnchorOverride{
+			TopicID:      topicID,
+			NewEmbedding: newEmbedding,
+			Source:       TopicAnchorSourceSelectedSections,
+			InputSummary: anchorInputSummary(unique),
+			Operator:     operator,
+		}
+		if oldEmbedding != "" {
+			override.OldEmbedding = &oldEmbedding
+		}
+		if err := tx.Create(&override).Error; err != nil {
+			return fmt.Errorf("append anchor override for topic %d: %w", topicID, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var overrideCount int64
+	if err := r.db.Model(&TopicAnchorOverride{}).Where("topic_id = ?", topicID).Count(&overrideCount).Error; err != nil {
+		return nil, fmt.Errorf("count anchor overrides for topic %d: %w", topicID, err)
+	}
+
+	return &AnchorFromSectionsResult{
+		TopicID:       topicID,
+		Source:        TopicAnchorSourceSelectedSections,
+		SectionIDs:    unique,
+		OverrideCount: int(overrideCount),
+		EffectiveFrom: AnchorEffectiveFromNextReport,
+	}, nil
+}
+
+// loadAnchorSectionVectors loads the chosen sections and turns them into
+// vectors, rejecting the whole set as soon as one node breaks a rule
+// (cross-topic / cross-board / missing vector / mismatched dimension).
+func (r *TopicGraphRepository) loadAnchorSectionVectors(topicID, boardID uint, sectionIDs []uint) ([][]float64, error) {
+	type secRow struct {
+		ID                uint
+		Embedding         string
+		PersistentTopicID *uint
+		BoardID           uint
+	}
+	var rows []secRow
+	if err := r.db.Raw(`
+		SELECT s.id AS id,
+		       s.embedding AS embedding,
+		       s.persistent_topic_id AS persistent_topic_id,
+		       rpt.semantic_board_id AS board_id
+		FROM daily_report_sections s
+		JOIN board_daily_reports rpt ON rpt.id = s.report_id
+		WHERE s.id IN ?
+	`, sectionIDs).Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("load anchor sections for topic %d: %w", topicID, err)
+	}
+	byID := make(map[uint]secRow, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+
+	vectors := make([][]float64, 0, len(sectionIDs))
+	dim := 0
+	for _, id := range sectionIDs {
+		row, ok := byID[id]
+		if !ok {
+			return nil, &AnchorSelectionError{
+				SectionID: id,
+				Reason:    "section_not_found",
+				Message:   fmt.Sprintf("节点 %d 不存在", id),
+			}
+		}
+		if row.BoardID != boardID {
+			return nil, &AnchorSelectionError{
+				SectionID: id,
+				Reason:    "other_board",
+				Message:   fmt.Sprintf("节点 %d 不属于当前版块", id),
+			}
+		}
+		if row.PersistentTopicID == nil || *row.PersistentTopicID != topicID {
+			return nil, &AnchorSelectionError{
+				SectionID: id,
+				Reason:    "not_in_topic",
+				Message:   fmt.Sprintf("节点 %d 不属于该话题", id),
+			}
+		}
+		vec, perr := repoParsePgVector(row.Embedding)
+		if perr != nil || len(vec) == 0 {
+			return nil, &AnchorSelectionError{
+				SectionID: id,
+				Reason:    "no_embedding",
+				Message:   fmt.Sprintf("节点 %d 没有可用向量", id),
+			}
+		}
+		if dim == 0 {
+			dim = len(vec)
+		} else if len(vec) != dim {
+			return nil, &AnchorSelectionError{
+				SectionID: id,
+				Reason:    "dim_mismatch",
+				Message:   fmt.Sprintf("节点 %d 的向量维度与其它节点不一致", id),
+			}
+		}
+		vectors = append(vectors, vec)
+	}
+	return vectors, nil
+}
+
+// dedupeSectionIDs removes duplicates while keeping the caller's order.
+func dedupeSectionIDs(ids []uint) []uint {
+	seen := make(map[uint]struct{}, len(ids))
+	out := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// anchorInputSummary renders the chosen section ids as a JSON array — the
+// audit trail's「输入摘要」(what the user actually picked).
+func anchorInputSummary(ids []uint) string {
+	if len(ids) == 0 {
+		return "[]"
+	}
+	raw, err := json.Marshal(ids)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// ── 质心刷新范围：touched ∪ 待重算（lane-manual-correction D2） ───────────
+
+// ListPendingCentroidTopicIDs returns the board's topics whose centroid is
+// flagged for a forced recompute. These topics join the refresh round even
+// when the day's report never touched them — that is the only path on which
+// a manual correction on a lane without new hits can ever take effect.
+func (r *TopicGraphRepository) ListPendingCentroidTopicIDs(boardID uint) ([]uint, error) {
+	var ids []uint
+	if err := r.db.Model(&BoardPersistentTopic{}).
+		Where("semantic_board_id = ? AND centroid_pending_recompute = ?", boardID, true).
+		Order("id ASC").Pluck("id", &ids).Error; err != nil {
+		return nil, fmt.Errorf("list pending centroid topics for board %d: %w", boardID, err)
+	}
+	return ids, nil
+}
+
+// centroidRefreshTargets merges the topics the day's report touched with the
+// board's topics flagged for a forced recompute (D2): the refresh scope is
+// 「当日 touched 话题 ∪ centroid_pending_recompute=true 的话题」.
+func (r *TopicGraphRepository) centroidRefreshTargets(boardID uint, touched []uint) ([]uint, error) {
+	pending, err := r.ListPendingCentroidTopicIDs(boardID)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[uint]struct{}, len(touched)+len(pending))
+	ids := make([]uint, 0, len(touched)+len(pending))
+	for _, id := range touched {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for _, id := range pending {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// RefreshBoardCentroids recomputes the centroids of the topics the day's
+// report touched plus every topic flagged centroid_pending_recompute on the
+// board (D2), then clears the flag of the topics it refreshed successfully.
+//
+// Per-topic isolation holds: a topic whose refresh fails keeps its flag (the
+// next round retries it) and does not abort the remaining topics.
+//
+// The flag is cleared **conditionally** (review R-11): the trail version read
+// before the recompute is passed to the clear, so a manual correction that
+// lands *during* the recompute (and therefore re-arms the flag) is not wiped
+// by this round's cleanup.
+func (r *TopicGraphRepository) RefreshBoardCentroids(boardID uint, touched []uint) (updated, failed int) {
+	ids, err := r.centroidRefreshTargets(boardID, touched)
+	if err != nil {
+		logging.Errorf("persistent-topic: collect centroid refresh targets for board %d: %v", boardID, err)
+		return 0, 0
+	}
+	return refreshCentroidsIsolated(ids,
+		func(topicID uint) (int64, error) { return r.correctionTrailVersion(nil, topicID) },
+		func(topicID uint) error { return r.UpdateCentroidOnSectionChange(nil, topicID) },
+		func(topicID uint, version int64) error { return r.clearCentroidPendingFlag(nil, topicID, version) },
+	)
+}
+
+// refreshCentroidsIsolated runs the per-topic centroid refresh with per-topic
+// isolation: a failing topic keeps its pending flag and does not abort the
+// rest (D2 / spec「重算失败保留标记、不中断其余话题」). Kept as a pure
+// function over the callbacks so the failure path is testable without a
+// broken database.
+//
+// The three callbacks are, per topic:
+//
+//	snapshot    — read the correction-trail version BEFORE the recompute;
+//	refresh     — recompute the centroid;
+//	clearPending— clear the pending flag, but only if the trail version is
+//	              unchanged since the snapshot (review R-11: a correction that
+//	              lands during the recompute re-arms the flag and must not be
+//	              wiped by this round's cleanup).
+//
+// A failing snapshot means the trail state is unknown → the flag is kept
+// (safe direction: the next round recomputes again, which is idempotent).
+func refreshCentroidsIsolated(ids []uint, snapshot func(uint) (int64, error), refresh func(uint) error, clearPending func(uint, int64) error) (updated, failed int) {
+	for _, id := range ids {
+		version, err := snapshot(id)
+		if err != nil {
+			logging.Errorf("persistent-topic: read correction trail version for topic %d: %v", id, err)
+		}
+		if err := refresh(id); err != nil {
+			failed++
+			logging.Errorf("persistent-topic: centroid refresh failed for topic %d: %v", id, err)
+			continue
+		}
+		updated++
+		if err != nil {
+			// Unknown trail state → keep the flag (safe direction).
+			continue
+		}
+		if err := clearPending(id, version); err != nil {
+			// The centroid itself was written; only the flag write failed.
+			// Leaving the flag set is the safe direction — the next round
+			// recomputes again (idempotent).
+			logging.Errorf("persistent-topic: clear centroid pending flag for topic %d: %v", id, err)
+		}
+	}
+	return updated, failed
+}
+
+// correctionTrailVersion counts the append-only audit rows that mention the
+// topic: 首义改写留痕 + 泳道归属变更留痕.
+//
+// Every manual correction appends exactly one row **in the same transaction**
+// that sets centroid_pending_recompute, so a change of this number between
+// the pre-recompute read and the clear means "a new correction landed" → the
+// pending flag must survive (review R-11).
+func (r *TopicGraphRepository) correctionTrailVersion(tx *gorm.DB, topicID uint) (int64, error) {
+	exec := r.db
+	if tx != nil {
+		exec = tx
+	}
+	var version int64
+	if err := exec.Raw(`
+		SELECT
+			(SELECT count(*) FROM topic_anchor_overrides WHERE topic_id = ?) +
+			(SELECT count(*) FROM section_assignment_overrides WHERE topic_id_from = ? OR topic_id_to = ?) AS version
+	`, topicID, topicID, topicID).Scan(&version).Error; err != nil {
+		return 0, fmt.Errorf("read correction trail version for topic %d: %w", topicID, err)
+	}
+	return version, nil
+}
+
+// clearCentroidPendingFlag clears the forced-recompute flag after a
+// successful centroid refresh (D2: 重算成功后清标记；失败保留待下次重试).
+//
+// The clear is **conditional** (review R-11): the flag is only cleared when
+// the correction trail still holds the same number of rows it held when the
+// recompute started. A manual correction that landed during the recompute
+// appended a row (and re-armed the flag) → the count differs → the flag is
+// kept, so that correction's centroid refresh is not silently skipped.
+func (r *TopicGraphRepository) clearCentroidPendingFlag(tx *gorm.DB, topicID uint, version int64) error {
+	exec := r.db
+	if tx != nil {
+		exec = tx
+	}
+	if err := exec.Exec(`
+		UPDATE board_persistent_topics
+		SET centroid_pending_recompute = false
+		WHERE id = ?
+		  AND centroid_pending_recompute = true
+		  AND (
+			(SELECT count(*) FROM topic_anchor_overrides WHERE topic_id = ?) +
+			(SELECT count(*) FROM section_assignment_overrides WHERE topic_id_from = ? OR topic_id_to = ?)
+		  ) = ?
+	`, topicID, topicID, topicID, topicID, version).Error; err != nil {
+		return fmt.Errorf("clear centroid pending flag for topic %d: %w", topicID, err)
+	}
+	return nil
+}
+
+// ── 人工归属变更（lane-manual-correction D4/D5/D6） ────────────────────────
+// 归属变更是双向的：移除（解除归属）与加回，共用一个端点、同一套快照列口径。
+// 事实层只有人工可写的几列；质心/命中计数/状态一律不动（D1/D2）。
+
+// Manual assignment actions recorded in the section's audit columns.
+const (
+	// ManualAssignmentActionDetach — the node was removed from its lane.
+	ManualAssignmentActionDetach = "detach"
+	// ManualAssignmentActionAttach — the node was attached to a lane.
+	ManualAssignmentActionAttach = "attach"
+)
+
+var (
+	// ErrSectionNotFound means the addressed section does not exist.
+	ErrSectionNotFound = errors.New("section not found")
+	// ErrSectionAlreadyUnassigned means the section has no lane to leave —
+	// there is nothing to detach.
+	ErrSectionAlreadyUnassigned = errors.New("section has no topic assignment")
+	// ErrSectionAlreadyAssigned means the section already belongs to another
+	// lane that is NOT eligible for a 改挂. 改挂 from a **candidate**（动态）
+	// lane is allowed (its lane has not been promoted yet, so the material is
+	// still fluid); 改挂 from an **active** lane is deliberately not
+	// supported: the user expresses 「它不该在这儿」, not 「它该在那儿」 (D4).
+	ErrSectionAlreadyAssigned = errors.New("section already has a topic assignment")
+	// ErrReassignFromActiveLane means the section belongs to an active lane —
+	// moving it out of a promoted lane is not supported.
+	ErrReassignFromActiveLane = errors.New("section belongs to an active lane; 改挂 is not supported")
+	// ErrTopicOnOtherBoard means the attach target lives on another board.
+	ErrTopicOnOtherBoard = errors.New("topic belongs to another board")
+)
+
+// AssignmentChangeResult is the outcome of a manual lane-membership change.
+type AssignmentChangeResult struct {
+	SectionID uint `json:"section_id"`
+	// TopicID is the section's lane after the change; nil = 游离节点（不归属
+	// 任何泳道）.
+	TopicID *uint `json:"topic_id"`
+	// PreviousTopicID is the lane the section belonged to before the change.
+	PreviousTopicID *uint `json:"previous_topic_id"`
+	// Action is "detach" or "attach".
+	Action string `json:"action"`
+	// Changed reports whether any row was written. The idempotent attach
+	// (the node already belongs to the target lane) writes nothing and
+	// appends no audit row.
+	Changed bool `json:"changed"`
+	// Distance is the recomputed distance to the target anchor (attach only;
+	// nil when the node has no usable vector).
+	Distance *float64 `json:"topic_match_distance,omitempty"`
+	// BoardID is the board whose relation graph was rebuilt.
+	BoardID uint `json:"board_id"`
+}
+
+// BatchDetachResult is the outcome of a per-day batch detach.
+type BatchDetachResult struct {
+	TopicID uint `json:"topic_id"`
+	// PeriodDate is the released day ("YYYY-MM-DD").
+	PeriodDate string `json:"period_date"`
+	// Detached is how many nodes were released.
+	Detached int `json:"detached"`
+	// SectionIDs are the released nodes.
+	SectionIDs []uint `json:"section_ids"`
+	// BoardID is the board whose relation graph was rebuilt.
+	BoardID uint `json:"board_id"`
+}
+
+// SetSectionTopicAssignment changes one node's lane membership
+// (lane-manual-correction D4/D5, tasks 3.1/3.3/3.5/3.6/3.7).
+//
+// targetTopicID == nil → 移除（解除归属）: the four snapshot columns
+// (persistent_topic_id / topic_match_distance / topic_match_confidence /
+// topic_status_at_report) are set to NULL, lane_tier keeps its value and the
+// audit columns record action=detach with the topic it came from.
+//
+// targetTopicID != nil → 加回: the node must currently be unassigned (改挂 is
+// rejected), the target must live on the same board and must not be archived.
+// persistent_topic_id becomes the target, topic_match_confidence becomes
+// "manual", topic_match_distance is recomputed against the target's anchor
+// (centroid first, embedding fallback) and topic_status_at_report is NULL.
+//
+// Both directions run in ONE transaction that ends with RebuildBoardRelations
+// (identity edges are derived from persistent_topic_id, so a membership change
+// necessarily changes edges) and flags the affected topic with
+// centroid_pending_recompute — the centroid itself is NOT recomputed here
+// (D1/D2: 质心只由下一次日报生成统一重算).
+//
+// The topic's hit_count / consecutive_hits / status / first_seen_date /
+// last_seen_date are never touched: hit counters belong to the algorithm
+// (flow/topic-graph 红线 1) and archiving is a user-explicit operation only.
+func (r *TopicGraphRepository) SetSectionTopicAssignment(sectionID uint, targetTopicID *uint) (*AssignmentChangeResult, error) {
+	row, err := r.loadAssignmentRow(sectionID)
+	if err != nil {
+		return nil, err
+	}
+
+	if targetTopicID == nil {
+		return r.detachSection(row)
+	}
+	return r.attachSection(row, *targetTopicID)
+}
+
+// assignmentRow is the slice of the section row a membership change needs:
+// the vector (for the recomputed distance), the current lane and the board
+// the node lives on.
+type assignmentRow struct {
+	ID                uint
+	Embedding         string
+	PersistentTopicID *uint
+	BoardID           uint
+}
+
+// loadAssignmentRow loads the section together with its board. The board is
+// derived from the report the section belongs to — the only place a section
+// learns which board it is on.
+func (r *TopicGraphRepository) loadAssignmentRow(sectionID uint) (*assignmentRow, error) {
+	var row assignmentRow
+	result := r.db.Raw(`
+		SELECT s.id AS id,
+		       s.embedding AS embedding,
+		       s.persistent_topic_id AS persistent_topic_id,
+		       rpt.semantic_board_id AS board_id
+		FROM daily_report_sections s
+		JOIN board_daily_reports rpt ON rpt.id = s.report_id
+		WHERE s.id = ?
+	`, sectionID).Scan(&row)
+	if result.Error != nil {
+		return nil, fmt.Errorf("load section %d: %w", sectionID, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return nil, ErrSectionNotFound
+	}
+	return &row, nil
+}
+
+// detachSection releases a node from its lane (移除). Only the four snapshot
+// columns and the audit columns are written; lane_tier and the content stay.
+//
+// The append-only trail (section_assignment_overrides) gets one row in the
+// same transaction — the section's own trace columns only keep the latest
+// change (review R-2: 「移除 → 加回」 used to erase the detach trail).
+func (r *TopicGraphRepository) detachSection(row *assignmentRow) (*AssignmentChangeResult, error) {
+	if row.PersistentTopicID == nil {
+		return nil, ErrSectionAlreadyUnassigned
+	}
+	previous := *row.PersistentTopicID
+	now := time.Now()
+
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&DailyReportSection{}).Where("id = ?", row.ID).Updates(map[string]interface{}{
+			"persistent_topic_id":             nil,
+			"topic_match_distance":            nil,
+			"topic_match_confidence":          nil,
+			"topic_status_at_report":          nil,
+			"manual_assignment_at":            now,
+			"manual_assignment_from_topic_id": previous,
+			"manual_assignment_action":        ManualAssignmentActionDetach,
+		}).Error; err != nil {
+			return fmt.Errorf("detach section %d: %w", row.ID, err)
+		}
+		if err := r.appendAssignmentOverride(tx, row.ID, &previous, nil, ManualAssignmentActionDetach); err != nil {
+			return err
+		}
+		// The lane that lost the node must be recomputed on the next daily
+		// report — its rolling window no longer contains the node.
+		if err := r.markTopicCentroidPending(tx, previous); err != nil {
+			return err
+		}
+		if err := r.rebuildRelations(tx, row.BoardID); err != nil {
+			return fmt.Errorf("rebuild relations: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return &AssignmentChangeResult{
+		SectionID:       row.ID,
+		TopicID:         nil,
+		PreviousTopicID: &previous,
+		Action:          ManualAssignmentActionDetach,
+		Changed:         true,
+		BoardID:         row.BoardID,
+	}, nil
+}
+
+// loadTopicForReassign loads the lane a node currently belongs to, so the
+// 改挂 guard can look at its status (candidate = movable, active = not).
+func (r *TopicGraphRepository) loadTopicForReassign(topicID uint) (*BoardPersistentTopic, error) {
+	var topic BoardPersistentTopic
+	if err := r.db.First(&topic, topicID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrTopicNotFound
+		}
+		return nil, fmt.Errorf("load topic %d for reassign: %w", topicID, err)
+	}
+	return &topic, nil
+}
+
+// reassignSection moves a node from a candidate（动态）lane into the target
+// lane (改挂). The source lane has not been promoted yet, so the material is
+// still fluid; moving a node out of an active lane is rejected upstream.
+//
+// Both lanes' rolling windows change → both get the pending-recompute mark,
+// and the assignment override is appended with the source lane recorded.
+func (r *TopicGraphRepository) reassignSection(
+	row *assignmentRow,
+	target BoardPersistentTopic,
+	source *BoardPersistentTopic,
+) (*AssignmentChangeResult, error) {
+	// 实算距离：section embedding → 目标锚点（centroid 优先、embedding 兜底）。
+	// 节点没有可用向量时距离无从算起 → 写 NULL（不伪造数字）。
+	var distance *float64
+	if vec, perr := repoParsePgVector(row.Embedding); perr == nil && len(vec) > 0 {
+		if anchor := topicAnchorVec(target); len(anchor) > 0 {
+			d := cosineDistance(vec, anchor)
+			distance = &d
+		}
+	}
+
+	now := time.Now()
+	updates := map[string]interface{}{
+		"persistent_topic_id":             target.ID,
+		"topic_match_confidence":          TopicConfManual,
+		"topic_status_at_report":          nil,
+		"manual_assignment_at":            now,
+		"manual_assignment_from_topic_id": &source.ID,
+		"manual_assignment_action":        ManualAssignmentActionAttach,
+	}
+	if distance != nil {
+		updates["topic_match_distance"] = *distance
+	} else {
+		updates["topic_match_distance"] = nil
+	}
+
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&DailyReportSection{}).Where("id = ?", row.ID).Updates(updates).Error; err != nil {
+			return fmt.Errorf("reassign section %d: %w", row.ID, err)
+		}
+		if err := r.appendAssignmentOverride(tx, row.ID, &source.ID, &target.ID, ManualAssignmentActionAttach); err != nil {
+			return err
+		}
+		// Both lanes' rolling windows changed → both get the pending mark.
+		if err := r.markTopicCentroidPending(tx, target.ID); err != nil {
+			return err
+		}
+		if err := r.markTopicCentroidPending(tx, source.ID); err != nil {
+			return err
+		}
+		if err := r.rebuildRelations(tx, row.BoardID); err != nil {
+			return fmt.Errorf("rebuild relations: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return &AssignmentChangeResult{
+		SectionID:       row.ID,
+		TopicID:         &target.ID,
+		PreviousTopicID: &source.ID,
+		Action:          ManualAssignmentActionAttach,
+		Changed:         true,
+		BoardID:         row.BoardID,
+	}, nil
+}
+
+// attachSection puts a currently unassigned node back into a lane (加回).
+// 改挂 from an active lane is rejected: the node must be removed first, then
+// re-attached. 改挂 from a candidate（动态）lane IS allowed — see
+// reassignSection.
+func (r *TopicGraphRepository) attachSection(row *assignmentRow, targetTopicID uint) (*AssignmentChangeResult, error) {
+	var topic BoardPersistentTopic
+	if err := r.db.First(&topic, targetTopicID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrTopicNotFound
+		}
+		return nil, fmt.Errorf("load topic %d: %w", targetTopicID, err)
+	}
+	if topic.SemanticBoardID != row.BoardID {
+		return nil, ErrTopicOnOtherBoard
+	}
+	if topic.Status == TopicStatusArchived {
+		return nil, ErrTopicArchived
+	}
+	if row.PersistentTopicID != nil {
+		if *row.PersistentTopicID == topic.ID {
+			// 幂等：节点已属目标泳道 → 不写任何列、不追加留痕。
+			return &AssignmentChangeResult{
+				SectionID:       row.ID,
+				TopicID:         &topic.ID,
+				PreviousTopicID: &topic.ID,
+				Action:          ManualAssignmentActionAttach,
+				Changed:         false,
+				BoardID:         row.BoardID,
+			}, nil
+		}
+		// 改挂：节点已属另一泳道。只有对方泳道是 **candidate（动态）** 时
+		// 允许挪走（尚未转正，素材仍在流动）；对方是 active（已转正）则拒绝
+		// （D4 的「SHALL NOT 改挂到 active 泳道」）。
+		previous, err := r.loadTopicForReassign(*row.PersistentTopicID)
+		if err != nil {
+			return nil, err
+		}
+		if previous.Status != TopicStatusCandidate {
+			return nil, ErrReassignFromActiveLane
+		}
+		return r.reassignSection(row, topic, previous)
+	}
+
+	// 实算距离：section embedding → 目标锚点（centroid 优先、embedding 兜底）。
+	// 节点没有可用向量时距离无从算起 → 写 NULL（与移除方向同义：无可比距离）。
+	var distance *float64
+	if vec, perr := repoParsePgVector(row.Embedding); perr == nil && len(vec) > 0 {
+		if anchor := topicAnchorVec(topic); len(anchor) > 0 {
+			d := cosineDistance(vec, anchor)
+			distance = &d
+		}
+	}
+
+	now := time.Now()
+	updates := map[string]interface{}{
+		"persistent_topic_id":             topic.ID,
+		"topic_match_confidence":          TopicConfManual,
+		"topic_status_at_report":          nil,
+		"manual_assignment_at":            now,
+		"manual_assignment_from_topic_id": nil,
+		"manual_assignment_action":        ManualAssignmentActionAttach,
+	}
+	if distance != nil {
+		updates["topic_match_distance"] = *distance
+	} else {
+		updates["topic_match_distance"] = nil
+	}
+
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&DailyReportSection{}).Where("id = ?", row.ID).Updates(updates).Error; err != nil {
+			return fmt.Errorf("attach section %d: %w", row.ID, err)
+		}
+		if err := r.appendAssignmentOverride(tx, row.ID, nil, &topic.ID, ManualAssignmentActionAttach); err != nil {
+			return err
+		}
+		// The target lane's rolling window now contains the node again.
+		if err := r.markTopicCentroidPending(tx, topic.ID); err != nil {
+			return err
+		}
+		if err := r.rebuildRelations(tx, row.BoardID); err != nil {
+			return fmt.Errorf("rebuild relations: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return &AssignmentChangeResult{
+		SectionID:       row.ID,
+		TopicID:         &topic.ID,
+		PreviousTopicID: nil,
+		Action:          ManualAssignmentActionAttach,
+		Changed:         true,
+		Distance:        distance,
+		BoardID:         row.BoardID,
+	}, nil
+}
+
+// DetachTopicSectionsByDate releases every node of one lane on one day
+// (lane-manual-correction「批量移除某一天」, task 3.2/3.3/3.5).
+//
+// Each released node follows the single-detach口径 (four snapshot columns
+// NULL, lane_tier preserved, audit action=detach); the whole batch runs in one
+// transaction that ends with a single RebuildBoardRelations.
+func (r *TopicGraphRepository) DetachTopicSectionsByDate(topicID uint, periodDate time.Time) (*BatchDetachResult, error) {
+	var topic BoardPersistentTopic
+	if err := r.db.First(&topic, topicID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrTopicNotFound
+		}
+		return nil, fmt.Errorf("load topic %d: %w", topicID, err)
+	}
+	day := NormalizeReportDate(periodDate).Format("2006-01-02")
+
+	var ids []uint
+	if err := r.db.Raw(`
+		SELECT s.id
+		FROM daily_report_sections s
+		JOIN board_daily_reports rpt ON rpt.id = s.report_id
+		WHERE s.persistent_topic_id = ?
+		  AND rpt.semantic_board_id = ?
+		  AND rpt.period_date = ?
+		ORDER BY s.id ASC
+	`, topicID, topic.SemanticBoardID, day).Scan(&ids).Error; err != nil {
+		return nil, fmt.Errorf("list nodes of topic %d on %s: %w", topicID, day, err)
+	}
+
+	now := time.Now()
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		for _, id := range ids {
+			if err := tx.Model(&DailyReportSection{}).Where("id = ?", id).Updates(map[string]interface{}{
+				"persistent_topic_id":             nil,
+				"topic_match_distance":            nil,
+				"topic_match_confidence":          nil,
+				"topic_status_at_report":          nil,
+				"manual_assignment_at":            now,
+				"manual_assignment_from_topic_id": topicID,
+				"manual_assignment_action":        ManualAssignmentActionDetach,
+			}).Error; err != nil {
+				return fmt.Errorf("detach section %d: %w", id, err)
+			}
+			if err := r.appendAssignmentOverride(tx, id, &topicID, nil, ManualAssignmentActionDetach); err != nil {
+				return err
+			}
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		if err := r.markTopicCentroidPending(tx, topicID); err != nil {
+			return err
+		}
+		if err := r.rebuildRelations(tx, topic.SemanticBoardID); err != nil {
+			return fmt.Errorf("rebuild relations: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	if ids == nil {
+		ids = []uint{}
+	}
+	return &BatchDetachResult{
+		TopicID:    topicID,
+		PeriodDate: day,
+		Detached:   len(ids),
+		SectionIDs: ids,
+		BoardID:    topic.SemanticBoardID,
+	}, nil
+}
+
+// markTopicCentroidPending flags a topic for a forced centroid recompute in
+// the next daily-report refresh round (D2). Only the flag is written — the
+// centroid column belongs to the algorithm (D1).
+func (r *TopicGraphRepository) markTopicCentroidPending(tx *gorm.DB, topicID uint) error {
+	if err := tx.Model(&BoardPersistentTopic{}).Where("id = ?", topicID).
+		Update("centroid_pending_recompute", true).Error; err != nil {
+		return fmt.Errorf("flag topic %d for centroid recompute: %w", topicID, err)
+	}
+	return nil
 }

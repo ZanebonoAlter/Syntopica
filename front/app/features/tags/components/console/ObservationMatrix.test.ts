@@ -88,8 +88,8 @@ describe('ObservationMatrix — 矩阵派生（MX 组，线索口径）', () => 
   it('MX-2b：线索全未知日（旧数据）→ 「?」不造 0，aria 注明线索数未知，有分区仍可开', () => {
     const source = fixtureSource()
     source.lanes[0]!.timeline.push(windowDay('2026-10-22', [
-      { threadCount: null, fallbackClueCount: null },
-      { threadCount: null, fallbackClueCount: null },
+      { threadCount: null },
+      { threadCount: null },
     ]))
     const wrapper = mountMatrix({
       resolveDay: tierResolver(source),
@@ -100,6 +100,25 @@ describe('ObservationMatrix — 矩阵派生（MX 组，线索口径）', () => 
     expect(cell.text()).toBe('?')
     expect(cell.attributes('aria-label')).toContain('线索数未知')
     expect(cell.attributes('disabled')).toBeUndefined()
+  })
+
+  it('tooltip 与格值同口径：综合稿只以差额出现，thread 总数不得当线索数', () => {
+    const source = fixtureSource()
+    source.lanes[0]!.timeline.push(windowDay('2026-10-22', [
+      { threadCount: 5, compositeCount: 2 },
+    ], { clueCount: 3 }))
+    const wrapper = mountMatrix({
+      resolveDay: tierResolver(source),
+      activeRows: buildObservationRows(source, AXIS14).filter(row => row.topicId === '10'),
+    })
+    const cell = wrapper.find('[data-testid="matrix-cell-10-2026-10-22"]')
+    expect(cell.text()).toBe('3')
+    const title = cell.attributes('title') ?? ''
+    expect(title).toContain('3 条线索')
+    expect(title).toContain('1 个主题桶')
+    expect(title).toContain('另有 2 条综合稿未计入')
+    expect(title).not.toContain('5 条线索')
+    expect(title).not.toContain('最多一天桶')
   })
 
   it('MX-3：有分区 0 线索 = 已知 0，可点击选日', async () => {
@@ -233,6 +252,17 @@ describe('ObservationMatrix — 名单稳定与三态', () => {
     expect(header.attributes('title')).toContain('4 个主题桶')
     expect(header.attributes('title')).not.toContain('事件线')
     expect(header.attributes('aria-label')).toBe(header.attributes('title'))
+  })
+
+  it('常驻口径说明可见：数字 = 当日线索合计 / 综合稿不计入（与图例行分开）', () => {
+    const wrapper = mountMatrix()
+    const basis = wrapper.find('[data-testid="matrix-basis-note"]')
+    expect(basis.exists()).toBe(true)
+    expect(basis.text()).toContain('数字 = 当日线索合计')
+    expect(basis.text()).toContain('非综合稿线索数之和')
+    expect(basis.text()).toContain('综合稿不计入')
+    // 常驻说明与图例是两行（不得互相吞掉）
+    expect(wrapper.find('[data-testid="matrix-legend"]').exists()).toBe(true)
   })
 
   it('事件身份未回填 footnote 整体退役（D4）：无论旧 props 取值都不再渲染', () => {
