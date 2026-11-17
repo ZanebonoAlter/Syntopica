@@ -12,7 +12,8 @@
  *  - 坐标映射只消费绘图区真实 rect；日期/线索数轴外置（TrendAxes）；
  *    series null=未取到（不补 0 不桥接），已知 0 画基线；无数据不造今天。
  */
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useIsNarrowViewport } from '~/composables/useMediaQuery'
 import TrendAxes from './TrendAxes.vue'
 import RangeDateForm from './RangeDateForm.vue'
 import RangeHandleHits from './RangeHandleHits.vue'
@@ -90,6 +91,48 @@ const emit = defineEmits<{
 
 const disabled = computed(() => props.bounds === null || props.range === null)
 const plotRef = ref<SVGSVGElement | null>(null)
+
+// ── 折叠（窄屏默认收起；手动选择优先并持久化） ──────────────────────────────
+const COLLAPSE_STORAGE_KEY = 'syntopica.orc.collapsed'
+const bodyId = 'orc-body'
+const isNarrow = useIsNarrowViewport()
+/** null = 用户未手动选择过（此时跟随视口宽度）。 */
+const collapsePref = ref<boolean | null>(null)
+
+const collapsed = computed(() => collapsePref.value ?? isNarrow.value)
+
+/** 折叠摘要：档位 + 起止日（MM-DD）；数据未就绪时直说。 */
+const rangeSummary = computed(() => {
+  if (disabled.value) return '数据未就绪'
+  const tier = props.sourceDays === 365 ? '近 1 年' : `${props.sourceDays} 天`
+  const range = props.range
+  if (!range) return tier
+  const short = (date: string) => date.slice(5)
+  return `${tier} · ${short(range.start)}~${short(range.end)}`
+})
+
+function toggleCollapsed(): void {
+  const next = !collapsed.value
+  collapsePref.value = next
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(COLLAPSE_STORAGE_KEY, next ? '1' : '0')
+    } catch {
+      // 隐私模式 / 配额满：忽略，退回窄屏默认
+    }
+  }
+}
+
+onMounted(() => {
+  if (typeof localStorage === 'undefined') return
+  try {
+    const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY)
+    if (raw === '1') collapsePref.value = true
+    else if (raw === '0') collapsePref.value = false
+  } catch {
+    // 忽略
+  }
+})
 
 /** 表单/键盘的可选界（缺省 = bounds，矩阵页行为不变）。 */
 const formBounds = computed<DateBounds | null>(() => props.selectableBounds ?? props.bounds)
@@ -244,9 +287,26 @@ const feedback = computed(() => {
 </script>
 
 <template>
-  <section class="orc" aria-label="时间视窗" data-testid="observation-range-controls">
+  <section
+    class="orc"
+    :class="{ 'is-collapsed': collapsed }"
+    aria-label="时间视窗"
+    data-testid="observation-range-controls"
+  >
     <div class="orc-head">
-      <h3 class="orc-title">时间视窗</h3>
+      <button
+        type="button"
+        class="orc-toggle"
+        :aria-expanded="!collapsed"
+        :aria-controls="bodyId"
+        data-testid="observation-range-toggle"
+        @click="toggleCollapsed"
+      >
+        <span class="orc-title">时间视窗</span>
+        <span v-if="collapsed" class="orc-summary" data-testid="observation-range-summary">{{ rangeSummary }}</span>
+        <span class="orc-chevron" aria-hidden="true">{{ collapsed ? '▸' : '▾' }}</span>
+      </button>
+      <template v-if="!collapsed">
       <div class="orc-tiers" role="group" aria-label="独立数据档（决定名单与排序）">
         <button
           v-for="days in tiers"
@@ -260,8 +320,10 @@ const feedback = computed(() => {
         >{{ days === 365 ? '近 1 年' : `${days} 天` }}</button>
       </div>
       <span class="orc-sub">Asia/Shanghai · 含起止日</span>
+      </template>
     </div>
 
+    <div :id="bodyId" v-show="!collapsed">
     <div v-if="disabled" class="orc-empty" data-testid="observation-range-empty">
       数据尚未就绪，暂不能设置观察范围。
     </div>
@@ -355,6 +417,7 @@ const feedback = computed(() => {
       <p class="orc-instruction">日期轴 · 拖动选区 / 两端 · 方向键逐日，Shift 逐周</p>
       <p class="orc-feedback" role="status" data-testid="observation-range-feedback">{{ feedback }}</p>
     </template>
+    </div>
   </section>
 </template>
 
@@ -363,6 +426,47 @@ const feedback = computed(() => {
   border-bottom: 1px solid var(--color-border-medium);
   padding-bottom: 8px;
   min-width: 0;
+}
+
+.orc-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.orc-toggle:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.orc-summary {
+  font-size: 12px;
+  opacity: 0.72;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.orc-chevron {
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.6;
+}
+
+.orc.is-collapsed {
+  padding-bottom: 0;
+}
+
+.orc.is-collapsed .orc-head {
+  min-height: 32px;
 }
 
 .orc-head {

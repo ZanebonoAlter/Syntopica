@@ -11,7 +11,7 @@
  *  - series：null 不桥接不补 0（分段折线）、Y 量级刻度、X 首/中/末日期、空/加载态。
  * mock 说明：getBoundingClientRect 打桩为 left=0/width=400（组件层坐标映射），非生产 e2e。
  */
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import ObservationRangeControls from './ObservationRangeControls.vue'
@@ -464,5 +464,70 @@ describe('ObservationRangeControls — 配置化扩展（unify-lane-workbench 6.
     await wrapper.find('form').trigger('submit')
     expect(wrapper.emitted('commit')).toBeUndefined()
     expect(wrapper.text()).toContain('日期超出可取数范围')
+  })
+})
+
+
+// ── 折叠（make-range-controls-collapsible） ───────────────────────────────────
+// 窄屏判定走 useIsNarrowViewport（内部基于 matchMedia）；happy-dom 无真实视口，
+// 故以模块级开关驱动，其余 36 条用例保持默认 false（宽屏展开）不受影响。
+const collapseState = vi.hoisted(() => ({ narrow: false }))
+vi.mock('~/composables/useMediaQuery', async () => {
+  const { computed } = await import('vue')
+  return { useIsNarrowViewport: () => computed(() => collapseState.narrow) }
+})
+
+describe('ObservationRangeControls 折叠', () => {
+  const toggleOf = (w: ReturnType<typeof mountControls>['wrapper']) => w.get('[data-testid="observation-range-toggle"]')
+  const summaryOf = (w: ReturnType<typeof mountControls>['wrapper']) => w.find('[data-testid="observation-range-summary"]')
+
+  beforeEach(() => {
+    localStorage.clear()
+    collapseState.narrow = false
+  })
+
+  it('C1 宽屏默认展开：aria-expanded=true 且无摘要行', () => {
+    const w = mountControls().wrapper
+    expect(toggleOf(w).attributes('aria-expanded')).toBe('true')
+    expect(summaryOf(w).exists()).toBe(false)
+  })
+
+  it('C2 点击收起源：摘要含档位与起止日（MM-DD），主体不可见', async () => {
+    const w = mountControls().wrapper
+    await toggleOf(w).trigger('click')
+    expect(toggleOf(w).attributes('aria-expanded')).toBe('false')
+    const summary = summaryOf(w)
+    expect(summary.exists()).toBe(true)
+    expect(summary.text()).toContain('14 天')
+    expect(summary.text()).toContain('10-10')
+    expect(summary.text()).toContain('10-23')
+    // v-show 通过内联 display 收起主体（happy-dom 下 isVisible 对选择器不敏感，直读 style）
+    expect((w.get('#orc-body').element as HTMLElement).style.display).toBe('none')
+  })
+
+  it('C3 窄屏默认收起', () => {
+    collapseState.narrow = true
+    const w = mountControls().wrapper
+    expect(toggleOf(w).attributes('aria-expanded')).toBe('false')
+  })
+
+  it('C4 手动展开写 localStorage，重新挂载仍展开（手动优先于窄屏默认）', async () => {
+    collapseState.narrow = true
+    const w = mountControls().wrapper
+    expect(toggleOf(w).attributes('aria-expanded')).toBe('false')
+    await toggleOf(w).trigger('click')
+    expect(localStorage.getItem('syntopica.orc.collapsed')).toBe('0')
+    const remounted = mountControls().wrapper
+    await nextTick()
+    expect(toggleOf(remounted).attributes('aria-expanded')).toBe('true')
+  })
+
+  it('C5 折叠切换不触发 preview / commit / source-change', async () => {
+    const w = mountControls().wrapper
+    await toggleOf(w).trigger('click')
+    await toggleOf(w).trigger('click')
+    expect(w.emitted('preview')).toBeUndefined()
+    expect(w.emitted('commit')).toBeUndefined()
+    expect(w.emitted('source-change')).toBeUndefined()
   })
 })
