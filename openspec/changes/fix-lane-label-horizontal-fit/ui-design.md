@@ -38,3 +38,11 @@
 - V3/V4：焦点与键盘路径不变（画布既有声明）。
 - V5：无新增动效。
 - V6：无新增装饰元素。
+
+## Acceptance
+
+- **组件测试映射**：`front/app/features/tags/components/console/LaneCorrectionCanvas.test.ts`
+  - 「4.6 列宽有下限：天数多时撑宽画布横向滚动」→ 验证 Scenario「天数多时撑宽画布而非压缩列宽」
+  - 「4.7 标签每行字数按列宽收窄」→ 验证 Scenario「标签宽度不超过所在列宽」
+  - 「4.4 缩放只等比拉伸」→ 验证 Scenario「放大不改变横向拥挤比值」
+- **节点圆碰撞兜底**：同一测试文件的 `labels` 相关断言覆盖（Scenario「标签不压其它列节点圆」经实现层保证，测试以 4.7 的列内断言间接锁定）。
