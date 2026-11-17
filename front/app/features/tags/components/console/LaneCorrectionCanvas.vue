@@ -125,7 +125,10 @@ const LABEL_TOP_GAP = 5
 /** 节点卡宽度固定（绝对定位卡片量宽会形成塌缩反馈环）。 */
 const CARD_WIDTH = 264
 /** 标题每行字数 / 最多行数（两行截断，title 属性给全名）。 */
-const LABEL_PER_LINE = 10
+/** 每行最多多少字（上限；实际按列宽收窄，见 labelPerLine）。 */
+const LABEL_PER_LINE_MAX = 10
+/** 标签字号（px）；须与 `.lcc-label { font-size }` 一致。 */
+const LABEL_FONT_SIZE = 11
 const LABEL_MAX_LINES = 2
 const LABEL_LINE_H = 12
 /**
@@ -257,7 +260,8 @@ function onSurfacePointerUp(): void {
 }
 
 // ── 布局（容器真实像素 1:1） ──────────────────────────────────────────────
-const vbWidth = computed(() => (containerWidth.value > 0 ? containerWidth.value : FALLBACK_WIDTH))
+/** 可视宽度（容器实测；未测量时用回退值）。 */
+const viewportWidth = computed(() => (containerWidth.value > 0 ? containerWidth.value : FALLBACK_WIDTH))
 
 interface Point { x: number, y: number }
 
@@ -270,7 +274,22 @@ const hasFold = computed(() => props.foldNodes.length > 0)
 /** 时间轴左缘（有折叠带时整体右移一个折叠带宽）。 */
 const axisX0 = computed(() => LEFT_PAD + (hasFold.value ? FOLD_W + FOLD_GAP : 0))
 
-const columnWidth = computed(() => Math.max(8, (vbWidth.value - axisX0.value - RIGHT_PAD) / Math.max(1, props.dates.length)))
+/**
+ * 列宽下限：低于它一个标题无处可放（两行×10 字 ≈ 116px），列与列挤成一团。
+ * 天数多到均分不够时**宁可把画布撑宽让人横向滚动，也不继续压缩列宽**，
+ * 与纵向「宁滚动不重叠」同一原则。
+ */
+const MIN_COLUMN_WIDTH = 64
+
+/** 列宽：理想均分，但不得低于下限（下限会撑宽画布，由容器横向滚动承接）。 */
+const columnWidth = computed(() => {
+  const avail = viewportWidth.value - axisX0.value - RIGHT_PAD
+  return Math.max(MIN_COLUMN_WIDTH, avail / Math.max(1, props.dates.length))
+})
+
+/** 画布内容宽（≥ 视口宽）；列宽被下限撑大时画布变宽，容器横向滚动。 */
+const vbWidth = computed(() =>
+  Math.max(viewportWidth.value, axisX0.value + columnWidth.value * props.dates.length + RIGHT_PAD))
 
 /**
  * 节点行距：按**节点总占高**（圆 + 两行标签）推导，保证上一个节点的标签底
@@ -488,17 +507,30 @@ function crossPath(node: LaneCorrectionNode): string {
 }
 
 // ── 标题（两行截断 + 冲突宁缺勿叠） ───────────────────────────────────────
-function wrapTitle(text: string): string[] {
+function wrapTitle(text: string, perLine: number): string[] {
   const out: string[] = []
   const source = String(text ?? '')
-  for (let i = 0; i < source.length && out.length < LABEL_MAX_LINES; i += LABEL_PER_LINE) {
-    out.push(source.slice(i, i + LABEL_PER_LINE))
+  for (let i = 0; i < source.length && out.length < LABEL_MAX_LINES; i += perLine) {
+    out.push(source.slice(i, i + perLine))
   }
-  if (source.length > LABEL_PER_LINE * LABEL_MAX_LINES) {
-    out[LABEL_MAX_LINES - 1] = `${out[LABEL_MAX_LINES - 1]!.slice(0, LABEL_PER_LINE - 1)}…`
+  if (source.length > perLine * LABEL_MAX_LINES) {
+    out[LABEL_MAX_LINES - 1] = `${out[LABEL_MAX_LINES - 1]!.slice(0, Math.max(1, perLine - 1))}…`
   }
   return out
 }
+
+/**
+ * 每行可放几个字：按**列宽**算，保证标签宽度不跨列。
+ *
+ * 这是「标签压邻列节点」的真正根治手段——只做 label↔圆 碰撞检测的话，
+ * 标签要么被大面积丢弃（宁缺勿叠过度），要么仍然跨列压字。让标签宽度
+ * 永远 ≤ 列宽，它就不可能碰到别的列；列宽被撑大（天数少 / 放大）时
+ * 每行字数自然变多，信息量随之恢复。
+ */
+const labelPerLine = computed(() => {
+  const usable = columnWidth.value - 6 // 留 3px/侧 内边距
+  return Math.max(2, Math.min(LABEL_PER_LINE_MAX, Math.floor(usable / LABEL_FONT_SIZE)))
+})
 
 interface PlacedLabel {
   id: string
@@ -508,18 +540,24 @@ interface PlacedLabel {
 }
 
 /**
- * 标题落位：节点下方两行；与**已放标签**冲突则跳过（宁缺勿叠）。
+ * 标题落位：节点下方两行；与**已放标签**或**其它节点圆**冲突则跳过（宁缺勿叠）。
  *
- * 已知边界（review R-5，独立问题未纳入本 change）：本实现只防 label↔label，
- * 不防 label↔节点圆、也不防 label↔节点卡（`.lcc-card` 是不透明 HTML 浮层）。
- * 列宽小于标签宽度时（如 30 天档列宽 ≈24px、标签框 ≈116px），标签仍可能
- * 横向压到邻列节点上。横向避让需另行 design，见 change
- * `fix-lane-row-gap-zoom` 的 review.md R-5。
+ * 为什么要防 label↔圆：列宽（尤其是 30 天以上档）往往小于标签宽度，一个标签
+ * 会横跨 4–5 列。若只防 label↔label，标签就会直接压在邻列节点的圆上——
+ * 这正是「看起来一直很挤」的主因（纵向行距只能解决同一天多成员的堆叠）。
+ * 装不下就跳过，列宽被撑大或用户放大后标签自然恢复。
  */
 const labels = computed<PlacedLabel[]>(() => {
   const placed: { x1: number, x2: number, y1: number, y2: number }[] = []
   const out: PlacedLabel[] = []
   const all = [...props.memberNodes, ...props.candidateNodes, ...props.removedNodes, ...props.readonlyNodes]
+  /** 全部节点圆（含只读/候选），标签只允许压在**自己的**圆下方。 */
+  const circles = all
+    .map(node => {
+      const point = allPoints.value.get(node.id)
+      return point ? { id: node.id, x: point.x, y: point.y, r: radiusOf(node) } : null
+    })
+    .filter((item): item is { id: string, x: number, y: number, r: number } => item !== null)
   const ordered = all.sort((a, b) => {
     const pa = allPoints.value.get(a.id)
     const pb = allPoints.value.get(b.id)
@@ -528,9 +566,9 @@ const labels = computed<PlacedLabel[]>(() => {
   for (const node of ordered) {
     const point = allPoints.value.get(node.id)
     if (!point) continue
-    const lines = wrapTitle(node.title)
+    const lines = wrapTitle(node.title, labelPerLine.value)
     if (!lines.length) continue
-    const width = estimateTextWidth(lines[0] ?? '', 11) + 6
+    const width = estimateTextWidth(lines[0] ?? '', LABEL_FONT_SIZE) + 6
     const height = lines.length * LABEL_LINE_H + 4
     const box = {
       x1: point.x - width / 2,
@@ -542,6 +580,11 @@ const labels = computed<PlacedLabel[]>(() => {
     if (box.y2 > canvasHeight.value - 8) continue
     const hit = placed.some(other => !(box.x2 < other.x1 || box.x1 > other.x2 || box.y2 < other.y1 || box.y1 > other.y2))
     if (hit) continue
+    const circleHit = circles.some(c =>
+      c.id !== node.id
+      && box.x2 >= c.x - c.r && box.x1 <= c.x + c.r
+      && box.y2 >= c.y - c.r && box.y1 <= c.y + c.r)
+    if (circleHit) continue
     placed.push(box)
     out.push({ id: node.id, lines, x: point.x, y: box.y1 })
   }

@@ -427,4 +427,48 @@ describe('LaneCorrectionCanvas · 成员区行距按节点占高（fix-lane-row-
     expect(after.height).toBeCloseTo(before.height * 1.1, 6)
     expect(before.gap / (2 * before.r)).toBe(after.gap / (2 * after.r))
   })
+
+  const dayList = (n: number) => Array.from({ length: n }, (_, i) => `2026-11-${String(i + 1).padStart(2, '0')}`)
+
+  it('4.6 列宽有下限：天数多时撑宽画布横向滚动，而不是继续压缩列宽', () => {
+    const seven = mountCanvas({
+      dates: dayList(7),
+      memberNodes: dayList(7).map((d, i) => node(`m${i}`, d, '一个比较长的成员标题')),
+      candidateNodes: [],
+      readonlyNodes: [],
+      foldNodes: [],
+    })
+    const thirty = mountCanvas({
+      dates: dayList(30),
+      memberNodes: dayList(30).map((d, i) => node(`m${i}`, d, '一个比较长的成员标题')),
+      candidateNodes: [],
+      readonlyNodes: [],
+      foldNodes: [],
+    })
+    // 7 天：均分（≈103px）够用 → 画布宽 = 视口宽 900，不出现横向滚动
+    expect(svgWidth(seven)).toBeCloseTo(900, 0)
+    // 30 天：均分只有 ≈24px → 抬到下限 64 → 画布撑宽（≈2098），由容器横向滚动承接
+    const w30 = svgWidth(thirty)
+    expect(w30).toBeGreaterThan(900)
+    const col30 = (w30 - 150 - 28) / 30
+    expect(col30).toBeGreaterThanOrEqual(64)
+    expect(col30).toBeLessThan(70)
+  })
+
+  it('4.7 标签每行字数按列宽收窄 → 标签宽度不跨列（根治横向压邻节点）', () => {
+    const dates = dayList(30)
+    const w = mountCanvas({
+      dates,
+      memberNodes: dates.map((d, i) => node(`m${i}`, d, '一个比较长的成员标题')),
+      candidateNodes: [],
+      readonlyNodes: [],
+      foldNodes: [],
+    })
+    const lines = w.findAll('text.lcc-label').map(el => (el.text() ?? '').replace('…', ''))
+    expect(lines.length).toBeGreaterThan(0)
+    // 列宽 64 / 字号 11 → 每行 ≤ floor((64-6)/11) = 5 字 → 标签框 ≈61px < 64px（不跨列）
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(5)
+    }
+  })
 })
