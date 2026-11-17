@@ -7,6 +7,7 @@ import {
   centroidRecommendations,
   clampZoom,
   cosineFor,
+  defaultMemberRadius,
   estimateTextWidth,
   laneSelectionState,
   laneSeriesFromDynamics,
@@ -436,6 +437,33 @@ describe('laneComposeLogic · unify-lane-workbench 点形统一（B1 / E8 / E13�
     expect(pointAppearance(0.3, 0.3, false, false, 5, 30).proximity).not.toBeNull()
     expect(pointAppearance(0.3 + 1e-6, 0.3, false, false, 5, 30).proximity).toBeNull()
     expect(pointAppearance(null, 0.3, false, false, 5, 30).proximity).toBeNull()
+  })
+})
+
+describe('laneComposeLogic · 成员半径与行距（fix-lane-row-gap-zoom 1.1 / 1.2）', () => {
+  it('列宽 8：半径有下限（≥3），不因窄列宽缩到看不见', () => {
+    const r = defaultMemberRadius(8)
+    expect(r).toBeGreaterThanOrEqual(3)
+    expect(r).toBeCloseTo(3.68, 10) // cap = max(3, min(16, 8 × 0.46))
+  })
+
+  it('列宽 20 / 46 / 80：单调不降，且上限 13.6', () => {
+    const r20 = defaultMemberRadius(20)
+    const r46 = defaultMemberRadius(46)
+    const r80 = defaultMemberRadius(80)
+    expect(r20).toBeLessThanOrEqual(r46)
+    expect(r46).toBeLessThanOrEqual(r80)
+    expect(r46).toBeCloseTo(13.6, 10)
+    expect(r80).toBeCloseTo(13.6, 10) // cap 封顶 16 → 基准半径封顶 13.6
+    expect(r20).toBeCloseTo(9.2, 10)
+    for (const r of [r20, r46, r80]) expect(r).toBeLessThanOrEqual(13.6)
+  })
+
+  it('与 pointAppearance 默认路径同源：成员半径恒等于 defaultMemberRadius', () => {
+    for (const width of [8, 20, 46, 80]) {
+      const member = pointAppearance(0.1, 0.3, true, false, 4, width)
+      expect(member.radius).toBe(defaultMemberRadius(width))
+    }
   })
 })
 

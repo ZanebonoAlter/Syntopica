@@ -306,3 +306,125 @@ describe('LaneCorrectionCanvas · 节点表达统一（unify-lane-workbench 4.3 
     expect(rReadonly).toBeLessThan(rMember)
   })
 })
+
+describe('LaneCorrectionCanvas · 成员区行距按节点占高（fix-lane-row-gap-zoom 4.1–4.3）', () => {
+  type Canvas = ReturnType<typeof mountCanvas>
+
+  /** 标签几何常量：须与组件 LABEL_TOP_GAP(5) + LABEL_MAX_LINES(2)×LABEL_LINE_H(12) 同步。 */
+  const LABEL_BLOCK_H = 5 + 2 * 12
+
+  /** 读节点真实 cy / r 属性（不读实现内部变量、不用快照）。 */
+  function pointOf(w: Canvas, id: string): { cy: number, r: number } {
+    const circle = w.find(`[data-testid="lane-node-${id}"]`).find('.lcc-point')
+    return { cy: Number(circle.attributes('cy')), r: Number(circle.attributes('r')) }
+  }
+
+  function gapOf(w: Canvas, top: string, bottom: string): number {
+    return Math.abs(pointOf(w, bottom).cy - pointOf(w, top).cy)
+  }
+
+  function svgHeight(w: Canvas): number {
+    return Number(w.find('[data-testid="lane-correction-canvas-svg"]').attributes('height'))
+  }
+
+  function svgWidth(w: Canvas): number {
+    return Number(w.find('[data-testid="lane-correction-canvas-svg"]').attributes('width'))
+  }
+
+  const SAME_DAY = [
+    node('d1', '2026-11-10', '同日成员一', { topicId: '7', topicLabel: 'AI 前沿', proximity: 0.9 }),
+    node('d2', '2026-11-10', '同日成员二', { topicId: '7', topicLabel: 'AI 前沿', proximity: 0.8 }),
+  ]
+
+  it('4.1 同一天两个成员：圆心距 ≥ 单个节点总占高（圆 + 两行标签）+ 4px（读真实 cy / r 属性）', () => {
+    const w = mountCanvas({ dates: ['2026-11-10'], memberNodes: SAME_DAY, candidateNodes: [], readonlyNodes: [], foldNodes: [] })
+    const top = pointOf(w, 'd1')
+    const bottom = pointOf(w, 'd2')
+    expect(bottom.cy).toBeGreaterThan(top.cy)
+    // 节点总占高 = 圆直径 + 标签起笔间距 + 两行标签 = 2r + LABEL_BLOCK_H
+    // 行距必须 ≥ 它 + 4，否则上一节点的标签会压在下一节点的圆上（原缺陷）
+    expect(bottom.cy - top.cy).toBeGreaterThanOrEqual(2 * top.r + LABEL_BLOCK_H + 4)
+  })
+
+  it('4.2 行距由节点占高决定、与天数无关：7 天与 30 天档行距相同且都够放标签', () => {
+    const dates = (count: number): string[] => Array.from({ length: count }, (_, index) => `2026-11-${String(index + 1).padStart(2, '0')}`)
+    const mount = (count: number): Canvas => mountCanvas({
+      dates: dates(count),
+      memberNodes: SAME_DAY,
+      candidateNodes: [],
+      readonlyNodes: [],
+      foldNodes: [],
+    })
+    const gap7 = gapOf(mount(7), 'd1', 'd2')
+    const gap30 = gapOf(mount(30), 'd1', 'd2')
+    // 本画布成员半径恒为 MEMBER_BASE_RADIUS（5.5，被 memberRadius 覆盖），
+    // 不随列宽变 → 行距按「圆 + 两行标签」算，也应恒定，与天数无关。
+    expect(gap7).toBe(gap30)
+    // 且必须够放一个节点（圆 11 + 起笔 5 + 两行标签 24 + 间隙 4 = 44）
+    expect(gap7).toBeGreaterThanOrEqual(44)
+  })
+
+  it('4.3 候选区不压成员，且成员多时画布变高（走滚动不压缩行距）', () => {
+    const candidate = [node('c1', '2026-11-10', '候选一', { proximity: 0.5, proximityKind: 'estimate' })]
+    const memberIds = ['m1', 'm2', 'm3', 'm4']
+    const one = mountCanvas({
+      dates: ['2026-11-10'],
+      memberNodes: [node('m1', '2026-11-10', '成员一')],
+      candidateNodes: candidate,
+      readonlyNodes: [],
+      foldNodes: [],
+    })
+    const four = mountCanvas({
+      dates: ['2026-11-10'],
+      memberNodes: memberIds.map(id => node(id, '2026-11-10', `成员${id}`)),
+      candidateNodes: candidate,
+      readonlyNodes: [],
+      foldNodes: [],
+    })
+    const lowestMember = Math.max(...memberIds.map(id => pointOf(four, id).cy))
+    expect(pointOf(four, 'c1').cy).toBeGreaterThan(lowestMember)
+    expect(svgHeight(four)).toBeGreaterThan(svgHeight(one))
+    // 行距不因成员变多而压缩（阈值必须覆盖标签块，否则旧的 16px 行距也能蒙混过关）
+    expect(gapOf(four, 'm3', 'm4')).toBeGreaterThanOrEqual(2 * pointOf(four, 'm4').r + LABEL_BLOCK_H + 4)
+  })
+
+  it('4.5 候选区 / 只读参照区同样不重叠，且候选与已移出首节点不重合', () => {
+    const w = mountCanvas({
+      dates: ['2026-11-10'],
+      memberNodes: [],
+      candidateNodes: [
+        node('c1', '2026-11-10', '候选一', { proximity: 0.6, proximityKind: 'estimate' }),
+        node('c2', '2026-11-10', '候选二', { proximity: 0.5, proximityKind: 'estimate' }),
+      ],
+      removedNodes: [node('rm1', '2026-11-10', '已移出一')],
+      readonlyNodes: [
+        node('r1', '2026-11-10', '只读一', { topicId: '9', topicLabel: '新能源' }),
+        node('r2', '2026-11-10', '只读二', { topicId: '9', topicLabel: '新能源' }),
+      ],
+      foldNodes: [],
+    })
+    // 候选区：同日两候选圆心距 ≥ 各自占高 + 4
+    const c1 = pointOf(w, 'c1')
+    const c2 = pointOf(w, 'c2')
+    expect(Math.abs(c2.cy - c1.cy)).toBeGreaterThanOrEqual(2 * Math.max(c1.r, c2.r) + LABEL_BLOCK_H + 4)
+    // 已移出与候选共用堆叠池 → 不得与任一候选同 y
+    const rm = pointOf(w, 'rm1')
+    expect([c1.cy, c2.cy]).not.toContain(rm.cy)
+    // 只读参照区：同日两节点圆心距同样满足
+    const r1 = pointOf(w, 'r1')
+    const r2 = pointOf(w, 'r2')
+    expect(Math.abs(r2.cy - r1.cy)).toBeGreaterThanOrEqual(2 * Math.max(r1.r, r2.r) + LABEL_BLOCK_H + 4)
+  })
+
+  it('4.4 缩放只等比拉伸：cy 差与 r 不变、SVG 尺寸 ×1.1（比值不变，放大不负责解拥挤）', async () => {
+    const w = mountCanvas({ dates: ['2026-11-10'], memberNodes: SAME_DAY, candidateNodes: [], readonlyNodes: [], foldNodes: [] })
+    const before = { gap: gapOf(w, 'd1', 'd2'), r: pointOf(w, 'd1').r, width: svgWidth(w), height: svgHeight(w) }
+    await w.find('[data-testid="lane-zoom-in"]').trigger('click')
+    const after = { gap: gapOf(w, 'd1', 'd2'), r: pointOf(w, 'd1').r, width: svgWidth(w), height: svgHeight(w) }
+    expect(after.gap).toBe(before.gap)
+    expect(after.r).toBe(before.r)
+    expect(after.width).toBeCloseTo(before.width * 1.1, 6)
+    expect(after.height).toBeCloseTo(before.height * 1.1, 6)
+    expect(before.gap / (2 * before.r)).toBe(after.gap / (2 * after.r))
+  })
+})

@@ -6,6 +6,11 @@
  * - **容器真实像素 1:1**：viewBox 宽 = 容器 `clientWidth`；窗口尺寸变化后重排重绘；
  * - **查看与选入分离**：点节点只改选中态（节点卡跟随），成员数不变；
  * - 拖拽平移不误伤点选（位移超阈值才算拖）；滚轮缩放 0.5×–3×，缩放只影响呈现；
+ * - **成员行距跟随节点占高**（fix-lane-row-gap-zoom）：同一天成员按行错开时行距 =
+ *   `max(16, 圆直径 + 标签起笔距 + 两行标签 + 4)` = 44px。**不按半径推导**：本画布成员
+ *   半径恒为 5.5（`MEMBER_BASE_RADIUS` 覆盖），按半径只得出 16px，而上一个节点的两行
+ *   标签（+34.5px）会压在下一个节点的圆上——这才是“同一天多节点拥挤”的真因。
+ *   成员区变高时分区下移，画布变高由容器滚动承接（宁滚动不重叠）；
  * - 图面文字 / 编号 / 横条不越出画布边界，标题冲突时宁缺勿叠。
  *
  * 修正模式专属：
@@ -113,12 +118,22 @@ const RIGHT_PAD = 28
 const BAND_Y = 44
 /** 成员节点基线。 */
 const MEMBER_Y = 86
+/** 成员节点半径（本画布固定小尺寸，不随列宽变化）。 */
+const MEMBER_BASE_RADIUS = 5.5
+/** 标题起笔距节点下沿的间距（引导线与标签共用）。 */
+const LABEL_TOP_GAP = 5
 /** 节点卡宽度固定（绝对定位卡片量宽会形成塌缩反馈环）。 */
 const CARD_WIDTH = 264
 /** 标题每行字数 / 最多行数（两行截断，title 属性给全名）。 */
 const LABEL_PER_LINE = 10
 const LABEL_MAX_LINES = 2
 const LABEL_LINE_H = 12
+/**
+ * 单个节点的纵向总占高：圆直径 + 标签起笔间距 + 标签最多两行。
+ * 行距必须≥它，否则上一个节点的标签会压在下一个节点的圆上——
+ * 这才是“同一天多节点拥挤”的真因（半径 5.5 直径 11 本身不重叠）。
+ */
+const NODE_BLOCK_H = MEMBER_BASE_RADIUS * 2 + LABEL_TOP_GAP + LABEL_MAX_LINES * LABEL_LINE_H
 
 const containerRef = ref<HTMLElement | null>(null)
 const containerWidth = ref(0)
@@ -246,8 +261,8 @@ const vbWidth = computed(() => (containerWidth.value > 0 ? containerWidth.value 
 
 interface Point { x: number, y: number }
 
-/** 画布可视高度（容器高度优先；不足时给最小可视区）。 */
-const canvasHeight = computed(() => Math.max(360, containerHeight.value || 360))
+/** 画布可视高度基线（容器高度优先；不足时给最小可视区）。 */
+const baseCanvasHeight = computed(() => Math.max(360, containerHeight.value || 360))
 
 /** 折叠带是否存在（当前首义集含窗口外节点）。 */
 const hasFold = computed(() => props.foldNodes.length > 0)
@@ -257,18 +272,71 @@ const axisX0 = computed(() => LEFT_PAD + (hasFold.value ? FOLD_W + FOLD_GAP : 0)
 
 const columnWidth = computed(() => Math.max(8, (vbWidth.value - axisX0.value - RIGHT_PAD) / Math.max(1, props.dates.length)))
 
-/** 画布分区（候选区 / 只读参照）：按容器高度自适应。 */
+/**
+ * 节点行距：按**节点总占高**（圆 + 两行标签）推导，保证上一个节点的标签底
+ * 不会碰到下一个节点的圆顶（留 4px 间隙）。三个区共用同一行距。
+ *
+ * 不按半径推导——半径最大值仅 5.5，按半径只会得出 16，标签仍然会压（原缺陷）；
+ * 也不随列宽变——半径不随列宽变，行距跟着变只会让窄窗更密。
+ */
+const nodeRowGap = computed(() => Math.max(16, NODE_BLOCK_H + 4))
+
+/** 同一天在同一区内的最大堆叠数（纯计数，不依赖 zones → 无循环）。 */
+const maxSlots = computed(() => {
+  const countOf = (nodes: readonly LaneCorrectionNode[]): number => {
+    const perDay = new Map<string, number>()
+    for (const node of nodes) perDay.set(node.date, (perDay.get(node.date) ?? 0) + 1)
+    return perDay.size === 0 ? 0 : Math.max(...perDay.values())
+  }
+  return {
+    member: countOf(props.memberNodes),
+    // 候选与已移出共用候选区坐标系，堆叠数必须合起来算（否则两者首个节点会重合）
+    candidate: countOf([...props.candidateNodes, ...props.removedNodes]),
+    readonly: countOf(props.readonlyNodes),
+  }
+})
+
+/** 每个区需要的高度：至少容纳该区同日最大堆叠（下限 60 保持旧观感）。 */
+const zoneHeights = computed(() => ({
+  zone1: Math.max(60, maxSlots.value.candidate * nodeRowGap.value),
+  zone2: Math.max(60, maxSlots.value.readonly * nodeRowGap.value),
+}))
+
+/**
+ * 成员区底部：最后一个成员圆心 + NODE_BLOCK_H。
+ *
+ * 注：NODE_BLOCK_H（40）的语义是「圆顶→标签底」，加在圆心上会多算 5.5px
+ * （半个圆）。这是**保守的高估**，不会反过来造成重叠；保留单一常量是为了
+ * 让行距与区域高度同源，避免两个近似值各自漂移。
+ */
+const membersBottom = computed(() => {
+  if (maxSlots.value.member === 0) return MEMBER_Y
+  return MEMBER_Y + (maxSlots.value.member - 1) * nodeRowGap.value + NODE_BLOCK_H
+})
+
+/**
+ * 画布高度：成员区 + 两个分区各自需要的堆叠高度 + 间隔与留白。
+ * 节点再多也不压缩行距，超出部分由容器纵向滚动承接（宁滚动不重叠）。
+ */
+const canvasHeight = computed(() => {
+  const needed = membersBottom.value + 48 + 30 + zoneHeights.value.zone1 + 46 + 30 + zoneHeights.value.zone2 + 56
+  return Math.max(baseCanvasHeight.value, needed)
+})
+
+/** 画布分区（候选区 / 只读参照）：起点跟随成员区底部，高度按各自堆叠需求。 */
 const zones = computed(() => {
-  const top = 156
-  const bottom = Math.max(top + 120, canvasHeight.value - 56)
-  const h = Math.max(60, (bottom - top - 92) / 2)
+  const top = Math.max(156, membersBottom.value + 48)
+  const holder = Math.max(60, (canvasHeight.value - 56 - top - 92) / 2)
+  // 有余量时两区均分剩余空间（保持旧观感），不足时用各自的需求高度（不压缩）。
+  const z1 = Math.max(zoneHeights.value.zone1, holder)
+  const z2 = Math.max(zoneHeights.value.zone2, holder)
   return {
     zone1Line: top,
     zone1Top: top + 30,
-    zone1H: h,
-    zone2Line: top + h + 46,
-    zone2Top: top + h + 46 + 30,
-    zone2H: h,
+    zone1H: z1,
+    zone2Line: top + z1 + 46,
+    zone2Top: top + z1 + 46 + 30,
+    zone2H: z2,
   }
 })
 
@@ -285,32 +353,32 @@ const points = computed(() => {
   const memberSlot = new Map<string, number>()
   const candidateSlot = new Map<string, number>()
   const readonlySlot = new Map<string, number>()
-  const removedSlot = new Map<string, number>()
   const z = zones.value
 
   for (const node of props.memberNodes) {
     const key = node.date
     const slot = memberSlot.get(key) ?? 0
     memberSlot.set(key, slot + 1)
-    map.set(node.id, { x: xForDate(node.date), y: MEMBER_Y + slot * 16 })
+    map.set(node.id, { x: xForDate(node.date), y: MEMBER_Y + slot * nodeRowGap.value })
   }
   for (const node of props.candidateNodes) {
     const key = node.date
     const slot = candidateSlot.get(key) ?? 0
     candidateSlot.set(key, slot + 1)
-    map.set(node.id, { x: xForDate(node.date), y: z.zone1Top + slot * 22 })
+    map.set(node.id, { x: xForDate(node.date), y: z.zone1Top + slot * nodeRowGap.value })
   }
+  // 已移出节点与候选节点共用同一区坐标系与同一个堆叠池（否则两者首个节点会重合）。
   for (const node of props.removedNodes) {
     const key = node.date
-    const slot = removedSlot.get(key) ?? 0
-    removedSlot.set(key, slot + 1)
-    map.set(node.id, { x: xForDate(node.date), y: z.zone1Top + slot * 22 })
+    const slot = candidateSlot.get(key) ?? 0
+    candidateSlot.set(key, slot + 1)
+    map.set(node.id, { x: xForDate(node.date), y: z.zone1Top + slot * nodeRowGap.value })
   }
   for (const node of props.readonlyNodes) {
     const key = node.date
     const slot = readonlySlot.get(key) ?? 0
     readonlySlot.set(key, slot + 1)
-    map.set(node.id, { x: xForDate(node.date), y: z.zone2Top + slot * 12 })
+    map.set(node.id, { x: xForDate(node.date), y: z.zone2Top + slot * nodeRowGap.value })
   }
   return map
 })
@@ -338,8 +406,6 @@ const allPoints = computed(() => {
 })
 
 // ── 节点表达（unify-lane-workbench D7：pointAppearance 唯一入口） ──────────
-const MEMBER_BASE_RADIUS = 5.5
-
 function isMember(id: string): boolean {
   return props.memberNodes.some(item => item.id === id)
 }
@@ -441,7 +507,15 @@ interface PlacedLabel {
   y: number
 }
 
-/** 标题落位：节点下方两行；与已放标题或节点卡冲突则跳过（宁缺勿叠）。 */
+/**
+ * 标题落位：节点下方两行；与**已放标签**冲突则跳过（宁缺勿叠）。
+ *
+ * 已知边界（review R-5，独立问题未纳入本 change）：本实现只防 label↔label，
+ * 不防 label↔节点圆、也不防 label↔节点卡（`.lcc-card` 是不透明 HTML 浮层）。
+ * 列宽小于标签宽度时（如 30 天档列宽 ≈24px、标签框 ≈116px），标签仍可能
+ * 横向压到邻列节点上。横向避让需另行 design，见 change
+ * `fix-lane-row-gap-zoom` 的 review.md R-5。
+ */
 const labels = computed<PlacedLabel[]>(() => {
   const placed: { x1: number, x2: number, y1: number, y2: number }[] = []
   const out: PlacedLabel[] = []
@@ -461,8 +535,8 @@ const labels = computed<PlacedLabel[]>(() => {
     const box = {
       x1: point.x - width / 2,
       x2: point.x + width / 2,
-      y1: point.y + radiusOf(node) + 5,
-      y2: point.y + radiusOf(node) + 5 + height,
+      y1: point.y + radiusOf(node) + LABEL_TOP_GAP,
+      y2: point.y + radiusOf(node) + LABEL_TOP_GAP + height,
     }
     if (box.x1 < 0 || box.x2 > vbWidth.value) continue
     if (box.y2 > canvasHeight.value - 8) continue

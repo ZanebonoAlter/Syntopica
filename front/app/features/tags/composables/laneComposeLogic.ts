@@ -393,6 +393,18 @@ export function placeLabels(
 }
 
 /**
+ * 成员节点基准半径（由列宽推导）。单一公式源：
+ * `pointAppearance` 与画布行距计算都走这里，避免两处漂移。
+ *
+ * - `cap = max(3, min(16, columnWidth × 0.46))`——列宽越窄上限越小，但不小于 3px；
+ * - 基准半径落在 `[min(cap,10), cap]` 的 0.85 位置（大列宽下稳定在 13.6px）。
+ */
+export function defaultMemberRadius(columnWidth: number): number {
+  const cap = Math.max(3, Math.min(16, columnWidth * 0.46))
+  return Math.max(Math.min(cap, 10), cap * 0.85)
+}
+
+/**
  * 点的视觉映射（**只表达接近程度，不是置信度**）。
  *
  * - 普通点半径下限 3px；只读参照下限 2.5px；
@@ -417,7 +429,7 @@ export function pointAppearance(
   // 按自己的布局密度给固定尺寸（缺省用 cap 档位公式，编排画布视觉不变）。
   const memberBase = Number.isFinite(flags.memberRadius) && flags.memberRadius! > 0
     ? Math.max(3, flags.memberRadius!)
-    : Math.max(Math.min(cap, 10), cap * 0.85)
+    : defaultMemberRadius(columnWidth)
   // 推荐点半径恒小于已选点半径：大小只表达「接近程度」，选中只由实心＋✓表达。
   // memberRadius 覆盖时同步压 recommendCap（否则固定小尺寸成员会被大候选压过）。
   const recommendCap = Math.min(cap * 0.72, memberBase - 0.5)
