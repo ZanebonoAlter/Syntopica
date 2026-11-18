@@ -197,7 +197,7 @@ Fallback 标签同等对待：fallback 路径产生的标签也携带 `match_rea
 
 ### Requirement: 日报分段并行生成
 系统 SHALL 保持 Call C×K 并行，Call A SHALL 改为落库、归属与跨期去重之后执行：
-- **Call A（今日重点）**：输入热度 top 8 事件线及其本期标签事实，输出含 story_id/title/reason/tag_ids 的重点；归属失败或无可用线时 SHALL 选择既有标签聚类回退模式，story_id 为空
+- **Call A（今日重点）**：输入当天同事件聚簇 Top 8 候选及其标签事实（composite 线索同权，见「今日重点聚簇候选」），输出含 title/reason/tag_ids 的重点；聚簇零候选时 SHALL 选择既有标签聚类回退模式，cluster_id 为空
 - **Call C×K（聚类叙事线索）**：每个聚类一次调用，输入该聚类标签，输出 0-N 条线索（仅 title + summary + tag_ids + confidence）
 
 Call C 生成完成后，系统 SHALL 将线程作为 `daily_report_threads` 表的行持久化。
@@ -210,7 +210,7 @@ promptVersion SHALL 从当前 6.0 升级未使用版本，以区分旧并行与�
 
 #### Scenario: 并行生成成功
 - **WHEN** 有 5 个聚类
-- **THEN** 系统 SHALL 并行发起 Call C×5，在落库、归属与去重后发起一次 Call A（既有非法响应重试除外），SHALL NOT 提前调用或异步二次刷新重点
+- **THEN** 系统 SHALL 并行发起 Call C×5，在落库后发起一次 Call A（既有非法响应重试除外），SHALL NOT 提前调用或异步二次刷新重点
 
 #### Scenario: Thread 输出不含 status
 - **WHEN** Call C 为某聚类生成 3 条 thread
@@ -1093,39 +1093,6 @@ JSON schema 中 `summary` / `reason` 字段的 description SHALL 追加「须基
 - **WHEN** 某日报含 `body`/`flash`/`hidden` 三种 display_tier 的事件
 - **THEN** 日报详情读路径 SHALL 只返回 `body` 事件；`flash`/`hidden` 行 SHALL 仍在库中可查（供未来快讯 UI），直接数据库读取 SHALL 仍可见
 
-### Requirement: 事件线热度先筛重点候选
-系统 SHALL 在本 report 的 single、已归属且至少有一条可见 body thread 的存活事件线中去重筛选候选。热度 SHALL 复用 `heat-v1-48h-hl24h`，以 report.period_date 北京时间 23:59:59 为 t，窗口 `[t-48h,t]` 内每 participant_key 最后 observed_at 的 `0.5^((t-last_at)/24h)` 之和为 H、去重参与者数为 P。排序 SHALL 为原始 H 降序 → P 降序 → 存活 id 升序，最多 8 条，不按 rounded heat 排序、不用 lane_heat 或文章/分区数替代。
-
-每个候选 SHALL 附标题、来源数、热度和本期标签 label/description/代表文章事实；LLM SHALL 只从这 8 条以内候选中选至多 3 条不同故事写 title/reason，SHALL NOT 编造事实、数字、情绪或因果。来源数与热度 SHALL 由服务端补齐快照。模型 story_id SHALL 属当次候选白名单，tag_ids SHALL 属该 story 的本期事实白名单；过滤后空 tag、空白标题理由、集外 id 或类型错误 SHALL 按既有语义非法响应同参重试一次；合法 [] 不重试，最终失败仍 []。重复 story SHALL 保留首条。候选不足允许 1 条，零候选 SHALL 在调用前选择标签回退，不伪造身份。
-
-#### Scenario: 候选按热度而非桶数截断
-- **WHEN** 本期有 10 条可用事件线且热度排序明确，第 9 条拥有最多 section
-- **THEN** LLM SHALL 只收到排序前 8 条的事实与热度，第 9 条 SHALL NOT 因桶数进入候选
-
-#### Scenario: 同分与精度不反转
-- **WHEN** H 相同但 P 不同，或 H/P 均相同，或两个 H 四舍五入后相同但原值不同
-- **THEN** SHALL 依次按 P 降序/id 升序破同分，未舍入 H 更高者仍排前
-
-#### Scenario: 来源窗口与半衰期
-- **WHEN** t 前 24h、48h、49h 各有不同 feed 报道，另有 t 后信号
-- **THEN** H SHALL 为 0.75、P SHALL 为 2，49h 前与未来信号 SHALL NOT 计入，同 feed 多报道只计最后一次
-
-#### Scenario: 只可从候选事实写文案
-- **WHEN** 模型返回集外 story_id 或仅含别的故事 tag_ids 的重点
-- **THEN** SHALL 判非法并按既有上限重试，SHALL NOT 将该条作为合法重点落库
-
-#### Scenario: 无事件线走标签回退
-- **WHEN** 今日全部 composite、全部未归属或所有已归属事件均无 body 落点
-- **THEN** SHALL 选择现有标签聚类重点路径，story_id 为空，正文/归属/signals SHALL NOT 为了凑候选被修改
-
-#### Scenario: 少量候选与合法空返回
-- **WHEN** 只有一条候选或候选事实不足导致模型返回 []
-- **THEN** SHALL 分别允许一条重点或合法空数组，SHALL NOT 为凑 2 条编造内容或重试合法 []
-
-#### Scenario: 重点快照与旧数据兼容
-- **WHEN** 读取新故事重点、旧 tag_ids-only 重点或 JSON null
-- **THEN** 新重点 SHALL 返回生成时来源/热度/版本/截止时刻/不完整标记，旧重点 SHALL 不伪造快照，JSON null SHALL 归一为 []，首条重点仍为报告 title/summary 来源，无重点仍用既有兜底
-
 ### Requirement: 昨日重点延续徽标
 每条重点的 `is_progress` SHALL 在详情读取时按同 board、精确前一北京时间日历日已完成报告的 highlights 集合派生。今天与昨天非空 story_id SHALL 同时经同版块 merged_into 一跳解析为存活 id 后比较。同线 SHALL 标「进展」，可读提示 SHALL 为「昨日重点再次入选」；无昨日、空/旧重点、坏引用或跨 board SHALL 不标。SHALL NOT 用最近一期代替昨日，SHALL NOT 用线程 is_development 代替集合比较或据此修改跨期去重。
 
@@ -1168,3 +1135,36 @@ JSON schema 中 `summary` / `reason` 字段的 description SHALL 追加「须基
 - **WHEN** 用户从雷达打开 `/tags/1974/2026-11-06?story=42`，该期正文含事件线 42 的 thread
 - **THEN** 阅读台 SHALL 定位该事件线在正文 DOM 顺序中的第一条 thread 并高亮 2s
 - **AND** 当该期正文已无事件线 42 的 thread 时 SHALL 提示「本期正文暂无对应事件」且不滚动，SHALL NOT 跳到近似位置
+
+### Requirement: 今日重点聚簇候选
+系统 SHALL 在日报落库尾部为每版块生成「今日重点」候选：当天线索命中的 event 标签按 related-event 向量相似度聚簇（向量聚簇 → 语义向量兜底 → 主体近似三级降级），候选排序 SHALL 为簇内内容身份去重文章数 DESC → 簇内标签数 DESC → 代表标签 id ASC，最多保留 8 条。LLM SHALL 只从候选白名单内选至多 3 条写 title/reason，SHALL NOT 编造事实或数字——簇文章数、簇身份等数值快照一律由服务端计算补齐（`cluster_id` / `article_count` / `cluster_mode` / `data_as_of` / `research_at`），展示序即服务端候选序。
+
+**聚簇输入 SHALL NOT 因线索 `scope=composite` 被排除（本 change 起）**：composite 线索（同事件多表述标签聚合）的 event 标签 SHALL 与 single 线索同权参与聚簇。跨事件混编标签 SHALL 由聚簇相似度门槛隔离（自成小簇、不并入单事件簇）；composite「SHALL NOT 计入事件数、SHALL NOT 建立事件线」的既有语义 SHALL 不变。当天线索均无 event 标签或聚簇产出零候选时 SHALL 走标签回退模式（cluster_id 为空、快照字段缺省、不伪造篇数）。
+
+#### Scenario: 单事件多标签大簇进候选
+- **WHEN** 某线索聚合 17 个同事件不同表述的 event 标签、关联 20 篇文章（scope=composite），当天另有多个 1 篇文章的单标签线索
+- **THEN** 聚簇 SHALL 将这 17 个标签聚为一簇、簇内去重文章数为 20 篇级，该簇 SHALL 排候选白名单首位
+
+#### Scenario: 混编标签自成小簇不污染
+- **WHEN** 某混编标签横跨 5 个事件共 12 篇文章，与任一单事件标签的向量距离均超聚簇阈值
+- **THEN** 该标签 SHALL 自成一簇、SHALL NOT 并入任何单事件簇，其簇文章数按自身关联文章去重计算
+
+#### Scenario: 全 composite 日报不再走标签回退
+- **WHEN** 当天全部线索 scope 均为 composite 且均含 event 标签
+- **THEN** 聚簇 SHALL 正常产出候选，SHALL NOT 仅因线索为 composite 而进入标签回退模式
+
+#### Scenario: 候选按簇内文章数截断
+- **WHEN** 本期聚出 10 个簇且去重文章数排序明确，第 9 簇的标签数最多
+- **THEN** LLM SHALL 只收到前 8 簇的事实，第 9 簇 SHALL NOT 因标签数进入候选
+
+#### Scenario: 模型只从白名单挑且不输出数字
+- **WHEN** 模型返回白名单外的簇身份或自填 article_count 数值
+- **THEN** SHALL 按既有非法语义同参重试，数值快照 SHALL 仅由服务端计算落库
+
+#### Scenario: 零候选走标签回退
+- **WHEN** 当天线索均无 event 标签或聚簇产出为空
+- **THEN** SHALL 走标签回退模式，cluster_id 为空、快照字段缺省不伪造篇数，正文/归属/事件数不受影响
+
+#### Scenario: 旧重点快照读取兼容
+- **WHEN** 读取本 change 之前落库的重点（旧聚簇口径或标签回退产物）
+- **THEN** 快照字段 SHALL 原样返回、不回填不重算；该日报被重建时 SHALL 按新口径重算重点

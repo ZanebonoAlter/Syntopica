@@ -28,10 +28,17 @@ func TestRankEventClusterCandidatesOrderAndLimit(t *testing.T) {
 	require.Equal(t, uint(10), ranked[2].ClusterID)
 	require.Equal(t, uint(30), ranked[3].ClusterID)
 
-	// 上限 8：第 9 名不进候选，且不按 section 数 / 泳道热度替代。
+	// 上限 8：第 9 名不进候选，且不按 section 数 / 泳道热度替代；
+	// 第 9/10 簇标签数最多（4 标签 vs 其余 1 标签）也不进——标签数只是
+	// 同篇数时的次级键，不能凭标签数挤进候选（delta spec Scenario
+	// 「候选按簇内文章数截断」的字面覆盖）。
 	many := make([]EventCluster, 0, 10)
 	for i := 1; i <= 10; i++ {
-		many = append(many, EventCluster{ClusterID: uint(i), TagIDs: []uint{uint(i)}, ArticleCount: 100 - i})
+		tags := []uint{uint(i)}
+		if i >= 9 {
+			tags = []uint{uint(i), uint(i) + 100, uint(i) + 200, uint(i) + 300}
+		}
+		many = append(many, EventCluster{ClusterID: uint(i), TagIDs: tags, ArticleCount: 100 - i})
 	}
 	ranked = RankEventClusterCandidates(many, 8)
 	require.Len(t, ranked, 8)

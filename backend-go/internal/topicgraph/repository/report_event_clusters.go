@@ -16,17 +16,22 @@ import (
 // 兜底。聚簇算法与模型调用在 service 层（daily_report_event_cluster.go），
 // 结果不落任何表。
 
-// ReportEventThread is one non-composite thread's event-tag / evidence
-// projection. Composite (综合稿) threads are excluded at the query level: a
-// multi-event piece must not enter any cluster nor inflate a cluster's article
-// count (spec: 综合稿不进聚簇).
+// ReportEventThread is one report thread's event-tag / evidence projection.
+// Composite (综合稿) threads are included since
+// widen-highlight-cluster-candidates (2026-11-15): a single event voiced by
+// many near-duplicate tags aggregates into one composite thread, and its
+// event tags SHALL cluster with equal weight — the old entry-level scope
+// exclusion starved the day's biggest cluster. Cross-event mixed tags are
+// isolated by the clustering similarity threshold (own small cluster), not
+// by this entry filter (spec: 今日重点聚簇候选).
 type ReportEventThread struct {
 	TagIDs     []uint
 	ArticleIDs []uint
 }
 
-// ListReportEventThreads returns the report's non-composite threads with their
-// event tags and related article ids. Order is thread id ASC (deterministic).
+// ListReportEventThreads returns the report's threads (composite included)
+// with their event tags and related article ids. Order is thread id ASC
+// (deterministic).
 func (r *TopicGraphRepository) ListReportEventThreads(reportID uint) ([]ReportEventThread, error) {
 	var rows []struct {
 		TagIDs            JSON
@@ -35,7 +40,6 @@ func (r *TopicGraphRepository) ListReportEventThreads(reportID uint) ([]ReportEv
 	if err := r.db.Table("daily_report_threads").
 		Select("tag_ids, related_article_ids").
 		Where("report_id = ?", reportID).
-		Where("COALESCE(scope, '') <> ?", ThreadScopeComposite).
 		Order("id ASC").
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("event cluster: report %d threads: %w", reportID, err)

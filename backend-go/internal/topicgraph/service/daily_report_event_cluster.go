@@ -115,8 +115,10 @@ func buildDailyReportEventClusters(ctx context.Context, boardID, reportID uint, 
 	if err != nil {
 		return nil, err
 	}
-	// tagHits counts the day's non-composite threads carrying each event tag
-	// (the truncation ranking); articleByTag unions the same threads' evidence.
+	// tagHits counts the day's threads carrying each event tag (the truncation
+	// ranking); articleByTag unions the same threads' evidence. Composite
+	// threads join with equal weight since widen-highlight-cluster-candidates
+	// (scope is no longer a filter at the repository entry).
 	tagHits := make(map[uint]int)
 	articleByTag := make(map[uint][]uint)
 	for _, thread := range threads {
@@ -375,7 +377,8 @@ func clusterBySubject(candidates []clusterCandidate) [][]uint {
 
 // buildEventClusters materializes the transmission shape: representative tag
 // (smallest member id), its facts, members and the content-identity-deduped
-// article count (综合稿 threads never reach this function).
+// article count (composite threads' evidence joins the count since
+// widen-highlight-cluster-candidates; mixed labels stay separate clusters).
 func buildEventClusters(candidates []clusterCandidate, groups [][]uint, identities map[uint]string, mode string, dataAsOf, researchAt time.Time) []repository.EventCluster {
 	byID := make(map[uint]clusterCandidate, len(candidates))
 	for _, candidate := range candidates {

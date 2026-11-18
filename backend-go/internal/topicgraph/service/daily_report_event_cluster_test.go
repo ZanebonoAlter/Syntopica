@@ -164,8 +164,9 @@ func TestDailyReportEventClusterOrderIsDeterministic(t *testing.T) {
 }
 
 // TestDailyReportEventClusterEndToEnd 主链路：当天 event 标签 → 批量 embedding
-// → 内存聚簇；综合稿不入簇；簇内文章数按内容身份去重；跨天标签不入簇；
-// 批量不逐标签调用；operation 非空且与索引刷新区分；零业务表写入。
+// → 内存聚簇；composite 线索的标签与证据自 widen-highlight-cluster-candidates
+// 起同权入簇；簇内文章数按内容身份去重；跨天标签不入簇；批量不逐标签调用；
+// operation 非空且与索引刷新区分；零业务表写入。
 func TestDailyReportEventClusterEndToEnd(t *testing.T) {
 	fx := newClusterFixture(t)
 	day := fx.report.PeriodDate
@@ -203,7 +204,7 @@ func TestDailyReportEventClusterEndToEnd(t *testing.T) {
 	seedClusterThread(t, fx.db, fx.report.ID, fx.sectionID, repository.ThreadScopeSingle, []uint{tagA.ID}, []uint{articleC.ID})
 	seedClusterThread(t, fx.db, fx.report.ID, fx.sectionID, repository.ThreadScopeSingle, []uint{tagB.ID}, []uint{articleNoLink.ID})
 	seedClusterThread(t, fx.db, fx.report.ID, fx.sectionID, repository.ThreadScopeSingle, []uint{tagC.ID}, nil)
-	// 综合稿：不进簇、不计篇数。
+	// 综合稿：scope=composite，其标签与证据文章同权进聚簇（widen 后）。
 	seedClusterThread(t, fx.db, fx.report.ID, fx.sectionID, repository.ThreadScopeComposite, []uint{tagC.ID, tagA.ID}, []uint{articleC.ID})
 
 	// 现算表示对应的向量：A/B 相似（≥0.86），C 独立。
@@ -223,7 +224,7 @@ func TestDailyReportEventClusterEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, repository.EventClusterModeVector, set.Mode)
 	require.InDelta(t, 0.86, set.Threshold, 1e-9, "阈值与相关事件同源（默认 0.86）")
-	require.Equal(t, 3, set.TagCount, "跨天标签不进候选集；综合稿标签也不进")
+	require.Equal(t, 3, set.TagCount, "跨天标签不进候选集；composite 线索携带的是既有标签，不新增候选数")
 	require.False(t, set.Truncated)
 	require.Equal(t, repository.NormalizeReportDate(day), set.DataAsOf)
 	require.Equal(t, time.Date(2026, 11, 6, 21, 0, 0, 0, time.UTC), set.ResearchAt)
@@ -245,7 +246,7 @@ func TestDailyReportEventClusterEndToEnd(t *testing.T) {
 	require.Equal(t, "甲公司发布芯片", first.Label)
 	require.Len(t, first.Facts, 2)
 	require.Equal(t, tagC.ID, second.ClusterID)
-	require.Zero(t, second.ArticleCount, "综合稿的 articleC 不计入；C 的普通线程没有证据文章")
+	require.Equal(t, 1, second.ArticleCount, "composite 线索的证据文章计入其标签的簇（同权）；C 的普通线程没有证据文章")
 
 	// 零写入：业务表行数不变（聚簇只在内存）。
 	var threadAfter, articleAfter, sectionAfter int64

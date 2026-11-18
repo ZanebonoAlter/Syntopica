@@ -208,7 +208,8 @@ func finalizeDailyReportHighlights(ctx context.Context, report *repository.Board
 	if len(candidates) > 0 {
 		highlights, err = GenerateClusterHighlights(ctx, candidates)
 	} else {
-		// 零候选（当天无 event 标签 / 全为综合稿）：走既有标签回退模式，
+		// 零候选（当天线索均无 event 标签 / 聚簇产出为空；全 composite 且含
+		// event 标签自本 change 起正常聚簇、不再触发回退）：走既有标签回退模式，
 		// cluster_id 为空、快照字段缺省（不伪造聚簇身份或篇数）。
 		logging.Infof("daily-report: no event cluster candidates report=%d, using tag highlights", report.ID)
 		highlights, err = GenerateHighlights(ctx, tags, fallbackClusters)
