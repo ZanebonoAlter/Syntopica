@@ -317,7 +317,7 @@ const feedback = computed(() => {
         type="button"
         class="orc-toggle"
         :class="{ 'orc-toggle--collapsed': collapsed }"
-        :aria-expanded="String(!collapsed)"
+        :aria-expanded="!collapsed"
         :aria-controls="bodyId"
         data-testid="observation-range-toggle"
         @click="toggleCollapsed"
