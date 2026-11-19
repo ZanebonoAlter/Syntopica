@@ -149,6 +149,9 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		boards.DELETE("/:id", handler.deleteSemanticBoard)
 		boards.GET("/:id/suggest-auxiliaries", handler.suggestAuxiliariesForBoard)
 		boards.GET("/:id/articles", handler.getBoardArticles)
+		// 按日计数（archive-time-chart-range）：版块命中文章按自然日的只读聚合，供归档
+		// 时间曲线与导航条使用；口径与 /articles 主查询逐字一致。
+		boards.GET("/:id/article-daily-counts", handler.getBoardArticleDailyCounts)
 		boards.GET("/:id/source-breakdown", handler.getBoardSourceBreakdown)
 		boards.GET("/:id/health-checkup", handler.getBoardHealthCheckup)
 		boards.GET("/:id/match-detail/:tagId", handler.getTagMatchDetail)

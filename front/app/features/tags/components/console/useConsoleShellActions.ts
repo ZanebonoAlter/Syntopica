@@ -47,7 +47,10 @@ export function useConsoleShellActions(deps: ConsoleShellActionsDeps) {
   }
 
   function handleViewArchive(date?: string): void {
-    deps.archiveInitialDate.value = date || deps.archiveInitialDate.value
+    // 默认日期口径（archive-time-chart-range）：带日期进归档 = 从历史格子「看归档」，该日期优先；
+    // 不带日期 = 点顶栏「文章归档」普通切换，MUST 回到日历今天（旧实现保留上次带入日期 = 粘滞，
+    // 会让「默认今天」在第二次进入时失效）。
+    deps.archiveInitialDate.value = date ?? null
     archiveReturnScroll = deps.returnContext.captureStageScroll()
     deps.setView('archive')
   }

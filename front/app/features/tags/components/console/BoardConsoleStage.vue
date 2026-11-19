@@ -104,7 +104,6 @@ function scrollToChronicle(): void {
   <BoardArchiveView
     v-if="activeView === 'archive'"
     :board-id="boardId"
-    :as-of="latestReportDate || anchorDate"
     :initial-date="archiveInitialDate ?? undefined"
     :labels="compositionLabels"
     @open-article="id => emit('openArticle', String(id))"

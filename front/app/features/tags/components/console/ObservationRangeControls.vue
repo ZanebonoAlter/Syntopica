@@ -11,6 +11,10 @@
  *    Shift 逐周/Home/End；pointercancel/Esc 恢复起始选区不提交，一次手势恰一次 commit。
  *  - 坐标映射只消费绘图区真实 rect；日期/线索数轴外置（TrendAxes）；
  *    series null=未取到（不补 0 不桥接），已知 0 画基线；无数据不造今天。
+ *
+ * 可选扩展（archive-time-chart-range）：`unitLabel` / `title` / `collapseStorageKey`
+ * 三个 prop 缺省值 = 矩阵现状（矩阵与工作面零变化），`footer` 具名插槽缺省不渲染
+ * 任何 DOM（归档用它挂全历史导航条）。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useIsNarrowViewport } from '~/composables/useMediaQuery'
@@ -70,10 +74,25 @@ const props = withDefaults(defineProps<{
    */
   maxSpanDays?: number | null
   /**
-   * 曲线口径标注（两行：标题行 / 单位行）；缺省 = 矩阵页现状文案。
-   * 工作面按曲线来源传自己的口径（如「可选线索数（不含 active 泳道）」）。
+   * 曲线口径标注（两行：标题行 / 单位行）；缺省 = 不渲染（矩阵页不另写图注，
+   * 轴单位已由 TrendAxes 承担）。工作面按曲线来源传自己的口径
+   * （如「可选线索数（不含 active 泳道）」）。
    */
   caption?: [string, string] | null
+  /**
+   * Y 轴单位（缺省「线索数」，矩阵/工作面不变）；归档传「篇」。
+   */
+  unitLabel?: string
+  /**
+   * 头部标题（缺省「时间视窗」）；归档传「时间范围」。
+   */
+  title?: string
+  /**
+   * 折叠偏好存储键（缺省 'syntopica.orc.collapsed'）；归档传自己的键
+   * （'syntopica.archive.time.collapsed'），不与矩阵页共享。
+   */
+  collapseStorageKey?: string
+  defaultCollapsed?: boolean
 }>(), {
   loading: false,
   notice: null,
@@ -81,6 +100,10 @@ const props = withDefaults(defineProps<{
   selectableBounds: null,
   maxSpanDays: null,
   caption: null,
+  unitLabel: '线索数',
+  title: '时间视窗',
+  collapseStorageKey: 'syntopica.orc.collapsed',
+  defaultCollapsed: undefined,
 })
 
 const emit = defineEmits<{
@@ -93,13 +116,12 @@ const disabled = computed(() => props.bounds === null || props.range === null)
 const plotRef = ref<SVGSVGElement | null>(null)
 
 // ── 折叠（窄屏默认收起；手动选择优先并持久化） ──────────────────────────────
-const COLLAPSE_STORAGE_KEY = 'syntopica.orc.collapsed'
 const bodyId = 'orc-body'
 const isNarrow = useIsNarrowViewport()
 /** null = 用户未手动选择过（此时跟随视口宽度）。 */
 const collapsePref = ref<boolean | null>(null)
 
-const collapsed = computed(() => collapsePref.value ?? isNarrow.value)
+const collapsed = computed(() => collapsePref.value ?? props.defaultCollapsed ?? isNarrow.value)
 
 /** 折叠摘要：档位 + 起止日（MM-DD）；数据未就绪时直说。 */
 const rangeSummary = computed(() => {
@@ -116,7 +138,7 @@ function toggleCollapsed(): void {
   collapsePref.value = next
   if (typeof localStorage !== 'undefined') {
     try {
-      localStorage.setItem(COLLAPSE_STORAGE_KEY, next ? '1' : '0')
+      localStorage.setItem(props.collapseStorageKey, next ? '1' : '0')
     } catch {
       // 隐私模式 / 配额满：忽略，退回窄屏默认
     }
@@ -126,7 +148,7 @@ function toggleCollapsed(): void {
 onMounted(() => {
   if (typeof localStorage === 'undefined') return
   try {
-    const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY)
+    const raw = localStorage.getItem(props.collapseStorageKey)
     if (raw === '1') collapsePref.value = true
     else if (raw === '0') collapsePref.value = false
   } catch {
@@ -295,8 +317,8 @@ const feedback = computed(() => {
   >
     <div class="orc-head">
       <template v-if="!collapsed">
-        <span class="orc-title">时间视窗</span>
-        <div class="orc-tiers" role="group" aria-label="独立数据档（决定名单与排序）">
+        <span class="orc-title">{{ title }}</span>
+        <div v-if="tiers.length" class="orc-tiers" role="group" aria-label="独立数据档（决定名单与排序）">
           <button
             v-for="days in tiers"
             :key="days"
@@ -308,7 +330,6 @@ const feedback = computed(() => {
             @click="emit('source-change', days)"
           >{{ days === 365 ? '近 1 年' : `${days} 天` }}</button>
         </div>
-        <span class="orc-sub">Asia/Shanghai · 含起止日</span>
       </template>
       <!-- 折叠开关：始终是同一个元素（切换不销毁 → 焦点不丢）；
            折叠态独占整行（左侧 template 不渲染，带上标题与摘要），
@@ -323,7 +344,7 @@ const feedback = computed(() => {
         @click="toggleCollapsed"
       >
         <template v-if="collapsed">
-          <span class="orc-title">时间视窗</span>
+          <span class="orc-title">{{ title }}</span>
           <span class="orc-summary" data-testid="observation-range-summary">{{ rangeSummary }}</span>
           <span class="orc-chevron" aria-hidden="true">▸</span>
         </template>
@@ -346,12 +367,12 @@ const feedback = computed(() => {
         @issue="formIssue = $event"
       />
 
-      <div class="orc-caption">
-        <span>{{ caption?.[0] ?? '365 日池 · 已返回泳道的日线索数' }}</span>
-        <span>{{ caption?.[1] ?? '线索数（非文章数）· 综合稿不计入' }}</span>
+      <div v-if="caption" class="orc-caption">
+        <span>{{ caption?.[0] }}</span>
+        <span>{{ caption?.[1] }}</span>
       </div>
 
-      <TrendAxes v-if="curve" unit-label="线索数（非文章数）" :y-ticks="curve.yTicks" :x-ticks="curve.xTicks">
+      <TrendAxes v-if="curve" :unit-label="unitLabel" :y-ticks="curve.yTicks" :x-ticks="curve.xTicks">
         <div class="orc-plot-wrap">
         <svg
           ref="plotRef"
@@ -420,11 +441,14 @@ const feedback = computed(() => {
         </div>
       </TrendAxes>
 
-      <p v-if="loading" class="orc-series-state" data-testid="observation-range-loading">池曲线加载中…</p>
+      <p v-if="loading" class="orc-series-state" data-testid="observation-range-loading">{{ title }}加载中…</p>
       <p v-else-if="!series || series.length === 0" class="orc-series-state" data-testid="observation-range-no-series">
-        365 日池趋势未取到（不影响日期选择，不补 0）。
+        {{ title }}趋势未取到（不影响日期选择）。
       </p>
       <p class="orc-feedback" role="status" data-testid="observation-range-feedback">{{ feedback }}</p>
+
+      <!-- 底部插槽：缺省不渲染任何 DOM（矩阵页/工作面零变化）；归档用来挂全历史导航条。 -->
+      <slot name="footer" />
     </template>
     </div>
   </section>
@@ -540,12 +564,6 @@ const feedback = computed(() => {
 .orc-tier:disabled {
   opacity: 0.5;
   cursor: default;
-}
-
-.orc-sub {
-  font-size: 11px;
-  color: var(--color-text-muted);
-  margin-left: auto;
 }
 
 .orc-empty {

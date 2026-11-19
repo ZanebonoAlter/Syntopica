@@ -20,23 +20,37 @@
  * 数据口径不变：in_report / weak_evidence / 组内 quality 序均由后端派生，前端只读不重排；
  * 日期分组走 groupedArticles（Map 聚合，避免 quality 序下逐条相邻切段的碎组）。
  */
-import { computed, ref, toRef, watch } from 'vue'
+import { computed, nextTick, ref, toRef, useId, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import AppDialog from '~/components/ui/AppDialog.vue'
-import AppInput from '~/components/ui/AppInput.vue'
 import AppToggle from '~/components/ui/AppToggle.vue'
 import ArchiveMatchPopover from './ArchiveMatchPopover.vue'
+import ObservationRangeControls from './ObservationRangeControls.vue'
+import ArchiveHistoryStrip from './ArchiveHistoryStrip.vue'
 import { useSemanticBoardsApi } from '~/api/semanticBoards'
 import type { BoardArticleTag } from '~/api/semanticBoards'
 import { matchReasonColor, stepNoOf, stepShortOf } from '~/utils/matchQuality'
 import { todayInShanghai } from '../../composables/useBoardConsole'
+import { useArchiveDailyCounts } from '../../composables/useArchiveDailyCounts'
+import {
+  shiftRangeWithViewport,
+  sliceSeries,
+  viewportFor,
+} from './archiveTimeSeries'
+import {
+  clampRangeToBounds,
+  daysBetweenInclusive,
+  sameRange,
+  shiftDate,
+  type DateBounds,
+  type ObservationRange,
+} from './observationRange'
 import {
   isWeakArticle,
   ruleMeta,
   useBoardArchive,
   type ArchiveArticle,
   type ArchiveFilter,
-  type ArchiveSortMode,
 } from '../../composables/useBoardArchive'
 import {
   buildGenericFlowSteps,
@@ -48,8 +62,6 @@ import {
 
 const props = defineProps<{
   boardId: number
-  /** 矩阵同源的最新日报日期（YYYY-MM-DD）；归档默认落在这一天。 */
-  asOf: string | null
   /** 从历史格子「看归档」带入的日期；普通切换归档不传。 */
   initialDate?: string
   /** 当前版块构成标签，用于筛选覆盖面（不再混用 event tag id）。 */
@@ -62,22 +74,194 @@ const emit = defineEmits<{
 
 const sbApi = useSemanticBoardsApi()
 
-const today = computed(() => props.initialDate || props.asOf || todayInShanghai())
-const startDate = ref(today.value)
-const endDate = ref(today.value)
+// ── 时间导航块状态（archive-time-chart-range） ──────────────────────────────
+// 不变量：committedRange ⊆ viewport（主图按 bounds 下标高亮，区间越界会画歪）。
+// 三处入口（主图刷选 / 导航条平移 / 日期表单）全部收敛到 commitRange 与
+// onViewport* 三个函数，不各自改状态。
+
+/** 基准日：initialDate 优先，否则日历今天（Asia/Shanghai）；旧版日报锚点不再作默认。 */
+const baseDate = computed(() => props.initialDate || todayInShanghai())
+
+/** 视窗右端（含）。 */
+const anchorEnd = ref(baseDate.value)
+/** 视窗宽度（天）：默认 90；表单提交了更宽的区间才放宽（只放宽不收紧，避免视窗跳变）。 */
+const viewportDays = ref(90)
+/** 已提交区间 = 列表请求范围。 */
+const committedRange = ref<ObservationRange>({ start: baseDate.value, end: baseDate.value })
+/** 手势 / 拖动中的临时区间（只喂主图，不发请求）。 */
+const draftRange = ref<ObservationRange | null>(null)
+/** 导航条拖动基线：手势开始时的视窗右端 / 视窗起点 / 已提交区间（Esc 回滚 + 同步平移的参照）。 */
+interface ViewportDragBase {
+  anchorEnd: string
+  viewportStart: string
+  range: ObservationRange
+}
+
+/** 导航条拖动基线（null = 不在拖动中）。delta 必须相对基线算，不能在已更新的视窗上算增量。 */
+const viewportDrag = ref<ViewportDragBase | null>(null)
+
+const {
+  earliest: countsEarliest,
+  latest: countsLatest,
+  byDate: countsByDate,
+  loading: countsLoading,
+  error: countsError,
+  reload: reloadCounts,
+} = useArchiveDailyCounts(toRef(props, 'boardId'))
+
+/** 视窗右端上限：max(今天, 最新命中日)；基准日兜底（initialDate 可能是未来日）。 */
+const upperBound = computed(() => {
+  const today = todayInShanghai()
+  let bound = today
+  if (countsLatest.value && countsLatest.value > bound) bound = countsLatest.value
+  if (baseDate.value > bound) bound = baseDate.value
+  return bound
+})
+
+/** 当前视窗（主图 bounds = 视窗区间）。 */
+// earliest 直接交给 viewportFor：它已处理「anchor 早于 earliest」与「earliest 晚于上界」
+// 两种边界（前者把视窗抬到能让区间完整可见的位置，后者退化为单点）——不能在这里
+// 把 earliest 抹成 null，否则「计数到的历史晚于已提交区间」时视窗会丢掉左贴，
+// committedRange ⊆ viewport 的不变量就失守（archive-time-chart-range R-3）。
+const viewport = computed(() => viewportFor(
+  anchorEnd.value,
+  countsEarliest.value,
+  upperBound.value,
+  viewportDays.value,
+))
+
+/** 视窗实际宽度（贴齐最早日时变窄）。 */
+const viewportSpan = computed(() => daysBetweenInclusive(viewport.value.start, viewport.value.end))
+
+/** 主图曲线：视窗内每日篇数（缺日 = 已知 0，补基线）。 */
+const viewportSeries = computed(() => sliceSeries(viewport.value, countsByDate.value))
+
+/** 日期表单可选界：全历史（最早有文章日 → 今天）；计数未就绪时兜底为一窗。 */
+const fullBounds = computed<DateBounds>(() => ({
+  start: countsEarliest.value ?? shiftDate(upperBound.value, -(viewportSpan.value - 1)),
+  end: upperBound.value,
+}))
+
+/** 主图反馈行文案（空态 / 失败态；成功态不占行）。 */
+const chartNotice = computed<string | null>(() => {
+  if (countsError.value) return '时间曲线加载失败，点「重试」重拉计数'
+  if (!countsLoading.value && countsEarliest.value === null) return '本版块还没有命中文章，暂无时间曲线'
+  return null
+})
+
+/** 区间是否落在视窗内（committedRange ⊆ viewport 的判定）。 */
+function insideViewport(range: ObservationRange): boolean {
+  return range.start >= viewport.value.start && range.end <= viewport.value.end
+}
+
+/** 提交区间：越界时先把视窗右端跟到区间末（区间完整可见），再写区间。 */
+function commitRange(range: ObservationRange): void {
+  const width = daysBetweenInclusive(range.start, range.end)
+  if (width > viewportDays.value) viewportDays.value = width
+  if (!insideViewport(range)) {
+    anchorEnd.value = range.end
+  }
+  draftRange.value = null
+  viewportDrag.value = null
+  // 同值提交不重拉（拖动原位 / 点同一天时避免多一次列表请求）。
+  if (sameRange(range, committedRange.value)) return
+  committedRange.value = { start: range.start, end: range.end }
+}
+
+/** 主图拖动中：只写草稿（列表不重拉，deck 数字保持上次提交值）。 */
+function onChartPreview(range: ObservationRange): void {
+  draftRange.value = range
+}
+
+/** 主图松手 / 日期表单提交：写区间（列表重拉一次）。 */
+function onChartCommit(range: ObservationRange): void {
+  commitRange(range)
+}
+
+/** 取（或建立）本次拖动的基线：delta 以基线视窗起点为准，否则拖动中视窗已随 anchorEnd 移动，增量会算成 0。 */
+function viewportDragBase(): ViewportDragBase {
+  if (viewportDrag.value) return viewportDrag.value
+  const base: ViewportDragBase = {
+    anchorEnd: anchorEnd.value,
+    viewportStart: viewport.value.start,
+    range: { ...committedRange.value },
+  }
+  viewportDrag.value = base
+  return base
+}
+
+/** 区间随视窗同步平移同偏移（相对拖动基线，不累加）。 */
+function shiftedRangeFor(base: ViewportDragBase, next: ObservationRange): ObservationRange {
+  const delta = daysBetweenInclusive(base.viewportStart, next.start) - 1
+  return shiftRangeWithViewport(base.range, delta, next)
+}
+
+/** 导航条拖动中：视窗与已提交区间同步平移同偏移（只写草稿，不发请求）。 */
+function onViewportPreview(next: ObservationRange): void {
+  const base = viewportDragBase()
+  anchorEnd.value = next.end
+  draftRange.value = shiftedRangeFor(base, next)
+}
+
+/** 导航条松手 / 键盘步进：视窗与区间一起提交（一次列表请求）。 */
+function onViewportCommit(next: ObservationRange): void {
+  const base = viewportDragBase()
+  anchorEnd.value = next.end
+  const shifted = shiftedRangeFor(base, next)
+  viewportDrag.value = null
+  draftRange.value = null
+  if (sameRange(shifted, committedRange.value)) return
+  committedRange.value = shifted
+}
+
+/** 导航条取消（Esc / pointercancel）：回到拖动前的视窗与区间，不提交。 */
+function onViewportCancel(): void {
+  if (viewportDrag.value) anchorEnd.value = viewportDrag.value.anchorEnd
+  viewportDrag.value = null
+  draftRange.value = null
+}
+
+watch(baseDate, (next) => {
+  anchorEnd.value = next
+  committedRange.value = { start: next, end: next }
+  draftRange.value = null
+  viewportDrag.value = null
+})
+
+/**
+ * 计数到达/变化后重建不变量 `committedRange ⊆ viewport`。
+ *
+ * 触发场景：进归档时计数未回 → 视窗先按「今天往前 90 天」兜底，用户此时用日期表单
+ * 提交了更早的区间；计数回来后 `earliest` 把视窗左端抬到最早有文章日（视窗收窄），
+ * 已提交区间就可能漏到视窗外——那一瞬间 `ObservationRangeControls` 会拿到负下标
+ * 把选区画到轴外，后续手势还会从轴上取到空日期。
+ */
+watch([countsEarliest, upperBound], () => {
+  if (insideViewport(committedRange.value)) {
+    if (draftRange.value && !insideViewport(draftRange.value)) draftRange.value = null
+    return
+  }
+  // 先试「把视窗右端跟到区间末」；仍越界（区间起点早于 earliest）再把区间钳进视窗。
+  anchorEnd.value = committedRange.value.end
+  if (insideViewport(committedRange.value)) return
+  const clamped = clampRangeToBounds(committedRange.value, viewport.value)
+  draftRange.value = null
+  viewportDrag.value = null
+  if (!sameRange(clamped, committedRange.value)) committedRange.value = clamped
+})
+
 /** 展开「+N」的文章 id 集合。 */
 const expandedIds = ref<Set<number>>(new Set())
-/** 筛选覆盖面 / 匹配流程 两个弹窗的开关。 */
-const filterDialogOpen = ref(false)
+const moreFiltersOpen = ref(false)
+const filterPanelId = useId()
+const moreButton = ref<HTMLButtonElement | null>(null)
 const flowDialogOpen = ref(false)
 const flowConfig = ref<MatchFlowConfig | null>(null)
 const flowLoading = ref(false)
 const flowError = ref<string | null>(null)
 
-watch(today, (next) => {
-  startDate.value = next
-  endDate.value = next
-}, { immediate: true })
+const startDate = computed(() => committedRange.value.start)
+const endDate = computed(() => committedRange.value.end)
 
 const {
   visibleArticles,
@@ -103,46 +287,39 @@ const FILTERS: Array<{ key: ArchiveFilter, label: string }> = [
   { key: 'weak', label: '弱证据' },
 ]
 
-const SORTS: Array<{ key: ArchiveSortMode, label: string }> = [
-  { key: 'quality', label: '质量' },
-  { key: 'time', label: '时间' },
-]
+const activeFilters = computed(() => {
+  const items: Array<{ key: 'feed' | 'label', text: string }> = []
+  if (feedId.value !== null) {
+    const name = feedOptions.value.find(item => item.id === feedId.value)?.name
+    items.push({ key: 'feed', text: name ? `来源：${name}` : '已选来源' })
+  }
+  if (labelId.value !== null) {
+    const name = props.labels?.find(item => item.id === labelId.value)?.label
+    items.push({ key: 'label', text: name ? `标签：${name}` : '已选标签' })
+  }
+  return items
+})
+const hasFilters = computed(() => filter.value !== 'all' || activeFilters.value.length > 0)
 
-const PRESETS = [
-  { days: 1, label: '数据日' },
-  { days: 7, label: '近 7 天' },
-  { days: 14, label: '近 14 天' },
-  { days: 30, label: '近 30 天' },
-]
-
-function addDays(date: string, delta: number): string {
-  const base = new Date(`${date}T00:00:00Z`)
-  base.setUTCDate(base.getUTCDate() + delta)
-  return base.toISOString().slice(0, 10)
+function changeSort(event: Event): void {
+  setSortMode((event.target as HTMLSelectElement).value === 'time' ? 'time' : 'quality')
 }
 
-function applyPreset(days: number): void {
-  endDate.value = today.value
-  startDate.value = days <= 1 ? today.value : addDays(today.value, -(days - 1))
+function focusFilterControl(): void {
+  void nextTick(() => moreButton.value?.focus())
 }
 
-function isPreset(days: number): boolean {
-  const expected = days <= 1 ? today.value : addDays(today.value, -(days - 1))
-  return startDate.value === expected && endDate.value === today.value
-}
-
-function onStartDate(value: string | number): void {
-  startDate.value = String(value)
-}
-
-function onEndDate(value: string | number): void {
-  endDate.value = String(value)
+function removeFilter(key: 'feed' | 'label'): void {
+  if (key === 'feed') feedId.value = null
+  else labelId.value = null
+  focusFilterControl()
 }
 
 function resetFilters(): void {
+  filter.value = 'all'
   feedId.value = null
   labelId.value = null
-  showDirectionMismatch.value = false
+  focusFilterControl()
 }
 
 // ── 行内容派生 ────────────────────────────────────────────────────────────
@@ -356,8 +533,18 @@ const filterCounts = computed<Record<ArchiveFilter, number>>(() => ({
   weak: stats.value.weak,
 }))
 
-/** 筛选覆盖面是否有生效项（决定「筛选」按钮上的提示点）。 */
-const advancedActive = computed(() => feedId.value !== null || labelId.value !== null || showDirectionMismatch.value)
+const listCount = computed(() => {
+  const shown = visibleArticles.value.length
+  if (truncated.value) return `显示 ${shown} 篇`
+  if (!hasFilters.value) return `${shown} 篇`
+  if (!activeFilters.value.length) return `显示 ${shown} / ${stats.value.total} 篇`
+  if (countsLoading.value || countsError.value) return `显示 ${shown} 篇`
+  let total = 0
+  for (const [date, count] of countsByDate.value) {
+    if (date >= range.value.start && date <= range.value.end) total += count
+  }
+  return total >= stats.value.total ? `显示 ${shown} / ${total} 篇` : `显示 ${shown} 篇`
+})
 </script>
 
 <template>
@@ -400,64 +587,71 @@ const advancedActive = computed(() => feedId.value !== null || labelId.value !==
           <span class="ar-deck-hint">可与入报交叉</span>
         </span>
       </div>
-      <p class="ar-deck-note">
-        已入 = 出现在范围内任一日报分区线索（后端派生）；无命中标签的文章不会进入日报。
-      </p>
-    </div>
-
-    <div class="ar-toolbar" data-testid="archive-toolbar">
-      <div class="ar-group">
-        <div class="ar-presets" role="group" aria-label="日期快捷筛选">
-          <button
-            v-for="preset in PRESETS"
-            :key="preset.days"
-            type="button"
-            class="ar-chip"
-            :class="{ 'is-active': isPreset(preset.days) }"
-            :data-testid="`archive-preset-${preset.days}`"
-            @click="applyPreset(preset.days)"
-          >
-            {{ preset.label }}
-          </button>
-        </div>
-
-        <label class="ar-date-field">
-          <span>从</span>
-          <AppInput
-            :model-value="startDate"
-            type="date"
-            :max="endDate"
-            data-testid="archive-start-date"
-            @update:model-value="onStartDate"
-          />
-        </label>
-        <label class="ar-date-field">
-          <span>到</span>
-          <AppInput
-            :model-value="endDate"
-            type="date"
-            :min="startDate"
-            data-testid="archive-end-date"
-            @update:model-value="onEndDate"
-          />
-        </label>
-      </div>
-
-      <div class="ar-seg" role="group" aria-label="组内排序">
-        <button
-          v-for="item in SORTS"
-          :key="item.key"
-          type="button"
-          class="ar-seg-btn"
-          :class="{ 'is-active': sortMode === item.key }"
-          :aria-pressed="sortMode === item.key"
-          :data-testid="`archive-sort-${item.key}`"
-          @click="setSortMode(item.key)"
-        >
-          {{ item.label }}
+      <div class="ar-deck-meta">
+        <p class="ar-deck-note">已入 = 出现在范围内任一日报分区线索；无命中标签的文章不会进入日报。</p>
+        <AppToggle v-model="showDirectionMismatch" label="显示方向不符标签" data-testid="archive-direction-toggle" />
+        <button type="button" class="ar-gear" data-testid="archive-flow-open" @click="openFlowDialog">
+          <Icon icon="mdi:information-outline" width="14" />
+          匹配流程
         </button>
       </div>
+    </div>
 
+
+
+    <!-- 时间导航块（archive-time-chart-range）：日期表单 + 90 天视窗主图 + 全历史导航条 -->
+    <section class="ar-time-nav" data-testid="archive-time-nav">
+      <div v-if="countsError" class="ar-time-error">
+        <button
+          type="button"
+          class="ar-text-btn"
+          data-testid="archive-time-retry"
+          @click="reloadCounts"
+        >重试</button>
+      </div>
+
+      <ObservationRangeControls
+        :bounds="viewport"
+        :range="draftRange ?? committedRange"
+        :source-days="viewportSpan"
+        :series="countsLoading || countsEarliest === null ? null : viewportSeries"
+        :tiers="[]"
+        :max-span-days="viewportSpan"
+        :selectable-bounds="fullBounds"
+        :loading="countsLoading"
+        :notice="chartNotice"
+        unit-label="篇"
+        title="时间轴"
+        default-collapsed
+        collapse-storage-key="syntopica.archive.time.collapsed"
+        :caption="[
+          '每日进版块文章数（全版块命中）',
+          '篇 · 命中本版块标签的文章数，非线索数；不随列表筛选变化',
+        ]"
+        @preview="onChartPreview"
+        @commit="onChartCommit"
+      >
+        <template #footer>
+          <ArchiveHistoryStrip
+            :earliest="countsEarliest"
+            :latest="upperBound"
+            :by-date="countsByDate"
+            :viewport="viewport"
+            :disabled="countsLoading"
+            @viewport-preview="onViewportPreview"
+            @viewport-commit="onViewportCommit"
+            @viewport-cancel="onViewportCancel"
+          />
+        </template>
+      </ObservationRangeControls>
+    </section>
+
+    <div class="ar-list-head">
+      <h2>文章列表</h2>
+      <span v-if="!loading && !error" data-testid="archive-list-count" role="status">{{ listCount }}</span>
+    </div>
+    <div class="ar-toolbar" data-testid="archive-toolbar">
+      <div class="ar-toolbar-leading">
       <div class="ar-filters" role="group" aria-label="归档筛选">
         <button
           v-for="item in FILTERS"
@@ -473,24 +667,50 @@ const advancedActive = computed(() => feedId.value !== null || labelId.value !==
           {{ item.label }}
         </button>
       </div>
-
-      <div class="ar-toolbar-tail">
         <button
           type="button"
           class="ar-gear"
-          :class="{ 'is-open': advancedActive }"
+          :aria-expanded="moreFiltersOpen"
+          :aria-controls="filterPanelId"
+          ref="moreButton"
           data-testid="archive-filter-open"
-          @click="filterDialogOpen = true"
-        >
-          <Icon icon="mdi:cog" width="14" />
-          筛选
-          <span v-if="advancedActive" class="ar-dot" />
-        </button>
-        <button type="button" class="ar-gear" data-testid="archive-flow-open" @click="openFlowDialog">
-          <Icon icon="mdi:information-outline" width="14" />
-          匹配流程
-        </button>
+          @click="moreFiltersOpen = !moreFiltersOpen"
+        >更多筛选{{ activeFilters.length ? ` · ${activeFilters.length}` : '' }}</button>
       </div>
+      <label class="ar-select">
+        组内排序
+        <select data-testid="archive-sort" :value="sortMode" @change="changeSort">
+          <option value="quality">强证据优先</option>
+          <option value="time">发布时间 ↓</option>
+        </select>
+      </label>
+    </div>
+    <div v-show="moreFiltersOpen" :id="filterPanelId" class="ar-filter-form">
+      <label class="ar-select">
+        <span>来源</span>
+        <select v-model="feedId" data-testid="archive-feed-filter">
+          <option :value="null">全部来源</option>
+          <option v-for="feed in feedOptions" :key="feed.id" :value="feed.id">{{ feed.name }}</option>
+        </select>
+      </label>
+      <label class="ar-select">
+        <span>构成标签</span>
+        <select v-model="labelId" data-testid="archive-label-filter">
+          <option :value="null">全部标签</option>
+          <option v-for="label in labels ?? []" :key="label.id" :value="label.id">{{ label.label }}</option>
+        </select>
+      </label>
+    </div>
+    <div v-if="hasFilters" class="ar-active-filters" aria-label="已选筛选">
+      <button
+        v-for="item in activeFilters"
+        :key="item.key"
+        type="button"
+        class="ar-gear"
+        :aria-label="`移除筛选：${item.text}`"
+        @click="removeFilter(item.key)"
+      >{{ item.text }} <span aria-hidden="true">×</span></button>
+      <button type="button" class="ar-text-btn" data-testid="archive-filter-reset" @click="resetFilters">清空筛选</button>
     </div>
 
     <div v-if="loading" class="ar-state" data-testid="archive-loading">
@@ -504,14 +724,15 @@ const advancedActive = computed(() => feedId.value !== null || labelId.value !==
       <button type="button" class="ar-text-btn" data-testid="archive-retry" @click="reload">重试</button>
     </div>
 
-    <div v-else-if="articlesEmpty" class="ar-empty" data-testid="archive-empty">
+    <div v-else-if="articlesEmpty && !hasFilters" class="ar-empty" data-testid="archive-empty">
       <Icon icon="mdi:calendar-filter" width="24" />
       <p>{{ range.start === range.end ? `${range.start} 没有匹配到本版块的文章。` : '这个日期范围内没有匹配到本版块的文章。' }}</p>
       <small>换个日期，或确认文章是否已经打标。</small>
     </div>
 
     <div v-else-if="visibleArticles.length === 0" class="ar-state" data-testid="archive-filter-empty">
-      当前筛选下没有文章，换个筛选看看。
+      当前筛选下没有文章。
+      <button type="button" class="ar-text-btn" @click="resetFilters">清空筛选</button>
     </div>
 
     <div v-else class="ar-days" data-testid="archive-days">
@@ -520,7 +741,6 @@ const advancedActive = computed(() => feedId.value !== null || labelId.value !==
           <h3 class="ar-day-date">{{ group.date }}</h3>
           <span class="ar-day-count">{{ group.count }} 篇</span>
           <span v-if="group.weakCount" class="ar-day-weak">弱证据 {{ group.weakCount }}</span>
-          <span class="ar-day-sort">组内：{{ sortMode === 'quality' ? '质量（强证据在前）' : '发布时间' }}</span>
         </header>
 
         <div
@@ -601,35 +821,7 @@ const advancedActive = computed(() => feedId.value !== null || labelId.value !==
 
     <p v-if="truncated" class="ar-truncated">结果超过 2000 篇，仅展示前 2000 篇；请缩小日期范围。</p>
 
-    <!-- 筛选覆盖面：来源 / 构成标签 / 方向不符（工具行降噪，不再常年占一行原生控件） -->
-    <AppDialog v-model="filterDialogOpen" size="md" title="筛选">
-      <div class="ar-filter-form">
-        <label class="ar-select">
-          <span>来源</span>
-          <select v-model="feedId" data-testid="archive-feed-filter">
-            <option :value="null">全部来源</option>
-            <option v-for="feed in feedOptions" :key="feed.id" :value="feed.id">{{ feed.name }}</option>
-          </select>
-        </label>
-        <label class="ar-select">
-          <span>构成标签</span>
-          <select v-model="labelId" data-testid="archive-label-filter">
-            <option :value="null">全部标签</option>
-            <option v-for="label in labels ?? []" :key="label.id" :value="label.id">{{ label.label }}</option>
-          </select>
-        </label>
-        <AppToggle
-          v-model="showDirectionMismatch"
-          label="显示方向不符标签"
-          data-testid="archive-direction-toggle"
-        />
-      </div>
-      <template #footer>
-        <button type="button" class="ar-text-btn" data-testid="archive-filter-reset" @click="resetFilters">
-          清空筛选
-        </button>
-      </template>
-    </AppDialog>
+
 
     <!-- 匹配流程：对所有构成标签一致的通用说明（阈值取全局匹配配置真实值） -->
     <AppDialog v-model="flowDialogOpen" size="md" title="匹配流程 · 版块怎么判定标签归属（对所有构成标签通用）">

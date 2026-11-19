@@ -126,11 +126,9 @@ func (h *semanticBoardHandler) getBoardArticles(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Step 1: Get tag IDs belonging to this board
-	var boardTagIDs []uint
-	if err := h.db.WithContext(ctx).Model(&tagmodels.TopicTagBoardLabel{}).
-		Select("topic_tag_id").
-		Where("semantic_board_id = ?", boardID).
-		Pluck("topic_tag_id", &boardTagIDs).Error; err != nil {
+	// 成员口径的唯一实现（与按日计数端点共用）：同一 boardTagIDs 取法，不过滤标签 status。
+	boardTagIDs, err := h.loadBoardTagIDs(ctx, boardID)
+	if err != nil {
 		respondError(c, http.StatusInternalServerError, err)
 		return
 	}

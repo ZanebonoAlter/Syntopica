@@ -440,6 +440,21 @@ export interface BoardArticle {
   [key: string]: unknown
 }
 
+/**
+ * 版块文章按日计数（archive-time-chart-range，GET /semantic-boards/:id/article-daily-counts）。
+ *
+ * 口径固定为「全版块命中文章数（篇）」：不随来源 / 构成标签 / 方向不符 / 日报状态筛选
+ * 变化（筛选只作用于归档列表）。`days` 是**稀疏**数组（只含 count>0 的日期、升序），
+ * 缺日由调用方按已知 0 处理。
+ */
+export interface BoardArticleDailyCounts {
+  /** 该版块命中文章的最早自然日；无命中文章时为 null。 */
+  earliest_date: string | null
+  /** 该版块命中文章的最新自然日；无命中文章时为 null。 */
+  latest_date: string | null
+  days: Array<{ date: string, count: number }>
+}
+
 
 export function useSemanticBoardsApi() {
   async function getBoards(params?: { search?: string; status?: string }): Promise<ApiResponse<{ items: SemanticBoard[]; total: number }>> {
@@ -564,6 +579,17 @@ export function useSemanticBoardsApi() {
     return apiClient.get(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
   }
 
+  /**
+   * 版块文章按日计数（只读聚合，archive-time-chart-range）。
+   *
+   * 固定口径：无查询参数——筛选 / 分页 / 日期窗口一律不参与；成员口径与
+   * `getBoardArticles` 主查询逐字一致（同一版块标签集合、feeds 内连接、DATE 归日、
+   * 按文章 id 去重）。
+   */
+  async function getBoardArticleDailyCounts(id: number): Promise<ApiResponse<BoardArticleDailyCounts>> {
+    return apiClient.get<BoardArticleDailyCounts>(`/semantic-boards/${id}/article-daily-counts`)
+  }
+
   async function getMatchDetail(boardId: number, tagId: number): Promise<ApiResponse<MatchDetailResponse>> {
     return apiClient.get(`/semantic-boards/${boardId}/match-detail/${tagId}`)
   }
@@ -615,6 +641,7 @@ async function suggestAuxiliariesForBoard(boardId: number, params?: {
     suggestAuxiliaries,
     suggestAuxiliariesForBoard,
     getBoardArticles,
+    getBoardArticleDailyCounts,
     getMatchDetail,
     getRelatedEvents,
     getTagAuxiliaryLabels,

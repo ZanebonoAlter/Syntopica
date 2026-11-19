@@ -3,7 +3,8 @@
  *
  * 产品定位：回答「指定日期有哪些文章被判定属于本版块，以及为什么」。
  *  - 不再按话题/标签分组：文章按日期平铺，一行看标题 + 全部命中标签；
- *  - 日期是主筛选：默认只看数据锚点当天，也支持任意起止日期；
+ *  - 日期是主筛选：默认只看日历今天（archive-time-chart-range 起；旧版默认数据锚点当天
+ *    已退役），也支持任意起止日期；
  *  - `in_report` / `weak_evidence` 由后端派生，前端只读，不复制口径。
  *
  * 8G.3b（2026-10-31 归档重做）新增：
@@ -13,6 +14,7 @@
 import { computed, onMounted, ref, watch, type Ref } from 'vue'
 import { useSemanticBoardsApi } from '~/api/semanticBoards'
 import type { BoardArticle } from '~/api/semanticBoards'
+import { todayInShanghai } from './laneMatrixModel'
 
 export type ArchiveFilter = 'all' | 'not_in_report' | 'weak'
 
@@ -68,12 +70,6 @@ export function articleDate(article: ArchiveArticle): string {
   return (article.pub_date ?? '').slice(0, 10)
 }
 
-function todayLocal(): string {
-  const now = new Date()
-  const pad = (value: number) => String(value).padStart(2, '0')
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
-}
-
 /** 单篇弱证据：优先后端派生；旧响应回退到规则判断。 */
 export function isWeakArticle(article: ArchiveArticle): boolean {
   if (typeof article.weak_evidence === 'boolean') return article.weak_evidence
@@ -105,19 +101,10 @@ export function archiveStats(articles: ArchiveArticle[]): ArchiveStats {
   }
 }
 
-/** 归档窗口（保留给旧调用方）：以 asOf 为右端、向前 days 天（含端点）。 */
-export function archiveWindowRange(asOf: string | null, days: number): { start: string; end: string } {
-  const end = asOf && /^\d{4}-\d{2}-\d{2}$/.test(asOf) ? asOf : todayLocal()
-  const base = new Date(`${end}T00:00:00Z`)
-  const span = Math.max(1, Math.floor(days)) - 1
-  base.setUTCDate(base.getUTCDate() - span)
-  return { start: base.toISOString().slice(0, 10), end }
-}
-
-/** 起止日期归一：非法/空回退今天；start > end 时交换，保证 API 窗口合法。 */
+/** 起止日期归一：非法/空回退今天（Asia/Shanghai，与页面 today 同源）；start > end 时交换，保证 API 窗口合法。 */
 export function normalizeArchiveRange(start: string, end: string): { start: string; end: string } {
   const valid = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value)
-  const fallback = todayLocal()
+  const fallback = todayInShanghai()
   const safeEnd = valid(end) ? end : fallback
   const safeStart = valid(start) ? start : safeEnd
   return safeStart <= safeEnd ? { start: safeStart, end: safeEnd } : { start: safeEnd, end: safeStart }

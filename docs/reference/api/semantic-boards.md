@@ -17,6 +17,7 @@
 | POST | `/semantic-boards/:id/composition` | 新增 composition 辅助标签 |
 | DELETE | `/semantic-boards/:id/composition/:auxiliary_label_id` | 移除 composition 辅助标签 |
 | GET | `/semantic-boards/:id/articles` | 查询版块下的文章 |
+| GET | `/semantic-boards/:id/article-daily-counts` | 查询版块命中文章按自然日的计数（只读聚合，archive-time-chart-range） |
 | GET | `/semantic-boards/:id/source-breakdown` | 查询版块来源构成（只读聚合，add-source-board-hit-rate） |
 | GET | `/semantic-boards/:id/health-checkup` | 查询版块体检数据（最新快照+评分趋势，只读，add-board-health-checkup） |
 | GET | `/semantic-boards/:id/suggest-auxiliaries` | 版块级辅助标签建议 |
@@ -944,6 +945,33 @@ Response（`data` 为文章数组，`pagination` 与 `data` 同级）：
 ```
 
 文章字段同 `GET /articles/:id`（`ToDict()`），额外带 `feed_name` 与 `filtered_tags`；`filtered_tags` 每项的 `description` 取 `topic_tags.description`（标签无描述时为空串）；无数据时 `data` 为空数组。
+
+### GET `/semantic-boards/:id/article-daily-counts`
+
+查询版块 `:id` 命中文章按自然日的计数（archive-time-chart-range）：供归档时间曲线与全历史导航条使用。**只读聚合**：不写库、不触发打标或匹配。
+
+无查询参数——**固定口径聚合**：`feed_id` / `auxiliary_label_id` / `report_status` / `show_direction_mismatch` / 分页 / 日期窗口一律不参与（传了也不解析、不返回 400；这是给未来留的余地，不是契约）。
+
+**成员口径与 [`/articles`](#get-semantic-boards-idarticles) 主查询逐字一致**：同一 `boardTagIDs` 取法（`topic_tag_board_labels.semantic_board_id`，不过滤标签 `status`）、同 `feeds` 内连接、同 `DATE(articles.pub_date)` 归日；计数按文章 id 去重（一篇文章命中多个版块标签仍只计 1）。方向校验未通过的文章（列表行内默认隐藏其标签）**仍计入**当日 `count`，以与归档列表「当天篇数」对齐。`pub_date IS NULL` 的存量行**排除**（按日曲线无法定位无日期文章；NULL 分组会让扫描目标整体报错）。
+
+**时区前提**：`DATE(pub_date)` 取的是数据库**会话时区**的日历日。默认 DSN 钉了 `TimeZone=Asia/Shanghai`（`internal/platform/config` 默认值），与前端「今天」口径一致；若部署时用 `DATABASE_DSN` 整体覆盖或改容器 `TZ`，归日会随之偏移，曲线日与归档列表分组/「今天」就会错位。
+
+Response `data`：
+
+```json
+{
+  "earliest_date": "2026-01-05",
+  "latest_date": "2026-11-18",
+  "days": [
+    { "date": "2026-11-17", "count": 211 },
+    { "date": "2026-11-18", "count": 246 }
+  ]
+}
+```
+
+- `earliest_date` / `latest_date`：该版块命中文章的最早 / 最新自然日；**版块无命中文章时两者均为 `null`**。
+- `days`：**稀疏**数组（只含 `count > 0` 的日期，按 `date` 升序）；缺失日期由调用方按已知 0 处理，端点 MUST NOT 补齐全区间零值。
+- 版块无标签 / 版块不存在：返回 `{"earliest_date": null, "latest_date": null, "days": []}`，HTTP `200`（与 `/articles` 的空列表口径一致，不返回 404）。
 
 ### GET `/semantic-boards/:id/source-breakdown`
 

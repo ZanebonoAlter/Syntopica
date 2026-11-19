@@ -398,21 +398,30 @@ describe('ObservationRangeControls — 状态', () => {
   })
 })
 
-// ── 曲线口径标注（fix-lane-metric-provenance）───────────────────────────────
-// 曲线值与矩阵格同口径（非综合稿线索数）；单位文案直接表达「线索数（非文章数）」，
-// MUST NOT 出现已退役的事件线量纲字样（「事件线」「兜底」）。
+// ── 曲线口径标注（fix-lane-metric-provenance / simplify-workshop-matrix-copy）───
+// 曲线值与矩阵格同口径（非综合稿线索数）；轴单位只写一次「线索数」，矩阵默认不另写图注
+// （图注归需要它的宿主：仅工作面传 `caption`）；MUST NOT 出现已退役的事件线量纲字样。
 describe('ObservationRangeControls — 曲线口径标注', () => {
-  it('曲线标注表达线索数（非文章数）口径；不出现已退役的事件线/兜底字样', async () => {
+  it('轴单位标「线索数」且不重复单位；不出现已退役的事件线/兜底字样', async () => {
     const { wrapper } = mountControls()
-    const caption = wrapper.find('.orc-caption')
-    expect(caption.exists()).toBe(true)
-    expect(caption.text()).toContain('日线索数')
-    expect(caption.text()).toContain('线索数（非文章数）')
-    expect(caption.text()).not.toContain('事件线')
-    expect(caption.text()).not.toContain('兜底')
     const axes = wrapper.findComponent({ name: 'TrendAxes' })
     expect(axes.exists()).toBe(true)
-    expect(axes.props('unitLabel')).toBe('线索数（非文章数）')
+    expect(axes.props('unitLabel')).toBe('线索数')
+    expect(wrapper.find('.ta-unit').text()).toBe('线索数')
+    expect(wrapper.text()).not.toContain('事件线')
+    expect(wrapper.text()).not.toContain('兜底')
+    expect(wrapper.text()).not.toContain('非文章数')
+  })
+
+  it('矩阵默认不另写图注（caption 缺省不渲染）；日期格式只由空输入提示与校验承担', () => {
+    const { wrapper } = mountControls()
+    expect(wrapper.find('.orc-caption').exists()).toBe(false)
+    expect(wrapper.find('#orc-start').attributes('placeholder')).toBe('YYYY-MM-DD')
+    expect(wrapper.findAll('.orf-field').map(node => node.text())).toEqual(['起始日', '截止日'])
+    // 头部不另写日期口径旁注（Asia/Shanghai · 含起止日 已退役）
+    expect(wrapper.find('.orc-sub').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Asia/Shanghai')
+    expect(wrapper.text()).not.toContain('含起止日')
   })
 })
 
@@ -448,12 +457,12 @@ describe('ObservationRangeControls — 配置化扩展（unify-lane-workbench 6.
     expect(plainCommits!.at(-1)![0]).toEqual({ start: dateAt(0), end: dateAt(100) })
   })
 
-  it('caption 传工作面口径文案：标注按传入渲染；缺省为矩阵文案', () => {
+  it('caption 传工作面口径文案：专用图注按传入渲染（不被精减退删）；缺省不渲染', () => {
     const { wrapper } = mountControls({ caption: ['365 日 · 可选线索数（不含 active 泳道）', '线索数（非文章数）· 不含 active 泳道'] })
     const caption = wrapper.find('.orc-caption')
     expect(caption.text()).toContain('不含 active 泳道')
     const plain = mountControls()
-    expect(plain.wrapper.find('.orc-caption').text()).toContain('已返回泳道的日线索数')
+    expect(plain.wrapper.find('.orc-caption').exists()).toBe(false)
   })
 
   it('selectableBounds：表单以可选界校验（不越可选界提交）', async () => {
@@ -475,6 +484,50 @@ const collapseState = vi.hoisted(() => ({ narrow: false }))
 vi.mock('~/composables/useMediaQuery', async () => {
   const { computed } = await import('vue')
   return { useIsNarrowViewport: () => computed(() => collapseState.narrow) }
+})
+
+describe('ObservationRangeControls — 可选 prop 扩展（archive-time-chart-range）', () => {
+  it('缺省：单位仍「线索数」、标题仍「时间视窗」、存储键仍 syntopica.orc.collapsed', async () => {
+    localStorage.clear()
+    const { wrapper } = mountControls()
+    expect(wrapper.findComponent({ name: 'TrendAxes' }).props('unitLabel')).toBe('线索数')
+    expect(wrapper.find('.orc-title').text()).toBe('时间视窗')
+    await wrapper.find('[data-testid="observation-range-toggle"]').trigger('click')
+    expect(localStorage.getItem('syntopica.orc.collapsed')).toBe('1')
+  })
+
+  it('无 footer 插槽：DOM 不多出任何节点', () => {
+    const { wrapper } = mountControls()
+    expect(wrapper.find('.orc-footer').exists()).toBe(false)
+    expect(wrapper.html()).not.toContain('slot')
+  })
+
+  it('tiers 传空数组：不渲染档位分组（不留空的无障碍分组）', () => {
+    const { wrapper } = mountControls({ tiers: [] })
+    expect(wrapper.find('.orc-tiers').exists()).toBe(false)
+    expect(wrapper.findAll('.orc-tier')).toHaveLength(0)
+  })
+
+  it('传入自定义单位 / 标题 / 存储键：按传入渲染（归档口径）', async () => {
+    localStorage.clear()
+    const { wrapper } = mountControls({
+      unitLabel: '篇',
+      title: '时间范围',
+      collapseStorageKey: 'syntopica.archive.time.collapsed',
+    })
+    expect(wrapper.findComponent({ name: 'TrendAxes' }).props('unitLabel')).toBe('篇')
+    expect(wrapper.find('.orc-title').text()).toBe('时间范围')
+    await wrapper.find('[data-testid="observation-range-toggle"]').trigger('click')
+    expect(localStorage.getItem('syntopica.archive.time.collapsed')).toBe('1')
+    expect(localStorage.getItem('syntopica.orc.collapsed')).toBeNull()
+  })
+
+  it('无曲线提示按标题生成（缺省矩阵读作「时间视窗趋势未取到」）', () => {
+    const { wrapper } = mountControls()
+    const text = wrapper.find('[data-testid="observation-range-no-series"]').text()
+    expect(text).toContain('时间视窗趋势未取到')
+    expect(text).not.toContain('365 日池')
+  })
 })
 
 describe('ObservationRangeControls 折叠', () => {

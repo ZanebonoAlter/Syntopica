@@ -367,3 +367,175 @@ func TestBoardArticles_InvalidInReportAlias(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	require.Contains(t, w.Body.String(), "in_report")
 }
+
+// ── 版块文章按日计数（archive-time-chart-range） ─────────────────────────────
+// 端点口径 MUST 与 /articles 主查询逐字一致：同一 boardTagIDs 取法、feeds 内连接、
+// DATE(pub_date) 归日、COUNT(DISTINCT a.id) 去重；固定口径（不吃任何筛选参数）。
+
+// boardDailyCountsResponse 是按日计数端点的响应体（测试只读三个字段）。
+type boardDailyCountsResponse struct {
+	Success bool `json:"success"`
+	Data    struct {
+		EarliestDate *string `json:"earliest_date"`
+		LatestDate   *string `json:"latest_date"`
+		Days         []struct {
+			Date  string `json:"date"`
+			Count int    `json:"count"`
+		} `json:"days"`
+	} `json:"data"`
+}
+
+// dailyCounts 请求按日计数端点（query 非空时附加，固定口径端点会忽略这些参数）。
+func (f *archiveFixture) dailyCounts(t *testing.T, boardID uint, query string) boardDailyCountsResponse {
+	t.Helper()
+	url := fmt.Sprintf("/api/semantic-boards/%d/article-daily-counts", boardID)
+	if query != "" {
+		url += "?" + query
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	f.router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var body boardDailyCountsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.True(t, body.Success)
+	return body
+}
+
+// articlesTotal 取归档列表的当天篇数（与按日计数对账用）。
+func (f *archiveFixture) articlesTotal(t *testing.T, query string) int {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/semantic-boards/%d/articles?%s", f.boardID, query), nil)
+	f.router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var body struct {
+		Pagination struct {
+			Total int `json:"total"`
+		} `json:"pagination"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	return body.Pagination.Total
+}
+
+// makeArticleAt 在指定发布日期造一篇命中给定标签（label）的文章。
+func (f *archiveFixture) makeArticleAt(t *testing.T, pubDate time.Time, tagLabels ...string) uint {
+	t.Helper()
+	var feed models.Feed
+	require.NoError(t, f.db.First(&feed).Error)
+	article := models.Article{
+		FeedID:  feed.ID,
+		Title:   fmt.Sprintf("daily-%d", time.Now().UnixNano()),
+		Link:    fmt.Sprintf("https://example.com/daily-%d", time.Now().UnixNano()),
+		PubDate: &pubDate,
+	}
+	require.NoError(t, f.db.Create(&article).Error)
+	for _, label := range tagLabels {
+		var tag models.TopicTag
+		require.NoError(t, f.db.Where("label = ?", label).First(&tag).Error)
+		require.NoError(t, f.db.Create(&models.ArticleTopicTag{
+			ArticleID:  article.ID,
+			TopicTagID: tag.ID,
+			Score:      0.9,
+		}).Error)
+	}
+	return article.ID
+}
+
+// countOf 取某日的计数（缺日 = 稀疏数组里没有该日 = 0）。
+func countOf(body boardDailyCountsResponse, date string) int {
+	for _, day := range body.Data.Days {
+		if day.Date == date {
+			return day.Count
+		}
+	}
+	return 0
+}
+
+// TestBoardArticleDailyCounts_MatchesArticlesTotal 锁口径不变量：按日计数与
+// /articles 的当天篇数逐日相等；同一篇文章命中多个版块标签只计一次。
+func TestBoardArticleDailyCounts_MatchesArticlesTotal(t *testing.T) {
+	f := setupArchiveFixture(t)
+	// 同文多标签：命中 strong + hitrate 两个标签 → 当日只计 1 篇。
+	f.makeArticleAt(t, time.Date(2026, 10, 25, 8, 0, 0, 0, time.UTC), "strong", "hitrate")
+
+	body := f.dailyCounts(t, f.boardID, "")
+	require.NotNil(t, body.Data.EarliestDate)
+	require.NotNil(t, body.Data.LatestDate)
+	require.Equal(t, "2026-10-20", *body.Data.EarliestDate)
+	require.Equal(t, "2026-10-25", *body.Data.LatestDate)
+
+	require.Equal(t, 1, countOf(body, "2026-10-25"))
+	require.Equal(t, 1, f.articlesTotal(t, "start_date=2026-10-25&end_date=2026-10-25&per_page=100"))
+	require.Equal(t, 20, countOf(body, "2026-10-20"))
+	require.Equal(t, 20, f.articlesTotal(t, "start_date=2026-10-20&end_date=2026-10-20&per_page=100"))
+
+	// 固定口径：feed_id / report_status / 日期窗口都不参与该端点，结果与不带一致。
+	withParams := f.dailyCounts(t, f.boardID, "feed_id=1&report_status=weak&start_date=2026-10-25&end_date=2026-10-25")
+	require.Equal(t, body.Data.Days, withParams.Data.Days)
+}
+
+// TestBoardArticleDailyCounts_SparseAcrossDays 锁稀疏语义：只含 count>0 的日期，
+// 按 date 升序；中间没文章的日期不出现在数组里。
+func TestBoardArticleDailyCounts_SparseAcrossDays(t *testing.T) {
+	f := setupArchiveFixture(t)
+	f.makeArticleAt(t, time.Date(2026, 10, 25, 8, 0, 0, 0, time.UTC), "strong")
+
+	body := f.dailyCounts(t, f.boardID, "")
+	require.Len(t, body.Data.Days, 2)
+	require.Equal(t, "2026-10-20", body.Data.Days[0].Date)
+	require.Equal(t, 20, body.Data.Days[0].Count)
+	require.Equal(t, "2026-10-25", body.Data.Days[1].Date)
+	require.Equal(t, 1, body.Data.Days[1].Count)
+}
+
+// TestBoardArticleDailyCounts_CountsDirectionMismatch 方向校验未通过的文章（列表行内
+// 默认隐藏其标签）仍计入当日 count——与列表「当天篇数」对齐。
+func TestBoardArticleDailyCounts_CountsDirectionMismatch(t *testing.T) {
+	f := setupArchiveFixture(t)
+	f.makeArticleAt(t, time.Date(2026, 10, 25, 8, 0, 0, 0, time.UTC), "mismatch")
+
+	body := f.dailyCounts(t, f.boardID, "")
+	require.Equal(t, 1, countOf(body, "2026-10-25"))
+	require.Equal(t, 1, f.articlesTotal(t, "start_date=2026-10-25&end_date=2026-10-25&per_page=100"))
+}
+
+// TestBoardArticleDailyCounts_NilPubDate 存量无发布日期的文章不得把整个端点打成 500：
+// `pub_date IS NULL` 的命中文章被排除（按日曲线无法给它定位到某一天），其余日期照常返回。
+func TestBoardArticleDailyCounts_NilPubDate(t *testing.T) {
+	f := setupArchiveFixture(t)
+	var feed models.Feed
+	require.NoError(t, f.db.First(&feed).Error)
+	var tag models.TopicTag
+	require.NoError(t, f.db.Where("label = ?", "strong").First(&tag).Error)
+	article := models.Article{
+		FeedID: feed.ID,
+		Title:  "no-pub-date",
+		Link:   fmt.Sprintf("https://example.com/no-pub-date-%d", time.Now().UnixNano()),
+	}
+	require.NoError(t, f.db.Create(&article).Error)
+	require.NoError(t, f.db.Create(&models.ArticleTopicTag{
+		ArticleID:  article.ID,
+		TopicTagID: tag.ID,
+		Score:      0.9,
+	}).Error)
+
+	body := f.dailyCounts(t, f.boardID, "")
+	require.NotNil(t, body.Data.EarliestDate)
+	for _, day := range body.Data.Days {
+		require.NotEmpty(t, day.Date)
+	}
+	// 固定 fixture 的既有文章仍照常计入，NULL 行不额外产生日期。
+	require.Equal(t, 20, countOf(body, "2026-10-20"))
+}
+
+// TestBoardArticleDailyCounts_EmptyBoard 无命中文章：200 + earliest/latest 为 null +
+// days 为空数组（不是 404）。
+func TestBoardArticleDailyCounts_EmptyBoard(t *testing.T) {
+	f := setupArchiveFixture(t)
+	body := f.dailyCounts(t, f.boardID+9999, "")
+	require.Nil(t, body.Data.EarliestDate)
+	require.Nil(t, body.Data.LatestDate)
+	require.NotNil(t, body.Data.Days)
+	require.Empty(t, body.Data.Days)
+}
