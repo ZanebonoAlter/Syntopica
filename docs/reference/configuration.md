@@ -6,7 +6,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 ### 后端（Go）
 
-以下环境变量会覆盖 `backend-go/configs/config.yaml` 中的值。未设置时使用配置文件默认值。
+以下环境变量会覆盖 `backend-go/configs/config.yaml` 中的值，或为只有环境变量一途的进程开关（如 `DEMO_READ_ONLY` / `COMPRESS_MIN_BYTES` / `FINGENIUS_API_KEY`）。未设置时使用配置文件默认值或代码默认值。
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
@@ -16,16 +16,27 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | `DATABASE_DSN` | 否 | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | PostgreSQL 连接字符串 |
 | `CORS_ORIGINS` | 否 | `"http://localhost:3000,http://localhost:3000"` | 逗号分隔的允许 CORS 来源列表（首尾空白会被裁剪）。**精确匹配**（`middleware/cors.go` 逐条比对，无通配回退）：跨 origin 部署时须逐个列出浏览器地址栏里的 origin；同源部署（前端由后端同源托管或反代提供）下不参与。见[部署指南](deployment.md)「多机 / 远程访问」节。 |
 | `MIGRATIONS_ALLOW_DESTRUCTIVE` | 否 | *(未设置)* | 仅设为 `"1"` 时启用破坏性数据库迁移（含 `TRUNCATE`/`DROP` 的历史数据清理迁移）。**生产环境绝不设置**；dev/本地开发设 `"1"` 以执行历史数据清理。见 [部署指南](deployment.md#破坏性迁移开关)。 |
+| `DEMO_READ_ONLY` | 否 | *(未设置)* | 公开只读 demo 开关，**仅裸 `1` 生效**（`middleware.IsDemoReadOnly()` 去空白后比较，但 `cmd/server/main.go` 用原值比较——写成 ` 1 ` 会出现「API 只读已生效、后台调度却照常启动」的半开状态）。置 `1` 时：① `/api` 挂 `middleware.ReadOnly()`——放行 OPTIONS 与 GET，其余方法 405 `read-only demo`，两个 merge-preview SSE GET 流也拦；② 不注册 `/ws`；③ 整个 `StartRuntime()` 跳过（无调度器、无启动自愈/序列对齐/孤儿收敛，保证演示快照零写入）。见[部署指南](deployment.md)「公开只读 Demo」与 `demo/docker-compose.demo.yml`（`DEMO_READ_ONLY: "1"`） |
 | `TRACE_SAMPLE_RATIO` | 否 | `0.05` | OTel root span 采样比例（`ParentBased(TraceIDRatioBased)`）。`1.0`=全采；`<1.0` 按比例降采样；被采 root 的所有子 span（DB/出站 HTTP/业务）完整保留。非法值（不可解析或超出 0.0–1.0）回退默认 `0.05` 并打 warn。全采样下 otel_spans 日增 ~82 万行/600MB，故默认低采样；排障时临时设 `1.0` 重启即可恢复全采。 |
 | `TRACE_INSTRUMENT_GORM` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭 GORM DB 操作自动埋点（自写 `GORMTracePlugin`）。非 `"0"` 均视为启用。 |
 | `TRACE_INSTRUMENT_HTTP` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭出站 HTTP 自动埋点（`httpclient` 工厂的 otelhttp 包装）。非 `"0"` 均视为启用。 |
 | `STORAGE_ICON_DIR` | 否 | `"data/icons"` | feed 图标本地化存储根目录（实际文件在 `feeds/` 子目录），由后端 `/icons` 静态路由对外服务 |
 | `IMAGE_CACHE_MAX_MB` | 否 | `256` | 图片代理（`GET /api/image-proxy`）磁盘缓存总量上限（MB，整数）。超限按最近访问时间（mtime）从旧淘汰到 90% 水位；`"0"` 禁用缓存（每次回源）；负数/非法值回落默认。缓存目录固定 `data/image-cache/`（URL SHA-256 命名），**整目录删除即可热清缓存**（图床内容变更需强一致时），下次访问自动重建。 |
+| `COMPRESS_MIN_BYTES` | 否 | `1024`（1 KiB） | 响应体 gzip 压缩的最小阈值（字节，整数）：小于该值的响应保持 identity（gzip 帧开销超过收益）。压缩在应用进程内做内容协商（`middleware.Compress()`，不交给反代）：每响应写 `Vary: Accept-Encoding`，跳过已压缩媒体类型/已带 `Content-Encoding` 的响应/WebSocket 升级/Range 请求/两个 merge-preview SSE 流。`0` = 全部压缩；负数/非法值回落默认 |
 | `BOCHA_API_KEY` | 否 | *(空)* | **部署兜底**——博查 key 首选在设置界面「博查搜索」配（存 `ai_settings` 表，动态生效）。此 env 仅用于无界面/CI/容器部署，与 `configs/config.yaml` 的 `bocha.api_key` 同为兜底（优先级：界面 DB > env > config.yaml）。全空→`web_search` 降级 Noop（返回错误 JSON，agent 自降级、不阻断） |
 | `BOCHA_ENDPOINT` | 否 | `"https://api.bochaai.com/v1/web-search"` | 博查通搜 endpoint（原始网页结果模式）的**兜底**值；界面可覆盖。仅在需要切换 endpoint（如代理/镜像）时设 |
 | `SEARXNG_URL` | 否 | *(空)* | 本地 SearXNG 实例地址的**兜底**（页边注问答联网补强，daily-report-margin-notes D7）。**首选在设置界面「SearXNG 搜索」配**（存 `ai_settings` 表 `searxng_config`，每次提问现读、即时生效，优先级：界面 DB > env > `configs/config.yaml` `searxng.endpoint`）。空→禁用（问答静默降级为纯文章+模型知识，不报错）。客户端：`internal/platform/searxng` |
 | `COMTRADE_API_KEY` | 否 | *(空)* | UN Comtrade 订阅 key 的**兜底**（研究数据源域，change integrate-research-data-sources）。**首选在设置界面「研究数据源」配**（存 `ai_settings` 表 `comtrade_config`，动态生效免重启，同博查语义）；优先级：界面 DB > env > `configs/config.yaml` `comtrade.api_key`。全空→`un_comtrade` 源在目录中 disabled 且取数报「配置缺失」型 SOURCE_UNAVAILABLE（消息指向配置项），其余三源（EIA/JODI/WDI）匿名可用不受影响。key 获取：comtradedeveloper.un.org 订阅 Free APIs 产品（详见下方「研究数据源」节） |
+| `FINGENIUS_API_KEY` | 否 | *(空)* | FinGenius 个股辩论服务的凭据（可选外部服务：分析员输出 `sectors[].symbols` 后由用户手动触发，6 角色 agent 多轮辩论 + 投票，结果经 `data_enrichment.debate_distill` 提炼存入 `stock_debate_result`）；非空时以 `Authorization: Bearer <key>` 发给 `FINGENIUS_BASE_URL`（默认 `http://localhost:8000`）。**仅环境变量可配**（`configs/config.yaml` 无对应键）；留空 = 不带鉴权头。辩论失败不阻塞循环 B 主流程（non-fatal，见 [flow/data-enrichment.md](flow/data-enrichment.md) §FinGenius 可选辩论） |
 | `FRED_API_KEY` | 否 | *(空)* | FRED API key 的**兜底**（研究数据源域，change add-fast-frequency-datasources，同 Comtrade 动态链）。**首选在设置界面「研究数据源」配**（存 `ai_settings` 表 `fred_config`，动态生效免重启）；优先级：界面 DB > env > `configs/config.yaml` `fred.api_key`。全空→`fred` 源在目录中 disabled 且取数报「配置缺失」型 SOURCE_UNAVAILABLE，其余六源匿名可用不受影响。key 获取：stlouisfed.org 免费注册（1 分钟，详见下方「研究数据源」节） |
+
+### 演示数据导出（dump-sanitizer CLI）
+
+以下变量只对 `backend-go/cmd/dump-sanitizer`（脱敏导出 `demo/seed/seed.sql` 的命令行工具）生效，后端服务进程不读。
+
+| 变量 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `RSSHUB_REWRITE` | 否 | `"rsshub.app=rsshub.app"` | RSSHub **源主机改写规则**，形如 `源host=目标host`：导出时命中 `源host` 的文章链接改写到 `目标host`（scheme 固定 `https`），避免演示数据泄漏自托管实例地址；非 URL / 主机不匹配原样保留。默认值等于「不改写」。仅影响导出产物，不影响运行期抓取。`scripts/deploy/sync-demo-weekly.sh` 优先取同名环境变量，其次读 `demo/seed/.rsshub-rewrite` 首行（gitignore，不入库），两者皆无时 fail-closed 中止导出（除非显式 `ALLOW_NO_RSSHUB_REWRITE=1`） |
 
 ### 桌面壳（desktop shell）
 
@@ -347,9 +358,9 @@ go run ./cmd/related-events --experiment --board <boardId>              # 只读
 - **修改即时生效、无需重启**：airouter 每次调用经 `LoadRouteWithProviders` 现查路由与 provider（`openai_compatible.go` 按当次 `provider.TimeoutSeconds` 建 client 超时）。
 - 另：HTTP 成功但 assistant content 为空的响应会被 airouter 统一规范化为可重试失败（`error_code=empty_response`）并走 ordered fallback，不会把空文本当成功结果消费（board-level-deep-analysis 2026-08-31 修复，见 flow/ai-summary 与 standard/backend/ai-logging）。
 
-#### 6. 分析方法卡（UI 管理，无配置文件项）
+#### 6. 分析方法卡（已整体退役，无配置文件项）
 
-方法卡（`analysis_methods` 表）经设置页「分析方法」section 或 `/api/analysis-methods` CRUD 管理（创建默认停用，启停即时生效）；仅调查链按问题选中 0-2 张注入，不进简报/事实阶段。旧参考角色（`reference_roles`）已退役只读。详见 [api/dataenrichment.md](api/dataenrichment.md)。
+方法卡（`analysis_methods` 表）、设置页「分析方法」分区与 `/api/analysis-methods` CRUD **已于 2026-09-27 `restructure-settings-navigation` 全链移除**（选卡/清洗/注入/仓储/模型/表一并删除，迁移 `20260926_0001` DROP 表；事实零启用零注入，删除无行为损失），调查链前置阶段收敛为「假设生成」单步；旧参考角色（`reference_roles`）同批退役并被同一迁移 DROP。**因此当前没有任何方法卡配置项可配，也没有对应设置页分区**——本文档保留此节只为避免读者按旧文档去找入口。详见 [flow/data-enrichment.md](flow/data-enrichment.md) 变更溯源。
 
 #### 6. 跨版块关系发现（add-evidence-backed-cross-board-relations，默认关闭）
 

@@ -1,6 +1,6 @@
 # 话题数据增强 Data Enrichment
 
-> 涵盖话题维度的生命周期上下文（lifeline_context）、增强结果（enrichment_result）、复盘评审（enrichment_review）、个股多空辩论（stock_debate），板块维度的数据源绑定（board_data_source）与简报/调查分析（board_brief / board_investigation），以及全局分析方法卡库（analysis_methods，旧 reference_roles 只读兼容）。
+> 涵盖话题维度的生命周期上下文（lifeline_context）、增强结果（enrichment_result）、复盘评审（enrichment_review）、个股多空辩论（stock_debate），板块维度的数据源绑定（board_data_source）与简报/调查分析（board_brief / board_investigation）；web_search 后端的博查配置见文末「博查搜索配置」。旧分析方法卡库（analysis_methods）与参考角色库（reference_roles）已删除，见文末「已退役」节。
 >
 > 通用约定（响应信封、错误格式）见 [_conventions.md](_conventions.md)。
 
@@ -39,11 +39,8 @@
 | POST | `/api/semantic-boards/:id/enrichment/analysis/relations/:rid/confirm` | 确认 proposed 关系（TTL 内生效） |
 | POST | `/api/semantic-boards/:id/enrichment/analysis/relations/:rid/dismiss` | 驳回 proposed/unresolved 关系（reason 必填，进冷却） |
 | POST | `/api/semantic-boards/:id/enrichment/analysis/relations/:rid/re-resolve` | 重解析 unresolved 关系目标 |
-| GET / POST | `/api/analysis-methods` | 方法卡列表 / 创建 |
-| GET / PUT / DELETE | `/api/analysis-methods/:id` | 方法卡详情 / 局部更新 / 软删除 |
-| PUT | `/api/analysis-methods/:id/enable` | 方法卡启停 |
-| GET | `/api/reference-roles`、`/api/reference-roles/:id` | 旧参考角色只读兼容（一版本） |
-| POST / PUT / DELETE | `/api/reference-roles*` | 已退役，一律 410 |
+| — | `/api/analysis-methods*`、`/api/reference-roles*` | **已删除**：路由不存在，任何方法一律 `404`（2026-09-27 restructure-settings-navigation，见文末「已退役」节） |
+| GET / POST | `/api/settings/bocha` | 博查 web_search 后端配置（GET 脱敏 / POST 即时生效） |
 
 > **路径参数命名**：本模块话题维度统一用 `:topicId`（驼峰，区别于其它模块常用的 `:topic_id` 下划线风格）；板块维度用 `:id`，与 board CRUD 一致。`:granularity` 取值固定为 `week` / `month` / `year` / `all`。
 
@@ -473,7 +470,7 @@
     "result_kind": "board_investigation",
     "parent_result_id": 205,
     "question_key": "6a1b2c3d4e5f...（64-hex SHA-256）",
-    "sectors": { "scope": "board", "result_kind": "board_investigation", "question": { "id": "q1", "text": "...", "source": "generated" }, "hypotheses": [...], "conclusion": {...}, "evidence_chain": [...], "lane_refs": [...], "method_refs": [...] },
+    "sectors": { "scope": "board", "result_kind": "board_investigation", "question": { "id": "q1", "text": "...", "source": "generated" }, "hypotheses": [...], "conclusion": {...}, "evidence_chain": [...], "lane_refs": [...] },
     "tool_calls": [...],
     "input_snapshot": {...},
     "session_id": "data_enrichment_board_9_ab12cd34",
@@ -482,7 +479,7 @@
 }
 ```
 
-> `sectors` 按 `result_kind` 多态：`board_brief` 载 `{summary, observations, relationships, uncertainties, research_questions, lane_refs, degraded?, retry_reason?}`；`board_investigation` 载 `{question, hypotheses[](五态 assessment+支持/反证/gaps), conclusion, evidence_chain, lane_refs, method_refs, retry_reason?}`；`legacy_board_analysis` 原样透传 v1 五字段 `{thesis, candidates, argument, depth, lane_refs}`。
+> `sectors` 按 `result_kind` 多态：`board_brief` 载 `{summary, observations, relationships, uncertainties, research_questions, lane_refs, degraded?, retry_reason?}`；`board_investigation` 载 `{question, hypotheses[](五态 assessment+支持/反证/gaps), conclusion, evidence_chain, lane_refs, retry_reason?}`；旧行可能还带 `method_refs`（方法卡库已于 2026-09-27 删除，新调查不再写该方法，历史行按存储原样透传，见文末「已退役」节）；`legacy_board_analysis` 原样透传 v1 五字段 `{thesis, candidates, argument, depth, lane_refs}`。
 
 ### 板块档报告追问 QA（三 kind 均可）
 
@@ -516,54 +513,48 @@
 
 `job_kind` 枚举：`topic_analysis` / `board_brief` / `board_investigation`。完成后 `finished=true` 且带 `result_id`；失败带 `error`。单次后台上限 30 分钟；内存 job 表，进程重启即空闲态。
 
-## 分析方法卡 Analysis Methods（方法库，board-level-deep-analysis）
+## 已退役：分析方法卡 / 参考角色（restructure-settings-navigation）
 
-> 全局方法卡库（`analysis_methods` 表）：声明适用/禁用/证据/失败模式边界，仅在调查链按问题选中 0-2 张注入（经清洗）；简报/事实阶段永不注入。创建默认 `disabled`；`legacy=true` 项为旧参考角色迁移（需人工整理后启用）。设置页「分析方法」section 即此 API。
+> `analysis_methods`（全局方法卡库）与 `reference_roles`（旧方法论画像库）两套体系已于 2026-09-27 整体移除：路由注册段删除、**没有 410 兼容 stub**，两表由迁移 `20260926_0001` `DROP TABLE`，设置页对应 section 一并下架。
+>
+> 因此本文件旧版记载的 `/api/analysis-methods`（列表/创建）、`/api/analysis-methods/:id`（详情/更新/软删除）、`/api/analysis-methods/:id/enable`（启停）以及 `/api/reference-roles*`（旧“GET 只读兼容 + 写 410”）现在**全部是 `404`**（gin 无此路由），不是 410；调查链也不再注入任何方法卡正文。
+>
+> 考古：change `restructure-settings-navigation`（git `dddc3408`）；代码 `internal/dataenrichment/handler/handler.go`（注册段删除处留注释）、迁移 `internal/platform/database/postgres_migrations.go`（`20260926_0001` drop profile tables）。
 
-### GET /api/analysis-methods
+## 博查搜索配置（web_search 后端，`/api/settings/bocha`）
 
-方法卡列表（当前返回完整卡，含 `content`；设置页无需再逐条请求详情）。**响应示例**
+> `web_search` 工具（话题深度层证据链 / 版块简报·调查的联网检索 / 跨版块关系发现的 Scout 检索）后端为博查通搜。配置存 `ai_settings.bocha_config`，`BochaWebSearcher` 每次检索现读，**界面改即时生效、无需重启**；解析优先级 **界面 DB > env（`BOCHA_API_KEY` / `BOCHA_ENDPOINT`）> config.yaml（`bocha.*`）> 空**（`enabled` 仅显式 `false` 才跳过界面值）。全空 → `web_search` 返回 not configured，agent 侧降级不阻断主流程。只用通搜原始网页结果（`summary:false`），不用 AI 总结模式。
+
+### GET /api/settings/bocha
+
+读博查配置，key 脱敏不回显完整值。**只读界面 DB 值**，env / config.yaml 兜底值不在此回显。
 
 ```json
-{
-  "success": true,
-  "data": [
-    { "id": 1, "name": "inside-america", "title": "内部看美国·方法论画像（v2）", "summary": "...", "selection_meta": { "applicable_when": [...], "avoid_when": [...], "required_evidence": [...], "failure_modes": [...] }, "content": "...", "enabled": false, "legacy": true, "created_at": "2026-08-28T00:00:00Z", "updated_at": "2026-08-28T00:00:00Z" }
-  ]
-}
+{ "success": true, "data": { "api_key_configured": true, "api_key_hint": "a1b2", "endpoint": "https://api.bochaai.com/v1/web-search", "enabled": true } }
 ```
 
-### POST /api/analysis-methods
+| 字段 | 说明 |
+| --- | --- |
+| `api_key_configured` | 界面 DB 是否已配 key（仅 env/config.yaml 配了 key 时为 `false`） |
+| `api_key_hint` | key 末 4 位；key 长度 ≤4 时为空串（只标“已配置”） |
+| `endpoint` | 通搜 endpoint，缺省回落 `https://api.bochaai.com/v1/web-search` |
+| `enabled` | 界面开关，缺省 `true` |
 
-创建方法卡。body：`{ "name": "...", "title"?: "...", "summary"?: "...", "selection_meta"?: {...四数组}, "content": "...", "enabled"?: false }`——`name` + `content` 必填（缺 → `400`）；重名 → `409`；默认 `enabled=false`。
+### POST /api/settings/bocha
 
-### GET /api/analysis-methods/:id
+写博查配置，**空值即“不改”**（防表单回填覆盖已存值）。
 
-单条详情（含 `content` 正文）；不存在或已软删除 → `404`。
+```json
+{ "api_key": "sk-...", "endpoint": "https://api.bochaai.com/v1/web-search", "enabled": true }
+```
 
-### PUT /api/analysis-methods/:id
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `api_key` | 否 | 空串/缺省 = 保留原值；非空才覆盖 |
+| `endpoint` | 否 | 空串/缺省 = 保留原值（及缺省 endpoint）；非空才覆盖 |
+| `enabled` | 否 | 指针语义：缺省 = 保留原值，非缺省即覆盖（不必用 `false` 兜底） |
 
-局部更新（`name`/`title`/`summary`/`selection_meta`/`content`/`enabled` 任意子集）；传空 `name`/`content` → `400`；改名为已存在名 → `409`。
-
-### PUT /api/analysis-methods/:id/enable
-
-启停。body `{ "enabled": true }` 必填（缺 → `400`）；即时生效（后端每次调查现查 enabled 卡）。
-
-### DELETE /api/analysis-methods/:id
-
-软删除（`deleted_at`）；响应 `{ "deleted": <id> }`。历史调查的 `method_refs`（含 content_hash）仍可追溯。
-
-## 参考角色 Reference Roles（旧，只读兼容一版本）
-
-> 旧方法论画像库（`reference_roles` 表）已退役：所有 prompt 不再注入。GET 保留一版本供迁移查看；写 API 一律 `410`，指向 `/analysis-methods`（旧角色已由迁移按原文字节复制为 disabled legacy 方法卡）。设置页旧面板已下架。
-
-### GET /api/reference-roles、GET /api/reference-roles/:id
-
-旧角色列表/详情，只读；不存在 → `404`。
-
-### POST / PUT / DELETE /api/reference-roles*
-
-一律 `410 Gone`：`reference roles are read-only; use /analysis-methods`。
+请求体非法 JSON → `400`（`Invalid request body`）；写库失败 → `500`。成功返回 `{ "success": true }`。
 
 ## 单泳道 trigger 扩展：prefill_lens
 

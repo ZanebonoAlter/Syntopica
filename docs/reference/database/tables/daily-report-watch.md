@@ -3,7 +3,7 @@
 > 真相源 = 代码（GORM struct + `postgres_migrations.go`），本文件是投影。全局约定（FK 真相 / 向量维度 / 枚举 / 唯一与 CHECK 约束）见 [_conventions.md](_conventions.md)；完整表清单与导航见 [_index.md](../_index.md)。
 
 
-> 本域 10 张表由 `internal/topicgraph` 的 `RegisterModels` 注册（`init()`），部署若未引入该包则表不存在；迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
+> 本域 14 张表：12 张由 `internal/topicgraph/repository` 的 `RegisterModels` 注册（`init()`）；`topic_anchor_overrides` / `section_assignment_overrides` 两张留痕表由显式迁移 `20261113_0002` / `20261113_0004` 建表（模型刻意不进 AutoMigrate）。部署若未引入该包则表不存在，迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
 
 ### 9.1 board_daily_reports（板块日报主表）
 
@@ -53,6 +53,9 @@
 | `lane_tier` | VARCHAR(16) | —（迁移 `20260727_0001`） | 泳道归属标记：`l1_direct`（质心强挂直归属）/ `l2_llm`（弱区 LLM 留/换）/ `l3_new`（新开 candidate）；物化轨另有 `watch_keyword` / `watch_sentence`。NULL = 迁移前历史 section（旧流程产出，不回刷） |
 | `bucket_title` | VARCHAR(200) | 可空（迁移 `20261024_0001`） | 泳道内主题分桶的方向名（add-intra-lane-theme-bucketing）。NULL = 未分桶/历史行；不参与任何跨天统计 |
 | `bucket_index` | INTEGER | NOT NULL DEFAULT 0（迁移 `20261024_0001`） | 同一 `cluster_index` 内的桶序号（0 起、组内唯一）。未分桶 = 0；`(report_id, cluster_index)` **刻意无唯一约束**（兄弟桶共享） |
+| `manual_assignment_at` | TIMESTAMPTZ | 可空（迁移 `20261113_0003`） | 最近一次人工归属变更时刻；历史行 NULL（**不回填**） |
+| `manual_assignment_from_topic_id` | BIGINT | 可空（同上） | 变更前所属话题 id（`detach` 记来源；`attach` 为 NULL） |
+| `manual_assignment_action` | VARCHAR(16) | 可空（同上） | 动作：`detach` / `attach`。**只保留最近一次**（会被下一次覆盖），完整历史在 `section_assignment_overrides`（§9.14） |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 
 > HNSW 索引 `idx_daily_report_sections_embedding`：运行时由 `ensureSectionEmbeddingDimension` 创建（dim ≤ 2000 才建）。
@@ -120,6 +123,7 @@
 | `is_vacuum` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20260727_0001`） | 吸尘器标记：`strong/(strong+mid) < persistent_topic_vacuum_ratio`（默认 0.20）则 true——质心过宽、沾边 tag 都被吸成最近邻，挂到它的 tag 从 L1 降级 L2 交 LLM 裁决 |
 | `vacuum_strong` | INTEGER | NOT NULL DEFAULT 0（迁移 `20260727_0001`） | 近 `persistent_topic_vacuum_window`（默认 7 天）归属该 topic 且 `topic_match_distance < 0.18` 的 section 计数（吸尘器统计快照） |
 | `vacuum_mid` | INTEGER | NOT NULL DEFAULT 0（迁移 `20260727_0001`） | 近窗口归属该 topic 且 distance ∈ [0.18, 0.30] 的 section 计数（吸尘器统计快照） |
+| `centroid_pending_recompute` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261113_0001`） | 人工修正后的强制重算标记：质心刷新范围 =「当日 touched 话题 ∪ 本列为 true 的话题」，否则当天无新内容的泳道永远等不到重算。历史行 false，不触发重算 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
 
@@ -273,6 +277,41 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 
 > 写入幂等：复合主键 `(story_id, article_id)` 收敛（重复写入保留最新 observed_at）；归属变更时旧线 signal 删除、新线写入（`RecomputeSignalsForStory`）。证据不按 `archived` 过滤——归档只是轮转出 feed 活跃窗口（MaxArticles），不是撤回，归档报道照常计入热度（红线同 sourcestats 包「窗口查询不得过滤 archived」）；将来若需排除「撤回/恶意」须新增专用列，不得复用 `archived`。
 
+### 9.13 topic_anchor_overrides（首义改写留痕，append-only；lane-manual-correction-loop）
+
+人工重设话题首义（`PATCH /api/daily-reports/topics/:id/anchor`）每改一次追加一行：旧行**永不更新、永不删除**，所以「这条泳道的定义面什么时候被谁改成什么」永远可答。读出口 `GET /api/daily-reports/topics/:id/anchor` 的 `override_count` 就是本表中该话题的行数（0 = `source=auto` 走自动首义；≥1 = `source=manual`，节点集取最新一行（`created_at DESC, id DESC`）的 `input_summary`）。与 `daily_report_sections` 的留痕三列不同，本表是**完整历史**而非「最近一次快照」。
+
+> **建表方式**：显式迁移 `20261113_0002` `CREATE TABLE`——模型 `TopicAnchorOverride` 刻意不进 AutoMigrate 注册清单（`TableName()` 返回本表名）。
+> **刻意无 DB 级外键**：`topic_id` 不建 FK——留痕是只追加的审计流水，话题被硬删时不应连带抹掉改写历史。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 主键 |
+| `topic_id` | BIGINT | NOT NULL; index `idx_topic_anchor_overrides_topic` | 被改写的话题（逻辑引用 `board_persistent_topics.id`，**无 FK**） |
+| `old_embedding` | vector | 可空（运行时维度） | 改写前的首义向量；话题此前无可用向量时 NULL |
+| `new_embedding` | vector | NOT NULL（运行时维度） | 改写后写入的首义向量 |
+| `source` | VARCHAR(32) | NOT NULL | 输入模式；当前只有 `selected_sections`（首义由选定节点区间定义，不接自由文本） |
+| `input_summary` | TEXT | NOT NULL DEFAULT '' | 选定 section id 的 JSON 数组（留痕原文） |
+| `operator` | VARCHAR(64) | NOT NULL DEFAULT '' | 操作者；单用户无鉴权部署统一记本地用户 |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 追加时刻 |
+
+### 9.14 section_assignment_overrides（泳道归属变更留痕，append-only；lane-manual-correction-loop）
+
+人工移除/加回一条 section 的泳道归属（`PATCH /api/daily-reports/sections/:id/assignment`）各追加一行。`daily_report_sections` 上的留痕三列只保留**最近一次**变更（下一次即覆盖）——「移除 → 加回」会抹掉 detach 痕迹；本表补完整历史：谁在什么时候把哪条内容挪进 / 挪出哪条泳道。
+
+> **建表方式**：显式迁移 `20261113_0004` `CREATE TABLE`（模型 `SectionAssignmentOverride` 同样不进 AutoMigrate）。
+> **刻意无 DB 级外键**：`section_id` / `topic_id_from` / `topic_id_to` 均不建 FK——留痕必须比被硬删的 section 活得更久。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 主键 |
+| `section_id` | BIGINT | NOT NULL; index `idx_section_assignment_overrides_section` | 被移动的 section（逻辑引用 `daily_report_sections.id`，**无 FK**） |
+| `topic_id_from` | BIGINT | 可空 | 变更前所属话题；`attach` 时为 NULL（此前无归属） |
+| `topic_id_to` | BIGINT | 可空 | 变更后所属话题；`detach` 时为 NULL（不再归属任何泳道） |
+| `action` | VARCHAR(16) | NOT NULL | 动作：`detach` / `attach`（与 §9.2 `manual_assignment_action` 同口径） |
+| `operator` | VARCHAR(64) | NOT NULL DEFAULT '' | 操作者 |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 追加时刻 |
+
 ---
 
 
@@ -301,6 +340,8 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `idx_topic_key_events_topic_state` | topic_key_event_markers | `(persistent_topic_id, state, source_period_date)` | gorm tag（AutoMigrate） |
 | `idx_key_event_runs_report` | key_event_recommendation_runs | UNIQUE `(report_id)` | gorm tag（AutoMigrate） |
 | `daily_report_threads_story_idx` | daily_report_threads | `(story_id)` | `20261105_0001` |
+| `idx_topic_anchor_overrides_topic` | topic_anchor_overrides | `(topic_id)` | `20261113_0002` |
+| `idx_section_assignment_overrides_section` | section_assignment_overrides | `(section_id)` | `20261113_0004` |
 | `board_stories_recall_idx` | board_stories | 部分索引 `(board_id, last_seen_date DESC) WHERE merged_into IS NULL AND status='active'` | `20261105_0001` |
 | `board_stories_subject_idx` | board_stories | `(board_id, subject_key)` | `20261105_0001` |
 | `story_signals_time_idx` | story_signals | `(observed_at DESC)` | `20261105_0001` |
