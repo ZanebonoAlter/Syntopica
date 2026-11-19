@@ -45,6 +45,7 @@ function mountRail(props: Record<string, unknown> = {}) {
     ask: vi.fn(),
     retryAsk: vi.fn(),
     openCited: vi.fn(),
+    collapse: vi.fn(),
   }
   const wrapper = mount(MarginNotesRail, {
     props: {
@@ -58,6 +59,7 @@ function mountRail(props: Record<string, unknown> = {}) {
       onAsk: on.ask,
       onRetryAsk: on.retryAsk,
       onOpenCited: on.openCited,
+      onCollapse: on.collapse,
       ...props,
     },
     attachTo: document.body,
@@ -144,5 +146,18 @@ describe('MarginNotesRail（页边注栏状态矩阵）', () => {
   it('changedIds：对应卡呈「原文已变更」降级态（PR-3）', () => {
     const { wrapper } = mountRail({ notes: [makeNote()], changedIds: [5] })
     expect(wrapper.find('[data-testid="mn-changed"]').exists()).toBe(true)
+  })
+
+  it('canCollapse：栏头渲染收起按钮并上抛 collapse（抽屉实例不传则不渲染）', async () => {
+    const { wrapper: drawerRail } = mountRail()
+    expect(drawerRail.find('[data-testid="mn-rail-collapse"]').exists()).toBe(false)
+
+    const { wrapper, on } = mountRail({ canCollapse: true })
+    const button = wrapper.find('[data-testid="mn-rail-collapse"]')
+    expect(button.exists()).toBe(true)
+    expect(button.attributes('aria-label')).toBe('收起页边注')
+    expect(button.attributes('aria-expanded')).toBe('true')
+    await button.trigger('click')
+    expect(on.collapse).toHaveBeenCalledTimes(1)
   })
 })

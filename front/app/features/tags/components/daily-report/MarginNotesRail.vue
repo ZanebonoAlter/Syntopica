@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { Icon } from '@iconify/vue'
 import AppButton from '~/components/ui/AppButton.vue'
 import AppDialog from '~/components/ui/AppDialog.vue'
 import MarginNoteCard from './MarginNoteCard.vue'
@@ -23,6 +24,8 @@ const props = defineProps<{
   /** 被点亮（跳卡呼应）的批注 id；变化时定位滚动到对应卡。 */
   litId?: number | null
   askStates: Map<number, MarginNoteAskState>
+  /** 桌面第三列实例：栏头提供收起按钮（窄屏抽屉不传，抽屉靠遮罩/Esc 关闭）。 */
+  canCollapse?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -32,6 +35,7 @@ const emit = defineEmits<{
   ask: [annotationId: number, question: string]
   retryAsk: [annotationId: number]
   openCited: [annotationId: number, articleId: number]
+  collapse: []
 }>()
 
 const railEl = ref<HTMLElement | null>(null)
@@ -78,6 +82,18 @@ defineExpose({ focusCard })
     <div class="mn-rail__head">
       <span>页边注</span>
       <em>MARGIN NOTES · {{ notes.length }}</em>
+      <button
+        v-if="canCollapse"
+        type="button"
+        class="mn-rail__collapse"
+        data-testid="mn-rail-collapse"
+        aria-label="收起页边注"
+        aria-expanded="true"
+        title="收起页边注"
+        @click="emit('collapse')"
+      >
+        <Icon icon="mdi:chevron-right" width="16" />
+      </button>
     </div>
 
     <!-- 落锚失败：不静默（气泡点击后无卡无声 = 用户报障「点了没反应」）；重试即重新划选。
@@ -141,8 +157,9 @@ defineExpose({ focusCard })
 
 .mn-rail__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
+  gap: 0.45rem;
   padding-bottom: 0.5rem;
   margin-bottom: 0.8rem;
   border-bottom: 1px solid var(--color-border-strong);
@@ -153,9 +170,33 @@ defineExpose({ focusCard })
 }
 
 .mn-rail__head em {
+  margin-left: auto;
   color: var(--color-accent);
   font-size: 0.66rem;
   font-style: normal;
+}
+
+.mn-rail__collapse {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s, border-color 0.2s;
+}
+
+.mn-rail__collapse:hover,
+.mn-rail__collapse:focus-visible {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 
 .mn-rail__loading {
@@ -219,5 +260,11 @@ defineExpose({ focusCard })
 @keyframes mnRailPulse {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 0.85; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mn-rail__collapse {
+    transition: none;
+  }
 }
 </style>
