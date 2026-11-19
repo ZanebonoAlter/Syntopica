@@ -405,6 +405,12 @@ func (s *CandidateEmbeddingService) DirtyCandidateEmbeddings(ctx context.Context
 // writeEmbedding 在一个事务里复查候选 revision 与指纹后 upsert 向量行。
 // 返回 written=false 表示复查失败（旧请求作废，未写库）。
 func (s *CandidateEmbeddingService) writeEmbedding(ctx context.Context, src candidateEmbeddingSource, vec []float64, dim int, model string) (bool, error) {
+	// 写入前的维度一致性校验（embedding-dimension-contract）：向量列不再带维度
+	// 约束，写入侧是唯一的维度防线——维度与向量不符的行会污染检索侧。
+	if err := airouter.ValidateEmbeddingDimension(vec, dim); err != nil {
+		logging.Errorf("candidate embedding: rejecting write for candidate %d: %v", src.CandidateID, err)
+		return false, err
+	}
 	written := false
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		fresh, err := s.loadSource(ctx, tx, src.CandidateID, true)

@@ -562,7 +562,14 @@ func MergeTags(sourceTagID, targetTagID uint) error {
 // SaveEmbedding saves or updates a tag's embedding in the database.
 // If the actual vector dimension differs from the column definition, it alters the column type.
 func (s *EmbeddingService) SaveEmbedding(embedding *tagmodels.TopicTagEmbedding) error {
+	// 写入前的维度一致性校验（embedding-dimension-contract）：向量列不再带
+	// 维度约束（unify-vector-column-dimension），列级校验已消失——写进一条错
+	// 维度的向量比事后查询时报错更难排查，这里是唯一的写入侧防线。
 	if embedding.Dimension > 0 && embedding.EmbeddingVec != "" {
+		if err := airouter.ValidatePgVectorDimension(embedding.EmbeddingVec, embedding.Dimension); err != nil {
+			logging.Errorf("Rejecting embedding write for tag %d (%s): %v", embedding.TopicTagID, embedding.EmbeddingType, err)
+			return fmt.Errorf("embedding dimension check: %w", err)
+		}
 		if err := ensureVectorDimension(embedding.Dimension); err != nil {
 			return fmt.Errorf("ensure vector dimension %d: %w", embedding.Dimension, err)
 		}
@@ -593,93 +600,146 @@ func (s *EmbeddingService) SaveEmbedding(embedding *tagmodels.TopicTagEmbedding)
 	return repository.Repo.DB().Create(embedding).Error
 }
 
-// ensureVectorDimension checks if the embedding column matches the required dimension
-// and alters it (plus the indexes) if not. Drops indexes before ALTER, recreates after.
+// ensureVectorDimension 让 topic_tag_embeddings.embedding 的**向量索引**与当前
+// 运行时维度保持一致。列类型只在“还带着过时的维度限定”时才动。
 //
-// Index policy (optimize-search-semantic-index design D4):
-//   - float32 HNSW idx_topic_tag_embeddings_embedding：dim ≤ 2000（pgvector float32
-//     HNSW 硬上限）才建；aux-label 去重另有 Go 侧余弦缓存兜底（sqlMergeMatcher）。
-//   - halfvec identity 部分 HNSW（database.TopicTagIdentityHalfvecIndexDDL）：语义搜索
-//     标签召回的 ANN 索引，dim ≤ 4000（pgvector halfvec 上限）才建。
+// 三分支（unify-vector-column-dimension design D3/D4 + 缺口 B）：
+//
+//  1. 列已是无维度限定的 vector（目标形态）：**不执行 ALTER**。维度是运行时
+//     属性，schema 不承载它——ALTER 只会把分叉源搬回 DDL。只按运行时维度
+//     校验/重建 halfvec 索引（表达式内嵌维度，漂移必须重建）。
+//  2. 列是 vector(dim) 且与运行时维度一致：列不动，只确保索引存在。
+//  3. 列是 vector(其他N)：**迁移过渡期分支**——只有尚未跑统一迁移的旧库才会
+//     落进来；保留原有的 DROP INDEX + ALTER + 重建纠正动作（统一迁移跑完后该
+//     分支自然失效，因为列已经是裸 vector）。
+//
+// 索引策略（optimize-search-semantic-index design D4）：
+//   - halfvec identity 部分 HNSW（database.TopicTagIdentityHalfvecIndexDDL）：
+//     语义搜索标签召回的 ANN 索引，dim ≤ 4000（pgvector halfvec 上限）才建；
+//     裸 vector 列上也能建（表达式自带维度）。
+//   - float32 HNSW idx_topic_tag_embeddings_embedding：dim ≤ 2000（pgvector
+//     float32 HNSW 硬上限）才建，且**只在线列带维度限定时可建**——裸 vector 列
+//     建它会报 "column does not have dimensions"，且存活的 float32 索引会把列
+//     钉在旧维度上。语义召回主路径走 halfvec 索引，float32 索引无查询在用。
 //   - dim > 4000：两个索引都建不了，语义路回退旧的全表精确扫描（行为不中断）。
-//
-// 两个索引的表达式都内嵌列维度（typmod），维度变更后旧索引的表达式与新列类型
-// 不再匹配，所以必须先 drop 再 ALTER，否则 Postgres 报错/留下失效索引。
 func ensureVectorDimension(dim int) error {
-	var typeStr string
-	if err := repository.Repo.DB().Raw(`
-		SELECT format_type(a.atttypid, a.atttypmod)
-		FROM pg_attribute a
-		JOIN pg_class c ON c.oid = a.attrelid
-		WHERE c.relname = 'topic_tag_embeddings' AND a.attname = 'embedding'
-	`).Row().Scan(&typeStr); err != nil {
-		return nil
+	db := repository.Repo.DB()
+
+	typeStr, err := database.VectorColumnType(db, "topic_tag_embeddings", "embedding")
+	if err != nil {
+		return nil // 列不存在：让迁移处理
 	}
 
 	expected := fmt.Sprintf("vector(%d)", dim)
-	if typeStr == expected {
-		return nil
+	switch typeStr {
+	case "vector":
+		// 分支 1：裸 vector —— 不 ALTER，只管索引。
+		return ensureTopicTagVectorIndexes(db, dim, false)
+	case expected:
+		// 分支 2：列维度与运行时一致 —— 列不动，只确保索引存在。
+		return ensureTopicTagVectorIndexes(db, dim, true)
 	}
 
+	// 分支 3：迁移过渡期 —— 列仍带过时的维度限定，保留原有纠正动作。
 	logging.Infof("Altering embedding column from %s to %s", typeStr, expected)
 
 	// Drop indexes first — they depend on the column type (float32 index on the
 	// column, halfvec index on the cast expression with the old dimension).
 	for _, indexName := range []string{"idx_topic_tag_embeddings_embedding", database.TopicTagIdentityHalfvecIndexName} {
-		if err := repository.Repo.DB().Exec("DROP INDEX IF EXISTS " + indexName).Error; err != nil { //nolint:gosec // G202: 索引名来自包内常量/固定字面量
+		if err := db.Exec("DROP INDEX IF EXISTS " + indexName).Error; err != nil { //nolint:gosec // G202: 索引名来自包内常量/固定字面量
 			logging.Warnf("Failed to drop vector index %s: %v", indexName, err)
 		}
 	}
 
-	if err := repository.Repo.DB().Exec(fmt.Sprintf(
+	if err := db.Exec(fmt.Sprintf(
 		"ALTER TABLE topic_tag_embeddings ALTER COLUMN embedding TYPE %s", expected,
 	)).Error; err != nil {
 		return fmt.Errorf("alter embedding column to %s: %w", expected, err)
 	}
 
-	// Recreate the float32 index — HNSW supports max 2000 dimensions.
-	if dim <= 2000 {
-		if err := repository.Repo.DB().Exec(
-			"CREATE INDEX idx_topic_tag_embeddings_embedding ON topic_tag_embeddings USING hnsw (embedding vector_cosine_ops)",
-		).Error; err != nil {
-			logging.Warnf("Failed to recreate HNSW index: %v", err)
-		}
-	} else {
-		// No float32 DB-side vector index (>2000 dim exceeds pgvector HNSW limit).
-		// aux-label dedup uses Go-side cosine over the process-cached embeddings
-		// (sqlMergeMatcher), so queries still work without an ANN index here.
-		logging.Infof("Dimension %d exceeds pgvector float32 HNSW limit (2000); skipping float32 vector index (aux-label dedup falls back to Go-side cosine via cache)", dim)
-	}
+	// 列已带维度限定 → float32 索引可建。
+	return ensureTopicTagVectorIndexes(db, dim, true)
+}
 
-	// Recreate the halfvec identity index used by semantic search tag recall
-	// (design D1/D4). Same DDL as migration 20261023_0001 — single source of truth.
+// ensureTopicTagVectorIndexes 确保 topic_tag_embeddings 上的向量索引与运行时维度
+// 一致。
+//
+//   - halfvec identity 部分 HNSW：表达式内嵌维度 → 运行时维度变了必须重建；
+//     dim ≤ 4000 才建，超限跳过并记日志（语义召回回退精确扫描）。
+//   - float32 HNSW：dim ≤ 2000 才建，且只在线列带维度限定时可建——裸 vector 列
+//     建它会报 "column does not have dimensions"；裸列上残留的同名索引会把列
+//     钉在旧维度上（新维度向量写入直接被拒）→ 删除。
+//
+// columnHasFixedDimension：列类型是否带维度限定（vector(dim)）。
+func ensureTopicTagVectorIndexes(db *gorm.DB, dim int, columnHasFixedDimension bool) error {
+	// ── halfvec identity 索引（语义召回 ANN 路径）──
 	if dim > 0 && dim <= 4000 {
-		// Pin one connection for the session-level build GUCs (Connection does not
-		// open a transaction, so plain CREATE INDEX is fine). Disable parallel
-		// maintenance: Docker's default 64MB /dev/shm makes HNSW parallel builds
-		// fail with SQLSTATE 53100 (seen in the production migration).
-		if err := repository.Repo.DB().Connection(func(tx *gorm.DB) error {
-			// Register RESET before the first SET: if the first SET itself fails,
-			// the pinned connection still returns to the pool clean.
-			defer func() {
-				_ = tx.Exec("RESET maintenance_work_mem").Error
-				_ = tx.Exec("RESET max_parallel_maintenance_workers").Error
-			}()
-			if err := tx.Exec("SET maintenance_work_mem = '256MB'").Error; err != nil {
-				return err
-			}
-			if err := tx.Exec("SET max_parallel_maintenance_workers = 0").Error; err != nil {
-				return err
-			}
-			return tx.Exec(database.TopicTagIdentityHalfvecIndexDDL(dim)).Error
-		}); err != nil {
-			logging.Warnf("Failed to recreate halfvec identity HNSW index: %v", err)
+		if err := ensureTopicTagHalfvecIndex(db, dim); err != nil {
+			logging.Warnf("Failed to ensure halfvec identity HNSW index: %v", err)
 		}
 	} else {
 		logging.Infof("Dimension %d exceeds pgvector halfvec HNSW limit (4000); skipping semantic identity index (semantic search falls back to exact scan)", dim)
 	}
 
+	// ── float32 HNSW 索引 ──
+	const float32Index = "idx_topic_tag_embeddings_embedding"
+	if dim > 2000 {
+		logging.Infof("Dimension %d exceeds pgvector float32 HNSW limit (2000); skipping float32 vector index (aux-label dedup falls back to Go-side cosine via cache)", dim)
+		return nil
+	}
+	if !columnHasFixedDimension {
+		exists, err := database.VectorIndexExists(db, float32Index)
+		if err != nil {
+			logging.Warnf("Failed to probe float32 vector index %s: %v", float32Index, err)
+			return nil
+		}
+		if exists {
+			logging.Infof("Dropping legacy float32 vector index %s: a dimensionless column cannot host a float32 HNSW index and the stale index pins the column to its old dimension", float32Index)
+			if err := db.Exec("DROP INDEX IF EXISTS " + float32Index).Error; err != nil { //nolint:gosec // G202: 索引名是包内常量
+				logging.Warnf("Failed to drop float32 vector index %s: %v", float32Index, err)
+			}
+		}
+		return nil
+	}
+	if err := db.Exec("CREATE INDEX IF NOT EXISTS " + float32Index + //nolint:gosec // G202: 索引名是包内常量
+		" ON topic_tag_embeddings USING hnsw (embedding vector_cosine_ops)").Error; err != nil {
+		logging.Warnf("Failed to create float32 HNSW index: %v", err)
+	}
 	return nil
+}
+
+// ensureTopicTagHalfvecIndex 按运行时维度确保 halfvec identity 索引的表达式内嵌
+// 维度正确——不符（或索引 invalid）则重建。
+//
+// 构建期 GUC 设在固定连接上（会话级 SET + RESET）：运行期不在事务里，SET LOCAL
+// 无效；迁移路径（20261023_0001 / 20261117_0002）走事务内的 SET LOCAL。
+func ensureTopicTagHalfvecIndex(db *gorm.DB, dim int) error {
+	existingDim, valid := database.TopicTagIdentityHalfvecIndexState(db)
+	if existingDim == dim && valid {
+		return nil // 已是正确表达式且有效：不动
+	}
+	if existingDim != 0 {
+		logging.Infof("Rebuilding halfvec identity HNSW index: embedded dimension %d != runtime dimension %d", existingDim, dim)
+	}
+	// Pin one connection for the session-level build GUCs (Connection does not
+	// open a transaction, so plain CREATE INDEX is fine). Disable parallel
+	// maintenance: Docker's default 64MB /dev/shm makes HNSW parallel builds
+	// fail with SQLSTATE 53100 (seen in the production migration).
+	return db.Connection(func(tx *gorm.DB) error {
+		// Register RESET before the first SET: if the first SET itself fails,
+		// the pinned connection still returns to the pool clean.
+		defer func() {
+			_ = tx.Exec("RESET maintenance_work_mem").Error
+			_ = tx.Exec("RESET max_parallel_maintenance_workers").Error
+		}()
+		if err := tx.Exec("SET maintenance_work_mem = '256MB'").Error; err != nil {
+			return err
+		}
+		if err := tx.Exec("SET max_parallel_maintenance_workers = 0").Error; err != nil {
+			return err
+		}
+		return database.EnsureTopicTagIdentityHalfvecIndex(tx, dim)
+	})
 }
 
 // GetEmbedding retrieves the embedding for a tag

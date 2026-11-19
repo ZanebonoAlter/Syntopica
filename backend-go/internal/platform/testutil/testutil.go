@@ -414,9 +414,11 @@ func ResetTestData(t *testing.T, db *gorm.DB) *gorm.DB {
 	return freshDB
 }
 
-// TestEmbeddingDim is the vector dimension enforced by the production schema
-// (semantic_labels.embedding/merge_embedding and topic_tag_embeddings.embedding
-// are vector(4096)).
+// TestEmbeddingDim is the vector dimension the test fixtures use. It is NOT a
+// schema contract: since unify-vector-column-dimension every vector column is a
+// dimensionless `vector` and the real dimension comes from the embedder at
+// runtime. The value only sizes fixture vectors; snapshotVectorColumns still
+// rebuilds whatever typmod a test mutated.
 const TestEmbeddingDim = 4096
 
 // PadVector zero-pads vec to dim. Integration tests construct small semantic

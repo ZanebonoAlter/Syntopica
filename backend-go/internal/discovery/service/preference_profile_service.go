@@ -12,6 +12,7 @@ import (
 
 	discmodels "syntopica-backend/internal/discovery/models"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/tracing"
 )
@@ -470,6 +471,12 @@ func (s *PreferenceProfileService) WriteSeed(
 	defer span.End()
 	if len(incomingVec) == 0 {
 		return nil
+	}
+	// 写入前的维度一致性校验（embedding-dimension-contract）：向量列不再带维度
+	// 约束，维度与向量不符的行会污染画像（检索侧同维校验会整轮阻断）。
+	if err := airouter.ValidateEmbeddingDimension(incomingVec, dim); err != nil {
+		logging.Errorf("preference seed: rejecting write: %v", err)
+		return fmt.Errorf("seed 维度不一致: %w", err)
 	}
 	boardID := matchSeedBoard(incomingVec, boardVecs, SeedMatchThresholdDefault)
 

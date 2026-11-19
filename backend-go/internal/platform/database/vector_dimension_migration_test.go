@@ -1,6 +1,7 @@
 package database_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -215,4 +216,218 @@ func TestVectorDimensionMigrationChainReplayOnPopulatedDBIsIdempotent(t *testing
 	t.Cleanup(func() {
 		testutil.ReimportTestDB(t, db)
 	})
+}
+
+// ── unify-vector-column-dimension：存量向量列统一为无维度限定 ──────────────
+
+// unifiedVectorColumns 是统一迁移（20261117_0001）负责的六列。
+// 与迁移里的 vectorDimensionlessColumns 一一对应（测试侧独立列一份，避免
+// 靠同一份常量“自证”——真出问题时两处一起漂移就发现不了）。
+var unifiedVectorColumns = []struct{ table, column string }{
+	{"topic_tag_embeddings", "embedding"},
+	{"daily_report_sections", "embedding"},
+	{"semantic_labels", "embedding"},
+	{"semantic_labels", "merge_embedding"},
+	{"term_notes", "embedding"},
+	{"board_persistent_topics", "embedding"},
+}
+
+// setColumnDimension 把列改成带维度限定的 vector(N)（造「存量形态」）。
+func setColumnDimension(t *testing.T, db *gorm.DB, table, column string, dim int) {
+	t.Helper()
+	stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE vector(%d)", table, column, dim)
+	require.NoError(t, db.Exec(stmt).Error)
+}
+
+// TestVectorDimensionMigrationUnifiesAllVectorColumns 覆盖场景
+// 「存量向量列统一为无维度限定」：迁移后六个向量列的类型声明都不再携带维度
+// （format_type = "vector"）。
+func TestVectorDimensionMigrationUnifiesAllVectorColumns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires testcontainer Postgres")
+	}
+	db := testutil.SetupTestDB(t)
+
+	// 造「存量形态」：全部列带维度限定。
+	for _, col := range unifiedVectorColumns {
+		setColumnDimension(t, db, col.table, col.column, 2560)
+		t.Cleanup(func() {
+			db.Exec(fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE vector", col.table, col.column))
+		})
+	}
+
+	up := findMigrationUp(t, "20261117_0001")
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return up(tx) }))
+
+	for _, col := range unifiedVectorColumns {
+		assert.Equal(t, "vector", vectorColumnType(t, db, col.table, col.column),
+			"%s.%s 必须统一为无维度限定的 vector", col.table, col.column)
+	}
+}
+
+// TestVectorDimensionMigrationKeepsRowsAndVectorDims 覆盖场景
+// 「列类型变更不丢弃向量值」：列类型变更后行数不变、非空向量的实际维度不变。
+func TestVectorDimensionMigrationKeepsRowsAndVectorDims(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires testcontainer Postgres")
+	}
+	db := testutil.SetupTestDB(t)
+
+	require.NoError(t, db.Exec(`DELETE FROM topic_tag_embeddings`).Error)
+	setColumnDimension(t, db, "topic_tag_embeddings", "embedding", 2560)
+	t.Cleanup(func() {
+		db.Exec(`DELETE FROM topic_tag_embeddings`)
+		db.Exec(`ALTER TABLE topic_tag_embeddings ALTER COLUMN embedding TYPE vector`)
+	})
+
+	tagID := seedTopicTag(t, db, "vd-unify-tag")
+	require.NoError(t, db.Exec(`
+		INSERT INTO topic_tag_embeddings (topic_tag_id, embedding_type, embedding, dimension, model, text_hash, created_at, updated_at)
+		VALUES (?, 'identity', array_fill(0.4::real, ARRAY[2560])::vector, 2560, 'probe-model', 'vd-unify-1', now(), now()),
+		       (?, 'semantic', array_fill(0.5::real, ARRAY[2560])::vector, 2560, 'probe-model', 'vd-unify-2', now(), now())`,
+		tagID, tagID).Error)
+
+	var beforeRows int64
+	require.NoError(t, db.Table("topic_tag_embeddings").Count(&beforeRows).Error)
+	var beforeDims []int
+	require.NoError(t, db.Raw(`SELECT vector_dims(embedding) FROM topic_tag_embeddings ORDER BY id`).Scan(&beforeDims).Error)
+	require.Equal(t, []int{2560, 2560}, beforeDims)
+
+	up := findMigrationUp(t, "20261117_0001")
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return up(tx) }))
+
+	var afterRows int64
+	require.NoError(t, db.Table("topic_tag_embeddings").Count(&afterRows).Error)
+	assert.Equal(t, beforeRows, afterRows, "列类型变更不得丢行")
+	var afterDims []int
+	require.NoError(t, db.Raw(`SELECT vector_dims(embedding) FROM topic_tag_embeddings ORDER BY id`).Scan(&afterDims).Error)
+	assert.Equal(t, beforeDims, afterDims, "存量向量的实际维度不得改变")
+}
+
+// TestVectorDimensionMigrationReplayIsIdempotent 覆盖场景
+// 「迁移对已统一的列幂等」：列已是无维度限定时重复执行迁移，迁移成功且列类型
+// 不变（不产生额外 DDL 效果）。
+func TestVectorDimensionMigrationReplayIsIdempotent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires testcontainer Postgres")
+	}
+	db := testutil.SetupTestDB(t)
+
+	up := findMigrationUp(t, "20261117_0001")
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return up(tx) }))
+	for _, col := range unifiedVectorColumns {
+		require.Equal(t, "vector", vectorColumnType(t, db, col.table, col.column),
+			"%s.%s 迁移后必须无维度限定", col.table, col.column)
+	}
+	// 再跑一遍：幂等成功，类型不变。
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return up(tx) }))
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return up(tx) }))
+	for _, col := range unifiedVectorColumns {
+		assert.Equal(t, "vector", vectorColumnType(t, db, col.table, col.column),
+			"重复执行不得改变列类型")
+	}
+}
+
+// TestVectorDimensionMigrationDropsInvalidIndexLeftover 覆盖场景
+// 「无效索引残留被清理」：迁移删掉创建失败残留的 invalid 索引；同名但有效的
+// 索引一律保留（不误删用户索引）。
+func TestVectorDimensionMigrationDropsInvalidIndexLeftover(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires testcontainer Postgres")
+	}
+	db := testutil.SetupTestDB(t)
+
+	// 造一个 invalid 残留（PG 里 CREATE INDEX 失败会回滚，invalid 索引是
+	// CONCURRENTLY 失败或列类型变更重建失败的产物——用 catalog 标记模拟）。
+	require.NoError(t, db.Exec(`CREATE INDEX tmp_hnsw_test ON topic_tag_embeddings (topic_tag_id)`).Error)
+	t.Cleanup(func() { db.Exec(`DROP INDEX IF EXISTS tmp_hnsw_test`) })
+	require.NoError(t, db.Exec(`UPDATE pg_index SET indisvalid = false, indisready = false
+		WHERE indexrelid = to_regclass('public.tmp_hnsw_test')`).Error)
+
+	up := findMigrationUp(t, "20261117_0001")
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return up(tx) }))
+
+	var exists bool
+	require.NoError(t, db.Raw(`SELECT to_regclass('public.tmp_hnsw_test') IS NOT NULL`).Scan(&exists).Error)
+	assert.False(t, exists, "invalid 索引残留必须被迁移清理")
+
+	// 同名但有效的索引必须保留（不误删）。
+	require.NoError(t, db.Exec(`CREATE INDEX tmp_hnsw_test ON topic_tag_embeddings (topic_tag_id)`).Error)
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return up(tx) }))
+	require.NoError(t, db.Raw(`SELECT to_regclass('public.tmp_hnsw_test') IS NOT NULL`).Scan(&exists).Error)
+	assert.True(t, exists, "有效索引不得被误删")
+}
+
+// TestVectorDimensionMigrationBuildsHalfvecIndexForDimensionlessColumn 覆盖缺口 A：
+// 列已是裸 vector 时，20261117_0002 从存量数据采样维度并建 halfvec 索引；表空
+// （采样不到维度）时跳过并等运行时首次写入时建。
+func TestVectorDimensionMigrationBuildsHalfvecIndexForDimensionlessColumn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires testcontainer Postgres")
+	}
+	db := testutil.SetupTestDB(t)
+
+	require.NoError(t, db.Exec(`DELETE FROM topic_tag_embeddings`).Error)
+	require.NoError(t, db.Exec(`DROP INDEX IF EXISTS `+database.TopicTagIdentityHalfvecIndexName).Error)
+	t.Cleanup(func() {
+		db.Exec(`DELETE FROM topic_tag_embeddings`)
+		db.Exec(`DROP INDEX IF EXISTS ` + database.TopicTagIdentityHalfvecIndexName)
+	})
+
+	// 表空 → 采样不到维度 → 跳过（不猜维度）。
+	upIndex := findMigrationUp(t, "20261117_0002")
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return upIndex(tx) }))
+	exists, err := database.VectorIndexExists(db, database.TopicTagIdentityHalfvecIndexName)
+	require.NoError(t, err)
+	assert.False(t, exists, "表空时不得猜维度建索引")
+
+	// 有存量数据 → 从数据采样维度 → 建索引。
+	tagID := seedTopicTag(t, db, "vd-halfvec-tag")
+	require.NoError(t, db.Exec(`
+		INSERT INTO topic_tag_embeddings (topic_tag_id, embedding_type, embedding, dimension, model, text_hash, created_at, updated_at)
+		VALUES (?, 'identity', array_fill(0.6::real, ARRAY[64])::vector, 64, 'probe-model', 'vd-halfvec-1', now(), now())`,
+		tagID).Error)
+
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return upIndex(tx) }))
+	assert.Equal(t, 64, database.TopicTagIdentityHalfvecIndexDimension(db),
+		"裸 vector 列的索引维度必须取自存量数据")
+
+	var valid bool
+	require.NoError(t, db.Raw(`
+		SELECT i.indisvalid FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		WHERE c.relname = ?`, database.TopicTagIdentityHalfvecIndexName).Scan(&valid).Error)
+	assert.True(t, valid, "新建的 halfvec 索引必须有效")
+}
+
+// TestVectorDimensionMigrationSkipsIndexOnMixedDimensions 覆盖 review M2：
+// 裸 vector 列里并存多种维度时，**不建**带维度的 halfvec 索引——索引表达式内嵌
+// 维度，会把另一维度的写入直接拒掉（实测 "expected N dimensions, not M"）。
+// 宁可回退精确扫描，也不建一个会拦写入的索引。
+func TestVectorDimensionMigrationSkipsIndexOnMixedDimensions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires testcontainer Postgres")
+	}
+	db := testutil.SetupTestDB(t)
+
+	require.NoError(t, db.Exec(`DELETE FROM topic_tag_embeddings`).Error)
+	require.NoError(t, db.Exec(`DROP INDEX IF EXISTS `+database.TopicTagIdentityHalfvecIndexName).Error)
+	t.Cleanup(func() {
+		db.Exec(`DELETE FROM topic_tag_embeddings`)
+		db.Exec(`DROP INDEX IF EXISTS ` + database.TopicTagIdentityHalfvecIndexName)
+	})
+
+	tagID := seedTopicTag(t, db, "vd-mixed-dim-tag")
+	require.NoError(t, db.Exec(`
+		INSERT INTO topic_tag_embeddings (topic_tag_id, embedding_type, embedding, dimension, model, text_hash, created_at, updated_at)
+		VALUES (?, 'identity', array_fill(0.1::real, ARRAY[64])::vector, 64, 'probe-model', 'vd-mixed-1', now(), now()),
+		       (?, 'identity', array_fill(0.2::real, ARRAY[32])::vector, 32, 'probe-model', 'vd-mixed-2', now(), now())`,
+		tagID, tagID).Error)
+
+	upIndex := findMigrationUp(t, "20261117_0002")
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return upIndex(tx) }))
+
+	exists, err := database.VectorIndexExists(db, database.TopicTagIdentityHalfvecIndexName)
+	require.NoError(t, err)
+	assert.False(t, exists, "并存多种维度时不得建带维度的 halfvec 索引（会拦掉另一维度的写入）")
 }

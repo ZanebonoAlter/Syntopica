@@ -2491,7 +2491,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, entitySubjectMigration())
 	migrations = append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration(), auxiliaryDescriptionRepairMigration(), embeddingModelColumnWidthMigration(), embeddingModelNotNullMigration(), storyHeatTablesMigration())
 	migrations = append(migrations, laneManualCorrectionPendingMigration(), laneManualCorrectionOverridesTableMigration(), laneManualCorrectionAssignmentTraceMigration(), laneManualCorrectionAssignmentOverridesTableMigration())
-	return append(migrations, storySignalContentKeyMigration())
+	return append(migrations, storySignalContentKeyMigration(), unifyVectorColumnDimensionMigration(), ensureTopicTagHalfvecIndexMigration())
 }
 
 // intraLaneBucketColumnsMigration implements 20261024_0001
@@ -3676,17 +3676,17 @@ func watchSuggestionCleanupMigration() Migration {
 //	                    长期分析另行保存）；FK ON DELETE CASCADE 兑现「删除批注
 //	                    连带问答」；
 //	term_notes          术语库：term_norm 归一化唯一键（trim+全角→半角+大小写
-//	                    折叠），hit_count 累计不重复建条；embedding vector(2560)
-//	                    可空列为 P2 相似词归并预留（维度=生产库实测
-//	                    semantic_labels/daily_report_sections 等列同维，2026-09-22
-//	                    核定），P1 不写入。
+//	                    折叠），hit_count 累计不重复建条；embedding 为**无维度限定**
+//	                    的 vector（维度是运行时属性，见
+//	                    unify-vector-column-dimension），可空列为 P2 相似词归并
+//	                    预留，P1 不写入。
 //
 // 无存量数据迁移，纯新增；回滚=前端还原+表保留（孤儿数据无害）。幂等：
 // CREATE TABLE/INDEX IF NOT EXISTS + FK 按约束名探测。
 func marginNotesTablesMigration() Migration {
 	return Migration{
 		Version:     "20260922_0003",
-		Description: "daily-report-margin-notes: create report_annotations / annotation_qas / term_notes (margin note anchors, QA turns with jsonb array contract, term library with normalized unique key and nullable vector(2560) embedding reserved for P2).",
+		Description: "daily-report-margin-notes: create report_annotations / annotation_qas / term_notes (margin note anchors, QA turns with jsonb array contract, term library with normalized unique key and nullable dimensionless vector embedding reserved for P2 — the dimension is a runtime property, not a schema contract).",
 		Up: func(db *gorm.DB) error {
 			if err := db.Exec(`
 				CREATE TABLE IF NOT EXISTS report_annotations (
@@ -3758,7 +3758,7 @@ func marginNotesTablesMigration() Migration {
 					first_seen_date     DATE         NULL,
 					last_seen_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
 					created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
-					embedding           vector(2560) DEFAULT NULL
+					embedding           vector DEFAULT NULL
 				)`).Error; err != nil {
 				return fmt.Errorf("create term_notes: %w", err)
 			}
@@ -4363,73 +4363,243 @@ func vectorColumnDimension(typeStr string) int {
 	return dim
 }
 
+// VectorColumnType 读取列的实际类型声明（format_type 带 typmod，例如
+// "vector" / "vector(2560)"）。列不存在或查询失败时返回错误。
+//
+// 运行时纠正器（tagmanagement core / auxlabel、topicgraph repository）用它区分
+// 「列已是无维度限定的 vector」（目标形态，不再 ALTER）与「列仍带维度限定」
+// （迁移过渡期）。
+func VectorColumnType(db *gorm.DB, table, column string) (string, error) {
+	var typeStr string
+	if err := db.Raw(`
+SELECT format_type(a.atttypid, a.atttypmod)
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+WHERE c.relname = ? AND a.attname = ?`, table, column).Row().Scan(&typeStr); err != nil {
+		return "", err
+	}
+	return typeStr, nil
+}
+
+// sampledVectorDimension 从存量数据采样列的实际维度——裸 vector 列的维度来源
+// （列类型不再声明维度后，维度只能从数据里读）。
+//
+// 表名与列名来自包内常量表（vectorDimensionlessColumns），无注入面。
+//
+// 返回 (dim, mixed, err)：
+//   - 表空 / 无非空向量 → (0, false, nil)；
+//   - 只有一种维度 → (该维度, false, nil)；
+//   - **多种维度并存** → (众数维度, true, nil)：裸列允许混合维度（放宽约束的
+//     代价），此时**不能**据此建 halfvec 索引——索引表达式内嵌维度，会把另一
+//     维度的写入直接拒掉（实测 "expected N dimensions, not M"）。调用方据此
+//     跳过建索引并降级为精确扫描。
+func sampledVectorDimension(db *gorm.DB, table, column string) (dim int, mixed bool, err error) {
+	type dimRow struct {
+		Dim   int
+		Count int64
+	}
+	var rows []dimRow
+	stmt := fmt.Sprintf( //nolint:gosec // G201: 表名/列名来自包内常量表，无注入面
+		"SELECT vector_dims(%s) AS dim, count(*) FROM %s WHERE %s IS NOT NULL GROUP BY 1 ORDER BY 2 DESC",
+		column, table, column)
+	if err := db.Raw(stmt).Scan(&rows).Error; err != nil {
+		return 0, false, err
+	}
+	if len(rows) == 0 {
+		return 0, false, nil
+	}
+	if len(rows) > 1 {
+		return rows[0].Dim, true, nil
+	}
+	return rows[0].Dim, false, nil
+}
+
+// topicTagEmbeddingColumnDimension 解析 topic_tag_embeddings.embedding 的维度：
+//
+//   - 列有限定（vector(N)）→ N（沿用 vectorColumnDimension 解析）；
+//   - 列无限定（vector）→ 从存量数据采样（SELECT vector_dims(...) GROUP BY）——
+//     列类型不再承载维度后，数据是唯一的维度事实源；
+//   - 表空（采样不到任何非空向量）→ 0，调用方跳过建索引，等运行时首次写入时
+//     由 ensureVectorDimension 按运行时维度建。
+//
+// mixed = true 表示存量数据里并存多种维度（裸列的放宽语义带来的可能）——调用方
+// 不应据此建带维度的索引。
+//
+// 迁移 20261023_0001 与 20261117_0002 共用本函数（单一真相源）。
+func topicTagEmbeddingColumnDimension(db *gorm.DB) (dim int, typeStr string, mixed bool, err error) {
+	typeStr, err = VectorColumnType(db, "topic_tag_embeddings", "embedding")
+	if err != nil {
+		return 0, "", false, err
+	}
+	if dim = vectorColumnDimension(typeStr); dim > 0 {
+		return dim, typeStr, false, nil
+	}
+	if typeStr != "vector" {
+		// 非 vector 类型（不该出现）：不做数据采样，避免把非向量列当向量读。
+		return 0, typeStr, false, nil
+	}
+	sampled, mixed, err := sampledVectorDimension(db, "topic_tag_embeddings", "embedding")
+	if err != nil {
+		return 0, typeStr, false, err
+	}
+	return sampled, typeStr, mixed, nil
+}
+
+// halfvecExpressionDimension 从索引定义文本解析 "::halfvec(N)" 内嵌的维度。
+// 表达式不可解析时返回 0。
+func halfvecExpressionDimension(indexDef string) int {
+	const marker = "::halfvec("
+	i := strings.Index(indexDef, marker)
+	if i < 0 {
+		return 0
+	}
+	rest := indexDef[i+len(marker):]
+	j := strings.Index(rest, ")")
+	if j < 0 {
+		return 0
+	}
+	dim, err := strconv.Atoi(rest[:j])
+	if err != nil || dim <= 0 {
+		return 0
+	}
+	return dim
+}
+
+// topicTagIdentityHalfvecIndexState 返回既有 halfvec identity 索引表达式内嵌的
+// 维度与其有效性（indisvalid）。索引不存在时返回 (0, true)。
+func topicTagIdentityHalfvecIndexState(db *gorm.DB) (dim int, valid bool) {
+	var def string
+	var isValid bool
+	if err := db.Raw(`
+SELECT pg_get_indexdef(i.indexrelid), i.indisvalid
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+WHERE c.relname = ? AND i.indrelid = to_regclass('public.topic_tag_embeddings')`,
+		TopicTagIdentityHalfvecIndexName).Row().Scan(&def, &isValid); err != nil {
+		return 0, true
+	}
+	return halfvecExpressionDimension(def), isValid
+}
+
+// TopicTagIdentityHalfvecIndexState 返回既有 halfvec identity 索引表达式内嵌的
+// 维度与其有效性（indisvalid）。索引不存在时返回 (0, true)。
+//
+// 运行时纠正器用它判断「索引表达式内嵌维度是否与当前运行时维度一致」——不一致
+// 必须重建（CREATE INDEX IF NOT EXISTS 不会纠正既有表达式）。
+func TopicTagIdentityHalfvecIndexState(db *gorm.DB) (dim int, valid bool) {
+	return topicTagIdentityHalfvecIndexState(db)
+}
+
+// VectorIndexExists 报告 public schema 下是否存在同名索引。
+func VectorIndexExists(db *gorm.DB, indexName string) (bool, error) {
+	var exists bool
+	if err := db.Raw(`SELECT to_regclass(?) IS NOT NULL`, "public."+indexName).Row().Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+// TopicTagIdentityHalfvecIndexDimension 返回既有 halfvec identity 索引表达式内嵌
+// 的维度；索引不存在或表达式不可解析时返回 0。运行时纠正器用它判断「索引表达式
+// 内嵌维度是否与当前运行时维度一致」（不一致必须重建——CREATE INDEX IF NOT
+// EXISTS 不会纠正既有表达式）。
+func TopicTagIdentityHalfvecIndexDimension(db *gorm.DB) int {
+	dim, _ := topicTagIdentityHalfvecIndexState(db)
+	return dim
+}
+
+// EnsureTopicTagIdentityHalfvecIndex 确保 halfvec identity 部分 HNSW 索引存在，
+// 且其表达式内嵌维度与 dim 一致：
+//
+//   - 索引不存在 → 建；
+//   - 索引存在但表达式内嵌维度 ≠ dim（**含表达式不可解析**——那就不是本索引，
+//     留着会静默挡住 CREATE INDEX IF NOT EXISTS）→ 先 DROP 再建；
+//   - 索引 INVALID（历史构建失败残留）→ 先 DROP 再建。
+//
+// 调用方负责 maintenance_work_mem / max_parallel_maintenance_workers 的设置
+// （迁移在事务内用 SET LOCAL，运行期在固定连接上用会话级 SET）。
+func EnsureTopicTagIdentityHalfvecIndex(db *gorm.DB, dim int) error {
+	exists, err := VectorIndexExists(db, TopicTagIdentityHalfvecIndexName)
+	if err != nil {
+		return fmt.Errorf("probe halfvec identity index: %w", err)
+	}
+	if exists {
+		existingDim, valid := topicTagIdentityHalfvecIndexState(db)
+		if !valid || existingDim != dim {
+			if err := db.Exec("DROP INDEX IF EXISTS " + TopicTagIdentityHalfvecIndexName).Error; err != nil { //nolint:gosec // G201: 索引名是包内常量
+				return fmt.Errorf("drop halfvec identity index: %w", err)
+			}
+		}
+	}
+	if err := db.Exec(TopicTagIdentityHalfvecIndexDDL(dim)).Error; err != nil {
+		return fmt.Errorf("create halfvec identity HNSW index (dim %d): %w", dim, err)
+	}
+	return nil
+}
+
+// ensureTopicTagIdentityHalfvecIndexForColumn 按列的实际维度确保 halfvec identity
+// 索引存在——迁移 20261023_0001 与 20261117_0002 共用的单一实现（维度解析 +
+// 上限判断 + 重建逻辑都只写一遍）。
+//
+// 维度来源：列有限定 → 解析列类型；列无限定 → 从存量数据采样（表空则跳过，
+// 等运行时首次写入时由 ensureVectorDimension 建）。
+func ensureTopicTagIdentityHalfvecIndexForColumn(db *gorm.DB, migrationTag string) error {
+	dim, typeStr, mixed, err := topicTagEmbeddingColumnDimension(db)
+	if err != nil {
+		return fmt.Errorf("read topic_tag_embeddings.embedding type: %w", err)
+	}
+	if mixed {
+		// 裸列里并存多种维度：不能建带维度的索引——索引表达式会把另一维度的
+		// 写入直接拒掉（实测 "expected N dimensions, not M"）。宁可精确扫描。
+		//
+		// 注意这里是**能力受限**不是单纯变慢：精确扫描同样要跨行比较向量，
+		// 混维的存量行会让比较报 different vector dimensions，检索在清理掉
+		// 少数派维度之前是不可用的。日志要如实说明，避免运维误以为只是慢。
+		logging.Warnf("Migration %s: skip halfvec HNSW index (embedding type %q holds vectors of multiple dimensions; cross-dimension comparisons will error until the minority-dimension rows are cleaned), semantic search degraded", migrationTag, typeStr)
+		return nil
+	}
+	if dim <= 0 || dim > 4000 {
+		logging.Infof("Migration %s: skip halfvec HNSW index (embedding type %q, dim %d; halfvec supports 1..4000), semantic search falls back to exact scan", migrationTag, typeStr, dim)
+		return nil
+	}
+
+	// 构建期维护内存：128MB 默认下 14k×2560 行会落盘（实测 64MB=73s，
+	// 256MB=29s）。SET LOCAL 随事务结束复位，不污染连接池。
+	if err := db.Exec(`SET LOCAL maintenance_work_mem = '256MB'`).Error; err != nil {
+		return fmt.Errorf("set maintenance_work_mem for halfvec index build: %w", err)
+	}
+	// 禁用并行维护：Docker 默认 /dev/shm 只有 64MB，HNSW 并行构建会报
+	// "could not resize shared memory segment ... No space left on device"
+	// （真库首次迁移实测，SQLSTATE 53100）。单进程构建只吃
+	// maintenance_work_mem，不依赖 /dev/shm。
+	if err := db.Exec(`SET LOCAL max_parallel_maintenance_workers = 0`).Error; err != nil {
+		return fmt.Errorf("disable parallel maintenance for halfvec index build: %w", err)
+	}
+	return EnsureTopicTagIdentityHalfvecIndex(db, dim)
+}
+
 // searchSemanticHalfvecIndexMigration implements 20261023_0001
 // (optimize-search-semantic-index design D1/D5): build the halfvec identity
 // partial HNSW index that lets semantic tag recall take ANN candidates instead
 // of a full-table cosine scan (真库实测：14,658 行全表扫描 3.74s，索引 top-50
-// 查询 15ms)。维度从列 format_type 解析——部署间 embedding 维度是运行时
-// 配置（当前 2560），不是编译期常量。halfvec 上限 4000：超限跳过并记日志
-// （语义路回退旧精确扫描，行为不中断）。
+// 查询 15ms)。维度是运行时属性（当前 2560），不是编译期常量：列带维度限定
+// 时从列 format_type 解析，列为无限定 vector 时从存量数据采样（表空则跳过，
+// 等运行时首次写入时由 ensureVectorDimension 建）。halfvec 上限 4000：超限跳过
+// 并记日志（语义路回退旧精确扫描，行为不中断）。
 //
 // 构建在事务内（默认 in-tx 路径）：SET LOCAL maintenance_work_mem 生效，
 // 失败整体回滚、版本不记录、下次启动重试。同名索引存在但 INVALID（历史
-// 构建中断）时先 DROP 再建，否则 IF NOT EXISTS 会把坏索引当成已完成。
+// 构建中断）或表达式内嵌维度与当前维度不符时先 DROP 再建，否则 IF NOT EXISTS
+// 会把坏索引/旧维度索引当成已完成。
 func searchSemanticHalfvecIndexMigration() Migration {
 	return Migration{
 		Version:     "20261023_0001",
-		Description: "optimize-search-semantic-index D1/D5: halfvec identity partial HNSW index on topic_tag_embeddings (dim parsed from column format_type, skipped above halfvec's 4000-dim limit)",
+		Description: "optimize-search-semantic-index D1/D5: halfvec identity partial HNSW index on topic_tag_embeddings (dimension from the column type, or sampled from stored data when the column is dimensionless; skipped above halfvec's 4000-dim limit)",
 		Up: func(db *gorm.DB) error {
 			if !tableExists(db, "topic_tag_embeddings") {
 				return nil
 			}
-			var typeStr string
-			if err := db.Raw(`
-SELECT format_type(a.atttypid, a.atttypmod)
-FROM pg_attribute a
-JOIN pg_class c ON c.oid = a.attrelid
-WHERE c.relname = 'topic_tag_embeddings' AND a.attname = 'embedding'`).Row().Scan(&typeStr); err != nil {
-				return fmt.Errorf("read topic_tag_embeddings.embedding type: %w", err)
-			}
-			dim := vectorColumnDimension(typeStr)
-			if dim <= 0 || dim > 4000 {
-				logging.Infof("Migration 20261023_0001: skip halfvec HNSW index (embedding type %q, dim %d; halfvec supports 1..4000), semantic search falls back to exact scan", typeStr, dim)
-				return nil
-			}
-
-			var invalid bool
-			if err := db.Raw(`
-SELECT EXISTS (
-	SELECT 1 FROM pg_index i
-	JOIN pg_class c ON c.oid = i.indexrelid
-	WHERE c.relname = ?
-	  AND i.indrelid = to_regclass('public.topic_tag_embeddings')
-	  AND NOT i.indisvalid
-)`, TopicTagIdentityHalfvecIndexName).Scan(&invalid).Error; err != nil {
-				return fmt.Errorf("probe halfvec index validity: %w", err)
-			}
-			if invalid {
-				logging.Warnf("Migration 20261023_0001: dropping INVALID index %s before rebuild", TopicTagIdentityHalfvecIndexName)
-				if err := db.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", TopicTagIdentityHalfvecIndexName)).Error; err != nil { //nolint:gosec // G201: 索引名是包内常量
-					return fmt.Errorf("drop invalid halfvec index: %w", err)
-				}
-			}
-
-			// 构建期维护内存：128MB 默认下 14k×2560 行会落盘（实测 64MB=73s，
-			// 256MB=29s）。SET LOCAL 随事务结束复位，不污染连接池。
-			if err := db.Exec(`SET LOCAL maintenance_work_mem = '256MB'`).Error; err != nil {
-				return fmt.Errorf("set maintenance_work_mem for halfvec index build: %w", err)
-			}
-			// 禁用并行维护：Docker 默认 /dev/shm 只有 64MB，HNSW 并行构建会报
-			// "could not resize shared memory segment ... No space left on device"
-			// （真库首次迁移实测，SQLSTATE 53100）。单进程构建只吃
-			// maintenance_work_mem，不依赖 /dev/shm。
-			if err := db.Exec(`SET LOCAL max_parallel_maintenance_workers = 0`).Error; err != nil {
-				return fmt.Errorf("disable parallel maintenance for halfvec index build: %w", err)
-			}
-			if err := db.Exec(TopicTagIdentityHalfvecIndexDDL(dim)).Error; err != nil {
-				return fmt.Errorf("create halfvec identity HNSW index (dim %d): %w", dim, err)
-			}
-			return nil
+			return ensureTopicTagIdentityHalfvecIndexForColumn(db, "20261023_0001")
 		},
 	}
 }
@@ -4782,6 +4952,164 @@ func storySignalContentKeyMigration() Migration {
 				return fmt.Errorf("create story_signals_story_content_idx: %w", err)
 			}
 			return nil
+		},
+	}
+}
+
+// vectorDimensionlessColumns 列出要统一为「无维度限定 vector」的向量列。
+//
+// 维度是**运行时属性**（由 embedding 模型的实际输出决定，逐行存于 Dimension
+// 字段），不是 schema 契约。带维度限定的列会逼出两类结构性问题：换模型就要
+// ALTER 全表重写；model 声明与实际 schema 长期对不上（14 处 model 声明里 13 处
+// 是无限定 `type:vector`，本 change 已把唯一的例外（margin_notes 的带维度限定
+// 声明）也归一为无限定形态）。
+//
+// float32Indexes 是该列上可能存在的 float32 HNSW 索引：裸 vector 列**建不了**
+// float32 索引（pgvector 报 "column does not have dimensions"），且存活下来的
+// float32 索引会把列钉死在旧维度上——新维度向量写入直接被拒（"different vector
+// dimensions"）。所以统一成裸 vector 之前先删掉它们（当前语义召回走 halfvec
+// 表达式索引，float32 索引没有任何查询在用）。
+var vectorDimensionlessColumns = []struct {
+	table          string
+	column         string
+	float32Indexes []string
+}{
+	{
+		table:          "topic_tag_embeddings",
+		column:         "embedding",
+		float32Indexes: []string{"idx_topic_tag_embeddings_embedding"},
+	},
+	{
+		table:          "daily_report_sections",
+		column:         "embedding",
+		float32Indexes: []string{"idx_daily_report_sections_embedding"},
+	},
+	{
+		table:  "semantic_labels",
+		column: "embedding",
+	},
+	{
+		table:  "semantic_labels",
+		column: "merge_embedding",
+	},
+	{
+		table:  "term_notes",
+		column: "embedding",
+	},
+	{
+		table:          "board_persistent_topics",
+		column:         "embedding",
+		float32Indexes: []string{"idx_board_persistent_topics_embedding"},
+	},
+}
+
+// unifyVectorColumnDimensionMigration implements 20261117_0001
+// (unify-vector-column-dimension design D1/D2)：把存量向量列从「带维度限定」
+// 统一为「无维度限定的 vector」。
+//
+// 语义等价于放宽约束（去掉 typmod），不丢数据：Postgres 对同 base type 的
+// typmod 变化走 binary coercion，不重写表体（真库实测：relfilenode 不变、
+// 存量 vector_dims 不变——见 docs/reference/database/RESTORE.md §8 附录）。
+// 与「加 typmod」（vector → vector(N)）方向相反：那条路需要 cast，pgvector 无
+// 跨维度 cast，会在有数据的库上直接失败——正是 2026-11-04 灾备恢复失败的根因。
+//
+// 幂等：列已是无限定 vector 时直接跳过（不取锁、不 ALTER）。表/列不存在时跳过
+// （域模型未注册的最小部署）。每张表用 withLockTimeout 守卫——ALTER COLUMN TYPE
+// 拿 AccessExclusiveLock，抢不到锁就快速失败而不是无限阻塞写入。
+//
+// 顺带清理失败残留：tmp_hnsw_test 是建在 2560 维列上的 float32 HNSW 索引，
+// 超过 pgvector float32 HNSW 的 2000 维硬上限 → 创建失败留下 invalid 残骸。
+// 只删 invalid 的同名索引（万一是有效索引则保留，不误删用户索引）。
+func unifyVectorColumnDimensionMigration() Migration {
+	return Migration{
+		Version:     "20261117_0001",
+		Description: "unify-vector-column-dimension: unify stored vector columns (topic_tag_embeddings.embedding / daily_report_sections.embedding / semantic_labels.embedding+merge_embedding / term_notes.embedding / board_persistent_topics.embedding) to dimensionless vector (dimension is a runtime property, not a schema contract; idempotent, lock-timeout guarded) and drop the INVALID tmp_hnsw_test index leftover",
+		Up: func(db *gorm.DB) error {
+			for _, col := range vectorDimensionlessColumns {
+				if !tableExists(db, col.table) {
+					continue // 域模型未注册的部署：跳过该表
+				}
+				if !columnExists(db, col.table, col.column) {
+					continue // 列不存在（老库尚未加列）：无从统一
+				}
+				typeStr, err := VectorColumnType(db, col.table, col.column)
+				if err != nil {
+					return fmt.Errorf("read %s.%s type: %w", col.table, col.column, err)
+				}
+				if typeStr == "vector" {
+					continue // 幂等：已是无维度限定，跳过（不取锁、不 ALTER）
+				}
+				logging.Infof("Migration 20261117_0001: unifying %s.%s from %s to dimensionless vector", col.table, col.column, typeStr)
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					for _, indexName := range col.float32Indexes {
+						// 裸 vector 列建不了 float32 HNSW 索引，且存活的 float32
+						// 索引会把列钉在旧维度上——先删再 ALTER。
+						if err := tx.Exec("DROP INDEX IF EXISTS " + indexName).Error; err != nil { //nolint:gosec // G201: 索引名是包内常量
+							return fmt.Errorf("drop %s: %w", indexName, err)
+						}
+					}
+					stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE vector", col.table, col.column) //nolint:gosec // G201: 表名/列名来自包内常量表
+					if err := tx.Exec(stmt).Error; err != nil {
+						return fmt.Errorf("unify %s.%s to dimensionless vector: %w", col.table, col.column, err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			return dropInvalidVectorIndexLeftovers(db, "20261117_0001")
+		},
+	}
+}
+
+// dropInvalidVectorIndexLeftovers 删除创建失败残留的 invalid 向量索引。
+// 只删 invalid 的——有效索引一律保留（不误删用户索引）。IF EXISTS 保证幂等：
+// 目标索引不存在时重复执行不报错。限定 public schema（与 VectorIndexExists 同
+// 口径），避免跨 schema 同名索引被误判/误删。
+func dropInvalidVectorIndexLeftovers(db *gorm.DB, migrationTag string) error {
+	const leftover = "tmp_hnsw_test"
+	var invalid bool
+	if err := db.Raw(`
+SELECT EXISTS (
+	SELECT 1 FROM pg_index i
+	JOIN pg_class c ON c.oid = i.indexrelid
+	JOIN pg_namespace n ON n.oid = c.relnamespace
+	WHERE c.relname = ? AND n.nspname = 'public' AND NOT i.indisvalid
+)`, leftover).Row().Scan(&invalid); err != nil {
+		return fmt.Errorf("probe %s validity: %w", leftover, err)
+	}
+	if !invalid {
+		return nil
+	}
+	logging.Warnf("Migration %s: dropping INVALID vector index leftover %s", migrationTag, leftover)
+	if err := db.Exec("DROP INDEX IF EXISTS public." + leftover).Error; err != nil { //nolint:gosec // G201: 索引名是包内常量
+		return fmt.Errorf("drop %s: %w", leftover, err)
+	}
+	return nil
+}
+
+// ensureTopicTagHalfvecIndexMigration implements 20261117_0002
+// (unify-vector-column-dimension 缺口 A)：列已是裸 vector 时补建 halfvec 索引。
+//
+// 为什么需要独立版本：20261023_0001 已在生产记录过版本，不会再跑；而它当初的
+// 维度来源只有「列 format_type」——列被统一成无限定 vector 后解析不到维度，
+// 索引就永远建不出来。20261117_0001（列统一）跑完之后，维度只能从数据采样：
+// SELECT vector_dims(embedding) ... LIMIT 1。
+//
+// 表空（没有任何非空向量）时采样不到维度 → 跳过并记日志，等运行时首次写入时
+// 由 ensureVectorDimension 按运行时维度建（不猜维度）。
+//
+// 与 20261023_0001 共用 ensureTopicTagIdentityHalfvecIndexForColumn（同一份
+// 维度解析 + 上限判断 + 重建逻辑），不复制粘贴。
+func ensureTopicTagHalfvecIndexMigration() Migration {
+	return Migration{
+		Version:     "20261117_0002",
+		Description: "unify-vector-column-dimension: build/rebuild the halfvec identity partial HNSW index for a dimensionless topic_tag_embeddings.embedding column (dimension sampled from stored data; skipped on an empty table — the runtime ensureVectorDimension builds it on the first write)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_tag_embeddings") {
+				return nil
+			}
+			return ensureTopicTagIdentityHalfvecIndexForColumn(db, "20261117_0002")
 		},
 	}
 }

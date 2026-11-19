@@ -10,6 +10,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/textutil"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
@@ -1210,45 +1211,72 @@ func UniqueSemanticLabelSlug(db *gorm.DB, base string) string {
 	}
 }
 
-// ensureSemanticLabelVectorColumnDim checks if a vector column on semantic_labels
-// matches the required dimension and alters it if not. column is a hardcoded column
-// name ("embedding" / "merge_embedding"), never user input, so it is safe to splice
-// into SQL.
+// ensureSemanticLabelVectorColumnDim keeps the vector column on semantic_labels
+// aligned with the runtime embedding dimension. column is a hardcoded column name
+// ("embedding" / "merge_embedding"), never user input, so it is safe to splice into
+// SQL.
+//
+// Three branches (unify-vector-column-dimension design D3/D4 + gap B):
+//
+//  1. The column is already a dimensionless vector (target shape): **no ALTER**.
+//     The dimension is a runtime property — schema must not carry it. semantic_labels
+//     has no vector index (idx_semantic_labels_* is never created anywhere), so
+//     there is nothing else to reconcile.
+//  2. The column is vector(dim) and matches the runtime dimension: nothing to do.
+//  3. The column is vector(some other N): **migration transition branch** — only
+//     reachable on databases that have not yet run the unification migration.
+//     The original DROP INDEX + ALTER + rebuild self-healing path is kept here
+//     (the unification migration makes this branch unreachable once it has run).
 //
 // Should only be called at startup; DDL operations use a 5s lock timeout to avoid
 // blocking if other connections hold table locks.
+//
+// The guard is a session-level SET + RESET pinned to one connection (not
+// SET LOCAL): this function runs **outside** a transaction (the startup path
+// deliberately avoids DDL inside a transaction), and SET LOCAL outside a
+// transaction block is a no-op — the lock guard would silently fail and the
+// ALTER could block writes indefinitely.
 //
 // On ALTER failure it diagnoses whether stale data is blocking the resize and returns
 // an actionable error: pgvector cannot truncate existing vectors, so the caller must
 // clear the rows before the dimension can change.
 func ensureSemanticLabelVectorColumnDim(column string, dim int) error {
 	db := repository.Repo.DB()
-	if err := db.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
-		logging.Warnf("Failed to set lock_timeout: %v", err)
-	}
 
-	var typeStr string
-	if err := db.Raw(`
-		SELECT format_type(a.atttypid, a.atttypmod)
-		FROM pg_attribute a
-		JOIN pg_class c ON c.oid = a.attrelid
-		WHERE c.relname = 'semantic_labels' AND a.attname = ?`, column,
-	).Row().Scan(&typeStr); err != nil {
+	typeStr, err := database.VectorColumnType(db, "semantic_labels", column)
+	if err != nil {
 		return nil // column may not exist yet, let migration handle it
 	}
 
 	expected := fmt.Sprintf("vector(%d)", dim)
-	if typeStr == expected {
+	switch typeStr {
+	case "vector":
+		// Branch 1: already dimensionless — never ALTER it back to a fixed
+		// dimension (that would re-introduce the schema/runtime split).
+		logging.Infof("semantic_labels.%s is already a dimensionless vector — no column rewrite needed (runtime dimension %d)", column, dim)
+		return nil
+	case expected:
+		// Branch 2: column dimension matches the runtime dimension.
 		return nil
 	}
 
+	// Branch 3: migration transition — the column still carries an outdated
+	// dimension constraint; keep the original self-healing ALTER.
 	logging.Infof("Altering semantic_labels.%s column from %s to %s", column, typeStr, expected)
 
-	_ = db.Exec(fmt.Sprintf("DROP INDEX IF EXISTS idx_semantic_labels_%s", column)).Error
-
-	if err := db.Exec(fmt.Sprintf(
-		"ALTER TABLE semantic_labels ALTER COLUMN %s TYPE %s", column, expected,
-	)).Error; err != nil {
+	alterErr := db.Connection(func(tx *gorm.DB) error {
+		defer func() {
+			_ = tx.Exec("RESET lock_timeout").Error
+		}()
+		if err := tx.Exec("SET lock_timeout = '5s'").Error; err != nil {
+			return fmt.Errorf("set lock_timeout: %w", err)
+		}
+		_ = tx.Exec(fmt.Sprintf("DROP INDEX IF EXISTS idx_semantic_labels_%s", column)).Error
+		return tx.Exec(fmt.Sprintf(
+			"ALTER TABLE semantic_labels ALTER COLUMN %s TYPE %s", column, expected,
+		)).Error
+	})
+	if alterErr != nil {
 		var staleRows int64
 		_ = db.Raw(fmt.Sprintf(
 			"SELECT count(*) FROM semantic_labels WHERE %s IS NOT NULL", column,
@@ -1257,10 +1285,10 @@ func ensureSemanticLabelVectorColumnDim(column string, dim int) error {
 			return fmt.Errorf(
 				"alter semantic_labels.%s from %s to %s failed: %d row(s) contain stale vectors of the old dimension; "+
 					"clear them (e.g. UPDATE semantic_labels SET %s = NULL) then restart: %w",
-				column, typeStr, expected, staleRows, column, err,
+				column, typeStr, expected, staleRows, column, alterErr,
 			)
 		}
-		return fmt.Errorf("alter semantic_labels.%s column to %s: %w", column, expected, err)
+		return fmt.Errorf("alter semantic_labels.%s column to %s: %w", column, expected, alterErr)
 	}
 
 	return nil

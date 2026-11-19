@@ -7,8 +7,11 @@ import (
 	"time"
 
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/logging"
 	tagging "syntopica-backend/internal/tagmanagement"
+
+	"gorm.io/gorm"
 )
 
 // BoardDailyReport — one report per board per day
@@ -486,8 +489,8 @@ type ArticleTagData struct {
 	Score     float64
 }
 
-// ensureSectionEmbeddingDimension sets the daily_report_sections.embedding column to
-// the correct vector dimension and creates the HNSW index if dimension ≤ 2000.
+// ensureSectionEmbeddingDimension keeps daily_report_sections.embedding aligned
+// with the runtime embedding dimension and keeps its float32 HNSW index in place.
 // Called once at startup via tagging.RegisterVectorDimEnsurer.
 func ensureSectionEmbeddingDimension(dim int) {
 	db := Repo.DB()
@@ -495,51 +498,12 @@ func ensureSectionEmbeddingDimension(dim int) {
 		return
 	}
 
-	if err := db.Exec("SET LOCAL lock_timeout = '5s'" /* #nosec G201 */).Error; err != nil {
-		logging.Warnf("Failed to set lock_timeout: %v", err)
-	}
-
-	var typeStr string
-	if err := db.Raw(`
-		SELECT format_type(a.atttypid, a.atttypmod)
-		FROM pg_attribute a
-		JOIN pg_class c ON c.oid = a.attrelid
-		WHERE c.relname = 'daily_report_sections' AND a.attname = 'embedding'
-	`).Row().Scan(&typeStr); err != nil {
-		return // column may not exist yet
-	}
-
-	expected := fmt.Sprintf("vector(%d)", dim)
-	needAlter := typeStr != expected
-	needIndex := true
-
-	if needAlter {
-		logging.Infof("Altering daily_report_sections.embedding from %s to %s", typeStr, expected)
-		_ = db.Exec("DROP INDEX IF EXISTS idx_daily_report_sections_embedding").Error
-		if err := db.Exec(fmt.Sprintf(
-			"ALTER TABLE daily_report_sections ALTER COLUMN embedding TYPE %s", expected,
-		)).Error; err != nil {
-			logging.Warnf("Failed to alter daily_report_sections.embedding to %s: %v", expected, err)
-			return
-		}
-	}
-
-	// pgvector HNSW supports up to 2000 dimensions.
-	if dim > 2000 {
-		logging.Infof("Skipping HNSW index on daily_report_sections.embedding: dimension %d > 2000 limit", dim)
-		needIndex = false
-	}
-
-	if needIndex {
-		if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_daily_report_sections_embedding ON daily_report_sections USING hnsw (embedding vector_cosine_ops)`).Error; err != nil {
-			logging.Warnf("Failed to create HNSW index on daily_report_sections.embedding: %v", err)
-		}
-	}
+	ensureVectorColumnDimensionAndIndex(db, "daily_report_sections", "embedding", "idx_daily_report_sections_embedding", dim)
 }
 
-// ensurePersistentTopicEmbeddingDimension aligns board_persistent_topics.embedding
-// to the active vector dimension and creates the HNSW index when dim ≤ 2000.
-// Mirrors ensureSectionEmbeddingDimension; called at startup via
+// ensurePersistentTopicEmbeddingDimension keeps board_persistent_topics.embedding
+// aligned with the runtime embedding dimension and keeps its float32 HNSW index in
+// place. Mirrors ensureSectionEmbeddingDimension; called at startup via
 // tagging.RegisterVectorDimEnsurer.
 func ensurePersistentTopicEmbeddingDimension(dim int) {
 	db := Repo.DB()
@@ -547,45 +511,84 @@ func ensurePersistentTopicEmbeddingDimension(dim int) {
 		return
 	}
 
-	if err := db.Exec("SET LOCAL lock_timeout = '5s'" /* #nosec G201 */).Error; err != nil {
-		logging.Warnf("Failed to set lock_timeout: %v", err)
-	}
+	ensureVectorColumnDimensionAndIndex(db, "board_persistent_topics", "embedding", "idx_board_persistent_topics_embedding", dim)
+}
 
-	var typeStr string
-	if err := db.Raw(`
-		SELECT format_type(a.atttypid, a.atttypmod)
-		FROM pg_attribute a
-		JOIN pg_class c ON c.oid = a.attrelid
-		WHERE c.relname = 'board_persistent_topics' AND a.attname = 'embedding'
-	`).Row().Scan(&typeStr); err != nil {
+// ensureVectorColumnDimensionAndIndex keeps a vector column's dimension contract
+// and its float32 HNSW index aligned with the runtime embedding dimension.
+//
+// Three branches (unify-vector-column-dimension design D3/D4 + gap B):
+//
+//  1. The column is already a dimensionless vector (target shape): **no ALTER**.
+//     A float32 HNSW index cannot be built on a dimensionless column (pgvector
+//     reports "column does not have dimensions"), and a leftover one pins the
+//     column to its old dimension (new-dimension writes get rejected) — drop it.
+//  2. The column is vector(dim) and matches the runtime dimension: ensure the
+//     index exists (create it when missing).
+//  3. The column is vector(some other N): **migration transition branch** — only
+//     reachable on databases that have not yet run the unification migration; the
+//     original DROP INDEX + ALTER + rebuild self-healing path is kept here.
+//
+// dim > 2000 (pgvector float32 HNSW hard limit): the index is skipped and logged —
+// the semantic path falls back to an exact scan.
+func ensureVectorColumnDimensionAndIndex(db *gorm.DB, table, column, indexName string, dim int) {
+	typeStr, err := database.VectorColumnType(db, table, column)
+	if err != nil {
 		return // column may not exist yet
 	}
 
 	expected := fmt.Sprintf("vector(%d)", dim)
-	needAlter := typeStr != expected
-	needIndex := true
-
-	if needAlter {
-		logging.Infof("Altering board_persistent_topics.embedding from %s to %s", typeStr, expected)
-		_ = db.Exec("DROP INDEX IF EXISTS idx_board_persistent_topics_embedding").Error
-		if err := db.Exec(fmt.Sprintf(
-			"ALTER TABLE board_persistent_topics ALTER COLUMN embedding TYPE %s", expected,
-		)).Error; err != nil {
-			logging.Warnf("Failed to alter board_persistent_topics.embedding to %s: %v", expected, err)
-			return
+	switch typeStr {
+	case "vector":
+		// Branch 1: already dimensionless — never ALTER it back to a fixed
+		// dimension (that would re-introduce the schema/runtime split).
+		if exists, err := database.VectorIndexExists(db, indexName); err == nil && exists {
+			logging.Infof("Dropping legacy float32 HNSW index %s: a dimensionless column cannot host a float32 HNSW index and the stale index pins the column to its old dimension", indexName)
+			_ = db.Exec("DROP INDEX IF EXISTS " + indexName).Error //nolint:gosec // G202: 索引名是包内常量
 		}
+		return
+	case expected:
+		// Branch 2: column dimension matches the runtime dimension.
+		ensureFloat32HNSWIndex(db, table, column, indexName, dim)
+		return
 	}
 
-	// pgvector HNSW supports up to 2000 dimensions.
+	// Branch 3: migration transition — the column still carries an outdated
+	// dimension constraint; keep the original self-healing ALTER.
+	logging.Infof("Altering %s.%s from %s to %s", table, column, typeStr, expected)
+	// The lock guard is a session-level SET + RESET pinned to one connection:
+	// this runs outside a transaction (SET LOCAL outside a transaction block is
+	// a no-op, so the guard would silently fail and the ALTER could block
+	// writes indefinitely).
+	alterErr := db.Connection(func(tx *gorm.DB) error {
+		defer func() {
+			_ = tx.Exec("RESET lock_timeout").Error
+		}()
+		if err := tx.Exec("SET lock_timeout = '5s'").Error; err != nil {
+			return err
+		}
+		_ = tx.Exec("DROP INDEX IF EXISTS " + indexName).Error //nolint:gosec // G202: 索引名是包内常量
+		return tx.Exec(fmt.Sprintf(
+			"ALTER TABLE %s ALTER COLUMN %s TYPE %s", table, column, expected,
+		)).Error
+	})
+	if alterErr != nil {
+		logging.Warnf("Failed to alter %s.%s to %s: %v", table, column, expected, alterErr)
+		return
+	}
+	ensureFloat32HNSWIndex(db, table, column, indexName, dim)
+}
+
+// ensureFloat32HNSWIndex creates the float32 HNSW index when dim ≤ 2000
+// (pgvector float32 HNSW hard limit).
+func ensureFloat32HNSWIndex(db *gorm.DB, table, column, indexName string, dim int) {
 	if dim > 2000 {
-		logging.Infof("Skipping HNSW index on board_persistent_topics.embedding: dimension %d > 2000 limit", dim)
-		needIndex = false
+		logging.Infof("Skipping HNSW index on %s.%s: dimension %d > 2000 limit", table, column, dim)
+		return
 	}
-
-	if needIndex {
-		if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_board_persistent_topics_embedding ON board_persistent_topics USING hnsw (embedding vector_cosine_ops)`).Error; err != nil {
-			logging.Warnf("Failed to create HNSW index on board_persistent_topics.embedding: %v", err)
-		}
+	stmt := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (%s vector_cosine_ops)", indexName, table, column) //nolint:gosec // G201: 索引名/表名/列名是包内常量
+	if err := db.Exec(stmt).Error; err != nil {
+		logging.Warnf("Failed to create HNSW index on %s.%s: %v", table, column, err)
 	}
 }
 

@@ -31,7 +31,7 @@
 | `updated_at` | TIMESTAMP | — | 更新时间 |
 
 > ⚠️ `slug` 约束是**单列 UNIQUE**（迁移 `20260521_0001` `UNIQUE(slug)`）。旧文档曾写「唯一约束 `(label_type, slug)`」，错误。
-> ⚠️ `embedding` / `merge_embedding` 均为运行时维度向量列（旧文档曾写 `vector(1536)`，错误）。
+> ⚠️ `embedding` / `merge_embedding` 均为**无维度限定**的向量列（`vector`，无 typmod）——维度是运行时属性，不属于 schema 契约；迁移 `20261117_0001` 把存量的 `vector(2560)` 统一为无维度限定形态。旧文档曾写 `vector(1536)` / `vector(2560)`，均已过时。
 > 描述修复链（§5.6）**只覆盖 `label_type='auxiliary'`**：组合标签（`composite`）在体检分诊里证据照常展示但**没有描述修复入口**（只读），其「建议摘除」仍走既有构成摘除接口；历史快照缺 `label_type` 时按「类型未知」处理，不臆造类型。
 
 ### 5.2 topic_tag_semantic_labels（tag-辅助标签关联，中间表）

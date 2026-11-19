@@ -122,6 +122,12 @@ func (s *CatalogSyncService) EmbedPendingRoutes(ctx context.Context, router *air
 		if len(result.Embeddings) == 0 || len(result.Embeddings[0]) == 0 {
 			continue
 		}
+		// 写入前的维度一致性校验（embedding-dimension-contract）：向量列不再带
+		// 维度约束，维度与向量不符的行会污染检索侧的同维校验。
+		if err := airouter.ValidateEmbeddingDimension(result.Embeddings[0], result.Dimensions); err != nil {
+			logging.Warnf("skip route embedding %d: %v", r.ID, err)
+			continue
+		}
 		emb := discmodels.RouteEmbedding{
 			RouteID:      r.ID,
 			EmbeddingVec: floatsToPgVector(result.Embeddings[0]),

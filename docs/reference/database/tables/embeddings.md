@@ -58,7 +58,9 @@
 | `space_key` | VARCHAR(220) | PK 组成 | 模型空间：`provider=<vendor>|model=<model>|gen=<generation>`（同维不同模型不混算） |
 | `text_hash` | VARCHAR(64) | index | 文本签名（sha256）；与当前标签文本不一致的旧行**不参与**查询 |
 | `dimension` | BIGINT | — | 向量维度（与源向量维度不一致的候选不算就绪） |
-| `embedding` | VECTOR | — | 表示向量（维度由实际路由模型决定，非固定 typmod） |
+| `embedding` | VECTOR | — | 表示向量（**无维度限定**：列类型不承载维度；维度由实际路由模型决定，逐行存于 `dimension` 列，写入前校验两者一致——`related/refresh.go` 的 `validateVector`） |
+
+> 向量维度契约（全库）：维度是运行时属性，schema 不承载（详见 [`_conventions.md`](_conventions.md)「向量维度规则总述」）。配置表 `embedding_config` 不持有任何维度键（迁移 `20260614_0001` 已删 `embedding_dimension`）。
 | `created_at` / `updated_at` | TIMESTAMPTZ | — | 写入/刷新时间 |
 
 - 主键 `(topic_tag_id, representation_version, space_key)`：三条失效轴 = 文本变化（`text_hash` 不匹配即失效）、表示版本升级、模型空间/显式 generation 变化。

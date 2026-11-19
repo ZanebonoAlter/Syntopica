@@ -47,7 +47,7 @@
 | `first_seen_board_id` | BIGINT | NULL | 首次遇到的版块 |
 | `first_seen_date` | DATE | NULL | 首次遇到日期（问答当下，非报告 period） |
 | `last_seen_at` | TIMESTAMPTZ | NULL | 最近一次命中 |
-| `embedding` | vector(2560) | NULL DEFAULT NULL | **P2 预留不写入**（维度=2026-09-22 生产库实测核定，与 semantic_labels 等列同维） |
+| `embedding` | vector | NULL DEFAULT NULL | **P2 预留不写入**（无维度限定：维度是运行时属性；迁移 `20261117_0001` 把存量的 `vector(2560)` 统一为无维度限定形态，与 semantic_labels 等列同口径） |
 | `created_at` / `updated_at` | TIMESTAMPTZ | NOT NULL | |
 
 ## 契约速查
