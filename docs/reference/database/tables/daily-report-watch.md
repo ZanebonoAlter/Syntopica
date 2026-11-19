@@ -262,7 +262,7 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 
 > ⚠️ **本表自 change `retire-story-adopt-event-metrics` 起只读保留**：不再有新写入（归属停写），历史行供回滚与存量核对；现行泳道热度不读本表（`heat-v2-lane-clues-1d` 按当天线索数现算）。
 
-一行 = 一条报道证据在信源时间讨论过一条事件线；身份（事件归属）与热度（signals）分离，去重只作用于身份层。**参与者身份 = 内容身份优先、feed 兜底**：去重键 = `COALESCE(NULLIF(content_key,''), participant_key)`——同一篇内容（规范化链接相同）被多个 feed 各抓一份只算 1 个参与者，`participant_count` / 来源数 / 热度同源于此（fix-duplicate-article-heat）。热度只读本表计算（`story_heat = Σ 0.5^(Δt/24h)` 窗口 48h；`lane_heat` 72h/14d 独立衰减），不从日报派生。迁移 `20261105_0001`（+ `20261110_0001` 加 `content_key`）。**存量回填入口**：`cmd/backfill-stories --backfill-content-keys`（按 `articles.link` 规范化回填 `content_key` 并重算受影响事件线的参与者计数，幂等；迁移本身不做数据回填）。
+一行 = 一条报道证据在信源时间讨论过一条事件线；身份（事件归属）与热度（signals）分离，去重只作用于身份层。**参与者身份 = 内容身份优先、feed 兜底**：去重键 = `COALESCE(NULLIF(content_key,''), participant_key)`——同一篇内容（规范化链接相同）被多个 feed 各抓一份只算 1 个参与者（fix-duplicate-article-heat）。**2026-11-19 校正（review R-5）**：`participant_count` / 来源数 / 热度**已随事件线退役不再派生**（flow `daily-report.md` 红线 43/49），本段只描述历史口径；内容身份去重的现行消费面是当天聚簇的簇内篇数（`report_event_clusters.go` 复用 `heatParticipantKey`）。热度只读本表计算（`story_heat = Σ 0.5^(Δt/24h)` 窗口 48h；`lane_heat` 72h/14d 独立衰减的历史公式），也从日报派生不了任何现役数字。迁移 `20261105_0001`（+ `20261110_0001` 加 `content_key`）。**存量回填已终结**：`content_key` 已于 2026-11-10 用 `cmd/backfill-stories --backfill-content-keys` 回填并核对（1386 行全有值、`participant_count` 全库一致）；事件线停写后该命令的**写模式一律拒绝并非零退出**（仅 `--dry-run` 保留），不得再重算 `participant_count`。
 
 | 字段名 | 类型 | 约束/默认/索引 | 用途 |
 | -------- | ------ | ------ | ------ |

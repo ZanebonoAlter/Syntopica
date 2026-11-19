@@ -16,7 +16,8 @@
 - **A. 关键字物化轨的日期穿透**：`MaterializeKeywordWatches` 新增报告日期入参并透传到 `scanBoardDayArticles`；补档 / 重建历史报告时扫描窗口跟随 `period_date`，不再退化为 `time.Now()`。生产调用点只有 `daily_report_orchestrator.go` 一处（sentence 轨早已正确传 `date`），同步补齐其测试调用点。
 - **B. 参与者身份按内容身份去重（口径变更）**：同一篇内容（规范化 link 相同：去 `#fragment` 与 `?query`）的多个 article 副本，在热度证据层只贡献 **1 个参与者**；`participant_count`、`story_heat`、`lane_heat`、「N 个来源」文案随之按独立内容计数。实现落在 `story_signals` 的写入与参与者计数，`(story_id, article_id)` 主键与热度公式本身不变（仍 48h/24h 半衰期）。
 - **B 的边界**：`articles` 入库层**不变**（`(feed_id, link)` 唯一保留，feed 归属与打标复用语义不受影响）；`related_article_ids` 生成口径**不变**（仍是 tag→文章并集），story 层只读消费；同标题不同 URL 的转载**不合并**（本期只认规范化链接）。
-- **存量修复**：按新口径重算受影响事件线的 `story_signals` / `participant_count` / 热度（幂等、可重入），**不重建任何日报正文**（section / thread 保持不变），旧报告不回填身份列。
+- **存量修复**：按新口径重算受影响事件线的 `story_signals` / `participant_count` / 热度（幂等、可重入），**不重建任何日报正文**（section / thread 保持不变），旧报告不回填身份列。入口是新增的独立开关 `cmd/backfill-stories --backfill-content-keys`（与 `--rebuild-signals` 正交）。
+  > 2026-11-19 补注：随 `retire-story-adopt-event-metrics` 落地，事件线在线生产已硬停写，该 CLI 的**写模式现被拒并非零退出**（仅 `--dry-run` 可用）；回填已于 2026-11-10 完成并核对（见 tasks 6.4/6.5），后续不得再重算 `participant_count`。
 - 文档同步：`docs/reference/flow/daily-report.md`（热度与物化轨约束节）、`docs/reference/standard/backend/` 相关口径说明；`story-heat-evidence` 原「转载各记一个参与者」的已知简化条目随之作废。
 
 ## Capabilities

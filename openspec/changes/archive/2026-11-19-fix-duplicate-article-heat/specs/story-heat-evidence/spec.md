@@ -2,9 +2,11 @@
 
 ### Requirement: 参与者身份与去重
 
+> **适用范围（2026-11-19 补注，review R-1）**：本 Requirement 描述事件线热度的**历史口径**。事件线在线生产已随 change `retire-story-adopt-event-metrics` 硬停写（flow `daily-report.md` 红线 43）——不再产生新的 `board_stories` / `story_signals` / `story_id`，下列 SHALL 只适用于存量只读数据与只读标定（`cmd/calibrate-heat --dry-run`），**不描述任何现行生产行为**，也 SHALL NOT 被重新开启为写路径。内容身份去重口径本身的现行承接方是 `lane-heat-metric`「线索计数的内容身份去重口径」（簇内文章数复用同一键），归档顺序上本 change SHALL 先于 `retire-story-adopt-event-metrics`（后者 REMOVE 本 Requirement，反序会使本 MODIFIED 找不到目标而硬失败）。
+
 `participant_key` SHALL 标识「一个独立参与方」，用于回答「有多少不同来源在说这件事」。参与者身份 SHALL 按**内容身份优先**判定：同一篇内容（`articles.link` 经规范化后相同）的多个 article 副本 SHALL 只贡献一个参与者；内容身份不可判定（link 为空或规范化后为空）时 SHALL 退化为 feed 粒度（`feed:<feed_id>`）。
 
-link 规范化口径 SHALL 固定为：去首尾空白 → 去掉 `#` 之后的 fragment → 去掉 `?` 之后的 query → scheme 与 host 转小写（path 保持原样，不做大小写折叠）。该口径 SHALL 只用于参与者身份与热度计数，SHALL NOT 改写 `articles.link`，SHALL NOT 变更入库判重键 `(feed_id, link)`。
+link 规范化口径 SHALL 固定为：去首尾空白 → 去掉 `#` 之后的 fragment（**`#!` hashbang 除外**：沿用 `textutil.StripURLFragment` 既有语义保留，SPA 路由身份不被吞掉）→ 去掉 `?` 之后的 query → scheme 与 host 转小写（path 保持原样，不做大小写折叠）。该口径 SHALL 只用于参与者身份与热度计数，SHALL NOT 改写 `articles.link`，SHALL NOT 变更入库判重键 `(feed_id, link)`。
 
 热度计算 SHALL 对每个参与者只计一次：同一参与者在窗口内多次报道同一事件线 SHALL NOT 叠加热度。
 

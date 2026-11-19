@@ -50,9 +50,10 @@
 
 ### D5. 存量重算走既有运维入口，幂等且不重建报告
 
-- **结论**：迁移只加列；存量 `content_key` 回填与受影响事件线的 signals / participant_count 重算复用 `cmd/backfill-stories --rebuild-signals`（补齐按内容键去重后的计数），分批、可重入、失败仅告警。
-- **落点**：`backend-go/cmd/backfill-stories/main.go`
+- **结论**：迁移只加列；存量 `content_key` 回填新增独立开关 `cmd/backfill-stories --backfill-content-keys`（按 `articles.link` 规范化回填，与 `--rebuild-signals` **正交**：后者整线重写 signals 时自然带上 `content_key`，前者补 rebuild 范围外的历史行），两者均分批、可重入、失败仅告警。
+- **落点**：`backend-go/cmd/backfill-stories/main.go`、`backend-go/cmd/backfill-stories/backfill_content_keys.go`
 - **取舍**：否掉「迁移里一次性全量回填 + 重算」——树莓派上长事务会阻塞启动，且迁移失败不可重试；否掉「重建 21 份受污染报告」——用户已拍板不动正文，重建会改变历史阅读内容。
+- **后续状态（2026-11-19 补注，review R-2）**：`retire-story-adopt-event-metrics` 落地后事件线已硬停写，本命令的**写模式一律被拒并非零退出**（`--rebuild-signals` / `--backfill-content-keys` / `--reattribute` 等，仅 `--dry-run` 只读预览可用）。存量回填已于 2026-11-10 完成并核对（1386 行 `story_signals` 全部有 `content_key`、`participant_count` 与去重键计数全库一致），**后续不再需要、也不得再重算** `participant_count`（flow 红线 43）。
 
 ### D6. 修正存量报告的记忆，只改数字不改正文
 
@@ -77,7 +78,8 @@
 ## Migration Plan
 
 1. 部署新代码 + 迁移（加 `content_key` 列与 `(story_id, content_key)` 索引，可空、可回滚）。
-2. 执行 `cmd/backfill-stories --rebuild-signals`：回填 `content_key` → 逐事件线重算 signals / participant_count（分批、幂等）。
+2. 执行存量回填（两开关正交，可只跑其一）：`cmd/backfill-stories --backfill-content-keys`（补历史行）与 `--rebuild-signals`（整线重写 signals 并重算 `participant_count`），分批、幂等。
+   > 2026-11-19 补注（review R-2）：事件线硬停写后这两条写模式均已被拒绝并非零退出，仅 `--dry-run` 可跑；存量回填已于 2026-11-10 完成，本步现作文档记录而非可重跑流程。
 3. 只读核对：受影响事件线（示例 5204）参与者数由 2 回落为 1；全库 `participant_key ≠ content_key` 的重复组归零。
 4. 回滚：列可保留不读；代码回滚后旧口径（按 feed）立即恢复，无需数据回滚。
 

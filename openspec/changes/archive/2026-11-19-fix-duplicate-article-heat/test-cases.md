@@ -18,7 +18,7 @@
 | 8 | 事件线两篇证据 link 为空 | 链接缺失退化按 feed | 参与者身份退化为 `feed:<id>`，不同 feed 不合并 | Go 仓测（隔离 PG） | `backend-go/internal/topicgraph/repository/story_heat_test.go` |
 | 9 | 同一 feed 48h 内 5 条同事件线 | 同一 feed 多条不叠加（回归） | 只按 1 个参与者计 | Go 仓测（隔离 PG） | `backend-go/internal/topicgraph/repository/story_heat_test.go` |
 | 10 | 副本文章已归档 | 归档不影响参与者计入（回归） | 照常计入热度，不因 `archived` 过滤 | Go 仓测（隔离 PG） | `backend-go/internal/topicgraph/repository/story_heat_test.go` |
-| 11 | 雷达 / 矩阵 / highlights / lane_heat 同读一条事件线 | 参与者身份与去重（消费面一致） | 四处「来源数」与热度同源同值；矩阵颜色分档按新参与者数 | Go 仓测（隔离 PG） | `backend-go/internal/topicgraph/repository/board_radar_stories_test.go`、`report_story_highlights_test.go`、`lane_snapshot_repository_test.go` |
+| 11 | 雷达 / 矩阵 / highlights / lane_heat 同读一条事件线 | 参与者身份与去重（消费面一致） | 四处「来源数」与热度同源同值；矩阵颜色分档按新参与者数 | Go 仓测（隔离 PG） | `backend-go/internal/topicgraph/repository/story_heat_test.go`、`report_story_highlights_test.go`、`lane_snapshot_repository_test.go`（原 `board_radar_stories_test.go` 已随事件线退役删除，2026-11-19 review R-7） |
 | 12 | 真库回填后重跑一次 | 可重算（回归）+ 幂等 | `--rebuild-signals` 两次结果一致；5204 的 `participant_count` 由 2 → 1 | 运维 CLI + 只读核对 | `backend-go/cmd/backfill-stories/main_test.go` |
 | 13 | 回填后核对报告正文 | 报告正文不被改写 | `daily_report_threads` / `daily_report_sections` 行数与 `related_article_ids` 校验和不变 | 只读 SQL | `tasks.md` §6.5–6.6 |
 
@@ -34,7 +34,7 @@
 | 信源时间优先 / 重复写入收敛 / 归属变更时证据迁移 | 保持 + 扩充（新增 `content_key` 同源写入断言） | `story_signals_test.go` | 旧断言保留；补「两副本同 link 的 `content_key` 相等」 |
 | 半衰期衰减 / 窗口外不计入 / 话题热度为事件线热度之和 | 保持（公式不变） | `story_heat_test.go` | 不动 |
 | 历史重算一致 / 落后源标记后重算 | 保持 + 扩充（按内容键重算） | `story_heat_test.go`、`cmd/backfill-stories/main_test.go` | 保留；补「重算后同 link 多副本仍 1 参与者」 |
-| 矩阵数字为事件线数 / 雷达排序与热度一致 | 保持 + 扩充（参与者数口径） | `story_heat_test.go`、`board_radar_stories_test.go`、`ObservationMatrix.test.ts` | 前端不动；后端断言改用内容键 |
+| 矩阵数字为事件线数 / 雷达排序与热度一致 | 保持 + 扩充（参与者数口径） | `story_heat_test.go`、`ObservationMatrix.test.ts`（`board_radar_stories_test.go` 已随事件线退役删除） | 前端不动；后端断言改用内容键 |
 | 含关键字文章聚合为固定话题 | 保持 + **负向新增**（补档日期） | `watch_materialize_keyword_test.go`、`watch_materialize_integration_test.go` | 旧断言保留；新增「补档日只取报告日文章」「零值日期报错」 |
 | 漏网文章可被捞回 / 裁决批量单次请求 / 无命中不产空 section / 裁决关闭回退机械聚合 | 保持 | `watch_materialize_integration_test.go` | 不动 |
 | 缺档日报自动补齐 / 队列未清空顺延 / 只补缺不重建已有 | 保持 + **负向新增**（内容口径） | `job_daily_report_test.go`、`job_daily_report_window_test.go` | 旧断言保留；新增「补档内容不含晚于报告日的文章」 |
@@ -107,7 +107,7 @@
 | 样本 5204 | `board_stories.participant_count` | 2 → 1 | 热度 1.394 → **0.697**（报日 23:59:59、48h/24h），与「1 篇报道」一致 |
 | 全库计数自洽 | 存储 `participant_count` vs 按 `COALESCE(NULLIF(content_key,''), participant_key)` 重算 | 1262 条事件线 | `mismatched = 0`（2026-11-10 回填后实测） |
 | 报告正文未动 | `daily_report_threads` / `daily_report_sections` 行数 + `related_article_ids` 指纹 | 13894 / 6437 / `57f911b3…` | 回填前后完全一致 |
-| content_key 覆盖率 | `story_signals WHERE content_key IS NULL OR =''` | 1281 行全部回填 | 空值 0 行 |
+| content_key 覆盖率 | `story_signals WHERE content_key IS NULL OR =''` | 1386 行全部回填（2026-11-19 真库实测 `SELECT count(*) FROM story_signals` = 1386） | 空值 0 行 |
 
 ## 5. 白盒附加（复杂档）
 
