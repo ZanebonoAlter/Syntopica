@@ -246,7 +246,7 @@ const present = (sp, marker, heading) =>
 		check('未绑定阶段仅注索引（constraints-index）', sp.includes('### constraints-index.md'));
 		check('未绑定阶段不注 flow 红线层', !sp.includes('auxiliary_label_dedupe_sim'));
 		check('未绑定阶段不显示活跃变更（无 mtime 兜底错位）', /活跃变更：无/.test(sp));
-		check('未绑定阶段不产出阶段路由清单', !sp.includes('阶段路由清单'));
+		check('未绑定阶段不产出阶段路由清单（按清单标题锚定，防文档正文撞词）', !sp.includes('### 阶段路由清单（'));
 		check('非 openspec skill 不绑定 change', !sp.includes(FIXTURE_NAME));
 
 		// 1. 输入提及 change 名 → 绑定该 change；**阶段由其 stage.md 决定**（implement）
