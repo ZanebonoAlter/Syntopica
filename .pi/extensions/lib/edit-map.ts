@@ -8,9 +8,10 @@
  * concurrency-status.sh 按此判定「树上脏文件归属哪个 change」。
  *
  * 语义要点：
- *   - boundChange 取同 session 最近一条 mode.set（档位绑定语义），非目录 mtime 启发式
- *     （detectActiveChange 语义太弱，不适合归属判定）；无 mode.set / boundChange=null
- *     → 无档会话，零事件不计入任何 change
+ *   - boundChange 取同 session 最近一条 stage.set（阶段绑定语义；**双读**：先 stage.set，
+ *     无该类行时回退 legacy mode.set——stage-driven-constraint-injection D7 过渡期），
+ *     非目录 mtime 启发式（detectActiveChange 语义太弱，不适合归属判定）；
+ *     无 stage.set / boundChange=null → 未绑定会话，零事件不计入任何 change
  *   - 跨 session 并集：落库侧合并（非查询侧）——首次绑定（或档位切换）时从库读该
  *     change 名下最新一条 edit.map 的 paths 作 base，之后每回合 base ∪= trigger 后
  *     落全量快照；「取最新一条即完整集合」因此成立
@@ -71,8 +72,13 @@ function loadSqliteReadonly(): new (
 	return cachedSqliteCtor;
 }
 
-/** 从一条 mode.set 行解析 boundChange；行缺失/payload 损坏/无绑定 → null（跳过不落） */
-export function parseModeSetPayload(
+/**
+ * 从一条 stage.set（payload {stage, stageFamily, boundChange, source}）行解析 boundChange；
+ * 行缺失/payload 损坏/无绑定 → null（跳过不落）。
+ * ⚠ payload 形状与 legacy mode.set 一致（都含 boundChange）——本消费点**只用 boundChange 名**，
+ * 故两种 kind 通用（D7：读方过渡期双读）。
+ */
+export function parseStageSetPayload(
 	row: Pick<HarnessEventRow, "payload"> | null | undefined,
 ): string | null {
 	if (!row || typeof row.payload !== "string") return null;
@@ -84,6 +90,24 @@ export function parseModeSetPayload(
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * 本会话绑定的 change 名（**双读**：先查 stage.set；该类行存在则以其最新一条为准
+ * ——含「最新一行无绑定 → 未绑定」的语义，MUST NOT 回退到更早的 legacy 行；
+ * 完全无 stage.set 行时回退 legacy mode.set）。
+ * 无记录 / boundChange=null → null（未绑定会话，零事件不计入任何 change）。
+ */
+export function latestBoundChange(cwd: string, sessionId: string): string | null {
+	const stageRows = queryBySession(cwd, sessionId, ["stage.set"]);
+	if (stageRows.length) {
+		return parseStageSetPayload(stageRows[stageRows.length - 1]);
+	}
+	const legacyRows = queryBySession(cwd, sessionId, ["mode.set"]);
+	if (legacyRows.length) {
+		return parseStageSetPayload(legacyRows[legacyRows.length - 1]);
+	}
+	return null;
 }
 
 /** 并集 + 字典序排序去重（快照确定性：同集合任何时序产出相同 payload） */
@@ -142,9 +166,8 @@ export function syncEditMap(
 	trigger: Iterable<string>,
 ): boolean {
 	try {
-		const rows = queryBySession(cwd, sessionId, ["mode.set"]);
-		const bound = parseModeSetPayload(rows[rows.length - 1]);
-		if (!bound) return false; // 无档会话不计入任何 change
+		const bound = latestBoundChange(cwd, sessionId);
+		if (!bound) return false; // 未绑定会话不计入任何 change
 		if (editMapBound !== bound) {
 			// 首次绑定或档位切换：从库读该 change 最新快照作 base（跨 session 并集）。
 			// 存量污染条目（工具自管路径）在读入时即剔除——append-only 不改历史事件，

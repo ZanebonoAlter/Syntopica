@@ -5,7 +5,7 @@
 #   menu                      打印 8 个固定文档域选项菜单
 #   suggest [--base <ref>] [--change <name>]
 #                             归属优先预勾选（attribute-concurrent-gate-noise）：change 名三源
-#     解析（--change → PI_SESSION_ID 查事实库最新 mode.set 的 boundChange → 空）；归属轨
+#     解析（--change → PI_SESSION_ID 查事实库最新 stage.set 的 boundChange → 空）；归属轨
 #     预勾选只吃本 change 的 edit.map 归属集合，输出标注轨别；解析不到/集合空/库不可用
 #     → 回退全树 diff 并显式标注。脏文件三桶分列（本 change/其他 active change/无归属）
 #     不静默过滤，预勾选只吃「本 change」桶。只读，退出码恒 0。
@@ -64,19 +64,30 @@ ownership_paths() {
 
 # ---------------------------------------------------------------------------
 # change 名三源解析（attribute-concurrent-gate-noise D2）：显式 --change 参数 →
-#   PI_SESSION_ID 查事实库该会话最新一条 mode.set 的 $.boundChange → 空。
+#   PI_SESSION_ID 查事实库该会话最新一条 stage.set 的 $.boundChange → 空。
+#   **双读**（stage-driven-constraint-injection D7 过渡期）：先查 stage.set；无该类行
+#   时回退 legacy mode.set（既有行不改写，30 天保留期自然消退）——改造期不失效。
 #   不用目录 mtime 启发式（detectActiveChange 曾把事件挂到无关 change 名下）。
 #   守卫同 ownership_paths（sqlite3 缺失/库不存在/查询失败 → 空，fail-open）；
 #   三源全空由调用方回退全树。
 # ---------------------------------------------------------------------------
 resolve_change_name() {
-	local explicit="$1" root db
+	local explicit="$1" root db v
 	[ -n "$explicit" ] && { echo "$explicit"; return 0; }
 	command -v sqlite3 >/dev/null 2>&1 || return 0
 	[ -n "${PI_SESSION_ID:-}" ] || return 0
 	root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
 	db="$root/.pi/harness/events.db"
 	[ -f "$db" ] || return 0
+	v="$(sqlite3 "$db" -readonly "SELECT json_extract(payload, '$.boundChange')
+		FROM events
+		WHERE kind = 'stage.set' AND session_id = '${PI_SESSION_ID//\'/\'\'}'
+		ORDER BY id DESC LIMIT 1" 2>/dev/null | head -1)"
+	if [ -n "$v" ]; then
+		echo "$v"
+		return 0
+	fi
+	# 回退：legacy mode.set（改造前既有行；写侧已停写）
 	sqlite3 "$db" -readonly "SELECT json_extract(payload, '$.boundChange')
 		FROM events
 		WHERE kind = 'mode.set' AND session_id = '${PI_SESSION_ID//\'/\'\'}'

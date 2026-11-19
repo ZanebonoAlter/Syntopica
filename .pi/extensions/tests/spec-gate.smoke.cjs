@@ -2,6 +2,8 @@
 // 缺件提醒已退役——复杂档/算法关键词不再催补 test-cases.md）+ 归档门禁 policy.decision 记账
 // （harden-harness-policy-and-spill）：block / bypass / 检查⑤ warn / 正常放行零记录，
 // 且原 block/放行/custom_message 行为不变（mock pi.exec 驱动完整 tool_call）。
+// + 归档侧约束文档读取对账（stage-driven-constraint-injection D6）：对账报红 → block 且 reason
+// 含未读域清单与取数指引；脚本缺席（127）→ fail-open 不阻断。
 // + 复杂档 + 有 delta Scenario 但验证节无映射表 → 归档门禁放行（④ 场景映射对账已退役）。
 // 由 run-harness-smoke.sh 调用（先 esbuild 产出 .sgate.cjs）。断言失败 exit 1。
 const fs = require('fs');
@@ -138,7 +140,7 @@ try {
 				&& rowsA[0].payload.policy === 'ui-design-gate' && rowsA[0].payload.action === 'block' && rowsA[0].payload.reasonCode === 'ui-verification-missing'
 				&& rowsA[1].payload.policy === 'spec-gate' && rowsA[1].payload.action === 'block' && rowsA[1].payload.reasonCode === 'archive-check-failed');
 		check('block 事件 change 绑定被归档 change（fake-change）', rowsA.every((r) => r.change === 'fake-change'));
-		check('block 事件 target 只含失败检查名（无输出正文；④ 场景映射对账已退役）', rowsA[1].payload.target === 'doc-impact,standards,tasks,review,ui-evidence' && !JSON.stringify(rowsA[1].payload).includes('boom'));
+		check('block 事件 target 只含失败检查名（无输出正文；④ 场景映射对账已退役）', rowsA[1].payload.target === 'doc-impact,standards,tasks,review,ui-evidence,constraint-read' && !JSON.stringify(rowsA[1].payload).includes('boom'));
 		check('block 路径不发 custom_message', gA.messages.length === 0);
 
 		// 7b. 显式 bypass（--force）→ 放行 + policy.decision(bypass, explicit-bypass)
@@ -155,7 +157,7 @@ try {
 		const tC = mktmp(); tmps.push(tC);
 		const outC = JSON.parse(execSync(`node -e ${JSON.stringify([
 			`process.env.SPEC_GATE_BYPASS='1';`,
-			`const mod=require(${JSON.stringify(path.resolve('.sgate.cjs'))});`,
+			`const mod=require(${JSON.stringify(path.resolve(__dirname, '.sgate.cjs'))});`,
 			`const h={};const msgs=[];const pi={on:(n,f)=>(h[n]=f),exec:async()=>({code:0,stdout:'',stderr:''}),sendMessage:(m)=>msgs.push(m)};`,
 			`mod.default(pi);`,
 			`h['tool_call']({toolName:'bash',input:{command:'openspec archive envbypass-change'},toolCallId:'t'},{cwd:${JSON.stringify(tC)},sessionManager:{getSessionId:()=>'sgs2'}})`,
@@ -490,6 +492,48 @@ const majorEvidence = (dir) => {
 		const rJ = await runGate(gJ, 'openspec archive rt-waived-chg', tJ);
 		check('7j review-trace waived 声明 → 归档检查全过放行 + 零 policy.decision（真跑真脚本）',
 			rJ === undefined && policyRows(tJ).length === 0);
+
+		// 7k. 归档侧约束文档读取对账（stage-driven-constraint-injection D6 / spec
+		// 「约束文档读取记账与归档对账」）：对账报红 → 归档被 block，reason 含未读域清单与取数指引
+		const tK = mktmp(); tmps.push(tK);
+		const crtRed = [
+			'✗ 未通过：1/1 个声明域的约束文档未在该 change 生命周期窗内被读过：',
+			'  - 域 scheduler：未读到 docs/reference/flow/scheduler.md',
+			'    取数指引：bash scripts/harness/constraint-digest.sh --brief --domains scheduler',
+			'  未读域清单：scheduler',
+		].join('\n');
+		const gK = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'bash' && args[0] === 'scripts/harness/constraint-read-trace.sh') {
+				return { code: 1, stdout: crtRed, stderr: '' };
+			}
+			return r;
+		});
+		require('./.sgate.cjs').default(gK.pi);
+		const rK = await runGate(gK, 'openspec archive crt-red-chg', tK);
+		const rowsK = policyRows(tK);
+		check('7k 约束读取对账红 → block + reason 含未读域清单与取数指引',
+			rK && rK.block === true
+				&& /\[constraint-read-trace\]/.test(rK.reason)
+				&& /scheduler/.test(rK.reason)
+				&& /constraint-digest\.sh --brief --domains scheduler/.test(rK.reason));
+		check('7k 约束读取对账红 → policy.decision target 只含 constraint-read',
+			rowsK.length === 1 && rowsK[0].payload.target === 'constraint-read'
+				&& rowsK[0].payload.reasonCode === 'archive-check-failed');
+
+		// 7k'. 对账脚本缺席/不可执行（127）→ fail-open 放行该项（不阻断归档，脚本不在不误伤）
+		const tK2 = mktmp(); tmps.push(tK2);
+		const gK2 = makeGatePi(async (cmd, args) => {
+			const r = await passExec(cmd, args);
+			if (cmd === 'bash' && args[0] === 'scripts/harness/constraint-read-trace.sh') {
+				return { code: 127, stdout: '', stderr: 'bash: scripts/harness/constraint-read-trace.sh: No such file or directory' };
+			}
+			return r;
+		});
+		require('./.sgate.cjs').default(gK2.pi);
+		const rK2 = await runGate(gK2, 'openspec archive crt-missing-chg', tK2);
+		check('7k\' 对账脚本缺席（exit 127）→ fail-open 放行该项（不 block + 零记账）',
+			rK2 === undefined && policyRows(tK2).length === 0);
 
 		// 7L. 复杂档 + 有 delta Scenario 但验证节无映射表 → 归档门禁放行
 		//     （streamline-business-test-verification：④ 场景映射对账退役 + ⑤a 白盒缺件提醒退役）

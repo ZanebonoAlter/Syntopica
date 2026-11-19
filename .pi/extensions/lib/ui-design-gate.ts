@@ -552,8 +552,8 @@ export type UiToolAction =
 
 /** decideUiToolGate 入参 */
 export interface UiToolGateInput extends UiContractInput {
-	/** 当前档位（implementation 才介入）；null = 无档位记录 */
-	mode: string | null;
+	/** 当前阶段族（planning / implementation；implementation 才介入）；null = 未绑定阶段 */
+	stageFamily: string | null;
 	/** 绑定的 change 名；null = 未绑定 */
 	boundChange: string | null;
 	tool: UiToolAction;
@@ -568,7 +568,7 @@ export type UiToolDecision =
 
 /**
  * 工具动作门禁（§4.2）：
- * - 非 implementation 档 / 未绑定 change → allow（requirements 静默）
+ * - 非 implementation 阶段族 / 未绑定 change → allow（planning 静默）
  * - legacy schema：mutation 触及 front/** → warn-legacy（调用方每 session/change 去重一次）；其余 allow
  * - 新 schema 合同 pass → allow（健康放行零噪声）
  * - 新 schema 合同 block：
@@ -581,7 +581,9 @@ export type UiToolDecision =
  * bypass 与 fail-open 由 extension 层处理（本函数不感知环境变量/异常）。
  */
 export function decideUiToolGate(input: UiToolGateInput): UiToolDecision {
-	if (input.mode !== "implementation" || !input.boundChange) {
+	// 介入条件：阶段族 == implementation（族为派生值——stage-driven-constraint-injection D2；
+	// 改造前判据是档位 mode == implementation，语义等价）
+	if (input.stageFamily !== "implementation" || !input.boundChange) {
 		return { action: "allow", silent: true };
 	}
 	const tool = input.tool;

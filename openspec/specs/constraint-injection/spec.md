@@ -5,173 +5,69 @@ TBD - created by archiving change port-constraint-injection. Update Purpose afte
 
 ## Requirements
 
-### Requirement: 档位识别与 change 绑定
-
-extension SHALL 通过 `input` 事件识别阶段命令设置会话内档位（`requirements` / `implementation`），命令集覆盖本仓 openspec 斜杠命令（`/opsx-*`、`/skill:openspec-*`）与对应 skill 文件读取（`tool_execution_start` 的 read 路径命中 skill 目录）。
-
-档位 SHALL 绑定活跃 change，绑定规则分档位：**输入提及优先**（命令参数/输入文本/写 change 目录文件时修正）；**mtime 最新兜底仅 implementation 档**（apply/verify/archive 无参语境）；requirements 档（explore/propose 新想法语境）SHALL NOT mtime 兜底——未明确提及时不绑定（关键词命中源不含无关 change 文本，pin_finding 落 research 库）。未激活档 SHALL 不显示、不分析任何 change。绑定 change 归档或删除后 SHALL 自动回落未激活档。
-
-**写 change 目录的绑定修正在多 change 并行下 SHALL 条件化**（防抢绑污染，实测 2026-09-16：并行工具调用一毫秒内 4 连绑、read 参考文档即被抢绑）：
-
-- read 工具 SHALL NOT 触发绑定修正（read 其他 change 目录属参考性访问）；
-- write/edit 命中 `openspec/changes/<name>/` 路径时，仅当当前绑定不健康（未绑定、或绑定 change 目录已消失）SHALL 兜底绑上 `<name>`；当前绑定健康时 SHALL NOT 抢绑（多 change 轮转会话的归因不因触碰其他 change 目录而漂移）；
-- 同一 turn 内绑定 SHALL 锁定：turn 内首个生效的绑定事件定绑，同 turn 后续工具调用 SHALL NOT 再切换绑定（消除并行工具调用完成顺序不定导致的非确定绑定；下一 turn 首个绑定事件可再切换）。
-
-档位状态 SHALL 持久化：**所有绑定与档位变化路径**（input 命令命中、skill 路径命中、写 change 目录兜底、resume/reload/startup 恢复、子线程继承、mtime 兜底显式化）MUST 向事实库记 `mode.set` 事件（payload 含 mode 与绑定 change，并附 `source` 字段区分激活来源：`command` / `skill` / `edit-dir` / `recover` / `inherit` / `fallback`）——隐性绑定（无记账的绑定变化）MUST NOT 存在，任何时刻的绑定状态都可从事实库归因。会话边界的恢复按 reason 区分，**三条恢复路径（resume / reload / startup）均 SHALL 仅按同 sessionId 的最近一条 `mode.set` 恢复，MUST NOT 全局兜底**（多 pi 窗口并行下，全局最新 mode.set 几乎必然属于其他会话）：`resume` 与 `reload` SHALL 清零后按同 sessionId 恢复；`startup` SHALL NOT 清零（pi-subagents 派发共用模块实例），但档位为空时 SHALL 按同 sessionId 恢复（pi 进程重启恢复会话的真实路径），恢复成功 SHALL 以 `source:"recover"` 记账；`new`/`fork` SHALL 维持清零语义（不恢复）。无本会话 mode.set 记录、或无法恢复（记录过期、绑定 change 目录已不存在）MUST 回落未激活档。恢复的档位与绑定遵循既有回落规则（change 归档后自动回落）。
-
-#### Scenario: explore 新会话不绑定无关 change
-
-- **WHEN** 新会话读 openspec-explore skill 激活 requirements 档，输入未提及任何 change，且存在 mtime 更新的其他 change 目录
-- **THEN** 注入块活跃变更显示「无」，关键词命中源不含无关 change 文本，pin_finding 落 research 库而非 mtime 最新 change
-
-#### Scenario: requirements 档提及后正常绑定
-
-- **WHEN** requirements 档下用户输入提及某 change 名（如 `/opsx-continue <name>`）
-- **THEN** 档位绑定该 change，其探索发现与约束照常送达
-
-#### Scenario: reload 后档位恢复
-
-- **WHEN** 档位激活的会话执行 `/reload`（reason=reload，sessionId 不变且有 mode.set 记录）
-- **THEN** 清零后按同 sessionId 恢复档位与 change 绑定（记 mode.set source=recover），无需重新触发阶段命令
-
-#### Scenario: resume 无法恢复回落未激活
-
-- **WHEN** resume 时事实库无可用 mode.set（无本会话记录/过期），或记录绑定的 change 目录已不存在
-- **THEN** 档位回落未激活（仅稳定层注入索引），不报错
-
-#### Scenario: 新会话不继承档位
-
-- **WHEN** 以 `session_start{reason:"new"|"fork"}` 开始会话，此前另一会话刚记录过 mode.set
-- **THEN** 档位为未激活，不从事实库恢复
-
-#### Scenario: 斜杠命令激活档位
-
-- **WHEN** 用户输入 `/opsx-apply add-change-scope`
-- **THEN** 档位切换为 implementation 并绑定 change `add-change-scope`，记一条 `mode.set`（payload source=command）
-
-#### Scenario: skill 读取激活档位
-
-- **WHEN** agent 自动 read `.agents/skills/openspec-propose/SKILL.md`
-- **THEN** 档位切换为 requirements（skill 路径 signal 命中），记一条 `mode.set`（payload source=skill）
-
-#### Scenario: change 归档后回落
-
-- **WHEN** 档位绑定的 change 目录已不存在（已归档）
-- **THEN** 下一次 `before_agent_start` 前档位回落未激活，不再注入该 change 相关约束
-
-#### Scenario: read 不抢绑
-
-- **WHEN** implementation 档健康绑定 change A，agent 并行 read `openspec/changes/B/tasks.md` 与其他文件（参考/巡检）
-- **THEN** 绑定保持 A 不变，无 mode.set 事件，注入与记账归因不漂移
-
-#### Scenario: 绑定健康时写其他 change 目录不抢绑
-
-- **WHEN** implementation 档健康绑定 change A，agent write/edit `openspec/changes/B/proposal.md`
-- **THEN** 绑定保持 A 不变，无 mode.set 事件（多 change 轮转的归因稳定）
-
-#### Scenario: 无绑定时写 change 目录兜底绑定
-
-- **WHEN** 档位激活但绑定为空（或绑定 change 目录已消失），agent write `openspec/changes/<name>/tasks.md` 勾选任务
-- **THEN** 绑定兜底设为 `<name>`，记一条 `mode.set`（payload source=edit-dir）
-
-#### Scenario: 同 turn 绑定锁定（并行竞态消除）
-
-- **WHEN** 同一 turn 内并行工具调用分别触碰 change X / Y / Z 的目录（write/edit 均满足兜底条件）
-- **THEN** 该 turn 绑定仅取首个生效事件（顺序由事件到达序决定且仅一次），同 turn 其余事件不切换绑定、不产生额外 mode.set
-
-#### Scenario: apply 中断后 resume 恢复档位
-
-- **WHEN** implementation 档会话（绑定 change X）中断后以 `session_start{reason:"resume"}` 恢复，事实库存在该会话线最近的 mode.set 且 change X 目录仍存在
-- **THEN** 档位恢复为 implementation 并绑定 X（记 mode.set source=recover），约束注入与 explore-findings 注入不丢失
-
-#### Scenario: pi 重启恢复会话后档位恢复（真实路径）
-
-- **WHEN** pi 进程退出后重启并恢复原会话（`session_start{reason:"startup"}`，sessionId 与此前 mode.set 记录一致，模块档位为空）
-- **THEN** 档位按同 sessionId 的最近一条 mode.set 恢复（含 change 绑定，记 mode.set source=recover），约束注入不丢失
-
-#### Scenario: 全新 pi 会话启动不继承其他会话档位
-
-- **WHEN** pi 冷启动打开全新会话（reason=startup，该 sessionId 无任何 mode.set 记录），而事实库存在其他会话的 mode.set
-- **THEN** 档位为未激活（startup 恢复无全局兜底），零注入零记账
-
-#### Scenario: 无自身档位历史的会话 reload/resume 不继承他窗口档位
-
-- **WHEN** 某会话自身无任何 mode.set 记录（新窗口探索会话），执行 `/reload` 或 `/resume`（reason=reload/resume），而事实库全局最新一条 mode.set 属于其他并行窗口
-- **THEN** 该会话档位为未激活（三条恢复路径均仅同 sessionId 取数，MUST NOT 全局兜底）
-
-#### Scenario: 子线程派发不清零主会话档位
-
-- **WHEN** 主会话 implementation 档激活，pi-subagents 派发子线程触发 `session_start{reason:"startup"}`（共用模块实例）
-- **THEN** 主会话档位与命中保持不变（不清零、不重复恢复、不产生 mode.set）
-
-#### Scenario: mtime 兜底显式记账
-
-- **WHEN** `/opsx-apply` 无参触发 implementation 档且无提及 change，mtime 兜底绑定最新 change `<name>`
-- **THEN** 记一条 `mode.set`（payload source=fallback），注入块头部活跃变更可归因
-
 ### Requirement: 混合注入通道（稳定层 system prompt + 动态层 steer 消息）
 
 约束注入 SHALL 按内容变化频率分两层通道送达（替代原「每 turn 全量重建 system prompt 注入块」——实测 system prompt 任何字节变化（含尾部追加）均使其后全部对话历史的前缀缓存失效）：
 
-**稳定层（system prompt，`before_agent_start` 追加）**：仅含变化频率与档位生命周期对齐的内容——索引文档（constraints-index）+ mode-base 基础文档 + 声明域红线层。稳定层在档位生命周期内（同一档位且绑定 change 不变）SHALL 字节恒定：内容不随对话输入、编辑路径、findings 文件更新而变化；仅在档位切换/绑定修正时整体变化一次（一次性缓存成本）。声明域红线层仍每回合从文件重解析内容（proposal 编辑生效），但重解析结果与上次不同时 SHALL 以 steer 消息通知差异部分而不改写稳定层（稳定层保持激活时刻快照）。
+**稳定层（system prompt，`before_agent_start` 追加）**：仅含变化频率与阶段生命周期对齐的内容——索引文档（constraints-index）+ 阶段路由清单（文档路径与节名，不含正文）。稳定层在阶段生命周期内（同一阶段族且绑定 change 不变）SHALL 字节恒定：内容不随对话输入、编辑路径、findings 文件更新而变化；仅在阶段切换/绑定修正时整体变化一次（一次性缓存成本）。**稳定层 SHALL NOT 内联任何业务域约束正文**——正文一律由模型按需自主 read（见 Requirement「阶段驱动的约束路由与自主导入」）。
 
-**动态层（steer 消息，`pi.sendMessage` + `deliverAs:"steer"`）**：关键词命中全节、JIT 路径命中全节、change 级文件（explore-findings / 词汇表）、稳定层差异通知。**未激活档（`mode = null`）的编辑路径命中 SHALL 同样经本层追加**（见 Requirement「无档位编辑路径 JIT 追加注入」）；未激活档关键词通道保持关闭。动态层 SHALL 事件驱动发送：维护已发送内容指纹，仅当指纹变化（新命中、文件更新导致内容变化、档位切换后首轮）时发送增量消息，相同指纹零发送（MUST NOT 每 turn 重发）。消息 SHALL 标注类型与来源（customType），display 渲染 SHALL 受控（默认折叠/精简展示，不整块刷屏）。steer 消息参与 LLM 上下文；档位切换时动态层全量集合重置（新 change 的命中文档与旧 change 无关）。
+**动态层（steer 消息，`pi.sendMessage` + `deliverAs:"steer"`）**：阶段首推的红线层、change 级文件（explore-findings / 词汇表）、稳定层差异通知。**动态层 SHALL NOT 注入业务域约束的整节正文**——原关键词命中全节与 JIT 路径命中全节两条通道 SHALL 退役（见 Requirement「阶段驱动的约束路由与自主导入」）。动态层 SHALL 事件驱动发送：维护已发送内容指纹，仅当指纹变化（阶段切换、新命中、文件更新导致内容变化）时发送增量消息，相同指纹零发送（MUST NOT 每 turn 重发）。消息 SHALL 标注类型与来源（customType），display 渲染 SHALL 受控（默认折叠/精简展示，不整块刷屏）。steer 消息参与 LLM 上下文；阶段切换时动态层全量集合重置（新 change 的命中文档与旧 change 无关）。
 
-**指纹重置按 regime 判定**：已发送指纹 SHALL 随投递记录其 regime——投递时 `stableSnapshotKey(mode, boundChange)` 快照键。档位/绑定可在 turn 中途切换（`tool_execution_start` 的 skill 文件读取激活、change 目录编辑兜底绑定），快照重建则延迟到下一 turn 的 `before_agent_start`；延迟重建时的指纹清空 SHALL 仅在「指纹 regime ≠ 新快照 key」时发生——同 turn 内已在新 regime 下送达的 JIT 条目 MUST NOT 被延迟重建当作旧 regime 残留清空而原样重投（相同内容 + 相同 regime = 零重发，无论快照是否重建）。fork / 子线程继承时指纹及其 regime SHALL 随 channel 一并拷贝，继承方的快照重建同样按 regime 判定清空（父会话已投递且 regime 一致的条目不重发）。
+**指纹重置按 regime 判定**：已发送指纹 SHALL 随投递记录其 regime——投递时 `stableSnapshotKey(stageFamily, boundChange)` 快照键。快照键 SHALL 使用**阶段族**（`planning` / `implementation`）而非完整 stage 值：6 档阶梯若直接入键会导致稳定层在同族内频繁重建（快照重建频率与前缀缓存命中率直接相关）。阶段/绑定可在 turn 中途切换（阶段 marker 变更、change 目录编辑兜底绑定），快照重建则延迟到下一 turn 的 `before_agent_start`；延迟重建时的指纹清空 SHALL 仅在「指纹 regime ≠ 新快照 key」时发生——同 turn 内已在新 regime 下送达的条目 MUST NOT 被延迟重建当作旧 regime 残留清空而原样重投（相同内容 + 相同 regime = 零重发，无论快照是否重建）。fork / 子线程继承时指纹及其 regime SHALL 随 channel 一并拷贝，继承方的快照重建同样按 regime 判定清空（父会话已投递且 regime 一致的条目不重发）。
 
-**compaction 补偿**：`session_compact` 事件后，extension SHALL 重发一次当前约束快照（稳定层摘要 + 动态层当前有效集合，一条消息），指纹不因重发而跳过。快照重发 SHALL 在 compact 完成后的下一次注入时机合并执行，不额外打断 turn。**例外**：无 `before_agent_start` 事件的子线程（pi-web 托管子会话）MUST NOT 因 compact 重发——该通道不存在，不伪造。
+**compaction 补偿**：`session_compact` 事件后，extension SHALL 重发一次**动态层当前有效集合**（一条消息；稳定层常驻 system prompt、不受 compaction 影响，无需重发——其「摘要」职责由注入块头部行承担），指纹不因重发而跳过。快照重发 SHALL 在 compact 完成后的下一次注入时机合并执行，不额外打断 turn。**例外**：无 `before_agent_start` 事件的子线程（pi-web 托管子会话）MUST NOT 因 compact 重发——该通道不存在，不伪造。
 
-**关键词命中域限定**：关键词命中源 SHALL 仅含最近用户输入（滚动窗），change 产物全文 MUST NOT 触发关键词命中；命中文档范围 SHALL 限定为「当前 change 声明域 ∪ 栈检测相关文档 ∪ 索引文档」，声明域之外的跨域关键词命中 MUST NOT 触发注入（实测修复：聊 harness 机制含 "discovery" 词误拉 ~8KB discovery.md 全节）。ASCII 关键词 SHALL 按词边界整词匹配（CJK 关键词保持子串匹配）。
+**关键词命中通道退役**：关键词命中源（最近用户输入滚动窗）SHALL NOT 再触发任何约束正文注入。改造前的实测证据：聊 harness 机制含 "discovery" 词即误拉 ~8KB discovery.md 全节；关键词本质重叠，隐式推断必致误注入。
 
 业务域声明 SHALL 解析 proposal.md 头部的 `<!-- constraint-domains: <域>, ... -->` HTML 注释标记（可多行合并），域名合法值 SHALL 为 `docs/reference/flow/*.md` 的 basename；未知域名 SHALL 宽容忽略并在状态提示；无声明 SHALL 不注入任何 flow 约束节并在状态栏提示（不阻断）。
 
-**声明域注入 SHALL 提取目标域「业务约束与不变量」节的红线层**：节内每条约束的首行加粗红线句逐行注入，尾部 SHALL 附细节层取回指引。红线层为空（0 条提取）或拼接后低于节级最小字节下限（`minSectionBytes`，缺省 512）SHALL 回退注入全节（fail-safe）。声明域 `constraint.inject` 记账 payload SHALL 附层级标记（`redline` / `full`）。
+**声明域注入 SHALL 提取目标域「业务约束与不变量」节的红线层**：节内每条约束的首行加粗红线句逐行注入，尾部 SHALL 附细节层取回指引（指向该 flow 文档全文路径与 `constraint-digest.sh` 取数命令）。红线层为空（0 条提取）、拼接后低于节级最小字节下限（`minSectionBytes`，缺省 512）或约束节缺失 SHALL 回退为**取数指引行**（零正文；review R-3：不再回退整节正文，注入体量断言（声明域/路由条目 ≤4000B）对全部域恒成立）。声明域 `constraint.inject` 记账 payload SHALL 附层级标记（`redline` / `pointer`）。红线层 SHALL 仅在**阶段首推**时注入；同阶段内后续回合 MUST NOT 重复注入相同红线层内容（零冗余）。
 
-JIT pathSignals SHALL 复用文档既有 `doc-impact-applies` frontmatter 标签生成，`.pi/constraint-injection.json` MUST NOT 手写 pathSignals。JIT 与关键词命中的注入内容 SHALL 为完整约束节（细节层经此通道按需到达模型）。
+JIT pathSignals SHALL 复用文档既有 `doc-impact-applies` frontmatter 标签生成，`.pi/constraint-injection.json` MUST NOT 手写 pathSignals。**编辑路径命中 SHALL NOT 触发正文注入**——命中的文档 SHALL 出现在本阶段路由清单中（引导模型自行 read）。
 
-节级注入 SHALL 设最小字节下限：提取的节内容低于下限时 SHALL 回退注入该文档全文（fail-safe）。注入内容（稳定层 + 动态层单条消息）总量 SHALL 受 `budgetBytes` 预算限制（配置缺省 32768 字节），超预算时 SHALL 按命中信号强度分层降级（关键词命中节 → JIT 命中节 → change 级文件 digest 收紧 → 域声明节 → change 级文件降占位；baseDocs 与 header SHALL NOT 降级），降级 MUST NOT 真丢文档（至少保留标题 + read 路径占位），降级决策 SHALL 确定性（相同命中集合 + 相同文档内容 + 相同预算 → 相同结果）。超预算时 SHALL 在注入块头部或消息头部列出已降级路径。
+节级注入 SHALL 设最小字节下限：提取的节内容低于下限时 SHALL 回退为取数指引行（零正文，不注入残缺内容）。注入内容（稳定层 + 动态层单条消息）总量 SHALL 受 `budgetBytes` 预算限制（配置缺省 32768 字节），超预算时 SHALL 按命中信号强度分层降级（关键词命中节 → JIT 命中节 → change 级文件 digest 收紧 → 域声明节 → change 级文件降占位；baseDocs 与 header SHALL NOT 降级），降级 MUST NOT 真丢文档（至少保留标题 + read 路径占位），降级决策 SHALL 确定性（相同命中集合 + 相同文档内容 + 相同预算 → 相同结果）。超预算时 SHALL 在注入块头部或消息头部列出已降级路径。
 
 注入块（含 steer 消息正文）SHALL 标注「与 AGENTS.md 优先级宪法冲突时以宪法为准」。
 
 #### Scenario: 稳定层档位生命周期内恒定
 
-- **WHEN** implementation 档绑定 change X 激活后，会话继续 20 个 turn（新增关键词命中、编辑代码触发 JIT 命中、findings 被 pin 更新）
+- **WHEN** implementation 族阶段绑定 change X 激活后，会话继续 20 个 turn（findings 被 pin 更新、路由清单不变）
 - **THEN** system prompt 注入块字节完全不变（新内容全部经 steer 消息送达），历史前缀缓存零失效
 
 #### Scenario: 档位切换一次性变化
 
-- **WHEN** 会话从未激活档切换为 implementation 绑定 change X
-- **THEN** 稳定层整体变化一次（索引 → 索引 + mode-base + X 的声明域红线层），此后 X 生命周期内恒定
+- **WHEN** 会话从 planning 族阶段切换为 implementation 族阶段并绑定 change X
+- **THEN** 稳定层整体变化一次（索引 → 索引 + 新阶段路由清单），此后 X 生命周期内恒定
 
 #### Scenario: 动态层事件驱动增量发送
 
-- **WHEN** 档位激活后第 3 个 turn 用户输入命中 daily-report 域关键词，第 4~10 个 turn 无新命中且已发送内容无变化
-- **THEN** 第 3 个 turn 发送一条含 daily-report 全节的 steer 消息，第 4~10 个 turn 零发送
+- **WHEN** 阶段首推后第 3 个 turn 无关键词命中，第 4~10 个 turn 无阶段变化且已发送内容无变化
+- **THEN** 第 3~10 个 turn 零发送（阶段首推已发生一次，此后同阶段零冗余）
 
 #### Scenario: turn 中途切档后同 turn 已投递内容不被延迟重建重投
 
-- **WHEN** 会话未激活档的某 turn 内，agent read requirements 类 skill 文件（`tool_execution_start` 激活档位），同 turn 随后 edit 命中某文档 `doc-impact-applies` 标签触发 JIT 即时投递（该节经 steer 消息送达，指纹以新档位 regime 记录）；下一 turn `before_agent_start` 延迟重建稳定层快照（快照 key 从未激活档变化为当前档位）
-- **THEN** 稳定层按新档位重建（mode-base 一次性变化），但动态层对该已投递节零重发（指纹 regime 与新快照 key 一致，不清空不重投）；`constraint.inject` 记账中该节在同会话代内不出现第二条同字节的 jit-path 记录
+- **WHEN** 会话在某 turn 内切换到新阶段（`stage.md` marker 变更），同 turn 随后触发该阶段首推（红线层经 steer 消息送达，指纹以新阶段 regime 记录）；下一 turn `before_agent_start` 延迟重建稳定层快照（快照 key 从旧阶段族变化为新阶段族）
+- **THEN** 稳定层按新阶段重建（路由清单一次性变化），但动态层对该已投递内容零重发（指纹 regime 与新快照 key 一致，不清空不重投）；`constraint.inject` 记账中该内容在同会话代内不出现第二条同字节记录
 
 #### Scenario: 绑定切换后首轮仍全量重投
 
-- **WHEN** 档位激活且已投递若干动态条目（指纹 regime 为 `<mode>|<changeX>`），turn 中途 agent 写 change Y 目录触发兜底绑定（edit-dir），下一 turn `before_agent_start` 快照 key 变为 `<mode>|<changeY>`
+- **WHEN** 阶段激活且已投递若干动态条目（指纹 regime 为 `<stageFamily>|<changeX>`），turn 中途 agent 写 change Y 目录触发兜底绑定（edit-dir），下一 turn `before_agent_start` 快照 key 变为 `<stageFamily>|<changeY>`
 - **THEN** 指纹 regime 与新快照 key 不一致 → 指纹清空、动态层全量集合按新 change 语境重投（既有设计行为保持：新 change 的命中文档与旧 change 无关）
 
 #### Scenario: fork 继承的指纹不被陈旧快照 key 重投
 
-- **WHEN** 父会话在 turn 中途切档后已 JIT 投递若干条目（指纹 regime 为新档位 key，但快照 key 尚为切档前的旧值），子会话 fork 继承父会话状态（含 channel 与指纹 regime），子会话首个 turn 快照重建（快照 key 与继承的旧快照 key 不一致）
+- **WHEN** 父会话在 turn 中途切换阶段后已投递若干条目（指纹 regime 为新阶段族 key，但快照 key 尚为切换前的旧值），子会话 fork 继承父会话状态（含 channel 与指纹 regime），子会话首个 turn 快照重建（快照 key 与继承的旧快照 key 不致）
 - **THEN** 指纹 regime 与新快照 key 一致 → 不清空、父会话已投递条目不重发（fork 语义：父会话已送达的动态层条目不重复）
 
 #### Scenario: findings 更新触发重发
 
-- **WHEN** implementation 档激活且 explore-findings.md 已发送，agent 调 pin_finding 追加新条目
+- **WHEN** implementation 族阶段激活且 explore-findings.md 已发送，agent 调 pin_finding 追加新条目
 - **THEN** 下一注入时机发送一条包含更新后 findings 的 steer 消息（指纹变化），而非每 turn 重发
 
 #### Scenario: compact 后快照重发
 
 - **WHEN** 会话发生 compaction（steer 消息被摘要移除），档位仍激活
-- **THEN** compact 后下一次注入时机合并重发一条约束快照（稳定层摘要 + 动态层当前有效集合），红线约束不因压缩丢失
+- **THEN** compact 后下一次注入时机合并重发一条约束快照（动态层当前有效集合；稳定层常驻 system prompt 不受影响），红线约束不因压缩丢失
 
 #### Scenario: 关键词域限定
 
@@ -181,7 +77,7 @@ JIT pathSignals SHALL 复用文档既有 `doc-impact-applies` frontmatter 标签
 #### Scenario: 声明域内关键词正常命中
 
 - **WHEN** implementation 档绑定 change X（声明域含 ai-summary），用户输入含 "airouter"
-- **THEN** ai-summary.md 完整约束节经 steer 消息送达（细节层）
+- **THEN** ai-summary.md 进入本阶段路由清单并标注「本次会话提及」（域限定仍生效），零正文注入（关键词通道已退役，只标注不送正文）
 
 #### Scenario: 稳定层差异走 steer 通知
 
@@ -206,32 +102,32 @@ JIT pathSignals SHALL 复用文档既有 `doc-impact-applies` frontmatter 标签
 #### Scenario: JIT 路径细化
 
 - **WHEN** implementation 档激活且 agent edit `backend-go/internal/topicgraph/service/daily_report_orchestrator.go`
-- **THEN** 命中 daily-report.md 头部 `doc-impact-applies` 标签路径前缀，该域完整约束节经 steer 消息送达
+- **THEN** 命中 daily-report.md 头部 `doc-impact-applies` 标签路径前缀，该域的路径与节名列进本阶段路由清单（零正文，引导自主 read）
 
 #### Scenario: 节残缺时回退全文
 
 - **WHEN** 某 flow 文档「业务约束与不变量」节处于编辑中间态仅 133B（低于 minSectionBytes），全文完整
-- **THEN** 注入回退为该文档全文，记账 bytes 为全文字节数（残缺节不注入）
+- **THEN** 注入回退为取数指引行（零正文，含 read 路径与 digest 命令），记账 bytes 为指引行字节数（残缺节不注入、全文也不自动注入）
 
 #### Scenario: 红线层为空回退全节
 
 - **WHEN** 某声明域约束节尚无规整列表项加粗红线句（红线层提取 0 条），全文完整
-- **THEN** 该域声明注入回退为全节，constraint.inject 记账 payload 层级标记为 `full`、bytes 为全节字节数
+- **THEN** 该域声明注入回退为取数指引行（零正文），constraint.inject 记账 payload 层级标记为 `pointer`、bytes 为指引行字节数
 
 #### Scenario: 红线层低于最小字节回退全节
 
 - **WHEN** 某声明域红线层拼接后 380B（低于 minSectionBytes 缺省 512）
-- **THEN** 该域声明注入回退为全节（残缺红线层不注入），记账 bytes 如实为全节
+- **THEN** 该域声明注入回退为取数指引行（残缺红线层不注入、正文零推送），记账 bytes 如实为指引行字节数
 
 #### Scenario: flow 文档节级注入
 
-- **WHEN** 档位激活且声明域命中某 flow 域（稳定层注红线层），或最近输入 / JIT 路径命中某 flow 域（动态层注全节）
-- **THEN** 声明域注入为该域红线层（逐行 + 指引尾行），关键词 / JIT 命中注入为该域完整约束节（细节层），两种形态节尾均附全文路径指引
+- **WHEN** 阶段激活且声明域命中某 flow 域（红线层首推），或最近输入 / 编辑路径命中某 flow 域
+- **THEN** 声明域注入为该域红线层（逐行 + 指引尾行），关键词 / 编辑路径命中只把该域列进路由清单（零正文），两种形态均附全文路径指引
 
 #### Scenario: 声明注入层级记账
 
-- **WHEN** 某 change 声明两域，一域红线层 1.8K、另一域红线层回退全节 12.9K
-- **THEN** 产生两条 reason=declaration 的 constraint.inject，payload 分别附 `layer:redline`（bytes≈1843）与 `layer:full`（bytes≈12900）
+- **WHEN** 某 change 声明两域，一域红线层 1.8K、另一域红线层回退取数指引（约 0.2K）
+- **THEN** 产生两条 reason=declaration 的 constraint.inject，payload 分别附 `layer:redline`（bytes≈1843）与 `layer:pointer`（bytes≤4000）
 
 #### Scenario: 命中只增不减（缓存稳定）
 
@@ -292,7 +188,7 @@ JIT pathSignals SHALL 复用文档既有 `doc-impact-applies` frontmatter 标签
 
 extension SHALL 注册 `pin_finding` 工具持久化探索发现，落点与 research-retention 规则对齐，三级解析：
 
-1. 显式 `change` 参数（目录存在）或档位激活（档位绑定优先；mtime 兜底仅 implementation 档）→ 活跃 change 的 `explore-findings.md`，implementation 档自动注入；
+1. 显式 `change` 参数（目录存在）或阶段已绑定（绑定优先；mtime 兜底仅 implementation 族阶段）→ 活跃 change 的 `explore-findings.md`，implementation 族阶段自动注入；
 2. 无档且传 `topic` → `docs/research/<topic>/explore-findings.md`；
 3. 无档无 topic → 通用池单文件 `docs/research/explore-findings.md`。
 
@@ -300,22 +196,22 @@ extension SHALL 注册 `pin_finding` 工具持久化探索发现，落点与 res
 
 #### Scenario: 实现阶段自动注入发现
 
-- **WHEN** requirements 档 pin 了「告警表结构」发现，随后档位切换为 implementation
+- **WHEN** planning 族阶段 pin 了「告警表结构」发现，随后阶段切换为 implementation 族
 - **THEN** 该 explore-findings.md 内容经动态层 steer 消息送达，实现阶段无需重探
 
 #### Scenario: research 语境不落 change
 
-- **WHEN** 无激活档位且未传 change 参数时调用 pin_finding
+- **WHEN** 无绑定 change 且未传 change 参数时调用 pin_finding
 - **THEN** 落点为 `docs/research/` 下（传 topic 落 `<topic>/`，未传落通用单文件），不写入 `openspec/changes/`
 
 #### Scenario: research 语境无 topic 落通用池
 
-- **WHEN** 无激活档位且未传 change 与 topic 参数时调用 pin_finding
+- **WHEN** 无绑定 change 且未传 change 与 topic 参数时调用 pin_finding
 - **THEN** 落点为 `docs/research/explore-findings.md` 通用池单文件
 
 ### Requirement: smoke test 覆盖纯函数
 
-extension 的纯逻辑（档位匹配、栈判定、速览提取、节提取、红线层提取与最小字节回退、节最小字节判定与全文回退、落点三级解析、命令匹配、**抢绑条件判定（read 不抢/健康不抢/兜底绑）**、**turn 绑定锁定**、**动态层 diff 指纹计算**、**关键词命中域过滤**、**compact 快照重发判定**）SHALL 有可脱离 pi harness 运行的 smoke test（node 直跑 .cjs 模式，同源项目 `tests/*.smoke.cjs` 实践）。
+extension 的纯逻辑（**stage marker 三态解析（missing/invalid/ok）**、**阶段族派生**、**阶段路由清单装配**、栈判定、速览提取、节提取、红线层提取与最小字节回退、节最小字节判定与全文回退、落点三级解析、命令匹配、**抢绑条件判定（read 不抢/健康不抢/兜底绑）**、**turn 绑定锁定**、**动态层 diff 指纹计算**、**compact 快照重发判定**、**读取路径归一化**）SHALL 有可脱离 pi harness 运行的 smoke test（node 直跑 .cjs 模式，同源项目 `tests/*.smoke.cjs` 实践）。
 
 #### Scenario: smoke test 直跑
 
@@ -354,11 +250,11 @@ extension 的纯逻辑（档位匹配、栈判定、速览提取、节提取、�
 
 ### Requirement: 会话作用域状态隔离
 
-注入器的**全部会话语义状态** SHALL 按 `sessionId` 隔离存储与读取：档位（`mode`）、绑定 change（`boundChange`）、turn 绑定锁、最近输入窗、JIT 命中集、关键词命中集、pin 注入去重集、稳定层快照/指纹/待发快照。任一时刻，某会话的注入内容（含归因字段与 `declaration` 域选择）SHALL 只由该会话自身的状态决定；他会话的绑定变化 MUST NOT 改变本会话的注入内容或归属。
+注入器的**全部会话语义状态** SHALL 按 `sessionId` 隔离存储与读取：阶段（`stage`）、阶段族（`stageFamily`）、绑定 change（`boundChange`）、turn 绑定锁、pin 注入去重集、稳定层快照/指纹/待发快照。任一时刻，某会话的注入内容（含归因字段与 `declaration` 域选择）SHALL 只由该会话自身的状态决定；他会话的绑定变化 MUST NOT 改变本会话的注入内容或归属。
 
-**无自身状态时的取用规则**（防跨会话借用）：会话有自身状态 → 用自身的；会话为父会话的 fork/子线程（父子关系可证）→ SHALL 显式继承父会话状态并以 `mode.set source=inherit` 记账；其余情况（无状态、无父子关系、无法确定来源）→ SHALL 视为未绑定（仅注入索引），MUST NOT 借用任意他会话的状态。按 `sessionId` 从事实库恢复档位（`resume` / `reload` / `startup`）的既有语义保持不变。
+**无自身状态时的取用规则**（防跨会话借用）：会话有自身状态 → 用自身的；会话为父会话的 fork/子线程（父子关系可证）→ SHALL 显式继承父会话状态并以 `stage.set source=inherit` 记账；其余情况（无状态、无父子关系、无法确定来源）→ SHALL 视为未绑定（仅注入索引），MUST NOT 借用任意他会话的状态。按 `sessionId` 从事实库恢复阶段（`resume` / `reload` / `startup`）的既有语义保持不变。
 
-**子线程检测的通道无关性**：父子关系判定 SHALL 只依据会话自身证据（会话文件 header 的 `parentSession`、fork 路径模式），MUST NOT 绑定具体派发通道——pi-subagents 独立 runner 子线程与 pi-web resourceLoader 子会话（profile 开启扩展加载后）SHALL 走同一继承链路；跨进程场景父会话内存状态不可见，继承 SHALL 经事实库回退（用父会话 id 查其最近一条可恢复 `mode.set`）完成；父子关系不可证（无 `parentSession` 且路径不可解）时 SHALL 退化为未激活，MUST NOT 借用他会话状态。跨进程继承的注入通道为全新会话首投递（子线程 system prompt 独立构建），MUST NOT 因父会话已投递过同内容而抑制投递；进程内 fork 的指纹随 channel 拷贝语义保持不变。
+**子线程检测的通道无关性**：父子关系判定 SHALL 只依据会话自身证据（会话文件 header 的 `parentSession`、fork 路径模式），MUST NOT 绑定具体派发通道——pi-subagents 独立 runner 子线程与 pi-web resourceLoader 子会话（profile 开启扩展加载后）SHALL 走同一继承链路；跨进程场景父会话内存状态不可见，继承 SHALL 经事实库回退（用父会话 id 查其最近一条可恢复 `stage.set`）完成；父子关系不可证（无 `parentSession` 且路径不可解）时 SHALL 退化为未激活，MUST NOT 借用他会话状态。跨进程继承的注入通道为全新会话首投递（子线程 system prompt 独立构建），MUST NOT 因父会话已投递过同内容而抑制投递；进程内 fork 的指纹随 channel 拷贝语义保持不变。
 
 **有界性**：会话条目 SHALL 有数量上限与最近使用淘汰（长跑进程不得无界增长）；extension rebind 时 SHALL 只重置本会话条目。无 `sessionId` 的非真实会话语境（烟测 stub）SHALL 使用单一兜底槽位，行为与隔离前等价。
 
@@ -376,29 +272,29 @@ extension 的纯逻辑（档位匹配、栈判定、速览提取、节提取、�
 
 #### Scenario: 无自身绑定且无父子关系时不借用他会话
 
-- **WHEN** 会话 C 从未绑定任何 change（无 `mode.set` 记录），而同进程会话 D 已绑定 change Y
-- **THEN** C 只注入常驻索引（未激活档），其注入归因 MUST 为未绑定
-- **AND** C 的注入内容中 MUST NOT 出现 Y 的档位基础块或 Y 声明的域约束
+- **WHEN** 会话 C 从未绑定任何 change（无 `stage.set` 记录），而同进程会话 D 已绑定 change Y
+- **THEN** C 只注入常驻索引（未绑定），其注入归因 MUST 为未绑定
+- **AND** C 的注入内容中 MUST NOT 出现 Y 的路由清单或 Y 声明的域约束
 
 #### Scenario: 子线程显式继承父会话
 
 - **WHEN** 主会话绑定 change X 后派发子线程（pi-subagents 子线程跑在**独立进程**、独立 sessionId、`session_start` reason=startup；其会话文件 header 带 `parentSession` 指向父会话文件）
 - **THEN** 子线程注入带 X 的完整约束块（档位基础块 + X 声明的域）
-- **AND** 事实库出现一条该子会话的 `mode.set`，`source=inherit`、`boundChange=X`
-- **AND** 子线程活动 MUST NOT 清零或改写主会话的档位与命中集
+- **AND** 事实库出现一条该子会话的 `stage.set`，`source=inherit`、`boundChange=X`
+- **AND** 子线程活动 MUST NOT 清零或改写主会话的阶段与绑定
 
 #### Scenario: 子线程显式继承父会话（pi-web 通道）
 
 - **WHEN** 主会话绑定 change X 后经 pi-web Agent 工具用带扩展 profile（`load_extensions: true`）派发子线程（独立进程、独立 sessionId、会话文件 header 带 `parentSession`）
 - **THEN** 子线程扩展加载后按同一继承链路注入带 X 的完整约束块（档位基础块 + X 声明的域）
-- **AND** 事实库出现一条该子会话的 `mode.set`，`source=inherit`、`boundChange=X`
-- **AND** 子线程活动 MUST NOT 清零或改写主会话的档位与命中集
+- **AND** 事实库出现一条该子会话的 `stage.set`，`source=inherit`、`boundChange=X`
+- **AND** 子线程活动 MUST NOT 清零或改写主会话的阶段与绑定
 
 #### Scenario: 命中集按会话隔离
 
-- **WHEN** 会话 A 编辑代码命中 JIT 文档、或输入命中关键词；同一进程会话 B 未命中
-- **THEN** B 的注入内容 MUST NOT 包含 A 命中的 JIT 文档或关键词文档
-- **AND** A 命中集「只增不减」的缓存稳定性在本会话内保持不变
+- **WHEN** 会话 A 处于 implementation 族阶段并绑定 change X；同一进程会话 B 处于 planning 族阶段且绑定 change Y
+- **THEN** B 的注入内容 MUST NOT 包含 X 的路由清单或 X 声明的域约束
+- **AND** A 的「只增不减」缓存稳定性在本会话内保持不变
 
 #### Scenario: turn 绑定锁按会话隔离
 
@@ -408,7 +304,7 @@ extension 的纯逻辑（档位匹配、栈判定、速览提取、节提取、�
 #### Scenario: 会话条目有界淘汰
 
 - **WHEN** 新建会话数超过条目上限
-- **THEN** 最久未使用的会话条目被淘汰，且淘汰不影响存活会话的档位、绑定与快照
+- **WHEN** 最久未使用的会话条目被淘汰，且淘汰不影响存活会话的阶段、绑定与快照
 
 #### Scenario: 无 sessionId 语境行为等价
 
@@ -481,71 +377,171 @@ extension 的纯逻辑（档位匹配、栈判定、速览提取、节提取、�
 - **WHEN** `harness-retro` 统计窗口内混有改造前的 `subagent.dispatch` 记录（无两个新字段）
 - **THEN** 这些记录计入「未知」并从带域比例分母剔除，报告显式标注未知条数
 
-### Requirement: 无档位编辑路径 JIT 追加注入
+### Requirement: stage 进度标识（替代档位机制）
 
-未激活档（`mode = null`）会话在 `write` / `edit` 工具调用命中文档头部 `doc-impact-applies` 路径标签（前 15 行内首条标签生效）时，SHALL 把命中文档追加进本会话的动态注入集合，并以动态层 steer 消息送达该文档完整约束节（节尾附全文路径指引，与档位激活时的 JIT 形态一致）。
+extension SHALL 以 openspec change 目录内的 `stage.md` 文件作为**进度阶段的唯一机器可读真相源**。`stage.md` 文件头 SHALL 含恰好一条 `<!-- stage: <值> -->` marker——解析按**全文恰好一条**判定（正文中间出现同形 marker 也算重复 → invalid，比「仅头部」更严，防正文示例伪造阶段）。
 
-**只开路径通道**：关键词匹配（`matchText`）、关键词域限定（`allowedKeywordDocs`）、change 绑定（`boundChange` / turn 绑锁 / `mode.set`）SHALL 继续以档位为开关——未激活档 MUST NOT 因编辑路径命中而绑定 change、MUST NOT 因对话输入关键词而注入域约束。
+stage 取值域 SHALL 为以下 6 档单调阶梯（顺序即进度顺序）：
 
-**去重**：同一会话同一文档 SHALL 只追加一次（粘性集合，只增不减）；未命中任何标签路径时 MUST 零注入。
+| stage | 语义 | 阶段族 |
+| --- | --- | --- |
+| `explore` | 探索/脑暴期，尚无制品 | planning |
+| `propose` | proposal 制品产出期 | planning |
+| `design` | ui-design / specs / design 制品产出期 | planning |
+| `implement` | 实现执行期（tasks 勾选推进） | implementation |
+| `verify` | 验收期 | implementation |
+| `archive` | 归档期 | implementation |
 
-**记账**：无档 JIT 注入 SHALL 记 `constraint.inject`，`reason = jit-path`，并在 payload 追加 append-only 字段 `tier`（值 `none` / `requirements` / `implementation`，自报会话档位）——现有 `mode` 字段表示文档形态（`section`/`digest`/`full`），MUST NOT 复用；历史记录无 `tier` 字段时统计 SHALL 计「未知」并剔除分母。
+**阶段族 SHALL 为派生值**（由 stage 映射得出），MUST NOT 作为独立可写状态存在。
 
-**预算**：无档 JIT 追加内容 SHALL 受既有 `budgetBytes` 约束，降级顺位与档位激活时一致（关键词 → JIT → change 级文件 → 声明域），降级 MUST NOT 真丢文档。
+marker 解析 SHALL 区分三态：
 
-**子线程**：未激活档的子线程编辑命中标签路径时 SHALL 同样追加（子线程无 `before_agent_start`，经 steer 即时投递），使子线程在不继承档位时也能按自己的真实目标路径自愈。
+- **missing**：`stage.md` 不存在或无 marker → 视为 legacy change：**不绑定阶段**、MUST NOT 阻断任何流程（含归档）；约束注入退化为「索引 + 声明域红线层」，不提供阶段路由清单（注意：keyword 与 jit-path 两条整节正文通道的退役对**全部** change 生效，与 stage 是否存在无关——legacy change 同样不再收到整节正文）；
+- **invalid**：marker 重复出现、或值不在 6 档取值域内 → 视为 legacy（降级不阻断），并记一条 warn 级事实库事件；
+- **ok**：恰好一条合法 marker → stage 生效。
 
-#### Scenario: 未激活档编辑命中业务路径
+`stage.md` SHALL 为非 schema 制品（与 `explore-findings.md` / `human-feedback.md` / `test-cases.md` 同性质），openspec schema 的制品 DAG SHALL NOT 因之改变。
 
-- **WHEN** 会话未激活档，agent edit `backend-go/internal/platform/airouter/embedding.go`（命中 ai-summary.md 头部标签，节字节 12.5KB 在默认预算内）
-- **THEN** 一条 steer 消息送达 ai-summary.md「业务约束与不变量」完整节（含全文路径指引），`constraint.inject` 记 `reason=jit-path`、`tier="none"`
+**业务域声明位置 SHALL 支持两处**：proposal.md 头部的 `<!-- constraint-domains: <域>, ... -->`（**存量 change 的既有位置**，保持不变）与 `stage.md` 头部的同名 marker（**实现期活口径**，用于声明实施过程中发现的新增业务域）。生效的域集合 SHALL 为两处声明的**并集**——stage.md SHALL NOT 收窄 proposal.md 已声明的域（域声明按超集安全方向收敛：多声明只是多推几行红线，不会漏推）。
 
-#### Scenario: 未激活档编辑未映射路径
+extension SHALL 在所有原「档位绑定变化」的路径上自报 `stage.set` 事实库事件，payload 含 `stage`（6 档取值）、`stageFamily`（`planning` / `implementation`）、`boundChange`（可空）与 `source`（归因来源）。原 `mode.set` 事件 SHALL 停写；读方 SHALL 在过渡期双读（先查 `stage.set`，无结果时查 `mode.set` 并按 `requirements`→`planning`、`implementation`→`implementation` 映射回族），保留期 30 天自然消退后双读可移除。
 
-- **WHEN** 会话未激活档，agent edit `scripts/harness/constraint-digest.sh`（无任何 `doc-impact-applies` 标签命中）
-- **THEN** 零动态层发送，零 `constraint.inject` 记账
+#### Scenario: stage marker 生效
 
-#### Scenario: 未激活档同域多次编辑只注一次
+- **WHEN** `openspec/changes/<name>/stage.md` 头部含恰好一条 `<!-- stage: implement -->`
+- **THEN** 该 change 的当前阶段为 `implement`，阶段族为 `implementation`
+- **AND** 产生一条 `stage.set` 事件，payload 含 stage=implement、stageFamily=implementation
 
-- **WHEN** 会话未激活档连续 edit 同一域下的两个不同文件（均命中同一 flow 文档标签）
-- **THEN** 该文档只追加一次，第二条 steer 消息不重发（指纹去重）
+#### Scenario: 缺失 marker 视为 legacy 不阻断
 
-#### Scenario: 未激活档 JIT 不绑定 change
+- **WHEN** 某 change 目录不存在 `stage.md`
+- **THEN** 该 change 按 legacy 处理，不绑定阶段
+- **AND** 约束注入退化为「索引 + 声明域红线层」，不提供阶段路由清单
+- **AND** 归档流程不因此阻断
 
-- **WHEN** 会话未激活档，agent edit `openspec/changes/<某 change>/tasks.md` 且该路径同时命中某文档标签
-- **THEN** 可追加该文档约束，但 `boundChange` 仍为空、不产生 `mode.set` 事件、档位仍为未激活
+#### Scenario: 非法 stage 值降级不阻断
 
-#### Scenario: 未激活档 JIT 受预算降级
+- **WHEN** `stage.md` 头部写 `<!-- stage: coding -->`（不在 6 档取值域内）
+- **THEN** 视为 legacy 降级，MUST NOT 阻断流程
+- **AND** 记一条 warn 级事实库事件，payload 标注 stage 非法
 
-- **WHEN** 未激活档会话命中 JIT 文档合计 40K，`budgetBytes = 32768`
-- **THEN** 按既有分层顺位降级到预算内，降级条目在消息头部列出路径，文档至少保留「标题 + read 路径」占位
+#### Scenario: marker 重复视为非法
 
-#### Scenario: 子线程未继承档位时按自身路径自愈
+- **WHEN** `stage.md` 头部出现两条 `<!-- stage: -->` marker
+- **THEN** 视为 invalid（legacy 降级），MUST NOT 取其中任一条生效
 
-- **WHEN** 主会话未激活档派发子线程（子线程继承 `mode = null`），子线程 edit `backend-go/internal/platform/airouter/embedding.go`（命中 ai-summary.md 标签）
-- **THEN** 子线程收到 ai-summary.md 完整约束节 steer 消息（节字节 12.5KB 在默认预算内；不必依赖主线程任务文本里的 brief）
+#### Scenario: stage.md 可追加业务域声明
 
-#### Scenario: legacy 通道不即时投递
+- **WHEN** proposal.md 声明域为 `reading`，stage.md 声明域为 `reading, scheduler`
+- **THEN** 生效域集合为 `{reading, scheduler}`（并集）
+- **AND** stage.md 的声明 MUST NOT 收窄 proposal.md 已声明的域
 
-- **WHEN** `channel = legacy` 且未激活档会话 edit 命中某业务域路径
-- **THEN** 本 turn 不发送 steer 消息；下一 turn `before_agent_start` 时含该文档的计划随 system prompt 注入（既有 legacy 语义，不新增通道）
+#### Scenario: stage.md 无域声明时沿用 proposal
 
-#### Scenario: 未激活档 compact 后重发 JIT 集合
+- **WHEN** proposal.md 声明域为 `scheduler` 且 stage.md 无 `constraint-domains` marker
+- **THEN** 生效域集合为 `{scheduler}`
 
-- **WHEN** 未激活档主会话已 JIT 命中两域，发生 compaction
-- **THEN** 下一注入时机重发索引 + 当前 JIT 集合（`pendingSnapshot` 既有机制），红线不因压缩丢失
+#### Scenario: 事实库双读兼容旧 mode.set
 
-#### Scenario: 无 before_agent_start 的子线程 compact 不重发
+- **WHEN** 查询某 session 的当前阶段，事实库无 `stage.set` 但存在旧 `mode.set`（payload mode=implementation）
+- **THEN** 返回阶段族 `implementation`，且不视为错误
 
-- **WHEN** 未激活档子线程（无 `before_agent_start` 事件）已 JIT 命中一域后发生 compaction
-- **THEN** 该子线程不因 compact 重发（已知边界，不伪造通道）；同文档重复编辑也不重投（去重语义），丢失内容需显式 read 或由主线程 brief 补齐
+### Requirement: 阶段驱动的约束路由与自主导入
 
-#### Scenario: 同进程 fork 继承命中集不重投
+extension SHALL 按当前 stage 组装注入内容，取代改造前「按关键词/编辑路径主动注入整节正文」的形态。
 
-- **WHEN** 父会话未激活档已 JIT 投递 daily-report 节，进程内 fork 子会话继承 `jitDocHits` 与指纹
-- **THEN** 子会话首投只含稳定层索引，不重投父已送达的 daily-report 节（指纹 regime 一致）
+**注入内容 SHALL 分两部分**：
 
-#### Scenario: reload 后命中集清零
+1. **红线层**：当前 change 声明的业务域（`<!-- constraint-domains: -->`）对应的 flow 文档「业务约束与不变量」节的顶层列表项首个加粗句逐行序列。提取 SHALL 复用 `lib/constraint-redlines.ts` 的既有实现（禁止重写第二份正则）。红线层提取为空、低于最小字节或约束节缺失时 SHALL 回退为**取数指引行**（文档路径 + 节名 + `constraint-digest.sh --brief --domains <域>` 命令，零正文——整节正文回退已退役，「正文永不主动推」对全部域恒成立）。
+2. **路由清单**：本阶段相关文档的清单，每行含文档路径、节名与取数方式。清单内容 SHALL 按 stage 派生：
 
-- **WHEN** 未激活档会话已 JIT 命中若干域，发生 reload / 会话状态重建
-- **THEN** `jitDocHits` 清零，不凭历史命中集重投；后续编辑重新命中
+| stage | 清单构成 |
+| --- | --- |
+| `explore` / `propose` | 索引文档 + 声明域红线层的细节层指引 |
+| `design` | 上述 + UI 契约相关规范（`standard/frontend/layout.md`、`standard/frontend/interaction.md`） |
+| `implement` | 上述 + 代码与测试规范（按栈命中 `standard/backend/` 或 `standard/frontend/`） |
+| `verify` / `archive` | 上述 + 验收与归档规范（`standard/shared/test-design.md`、`standard/shared/commit-pr.md`、`standard/shared/doc-authoring.md`） |
+
+路由清单 SHALL 以「路径 + 节名 + 取数方式」形态给出，SHALL NOT 内联文档正文。
+
+**注入时机 SHALL 为阶段首推**：某 stage 首次成为当前阶段时注入一次该 stage 的红线层 + 路由清单；同 stage 内的后续回合 MUST NOT 重复注入相同内容（零冗余）。阶段切换时 SHALL 以增量 steer 消息送达差异部分，SHALL NOT 改写 system prompt 稳定层。
+
+**正文导入方式 SHALL 为自主 read**：扩展 MUST NOT 再主动注入业务域约束的整节正文。模型需要细节时自行 `read` 对应文档，清单 SHALL 同时给出 `bash scripts/harness/constraint-digest.sh --brief --domains <域>` 作为取红线摘要的命令形式。
+
+原 keyword 通道（对话关键词命中 → 整节注入）与 jit-path 通道（编辑路径命中 → 整节注入）SHALL 退役。MUST NOT 再因对话关键词或编辑路径向模型主动推送约束文档正文。
+
+#### Scenario: 阶段首推红线层与清单
+
+- **WHEN** 当前 change 的 stage 由 `propose` 变为 `implement`，声明域含 `daily-report`
+- **THEN** 以增量 steer 消息送达 `daily-report` 的红线层（顶层加粗句逐行）+ 本阶段路由清单
+- **AND** 该消息不含 `daily-report` 约束节的整节正文
+
+#### Scenario: 同阶段不重复注入
+
+- **WHEN** 连续 5 个回合当前 stage 均为 `implement` 且声明域未变
+- **THEN** 只在首个回合注入过一次，后续 4 个回合零注入
+
+#### Scenario: 路由清单含取数命令
+
+- **WHEN** 注入 `implement` 阶段的路由清单
+- **THEN** 清单含 `daily-report` 的文档路径与节名
+- **AND** 清单含 `bash scripts/harness/constraint-digest.sh --brief --domains daily-report` 命令形式
+
+#### Scenario: 不再注入整节正文
+
+- **WHEN** 用户输入中包含某业务域的关键词（如「discovery」）
+- **THEN** 扩展 MUST NOT 因此注入该域约束节的整节正文
+
+#### Scenario: 编辑路径命中不再注入正文
+
+- **WHEN** agent 编辑了命中某 flow 文档 `doc-impact-applies` 标签的路径
+- **THEN** 扩展 MUST NOT 因此注入该文档正文
+- **AND** 该路径对应的域 SHALL 出现在本阶段路由清单中（引导模型自行 read）
+
+### Requirement: 约束文档读取记账与归档对账
+
+extension SHALL 在 agent `read` 工具调用**成功完成**时（tool_execution_end 且非 error）记录 `constraint.read` 事实库事件，payload 含被读文档的仓库根相对路径与读取时刻所属的 boundChange（可空）；发起即失败（路径拼错/文件不存在）或未回执的读取 MUST NOT 记账。带 offset/limit 的局部读取成功送达内容时同样算读（宽松方向）。
+
+归档对账 SHALL 由独立脚本 `bash scripts/harness/constraint-read-trace.sh <change-dir>` 执行，并 SHALL 被归档门禁（`spec-gate`）与归档就绪自查（`archive-readiness.sh`）共同调用，与其余归档检查项共用同一事实源。
+
+对账口径：对该 change 声明的**每一个**业务域，其 flow 文档 SHALL 在该 change 的实现期内被 `read` 过。证据 SHALL 同时满足：① 归属该 change（事件 change 列 = 该 change 名——他会话/未绑定会话的读取不算证据）；② 落在实现期窗内（起点 = 该 change 首条 implementation 族 `stage.set`（implement/verify/archive）的 ts；无记录时回退 change 创建时刻，宽松不误红；终点 = 当前时刻）。判定的「读文档」SHALL 认成功 `read` 的该文档路径（整档或局部均算，不要求只读该节）。
+
+未读 SHALL 为红项，输出 SHALL 含：未读的域名、对应文档路径、以及取数指引 `bash scripts/harness/constraint-digest.sh --brief --domains <域>`。
+
+legacy change（无 `stage.md`）SHALL 豁免本对账，MUST NOT 因此阻断归档。
+
+#### Scenario: 读过则对账通过
+
+- **WHEN** 某 change 声明域 `daily-report`，事实库存在归属该 change 且落在其实现期窗内的 `constraint.read` 事件（`docs/reference/flow/daily-report.md`）
+- **THEN** `constraint-read-trace.sh <change-dir>` 退出码 0
+
+#### Scenario: 未读过则红并给取数指引
+
+- **WHEN** 某 change 声明域 `scheduler`，但事实库无归属该 change 的 `docs/reference/flow/scheduler.md` 成功读取记录
+- **THEN** `constraint-read-trace.sh <change-dir>` 退出码 1
+- **AND** 输出含域名 `scheduler`、文档路径、以及 `constraint-digest.sh --brief --domains scheduler` 取数指引
+
+#### Scenario: 他会话的读取不算证据
+
+- **WHEN** 某 change 声明域 `daily-report`，而 `daily-report.md` 的 `constraint.read` 事件归属其他 change（change 列不同）
+- **THEN** 对该 change 对账仍为红（未读）
+
+#### Scenario: 规划期的读取不算证据
+
+- **WHEN** 某 change 声明域 `daily-report`，其 `constraint.read` 事件归属该 change但 ts 早于该 change 首条 implementation 族 `stage.set` 的 ts
+- **THEN** 对该 change 对账仍为红（未读）
+
+#### Scenario: 失败读取不记账
+
+- **WHEN** agent 发起某 flow 文档的 `read` 但执行失败（tool_execution_end 为 error）
+- **THEN** 事实库不新增该文档的 `constraint.read` 事件
+
+#### Scenario: legacy change 豁免对账
+
+- **WHEN** 某 change 目录无 `stage.md`（legacy）
+- **THEN** `constraint-read-trace.sh <change-dir>` 退出码 0 且输出明示豁免
+
+#### Scenario: 归档门禁接入对账
+
+- **WHEN** agent 执行 `openspec archive <name>` 且对账脚本报红
+- **THEN** 归档被阻断，reason 含未读域清单

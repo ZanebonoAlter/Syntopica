@@ -6,8 +6,9 @@
  * 设计决策：
  * 1. 挂 tool_call，只拦截结构化入口：Agent 派发与 edit/write mutation（bash 写盘
  *    不做可靠判定，交 schema apply preflight 主门）；read/grep/bash 等一律放行。
- * 2. 介入条件：本会话最新 mode.set = implementation 且绑定了 change（同源
- *    entry-gate：constraint-injection 写入的 mode.set；无记录 = requirements → 静默）。
+ * 2. 介入条件：本会话最新 stage.set 的**阶段族 == implementation** 且绑定了 change
+ *    （stage.set 由 constraint-injection 写入；取数走 queryLatestStageSet
+ *    ——双读，legacy mode.set 自动映射回族；无记录 = 未绑定阶段 → 静默）。
  * 3. 每次检查**重新读磁盘**（.openspec.yaml / proposal.md / ui-design.md / tasks.md /
  *    change 目录递归普通文件清单）——用户批准后不沿用旧 pending 缓存；判定全在
  *    lib/ui-design-gate.ts 纯函数（不读文件/不抛异常）。
@@ -39,7 +40,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { logPolicyDecision, type PolicyDecisionInput } from "./lib/policy-decision";
-import { queryByChange, queryBySession } from "./lib/harness-log";
+import { queryByChange, queryLatestStageSet } from "./lib/harness-log";
 import {
 	changeNameFromPath,
 	checkStageScope,
@@ -139,11 +140,11 @@ async function check(
 	// 0. 按写入路径触发的 stage 记账（add-ui-stage-accounting D1/D4）：不看 mode、不改裁夺。
 	if (tool.kind === "mutation") accountStageScope(ctx, normalizeTarget(tool, cwd));
 
-	const modeInfo = readLatestMode(cwd, sessionId);
-	if (!modeInfo || modeInfo.mode !== "implementation" || !modeInfo.boundChange) {
+	const stageInfo = readLatestStage(cwd, sessionId);
+	if (!stageInfo || stageInfo.stageFamily !== "implementation" || !stageInfo.boundChange) {
 		return;
 	}
-	const { boundChange } = modeInfo;
+	const { boundChange } = stageInfo;
 	const changeDir = join(cwd, "openspec/changes", boundChange);
 
 	// 2. 磁盘快照（每次重读，不缓存——批准后即时生效）
@@ -153,7 +154,7 @@ async function check(
 		tasksMd: safeRead(join(changeDir, "tasks.md")),
 		uiDesignText: safeRead(join(changeDir, "ui-design.md")),
 		changeDirFiles: listRegularFiles(changeDir),
-		mode: modeInfo.mode,
+		stageFamily: stageInfo.stageFamily,
 		boundChange,
 		tool: normalizeTarget(tool, cwd),
 	};
@@ -227,25 +228,22 @@ function readSchemaName(changeDir: string): string | null {
 	return m ? m[1] : null;
 }
 
-/** 本会话最新 mode.set（payload {mode, boundChange}）；无记录/损坏 → null */
-function readLatestMode(
+/**
+ * 本会话最新阶段（**双读**：先 stage.set，无则回退 legacy mode.set 并映射回族——
+ * stage-driven-constraint-injection D7 过渡期不断链）；无记录/损坏 → null。
+ * 判定只看**阶段族**（implementation 才介入；族为派生值，D2）。
+ */
+function readLatestStage(
 	cwd: string,
 	sessionId: string,
-): { mode: string | null; boundChange: string | null } | null {
-	const rows = queryBySession(cwd, sessionId, ["mode.set"]);
-	if (rows.length === 0) return null;
-	try {
-		const payload = JSON.parse(rows[rows.length - 1].payload) as {
-			mode?: unknown;
-			boundChange?: unknown;
-		};
-		return {
-			mode: typeof payload.mode === "string" ? payload.mode : null,
-			boundChange: typeof payload.boundChange === "string" ? payload.boundChange : null,
-		};
-	} catch {
-		return null;
-	}
+): { stage: string | null; stageFamily: string | null; boundChange: string | null } | null {
+	const info = queryLatestStageSet(sessionId, cwd);
+	if (!info) return null;
+	return {
+		stage: info.stage,
+		stageFamily: info.stageFamily,
+		boundChange: info.boundChange,
+	};
 }
 
 /** 读文本；读不到 → null */

@@ -12,11 +12,11 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 | 扩展 | 挂点 | 触发 | 软硬 | fail 策略 | 事件库记账 |
 | --- | --- | --- | --- | --- | --- |
-| constraint-injection | `before_agent_start`（稳定层）+ `input`/`tool_execution_start`/`session_compact`（动态层） | 混合通道注入：稳定层 system prompt（档位生命周期内字节恒定）/ 动态层 steer 消息（指纹 diff，稳态零投递） | 软（不干预工具） | fail-open（注入失败不阻断） | constraint.inject / pin.* / mode.set（含 source） |
+| constraint-injection | `before_agent_start`（稳定层）+ `input`/`tool_execution_start`/`session_compact`（动态层） | 混合通道注入：稳定层 system prompt（**索引 + 阶段路由清单**，阶段族生命周期内字节恒定）/ 动态层 steer 消息（**阶段首推红线层** + change 级文件；指纹 diff，稳态零投递） | 软（不干预工具） | fail-open（注入失败不阻断） | constraint.inject / pin.* / stage.set（含 source；读方双读 legacy mode.set）/ constraint.read |
 | quality-gate | `turn_end` | 执行链路平台判定（`cmd.exe` 可达性）→ windows 模式：interop 健康探测，vsock 故障整轮短路（harden-gate-interop-health）；native 模式：本机工具链直接执行 + 工具链可达性探测，缺失侧短路（harden-gate-native-toolchain）；另落 `edit.map` 归属地图（增量路径 × boundChange 聚合，coordinate-concurrent-changes）；失败报告边沿触发注入（首现/指纹变化全块、同指纹持续零注入、转绿收尾，aggregate-concurrent-gate-warns；指纹=归一化失败特征行（剥时间戳/端口/耗时/数字序列/仓库根前缀，add-foreign-gate-steer-attribution），展示与记账 diag 保留原文；包锚点目录∩已知归属展开 + 绝对路径剥根）+ 并发外部归因三态（[外部]/[并发]/本会话，attribute-concurrent-gate-noise + tune-quality-gate-concurrency；其他 change 的 edit.map 归属不依赖本会话绑定，add-foreign-gate-steer-attribution Fix C）；门禁互斥锁 + 限核（gate.lock 抢不到整轮跳过；GOMAXPROCS=2 / lint --concurrency=2 / vet-build 串行，tune-quality-gate-concurrency） | 软 steer 催修（windows 链路失败标（wsl环境），native 标本机；环境故障不计粘性；[外部] 失败不催修不进粘性；[并发] 混合归属进粘性不催修分级；同指纹持续零注入，红态可查 `scripts/harness/gate-status.sh`） | fail-open（门禁故障/锁被持放行） | gate.check（ok=false 附 ownership 四态）/ edit.map / policy.decision(interop-down / toolchain-down / foreign-breakage / gate-lock-held / concurrent-mixed / attribution-degraded) |
 | quota-gate | Agent 派发前 | 子线程派发前查额度 | 硬 block（低额度阻断派发） | fail-open（查询失败放行） | policy.decision（quota-low/exhausted=block、quota-query-failed=fail-open、fuzzy-model-resolve=warn） |
 | spec-gate | `tool_call` | bash 命中 `openspec archive` | 硬 block（归档门禁：doc-impact/standards/尾三节 + complex 档 review 任务行 + major 档 UI 验收任务行（`check-tasks-tail.sh`，harden-archive-readiness 抽出为独立脚本，review-task-frontload 扩展 review 任务行判定：proposal 头部 complex 且未 waived 时 tasks 须含 review 任务行；add-ui-verification-trace-gate 扩展第三道防线：proposal 头部 major 且新 schema 时 tasks 须含指向 `ui-verification/report.md` 的任务行）/review-trace 痕迹对账（add-review-trace-gate：review.md 建账或 proposal 头部 `<!-- review: waived -->` 豁免，皆无则 block）/UI 验收痕迹对账（add-ui-verification-trace-gate：spawn `scripts/harness/ui-verification-trace.sh` 取退出码，判定单一事实源在脚本——major report.md 建账+点名截图实物/minor 指名道姓映射/none N/A 一致/旧 schema fail-open；规划制品 approval+原型存在仍由 lib 校验；spawn 失败 warn 不阻断）；另检查⑤'归档并发 warn 不 block：树上存在归属其他 active change 的未 commit 文件 → steer 提醒 + concurrent-dirty-tree 记账，冷启动零输出；⑤/⑤' warn 边沿触发：同指纹会话内至多一条、转绿一行收尾、compact 重发，edge-trigger-archive-gate-warns） | `--force` / `SPEC_GATE_BYPASS=1` 逃生口留痕 | policy.decision（archive-check-failed=block、explicit-bypass=bypass、acceptance-wording=warn、concurrent-dirty-tree=warn；UI 缺证据另记 ui-design-gate block ui-verification-missing，此前有未解除同码 block 而本次证据齐备 → 归档放行时刻记 pass ui-design-satisfied，add-change-lifecycle-retro） |
-| （非门禁）archive-readiness | 手动（agent 归档前） | `bash scripts/harness/archive-readiness.sh <change>` | 归档就绪聚合自查（harden-archive-readiness + add-review-trace-gate + add-ui-verification-trace-gate）：与 spec-gate 同口径五项脚本同一事实源（①doc-impact/②standards/③尾三节+review 任务行+UI 验收任务行/④review-trace/⑤ui-verification-trace UI 验收痕迹对账），逐项 ✓/✗，全绿再 archive；非门禁、不记账、不阻断 | 无（它本身就是入口不是拦截器） | 无 |
+| （非门禁）archive-readiness | 手动（归档前） | `bash scripts/harness/archive-readiness.sh <change>` | 聚合现有文档、任务结构、review、UI 和约束读取检查；不查逐 Scenario 映射，也不执行测试。 | 无 | 无 |
 | ui-design-gate | `tool_call` | implementation 档绑定 syntopica-ui schema change：**具备写能力的** Agent 派发与 edit/write 项目代码，major 原型未批准（合同 block）时拦截；只读档（explore/plan/change-review）与原型编辑档（ui-design）派发放行并留痕（写侧边界不放宽——子线程经 `edit`/`write` 工具的每次写入仍逐个过门禁，shell 类通道不在本门禁覆盖范围——既有边界）；当前 change 的 ui-design.md/ui-prototype/** 修复不受限 | 硬 block（legacy schema 仅 front mutation 每会话/change warn 一次） | fail-open（检查异常放行+告警+记账）；`UI_DESIGN_GATE_BYPASS=1` 显式旁路留痕 | policy.decision（ui-impact-missing/ui-impact-mismatch/ui-design-missing/ui-prototype-missing/ui-approval-pending=block、explicit-bypass=bypass、ui-gate-check-failed=fail-open、**ui-dispatch-allowed=warn**（合同未就绪时放行只读档/原型编辑档派发，add-ui-prototype-editor-agent）；放行侧 pass 两码：ui-approval-approved（审批通过时刻）/ ui-design-satisfied（block 后补齐放行）——账本上有未解除 block 才记，健康放行仍零记录，add-change-lifecycle-retro；归档侧 ui-verification-missing 的解除由 spec-gate 记）；**按路径触发的 stage 记账通道**（add-ui-stage-accounting）：写入目标落在 `openspec/changes/<name>/` 下即触发，change 名由路径解析、**不依赖 mode 与 boundChange**，因此能看见 requirements/无档位下发生的原型生产（ui-approval 只在 implementation 生效，实测看不见 34/34 次 ui-design 派发）；读 `ui-design.md` 的 `<!-- ui-stage: l0\|skeleton\|interaction\|data\|approved -->`，`l0` 禁写 `ui-prototype/`、`skeleton` 只许 `ui-prototype/skeleton/`，越域/缺失/非法各记一条 warn，**只记账、不改任何 block/pass 裁决**（去重键 session×change×码） |
 | test-scope-guard | `tool_call` | bash + `ctx_execute`(仅 shell) + `ctx_batch_execute` 命中真·全量 `go test`（判定纯函数：裸 `./...` + 生效 cwd = 仓库根/backend-go；掩蔽引号/#注释/heredoc/`cat` 目标；影响包/子树/单包/写文档放行） | 软提醒（日常只跑影响包；文案列归档与依赖变更两条合法路径） | fail-open | policy.decision（full-go-test：soft=warn / hard=block；归档/依赖变更语境与 `# archive-gate`/`# allow-full-test` 逃生注释放行零记账） |
 | sql-safety-guard | `tool_call` | bash + `ctx_execute`(仅 shell) + `ctx_batch_execute` 命中 psql 入口 ∧ TRUNCATE/DROP（判定基于命令原文、不掩蔽引号，`-f`/`--file` 形态读文件扫两词、不可读保守拦） | 硬 block（`SQL_SAFETY_GUARD` hard 默认 / soft 提醒 / off 关；逃生口：`# allow-truncate-drop` 注释、BEGIN+ROLLBACK 事务包裹、一次性容器放行；仅拦 TRUNCATE/DROP，DELETE/UPDATE/ALTER/INSERT 不拦） | fail-open（判定异常放行） | policy.decision（sql-safety：block/warn、逃生=bypass；off/未命中、事务与容器放行零记录） |
@@ -32,26 +32,64 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 - `--paths <路径>[,<路径>...]`：按文档头部 `doc-impact-applies` 标签反查受影响文档 → 导出域清单；反查语义与 constraint-injection 的 `scanAppliesTags` 一致（只扫文档头部 15 行、同一正则、纯子串匹配、单文档首个匹配行即止）。
 - `--domains <域>[,<域>...]`：直接指定业务域（域名 MUST 取域唯一真相源里的名字，未知域名非零退出并列出可用域名）。
 - 输出形态：「域标题 + 源文档相对路径 + 逐行红线句 + 细节层 read 指引」，单域红线正文 ≤8 行——供主线程**原样**粘进派发任务文本的 `## 约束（红线，源 docs/reference/flow/<域>.md）` 段（该段落格式是 telemetry 解析契约，取数三步与模板见《开发执行规范》§0.6 步骤 3）。
-- **红线提取复用 constraint-injection 的同一实现**（`.pi/extensions/lib/constraint-redlines.ts` 的 `extractRedlines()`），MUST NOT 在脚本内重写第二份正则；**域清单唯一真相源 = `docs/reference/flow/*.md` basename**——`.pi/constraint-injection.json` 的 `keywordDocs` 是别名/子集、`docs/reference/constraints-index.md` 域表是面向模型的人读索引、`scripts/harness/doc-impact.sh menu` 的 8 项是**文档目录轴**（flow/api/database/…）不是业务域轴，三处禁止混用。
+- **红线提取复用 constraint-injection 的同一实现**（`.pi/extensions/lib/constraint-redlines.ts` 的 `extractRedlines()`），MUST NOT 在脚本内重写第二份正则；**域清单唯一真相源 = `docs/reference/flow/*.md` basename**——`.pi/constraint-injection.json` 的 `keywordDocs` 是别名/子集（改造后仅用于路由清单的「本次会话提及」标注与域限定，**不再用作注入正文的入口**）、`docs/reference/constraints-index.md` 域表是面向模型的人读索引、`scripts/harness/doc-impact.sh menu` 的 8 项是**文档目录轴**（flow/api/database/…）不是业务域轴，三处禁止混用。
 
 **可观测（append-only）**：`subagent.dispatch` 事件追加两个字段——`constraintDigest`（`present`/`absent`：任务文本有无 `## 约束` 段）与 `constraintDomains`（`string[]`，从该段 `源 docs/reference/flow/<域>.md` 收域；段存在但收不到域名记 `present` + `[]`，不猜域、不阻断派发）。改造前的历史记录无这两个字段 → `harness-retro` 计「未知」并从带域比例分母剔除（**不回溯**记 `absent`，否则把历史数据算成遗漏），报告显式标注未知条数。
 
 ## 约束注入（constraint-injection，自动，管"知道"）
 
-`.pi/extensions/constraint-injection.ts` 按**混合通道**注入约束上下文（harden-constraint-injection-channel）：
+`.pi/extensions/constraint-injection.ts` 按**混合通道**注入约束上下文（harden-constraint-injection-channel 定通道，stage-driven-constraint-injection 定内容形态）。
 
-- **稳定层**（system prompt：索引 + mode-base + 声明域红线层；快照 key=mode|绑定 change，档位生命周期内**字节恒定** → system prompt 不变则其后 history 前缀缓存不失效）。
-- **动态层**（追加消息：关键词命中全节 / JIT 命中全节 / change 级文件（explore-findings、词汇表）/ 稳定层差异；指纹 diff 驱动，稳态零投递；指纹按投递时的快照键记 regime（2026-09-17 fix-injection-transition-fingerprint-wipe：延迟快照重建仅在指纹 regime ≠ 新快照键时清空，mid-turn 切档后同 turn 已投递内容不重投）；turn 中途 JIT 命中经 `sendMessage(deliverAs:"steer", triggerTurn:false)` 即时送达；`session_compact` 后重发一次快照补偿压缩）。配置 `channel:"legacy"` 可回退旧的每 turn 全量进 system prompt。
+**注入形态 = 红线层 + 路由清单 + 模型自主 read**（stage-driven-constraint-injection D4）——扩展**不再主动推送约束文档正文**，只给红线句和「去哪读」：
 
-**档位/绑定**：`input` 命令 / skill 路径 / 写 change 目录兜底均可激活；**绑定修正条件化**（read 永不抢绑、当前绑定健康时不抢绑、仅未绑定/绑定 change 消失时兜底）且**同 turn 锁定**；**所有绑定变化均记 `mode.set` 并带 `source`**（command/skill/edit-dir/recover/inherit/fallback），隐性绑定不存在——治多 change 并行注入污染（2026-09-16 事实库取证：隐性绑定 / 一毫秒 4 连绑）。
+- **稳定层**（system prompt）：**约束索引**（`constraints-index.md` **全篇**注入，不是节选）+ **本阶段路由清单**（相关文档的「路径 + 节名 + 取数方式」，零正文）。快照 key = `阶段族|绑定 change`，同族内换阶段不重建 → 字节恒定 → system prompt 不变则其后 history 前缀缓存不失效（2026-09-17 fix-injection-transition-fingerprint-wipe：指纹 regime ≠ 新快照键才清空，mid-turn 切阶段后同 turn 已投递内容不重投）。
+- **动态层**（追加消息 / turn 中途 steer）：**声明域红线层**（阶段首推送达；正文见「注入源」）+ change 级文件（explore-findings / 词汇表，仅 implementation 族）+ 稳定层差异；指纹 diff 驱动，稳态零投递；`session_compact` 后重发一次快照补偿压缩。配置 `channel:"legacy"` 可回退旧的每 turn 全量进 system prompt。
 
-**注入源与命中规则**：flow「业务约束与不变量」节按 **proposal.md 业务域声明**（头部 `<!-- constraint-domains: 域, ... -->`，域名=flow 文档 basename 如 `daily-report`；纯工具链 change 可不写，widget 提示无域声明属预期；**声明域注入=红线层**——约束节内顶层列表项首个加粗红线句逐行 + 细节层取回指引，红线层提取 0 条或低于 512B 回退全节，格式见 `standard/shared/doc-authoring.md`「约束节红线句格式」）+ 对话输入关键词命中（**域限定**：仅声明域∪栈相关∪索引内的命中生效，跨域词不再误拉无关域全节）+ standard/flow 文档按头部 `doc-impact-applies` 标签对编辑路径 JIT 命中、`pin_finding` 工具持久化探索发现（档激活落 change 的 explore-findings.md，无档落 `docs/research/`）。配置 `.pi/constraint-injection.json`，常驻索引 `docs/reference/constraints-index.md`（旧 `doc-impact.sh context` 已退役）。
+**阶段标识（stage，替代档位 mode，D1/D2）**：
 
-**无档编辑路径 JIT（enable-unbound-jit-injection）**：**未激活档（`mode = null`）会话写/编辑代码命中 `doc-impact-applies` 标签路径时，同样把命中文档追加进动态层并经 steer 送达完整约束节**——稳定层仍只注索引（快照键 `none|none` 不变、字节恒定），JIT 只走动态层。理由：路径标签是**文件系统事实**（零歧义），而关键词匹配是对话文本的推测；只开路径通道不开关键词通道，误命中面为零。关键词命中（`matchText`）、关键词域限定（`allowedKeywordDocs`）、change 绑定（`boundChange` / turn 绑锁 / `mode.set`）**仍以档位为开关**——未激活档 MUST NOT 因编辑路径命中而绑定 change。standard 文档与 flow 文档同走此通道（不限 flow）。落地盘点：`bash scripts/harness/constraint-coverage.sh`（业务路径 → 命中域矩阵 + 覆盖率）。
+- **载体** = `openspec/changes/<name>/stage.md`（**非 schema 制品**，与 `explore-findings.md` / `human-feedback.md` 同性质；openspec 制品 DAG 不因之改变）头部一条 `<!-- stage: <值> -->` marker。样例见 `openspec/changes/archive/2026-11-19-stage-driven-constraint-injection/stage.md`。
+- **取值 6 档单调阶梯**：`explore` → `propose` → `design` → `implement` → `verify` → `archive`。
+- **阶段族为派生值**（`explore`/`propose`/`design` → planning，其余 → implementation），MUST NOT 作为独立可写状态；族只服务三处纯布尔判定（快照键、change 级文件注入、mtime 兜底绑定）。
+- **三态解析**（`lib/stage.ts` 的 `parseStageMarker` / `readStageFile`，语义对齐 `ui-design-gate.ts` 的 `parseUiStage`）：**missing**（无文件/无 marker）= legacy，不绑定阶段、不阻断任何流程（含归档）；**invalid**（marker 重复或值越界）= 降级不阻断，只记 warn；**ok** = stage 生效。
+- **命令与 skill 不决定阶段**：`input` 命令 / `openspec-*` skill 路径只回答「是否允许 mtime 兜底绑定」（implementation 意图才兜底；planning 是新想法语境），阶段恒由绑定 change 的 `stage.md` 派生。
+- **绑定修正条件化**且**同 turn 锁定**：read 永不抢绑、当前绑定健康时不抢绑、仅未绑定/绑定 change 消失时兜底；写 `stage.md` 立即刷新阶段（每回合重读，无需重启会话）。
 
-- **生命周期边界**：主会话 `session_compact` → 下一注入时机重发索引 + 当前 JIT 集合（`pendingSnapshot` 机制）；**无 `before_agent_start` 的子线程 compact 不重发**（该事件在子线程 SDK 不存在，不伪造通道），同文档重复编辑也不重投（去重语义），丢失内容靠显式 read 或父会话 brief；同进程 fork / 子线程继承时 `jitDocHits` 与指纹随 channel 拷贝，父已送达的文档不重投；`channel:"legacy"` 下无档 JIT **不即时 steer**，下一 turn `before_agent_start` 把含 jit-path 的完整计划放回 system prompt；reload / resume 会话状态重建 → `jitDocHits` 清零（后续编辑重新命中）。
-- **记账口径**：`constraint.inject` payload 追加 **append-only** 字段 `tier`（`none` / `requirements` / `implementation`，由注入器自报当前会话档位）；既有 `mode` 字段语义不变（**文档形态** `section` / `digest` / `full`，MUST NOT 复用为档位）。历史记录无 `tier` → 统计计「未知」并**剔除分母**（同 `subagent.dispatch` 的 `constraintDigest` 三态口径，不回溯伪造）。观测入口：`bash scripts/harness/harness-retro.sh` 的 **⑦H 无档 JIT** 段（注入条数 / 会话数 / 平均域数 / **送达字节** / 降级占比；compact 重发计入条数不重计会话；域数只算 `path` 以 `docs/reference/flow/` 开头的条目，同会话同 path 只计一次）。
-- **回滚**：把 `.pi/extensions/constraint-injection.ts` 的两处 gate 恢复 `state.mode &&`（JIT **写入** gate 与 JIT **投递** gate 各一处，一行级）即回到「未激活=仅索引」旧行为；无需新增配置项或环境变量，已注入的历史消息不受影响，重载会话后按旧行为走。
+**业务域声明（两处并集，D1 协作契约）**：`proposal.md` 头部 `<!-- constraint-domains: 域, ... -->`（存量位置，保持不变）∪ `stage.md` 头部同名 marker（实现期活口径，补实施过程中新发现的域；**只增不减**——多声明只是多推几行红线，不会漏推）。域名 = `docs/reference/flow/*.md` basename；纯工具链 change 可不写，widget 提示「无域声明」属预期。
+
+**注入源（声明域红线层）**：flow「业务约束与不变量」节内**顶层列表项首个加粗红线句逐行** + 细节层 read 指引；提取复用 `lib/constraint-redlines.ts` 的 `extractRedlines`（与 `constraint-digest.sh` 双引同一实现，**禁止第二份正则**）；红线层提取 0 条、低于 `minSectionBytes`（缺省 512B）或约束节缺失 → 回退为**取数指引行**（路径 + 节名 + `constraint-digest.sh` 命令，零正文——整节回退已退役，「正文永不主动推」恒成立）。格式规范见 `standard/shared/doc-authoring.md`「约束节红线句格式」。另有 `pin_finding` 工具持久化探索发现（有活跃 change 落其 `explore-findings.md`，无 change 落 `docs/research/`）。
+
+**退役通道（全局生效，与 stage 是否存在无关，D4 末段）**：
+
+- **关键词通道**：对话关键词命中**不再注入任何正文**，只在路由清单里给基础清单内的条目加「本次会话提及，优先」标注，且仍受**域限定**（仅声明域 ∪ 栈相关文档 ∪ 索引内的命中生效，跨域词不再误拉无关域）——「提到什么词」与「这个 change 需要什么约束」本就是两回事（2026-09-16 已因同类原因关闭 change 文本关键词通道）。
+- **JIT 路径通道**：编辑命中 `doc-impact-applies` 标签路径时**不再注入该文档正文**，命中文档（路径 + `section=` 节名）**进本阶段路由清单**引导模型自行 read。路径标签仍是**文件系统事实**（零歧义），只是送达形态从「推正文」改成「给路径」。
+
+**路由清单的数据源（单一职责：配置管选哪些、代码管叫什么）**：
+
+| 层 | 落点 | 内容 |
+| --- | --- | --- |
+| 选哪些文档 | `.pi/constraint-injection.json` 的 `stages.<stage>.docs`（6 档各一份：`required` 无条件进清单 / `conditional.backend` `conditional.frontend` 按栈命中） | **只写路径**，不写节名 |
+| 节名 | `.pi/extensions/lib/stage.ts` 的 `ROUTING_DOC_CATALOG`（path → 节名，含 `ROUTING_UI_CONTRACT_DOCS` / `ROUTING_CODE_DOCS_BY_STACK` / `ROUTING_ACCEPTANCE_DOCS`） | 唯一维护点，未知路径 → 整篇读（fail-open 不丢文档） |
+| 无配置兜底 | 同文件 `STAGE_ROUTING_PLAN` + 上述常量 | 临时目录 / 烟测 / 配置未升级时等价装配 |
+
+清单构成（累加式，对齐 spec 表格）：`explore`/`propose` = 索引 + 声明域文档；`design` + UI 契约（`standard/frontend/layout.md`、`interaction.md`）；`implement` + 按栈代码与测试规范（`standard/backend/` 的 code-style/lint/package-layout/testing 或 `standard/frontend/` 的 code-style/lint/testing）；`verify`/`archive` + 验收与归档规范（`standard/shared/` 的 test-design/commit-pr/doc-authoring）。声明域文档的清单行给 `bash scripts/harness/constraint-digest.sh --brief --domains <域>`（红线摘要）+ 细节层 read 指引。
+
+**注入体量对比（改造前实测 vs 改造后量取）**：
+
+| 通道 | 改造前 | 改造后 |
+| --- | --- | --- |
+| 稳定层 · 索引 | 3.9–4.3K（443 次，max 4 551B） | 5.8KB（`constraints-index.md` 全篇；本次补阶段载体 + 路由清单口径，4552B → 5955B） |
+| 稳定层 · 路由清单 | —（无此形态） | **0.7–2.1KB**（实测 2 声明域 + backend 栈：explore 669B / design 953B / implement 1 599B / verify 2 142B） |
+| 动态层 · 声明域 | 红线层 3.6–5.1K（878 次，max 9 040B） | 同形态（红线层仍是红线层，未变） |
+| 动态层 · 关键词命中整节 | 2.0–4.2K 平均、**max 23 103B**（136 次） | **0**（降级为清单行后缀标注） |
+| 动态层 · 编辑路径 JIT 整节 | 2.0–4.2K 平均、**max 27 831B**（918 次） | **0**（降级为清单行路径 + 节名） |
+| 稳定层 · mode-base | 3.4–4.3K（348 次，两档同值） | **0**（死配置，与索引重复） |
+
+等价说法的红线层瘦身幅度（同实现量取）：`daily-report` 红线层 8.9KB vs 其约束节全节 55.4KB；`scheduler` 0.9KB vs 7.7KB；`discovery` 3.3KB vs 15.1KB。
+
+- **记账（三本账）**：`constraint.inject`（送达时记，payload 含 `reason`：`index` / `routing` / `declaration` / `change-file` 与 `mode`（**文档形态** `section`/`digest`/`full`，MUST NOT 当档位用））；**`stage.set`**（payload `stage` / `stageFamily` / `boundChange` / `source`：`command`/`skill`/`edit-dir`/`recover`/`inherit`/`fallback`，隐性绑定不存在）；**`constraint.read`**（`read` 工具**成功完成**（tool_execution_end 且非 error）且命中约束文档白名单——flow 顶层 `.md` 与 `standard/**/*.md`——时记，payload 仓库根相对路径 + 当时 `boundChange`；失败/未回执的读取不记；写入失败 MUST NOT 阻断 agent 动作）。`mode.set` **已停写**，读方过渡期**双读**（先查 `stage.set`，无则查 `mode.set` 并按 `requirements`→planning、`implementation`→implementation 映射回族；既有行不改写，30 天保留期自然消退，D7）。观测入口 `bash scripts/harness/harness-retro.sh`；事件考古 skill `harness-facts`。
+- **读取对账（归档兜底，D6）**：`bash scripts/harness/constraint-read-trace.sh <change-dir>` 逐声明域检查 flow 文档是否被**归属本 change 的成功 read**读过（证据双条件：change 列 = 本 change + 落在实现期窗——首条 implementation 族 `stage.set` 之后；他会话/规划期的读取不算证据）——未读 → 退出码 1 并给 `constraint-digest.sh --brief --domains <域>` 取数指引；legacy change（无 `stage.md`）豁免。已接入归档门禁 `spec-gate` 与 `archive-readiness.sh`。已知边界：只认 `read` 工具事件，用 bash `cat` 读不计（无法可靠归因路径），误报成本 = 补一次 read。
+- **生命周期边界**：主会话 `session_compact` → 下一注入时机重发索引 + 路由清单（`pendingSnapshot` 机制）；**无 `before_agent_start` 的子线程 compact 不重发**（该事件在子线程 SDK 不存在，不伪造通道），同文档重复编辑也不重投（去重语义）；同进程 fork / 子线程继承时 `jitDocHits`/`keywordDocHits` 与指纹随 channel 拷贝（用于清单标注，不再携带正文）；reload / resume 会话状态重建 → 阶段从事实库 `stage.set` 恢复（双读 `mode.set`），命中集清零。跨进程子线程靠 `boundChange`+stage 通道继承（D8）。
+- **回滚**：本改造无环境变量开关；要回到「推正文」形态需回退 `.pi/extensions/constraint-injection.ts` 与 `lib/stage.ts` 的对应版本（历史注入消息不受影响，重载会话后按旧行为走）。`channel:"legacy"` 仍只切通道形态（每 turn 全量进 system prompt），不改内容来源。
 
 ## 增量质量门禁（quality-gate，自动，管"做到"）
 
@@ -73,7 +111,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 - **归属可观测与归因降级记账**（add-foreign-gate-steer-attribution）：`gate.check` ok=false 附 `ownership` 四态（`mine`/`foreign`/`mixed` 透传判定结果，`attribution-degraded` = 归因信号缺席/判定异常的保守回退标记；ok=true 与环境故障失败无该键，存量无键事件消费侧判空回退）。归因保守回退**不静默**：判定过程异常 / 失败输出解析不出路径（P=∅）→ 记 `policy.decision(warn, attribution-degraded, target=cmd)`（同 (cmd, 归一化指纹) 会话内至多一条）；基线信号缺席（session_start git 快照失败）且失败无 mine 命中（本可判外部）→ 会话级单发一条；与 gate.check 失败事实不双写（gate.check 记失败本身与 ownership，policy.decision 只记降级原因）。已知残余（research 留痕）：他会话 bash 编辑（不进 edit.map）仍会污染 mine；错误浮出面失败（如 DB migration 破表后测试在无人编辑过的调用点报错——2026-09-28 实账 store_vendor.go 形态）路径归属模型无信号，保守 mine，伤害由指纹归一化抑制兜底（同指纹仅首现一次完整块）。
 - **混合归属记账边沿化**：`policy.decision(warn, concurrent-mixed, target=<cmd>)` 与 [并发] 完整块**同一边沿**触发——新指纹（首现/指纹变化/失败段重建）各记一条，同指纹持续回合零注入零记账（每指纹会话内至多一条；指纹变化或转绿后再现作为新失败段可再记，aggregate-concurrent-gate-warns D2；回检指标：7 天计数 41 → ≤10）。`foreign-breakage` 维持每命中回合一条不变。
 - **与归档门禁的分工**：本机制在 `turn_end` 实时降嗓；spec-gate 检查⑤'（`concurrent-dirty-tree` warn）在归档时点检查树上归属其他 active change 的未 commit 文件——一个管会话内报告噪声，一个管归档拆 commit 收口，互补不替代。
-- suggest 侧配套（spec `doc-impact-gate`「suggest 预勾选输入口径」）：`doc-impact.sh suggest` 预勾选改归属优先（change 名三源解析：`--change` → `PI_SESSION_ID` 查最新 `mode.set.boundChange` → 空），脏文件三桶分列（本 change/其他 active change/无归属，各桶上限 20 行）不静默过滤，解析不到回退全树 diff 并显式标注，退出码恒 0。
+- suggest 侧配套（spec `doc-impact-gate`「suggest 预勾选输入口径」）：`doc-impact.sh suggest` 预勾选改归属优先（change 名三源解析：`--change` → `PI_SESSION_ID` 查最新 `stage.set.boundChange`（**双读**：无 `stage.set` 行时回退 legacy `mode.set`，stage-driven-constraint-injection D7）→ 空），脏文件三桶分列（本 change/其他 active change/无归属，各桶上限 20 行）不静默过滤，解析不到回退全树 diff 并显式标注，退出码恒 0。
 
 白盒用例缺件提醒和逐 Scenario 对账已退出工作流。旧映射可用于历史检索；新 change 在 verify 阶段记录主路径与已知回归的实际结果。
 
@@ -93,8 +131,8 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 | 通道 × 模式 | 扩展加载 | 约束可达 | 门禁行为 |
 | --- | --- | --- | --- |
-| pi-web Agent × 项目覆盖三档（`.pi/agents/{general-purpose,explore,plan}.md` 同名覆盖内置档，2026-10-13 上线；general-purpose 已兼实现档职能——implementer 档 2026-11-03 并入退役，见下） | 是（`load_extensions: true`；general-purpose 另开 `codemode: on`） | **是**（constraint-injection 注入 + 档位继承 + 事实库记账，探针实测 2026-10-13：codemode/ctx 工具/`<skills>` 节/约束注入块全在；档位继承 `mode.set source=inherit`） | turn_end 降载：零重命令放行 + `policy.decision(bypass, child-session)` 记账 |
-| pi-web Agent × 原型编辑档（`.pi/agents/ui-design.md`，项目自定义档，2026-11-03 新增；只改当前 change 的 `ui-prototype/**` 与 `ui-design.md` 的 Prototype 节） | 是（`load_extensions: true`；codemode + mcp 开） | **是**（constraint-injection 注入 + 档位继承 + 事实库记账） | 写侧逐个过 ui-design-gate（经 `edit`/`write` 工具）：当前 change 目录内放行、越界（`front/` 等）block（shell 类通道不在本门禁覆盖范围——既有边界）；合同未就绪时的派发放行并留痕 `ui-dispatch-allowed`（只读档 + 原型档白名单，`lib/ui-design-gate.ts` 的 `UI_DISPATCH_ALLOWED_AGENTS`）；turn_end 降载：同项目覆盖档（child-session bypass） |
+| pi-web Agent × 项目覆盖三档（`.pi/agents/{general-purpose,explore,plan}.md` 同名覆盖内置档，2026-10-13 上线；general-purpose 已兼实现档职能——implementer 档 2026-11-03 并入退役，见下） | 是（`load_extensions: true`；general-purpose 另开 `codemode: on`） | **是**（constraint-injection 注入 + 阶段/绑定继承 + 事实库记账，探针实测 2026-10-13：codemode/ctx 工具/`<skills>` 节/约束注入块全在；阶段继承 `stage.set source=inherit`） | turn_end 降载：零重命令放行 + `policy.decision(bypass, child-session)` 记账 |
+| pi-web Agent × 原型编辑档（`.pi/agents/ui-design.md`，项目自定义档，2026-11-03 新增；只改当前 change 的 `ui-prototype/**` 与 `ui-design.md` 的 Prototype 节） | 是（`load_extensions: true`；codemode + mcp 开） | **是**（constraint-injection 注入 + 阶段/绑定继承 + 事实库记账） | 写侧逐个过 ui-design-gate（经 `edit`/`write` 工具）：当前 change 目录内放行、越界（`front/` 等）block（shell 类通道不在本门禁覆盖范围——既有边界）；合同未就绪时的派发放行并留痕 `ui-dispatch-allowed`（只读档 + 原型档白名单，`lib/ui-design-gate.ts` 的 `UI_DISPATCH_ALLOWED_AGENTS`）；turn_end 降载：同项目覆盖档（child-session bypass） |
 | pi-web Agent × 内置档默认值（无项目覆盖时的 pi-web 内置 general-purpose/explore/plan，留作漂移诊断基准） | 否（profile 写死 `codemode:"off"` / `loadSkills:false` / `loadExtensions:false`） | 否（盲区） | 无（扩展不在） |
 | pi-subagents × 前台 | 默认否（agent 定义 frontmatter `extensions:` 可显式挂载） | 挂载后可达 | 挂载后同降载语义 |
 | pi-subagents × 后台（独立 runner） | 是（ambient 默认加载，`extensions: []` 可覆盖关） | 是 | 同降载语义 |
@@ -174,6 +212,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 | --- | --- | --- | --- |
+| 2026-11-18 | stage-driven-constraint-injection | 约束注入形态换代：**红线层 + 路由清单 + 模型自主 read**（keyword/jit-path 两条整节正文通道退役）;进度真相源从 mode 档位改为 change 目录的 `stage.md`（6 档 stage + 阶段族派生，missing/invalid 降级不阻断）；路由清单数据源 = 配置 `stages.<stage>.docs`（路径）+ `lib/stage.ts` 的 `ROUTING_DOC_CATALOG`（节名）；事实库 `mode.set` → `stage.set`（双读过渡）+ 新增 `constraint.read` 与归档对账 `constraint-read-trace.sh` | ../../../openspec/changes/archive/2026-11-19-stage-driven-constraint-injection |
 | 2026-11-15 | add-ui-stage-accounting | ui-design-gate 新增「按路径触发」的 stage 记账通道：`<!-- ui-stage: l0\|skeleton\|interaction\|data\|approved -->` marker + 路径解析 change 身份（绕过只认 implementation 档的盲区）+ l0/skeleton 禁写 `ui-prototype/`（skeleton 另放行 `ui-prototype/skeleton/`）；本阶段只记 `warn`（ui-stage-missing / ui-stage-invalid / ui-stage-scope-out，**不进阻断码九个白名单**），不改任何既有裁决 | ../../../openspec/changes/add-ui-stage-accounting（待归档） |
 | 2026-11-13 | add-browser-leak-guard | 新增无主浏览器栈定时回收（脚本 + 用户级 systemd timer，10 分钟）：窄锚点识别 agent-browser daemon/chromium，安全五条件（年龄 1800s / 本轮 CPU 冻结 / 跨轮次冻结 first-seen / 无活客户端含 argv `--session` / 组首自证），优雅 `close --session` 优先，失败降级组杀 + profile/runtime 清理；手动默认 dry-run，`--apply` 仅供定时器 | ../../../openspec/changes/add-browser-leak-guard（待归档） |
 | 2026-11-04 | add-dispatch-constraint-digest | 补「派发期红线取数（constraint-digest.sh）」节：派发期红线取数脚本定位（红线提取复用 `.pi/extensions/lib/constraint-redlines.ts` 的 `extractRedlines()`，与 constraint-injection 注入同一实现；`--paths` 反查语义与 `scanAppliesTags` 一致）+ 域清单唯一真相源=flow basename（`keywordDocs`/constraints-index 域表/`doc-impact.sh menu` 是别名或不同轴，禁止混用）+ `subagent.dispatch` 追加 `constraintDigest`/`constraintDomains` 两字段（append-only，历史计「未知」并剔除分母）；配套《开发执行规范》§0.6 步骤 3 三步取数 + brief 模板、AGENTS.md 取数指针 | ../../../openspec/changes/add-dispatch-constraint-digest（待归档） |

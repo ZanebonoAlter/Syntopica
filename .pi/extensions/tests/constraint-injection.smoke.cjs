@@ -29,6 +29,8 @@ const RESEARCH_POOL = path.join(REPO_ROOT, 'docs/research', 'explore-findings.md
 // fixture proposal：声明 daily-report（合法）+ not-a-domain（未知）；正文刻意埋
 // harness-facts-tier-a 事故撞车词（digest/topic/模型/摘要/stage）——change 文本已退出
 // 关键词命中源，这些词不得触发任何 flow 约束节注入。前端栈信号不含（无 .vue/组件）。
+// stage.md：**阶段唯一真相源**（stage-driven-constraint-injection D1）——fixture 处于
+// implement 阶段（implementation 族）→ 路由清单含代码规范、change 级文件注入开启。
 function writeFixture() {
 	fs.mkdirSync(FIXTURE, { recursive: true });
 	fs.writeFileSync(
@@ -37,10 +39,34 @@ function writeFixture() {
 			'后端 Controller 与 Service 调整。digest 阶段的 topic 参数与模型摘要截断（stage 判定）需要核对。\n',
 	);
 	fs.writeFileSync(path.join(FIXTURE, 'tasks.md'), '- [ ] smoke 任务\n');
+	fs.writeFileSync(path.join(FIXTURE, 'stage.md'), '<!-- stage: implement -->\n\n# 阶段\n');
 	fs.writeFileSync(
 		path.join(FIXTURE, 'explore-findings.md'),
 		'## 告警表结构\n\nalarm_record 按 tenant_id 分区。\n',
 	);
+}
+
+// 域声明两处并集夹具（主线程追加契约）：proposal.md（存量位置）+ stage.md（实现期活口径）
+//   dom-union：proposal 声明 reading + stage.md 声明 reading,scheduler → 生效域并集
+//   dom-prop ：proposal 声明 daily-report + stage.md 无 constraint-domains → 沿用 proposal
+const DOM_UNION_FIXTURE = path.join(REPO_ROOT, OPENSPEC_CHANGES_DIR_REL, 'smoke-fixture-dom-union');
+const DOM_PROP_FIXTURE = path.join(REPO_ROOT, OPENSPEC_CHANGES_DIR_REL, 'smoke-fixture-dom-prop');
+function writeDomainFixtures() {
+	fs.mkdirSync(DOM_UNION_FIXTURE, { recursive: true });
+	fs.writeFileSync(
+		path.join(DOM_UNION_FIXTURE, 'proposal.md'),
+		'# dom-union fixture\n\n<!-- constraint-domains: reading -->\n\n正文。\n',
+	);
+	fs.writeFileSync(
+		path.join(DOM_UNION_FIXTURE, 'stage.md'),
+		'<!-- stage: implement -->\n\n<!-- constraint-domains: reading,scheduler -->\n',
+	);
+	fs.mkdirSync(DOM_PROP_FIXTURE, { recursive: true });
+	fs.writeFileSync(
+		path.join(DOM_PROP_FIXTURE, 'proposal.md'),
+		'# dom-prop fixture\n\n<!-- constraint-domains: daily-report -->\n\n正文。\n',
+	);
+	fs.writeFileSync(path.join(DOM_PROP_FIXTURE, 'stage.md'), '<!-- stage: implement -->\n');
 }
 
 // 临时 cwd 场景：自建配置 + fixture 文档（doc-impact-applies 标签指向不存在的节），
@@ -83,12 +109,21 @@ function makeTempScenario() {
 		path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'smoke-fixture-temp', 'proposal.md'),
 		'# temp fixture\n',
 	);
-	// 声明域 fixture（D7 关键词通道 + 预算降级用）：声明 kwdom → 关键词命中该域时投递全节
+	// 声明域 fixture（D7 关键词通道 + 预算降级用）：声明 kwdom → 关键词命中该域时进路由清单
 	fs.mkdirSync(path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'smoke-fixture-budget'), { recursive: true });
 	fs.writeFileSync(
 		path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'smoke-fixture-budget', 'proposal.md'),
 		'# budget fixture\n\n<!-- constraint-domains: kwdom -->\n\n正文。\n',
 	);
+	// stage.md：**阶段唯一真相源**——tmp 夹具 change 统一置 implement（implementation 族）
+	for (const c of ['smoke-fixture-temp', 'smoke-fixture-decl', 'smoke-fixture-budget']) {
+		fs.mkdirSync(path.join(tmp, OPENSPEC_CHANGES_DIR_REL, c), { recursive: true });
+		fs.writeFileSync(
+			path.join(tmp, OPENSPEC_CHANGES_DIR_REL, c, 'stage.md'),
+			'<!-- stage: implement -->\n',
+		);
+	}
+
 	fs.writeFileSync(
 		path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'smoke-fixture-budget', 'explore-findings.md'),
 		'## 临时发现A\n\n内容A。\n',
@@ -196,83 +231,113 @@ const present = (sp, marker, heading) =>
 	const poolOrig = poolExisted ? fs.readFileSync(RESEARCH_POOL, 'utf8') : null;
 	const tmp = makeTempScenario();
 	try {
+		writeDomainFixtures();
 		const checks = [];
 		const check = (name, ok) => checks.push([name, ok]);
 
-		// 0. 输入提到 fixture change 名（确定性绑定）
-		await emit('input', { text: `smoke 绑定 ${FIXTURE_NAME}` });
-		// 1. 非 openspec skill（headroom）不激活档位
+		// 0. 未绑定阶段：稳定层仅注索引（不借任何 change 的域/清单）
+		await emit('session_start', { reason: 'new' });
 		await emit('tool_execution_start', {
 			toolName: 'read',
 			args: { path: '/root/.pi/agent/skills/headroom/SKILL.md' },
 		});
 		let sp = await systemPrompt();
 
-		check('非 openspec skill 不激活档位', /档位：未激活/.test(sp));
-		check('未激活档仅注索引（constraints-index）', sp.includes('### constraints-index.md'));
-		check('未激活档不注 flow 约束节', !sp.includes('auxiliary_label_dedupe_sim'));
-		check('未激活档不显示活跃变更（无 mtime 兜底错位）', /活跃变更：无/.test(sp));
+		check('未绑定阶段仅注索引（constraints-index）', sp.includes('### constraints-index.md'));
+		check('未绑定阶段不注 flow 红线层', !sp.includes('auxiliary_label_dedupe_sim'));
+		check('未绑定阶段不显示活跃变更（无 mtime 兜底错位）', /活跃变更：无/.test(sp));
+		check('未绑定阶段不产出阶段路由清单', !sp.includes('阶段路由清单'));
+		check('非 openspec skill 不绑定 change', !sp.includes(FIXTURE_NAME));
 
-		// 2. openspec 族 skill 激活：读 openspec-apply-change → 实现/评审档 + 绑定 change。
-		//    注意字段是 args（pi ToolExecutionStartEvent.args），不是 input。
-		await emit('tool_execution_start', {
-			toolName: 'read',
-			args: { path: '/mnt/d/project/Syntopica/.agents/skills/openspec-apply-change/SKILL.md' },
-		});
+		// 1. 输入提及 change 名 → 绑定该 change；**阶段由其 stage.md 决定**（implement）
+		await emit('input', { text: `smoke 绑定 ${FIXTURE_NAME}` });
 		sp = await systemPrompt();
 
-		check('切档为 实现/评审', /档位：实现\/评审/.test(sp));
-		check('绑定 fixture change', sp.includes(`活跃变更：${FIXTURE_NAME}（档位绑定）`));
-		check('baseDocs: 约束索引注入', sp.includes('### constraints-index.md'));
+		check('阶段绑定生效（fixture stage.md=implement）', /阶段：implement（族：implementation）/.test(sp));
+		check('绑定 fixture change', sp.includes(`活跃变更：${FIXTURE_NAME}（阶段绑定）`));
+		check('约束索引注入（稳定层）', sp.includes('### constraints-index.md'));
 		check('注入块头部宪法优先标注', sp.includes('与 AGENTS.md 优先级宪法冲突时，以宪法为准'));
-		check('explore-findings 注入', sp.includes('📌 探索阶段发现') && sp.includes('alarm_record'));
+		check('阶段路由清单注入（稳定层）', sp.includes('### 阶段路由清单（implement）'));
+		check(
+			'路由清单含声明域文档路径 + 取数命令（自主 read 指引）',
+			sp.includes('docs/reference/flow/daily-report.md') &&
+				sp.includes('bash scripts/harness/constraint-digest.sh --brief --domains daily-report'),
+		);
+		check('explore-findings 注入（implementation 族）', sp.includes('📌 探索阶段发现') && sp.includes('alarm_record'));
+		check('阶段首推消息带阶段标签（📎 约束首推（阶段 implement））', sp.includes('📎 约束首推（阶段 implement）'));
 
-		// 2.5 业务域声明（@constraint-declaration-redline）：声明 daily-report → 注入其
-		//     约束节红线层（首个加粗块逐行 + 细节层取回指引）；proposal 正文撞车词
-		//     （digest/topic/模型/摘要/stage）不得注入任何域
-		check('声明注入 daily-report 红线层（docList 标记 + 细节层指引尾行）', sp.includes('### daily-report.md') && sp.includes('daily-report.md(红线层)') && sp.includes('细节层：read `docs/reference/flow/daily-report.md`「业务约束与不变量」节'));
+		// 1.5 业务域声明红线层（阶段首推）：声明 daily-report → 送达其约束节**红线层**
+		//      （顶层加粗句逐行 + 细节层取回指引）；**不含整节正文**（细节层自主 read）
+		check(
+			'声明注入 daily-report 红线层（标题标层 + 细节层指引尾行）',
+			sp.includes('### daily-report.md') &&
+				sp.includes('daily-report.md（红线层）') &&
+				sp.includes('细节层：read `docs/reference/flow/daily-report.md`「业务约束与不变量」节'),
+		);
+		check(
+			'红线层含首条红线句（顶层加粗块逐行）',
+			sp.includes('同 board 同日重跑必须整份覆盖重建'),
+		);
+		check(
+			'红线层不含细节层正文（整节不再主动注入）',
+			!sp.includes('SaveReport` 按 `(semantic_board_id, period_date)` upsert'),
+		);
 		check('域声明头部提示（含未知域忽略）', /域声明：声明域：daily-report（忽略未知域：not-a-domain）/.test(sp));
 		check('change 文本撞车词不注入 semantic-board', !sp.includes('### semantic-board.md'));
 		check('change 文本撞车词不注入 topic-graph', !sp.includes('### topic-graph.md'));
 		check('change 文本撞车词不注入 ai-summary', !sp.includes('### ai-summary.md'));
 
-		// 3. 关键词通道域限定（D7，harden-constraint-injection-channel）：fixture 声明 daily-report，
-		//    跨域关键词（「板块」→semantic-board、「cron」→scheduler）命中被拦截——不再注入无关域全节
+		// 3. 关键词通道**退役**（D4）：对话关键词命中不再送达整节正文——跨域词
+		//    （「板块」→semantic-board、「cron」→scheduler）既不注正文也不进路由清单
 		await emit('input', { text: '需要调整板块的标签展示' });
 		sp = await systemPrompt();
-		check('D7: 跨域关键词命中被拦截（semantic-board 不注入）', !sp.includes('### semantic-board.md'));
+		check('关键词通道退役: 跨域关键词命中零正文注入（semantic-board）', !sp.includes('### semantic-board.md'));
+		check('关键词通道退役: 跨域关键词不进路由清单', !sp.includes('docs/reference/flow/semantic-board.md'));
 		await emit('input', { text: 'cronjob 卡住需要修复' });
 		sp = await systemPrompt();
-		check('D7: 跨域关键词命中被拦截（scheduler 不注入）', !sp.includes('### scheduler.md'));
+		check('关键词通道退役: 跨域关键词零正文注入（scheduler）', !sp.includes('### scheduler.md'));
+		// 声明域内的关键词 → 只在路由清单里**标注**（不新增文档、不注正文）
+		await emit('input', { text: '日报的展示要调整' });
+		sp = await systemPrompt();
+		check(
+			'关键词命中只作路由标注（声明域内条目标「本次会话提及」，零正文）',
+			sp.includes('本次会话提及，优先') && !sp.includes('SaveReport` 按'),
+		);
 
 		// 4. 动态层 diff 稳态零重发（D3）：命中集合未变 → 后续回合零投递（缓存友好）
 		const zeroSp = await systemPrompt();
 		check('动态层稳态零重发（无新消息投递）', !zeroSp.includes('📎 约束补充'));
 
-		// 5. JIT 单一真相源（doc-impact-applies 标签）：edit airouter 路径 →
-		//    ai-logging（Requirements 节）+ ai-summary（业务约束节，标签同样声明 airouter 辖区）
+		// 5. 编辑路径命中（doc-impact-applies 标签）→ **零正文注入 + 进路由清单**
+		//    （整节正文通道退役：改造前单次最坏 27.8KB；命中文档改由模型自主 read）
 		await emit('tool_execution_start', {
 			toolName: 'edit',
 			args: { path: 'backend-go/internal/platform/airouter/router.go' },
 		});
 		sp = await systemPrompt();
-		check('JIT: edit airouter 后追加 ai-logging（标签源）', sp.includes('### ai-logging.md'));
-		check('JIT 节级注入含 Requirements 内容', sp.includes('所有 AI 调用必须经 airouter'));
-		check('JIT 节级注入不含其他节（截断策略节内容）', !sp.includes('prompt / response 完整记录'));
-		check('JIT: airouter 同时命中 ai-summary 约束节（标签辖区重叠）', sp.includes('### ai-summary.md'));
+		check('编辑路径命中零正文注入（ai-logging 不注正文）', !sp.includes('### ai-logging.md'));
+		check('编辑路径命中零正文注入（ai-summary 不注正文）', !sp.includes('### ai-summary.md'));
+		check(
+			'编辑路径命中文档进路由清单（路径 + 节名，自主导入）',
+			sp.includes('docs/reference/standard/backend/ai-logging.md') &&
+				sp.includes('编辑路径命中，自主导入'),
+		);
 		const stableOnly5 = await systemPromptOnly();
-		check('JIT 命中经动态层投递（稳定层 systemPrompt 不含 JIT 文档）', !stableOnly5.includes('### ai-logging.md') && !stableOnly5.includes('### ai-summary.md'));
+		check(
+			'稳定层不含命中文档正文（整节正文通道退役）',
+			!stableOnly5.includes('所有 AI 调用必须经 airouter'),
+		);
 
-		// 6. pin_finding：档激活时落档位绑定的 change
-		const pinC = await invokePin({ title: 'pin-smoke-active', finding: '档内 pin 内容。' });
-		check('pin（有档位）落绑定 change', pinC.includes(`已存档到 ${OPENSPEC_CHANGES_DIR_REL}/${FIXTURE_NAME}`) && !pinC.includes('research'));
-		check('pin（有档位）写入绑定 change 文件', fs.readFileSync(path.join(FIXTURE, 'explore-findings.md'), 'utf8').includes('pin-smoke-active'));
+		// 6. pin_finding：已绑定阶段时落绑定 change
+		const pinC = await invokePin({ title: 'pin-smoke-active', finding: '阶段内 pin 内容。' });
+		check('pin（已绑定）落绑定 change', pinC.includes(`已存档到 ${OPENSPEC_CHANGES_DIR_REL}/${FIXTURE_NAME}`) && !pinC.includes('research'));
+		check('pin（已绑定）写入绑定 change 文件', fs.readFileSync(path.join(FIXTURE, 'explore-findings.md'), 'utf8').includes('pin-smoke-active'));
 
 		// 6.5 session_start reason 过滤（@bugfix）：startup = 子线程派发（pi-subagents
 		//     createAgentSession 默认）不清零主会话状态；new/resume/fork/reload 才是真会话边界
 		await emit('session_start', { reason: 'startup' });
 		sp = await systemPrompt();
-		check('session_start(startup=子线程派发) 不清零档位', /档位：实现\/评审/.test(sp));
+		check('session_start(startup=子线程派发) 不清零阶段', /阶段：implement/.test(sp));
 		// startup 不清零：命中集合与指纹均保留 → 重复触碰同一路径零重投递（集合被清则重投）
 		await emit('tool_execution_start', {
 			toolName: 'edit',
@@ -281,24 +346,23 @@ const present = (sp, marker, heading) =>
 		const afterStartupSp = await systemPrompt();
 		check('session_start(startup) 不清零命中集合（重复命中零投递）', !afterStartupSp.includes('📎 约束补充'));
 
-		// 7. session_start 会话边界重置：档位/关键词命中/JIT 命中/输入窗全部归零
+		// 7. session_start 会话边界重置：阶段/关键词命中/编辑路径命中/输入窗全部归零
 		await emit('session_start', { reason: 'new' });
 		sp = await systemPrompt();
-		check('session_start 后档位回落未激活', /档位：未激活/.test(sp));
+		check('session_start 后阶段回落未绑定', /阶段：未绑定/.test(sp));
 		check('session_start 后关键词命中清空', !sp.includes('auxiliary_label_dedupe_sim'));
-		check('session_start 后 JIT 命中清空', !sp.includes('### ai-logging.md'));
+		check('session_start 后编辑路径命中清空', !sp.includes('docs/reference/standard/backend/ai-logging.md'));
 
-		// 8. JIT 门控（enable-unbound-jit-injection 反转）：未激活会话写 airouter →
-		//    **追加注入**（稳定层仍只索引；JIT 只走动态层）。旧断言「不注入」已作废——
-		//    路径标签是文件系统事实，零歧义；关键词通道仍以档位为开关（见 unbound-jit-5）。
+		// 8. 未绑定阶段时编辑命中标签路径 → **零正文注入**（整节通道退役；未绑定阶段
+		//    也无路由清单 → 零动态层发送）
 		await emit('tool_execution_start', {
 			toolName: 'write',
 			args: { path: 'backend-go/internal/platform/airouter/router.go' },
 		});
 		sp = await systemPrompt();
-		check('JIT 门控反转: 未激活时写 airouter 注入 ai-summary', sp.includes('### ai-summary.md'));
-		check('JIT 门控反转: 未激活时写 airouter 注入 ai-logging（standard 文档同走 JIT）', sp.includes('### ai-logging.md'));
-		check('JIT 门控反转: 稳定层仍只索引（未激活档不注 flow 声明域）', /档位：未激活/.test(sp) && sp.includes('### constraints-index.md'));
+		check('未绑定阶段: 编辑命中路径零正文注入（ai-summary）', !sp.includes('### ai-summary.md'));
+		check('未绑定阶段: 编辑命中路径零正文注入（ai-logging）', !sp.includes('### ai-logging.md'));
+		check('未绑定阶段: 稳定层仍只索引（无路由清单）', /阶段：未绑定/.test(sp) && sp.includes('### constraints-index.md'));
 
 		// 9. pin_finding：无档位（research 语境）带 topic → docs/research/<topic>/
 		const pinF = await invokePin({ title: 'pin-smoke-research', finding: 'research pin 内容。', topic: RESEARCH_TOPIC });
@@ -323,31 +387,31 @@ const present = (sp, marker, heading) =>
 		const pinG = await invokePin({ title: 'pin-smoke-explicit', finding: '显式落点。', change: FIXTURE_NAME });
 		check('pin（显式 change）落指定 change', pinG.includes(`已存档到 ${OPENSPEC_CHANGES_DIR_REL}/${FIXTURE_NAME}`));
 
-		// 12.5 explore 新会话场景（@Syntopica bugfix）：读 explore skill → requirements 档，
-		//     无 change 提及时不 mtime 兜底绑定（fixture 是 mtime 最新但不应被绑），pin 落 research
+		// 12.5 planning 族场景：读 openspec-explore skill → **不** mtime 兜底绑定
+		//     （planning 族 = 新想法语境；兜底会绑到无关 change）——阶段不生效，pin 落 research
 		await emit('session_start', { reason: 'new' });
 		await emit('tool_execution_start', {
 			toolName: 'read',
 			args: { path: '/mnt/d/project/Syntopica/.agents/skills/openspec-explore/SKILL.md' },
 		});
 		sp = await systemPrompt();
-		check('explore 档无提及不兜底绑定（活跃变更：无）', /档位：需求\/设计/.test(sp) && /活跃变更：无/.test(sp));
-		check('explore 档无绑定时不注 change 探索发现', !sp.includes('alarm_record'));
+		check('planning 族不兜底绑定（阶段未生效）', /阶段：未绑定/.test(sp) && /活跃变更：无/.test(sp));
+		check('planning 族无绑定时不注 change 探索发现', !sp.includes('alarm_record'));
 		const pinR = await invokePin({ title: 'pin-smoke-explore', finding: 'explore 新想法发现。' });
-		check('explore 档无绑定时 pin 落 research 库', pinR.includes('docs/research/explore-findings.md'));
-		check('explore 档无绑定时 pin 不落 change', !pinR.includes(OPENSPEC_CHANGES_DIR_REL));
-		// 输入提及 change 名 → requirements 档正常绑定（/opsx-continue 语境）
+		check('未绑定阶段时 pin 落 research 库', pinR.includes('docs/research/explore-findings.md'));
+		check('未绑定阶段时 pin 不落 change', !pinR.includes(OPENSPEC_CHANGES_DIR_REL));
+		// 输入提及 change 名 → 正常绑定（阶段由其 stage.md 决定）
 		await emit('input', { text: `/opsx-continue ${FIXTURE_NAME}` });
 		sp = await systemPrompt();
-		check('requirements 档提及 change 名正常绑定', sp.includes(`活跃变更：${FIXTURE_NAME}（档位绑定）`));
+		check('输入提及 change 名正常绑定', sp.includes(`活跃变更：${FIXTURE_NAME}（阶段绑定）`));
 		await emit('session_start', { reason: 'new' }); // 收尾重置，不污染后续场景
 
 		// 12. pin_finding：change 参数不存在 → research 库 + 警告
 		const pinH = await invokePin({ title: 'pin-smoke-badchange', finding: '坏参数落点。', change: 'no-such-change-xyz' });
 		check('pin（change 不存在）改存 research 库并警告', pinH.includes('⚠️') && pinH.includes('docs/research'));
 
-		// 13. 临时 cwd：标签 JIT + 节不存在回落全文 + 无域声明提示。
-		//     配置无 jitDocs（已移除）；JIT 命中源 = 文档头部 doc-impact-applies 标签。
+		// 13. 临时 cwd：编辑路径命中（doc-impact-applies 标签）→ **零正文注入 + 进路由清单**；
+		//     无声明 → 域声明提示。配置无 jitDocs（已移除）；命中源 = 文档头部标签。
 		const tmpCtx = {
 			cwd: tmp,
 			hasUI: false,
@@ -360,11 +424,22 @@ const present = (sp, marker, heading) =>
 			args: { path: 'backend-go/internal/platform/airouter/router.go' },
 		}, tmpCtx);
 		const tsp = await systemPrompt(tmpCtx);
-		check('标签 JIT 命中 + 节不存在回落全文注入（FULLDOC-MARKER 可见）', tsp.includes('FULLDOC-MARKER') && tsp.includes('REQ-MARKER'));
-		check('残缺节（<512B）回退全文注入（STD2-FULLDOC 可见而非仅短节）', tsp.includes('STD2-FULLDOC'));
-		check('残缺节回退不标节级模式（无「短节节」docList 项）', !/fixture-std2\.md\(短节节\)/.test(tsp));
+		check(
+			'标签命中零正文注入（FULLDOC-MARKER 不出现）',
+			!tsp.includes('FULLDOC-MARKER') && !tsp.includes('REQ-MARKER'),
+		);
+		check(
+			'标签命中文档进路由清单（路径 + 节名，自主导入）',
+			tsp.includes('docs/reference/standard/backend/fixture-std.md') &&
+				tsp.includes('编辑路径命中，自主导入'),
+		);
+		check(
+			'残缺节文档同样只进路由清单（零正文）',
+			tsp.includes('docs/reference/standard/backend/fixture-std2.md') && !tsp.includes('STD2-FULLDOC'),
+		);
 		check('无声明 → 域声明提示（纯工具链 change 可忽略）', /域声明：无域声明（纯工具链 change 可忽略）/.test(tsp));
 		check('无声明 → 不注入 flow 约束节', !tsp.includes('业务约束与不变量'));
+		check('阶段路由清单存在（implement 族）', tsp.includes('### 阶段路由清单（implement）'));
 
 		// 14. 事实库记账（harness-facts-tier-a）：pin.read 标题解析（含锚点剥除）+
 		//     会话内去重 + constraint.inject 命中原因；docList 渲染不受 docEntries 增量影响
@@ -384,95 +459,163 @@ const present = (sp, marker, heading) =>
 			'constraint.inject 记账含 change-file 命中原因与字节',
 			injects.some((p) => p.reason === 'change-file' && p.path.endsWith('explore-findings.md') && typeof p.bytes === 'number'),
 		);
-		// 残缺节回退全文记账：mode=full + bytes=实际注入全文字节数（不虚标节字节）
-		const std2Full = fs.readFileSync(path.join(tmp, 'docs/reference/standard/backend', 'fixture-std2.md'), 'utf8').trim();
+		// 整节正文通道退役：编辑路径命中的文档**零正文记账**（无 jit-path / keyword reason 行）
 		check(
-			'残缺节回退全文记账（mode=full + bytes=全文字节）',
-			injects.some((p) => p.path.endsWith('fixture-std2.md') && p.mode === 'full' && p.bytes === Buffer.byteLength(std2Full, 'utf8')),
+			'编辑路径命中零正文记账（无 jit-path / keyword 原因行）',
+			!injects.some((p) => p.reason === 'jit-path' || p.reason === 'keyword'),
+		);
+		check(
+			'路由清单单独记账（reason=routing + 伪路径 stage-routing）',
+			injects.some((p) => p.reason === 'routing' && p.path === 'stage-routing'),
 		);
 		check('change 文件经动态层投递（探索发现标题在投递内容中）', tsp.includes('### 📌 探索阶段发现'));
 		evDb.close();
 
-		// 14.5 声明域红线层三态（@constraint-declaration-redline）：规整节→红线层注入；
-		//      无加粗节/低字节红线层→回退全节；记账 layer 如实。结束绑回 temp（17 的
-		//      resume 断言依赖本会话最后一条 mode.set 是 smoke-fixture-temp）
+		// 14.5 声明域红线层三态（@constraint-declaration-redline + review R-3）：规整节→红线层注入；
+		//      无加粗节/低字节红线层→**取数指引**（零正文，整节回退已退役）；记账 layer 如实。
+		//      结束绑回 temp（17 的 resume 断言依赖本会话最后一条 stage.set 是 smoke-fixture-temp）
 		await emit('input', { text: '/opsx-apply smoke-fixture-decl' }, tmpCtx);
 		const declSp = await systemPrompt(tmpCtx);
 		check('decl: 规整节红线层注入（首尾红线句逐行可见）', declSp.includes('### redline-ok.md') && declSp.includes('1. **REDLINE-OK-1') && declSp.includes('6. **REDLINE-OK-6'));
 		check('decl: 红线层不含细节层内容', !declSp.includes('DETAIL-OK-'));
 		check('decl: 红线层附细节层取回指引尾行', declSp.includes('细节层：read `docs/reference/flow/redline-ok.md`「业务约束与不变量」节'));
-		check('decl: docList 标红线层', declSp.includes('redline-ok.md(红线层)'));
-		check('decl: 无加粗节回退全节（细节可见）', declSp.includes('NOBOLD-DETAIL-2') && declSp.includes('本节摘自'));
-		check('decl: 低字节红线层回退全节', declSp.includes('DETAIL-TINY-1') && !declSp.includes('redline-tiny.md(红线层)'));
+		check('decl: 标题标红线层', declSp.includes('redline-ok.md（红线层）'));
+		check('decl: 无加粗节 → 取数指引（零正文，含 digest 命令）', !declSp.includes('NOBOLD-DETAIL-2') && declSp.includes('redline-nobold.md（取数指引）') && declSp.includes('--brief --domains redline-nobold'));
+		check('decl: 低字节红线层 → 取数指引（零正文）', !declSp.includes('DETAIL-TINY-1') && declSp.includes('redline-tiny.md（取数指引）'));
 		const declDb = new EvDb(path.join(tmp, '.pi', 'harness', 'events.db'), { readOnly: true });
 		const declRows = declDb.prepare("SELECT payload FROM events WHERE kind='constraint.inject' AND session_id='ci-smoke-pin' AND payload LIKE '%redline-%'").all().map((r) => JSON.parse(r.payload));
 		check(
-			'decl: 记账 layer 标记（ok=redline / nobold+tiny=full）',
+			'decl: 记账 layer 标记（ok=redline / nobold+tiny=pointer）',
 			declRows.some((p) => p.reason === 'declaration' && p.path.endsWith('redline-ok.md') && p.layer === 'redline' && typeof p.bytes === 'number') &&
-				declRows.some((p) => p.reason === 'declaration' && p.path.endsWith('redline-nobold.md') && p.layer === 'full') &&
-				declRows.some((p) => p.reason === 'declaration' && p.path.endsWith('redline-tiny.md') && p.layer === 'full'),
+				declRows.some((p) => p.reason === 'declaration' && p.path.endsWith('redline-nobold.md') && p.layer === 'pointer') &&
+				declRows.some((p) => p.reason === 'declaration' && p.path.endsWith('redline-tiny.md') && p.layer === 'pointer'),
 		);
 		check(
-			'decl: 红线层字节远小于全节回退（瘦身收益可观测）',
-			(declRows.find((p) => p.path.endsWith('redline-ok.md') && p.layer === 'redline') || {}).bytes <
-				(declRows.find((p) => p.path.endsWith('redline-nobold.md') && p.layer === 'full') || {}).bytes,
+			'decl: 取数指引远小于全节回退的旧形态（瘦身收益可观测）',
+			(declRows.find((p) => p.path.endsWith('redline-nobold.md') && p.layer === 'pointer') || {}).bytes < 600,
+		);
+		const allInjRows = declDb.prepare("SELECT payload FROM events WHERE kind='constraint.inject'").all().map((r) => JSON.parse(r.payload));
+		check(
+			'注入体量：declaration（红线层/取数指引）与 routing 条目均 ≤4000 字节（tasks 9.3）',
+			allInjRows
+				.filter((p) => p.reason === 'declaration' || p.reason === 'routing')
+				.every((p) => typeof p.bytes === 'number' && p.bytes <= 4000),
 		);
 		declDb.close();
 		await emit('input', { text: '/opsx-apply smoke-fixture-temp' }, tmpCtx);
 
-		// 17. resume 档位恢复（@constraint-injection-tier-b D6）：两段式取数 + new 不恢复 + 绑定失效回落
+		// 14.6 域声明两处并集（主线程追加契约）：proposal.md（存量位置）+ stage.md（实现期
+		//      活口径）取**并集**；stage.md 不得收窄 proposal 的域（超集安全方向）。
+		//      跑在 REPO_ROOT（真实 flow 域名 reading / scheduler / daily-report 才过域名校验）。
+		await emit('session_start', { reason: 'new' });
+		await emit('input', { text: '/opsx-apply smoke-fixture-dom-union' });
+		const unionSp = await systemPrompt();
+		check(
+			'域声明并集: proposal(reading) + stage.md(reading,scheduler) → 生效域含两域',
+			unionSp.includes('docs/reference/flow/reading.md') &&
+				unionSp.includes('docs/reference/flow/scheduler.md'),
+		);
+		check(
+			'域声明并集: 头部域声明提示含并集结果',
+			/域声明：声明域：reading, scheduler/.test(unionSp),
+		);
+		await emit('session_start', { reason: 'new' });
+		await emit('input', { text: '/opsx-apply smoke-fixture-dom-prop' });
+		const propSp = await systemPrompt();
+		check(
+			'域声明并集: stage.md 无 constraint-domains → 沿用 proposal 的域',
+			propSp.includes('docs/reference/flow/daily-report.md') &&
+				!propSp.includes('docs/reference/flow/scheduler.md'),
+		);
+		check(
+			'域声明并集: 头部域声明提示沿用 proposal 域',
+			/域声明：声明域：daily-report/.test(propSp),
+		);
+		await emit('session_start', { reason: 'new' }); // 收尾重置（不污染后续场景）
+
+		// 17. resume 阶段恢复（stage.set + 双读）：两段式取数 + new 不恢复 + 绑定失效回落
 		await emit('session_start', { reason: 'new' }, tmpCtx);
 		let rsp = await systemPrompt(tmpCtx);
-		check('resume前置: new 清零且不恢复（db 有 mode.set 也不继承）', /档位：未激活/.test(rsp));
+		check('resume前置: new 清零且不恢复（db 有 stage.set 也不继承）', /阶段：未绑定/.test(rsp));
 		await emit('session_start', { reason: 'resume' }, tmpCtx);
 		rsp = await systemPrompt(tmpCtx);
-		check('resume 同 sessionId 恢复档位（第1段 queryBySession）', /档位：实现/.test(rsp));
+		check('resume 同 sessionId 恢复阶段（queryLatestStageSet）', /阶段：implement/.test(rsp));
 		check('resume 恢复 change 绑定', rsp.includes('活跃变更：smoke-fixture-temp'));
-		check('resume 不恢复粘性命中（JIT 清空，有意为之）', !rsp.includes('FULLDOC-MARKER'));
+		check('resume 不恢复粘性命中（编辑路径命中清空，有意为之）', !rsp.includes('docs/reference/standard/backend/fixture-std.md'));
 		const tmpCtxNew = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-resume-2' } };
 		await emit('session_start', { reason: 'resume' }, tmpCtxNew);
 		rsp = await systemPrompt(tmpCtxNew);
-		check('resume 无自身档位历史：不继承他窗口档位（无全局兑底，2026-08-23 实测回归）', /档位：未激活/.test(rsp) && !rsp.includes('smoke-fixture-temp'));
+		check('resume 无自身阶段历史：不继承他窗口状态（无全局兑底，2026-08-23 实测回归）', /阶段：未绑定/.test(rsp) && !rsp.includes('smoke-fixture-temp'));
 		await emit('session_start', { reason: 'reload' }, tmpCtxNew);
 		rsp = await systemPrompt(tmpCtxNew);
-		check('reload 无自身档位历史：同样不继承（未激活）', /档位：未激活/.test(rsp));
+		check('reload 无自身阶段历史：同样不继承（未绑定）', /阶段：未绑定/.test(rsp));
 		const tmpChangeDir = path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'smoke-fixture-temp');
 		fs.renameSync(tmpChangeDir, `${tmpChangeDir}-bak`);
 		await emit('session_start', { reason: 'resume' }, tmpCtxNew);
 		rsp = await systemPrompt(tmpCtxNew);
-		check('resume 绑定 change 已不存在 → 回落未激活', /档位：未激活/.test(rsp));
+		check('resume 绑定 change 已不存在 → 回落未绑定', /阶段：未绑定/.test(rsp));
 		fs.renameSync(`${tmpChangeDir}-bak`, tmpChangeDir);
+	// R-1 回归（review High）：先绑定有阶段的 temp(implement)，再切到无 stage.md 的 legacy
+	// change → 事实库最新 stage.set 是 stage=null 合法绑定行；resume 必须恢复「绑定 legacy、
+	// 阶段未绑定」，MUST NOT 回退读到更早的 temp(implement) 行（门禁/继承同理走同一取数）。
+	const legacyDir = path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'smoke-fixture-legacy');
+	fs.mkdirSync(legacyDir, { recursive: true });
+	fs.writeFileSync(path.join(legacyDir, 'proposal.md'), '<!-- complexity: minimal -->\n\n# legacy fixture（无 stage.md）\n');
+	await emit('input', { text: '/opsx-apply smoke-fixture-legacy' }, tmpCtx);
+	let rspR1 = await systemPrompt(tmpCtx);
+	check('R-1前置: 绑定 legacy change → 阶段未绑定 + 活跃变更为该 change', /阶段：未绑定（仅索引）/.test(rspR1) && rspR1.includes('活跃变更：smoke-fixture-legacy'));
+	await emit('session_start', { reason: 'resume' }, tmpCtx);
+	rspR1 = await systemPrompt(tmpCtx);
+	check(
+		'R-1: resume 到 legacy 绑定行 → 恢复 legacy 绑定而非回退旧阶段（无 temp/implement）',
+		/阶段：未绑定（仅索引）/.test(rspR1) &&
+			rspR1.includes('活跃变更：smoke-fixture-legacy') &&
+			!rspR1.includes('smoke-fixture-temp') &&
+			!/阶段：implement/.test(rspR1),
+	);
+	await emit('input', { text: '/opsx-apply smoke-fixture-temp' }, tmpCtx); // 收尾绑回 temp（后续 startup 断言依赖）
 		// startup 双面孔（@constraint-injection-tier-b 6.5 返工：真实链路 quit 重启走 startup）：
-		// ① 冷启动（档位空）+ 同 sessionId 有 mode.set → 第 1 段恢复，不全局兜底；
-		// ② 子线程派发（档位非空）→ 不清零不动；③ 全新会话 startup → 不继承其他会话档位
-		await emit('session_start', { reason: 'startup' }, tmpCtx); // 场景17末尾恢复失败档位空 → 冷启动路径
+		// ① 冷启动（阶段空）+ 同 sessionId 有 stage.set → 第 1 段恢复，不全局兜底；
+		// ② 子线程派发（阶段非空）→ 不清零不动；③ 全新会话 startup → 不继承其他会话状态
+		await emit('session_start', { reason: 'startup' }, tmpCtx); // 场景17末尾恢复失败阶段空 → 冷启动路径
 		rsp = await systemPrompt(tmpCtx);
-		check('startup 冷启动：同 sessionId 恢复档位（真实路径：quit 重启）', /档位：实现/.test(rsp) && rsp.includes('smoke-fixture-temp'));
-		check('startup 恢复不带回粘性命中（JIT 仍空）', !rsp.includes('FULLDOC-MARKER'));
+		check('startup 冷启动：同 sessionId 恢复阶段（真实路径：quit 重启）', /阶段：implement/.test(rsp) && rsp.includes('活跃变更：smoke-fixture-temp'));
+		check('startup 恢复不带回粘性命中（编辑路径命中仍空）', !rsp.includes('docs/reference/standard/backend/fixture-std.md'));
 		await emit('tool_execution_start', { toolName: 'edit', args: { path: 'backend-go/internal/platform/airouter/router.go' } }, tmpCtx);
-		await emit('session_start', { reason: 'startup' }, tmpCtx); // 档位非空 = 子线程派发 → 不动
+		await emit('session_start', { reason: 'startup' }, tmpCtx); // 阶段非空 = 子线程派发 → 不动
 		rsp = await systemPrompt(tmpCtx);
-		check('startup 子线程派发：不清零不重恢复（档位/JIT 均保持）', /档位：实现/.test(rsp) && rsp.includes('FULLDOC-MARKER'));
+		check('startup 子线程派发：不清零不重恢复（阶段/命中均保持）', /阶段：implement/.test(rsp) && rsp.includes('docs/reference/standard/backend/fixture-std.md'));
 		const freshCtx = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-fresh-session' } };
 		await emit('session_start', { reason: 'new' }, freshCtx); // 模拟新进程空状态（真实世界新会话=新模块实例）
-		await emit('session_start', { reason: 'startup' }, freshCtx); // 冷启动 + 无本会话 mode.set
+		await emit('session_start', { reason: 'startup' }, freshCtx); // 冷启动 + 无本会话 stage.set
 		rsp = await systemPrompt(freshCtx);
-		check('startup 全新会话：不继承其他会话档位（无全局兜底）', /档位：未激活/.test(rsp));
+		check('startup 全新会话：不继承其他会话状态（无全局兜底）', /阶段：未绑定/.test(rsp));
 		// reload 恢复：同会话扩展重载，id 不变 → 第 1 段必中
 		await emit('session_start', { reason: 'reload' }, tmpCtx);
 		rsp = await systemPrompt(tmpCtx);
-		check('reload：清零后恢复档位（同 sessionId 第 1 段）', /档位：实现/.test(rsp) && rsp.includes('smoke-fixture-temp'));
+		check('reload：清零后恢复阶段（同 sessionId 第 1 段）', /阶段：implement/.test(rsp) && rsp.includes('活跃变更：smoke-fixture-temp'));
 		await emit('session_start', { reason: 'new' }); // 收尾重置（共享 ctx 场景隔离）
-		// mode.set 记账核验（触发点①input 已在场景13触发）
+		// stage.set 记账核验（触发点①input 已在场景13触发）
 		const msDb = new EvDb(path.join(tmp, '.pi', 'harness', 'events.db'), { readOnly: true });
-		const msRows = msDb.prepare("SELECT payload FROM events WHERE kind='mode.set'").all().map((r) => JSON.parse(r.payload));
-		check('mode.set 记账存在（mode+boundChange）', msRows.length >= 1 && msRows.some((p) => p.mode === 'implementation' && p.boundChange === 'smoke-fixture-temp'));
+		const msRows = msDb.prepare("SELECT payload FROM events WHERE kind='stage.set'").all().map((r) => JSON.parse(r.payload));
+		check(
+			'stage.set 记账存在（stage+stageFamily+boundChange）',
+			msRows.length >= 1 &&
+				msRows.some(
+					(p) => p.stage === 'implement' && p.stageFamily === 'implementation' && p.boundChange === 'smoke-fixture-temp',
+				),
+		);
+		check(
+			'stage.set 停写 legacy mode.set（写侧已全部切 stage.set）',
+			msDb.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='mode.set'").get().n === 0,
+		);
 		msDb.close();
 
-		// 18. 预算降级（@constraint-injection-tier-b D1-D4）：分层顺序 / 永不真丢 / 确定性 / 降级记账
+		// 18. 预算降级（@constraint-injection-tier-b D1-D4 + stage-driven 降级顺位调整）：
+		//     分层顺序 = **红线层 → 路由清单 → change-file**（正文仍不真丢）
 		const pad = (marker) => Array.from({ length: 60 }, (_, i) => `${marker} 填充行${i} ${'X'.repeat(40)}`).join('\n');
 		const kwRedlines = Array.from({ length: 6 }, (_, i) =>
-			`${i + 1}. **KWDOM-REDLINE-${i + 1} 约束主体必须满足的边界条件与例外说明以及适用范围的具体界定与失效处理路径说明**：细节层 ${pad('BIGKW-MARKER').split('\n').join(' ')}`,
+			`${i + 1}. **KWDOM-REDLINE-${i + 1} ${'约束主体必须满足的边界条件与例外说明以及适用范围的具体界定与失效处理路径说明'.repeat(6)}**：细节层 ${pad('BIGKW-MARKER').split('\n').join(' ')}`,
 		).join('\n');
 		fs.writeFileSync(
 			path.join(tmp, 'docs/reference/flow', 'kwdom.md'),
@@ -495,12 +638,17 @@ const present = (sp, marker, heading) =>
 		await emit('input', { text: '调整大预算词相关展示' }, tmpCtx);
 		await emit('tool_execution_start', { toolName: 'edit', args: { path: 'backend-go/internal/bigmod/service.go' } }, tmpCtx);
 		let dsp = await systemPrompt(tmpCtx);
-		check('预算: keyword 层先降（BIGKW-MARKER 全文消失）', !dsp.includes('BIGKW-MARKER'));
-		check('预算: 永不真丢（kwdom 标题占位 + read 指引 + 占位预览）', dsp.includes('### kwdom.md') && dsp.includes('read docs/reference/flow/kwdom.md') && dsp.includes('「业务约束与不变量」节'));
-		check('预算: jit 层随后降（BIGJIT-MARKER 全文消失、标题保留）', !dsp.includes('BIGJIT-MARKER') && dsp.includes('### bigjit.md'));
-		check('预算: 未配 baseDocs 时索引不注（实现档 baseDocs 为空）', !dsp.includes('### idx.md'));
+		check('预算: 红线层先降（细节层全文消失）', !dsp.includes('BIGKW-MARKER'));
+		check(
+			'预算: 永不真丢（kwdom 标题占位 + read 指引 + 占位预览）',
+			dsp.includes('### kwdom.md') &&
+				dsp.includes('read docs/reference/flow/kwdom.md') &&
+				dsp.includes('预算已满'),
+		);
+		check('预算: 编辑路径命中文档零正文（bigjit 不注正文）', !dsp.includes('BIGJIT-MARKER') && !dsp.includes('### bigjit.md'));
+		check('预算: 索引不降级（index 恒在）', dsp.includes('### idx.md'));
 		check('预算: change-file 未到占位层（findings 全文保留）', dsp.includes('内容A'));
-		check('预算: 头部模型可见降级通知', /预算降级/.test(dsp) && /kwdom\.md、bigjit\.md|bigjit\.md、kwdom\.md/.test(dsp));
+		check('预算: 头部模型可见降级通知', /预算降级/.test(dsp) && /kwdom\.md/.test(dsp));
 		const dspStable = await systemPromptOnly(tmpCtx);
 		const dsp2 = await systemPrompt(tmpCtx);
 		check('预算: 降级确定性（同输入零重投递 + 稳定层字节一致）', !dsp2.includes('📎 约束补充') && dsp2 === dspStable);
@@ -598,12 +746,11 @@ const present = (sp, marker, heading) =>
 			args: { path: 'backend-go/internal/foo/bar_test.go' },
 		});
 		sp = await systemPrompt();
-		check('JIT: edit *_test.go 追加 test-design（JIT 注入摘要节）', sp.includes('### test-design.md'));
 		check(
-			'JIT: 注入内容为摘要节本体（结构性关键词可见）',
-			present(sp, '五问句', '### test-design.md') && present(sp, '双轨', '### test-design.md'),
+			'编辑路径命中 test-design → 进路由清单（零正文）',
+			sp.includes('docs/reference/standard/shared/test-design.md') && !sp.includes('### test-design.md'),
 		);
-		check('JIT: 摘要节外正文不注入（问句①主文档标题不可见）', !sp.includes('问句①：节拍全吗'));
+		check('编辑路径命中零正文注入（摘要节本体不可见）', !sp.includes('五问句') && !sp.includes('问句①：节拍全吗'));
 
 		// 17. 混合注入通道 + 绑定污染修复（harden-constraint-injection-channel）
 		// 17.1 纯函数（可脱离 pi 直跑）
@@ -620,8 +767,9 @@ const present = (sp, marker, heading) =>
 				ext.changeNameFromPath('backend-go/x.go') === null,
 		);
 		check(
-			'D2: 稳定层 key 仅随档位/绑定变',
+			'D3: 稳定层 key 用**阶段族**（同族切换不重建，跨族/换绑定才变）',
 			ext.stableSnapshotKey('implementation', 'a') === ext.stableSnapshotKey('implementation', 'a') &&
+				ext.stableSnapshotKey('planning', 'a') !== ext.stableSnapshotKey('implementation', 'a') &&
 				ext.stableSnapshotKey('implementation', 'a') !== ext.stableSnapshotKey('implementation', 'b'),
 		);
 		const dItem = { key: 'd1', heading: '### d1', body: 'B1', relPath: 'd1', short: 'd1', reason: 'keyword', mode: 'section' };
@@ -636,19 +784,19 @@ const present = (sp, marker, heading) =>
 				ext.renderDynamicMessage([]) === null,
 		);
 		check(
-			'D1: splitPlanItems 稳定/动态分层（declaration→稳定，keyword→动态）',
+			'D1: splitPlanItems 稳定/动态分层（index+routing→稳定，declaration/change-file→动态）',
 			(() => {
 				const sp = ext.splitPlanItems([
-					{ key: 'a', reason: 'mode-base' },
-					{ key: 'b', reason: 'declaration' },
-					{ key: 'c', reason: 'keyword' },
+					{ key: 'a', reason: 'index' },
+					{ key: 'b', reason: 'routing' },
+					{ key: 'c', reason: 'declaration' },
 					{ key: 'd', reason: 'change-file' },
 				]);
 				return sp.stable.length === 2 && sp.dynamic.length === 2;
 			})(),
 		);
 
-		// 17.2 行为：混合通道（tmp 场景，预算充足 + 声明域关键词）
+		// 17.2 行为：混合通道（tmp 场景，预算充足 + 声明域红线层）
 		const tmpCfgPath = path.join(tmp, '.pi', 'constraint-injection.json');
 		const baseCfg = JSON.parse(fs.readFileSync(tmpCfgPath, 'utf8'));
 		const bigCfg = {
@@ -661,33 +809,33 @@ const present = (sp, marker, heading) =>
 			const t = new Date(Date.now() + tick * 2000);
 			fs.utimesSync(tmpCfgPath, t, t);
 		};
-		const readModeSet = (dir) => {
+		const readStageSet = (dir) => {
 			const { DatabaseSync } = require('node:sqlite');
 			const db = new DatabaseSync(path.join(dir, '.pi', 'harness', 'events.db'), { readOnly: true });
-			const rows = db.prepare("SELECT payload FROM events WHERE kind='mode.set'").all().map((r) => JSON.parse(r.payload));
+			const rows = db.prepare("SELECT payload FROM events WHERE kind='stage.set'").all().map((r) => JSON.parse(r.payload));
 			db.close();
 			return rows;
 		};
-		// mode.set 全量（含 session_id，供「记在谁名下」断言）；seedModeSet 造一条父会话历史
+		// stage.set 全量（含 session_id，供「记在谁名下」断言）；seedStageSet 造一条父会话历史
 		// （模拟跨进程：父会话不在本进程内存，只有事实库记录）。
-		const readModeSetFull = (dir) => {
+		const readStageSetFull = (dir) => {
 			const { DatabaseSync } = require('node:sqlite');
 			const db = new DatabaseSync(path.join(dir, '.pi', 'harness', 'events.db'), { readOnly: true });
 			const rows = db
-				.prepare("SELECT session_id, change, payload FROM events WHERE kind='mode.set' ORDER BY id")
+				.prepare("SELECT session_id, change, payload FROM events WHERE kind='stage.set' ORDER BY id")
 				.all()
 				.map((r) => ({ ...JSON.parse(r.payload), session_id: r.session_id, change: r.change }));
 			db.close();
 			return rows;
 		};
-		const seedModeSet = (dir, sessionId, mode, boundChange, source = 'skill') => {
+		const seedStageSet = (dir, sessionId, stage, boundChange, source = 'skill') => {
 			const { DatabaseSync } = require('node:sqlite');
 			const db = new DatabaseSync(path.join(dir, '.pi', 'harness', 'events.db'));
-			db.prepare("INSERT INTO events (ts, session_id, kind, change, payload) VALUES (?, ?, 'mode.set', ?, ?)").run(
+			db.prepare("INSERT INTO events (ts, session_id, kind, change, payload) VALUES (?, ?, 'stage.set', ?, ?)").run(
 				new Date().toISOString(),
 				sessionId,
 				boundChange,
-				JSON.stringify({ mode, boundChange, source }),
+				JSON.stringify({ stage, stageFamily: stage === 'implement' ? 'implementation' : 'planning', boundChange, source }),
 			);
 			db.close();
 		};
@@ -696,66 +844,73 @@ const present = (sp, marker, heading) =>
 		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, tmpCtx);
 		const s17a = await systemPromptOnly(tmpCtx);
 		const s17b = await systemPromptOnly(tmpCtx);
-		check('行为: 稳定层档位生命周期内字节恒定', s17a === s17b && s17a.includes('### constraints-index.md') === false && s17a.includes('活跃变更：smoke-fixture-budget'));
-		check('行为: 稳定层不含关键词/JIT 动态内容（声明域红线层在稳定层）', !s17a.includes('BIGKW-MARKER') && !s17a.includes('### bigjit.md'));
+		check(
+			'行为: 稳定层阶段生命周期内字节恒定',
+			s17a === s17b && s17a.includes('活跃变更：smoke-fixture-budget') && s17a.includes('阶段路由清单（implement）'),
+		);
+		check('行为: 稳定层零业务域正文（红线层走动态层）', !s17a.includes('KWDOM-REDLINE-1'));
+		const s17Dyn = await systemPrompt(tmpCtx);
+		check('行为: 阶段首推红线层经动态层送达', s17Dyn.includes('KWDOM-REDLINE-1'));
 		await emit('input', { text: '大预算词相关展示调整' }, tmpCtx);
 		const kwSp = await systemPrompt(tmpCtx);
-		check('行为: 声明域内关键词命中投递全节（细节层）', kwSp.includes('BIGKW-MARKER'));
+		check('行为: 关键词命中零正文注入（细节层不进上下文）', !kwSp.includes('BIGKW-MARKER'));
 		const kwStable = await systemPromptOnly(tmpCtx);
-		check('行为: 动态层内容不进 system prompt', !kwStable.includes('BIGKW-MARKER'));
+		check('行为: 动态层内容不进 system prompt', !kwStable.includes('KWDOM-REDLINE-1'));
 		check('行为: 动态层稳态零重发', !(await systemPrompt(tmpCtx)).includes('📎 约束补充'));
 		await emit('session_compact', { reason: 'manual' }, tmpCtx);
 		const csSp = await systemPrompt(tmpCtx);
-		check('行为: compact 后重发约束快照', csSp.includes('约束快照（compact 后重发）') && csSp.includes('BIGKW-MARKER'));
-
+		check('行为: compact 后重发约束快照', csSp.includes('约束快照（compact 后重发）') && csSp.includes('KWDOM-REDLINE-1'));
 		// 17.3 行为：绑定污染修复（read/健康写不抢绑、兜底绑、turn 锁定、恢复记账、source 不变量）
 		await emit('session_start', { reason: 'resume' }, tmpCtx);
-		let msRows17 = readModeSet(tmp);
+		let msRows17 = readStageSet(tmp);
 		check('行为: 恢复路径记账 source=recover', msRows17.some((r) => r.source === 'recover'));
 		await emit('session_start', { reason: 'new' }, tmpCtx);
 		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, tmpCtx);
 		await systemPromptOnly(tmpCtx); // turn 起点（解锁）
-		const msBefore17 = readModeSet(tmp).length;
+		const msBefore17 = readStageSet(tmp).length;
 		await emit('tool_execution_start', { toolName: 'read', args: { path: 'openspec/changes/smoke-fixture-temp/tasks.md' } }, tmpCtx);
 		await emit('tool_execution_start', { toolName: 'write', args: { path: 'openspec/changes/smoke-fixture-temp/proposal.md' } }, tmpCtx);
-		msRows17 = readModeSet(tmp);
+		msRows17 = readStageSet(tmp);
 		check('行为: read / 健康绑定写其他 change 目录零抢绑（零新增记账）', msRows17.length === msBefore17);
 		for (const n of ['bind-a', 'bind-b', 'bind-c']) fs.mkdirSync(path.join(tmp, OPENSPEC_CHANGES_DIR_REL, n), { recursive: true });
-		// bind-c 带声明域（kwdom）：使 19.6 的「B 绑定生效」可观测——无声明时 requirements 档
-		// 零稳定条目 → 稳定层 header 不输出（wantBlock 门），绑定生效与否无处可断言。
+		// bind-c 带声明域（kwdom）：使 19.6 的「B 绑定生效」可观测——绑定生效时其声明域
+		// 红线层与路由清单可断言。
 		fs.writeFileSync(
 			path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'bind-c', 'proposal.md'),
 			'# bind-c fixture\n\n<!-- constraint-domains: kwdom -->\n\n正文。\n',
 		);
+		// bind-a/b/c 置 **planning 族**（stage=design）：mtime 兜底只绑 implementation 族
+		// → 新想法语境不兜底；绑定只由「写 change 目录」（edit-dir）触发。
+		for (const n of ['bind-a', 'bind-b', 'bind-c']) {
+			fs.writeFileSync(path.join(tmp, OPENSPEC_CHANGES_DIR_REL, n, 'stage.md'), '<!-- stage: design -->\n');
+		}
 		await emit('session_start', { reason: 'new' }, tmpCtx);
-		await emit('input', { text: '/opsx-new' }, tmpCtx); // requirements 档：无 mtime 兜底 → 无绑定
-		await systemPromptOnly(tmpCtx); // turn 起点（解锁）
+		await emit('input', { text: '/opsx-new' }, tmpCtx); // 工作流命令：记意图（不提 change）
+		await systemPromptOnly(tmpCtx); // turn 起点（解锁）：planning 族活跃 change 不兜底
 		await emit('tool_execution_start', { toolName: 'write', args: { path: 'openspec/changes/bind-a/x.md' } }, tmpCtx);
 		await emit('tool_execution_start', { toolName: 'write', args: { path: 'openspec/changes/bind-b/x.md' } }, tmpCtx);
-		msRows17 = readModeSet(tmp);
+		msRows17 = readStageSet(tmp);
 		const editDirBinds = msRows17.filter((r) => r.source === 'edit-dir').map((r) => r.boundChange);
 		check('行为: 无绑定写 change 目录兜底绑 + 同 turn 锁定（仅首个生效）', editDirBinds.length === 1 && editDirBinds[0] === 'bind-a');
 		await systemPromptOnly(tmpCtx); // 新 turn（解锁）
 		fs.rmSync(path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'bind-a'), { recursive: true, force: true });
 		await emit('tool_execution_start', { toolName: 'write', args: { path: 'openspec/changes/bind-b/x.md' } }, tmpCtx);
-		msRows17 = readModeSet(tmp);
+		msRows17 = readStageSet(tmp);
 		check('行为: 锁定仅限同 turn（新 turn 内可再切绑）', msRows17.some((r) => r.source === 'edit-dir' && r.boundChange === 'bind-b'));
 		check(
-			'行为: mode.set 全路径带 source（隐性绑定不存在）',
+			'行为: stage.set 全路径带 source（隐性绑定不存在）',
 			msRows17.length > 0 &&
 				msRows17.every((r) => ['command', 'skill', 'edit-dir', 'recover', 'inherit', 'fallback'].includes(r.source)),
 		);
-
 		// 17.4 行为：legacy 回退通道（应急开关，恢复旧「全量进 system prompt」）
 		writeCfg({ ...bigCfg, channel: 'legacy' }, 2);
 		await emit('session_start', { reason: 'new' }, tmpCtx);
 		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, tmpCtx);
 		const legacySp = await systemPrompt(tmpCtx);
 		check('行为: legacy 通道全量进 system prompt（零消息投递）', legacySp.includes('### kwdom.md') && messages.length === msgCursor);
-
 		// 19. 会话作用域状态隔离（per-session-constraint-binding）
-		//     背景（2026-09-17 事实库）：绑定状态曾是模块级全局，他会话的 mode.set 会决定本会话
-		//     注入谁的约束（会话 01a0aaf4 零 mode.set，却在另一会话绑定 6 秒后拿到
+		//     背景（2026-09-17 事实库）：绑定状态曾是模块级全局，他会话的绑定记账会决定本会话
+		//     注入谁的约束（会话 01a0aaf4 零绑定记账，却在另一会话绑定 6 秒后拿到
 		//     dedupe-rss-articles 及其声明域）。本组用例按 spec「会话作用域状态隔离」逐条对账。
 		writeCfg(bigCfg, 3); // 回到 split 通道（上组 17.4 写成了 legacy）
 		const sessA = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-A' } };
@@ -791,7 +946,7 @@ const present = (sp, marker, heading) =>
 		const cSp = await systemPromptOnly(sessC);
 		check(
 			'隔离: 无自身绑定且无父子关系 → 未激活（不借他会话绑定/域）',
-			/档位：未激活/.test(cSp) &&
+			/阶段：未绑定/.test(cSp) &&
 				cSp.includes('活跃变更：无') &&
 				!cSp.includes('### kwdom.md') &&
 				!dynamicText().includes('kwdom'),
@@ -813,10 +968,14 @@ const present = (sp, marker, heading) =>
 		const childSp = await systemPrompt(childCtx);
 		check(
 			'隔离: 子线程继承父会话档位与绑定',
-			/档位：实现/.test(childSp) && childSp.includes('活跃变更：smoke-fixture-budget'),
+			/阶段：implement/.test(childSp) && childSp.includes('活跃变更：smoke-fixture-budget'),
 		);
-		check('隔离: 子线程带父会话声明域红线层', childSp.includes('### kwdom.md'));
-		const inheritRows = readModeSet(tmp).filter((r) => r.source === 'inherit');
+		check(
+			'隔离: 同进程子线程继承父指纹 → 父已送达红线层不重投（零冗余）',
+			!childSp.includes('### kwdom.md'),
+		);
+		check('隔离: 子线程稳定层含父会话阶段路由清单', childSp.includes('阶段路由清单（implement）'));
+		const inheritRows = readStageSet(tmp).filter((r) => r.source === 'inherit');
 		check(
 			'隔离: 继承显式记账 source=inherit + boundChange',
 			inheritRows.length === 1 && inheritRows[0].boundChange === 'smoke-fixture-budget',
@@ -835,13 +994,15 @@ const present = (sp, marker, heading) =>
 		); // 子会话 JIT 命中（bigjit）
 		const childHits = await systemPrompt(childCtx);
 		check(
-			'隔离: 子会话自身命中生效（关键词 + JIT）',
-			childHits.includes('BIGKW-MARKER') && childHits.includes('### bigjit.md'),
+			'隔离: 子会话自身命中生效（编辑路径进路由清单、零正文）',
+			childHits.includes('docs/reference/standard/backend/bigjit.md') &&
+				!childHits.includes('BIGKW-MARKER') &&
+				!childHits.includes('### bigjit.md'),
 		);
 		markMessages();
 		const aAfterChildHits = await systemPrompt(sessA);
 		check('隔离: 子线程关键词命中不回写主会话命中集', !aAfterChildHits.includes('BIGKW-MARKER'));
-		check('隔离: 子线程 JIT 命中不回写主会话命中集', !aAfterChildHits.includes('bigjit'));
+		check('隔离: 子线程编辑路径命中不回写主会话命中集', !aAfterChildHits.includes('bigjit'));
 
 		// 19.4b 父会话不可证（header 指向不存在会话）→ 不继承
 		const orphanCtx = {
@@ -854,15 +1015,15 @@ const present = (sp, marker, heading) =>
 		};
 		await emit('session_start', { reason: 'startup' }, orphanCtx);
 		const orphanSp = await systemPrompt(orphanCtx);
-		check('隔离: 父会话不可证 → 不继承（未激活）', /档位：未激活/.test(orphanSp));
+		check('隔离: 父会话不可证 → 不继承（未激活）', /阶段：未绑定/.test(orphanSp));
 
 		// 19.10 跨进程继承（事实库回退）：父会话**不在本进程内存**（模拟 pi-subagents
-		//       子线程 = 独立 node 进程，2026-09-17 实测），但父会话的 mode.set 历史在共享
-		//       事实库 → 子会话据 header 的 parentSession 采纳档位与绑定。
+		//       子线程 = 独立 node 进程，2026-09-17 实测），但父会话的 stage.set 历史在共享
+		//       事实库 → 子会话据 header 的 parentSession 采纳阶段与绑定。
 		//       判别力：把 inheritFromParentHistory 短路（开头 return false）→ 本节3 条断言变红。
 		const xprocParent = 'ci-smoke-parent-xproc';
-		seedModeSet(tmp, xprocParent, 'implementation', 'smoke-fixture-budget');
-		const beforeXproc = readModeSetFull(tmp).length;
+		seedStageSet(tmp, xprocParent, 'implement', 'smoke-fixture-budget');
+		const beforeXproc = readStageSetFull(tmp).length;
 		const xprocChild = {
 			cwd: tmp,
 			hasUI: false,
@@ -877,10 +1038,10 @@ const present = (sp, marker, heading) =>
 		const xprocSp = await systemPrompt(xprocChild);
 		check(
 			'跨进程: 子线程据父会话事实库历史继承档位与绑定',
-			/档位：实现/.test(xprocSp) && xprocSp.includes('活跃变更：smoke-fixture-budget'),
+			/阶段：implement/.test(xprocSp) && xprocSp.includes('活跃变更：smoke-fixture-budget'),
 		);
 		check('跨进程: 子线程带父会话声明域红线层（kwdom）', xprocSp.includes('### kwdom.md'));
-		const xprocInheritRows = readModeSetFull(tmp)
+		const xprocInheritRows = readStageSetFull(tmp)
 			.slice(beforeXproc)
 			.filter((r) => r.source === 'inherit');
 		check(
@@ -888,6 +1049,42 @@ const present = (sp, marker, heading) =>
 			xprocInheritRows.length === 1 &&
 				xprocInheritRows[0].boundChange === 'smoke-fixture-budget' &&
 				xprocInheritRows[0].session_id === 'ci-smoke-child-xproc',
+		);
+
+		// 19.10b R-1 回归（review High）：父会话最新一条是 legacy 绑定行（stage=null 且
+		//       stageFamily=null）时，跨进程子线程必须继承「绑定该 change、阶段未绑定」，
+		//       不得回退读到父会话更早的 implement 行（借旧 change/旧阶段）。
+		const r1Parent = 'ci-smoke-parent-r1';
+		seedStageSet(tmp, r1Parent, 'implement', 'smoke-fixture-temp');
+		{
+			const { DatabaseSync } = require('node:sqlite');
+			const db = new DatabaseSync(path.join(tmp, '.pi', 'harness', 'events.db'));
+			db.prepare("INSERT INTO events (ts, session_id, kind, change, payload) VALUES (?, ?, 'stage.set', ?, ?)").run(
+				new Date().toISOString(),
+				r1Parent,
+				'smoke-fixture-legacy',
+				JSON.stringify({ stage: null, stageFamily: null, boundChange: 'smoke-fixture-legacy', source: 'fallback' }),
+			);
+			db.close();
+		}
+		const r1Child = {
+			cwd: tmp,
+			hasUI: false,
+			sessionManager: {
+				getSessionId: () => 'ci-smoke-child-r1',
+				getHeader: () => ({
+					parentSession: `/home/x/.pi/agent/sessions/dir/2026-09-17T00-00-00-000Z_${r1Parent}.jsonl`,
+				}),
+			},
+		};
+		await emit('session_start', { reason: 'startup' }, r1Child);
+		const r1ChildSp = await systemPrompt(r1Child);
+		check(
+			'R-1: 跨进程继承 legacy 绑定行 → 继承绑定而非回退旧阶段（无 temp/implement）',
+			/阶段：未绑定（仅索引）/.test(r1ChildSp) &&
+				r1ChildSp.includes('活跃变更：smoke-fixture-legacy') &&
+				!r1ChildSp.includes('smoke-fixture-temp') &&
+				!/阶段：implement/.test(r1ChildSp),
 		);
 
 		// 19.11 路径兜底解析：getHeader 不可用（未落盘/契约变化），但 getSessionFile() 形如
@@ -906,7 +1103,7 @@ const present = (sp, marker, heading) =>
 		const pathChildSp = await systemPrompt(pathChild);
 		check(
 			'跨进程: getHeader 缺失时按 fork 路径解父 id 并继承',
-			/档位：实现/.test(pathChildSp) &&
+			/阶段：implement/.test(pathChildSp) &&
 				pathChildSp.includes('活跃变更：smoke-fixture-budget') &&
 				pathChildSp.includes('### kwdom.md'),
 		);
@@ -925,17 +1122,17 @@ const present = (sp, marker, heading) =>
 		await emit('session_start', { reason: 'startup' }, noSrcChild);
 		check(
 			'跨进程: 无父子证据（非 fork 路径）→ 不继承（未激活）',
-			/档位：未激活/.test(await systemPromptOnly(noSrcChild)),
+			/阶段：未绑定/.test(await systemPromptOnly(noSrcChild)),
 		);
 
 		// 19.13 pi-web 子会话继承（harden-subagent-constraint-channel T3/D3）：pi-web Agent
 		//       工具派发的实现档子线程与 pi-subagents 同形——独立 sessionId + session_start
 		//       reason=startup + header parentSession（2026-09-18 实测样本 01a0b314 转录头）。
-		//       期望：mode.set source=inherit 记在子会话名下 + 注入带父会话绑定的 change
+		//       期望：stage.set source=inherit 记在子会话名下 + 注入带父会话绑定的 change
 		//       （稳定层 header 与 constraint.inject 记账 change 列均为绑定 change）。
 		const piwebParent = 'ci-smoke-parent-piweb';
-		seedModeSet(tmp, piwebParent, 'implementation', 'bind-c');
-		const beforePiweb = readModeSetFull(tmp).length;
+		seedStageSet(tmp, piwebParent, 'implement', 'bind-c');
+		const beforePiweb = readStageSetFull(tmp).length;
 		const piwebChild = {
 			cwd: tmp,
 			hasUI: false,
@@ -950,13 +1147,13 @@ const present = (sp, marker, heading) =>
 		const piwebSp = await systemPrompt(piwebChild);
 		check(
 			'pi-web: 子会话继承父绑定（注入带绑定 change + 其声明域）',
-			/档位：实现/.test(piwebSp) && piwebSp.includes('活跃变更：bind-c（档位绑定）') && piwebSp.includes('### kwdom.md'),
+			/阶段：implement/.test(piwebSp) && piwebSp.includes('活跃变更：bind-c（阶段绑定）') && piwebSp.includes('### kwdom.md'),
 		);
-		const piwebInherit = readModeSetFull(tmp)
+		const piwebInherit = readStageSetFull(tmp)
 			.slice(beforePiweb)
 			.filter((r) => r.source === 'inherit');
 		check(
-			'pi-web: mode.set source=inherit 记在子会话名下且带绑定 change',
+			'pi-web: stage.set source=inherit 记在子会话名下且带绑定 change',
 			piwebInherit.length === 1 &&
 				piwebInherit[0].session_id === 'ci-smoke-child-piweb' &&
 				piwebInherit[0].boundChange === 'bind-c',
@@ -1009,7 +1206,7 @@ const present = (sp, marker, heading) =>
 		check(
 			'T3-rev①: 内容含索引/档位块（未绑定档仅索引，无 change 文本）',
 			initMsgs[0].msg.content.includes('### idx.md') &&
-				initMsgs[0].msg.content.includes('档位：未激活') &&
+				initMsgs[0].msg.content.includes('阶段：未绑定') &&
 				initMsgs[0].msg.content.includes('活跃变更：无') &&
 				initMsgs[0].msg.content.includes('与 AGENTS.md 优先级宪法冲突时，以宪法为准') &&
 				!initMsgs[0].msg.content.includes('smoke-fixture'),
@@ -1048,7 +1245,7 @@ const present = (sp, marker, heading) =>
 		const mainSp = await systemPromptOnly(mainCtx);
 		check(
 			'T3-rev③: 主会话 before_agent_start 照常返回稳定层 systemPrompt（现状回归）',
-			mainSp.startsWith('BASE') && mainSp.includes('### idx.md') && mainSp.includes('档位：未激活'),
+			mainSp.startsWith('BASE') && mainSp.includes('### idx.md') && mainSp.includes('阶段：未绑定'),
 		);
 		const mainChan = ext.channelStateForTest('ci-smoke-main-t3rev');
 		check(
@@ -1059,7 +1256,7 @@ const present = (sp, marker, heading) =>
 		// 19.5 命中集按会话隔离（关键词 + JIT 各一例）
 		await emit('input', { text: '大预算词相关展示调整' }, sessA);
 		const aKw = await systemPrompt(sessA);
-		check('隔离: A 关键词命中投递全节（细节层）', aKw.includes('BIGKW-MARKER'));
+		check('隔离: A 关键词命中零正文注入（细节层不可见）', !aKw.includes('BIGKW-MARKER'));
 		markMessages();
 		await systemPromptOnly(sessB);
 		check('隔离: 他会话关键词命中不投递给本会话', !dynamicText().includes('BIGKW-MARKER'));
@@ -1069,10 +1266,13 @@ const present = (sp, marker, heading) =>
 			sessA,
 		);
 		const aJit = await systemPrompt(sessA);
-		check('隔离: A JIT 命中注入 bigjit', aJit.includes('### bigjit.md'));
+		check(
+			'隔离: A 编辑路径命中进路由清单（零正文）',
+			aJit.includes('docs/reference/standard/backend/bigjit.md') && !aJit.includes('### bigjit.md'),
+		);
 		markMessages();
 		await systemPromptOnly(sessB);
-		check('隔离: 他会话 JIT 命中不投递给本会话', !dynamicText().includes('bigjit'));
+		check('隔离: 他会话编辑路径命中不投递给本会话', !dynamicText().includes('bigjit'));
 
 		// 19.6 turn 绑定锁按会话隔离。
 		//     判别力顺序（review P2-4 修正）：必须让 **A 先持锁**、再让 B 写 change 目录。
@@ -1082,9 +1282,9 @@ const present = (sp, marker, heading) =>
 		await emit('session_start', { reason: 'new' }, sessB);
 		await emit('input', { text: '/opsx-new' }, sessB); // requirements 档：无 mtime 兜底 → 无绑定
 		await systemPromptOnly(sessB); // B 的 turn 起点（解 B 的锁）
-		const msBeforeLock = readModeSet(tmp).length;
+		const msBeforeLock = readStageSet(tmp).length;
 		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, sessA); // A 命令绑定 → 置 A 的锁
-		const msAfterLock = readModeSet(tmp);
+		const msAfterLock = readStageSet(tmp);
 		check(
 			'隔离: A 置锁前置成立（A 命令绑定已记账）',
 			msAfterLock.length === msBeforeLock + 1 &&
@@ -1096,7 +1296,7 @@ const present = (sp, marker, heading) =>
 			{ toolName: 'write', args: { path: 'openspec/changes/bind-c/x.md' } },
 			sessB,
 		);
-		const cBinds = readModeSet(tmp).filter((r) => r.source === 'edit-dir' && r.boundChange === 'bind-c');
+		const cBinds = readStageSet(tmp).filter((r) => r.source === 'edit-dir' && r.boundChange === 'bind-c');
 		check('隔离: turn 锁按会话独立（B 的兜底绑不被 A 的锁拦住）', cBinds.length >= 1);
 		const bBoundSp = await systemPrompt(sessB);
 		check(
@@ -1177,13 +1377,10 @@ const present = (sp, marker, heading) =>
 		);
 		writeCfg(bigCfg, 8); // 还原默认配置
 
-		// 20. 指纹按 regime 标记（fix-injection-transition-fingerprint-wipe）：
-		//     档位/绑定可 mid-turn（tool_execution_start）变化而快照重建延迟到下一 turn 起点，
-		//     延迟重建的指纹清空仅当 regime≠新快照 key —— mid-turn 切档后同 turn 已投递的
-		//     JIT 条目不被误清重投；真实 regime 切换（edit-dir 绑定）仍全量重投；fork 继承
-		//     陈旧快照 key 同理不重发。判别力：把清空条件改回无条件 isTransition → 场景 A/C 红；
-		//     把清空去掉（永不清空）→ 场景 B 红。用 requirements 档：implementation 有
-		//     mtime 兜底绑定会污染快照 key。
+		// 20. 指纹按 regime 标记（fix-injection-transition-fingerprint-wipe，阶段化后按**阶段族**）：
+		//     阶段/绑定可 mid-turn（tool_execution_start）变化而快照重建延迟到下一 turn 起点，
+		//     延迟重建的指纹清空仅当 regime≠新快照 key —— mid-turn 切阶段后同 turn 已投递的
+		//     内容不被误清重投；真实 regime 切换（族切换）仍全量重投。
 		writeCfg(
 			{
 				...bigCfg,
@@ -1192,78 +1389,56 @@ const present = (sp, marker, heading) =>
 			10,
 		);
 		const sessW = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-wipe' } };
-		// 场景 A（bug 复刻）：未激活 turn 建快照 → mid-turn skill 激活 → 同 turn JIT 即时投递
-		// → 下一 turn 快照重建：稳定层重建发生，但已投递节零重投。
-		//   断言动态层一律 systemPromptOnly（不消费消息）+ dynamicText()：systemPrompt()
-		//   会消费新消息，之后 dynamicText() 恒空、断言失去判别力。
+		const stageFile = path.join(tmp, OPENSPEC_CHANGES_DIR_REL, 'smoke-fixture-budget', 'stage.md');
+		// 场景 A：同族内阶段切换（implement → verify，同属 implementation 族）
+		//   → 快照键（stageFamily|boundChange）不变 → 稳定层不重建 → 已投递内容零重投
 		await emit('session_start', { reason: 'new' }, sessW);
-		const wSp1 = await systemPromptOnly(sessW); // 未激活 turn：建快照 key=none|none
-		check('regime: 未激活 turn 建快照（索引注入）', wSp1.includes('idx.md'));
+		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, sessW);
+		const wSp1 = await systemPromptOnly(sessW);
+		check('regime: 阶段绑定后稳定层建快照（implement 族路由清单）', wSp1.includes('阶段路由清单（implement）'));
 		markMessages();
+		fs.writeFileSync(stageFile, '<!-- stage: verify -->\n');
 		await emit(
 			'tool_execution_start',
-			{ toolName: 'read', args: { path: '/x/.pi/agent/skills/openspec-new-change/SKILL.md' } },
+			{ toolName: 'write', args: { path: 'openspec/changes/smoke-fixture-budget/stage.md' } },
 			sessW,
-		); // mid-turn requirements 激活（快照不重建）
-		check(
-			'regime: mid-turn skill 激活记账（source=skill, requirements）',
-			readModeSet(tmp).some((r) => r.source === 'skill' && r.mode === 'requirements' && !r.boundChange),
 		);
-		await emit(
-			'tool_execution_start',
-			{ toolName: 'edit', args: { path: 'backend-go/internal/platform/airouter/router.go' } },
-			sessW,
-		); // 同 turn JIT 命中 → 即时投递（指纹 regime=requirements|none）
-		const wJit = dynamicText();
-		markMessages();
-		check('regime: 同 turn JIT 即时投递（fixture 全文回落）', wJit.includes('FULLDOC-MARKER') && wJit.includes('STD2-FULLDOC'));
-		const wSp2 = await systemPromptOnly(sessW); // 下一 turn：延迟快照重建
-		check('regime: 下一 turn 稳定层按新档位重建（需求档 header）', /档位：需求/.test(wSp2));
 		check(
-			'regime: mid-turn 切档后同 turn 已投递内容零重投（本案修复点）',
-			!dynamicText().includes('📎') && !dynamicText().includes('FULLDOC-MARKER'),
+			'regime: mid-turn 阶段变更记账（source=edit-dir + stage=verify）',
+			readStageSet(tmp).some((r) => r.source === 'edit-dir' && r.stage === 'verify'),
 		);
+		check('regime: mid-turn 切阶段后同 turn 已投递内容零重投', !dynamicText().includes('📎'));
+		const wSp2 = await systemPromptOnly(sessW); // 下一 turn：同族 → 快照键不变 → 不重建
+		check('regime: 同族切阶段 → 稳定层不重建（快照键=阶段族不变）', wSp2 === wSp1);
 		markMessages();
 		await systemPromptOnly(sessW); // 隔 N turn 仍零重投
 		check('regime: 稳态零投递保持（指纹+regime 存续）', !dynamicText().includes('📎'));
 		markMessages();
-		// 场景 B（反向护栏）：真实 regime 切换（edit-dir 兜底绑定）→ 指纹清空 → 全量重投
+		// 场景 B（反向护栏）：真实 regime 切换（族切换 implementation → planning）
+		//   → 指纹清空 → 全量重投
+		fs.writeFileSync(stageFile, '<!-- stage: design -->\n');
 		await emit(
 			'tool_execution_start',
-			{ toolName: 'edit', args: { path: 'openspec/changes/smoke-fixture-budget/proposal.md' } },
+			{ toolName: 'write', args: { path: 'openspec/changes/smoke-fixture-budget/stage.md' } },
 			sessW,
 		);
+		markMessages();
+		const wSp3 = await systemPromptOnly(sessW); // 族切换 → 快照重建
 		check(
-			'regime: edit-dir 兜底绑定记账（source=edit-dir）',
-			readModeSet(tmp).some((r) => r.source === 'edit-dir' && r.boundChange === 'smoke-fixture-budget'),
-		);
-		const wSp3 = await systemPromptOnly(sessW); // 绑定切换后快照重建
-		check(
-			'regime: 绑定切换后稳定层重建（新绑定 + 声明域红线层）',
-			wSp3.includes('活跃变更：smoke-fixture-budget') && wSp3.includes('### kwdom.md'),
+			'regime: 族切换后稳定层重建（新阶段路由清单）',
+			wSp3 !== wSp1 && wSp3.includes('阶段路由清单（design）'),
 		);
 		check(
-			// requirements 档不注 change 级文件（仅实现档），全量重投以粘性 JIT 条目为证
-			'regime: 真实 regime 切换仍全量重投（含已投递过的 JIT 节）',
-			dynamicText().includes('FULLDOC-MARKER') && dynamicText().includes('STD2-FULLDOC'),
+			'regime: 真实 regime 切换仍全量重投（含已投递过的红线层）',
+			dynamicText().includes('KWDOM-REDLINE-1'),
 		);
 		markMessages();
-		// 场景 C（fork 变体）：父 mid-turn 切档已投递、快照未及重建（陈旧 none|none）→
-		// 子会话继承父 channel → 子首 turn 快照重建但父已投递内容不重发（fork 语义）
+		// 场景 C（fork 变体）：父已投递、快照已重建 → 子会话继承父 channel（指纹 + regime）
+		//   → 子首 turn 快照重建但父已投递内容不重发（fork 语义）
 		const sessP = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-wipe-parent' } };
 		await emit('session_start', { reason: 'new' }, sessP);
-		await systemPromptOnly(sessP); // 未激活快照 none|none（保持陈旧，不重建）
-		markMessages();
-		await emit(
-			'tool_execution_start',
-			{ toolName: 'read', args: { path: '/x/.pi/agent/skills/openspec-new-change/SKILL.md' } },
-			sessP,
-		);
-		await emit(
-			'tool_execution_start',
-			{ toolName: 'edit', args: { path: 'backend-go/internal/platform/airouter/router.go' } },
-			sessP,
-		); // 父同 turn JIT 投递（指纹 regime=requirements|none，快照仍 none|none）
+		await emit('input', { text: '/opsx-apply smoke-fixture-budget' }, sessP);
+		await systemPromptOnly(sessP);
 		markMessages();
 		const childW = {
 			cwd: tmp,
@@ -1276,31 +1451,27 @@ const present = (sp, marker, heading) =>
 			},
 		};
 		await emit('session_start', { reason: 'startup' }, childW); // 继承父 channel（指纹 regime=新 key）
-		// T3-rev：子会话 startup 末尾即投递稳定层消息（header 块），首 turn system prompt 冻结
 		await systemPromptOnly(childW); // 子首 turn：防双投（systemPrompt 不再拼稳定层块）
 		check(
-			'regime: fork 子会话继承父档位（需求档，经 session_start 消息投递）',
-			/档位：需求/.test(dynamicText()),
+			'regime: fork 子会话继承父阶段（session_start 消息投递稳定层）',
+			dynamicText().includes('阶段路由清单'),
 		);
 		check(
 			'regime: fork 子会话父已投递内容不重发（fork 指纹继承语义保持）',
-			!dynamicText().includes('📎') && !dynamicText().includes('FULLDOC-MARKER'),
+			!dynamicText().includes('KWDOM-REDLINE-1'),
 		);
 		markMessages();
-
-		// 21. 无档位编辑路径 JIT（enable-unbound-jit-injection）
-		//     契约：「未激活档 = 稳定层仅索引 + 编辑路径命中经动态层追加」；
-		//     关键词通道（matchText / allowedKeywordDocs）、change 绑定仍以档位为开关。
-		//     落点 = test-cases.md 主链路表步 1~12（unbound-jit-1..12）。
-		// 21.1 步 1 + 步 7：未激活档 edit airouter → 动态层送达 ai-summary 全节；
-		//      稳定层（system prompt）字节完全不变（快照键 none|none）。
+		// 21. 编辑路径命中 → **只进路由清单**（整节正文通道退役，stage-driven D4）
+		//     契约：命中文档**零正文注入**；已绑定阶段时进本阶段路由清单（路径 + 节名），
+		//     由模型自主 read；未绑定阶段时无路由清单 → 零投递。
+		// 21.1 未绑定阶段：edit airouter → 零正文、零动态层发送
 		await emit('session_start', { reason: 'new' });
 		markMessages();
 		const uSp0 = await systemPromptOnly();
 		const uStableBytes = Buffer.byteLength(uSp0, 'utf8');
 		check(
-			'unbound-jit-7: 未激活档稳定层仅索引（仅索引文档，无域节）',
-			uSp0.includes('### constraints-index.md') && /档位：未激活/.test(uSp0),
+			'route-hit-1: 未绑定阶段稳定层仅索引（无路由清单）',
+			uSp0.includes('### constraints-index.md') && /阶段：未绑定/.test(uSp0) && !uSp0.includes('阶段路由清单'),
 		);
 		markMessages();
 		await emit('tool_execution_start', {
@@ -1309,119 +1480,107 @@ const present = (sp, marker, heading) =>
 		});
 		const uJit = dynamicText();
 		markMessages();
-		check('unbound-jit-1: 未激活档 edit airouter 送达 ai-summary 约束节', uJit.includes('### ai-summary.md'));
-		check(
-			'unbound-jit-1: 注入内容为该域完整节（细节层可达）',
-			present(uJit, 'capability 枚举固定为六类', '### ai-summary.md'),
-		);
-		check('unbound-jit-1: standard 文档同样走 JIT（ai-logging Requirements 节）', uJit.includes('### ai-logging.md'));
-		check(
-			'unbound-jit-1: 动态层走 steer 通道（不进 system prompt）',
-			messages.length > 0 && messages[messages.length - 1].opts?.deliverAs === 'steer',
-		);
+		check('route-hit-1: 未绑定阶段编辑命中零正文注入（ai-summary）', !uJit.includes('### ai-summary.md'));
+		check('route-hit-1: 未绑定阶段编辑命中零动态层发送', uJit.trim() === '');
 		const uSp1 = await systemPromptOnly();
 		check(
-			'unbound-jit-7: JIT 注入前后稳定层字节完全一致',
+			'route-hit-2: 未绑定阶段稳定层字节完全不变',
 			uSp1 === uSp0 && Buffer.byteLength(uSp1, 'utf8') === uStableBytes,
 		);
 
-		// 21.2 步 2：standard 文档辖区（非 flow 域）同样走 JIT
+		// 21.2 已绑定阶段：编辑命中 → 下一 turn 路由清单差异送达（路径 + 节名，零正文）
 		await emit('session_start', { reason: 'new' });
-		markMessages();
-		await emit('tool_execution_start', { toolName: 'edit', args: { path: 'front/app/app.vue' } });
-		const uStd = dynamicText();
-		markMessages();
-		check(
-			'unbound-jit-2: 未激活档 edit front/app/app.vue 送达 standard 文档（loading-experience）',
-			uStd.includes('### loading-experience.md'),
-		);
-
-		// 21.3 步 3：未映射路径 → 零动态层发送
-		await emit('session_start', { reason: 'new' });
-		markMessages();
-		await emit('tool_execution_start', {
-			toolName: 'edit',
-			args: { path: 'front/app/composables/useOnboarding.ts' },
-		});
-		const uNone = dynamicText();
-		markMessages();
-		check('unbound-jit-3: 未映射路径零动态层发送', uNone.trim() === '');
-
-		// 21.4 步 4：同域多次编辑只注一次（粘性集合 + 指纹去重）
-		await emit('session_start', { reason: 'new' });
+		await emit('input', { text: `smoke 绑定 ${FIXTURE_NAME}` });
+		await systemPromptOnly();
 		markMessages();
 		await emit('tool_execution_start', {
 			toolName: 'edit',
 			args: { path: 'backend-go/internal/platform/airouter/embedding.go' },
 		});
-		const uFirst = dynamicText();
+		const uRoute = await systemPrompt();
+		check(
+			'route-hit-3: 编辑命中文档进路由清单（路径 + 取数方式）',
+			uRoute.includes('docs/reference/standard/backend/ai-logging.md') &&
+				uRoute.includes('编辑路径命中，自主导入'),
+		);
+		check('route-hit-3: 编辑命中零正文注入（整节不进上下文）', !uRoute.includes('所有 AI 调用必须经 airouter'));
+
+		// 21.3 粘性：同一路径重复编辑 → 路由清单不变 → 零重投
 		markMessages();
 		await emit('tool_execution_start', {
 			toolName: 'edit',
 			args: { path: 'backend-go/internal/platform/airouter/router.go' },
 		});
-		const uSecond = dynamicText();
-		markMessages();
-		check(
-			'unbound-jit-4: 同域多次编辑只注一次（第二条零投递）',
-			uFirst.includes('### ai-summary.md') && uSecond.trim() === '',
-		);
+		const uRoute2 = await systemPrompt();
+		check('route-hit-4: 重复编辑零重投（命中集合只增不减 + 指纹去重）', !uRoute2.includes('📎 约束补充'));
 
-		// 21.5 步 5：关键词通道保持关闭（未激活档仍不按对话文本注域）
+		// 21.4 未映射路径 → 零动态层发送
+		await emit('session_start', { reason: 'new' });
+		await emit('input', { text: `smoke 绑定 ${FIXTURE_NAME}` });
+		await systemPromptOnly();
+		markMessages();
+		await emit('tool_execution_start', {
+			toolName: 'edit',
+			args: { path: 'front/app/utils/useUnmappedHelper.ts' },
+		});
+		await systemPromptOnly();
+		const uNone = dynamicText();
+		markMessages();
+		check('route-hit-5: 未映射路径零动态层发送', uNone.trim() === '');
+
+		// 21.5 关键词通道保持关闭（未绑定阶段不按对话文本注域）
 		await emit('session_start', { reason: 'new' });
 		markMessages();
 		await emit('input', { text: '日报与定时任务的展示要调整' });
 		const uKw = await systemPrompt();
 		check(
-			'unbound-jit-5: 未激活档关键词通道保持关闭（不注 daily-report / scheduler）',
+			'route-hit-6: 关键词通道保持关闭（不注 daily-report / scheduler 正文）',
 			!uKw.includes('### daily-report.md') && !uKw.includes('### scheduler.md'),
 		);
 
-		// 21.6 步 8：命中巨域（daily-report 47KB）→ 预算降级为占位行
+		// 21.6 巨域（daily-report）→ 零正文（未声明域不送红线层）
 		await emit('session_start', { reason: 'new' });
+		await emit('input', { text: `smoke 绑定 ${FIXTURE_NAME}` });
+		await systemPromptOnly();
 		markMessages();
 		await emit('tool_execution_start', {
 			toolName: 'edit',
 			args: { path: 'backend-go/internal/topicgraph/service/daily_report_orchestrator.go' },
 		});
-		const uDeg = dynamicText();
-		markMessages();
+		const uDeg = await systemPrompt();
 		check(
-			'unbound-jit-8: 巨域超预算 → 降级为占位行（标题 + read 路径保留）',
-			uDeg.includes('### daily-report.md') && uDeg.includes('read docs/reference/flow/daily-report.md'),
-		);
-		check(
-			'unbound-jit-8: 消息头列出已降级路径（模型可见省略通知）',
-			/预算降级/.test(uDeg) && uDeg.includes('daily-report.md'),
+			'route-hit-7: 巨域命中零正文（红线层只随声明域送达）',
+			!uDeg.includes('### daily-report.md') && !uDeg.includes('read docs/reference/flow/daily-report.md」节'),
 		);
 
-		// 21.7 步 12a：主会话 compact → 下一注入时机重发 JIT 集合
+		// 21.7 compact → 下一注入时机重发动态集合（红线层）
 		await emit('session_start', { reason: 'new' });
-		markMessages();
-		await emit('tool_execution_start', {
-			toolName: 'edit',
-			args: { path: 'backend-go/internal/platform/airouter/embedding.go' },
-		});
+		await emit('input', { text: `smoke 绑定 ${FIXTURE_NAME}` });
+		await systemPromptOnly();
 		markMessages();
 		await emit('session_compact', { reason: 'manual' });
 		const uCompact = await systemPrompt();
 		check(
-			'unbound-jit-12: 无档主会话 compact 后重发 JIT 集合',
-			uCompact.includes('约束快照（compact 后重发）') && uCompact.includes('### ai-summary.md'),
+			'route-hit-8: compact 后重发动态集合（红线层快照）',
+			uCompact.includes('约束快照（compact 后重发）') && uCompact.includes('同 board 同日重跑必须整份覆盖重建'),
 		);
 
-		// 21.8 步 12b：reload → 命中集清零（后续编辑可重新命中）
+		// 21.8 reload → 命中集清零（后续编辑可重新命中）
 		await emit('session_start', { reason: 'reload' });
+		await emit('input', { text: `smoke 绑定 ${FIXTURE_NAME}` });
+		await systemPromptOnly();
 		markMessages();
 		await emit('tool_execution_start', {
 			toolName: 'edit',
 			args: { path: 'backend-go/internal/platform/airouter/embedding.go' },
 		});
-		const uReload = dynamicText();
-		markMessages();
-		check('unbound-jit-12: reload 后命中集清零（重新编辑可再命中）', uReload.includes('### ai-summary.md'));
+		const uReload = await systemPrompt();
+		check(
+			'route-hit-9: reload 后命中集清零（重新编辑可再命中）',
+			uReload.includes('docs/reference/standard/backend/ai-logging.md'),
+		);
 
-		// 21.9 步 9：子线程（父未激活档）按**自身**编辑路径自愈（不依赖主线程 brief）
+		// 21.9 子线程（父未绑定阶段）按自身路径自愈 → 零正文（无阶段 → 无路由清单）
 		//      跑在 tmp 夹具 cwd（真实事件库落 tmp，不写真仓库事实库）
 		const uParent = {
 			cwd: tmp,
@@ -1450,63 +1609,12 @@ const present = (sp, marker, heading) =>
 		const uChildJit = dynamicText();
 		markMessages();
 		check(
-			'unbound-jit-9: 子线程（父未激活档）按自身路径自愈（收到约束节 steer）',
-			uChildJit.includes('### unbound-dom.md'),
+			'route-hit-10: 子线程（父未绑定）编辑命中零正文注入',
+			!uChildJit.includes('### unbound-dom.md') && !uChildJit.includes('UNBOUND-REDLINE-1'),
 		);
 
-		// 21.10 步 12c：同进程 fork 继承命中集 → 父已送达节不重投
-		const uParent2 = {
-			cwd: tmp,
-			hasUI: false,
-			sessionManager: { getSessionId: () => 'ci-smoke-unbound-p2' },
-		};
-		await emit('session_start', { reason: 'new' }, uParent2);
-		markMessages();
-		await emit(
-			'tool_execution_start',
-			{ toolName: 'edit', args: { path: 'backend-go/internal/unboundmod/parent.go' } },
-			uParent2,
-		);
-		markMessages();
-		const uChild2 = {
-			cwd: tmp,
-			hasUI: false,
-			sessionManager: {
-				getSessionId: () => 'ci-smoke-unbound-c2',
-				getHeader: () => ({
-					parentSession: '/x/2026-01-01T00-00-00-000Z_ci-smoke-unbound-p2.jsonl',
-				}),
-			},
-		};
-		await emit('session_start', { reason: 'startup' }, uChild2);
-		markMessages();
-		await emit(
-			'tool_execution_start',
-			{ toolName: 'edit', args: { path: 'backend-go/internal/unboundmod/child2.go' } },
-			uChild2,
-		);
-		const uForkJit = dynamicText();
-		markMessages();
-		check(
-			'unbound-jit-12: 同进程 fork 继承命中集 → 父已送达内容不重投',
-			uForkJit.trim() === '',
-		);
-		const uForkSp = await systemPrompt(uChild2);
-		check(
-			'unbound-jit-12: fork 子会话首 turn 不重投父已送达节',
-			!uForkSp.includes('### unbound-dom.md'),
-		);
-		// 21.11 步 12d：无 before_agent_start 的子线程 compact → 不重发（不伪造通道）
-		await emit('session_compact', { reason: 'manual' }, uChild2);
-		const uChildCompact = dynamicText();
-		markMessages();
-		check(
-			'unbound-jit-12: 无 before_agent_start 的子线程 compact 不重发',
-			uChildCompact.trim() === '',
-		);
-
-		// 21.12 步 10 + 步 6：记账归因（tier=none）+ 不绑定 change（无 mode.set）
-		//      夹具场景（tmp cwd，真实事件库落盘）：无档位 edit 命中夹具域标签。
+		// 21.10 记账归因（tier=none）+ 编辑路径命中不绑定 change
+		//      夹具场景（tmp cwd，真实事件库落盘）：未绑定阶段 edit 命中夹具域标签。
 		writeCfg({ ...bigCfg, channel: 'split' }, 12);
 		const uCtx = {
 			cwd: tmp,
@@ -1523,8 +1631,8 @@ const present = (sp, marker, heading) =>
 		const uFixtureJit = dynamicText();
 		markMessages();
 		check(
-			'unbound-jit-1: 夹具域命中（未激活档追加注入夹具域约束节）',
-			uFixtureJit.includes('### unbound-dom.md'),
+			'route-hit-11: 未绑定阶段夹具域命中零正文注入',
+			!uFixtureJit.includes('### unbound-dom.md'),
 		);
 		const uDb = new EvDb(path.join(tmp, '.pi', 'harness', 'events.db'), { readOnly: true });
 		const uInjectRows = uDb
@@ -1532,23 +1640,16 @@ const present = (sp, marker, heading) =>
 			.all()
 			.map((r) => JSON.parse(r.payload));
 		check(
-			'unbound-jit-10: 记账 reason=jit-path + tier=none + mode 仍为文档形态',
-			uInjectRows.some(
-				(p) =>
-					p.reason === 'jit-path' &&
-					p.tier === 'none' &&
-					(p.mode === 'section' || p.mode === 'full') &&
-					String(p.path).endsWith('unbound-dom.md') &&
-					typeof p.bytes === 'number',
-			),
+			'route-hit-11: 记账无 jit-path / keyword 原因行（整节正文通道退役）',
+			!uInjectRows.some((p) => p.reason === 'jit-path' || p.reason === 'keyword'),
 		);
-		const uModeSetCount = uDb
-			.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='mode.set' AND session_id='ci-smoke-unbound'")
+		const uStageSetCount = uDb
+			.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='stage.set' AND session_id='ci-smoke-unbound'")
 			.get().n;
-		check('unbound-jit-6: 未激活档 JIT 不绑定 change（无 mode.set 记账）', uModeSetCount === 0);
+		check('route-hit-12: 未绑定阶段编辑命中不绑定 change（无 stage.set 记账）', uStageSetCount === 0);
 		uDb.close();
 
-		// 21.13 步 11：legacy 通道不即时投递（下一 turn 落 system prompt）
+		// 21.11 legacy 通道不即时投递（下一 turn 落 system prompt，且仍无整节正文）
 		writeCfg({ ...bigCfg, channel: 'legacy' }, 14);
 		const uLegacyCtx = {
 			cwd: tmp,
@@ -1564,13 +1665,253 @@ const present = (sp, marker, heading) =>
 		);
 		const uLegacyJit = dynamicText();
 		markMessages();
-		check('unbound-jit-11: legacy 通道本 turn 零 steer', uLegacyJit.trim() === '');
+		check('route-hit-13: legacy 通道本 turn 零 steer', uLegacyJit.trim() === '');
 		const uLegacySp = await systemPrompt(uLegacyCtx);
 		check(
-			'unbound-jit-11: legacy 下一 turn system prompt 含该文档',
-			uLegacySp.includes('### unbound-dom.md'),
+			'route-hit-13: legacy 下一 turn system prompt 无该文档正文',
+			!uLegacySp.includes('### unbound-dom.md') && !uLegacySp.includes('UNBOUND-REDLINE-1'),
 		);
 		writeCfg(bigCfg, 16); // 还原默认配置（split 通道）
+		// 21.12 读取记账（3.5 + review R-4）：read **成功回执**（tool_execution_end 且非
+		//       error）才记 constraint.read；读普通源码不记（控事实库体量）；同一文档重复
+		//       读只记一条（幂等）；发起但失败的读取不算证据。
+		const crCtx = { cwd: tmp, hasUI: false, sessionManager: { getSessionId: () => 'ci-smoke-read' } };
+		await emit('session_start', { reason: 'new' }, crCtx);
+		const rd = (id, path) => [
+			['tool_execution_start', { toolCallId: id, toolName: 'read', args: { path } }],
+			['tool_execution_end', { toolCallId: id, toolName: 'read', isError: false }],
+		];
+		for (const [ev, args] of [
+			...rd('rd-1', 'docs/reference/flow/redline-ok.md'),
+			...rd('rd-2', 'docs/reference/standard/backend/testing.md'),
+			...rd('rd-3', 'backend-go/internal/foo/bar.go'),
+			...rd('rd-4', 'docs/reference/flow/redline-ok.md'),
+		]) {
+			await emit(ev, args, crCtx);
+		}
+		// 失败读取（isError）与发起后未回执的读取：均不得记账
+		await emit('tool_execution_start', { toolCallId: 'rd-err', toolName: 'read', args: { path: 'docs/reference/flow/redline-ok.md' } }, crCtx);
+		await emit('tool_execution_end', { toolCallId: 'rd-err', toolName: 'read', isError: true }, crCtx);
+		await emit('tool_execution_start', { toolCallId: 'rd-hang', toolName: 'read', args: { path: 'docs/reference/standard/backend/lint.md' } }, crCtx);
+		const crDb = new EvDb(path.join(tmp, '.pi', 'harness', 'events.db'), { readOnly: true });
+		const crRows = crDb
+			.prepare("SELECT payload FROM events WHERE kind='constraint.read' AND session_id='ci-smoke-read'")
+			.all();
+		crDb.close();
+		const crPaths = crRows.map((r) => JSON.parse(r.payload).path);
+		check(
+			'constraint.read: 成功读约束文档才记账（flow + standard 各一条）',
+			crPaths.includes('docs/reference/flow/redline-ok.md') &&
+				crPaths.includes('docs/reference/standard/backend/testing.md'),
+		);
+		check('constraint.read: 读普通源码不记账', !crPaths.some((p) => p.includes('bar.go')));
+		check(
+			'constraint.read: 同一文档重复读只记一条（幂等）',
+			crPaths.filter((p) => p === 'docs/reference/flow/redline-ok.md').length === 1,
+		);
+		check(
+			'R-4: 失败读取（isError）不记账',
+			crPaths.filter((p) => p === 'docs/reference/flow/redline-ok.md').length === 1,
+		);
+		check('R-4: 发起未回执（无 end）不算读', !crPaths.includes('docs/reference/standard/backend/lint.md'));
+
+		// 22. stage 标识与阶段路由清单（stage-driven-constraint-injection 任务组 1：lib/stage.ts 纯函数）
+		//     载体 = change 目录内 stage.md 头部 `<!-- stage: <值> -->` marker，三态 missing/invalid/ok。
+		//     本组只测纯函数与清单装配（扩展管线接入属任务组 3）。
+		const stage = require('../lib/stage.ts');
+		check(
+			'stage-parse-1: 恰好一条合法 marker → ok + stage',
+			stage.parseStageMarker('<!-- stage: implement -->').kind === 'ok' &&
+				stage.parseStageMarker('<!-- stage: implement -->').stage === 'implement',
+		);
+		check(
+			'stage-parse-2: 无 marker → missing（legacy，不阻断）',
+			stage.parseStageMarker('# 阶段\n\n正文没有 marker\n').kind === 'missing',
+		);
+		check(
+			'stage-parse-3: 空串/null → missing',
+			stage.parseStageMarker('').kind === 'missing' &&
+				stage.parseStageMarker(null).kind === 'missing',
+		);
+		check(
+			'stage-parse-4: marker 重复 → invalid（不取任一条生效）',
+			stage.parseStageMarker('<!-- stage: implement -->\n<!-- stage: design -->').kind === 'invalid',
+		);
+		check(
+			'stage-parse-5: 值不在取值域 → invalid',
+			stage.parseStageMarker('<!-- stage: coding -->').kind === 'invalid',
+		);
+		check(
+			'stage-parse-6: 大小写不匹配 → invalid（大小写敏感）',
+			stage.parseStageMarker('<!-- stage: Implement -->').kind === 'invalid',
+		);
+		check(
+			'stage-parse-7: 6 档取值域全覆盖解析为 ok',
+			stage.STAGES.length === 6 &&
+				stage.STAGES.every(
+					(s) => stage.parseStageMarker(`<!-- stage: ${s} -->`).kind === 'ok',
+				),
+		);
+		check(
+			'stage-family-1: explore/propose/design → planning',
+			stage.stageFamilyOf('explore') === 'planning' &&
+				stage.stageFamilyOf('propose') === 'planning' &&
+				stage.stageFamilyOf('design') === 'planning',
+		);
+		check(
+			'stage-family-2: implement/verify/archive → implementation',
+			stage.stageFamilyOf('implement') === 'implementation' &&
+				stage.stageFamilyOf('verify') === 'implementation' &&
+				stage.stageFamilyOf('archive') === 'implementation',
+		);
+		check(
+			'stage-family-3: 非法 stage → null（不抛错）',
+			stage.stageFamilyOf('coding') === null &&
+				stage.stageFamilyOf(null) === null &&
+				stage.stageFamilyOf(undefined) === null,
+		);
+		check(
+			'stage-legacy: missing/invalid 判 legacy，ok 不判',
+			stage.isLegacyStage({ kind: 'missing' }) === true &&
+				stage.isLegacyStage({ kind: 'invalid' }) === true &&
+				stage.isLegacyStage({ kind: 'ok', stage: 'design' }) === false,
+		);
+		const stageFixtureDir = path.join(
+			tmp,
+			OPENSPEC_CHANGES_DIR_REL,
+			'smoke-fixture-stage',
+		);
+		fs.mkdirSync(stageFixtureDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(stageFixtureDir, 'stage.md'),
+			'<!-- stage: implement -->\n\n# 阶段\n',
+		);
+		const stageFileOk = stage.readStageFile(stageFixtureDir);
+		check(
+			'stage-file-1: stage.md 存在且 marker 合法 → ok + stage',
+			stageFileOk.kind === 'ok' && stageFileOk.stage === 'implement',
+		);
+		fs.writeFileSync(path.join(stageFixtureDir, 'stage.md'), '');
+		check(
+			'stage-file-2: 空 stage.md → missing（legacy 降级）',
+			stage.readStageFile(stageFixtureDir).kind === 'missing',
+		);
+		fs.rmSync(stageFixtureDir, { recursive: true, force: true });
+		check(
+			'stage-file-3: stage.md 不存在 → missing 且不抛错（legacy 不阻断）',
+			stage.readStageFile(path.join(tmp, 'no-such-change')).kind === 'missing',
+		);
+		const codeDocPaths = [
+			...stage.ROUTING_CODE_DOCS_BY_STACK.backend.map((d) => d.path),
+			...stage.ROUTING_CODE_DOCS_BY_STACK.frontend.map((d) => d.path),
+		];
+		const exploreRouting = stage.buildStageRouting('explore', {
+			domainDocs: ['daily-report'],
+		});
+		const designRouting = stage.buildStageRouting('design', {
+			domainDocs: ['daily-report'],
+		});
+		const implementRouting = stage.buildStageRouting('implement', {
+			domainDocs: ['daily-report'],
+			stack: 'backend',
+		});
+		const verifyRouting = stage.buildStageRouting('verify', {
+			domainDocs: ['daily-report'],
+			stack: 'frontend',
+		});
+		check(
+			'stage-routing-1: planning 族清单含索引 + 声明域 flow 文档',
+			exploreRouting.some((i) => i.path === 'docs/reference/constraints-index.md') &&
+				exploreRouting.some((i) => i.path === 'docs/reference/flow/daily-report.md'),
+		);
+		check(
+			'stage-routing-2: planning 族清单不含代码规范文档（按栈条件文档不出现）',
+			!exploreRouting.some((i) => codeDocPaths.includes(i.path)) &&
+				!designRouting.some((i) => codeDocPaths.includes(i.path)),
+		);
+		check(
+			'stage-routing-3: design 族加 UI 契约规范（layout + interaction）',
+			designRouting.some((i) => i.path === 'docs/reference/standard/frontend/layout.md') &&
+				designRouting.some((i) => i.path === 'docs/reference/standard/frontend/interaction.md'),
+		);
+		check(
+			'stage-routing-4: implement 族含按栈命中的代码规范文档（backend 栈命中、frontend 栈不命中）',
+			implementRouting.some((i) => i.path === 'docs/reference/standard/backend/testing.md') &&
+				!implementRouting.some((i) => i.path === 'docs/reference/standard/frontend/code-style.md'),
+		);
+		check(
+			'stage-routing-5: implement 族无栈命中 → 不含任何代码规范文档',
+			!stage
+				.buildStageRouting('implement', { domainDocs: [] })
+				.some((i) => codeDocPaths.includes(i.path)),
+		);
+		check(
+			'stage-routing-6: verify 族加验收与归档规范（test-design / commit-pr / doc-authoring）',
+			verifyRouting.some((i) => i.path === 'docs/reference/standard/shared/test-design.md') &&
+				verifyRouting.some((i) => i.path === 'docs/reference/standard/shared/commit-pr.md') &&
+				verifyRouting.some((i) => i.path === 'docs/reference/standard/shared/doc-authoring.md'),
+		);
+		check(
+			'stage-routing-7: 声明域为空 → 清单仍含索引（不崩）',
+			stage.buildStageRouting('explore', { domainDocs: [] }).length >= 1 &&
+				stage.buildStageRouting('explore', {}).length >= 1,
+		);
+		check(
+			'stage-routing-8: 清单项只含路径 + 节名 + 取数方式，不内联正文（无换行、单项 ≤300 字节）',
+			exploreRouting.every(
+				(i) => Object.keys(i).sort().join(',') === 'how,path,section',
+			) &&
+				exploreRouting.every((i) => i.how.length <= 300 && !i.how.includes('\n')),
+		);
+		check(
+			'stage-routing-9: 路由清单含取数命令（constraint-digest.sh --brief --domains <域>）',
+			implementRouting.some((i) =>
+				i.how.includes(
+					'bash scripts/harness/constraint-digest.sh --brief --domains daily-report',
+				),
+			),
+		);
+		check(
+			'read-path-1: 相对路径原样归一',
+			stage.normalizeRepoPath('docs/reference/flow/daily-report.md') ===
+				'docs/reference/flow/daily-report.md',
+		);
+		check(
+			'read-path-2: 绝对路径剥仓库根前缀',
+			stage.normalizeRepoPath(
+				path.join(REPO_ROOT, 'docs/reference/flow/daily-report.md'),
+				REPO_ROOT,
+			) === 'docs/reference/flow/daily-report.md',
+		);
+		check(
+			'read-path-3: Windows 反斜杠归一为正斜杠',
+			stage.normalizeRepoPath('docs\\reference\\flow\\daily-report.md') ===
+				'docs/reference/flow/daily-report.md',
+		);
+		check(
+			'read-path-4: 路径含 .. → 解析后仍在仓库内',
+			stage.normalizeRepoPath('docs/reference/flow/../flow/daily-report.md') ===
+				'docs/reference/flow/daily-report.md',
+		);
+		check(
+			'read-path-5: 路径含 .. 越出仓库根 → null',
+			stage.normalizeRepoPath('../../outside.md') === null,
+		);
+		check(
+			'read-path-6: 大小写差异保持原样（Linux 大小写敏感 → 不算同一文档）',
+			stage.normalizeRepoPath('Docs/Reference/Flow/Daily-Report.md') ===
+				'Docs/Reference/Flow/Daily-Report.md' &&
+				stage.isConstraintDocPath(
+					stage.normalizeRepoPath('Docs/Reference/Flow/Daily-Report.md'),
+				) === false,
+		);
+		check(
+			'read-path-7: 约束文档白名单（flow 顶层 .md + standard 任意层级 .md）',
+			stage.isConstraintDocPath('docs/reference/flow/daily-report.md') === true &&
+				stage.isConstraintDocPath('docs/reference/standard/backend/testing.md') === true &&
+				stage.isConstraintDocPath('front/app.vue') === false &&
+				stage.isConstraintDocPath('docs/reference/flow/diagrams/x.md') === false,
+		);
 
 		let fail = 0;
 		for (const [name, ok] of checks) {
@@ -1585,6 +1926,8 @@ const present = (sp, marker, heading) =>
 		}
 	} finally {
 		fs.rmSync(FIXTURE, { recursive: true, force: true });
+		fs.rmSync(DOM_UNION_FIXTURE, { recursive: true, force: true });
+		fs.rmSync(DOM_PROP_FIXTURE, { recursive: true, force: true });
 		fs.rmSync(RESEARCH_FIXTURE, { recursive: true, force: true });
 		if (poolExisted) fs.writeFileSync(RESEARCH_POOL, poolOrig);
 		else fs.rmSync(RESEARCH_POOL, { force: true });

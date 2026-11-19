@@ -82,12 +82,12 @@ import {
 	mkdirSync,
 } from "node:fs";
 import { join, delimiter } from "node:path";
-import { logEvent, queryBySession } from "./lib/harness-log";
+import { logEvent } from "./lib/harness-log";
 import { detectActiveChange } from "./lib/active-change";
 import {
 	syncEditMap,
 	resetEditMapState,
-	parseModeSetPayload,
+	latestBoundChange,
 	latestEditMapByChange,
 } from "./lib/edit-map";
 import {
@@ -687,7 +687,7 @@ export default function (pi: ExtensionAPI) {
 
 		// 3.7 并发外部归因预取（attribute-concurrent-gate-noise D5/D7 +
 		//     add-foreign-gate-steer-attribution D4 修复）：mine = 本会话累计触发集 ∪
-		//     本 change（mode.set boundChange）归属；foreign = 会话启动基线 ∪ 其他 change
+		//     本 change（stage.set boundChange）归属；foreign = 会话启动基线 ∪ 其他 change
 		//     归属。gateLog 是同步回调，判定集合必须在此（门禁命令执行前）预取完成，
 		//     不得在回调内发起查询。库不可用 → 归属信号缺席，判定退化为触发集/基线
 		//     （保守方向）；任何异常吞掉（fail-open），不影响门禁既有流程。
@@ -705,11 +705,8 @@ export default function (pi: ExtensionAPI) {
 		const otherChangePaths = new Set<string>();
 		const boundChangePaths = new Set<string>();
 		try {
-			const modeRows = sessionId
-				? queryBySession(repoRoot, sessionId, ["mode.set"])
-				: [];
-			boundChangeName =
-				parseModeSetPayload(modeRows[modeRows.length - 1]) ?? null;
+			// 绑定取数：stage.set（**双读**：无该类行时回退 legacy mode.set——D7 过渡期）
+			boundChangeName = sessionId ? latestBoundChange(repoRoot, sessionId) : null;
 			for (const [change, paths] of latestEditMapByChange(repoRoot)) {
 				const target =
 					change === boundChangeName ? boundChangePaths : otherChangePaths;

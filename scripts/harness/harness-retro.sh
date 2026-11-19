@@ -679,8 +679,9 @@ term AS (
     (SELECT COUNT(*) FROM events WHERE kind='change.abandon' AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) = ${NAME_LIT}) AS abandon_n
 ),
 sess AS (SELECT COUNT(DISTINCT session_id) n, MAX(ts) last_ts FROM ev),
-mode_seq AS (SELECT ts, session_id, json_extract(payload,'$.mode') m, json_extract(payload,'$.source') src FROM ev WHERE kind='mode.set' ORDER BY id),
-mode_by AS (SELECT json_extract(payload,'$.mode') m, COUNT(*) n FROM ev WHERE kind='mode.set' GROUP BY 1),
+stage_seq AS (SELECT ts, session_id, json_extract(payload,'$.stage') st, json_extract(payload,'$.stageFamily') fam, json_extract(payload,'$.source') src FROM ev WHERE kind='stage.set' AND json_extract(payload,'$.stage') IS NOT NULL ORDER BY id),
+stage_by AS (SELECT json_extract(payload,'$.stage') st, COUNT(*) n FROM ev WHERE kind='stage.set' AND json_extract(payload,'$.stage') IS NOT NULL GROUP BY 1),
+stage_legacy_unknown AS (SELECT COUNT(*) n FROM ev WHERE kind='mode.set'),
 inj AS (SELECT COALESCE(json_extract(payload,'$.reason'),'(无 reason)') reason, COUNT(*) n, IFNULL(SUM(CAST(json_extract(payload,'$.bytes') AS INTEGER)),0) b FROM ev WHERE kind='constraint.inject' GROUP BY 1 ORDER BY n DESC),
 pinw AS (SELECT COUNT(*) n FROM ev WHERE kind='pin.write'),
 pinr AS (SELECT COUNT(*) n FROM ev WHERE kind='pin.read'),
@@ -757,8 +758,9 @@ SELECT json_object(
   'terminal', json_object('arch_ts',(SELECT arch_ts FROM term),'arch_n',(SELECT arch_n FROM term),'abandon_ts',(SELECT abandon_ts FROM term),'abandon_n',(SELECT abandon_n FROM term)),
   'sessions', json_object('total',(SELECT n FROM sess),'last_activity',(SELECT last_ts FROM sess)),
   'flow', json_object(
-    'mode_seq', (SELECT json_group_array(json_object('ts',ts,'session',session_id,'mode',m,'source',src)) FROM mode_seq),
-    'mode_by', (SELECT json_group_array(json_object('mode',m,'n',n)) FROM mode_by),
+    'stage_seq', (SELECT json_group_array(json_object('ts',ts,'session',session_id,'stage',st,'stageFamily',fam,'source',src)) FROM stage_seq),
+    'stage_by', (SELECT json_group_array(json_object('stage',st,'n',n)) FROM stage_by),
+    'stage_legacy_unknown', (SELECT IFNULL(n,0) FROM stage_legacy_unknown),
     'inject', (SELECT json_group_array(json_object('reason',reason,'n',n,'bytes',b)) FROM inj),
     'pin', json_object('write',(SELECT n FROM pinw),'read',(SELECT n FROM pinr)),
     'emap', json_object('paths',(SELECT n FROM emap_last),'snaps',(SELECT n FROM emap_snaps),'last_ts',(SELECT ts FROM emap_last)),
@@ -995,14 +997,20 @@ if empty:
     out.append('该 change 名下无任何事件且无终态锚点：各段降级为缺席标注（可能从未启动，或事件已过 TTL 30 天保留期）。')
 else:
     # ---- 一、流程规范段 ----
-    out.append('一、流程规范段（档位绑定 → 约束注入 → pin 接力 → 编辑归属 → 门禁执行 → 终态锚点）')
-    ms = flow.get('mode_seq') or []
+    out.append('一、流程规范段（阶段绑定 → 约束注入 → pin 接力 → 编辑归属 → 门禁执行 → 终态锚点）')
+    # 阶段统计口径（stage-driven-constraint-injection D7/4.5）：读 stage.set 的
+    # stage/stageFamily 字段；**历史 mode.set 行计「未知」并从分母剔除**（写侧已停写，
+    # 30 天保留期自然消退）。
+    ms = flow.get('stage_seq') or []
+    legacy_unknown = flow.get('stage_legacy_unknown') or 0
+    legacy_note = '（另有 %d 次历史 mode.set 计「未知」，不计分母）' % legacy_unknown if legacy_unknown else ''
     if ms:
-        out.append('   档位绑定        : %d 次 mode.set（%s）' % (
+        out.append('   阶段绑定        : %d 次 stage.set%s（%s）' % (
             len(ms),
-            ' / '.join('%s@%s' % ((it.get('mode') or '?'), (it.get('ts') or '')[5:16]) for it in ms[:6]) + (' …' if len(ms) > 6 else '')))
+            legacy_note,
+            ' / '.join('%s@%s' % ((it.get('stage') or '?'), (it.get('ts') or '')[5:16]) for it in ms[:6]) + (' …' if len(ms) > 6 else '')))
     else:
-        out.append('   档位绑定        : 无 mode.set 记录（requirements 档未激活，或已过保留期）')
+        out.append('   阶段绑定        : 无 stage.set 记录（阶段未激活，或已过保留期）%s' % legacy_note)
     inj = flow.get('inject') or []
     if inj:
         _n = sum(it['n'] for it in inj)

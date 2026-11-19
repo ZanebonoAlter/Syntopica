@@ -3,8 +3,8 @@
  *
  * 设计决策（见 docs/reference/开发执行规范.md §11 归档门禁、§4.1 门禁分层表）：
  * 1. 挂 tool_call，仅 bash 命令命中 `openspec archive` 时介入；其余工具调用零开销直接放行
- * 2. 五项 block 级检查（各自独立判定、不强制顺序，任一失败即 block）+ 检查⑤措辞（warn）
- *    （④ 场景映射对账已退役，见第 6 条）：
+ * 2. 六项 block 级检查（各自独立判定、不强制顺序，任一失败即 block）+ 检查⑤措辞（warn）
+ *    + ⑥' UI 验收 + ⑦' 约束读取对账（④ 场景映射对账已退役，见第 6 条）：
  *    ① `bash scripts/harness/doc-impact.sh verify openspec/changes/<name>` 退出码 0
  *    ② `bash scripts/harness/check-standards.sh --change <name>` 退出码 0（F 段只对账归档目标）
  *    ③ `bash scripts/harness/check-tasks-tail.sh <changeDir>` 退出码 0（tasks.md 尾三节
@@ -25,7 +25,13 @@
  *       spawn 失败沿既有 fail-open 语义 warn 不阻断；此前有未解除的 ui-verification-missing
  *       block 而本次证据齐备 → 放行时刻记 action=pass（ui-design-satisfied，
  *       add-change-lifecycle-retro design D2）
- * 3. 失败 → { block: true, reason }：reason 中文，列失败项 + 每项尾部输出（tail 20 行）+
+ *    ⑦' `bash scripts/harness/constraint-read-trace.sh <changeDir>` 退出码 0（约束文档读取
+ *       对账，stage-driven-constraint-injection D6：change 声明的每个业务域，其 flow 文档
+ *       MUST 在该 change 生命周期窗内被 read 过；未读 → block，reason 含未读域清单与取数
+ *       指引 `bash scripts/harness/constraint-digest.sh --brief --domains <域>`；legacy change
+ *       （无 stage.md）豁免；脚本 spawn 失败/缺席沿既有 fail-open 语义 warn 不阻断）
+ * 3. 失败 → { block: true, reason }：reason 中文，列失败项 + 每项尾部输出（tail 20 行；
+ *    约束读取对账项用完整 stdout，保证未读域清单不被截断）+
  *    修复指引（含 doc-impact-excuse 豁免机制与 --force / SPEC_GATE_BYPASS=1 逃生口）
  * 4. 豁免：命令带 --force 或环境变量 SPEC_GATE_BYPASS=1 → 放行，但 custom_message 记
  *    warning 留痕（复用 quality-gate 的 sendMessage customType 模式，不静默）
@@ -175,8 +181,9 @@ export default function (pi: ExtensionAPI) {
 
 // ---------- 归档检查 ----------
 
-/** 对一次 openspec archive 执行五项归档检查（block 级）+ 检查⑤措辞扫描（warn 级不 block）；
- *  失败返回 { block: true, reason }，通过/豁免返回 undefined */
+/** 对一次 openspec archive 执行六项归档检查（block 级）+ 检查⑤措辞扫描（warn 级不 block）
+ *  + 检查⑥' UI 验收、⑦' 约束读取对账（block 级）；失败返回 { block: true, reason }，
+ *  通过/豁免返回 undefined */
 async function gateArchive(
 	pi: ExtensionAPI,
 	command: string,
@@ -190,7 +197,7 @@ async function gateArchive(
 		console.warn(`[spec-gate] ${why}，豁免放行（归档检查与⑤措辞扫描均未执行）`);
 		warn(
 			pi,
-			`⚠️ [spec-gate] ${why}，openspec archive 已豁免放行；五项归档检查（doc-impact verify / check-standards / tasks.md 尾三节 / review-trace 痕迹对账 / UI 验收对账脚本+规划制品）与检查⑤（措辞扫描）均未执行，留痕备查。`,
+			`⚠️ [spec-gate] ${why}，openspec archive 已豁免放行；六项归档检查（doc-impact verify / check-standards / tasks.md 尾三节 / review-trace 痕迹对账 / UI 验收对账脚本+规划制品 / 约束文档读取对账）与检查⑤（措辞扫描）均未执行，留痕备查。`,
 		);
 		auditPolicy(ctx, extractChangeName(command) || undefined, {
 			policy: "spec-gate",
@@ -256,6 +263,24 @@ async function gateArchive(
 		});
 	}
 
+	// 2.7 检查⑦'：约束文档读取对账（stage-driven-constraint-injection D6）——声明域的 flow
+	//     文档是否在该 change 生命周期窗内被 read 过；未读 → block，reason 含未读域清单与
+	//     取数指引。脚本 spawn 失败（code -1）或脚本缺席/不可执行（126/127）沿既有 fail-open
+	//     语义：console.warn 留痕、不阻断（与检查⑥' 一致，脚本不在不误伤正常归档）。
+	const constraintRead = await runScript(pi, ctx, [
+		"scripts/harness/constraint-read-trace.sh",
+		changeDir,
+	]);
+	if (constraintRead.code === -1 || constraintRead.code === 126 || constraintRead.code === 127) {
+		console.warn(
+			`[spec-gate] 检查⑦' 约束读取对账脚本执行失败（exit ${constraintRead.code}），fail-open 放行该项（不阻断）：${constraintRead.detail}`,
+		);
+	} else if (!constraintRead.ok) {
+		// reason 用完整 stdout（非 tail 20 行）——未读域清单必须完整出现
+		const body = constraintRead.stdout.trim() || constraintRead.detail;
+		failures.push(`[constraint-read-trace] ${body}`);
+		failedChecks.push("constraint-read");
+	}
 
 	// 3. 检查⑤：验收措辞扫描（warn 级——仅留痕，不进 failures、不改下方裁决；
 	//    豁免/无名 fail-open 已在上文 return 短路，天然不跑）
@@ -583,6 +608,7 @@ function buildBlockReason(name: string, failures: string[]): string {
 		"- review-trace：review 做了留痕——change 目录建 review.md（### R-1 <日期>【High|Medium|Low】<标题> + 状态行；零发现写「- 审毕无发现（审查范围：…）」）；不做显式豁免——proposal.md 头部声明 <!-- review: waived -->（add-review-trace-gate）",
 		"- 归档撞见非本 change 的红测试：用 `bash scripts/harness/test-patrol.sh --register <test_id> --context <本change名>` 登记台账（或用 --report 确认已在账），在验证节记一句「已记账」后可继续——本 change 影响包内的红不适用该通道，必须修复（test-debt-patrol）",
 		"- UI 验收：按 ui-verification-trace.sh 对账结论补实物——major 需 ui-verification/report.md 建账（### A-N <场景>【pass|fail|未覆盖】+依据行，未覆盖写原因）且点名截图在盘；minor 验收映射须指名道姓（真实测试文件路径或 report.md 建账）；none 需 N/A 一致；规划制品（major approved+原型在）仍由门禁校验（add-ui-verification-trace-gate）",
+		"- 约束文档读取对账：按输出逐域 read 对应的 docs/reference/flow/<域>.md（整文档读即算读），或先取红线 `bash scripts/harness/constraint-digest.sh --brief --domains <域>`；读过后重试归档（legacy change 无 stage.md 自动豁免）",
 		"- 确认要跳过检查：命令加 --force 或设 SPEC_GATE_BYPASS=1（豁免会记 warning 留痕）",
 	].join("\n");
 }

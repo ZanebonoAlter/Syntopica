@@ -208,7 +208,7 @@ function makePi() {
 			const script = [
 				'process.env.TEST_SCOPE_GUARD=' + JSON.stringify(mode) + ';',
 				'const cp=require("child_process");',
-				'const mod=require(' + JSON.stringify(path.resolve('.tsg.cjs')) + ');',
+				'const mod=require(' + JSON.stringify(path.resolve(__dirname, '.tsg.cjs')) + ');',
 				'const handlers={};',
 				'mod.default({on:(n,f)=>handlers[n]=f,exec:(c,a,o)=>Promise.resolve({code:0,stdout:cp.execSync([c,...a].join(" "),{cwd:o&&o.cwd,encoding:"utf8",stdio:["ignore","pipe","ignore"]})})});',
 				'const entries=' + JSON.stringify(entries) + ';',
@@ -425,7 +425,7 @@ function makePi() {
 			const script = [
 				'process.env.TEST_SCOPE_GUARD="hard";',
 				'const cp=require("child_process");',
-				'const mod=require(' + JSON.stringify(path.resolve('.tsg.cjs')) + ');',
+				'const mod=require(' + JSON.stringify(path.resolve(__dirname, '.tsg.cjs')) + ');',
 				'const handlers={};',
 				'mod.default({on:(n,f)=>handlers[n]=f,exec:(c,a,o)=>Promise.resolve({code:0,stdout:cp.execSync([c,...a].join(" "),{cwd:o&&o.cwd,encoding:"utf8",stdio:["ignore","pipe","ignore"]})})});',
 				'const cwd=' + JSON.stringify(cwd) + ';',
@@ -455,7 +455,7 @@ function makePi() {
 		     2 处：①判定异常/解析不出按 (cmd,fp) 边沿 ②基线缺席会话级单发，
 		     add-foreign-gate-steer-attribution D3，与 gate.check 失败事实不双写），且被
 		     短路/锁跳过的命令零 gate.check 双写 ---------- */
-		const qg = fs.readFileSync(path.resolve('../quality-gate.ts'), 'utf8');
+		const qg = fs.readFileSync(path.resolve(__dirname, '../quality-gate.ts'), 'utf8');
 		check('quality-gate 源码 logPolicyDecision 恰九处（interop×1 + toolchain×2 + child-session×1 + foreign-breakage×1 + gate-lock-held×1 + concurrent-mixed×1 + attribution-degraded×2）',
 			(qg.match(/logPolicyDecision\(/g) ?? []).length === 9 &&
 			qg.includes('reasonCode: "interop-down"') &&

@@ -659,8 +659,10 @@ FM="$TMP/m.db"
 mk_db "$FM"
 # life-ui（已归档、事件完整）：双锚点（事件+目录）、成本主 1.0+子 0.5、ui 卡点×2→pass、
 # spec-gate 归档重试 30min、lint 红→绿 40min（quality-gate 口径）
-ins "$FM" mode.set life-ui '{"mode":"implementation","boundChange":"life-ui","source":"command"}' s-m1 "$(MT '-200 min')"
-ins "$FM" mode.set life-ui '{"mode":"implementation","boundChange":"life-ui","source":"recover"}' s-m2 "$(MT '-30 min')"
+	ins "$FM" stage.set life-ui '{"stage":"implement","stageFamily":"implementation","boundChange":"life-ui","source":"command"}' s-m1 "$(MT '-200 min')"
+	ins "$FM" stage.set life-ui '{"stage":"implement","stageFamily":"implementation","boundChange":"life-ui","source":"recover"}' s-m2 "$(MT '-30 min')"
+	# 历史 mode.set 行 → 计「未知」并从分母剔除（写侧已停写，30 天保留期自然消退）
+	ins "$FM" mode.set life-ui '{"mode":"implementation","boundChange":"life-ui","source":"recover"}' s-m2 "$(MT '-25 min')"
 ins "$FM" constraint.inject life-ui '{"path":"docs/reference/flow/daily-report.md","mode":"section","reason":"declaration","bytes":800}' s-m1 "$(MT '-190 min')"
 ins "$FM" constraint.inject life-ui '{"path":"docs/reference/flow/reading.md","mode":"section","reason":"keyword","bytes":900}' s-m2 "$(MT '-29 min')"
 ins "$FM" pin.write life-ui '{"title":"t","file":"x.md"}' s-m1 "$(MT '-180 min')"
@@ -778,7 +780,7 @@ check 0 "L1 已归档 change 四段齐备 + 归档目录声明元数据（日期
 	"声明元数据: ui-impact=major / complexity=moderate / constraint-domains=daily-report, reading" \
 	"终态      : 已归档"
 check 0 "L1b 流程规范段指标（档位/注入/pin/编辑/门禁）" \
-	"档位绑定        : 2 次 mode.set" "约束注入        : 2 条 / 1700 B" "declaration×1" "keyword×1" \
+	"阶段绑定        : 2 次 stage.set（另有 1 次历史 mode.set 计「未知」，不计分母）" "约束注入        : 2 条 / 1700 B" "declaration×1" "keyword×1" \
 	"pin 接力        : write 1 条 / read 3 条" "编辑归属        : 2 个路径（edit.map 快照 2 次" "门禁执行        : 1 次执行 / 1 次失败（还原口径；Top：lint 1/1）"
 check 0 "L1c UI 工作流：卡点链 + pass 直读口径" \
 	"卡点链          : ui-prototype-missing ×2" "放行态          : 已放行（pass ui-design-satisfied"

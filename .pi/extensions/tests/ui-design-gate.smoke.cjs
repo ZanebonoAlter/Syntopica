@@ -3,7 +3,7 @@
 //    none/minor/major 三档合同、原型路径边界、mismatch 反向质询、legacy、marker 健壮性）；
 // §B 工具动作分支表（4.2）—— decideUiToolGate 纯函数（requirements 静默/pass 放行/block 分流/
 //    change 内修复放行/legacy warn）；
-// §C extension 集成 —— 真 tmp 仓库 + 真 events.db mode.set（major pending 阻断 Agent/mutation、
+// §C extension 集成 —— 真 tmp 仓库 + 真 events.db stage.set（major pending 阻断 Agent/mutation、
 //    approved/none 放行、requirements 静默、legacy 每 session/change 一次、断链 symlink、
 //    bypass 留痕、fail-open 记账）；
 // §D telemetry —— block/warn/bypass/fail-open 四类 policy=ui-design-gate 事件、健康放行零记录、
@@ -166,7 +166,7 @@ const TOOL = { agent: { kind: 'agent-dispatch', subagentType: null }, read: { ki
 const mut = (p) => ({ kind: 'mutation', targetPath: p });
 const dispatch = (t) => ({ kind: 'agent-dispatch', subagentType: t });
 const gate = (over = {}) => ({
-	schema: UI_SCHEMA, mode: 'implementation', boundChange: 'chg',
+	schema: UI_SCHEMA, stageFamily: 'implementation', boundChange: 'chg',
 	proposalText: PROP_MAJOR, tasksMd: TASKS_CLEAN,
 	uiDesignText: UI_MAJOR_FULL('pending', 'ui-prototype/index.html'),
 	changeDirFiles: FILES_WITH_PROTO,
@@ -174,8 +174,8 @@ const gate = (over = {}) => ({
 	...over,
 });
 
-check('B1 requirements 档任意工具 → 静默放行', decideUiToolGate(gate({ mode: 'requirements' })).action === 'allow' && decideUiToolGate(gate({ mode: 'requirements', tool: mut('src/x.go') })).action === 'allow');
-check('B2 无档位记录/未绑定 change → 静默放行', decideUiToolGate(gate({ mode: null })).action === 'allow' && decideUiToolGate(gate({ boundChange: null })).action === 'allow');
+check('B1 planning 族任意工具 → 静默放行', decideUiToolGate(gate({ stageFamily: 'planning' })).action === 'allow' && decideUiToolGate(gate({ stageFamily: 'planning', tool: mut('src/x.go') })).action === 'allow');
+check('B2 未绑定阶段/未绑定 change → 静默放行', decideUiToolGate(gate({ stageFamily: null })).action === 'allow' && decideUiToolGate(gate({ boundChange: null })).action === 'allow');
 check('B3 合同 pass：Agent 派发与 mutation 均放行（零噪声）', decideUiToolGate(gate({ uiDesignText: UI_MAJOR_FULL('approved', 'ui-prototype/index.html') })).action === 'allow');
 check('B4 合同 block + Agent 派发 → block ui-approval-pending', isBlock(decideUiToolGate(gate()), 'ui-approval-pending') || (decideUiToolGate(gate()).action === 'block' && decideUiToolGate(gate()).reasonCode === 'ui-approval-pending'));
 check('B4 合同 block + 项目代码 mutation → block', decideUiToolGate(gate({ tool: mut('src/x.go') })).action === 'block' && decideUiToolGate(gate({ tool: mut('backend-go/main.go') })).action === 'block');
@@ -203,7 +203,9 @@ const EVENTS_DDL = [
 	'CREATE INDEX IF NOT EXISTS idx_ev_change ON events(change, id)',
 	'CREATE INDEX IF NOT EXISTS idx_ev_kind_ts ON events(kind, ts)',
 ];
-function seedModeSet(cwd, sessionId, mode, boundChange) {
+// 阶段族语义（stage-driven-constraint-injection D2/D7）：implementation 族 = implement/verify/archive；
+// planning 族 = explore/propose/design。事实库写 stage.set（读方双读兼容旧 mode.set）。
+function seedStageSet(cwd, sessionId, family, boundChange) {
 	const dbDir = path.join(cwd, '.pi', 'harness');
 	fs.mkdirSync(dbDir, { recursive: true });
 	const db = new DatabaseSync(path.join(dbDir, 'events.db'));
@@ -211,8 +213,9 @@ function seedModeSet(cwd, sessionId, mode, boundChange) {
 	db.exec(`PRAGMA application_id = ${0x53594e54}`);
 	db.exec('PRAGMA user_version = 1');
 	for (const ddl of EVENTS_DDL) db.exec(ddl);
+	const stage = family === 'implementation' ? 'implement' : 'propose';
 	db.prepare('INSERT INTO events (ts, session_id, kind, change, payload) VALUES (?, ?, ?, ?, ?)')
-		.run(new Date().toISOString(), sessionId, 'mode.set', boundChange, JSON.stringify({ mode, boundChange }));
+		.run(new Date().toISOString(), sessionId, 'stage.set', boundChange, JSON.stringify({ stage, stageFamily: family, boundChange, source: 'command' }));
 	db.close();
 }
 const policyRows = (cwd, policy) => {
@@ -253,7 +256,7 @@ function makePi() {
 	};
 	return { pi, handlers, messages };
 }
-async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementation', boundChange = 'major-chg', ctxOverride = null) {
+async function runTool(mod, cwd, sessionId, toolName, input, family = 'implementation', boundChange = 'major-chg', ctxOverride = null) {
 	const { pi, handlers, messages } = makePi();
 	mod.default(pi);
 	const ctx = ctxOverride ?? { cwd, sessionManager: { getSessionId: () => sessionId } };
@@ -271,7 +274,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		// （add-ui-prototype-editor-agent 后只读档/原型编辑档派发放行，阻断用例改用写能力档 general-purpose）
 		const t1 = mktmp(); tmps.push(t1);
 		writeChange(t1, 'major-chg', MAJOR_PENDING_FILES);
-		seedModeSet(t1, 's1', 'implementation', 'major-chg');
+		seedStageSet(t1, 's1', 'implementation', 'major-chg');
 		const r1 = await runTool(loadFresh('./.uige.cjs'), t1, 's1', 'Agent', { prompt: 'x', subagent_type: 'general-purpose' });
 		check('C1 major pending Agent 派发 → block:true + 文案含 reasonCode/修复路径', r1.result && r1.result.block === true && r1.result.reason.includes('ui-approval-pending') && r1.result.reason.includes('major-chg'));
 		check('D1 阻断 → policy=ui-design-gate block ui-approval-pending 绑定 change', (() => { const rows = policyRows(t1, 'ui-design-gate'); return rows.length === 1 && rows[0].payload.action === 'block' && rows[0].payload.reasonCode === 'ui-approval-pending' && rows[0].change === 'major-chg'; })());
@@ -309,8 +312,8 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 			'ui-prototype/broken.html': 'x', // 占位：C7 同款断链场景改用真实缺失
 		});
 		fs.rmSync(path.join(t3b, 'openspec/changes/proto-chg/ui-prototype/broken.html'));
-		seedModeSet(t3b, 's-block', 'implementation', 'proto-chg');
-		seedModeSet(t3b, 's-release', 'implementation', 'proto-chg');
+		seedStageSet(t3b, 's-block', 'implementation', 'proto-chg');
+		seedStageSet(t3b, 's-release', 'implementation', 'proto-chg');
 		const r3c = await runTool(loadFresh('./.uige.cjs'), t3b, 's-block', 'Agent', { prompt: 'x', subagent_type: 'general-purpose' }); // 写能力档：合同 block 态仍阻断
 		check('C3.5a 原型缺失 → block ui-prototype-missing', r3c.result && r3c.result.block === true && r3c.result.reason.includes('ui-prototype-missing'));
 		// 用户补齐原型（change 目录内 mutation 放行，不触发 pass——verdict 仍为 block）
@@ -323,28 +326,28 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		// C3.5c 无 block 在案的健康放行（none 档）→ 零 pass（首过不记）
 		const t3c = mktmp(); tmps.push(t3c);
 		writeChange(t3c, 'none2-chg', NONE_OK_FILES);
-		seedModeSet(t3c, 's-none2', 'implementation', 'none2-chg');
+		seedStageSet(t3c, 's-none2', 'implementation', 'none2-chg');
 		const r3e = await runTool(loadFresh('./.uige.cjs'), t3c, 's-none2', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
 		check('C3.5c 无 block 在案 → 健康放行零 pass', r3e.result === undefined && policyRows(t3c, 'ui-design-gate').length === 0);
 
 		// C4 requirements 档静默：同 change 任意工具零介入零记账
 		const t4 = mktmp(); tmps.push(t4);
 		writeChange(t4, 'major-chg', MAJOR_PENDING_FILES);
-		seedModeSet(t4, 's4', 'requirements', 'major-chg');
+		seedStageSet(t4, 's4', 'planning', 'major-chg');
 		const r4 = await runTool(loadFresh('./.uige.cjs'), t4, 's4', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
 		check('C4 requirements 档 → 静默放行零记账', r4.result === undefined && policyRows(t4).length === 0);
 
 		// C5 none 档合同齐备：front mutation 放行（零噪声）
 		const t5 = mktmp(); tmps.push(t5);
 		writeChange(t5, 'none-chg', NONE_OK_FILES);
-		seedModeSet(t5, 's5', 'implementation', 'none-chg');
+		seedStageSet(t5, 's5', 'implementation', 'none-chg');
 		const r5 = await runTool(loadFresh('./.uige.cjs'), t5, 's5', 'edit', { path: path.join(t5, 'backend-go/x.go'), edits: [] });
 		check('C5 none 合同齐备 → 放行零记账', r5.result === undefined && policyRows(t5).length === 0);
 
 		// C6 legacy：front mutation → warn 一次（policy warn）；同 session 第二次零新增；非 front 零提醒
 		const t6 = mktmp(); tmps.push(t6);
 		writeChange(t6, 'legacy-chg', { '.openspec.yaml': SCHEMA_LEGACY, 'proposal.md': '## Why\nx' });
-		seedModeSet(t6, 's6', 'implementation', 'legacy-chg');
+		seedStageSet(t6, 's6', 'implementation', 'legacy-chg');
 		const m6 = loadFresh('./.uige.cjs');
 		const r6a = await runTool(m6, t6, 's6', 'edit', { path: path.join(t6, 'front/app/pages/x.vue'), edits: [] });
 		check('C6 legacy front mutation → 放行（不硬阻断）+ steer 提醒', r6a.result === undefined && r6a.messages.length === 1 && /ui-design/.test(r6a.messages[0].content));
@@ -360,14 +363,14 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		const d7 = writeChange(t7, 'sym-chg', { '.openspec.yaml': SCHEMA_UI, 'proposal.md': PROP_MAJOR, 'ui-design.md': UI_MAJOR_FULL('approved', 'ui-prototype/broken.html') });
 		fs.mkdirSync(path.join(d7, 'ui-prototype'), { recursive: true });
 		fs.symlinkSync('/nonexistent/target', path.join(d7, 'ui-prototype/broken.html'));
-		seedModeSet(t7, 's7', 'implementation', 'sym-chg');
+		seedStageSet(t7, 's7', 'implementation', 'sym-chg');
 		const r7 = await runTool(loadFresh('./.uige.cjs'), t7, 's7', 'Agent', { prompt: 'x', subagent_type: 'general-purpose' });
 		check('C7 断链 symlink 原型 → block ui-prototype-missing', r7.result && r7.result.block === true && r7.result.reason.includes('ui-prototype-missing'));
 
 		// C8 内部异常 → fail-open 放行 + 显式告警 + fail-open 记账（不伪装成功）；
 		//    模拟「check 内部 bug 但上下文可读」：getSessionId 首调抛错、auditPolicy 复调恢复
 		const t8 = mktmp(); tmps.push(t8);
-		seedModeSet(t8, 's8', 'implementation', 'major-chg');
+		seedStageSet(t8, 's8', 'implementation', 'major-chg');
 		writeChange(t8, 'major-chg', MAJOR_PENDING_FILES);
 		let ctxCalls = 0;
 		const ctx8 = {
@@ -386,10 +389,10 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		// C9 显式 bypass：UI_DESIGN_GATE_BYPASS=1 → 放行 + 告警留痕 + policy bypass（子进程，防主进程 env 污染）
 		const t9 = mktmp(); tmps.push(t9);
 		writeChange(t9, 'major-chg', MAJOR_PENDING_FILES);
-		seedModeSet(t9, 's9', 'implementation', 'major-chg');
+		seedStageSet(t9, 's9', 'implementation', 'major-chg');
 		const out9 = JSON.parse(execSync(`node -e ${JSON.stringify([
 			`process.env.UI_DESIGN_GATE_BYPASS='1';`,
-			`const mod=require(${JSON.stringify(path.resolve('.uige.cjs'))});`,
+			`const mod=require(${JSON.stringify(path.resolve(__dirname, '.uige.cjs'))});`,
 			`const h={};const msgs=[];const pi={on:(n,f)=>(h[n]=f),sendMessage:(m)=>msgs.push(m)};mod.default(pi);`,
 			`h['tool_call']({toolName:'Agent',input:{prompt:'x'},toolCallId:'t'},{cwd:${JSON.stringify(t9)},sessionManager:{getSessionId:()=>'s9'}})`,
 			`.then((r)=>console.log(JSON.stringify({pass:r===undefined,msgs:msgs.length})));`,
@@ -397,12 +400,12 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		check('C9 bypass → 放行 + 显式告警不静默', out9.pass === true && out9.msgs === 1);
 		check('D6 bypass → policy bypass explicit-bypass', (() => { const rows = policyRows(t9, 'ui-design-gate'); return rows.length === 1 && rows[0].payload.action === 'bypass' && rows[0].payload.reasonCode === 'explicit-bypass'; })());
 
-		// C10 提取不到档位（无 mode.set）→ 完全静默
+		// C10 提取不到阶段（无 stage.set）→ 完全静默
 		const t10 = mktmp(); tmps.push(t10);
 		writeChange(t10, 'major-chg', MAJOR_PENDING_FILES);
 		fs.mkdirSync(path.join(t10, '.pi/harness'), { recursive: true });
 		const r10 = await runTool(loadFresh('./.uige.cjs'), t10, 's10', 'Agent', { prompt: 'x', subagent_type: 'Explore' });
-		check('C10 无 mode.set 记录 → 静默放行零记账', r10.result === undefined && policyRows(t10).length === 0);
+		check('C10 无 stage.set 记录 → 静默放行零记账', r10.result === undefined && policyRows(t10).length === 0);
 
 		// D7 reasonCode 白名单与 spec 九值对齐
 		const expected = ['ui-impact-missing', 'ui-impact-mismatch', 'ui-design-missing', 'ui-prototype-missing', 'ui-approval-pending', 'ui-verification-missing', 'ui-dispatch-allowed', 'explicit-bypass', 'ui-gate-check-failed'];
@@ -438,7 +441,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		//  E6 反向漂移防护：.pi/agents/ 中无写工具的 profile 必须都在白名单内
 		const tE = mktmp(); tmps.push(tE);
 		writeChange(tE, 'major-chg', MAJOR_PENDING_FILES);
-		seedModeSet(tE, 'sE', 'implementation', 'major-chg');
+		seedStageSet(tE, 'sE', 'implementation', 'major-chg');
 		const mE = loadFresh('./.uige.cjs');
 		const rE1 = await runTool(mE, tE, 'sE', 'Agent', { prompt: 'x', subagent_type: 'explore' });
 		check('E1a 只读档 explore 派发（合同未就绪）→ 放行并留痕 ui-dispatch-allowed', rE1.result === undefined && (() => { const rows = policyRows(tE, 'ui-design-gate'); return rows.length === 1 && rows[0].payload.action === 'warn' && rows[0].payload.reasonCode === 'ui-dispatch-allowed' && rows[0].change === 'major-chg'; })());
@@ -453,7 +456,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		const rE3b = await runTool(mE, tE, 'sE', 'Agent', { prompt: 'x' }); // 未指定档位 = 默认 general-purpose
 		check('E3b 未指定档位的派发（默认 general-purpose）→ 仍 block', rE3b.result && rE3b.result.block === true);
 		// 子线程会话（档位继承 parent）：原型编辑档的越界写入仍被门禁逐个阻断（写侧不放宽）
-		seedModeSet(tE, 'sE-child', 'implementation', 'major-chg');
+		seedStageSet(tE, 'sE-child', 'implementation', 'major-chg');
 		const rE4 = await runTool(mE, tE, 'sE-child', 'edit', { path: path.join(tE, 'front/app/pages/x.vue'), edits: [] });
 		check('E4 原型档子线程会话内 edit front/ 下文件 → 仍 block（写侧不放宽）', rE4.result && rE4.result.block === true && rE4.result.reason.includes('major-chg'));
 		const rE4b = await runTool(mE, tE, 'sE-child', 'edit', { path: path.join(tE, 'openspec/changes/major-chg/ui-prototype/index.html'), edits: [] });
@@ -520,7 +523,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 			'ui-design.md': UI_STAGE_DOC('skeleton'),
 			'ui-prototype/skeleton/a.html': '<html>s</html>',
 		});
-		seedModeSet(tG, 'sG', 'requirements', 'stage-chg');
+		seedStageSet(tG, 'sG', 'planning', 'stage-chg');
 		// 同一模块实例代表真实会话内的扩展进程（loadFresh 每次会重置内存去重集合）
 		const extG = loadFresh('./.uige.cjs');
 		const g1 = await runTool(extG, tG, 'sG', 'write', {
@@ -558,7 +561,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 			'ui-design.md': UI_MAJOR_FULL('pending', 'ui-prototype/index.html').replace(/<!-- ui-stage: [a-z]+ -->\n/, ''),
 			'ui-prototype/index.html': '<html>p</html>',
 		});
-		seedModeSet(tL, 'sL', 'requirements', 'legacy-stage');
+		seedStageSet(tL, 'sL', 'planning', 'legacy-stage');
 		const g4 = await runTool(loadFresh('./.uige.cjs'), tL, 'sL', 'write', {
 			path: 'openspec/changes/legacy-stage/ui-prototype/i.html',
 			content: 'x',
@@ -578,7 +581,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 			'ui-design.md': UI_STAGE_DOC('design'),
 			'ui-prototype/index.html': '<html>p</html>',
 		});
-		seedModeSet(tI, 'sI', 'requirements', 'bad-stage');
+		seedStageSet(tI, 'sI', 'planning', 'bad-stage');
 		const g5 = await runTool(loadFresh('./.uige.cjs'), tI, 'sI', 'write', {
 			path: 'openspec/changes/bad-stage/ui-prototype/i.html',
 			content: 'x',
@@ -598,7 +601,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 			'ui-design.md': UI_STAGE_DOC('approved'),
 			'ui-prototype/index.html': '<html>p</html>',
 		});
-		seedModeSet(tA, 'sA', 'requirements', 'ok-stage');
+		seedStageSet(tA, 'sA', 'planning', 'ok-stage');
 		const g6 = await runTool(loadFresh('./.uige.cjs'), tA, 'sA', 'write', {
 			path: 'openspec/changes/ok-stage/ui-prototype/i.html',
 			content: 'x',
@@ -622,7 +625,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, mode = 'implementat
 		check('G8 仓库外路径（ghost change 不存在）→ 不记账', g8.result === undefined && policyRows(tP, 'ui-design-gate').length === 0);
 
 		// G9 去重跨 session（子线程共用模块实例）：换 session 不新增
-		seedModeSet(tG, 'sG2', 'requirements', 'stage-chg');
+		seedStageSet(tG, 'sG2', 'planning', 'stage-chg');
 		const g9 = await runTool(extG, tG, 'sG2', 'write', {
 			path: 'openspec/changes/stage-chg/ui-prototype/y.html',
 			content: 'x',
