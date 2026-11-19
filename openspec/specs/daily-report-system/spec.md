@@ -440,6 +440,7 @@ promptVersion SHALL 从当前 6.0 升级未使用版本，以区分旧并行与�
 - **THEN** 返回的 `related_article_ids` SHALL 只保留该 id 的首个出现（与 link 是否可判定无关）
 
 ### Requirement: 日报时间线组件 BoardDailyReportTimeline（报纸布局）
+
 前端 SHALL 提供 `BoardDailyReportTimeline.vue` 组件，展示板块日报列表，并以**阅读台**（`/tags/:boardId/:date`）呈现选中日报。阅读台 SHALL 沿用旧版阅读层的**三栏**：左侧目录栏（本期目录 / 持续追踪 / 历史日报 / 版块切换）、正文（刊头 + 分区正文）、宽屏下常驻的右侧页边注栏；MUST NOT 渲染已撤下的右栏演进/本期话题。页边注在 <1100px SHALL 收为右下浮动入口 + 抽屉。日期历史 SHALL 由左侧目录栏的历史列表承载（「加载更早」增量），不再使用日期下拉。
 
 **入口与容器**：阅读台 SHALL 作为独立路由页面渲染，取代原先 `position: fixed; inset: 0` 的全屏浮层。离开阅读台（返回按钮或 Esc）SHALL 回到该版块的矩阵视图，并保留进入前的选中泳道。阅读台 SHALL 在页面容器内整体滚动（顶栏 sticky，左目录与页边注栏各自 sticky），MUST NOT 把正文锁进固定高度的小滚动窗。
@@ -457,15 +458,21 @@ promptVersion SHALL 从当前 6.0 升级未使用版本，以区分旧并行与�
 
 **目录与日期联动**：左侧目录栏 SHALL 提供「头条」「话题正文」锚点、持续追踪话题、历史日报日期列表与版块切换；历史日报 SHALL 按日期倒序列出当前已加载日报，点击 SHALL 切换日期；「加载更早」SHALL 扩充该列表的日期范围。分区索引下拉与 scroll-spy 已于 2026-10-27 用户复审撤下，阅读台 SHALL NOT 依赖它们。
 
-**话题卡片与 mini 生命线**：active 话题卡片 SHALL 支持原位展开。首次展开调用 `getTopicLifeline(topicId)`，展示以当前日报日期为终点的最近七个自然日；加载成功后按 topic id 缓存，重复展开不再次请求。加载、失败、重试和空状态 SHALL 明确可见。
+**话题卡片与线索相关事件**：active 话题卡片 SHALL 支持原位展开。展开后每条当日线索（thread）SHALL 在其行内渲染「相关线索」chip 行，数据来自 `thread-related-events` 的 `GET /api/daily-reports/:reportId/thread-relations`；首次展开时 SHALL 以 `days=7` 请求一次并覆盖整份日报的全部线索，成功后按 `(reportId, days)` 缓存。MUST NOT 为每条线索各发一次请求。
 
-mini 生命线 SHALL 按日期列展示真实 section，同日多 section 合并为一个节点并显示数量。连线只使用响应中 `relation_type="identity"` 的真实关系，采用贝塞尔路径连接端点；空白日期不生成假节点，系统 SHALL NOT 根据日期相邻关系臆造连线或混入 similarity relation。节点点击 SHALL 原位展开当日 threads。
+每条线索 SHALL 最多渲染 3 个 chip，其余折叠为「还有 N 条」（N 来自响应中该线索的推荐总数，展开后仍只渲染 chip，不跳转、不弹层）。**没有相关事件的线索 SHALL NOT 渲染 chip 行**——不占位、不留最小高度、不给「暂无相关」文案。
 
-原「话题总览」入口与 desk 索引里的「在矩阵中查看这条线」入口已于 2026-10-27 复审随新版索引一并撤下；泳道/矩阵聚焦入口保留在版块态势页自身，阅读台不再内嵌该出口。
+chip SHALL 在指针悬停或键盘聚焦时显示预览浮层，内容为：候选线索的标题、其摘要、来源文章标题、相似度档位与分数、该候选的日报日期。预览浮层 SHALL 以固定定位渲染并做视口边界翻转，MUST NOT 被线索行的 `overflow` 裁剪。
+
+点击 chip SHALL 直接打开站内阅读预览弹窗（复用既有入口与既有出口），弹窗内 SHALL 显示该推荐的相关度档位、分数与候选日期作为阅读上下文；MUST NOT 跳转离开阅读台。
+
+相关线索档位 SHALL 为 `7 天 / 30 天` 两档，默认 7 天，且 SHALL 以**分区级工具条**呈现（每个内容分区一条，不放在线索行内——否则无候选的线索行会留下只有档位控件的空行）。切换档位 SHALL 以新档位重新请求（含失败后重试），切回已成功加载过的档位 SHALL 命中缓存不再请求。推荐加载失败 SHALL NOT 阻断日报阅读：该线索的 chip 行不渲染，卡片其余内容照常呈现。
+
+daily-report 阅读台 SHALL NOT 再渲染 7 天折线、节点、贝塞尔连线、节点计数或「在侦探墙打开完整生命线」入口。本 change 之后「完整话题生命线」在界面上**暂无入口**（原来的唯一入口随 mini 生命线退役，版块态势页当前未挂载侦探墙）——该缺口 SHALL 如实登记为已知限制，MUST NOT 在文档里宣称「从版块态势页进入」而实际不可达。原「话题总览」入口与 desk 索引里的「在矩阵中查看这条线」入口已于 2026-10-27 复审随新版索引一并撤下；泳道/矩阵聚焦入口保留在版块态势页自身，阅读台不再内嵌该出口。
 
 **thread 文章**：thread 有 `related_article_ids` 时 SHALL 可原位展开文章标题列表。前端只加载尚未缓存的 article id，相同文章跨 thread 复用缓存；单篇失败不阻塞其他文章并提供重试。点击文章 SHALL 直接打开站内阅读预览弹窗（详情拉取期间弹窗呈现加载态、失败给出可见错误提示），并保留阅读台上下文。
 
-**section 生命周期**：点击 section header SHALL 继续打开右侧 SectionLifecyclePanel，不因新增 topic mini 生命线而移除 section 维度入口。
+**section 生命周期**：点击 section header SHALL 继续打开右侧 SectionLifecyclePanel，不因新增线索相关事件 chip 而移除 section 维度入口。
 
 "加载更早" SHALL 每次将 `days` 增加 7 并重新请求该完整时间范围。组件 SHALL 用响应替换当前列表，避免累计请求造成重复日报。切换 board SHALL 将 `days` 重置为 14（阅读台按 14 天展示历史列表，可继续「加载更早」），并清理与旧 board 相关的展开状态。
 
@@ -474,13 +481,11 @@ mini 生命线 SHALL 按日期列展示真实 section，同日多 section 合并
 - **THEN** BoardDailyReportTimeline SHALL 渲染 3 张日报卡片，按日期倒序
 
 #### Scenario: 打开全屏日报详情
-<!-- 保留主 spec 的 Scenario 身份锚以维持旧测试资产追溯；本 change 的设计标签为「打开日报阅读台」，行为以以下 WHEN/THEN 为准。此处仅修复标题兼容，不代表日报设计已随矩阵阶段扩批或交付。 -->
 - **WHEN** 用户点击某日报卡片或从版块态势页点击「打开今日日报」
 - **THEN** 路由 SHALL 变为 `/tags/:boardId/:date` 并渲染占满视口的三栏阅读台（左目录 / 正文 / 页边注）
 - **AND** 返回后 SHALL 回到该版块矩阵并保留进入前的选中泳道
 
 #### Scenario: 宽屏双栏与窄屏降级
-<!-- 保留主 spec 的历史 Scenario 身份锚；本 change 拟议的「宽屏三栏与窄屏降级」仍由以下 WHEN/THEN 描述，本轮不改正文、不扩大矩阵阶段的 UI 批准范围。 -->
 - **WHEN** 分别以 1920px、1100px 和 720px viewport 打开同一日报
 - **THEN** 1920px SHALL 显示「左目录 + 宽屏正文 + 右页边注栏」三栏，刊头与「今日重点」top3 可见，不出现右栏演进
 - **AND** 1100px SHALL 单栏并把页边注收为右下浮动入口 + 抽屉
@@ -488,35 +493,75 @@ mini 生命线 SHALL 按日期列展示真实 section，同日多 section 合并
 
 #### Scenario: 双主题渲染
 - **WHEN** 用户在 editorial 与 dark 主题间切换
-- **THEN** 日报 surface、文字、边框、SVG 和交互状态 SHALL 使用对应主题语义 token 并保持可读
+- **THEN** 日报 surface、文字、边框和交互状态 SHALL 使用对应主题语义 token 并保持可读
 
 #### Scenario: 按持久话题状态分区
 - **WHEN** 日报包含 2 个 active、1 个 candidate 和 1 个未归属 section
 - **THEN** 页面 SHALL 分别在"关心的话题""突发的新话题""其他动态"展示 2、1、1 个 section
 
-#### Scenario: 展开并缓存话题生命线
-- **WHEN** 用户首次展开一个 active 话题卡片并在加载完成后收起、再次展开
-- **THEN** 系统 SHALL 仅调用一次 `getTopicLifeline(topicId)`
-- **AND** 再次展开 SHALL 使用缓存结果
+#### Scenario: 线索行渲染相关事件 chip
+- **WHEN** 用户展开一个 active 话题卡片，其中某条线索在窗口内有 5 条推荐
+- **THEN** 该线索行 SHALL 渲染前 3 个 chip 与「还有 2 条」
+- **AND** 整份日报的推荐 SHALL 由一次 `thread-relations` 请求取得
+
+#### Scenario: 无相关事件的线索不渲染 chip 行
+- **WHEN** 某条线索在窗口内没有任何相似度达到阈值的候选线索（任一档位）
+- **THEN** 该线索 MUST NOT 渲染 chip 行或任何占位/空态文案
+- **AND** 线索标题、摘要、文章数 SHALL 与未引入本特性时一致
+- **AND** 档位控件 SHALL 位于分区级工具条，MUST NOT 因该线索无候选而出现在线索行内
+
+#### Scenario: chip 悬停出预览
+- **WHEN** 用户将指针悬停在某个 chip 上，或用 Tab 聚焦它
+- **THEN** 系统 SHALL 显示预览浮层，含候选线索标题、摘要、来源文章标题、相似度档位与分数与该候选日期
+- **AND** 浮层 MUST NOT 被线索行容器裁剪
+
+#### Scenario: 点击 chip 打开阅读预览
+- **WHEN** 用户点击某个 chip
+- **THEN** 系统 SHALL 打开站内阅读预览弹窗并加载该来源文章
+- **AND** 弹窗内 SHALL 显示该推荐的关联度与出现次数
+- **AND** 路由 MUST NOT 离开当前日报阅读台
+
+#### Scenario: 7/30 档位切换与缓存
+- **WHEN** 用户从 7 天档切到 30 天档，再切回 7 天档
+- **THEN** 切到 30 天 SHALL 以 `days=30` 请求一次
+- **AND** 切回 7 天 SHALL 直接使用缓存，SHALL NOT 再次请求
+
+#### Scenario: 推荐加载失败不阻断阅读
+- **WHEN** `thread-relations` 返回错误
+- **THEN** 线索的 chip 行 SHALL 不渲染
+- **AND** 日报正文、线索标题摘要、文章列表与关键事件动作 SHALL 照常可用
 
 #### Scenario: identity 连线跨越空白日期
-- **WHEN** lifeline 在周一和周三有节点、周二无节点，且响应包含周一到周三的 identity relation
-- **THEN** mini 生命线 SHALL 用一条贝塞尔路径连接周一和周三的真实节点
-- **AND** SHALL NOT 为周二生成假节点
-- **AND** 该跨天连线 SHALL 以弱化不透明度呈现，与相邻节点的强连线区分
+- **WHEN** 窗口内周一与周三有节点、周二无节点，且存在周一到周三的 identity 关系
+- **THEN** 日报 SHALL NOT 渲染任何连线或节点图
+- **AND** identity 关系 SHALL 继续由后端保留，供版块态势页与侦探墙使用
+
+#### Scenario: 展开并缓存话题生命线
+- **WHEN** 用户展开一个 active 话题卡片
+- **THEN** 日报 SHALL NOT 再调用 `getTopicLifeline(topicId)`
+- **AND** 该位置的能力改由线索相关事件承担，行为以「线索行渲染相关事件 chip」为准
+- **AND** 后端 `lifeline` 端点 SHALL 继续存在（版块态势页与侦探墙仍使用）
 
 #### Scenario: lifeline 加载失败
-- **WHEN** `getTopicLifeline(topicId)` 返回错误
-- **THEN** 话题卡片 SHALL 显示局部错误和重试操作，不关闭日报详情或影响其他话题
+- **WHEN** 旧 lifeline 端点返回错误
+- **THEN** 日报话题卡片 SHALL NOT 因此进入错误态（该调用已从日报退役）
+- **AND** 错误呈现归属线索相关事件，见「推荐加载失败不阻断阅读」
+
+#### Scenario: 进入完整话题生命线
+- **WHEN** 用户在日报阅读台展开 active 话题卡片
+- **THEN** 系统 SHALL NOT 渲染「在侦探墙打开完整生命线」入口
+- **AND** 完整生命线入口当前 SHALL 视为已知缺口（无界面入口），MUST NOT 渲染任何不可达的入口按钮
+
+#### Scenario: 窄容器排版不崩坏
+- **WHEN** 阅读台正文列宽度在 690–900px（视口 900–1400px）且话题卡片已展开
+- **THEN** 线索行 SHALL 不产生区块级横向溢出
+- **AND** chip 行 SHALL 在容器宽内换行，MUST NOT 出现逐字换行的竖排列
+- **AND** 布局 MUST NOT 按「容器宽 / 7 列 × 2」计算宽度
 
 #### Scenario: 展开 thread 文章并复用缓存
 - **WHEN** 两个 thread 引用同一个 article id，用户依次展开两个 thread
 - **THEN** 前端 SHALL 只为该 article id 请求一次文章详情
 - **AND** 点击文章 SHALL 直接打开站内阅读预览弹窗并保留阅读台上下文
-
-#### Scenario: 进入完整话题生命线
-- **WHEN** 用户点击 active topic 的「在矩阵中查看这条线」
-- **THEN** 系统 SHALL 返回版块态势页并选中该泳道；无 topic id 时该入口 SHALL 隐藏
 
 #### Scenario: 键盘关闭详情
 - **WHEN** 阅读台打开且用户按 Esc

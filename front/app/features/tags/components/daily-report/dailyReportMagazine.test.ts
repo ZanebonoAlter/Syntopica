@@ -1,7 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  buildBezierPath,
-  buildLifelineWindow,
   buildQualityZones,
   createRequestCache,
   groupSectionsByTopic,
@@ -9,7 +7,7 @@ import {
   selectLeadStory,
   sortDailyReportSections,
 } from './dailyReportMagazine'
-import type { DailyReport, DailyReportSection, SectionRelation, SectionTimelineNode } from '~/api/dailyReports'
+import type { DailyReport, DailyReportSection } from '~/api/dailyReports'
 
 function section(
   id: number,
@@ -125,50 +123,6 @@ describe('dailyReportMagazine data mapping', () => {
 
     expect(selectLeadStory({ ...base, highlights: [{ title: '头条', reason: '原因', tag_ids: [] }] })?.title).toBe('头条')
     expect(selectLeadStory({ ...base, highlights: [] })?.title).toBe('section-2')
-  })
-
-  it('builds a seven-day window, aggregates same-day nodes, and keeps identity edges only', () => {
-    const nodes = [
-      { id: 1, report_id: 1, period_date: '2026-06-19', cluster_label: 'A' },
-      { id: 2, report_id: 2, period_date: '2026-06-21', cluster_label: 'B' },
-      { id: 3, report_id: 2, period_date: '2026-06-21', cluster_label: 'C' },
-      { id: 4, report_id: 3, period_date: '2026-06-01', cluster_label: 'outside' },
-    ] as SectionTimelineNode[]
-    const relations = [
-      { from_id: 1, to_id: 2, distance: 0, relation_type: 'identity' },
-      { from_id: 1, to_id: 3, distance: 0.1, relation_type: 'similarity' },
-      { from_id: 4, to_id: 1, distance: 0, relation_type: 'identity' },
-    ] satisfies SectionRelation[]
-
-    const result = buildLifelineWindow(nodes, relations, '2026-06-21', 7)
-
-    expect(result.days).toHaveLength(7)
-    expect(result.days.find(day => day.key === '2026-06-20')?.sections).toHaveLength(0)
-    expect(result.days.find(day => day.key === '2026-06-21')?.sections).toHaveLength(2)
-    expect(result.edges).toEqual([expect.objectContaining({ fromDayKey: '2026-06-19', toDayKey: '2026-06-21', weak: true })])
-  })
-
-  it('marks edges crossing empty days as weak and adjacent edges as strong', () => {
-    const nodes = [
-      { id: 1, report_id: 1, period_date: '2026-06-20', cluster_label: 'A' },
-      { id: 2, report_id: 2, period_date: '2026-06-21', cluster_label: 'B' },
-      { id: 3, report_id: 3, period_date: '2026-06-15', cluster_label: 'C' },
-    ] as SectionTimelineNode[]
-    const relations = [
-      { from_id: 1, to_id: 2, distance: 0, relation_type: 'identity' },
-      { from_id: 3, to_id: 1, distance: 0, relation_type: 'identity' },
-    ] satisfies SectionRelation[]
-
-    const result = buildLifelineWindow(nodes, relations, '2026-06-21', 7)
-    const adjacent = result.edges.find(edge => edge.fromSectionId === 1 && edge.toSectionId === 2)
-    const crossing = result.edges.find(edge => edge.fromSectionId === 3 && edge.toSectionId === 1)
-
-    expect(adjacent?.weak).toBe(false)
-    expect(crossing?.weak).toBe(true)
-  })
-
-  it('uses the shared cubic bezier geometry', () => {
-    expect(buildBezierPath(10, 20, 110, 60)).toBe('M10,20 C60,20 60,60 110,60')
   })
 })
 

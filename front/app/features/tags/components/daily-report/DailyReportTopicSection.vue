@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
-import DailyReportMiniLifeline from './DailyReportMiniLifeline.vue'
+import ThreadRelatedEvents from './ThreadRelatedEvents.vue'
 import SectionWatchBadge from './SectionWatchBadge.vue'
 import SectionTierBadge from './SectionTierBadge.vue'
 import SectionAnchorBadge from './SectionAnchorBadge.vue'
@@ -19,18 +19,24 @@ import type { LaneDynamicsLane, LaneDynamicsResponse } from '~/api/laneDynamics'
 import type { ContextRow } from '~/api/boardEnrichment'
 import { isThreadFitDemoted, threadFitLabel } from '~/utils/threadFit'
 import { useTopicKeyEvents } from '~/features/tags/composables/useTopicKeyEvents'
+import { useThreadRelatedEvents } from '~/features/tags/composables/useThreadRelatedEvents'
+import {
+  RELATED_WINDOW_DEFAULT,
+  RELATED_WINDOW_OPTIONS,
+} from '~/utils/threadRelation'
+import type { ArticleOpenTarget } from '~/utils/threadRelation'
 import { useConfirm } from '~/composables/useConfirm'
 import { useMediaQuery } from '~/composables/useMediaQuery'
 import KeyEventMarkerActions from '../KeyEventMarkerActions.vue'
-import type { ArticleTitle, TopicLifelineData } from '~/features/tags/composables/useDailyReportReader'
-import type { DailyReport, DailyReportSection, DailyReportThread } from '~/api/dailyReports'
+import type { ArticleTitle } from '~/features/tags/composables/useDailyReportReader'
+import type { DailyReportSection, DailyReportThread } from '~/api/dailyReports'
 
 const props = defineProps<{
   zone: QualityZone
+  /** 当期日报 id（相关线索的缓存键维度：一次请求覆盖整份日报）。 */
+  reportId: number
   reportDate: string
-  lifelineEntries: Map<number, RequestCacheEntry<TopicLifelineData>>
   articleEntries: Map<number, RequestCacheEntry<ArticleTitle>>
-  reportDetails: Map<number, DailyReport>
   /** 板块级泳道趋势聚合缓存（宿主 useLaneTrendData；首个泳道展开触发，翻期不重拉）。 */
   laneDynamicsEntry: RequestCacheEntry<LaneDynamicsResponse>
   /** 话题周期归档缓存（键 contextCacheKey(topicId, granularity)，宿主 useLaneTrendData）。 */
@@ -47,12 +53,10 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  ensureLifeline: [topicId: number, retry?: boolean]
   ensureArticles: [articleIds: number[]]
   retryArticle: [articleId: number]
-  loadHistorical: [reportIds: number[]]
-  openArticle: [articleId: number]
-  openDetective: [topicId: number]
+  /** 数字 = 普通文章行；对象 = chip 点击（带相关度上下文）。 */
+  openArticle: [target: ArticleOpenTarget]
   /** 泳道展开信号：宿主首个展开时拉一次板块级 lane-dynamics（页面级缓存去重）。 */
   ensureLaneDynamics: [retry?: boolean]
   /** 月/年档切档信号：宿主按 topicId+granularity 按需拉取 contexts。 */
@@ -63,9 +67,13 @@ const emit = defineEmits<{
 
 const groups = computed(() => groupSectionsByTopic(props.zone))
 const expandedTopics = ref(new Set<string>())
-const selectedDayByTopic = ref(new Map<number, string>())
 const expandedThreads = ref(new Set<string>())
 let autoExpandedDate = ''
+
+// 线索相关推荐共享缓存（单例）：键含报告与窗口，一次请求覆盖整份日报。
+const threadRelations = useThreadRelatedEvents()
+/** `7 天 / 30 天` 档位：分区级状态（工具条在每个内容分区的标题行，不放进线索行）。 */
+const relatedDays = ref<number>(RELATED_WINDOW_DEFAULT)
 
 // 关键事件共享缓存（单例）：当日/历史 thread 的挑选动作经同一份状态跨入口同步。
 const keyEvents = useTopicKeyEvents()
@@ -105,9 +113,27 @@ const topicStatusLabel: Record<QualityZone['key'], string> = {
   briefs: '其他动态',
 }
 
-function lifelineEntry(topicId?: number): RequestCacheEntry<TopicLifelineData> {
-  return topicId == null ? { status: 'idle' } : props.lifelineEntries.get(topicId) ?? { status: 'idle' }
+function threadRelationsEntry() {
+  return threadRelations.entry(props.reportId, relatedDays.value)
 }
+
+/** 话题卡片展开即拉一次整份日报的推荐（成功过的键命中缓存，不重取）。 */
+function ensureThreadRelations() {
+  void threadRelations.ensure(props.reportId, relatedDays.value)
+}
+
+function changeRelatedDays(days: number) {
+  if (relatedDays.value === days) return
+  relatedDays.value = days
+  // 已成功过的档位命中缓存（spec「切回 7 天直接使用缓存，不再次请求」）；
+  // 失败档位在这里强制重发——档位控件常驻分区工具条，切档是 request 失败后唯一的
+  // 显式重试入口（线索行在失败态整行不渲染，不再携带档位控件）。
+  const cached = threadRelations.entry(props.reportId, days)
+  void threadRelations.ensure(props.reportId, days, cached.status === 'error')
+}
+
+// 换报告（含切版块）后旧报告的推荐缓存不再有意义：清掉，后续 ensure 按新键重拉。
+watch(() => props.reportId, () => threadRelations.resetLocal())
 
 function articleEntry(articleId: number): RequestCacheEntry<ArticleTitle> {
   return props.articleEntries.get(articleId) ?? { status: 'idle' }
@@ -132,10 +158,9 @@ function toggleTopic(group: TopicGroup) {
   if (next.has(group.key)) next.delete(group.key)
   else {
     next.add(group.key)
-    if (group.topicId != null && props.zone.key === 'active') {
-      emit('ensureLifeline', group.topicId)
-      emit('ensureLaneDynamics')
-    }
+    // 线索 chip 行在两个分区都会渲染 → 推荐取数不按分区闸（趋势区仍只对 active 拉）
+    ensureThreadRelations()
+    if (group.topicId != null && props.zone.key === 'active') emit('ensureLaneDynamics')
   }
   expandedTopics.value = next
 }
@@ -168,40 +193,6 @@ function demotedThreads(section: DailyReportSection): DailyReportThread[] {
 
 function demotedCount(section: DailyReportSection): number {
   return demotedThreads(section).length
-}
-
-function selectLifelineDay(topicId: number, dayKey: string) {
-  const next = new Map(selectedDayByTopic.value)
-  if (next.get(topicId) === dayKey) next.delete(topicId)
-  else next.set(topicId, dayKey)
-  selectedDayByTopic.value = next
-
-  const reportIds = (lifelineEntry(topicId).data?.sections ?? [])
-    .filter(section => section.period_date.slice(0, 10) === dayKey)
-    .map(section => section.report_id)
-  if (reportIds.length) emit('loadHistorical', [...new Set(reportIds)])
-}
-
-function historicalSections(group: TopicGroup): DailyReportSection[] {
-  if (group.topicId == null) return []
-  const dayKey = selectedDayByTopic.value.get(group.topicId)
-  if (!dayKey) return []
-  const nodes = (lifelineEntry(group.topicId).data?.sections ?? [])
-    .filter(section => section.period_date.slice(0, 10) === dayKey)
-  return nodes.flatMap((node) => {
-    const report = props.reportDetails.get(node.report_id)
-    const section = report?.sections.find(item => item.id === node.id)
-    return section ? [section] : []
-  })
-}
-
-function historicalPending(group: TopicGroup): boolean {
-  if (group.topicId == null) return false
-  const dayKey = selectedDayByTopic.value.get(group.topicId)
-  if (!dayKey) return false
-  const nodes = (lifelineEntry(group.topicId).data?.sections ?? [])
-    .filter(section => section.period_date.slice(0, 10) === dayKey)
-  return nodes.some(node => !props.reportDetails.has(node.report_id))
 }
 
 // ── 重点定位（surface-story-heat-in-report-top）──
@@ -261,10 +252,8 @@ watch(() => props.locateThread, async (request) => {
     const next = new Set(expandedTopics.value)
     next.add(hit.groupKey)
     expandedTopics.value = next
-    if (hit.topicId != null && props.zone.key === 'active') {
-      emit('ensureLifeline', hit.topicId)
-      emit('ensureLaneDynamics')
-    }
+    ensureThreadRelations()
+    if (hit.topicId != null && props.zone.key === 'active') emit('ensureLaneDynamics')
   }
   await nextTick()
   const target = document.getElementById(`report-thread-${hit.threadId}`)
@@ -291,10 +280,8 @@ watch([groups, () => props.reportDate], ([nextGroups, reportDate]) => {
   autoExpandedDate = reportDate
   const first = nextGroups[0]
   expandedTopics.value = new Set([first.key])
-  if (first.topicId != null) {
-    emit('ensureLifeline', first.topicId)
-    emit('ensureLaneDynamics')
-  }
+  ensureThreadRelations()
+  if (first.topicId != null) emit('ensureLaneDynamics')
 }, { immediate: true })
 
 watch(() => props.focusSectionId, async (requestedId) => {
@@ -307,10 +294,8 @@ watch(() => props.focusSectionId, async (requestedId) => {
   const next = new Set(expandedTopics.value)
   next.add(group.key)
   expandedTopics.value = next
-  if (group.topicId != null && props.zone.key === 'active') {
-    emit('ensureLifeline', group.topicId)
-    emit('ensureLaneDynamics')
-  }
+  ensureThreadRelations()
+  if (group.topicId != null && props.zone.key === 'active') emit('ensureLaneDynamics')
 
   await nextTick()
   const target = document.getElementById(`report-section-${sectionId}`)
@@ -327,7 +312,25 @@ watch(() => props.focusSectionId, async (requestedId) => {
         <span class="drm-zone__eyebrow">{{ zone.eyebrow }}</span>
         <h2>{{ zone.label }}</h2>
       </div>
-      <span>{{ groups.length }} 个话题</span>
+      <div class="drm-zone__aside">
+        <span class="drm-zone__count">{{ groups.length }} 个话题</span>
+        <!-- 相关线索档位：分区级工具条（不放进线索行——否则无候选的线索行会留下一条只
+             有档位控件的空行）。全分区共用，切换即以新档位重取；成功过的档位命中缓存。 -->
+        <div class="drm-zone__days" role="group" aria-label="相关线索时间范围">
+          <button
+            v-for="option in RELATED_WINDOW_OPTIONS"
+            :key="option"
+            type="button"
+            class="drm-zone__day"
+            :class="{ active: relatedDays === option }"
+            :aria-pressed="relatedDays === option"
+            :data-testid="`zone-related-days-${option}`"
+            @click="changeRelatedDays(option)"
+          >
+            {{ option }} 天
+          </button>
+        </div>
+      </div>
     </header>
 
     <div class="drm-zone__topics">
@@ -468,6 +471,13 @@ watch(() => props.focusSectionId, async (requestedId) => {
                     @unmark="onKeyEventUnmark(section, thread)"
                   />
                   </div>
+                  <!-- 线索相关引用：整宽一行（.drm-thread-row 的两列 grid 由 KeyEventMarkerActions 的多根 fragment 自动摆放，不塞第三块） -->
+                  <ThreadRelatedEvents
+                    :thread-id="thread.id"
+                    :report-id="reportId"
+                    :entry="threadRelationsEntry()"
+                    @open-article="emit('openArticle', $event)"
+                  />
                   <div
                     v-if="expandedThreads.has(threadKey(`current-${section.id}`, thread))"
                     class="drm-articles"
@@ -508,124 +518,6 @@ watch(() => props.focusSectionId, async (requestedId) => {
               </div>
             </article>
           </div>
-
-          <DailyReportMiniLifeline
-            v-if="zone.key === 'active' && group.topicId != null"
-            :topic-id="group.topicId"
-            :topic-color="group.color"
-            :report-date="reportDate"
-            :entry="lifelineEntry(group.topicId)"
-            :selected-day-key="selectedDayByTopic.get(group.topicId)"
-            @retry="emit('ensureLifeline', group.topicId, true)"
-            @select-day="selectLifelineDay(group.topicId, $event)"
-            @open-detective="emit('openDetective', $event)"
-          >
-            <template #details>
-              <section
-                v-if="selectedDayByTopic.get(group.topicId)"
-                class="drm-history"
-                aria-label="历史节点详情"
-              >
-                <header>
-                  <span>{{ selectedDayByTopic.get(group.topicId) }}</span>
-                  <button type="button" @click="selectLifelineDay(group.topicId, selectedDayByTopic.get(group.topicId)!)">
-                    收起
-                  </button>
-                </header>
-                <div v-if="historicalPending(group)" class="drm-history__loading">
-                  <Icon icon="mdi:loading" width="16" class="drm-spin" />
-                  正在加载当日线索…
-                </div>
-                <div v-else-if="!historicalSections(group).length" class="drm-history__loading">当日暂无可展开线索。</div>
-                <article v-for="section in historicalSections(group)" :key="section.id" class="drm-history__section">
-                  <h3>{{ section.cluster_label }}</h3>
-                  <article
-                    v-for="thread in section.threads"
-                    :id="`report-thread-${thread.id}`"
-                    :key="thread.id"
-                    class="drm-thread"
-                    :class="{ 'drm-thread--demoted': isThreadFitDemoted(thread.fit_distance), 'drm-thread--lit': litThreadId === thread.id }"
-                      tabindex="-1"
-                  >
-                    <div class="drm-thread-row">
-                    <button
-                      type="button"
-                      class="drm-thread__header"
-                      :disabled="!thread.related_article_ids?.length"
-                      :aria-expanded="expandedThreads.has(threadKey(`history-${section.id}`, thread))"
-                      @click="toggleThread(`history-${section.id}`, thread)"
-                    >
-                      <span>
-                        <span class="drm-thread__title">
-                          <Icon
-                            v-if="isThreadFitDemoted(thread.fit_distance)"
-                            icon="mdi:alert-circle-outline"
-                            width="14"
-                            class="drm-thread__flag"
-                            aria-label="可能跑题的线索"
-                          />
-                          <strong>{{ thread.title }}</strong>
-                        </span>
-                        <small v-if="thread.summary">{{ thread.summary }}</small>
-                      </span>
-                      <span class="drm-thread__meta">
-                        <span v-if="thread.related_article_ids?.length" class="drm-thread__count">
-                          {{ thread.related_article_ids.length }} 篇
-                          <Icon icon="mdi:chevron-down" width="14" />
-                        </span>
-                      </span>
-                    </button>
-                    <KeyEventMarkerActions
-                      mode="history"
-                      :thread-id="thread.id"
-                      :topic-id="section.persistent_topic_id"
-                      :view="keyEvents.threadView(thread.id)"
-                      @mark="onKeyEventMark(section, thread)"
-                      @dismiss="onKeyEventDismiss(section, thread)"
-                      @unmark="onKeyEventUnmark(section, thread)"
-                    />
-                    </div>
-                    <div
-                      v-if="expandedThreads.has(threadKey(`history-${section.id}`, thread))"
-                      class="drm-articles"
-                    >
-                      <p class="drm-thread__fit-probe">
-                        贴合度<template v-if="typeof thread.fit_distance === 'number' && !Number.isNaN(thread.fit_distance)"> {{ thread.fit_distance.toFixed(2) }} ·</template> {{ threadFitLabel(thread.fit_distance) }}
-                      </p>
-                      <template v-for="articleId in thread.related_article_ids" :key="articleId">
-                        <button
-                          v-if="articleEntry(articleId).status === 'success'"
-                          type="button"
-                          class="drm-article"
-                          @click="emit('openArticle', articleId)"
-                        >
-                          <Icon icon="mdi:file-document-outline" width="14" />
-                          <span>{{ articleEntry(articleId).data?.title }}</span>
-                        </button>
-                        <button
-                          v-else-if="articleEntry(articleId).status === 'error'"
-                          type="button"
-                          class="drm-article drm-article--error"
-                          @click="emit('retryArticle', articleId)"
-                        >
-                          <Icon icon="mdi:refresh" width="14" />
-                          <span>文章加载失败，点击重试</span>
-                        </button>
-                        <div v-else class="drm-article drm-article--loading">
-                          <Icon icon="mdi:loading" width="14" class="drm-spin" />
-                          <span>正在查阅文章 #{{ articleId }}</span>
-                        </div>
-                      </template>
-                    </div>
-                  </article>
-                  <p v-if="demotedCount(section) > 0" class="drm-thread__hint">
-                    <Icon icon="mdi:alert-circle-outline" width="13" aria-hidden="true" />
-                    可能跑题的线索 {{ demotedCount(section) }} 条
-                  </p>
-                </article>
-              </section>
-            </template>
-          </DailyReportMiniLifeline>
         </div>
       </article>
     </div>
@@ -670,9 +562,50 @@ watch(() => props.focusSectionId, async (requestedId) => {
   font-style: italic;
 }
 
-.drm-zone__header > span {
+.drm-zone__count {
   color: var(--color-text-muted);
   font-size: 0.7rem;
+}
+
+.drm-zone__aside {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 档位复用趋势区的分段控件视觉（原生 button + active 态），不自造控件 */
+.drm-zone__days {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.drm-zone__day {
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.65rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.drm-zone__day:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text-secondary);
+}
+
+.drm-zone__day.active {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.drm-zone__day:focus-visible {
+  outline: 2px solid var(--color-input-focus);
+  outline-offset: 2px;
 }
 
 .drm-zone__topics {
@@ -1138,45 +1071,6 @@ button.drm-article:focus-visible {
   color: var(--color-text-muted);
 }
 
-.drm-history {
-  margin: 0.75rem 1rem 0;
-  padding: 1rem;
-  border-left: 2px solid var(--color-accent);
-  background: var(--color-bg-sunken);
-}
-
-.drm-history > header {
-  display: flex;
-  justify-content: space-between;
-  padding-bottom: 0.65rem;
-  border-bottom: 1px solid var(--color-border-medium);
-  color: var(--color-text-muted);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 0.68rem;
-}
-
-.drm-history > header button {
-  border: 0;
-  background: transparent;
-  color: var(--color-link);
-  cursor: pointer;
-}
-
-.drm-history__loading {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 1rem 0;
-  color: var(--color-text-muted);
-  font-size: 0.72rem;
-}
-
-.drm-history__section h3 {
-  margin: 1rem 0 0.35rem;
-  font-family: "Noto Serif SC", serif;
-  font-size: 0.92rem;
-}
-
 .drm-spin {
   animation: drmSpin 0.9s linear infinite;
 }
@@ -1221,6 +1115,7 @@ button.drm-article:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .drm-zone,
+  .drm-zone__day,
   .drm-topic__heading strong,
   .drm-spin {
     transition: none;

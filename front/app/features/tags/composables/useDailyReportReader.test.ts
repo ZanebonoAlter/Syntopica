@@ -40,22 +40,20 @@ describe('useDailyReportReader', () => {
     api.getReportKeyEvents.mockResolvedValue({ success: true, data: { status: 'idle', markers: [] } })
     api.getTopicKeyEvents.mockResolvedValue({ success: true, data: { topic_id: 1, days: 14, markers: [] } })
     api.getBoardDailyReports.mockResolvedValue({ success: true, data: { reports: [] } })
-    api.getTopicLifeline.mockResolvedValue({ success: true, data: { sections: [], relations: [] } })
     api.getArticle.mockImplementation(async (id: number) => ({ success: true, data: { id: String(id), title: `article-${id}` } }))
   })
 
-  it('deduplicates lifeline and article requests', async () => {
+  it('deduplicates article requests (日报侧不再拉话题生命线)', async () => {
     const reader = useDailyReportReader(ref(1974))
     await flushPromises()
 
-    await Promise.all([reader.ensureLifeline(5), reader.ensureLifeline(5)])
-    await reader.ensureLifeline(5)
-    await reader.ensureArticleTitles([99, 99])
+    await Promise.all([reader.ensureArticleTitles([99, 99])])
     await reader.ensureArticleTitles([99])
 
-    expect(api.getTopicLifeline).toHaveBeenCalledTimes(1)
     expect(api.getArticle).toHaveBeenCalledTimes(1)
     expect(reader.getArticleTitle(99).data?.title).toBe('article-99')
+    // 折线退役（replace-lane-lifeline-with-topic-events）：日报读端 MUST NOT 再调 lifeline 端点
+    expect(api.getTopicLifeline).not.toHaveBeenCalled()
   })
 
   it('keeps a failed item local and supports retry', async () => {
@@ -79,22 +77,20 @@ describe('useDailyReportReader', () => {
     const boardId = ref(1974)
     const reader = useDailyReportReader(boardId)
     await flushPromises()
-    await reader.ensureLifeline(5)
     await reader.ensureArticleTitles([99])
 
     boardId.value = 1980
     await flushPromises()
 
     expect(reader.days.value).toBe(7)
-    expect(reader.getLifeline(5).status).toBe('idle')
     expect(reader.getArticleTitle(99).status).toBe('idle')
     expect(api.getBoardDailyReports).toHaveBeenLastCalledWith(1980, { days: 7 })
   })
 
-  // 回归：mini 话题泳道点击历史时间点（loadHistorical → ensureHistoricalDetail）
-  // 不得污染当前选中日报的 detailLoading / detailError，否则整个日报详情会被
-  // 骨架屏替换，表现为“点击时间点就刷新日报”。
-  it('ensureHistoricalDetail fills the cache without setting detailLoading/detailError', async () => {
+  // 回归：读详情时不得污染 detailLoading / detailError（否则整个日报详情会被骨架屏
+  // 替换）；历史详情的静默加载入口（ensureHistoricalDetail）已随迷你生命线退役删除
+  // （replace-lane-lifeline-with-topic-events review R-11），这里只锚定当期详情读取。
+  it('ensureDetail 写入缓存且结算后 detailLoading 回到 null', async () => {
     api.getDailyReportDetail.mockResolvedValue({
       success: true,
       data: { report: { id: 42 } as DailyReport },
@@ -103,9 +99,9 @@ describe('useDailyReportReader', () => {
     const reader = useDailyReportReader(ref(1974))
     await flushPromises()
 
-    const pending = reader.ensureHistoricalDetail(42)
-    // 加载进行中也不应触碰 detailLoading（这正是 bug 的触发条件）。
-    expect(reader.detailLoading.value).toBeNull()
+    const pending = reader.ensureDetail(42)
+    // 加载进行中：detailLoading 指向请求中的报告 id，但不置错误
+    expect(reader.detailLoading.value).toBe(42)
     expect(reader.detailError.value).toBe('')
     await pending
 
@@ -115,21 +111,8 @@ describe('useDailyReportReader', () => {
     expect(reader.detailCache.value.get(42)).toEqual({ id: 42 })
 
     // 重复加载命中缓存，不再发请求。
-    await reader.ensureHistoricalDetail(42)
+    await reader.ensureDetail(42)
     expect(api.getDailyReportDetail).toHaveBeenCalledTimes(1)
-  })
-
-  it('ensureHistoricalDetail swallows failures without surfacing detailError', async () => {
-    api.getDailyReportDetail.mockResolvedValue({ success: false })
-
-    const reader = useDailyReportReader(ref(1974))
-    await flushPromises()
-
-    const result = await reader.ensureHistoricalDetail(7)
-    expect(result).toBeUndefined()
-    expect(reader.detailLoading.value).toBeNull()
-    expect(reader.detailError.value).toBe('')
-    expect(reader.detailCache.value.has(7)).toBe(false)
   })
 
   it('loads key events read-only alongside each cached report detail (打开页面只读拉取)', async () => {
@@ -146,9 +129,6 @@ describe('useDailyReportReader', () => {
     expect(api.getReportKeyEvents).toHaveBeenCalledWith(55)
     expect(api.putThreadKeyEvent).not.toHaveBeenCalled()
     expect(api.patchKeyEventMarker).not.toHaveBeenCalled()
-
-    await reader.ensureHistoricalDetail(56)
-    expect(api.getReportKeyEvents).toHaveBeenCalledWith(56)
   })
 
 })

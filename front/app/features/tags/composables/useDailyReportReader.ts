@@ -7,14 +7,7 @@ import type {
   DailyReport,
   DailyReportListItem,
   DailyReportSection,
-  SectionRelation,
-  SectionTimelineNode,
 } from '~/api/dailyReports'
-
-export interface TopicLifelineData {
-  sections: SectionTimelineNode[]
-  relations: SectionRelation[]
-}
 
 export interface ArticleTitle {
   id: number
@@ -38,7 +31,7 @@ export interface UseDailyReportReaderOptions {
 }
 
 export function useDailyReportReader(boardId: Ref<number>, options: UseDailyReportReaderOptions = {}) {
-  const { getBoardDailyReports, getDailyReportDetail, getTopicLifeline, rebucketSection } = useDailyReportsApi()
+  const { getBoardDailyReports, getDailyReportDetail, rebucketSection } = useDailyReportsApi()
   const { getArticle } = useArticlesApi()
   // 关键事件共享缓存（add-topic-key-event-markers）：日报读端与总览共用；
   // 读取随详情加载触发，只读不触发推荐（spec：打开页面只读）。
@@ -52,18 +45,11 @@ export function useDailyReportReader(boardId: Ref<number>, options: UseDailyRepo
   const detailCache = ref(new Map<number, DailyReport>())
   const detailLoading = ref<number | null>(null)
   const detailError = ref('')
-  const lifelineEntries = ref(new Map<number, RequestCacheEntry<TopicLifelineData>>())
   const articleEntries = ref(new Map<number, RequestCacheEntry<ArticleTitle>>())
   /** 正在进行重分桶的 section id（按钮置灰 + 原位 spinner）。 */
   const rebucketSectionId = ref<number | null>(null)
   /** 重分桶后失效的旧锚点 → 该组首条 section（深链兼容；只影响本会话内存）。 */
   const sectionAliases = ref(new Map<number, number>())
-
-  const lifelineCache = createRequestCache<number, TopicLifelineData>(async (topicId) => {
-    const response = await getTopicLifeline(topicId)
-    if (!response.success || !response.data) throw responseError('话题生命线加载失败')
-    return response.data
-  }, entries => { lifelineEntries.value = entries })
 
   const articleCache = createRequestCache<number, ArticleTitle>(async (articleId) => {
     const response = await getArticle(articleId)
@@ -111,18 +97,6 @@ export function useDailyReportReader(boardId: Ref<number>, options: UseDailyRepo
     }
   }
 
-  // 静默加载历史日报详情：写入 detailCache 供历史节点展示，
-  // 但不触碰 detailLoading / detailError，避免遮蔽当前正在阅读的日报。
-  async function ensureHistoricalDetail(reportId: number) {
-    if (detailCache.value.has(reportId)) return detailCache.value.get(reportId)
-    const response = await getDailyReportDetail(reportId)
-    if (!response.success || !response.data) return undefined
-    detailCache.value.set(reportId, response.data.report)
-    detailCache.value = new Map(detailCache.value)
-    void keyEvents.ensureReportKeyEvents(reportId)
-    return response.data.report
-  }
-
   async function selectReport(index: number) {
     const report = reports.value[index]
     if (!report) return undefined
@@ -149,14 +123,6 @@ export function useDailyReportReader(boardId: Ref<number>, options: UseDailyRepo
   async function loadMore() {
     days.value += 7
     await loadReports()
-  }
-
-  function getLifeline(topicId: number): RequestCacheEntry<TopicLifelineData> {
-    return lifelineEntries.value.get(topicId) ?? { status: 'idle' }
-  }
-
-  async function ensureLifeline(topicId: number, retry = false) {
-    return lifelineCache.load(topicId, retry)
   }
 
   function getArticleTitle(articleId: number): RequestCacheEntry<ArticleTitle> {
@@ -230,7 +196,6 @@ export function useDailyReportReader(boardId: Ref<number>, options: UseDailyRepo
     detailCache.value = new Map()
     detailLoading.value = null
     detailError.value = ''
-    lifelineCache.clear()
     articleCache.clear()
     rebucketSectionId.value = null
     sectionAliases.value = new Map()
@@ -248,7 +213,6 @@ export function useDailyReportReader(boardId: Ref<number>, options: UseDailyRepo
     currentDayIndex,
     detailLoading,
     detailError,
-    lifelineEntries,
     articleEntries,
     selectedReport,
     selectedDetail,
@@ -259,14 +223,11 @@ export function useDailyReportReader(boardId: Ref<number>, options: UseDailyRepo
     rebucket,
     loadReports,
     ensureDetail,
-    ensureHistoricalDetail,
     getReportDetail,
     selectReport,
     selectReportById,
     shiftReport,
     loadMore,
-    getLifeline,
-    ensureLifeline,
     getArticleTitle,
     ensureArticleTitles,
     retryDetail,

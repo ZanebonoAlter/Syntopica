@@ -30,6 +30,8 @@
 
 <!-- doc-impact: standard -->
 
+本 change 只改 `docs/reference/standard/frontend/`（交互契约与原型内容下限），无 flow 影响（§12.2 豁免溯源）。
+
 - [x] 5.1 更新 `docs/reference/standard/frontend/interaction.md`（见 1.1–1.4）
 - [x] 5.2 更新 `docs/reference/standard/frontend/layout.md`（见 1.5）
 - [x] 5.3 判定是否需进 `constraints-index.md`：无需新增行（该索引已有 `standard/frontend/interaction.md` 一行，本 change 只是给同一文件加节）

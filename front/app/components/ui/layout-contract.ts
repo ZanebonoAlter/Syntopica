@@ -19,6 +19,10 @@ export const Z_INDEX = {
   dialogNested: 1100,      // 弹窗内再开的嵌套浮层
   readingDialog: 9100,     // 阅读层弹窗
   readingFullscreen: 9200, // 弹窗内全屏层
+  // 阅读台内的行内预览浮层（如线索 chip 的相关度浮层）：高于阅读台自身遮罩层
+  // （DailyReportReader 的 .drm-overlay 9000），低于阅读弹窗 9100——点开的阅读预览
+  // 弹窗必须盖住浮层，浮层不得穿到弹窗之上。
+  readingTooltip: 9099,
   toast: 9999,             // 全局提示 / 菜单
 } as const
 

@@ -241,6 +241,31 @@ describe('ArticlePreviewModal — header-actions 插槽（add-article-search）'
   })
 })
 
+// ===== 相关线索阅读上下文（replace-lane-lifeline-with-topic-events review R-1）=====
+// 从线索 chip 打开时要带「档位 + 分数 + 候选日期」；普通文章行不传 → 整行不渲染。
+describe('ArticlePreviewModal — 相关线索上下文行', () => {
+  it('传 relatedContext：标题下方渲染一行「相关线索 · 强关联 0.89 · 日期」', () => {
+    const w = mountModal({ relatedContext: { score: 0.89, level: 'strong', periodDate: '2026-11-02' } })
+    const row = w.find('[data-testid="preview-related-context"]')
+    expect(row.exists()).toBe(true)
+    expect(row.text()).toBe('相关线索 · 强关联 0.89 · 2026-11-02')
+    // 仍在 header 内，且标题行不受影响（header 不再多出第二个 .preview-header-text）
+    expect(w.find('[data-test="app-dialog-header"]').element.contains(row.element)).toBe(true)
+    expect(w.findAll('p.preview-header-text')).toHaveLength(1)
+  })
+
+  it('related 档显示「相关」，分数向零截断不跨档（0.8499 → 0.84）', () => {
+    const w = mountModal({ relatedContext: { score: 0.8499, level: 'related', periodDate: '2026-10-30' } })
+    expect(w.find('[data-testid="preview-related-context"]').text()).toBe('相关线索 · 相关 0.84 · 2026-10-30')
+  })
+
+  it('不传 relatedContext（普通文章行）：不渲染上下文行（零行为变化）', () => {
+    const w = mountModal()
+    expect(w.find('[data-testid="preview-related-context"]').exists()).toBe(false)
+    expect(w.text()).not.toContain('相关线索')
+  })
+})
+
 
 // ===== 全屏层级契约（2026-10-28 用户反馈修复）：弹窗内点「全屏」不能被遮罩盖住 =====
 

@@ -130,6 +130,10 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 
 	// 话题关键事件注记（add-topic-key-event-markers）：读/写/维护端点
 	RegisterKeyEventRoutes(api)
+
+	// 线索相关事件推荐（replace-lane-lifeline-with-topic-events）：一次返回
+	// 整份日报所有线索的相关事件，只读；取代话题泳道折线的「之前讲过什么」入口。
+	RegisterThreadRelationRoutes(api)
 }
 
 // triggerGenerateDailyReport handles POST /api/daily-reports/generate

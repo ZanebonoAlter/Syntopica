@@ -17,6 +17,18 @@ import DailyReportTopicSection from './DailyReportTopicSection.vue'
 import type { DailyReport, DailyReportHighlight, DailyReportSection, DailyReportThread } from '~/api/dailyReports'
 import type { QualityZone } from './dailyReportMagazine'
 
+// 线索相关推荐（ThreadRelatedEvents）会经模块级单例取数 → 离线 mock，默认无候选。
+vi.mock('~/api/dailyReports', () => ({
+  useDailyReportsApi: () => ({
+    getThreadRelations: vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        report_id: 60, days: 7, window_start: '', window_end: '', status: 'empty', threads: {}, total: 0, skipped_no_embedding: 0,
+      },
+    }),
+  }),
+}))
+
 const reducedMotion = { value: false }
 vi.mock('~/composables/useMediaQuery', () => ({
   useMediaQuery: () => ({ get value() { return reducedMotion.value } }),
@@ -26,10 +38,6 @@ vi.mock('@iconify/vue', () => ({
 }))
 
 const stubs = {
-  DailyReportMiniLifeline: {
-    name: 'DailyReportMiniLifeline',
-    template: '<div class="lifeline-stub"><slot name="details" /></div>',
-  },
   SectionTierBadge: { name: 'SectionTierBadge', template: '<span class="tier-stub" />' },
   SectionAnchorBadge: { name: 'SectionAnchorBadge', template: '<span class="anchor-stub" />' },
   SectionQualityExplore: { name: 'SectionQualityExplore', template: '<span class="explore-stub" />' },
@@ -114,10 +122,9 @@ function mountSection(zone: QualityZone) {
   return mount(DailyReportTopicSection, {
     props: {
       zone,
+      reportId: 60,
       reportDate: '2026-11-03T12:00:00Z',
-      lifelineEntries: new Map(),
       articleEntries: new Map(),
-      reportDetails: new Map(),
       laneDynamicsEntry: { status: 'idle' as const },
       contextEntries: new Map(),
     },

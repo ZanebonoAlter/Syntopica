@@ -2,6 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ArticleContentView } from '~/features/articles/public'
 import { popOverlay, pushOverlay } from '~/components/ui/overlayStack'
+import { formatRelationScore, relationLevelLabel } from '~/utils/threadRelation'
+import type { RelatedPreviewContext } from '~/utils/threadRelation'
 import type { Article } from '~/types'
 
 const props = withDefaults(defineProps<{
@@ -14,9 +16,13 @@ const props = withDefaults(defineProps<{
   highlightTerms?: string[]
   /** R38：仅 matrix 原文阅读显式 opt-in 对话语义/初始焦点；默认 false 保持旧行为。 */
   dialogSemantics?: boolean
+  /** 线索相关推荐的阅读上下文（replace-lane-lifeline-with-topic-events R-1）：只在从
+   *  相关线索 chip 打开时传入，弹窗头部多一行档位/分数/候选日期；普通文章行为 null。 */
+  relatedContext?: RelatedPreviewContext | null
 }>(), {
   highlightTerms: () => [],
   dialogSemantics: false,
+  relatedContext: null,
 })
 const emit = defineEmits<{
   close: []
@@ -28,6 +34,13 @@ const emit = defineEmits<{
 const show = computed({
   get: () => props.visible,
   set: (val: boolean) => { if (!val) emit('close') }
+})
+
+/** 相关度上下文文案（档位 + 分数 + 候选日期）；无上下文时整行不渲染。 */
+const relatedContextText = computed(() => {
+  const context = props.relatedContext
+  if (!context) return ''
+  return `相关线索 · ${relationLevelLabel(context.level)} ${formatRelationScore(context.score)} · ${context.periodDate}`
 })
 
 /**
@@ -204,9 +217,20 @@ onBeforeUnmount(() => {
     dialog-label="站内原文阅读"
   >
     <template #header>
-      <p class="preview-header-text">
-        {{ loadingPreviewArticle ? '正在准备文章预览...' : '文章预览' }}
-      </p>
+      <div class="preview-header-main">
+        <p class="preview-header-text">
+          {{ loadingPreviewArticle ? '正在准备文章预览...' : '文章预览' }}
+        </p>
+        <!-- 相关线索上下文（替换旧生命线后 chip 是唯一入口）：只在 chip 点击时出现，
+             普通文章行不渲染该行（零行为变化）。 -->
+        <p
+          v-if="relatedContextText"
+          class="preview-header-related"
+          data-testid="preview-related-context"
+        >
+          {{ relatedContextText }}
+        </p>
+      </div>
       <!-- 可选 header-actions（add-article-search D1）：AppDialog header 本身是 flex 行，
            margin-left:auto 使动作落在标题行右侧、关闭钮之前；不传插槽时本节点不渲染，
            header DOM 与现状完全一致（tags 域零变化红线） -->
@@ -231,9 +255,25 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 标题 + 相关度上下文两行（header 本身是 flex 行：本块靠左，header-actions 靠右） */
+.preview-header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .preview-header-text {
   font-size: 0.875rem;
   color: var(--color-text-muted);
+}
+
+.preview-header-related {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
 }
 
 /* header-actions 容器（add-article-search）：仅插槽传入时渲染 */

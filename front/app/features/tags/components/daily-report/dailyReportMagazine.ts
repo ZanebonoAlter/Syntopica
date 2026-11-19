@@ -2,8 +2,6 @@ import type {
   DailyReport,
   DailyReportHighlight,
   DailyReportSection,
-  SectionRelation,
-  SectionTimelineNode,
 } from '~/api/dailyReports'
 
 export type QualityZoneKey = 'active' | 'briefs'
@@ -34,27 +32,6 @@ export interface LeadStory {
   source: 'highlight' | 'section'
   /** 头条由 section 线索派生时的 section id（lead 批注无 thread 时锚定归属线索用；highlight 派生时无）。 */
   sectionId?: number
-}
-
-export interface LifelineDay {
-  key: string
-  date: string
-  sections: SectionTimelineNode[]
-}
-
-export interface LifelineEdge {
-  key: string
-  fromSectionId: number
-  toSectionId: number
-  fromDayKey: string
-  toDayKey: string
-  /** 跨过空白自然日（日期跨度 > 1 天）的连线，渲染时弱化 */
-  weak: boolean
-}
-
-export interface LifelineWindow {
-  days: LifelineDay[]
-  edges: LifelineEdge[]
 }
 
 export type RequestStatus = 'idle' | 'loading' | 'success' | 'error'
@@ -277,64 +254,6 @@ export function selectLeadStory(report: DailyReport): LeadStory | null {
     source: 'section',
     sectionId: section.id,
   }
-}
-
-function dateKey(date: string): string {
-  return date.slice(0, 10)
-}
-
-function addUtcDays(key: string, amount: number): string {
-  const value = new Date(`${key}T12:00:00Z`)
-  value.setUTCDate(value.getUTCDate() + amount)
-  return value.toISOString().slice(0, 10)
-}
-
-export function buildLifelineWindow(
-  sections: SectionTimelineNode[],
-  relations: SectionRelation[],
-  reportDate: string,
-  dayCount = 7,
-): LifelineWindow {
-  const endKey = dateKey(reportDate)
-  const dayKeys = Array.from({ length: dayCount }, (_, index) => addUtcDays(endKey, index - dayCount + 1))
-  const dayKeySet = new Set(dayKeys)
-  const dayIndex = new Map(dayKeys.map((key, index) => [key, index]))
-  const sectionDayById = new Map<number, string>()
-  const grouped = new Map(dayKeys.map(key => [key, [] as SectionTimelineNode[]]))
-
-  for (const section of sections) {
-    const key = dateKey(section.period_date)
-    if (!dayKeySet.has(key)) continue
-    grouped.get(key)?.push(section)
-    sectionDayById.set(section.id, key)
-  }
-
-  const edges = relations
-    .filter(relation => relation.relation_type === 'identity')
-    .flatMap((relation) => {
-      const fromDayKey = sectionDayById.get(relation.from_id)
-      const toDayKey = sectionDayById.get(relation.to_id)
-      if (!fromDayKey || !toDayKey || fromDayKey === toDayKey) return []
-      const span = Math.abs((dayIndex.get(toDayKey) ?? 0) - (dayIndex.get(fromDayKey) ?? 0))
-      return [{
-        key: `${relation.from_id}-${relation.to_id}`,
-        fromSectionId: relation.from_id,
-        toSectionId: relation.to_id,
-        fromDayKey,
-        toDayKey,
-        weak: span > 1,
-      }]
-    })
-
-  return {
-    days: dayKeys.map(key => ({ key, date: key, sections: grouped.get(key) ?? [] })),
-    edges,
-  }
-}
-
-export function buildBezierPath(x1: number, y1: number, x2: number, y2: number): string {
-  const midX = (x1 + x2) / 2
-  return `M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`
 }
 
 export function formatMagazineDate(date: string): string {

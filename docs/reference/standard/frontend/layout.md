@@ -108,6 +108,7 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 | --- | --- | --- |
 | `dialog` | 1000 | 基础弹窗遮罩（`AppDialog` 默认） |
 | `dialogNested` | 1100 | 弹窗内再开的嵌套浮层 |
+| `readingTooltip` | 9099 | 阅读层内的行内预览浮层（高于阅读台遮罩 `.drm-overlay` 9000、低于阅读层弹窗 9100；replace-lane-lifeline-with-topic-events） |
 | `readingDialog` | 9100 | 阅读层弹窗 |
 | `readingFullscreen` | 9200 | 弹窗内全屏层 |
 | `toast` | 9999 | 全局提示 / 菜单 |
@@ -143,7 +144,7 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 
 **级别**: MUST
 
-自建浮层/弹窗容器（Teleport + overlay，存量未迁 AppDialog 的组件）与新浮层代码 SHALL 在组件单测中携带「展示合理性」机械锚，防止样式重构丢失定位规则：
+自建浮层/弹窗容器（Teleport + overlay，存量未迁 AppDialog 的组件）与新浮层代码 SHALL 在组件单测中携带「展示合理性」机械锚。这是 2026-09-07 浮层丢失定位、退化为流内布局的回归守卫：
 
 1. **样式规则锚**：源码 `<style>` 中 overlay 规则存在（`position: fixed` + `inset: 0`；层级按「浮层层级契约」由档位表内联绑定注入时，`<style>` 不再写死 `z-index`）；
 2. **Teleport 挂载锚**：不 stub teleport 挂载时 overlay 渲染在 `document.body` 而非组件原地。
@@ -153,7 +154,7 @@ doc-impact-applies: front/app/pages/, front/app/features/, front/app/components/
 #### Scenario: 重写样式块
 
 - **WHEN** 浮层组件的 `<style>` 块被重写/精简，定位规则丢失使弹窗退化为流内 div
-- **THEN** 机械锚单测 SHALL 失败拦截（而非依赖 lint/单测都无法发现后流入用户界面）
+- **THEN** 机械锚单测 SHALL 失败拦截（而非依赖 lint 判定布局）
 
 ### Requirement: major UI change 双视口验收
 

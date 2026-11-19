@@ -17,9 +17,15 @@ describe('浮层层级档位表（Z_INDEX）', () => {
   it('档位取值与契约表一致（数值锚，防手写漂移）', () => {
     expect(Z_INDEX.dialog).toBe(1000)
     expect(Z_INDEX.dialogNested).toBe(1100)
+    expect(Z_INDEX.readingTooltip).toBe(9099)
     expect(Z_INDEX.readingDialog).toBe(9100)
     expect(Z_INDEX.readingFullscreen).toBe(9200)
     expect(Z_INDEX.toast).toBe(9999)
+  })
+
+  it('阅读台行内浮层低于阅读弹窗：点开的阅读预览必须盖住浮层（review R-12）', () => {
+    expect(Z_INDEX.readingTooltip).toBeLessThan(Z_INDEX.readingDialog)
+    expect(Z_INDEX.readingTooltip).toBeGreaterThan(Z_INDEX.dialogNested)
   })
 })
 

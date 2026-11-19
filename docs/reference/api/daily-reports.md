@@ -9,6 +9,7 @@
 | 方法 | 路径 | 说明 |
 | ------ | ------ | ------ |
 | POST | `/daily-reports/generate` | 手动触发日报生成（异步） |
+| GET | `/daily-reports/today?date=YYYY-MM-DD` | 阅读台队列：指定日期已有日报的版块清单（每板一行轻量投影） |
 | GET | `/daily-reports/:id` | 查询单篇日报详情 |
 | POST | `/daily-reports/:id/rebucket` | 重新分桶：对某 section 所在的泳道内主题桶组重跑两阶段分桶 |
 | GET | `/semantic-boards/:id/daily-reports` | 查询板块日报列表 |
@@ -18,6 +19,7 @@
 | GET | `/semantic-boards/overview` | 今日雷达：全部活跃版块的事件线密度、story_heat 升温口径与最新日报摘要（单请求，5s 降级；add-event-story-heat 起关注度=lane_heat；surface-story-events-in-radar 起顶层 `stories` 段为跨版块事件线清单；matrix-clue-fallback-and-rail-merge 起收敛为单清单「今日该读」（≤8）+ 行内徽标） |
 | GET | `/daily-reports/sections/:id/lifecycle` | section 连通分量生命周期 |
 | GET | `/daily-reports/topics/:id/lifeline` | 持久话题全量 section |
+| GET | `/daily-reports/:id/thread-relations?days=7` | 该期日报每条线索的相关线索推荐（同话题、窗口内、thread 向量余弦 ≥0.75；单请求覆盖全期，replace-lane-lifeline-with-topic-events） |
 | PATCH | `/daily-reports/topics/:id` | 更新话题标题/状态 |
 | DELETE | `/daily-reports/topics/:id` | 硬删话题（解绑 section） |
 | POST | `/daily-reports/topics/:id/merge` | 合并源话题到目标 |
@@ -105,6 +107,39 @@ WebSocket 进度消息：
 
 调度侧同闸获取失败则记 skip（`skipped: "already_running"`，不标 failed、不发第二条终态通知）。窗口校验在闸检查之前：超窗日期不碰闸直接 4xx。
 
+## GET `/daily-reports/today`
+
+阅读台左栏队列：返回**指定日期已有日报的版块**清单，每板一行轻量投影（不含 sections / threads 载荷）。纯读、无副作用、不触发生成。
+
+**参数：**
+
+- `date`：`YYYY-MM-DD`，缺省取服务端本地日历当天；格式非法 → `400`（不回落默认日期）。
+
+Response `data`（按 `semantic_board_id` 升序）：
+
+```json
+{
+  "success": true,
+  "data": {
+    "date": "2026-11-03",
+    "reports": [
+      { "report_id": 1284, "semantic_board_id": 2849, "period_date": "2026-11-03", "title": "日报 2026-11-03", "status": "completed" }
+    ]
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `date` | 生效的查询日期（回显；未传时即服务端今天） |
+| `reports[].report_id` | 报告主键（可交给 `GET /daily-reports/:id` 取详情） |
+| `reports[].semantic_board_id` | 版块 ID |
+| `reports[].period_date` | 报告期日（`YYYY-MM-DD`，`period_date` 列投影） |
+| `reports[].title` | 报告标题（生成时写成 `日报 <日期>`） |
+| `reports[].status` | 报告行 `status` 列原值（生成成功落库的日报恒为 `completed`） |
+
+格式非法时 `400 { "success": false, "error": "invalid date" }`；查询失败 `500`。当天无任何日报时 `reports` 为 `[]`（不是 `null`，也不是 404）。`(semantic_board_id, period_date)` 唯一索引保证每板当日至多一行。
+
 ## GET `/semantic-boards/:id/section-timeline?days=30`
 
 查询板块日报 section 时间线，供 2D 线索浏览和 3D 侦探墙复用。
@@ -154,6 +189,30 @@ Response `data`：
 按 `persistent_topic_id` 查询一个持久话题的全部 section 与内部关系，不受时间窗限制。
 
 Response 的 `sections[].topic_match_distance` = 该 section 到话题质心的归属距离（float，**恒下发**）：距离恰为 `0` 是合法结果（完美锚定），不得被省略（fix-lane-metric-provenance）——省略会让客户端把接近度读成「未知」而不是 `1 − 0 = 1.00`。
+
+## GET `/daily-reports/:id/thread-relations?days=7`
+
+给日报阅读台的**每条当日线索**返回「相关线索」推荐，用于线索行内的 chip（replace-lane-lifeline-with-topic-events）。一次请求覆盖整期日报全部线索，按 `thread_id` 分组——不要求前端逐条发请求。
+
+**参数**：`days` 只接受 `7` 与 `30`，其它值回落 `7` 并以响应字段回显实际生效值；窗口为 `[report_date - days, report_date - 1]`，**不含当前期**（当期线索已在同一屏可见，不推荐自己）。
+
+**候选与打分**：同 `persistent_topic_id`、窗口内、`embedding` 非空的其它 thread，按 `1 - (a <=> b)` 余弦相似度筛选，**只有 ≥ 0.75 进入列表**；`score` 就是余弦值本身，**不叠加时间衰减/篇数/confirmed 加权**；`level = score >= 0.85 ? "strong" : "related"`（两档）。排序 `score` desc → `period_date` desc → `thread_id` asc，**后端返回全量不截断**（前端只渲染前 3）。
+
+**为什么不用事件标签做匹配**：实测「事件标签 id 交集」有候选的线索仅 1.6%（标签 id 不跨天复用 + 孤儿清理硬删）；「事件标签向量」的 top-3 与 thread 向量**零重叠**，候选池只有 19%。选型实测见 change 的 `design.md` D3。
+
+**响应**（`data` 下）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `report_id` / `days` / `window_start` / `window_end` | 参数与实际窗口 |
+| `status` | `ready` / `partial`（有当期线索缺向量被跳过）/ `empty`（无任何推荐） |
+| `threads` | `{ "<threadId>": [ { thread_id, title, summary, period_date, score, level, confirmed, source_article } ] }`，无推荐时为空对象 `{}`（不是 `null`） |
+| `total` | 全部推荐条数 |
+| `skipped_no_embedding` | 当期缺 embedding 被跳过的线索数 |
+
+`source_article` 取候选 thread 的 `related_article_ids` **首篇**（`id` / `title` / `feed` / `published_at`），查不到时为 `null`（不编造标题）。`confirmed` 表示候选 thread 的 event 标签在本话题有 `state='confirmed'` 的关键事件注记。
+
+**只读**：不写任何表/缓存/索引、不调模型、不算 embedding。`reportId` 不存在返回 404。
 
 ## PATCH `/daily-reports/topics/:id`
 

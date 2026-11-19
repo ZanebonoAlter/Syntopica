@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import DailyReportReader from './DailyReportReader.vue'
+import { __mediaQueryClient } from '~/composables/useMediaQuery'
 import type { DailyReport, DailyReportListItem } from '~/api/dailyReports'
+
+/** 页边注栏收起偏好键（组件内同名常量，测试按契约字符串断言）。 */
+const NOTES_RAIL_STORAGE_KEY = 'syntopica.daily-report.margin-notes-collapsed'
 
 const api = vi.hoisted(() => ({
   getBoardDailyReports: vi.fn(),
@@ -18,6 +22,12 @@ const api = vi.hoisted(() => ({
   deleteAnnotation: vi.fn(),
   rebucketSection: vi.fn(),
   generateDailyReport: vi.fn(),
+  getThreadRelations: vi.fn().mockResolvedValue({
+    success: true,
+    data: {
+      report_id: 1, days: 7, window_start: '', window_end: '', status: 'empty', threads: {}, total: 0, skipped_no_embedding: 0,
+    },
+  }),
   getReportKeyEvents: vi.fn().mockResolvedValue({ success: true, data: { status: 'idle', markers: [] } }),
   getTopicKeyEvents: vi.fn().mockResolvedValue({ success: true, data: { topic_id: 1, days: 14, markers: [] } }),
   putThreadKeyEvent: vi.fn(),
@@ -38,6 +48,7 @@ vi.mock('~/api/dailyReports', () => ({
     getTopicLifeline: api.getTopicLifeline,
     rebucketSection: api.rebucketSection,
     generateDailyReport: api.generateDailyReport,
+    getThreadRelations: api.getThreadRelations,
     getReportKeyEvents: api.getReportKeyEvents,
     getTopicKeyEvents: api.getTopicKeyEvents,
     putThreadKeyEvent: api.putThreadKeyEvent,
@@ -178,6 +189,8 @@ async function mountReader(overrides: Record<string, unknown> = {}) {
 }
 
 describe('DailyReportReader — 阅读台（6.x）', () => {
+  const originalMatchMedia = window.matchMedia
+
   beforeEach(() => {
     api.getBoardDailyReports.mockResolvedValue({ success: true, data: { reports } })
     api.getDailyReportDetail.mockImplementation(async (id: number) => ({ success: true, data: { report: makeDetail(id) } }))
@@ -190,11 +203,16 @@ describe('DailyReportReader — 阅读台（6.x）', () => {
     api.askAnnotation.mockResolvedValue({ success: false })
     api.rebucketSection.mockResolvedValue({ success: true, data: { buckets: 2, sections: [] } })
     api.generateDailyReport.mockResolvedValue({ success: true, data: { job_id: 'j', status: 'queued' } })
+    // 页边注栏收起偏好存 localStorage（组件用 typeof window 守卫，happy-dom 下可真实读写），
+    // 每个用例前清空，避免上一条用例落盘的偏好污染下面用例
+    localStorage.clear()
   })
 
   afterEach(() => {
     document.body.innerHTML = ''
     vi.clearAllMocks()
+    window.matchMedia = originalMatchMedia
+    __mediaQueryClient.value = false
   })
 
   it('左栏恢复旧版目录：本期目录 + 历史日报列表（不再渲染分区索引）', async () => {
@@ -204,12 +222,87 @@ describe('DailyReportReader — 阅读台（6.x）', () => {
     expect(wrapper.findAll('.drm-sidebar__archive button').length).toBeGreaterThan(0)
   })
 
-  it('阅读台三栏：左目录 + 宽屏正文 + 右页边注栏（宽屏不收抽屉），且不锁 body 滚动', async () => {
+  it('阅读台桌面默认收起页边注：两列 + 右缘入口浮标，且不锁 body 滚动', async () => {
     const wrapper = await mountReader()
     expect(wrapper.find('.drm-sidebar').exists()).toBe(true)
-    expect(wrapper.find('.drm-notes-rail').exists()).toBe(true)
+    expect(wrapper.find('.drm-notes-rail').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="drm-notes-tab"]').exists()).toBe(true)
+    expect(wrapper.find('.drm-layout').classes()).toContain('drm-layout--notes-collapsed')
     expect(wrapper.find('[data-testid="desk-evolution"]').exists()).toBe(false)
     expect(document.body.style.overflow).not.toBe('hidden')
+  })
+
+  it('右缘浮标展开 → 栏头收起按钮收回（双向切换，偏好只在显式切换时落盘）', async () => {
+    const wrapper = await mountReader()
+    expect(localStorage.getItem(NOTES_RAIL_STORAGE_KEY)).toBeNull()
+
+    await wrapper.find('[data-testid="drm-notes-tab"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.drm-notes-rail').exists()).toBe(true)
+    expect(wrapper.find('.drm-layout').classes()).not.toContain('drm-layout--notes-collapsed')
+    expect(wrapper.find('[data-testid="drm-notes-tab"]').exists()).toBe(false)
+    expect(localStorage.getItem(NOTES_RAIL_STORAGE_KEY)).toBe('0')
+
+    const collapse = wrapper.find('[data-testid="mn-rail-collapse"]')
+    expect(collapse.exists()).toBe(true)
+    await collapse.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.drm-notes-rail').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="drm-notes-tab"]').exists()).toBe(true)
+    expect(wrapper.find('.drm-layout').classes()).toContain('drm-layout--notes-collapsed')
+    expect(localStorage.getItem(NOTES_RAIL_STORAGE_KEY)).toBe('1')
+  })
+
+  it('记住显式选择：偏好为展开（0）时进入即三栏，为收起（1）时即两列', async () => {
+    localStorage.setItem(NOTES_RAIL_STORAGE_KEY, '0')
+    const expanded = await mountReader()
+    expect(expanded.find('.drm-notes-rail').exists()).toBe(true)
+    expect(expanded.find('[data-testid="drm-notes-tab"]').exists()).toBe(false)
+  })
+
+  it('程序性展开（深链定位批注）不写偏好，保持用户上次显式选择', async () => {
+    api.getReportAnnotations.mockResolvedValue({
+      success: true,
+      data: {
+        annotations: [{
+          id: 77,
+          report_id: 51,
+          section_id: 366,
+          thread_id: 10,
+          quoted_text: '航运风险开始回落',
+          anchor_offset_start: null,
+          anchor_offset_end: null,
+          qas: [],
+          created_at: '2026-06-21T12:00:00Z',
+        }],
+      },
+    })
+    const wrapper = await mountReader({ initialAnnotationId: 77 })
+    await flushPromises()
+
+    expect(wrapper.find('.drm-notes-rail').exists()).toBe(true)
+    expect(localStorage.getItem(NOTES_RAIL_STORAGE_KEY)).toBeNull()
+  })
+
+  it('窄屏（<1100px）：不渲染桌面浮标与第三列，仍走右下入口分支', async () => {
+    __mediaQueryClient.value = true
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('1100px'),
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia
+
+    const wrapper = await mountReader()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="drm-notes-tab"]').exists()).toBe(false)
+    expect(wrapper.find('.drm-notes-rail').exists()).toBe(false)
+    expect(wrapper.find('.drm-layout').classes()).not.toContain('drm-layout--notes-collapsed')
   })
 
   it('刊头保留「今日重点」top3 高亮（不再隐藏）', async () => {

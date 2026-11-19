@@ -280,6 +280,54 @@ export interface RebucketSectionsResult {
   sections: DailyReportSection[]
 }
 
+/**
+ * 线索相关推荐（replace-lane-lifeline-with-topic-events D3/D4）。
+ *
+ * 一条历史线索 = 一个 chip，身份是 **thread 本身**（不做语义归并）；相似度是
+ * 两条 thread 向量的余弦，不是概率、不掺时间衰减/篇数权重，小数只放进预览浮层。
+ */
+export interface ThreadRelationItem {
+  thread_id: number
+  title: string
+  summary: string
+  /** 该候选所属日报日期（YYYY-MM-DD）；窗口 [report_date-days, report_date-1]，不含当期。 */
+  period_date: string
+  /** 余弦相似度（未取整），只用于档位、进度条与浮层核对。 */
+  score: number
+  /** strong（≥0.85）/ related（≥0.75）；chip 上不显示小数。 */
+  level: 'strong' | 'related'
+  /** 人工确认过的关键事件命中该候选的 event 标签 → chip 带 ★（只读）。 */
+  confirmed: boolean
+  /** 候选线索的首篇来源文章；缺失 = 该线索无文章或行已删（不编造标题）。 */
+  source_article: ThreadRelationSourceArticle | null
+}
+
+/** 候选线索的首篇来源文章（点击 chip 直接开它的站内阅读预览）。 */
+export interface ThreadRelationSourceArticle {
+  id: number
+  title: string
+  feed: string
+  published_at: string | null
+}
+
+/**
+ * `GET /daily-reports/:id/thread-relations` 响应（一次请求覆盖整份日报的所有线索）。
+ *
+ * `threads` 按**当前期** thread id 分组，键是字符串（JSON 对象）；没有推荐的线索
+ * 不出现在这里。`status`：`partial` = 当期有线索缺向量被跳过，`empty` = 无推荐。
+ */
+export interface ThreadRelationsResponse {
+  report_id: number
+  /** 实际生效窗口（7 或 30），服务端回显，前端按它标注档位。 */
+  days: number
+  window_start: string
+  window_end: string
+  status: 'ready' | 'partial' | 'empty'
+  threads: Record<string, ThreadRelationItem[]>
+  total: number
+  skipped_no_embedding: number
+}
+
 export interface DailyReport {
   id: number
   semantic_board_id: number
@@ -396,6 +444,15 @@ export function useDailyReportsApi() {
     return apiClient.get(`/daily-reports/topics/${topicId}/lifeline`)
   }
 
+  /**
+   * 整份日报的线索相关推荐（thread 向量口径）：一次请求覆盖所有线索，前端不为每条
+   * 线索各发一次。`days` 只认 7/30，其它值服务端回落 7 并在响应 `days` 回显。
+   */
+  async function getThreadRelations(reportId: number, params?: { days?: number }): Promise<ApiResponse<ThreadRelationsResponse>> {
+    const query = params?.days != null ? `?days=${params.days}` : ''
+    return apiClient.get(`/daily-reports/${reportId}/thread-relations${query}`)
+  }
+
   /** 当期日报的注记与推荐状态（日报读端：可含 suggested 待处理；打开页面只读不触发推荐）。 */
   async function getReportKeyEvents(reportId: number): Promise<ApiResponse<ReportKeyEventsData>> {
     return apiClient.get(`/daily-reports/${reportId}/key-events`)
@@ -504,6 +561,7 @@ export function useDailyReportsApi() {
     getBoardSectionTimeline,
     getSectionLifecycle,
     getTopicLifeline,
+    getThreadRelations,
     getReportKeyEvents,
     getTopicKeyEvents,
     putThreadKeyEvent,
