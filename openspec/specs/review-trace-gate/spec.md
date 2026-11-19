@@ -69,11 +69,11 @@ review 意见建账文件 SHALL 位于 change 目录 `review.md`，随 change �
 
 ### Requirement: 归档门禁集成（spec-gate 第五项 block 检查）
 
-`openspec archive` 前置门禁 SHALL 在既有四项 block 检查（doc-impact verify / check-standards / tasks.md 尾三节 / scenario-trace）之外新增第五项：`bash scripts/harness/review-trace.sh <changeDir>` 退出码 0。该项与前四项各自独立判定、任一失败即阻断归档，失败输出与修复指引并入既有 reason 格式；豁免放行文案（`--force` / `SPEC_GATE_BYPASS=1`）SHALL 同步枚举新增检查项。逃生口沿用既有机制不新增；存量 in-flight change 不豁免。
+`openspec archive` 前置门禁 SHALL 在其他适用的 block 检查之外执行：`bash scripts/harness/review-trace.sh <changeDir>` 退出码 0。该项与其他检查各自独立判定、任一失败即阻断归档，失败输出与修复指引并入既有 reason 格式；豁免放行文案（`--force` / `SPEC_GATE_BYPASS=1`）SHALL 同步枚举新增检查项。逃生口沿用既有机制不新增；存量 in-flight change 不豁免。
 
 #### Scenario: 归档时零痕迹阻断
 
-- **WHEN** agent 执行 `openspec archive <change>` 且前四项通过而 review-trace.sh 退出码非 0
+- **WHEN** agent 执行 `openspec archive <change>` 且其他适用检查通过而 review-trace.sh 退出码非 0
 - **THEN** 归档被阻断，reason 含缺痕迹说明与 review.md 建账 / waived 声明两条修复路径
 
 #### Scenario: 豁免放行留痕

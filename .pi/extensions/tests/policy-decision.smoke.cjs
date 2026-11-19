@@ -1,7 +1,7 @@
 // policy-decision smoke（harden-harness-policy-and-spill）：helper 有界收敛（normalizeDecision
 // 白盒）+ logPolicyDecision 集成（change 归属三分支/写入失败旁路）+ quota-gate 行为（block/
 // fail-open/fuzzy-warn/健康放行零记录/target 安全）+ test-scope-guard 行为（soft warn/hard
-// block/off 与未命中/归档语境零记录）+ quality-gate/entry-gate 与 policy.decision 隔离复核。
+// block/off 与未命中/归档语境零记录）+ quality-gate 与 policy.decision 隔离复核。
 // 由 run-harness-smoke.sh 调用（先 esbuild 产出 .pdec.cjs / .qgate.cjs / .tsg.cjs）。断言失败 exit 1。
 const fs = require('fs');
 const os = require('os');
@@ -446,7 +446,7 @@ function makePi() {
 		/* ---------- 5. 隔离复核（2.4，harden-gate-interop-health 修订；harden-gate-
 		     native-toolchain / harden-subagent-constraint-channel 扩展；attribute-
 		     concurrent-gate-noise 扩展；add-foreign-gate-steer-attribution 扩展）：
-		     quality-gate / entry-gate 只写 gate.check；quality-gate 例外 = 环境短路
+		     quality-gate 只写 gate.check；quality-gate 例外 = 环境短路
 		     fail-open（interop-down 1 处 + toolchain-down backend/frontend 2 处）+ 子线程
 		     降载 bypass（child-session 1 处）+ 外部失败归因 warn（foreign-breakage 1 处，
 		     spec gate-failure-reporting「外部失败不进粘性且记 warn 归因」）+ 锁跳过
@@ -456,7 +456,6 @@ function makePi() {
 		     add-foreign-gate-steer-attribution D3，与 gate.check 失败事实不双写），且被
 		     短路/锁跳过的命令零 gate.check 双写 ---------- */
 		const qg = fs.readFileSync(path.resolve('../quality-gate.ts'), 'utf8');
-		const eg = fs.readFileSync(path.resolve('../entry-gate.ts'), 'utf8');
 		check('quality-gate 源码 logPolicyDecision 恰九处（interop×1 + toolchain×2 + child-session×1 + foreign-breakage×1 + gate-lock-held×1 + concurrent-mixed×1 + attribution-degraded×2）',
 			(qg.match(/logPolicyDecision\(/g) ?? []).length === 9 &&
 			qg.includes('reasonCode: "interop-down"') &&
@@ -466,7 +465,9 @@ function makePi() {
 			qg.includes('reasonCode: "concurrent-mixed"') &&
 			qg.includes('reasonCode: "attribution-degraded"') &&
 			qg.includes('"quality-gate"'));
-		check('entry-gate 源码无 policy.decision 引用（同裁决无双写）', !eg.includes('policy.decision') && !eg.includes('logPolicyDecision'));
+		// entry-gate 随 streamline-business-test-verification 退役（白盒缺件提醒退场），
+		// 其「只写 gate.check 不双写」断言随文件一并移除——同一裁决无双写由 quality-gate
+		// 上面的 logPolicyDecision 计数断言覆盖。
 
 		let fail = 0;
 		for (const [name, ok] of checks) {

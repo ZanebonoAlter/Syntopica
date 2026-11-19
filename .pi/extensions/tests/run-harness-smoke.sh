@@ -26,14 +26,10 @@ npx -y esbuild ../quota-gate.ts --bundle --platform=node --format=cjs \
   --outfile=./.qgate.cjs >/dev/null
 npx -y esbuild ../test-scope-guard.ts --bundle --platform=node --format=cjs \
   --outfile=./.tsg.cjs >/dev/null
-npx -y esbuild ../lib/test-case-gate.ts --bundle --platform=node --format=cjs \
-  --outfile=./.tcg.cjs >/dev/null
 npx -y esbuild ../lib/ui-design-gate.ts --bundle --platform=node --format=cjs \
   --outfile=./.uig.cjs >/dev/null
 npx -y esbuild ../ui-design-gate.ts --bundle --platform=node --format=cjs \
   --outfile=./.uige.cjs >/dev/null
-npx -y esbuild ../entry-gate.ts --bundle --platform=node --format=cjs \
-  --outfile=./.egate.cjs >/dev/null
 npx -y esbuild ../lib/trigger-set.ts --bundle --platform=node --format=cjs \
   --outfile=./.tgset.cjs >/dev/null
 npx -y esbuild ../lib/edit-map.ts --bundle --platform=node --format=cjs \
@@ -61,7 +57,6 @@ node spill.smoke.cjs || rc=$?
 node spec-gate.smoke.cjs || rc=$?
 node quality-gate.smoke.cjs || rc=$?
 node quality-gate.behavior.smoke.cjs || rc=$?
-node test-case-gate.smoke.cjs || rc=$?
 node ui-design-gate.smoke.cjs || rc=$?
 node policy-decision.smoke.cjs || rc=$?
 node sql-safety-guard.smoke.cjs || rc=$?
@@ -69,5 +64,5 @@ node session-rollup.smoke.cjs || rc=$?
 node telemetry-archive.smoke.cjs || rc=$?
 node telemetry-dispatch.smoke.cjs || rc=$?
 node dev-process-guard.smoke.cjs || rc=$?
-rm -f ./.hlog.cjs ./.fcls.cjs ./.tel.cjs ./.spill.cjs ./.sgate.cjs ./.tgset.cjs ./.tcg.cjs ./.egate.cjs ./.gsamp.cjs ./.childsess.cjs ./.pdec.cjs ./.qgate.cjs ./.tsg.cjs ./.uig.cjs ./.uige.cjs ./.qgateb.cjs ./.emap.cjs ./.srollup.cjs ./.dps.cjs ./.dpg.cjs ./.ssql.cjs
+rm -f ./.hlog.cjs ./.fcls.cjs ./.tel.cjs ./.spill.cjs ./.sgate.cjs ./.tgset.cjs ./.gsamp.cjs ./.childsess.cjs ./.pdec.cjs ./.qgate.cjs ./.tsg.cjs ./.uig.cjs ./.uige.cjs ./.qgateb.cjs ./.emap.cjs ./.srollup.cjs ./.dps.cjs ./.dpg.cjs ./.ssql.cjs
 exit $rc

@@ -1,13 +1,14 @@
-// spec-gate smoke：检查⑤验收措辞扫描纯函数——无违例静默 / ⑤a 关键词命中与文档检出抑制 /
-// ⑤a 按关键词去重 / ⑤b 纯函数×SQLite 分层错配 / 健壮性（空串/超长行/纯标签行/畸形输入）。
-// + 归档门禁 policy.decision 记账（harden-harness-policy-and-spill）：block / bypass / 检查⑤ warn /
-// 正常放行零记录，且原 block/放行/custom_message 行为不变（mock pi.exec 驱动完整 tool_call）。
+// spec-gate smoke：检查⑤验收措辞扫描纯函数（⑤b 纯函数×SQLite 分层错配；⑤a 复杂档白盒
+// 缺件提醒已退役——复杂档/算法关键词不再催补 test-cases.md）+ 归档门禁 policy.decision 记账
+// （harden-harness-policy-and-spill）：block / bypass / 检查⑤ warn / 正常放行零记录，
+// 且原 block/放行/custom_message 行为不变（mock pi.exec 驱动完整 tool_call）。
+// + 复杂档 + 有 delta Scenario 但验证节无映射表 → 归档门禁放行（④ 场景映射对账已退役）。
 // 由 run-harness-smoke.sh 调用（先 esbuild 产出 .sgate.cjs）。断言失败 exit 1。
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execSync } = require('child_process');
-const { scanAcceptanceWording, COMPLEXITY_KEYWORDS } = require('./.sgate.cjs');
+const { scanAcceptanceWording } = require('./.sgate.cjs');
 
 const priorWarn = process.listeners('warning');
 process.removeAllListeners('warning');
@@ -39,7 +40,7 @@ function makeGatePi(execImpl) {
 	return { pi, handlers, messages };
 }
 const OK_TASKS = ['## 1. 任务', '- [ ] 1.1 干活', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n');
-/** 默认 exec：四项检查全过（bash→code 0；cat→合法 tasks/proposal；ls→文件列表） */
+/** 默认 exec：归档检查全过（bash→code 0；cat→合法 tasks；ls→文件列表） */
 const passExec = async (cmd, args) => {
 	const a = args.join(' ');
 	if (cmd === 'bash') return { code: 0, stdout: '', stderr: '' };
@@ -59,104 +60,66 @@ const check = (name, ok) => checks.push([name, ok]);
 
 (async () => {
 try {
-	// ---- 1. 无违例输入（干净 tasks.md + 任意文件列表）→ 空数组 ----
+	// ---- 1. 无违例输入（干净 tasks.md）→ 空数组 ----
 	const cleanTasks = [
 		'## 1. 任务',
 		'- [ ] 1.1 写 handler 测试：验收 `go test ./internal/x -run TestY → PASS`',
 		'- [x] 1.2 补文档：新增 docs/foo.md',
 		'非任务行含解析算法协议状态机——不锚定任务行，不应命中',
 	].join('\n');
-	const none = scanAcceptanceWording(cleanTasks, ['proposal.md', 'design.md', 'tasks.md']);
-	check('干净 tasks.md + 无关文件列表 → 空数组', Array.isArray(none) && none.length === 0);
+	const none = scanAcceptanceWording(cleanTasks);
+	check('干净 tasks.md → 空数组', Array.isArray(none) && none.length === 0);
 
-	// ---- 2. ⑤a 正样本：任务行含「解析」+ 文件列表无 test-cases* → 1 条且文案含「可忽略」 ----
-	const a1 = scanAcceptanceWording('- [ ] 2.1 实现正文解析逻辑 extractContent', ['tasks.md', 'proposal.md']);
-	check('⑤a 正样本：解析关键词 + 无 test-cases* → 1 条', a1.length === 1);
-	check('⑤a 文案含「可忽略」修复指引', a1[0].includes('可忽略'));
-	check('⑤a 文案含白盒用例义务提示', a1[0].includes('case-first-testing'));
-
-	// ⑤a 按关键词去重：同关键词多行只一条，多关键词各一条（顺序循常量表）
+	// ---- 2. ⑤a 退役（streamline-business-test-verification）：复杂档/关键词不再催补白盒文档 ----
+	const a1 = scanAcceptanceWording('- [ ] 2.1 实现正文解析逻辑 extractContent');
+	check('⑤a 退役：任务行含「解析」→ 0 条（不再催补白盒文档）', a1.length === 0);
 	const a2 = scanAcceptanceWording(
 		['- [ ] 1.1 实现解析逻辑', '- [x] 1.2 再写一层解析', '- [ ] 1.3 状态机迁移'].join('\n'),
-		[],
 	);
-	check('⑤a 去重：解析×2 行 + 状态机×1 行 → 2 条（按关键词）', a2.length === 2);
-	check('⑤a 两条文案均不重复同关键词', a2.filter((s) => s.includes('解析')).length === 1 && a2.filter((s) => s.includes('状态机')).length === 1);
-
-	// ⑤a 文档检出抑制：test-cases*.md 前缀与 *-test-cases.md 后缀变体均放行
-	const suppressed = scanAcceptanceWording('- [ ] 1.1 实现解析逻辑', ['test-cases.md']);
-	const suppressed2 = scanAcceptanceWording('- [ ] 1.1 实现解析逻辑', ['test-cases-whitebox.md']);
-	const suppressed3 = scanAcceptanceWording('- [ ] 1.1 实现解析逻辑', ['daily-report-test-cases.md']);
-	const suppressed4 = scanAcceptanceWording('- [ ] 1.1 实现解析逻辑', ['test-cases.csv', 'xtest-cases.md']);
-	check(
-		'⑤a 检出抑制：test-cases.md / test-cases-whitebox.md / *-test-cases.md → 0 条；近似名不算',
-		suppressed.length === 0 && suppressed2.length === 0 && suppressed3.length === 0 && suppressed4.length === 1,
-	);
+	check('⑤a 退役：多关键词多行 → 0 条', a2.length === 0);
 
 	// ---- 3. ⑤b 正样本：同一任务行同含「纯函数」+「SQLite」→ 1 条 ----
-	const b1 = scanAcceptanceWording('- [ ] 2.1 给排序写纯函数单测：SQLite 内存库建表 → PASS', ['test-cases.md']);
-	check('⑤b 正样本：纯函数+SQLite 同行（文档已检出抑制⑤a）→ 1 条', b1.length === 1);
+	const b1 = scanAcceptanceWording('- [ ] 2.1 给排序写纯函数单测：SQLite 内存库建表 → PASS');
+	check('⑤b 正样本：纯函数+SQLite 同行 → 1 条', b1.length === 1);
 	check('⑤b 文案含分层指引 *_unit_test.go 无 DB', b1[0].includes('*_unit_test.go 无 DB'));
 
 	// ⑤b 每行只一条：同一行纯函数/SQLite 出现多次仍 1 条；两行则 2 条
-	const b2 = scanAcceptanceWording('- [x] 3.1 纯函数纯函数逻辑用 SQLite SQLite 验证', ['test-cases.md']);
+	const b2 = scanAcceptanceWording('- [x] 3.1 纯函数纯函数逻辑用 SQLite SQLite 验证');
 	check('⑤b 每行一条：同词重复仍 1 条', b2.length === 1);
 	const b3 = scanAcceptanceWording(
 		['- [ ] 4.1 纯函数走 SQLite', '- [ ] 4.2 另一任务纯函数配 SQLite'].join('\n'),
-		['test-cases.md'],
 	);
 	check('⑤b 多行各一条：2 行 → 2 条', b3.length === 2);
 	// ⑤b 半命中（只含其一）不告警
-	const b4 = scanAcceptanceWording('- [ ] 5.1 纯函数单测（无 DB）\n- [ ] 5.2 repository 用 SQLite 集成测试', ['test-cases.md']);
+	const b4 = scanAcceptanceWording('- [ ] 5.1 纯函数单测（无 DB）\n- [ ] 5.2 repository 用 SQLite 集成测试');
 	check('⑤b 半命中（纯函数/SQLite 各自单独出现）→ 0 条', b4.length === 0);
 
 	// ---- 4. 健壮性：空串 / 超长行(>10KB) / 纯标签行 / 畸形输入 → 不抛异常返回数组 ----
 	let robust = true;
 	try {
-		const empty = scanAcceptanceWording('', ['tasks.md']);
+		const empty = scanAcceptanceWording('');
 		robust = robust && Array.isArray(empty) && empty.length === 0;
-		const longLine = scanAcceptanceWording('- [ ] ' + '解析'.repeat(6000), ['tasks.md']); // ~18KB 行
-		robust = robust && Array.isArray(longLine) && longLine.length === 1;
-		const bareLabels = scanAcceptanceWording(['- [ ]', '- [x]', '  - [x] ', '- []', '[]', '- [q] bogus'].join('\n'), []);
+		const longLine = scanAcceptanceWording('- [ ] ' + '解析'.repeat(6000)); // ~18KB 行
+		robust = robust && Array.isArray(longLine) && longLine.length === 0;
+		const bareLabels = scanAcceptanceWording(['- [ ]', '- [x]', '  - [x] ', '- []', '[]', '- [q] bogus'].join('\n'));
 		robust = robust && Array.isArray(bareLabels) && bareLabels.length === 0;
-		const weirdFiles = scanAcceptanceWording('- [ ] 1.1 解析任务', ['a.md', 'test-cases.md\n Injection.md']);
-		robust = robust && Array.isArray(weirdFiles); // 含换行的畸形文件名（实际 ls 不可能产出）只要求不抛异常返回数组
-		const nullFiles = scanAcceptanceWording('- [ ] 1.1 解析任务', null);
-		robust = robust && Array.isArray(nullFiles) && nullFiles.length === 1; // null 视作空列表 → 保守提醒不算异常
+		const weird = scanAcceptanceWording('- [ ] 1.1 纯函数 SQLite');
+		robust = robust && Array.isArray(weird) && weird.length === 1; // 含换行的畸形行只要求不抛异常返回数组
 	} catch (e) {
 		robust = false;
 		console.error('健壮性用例抛异常：', e);
 	}
-	check('健壮性：空串/超长行/纯标签行/畸形文件名 → 不抛异常返回合理结果', robust);
+	check('健壮性：空串/超长行/纯标签行/畸形行 → 不抛异常返回合理结果', robust);
 
-	// ---- 5. 常量表冒烟：与权威源四词对齐（漂移时此处红） ----
+	// ---- 5. ⑤a 退役锚点：复杂档 + 关键词任务行 → 0 条（不催补白盒文档）----
 	check(
-		'COMPLEXITY_KEYWORDS 含算法/状态机/解析/协议',
-		['算法', '状态机', '解析', '协议'].every((k) => COMPLEXITY_KEYWORDS.includes(k)),
+		'⑤a 退役：复杂档关键词任务行（解析/算法/状态机/协议）→ 0 条',
+		scanAcceptanceWording('- [ ] 6.1 实现状态机迁移\n- [ ] 6.2 协议字段\n- [ ] 6.3 解析算法').length === 0,
 	);
 
-	// ---- 6. ⑤a 声明优先（test-case-entry-gate）：归档时序三分支 ----
-	const noDoc = ['proposal.md', 'tasks.md'];
-	// 声明 complex + 缺文档 → 一条强违例
-	const s1 = scanAcceptanceWording('- [ ] 1.1 干活', noDoc, '<!-- complexity: complex -->');
-	check('声明 complex 缺文档 → 1 条强违例', s1.length === 1 && s1[0].includes('声明复杂档') && s1[0].includes('complexity'));
-	// 声明 complex + 有文档 → 静默（文档检出抑制一切 ⑤a）
-	const s2 = scanAcceptanceWording('- [ ] 1.1 干活', ['test-cases.md'], '<!-- complexity: complex -->');
-	check('声明 complex 有文档 → 静默', s2.length === 0);
-	// 声明 simple + 词表命中 → 一条反向质询（不再逐词）
-	const s3 = scanAcceptanceWording('- [ ] 1.1 实现状态机迁移\n- [ ] 1.2 协议字段', noDoc, '<!-- complexity: simple -->');
-	check('simple+命中 → 1 条质询含两词', s3.length === 1 && s3[0].includes('simple') && s3[0].includes('状态机') && s3[0].includes('协议'));
-	// 声明 simple + 未命中 → 静默
-	const s4 = scanAcceptanceWording('- [ ] 1.1 干活', noDoc, '<!-- complexity: simple -->');
-	check('simple 未命中 → 静默', s4.length === 0);
-	// 未声明（proposalText=null）+ 命中 → 沿旧逐词文案（兼容两参调用）
-	const s5 = scanAcceptanceWording('- [ ] 1.1 实现解析逻辑', noDoc, null);
-	check('未声明+命中 → 旧逐词文案', s5.length === 1 && s5[0].includes('可忽略'));
-	const s5b = scanAcceptanceWording('- [ ] 1.1 实现解析逻辑', noDoc);
-	check('省略第三参 = 同 null 行为', s5b.length === 1 && s5b[0] === s5[0]);
-	// proposal 读不到但声明 complex 在（正常读不到 → null → 未声明）：验证 null 路径
-	const s6 = scanAcceptanceWording('- [ ] 1.1 干活', noDoc, '');
-	check('空 proposal 文本 → 未声明未命中静默', s6.length === 0);
+	// ---- 6. ⑤b 保留锚点：分层错配提示与复杂度无关，仍照常产出 ----
+	const s3 = scanAcceptanceWording('- [ ] 7.1 给排序写纯函数单测：SQLite 内存库建表 → PASS');
+	check('⑤b 保留：分层错配提示照常产出（与复杂度无关）', s3.length === 1 && s3[0].includes('*_unit_test.go 无 DB'));
 
 	// ---- 7. 归档门禁 policy.decision 记账（harden-harness-policy-and-spill，驱动完整 tool_call）----
 	const tmps = [];
@@ -175,7 +138,7 @@ try {
 				&& rowsA[0].payload.policy === 'ui-design-gate' && rowsA[0].payload.action === 'block' && rowsA[0].payload.reasonCode === 'ui-verification-missing'
 				&& rowsA[1].payload.policy === 'spec-gate' && rowsA[1].payload.action === 'block' && rowsA[1].payload.reasonCode === 'archive-check-failed');
 		check('block 事件 change 绑定被归档 change（fake-change）', rowsA.every((r) => r.change === 'fake-change'));
-		check('block 事件 target 只含失败检查名（无输出正文）', rowsA[1].payload.target === 'doc-impact,standards,tasks,trace,review,ui-evidence' && !JSON.stringify(rowsA[1].payload).includes('boom'));
+		check('block 事件 target 只含失败检查名（无输出正文；④ 场景映射对账已退役）', rowsA[1].payload.target === 'doc-impact,standards,tasks,review,ui-evidence' && !JSON.stringify(rowsA[1].payload).includes('boom'));
 		check('block 路径不发 custom_message', gA.messages.length === 0);
 
 		// 7b. 显式 bypass（--force）→ 放行 + policy.decision(bypass, explicit-bypass)
@@ -201,27 +164,26 @@ try {
 		const rowsC = policyRows(tC);
 		check('SPEC_GATE_BYPASS=1 → 放行 + warning 留痕 + bypass 记账', outC.pass === true && outC.msgs === 1 && rowsC.length === 1 && rowsC[0].payload.action === 'bypass' && rowsC[0].change === 'envbypass-change');
 
-		// 7d. 检查⑤ warning → policy.decision(warn, acceptance-wording)；四项仍放行（行为不变）
+		// 7d. 检查⑤ warning → policy.decision(warn, acceptance-wording)；归档检查仍放行（行为不变）
 		const tD = mktmp(); tmps.push(tD);
 		const gD = makeGatePi(async (cmd, args) => {
 			const r = await passExec(cmd, args);
-			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: ['## 1. 任务', '- [ ] 1.1 实现解析逻辑', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n'), stderr: '' };
-			if (cmd === 'ls') return { code: 0, stdout: 'proposal.md\ntasks.md', stderr: '' }; // 无 test-cases*
+			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: ['## 1. 任务', '- [ ] 1.1 给排序写纯函数单测：SQLite 内存库建表 → PASS', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n'), stderr: '' };
 			return r;
 		});
 		require('./.sgate.cjs').default(gD.pi);
 		const rD = await runGate(gD, 'openspec archive warn-change', tD);
 		const rowsD = policyRows(tD);
-		check('检查⑤ warn → 四项检查仍放行（undefined）+ warning custom_message', rD === undefined && gD.messages.some((m) => m.customType === 'spec-gate-warning' && /检查⑤/.test(m.content)));
+		check('检查⑤ warn → 归档检查仍放行（undefined）+ warning custom_message', rD === undefined && gD.messages.some((m) => m.customType === 'spec-gate-warning' && /检查⑤/.test(m.content)));
 		check('检查⑤ warn → policy.decision(warn, acceptance-wording) 绑定 warn-change',
 			rowsD.length === 1 && rowsD[0].payload.action === 'warn' && rowsD[0].payload.reasonCode === 'acceptance-wording' && rowsD[0].change === 'warn-change');
 
-		// 7e. 正常放行（四项全过 + ⑤无违例）→ 零 policy.decision（低噪声）
+		// 7e. 正常放行（归档检查全过 + ⑤无违例）→ 零 policy.decision（低噪声）
 		const tE = mktmp(); tmps.push(tE);
 		const gE = makeGatePi(passExec);
 		require('./.sgate.cjs').default(gE.pi);
 		const rE = await runGate(gE, 'openspec archive ok-change', tE);
-		check('四项全过 + ⑤无违例 → 放行 undefined + 零 policy.decision', rE === undefined && policyRows(tE).length === 0);
+		check('归档检查全过 + ⑤无违例 → 放行 undefined + 零 policy.decision', rE === undefined && policyRows(tE).length === 0);
 
 		// 7e'. 检查⑤'归档并发（coordinate-concurrent-changes）：exit 2 → warn 不 block + 记账
 		const tEm = mktmp(); tmps.push(tEm);
@@ -516,7 +478,7 @@ const majorEvidence = (dir) => {
 		const rowsI = policyRows(tI);
 		check('7i review-trace 零痕迹 → block + reason 含零痕迹与两条修复路径（真跑真脚本）',
 			rI && rI.block === true && /\[review-trace\]/.test(rI.reason) && /零痕迹/.test(rI.reason) && /修复路径（二选一）/.test(rI.reason));
-		check('7i review-trace 失败 → target 只含 review（其余四项绿）',
+		check('7i review-trace 失败 → target 只含 review（其余检查绿）',
 			rowsI.length === 1 && rowsI[0].payload.target === 'review' && rowsI[0].payload.reasonCode === 'archive-check-failed');
 
 		// 7j. waived fixture（proposal 头部声明）→ 真跑通过 → 放行零记账
@@ -526,8 +488,58 @@ const majorEvidence = (dir) => {
 		const gJ = makeGatePi(rtRealExec(tJ));
 		require('./.sgate.cjs').default(gJ.pi);
 		const rJ = await runGate(gJ, 'openspec archive rt-waived-chg', tJ);
-		check('7j review-trace waived 声明 → 五项全过放行 + 零 policy.decision（真跑真脚本）',
+		check('7j review-trace waived 声明 → 归档检查全过放行 + 零 policy.decision（真跑真脚本）',
 			rJ === undefined && policyRows(tJ).length === 0);
+
+		// 7L. 复杂档 + 有 delta Scenario 但验证节无映射表 → 归档门禁放行
+		//     （streamline-business-test-verification：④ 场景映射对账退役 + ⑤a 白盒缺件提醒退役）
+		const tL = mktmp(); tmps.push(tL);
+		const dirL = path.join(tL, 'openspec', 'changes', 'complex-no-map');
+		fs.mkdirSync(path.join(dirL, 'specs', 'demo'), { recursive: true });
+		fs.writeFileSync(path.join(dirL, 'proposal.md'), '<!-- complexity: complex -->\n\n## Why\nx\n');
+		fs.writeFileSync(path.join(dirL, 'specs', 'demo', 'spec.md'), [
+			'## ADDED Requirements',
+			'',
+			'### Requirement: 某能力',
+			'',
+			'#### Scenario: 主路径可用',
+			'',
+			'- **WHEN** 用户走主路径',
+			'- **THEN** 结果正确',
+			'',
+		].join('\n'));
+		const tasksL = [
+			'## 1. 任务',
+			'- [ ] 1.1 实现状态机迁移与协议解析（复杂档，关键词齐全）',
+			'',
+			'## 2. 测试',
+			'- go test ./internal/demo → PASS',
+			'',
+			'## 3. 文档',
+			'<!-- doc-impact: none -->',
+			'',
+			'## 4. 验证',
+			'- go test ./internal/demo -run TestMain → PASS（主路径实测）',
+		].join('\n');
+		fs.writeFileSync(path.join(dirL, 'tasks.md'), tasksL);
+		const bashCallsL = [];
+		const gL = makeGatePi(async (cmd, args) => {
+			if (cmd === 'bash') bashCallsL.push(args.join(' '));
+			// 场景映射对账若仍被调用则让脚本红——退役后不应触发
+			if (cmd === 'bash' && args[0] === 'scripts/harness/scenario-trace.sh') {
+				return { code: 1, stdout: '✗ 未通过：验证节内未找到映射表', stderr: '' };
+			}
+			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: tasksL, stderr: '' };
+			return passExec(cmd, args);
+		});
+		require('./.sgate.cjs').default(gL.pi);
+		const rL = await runGate(gL, 'openspec archive complex-no-map', tL);
+		check('7L 复杂档 + 验证节无映射表 → 归档放行（不因缺映射表阻断）', rL === undefined);
+		check('7L 归档门禁不再调用 scenario-trace.sh（④ 场景映射对账退役）',
+			!bashCallsL.some((c) => c.includes('scenario-trace.sh')));
+		check('7L 复杂档缺 test-cases.md 不再催补白盒文档（⑤a 退役，零 warning）',
+			!gL.messages.some((m) => /白盒|test-cases|⑤a/.test(String(m.content))));
+		check('7L 放行零 policy.decision（低噪声）', policyRows(tL).length === 0);
 
 		// ---- 9. 归档 warn 边沿触发（edge-trigger-archive-gate-warns）：同会话多次 tool_call，
 		//     指纹态 per-sessionId（模块级 Map，跨用例存活——新用例 change 名已避让既有用例）----
@@ -660,11 +672,9 @@ const majorEvidence = (dir) => {
 
 		// 9-Ⅷ（W1→W2）：⑤ 首见投递+记账 → 同违例集合第二次零投递零记账
 		const t9h = mktmp(); tmps.push(t9h);
-		let lsOut9h = 'proposal.md\ntasks.md'; // 无 test-cases* → ⑤a 命中
 		const g9h = makeGatePi(async (cmd, args) => {
 			const r = await passExec(cmd, args);
-			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: ['## 1. 任务', '- [ ] 1.1 实现解析逻辑', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n'), stderr: '' };
-			if (cmd === 'ls') return { code: 0, stdout: lsOut9h, stderr: '' };
+			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: ['## 1. 任务', '- [ ] 1.1 给排序写纯函数单测：SQLite 内存库建表 → PASS', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n'), stderr: '' };
 			return r;
 		});
 		require('./.sgate.cjs').default(g9h.pi);
@@ -677,36 +687,34 @@ const majorEvidence = (dir) => {
 		check('9-Ⅷ⑤ 同指纹重试 → 零重复 warning 零记账（现行全量重发 → 红）',
 			r9h2 === undefined && g9h.messages.length === m9h1 && rows9h.length === r9h1);
 
-		// 9-Ⅸ（W3）：违例集合变化（tasks 加一行关键词）→ 重新投递再记账（锚点：现行绿）
+		// 9-Ⅸ（W3）：违例集合变化（tasks 再加一行分层错配）→ 重新投递再记账（锚点）
 		const t9i = mktmp(); tmps.push(t9i);
-		let tasks9i = ['## 1. 任务', '- [ ] 1.1 实现解析逻辑', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n');
+		let tasks9i = ['## 1. 任务', '- [ ] 1.1 给排序写纯函数单测：SQLite 内存库建表 → PASS', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n');
 		const g9i = makeGatePi(async (cmd, args) => {
 			const r = await passExec(cmd, args);
 			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: tasks9i, stderr: '' };
-			if (cmd === 'ls') return { code: 0, stdout: 'proposal.md\ntasks.md', stderr: '' };
 			return r;
 		});
 		require('./.sgate.cjs').default(g9i.pi);
 		await runGate(g9i, 'openspec archive edge-word', t9i, 'esgs-i');
 		const m9i1 = g9i.messages.length;
-		tasks9i = ['## 1. 任务', '- [ ] 1.1 实现解析逻辑', '- [ ] 1.2 状态机迁移', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n');
+		tasks9i = ['## 1. 任务', '- [ ] 1.1 纯函数走 SQLite', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n');
 		const r9i2 = await runGate(g9i, 'openspec archive edge-word', t9i, 'esgs-i');
 		check('9-Ⅸ⑤ 违例集合变化 → 重新投递 + 再记账（锚点）',
 			r9i2 === undefined && g9i.messages.length === m9i1 + 1 && policyRows(t9i).length === 2);
 
-		// 9-Ⅹ（W4）：违例清零（已补 test-cases.md）→ 单行「已清零」收尾 + 零记账（现行无 → 红）
+		// 9-Ⅹ（W4）：违例清零（措辞已修）→ 单行「已清零」收尾 + 零记账
 		const t9j = mktmp(); tmps.push(t9j);
-		let lsOut9j = 'proposal.md\ntasks.md';
+		let tasks9j = ['## 1. 任务', '- [ ] 1.1 给排序写纯函数单测：SQLite 内存库建表 → PASS', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n');
 		const g9j = makeGatePi(async (cmd, args) => {
 			const r = await passExec(cmd, args);
-			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: ['## 1. 任务', '- [ ] 1.1 实现解析逻辑', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n'), stderr: '' };
-			if (cmd === 'ls') return { code: 0, stdout: lsOut9j, stderr: '' };
+			if (cmd === 'cat' && args.join(' ').includes('tasks.md')) return { code: 0, stdout: tasks9j, stderr: '' };
 			return r;
 		});
 		require('./.sgate.cjs').default(g9j.pi);
 		await runGate(g9j, 'openspec archive edge-word', t9j, 'esgs-j');
 		const m9j1 = g9j.messages.length;
-		lsOut9j = 'proposal.md\ntasks.md\ntest-cases.md'; // 补文档 → ⑤a 消失 → 清零
+		tasks9j = ['## 1. 任务', '- [ ] 1.1 给排序写纯函数单测（无 DB）', '', '## 2. 测试', '## 3. 文档', '<!-- doc-impact: 无 -->', '', '## 4. 验证'].join('\n'); // 措辞已修 → ⑤b 消失 → 清零
 		const r9j2 = await runGate(g9j, 'openspec archive edge-word', t9j, 'esgs-j');
 		check('9-Ⅹ⑤ 违例清零 → 单行「已清零」收尾投递 + 零记账（现行无收尾 → 红）',
 			r9j2 === undefined && g9j.messages.length === m9j1 + 1 && /已清零/.test(g9j.messages[m9j1].content) && policyRows(t9j).length === 1);

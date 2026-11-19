@@ -120,7 +120,7 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 | check-standards E | archive change 被 flow「变更溯源」表引用（2026-06-29 后） | 归档后 |
 | check-standards F | active change 的 doc-impact 声明对账（doc-impact.sh verify） | 归档前 |
 | check-standards G | 导航层（docs/README、docs/reference/*.md 一级、flow/README、architecture/map.md）相对 .md 链接死链 | 归档前 |
-| spec-gate ①-④ | ① doc-impact verify 退出码 0 ② check-standards 退出码 0 ③ tasks 尾三节+声明标记 ④ scenario-trace（验证节 `\| Scenario \| 测试文件 \|` 映射表，「人工」开头合法） | `openspec archive` 时 tool_call 拦截 |
+| spec-gate 文档与任务结构 | doc-impact、check-standards、tasks 尾三节和声明标记；不再对账 Scenario 映射。其余检查见开发执行规范 §11 | `openspec archive` 时 tool_call 拦截 |
 
 ## 维护提醒
 

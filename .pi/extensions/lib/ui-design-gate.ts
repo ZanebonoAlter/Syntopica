@@ -6,7 +6,7 @@
  *   - .pi/extensions/spec-gate.ts（归档链 UI 证据检查⑤→⑥）
  *   - .pi/extensions/tests/ui-design-gate.smoke.cjs / spec-gate.smoke.cjs（白盒分支表直测）
  *
- * 纯函数纪律（同 lib/test-case-gate.ts）：不 import fs、不触网、不抛异常——
+ * 纯函数纪律：不 import fs、不触网、不抛异常——
  * 空串/超长/畸形输入返回确定结果；文件存在性与目录清单由调用方快照传入。
  *
  * 契约权威：openspec/changes/make-ui-design-first-class/specs/ui-design-workflow/spec.md

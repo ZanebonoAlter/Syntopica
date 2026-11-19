@@ -125,7 +125,7 @@ major UI change 的完成验收 MUST 同时包含：至少一条 agent-browser�
 #### Scenario: major UI 双层验收通过
 
 - **WHEN** agent-browser 主链路断言通过，两个桌面视口的视觉证据以判定条目建账于 `ui-verification/report.md`，点名截图真实存在，且差异说明已记录
-- **THEN** UI 验收 SHALL 通过并可纳入 Scenario→测试映射
+- **THEN** UI 验收 SHALL 通过，并按现有 UI 验收机制记录实际证据；不要求逐 Scenario 映射
 
 #### Scenario: 只有单元测试不得完成 major UI
 

@@ -8,7 +8,7 @@ doc-impact-applies: .test.ts, .spec.ts, front/tests/ | section=单元测试（Vi
 
 ## 用例设计（测什么）
 
-> 测什么 / 测到什么程度 / 验收措辞的权威源是 [`standard/shared/test-design.md`](../shared/test-design.md)（故事锚点四问句，跨前后端）。本节只列前端分层判据速查：
+> 测什么 / 测到什么程度 / 验收措辞的权威源是 [`standard/shared/test-design.md`](../shared/test-design.md)（API 主线与真实 Bug 回归，跨前后端）。本节只列前端分层判据速查：
 
 | 故事性质 | 层 | 载体 |
 | --- | --- | --- |

@@ -8,7 +8,7 @@
  * 挂点（D1）：
  *   - session_start：记会话窗口起点（Map<sessionId, epoch 秒>，按会话隔离；
  *     从不整体清空 Map——子线程共享模块实例时 session_start{startup} 只是记录自己的键，
- *     不会误伤主会话窗口；quality-gate/entry-gate 同款防御方向）。
+ *     不会误伤主会话窗口；quality-gate 同款防御方向）。
  *   - session_shutdown：扫描泄漏类 dev 进程（八模式 cmdline + cwd 仓库内 + 无控制终端
  *     + 非 pidfile 接管 + 非自身组，五条件合取），启动时间 ∈ 本会话窗口 [start, now]
  *     （闭区间）的按组 TERM → 轮询 2s（150ms 间隔）→ 仍存活 KILL（D4 状态机）；

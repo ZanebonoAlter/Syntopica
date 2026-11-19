@@ -45,7 +45,7 @@ artifacts:
       <!-- ui-impact: none|minor|major -->
       ```
 
-      `complexity` (test-design intensity) and `ui-impact` (UI-design
+      `complexity` (design and review scope) and `ui-impact` (UI-design
       intensity) are INDEPENDENT dimensions: a governance panel may be
       simple logic but major UI; a parser rewrite may be complex logic with
       no user-visible UI. Judge each separately.

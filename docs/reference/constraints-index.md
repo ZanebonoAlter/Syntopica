@@ -8,7 +8,7 @@
 | --- | --- |
 | AI 调用与日志（`internal/platform/airouter/`、`internal/dataenrichment/`） | [`standard/backend/ai-logging.md`](standard/backend/ai-logging.md) |
 | 后端测试与数据安全红线 | [`standard/backend/testing.md`](standard/backend/testing.md) |
-| 测试用例设计（测什么/变体/层选择/验收措辞，故事锚点） | [`standard/shared/test-design.md`](standard/shared/test-design.md) |
+| 业务测试准入（API 主线、真实 Bug 回归、临时白盒） | [`standard/shared/test-design.md`](standard/shared/test-design.md) |
 | 后端代码风格 / lint / 包布局 | [`standard/backend/`](standard/backend/) |
 | 前端代码风格 / 交互约定 / 测试 / 主题 | [`standard/frontend/`](standard/frontend/) |
 | 页面布局模式 / 弹窗尺寸档 / major UI 双视口验收 | [`standard/frontend/layout.md`](standard/frontend/layout.md) |

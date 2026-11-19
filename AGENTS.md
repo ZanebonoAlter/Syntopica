@@ -15,7 +15,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 | brainstorming | openspec-explore（或开发执行规范 §3 脑暴） |
 | writing-plans / executing-plans | openspec proposal/design + §0.6 编排六步 |
 | subagent-driven-development / dispatching-parallel-agents | §0.6 六步 + §0.6「供应商与模型选择」 |
-| test-driven-development | 开发执行规范 §2（用例先行：specs Scenario 即用例+复杂档白盒用例，以 §2 表述为准） |
+| test-driven-development | 开发执行规范 §2（用例先行：specs 定契约；永久业务测试只留 API 主线和真实 Bug 回归，白盒代码用完即弃） |
 | verification-before-completion | quality-gate 自动门禁 + §11 归档门禁 |
 | using-git-worktrees | 不用——主仓库直改（Docker DB 在宿主机） |
 | finishing-a-development-branch | §11/§12 归档即家，无 feature branch 流程 |
