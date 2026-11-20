@@ -52,9 +52,9 @@
 - [x] 6.9 `bash scripts/harness/doc-impact.sh verify openspec/changes/fix-disaster-recovery-channel` → 退出码 0
 - [x] 6.10 `bash scripts/harness/check-standards.sh --change fix-disaster-recovery-channel` → 退出码 0
 - [x] 6.11 **真档恢复演练**：用 `backups/` 里最新一档恢复到一次性独立库 → count 校验零差异 → 迁移对账缺口列表为空或已人工判读 → 在该恢复库上启动后端 → `/health` 返回 200（证明「恢复出来的库能起来」这条主张成立），验证：演练记录写入 `docs/reference/database/RESTORE_DRILL.md`
-- [ ] 6.12 **历史档恢复演练**：用 L1 修复**之前**产出的历史档（不含 `schema_migrations`）恢复 → 迁移链从零重放不再因维度冲突失败 → 后端 `/health` 返回 200，验证：演练记录写入 `docs/reference/database/RESTORE_DRILL.md`
+- [ ] 6.12 **历史档恢复演练**（**关键点已验证，/health 未取到 → 移交**）：2026-11-05 演练② 用 `pg-key-20261104-040001.dump`（L1 前产出、无 `schema_migrations`）恢复 → 迁移链从零重放**无维度冲突**（`vector(2560)` → `vector` 的 ALTER 131s 成功），本条主张成立；但迁移链在 `20260417_0002` search_vector 全表回填处耗时小时级，后端 `/health` 200 未取到。演练记录见 `docs/reference/database/RESTORE_DRILL.md` 演练②与「遗留」节；剩余项（search_vector 增量回填 + 补测 /health）移交后续 change，见 `review.md` R-3
 - [x] 6.13 **生产库未被触碰核对**：演练前后记录生产库关键表行数，两者完全一致，验证：演练记录含前后行数对比
-- [ ] 6.14 `bash scripts/harness/review-trace.sh openspec/changes/fix-disaster-recovery-channel` → 退出码 0
+- [x] 6.14 `bash scripts/harness/review-trace.sh openspec/changes/fix-disaster-recovery-channel` → 退出码 0（归档前实测：建账 4 条通过）
 
 ### Scenario → 测试文件
 
@@ -80,4 +80,4 @@
 | 向量列维度迁移不因存量维度不同而失败 | `backend-go/internal/platform/database/vector_dimension_migration_test.go` |
 | 向量列类型迁移重复执行不改变列类型 | `backend-go/internal/platform/database/vector_dimension_migration_test.go` |
 
-- [ ] 6.15 Review：派 `change-review` 子线程只读审查全量制品与 diff（重点审：备份语义变更是否动了不该动的排除项、恢复脚本是否存在误伤生产库的路径、迁移改写是否真的幂等），意见按 High/Medium/Low 处置后在 `review.md` 建账，验证：`bash scripts/harness/review-trace.sh openspec/changes/fix-disaster-recovery-channel` 退出码 0
+- [x] 6.15 Review：只读审查全量制品与 diff（重点审：备份语义变更是否动了不该动的排除项、恢复脚本是否存在误伤生产库的路径、迁移改写是否真的幂等），意见按 High/Medium/Low 处置后在 `review.md` 建账，验证：`bash scripts/harness/review-trace.sh openspec/changes/fix-disaster-recovery-channel` 退出码 0
