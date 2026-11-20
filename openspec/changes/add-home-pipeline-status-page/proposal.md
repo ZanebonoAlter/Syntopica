@@ -1,7 +1,7 @@
 <!-- complexity: complex -->
 <!-- ui-impact: major -->
 <!-- ui-approval: pending -->
-<!-- constraint-domains: reading, scheduler, semantic-board, daily-report, content-enrichment, ai-summary, data-enrichment -->
+<!-- constraint-domains: reading, scheduler, semantic-board, daily-report, content-enrichment, ai-summary, data-enrichment, discovery -->
 
 ## Why
 
