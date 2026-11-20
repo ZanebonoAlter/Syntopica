@@ -14,16 +14,28 @@
  * 分档徽标滞后弱化（2026-11-11 看版后修订，tasks 3.6）：版本锚点日 ≠ 总览全局锚点日时
  * 不挂「热点 / 关注」分档徽标（阈值按今日分布标定，旧数据不可比），改为中性小标注
  * 「数据至 MM/DD」；关注度数值照旧如实显示、不被隐藏也不被打折。
+ * 行色标（is-hot / is-warm）同样不命中：滞后行沉底不占前排，不与当日可比版块同色。
  *
  * 小矩阵（D5）：格值 = 该泳道该日线索合计（`clue_counts`）；**颜色 = 该数在本泳道 14 天窗口内的
  * 归一深浅**（2026-11-11 用户看版后修订，tasks 3.5：行内归一只，0/未知不着色，行内峰值最深）。
  * 颜色只是冗余强化通道，数值 + title/aria 仍是唯一信息承载；旧后端缺 `clue_counts` 的格子标
  * 「线索数未知」，SHALL NOT 造 0，也不拿分区数/事件数冒充线索数。
+ *
+ * 行尾「⋯」入口（lane-manual-correction-loop 6.5）：「编辑版块」/「归档版块」两项。
+ * 触发器 `@click.stop` + 菜单 Teleport 到 body → **不触发行点击进版块态势页**（不 emit openBoard）。
+ * 两个动作以 emit 上抛（`editBoard` / `archiveBoard`），弹窗与写操作由上层壳层持有。
+ *
+ * 「没取到 ≠ 0」（fix-radar-overview-false-zero）：本行 `dataUnavailable=true`（本次没取到）
+ * 时，关注强度显示「—」、不挂分档徽标（改挂中性「数据未取到」）、日报摘要行与小矩阵
+ * 区都写「数据未取到」——不显示「关注强度 0.0」「0 篇文章 · 0 个事件」「无日报日期」
+ * 「数据延迟 · 截至 日期未提供」这类由未取到推出的结论。
  */
 import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
-import { RADAR_HOT_ATTENTION, isDelayed, isLaggingAnchor, miniAxis, shortDate, tierLabel, trendOf } from './boardRadarHelpers'
+import { RADAR_HOT_ATTENTION, attentionText, isDelayed, isLaggingAnchor, miniAxis, shortDate, tierLabel, trendOf } from './boardRadarHelpers'
 import { clueDepth, clueMix, clueRowMax } from './observationLanes'
+import RowActionMenu from './RowActionMenu.vue'
+import type { RowActionMenuItem } from './rowActionMenu'
 import type { RadarBoard, RadarLane } from '~/api/semanticBoards'
 
 const props = defineProps<{
@@ -37,19 +49,49 @@ const emit = defineEmits<{
   (e: 'openBoard', boardId: string): void
   (e: 'openReport', row: RadarBoard): void
   (e: 'openLane', payload: { boardId: string, topicId: string }): void
+  /** 「编辑版块」→ 版块轻编辑弹窗（md 档）。 */
+  (e: 'editBoard', boardId: string): void
+  /** 「归档版块」→ 归档弹窗（手打版块名确认）。 */
+  (e: 'archiveBoard', boardId: string): void
 }>()
+
+/** 行尾菜单项（动作标签；不带操作口径解说）。 */
+const rowMenuItems: RowActionMenuItem[] = [
+  { key: 'edit', label: '编辑版块' },
+  { key: 'archive', label: '归档版块' },
+]
+
+function onMenuSelect(key: string): void {
+  if (key === 'edit') emit('editBoard', props.row.boardId)
+  else if (key === 'archive') emit('archiveBoard', props.row.boardId)
+}
 
 const tier = computed(() => tierLabel(props.row.attention))
 const trend = computed(() => trendOf(props.row))
 const delayed = computed(() => isDelayed(props.row, props.globalDate))
 /** 滞后 = 本行锚点日 ≠ 总览全局锚点日（分档徽标不挂，改「数据至」）。 */
 const lagging = computed(() => isLaggingAnchor(props.row.anchorDate, props.globalDate))
+/**
+ * 行色标：关注度未知（null）不参与比较——未取到的行不染热点/关注色；
+ * 滞后行也不染（阈值按今日分布标定，旧数据不可比 → 沉底且不占前排语义）。
+ */
+const isHot = computed(() => !lagging.value && props.row.attention !== null && props.row.attention >= RADAR_HOT_ATTENTION)
+const isWarm = computed(() => !lagging.value && props.row.attention !== null && props.row.attention < RADAR_HOT_ATTENTION)
 const todayText = computed(() => (props.row.todayClues === null ? '当日线索未知' : `当日线索 ${props.row.todayClues}`))
 const anchorText = computed(() => {
   const asOf = delayed.value ? shortDate(props.row.anchorDate) : '今日'
   return `${asOf} · ${todayText.value}`
 })
-const reportFallback = computed(() => (props.row.reportDate ? '查看已有日报' : '今天暂无日报'))
+/**
+ * 日报元信息没取到（brief 查询失败）：计数是 null 但行本身没被标成「未取到」
+ * （泳道数据是好的）。这时不能渲染成「今天暂无日报 / 无日报日期」——那是
+ * 把「没取到」说成「没有」，正是本 change 要消灭的伪空态（review R-5）。
+ */
+const reportUnknown = computed(() => props.row.reportArticleCount === null || props.row.reportEventCount === null)
+const reportFallback = computed(() => {
+  if (reportUnknown.value) return '日报信息未取到'
+  return props.row.reportDate ? '查看已有日报' : '今天暂无日报'
+})
 /** 小矩阵格子 title 的日期轴（无全局日期时退回板块自身锚日）。 */
 const miniDates = computed(() => miniAxis(props.globalDate || props.row.anchorDate || '', 14))
 
@@ -93,7 +135,7 @@ function openLane(lane: RadarLane): void {
 <template>
   <article
     class="rd-story rd-grid"
-    :class="{ 'is-hot': row.attention >= RADAR_HOT_ATTENTION, 'is-warm': row.attention < RADAR_HOT_ATTENTION }"
+    :class="{ 'is-hot': isHot, 'is-warm': isWarm }"
     :data-testid="`radar-row-${row.boardId}`"
     @click="emit('openBoard', row.boardId)"
   >
@@ -104,6 +146,7 @@ function openLane(lane: RadarLane): void {
         {{ row.label }}
       </button>
       <button
+        v-if="!row.dataUnavailable"
         type="button"
         class="rd-story-report"
         :title="row.reportTitle || reportFallback"
@@ -112,9 +155,14 @@ function openLane(lane: RadarLane): void {
         {{ row.reportTitle || reportFallback }}
       </button>
       <p class="rd-story-meta">
-        <span>{{ row.reportDate ? shortDate(row.reportDate) : '无日报日期' }}</span>
-        <span>{{ row.reportArticleCount }} 篇文章 · {{ row.reportEventCount }} 个事件</span>
-        <span v-if="delayed" class="rd-delay">数据延迟 · 截至 {{ shortDate(row.anchorDate) }}</span>
+        <template v-if="row.dataUnavailable">
+          <span>数据未取到</span>
+        </template>
+        <template v-else>
+          <span>{{ reportUnknown ? '日报信息未取到' : row.reportDate ? shortDate(row.reportDate) : '无日报日期' }}</span>
+          <span>{{ row.reportArticleCount ?? '—' }} 篇文章 · {{ row.reportEventCount ?? '—' }} 个事件</span>
+          <span v-if="delayed" class="rd-delay">数据延迟 · 截至 {{ shortDate(row.anchorDate) }}</span>
+        </template>
       </p>
     </div>
 
@@ -143,29 +191,37 @@ function openLane(lane: RadarLane): void {
           />
         </div>
       </div>
-      <small v-if="!row.lanes.length" class="rd-mini-empty">无活跃泳道 · 已有日报仍可读</small>
+      <small v-if="!row.lanes.length" class="rd-mini-empty">{{ row.dataUnavailable ? '数据未取到' : '无活跃泳道 · 已有日报仍可读' }}</small>
     </div>
 
     <div class="rd-attention-wrap">
-      <span class="rd-attention">{{ row.attention.toFixed(1) }}</span>
+      <span class="rd-attention">{{ attentionText(row.attention) }}</span>
       <!-- 滞后行不挂分档徽标（阈值按今日分布标定，旧数据不可比），改中性「数据至」。 -->
-      <small v-if="lagging" class="rd-tier rd-tier-stale" data-testid="radar-lagging-tier">
+      <small v-if="row.dataUnavailable" class="rd-tier">数据未取到</small>
+      <small v-else-if="lagging" class="rd-tier rd-tier-stale" data-testid="radar-lagging-tier">
         数据至 {{ shortDate(row.anchorDate) }}
       </small>
-      <small v-else class="rd-tier">关注强度 · {{ tier }}</small>
+      <small v-else class="rd-tier">关注强度 · {{ tier ?? '—' }}</small>
     </div>
 
     <div class="rd-trend">
       <b class="rd-trend-value" :class="`is-${trend.dir}`">{{ trend.text }}</b>
       <small class="rd-trend-base">
-        近 3 日 {{ row.last3Clues ?? '—' }} / 前 3 日 {{ row.prev3Clues ?? '—' }}<br>
-        {{ anchorText }}
+        近 3 日 {{ row.last3Clues ?? '—' }} / 前 3 日 {{ row.prev3Clues ?? '—' }}<template v-if="!row.dataUnavailable"><br>{{ anchorText }}</template>
       </small>
     </div>
 
-    <button type="button" class="rd-enter" @click.stop="emit('openBoard', row.boardId)">
-      矩阵 <Icon icon="mdi:arrow-top-right" width="13" />
-    </button>
+    <div class="rd-actions">
+      <button type="button" class="rd-enter" @click.stop="emit('openBoard', row.boardId)">
+        矩阵 <Icon icon="mdi:arrow-top-right" width="13" />
+      </button>
+      <RowActionMenu
+        :items="rowMenuItems"
+        :trigger-label="`${row.label} 的更多操作`"
+        :trigger-testid="`radar-menu-trigger-${row.boardId}`"
+        @select="onMenuSelect"
+      />
+    </div>
   </article>
 </template>
 
@@ -391,12 +447,23 @@ function openLane(lane: RadarLane): void {
   white-space: nowrap;
 }
 
+/* 行尾动作区（进入矩阵 + 「⋯」菜单，lane-manual-correction-loop 6.5）：
+   宽度固定 7rem —— 与总览表头末列（`.rd-labels` 的 minmax(7rem, max-content)）等宽，
+   保证表头「进入」与行尾按钮区左边缘对齐（两网格各自独立，列宽必须一致）。 */
+.rd-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 7rem;
+}
+
 .rd-enter {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.2rem;
-  min-width: 7rem;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 0.35rem 0.6rem;
   border: 1px solid var(--color-border-medium);
   border-radius: 4px;
@@ -427,13 +494,18 @@ function openLane(lane: RadarLane): void {
 
 @media (max-width: 767.98px) {
   .rd-grid {
-    grid-template-columns: 1.6rem minmax(0, 1fr) 3.4rem;
+    grid-template-columns: 1.6rem minmax(0, 1fr) 3.4rem 1.6rem;
     gap: 0.55rem;
   }
 
   .rd-grid-mini,
   .rd-enter {
     display: none;
+  }
+
+  /* 窄屏只留「⋯」菜单（进入矩阵的按钮已隐藏）；动作区宽度让给菜单本身。 */
+  .rd-actions {
+    width: auto;
   }
 
   .rd-story {

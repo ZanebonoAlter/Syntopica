@@ -103,8 +103,8 @@ database:
   driver: "postgres"
   dsn: "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"
   postgres:
-    max_idle_conns: 5
-    max_open_conns: 25
+    max_idle_conns: 25
+    max_open_conns: 40
     conn_max_lifetime_minutes: 60
     conn_max_idle_time_minutes: 10
 ```
@@ -112,7 +112,7 @@ database:
 ### 主要配置段
 
 - **server** — 控制 HTTP 服务器端口和 Gin 运行模式。`release` 模式下 Gin 会抑制调试输出。
-- **database** — 配置持久化层。`driver` 字段始终为 `"postgres"`。PostgreSQL 有独立的连接池调优参数。
+- **database** — 配置持久化层。`driver` 字段始终为 `"postgres"`。PostgreSQL 有独立的连接池调优参数（`max_open_conns` 40 / `max_idle_conns` 25，2026-11-19 起：雷达总览等聚合端点会并发取多个版块的数据，池子过小会让请求排队等连接——表现为「接口慢」而不是「查询慢」；`max_idle_conns` 需接近 `max_open_conns`，否则突发并发后连接被销毁、下次突发要重新握手）。
 - **cors** — 跨域请求的允许来源、HTTP 方法和请求头。来源是列表形式；通过 `CORS_ORIGINS` 环境变量覆盖时，解析为逗号分隔的字符串。
 - **entity_subject** — 全局实体主体归一身份层开关（`entity_subject.mode`，normalize-event-subject-entities）。**默认 `off`**（2026-11-10 决策：影子实验结束，实体层不接入事件线判定；避免实体注册表只增不减成为黑洞。代码与数据都保留，可通过配置切到 `shadow` 继续跑实验态）。本轮只实现 `off` / `shadow`，`active` **显式报错拒绝**。详见下方「实体主体归一（`entity_subject.mode`）」。
 

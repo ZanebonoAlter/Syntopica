@@ -12,7 +12,7 @@
  * partial/滞后诚实标记；旧后端缺该段时回退版块级日报标题列表。
  * 管线状态块默认折叠、异常自展开。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import AppPageShell from '~/components/ui/AppPageShell.vue'
 import { useBoardRadarOverview } from '~/features/tags/composables/useBoardRadarOverview'
@@ -22,13 +22,17 @@ import BoardRadarCold from './BoardRadarCold.vue'
 import BoardRadarReadingRail from './BoardRadarReadingRail.vue'
 import BoardRadarStatusBlock from './BoardRadarStatusBlock.vue'
 import BoardRadarGovernance, { type RadarAdvancedKind } from './BoardRadarGovernance.vue'
+import BoardQuickEditDialog from './BoardQuickEditDialog.vue'
+import BoardArchiveDialog from './BoardArchiveDialog.vue'
 
 const {
   rows,
   date,
   loading,
   error,
-  hotRows,
+  unavailableCount,
+  unavailableRows,
+  laggingRows,
   coldRows,
   visibleRows,
   todayRead,
@@ -39,6 +43,7 @@ const {
   degradedBoardCount,
   laggingBoardCount,
   todayClueTotal,
+  hotCount,
   firstLoadFailed,
   subKind,
   dateText,
@@ -50,8 +55,31 @@ const {
   openLane,
 } = useBoardRadarOverview()
 
+/**
+ * 序号接号（沿用 BoardRadarCold 的 rank-offset 机制）：关注行 → 常温行 → 滞后行 → 未取到行，
+ * 逐段往后接，序号连续不重号。
+ */
+const laggingRankOffset = computed(() => visibleRows.value.length + coldRows.value.length)
+const unavailableRankOffset = computed(() => laggingRankOffset.value + laggingRows.value.length)
+
 const showAddBoard = ref(false)
 const governanceRef = ref<InstanceType<typeof BoardRadarGovernance> | null>(null)
+
+/** 行尾「⋯」入口的两个落点（lane-manual-correction-loop 6.5）：编辑版块（md）/ 归档版块（手打名确认）。 */
+const quickEditOpen = ref(false)
+const quickEditBoardId = ref<number | null>(null)
+const archiveOpen = ref(false)
+const archiveBoardId = ref<number | null>(null)
+
+function openQuickEdit(boardId: string): void {
+  quickEditBoardId.value = Number(boardId)
+  quickEditOpen.value = true
+}
+
+function openArchive(boardId: string): void {
+  archiveBoardId.value = Number(boardId)
+  archiveOpen.value = true
+}
 
 onMounted(() => { void load() })
 
@@ -78,7 +106,7 @@ function handleGenerated(): void {
         :date-text="dateText"
         :headline="headline"
         :sub="subKind"
-        :hot-count="hotRows.length"
+        :hot-count="hotCount"
         :rows-count="rows.length"
         :today-clue-total="todayClueTotal"
         :stats-visible="!firstLoadFailed"
@@ -87,14 +115,16 @@ function handleGenerated(): void {
         @add-board="showAddBoard = true"
       />
 
-      <div v-if="error" class="rd-error" role="alert">
+      <!-- 「没取到」复用既有错误条（role=alert + 既有重试按钮），不新造提示条。 -->
+      <div v-if="error || unavailableCount > 0" class="rd-error" role="alert">
         <Icon icon="mdi:alert-circle-outline" width="16" />
-        <span>{{ error }}</span>
+        <span v-if="error">{{ error }}</span>
+        <span v-if="unavailableCount > 0">本次数据未取全（{{ unavailableCount }} 个版块未取到）</span>
         <button type="button" data-testid="radar-retry" @click="load">重试</button>
       </div>
 
       <div class="rd-overview">
-        <main class="rd-stage" aria-label="板块横向比较">
+        <main class="rd-stage scroll-thin" aria-label="板块横向比较">
           <div v-if="loading" class="rd-skeleton" data-testid="radar-loading">
             <div v-for="i in 4" :key="i" class="rd-sk-row" />
           </div>
@@ -112,6 +142,7 @@ function handleGenerated(): void {
               <span>进入</span>
             </div>
 
+            <!-- 关注行：热点 + 关注（数据新鲜、锚点日与全局一致） -->
             <BoardRadarStory
               v-for="(row, index) in visibleRows"
               :key="row.boardId"
@@ -121,8 +152,11 @@ function handleGenerated(): void {
               @open-board="openBoard"
               @open-report="openReport"
               @open-lane="openLane"
+              @edit-board="openQuickEdit"
+              @archive-board="openArchive"
             />
 
+            <!-- 常温（新鲜数据里的低关注度版块）：折叠段，序号接着关注行 -->
             <BoardRadarCold
               v-if="coldRows.length"
               :cold-rows="coldRows"
@@ -133,7 +167,42 @@ function handleGenerated(): void {
               @open-lane="openLane"
             />
 
-            <!-- R-17：业务空态只在成功取数且空集时出现，首次失败不算「没有板块」 -->
+            <!-- 滞后版块（自身锚点日 ≠ 全局锚点日）：逐行沉底，不占前排位次 -->
+            <section v-if="laggingRows.length" class="rd-segment" data-testid="radar-lagging-section">
+              <h2 class="rd-segment-title">滞后 · {{ laggingRows.length }} 个版块</h2>
+              <BoardRadarStory
+                v-for="(row, index) in laggingRows"
+                :key="row.boardId"
+                :row="row"
+                :rank="laggingRankOffset + index + 1"
+                :global-date="date"
+                @open-board="openBoard"
+                @open-report="openReport"
+                @open-lane="openLane"
+                @edit-board="openQuickEdit"
+                @archive-board="openArchive"
+              />
+            </section>
+
+            <!-- 未取到的版块：排最底（行内写「数据未取到」） -->
+            <section v-if="unavailableRows.length" class="rd-segment" data-testid="radar-unavailable-section">
+              <h2 class="rd-segment-title">未取到 · {{ unavailableRows.length }} 个版块</h2>
+              <BoardRadarStory
+                v-for="(row, index) in unavailableRows"
+                :key="row.boardId"
+                :row="row"
+                :rank="unavailableRankOffset + index + 1"
+                :global-date="date"
+                @open-board="openBoard"
+                @open-report="openReport"
+                @open-lane="openLane"
+                @edit-board="openQuickEdit"
+                @archive-board="openArchive"
+              />
+            </section>
+
+            <!-- R-17：业务空态只在成功取数且空集时出现，首次失败不算「没有板块」；
+                 全部未取到时 rows 非空（行内写「数据未取到」），也不落业务空态。 -->
             <div v-if="!error && !rows.length" class="rd-empty" data-testid="radar-empty">
               <Icon icon="mdi:white-balance-sunny" width="26" />
               <p>今天没有需要看的版块。</p>
@@ -152,7 +221,7 @@ function handleGenerated(): void {
              等业务空结论与失败态混排；有旧数据时可保留，成功空集照旧。
              状态块始终常驻（它自己用「读取中 / 读取失败」表达未知态，不产出业务结论）。 -->
         <div class="rd-rail-col">
-          <div class="rd-rail-scroll">
+          <div class="rd-rail-scroll scroll-thin">
             <BoardRadarReadingRail
               v-if="!firstLoadFailed"
               :lane-mode="hasLaneFeed"
@@ -179,6 +248,18 @@ function handleGenerated(): void {
         ref="governanceRef"
         v-model:add-board-visible="showAddBoard"
         @board-created="handleBoardCreated"
+      />
+
+      <BoardQuickEditDialog
+        v-model="quickEditOpen"
+        :board-id="quickEditBoardId"
+        @saved="load"
+      />
+
+      <BoardArchiveDialog
+        v-model="archiveOpen"
+        :board-id="archiveBoardId"
+        @archived="load"
       />
     </div>
   </AppPageShell>
@@ -215,7 +296,6 @@ function handleGenerated(): void {
   min-height: 0;
   overflow-y: auto;
   padding-right: 0.4rem;
-  scrollbar-width: thin;
 }
 
 /* ── 右栏两段容器：上段独立滚动 + 下段状态块常驻底部 ─────────────────── */
@@ -232,7 +312,6 @@ function handleGenerated(): void {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  scrollbar-width: thin;
 }
 
 /* 表头列宽仅限定 .rd-labels（本组件自有元素）：scoped 样式会命中子组件根节点，
@@ -278,6 +357,22 @@ function handleGenerated(): void {
 @keyframes rd-pulse {
   from { opacity: 0.55; }
   to { opacity: 1; }
+}
+
+/* ── 分段标题（滞后 / 未取到）：复用常温折叠段的分组标题样式 ───────────── */
+.rd-segment {
+  margin-top: 0.9rem;
+}
+
+.rd-segment-title {
+  margin: 0;
+  padding: 0.75rem 0.2rem;
+  border-top: 1px solid var(--color-border-medium);
+  border-bottom: 1px solid var(--color-border-medium);
+  color: var(--color-text-primary);
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 /* ── 错误条 / 空态 ────────────────────────────────────────────────────── */

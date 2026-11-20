@@ -3,7 +3,8 @@
  * 雷达总览报头（rework-workshop-into-radar-and-desk 8A/R-18 拆分）。
  * 纯展示：eyebrow 日期、大标题与动态副注、活跃/热点/当日线索统计、「全局治理」菜单
  * （对齐已批准原型措辞，原「更多」）与唯一「新建版块」入口。统计与业务文案在首次
- * 取数失败时（statsVisible=false / sub=failed）不得把初始化 0 呈现为业务结论（R-17）。
+ * 取数失败时（statsVisible=false / sub=failed）不得把初始化 0 呈现为业务结论（R-17）；
+ * 本次有版块没取到时（sub=partial）热点数与当日线索显示「—」（未知），不显示 0。
  * 治理动作经 advanced 事件交 BoardRadarGovernance 承接，本组件零数据依赖。
  */
 import { Icon } from '@iconify/vue'
@@ -15,9 +16,10 @@ defineProps<{
   dateText: string
   headline: string
   sub: RadarSubKind
-  hotCount: number
+  /** 达到热点阈值的版块数；null = 本次有版块没取到（未知，显示「—」）。 */
+  hotCount: number | null
   rowsCount: number
-  /** 全版块当日线索合计；null = 旧后端缺该字段（未知，不显示统计项）。 */
+  /** 全版块当日线索合计；null = 未知（本次未取到或旧后端缺该字段）。 */
   todayClueTotal: number | null
   /** 首次取数失败时隐藏统计（0/0/0 是未知不是结论）。 */
   statsVisible: boolean
@@ -44,13 +46,16 @@ function pick(kind: AdvancedKind, event: MouseEvent): void {
         <h1 class="rd-headline">{{ headline }}</h1>
         <p class="rd-sub">
           <template v-if="sub === 'hot'">
-            <b>{{ hotCount }}</b> 个版块达到热点阈值，先扫热度再进版块。
+            <b>{{ hotCount ?? '—' }}</b> 个版块达到热点阈值，先扫热度再进版块。
           </template>
           <template v-else-if="sub === 'no-hot'">
             今天没有达到热点阈值的板块，下面按关注度从高到低排。
           </template>
           <template v-else-if="sub === 'empty'">
             今天没有需要看的版块。
+          </template>
+          <template v-else-if="sub === 'partial'">
+            本次数据未取全。
           </template>
           <template v-else>
             总览读取失败，重试后恢复今日雷达。
@@ -62,8 +67,8 @@ function pick(kind: AdvancedKind, event: MouseEvent): void {
     <div class="rd-issue-actions">
       <div v-if="statsVisible" class="rd-meta">
         <span>活跃板块 <b>{{ rowsCount }}</b></span>
-        <span>热点 <b>{{ hotCount }}</b></span>
-        <span v-if="todayClueTotal !== null">今日线索 <b>{{ todayClueTotal }}</b></span>
+        <span>热点 <b>{{ hotCount ?? '—' }}</b></span>
+        <span v-if="todayClueTotal !== null || sub === 'partial'">今日线索 <b>{{ todayClueTotal ?? '—' }}</b></span>
       </div>
       <NuxtLink to="/" class="rd-home rd-action-btn" aria-label="返回主页" data-testid="radar-home">
         <Icon icon="mdi:home-outline" width="14" />

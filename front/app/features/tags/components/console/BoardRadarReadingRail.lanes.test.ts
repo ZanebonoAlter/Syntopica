@@ -43,6 +43,7 @@ function board(over: Partial<RadarBoard> = {}): RadarBoard {
     heatRuleVersion: 'heat-v2-lane-clues-1d',
     clueDays: [],
     dataDelayed: false,
+    dataUnavailable: false,
     lanes: [],
     ...over,
   }

@@ -20,7 +20,19 @@ const NuxtLinkStub = {
   template: '<a :href="to"><slot /></a>',
 }
 
-function mountMasthead() {
+/** 报头 props 覆盖项（默认值为完整成功态）。 */
+type MastheadProps = {
+  dateText?: string
+  headline?: string
+  sub?: 'hot' | 'no-hot' | 'empty' | 'failed' | 'partial'
+  hotCount?: number | null
+  rowsCount?: number
+  todayClueTotal?: number | null
+  statsVisible?: boolean
+  creatingBoard?: boolean
+}
+
+function mountMasthead(over: MastheadProps = {}) {
   return mount(BoardRadarMasthead, {
     props: {
       dateText: '2026-10-29',
@@ -31,6 +43,7 @@ function mountMasthead() {
       todayClueTotal: 12,
       statsVisible: true,
       creatingBoard: false,
+      ...over,
     },
     global: {
       components: { NuxtLink: NuxtLinkStub },
@@ -101,5 +114,29 @@ describe('BoardRadarMasthead — 主页入口归位到操作区（8F / FB-13）'
     // 「主页在治理左边」是用户诉求本身：容器不得改成 row-reverse / 用 order 调换视觉左右
     expect(src).not.toMatch(/\.rd-issue-actions\s*\{[^}]*flex-direction:\s*row-reverse/)
     expect(src).not.toMatch(/\.rd-issue-actions\s*\{[^}]*order:\s*-/)
+  })
+})
+
+describe('BoardRadarMasthead — 「没取到 ≠ 0」（fix-radar-overview-false-zero）', () => {
+  it('partial 态：热点与今日线索显示「—」，副注说明本次数据未取全', () => {
+    const wrapper = mountMasthead({
+      dateText: '',
+      headline: '2 个板块值得关注（1 个版块未取到）',
+      sub: 'partial' as const,
+      hotCount: null,
+      rowsCount: 3,
+      todayClueTotal: null,
+    })
+    const meta = wrapper.find('.rd-meta')
+    expect(meta.text()).toContain('热点 —')
+    expect(meta.text()).toContain('今日线索 —')
+    expect(meta.text()).not.toContain('热点 0')
+    expect(wrapper.find('.rd-sub').text()).toContain('本次数据未取全')
+  })
+
+  it('日期未知时不显示空串的「数据截至」', () => {
+    const wrapper = mountMasthead({ dateText: '', sub: 'partial' as const, hotCount: null, todayClueTotal: null })
+    expect(wrapper.text()).not.toContain('数据截至')
+    expect(wrapper.find('.rd-eyebrow').text()).not.toContain('·')
   })
 })

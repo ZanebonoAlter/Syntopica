@@ -14,7 +14,8 @@ import (
 // getBoardRadarOverview handles GET /api/semantic-boards/overview (spec 8.2).
 // Read-only single shot: active boards + today/3d/14d section density +
 // latest report brief. The repository reuses lane-dynamics and the report
-// table; the 5s budget degrades late rows to zero + data_delayed.
+// table; the 5s budget degrades late rows to unknown counts (data_delayed +
+// data_unavailable) — a degradation must never read as a business zero.
 func getBoardRadarOverview(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()

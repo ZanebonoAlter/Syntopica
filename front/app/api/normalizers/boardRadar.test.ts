@@ -191,6 +191,64 @@ describe('normalizeRadarOverview — 版块行当天线索口径', () => {
   })
 })
 
+describe('normalizeRadarOverview — 「没取到 ≠ 0」（fix-radar-overview-false-zero）', () => {
+  it('未取到的行：data_unavailable=true + 计数类字段归一为 null（未知，不造 0）', () => {
+    const raw = rawOverview()
+    Object.assign(raw.boards[0]!, {
+      data_unavailable: true,
+      attention: null,
+      today_clues: null,
+      last3_clues: null,
+      prev3_clues: null,
+      report_article_count: null,
+      report_event_count: null,
+      report_date: '',
+      report_title: '',
+      anchor_date: '',
+      clue_days: [],
+      lanes: [],
+    })
+    const board = normalizeRadarOverview(raw).boards[0]!
+    expect(board.dataUnavailable).toBe(true)
+    expect(board.attention).toBeNull()
+    expect(board.todayClues).toBeNull()
+    expect(board.last3Clues).toBeNull()
+    expect(board.prev3Clues).toBeNull()
+    expect(board.reportArticleCount).toBeNull()
+    expect(board.reportEventCount).toBeNull()
+  })
+
+  it('真实零值行：计数为 0 且 data_unavailable=false（0 不等于没取到）', () => {
+    const raw = rawOverview()
+    Object.assign(raw.boards[0]!, {
+      attention: 0,
+      today_clues: 0,
+      last3_clues: 0,
+      prev3_clues: 0,
+      report_article_count: 0,
+      report_event_count: 0,
+    })
+    const board = normalizeRadarOverview(raw).boards[0]!
+    expect(board.dataUnavailable).toBe(false)
+    expect(board.attention).toBe(0)
+    expect(board.todayClues).toBe(0)
+    expect(board.reportArticleCount).toBe(0)
+    expect(board.reportEventCount).toBe(0)
+  })
+
+  it('缺 data_unavailable 字段（旧后端）：按取到处理，缺失的计数字段归一为 null', () => {
+    const raw = rawOverview()
+    delete raw.boards[0]!.data_unavailable
+    delete raw.boards[0]!.attention
+    delete raw.boards[0]!.report_article_count
+    const board = normalizeRadarOverview(raw).boards[0]!
+    expect(board.dataUnavailable).toBe(false)
+    expect(board.attention).toBeNull()
+    expect(board.reportArticleCount).toBeNull()
+    expect(board.reportEventCount).toBe(13)
+  })
+})
+
 describe('normalizeRadarTopLanes — 当天线索最多的泳道清单段', () => {
   const rawFeed: BoardRadarRawTopLanes = {
     anchor_date: '2026-10-24',

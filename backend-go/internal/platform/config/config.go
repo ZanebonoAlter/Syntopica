@@ -158,8 +158,10 @@ func LoadConfig(configPath string) error {
 	viper.SetDefault("server.mode", "debug")
 	viper.SetDefault("database.driver", "postgres")
 	viper.SetDefault("database.dsn", "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai")
-	viper.SetDefault("database.postgres.max_idle_conns", 5)
-	viper.SetDefault("database.postgres.max_open_conns", 25)
+	// 与 configs/config.yaml 保持一致（fix-radar-overview-false-zero）：雷达总览等聚合端点
+	// 会并发取多个版块的数据，连接池过小会让请求排队等连接（表现为「慢」而非「查询慢」）。
+	viper.SetDefault("database.postgres.max_idle_conns", 25)
+	viper.SetDefault("database.postgres.max_open_conns", 40)
 	viper.SetDefault("database.postgres.conn_max_lifetime_minutes", 60)
 	viper.SetDefault("database.postgres.conn_max_idle_time_minutes", 10)
 	viper.SetDefault("cors.origins", []string{"http://localhost:3000", "http://localhost:3000"})

@@ -344,10 +344,14 @@ type LaneDynamicsResponse struct {
 	// uses (fix-lane-metric-provenance D10). Empty string when the board has
 	// no completed report yet. The frontend uses it as the matrix axis end so
 	// both windows end on the same day.
-	AnchorDate      string                  `json:"anchor_date"`
-	HeatRuleVersion string                  `json:"heat_rule_version"`
-	Lanes           []LaneDynamicsLane      `json:"lanes"`
-	Candidates      []LaneDynamicsCandidate `json:"candidates"`
+	AnchorDate      string `json:"anchor_date"`
+	HeatRuleVersion string `json:"heat_rule_version"`
+	// CluesDegraded = 当日线索聚合（CountLaneCluesByDate）失败，本次 lane_heat 是
+	// 「算不出来的 0」而非「今天确实没线索」。单版块端点仍按既有语义降级为 0 热
+	// 且不阻断响应；雷达总览据此把该版块判为「未取到」（不拿 0 冒充业务结论）。
+	CluesDegraded bool                    `json:"clues_degraded"`
+	Lanes         []LaneDynamicsLane      `json:"lanes"`
+	Candidates    []LaneDynamicsCandidate `json:"candidates"`
 }
 
 // laneSectionRow mirrors the windowed anchored-section projection shared by
@@ -430,8 +434,154 @@ func (r *TopicGraphRepository) listLaneSectionThreads(sectionIDs []uint) (map[ui
 	return out, nil
 }
 
+// ── 板级数据加载器（雷达总览批量取数）────────────────────────────────────
+//
+// 泳道计算的输入分两层：
+//   - 板级（board-level）：版块锚点日、非归档话题、watch 关联话题；
+//   - 版块内（per-board）：窗口 sections / threads / 快照 / 当天线索数 / 候选提示。
+//
+// 板级这三样与泳道窗口无关，天然可跨版块批量取：雷达总览一次拿全部版块的板级
+// 数据（3 条 SQL），单版块端点拿自己的一份（同样 3 条）。两条路径共用同一份
+// 聚合代码（computeBoardLaneDynamics）——取数方式不同，口径代码只有一份。
+
+// boardLevelData is one board's board-level input of the lane computation.
+type boardLevelData struct {
+	// anchor is the board's latest COMPLETED report day (normalized noon UTC).
+	anchor time.Time
+	// hasAnchor = the board has at least one completed report.
+	hasAnchor bool
+	// topics = the board's non-archived topics (DB order).
+	topics []BoardPersistentTopic
+	// topicByID = topics keyed by topic id.
+	topicByID map[uint]BoardPersistentTopic
+	// watchLinked = topic ids referenced by ACTIVE watches of the board.
+	watchLinked map[uint]bool
+}
+
+// loadBoardLevel loads ONE board's board-level data.
+func (r *TopicGraphRepository) loadBoardLevel(boardID uint) (*boardLevelData, error) {
+	levels, err := r.loadBoardLevels([]uint{boardID})
+	if err != nil {
+		return nil, err
+	}
+	level, ok := levels[boardID]
+	if !ok {
+		// 取数成功但这个版块没有任何板级数据 → 无锚点（空泳道响应）。
+		return &boardLevelData{topicByID: map[uint]BoardPersistentTopic{}, watchLinked: map[uint]bool{}}, nil
+	}
+	return level, nil
+}
+
+// loadBoardLevels loads the board-level data of MANY boards in three queries
+// (anchor / watch-linked / topics) —— 每类一条，不是每版块一条。
+//
+// anchor 口径与 GetBoardReportAnchor 逐字一致：只认 status='completed' 的最新
+// period_date。取「每个版块最新一行」用 ROW_NUMBER() 窗口函数（PG 与 SQLite
+// 都支持；DISTINCT ON 只有 PG 能用，而本包的 service 层测试跑内存 SQLite）。
+// board_daily_reports 的 (semantic_board_id, period_date) 有唯一索引，同日不会有
+// 并列行，窗口函数的取舍是确定的。
+func (r *TopicGraphRepository) loadBoardLevels(boardIDs []uint) (map[uint]*boardLevelData, error) {
+	out := make(map[uint]*boardLevelData, len(boardIDs))
+	for _, id := range boardIDs {
+		out[id] = &boardLevelData{
+			topicByID:   map[uint]BoardPersistentTopic{},
+			watchLinked: map[uint]bool{},
+		}
+	}
+	if len(boardIDs) == 0 {
+		return out, nil
+	}
+
+	// ① 锚点日：每个版块最新一期 **completed** 日报。
+	var anchors []struct {
+		SemanticBoardID uint
+		PeriodDate      time.Time
+	}
+	if err := r.db.Raw(
+		"SELECT semantic_board_id, period_date FROM ("+
+			"SELECT semantic_board_id, period_date, "+
+			"ROW_NUMBER() OVER (PARTITION BY semantic_board_id ORDER BY period_date DESC) AS rn "+
+			"FROM board_daily_reports WHERE semantic_board_id IN (?) AND status = ?"+
+			") ranked WHERE rn = 1",
+		boardIDs, ReportStatusCompleted).
+		Scan(&anchors).Error; err != nil {
+		return nil, fmt.Errorf("lane dynamics: board anchors: %w", err)
+	}
+	for _, a := range anchors {
+		level, ok := out[a.SemanticBoardID]
+		if !ok || level.hasAnchor {
+			continue
+		}
+		level.anchor = NormalizeReportDate(a.PeriodDate)
+		level.hasAnchor = true
+	}
+
+	// ② watch 关联话题（ACTIVE watches）—— 「我在追踪」泳道集合。
+	var watched []struct {
+		SemanticBoardID   uint
+		PersistentTopicID uint
+	}
+	if err := r.db.Model(&BoardTopicWatch{}).
+		Select("semantic_board_id, persistent_topic_id").
+		Where("semantic_board_id IN ? AND status = ? AND persistent_topic_id IS NOT NULL",
+			boardIDs, WatchStatusActive).
+		Distinct().
+		Scan(&watched).Error; err != nil {
+		return nil, fmt.Errorf("lane dynamics: watch-linked topics: %w", err)
+	}
+	for _, w := range watched {
+		if level, ok := out[w.SemanticBoardID]; ok {
+			level.watchLinked[w.PersistentTopicID] = true
+		}
+	}
+
+	// ③ 非归档话题（lanes 取自 active ∪ watch-linked；归档泳道两种口径都排除）。
+	//
+	// 只取泳道计算真正用到的列：board_persistent_topics 带 embedding / centroid
+	// 向量列，13 个活跃版块实测 2074 行 ≈ 41MB 向量载荷——整表 SELECT * 光取回
+	// 就要 ~1s（EXPLAIN 看不到：TOAST 向量不在堆页里），而泳道口径一个向量都
+	// 不用。向量列不参与任何分桶 / 热度 / 线索窗计算，故不取。
+	var topics []BoardPersistentTopic
+	if err := r.db.Model(&BoardPersistentTopic{}).
+		Select("id, semantic_board_id, label, status, hit_count, last_seen_date").
+		Where("semantic_board_id IN ? AND status != ?", boardIDs, TopicStatusArchived).
+		Find(&topics).Error; err != nil {
+		return nil, fmt.Errorf("lane dynamics: board topics: %w", err)
+	}
+	for _, t := range topics {
+		level, ok := out[t.SemanticBoardID]
+		if !ok {
+			continue
+		}
+		level.topics = append(level.topics, t)
+		level.topicByID[t.ID] = t
+	}
+	return out, nil
+}
+
+// laneDynamicsSettings is the request-scoped input of the lane computation:
+// the two ai_settings reads it needs. Reading them once per request (instead
+// of once per board) keeps the values identical and removes N-1 duplicate
+// reads per board.
+type laneDynamicsSettings struct {
+	candidateWeight float64
+	topicConfig     PersistentTopicConfig
+}
+
+// loadLaneDynamicsSettings reads the request-scoped lane settings.
+func (r *TopicGraphRepository) loadLaneDynamicsSettings() laneDynamicsSettings {
+	return laneDynamicsSettings{
+		candidateWeight: LoadLaneHeatCandidateWeight(r.db),
+		topicConfig:     LoadPersistentTopicConfig(r.db),
+	}
+}
+
 // GetBoardLaneDynamics is the single-shot aggregate behind
-// GET /semantic-boards/:id/lane-dynamics?days=14 (design D4):
+// GET /semantic-boards/:id/lane-dynamics?days=14 (design D4).
+//
+// It loads the board's board-level data (anchor / watch-linked / topics) and
+// hands it to computeBoardLaneDynamics —— the SAME aggregation the radar
+// overview's batch path runs. 取数方式不同，口径代码只有一份。
 //   - window anchored at the board's MAX(period_date) going back `days` days
 //     (inclusive both ends — same convention as the landscape date axis), NOT
 //     now(), so 态势句素材与时间线同窗 (spec);
@@ -450,41 +600,36 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 	if days <= 0 {
 		days = LaneDynamicsDefaultDays
 	}
+	level, err := r.loadBoardLevel(boardID)
+	if err != nil {
+		return nil, err
+	}
+	return r.computeBoardLaneDynamics(level, boardID, days, r.loadLaneDynamicsSettings())
+}
+
+// computeBoardLaneDynamics is the ONE lane-dynamics aggregation: board-level
+// data + request-scoped settings → lanes / candidates / heat. The single-board
+// endpoint and the radar overview's batch path both run THIS function.
+// 取数方式不同（单版块 vs 批量），口径代码只有一份。
+func (r *TopicGraphRepository) computeBoardLaneDynamics(level *boardLevelData, boardID uint, days int, settings laneDynamicsSettings) (*LaneDynamicsResponse, error) {
 	resp := &LaneDynamicsResponse{
 		WindowDays:      days,
 		HeatRuleVersion: LaneHeatRuleVersion,
 		Lanes:           []LaneDynamicsLane{},
 		Candidates:      []LaneDynamicsCandidate{},
 	}
-
-	anchor, ok, err := r.GetBoardReportAnchor(boardID)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
+	if level == nil || !level.hasAnchor {
 		// 无日报：空数组非 null（tasks 2.2）。
 		return resp, nil
 	}
+	anchor := level.anchor
 	resp.HasReports = true
 	resp.AnchorDate = NormalizeReportDate(anchor).Format("2006-01-02")
 	from := anchor.AddDate(0, 0, -(days - 1))
 
-	watchLinked, err := r.ListActiveWatchLinkedTopicIDs(boardID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Non-archived topics of the board (lanes draw from active ∪ watch-linked;
-	// archived lanes are excluded either way).
-	var topics []BoardPersistentTopic
-	if err := r.db.Where("semantic_board_id = ? AND status != ?", boardID, TopicStatusArchived).
-		Find(&topics).Error; err != nil {
-		return nil, fmt.Errorf("lane dynamics: board topics: %w", err)
-	}
-	topicByID := make(map[uint]BoardPersistentTopic, len(topics))
-	for _, t := range topics {
-		topicByID[t.ID] = t
-	}
+	watchLinked := level.watchLinked
+	topics := level.topics
+	topicByID := level.topicByID
 
 	secs, err := r.listLaneWindowSections(boardID, from, anchor, nil)
 	if err != nil {
@@ -547,11 +692,15 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 	// 当天热度：口径唯一实现见 lane_heat_repository.go（heat-v2-lane-clues-1d）。
 	// 全板一次聚合锚点日线索数（覆盖 active + candidate），不逐 lane 探库；
 	// 失败降级为 0 热并告警，不阻断响应。
-	candidateWeight := LoadLaneHeatCandidateWeight(r.db)
+	candidateWeight := settings.candidateWeight
 	clueByTopic, err := r.CountLaneCluesByDate(boardID, anchor)
 	if err != nil {
+		// 单版块端点保持既有降级（0 热 + 告警，不阻断响应），但必须如实标记：
+		// 雷达总览看到 CluesDegraded 会把该版块判为「未取到」——否则 0 热会被
+		// 渲染成「关注强度 0.0」，正是 fix-radar-overview-false-zero 要消灭的假 0。
 		logging.Warnf("lane dynamics: board %d clue counts degraded: %v", boardID, err)
 		clueByTopic = map[uint]int{}
+		resp.CluesDegraded = true
 	}
 	laneHeat := make(map[uint]float64, len(laneIDs))
 	for _, id := range laneIDs {
@@ -633,7 +782,7 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 	// Candidate bar: visible-gate candidates (hit_count >= upgrade_threshold —
 	// FilterVisibleTopics 口径 restricted to status=candidate) with their
 	// latest section title as hint (最近动向，不window限—最新一条可在窗口外).
-	cfg := LoadPersistentTopicConfig(r.db)
+	cfg := settings.topicConfig
 	var candIDs []uint
 	for _, t := range topics {
 		if t.Status == TopicStatusCandidate && t.HitCount >= cfg.UpgradeThreshold {

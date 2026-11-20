@@ -10,6 +10,9 @@
  * `laneDegradedLevel` 四档分档已整体退役。色深不在这里：改由 `observationLanes.clueDepth`
  * 按当日线索数做行内归一连续深浅（2026-11-11 看版后修订，tasks 3.5），数值 + title/aria
  * 仍是唯一信息承载。
+ *
+ * 「没取到 ≠ 0」（fix-radar-overview-false-zero）：关注度未知（null）不进任何分档，
+ * 分档标签返回 null；展示层据此显示「—」而不是「关注强度 0.0」。
  */
 import type { RadarBoard } from '~/api/normalizers/boardRadar'
 
@@ -23,11 +26,20 @@ export const RADAR_WARM_ATTENTION = 2.3
 
 export type RadarTier = '热点' | '关注' | '常温'
 
-/** 关注强度分档标签（版块关注度 = Σ 泳道当天热度）：≥P80 热点、≥P20 关注、其余常温。 */
-export function tierLabel(attention: number): RadarTier {
+/**
+ * 关注强度分档标签（版块关注度 = Σ 泳道当天热度）：≥P80 热点、≥P20 关注、其余常温。
+ * 关注度未知（null = 没取到 / 旧后端缺字段）→ null（无分档），不得当成 0 冒充常温。
+ */
+export function tierLabel(attention: number | null): RadarTier | null {
+  if (attention === null) return null
   if (attention >= RADAR_HOT_ATTENTION) return '热点'
   if (attention >= RADAR_WARM_ATTENTION) return '关注'
   return '常温'
+}
+
+/** 关注强度可读值：未知显示「—」，不显示 0.0。 */
+export function attentionText(attention: number | null): string {
+  return attention === null ? '—' : attention.toFixed(1)
 }
 
 export interface RadarTrend {

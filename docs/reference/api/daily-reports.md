@@ -542,7 +542,7 @@ Response `data`：
 
 今日雷达单次聚合（rework-workshop-into-radar-and-desk 8.2；retire-story-adopt-event-metrics 1.5/3.2 换当天线索口径）：只读，返回所有 `status=active` 版块的行。**关注度 `attention` = 该版块各泳道当天热度之和（含候选泳道按 `lane_heat_candidate_weight` 加权，保留一位小数）**——泳道当天热度 = 当天线索数按话题状态加权（`heat-v2-lane-clues-1d`：active × 1.0 + candidate × 权重），只表达当天、不衰减不跨天；不再是事件线热度（`heat-v1-48h-hl24h`）之和，也不是旧 section 数加权公式。分档阈值按新关注度真实分布标定（前端 14.5 / 2.3 = P80/P20，实测记录见 change design D9），不沿用旧 3.3/0.7 或 50/15。
 
-字段变更（相对事件线口径）：**移除** `today_sections` / `last3_sections` / `prev3_sections` / `days` / `today_stories` / `last3_stories` / `prev3_stories` / `today_heat` / `last3_heat` / `prev3_heat` / `heat_days` / `stories_backfilled` / `story_identity_state` / `heat_incomplete` / `heat_stale_feed_ids`；**新增** `today_clues` / `last3_clues` / `prev3_clues`（同轴窗口的当天线索合计）与 `clue_days`（14 天逐日线索合计，oldest → newest，未知不补 0）、`lanes[].clue_counts`（14 天逐日线索合计）；`heat_rule_version` 恒 `heat-v2-lane-clues-1d`。泳道移除 `counts` / `story_counts` / `section_count_14d`，保留 `thread_count_14d`（全窗线索合计，排序次键）。泳道与分区口径复用 `lane-dynamics`，最新日报取 `board_daily_reports`；无数据版块返回零值行，单版块查询超时返回零值并标 `data_delayed=true`，不阻塞整屏。窗口锚定该版块最新日报日（无日报则无密度），`date` 为全部版块最新日报日的最大值。
+字段变更（相对事件线口径）：**移除** `today_sections` / `last3_sections` / `prev3_sections` / `days` / `today_stories` / `last3_stories` / `prev3_stories` / `today_heat` / `last3_heat` / `prev3_heat` / `heat_days` / `stories_backfilled` / `story_identity_state` / `heat_incomplete` / `heat_stale_feed_ids`；**新增** `today_clues` / `last3_clues` / `prev3_clues`（同轴窗口的当天线索合计）与 `clue_days`（14 天逐日线索合计，oldest → newest，未知不补 0）、`lanes[].clue_counts`（14 天逐日线索合计）；`heat_rule_version` 恒 `heat-v2-lane-clues-1d`。泳道移除 `counts` / `story_counts` / `section_count_14d`，保留 `thread_count_14d`（全窗线索合计，排序次键）。泳道与分区口径复用 `lane-dynamics`，最新日报取 `board_daily_reports`；无数据版块返回零值行（**真实 0**），单版块超时未完成或泳道动态计算失败则该行标 `data_unavailable=true` 且计数类字段落 `null`（**未知**，不造 0），不阻塞整屏。窗口锚定该版块最新日报日（无日报则无密度），`date` 为全部版块最新日报日的最大值（**全部版块都未取到时为空串**，不冒充今天）。
 
 ```json
 {
@@ -563,6 +563,7 @@ Response `data`：
     "heat_rule_version": "heat-v2-lane-clues-1d",
     "clue_days": [0, 1, 2, 1, 0, 3, 1, 2, 0, 1, 2, 1, 0, 7],
     "data_delayed": false,
+    "data_unavailable": false,
     "lanes": [{
       "topic_id": 1204,
       "label": "美伊博弈升级：从经济威胁到全面孤立",
@@ -587,8 +588,11 @@ Response `data`：
 }
 ```
 
-- `attention` 为 float（Σ 泳道当天热度，1 位小数）；行按 attention 降序（平手 board_id 升序）。
+- `attention` 为 float（Σ 泳道当天热度，1 位小数）；行按 attention 降序（平手 board_id 升序）；`attention` 未知（未取到）的行沉到末尾。
 - `today_clues` / `last3_clues` / `prev3_clues` / `clue_days` / `lanes[].clue_counts` 缺省（旧后端）时归一为 `null`，前端标「线索数未知」，**不造 0、不拿分区数冒充**；`clue_count` 已排除综合稿（`scope=composite`）。
+- **`data_unavailable`**（fix-radar-overview-false-zero）：true = 该版块**这次没取到**（端点超时未完成，或该版块泳道动态计算失败）。此时 `attention` / `today_clues` / `last3_clues` / `prev3_clues` / `report_article_count` / `report_event_count` 均为 `null`（未知）。前端 SHALL 把这些行显示为「数据未取到」，SHALL NOT 当成「0」渲染成「今天没有热点 / 0 篇文章」；这些行也不参与关注度分档与「N 个板块值得关注」计数。**真实零值**（近 14 天无日报无泳道、取数成功）仍是 `data_unavailable=false` + 计数为 0。
+- `data_delayed` 保留原义（端点超时降级标记）；计算失败路径不标 `data_delayed`，只标 `data_unavailable`。
+- 滞后版块（自身锚点日 ≠ 全局 `date`）的计数照旧返回实数，但前端 SHALL 把它们排在主列表末尾（不进分档、不占前排名次）。
 - `heat_rule_version` 恒 `heat-v2-lane-clues-1d`（与 lane-dynamics 同源）；旧热度字段不再下发。
 
 ### 顶层 `top_lanes` 段（当天线索最多的泳道，D10）
@@ -605,6 +609,17 @@ Response `data`：
 
 - 当天线索为 0 的泳道不进清单；清单为空时前端渲染空态（不得说成「今天没有事件」）。
 - 事件线清单段（`stories` / `unbackfilled_board_ids` / `warming_count` / `cross_day_story_count` 等）随事件线退役整体移除；条目不再提供 `?story=` 深链，点击进既有控制台 `?lane=`。
+
+### 消费方 ②：L1 版块态势页左轨（console-rails-live-signals，2026-11-19）
+
+同一份 overview 响应也是版块态势页（`/tags/:boardId`）**左轨版块栏**的数据源：每行 = 名称 + 14 格逐日线索条码，格值取 `boards[].clue_days`，色阶按行内峰值归一。
+
+> ⚠️ **共同轴对齐（消费方必须做，否则是假比较）**：本端点的 `clue_days` 由 `radarAxis(anchor)` 按**每个版块自己的锚点日**生成 14 天窗口（`backend-go/internal/topicgraph/repository/board_radar_repository.go:433,501-510`），因此不同版块的「最后一格」代表**不同日期**。消费方 MUST 按**全局锚点**（响应 `date`）重对齐再并列展示：
+> `offset = daysBetween(date, boards[i].anchor_date)`；`clue_days[j]` 在共同轴 `[date-13 … date]` 上的位置 = `j - offset`；位置越界 = **该位未取到**（MUST 画未取到占位，MUST NOT 补 0）。对齐后「停更」（末段未取到）与「安静」（真实 0）才可区分。
+>
+> `boards[].data_unavailable = true` 的行，其计数类字段为 `null`（未知），消费方 MUST 显示未取到，MUST NOT 当成 0。`boards[].anchor_date` 落后的行（滞后版块）按各板自己的日期表达，不得冒充全局锚点日。
+
+**口径不新增**：本端点的 `clue_days` / `today_clues` / `last3_clues` / `prev3_clues` 口径与 §字段变更处一致，本节只声明第二个消费点与共同轴对齐规则。
 
 ## GET `/semantic-boards/:id/lane-dynamics?days=14`
 
@@ -758,6 +773,15 @@ Response `data`：
 > **threads 的 display_tier 读取口径（add-event-story-heat）**：thread 落库携带 `display_tier`（`body`=正文默认 / `flash`=快讯（跨期重述降级） / `hidden`=预留）；本端点的 threads 只返回 **`body`** 行——`flash`/`hidden` 本期丢弃不渲染（快讯 UI 是未来工作，列仍可查）。降级只影响展示：flash 行照常落库、signals 照常写、热度不变（详见 `flow/daily-report.md` 约束 44/45）。
 
 > **`related_article_ids` 的折叠语义（dedupe-thread-article-copies）**：本端点返回的每条 thread 的 `related_article_ids` 是**读路径投影**——同一篇内容被两个 feed 各抓一份（同 `link`）时只保留**首个出现**的一条，数组顺序不变；`link` 为空（或归一后为空）、以及库里查不到的 id **不参与折叠**、原样保留。归一口径 = `textutil.NormalizeArticleLink`（去 fragment、去 query、scheme/host 小写），只认「归一 link 相同」这一条信号——同标题不同 URL 的多源转载**不折叠**。落库值 `daily_report_threads.related_article_ids` 不变（仍是该 thread `tag_ids` 对应文章的并集），故响应数组长度可能短于落库值；折叠所需的 link 取不到时降级为原样返回（本端点仍 200）。详见 `flow/daily-report.md` 约束 45。
+
+### 消费方 ②：L1 版块态势页右轨「当日日报」（console-rails-live-signals，2026-11-19）
+
+本端点的 `report.highlights` / `report.sections[]` 也是版块态势页右轨「当日日报」块的数据源（**跟随矩阵选中日**，右轨不提供日期选择器）：
+
+- **点评层** = `report.highlights`（2–3 条，元素字段见 `highlights` 字段契约）。消费方 MUST NOT 同时展示 `report.title` / `report.summary`——二者由后端派生自**首条重点**（`title = highlights[0].Title`、`summary = highlights[0].Reason`，`repository/report_story_highlights.go:78-81`），并排即重复渲染同一条。`highlights[].article_count` 缺省时消费方 MUST NOT 显示「N 篇来源」，MUST NOT 补 0。
+- **泳道层** = `report.sections[]` 中 `topic_status_at_report = 'active'` 且有 `persistent_topic` 的分区；代表线索取该分区首条 thread 的 `title`（无 thread 则退回 `cluster_label`）。该层的**线索数 MUST 取 `lane-dynamics` 的逐日 `clue_count`**（与矩阵日格同源同值），MUST NOT 用本端点 sections 内的 thread 条数（含综合稿，另一套量纲）；按线索数降序展示，并列时保持本端点 sections 原序。`topic_status_at_report = 'candidate'` 的分区（其他动态）不进该块。
+
+**口径不新增**：本端点响应结构不变，消费方只是把此前被 normalizer 丢弃的 `title` / `summary` / `highlights` 字段接上（前端补字段，零后端改动、零新增请求）。
 
 ## POST `/daily-reports/:id/rebucket`
 

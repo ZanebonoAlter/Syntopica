@@ -14,6 +14,12 @@
  * `today_clues` 时归一为 `null`（未知，不造 0），由展示层标「线索数未知」。
  * 顶层清单段由事件线换成「当天线索最多的泳道」（`top_lanes`）；旧后端缺该段时
  * `topLanes = null`，右栏回退版块级日报标题列表（不渲染成业务空态）。
+ *
+ * 「没取到 ≠ 0」（fix-radar-overview-false-zero）：端点有 5 秒预算，超时未完成或
+ * 泳道动态计算失败的版块行带 `data_unavailable=true`，其计数类字段输出 JSON `null`
+ * （未知）而不是 0。归一化层把 `null`/缺字段一律归为 `null`——**不造 0**，让展示层
+ * 区分「这次没取到」与「真的是 0」。真实空态版块（近 14 天无日报/无泳道）仍下发
+ * 零值数字且不标 `data_unavailable`。
  */
 import type { ApiResponse, PaginationMeta } from '~/types'
 
@@ -37,21 +43,24 @@ export interface BoardRadarRawBoard {
   tag_count: number
   report_date: string
   report_title: string
-  report_article_count: number
-  report_event_count: number
+  /** 未取到时后端输出 null（未知），不是 0；缺字段 = 旧后端（同样未知）。 */
+  report_article_count?: number | null
+  report_event_count?: number | null
   /** 版块自身最新数据日；缺省表示后端未提供（UI 不标延迟）。 */
   anchor_date?: string
   /** 当日 / 近 3 日 / 前 3 日线索合计；缺省 = 旧后端（未知，不造 0）。 */
-  today_clues?: number
-  last3_clues?: number
-  prev3_clues?: number
-  /** 关注度 = Σ 泳道当天热度（含候选权重，一位小数）。 */
-  attention: number
+  today_clues?: number | null
+  last3_clues?: number | null
+  prev3_clues?: number | null
+  /** 关注度 = Σ 泳道当天热度（含候选权重，一位小数）；未取到时为 null（未知）。 */
+  attention?: number | null
   /** 热度口径版本（heat-v2-lane-clues-1d）。 */
   heat_rule_version?: string
   /** 14 天逐日线索轴（oldest→newest）；缺省 = 旧后端。 */
   clue_days?: number[]
   data_delayed: boolean
+  /** 本次没取到该版块（端点超时未完成 / 泳道动态计算失败）= true；缺省 = 取到。 */
+  data_unavailable?: boolean
   lanes: BoardRadarRawLane[]
 
   /**
@@ -126,19 +135,23 @@ export interface RadarBoard {
   tagCount: number
   reportDate: string
   reportTitle: string
-  reportArticleCount: number
-  reportEventCount: number
+  /** 报告文章数；null = 未知（未取到或旧后端缺字段），不造 0。 */
+  reportArticleCount: number | null
+  /** 报告事件数；null = 未知（未取到或旧后端缺字段），不造 0。 */
+  reportEventCount: number | null
   anchorDate?: string
   /** 当日 / 近 3 日 / 前 3 日线索合计；null = 旧后端缺字段（未知，不造 0）。 */
   todayClues: number | null
   last3Clues: number | null
   prev3Clues: number | null
-  /** 关注度 = Σ 泳道当天热度（含候选权重，一位小数）。 */
-  attention: number
+  /** 关注度 = Σ 泳道当天热度（含候选权重，一位小数）；null = 未知（不造 0）。 */
+  attention: number | null
   heatRuleVersion: string
   /** 14 天逐日线索轴；null = 旧后端缺字段。 */
   clueDays: number[] | null
   dataDelayed: boolean
+  /** 本次没取到该版块（超时未完成 / 泳道动态计算失败）：true = 该行计数未知。 */
+  dataUnavailable: boolean
   lanes: RadarLane[]
 }
 
@@ -208,16 +221,18 @@ export function normalizeRadarBoard(board: BoardRadarRawBoard): RadarBoard {
     tagCount: num(board?.tag_count),
     reportDate: str(board?.report_date),
     reportTitle: str(board?.report_title),
-    reportArticleCount: num(board?.report_article_count),
-    reportEventCount: num(board?.report_event_count),
+    reportArticleCount: numOrNull(board?.report_article_count),
+    reportEventCount: numOrNull(board?.report_event_count),
     anchorDate: board?.anchor_date ? str(board.anchor_date) : undefined,
     todayClues: numOrNull(board?.today_clues),
     last3Clues: numOrNull(board?.last3_clues),
     prev3Clues: numOrNull(board?.prev3_clues),
-    attention: num(board?.attention),
+    attention: numOrNull(board?.attention),
     heatRuleVersion: str(board?.heat_rule_version),
     clueDays: numArrayOrNull(board?.clue_days),
     dataDelayed: board?.data_delayed === true,
+    // 未取到 = 计数未知（null），不是 0；缺字段按取到处理（旧后端无该标记）。
+    dataUnavailable: board?.data_unavailable === true,
     lanes: Array.isArray(board?.lanes) ? board.lanes.map(normalizeRadarLane) : [],
   }
 }

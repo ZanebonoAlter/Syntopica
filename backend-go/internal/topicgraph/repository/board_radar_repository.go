@@ -39,28 +39,47 @@ type RadarLane struct {
 // (1 decimal) — lane heat is the same-day clue count weighted by topic status
 // (lane-heat-metric). Section counts, thread counts, event counts and bucket
 // counts MUST NOT feed it (spec: 不得因分区数虚高).
+//
+// 「未取到 ≠ 0」（fix-radar-overview-false-zero）：计数类字段用指针表达两种语义——
+// nil = **未知**（本次没取到该版块的数据，JSON 落 null），指针值 = **已取到的数**
+// （可以是真实的 0）。JSON 刻意不加 omitempty：未取到必须落成 null 而不是被省略
+// 或写成 0，否则前端会把降级渲染成「今天没有热点」这类业务结论。
 type RadarBoardRow struct {
-	BoardID       uint   `json:"board_id"`
-	Label         string `json:"label"`
-	TagCount      int64  `json:"tag_count"`
-	ReportDate    string `json:"report_date"` // latest report period_date (YYYY-MM-DD), "" when none
-	ReportTitle   string `json:"report_title"`
-	ReportArticle int    `json:"report_article_count"`
-	ReportEvent   int    `json:"report_event_count"`
+	BoardID  uint   `json:"board_id"`
+	Label    string `json:"label"`
+	TagCount int64  `json:"tag_count"`
+	// ReportDate / ReportTitle 是字符串事实：取到了就填，没取到是空串。
+	ReportDate  string `json:"report_date"` // latest report period_date (YYYY-MM-DD), "" when none
+	ReportTitle string `json:"report_title"`
+	// ReportArticle / ReportEvent：nil = 未知（没取到），0 = 取到了且确实没有。
+	ReportArticle *int   `json:"report_article_count"`
+	ReportEvent   *int   `json:"report_event_count"`
 	AnchorDate    string `json:"anchor_date"`
 	// Same-day / 3-day / previous-3-day clue windows (oldest → newest axis).
-	TodayClues int `json:"today_clues"`
-	Last3Clues int `json:"last3_clues"`
-	Prev3Clues int `json:"prev3_clues"`
+	// nil = 未知（见 ReportArticle）。
+	TodayClues *int `json:"today_clues"`
+	Last3Clues *int `json:"last3_clues"`
+	Prev3Clues *int `json:"prev3_clues"`
 	// Attention = Σ 泳道当天热度（含候选按权重计入），保留一位小数。
-	Attention float64 `json:"attention"`
+	// nil = 未知（见 ReportArticle）。
+	Attention *float64 `json:"attention"`
 	// HeatRuleVersion pins the same-day heat formula (heat-v2-lane-clues-1d).
 	HeatRuleVersion string `json:"heat_rule_version"`
 	// ClueDays is the full 14-day clue axis (oldest → newest).
-	ClueDays    []int       `json:"clue_days"`
-	DataDelayed bool        `json:"data_delayed"`
-	Lanes       []RadarLane `json:"lanes"`
+	ClueDays []int `json:"clue_days"`
+	// DataDelayed = 本次聚合超时未完成该版块（端点预算耗尽）。
+	DataDelayed bool `json:"data_delayed"`
+	// DataUnavailable = 本次**没取到**该版块的数据（超时未完成 / 泳道动态计算
+	// 失败）：该行计数类字段是未知（null），不是 0。取数成功但确实没数据的版块
+	// 仍是完整零值行（计数为 0）且不标本字段。
+	DataUnavailable bool        `json:"data_unavailable"`
+	Lanes           []RadarLane `json:"lanes"`
 }
+
+// radarIntPtr / radarFloatPtr 把已知的数包成指针：区分「已知的 0」与「未知」。
+func radarIntPtr(v int) *int { return &v }
+
+func radarFloatPtr(v float64) *float64 { return &v }
 
 // RadarTopLanes is the cross-board 「当天线索最多的泳道」 list that replaces the
 // retired event-line feed (design D10). The merge, the sort and the truncation
@@ -108,13 +127,27 @@ type RadarOverview struct {
 // count only affects first-screen density — 上限 8，第 9 名不展示).
 const radarTopLaneLimit = 8
 
+// RadarOverviewBudget is the aggregation budget for one overview call. The
+// handler wraps the request context with the same 5s bound; this caps it
+// inside the repository so late rows degrade instead of hanging. It is a
+// package-level var (not a const) so tests can inject a zero budget and
+// deterministically reproduce the timeout-degradation row — real slow queries
+// can't be reproduced reliably in a unit test.
+var RadarOverviewBudget = 5 * time.Second
+
 // GetBoardRadarOverview aggregates all active boards. A board whose lane
-// dynamics query fails degrades to zero counts instead of failing the page
+// dynamics query fails degrades to unknown counts instead of failing the page
 // (spec: 无数据版块返回零值). ctx carries the 5s handler budget; rows that
-// do not make it are still returned as zero with data_delayed=true.
+// do not make it are returned as unknown with data_delayed=true +
+// data_unavailable=true — a degradation must never look like a business
+// conclusion («今天 0 关注»).
 func (r *TopicGraphRepository) GetBoardRadarOverview(ctx context.Context) (*RadarOverview, error) {
+	// ctx 感知副本：查询句柄带上请求 ctx —— 预算到期后在飞的查询立刻被取消，
+	// 连接马上归还池子（否则超时后 goroutine 还在跑完查询、白占连接与 IO，
+	// 拖慢后续请求）。
+	rctx := r.withContext(ctx)
 	var labels []models.SemanticLabel
-	if err := r.db.WithContext(ctx).
+	if err := rctx.db.
 		Where("label_type = ? AND status = ?", "board", "active").
 		Order("display_order ASC, id ASC").
 		Find(&labels).Error; err != nil {
@@ -136,7 +169,7 @@ func (r *TopicGraphRepository) GetBoardRadarOverview(ctx context.Context) (*Rada
 			SemanticBoardID uint  `gorm:"column:semantic_board_id"`
 			Count           int64 `gorm:"column:count"`
 		}
-		if err := r.db.WithContext(ctx).Table("topic_tag_board_labels").
+		if err := rctx.db.Table("topic_tag_board_labels").
 			Select("semantic_board_id, COUNT(DISTINCT topic_tag_id) AS count").
 			Where("semantic_board_id IN ?", ids).
 			Group("semantic_board_id").
@@ -171,6 +204,28 @@ func (r *TopicGraphRepository) GetBoardRadarOverview(ctx context.Context) (*Rada
 		return out, nil
 	}
 
+	// 批量板级取数：所有版块的锚点日 / 非归档话题 / watch 关联话题（3 条）+
+	// 各版块最新日报摘要（1 条）—— 取代「每版块各查一遍」的 N 倍往返。
+	// 取数口径与单版块路径逐字一致（同一张表、同一过滤、同一「取最新」语义），
+	// 聚合口径代码则完全复用（computeBoardLaneDynamics / radarRowFrom）。
+	levels, levelErr := rctx.loadBoardLevels(ids)
+	if levelErr != nil {
+		// 批量板级取数失败 → 各版块的泳道数据「没取到」（降级），不报错挂端点。
+		logging.Warnf("radar: board level batch failed: %v", levelErr)
+	}
+	briefs, briefErr := rctx.loadLatestReportBriefs(ids)
+	if briefErr != nil {
+		// 批量日报摘要失败 → 各版块的日报计数「没取到」（null），不冒充 0。
+		logging.Warnf("radar: report brief batch failed: %v", briefErr)
+	}
+	batch := &radarBatch{
+		levels:   levels,
+		briefs:   briefs,
+		levelErr: levelErr,
+		briefErr: briefErr,
+		settings: rctx.loadLaneDynamicsSettings(),
+	}
+
 	type result struct {
 		index int
 		board radarBoardResult
@@ -178,11 +233,11 @@ func (r *TopicGraphRepository) GetBoardRadarOverview(ctx context.Context) (*Rada
 	ch := make(chan result, len(boards))
 	for i, b := range boards {
 		go func(index int, brief boardBrief) {
-			ch <- result{index: index, board: r.buildRadarRow(brief.ID)}
+			ch <- result{index: index, board: rctx.buildRadarRowBatch(brief.ID, batch)}
 		}(i, b)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(RadarOverviewBudget)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
@@ -191,36 +246,74 @@ func (r *TopicGraphRepository) GetBoardRadarOverview(ctx context.Context) (*Rada
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for len(done) < len(boards) {
-		select {
-		case res := <-ch:
-			done[res.index] = true
-			row := res.board.row
-			row.BoardID = out.Boards[res.index].BoardID
-			row.Label = out.Boards[res.index].Label
-			row.TagCount = out.Boards[res.index].TagCount
-			out.Boards[res.index] = row
-			lanes[row.BoardID] = radarBoardLanes{
-				anchorDate: row.AnchorDate,
-				lanes:      res.board.lanes,
-				degraded:   res.board.degraded,
-			}
-		case <-timer.C:
-			for i := range out.Boards {
-				if !done[i] {
-					out.Boards[i].DataDelayed = true
-					out.Boards[i].ClueDays = make([]int, LaneDynamicsDefaultDays)
-					out.Boards[i].Lanes = []RadarLane{}
+		// 先判 deadline 再等结果：预算耗尽即刻收口（不再等缓冲区里已算完的行），
+		// 超时因此可复现（测试可把预算注入为 0）。
+		if time.Now().Before(deadline) {
+			select {
+			case res := <-ch:
+				done[res.index] = true
+				row := res.board.row
+				row.BoardID = out.Boards[res.index].BoardID
+				row.Label = out.Boards[res.index].Label
+				row.TagCount = out.Boards[res.index].TagCount
+				out.Boards[res.index] = row
+				lanes[row.BoardID] = radarBoardLanes{
+					anchorDate: row.AnchorDate,
+					lanes:      res.board.lanes,
+					degraded:   res.board.degraded,
 				}
+				continue
+			case <-timer.C:
 			}
-			// drain in background; ch is buffered so senders never block
-			finalizeRadar(out)
-			finalizeRadarTopLanes(out, lanes)
-			return out, nil
 		}
+		// 预算耗尽：没算完的版块是「没取到」——计数落未知（null），不是 0。
+		markRadarRowsUnavailable(out, done)
+		// drain in background; ch is buffered so senders never block
+		finalizeRadar(out)
+		finalizeRadarTopLanes(out, lanes)
+		return out, nil
 	}
 	finalizeRadar(out)
 	finalizeRadarTopLanes(out, lanes)
 	return out, nil
+}
+
+// markRadarRowsUnavailable degrades the boards that didn't make it into the
+// budget: their count fields become unknown (nil → JSON null), never 0 —
+// rendering a degradation as a business conclusion is the bug this protocol
+// change removes.
+func markRadarRowsUnavailable(out *RadarOverview, done map[int]bool) {
+	for i := range out.Boards {
+		if done[i] {
+			continue
+		}
+		out.Boards[i].DataDelayed = true
+		out.Boards[i].DataUnavailable = true
+		out.Boards[i].Attention = nil
+		out.Boards[i].TodayClues = nil
+		out.Boards[i].Last3Clues = nil
+		out.Boards[i].Prev3Clues = nil
+		out.Boards[i].ReportArticle = nil
+		out.Boards[i].ReportEvent = nil
+		out.Boards[i].ClueDays = []int{}
+		out.Boards[i].Lanes = []RadarLane{}
+	}
+}
+
+// markRadarRowUnavailable 把「本次没取到」写到一行上：计数落未知（null）而不是 0。
+// 调用前 row 已带 BoardID/报表摘要，这里只清计数与泳道轴。
+func markRadarRowUnavailable(row RadarBoardRow, boardID uint, cause error) RadarBoardRow {
+	logging.Warnf("radar: board %d unavailable: %v", boardID, cause)
+	row.DataUnavailable = true
+	row.Attention = nil
+	row.TodayClues = nil
+	row.Last3Clues = nil
+	row.Prev3Clues = nil
+	row.ReportArticle = nil
+	row.ReportEvent = nil
+	row.ClueDays = []int{}
+	row.Lanes = []RadarLane{}
+	return row
 }
 
 // radarBoardLanes is one board's lane projection for the cross-board list.
@@ -241,24 +334,110 @@ type radarBoardResult struct {
 	degraded bool
 }
 
+// radarBatch is the batch-loaded input of one radar overview call: every
+// board's board-level data + its latest report brief, loaded with a handful of
+// queries instead of one set per board.
+type radarBatch struct {
+	// levels = per-board board-level data (anchor / topics / watch-linked).
+	levels map[uint]*boardLevelData
+	// briefs = per-board latest report brief (absent = the board has no report).
+	briefs map[uint]*RadarReportBrief
+	// levelErr = the board-level batch failed → 各版块的泳道数据「没取到」。
+	levelErr error
+	// briefErr = the report brief batch failed → 各版块的日报计数「没取到」。
+	briefErr error
+	// settings = request-scoped lane settings (read once per request).
+	settings laneDynamicsSettings
+}
+
+// buildRadarRowBatch assembles one board's row from the batch-loaded data.
+// It runs the SAME aggregation as the single-board path (radarRowFrom) ——
+// 批量路径只换「取数」，不改任何口径。
+func (r *TopicGraphRepository) buildRadarRowBatch(boardID uint, batch *radarBatch) radarBoardResult {
+	var brief *RadarReportBrief
+	briefErr := batch.briefErr
+	if briefErr == nil {
+		brief = batch.briefs[boardID]
+	}
+	level, hasLevel := batch.levels[boardID]
+	if batch.levelErr != nil || !hasLevel {
+		dynErr := batch.levelErr
+		if dynErr == nil {
+			dynErr = fmt.Errorf("radar: board %d level data missing", boardID)
+		}
+		return radarRowFrom(boardID, brief, briefErr, nil, dynErr)
+	}
+	dynamics, dynErr := r.radarLaneDynamics(boardID, LaneDynamicsDefaultDays, level, batch.settings)
+	return radarRowFrom(boardID, brief, briefErr, dynamics, dynErr)
+}
+
+// radarLaneDynamics returns a board's lane dynamics for the radar row: the
+// test override seam (repo.laneDynamics) wins; otherwise the shared
+// aggregation runs on the batch-loaded board-level data.
+func (r *TopicGraphRepository) radarLaneDynamics(boardID uint, days int, level *boardLevelData, settings laneDynamicsSettings) (*LaneDynamicsResponse, error) {
+	if r.laneDynamics != nil {
+		return r.laneDynamics(boardID, days)
+	}
+	return r.computeBoardLaneDynamics(level, boardID, days, settings)
+}
+
+// buildRadarRow assembles one board's row on the SINGLE-BOARD path (each
+// board loads its own data). The batch path (buildRadarRowBatch) and this one
+// share the same aggregation code —— radarRowFrom。
+//
+//nolint:unused // 单版块口径基准：口径回归测试拿它与批量路径逐字段对照；端点走批量路径
 func (r *TopicGraphRepository) buildRadarRow(boardID uint) radarBoardResult {
+	brief, briefErr := r.GetLatestReportBrief(boardID)
+	var dynamics *LaneDynamicsResponse
+	var dynErr error
+	if r.laneDynamics != nil {
+		// 测试注入的失败闸门（原签名不变）。
+		dynamics, dynErr = r.laneDynamics(boardID, LaneDynamicsDefaultDays)
+	} else {
+		dynamics, dynErr = r.GetBoardLaneDynamics(boardID, LaneDynamicsDefaultDays)
+	}
+	return radarRowFrom(boardID, brief, briefErr, dynamics, dynErr)
+}
+
+// radarRowFrom assembles a board's row from the loaded data —— 纯聚合（不碰
+// 数据库）：单版块路径与批量路径共用这一份，口径不会分叉。
+func radarRowFrom(boardID uint, brief *RadarReportBrief, briefErr error, dynamics *LaneDynamicsResponse, dynErr error) radarBoardResult {
 	row := RadarBoardRow{
 		ClueDays:        make([]int, LaneDynamicsDefaultDays),
 		HeatRuleVersion: LaneHeatRuleVersion,
 		Lanes:           []RadarLane{},
+		// 取数成功但确实没数据 → 计数是「已知的 0」，不是未知；未知只在降级路径出现。
+		Attention:  radarFloatPtr(0),
+		TodayClues: radarIntPtr(0),
+		Last3Clues: radarIntPtr(0),
+		Prev3Clues: radarIntPtr(0),
 	}
-	brief, err := r.GetLatestReportBrief(boardID)
-	if err == nil && brief != nil {
+	switch {
+	case briefErr != nil:
+		// 日报 brief 取不到 → 报告相关计数是未知（null）；写 0 等于把「没取到」
+		// 冒充成「这个版块没有文章」。
+		logging.Warnf("radar: board %d report brief failed: %v", boardID, briefErr)
+	case brief != nil:
 		row.ReportDate = brief.PeriodDate
 		row.ReportTitle = brief.Title
-		row.ReportArticle = brief.ArticleCount
-		row.ReportEvent = brief.EventCount
+		row.ReportArticle = radarIntPtr(brief.ArticleCount)
+		row.ReportEvent = radarIntPtr(brief.EventCount)
+	default:
+		// 没有日报（取数成功）→ 真实零值：0 篇文章 / 0 个事件。
+		row.ReportArticle = radarIntPtr(0)
+		row.ReportEvent = radarIntPtr(0)
 	}
 
-	dynamics, err := r.GetBoardLaneDynamics(boardID, LaneDynamicsDefaultDays)
-	if err != nil {
-		logging.Warnf("radar: board %d lane dynamics failed: %v", boardID, err)
-		return radarBoardResult{row: row, degraded: true}
+	if dynErr != nil {
+		return radarBoardResult{row: markRadarRowUnavailable(row, boardID, dynErr), degraded: true}
+	}
+	// 当日线索聚合失败时泳道热度是「算不出来的 0」——单版块端点可以降级为 0 热，
+	// 但雷达把 0 当结论就是假 0（用户看到的「关注强度 0.0」）。按「未取到」处理。
+	if dynamics != nil && dynamics.CluesDegraded {
+		return radarBoardResult{
+			row:      markRadarRowUnavailable(row, boardID, fmt.Errorf("clue counts degraded")),
+			degraded: true,
+		}
 	}
 	if dynamics == nil || !dynamics.HasReports {
 		return radarBoardResult{row: row}
@@ -300,7 +479,8 @@ func (r *TopicGraphRepository) buildRadarRow(boardID uint) radarBoardResult {
 	for _, candidate := range dynamics.Candidates {
 		heats = append(heats, candidate.LaneHeat)
 	}
-	row.Attention = ComputeBoardAttention(heats)
+	attention := ComputeBoardAttention(heats)
+	row.Attention = &attention
 
 	// 「前 3 条泳道」筛选键 = 14 天线索合计（与 lane-dynamics 行序同一口径，
 	// 传入次序已是 lane_heat → clue total → id）。section 数 / 事件线数不参与。
@@ -312,9 +492,9 @@ func (r *TopicGraphRepository) buildRadarRow(boardID uint) radarBoardResult {
 		row.Lanes = row.Lanes[:3]
 	}
 	last := len(row.ClueDays) - 1
-	row.TodayClues = row.ClueDays[last]
-	row.Last3Clues = sumRadar(row.ClueDays[last-2:])
-	row.Prev3Clues = sumRadar(row.ClueDays[last-5 : last-2])
+	row.TodayClues = radarIntPtr(row.ClueDays[last])
+	row.Last3Clues = radarIntPtr(sumRadar(row.ClueDays[last-2:]))
+	row.Prev3Clues = radarIntPtr(sumRadar(row.ClueDays[last-5 : last-2]))
 	return radarBoardResult{row: row, lanes: full}
 }
 
@@ -352,18 +532,32 @@ func sumRadar(values []int) int {
 
 func finalizeRadar(out *RadarOverview) *RadarOverview {
 	sort.SliceStable(out.Boards, func(i, j int) bool {
-		if out.Boards[i].Attention != out.Boards[j].Attention {
-			return out.Boards[i].Attention > out.Boards[j].Attention
+		a, b := out.Boards[i], out.Boards[j]
+		// 关注度未知的行（没取到）沉到末尾：没取到的行不得靠「假装 0」占排名位次。
+		if (a.Attention == nil) != (b.Attention == nil) {
+			return b.Attention == nil
 		}
-		return out.Boards[i].BoardID < out.Boards[j].BoardID
+		if a.Attention == nil {
+			return a.BoardID < b.BoardID
+		}
+		if *a.Attention != *b.Attention {
+			return *a.Attention > *b.Attention
+		}
+		return a.BoardID < b.BoardID
 	})
 	latest := ""
+	unavailable := false
 	for _, row := range out.Boards {
 		if row.ReportDate > latest {
 			latest = row.ReportDate
 		}
+		if row.DataUnavailable {
+			unavailable = true
+		}
 	}
-	if latest == "" {
+	if latest == "" && !unavailable {
+		// 确实没有日报（取数成功）→ 回退今天，报头不拿空日期。
+		// 但存在没取到的行时不得回退：那是「冒充全局锚点日」，保持未知（空串）。
 		latest = NormalizeReportDate(time.Now()).Format("2006-01-02")
 	}
 	out.Date = latest
@@ -493,4 +687,53 @@ func (r *TopicGraphRepository) GetLatestReportBrief(boardID uint) (*RadarReportB
 		ArticleCount: row.ArticleCount,
 		EventCount:   row.EventTagCount,
 	}, nil
+}
+
+// loadLatestReportBriefs loads the newest report brief of MANY boards in ONE
+// query —— GetLatestReportBrief 的批量版。
+//
+// 口径逐字一致：**不限 status**（GetLatestReportBrief 就不限，取最新一期日报
+// 摘要，不分是否已发布），只取 period_date 最新的一行。取「每个版块最新一行」
+// 用 ROW_NUMBER() 窗口函数（PG 与 SQLite 都支持——本包的 service 层测试跑
+// 内存 SQLite，DISTINCT ON 只有 PG 能用）。board_daily_reports 的
+// (semantic_board_id, period_date) 有唯一索引，同日不会有并列行，取舍是确定的。
+//
+// 没有日报的版块不在结果里（调用方读到 nil = 「没有日报」→ 真实零值）。
+func (r *TopicGraphRepository) loadLatestReportBriefs(boardIDs []uint) (map[uint]*RadarReportBrief, error) {
+	out := make(map[uint]*RadarReportBrief, len(boardIDs))
+	if len(boardIDs) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		SemanticBoardID uint
+		PeriodDate      time.Time
+		Title           string
+		ArticleCount    int
+		EventTagCount   int
+	}
+	if err := r.db.Raw(
+		"SELECT semantic_board_id, period_date, title, article_count, event_tag_count FROM ("+
+			"SELECT semantic_board_id, period_date, title, article_count, event_tag_count, "+
+			"ROW_NUMBER() OVER (PARTITION BY semantic_board_id ORDER BY period_date DESC) AS rn "+
+			"FROM board_daily_reports WHERE semantic_board_id IN (?)"+
+			") ranked WHERE rn = 1",
+		boardIDs).
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("radar: latest report briefs: %w", err)
+	}
+	for _, row := range rows {
+		if _, seen := out[row.SemanticBoardID]; seen {
+			continue
+		}
+		if row.PeriodDate.IsZero() {
+			continue
+		}
+		out[row.SemanticBoardID] = &RadarReportBrief{
+			PeriodDate:   NormalizeReportDate(row.PeriodDate).Format("2006-01-02"),
+			Title:        row.Title,
+			ArticleCount: row.ArticleCount,
+			EventCount:   row.EventTagCount,
+		}
+	}
+	return out, nil
 }

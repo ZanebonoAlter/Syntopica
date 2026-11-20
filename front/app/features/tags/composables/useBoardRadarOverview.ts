@@ -11,14 +11,29 @@
  * 事件线退役（D10）：`warming` / `topStories` / `crossDayBuilding` 派生整体删除——
  * 右栏清单由后端归并/排序/截断（上限 8），前端只读 `top_lanes` 与三个诚实标记；
  * 旧后端缺该段时 `topLanes = null`，右栏回退版块级日报标题列表。
+ *
+ * 「没取到 ≠ 0」（fix-radar-overview-false-zero）：端点超时未完成或泳道动态计算失败的
+ * 版块行带 `dataUnavailable=true`，其计数类字段是 `null`（未知）。这些行**不参与**
+ * 关注度分档、不计入「N 个板块值得关注」，当日线索合计与热点数在存在未取到版块时
+ * 归为未知（`null`）——报头不得拿 0 冒充「今天没有」。
+ *
+ * 滞后版块沉底（fix-radar-overview-false-zero 追加，2026-11-19 用户决定）：本版块自己的
+ * 锚点日 ≠ 全局锚点日的行归入「滞后」段——数据是齐的，只是这个版块的「今天」更早。
+ * 关注分档阈值按当日分布标定，旧数据不可比 → 滞后行**不进 hot/warm/cold**、不占前排
+ * 位次，逐行沉底到列表最底部（仍可见，保留「数据至 MM/DD」中性徽标）。判定复用
+ * `isLaggingAnchor`（锚点日缺失 = 没有自己的锚点日 → 不算滞后，照旧按常温处理）。
  */
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useBoardRadarApi, type RadarBoard, type RadarTopLanes } from '~/api/semanticBoards'
-import { RADAR_HOT_ATTENTION, RADAR_WARM_ATTENTION, miniAxis, shortDate } from '~/features/tags/components/console/boardRadarHelpers'
+import { RADAR_HOT_ATTENTION, RADAR_WARM_ATTENTION, isLaggingAnchor, miniAxis, shortDate } from '~/features/tags/components/console/boardRadarHelpers'
 
-/** 报头副注形态：hot=有热点 / no-hot=有关注无热点 / empty=成功空集 / failed=首次取数失败。 */
-export type RadarSubKind = 'hot' | 'no-hot' | 'empty' | 'failed'
+/**
+ * 报头副注形态：
+ * hot=有热点 / no-hot=有关注无热点 / empty=成功空集 / failed=首次取数失败 /
+ * partial=本次有版块没取到（全部或部分未取到）。
+ */
+export type RadarSubKind = 'hot' | 'no-hot' | 'empty' | 'failed' | 'partial'
 
 export function useBoardRadarOverview() {
   const router = useRouter()
@@ -49,15 +64,44 @@ export function useBoardRadarOverview() {
     loading.value = false
   }
 
-  const hotRows = computed(() => rows.value.filter(row => row.attention >= RADAR_HOT_ATTENTION))
-  const warmRows = computed(() => rows.value.filter(row => row.attention >= RADAR_WARM_ATTENTION && row.attention < RADAR_HOT_ATTENTION))
-  const coldRows = computed(() => rows.value.filter(row => row.attention < RADAR_WARM_ATTENTION))
-  const visibleRows = computed(() => [...hotRows.value, ...warmRows.value])
+  /**
+   * 本次没取到的版块行（端点超时未完成 / 泳道动态计算失败）：计数未知（null）。
+   * 它们不参与关注度分档、不计入「N 个板块值得关注」。
+   */
+  const unavailableRows = computed(() => rows.value.filter(row => row.dataUnavailable))
+  /** 取到数据的版块行（与「未取到」严格区分）。 */
+  const knownRows = computed(() => rows.value.filter(row => !row.dataUnavailable))
+  /** 未取到的版块数。 */
+  const unavailableCount = computed(() => unavailableRows.value.length)
+  /** 本次数据不完整（至少一个版块没取到）。 */
+  const partial = computed(() => unavailableCount.value > 0)
+  /** 全部版块都没取到（有行且逐行未取到）。 */
+  const allUnavailable = computed(() => rows.value.length > 0 && unavailableCount.value === rows.value.length)
 
-  /** 旧响应回退（无泳道清单段）：版块级日报标题列表。 */
+  /**
+   * 滞后版块行（本版块锚点日 ≠ 全局锚点日）：不进关注度分档、不占前排位次，
+   * 逐行沉底到列表最底部（仍可见）。锚点日缺失的行不算滞后。
+   */
+  const laggingRows = computed(() => knownRows.value.filter(row => isLaggingAnchor(row.anchorDate, date.value)))
+  /** 滞后版块数。 */
+  const laggingCount = computed(() => laggingRows.value.length)
+  /** 数据新鲜、锚点日与全局一致的已知行（关注度分档只对这批做）。 */
+  const freshRows = computed(() => knownRows.value.filter(row => !isLaggingAnchor(row.anchorDate, date.value)))
+
+  /** 分档只对新鲜已知行做；关注度未知（null）的行不进任何一档——不拿 0 冒充常温。 */
+  const hotRows = computed(() => freshRows.value.filter(row => row.attention !== null && row.attention >= RADAR_HOT_ATTENTION))
+  const warmRows = computed(() => freshRows.value.filter(row => row.attention !== null && row.attention >= RADAR_WARM_ATTENTION && row.attention < RADAR_HOT_ATTENTION))
+  // 关注度未知但没标 data_unavailable 的行（协议上不可达，防御性兜底）也归常温：
+  // 行内全部 null-safe 显示「—」，总比从四段全部漏出、静默消失要好。
+  const coldRows = computed(() => freshRows.value.filter(row => row.attention === null || row.attention < RADAR_WARM_ATTENTION))
+  const visibleRows = computed(() => [...hotRows.value, ...warmRows.value])
+  /** 主列表行序（前端排序口径）：关注（热点→关注）→ 常温 → 滞后 → 未取到。 */
+  const storyRows = computed(() => [...visibleRows.value, ...coldRows.value, ...laggingRows.value, ...unavailableRows.value])
+
+  /** 旧响应回退（无泳道清单段）：版块级日报标题列表；未取到的版块没有日报标题。 */
   const todayRead = computed(() => [...rows.value]
-    .filter(row => row.reportTitle)
-    .sort((a, b) => b.attention - a.attention)
+    .filter(row => row.reportTitle && !row.dataUnavailable)
+    .sort((a, b) => (b.attention ?? -1) - (a.attention ?? -1))
     .slice(0, 5))
 
   /** 泳道清单可用（新版后端带该段）。跨版块归并与排序全在后端完成。 */
@@ -72,21 +116,32 @@ export function useBoardRadarOverview() {
   const degradedBoardCount = computed(() => topLanes.value?.degradedBoardIds.length ?? 0)
   /** 滞后版块数（各条目按自己的锚点日计——已知口径偏差如实呈现）。 */
   const laggingBoardCount = computed(() => topLanes.value?.laggingBoardIds.length ?? 0)
-  /** 全版块当日线索合计（报头统计用）；任一行缺该字段（旧后端）→ null（未知，不造 0）。 */
+  /**
+   * 全版块当日线索合计（报头统计用）；任一行缺该字段（旧后端）或存在未取到版块
+   * → null（未知，不造 0，也不拿未取到的行当 0 计入）。
+   */
   const todayClueTotal = computed<number | null>(() => {
+    if (unavailableCount.value > 0) return null
     let total = 0
-    for (const row of rows.value) {
+    // 只合「今日」的行：滞后版块的线索数是它自己那个更早的锚点日的数，
+    // 混进来就是旧数据污染今日口径（与分档、排序同一把尺子）。
+    for (const row of freshRows.value) {
       if (row.todayClues === null) return null
       total += row.todayClues
     }
     return total
   })
 
+  /** 达到热点阈值的版块数；存在未取到版块时为未知（null，不据此断言「没有热点」）。 */
+  const hotCount = computed<number | null>(() => (unavailableCount.value > 0 ? null : hotRows.value.length))
+
   /** 首次取数即失败：错误且从未成功拿到数据。 */
   const firstLoadFailed = computed(() => Boolean(error.value) && rows.value.length === 0)
 
   const subKind = computed<RadarSubKind>(() => {
     if (firstLoadFailed.value) return 'failed'
+    // 全部未取到与部分未取到同属「本次数据不完整」一档。
+    if (unavailableCount.value > 0) return 'partial'
     if (hotRows.value.length) return 'hot'
     if (visibleRows.value.length) return 'no-hot'
     return 'empty'
@@ -98,9 +153,16 @@ export function useBoardRadarOverview() {
     return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(d)
   })
 
-  /** 报头大标题：首次失败给中性「今日雷达」，不把 0 说成业务结论。 */
+  /** 报头大标题：首次失败给中性「今日雷达」；未取到不给「0 个板块值得关注」这类结论。 */
   const headline = computed(() => {
     if (firstLoadFailed.value) return '今日雷达'
+    if (allUnavailable.value) return '本次数据未取全，请重试'
+    if (unavailableCount.value > 0) {
+      // 已经一个关注版块都没剩（或本来就没）时，再说「0 个板块值得关注」
+      // 就是从没取到的数据里推结论——直接说没取全（review R-6）。
+      if (visibleRows.value.length === 0) return '本次数据未取全，请重试'
+      return `${visibleRows.value.length} 个板块值得关注（${unavailableCount.value} 个版块未取到）`
+    }
     const hot = hotRows.value.length
     return `${visibleRows.value.length} 个板块值得关注${hot ? `，其中 ${hot} 个达到热点阈值` : ''}`
   })
@@ -137,10 +199,19 @@ export function useBoardRadarOverview() {
     loading,
     error,
     topLanes,
+    unavailableRows,
+    knownRows,
+    unavailableCount,
+    partial,
+    allUnavailable,
+    laggingRows,
+    laggingCount,
+    freshRows,
     hotRows,
     warmRows,
     coldRows,
     visibleRows,
+    storyRows,
     todayRead,
     hasLaneFeed,
     laneItems,
@@ -149,6 +220,7 @@ export function useBoardRadarOverview() {
     degradedBoardCount,
     laggingBoardCount,
     todayClueTotal,
+    hotCount,
     firstLoadFailed,
     subKind,
     dateText,

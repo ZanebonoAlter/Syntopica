@@ -657,7 +657,7 @@ async function suggestAuxiliariesForBoard(boardId: number, params?: {
 // 字符串 ID 读模型（raw 契约与转换唯一实现在 api/normalizers/boardRadar.ts，
 // 组件层不散落映射，也不扩展到 semanticBoards 其它 API）。
 
-export type { RadarBoard, RadarLane, RadarOverview, RadarTopLaneItem, RadarTopLanes, BoardRadarRawOverview, BoardRadarRawTopLanes, BoardRadarRawTopLaneItem, RadarOverviewResponse } from '~/api/normalizers/boardRadar'
+export type { RadarBoard, RadarLane, RadarOverview, RadarTopLaneItem, RadarTopLanes, BoardRadarRawBoard, BoardRadarRawOverview, BoardRadarRawTopLanes, BoardRadarRawTopLaneItem, RadarOverviewResponse } from '~/api/normalizers/boardRadar'
 
 import { mapRadarOverviewResponse, type BoardRadarRawOverview, type RadarOverviewResponse } from '~/api/normalizers/boardRadar'
 

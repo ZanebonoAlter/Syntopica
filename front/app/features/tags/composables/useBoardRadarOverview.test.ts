@@ -32,6 +32,7 @@ function board(over: Partial<RadarBoard> = {}): RadarBoard {
     heatRuleVersion: 'heat-v2-lane-clues-1d',
     clueDays: Array.from({ length: 14 }, () => 1),
     dataDelayed: false,
+    dataUnavailable: false,
     lanes: [],
     ...over,
   }
@@ -135,6 +136,164 @@ describe('useBoardRadarOverview — 取数与分档', () => {
       boards: [board({ todayClues: 8 }), board({ boardId: '2', todayClues: null })],
     })
     expect(legacy.todayClueTotal.value).toBeNull()
+  })
+})
+
+describe('useBoardRadarOverview — 「没取到 ≠ 0」（fix-radar-overview-false-zero）', () => {
+  /** 未取到的版块行：计数全是未知（null）。 */
+  function unavailable(over: Partial<RadarBoard> = {}): RadarBoard {
+    return board({
+      reportDate: '',
+      reportTitle: '',
+      reportArticleCount: null,
+      reportEventCount: null,
+      todayClues: null,
+      last3Clues: null,
+      prev3Clues: null,
+      attention: null,
+      dataUnavailable: true,
+      lanes: [],
+      ...over,
+    })
+  }
+
+  it('全部未取到：报头不说「0 个板块值得关注」，当日线索与热点数为未知', async () => {
+    const overview = await setup({ boards: [unavailable({ boardId: '1' }), unavailable({ boardId: '2' })] })
+    expect(overview.unavailableCount.value).toBe(2)
+    expect(overview.allUnavailable.value).toBe(true)
+    expect(overview.partial.value).toBe(true)
+    expect(overview.subKind.value).toBe('partial')
+    expect(overview.headline.value).toBe('本次数据未取全，请重试')
+    expect(overview.headline.value).not.toContain('0 个板块值得关注')
+    expect(overview.todayClueTotal.value).toBeNull()
+    expect(overview.hotCount.value).toBeNull()
+    // 未取到的行不进任何分档
+    expect(overview.hotRows.value).toEqual([])
+    expect(overview.warmRows.value).toEqual([])
+    expect(overview.coldRows.value).toEqual([])
+    expect(overview.unavailableRows.value).toHaveLength(2)
+    expect(overview.knownRows.value).toEqual([])
+  })
+
+  it('部分未取到：未取到的行不进 hot/warm/cold，当日线索合计为未知', async () => {
+    const overview = await setup({
+      boards: [
+        board({ boardId: '1', attention: 20 }),
+        board({ boardId: '2', attention: 5 }),
+        unavailable({ boardId: '3' }),
+      ],
+    })
+    expect(overview.unavailableCount.value).toBe(1)
+    expect(overview.allUnavailable.value).toBe(false)
+    expect(overview.partial.value).toBe(true)
+    expect(overview.subKind.value).toBe('partial')
+    expect(overview.hotRows.value.map(row => row.boardId)).toEqual(['1'])
+    expect(overview.warmRows.value.map(row => row.boardId)).toEqual(['2'])
+    expect(overview.coldRows.value).toEqual([])
+    expect(overview.todayClueTotal.value).toBeNull()
+    expect(overview.hotCount.value).toBeNull()
+    expect(overview.headline.value).toBe('2 个板块值得关注（1 个版块未取到）')
+    // 未取到的行保留行位（进主列表），但不进「值得关注的行」计数
+    expect(overview.storyRows.value.map(row => row.boardId)).toEqual(['1', '2', '3'])
+    expect(overview.visibleRows.value.map(row => row.boardId)).toEqual(['1', '2'])
+  })
+
+  it('部分未取到且一个关注版块都没剩：报头不说「0 个板块值得关注」（review R-6）', async () => {
+    const overview = await setup({
+      boards: [
+        board({ boardId: '2', attention: 1.2 }),
+        unavailable({ boardId: '3' }),
+      ],
+    })
+    expect(overview.visibleRows.value).toEqual([])
+    expect(overview.headline.value).toBe('本次数据未取全，请重试')
+    expect(overview.headline.value).not.toContain('0 个板块值得关注')
+  })
+
+  it('真实零值版块（取数成功、计数为 0）：仍进常温，不被标为未取到', async () => {
+    const overview = await setup({
+      boards: [board({ boardId: '1', attention: 0, todayClues: 0, last3Clues: 0, prev3Clues: 0, reportArticleCount: 0, reportEventCount: 0 })],
+    })
+    expect(overview.unavailableCount.value).toBe(0)
+    expect(overview.allUnavailable.value).toBe(false)
+    expect(overview.partial.value).toBe(false)
+    // 计数为 0 但取数成功：照旧归常温（不进「未取到」）
+    expect(overview.subKind.value).toBe('empty')
+    expect(overview.coldRows.value.map(row => row.boardId)).toEqual(['1'])
+    expect(overview.todayClueTotal.value).toBe(0)
+    expect(overview.hotCount.value).toBe(0)
+    expect(overview.headline.value).toBe('0 个板块值得关注')
+  })
+})
+
+describe('useBoardRadarOverview — 滞后版块沉底（fix-radar-overview-false-zero 追加）', () => {
+  it('滞后版块不进 hot/warm/cold，只进 laggingRows（关注度再高也不占前排位次）', async () => {
+    const overview = await setup({
+      boards: [
+        // 全局锚点日 = 2026-10-24（setup 默认）
+        board({ boardId: '1', label: '当日热点', attention: 20, anchorDate: '2026-10-24' }),
+        board({ boardId: '2', label: '滞后高关注', attention: 26, anchorDate: '2026-11-07' }),
+        board({ boardId: '3', label: '滞后低关注', attention: 0.5, anchorDate: '2026-11-07' }),
+        board({ boardId: '4', label: '当日常温', attention: 0.5, anchorDate: '2026-10-24' }),
+      ],
+    })
+    // 滞后 = 自己的锚点日 ≠ 全局锚点日
+    expect(overview.laggingRows.value.map(row => row.boardId)).toEqual(['2', '3'])
+    expect(overview.laggingCount.value).toBe(2)
+    // 滞后行不进任何关注度分档（不进 hot/warm/cold）
+    expect(overview.hotRows.value.map(row => row.boardId)).toEqual(['1'])
+    expect(overview.warmRows.value.map(row => row.boardId)).toEqual([])
+    expect(overview.coldRows.value.map(row => row.boardId)).toEqual(['4'])
+    expect(overview.freshRows.value.map(row => row.boardId)).toEqual(['1', '4'])
+  })
+
+  it('锚点日缺失的行不算滞后（没有自己的锚点日 → 照旧按常温处理）', async () => {
+    const overview = await setup({ boards: [board({ boardId: '5', attention: 0.5 })] })
+    expect(overview.laggingRows.value).toEqual([])
+    expect(overview.laggingCount.value).toBe(0)
+    expect(overview.coldRows.value.map(row => row.boardId)).toEqual(['5'])
+  })
+
+  it('滞后行不占「值得关注的板块数」与热点数（沉底不等于今日热点）', async () => {
+    const overview = await setup({ boards: [board({ attention: 20, anchorDate: '2026-11-07' })] })
+    expect(overview.hotRows.value).toEqual([])
+    expect(overview.visibleRows.value).toEqual([])
+    expect(overview.hotCount.value).toBe(0)
+    expect(overview.headline.value).toBe('0 个板块值得关注')
+    expect(overview.subKind.value).toBe('empty')
+  })
+
+  it('滞后行的旧日线索不进「今日线索」合计（旧数据不污染今日口径）', async () => {
+    const overview = await setup({
+      boards: [
+        board({ boardId: '1', attention: 20, todayClues: 8, anchorDate: '2026-10-24' }),
+        board({ boardId: '2', attention: 3, todayClues: 40, anchorDate: '2026-11-07' }),
+      ],
+    })
+    // 滞后行的 40 条是它自己 11-07 那天���数，不是今天的 → 不进今日合计。
+    expect(overview.todayClueTotal.value).toBe(8)
+  })
+
+  it('未取到的行不算滞后（未取到优先归「未取到」段，不进滞后段）', async () => {
+    const overview = await setup({
+      boards: [
+        board({ boardId: '6', attention: null, anchorDate: '2026-11-07', dataUnavailable: true }),
+      ],
+    })
+    expect(overview.laggingRows.value).toEqual([])
+    expect(overview.unavailableRows.value.map(row => row.boardId)).toEqual(['6'])
+  })
+
+  it('主列表行序：关注 → 常温 → 滞后 → 未取到', async () => {
+    const overview = await setup({
+      boards: [
+        board({ boardId: '1', attention: 20, anchorDate: '2026-10-24' }),
+        board({ boardId: '2', attention: 0.5, anchorDate: '2026-10-24' }),
+        board({ boardId: '3', attention: 3, anchorDate: '2026-11-07' }),
+        board({ boardId: '4', attention: null, anchorDate: '2026-11-07', dataUnavailable: true }),
+      ],
+    })
+    expect(overview.storyRows.value.map(row => row.boardId)).toEqual(['1', '2', '3', '4'])
   })
 })
 

@@ -97,6 +97,7 @@ function row(overrides: Partial<RadarBoard> = {}): RadarBoard {
     heatRuleVersion: 'heat-v2-lane-clues-1d',
     clueDays: Array.from({ length: 14 }, (_, i) => (i === 13 ? 8 : 1)),
     dataDelayed: false,
+    dataUnavailable: false,
     lanes: [
       { topicId: '1', label: '美伊博弈', threadCount14d: 40, clueCounts: Array.from({ length: 14 }, (_, i) => (i === 13 ? 3 : 0)) },
       { topicId: '2', label: '沙特', threadCount14d: 27, clueCounts: Array.from({ length: 14 }, (_, i) => (i === 13 ? 2 : 0)) },
@@ -236,6 +237,10 @@ describe('BoardRadarView — 雷达列表', () => {
     expect(tier.text()).not.toContain('关注强度')
     // 数值不隐藏、不打折（沉底/弱化不是折扣）
     expect(story.find('.rd-attention').text()).toBe('20.0')
+    // 滞后行不占前排：不染热点/关注色，并落在滞后段
+    expect(story.classes()).not.toContain('is-hot')
+    expect(story.classes()).not.toContain('is-warm')
+    expect(wrapper.find('[data-testid="radar-lagging-section"]').exists()).toBe(true)
   })
 
   it('热点行分「热点」档（新标定阈值 ≥14.5），常温折叠不展开；点行进 L1', async () => {
@@ -505,6 +510,149 @@ describe('BoardRadarView — 8A.1 报刊式总览（已批准原型）', () => {
     for (const id of ['radar-more-upgrade', 'radar-more-backfill', 'radar-more-matching', 'radar-more-merge', 'radar-more-labels']) {
       expect(wrapper.find(`[data-testid="${id}"]`).exists()).toBe(true)
     }
+  })
+})
+
+describe('BoardRadarView — 「没取到 ≠ 0」（fix-radar-overview-false-zero）', () => {
+  /** 未取到的版块行：计数全是未知（null），不是 0。 */
+  function missing(over: Partial<RadarBoard> = {}): RadarBoard {
+    return row({
+      reportDate: '',
+      reportTitle: '',
+      reportArticleCount: null,
+      reportEventCount: null,
+      todayClues: null,
+      last3Clues: null,
+      prev3Clues: null,
+      attention: null,
+      dataUnavailable: true,
+      lanes: [],
+      ...over,
+    })
+  }
+
+  it('全部未取到：报头不说「0 个板块值得关注」，错误条带重试，不渲染业务空态', async () => {
+    const wrapper = await mountRadar([missing({ boardId: '9' }), missing({ boardId: '10' })])
+    expect(wrapper.find('.rd-headline').text()).toBe('本次数据未取全，请重试')
+    expect(wrapper.text()).not.toContain('0 个板块值得关注')
+    expect(wrapper.find('[data-testid="radar-empty"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('今天没有需要看的版块')
+    const alert = wrapper.find('[role="alert"]')
+    expect(alert.text()).toContain('本次数据未取全')
+    expect(alert.text()).toContain('2 个版块未取到')
+    expect(alert.find('[data-testid="radar-retry"]').exists()).toBe(true)
+    // 统计未知：热点与今日线索给「—」，不给 0
+    expect(wrapper.find('.rd-meta').text()).toContain('热点 —')
+    expect(wrapper.find('.rd-meta').text()).toContain('今日线索 —')
+  })
+
+  it('部分未取到：未取到的行显示「数据未取到」，不进分档也不出 0 冒充', async () => {
+    const wrapper = await mountRadar([
+      row({ boardId: '1', label: '热点版块', attention: 20 }),
+      missing({ boardId: '9', label: '没取到的版块' }),
+    ])
+    expect(wrapper.find('.rd-headline').text()).toBe('1 个板块值得关注（1 个版块未取到）')
+    const story = wrapper.find('[data-testid="radar-row-9"]')
+    expect(story.exists()).toBe(true)
+    expect(story.text()).toContain('数据未取到')
+    expect(story.text()).not.toContain('0.0')
+    expect(story.text()).not.toContain('0 篇文章')
+    expect(story.find('.rd-attention').text()).toBe('—')
+    expect(story.classes()).not.toContain('is-hot')
+    expect(story.classes()).not.toContain('is-warm')
+    // 错误条承载「未取全」并带既有重试按钮
+    expect(wrapper.find('[role="alert"]').text()).toContain('1 个版块未取到')
+    expect(wrapper.find('[data-testid="radar-retry"]').exists()).toBe(true)
+  })
+
+  it('真实零值版块（取数成功、计数为 0）：照旧进常温，不被标为未取到', async () => {
+    const wrapper = await mountRadar([
+      row({ boardId: '3', label: '常温版块', attention: 0.6, todayClues: 0, last3Clues: 0, prev3Clues: 0 }),
+    ])
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('常温 · 1 个版块')
+    expect(wrapper.text()).not.toContain('数据未取到')
+  })
+})
+
+describe('BoardRadarView — 滞后版块沉底 + 未取到排最底（fix-radar-overview-false-zero 追加）', () => {
+  /** 未取到的版块行：计数全是未知（null），不是 0。 */
+  function missing(over: Partial<RadarBoard> = {}): RadarBoard {
+    return row({
+      reportDate: '',
+      reportTitle: '',
+      reportArticleCount: null,
+      reportEventCount: null,
+      todayClues: null,
+      last3Clues: null,
+      prev3Clues: null,
+      attention: null,
+      dataUnavailable: true,
+      lanes: [],
+      ...over,
+    })
+  }
+
+  /** DOM 顺序断言：a 在 b 之前（DOCUMENT_POSITION_FOLLOWING = 4）。 */
+  function isBefore(a: Element, b: Element): boolean {
+    return Boolean(a.compareDocumentPosition(b) & 4)
+  }
+
+  it('滞后行排在常温段之后、未取到行之前；序号连续不重号', async () => {
+    const wrapper = await mountRadar([
+      row({ boardId: '1', label: '当日热点', attention: 20 }),
+      row({ boardId: '2', label: '当日常温', attention: 0.6 }),
+      row({ boardId: '3', label: '滞后版块', attention: 3, anchorDate: '2026-11-07' }),
+      missing({ boardId: '4', label: '没取到的版块' }),
+    ])
+    const el = wrapper.element as HTMLElement
+    const cold = el.querySelector('.rd-cold')!
+    const lagging = el.querySelector('[data-testid="radar-row-3"]')!
+    const unavailable = el.querySelector('[data-testid="radar-row-4"]')!
+    expect(isBefore(cold, lagging)).toBe(true)
+    expect(isBefore(lagging, unavailable)).toBe(true)
+
+    // 序号：关注行 01 → 常温行 02（展开后）→ 滞后行 03 → 未取到行 04
+    expect(wrapper.find('[data-testid="radar-row-1"] .rd-rank').text()).toBe('01')
+    expect(wrapper.find('[data-testid="radar-row-3"] .rd-rank').text()).toBe('03')
+    expect(wrapper.find('[data-testid="radar-row-4"] .rd-rank').text()).toBe('04')
+    await wrapper.find('.rd-cold-toggle').trigger('click')
+    expect(wrapper.findAll('.rd-rank').map(node => node.text())).toEqual(['01', '02', '03', '04'])
+  })
+
+  it('滞后但关注度高的版块不进前排（不进关注段、不染热点色、不挂分档徽标）', async () => {
+    const wrapper = await mountRadar([
+      row({ boardId: '9', label: '滞后高关注', attention: 20, anchorDate: '2026-11-07' }),
+    ])
+    const story = wrapper.find('[data-testid="radar-row-9"]')
+    expect(story.exists()).toBe(true)
+    expect(story.classes()).not.toContain('is-hot')
+    expect(story.classes()).not.toContain('is-warm')
+    expect(story.find('.rd-tier').text()).toContain('数据至 11/07')
+    expect(story.find('.rd-tier').text()).not.toContain('关注强度')
+    // 不在常温折叠段里（滞后不进 cold）
+    expect(wrapper.find('.rd-cold').exists()).toBe(false)
+    // 分段标题写明段与条数
+    expect(wrapper.find('[data-testid="radar-lagging-section"]').text()).toContain('滞后 · 1 个版块')
+  })
+
+  it('未取到的版块排在最底（分段标题 + 行内「数据未取到」）', async () => {
+    const wrapper = await mountRadar([
+      row({ boardId: '1', label: '当日热点', attention: 20 }),
+      missing({ boardId: '9', label: '没取到的版块' }),
+    ])
+    expect(wrapper.findAll('[data-testid^="radar-row-"]').map(node => node.attributes('data-testid')))
+      .toEqual(['radar-row-1', 'radar-row-9'])
+    expect(wrapper.find('[data-testid="radar-unavailable-section"]').text()).toContain('未取到 · 1 个版块')
+    expect(wrapper.find('[data-testid="radar-row-9"] .rd-tier').text()).toBe('数据未取到')
+  })
+
+  it('锚点日缺失的行不算滞后（照旧留在关注段里）', async () => {
+    const wrapper = await mountRadar([
+      row({ boardId: '1', label: '无锚点日的版块', attention: 20 }),
+    ])
+    expect(wrapper.find('[data-testid="radar-lagging-section"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="radar-row-1"] .rd-tier').text()).toContain('关注强度 · 热点')
   })
 })
 

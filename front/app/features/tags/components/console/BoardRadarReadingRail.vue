@@ -59,14 +59,14 @@ function openLane(item: RadarTopLaneItem): void {
   emit('openLane', { boardId: item.boardId, topicId: item.topicId })
 }
 
-/** 「今日该读」事件数口径（旧响应回退块用）：回落日报事件数。 */
+/** 「今日该读」事件数口径（旧响应回退块用）：回落日报事件数；未知显示「—」。 */
 function readEventText(row: RadarBoard): string {
-  return `${row.reportEventCount} 个事件`
+  return `${row.reportEventCount ?? '—'} 个事件`
 }
 </script>
 
 <template>
-  <aside class="rd-rail" aria-label="今日阅读与线索">
+  <aside class="rd-rail scroll-thin" aria-label="今日阅读与线索">
     <section class="rd-rail-block">
       <div class="rd-rule-title">
         <h2>{{ laneMode ? '当天线索最多的泳道' : '今日该读' }}</h2>
@@ -120,7 +120,7 @@ function readEventText(row: RadarBoard): string {
           <span class="rd-read-board">{{ row.label }}</span>
           <span class="rd-read-title">{{ row.reportTitle }}</span>
           <small class="rd-read-meta">
-            {{ shortDate(row.reportDate) }} · {{ row.reportArticleCount }} 篇文章 · {{ readEventText(row) }}
+            {{ shortDate(row.reportDate) }} · {{ row.reportArticleCount ?? '—' }} 篇文章 · {{ readEventText(row) }}
           </small>
         </button>
         <p v-if="!todayRead.length" class="rd-rail-empty">今天还没有日报。</p>
@@ -135,7 +135,6 @@ function readEventText(row: RadarBoard): string {
   overflow-y: auto;
   padding-left: 1.5rem;
   border-left: 1px solid var(--color-border-medium);
-  scrollbar-width: thin;
 }
 
 .rd-rail-block {
