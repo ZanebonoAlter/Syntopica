@@ -5,17 +5,18 @@
 ## Requirements
 
 ### Requirement: 日报数据模型
+
 系统 SHALL 使用 `board_daily_reports` 和 `daily_report_sections` 两张表承载日报。每个 SemanticBoard 每天至多一条 `BoardDailyReport` 记录。
 
 **BoardDailyReport 字段**：id, semantic_board_id, period_date, title, summary, highlights(JSON), dynamics(TEXT), article_count, event_tag_count, cluster_count, status(generating/done/failed), raw_clusters(JSON), prev_report_id(可为空，指向前一日日报), generation_prompt_version, created_at, updated_at。
 
 **DailyReportSection 字段**：id, report_id, cluster_index, cluster_label, cluster_tag_ids(JSON), article_count, best_tier, avg_score, embedding(向量列，维度由模型输出决定, 用于语义匹配), bucket_title(可空，主题方向名), bucket_index(整数，默认 0), created_at。事件数据已迁移至 `daily_report_threads` 表，通过 `section_id` 外键关联。跨天关系通过 `daily_report_section_relations` 关系表表达，status 通过关系拓扑动态推导。
 
-**DailyReportThread 字段**：id, report_id, section_id, title, summary, tag_ids(JSONB), confidence, story_id(可空), scope(single/composite), is_development(布尔，默认 false), story_manual(布尔，默认 false), display_tier(body/flash/hidden, 默认 body), created_at。
+**DailyReportThread 字段**：id, report_id, section_id, title, summary, tag_ids(JSONB), confidence, story_id(可空，只读历史列), scope(single/composite), is_development(布尔，默认 false), story_manual(布尔，只读历史列), display_tier(body/flash/hidden，默认 body), created_at。
 
-`story_id` SHALL 指向 `board_stories` 的存活记录或经 `merged_into` 解析到存活记录；该列 SHALL 可空、SHALL NOT 设外键级联删除、SHALL NOT 参与事件的去重与展示过滤。`scope` SHALL 由 `tag_ids` 中 `category='event'` 的标签数推导：`≥2` 为 `composite`，否则为 `single`；`composite` 事件 SHALL NOT 建立或加入事件线，也 SHALL NOT 计入事件数。`is_development` SHALL 仅在判定为「同一事件的不同阶段」时置真。`story_manual` SHALL 标记该事件的身份由人工决定：人工指派时置真并写 `story_id`，人工拆分时置真且 `story_id` 保持 NULL；任何自动归属判定与历史回填 SHALL 跳过 `story_manual=true` 的事件，SHALL NOT 改写其 `story_id`。`display_tier` SHALL 为跨期去重的展示层载体（`body`=正文默认、`flash`=快讯、`hidden`=未展示预留）：身份、signals 与热度 SHALL NOT 读该列；本期日报详情读路径 SHALL 只返回 `body`（`flash`/`hidden` 丢弃不渲染，字段保留供未来快讯 UI）。
+`story_id` SHALL 保留为**只读历史列**：新生成或重建的日报 SHALL 恒为 NULL，归属判定链 SHALL NOT 再写入该列；历史日报中已存在的 `story_id` 与其指向的 `board_stories` 行 SHALL 保留不动，读路径 MAY 解析存活身份但 SHALL NOT 对外透出事件线身份。`scope` SHALL 继续由 `tag_ids` 中 `category='event'` 的标签数推导：`≥2` 为 `composite`，否则为 `single`；`composite` 事件 SHALL NOT 进入任何同事件聚簇，也 SHALL NOT 计入聚簇文章数。`is_development` SHALL 恒为 false（其唯一驱动源——事件线阶段判定——已退役），SHALL NOT 作任何判定输入。`story_manual` SHALL 保留为只读历史列（人工指派 / 拆分过的历史行仍为 true），SHALL NOT 触发任何判定或写动作。`display_tier` SHALL 恒为 `body`（唯一写入方——依赖 `story_id` 的跨期去重——已退役），SHALL NOT 影响任何计数、排序或展示过滤。
 
-`highlights` SHALL 恒为数组。每项保留 title/reason/tag_ids，新增可空 story_id；故事模式还 SHALL 保存由服务端计算的 participant_count、story_heat、heat_rule_version、heat_as_of、heat_incomplete 快照，不接受模型填写这些数值。标签回退与历史数据 MAY 缺这些字段。正常目标 2–3 项，候选不足允许 1 项、事实不足允许 []。story_id 读取时 SHALL 同版块一跳解析存活身份，坏引用置空，不回写历史 JSON；数值 SHALL 保持生成时快照。
+`highlights` SHALL 恒为数组。每项保留 title/reason/tag_ids，并新增可空 `cluster_id`（当天同事件聚簇 id，服务端计算，模型不输出）；同事件聚簇模式还 SHALL 保存由服务端计算的 `article_count`（簇内文章数，按内容身份去重）、`cluster_mode`（向量聚簇 / 语义向量兜底 / 主体近似）、`data_as_of`（数据截至日）与 `research_at`（研究时点）快照，SHALL NOT 接受模型填写这些数值。标签回退与历史数据 MAY 缺这些字段。正常目标 2–3 项，候选不足允许 1 项、事实不足允许 []。`cluster_id` 读取时 SHALL 同版块一跳解析，坏引用置空，不回写历史 JSON；数值 SHALL 保持生成时快照。
 
 **`highlights` SHALL 恒为 JSON 数组**：落库时 SHALL 写 `[]`（空数组），SHALL NOT 写 JSON `null` 标量——`null` 标量会让 `jsonb_array_elements_text` 抛 SQLSTATE 22023，且在读路径上被前端当作「无内容」而整块隐藏。API 读出时 SHALL 同样恒为数组（历史遗留的 `null` 值 SHALL 在读路径归一为 `[]`），SHALL NOT 向客户端返回 `"highlights": null`。
 
@@ -34,7 +35,7 @@
 - **THEN** 系统 SHALL NOT 创建重复记录，而是更新已有记录
 
 #### Scenario: 并发落库同板同日不炸唯一约束
-- **WHEN** 两条写路径（正常情况下被生成闸互斥；异常绕过闸时）先后或并发为 SemanticBoard #5 落库 2026-05-25 的日报
+- **WHEN** 两条写路径（正常情况下由生成闸互斥；异常绕过闸时）先后或并发为 SemanticBoard #5 落库 2026-05-25 的日报
 - **THEN** 系统 SHALL 通过原子 upsert 收敛为一条记录（后写覆盖先写），SHALL NOT 出现 duplicate key 唯一约束错误，SHALL NOT 产生部分写入的残缺日报（sections 与主记录同事务落库）
 
 #### Scenario: 日报关联昨日报告
@@ -69,8 +70,18 @@
 - **WHEN** 某事件的 `tag_ids` 含 3 个 `category='event'` 标签
 - **THEN** 该事件落库时 `scope` SHALL 为 `composite`，`story_id` SHALL 保持 NULL
 
+#### Scenario: 新日报不写事件身份
+- **WHEN** 生成或重建任意一期的日报
+- **THEN** 该期所有 thread 的 `story_id` SHALL 为 NULL，`story_manual` SHALL 为 false，`display_tier` SHALL 为 `body`
+- **AND** 系统 SHALL NOT 新建、合并或改写任何 `board_stories` / `story_signals` 行
+
+#### Scenario: 旧事件身份只读保留
+- **WHEN** 读取一篇历史日报，其 thread 带非空 `story_id` 且指向存活的 `board_stories` 行
+- **THEN** 该历史值 SHALL 原样保留在库中，SHALL NOT 被清空或改写
+- **AND** 对外响应 SHALL NOT 透出事件线身份字段
+
 #### Scenario: 事件未归组不影响日报
-- **WHEN** 某事件的 `story_id` 为 NULL（未回填或判定失败）
+- **WHEN** 某事件的 `story_id` 为 NULL
 - **THEN** 该事件 SHALL 照常在日报正文展示，SHALL NOT 被过滤或隐藏
 
 ### Requirement: 事件标签去重
@@ -1113,82 +1124,41 @@ JSON schema 中 `summary` / `reason` 字段的 description SHALL 追加「须基
 - **WHEN** 日报 `highlights` 含 3 条
 - **THEN** 刊头 SHALL 渲染 3 条要闻（最多展示 3 条），SHALL NOT 出现空态占位
 
-### Requirement: 跨期重复降级
-
-日报生成时 SHALL 利用事件线身份识别跨期重复：对每个候选事件，若其 `story_id` 非空且该事件线在最近 7 天已进入过日报正文，系统 SHALL 判定本次为「重述」或「进展」：
-
-- **重述**：本事件的 `related_article_ids` 与事件线已有文章集合的重叠率 ≥ 0.6，且未出现新的独立来源（feed）→ SHALL 不进正文，降级为快讯或丢弃。
-- **进展**：重叠率 < 0.6、或出现新 feed、或当事方自身有新动作（`is_development=true`）→ SHALL 进正文。
-- `story_id` 为空或为综合稿的事件 SHALL 维持现有行为，SHALL NOT 因缺少身份而被误判为重复。
-
-降级 SHALL 只作用于展示：事件 SHALL 照常落库、signals SHALL 照常写入、热度 SHALL 不受影响。降级结果 SHALL 写入 `display_tier`（`body`=正文、`flash`=快讯、`hidden`=未展示预留）并在读取路径可区分（本期日报详情只返回 `body`，`flash`/`hidden` 丢弃不渲染——字段保留供未来快讯 UI），SHALL NOT 删除历史记录。`story_manual=true`（人工指派）的事件 SHALL 不参与自动去重，保持 `body`。降级判定 SHALL 幂等：重复执行结果一致；条件变化（如新 feed 补入）时按当前集合重算，已降级事件可恢复 `body`。
-
-#### Scenario: 重述降级为快讯
-- **WHEN** 某事件线昨日已进正文，今日新事件的文章集合与之重叠 0.8 且无新 feed
-- **THEN** 今日该事件 SHALL 不进正文（`display_tier='flash'`，本期读路径丢弃不渲染）；其 signals 与热度 SHALL 正常累计
-
-#### Scenario: 新来源判为进展
-- **WHEN** 某事件线昨日已进正文，今日新事件文章重叠 0.7 但引入了 1 个新 feed
-- **THEN** 今日该事件 SHALL 进正文并标记为进展
-
-#### Scenario: 当事方新动作判为进展
-- **WHEN** 某事件线昨日已进正文，今日对应事件的 `is_development=true`
-- **THEN** 该事件 SHALL 进正文，SHALL NOT 被降级
-
-#### Scenario: 未归组事件不参与去重
-- **WHEN** 某事件的 `story_id` 为 NULL
-- **THEN** 该事件 SHALL 按现有逻辑展示，SHALL NOT 被判定为重述
-
-#### Scenario: 降级不改变热量
-- **WHEN** 日报把某事件从正文降级为快讯
-- **THEN** 该事件线的 `story_signals` 与热度 SHALL 与降级前完全一致
-
-#### Scenario: 读取路径只回正文线程
-- **WHEN** 某日报含 `body`/`flash`/`hidden` 三种 display_tier 的事件
-- **THEN** 日报详情读路径 SHALL 只返回 `body` 事件；`flash`/`hidden` 行 SHALL 仍在库中可查（供未来快讯 UI），直接数据库读取 SHALL 仍可见
-
-### Requirement: 昨日重点延续徽标
-每条重点的 `is_progress` SHALL 在详情读取时按同 board、精确前一北京时间日历日已完成报告的 highlights 集合派生。今天与昨天非空 story_id SHALL 同时经同版块 merged_into 一跳解析为存活 id 后比较。同线 SHALL 标「进展」，可读提示 SHALL 为「昨日重点再次入选」；无昨日、空/旧重点、坏引用或跨 board SHALL 不标。SHALL NOT 用最近一期代替昨日，SHALL NOT 用线程 is_development 代替集合比较或据此修改跨期去重。
-
-#### Scenario: 昨日同线再入选
-- **WHEN** 今日重点 story_id=10 且昨日重点含同一存活 id
-- **THEN** SHALL 返回 is_progress=true 并在标题旁标「进展」，不改 thread.is_development
-
-#### Scenario: 缺昨日不借前日
-- **WHEN** 前日有同线重点但昨日无报告、无重点或仅旧 tag_ids
-- **THEN** is_progress SHALL 为 false，即使 prev_report_id 指向前日也 SHALL NOT 标进展
-
-#### Scenario: 合并与坏引用
-- **WHEN** 昨日重点 A 已一跳合并进今日 B，另有一项指向坏引用/跨版块/异常多跳
-- **THEN** A/B SHALL 视为同线，异常项 SHALL 保守不标，SHALL NOT 回写人工归属或历史 highlights
-
 ### Requirement: 重点依据与正文定位
-前端 SHALL 在故事重点旁显示服务端快照「N 个来源」（0 是合法值），可读提示附 48h 热度、截止时刻及不完整标记。字段缺失 SHALL 省略数字而非伪造 0。带有效 story_id 且有正文目标的重点 SHALL 可键盘激活，定位本 report 当前正文 DOM 顺序中该线第一条 thread；必要时展开目标所在正文容器，滚动、聚焦并高亮 2s。锚点 SHALL 为 `report-thread-{thread.id}`，归并只读解析存活 id。
 
-旧重点无 story_id SHALL 仅展示文案、不猜标签归属。无目标 SHALL 禁用定位并提示「本期正文暂无对应事件」；点击时目标消失 SHALL 原地轻提示，SHALL NOT 打开新详情页、近似跳 section 或自动重建。重复激活 SHALL 替换单个高亮与计时器，切 report/卸载清理；reduced-motion SHALL 不平滑滚动，划选 SHALL NOT 触发定位。
+前端 SHALL 在今日重点旁显示服务端快照「N 篇来源」（0 是合法值，按内容身份去重后的簇内文章数），可读提示附数据截至日、研究时点与聚簇口径标记。字段缺失 SHALL 省略数字而非伪造 0。带有效 `cluster_id` 且有正文目标的重点 SHALL 可键盘激活，定位本 report 当前正文 DOM 顺序中该聚簇第一条 thread；必要时展开目标所在正文容器，滚动、聚焦并高亮 2s。锚点 SHALL 为 `report-thread-{thread.id}`，聚簇只读解析。
 
-跨页寻址 SHALL 通过日报阅读台路由的 `story` 查询参数（`/tags/:boardId/:date?story=<story_id>`）：参数 SHALL 在该期日报详情就绪后，按存活身份解析并定位本 report 当前正文 DOM 顺序中该事件线第一条 thread，展开/滚动/聚焦/高亮 2s，与刊头重点定位同一路径。参数所指事件线在本期正文无落点时 SHALL NOT 滚动、SHALL NOT 跳到近似位置，SHALL 提示「本期正文暂无对应事件」。翻页或切换 report 后 SHALL 清理该参数，SHALL NOT 在其它报告重复定位；无效或非法的参数值 SHALL 忽略且 SHALL NOT 报错阻断阅读。
+带簇内标签的重点 SHALL 可展开（默认收起）列出本期正文中该簇的全部线索：前端用 `tag_ids`（缺失时回退 `cluster_id`）与本 report 正文 thread 的 `tag_ids` 求交集现算，按正文 DOM 顺序列出，每行标注所属话题名；命中代表标签（`cluster_id`）的线索 SHALL 排最前并显式标注「代表线索」。行点击 SHALL 精确定位该条 thread（必要时展开所在正文容器，滚动/聚焦/高亮 2s，语义同重点定位）。展开 SHALL 纯前端现算，SHALL NOT 依赖后端新增字段或快照补齐（历史 highlights 同样可展开）；交集为空 SHALL 显示「本期正文未找到对应线索」，SHALL NOT 编造线索或跳到近似位置。重点条目主体点击与 `cluster` 深链的定位语义不变（仍为正文 DOM 顺序首条）。
+
+无 `cluster_id` 的重点 SHALL 仅展示文案、不猜标签归属。无目标 SHALL 禁用定位并提示「本期正文暂无对应内容」；点击时目标消失 SHALL 原地轻提示，SHALL NOT 打开新详情页、近似跳 section 或自动重建。重复激活 SHALL 替换单个高亮与计时器，切 report/卸载清理；reduced-motion SHALL 不平滑滚动，划选 SHALL NOT 触发定位。
+
+跨页寻址 SHALL 通过日报阅读台路由的 `cluster` 查询参数（`/tags/:boardId/:date?cluster=<cluster_id>`）：参数 SHALL 在该期日报详情就绪后，按聚簇身份解析并定位本 report 当前正文 DOM 顺序中该聚簇第一条 thread，展开/滚动/聚焦/高亮 2s，与刊头重点定位同一路径。参数所指聚簇在本期正文无落点时 SHALL NOT 滚动、SHALL NOT 跳到近似位置，SHALL 提示「本期正文暂无对应内容」。旧的 `story` 查询参数 SHALL 继续被解析但 SHALL 被忽略，并提示该定位方式已下线，SHALL NOT 报错、SHALL NOT 定位到任何内容。翻页或切换 report 后 SHALL 清理该参数，SHALL NOT 在其它报告重复定位；无效或非法的参数值 SHALL 忽略且 SHALL NOT 报错阻断阅读。
 
 #### Scenario: 点击第一条可见正文线程
-- **WHEN** 同一 story 在本期两个正文位置出现，用户点击或键盘激活重点
+- **WHEN** 同一聚簇在本期两个正文位置出现，用户点击或键盘激活重点
 - **THEN** SHALL 展开需要展开的正文容器并滚动/聚焦 DOM 中第一条对应 thread，高亮 2s，SHALL NOT 按最小 id 或跳别的 report
 
 #### Scenario: 失去目标与旧重点
-- **WHEN** 重点无 story_id 或有 id 但正文已无对应 thread
-- **THEN** 无 id 的重点 SHALL 保持静态文案；无目标的故事重点 SHALL 提示本期正文暂无对应事件，SHALL NOT 产生空跳转
+- **WHEN** 重点无 `cluster_id` 或有 id 但正文已无对应 thread
+- **THEN** 无 id 的重点 SHALL 保持静态文案；无目标的聚簇重点 SHALL 提示本期正文暂无对应内容，SHALL NOT 产生空跳转
 
 #### Scenario: 重复定位与减弱动画
 - **WHEN** 连续定位两条重点，随后切换 report，且用户设置 reduced-motion
 - **THEN** SHALL 始终最多一个高亮，切换时清理，无平滑动画，划选文案 SHALL NOT 触发定位
 
 #### Scenario: 展示筛选不改变热度
-- **WHEN** 某线程被既有 7 天/0.6 去重规则降为 flash
-- **THEN** 其 story SHALL 在无其他 body thread 时不进入可定位重点候选，但身份、signals、H/P SHALL 不变；昨日重点徽标 SHALL NOT 把该线程恢复 body
+- **WHEN** 某 thread 因其它原因未进入正文展示
+- **THEN** 该聚簇的 `article_count` SHALL 不因其被筛掉而改变，SHALL NOT 在定位时把用户带到其它内容
 
 #### Scenario: 深链参数定位与失去目标
-- **WHEN** 用户从雷达打开 `/tags/1974/2026-11-06?story=42`，该期正文含事件线 42 的 thread
-- **THEN** 阅读台 SHALL 定位该事件线在正文 DOM 顺序中的第一条 thread 并高亮 2s
-- **AND** 当该期正文已无事件线 42 的 thread 时 SHALL 提示「本期正文暂无对应事件」且不滚动，SHALL NOT 跳到近似位置
+- **WHEN** 用户打开 `/tags/1974/2026-11-06?cluster=7`，该期正文含该聚簇的 thread
+- **THEN** 阅读台 SHALL 定位该聚簇在正文 DOM 顺序中的第一条 thread 并高亮 2s
+- **AND** 当该期正文已无该聚簇的 thread 时 SHALL 提示「本期正文暂无对应内容」且不滚动，SHALL NOT 跳到近似位置
+
+#### Scenario: 旧 story 深链被忽略不报错
+- **WHEN** 用户打开携带 `?story=42` 的历史链接
+- **THEN** 页面 SHALL 正常打开并提示该定位方式已下线
+- **AND** SHALL NOT 定位到任何 thread，SHALL NOT 报错
 
 ### Requirement: 今日重点聚簇候选
 系统 SHALL 在日报落库尾部为每版块生成「今日重点」候选：当天线索命中的 event 标签按 related-event 向量相似度聚簇（向量聚簇 → 语义向量兜底 → 主体近似三级降级），候选排序 SHALL 为簇内内容身份去重文章数 DESC → 簇内标签数 DESC → 代表标签 id ASC，最多保留 8 条。LLM SHALL 只从候选白名单内选至多 3 条写 title/reason，SHALL NOT 编造事实或数字——簇文章数、簇身份等数值快照一律由服务端计算补齐（`cluster_id` / `article_count` / `cluster_mode` / `data_as_of` / `research_at`），展示序即服务端候选序。
@@ -1222,3 +1192,35 @@ JSON schema 中 `summary` / `reason` 字段的 description SHALL 追加「须基
 #### Scenario: 旧重点快照读取兼容
 - **WHEN** 读取本 change 之前落库的重点（旧聚簇口径或标签回退产物）
 - **THEN** 快照字段 SHALL 原样返回、不回填不重算；该日报被重建时 SHALL 按新口径重算重点
+
+### Requirement: 当天同事件聚簇先筛重点候选
+
+系统 SHALL 在本 report 当天同事件聚簇中去重筛选「今日重点」候选。候选 SHALL 为该版块当天日报命中的 event 标签聚成的簇（口径与降级链见 `related-events`「日报同事件聚簇」），每个候选 SHALL 附代表标签、label/description、簇内文章数（按内容身份去重）与聚簇口径标记；排序 SHALL 按簇内文章数降序 → 簇内 event 标签数降序 → 聚簇代表标签 id 升序，最多 8 条，不按四舍五入后的篇数排序、不用版块 section 数或泳道热度替代。
+
+LLM SHALL 只从这 8 条以内候选中选至多 3 条不同聚簇写 title/reason，SHALL NOT 编造事实、数字、情绪或因果。模型返回的 `cluster_id` SHALL 属当次候选白名单，`tag_ids` SHALL 属该聚簇的本期标签白名单；过滤后空 tag、空白标题理由、集外 id 或类型错误 SHALL 按既有语义非法响应同参重试一次；合法 `[]` 不重试，最终失败仍 `[]`。重复聚簇 SHALL 保留首条。
+
+文章数、聚簇口径、数据截至日与研究时点 SHALL 由服务端补齐快照，SHALL NOT 由模型输出。候选不足允许 1 条，零候选 SHALL 在调用前选择标签回退模式（`cluster_id` 为空、缺省快照字段），SHALL NOT 伪造身份或编造聚簇。旧报告 SHALL NOT 回填补造聚簇身份或篇数快照。
+
+#### Scenario: 候选按簇内文章数截断
+- **WHEN** 本期有 10 个候选聚簇，簇内文章数排序明确，第 9 名拥有最多 section
+- **THEN** LLM SHALL 只收到排序前 8 个候选的事实与篇数，第 9 名 SHALL NOT 因 section 数进入候选
+
+#### Scenario: 同分与精度不反转
+- **WHEN** 两个候选簇内文章数相同，或四舍五入后相同但原值不同
+- **THEN** SHALL 依次按簇内 event 标签数降序、代表标签 id 升序破同分，未舍入篇数更高者仍排前
+
+#### Scenario: 只可从候选事实写文案
+- **WHEN** 模型返回集外 `cluster_id` 或仅含别的聚簇 tag_ids 的重点
+- **THEN** SHALL 判非法并按既有上限重试，SHALL NOT 将该条作为合法重点落库
+
+#### Scenario: 无聚簇走标签回退
+- **WHEN** 当天全部为综合稿、无候选 event 标签，或全部候选无正文落点
+- **THEN** SHALL 选择现有标签聚类重点路径，`cluster_id` 为空，正文与统计字段 SHALL NOT 为了凑候选被修改
+
+#### Scenario: 少量候选与合法空返回
+- **WHEN** 只有一条候选或候选事实不足导致模型返回 `[]`
+- **THEN** SHALL 分别允许一条重点或合法空数组，SHALL NOT 为凑 2 条编造内容或重试合法 `[]`
+
+#### Scenario: 重点快照与旧数据兼容
+- **WHEN** 读取新聚簇重点、旧 tag_ids-only 重点或 JSON null
+- **THEN** 新重点 SHALL 返回生成时来源、篇数、聚簇口径与时点快照，旧重点 SHALL 不伪造快照，JSON null SHALL 归一为 `[]`，首条重点仍为报告 title/summary 来源，无重点仍用既有兜底
