@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -522,5 +523,63 @@ func TestListReadyArticlesRespectsCompletionGate(t *testing.T) {
 	}
 	if len(articles) != 2 {
 		t.Fatalf("picked %d articles, want 2 (incomplete + pending of both-on feed)", len(articles))
+	}
+}
+
+// 智源社区的形态：整篇文章的正文都在一个 opacity:0 的根节点里，摘要字段
+// 清洗后是空串；Firecrawl 一旦失败，旧实现就拿不到任何可总结的内容，文章
+// 永久停在 failed。降级链必须回落到正文源字段（源站原文）的文本投影。
+func TestCompleteArticle_FirecrawlFailedFallsBackToBodySourceWhenSummaryEmpty(t *testing.T) {
+	setupServicesTestDB(t)
+
+	var capturedBody string
+	aiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload, _ := io.ReadAll(r.Body)
+		capturedBody = string(payload)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"# 降级摘要\n\n## 导读\n- from body source"}}]}`))
+	}))
+	defer aiServer.Close()
+
+	seedSummaryRouteFixture(t, aiServer.URL)
+
+	feed := models.Feed{Title: "Feed", URL: fmt.Sprintf("https://example.com/%s", t.Name()), ArticleSummaryEnabled: true, FirecrawlEnabled: true, TaggingEnabled: true, MaxCompletionRetries: 2}
+	if err := database.DB.Create(&feed).Error; err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+
+	// description 为空（整篇正文被隐藏根节点包裹，清洗后无可见文本），
+	// 正文源字段保留源站原文。
+	article := models.Article{
+		FeedID:           feed.ID,
+		Title:            "hidden root body",
+		Link:             "https://example.com/hidden-root",
+		FirecrawlStatus:  "failed",
+		FirecrawlContent: "",
+		Description:      "",
+		Content:          `<div style="visibility: visible; opacity: 0;"><p>被隐藏根节点包裹的正文，只有这一份内容可用。</p></div>`,
+		SummaryStatus:    "incomplete",
+	}
+	if err := database.DB.Create(&article).Error; err != nil {
+		t.Fatalf("create article: %v", err)
+	}
+
+	service := NewContentCompletionService()
+	if err := service.CompleteArticle(context.Background(), article.ID); err != nil {
+		t.Fatalf("complete article: %v", err)
+	}
+
+	var refreshed models.Article
+	if err := database.DB.First(&refreshed, article.ID).Error; err != nil {
+		t.Fatalf("reload article: %v", err)
+	}
+	if refreshed.SummaryStatus != "complete" {
+		t.Fatalf("summary status = %q, want complete (empty summary must fall back to the body source)", refreshed.SummaryStatus)
+	}
+	if refreshed.AIContentSummary == "" {
+		t.Fatal("expected AI content summary to be populated from the body-source fallback")
+	}
+	if !strings.Contains(capturedBody, "被隐藏根节点包裹的正文") {
+		t.Fatalf("the fallback input must carry the body text, got payload: %s", capturedBody)
 	}
 }

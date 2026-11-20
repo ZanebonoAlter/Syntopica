@@ -6,6 +6,7 @@ import { useReadingTracker, useScrollDepthTracker } from '~/features/preferences
 import { useContentCompletion, type ContentCompletionStatus } from '~/features/articles/composables/useContentCompletion'
 import { useFirecrawlApi } from '~/api/firecrawl'
 import { shouldShowArticleDescription } from '~/utils/articleContentGuards'
+import { buildOriginalContentHtml } from '~/utils/articleContentHtml'
 import { proxyImagesInHtml } from '~/utils/imageProxy'
 import {
   getArticleContentSources,
@@ -28,6 +29,12 @@ import { useAI } from '~/composables/useAI'
 
 marked.setOptions({ gfm: true, breaks: true })
 
+/**
+ * 原文源的一条内容从入库值到可渲染 HTML 的加工链已提到
+ * `~/utils/articleContentHtml`（`buildOriginalContentHtml`）——纯函数、不依赖
+ * store，徒得起来才能做行为断言。
+ */
+
 export function useArticleContentView(props: {
   article: Article | null
   articles?: Article[]
@@ -49,6 +56,7 @@ export function useArticleContentView(props: {
   const manualFirecrawlLoading = ref(false)
   const manualSummaryLoading = ref(false)
   const manualTaggingLoading = ref(false)
+  const manualDetectionLoading = ref(false)
   const manualActionError = ref<string | null>(null)
   const taggingError = ref<string | null>(null)
   const watchPendingIds = ref(new Set<number>())
@@ -160,10 +168,11 @@ export function useArticleContentView(props: {
     let content: string
     if (activeContentSource.value === 'firecrawl') {
       content = marked.parse(resolvedContent) as string
-    } else {
-      content = resolvedContent
+      return proxyImagesInHtml(content.replace(/<img[^>]*src=["']Base64-Image-Removed["'][^>]*\/?>/gi, ''))
     }
-    return proxyImagesInHtml(content.replace(/<img[^>]*src=["']Base64-Image-Removed["'][^>]*\/?>/gi, ''))
+    // 原文源：清洗 → Base64 剔除 → 图片代理，整条链收在 buildOriginalContentHtml
+    // 里（顺序即契约，行为断言见 ArticleContentView.test.ts）。
+    return buildOriginalContentHtml(resolvedContent)
   })
 
   // 导语取值优先级（slim-article-list-payload）：详情 description 优先，
@@ -286,6 +295,27 @@ export function useArticleContentView(props: {
     }
   }
 
+  /**
+   * 人工标记/取消疑似 AI 生成（add-ai-generated-article-detection design D10/D14）。
+   * 就地生效不弹确认；人工结论优先（source=manual），后续自动判定不覆盖。
+   * 失败走既有手动操作行内错误位（.asm-menu-error），不弹窗、不做整页错误。
+   */
+  async function handleManualAiDetection(status: 'suspect' | 'not_ai') {
+    if (!props.article || manualDetectionLoading.value) return
+    manualDetectionLoading.value = true
+    manualActionError.value = null
+    try {
+      const response = await articlesApi.updateArticle(Number(props.article.id), {
+        ai_detection_status: status,
+        ai_detection_source: 'manual',
+      })
+      if (!response.success) throw new Error(response.error || '标记失败')
+      syncCurrentArticle({ aiDetectionStatus: status, aiDetectionSource: 'manual' })
+    } catch (error) {
+      manualActionError.value = error instanceof Error ? error.message : '标记失败'
+    } finally { manualDetectionLoading.value = false }
+  }
+
   async function handleTagWatchToggle(payload: { id: number; slug: string }) {
     if (!props.article?.tags || watchPendingIds.value.has(payload.id)) return
     const tag = props.article.tags.find(t => t.id === payload.id)
@@ -346,6 +376,7 @@ export function useArticleContentView(props: {
     manualFirecrawlLoading.value = false
     manualSummaryLoading.value = false
     manualTaggingLoading.value = false
+    manualDetectionLoading.value = false
     lastScrollDepth = 0
     scrollProgress.value = 0
     scrollTop.value = 0
@@ -379,7 +410,7 @@ export function useArticleContentView(props: {
     // State
     viewMode, iframeLoading, isFullscreen, liveStatus,
     selectedContentSource, manualFirecrawlLoading,
-    manualSummaryLoading, manualTaggingLoading,
+    manualSummaryLoading, manualTaggingLoading, manualDetectionLoading,
     manualActionError, taggingError, watchPendingIds,
     scrollProgress, scrollTop, contentContainer, fullscreenContentContainer,
     showBackTop,
@@ -397,7 +428,7 @@ export function useArticleContentView(props: {
 
     // Event handlers
     onContentScroll, scrollToTop,
-    handleManualFirecrawl, handleManualSummary, handleManualTagging,
+    handleManualFirecrawl, handleManualSummary, handleManualTagging, handleManualAiDetection,
     handleTagWatchToggle, handleFavorite,
     openOriginal, toggleViewMode, toggleFullscreen,
     handleIframeLoad, handleIframeError,

@@ -12,8 +12,8 @@
 | `id` | SERIAL | PK | 主键 |
 | `feed_id` | INTEGER | NOT NULL; index | 所属订阅源 ID（逻辑关联 `feeds.id`，无 DB FK） |
 | `title` | VARCHAR(500) | NOT NULL | 文章标题 |
-| `description` | TEXT | — | 文章描述（参与全文检索，权重 B） |
-| `content` | TEXT | — | RSS 原始内容（HTML 片段） |
+| `description` | TEXT | — | 文章摘要。**入库即纯文本化**（fix-reader-lede-blank-space）：RSS 条目的 `description` 可能是整篇文章的 HTML（智源社区均值 66 KB、最大 864 KB），入库时经 `htmltext.PlainSummary(raw, 300)` 收敛为 ≤300 字符纯文本（去 script/style → 剔隐藏子树 → 去标签 → 还原实体 → 折叠空白 → 按 rune 截断加省略号）；清洗在入库层 `feed_service.buildArticleFromEntry`，解析层保持源站原文。存量可一次性回填：`go run ./cmd/clean-article-descriptions`（默认 dry-run，`--apply` 才写库，只改本列）。参与全文检索，权重 B；trgm 索引 `idx_articles_description_trgm` 覆盖本列 |
+| `content` | TEXT | — | RSS 原始内容（HTML 片段）。**保留源站原文、不被摘要清洗改写**（fix-reader-lede-blank-space）：正文源切换、Firecrawl 兜底与整理稿降级都依赖它；阅读页原文源渲染前在前端做保守清洗（`utils/articleContentHtml.ts`） |
 | `link` | VARCHAR(1000) | index `idx_articles_link`；部分唯一索引 `uq_articles_feed_link`（迁移 `20260917_0001`） | 文章链接。**入库判重键 = `(feed_id, link)`**（标题不参与判重），唯一部分索引 `WHERE link <> ''` 兜底并发刷新（空 link 行不受约束）；跨 feed 复用打标与存量归并都依赖 `idx_articles_link` |
 | `image_url` | VARCHAR(1000) | — | 封面图 |
 | `pub_date` | TIMESTAMP | — | 发布时间 |

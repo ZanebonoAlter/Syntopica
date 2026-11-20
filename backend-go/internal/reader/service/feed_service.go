@@ -10,11 +10,18 @@ import (
 	otelCodes "go.opentelemetry.io/otel/codes"
 	"gorm.io/gorm"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/htmltext"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/tracing"
 	"syntopica-backend/internal/reader/repository"
 	tagging "syntopica-backend/internal/tagmanagement"
 )
+
+// descriptionSummaryMaxRunes bounds the stored article summary length
+// (spec article-description-sanitization: ≤300 字符). It shares the cleaning
+// implementation with the list lede (internal/platform/htmltext) — same
+// source, different cap: excerpt ≤200, summary ≤300.
+const descriptionSummaryMaxRunes = 300
 
 type FeedService struct {
 	rssParser *RSSParser
@@ -130,6 +137,13 @@ func (s *FeedService) enqueueArticleProcessing(feed models.Feed, article models.
 		return repository.NewFirecrawlJobQueue(repository.Repo.DB()).Enqueue(article)
 	}
 
+	// 疑似 AI 判定与打标/抓取相互独立（design D4 ③）：feed 未开全文抓取时，文章
+	// 入库（含内容刷新）即用 RSS 正文判定。入队失败只记日志——不得阻断文章入库或
+	// 打标（spec「判定失败不影响打标」）。
+	if err := EnqueueAIDetectionJob(repository.Repo.DB(), &feed, article.ID, AIDetectionReasonArticleIngested); err != nil {
+		logging.Warnf("Error enqueueing AI detection for article %d (feed %d): %v", article.ID, feed.ID, err)
+	}
+
 	if !feed.TaggingEnabled {
 		return nil
 	}
@@ -145,8 +159,8 @@ func (s *FeedService) enqueueArticleProcessing(feed models.Feed, article models.
 // refreshExistingArticle applies the update semantics for an RSS entry whose
 // link already exists in the feed (dedupe-rss-articles D2):
 //
-//   - title+description unchanged → no-op (zero processing-chain cost);
-//   - either changed → UPDATE content fields, reset the processing-chain
+//   - title+summary+body unchanged → no-op (zero processing-chain cost);
+//   - any of them changed → UPDATE content fields, reset the processing-chain
 //     state exactly like a fresh insert (buildArticleFromEntry rules), clear
 //     derived fields (crawl body / AI summary / completion bookkeeping), drop
 //     stale topic tags, and re-enqueue processing. Retagging then rides the
@@ -165,11 +179,21 @@ func (s *FeedService) refreshExistingArticle(feed models.Feed, entry ParsedEntry
 		return err
 	}
 
-	if existing.Title == entry.Title && existing.Description == entry.Description {
+	// The comparison must run against the CLEANED values: the stored summary
+	// is the plain-text projection of the source description (≤300 runes),
+	// while the entry still carries the source document. Comparing the raw
+	// entry against the stored row would never match for a feed that ships
+	// the whole article as the item description (智源社区 does), so every
+	// refresh would re-run the whole processing chain.
+	//
+	// The body source must be compared too: the cleaned summary is capped at
+	// 300 runes, so a body change past that cap is invisible in the summary
+	// but still has to refresh the row.
+	fresh := s.buildArticleFromEntry(feed, entry)
+	if existing.Title == fresh.Title && existing.Description == fresh.Description && existing.Content == fresh.Content {
 		return nil
 	}
 
-	fresh := s.buildArticleFromEntry(feed, entry)
 	updates := map[string]interface{}{
 		"title":                         fresh.Title,
 		"description":                   fresh.Description,
@@ -309,9 +333,13 @@ func (s *FeedService) FetchFeedPreview(feedURL string) (title, description strin
 
 func (s *FeedService) buildArticleFromEntry(feed models.Feed, entry ParsedEntry) models.Article {
 	article := models.Article{
-		FeedID:          feed.ID,
-		Title:           entry.Title,
-		Description:     entry.Description,
+		FeedID: feed.ID,
+		Title:  entry.Title,
+		// The summary is cleaned at the ingestion boundary: some feeds put the
+		// whole article HTML into the item description (智源社区 does), and the
+		// reader would then render a multi-kilobyte third-party document as
+		// the lede.
+		Description:     htmltext.PlainSummary(entry.Description, descriptionSummaryMaxRunes),
 		Content:         entry.Content,
 		Link:            entry.Link,
 		ImageURL:        entry.ImageURL,

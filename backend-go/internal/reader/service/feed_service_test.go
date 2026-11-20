@@ -695,6 +695,100 @@ func TestRefreshFeedUpdatesChangedEntryAndClearsDerivedState(t *testing.T) {
 	}
 }
 
+// TestRefreshExistingArticleSkipsUnchangedHTMLDescription covers the
+// refresh dedupe for feeds that ship markup as the item description: the
+// stored summary is the CLEANED projection of that markup, so comparing the
+// raw entry against the stored row would never match and every refresh would
+// re-run the whole processing chain (crawl + summary + retag).
+//
+// The body source must be compared as well: the cleaned summary is capped at
+// 300 runes, so a body change past that cap is invisible in the summary.
+func TestRefreshExistingArticleSkipsUnchangedHTMLDescription(t *testing.T) {
+	setupFeedsTestDB(t)
+
+	feed := models.Feed{Title: "HTML Feed", URL: "https://example.com/html", FirecrawlEnabled: true, ArticleSummaryEnabled: true, CompletionOnRefresh: true}
+	if err := database.DB.Create(&feed).Error; err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+
+	// The source item carries markup; the ingestion boundary stores its
+	// plain-text projection as the summary and the source document as the body.
+	sourceHTML := `<p>摘要<b>文本</b></p>`
+	article := models.Article{
+		FeedID: feed.ID, Title: "headline", Description: "摘要 文本", Content: sourceHTML,
+		Link: "https://example.com/html/1", FirecrawlStatus: "completed", SummaryStatus: "complete",
+		AIContentSummary: "旧整理稿", FirecrawlContent: "<p>抓到的正文</p>", CompletionAttempts: 3,
+	}
+	if err := database.DB.Create(&article).Error; err != nil {
+		t.Fatalf("create article: %v", err)
+	}
+	tag := models.TopicTag{Label: "旧话题", Slug: "kept-topic", Category: "keyword", Status: "active"}
+	if err := database.DB.Create(&tag).Error; err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+	if err := database.DB.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag.ID, Score: 0.9, Source: "llm"}).Error; err != nil {
+		t.Fatalf("create tag link: %v", err)
+	}
+
+	service := newDedupeTestService(t)
+
+	// Same title, same source markup, same body → the row is a no-op hit.
+	unchanged := ParsedEntry{Title: "headline", Description: sourceHTML, Content: sourceHTML, Link: article.Link}
+	if err := service.refreshExistingArticle(feed, unchanged); err != nil {
+		t.Fatalf("refreshExistingArticle (unchanged): %v", err)
+	}
+
+	var reloaded models.Article
+	if err := database.DB.First(&reloaded, article.ID).Error; err != nil {
+		t.Fatalf("reload article: %v", err)
+	}
+	if reloaded.FirecrawlStatus != "completed" || reloaded.FirecrawlContent != "<p>抓到的正文</p>" {
+		t.Fatalf("unchanged entry must not reset the crawl chain: status=%q content=%q", reloaded.FirecrawlStatus, reloaded.FirecrawlContent)
+	}
+	if reloaded.SummaryStatus != "complete" || reloaded.AIContentSummary != "旧整理稿" {
+		t.Fatalf("unchanged entry must not reset the summary chain: status=%q summary=%q", reloaded.SummaryStatus, reloaded.AIContentSummary)
+	}
+	if reloaded.CompletionAttempts != 3 {
+		t.Fatalf("completion attempts = %d, want 3 (unchanged entry must not consume a retry)", reloaded.CompletionAttempts)
+	}
+	var tagLinks int64
+	database.DB.Model(&models.ArticleTopicTag{}).Where("article_id = ?", article.ID).Count(&tagLinks)
+	if tagLinks != 1 {
+		t.Fatalf("tag links = %d, want 1 (unchanged entry must not drop the tags)", tagLinks)
+	}
+	var jobCount int64
+	database.DB.Model(&models.FirecrawlJob{}).Where("article_id = ?", article.ID).Count(&jobCount)
+	if jobCount != 0 {
+		t.Fatalf("firecrawl jobs = %d, want 0 (unchanged entry must not re-enqueue processing)", jobCount)
+	}
+
+	// The body source changed while the summary did not (the change sits past
+	// the 300-rune summary cap) → the row must refresh.
+	changedBody := ParsedEntry{Title: "headline", Description: sourceHTML, Content: sourceHTML + "<p>新增段落</p>", Link: article.Link}
+	if err := service.refreshExistingArticle(feed, changedBody); err != nil {
+		t.Fatalf("refreshExistingArticle (changed body): %v", err)
+	}
+
+	var updated models.Article
+	if err := database.DB.First(&updated, article.ID).Error; err != nil {
+		t.Fatalf("reload updated article: %v", err)
+	}
+	if updated.Content != sourceHTML+"<p>新增段落</p>" {
+		t.Fatalf("content = %q, want the new body source", updated.Content)
+	}
+	if updated.FirecrawlStatus != "pending" || updated.FirecrawlContent != "" {
+		t.Fatalf("changed body must reset the crawl chain: status=%q content=%q", updated.FirecrawlStatus, updated.FirecrawlContent)
+	}
+	if updated.AIContentSummary != "" || updated.CompletionAttempts != 0 {
+		t.Fatalf("changed body must reset the summary chain: summary=%q attempts=%d", updated.AIContentSummary, updated.CompletionAttempts)
+	}
+	tagLinks = 0
+	database.DB.Model(&models.ArticleTopicTag{}).Where("article_id = ?", article.ID).Count(&tagLinks)
+	if tagLinks != 0 {
+		t.Fatalf("tag links = %d, want 0 (changed body must drop the stale tags)", tagLinks)
+	}
+}
+
 // TestRefreshExistingArticleStatusMatrix drives refreshExistingArticle across
 // the four feed switch combinations and asserts the reset matches the
 // buildArticleFromEntry state machine (spec scenario "内容实质变化时更新并重走

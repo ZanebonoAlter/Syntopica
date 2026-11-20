@@ -89,6 +89,24 @@ ArticleListPanel → ArticleContentView
 - **导语两段式不变**：`FeedLayoutShell.hydrateSelectedArticle` 仍是「先列表行首帧 → 再详情覆盖」；首帧导语优先级「详情 `description` →（详情未就绪）回退列表 `excerpt`」，详情返回后 `displayContent` 取值链与渲染结构不变——正文与完整导语的唯一来源仍是详情接口 `GET /api/articles/:article_id`。
 - **自动刷新**：收敛为单调度器串行错峰（维护 `{feedId, intervalMinutes, nextDueAt}`，单个 `setTimeout` 排下一个到期项，同一分钟至多 1 个 feed 刷新）；刷新完成后只重取**当前筛选 + 当前页**（`per_page ≤ 100`），不再发 `per_page=10000` 的列表请求；`/api/feeds` 的 `per_page=10000` 保持不动（响应仅 14.6 KB）。
 
+### 摘要纯文本化与第三方 HTML 渲染护栏（fix-reader-lede-blank-space）
+
+部分源（智源社区等）的 RSS 条目把**整篇文章的 HTML** 塞进 `description`（该源 2148 篇里 1958 篇是 >2KB 的 HTML，均值 66 KB、最大 864 KB；全库 63303 行含真实标签标记、合计 381.0 MiB，按字符计 276 MB）。该 HTML 是公众号文章原样搬运，根节点带 `style="visibility: visible; opacity: 0;"` —— 若直接 `v-html` 渲染，内容**不可见却照样占位**（实测单篇导语段高 8046 px、正文从第 8787 px 才开始），用户看到的就是标题下方一大片空白；同一篇文章的可见文本还在导语段与正文段各渲染一遍。
+
+```text
+RSS item.description（可能是整篇 HTML）
+  → 入库：reader/service/feed_service.go:buildArticleFromEntry
+        description = htmltext.PlainSummary(raw, 300)  ← 去 script/style、剔隐藏子树、去标签、还原实体、折叠空白、截断
+        content     = 源站原文（不动：正文源切换与 Firecrawl 兜底链路依赖它）
+  → 详情 GET /api/articles/:id
+  → 导语段：toPlainText(description, 300) → v-text（不再 v-html 直出第三方 HTML）
+  → 原文源：sanitizeHtml(content) → 渲染（视觉隐藏剥声明 / 语义不展示移除子树）
+```
+
+隐藏处理分两类：**视觉隐藏声明**（`visibility:hidden`/`opacity:0`/`font-size:0`）在结构清洗里**剥离声明、保留内容**（内容有效只是被藏起来，剥声明后重新可见）；**语义不展示**（`display:none`/`hidden` 属性）**移除元素连同子树**（本就不展示，且常藏 SEO 关键词堆砌）。纯文本摘要侧取更严口径：任一隐藏声明包裹的子树整体不进入摘要（摘要不重复正文）。
+
+> 事实澄清：用户报的「混着人类不可读的 aaaa」经全库核查**不是** SEO 关键词堆砌——剥标签、剥图片链接后搜 `aaaa` 全库 0 命中，真相是配图 CDN 文件名哈希（`.../hub-detail/3a8fed6844ebaaaae1a18986c50781fa1790748001235.webp`）里的十六进制连字。
+
 ### 源视角观测（源 → 文章 → 标签 → 板块的反向聚合，add-source-board-hit-rate）
 
 ```text
@@ -198,6 +216,7 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 12. **搜索 MUST 只读消费 topic_tag_embeddings 与 article_topic_tags，零写入、不触发任何打标或向量任务**（add-article-search）：语义路对 identity 型标签向量做 cosine 近邻（双约束：分数 ≥ search_semantic_min_cosine ∧ 排序 top search_semantic_top_n），经边表召回文章取 max cosine；标签召回走 halfvec HNSW 部分索引取 ANN 候选 + 原始 float32 精确复算（optimize-search-semantic-index，迁移 20261023_0001），不写库、不入队、不影响标签生命周期（与 topic-graph 域红线 1/4 兼容：搜索不足以为话题并状态变更触发器）。
 13. **站内搜索默认按时间优先排序：按 Asia/Shanghai（UTC+8）日历日倒序分组，同一天内按融合相关度；`relevance` 模式显式恢复纯 RRF 顺序**（add-search-sort-modes）：日期用 `pub_date`（空回退 `created_at`），日界固定 UTC+8（不用 UTC，避免 00:00~08:00 的新闻被算到前一天）；两种排序返回同一结果集与 `total`，只改顺序；`sort_by` 缺省/非法静默回退 `date`，响应 `sortBy` 回显生效值；分页排序键全序确定（日 → RRF → 关键词分 → 语义分 → 精确时间 → 文章 ID）。
 14. **文章预览弹窗内的全屏层必须盖过宿主浮层，否则「点了全屏像没反应」**：`ArticleContentView` 的全屏层（Teleport 到 `body`，`.fullscreen-article`）SHALL NOT 硬编码低于宿主遮罩的 z-index——2026-10-28 前硬编码 `z-[100]`，而弹窗宿主 `ArticlePreviewModal` 的 `AppDialog` 遮罩为 `9100`（与 `MarginNotesRail` 同源约定），全屏层被整屏遮罩盖住（实测 `elementFromPoint` 命中的仍是 `.preview-body`），用户点「全屏」看不到任何变化、也点不到「退出全屏」。层级 SHALL 由宿主经 `fullscreenZIndex` prop 传入（弹窗宿主传 `9200`；阅读页原地全屏保持缺省 `100` 不变）；取值 SHALL 低于全局 toast（`9999`），保证全屏中的失败提示可见。
+15. **文章摘要 MUST 是 ≤300 字符纯文本，第三方 HTML MUST NOT 直接进 DOM，不可见内容 MUST NOT 形成空白占位**（fix-reader-lede-blank-space）：RSS 条目的 `description` 可能是整篇 HTML（智源社区均值 66 KB、最大 864 KB），入库时 MUST 经 `htmltext.PlainSummary(raw, 300)` 纯文本化（去 script/style、剔隐藏子树、去标签、还原实体、折叠空白、截断）；`articles.content` 作为正文源 MUST 保持源站原文不动（正文源切换与 Firecrawl 兜底链路依赖它）。导语段 MUST 以去标签纯文本渲染（`v-text`），MUST NOT `v-html` 直出 `description`；原文源渲染前 MUST 经保守清洗——**视觉隐藏声明**（`visibility:hidden`/`opacity:0`/`font-size:0`）剥离声明使内容重新可见、**语义不展示**（`display:none`/`hidden` 属性）连同子树移除、脚本/样式/`on*` 事件属性一律去除。清洗 MUST 在渲染路径生效（MUST NOT 依赖存量数据是否已回填）。摘要清洗口径与列表 `excerpt` 同源同实现（`internal/platform/htmltext`），仅长度上限不同（excerpt ≤200 / 摘要 ≤300）。
 
 ## 代码入口
 
@@ -207,7 +226,7 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 - **后端偏好画像 / 订阅源发现（admin 域）**：`backend-go/internal/admin/service/{preference_profile_service,recommendation_service,catalog_sync_service,catalog_extras,rsshub_config}.go`、`backend-go/internal/admin/handler/{preference_profile_handler,discovery_handler}.go`、`backend-go/internal/admin/scheduler/{job_preference_profile_update,job_rsshub_catalog_sync}.go`，详见 [discovery.md](discovery.md)。
 - **打标签（tagmanagement 域）**：`backend-go/internal/tagmanagement/`（`TagQueue`、article_tagger）。
 - **源/版块命中统计（tagmanagement 域 sourcestats）**：`backend-go/internal/tagmanagement/service/sourcestats/`（口径唯一实现：`ParseWindow` 白名单、`FeedBoardHitStats` 源视角、`BoardSourceBreakdown` 版块视角）；源视角端点 handler `internal/reader/handler/feed_board_stats_handler.go`，版块视角 `internal/tagmanagement/handler/board_source_breakdown_handler.go`；前端 `front/app/features/settings/components/`（`FeedSourceQualityPill.vue` 行 pill、`FeedSourceQualityBlock.vue` 详情三分解块、`FeedMasterList.vue` 工具栏）与 `front/app/features/settings/composables/useFeedSourceQuality.ts`。
-- **前端**：`front/app/features/articles/`（列表/正文/阅读追踪；正文区组件 ArticleContentView/ArticleContentToolbar/ArticleContentPreviewPanel/ArticleStatusMenu——后者承担工具栏处理状态图标、详情浮层与 ⋯ 菜单）、`front/app/components/article/ArticleContent.css`（阅读列版式 + `.markdown-body` 共享排版）、`front/app/features/tags/components/ArticlePreviewModal.vue`（站内原文预览弹窗：承载 `ArticleContentView`，弹窗内全屏层层级 9200 > 遮罩 9100，见约束 14；收藏状态经 `useArticleFavoriteToggle` 乐观更新，见 [daily-report.md](daily-report.md) 约束 32）、`front/app/features/articles/composables/useArticleFavoriteToggle.ts`（收藏乐观更新 + 失败回滚）、`front/app/features/shell/`（FeedLayoutShell、导航；**窄屏降级**（mobile-viewport-stage1）：<768px 常驻侧栏改 `components/ui/AppSidebarDrawer.vue` 抽屉、列表↔阅读单栏切换 `viewMode`（仅窄屏分支读取）、列表滚动记忆经 `features/shell/components/feedListScrollBridge.ts` provide/inject 桥、断点判定 `composables/useMediaQuery.ts` `useIsNarrowViewport()`）、`front/app/stores/`（api/feeds/articles）、`front/app/composables/useReadingTracker.ts`（阅读行为采集）、`front/app/utils/articleContentGuards.ts`（description 展示 guard）。偏好画像 UI 与发现页入口见 [discovery.md](discovery.md)。图标：`front/app/components/feed/FeedIcon.vue`（三类 icon 值渲染 + 降级）、`front/app/plugins/iconify-local.ts` + `front/app/assets/iconify-subset.json`（UI 图标本地子集）、`front/scripts/generate-icon-subset.mjs`（子集生成）。
+- **前端**：`front/app/features/articles/`（列表/正文/阅读追踪；正文区组件 ArticleContentView/ArticleContentToolbar/ArticleContentPreviewPanel/ArticleStatusMenu——后者承担工具栏处理状态图标、详情浮层与 ⋯ 菜单）、`front/app/components/article/ArticleContent.css`（阅读列版式 + `.markdown-body` 共享排版）、`front/app/utils/htmlSanitize.ts`（第三方 HTML 保守清洗 `sanitizeHtml` + 纯文本抽取 `toPlainText`，导语段与原文源共用；无新依赖，DOMParser 不可用时降级转义纯文本）、`front/app/features/tags/components/ArticlePreviewModal.vue`（站内原文预览弹窗：承载 `ArticleContentView`，弹窗内全屏层层级 9200 > 遮罩 9100，见约束 14；收藏状态经 `useArticleFavoriteToggle` 乐观更新，见 [daily-report.md](daily-report.md) 约束 32）、`front/app/features/articles/composables/useArticleFavoriteToggle.ts`（收藏乐观更新 + 失败回滚）、`front/app/features/shell/`（FeedLayoutShell、导航；**窄屏降级**（mobile-viewport-stage1）：<768px 常驻侧栏改 `components/ui/AppSidebarDrawer.vue` 抽屉、列表↔阅读单栏切换 `viewMode`（仅窄屏分支读取）、列表滚动记忆经 `features/shell/components/feedListScrollBridge.ts` provide/inject 桥、断点判定 `composables/useMediaQuery.ts` `useIsNarrowViewport()`）、`front/app/stores/`（api/feeds/articles）、`front/app/composables/useReadingTracker.ts`（阅读行为采集）、`front/app/utils/articleContentGuards.ts`（description 展示 guard）。偏好画像 UI 与发现页入口见 [discovery.md](discovery.md)。图标：`front/app/components/feed/FeedIcon.vue`（三类 icon 值渲染 + 降级）、`front/app/plugins/iconify-local.ts` + `front/app/assets/iconify-subset.json`（UI 图标本地子集）、`front/scripts/generate-icon-subset.mjs`（子集生成）。
 - 应用装配：`backend-go/internal/app/router.go`、`backend-go/internal/app/runtime.go`。
 
 ## 变更溯源
@@ -241,3 +260,4 @@ UI 图标（mdi:*）同为本地化机制：启动时 `app/plugins/iconify-local
 | 2026-10-23 | add-search-sort-modes | 站内搜索结果新增排序模式：`sort_by=date`（默认，Asia/Shanghai 日历日倒序分组 + 同日内按 RRF/关键词/语义分 + 精确时间/ID 全序）与 `sort_by=relevance`（旧 RRF 顺序），两模式同结果集、`sortBy` 回显、非法值回退 date；修复「实时新闻被旧高分文章压到几十页后」（真库实测 `q=英伟达` 近 3 天 118 篇命中但首屏仅 8 条 10-22、0 条当天）；前端搜索页过滤行加「最新优先/相关度优先」分段切换；约束新增 #13 | [`openspec/changes/archive/2026-10-23-add-search-sort-modes`](../../../openspec/changes/archive/2026-10-23-add-search-sort-modes) |
 | 2026-10-23 | optimize-search-semantic-index | 语义搜索超时根治：标签召回从 14,658 条 2560 维 identity 向量全表余弦扫描（实测 3.74s，吃满 3s 预算）改为 halfvec HNSW 部分索引（迁移 20261023_0001，`(embedding::halfvec(N))`、`WHERE embedding_type='identity'`，≤4000 维）取 top-128 ANN 候选 + 原始 float32 精确复算；`ensureVectorDimension` 维度变更时 drop/重建该索引；语义行为契约（双约束/skipped/3s）不变 | [`openspec/changes/archive/2026-10-23-optimize-search-semantic-index`](../../../openspec/changes/archive/2026-10-23-optimize-search-semantic-index) |
 
+| 2026-11-20 | fix-reader-lede-blank-space | 摘要纯文本化 + 第三方 HTML 渲染护栏：`articles.description` 入库即 ≤300 字符纯文本（清洗口径唯一实现 `internal/platform/htmltext`，与列表 excerpt 同源）、`content` 正文源保留源站原文不动；导语段由 `v-html` 直出改纯文本 `v-text`（修复智源类「整篇被 `opacity:0` 根节点包裹」导致的 8046px 不可见空白；实测导语区 8046px→30px、正文起始 8787px→771px）；原文源渲染前保守清洗（视觉隐藏剥声明 / 语义不展示移除子树 / 可执行嵌入与危险 URL 剔除）；新增硬线约束 15；用户报的「aaaa 关键词堆砌」经全库核查为配图 CDN 哈希误判（剥标签后 0 命中） | [`openspec/changes/archive/2026-11-20-fix-reader-lede-blank-space`](../../../openspec/changes/archive/2026-11-20-fix-reader-lede-blank-space) |

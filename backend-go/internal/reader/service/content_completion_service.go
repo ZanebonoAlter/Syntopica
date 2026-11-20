@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/htmltext"
 	"syntopica-backend/internal/platform/tracing"
 	"syntopica-backend/internal/reader/repository"
 	tagging "syntopica-backend/internal/tagmanagement"
@@ -165,8 +166,19 @@ func (s *ContentCompletionService) CompleteArticleWithMetadata(ctx context.Conte
 		}
 	}
 
-	// firecrawl 抓到全文用全文；失败时降级用 RSS description（比无摘要好）
+	// firecrawl 抓到全文用全文；失败时降级用正文源字段的文本投影。
+	//
+	// 不能用 article.Description：它是清洗后的纯文本摘要（≤300 字符），且对
+	// 「整篇正文被隐藏根节点包裹」的源（智源社区）清洗结果为空串——那样
+	// Firecrawl 一失败文章就永久拿不到整理稿。content 是未清洗的源站原文，
+	// 比摘要更接近正文。
+	//
+	// 投影用 PlainTextAll 而非 PlainText：这里要的是「文章里有什么」，源站把
+	// 自己的正文藏在 opacity:0 里只是它的样式决定，不代表内容不存在。
 	contentToSummarize := strings.TrimSpace(article.FirecrawlContent)
+	if contentToSummarize == "" {
+		contentToSummarize = htmltext.PlainTextAll(article.Content)
+	}
 	if contentToSummarize == "" {
 		contentToSummarize = strings.TrimSpace(article.Description)
 	}
