@@ -253,6 +253,9 @@ function locateTarget(watch: TopicWatch): string | null {
     min-height: 0;
     height: 100%;
     overflow-y: auto;
+    /* 滚动条是 overlay 型（宽度 0、浮在内容上）：右侧留出间隙，否则滚动条直接压在
+       行尾数字与状态词上（add-other-topics-to-context-rail 收尾修复）。 */
+    padding-right: 0.6rem;
     background: rgba(232, 227, 218, 0.022);
   }
 }
