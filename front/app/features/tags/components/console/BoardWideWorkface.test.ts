@@ -28,6 +28,14 @@ const RAIL: RailContext = {
   },
   watches: { items: [], loading: false, error: null },
   now: { date: null, status: 'loading', error: null, hasReport: false, reviews: [], lanes: [] },
+  otherTopics: {
+    state: 'ready',
+    rows: [],
+    clueCount: 0,
+    statusText: '当日分区都已在泳道内可读',
+    note: null,
+    retryable: false,
+  },
 }
 
 function mountWorkface(overrides: Record<string, unknown> = {}) {
@@ -57,8 +65,8 @@ function mountWorkface(overrides: Record<string, unknown> = {}) {
         BoardContextRail: {
           name: 'BoardContextRail',
           props: ['variant'],
-          emits: ['open-candidates', 'open-health', 'open-watch-manage', 'locate-lane', 'open-topics'],
-          template: '<div data-testid="context-rail-stub" :data-variant="variant"><button data-testid="ctx-candidates" @click="$emit(\'open-candidates\')" /><button data-testid="ctx-topics" @click="$emit(\'open-topics\')" /></div>',
+          emits: ['open-candidates', 'open-health', 'open-watch-manage', 'locate-lane', 'select-other', 'retry-now', 'open-topics'],
+          template: '<div data-testid="context-rail-stub" :data-variant="variant"><button data-testid="ctx-candidates" @click="$emit(\'open-candidates\')" /><button data-testid="ctx-topics" @click="$emit(\'open-topics\')" /><button data-testid="ctx-select-other" @click="$emit(\'select-other\', { sectionId: \'41\', date: \'2026-11-19\', topicId: null })" /><button data-testid="ctx-retry-now" @click="$emit(\'retry-now\', \'2026-11-19\')" /></div>',
         },
         BoardHealthWorkspace: {
           name: 'BoardHealthWorkspace',
@@ -137,5 +145,18 @@ describe('BoardWideWorkface', () => {
     const wrapper = mountWorkface({ tab: 'settings' })
     await wrapper.find('[data-testid="settings-deleted"]').trigger('click')
     expect(wrapper.emitted('deleted')).toHaveLength(1)
+  })
+
+  // add-other-topics-to-context-rail（review R-1）：工作面 context 页签也会有「当日其他话题」
+  // 子块（≥1440px 视口下按视口而非 variant 判定），点行/重试必须与泳道行 locate-lane 一样外抛，
+  // 否则该渲染面的点行/重试是死键。
+  it('context 页：「当日其他话题」点行与当日日报重试均外抛给壳层（与 locate-lane 对齐）', async () => {
+    const wrapper = mountWorkface({ tab: 'context' })
+
+    await wrapper.find('[data-testid="ctx-select-other"]').trigger('click')
+    expect(wrapper.emitted('selectOther')).toEqual([[{ sectionId: '41', date: '2026-11-19', topicId: null }]])
+
+    await wrapper.find('[data-testid="ctx-retry-now"]').trigger('click')
+    expect(wrapper.emitted('retryNow')).toEqual([['2026-11-19']])
   })
 })

@@ -5,7 +5,9 @@
  *
  * 常驻顺序（结论 → 信号 → 我的关注 → 属性）：**版块体检 → 当日日报 → 话题追踪 → 构成候选 → 来源构成**。
  * - 体检 = 一行状态条（真实评分/时间/刷新）；评语按需进详情（右轨不常驻评语首句）。
- * - 当日日报 = 跟随矩阵选中日（唯一日期源；本轨无任何日期选择器）的两层：当日点评 + 各泳道一句。
+ * - 当日日报 = 跟随矩阵选中日（唯一日期源；本轨无任何日期选择器）的两层：当日点评 + 各泳道一句；
+ *   同块内另有「当日其他话题」子块（add-other-topics-to-context-rail，≥1440px 才显示：
+ *   与泳道层分块分单位——泳道层「条」、子块「条线索」）。
  * - 候选 top3 真实名称与清单数；watch 名称 + active/paused；来源贡献条 + 总量。
  *   依据与全量列表在单级宽工作面（emit open*）按需查看，不在此塞满。
  * - 三类不同实体分列，不互相冒充：构成候选（辅助标签，经体检/构成面板收编，人工确认）、
@@ -21,9 +23,11 @@ import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { RailHealthSnapshotView } from '~/api/normalizers/consoleRail'
 import type { TopicWatch } from '~/api/topicWatches'
+import type { OtherTopicsView } from './dayOtherTopics'
 import type { NowBriefModel } from './nowBrief'
 import RailHealthBrief from './RailHealthBrief.vue'
 import RailNowBrief from './RailNowBrief.vue'
+import RailOtherTopicsBrief from './RailOtherTopicsBrief.vue'
 import RailSourcesBrief from './RailSourcesBrief.vue'
 
 const props = withDefaults(defineProps<{
@@ -48,6 +52,11 @@ const props = withDefaults(defineProps<{
   topicCandidateCount: number
   /** 「当日日报」视图模型（跟随矩阵选中日；壳层用既有读取链组装，本组件不发请求）。 */
   now: NowBriefModel
+  /**
+   * 「当日其他话题」组视图模型（矩阵同源派生；唯一实现点 `dayOtherTopics.ts`，
+   * 本组件只消费，不重算排除口径与计数）。
+   */
+  otherTopics: OtherTopicsView
   /** rail=右轨常驻；full=单级宽工作面（候选/watch/来源均全量）。 */
   variant?: 'rail' | 'full'
 }>(), {
@@ -68,6 +77,11 @@ const emit = defineEmits<{
   openReport: [payload: { date: string, clusterId: number | null }]
   /** 当日日报详情读取失败 → 受控重试（只重取当日详情，不重建索引）。 */
   retryNow: [date: string]
+  /**
+   * 点「当日其他话题」某行 → 选中该分区（主区既有阅读槽承接；右轨不改选择态）。
+   * `date` = 唯一日期源（矩阵选中日，即本块所跟的当日日报日）。
+   */
+  selectOther: [payload: { sectionId: string, date: string, topicId?: string | null }]
 }>()
 
 const candidateLimit = computed(() => (props.variant === 'full' ? Number.MAX_SAFE_INTEGER : 3))
@@ -117,6 +131,15 @@ function locateTarget(watch: TopicWatch): string | null {
         @open-report="emit('openReport', $event)"
         @retry="emit('retryNow', now.date ?? '')"
       />
+      <!-- 「当日其他话题」子块（add-other-topics-to-context-rail）：≥1440px 才显示，
+           填该宽度段「当日日报」块底部留白；1200–1439.98px 右轨随页面流动，不出该子块。 -->
+      <div class="bcr-other" data-testid="rail-other-topics-block">
+        <RailOtherTopicsBrief
+          :view="otherTopics"
+          @select-other="emit('selectOther', { ...$event, date: now.date ?? '' })"
+          @retry="emit('retryNow', now.date ?? '')"
+        />
+      </div>
     </section>
 
     <!-- 3. 话题追踪（boardId 作用域）+ 话题候选（人工激活）分列 -->
@@ -248,6 +271,18 @@ function locateTarget(watch: TopicWatch): string | null {
 @media (min-width: 1440px) {
   .bcr.is-rail .bcr-block--grow {
     flex: 1 1 auto;
+  }
+}
+
+/* 「当日其他话题」子块：默认隐藏，只在 ≥1440px 出现（该宽度段才有「当日日报」块留白可填；
+   1200–1439.98px 右轨随页面流动，出该子块会改变该视口下的页面高度）。 */
+.bcr-other {
+  display: none;
+}
+
+@media (min-width: 1440px) {
+  .bcr-other {
+    display: block;
   }
 }
 

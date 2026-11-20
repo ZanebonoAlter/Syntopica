@@ -67,7 +67,11 @@ const emit = defineEmits<{
   deleted: []
   retryHealth: []
   retryWatches: []
+  /** 当日日报详情读取失败 → 受控重试（只重取当日详情，不重建索引）。 */
+  retryNow: [date: string]
   locateLane: [topicId: string]
+  /** 点「当日其他话题」某行 → 选中该分区（主区既有阅读槽承接）。 */
+  selectOther: [payload: { sectionId: string, date: string, topicId?: string | null }]
   openWatchManage: []
   openTopics: []
 }>()
@@ -144,6 +148,8 @@ function openHealth(): void {
         @open-watch-manage="emit('openWatchManage')"
         @retry-watches="emit('retryWatches')"
         @locate-lane="emit('locateLane', $event)"
+        @retry-now="emit('retryNow', $event)"
+        @select-other="emit('selectOther', $event)"
         @open-topics="emit('openTopics')"
       />
 

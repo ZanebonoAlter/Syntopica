@@ -306,6 +306,8 @@ const {
   reportDay: computed(() => wiring.stageProps.value.reportDay),
   selectedDate,
   laneDynamicsLanes,
+  // 「当日其他话题」组视图模型：壳层已算好（矩阵同源），右轨只消费（零新增请求）。
+  otherTopics: wiring.otherTopics,
 })
 
 const stageBinding = computed<BoardConsoleStageProps>(() => buildConsoleStageProps({
@@ -359,6 +361,16 @@ async function handleRetryNow(date: string): Promise<void> {
   await wiring.retryReportDay(date)
 }
 
+/**
+ * 「当日其他话题」选行（矩阵折叠组 / 右轨子块同一入口）：选中该分区并由主区既有阅读槽
+ * 承接——右轨只发事件，不自己改选择态、不另开浮层。开着工作面时先关工作面
+ * （同「定位泳道」：正文在幕后的阅读槽里）。
+ */
+function handleSelectOther(payload: { sectionId: string, date: string, topicId?: string | null }): void {
+  closeWorkface()
+  wiring.selectOther(payload)
+}
+
 function handleBoardDeleted(): void {
   closeWorkface()
   void router.push('/tags')
@@ -410,7 +422,7 @@ watch(boardIdRef, () => {
       @select-cell="wiring.selectCellFromStage"
       @select-date="wiring.selectDateFromStage"
       @select-day-header="wiring.selectDayHeader"
-      @select-other="wiring.selectOther"
+      @select-other="handleSelectOther"
       @toggle-others="wiring.toggleOthers"
       @select-observed-day="wiring.selectObservedDay"
       @toggle-dormant="toggleDormant"
@@ -463,6 +475,8 @@ watch(boardIdRef, () => {
       @retry-health="loadHealth"
       @retry-watches="loadWatches"
       @locate-lane="locateLaneFromRail"
+      @select-other="handleSelectOther"
+      @retry-now="handleRetryNow"
       @open-watch-manage="overlays.openWatchManage"
       @open-topics="overlays.openTopicManage"
     />

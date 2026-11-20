@@ -2,7 +2,8 @@
  * 右轨「当日日报」读模型（console-rails-live-signals design D5/D6）。
  *
  * 纯函数：**不发任何请求**——输入是既有读取链的当日日报详情（报告优先读取 `reportDay`）
- * 与既有 lane-dynamics 泳道清单（矩阵日格同源）。两层表达：
+ * 与既有 lane-dynamics 泳道清单（矩阵日格同源）。两层表达（第三层「其他话题」由独立组件
+ * `RailOtherTopicsBrief.vue` 承载，不在本模型派生）：
  *
  *  1. **点评层** = `report.highlights`（后端 LLM 生成的 2–3 条当日要闻，原序不截断）。
  *     MUST NOT 单独再显示 `report.title` / `report.summary`——后端 `FinalizeReportHighlights`
@@ -16,7 +17,11 @@
  *     - **线索数取 lane-dynamics 该泳道在选中日的 `clue_count`**（与矩阵日格同源同值，
  *       绝不用含综合稿的日报分区线索数）；取不到 → `null`（显示 `—`，不补 0）。
  *     - **按线索数降序**（`null` 排末位）；并列保持日报 sections 原序（稳定排序）。
- *     - candidate 分区（「其他动态」）不进右轨（矩阵下方「当日其他话题」已承载）。
+ *     - candidate 分区（「其他动态」）不进**泳道层**（不得与泳道行的「该泳道当日线索数」并排成
+ *       同一列）；它们由右轨「当日日报」块内的独立子块「当日其他话题」承载
+ *       （add-other-topics-to-context-rail：≥1440px 才显示，模型 = `dayOtherTopics.ts` 的
+ *       `OtherTopicsView`，单位后缀「条线索」与泳道层的「条」分家）；矩阵下方「当日其他话题」
+ *       折叠组仍是主交互面。
  */
 import type { LaneDayReportHighlight, LaneDayReportSection } from '~/api/normalizers/laneDayReading'
 import { dayCellMetrics, type WindowLane } from '~/api/normalizers/laneDynamicsWindow'

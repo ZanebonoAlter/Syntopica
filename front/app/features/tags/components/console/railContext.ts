@@ -9,6 +9,7 @@
 import type { TopicWatch } from '~/api/topicWatches'
 import type { RailHealthSnapshotView } from '~/api/normalizers/consoleRail'
 import type { GovernanceTab } from './governanceTabs'
+import type { OtherTopicsView } from './dayOtherTopics'
 import type { NowBriefModel } from './nowBrief'
 
 export interface RailHealthView {
@@ -42,6 +43,8 @@ export interface RailContext {
   watches: RailWatchView
   /** 「当日日报」视图模型（跟随矩阵选中日；壳层用既有读取链组装，右轨不另发请求）。 */
   now: NowBriefModel
+  /** 「当日其他话题」组视图模型（矩阵同源派生；唯一实现点 `dayOtherTopics.ts`）。 */
+  otherTopics: OtherTopicsView
 }
 
 /** 单级宽工作面页签：本板块上下文 / 体检依据 + 治理五页签。 */
@@ -76,6 +79,8 @@ export interface RailBinding {
   topicCandidateCount: number
   /** 「当日日报」视图模型（点评层 + 泳道层）。 */
   now: NowBriefModel
+  /** 「当日其他话题」组视图模型（成员/行序/计数/状态词；右轨只渲染）。 */
+  otherTopics: OtherTopicsView
 }
 
 export function toRailBinding(context: RailContext): RailBinding {
@@ -96,6 +101,7 @@ export function toRailBinding(context: RailContext): RailBinding {
     laneIds: context.laneIds,
     topicCandidateCount: context.topicCandidateCount,
     now: context.now,
+    otherTopics: context.otherTopics,
   }
 }
 

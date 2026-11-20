@@ -183,6 +183,7 @@ defineExpose({ getStageElement })
         @open-topics="emit('openTopics')"
         @open-report="emit('openReportCluster', $event)"
         @retry-now="emit('retryNow', $event)"
+        @select-other="emit('selectOther', $event)"
       />
     </aside>
   </div>

@@ -9,13 +9,16 @@
  *  - RS-6 无全局治理六项（反向断言）
  *  - RS-7 体检/来源失败局部降级、互不阻塞
  *  - RS-8 「当日日报」块：跟随选中日、点评层不重复日报标题、泳道层线索数与事件上抛
+ *  - RS-9 「当日其他话题」子块：挂在「当日日报」块内、右轨五块顺序不变、视口门槛（≥1440px）
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
 import type { BoardHealthSnapshotDTO } from '~/api/semanticBoards'
 import { normalizeRailHealth } from '~/api/normalizers/consoleRail'
 import type { TopicWatch } from '~/api/topicWatches'
 import type { BoardSourceBreakdown } from '~/types'
+import type { OtherTopicsView } from './dayOtherTopics'
 import type { NowBriefModel } from './nowBrief'
 
 const { apiMock } = vi.hoisted(() => ({
@@ -126,6 +129,30 @@ function nowModel(overrides: Partial<NowBriefModel> = {}): NowBriefModel {
   }
 }
 
+/** 「当日其他话题」组视图模型（壳层 `buildOtherTopics` 派生产物；本测试只管渲染与事件）。 */
+function otherTopicsView(overrides: Partial<OtherTopicsView> = {}): OtherTopicsView {
+  return {
+    state: 'ready',
+    rows: [
+      {
+        sectionId: '701',
+        label: '乌干达因过境旅客确诊加德满都口岸加强防疫',
+        clusterIndex: 0,
+        threadCount: 3,
+        compositeCount: 0,
+        persistentTopicId: null,
+        statusKind: 'unattributed',
+        statusText: '当次未归属',
+      },
+    ],
+    clueCount: 3,
+    statusText: null,
+    note: null,
+    retryable: false,
+    ...overrides,
+  }
+}
+
 function mountRail(overrides: Record<string, unknown> = {}) {
   const wrapper = mount(BoardContextRail, {
     props: {
@@ -144,6 +171,7 @@ function mountRail(overrides: Record<string, unknown> = {}) {
       laneIds: ['1204', '1205'],
       topicCandidateCount: 4,
       now: nowModel(),
+      otherTopics: otherTopicsView(),
       ...overrides,
     },
   })
@@ -439,5 +467,44 @@ describe('BoardContextRail — RS-8 「当日日报」块', () => {
     await wrapper.find('[data-testid="rail-now-retry"]').trigger('click')
     expect(wrapper.emitted('retryNow')).toEqual([['2026-11-18']])
     expect(wrapper.find('[data-testid="rail-watches"]').text()).toContain('美伊谈判')
+  })
+})
+
+describe('BoardContextRail — RS-9「当日其他话题」子块', () => {
+  it('子块挂在「当日日报」块内（rail-block-now）；右轨五个顶层区块顺序不变', async () => {
+    const wrapper = mountRail()
+    await flushPromises()
+    const nowBlock = wrapper.find('[data-testid="rail-block-now"]')
+    expect(nowBlock.find('[data-testid="rail-other-topics-block"]').exists()).toBe(true)
+    expect(nowBlock.find('[data-testid="rail-other-topics"]').exists()).toBe(true)
+    // 顶层五块顺序不变（体检 → 当日日报 → 话题追踪 → 构成候选 → 来源）
+    const html = wrapper.html()
+    const order = ['rail-block-health', 'rail-block-now', 'rail-block-watch', 'rail-block-candidates', 'rail-block-sources']
+      .map(id => html.indexOf(`data-testid="${id}"`))
+    expect(order.every(index => index >= 0)).toBe(true)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
+  })
+
+  it('子块内容 = 分区标题 / 该分区线索数（单位「条线索」）/ 归属状态词', async () => {
+    const wrapper = mountRail()
+    await flushPromises()
+    const item = wrapper.find('[data-testid="rail-other-topic-item-701"]')
+    expect(item.text()).toContain('乌干达因过境旅客确诊加德满都口岸加强防疫')
+    expect(item.text()).toContain('3 条线索')
+    expect(item.text()).toContain('当次未归属')
+    expect(wrapper.find('[data-testid="rail-other-topics-count"]').text()).toBe('3 条线索')
+  })
+
+  it('点子块行 → 上抛 selectOther（带 sectionId / 所跟日期 / topicId）；右轨不改选择态', async () => {
+    const wrapper = mountRail()
+    await flushPromises()
+    await wrapper.find('[data-testid="rail-other-topic-row"]').trigger('click')
+    expect(wrapper.emitted('selectOther')).toEqual([[{ sectionId: '701', date: '2026-11-18', topicId: null }]])
+  })
+
+  it('视口门槛：子块默认隐藏，仅 @media (min-width: 1440px) 显示（1200–1439.98px 不出现）', () => {
+    const source = readFileSync(`${import.meta.dirname}/BoardContextRail.vue`, 'utf8')
+    expect(source).toMatch(/\.bcr-other\s*\{\s*display:\s*none;\s*\}/)
+    expect(source).toMatch(/@media\s*\(min-width:\s*1440px\)\s*\{\s*\.bcr-other\s*\{\s*display:\s*block;\s*\}/)
   })
 })

@@ -16,6 +16,7 @@ import { useBoardHealth } from '~/features/tags/composables/useBoardHealth'
 import { useBoardComposition } from '~/features/tags/composables/useBoardComposition'
 import type { LaneReportDay } from '~/features/tags/composables/useLaneDayReading'
 import type { ObservationLaneRow } from './observationLanes'
+import type { OtherTopicsView } from './dayOtherTopics'
 import { buildNowBriefModel } from './nowBrief'
 import { toRailBinding, type RailContext } from './railContext'
 
@@ -32,6 +33,11 @@ export interface ConsoleRailDeps {
   selectedDate: Ref<string | null>
   /** lane-dynamics 泳道清单（A 档 + 365 池合并；线索数与矩阵日格同源同值）。 */
   laneDynamicsLanes: Ref<WindowLane[]>
+  /**
+   * 「当日其他话题」组视图模型（壳层既有派生结果：唯一实现点 `dayOtherTopics.ts`；
+   * 右轨只消费，不重算排除口径/计数，也不再发请求）。
+   */
+  otherTopics: Ref<OtherTopicsView>
 }
 
 export function useConsoleRail(deps: ConsoleRailDeps) {
@@ -75,6 +81,7 @@ export function useConsoleRail(deps: ConsoleRailDeps) {
       error: deps.watchesError.value,
     },
     now: nowModel.value,
+    otherTopics: deps.otherTopics.value,
   }))
 
   const railBinding = computed(() => toRailBinding(railContext.value))
