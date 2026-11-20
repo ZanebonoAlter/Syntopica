@@ -24,8 +24,20 @@
 
 - [x] 4.1 discovery 代理设置 API（`GetProxySettings`/`SaveProxySettings`）注释与描述文案收窄为「外部内容抓取链路」
 
-## 5. 测试与验证
+## 5. 测试
 
-- [x] 5.1 单测：强制直连不读环境代理（`t.Setenv HTTPS_PROXY` + httptest 断言直连）；`WithCrawlScope` client 仍按 `SetProxy` 路由；既有 failover/熔断测试保持绿
-- [x] 5.2 `golangci-lint run ./internal/platform/httpclient/...` + 影响包 `go test`（httpclient、datasources、reader/service、imageproxy）
-- [x] 5.3 重启后端（`bash scripts/dev/start-dev.sh --restart`），mihomo 日志验证：`main` 进程的 AI 域名行（deepseek/minimax/bigmodel）绝迹；恢复 `http_proxy_url` 后抓取链路仍走代理
+- [x] 5.1 单测：强制直连不读环境代理（httptest + 直连断言 + `sharedDirect().Proxy` 非空直接断言）；`WithCrawlScope` client 仍按 `SetProxy` 路由；env 兑底为引用断言（stdlib once 缓存限制，行为面归部署验证）；既有 failover/熔断测试全绿
+- [x] 5.2 `golangci-lint` + 影响包 `go test -count=1`（httpclient、datasources、reader/service、imageproxy、discovery/handler）全绿
+
+## 6. 文档
+
+<!-- doc-impact: flow, configuration -->
+<!-- doc-impact-excuse: api=discovery_handler 仅改注释文案，API 契约（路由/请求/响应）零变化，api 文档无需更新 -->
+
+- [x] 6.1 `docs/reference/configuration.md`：出站代理节与配置表的作用域描述收窄（仅抓取链路，AI 调用等其余出站一律直连）
+- [x] 6.2 `docs/reference/flow/scheduler.md`：代理污染防线段更新 + 变更溯源表加 narrow-outbound-proxy-scope 行
+
+## 7. 验证
+
+- [x] 7.1 重启后端（start-dev.sh --restart，普通 bash），健康检查与代理配置注入正常（configured:true）
+- [x] 7.2 mihomo 日志验证：重启后 `main` 进程 AI 域名行 0 条（deepseek/minimax/siliconflow）；抓取链路连接仍经 mihomo DIRECT（作用域正常工作）
