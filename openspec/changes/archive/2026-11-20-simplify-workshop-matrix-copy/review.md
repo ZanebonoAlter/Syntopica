@@ -4,6 +4,9 @@
 审查方式：逐文件 diff 对照 `proposal.md` / `design.md` / `ui-design.md` / delta spec `specs/workshop-board-console/spec.md`，
 并全仓 grep 已删文案的残留引用；不重跑测试（主线程已报 205 相关用例 + typecheck + 增量 lint 绿）。
 
+### R-1 2026-11-18【Low】矩阵/右轨文案精简的 16 文件改动逐条对账完成，无阻塞项
+- **状态**：已采纳（结论：无 High / Medium 阻塞项；对账明细见下方「与制品的一致性」表）
+
 ## 结论
 
 **无 High / Medium 阻塞项，可继续临时目录构建。** 改动全部落在「删重复说明 + 把口径挪到数据/操作旁」，
