@@ -23,7 +23,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 - 保留互补的 superpowers skill：`systematic-debugging`、`requesting-code-review`、`receiving-code-review`（§0.6 review 纪律已引用后者）。
 - superpowers bootstrap 的「1% 命中也必须先调 skill」规则在本仓库按上表执行，**不构成额外 MUST**；开发入口永远是 openspec 编排。
 - caveman 系列仅用户显式 `/caveman` 时启用；description 里的 auto-trigger（"be brief"/"less tokens"）一律忽略，日常沟通保持中文大白话。
-- 跑 `openspec update` 时加 `--tools pi`，避免重新生成 `source-command-opsx-*` 等重复 skill，也防止 `.claude/skills`、`.claude/commands` 等其他 harness 副本再生（曾于 2026-08 清理，备份在 `.agents/skills-library/`；2026-08-20 又清理过一轮 18 份漂移副本）。
+- **OpenSpec 2.x 更新约定（2026-11-20 由 1.13.2 升 2.1.1）**：直接执行 `openspec update`——2.0 起 skills-only，已无 `--tools` 参数，`.pi/prompts/opsx-*` 命令文件不再生成，指令只落 `.agents/skills/openspec-*/SKILL.md` 单层（`.claude`/`.codex` 副本由 update 自动清理；历史清理记录见 `.agents/skills-library/`）。workflow 集由**全局** profile 决定：本仓库依赖逐步建档与归档验证，`new` / `continue` / `verify` 必须留在 `openspec config get workflows`（丢了会退化成只有 propose 一步生成，绕过 major UI 原型审批），用 `openspec config set workflows '[...]'` 加回。
 
 ## Project Snapshot
 
