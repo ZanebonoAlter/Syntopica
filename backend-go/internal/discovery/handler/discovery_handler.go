@@ -535,9 +535,10 @@ func SaveSearxngSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// ── proxy settings（全局出站代理）──
+// ── proxy settings（外部内容抓取链路的出站代理）──
 
-// GetProxySettings GET /api/settings/proxy — 读全局出站代理地址（feed 抓取等所有外部请求）。
+// GetProxySettings GET /api/settings/proxy — 读全局出站代理地址（作用域：
+// feed 拉取、正文提取、文章外链图片；AI 调用等其余出站不受影响，一律直连）。
 func GetProxySettings(c *gin.Context) {
 	proxyURL := ""
 	configured := false
@@ -561,7 +562,8 @@ type saveProxySettingsRequest struct {
 	HTTPProxyURL string `json:"http_proxy_url"`
 }
 
-// SaveProxySettings POST /api/settings/proxy — 写全局出站代理地址并即时生效。
+// SaveProxySettings POST /api/settings/proxy — 写全局出站代理地址并即时生效
+// （仅作用于外部内容抓取链路，见 GetProxySettings）。
 // 空串=清除代理（恢复直连）。URL 需为 http/https/socks5，非法值返回 400。
 func SaveProxySettings(c *gin.Context) {
 	var req saveProxySettingsRequest

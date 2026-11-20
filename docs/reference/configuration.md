@@ -220,7 +220,7 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `firecrawl_config` | Firecrawl 集成设置（启用、API URL、API key、模式、超时、最大内容长度） |
 | `open_notebook_config` | Open Notebook digest 导出设置（启用、base URL、API key、model、目标笔记本、prompt 模式、自动发送日报/周报） |
 | `rsshub_config` | RSSHub 实例配置（订阅源发现用，见下「订阅源发现」节；`rsshub_base_url` 缺省回落 `http://rsshub.app`） |
-| `http_proxy_config` | 全局出站代理配置（feed 抓取 / Firecrawl / LLM 等所有外部请求；见下「出站代理」节；`http_proxy_url` 空=直连） |
+| `http_proxy_config` | 全局出站代理配置（**仅外部内容抓取链路**：feed 拉取 / 正文提取 / 文章外链图片；AI 调用等其余出站一律直连，见下「出站代理」节；`http_proxy_url` 空=直连） |
 | `daily_report_time` | 日报生成最早时刻（HH:MM 格式，默认 `21:00`）；实际生成还受队列感知门控（双队列清空才出，见下一条） |
 | `daily_report_deadline` | 日报兜底强制生成时刻（HH:MM 格式，默认 `23:30`；队列未清空时到点强制出报告；早于 `daily_report_time` 回退默认并告警） |
 | `auto_start_models` | 本地模型自动拉起总开关（默认 `false`）：后端启动时，对「探测不通且配了 `start_command`」的 provider 自动执行启动命令拉起本地模型进程。见下「本地模型自动拉起」节 |
@@ -390,13 +390,13 @@ go run ./cmd/related-events --experiment --board <boardId>              # 只读
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `http_proxy_url` | *(空)* | 全局出站代理地址；feed 抓取、Firecrawl、LLM 等**外部**请求经此转发。支持 `http`/`https`/`socks5`。空=直连 |
+| `http_proxy_url` | *(空)* | 全局出站代理地址；**仅抓取链路**（feed 拉取、正文提取、文章外链图片）经此转发，AI 调用、数据增强、目录同步等强制直连（narrow-outbound-proxy-scope）。支持 `http`/`https`/`socks5`。空=直连 |
 
 - **回环地址自动直连**：即使配置了代理，目标为回环地址（`localhost` / `127.0.0.0/8` / `::1` / 空 host）的请求一律绕过代理直连（NO_PROXY 惯例）——本地托管模型（llama-server）的探测/推理不被代理 502 拦截（2026-08-19 修复，见 ai-health-reprobe）。
 
 - **代理不可达熔断直连回退**（2026-09-17，见 outbound-proxy-failover）：拨代理本身失败（连接拒绝/拨号超时，如 Clash 进程退出）时，该请求立即直连重试（dial 阶段失败请求未发出，重试无副作用），并打开熔断 60 秒——窗口内所有请求直接直连零等待；到期放行单个请求试探代理（单飞，并发其余直连），代理路径通则自动接回、仍不通则续期。仅「拨代理失败」触发：代理活着但目标侧失败（502/CONNECT 拒绝/目标超时）不熔断也不直连重试（那类站点可能正是依赖代理的）。
-- **保存真正即时生效**：代理 URL 原子存储、包级 failover transport 每请求动态读取——`httpclient.SetProxy` 运行时变更（换址/清空）对**所有已构造 client**（含启动时建好的抓取/AI 单例）立即生效，无需重启；换址同时重置熔断状态（新地址按健康对待）。重启后由 `cmd/server/main.go` 从该配置注入，无需重设。
-- 与 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量的关系：本配置优先；当 `http_proxy_url` 为空时，路由回落标准库 `ProxyFromEnvironment`（即环境变量作兜底）；代理故障降级直连的重试同样保留该兑底。
+- **保存真正即时生效**：代理 URL 原子存储、包级 failover transport 每请求动态读取——`httpclient.SetProxy` 运行时变更（换址/清空）对**所有抓取作用域内已构造 client**（含启动时建好的单例）立即生效，无需重启；换址同时重置熔断状态（新地址按健康对待）。重启后由 `cmd/server/main.go` 从该配置注入，无需重设。
+- 与 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量的关系：本配置优先；当 `http_proxy_url` 为空时，抓取链路回落标准库 `ProxyFromEnvironment`（即环境变量作兜底）；非抓取链路强制直连，不读环境变量（narrow-outbound-proxy-scope）；代理故障降级直连的重试同样保留该兑底。
 - 实现入口：`internal/platform/httpclient/`（`httpclient.go` 的 `SetProxy` 原子 URL + `failover.go` 的包级 failover transport：熔断器 3 态状态机 + `proxyDialContext` 拨号层错误打标，回环直连 `isLoopbackHost` 在路由函数内）；复用 `aisettings` 通用配置存储，与 RSSHub/Firecrawl 配置同机制。
 
 ### 订阅源发现（Feed Discovery）

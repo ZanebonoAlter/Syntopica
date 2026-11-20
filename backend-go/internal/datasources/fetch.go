@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"syntopica-backend/internal/platform/httpclient"
 )
 
 // FetchBudget bounds a single HTTP request (design decision 3). Values follow
@@ -72,17 +74,19 @@ func NewFetcher(allowlist []string, budget FetchBudget) *Fetcher {
 	for _, h := range allowlist {
 		al[normalizeHost(h)] = struct{}{}
 	}
+	c := httpclient.New(httpclient.WithTimeout(budget.Timeout))
+	// 数据增强研究源（EIA/JODI/GDELT 等）不属抓取作用域，强制直连
+	// （GDELT 对代理出口 IP 限流 429，直连实测正常）。若未来出现需代理的
+	// 境外源，给该 client 加 WithCrawlScope 纳入作用域即可。
+	// Manual redirect control: never follow automatically; hops are
+	// validated against the allowlist + https before following.
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	return &Fetcher{
 		allowlist: al,
 		budget:    budget,
-		// Manual redirect control: never follow automatically; hops are
-		// validated against the allowlist + https before following.
-		client: &http.Client{
-			Timeout: budget.Timeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
+		client:    c,
 	}
 }
 

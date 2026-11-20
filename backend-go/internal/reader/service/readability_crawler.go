@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	nurl "net/url"
 	"strings"
 	"time"
 
@@ -64,18 +66,42 @@ type ReadabilityCrawler struct {
 // NewReadabilityCrawler 构造一个进程内 readability 抓取器。
 func NewReadabilityCrawler() *ReadabilityCrawler {
 	return &ReadabilityCrawler{
-		client: httpclient.New(httpclient.WithTimeout(30 * time.Second)),
+		// 正文提取属外部内容抓取链路（narrow-outbound-proxy-scope）：
+		// 抓取经工厂 client（跟随全局出站代理 + 熔断回退），readability 只做解析。
+		client: httpclient.New(httpclient.WithTimeout(30*time.Second), httpclient.WithCrawlScope()),
 	}
 }
 
 // ScrapePage 抓取 URL，用 readability 提正文后转 Markdown，返回中立 ScrapeResult。
+// 抓取走工厂 client（WithCrawlScope，跟随全局出站代理）：readability.FromURL
+// 内部自建裸 client 不受代理/熔断管控，故改为「自行抓取 + 库仅解析」两段式。
 // 注意：返回结果是否"合格"需调用方用 isUsableArticle 判定；本方法不自行过滤。
 func (c *ReadabilityCrawler) ScrapePage(ctx context.Context, url string) (*ScrapeResult, error) {
 	_, span := otel.Tracer(tracing.ServiceName).Start(ctx, "ReadabilityCrawler.ScrapePage")
 	defer span.End()
-	article, err := readability.FromURL(url, 30*time.Second, readability.RequestWith(func(r *http.Request) {
-		r.Header.Set("User-Agent", desktopUserAgent)
-	}))
+
+	parsedURL, err := nurl.ParseRequestURI(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse URL: %v", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", desktopUserAgent)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// 与 readability.FromURL 同款前置校验：非 HTML 不进解析器。
+	if cp := resp.Header.Get("Content-Type"); !strings.Contains(cp, "text/html") {
+		return nil, fmt.Errorf("URL is not a HTML document")
+	}
+
+	parser := readability.NewParser()
+	article, err := parser.Parse(resp.Body, parsedURL)
 	if err != nil {
 		return nil, err
 	}

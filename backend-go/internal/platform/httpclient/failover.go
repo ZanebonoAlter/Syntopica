@@ -39,9 +39,10 @@ import (
 // allowed to retry the proxy. Package var so tests can shorten it.
 var proxyFailoverWindow = 60 * time.Second
 
-// failoverTransport routes requests through the configured proxy while a
-// breaker watches proxy health; it is the package-level transport shared by
-// every client built via New without an explicit transport.
+// failoverTransport routes crawl-scoped clients (WithCrawlScope: feed
+// fetching, article extraction, upstream image pulls) through the configured
+// proxy while a breaker watches proxy health; it is the package-level
+// transport those clients share.
 type failoverTransport struct {
 	// proxy dials through the currently configured proxy URL. Its Proxy
 	// function is a pure routing decision; breaker state transitions live
