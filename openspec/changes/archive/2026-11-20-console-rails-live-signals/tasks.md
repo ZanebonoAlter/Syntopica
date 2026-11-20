@@ -41,24 +41,42 @@
 - [x] 4.1 `ObservationMatrixGrid.vue` / `ObservationMatrixDayHeader.vue` / `observationMatrixRows.css`：选中列整列淡底（`color-mix` 低浓度 `background`），仅在有分区的报日铺底，无分区历史日不铺；不改列头高亮、不动格子色。
 - [x] 4.2 既有矩阵测试内补淡底断言（选中 / 未选中 / 无分区日三种）。
 
-## 5. 视觉验收
+## 4b. Review
 
-- [x] 5.1 `pnpm lint` && `pnpm exec nuxi typecheck` && `pnpm test:unit <受影响文件> --maxWorkers=2` && `pnpm build`。（build 需 `NODE_OPTIONS=--max-old-space-size=3584`，与 deploy 脚本同款）
-      → 本线程已跑 lint（0 error）/ typecheck（0 error）/ 受影响范围单测（全绿，见报告）；`pnpm build` 按主线程要求未跑。
-- [x] 5.2 agent-browser 主链路：打开 `/tags/<boardId>` → 左轨读条码 → 点另一版块 → 右轨读当日日报 → 点矩阵列头换日（右栏跟随 + 列淡底）→ 点泳道行定位。
-      → 需先有构建产物（静态托管走 `bash scripts/dev/deploy-frontend.sh`），留给主会话。
-- [x] 5.3 1440×900 与 1920×1080 两档截图，`ui-verification/report.md` 按 `### A-N 场景【pass|fail|未覆盖】+ 依据` 建账（A-1~A-9 全 pass）。
-- [x] 5.4 部署静态托管（`bash scripts/dev/deploy-frontend.sh`）后人工确认一屏效果。
+- [x] 4b.1 派 `change-review` 子线程聚焦 review（制品 proposal/design/spec delta/ui-design + 实现 diff），意见按 High/Medium/Low 处置后 `review.md` 建账。
+      → 审出 0 High / 4 Medium / 6 Low；Medium 全修（R-1 色点改用后端稳定色、R-2 flow 措辞同步、R-3 补矩阵淡底 spec delta、R-4 日期闸门下沉纯函数+补测）；Low 修 5 条、驳回 1 条（R-8 跨模块搬迁延后）。处置后 5 文件 73 tests 全绿。详见 `review.md`。
 
-## 6. 文档与归档
+## 5. 文档
 
-<!-- doc-impact: flow api -->
+<!-- doc-impact: flow=左右轨口径与共同轴对齐规则落在 flow/semantic-board.md 与 flow/daily-report.md；api=两个既有端点的消费方与对齐 MUST 落在 api/daily-reports.md -->
 
-- [x] 6.1 `docs/reference/flow/semantic-board.md`：左轨条码口径与**共同轴对齐**规则；右轨「当日日报」节；§12 变更溯源加本 change。
-- [x] 6.2 `docs/reference/flow/daily-report.md`：`highlights` 与 `title`/`summary` 的派生关系（title/summary 取首条重点）——右栏不得重复展示的依据。
-- [x] 6.3 `docs/reference/api/daily-reports.md`：`GET /daily-reports/:id` 节补「L1 版块态势页右轨消费方」；`GET /semantic-boards/overview` 节补左轨消费方与共同轴对齐说明。
-- [x] 6.4 `bash scripts/harness/doc-impact.sh verify` + `bash scripts/harness/check-standards.sh`。
-      → doc-impact 通过（声明 `flow api`）；check-standards 315 通过 / 2 失败，两项均非本 change（`fix-lane-row-gap-zoom` 历史溯源债、`fix-radar-overview-false-zero` 他人活跃 change）。
-- [x] 6.5 归档前满足《开发执行规范》§11 门禁（含 §11.1-⑤ UI 验收证据）。
-      → §11.1-⑤ 验收证据已建账（`ui-verification/report.md`，A-1~A-9 全 pass）。
-      → `check-standards.sh` 317 通过 / 0 失败（全绿）；其间补了已归档 change `2026-11-17-fix-lane-row-gap-zoom` 缺的一行流程溯源（纯文档、归档门禁硬要求）。
+- [x] 5.1 `docs/reference/flow/semantic-board.md`：左轨条码口径与**共同轴对齐**规则；右轨「当日日报」节；§12 变更溯源加本 change。
+- [x] 5.2 `docs/reference/flow/daily-report.md`：`highlights` 与 `title`/`summary` 的派生关系（title/summary 取首条重点）——右栏不得重复展示的依据。
+- [x] 5.3 `docs/reference/api/daily-reports.md`：`GET /daily-reports/:id` 节补「L1 版块态势页右轨消费方」；`GET /semantic-boards/overview` 节补左轨消费方与共同轴对齐说明。
+- [x] 5.4 `bash scripts/harness/doc-impact.sh verify` + `bash scripts/harness/check-standards.sh`。
+      → doc-impact 通过（声明 `flow api`）；check-standards 318 通过 / 0 失败（全绿）；其间补了已归档 change `2026-11-17-fix-lane-row-gap-zoom` 缺的一行流程溯源（纯文档、归档门禁硬要求）。
+- [x] 5.5 归档前满足《开发执行规范》§11 门禁（含 §11.1-⑤ UI 验收证据）。
+      → §11.1-⑤ 验收证据已建账（`ui-verification/report.md`，A-1~A-9 全 pass + 两处验收后微调复测）。
+
+## 6. 测试
+
+<!-- doc-impact: flow=测试口径复用既有 clueDepth/clueMix 与 dayCellMetrics，不新增量纲；api=不改协议只补前端归一字段 -->
+
+- [x] 6.1 `railClueAxis.test.ts`（11 例）：共同轴重对齐 offset 0 / 3 / ≥14、join 顺序不等于 overview 序、未取到整行斜纹、峰值与强度计算、`data_unavailable` 行。
+- [x] 6.2 `nowBrief.test.ts`（17 例）：不重复日报标题、`article_count` 缺省不显示、candidate 分区排除、thread 优先于 cluster_label、无 thread 无 label 不出行、**排序 1/4/2/0 → 4/2/1/0**、并列保持日报原序、null 末位、lane-dynamics 里查不到的 topic 不进右栏。
+- [x] 6.3 `BoardRail.test.ts`（9 例）：14 格数量、斜纹 vs 真实 0、选中态、`title` 含 `tag_count`、`add` 入口行为不变。
+- [x] 6.4 `BoardContextRail.test.ts`（23 例）：右轨顺序、当日日报块存在、泳道行不并排两套量纲、体检徽章即评语入口（BUTTON + `openHealth`）。
+- [x] 6.5 `ObservationMatrixLaneRow.test.ts` / `ObservationMatrix` / `ObservationMatrixGrid`：选中列淡底三态（选中 / 未选中 / 无分区日不铺）。
+- [x] 6.6 受影响文件全绿：`pnpm test:unit <10 个文件> --maxWorkers=2` → 10 files / 136 tests 全通过；收尾微调后复测 `BoardContextRail + BoardRail` 32 tests 全通过。
+- [x] 6.7 存量红测试登记：`LaneTrendChart.test.ts` 2 例（断言旧文案「事件线数」，HEAD 基线即红、非本 change 引起）已 `test-patrol.sh --register fe-lane-trend-chart-wording` 记账。
+
+## 7. 验证
+
+<!-- doc-impact: flow=验收断言以 flow 的线索口径与「未取到≠0」为判据；api=数值一致性经后端 lane-dynamics 逐条对账 -->
+
+- [x] 7.1 `pnpm lint`（0 error，7 warning 全为存量非本 change 文件）/ `pnpm exec nuxi typecheck`（exit 0）/ `pnpm build`（需 `NODE_OPTIONS=--max-old-space-size=3584`）。
+- [x] 7.2 `openspec validate console-rails-live-signals --strict` → valid（5/5 artifacts）。
+- [x] 7.3 `bash scripts/harness/archive-readiness.sh console-rails-live-signals` 全绿。
+- [x] 7.4 agent-browser 主链路（1440×900 + 1920×1080 两档）：左轨条码 → 换版块 → 右轨当日日报 → 点列头换日（右栏跟随 + 列淡底）→ 点泳道行定位。
+- [x] 7.5 **数值一致性对账**（核心口径）：右栏 `5/3/2/1 条` = `GET /lane-dynamics` 11-19 的 `5/3/2/1` = 矩阵 11-19 列 → 三者同源同值。
+- [x] 7.6 `ui-verification/report.md` 建账：A-1~A-9 全 pass + 两处验收后微调（名称截断、体检行宽度）复测记录；截图 `1440x900.png` / `1920x1080.png` 在盘。

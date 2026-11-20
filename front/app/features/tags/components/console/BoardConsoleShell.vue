@@ -30,6 +30,7 @@ import { useConsoleRefresh } from './useConsoleRefresh'
 import { useConsoleReadingWiring } from './useConsoleReadingWiring'
 import { useConsoleShellOverlays } from './useConsoleShellOverlays'
 import { buildConsoleStageProps } from './consoleStageBinding'
+import { mergeLaneDynamicsLanes } from './nowBrief'
 import { useConsoleShellActions } from './useConsoleShellActions'
 import BoardConsoleBody from './BoardConsoleBody.vue'
 import BoardWideWorkface from './BoardWideWorkface.vue'
@@ -62,6 +63,9 @@ const {
   reportMetaUnavailable,
   reportMetaStale,
   reportMetaLoading,
+  overviewError,
+  railRows,
+  railAxisDateList,
   watches,
   watchesLoading,
   watchesError,
@@ -84,6 +88,7 @@ const {
   today,
   axis,
   sourceWindow,
+  poolWindow,
   poolBounds,
   poolLoading,
   poolError,
@@ -271,6 +276,12 @@ const {
 })
 
 // ── 体检 / 构成 / 右轨上下文（同一份真实数据；装配在 useConsoleShellRail） ──
+/** lane-dynamics 泳道清单（A 档 + 365 池合并）：右轨泳道线索数与矩阵日格同源同值。 */
+const laneDynamicsLanes = computed(() => mergeLaneDynamicsLanes(
+  sourceWindow.value?.lanes ?? [],
+  poolWindow.value?.lanes ?? [],
+))
+
 const {
   railContext,
   railBinding,
@@ -292,6 +303,9 @@ const {
   watches,
   watchesLoading,
   watchesError,
+  reportDay: computed(() => wiring.stageProps.value.reportDay),
+  selectedDate,
+  laneDynamicsLanes,
 })
 
 const stageBinding = computed<BoardConsoleStageProps>(() => buildConsoleStageProps({
@@ -330,6 +344,21 @@ async function handleBoardSaved(): Promise<void> {
   await loadBoards()
 }
 
+/** 左轨重试：版块列表与 overview 信号（同一批请求，零新增）。 */
+async function handleRetryRail(): Promise<void> {
+  await Promise.all([loadBoards(), loadReportMeta()])
+}
+
+/** 右轨「当日日报」点评标题 → 跳到该期日报正文的对应聚簇（inline-edit）。 */
+function handleOpenReportCluster(payload: { date: string, clusterId: number | null }): void {
+  returnContext.openReport(payload.date, payload.clusterId)
+}
+
+/** 右轨「当日日报」详情失败 → 只重取当日详情（不重建索引、不改选中日）。 */
+async function handleRetryNow(date: string): Promise<void> {
+  await wiring.retryReportDay(date)
+}
+
 function handleBoardDeleted(): void {
   closeWorkface()
   void router.push('/tags')
@@ -350,7 +379,9 @@ watch(boardIdRef, () => {
   <BoardConsoleBody
       ref="bodyRef"
       :board-missing="boardMissing"
-      :boards="boards"
+      :rail-rows="railRows"
+      :rail-axis-dates="railAxisDateList"
+      :signal-error="overviewError"
       :selected-board-id="boardId"
       :boards-loading="boardsLoading"
       :boards-error="boardsError"
@@ -372,7 +403,7 @@ watch(boardIdRef, () => {
       @new-lane="overlays.handleNewLane"
       @open-context="openContext"
       @select-board="selectBoard"
-      @retry-boards="loadBoards"
+      @retry-boards="handleRetryRail"
       @select-lane="wiring.selectLaneFromStage"
       @edit-lane="overlays.openLaneCorrection"
       @archive-lane="overlays.openLaneArchive"
@@ -403,6 +434,8 @@ watch(boardIdRef, () => {
       @retry-watches="loadWatches"
       @locate-lane="locateLaneFromRail"
       @open-topics="overlays.openTopicManage"
+      @open-report-cluster="handleOpenReportCluster"
+      @retry-now="handleRetryNow"
     />
 
     <BoardWideWorkface

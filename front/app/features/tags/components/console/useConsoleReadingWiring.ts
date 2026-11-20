@@ -173,6 +173,15 @@ export function useConsoleReadingWiring(deps: ConsoleReadingWiringDeps) {
     await readingBridge.ensureReportIndex({ force: true })
   }
 
+  /**
+   * 当日日报详情受控重试（右轨「当日日报」块局部降级用）：只强刷该日详情，
+   * 不重建报日索引、不改选中日、不发观察请求。
+   */
+  async function retryReportDay(date: string): Promise<void> {
+    if (!date) return
+    await readingBridge.ensureReportDay(date, { force: true })
+  }
+
   const stageProps = computed<ConsoleReadingStageProps>(() => ({
     reportDates: reportDates.value,
     indexLoading: readingBridge.indexLoading.value,
@@ -213,6 +222,7 @@ export function useConsoleReadingWiring(deps: ConsoleReadingWiringDeps) {
     selectDateFromStage,
     retryReport,
     retryReportIndex,
+    retryReportDay,
     refreshAfterRebuild,
     rebuildLaneReading,
     stageProps,

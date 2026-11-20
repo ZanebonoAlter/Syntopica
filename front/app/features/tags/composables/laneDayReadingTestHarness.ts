@@ -54,6 +54,9 @@ export function reportDetail(reportId: string, periodDate: string, sections: {
     reportId,
     boardId: String(BOARD),
     periodDate,
+    title: `日报${reportId}`,
+    summary: '',
+    highlights: [],
     sections: sections.map(section => ({
       sectionId: section.sectionId,
       clusterLabel: `桶${section.sectionId}`,

@@ -13,7 +13,11 @@
  * 不拥有：索引状态（`laneDayReportIndex`）、详情缓存本体（父 store 注入）、选中日与 UI。
  */
 import { ref, shallowRef, type Ref, type ShallowRef } from 'vue'
-import type { LaneDayReportDetail, LaneDayReportSection } from '~/api/normalizers/laneDayReading'
+import type {
+  LaneDayReportDetail,
+  LaneDayReportHighlight,
+  LaneDayReportSection,
+} from '~/api/normalizers/laneDayReading'
 import type { BoundedRequestCache, BoundedCacheLoadResult } from './laneDayReadingCache'
 import type { IndexLoadResult } from './laneDayReportIndex'
 
@@ -32,6 +36,9 @@ export interface LaneReportDay {
   reportId: string | null
   /** 该日报详情全量 sections（当日原序；0 个是合法结论，不补造）。 */
   sections: LaneDayReportSection[]
+  /** 该日报的当日重点（2–3 条；右轨「当日日报」点评层；缺 highlights 的旧响应 = 未取到）。
+   *  可选：旧读取链的模型不带该字段，消费方按空数组处理（不造重点）。 */
+  highlights?: LaneDayReportHighlight[]
 }
 
 export interface LaneDayReportDayDeps {
@@ -81,7 +88,14 @@ export function createLaneDayReportDay(deps: LaneDayReportDayDeps): LaneDayRepor
     const indexResult = await deps.loadIndex(deps.requiredIndexDays(date))
     if (requestSeq !== reportSeq) return
     if (deps.boardId() !== boardId || indexResult.stale) return
-    const base: LaneReportDay = { date, status: 'loading', error: null, errorSource: null, reportId: null, sections: [] }
+    const base: LaneReportDay = {
+      date,
+      status: 'loading',
+      error: null,
+      errorSource: null,
+      reportId: null,
+      sections: [],
+    }
     const items = indexResult.items
     if (items === null) {
       finish(requestSeq, { ...base, status: 'error', error: indexResult.error || '日报列表加载失败', errorSource: 'index' }, previous)
@@ -116,6 +130,7 @@ export function createLaneDayReportDay(deps: LaneDayReportDayDeps): LaneDayRepor
       errorSource: null,
       reportId: matched.reportId,
       sections: detailRes.data.sections,
+      highlights: detailRes.data.highlights,
     }, previous)
   }
 

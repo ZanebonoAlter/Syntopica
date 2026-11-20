@@ -6,6 +6,10 @@
  *  - 最新日报独立元信息：优先 `/semantic-boards/overview` 的版块 report_date（0 active
  *    泳道版块也有真实锚），失败才退回 days=365 日报列表（锚今天，仅兜底）；
  *  - 当前板块关注记录（真实 boardId 作用域；WatchManagePanel 仍是唯一写入口）。
+ *
+ * console-rails-live-signals：overview 响应里**本来就被丢弃**的版块行（逐日线索轴 /
+ * 锚点日）在此提升为共享状态，供左轨条码读模型消费——**零新增请求**（同一次
+ * `getOverview()` 调用；overview 失败不阻塞版块列表与矩阵，左轨退「全部未取到」形态）。
  */
 import { computed, onMounted, ref, watch, type Ref } from 'vue'
 import {
@@ -13,8 +17,10 @@ import {
   useSemanticBoardsApi,
   type SemanticBoard,
 } from '~/api/semanticBoards'
+import type { RadarBoard } from '~/api/normalizers/boardRadar'
 import { useDailyReportsApi } from '~/api/dailyReports'
 import { useTopicWatchesApi, type TopicWatch } from '~/api/topicWatches'
+import { buildRailBoardRows, railAxisDates } from './railClueAxis'
 
 export function useConsoleShellData(boardId: Ref<number>) {
   const sbApi = useSemanticBoardsApi()
@@ -28,6 +34,12 @@ export function useConsoleShellData(boardId: Ref<number>) {
 
   const latestReportDate = ref<string | null>(null)
   const latestReportTitle = ref('')
+  /** overview 的版块行（逐日线索轴 / 锚点日）；左轨条码读模型的输入。 */
+  const overviewRows = ref<RadarBoard[]>([])
+  /** overview 的全局锚点日（共同轴末日）。 */
+  const overviewGlobalDate = ref('')
+  /** overview 本次没取到（左轨退「全部未取到」形态，不阻塞版块列表与矩阵）。 */
+  const overviewError = ref<string | null>(null)
   /** overview + 兜底列表均失败且从未成功：不代表「从无历史日报」。 */
   const reportMetaUnavailable = ref(false)
   /** 刷新失败但保留同板块最后一次成功元信息。 */
@@ -71,9 +83,18 @@ export function useConsoleShellData(boardId: Ref<number>) {
       let nextDate = ''
       let nextTitle = ''
       if (overview.success) {
+        // overview 行提升为共享状态（左轨条码）：同一次请求，零新增。
+        overviewRows.value = overview.data.boards
+        overviewGlobalDate.value = overview.data.date
+        overviewError.value = null
         const row = overview.data.boards.find(item => item.boardId === String(boardId.value))
         nextDate = row?.reportDate ? row.reportDate.slice(0, 10) : ''
         nextTitle = row?.reportTitle ?? ''
+      } else {
+        // 本次没取到 → 左轨整列未取到（不拿旧值冒充本次信号）。
+        overviewRows.value = []
+        overviewGlobalDate.value = ''
+        overviewError.value = overview.error || '版块信号未取到'
       }
 
       let fallbackTried = false
@@ -118,6 +139,10 @@ export function useConsoleShellData(boardId: Ref<number>) {
       }
     } catch {
       if (seq !== reportSeq) return
+      // 异常路径同样算「本次没取到」：左轨退全未取到形态（不拿旧值冒充本次信号）。
+      overviewRows.value = []
+      overviewGlobalDate.value = ''
+      overviewError.value = '版块信号未取到'
       if (hadValue) {
         reportMetaStale.value = true
         reportMetaUnavailable.value = false
@@ -164,6 +189,11 @@ export function useConsoleShellData(boardId: Ref<number>) {
     () => !boardsLoading.value && !boardsError.value && boards.value.length > 0 && currentBoard.value === null,
   )
 
+  /** 左轨行视图模型（共同轴重对齐 + 峰值/强度；行序 = 版块列表序）。 */
+  const railRows = computed(() => buildRailBoardRows(boards.value, overviewRows.value, overviewGlobalDate.value))
+  /** 左轨共同轴日期（14 天，oldest→newest）。 */
+  const railAxisDateList = computed(() => railAxisDates(overviewGlobalDate.value))
+
   return {
     boards,
     boardsLoading,
@@ -176,6 +206,11 @@ export function useConsoleShellData(boardId: Ref<number>) {
     reportMetaUnavailable,
     reportMetaStale,
     reportMetaLoading,
+    overviewRows,
+    overviewGlobalDate,
+    overviewError,
+    railRows,
+    railAxisDateList,
     watches,
     watchesLoading,
     watchesError,

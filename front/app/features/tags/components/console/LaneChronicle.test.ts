@@ -84,6 +84,7 @@ function threads(count: number, sectionId: string) {
 
 const REPORT_1211: LaneDayReportDetail = {
   reportId: '1211', boardId: '1974', periodDate: '2026-10-22',
+  title: '日报 1211', summary: '', highlights: [],
   sections: [
     { sectionId: '501', clusterLabel: '桶501', bucketTitle: null, threads: threads(6, '501') },
     { sectionId: '502', clusterLabel: '桶502', bucketTitle: null, threads: [] },
@@ -91,10 +92,12 @@ const REPORT_1211: LaneDayReportDetail = {
 }
 const REPORT_1210_MISSING: LaneDayReportDetail = {
   reportId: '1210', boardId: '1974', periodDate: '2026-10-20',
+  title: '日报 1210', summary: '', highlights: [],
   sections: [{ sectionId: '999', clusterLabel: '别的桶', bucketTitle: null, threads: [] }],
 }
 const REPORT_1209: LaneDayReportDetail = {
   reportId: '1209', boardId: '1974', periodDate: '2026-10-18',
+  title: '日报 1209', summary: '', highlights: [],
   sections: [{ sectionId: '504', clusterLabel: '桶504', bucketTitle: null, threads: [{ threadId: 'u1', sectionId: '504', title: '早期线索', summary: '早期摘要', confidence: 0.7, relatedArticleIds: [], fitDistance: null, scope: null, createdAt: '' }] }],
 }
 
@@ -444,6 +447,7 @@ describe('状态分层 — error/stale/gap/unavailable', () => {
       success: true,
       data: {
         reportId: '1210', boardId: '1974', periodDate: '2026-10-20',
+        title: '日报 1210', summary: '', highlights: [],
         sections: [{ sectionId: '503', clusterLabel: '桶503', bucketTitle: null, threads: [{ threadId: 'd1', sectionId: '503', title: '降级日的命中线索', summary: '命中摘要', confidence: 0.7, relatedArticleIds: [], fitDistance: null, scope: null, createdAt: '' }] }],
       } as LaneDayReportDetail,
     }))

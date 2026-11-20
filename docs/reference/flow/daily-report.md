@@ -221,6 +221,7 @@ POST /api/daily-reports/backfill-topics       重建持久话题
 - **失败/回退**：聚簇零候选（当天线索均无 event 标签或聚簇产出为空；**全 composite 且含 event 标签自 2026-11-15 起正常聚簇、不再触发回退**）→ 走既有标签回退 `GenerateHighlights(ctx, tags, clusters)`，cluster_id 为空、快照字段缺省不伪造篇数；非法响应同参重试一次、合法 `[]` 不重试，降级不阻断日报（约束 41）。
 - **迟到写入保护**（`FinalizeReportHighlights`）：最终写入带 `WHERE id = ? AND updated_at = ?` 修订条件——同板同日重建换轮后，上一轮的迟到结果零行更新，只记告警不覆盖。
 - **兼容**：旧报告 highlights 不回填、不重算（旧聚簇口径或标签回退产物原样返回，缺字段 `omitempty` 不以 0 冒充）；该日报被重建时按新口径重算重点（预期内行为）。重建窗口守卫（约束 20）不变。
+- **派生关系（消费方须知，2026-11-19 补）**：`FinalizeReportHighlights` 写库时同时写 `highlights` / `title` / `summary`，其中 **`title = highlights[0].Title`、`summary = highlights[0].Reason`**（`backend-go/internal/topicgraph/repository/report_story_highlights.go:78-81`）——**日报标题与摘要就是首条重点的标题与点评**。任何消费方 MUST NOT 把 `title` / `summary` 与 `highlights` 并排展示（会重复渲染同一条）。版块态势页右轨「当日日报」块据此只展示 `highlights`（2–3 条），不另列日报标题（见 `flow/semantic-board.md` §版块态势页左右轨）。
 
 ### 编排 / 修正工作面的候选读取（unify-lane-workbench，365 窗口 + 轻量档）
 

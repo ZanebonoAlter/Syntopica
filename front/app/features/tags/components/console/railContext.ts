@@ -9,6 +9,7 @@
 import type { TopicWatch } from '~/api/topicWatches'
 import type { RailHealthSnapshotView } from '~/api/normalizers/consoleRail'
 import type { GovernanceTab } from './governanceTabs'
+import type { NowBriefModel } from './nowBrief'
 
 export interface RailHealthView {
   /** 归一后的 camelCase/字符串 ID 快照（旧管理面板仍用 raw DTO，只在壳层桥接）。 */
@@ -39,6 +40,8 @@ export interface RailContext {
   topicCandidateCount: number
   health: RailHealthView
   watches: RailWatchView
+  /** 「当日日报」视图模型（跟随矩阵选中日；壳层用既有读取链组装，右轨不另发请求）。 */
+  now: NowBriefModel
 }
 
 /** 单级宽工作面页签：本板块上下文 / 体检依据 + 治理五页签。 */
@@ -71,6 +74,8 @@ export interface RailBinding {
   watchesError: string | null
   laneIds: string[]
   topicCandidateCount: number
+  /** 「当日日报」视图模型（点评层 + 泳道层）。 */
+  now: NowBriefModel
 }
 
 export function toRailBinding(context: RailContext): RailBinding {
@@ -90,6 +95,7 @@ export function toRailBinding(context: RailContext): RailBinding {
     watchesError: context.watches.error,
     laneIds: context.laneIds,
     topicCandidateCount: context.topicCandidateCount,
+    now: context.now,
   }
 }
 

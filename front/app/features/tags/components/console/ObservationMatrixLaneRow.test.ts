@@ -1,0 +1,172 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import ObservationMatrixLaneRow from './ObservationMatrixLaneRow.vue'
+import type { MatrixCellView, ObservationLaneRow } from './observationLanes'
+
+// 图标组件在单测里走网络取图标（本地子集插件不在 vitest 管线内）→ 换成空壳，避免外网超时噪声
+vi.mock('@iconify/vue', () => ({ Icon: { name: 'Icon', template: '<span />' } }))
+
+/**
+ * 矩阵行头「⋯」入口（lane-manual-correction-loop 6.3）：
+ *  点「⋯」**不触发行选中 / 选中日变更**（阻止事件冒泡）；菜单项动作以 emit 上抛
+ * （「编辑泳道」→ 修正工作面，「归档泳道」→ 归档弹窗）。
+ *
+ * 「展示合理性」机械锚：菜单 Teleport 到 body（不落在行 DOM 内），层级取自 `Z_INDEX` 档位表
+ * （`<style>` 内不写死 z-index）。
+ */
+const ROW: ObservationLaneRow = {
+  topicId: '10',
+  label: 'Claude Code 工具链',
+  watchLinked: false,
+  sectionTotal: 3,
+  clueTotal: 11,
+  dormant: false,
+  snapshot: null,
+}
+
+const CELLS: MatrixCellView[] = [
+  { kind: 'content', text: '4', openable: true, depth: 0.5, aria: '4 条线索', title: '2026-10-23 · 4 条线索' },
+]
+
+let wrapper: VueWrapper | null = null
+
+function mountRow() {
+  wrapper = mount(ObservationMatrixLaneRow, {
+    props: {
+      row: ROW,
+      cells: CELLS,
+      axis: ['2026-10-23'],
+      today: '2026-10-23',
+      selectedLaneId: null,
+      selectedDate: null,
+      dormant: false,
+    },
+    attachTo: document.body,
+  })
+  return wrapper
+}
+
+/** 行头「⋯」触发器（testid 前缀刻意避开 `matrix-lane-`，免得被行序断言误收）。 */
+function trigger(): HTMLButtonElement {
+  return document.body.querySelector('[data-testid="lane-menu-trigger-10"]') as HTMLButtonElement
+}
+
+/** 选中列淡底用例的行格（content / gap / unavailable 三态）。 */
+function mountCells(cells: MatrixCellView[], selectedDate: string | null, axis = ['2026-10-22', '2026-10-23']) {
+  wrapper = mount(ObservationMatrixLaneRow, {
+    props: {
+      row: ROW,
+      cells,
+      axis,
+      today: '2026-10-23',
+      selectedLaneId: null,
+      selectedDate,
+      dormant: false,
+    },
+  })
+  return wrapper
+}
+
+function cellView(kind: MatrixCellView['kind']): MatrixCellView {
+  if (kind === 'gap') return { kind: 'gap', text: '—', openable: false, depth: 0, aria: '无分区', title: '无分区' }
+  if (kind === 'unavailable') {
+    return { kind: 'unavailable', text: '?', openable: false, depth: 0, aria: '未取到', title: '未取到' }
+  }
+  return { kind: 'content', text: '4', openable: true, depth: 0.5, aria: '4 条线索', title: '2026-10-23 · 4 条线索' }
+}
+
+afterEach(() => {
+  wrapper?.unmount()
+  wrapper = null
+  document.body.innerHTML = ''
+})
+
+describe('ObservationMatrixLaneRow — 行头「⋯」入口', () => {
+  it('点「⋯」不 emit 行选中 / 选中日', async () => {
+    const w = mountRow()
+    trigger().click()
+    await flushPromises()
+
+    expect(w.emitted('selectLane')).toBeUndefined()
+    expect(w.emitted('selectCell')).toBeUndefined()
+    // 菜单已展开（点一次即开）
+    expect(document.body.querySelector('[data-testid="row-action-menu"]')).not.toBeNull()
+  })
+
+  it('菜单含「编辑泳道」「归档泳道」两项', async () => {
+    mountRow()
+    trigger().click()
+    await flushPromises()
+
+    const items = [...document.body.querySelectorAll('.row-menu-item')].map(el => el.textContent?.trim())
+    expect(items).toEqual(['编辑泳道', '归档泳道'])
+  })
+
+  it('点「编辑泳道」→ emit editLane(topicId)', async () => {
+    const w = mountRow()
+    trigger().click()
+    await flushPromises()
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-10-edit"]') as HTMLButtonElement).click()
+    await flushPromises()
+
+    expect(w.emitted('editLane')).toEqual([['10']])
+    expect(w.emitted('selectLane')).toBeUndefined()
+    // 选完即收起
+    expect(document.body.querySelector('[data-testid="row-action-menu"]')).toBeNull()
+  })
+
+  it('点「归档泳道」→ emit archiveLane(topicId)', async () => {
+    const w = mountRow()
+    trigger().click()
+    await flushPromises()
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-10-archive"]') as HTMLButtonElement).click()
+    await flushPromises()
+
+    expect(w.emitted('archiveLane')).toEqual([['10']])
+    expect(w.emitted('selectLane')).toBeUndefined()
+  })
+
+  it('名称按钮仍可点选行（选中态与 data 属性在按钮上）', async () => {
+    const w = mountRow()
+    const nameBtn = document.body.querySelector('[data-testid="matrix-lane-10"]') as HTMLButtonElement
+    expect(nameBtn.getAttribute('aria-pressed')).toBe('false')
+    expect(nameBtn.getAttribute('data-lane-id')).toBe('10')
+    nameBtn.click()
+    await flushPromises()
+    expect(w.emitted('selectLane')).toEqual([['10']])
+  })
+
+  it('菜单 Teleport 到 body（不落在行 DOM 内），层级取自 Z_INDEX 档位表', async () => {
+    mountRow()
+    trigger().click()
+    await flushPromises()
+
+    const menu = document.body.querySelector('[data-testid="row-action-menu"]') as HTMLElement
+    expect(menu.parentElement).toBe(document.body)
+    expect(menu.style.zIndex).toBe('9999')
+  })
+})
+
+/**
+ * 选中列淡底（console-rails-live-signals D7）：选中日**整列**加一层淡底，
+ * 只铺在**有分区**的那天；无分区的历史日不铺（不盖过「— 无分区」的诚实表达）。
+ */
+describe('ObservationMatrixLaneRow — 选中列淡底', () => {
+  it('选中日的有分区格带淡底标记；其它日期的格不带', () => {
+    const w = mountCells([cellView('content'), cellView('content')], '2026-10-23')
+    expect(w.find('[data-testid="matrix-cell-10-2026-10-23"]').classes()).toContain('is-col-selected')
+    expect(w.find('[data-testid="matrix-cell-10-2026-10-22"]').classes()).not.toContain('is-col-selected')
+  })
+
+  it('选中日无分区（gap / 未取到）的格不铺淡底', () => {
+    const w = mountCells([cellView('gap'), cellView('unavailable')], '2026-10-22')
+    expect(w.find('[data-testid="matrix-cell-10-2026-10-22"]').classes()).not.toContain('is-col-selected')
+    expect(w.find('[data-testid="matrix-cell-10-2026-10-23"]').classes()).not.toContain('is-col-selected')
+  })
+
+  it('未选中日时整列不铺淡底', () => {
+    const w = mountCells([cellView('content'), cellView('content')], null)
+    expect(w.find('[data-testid="matrix-cell-10-2026-10-22"]').classes()).not.toContain('is-col-selected')
+    expect(w.find('[data-testid="matrix-cell-10-2026-10-23"]').classes()).not.toContain('is-col-selected')
+  })
+})

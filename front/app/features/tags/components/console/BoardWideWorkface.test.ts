@@ -27,6 +27,7 @@ const RAIL: RailContext = {
     trendSummary: '',
   },
   watches: { items: [], loading: false, error: null },
+  now: { date: null, status: 'loading', error: null, hasReport: false, reviews: [], lanes: [] },
 }
 
 function mountWorkface(overrides: Record<string, unknown> = {}) {

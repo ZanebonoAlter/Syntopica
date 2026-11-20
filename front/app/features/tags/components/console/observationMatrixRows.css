@@ -82,6 +82,7 @@
 }
 
 .omx-cell {
+  position: relative;
   min-width: 0;
   height: 2.9rem;
   border: none;
@@ -93,6 +94,22 @@
   color: var(--color-text-primary);
   background: color-mix(in srgb, var(--color-text-primary) 4%, var(--color-bg-base));
   cursor: pointer;
+}
+
+/* 选中列淡底（console-rails-live-signals D7）：选中日**整列**加一层淡底——
+   不描边、不改列头高亮、不动格子自身颜色（用伪元素叠一层，不覆盖格值色阶）。
+   只铺在有分区的那天（`is-col-selected` 只给 content 格）；无分区的历史日不铺。 */
+.omx-cell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: transparent;
+  pointer-events: none;
+}
+
+.omx-cell.is-col-selected::after {
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
 }
 
 .omx-cell:hover:not(:disabled) {

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 /**
- * 右轨「版块体检」结论卡（rework-workshop-into-radar-and-desk 矩阵阶段 G5）。
+ * 右轨「版块体检」结论卡（rework-workshop-into-radar-and-desk 矩阵阶段 G5；
+ * console-rails-live-signals 把 brief 瘦身为一行状态条）。
  *
  * 两种形态（同一真实数据源，壳层用 useBoardHealth 只取一次）：
- *  - `brief`（右轨常驻）：真实 llm_score 徽章 + 体检时间 + 评语首句两行预览 +
- *    「最新快照 · 非所选历史评分」标注 + 完整依据入口；
+ *  - `brief`（右轨常驻）：**一行状态条** = 评分徽章 + 上次体检时间 + 刷新 + 评语入口；
+ *    **不常驻评语首句**（评语在 `full` 变体 / 体检详情里仍完整可见，信息不丢）；
+ *    「最新快照」口径属详情，右轨不重复（≤ simplify-workshop-matrix-copy）。
  *  - `full`（单级宽工作面）：完整评语、挂载/幽灵/向量计数、评分趋势（真实 ≥2 点才画）。
  *
  * 诚实边界：无快照=等待首轮体检（不补 0、不套别的版块）；刷新失败但保留旧快照时标 stale；
@@ -36,66 +38,104 @@ const emit = defineEmits<{
   openDetail: []
 }>()
 
-/** 评语首句（原型口径：首个句末标点；无标点取全句）——只截首句，不改写原文。 */
-const firstSentence = computed(() => {
-  const comment = props.snapshot?.comment ?? ''
-  if (!comment) return ''
-  return comment.match(/^[\s\S]*?[。！？]/)?.[0]?.trim() || comment.trim()
-})
-
 const scoreText = computed(() => (props.score === null ? null : Math.round(props.score)))
 </script>
 
 <template>
   <section class="rhb" data-testid="rail-health">
-    <div class="rhb-head">
-      <span class="rhb-title">
-        <Icon icon="mdi:heart-pulse" width="14" />
-        版块体检
-      </span>
-      <span
-        v-if="snapshot && scoreText !== null"
-        class="rhb-badge"
-        :class="tier ? `rhb-badge--${tier}` : ''"
-        data-testid="rail-health-score"
-      >{{ scoreText }}</span>
-      <span v-else-if="snapshot" class="rhb-badge rhb-badge--pending">待评分</span>
-      <span v-else class="rhb-badge rhb-badge--pending" data-testid="rail-health-pending">等待首轮体检</span>
-    </div>
+    <!-- brief：右轨常驻的一行状态条（徽章 + 体检时间 + 刷新 + 评语入口） -->
+    <template v-if="variant === 'brief'">
+      <div class="rhb-head">
+        <span class="rhb-title">
+          <Icon icon="mdi:heart-pulse" width="14" />
+          版块体检
+        </span>
+        <button
+          v-if="snapshot"
+          type="button"
+          class="rhb-badge rhb-badge--btn"
+          :class="tier ? `rhb-badge--${tier}` : 'rhb-badge--pending'"
+          :data-testid="scoreText !== null ? 'rail-health-score' : 'rail-health-badge'"
+          title="查看完整评语与依据"
+          @click="emit('openDetail')"
+        >{{ scoreText !== null ? scoreText : '待评分' }}</button>
+        <span v-else class="rhb-badge rhb-badge--pending" data-testid="rail-health-pending">等待首轮体检</span>
 
-    <div v-if="loading && !snapshot" class="rhb-state" data-testid="rail-health-loading">体检数据加载中…</div>
-    <div v-else-if="error && !snapshot" class="rhb-error" data-testid="rail-health-error">
-      <Icon icon="mdi:alert-circle-outline" width="13" />
-      <span>{{ error }}</span>
-      <button type="button" class="rhb-link" data-testid="rail-health-retry" @click="emit('retry')">重试</button>
-    </div>
-    <div v-else-if="!snapshot" class="rhb-state" data-testid="rail-health-empty">
-      等待首轮体检——体检在每日日报生成后自动执行，届时此处展示评分与构成质量。
-    </div>
+        <span class="rhb-meta">
+          <span v-if="loading && !snapshot" class="rhb-meta-text" data-testid="rail-health-loading">
+            体检数据加载中…
+          </span>
+          <span v-else-if="error && !snapshot" class="rhb-error" data-testid="rail-health-error">
+            <Icon icon="mdi:alert-circle-outline" width="13" />
+            <span>{{ error }}</span>
+          </span>
+          <span v-else-if="checkedAtText" class="rhb-meta-text" data-testid="rail-health-checked-at">
+            上次体检 {{ checkedAtText }}
+          </span>
+          <button
+            v-if="error && !snapshot"
+            type="button"
+            class="rhb-link"
+            data-testid="rail-health-retry"
+            @click="emit('retry')"
+          >重试</button>
+          <button
+            v-if="snapshot && !loading"
+            type="button"
+            class="rhb-link rhb-refresh rhb-icon-btn"
+            data-testid="rail-health-refresh"
+            title="刷新体检快照"
+            aria-label="刷新体检快照"
+            @click="emit('retry')"
+          ><Icon icon="mdi:refresh" width="12" /></button>
+        </span>
+      </div>
 
-    <template v-else>
       <p v-if="stale && error" class="rhb-stale" data-testid="rail-health-stale">
         刷新失败（{{ error }}），下面是上次成功快照
         <button type="button" class="rhb-link" data-testid="rail-health-stale-retry" @click="emit('retry')">重试</button>
       </p>
+    </template>
 
-      <p class="rhb-meta" data-testid="rail-health-checked-at">
-        <span v-if="checkedAtText">上次体检 {{ checkedAtText }}</span>
-        <span class="rhb-latest">最新快照 · 非所选历史评分</span>
-        <button type="button" class="rhb-link rhb-refresh" data-testid="rail-health-refresh" @click="emit('retry')">刷新</button>
-      </p>
+    <!-- full：单级宽工作面（完整评语 / 依据 / 趋势） -->
+    <template v-else>
+      <div class="rhb-head">
+        <span class="rhb-title">
+          <Icon icon="mdi:heart-pulse" width="14" />
+          版块体检
+        </span>
+        <span
+          v-if="snapshot && scoreText !== null"
+          class="rhb-badge"
+          :class="tier ? `rhb-badge--${tier}` : ''"
+          data-testid="rail-health-score"
+        >{{ scoreText }}</span>
+        <span v-else-if="snapshot" class="rhb-badge rhb-badge--pending">待评分</span>
+        <span v-else class="rhb-badge rhb-badge--pending" data-testid="rail-health-pending">等待首轮体检</span>
+      </div>
 
-      <template v-if="variant === 'brief'">
-        <p class="rhb-excerpt" data-testid="rail-health-excerpt">
-          {{ firstSentence || '本轮体检未带评语。' }}
-        </p>
-        <button type="button" class="rhb-entry" data-testid="rail-health-detail" @click="emit('openDetail')">
-          完整评语与依据
-          <Icon icon="mdi:chevron-right" width="13" />
-        </button>
-      </template>
+      <div v-if="loading && !snapshot" class="rhb-state" data-testid="rail-health-loading">体检数据加载中…</div>
+      <div v-else-if="error && !snapshot" class="rhb-error" data-testid="rail-health-error">
+        <Icon icon="mdi:alert-circle-outline" width="13" />
+        <span>{{ error }}</span>
+        <button type="button" class="rhb-link" data-testid="rail-health-retry" @click="emit('retry')">重试</button>
+      </div>
+      <div v-else-if="!snapshot" class="rhb-state" data-testid="rail-health-empty">
+        等待首轮体检——体检在每日日报生成后自动执行，届时此处展示评分与构成质量。
+      </div>
 
       <template v-else>
+        <p v-if="stale && error" class="rhb-stale" data-testid="rail-health-stale">
+          刷新失败（{{ error }}），下面是上次成功快照
+          <button type="button" class="rhb-link" data-testid="rail-health-stale-retry" @click="emit('retry')">重试</button>
+        </p>
+
+        <p class="rhb-meta" data-testid="rail-health-checked-at">
+          <span v-if="checkedAtText">上次体检 {{ checkedAtText }}</span>
+          <span class="rhb-latest">最新快照 · 非所选历史评分</span>
+          <button type="button" class="rhb-link rhb-refresh" data-testid="rail-health-refresh" @click="emit('retry')">刷新</button>
+        </p>
+
         <blockquote v-if="snapshot.comment" class="rhb-comment" data-testid="rail-health-comment">
           {{ snapshot.comment }}
         </blockquote>
@@ -153,7 +193,8 @@ const scoreText = computed(() => (props.score === null ? null : Math.round(props
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.78rem;
+  flex: 0 0 auto;
+  font-size: 0.74rem;
   font-weight: 600;
   color: var(--color-text-secondary);
   white-space: nowrap;
@@ -163,6 +204,7 @@ const scoreText = computed(() => (props.score === null ? null : Math.round(props
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
   min-width: 2.1rem;
   height: 1.25rem;
   padding: 0 0.35rem;
@@ -171,6 +213,33 @@ const scoreText = computed(() => (props.score === null ? null : Math.round(props
   font-size: 0.68rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+/* 徽章即评语入口（有快照时可点进详情）：只补可点击反馈，不改分档配色。 */
+.rhb-badge--btn {
+  cursor: pointer;
+  font-family: inherit;
+  transition: filter 0.15s ease;
+}
+
+.rhb-badge--btn:hover {
+  filter: brightness(1.15);
+}
+
+.rhb-badge--btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* 刷新为图标钮：右轨 288px 下要给「上次体检 MM/DD HH:mm」留完整宽度。 */
+.rhb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 1.1rem;
+  height: 1.1rem;
+  padding: 0;
 }
 
 .rhb-badge--good {
@@ -201,29 +270,25 @@ const scoreText = computed(() => (props.score === null ? null : Math.round(props
 
 .rhb-meta {
   display: flex;
-  flex-wrap: wrap;
   align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
   gap: 0.4rem;
-  margin: 0;
   font-size: 0.68rem;
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
+.rhb-meta-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .rhb-latest {
   padding-left: 0.4rem;
   border-left: 1px solid var(--color-border-subtle);
-}
-
-.rhb-excerpt {
-  margin: 0;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  font-size: 0.76rem;
-  line-height: 1.6;
-  color: var(--color-text-primary);
 }
 
 .rhb-comment {
@@ -238,26 +303,16 @@ const scoreText = computed(() => (props.score === null ? null : Math.round(props
   overflow-wrap: anywhere;
 }
 
-.rhb-entry {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.4rem;
-  width: 100%;
-  padding: 0.32rem 0;
-  border: 0;
-  border-top: 1px solid var(--color-border-subtle);
+.rhb-link {
+  flex: 0 0 auto;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 6px;
+  padding: 0.1rem 0.4rem;
   background: none;
-  color: var(--color-text-secondary);
-  font-size: 0.72rem;
-  text-align: left;
-  cursor: pointer;
-}
-
-.rhb-entry:hover,
-.rhb-entry:focus-visible {
   color: var(--color-accent);
-  outline: none;
+  font-size: 0.68rem;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
 .rhb-state {
@@ -270,19 +325,10 @@ const scoreText = computed(() => (props.score === null ? null : Math.round(props
 .rhb-error {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.72rem;
+  gap: 0.3rem;
+  min-width: 0;
+  font-size: 0.7rem;
   color: var(--color-error);
-}
-
-.rhb-link {
-  border: 1px solid var(--color-border-medium);
-  border-radius: 6px;
-  padding: 0.1rem 0.4rem;
-  background: none;
-  color: var(--color-accent);
-  font-size: 0.68rem;
-  cursor: pointer;
 }
 
 .rhb-stale {

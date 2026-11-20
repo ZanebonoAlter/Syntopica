@@ -108,6 +108,17 @@
   - `doc-impact 失败 fix-radar-overview-false-zero`（另一会话的活跃 change）
   - 本 change 的 doc-impact 项为 `[OK]`。
 
+## 验收后第二处微调（用户裁决 2026-11-19）
+
+体检行原为 `88 · 上次体检 … · 刷新 · 评语↗` 四元素，1440 下（右轨 18rem = 288px）把体检时间挤成 `11/19 2…`。用户裁决「徽章可点、行末只剩刷新」：
+
+- 评分徽章改为 `<button>`（`title`「查看完整评语与依据」），点击 emit `openHealth` 进体检详情；无快照时仍是不可点的「等待首轮体检」span。
+- 「评语↗」独立按钮移除（入口收进徽章，不丢可达性）。
+- 「刷新」改为图标钮（`mdi:refresh`，`aria-label` + `title`）省出宽度。
+- 复测：`rail-health-checked-at` 文本 = 「上次体检 11/19 21:06」且 `scrollWidth === clientWidth`（**不再截断**）；`rail-health-detail` 节点不存在（测试已改为断言「徽章是 BUTTON 且点击 emit openHealth」）。
+- 复测单测：`BoardContextRail + BoardRail` 2 文件 **32 tests 全通过**；typecheck exit 0；lint 0 error。
+- 截图已更新为本院 `1440x900.png` / `1920x1080.png`。
+
 ## 结论
 
 A-1 ~ A-9 **全部 pass**（其中 A-4 的数值一致性另经后端 API 逐条对账）。无 fail、无未覆盖项。

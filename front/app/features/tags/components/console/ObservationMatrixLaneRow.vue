@@ -57,6 +57,9 @@ function cellClass(cell: MatrixCellView, date: string): unknown[] {
       'is-unknown': cell.kind === 'unavailable',
       'is-selected': props.row.topicId === props.selectedLaneId && date === props.selectedDate,
       'is-clue-depth': cellMix(cell) !== '',
+      // 选中列淡底（console-rails-live-signals D7）：只在**有分区**的那天铺
+      // （无分区的历史日不铺，避免灰带盖过「— 无分区」的诚实表达）；不改格子自身颜色。
+      'is-col-selected': date === props.selectedDate && cell.kind === 'content',
     },
   ]
 }

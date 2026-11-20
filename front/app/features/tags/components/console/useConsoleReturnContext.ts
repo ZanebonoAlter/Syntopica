@@ -120,13 +120,21 @@ export function useConsoleReturnContext(deps: ConsoleReturnDeps) {
     })
   }
 
-  function openReport(date: string | null): void {
+  /**
+   * 打开该期日报（日报阅读台）。`clusterId` 非空时带 `?cluster=` 深链，
+   * 定位本期正文中该聚簇的第一条线索（daily-report desk 既有参数）。
+   */
+  function openReport(date: string | null, clusterId?: number | null): void {
     if (!date) return
     saveContext()
     const lane = deps.selectedLaneKey.value
+    const query: Record<string, string> = lane ? { lane } : {}
+    if (typeof clusterId === 'number' && Number.isFinite(clusterId) && clusterId > 0) {
+      query.cluster = String(clusterId)
+    }
     void deps.router?.()?.push({
       path: `/tags/${deps.boardId.value}/${date}`,
-      query: lane ? { lane } : {},
+      query,
     })
   }
 

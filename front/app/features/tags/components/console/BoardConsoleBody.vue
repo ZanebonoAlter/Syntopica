@@ -7,11 +7,11 @@
  */
 import { ref } from 'vue'
 import { Icon } from '@iconify/vue'
-import type { SemanticBoard } from '~/api/semanticBoards'
 import type { ConsoleView } from '~/features/tags/composables/useBoardConsole'
 import type { BoardConsoleStageProps } from './consoleStageTypes'
 import type { ObservationRange, SourceTierDays } from './observationRange'
 import type { RailBinding } from './railContext'
+import type { RailBoardRow } from './railClueAxis'
 import BoardConsoleHeader from './BoardConsoleHeader.vue'
 import BoardRail from './BoardRail.vue'
 import BoardConsoleStage from './BoardConsoleStage.vue'
@@ -19,10 +19,15 @@ import BoardContextRail from './BoardContextRail.vue'
 
 defineProps<{
   boardMissing: boolean
-  boards: SemanticBoard[]
+  /** 左轨行视图模型（共同轴重对齐后的逐日线索条码）。 */
+  railRows: RailBoardRow[]
+  /** 左轨共同轴日期（14 天，oldest→newest；行 title 的逐日明细用）。 */
+  railAxisDates: string[]
   selectedBoardId: number
   boardsLoading: boolean
   boardsError: string | null
+  /** overview 本次没取到（版块信号未取到；版块列表本身可能正常）。 */
+  signalError: string | null
   boardLabel: string
   latestReportDate: string | null
   latestReportTitle: string
@@ -83,6 +88,10 @@ const emit = defineEmits<{
   retryWatches: []
   locateLane: [topicId: string]
   openTopics: []
+  /** 右轨当日点评 → 跳到该期日报正文的对应聚簇。 */
+  openReportCluster: [payload: { date: string, clusterId: number | null }]
+  /** 右轨当日日报详情失败 → 受控重试（只重取当日详情）。 */
+  retryNow: [date: string]
 }>()
 
 const stageRef = ref<HTMLElement | null>(null)
@@ -122,10 +131,12 @@ defineExpose({ getStageElement })
   <div class="console-main">
     <BoardRail
       class="console-boards"
-      :boards="boards"
+      :rows="railRows"
+      :axis-dates="railAxisDates"
       :selected-board-id="selectedBoardId"
       :loading="boardsLoading"
       :error="boardsError"
+      :signal-error="signalError"
       @select="id => emit('selectBoard', id)"
       @retry="emit('retryBoards')"
     />
@@ -170,6 +181,8 @@ defineExpose({ getStageElement })
         @retry-watches="emit('retryWatches')"
         @locate-lane="id => emit('locateLane', id)"
         @open-topics="emit('openTopics')"
+        @open-report="emit('openReportCluster', $event)"
+        @retry-now="emit('retryNow', $event)"
       />
     </aside>
   </div>
@@ -233,7 +246,8 @@ defineExpose({ getStageElement })
 .console-gov {
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
+  /* 右轨内部自己滚（满高自适应：内容超高时整栏滚动，不悬在栏底）。 */
+  overflow: hidden;
   border-left: 1px solid var(--color-border-subtle);
   padding: 0.9rem 1rem 1.6rem;
   display: flex;

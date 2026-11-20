@@ -10,7 +10,13 @@
  *   → threads[].id → related_article_ids → 文章详情。
  * join 按上述稳定 ID 精确匹配；MUST NOT 按标题文本匹配或跨报告借用（红线）。
  */
-import type { DailyReport, DailyReportListItem, DailyReportSection, DailyReportThread } from '../dailyReports'
+import type {
+  DailyReport,
+  DailyReportHighlight,
+  DailyReportListItem,
+  DailyReportSection,
+  DailyReportThread,
+} from '../dailyReports'
 import { normalizeArticle, type ArticlePayload } from './article'
 import type { Article } from '~/types'
 import type { WindowLaneDay } from './laneDynamicsWindow'
@@ -38,6 +44,25 @@ export interface LaneDayThread {
   createdAt: string
 }
 
+/**
+ * 日报重点（highlights）：后端 LLM 生成的 2–3 条当日要闻。
+ *
+ * 派生关系（红线，report_story_highlights.go）：写库时 `report.title = highlights[0].Title`、
+ * `report.summary = highlights[0].Reason`——**日报标题就是第 1 条重点**，展示层不得重复呈现。
+ */
+export interface LaneDayReportHighlight {
+  title: string
+  reason: string
+  /** 聚簇代表 event 标签 id；null = 无定位 / 无聚簇快照（旧数据）。 */
+  clusterId: number | null
+  /** 簇内文章数（内容身份去重后的篇数）；null = 缺省（展示层不显示「N 篇来源」，不补 0）。 */
+  articleCount: number | null
+  /** 聚簇口径（中文：向量聚簇 / 语义向量兜底 / 主体近似）；null = 缺省。 */
+  clusterMode: string | null
+  /** 数据截至日（YYYY-MM-DD）；null = 缺省。 */
+  dataAsOf: string | null
+}
+
 /** 报告详情内的一个主题桶（section）。 */
 export interface LaneDayReportSection {
   sectionId: string
@@ -51,6 +76,11 @@ export interface LaneDayReportSection {
   topicStatusAtReport?: string | null
   /** 生成时归属的持久话题（字符串 ID）；null/缺省 = 当次未归属（旧数据缺字段）。 */
   persistentTopicId?: string | null
+  /**
+   * 该持久话题的稳定色（后端 `PersistentTopicColor(topic_id)` 派生，同一话题全站同色）。
+   * null/缺省 = 后端未下发（旧数据）→ 消费方回退本地哈希（见 nowBrief.laneTopicColor）。
+   */
+  persistentTopicColor?: string | null
   threads: LaneDayThread[]
 }
 
@@ -59,6 +89,12 @@ export interface LaneDayReportDetail {
   reportId: string
   boardId: string
   periodDate: string
+  /** 日报标题（= highlights[0].Title 的派生值；展示层不得与点评层重复呈现）。 */
+  title: string
+  /** 日报摘要（= highlights[0].Reason 的派生值；同上）。 */
+  summary: string
+  /** 当日重点（2–3 条；右轨「当日日报」点评层的数据源）。 */
+  highlights: LaneDayReportHighlight[]
   sections: LaneDayReportSection[]
 }
 
@@ -84,7 +120,27 @@ function normalizeReportSection(section: DailyReportSection): LaneDayReportSecti
     bucketTitle: section.bucket_title ?? null,
     topicStatusAtReport: typeof section.topic_status_at_report === 'string' ? section.topic_status_at_report : null,
     persistentTopicId: section.persistent_topic_id == null ? null : String(section.persistent_topic_id),
+    // 话题稳定色：后端已下发（同话题全站同色），缺省不造色（消费方回退）。
+    persistentTopicColor: typeof section.persistent_topic?.color === 'string' && section.persistent_topic.color
+      ? section.persistent_topic.color
+      : null,
     threads: (section.threads ?? []).map(normalizeThread),
+  }
+}
+
+function normalizeReportHighlight(highlight: DailyReportHighlight): LaneDayReportHighlight {
+  return {
+    title: highlight.title ?? '',
+    reason: highlight.reason ?? '',
+    clusterId: typeof highlight.cluster_id === 'number' && Number.isFinite(highlight.cluster_id)
+      ? highlight.cluster_id
+      : null,
+    // 缺省 = 未取到（不造 0）；真实 0 是合法值，照实透传。
+    articleCount: typeof highlight.article_count === 'number' && Number.isFinite(highlight.article_count)
+      ? highlight.article_count
+      : null,
+    clusterMode: highlight.cluster_mode ?? null,
+    dataAsOf: highlight.data_as_of ?? null,
   }
 }
 
@@ -102,6 +158,9 @@ export function normalizeReportDetail(report: DailyReport): LaneDayReportDetail 
     reportId: String(report.id),
     boardId: String(report.semantic_board_id),
     periodDate: report.period_date,
+    title: report.title ?? '',
+    summary: report.summary ?? '',
+    highlights: (report.highlights ?? []).map(normalizeReportHighlight),
     sections: (report.sections ?? []).map(normalizeReportSection),
   }
 }
