@@ -21,6 +21,8 @@
 ## 4. 文档
 
 <!-- doc-impact: none(只改 CLI/skill 安装形态与根 AGENTS.md，不涉 docs/reference 八域) -->
+
+> **无 flow 影响**：只改 CLI/skill 安装形态与根 `AGENTS.md`，不触及任何业务域流程，故不补 flow 变更溯源行（§12.2 豁免）。
 <!-- doc-impact-excuse: flow=本会话未改 docs/reference/flow，命中来自并发脏树（edit.map 快照混入 backend-go/internal/reader 其他 change 文件）; database=同上，命中来自 backend-go/internal/platform/database 多个其他 change 的迁移脏文件 -->
 
 - [x] 4.1 proposal 的 Impact 段与实际改动对齐（`.pi/constraint-injection.json` 实际未改，已由上条说明）

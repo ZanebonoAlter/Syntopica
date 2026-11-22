@@ -20,6 +20,8 @@
 
 <!-- doc-impact: standard(只改 doc-authoring 图表达规范与开发执行规范指引，不涉 flow/api/database/architecture) -->
 
+> **无 flow 影响**：本 change 只动图表达规范（`docs/reference/standard/**` + 开发执行规范 §13），不改任何业务域流程语义，故不补 flow 变更溯源行（§12.2 豁免）。
+
 - [x] 4.1 §13 的样板路径与契约源引用可解析：`grep -n "archive/2026-11-20-fix-disaster-recovery-channel/design-diagram.md\|change-diagram-convention/spec.md" docs/reference/开发执行规范.md` 两条均命中
 
 ## 5. 验证

@@ -39,6 +39,8 @@
 <!-- doc-impact: none -->
 <!-- doc-impact-excuse: flow=本 change 只改 docs/srs/ 需求基线（不入库），未改 docs/reference/flow/；启发式命中来自编辑路径与关键词，非真实文档遗漏 -->
 
+> **无 flow 影响**：同 4.2 的判定——本 change 只收敛不入库的需求基线，无代码/行为/flow 变更，故不补 flow 变更溯源行（§12.2 豁免）。
+
 - [x] 4.1 `docs/reference/` 不需同步：本次只改需求基线，现网实现与 reference 描述的都是「能跑的单一实例」，与单形态不矛盾（校验方式见 §4.2）
 - [x] 4.2 archive 后按 §12 补 flow 变更溯源链接 —— **判定无需补**（本 change 只改不入库的 `docs/srs/` 需求基线，无代码/行为/flow 变更），理由已记入 `review.md`「归档后溯源判定」节
 

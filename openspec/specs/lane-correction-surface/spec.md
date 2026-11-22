@@ -376,3 +376,31 @@ TBD - created by archiving change lane-manual-correction-loop. Update Purpose af
 - **WHEN** 用户点击标题行切换折叠态
 - **THEN** SHALL NOT 触发 `preview` / `commit` / `source-change`
 - **AND** 当前 `range` 与 `sourceDays` SHALL 保持不变
+
+### Requirement: 修正工作面 SHALL 常驻展示生效时机结论
+
+泳道修正工作面 SHALL 在**顶部标题行**常驻展示**生效时机结论型徽标组**，使用户无需推断即可知道当前操作是否已经落库。徽标组 SHALL 至少覆盖三项结论：**立即生效**（加入 / 移出 / 改名逐条落库）、**次日日报生效**（首义 / 重心）、**无需保存**（本工作面不提供全局保存出口）。
+
+徽标 SHALL 为**结论型**（每项 ≤6 字），SHALL NOT 写成解说性长句、SHALL NOT 解释生效机制或派生值口径、SHALL NOT 只出现在工作面底部（页脚位置不构成常驻可见）。「无需保存」属**状态结论**（该界面没有保存出口），SHALL NOT 扩写成操作教学。新建泳道模式 SHALL NOT 渲染该徽标组（其出口为「起名并创建」）。
+
+本 requirement 与本 spec 的「产品界面不承载解说性长句」同向：生效时机只以徽标表达，不另加说明句。
+
+#### Scenario: 顶部常驻生效时机徽标
+
+- **WHEN** 用户打开泳道修正工作面（修正模式）
+- **THEN** 顶部标题行 SHALL 常驻显示「立即生效」「次日日报生效」「无需保存」三枚结论型徽标
+
+#### Scenario: 生效时机不再只藏在底部页脚
+
+- **WHEN** 用户在 1440×900 视口打开泳道修正工作面
+- **THEN** 三枚徽标 SHALL 在首屏可见，界面 SHALL NOT 依赖底部页脚承载生效时机
+
+#### Scenario: 生效时机徽标不是解说句
+
+- **WHEN** 修正工作面渲染生效时机说明
+- **THEN** 该说明 SHALL 为每项 ≤6 字的结论型徽标，SHALL NOT 出现解释生效机制、派生值口径或操作教学的句子
+
+#### Scenario: 新建泳道模式不出现生效时机徽标
+
+- **WHEN** 用户打开的是新建泳道模式（编排态）
+- **THEN** 界面 SHALL NOT 渲染生效时机徽标组
