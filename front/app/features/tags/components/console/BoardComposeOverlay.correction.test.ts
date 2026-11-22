@@ -140,11 +140,18 @@ describe('BoardComposeOverlay · 修正模式三栏（unify-lane-workbench 3.3 /
     expect(left.find('[data-testid="lane-anchor-panel"]').exists()).toBe(true)
   })
 
-  it('生效时机只以结论型徽标表达（页脚两枚）', async () => {
+  it('生效时机常驻顶部标题行：三枚结论型徽标；底部页脚不再承载', async () => {
     const w = await mountCorrection()
-    const foot = w.find('[data-testid="lane-correction-foot"]')
-    expect(foot.text()).toContain('归属 · 立即生效')
-    expect(foot.text()).toContain('次日日报生效')
+    const badges = w.find('[data-testid="lane-correction-effect-badges"]')
+    expect(badges.exists()).toBe(true)
+    // 精确断言：徽标组只由三段结论构成（追加任何科普/解释句即红）
+    expect(badges.text()).toBe('立即生效次日日报生效无需保存')
+    // 每项 ≤6 字：结论型徽标不得长成解说句
+    for (const badge of badges.findAll('span')) {
+      expect(badge.text().length).toBeLessThanOrEqual(6)
+    }
+    // 页脚撤除：生效时机不再只藏在底部
+    expect(w.find('[data-testid="lane-correction-foot"]').exists()).toBe(false)
   })
 })
 
@@ -306,5 +313,18 @@ describe('BoardComposeOverlay · 新建模式不变', () => {
     expect(w.find('.bco__right').exists()).toBe(true)
     expect(w.find('[data-testid="lane-correction-left"]').exists()).toBe(false)
     expect(w.find('[data-testid="lane-compose-canvas"]').exists()).toBe(true)
+  })
+
+  it('新建模式不渲染生效时机徽标组（出口是「起名并创建」）', async () => {
+    const w = mount(BoardComposeOverlay, {
+      props: { boardId: 1974, boardLabel: '测试版块' },
+      attachTo: document.body,
+      global: { stubs: { teleport: true } },
+    })
+    await flushPromises()
+    await flushPromises()
+    // 正锚：新建工作面确实渲染了（避免 mount 异常/窄屏分支导致假绿）
+    expect(w.find('[data-testid="lane-compose-canvas"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-correction-effect-badges"]').exists()).toBe(false)
   })
 })

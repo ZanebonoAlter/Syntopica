@@ -367,6 +367,13 @@ onBeforeUnmount(() => {
         </h2>
         <span v-if="isCorrection" class="bco__window-label" data-testid="lane-correction-window-label">{{ correction.windowLabel.value }}</span>
         <span v-else class="bco__window-label" data-testid="lane-compose-window-label">{{ compose.windowLabel.value }}</span>
+
+        <!-- 修正模式：生效时机结论型徽标，常驻标题行右侧（只给结论，不解释机制） -->
+        <div v-if="isCorrection" class="bco__effect-badges" data-testid="lane-correction-effect-badges">
+          <span class="bco__timing bco__timing--now">立即生效</span>
+          <span class="bco__timing bco__timing--next">次日日报生效</span>
+          <span class="bco__timing bco__timing--plain">无需保存</span>
+        </div>
       </header>
 
       <!-- 时间视窗（与矩阵页同一控件；模态内本地 state，不写 URL query） -->
@@ -587,12 +594,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </AppPageShell>
-
-      <!-- 修正模式页脚：生效时机结论型徽标（不解释机制） -->
-      <footer v-if="isCorrection" class="bco__foot" data-testid="lane-correction-foot">
-        <span class="bco__timing bco__timing--now">归属 · 立即生效</span>
-        <span class="bco__timing bco__timing--next">次日日报生效</span>
-      </footer>
 
       <!-- 历史待启用话题（管理名单）：工作面内的明确入口 -->
       <LaneComposeHistoryDialog
@@ -870,14 +871,14 @@ onBeforeUnmount(() => {
   width: 220px;
 }
 
-.bco__foot {
-  flex: none;
+/* 修正模式：生效时机结论型徽标（顶部标题行常驻；不解释机制、无保存出口） */
+.bco__effect-badges {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 6px 20px;
-  border-top: 1px solid var(--color-border-subtle);
-  font-size: 10px;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
+  font-size: 11px;
   color: var(--color-text-secondary);
 }
 
@@ -885,6 +886,7 @@ onBeforeUnmount(() => {
   padding: 1px 6px;
   border-radius: 3px;
   border: 1px solid var(--color-border-medium);
+  white-space: nowrap;
 }
 
 .bco__timing--now {
@@ -894,6 +896,10 @@ onBeforeUnmount(() => {
 
 .bco__timing--next {
   border-style: dashed;
+}
+
+.bco__timing--plain {
+  color: var(--color-text-secondary);
 }
 
 .bco__canvas {
