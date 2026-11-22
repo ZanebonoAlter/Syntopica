@@ -162,6 +162,8 @@
 > 不触及 `docs/reference/flow/`（业务域文档）、`docs/reference/api/`、`docs/reference/database/`
 > 等任何 doc-impact 域轴覆盖的文档。规范类文档（`docs/reference/standard/**`）不涉业务域红线，
 > 本 change 不修改其内容。故声明 `none`（纯内部重构）。
+>
+> **无 flow 影响**：本 change 未改任何业务域流程，故不补 flow 变更溯源行（§12.2 豁免）。
 
 - [x] 10.1 `docs/reference/harness/pi-extensions.md`：更新 constraint-injection 章节——注入形态改「红线层 + 路由清单」、stage 标识机制、`stage.set`/`constraint.read` 事件、keyword/jit-path 通道退役说明
 - [x] 10.2 `docs/reference/constraints-index.md`：更新注入文案口径（「档位：未激活」→「阶段：<stage>」），补 stage.md 载体说明与路由清单取数方式

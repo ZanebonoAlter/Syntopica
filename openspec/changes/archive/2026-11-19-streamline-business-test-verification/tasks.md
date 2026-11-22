@@ -9,6 +9,9 @@
 ## 3. 文档
 <!-- doc-impact: standard -->
 <!-- doc-impact-excuse: flow=共享工作树的业务流程文档被误归属，本变更不改业务行为; api=并行接口文档被误归属，本变更不改接口; database=并行表结构文档被误归属，本变更不改数据结构 -->
+
+> **无 flow 影响**：本 change 只收敛测试验证纪律（`docs/reference/standard/**` + harness 脚本），
+> 不改任何业务域流程语义，故不补 flow 变更溯源行（§12.2 豁免）。
 - [x] 同步 `docs/reference/standard/` 的 shared/test-design.md、shared/doc-authoring.md、backend/testing.md、frontend/testing.md、frontend/layout.md。
 - [x] 同步 `AGENTS.md`、`docs/reference/开发执行规范.md`、`docs/reference/constraints-index.md`、`docs/reference/harness/pi-extensions.md` 和 harness-facts。
 
