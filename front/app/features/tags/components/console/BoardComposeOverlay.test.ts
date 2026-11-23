@@ -268,31 +268,33 @@ describe('BoardComposeOverlay — 编排态入口与三栏（S1 / V16）', () =>
 describe('BoardComposeOverlay — 画布（V1–V7、V14、V15）', () => {
   it('V1/V2 画布按容器真实像素 1:1；宽度变化后重排重绘', async () => {
     const w = await mountOverlay()
+    // 列宽锁 124 下限后，内容宽常大于容器宽 → viewBox 取内容宽（靠横向滚动），
+    // 但 SVG 的 width 属性 = viewBox 宽 × 缩放，渲染仍 1:1（不缩放内容）。
     await setCanvasWidth(900)
-    expect(w.find('[data-testid="lane-compose-canvas-svg"]').attributes('viewBox')).toMatch(/^0 0 900 /)
-    await setCanvasWidth(1200)
-    expect(w.find('[data-testid="lane-compose-canvas-svg"]').attributes('viewBox')).toMatch(/^0 0 1200 /)
+    const vb900 = Number(w.find('[data-testid="lane-compose-canvas-svg"]').attributes('viewBox')!.split(' ')[2])
+    expect(vb900).toBeGreaterThanOrEqual(900)
+    await setCanvasWidth(2400)
+    const vb2400 = Number(w.find('[data-testid="lane-compose-canvas-svg"]').attributes('viewBox')!.split(' ')[2])
+    // 容器足够宽时 viewBox 回落到容器宽（内容宽不再撑开画布）
+    expect(vb2400).toBe(2400)
   })
 
-  it('V3 不越界：话题带横条与标题都收在画布内', async () => {
+  it('V3 不越界：行标签 / 分隔线 / 节点标题都收在画布内（无横条胶囊）', async () => {
     const w = await mountOverlay()
     await setCanvasWidth(900)
-    const vbWidth = 900
-    const bars = w.findAll('.lcc-canvas__band-bar')
-    expect(bars.length).toBeGreaterThan(0)
-    for (const bar of bars) {
-      const x = Number(bar.attributes('x'))
-      const width = Number(bar.attributes('width'))
-      expect(x).toBeGreaterThanOrEqual(0)
-      expect(x + width).toBeLessThanOrEqual(vbWidth)
+    const vbWidth = Number(w.find('[data-testid="lane-compose-canvas-svg"]').attributes('viewBox')!.split(' ')[2])
+    expect(w.findAll('[data-role="band-capsule"], .lcc-canvas__band-bar')).toHaveLength(0)
+    const rows = w.findAll('.lcc-canvas__row')
+    expect(rows.length).toBeGreaterThanOrEqual(2)
+    for (const separator of w.findAll('[data-role="row-separator"]')) {
+      expect(Number(separator.attributes('x1'))).toBeGreaterThanOrEqual(0)
+      expect(Number(separator.attributes('x2'))).toBeLessThanOrEqual(vbWidth)
     }
-    for (const title of w.findAll('.lcc-canvas__band-title')) {
-      const x = Number(title.attributes('x'))
-      const anchor = title.attributes('text-anchor')
-      const textWidth = estimateTextWidth(title.text(), 12)
+    for (const label of w.findAll('[data-role="row-label"]')) {
+      const x = Number(label.attributes('x'))
+      const textWidth = estimateTextWidth(label.text(), 11)
       expect(x).toBeGreaterThanOrEqual(0)
-      if (anchor === 'end') expect(x).toBeLessThanOrEqual(vbWidth)
-      else expect(x + textWidth).toBeLessThanOrEqual(vbWidth)
+      expect(x + textWidth).toBeLessThanOrEqual(vbWidth)
     }
   })
 
@@ -346,7 +348,7 @@ describe('BoardComposeOverlay — 画布（V1–V7、V14、V15）', () => {
     const t4 = w.find('[data-testid="lane-related-title-4"]')
     expect(t4.text().length).toBeLessThan(longLabel.length)
     expect(t4.text().endsWith('…')).toBe(true)
-    expect(t4.text().length).toBeLessThanOrEqual(10)
+    expect(t4.text().length).toBeLessThanOrEqual(11) // 10 个汉字 + 省略号
     // 位置：在节点下方，且不越出画布
     const nodeY = Number(w.find('[data-testid="lane-node-4"] .lcc-canvas__point').attributes('cy'))
     const titleY = Number(t4.attributes('y'))
@@ -358,7 +360,7 @@ describe('BoardComposeOverlay — 画布（V1–V7、V14、V15）', () => {
     expect(titleX + textWidth / 2).toBeLessThanOrEqual(vbWidth)
   })
 
-  it('相关节点在已有泳道里：只读参照区不压字 → 改为在提示行点名', async () => {
+  it('相关节点在已有泳道里：只读参照区不压字、画布底部不再有说明行', async () => {
     persistentMock.getComposeCandidates.mockResolvedValue({
       success: true,
       data: response({
@@ -371,16 +373,13 @@ describe('BoardComposeOverlay — 画布（V1–V7、V14、V15）', () => {
     await flushPromises()
     // 节点 5 属于已有 active 泳道（只读）→ 不在节点下画标题
     expect(w.find('[data-testid="lane-related-title-5"]').exists()).toBe(false)
-    const hint = w.find('[data-testid="lane-related-hint"]')
-    expect(hint.exists()).toBe(true)
-    expect(hint.text()).toContain('1 个')
-    expect(hint.text()).toContain('已有泳道')
-    expect(hint.text()).toContain('已有泳道')
-    // 开启只读参照后：仍在提示行点名（只读梯子里不逐点压字）
+    // 2026-11-23 用户定档：底部那行说明整段删除（只读节点在只读梯子里可见）
+    expect(w.find('[data-testid="lane-related-hint"]').exists()).toBe(false)
+    // 开启只读参照后：仍不在节点下压字
     await (w.find('[data-testid="lane-compose-show-assigned"]').element as HTMLInputElement).click()
     await flushPromises()
     expect(w.find('[data-testid="lane-related-title-5"]').exists()).toBe(false)
-    expect(w.find('[data-testid="lane-related-hint"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-related-hint"]').exists()).toBe(false)
   })
 
   it('相关节点标题：选中话题后，相关节点在节点下显示标题缩略', async () => {
@@ -411,7 +410,7 @@ describe('BoardComposeOverlay — 画布（V1–V7、V14、V15）', () => {
     const t4 = w.find('[data-testid="lane-related-title-4"]')
     expect(t4.text().length).toBeLessThan(longLabel.length)
     expect(t4.text().endsWith('…')).toBe(true)
-    expect(t4.text().length).toBeLessThanOrEqual(10)
+    expect(t4.text().length).toBeLessThanOrEqual(11) // 10 个汉字 + 省略号
     // 位置：在节点下方，且不越出画布
     const nodeY = Number(w.find('[data-testid="lane-node-4"] .lcc-canvas__point').attributes('cy'))
     const titleY = Number(t4.attributes('y'))
@@ -434,26 +433,34 @@ describe('BoardComposeOverlay — 画布（V1–V7、V14、V15）', () => {
   })
 
 
-  it('V6 话题带：每个候选话题一行标题，成员细线指向所属话题', async () => {
+  it('V6 行式泳道：每个候选链一行（行标签 = 话题名 + 计数），无 tick 拖线', async () => {
     const w = await mountOverlay()
     await setCanvasWidth(900)
-    expect(w.findAll('.lcc-canvas__band-bar')).toHaveLength(1)
-    expect(w.find('.lcc-canvas__band-title').text()).toBe('候选泳道 A')
-    expect(w.findAll('.lcc-canvas__band-tick')).toHaveLength(3)
+    const chainRow = w.find('.lcc-canvas__row[data-row-kind="chain"]')
+    expect(chainRow.exists()).toBe(true)
+    expect(chainRow.find('[data-role="row-label"]').text()).toBe('候选泳道 A')
+    expect(chainRow.text()).toContain('剩余 3 条')
+    expect(chainRow.find('.lcc-canvas__row-tally').text()).toBe('0/3')
+    expect(w.findAll('.lcc-canvas__band-tick')).toHaveLength(0)
   })
 
   it('V7 话题多于可读行数：明写「另有 N 个候选话题在左侧候选栏」', async () => {
-    const chains = Array.from({ length: 7 }, (_, i) => ({
+    const sections = Array.from({ length: 12 }, (_, i) => section(String(i + 1), '2026-10-27', `事件 ${i + 1}`, [1, 0], `T${i + 1}`))
+    const chains = Array.from({ length: 12 }, (_, i) => ({
       ...CHAIN,
-      key: `1984:${i + 1}`,
-      sectionIds: [String(i + 1)],
+      key: `T${i + 1}:${i + 1}`,
+      topicId: `T${i + 1}`,
       topicLabel: `候选话题 ${i + 1}`,
+      sectionIds: [String(i + 1)],
     }))
-    persistentMock.getComposeCandidates.mockResolvedValue({ success: true, data: response({ candidateChains: chains }) })
+    persistentMock.getComposeCandidates.mockResolvedValue({
+      success: true,
+      data: response({ sections, candidateChains: chains, relations: [] }),
+    })
     const w = await mountOverlay()
     await setCanvasWidth(900)
-    expect(w.findAll('.lcc-canvas__band-bar')).toHaveLength(6)
-    expect(w.find('.lcc-canvas__band-more').text()).toContain('另有 1 个候选话题在左侧候选栏')
+    expect(w.findAll('.lcc-canvas__row[data-row-kind="chain"]')).toHaveLength(10)
+    expect(w.find('.lcc-canvas__row-more').text()).toContain('另有 2 个候选话题在左侧候选栏')
   })
 
   it('V14 已有 active 泳道默认隐藏，显式开启才显示且只读', async () => {
@@ -528,6 +535,9 @@ describe('BoardComposeOverlay — 节点卡（V8–V12）', () => {
   it('V10/V11 卡内「＋选入 / 移出」真实改成员并当场翻字', async () => {
     const w = await mountOverlay()
     await setCanvasWidth(900)
+    // 阶 0 散料默认折叠：先整组选中一条候选链激活质心，散料近邻才浮现
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
     await w.find('[data-testid="lane-node-4"]').trigger('click')
     await flushPromises()
     const action = w.find('[data-testid="lane-node-card-action"]')
@@ -914,5 +924,175 @@ describe('BoardComposeOverlay — 时间视窗与可选池曲线（unify 7.1–7
     await w.findAll('.orc-tier')[3]!.trigger('click')
     await flushPromises()
     expect(persistentMock.getComposeCandidates).toHaveBeenLastCalledWith(1974, { mode: 365, days: 365 })
+  })
+})
+
+// ── 泳道行 / 拖拽 / 阈值三档 / 检索态（rework-lane-compose-swimlane-canvas 2.x–6.x） ──
+
+/** 指针拖拽（pointerdown → pointermove → pointerup），坐标即画布逻辑坐标（容器 rect 为 0）。 */
+async function dragOn(w: ReturnType<typeof mount>, from: { x: number, y: number }, to: { x: number, y: number }, on: Element): Promise<void> {
+  const surface = w.find('[data-testid="lane-compose-canvas"]').element
+  const fire = (type: string, point: { x: number, y: number }): void => {
+    const event = new Event(type, { bubbles: true, cancelable: true }) as PointerEvent
+    Object.defineProperties(event, {
+      clientX: { value: point.x },
+      clientY: { value: point.y },
+      pointerId: { value: 1 },
+    })
+    ;(type === 'pointerdown' ? on : surface).dispatchEvent(event)
+  }
+  fire('pointerdown', from)
+  fire('pointermove', to)
+  fire('pointerup', to)
+  await flushPromises()
+}
+
+function rowHandleRect(w: ReturnType<typeof mount>, row: number): { x: number, y: number } {
+  const handle = w.find(`[data-role="row-handle"][data-row="${row}"]`)
+  return { x: Number(handle.attributes('x')) + 20, y: Number(handle.attributes('y')) + 12 }
+}
+
+function laneRowDropY(w: ReturnType<typeof mount>): number {
+  const top = Number(w.find('.lcc-canvas__row[data-row="0"] [data-role="row-separator"]').attributes('y1'))
+  return top + 40
+}
+
+describe('BoardComposeOverlay — 行式泳道与拖拽选入（A-2 / A-3 / A-13）', () => {
+  it('A-13 拖行标签整组采纳：一次落位，左栏记 n/n，取空的链行从画布消失', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    expect(w.find('.lcc-canvas__row[data-row-kind="chain"]').exists()).toBe(true)
+    await dragOn(w, rowHandleRect(w, 1), { x: 60, y: laneRowDropY(w) }, w.find('[data-role="row-handle"][data-row="1"]').element)
+    expect(w.find('[data-testid="lane-state-1984:1"]').text()).toContain('3 / 3 已选')
+    expect(w.find('.lcc-canvas__row[data-row-kind="chain"]').exists()).toBe(false)
+    // 不出现「已采纳」摘要、不统计来源构成
+    expect(w.text()).not.toContain('已采纳')
+    expect(w.find('[data-testid="lane-compose-canvas"]').text()).not.toContain('来源构成')
+  })
+
+  it('A-2 拖单节点入本次泳道：成员数 +1 且原行留空位', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    const node = w.find('[data-testid="lane-node-1"]')
+    const point = node.find('.lcc-canvas__point')
+    await dragOn(
+      w,
+      { x: Number(point.attributes('cx')), y: Number(point.attributes('cy')) },
+      { x: Number(point.attributes('cx')), y: laneRowDropY(w) },
+      node.element,
+    )
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('1')
+    expect((w.find('[data-testid="lane-member-1"]').element as HTMLInputElement).checked).toBe(true)
+    // 原链行仍在（还有 2 个未采纳成员），n/N 同步
+    expect(w.find('[data-testid="lane-state-1984:1"]').text()).toContain('1 / 3 已选')
+  })
+
+  it('A-5 点击节点只改选中态：成员数不变（防回归到「点击选入」）', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-node-1"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('0')
+    expect(w.findAll('input[type="checkbox"]:checked')).toHaveLength(0)
+  })
+})
+
+describe('BoardComposeOverlay — 阈值三档（A-6 / 4.3）', () => {
+  it('工具条三档默认「标准」；切「仅高相关」只改散料，候选链成员/已选不变，右栏同批', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    expect(w.find('[data-testid="lane-compose-tier-standard"]').attributes('aria-pressed')).toBe('true')
+
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-6"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-suggest-6"]').exists()).toBe(true)
+
+    await w.find('[data-testid="lane-compose-tier-tight"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-tier-tight"]').attributes('aria-pressed')).toBe('true')
+    // 候选链成员 + 已选逐个不变
+    for (const id of ['1', '2', '3']) expect(w.find(`[data-testid="lane-node-${id}"]`).exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
+    // 散料收紧：画布与右栏同批
+    expect(w.find('[data-testid="lane-node-6"]').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-suggest-6"]').exists()).toBe(false)
+  })
+})
+
+describe('BoardComposeOverlay — 检索态与右栏恒定骨架（A-7 / A-7b / A-14）', () => {
+  it('A-14 空态 ③ 默认落「按标题找」；选入后回到「已选事件」', async () => {
+    const w = await mountOverlay()
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-tab-find"]').attributes('aria-selected')).toBe('true')
+    expect(w.find('[data-testid="lane-compose-find-input"]').exists()).toBe(true)
+    // ①②③ 三段都在
+    expect(w.find('[data-testid="lane-compose-focus"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-suggestions"]').exists()).toBe(true)
+
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-tab-chosen"]').attributes('aria-selected')).toBe('true')
+    expect(w.find('[data-testid="lane-compose-focus"]').exists()).toBe(true)
+  })
+
+  it('A-7 检索态：画布降级 + 命中四角括号；①② 保持可见', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-compose-tab-find"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-compose-find-input"]').setValue('归档')
+    await flushPromises()
+
+    expect(w.find('[data-testid="lane-compose-search-state"]').text()).toContain('检索态')
+    expect(w.find('[data-testid="lane-node-6"] [data-role="search-hit"]').exists()).toBe(true)
+    expect(w.find('.lcc-canvas__row[data-row-kind="chain"]').classes()).toContain('is-search-bg')
+    expect(w.find('[data-testid="lane-compose-focus"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-suggestions"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-compose-find-scope"]').text()).toContain('未归类 · 命中 1 条')
+  })
+
+  it('A-7b 检索范围不含候选链成员：只出现在链成员标题里的词 → 命中 0', async () => {
+    const w = await mountOverlay()
+    await setCanvasWidth(900)
+    await w.find('[data-testid="lane-compose-tab-find"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-compose-find-input"]').setValue('候选一')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-find-scope"]').text()).toContain('命中 0 条')
+    expect(w.findAll('[data-role="search-hit"]')).toHaveLength(0)
+    // 候选链成员仍可由行标签整组采纳处置
+    expect(w.find('[data-role="row-handle"][data-row="1"]').exists()).toBe(true)
+  })
+})
+
+describe('BoardComposeOverlay — 工具条文案（6.1）', () => {
+  it('工具条只给状态结论，不含「置信度」「不是」类解释句式', async () => {
+    const w = await mountOverlay()
+    const note = w.find('[data-testid="lane-compose-tool-note"]')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('未归类')
+    const tools = w.find('.bco__tools')
+    expect(tools.text()).not.toContain('置信度')
+    expect(tools.text()).not.toContain('不是')
+    expect(tools.text()).not.toContain('推荐不自动选入')
+  })
+})
+
+describe('BoardComposeOverlay — 检索态 Esc（interaction-table Esc 行为②）', () => {
+  it('检索中按 Esc 只退出检索，不退出编排态', async () => {
+    const w = await mountOverlay()
+    await flushPromises()
+    await w.find('[data-testid="lane-compose-tab-find"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="lane-compose-find-input"]').setValue('归档')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-search-state"]').exists()).toBe(true)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(w.find('[data-testid="lane-compose-search-state"]').exists()).toBe(false)
+    expect(w.emitted('close')).toBeUndefined()
   })
 })

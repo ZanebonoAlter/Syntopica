@@ -1,15 +1,18 @@
 <script setup lang="ts">
 /**
- * 编排态右栏 · 三段 + 两个 tab（rework-workshop-into-radar-and-desk / workshop-lane-compose）。
+ * 编排态右栏 · 三段 + 两个 tab（workshop-lane-compose / rework-lane-compose-swimlane-canvas）。
  *
  * 口径（契约 §2.4 / delta spec「右栏职责与画布标题」）：
  * - 右栏**只做三段**：① 当前事件的线索（只叙述标题/日期/归属/归档来源，**不再放选入按钮**）
  *   ② 可补充的事件（待选推荐，逐条明确加入）③ tab 区（已选事件 / 按标题找）；
- * - 不得出现关联事件清单、计算依据折叠、话题泳道参照；
- * - 已选事件逐条带真实复选框，取消勾选即从本次成员移出；
- * - 「按标题找」只在本窗范围内按标题过滤，不调 AI、不自动勾选。
+ * - **三段是恒定骨架**：空态 / 编辑中 / 已确认 / 检索态都渲染，只换内容不换骨架；
+ *   空态 ③ 默认落「按标题找」，编辑中与已确认态默认落「已选事件」；
+ * - 「按标题找」只在本窗范围内、且**只在未归类节点里**按标题过滤
+ *   （口径由宿主 `unclassifiedIds` 给出，不是 `persistentTopicId == null`），
+ *   不调 AI、不自动勾选；
+ * - 检索态 = ③ 切到按标题找 + 画布降级，**不是**另一套右栏。
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { proximityOf, type LaneRecommendations } from '~/features/tags/composables/laneComposeLogic'
 import type { ComposeCandidate } from '~/api/persistentTopics'
 
@@ -20,6 +23,10 @@ const props = defineProps<{
   selectedIds: Set<string>
   /** 窗口内全部 section（按标题找的取数范围）。 */
   sections: ComposeCandidate[]
+  /** 检索范围 = 未归类节点 id（宿主按「不属于任何候选链」派生）。 */
+  unclassifiedIds?: Set<string>
+  /** 检索关键词（宿主持有，画布命中集与右栏同源）。 */
+  query?: string
   showAssigned?: boolean
 }>()
 
@@ -27,17 +34,36 @@ const emit = defineEmits<{
   'add': [id: string]
   'remove': [id: string]
   'focus': [id: string]
+  'update:query': [value: string]
 }>()
 
-const activeTab = ref<'chosen' | 'find'>('chosen')
-const query = ref('')
+const activeTab = ref<'chosen' | 'find'>(props.selectedSections.length ? 'chosen' : 'find')
+const keyword = computed(() => props.query ?? '')
+
+function setQuery(value: string): void {
+  emit('update:query', value)
+}
+
+// ③ 的默认落点跟着态走：空态 → 按标题找；编辑中 / 已确认 → 已选事件。
+// 检索中（关键词非空）不抢用户的 tab 选择。
+watch(() => props.selectedSections.length, (now, prev) => {
+  if (keyword.value.trim()) return
+  if (prev === 0 && now > 0) activeTab.value = 'chosen'
+  else if (now === 0) activeTab.value = 'find'
+})
+
+// 退出检索（关键词由非空回到空）→ ③ 退回「已选事件」；①② 全程不变。
+watch(keyword, (now, prev) => {
+  if (!prev.trim() || now.trim()) return
+  activeTab.value = props.selectedSections.length ? 'chosen' : 'find'
+})
 
 /** 当前事件线索（只叙述）。 */
 const focusOrigin = computed(() => {
   const section = props.focusSection
   if (!section) return ''
   const status = section.persistentTopic?.status
-  if (status === 'active') return `归属「${section.persistentTopic?.label ?? '已有泳道'}」只读参照，跨正式泳道移入需另行确认。`
+  if (status === 'active') return `归属「${section.persistentTopic?.label ?? '已有泳道'}」· 只读参照。`
   if (status === 'archived') return `来自已归档泳道「${section.persistentTopic?.label ?? ''}」，只显示来源，不自动恢复原话题状态。`
   if (status === 'candidate') return `候选话题「${section.persistentTopic?.label ?? ''}」的成员。`
   return '当前窗口内未归属任何话题的事件。'
@@ -46,13 +72,18 @@ const focusOrigin = computed(() => {
 /** 可补充的事件（待选推荐，逐条明确加入）。 */
 const suggestions = computed(() => props.recommendations.unassigned)
 
-/** 按标题找：只在本窗范围内过滤未入 active 泳道的事件，不自动勾选。 */
+/** 按标题找：只在本窗范围内、且只在**未归类**节点里过滤，不自动勾选。 */
 const findResults = computed(() => {
-  const keyword = query.value.trim().toLowerCase()
-  const pool = props.sections.filter(section => section.persistentTopic?.status !== 'active')
-  if (!keyword) return pool
-  return pool.filter(section => section.clusterLabel.toLowerCase().includes(keyword))
+  const q = keyword.value.trim().toLowerCase()
+  const scope = props.unclassifiedIds
+  const pool = props.sections.filter(section => (scope ? scope.has(section.id) : section.persistentTopic?.status !== 'active'))
+  if (!q) return pool
+  return pool.filter(section => section.clusterLabel.toLowerCase().includes(q))
 })
+
+/** 检索范围的大小（③ 的口径行：未归类 · 命中 N 条）。 */
+const scopeCount = computed(() => (props.unclassifiedIds ? props.unclassifiedIds.size : findResults.value.length))
+const searching = computed(() => keyword.value.trim().length > 0)
 
 function archivedOrigin(section: ComposeCandidate): string {
   if (section.persistentTopic?.status !== 'archived') return ''
@@ -87,7 +118,6 @@ function onChosenToggle(section: ComposeCandidate, event: Event): void {
           <p v-if="focusSection.persistentTopic?.status === 'active' && !showAssigned" class="lci__focus-origin">
             图中已隐藏该归属，需手动开启「显示已有泳道」查看位置。
           </p>
-          <p class="lci__focus-origin">选入/移出在画布上的节点卡里直接点。</p>
         </template>
       </section>
 
@@ -98,7 +128,7 @@ function onChosenToggle(section: ComposeCandidate, event: Event): void {
           <small v-if="suggestions.length">{{ suggestions.length }}</small>
         </h4>
         <p v-if="!suggestions.length" class="lci__empty">
-          {{ selectedSections.length ? '当前没有符合阈值的补充推荐，仍可在「按标题找」里手动选入。' : '选入候选后，这里按成员平均质心给出可补充的事件。' }}
+          {{ selectedSections.length ? '当前没有符合阈值的补充推荐，仍可在「按标题找」里手动选入。' : '无' }}
         </p>
         <ul v-else class="lci__suggest-list">
           <li v-for="item in suggestions" :key="item.section.id" class="lci__suggest-row" :data-testid="`lane-suggest-${item.section.id}`">
@@ -155,12 +185,25 @@ function onChosenToggle(section: ComposeCandidate, event: Event): void {
           <input
             id="lane-compose-find-input"
             type="search"
-            v-model="query"
+            :value="keyword"
             placeholder="输入标题关键词"
             data-testid="lane-compose-find-input"
+            @input="setQuery(($event.target as HTMLInputElement).value)"
           >
         </label>
-        <p v-if="!findResults.length" class="lci__empty">没有匹配的事件，清空关键词可重新查看。</p>
+        <p class="lci__find-scope" data-testid="lane-compose-find-scope">
+          未归类 · <template v-if="searching">命中 {{ findResults.length }} 条</template><template v-else>{{ scopeCount }} 条可补</template>
+          <button
+            v-if="searching"
+            type="button"
+            class="lci__find-clear"
+            data-testid="lane-compose-find-clear"
+            @click="setQuery('')"
+          >清空</button>
+        </p>
+        <p v-if="!findResults.length" class="lci__empty">
+          {{ searching ? '没有匹配的事件，清空关键词可重新查看。' : '窗口内没有未归类的事件。' }}
+        </p>
         <ul v-else class="lci__find-list">
           <li v-for="section in findResults" :key="section.id" class="lci__find-row" :data-testid="`lane-find-${section.id}`">
             <div class="lci__find-text">
@@ -389,6 +432,22 @@ function onChosenToggle(section: ComposeCandidate, event: Event): void {
   background: var(--color-bg-base);
   color: var(--color-text-primary);
   font-size: 12px;
+}
+
+.lci__find-scope {
+  margin: 0 0 6px;
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
+.lci__find-clear {
+  margin-left: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
 }
 
 .lci__find-row {

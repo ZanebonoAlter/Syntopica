@@ -18,6 +18,7 @@ import AppDialog from '~/components/ui/AppDialog.vue'
 import AppInput from '~/components/ui/AppInput.vue'
 import AppPageShell from '~/components/ui/AppPageShell.vue'
 import { Z_INDEX } from '~/components/ui/layout-contract'
+import { unclassifiedIds, type LaneThresholdTier } from '~/features/tags/composables/laneComposeLogic'
 import LaneComposeCandidates from '~/features/tags/components/compose/LaneComposeCandidates.vue'
 import LaneComposeCanvas from '~/features/tags/components/compose/LaneComposeCanvas.vue'
 import LaneComposeHistoryDialog from '~/features/tags/components/compose/LaneComposeHistoryDialog.vue'
@@ -166,6 +167,42 @@ const compose = useLaneCompose({
   onSaved: handleSaved,
 })
 
+// ── 阈值三档（画布工具条控件；与右栏「可补充的事件」共用同一状态） ────────
+const THRESHOLD_TIERS: { key: LaneThresholdTier, label: string }[] = [
+  { key: 'tight', label: '仅高相关' },
+  { key: 'standard', label: '标准' },
+  { key: 'all', label: '全部' },
+]
+
+function setThresholdTier(tier: LaneThresholdTier): void {
+  compose.thresholdTier.value = tier
+}
+
+// ── 检索态（口径 = 未归类；范围与分析都在前端纯派生） ──────────────────────
+/**
+ * 检索范围 = **未归类**（不属于画布上任何候选链的节点，含未归属话题 +
+ * 挂着 candidate 话题但未成链）；候选链成员不进检索结果（它们靠拖行标签整组采纳）。
+ */
+const unclassified = computed(() => unclassifiedIds(compose.sections.value, compose.candidateChains.value))
+const searchQuery = ref('')
+const searchActive = computed(() => searchQuery.value.trim().length > 0)
+/** 命中集 = 未归类层里按标题 `includes` 命中的节点（画布与右栏同一批）。 */
+const searchHits = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  const hits = new Set<string>()
+  if (!q) return hits
+  for (const section of compose.sections.value) {
+    if (!unclassified.value.has(section.id)) continue
+    if (section.clusterLabel.toLowerCase().includes(q)) hits.add(section.id)
+  }
+  return hits
+})
+
+/** 整组采纳（拖行标签）：与左栏组勾选同一个写入口（含自动预填名口径）。 */
+function onAdoptChain(key: string): void {
+  compose.setChainSelected(key, true)
+}
+
 // ── 修正模式（既有泳道的就地修正） ─────────────────────────────────────────
 /**
  * 修正模式的状态机（`useLaneCorrection`）：成员移除 / 加回 / 加入、首义范围、改名。
@@ -288,6 +325,11 @@ function onKeydown(event: KeyboardEvent): void {
   // 历史名单弹窗自己处理 Esc（AppDialog 关掉它，不连带退出编排态）
   if (historyOpen.value) {
     historyOpen.value = false
+    return
+  }
+  // 检索态：Esc 先退出检索（不改成员），再按一次才退出编排态
+  if (searchActive.value) {
+    searchQuery.value = ''
     return
   }
   void onCancel()
@@ -454,7 +496,22 @@ onBeforeUnmount(() => {
             data-testid="lane-compose-clear-focus"
             @click="compose.clearFocus()"
           >取消聚焦</button>
-          <span class="bco__tool-note">推荐不自动选入；候选大小=接近度（成员固定尺寸），不是置信度。</span>
+          <div class="bco__tiers" role="group" aria-label="散料阈值（只影响散料显隐）">
+            <button
+              v-for="tier in THRESHOLD_TIERS"
+              :key="tier.key"
+              type="button"
+              class="bco__tier"
+              :class="{ 'is-active': compose.thresholdTier.value === tier.key }"
+              :aria-pressed="compose.thresholdTier.value === tier.key"
+              :data-testid="`lane-compose-tier-${tier.key}`"
+              @click="setThresholdTier(tier.key)"
+            >{{ tier.label }}</button>
+          </div>
+          <span class="bco__tool-note" data-testid="lane-compose-tool-note">
+            已选 {{ compose.memberCount.value }} 条 · 未归类 {{ unclassified.size }} 条
+          </span>
+          <span v-if="searchActive" class="bco__tool-note" data-testid="lane-compose-search-state">检索态 · 候选链层降为背景</span>
         </template>
       </div>
 
@@ -563,9 +620,15 @@ onBeforeUnmount(() => {
             :match-threshold="compose.matchThreshold.value"
             :show-assigned="compose.showAssigned.value"
             :dates="compose.dates.value"
+            :threshold-tier="compose.thresholdTier.value"
+            :search-active="searchActive"
+            :search-hits="searchHits"
+            :undo-id="compose.lastRemoval.value?.id ?? null"
             @focus="id => compose.toggleFocus(id)"
             @clear-focus="compose.clearFocus()"
             @toggle-member="(id, checked) => compose.toggleMember(id, checked)"
+            @adopt-chain="onAdoptChain"
+            @undo-removal="compose.undoRemoval()"
           />
 
           <div class="bco__right">
@@ -576,10 +639,13 @@ onBeforeUnmount(() => {
               :selected-sections="compose.selectedSections.value"
               :selected-ids="compose.selectedIds.value"
               :sections="compose.sections.value"
+              :unclassified-ids="unclassified"
+              :query="searchQuery"
               :show-assigned="compose.showAssigned.value"
               @add="id => compose.toggleMember(id, true)"
               @remove="id => compose.toggleMember(id, false)"
               @focus="id => compose.setFocus(id)"
+              @update:query="searchQuery = $event"
             />
             <footer class="bco__actions">
               <button type="button" class="bco__cancel" data-testid="compose-cancel-draft" @click="onCancel">取消本次</button>
@@ -763,6 +829,36 @@ onBeforeUnmount(() => {
   color: var(--color-accent);
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+/* 阈值三档（画布工具条内联控件；样式沿用既有档位按钮组） */
+.bco__tiers {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.bco__tier {
+  border: 0;
+  border-right: 1px solid var(--color-border-medium);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 11.5px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.bco__tier:last-child {
+  border-right: 0;
+}
+
+.bco__tier.is-active {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent);
+  font-weight: 600;
 }
 
 .bco__tool-note {

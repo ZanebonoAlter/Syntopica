@@ -257,6 +257,35 @@ SemanticBoard 管理面板
 
 **代码入口**：前端 `front/app/features/tags/components/console/BoardRail.vue`（左轨）、`console/RailNowBrief.vue`（当日日报块：点评层 + 泳道层）、`console/RailOtherTopicsBrief.vue`（右轨「当日其他话题」子块：标题 + 计数徽标 + 逐行；纯受控）、`console/BoardContextRail.vue`（右轨容器与顺序）、`console/RailHealthBrief.vue`（体检一行状态条）、`console/railClueAxis.ts`（左轨行读模型 + 共同轴重对齐）、`console/nowBrief.ts`（当日日报读模型 + 泳道排序）、`console/dayOtherTopics.ts`（「当日其他话题」组模型唯一实现点：成员/行序/计数/状态词）、`console/useConsoleShellData.ts`（overview 行共享读模型）、`api/normalizers/laneDayReading.ts`（日报 `title`/`summary`/`highlights` 归一）；后端**零改动**（`overview` 与 `daily-reports/:id` 字段均已存在，前端只是把被丢弃的字段接上，**零新增请求**）。
 
+### 关键事件视图（add-key-event-matrix-view：矩阵骨架的第二个读数）
+
+版块态势页主舞台的两个**同级视图**：「矩阵 / 追踪」（现状，量）与「关键事件」（名）。切换入口在页头 `.console-seg` 分段组（`BoardConsoleHeader.vue`，`activeView='events'`，窄屏 <768px 不渲染按钮与视图）；视图状态走 URL `?view=events`（非法值回落 `matrix`），刷新与分享保持。
+
+**共用三件套**（MUST NOT 各自维护一份）：
+
+- **时间视窗**：与矩阵共用同一控件与同一 `visibleAxis`（D9）——要看 30 天就在矩阵那处切，本视图 MUST NOT 出现第二个跨度控件。
+- **行集合与行序**：只含**持久化话题（active）**，行序沿用 `observationLanes.ts:buildObservationRows` 的产出（lane_heat 降序 → 全窗线索合计降序 → topic id 升序）与休眠判定；**候选话题（candidate）不占行**，其确认事件也不并入本视图（D2）。
+- **选中态**：同一组受控 `selectedLane` / `selectedDate`；切换视图 MUST NOT 重置其中任何一项（D6）。
+
+**读端**：版块级批量读 `GET /api/semantic-boards/:id/key-events?days=N`（只透 `state='confirmed'`，窗口内闭区间，排序 `source_period_date ASC, persistent_topic_id ASC, id ASC`）；前端一次取全，不再逐话题拉（D3）。`days` 必须是正整数（默认 14；0/负数/非数字 → 400，与话题级端点 `days=0=全部` 的旧契约不同）。
+
+**行内渲染**（`KeyEventTimelineView.vue` + `KeyEventLabel.vue` + `keyEventLayout.ts` 纯模型）：
+
+- **节点**：每条 confirmed 注记在其 `source_period_date` 列落一个节点；节点恒在生命线（轴线）上，同日多条靠**横向散开**区分（MUST NOT 竖向压到别层标签）；无事件日不落节点、MUST NOT 伪造 0。
+- **标签**：先以自然宽度渲染（`white-space: nowrap`，MUST NOT 加 `text-overflow` 截断标题），再用 `offsetWidth` 实测宽度做贪心分层（层顶 46px、层距 44px、同层间隙 ≥4px、靠右边界左移贴边）；行高 = 无标签 70px，有标签按层数每层 +44px（D4）。
+- **列宽与横滚**：列宽 = `max(64px, 主舞台可用宽 / 可见日数)`——超宽屏均分填满、窄屏守 64 下限后由**舞台容器内部**横向滚动承接，行头 sticky，切换 / 换日时选中日自动滚入视口；MUST NOT 压缩列宽把 30 天塞进一屏、MUST NOT 产生页面级横向滚动（D10/D11）。
+- **左键拖拽平移**：舞台空白处按住左键拖动即平移（复用新建泳道画布的 `laneComposeLogic.ts:panScroll` / `isDragBeyond`，位移阈值 5px，阈值内视为点选）（D11）。
+- **长窗降级**：可见日数 >31 时收起文字标签，只留节点与当日事件计数（`★N`），名称由下方阅读区承担（D7）。
+- **双主题**：节点 / 标签 / 选中列 / 文章列表 / 预览层一律走 `--color-*` 语义变量，MUST NOT 硬编码亮色或暗色色值（D13）。
+
+**下方阅读区**（`KeyEventDayPanel.vue`）：选中日当天全部 confirmed 事件（标题 + 所属话题快照 + 摘要内联展开）；事件卡可展开确认时冻结的关联文章（`article_ids_snapshot`，**只按需读**，复用既有 `laneDayRelatedArticles` 缓存，MUST NOT 新建第二份文章缓存），点文章 `emit('open-article', id)` 由壳层已挂载的 `ArticlePreviewModal` 打开全文，关闭后回到原卡且保持展开态与滚动位置（D12）。
+
+**只读**：本视图 MUST NOT 出现注记确认 / 取消 / 编辑入口——注记写动作的唯一归属是日报阅读台 `KeyEventMarkerActions.vue`（D8，`flow/topic-graph.md` 红线 10）。
+
+**四态诚实**：loading 出骨架（行头与轴占位）；窗口内 0 条 → 行与轴**照常渲染** + 「这段时间没有确认的关键事件 · 在日报阅读台标记」；读失败 → 错误条 + 重试，MUST NOT 冒称 0 条、MUST NOT 用空轴冒充失败；刷新失败但已有内容 → 保留内容 + 「刷新失败，展示上次数据」条。
+
+**代码入口**：前端 `front/app/api/boardKeyEvents.ts` + `api/normalizers/boardKeyEvents.ts`（取数与归一）、`composables/useBoardKeyEvents.ts`（按 board+days 缓存 / 三态 / 晚到隔离）、`console/keyEventLayout.ts`（列宽与标签分层纯模型）、`console/KeyEventTimelineView.vue`（行 + 轴 + 节点）、`console/KeyEventLabel.vue`（单条标签）、`console/KeyEventDayPanel.vue`（当日事件阅读区）；后端 `backend-go/internal/topicgraph/handler/key_event_handler.go:listBoardKeyEventMarkers` + `repository/key_event_markers.go:ListBoardKeyEventMarkers`（只读批量）。
+
 ### 泳道工作面（unify-lane-workbench：三栏 / 节点卡显式写操作 / 模态本地时间窗）
 
 版块态势页顶栏「新建泳道」与矩阵行入口打开的 `console/BoardComposeOverlay.vue` 同时承载两个模式；**修正模式（编辑既有泳道）为三栏工作面**：

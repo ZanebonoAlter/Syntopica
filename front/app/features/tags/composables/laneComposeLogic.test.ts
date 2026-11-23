@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
   boxesOverlap,
+  buildRowIndex,
+  layoutRows,
+  rowMemberY,
+  titleBudget,
+  truncateByWidth,
+  thresholdOf,
+  unclassifiedIds,
+  visibleScatter,
+  LANE_ROW_SELF,
+  LANE_MIN_COLUMN,
+  MAX_SLOT_PER_DAY,
+  MAX_TITLE_CHARS,
+  TITLE_MIN_COLUMN,
   candidatePoolDayTotals,
   candidateSelection,
   centroidOf,
@@ -18,6 +31,7 @@ import {
   pointAppearance,
   proximityOf,
   relatedNodeIds,
+  relativeProximities,
   scaledPointRadius,
   truncateText,
   validateWorkbenchRange,
@@ -405,6 +419,19 @@ describe('laneComposeLogic · unify-lane-workbench 点形统一（B1 / E8 / E13�
     expect(b.radius).toBe(5.5)
   })
 
+  it('scatterRadius / readonlyRadius 覆盖：缺省行为不变，显式传值时只改该档半径', () => {
+    // 缺省（修正画布）：散料 = min(8, baseRadius × 0.8)、只读 = max(2.5, baseRadius × 0.65)
+    expect(pointAppearance(undefined, 0.3, false, false, 7.3, 52).radius).toBeCloseTo(5.84, 10)
+    expect(pointAppearance(0.1, 0.3, false, true, 7.3, 52).radius).toBeCloseTo(4.745, 10)
+    // 编排画布提档：散料 11px 直径、只读梯子不跟着放大
+    expect(pointAppearance(undefined, 0.3, false, false, 7.3, 52, { scatterRadius: 5.5 }).radius).toBe(5.5)
+    expect(pointAppearance(0.1, 0.3, false, true, 7.3, 52, { readonlyRadius: 2.75 }).radius).toBe(2.75)
+    // 覆盖只认散料剖面：推荐点仍按接近度映射，不被散料尺寸吞掉
+    const recommend = pointAppearance(0, 0.3, false, false, 7.3, 52, { scatterRadius: 5.5, memberRadius: 7.5 })
+    expect(recommend.radius).toBeGreaterThan(5.5)
+    expect(recommend.radius).toBeLessThanOrEqual(7.5)
+  })
+
   it('候选半径随接近度单调，且仍小于成员半径；缩放下限保留', () => {
     const near = pointAppearance(0.02, 0.3, false, false, 5, 30)
     const far = pointAppearance(0.28, 0.3, false, false, 5, 30)
@@ -571,5 +598,457 @@ describe('laneComposeLogic · 工作面曲线纯函数（B7 / B8、E1 / E2 / E5 
     expect(late).toContain('早于支持的取数窗')
     // 跨月/闰日合法（E7）
     expect(validateWorkbenchRange('2024-02-29', '2024-03-01', 365, null)).toBeNull()
+  })
+})
+
+// ── 行式泳道画布（rework-lane-compose-swimlane-canvas） ──────────────────────
+describe('laneComposeLogic · 行归属（1.1）', () => {
+  const chains = [
+    { key: 'A:1', topicLabel: '链 A', sectionIds: ['1', '2', '3'] },
+    { key: 'B:4', topicLabel: '链 B', sectionIds: ['4', '5'] },
+  ]
+  const windowIds = ['1', '2', '3', '4', '5', '6', '7']
+
+  it('同链多成员同属一行；行序按服务端候选链顺序', () => {
+    const index = buildRowIndex(chains, windowIds)
+    expect(index.rowOf.get('1')).toBe(1)
+    expect(index.rowOf.get('2')).toBe(1)
+    expect(index.rowOf.get('3')).toBe(1)
+    expect(index.rowOf.get('4')).toBe(2)
+    expect(index.rowOf.get('5')).toBe(2)
+    expect(index.chainRows.map(r => [r.row, r.label])).toEqual([[1, '链 A'], [2, '链 B']])
+    expect(index.floorRow).toBe(3)
+  })
+
+  it('不在任何链 → 地板行（含挂着 candidate 话题但未成链的节点）', () => {
+    const index = buildRowIndex(chains, windowIds)
+    expect(index.rowOf.get('6')).toBe(index.floorRow)
+    expect(index.rowOf.get('7')).toBe(index.floorRow)
+  })
+
+  it('本次泳道成员优先级最高：命中即归第 0 行，不改链的身份', () => {
+    const index = buildRowIndex(chains, windowIds, new Set(['2', '6']))
+    expect(index.rowOf.get('2')).toBe(LANE_ROW_SELF)
+    expect(index.rowOf.get('1')).toBe(1) // 同链其它成员仍在原行
+    expect(index.rowOf.get('6')).toBe(LANE_ROW_SELF)
+    expect(index.chainRows[0]!.ids).toEqual(['1', '2', '3']) // 链成员表不因渲染覆盖而缩水
+  })
+
+  it('窗口外成员忽略；重复出现的成员取第一条链（服务端顺序）', () => {
+    const index = buildRowIndex([
+      { key: 'A:1', sectionIds: ['1', '999'] },
+      { key: 'B:1', sectionIds: ['1', '2'] },
+    ], ['1', '2'])
+    expect(index.rowOf.get('999')).toBeUndefined()
+    expect(index.rowOf.get('1')).toBe(1)
+    expect(index.rowOf.get('2')).toBe(2)
+  })
+})
+
+describe('laneComposeLogic · 行几何（1.2）', () => {
+  const dates = ['2026-11-06', '2026-11-07', '2026-11-08']
+  const rowIndex = new Map([
+    ['a', 1], ['b', 1], ['c', 1], ['d', 1], ['e', 1], ['f', 1], ['g', 1],
+  ])
+
+  it('同日 1 条：行高 = 标签 32 + 1 槽 24 + 行间 26', () => {
+    const [row] = layoutRows(rowIndex, dates, new Map([[1, [{ id: 'a', date: dates[0]! }]]]))
+    expect(row!.slots).toBe(1)
+    expect(row!.height).toBe(32 + 24 + 26)
+    expect(row!.top).toBe(0)
+    expect(row!.slotOf.get('a')).toBe(0)
+    expect(rowMemberY(row!, 0)).toBe(32 + 12)
+  })
+
+  it('同日 3 条：三条各占一槽（不折叠成计数点），行高随槽数增长', () => {
+    const rows = layoutRows(rowIndex, dates, new Map([[1, [
+      { id: 'a', date: dates[0]! },
+      { id: 'b', date: dates[0]! },
+      { id: 'c', date: dates[0]! },
+    ]]]))
+    expect(rows[0]!.slots).toBe(3)
+    expect(rows[0]!.height).toBe(32 + 3 * 24 + 26)
+    expect([...rows[0]!.slotOf.entries()].sort((x, y) => x[1] - y[1]).map(([id]) => id)).toEqual(['a', 'b', 'c'])
+    const ys = ['a', 'b', 'c'].map(id => rowMemberY(rows[0]!, rows[0]!.slotOf.get(id)!))
+    expect(ys[1]! - ys[0]!).toBe(24)
+    expect(ys[2]! - ys[1]!).toBe(24)
+  })
+
+  it('同日 7 条：封顶 6 槽，多的进 +N 计数（展开后不再封顶）', () => {
+    const members = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(id => ({ id, date: dates[0]! }))
+    const capped = layoutRows(rowIndex, dates, new Map([[1, members]]))
+    expect(capped[0]!.slots).toBe(MAX_SLOT_PER_DAY)
+    expect(capped[0]!.height).toBe(32 + MAX_SLOT_PER_DAY * 24 + 26)
+    expect(capped[0]!.slotOf.size).toBe(6)
+    expect(capped[0]!.hiddenIds).toEqual(['g'])
+    expect(capped[0]!.overflowByDate.get(dates[0]!)).toBe(1)
+
+    const expanded = layoutRows(rowIndex, dates, new Map([[1, members]]), {
+      expanded: new Set([`1:${dates[0]}`]),
+    })
+    expect(expanded[0]!.slots).toBe(7)
+    expect(expanded[0]!.slotOf.size).toBe(7)
+    expect(expanded[0]!.hiddenIds).toEqual([])
+    expect(expanded[0]!.overflowByDate.size).toBe(0)
+  })
+
+  it('多行堆叠：top 逐行累计；显式行序可占位空行（本次泳道行预留 2 槽）', () => {
+    const rows = layoutRows(rowIndex, dates, new Map([[1, [{ id: 'a', date: dates[1]! }]]]), {
+      rowOrder: [0, 1, 2],
+      minSlots: new Map([[0, 2]]),
+    })
+    expect(rows.map(r => r.row)).toEqual([0, 1, 2])
+    expect(rows[0]!.slots).toBe(2) // 落点预留
+    expect(rows[1]!.top).toBe(rows[0]!.top + rows[0]!.height)
+    expect(rows[2]!.top).toBe(rows[1]!.top + rows[1]!.height)
+  })
+
+  it('窗口外日期的成员跳过（不画到别的日期列）', () => {
+    const rows = layoutRows(rowIndex, dates, new Map([[1, [{ id: 'a', date: '2026-01-01' }]]]))
+    expect(rows[0]!.slots).toBe(0)
+    expect(rows[0]!.slotOf.size).toBe(0)
+  })
+})
+
+describe('laneComposeLogic · 标题档（1.3 / 11.5）', () => {
+  it('列宽 124px（下限）→ 10 字；列宽不足 124 → 整档关闭', () => {
+    expect(titleBudget(124)).toBe(10)
+    expect(titleBudget(125)).toBe(10)
+    expect(titleBudget(123.9)).toBeNull()
+    expect(titleBudget(52)).toBeNull()
+    expect(titleBudget(23)).toBeNull()
+  })
+
+  it('列宽足够大也不超过 10 字（不因窗口变宽而制造长标题）', () => {
+    expect(titleBudget(300)).toBe(MAX_TITLE_CHARS)
+    expect(MAX_TITLE_CHARS).toBe(10)
+  })
+
+  it('时间列宽下限就是标题档下限（124）：撑宽画布横向滚动，不缩字', () => {
+    expect(LANE_MIN_COLUMN).toBe(TITLE_MIN_COLUMN)
+    expect(LANE_MIN_COLUMN).toBe(124)
+  })
+})
+
+describe('laneComposeLogic · 散料可见性门控（4.1）', () => {
+  const pool = [
+    { id: 'c1', embedding: [1, 0], persistentTopic: { status: 'candidate' } },
+    { id: 's1', embedding: [1, 0] },
+    { id: 's2', embedding: [0.8, 0.6] },
+    { id: 's3', embedding: [0, 1] },
+    { id: 'a1', embedding: [1, 0], persistentTopic: { status: 'active' } },
+  ]
+  const candidateIds = new Set(['c1'])
+  const readonlyIds = new Set(['a1'])
+  const center = [1, 0]
+  const MT = 0.3
+
+  it('三档阈值：收紧 = ×0.5、标准 = matchThreshold、全部 = 1', () => {
+    expect(thresholdOf('tight', MT)).toBeCloseTo(0.15, 12)
+    expect(thresholdOf('standard', MT)).toBe(MT)
+    expect(thresholdOf('all', MT)).toBe(1)
+  })
+
+  it('仅高相关档：散料收紧，候选链成员/已选/只读参照逐个不变', () => {
+    const selected = new Set(['s1'])
+    const tight = visibleScatter(pool, selected, candidateIds, readonlyIds, center, 'tight', MT)
+    const standard = visibleScatter(pool, selected, candidateIds, readonlyIds, center, 'standard', MT)
+
+    // 三类白名单旁路：数量逐个节点不变
+    for (const id of ['c1', 's1', 'a1']) {
+      expect(tight.visibleIds.has(id)).toBe(true)
+      expect(standard.visibleIds.has(id)).toBe(true)
+    }
+    expect([...candidateIds].filter(id => tight.visibleIds.has(id))).toEqual([...candidateIds])
+    expect([...readonlyIds].filter(id => tight.visibleIds.has(id))).toEqual([...readonlyIds])
+
+    // 散料（未选）按档位收紧：s2 距离 ≈0.2 在标准档可见、仅在紧档被收起
+    const s2Standard = visibleScatter(pool, selected, candidateIds, readonlyIds, center, 'standard', MT)
+    expect(s2Standard.visibleScatterIds.has('s2')).toBe(true)
+    expect(tight.visibleScatterIds.has('s2')).toBe(false)
+    expect(tight.hiddenScatterIds).toContain('s2')
+    expect(tight.hiddenScatterIds).toContain('s3')
+    // 已选散料不当散料计数（它已在本次泳道里）
+    expect(tight.hiddenScatterIds).not.toContain('s1')
+  })
+
+  it('全部档：散料全可见（不依赖质心）；无质心的标准档全部收起（不伪造达标）', () => {
+    const all = visibleScatter(pool, new Set(), candidateIds, readonlyIds, null, 'all', MT)
+    expect(all.visibleScatterIds.has('s1')).toBe(true)
+    expect(all.visibleScatterIds.has('s3')).toBe(true)
+    expect(all.hiddenScatterIds).toEqual([])
+
+    const noCenter = visibleScatter(pool, new Set(), candidateIds, readonlyIds, null, 'standard', MT)
+    expect(noCenter.visibleScatterIds.size).toBe(0)
+    expect(noCenter.hiddenScatterIds.sort()).toEqual(['s1', 's2', 's3'])
+    // 白名单旁路不受质心缺失影响
+    expect(noCenter.visibleIds.has('c1')).toBe(true)
+    expect(noCenter.visibleIds.has('a1')).toBe(true)
+  })
+})
+
+describe('laneComposeLogic · 检索范围 = 未归类（5.1）', () => {
+  const sections = [
+    { id: '1', persistentTopic: { status: 'candidate' } },
+    { id: '2', persistentTopic: { status: 'candidate' } },
+    { id: '3' },
+    { id: '4', persistentTopic: { status: 'candidate' } },
+    { id: '5', persistentTopic: { status: 'active' } },
+  ]
+  const chains = [{ sectionIds: ['1', '2'] }]
+
+  it('= 窗口内 sections − ⋃ chain.memberIds（不是 persistentTopicId == null）', () => {
+    const ids = unclassifiedIds(sections, chains)
+    expect(ids.has('3')).toBe(true) // 未归属任何话题
+    expect(ids.has('4')).toBe(true) // 挂着 candidate 话题但未成链
+    expect(ids.has('1')).toBe(false) // 候选链成员
+    expect(ids.has('2')).toBe(false)
+    expect(ids.has('5')).toBe(false) // 只读参照属于正式泳道，不是未归类
+  })
+
+  it('只出现在候选链成员标题里的词 → 未归类命中 0', () => {
+    const ids = unclassifiedIds(sections, chains)
+    expect(sections.filter(s => ids.has(s.id) && s.id === '1')).toHaveLength(0)
+  })
+})
+
+describe('laneComposeLogic · 接近度映射区间覆盖（2026-11-21 用户实拍反馈）', () => {
+  /** 编排画布实际传入的区间（与 LaneComposeCanvas 常量一致）。 */
+  const RANGE = { min: 5.9, max: 7.4 }
+  const STRENGTH = { min: 18, max: 80 }
+  const flags = {
+    memberRadius: 7.5,
+    scatterRadius: 5.5,
+    readonlyRadius: 2.75,
+    recommendRange: RANGE,
+    strengthRange: STRENGTH,
+  }
+  /** 给定接近度反推一个距离（threshold = 0.3）。 */
+  const distanceAt = (proximity: number): number => 0.3 * (1 - proximity)
+
+  it('P1 推荐半径按接近度线性插值：0 → 5.9、0.5 → 6.65、1 → 7.4（±0.05）', () => {
+    const at = (proximity: number): number =>
+      pointAppearance(distanceAt(proximity), 0.3, false, false, 7.3, 52, flags).radius
+    expect(at(0)).toBeCloseTo(5.9, 2)
+    expect(at(0.5)).toBeCloseTo(6.65, 2)
+    expect(at(1)).toBeCloseTo(7.4, 2)
+    // 单调：越近越大（旧公式在编排画布只差 0.43px，肉眼等于常量）
+    expect(at(0.5)).toBeGreaterThan(at(0))
+    expect(at(1) - at(0)).toBeGreaterThan(1)
+  })
+
+  it('P2 不变量：推荐 ≤ 已选 7.5、散料 5.5 < 推荐下限 5.9', () => {
+    const never = pointAppearance(distanceAt(0), 0.3, false, false, 7.3, 52, flags)
+    const nearest = pointAppearance(distanceAt(1), 0.3, false, false, 7.3, 52, flags)
+    const member = pointAppearance(distanceAt(1), 0.3, true, false, 7.3, 52, flags)
+    const scatter = pointAppearance(undefined, 0.3, false, false, 7.3, 52, flags)
+    expect(nearest.radius).toBe(7.4)
+    expect(member.radius).toBe(7.5)
+    expect(nearest.radius).toBeLessThan(member.radius)
+    expect(scatter.radius).toBe(5.5)
+    expect(never.radius).toBeGreaterThan(scatter.radius)
+    // 选中只由实心＋✓表达：成员点不读接近度
+    expect(member.solid).toBe(true)
+    expect(member.radius).toBe(pointAppearance(distanceAt(0), 0.3, true, false, 7.3, 52, flags).radius)
+  })
+
+  it('P3 深浅区间同步放大：接近度 0 → 18%、1 → 80%（旧档 12%–67%）', () => {
+    const strengthAt = (proximity: number): number =>
+      pointAppearance(distanceAt(proximity), 0.3, false, false, 7.3, 52, flags).strength
+    expect(strengthAt(0)).toBeCloseTo(18, 6)
+    expect(strengthAt(0.5)).toBeCloseTo(49, 6)
+    expect(strengthAt(1)).toBeCloseTo(80, 6)
+  })
+
+  it('P4 缺省（修正画布不传区间）逐位不变：6.57 / 7.0、12% / 67%', () => {
+    const legacy = { memberRadius: 7.5 }
+    const at = (proximity: number): ReturnType<typeof pointAppearance> =>
+      pointAppearance(distanceAt(proximity), 0.3, false, false, 7.3, 52, legacy)
+    expect(at(0).radius).toBeCloseTo(6.57, 6)
+    // 旧公式在接近度 ≈0.06 就撞上 recommendCap = 7.0：这正是「大小被压平」的实证
+    expect(at(0.5).radius).toBeCloseTo(7.0, 6)
+    expect(at(1).radius).toBeCloseTo(7.0, 6)
+    expect(at(0).strength).toBeCloseTo(12, 6)
+    expect(at(1).strength).toBeCloseTo(67, 6)
+    // 未推荐点 / 只读参照不受影响
+    expect(pointAppearance(undefined, 0.3, false, false, 7.3, 52, legacy).strength).toBe(0)
+    expect(pointAppearance(0.1, 0.3, false, true, 7.3, 52, legacy).strength).toBe(0)
+  })
+
+  it('P5 非法区间（非有限数）按未传处理，不把 NaN 带进半径', () => {
+    const bad = pointAppearance(distanceAt(1), 0.3, false, false, 7.3, 52, {
+      memberRadius: 7.5,
+      recommendRange: { min: Number.NaN, max: Number.POSITIVE_INFINITY },
+    })
+    expect(Number.isFinite(bad.radius)).toBe(true)
+    expect(bad.radius).toBeCloseTo(7.0, 6)
+    expect(bad.strength).toBeCloseTo(67, 6)
+  })
+})
+
+describe('laneComposeLogic · 标题按宽度截断（12.x）', () => {
+  it('中英混排都吃满列宽：CJK 10 字、ASCII 约 18 字', () => {
+    // 列宽 124 − 2px 内边距 = 122px；11px 字号下 CJK = 11px/字 → 10 字 + 省略号
+    expect(truncateByWidth('一二三四五六七八九十十一', 122, 11)).toBe('一二三四五六七八九十…')
+    // ASCII = 0.55 × 11 ≈ 6.05px/字 → 约 18 字
+    const latin = truncateByWidth('abcdefghijklmnopqrstuvwxyz', 122, 11)
+    expect(latin.endsWith('…')).toBe(true)
+    expect(latin.length).toBeGreaterThan(14)
+  })
+
+  it('放得下就原样返回，不补省略号', () => {
+    expect(truncateByWidth('Gemini 4.5', 122, 11)).toBe('Gemini 4.5')
+  })
+
+  it('预算为 0 / 非法时不返回残字', () => {
+    expect(truncateByWidth('任意标题', 0, 11)).toBe('')
+    expect(truncateByWidth('任意标题', Number.NaN, 11)).toBe('')
+  })
+})
+
+describe('laneComposeLogic · 接近度相对归一（2026-11-24 用户实拍：画布看不出远近）', () => {
+  it('R1 批次内 min-max：最近 = 1、最远 = 0、中间按比例（实测那批 0.59/0.63/0.67）', () => {
+    const map = relativeProximities(new Map([['a', 0.59], ['b', 0.63], ['c', 0.67]]))
+    expect(map.get('a')).toBe(1)
+    expect(map.get('b')).toBeCloseTo(0.5, 12)
+    expect(map.get('c')).toBe(0)
+    // 旧「1 − 距离 / 阈值」口径在这批数据上只有 0.04–0.14（肉眼等于常量）
+    expect(1 - 0.59 / 0.67).toBeLessThan(0.15)
+  })
+
+  it('R2 单点 / 全部等距 → 0.5（不把所有人推到 0 或 1）', () => {
+    expect(relativeProximities(new Map([['a', 0.6]])).get('a')).toBe(0.5)
+    const flat = relativeProximities(new Map([['a', 0.6], ['b', 0.6], ['c', 0.6]]))
+    for (const id of ['a', 'b', 'c']) expect(flat.get(id)).toBe(0.5)
+  })
+
+  it('R3 null / 非有限距离不参与批次，也不出现在结果里', () => {
+    const map = relativeProximities(new Map([
+      ['a', Number.NaN],
+      ['b', 0.6],
+      ['c', Number.POSITIVE_INFINITY],
+      ['d', 0.7],
+    ]))
+    expect(map.has('a')).toBe(false)
+    expect(map.has('c')).toBe(false)
+    expect(map.get('b')).toBe(1)
+    expect(map.get('d')).toBe(0)
+  })
+
+  it('R4 空批次 → 空表（无质心时整块画布保持 ordinary 外观）', () => {
+    expect(relativeProximities(new Map()).size).toBe(0)
+  })
+
+  it('R5 归一后的 0..1 喂进区间：最近 7.4 / 80%、中间 6.65 / 49%、最远 5.9 / 18%', () => {
+    const flags = {
+      memberRadius: 7.5,
+      scatterRadius: 5.5,
+      recommendRange: { min: 5.9, max: 7.4 },
+      strengthRange: { min: 18, max: 80 },
+    }
+    const at = (proximity: number): ReturnType<typeof pointAppearance> =>
+      pointAppearance(undefined, 0.3, false, false, 7.3, 124, { ...flags, proximityOverride: proximity })
+    expect(at(1).radius).toBeCloseTo(7.4, 6)
+    expect(at(1).strength).toBeCloseTo(80, 6)
+    expect(at(0.5).radius).toBeCloseTo(6.65, 6)
+    expect(at(0.5).strength).toBeCloseTo(49, 6)
+    expect(at(0).radius).toBeCloseTo(5.9, 6)
+    expect(at(0).strength).toBeCloseTo(18, 6)
+    // 推荐恒小于已选 7.5
+    expect(at(1).radius).toBeLessThan(pointAppearance(0, 0.3, true, false, 7.3, 124, { ...flags, proximityOverride: 1 }).radius)
+  })
+
+  it('R6 不传 proximityOverride → 旧「距离 ÷ 阈值」公式逐位不变（修正画布）', () => {
+    // 修正画布 LaneCorrectionCanvas 从不传该 flag：缺省行为必须保持
+    expect(pointAppearance(0.15, 0.3, false, false, 4, 20).proximity).toBeCloseTo(0.5, 12)
+    expect(pointAppearance(0.05, 0.3, false, false, 4, 20).proximity).toBeCloseTo(1 - 0.05 / 0.3, 12)
+    // 超阈值仍不给接近度（旧口径）
+    expect(pointAppearance(0.31, 0.3, false, false, 4, 20).proximity).toBeNull()
+  })
+
+  it('R7 只读参照即使给了 override 也不得获得接近度（快照不驱动大小）', () => {
+    const readonly = pointAppearance(0.1, 0.3, false, true, 4, 20, { proximityOverride: 1 })
+    expect(readonly.proximity).toBeNull()
+    expect(readonly.strength).toBe(0)
+  })
+
+  it('R8 override 越界夹回 [0,1]，不把 NaN/超大值带进半径', () => {
+    const flags = { recommendRange: { min: 5.9, max: 7.4 } }
+    expect(pointAppearance(undefined, 0.3, false, false, 7.3, 124, { ...flags, proximityOverride: 9 }).proximity).toBe(1)
+    expect(pointAppearance(undefined, 0.3, false, false, 7.3, 124, { ...flags, proximityOverride: -3 }).proximity).toBe(0)
+    const nan = pointAppearance(undefined, 0.3, false, false, 7.3, 124, { ...flags, proximityOverride: Number.NaN })
+    expect(nan.proximity).toBeNull()
+    expect(Number.isFinite(nan.radius)).toBe(true)
+  })
+})
+
+describe('laneComposeLogic · 节点标题落位（boxTop / 动态障碍）', () => {
+  const cand = (id: string, x: number, y: number, extra: Partial<Parameters<typeof placeRelatedTitles>[0][number]> = {}) => ({
+    id,
+    x,
+    y,
+    r: 7.5,
+    w: 90,
+    h: 14,
+    priority: 1,
+    text: id,
+    ...extra,
+  })
+
+  it('B1 boxTop：按显式上缘落位，不再用 y + r + 5（基线 = 上缘 + 盒高）', () => {
+    const placed = placeRelatedTitles([cand('a', 100, 200, { boxTop: 200 })], { minX: 0, maxX: 500, minY: 0, maxY: 400 })
+    expect(placed[0]!.box!.y).toBe(200)
+    // 不传 boxTop 时仍是 y + r + 5（既有相关标题口径）
+    const legacy = placeRelatedTitles([cand('b', 100, 200)], { minX: 0, maxX: 500, minY: 0, maxY: 400 })
+    expect(legacy[0]!.box!.y).toBe(200 + 7.5 + 5)
+  })
+
+  it('B2 动态障碍：自身圆不算障碍，其它节点的圆算（被挤到下一行或跳过）', () => {
+    const circle = (cx: number, cy: number, r: number) => ({ x: cx - r, y: cy - r, w: r * 2, h: r * 2 })
+    // 自己的圆（圆心 = 候选点）不该挤掉自己的标题
+    const own = placeRelatedTitles([cand('a', 100, 200, { boxTop: 200 })], {
+      minX: 0,
+      maxX: 500,
+      minY: 0,
+      maxY: 400,
+      obstaclesOf: () => [circle(100, 200, 7.5)],
+    })
+    expect(own[0]!.skipped).toBeUndefined()
+    expect(own[0]!.box!.y).toBe(200)
+    // 别人压在同一位置（但不包含本候选点）→ 错行（lineHeight 16）
+    const clash = placeRelatedTitles([cand('b', 100, 200, { boxTop: 200 })], {
+      minX: 0,
+      maxX: 500,
+      minY: 0,
+      maxY: 400,
+      lineHeight: 16,
+      obstaclesOf: () => [circle(100, 209, 5)],
+    })
+    expect(clash[0]!.box!.y).toBe(216)
+  })
+
+  it('B3 错行用尽仍撞上 → 整条不画（宁缺勿叠，不叠字）', () => {
+    const placed = placeRelatedTitles([
+      cand('a', 100, 200, { boxTop: 200 }),
+      cand('b', 100, 200, { boxTop: 200 }),
+      cand('c', 100, 200, { boxTop: 200 }),
+    ], { lines: 1, lineHeight: 16, minX: 0, maxX: 500, minY: 0, maxY: 400 })
+    expect(placed.filter(p => p.skipped)).toHaveLength(1)
+    // 已落位的两条互不重叠（一条正下方、一条错一行）
+    const boxes = placed.filter(p => !p.skipped).map(p => p.box!)
+    expect(boxes).toHaveLength(2)
+    expect(boxesOverlap(boxes[0]!, boxes[1]!)).toBe(false)
+  })
+
+  it('B4 优先级：已选 > 候选链成员 > 焦点相关 > 散料（先放的不被后放的挤走）', () => {
+    const placed = placeRelatedTitles([
+      cand('floor', 100, 200, { boxTop: 200, priority: 1 }),
+      cand('selected', 100, 200, { boxTop: 200, priority: 4 }),
+      cand('chain', 100, 200, { boxTop: 200, priority: 3 }),
+    ], { lines: 1, lineHeight: 16, minX: 0, maxX: 500, minY: 0, maxY: 400 })
+    const at = new Map(placed.map(p => [p.id, p]))
+    expect(at.get('selected')!.box!.y).toBe(200)
+    expect(at.get('chain')!.box!.y).toBe(216)
+    expect(at.get('floor')!.skipped).toBe(true)
   })
 })

@@ -140,7 +140,9 @@ identity（同 persistent_topic）
 
 ### 前端：泳道编排态（新建泳道）
 
-版块矩阵顶栏「新建泳道」进入全屏编排态（`front/app/features/tags/components/console/BoardComposeOverlay.vue` + `useInlineCompose.ts`），只在 ≥768px 可用；窄屏仅提示「新建泳道需要宽屏或横屏」。
+版块矩阵顶栏「新建泳道」进入全屏编排态（`front/app/features/tags/components/console/BoardComposeOverlay.vue` + `composables/useLaneCompose.ts`），只在 ≥768px 可用；窄屏仅提示「新建泳道需要宽屏或横屏」。
+
+> **画布语法与选入手势的权威口径在 [semantic-board.md](semantic-board.md) §泳道工作面**（行 = 泳道 / 拖拽选入 / 右栏三段恒定 / 检索范围 = 未归类，rework-lane-compose-swimlane-canvas）。本节只保留入口、候选与保存链路。
 
 - **画布**：14 个连续日期列 × 现有 active 泳道行 + 待确认/未分类行；已归属 section 圆点为「已归属（只读）」，只能聚焦看关系，不能勾选或保存进新泳道（MUST NOT 把已有泳道 section 移出）。
 - **候选**：侧栏 `ComposeSidebar` 按 candidate 话题与语义搜索列出候选；「采纳」只预填名称 + 勾选待确认 section，预勾上限 20，并按日期升序取前 20。

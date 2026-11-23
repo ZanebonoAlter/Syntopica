@@ -38,9 +38,11 @@ import {
   candidateSelection,
   centroidRecommendations,
   laneSelectionState,
+  thresholdOf,
   validateWorkbenchRange,
   type LaneRecommendations,
   type LaneSelectionState,
+  type LaneThresholdTier,
   type WorkbenchTrendPoint,
 } from './laneComposeLogic'
 import type { DateBounds, ObservationRange } from '../components/console/observationRange'
@@ -54,6 +56,25 @@ export interface LaneWindowState {
   from: string
   to: string
   days: number
+}
+
+/** 「移出」可撤销窗口（D8）：3 秒内可恢复原槽位，超时入口消失。 */
+export const LANE_REMOVAL_UNDO_MS = 3000
+
+/**
+ * 一次限时移出记录（D8，只覆盖「移出」方向，不是通用撤销栈）。
+ *
+ * `row` / `slot` 是移出那一刻的落位（由画布按行归属与槽位给出）；画布重放时
+ * 按同一套 `buildRowIndex` / `layoutRows` 恢复——不存第二份布局真值。
+ */
+export interface LaneRemovalRecord {
+  id: string
+  /** 移出时所在行（0 = 本次泳道；null = 画布未提供）。 */
+  row: number | null
+  /** 移出时所在槽位（同日纵向序；null = 画布未提供）。 */
+  slot: number | null
+  /** 记录时刻（ms）。 */
+  at: number
 }
 
 /** 草稿确认请求（宿主用弹窗承接，返回 true = 确认执行）。 */
@@ -176,6 +197,15 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
   /** 已有 active 泳道只读参照开关（默认隐藏；仅用户显式开启才显示）。 */
   const showAssigned = ref(false)
 
+  /**
+   * 阈值三档（D4）：只门控**散料**可见集，不碰候选链成员 / 已选 / 只读参照。
+   *
+   * 画布工具条与右栏「可补充的事件」共用本状态（同一个阈值、同一批推荐），
+   * 不各算各的。默认 `standard` = 接口原 `matchThreshold`，不改变既有默认推荐集。
+   */
+  const thresholdTier = ref<LaneThresholdTier>('standard')
+  const threshold = computed(() => thresholdOf(thresholdTier.value, matchThreshold.value))
+
   // ── 历史管理名单（待启用话题） ───────────────────────────────────────────
   const historyTopics = ref<LaneHistoryTopic[]>([])
   const historyLoading = ref(false)
@@ -215,9 +245,13 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
   const memberCount = computed(() => selectedIds.value.size)
   const hasDraft = computed(() => selectedIds.value.size > 0 || laneName.value.trim() !== '')
 
-  /** 质心推荐（每次增删自动重算；焦点不参与质心）。 */
+  /**
+   * 质心推荐（每次增删自动重算；焦点不参与质心）。
+   *
+   * 阈值取当前档位（`thresholdOf`）——与画布散料门控、右栏「可补充的事件」同一批。
+   */
   const recommendations: ComputedRef<LaneRecommendations<ComposeCandidate>> = computed(() =>
-    centroidRecommendations(sections.value, selectedIds.value, matchThreshold.value),
+    centroidRecommendations(sections.value, selectedIds.value, threshold.value),
   )
 
   /** 焦点 section（只读线索用；右栏不重复放选入按钮）。 */
@@ -328,6 +362,7 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
     nameManuallyEdited.value = false
     autoNameKey.value = null
     focusId.value = null
+    clearRemoval()
   }
 
   /** 切窗口（有草稿先确认；失败保留旧范围与草稿；迟到响应丢弃）。 */
@@ -484,6 +519,54 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
     }
   }
 
+  // ── 移出撤销（D8：一次限时操作，不是通用撤销栈）────────────────────────────
+  const lastRemoval = ref<LaneRemovalRecord | null>(null)
+  let removalTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** 清掉当前撤销入口（超时、新一笔、或任何其它成员变更）。 */
+  function clearRemoval(): void {
+    if (removalTimer) {
+      clearTimeout(removalTimer)
+      removalTimer = null
+    }
+    if (lastRemoval.value) lastRemoval.value = null
+  }
+
+  /** 记一笔限时撤销：新的移出覆盖上一笔，3 秒后自动失效。 */
+  function noteRemoval(id: string, origin?: { row?: number | null, slot?: number | null }): void {
+    clearRemoval()
+    lastRemoval.value = {
+      id,
+      row: origin?.row ?? null,
+      slot: origin?.slot ?? null,
+      at: Date.now(),
+    }
+    removalTimer = setTimeout(() => {
+      lastRemoval.value = null
+      removalTimer = null
+    }, LANE_REMOVAL_UNDO_MS)
+  }
+
+  /**
+   * 撤销上一次移出：3 秒内有效（恢复到成员集；原行与原槽由画布按同一套
+   * `buildRowIndex` / `layoutRows` 重放）。超时返回 false，不假装成功。
+   * 选入方向没有撤销：再点一次 / 再拖回去即可。
+   */
+  function undoRemoval(): boolean {
+    const record = lastRemoval.value
+    if (!record) return false
+    if (Date.now() - record.at > LANE_REMOVAL_UNDO_MS) {
+      clearRemoval()
+      return false
+    }
+    clearRemoval()
+    const next = new Set(selectedIds.value)
+    next.add(record.id)
+    selectedIds.value = next
+    syncAutoName()
+    return true
+  }
+
   // ── 选择 ─────────────────────────────────────────────────────────────────
   /** 自动预填名跟随来源组：该组被取消且名字未被人工改写时一并清空。 */
   function syncAutoName(): void {
@@ -513,6 +596,8 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
   function setChainSelected(key: string, checked: boolean): void {
     const chain = candidateChains.value.find(c => c.key === key)
     if (!chain) return
+    // 整组操作不是「单条移出」：撤销入口失效（D8 只覆盖移出方向的单条）。
+    if (!checked) clearRemoval()
     selectedIds.value = candidateSelection(selectedIds.value, chain.sectionIds, checked)
     if (checked && !laneName.value.trim()) {
       laneName.value = chain.topicLabel
@@ -534,12 +619,20 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
     setChainSelected(key, false)
   }
 
-  /** 单成员勾选 / 取消。 */
-  function toggleMember(id: string, checked: boolean): void {
+  /**
+   * 单成员勾选 / 取消。
+   *
+   * 取消 → 记一笔 3 秒可撤销（`origin` 由画布给出当时的行/槽，用于叙述与重放）；
+   * 任何选入动作 → 清掉撤销入口（「其他成员变更清空」）。
+   */
+  function toggleMember(id: string, checked: boolean, origin?: { row?: number | null, slot?: number | null }): void {
+    const wasMember = selectedIds.value.has(id)
     const next = new Set(selectedIds.value)
     if (checked) next.add(id)
     else next.delete(id)
     selectedIds.value = next
+    if (checked) clearRemoval()
+    else if (wasMember) noteRemoval(id, origin)
     if (next.size === 0 && !nameManuallyEdited.value) {
       laneName.value = ''
       autoNameKey.value = null
@@ -551,6 +644,7 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
   /** 清空已选：成员全清，**手写名保留**。 */
   function clearSelection(): void {
     selectedIds.value = new Set()
+    clearRemoval()
     if (!nameManuallyEdited.value) {
       laneName.value = ''
       autoNameKey.value = null
@@ -794,9 +888,14 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
     chainMembers,
     chainStates,
     recommendations,
+    thresholdTier,
+    threshold,
     focusId,
     focusSection,
     showAssigned,
+    // 移出撤销（D8）
+    lastRemoval,
+    undoRemoval,
     // 历史管理名单
     historyTopics,
     historyLoading,
