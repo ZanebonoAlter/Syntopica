@@ -827,6 +827,9 @@ const hoverRow = ref<number | null>(null)
 const dragGhost = ref<{ x: number, y: number } | null>(null)
 const dragLabel = ref('')
 const dragCount = ref(0)
+/** 被拖对象相对起手点的内容坐标位移：本体跟随光标实时移动（不是只动 ghost）。 */
+const dragDelta = ref<{ x: number, y: number } | null>(null)
+let dragOrigin: { x: number, y: number } | null = null
 
 function isInteractiveTarget(target: Element | null): boolean {
   return Boolean(target?.closest?.('.lcc-card, .lcc-zoom, .lcc-undo, button, input, select, textarea'))
@@ -845,6 +848,8 @@ function onSurfacePointerDown(event: PointerEvent): void {
     const section = sectionById.value.get(id)
     if (!section || isReadonly(section)) return
     if (searchActive.value && !searchHits.value.has(id)) return
+    // 阻止浏览器默认行为：否则拖动会顺带选中画布上其它节点的文字（2026-11-23 用户反馈）。
+    event.preventDefault()
     gesture = { kind: 'node', id, chainKey: '', row: rowForId(id), ids: [id], start, scroll }
     return
   }
@@ -853,6 +858,7 @@ function onSurfacePointerDown(event: PointerEvent): void {
     const row = Number(rowEl.getAttribute('data-row'))
     const view = rowViews.value.find(item => item.row === row)
     if (!view || !view.draggable || !view.labelIds.length) return
+    event.preventDefault()
     gesture = { kind: 'row', id: '', chainKey: view.chainKey, row, ids: [...view.labelIds], start, scroll }
     return
   }
@@ -860,16 +866,21 @@ function onSurfacePointerDown(event: PointerEvent): void {
   isPanning.value = false
 }
 
-/** 画布内容坐标（解除滚动与缩放）。 */
-function contentPoint(event: PointerEvent): { x: number, y: number } {
+/** 客户端坐标 → 画布内容坐标（解除滚动与缩放）。 */
+function contentPointOf(clientX: number, clientY: number): { x: number, y: number } {
   const surface = containerRef.value
   if (!surface) return { x: 0, y: 0 }
   const rect = surface.getBoundingClientRect()
   const z = zoom.value > 0 ? zoom.value : 1
   return {
-    x: (event.clientX - rect.left + surface.scrollLeft) / z,
-    y: (event.clientY - rect.top + surface.scrollTop) / z,
+    x: (clientX - rect.left + surface.scrollLeft) / z,
+    y: (clientY - rect.top + surface.scrollTop) / z,
   }
+}
+
+/** 画布内容坐标（解除滚动与缩放）。 */
+function contentPoint(event: PointerEvent): { x: number, y: number } {
+  return contentPointOf(event.clientX, event.clientY)
 }
 
 /**
@@ -912,6 +923,7 @@ let pendingGhost: { x: number, y: number } | null = null
 function updateDragPoint(event: PointerEvent): void {
   const point = contentPoint(event)
   hoverRow.value = rowAtPointer(event)
+  if (dragOrigin) dragDelta.value = { x: point.x - dragOrigin.x, y: point.y - dragOrigin.y }
   pendingGhost = point
   if (dragGhost.value === null) dragGhost.value = point
   if (ghostFrame) return
@@ -927,6 +939,10 @@ function beginObjectDrag(event: PointerEvent): void {
   const active = gesture
   if (!active) return
   dragging.value = true
+  // 起点必须取 pointerdown 的位置，不能取第一次 move 的位置——否则首帧位移恒为 0，
+  // 用户会看到「拖了但节点不跟手」。
+  dragOrigin = contentPointOf(active.start.x, active.start.y)
+  dragDelta.value = { x: 0, y: 0 }
   dragCount.value = active.ids.length
   dragLabel.value = active.kind === 'row'
     ? (rowViews.value.find(row => row.row === active.row)?.label ?? '')
@@ -981,6 +997,8 @@ function resetGesture(): void {
   dragging.value = false
   isPanning.value = false
   dragGhost.value = null
+  dragDelta.value = null
+  dragOrigin = null
   hoverRow.value = null
   dragLabel.value = ''
   dragCount.value = 0
@@ -1146,11 +1164,45 @@ const focusRelatedIds = computed<Set<string> | null>(() => {
  */
 
 // ── 节点路径（关系边已抟除：不画任何连线，原关系只进节点卡计数与相关标题） ──────
+
+/** 拖拽中：被拖节点本体跟随光标（不是只让 ghost 动）。 */
+function draggedTransform(id: string): string | undefined {
+  const delta = dragDelta.value
+  if (!delta || !gesture || !gesture.ids.includes(id)) return undefined
+  return `translate(${delta.x.toFixed(2)} ${delta.y.toFixed(2)})`
+}
+
+/** 该节点是否有已确认关键线索（★ 星形主体，不是附加角标）。 */
+function hasKeyStar(id: string): boolean {
+  return (sectionById.value.get(id)?.confirmedKeyEvents?.length ?? 0) > 0
+}
+
+/**
+ * 五角星路径：外接半径 = `pointRadius`。
+ *
+ * 只换形状、不改尺寸语义——星形面积比同半径圆小，因此看起来略小是正确的；
+ * 放大外接半径会伪造一个「更接近」的大小信号，违反接近度编码红线。
+ */
+function starPath(id: string): string {
+  const point = points.value.get(id)
+  if (!point) return ''
+  const radius = pointRadius(id)
+  const innerRatio = 0.44
+  const pts: string[] = []
+  for (let i = 0; i < 10; i++) {
+    const angle = -Math.PI / 2 + (i * Math.PI) / 5
+    const r = i % 2 === 0 ? radius : radius * innerRatio
+    pts.push(`${(point.x + Math.cos(angle) * r).toFixed(2)} ${(point.y + Math.sin(angle) * r).toFixed(2)}`)
+  }
+  return `M${pts.join(' L')}Z`
+}
+
 function checkPath(id: string): string {
   const point = points.value.get(id)
   if (!point) return ''
   const radius = pointRadius(id)
-  const w = Math.min(3, radius * 0.48)
+  // 星形节点的内切圆更小：✓ 按 0.32R 缩（圆点 0.48R），避免溢出星形主体。
+  const w = Math.min(3, radius * (hasKeyStar(id) ? 0.32 : 0.48))
   return `M${point.x - w} ${point.y} L${point.x - w * 0.25} ${point.y + w * 0.75} L${point.x + w} ${point.y - w * 0.8}`
 }
 
@@ -1205,6 +1257,9 @@ const nodesByRow = computed(() => {
 const cardId = computed(() => props.focusId ?? hoverId.value)
 
 const cardSection = computed(() => (cardId.value ? sectionById.value.get(cardId.value) ?? null : null))
+
+/** 节点卡里的已确认关键线索（★ 明细；空数组时整块不渲染）。 */
+const cardKeyEvents = computed(() => cardSection.value?.confirmedKeyEvents ?? [])
 
 const cardVisible = computed(() => {
   const section = cardSection.value
@@ -1475,12 +1530,13 @@ watch(() => props.focusId, (now, prev) => {
               }"
               :data-node="section.id"
               :data-row="rowOfNode(section.id)"
+              :transform="draggedTransform(section.id)"
               :data-proximity="appearances.get(section.id)?.proximity ?? ''"
               :data-distance="recommendedDistance.get(section.id) ?? ''"
               :style="`--proximity-fill: ${appearances.get(section.id)?.strength ?? 0}%`"
               :tabindex="isClickable(section) ? 0 : -1"
               role="button"
-              :aria-label="`${isReadonly(section) ? '已有泳道只读' : selectedIds.has(section.id) ? '已选' : '未选'} · ${section.periodDate.slice(0, 10)} · ${section.clusterLabel}`"
+              :aria-label="`${isReadonly(section) ? '已有泳道只读' : selectedIds.has(section.id) ? '已选' : '未选'} · ${section.periodDate.slice(0, 10)} · ${section.clusterLabel}${hasKeyStar(section.id) ? ` · 已确认关键线索 ${section.confirmedKeyEvents?.length ?? 0} 条` : ''}`"
               :data-testid="`lane-node-${section.id}`"
               @mouseenter="onNodeEnter(section)"
               @mouseleave="onNodeLeave(section)"
@@ -1495,13 +1551,25 @@ watch(() => props.focusId, (now, prev) => {
                 :cy="points.get(section.id)?.y"
                 :r="Math.max(8, pointRadius(section.id) + 4)"
               />
+              <path
+                v-if="hasKeyStar(section.id)"
+                class="lcc-canvas__point"
+                data-role="key-star"
+                :d="starPath(section.id)"
+              />
               <circle
+                v-else
                 class="lcc-canvas__point"
                 :cx="points.get(section.id)?.x"
                 :cy="points.get(section.id)?.y"
                 :r="pointRadius(section.id)"
               />
-              <path v-if="selectedIds.has(section.id)" class="lcc-canvas__check" :d="checkPath(section.id)" />
+              <path
+                v-if="selectedIds.has(section.id)"
+                class="lcc-canvas__check"
+                :class="{ 'is-star': hasKeyStar(section.id) }"
+                :d="checkPath(section.id)"
+              />
               <circle
                 class="lcc-canvas__focus-ring"
                 :cx="points.get(section.id)?.x"
@@ -1864,6 +1932,15 @@ watch(() => props.focusId, (now, prev) => {
         <span class="lcc-card__meta">
           {{ cardSection.periodDate.slice(0, 10) }}<template v-if="cardReadonly"> · 已有泳道只读</template><template v-if="cardDistance !== null"> · 估算接近度 {{ proximityOf(cardDistance)?.toFixed(2) }}</template>
         </span>
+        <span v-if="cardKeyEvents.length" class="lcc-card__key" data-role="key-events">
+          <template v-if="cardKeyEvents.length === 1">★ 已确认关键线索：{{ cardKeyEvents[0]!.title }}</template>
+          <template v-else>
+            ★ 已确认关键线索 {{ cardKeyEvents.length }} 条
+            <template v-for="event in cardKeyEvents" :key="event.markerId">
+              <br>· {{ event.title }}
+            </template>
+          </template>
+        </span>
         <span v-if="cardArchivedOrigin" class="lcc-card__origin">来自已归档泳道：{{ cardArchivedOrigin }}</span>
         <span class="lcc-card__meta">{{ cardRelationCount ? `${cardRelationCount} 条原关系` : '暂无原关系，可人工选入' }}</span>
         <button
@@ -1932,6 +2009,8 @@ watch(() => props.focusId, (now, prev) => {
 
 .lcc-canvas__surface.is-dragging {
   cursor: grabbing;
+  /* 拖对象时也不得选中画布文本（仅 is-panning 不够：拖节点不走平移分支） */
+  user-select: none;
 }
 
 .lcc-canvas__surface svg {
@@ -2130,6 +2209,16 @@ watch(() => props.focusId, (now, prev) => {
   pointer-events: none;
 }
 
+/* 星形节点里的 ✓ 更细（内切圆小，粗线会糊成一团） */
+.lcc-canvas__check.is-star {
+  stroke-width: 1.1;
+}
+
+/* ★ 星形主体：只让星角圆润，不改 fill/stroke（沿用 .lcc-canvas__point 的各态规则） */
+.lcc-canvas__point[data-role="key-star"] {
+  stroke-linejoin: round;
+}
+
 .lcc-canvas__focus-ring {
   fill: none;
   stroke: var(--color-text-primary);
@@ -2274,6 +2363,15 @@ watch(() => props.focusId, (now, prev) => {
   padding-right: 18px;
   font-size: 13px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.lcc-card__key {
+  display: block;
+  font-size: 11px;
+  margin-top: 4px;
+  line-height: 1.6;
+  color: var(--color-accent);
   overflow-wrap: anywhere;
 }
 

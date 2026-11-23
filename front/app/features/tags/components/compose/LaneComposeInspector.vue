@@ -135,7 +135,13 @@ function onChosenToggle(section: ComposeCandidate, event: Event): void {
             <button type="button" class="lci__suggest-title" @click="emit('focus', item.section.id)">{{ item.section.clusterLabel }}</button>
             <p v-if="archivedOrigin(item.section)" class="lci__origin">来自已归档泳道：{{ archivedOrigin(item.section) }}</p>
             <div class="lci__suggest-foot">
-              <small>{{ item.section.periodDate.slice(5) }} · 估算接近度 {{ proximityOf(item.distance)?.toFixed(2) }}</small>
+              <small>
+                <span
+                  v-if="item.section.confirmedKeyEvents?.length"
+                  class="lci__key-star"
+                  data-role="key-star"
+                >★ </span>{{ item.section.periodDate.slice(5) }} · 估算接近度 {{ proximityOf(item.distance)?.toFixed(2) }}
+              </small>
               <button type="button" class="lci__suggest-add" :data-testid="`lane-suggest-add-${item.section.id}`" @click="emit('add', item.section.id)">＋ 加入</button>
             </div>
           </li>
@@ -328,6 +334,10 @@ function onChosenToggle(section: ComposeCandidate, event: Event): void {
   color: inherit;
   cursor: pointer;
   overflow-wrap: anywhere;
+}
+
+.lci__key-star {
+  color: var(--color-accent);
 }
 
 .lci__suggest-foot {

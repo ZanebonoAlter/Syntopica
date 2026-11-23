@@ -208,6 +208,41 @@ describe('usePersistentTopicsApi — 手动建泳道编排态（切片③）', (
     })
   })
 
+  describe('getComposeCandidates — confirmed_key_events 归一（add-lane-compose-topic-event-tags）', () => {
+    it('原样映射为 camelCase；空数组/缺字段 → []；thread_id / confirmed_at 为 null 时省略', async () => {
+      getMock.mockResolvedValue({
+        success: true,
+        data: {
+          sections: [
+            {
+              id: 1,
+              report_id: 11,
+              period_date: '2026-11-01',
+              cluster_label: 'a',
+              embedding: [0.1],
+              confirmed_key_events: [
+                { marker_id: 7, thread_id: 91, title: '降息预期升温', confirmed_at: '2026-11-20T10:00:00Z' },
+                { marker_id: 8, thread_id: null, title: '非农超预期', confirmed_at: null },
+              ],
+            },
+            { id: 2, report_id: 11, period_date: '2026-11-01', cluster_label: 'b', embedding: [0.1], confirmed_key_events: [] },
+            { id: 3, report_id: 11, period_date: '2026-11-01', cluster_label: 'c', embedding: [0.1] },
+          ],
+          match_threshold: 0.3,
+        },
+      })
+      const api = usePersistentTopicsApi()
+      const res = await api.getComposeCandidates(1974, 14)
+      const sections = res.data!.sections
+      expect(sections[0]!.confirmedKeyEvents).toEqual([
+        { markerId: '7', threadId: '91', title: '降息预期升温', confirmedAt: '2026-11-20T10:00:00Z' },
+        { markerId: '8', title: '非农超预期' },
+      ])
+      expect(sections[1]!.confirmedKeyEvents).toEqual([])
+      expect(sections[2]!.confirmedKeyEvents).toEqual([]) // 旧后端缺字段 → 无标记，不炸
+    })
+  })
+
   describe('getComposeCandidates — early_members[].embedding 透传（unify-lane-workbench R-1 / D6）', () => {
     it('有向量时原样透传（更早成员要撑起推荐质心）', async () => {
       getMock.mockResolvedValue({

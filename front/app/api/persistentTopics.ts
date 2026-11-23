@@ -25,6 +25,20 @@ const DEFAULT_COMPOSE_DAYS = 30
 /** 服务端未回传 match_threshold 时的兜底阈值（契约 §2.2：默认 0.3）。 */
 const DEFAULT_MATCH_THRESHOLD = 0.3
 
+/**
+ * 编排态 section 下一条「已确认关键线索」（★ 只读投影）。
+ *
+ * - title 是服务端冻结快照（title_snapshot），客户端不改写、不回填新闻正文；
+ * - threadId / confirmedAt 可空：日报重建可能把来源指针置 NULL（脱离快照）；
+ * - 不参与选入/接近度/质心/阈值任何计算。
+ */
+export interface ComposeConfirmedKeyEvent {
+  markerId: string
+  threadId?: string
+  title: string
+  confirmedAt?: string
+}
+
 /** 编排态候选 section（embedding 已展开为 number[]，供前端实时计算）。 */
 export interface ComposeCandidate {
   id: string
@@ -43,6 +57,12 @@ export interface ComposeCandidate {
    * - 只由 `clue_count` 归一化产生，不用 section 数 / thread 总数替代。
    */
   clueCount?: number | null
+  /**
+   * 该 section 下已确认的关键线索（★ 只读投影）。API 层恒为数组（无标记为
+   * []），归一化保证存在；类型标可选只为兼容手工构造的旧 fixture。
+   * 长度 > 0 才画星形。
+   */
+  confirmedKeyEvents?: ComposeConfirmedKeyEvent[]
 }
 
 /** 窗口内两端可见的原关系（identity / similarity 都保留，画布只画这批边）。 */
@@ -172,6 +192,13 @@ interface ComposeCandidatePayload {
   persistent_topic?: { id: number, label: string, status: string, color: string }
   /** 后端补字段（unify-lane-workbench）；旧后端缺省 → 归一化为 null（未知）。 */
   clue_count?: number | null
+  /** ★ 只读投影；旧后端缺省 → 归一化为 []（无标记）。 */
+  confirmed_key_events?: {
+    marker_id: number | string
+    thread_id?: number | string | null
+    title?: string | null
+    confirmed_at?: string | null
+  }[]
 }
 
 interface ComposeRelationPayload {
@@ -248,6 +275,15 @@ function normalizeCandidate(p: ComposeCandidatePayload): ComposeCandidate {
     embedding: p.embedding ?? [],
     // 0 保留；缺字段 / null / 非有限数（NaN、Infinity）/ 负数（非非负整数）→ null 未知。
     clueCount: typeof p.clue_count === 'number' && Number.isFinite(p.clue_count) && p.clue_count >= 0 ? p.clue_count : null,
+    confirmedKeyEvents: (p.confirmed_key_events ?? []).map((event) => {
+      const item: ComposeConfirmedKeyEvent = {
+        markerId: String(event.marker_id),
+        title: event.title ?? '',
+      }
+      if (event.thread_id != null) item.threadId = String(event.thread_id)
+      if (event.confirmed_at) item.confirmedAt = event.confirmed_at
+      return item
+    }),
   }
   if (p.persistent_topic_id != null) out.persistentTopicId = String(p.persistent_topic_id)
   if (p.topic_match_confidence) out.topicMatchConfidence = p.topic_match_confidence

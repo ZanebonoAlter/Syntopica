@@ -169,6 +169,13 @@ type composeCandidatesPayload struct {
 		ClusterLabel      string `json:"cluster_label"`
 		PersistentTopicID *uint  `json:"persistent_topic_id"`
 		ClueCount         int    `json:"clue_count"`
+		// ★ 只读投影：恒为数组，无标记是 []（不是 null / 缺字段）。
+		ConfirmedKeyEvents []struct {
+			MarkerID    uint    `json:"marker_id"`
+			ThreadID    *uint   `json:"thread_id"`
+			Title       string  `json:"title"`
+			ConfirmedAt *string `json:"confirmed_at"`
+		} `json:"confirmed_key_events"`
 	} `json:"sections"`
 	Relations []struct {
 		FromID       uint    `json:"from_id"`
@@ -663,6 +670,98 @@ func TestComposeCandidates_D17EarlyMembersEmptyArray(t *testing.T) {
 	data := decodeComposePayload(t, w)
 	require.NotNil(t, data.EarlyMembers)
 	assert.Empty(t, *data.EarlyMembers)
+}
+
+// ── 编排态 ★ 只读投影（add-lane-compose-topic-event-tags）──
+
+// CC-K1 — confirmed markers are projected per section; thread-deleted snapshots
+// (source_thread_id NULL) still attach via source_section_id; suggested never
+// enters the payload.
+func TestComposeCandidates_ConfirmedKeyEventsPerSection(t *testing.T) {
+	r, db := setupComposeCandidatesHandlerTest(t)
+	fx := seedComposeFixture(t, db)
+
+	seedComposeThread(t, db, fx.s1, fx.s1, "线索一", "single")
+	var thread repository.DailyReportThread
+	require.NoError(t, db.Where("section_id = ? AND title = ?", fx.s1, "线索一").First(&thread).Error)
+
+	now := time.Now()
+	require.NoError(t, db.Create(&repository.TopicKeyEventMarker{
+		SemanticBoardID:  fx.boardID,
+		SourceKey:        "k-thread",
+		SourceSectionID:  &fx.s1,
+		SourceThreadID:   &thread.ID,
+		SourcePeriodDate: composeDay(t, "2026-10-27"),
+		TitleSnapshot:    "确认线索一",
+		State:            repository.KeyEventStateConfirmed,
+		LastAction:       repository.KeyEventActionMark,
+		ConfirmedAt:      &now,
+	}).Error)
+	// thread 已删（source_thread_id NULL）→ 仍靠 section 指针挂上。
+	require.NoError(t, db.Create(&repository.TopicKeyEventMarker{
+		SemanticBoardID:  fx.boardID,
+		SourceKey:        "k-detached-thread",
+		SourceSectionID:  &fx.s1,
+		SourcePeriodDate: composeDay(t, "2026-10-27"),
+		TitleSnapshot:    "thread 已删的确认快照",
+		State:            repository.KeyEventStateConfirmed,
+		LastAction:       repository.KeyEventActionMark,
+	}).Error)
+	// suggested 不进投影。
+	require.NoError(t, db.Create(&repository.TopicKeyEventMarker{
+		SemanticBoardID:  fx.boardID,
+		SourceKey:        "k-suggested",
+		SourceSectionID:  &fx.s2,
+		SourcePeriodDate: composeDay(t, "2026-10-28"),
+		TitleSnapshot:    "AI 建议",
+		State:            repository.KeyEventStateSuggested,
+	}).Error)
+
+	w := callComposeCandidates(t, r, fx.boardID, "days=30")
+	require.Equal(t, http.StatusOK, w.Code)
+	data := decodeComposePayload(t, w)
+
+	s1Index := -1
+	for i := range data.Sections {
+		if data.Sections[i].ID == fx.s1 {
+			s1Index = i
+		}
+	}
+	require.NotEqual(t, -1, s1Index)
+	s1 := data.Sections[s1Index]
+	require.Len(t, s1.ConfirmedKeyEvents, 2)
+	assert.Equal(t, "确认线索一", s1.ConfirmedKeyEvents[0].Title)
+	require.NotNil(t, s1.ConfirmedKeyEvents[0].ThreadID, "有线程的标记带 thread_id")
+	require.NotNil(t, s1.ConfirmedKeyEvents[0].ConfirmedAt)
+	assert.Equal(t, "thread 已删的确认快照", s1.ConfirmedKeyEvents[1].Title)
+	assert.Nil(t, s1.ConfirmedKeyEvents[1].ThreadID, "thread 已删 → thread_id 省略")
+
+	// 没有 marker 的 section 必须序列化成 []（不是 null / 缺字段）。
+	foundEmpty := false
+	for _, sec := range data.Sections {
+		if sec.ID == fx.s2 {
+			foundEmpty = true
+			assert.Empty(t, sec.ConfirmedKeyEvents)
+		}
+	}
+	assert.True(t, foundEmpty)
+	assert.Contains(t, w.Body.String(), `"confirmed_key_events":[]`)
+}
+
+// CC-K2 — no markers at all → every section is [] (known "no marker", not null).
+func TestComposeCandidates_ConfirmedKeyEventsEmptyArray(t *testing.T) {
+	r, db := setupComposeCandidatesHandlerTest(t)
+	fx := seedComposeFixture(t, db)
+
+	w := callComposeCandidates(t, r, fx.boardID, "days=30")
+	require.Equal(t, http.StatusOK, w.Code)
+	data := decodeComposePayload(t, w)
+	require.NotEmpty(t, data.Sections)
+	for _, sec := range data.Sections {
+		assert.NotNil(t, sec.ConfirmedKeyEvents)
+		assert.Empty(t, sec.ConfirmedKeyEvents)
+	}
+	assert.NotContains(t, w.Body.String(), `"confirmed_key_events":null`)
 }
 
 // ── unify-lane-workbench：section 线索数（clue_count）与轻量取数 ──

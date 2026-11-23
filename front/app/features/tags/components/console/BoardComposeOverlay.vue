@@ -17,11 +17,9 @@ import AppButton from '~/components/ui/AppButton.vue'
 import AppDialog from '~/components/ui/AppDialog.vue'
 import AppInput from '~/components/ui/AppInput.vue'
 import AppPageShell from '~/components/ui/AppPageShell.vue'
-import { Z_INDEX } from '~/components/ui/layout-contract'
 import { unclassifiedIds, type LaneThresholdTier } from '~/features/tags/composables/laneComposeLogic'
 import LaneComposeCandidates from '~/features/tags/components/compose/LaneComposeCandidates.vue'
 import LaneComposeCanvas from '~/features/tags/components/compose/LaneComposeCanvas.vue'
-import LaneComposeHistoryDialog from '~/features/tags/components/compose/LaneComposeHistoryDialog.vue'
 import LaneComposeInspector from '~/features/tags/components/compose/LaneComposeInspector.vue'
 import LaneAnchorScope from '~/features/tags/components/console/LaneAnchorScope.vue'
 import LaneCorrectionCanvas from '~/features/tags/components/console/LaneCorrectionCanvas.vue'
@@ -32,7 +30,6 @@ import { useLaneCompose, type LaneComposeConfirmRequest } from '~/features/tags/
 import { useLaneCorrection } from '~/features/tags/composables/useLaneCorrection'
 import type { ManualTopicResult } from '~/api/persistentTopics'
 import { useIsNarrowViewport } from '~/composables/useMediaQuery'
-import { useNotify } from '~/composables/useNotify'
 
 const props = defineProps<{
   boardId: number
@@ -57,7 +54,6 @@ const isCorrection = computed(() => props.mode === 'correction')
 
 const isNarrowViewport = useIsNarrowViewport()
 const isNarrow = computed(() => Boolean(isNarrowViewport.value))
-const { success: notifySuccess, warn: notifyWarn, error: notifyError } = useNotify()
 
 // ── 草稿确认弹窗（切窗口 / 取消本次） ─────────────────────────────────────
 const confirmOpen = ref(false)
@@ -111,47 +107,6 @@ async function confirmCreate(): Promise<void> {
   const ok = await compose.save(nameDraft.value)
   if (ok) {
     namingOpen.value = false
-  }
-}
-
-// ── 历史待启用话题（管理名单） ────────────────────────────────────────────
-const historyOpen = ref(false)
-
-/** 打开入口：拉管理名单（服务端可见性，前端不放宽）。 */
-async function openHistory(): Promise<void> {
-  historyOpen.value = true
-  await compose.loadHistoryTopics()
-}
-
-/**
- * 「带入草稿」：只带该话题在当前窗口内的 owned 成员（不补相似、不截条）。
- * 名称预填/保留手写名的口径在 composable；这里只给明确反馈。
- */
-function onHistoryAdopt(topicId: string): void {
-  const outcome = compose.adoptHistoryTopic(topicId)
-  if (!outcome) {
-    notifyError('话题不存在或已从名单移除')
-    return
-  }
-  if (outcome.ownedCount === 0) {
-    notifyWarn(`当前日期范围内没有「${outcome.topicLabel}」的事件，未带入草稿。`)
-    return
-  }
-  if (outcome.keptManualName) {
-    notifySuccess(`已保留你写的名称，未覆盖；新增预选 ${outcome.addedCount} 条。`)
-  } else {
-    notifySuccess(`已预填名称，保留原先选择；新增预选 ${outcome.addedCount} 条。`)
-  }
-  historyOpen.value = false
-}
-
-/** 「直接启用原话题」：改原话题状态（与本次草稿的人工新建是两件事）。 */
-async function onHistoryActivate(topicId: string): Promise<void> {
-  const outcome = await compose.activateHistoryTopic(topicId)
-  if (outcome.ok) {
-    notifySuccess(`${outcome.message}；这一步只改原话题的状态，与本次草稿的人工新建无关。`)
-  } else {
-    notifyError(outcome.message)
   }
 }
 
@@ -298,10 +253,6 @@ async function onCorrectionSourceChange(days: number): Promise<void> {
   await correction.setWindow(days as 7 | 14 | 30 | 365)
 }
 
-function onToggleAssigned(event: Event): void {
-  compose.showAssigned.value = (event.target as HTMLInputElement).checked
-}
-
 // ── 退出 ──────────────────────────────────────────────────────────────────
 async function onCancel(): Promise<void> {
   // 修正模式的改动逐条即时落库，没有「未保存草稿」，直接退出。
@@ -322,11 +273,6 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
   if (confirmOpen.value || namingOpen.value) return
-  // 历史名单弹窗自己处理 Esc（AppDialog 关掉它，不连带退出编排态）
-  if (historyOpen.value) {
-    historyOpen.value = false
-    return
-  }
   // 检索态：Esc 先退出检索（不改成员），再按一次才退出编排态
   if (searchActive.value) {
     searchQuery.value = ''
@@ -474,21 +420,6 @@ onBeforeUnmount(() => {
           >取消聚焦</button>
         </template>
         <template v-else>
-          <label class="bco__tool">
-            <input
-              type="checkbox"
-              :checked="compose.showAssigned.value"
-              data-testid="lane-compose-show-assigned"
-              @change="onToggleAssigned"
-            >
-            显示已有泳道（只读）
-          </label>
-          <button
-            type="button"
-            class="bco__tool bco__tool--entry"
-            data-testid="lane-compose-history-open"
-            @click="openHistory"
-          >历史待启用话题</button>
           <button
             type="button"
             class="bco__tool"
@@ -660,21 +591,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </AppPageShell>
-
-      <!-- 历史待启用话题（管理名单）：工作面内的明确入口 -->
-      <LaneComposeHistoryDialog
-        :model-value="historyOpen"
-        :topics="compose.filteredHistoryTopics.value"
-        :loading="compose.historyLoading.value"
-        :error="compose.historyError.value"
-        :query="compose.historyQuery.value"
-        :activating-id="compose.activatingTopicId.value"
-        :z-index="Z_INDEX.dialogNested"
-        @update:model-value="historyOpen = $event"
-        @update:query="compose.historyQuery.value = $event"
-        @adopt="onHistoryAdopt"
-        @activate="onHistoryActivate"
-      />
 
       <!-- 草稿确认 -->
       <AppDialog

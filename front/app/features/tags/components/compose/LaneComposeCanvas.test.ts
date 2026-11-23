@@ -602,6 +602,39 @@ describe('LaneComposeCanvas — 手势分流与拖拽选入（3.1–3.3）', () 
     expect(w.emitted('focus')).toBeUndefined()
   })
 
+  it('拖拽时被拖节点本体跟随光标（transform）；pointerdown 阻止默认文本选择；松手清空', async () => {
+    const w = await mountRows({ selectedIds: new Set<string>() })
+    const nodeEl = w.find('[data-testid="lane-node-1"]').element
+    const from = pointOf(w, '1')
+    const surface = w.find('[data-testid="lane-compose-canvas"]').element as HTMLElement
+
+    const down = new Event('pointerdown', { bubbles: true, cancelable: true }) as PointerEvent
+    Object.defineProperties(down, { clientX: { value: from.x }, clientY: { value: from.y }, pointerId: { value: 1 } })
+    nodeEl.dispatchEvent(down)
+    // 不 preventDefault 的话，浏览器拖动会顺带选中画布上其它节点的文字
+    expect(down.defaultPrevented).toBe(true)
+
+    const move = new Event('pointermove', { bubbles: true }) as PointerEvent
+    Object.defineProperties(move, { clientX: { value: from.x + 24 }, clientY: { value: from.y + 18 }, pointerId: { value: 1 } })
+    surface.dispatchEvent(move)
+    await flushPromises()
+
+    const transform = w.find('[data-testid="lane-node-1"]').attributes('transform')
+    expect(transform).toBeDefined()
+    // 数值断言：起点必须取 pointerdown 位置——若改回首帧 move，位移会是 0 而这里立刻红
+    const nums = [...(transform ?? '').matchAll(/-?\d+(?:\.\d+)?/g)].map(m => Number(m[0]))
+    expect(nums[0]).toBeCloseTo(24, 1)
+    expect(nums[1]).toBeCloseTo(18, 1)
+    // 其它节点不跟着动
+    expect(w.find('[data-testid="lane-node-2"]').attributes('transform')).toBeUndefined()
+
+    const up = new Event('pointerup', { bubbles: true }) as PointerEvent
+    Object.defineProperties(up, { clientX: { value: from.x + 24 }, clientY: { value: from.y + 18 }, pointerId: { value: 1 } })
+    surface.dispatchEvent(up)
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-1"]').attributes('transform')).toBeUndefined()
+  })
+
   it('Esc / pointercancel 取消拖拽：不产生任何成员变化', async () => {
     const w = await mountRows({ selectedIds: new Set<string>() })
     const from = pointOf(w, '1')
@@ -893,6 +926,65 @@ describe('LaneComposeCanvas — 无成型候选空态（必修 1）', () => {
     const w = await mountRows({ sections: [], chains: [], selectedIds: new Set<string>() })
     expect(w.find('[data-testid="lane-compose-no-chain-notice"]').exists()).toBe(false)
     expect(w.find('[data-testid="lane-compose-canvas-empty"]').exists()).toBe(true)
+  })
+})
+
+describe('LaneComposeCanvas — 已确认关键线索星形（add-lane-compose-topic-event-tags）', () => {
+  const withKey: ComposeCandidate[] = SECTIONS.map(s => s.id === '1'
+    ? {
+        ...s,
+        confirmedKeyEvents: [
+          { markerId: 'm1', title: '降息预期升温' },
+          { markerId: 'm2', title: '非农超预期' },
+        ],
+      }
+    : s)
+
+  it('有确认注记 → 星形 path（不是圆点 + 角标）；无标记仍画圆点', async () => {
+    const w = await mountRows({ sections: withKey })
+    const star = w.find('[data-testid="lane-node-1"] [data-role="key-star"]')
+    expect(star.exists()).toBe(true)
+    expect(star.element.tagName.toLowerCase()).toBe('path')
+    expect(w.find('[data-testid="lane-node-2"] [data-role="key-star"]').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-node-2"] .lcc-canvas__point').element.tagName.toLowerCase()).toBe('circle')
+  })
+
+  it('星形外接尺寸沿用同一节点的 pointRadius（不放大）', async () => {
+    // 对照：同一节点不带星时的圆点半径（不能拿另一个节点比——两节点恰好同半径就挡不住"写死半径"回归）
+    const plain = await mountRows({ sections: SECTIONS })
+    const r = Number(plain.find('[data-testid="lane-node-1"] .lcc-canvas__point').attributes('r'))
+    plain.unmount()
+
+    const w = await mountRows({ sections: withKey })
+    const d = w.find('[data-testid="lane-node-1"] [data-role="key-star"]').attributes('d')!
+    const nums = [...d.matchAll(/-?\d+(?:\.\d+)?/g)].map(m => Number(m[0]))
+    const xs = nums.filter((_, i) => i % 2 === 0)
+    const ys = nums.filter((_, i) => i % 2 === 1)
+    // 五角星：横向 2R·cos18° ≈ 1.902R，纵向 R + R·sin54° ≈ 1.809R
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(r * 1.902, 1)
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(r * 1.809, 1)
+  })
+
+  it('已选星形节点：星形保留 + ✓ 缩小（is-star），不回退成圆点', async () => {
+    const w = await mountRows({ sections: withKey })
+    expect(w.find('[data-testid="lane-node-1"] [data-role="key-star"]').exists()).toBe(true)
+    expect(w.find('[data-testid="lane-node-1"] .lcc-canvas__check.is-star').exists()).toBe(true)
+    // spec「有确认注记的事件节点」明文要求 aria-label 带条数
+    expect(w.find('[data-testid="lane-node-1"]').attributes('aria-label')).toContain('已确认关键线索 2 条')
+  })
+
+  it('节点卡逐条列出全部被确认线索', async () => {
+    const w = await mountRows({ sections: withKey, focusId: '1' })
+    const card = w.find('[data-testid="lane-node-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('已确认关键线索 2 条')
+    expect(card.text()).toContain('降息预期升温')
+    expect(card.text()).toContain('非农超预期')
+  })
+
+  it('无确认注记：卡内不出现该区块（无占位符）', async () => {
+    const w = await mountRows({ sections: withKey, focusId: '2' })
+    expect(w.find('[data-testid="lane-node-card"]').text()).not.toContain('已确认关键线索')
   })
 })
 

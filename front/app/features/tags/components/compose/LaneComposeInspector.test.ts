@@ -156,6 +156,22 @@ describe('LaneComposeInspector — ① 只叙述（不放选入按钮）', () =>
   })
 })
 
+describe('LaneComposeInspector — 右栏② ★（add-lane-compose-topic-event-tags）', () => {
+  it('可补充事件条目带确认注记 → 日期行首 ★；无标记不显示', () => {
+    const withKey = {
+      ...RECS,
+      unassigned: [
+        { section: { ...SECTIONS[2]!, confirmedKeyEvents: [{ markerId: 'm1', title: '降息预期升温' }] }, distance: 0.1 },
+        { section: { ...SECTIONS[2]!, id: '8', clusterLabel: '另一条', confirmedKeyEvents: [] }, distance: 0.2 },
+      ],
+    }
+    const w = mountInspector({ recommendations: withKey })
+    expect(w.findAll('.lci__key-star')).toHaveLength(1)
+    expect(w.find('[data-testid="lane-suggest-4"]').text()).toContain('★')
+    expect(w.find('[data-testid="lane-suggest-8"]').text()).not.toContain('★')
+  })
+})
+
 describe('LaneComposeInspector — 退出检索（A-7 收口）', () => {
   it('「清空」→ 关键词归零（宿主据此退出检索态）', async () => {
     const w = mountInspector({ query: '归档' })

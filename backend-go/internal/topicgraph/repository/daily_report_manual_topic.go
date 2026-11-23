@@ -95,6 +95,23 @@ type ComposeCandidateSection struct {
 	// listLaneSectionThreads 的 Clues 同源（综合稿不计入）；无 thread 的
 	// section 为已知 0（必序列化，不加 omitempty），不是文章总数。
 	ClueCount int `json:"clue_count"`
+	// ConfirmedKeyEvents lists the confirmed key-event markers under this
+	// section (★ read-only projection; add-lane-compose-topic-event-tags).
+	// Always serialized as an array — empty is [] (no omitempty): "no marker"
+	// is a known state, not unknown. Never participates in selection,
+	// centroid, threshold or candidate-chain eligibility.
+	ConfirmedKeyEvents []ComposeConfirmedKeyEvent `json:"confirmed_key_events"`
+}
+
+// ComposeConfirmedKeyEvent is one confirmed key-event marker under a compose
+// candidate section, projected read-only for the canvas ★ marker. Title is the
+// server-frozen snapshot (client never rewrites it); ThreadID/ConfirmedAt are
+// nullable because a rebuild can detach the source thread.
+type ComposeConfirmedKeyEvent struct {
+	MarkerID    uint       `json:"marker_id"`
+	ThreadID    *uint      `json:"thread_id,omitempty"`
+	Title       string     `json:"title"`
+	ConfirmedAt *time.Time `json:"confirmed_at,omitempty"`
 }
 
 // ComposeCandidatesQuery describes the window of the compose-candidates
@@ -329,6 +346,27 @@ func (r *TopicGraphRepository) GetComposeCandidates(q ComposeCandidatesQuery) (C
 		}
 		for i := range out {
 			out[i].ClueCount = threadsBySection[out[i].ID].Clues
+		}
+
+		// ★ 只读投影：该 section 下被人工确认的关键线索（add-lane-compose-
+		// topic-event-tags）。一次批量查、按 section 分组；无标记的 section
+		// 恒为 []（不省略、不给 null），前端据此决定是否画星形。
+		keyEvents, err := r.ListConfirmedKeyEventsBySections(ids)
+		if err != nil {
+			return ComposeCandidatesResponse{}, fmt.Errorf("GetComposeCandidates: confirmed key events: %w", err)
+		}
+		for i := range out {
+			markers := keyEvents[out[i].ID]
+			list := make([]ComposeConfirmedKeyEvent, 0, len(markers))
+			for _, marker := range markers {
+				list = append(list, ComposeConfirmedKeyEvent{
+					MarkerID:    marker.ID,
+					ThreadID:    marker.SourceThreadID,
+					Title:       marker.TitleSnapshot,
+					ConfirmedAt: marker.ConfirmedAt,
+				})
+			}
+			out[i].ConfirmedKeyEvents = list
 		}
 	}
 

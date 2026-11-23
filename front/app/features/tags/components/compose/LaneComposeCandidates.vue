@@ -122,7 +122,14 @@ function onTitleClick(lane: LaneView): void {
                 @change="onMemberChange(member.id, $event)"
               >
               <span class="lcc__member-text">
-                <small class="lcc__member-date">{{ member.periodDate.slice(0, 10) }}</small>
+                <small class="lcc__member-date">
+                  {{ member.periodDate.slice(0, 10) }}
+                  <span
+                    v-if="member.confirmedKeyEvents?.length"
+                    class="lcc__member-star"
+                    data-role="key-star"
+                  >★</span>
+                </small>
                 <span class="lcc__member-label-text">{{ member.clusterLabel }}</span>
               </span>
             </label>
@@ -274,6 +281,11 @@ function onTitleClick(lane: LaneView): void {
 
 .lcc__member-text {
   min-width: 0;
+}
+
+.lcc__member-star {
+  margin-left: 4px;
+  color: var(--color-accent);
 }
 
 .lcc__member-date {

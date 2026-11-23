@@ -774,6 +774,8 @@ Response `data`：
 
 > **`related_article_ids` 的折叠语义（dedupe-thread-article-copies）**：本端点返回的每条 thread 的 `related_article_ids` 是**读路径投影**——同一篇内容被两个 feed 各抓一份（同 `link`）时只保留**首个出现**的一条，数组顺序不变；`link` 为空（或归一后为空）、以及库里查不到的 id **不参与折叠**、原样保留。归一口径 = `textutil.NormalizeArticleLink`（去 fragment、去 query、scheme/host 小写），只认「归一 link 相同」这一条信号——同标题不同 URL 的多源转载**不折叠**。落库值 `daily_report_threads.related_article_ids` 不变（仍是该 thread `tag_ids` 对应文章的并集），故响应数组长度可能短于落库值；折叠所需的 link 取不到时降级为原样返回（本端点仍 200）。详见 `flow/daily-report.md` 约束 45。
 
+> **线索文章的判定投影 `threads[].articles`（add-ai-generated-article-detection 4.6）**：每条 thread 额外带 `articles` 数组——`related_article_ids` 的只读投影，元素为 `{ "id", "title", "ai_detection_status", "ai_detection_score" }`。顺序与折叠后的 `related_article_ids` 完全一致，**不增删成员**（数组长度 = 「N 篇」计数，集合仍受红线 45 约束不变）；库里查不到的越界 id 仍保留投影项（`title` 空、`ai_detection_status=unknown`）不丢弃；成员查询失败时整条投影缺席（详情接口照常 200，前端不渲染标记），只有 `related_article_ids` 为空数组的 thread 不带该字段。`ai_detection_status` 取值 `unknown` / `suspect` / `not_ai`；本端点**不**给判定来源与判定时间（需要时走 `GET /api/articles/:article_id`）。疑似文章在数组末尾是本 change 服务端稳定分区（非疑似保序在前）的结果，前端按此顺序展开即可。
+
 ### 消费方 ②：L1 版块态势页右轨「当日日报」（console-rails-live-signals，2026-11-19）
 
 本端点的 `report.highlights` / `report.sections[]` 也是版块态势页右轨「当日日报」块的数据源（**跟随矩阵选中日**，右轨不提供日期选择器）：
@@ -897,7 +899,11 @@ Response `data`：
       "embedding": [0.0123, -0.0456],
       "persistent_topic_id": 9,
       "topic_match_confidence": "anchor_hit",
-      "persistent_topic": { "id": 9, "label": "美伊谈判", "status": "active", "color": "#60a5fa" }
+      "persistent_topic": { "id": 9, "label": "美伊谈判", "status": "active", "color": "#60a5fa" },
+      "clue_count": 3,
+      "confirmed_key_events": [
+        { "marker_id": 11, "thread_id": 1001, "title": "美伊谈判达成框架协议", "confirmed_at": "2026-11-20T10:00:00Z" }
+      ]
     }
   ],
   "relations": [
@@ -926,6 +932,7 @@ Response `data`：
 ```
 
 - `relations`：**窗口内两端都可见**的原关系全集（`identity` 与 `similarity` 都保留，`relation_type` 原样带出）。**只读、不新增边**。
+- `confirmed_key_events`：该 section 下 **state=confirmed** 的关键事件注记（编排态 ★ 只读投影）。**恒为数组**：无标记是 `[]`（不是 null / 缺字段）；`thread_id` / `confirmed_at` 为空时**该键省略**（`omitempty`；日报重建把来源指针置 NULL 的脱离快照）。只按 `source_section_id` 精确归属，指针为 NULL 的注记**不会**出现；客户端不得按标题/日期模糊补挂。不参与选入、接近度、质心、阈值或候选链资格。
 - `candidate_chains`：**服务端唯一实现**的候选链口径（见 `flow/daily-report.md` 业务约束）；前端只渲染不重算。
 - `window.days`：**生效**窗口天数（闭区间）。`days` 档：`>90` 回显 90、`<=0` 回显 0；`from`/`to` 档：回显 `to-from+1`。
 - `window.from` / `window.to`：**可能为 `null`**（无已完成日报、或 `days<=0` 全历史档），表示开边界；`window.latest_completed_date` 在该板块**没有已完成日报**时为 `null`。
