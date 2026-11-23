@@ -840,3 +840,306 @@ func TestRefreshExistingArticleStatusMatrix(t *testing.T) {
 		})
 	}
 }
+
+// TestRefreshFeedDedupesRepeatedLinkWithinDocument covers the feed-31 shape
+// (fix-feed-refresh-churn D1): one RSS document lists the same link twice under
+// two different titles (index 30/38 of 智源社区), so one refresh used to
+// rewrite the single stored row twice — clearing tags and re-enqueueing each
+// time (article 167936 did that every hour). Each link must be processed once,
+// on the newest variant (review R-2): pubDate 最新的那条胜出，pubDate 缺失或相等
+// 时回退首现。
+func TestRefreshFeedDedupesRepeatedLinkWithinDocument(t *testing.T) {
+	const link = "https://example.com/dup/1"
+
+	type variant struct{ title, desc, pubDate string }
+	first := variant{"首现标题", "首现摘要", "Sun, 22 Mar 2026 09:00:00 GMT"}
+	older := variant{"更旧副本标题", "更旧副本摘要", "Sat, 21 Mar 2026 09:00:00 GMT"}
+	newer := variant{"更新副本标题", "更新副本摘要", "Mon, 23 Mar 2026 09:00:00 GMT"}
+	undated := variant{"无日期副本标题", "无日期副本摘要", ""}
+
+	rssBody := func(entries ...variant) string {
+		body := `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Repeated</title>
+    <description>Feed for tests</description>
+    <link>https://example.com</link>`
+		for _, e := range entries {
+			body += fmt.Sprintf(`
+    <item>
+      <title>%s</title>
+      <link>%s</link>
+      <description>%s</description>`, e.title, link, e.desc)
+			if e.pubDate != "" {
+				body += fmt.Sprintf("\n      <pubDate>%s</pubDate>", e.pubDate)
+			}
+			body += "\n    </item>"
+		}
+		return body + "\n  </channel>\n</rss>"
+	}
+
+	cases := []struct {
+		name    string
+		entries []variant
+		want    variant
+	}{
+		{"后现 pubDate 更新", []variant{first, newer}, newer},
+		{"后现 pubDate 更旧", []variant{first, older}, first},
+		{"pubDate 缺失回退首现", []variant{first, undated}, first},
+		{"前现 pubDate 缺失时后现有日期胜出", []variant{undated, first}, first},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setupFeedsTestDB(t)
+
+			body := rssBody(tc.entries...)
+			server := startSwitchableRSSServer(t, &body)
+
+			feed := models.Feed{Title: "Repeated", URL: server.URL, MaxArticles: 10, TaggingEnabled: true}
+			if err := database.DB.Create(&feed).Error; err != nil {
+				t.Fatalf("create feed: %v", err)
+			}
+
+			service := newDedupeTestService(t)
+			if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+				t.Fatalf("refresh feed: %v", err)
+			}
+
+			var articles []models.Article
+			if err := database.DB.Where("feed_id = ?", feed.ID).Find(&articles).Error; err != nil {
+				t.Fatalf("load articles: %v", err)
+			}
+			if len(articles) != 1 {
+				t.Fatalf("article rows = %d, want 1 (repeated link must not insert twice)", len(articles))
+			}
+			if articles[0].Title != tc.want.title || articles[0].Description != tc.want.desc {
+				t.Fatalf("stored row = %q/%q, want %q/%q (one variant per link, newest pubDate wins)",
+					articles[0].Title, articles[0].Description, tc.want.title, tc.want.desc)
+			}
+		})
+	}
+}
+
+// TestRefreshExistingArticleFreezesArchivedRow covers D3: an archived row is a
+// frozen snapshot — an upstream title/body revision must not rewrite it, drop
+// its tags, or re-enqueue the processing chain.
+func TestRefreshExistingArticleFreezesArchivedRow(t *testing.T) {
+	setupFeedsTestDB(t)
+
+	feed := models.Feed{Title: "Archive Freeze", URL: "https://example.com/archive", FirecrawlEnabled: true, ArticleSummaryEnabled: true, CompletionOnRefresh: true}
+	if err := database.DB.Create(&feed).Error; err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+	article := models.Article{
+		FeedID: feed.ID, Title: "归档时的标题", Description: "归档时的摘要", Content: "<p>归档时的正文</p>",
+		Link: "https://example.com/archive/1", Archived: true,
+		FirecrawlStatus: "completed", FirecrawlContent: "<p>已抓正文</p>", SummaryStatus: "complete", AIContentSummary: "旧整理稿",
+	}
+	if err := database.DB.Create(&article).Error; err != nil {
+		t.Fatalf("create article: %v", err)
+	}
+	tag := models.TopicTag{Label: "归档话题", Slug: "archived-topic", Category: "keyword", Status: "active"}
+	if err := database.DB.Create(&tag).Error; err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+	if err := database.DB.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag.ID, Score: 0.9, Source: "llm"}).Error; err != nil {
+		t.Fatalf("create tag link: %v", err)
+	}
+
+	service := newDedupeTestService(t)
+	revised := ParsedEntry{Title: "源站修订后的标题", Description: "源站修订后的摘要", Content: "<p>源站修订后的正文</p>", Link: article.Link}
+	if err := service.refreshExistingArticle(feed, revised); err != nil {
+		t.Fatalf("refreshExistingArticle: %v", err)
+	}
+
+	var reloaded models.Article
+	if err := database.DB.First(&reloaded, article.ID).Error; err != nil {
+		t.Fatalf("reload article: %v", err)
+	}
+	if reloaded.Title != "归档时的标题" || reloaded.Description != "归档时的摘要" || reloaded.Content != "<p>归档时的正文</p>" {
+		t.Fatalf("archived row must stay frozen: title=%q desc=%q content=%q", reloaded.Title, reloaded.Description, reloaded.Content)
+	}
+	if reloaded.FirecrawlStatus != "completed" || reloaded.FirecrawlContent != "<p>已抓正文</p>" || reloaded.AIContentSummary != "旧整理稿" {
+		t.Fatalf("archived row must keep the processing chain: status=%q crawl=%q summary=%q",
+			reloaded.FirecrawlStatus, reloaded.FirecrawlContent, reloaded.AIContentSummary)
+	}
+	var tagLinks int64
+	database.DB.Model(&models.ArticleTopicTag{}).Where("article_id = ?", article.ID).Count(&tagLinks)
+	if tagLinks != 1 {
+		t.Fatalf("tag links = %d, want 1 (archived refresh must not drop tags)", tagLinks)
+	}
+	var jobCount int64
+	database.DB.Model(&models.FirecrawlJob{}).Where("article_id = ?", article.ID).Count(&jobCount)
+	if jobCount != 0 {
+		t.Fatalf("firecrawl jobs = %d, want 0 (archived refresh must not re-enqueue)", jobCount)
+	}
+}
+
+// TestRefreshFeedFreezesArchivedRowButUpdatesFeedMetadata covers the spec
+// scenario "归档条目冻结不跟进" at the RefreshFeed level (review R-8): the
+// archived-row unit test drives refreshExistingArticle directly, so nothing
+// guards the "feed 自身的元数据刷新不受影响" second half. A full refresh must
+// update feed.title / last_refresh_at while the archived row stays a frozen
+// snapshot — same content, same tags, no new job.
+func TestRefreshFeedFreezesArchivedRowButUpdatesFeedMetadata(t *testing.T) {
+	setupFeedsTestDB(t)
+
+	const link = "https://example.com/archived-refresh/1"
+	body := rssItemBody("新频道标题", "源站修订后的标题", link, "源站修订后的摘要")
+	server := startSwitchableRSSServer(t, &body)
+
+	feed := models.Feed{Title: "旧频道标题", URL: server.URL, MaxArticles: 10, FirecrawlEnabled: true, TaggingEnabled: true}
+	if err := database.DB.Create(&feed).Error; err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+	article := models.Article{
+		FeedID: feed.ID, Title: "归档时的标题", Description: "归档时的摘要", Content: "<p>归档时的正文</p>",
+		Link: link, Archived: true, FirecrawlStatus: "completed", FirecrawlContent: "<p>已抓正文</p>",
+		SummaryStatus: "complete", AIContentSummary: "旧整理稿",
+	}
+	if err := database.DB.Create(&article).Error; err != nil {
+		t.Fatalf("create article: %v", err)
+	}
+	tag := models.TopicTag{Label: "归档话题", Slug: "archived-refresh-topic", Category: "keyword", Status: "active"}
+	if err := database.DB.Create(&tag).Error; err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+	if err := database.DB.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag.ID, Score: 0.9, Source: "llm"}).Error; err != nil {
+		t.Fatalf("create tag link: %v", err)
+	}
+
+	before := time.Now()
+	service := newDedupeTestService(t)
+	if err := service.RefreshFeed(context.Background(), feed.ID); err != nil {
+		t.Fatalf("refresh feed: %v", err)
+	}
+
+	var reloadedFeed models.Feed
+	if err := database.DB.First(&reloadedFeed, feed.ID).Error; err != nil {
+		t.Fatalf("reload feed: %v", err)
+	}
+	if reloadedFeed.Title != "新频道标题" {
+		t.Fatalf("feed title = %q, want the parsed channel title (feed metadata must still refresh)", reloadedFeed.Title)
+	}
+	if reloadedFeed.LastRefreshAt == nil || reloadedFeed.LastRefreshAt.Before(before) {
+		t.Fatalf("feed last_refresh_at = %v, want a timestamp from this refresh (>= %v)", reloadedFeed.LastRefreshAt, before)
+	}
+	if reloadedFeed.RefreshStatus != "success" {
+		t.Fatalf("feed refresh_status = %q, want success", reloadedFeed.RefreshStatus)
+	}
+
+	var reloaded models.Article
+	if err := database.DB.First(&reloaded, article.ID).Error; err != nil {
+		t.Fatalf("reload article: %v", err)
+	}
+	if reloaded.Title != "归档时的标题" || reloaded.Description != "归档时的摘要" || reloaded.Content != "<p>归档时的正文</p>" {
+		t.Fatalf("archived row must stay frozen: title=%q desc=%q content=%q", reloaded.Title, reloaded.Description, reloaded.Content)
+	}
+	if reloaded.FirecrawlStatus != "completed" || reloaded.FirecrawlContent != "<p>已抓正文</p>" || reloaded.AIContentSummary != "旧整理稿" {
+		t.Fatalf("archived row must keep the processing chain: status=%q crawl=%q summary=%q",
+			reloaded.FirecrawlStatus, reloaded.FirecrawlContent, reloaded.AIContentSummary)
+	}
+	var tagLinks int64
+	database.DB.Model(&models.ArticleTopicTag{}).Where("article_id = ?", article.ID).Count(&tagLinks)
+	if tagLinks != 1 {
+		t.Fatalf("tag links = %d, want 1 (archived refresh must not drop tags)", tagLinks)
+	}
+	var firecrawlJobs, tagJobs int64
+	database.DB.Model(&models.FirecrawlJob{}).Where("article_id = ?", article.ID).Count(&firecrawlJobs)
+	database.DB.Model(&models.TagJob{}).Where("article_id = ?", article.ID).Count(&tagJobs)
+	if firecrawlJobs != 0 || tagJobs != 0 {
+		t.Fatalf("jobs = %d firecrawl / %d tag, want 0/0 (archived refresh must not re-enqueue)", firecrawlJobs, tagJobs)
+	}
+}
+
+// TestRefreshExistingArticleNormalizesStoredHTMLDescription covers D2: the
+// stored summary of an un-backfilled row still carries the raw HTML of the
+// source description, while the entry is compared through the cleaning
+// projection. Comparing the two keys directly marks every such row as changed
+// forever (62k rows); normalizing the stored side through the same projection
+// makes an unchanged source a zero-write no-op.
+func TestRefreshExistingArticleNormalizesStoredHTMLDescription(t *testing.T) {
+	setupFeedsTestDB(t)
+
+	feed := models.Feed{Title: "Stored HTML", URL: "https://example.com/stored-html", FirecrawlEnabled: true, ArticleSummaryEnabled: true, CompletionOnRefresh: true}
+	if err := database.DB.Create(&feed).Error; err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+
+	sourceHTML := `<p>摘要<b>文本</b></p>`
+	// Legacy row: the summary was stored as the source markup, not its
+	// plain-text projection.
+	article := models.Article{
+		FeedID: feed.ID, Title: "headline", Description: sourceHTML, Content: sourceHTML,
+		Link: "https://example.com/stored-html/1", FirecrawlStatus: "completed", SummaryStatus: "complete",
+		FirecrawlContent: "<p>抓到的正文</p>", AIContentSummary: "旧整理稿", CompletionAttempts: 3,
+	}
+	if err := database.DB.Create(&article).Error; err != nil {
+		t.Fatalf("create article: %v", err)
+	}
+	tag := models.TopicTag{Label: "旧话题", Slug: "legacy-topic", Category: "keyword", Status: "active"}
+	if err := database.DB.Create(&tag).Error; err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+	if err := database.DB.Create(&models.ArticleTopicTag{ArticleID: article.ID, TopicTagID: tag.ID, Score: 0.9, Source: "llm"}).Error; err != nil {
+		t.Fatalf("create tag link: %v", err)
+	}
+
+	service := newDedupeTestService(t)
+
+	// Source unchanged: same markup, same body → the stored projection matches.
+	unchanged := ParsedEntry{Title: "headline", Description: sourceHTML, Content: sourceHTML, Link: article.Link}
+	if err := service.refreshExistingArticle(feed, unchanged); err != nil {
+		t.Fatalf("refreshExistingArticle (unchanged): %v", err)
+	}
+
+	var reloaded models.Article
+	if err := database.DB.First(&reloaded, article.ID).Error; err != nil {
+		t.Fatalf("reload article: %v", err)
+	}
+	if reloaded.Description != sourceHTML {
+		t.Fatalf("description = %q, want the stored value untouched (zero write)", reloaded.Description)
+	}
+	if reloaded.FirecrawlStatus != "completed" || reloaded.FirecrawlContent != "<p>抓到的正文</p>" || reloaded.AIContentSummary != "旧整理稿" || reloaded.CompletionAttempts != 3 {
+		t.Fatalf("unchanged source must not reset the chain: status=%q crawl=%q summary=%q attempts=%d",
+			reloaded.FirecrawlStatus, reloaded.FirecrawlContent, reloaded.AIContentSummary, reloaded.CompletionAttempts)
+	}
+	var tagLinks int64
+	database.DB.Model(&models.ArticleTopicTag{}).Where("article_id = ?", article.ID).Count(&tagLinks)
+	if tagLinks != 1 {
+		t.Fatalf("tag links = %d, want 1 (unchanged source must not drop tags)", tagLinks)
+	}
+	var jobCount int64
+	database.DB.Model(&models.FirecrawlJob{}).Where("article_id = ?", article.ID).Count(&jobCount)
+	if jobCount != 0 {
+		t.Fatalf("firecrawl jobs = %d, want 0 (unchanged source must not re-enqueue)", jobCount)
+	}
+
+	// Source genuinely changed → the row refreshes and the summary is stored in
+	// the cleaning projection (same key the next refresh compares against).
+	changed := ParsedEntry{Title: "headline", Description: `<p>摘要<b>新文本</b></p>`, Content: sourceHTML + "<p>新增段落</p>", Link: article.Link}
+	if err := service.refreshExistingArticle(feed, changed); err != nil {
+		t.Fatalf("refreshExistingArticle (changed): %v", err)
+	}
+
+	var updated models.Article
+	if err := database.DB.First(&updated, article.ID).Error; err != nil {
+		t.Fatalf("reload updated article: %v", err)
+	}
+	if updated.Description != "摘要 新文本" {
+		t.Fatalf("description = %q, want the cleaned projection %q", updated.Description, "摘要 新文本")
+	}
+	if updated.Content != sourceHTML+"<p>新增段落</p>" {
+		t.Fatalf("content = %q, want the new body source", updated.Content)
+	}
+	if updated.FirecrawlStatus != "pending" || updated.AIContentSummary != "" || updated.CompletionAttempts != 0 {
+		t.Fatalf("changed source must reset the chain: status=%q summary=%q attempts=%d",
+			updated.FirecrawlStatus, updated.AIContentSummary, updated.CompletionAttempts)
+	}
+	tagLinks = 0
+	database.DB.Model(&models.ArticleTopicTag{}).Where("article_id = ?", article.ID).Count(&tagLinks)
+	if tagLinks != 0 {
+		t.Fatalf("tag links = %d, want 0 (changed source must drop stale tags)", tagLinks)
+	}
+}

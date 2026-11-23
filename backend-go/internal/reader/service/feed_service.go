@@ -81,9 +81,30 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 	}
 
 	articlesAdded := 0
+	// seenInDoc 管「本文档内是否处理过这个 link」，与 linkSet（库里有没有）职责
+	// 分开。同一 link 在文档内出现多次且内容不同时会每轮触发两次「变化→改写→
+	// 清标签→入队」（feed 31 的 167936 每小时被双写实证），因此每个 link 只处理
+	// 一个变体：pubDate 最新的那条。pubDate 缺失或相等时回退首现——不再依赖
+	// 「RSS 文档 newest-first」这条无法校验的惯例（review R-2：oldest-first 源会
+	// 把库内行永久钉在最旧变体上）。
+	//
+	// 遍历仍按文档顺序、在首现位置处理选中的变体，保持 MaxArticles「文档靠前
+	// 优先」的既有语义；标记在处理前落下——同一文档内的重复副本即使首次处理
+	// 失败也不该再走一遍。
+	variants := newestEntryByLink(parsed.Entries)
+	seenInDoc := make(map[string]bool, len(variants))
 	for _, entry := range parsed.Entries {
 		if entry.Link == "" {
 			continue
+		}
+
+		if seenInDoc[entry.Link] {
+			continue
+		}
+		seenInDoc[entry.Link] = true
+
+		if chosen, ok := variants[entry.Link]; ok {
+			entry = chosen
 		}
 
 		if linkSet[entry.Link] {
@@ -130,6 +151,27 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 	}
 
 	return nil
+}
+
+// newestEntryByLink 按 link 分组选代表：同 link 多次出现时取 pubDate 最新的
+// 变体；pubDate 缺失或相等时保留首次出现的那个（稳定回退，不依赖条目顺序）。
+// 空 link 不参与（调用方直接跳过）。
+func newestEntryByLink(entries []ParsedEntry) map[string]ParsedEntry {
+	best := make(map[string]ParsedEntry, len(entries))
+	for _, entry := range entries {
+		if entry.Link == "" {
+			continue
+		}
+		current, seen := best[entry.Link]
+		if !seen {
+			best[entry.Link] = entry
+			continue
+		}
+		if entry.PubDate != nil && (current.PubDate == nil || entry.PubDate.After(*current.PubDate)) {
+			best[entry.Link] = entry
+		}
+	}
+	return best
 }
 
 func (s *FeedService) enqueueArticleProcessing(feed models.Feed, article models.Article) error {
@@ -179,18 +221,37 @@ func (s *FeedService) refreshExistingArticle(feed models.Feed, entry ParsedEntry
 		return err
 	}
 
-	// The comparison must run against the CLEANED values: the stored summary
-	// is the plain-text projection of the source description (≤300 runes),
-	// while the entry still carries the source document. Comparing the raw
-	// entry against the stored row would never match for a feed that ships
-	// the whole article as the item description (智源社区 does), so every
-	// refresh would re-run the whole processing chain.
+	// 归档行是冻结快照（article-archive-instead-of-delete 语义的延伸）：不再跟进
+	// 上游标题/正文修订，不清标签、不重入队——全量历史型源每轮回放归档行时不再
+	// 产生写放大与无效作业。feed 元数据（title/last_refresh_at 等）照常更新，不受
+	// 影响。归档是单向的：全仓没有置回 archived=false 的入口（当前无解档功能），
+	// 若产品需要解档，届时再回到下面的正常比较路径。
+	if existing.Archived {
+		return nil
+	}
+
+	// The comparison must run against the CLEANED values on BOTH sides: the
+	// stored summary is the plain-text projection of the source description
+	// (≤300 runes), while the entry still carries the source document.
+	// Comparing the raw entry against the stored row would never match for a
+	// feed that ships the whole article as the item description (智源社区
+	// does), so every refresh would re-run the whole processing chain.
+	//
+	// The stored side can still carry markup when the cleaning contract moved
+	// after the row was written (the 62k-row backfill, or any future projection
+	// change): normalize it through the same PlainSummary projection instead of
+	// comparing across two different keys. Clean stored values short-circuit on
+	// HasMarkup and compare as plain strings at zero parsing cost.
 	//
 	// The body source must be compared too: the cleaned summary is capped at
 	// 300 runes, so a body change past that cap is invisible in the summary
 	// but still has to refresh the row.
+	storedDesc := existing.Description
+	if htmltext.HasMarkup(storedDesc) {
+		storedDesc = htmltext.PlainSummary(storedDesc, descriptionSummaryMaxRunes)
+	}
 	fresh := s.buildArticleFromEntry(feed, entry)
-	if existing.Title == fresh.Title && existing.Description == fresh.Description && existing.Content == fresh.Content {
+	if existing.Title == fresh.Title && storedDesc == fresh.Description && existing.Content == fresh.Content {
 		return nil
 	}
 

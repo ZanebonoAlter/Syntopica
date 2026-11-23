@@ -192,11 +192,30 @@ func GetTagQueueTasks(c *gin.Context) {
 	})
 }
 
+// RetryTagQueueFailed 把失败作业批量重置为 pending（清零重试计数、释放租约）。
+//
+// 部分唯一索引 uq_tag_jobs_article_active 只允许同文章一条未完成作业，因此重试
+// 必须挑「文章当前没有活动作业」的行，并且每篇文章只挑一条：同文章可能堆积多条
+// failed 行（每次终态失败后再入队都会新增一条），一起翻成 pending 会整条 UPDATE
+// 撞索引回滚——接口 500 且一行也重试不了（review R-1）。每篇挑最新一条（MAX(id)）
+// 沿用 Enqueue「取最新作业」的口径；article_id IS NOT NULL 兜住空值行避免
+// NOT IN 的三值逻辑把整批过滤成空。
 func RetryTagQueueFailed(c *gin.Context) {
 	reader := getTagQueueStatusReader()
 
+	failed := string(models.JobStatusFailed)
+	activeStatuses := []string{string(models.JobStatusPending), string(models.JobStatusLeased)}
 	result := reader.db.Model(&models.TagJob{}).
-		Where("status = ?", string(models.JobStatusFailed)).
+		Where("status = ?", failed).
+		Where(`id IN (
+			SELECT MAX(id) FROM tag_jobs
+			WHERE status = ? AND article_id IS NOT NULL
+			  AND article_id NOT IN (
+				SELECT article_id FROM tag_jobs
+				WHERE status IN ? AND article_id IS NOT NULL
+			  )
+			GROUP BY article_id
+		)`, failed, activeStatuses).
 		Updates(map[string]interface{}{
 			"status":           string(models.JobStatusPending),
 			"attempt_count":    0,
