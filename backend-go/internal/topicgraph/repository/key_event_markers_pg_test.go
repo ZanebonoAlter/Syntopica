@@ -702,6 +702,48 @@ func TestKeyEvent_CountConfirmedThreadMarkers(t *testing.T) {
 	assert.Equal(t, 1, counts[tB])
 }
 
+// ListConfirmedKeyEventsBySections：编排态 ★ 只读投影（add-lane-compose-
+// topic-event-tags）。按 source_section_id 批量分组；只认 confirmed；section
+// 指针为 NULL 的脱离快照不返回（不猜归属）。
+func TestKeyEvent_ListConfirmedKeyEventsBySections(t *testing.T) {
+	repo := keyEventTestRepo(t)
+	boardID, topicID, reportID, sectionA, threadA := keyEventFullSetup(t, repo, "投影A", []uint{1}, []uint{10})
+	threadA2 := keyEventSeedThreadWithParams(t, repo.db, reportID, sectionA, "投影A2", []uint{2}, []uint{11})
+	sectionB := seedTestSectionWithTopic(t, repo.db, reportID, "cluster-b", topicID)
+	threadB := keyEventSeedThreadWithParams(t, repo.db, reportID, sectionB, "投影B", []uint{3}, []uint{12})
+
+	_, err := repo.ApplyThreadKeyEvent(topicID, threadA, KeyEventActionMark, nil)
+	require.NoError(t, err)
+	_, err = repo.ApplyThreadKeyEvent(topicID, threadA2, KeyEventActionMark, nil)
+	require.NoError(t, err)
+	_, err = repo.ApplyThreadKeyEvent(topicID, threadB, KeyEventActionDismiss, nil)
+	require.NoError(t, err)
+
+	// 脱离快照：source_section_id 为 NULL（重建指纹失配）→ 永不挂到任何节点。
+	require.NoError(t, repo.db.Create(&TopicKeyEventMarker{
+		SemanticBoardID:  boardID,
+		SourceKey:        "detached-projection",
+		SourcePeriodDate: time.Now(),
+		TitleSnapshot:    "脱离快照",
+		State:            KeyEventStateConfirmed,
+		LastAction:       KeyEventActionMark,
+	}).Error)
+
+	got, err := repo.ListConfirmedKeyEventsBySections([]uint{sectionA, sectionB, 9999})
+	require.NoError(t, err)
+	require.Len(t, got[sectionA], 2)
+	assert.Equal(t, "投影A", got[sectionA][0].TitleSnapshot)
+	assert.Equal(t, "投影A2", got[sectionA][1].TitleSnapshot)
+	_, hasB := got[sectionB]
+	assert.False(t, hasB, "dismissed 不进投影")
+	_, hasMissing := got[9999]
+	assert.False(t, hasMissing)
+
+	empty, err := repo.ListConfirmedKeyEventsBySections(nil)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
 // ── 生命线装配（lifeline key_events 只透 confirmed）────────────────────────
 
 func TestKeyEvent_GetTopicLifelineCarriesConfirmedOnly(t *testing.T) {
@@ -765,4 +807,71 @@ func TestKeyEvent_RebuildRotatesRunToken(t *testing.T) {
 	run2, err := repo.GetKeyEventRecommendationRun(reportID)
 	require.NoError(t, err)
 	assert.Equal(t, KeyEventRunStateRunning, run2.State, "旧 token 终态写入不得污染轮换后的 run 行")
+}
+
+// ── 版块级批量读（add-key-event-matrix-view 1.1）────────────────────────────
+
+func TestKeyEvent_ListBoardKeyEventMarkersWindowStateOrder(t *testing.T) {
+	repo := keyEventTestRepo(t)
+	boardID := seedTestBoardNamed(t, repo.db, "board-key-events-a")
+	otherBoard := seedTestBoardNamed(t, repo.db, "board-key-events-b")
+	topicA := keyEventSeedTopic(t, repo.db, boardID, "话题A")
+	topicB := keyEventSeedTopic(t, repo.db, boardID, "话题B")
+
+	today := NormalizeReportDate(time.Now())
+	seed := func(board, topic uint, daysAgo int, title string) uint {
+		reportID := seedTestReport(t, repo.db, board, today.AddDate(0, 0, -daysAgo))
+		sectionID := seedTestSectionWithTopic(t, repo.db, reportID, title, topic)
+		threadID := keyEventSeedThreadWithParams(t, repo.db, reportID, sectionID, title, []uint{1}, []uint{2})
+		m, err := repo.ApplyThreadKeyEvent(topic, threadID, KeyEventActionMark, nil)
+		require.NoError(t, err)
+		return m.ID
+	}
+	// Two confirmed markers on day-1 (topic order decides intra-day order),
+	// one on day-4, plus one on ANOTHER board (must not leak in).
+	d1TopicA := seed(boardID, topicA, 1, "事件甲")
+	d1TopicB := seed(boardID, topicB, 1, "事件乙")
+	d4 := seed(boardID, topicA, 4, "早期事件")
+	seed(otherBoard, keyEventSeedTopic(t, repo.db, otherBoard, "外板块"), 1, "外板块事件")
+
+	// Suggested + dismissed rows on the same board/day: neither may return.
+	sugReport := seedTestReport(t, repo.db, boardID, today)
+	sugSection := seedTestSectionWithTopic(t, repo.db, sugReport, "建议", topicA)
+	sugThread := keyEventSeedThreadWithParams(t, repo.db, sugReport, sugSection, "建议事件", []uint{3}, []uint{4})
+	require.NoError(t, repo.UpsertKeyEventRecommendationRun(sugReport, boardID, "token-board"))
+	_, err := repo.SaveSuggestedMarkers(boardID, sugReport, "token-board", []SuggestedKeyEvent{{
+		SourceThreadID: sugThread,
+		Reason:         "AI 建议（不得进版块批量读）",
+		NewProgress:    true,
+		EvidenceIDs:    []uint{4},
+	}})
+	require.NoError(t, err)
+	disThread := keyEventSeedThreadWithParams(t, repo.db, sugReport, sugSection, "已取消事件", []uint{5}, []uint{6})
+	_, err = repo.ApplyThreadKeyEvent(topicA, disThread, KeyEventActionDismiss, nil)
+	require.NoError(t, err)
+
+	// 7-day closed window on the target board: only the three confirmed rows.
+	from := today.AddDate(0, 0, -6)
+	got, err := repo.ListBoardKeyEventMarkers(boardID, from, today)
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	// Order: date ASC → topic ASC → id ASC.
+	assert.Equal(t, d4, got[0].ID)
+	assert.Equal(t, d1TopicA, got[1].ID)
+	assert.Equal(t, d1TopicB, got[2].ID)
+	for _, m := range got {
+		assert.Equal(t, KeyEventStateConfirmed, m.State)
+		assert.Equal(t, boardID, m.SemanticBoardID)
+	}
+
+	// Narrow window excludes the day-4 marker (窗口外不返回).
+	narrow, err := repo.ListBoardKeyEventMarkers(boardID, today.AddDate(0, 0, -2), today)
+	require.NoError(t, err)
+	require.Len(t, narrow, 2)
+
+	// Empty result is a non-nil empty slice, not an error.
+	empty, err := repo.ListBoardKeyEventMarkers(boardID, today.AddDate(0, 0, 30), today.AddDate(0, 0, 40))
+	require.NoError(t, err)
+	assert.NotNil(t, empty)
+	assert.Len(t, empty, 0)
 }

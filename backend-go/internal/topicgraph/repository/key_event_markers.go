@@ -626,6 +626,24 @@ func (r *TopicGraphRepository) ListTopicKeyEventMarkers(topicID uint, days int, 
 	return markers, nil
 }
 
+// ListBoardKeyEventMarkers returns the board's CONFIRMED markers whose
+// source_period_date falls in the closed [from, to] window (add-key-event-
+// matrix-view design D3: 板块级批量读，供矩阵级关键事件视图一次取全).
+// Suggested/dismissed never enter the payload; ordering is date ASC →
+// topic ASC → id ASC so the frontend can aggregate by topic+date and keep
+// same-day multi-event order straight from the wire.
+func (r *TopicGraphRepository) ListBoardKeyEventMarkers(boardID uint, from, to time.Time) ([]TopicKeyEventMarker, error) {
+	var markers []TopicKeyEventMarker
+	if err := r.db.
+		Where("semantic_board_id = ? AND state = ? AND source_period_date >= ? AND source_period_date <= ?",
+			boardID, KeyEventStateConfirmed, from.Format("2006-01-02"), to.Format("2006-01-02")).
+		Order("source_period_date ASC, persistent_topic_id ASC, id ASC").
+		Find(&markers).Error; err != nil {
+		return nil, fmt.Errorf("list board key event markers: %w", err)
+	}
+	return markers, nil
+}
+
 // CountConfirmedThreadMarkers returns confirmed marker counts grouped by
 // source_thread_id for a set of threads (overview ★n badges: count is the
 // number of independent confirmed thread markers under that source, never a
@@ -648,6 +666,36 @@ func (r *TopicGraphRepository) CountConfirmedThreadMarkers(threadIDs []uint) (ma
 	}
 	for _, r := range rows {
 		out[r.SourceThreadID] = r.Count
+	}
+	return out, nil
+}
+
+// ListConfirmedKeyEventsBySections returns confirmed markers grouped by
+// source_section_id for the given sections (compose ★ read-only projection).
+//
+// One batch query, no thread join: source_section_id and source_thread_id are
+// written together when a marker is created and re-attached together on
+// rebuild, so section lookup is complete and also covers markers whose thread
+// row is gone. Markers whose source_section_id is NULL (detached snapshots
+// after a rebuild fingerprint mismatch) are never returned — the compose ★
+// marker must not guess an owner (daily-report 约束 31).
+func (r *TopicGraphRepository) ListConfirmedKeyEventsBySections(sectionIDs []uint) (map[uint][]TopicKeyEventMarker, error) {
+	out := make(map[uint][]TopicKeyEventMarker, len(sectionIDs))
+	if len(sectionIDs) == 0 {
+		return out, nil
+	}
+	var markers []TopicKeyEventMarker
+	if err := r.db.
+		Where("source_section_id IN ? AND state = ?", sectionIDs, KeyEventStateConfirmed).
+		Order("source_section_id ASC, id ASC").
+		Find(&markers).Error; err != nil {
+		return nil, fmt.Errorf("list confirmed key events by sections: %w", err)
+	}
+	for _, marker := range markers {
+		if marker.SourceSectionID == nil {
+			continue
+		}
+		out[*marker.SourceSectionID] = append(out[*marker.SourceSectionID], marker)
 	}
 	return out, nil
 }

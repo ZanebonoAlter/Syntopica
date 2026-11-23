@@ -4,7 +4,7 @@
  *
  * 只做壳层入口编排，不取数、不持有业务选择：
  *  - 面包屑（主页 / 叙事工坊 / 当前版块）；
- *  - 视图 seg：矩阵 / 追踪（active）｜文章归档｜研究工作台（真实 /tags/:boardId/research）；
+ *  - 视图 seg：矩阵 / 追踪（active）｜关键事件（add-key-event-matrix-view；窄屏不渲染）｜文章归档｜研究工作台（真实 /tags/:boardId/research）；
  *  - 唯一「最新日报」主按钮（日期来自版块独立 report 元信息，不是 active 泳道最大日）；
  *  - 板块管理（设置 / 构成治理 / 泳道管理 / 研究工作台）与新建泳道；
  *  - 中等宽度「本板块上下文」入口（右轨隐藏时的替代路径，打开同一单级工作面）。
@@ -98,6 +98,16 @@ function pickManage(kind: 'settings' | 'composition' | 'topics', event: MouseEve
           @click="emit('setView', 'matrix')"
         >
           矩阵 / 追踪
+        </button>
+        <button
+          v-if="!isNarrow"
+          type="button"
+          :class="{ 'is-on': activeView === 'events' }"
+          :aria-pressed="activeView === 'events'"
+          data-testid="console-view-events"
+          @click="emit('setView', 'events')"
+        >
+          关键事件
         </button>
         <button
           type="button"

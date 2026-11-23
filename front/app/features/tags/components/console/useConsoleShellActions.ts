@@ -6,6 +6,7 @@
  * 不新写 URL 键（四参与 `?focus=report` 语义仍由 `useConsoleReturnContext` 承担）。
  */
 import type { ComputedRef, Ref } from 'vue'
+import { nextTick } from 'vue'
 import type { Router } from 'vue-router'
 import type { ConsoleView } from '~/features/tags/composables/useBoardConsole'
 import type { RetryReportPayload, RetryReportResult } from './useConsoleReading'
@@ -31,6 +32,13 @@ export interface ConsoleShellActionsDeps {
   /** 选泳道（显式清其他选择）。 */
   selectLaneFromStage: (topicId: string) => void
   closeWorkface: () => void
+  /**
+   * 合并 query 写入作用域：作用域内的多次写入合成**一次** router.replace。
+   * `router.replace` 异步落地（导航完成前 route.query 仍是旧快照），同一动作里两次
+   * 独立 replace 会各自基于旧快照重建 query → 后写覆盖前写（实机验收 A-34：切回矩阵
+   * 删掉的 `view=events` 被选泳道那次写入又写回去 → URL 与画面不一致）。
+   */
+  batchQueryWrite: <T>(fn: () => T) => T
 }
 
 export function useConsoleShellActions(deps: ConsoleShellActionsDeps) {
@@ -87,8 +95,21 @@ export function useConsoleShellActions(deps: ConsoleShellActionsDeps) {
   /** 右轨「定位泳道」：关工作面、选同一泳道（清其他选择）并就地滚到格位。 */
   function locateLaneFromRail(topicId: string): void {
     deps.closeWorkface()
-    deps.selectLaneFromStage(topicId)
-    void Promise.resolve().then(() => {
+    // 右轨选中在**关键事件视图**里无处可落（候选话题不占行、泳道行只在矩阵 / 追踪），
+    // 这时才切回矩阵，不留在视图里造一个死选择（design D14 / delta spec
+    // 「右轨选中切回矩阵视图」——该 Scenario 的 WHEN 明确限定「在关键事件视图里」）。
+    //
+    // 其它视图（矩阵 / 追踪、归档）**不切视图**：归档视图里的右轨点击不得静默把用户
+    // 切走（归档 → 站内读正文 → 回原日期这条主故事的上下文不能被打断；review R-1）。
+    //
+    // 「切视图」与「选泳道」两次 query 写入合并成一次 replace：两次独立 replace 会
+    // 各自基于尚未更新的 route.query 重建 query，后写把前写删掉的 view=events 又写
+    // 回去 → URL 与画面不一致、刷新回到关键事件视图（实机验收 A-34）。
+    deps.batchQueryWrite(() => {
+      if (deps.activeView.value === 'events') handleSetView('matrix')
+      deps.selectLaneFromStage(topicId)
+    })
+    void nextTick(() => {
       document.querySelector<HTMLElement>(`[data-testid="matrix-lane-${topicId}"]`)?.scrollIntoView({ block: 'nearest' })
     })
   }

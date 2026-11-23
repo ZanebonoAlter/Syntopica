@@ -20,6 +20,7 @@
 | GET | `/semantic-boards/:id/article-daily-counts` | 查询版块命中文章按自然日的计数（只读聚合，archive-time-chart-range） |
 | GET | `/semantic-boards/:id/source-breakdown` | 查询版块来源构成（只读聚合，add-source-board-hit-rate） |
 | GET | `/semantic-boards/:id/health-checkup` | 查询版块体检数据（最新快照+评分趋势，只读，add-board-health-checkup） |
+| GET | `/semantic-boards/:id/key-events` | 版块级关键事件批量读（窗口内全部 confirmed 注记，只读，add-key-event-matrix-view） |
 | GET | `/semantic-boards/:id/suggest-auxiliaries` | 版块级辅助标签建议 |
 | GET | `/semantic-boards/suggest-auxiliaries` | 全局辅助标签建议 |
 | GET | `/semantic-boards/:id/match-detail/:tagId` | tag 与版块匹配明细 |
@@ -728,6 +729,53 @@ Response `data`：返回更新后的完整配置。
 - 白名单外的键 → 400 `unsupported config key`；
 - `lane_heat_candidate_weight` 与相关事件阈值各自独立校验、互不影响：任一键非法即整体 400，不部分落库。
 
+## 关键事件（版块级批量读）
+
+### GET `/semantic-boards/:id/key-events?days=14`
+
+一次取回版块 `:id` 在观察窗内的**全部人工确认关键事件**（add-key-event-matrix-view，design D3）。供版块态势页的「关键事件」视图一次取全，不再逐话题请求。**只读**：不创建 / 确认 / 修改任何注记，不改写任何快照字段。
+
+口径：
+
+- **状态**：只返回 `state='confirmed'`；`suggested` / `dismissed` 永不进入载荷。
+- **窗口**：按 `source_period_date` 落在闭区间 `[今天 − (days−1), 今天]`（服务端上海时区今天）筛选；窗外事件不返回。
+- **排序**：`source_period_date ASC, persistent_topic_id ASC, id ASC` —— 前端可直接按「话题 + 日期」聚合，同日多事件保持接口序。
+- **快照字段不反查**：事件名称、话题名、摘要、关联文章都是**确认时冻结的快照**（话题被改名 / 归档都不回写）。
+- **空结果**：窗口内 0 条时返回 `200` 与空数组（**不是错误**，也不拿建议态补足）。
+- **越权与非法参数**：版块不存在或不是 board → `404`；`id` 非数字 → `400`；`days` 非数字 / 负数 / **0** → `400`（本端点 `days` 必须是**正整数**；与话题级端点 `days=0=全部时间` 的旧契约不同——那里是既有契约，MUST NOT 连带改坏）。
+
+Query：
+
+- `days` 可选，整数正数，缺省 `14`；非法值（非数字 / ≤0）返回 `400` 且错误信息指明 `days` 不合法。
+
+Response `data`：
+
+```json
+{
+  "markers": [
+    {
+      "id": 42,
+      "semantic_board_id": 1980,
+      "source_key": "thread:1024",
+      "persistent_topic_id": 93,
+      "source_period_date": "2026-11-18T00:00:00Z",
+      "topic_label_snapshot": "LLM生态相关新闻",
+      "title_snapshot": "GPT-6.2 Astra 与 Sol 双模型发布",
+      "summary_snapshot": "OpenAI 同日发布两个模型，分层定位。",
+      "tag_ids_snapshot": [7, 9],
+      "article_ids_snapshot": [178945, 178947],
+      "state": "confirmed",
+      "confirmed_at": "2026-11-19T02:11:00Z",
+      "revision": 1,
+      "created_at": "2026-11-19T02:10:00Z",
+      "updated_at": "2026-11-19T02:11:00Z"
+    }
+  ]
+}
+```
+
+`persistent_topic_id` 可为 `null`（来源话题被删 / 重建断开引用，FK `ON DELETE SET NULL` 保留确认快照）；`article_ids_snapshot` 可为 `null`（确认时未冻结关联文章）——两者都是合法态，前端分别按「无话题归属」与「无关联文章」渲染，MUST NOT 造 0 / 造 ID。
+
 ## 相关事件
 
 ### GET `/semantic-boards/:id/tags/:tagId/related-events`
@@ -945,6 +993,8 @@ Response（`data` 为文章数组，`pagination` 与 `data` 同级）：
 ```
 
 文章字段同 `GET /articles/:id`（`ToDict()`），额外带 `feed_name` 与 `filtered_tags`；`filtered_tags` 每项的 `description` 取 `topic_tags.description`（标签无描述时为空串）；无数据时 `data` 为空数组。
+
+> **疑似 AI 标记（add-ai-generated-article-detection）**：因为走 `ToDict()`，每行天然带判定四元组 `ai_detection_status` / `ai_detection_score` / `ai_detection_source` / `ai_detection_at`（取值语义同 `GET /articles/:id`；未判定时 `ai_detection_status` 归一为 `unknown`，字段不缺失）。它只是投影字段：不影响成员筛选、`filtered_tags`、排序（`sort=quality` / `sort=time`）与分页，也不进任何匹配口径。前端归档视图只据此渲染「疑似 AI 生成」chip。
 
 ### GET `/semantic-boards/:id/article-daily-counts`
 

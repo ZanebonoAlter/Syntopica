@@ -44,6 +44,7 @@ export {
   normalizeWindowDays,
   parseBoardDeepLink,
   hasReportDeepLink,
+  parseViewParam,
 } from './laneMatrixModel'
 export type {
   ConsoleView,
@@ -60,6 +61,7 @@ import {
   buildLaneRows,
   normalizeWindowDays,
   parseLaneParam,
+  parseViewParam,
   resolveLaneSelection,
   splitDormantRows,
   todayInShanghai,
@@ -104,17 +106,71 @@ export function useBoardConsole(boardId: Ref<number>, deps: BoardConsoleDeps = {
     return deps.route?.()?.query?.lane
   }
 
-  function writeLaneQuery(topicId: number | null): void {
+  /**
+   * 待落地的 query 补丁（同一动作内的多次写入合并成一次 replace）。
+   *
+   * `router.replace` 是异步的：导航落地前 `route.query` 仍是旧快照。两次**独立** replace
+   * 各自基于同一份旧快照重建 query → 后写覆盖前写（实机验收 A-34：右轨选中先切回矩阵
+   * 删掉 `view=events`，紧接着选泳道那次写入把 `view=events` 又写回去 → URL 与画面
+   * 不一致、刷新该 URL 回到关键事件视图）。故同一动作内的多次写入用 `batchQueryWrite`
+   * 合成一次 replace：后一次基于前一次的结果，不与前一次争抢同一组 query key。
+   */
+  let queryBatch: Array<(query: LocationQuery) => void> | null = null
+
+  /** 写 query：批处理作用域内只记补丁；作用域外立即 replace（时序不变）。 */
+  function applyQueryPatch(patch: (query: LocationQuery) => void): void {
     const router = deps.router?.()
     const route = deps.route?.()
     if (!router || !route) return
-    const query: LocationQuery = { ...route.query }
-    if (topicId === null) {
-      delete query.lane
-    } else {
-      query.lane = String(topicId)
+    if (queryBatch) {
+      queryBatch.push(patch)
+      return
     }
+    const query: LocationQuery = { ...route.query }
+    patch(query)
     router.replace({ query })
+  }
+
+  /**
+   * 合并 query 写入作用域：作用域内的多次写入合成**一次** replace。
+   *
+   * 作用域是**同步**的——replace 仍在同一个事件处理里发出（不改写入时序），只是
+   * 「后写」不再基于尚未更新的 `route.query`。嵌套调用并入外层批次。
+   */
+  function batchQueryWrite<T>(fn: () => T): T {
+    if (queryBatch) return fn()
+    const patches: Array<(query: LocationQuery) => void> = []
+    queryBatch = patches
+    try {
+      return fn()
+    } finally {
+      queryBatch = null
+      const router = deps.router?.()
+      const route = deps.route?.()
+      if (router && route && patches.length > 0) {
+        const query: LocationQuery = { ...route.query }
+        for (const patch of patches) patch(query)
+        router.replace({ query })
+      }
+    }
+  }
+
+  function writeLaneQuery(topicId: number | null): void {
+    applyQueryPatch((query) => {
+      if (topicId === null) {
+        delete query.lane
+      } else {
+        query.lane = String(topicId)
+      }
+    })
+  }
+
+  /** 视图 query 写回（add-key-event-matrix-view D6）：matrix 是默认态不占 query，非默认才写。 */
+  function writeViewQuery(view: ConsoleView): void {
+    applyQueryPatch((query) => {
+      if (view === 'matrix') delete query.view
+      else query.view = view
+    })
   }
 
   const today = computed(() => todayInShanghai(deps.now?.() ?? new Date()))
@@ -269,7 +325,9 @@ export function useBoardConsole(boardId: Ref<number>, deps: BoardConsoleDeps = {
   }
 
   function setView(view: ConsoleView): void {
+    if (activeView.value === view) return
     activeView.value = view
+    writeViewQuery(view)
   }
 
   // 初始档：URL days 合法则直接用（首次请求即该档）；非法回默认并提示（变体 3：不发非法请求）
@@ -280,6 +338,10 @@ export function useBoardConsole(boardId: Ref<number>, deps: BoardConsoleDeps = {
     windowState.daysNotice.value = `days 参数不合法（${initialDays.invalidRaw}），已回退 ${DEFAULT_WINDOW_DAYS} 日档`
   }
 
+  // 初始视图：URL ?view= 合法直接用（D6）；非法/缺失回落 matrix（不写回）。
+  const initialView = parseViewParam(deps.route?.()?.query?.view)
+  if (initialView) activeView.value = initialView
+
   watch(boardId, (_next, prev) => {
     if (prev !== undefined) {
       channelStore.invalidateBoard(prev)
@@ -288,12 +350,24 @@ export function useBoardConsole(boardId: Ref<number>, deps: BoardConsoleDeps = {
       sourceWindow.value = null
       selectedLaneId.value = null
       expandedDormant.value = false
-      activeView.value = 'matrix'
+      if (activeView.value !== 'matrix') {
+        activeView.value = 'matrix'
+        writeViewQuery('matrix')
+      }
       windowDays.value = windowState.readDaysQuery().days ?? DEFAULT_WINDOW_DAYS
       windowState.resetForBoard()
     }
     void load()
   }, { immediate: true })
+
+  // 外部（前进/后退、手动改地址）改 ?view= 时同步；自身写入时值相同 → 幂等。
+  watch(
+    () => parseViewParam(deps.route?.()?.query?.view),
+    (requested) => {
+      const next = requested ?? 'matrix'
+      if (activeView.value !== next) activeView.value = next
+    },
+  )
 
   // 外部（前进/后退、手动改地址）改 ?lane= 时同步；自身写入时值相同 → 幂等。
   watch(
@@ -345,5 +419,7 @@ export function useBoardConsole(boardId: Ref<number>, deps: BoardConsoleDeps = {
     setWindow,
     setView,
     writeLaneQuery,
+    /** 合并 query 写入作用域（同一动作内的多次写入合成一次 replace；见 A-34）。 */
+    batchQueryWrite,
   }
 }

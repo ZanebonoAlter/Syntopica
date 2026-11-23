@@ -8,7 +8,7 @@ import type { LocationQuery, Router } from 'vue-router'
 import type { LaneDynamicsLane } from '~/api/laneDynamics'
 import { laneSectionClueCount } from '~/api/normalizers/laneDynamicsWindow'
 
-export type ConsoleView = 'matrix' | 'archive'
+export type ConsoleView = 'matrix' | 'archive' | 'events'
 export type MatrixWindowKey = '7d' | '14d' | '30d' | 'all'
 
 export interface MatrixWindowOption {
@@ -195,6 +195,13 @@ export function hasReportDeepLink(query: Record<string, unknown> | undefined | n
   const raw = query.report
   const value = Array.isArray(raw) ? raw[0] : raw
   return value != null && String(value).trim() !== ''
+}
+
+/** 解析 `?view=`：合法视图名（matrix/archive/events）→ 该值；其余（空/非法/数组）→ null（回退 matrix，不写回 URL）。 */
+export function parseViewParam(raw: unknown): ConsoleView | null {
+  const value = Array.isArray(raw) ? raw[0] : raw
+  if (value === 'matrix' || value === 'archive' || value === 'events') return value
+  return null
 }
 
 export interface ConsoleRouteLike {

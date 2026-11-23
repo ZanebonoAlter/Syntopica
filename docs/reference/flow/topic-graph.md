@@ -150,6 +150,14 @@ identity（同 persistent_topic）
 - **质量指标**：成员数、平均距离（无已知关系显示「—」）、离群数随勾选即时刷新；保存前必须同时有名称与成员，重复点保存只创建一次。
 - **退出**：取消 / Esc 关闭且不落库；保存成功退出并回矩阵选中新泳道。组合建议/候选采纳仍走既有 compose 建议确认事务，不在本画布直接建话题。
 
+### 关键事件注记的版块级批量读（add-key-event-matrix-view）
+
+话题级读端 `GET /api/daily-reports/topics/:id/key-events` 只服务单话题回看；版块态势页的「关键事件」视图需要整版块一次取全（行数不固定，逐话题拉不可行），故新增**版块级批量读端点**：
+
+- `GET /api/semantic-boards/:id/key-events?days=N`：**只读**，只返回该版块在窗口内 `state='confirmed'` 的注记（`suggested` / `dismissed` 永不进载荷），按 `source_period_date` 闭区间筛选（`days` 严格正整数、默认 14；0/负数/非数字 → 400；与话题级端点 `days=0=全部时间` 的旧契约不同，那条 MUST NOT 连带改坏）；排序 `source_period_date ASC, persistent_topic_id ASC, id ASC`，前端按「话题 + 日期」聚合，同日多事件保持接口序；窗口内无事件返回 200 + 空数组（**不是错误**，也不拿建议态补足）；版块不存在/非 board → 404，非法 id → 400。
+- **本端点只读**：MUST NOT 创建、确认或修改任何注记；既有「按单个话题读」端点与注记写端点的语义 MUST NOT 因本端点而改变（约束 10 的人工主权层口径不变）。
+- **消费侧**：`front/app/api/boardKeyEvents.ts` + `composables/useBoardKeyEvents.ts`（按 board+days 缓存、loading/error/stale 三态、切板块晚到隔离）+ `console/KeyEventTimelineView.vue`；事件名称 / 话题名 / 摘要 / 关联文章都是**确认时冻结的快照**（`title_snapshot` / `topic_label_snapshot` / `summary_snapshot` / `article_ids_snapshot`），消费方只读、不得反查实时名，也不得把 `article_ids_snapshot` 当作实时关系。
+
 ## 业务约束与不变量
 
 > 本节是 constraint-injection extension 的注入数据源：apply 改 `internal/topicgraph/` 或 `internal/tagmanagement/` 代码前会自动注入 system prompt，必须遵守。
@@ -188,13 +196,14 @@ identity（同 persistent_topic）
 - **后端 handler**：`backend-go/internal/topicgraph/handler/topic_watch_handler.go`（话题 watch）、`handler/daily_report_handler.go`（话题管理列表 + PATCH rename/status、DELETE 硬删、POST merge/split、手动建泳道、backfill-embeddings/relations/topics、recompute-topic-centroids 存量质心重算）。
 - **后端人工修正（lane-manual-correction-loop）**：`backend-go/internal/topicgraph/handler/daily_report_anchor_handler.go`（`PATCH /daily-reports/topics/:id/anchor` 人工重设首义）、`handler/daily_report_anchor_read_handler.go`（`GET /daily-reports/topics/:id/anchor` 纯读首义状态）、`handler/daily_report_assignment_handler.go`（`PATCH /daily-reports/sections/:id/assignment` 移除/加回归属 + `POST /daily-reports/topics/:id/detach-date` 按日批量移除）；repository 侧 `repository/daily_report_topic_repository.go`（`SetTopicAnchorFromSections` / `SetSectionTopicAssignment` / `DetachTopicSectionsByDate`）、`repository/daily_report_anchor_read.go`（`GetTopicAnchorState`）、`repository/daily_report_models.go`（`TopicAnchorOverride` 追加表 + `CentroidPendingRecompute` 标记列）。
 - **标签提取 / 去重 / 层级**（话题聚类的输入源）：`backend-go/internal/tagmanagement/`（`service/` 抽象标签层级与合并、`handler/` 标签管理、`repository/` 持久化）；文章打标执行点 `service/core/article_tagger.go`（`tagArticle` / `RetagArticle` / `reuseTagsFromSiblingArticle` 跨 feed 复用）。
-- **关键事件注记（回看侧）**：`backend-go/internal/topicgraph/repository/key_event_markers.go`（注记模型与人工动作，状态机与指纹详见 `flow/daily-report.md` §关键事件注记）、`handler/key_event_handler.go`（话题读端 confirmed + 注记维护端点）、`GetTopicLifeline`（生命线 `key_events` 字段装配）；前端 `front/app/features/tags/composables/useTopicKeyEvents.ts`（共享缓存单例）+ `front/app/features/tags/components/KeyEventMarkerActions.vue`（注记动作组件：现只有 `mode="review"` 一处挂载在日报 `daily-report/DailyReportTopicSection.vue` 的 thread header，`history`/`overview` 两模式暂无挂载点）。原 `BoardThreadBrowser.vue`（lanes ★n / 焦点合并轴 + 失效快照同轴注记）已随 rework-workshop-into-radar-and-desk 8.4 物理删除，**话题总览泳道视图不复存在**——回看数据仍由 `GetTopicLifeline` 的 `key_events` 字段提供。
+- **关键事件注记（回看侧）**：`backend-go/internal/topicgraph/repository/key_event_markers.go`（注记模型与人工动作，状态机与指纹详见 `flow/daily-report.md` §关键事件注记）、`handler/key_event_handler.go`（话题读端 confirmed + 注记维护端点 + **版块级批量读** `listBoardKeyEventMarkers`）、`GetTopicLifeline`（生命线 `key_events` 字段装配）；前端 `front/app/features/tags/composables/useTopicKeyEvents.ts`（共享缓存单例）+ `front/app/features/tags/components/KeyEventMarkerActions.vue`（注记动作组件：现只有 `mode="review"` 一处挂载在日报 `daily-report/DailyReportTopicSection.vue` 的 thread header，`history`/`overview` 两模式暂无挂载点）。原 `BoardThreadBrowser.vue`（lanes ★n / 焦点合并轴 + 失效快照同轴注记）已随 rework-workshop-into-radar-and-desk 8.4 物理删除，**话题总览泳道视图不复存在**——回看数据仍由 `GetTopicLifeline` 的 `key_events` 字段提供。
 - **前端**：`front/app/features/tags/components/SectionLifecyclePanel.vue`（section 生命周期面板，当前无挂载点）、`front/app/features/tags/components/daily-report/`（`SectionAnchorBadge.vue` / `SectionQualityExplore.vue` 等话题锚定与血缘展示）、`front/app/features/tags/components/console/{ObservationMatrix,BoardConsoleShell}.vue`（话题泳道的现行宿主：L1 版块态势页矩阵）；`front/tests/e2e/` 现只剩 `baseline.spec.ts`（原 `topic-graph.spec.ts` 已删）。
 
 ## 变更溯源
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
+| 2026-11-23 | add-key-event-matrix-view | 新增**版块级**关键事件批量读端点 `GET /api/semantic-boards/:id/key-events?days=N`（只透 `confirmed`，窗口内闭区间，排序 `source_period_date ASC, persistent_topic_id ASC, id ASC`；`days` 严格正整数、默认 14，与话题级端点 `days=0=全部` 的旧契约不同）。供版块态势页「关键事件」视图一次取全（行数不固定，逐话题拉不可行）。本端点只读：不创建/确认/修改注记，既有话题级读端与写端语义不变（约束 10 人工主权层口径不变）；前端按「话题+日期」聚合，快照字段只读不反查实时名。 | [add-key-event-matrix-view](../../../openspec/changes/add-key-event-matrix-view) |
 | 2026-11-17 | unify-vector-column-dimension | `term_notes.embedding`（页边注术语库）/ `board_persistent_topics.embedding`（常青话题）去维度限定；话题质心的向量维度改为运行时属性，Centroid 计算与 lane 分桶的输入语义不变；AutoMigrate 不 ALTER 类型，model 侧 `type:vector(2560)` 已全仓归一 | [archive/2026-11-17-unify-vector-column-dimension](../../../openspec/changes/archive/2026-11-17-unify-vector-column-dimension) |
 | 2026-11-14 | lane-manual-correction-loop | 泳道人工修正闭环（批 E1 文档收口）：红线 17 首义条款改为「算法不得改写、人工可显式改写且须留痕」（`topic_anchor_overrides` append-only）；新增红线 18-22（人工修正只写事实层·派生缓存不直写 / 算法不写首义列且留痕只追加 / 移除加回不动命中计数与状态 / 归属变更同事务触发整板关系重建 / 质心刷新 = 当日 touched ∪ `centroid_pending_recompute`） | [`openspec/changes/archive/2026-11-16-lane-manual-correction-loop`](../../../openspec/changes/archive/2026-11-16-lane-manual-correction-loop) |
 | 2026-11-12 | anchor-topic-centroid-with-embedding | 话题质心改为「首义锚定+滚动均值」加权混合（红线 17）：α=`persistent_topic_centroid_anchor_weight`（默认 0.5）·首义 + (1-α)·最近 30 条命中 section 均值；治宽口径话题漂成「泛新闻磁铁」（1009 话题漂移致陈杰寻人社会新闻 0.166 直连错挂）；首义不可用回退纯滚动+告警，<2 section 退化不变；新端点 `POST /daily-reports/recompute-topic-centroids`（异步幂等，上线当日全站 1915 话题重算 0 失败） | [`openspec/changes/archive/2026-11-12-anchor-topic-centroid-with-embedding`](../../../openspec/changes/archive/2026-11-12-anchor-topic-centroid-with-embedding) |

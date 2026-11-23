@@ -368,3 +368,74 @@ func TestKeyEventGet_ReportStatusDerivation(t *testing.T) {
 	code, _ = keyEventRequest(t, engine, http.MethodGet, "/api/daily-reports/abc/key-events", nil)
 	assert.Equal(t, http.StatusBadRequest, code)
 }
+
+// ── 版块级批量读 HTTP 语义（add-key-event-matrix-view 1.2/1.3）───────────────
+
+func TestKeyEventGet_BoardBatchConfirmedWindow(t *testing.T) {
+	engine, repo := setupKeyEventHandlerTest(t)
+	w := seedKeyEventWorld(t, repo)
+
+	// One confirmed + one dismissed on the board; only the confirmed returns.
+	_, respA := keyEventRequest(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/daily-reports/topics/%d/key-events/threads/%d", w.topicID, w.threadA),
+		map[string]any{"action": "mark"})
+	require.Equal(t, true, respA["success"])
+	_, respB := keyEventRequest(t, engine, http.MethodPut,
+		fmt.Sprintf("/api/daily-reports/topics/%d/key-events/threads/%d", w.topicID, w.threadB),
+		map[string]any{"action": "dismiss"})
+	require.Equal(t, true, respB["success"])
+
+	// Suggested row via the AI path must not leak either: a fresh thread gets
+	// an AI suggestion and must never show up in the board payload.
+	threadC := repository.DailyReportThread{
+		ReportID: w.reportID, SectionID: w.sectionA, Title: "AI 建议行", Summary: "摘要",
+		TagIDs: repository.JSON("[7]"), RelatedArticleIDs: repository.JSON("[8,9]"),
+		Embedding: repository.FloatsToPgVector([]float64{0}),
+	}
+	require.NoError(t, repo.DB().Create(&threadC).Error)
+	require.NoError(t, repo.UpsertKeyEventRecommendationRun(w.reportID, w.boardID, "token-batch"))
+	_, err := repo.SaveSuggestedMarkers(w.boardID, w.reportID, "token-batch", []repository.SuggestedKeyEvent{{
+		SourceThreadID: threadC.ID,
+		Reason:         "AI 建议（不得进版块批量读）",
+		NewProgress:    true,
+	}})
+	require.NoError(t, err)
+	var suggestedCount int64
+	require.NoError(t, repo.DB().Model(&repository.TopicKeyEventMarker{}).
+		Where("semantic_board_id = ? AND state = ?", w.boardID, repository.KeyEventStateSuggested).
+		Count(&suggestedCount).Error)
+	assert.Greater(t, suggestedCount, int64(0), "前提：库里确有 suggested 行")
+
+	get := func(path string) (int, map[string]any) {
+		return keyEventRequest(t, engine, http.MethodGet, path, nil)
+	}
+
+	// 200 with the confirmed marker (days default 14).
+	code, got := get(fmt.Sprintf("/api/semantic-boards/%d/key-events", w.boardID))
+	require.Equal(t, http.StatusOK, code, "%v", got)
+	markers := got["data"].(map[string]any)["markers"].([]any)
+	require.Len(t, markers, 1)
+	m := markers[0].(map[string]any)
+	assert.Equal(t, "线索A", m["title_snapshot"])
+	assert.Equal(t, "confirmed", m["state"])
+	assert.Equal(t, float64(w.topicID), m["persistent_topic_id"])
+
+	// 200 with an empty array for a board that has no markers.
+	emptyBoard := models.SemanticLabel{Label: "ke-empty", Slug: "ke-empty", LabelType: "board", Status: "active"}
+	require.NoError(t, repo.DB().Create(&emptyBoard).Error)
+	code, gotEmpty := get(fmt.Sprintf("/api/semantic-boards/%d/key-events?days=30", emptyBoard.ID))
+	require.Equal(t, http.StatusOK, code, "%v", gotEmpty)
+	assert.Len(t, gotEmpty["data"].(map[string]any)["markers"].([]any), 0)
+
+	// 400 invalid board id / invalid days (0 included: strictly positive).
+	code, _ = get("/api/semantic-boards/notanumber/key-events")
+	assert.Equal(t, http.StatusBadRequest, code)
+	for _, days := range []string{"abc", "-1", "0", "0x2"} {
+		code, resp := get(fmt.Sprintf("/api/semantic-boards/%d/key-events?days=%s", w.boardID, days))
+		assert.Equal(t, http.StatusBadRequest, code, "days=%s: %v", days, resp)
+	}
+
+	// 404 for a board id that parses but does not exist.
+	code, _ = get("/api/semantic-boards/999999/key-events")
+	assert.Equal(t, http.StatusNotFound, code)
+}

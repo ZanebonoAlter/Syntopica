@@ -64,6 +64,8 @@ const emit = defineEmits<{
   toggleOthers: []
   /** 其他组选行/选格。 */
   selectOther: [payload: { sectionId: string, date: string, topicId?: string | null }]
+  /** 右轨「当日其他话题」选行（同一落点，但右轨发起要先切回矩阵 / 追踪视图，design D14）。 */
+  selectOtherFromRail: [payload: { sectionId: string, date: string, topicId?: string | null }]
   /** 观察带节点（原子切同一 selectedDate + 稳定目标）。 */
   selectObservedDay: [payload: { date: string, sectionId: string, reportId: string, topicId: string }]
   retryStage: []
@@ -183,7 +185,7 @@ defineExpose({ getStageElement })
         @open-topics="emit('openTopics')"
         @open-report="emit('openReportCluster', $event)"
         @retry-now="emit('retryNow', $event)"
-        @select-other="emit('selectOther', $event)"
+        @select-other="emit('selectOtherFromRail', $event)"
       />
     </aside>
   </div>

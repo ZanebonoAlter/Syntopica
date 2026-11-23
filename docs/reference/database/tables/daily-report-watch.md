@@ -202,7 +202,7 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `title_snapshot` | TEXT | — | 确认时线索标题快照（展示不得重写新闻） |
 | `summary_snapshot` | TEXT | — | 确认时线索摘要快照 |
 | `tag_ids_snapshot` | JSONB | — | 标签 ID 快照数组 |
-| `article_ids_snapshot` | JSONB | — | 依据文章 ID 快照数组 |
+| `article_ids_snapshot` | JSONB | — | 依据文章 ID 快照数组（**确认时冻结**，可为 `null` = 未冻结文章）；版块级关键事件视图的「关联文章」展开入口读它（add-key-event-matrix-view），MUST NOT 用它反查实时文章集合 |
 | `state` | VARCHAR(16) | NOT NULL DEFAULT 'suggested'; 复合索引同上; **CHECK** `ck_topic_key_event_markers_state IN ('suggested','confirmed','dismissed')` | 三态；AI 只写 suggested |
 | `recommendation_reason` | TEXT | —（AI 行才有；手动标记为空） | 建议理由（服务端校验候选与证据归属后才落库） |
 | `recommendation_basis` | JSONB | —（同上） | `{"evidence_article_ids":[...],"new_progress":bool}`；证据必须 ⊆ 线索文章 |
@@ -213,6 +213,8 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `created_at` / `updated_at` | TIMESTAMP | — | 创建 / 更新时间 |
 
 > 幂等语义（add-topic-key-event-markers design D1）：PUT/PATCH 同目标同状态重复提交直接返回已保存行；状态变更必须携带最新 `revision`，冲突 409 附服务端最新行；重建重跑按 `source_key` 精确匹配重挂来源指针，失配即断开为独立快照注记（不伪造 section/关系）。
+>
+> 读端口径（add-key-event-matrix-view）：`GET /semantic-boards/:id/key-events?days=N` 只读 `state='confirmed'` 且 `source_period_date` 落在窗口内的行，按 `source_period_date ASC, persistent_topic_id ASC, id ASC` 排序；`suggested`/`dismissed` 不进载荷。`article_ids_snapshot` / `tag_ids_snapshot` 是**确认时冻结**的事实层快照，消费方只读、不得回写、不得当作实时关系。
 
 ### 9.10 key_event_recommendation_runs（推荐任务状态）
 

@@ -110,6 +110,7 @@ const {
   toggleDormant,
   setView,
   setSourceDays,
+  batchQueryWrite,
   applyObservationRange,
   syncDefaultRangeToAnchor,
 } = consoleState
@@ -136,6 +137,16 @@ const rangeNoticeText = computed(() => rangeNotice.value ?? daysNotice.value)
 // ── 报告元信息晚到：不改用户已选范围，只补默认区间 ─────────────────────────
 watch(anchorDate, () => {
   syncDefaultRangeToAnchor()
+}, { immediate: true })
+
+// ── 窄屏回落：关键事件视图窄屏不渲染（delta spec「窄屏不渲染」）────────────
+// 窄屏深链 ?view=events 时若停在事件视图：舞台走窄屏摘要分支（视图本身不渲染），
+// 而阅读槽又被 `activeView !== 'events'` 连带隐藏、头部也没有可切的按钮（窄屏不渲染
+// 该按钮）→ 用户卡在空舞台、无处可去（review R-8）。
+// 故窄屏一律回落矩阵（= 现有窄屏降级形态），并把 URL 里的 view=events 一并去掉
+// （URL 与画面保持一致，刷新不会又掉进来）。
+watch(isNarrow, (narrow) => {
+  if (narrow && activeView.value === 'events') setView('matrix')
 }, { immediate: true })
 
 const bodyRef = ref<{ getStageElement: () => HTMLElement | null } | null>(null)
@@ -273,6 +284,7 @@ const {
   retryReport: wiring.retryReport,
   selectLaneFromStage: wiring.selectLaneFromStage,
   closeWorkface,
+  batchQueryWrite,
 })
 
 // ── 体检 / 构成 / 右轨上下文（同一份真实数据；装配在 useConsoleShellRail） ──
@@ -371,6 +383,23 @@ function handleSelectOther(payload: { sectionId: string, date: string, topicId?:
   wiring.selectOther(payload)
 }
 
+/**
+ * 右轨「当日其他话题」选行：与舞台内同名动作同一落点；**右轨发起**且当前在关键事件
+ * 视图时要先切回矩阵 / 追踪视图（关键事件视图没有其他话题组，阅读槽也不在那里；
+ * 不切就等于选了个寂寞）。
+ * 判据在发起处区分：舞台内选中仍留在当前视图；矩阵 / 归档视图里的右轨选中**不切视图**
+ * （design D14 / delta spec「右轨选中切回矩阵视图」；review R-1：归档视图里的右轨点击
+ * 不得静默把用户切走）。
+ */
+function handleSelectOtherFromRail(payload: { sectionId: string, date: string, topicId?: string | null }): void {
+  // 与「话题追踪」同纪律：同一动作里的 query 写入合并成一次 replace（实机验收 A-34）。
+  // 本路径本身只写一次（不写 lane），合并是为口径一致 + 防后续新增写入再起竞争。
+  batchQueryWrite(() => {
+    if (activeView.value === 'events') handleSetView('matrix')
+    handleSelectOther(payload)
+  })
+}
+
 function handleBoardDeleted(): void {
   closeWorkface()
   void router.push('/tags')
@@ -423,6 +452,7 @@ watch(boardIdRef, () => {
       @select-date="wiring.selectDateFromStage"
       @select-day-header="wiring.selectDayHeader"
       @select-other="handleSelectOther"
+      @select-other-from-rail="handleSelectOtherFromRail"
       @toggle-others="wiring.toggleOthers"
       @select-observed-day="wiring.selectObservedDay"
       @toggle-dormant="toggleDormant"
@@ -475,7 +505,7 @@ watch(boardIdRef, () => {
       @retry-health="loadHealth"
       @retry-watches="loadWatches"
       @locate-lane="locateLaneFromRail"
-      @select-other="handleSelectOther"
+      @select-other="handleSelectOtherFromRail"
       @retry-now="handleRetryNow"
       @open-watch-manage="overlays.openWatchManage"
       @open-topics="overlays.openTopicManage"

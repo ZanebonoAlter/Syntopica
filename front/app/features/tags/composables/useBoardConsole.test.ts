@@ -329,6 +329,34 @@ describe('useBoardConsole — 组合状态', () => {
     expect(harness.state.selectedLaneId.value).toBe(11)
   })
 
+  it('batchQueryWrite：同一动作里的多次 query 写入合并成一次 replace，且不丢其他 query 键（A-34）', async () => {
+    harness = mountConsole()
+    // 既有 query 键（days / start / end）必须原样带过去
+    harness.routeState.query = { days: '30', start: '2026-10-01', end: '2026-10-23' }
+    await flushPromises()
+    const before = harness.router.replace.mock.calls.length
+    harness.state.batchQueryWrite(() => {
+      harness.state.setView('events')
+      harness.state.selectLane(11)
+    })
+    await flushPromises()
+    const calls = harness.router.replace.mock.calls.slice(before)
+    expect(calls.length, '同一动作里的两次写入必须合并成一次 replace（两次独立 replace 会争抢同一组 query key）').toBe(1)
+    expect(harness.routeState.query).toMatchObject({
+      days: '30', start: '2026-10-01', end: '2026-10-23', view: 'events', lane: '11',
+    })
+  })
+
+  it('batchQueryWrite 外的写入仍各自 replace（时序不变，写入不丢）', async () => {
+    harness = mountConsole()
+    await flushPromises()
+    const before = harness.router.replace.mock.calls.length
+    harness.state.selectLane(11)
+    await flushPromises()
+    expect(harness.router.replace.mock.calls.length - before).toBe(1)
+    expect(harness.routeState.query.lane).toBe('11')
+  })
+
   it('切版块：清数据、复位休眠展开与视图、按新版块重取（R-7/1.4）', async () => {
     harness = mountConsole()
     harness.routeState.query = { lane: '12' }

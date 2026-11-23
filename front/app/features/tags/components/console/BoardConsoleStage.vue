@@ -14,6 +14,7 @@ import ObservationRangeControls from './ObservationRangeControls.vue'
 import { POOL_DAYS } from './observationRange'
 import BoardNarrowSummary from './BoardNarrowSummary.vue'
 import ObservationMatrix from './ObservationMatrix.vue'
+import KeyEventTimelineView from './KeyEventTimelineView.vue'
 import ObservationLaneEvolution from './ObservationLaneEvolution.vue'
 import LaneChronicle from './LaneChronicle.vue'
 import OtherTopicReading from './OtherTopicReading.vue'
@@ -187,6 +188,33 @@ function scrollToChronicle(): void {
     />
 
     <template v-else>
+      <!-- 关键事件视图（add-key-event-matrix-view）：矩阵骨架的另一个读数，自带当日事件阅读区；
+           时间视窗/选中态/行序全部与矩阵共用（D9/D2），候选话题不占行。 -->
+      <KeyEventTimelineView
+        v-if="activeView === 'events'"
+        :board-id="boardId"
+        :board-label="boardLabel"
+        :axis="visibleAxis"
+        :active-rows="activeLanes"
+        :dormant-rows="dormantLanes"
+        :selected-lane-id="laneHighlightKey"
+        :selected-date="selectedDate"
+        :today="today"
+        :source-days="sourceDays"
+        :expanded-dormant="expandedDormant"
+        :loading="loading"
+        :error="error"
+        :stale-notice="staleNotice"
+        :empty-state="emptyState"
+        :reading="reading"
+        @select-lane="(id: string) => emit('selectLane', id)"
+        @select-date="(date: string) => emit('selectDate', date)"
+        @toggle-dormant="emit('toggleDormant')"
+        @retry="emit('retry')"
+        @open-article="(id: string) => emit('openArticle', id)"
+      />
+
+      <template v-else>
       <ObservationMatrix
         :axis="visibleAxis"
         :observed-days="observedDays"
@@ -239,9 +267,13 @@ function scrollToChronicle(): void {
         @select-date="date => emit('selectDate', date)"
         @retry="emit('retry')"
       />
+      </template>
     </template>
 
-    <div ref="chronicleRef" class="stage-chronicle">
+    <!-- 阅读槽：事件视图自带当日事件阅读区，故矩阵/追踪/归档视图下才渲染；
+         窄屏（isNarrow）例外：窄屏不渲染事件视图，阅读槽不得被连带隐藏
+         （否则窄屏深链 ?view=events 会留下一个空舞台，review R-8）。 -->
+    <div v-if="activeView !== 'events' || isNarrow" ref="chronicleRef" class="stage-chronicle">
       <!-- 单一阅读槽：其他分区 → OtherTopicReading（含观察带）；否则原 lane 编年；都没有给方向提示 -->
       <OtherTopicReading
         v-if="selectedOtherSectionId"

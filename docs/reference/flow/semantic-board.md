@@ -264,7 +264,7 @@ SemanticBoard 管理面板
 **共用三件套**（MUST NOT 各自维护一份）：
 
 - **时间视窗**：与矩阵共用同一控件与同一 `visibleAxis`（D9）——要看 30 天就在矩阵那处切，本视图 MUST NOT 出现第二个跨度控件。
-- **行集合与行序**：只含**持久化话题（active）**，行序沿用 `observationLanes.ts:buildObservationRows` 的产出（lane_heat 降序 → 全窗线索合计降序 → topic id 升序）与休眠判定；**候选话题（candidate）不占行**，其确认事件也不并入本视图（D2）。
+- **行集合与行序**：只含**持久化话题（active）**，行序沿用 `observationLanes.ts:buildObservationRows` 的产出（lane_heat 降序 → 全窗线索合计降序 → topic id 升序）与休眠判定；**候选话题（candidate）不占行**，其确认事件**在时间轴与当日阅读区都不呈现**（D2；避免出现「时间轴上没有、阅读区里有」的孤儿事件；候选转正后自然出现在对应行）。
 - **选中态**：同一组受控 `selectedLane` / `selectedDate`；切换视图 MUST NOT 重置其中任何一项（D6）。
 
 **读端**：版块级批量读 `GET /api/semantic-boards/:id/key-events?days=N`（只透 `state='confirmed'`，窗口内闭区间，排序 `source_period_date ASC, persistent_topic_id ASC, id ASC`）；前端一次取全，不再逐话题拉（D3）。`days` 必须是正整数（默认 14；0/负数/非数字 → 400，与话题级端点 `days=0=全部` 的旧契约不同）。
@@ -275,12 +275,14 @@ SemanticBoard 管理面板
 - **标签**：先以自然宽度渲染（`white-space: nowrap`，MUST NOT 加 `text-overflow` 截断标题），再用 `offsetWidth` 实测宽度做贪心分层（层顶 46px、层距 44px、同层间隙 ≥4px、靠右边界左移贴边）；行高 = 无标签 70px，有标签按层数每层 +44px（D4）。
 - **列宽与横滚**：列宽 = `max(64px, 主舞台可用宽 / 可见日数)`——超宽屏均分填满、窄屏守 64 下限后由**舞台容器内部**横向滚动承接，行头 sticky，切换 / 换日时选中日自动滚入视口；MUST NOT 压缩列宽把 30 天塞进一屏、MUST NOT 产生页面级横向滚动（D10/D11）。
 - **左键拖拽平移**：舞台空白处按住左键拖动即平移（复用新建泳道画布的 `laneComposeLogic.ts:panScroll` / `isDragBeyond`，位移阈值 5px，阈值内视为点选）（D11）。
-- **长窗降级**：可见日数 >31 时收起文字标签，只留节点与当日事件计数（`★N`），名称由下方阅读区承担（D7）。
+- **长窗降级**：**按堆叠层数自适应，MUST NOT 按天数一刀切**（D7，2026-11-23 用户实机反馈修订）——层数 ≤ 4 时**长窗（观察窗 > 30 天）仍照常显示事件名称**（天数多只是列更宽更稀，不是更挤）；仅当层数 > 4（行高封顶 246px）时**该行**才收起文字标签、只留节点与当日事件计数（`★N`），名称由下方阅读区承担。MUST NOT 因观察窗天数长就整视图收成光点。
 - **双主题**：节点 / 标签 / 选中列 / 文章列表 / 预览层一律走 `--color-*` 语义变量，MUST NOT 硬编码亮色或暗色色值（D13）。
 
 **下方阅读区**（`KeyEventDayPanel.vue`）：选中日当天全部 confirmed 事件（标题 + 所属话题快照 + 摘要内联展开）；事件卡可展开确认时冻结的关联文章（`article_ids_snapshot`，**只按需读**，复用既有 `laneDayRelatedArticles` 缓存，MUST NOT 新建第二份文章缓存），点文章 `emit('open-article', id)` 由壳层已挂载的 `ArticlePreviewModal` 打开全文，关闭后回到原卡且保持展开态与滚动位置（D12）。
 
 **只读**：本视图 MUST NOT 出现注记确认 / 取消 / 编辑入口——注记写动作的唯一归属是日报阅读台 `KeyEventMarkerActions.vue`（D8，`flow/topic-graph.md` 红线 10）。
+
+**右轨联动**：从**右轨**发起的话题选中（「话题追踪」条目 / 「当日其他话题」）MUST 先切回「矩阵 / 追踪」视图再落点（D14，2026-11-23 用户实机反馈）——候选话题在本视图不占行，不切回就是死选择；「话题追踪」路径另需把该泳道**滚入视野 + 高亮**，「当日其他话题」路径落既有「其他话题」阅读槽（该分区不是泳道，按既有语义不做泳道高亮）。本视图**内部**的选中（点行头、点事件节点）仍留在本视图，MUST NOT 把用户踢出时间轴上下文。
 
 **四态诚实**：loading 出骨架（行头与轴占位）；窗口内 0 条 → 行与轴**照常渲染** + 「这段时间没有确认的关键事件 · 在日报阅读台标记」；读失败 → 错误条 + 重试，MUST NOT 冒称 0 条、MUST NOT 用空轴冒充失败；刷新失败但已有内容 → 保留内容 + 「刷新失败，展示上次数据」条。
 
@@ -305,7 +307,8 @@ SemanticBoard 管理面板
 - **选入手势**：拖节点 → 本次泳道行 = 单条选入；拖**行标签** → = 整组采纳；拖出 = 移出（3 秒可撤销）。**点击 = 只看**，不改成员数；节点卡「＋选入 / ⊘移出」是拖拽的键盘/无障碍等价通道。拖拽与平移共用一次 `pointerdown` 按「起始命中对象」分流（命中节点/行标签 → 拖对象，命中空白 → 平移），共用 4px 阈值与拖后吞 click。
 - **右栏三段恒定骨架**：① 当前事件的线索（空态「尚未选入事件」；已确认态换成「覆盖」汇总）② 可补充的事件 ③ tab 区（已选事件 / 按标题找）——**四态（空/编辑中/已确认/检索态）都渲染**，只换内容不换骨架；**空态 ③ 默认落「按标题找」**（此时没有已选事件，唯一动作是找料）。检索态 = ③ 切 tab + 画布降级，SHALL NOT 是另一套右栏。
 - **检索范围 = 未归类**：`unclassifiedIds` = 窗口 sections − ⋃`chain.memberIds` − `persistentTopic.status='active'`（active 属正式泳道、只读不可选入、画布默认不画；纳入会出现「右栏有命中、画布无点」）。SHALL NOT 用 `persistentTopicId == null` 判——那会漏掉挂着 candidate 话题但未成链的节点。命中点在画布**真实位置**浮出，标记为四角括号（与「已选 = 实心+✓」「相关 = 加粗描边」形状不同源）。
-- **代码入口**：`front/app/features/tags/components/compose/LaneComposeCanvas.vue`（行几何 + 手势 + ghost）、`composables/laneComposeLogic.ts`（`buildRowIndex` / `layoutRows` / `titleBudget` / `thresholdOf` / `visibleScatter` / `unclassifiedIds`）、`composables/useLaneCompose.ts`（`thresholdTier` / `lastRemoval` 撤销）、`components/compose/LaneComposeInspector.vue`（三段骨架 + 检索投影）。
+- **已确认关键线索 ★（add-lane-compose-topic-event-tags）**：带 confirmed 关键注记的节点**主体换成星形**（不是圆点 + 角标）；外接尺寸沿用 `pointRadius`，不改变「大小 = 接近程度」；节点卡日期行后逐条列出快照标题，左栏成员条目日期行右端、右栏②条目日期行首各显示 ★。只读投影，不参与任何计算；`source_section_id` 为 NULL 的脱离快照不显示、不模糊补挂。编排面**不再提供**「显示已有泳道（只读）」与「历史待启用话题」入口（2026-11-23 用户定档；`showAssigned` 恒 false）。
+- **代码入口**：`front/app/features/tags/components/compose/LaneComposeCanvas.vue`（行几何 + 手势 + ghost + 星形 `starPath`）、`components/compose/LaneComposeCandidates.vue`（左栏条目 ★）、`composables/laneComposeLogic.ts`（`buildRowIndex` / `layoutRows` / `titleBudget` / `thresholdOf` / `visibleScatter` / `unclassifiedIds`）、`composables/useLaneCompose.ts`（`thresholdTier` / `lastRemoval` 撤销）、`components/compose/LaneComposeInspector.vue`（三段骨架 + 检索投影）。
 
 ### 板块来源构成（add-source-board-hit-rate，当前右轨/单级工作面）
 
@@ -509,6 +512,8 @@ flowchart LR
 35. **版块 label 或 description 变更后 SHALL 在同一请求内失效 board embeddings 匹配缓存，且 SHALL NOT 自动重跑匹配**（lane-manual-correction-loop board-match-cache）：`PUT /api/semantic-boards/:id` 改 label 或 description 会重算版块向量（`embed("label. description")`），而 `loadBoardEmbeddings` 缓存无 TTL（只靠显式失效），故更新成功后必须立即调 `InvalidateMatchCache()` 清缓存——SHALL NOT 让方向校验继续用旧向量，SHALL NOT 依赖进程重启或 TTL 过期；失效后 SHALL NOT 自动重跑 `topic_tag_board_labels`（匹配表保持旧结果，重跑/回填是用户的显式动作）。
 36. **归档时间曲线 MUST 固定为「每日进版块文章数（篇）」全版块口径：缺日按已知 0 画基线、MUST NOT 随筛选变化、成员口径 MUST 与归档列表主查询逐字一致**（archive-time-chart-range）：曲线口径 = 当日入库且命中本版块标签集合的文章数（篇），**不是线索数**；来源 / 构成标签 / 方向不符 / 日报状态筛选只作用于下方列表，**MUST NOT** 改变曲线（MUST NOT 因筛选重拉计数端点）。成员口径与 `GET /api/semantic-boards/:id/articles` 主查询**逐字一致**：同一 `boardTagIDs` 取法（`topic_tag_board_labels.semantic_board_id`，不过滤标签 `status`）、同 `feeds` 内连接、同 `DATE(articles.pub_date)` 归日、按文章 id 去重（一篇文章命中多个版块标签只计 1）；方向校验未通过的文章（列表行内默认隐藏其标签）**仍计入**当日计数。某日无命中文章 = **已知 0**（画基线，MUST NOT 呈现为断档或缺口语义）——这与矩阵侧 `laneTrendSeries` 的「`null` = 未取到、不补 0」约定**相反**（归档一次请求已覆盖整段历史，缺口即已知 0），两套口径 MUST NOT 互相「统一」。端点（`GET /api/semantic-boards/:id/article-daily-counts`）为固定口径只读聚合：不接受筛选 / 分页 / 日期窗口，版块无命中文章时返回 `earliest_date`/`latest_date` 为 `null` + `days` 为空数组且 HTTP 200。**归日按数据库会话时区**（默认 DSN `TimeZone=Asia/Shanghai`，与前端「今天」同口径）；`pub_date IS NULL` 的存量行排除在外。若部署侧用 `DATABASE_DSN` 或容器 `TZ` 改掉会话时区，MUST 同步修正本口径并重测曲线日与列表分组一致。
 
+37. **关键事件视图 MUST 只读、行集合只含持久化话题：注记写动作唯一归属日报阅读台，候选话题不占行、其确认事件在本视图（时间轴与当日阅读区）都不呈现**（add-key-event-matrix-view）：版块态势页「关键事件」视图是矩阵骨架的第二个读数（行 = 持久化话题 active，列 = 同一 `visibleAxis`），时间视窗、行序与选中态 MUST 与矩阵共用同一份（MUST NOT 维护第二套跨度、切换 MUST NOT 重置 `selectedLane` / `selectedDate` / 观察窗）；本视图 MUST NOT 提供注记确认 / 取消 / 编辑入口（唯一归属日报阅读台 `KeyEventMarkerActions.vue`）、MUST NOT 呈现 `suggested` / `dismissed` 注记、MUST NOT 把候选话题渲染成行或把其确认事件并入其它行；无事件日 MUST NOT 落节点、MUST NOT 伪造 0；读端失败 MUST 显示错误与重试、MUST NOT 冒称「0 条事件」，刷新失败 MUST 保留上次内容并标陈旧；列宽 MUST 取 `max(64px, 可用宽 / 可见日数)`，总宽超出舞台 MUST 由舞台容器内部横向滚动承接（行头 sticky、选中日滚入视口），MUST NOT 压缩列宽塞进一屏；标签 MUST 完整显示标题（MUST NOT 用省略号截断）；标签收起 MUST 按堆叠层数上限（4 层 / 行高封顶 246px）逐行判定、MUST NOT 按观察窗天数一刀切（长窗层数 ≤ 4 仍 MUST 显示事件名称）；从右轨发起的话题选中 MUST 先切回矩阵 / 追踪视图再落点（本视图内部选中仍留在本视图）。
+
 ## 代码入口
 
 - **后端辅助标签**：`backend-go/internal/tagmanagement/service/auxlabel/`（`auxiliary_label_service.go` L1/L2/L3 去重、`addAlias`、alias 合并、composition 移除、禁用；`composite_label_service.go` 组合标签创建/两级去重/禁用启用/列表）。
@@ -547,6 +552,7 @@ handler 出处：`tagmanagement/handler/{tag_queue,embedding_queue,merge_reembed
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 | ------ | ------ | ------ | ---------- |
+| 2026-11-23 | add-key-event-matrix-view | 版块态势页新增同级视图「关键事件」（矩阵骨架的第二个读数）：行 = 持久化话题（active，沿用 `buildObservationRows` 行序与休眠判定，候选话题不占行）、列 = 与矩阵共用的同一 `visibleAxis`（时间视窗共用，不维护第二套跨度）、选中态与矩阵同一组（切换不重置）。新增版块级只读批量端点 `GET /api/semantic-boards/:id/key-events?days=N`（只透 confirmed、`days` 严格正整数——与话题级端点 `days=0=全部` 的旧契约不同）。行内节点恒在生命线上、同日多条横向散开，标签先量后排（贪心分层、层距 44px、不截断标题），列宽 `max(64px, 可用宽/可见日数)`、超宽横滚 + 行头 sticky + 选中日滚入视口，空白处左键拖拽平移（阈值 5px），长窗降级按堆叠层数上限（4 层 / 行高封顶 246px）逐行判定、不按观察窗天数一刀切（2026-11-23 用户实机反馈修订：55 天窗口曾因天数阈值整屏只剩光点）。右轨发起的话题选中（话题追踪 / 当日其他话题）先切回矩阵视图再落点、泳道追踪条目另滚入视野并高亮（本视图内部选中仍留在时间轴）。事件 → 文章 → 阅读闭环复用既有 `laneDayRelatedArticles` 缓存与 `ArticlePreviewModal`（不新建第二份阅读器）；本视图**只读**，注记写动作唯一归属日报阅读台。四态诚实：0 条照常渲染行与轴、失败显错误条 + 重试（不冒称 0 条）、刷新失败保留旧内容 + stale 条；颜色全走 `--color-*` 语义变量（双主题）。 | [add-key-event-matrix-view](../../../openspec/changes/add-key-event-matrix-view) |
 | 2026-11-23 | clarify-lane-correction-effect-timing | 泳道修正工作面「生效时机」上移：底部页脚两枚 10px 徽标 → 顶部标题行**常驻结论型徽标组**（立即生效 / 次日日报生效 / 无需保存），底部页脚撤除。写路径零变更——加入 / 移出 / 定首义 / 改名仍逐条即时落库，**不提供全局保存出口**（`workshop-lane-compose` 契约不变）。用户报障「编辑泳道都没保存按钮」的根因是**生效时机不可见**，不是缺保存入口。 | [archive/2026-11-23-clarify-lane-correction-effect-timing](../../../openspec/changes/archive/2026-11-23-clarify-lane-correction-effect-timing) |
 | 2026-11-17 | unify-vector-column-dimension | `semantic_labels.embedding` / `merge_embedding` 去维度限定（迁移 20261117_0001）；辅助标签 L2 相似命中的向量维度不再由列类型约束，改由写入口按「随值留存维度」校验（不一致拒绝写入）；L2 命中只 addAlias、不改 Label / 不重算 MergeEmbedding 的红线未触及 | [archive/2026-11-17-unify-vector-column-dimension](../../../openspec/changes/archive/2026-11-17-unify-vector-column-dimension) |
 | 2026-11-20 | fix-radar-overview-false-zero | 雷达总览降级诚实性：未取到（端点超时 / 泳道计算失败 / 线索聚合失败）标 `data_unavailable=true` 且计数落 `null`，不再渲染成「关注强度 0.0 / 0 篇文章 / 今日线索 0 / 0 个板块值得关注」；真实零值仍为 0。滞后版块（锚点日 ≠ 全局锚点日）逐行沉底到主列表末尾、不进关注度分档，「没取到」的排最底；今日线索合计只计新鲜行。端点性能治本：板级查询批量化（SQL 140→68）、雷达查询挂 ctx、话题表只取泳道所需列、连接池 25/40，统计口径零改动 | [archive/2026-11-20-fix-radar-overview-false-zero](../../../openspec/changes/archive/2026-11-20-fix-radar-overview-false-zero) |
