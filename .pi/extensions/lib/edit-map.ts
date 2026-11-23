@@ -134,7 +134,35 @@ export function isToolManagedPath(p: string): boolean {
 		/^openspec\/changes\/[^/]+\/\.openspec\.yaml$/.test(p)
 	)
 		return true;
+	// 构建 / 部署产物（fix-editmap-deploy-artifact-pollution）：`deploy-frontend.sh`
+	// 会写静态托管目录与 .frontend-before-* 备份目录，被当成「本次编辑过的文件」记进
+	// 归属集后，doc-impact 的启发式就会对每个 change 误报 api/database/architecture/
+	// standard「疑似遗漏」（实测混入 1195 条 backend-go 路径）。
+	if (
+		p.startsWith("backend-go/frontend/") ||
+		p.startsWith("backend-go/.frontend-before-") ||
+		p.startsWith("front/.output/") ||
+		p.startsWith("front/.nuxt/") ||
+		p.startsWith("front/dist/")
+	)
+		return true;
 	return false;
+}
+
+/**
+ * 「不是文件路径」的采集噪声剔除（fix-editmap-deploy-artifact-pollution）。
+ *
+ * 触发集合来自 shell 命令解析，CLI 开关（`--full-page`、`-f`）会被当成路径混进来：
+ * 实测 `edit.map` 归属集里出现过裸 `--full-page`——它不属于任何 change，却会让
+ * doc-impact 的归属轨判定凭空多出一个「改动文件」。
+ */
+export function isNonPathToken(p: string): boolean {
+	return typeof p === "string" && /^-[A-Za-z-]/.test(p);
+}
+
+/** 归属集合的采集/读取统一过滤点：工具自管路径 + 非路径 token。 */
+export function isExcludedPath(p: string): boolean {
+	return isToolManagedPath(p) || isNonPathToken(p);
 }
 
 /** edit.map payload 构造（白盒直测点：结构契约 { paths, n }） */
@@ -180,7 +208,7 @@ export function syncEditMap(
 				if (Array.isArray(p.paths))
 					base = p.paths.filter(
 						(x): x is string =>
-							typeof x === "string" && !isToolManagedPath(x),
+							typeof x === "string" && !isExcludedPath(x),
 				);
 			}
 			editMapBase = base;
@@ -188,7 +216,7 @@ export function syncEditMap(
 		}
 		// 采集侧黑名单：本回合 trigger 剔除工具自管路径后再聚合（fix 后新路径零污染）
 		const triggerFiltered = [...trigger].filter(
-			(p) => typeof p === "string" && !isToolManagedPath(p),
+			(p) => typeof p === "string" && !isExcludedPath(p),
 		);
 		const merged = mergePaths(editMapBase, triggerFiltered);
 		if (merged.length === 0) return false; // 全工具自管/空集：零事件不落库
@@ -235,7 +263,7 @@ export function latestEditMapByChange(cwd: string): Map<string, string[]> {
 						r.change,
 						p.paths.filter(
 							(x): x is string =>
-								typeof x === "string" && !!x && !isToolManagedPath(x),
+								typeof x === "string" && !!x && !isExcludedPath(x),
 						),
 					);
 				} catch {

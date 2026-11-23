@@ -120,10 +120,18 @@ all_ownership() {
 # 保留在归属地图供并发冲突感知），smoke 同 fixture 断言两侧一致（防漂移）。
 # ---------------------------------------------------------------------------
 filter_blacklist() {
+	# 与 .pi/extensions/lib/edit-map.ts 的 isExcludedPath 同口径（修 change：
+	# fix-editmap-deploy-artifact-pollution）——采集侧止增，读取侧同源过滤。
 	grep -vE \
 		-e '^openspec/changes/archive/' \
 		-e '^openspec/changes/[^/]+/\.openspec\.yaml$' \
 		-e '^(AGENTS\.md|front/AGENTS\.md|backend-go/AGENTS\.md|docs/reference/constraints-index\.md)$' \
+		-e '^backend-go/frontend/' \
+		-e '^backend-go/\.frontend-before-' \
+		-e '^front/\.output/' \
+		-e '^front/\.nuxt/' \
+		-e '^front/dist/' \
+		-e '^-' \
 		|| true
 }
 

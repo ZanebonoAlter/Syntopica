@@ -1,6 +1,5 @@
 <!-- complexity: simple -->
 <!-- ui-impact: none -->
-<!-- constraint-domains: semantic-board -->
 
 # Proposal: 修 edit.map 对「部署产物」的误记账，止住 doc-impact 归属污染
 

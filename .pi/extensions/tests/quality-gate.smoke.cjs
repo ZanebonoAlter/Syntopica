@@ -227,7 +227,7 @@ const check = (name, ok) => checks.push([name, ok]);
 	const fs = require('fs');
 	const os = require('os');
 	const path = require('path');
-	const { isToolManagedPath, syncEditMap, resetEditMapState } = require('./.emap.cjs');
+	const { isToolManagedPath, isNonPathToken, isExcludedPath, syncEditMap, resetEditMapState } = require('./.emap.cjs');
 	const { logEvent, queryByChange } = require('./.hlog.cjs');
 
 	const mktmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'emap-filter-'));
@@ -247,6 +247,22 @@ const check = (name, ok) => checks.push([name, ok]);
 		&& isToolManagedPath('docs/reference/standard/frontend/layout.md') === false);
 	// F3c 边界：active change 目录下的 tasks.md 等真实产物不剔除（只有 .openspec.yaml 是工具元数据）
 	check('F3c active change 的 tasks.md 不剔除（非工具元数据）', isToolManagedPath('openspec/changes/foo/tasks.md') === false);
+	// F3d 构建/部署产物剔除（fix-editmap-deploy-artifact-pollution）：
+	// deploy-frontend.sh 写静态托管目录与 .frontend-before-* 备份，混入归属集会让
+	// doc-impact 对每个 change 误报 api/database/architecture/standard「疑似遗漏」。
+	check('F3d 部署产物剔除', isToolManagedPath('backend-go/frontend/index.html') === true
+		&& isToolManagedPath('backend-go/.frontend-before-matrix-copy.KtDRQM/_nuxt/a.js') === true
+		&& isToolManagedPath('front/.output/public/index.html') === true
+		&& isToolManagedPath('front/.nuxt/tsconfig.json') === true
+		&& isToolManagedPath('front/dist/x.js') === true);
+	check('F3e 部署产物边界：frontend 只认 backend-go 下的', isToolManagedPath('front/app/features/frontend/a.vue') === false
+		&& isToolManagedPath('backend-go/frontendx/a.go') === false);
+	// F3f 非路径 token 剔除：CLI 开关曾被当成路径写进归属集（实测裸 `--full-page`）
+	check('F3f 非路径 token 剔除', isNonPathToken('--full-page') === true && isNonPathToken('-f') === true
+		&& isNonPathToken('front/app/a.vue') === false && isNonPathToken('-') === false);
+	check('F3g 统一过滤点 isExcludedPath 汇总两档', isExcludedPath('--full-page') === true
+		&& isExcludedPath('backend-go/frontend/index.html') === true
+		&& isExcludedPath('backend-go/internal/a.go') === false);
 
 	const tmps = [];
 	resetEditMapState(); // 隔离 Q 系残留的模块状态（同 bundle 实例跨块共享）
@@ -260,6 +276,11 @@ const check = (name, ok) => checks.push([name, ok]);
 		// F5 混合 trigger：落库集合只含正常路径
 		syncEditMap(t1, 's1', ['backend-go/a.go', 'openspec/changes/archive/2026-09-05-x/tasks.md']);
 		check('F5 混合 trigger 落库仅正常路径', JSON.stringify(lastPaths(t1, 'foo')) === JSON.stringify(['backend-go/a.go']));
+
+		// F5b 部署产物 + CLI 开关混合 trigger：两者都不进归属集合
+		syncEditMap(t1, 's1', ['--full-page', 'backend-go/frontend/_nuxt/a.js', 'backend-go/.frontend-before-x/index.html', 'backend-go/b.go']);
+		check('F5b 部署产物与开关 token 不进归属集合',
+			JSON.stringify(lastPaths(t1, 'foo')) === JSON.stringify(['backend-go/a.go', 'backend-go/b.go']));
 
 		// F6 存量污染 base：新快照不再携带（采集侧止增，旧事件不动）
 		const t2 = mktmp(); tmps.push(t2);
