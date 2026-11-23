@@ -247,7 +247,7 @@
 
 ### POST /api/tag-queue/retry
 
-把所有 `failed` 打标任务重置为 `pending`（清零尝试次数与租约）。
+把所有可重试的 `failed` 打标任务重置为 `pending`（清零尝试次数与租约）。同一篇文章已有 `pending`/`leased` 作业时，该文章的 failed 行**跳过**——部分唯一索引 `uq_tag_jobs_article_active` 只允许同文章一条未完成作业，一起翻成 pending 会撞索引导致整批 UPDATE 回滚（500）；同一篇文章堆积多条 failed 行时只重试最新一条。
 
 **响应示例**
 

@@ -44,6 +44,8 @@
 
 > ⚠️ `firecrawl_jobs` / `tag_jobs` 的 `status`、`available_at`、`lease_expires_at` 均为各自单列索引（非旧文档所写复合索引）。
 
+> 🔒 **部分唯一索引 `uq_tag_jobs_article_active`（迁移 `20261120_0002`，fix-feed-refresh-churn D4）**：`(article_id) WHERE status IN ('pending','leased')` —— 同文章至多一条未完成作业。建索引前先删存量同文章重复未完成行（只保留最小 `id`；删除前把较新行的 `priority` 取 MAX、`force_retag` 取 OR、`reason` 取最新非空值合并进保留行）。`Enqueue` 插入走 `ON CONFLICT DO NOTHING`，撞索引后按既有「原地更新」语义合并，并发双插收敛为零新行；`POST /api/tag-queue/retry` 批量重试跳过已有活动作业的文章、同文章多条 `failed` 只重试最新一条。
+
 ---
 
 ---
