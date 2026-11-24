@@ -35,7 +35,7 @@
 
 读者 SHALL 能在批注锚点处输入问题并获得 AI 回答。回答 SHALL 结合通用概念解释与该批注所属 thread 关联的当天文章内容（RAG），并附引用文章列表；引用文章 SHALL 通过与 thread 溯源相同的文章打开通道展示，引用文章 ID 反查与 thread 引用同口径（豁免 archived 过滤，保证永久可读）。无可用文章上下文时回答 MUST 明示"纯模型知识、无当天文章引用"。生成失败 SHALL 行内报错并允许重试，已提交的问题与已有问答轮不丢失。每次问答的回答调用 SHALL 走 airouter `open_notebook` capability 路由并落调用审计。
 
-提问时系统 SHALL 先发起一次轻量 LLM 调用（输入划词文本+问题+线索上下文）自由生成 1~3 个搜索 query——搜索词 SHALL 由 LLM 依据问题语义自由选择，而非由划词文本机械截断生成；该调用 SHALL 走 airouter `open_notebook` capability 路由并落调用审计（operation 与回答调用区分）。生成的 query SHALL 用于调用本地 SearXNG（`searxng_config` 配置）做联网检索，多个 query 的结果按 URL 合并去重后取前 5 条原始网页结果（标题+URL+摘要）作为参考上下文并入回答 LLM 调用。query 生成失败/超时/输出为空 SHALL 静默回退为以划词文本（截前 80 runes）做单 query 搜索（回退后行为与既有实现一致）；搜索失败/超时/未配置 SHALL 静默降级（不阻塞问答、不报错、回答形态不变）——联网始终是增益不是依赖。联网结果仅为参考，服务端 SHALL 对回答引用的网络来源做白名单校验（URL 必须在本次合并搜索结果池内，集外剔除、保序去重、≤5）。被引用的网络来源 SHALL 结构化沉淀（`cited_web_sources`）并在批注卡与管理页问答轮中展示为可点击外链 chips（新窗口打开）。「纯模型知识」标注 SHALL 仅在本地文章引用与网络来源均为空时出现。
+提问时系统 SHALL 先发起一次轻量 LLM 调用（输入划词文本+问题+线索上下文）自由生成 1~3 个搜索 query——搜索词 SHALL 由 LLM 依据问题语义自由选择，而非由划词文本机械截断生成；该调用 SHALL 走 airouter `open_notebook` capability 路由并落调用审计（operation 与回答调用区分）。生成的 query SHALL 用于调用统一网页搜索入口（见 `web-search-provider`，数据源为 DeepSeek Search API）做联网检索；多个 query 的结果按 URL 合并去重后 SHALL 跨 query 按相关度分重排（相关度分相同或缺失时按首次出现顺序），取前 5 条原始网页结果（标题+URL+摘要，每条摘要截 400 runes）作为参考上下文并入回答 LLM 调用。query 生成失败/超时/输出为空 SHALL 静默回退为以划词文本（截前 80 runes）做单 query 搜索（回退后行为与既有实现一致）；搜索失败/超时/未配置 SHALL 静默降级（不阻塞问答、不报错、回答形态不变）——联网始终是增益不是依赖。联网结果仅为参考，服务端 SHALL 对回答引用的网络来源做白名单校验（URL 必须在本次合并搜索结果池内，集外剔除、保序去重、≤5）。被引用的网络来源 SHALL 结构化沉淀（`cited_web_sources`）并在批注卡与管理页问答轮中展示为可点击外链 chips（新窗口，打开）。「纯模型知识」标注 SHALL 仅在本地文章引用与网络来源均为空时出现。
 
 #### Scenario: 提问获得带引用回答
 
@@ -67,14 +67,19 @@
 - **WHEN** query 生成的 LLM 调用失败、超时或输出为空
 - **THEN** 系统静默回退为以划词文本（截前 80 runes）做单 query 搜索，问答照常完成，无错误提示，体验与回退前一致
 
+#### Scenario: 跨 query 合并按相关度重排
+
+- **WHEN** 三条搜索词各自返回结果，其中第 3 条搜索词的首条结果相关度分最高
+- **THEN** 合并池去重后该结果排在参考上下文首位，而非按搜索词顺序把第 1 条搜索词的结果排在前面
+
 #### Scenario: 联网补强回答
 
-- **WHEN** SearXNG 返回与问题相关的结果且 AI 采纳引用
+- **WHEN** 搜索入口返回与问题相关的结果且 AI 采纳引用
 - **THEN** 回答尾部展示「网络来源」chips（标题+域名，外链标识），点击新窗口打开原网页；与引用文章 chips 分行展示
 
 #### Scenario: 搜索失败静默降级
 
-- **WHEN** SearXNG 超时、返回错误或未配置（`searxng_config` 空或禁用）
+- **WHEN** 搜索入口超时、返回错误或未配置（无可用 DeepSeek 供应商密钥）
 - **THEN** 问答照常完成（仅本地文章+模型知识），无网络来源行、无错误提示，体验与联网扩充前一致
 
 #### Scenario: 编造 URL 白名单剔除
@@ -165,25 +170,29 @@
 
 ### Requirement: 问答联网状态可见性
 
-页边注问答每次调用 SHALL 采集联网搜索状态 `web_search_status` 并持久化到问答轮（`annotation_qas.web_search_status`）：`disabled`（SearXNG 未配置或未启用）｜`ok`（搜索链路启用且有结果进入参考池）｜`empty`（链路启用但全部搜索失败或结果为空）。该字段 SHALL 随 QA 响应一并返回（加法字段，旧消费方不受影响）。旧行（列值为 NULL）SHALL 视为历史数据，不显示任何联网标记。
+页边注问答每次调用 SHALL 采集联网搜索状态 `web_search_status` 并持久化到问答轮（`annotation_qas.web_search_status`）：`disabled`（搜索入口未配置）｜`ok`（搜索链路启用且有结果进入参考池）｜`empty`（链路启用但全部搜索失败或结果为空）。该字段 SHALL 随 QA 响应一并返回（加法字段，旧消费方不受影响）。旧行（列值为 NULL）SHALL 视为历史数据，不显示任何联网标记。
 
-批注卡问答轮 WHEN `web_search_status=empty` SHALL 显示「联网搜索无结果」弱化标记（含 title 提示前往设置面板排查）；`ok`/`disabled`/NULL SHALL 不显示标记。标记为纯展示，SHALL NOT 影响回答内容、引用校验与静默降级行为（「搜索失败静默降级」既有语义不变）。
+批注卡问答轮 SHALL 按下列规则渲染联网标记：`empty`→「联网搜索无结果」（含 title 提示前往设置面板排查）；`ok` 且本轮有网络来源→「已联网」；`ok` 且本轮无网络来源→「已联网 · 未采用」（title 提示「已搜索到结果，但模型本轮未引用」）；`disabled`/NULL→不显示。标记为纯展示，SHALL NOT 影响回答内容、引用校验与静默降级行为（「搜索失败静默降级」既有语义不变）。
 
 #### Scenario: 联网失效时回答带降级标记
 
-- **WHEN** SearXNG 启用但其上游引擎全部超时，读者完成一次提问
+- **WHEN** 搜索入口启用但全部搜索失败或无结果，读者完成一次提问
 - **THEN** 问答轮带 `web_search_status=empty` 落库并在批注卡显示「联网搜索无结果」标记，回答正常返回
 
 #### Scenario: 未启用联网时不显示标记
 
-- **WHEN** searxng_config 未配置或 enabled=false 时完成一次提问
-
+- **WHEN** 搜索入口未配置（无可用 DeepSeek 供应商密钥）时完成一次提问
 - **THEN** 问答轮 `web_search_status=disabled` 落库，批注卡不显示任何联网标记
 
 #### Scenario: 联网正常时不显示标记
 
-- **WHEN** 搜索链路启用且有结果进入参考池（无论回答是否引用）
-- **THEN** 问答轮 `web_search_status=ok` 落库，批注卡不显示联网标记
+- **WHEN** 搜索链路启用、有结果进入参考池但回答未引用任何网络来源
+- **THEN** 问答轮 `web_search_status=ok` 落库，批注卡显示「已联网 · 未采用」标记（本 change 前为不显示标记）
+
+#### Scenario: 联网并被引用时显示已联网
+
+- **WHEN** 搜索链路启用、有结果进入参考池且回答引用了网络来源
+- **THEN** 问答轮 `web_search_status=ok` 落库，批注卡显示「已联网」标记
 
 #### Scenario: 历史问答不显示标记
 

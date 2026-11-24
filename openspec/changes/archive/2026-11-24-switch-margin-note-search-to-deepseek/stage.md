@@ -1,4 +1,4 @@
-<!-- stage: implement -->
+<!-- stage: archive -->
 <!-- constraint-domains: daily-report, discovery -->
 
 # stage — switch-margin-note-search-to-deepseek
