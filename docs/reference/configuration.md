@@ -178,6 +178,36 @@ entity_subject:
 | Public API base | `"http://localhost:5100/api"` | `nuxt.config.ts` |
 | dev server host | `"0.0.0.0"` | `nuxt.config.ts`（修 Windows 下 localhost 只绑 ::1 的问题） |
 
+## 日志
+
+后端日志主干是 slog，`configs/config.yaml` 的 `log` 段：
+
+```yaml
+log:
+  level: "info"            # debug | info | warn | error
+  file:
+    enabled: true          # 关闭时退回纯 stdout（脚本与单测依赖此语义）
+    path: "logs/app.log"
+    max_size_mb: 50        # 单文件上限，超出切分
+    max_backups: 30        # 保留份数
+    max_age_days: 30       # 保留天数
+    compress: true         # 历史文件 gzip
+```
+
+通道约定（2026-11-24 `fix-log-stdout-rotation`）：
+
+| 通道 | 去向 | 说明 |
+| --- | --- | --- |
+| slog（业务主干） | `logs/app.log` | 文件启用时**不再**扇出 stdout |
+| Gin 访问 / 恢复日志 | `logs/app.log` | `gin.DefaultWriter` / `DefaultErrorWriter` 复用同一个 lumberjack 实例 |
+| zap 桥（embedding / merge 队列） | `logs/app.log` | `NewZapLogger` 与 slog 同通道 |
+| 启动横幅 / 进程级崩溃 stderr | `backend-go/nohup.out` | 仅兜底，正常运行时 KB 级 |
+
+- 查看日志：`tail -f backend-go/logs/app.log`
+- 临时回到 stdout（唯一进程级日志开关）：启动前 `LOG_CONSOLE=true`
+- 调整级别：编辑 `log.level` 后重启后端（配置层不提供环境变量覆盖）
+- 背景：改动前 slog / Gin / zap 三路都写 stdout，dev 栈把它重定向到无轮转的 `nohup.out`；2026-11-24 实测长到 756MB / 285 万行，同分区已用 79%。
+
 ## 各环境覆盖
 
 ### 本地开发

@@ -38,7 +38,7 @@ cors:
     - "Authorization"
 
 log:
-  level: "debug"
+  level: "info"
   file:
     enabled: true
     path: "logs/app.log"

@@ -23,7 +23,8 @@
 # 覆盖示例：
 #   NUXT_PUBLIC_API_BASE=/api CORS_ORIGINS=http://192.168.1.9:3000 bash scripts/dev/start-dev.sh --restart front
 #
-# 日志：后端 → backend-go/nohup.out，前端 → front/nohup.out（`tail -f` 看即可）
+# 日志：后端 → backend-go/logs/app.log（lumberjack 轮转，`tail -f backend-go/logs/app.log`；
+#       backend-go/nohup.out 只剩启动横幅与进程崩溃兜底）；前端 → front/nohup.out
 # 需要：Linux / macOS / WSL bash（Windows 原生按 docs/reference/development.md 的三步手动起）
 
 set -uo pipefail
@@ -206,12 +207,12 @@ start_back() {
 		echo "  后端（:$BACK_PORT）已在跑，跳过（PID: $(port_pids "$BACK_PORT")）"
 		return 0
 	fi
-	echo "  起后端（:$BACK_PORT）→ backend-go/nohup.out"
+	echo "  起后端（:$BACK_PORT）→ 运行日志 backend-go/logs/app.log（nohup.out 仅启动兜底）"
 	spawn_detached backend "$REPO_ROOT/backend-go" go run cmd/server/main.go
 	if wait_http "http://127.0.0.1:${BACK_PORT}/health" 30; then
 		echo "  ✓ 后端就绪（/health 200，PID: $(port_pids "$BACK_PORT")）"
 	else
-		echo "  ✗ 后端 60s 内没起来，看 backend-go/nohup.out" >&2
+		echo "  ✗ 后端 60s 内没起来，看 backend-go/nohup.out（启动横幅）与 backend-go/logs/app.log" >&2
 		return 1
 	fi
 }
