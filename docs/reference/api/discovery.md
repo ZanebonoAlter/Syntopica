@@ -182,23 +182,32 @@
 >
 > `rsshub_doc_base` 存 `ai_settings.rsshub_doc_base`（官方文档基址，用于推荐卡片「官方文档」链接生成）。缺省 `https://docs.rsshub.app`；官方文档站国内可能访问受限，可配换镜像。
 
-## SearXNG 配置与健康探测
+## 网页搜索配置与连通性探测
+
+页边注问答的联网后端是统一网页搜索入口（`backend-go/internal/platform/websearch`，数据源 DeepSeek Search API）。凭据**只认 AI 供应商注册表里的 DeepSeek 供应商密钥**（`ai_vendors` 中 `provider_type=openai_compatible` 且 base_url 主机为 `api.deepseek.com` 的已启用记录，多条取 id 最小），所以本组接口**只读关联状态 + 探测连通性，没有保存端点**——换 key 请去设置「AI 模型」分区改供应商。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/settings/searxng` | 读取 SearXNG 配置（endpoint + enabled） |
-| POST | `/api/settings/searxng` | 保存 SearXNG 配置 |
-| GET | `/api/settings/searxng/health` | 连通性主动探测（四态 + 耗时，add-searxng-health-indicator） |
+| GET | `/api/settings/web-search` | 读取供应商关联状态（`vendor_configured` + `vendor_name`，不返回任何密钥字段） |
+| GET | `/api/settings/web-search/health` | 连通性主动探测（四态 + 耗时 + `error_kind`，switch-margin-note-search-to-deepseek） |
 
-### GET /api/settings/searxng/health
+### GET `/api/settings/web-search`
 
 ```json
-{ "success": true, "data": { "status": "degraded", "latency_ms": 5213, "detail": "服务可达但搜索无结果（引擎可能故障或上游代理失效）" } }
+{ "success": true, "data": { "vendor_configured": true, "vendor_name": "DeepSeek" } }
 ```
 
-`status` 四态：`disabled`（未配置/未启用，200 正常态非错误）｜`unreachable`（endpoint 连接失败/超时/响应体解析失败）｜`degraded`（HTTP 可达但搜索结果为空——引擎全挂，2026-10-01 Clash 出口失效事故形态）｜`ok`（可达且结果非空）。`detail` 为人话摘要，不透传原始 JSON。
+`vendor_configured=false`（无已启用且填了密钥的 DeepSeek 供应商）是**正常态**：HTTP 200 + `vendor_name: ""`，面板显示空态指引（去「AI 模型」分区添加 DeepSeek 供应商并填密钥），联网参考关闭、问答本身不受影响。凭据查询真失败（如 DB 不可达）才返回 500 `{success:false, error}`。
 
-> 探测=真实探针搜索（固定 query `connectivity probe`），非进程探活——事故形态是「进程活、引擎死」，`/healthz` 类端点无法暴露。复用页边注问答联网链路同一配置解析（`platform/searxng.ResolveConfiguredEndpoint`，DB>env>yaml 现读现生效）与同一搜索客户端，面板与链路同源判活。按需触发不轮询；不走 airouter、不落 `ai_call_logs`（非 AI 调用）；探测日志前缀 `margin-notes: health probe` 可与问答降级 WARN 一起 grep。设置面板保存配置成功后自动探测一次；探测失败不阻塞保存。
+### GET `/api/settings/web-search/health`
+
+```json
+{ "success": true, "data": { "status": "degraded", "latency_ms": 512, "detail": "服务可达但搜索无结果（搜索服务侧可能异常）" } }
+```
+
+`status` 四态：`disabled`（未配置，200 正常态非错误，`latency_ms=0`、无 `error_kind`）｜`unreachable`（`error_kind` 给出具体类别）｜`degraded`（服务可达但探针搜索无结果——上游失效的事故形态，进程探活发现不了）｜`ok`（可达且结果非空）。`error_kind` 是 `unreachable` 的子类别（`websearch.ErrorKind`）：`auth`（401，或 403 非额度语义）／`quota`（402，或 403 且响应体表余额/额度不足）／`rate_limited`（429）／`timeout`（超时）／`unavailable`（网络不可达、5xx、响应体无法解析）。`detail` 为人话摘要，不透传原始 JSON（原始错误只进后端日志）。四态一律 200；只有探测自身异常才 500 `{success:false, error}`。
+
+> 探测=真实探针搜索（固定 query `connectivity probe`），非进程探活——事故形态是「服务活、搜索死」，`/healthz` 类端点无法暴露。复用页边注问答联网链路同一凭据解析（`platform/websearch.ResolveCredentials`，每次现读，AI 供应商配置改动即时生效）与同一搜索客户端（`websearch.Search`），面板与链路同源判活。按需触发不轮询；不走 airouter、不落 `ai_call_logs`（非 AI 调用）；探测日志前缀 `margin-notes: health probe` 可与问答降级 WARN 一起 grep。面板无保存动作，点「测试连接」即探测一次。
 
 ## 路由参数字典（admin）
 

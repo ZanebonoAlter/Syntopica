@@ -57,10 +57,10 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		settings.POST("/proxy", handler.SaveProxySettings)
 		settings.GET("/bocha", handler.GetBochaSettings)
 		settings.POST("/bocha", handler.SaveBochaSettings)
-		settings.GET("/searxng", handler.GetSearxngSettings)
-		settings.POST("/searxng", handler.SaveSearxngSettings)
-		// SearXNG 连通性主动探测（add-searxng-health-indicator）：按需触发不轮询。
-		settings.GET("/searxng/health", handler.GetSearxngHealth)
+		// 网页搜索：只读关联状态 + 连通性主动探测（switch-margin-note-search-to-deepseek
+		// design D6）。无 POST——凭据只在 AI 路由的供应商里管理，面板不可编辑。
+		settings.GET("/web-search", handler.GetWebSearchSettings)
+		settings.GET("/web-search/health", handler.GetWebSearchHealth)
 	}
 
 	// 路由参数可选值字典 CRUD（feed-param-options）

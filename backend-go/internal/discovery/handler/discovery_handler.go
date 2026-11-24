@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,7 +16,7 @@ import (
 	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/httpclient"
 	"syntopica-backend/internal/platform/logging"
-	"syntopica-backend/internal/platform/searxng"
+	"syntopica-backend/internal/platform/websearch"
 )
 
 // ── discovery handler（preference-vector-feed-discovery + improve-discovery-recommendations）──
@@ -446,93 +447,63 @@ func SaveBochaSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// ── searxng settings（页边注问答联网后端，design D7）──
+// ── web-search settings（页边注问答联网后端，switch-margin-note-search-to-deepseek）──
 
-// GetSearxngHealth GET /api/settings/searxng/health — SearXNG 连通性主动探测
-// （add-searxng-health-indicator）：复用问答联网链路同一配置解析与同一搜索
-// 客户端，发一次真实探针搜索返回四态（disabled/unreachable/degraded/ok）
-// + 耗时。配置现读现生效（探测与下次提问同源判活）。disabled 是正常态非错
-// 误（200 带状态，不返回错误码）；探测不重试、不落 ai_call_logs（非 AI 调
-// 用）。handler 层再包一层 8s context 超时防悬挂（searxng 客户端自身已 8s）。
-func GetSearxngHealth(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
+// webSearchResolveCredentials / webSearchProbeHealth 是 handler 层测试接缝
+// （websearch 包的替换点未导出，跨包测试打不到；做法同 topicgraph 的
+// marginNoteWebSearchFn）。生产装配即 websearch 包本体。
+var webSearchResolveCredentials = websearch.ResolveCredentials
+var webSearchProbeHealth = websearch.ProbeHealth
+
+// GetWebSearchSettings GET /api/settings/web-search — 读网页搜索的供应商关联状态
+// （design D6）。面板无保存端点：密钥只在 AI 路由的 DeepSeek 供应商里管理，故只
+// 透出「是否已关联 + 供应商名」，不返回任何密钥字段。
+func GetWebSearchSettings(c *gin.Context) {
+	creds, err := webSearchResolveCredentials(c.Request.Context())
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"vendor_configured": true,
+				"vendor_name":       creds.VendorName,
+			},
+		})
+	case errors.Is(err, websearch.ErrNotConfigured):
+		// 未配置是正常态：面板显示空态指引（去 AI 路由配 DeepSeek 供应商）。
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"vendor_configured": false,
+				"vendor_name":       "",
+			},
+		})
+	default:
+		logging.Warnf("web-search settings: resolve credentials failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+	}
+}
+
+// GetWebSearchHealth GET /api/settings/web-search/health — 网页搜索连通性主动探测
+// （design D5/D6）：复用问答联网链路同一凭据解析与同一客户端，发一次真实探针
+// 搜索返回四态（disabled/unreachable/degraded/ok）+ 耗时 + error_kind。
+//
+// 四态一律 200：disabled 是「未配置」而非故障，unreachable 的原因在
+// error_kind 里（供面板出针对性文案），都不该让面板拿错误码反推状态。
+// websearch.ProbeHealth 的 error 恒为 nil（失败形态全部编码进 Health），故这里
+// 不按 err 分流，只在真出现时记日志并 500 兜底。外层 10s 大于客户端内层 8s，
+// 保证超时被归类为 timeout 而非外层取消。
+func GetWebSearchHealth(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	res := searxng.ProbeHealth(ctx)
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"status":     res.Status,
-			"latency_ms": res.LatencyMS,
-			"detail":     res.Detail,
-		},
-	})
-}
 
-// GetSearxngSettings GET /api/settings/searxng — 读 SearXNG 配置（endpoint + enabled，
-// 无 key）。响应形状对齐 bocha（去掉 key 字段）；未配置时 endpoint 返回空串。
-func GetSearxngSettings(c *gin.Context) {
-	endpoint := ""
-	enabled := false
-	if cfg, _, err := aisettings.LoadSearxngConfig(); err == nil && cfg != nil {
-		if v, ok := cfg["endpoint"].(string); ok && strings.TrimSpace(v) != "" {
-			endpoint = strings.TrimSpace(v)
-		}
-		if v, ok := cfg["enabled"].(bool); ok {
-			enabled = v
-		}
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"endpoint": endpoint,
-			"enabled":  enabled,
-		},
-	})
-}
-
-// saveSearxngSettingsRequest 保存 SearXNG 配置请求体。Enabled 指针语义对齐 bocha
-// （nil=保留现有值）；endpoint 空=不改。
-type saveSearxngSettingsRequest struct {
-	Endpoint string `json:"endpoint"`
-	Enabled  *bool  `json:"enabled"`
-}
-
-// SaveSearxngSettings POST /api/settings/searxng — 写 SearXNG 配置。
-// 界面改即时生效（marginNoteSearxngEndpoint 每次 Search 现读）。
-func SaveSearxngSettings(c *gin.Context) {
-	var req saveSearxngSettingsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request body"})
-		return
-	}
-
-	// 读现有配置，作为“不改”语义的缺省源。
-	existing, _, _ := aisettings.LoadSearxngConfig()
-	if existing == nil {
-		existing = map[string]interface{}{}
-	}
-	endpoint, _ := existing["endpoint"].(string)
-	enabled := false
-	if v, ok := existing["enabled"].(bool); ok {
-		enabled = v
-	}
-
-	if ep := strings.TrimSpace(req.Endpoint); ep != "" {
-		endpoint = ep
-	}
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
-
-	configJSON := map[string]interface{}{
-		"endpoint": endpoint,
-		"enabled":  enabled,
-	}
-	if err := aisettings.SaveSearxngConfig(configJSON, "SearXNG local search configuration"); err != nil {
+	health, err := webSearchProbeHealth(ctx)
+	if err != nil {
+		logging.Warnf("web-search health: probe failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": health})
 }
 
 // ── proxy settings（外部内容抓取链路的出站代理）──

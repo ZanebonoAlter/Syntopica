@@ -190,29 +190,54 @@ describe('MarginNoteCard（锚点卡交互契约）', () => {
     expect(on.openCited).toHaveBeenCalledWith(102)
   })
 
-  it('联网降级标记（add-searxng-health-indicator）：仅 empty 渲染，ok/disabled/旧行 NULL 不渲染', () => {
-    // empty：渲染标记 + title 提示去设置面板排查。
+  it('联网状态标记（empty，老行为不变）：渲染「联网搜索无结果」+ title 排查提示，且可与纯模型知识标注并存', () => {
+    // empty（链路启用但本轮无结果）：渲染标记 + title 提示去设置面板排查。
     const { wrapper: emptyWrapper } = mountCard({
-      qas: [{ ...makeNote().qas[0]!, web_search_status: 'empty' }],
+      qas: [{ ...makeNote().qas[0]!, cited_article_ids: [], cited_web_sources: [], web_search_status: 'empty' }],
     })
     const marker = emptyWrapper.find('[data-testid="mn-web-search-empty"]')
     expect(marker.exists()).toBe(true)
     expect(marker.text()).toBe('联网搜索无结果')
     expect(marker.attributes('title')).toContain('设置')
+    expect(emptyWrapper.find('[data-testid="mn-web-ok"]').exists()).toBe(false)
+    expect(emptyWrapper.find('[data-testid="mn-web-unused"]').exists()).toBe(false)
 
-    // ok / disabled / 旧行 NULL（字段缺省）→ 不渲染任何联网标记。
-    for (const status of ['ok', 'disabled', undefined] as const) {
+    // 标记与引用/纯模型知识标注互不干扰：empty 且无引用时可两者并存（各自独立信号）。
+    expect(emptyWrapper.find('[data-testid="mn-pure-model"]').exists()).toBe(true)
+  })
+
+  it('联网状态标记（ok）：本轮有网络来源→「已联网」；无网络来源→「已联网 · 未采用」', () => {
+    // ok + 本轮引用了网络来源 → 已联网（弱化标记，无交互）。
+    const { wrapper: okWrapper } = mountCard({
+      qas: [{ ...makeNote().qas[0]!, web_search_status: 'ok' }],
+    })
+    const okMarker = okWrapper.find('[data-testid="mn-web-ok"]')
+    expect(okMarker.exists()).toBe(true)
+    expect(okMarker.text()).toBe('已联网')
+    expect(okWrapper.find('[data-testid="mn-web-unused"]').exists()).toBe(false)
+    expect(okWrapper.find('[data-testid="mn-web-search-empty"]').exists()).toBe(false)
+
+    // ok + 搜索有结果但模型本轮没引用 → 「已联网 · 未采用」+ title 说明（语义由本 change 翻转）。
+    const { wrapper: unusedWrapper } = mountCard({
+      qas: [{ ...makeNote().qas[0]!, cited_article_ids: [], cited_web_sources: [], extracted_terms: [], web_search_status: 'ok' }],
+    })
+    const unusedMarker = unusedWrapper.find('[data-testid="mn-web-unused"]')
+    expect(unusedMarker.exists()).toBe(true)
+    expect(unusedMarker.text()).toBe('已联网 · 未采用')
+    expect(unusedMarker.attributes('title')).toBe('已搜索到结果，但模型本轮未引用')
+    expect(unusedWrapper.find('[data-testid="mn-web-ok"]').exists()).toBe(false)
+    // 纯模型知识标注只由「无本地引用且无网络来源」决定，不被联网标记影响。
+    expect(unusedWrapper.find('[data-testid="mn-pure-model"]').exists()).toBe(true)
+  })
+
+  it('联网状态标记（disabled / 历史 NULL / 字段缺省）：不渲染任何联网标记', () => {
+    for (const status of ['disabled', null, undefined] as const) {
       const { wrapper } = mountCard({
         qas: [{ ...makeNote().qas[0]!, web_search_status: status }],
       })
       expect(wrapper.find('[data-testid="mn-web-search-empty"]').exists(), `status=${status}`).toBe(false)
+      expect(wrapper.find('[data-testid="mn-web-ok"]').exists(), `status=${status}`).toBe(false)
+      expect(wrapper.find('[data-testid="mn-web-unused"]').exists(), `status=${status}`).toBe(false)
     }
-
-    // 标记与引用/纯模型知识标注互不干扰：empty 且无引用时可两者并存（各自独立信号）。
-    const { wrapper: bothWrapper } = mountCard({
-      qas: [{ ...makeNote().qas[0]!, cited_article_ids: [], cited_web_sources: [], extracted_terms: [], web_search_status: 'empty' }],
-    })
-    expect(bothWrapper.find('[data-testid="mn-web-search-empty"]').exists()).toBe(true)
-    expect(bothWrapper.find('[data-testid="mn-pure-model"]').exists()).toBe(true)
   })
 })

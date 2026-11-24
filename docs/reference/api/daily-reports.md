@@ -33,7 +33,7 @@
 | GET | `/daily-reports/:id/annotations` | 日报页边注批注列表（含问答轮） |
 | POST | `/daily-reports/:id/annotations` | 落锚批注 |
 | DELETE | `/annotations/:id` | 删除批注（连带问答） |
-| POST | `/annotations/:id/questions` | 批注提问/追问（SearXNG 联网补强） |
+| POST | `/annotations/:id/questions` | 批注提问/追问（网页搜索联网补强） |
 | GET | `/annotations` | 跨报告管理页列表（版块/关键词筛选） |
 | POST | `/daily-reports/backfill-embeddings` | 回填 section 向量 |
 | POST | `/daily-reports/backfill-relations` | 回填话题关系 |
@@ -1118,7 +1118,7 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 ```
 
 - `thread_id=null` + `section_id=0` = 头条 lead 批注（PR-4 放行路径）。
-- `cited_web_sources` 为 D7 联网白名单来源（url 均在提问当次的 SearXNG 搜索结果集内），前端外链新窗口打开。
+- `cited_web_sources` 为 D7 联网白名单来源（url 均在提问当次的统一网页搜索合并结果池内），前端外链新窗口打开。
 
 ### POST `/daily-reports/:id/annotations`
 
@@ -1134,7 +1134,7 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 
 提问/追问（同一端点，追加新问答轮）。Request：`{ "question": "…（必填，≤1000 字符）" }`。
 
-提问时先以划词（截 80 runes，空则回退问题）调本地 SearXNG（失败/未配置静默降级），原始结果作为参考并入同一次 LLM 调用（operation `daily_report.margin_note_qa`，capability `open_notebook`）。Response `data.qa` 形状同 GET 的 qas 条目，另带：
+提问时先经一次轻量 LLM 调用（operation `daily_report.margin_note_search_query`）依问题语义自由生成 1~3 条搜索词，失败/超时/输出空则回退划词文本（截 80 runes，空再回退问题）单 query；各 query 并行调统一网页搜索入口（`platform/websearch`，DeepSeek Search API；未配置/失败/超时静默降级），结果按 URL 去重后跨 query 按相关度分（`rerank_score`）稳定重排、每条摘要截 400 runes、取前 5 条作为参考并入同一次 LLM 调用（operation `daily_report.margin_note_qa`，capability `open_notebook`）。Response `data.qa` 形状同 GET 的 qas 条目，另带：
 
 ```json
 {

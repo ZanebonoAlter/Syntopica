@@ -19,7 +19,6 @@ type Config struct {
 	Bocha         BochaConfig
 	Comtrade      ComtradeConfig
 	Fred          FredConfig
-	Searxng       SearxngConfig
 	CrossBoardRel CrossBoardRelationConfig
 	EntitySubject EntitySubjectConfig
 }
@@ -137,13 +136,6 @@ type FredConfig struct {
 	APIKey string `mapstructure:"api_key"` // empty → source disabled
 }
 
-// SearxngConfig configures the local SearXNG instance used by the daily-report
-// margin-note QA web augmentation (design D7). Empty endpoint → disabled
-// (QA silently degrades); no API key needed.
-type SearxngConfig struct {
-	Endpoint string `mapstructure:"endpoint"` // empty → disabled
-}
-
 var AppConfig *Config
 
 func LoadConfig(configPath string) error {
@@ -186,7 +178,6 @@ func LoadConfig(configPath string) error {
 	viper.SetDefault("bocha.endpoint", "https://api.bochaai.com/v1/web-search")
 	viper.SetDefault("comtrade.api_key", "")
 	viper.SetDefault("fred.api_key", "")
-	viper.SetDefault("searxng.endpoint", "") // empty → disabled (QA degrades silently)
 
 	// Cross-board relation discovery budgets (add-evidence-backed-cross-board-relations).
 	viper.SetDefault("cross_board_rel.auto_max_sources_per_brief", 3)
@@ -282,11 +273,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv("BOCHA_ENDPOINT")); v != "" {
 		cfg.Bocha.Endpoint = v
-	}
-
-	// SearXNG local search (margin-note QA web augmentation). Empty → disabled.
-	if v := strings.TrimSpace(os.Getenv("SEARXNG_URL")); v != "" {
-		cfg.Searxng.Endpoint = v
 	}
 
 	// UN Comtrade data source (research data sources domain). Empty key →

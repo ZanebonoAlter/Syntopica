@@ -452,6 +452,7 @@ linters:
 #     AIRoute             | admin + platform/airouter        | 路由配置
 #     AIRouteProvider     | admin + platform/airouter        | 路由配置
 #     AICallLog           | admin + platform/airouter        | 调用日志
+#     AIVendor            | admin + platform/airouter/websearch | AI 供应商注册表（基线后补登：搜索凭据复用它，见 switch-margin-note-search-to-deepseek R-15）
 #     AIEmbeddingCache    | tagmanagement + platform/airouter | 嵌入缓存
 #     Notification        | admin/topicgraph + platform/notification | 通知
 #   例外（非 GORM 表，登记留痕）：

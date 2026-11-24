@@ -300,6 +300,9 @@ bash scripts/dev/start-dev.sh back --restart   # 或手动重启 go run
 ```
 
 > **一键脚本**：以上三步封装为 `bash scripts/dev/deploy-frontend.sh`（`--no-restart` 只铺盘不重启）；前端改动收尾顺手跑（AGENTS.md §Build & Verify 已固化），勿让用户打开页面还是旧版。
+> **构建限载已内置（2026-11-24 事故后固化，用户要求作为标准）**：`pnpm generate` 与本机其它 pi 会话叠加时会持续吃满 4 核并抬高 load，2026-11-24 10:08 实测把整机压到 reboot（构建被杀、产物未上线）。脚本现在把构建包进 `run_guarded`：`nice -n 19`（最低优先级）+ `NODE_OPTIONS=--max-old-space-size=3584` + 看门狗（每 20s 采样，仅 `MemAvailable<350MB` 或 `load1>30` 中止，且只杀构建进程组，不影响后续铺盘/重启）。阈值取宽是因为 load average 滞后：构建结束那一瞬仍会冲高，误杀收尾步骤比放过短时高负载代价更大（首次固化时阈值定在 load1>10，就在构建已完成的收尾阶段误杀了重启步骤）。
+>
+> **手工构建同样要限载**：不要在其它 pi 会话跑重活时直接 `pnpm generate`；确需手工跑时用 `nice -n 19 env NODE_OPTIONS=--max-old-space-size=3584 pnpm generate`，并用 `uptime` 与 `awk '/MemAvailable/{print $2/1024}' /proc/meminfo` 盯着，`MemAvailable` 跌破 400MB 立即 `Ctrl-C`。
 
 - 访问 `http://<pi-ip>:5100/`（API、WebSocket、feed 图标、静态页面同端口，与 Docker 部署形态一致）；代价是无 HMR，改前端代码须重新 generate + 拷贝。
 - `backend-go/frontend/` 是构建产物（不入 git 语义的部署产物），**别手改**；后端启动时该目录不存在则自动纯 API 模式（`internal/app/static.go`）。

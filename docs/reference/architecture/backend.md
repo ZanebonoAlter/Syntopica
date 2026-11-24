@@ -124,7 +124,7 @@ backend-go/
 │       ├── analysispause/         # 分析暂停总闸
 │       ├── aihealth/ articlerefs/ config/ database/ httpclient/ imageproxy/
 │       ├── jsonutil/ logging/ middleware/ notification/ safefetch/
-│       ├── searxng/ testutil/ textutil/ tracing/ ws/
+│       ├── testutil/ textutil/ tracing/ websearch/ ws/
 ```
 
 每个业务域统一遵循三层结构：
@@ -196,7 +196,7 @@ internal/<domain>/
 
 订阅发现域（feed-discovery，decouple-backend-domains 自 admin 整体迁出；对外 API `/api/discovery/*` 不变）：
 
-- `handler/`：发现/推荐/候选目录/路由参数字典/偏好画像 API（含 `/api/settings` 的 rsshub/proxy/bocha/searxng）
+- `handler/`：发现/推荐/候选目录/路由参数字典/偏好画像 API（含 `/api/settings` 的 rsshub/proxy/bocha/web-search）
 - `service/`：候选召回、精排推荐、可用性检查、RSSHub 目录同步、偏好画像、seed 策略
 - `models/`：域独占模型（DiscoveryRun、FeedCandidate、FeedRecommendation、RSSHubRoute、PreferenceVector 等 12 个，AutoMigrate 自注册）
 - `routes.go` + `wire.go`：路由注册 + root 门面（admin jobs / app runtime 的唯一跨域入口）

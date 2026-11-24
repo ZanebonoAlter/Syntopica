@@ -29,8 +29,8 @@ vi.mock('~/components/dialog/FirecrawlConfigPanel.vue', () => ({
 vi.mock('~/components/dialog/BochaConfigPanel.vue', () => ({
   default: { name: 'BochaStub', template: '<div data-testid="panel-bocha" />' },
 }))
-vi.mock('~/components/dialog/SearxngConfigPanel.vue', () => ({
-  default: { name: 'SearxngStub', template: '<div data-testid="panel-searxng" />' },
+vi.mock('~/components/dialog/WebSearchConfigPanel.vue', () => ({
+  default: { name: 'WebSearchStub', template: '<div data-testid="panel-web-search" />' },
 }))
 vi.mock('./SettingsSectionRsshub.vue', () => ({
   default: { name: 'RsshubStub', template: '<div data-testid="panel-rsshub" />' },
@@ -42,7 +42,7 @@ vi.mock('./SettingsSectionProxy.vue', () => ({
   default: { name: 'ProxyStub', template: '<div data-testid="panel-proxy" />' },
 }))
 
-const SUB_TABS = ['firecrawl', 'bocha', 'searxng', 'rsshub', 'datasources', 'proxy']
+const SUB_TABS = ['firecrawl', 'bocha', 'web-search', 'rsshub', 'datasources', 'proxy']
 
 function mountSection() {
   return mount(SettingsSectionDatasourcesNetwork)
@@ -58,7 +58,8 @@ describe('SettingsSectionDatasourcesNetwork（复合 section 子 tab）', () => 
   it('渲染 6 个子 tab，默认落 Firecrawl', () => {
     const wrapper = mountSection()
     const tabs = wrapper.findAll('[role="tab"]')
-    expect(tabs.map(t => t.text())).toEqual(['Firecrawl', '博查', 'SearXNG', 'RSSHub', '研究数据源', '出站代理'])
+    expect(tabs.map(t => t.text())).toEqual(['Firecrawl', '博查', '网页搜索', 'RSSHub', '研究数据源', '出站代理'])
+    expect(tabs.map(t => t.text())).not.toContain('SearXNG')
     expect(tabs[0]!.attributes('aria-selected')).toBe('true')
     expect(wrapper.find('[data-testid="panel-firecrawl"]').exists()).toBe(true)
   })
@@ -80,10 +81,20 @@ describe('SettingsSectionDatasourcesNetwork（复合 section 子 tab）', () => 
     expect(wrapper.find('[data-testid="panel-firecrawl"]').exists()).toBe(false)
   })
 
-  it('URL tab 参数驱动初始子 tab（?tab=searxng 直达 SearXNG）', () => {
+  it('URL tab 参数驱动初始子 tab（?tab=web-search 直达网页搜索）', () => {
+    routeQuery.tab = 'web-search'
+    const wrapper = mountSection()
+    expect(wrapper.find('[data-testid="panel-web-search"]').exists()).toBe(true)
+  })
+
+  it('旧深链 ?tab=searxng 归一为 web-search（面板下线、深链不死）', async () => {
     routeQuery.tab = 'searxng'
     const wrapper = mountSection()
-    expect(wrapper.find('[data-testid="panel-searxng"]').exists()).toBe(true)
+    await nextTick()
+
+    expect(replaceMock).toHaveBeenCalledWith({ query: { section: 'datasources-network', tab: 'web-search' } })
+    expect(wrapper.find('[data-testid="panel-web-search"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="panel-firecrawl"]').exists()).toBe(false)
   })
 
   it('非法 tab 值回默认并清参数（回退到 Firecrawl）', async () => {
@@ -105,7 +116,7 @@ describe('SettingsSectionDatasourcesNetwork（复合 section 子 tab）', () => 
   })
 
   it('子 tab 键沿用旧 section 键（旧键重定向目标合法）', () => {
-    // settings-workspace spec：旧键深链重定向 → tab=<旧键>；容器必须接受全部 6 旧键
+    // settings-workspace spec：旧键深链重定向 → tab=<旧键>；容器必须接受全部 6 个现有 tab 键
     for (const legacyKey of SUB_TABS) {
       for (const k of Object.keys(routeQuery)) delete routeQuery[k]
       routeQuery.section = 'datasources-network'
