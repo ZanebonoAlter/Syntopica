@@ -1703,3 +1703,117 @@ describe('LaneComposeCanvas — 统一标题（缺陷 B）', () => {
     expect(w.find('[data-testid="lane-node-r1"] [data-role="node-title"]').exists()).toBe(false)
   })
 })
+
+// ── 2026-11-24 用户实拍：单泳道时画布下方空掉约 30% 视口（align-lane-correction-workface 7.x） ──
+
+describe('LaneComposeCanvas — 编排画布高度贴合容器（align-lane-correction-workface 7.1）', () => {
+  /** 打桩容器可视高（画布贴合的实测口径是 clientHeight）。 */
+  async function setCanvasHeight(w: ReturnType<typeof mount>, height: number): Promise<void> {
+    const el = w.find('[data-testid="lane-compose-canvas"]').element as HTMLElement
+    Object.defineProperty(el, 'clientHeight', { value: height, configurable: true })
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+  }
+
+  /** 指针事件（happy-dom 的 Event 不带坐标）。 */
+  function pointerAt(type: 'pointerdown' | 'pointermove' | 'pointerup', x: number, y: number): PointerEvent {
+    const event = new Event(type, { bubbles: true, cancelable: true })
+    Object.defineProperties(event, {
+      clientX: { value: x, configurable: true },
+      clientY: { value: y, configurable: true },
+      pointerId: { value: 1, configurable: true },
+    })
+    return event as unknown as PointerEvent
+  }
+
+  it('7.1-a 内容少时画布填满容器：总高 = 容器实测高（不在地线 460/560 上停住）', async () => {
+    const w = await mountRows()
+    await setCanvasHeight(w, 900)
+    expect(svgAttrs().height).toBeCloseTo(900, 6)
+    // 容器仍高于内容 → 画布继续贴合容器（不是固定值）
+    await setCanvasHeight(w, 520)
+    expect(svgAttrs().height).toBeCloseTo(520, 6)
+    expect(svgAttrs().height).toBeGreaterThan(460)
+    // viewBox 高度与像素高度同一口径（zoom = 1）
+    expect(svgAttrs().viewBox.split(' ')[3]).toBe('520')
+  })
+
+  it('7.1-b 内容高于容器时按内容撑高（不退化成 460/560 地线），容器纵向滚动承接', async () => {
+    const w = await mountRows({
+      sections: denseSections(),
+      chains: denseChains(),
+      selectedIds: new Set(['c0']),
+    })
+    await setCanvasHeight(w, 200)
+    const content = svgAttrs().height
+    expect(content).toBeGreaterThan(560)
+    // 容器仍低于内容 → 画布高由内容决定，不随容器变
+    await setCanvasHeight(w, 320)
+    expect(svgAttrs().height).toBeCloseTo(content, 6)
+    // 容器高过内容 → 重新贴合容器
+    await setCanvasHeight(w, content + 120)
+    expect(svgAttrs().height).toBeCloseTo(content + 120, 6)
+  })
+
+  it('7.2 余量全部给散料区：容器变高 → 散料区下缘跟着下移，本次泳道行 / 候选链行 top 不变', async () => {
+    const far = section('7', '2026-10-27', '散料较远', [0.7, 0.714])
+    const w = await mountRows({ sections: [...SECTIONS, far], selectedIds: new Set<string>() })
+    await setCanvasHeight(w, 600)
+    const laneTop = rowTop(w, 0)
+    const chainTop = rowTop(w, 1)
+    // 散料区下缘的唯一 DOM 投影：地板折叠计数的锚点（y = 下缘 − 9）
+    const floorBottom = (): number => Number(w.find('[data-testid="lane-floor-fold"]').attributes('y')) + 9
+    const bottom600 = floorBottom()
+
+    await setCanvasHeight(w, 900)
+
+    expect(rowTop(w, 0)).toBeCloseTo(laneTop, 6)
+    expect(rowTop(w, 1)).toBeCloseTo(chainTop, 6)
+    // 富余 300px 全部落到散料区下缘（不是插在行之间、也不是留成空白带）
+    expect(floorBottom()).toBeCloseTo(bottom600 + 300, 6)
+    expect(floorBottom()).toBeGreaterThan(chainTop + 100)
+  })
+
+  it('7.3 刚好贴合容器（不溢出）时第 0 行不吸顶；只有确实溢出才吸顶', async () => {
+    const w = await mountRows()
+    // 容器极小 → 画布高 = 内容所需高
+    await setCanvasHeight(w, 1)
+    const content = svgAttrs().height
+    expect(content).toBeGreaterThan(0)
+
+    // 内容刚好装进容器（canvasHeight == 容器高，不溢出）
+    await setCanvasHeight(w, content)
+    const laneRow = () => w.find('.lcc-canvas__row[data-row-kind="lane"]')
+    expect(laneRow().attributes('data-role')).toBeUndefined()
+    expect(laneRow().attributes('transform')).toBeUndefined()
+    expect(w.findAll('[data-role="sticky-bg"]')).toHaveLength(0)
+    await setCanvasScrollTop(w, 30)
+    expect(pinnedOffset(w)).toBe(0)
+
+    // 容器再矮一点（内容确实溢出）→ 吸顶生效，位移 = scrollTop / zoom
+    await setCanvasHeight(w, content - 40)
+    expect(laneRow().attributes('data-role')).toBe('sticky-row')
+    expect(pinnedOffset(w)).toBeCloseTo(30, 6)
+  })
+
+  it('7.4 「不可落点」态有实际样式：类被绑定，且单文件 CSS 里有同名规则（不是只有类名）', async () => {
+    const w = await mountRows({ selectedIds: new Set(['1']) })
+    const surface = w.find('[data-testid="lane-compose-canvas"]')
+    const chainRow = () => w.find('.lcc-canvas__row[data-row-kind="chain"]')
+    expect(chainRow().classes()).not.toContain('is-drop-other')
+
+    // 拖本次泳道成员悬停在候选链行（非本次泳道行）上 → 该行呈现「不可落点」形态
+    const chainTop = rowTop(w, 1)
+    w.find('[data-testid="lane-node-1"]').element.dispatchEvent(pointerAt('pointerdown', 300, 5))
+    surface.element.dispatchEvent(pointerAt('pointermove', 300, chainTop + 10))
+    await flushPromises()
+    expect(chainRow().classes()).toContain('is-drop-other')
+    // 与「本次泳道行的落点高亮」明确不同：同一时刻本次泳道行不是落点目标
+    expect(w.find('.lcc-canvas__row[data-row-kind="lane"]').classes()).not.toContain('is-drop-target')
+    surface.element.dispatchEvent(pointerAt('pointerup', 300, chainTop + 10))
+    await flushPromises()
+
+    const src = readFileSync(`${import.meta.dirname}/LaneComposeCanvas.vue`, 'utf8')
+    expect(src).toMatch(/\.lcc-canvas__row\.is-drop-other \{[^}]*opacity: 0\.35/)
+  })
+})

@@ -554,8 +554,14 @@ func formatComposeDate(t *time.Time) *string {
 // status=active, reassigning the given sections to it. The topic embedding is
 // the mean pooling of the selected sections' embeddings. Sections without valid
 // embeddings are skipped and returned. The entire operation runs in a single
-// transaction: any step that fails (including RebuildBoardRelations) rolls back
-// the whole thing, leaving no half-created topic.
+// transaction: any step that fails (including the 首义留痕 append and
+// RebuildBoardRelations) rolls back the whole thing, leaving no half-created
+// topic.
+//
+// 同事务内追加一行 topic_anchor_overrides 留痕（source=selected_sections，
+// input_summary = 实际参与聚合的 section id 列表），使该话题的首义来源可被
+// 读端点反解为「人工（建话题时选定的 N 个节点）」（design D6/D8）。历史手动
+// 建的泳道不回填（当时未留痕，事后推断即编造）。
 func (r *TopicGraphRepository) CreateManualTopic(boardID uint, label string, sectionIDs []uint) (topic *BoardPersistentTopic, skipped []uint, err error) {
 	if len(sectionIDs) == 0 {
 		return nil, nil, fmt.Errorf("CreateManualTopic: no sections provided")
@@ -651,6 +657,27 @@ func (r *TopicGraphRepository) CreateManualTopic(boardID uint, label string, sec
 			if err := r.UpdateSectionTopicAssignment(tx, u.id, &tid, dist, TopicConfManual, u.laneTier, nil); err != nil {
 				return fmt.Errorf("CreateManualTopic: assign section %d: %w", u.id, err)
 			}
+		}
+
+		// 首义留痕：与建话题同事务（design D8）。
+		//
+		// 留痕必须与**实际构成首义向量**的节点集一致 —— 跳过无向量的 section
+		// 不计入（否则读端点会解析出一个与首义向量无关的节点集）。
+		// 写入失败 → 整个事务回滚：SHALL NOT 留下「有话题、无留痕」的半成品，
+		// 那正是「来源不可考」状态，本条要消除的就是它。
+		participating := make([]uint, 0, len(usables))
+		for _, u := range usables {
+			participating = append(participating, u.id)
+		}
+		override := TopicAnchorOverride{
+			TopicID:      created.ID,
+			NewEmbedding: FloatsToPgVector(mean),
+			Source:       TopicAnchorSourceSelectedSections,
+			InputSummary: anchorInputSummary(participating),
+			Operator:     AnchorOperatorUser,
+		}
+		if err := tx.Create(&override).Error; err != nil {
+			return fmt.Errorf("CreateManualTopic: append anchor override: %w", err)
 		}
 
 		// Rebuild relations — failure here MUST roll back the entire transaction.

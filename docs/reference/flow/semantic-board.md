@@ -298,6 +298,8 @@ SemanticBoard 管理面板
 首义范围（sticky 按钮）       点节点只 = 选中查看，不改成员    pending / 空态 / 错误态
 ```
 
+**中央画布交互口径**（`console/LaneCorrectionCanvas.vue`）：点节点只 = 选中查看（节点卡跟随，标题完整换行展示、不以省略号截断）；**轻点画布空白处 = 取消聚焦**（节点卡收起；平移松手、落在节点 / 节点卡 / 缩放条 / 折叠带勾选框上的操作不算，零写请求）；归属变更走拖拽或节点卡按钮（即时落库）；话题带只画标签与中性基线，不画强调色横条（align-lane-correction-workface 实机反馈补丁）。
+
 - **左右不重复**：推荐只在右栏（`LaneRecommendationList.vue`），左栏（`LaneMemberList.vue`）收窄为成员/更早成员/本次已移出三组 + 首义（`LaneAnchorScope.vue`）；两侧各自独立纵向不均匀截断（块内滚动、操作按钮不被裁掉）。
 - **显式卡片写入**：节点卡（跟随选中节点）上直接给「＋加入本泳道 / ⊘移出本泳道 / 加回来」，右栏「＋加入」与卡上按钮走**同一** `useLaneCorrection` 的 `addMember/removeMember/restoreMember`，一次显式动作 = 一次既有归属 PATCH；点画布本体/Enter 只改选中态（查看与选入分离）。写操作只写事实层：不动 `hit_count` / `consecutive_hits` / `status`（红线 20），移出不弹二次确认，首义仍只由左栏发起（次日生效）。
 - **时间窗是模态本地态**：新建/修正各自持已提交范围 + 控件草稿 + 手势预览 + 请求序号，**不写 router/query**（矩阵深链 `days/start/end` 不被覆盖）；`preview` 不取数，`commit` 校验通过才取候选，失败恢复旧范围并保留草稿/旧清单；修正档 7/14/30/365（可编排上限 365，与后端 `ComposeWindowMaxDays` 同源）。

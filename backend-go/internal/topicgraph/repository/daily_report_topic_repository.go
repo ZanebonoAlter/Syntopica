@@ -935,6 +935,60 @@ func computeVacuumFlag(strong, mid int, ratio float64) bool {
 	return float64(strong)/float64(total) < ratio
 }
 
+// CentroidWindowSection is one section inside a topic's rolling-centroid
+// window: the section id plus the read-only detail the anchor endpoint shows
+// (title + report period) and the raw embedding the centroid math consumes.
+type CentroidWindowSection struct {
+	// SectionID is the daily-report section id.
+	SectionID uint
+	// Title is the section's cluster label (the node title in the workbench).
+	Title string
+	// PeriodDate is the owning report's period date.
+	PeriodDate time.Time
+	// Embedding is the raw pgvector literal of the section.
+	Embedding string
+}
+
+// ListCentroidWindowSections returns the sections that make up a topic's
+// rolling-centroid window — the single 取数实现 shared by the centroid
+// computation and by the 首义 read endpoint (align-lane-correction-workface
+// D7 / spec「滚动窗口成员取数的单点实现」).
+//
+// 口径与 ComputeTopicCentroid 原内联 SQL **完全等价**：
+//
+//	谓词：归属本话题 且 embedding 非空；
+//	排序：报告期日期倒序，同期按 section id 倒序；
+//	上限：window（配置 persistent_topic_centroid_window，默认 30）。
+//
+// The SQL below is the original inline query of ComputeTopicCentroid with the
+// projection widened (section id + title + report period) so the read side can
+// answer "which nodes participate" without a second query. Predicate, join,
+// ordering and limit are untouched — the row set is identical to the old
+// query's. The projection stays dialect-neutral (no to_char): the very same
+// query runs on the SQLite-backed handler tests.
+//
+// Read-only: it never writes, never touches the centroid/embedding columns and
+// never triggers a recompute.
+func (r *TopicGraphRepository) ListCentroidWindowSections(topicID uint, window int) ([]CentroidWindowSection, error) {
+	if window <= 0 {
+		window = DefaultPersistentTopicConfig().CentroidWindow
+	}
+	var rows []CentroidWindowSection
+	err := r.db.Raw(`
+		SELECT s.id AS section_id, s.embedding AS embedding, s.cluster_label AS title, rpt.period_date AS period_date
+		FROM daily_report_sections s
+		JOIN board_daily_reports rpt ON rpt.id = s.report_id
+		WHERE s.persistent_topic_id = ?
+		  AND s.embedding IS NOT NULL
+		ORDER BY rpt.period_date DESC, s.id DESC
+		LIMIT ?
+	`, topicID, window).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("load recent sections for centroid: %w", err)
+	}
+	return rows, nil
+}
+
 // ComputeTopicCentroid recomputes the centroid for one topic from its recent
 // sections' embeddings, blended with the topic's 首义向量:
 //
@@ -963,21 +1017,10 @@ func (r *TopicGraphRepository) ComputeTopicCentroid(topicID uint) (string, error
 		window = DefaultPersistentTopicConfig().CentroidWindow
 	}
 
-	type secRow struct {
-		Embedding string
-	}
-	var rows []secRow
-	err := r.db.Raw(`
-		SELECT s.embedding AS embedding
-		FROM daily_report_sections s
-		JOIN board_daily_reports rpt ON rpt.id = s.report_id
-		WHERE s.persistent_topic_id = ?
-		  AND s.embedding IS NOT NULL
-		ORDER BY rpt.period_date DESC, s.id DESC
-		LIMIT ?
-	`, topicID, window).Scan(&rows).Error
+	// 窗口成员取数走单点实现（与首义读端点共用同一份口径，design D7）。
+	rows, err := r.ListCentroidWindowSections(topicID, window)
 	if err != nil {
-		return "", fmt.Errorf("load recent sections for centroid: %w", err)
+		return "", err
 	}
 
 	var vecs [][]float64

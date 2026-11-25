@@ -475,8 +475,13 @@ onBeforeUnmount(() => {
               :applying="correction.pendingIds.value.size > 0"
               :window-count="correction.memberNodes.value.length"
               :total-count="correction.totalMemberCount.value"
+              :origin-kind="correction.anchorOriginKind.value"
+              :origin-title="correction.anchorOrigin.value?.title ?? null"
+              :origin-date="correction.anchorOrigin.value?.periodDate ?? null"
+              :centroid="correction.centroidScope.value"
               @toggle="id => correction.toggleAnchorNode(id)"
               @apply="correction.requestAnchorApply()"
+              @retry="correction.reloadAnchor()"
             />
           </aside>
 
@@ -489,6 +494,7 @@ onBeforeUnmount(() => {
             :readonly-nodes="correction.readonlyNodes.value"
             :removed-nodes="correction.removedNodes.value"
             :fold-nodes="correction.earlierAnchorNodes.value"
+            :anchor-ids="anchorIdList"
             :anchor-selection="anchorSelectionList"
             :focus-id="correction.focusId.value"
             :loading="correction.loading.value"
@@ -500,6 +506,7 @@ onBeforeUnmount(() => {
             :relations="correction.relations.value"
             :pending-ids="pendingIdList"
             @focus="id => correction.setFocus(id)"
+            @clear-focus="correction.clearFocus()"
             @add="id => correction.addMember(id)"
             @remove="id => correction.removeMember(id)"
             @restore="id => correction.restoreMember(id)"

@@ -399,6 +399,18 @@ const rowsBottom = computed(() => {
   return last ? last.top + last.height : ROWS_TOP
 })
 
+/**
+ * 散料地板行的下缘（吸收容器富余高度后的真实下缘 = 画布底缘）。
+ *
+ * 折叠计数（「低相关散料 N 条 · 展开」）锚在这个下缘：富余高度归散料区后，
+ * 它落在画布底部，把「散料区到画布底」这一段读成地板本身，而不是一条空白带。
+ */
+const floorRowBottom = computed(() => {
+  const row = layoutByRow.value.get(floorRow.value)
+  const top = row?.top ?? rowsBottom.value
+  return top + (row?.height ?? 0) + floorExtra.value
+})
+
 /** 本次泳道成员覆盖的天数（行标签的「跨度」）。 */
 const coveredDays = computed(() => {
   const days = new Set<string>()
@@ -461,7 +473,8 @@ const rowViews = computed<RowView[]>(() => {
       row: row.row,
       kind,
       top: row.top,
-      height: row.height,
+      // 散料区吸收容器富余高度（本次泳道行 / 候选链行的高度不变）。
+      height: kind === 'floor' ? row.height + floorExtra.value : row.height,
       slots: row.slots,
       chainKey: chain?.key ?? '',
       label: kind === 'lane'
@@ -607,9 +620,47 @@ const points = computed(() => {
   return map
 })
 
-const canvasHeight = computed(() => (props.showAssigned
+/**
+ * 内容所需高度（**只按内容算**：行几何 + 底部留白；不读容器高度）。
+ *
+ * 地线 460 / 560 是旧实现的最小可视区（内容极少时的下限），不再是高度的主口径——
+ * 高度的主口径是「贴合容器」（见 `canvasHeight`）。
+ */
+const contentHeight = computed(() => (props.showAssigned
   ? Math.max(560, activeRowOffsets.value.cursor + 30)
   : Math.max(460, rowsBottom.value + CANVAS_BOTTOM_PAD)))
+
+/**
+ * 容器实测高度换算成画布逻辑坐标（画布按 zoom 缩放，SVG 高 = canvasHeight × zoom）。
+ *
+ * 高度测量用容器的 `clientHeight`（滚动条已占位后的值），由既有 `ResizeObserver`
+ * 单向驱动（容器 → 高度）；高度**不反向依赖「是否溢出」**——溢出判据只用于吸顶，
+ * 否则会构成「高度 → 溢出 → 容器高 → 高度」的自指反馈环（design D13）。
+ */
+const containerFitHeight = computed(() => (containerHeight.value > 0 && zoom.value > 0
+  ? containerHeight.value / zoom.value
+  : 0))
+
+/**
+ * 画布总高：**先贴合容器，再按需撑高**。
+ *
+ * - 内容不足以撑满容器 → 画布总高 = 容器高度（下方不再空掉一大块空白带）；
+ * - 内容超出容器 → 画布总高 = 内容高度（容器纵向滚动承接，行距不压缩）。
+ */
+const canvasHeight = computed(() => Math.max(contentHeight.value, containerFitHeight.value))
+
+/**
+ * 容器贴合带来的富余高度：**全部**归底部散料区（floorRow）。
+ *
+ * 用户拍板：本次泳道行与候选链行的位置**不变**（行序与行内几何保持原样），
+ * 富余高度由底部散料区吸收 —— 散料区因而不出现「内容结束后空掉一大块」的空白带。
+ *
+ * 只读参照梯子（`showAssigned`）在散料区**之下**，富余高度不能插在两者中间，
+ * 故该模式不把富余给散料区（保持既有几何）。
+ */
+const floorExtra = computed(() => (props.showAssigned
+  ? 0
+  : Math.max(0, canvasHeight.value - contentHeight.value)))
 
 // ── 吸顶（P-1：本次泳道行钉在画布顶部） ─────────────────────────────────
 /**
@@ -753,6 +804,13 @@ const appearances = computed(() => {
 })
 
 // ── 缩放（滚轮放大 / 缩小；拖拽期间屏蔽） ─────────────────────────────────
+/**
+ * 画布缩放比例（滚轮改；拖拽期间屏蔽）。
+ *
+ * 注意：`canvasHeight` 的容器贴合换算要用到它，而它在文件里声明得比 `canvasHeight` 晚。
+ * 计算属性是**惰性求值**（首次访问在 setup 之后），因此不踩 TDZ；但 watch 的 source
+ * 会立即求值，那条 watch 必须留在本声明之后。
+ */
 const zoom = ref(LANE_ZOOM_DEFAULT)
 const zoomPercent = computed(() => `${Math.round(zoom.value * 100)}%`)
 
@@ -1864,7 +1922,7 @@ watch(() => props.focusId, (now, prev) => {
           data-testid="lane-floor-fold"
           :transform="rowLabelTransform"
           :x="2"
-          :y="(layoutByRow.get(floorRow)?.top ?? rowsBottom) + (layoutByRow.get(floorRow)?.height ?? 0) - 9"
+          :y="floorRowBottom - 9"
           text-anchor="start"
           @click="toggleFloor()"
         >{{ floorFoldText }}</text>
@@ -2133,6 +2191,17 @@ watch(() => props.focusId, (now, prev) => {
 .lcc-canvas__row.is-drop-target .lcc-canvas__dropzone {
   fill: color-mix(in srgb, var(--color-accent) 14%, transparent);
   stroke-width: 1.5;
+}
+
+/*
+ * 不可落点（拖到本次泳道行之外）：与落点高亮**明确不同**的视觉形态。
+ *
+ * 落点高亮 = 目标行加深（accent 底色 + 粗描边）；不可落点 = 被指到的行整体弱化，
+ * 两种形态不共用同一套语言（此前该 class 只绑定、没有任何样式 → 拖到非目标行
+ * 「没有任何反馈」，是既有缺陷）。
+ */
+.lcc-canvas__row.is-drop-other {
+  opacity: 0.35;
 }
 
 .lcc-canvas__day-more {

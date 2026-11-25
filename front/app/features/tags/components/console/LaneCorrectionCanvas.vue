@@ -22,19 +22,36 @@
  *   「⊘移出本泳道」/「↩加回」，当场生效（emit 意图，宿主统一走 useLaneCorrection）；
  *   **点画布本体仍只改选中态**（查看与选入分离不破）；active 只读与归属未知节点
  *   不提供写入口；按钮阻止冒泡。
+ * - **节点卡标题完整展示**（实机反馈）：标题按需换行、不以省略号截断；
+ * - **轻点空白取消聚焦**（实机反馈）：聚焦在场时点画布空白处 emit `clear-focus`（节点卡收起）；
+ *   平移松手、落在节点 / 节点卡 / 缩放条 / 折叠带勾选框上的操作不算；
+ * - **话题带不画强调色横条**（实机反馈）：成员行上方只留标签与中性基线，与其它分区同形。
  * - **相关高亮**（D6）：焦点的一跳原关系 ∪ 推荐（relatedNodeIds 唯一入口）；
  *   其余节点弱化；取消聚焦恢复默认。
- * - **节点表达统一 pointAppearance**（D7）：成员固定尺寸、候选按接近度、只读更弱更小；
- *   已移出划除 / 首义虚线 / 焦点环 / 相关 / 弱化是正交标志。图例「候选大小=接近度」。
+ * - **节点表达统一 pointAppearance**（D7）：成员固定尺寸、候选按**批内相对归一**的接近度、
+ *   只读更弱更小；已移出划除 / 首义标记 / 焦点环 / 相关 / 弱化是正交标志。
+ *
+ * 拖拽改归属（align-lane-correction-workface 第 4 节）：
+ * - **落点按分区、不按日期列**（X 轴是报告期事实，拖动不改写 `periodDate`）：
+ *   成员区 = 加入 / 加回，成员区之外 = 移出，只读参照区与「更早」折叠带 = 不可落点；
+ * - **可拖性逐节点判定**：只读参照 / 折叠带 / 落库中（pendingIds）节点不可拖；
+ * - **手势纪律**与编排画布一致：pointer 事件、4px 起拖阈值、拖拽期抑制文本选中、
+ *   指针捕获只在判定为拖拽那一刻启用、拖完 250ms 内吞 click、Esc / pointercancel 取消；
+ * - **即时落库、无草稿**：松手即 emit 既有 `add` / `remove` / `restore`（同一写路径、
+ *   同一份成员集合）；落库中节点半透明且不可再拖（防重入）；
+ * - **失败乐观回滚 + 节点内联标错**：分区由 props 派生，写失败即回原分区，
+ *   错误以红描边 + `title` / `aria-live` 就地呈现（不弹窗、不中断连续拖拽）。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  canvasContentPoint,
   clampZoom,
   estimateTextWidth,
   isDragBeyond,
   panScroll,
   pointAppearance,
   relatedNodeIds,
+  relativeProximities,
   scaledPointRadius,
   zoomAnchorScroll,
   zoomStep,
@@ -80,15 +97,25 @@ const props = withDefaults(defineProps<{
   relations?: LaneRelation[]
   /** 正在提交的节点 id（卡片按钮禁用，防重复提交；与左栏/右栏同一份）。 */
   pendingIds?: string[]
+  /**
+   * **已生效首义**节点 id（当前首义集里的成员）。
+   *
+   * 与「待提交勾选」（`anchorSelection`）是**两套标记**：左栏勾选但尚未提交的节点
+   * 画虚线环；当前首义集里的成员画实线环——两者可区分（D10 / 5.4）。
+   */
+  anchorIds?: string[]
 }>(), {
   matchThreshold: 0.3,
   relations: () => [],
   pendingIds: () => [],
+  anchorIds: () => [],
 })
 
 const emit = defineEmits<{
   /** 点节点 → 只改选中态。 */
   focus: [id: string]
+  /** 点画布空白处 → 取消聚焦（节点卡收起）；平移松手与落在节点上的轻点不算。 */
+  'clear-focus': []
   /** 节点卡「＋加入本泳道」（显式写意图，当场生效）。 */
   add: [id: string]
   /** 节点卡「⊘移出本泳道」（直接解除归属，不选去处）。 */
@@ -118,8 +145,25 @@ const RIGHT_PAD = 28
 const BAND_Y = 44
 /** 成员节点基线。 */
 const MEMBER_Y = 86
-/** 成员节点半径（本画布固定小尺寸，不随列宽变化）。 */
-const MEMBER_BASE_RADIUS = 5.5
+/**
+ * 成员节点半径（本画布固定尺寸，**不随列宽变化、不编码接近度**）。
+ *
+ * 取 7.5 是布局链联动的结果（D4）：`pointAppearance` 的候选半径上限被
+ * `min(cap × 0.72, memberBase − 0.5)` 钉死在成员基准半径之下——成员基准半径
+ * 只有 5.5 时，候选再怎么调区间也只能落在 5.0 上下（肉眼无差别）。
+ * 抬到 7.5 后候选才有 5.9–7.4 的可见档差，且仍 < 成员（推荐 ≤ 已选）。
+ */
+const MEMBER_BASE_RADIUS = 7.5
+/** 普通点基准半径（缺省公式的输入；只读参照与无估算候选走它）。 */
+const BASE_POINT_RADIUS = 4
+/**
+ * 候选接近度 → 半径 / 深浅（**批内相对归一**后使用）。
+ *
+ * 半径 5.9–7.4（直径 11.8–14.8）< 成员 7.5；深浅 18%–80%。
+ * 与编排画布同款区间，两画布的候选视觉一致。
+ */
+const RECOMMEND_RADIUS_RANGE = { min: 5.9, max: 7.4 }
+const PROXIMITY_STRENGTH_RANGE = { min: 18, max: 80 }
 /** 标题起笔距节点下沿的间距（引导线与标签共用）。 */
 const LABEL_TOP_GAP = 5
 /** 节点卡宽度固定（绝对定位卡片量宽会形成塌缩反馈环）。 */
@@ -166,6 +210,8 @@ let resizeObserver: ResizeObserver | null = null
 onMounted(() => {
   measure()
   window.addEventListener('resize', onWindowResize)
+  // Esc 取消拖拽（捕获阶段：拖拽中的 Esc 不冒泡到宿主）。
+  window.addEventListener('keydown', onWindowKeydown, true)
   if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
     resizeObserver = new ResizeObserver(() => measure())
     resizeObserver.observe(containerRef.value)
@@ -175,6 +221,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onWindowResize)
+  window.removeEventListener('keydown', onWindowKeydown, true)
   resizeObserver?.disconnect()
   resizeObserver = null
   containerRef.value?.removeEventListener('wheel', onWheel)
@@ -228,7 +275,7 @@ function resetZoom(): void {
 }
 
 // ── 拖拽平移（空白处拖；位移超阈值才算拖，不误伤点选） ─────────────────────
-let panStart: { x: number, y: number, left: number, top: number } | null = null
+let panStart: { x: number, y: number, left: number, top: number, onNode: boolean } | null = null
 let lastPanAt = 0
 const isPanning = ref(false)
 
@@ -237,11 +284,39 @@ function onSurfacePointerDown(event: PointerEvent): void {
   if (target?.closest?.('.lcc-card, .lcc-zoom, button, .lcc-fold-check')) return
   const surface = containerRef.value
   if (!surface) return
-  panStart = { x: event.clientX, y: event.clientY, left: surface.scrollLeft, top: surface.scrollTop }
+  // 命中可拖节点 → 接管手势为拖拽候选。
+  // 不可拖节点（只读参照 / 「更早」折叠带 / 落库中）**不接管拖拽，但也不吞手势**：
+  // 按下退化为空白处平移（旧能力：任何非交互目标都可起平移）；
+  // 未过阈值松手仍算点击，由 click 处理聚焦（onNodeClick 语义不变）。
+  const nodeEl = target?.closest?.('[data-node]') as HTMLElement | null
+  if (nodeEl) {
+    const id = nodeEl.getAttribute('data-node') ?? ''
+    if (isDraggable(id)) {
+      gesture = {
+        id,
+        start: { x: event.clientX, y: event.clientY },
+        scroll: { left: surface.scrollLeft, top: surface.scrollTop },
+        dragging: false,
+      }
+      // 阻止默认行为：拖动时不选中画布上的其它文字（同编排画布纪律）。
+      event.preventDefault()
+      return
+    }
+  }
+  panStart = { x: event.clientX, y: event.clientY, left: surface.scrollLeft, top: surface.scrollTop, onNode: Boolean(nodeEl) }
   isPanning.value = false
 }
 
 function onSurfacePointerMove(event: PointerEvent): void {
+  // 节点拖拽优先（手势与画布平移互斥）。
+  if (gesture) {
+    if (!gesture.dragging) {
+      if (!isDragBeyond(gesture.start, { x: event.clientX, y: event.clientY })) return
+      beginNodeDrag(event)
+    }
+    updateDragPoint(event)
+    return
+  }
   if (!panStart) return
   const surface = containerRef.value
   if (!surface) return
@@ -259,9 +334,35 @@ function onSurfacePointerMove(event: PointerEvent): void {
   surface.scrollTop = next.top
 }
 
-function onSurfacePointerUp(): void {
+function onSurfacePointerUp(event: PointerEvent): void {
+  if (gesture) {
+    const active = gesture
+    const wasDragging = active.dragging
+    const target = wasDragging ? zoneAtPoint(contentPointOf(event)) : 'none'
+    resetGesture()
+    // 未过 4px 阈值 → 仍算点击（只改选中态，由 click 处理）。
+    if (!wasDragging) return
+    // 拖完 250ms 内吞 click（防误触节点卡）。
+    lastDragAt = Date.now()
+    applyDrop(active.id, target)
+    return
+  }
   if (!panStart) return
-  if (isPanning.value) lastPanAt = Date.now()
+  if (!panStart) return
+  const wasPanning = isPanning.value
+  const startedOnNode = panStart.onNode
+  if (wasPanning) lastPanAt = Date.now()
+  panStart = null
+  isPanning.value = false
+  // 空白处轻点（未平移、起手不在节点上）= 取消聚焦：节点卡收起、相关高亮 / 弱化恢复默认。
+  // 落在节点上的轻点不算——聚焦与「再点同一节点取消」由节点自己的 click 负责，
+  // 这里若先清空，随后的 click 会把它重新聚焦（切换语义坏掉）；平移松手是滚动，不是选择。
+  if (!wasPanning && !startedOnNode && props.focusId) emit('clear-focus')
+}
+
+/** pointercancel：取消拖拽、**不发任何写请求**。 */
+function onSurfacePointerCancel(): void {
+  resetGesture()
   panStart = null
   isPanning.value = false
 }
@@ -431,11 +532,234 @@ const allPoints = computed(() => {
   return map
 })
 
+// ── 拖拽改归属（第 4 节：落点按**分区**，不按日期列） ─────────────────────────
+/**
+ * 落点分区。**X 轴是报告期事实**——拖动不得改写节点的 `periodDate`，
+ * 因此落点只判「成员区 / 候选区（含已移出）/ 只读参照区」三条横向带。
+ */
+type DropZone = 'member' | 'candidate' | 'readonly' | 'fold' | 'none'
+
+/** 节点当前所属分区（判定「拖出成员区 = 移出」与落库结果）。 */
+type NodeZone = 'member' | 'candidate' | 'removed' | 'readonly' | 'fold'
+
+/** 拖拽手势（与画布平移互斥：命中可拖节点即接管手势）。 */
+interface DragGesture {
+  id: string
+  /** 指针起点（视口坐标）。 */
+  start: { x: number, y: number }
+  /** 起手时的滚动位置。 */
+  scroll: { left: number, top: number }
+  /** 是否已过 4px 阈值（过了才算拖）。 */
+  dragging: boolean
+}
+
+/**
+ * 落库意图（松手即记；用于失败回滚与节点内联标错）。
+ *
+ * `to` = 期望落到的分区；写成功后 props 会按该分区变化 → 意图消解为成功；
+ * 写失败则分区不变 → 节点留在原分区（回滚）+ 内联标错。
+ */
+interface DropIntent {
+  from: NodeZone
+  to: NodeZone
+  /** 是否观察到过「落库中」（pendingIds 含该 id）——没观察到就不能判失败。 */
+  sawPending: boolean
+}
+
+const dragging = ref(false)
+const dragGhost = ref<{ x: number, y: number } | null>(null)
+const dragNodeId = ref<string | null>(null)
+const hoverZone = ref<DropZone>('none')
+/** 节点内联错误（写失败：不弹窗，就地红描边 + 文案）。 */
+const nodeErrors = ref<Record<string, string>>({})
+/** 最近一次失败文案（屏幕阅读器播报区）。 */
+const lastErrorMessage = ref('')
+
+let gesture: DragGesture | null = null
+/** 拖拽意图表（写成功后消解）。 */
+const dropIntents = new Map<string, DropIntent>()
+/** 拖完 250ms 内吞 click（防误触节点卡）。 */
+let lastDragAt = 0
+
+/** 成员区上缘（话题带）。 */
+const memberZoneTop = BAND_Y
+/** 成员区下缘（成员节点总占高的底部）。 */
+const memberZoneBottom = computed(() => membersBottom.value)
+/** 候选区（含已移出节点）纵向范围。 */
+const candidateZoneTop = computed(() => zones.value.zone1Top)
+const candidateZoneBottom = computed(() => zones.value.zone1Top + zones.value.zone1H)
+/** 只读参照区纵向范围。 */
+const readonlyZoneTop = computed(() => zones.value.zone2Top)
+const readonlyZoneBottom = computed(() => zones.value.zone2Top + zones.value.zone2H)
+
+/** 节点当前分区。 */
+function zoneOfNode(id: string): NodeZone {
+  if (props.foldNodes.some(item => item.id === id)) return 'fold'
+  if (isMember(id)) return 'member'
+  if (isRemovedNode(id)) return 'removed'
+  if (isReadonlyNode(id)) return 'readonly'
+  return 'candidate'
+}
+
+/**
+ * 可拖性**逐节点**判定：只读参照区与「更早」折叠带节点不可拖；
+ * 落库中（`pendingIds`）也不可拖（防重入）。
+ */
+function isDraggable(id: string): boolean {
+  if (props.pendingIds.includes(id)) return false
+  const zone = zoneOfNode(id)
+  return zone === 'member' || zone === 'candidate' || zone === 'removed'
+}
+
+/** 指针 → 内容坐标（解除滚动与缩放；两画布共用同一换算）。 */
+function contentPointOf(event: PointerEvent): { x: number, y: number } {
+  const surface = containerRef.value
+  if (!surface) return { x: 0, y: 0 }
+  return canvasContentPoint(
+    event.clientX,
+    event.clientY,
+    surface.getBoundingClientRect(),
+    { left: surface.scrollLeft, top: surface.scrollTop },
+    zoom.value,
+  )
+}
+
+/** 落点分区判定（**只看纵向分区带**；日期列不参与）。 */
+function zoneAtPoint(point: { x: number, y: number }): DropZone {
+  // 左缘「更早」折叠带不是落点（带内节点本就不可拖）。
+  if (hasFold.value && point.x >= LEFT_PAD && point.x <= LEFT_PAD + FOLD_W) return 'fold'
+  if (point.y >= memberZoneTop && point.y <= memberZoneBottom.value) return 'member'
+  if (point.y >= candidateZoneTop.value && point.y <= candidateZoneBottom.value) return 'candidate'
+  if (point.y >= readonlyZoneTop.value && point.y <= readonlyZoneBottom.value) return 'readonly'
+  return 'none'
+}
+
+/**
+ * 落点 → 写动作（null = 不发起任何写操作）。
+ *
+ * - 成员区：候选 → 加入、已移出 → 加回；已在成员区 → 无动作；
+ * - 成员区之外（候选区 / 画布空白）：成员 → 移出；
+ * - 只读参照区与折叠带：**不可落点**（不发起任何写操作）。
+ */
+function dropAction(id: string, target: DropZone): 'add' | 'remove' | 'restore' | null {
+  const zone = zoneOfNode(id)
+  if (target === 'readonly' || target === 'fold') return null
+  if (target === 'member') {
+    if (zone === 'candidate') return 'add'
+    if (zone === 'removed') return 'restore'
+    return null
+  }
+  if (zone === 'member') return 'remove'
+  return null
+}
+
+/** 落点分区的视觉类（可落点高亮 / 不可落点弱化）。 */
+function dropZoneClass(zone: DropZone): Record<string, boolean> {
+  if (!dragging.value) return {}
+  const id = dragNodeId.value
+  const valid = id ? dropAction(id, zone) !== null : false
+  if (hoverZone.value === zone) return valid ? { 'is-drop-target': true } : { 'is-drop-other': true }
+  // 只读参照区永不可落点 → 拖拽期间弱化（与落点高亮明确不同）。
+  if (zone === 'readonly') return { 'is-drop-other': true }
+  return {}
+}
+
+/** 节点内联错误写入 / 清除。 */
+function setNodeError(id: string, message: string): void {
+  nodeErrors.value = { ...nodeErrors.value, [id]: message }
+  lastErrorMessage.value = message
+}
+
+function clearNodeError(id: string): void {
+  if (!nodeErrors.value[id]) return
+  const next = { ...nodeErrors.value }
+  delete next[id]
+  nodeErrors.value = next
+}
+
+/**
+ * 落库意图消解：写成功 → 分区已按 props 归位；写失败 → 分区未变 → 内联标错。
+ *
+ * 节点分区**完全由 props 派生**（不乐观改写本地成员集），所以「失败回滚」是
+ * 天然的：写失败不改 props，节点就留在原分区。落库期间节点半透明（pendingIds），
+ * 计数不跳变（与 ui-design「loading（拖拽落库）」一致）。
+ */
+function resolveDropIntents(): void {
+  if (!dropIntents.size) return
+  for (const [id, intent] of [...dropIntents.entries()]) {
+    if (zoneOfNode(id) === intent.to) {
+      dropIntents.delete(id)
+      clearNodeError(id)
+      continue
+    }
+    if (props.pendingIds.includes(id)) {
+      intent.sawPending = true
+      continue
+    }
+    if (intent.sawPending) {
+      dropIntents.delete(id)
+      setNodeError(id, '落库失败，节点已回到原分区（可重试）')
+    }
+  }
+}
+
+watch(
+  [() => props.pendingIds, () => props.memberNodes, () => props.candidateNodes, () => props.removedNodes],
+  () => resolveDropIntents(),
+)
+
+/** 起拖：过 4px 阈值才启动（未过阈值的仍算点击，只改选中态）。 */
+function beginNodeDrag(event: PointerEvent): void {
+  if (!gesture) return
+  gesture.dragging = true
+  dragging.value = true
+  dragNodeId.value = gesture.id
+  try { containerRef.value?.setPointerCapture?.(event.pointerId) } catch { /* 环境不支持指针捕获 */ }
+  updateDragPoint(event)
+}
+
+/** ghost 跟随 + 落点分区跟踪。 */
+function updateDragPoint(event: PointerEvent): void {
+  const point = contentPointOf(event)
+  dragGhost.value = point
+  hoverZone.value = zoneAtPoint(point)
+}
+
+/** 拖拽结算：松手即落库（无草稿 / 无应用 / 无撤销）。 */
+function applyDrop(id: string, target: DropZone): void {
+  const action = dropAction(id, target)
+  if (!action) return
+  clearNodeError(id)
+  dropIntents.set(id, { from: zoneOfNode(id), to: action === 'remove' ? 'removed' : 'member', sawPending: false })
+  if (action === 'add') emit('add', id)
+  else if (action === 'remove') emit('remove', id)
+  else emit('restore', id)
+}
+
+/** 复位拖拽态（Esc / pointercancel / 落点后）。 */
+function resetGesture(): void {
+  gesture = null
+  dragging.value = false
+  dragGhost.value = null
+  dragNodeId.value = null
+  hoverZone.value = 'none'
+}
+
+/** Esc 取消：回原位、**不发任何写请求**。 */
+function onWindowKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape') return
+  if (!dragging.value) return
+  event.preventDefault()
+  // 捕获阶段拦下：拖拽中的 Esc 只取消拖拽。
+  event.stopPropagation()
+  lastDragAt = Date.now()
+  resetGesture()
+}
+
 // ── 节点表达（unify-lane-workbench D7：pointAppearance 唯一入口） ──────────
 function isMember(id: string): boolean {
   return props.memberNodes.some(item => item.id === id)
 }
-
 function isRemovedNode(id: string): boolean {
   return props.removedNodes.some(item => item.id === id)
 }
@@ -458,23 +782,46 @@ const focusRelatedIds = computed<Set<string> | null>(() => {
   return relatedNodeIds(edges.value, new Set([props.focusId]), recommended)
 })
 
-/** 统一节点表达：成员固定尺寸、候选按接近度、只读更弱更小；正交标志叠加。 */
+/**
+ * 候选桶（候选 + 本次已移出）的**批内相对接近度**（D3 / 5.1）。
+ *
+ * - 输入 = 候选桶里**估算口径**的接近度（1 − 质心距离）换算回距离；
+ * - 归一用 `relativeProximities`（批内 min-max：最近 = 1、最远 = 0，单点/全等距取 0.5）；
+ * - **成员与只读参照不进批次**：成员接近度恒为归属快照原值、尺寸固定，不编码接近度；
+ * - 无估算口径的节点不进批次（不伪造接近度，维持普通外观）。
+ */
+const candidateProximity = computed(() => {
+  const distances = new Map<string, number>()
+  for (const node of [...props.candidateNodes, ...props.removedNodes]) {
+    if (node.proximityKind !== 'estimate' || node.proximity === null) continue
+    const distance = 1 - node.proximity
+    if (!Number.isFinite(distance)) continue
+    distances.set(node.id, distance)
+  }
+  return relativeProximities(distances)
+})
+
+/** 统一节点表达：成员固定尺寸、候选按批内相对接近度、只读更弱更小；正交标志叠加。 */
 function appearanceOf(node: LaneCorrectionNode): LanePointAppearance {
   const member = isMember(node.id)
   const readonlyFlag = isReadonlyNode(node.id)
   const removedFlag = isRemovedNode(node.id)
   // 候选接近度是估算（1 − 质心距离）；成员/只读不读接近度（快照不驱动大小）。
-  const distance = !member && !readonlyFlag && node.proximityKind === 'estimate' && node.proximity !== null
-    ? 1 - node.proximity
-    : null
+  const estimate = !member && !readonlyFlag && node.proximityKind === 'estimate' && node.proximity !== null
+  const distance = estimate ? 1 - node.proximity! : null
+  // 候选桶用**批内相对归一**；成员与只读参照不传 override（尺寸固定）。
+  const override = estimate ? candidateProximity.value.get(node.id) : undefined
   const related = focusRelatedIds.value?.has(node.id) ?? false
-  return pointAppearance(distance, props.matchThreshold, member, readonlyFlag, 4, Math.max(8, columnWidth.value), {
+  return pointAppearance(distance, props.matchThreshold, member, readonlyFlag, BASE_POINT_RADIUS, Math.max(8, columnWidth.value), {
     removed: removedFlag,
-    anchor: isAnchorChecked(node.id) || props.foldNodes.some(item => item.id === node.id),
+    anchor: isAnchorEffective(node.id) || isAnchorChecked(node.id) || props.foldNodes.some(item => item.id === node.id),
     focus: props.focusId === node.id,
     related,
     dimmed: focusRelatedIds.value !== null && !related,
     memberRadius: MEMBER_BASE_RADIUS,
+    recommendRange: RECOMMEND_RADIUS_RANGE,
+    strengthRange: PROXIMITY_STRENGTH_RANGE,
+    proximityOverride: override,
   })
 }
 
@@ -673,11 +1020,19 @@ watch(() => props.focusId, () => {
 // ── 交互 ──────────────────────────────────────────────────────────────────
 function onNodeClick(node: LaneCorrectionNode): void {
   if (Date.now() - lastPanAt < 250) return
+  // 拖完 250ms 内吞 click（防误触节点卡）。
+  if (Date.now() - lastDragAt < 250) return
   emit('focus', node.id)
 }
 
+/** 待提交勾选（左栏首义面板勾选、尚未提交）。 */
 function isAnchorChecked(id: string): boolean {
   return props.anchorSelection.includes(id)
+}
+
+/** 已生效首义（当前首义集里的成员）——与待提交勾选各有独立可辨标记。 */
+function isAnchorEffective(id: string): boolean {
+  return props.anchorIds.includes(id)
 }
 
 /** 折叠带溢出标记（超出上限的节点数）。 */
@@ -703,13 +1058,13 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
     <div
       ref="containerRef"
       class="lcc-surface"
-      :class="{ 'is-panning': isPanning }"
+      :class="{ 'is-panning': isPanning, 'is-dragging': dragging }"
       data-testid="lane-correction-canvas"
       aria-label="本泳道成员与候选节点画布"
       @pointerdown="onSurfacePointerDown"
       @pointermove="onSurfacePointerMove"
       @pointerup="onSurfacePointerUp"
-      @pointercancel="onSurfacePointerUp"
+      @pointercancel="onSurfacePointerCancel"
     >
       <!-- 加载骨架 -->
       <svg
@@ -765,28 +1120,11 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
           </template>
         </g>
 
-        <!-- 话题带（本泳道一条）+ 活跃段 -->
+        <!-- 话题带（本泳道一条）：标签 + 中性基线；强调色横条与刻度线已按实机反馈移除 -->
         <g class="lcc-band">
           <text class="lcc-band-title" x="14" :y="BAND_Y + 2">本泳道话题带</text>
           <text class="lcc-band-sub" x="14" :y="BAND_Y + 18">{{ laneLabel }}</text>
           <line class="lcc-track" :x1="axisX0" :x2="vbWidth - RIGHT_PAD" :y1="BAND_Y + 6" :y2="BAND_Y + 6" />
-          <rect
-            class="lcc-band-bar"
-            :x="axisX0"
-            :y="BAND_Y"
-            :width="Math.max(28, vbWidth - axisX0 - RIGHT_PAD)"
-            height="12"
-            rx="6"
-          />
-          <line
-            v-for="node in memberNodes"
-            :key="`tick-${node.id}`"
-            class="lcc-band-tick"
-            :x1="allPoints.get(node.id)?.x"
-            :x2="allPoints.get(node.id)?.x"
-            :y1="BAND_Y + 12"
-            :y2="allPoints.get(node.id)?.y"
-          />
         </g>
 
         <!-- 分区线与分区标签 -->
@@ -797,6 +1135,40 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
           <line class="lcc-zone" :x1="axisX0" :x2="vbWidth - RIGHT_PAD" :y1="zones.zone2Line" :y2="zones.zone2Line" />
           <text class="lcc-zone-label" x="14" :y="zones.zone2Line + 14">只读参照</text>
           <text class="lcc-zone-label" x="14" :y="zones.zone2Line + 26">属其它泳道</text>
+        </g>
+
+        <!-- 落点分区（拖拽时高亮可落点分区、弱化不可落点区；平时不显现） -->
+        <g class="lcc-dropzones">
+          <rect
+            class="lcc-canvas__dropzone"
+            :class="dropZoneClass('member')"
+            data-testid="lane-dropzone-member"
+            :x="axisX0"
+            :y="memberZoneTop"
+            :width="Math.max(0, vbWidth - axisX0 - RIGHT_PAD)"
+            :height="Math.max(0, memberZoneBottom - memberZoneTop)"
+            rx="6"
+          />
+          <rect
+            class="lcc-canvas__dropzone"
+            :class="dropZoneClass('candidate')"
+            data-testid="lane-dropzone-candidate"
+            :x="axisX0"
+            :y="candidateZoneTop"
+            :width="Math.max(0, vbWidth - axisX0 - RIGHT_PAD)"
+            :height="Math.max(0, candidateZoneBottom - candidateZoneTop)"
+            rx="6"
+          />
+          <rect
+            class="lcc-canvas__dropzone"
+            :class="dropZoneClass('readonly')"
+            data-testid="lane-dropzone-readonly"
+            :x="axisX0"
+            :y="readonlyZoneTop"
+            :width="Math.max(0, vbWidth - axisX0 - RIGHT_PAD)"
+            :height="Math.max(0, readonlyZoneBottom - readonlyZoneTop)"
+            rx="6"
+          />
         </g>
 
         <!-- 节点（先只读参照，再候选与移出，成员在上层；表达统一 pointAppearance） -->
@@ -811,6 +1183,10 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
             'is-focus': focusId === node.id,
             'is-related': appearances.get(node.id)?.related,
             'is-dimmed': appearances.get(node.id)?.dimmed,
+            'is-draggable': isDraggable(node.id),
+            'is-locked': !isDraggable(node.id),
+            'is-pending': pendingIds.includes(node.id),
+            'is-error': Boolean(nodeErrors[node.id]),
           }"
           :data-node="node.id"
           :data-testid="`lane-node-${node.id}`"
@@ -818,14 +1194,23 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
           :style="`--proximity-fill: ${Math.round(appearances.get(node.id)?.strength ?? 0)}%`"
           tabindex="0"
           role="button"
-          :aria-label="`${node.date} · ${node.title}`"
+          :aria-label="`${node.date} · ${node.title}${nodeErrors[node.id] ? ' · ' + nodeErrors[node.id] : ''}`"
           @click="onNodeClick(node)"
         >
-          <title>{{ node.title }} · {{ node.date }}</title>
+          <title>{{ node.title }} · {{ node.date }}{{ nodeErrors[node.id] ? ` · ${nodeErrors[node.id]}` : '' }}</title>
           <circle class="lcc-hit" :cx="allPoints.get(node.id)?.x" :cy="allPoints.get(node.id)?.y" :r="Math.max(9, radiusOf(node) + 5)" />
+          <!-- 已生效首义：实线环（与待提交勾选的虚线环可区分） -->
+          <circle
+            v-if="isAnchorEffective(node.id)"
+            class="lcc-anchor-ring lcc-anchor-ring--effective"
+            :cx="allPoints.get(node.id)?.x"
+            :cy="allPoints.get(node.id)?.y"
+            :r="radiusOf(node) + 7"
+          />
+          <!-- 待提交勾选：虚线环 -->
           <circle
             v-if="isAnchorChecked(node.id)"
-            class="lcc-anchor-ring"
+            class="lcc-anchor-ring lcc-anchor-ring--pending"
             :cx="allPoints.get(node.id)?.x"
             :cy="allPoints.get(node.id)?.y"
             :r="radiusOf(node) + 7"
@@ -920,6 +1305,17 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
         </g>
       </svg>
 
+      <!-- 拖拽 ghost：放大 1.6× 跟随（与编排画布同款视觉语言） -->
+      <div
+        v-if="dragGhost"
+        class="lcc-drag-ghost"
+        data-role="drag-ghost"
+        :style="{ left: `${dragGhost.x * zoom}px`, top: `${dragGhost.y * zoom}px` }"
+      />
+
+      <!-- 节点内联失败播报（不弹窗；错误同时以红描边 + title 呈现在节点上） -->
+      <p class="lcc-live" aria-live="assertive" data-testid="lane-node-error-live">{{ lastErrorMessage }}</p>
+
       <!-- 画布无节点可展示 -->
       <p v-if="!loading && !error && emptyNote" class="lcc-note" data-testid="lane-correction-empty">
         {{ emptyNote }}
@@ -968,11 +1364,12 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
       </div>
     </div>
 
-    <!-- 图例：候选大小=接近度（成员固定尺寸，不编码接近度）；相关/弱化为正交标志 -->
+    <!-- 图例：尺寸图例（小圆—大圆）+ 两种首义标记 + 相关/弱化为正交标志 -->
     <p class="lcc-legend" aria-label="图例">
       <span><i class="lcc-lg lcc-lg--member" />成员</span>
-      <span><i class="lcc-lg lcc-lg--near" />候选大小=接近度</span>
-      <span><i class="lcc-lg lcc-lg--anchor" />虚线=首义</span>
+      <span class="lcc-lg-scale"><i class="lcc-lg lcc-lg--scale-sm" /><i class="lcc-lg lcc-lg--scale-lg" />候选大小=接近度</span>
+      <span><i class="lcc-lg lcc-lg--anchor-effective" />已生效首义</span>
+      <span><i class="lcc-lg lcc-lg--anchor-pending" />待提交勾选</span>
       <span><i class="lcc-lg lcc-lg--out">⊘</i>已移出</span>
       <span><i class="lcc-lg lcc-lg--related" />相关</span>
     </p>
@@ -1054,6 +1451,12 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
   user-select: none;
 }
 
+/* 拖拽期间：抑制文本选中 + 光标变 grabbing（落点高亮见 .lcc-canvas__dropzone）。 */
+.lcc-surface.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
 .lcc-svg {
   display: block;
 }
@@ -1102,21 +1505,32 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
   font-size: 11px;
 }
 
-.lcc-band-bar {
-  fill: var(--color-accent-subtle);
-  stroke: var(--color-accent);
-  stroke-width: 1;
-}
-
-.lcc-band-tick {
-  stroke: var(--color-accent);
-  stroke-width: 0.8;
-  opacity: 0.4;
-  stroke-dasharray: 2 3;
-}
-
 .lcc-node {
   cursor: pointer;
+}
+
+/* 可拖节点：光标 grab；不可拖（只读参照 / 更早折叠带 / 落库中）：default。 */
+.lcc-node.is-draggable {
+  cursor: grab;
+}
+
+.lcc-node.is-locked {
+  cursor: default;
+}
+
+/* 落库中（pendingIds）：半透明 + 不可再次拖拽（防重入）。 */
+.lcc-node.is-pending .lcc-point {
+  opacity: 0.45;
+}
+
+/* 落库失败：节点内联红描边（不弹窗）。 */
+.lcc-node.is-error .lcc-point {
+  stroke: var(--color-error);
+  stroke-width: 2;
+}
+
+.lcc-node.is-error .lcc-check {
+  stroke: var(--color-error);
 }
 
 .lcc-hit {
@@ -1162,6 +1576,13 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
   stroke-dasharray: 3 3;
   opacity: 0.9;
   pointer-events: none;
+}
+
+/* 已生效首义 = 实线环；待提交勾选 = 虚线环（两套标记可区分，D10）。 */
+.lcc-anchor-ring--effective {
+  stroke-width: 1.8;
+  stroke-dasharray: none;
+  opacity: 1;
 }
 
 /* 取消选中 = 细圈；与「取消勾选 = 移除」（左栏破坏性描边）明确区分。 */
@@ -1273,15 +1694,15 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
   border-radius: 6px;
   background: var(--color-bg-base);
   box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
-  /* 卡体仍穿透点击（不挡画布）；写操作按钮自己接事件。 */
-  pointer-events: none;
+  /* 卡体接住自己的点击：点卡不算「点空白画布」（不取消聚焦），长标题也可选中复制；
+     画布空白处轻点才取消聚焦（见 onSurfacePointerUp）。 */
+  pointer-events: auto;
 }
 
 .lcc-card__actions {
   display: flex;
   gap: 6px;
   margin-top: 4px;
-  pointer-events: auto;
 }
 
 .lcc-card__btn {
@@ -1327,17 +1748,71 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
   opacity: 0.35;
 }
 
+/* 标题完整展示：长标题换行、不以省略号截断（卡高随内容实测，见 cardSize）。 */
 .lcc-card__title {
   font-size: 12px;
+  line-height: 1.45;
   color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .lcc-card__meta {
   font-size: 11px;
   color: var(--color-text-muted);
+}
+
+/* 落点分区：平时不显现，拖拽时高亮可落点分区、弱化不可落点区
+   （与编排画布同款 .lcc-canvas__dropzone 视觉语言；scoped 样式各自维护一份）。 */
+.lcc-canvas__dropzone {
+  fill: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  stroke: color-mix(in srgb, var(--color-accent) 62%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 5 4;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.lcc-surface.is-dragging .lcc-canvas__dropzone {
+  opacity: 1;
+}
+
+.lcc-surface.is-dragging .lcc-canvas__dropzone.is-drop-target {
+  fill: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  stroke-width: 1.5;
+  opacity: 1;
+}
+
+.lcc-surface.is-dragging .lcc-canvas__dropzone.is-drop-other {
+  opacity: 0.3;
+}
+
+/* 拖拽 ghost：放大 1.6× 跟随（与编排画布同款）。 */
+.lcc-drag-ghost {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 30%, var(--color-bg-base));
+  transform: scale(1.6);
+  opacity: 0.9;
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* 落库失败播报区（屏幕阅读器；视觉错误在节点上）。 */
+.lcc-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .lcc-legend {
@@ -1368,13 +1843,36 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
   background: var(--color-accent);
 }
 
-.lcc-lg--near {
-  border-radius: 50%;
-  border: 1px solid var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 40%, transparent);
+/* 尺寸图例：小圆—大圆（候选大小 = 批内相对接近度）。 */
+.lcc-lg-scale {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
-.lcc-lg--anchor {
+.lcc-lg--scale-sm {
+  width: 5px;
+  height: 5px;
+  margin-right: 0;
+  border-radius: 50%;
+  border: 1px solid var(--color-accent);
+}
+
+.lcc-lg--scale-lg {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1px solid var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 60%, transparent);
+}
+
+/* 两种首义标记：已生效 = 实线环；待提交勾选 = 虚线环。 */
+.lcc-lg--anchor-effective {
+  border-radius: 50%;
+  border: 1.8px solid var(--color-accent);
+}
+
+.lcc-lg--anchor-pending {
   border-radius: 50%;
   border: 1px dashed var(--color-accent);
 }

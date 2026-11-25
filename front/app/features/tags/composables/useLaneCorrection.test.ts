@@ -286,12 +286,39 @@ describe('useLaneCorrection · 首义范围（故事 A）', () => {
     await state.load()
     state.toggleAnchorNode('101')
     state.toggleAnchorNode('102')
+    // 写成功后重读首义（纯读）会看到刚落库的 override → 来源转为人工、节点集为刚提交的两个
+    reportsMock.getTopicAnchor.mockResolvedValue({
+      success: true,
+      data: {
+        topic_id: 7,
+        source: 'manual',
+        section_ids: [101, 102],
+        override_count: 1,
+        effective_from: 'next_report',
+        anchor_origin: { resolved: true, section_id: 101, title: '成员一', period_date: '2026-11-10' },
+      },
+    })
     const ok = await state.applyAnchor()
     expect(ok).toBe(true)
     expect(reportsMock.updateTopicAnchor).toHaveBeenCalledWith(7, [101, 102])
     expect(state.anchorSource.value).toBe('manual')
     expect(state.anchorSourceLabel.value).toBe('人工（选定的 2 个节点）')
     expect(notifyMock.success.mock.calls.at(-1)![0]).toContain('次日日报生效')
+    // 写后重读一次（load 一次 + 写后一次），让只读块反映真实结果而不是写前的旧值
+    expect(reportsMock.getTopicAnchor).toHaveBeenCalledTimes(2)
+    expect(state.anchorOriginKind.value).toBe('resolved')
+  })
+
+  it('写成功后重读失败：不抹掉刚写入的写入结论，但也不伪造「可考」', async () => {
+    const { state } = makeComposable()
+    await state.load()
+    state.toggleAnchorNode('101')
+    reportsMock.getTopicAnchor.mockResolvedValue({ success: false, error: '读挂了' })
+    const ok = await state.applyAnchor()
+    expect(ok).toBe(true)
+    expect(state.anchorSourceLabel.value).toBe('人工（选定的 1 个节点）')
+    // 来源节点回到「读失败」态（保守），不得变成「创建时写入·来源不可考」
+    expect(state.anchorOriginKind.value).toBe('error')
   })
 
   it('已有首义时先出画布内确认条（不叠弹窗）', async () => {
@@ -585,5 +612,144 @@ describe('useLaneCorrection · 时间视窗与本泳道曲线（unify-lane-workb
     })
     await slow
     expect(state.memberNodes.value.map(n => n.id)).toEqual(['201']) // 旧响应被丢弃
+  })
+})
+
+// ── 8.5：首义来源与滚动窗口的归一（align-lane-correction-workface R-3） ─────
+//
+// 本组是本 change 新增的归一逻辑（normalizeAnchorOrigin / normalizeCentroid）与
+// 失败隔离路径（getTopicAnchor 失败不阻断写入口）的用例——此前只有 LaneAnchorScope
+// 的纯 props 单测（测组件不测归一）。
+
+describe('useLaneCorrection · 首义来源与滚动窗口归一（8.5）', () => {
+  /** 后端 anchor 响应的最小骨架（source=auto，无节点集）。 */
+  function anchorState(extra: Record<string, unknown> = {}) {
+    return {
+      success: true,
+      data: { topic_id: 7, source: 'auto', section_ids: [], override_count: 0, effective_from: '', ...extra },
+    }
+  }
+
+  it('8.5-a anchor_origin 可考：标题 + 日期如实透出（来源节点有值，不改造事实）', async () => {
+    reportsMock.getTopicAnchor.mockResolvedValue(anchorState({
+      source: 'manual',
+      section_ids: [109],
+      anchor_origin: { resolved: true, section_id: 109, title: '窗外首义节点', period_date: '2026-10-21' },
+    }))
+    const { state } = makeComposable()
+    await state.load()
+    expect(state.anchorOriginKind.value).toBe('resolved')
+    expect(state.anchorOrigin.value).toEqual({
+      resolved: true,
+      sectionId: 109,
+      title: '窗外首义节点',
+      periodDate: '2026-10-21',
+    })
+    expect(state.anchorError.value).toBeNull()
+  })
+
+  it('8.5-b anchor_origin resolved=false：不可考且三个节点字段一律 null（不用推测节点顶替）', async () => {
+    reportsMock.getTopicAnchor.mockResolvedValue(anchorState({
+      anchor_origin: { resolved: false, section_id: null, title: null, period_date: null },
+    }))
+    const { state } = makeComposable()
+    await state.load()
+    expect(state.anchorOriginKind.value).toBe('unresolved')
+    expect(state.anchorOrigin.value).toEqual({ resolved: false, sectionId: null, title: null, periodDate: null })
+    // 不可考 ≠ 读失败：没有错误，也不弹重试。
+    expect(state.anchorError.value).toBeNull()
+  })
+
+  it('8.5-c anchor_origin 整段缺失（旧后端）：按不可考处理，不造节点', async () => {
+    reportsMock.getTopicAnchor.mockResolvedValue(anchorState())
+    const { state } = makeComposable()
+    await state.load()
+    expect(state.anchorOriginKind.value).toBe('unresolved')
+    expect(state.anchorOrigin.value).toBeNull()
+    expect(state.anchorError.value).toBeNull()
+  })
+
+  it('8.5-d centroid 齐备：窗口 / α / 节点集合与明细按 camelCase 归一，degraded 原样透出', async () => {
+    reportsMock.getTopicAnchor.mockResolvedValue(anchorState({
+      centroid: {
+        window_size: 30,
+        anchor_weight: 0.4,
+        section_ids: [11, 12],
+        section_count: 2,
+        members: [
+          { section_id: 11, title: '滚动节点一', period_date: '2026-11-10' },
+          { section_id: 12, title: '滚动节点二', period_date: '2026-11-11' },
+        ],
+        degraded: true,
+      },
+    }))
+    const { state } = makeComposable()
+    await state.load()
+    const scope = state.centroidScope.value!
+    expect(scope.windowSize).toBe(30)
+    expect(scope.anchorWeight).toBeCloseTo(0.4, 6)
+    expect(scope.sectionIds).toEqual([11, 12])
+    expect(scope.sectionCount).toBe(2)
+    expect(scope.members.map(m => m.sectionId)).toEqual([11, 12])
+    expect(scope.members[0]!.title).toBe('滚动节点一')
+    // degraded 是单一布尔标记，原样透出（文案分支在组件层，不在这里断言）。
+    expect(scope.degraded).toBe(true)
+    expect(state.centroidDegraded.value).toBe(true)
+    expect(state.centroidSectionCount.value).toBe(2)
+  })
+
+  it('8.5-e centroid 缺失（旧后端）：按空处理不抛；section_count 缺席时按 section_ids.length 回退', async () => {
+    reportsMock.getTopicAnchor.mockResolvedValue(anchorState())
+    const { state } = makeComposable()
+    await expect(state.load()).resolves.toBe(true)
+    expect(state.centroidScope.value).toBeNull()
+    expect(state.centroidDegraded.value).toBe(false)
+    expect(state.centroidSectionCount.value).toBeNull() // 未知，不写 0
+
+    // 齐备但无 section_count（旧后端）→ 回退到 section_ids 条数
+    reportsMock.getTopicAnchor.mockResolvedValue(anchorState({
+      centroid: {
+        window_size: 14,
+        anchor_weight: 0.5,
+        section_ids: [21, 22, 23],
+        members: [],
+        degraded: false,
+      },
+    }))
+    const second = makeComposable().state
+    await second.load()
+    expect(second.centroidScope.value!.sectionCount).toBe(3)
+    expect(second.centroidSectionCount.value).toBe(3)
+  })
+
+  it('8.5-f getTopicAnchor reject：load() 仍成功（成员/候选照常落地），anchorError 有值且不输出「自动」断言', async () => {
+    reportsMock.getTopicAnchor.mockRejectedValue(new Error('gateway timeout'))
+    const { state } = makeComposable()
+    await expect(state.load()).resolves.toBe(true)
+
+    // 写入口不被只读块拖死：成员 / 候选照常落地。
+    expect(state.memberNodes.value.map(node => node.id)).toEqual(['101', '102'])
+    expect(state.candidateNodes.value.map(node => node.id)).toEqual(['103'])
+    expect(state.loadError.value).toBeNull()
+
+    expect(state.anchorError.value).toBe('gateway timeout')
+    expect(state.anchorOriginKind.value).toBe('error')
+    // 没读到就不能断言来源：标签为空串（不得回退成「自动」）。
+    expect(state.anchorSourceLabel.value).toBe('')
+    expect(state.anchorSourceLabel.value).not.toContain('自动')
+
+    // 写入口实际可用：勾选 + 定首义照常发请求。
+    state.toggleAnchorNode('101')
+    await expect(state.applyAnchor()).resolves.toBe(true)
+    expect(reportsMock.updateTopicAnchor).toHaveBeenCalledWith(7, [101])
+  })
+
+  it('8.5-g getTopicAnchor success:false：同样只落到只读块，不阻断 load()', async () => {
+    reportsMock.getTopicAnchor.mockResolvedValue({ success: false, error: '话题不存在' })
+    const { state } = makeComposable()
+    await expect(state.load()).resolves.toBe(true)
+    expect(state.anchorError.value).toBe('话题不存在')
+    expect(state.anchorSourceLabel.value).toBe('')
+    expect(state.memberNodes.value).toHaveLength(2)
   })
 })

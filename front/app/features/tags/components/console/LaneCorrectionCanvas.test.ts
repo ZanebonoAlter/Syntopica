@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import LaneCorrectionCanvas from './LaneCorrectionCanvas.vue'
 import type { LaneCorrectionNode } from '~/features/tags/composables/useLaneCorrection'
@@ -77,6 +79,73 @@ function mountCanvas(overrides: Record<string, unknown> = {}) {
   })
 }
 
+// ── 拖拽手势 harness（happy-dom 不实现 PointerEvent 坐标系，按浏览器语义补齐）──
+
+interface Pt { x: number, y: number }
+
+/** 指针事件：happy-dom 的 Event 不带 clientX/clientY/pointerId。 */
+function pointer(type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel', at: Pt): PointerEvent {
+  const event = new Event(type, { bubbles: true, cancelable: true })
+  Object.defineProperties(event, {
+    clientX: { value: at.x, configurable: true },
+    clientY: { value: at.y, configurable: true },
+    pointerId: { value: 1, configurable: true },
+  })
+  return event as unknown as PointerEvent
+}
+
+function surfaceOf(w: ReturnType<typeof mountCanvas>) {
+  return w.find('[data-testid="lane-correction-canvas"]')
+}
+
+/**
+ * 分区带的纵向中心（读画布真实几何，不写死常量）。
+ *
+ * 落点只判纵向分区带（X 轴是日期事实、不参与判定），故 y 直接取
+ * `lane-dropzone-*` 矩形的实际 y / height。
+ */
+function zoneY(w: ReturnType<typeof mountCanvas>, zone: 'member' | 'candidate' | 'readonly'): number {
+  const rect = w.find(`[data-testid="lane-dropzone-${zone}"]`)
+  return Number(rect.attributes('y')) + Number(rect.attributes('height')) / 2
+}
+
+/** 起手：必须命中节点 `[data-node]` 才接管拖拽手势。 */
+async function pressAt(w: ReturnType<typeof mountCanvas>, selector: string, at: Pt = { x: 400, y: 70 }): Promise<void> {
+  w.find(selector).element.dispatchEvent(pointer('pointerdown', at))
+  await nextTick()
+}
+
+async function movePointer(w: ReturnType<typeof mountCanvas>, at: Pt): Promise<void> {
+  surfaceOf(w).element.dispatchEvent(pointer('pointermove', at))
+  await nextTick()
+}
+
+async function releasePointer(w: ReturnType<typeof mountCanvas>, at: Pt): Promise<void> {
+  surfaceOf(w).element.dispatchEvent(pointer('pointerup', at))
+  await nextTick()
+}
+
+/** 完整拖拽：按下节点 → 越过 4px 阈值 → 松手。 */
+async function dragNode(w: ReturnType<typeof mountCanvas>, id: string, to: Pt): Promise<void> {
+  await pressAt(w, `[data-testid="lane-node-${id}"]`)
+  await movePointer(w, to)
+  await releasePointer(w, to)
+}
+
+/** 空白处轻点：起手与松手都落在画布空白（直接派发到滚动容器，不命中任何节点 / 卡片）。 */
+async function pressBlank(w: ReturnType<typeof mountCanvas>, at: Pt): Promise<void> {
+  surfaceOf(w).element.dispatchEvent(pointer('pointerdown', at))
+  await nextTick()
+  await releasePointer(w, at)
+}
+
+/** 写事件一条都不该有（拖拽不可用 / 取消的负向断言）。 */
+function expectNoWrites(w: ReturnType<typeof mountCanvas>): void {
+  expect(w.emitted('add')).toBeUndefined()
+  expect(w.emitted('remove')).toBeUndefined()
+  expect(w.emitted('restore')).toBeUndefined()
+}
+
 describe('LaneCorrectionCanvas · 查看与选入分离', () => {
   it('点节点只抛 focus（不抛任何归属事件 → 成员数不变；S1.3 负向保留）', async () => {
     const w = mountCanvas()
@@ -113,6 +182,76 @@ describe('LaneCorrectionCanvas · 查看与选入分离', () => {
     expect(after).toContain('left:')
     expect(after).toContain('top:')
     expect(before).not.toBe('')
+  })
+
+  // ── 点空白取消聚焦（align-lane-correction-workface 5.8，实机反馈）──
+  it('聚焦在场时轻点空白画布 → 抛 clear-focus、零写事件；未聚焦时不抛', async () => {
+    const focused = mountCanvas({ focusId: 'm1' })
+    await pressBlank(focused, { x: 400, y: 300 })
+    expect(focused.emitted('clear-focus')).toEqual([[]])
+    expectNoWrites(focused)
+
+    const idle = mountCanvas({ focusId: null })
+    await pressBlank(idle, { x: 400, y: 300 })
+    expect(idle.emitted('clear-focus')).toBeUndefined()
+  })
+
+  it('拖动平移后松手不抛 clear-focus（滚动不是选择）', async () => {
+    const w = mountCanvas({ focusId: 'm1' })
+    surfaceOf(w).element.dispatchEvent(pointer('pointerdown', { x: 400, y: 300 }))
+    await nextTick()
+    await movePointer(w, { x: 440, y: 330 })
+    await releasePointer(w, { x: 440, y: 330 })
+    expect(w.emitted('clear-focus')).toBeUndefined()
+  })
+
+  it('落在节点上的轻点不抛 clear-focus：可拖与不可拖节点都交给节点自己的 click 聚焦', async () => {
+    const w = mountCanvas()
+    // 候选 c1（可拖）：按下起拖拽手势、未过阈值松手 → 不抛
+    await pressAt(w, '[data-testid="lane-node-c1"]')
+    await releasePointer(w, { x: 400, y: 70 })
+    // 只读参照 r1（不可拖）：按下退化为平移、未过阈值松手 → 不抛
+    await pressAt(w, '[data-testid="lane-node-r1"]')
+    await releasePointer(w, { x: 400, y: 70 })
+    expect(w.emitted('clear-focus')).toBeUndefined()
+    // 聚焦仍由节点的 click 负责（再点同一节点切换的语义不被破坏）
+    await w.find('[data-testid="lane-node-r1"]').trigger('click')
+    expect(w.emitted('focus')).toEqual([['r1']])
+  })
+
+  it('点节点卡本体不取消聚焦（卡体接住点击，不算点空白）', async () => {
+    const w = mountCanvas({ focusId: 'm1' })
+    w.find('[data-testid="lane-node-card"]').element.dispatchEvent(pointer('pointerdown', { x: 420, y: 90 }))
+    await nextTick()
+    await releasePointer(w, { x: 420, y: 90 })
+    expect(w.emitted('clear-focus')).toBeUndefined()
+  })
+})
+
+describe('LaneCorrectionCanvas · 实机反馈补丁（节点卡标题换行 / 话题带横条移除）', () => {
+  it('节点卡标题完整展示：全文在卡内，样式允许换行且无省略号截断', () => {
+    const longTitle = 'DeepSeek 开发工具调用框架、并行调用与 Codex 调试实践：从单轮补全到多智能体编排的工程笔记'
+    const w = mountCanvas({
+      focusId: 'm1',
+      memberNodes: [node('m1', '2026-11-10', longTitle, { topicId: '7', proximity: 0.91 })],
+    })
+    expect(w.find('[data-testid="lane-node-card"] .lcc-card__title').text()).toBe(longTitle)
+
+    // 布局引擎在 happy-dom 里不算行：换行与否只能锁样式规则（白盒断言，防回退成单行省略）
+    const source = readFileSync(`${import.meta.dirname}/LaneCorrectionCanvas.vue`, 'utf8')
+    const rule = source.slice(source.indexOf('.lcc-card__title {'))
+    const body = rule.slice(0, rule.indexOf('}'))
+    expect(body).toMatch(/white-space:\s*normal/)
+    expect(body).toMatch(/overflow-wrap:\s*anywhere/)
+    expect(body).not.toMatch(/nowrap|text-overflow/)
+  })
+
+  it('话题带不再画强调色横条与刻度线；标签与中性基线仍在', () => {
+    const w = mountCanvas()
+    expect(w.find('.lcc-band-bar').exists()).toBe(false)
+    expect(w.find('.lcc-band-tick').exists()).toBe(false)
+    expect(w.find('.lcc-band-title').text()).toBe('本泳道话题带')
+    expect(w.find('.lcc-track').exists()).toBe(true)
   })
 })
 
@@ -197,10 +336,18 @@ describe('LaneCorrectionCanvas · 确认条与文字纪律', () => {
     expect(w.emitted('cancelApply')).toHaveLength(1)
   })
 
-  it('图例按新契约：候选大小=接近度（成员固定尺寸）+ 相关标志；无解说长句（A-9）', () => {
+  it('图例按新契约：候选大小=接近度（成员固定尺寸）+ 已生效首义/待提交勾选分立 + 相关标志；无解说长句（align-lane-correction-workface A-9）', () => {
     const w = mountCanvas({ focusId: 'm1' })
     const legend = w.find('.lcc-legend')
-    expect(legend.text().replace(/\s+/g, '')).toBe('成员候选大小=接近度虚线=首义⊘已移出相关')
+    expect(legend.text().replace(/\s+/g, '')).toBe(
+      '成员候选大小=接近度已生效首义待提交勾选⊘已移出相关',
+    )
+    // 尺寸图例：候选以「小圆—大圆」表达分档，不再用单一固定圆冒充
+    expect(legend.findAll('.lcc-lg--scale-sm').length).toBe(1)
+    expect(legend.findAll('.lcc-lg--scale-lg').length).toBe(1)
+    // 两种首义标记互斥可辨
+    expect(legend.findAll('.lcc-lg--anchor-effective').length).toBe(1)
+    expect(legend.findAll('.lcc-lg--anchor-pending').length).toBe(1)
     const banned = ['不是置信度', '点节点', '勾选 =', '重心 =', 'α']
     for (const text of banned) {
       expect(w.text()).not.toContain(text)
@@ -489,5 +636,294 @@ describe('LaneCorrectionCanvas · 成员区行距按节点占高（fix-lane-row-
     for (const line of lines) {
       expect(line.length).toBeLessThanOrEqual(5)
     }
+  })
+})
+
+// ── 拖拽改归属（align-lane-correction-workface 第 4 节 ADDED） ────────────────
+
+describe('LaneCorrectionCanvas · 拖拽改归属（align-lane-correction-workface 4.1）', () => {
+  it('4.1-a 候选拖入成员区 → emit add（松手即落库，无草稿态）', async () => {
+    const w = mountCanvas()
+    await dragNode(w, 'c1', { x: 400, y: zoneY(w, 'member') })
+    expect(w.emitted('add')).toEqual([['c1']])
+    expect(w.emitted('remove')).toBeUndefined()
+    expect(w.emitted('restore')).toBeUndefined()
+    // 即时落库：没有「应用 / 取消」草稿态，也不叠弹窗
+    expect(w.find('.app-dialog').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-anchor-confirm"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('4.1-b 成员拖出成员区 → emit remove（不再归属任何泳道）', async () => {
+    const w = mountCanvas()
+    await dragNode(w, 'm1', { x: 400, y: zoneY(w, 'candidate') })
+    expect(w.emitted('remove')).toEqual([['m1']])
+    expect(w.emitted('add')).toBeUndefined()
+    expect(w.emitted('restore')).toBeUndefined()
+    w.unmount()
+  })
+
+  it('4.1-c 已移出节点拖回成员区 → emit restore（与左栏「加回来」同一路径）', async () => {
+    const removed = [node('rm1', '2026-11-11', '本次移出节点', { topicId: '7' })]
+    const w = mountCanvas({ removedNodes: removed })
+    await dragNode(w, 'rm1', { x: 400, y: zoneY(w, 'member') })
+    expect(w.emitted('restore')).toEqual([['rm1']])
+    expect(w.emitted('add')).toBeUndefined()
+    expect(w.emitted('remove')).toBeUndefined()
+    w.unmount()
+  })
+
+  it('4.1-d 位移未过 4px 阈值：不启动拖拽（不出现 drag ghost）、不 emit 写事件', async () => {
+    const w = mountCanvas()
+    await pressAt(w, '[data-testid="lane-node-c1"]', { x: 400, y: 70 })
+    await movePointer(w, { x: 403, y: 72 })
+    expect(w.find('.lcc-drag-ghost').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-dropzone-member"]').classes()).not.toContain('is-drop-target')
+    await releasePointer(w, { x: 403, y: 72 })
+    expectNoWrites(w)
+    w.unmount()
+  })
+
+  it('4.2 只读参照与「更早」折叠带节点不可拖：手势根本不启动，不 emit 任何写事件', async () => {
+    const w = mountCanvas()
+    expect(w.find('[data-testid="lane-node-r1"]').classes()).toContain('is-locked')
+    expect(w.find('[data-testid="lane-node-r1"]').classes()).not.toContain('is-draggable')
+    expect(w.find('[data-testid="lane-fold-node-f1"]').exists()).toBe(true)
+
+    await pressAt(w, '[data-testid="lane-node-r1"]', { x: 400, y: 70 })
+    await movePointer(w, { x: 400, y: zoneY(w, 'member') })
+    // 不启动拖拽：没有 drag ghost，也没有分区高亮（不是「拖了但落点无效」）
+    expect(w.find('.lcc-drag-ghost').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-dropzone-member"]').classes()).not.toContain('is-drop-target')
+    await releasePointer(w, { x: 400, y: zoneY(w, 'member') })
+
+    await pressAt(w, '[data-testid="lane-fold-node-f1"]', { x: 184, y: 70 })
+    await movePointer(w, { x: 400, y: zoneY(w, 'member') })
+    expect(w.find('.lcc-drag-ghost').exists()).toBe(false)
+    await releasePointer(w, { x: 400, y: zoneY(w, 'member') })
+
+    expectNoWrites(w)
+    w.unmount()
+  })
+
+  it('4.3 落库期间（pendingIds）不可再次拖拽：不重复 emit', async () => {
+    const w = mountCanvas({ pendingIds: ['c1'] })
+    expect(w.find('[data-testid="lane-node-c1"]').classes()).toContain('is-pending')
+    await pressAt(w, '[data-testid="lane-node-c1"]')
+    await movePointer(w, { x: 400, y: zoneY(w, 'member') })
+    expect(w.find('.lcc-drag-ghost').exists()).toBe(false)
+    await releasePointer(w, { x: 400, y: zoneY(w, 'member') })
+    expectNoWrites(w)
+    w.unmount()
+  })
+
+  it('4.5 落库失败：节点回原分区 + 内联标错，不弹窗、不给去处选择器', async () => {
+    const w = mountCanvas()
+    const before = Number(w.find('[data-testid="lane-node-c1"] .lcc-point').attributes('cy'))
+    await dragNode(w, 'c1', { x: 400, y: zoneY(w, 'member') })
+    expect(w.emitted('add')).toEqual([['c1']])
+    // 写请求期间：节点进 pendingIds（半透明 + 不可再拖）
+    await w.setProps({ pendingIds: ['c1'] })
+    expect(w.find('[data-testid="lane-node-c1"]').classes()).toContain('is-pending')
+    // 写失败：props 未变 → 分区回滚；pending 结束 → 就地标错
+    await w.setProps({ pendingIds: [] })
+    const node = w.find('[data-testid="lane-node-c1"]')
+    expect(node.classes()).toContain('is-error')
+    expect(Number(node.find('.lcc-point').attributes('cy'))).toBe(before) // 仍在候选区
+    expect(node.find('title').text()).toContain('落库失败')
+    expect(w.find('[data-testid="lane-node-error-live"]').text()).toContain('落库失败')
+    // 内联标错＝就地红描边 + 文案，不弹窗、不中断后续拖拽
+    expect(w.find('.app-dialog').exists()).toBe(false)
+    expect(w.find('select').exists()).toBe(false)
+    // 失败后仍可继续拖其它节点（不整块禁用）
+    await dragNode(w, 'm1', { x: 400, y: zoneY(w, 'candidate') })
+    expect(w.emitted('remove')).toEqual([['m1']])
+    w.unmount()
+  })
+
+  it('4.6 拖拽取消：Esc 与 pointercancel 都不落库（成员集合不变）', async () => {
+    const w = mountCanvas()
+
+    await pressAt(w, '[data-testid="lane-node-c1"]')
+    await movePointer(w, { x: 400, y: zoneY(w, 'member') })
+    expect(w.find('.lcc-drag-ghost').exists()).toBe(true) // 确认已越过阈值、拖拽真的起来了
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(w.find('.lcc-drag-ghost').exists()).toBe(false)
+    await releasePointer(w, { x: 400, y: zoneY(w, 'member') })
+
+    await pressAt(w, '[data-testid="lane-node-m1"]')
+    await movePointer(w, { x: 400, y: zoneY(w, 'candidate') })
+    surfaceOf(w).element.dispatchEvent(pointer('pointercancel', { x: 400, y: zoneY(w, 'candidate') }))
+    await nextTick()
+    await releasePointer(w, { x: 400, y: zoneY(w, 'candidate') })
+
+    expectNoWrites(w)
+    w.unmount()
+  })
+
+  it('4.x 拖拽期间的分区视觉：可落点高亮、只读参照区弱化为不可落点', async () => {
+    const w = mountCanvas()
+    await pressAt(w, '[data-testid="lane-node-c1"]')
+    await movePointer(w, { x: 400, y: zoneY(w, 'member') })
+    expect(w.find('[data-testid="lane-dropzone-member"]').classes()).toContain('is-drop-target')
+    // 只读参照区永不可落点 → 与落点高亮明确不同（弱化），不是空白
+    expect(w.find('[data-testid="lane-dropzone-readonly"]').classes()).toContain('is-drop-other')
+    expect(w.find('[data-testid="lane-dropzone-candidate"]').classes()).not.toContain('is-drop-target')
+    await releasePointer(w, { x: 400, y: zoneY(w, 'member') })
+    w.unmount()
+  })
+})
+
+// ── 候选分档的视觉编码（align-lane-correction-workface 5.1） ─────────────────
+
+describe('LaneCorrectionCanvas · 候选分档只归一候选桶（align-lane-correction-workface 5.1）', () => {
+  it('5.1 候选半径 / 填色按批内相对位置分档；成员尺寸与填色不读接近度', () => {
+    const w = mountCanvas({
+      memberNodes: [
+        node('m-hi', '2026-11-10', '高接近成员', { topicId: '7', proximity: 0.95 }),
+        node('m-lo', '2026-11-10', '低接近成员', { topicId: '7', proximity: 0.05 }),
+      ],
+      candidateNodes: [
+        node('c-near', '2026-11-11', '批内最近候选', { proximity: 0.95, proximityKind: 'estimate' }),
+        node('c-far', '2026-11-12', '批内最远候选', { proximity: 0.35, proximityKind: 'estimate' }),
+      ],
+      readonlyNodes: [],
+      foldNodes: [],
+    })
+    const radiusOf = (id: string): number =>
+      Number(w.find(`[data-testid="lane-node-${id}"]`).find('.lcc-point').attributes('r'))
+    const fillOf = (id: string): string =>
+      w.find(`[data-testid="lane-node-${id}"]`).attributes('style') ?? ''
+
+    // 批内归一：最近者落在区间上限、最远者落在下限，肉眼可辨（不是窄区间）
+    expect(radiusOf('c-near')).toBeCloseTo(7.4, 6)
+    expect(radiusOf('c-far')).toBeCloseTo(5.9, 6)
+    expect(fillOf('c-near')).toContain('--proximity-fill: 80%')
+    expect(fillOf('c-far')).toContain('--proximity-fill: 18%')
+
+    // 成员不进归一：接近度差 0.9 仍同尺寸、同填色（尺寸不编码成员远近）
+    expect(radiusOf('m-hi')).toBe(radiusOf('m-lo'))
+    expect(fillOf('m-hi')).toBe(fillOf('m-lo'))
+    expect(fillOf('m-hi')).toContain('--proximity-fill: 0%')
+  })
+
+  it('5.1 候选批内相对位置变化不改成员尺寸（成员与候选不同形）', () => {
+    const member = node('m1', '2026-11-10', '成员', { topicId: '7', proximity: 0.99 })
+    const near = node('c1', '2026-11-11', '近候选', { proximity: 0.9, proximityKind: 'estimate' })
+    const far = node('c2', '2026-11-12', '远候选', { proximity: 0.1, proximityKind: 'estimate' })
+
+    const oneBatch = mountCanvas({ memberNodes: [member], candidateNodes: [near], readonlyNodes: [], foldNodes: [] })
+    const twoBatch = mountCanvas({ memberNodes: [member], candidateNodes: [near, far], readonlyNodes: [], foldNodes: [] })
+    const r = (w: ReturnType<typeof mountCanvas>, id: string): number =>
+      Number(w.find(`[data-testid="lane-node-${id}"]`).find('.lcc-point').attributes('r'))
+
+    expect(r(twoBatch, 'm1')).toBe(r(oneBatch, 'm1'))
+    // 同一候选在更大批里的相对位置变了 → 半径收缩（归一确实只在候选桶里算）
+    expect(r(twoBatch, 'c1')).toBeGreaterThan(r(twoBatch, 'c2'))
+    oneBatch.unmount()
+    twoBatch.unmount()
+  })
+})
+
+// ── 5.5：画布高度吃满容器（align-lane-correction-workface 5.5 / R-3） ───────
+
+describe('LaneCorrectionCanvas · 画布高度贴合容器（5.5）', () => {
+  type Canvas = ReturnType<typeof mountCanvas>
+
+  /**
+   * 打桩容器可视高（画布贴合的实测口径是 `clientHeight`），再触发 window resize
+   * 让组件重新 measure——与编排画布同名用例同一套做法。
+   */
+  async function setCanvasHeight(w: Canvas, height: number): Promise<void> {
+    const el = surfaceOf(w).element as HTMLElement
+    Object.defineProperty(el, 'clientHeight', { value: height, configurable: true })
+    window.dispatchEvent(new Event('resize'))
+    await nextTick()
+  }
+
+  function svgHeight(w: Canvas): number {
+    return Number(w.find('[data-testid="lane-correction-canvas-svg"]').attributes('height'))
+  }
+
+  function memberCy(w: Canvas, id: string): number {
+    return Number(w.find(`[data-testid="lane-node-${id}"]`).find('.lcc-point').attributes('cy'))
+  }
+
+  /** 成员区下缘（唯一 DOM 投影 = 成员 dropzone 的 y + height）。 */
+  function memberZoneBottom(w: Canvas): number {
+    const rect = w.find('[data-testid="lane-dropzone-member"]')
+    return Number(rect.attributes('y')) + Number(rect.attributes('height'))
+  }
+
+  it('5.5-a 容器高 > 内容高 → svg 高度贴合容器（不退化成内容高 / 360 地板）', async () => {
+    const w = mountCanvas()
+    // 容器未测量时的高度 = 内容需求（本用例约 456，既高于 360 地板又远低于 900）
+    const contentHeight = svgHeight(w)
+    expect(contentHeight).toBeLessThan(900)
+
+    await setCanvasHeight(w, 900)
+    expect(svgHeight(w)).toBe(900)
+    // 容器仍高于内容 → 继续贴合容器（不是某个固定值）
+    await setCanvasHeight(w, 520)
+    expect(svgHeight(w)).toBe(520)
+    // viewBox 高度与像素高度同一口径（zoom = 1）
+    expect(w.find('[data-testid="lane-correction-canvas-svg"]').attributes('viewBox')!.split(' ')[3]).toBe('520')
+    w.unmount()
+  })
+
+  it('5.5-b 富余高度不改变成员区基线（成员点 cy 与成员区下缘与矮容器时一致）', async () => {
+    const w = mountCanvas()
+    await setCanvasHeight(w, 300)
+    const short = { cy: memberCy(w, 'm1'), bottom: memberZoneBottom(w) }
+
+    await setCanvasHeight(w, 900)
+    // 富余 600px 全部落在画布下方（不把成员区往下推、不改行距）
+    expect(svgHeight(w)).toBe(900)
+    expect(memberCy(w, 'm1')).toBe(short.cy)
+    expect(memberCy(w, 'm2')).toBe(memberCy(w, 'm1')) // 不同日成员同一基线
+    expect(memberZoneBottom(w)).toBe(short.bottom)
+    w.unmount()
+  })
+})
+
+// ── 平移死区（align-lane-correction-workface R-6） ─────────────────────
+
+describe('LaneCorrectionCanvas · 不可拖节点上也能起平移（R-6）', () => {
+  it('R-6 在只读参照 / 「更早」折叠带节点上按下：不启动节点拖拽，但退化为画布平移', async () => {
+    const w = mountCanvas()
+    expect(w.find('[data-testid="lane-node-r1"]').classes()).toContain('is-locked')
+
+    // 只读参照节点上按下 → 越过阈值后是平移（不是拖拽）
+    await pressAt(w, '[data-testid="lane-node-r1"]', { x: 400, y: 70 })
+    await movePointer(w, { x: 452, y: 122 })
+    expect(surfaceOf(w).classes()).toContain('is-panning')
+    expect(w.find('.lcc-drag-ghost').exists()).toBe(false)
+    await releasePointer(w, { x: 452, y: 122 })
+    expect(surfaceOf(w).classes()).not.toContain('is-panning')
+
+    // 「更早」折叠带节点上按下 → 同样起平移
+    await pressAt(w, '[data-testid="lane-fold-node-f1"]', { x: 184, y: 70 })
+    await movePointer(w, { x: 236, y: 122 })
+    expect(surfaceOf(w).classes()).toContain('is-panning')
+    expect(w.find('.lcc-drag-ghost').exists()).toBe(false)
+    await releasePointer(w, { x: 236, y: 122 })
+
+    // 不可拖 ≠ 可写：任何归属写事件都不应发生
+    expectNoWrites(w)
+    w.unmount()
+  })
+
+  it('R-6 未移动鼠标时点击照常只聚焦（不破坏 onNodeClick 语义）', async () => {
+    const w = mountCanvas()
+    // 按下 + 原位松手：没有越过阈值 → 不算平移（lastPanAt 不置位，点击不被吞）
+    await pressAt(w, '[data-testid="lane-node-r1"]', { x: 400, y: 70 })
+    await releasePointer(w, { x: 400, y: 70 })
+    expect(surfaceOf(w).classes()).not.toContain('is-panning')
+
+    await w.find('[data-testid="lane-node-r1"]').trigger('click')
+    expect(w.emitted('focus')).toEqual([['r1']])
+    expectNoWrites(w)
+    w.unmount()
   })
 })

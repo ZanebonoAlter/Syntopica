@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import LaneAnchorScope from './LaneAnchorScope.vue'
-import type { LaneCorrectionNode } from '~/features/tags/composables/useLaneCorrection'
+import type { LaneCentroidScope, LaneCorrectionNode } from '~/features/tags/composables/useLaneCorrection'
 
 /**
  * 左栏「首义范围」用例（test-cases 故事 A2 / D2–D5 + A-3 / A-12）。
@@ -50,9 +50,29 @@ function mountScope(overrides: Record<string, unknown> = {}) {
       anchorIds: [],
       selection: [],
       applying: false,
+      originKind: 'unresolved',
+      originTitle: null,
+      originDate: null,
+      centroid: null,
       ...overrides,
     },
   })
+}
+
+/** 质心滚动窗口口径（参与滚动计算的节点）。 */
+function centroid(overrides: Partial<LaneCentroidScope> = {}): LaneCentroidScope {
+  return {
+    windowSize: 30,
+    anchorWeight: 0.5,
+    sectionIds: [11, 12],
+    sectionCount: 2,
+    members: [
+      { sectionId: 11, title: '滚动节点一', periodDate: '2026-11-10' },
+      { sectionId: 12, title: '滚动节点二', periodDate: '2026-11-11' },
+    ],
+    degraded: false,
+    ...overrides,
+  }
 }
 
 describe('LaneAnchorScope · 计数口径（fix-lane-metric-provenance）', () => {
@@ -82,6 +102,20 @@ describe('LaneAnchorScope · 当前首义来源', () => {
   it('人工首义：标签带选定节点数', () => {
     const w = mountScope({ manual: true, sourceLabel: '人工（选定的 2 个节点）' })
     expect(w.find('[data-testid="lane-anchor-source"]').text()).toContain('人工（选定的 2 个节点）')
+  })
+
+  it('首义读失败（sourceLabel 为空）：不渲染来源行（不拿未读到的值当断言），但保留「读取失败 · 重试」', () => {
+    const w = mountScope({ sourceLabel: '', originKind: 'error' })
+    // 来源行整行不渲染：没有「当前首义来源：自动/人工」的断言。
+    expect(w.find('[data-testid="lane-anchor-source"]').exists()).toBe(false)
+    expect(w.text()).not.toContain('当前首义来源')
+    expect(w.text()).not.toContain('自动（创建话题时写入）')
+    // 不重复报错：只留「读取失败 · 重试」这一行。
+    const retry = w.find('[data-testid="lane-anchor-origin-retry"]')
+    expect(retry.exists()).toBe(true)
+    expect(retry.text()).toContain('读取失败 · 重试')
+    // 写入口照旧在场。
+    expect(w.find('[data-testid="lane-anchor-apply"]').exists()).toBe(true)
   })
 })
 
@@ -150,5 +184,85 @@ describe('LaneAnchorScope · 更早成员分组（D2 / D4 / D5）', () => {
     expect(w.find('[data-testid="lane-anchor-earlier-check-f1"]').element).toHaveProperty('checked', true)
     await w.find('[data-testid="lane-anchor-earlier-check-f1"]').trigger('change')
     expect(w.emitted('toggle')).toEqual([['f1']])
+  })
+})
+
+// ── 6.3：首义来源与滚动窗口的只读展示（align-lane-correction-workface） ─────────
+describe('LaneAnchorScope · 首义来源节点（可考 / 不可考 / 读失败）', () => {
+  it('可考：显示来源节点标题 + 日期，且不出现「来源不可考」', () => {
+    const w = mountScope({
+      originKind: 'resolved',
+      originTitle: '人工选定的首义节点',
+      originDate: '2026-11-10',
+    })
+    const origin = w.find('[data-testid="lane-anchor-origin"]').text()
+    expect(origin).toContain('人工选定的首义节点')
+    expect(origin).toContain('2026-11-10')
+    expect(origin).not.toContain('来源不可考')
+    expect(w.find('[data-testid="lane-anchor-origin-unresolved"]').exists()).toBe(false)
+  })
+
+  it('不可考：显示「创建时写入 · 来源不可考」，且**不显示任何节点条目**', () => {
+    const w = mountScope({ originKind: 'unresolved' })
+    expect(w.find('[data-testid="lane-anchor-origin-unresolved"]').text()).toContain('创建时写入 · 来源不可考')
+    // 不拿「最早成员」等推测节点顶替：来源节点区域不得出现节点标题
+    expect(w.find('[data-testid="lane-anchor-origin-node"]').exists()).toBe(false)
+    expect(w.find('[data-testid="lane-anchor-origin"]').text()).not.toContain('窗口内成员')
+    expect(w.find('[data-testid="lane-anchor-origin-note"]').text()).toContain('定一次首义即可留痕')
+  })
+
+  it('读失败：显示「读取失败 · 重试」，点它抛 retry（只读块失败不阻断写入口）', async () => {
+    const w = mountScope({ originKind: 'error' })
+    const retry = w.find('[data-testid="lane-anchor-origin-retry"]')
+    expect(retry.text()).toContain('读取失败 · 重试')
+    await retry.trigger('click')
+    expect(w.emitted('retry')).toHaveLength(1)
+    // 写入口（勾选 / 定首义）仍在
+    expect(w.find('[data-testid="lane-anchor-apply"]').exists()).toBe(true)
+  })
+
+  it('读取中：显示「读取中…」，不误报不可考', () => {
+    const w = mountScope({ originKind: 'loading' })
+    expect(w.find('[data-testid="lane-anchor-origin-loading"]').text()).toContain('读取中')
+    expect(w.find('[data-testid="lane-anchor-origin-unresolved"]').exists()).toBe(false)
+  })
+})
+
+describe('LaneAnchorScope · 参与滚动计算的节点（命名隔离 + 退化口径）', () => {
+  it('计数与成员计数不同名不同数：「参与滚动计算的节点（30/30）」≠「窗口内 11 · 全部 108」', () => {
+    const w = mountScope({
+      windowCount: 11,
+      totalCount: 108,
+      centroid: centroid({ sectionIds: [1, 2, 3], sectionCount: 30 }),
+    })
+    const badge = w.find('.las-count').text()
+    expect(badge).toContain('窗口内 11')
+    expect(badge).toContain('全部 108')
+    const group = w.find('[data-testid="lane-anchor-centroid-toggle"]').text()
+    expect(group).toContain('参与滚动计算的节点（30/30）')
+    // 两把尺子不得同名：徽标说「窗口内」，滚动组不得也叫「窗口 N」
+    expect(group).not.toContain('窗口内')
+  })
+
+  it('默认收起：只显示计数；点开列出参与滚动计算的节点', async () => {
+    const w = mountScope({ centroid: centroid() })
+    expect(w.find('[data-testid="lane-anchor-centroid-list"]').exists()).toBe(false)
+    await w.find('[data-testid="lane-anchor-centroid-toggle"]').trigger('click')
+    const list = w.find('[data-testid="lane-anchor-centroid-list"]').text()
+    expect(list).toContain('滚动节点一')
+    expect(list).toContain('滚动节点二')
+  })
+
+  it('degraded：文案是中性退化口径，不得写死成「退回首义向量」', () => {
+    const w = mountScope({ centroid: centroid({ degraded: true }) })
+    const note = w.find('[data-testid="lane-anchor-centroid-note"]').text()
+    expect(note).toContain('质心当前为退化口径（窗口向量不足或首义不可用）')
+    expect(note).not.toContain('退回首义向量')
+    expect(note).not.toContain('纯滚动均值')
+  })
+
+  it('后端未给滚动窗口口径 → 整块不渲染（不造 0、不造窗口）', () => {
+    const w = mountScope({ centroid: null })
+    expect(w.find('[data-testid="lane-anchor-centroid-group"]').exists()).toBe(false)
   })
 })

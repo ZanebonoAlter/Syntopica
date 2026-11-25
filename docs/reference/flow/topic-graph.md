@@ -187,6 +187,8 @@ identity（同 persistent_topic）
 21. **人工变更泳道归属 SHALL 在同一事务内触发整板关系重建**（lane-manual-correction-loop D6）：归属事务末尾调 `RebuildBoardRelations(tx, board_id)`（identity 边由 `persistent_topic_id` 派生，归属变了边就必须重建），SHALL NOT 做增量重建；重建失败 SHALL 整体回滚——归属变更与留痕一并撤销。
 22. **人工改挂 SHALL 只从 candidate（动态）泳道取节点，SHALL NOT 从 active（已转正）泳道改挂**（lane-manual-correction-loop）：人工把 section 加入本泳道时，若该 section 已属其它泳道 —— 来源泳道 `status='candidate'`（尚未转正、素材仍在流动）时 SHALL 允许改挂；来源泳道 `status='active'`（已转正）时 SHALL 拒绝（4xx），已转正泳道的素材不因人工编辑而流动。改挂 SHALL 追加归属留痕（记来源与目标泳道）并 SHALL 把**来源与目标两条泳道**均置 `centroid_pending_recompute=true`（两侧滚动窗口都变了）。候选口径同步放宽：画布候选区与左栏关联推荐 SHALL 覆盖「无归属节点 + 属 candidate 泳道的节点」，属 active 泳道的节点只作只读参照；候选行 SHALL 标注来源泳道名（无来源的装饰性标签禁止）。
 23. **质心刷新范围 SHALL 为「当日 touched 话题 ∪ `centroid_pending_recompute=true` 的话题」**（lane-manual-correction-loop D2）：日报生成 post-commit 的质心刷新集合按 board 收敛为该并集（当日无新命中但被标记的话题同样被重算）；重算成功清标记、失败保留标记且 SHALL NOT 中断其余话题的重算；人工修正 SHALL NOT 立即重算质心——质心只由下一次日报生成刷新，修正只影响往后。
+24. **手动建话题 SHALL 在建话题同一事务内追加一行首义留痕（`source=selected_sections`、记实际参与聚合的节点），留痕写失败 SHALL 回滚整个建话题事务**（align-lane-correction-workface D8）：留痕「只记实际参与聚合的 section」而非用户选中的全量——被跳过（无 embedding）的节点不进 `input_summary`，否则读回的节点集与首义向量不对应；写入位置在建话题事务内、归属改写之后、`RebuildBoardRelations` 之前，SHALL NOT 留下「有话题、无留痕」的半成品（那正是「来源不可考」要消除的状态）；SHALL NOT 新增来源枚举（沿用 `selected_sections`），SHALL NOT 为存量手动话题写任何回填/迁移（历史未留痕=事实，事后推断即编造）。
+25. **滚动窗口取数 SHALL 单点实现（`ListCentroidWindowSections`），质心计算与首义读端点 MUST 共用同一实现，且该读路径 MUST 零写副作用**（align-lane-correction-workface D7）：谓词（归属本话题 + embedding 非空）、排序（报告期倒序、同期 id 倒序）、上限（`persistent_topic_centroid_window`，默认 30）三者等价于原内联 SQL，MUST NOT 出现第二份窗口筛选口径；读端点 SHALL NOT 写表、SHALL NOT 触碰 `centroid`/`embedding`、SHALL NOT 置 `centroid_pending_recompute`、SHALL NOT 触发重算或回填快照（红线 5 的读侧等价物）。
 
 ## 代码入口
 

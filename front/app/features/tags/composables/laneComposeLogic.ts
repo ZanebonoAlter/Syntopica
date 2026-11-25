@@ -230,6 +230,31 @@ export function panScroll(
 }
 
 /**
+ * 客户端坐标 → 画布**内容坐标**（解除横向/纵向滚动与缩放）。
+ *
+ * - `clientX/clientY`：指针的视口坐标；
+ * - `rect`：滚动容器的 `getBoundingClientRect()`（只用 left / top）；
+ * - `scroll`：滚动容器的 `scrollLeft` / `scrollTop`；
+ * - `zoom`：画布缩放比例（SVG 的 viewBox 缩放；非正数按 1 兜底）。
+ *
+ * 返回值与 SVG 的 viewBox 同一坐标系（1:1 内容像素）——落点判定、行位计算都用它。
+ * 两画布共用这一份换算，避免各自漂移。
+ */
+export function canvasContentPoint(
+  clientX: number,
+  clientY: number,
+  rect: { left: number, top: number },
+  scroll: { left: number, top: number },
+  zoom: number,
+): { x: number, y: number } {
+  const z = Number.isFinite(zoom) && zoom > 0 ? zoom : 1
+  return {
+    x: (clientX - rect.left + scroll.left) / z,
+    y: (clientY - rect.top + scroll.top) / z,
+  }
+}
+
+/**
  * 拖拽判定：位移超过阈值才算「拖」（否则算「点」）。
  * 阈值用来区分「点节点」与「拖画布」——点节点要照常触发选中和节点卡。
  */

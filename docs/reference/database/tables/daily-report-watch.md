@@ -281,7 +281,7 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 
 ### 9.13 topic_anchor_overrides（首义改写留痕，append-only；lane-manual-correction-loop）
 
-人工重设话题首义（`PATCH /api/daily-reports/topics/:id/anchor`）每改一次追加一行：旧行**永不更新、永不删除**，所以「这条泳道的定义面什么时候被谁改成什么」永远可答。读出口 `GET /api/daily-reports/topics/:id/anchor` 的 `override_count` 就是本表中该话题的行数（0 = `source=auto` 走自动首义；≥1 = `source=manual`，节点集取最新一行（`created_at DESC, id DESC`）的 `input_summary`）。与 `daily_report_sections` 的留痕三列不同，本表是**完整历史**而非「最近一次快照」。
+人工重设话题首义（`PATCH /api/daily-reports/topics/:id/anchor`）每改一次追加一行：旧行**永不更新、永不删除**，所以「这条泳道的定义面什么时候被谁改成什么」永远可答。**另一条写入路径（align-lane-correction-workface 起）**：手动建泳道（`POST /supervision/.../persistent-topics/manual` 一类手动建话题入口 → `CreateManualTopic`）在建话题的**同一事务内**追加一行（`source=selected_sections`、`input_summary` = 实际参与聚合的 section id = 构成首义向量的那批节点），使「建话题时选中的节点」即首义集合可读回；留痕写失败则整个建话题事务回滚。**历史存量手动话题不回填**（当时未留痕，事后推断即编造），继续读作 `source=auto` 的「来源不可考」。读出口 `GET /api/daily-reports/topics/:id/anchor` 的 `override_count` 就是本表中该话题的行数（0 = `source=auto` 走自动首义；≥1 = `source=manual`，节点集取最新一行（`created_at DESC, id DESC`）的 `input_summary`）。与 `daily_report_sections` 的留痕三列不同，本表是**完整历史**而非「最近一次快照」。
 
 > **建表方式**：显式迁移 `20261113_0002` `CREATE TABLE`——模型 `TopicAnchorOverride` 刻意不进 AutoMigrate 注册清单（`TableName()` 返回本表名）。
 > **刻意无 DB 级外键**：`topic_id` 不建 FK——留痕是只追加的审计流水，话题被硬删时不应连带抹掉改写历史。

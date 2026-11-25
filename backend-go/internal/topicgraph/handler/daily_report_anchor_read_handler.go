@@ -24,9 +24,25 @@ import (
 //	  "topic_id": 7,
 //	  "source": "auto" | "manual",
 //	  "section_ids": [101, 109],   // 当前首义节点集；自动首义为空数组（不虚构）
-//	  "override_count": 2,          // 人工改写次数
-//	  "effective_from": "next_report" // 人工改写的生效时机；自动首义为空串
+//	  "override_count": 2,          // 首义留痕条数（含手动建泳道的建话题留痕）
+//	  "effective_from": "next_report", // 人工留痕的生效时机；自动首义为空串
+//	  "anchor_origin": {            // 首义来源节点（可考 / 不可考）
+//	    "resolved": true,
+//	    "section_id": 101,
+//	    "title": "…",
+//	    "period_date": "2026-11-10"
+//	  },
+//	  "centroid": {                 // 滚动窗口口径（只读）
+//	    "window_size": 30,
+//	    "anchor_weight": 0.5,
+//	    "section_ids": […],
+//	    "members": [{"section_id": …, "title": "…", "period_date": "…"}],
+//	    "degraded": false
+//	  }
 //	}
+//
+// anchor_origin.resolved=false 时，section_id / title / period_date 一律为
+// null（来源不可考，绝不用「最早成员」顶替）。
 //
 // Errors: unknown topic → 404. Read-only: this endpoint never writes.
 func getTopicAnchor(c *gin.Context) {

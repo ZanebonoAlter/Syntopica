@@ -1,10 +1,17 @@
 <script setup lang="ts">
 /**
- * 左栏 · 首义范围（lane-manual-correction-loop 5.4 / 5.13）。
+ * 左栏 · 首义范围（lane-manual-correction-loop 5.4 / 5.13；
+ * align-lane-correction-workface 6.3：首义来源与滚动窗口的只读展示）。
  *
  * 契约：
  * - **当前首义来源**：自动（创建话题时写入）/ 人工（选定的 N 个节点）；自动首义**无节点集**
- *   → 画布不出现「更早」折叠带（不虚构节点列表）。
+ *   → 画布不出现「更早」折叠带（不虚构节点列表）。首义读失败时 `sourceLabel` 为空 →
+ *   该行**不渲染**（不把从未读到的值当结论，只留下面的「读取失败 · 重试」）。
+ * - **首义来源节点**（只读）：可考 → 标题 + 日期；不可考 → 「创建时写入 · 来源不可考」，
+ *   **不显示任何节点**（不得用「最早成员」等推测值顶替）。
+ * - **参与滚动计算的节点（N/窗口大小）**（只读，可折叠，默认收起）：质心滚动窗口径；
+ *   与既有成员计数「窗口内 N · 全部 M」（成员总数）是**两把尺子**，命名必须分开
+ *   （design D11：同屏不得出现两个含义不同的「窗口 N」）。
  * - **选择池 = 窗口内本泳道节点 + 全部更早成员**（都是本话题成员，都可选）：
  *   未属本话题的候选不入池（候选/关联推荐仍是窗口内语义）。
  * - **「更早成员」分组**装池内**窗口外**的节点（日期如实，按月分堆由成员面板承担）；
@@ -13,10 +20,10 @@
  *   按钮不被裁到视口外 —— A-10）。
  */
 import { computed, ref } from 'vue'
-import type { LaneCorrectionNode } from '~/features/tags/composables/useLaneCorrection'
+import type { LaneAnchorOriginKind, LaneCentroidScope, LaneCorrectionNode } from '~/features/tags/composables/useLaneCorrection'
 
 const props = defineProps<{
-  /** 当前首义来源结论（自动 / 人工 + 节点数）。 */
+  /** 当前首义来源结论（自动 / 人工 + 节点数）；**空串 = 首义读失败 → 该行不渲染**。 */
   sourceLabel: string
   /** 当前首义来源是否为人工（有节点集）。 */
   manual: boolean
@@ -39,6 +46,19 @@ const props = defineProps<{
    * 缺省 = 按选择池条数回退（旧调用）。
    */
   totalCount?: number | null
+  /**
+   * 首义来源节点的展示三态（可考 / 不可考 / 读失败；读失败不阻断写入口）。
+   */
+  originKind: LaneAnchorOriginKind
+  /** 首义来源节点标题（可考时；不可考时为 null —— 不虚构）。 */
+  originTitle?: string | null
+  /** 首义来源节点报告期（YYYY-MM-DD；可考时）。 */
+  originDate?: string | null
+  /**
+   * 质心滚动窗口口径（参与滚动计算的节点）；null = 后端未提供该段 → 整块不渲染
+   * （不造 0、不造窗口）。
+   */
+  centroid?: LaneCentroidScope | null
 }>()
 
 const emit = defineEmits<{
@@ -46,6 +66,8 @@ const emit = defineEmits<{
   toggle: [id: string]
   /** 「用选中的 N 个节点定首义」。 */
   apply: []
+  /** 重读首义来源（只读块读失败时的「重试」）。 */
+  retry: []
 }>()
 
 /** 窗外成员（「更早成员」分组；自动首义恒为空）。 */
@@ -62,6 +84,12 @@ const earlierOpen = ref(false)
 
 /** 「窗口内」分组是否展开（默认展开：这是本工作面的主选择区）。 */
 const windowOpen = ref(true)
+
+/**
+ * 「参与滚动计算的节点」分组是否展开（**默认收起**：这是只读旁证，
+ * 平时只需知道计数；点开才逐条列出）。
+ */
+const centroidOpen = ref(false)
 
 /**
  * 选择池计数（与成员面板徽标同口径：窗口内 N · 全部 M）。
@@ -94,6 +122,44 @@ function nodeTag(node: LaneCorrectionNode): string {
   if (node.outsideWindow) return '更早成员'
   return isMember(node.id) ? '成员' : '未选入'
 }
+
+/**
+ * 首义来源节点的展示文案。
+ *
+ * - 可考 → 标题 + 日期（两者齐备时用「标题 · 日期」）；
+ * - 不可考 → 「创建时写入 · 来源不可考」（**不显示任何节点**）。
+ */
+const originText = computed(() => {
+  if (props.originKind !== 'resolved') return ''
+  const title = props.originTitle ?? ''
+  const date = props.originDate ?? ''
+  if (title && date) return `${title} · ${date}`
+  return title || date
+})
+
+/**
+ * 质心退化提示（两种退化分支落点不同：可解析向量不足 2 → 退回首义向量；
+ * 首义不可用 → 退化为纯滚动均值）。
+ *
+ * 因此文案 SHALL NOT 写死成其中一种，只说「当前为退化口径」。
+ */
+const centroidNote = computed(() => {
+  const scope = props.centroid
+  if (!scope) return ''
+  if (scope.degraded) return '质心当前为退化口径（窗口向量不足或首义不可用）'
+  if (scope.sectionCount < 2) return '参与滚动的节点不足，质心当前为退化口径（窗口向量不足或首义不可用）'
+  return ''
+})
+
+/** 参与滚动计算的节点是否少到不值得画清单（空骨架不画）。 */
+const centroidListHidden = computed(() => (props.centroid?.sectionCount ?? 0) < 2)
+
+/** 「参与滚动计算的节点（N/窗口大小）」计数（与成员计数口径不同源、不同名）。 */
+const centroidCountText = computed(() => {
+  const scope = props.centroid
+  if (!scope) return ''
+  return `参与滚动计算的节点（${scope.sectionCount}/${scope.windowSize}）`
+})
 </script>
 
 <template>
@@ -104,9 +170,59 @@ function nodeTag(node: LaneCorrectionNode): string {
       <span class="las-timing">次日日报生效</span>
     </header>
     <div class="las-body">
-      <p class="las-source" :class="{ 'is-manual': manual }" data-testid="lane-anchor-source">
+      <!--
+        「当前首义来源」行：sourceLabel 为空（首义读失败——来源从未读到）时**整行不渲染**，
+        不把未读到的猜测当断言（下面「读取失败 · 重试」已报错，不重复报）。
+      -->
+      <p v-if="sourceLabel" class="las-source" :class="{ 'is-manual': manual }" data-testid="lane-anchor-source">
         当前首义来源：<b>{{ sourceLabel }}</b>
       </p>
+
+      <!--
+        首义来源节点（只读）：可考 → 标题 + 日期；不可考 → 显式不可考且不显示任何节点；
+        读失败 → 只显示「读取失败 · 重试」，**不阻断**画布与成员操作（design D14）。
+      -->
+      <p class="las-origin" data-testid="lane-anchor-origin">
+        <span class="las-origin-label">首义来源节点：</span>
+        <span v-if="originKind === 'loading'" class="las-origin-value" data-testid="lane-anchor-origin-loading">读取中…</span>
+        <button
+          v-else-if="originKind === 'error'"
+          type="button"
+          class="las-origin-retry"
+          data-testid="lane-anchor-origin-retry"
+          @click="emit('retry')"
+        >读取失败 · 重试</button>
+        <b v-else-if="originKind === 'resolved'" class="las-origin-value" data-testid="lane-anchor-origin-node">{{ originText }}</b>
+        <b v-else class="las-origin-value" data-testid="lane-anchor-origin-unresolved">创建时写入 · 来源不可考</b>
+      </p>
+      <p v-if="originKind === 'unresolved'" class="las-note" data-testid="lane-anchor-origin-note">
+        用下方的节点定一次首义即可留痕。
+      </p>
+
+      <!--
+        参与滚动计算的节点（质心滚动窗口口径）：计数与既有「窗口内 N · 全部 M」
+        是两把尺子，**不同名不同数**（design D11）。默认收起，只显示计数。
+      -->
+      <div v-if="centroid" class="las-group las-group--centroid" data-testid="lane-anchor-centroid-group">
+        <button
+          type="button"
+          class="las-group-head"
+          :aria-expanded="centroidOpen"
+          :aria-label="centroidOpen ? '收起参与滚动计算的节点' : '展开参与滚动计算的节点'"
+          data-testid="lane-anchor-centroid-toggle"
+          @click="centroidOpen = !centroidOpen"
+        >
+          <b>{{ centroidCountText }}</b>
+          <span class="las-group-toggle">{{ centroidOpen ? '收起' : '展开' }}</span>
+        </button>
+        <p v-if="centroidNote" class="las-note" data-testid="lane-anchor-centroid-note">{{ centroidNote }}</p>
+        <ul v-if="centroidOpen && !centroidListHidden" class="las-list" data-testid="lane-anchor-centroid-list">
+          <li v-for="member in centroid.members" :key="member.sectionId" class="las-row">
+            <span class="las-name" :title="member.title">{{ member.title }}</span>
+            <span class="las-meta">{{ member.periodDate }}</span>
+          </li>
+        </ul>
+      </div>
 
       <div v-if="earlier.length" class="las-group las-group--early" data-testid="lane-anchor-earlier-group">
         <button
@@ -183,6 +299,8 @@ function nodeTag(node: LaneCorrectionNode): string {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* 同 .lml-panel：不参与 .bco__left 的收缩，否则首义面板被压扁、按钮被裁。 */
+  flex-shrink: 0;
 }
 
 .las-head {
@@ -238,6 +356,43 @@ function nodeTag(node: LaneCorrectionNode): string {
 .las-source b {
   color: var(--color-text-primary);
   font-weight: 600;
+}
+
+/* 首义来源节点（只读一行）：与「当前首义来源」行同层级，不抢主色。 */
+.las-origin {
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  border-left: 2px solid var(--color-border-subtle);
+  padding-left: 6px;
+}
+
+.las-origin-label {
+  color: var(--color-text-muted);
+}
+
+.las-origin-value {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+/* 读失败：行内重试（不弹窗、不阻断写入口）。 */
+.las-origin-retry {
+  border: 1px solid var(--color-error);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-error);
+  font-size: 11px;
+  padding: 0 5px;
+  cursor: pointer;
+}
+
+/* 只读提示句（不可考时的引导 / 质心退化说明）。 */
+.las-note {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  padding-left: 8px;
 }
 
 .las-list {
@@ -305,6 +460,18 @@ function nodeTag(node: LaneCorrectionNode): string {
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px dashed var(--color-border-medium);
+}
+
+/* 参与滚动计算的节点（质心口径）：独立分组，与成员计数口径分开命名。 */
+.las-group--centroid {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--color-border-medium);
+}
+
+.las-group--centroid .las-group-head b {
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .las-group--early .las-group-head b {

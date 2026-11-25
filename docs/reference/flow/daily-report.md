@@ -396,6 +396,8 @@ CRUD：POST/GET /api/semantic-boards/:id/topic-watches、PATCH/DELETE /api/topic
 
 62. **编排态的已确认关键线索 ★ SHALL 是只读投影**（add-lane-compose-topic-event-tags）：`compose-candidates` 按 `source_section_id` 批量返回 confirmed 注记（`confirmed_key_events` 恒数组，空则 `[]`），画布节点以**星形主体**呈现（外接尺寸沿用既有 `pointRadius`，不改变大小语义），条数与快照标题只在节点卡与左右栏条目展示；只认 section 指针精确归属，`source_section_id` 为 NULL 的脱离快照 MUST NOT 显示、MUST NOT 按标题/日期/话题模糊补挂（约束 30/31 的延伸）；★ MUST NOT 参与选入/移出、接近度、质心、阈值或候选链资格。
 63. **新建泳道编排面 SHALL NOT 提供「显示已有泳道（只读）」与「历史待启用话题」入口**（2026-11-23 用户定档）：只读参照层默认且永远不渲染（`showAssigned` 恒 false）；历史管理名单仍可经数据层/API 读取，但编排面无入口，`can_activate` 与管理资格口径不变。
+64. **修正画布的归属变更 SHALL 拖拽松手即落库（无草稿/应用态），写期间节点 MUST 防重入，失败 SHALL 乐观回滚并内联标错且 MUST NOT 弹窗**（align-lane-correction-workface D1/D2）：拖入成员区=加入/加回、成员拖出成员区=移出，与节点卡按钮、左栏勾选**共用同一条写路径与同一份成员集合**（SHALL NOT 产生第二份状态）；写入中的节点进 pending 且不可重复拖动；失败回滚后 MUST 允许继续拖下一条；日期是事实，拖拽 SHALL NOT 改写 `periodDate`、SHALL NOT 提供拖拽排序；只读参照与「更早」折叠带的节点 SHALL NOT 可拖。
+65. **首义来源展示 SHALL 可考性如实：无留痕时 MUST 显式 `resolved=false` 并显示「来源不可考」，MUST NOT 用推测节点顶替；“参与滚动计算的节点 N” MUST 与“窗口内 N · 全部 M”分开命名**（align-lane-correction-workface D5/D6/D11）：`anchor_origin.resolved=false` 是终态而非占位，前端 SHALL NOT 渲染任何来源节点、SHALL NOT 把「最早成员」当首义来源（auto 首义只有一条向量，契约禁止虚构）；滚动窗口计数是**质心口径**（默认 30 条），与成员总数计数不是同一把尺子，两者同名同形即违反 `persistent-topic`“泳道成员计数与接近度的单一口径”；首义读失败 SHALL 只让该只读块显示重试，MUST NOT 阻断画布与写入口。
 
 ## 代码入口
 

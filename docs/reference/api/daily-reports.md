@@ -334,14 +334,34 @@ Response `data`：
   "source": "manual",
   "section_ids": [101, 109],
   "override_count": 2,
-  "effective_from": "next_report"
+  "effective_from": "next_report",
+  "anchor_origin": {
+    "resolved": true,
+    "section_id": 101,
+    "title": "巴萨与皇马的分歧",
+    "period_date": "2026-11-10"
+  },
+  "centroid": {
+    "window_size": 30,
+    "anchor_weight": 0.5,
+    "section_ids": [101, 109, 112],
+    "section_count": 3,
+    "members": [
+      { "section_id": 101, "title": "巴萨与皇马的分歧", "period_date": "2026-11-10" },
+      { "section_id": 109, "title": "以黎冲突升级", "period_date": "2026-11-12" }
+    ],
+    "degraded": false
+  }
 }
 ```
 
-- `source`：`auto` = 首义是创建话题时写入的（无节点集）/ `manual` = 首义由人工选定的节点范围定义。
+- `source`：`auto` = 首义是创建话题时写入的（无节点集）/ `manual` = 首义由人工选定的节点范围定义，**或由手动建泳道在创建时留痕**（align-lane-correction-workface 起：建话题事务内追加一行留痕，故手动建的泳道读出来是 `manual` 且节点集可解）。
 - `section_ids`：当前首义节点集（取 `topic_anchor_overrides` 最新一行反解，可能含当前取数窗口之外的节点）；`source=auto` 时**恒为空数组**——自动首义只有一条向量，没有对应节点列表，接口不得虚构。
-- `override_count`：人工改写次数。
+- `override_count`：**该话题的首义留痕条数**（`topic_anchor_overrides` 行数，含手动建泳道时那一条）；0 行即 `auto`。
 - `effective_from`：`manual` 为 `next_report`；`auto` 为空串（已在用）。
+- `anchor_origin`：**首义来源节点**（只读）。`resolved=true` 时给出 `section_id` / `title` / `period_date`，取最新留痕行里第一个仍存在的节点；`resolved=false` 时三者**均为 `null`**（`source=auto` 且无留痕、或留痕节点已被删除）——**接口不得用「最早成员」等推测值顶替**。`source` 与 `anchor_origin.resolved` 是两件事：前者说「谁写的」，后者说「写的是哪条节点、现在还查得到吗」。
+- `centroid`：**当前质心的口径与输入**（只读）。`window_size` = 滚动窗口大小（`persistent_topic_centroid_window`，默认 30）、`anchor_weight` = 首义权重 α（`persistent_topic_centroid_anchor_weight`，默认 0.5）、`section_ids` / `members[]` = 参与滚动均值计算的 section（与质心计算**同一份取数实现**，谓词/排序/上限完全等价）、`degraded` = 当前质心是否处于退化口径（可解析向量 < 2 → 退回首义向量；首义不可用 → 退化为纯滚动均值）。**`degraded` 是单一布尔标记，两种退化分支的落点不同，消费方 MUST NOT 把它断言为「退回首义向量」。**
+- **纯读边界**：本端点 SHALL NOT 写表、SHALL NOT 触碰 `centroid` / `embedding`、SHALL NOT 置 `centroid_pending_recompute`、SHALL NOT 触发重算或回填快照。
 
 错误码：`404` 话题不存在；`500` 读取失败。
 

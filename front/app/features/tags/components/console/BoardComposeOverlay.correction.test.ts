@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import BoardComposeOverlay from './BoardComposeOverlay.vue'
 
@@ -59,6 +60,17 @@ async function mountCorrection(overrides: Record<string, unknown> = {}) {
   await flushPromises()
   await flushPromises()
   return w
+}
+
+/** 指针事件：happy-dom 的 Event 不带 clientX/clientY/pointerId（与画布用例同款补齐）。 */
+function pointer(type: 'pointerdown' | 'pointerup', at: { x: number, y: number }): PointerEvent {
+  const event = new Event(type, { bubbles: true, cancelable: true })
+  Object.defineProperties(event, {
+    clientX: { value: at.x, configurable: true },
+    clientY: { value: at.y, configurable: true },
+    pointerId: { value: 1, configurable: true },
+  })
+  return event as unknown as PointerEvent
 }
 
 beforeEach(() => {
@@ -140,6 +152,26 @@ describe('BoardComposeOverlay · 修正模式三栏（unify-lane-workbench 3.3 /
     expect(left.find('[data-testid="lane-anchor-panel"]').exists()).toBe(true)
   })
 
+  it('已生效首义标记接通画布：人工首义的节点在画布上拎虚线环（本轮 R-1 回归）', async () => {
+    // 宿主必须把 anchor_ids 传给画布——漏传时 prop 默认 []，环永远不渲染，
+    // 且单测因直接传 props 无法暴露。这里从宿主层校验接线。
+    reportsMock.getTopicAnchor.mockResolvedValue({
+      success: true,
+      data: {
+        topic_id: 7,
+        source: 'manual',
+        section_ids: [101],
+        override_count: 1,
+        effective_from: 'next_report',
+      },
+    })
+    const w = await mountCorrection()
+    await flushPromises()
+    const canvas = w.find('[data-testid="lane-correction-canvas"]')
+    const effective = canvas.findAll('.lcc-anchor-ring--effective')
+    expect(effective.length).toBeGreaterThan(0)
+  })
+
   it('生效时机常驻顶部标题行：三枚结论型徽标；底部页脚不再承载', async () => {
     const w = await mountCorrection()
     const badges = w.find('[data-testid="lane-correction-effect-badges"]')
@@ -169,6 +201,28 @@ describe('BoardComposeOverlay · 节点卡快捷加入与移除（unify 4.2 / S1
     expect(reportsMock.setSectionAssignment).toHaveBeenCalledTimes(1)
     expect(reportsMock.setSectionAssignment).toHaveBeenCalledWith(103, 7)
     expect(notifyMock.success).toHaveBeenCalled()
+  })
+
+  it('点空白画布取消聚焦：节点卡收起、零写请求；再点节点可重新聚焦（实机反馈补丁）', async () => {
+    const w = await mountCorrection()
+    await w.find('[data-testid="lane-node-103"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card"]').exists()).toBe(true)
+
+    // 空白处轻点：起手与松手都落在滚动容器的空白上（不命中节点 / 卡片）
+    const surface = w.find('[data-testid="lane-correction-canvas"]').element
+    surface.dispatchEvent(pointer('pointerdown', { x: 400, y: 300 }))
+    await nextTick()
+    surface.dispatchEvent(pointer('pointerup', { x: 400, y: 300 }))
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card"]').exists()).toBe(false)
+    expect(reportsMock.setSectionAssignment).not.toHaveBeenCalled()
+    expect(reportsMock.updateTopicAnchor).not.toHaveBeenCalled()
+
+    // 再点节点重新聚焦
+    await w.find('[data-testid="lane-node-103"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="lane-node-card"]').exists()).toBe(true)
   })
 
   it('成员卡上「⊘移出本泳道」一次写 topic_id:null（不弹去处选择器/二次确认）', async () => {

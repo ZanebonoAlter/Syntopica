@@ -27,6 +27,7 @@
  */
 import { computed, ref, type Ref } from 'vue'
 import { useDailyReportsApi } from '~/api/dailyReports'
+import type { TopicAnchorCentroid, TopicAnchorOrigin, TopicAnchorState } from '~/api/dailyReports'
 import { usePersistentTopicsApi } from '~/api/persistentTopics'
 import type { ComposeCandidate, ComposeEarlyMember, ComposeRelation } from '~/api/persistentTopics'
 import { useLaneDynamicsWindowApi } from '~/api/laneDynamicsWindow'
@@ -74,6 +75,52 @@ export interface LaneCorrectionNode {
 
 /** 空态种类（各自身份，不共用一句话）。 */
 export type LaneCorrectionEmpty = 'no-members' | 'no-nodes' | null
+
+/**
+ * 首义来源节点（归一后的展示态）。
+ *
+ * `resolved=false` 是**最终形态而非占位**：来源不可考就是不可考，节点字段为 null，
+ * 前端不用「最早成员」等推测值顶替（虚构即编造）。
+ */
+export interface LaneAnchorOriginState {
+  /** 来源是否可考。 */
+  resolved: boolean
+  /** 来源节点 id（不可考时为 null）。 */
+  sectionId: number | null
+  /** 来源节点标题（不可考时为 null）。 */
+  title: string | null
+  /** 来源节点报告期 YYYY-MM-DD（不可考时为 null）。 */
+  periodDate: string | null
+}
+
+/**
+ * 质心滚动窗口口径（归一后的展示态）。
+ *
+ * 这是**第二把尺子**（质心滚动窗），与成员计数口径「窗口内 N · 全部 M」
+ * （报告期观察窗 = 成员总数）不同源，命名必须分开（design D11）。
+ */
+export interface LaneCentroidScope {
+  /** 滚动窗口大小（配置默认 30）。 */
+  windowSize: number
+  /** 首义权重 α（配置默认 0.5）。 */
+  anchorWeight: number
+  /** 参与滚动计算的 section 集合。 */
+  sectionIds: number[]
+  /** 参与滚动计算的节点数。 */
+  sectionCount: number
+  /** 参与滚动计算的节点明细（只读）。 */
+  members: { sectionId: number, title: string, periodDate: string }[]
+  /** 退化标记（单一布尔；两种退化分支落点不同，文案不得断言其中一种）。 */
+  degraded: boolean
+}
+
+/** 首义来源的展示三态（读失败独立成一态：只读块失败不阻断写入口）。 */
+export type LaneAnchorOriginKind = 'loading' | 'error' | 'resolved' | 'unresolved'
+
+/** 质心滚动窗口默认大小（后端未给时兜底；与后端配置默认值同口径）。 */
+const DEFAULT_CENTROID_WINDOW = 30
+/** 质心首义权重默认值（后端未给时兜底；与后端配置默认值同口径）。 */
+const DEFAULT_CENTROID_ANCHOR_WEIGHT = 0.5
 
 /** 取数窗口档位（unify-lane-workbench OQ-2 后 365 可用）。 */
 export type LaneCorrectionWindow = 7 | 14 | 30 | 365
@@ -161,8 +208,20 @@ export function useLaneCorrection(opts: UseLaneCorrectionOptions) {
 
   /** 当前首义来源：auto = 创建话题时写入（无节点集）；manual = 人工选定节点范围。 */
   const anchorSource = ref<'auto' | 'manual'>('auto')
+  /** 来源是否**已确证**（读过成功响应，或本会话写入成功）——区分「已知 auto」与「没读到」。 */
+  const anchorSourceConfirmed = ref(false)
   /** 当前首义节点集（人工改写的选定节点；自动首义恒为空）。 */
   const anchorSectionIds = ref<number[]>([])
+
+  // ── 首义来源与滚动窗口（只读块；读失败不阻断写入口） ─────────────────────
+  /** 首义来源读取中（骨架 / 「读取中」）。 */
+  const anchorLoading = ref(false)
+  /** 首义来源读取失败（只读块显示「读取失败 · 重试」；画布与写入口照常可用）。 */
+  const anchorError = ref<string | null>(null)
+  /** 首义来源节点（可考时有值；不可考时为 null —— 不虚构）。 */
+  const anchorOrigin = ref<LaneAnchorOriginState | null>(null)
+  /** 质心滚动窗口口径（后端未升级时为 null —— 不造数，该块整体不渲染）。 */
+  const centroidScope = ref<LaneCentroidScope | null>(null)
 
   // ── 会话内交互态 ─────────────────────────────────────────────────────────
   /** 本泳道成员（窗口内）。 */
@@ -335,12 +394,44 @@ export function useLaneCorrection(opts: UseLaneCorrectionOptions) {
     return out
   })
 
-  /** 当前首义来源的展示结论（自动 / 人工 + 节点数）。 */
-  const anchorSourceLabel = computed(() =>
-    anchorSource.value === 'manual'
+  /**
+   * 当前首义来源的展示结论（自动 / 人工 + 节点数）。
+   *
+   * **读失败且来源未经确证时返回空串**：`anchorSource` 的初值是 `'auto'`，读失败时
+   * 它只是一条从未读到的猜测——不得播成「当前首义来源：自动」的断言（用户的泳道
+   * 可能是人工首义）。空串 = 该行不渲染，同屏只留「读取失败 · 重试」（可考性如实）。
+   *
+   * 例外：本次会话**已写成功**（或读成功）过首义 → 来源是已知事实（人工 + 这 N 个
+   * 节点），此时即使随后的重读失败也不得抹掉该结论；读失败只影响「来源节点细节」
+   * （`anchorOriginKind` 回到 error），两件事分开。
+   */
+  const anchorSourceLabel = computed(() => {
+    if (anchorError.value && !anchorSourceConfirmed.value) return ''
+    return anchorSource.value === 'manual'
       ? `人工（选定的 ${anchorSectionIds.value.length} 个节点）`
-      : '自动（创建话题时写入）',
-  )
+      : '自动（创建话题时写入）'
+  })
+
+  /**
+   * 首义来源的展示三态（外加「读取中」）。
+   *
+   * - `resolved`：来源可考 → 展示节点标题 + 日期；
+   * - `unresolved`：来源不可考（`resolved=false` 或后端未给该段）→ 显式不可考，
+   *   **不显示任何节点**（不得用「最早成员」等推测值顶替）；
+   * - `error`：读取失败 → 只读块显示「读取失败 · 重试」，**不阻断写入口**；
+   * - `loading`：读取中 → 骨架 / 「读取中」。
+   */
+  const anchorOriginKind = computed<LaneAnchorOriginKind>(() => {
+    if (anchorLoading.value) return 'loading'
+    if (anchorError.value) return 'error'
+    return anchorOrigin.value?.resolved ? 'resolved' : 'unresolved'
+  })
+
+  /** 质心是否处于退化口径（窗口向量不足或首义不可用；单一布尔标记）。 */
+  const centroidDegraded = computed(() => centroidScope.value?.degraded ?? false)
+
+  /** 参与滚动计算的节点数（无口径时为 null —— 未知，不写 0）。 */
+  const centroidSectionCount = computed<number | null>(() => centroidScope.value?.sectionCount ?? null)
 
   /** 空态（首次加载失败时恒为 null —— 失败不呈现业务空态）。 */
   const emptyKind = computed<LaneCorrectionEmpty>(() => {
@@ -351,6 +442,94 @@ export function useLaneCorrection(opts: UseLaneCorrectionOptions) {
   })
 
   // ── 取数 ─────────────────────────────────────────────────────────────────
+  /**
+   * 首义来源节点归一（`anchor_origin` → 展示态）。
+   *
+   * `resolved=false` → 节点字段一律 null（不可考就是不可考，不推测）。
+   * 旧后端整段缺失 → 返回 null（前端按「不可考」兜底，不造节点）。
+   */
+  function normalizeAnchorOrigin(raw: TopicAnchorOrigin | null | undefined): LaneAnchorOriginState | null {
+    if (!raw) return null
+    if (raw.resolved !== true) {
+      return { resolved: false, sectionId: null, title: null, periodDate: null }
+    }
+    return {
+      resolved: true,
+      sectionId: typeof raw.section_id === 'number' ? raw.section_id : null,
+      title: typeof raw.title === 'string' ? raw.title : null,
+      periodDate: typeof raw.period_date === 'string' ? raw.period_date : null,
+    }
+  }
+
+  /**
+   * 质心滚动窗口口径归一（`centroid` → 展示态）。
+   *
+   * 后端未给该段（旧后端）→ 返回 null：该块整体不渲染（不造 0、不造窗口）。
+   * `section_count` 后端未给时按 `section_ids.length` 回退（再回退到明细条数）。
+   */
+  function normalizeCentroid(raw: TopicAnchorCentroid | null | undefined): LaneCentroidScope | null {
+    if (!raw) return null
+    const members = (raw.members ?? []).map(member => ({
+      sectionId: member.section_id,
+      title: member.title ?? '',
+      periodDate: member.period_date ?? '',
+    }))
+    const sectionIds = [...(raw.section_ids ?? [])]
+    const count = typeof raw.section_count === 'number' && Number.isFinite(raw.section_count)
+      ? raw.section_count
+      : sectionIds.length || members.length
+    return {
+      windowSize: typeof raw.window_size === 'number' && raw.window_size > 0
+        ? raw.window_size
+        : DEFAULT_CENTROID_WINDOW,
+      anchorWeight: typeof raw.anchor_weight === 'number' && Number.isFinite(raw.anchor_weight)
+        ? raw.anchor_weight
+        : DEFAULT_CENTROID_ANCHOR_WEIGHT,
+      sectionIds,
+      sectionCount: count,
+      members,
+      degraded: raw.degraded === true,
+    }
+  }
+
+  /**
+   * 落地一次 anchor 读结果（既有 5 字段 + 两段只读块）。
+   *
+   * 只写派生展示态与首义事实，**不触发任何写动作**（读端点零写副作用）。
+   */
+  function applyAnchorState(data: TopicAnchorState): void {
+    anchorSource.value = data.source === 'manual' ? 'manual' : 'auto'
+    anchorSectionIds.value = [...(data.section_ids ?? [])]
+    anchorOrigin.value = normalizeAnchorOrigin(data.anchor_origin)
+    centroidScope.value = normalizeCentroid(data.centroid)
+    anchorSourceConfirmed.value = true
+    anchorError.value = null
+  }
+
+  /**
+   * 重读首义（只读块「重试」入口）。
+   *
+   * 失败只让该块显示「读取失败 · 重试」，**不阻断**画布拖拽 / 节点卡按钮 /
+   * 左栏勾选等写入口（design D14）。
+   */
+  async function reloadAnchor(): Promise<boolean> {
+    anchorLoading.value = true
+    try {
+      const res = await getTopicAnchor(opts.topicId.value)
+      if (!res.success || !res.data) {
+        anchorError.value = res.error || '读取当前首义失败'
+        return false
+      }
+      applyAnchorState(res.data)
+      return true
+    } catch (e) {
+      anchorError.value = e instanceof Error ? e.message : '读取当前首义失败'
+      return false
+    } finally {
+      anchorLoading.value = false
+    }
+  }
+
   function buildDates(from: string, to: string): string[] {
     if (!from || !to) return []
     const start = Date.parse(`${from}T00:00:00Z`)
@@ -416,19 +595,21 @@ export function useLaneCorrection(opts: UseLaneCorrectionOptions) {
     const seq = ++loadSeq
     loading.value = true
     loadError.value = null
+    anchorLoading.value = true
     try {
       const [candidates, lifeline, anchor] = await Promise.all([
         getComposeCandidates(opts.boardId.value, { days: windowDays.value, allMembersTopicId: opts.topicId.value }),
         getTopicLifeline(opts.topicId.value),
-        getTopicAnchor(opts.topicId.value),
+        // 首义读失败**不阻断**工作面（design D14）：异常在这里吃掉，只落到只读块。
+        getTopicAnchor(opts.topicId.value).catch((e: unknown) => ({
+          success: false,
+          data: undefined,
+          error: e instanceof Error ? e.message : '读取当前首义失败',
+        })),
       ])
       if (seq !== loadSeq) return false // 迟到响应丢弃：不改清单/范围/曲线
       if (!candidates.success || !candidates.data) {
         loadError.value = candidates.error || '加载泳道成员失败'
-        return false
-      }
-      if (!anchor.success || !anchor.data) {
-        loadError.value = anchor.error || '读取当前首义失败'
         return false
       }
 
@@ -467,8 +648,13 @@ export function useLaneCorrection(opts: UseLaneCorrectionOptions) {
         ? null
         : buildEarlyMembers(candidates.data.earlyMembers)
 
-      anchorSource.value = anchor.data.source === 'manual' ? 'manual' : 'auto'
-      anchorSectionIds.value = [...(anchor.data.section_ids ?? [])]
+      // 首义：成功 → 落地事实与两段只读块；失败 → 只让只读块显示「读取失败 · 重试」，
+      // 画布 / 节点卡按钮 / 左栏勾选等写入口照常可用。
+      if (anchor.success && anchor.data) {
+        applyAnchorState(anchor.data)
+      } else {
+        anchorError.value = anchor.error || '读取当前首义失败'
+      }
       anchorSelection.value = new Set()
       anchorConfirmOpen.value = false
       focusId.value = null
@@ -479,7 +665,10 @@ export function useLaneCorrection(opts: UseLaneCorrectionOptions) {
       loadError.value = e instanceof Error ? e.message : '加载泳道成员失败'
       return false
     } finally {
-      if (seq === loadSeq) loading.value = false
+      if (seq === loadSeq) {
+        loading.value = false
+        anchorLoading.value = false
+      }
     }
   }
 
@@ -740,7 +929,13 @@ export function useLaneCorrection(opts: UseLaneCorrectionOptions) {
       }
       anchorSource.value = 'manual'
       anchorSectionIds.value = ids
+      anchorSourceConfirmed.value = true
       anchorConfirmOpen.value = false
+      // 写入成功 → 首义来源刚刚被本操作确定。同步重读一次首义状态（纯读），
+      // 让「首义来源节点 / 滚动窗口」反映真实结果：写前若读过失败，这里不能
+      // 靠清 anchorError 把「不可考」伪造成「可考」——只能重新读。
+      // 重读失败不影响写入结论（来源标签已确定），下面仍照常报成功。
+      void reloadAnchor()
       notifySuccess('首义已更新，次日日报生效')
       return true
     } catch (e) {
@@ -831,6 +1026,16 @@ export function useLaneCorrection(opts: UseLaneCorrectionOptions) {
     anchorNodes,
     earlierAnchorNodes,
     anchorPool,
+    // 首义来源与滚动窗口（只读块）
+    anchorLoading,
+    anchorError,
+    anchorSourceConfirmed,
+    anchorOrigin,
+    anchorOriginKind,
+    centroidScope,
+    centroidDegraded,
+    centroidSectionCount,
+    reloadAnchor,
     // 派生
     memberNodes,
     earlierMemberNodes,

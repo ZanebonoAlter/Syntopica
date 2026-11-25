@@ -91,6 +91,65 @@ export interface TopicAnchorState {
   override_count: number
   /** 生效时机；人工改写为 `next_report`，自动首义为空串。 */
   effective_from: string
+  /**
+   * 首义来源节点（可考性三态）。
+   *
+   * `resolved=true` → 来源节点**可考**，`section_id` / `title` / `period_date`
+   * 齐备；`resolved=false` → 来源**不可考**，三个节点字段为 `null`
+   * （不得用「最早成员」等推测值顶替——虚构即编造）。
+   *
+   * 缺省 = 后端未升级（旧响应无此段）；前端按兜底口径处理，不崩。
+   */
+  anchor_origin?: TopicAnchorOrigin | null
+  /**
+   * 当前质心的口径与输入（滚动窗口）。
+   *
+   * 缺省 = 后端未升级；前端不造数（该块整体不渲染）。
+   */
+  centroid?: TopicAnchorCentroid | null
+}
+
+/**
+ * 首义来源节点（与后端 `TopicAnchorOrigin` 的 json tag 逐字对齐）。
+ */
+export interface TopicAnchorOrigin {
+  /** 来源是否可考；false = 不可考（节点字段为 null）。 */
+  resolved: boolean
+  /** 来源节点 id；不可考时为 null。 */
+  section_id: number | null
+  /** 来源节点标题（section 的 cluster_label）；不可考时为 null。 */
+  title: string | null
+  /** 来源节点报告期（YYYY-MM-DD）；不可考时为 null。 */
+  period_date: string | null
+}
+
+/** 参与滚动计算的一个节点（质心滚动窗口的只读明细）。 */
+export interface TopicAnchorCentroidMember {
+  section_id: number
+  title: string
+  period_date: string
+}
+
+/**
+ * 当前质心的滚动窗口口径（与后端 `TopicAnchorCentroid` 的 json tag 逐字对齐）。
+ *
+ * `degraded=true` 表示当前质心**不是正常混合口径**：可解析向量不足 2 条时退回首义
+ * 向量，首义不可用时退化为纯滚动均值——两种分支落点不同，因此它只是**单一退化标记**，
+ * 前端文案不得断言成其中一种。
+ */
+export interface TopicAnchorCentroid {
+  /** 滚动窗口大小（配置默认 30）。 */
+  window_size: number
+  /** 首义权重 α（配置默认 0.5）。 */
+  anchor_weight: number
+  /** 参与滚动计算的 section 集合（与 `members` 同序）。 */
+  section_ids: number[]
+  /** 参与滚动计算的节点数（后端未给时按 `section_ids.length` 回退）。 */
+  section_count?: number
+  /** 参与滚动计算的节点明细（只读）。 */
+  members: TopicAnchorCentroidMember[]
+  /** 退化标记（单一布尔；两种退化分支的落点不同）。 */
+  degraded: boolean
 }
 
 /**
@@ -513,6 +572,10 @@ export function useDailyReportsApi() {
    * `source = "auto"` = 首义是创建话题时写入的（**无节点集**，界面不得虚构节点列表）；
    * `source = "manual"` = 首义由人工选定的节点范围定义，节点集在 `section_ids` 里
    * （可能含窗口外节点 → 画布「更早」折叠带）。
+   *
+   * 另带两段只读块：`anchor_origin`（首义来源节点，可考 / 不可考）与 `centroid`
+   * （当前质心的滚动窗口口径与退化标记）。两者都是**只增不改**的扩展字段，
+   * 旧后端缺失时前端按兜底口径处理（不崩、不造数）。
    */
   async function getTopicAnchor(topicId: number): Promise<ApiResponse<TopicAnchorState>> {
     return apiClient.get(`/daily-reports/topics/${topicId}/anchor`)

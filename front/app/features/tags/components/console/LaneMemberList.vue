@@ -236,6 +236,10 @@ function proximityText(node: LaneCorrectionNode): string {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* 作为 .bco__left 的 flex 子项：不参与收缩。
+     否则块被压到低于自身内容高度 → 行高不足、标题与按钮被硬切（1440×900 实测）。
+     左栏整体 `overflow-y:auto` 承接超屏，块内长清单仍由各自的 max-height 内部滚动。 */
+  flex-shrink: 0;
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
