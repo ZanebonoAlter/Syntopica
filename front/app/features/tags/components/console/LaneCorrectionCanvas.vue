@@ -42,10 +42,9 @@
  * - **失败乐观回滚 + 节点内联标错**：分区由 props 派生，写失败即回原分区，
  *   错误以红描边 + `title` / `aria-live` 就地呈现（不弹窗、不中断连续拖拽）。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, useId, watch } from 'vue'
 import {
   canvasContentPoint,
-  clampZoom,
   estimateTextWidth,
   isDragBeyond,
   panScroll,
@@ -53,12 +52,11 @@ import {
   relatedNodeIds,
   relativeProximities,
   scaledPointRadius,
-  zoomAnchorScroll,
-  zoomStep,
   type LanePointAppearance,
   type LaneRelation,
-  LANE_ZOOM_DEFAULT,
 } from '~/features/tags/composables/laneComposeLogic'
+import { useLaneCanvasShell } from '~/features/tags/composables/useLaneCanvasShell'
+import LaneCanvasStickyRail from '~/features/tags/components/LaneCanvasStickyRail.vue'
 import type { LaneCorrectionNode } from '~/features/tags/composables/useLaneCorrection'
 import { LANE_FOLD_MAX } from '~/features/tags/composables/useLaneCorrection'
 
@@ -143,6 +141,13 @@ const FOLD_GAP = 8
 const RIGHT_PAD = 28
 /** 话题带基线。 */
 const BAND_Y = 44
+/**
+ * 日期轴区高：刻度文字（基线 14）落在这一条里，列 guide 从它起笔（`y1`）。
+ *
+ * 纵向吸顶的范围就是 `y ∈ [0, DATE_AXIS_H]`——**分区带不钉顶**（unify-lane-canvas-shell D6：
+ * 本画布只有一条泳道，钉顶等于让整块上部常驻，会吃掉候选区可视高）。
+ */
+const DATE_AXIS_H = 36
 /** 成员节点基线。 */
 const MEMBER_Y = 86
 /**
@@ -189,91 +194,53 @@ const LABEL_LINE_H = 12
 const LABEL_BOX_PAD = 4
 const NODE_BLOCK_H = MEMBER_BASE_RADIUS * 2 + LABEL_TOP_GAP + LABEL_MAX_LINES * LABEL_LINE_H + LABEL_BOX_PAD
 
-const containerRef = ref<HTMLElement | null>(null)
-const containerWidth = ref(0)
-const containerHeight = ref(0)
 const cardEl = ref<HTMLElement | null>(null)
 const cardSize = ref({ width: CARD_WIDTH, height: 120 })
 
-const zoom = ref(LANE_ZOOM_DEFAULT)
-const zoomPercent = computed(() => `${Math.round(zoom.value * 100)}%`)
-
-function measure(): void {
-  const el = containerRef.value
-  if (!el) return
-  containerWidth.value = el.clientWidth || 0
-  containerHeight.value = el.clientHeight || 0
-}
-
-let resizeObserver: ResizeObserver | null = null
-
-onMounted(() => {
-  measure()
-  window.addEventListener('resize', onWindowResize)
-  // Esc 取消拖拽（捕获阶段：拖拽中的 Esc 不冒泡到宿主）。
-  window.addEventListener('keydown', onWindowKeydown, true)
-  if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
-    resizeObserver = new ResizeObserver(() => measure())
-    resizeObserver.observe(containerRef.value)
-  }
-  containerRef.value?.addEventListener('wheel', onWheel, { passive: false })
+/**
+ * 画布外壳（容器测量 / 缩放 / 滚动同步 / `Esc`）——与编排画布共用同一份实现
+ * （unify-lane-canvas-shell D1）。
+ *
+ * `contentHeight` / `contentWidth` 用 getter 惰性传入：`canvasHeight` / `vbWidth`
+ * 声明在本调用之后，计算属性惰性求值因此不踩 TDZ。
+ */
+const {
+  containerRef,
+  containerWidth,
+  containerHeight,
+  measure,
+  zoom,
+  zoomPercent,
+  changeZoom,
+  resetZoom,
+  syncScroll,
+  scrollTopLogical,
+  scrollLeftLogical,
+  overflowing,
+  overflowingX,
+} = useLaneCanvasShell({
+  contentHeight: () => canvasHeight.value,
+  contentWidth: () => vbWidth.value,
+  // 拖拽期间屏蔽滚轮缩放（D3-①：编辑侧原本缺这个守卫，本次向编排侧对齐）
+  isZoomBlocked: () => dragging.value,
+  // Esc 同时取消拖拽与平移（D3-②：编辑侧原本只取消拖拽）
+  hasActiveGesture: () => dragging.value || isPanning.value,
+  onCancelGesture: () => {
+    lastDragAt = Date.now()
+    if (isPanning.value) lastPanAt = Date.now()
+    resetGesture()
+    panStart = null
+    isPanning.value = false
+  },
 })
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', onWindowResize)
-  window.removeEventListener('keydown', onWindowKeydown, true)
-  resizeObserver?.disconnect()
-  resizeObserver = null
-  containerRef.value?.removeEventListener('wheel', onWheel)
-})
-
-function onWindowResize(): void {
-  measure()
-}
 
 defineExpose({ measure })
 
 // ── 缩放（只影响呈现，不碰选择 / 成员数 / 首义选择集） ─────────────────────
-function onWheel(event: WheelEvent): void {
-  event.preventDefault()
-  applyZoom(zoomStep(zoom.value, event.deltaY), event.clientX, event.clientY)
-}
-
-function applyZoom(next: number, clientX?: number, clientY?: number): void {
-  const to = clampZoom(next)
-  const from = zoom.value
-  if (to === from) return
-  const surface = containerRef.value
-  if (!surface) {
-    zoom.value = to
-    return
-  }
-  const rect = surface.getBoundingClientRect()
-  const anchorX = (clientX ?? rect.left + surface.clientWidth / 2) - rect.left
-  const anchorY = (clientY ?? rect.top + surface.clientHeight / 2) - rect.top
-  const nextLeft = zoomAnchorScroll(anchorX, surface.scrollLeft, from, to)
-  const nextTop = zoomAnchorScroll(anchorY, surface.scrollTop, from, to)
-  zoom.value = to
-  void nextTick().then(() => {
-    surface.scrollLeft = nextLeft
-    surface.scrollTop = nextTop
-  })
-}
-
-function changeZoom(delta: number): void {
-  applyZoom(zoom.value * delta)
-}
-
-function resetZoom(): void {
-  zoom.value = LANE_ZOOM_DEFAULT
-  const surface = containerRef.value
-  if (!surface) return
-  void nextTick().then(() => {
-    surface.scrollLeft = 0
-    surface.scrollTop = 0
-  })
-}
-
+/**
+ * 滚轮 / 锚点换算 / 重置全部由外壳 composable 提供（见上方 `useLaneCanvasShell`）；
+ * 本画布只保留 `＋ / － / 重置` 三个控件接的 `changeZoom` / `resetZoom`（由外壳返回）。
+ */
 // ── 拖拽平移（空白处拖；位移超阈值才算拖，不误伤点选） ─────────────────────
 let panStart: { x: number, y: number, left: number, top: number, onNode: boolean } | null = null
 let lastPanAt = 0
@@ -532,6 +499,35 @@ const allPoints = computed(() => {
   return map
 })
 
+// ── 吸顶（横向钉标签列 / 纵向只钉日期轴） ───────────────────────────────
+/**
+ * 吸顶标签列的覆盖高度：画布顶 → 第二个分区标签下缘（标签在 `zone2Line + 26`）。
+ *
+ * 只盖到标签列真正有内容的地方：往下的只读参照区没有列内图元，不需要一块空底。
+ */
+const stickyRailHeight = computed(() => zones.value.zone2Line + 30)
+
+/**
+ * 日期轴的纵向吸顶位移（逻辑坐标 = `scrollTop / zoom`）；不溢出时**不下发** transform。
+ *
+ * 与编排画布同一条口径：只有日期轴钉顶，列 guide 留在内容层（纵向随内容走）。
+ */
+const dateAxisTransform = computed(() => (overflowing.value
+  ? `translate(0, ${scrollTopLogical.value})`
+  : undefined))
+
+/**
+ * 日期轴 / 列 guide 的横向裁切框：只允许画在吸顶标签列右侧的可视区。
+ *
+ * - 左界 = 标签列右缘 `axisX0`（视口坐标），右界 = `vbWidth`；
+ * - 裁切框活在内容坐标，所以左界要加 `scrollLeftLogical` 才是「视口 `axisX0`」；
+ * - `overflowingX` 为假时不下发 `clip-path`（不溢出时渲染与无吸顶实现逐像素一致）。
+ */
+const axisClipId = `lcc-axis-clip-${useId()}`
+const axisClipPath = computed(() => (overflowingX.value ? `url(#${axisClipId})` : undefined))
+const axisClipX = computed(() => axisX0.value + (overflowingX.value ? scrollLeftLogical.value : 0))
+const axisClipWidth = computed(() => Math.max(0, vbWidth.value - axisClipX.value))
+
 // ── 拖拽改归属（第 4 节：落点按**分区**，不按日期列） ─────────────────────────
 /**
  * 落点分区。**X 轴是报告期事实**——拖动不得改写节点的 `periodDate`，
@@ -745,16 +741,7 @@ function resetGesture(): void {
   hoverZone.value = 'none'
 }
 
-/** Esc 取消：回原位、**不发任何写请求**。 */
-function onWindowKeydown(event: KeyboardEvent): void {
-  if (event.key !== 'Escape') return
-  if (!dragging.value) return
-  event.preventDefault()
-  // 捕获阶段拦下：拖拽中的 Esc 只取消拖拽。
-  event.stopPropagation()
-  lastDragAt = Date.now()
-  resetGesture()
-}
+// Esc 捕获在 `useLaneCanvasShell` 里（两份画布共用一份）；手势取消回调见上方 options。
 
 // ── 节点表达（unify-lane-workbench D7：pointAppearance 唯一入口） ──────────
 function isMember(id: string): boolean {
@@ -1061,6 +1048,7 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
       :class="{ 'is-panning': isPanning, 'is-dragging': dragging }"
       data-testid="lane-correction-canvas"
       aria-label="本泳道成员与候选节点画布"
+      @scroll="syncScroll"
       @pointerdown="onSurfacePointerDown"
       @pointermove="onSurfacePointerMove"
       @pointerup="onSurfacePointerUp"
@@ -1100,41 +1088,38 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
         role="group"
         aria-label="本泳道成员、候选与只读参照节点"
       >
-        <!-- 日期轴 -->
-        <g class="lcc-axis">
+        <!--
+          日期轴 / 列 guide 的横向裁切框：只允许画在吸顶标签列右侧的可视区
+          （左界视口坐标 = 标签列右缘 `axisX0`，右界 = `vbWidth`）；不横向溢出时整段不上场。
+        -->
+        <defs>
+          <clipPath :id="axisClipId" data-role="axis-clip">
+            <rect :x="axisClipX" y="0" :width="axisClipWidth" :height="canvasHeight" />
+          </clipPath>
+        </defs>
+
+        <!-- 日期列 guide（画在最底，不遮任何内容；留在内容层：纵向不吸顶、横向随内容走） -->
+        <g class="lcc-axis" data-role="column-guides" :clip-path="axisClipPath">
           <template v-for="(date, index) in dates" :key="date">
             <line
               class="lcc-guide"
               :x1="axisX0 + (index + 0.5) * columnWidth"
               :x2="axisX0 + (index + 0.5) * columnWidth"
-              y1="36"
+              :y1="DATE_AXIS_H"
               :y2="canvasHeight - 16"
             />
-            <text
-              v-if="index % Math.max(1, Math.ceil(54 / columnWidth)) === 0"
-              class="lcc-text"
-              :x="axisX0 + (index + 0.5) * columnWidth"
-              y="14"
-              text-anchor="middle"
-            >{{ date.slice(5) }}</text>
           </template>
         </g>
 
-        <!-- 话题带（本泳道一条）：标签 + 中性基线；强调色横条与刻度线已按实机反馈移除 -->
+        <!-- 话题带（本泳道一条）：中性基线留在内容层，标签进吸顶列（见本 svg 末尾） -->
         <g class="lcc-band">
-          <text class="lcc-band-title" x="14" :y="BAND_Y + 2">本泳道话题带</text>
-          <text class="lcc-band-sub" x="14" :y="BAND_Y + 18">{{ laneLabel }}</text>
           <line class="lcc-track" :x1="axisX0" :x2="vbWidth - RIGHT_PAD" :y1="BAND_Y + 6" :y2="BAND_Y + 6" />
         </g>
 
-        <!-- 分区线与分区标签 -->
+        <!-- 分区线（内容层，起点 = 标签列右缘）；分区名进吸顶列 -->
         <g class="lcc-zones">
           <line class="lcc-zone" :x1="axisX0" :x2="vbWidth - RIGHT_PAD" :y1="zones.zone1Line" :y2="zones.zone1Line" />
-          <text class="lcc-zone-label" x="14" :y="zones.zone1Line + 14">候选区</text>
-          <text class="lcc-zone-label" x="14" :y="zones.zone1Line + 26">未选入本泳道</text>
           <line class="lcc-zone" :x1="axisX0" :x2="vbWidth - RIGHT_PAD" :y1="zones.zone2Line" :y2="zones.zone2Line" />
-          <text class="lcc-zone-label" x="14" :y="zones.zone2Line + 14">只读参照</text>
-          <text class="lcc-zone-label" x="14" :y="zones.zone2Line + 26">属其它泳道</text>
         </g>
 
         <!-- 落点分区（拖拽时高亮可落点分区、弱化不可落点区；平时不显现） -->
@@ -1258,50 +1243,136 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
           </template>
         </g>
 
-        <!-- 「更早」折叠带（窗口外首义节点；非比例折叠） -->
-        <g v-if="hasFold" class="lcc-fold" data-testid="lane-fold-band">
-          <rect class="lcc-fold-bg" :x="LEFT_PAD" y="4" :width="FOLD_W" :height="Math.max(40, zones.zone1Line - 20)" rx="7" />
-          <line class="lcc-fold-sep" :x1="LEFT_PAD + FOLD_W + FOLD_GAP / 2" y1="2" :x2="LEFT_PAD + FOLD_W + FOLD_GAP / 2" :y2="zones.zone1Line - 10" />
-          <text class="lcc-fold-label" :x="LEFT_PAD + FOLD_W / 2" y="15" text-anchor="middle">更早 · {{ foldNodes.length }}</text>
-          <text class="lcc-fold-break" :x="LEFT_PAD + FOLD_W / 2" y="34" text-anchor="middle">⋯</text>
-          <g
-            v-for="node in foldShown"
-            :key="`fold-${node.id}`"
-            class="lcc-fold-node"
-            :data-node="node.id"
-            :data-testid="`lane-fold-node-${node.id}`"
-            tabindex="0"
-            role="button"
-            :aria-label="`更早 · ${node.title}`"
-            @click="onNodeClick(node)"
-          >
-            <title>{{ node.title }} · {{ node.date }} · 首义来源节点</title>
-            <circle class="lcc-hit" :cx="allPoints.get(node.id)?.x" :cy="allPoints.get(node.id)?.y" r="11" />
-            <circle class="lcc-point is-anchor" :cx="allPoints.get(node.id)?.x" :cy="allPoints.get(node.id)?.y" r="3.5" />
-            <circle class="lcc-fold-ring" :cx="allPoints.get(node.id)?.x" :cy="allPoints.get(node.id)?.y" r="8" />
+        <!--
+          横向吸顶标签列（unify-lane-canvas-shell D5）：话题带两行标签 + 两个分区名
+          + 「更早」折叠带（含首义范围勾选框）。
+
+          - 宽度取 `axisX0`（150 ↔ 226，随折叠带存在与否），**不取 `LEFT_PAD`**：折叠带里的
+            勾选框是可点操作入口，随横滚消失即退化；
+          - slot 内图元一律按**内容坐标**书写（`x = 14` / `LEFT_PAD` 起），横向位移由
+            `LaneCanvasStickyRail` 外层整组一次性给足（`offset = scrollLeftLogical`）——
+            图元自身再补一次位移就会偏移一个滚动量（双重平移）；
+          - 画在节点与标题之后：不透明底要盖住滑到标签列下方的点与标题；
+          - 不横向溢出时不下发 transform、不画底与阴影（渲染与无吸顶实现一致）。
+        -->
+        <LaneCanvasStickyRail
+          :width="axisX0"
+          :overflowing="overflowingX"
+          :y="0"
+          :height="stickyRailHeight"
+          :offset="scrollLeftLogical"
+          tint
+        >
+          <text class="lcc-band-title" x="14" :y="BAND_Y + 2">本泳道话题带</text>
+          <text class="lcc-band-sub" x="14" :y="BAND_Y + 18">{{ laneLabel }}</text>
+          <text class="lcc-zone-label" x="14" :y="zones.zone1Line + 14">候选区</text>
+          <text class="lcc-zone-label" x="14" :y="zones.zone1Line + 26">未选入本泳道</text>
+          <text class="lcc-zone-label" x="14" :y="zones.zone2Line + 14">只读参照</text>
+          <text class="lcc-zone-label" x="14" :y="zones.zone2Line + 26">属其它泳道</text>
+
+          <!-- 「更早」折叠带（窗口外首义节点；非比例折叠）也钉在列内：勾选框是可点入口 -->
+          <g v-if="hasFold" class="lcc-fold" data-testid="lane-fold-band">
+            <rect class="lcc-fold-bg" :x="LEFT_PAD" y="4" :width="FOLD_W" :height="Math.max(40, zones.zone1Line - 20)" rx="7" />
+            <line class="lcc-fold-sep" :x1="LEFT_PAD + FOLD_W + FOLD_GAP / 2" y1="2" :x2="LEFT_PAD + FOLD_W + FOLD_GAP / 2" :y2="zones.zone1Line - 10" />
+            <text class="lcc-fold-label" :x="LEFT_PAD + FOLD_W / 2" y="15" text-anchor="middle">更早 · {{ foldNodes.length }}</text>
+            <text class="lcc-fold-break" :x="LEFT_PAD + FOLD_W / 2" y="34" text-anchor="middle">⋯</text>
+            <g
+              v-for="node in foldShown"
+              :key="`fold-${node.id}`"
+              class="lcc-fold-node"
+              :data-node="node.id"
+              :data-testid="`lane-fold-node-${node.id}`"
+              tabindex="0"
+              role="button"
+              :aria-label="`更早 · ${node.title}`"
+              @click="onNodeClick(node)"
+            >
+              <title>{{ node.title }} · {{ node.date }} · 首义来源节点</title>
+              <circle class="lcc-hit" :cx="allPoints.get(node.id)?.x" :cy="allPoints.get(node.id)?.y" r="11" />
+              <circle class="lcc-point is-anchor" :cx="allPoints.get(node.id)?.x" :cy="allPoints.get(node.id)?.y" r="3.5" />
+              <circle class="lcc-fold-ring" :cx="allPoints.get(node.id)?.x" :cy="allPoints.get(node.id)?.y" r="8" />
+            </g>
+            <g
+              v-for="node in foldShown"
+              :key="`fold-check-${node.id}`"
+              class="lcc-fold-check"
+              :class="{ 'is-on': isAnchorChecked(node.id) }"
+              :data-testid="`lane-fold-check-${node.id}`"
+              role="checkbox"
+              :aria-checked="isAnchorChecked(node.id)"
+              :aria-label="`首义范围：${node.title}`"
+              @click.stop="emit('toggleAnchor', node.id)"
+            >
+              <rect class="lcc-hit" :x="(allPoints.get(node.id)?.x ?? 0) + 10" :y="(allPoints.get(node.id)?.y ?? 0) - 7" width="14" height="14" />
+              <rect class="lcc-fold-box" :x="(allPoints.get(node.id)?.x ?? 0) + 12" :y="(allPoints.get(node.id)?.y ?? 0) - 5" width="10" height="10" rx="2" />
+              <path
+                v-if="isAnchorChecked(node.id)"
+                class="lcc-fold-tick"
+                :d="`M${(allPoints.get(node.id)?.x ?? 0) + 13.8} ${allPoints.get(node.id)?.y ?? 0} L${(allPoints.get(node.id)?.x ?? 0) + 16.3} ${(allPoints.get(node.id)?.y ?? 0) + 2.6} L${(allPoints.get(node.id)?.x ?? 0) + 20.4} ${(allPoints.get(node.id)?.y ?? 0) - 2.8}`"
+              />
+            </g>
+            <text v-if="foldOverflow > 0" class="lcc-fold-more" :x="LEFT_PAD + FOLD_W / 2" :y="(foldPoints.get(foldShown[foldShown.length - 1]?.id ?? '')?.y ?? 62) + 22" text-anchor="middle">
+              +{{ foldOverflow }}
+            </text>
           </g>
-          <g
-            v-for="node in foldShown"
-            :key="`fold-check-${node.id}`"
-            class="lcc-fold-check"
-            :class="{ 'is-on': isAnchorChecked(node.id) }"
-            :data-testid="`lane-fold-check-${node.id}`"
-            role="checkbox"
-            :aria-checked="isAnchorChecked(node.id)"
-            :aria-label="`首义范围：${node.title}`"
-            @click.stop="emit('toggleAnchor', node.id)"
-          >
-            <rect class="lcc-hit" :x="(allPoints.get(node.id)?.x ?? 0) + 10" :y="(allPoints.get(node.id)?.y ?? 0) - 7" width="14" height="14" />
-            <rect class="lcc-fold-box" :x="(allPoints.get(node.id)?.x ?? 0) + 12" :y="(allPoints.get(node.id)?.y ?? 0) - 5" width="10" height="10" rx="2" />
-            <path
-              v-if="isAnchorChecked(node.id)"
-              class="lcc-fold-tick"
-              :d="`M${(allPoints.get(node.id)?.x ?? 0) + 13.8} ${allPoints.get(node.id)?.y ?? 0} L${(allPoints.get(node.id)?.x ?? 0) + 16.3} ${(allPoints.get(node.id)?.y ?? 0) + 2.6} L${(allPoints.get(node.id)?.x ?? 0) + 20.4} ${(allPoints.get(node.id)?.y ?? 0) - 2.8}`"
-            />
-          </g>
-          <text v-if="foldOverflow > 0" class="lcc-fold-more" :x="LEFT_PAD + FOLD_W / 2" :y="(foldPoints.get(foldShown[foldShown.length - 1]?.id ?? '')?.y ?? 62) + 22" text-anchor="middle">
-            +{{ foldOverflow }}
-          </text>
+        </LaneCanvasStickyRail>
+
+        <!--
+          日期轴刻度：钉在画布顶部（纵向吸顶），但**不横向吸顶**——刻度必需跟日期列一起
+          横向移动，否则就对不上列；画在所有内容之后，并裁切到标签列右侧（`axisClipPath`），
+          否则横滚后刻度会滑到吸顶标签列上方与该列文字重叠。
+
+          渐变吸顶带（与编排画布的 `sticky-bg` / `sticky-tint` / `sticky-edge` 同款三件套）：
+          刻度文字自己只有 10px 细字，纵滚 40–60px 后话题带与分区线就会滑进 `y ∈ [0, 36]`
+          的刻度区，没有不透明底时日期数字直接压在节点圆 / 标题 / 分区线上（不可读）。
+          - 底从 `axisX0` 起（**不从 0**）：左侧吸顶标签列在文档顺序里画在这层之前，
+            盖上去会把「本泳道话题带」那块的上半截吃掉；
+          - `y = -scrollTopLogical` + `height = scrollTopLogical + DATE_AXIS_H`：即
+            **在视口坐标里恒盖 `y ∈ [0, DATE_AXIS_H]`**（整组已被上移了 scrollTop）；
+          - 三者同受 `overflowing` 门控：不溢出时一个不画，渲染与无吸顶实现一致。
+        -->
+        <g
+          class="lcc-axis-ticks"
+          data-role="date-axis"
+          :transform="dateAxisTransform"
+          :clip-path="axisClipPath"
+        >
+          <rect
+            v-if="overflowing"
+            class="lcc-date-axis-bg"
+            data-role="date-axis-bg"
+            :x="axisX0"
+            :y="-scrollTopLogical"
+            :width="Math.max(0, vbWidth - axisX0)"
+            :height="scrollTopLogical + DATE_AXIS_H"
+          />
+          <rect
+            v-if="overflowing"
+            class="lcc-date-axis-tint"
+            data-role="date-axis-tint"
+            :x="axisX0"
+            :y="-scrollTopLogical"
+            :width="Math.max(0, vbWidth - axisX0)"
+            :height="scrollTopLogical + DATE_AXIS_H"
+          />
+          <line
+            v-if="overflowing"
+            class="lcc-date-axis-edge"
+            data-role="date-axis-edge"
+            :x1="axisX0"
+            :x2="vbWidth"
+            :y1="DATE_AXIS_H"
+            :y2="DATE_AXIS_H"
+          />
+          <template v-for="(date, index) in dates" :key="`tick-${date}`">
+            <text
+              v-if="index % Math.max(1, Math.ceil(54 / columnWidth)) === 0"
+              class="lcc-text"
+              :x="axisX0 + (index + 0.5) * columnWidth"
+              y="14"
+              text-anchor="middle"
+            >{{ date.slice(5) }}</text>
+          </template>
         </g>
       </svg>
 
@@ -1503,6 +1574,28 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
 .lcc-band-sub {
   fill: var(--color-text-muted);
   font-size: 11px;
+}
+
+/*
+  日期轴吸顶带（与编排画布 `sticky-bg` / `sticky-tint` / `sticky-edge` 同款）。
+  不透明底先把滑到顶部的节点与标题整片盖住，提档色才叠得上去。
+*/
+.lcc-date-axis-bg {
+  fill: var(--color-bg-base);
+}
+
+/*
+  提档底色：必须叠在上面那层 bg-base 之上——elevated 在深色主题带 alpha，
+  单独用它当唯一底色会透出滚动内容。
+*/
+.lcc-date-axis-tint {
+  fill: var(--color-bg-elevated);
+}
+
+/* 带下缘 1px 硬分隔（与固定列右缘阴影一起表达层界） */
+.lcc-date-axis-edge {
+  stroke: var(--color-border-medium);
+  stroke-width: 1;
 }
 
 .lcc-node {

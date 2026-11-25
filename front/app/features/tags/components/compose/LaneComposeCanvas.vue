@@ -34,11 +34,10 @@
  *
  * 只读边界：active 泳道的点只读（不可拖、卡内无选入动作）。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, nextTick, ref, useId, watch } from 'vue'
 import {
   buildRowIndex,
   centroidRecommendations,
-  clampZoom,
   cosineFor,
   estimateTextWidth,
   isDragBeyond,
@@ -57,8 +56,6 @@ import {
   TITLE_CHAR_WIDTH,
   truncateText,
   visibleScatter,
-  zoomAnchorScroll,
-  zoomStep,
   type LaneBox,
   type LaneLabelCandidate,
   type LanePlacedLabel,
@@ -70,8 +67,9 @@ import {
   LANE_ROW_SELF,
   LANE_SLOT_H,
   LANE_MIN_COLUMN,
-  LANE_ZOOM_DEFAULT,
 } from '~/features/tags/composables/laneComposeLogic'
+import { useLaneCanvasShell } from '~/features/tags/composables/useLaneCanvasShell'
+import LaneCanvasStickyRail, { STICKY_SHADOW_BANDS, stickyShadowOpacity } from '../LaneCanvasStickyRail.vue'
 import type { ComposeCandidate, ComposeCandidateChain, ComposeRelation } from '~/api/persistentTopics'
 
 const props = defineProps<{
@@ -155,47 +153,44 @@ const NODE_TITLE_LINE_H = 16
  */
 const CARD_WIDTH = 300
 
-const containerRef = ref<HTMLElement | null>(null)
-const containerWidth = ref(0)
-const containerHeight = ref(0)
 const hoverId = ref<string | null>(null)
 const dismissedId = ref<string | null>(null)
 const cardEl = ref<HTMLElement | null>(null)
 const cardSize = ref({ width: 260, height: 120 })
 
-function measure(): void {
-  const el = containerRef.value
-  if (!el) return
-  containerWidth.value = el.clientWidth || 0
-  containerHeight.value = el.clientHeight || 0
-  // 容器尺寸变化后滚动位置可能被浏览器夹回，吸顶位移要跟着重算
-  syncScrollTop()
-}
-
-let resizeObserver: ResizeObserver | null = null
-
-function onWindowResize(): void {
-  measure()
-}
-
-onMounted(() => {
-  measure()
-  window.addEventListener('resize', onWindowResize)
-  window.addEventListener('keydown', onWindowKeydown, true)
-  if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
-    resizeObserver = new ResizeObserver(() => measure())
-    resizeObserver.observe(containerRef.value)
-  }
-  // 滚轮缩放：必须非 passive，否则 preventDefault 不生效（画布上滚轮会把整页滚走）
-  containerRef.value?.addEventListener('wheel', onWheel, { passive: false })
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', onWindowResize)
-  window.removeEventListener('keydown', onWindowKeydown, true)
-  resizeObserver?.disconnect()
-  resizeObserver = null
-  containerRef.value?.removeEventListener('wheel', onWheel)
+/**
+ * 画布外壳（容器测量 / 缩放 / 滚动同步 / `Esc`）——与修正画布共用同一份实现
+ * （unify-lane-canvas-shell D1）。
+ *
+ * `contentHeight` / `contentWidth` 用 getter 惰性传入：`canvasHeight` / `vbWidth` 声明在
+ * 本调用之后，而计算属性惰性求值（首帧渲染时才读），因此不踩 TDZ；`zoom` 从此处即可用，
+ * 下方 `containerFitHeight` 的容器贴合换算依赖它。
+ */
+const {
+  containerRef,
+  containerWidth,
+  containerHeight,
+  measure,
+  zoom,
+  zoomPercent,
+  resetZoom,
+  scrollLeft,
+  scrollTopLogical,
+  scrollLeftLogical,
+  overflowing,
+  overflowingX,
+  syncScroll,
+} = useLaneCanvasShell({
+  contentHeight: () => canvasHeight.value,
+  contentWidth: () => vbWidth.value,
+  // 拖拽期间屏蔽滚轮缩放（D3-①）
+  isZoomBlocked: () => dragging.value,
+  // Esc 同时取消拖拽与平移（D3-②）：两者任一在跑就接管
+  hasActiveGesture: () => dragging.value || isPanning.value,
+  onCancelGesture: () => {
+    lastDragAt = Date.now()
+    resetGesture()
+  },
 })
 
 defineExpose({ measure, debugPointsEpoch: () => pointsEpoch })
@@ -664,39 +659,12 @@ const floorExtra = computed(() => (props.showAssigned
 
 // ── 吸顶（P-1：本次泳道行钉在画布顶部） ─────────────────────────────────
 /**
- * 画布纵向滚动的实际位置（CSS px，含缩放）。
- *
  * 吸顶不是「另一个容器」，而是把**本次泳道行整组**（行标签 + 落点框 + 成员点）
  * 反向平移 `scrollTop / zoom`：它因此永远停在日期轴之下，滚到地板的散料也能拖进来。
+ *
+ * 滚动位置 / 逻辑位移 / 溢出判据由外壳 composable 提供（`scrollTop`、`scrollTopLogical`、
+ * `overflowing`、`overflowingX`、`syncScroll`），本节只保留吸顶所需的派生位移。
  */
-const scrollTop = ref(0)
-const scrollLeft = ref(0)
-const scrollTopLogical = computed(() => (zoom.value > 0 ? scrollTop.value / zoom.value : scrollTop.value))
-const scrollLeftLogical = computed(() => (zoom.value > 0 ? scrollLeft.value / zoom.value : scrollLeft.value))
-
-function syncScrollTop(): void {
-  const el = containerRef.value
-  scrollTop.value = el ? el.scrollTop || 0 : 0
-  scrollLeft.value = el ? el.scrollLeft || 0 : 0
-}
-
-function onSurfaceScroll(): void {
-  syncScrollTop()
-}
-
-/** 内容是否真的超出可视高度（决定要不要吸顶；不溢出时行为与旧版完全一致）。 */
-const overflowing = computed(() => {
-  const viewport = containerHeight.value
-  if (!viewport) return false
-  return canvasHeight.value * zoom.value > viewport + 1
-})
-
-/** 内容是否真的超出可视宽（决定行标签列要不要横向吸顶）。 */
-const overflowingX = computed(() => {
-  const viewport = containerWidth.value
-  if (!viewport) return false
-  return vbWidth.value * zoom.value > viewport + 1
-})
 
 /** 吸顶行的反向位移（逻辑坐标 = CSS px / zoom；不溢出时不下发 transform）。 */
 const pinnedTransform = computed(() => (overflowing.value
@@ -722,8 +690,8 @@ const visibleWidth = computed(() => {
 const dropzoneX = computed(() => 6 + (overflowingX.value ? scrollLeftLogical.value : 0))
 const dropzoneWidth = computed(() => Math.max(0, visibleWidth.value - 12))
 
-/** 吸顶行下缘的层界阴影层数（每层 1px，透明度递减；1px 分隔线另画）。 */
-const STICKY_SHADOW_BANDS = 6
+// 吸顶带下缘的层界阴影级数与递减步长：只有 `LaneCanvasStickyRail` 里那一份定义
+// （`STICKY_SHADOW_BANDS`），本文件直接取用，SHALL NOT 再写一个 6。
 
 // ── 横向裁剪 / 吸顶标签置顶层 ────────────────────────────────────────────
 /**
@@ -804,63 +772,13 @@ const appearances = computed(() => {
 })
 
 // ── 缩放（滚轮放大 / 缩小；拖拽期间屏蔽） ─────────────────────────────────
-/**
- * 画布缩放比例（滚轮改；拖拽期间屏蔽）。
- *
- * 注意：`canvasHeight` 的容器贴合换算要用到它，而它在文件里声明得比 `canvasHeight` 晚。
- * 计算属性是**惰性求值**（首次访问在 setup 之后），因此不踩 TDZ；但 watch 的 source
- * 会立即求值，那条 watch 必须留在本声明之后。
- */
-const zoom = ref(LANE_ZOOM_DEFAULT)
-const zoomPercent = computed(() => `${Math.round(zoom.value * 100)}%`)
-
-// 内容高度 / 缩放 / 是否溢出变化后滚动位置可能被浏览器夹回 → 吸顶位移同步一次
-// （放在 zoom 之后：watch 会立刻求值 source，提前引用会踩 TDZ）
+// 缩放比例 / 滚轮 / 重置全部由外壳 composable 提供（见上方 `useLaneCanvasShell`）。
+// 此处只保留「内容高度 / 缩放 / 是否溢出变化后滚动位置可能被浏览器夹回 → 同步一次」
+// 这条 watch，且**位置不得上移**：watch 的 source 会立即求值，必须留在 `zoom` 与
+// `overflowing` / `overflowingX` 均已可用之后（design 风险段第 2 条）。
 watch([overflowing, overflowingX, canvasHeight, vbWidth, zoom], () => {
-  void nextTick().then(syncScrollTop)
+  void nextTick().then(syncScroll)
 })
-
-function onWheel(event: WheelEvent): void {
-  // 拖拽期间不响应滚轮缩放（D3）
-  if (dragging.value) return
-  event.preventDefault()
-  const clientX = Number.isFinite(event.clientX) ? event.clientX : undefined
-  const clientY = Number.isFinite(event.clientY) ? event.clientY : undefined
-  applyZoom(zoomStep(zoom.value, event.deltaY), clientX, clientY)
-}
-
-/** 应用缩放：改比例 + 按光标锚点换算滚动位置（等 SVG 尺寸更新后再落滚动，避免被旧范围夹掉）。 */
-function applyZoom(next: number, clientX?: number, clientY?: number): void {
-  const to = clampZoom(next)
-  const from = zoom.value
-  if (to === from) return
-  const surface = containerRef.value
-  if (!surface) {
-    zoom.value = to
-    return
-  }
-  const rect = surface.getBoundingClientRect()
-  const anchorX = (clientX ?? rect.left + surface.clientWidth / 2) - rect.left
-  const anchorY = (clientY ?? rect.top + surface.clientHeight / 2) - rect.top
-  const nextScrollLeft = zoomAnchorScroll(anchorX, surface.scrollLeft, from, to)
-  const nextScrollTop = zoomAnchorScroll(anchorY, surface.scrollTop, from, to)
-  zoom.value = to
-  void nextTick().then(() => {
-    surface.scrollLeft = nextScrollLeft
-    surface.scrollTop = nextScrollTop
-  })
-}
-
-/** 重置到 100%：比例与滚动位置一起回到初始态。 */
-function resetZoom(): void {
-  zoom.value = LANE_ZOOM_DEFAULT
-  const surface = containerRef.value
-  if (!surface) return
-  void nextTick().then(() => {
-    surface.scrollLeft = 0
-    surface.scrollTop = 0
-  })
-}
 
 // ── 指针手势：平移 / 单条拖拽 / 整组拖拽（D3） ─────────────────────────────
 type GestureKind = 'pan' | 'node' | 'row'
@@ -1086,16 +1004,6 @@ function onSurfacePointerUp(event?: PointerEvent): void {
 function onSurfacePointerCancel(): void {
   if (!gesture) return
   if (dragging.value || isPanning.value) lastDragAt = Date.now()
-  resetGesture()
-}
-
-function onWindowKeydown(event: KeyboardEvent): void {
-  if (event.key !== 'Escape') return
-  if (!dragging.value && !isPanning.value) return
-  event.preventDefault()
-  // 捕获阶段拦下：拖拽中的 Esc 只取消拖拽，不冒泡到宿主的「退出编排态」
-  event.stopPropagation()
-  lastDragAt = Date.now()
   resetGesture()
 }
 
@@ -1458,7 +1366,7 @@ watch(() => props.focusId, (now, prev) => {
       @pointermove="onSurfacePointerMove"
       @pointerup="onSurfacePointerUp"
       @pointercancel="onSurfacePointerCancel"
-      @scroll="onSurfaceScroll"
+      @scroll="syncScroll"
     >
       <svg
         :viewBox="`0 0 ${vbWidth} ${canvasHeight}`"
@@ -1659,31 +1567,20 @@ watch(() => props.focusId, (now, prev) => {
             </g>
 
             <!--
-              行标签层：画在节点**之后**——横向吸顶时标签底色要盖住滑到下面的点与标题；
-              整组（含 row-handle 热区）反向平移 scrollLeft/zoom，不溢出时不下发 transform。
+              行标签层：画在节点**之后**——横向吸顶时标签底色要盖住滑到下面的点与标题。
+              四件事（整组反向平移 / 不透明底 / 可选提档底 / N 级右缘渐隐）全在
+               `LaneCanvasStickyRail` 里，本文件不再内联任何一处（workshop-lane-compose）。
             -->
             <template v-if="row.kind === 'readonly'">
               <!-- 只读梯子的泳道名也在标签列：横向吸顶后仍钉在最左 -->
-              <g class="lcc-canvas__row-label" data-role="row-label-group" :transform="rowLabelTransform">
-                <rect
-                  v-if="overflowingX"
-                  class="lcc-canvas__label-bg"
-                  data-role="row-label-bg"
-                  x="0"
-                  :y="separatorY"
-                  :width="LABEL_W"
-                  :height="Math.max(0, activeRowOffsets.cursor - separatorY)"
-                />
-                <!-- 标签列底色提一档（与吸顶带同一档，两条吸顶轴看起来是一块「固定框」） -->
-                <rect
-                  v-if="overflowingX"
-                  class="lcc-canvas__sticky-tint"
-                  data-role="row-label-tint"
-                  x="0"
-                  :y="separatorY"
-                  :width="LABEL_W"
-                  :height="Math.max(0, activeRowOffsets.cursor - separatorY)"
-                />
+              <LaneCanvasStickyRail
+                :width="LABEL_W"
+                :overflowing="overflowingX"
+                :y="separatorY"
+                :height="Math.max(0, activeRowOffsets.cursor - separatorY)"
+                :offset="scrollLeftLogical"
+                tint
+              >
                 <text x="10" :y="separatorY + 24">已有泳道 · 只读</text>
                 <text
                   v-for="active in activeRows"
@@ -1692,57 +1589,27 @@ watch(() => props.focusId, (now, prev) => {
                   :x="10"
                   :y="(activeRowOffsets.offsets.get(active.topicId) ?? activeTop) - 2"
                 >{{ truncateText(active.label, 10) }}</text>
-                <!-- 标签列右缘渐隐阴影（与其它行同款 6 级） -->
-                <template v-if="overflowingX">
-                  <rect
-                    v-for="band in STICKY_SHADOW_BANDS"
-                    :key="`lane-label-shadow-${band}`"
-                    class="lcc-canvas__label-shadow"
-                    :data-role="band === 1 ? 'row-label-shadow' : undefined"
-                    :x="LABEL_W + band - 1"
-                    :y="separatorY"
-                    width="1"
-                    :height="Math.max(0, activeRowOffsets.cursor - separatorY)"
-                    :opacity="0.28 - (band - 1) * 0.045"
-                  />
-                </template>
-              </g>
+              </LaneCanvasStickyRail>
               <!-- 层界分隔线画在标签底色之上（否则标签列里看不到行界） -->
               <line class="lcc-canvas__separator" x1="10" :x2="vbWidth - 10" :y1="separatorY" :y2="separatorY" />
             </template>
 
             <template v-else>
               <!--
-                行标签列（横向吸顶）：整组（含 row-handle 拖拽热区）反向平移 scrollLeft/zoom；
-                不溢出时不下发 transform（01–03 态与原渲染一致）。
-                吸顶时本次泳道行的标签组改画到置顶覆盖层（见行组之后）——这里 `v-if` 跳过，
-                保证 `[data-role="row-label"]` 全画布只有一份。
+                行标签列（横向吸顶）：
+                - 整组（含 row-handle 拖拽热区）反向平移 scrollLeft/zoom，不溢出时不下发 transform；
+                - 吸顶时本次泳道行的标签组改画到置顶覆盖层（见行组之后）——这里 `v-if` 跳过，
+                  保证 `[data-role="row-label"]` 全画布只有一份。
               -->
-              <g
+              <LaneCanvasStickyRail
                 v-if="!(row.kind === 'lane' && overflowing)"
-                class="lcc-canvas__row-label"
-                data-role="row-label-group"
-                :transform="rowLabelTransform"
+                :width="LABEL_W"
+                :overflowing="overflowingX"
+                :y="row.top"
+                :height="row.height"
+                :offset="scrollLeftLogical"
+                tint
               >
-                <rect
-                  v-if="overflowingX"
-                  class="lcc-canvas__label-bg"
-                  data-role="row-label-bg"
-                  x="0"
-                  :y="row.top"
-                  :width="LABEL_W"
-                  :height="row.height"
-                />
-                <!-- 标签列底色提一档（与吸顶带同一档） -->
-                <rect
-                  v-if="overflowingX"
-                  class="lcc-canvas__sticky-tint"
-                  data-role="row-label-tint"
-                  x="0"
-                  :y="row.top"
-                  :width="LABEL_W"
-                  :height="row.height"
-                />
                 <rect
                   v-if="row.draggable"
                   class="lcc-canvas__row-handle"
@@ -1771,21 +1638,7 @@ watch(() => props.focusId, (now, prev) => {
                   :y="row.top + 29"
                   text-anchor="end"
                 >{{ row.tally }}</text>
-                <!-- 标签列右缘渐隐阴影（横向同款 6 级；与纵向吸顶同一套画法） -->
-                <template v-if="overflowingX">
-                  <rect
-                    v-for="band in STICKY_SHADOW_BANDS"
-                    :key="`label-shadow-${band}`"
-                    class="lcc-canvas__label-shadow"
-                    :data-role="band === 1 ? 'row-label-shadow' : undefined"
-                    :x="LABEL_W + band - 1"
-                    :y="row.top"
-                    width="1"
-                    :height="row.height"
-                    :opacity="0.28 - (band - 1) * 0.045"
-                  />
-                </template>
-              </g>
+              </LaneCanvasStickyRail>
               <!-- 行分隔线画在标签底色之上（否则标签列里看不到行界） -->
               <line
                 class="lcc-canvas__row-separator"
@@ -1808,7 +1661,7 @@ watch(() => props.focusId, (now, prev) => {
                 :y="row.top + row.height + band - 1"
                 :width="vbWidth"
                 height="1"
-                :opacity="0.28 - (band - 1) * 0.045"
+                :opacity="stickyShadowOpacity(band)"
               />
               <!-- 带下缘的 1px 硬分隔（画在渐隐之后，边界才看得见） -->
               <line
@@ -1838,25 +1691,14 @@ watch(() => props.focusId, (now, prev) => {
           data-role="lane-label-overlay"
           :transform="pinnedTransform"
         >
-          <g class="lcc-canvas__row-label" data-role="row-label-group" :transform="rowLabelTransform">
-            <rect
-              v-if="overflowingX"
-              class="lcc-canvas__label-bg"
-              data-role="row-label-bg"
-              x="0"
-              :y="laneRowView.top"
-              :width="LABEL_W"
-              :height="laneRowView.height"
-            />
-            <rect
-              v-if="overflowingX"
-              class="lcc-canvas__sticky-tint"
-              data-role="row-label-tint"
-              x="0"
-              :y="laneRowView.top"
-              :width="LABEL_W"
-              :height="laneRowView.height"
-            />
+          <LaneCanvasStickyRail
+            :width="LABEL_W"
+            :overflowing="overflowingX"
+            :y="laneRowView.top"
+            :height="laneRowView.height"
+            :offset="scrollLeftLogical"
+            tint
+          >
             <!-- 整组拖拽热区在标签层里（本次泳道行不可整组拖，`draggable` 为假时不渲染） -->
             <rect
               v-if="laneRowView.draggable"
@@ -1885,20 +1727,7 @@ watch(() => props.focusId, (now, prev) => {
               :y="laneRowView.top + 29"
               text-anchor="end"
             >{{ laneRowView.tally }}</text>
-            <template v-if="overflowingX">
-              <rect
-                v-for="band in STICKY_SHADOW_BANDS"
-                :key="`lane-label-shadow-${band}`"
-                class="lcc-canvas__label-shadow"
-                :data-role="band === 1 ? 'row-label-shadow' : undefined"
-                :x="LABEL_W + band - 1"
-                :y="laneRowView.top"
-                width="1"
-                :height="laneRowView.height"
-                :opacity="0.28 - (band - 1) * 0.045"
-              />
-            </template>
-          </g>
+          </LaneCanvasStickyRail>
         </g>
 
         <!-- 行标签列与内容区的竖向分隔（横向吸顶时钉在标签列右缘；画在标签层之上才不糊） -->
@@ -2121,11 +1950,7 @@ watch(() => props.focusId, (now, prev) => {
   fill: var(--color-bg-base);
 }
 
-/* 行标签列横向吸顶：不透明底（盖住从标签下方滑过的点）+ 右缘 6 级渐隐 */
-.lcc-canvas__label-bg,
-.lcc-canvas__label-shadow {
-  fill: var(--color-bg-base);
-}
+/* 吸顶标签列自己的底色/阴影/提档色已随单元搬进 `LaneCanvasStickyRail.vue`（scoped）。 */
 
 .lcc-canvas__guide {
   stroke: var(--color-border-medium);

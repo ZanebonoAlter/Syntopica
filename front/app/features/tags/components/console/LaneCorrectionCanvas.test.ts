@@ -887,6 +887,76 @@ describe('LaneCorrectionCanvas · 画布高度贴合容器（5.5）', () => {
   })
 })
 
+// ── 手势外壳与编排画布同源（unify-lane-canvas-shell 2.4 / D3） ────────────
+
+/**
+ * 在画布上滚一格（`deltaY < 0` 放大）。补 clientX/clientY（happy-dom 的 WheelEvent 不带）。
+ *
+ * 滚轮监听挂在滚动容器上（`useLaneCanvasShell` 非 passive 注册）——必须派发到容器本身，
+ * 才能走到「拖拽期间屏蔽」那条守卫。
+ */
+async function wheelOn(w: ReturnType<typeof mountCanvas>, deltaY: number, at: Pt = { x: 400, y: 300 }): Promise<void> {
+  const el = surfaceOf(w).element
+  const event = new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true })
+  Object.defineProperties(event, {
+    clientX: { value: at.x, configurable: true },
+    clientY: { value: at.y, configurable: true },
+  })
+  el.dispatchEvent(event)
+  await nextTick()
+}
+
+function zoomReadout(w: ReturnType<typeof mountCanvas>): string {
+  return w.find('[data-testid="lane-zoom-readout"]').text()
+}
+
+describe('LaneCorrectionCanvas · 手势外壳与编排画布同源（2.4 / D3）', () => {
+  it('D3-① 拖拽节点期间滚轮不缩放；松手后滚轮恢复缩放（无需重新进入画布）', async () => {
+    const w = mountCanvas()
+    expect(zoomReadout(w)).toBe('100%')
+
+    await pressAt(w, '[data-testid="lane-node-c1"]')
+    await movePointer(w, { x: 400, y: zoneY(w, 'member') })
+    // 拖拽真的在跑（已越过 4px 阈值）才谈得上屏蔽
+    expect(w.find('.lcc-drag-ghost').exists()).toBe(true)
+
+    await wheelOn(w, -100)
+    expect(zoomReadout(w)).toBe('100%')
+    await wheelOn(w, -100)
+    expect(zoomReadout(w)).toBe('100%')
+
+    await releasePointer(w, { x: 400, y: zoneY(w, 'member') })
+    await wheelOn(w, -100)
+    expect(zoomReadout(w)).toBe('110%')
+    w.unmount()
+  })
+
+  it('D3-② 平移中按 Esc 取消手势：指针继续移动不再改滚动位置', async () => {
+    const w = mountCanvas()
+    const surface = surfaceOf(w).element as HTMLElement
+    surface.scrollLeft = 0
+    surface.scrollTop = 0
+
+    // 空白处按下 → 越过 4px 阈值 → 起平移（内容反方向走）
+    surface.dispatchEvent(pointer('pointerdown', { x: 400, y: 300 }))
+    await nextTick()
+    await movePointer(w, { x: 320, y: 300 })
+    expect(surfaceOf(w).classes()).toContain('is-panning')
+    expect(surface.scrollLeft).toBe(80)
+
+    // Esc：手势取消（编辑侧原本只取消拖拽，平移仍在跟手 → 这条断言就是本次对齐的落点）
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(surfaceOf(w).classes()).not.toContain('is-panning')
+
+    await movePointer(w, { x: 120, y: 300 })
+    expect(surface.scrollLeft).toBe(80)
+    await releasePointer(w, { x: 120, y: 300 })
+    expectNoWrites(w)
+    w.unmount()
+  })
+})
+
 // ── 平移死区（align-lane-correction-workface R-6） ─────────────────────
 
 describe('LaneCorrectionCanvas · 不可拖节点上也能起平移（R-6）', () => {
