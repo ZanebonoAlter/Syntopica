@@ -21,12 +21,22 @@
  *   那种推算会把「当日无内容」的板块错算成失败（与通知中心口径不一致）。
  *   队列门槛（`pending + processing > 0` / 对账从未成功）在**入口**同样把关：
  *   绕过 UI 直接调用也不会放行（清单展开期间有文章入队时同样生效）。
+ * - **近 7 天缺口与补填**（add-daily-report-gap-backfill D8）：缺口清单来自
+ *   `GET /daily-reports/gaps`（**一次性请求**：挂载 / 补填终态 / 跨日切换各取
+ *   一次，**不新建周期性轮询**，也不塞进雷达总览的轮询载荷）。缺口判定口径在
+ *   服务端（与生成 Step1 同谓词），前端只消费 `missing_days` / `total_missing`
+ *   与平铺的 `gaps`，**不自行推算**。取数失败只降级缺口区（未知 ≠ 无缺口），
+ *   卡片其余五项事实不受影响。补填走 `POST /daily-reports/backfill-gaps`
+ *   （异步受理即返回 `job_id`）；逐格进度复用 `daily_report_progress` 但**必须**
+ *   按 `run_scope === 'backfill'` + `job_id` 过滤（否则被当日生成的进度串台），
+ *   终态走**独立**事件 `daily_report_backfill_done`（`daily_report_done` 仍是
+ *   当日生成专用）。
  *
  * R-17：首次对账从未成功时，本层只给「读取中」，**不产出**「今日日报未生成」
  * 这类业务结论；对账失败保留旧值由 `usePollBundle` 保证（不清零、不转错误态）。
  */
-import { computed, getCurrentInstance, onUnmounted, ref, toValue, type MaybeRefOrGetter } from 'vue'
-import { useDailyReportsApi } from '~/api/dailyReports'
+import { computed, getCurrentInstance, onMounted, onUnmounted, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
+import { useDailyReportsApi, type DailyReportBackfillRunSummary, type DailyReportBackfillStatus, type DailyReportGap } from '~/api/dailyReports'
 import { useEmbeddingQueueProgress } from '~/composables/useEmbeddingQueueProgress'
 import { useEventStream } from '~/composables/useEventStream'
 import { usePollBundle } from '~/composables/usePollBundle'
@@ -78,6 +88,44 @@ export interface RadarGenerateResult {
    * 后端旧版本不带该字段时为 0（不可知 ≠ 有）。
    */
   emptyBoards: number
+}
+
+/** 缺口窗口天数（与后端缺口查询 / 「一次补齐」的默认窗口同口径）。 */
+export const GAP_WINDOW_DAYS = 7
+
+/** 补填状态机（白盒表：idle / submitting / running / done / failed）。 */
+export type RadarBackfillPhase = 'idle' | 'submitting' | 'running' | 'done' | 'failed'
+
+/** 缺口日里的一个缺报板块。 */
+export interface RadarGapBoard {
+  boardId: number
+  /** 板块名（服务端可能给空串 → 回退 `Board #N`）。 */
+  label: string
+}
+
+/** 某一天的缺口（该日缺报的板块集合）。 */
+export interface RadarGapDay {
+  /** 报告日（YYYY-MM-DD）。 */
+  date: string
+  boards: RadarGapBoard[]
+}
+
+/** 补填进度（已补数 / 总数 / 当前报告日）。 */
+export interface RadarBackfillProgress {
+  filled: number
+  total: number
+  /** 当前正在补的报告日（未收到进度消息时为空串）。 */
+  date: string
+}
+
+/** 补填终态结果（服务端四态：success / partial / failed / budget_exhausted）。 */
+export interface RadarBackfillResult {
+  status: DailyReportBackfillStatus
+  filled: number
+  failed: number
+  remaining: number
+  windowStart: string
+  windowEnd: string
 }
 
 export interface RadarPipelineStatusOptions {
@@ -147,6 +195,14 @@ export function useRadarPipelineStatus(options: RadarPipelineStatusOptions = {})
    */
   const queuesDrained = computed(() => !queueBlocked.value && !embeddingBlocked.value)
 
+  /**
+   * 补填入口门槛（review 复查）：补填与自动生成同款双队列判据——队列没排空时
+   * 补出来的候选不全，服务端会 409 `tag_queue_not_empty` / `embedding_queue_not_empty`。
+   * 入口同步禁用，避免「看着能点、点了报错」；典型触发场景（停机/故障恢复后
+   * 想补缺）恰好就是队列最可能堆着的时候。
+   */
+  const backfillBlocked = computed(() => !queuesDrained.value)
+
   // ── 对账状态（R-17 的判据来源）────────────────────────────────────────
   /** 对账至少成功过一次（0 = 从未成功 → 只呈现「读取中」）。 */
   const pollReady = computed(() => queue.lastReconciledAt.value > 0)
@@ -195,6 +251,175 @@ export function useRadarPipelineStatus(options: RadarPipelineStatusOptions = {})
   const failureMessage = ref('')
   /** 每板最近一次状态（completed / failed），用于终态的成功/失败计数。 */
   const boardStatuses = ref<Map<number, string>>(new Map())
+
+  // ── 缺口（近 7 天）─────────────────────────────────────────────────────
+  // 缺口取数是**一次性请求**：挂载 / 补填终态 / 跨日切换各取一次——
+  // 不新建周期性轮询（状态块既有约束），不塞进雷达总览的轮询载荷。
+  const gaps = ref<DailyReportGap[]>([])
+  const gapLoading = ref(false)
+  const gapError = ref('')
+  /** 成功取到过缺口（false = 未知；未知不得渲染成「无缺口」）。 */
+  const gapLoaded = ref(false)
+  const gapMissingDays = ref(0)
+  const gapTotalMissing = ref(0)
+  /** 实际窗口天数（服务端按保留窗口收窄；「一次补齐」复用同一口径）。 */
+  const gapWindowDays = ref(GAP_WINDOW_DAYS)
+  /** 最近一次补填运行摘要（服务端留档；无运行记录时为 null）。 */
+  const lastRun = ref<DailyReportBackfillRunSummary | null>(null)
+
+  /**
+   * 缺口按日分组（日期升序）。
+   *
+   * 今日**不在缺口区呈现**（今日状态由既有「当日日报状态」行负责）——服务端
+   * 窗口本就不含今天，这里再挡一层（口径漂移时也不把今天列成缺口）。
+   * 板块名缺失时回退 `Board #N`（不编造板块名）。
+   */
+  const gapsByDate = computed<RadarGapDay[]>(() => {
+    const today = todayKey()
+    const byDate = new Map<string, RadarGapBoard[]>()
+    for (const gap of gaps.value) {
+      if (!gap.date || gap.date === today) continue
+      const boards = byDate.get(gap.date) ?? []
+      boards.push({
+        boardId: Number(gap.board_id),
+        label: gap.board_label?.trim() || `Board #${gap.board_id}`,
+      })
+      byDate.set(gap.date, boards)
+    }
+    return [...byDate.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .map(([date, boards]) => ({ date, boards }))
+  })
+  /** 缺口天数（服务端计数；前端不自行推算）。 */
+  const missingDays = computed(() => gapMissingDays.value)
+  /** 缺口篇数（服务端计数）。 */
+  const totalMissing = computed(() => gapTotalMissing.value)
+
+  /**
+   * 取一次缺口清单。
+   *
+   * 失败只降级缺口区：保留「未知」（错误文案 + 重试入口），**不**影响卡片其余
+   * 五项事实，也**不**把失败渲染成「无缺口」。
+   */
+  async function reloadGaps(): Promise<void> {
+    gapLoading.value = true
+    gapError.value = ''
+    const res = await useDailyReportsApi().getDailyReportGaps({ days: GAP_WINDOW_DAYS })
+    gapLoading.value = false
+    if (!res.success || !res.data) {
+      gapError.value = res.error || res.message || '读取失败'
+      return
+    }
+    gaps.value = res.data.gaps ?? []
+    gapMissingDays.value = res.data.missing_days ?? 0
+    gapTotalMissing.value = res.data.total_missing ?? 0
+    gapWindowDays.value = res.data.days ?? GAP_WINDOW_DAYS
+    lastRun.value = res.data.last_run ?? null
+    gapLoaded.value = true
+  }
+
+  // ── 补填（异步：受理即返回，进度与终态走 WS）──────────────────────────
+  const backfillPhase = ref<RadarBackfillPhase>('idle')
+  const backfillProgress = ref<RadarBackfillProgress>({ filled: 0, total: 0, date: '' })
+  const backfillResult = ref<RadarBackfillResult | null>(null)
+  const backfillError = ref('')
+  /** 本次补填的 job_id（受理响应到达后落定；空 = 尚未受理）。 */
+  const backfillJobId = ref('')
+  /** 受理响应到达前缓存的补填进度消息（待 job_id 比对后回放/丢弃）。 */
+  const bufferedBackfillProgress: Array<Record<string, unknown>> = []
+  // 终态消息也可能先于受理响应到达（快失败）：同样先缓存，拿到 job_id 后按 id 回放。
+  // 不缓冲会让 UI 永久卡在 running（review R-4）。
+  const bufferedBackfillDone: Array<Record<string, unknown>> = []
+
+  /**
+   * 补填进度消息：`saved` = 已补数，`progress` = "3/7"（已补/总数），
+   * `date` = 本格对应的报告日。只渲染服务端计数，不自行推算。
+   */
+  function applyBackfillProgress(msg: Record<string, unknown>): void {
+    const filled = countOf(msg, 'saved') ?? 0
+    const progressText = typeof msg.progress === 'string' ? msg.progress : ''
+    const total = Number(progressText.split('/')[1] ?? '')
+    backfillProgress.value = {
+      filled,
+      total: Number.isFinite(total) ? total : 0,
+      date: typeof msg.date === 'string' ? msg.date : '',
+    }
+  }
+
+  /**
+   * 发起一次补填（异步受理）。
+   *
+   * `date` = 只补那天；`days` = 一次补齐（窗口与缺口清单同口径）。
+   * 进行中（submitting / running）不重复受理——服务端闸门也会拦，但前端不
+   * 把 409 当常态。
+   */
+  async function triggerBackfill(params: { date?: string; days?: number }): Promise<void> {
+    if (backfillPhase.value === 'submitting' || backfillPhase.value === 'running') return
+    backfillPhase.value = 'submitting'
+    backfillError.value = ''
+    backfillResult.value = null
+    backfillProgress.value = { filled: 0, total: 0, date: '' }
+    backfillJobId.value = ''
+    bufferedBackfillProgress.length = 0
+    bufferedBackfillDone.length = 0
+    const res = await useDailyReportsApi().triggerGapBackfill(params)
+    if (!res.success) {
+      bufferedBackfillDone.length = 0
+      backfillPhase.value = 'failed'
+      backfillError.value = res.error || res.message || '补填提交失败，请稍后再试。'
+      return
+    }
+    backfillJobId.value = res.data?.job_id ?? ''
+    backfillPhase.value = 'running'
+    // 回放受理响应到达前缓存的进度消息：只有 job_id 匹配的才算本次的。
+    const buffered = bufferedBackfillProgress.splice(0, bufferedBackfillProgress.length)
+    for (const msg of buffered) {
+      if (backfillJobId.value && messageJobId(msg) !== backfillJobId.value) continue
+      applyBackfillProgress(msg)
+    }
+    // 回放受理响应到达前缓存的**终态**（与进度同理，按 job_id 匹配）。
+    const bufferedDone = bufferedBackfillDone.splice(0, bufferedBackfillDone.length)
+    for (const msg of bufferedDone) {
+      if (backfillJobId.value && messageJobId(msg) !== backfillJobId.value) continue
+      onBackfillDone(msg)
+    }
+  }
+
+  /** 补某一天（只覆盖该日；不为该日之外的缺口生成日报）。 */
+  async function backfillDate(date: string): Promise<void> {
+    await triggerBackfill({ date })
+  }
+
+  /** 一次补齐窗口内全部缺口（窗口与缺口清单同口径）。 */
+  async function backfillAll(): Promise<void> {
+    await triggerBackfill({ days: gapWindowDays.value })
+  }
+
+  /**
+   * 补填终态（独立事件 `daily_report_backfill_done`）。
+   *
+   * 只认本 job 的消息（job_id 匹配）——别的补填 / 当日生成终态一律忽略。
+   * 终态后重取一次缺口（补填改变了缺口清单）。
+   */
+  function onBackfillDone(msg: Record<string, unknown>): void {
+    if (!backfillJobId.value) {
+      if (backfillPhase.value === 'submitting') bufferedBackfillDone.push(msg)
+      return
+    }
+    if (messageJobId(msg) !== backfillJobId.value) return
+    const status = (typeof msg.status === 'string' ? msg.status : 'failed') as DailyReportBackfillStatus
+    backfillResult.value = {
+      status,
+      filled: countOf(msg, 'filled') ?? 0,
+      failed: countOf(msg, 'failed') ?? 0,
+      remaining: countOf(msg, 'remaining') ?? 0,
+      windowStart: typeof msg.window_start === 'string' ? msg.window_start : '',
+      windowEnd: typeof msg.window_end === 'string' ? msg.window_end : '',
+    }
+    backfillPhase.value = 'done'
+    backfillProgress.value = { filled: 0, total: 0, date: '' }
+    void reloadGaps()
+  }
 
   // ── WS 消息归属（job_id）──────────────────────────────────────────────
   // `daily_report_progress` / `daily_report_done` 是**全局广播**：请求在途
@@ -283,6 +508,19 @@ export function useRadarPipelineStatus(options: RadarPipelineStatusOptions = {})
   }
 
   function onProgress(msg: Record<string, unknown>): void {
+    // 补填进度与当日生成进度**复用同一事件类型**：先按 run_scope 分流，
+    // 再按 job_id 归属——否则会被当日生成的进度串台（补填进度报「3/7」时
+    // 当日生成可能正在跑）。
+    if (msg.run_scope === 'backfill') {
+      if (!backfillJobId.value) {
+        // 受理响应未到：先缓存（可能是并发补填），拿到 job_id 后再回放。
+        if (backfillPhase.value === 'submitting') bufferedBackfillProgress.push(msg)
+        return
+      }
+      if (messageJobId(msg) !== backfillJobId.value) return
+      applyBackfillProgress(msg)
+      return
+    }
     routeMessage('progress', msg)
   }
 
@@ -293,12 +531,30 @@ export function useRadarPipelineStatus(options: RadarPipelineStatusOptions = {})
   const stream = useEventStream()
   const unsubProgress = stream.on<Record<string, unknown>>(EVENT_TYPES.DAILY_REPORT_PROGRESS, onProgress)
   const unsubDone = stream.on<Record<string, unknown>>(EVENT_TYPES.DAILY_REPORT_DONE, onDone)
+  const unsubBackfillDone = stream.on<Record<string, unknown>>(EVENT_TYPES.DAILY_REPORT_BACKFILL_DONE, onBackfillDone)
   if (getCurrentInstance()) {
+    // 挂载取一次缺口（一次性请求；不新建周期性轮询）。
+    onMounted(() => { void reloadGaps() })
     onUnmounted(() => {
       unsubProgress()
       unsubDone()
+      unsubBackfillDone()
     })
   }
+
+  /**
+   * 跨日切换时重取一次缺口（窗口口径是「近 N 天」，跨日后清单变了）。
+   *
+   * 跨日判据用**最近一次对账时刻**作刻度（每次对账成功必变）——不为此引入
+   * 定时器（client-poll-budget），当日判定仍用本地日 `todayKey()`。
+   */
+  let gapFetchedDay = todayKey()
+  watch(lastReconciledAt, () => {
+    const today = todayKey()
+    if (today === gapFetchedDay) return
+    gapFetchedDay = today
+    void reloadGaps()
+  })
 
   /**
    * 发起一次手动生成（作用域 = 勾选的板块集合）。
@@ -383,5 +639,22 @@ export function useRadarPipelineStatus(options: RadarPipelineStatusOptions = {})
     result,
     failureMessage,
     generate,
+    // 缺口（近 7 天）
+    gapsByDate,
+    missingDays,
+    totalMissing,
+    gapLoading,
+    gapError,
+    gapLoaded,
+    lastRun,
+    reloadGaps,
+    // 补填
+    backfillPhase,
+    backfillProgress,
+    backfillResult,
+    backfillError,
+    backfillDate,
+    backfillAll,
+    backfillBlocked,
   }
 }

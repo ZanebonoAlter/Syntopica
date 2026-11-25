@@ -74,7 +74,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	)
 	var topicBriefs map[uint][]repository.TopicRecentBrief
 	if existingTopics != nil {
-		briefs, briefsErr := repository.Repo.ListTopicRecentBriefs(boardID, briefsSinceDays, briefsPerTopicCap)
+		briefs, briefsErr := repository.Repo.ListTopicRecentBriefs(boardID, startOfDay, briefsSinceDays, briefsPerTopicCap)
 		if briefsErr != nil {
 			logging.Warnf("daily-report: load topic briefs for board %d failed (degrading to label-only): %v", boardID, briefsErr)
 		} else {
@@ -714,8 +714,13 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 }
 func findPreviousReportBrief(boardID uint, date time.Time) *repository.BoardDailyReport {
 	var report repository.BoardDailyReport
+	// Order 必须显式按报告日倒序：GORM 的 First() 自带 `ORDER BY <主键> ASC`，
+	// 不写 Order 时拿到的是**最早**一份报告而不是紧邻的前一日（review R-1：
+	// 补填按旧→新串行就是为了让 prev_report_id 指向上一天，主键序会把它指向
+	// 史前第一份）。
 	err := repository.Repo.DB().Where("semantic_board_id = ? AND period_date < ? AND status = ?",
 		boardID, repository.NormalizeReportDate(date).Format("2006-01-02"), "completed").
+		Order("period_date DESC").
 		First(&report).Error
 	if err != nil {
 		return nil

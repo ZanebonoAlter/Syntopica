@@ -4,6 +4,7 @@ import { Icon } from '@iconify/vue'
 import { useSemanticBoardsApi, type SemanticBoard } from '~/api/semanticBoards'
 import { useDailyReportsApi } from '~/api/dailyReports'
 import { useDailyReportProgress } from '~/composables/useDailyReportProgress'
+import { todayKey } from '~/utils/todayKey'
 
 const props = defineProps<{
   visible: boolean
@@ -28,7 +29,9 @@ watch(done, (value, previous) => {
   if (value && !previous) emit('completed')
 })
 
-const selectedDate = ref(new Date().toISOString().slice(0, 10))
+// 默认日期用**本地**日（todayKey）——`toISOString()` 是 UTC 截断，在 UTC+8 的
+// 00:00–08:00 会得到「昨天」（默认日期落在昨天 = 生成窗口错一天）。
+const selectedDate = ref(todayKey())
 const selectedBoardId = ref<number | null>(null) // null = all
 const generating = ref(false)
 const jobId = ref<string | null>(null)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,15 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 
 	// GET /api/daily-reports/today — reading-desk queue: boards with a report today.
 	api.GET("/daily-reports/today", listTodayReports)
+
+	// GET /api/daily-reports/gaps — 窗口内「有候选内容但没有报告」的缺口清单。
+	// 静态路径必须注册在通配 /daily-reports/:id 之前（gin 同层静态/通配共存
+	// 依赖注册顺序，先静态后通配才不会落到 :id 分支）。
+	api.GET("/daily-reports/gaps", listDailyReportGaps)
+
+	// POST /api/daily-reports/backfill-gaps — 异步补填：受理即返回 job_id，
+	// 服务端后台旧到新串行补空（只补缺、不重建已有）。
+	api.POST("/daily-reports/backfill-gaps", triggerBackfillDailyReportGaps)
 
 	// GET /api/daily-reports/:id
 	api.GET("/daily-reports/:id", getDailyReport)
@@ -76,6 +86,10 @@ func RegisterDailyReportRoutes(api *gin.RouterGroup) {
 	// GET /api/daily-reports/topics/:id/anchor/history — the full append-only
 	// 首义 rewrite trail, oldest first (review R-2).
 	api.GET("/daily-reports/topics/:id/anchor/history", getTopicAnchorHistory)
+	// GET /api/daily-reports/topics/:id/constraints — 辅助标签约束列表（只回元信息，
+	// 不回锤向量）与全量覆盖式替换（topic-lane-auxiliary-label-constraint）。
+	api.GET("/daily-reports/topics/:id/constraints", getTopicLaneConstraints)
+	api.PUT("/daily-reports/topics/:id/constraints", putTopicLaneConstraints)
 	// PATCH /api/daily-reports/sections/:id/assignment — manual lane
 	// membership change (lane-manual-correction D4): {"topic_id": null}
 	// removes the node from its lane, {"topic_id": N} attaches it to lane N.
@@ -352,13 +366,14 @@ func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 	ctx, cancel := timeoutCtx(10 * time.Minute)
 	defer cancel()
 
+	dateKey := date.Format("2006-01-02")
 	boardName := dailyReportBoardName(boardID)
-	broadcastProgress(jobID, "generating", boardID, boardName, 0, "0/1")
+	broadcastProgress(jobID, "generating", boardID, boardName, 0, "0/1", dateKey, dailyReportRunScopeGenerate)
 
 	report, err := generateReportEntry(ctx, boardID, date)
 	if err != nil {
 		logging.Errorf("daily-report: generate/save failed for board %d: %v", boardID, err)
-		broadcastProgress(jobID, "failed", boardID, boardName, 0, "1/1")
+		broadcastProgress(jobID, "failed", boardID, boardName, 0, "1/1", dateKey, dailyReportRunScopeGenerate)
 		// 三态计数与终态通知同口径：失败 1（该板块真失败）· 无内容 0。
 		broadcastDone(jobID, dailyReportCounts{failed: 1}, 1)
 		// 单版面项目：失败 1 = 全部失败 → 1 条失败汇总（白盒 B3/B 边界）
@@ -366,7 +381,7 @@ func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 		return
 	}
 	if report == nil {
-		broadcastProgress(jobID, "completed", boardID, boardName, 0, "1/1")
+		broadcastProgress(jobID, "completed", boardID, boardName, 0, "1/1", dateKey, dailyReportRunScopeGenerate)
 		// 版面无内容不算失败：终态完成（保存 0 条）——计入 empty，不计失败。
 		broadcastDone(jobID, dailyReportCounts{empty: 1}, 1)
 		// 版面无内容不算失败：终态完成（保存 0 条）；通知走成功类，且
@@ -375,7 +390,7 @@ func generateSingleBoard(boardID uint, date time.Time, jobID string) {
 		return
 	}
 
-	broadcastProgress(jobID, "completed", boardID, boardName, 1, "1/1")
+	broadcastProgress(jobID, "completed", boardID, boardName, 1, "1/1", dateKey, dailyReportRunScopeGenerate)
 	broadcastDone(jobID, dailyReportCounts{saved: 1}, 1)
 	notifyDailyReportTerminal(date, 1, 1, 0, 0)
 	// 产出日报 → 体检该板块（异步、范围限本板）。体检是体检依据的产出面：
@@ -392,10 +407,12 @@ func generateAllBoards(date time.Time, jobID string) {
 	ctx, cancel := timeoutCtx(30 * time.Minute)
 	defer cancel()
 
+	dateKey := date.Format("2006-01-02")
+
 	boardIDs, err := repository.Repo.CollectBoardIDsForDate(date)
 	if err != nil {
 		logging.Errorf("daily-report: collect boards failed: %v", err)
-		broadcastProgress(jobID, "failed", 0, "All boards", 0, "0/0")
+		broadcastProgress(jobID, "failed", 0, "All boards", 0, "0/0", dateKey, dailyReportRunScopeGenerate)
 		// 收集阶段即失败：终态计数与终态通知同口径（通知把这次收集失败
 		// 记作「共 1 个版面，0 成功 1 失败」）——记 1 个失败板块，
 		// 恒等式 saved + failed + empty == total_boards 仍成立。
@@ -418,23 +435,23 @@ func generateAllBoards(date time.Time, jobID string) {
 	emptyCount := 0
 	for idx, boardID := range boardIDs {
 		boardName := dailyReportBoardName(boardID)
-		broadcastProgress(jobID, "generating", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx, totalBoards))
+		broadcastProgress(jobID, "generating", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx, totalBoards), dateKey, dailyReportRunScopeGenerate)
 
 		report, genErr := generateReportEntry(ctx, boardID, date)
 		if genErr != nil {
 			logging.Warnf("daily-report: generate/save failed for board %d: %v", boardID, genErr)
-			broadcastProgress(jobID, "failed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+			broadcastProgress(jobID, "failed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards), dateKey, dailyReportRunScopeGenerate)
 			failedCount++
 			continue
 		}
 		if report == nil {
-			broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+			broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards), dateKey, dailyReportRunScopeGenerate)
 			// 当日无内容：既不算成功也不算失败（与通知中心口径一致）
 			emptyCount++
 			continue
 		}
 		savedCount++
-		broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+		broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards), dateKey, dailyReportRunScopeGenerate)
 	}
 
 	broadcastDone(jobID, dailyReportCounts{saved: savedCount, failed: failedCount, empty: emptyCount}, totalBoards)
@@ -484,6 +501,8 @@ func generateSelectedBoards(date time.Time, boardIDs []uint, jobID string) {
 	ctx, cancel := timeoutCtx(30 * time.Minute)
 	defer cancel()
 
+	dateKey := date.Format("2006-01-02")
+
 	totalBoards := len(boardIDs)
 	if totalBoards == 0 {
 		broadcastDone(jobID, dailyReportCounts{}, 0)
@@ -495,23 +514,23 @@ func generateSelectedBoards(date time.Time, boardIDs []uint, jobID string) {
 	emptyCount := 0
 	for idx, boardID := range boardIDs {
 		boardName := dailyReportBoardName(boardID)
-		broadcastProgress(jobID, "generating", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx, totalBoards))
+		broadcastProgress(jobID, "generating", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx, totalBoards), dateKey, dailyReportRunScopeGenerate)
 
 		report, genErr := generateReportEntry(ctx, boardID, date)
 		if genErr != nil {
 			logging.Warnf("daily-report: generate/save failed for board %d: %v", boardID, genErr)
-			broadcastProgress(jobID, "failed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+			broadcastProgress(jobID, "failed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards), dateKey, dailyReportRunScopeGenerate)
 			failedCount++
 			continue
 		}
 		if report == nil {
-			broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+			broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards), dateKey, dailyReportRunScopeGenerate)
 			// 当日无内容：既不算成功也不算失败（与通知中心口径一致）
 			emptyCount++
 			continue
 		}
 		savedCount++
-		broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards))
+		broadcastProgress(jobID, "completed", boardID, boardName, savedCount, fmt.Sprintf("%d/%d", idx+1, totalBoards), dateKey, dailyReportRunScopeGenerate)
 	}
 
 	broadcastDone(jobID, dailyReportCounts{saved: savedCount, failed: failedCount, empty: emptyCount}, totalBoards)
@@ -883,11 +902,19 @@ func deleteTopic(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
+// 日报运行的来源标记（run_scope）。generate = 当日生成（定时 / 手动），
+// backfill = 缺档补填。补填的逐格进度复用 daily_report_progress 事件类型，
+// 终态走独立事件类型（见 buildBackfillDoneMessage）。
+const (
+	dailyReportRunScopeGenerate = "generate"
+	dailyReportRunScopeBackfill = "backfill"
+)
+
 // broadcastProgress sends a WebSocket progress message. Package-level var so
 // tests can observe the broadcast stream without a live WebSocket client
 // (same seam pattern as generateReportEntry).
-var broadcastProgress = func(jobID string, status string, boardID uint, boardName string, saved int, progress string) {
-	msg := buildProgressMessage(jobID, status, boardID, boardName, saved, progress)
+var broadcastProgress = func(jobID string, status string, boardID uint, boardName string, saved int, progress string, date string, runScope string) {
+	msg := buildProgressMessage(jobID, status, boardID, boardName, saved, progress, date, runScope)
 	data, _ := json.Marshal(msg)
 	ws.GetHub().BroadcastRaw(data)
 }
@@ -905,7 +932,19 @@ var broadcastDone = func(jobID string, counts dailyReportCounts, totalBoards int
 	ws.GetHub().BroadcastRaw(data)
 }
 
-func buildProgressMessage(jobID string, status string, boardID uint, boardName string, saved int, progress string) map[string]interface{} {
+// buildProgressMessage builds the per-board progress payload.
+//
+// date 与 run_scope 是附加字段（add-daily-report-gap-backfill D10）：
+//   - date：本次进度对应的**报告日**（YYYY-MM-DD）。补填是多天串行的，
+//     没有它前端无法把进度归到具体那一天。
+//   - run_scope：本次运行的来源（generate / backfill）。补填的逐格进度复用
+//     本事件类型（旧消费方忽略附加字段即可），但补填的**终态**走独立事件
+//     daily_report_backfill_done——daily_report_done 被现有消费方无 job_id
+//     过滤地消费，复用会把补填终态误认成「本次今日生成」的结果。
+//
+// 既有字段（type / job_id / status / board_id / board_name / saved /
+// progress / timestamp）一个不动，旧消费方保持兼容。
+func buildProgressMessage(jobID string, status string, boardID uint, boardName string, saved int, progress string, date string, runScope string) map[string]interface{} {
 	return map[string]interface{}{
 		"type":       "daily_report_progress",
 		"job_id":     jobID,
@@ -914,6 +953,8 @@ func buildProgressMessage(jobID string, status string, boardID uint, boardName s
 		"board_name": boardName,
 		"saved":      saved,
 		"progress":   progress,
+		"date":       date,
+		"run_scope":  runScope,
 		"timestamp":  time.Now().Format(time.RFC3339),
 	}
 }
@@ -937,6 +978,423 @@ func buildDoneMessage(jobID string, counts dailyReportCounts, totalBoards int) m
 		"empty_count":  counts.empty,
 		"timestamp":    time.Now().Format(time.RFC3339),
 	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 日报缺档：缺口查询 + 异步补填（add-daily-report-gap-backfill）
+// ═══════════════════════════════════════════════════════════════════════
+
+// backfillRunTimeout 是补填后台 goroutine 的硬上限。整轮预算由
+// ai_settings（daily_report_backfill_budget_minutes，默认 60 分钟）控制，
+// 这个超时只是「预算之外也别永远挂着」的兜底：在途的那一格生成允许比预算
+// 多跑一会儿（预算只拦「不再启动新的生成」）。
+const backfillRunTimeout = 2 * time.Hour
+
+// 补填相关的包级 seam（与 generateReportEntry / broadcastProgress 同一模式）：
+// 测试替换它们即可观察受理 / 进度 / 终态 / 通知，不碰真 LLM 管线。
+var (
+	// broadcastBackfillProgress 逐格进度（复用 daily_report_progress 事件类型，
+	// 带 date 与 run_scope=backfill 附加字段）。
+	broadcastBackfillProgress = func(jobID string, p service.GapBackfillProgress) {
+		msg := buildBackfillProgressMessage(jobID, p)
+		data, _ := json.Marshal(msg)
+		ws.GetHub().BroadcastRaw(data)
+	}
+	// broadcastBackfillDone 终态（独立事件类型 daily_report_backfill_done）。
+	broadcastBackfillDone = func(jobID, runID, status string, filled, failed, remaining int, windowStart, windowEnd string, startedAt, finishedAt time.Time) {
+		msg := buildBackfillDoneMessage(jobID, runID, status, filled, failed, remaining, windowStart, windowEnd, startedAt, finishedAt)
+		data, _ := json.Marshal(msg)
+		ws.GetHub().BroadcastRaw(data)
+	}
+	// notifyBackfillTerminal 终态通知入口（每次运行恰好一条，四态）。
+	notifyBackfillTerminal = notification.DailyReportBackfillTerminal
+)
+
+// buildBackfillProgressMessage builds one gap-backfill cell's progress payload.
+//
+// 事件类型复用 daily_report_progress（旧消费方忽略附加字段即可），附加 date
+// （本次进度对应的报告日）与 run_scope=backfill（区分补填与当日生成）。
+func buildBackfillProgressMessage(jobID string, p service.GapBackfillProgress) map[string]interface{} {
+	return buildProgressMessage(jobID, p.Status, p.BoardID, p.BoardLabel,
+		p.Filled, fmt.Sprintf("%d/%d", p.Filled, p.Total), p.Date, dailyReportRunScopeBackfill)
+}
+
+// buildBackfillDoneMessage builds the gap-backfill terminal payload.
+//
+// **独立事件类型**（不复用 daily_report_done）：daily_report_done 被现有消费方
+// （useDailyReportProgress / useRadarPipelineStatus 的 done 分支）无 job_id
+// 过滤地消费，复用会把补填终态误认成「本次今日生成」的结果。
+//
+// 字段：type / job_id / run_id / status / filled / failed / remaining /
+// window_start / window_end / started_at / finished_at / timestamp。
+func buildBackfillDoneMessage(jobID, runID, status string, filled, failed, remaining int, windowStart, windowEnd string, startedAt, finishedAt time.Time) map[string]interface{} {
+	return map[string]interface{}{
+		"type":         "daily_report_backfill_done",
+		"job_id":       jobID,
+		"run_id":       runID,
+		"status":       status,
+		"filled":       filled,
+		"failed":       failed,
+		"remaining":    remaining,
+		"window_start": windowStart,
+		"window_end":   windowEnd,
+		"started_at":   startedAt.Format(time.RFC3339),
+		"finished_at":  finishedAt.Format(time.RFC3339),
+		"timestamp":    time.Now().Format(time.RFC3339),
+	}
+}
+
+// dailyReportGapDefaultDays is the default lookback of the gap window (days).
+// 上限受 tag_edge_retention_days 约束（保留窗口是硬上界）。缺口查询与补填
+// 端点共用这个默认值——「补齐」的范围必须与用户看到的缺口清单同口径。
+const dailyReportGapDefaultDays = 7
+
+// localDayStart truncates a timestamp to local midnight.
+func localDayStart(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+// dailyReportGapWindow resolves the gap/backfill window: [today - days, today - 1].
+// today 不在窗口内（今天由当日生成负责）；days 只能收窄，不能越过保留窗口下界
+// （effectiveDays = min(days, retentionDays)）。
+func dailyReportGapWindow(days int, retentionDays int, now time.Time) (time.Time, time.Time, int) {
+	effective := days
+	if effective <= 0 {
+		effective = retentionDays
+	}
+	if retentionDays > 0 && effective > retentionDays {
+		effective = retentionDays
+	}
+	if effective <= 0 {
+		effective = 1
+	}
+	today := localDayStart(now)
+	return today.AddDate(0, 0, -effective), today.AddDate(0, 0, -1), effective
+}
+
+// listDailyReportGaps handles GET /api/daily-reports/gaps.
+//
+// 只读端点：返回窗口内「该板块当天有候选内容、但没有报告」的格子。候选口径
+// 与生成 Step1 一致（active + event + NOT direction_mismatch + 跨板排他），
+// 不使用宽松口径——否则会把生成时必然被剔的板块算成缺口，补填反复空跑烧 LLM。
+//
+// 查询不写库、不触发任何生成。
+func listDailyReportGaps(c *gin.Context) {
+	retentionDays := tagging.LoadTagEdgeRetentionDays(repository.Repo.DB())
+
+	days := dailyReportGapDefaultDays
+	if v := c.Query("days"); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   "invalid days, expected a positive integer",
+				"reason":  "invalid_days",
+			})
+			return
+		}
+		days = parsed
+	}
+
+	now := time.Now()
+	windowStart, windowEnd, effectiveDays := dailyReportGapWindow(days, retentionDays, now)
+
+	gaps, err := service.ListDailyReportGaps(windowStart, windowEnd)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	if gaps == nil {
+		gaps = []repository.DailyReportGap{}
+	}
+
+	// 按日分组（升序）：missing_days = 有缺口的日期数，total_missing = 格子数。
+	byDate := map[string][]repository.DailyReportGap{}
+	dateOrder := []string{}
+	for _, g := range gaps {
+		if _, ok := byDate[g.Date]; !ok {
+			dateOrder = append(dateOrder, g.Date)
+		}
+		byDate[g.Date] = append(byDate[g.Date], g)
+	}
+	sort.Strings(dateOrder)
+
+	lastRun, err := repository.Repo.LatestBackfillRun()
+	if err != nil {
+		logging.Warnf("daily-report: load latest backfill run failed: %v", err)
+	}
+
+	payload := gin.H{
+		"window_start":   windowStart.Format("2006-01-02"),
+		"window_end":     windowEnd.Format("2006-01-02"),
+		"days":           effectiveDays,
+		"retention_days": retentionDays,
+		"gaps":           gaps,
+		"missing_days":   len(dateOrder),
+		"total_missing":  len(gaps),
+	}
+	if lastRun != nil {
+		payload["last_run"] = backfillRunSummary(lastRun)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": payload})
+}
+
+// backfillRunSummary projects a run ledger row into the gaps response's
+// last_run field (no run record → the field is absent).
+func backfillRunSummary(run *repository.DailyReportBackfillRun) gin.H {
+	summary := gin.H{
+		"run_id":       run.RunID,
+		"status":       run.Status,
+		"filled":       run.FilledCount,
+		"failed":       run.FailedCount,
+		"remaining":    run.RemainingCount,
+		"window_start": run.WindowStart.Format("2006-01-02"),
+		"window_end":   run.WindowEnd.Format("2006-01-02"),
+		"started_at":   run.StartedAt.Format(time.RFC3339),
+	}
+	if run.FinishedAt != nil {
+		summary["finished_at"] = run.FinishedAt.Format(time.RFC3339)
+	}
+	return summary
+}
+
+// triggerBackfillDailyReportGaps handles POST /api/daily-reports/backfill-gaps.
+//
+// 受理即返回 job_id / run_id，补填在服务端后台旧到新串行执行（HTTP 线程不
+// 等待补齐完成）。
+//
+// 三条前置先判后跑（顺序固定，与 generate 端点同口径）：
+//
+//	① 窗口守卫（400）——超保留窗口的日期拒绝；今天由当日生成负责，不在补填窗口内；
+//	② 打标队列门槛（409）——队列未排空时补出的候选不全；
+//	③ 日报生成闸门（409）——与定时任务 / 手动生成共用同一把域闸。
+//
+// 请求体（均可选）：{"date": "YYYY-MM-DD", "days": N, "board_id": N}。
+// date 与 days 互斥（一个指定单日，一个收窄窗口）。
+func triggerBackfillDailyReportGaps(c *gin.Context) {
+	var req struct {
+		Date    string `json:"date"`
+		Days    *int   `json:"days"`
+		BoardID *uint  `json:"board_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// 类型错误直接拒（与 generate 端点同款）；其余（空 body / 非法 JSON）
+		// 走宽松路径 = 全窗口补填。
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) {
+			expected := "the declared field type"
+			switch typeErr.Field {
+			case "date":
+				expected = "a YYYY-MM-DD string"
+			case "days":
+				expected = "a number"
+			case "board_id":
+				expected = "a number"
+			default:
+				if typeErr.Field == "" {
+					typeErr.Field = "request body"
+					expected = "a JSON object"
+				}
+			}
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   fmt.Sprintf("invalid %s: expected %s, got %s", typeErr.Field, expected, typeErr.Value),
+			})
+			return
+		}
+		req.Date = ""
+		req.Days = nil
+		req.BoardID = nil
+	}
+
+	if req.Date != "" && req.Days != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "date 与 days 不能同时指定：一个指定单日，一个收窄窗口。",
+			"reason":  "conflicting_scope",
+		})
+		return
+	}
+
+	now := time.Now()
+	retentionDays := tagging.LoadTagEdgeRetentionDays(repository.Repo.DB())
+
+	var windowStart, windowEnd time.Time
+	if req.Date != "" {
+		parsed, err := time.ParseInLocation("2006-01-02", req.Date, time.Local)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   "invalid date format, use YYYY-MM-DD",
+				"reason":  "invalid_date",
+			})
+			return
+		}
+		// 重建窗口守卫：与 generate / TriggerNowWithDate 同谓词同文案。
+		if service.IsDateOutsideRebuildWindow(parsed, now, retentionDays) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   service.RebuildWindowRejectionMessage(retentionDays),
+				"reason":  "out_of_retention_window",
+			})
+			return
+		}
+		// 今天由当日日报生成负责，补填窗口不含今天（也不含未来）。
+		if !parsed.Before(localDayStart(now)) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   "补填窗口不含今天与未来日期（今天由当日日报生成负责）。",
+				"reason":  "out_of_backfill_window",
+			})
+			return
+		}
+		windowStart = localDayStart(parsed)
+		windowEnd = localDayStart(parsed)
+	} else {
+		// 默认天数与缺口查询一致（7 天，上限受保留窗口约束）——「补齐」的
+		// 范围必须与用户看到的缺口清单同口径，否则会补出用户看不见的日子。
+		days := dailyReportGapDefaultDays
+		if req.Days != nil {
+			if *req.Days <= 0 {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"error":   "invalid days, expected a positive integer",
+					"reason":  "invalid_days",
+				})
+				return
+			}
+			days = *req.Days
+		}
+		windowStart, windowEnd, _ = dailyReportGapWindow(days, retentionDays, now)
+	}
+
+	// 队列门槛（409）：打标队列未排空时补出的候选不全（与调度器补档同口径）。
+	// 双队列（tag_jobs + embedding_queues）语义同 useRadarPipelineStatus：
+	// 任一未清空即不得生成；计数不可得按「未知」处理（不当作已清空）。
+	drained, queueReason, queueErr := backfillQueuesDrained()
+	if queueErr != nil || !drained {
+		reason := queueReason
+		if reason == "" {
+			reason = "queue_check_failed"
+		}
+		logging.Warnf("daily-report: backfill rejected (reason=%s): %v", reason, queueErr)
+		c.JSON(http.StatusConflict, gin.H{
+			"success": false,
+			"error":   "打标/向量化队列未排空，补出的候选不全，请稍后再试。",
+			"reason":  reason,
+		})
+		return
+	}
+
+	// 日报生成闸门（409）：与定时任务 / 手动生成共用同一把域闸，整轮持有。
+	if !tryAcquireGenerationGate() {
+		c.JSON(http.StatusConflict, gin.H{
+			"success": false,
+			"error":   "日报生成正在执行中，请稍后再试。",
+			"reason":  "already_running",
+		})
+		return
+	}
+
+	jobID := uuid.New().String()
+	runID := uuid.New().String()
+
+	opts := service.GapBackfillOptions{
+		WindowStart:  windowStart,
+		WindowEnd:    windowEnd,
+		TriggerScope: repository.BackfillTriggerScopeManual,
+		RunID:        runID,
+		Progress: func(p service.GapBackfillProgress) {
+			broadcastBackfillProgress(jobID, p)
+		},
+	}
+	if req.BoardID != nil {
+		opts.BoardIDs = []uint{*req.BoardID}
+	}
+
+	go runGapBackfill(jobID, runID, opts)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"job_id":       jobID,
+			"run_id":       runID,
+			"status":       "processing",
+			"window_start": windowStart.Format("2006-01-02"),
+			"window_end":   windowEnd.Format("2006-01-02"),
+		},
+	})
+}
+
+// backfillQueuesDrained reports whether both consumer queues are drained:
+// tag_jobs has no pending/leased rows AND embedding_queues has no
+// pending/processing rows.
+//
+// 与调度器的 countQueuesDrained（internal/admin/scheduler/job_daily_report.go）
+// 是同一把尺子的调度器侧孪生实现——跨域不可 import（topicgraph → admin 会成环），
+// 故按同一口径复刻于此：failed 的打标作业**不**计入活跃量（它永远不会排空，
+// 不能因此永久冻结补填），但计数不可得时按「未知」处理（不当作已清空）。
+func backfillQueuesDrained() (bool, string, error) {
+	db := repository.Repo.DB()
+	if db == nil {
+		return false, "queue_check_failed", fmt.Errorf("backfill queue check: repository not initialized")
+	}
+	var tagBacklog int64
+	if err := db.Model(&models.TagJob{}).
+		Where("status IN ?", []string{string(models.JobStatusPending), string(models.JobStatusLeased)}).
+		Count(&tagBacklog).Error; err != nil {
+		return false, "queue_check_failed", fmt.Errorf("count tag job backlog: %w", err)
+	}
+	var embeddingBacklog int64
+	if err := db.Model(&models.EmbeddingQueue{}).
+		Where("status IN ?", []string{models.EmbeddingQueueStatusPending, models.EmbeddingQueueStatusProcessing}).
+		Count(&embeddingBacklog).Error; err != nil {
+		return false, "queue_check_failed", fmt.Errorf("count embedding queue backlog: %w", err)
+	}
+	if tagBacklog > 0 {
+		return false, "tag_queue_not_empty", nil
+	}
+	if embeddingBacklog > 0 {
+		return false, "embedding_queue_not_empty", nil
+	}
+	return true, "", nil
+}
+
+// runGapBackfill is the background worker of one accepted backfill run.
+//
+// 闸门释放挂在最前（defer FIRST）：成功 / 失败 / panic 展开都释放。
+// 终态：恰好一条通知（零缺口由通知入口自己守）+ 一条独立 WS 终态消息。
+func runGapBackfill(jobID, runID string, opts service.GapBackfillOptions) {
+	defer releaseGenerationGate()
+
+	ctx, cancel := context.WithTimeout(context.Background(), backfillRunTimeout)
+	defer cancel()
+
+	windowStart := opts.WindowStart.Format("2006-01-02")
+	windowEnd := opts.WindowEnd.Format("2006-01-02")
+
+	result, err := service.RunGapBackfill(ctx, opts)
+	if err != nil {
+		// 缺口扫描失败 = 这次运行根本没开始（没有格子被处理）：不发通知，
+		// 但仍广播终态消息，前端不会一直等。
+		logging.Errorf("daily-report: gap backfill failed: %v", err)
+		now := time.Now()
+		broadcastBackfillDone(jobID, runID, "failed", 0, 0, 0, windowStart, windowEnd, now, now)
+		return
+	}
+
+	counts := notification.BackfillCounts{
+		TotalCells: result.TotalCells,
+		Filled:     result.Filled,
+		Failed:     result.Failed,
+		Remaining:  result.Remaining,
+	}
+	// 每次运行恰好一条终态通知（成功也发；零缺口不发——由通知入口守）。
+	notifyBackfillTerminal(result.Status, windowStart, windowEnd, counts)
+	broadcastBackfillDone(jobID, result.RunID, result.Status,
+		result.Filled, result.Failed, result.Remaining,
+		windowStart, windowEnd, result.StartedAt, result.FinishedAt)
 }
 
 // triggerBackfillEmbeddings handles POST /api/daily-reports/backfill-embeddings

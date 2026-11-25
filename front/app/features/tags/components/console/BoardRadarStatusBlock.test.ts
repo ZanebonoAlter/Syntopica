@@ -24,9 +24,23 @@ vi.mock('~/api/poll', () => ({
   usePollApi: () => ({ getPollBundle: getPollBundleMock }),
 }))
 
-const { generateDailyReportMock } = vi.hoisted(() => ({ generateDailyReportMock: vi.fn() }))
+const { generateDailyReportMock, getDailyReportGapsMock, triggerGapBackfillMock, confirmMock } = vi.hoisted(() => ({
+  generateDailyReportMock: vi.fn(),
+  getDailyReportGapsMock: vi.fn(),
+  triggerGapBackfillMock: vi.fn(),
+  confirmMock: vi.fn(),
+}))
 vi.mock('~/api/dailyReports', () => ({
-  useDailyReportsApi: () => ({ generateDailyReport: generateDailyReportMock }),
+  useDailyReportsApi: () => ({
+    generateDailyReport: generateDailyReportMock,
+    getDailyReportGaps: getDailyReportGapsMock,
+    triggerGapBackfill: triggerGapBackfillMock,
+  }),
+}))
+
+// 二次确认走全局确认弹窗管道（useConfirm）；测试里直接控它的返回值。
+vi.mock('~/composables/useConfirm', () => ({
+  useConfirm: () => ({ state: { value: null }, confirm: confirmMock, settle: vi.fn() }),
 }))
 
 const wsHandlers = vi.hoisted(() => new Map<string, (data: unknown) => void>())
@@ -145,6 +159,26 @@ function emitWs(type: string, data: Record<string, unknown>): void {
   wsHandlers.get(type)?.(data)
 }
 
+/** 缺口查询响应（默认：窗口内无缺口）。 */
+function gapsOk(over: {
+  gaps?: Array<{ date: string; board_id: number; board_label: string }>
+  missing_days?: number
+  total_missing?: number
+} = {}) {
+  return {
+    success: true,
+    data: {
+      window_start: '2026-10-18',
+      window_end: '2026-10-24',
+      days: 7,
+      retention_days: 7,
+      gaps: over.gaps ?? [],
+      missing_days: over.missing_days ?? 0,
+      total_missing: over.total_missing ?? 0,
+    },
+  }
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
   // 固定基准时钟（本地中午）：「今日」与「是否已过生成时刻」的断言可重复
@@ -152,7 +186,18 @@ beforeEach(() => {
   wsHandlers.clear()
   getPollBundleMock.mockReset()
   generateDailyReportMock.mockReset()
+  getDailyReportGapsMock.mockReset()
+  triggerGapBackfillMock.mockReset()
+  confirmMock.mockReset()
   getPollBundleMock.mockResolvedValue(pollOk())
+  generateDailyReportMock.mockResolvedValue({ success: true, data: { job_id: 'j1', status: 'processing' } })
+  getDailyReportGapsMock.mockResolvedValue(gapsOk())
+  triggerGapBackfillMock.mockResolvedValue({
+    success: true,
+    data: { job_id: 'bj1', run_id: 'br1', status: 'processing', window_start: '2026-10-18', window_end: '2026-10-24' },
+  })
+  // 默认「确认」——既有重新生成用例不在本文件里断言二次确认
+  confirmMock.mockResolvedValue(true)
 })
 
 afterEach(async () => {
@@ -802,5 +847,234 @@ describe('BoardRadarStatusBlock — 默认折叠与异常自动展开', () => {
     // 标签队列 2 个失败（文章）+ Embedding 队列 1 个失败（标签）→ 分段写法 2+1
     expect(summary.text()).toContain('2+1')
     expect(summary.text()).not.toContain('队列有失败 3')
+  })
+})
+
+// ── 近 7 天缺口折叠区（add-daily-report-gap-backfill）────────────────────
+describe('BoardRadarStatusBlock — 缺口折叠区', () => {
+  const GAP_ROWS = [
+    { date: '2026-10-22', board_id: 12, board_label: 'AI 前沿' },
+    { date: '2026-10-22', board_id: 3, board_label: '' },
+    { date: '2026-10-21', board_id: 4, board_label: '芯片' },
+  ]
+
+  it('行头带「N 天 / M 篇」；展开后逐日行 + 底部「一次补齐 M 篇」', async () => {
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({ gaps: GAP_ROWS, missing_days: 2, total_missing: 3 }))
+    const wrapper = await mountBlock()
+
+    expect(wrapper.find('[data-testid="radar-gap-summary"]').text()).toBe('近 7 天缺口 2 天 / 3 篇')
+    // 默认折叠：清单不渲染（就地展开，不弹窗不跳页）
+    expect(wrapper.find('[data-testid="radar-gap-body"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="radar-gap-head"]').attributes('aria-expanded')).toBe('false')
+
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+
+    const rows = wrapper.findAll('[data-testid^="radar-gap-day-"]')
+    expect(rows).toHaveLength(2)
+    // 日期升序
+    expect(rows[0]!.text()).toContain('10-21')
+    expect(rows[0]!.text()).toContain('1 个板块缺')
+    expect(rows[1]!.text()).toContain('10-22')
+    expect(rows[1]!.text()).toContain('2 个板块缺')
+    expect(wrapper.find('[data-testid="radar-gap-backfill-all"]').text()).toBe('一次补齐 3 篇')
+  })
+
+  it('无缺口：行头呈「近 7 天无缺口」，不出补填按钮', async () => {
+    const wrapper = await mountBlock()
+
+    expect(wrapper.find('[data-testid="radar-gap-summary"]').text()).toBe('近 7 天无缺口')
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+    expect(wrapper.find('[data-testid="radar-gap-backfill-all"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid^="radar-gap-backfill-2026"]').exists()).toBe(false)
+  })
+
+  it('缺口取数失败：只降级缺口区，其余五项事实照常（读取失败 + 重试）', async () => {
+    getDailyReportGapsMock.mockResolvedValue({ success: false, error: '接口挂了' })
+    const wrapper = await mountBlock()
+
+    expect(wrapper.find('[data-testid="radar-gap-summary"]').text()).toContain('读取失败')
+    expect(wrapper.find('[data-testid="radar-gap-error"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="radar-gap-retry"]').exists()).toBe(true)
+    // 未知不得渲染成「无缺口」
+    expect(wrapper.find('[data-testid="radar-gap-summary"]').text()).not.toContain('无缺口')
+    // 其余事实照常
+    expect(wrapper.find('[data-testid="radar-status-queue"]').text()).toBe('队列空闲')
+    expect(wrapper.find('[data-testid="radar-status-today"]').text()).toBe('今日日报已出（1/1 板块）')
+  })
+
+  it('队列未排空：补填入口禁用 + 缺料说明（与生成同款双队列判据）', async () => {
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({ gaps: GAP_ROWS, missing_days: 2, total_missing: 3 }))
+    // 状态块位于异常态（队列积压）→ 挂载即展开。
+    getPollBundleMock.mockResolvedValue(pollOk({ pending: 5 }))
+    const wrapper = await mountBlock()
+
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+    expect(isDisabled(wrapper, 'radar-gap-backfill-all')).toBe(true)
+    expect(isDisabled(wrapper, 'radar-gap-backfill-2026-10-21')).toBe(true)
+    expect(wrapper.find('[data-testid="radar-gap-queue-blocked"]').exists()).toBe(true)
+  })
+
+  it('Embedding 队列状态未知：补填入口禁用 + 「状态未知」文案（不谎称未清空）', async () => {
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({ gaps: GAP_ROWS, missing_days: 2, total_missing: 3 }))
+    getPollBundleMock.mockResolvedValue(pollOk({ omitEmbeddingQueue: true }))
+    const wrapper = await mountBlock()
+
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+    expect(isDisabled(wrapper, 'radar-gap-backfill-all')).toBe(true)
+    const hint = wrapper.find('[data-testid="radar-gap-queue-blocked"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('状态未知')
+    expect(hint.text()).not.toContain('还没清空')
+  })
+
+  it('队列已清空：补填入口可用且不出缺料说明', async () => {
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({ gaps: GAP_ROWS, missing_days: 2, total_missing: 3 }))
+    const wrapper = await mountBlock()
+
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+    expect(isDisabled(wrapper, 'radar-gap-backfill-all')).toBe(false)
+    expect(wrapper.find('[data-testid="radar-gap-queue-blocked"]').exists()).toBe(false)
+  })
+
+  it('「补这天」只提交该日', async () => {
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({ gaps: GAP_ROWS, missing_days: 2, total_missing: 3 }))
+    const wrapper = await mountBlock()
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+
+    await wrapper.find('[data-testid="radar-gap-backfill-2026-10-22"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(triggerGapBackfillMock).toHaveBeenCalledWith({ date: '2026-10-22' })
+  })
+
+  it('「一次补齐」按缺口窗口提交（与缺口清单同口径）', async () => {
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({ gaps: GAP_ROWS, missing_days: 2, total_missing: 3 }))
+    const wrapper = await mountBlock()
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+
+    await wrapper.find('[data-testid="radar-gap-backfill-all"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(triggerGapBackfillMock).toHaveBeenCalledWith({ days: 7 })
+  })
+
+  it('补填进行中：两个入口禁用 + 进度行带报告日 + 行头转进度', async () => {
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({ gaps: GAP_ROWS, missing_days: 2, total_missing: 3 }))
+    const wrapper = await mountBlock()
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+
+    await wrapper.find('[data-testid="radar-gap-backfill-all"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+
+    emitWs('daily_report_progress', {
+      job_id: 'bj1', run_scope: 'backfill', date: '2026-10-22', board_id: 12, status: 'completed', saved: 2, progress: '2/5',
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(isDisabled(wrapper, 'radar-gap-backfill-2026-10-22')).toBe(true)
+    expect(isDisabled(wrapper, 'radar-gap-backfill-all')).toBe(true)
+    const progress = wrapper.find('[data-testid="radar-gap-progress"]')
+    expect(progress.text()).toContain('10-22')
+    expect(progress.text()).toContain('2/5')
+    expect(wrapper.find('[data-testid="radar-gap-summary"]').text()).toContain('补齐中 2/5')
+  })
+
+  it('补填终态：重取缺口 + 刷新雷达总览 + 内联结果', async () => {
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({ gaps: GAP_ROWS, missing_days: 2, total_missing: 3 }))
+    const wrapper = await mountBlock()
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+    await wrapper.find('[data-testid="radar-gap-backfill-all"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+
+    // 终态前取过 1 次（挂载）+ 1 次（受理后不发）→ 终态后应再取一次
+    getDailyReportGapsMock.mockClear()
+    emitWs('daily_report_backfill_done', {
+      job_id: 'bj1', run_id: 'br1', status: 'success', filled: 3, failed: 0, remaining: 0,
+      window_start: '2026-10-18', window_end: '2026-10-24',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    await wrapper.vm.$nextTick()
+
+    expect(getDailyReportGapsMock).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('generated')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="radar-gap-result"]').text()).toContain('补齐完成')
+  })
+
+  it('补填被拒（409）：内联失败文案，不静默', async () => {
+    triggerGapBackfillMock.mockResolvedValue({
+      success: false,
+      status: 409,
+      error: '打标/向量化队列未排空，补出的候选不全，请稍后再试。',
+    })
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({ gaps: GAP_ROWS, missing_days: 2, total_missing: 3 }))
+    const wrapper = await mountBlock()
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+
+    await wrapper.find('[data-testid="radar-gap-backfill-all"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="radar-gap-submit-error"]').text()).toContain('队列未排空')
+    // 失败后入口恢复可用
+    expect(isDisabled(wrapper, 'radar-gap-backfill-all')).toBe(false)
+  })
+
+  it('缺口区不列今天（今日状态由「当日日报状态」行负责）', async () => {
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({
+      gaps: [{ date: todayKey(), board_id: 9, board_label: '今天' }],
+      missing_days: 1,
+      total_missing: 1,
+    }))
+    const wrapper = await mountBlock()
+    await wrapper.find('[data-testid="radar-gap-head"]').trigger('click')
+
+    expect(wrapper.find('[data-testid^="radar-gap-day-"]').exists()).toBe(false)
+  })
+})
+
+// ── 重新生成的二次确认（add-daily-report-gap-backfill D9）────────────────
+describe('BoardRadarStatusBlock — 重新生成二次确认', () => {
+  it('今日已出：确认替换后弹二次确认（危险样式 + 写明破坏性后果）', async () => {
+    const wrapper = await mountBlock({ rows: [row({ reportDate: todayKey() })] })
+    await wrapper.find('[data-testid="radar-status-generate"]').trigger('click')
+    await wrapper.find('[data-testid="radar-status-confirm"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    const options = confirmMock.mock.calls[0]![0] as { title: string; message: string; danger?: boolean }
+    expect(options.danger).toBe(true)
+    expect(options.message).toContain('章节与线索会被重写')
+    expect(options.message).toContain('页边注与人工锚定')
+  })
+
+  it('今日已出：取消确认不发起生成请求', async () => {
+    confirmMock.mockResolvedValueOnce(false)
+    const wrapper = await mountBlock({ rows: [row({ reportDate: todayKey() })] })
+    await wrapper.find('[data-testid="radar-status-generate"]').trigger('click')
+    await wrapper.find('[data-testid="radar-status-confirm"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    expect(generateDailyReportMock).not.toHaveBeenCalled()
+  })
+
+  it('今日已出：确认后才发起重新生成', async () => {
+    confirmMock.mockResolvedValueOnce(true)
+    const wrapper = await mountBlock({ rows: [row({ reportDate: todayKey() })] })
+    await wrapper.find('[data-testid="radar-status-generate"]').trigger('click')
+    await wrapper.find('[data-testid="radar-status-confirm"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(generateDailyReportMock).toHaveBeenCalledWith({ date: todayKey(), board_ids: [1] })
+  })
+
+  it('首次生成：不弹二次确认，直接发起', async () => {
+    const wrapper = await mountBlock({ rows: [row({ reportDate: '2026-10-20' })] })
+    await wrapper.find('[data-testid="radar-status-generate"]').trigger('click')
+    await wrapper.find('[data-testid="radar-status-confirm"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(confirmMock).not.toHaveBeenCalled()
+    expect(generateDailyReportMock).toHaveBeenCalledWith({ date: todayKey(), board_ids: [1] })
   })
 })

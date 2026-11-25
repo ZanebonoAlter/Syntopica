@@ -1558,11 +1558,16 @@ func (r *TopicGraphRepository) BackfillAllRelations() (map[uint]int, error) {
 
 // ListTopicRecentBriefs fetches, for every active AND candidate persistent
 // topic on the board (candidate-topic-l2-gate: candidates now flow through L2
-// adjudication and need content to judge), sections from the last `sinceDays`
-// days with up to 5 active tag labels per section — the section's actual
-// tag-label fact fingerprint resolved from cluster_tag_ids. Sections are
-// sorted by period_date DESC and trimmed to `perTopicLimit` per topic.
-// Returns map[topicID][]TopicRecentBrief.
+// adjudication and need content to judge), sections from the `sinceDays` days
+// BEFORE the report day, with up to 5 active tag labels per section — the
+// section's actual tag-label fact fingerprint resolved from cluster_tag_ids.
+// Sections are sorted by period_date DESC and trimmed to `perTopicLimit` per
+// topic. Returns map[topicID][]TopicRecentBrief.
+//
+// 窗口与同日排除都以**报告日**（reportDate）为基准，不看执行时刻：补 5 天前的
+// 日报时，不能把之后 5 天发生的章节当成「近期内容」注入 prompt，也不能看到
+// 报告日自己的章节。这与「补档产物与当天按时生成等价」的不变量同源
+// （add-daily-report-gap-backfill D7）。
 //
 // The tag labels replace the old cluster_label source (frozen by the
 // orchestrator's topic-label overwrite → zero information) and the old
@@ -1572,13 +1577,17 @@ func (r *TopicGraphRepository) BackfillAllRelations() (map[uint]int, error) {
 // Degradation contract: when the query fails (DB down etc.), the caller SHALL
 // fall back to label-only injection — the briefs are purely an information
 // enrichment layer and SHALL NOT block ClusterTags.
-func (r *TopicGraphRepository) ListTopicRecentBriefs(boardID uint, sinceDays int, perTopicLimit int) (map[uint][]TopicRecentBrief, error) {
-	cutoff := time.Now().AddDate(0, 0, -sinceDays).Truncate(24 * time.Hour)
-	// Same-day exclusion: briefs inject only facts from BEFORE today. A same-day
-	// rerun would otherwise feed back the current run's own (possibly wrong)
-	// attachments as "recent content" evidence — the self-corroboration loop
-	// behind the Kalibaf candidate case. Yesterday becomes evidence tomorrow.
-	today := NormalizeReportDate(time.Now())
+func (r *TopicGraphRepository) ListTopicRecentBriefs(boardID uint, reportDate time.Time, sinceDays int, perTopicLimit int) (map[uint][]TopicRecentBrief, error) {
+	// 报告日（UTC 正午）：窗口下界 = 报告日 - sinceDays（UTC 零点），上界 =
+	// 报告日（排除同日）。两者都相对报告日，与执行时刻无关。
+	reportDay := NormalizeReportDate(reportDate)
+	cutoff := time.Date(reportDay.Year(), reportDay.Month(), reportDay.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -sinceDays)
+	// Same-day exclusion: briefs inject only facts from BEFORE the report day.
+	// A same-day rerun would otherwise feed back the current run's own
+	// (possibly wrong) attachments as "recent content" evidence — the
+	// self-corroboration loop behind the Kalibaf candidate case. Yesterday
+	// becomes evidence tomorrow.
+	today := reportDay
 
 	// 1) Collect anchorable topic IDs (active + candidate) on this board.
 	type topicRow struct {

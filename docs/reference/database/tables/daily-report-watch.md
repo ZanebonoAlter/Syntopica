@@ -3,7 +3,7 @@
 > 真相源 = 代码（GORM struct + `postgres_migrations.go`），本文件是投影。全局约定（FK 真相 / 向量维度 / 枚举 / 唯一与 CHECK 约束）见 [_conventions.md](_conventions.md)；完整表清单与导航见 [_index.md](../_index.md)。
 
 
-> 本域 14 张表：12 张由 `internal/topicgraph/repository` 的 `RegisterModels` 注册（`init()`）；`topic_anchor_overrides` / `section_assignment_overrides` 两张留痕表由显式迁移 `20261113_0002` / `20261113_0004` 建表（模型刻意不进 AutoMigrate）。部署若未引入该包则表不存在，迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
+> 本域 15 张表：12 张由 `internal/topicgraph/repository` 的 `RegisterModels` 注册（`init()`）；`topic_anchor_overrides` / `section_assignment_overrides` 两张留痕表由显式迁移 `20261113_0002` / `20261113_0004` 建表，`daily_report_backfill_runs` 补填留档表由显式迁移 `20261125_0001` 建表（三张的模型都刻意不进 AutoMigrate）。部署若未引入该包则表不存在，迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
 
 ### 9.1 board_daily_reports（板块日报主表）
 
@@ -314,6 +314,45 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `operator` | VARCHAR(64) | NOT NULL DEFAULT '' | 操作者 |
 | `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 追加时刻 |
 
+### 9.15 daily_report_backfill_runs（缺档补填运行留档，add-daily-report-gap-backfill）
+
+一次「日报缺档补填」运行留一行。补填是**异步后台运行**（`POST /api/daily-reports/backfill-gaps` 受理即返 `job_id`，服务端旧到新串行补空）——用户侧靠 WS 进度与终态通知看到过程与结果，但**运行级留痕**只有本表，它也是缺口查询响应里 `last_run` 摘要的来源。
+
+> **建表方式**：显式迁移 `20261125_0001` `CREATE TABLE`（模型 `repository.DailyReportBackfillRun` **刻意不进 AutoMigrate**，SQL 是 schema 唯一权威——jsonb 逐日明细契约与四态 `status` CHECK 由迁移固化，不让 AutoMigrate 猜）。迁移对 `board_daily_reports` 做 `tableExists` 守卫：日报域模型未注册的最小部署跳过整段，不炸启动。
+> **为什么独立成表**（不复用 `scheduler_tasks.last_execution_result`）：手动补填不走调度任务，塞进调度结果会丢；调度任务结果结构随调度器变动，而补填留档需要稳定的逐日明细 + 四态终态；缺口查询还要按 `started_at` 倒序读「最近一次运行」。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 主键 |
+| `run_id` | VARCHAR(64) | NOT NULL; UNIQUE index `uq_daily_report_backfill_runs_run_id` | 一次运行的唯一标识（与 WS 终态消息 `daily_report_backfill_done.run_id` 同值） |
+| `trigger_scope` | VARCHAR(20) | NOT NULL DEFAULT 'manual'; CHECK `ck_daily_report_backfill_runs_trigger_scope` IN ('manual','scheduled') | 触发来源：`manual`（手动端点）/ `scheduled`（调度器） |
+| `window_start` | DATE | NOT NULL | 补填窗口下界（含） |
+| `window_end` | DATE | NOT NULL | 补填窗口上界（含） |
+| `status` | VARCHAR(24) | NOT NULL DEFAULT 'running'; CHECK `ck_daily_report_backfill_runs_status` IN ('running','success','partial','failed','budget_exhausted') | 终态四态 + 运行中态 `running`（收尾时改写） |
+| `daily_details` | JSONB | NOT NULL DEFAULT '[]'::jsonb | 逐日明细数组（契约见下） |
+| `filled_count` | INTEGER | NOT NULL DEFAULT 0 | 补出篇数 |
+| `failed_count` | INTEGER | NOT NULL DEFAULT 0 | 失败格数 |
+| `remaining_count` | INTEGER | NOT NULL DEFAULT 0 | 未完成缺口数（预算耗尽 / 失败 / 当日无内容时 > 0） |
+| `started_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 开始时间 |
+| `finished_at` | TIMESTAMPTZ | 可空（运行中为 NULL） | 结束时间 |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 建行时间 |
+
+CHECK 约束第三条：`ck_daily_report_backfill_runs_window` — `window_end >= window_start`（倒置窗口被拒）。
+
+**`daily_details` jsonb 契约**：数组，元素 `{"date": "YYYY-MM-DD", "filled": int, "failed": int, "remaining": int}`，按日期升序；**空写 `[]` 不写 `null`**（对齐本域 jsonb 数组契约：空集合写 `[]`、不写 `null` 标量）。语义：`filled` = 该日补出篇数；`failed` = 该日生成失败的格数；`remaining` = 该日**仍未有报告**的格数（失败格与「当日无内容」格都计入，故 `remaining ≥ failed`）。
+
+**写路径**（谁写、何时收尾）：
+
+| 时机 | 入口 | 行为 |
+| ---- | ---- | ---- |
+| 运行开始（第一个格子生成**之前**） | `repository.CreateBackfillRun` | 插入一行 `status='running'`、`daily_details='[]'`、`started_at=now()`——先建行保证中途崩溃的运行也可见。表缺席时**静默跳过**（留档是增强，不是补填的前置条件） |
+| 运行收尾 | `repository.FinalizeBackfillRun` | 按 `run_id` **原地 UPDATE**（`status` / `daily_details` / `filled_count` / `failed_count` / `remaining_count` / `finished_at`）——**幂等，不新建行**（重复收尾 / 补偿任务不会把一次运行拆成两行）。表缺席时静默跳过 |
+| 只读 | `repository.LatestBackfillRun` | `ORDER BY started_at DESC, id DESC` 取最近一行；表缺席或无记录时返回 `(nil, nil)`（缺口查询响应的 `last_run` 字段随之缺省） |
+
+**保留策略**：本表**无自动清理**（仓库内没有针对本表的删除 / 裁剪代码），只增不删；`idx_daily_report_backfill_runs_started`（`started_at DESC`）供「读最近一次」与按时间倒序浏览。
+
+> **同迁移播种的设置项**：`20261125_0001` 同时向 `ai_settings` 播种 `daily_report_backfill_budget_minutes` = `60`（描述「日报缺档补填整轮预算（分钟）」）——整轮补填的分钟预算可在设置里在线调；读不到 / 非法值时回退默认 60。键值属 AI 路由域（见 [`ai-routing.md`](ai-routing.md)），此处只记它与本表同迁移落地。
+
 ---
 
 
@@ -349,6 +388,8 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `story_signals_time_idx` | story_signals | `(observed_at DESC)` | `20261105_0001` |
 | `story_signals_story_idx` | story_signals | `(story_id, participant_key, observed_at DESC)` | `20261105_0001` |
 | `story_signals_story_content_idx` | story_signals | `(story_id, content_key)` | `20261110_0001` |
+| `uq_daily_report_backfill_runs_run_id` | daily_report_backfill_runs | UNIQUE `(run_id)` | `20261125_0001` |
+| `idx_daily_report_backfill_runs_started` | daily_report_backfill_runs | `(started_at DESC)` | `20261125_0001` |
 
 
 ## 域 ER 图

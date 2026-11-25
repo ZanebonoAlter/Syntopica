@@ -80,6 +80,25 @@ vi.mock('~/composables/useEventStream', () => ({
     get connected() { return false },
   }),
 }))
+// 状态块挂载时取一次日报缺口（一次性请求）——单测里不发真实请求。
+vi.mock('~/api/dailyReports', () => ({
+  useDailyReportsApi: () => ({
+    generateDailyReport: vi.fn(),
+    getDailyReportGaps: vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        window_start: '2026-10-18',
+        window_end: '2026-10-24',
+        days: 7,
+        retention_days: 7,
+        gaps: [],
+        missing_days: 0,
+        total_missing: 0,
+      },
+    }),
+    triggerGapBackfill: vi.fn(),
+  }),
+}))
 
 function row(overrides: Partial<RadarBoard> = {}): RadarBoard {
   return {

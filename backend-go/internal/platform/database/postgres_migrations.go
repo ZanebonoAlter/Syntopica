@@ -2491,6 +2491,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, entitySubjectMigration())
 	migrations = append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration(), auxiliaryDescriptionRepairMigration(), embeddingModelColumnWidthMigration(), embeddingModelNotNullMigration(), storyHeatTablesMigration())
 	migrations = append(migrations, laneManualCorrectionPendingMigration(), laneManualCorrectionOverridesTableMigration(), laneManualCorrectionAssignmentTraceMigration(), laneManualCorrectionAssignmentOverridesTableMigration())
+	migrations = append(migrations, dailyReportBackfillRunsMigration())
 	return append(migrations, storySignalContentKeyMigration(), unifyVectorColumnDimensionMigration(), ensureTopicTagHalfvecIndexMigration(), tagJobUniqueMigration())
 }
 

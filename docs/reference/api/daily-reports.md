@@ -9,6 +9,8 @@
 | 方法 | 路径 | 说明 |
 | ------ | ------ | ------ |
 | POST | `/daily-reports/generate` | 手动触发日报生成（异步） |
+| GET | `/daily-reports/gaps?days=7` | 日报缺口清单：窗口内「该板块当天有候选内容、但没有报告」的格子（只读，不写库、不触发生成） |
+| POST | `/daily-reports/backfill-gaps` | 日报缺档异步补填：受理即返 `job_id`，服务端后台旧到新只补空（add-daily-report-gap-backfill） |
 | GET | `/daily-reports/today?date=YYYY-MM-DD` | 阅读台队列：指定日期已有日报的版块清单（每板一行轻量投影） |
 | GET | `/daily-reports/:id` | 查询单篇日报详情 |
 | POST | `/daily-reports/:id/rebucket` | 重新分桶：对某 section 所在的泳道内主题桶组重跑两阶段分桶 |
@@ -106,6 +108,195 @@ WebSocket 进度消息：
 ```
 
 调度侧同闸获取失败则记 skip（`skipped: "already_running"`，不标 failed、不发第二条终态通知）。窗口校验在闸检查之前：超窗日期不碰闸直接 4xx。
+
+## 日报缺口与异步补填（add-daily-report-gap-backfill）
+
+两个端点构成「缺口可见 → 缺口可补」闭环：缺口查询是只读的，补填是异步的（受理即返回，后台串行执行）。
+
+### GET `/daily-reports/gaps`
+
+窗口内「该板块当天有候选内容、但没有 `(board, period_date)` 报告」的格子清单。
+
+**判定口径**：与日报生成 Step1 的候选集谓词**逐条一致**（`topic_tags.status=active` 且 `category=event`、该板块挂载 `NOT direction_mismatch`、跨板排他 `NOT EXISTS`）——不使用宽松口径（后者不看 `direction_mismatch` 与排他分差，会把生成时必然被剔除的板块算成缺口，补填反复空跑烧 LLM）。已有报告的格子不算缺口。
+
+**纯读**：不写库、不触发任何生成。
+
+Query：
+
+- `days` 可选，正整数，默认 `7`。**只收窄不收宽**：实际窗口天数 = `min(days, tag_edge_retention_days)`；`days` 为 0、负数或非整数返回 `400`。
+
+窗口 = `[今天 - min(days, tag_edge_retention_days), 今天 - 1]`（本地日历日，**不含今天**——今天由当日生成与当日状态行负责）。
+
+Response `data`：
+
+```json
+{
+  "window_start": "2026-11-18",
+  "window_end": "2026-11-24",
+  "days": 7,
+  "retention_days": 7,
+  "gaps": [
+    { "date": "2026-11-18", "board_id": 2849, "board_label": "刚果（金）局势" },
+    { "date": "2026-11-21", "board_id": 2849, "board_label": "刚果（金）局势" }
+  ],
+  "missing_days": 2,
+  "total_missing": 2
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `window_start` | string | 窗口下界（`YYYY-MM-DD`，含） |
+| `window_end` | string | 窗口上界（`YYYY-MM-DD`，含）；= 昨天，**不含今天** |
+| `days` | int | 生效窗口天数（已按保留窗口收窄后的值） |
+| `retention_days` | int | `ai_settings.tag_edge_retention_days` 读到的保留窗口天数（默认 7） |
+| `gaps[]` | array | 缺口格子扁平列表，按日期升序、同日按 `board_id` 升序 |
+| `gaps[].date` | string | 报告日（`YYYY-MM-DD`） |
+| `gaps[].board_id` | int | 板块 id |
+| `gaps[].board_label` | string | 板块名称；标签行缺失时为空串（消费方回退显示 `Board #N`） |
+| `missing_days` | int | 有缺口的日期数 |
+| `total_missing` | int | 缺口格子总数 |
+| `last_run` | object? | 最近一次补填运行摘要；**无运行记录时该字段缺省** |
+
+`last_run` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `run_id` | string | 运行标识（与 WS 终态消息的 `run_id` 同一值） |
+| `status` | string | 终态：`running` / `success` / `partial` / `failed` / `budget_exhausted` |
+| `filled` | int | 本次补出篇数 |
+| `failed` | int | 失败格数 |
+| `remaining` | int | 未完成缺口数 |
+| `window_start` / `window_end` | string | 本次运行的补填窗口 |
+| `started_at` | string | 开始时间（RFC3339） |
+| `finished_at` | string? | 结束时间（RFC3339）；运行中尚未收尾时缺省 |
+
+错误：
+
+| 状态 | `reason` | 条件 |
+| ---- | -------- | ---- |
+| 400 | `invalid_days` | `days` 不是正整数（含 0、负数、非数字） |
+| 500 | — | 缺口扫描失败（`error` 为原始错误信息） |
+
+### POST `/daily-reports/backfill-gaps`
+
+异步补填：受理即返回 `job_id` / `run_id`，补填在**服务端后台**串行执行，HTTP 请求不等待补齐完成。
+
+Request body（字段均可选；整体可为空 = 按默认窗口补全部板块）：
+
+```json
+{ "date": "2026-11-20" }
+```
+
+```json
+{ "days": 3, "board_id": 2849 }
+```
+
+| 参数 | 类型 | 语义 |
+| ---- | ---- | --- |
+| `date` | string | 指定**单日**补填（`YYYY-MM-DD`） |
+| `days` | int | 按天数收窄窗口（默认 `7`，上限 `tag_edge_retention_days`），与缺口查询同口径 |
+| `board_id` | int | 只补该板块（缺省 = 全部板块） |
+
+`date` 与 `days` **互斥**：同时给出返回 `400 conflicting_scope`（一个指定单日，一个收窄窗口）。
+
+**三条前置先判后跑**（顺序固定）：
+
+| 序 | 前置 | 判定 | 不通过时 |
+| -- | ---- | ---- | -------- |
+| ① | 窗口守卫 | `date` 早于标签边保留窗口下界（`tag_edge_retention_days`，默认 7；恰好等于下界放行）→ 拒；`date` ≥ 今天（今天与未来）→ 拒 | `400` + `reason` |
+| ② | 双队列门槛 | `tag_jobs` 无 `pending`/`leased` **且** `embedding_queues` 无 `pending`/`processing`；队列计数查询失败按「未知」处理（**不当作已排空**） | `409` + `reason` |
+| ③ | 日报生成闸 | 与定时任务 / 手动生成共用同一把域闸，整轮持有、结束（含 panic）时释放 | `409 already_running` |
+
+队列未排空即拒绝：补出的候选不全，补了也是空跑。
+
+Response `data`（`200`）：
+
+```json
+{
+  "job_id": "b8e2...",
+  "run_id": "1c4a...",
+  "status": "processing",
+  "window_start": "2026-11-18",
+  "window_end": "2026-11-24"
+}
+```
+
+错误（`reason` 是机器可读枚举，`error` 是中文说明）：
+
+| 状态 | `reason` | 条件 |
+| ---- | -------- | ---- |
+| 400 | `invalid_days` | `days` 不是正整数 |
+| 400 | `conflicting_scope` | `date` 与 `days` 同时指定 |
+| 400 | `invalid_date` | `date` 不是 `YYYY-MM-DD` |
+| 400 | `out_of_retention_window` | `date` 早于标签边保留窗口下界（标签边已按窗口回收、候选不全） |
+| 400 | `out_of_backfill_window` | `date` ≥ 今天（今天由当日日报生成负责，补填窗口不含今天与未来） |
+| 409 | `queue_check_failed` | 队列积压计数查询失败（按「未知」处理，不当作已排空） |
+| 409 | `tag_queue_not_empty` | `tag_jobs` 仍有 `pending`/`leased` |
+| 409 | `embedding_queue_not_empty` | `embedding_queues` 仍有 `pending`/`processing` |
+| 409 | `already_running` | 日报生成闸被占（定时任务 / 手动生成在跑） |
+
+请求体字段**类型**非法（`date` 传数字、`days` 传字符串等）返回 `400`，`error` 说明期望类型，**无 `reason`**。
+
+**执行语义**（服务端后台）：只补空（旧到新）、只补仍缺的（幂等）、整轮 60 分钟预算（`ai_settings.daily_report_backfill_budget_minutes`，缺省 60）、终态留档 + 终态通知。详见 `flow/daily-report.md` §后端：缺口与补填。
+
+### 补填的 WebSocket 事件
+
+**逐格进度复用 `daily_report_progress`**（新增两个附加字段，既有字段一个不动、旧消费方忽略附加字段即可）：
+
+```json
+{
+  "type": "daily_report_progress",
+  "job_id": "b8e2...",
+  "status": "completed",
+  "board_id": 2849,
+  "board_name": "刚果（金）局势",
+  "saved": 1,
+  "progress": "1/3",
+  "date": "2026-11-20",
+  "run_scope": "backfill",
+  "timestamp": "2026-11-25T..."
+}
+```
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `date` | 本次进度对应的**报告日**（`YYYY-MM-DD`）——补填是多天串行的，没有它无法把进度归到具体那一天 |
+| `run_scope` | 运行来源：`generate`（当日生成）/ `backfill`（缺档补填） |
+| `status` | 逐格状态：`completed`（补出）/ `failed`（生成失败）/ `empty`（当日无内容，未补出） |
+| `saved` | 截至本格的累计补出篇数 |
+| `progress` | `已补出/总格子数` |
+
+**终态用独立事件类型 `daily_report_backfill_done`**：
+
+```json
+{
+  "type": "daily_report_backfill_done",
+  "job_id": "b8e2...",
+  "run_id": "1c4a...",
+  "status": "success",
+  "filled": 3,
+  "failed": 0,
+  "remaining": 0,
+  "window_start": "2026-11-18",
+  "window_end": "2026-11-24",
+  "started_at": "2026-11-25T01:00:00Z",
+  "finished_at": "2026-11-25T01:03:20Z",
+  "timestamp": "2026-11-25T01:03:20Z"
+}
+```
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `type` | 恒为 `daily_report_backfill_done` |
+| `job_id` / `run_id` | 本次运行的作业标识 / 运行标识（与留档表 `run_id` 同值） |
+| `status` | 终态四态：`success` / `partial` / `failed` / `budget_exhausted` |
+| `filled` / `failed` / `remaining` | 补出篇数 / 失败格数 / 未完成缺口数 |
+| `window_start` / `window_end` | 本次运行的补填窗口 |
+| `started_at` / `finished_at` | 开始 / 结束时间（RFC3339） |
+| `timestamp` | 消息发出时间（RFC3339） |
+
+> **为什么不复用 `daily_report_done`**：`daily_report_done` 被现有消费方（`useDailyReportProgress` / `useRadarPipelineStatus` 的 done 分支）**无 `job_id` 过滤**地消费——复用会让补填终态被误认成「本次今日生成」的结果，污染当日状态。故终态另开事件类型；逐格进度因携带 `date` + `run_scope` 足以区分，复用同一类型即可（旧消费方忽略附加字段）。
 
 ## GET `/daily-reports/today`
 

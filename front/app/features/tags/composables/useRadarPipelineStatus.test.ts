@@ -23,9 +23,17 @@ vi.mock('~/api/poll', () => ({
   usePollApi: () => ({ getPollBundle: getPollBundleMock }),
 }))
 
-const { generateDailyReportMock } = vi.hoisted(() => ({ generateDailyReportMock: vi.fn() }))
+const { generateDailyReportMock, getDailyReportGapsMock, triggerGapBackfillMock } = vi.hoisted(() => ({
+  generateDailyReportMock: vi.fn(),
+  getDailyReportGapsMock: vi.fn(),
+  triggerGapBackfillMock: vi.fn(),
+}))
 vi.mock('~/api/dailyReports', () => ({
-  useDailyReportsApi: () => ({ generateDailyReport: generateDailyReportMock }),
+  useDailyReportsApi: () => ({
+    generateDailyReport: generateDailyReportMock,
+    getDailyReportGaps: getDailyReportGapsMock,
+    triggerGapBackfill: triggerGapBackfillMock,
+  }),
 }))
 
 const wsHandlers = vi.hoisted(() => new Map<string, (data: unknown) => void>())
@@ -97,6 +105,26 @@ function board(over: Partial<RadarStatusBoard> = {}): RadarStatusBoard {
   }
 }
 
+/** 缺口查询响应（默认：窗口内无缺口）。 */
+function gapsOk(over: {
+  gaps?: Array<{ date: string; board_id: number; board_label: string }>
+  missing_days?: number
+  total_missing?: number
+} = {}) {
+  return {
+    success: true,
+    data: {
+      window_start: '2026-10-18',
+      window_end: '2026-10-24',
+      days: 7,
+      retention_days: 7,
+      gaps: over.gaps ?? [],
+      missing_days: over.missing_days ?? 0,
+      total_missing: over.total_missing ?? 0,
+    },
+  }
+}
+
 /** 挂载 composable 并等对账分发落地。 */
 async function setup(over: PollOverrides = {}) {
   getPollBundleMock.mockResolvedValue(pollOk(over))
@@ -119,6 +147,13 @@ beforeEach(() => {
   rows.value = []
   getPollBundleMock.mockReset()
   generateDailyReportMock.mockReset()
+  getDailyReportGapsMock.mockReset()
+  triggerGapBackfillMock.mockReset()
+  getDailyReportGapsMock.mockResolvedValue(gapsOk())
+  triggerGapBackfillMock.mockResolvedValue({
+    success: true,
+    data: { job_id: 'bj1', run_id: 'br1', status: 'processing', window_start: '2026-10-18', window_end: '2026-10-24' },
+  })
 })
 
 afterEach(async () => {
@@ -416,5 +451,201 @@ describe('useRadarPipelineStatus — 手动生成（D11）', () => {
     await status.generate([3])
     expect(generateDailyReportMock).not.toHaveBeenCalled()
     expect(status.phase.value).toBe('idle')
+  })
+})
+
+// ── 缺口与补填（add-daily-report-gap-backfill D8/D10）────────────────────
+describe('useRadarPipelineStatus — 缺口取数（一次性请求 + 独立降级）', () => {
+  it('取数失败：只降级缺口区，不产出「无缺口」结论，其余事实不受影响', async () => {
+    const status = await setup()
+    getDailyReportGapsMock.mockResolvedValue({ success: false, error: '接口挂了' })
+
+    await status.reloadGaps()
+
+    expect(status.gapError.value).toBe('接口挂了')
+    expect(status.gapLoaded.value).toBe(false)
+    expect(status.gapsByDate.value).toEqual([])
+    // 其余五项事实照常（缺口区降级不连坐）
+    expect(status.pollReady.value).toBe(true)
+    expect(status.queueIdle.value).toBe(true)
+    expect(status.overviewError.value).toBe('')
+  })
+
+  it('取数成功：按日分组（日期升序）、板块名缺失回退、不含今天', async () => {
+    const status = await setup()
+    getDailyReportGapsMock.mockResolvedValue(gapsOk({
+      gaps: [
+        { date: '2026-10-23', board_id: 12, board_label: 'AI 前沿' },
+        { date: '2026-10-22', board_id: 3, board_label: '' },
+        { date: '2026-10-22', board_id: 4, board_label: '芯片' },
+        { date: todayKey(), board_id: 9, board_label: '今天' },
+      ],
+      missing_days: 2,
+      total_missing: 4,
+    }))
+
+    await status.reloadGaps()
+
+    expect(status.gapLoaded.value).toBe(true)
+    expect(status.gapError.value).toBe('')
+    expect(status.missingDays.value).toBe(2)
+    expect(status.totalMissing.value).toBe(4)
+    expect(status.gapsByDate.value.map(d => d.date)).toEqual(['2026-10-22', '2026-10-23'])
+    // 板块名缺失 → 回退 Board #N（不编造板块名）
+    expect(status.gapsByDate.value[0]?.boards.map(b => b.label)).toEqual(['Board #3', '芯片'])
+    // 今天不在缺口区（今日状态由「当日日报状态」行负责）
+    expect(status.gapsByDate.value.some(d => d.date === todayKey())).toBe(false)
+  })
+
+  it('缺口取数是**一次性**请求：不随对账轮询重复发', async () => {
+    const status = await setup()
+    await status.reloadGaps()
+    expect(getDailyReportGapsMock).toHaveBeenCalledTimes(1)
+
+    // 对账再来一次（既有轮询）——缺口不跟着重取
+    getPollBundleMock.mockResolvedValue(pollOk())
+    await usePollBundle().reconcileNow()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getDailyReportGapsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('跨日切换：重取一次缺口（不新建定时器）', async () => {
+    const status = await setup()
+    // 本实例尚未取过缺口（gapLoaded 假）
+    expect(status.gapLoaded.value).toBe(false)
+
+    // 跨过本地日界：对账成功一次（对账时刻是跨日判据的时钟刻度）→ 缺口重取
+    const tomorrow = new Date(Date.now() + 24 * 3600 * 1000)
+    vi.setSystemTime(tomorrow)
+    getPollBundleMock.mockResolvedValue(pollOk())
+    await usePollBundle().reconcileNow()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(status.gapLoaded.value).toBe(true)
+    expect(getDailyReportGapsMock).toHaveBeenCalled()
+  })
+})
+
+describe('useRadarPipelineStatus — 补填状态流转', () => {
+  it('提交 → running → 进度 → 终态 done，并重取一次缺口', async () => {
+    const status = await setup()
+
+    const pending = status.backfillAll()
+    expect(status.backfillPhase.value).toBe('submitting')
+    await pending
+    expect(status.backfillPhase.value).toBe('running')
+    // 一次补齐：窗口与缺口清单同口径
+    expect(triggerGapBackfillMock).toHaveBeenCalledWith({ days: 7 })
+
+    // 逐格进度：run_scope=backfill + job_id 匹配
+    emitWs('daily_report_progress', {
+      job_id: 'bj1', run_scope: 'backfill', date: '2026-10-22', board_id: 12, status: 'completed', saved: 2, progress: '2/5',
+    })
+    expect(status.backfillProgress.value).toEqual({ filled: 2, total: 5, date: '2026-10-22' })
+
+    // 终态（独立事件类型）→ 重取缺口
+    getDailyReportGapsMock.mockClear()
+    emitWs('daily_report_backfill_done', {
+      job_id: 'bj1', run_id: 'br1', status: 'partial', filled: 3, failed: 1, remaining: 1,
+      window_start: '2026-10-18', window_end: '2026-10-24',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(status.backfillPhase.value).toBe('done')
+    expect(status.backfillResult.value).toEqual({
+      status: 'partial', filled: 3, failed: 1, remaining: 1, windowStart: '2026-10-18', windowEnd: '2026-10-24',
+    })
+    expect(getDailyReportGapsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('补填进度只认 run_scope=backfill：当日生成的进度不被吸收', async () => {
+    const status = await setup()
+    await status.backfillAll()
+
+    emitWs('daily_report_progress', {
+      job_id: 'bj1', run_scope: 'generate', date: todayKey(), saved: 9, progress: '9/9',
+    })
+    expect(status.backfillProgress.value).toEqual({ filled: 0, total: 0, date: '' })
+  })
+
+  it('补填进度按 job_id 归属：别的补填 job 不被吸收', async () => {
+    const status = await setup()
+    await status.backfillAll()
+
+    emitWs('daily_report_progress', {
+      job_id: 'other-job', run_scope: 'backfill', date: '2026-10-22', saved: 7, progress: '7/7',
+    })
+    expect(status.backfillProgress.value).toEqual({ filled: 0, total: 0, date: '' })
+  })
+
+  it('补填终态只认本 job：别的 job 的终态不吸收', async () => {
+    const status = await setup()
+    await status.backfillAll()
+
+    emitWs('daily_report_backfill_done', { job_id: 'other-job', status: 'success', filled: 9, failed: 0, remaining: 0 })
+    expect(status.backfillPhase.value).toBe('running')
+    expect(status.backfillResult.value).toBeNull()
+  })
+
+  it('补这天只提交该日（不为该日之外的缺口生成日报）', async () => {
+    const status = await setup()
+    await status.backfillDate('2026-10-22')
+    expect(triggerGapBackfillMock).toHaveBeenCalledWith({ date: '2026-10-22' })
+  })
+
+  it('补填被拒（409）：phase failed + 后端文案（不静默）', async () => {
+    const status = await setup()
+    triggerGapBackfillMock.mockResolvedValue({
+      success: false,
+      status: 409,
+      error: '打标/向量化队列未排空，补出的候选不全，请稍后再试。',
+    })
+
+    await status.backfillDate('2026-10-22')
+    expect(status.backfillPhase.value).toBe('failed')
+    expect(status.backfillError.value).toContain('队列未排空')
+  })
+
+  it('补填进行中：不重复受理', async () => {
+    const status = await setup()
+    const first = status.backfillAll()
+    const second = status.backfillAll()
+    await Promise.all([first, second])
+    expect(triggerGapBackfillMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('队列积压时补填入口禁用（与生成同款双队列判据）', async () => {
+    const status = await setup({ pending: 5 })
+    expect(status.backfillBlocked.value).toBe(true)
+  })
+
+  it('双队列清空时补填入口可用', async () => {
+    const status = await setup({ pending: 0, processing: 0, embeddingPending: 0 })
+    expect(status.backfillBlocked.value).toBe(false)
+  })
+
+  it('补填终态先于受理响应到达：缓冲后回放，不永久卡 running', async () => {
+    const status = await setup()
+    let resolveTrigger: (value: unknown) => void = () => {}
+    triggerGapBackfillMock.mockImplementation(() => new Promise((resolve) => {
+      resolveTrigger = resolve
+    }))
+
+    const pending = status.backfillAll()
+    // 响应尚未返回，终态 WS 先到（快失败场景）
+    emitWs('daily_report_backfill_done', {
+      job_id: 'bj1', run_id: 'br1', status: 'success', filled: 2, failed: 0, remaining: 0,
+    })
+    expect(status.backfillPhase.value).toBe('submitting')
+
+    resolveTrigger({
+      success: true,
+      data: { job_id: 'bj1', run_id: 'br1', status: 'processing', window_start: '', window_end: '' },
+    })
+    await pending
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(status.backfillPhase.value).toBe('done')
+    expect(status.backfillResult.value?.filled).toBe(2)
   })
 })

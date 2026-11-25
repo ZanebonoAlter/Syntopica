@@ -96,6 +96,59 @@ func DailyReportFailedSummary(date time.Time, successCount, failedCount int) {
 	})
 }
 
+// BackfillCounts 是「日报缺档补填」运行的终态计数（spec「补填运行留档与终态告知」）。
+//
+//   - TotalCells: 本次运行扫到的缺报格子总数
+//   - Filled:     补出的日报篇数
+//   - Failed:     生成报错的格子数
+//   - Remaining:  运行结束时仍缺报告的格子数（失败 + 无内容 + 预算未跑到）
+type BackfillCounts struct {
+	TotalCells int
+	Filled     int
+	Failed     int
+	Remaining  int
+}
+
+// 补填终态四态。与每日生成终态是**两次独立运行**，两条通知互不覆盖、互不抑制。
+const (
+	BackfillStatusSuccess         = "success"
+	BackfillStatusPartial         = "partial"
+	BackfillStatusFailed          = "failed"
+	BackfillStatusBudgetExhausted = "budget_exhausted"
+)
+
+// DailyReportBackfillTerminal 按四态口径写**一条**补填终态通知并广播它：
+// success → success 类；partial / failed / budget_exhausted → error 类。
+//
+// 每次运行恰好一条（逐格子不发通知），且**成功也发**（spec「成功与失败都必须发」）。
+// 零缺口不产生通知：TotalCells == 0 时直接返回——没有任何格子被处理，
+// 没有可告知的结果（spec「零缺口不发通知」）。
+//
+// 与每日生成终态（DailyReportTerminal）是两次独立运行：这里不读、不改、
+// 不抑制日报生成终态的通知行，两条通知都保留。
+// Fail-open: errors are logged, not returned.
+func DailyReportBackfillTerminal(status string, windowStart, windowEnd string, counts BackfillCounts) {
+	if counts.TotalCells == 0 {
+		return // 零缺口不产生通知
+	}
+	kind := "success"
+	title := fmt.Sprintf("日报缺档补填完成 · %s", windowStart)
+	switch status {
+	case BackfillStatusPartial:
+		kind = "error"
+		title = fmt.Sprintf("日报缺档补填部分失败 · %s", windowStart)
+	case BackfillStatusFailed:
+		kind = "error"
+		title = fmt.Sprintf("日报缺档补填失败 · %s", windowStart)
+	case BackfillStatusBudgetExhausted:
+		kind = "error"
+		title = fmt.Sprintf("日报缺档补填预算耗尽 · %s", windowStart)
+	}
+	summary := fmt.Sprintf("补出 %d 篇，%d 个失败，剩余 %d 个缺口，范围 %s ~ %s",
+		counts.Filled, counts.Failed, counts.Remaining, windowStart, windowEnd)
+	createAndBroadcast(kind, title, summary+"。", "daily-report", windowStart)
+}
+
 // BoardHealthAlert creates a board-health warning notification for a board
 // whose checkup score fell below the alert threshold and whose LLM notify
 // verdict was positive (add-board-health-checkup design D6). Reuses the

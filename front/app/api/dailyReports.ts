@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { ApiResponse } from '~/types'
+import type { AiDetectionStatus, ApiResponse } from '~/types'
 
 /**
  * 日报重点条目（retire-story-adopt-event-metrics 2.3/3.3：候选源换成当天同事件聚簇）。
@@ -42,6 +42,18 @@ export interface DailyReportThread {
    *  综合稿不计入线索数/热度/行序，但可在展示层标出（fix-lane-metric-provenance）。 */
   scope?: string
   related_article_ids: number[]
+  /**
+   * 线索文章的读路径投影（add-ai-generated-article-detection 4.6）：只带列表行需要的
+   * id/title/判定两字段，顺序跟随 related_article_ids（后端已把疑似文章稳定排至末尾），
+   * 成员不增删——「N 篇」计数仍取 related_article_ids.length。
+   * 旧响应无此字段（omitempty）：前端回退到标题缓存且不做任何排序。
+   */
+  articles?: Array<{
+    id: number
+    title: string
+    ai_detection_status?: AiDetectionStatus
+    ai_detection_score?: number
+  }>
   created_at: string
 }
 
@@ -437,6 +449,70 @@ interface ActiveWatchSummaryPayload {
   watchType?: string
 }
 
+/**
+ * 缺口条目（GET /daily-reports/gaps 的一格）。
+ *
+ * 一格 = 某天某个板块「有候选内容但没有报告」——服务端按生成 Step1 的严格口径
+ * 判定（active + event + NOT direction_mismatch + 跨板排他），前端不自行推算。
+ * `board_label` 可能为空（旧数据/无标签板块），展示侧回退成 `Board #N`。
+ */
+export interface DailyReportGap {
+  /** 报告日（YYYY-MM-DD；窗口不含今天）。 */
+  date: string
+  board_id: number
+  board_label: string
+}
+
+/** 补填运行的终态（四态；与日报生成终态互不抑制）。 */
+export type DailyReportBackfillStatus = 'success' | 'partial' | 'failed' | 'budget_exhausted'
+
+/**
+ * 最近一次补填运行的摘要（缺口查询响应的 `last_run`）。
+ *
+ * 无运行记录时后端**省略**该字段——故这里是可选字段，不是 null 语义。
+ */
+export interface DailyReportBackfillRunSummary {
+  run_id: string
+  status: DailyReportBackfillStatus
+  /** 已补出篇数。 */
+  filled: number
+  /** 真失败篇数。 */
+  failed: number
+  /** 剩余缺口篇数（预算耗尽时 > 0）。 */
+  remaining: number
+  window_start: string
+  window_end: string
+  started_at: string
+  /** 收尾时刻；运行未收尾时后端省略该字段。 */
+  finished_at?: string
+}
+
+/** 缺口查询响应（GET /daily-reports/gaps）。 */
+export interface DailyReportGaps {
+  window_start: string
+  window_end: string
+  /** 实际窗口天数（受保留窗口收窄）。 */
+  days: number
+  retention_days: number
+  /** 平铺的缺口格（前端自己按 date 分组）。 */
+  gaps: DailyReportGap[]
+  /** 有缺口的日期数。 */
+  missing_days: number
+  /** 缺口格总数（= 篇数）。 */
+  total_missing: number
+  /** 最近一次补填运行摘要；无运行记录时缺省。 */
+  last_run?: DailyReportBackfillRunSummary
+}
+
+/** 补填受理响应（POST /daily-reports/backfill-gaps）：受理即返回，异步执行。 */
+export interface DailyReportBackfillAccepted {
+  job_id: string
+  run_id: string
+  status: string
+  window_start: string
+  window_end: string
+}
+
 interface DailyReportListItemPayload extends Omit<DailyReportListItem, 'activeWatchSummaries'> {
   active_watch_summaries?: ActiveWatchSummaryPayload[]
   activeWatchSummaries?: ActiveWatchSummaryPayload[]
@@ -466,6 +542,30 @@ export function useDailyReportsApi() {
    */
   async function generateDailyReport(params: { date: string; board_id?: number; board_ids?: number[] }) {
     return apiClient.post<{ job_id: string; status: string }>('/daily-reports/generate', params)
+  }
+
+  /**
+   * 查询近 N 天的日报缺口（只读；不写库、不触发生成）。
+   *
+   * 缺口判定口径在服务端（与生成 Step1 同谓词），前端**不自行推算**——
+   * 只消费 `missing_days` / `total_missing` 与平铺的 `gaps`。
+   */
+  async function getDailyReportGaps(params?: { days?: number }): Promise<ApiResponse<DailyReportGaps>> {
+    const query = params?.days != null ? `?days=${params.days}` : ''
+    return apiClient.get<DailyReportGaps>(`/daily-reports/gaps${query}`)
+  }
+
+  /**
+   * 触发缺口补填（异步：受理即返回 job_id，服务端后台旧到新串行补）。
+   *
+   * 请求体三选一：`{ date }` 补单日 / `{ days }` 收窄窗口 / `{}` 按默认窗口补齐。
+   * `date` 与 `days` 互斥（同时给后端 400 `conflicting_scope`）。
+   * `board_id` 可选：把范围收窄到单个板块。
+   */
+  async function triggerGapBackfill(
+    params: { date?: string; days?: number; board_id?: number } = {},
+  ): Promise<ApiResponse<DailyReportBackfillAccepted>> {
+    return apiClient.post<DailyReportBackfillAccepted>('/daily-reports/backfill-gaps', params)
   }
 
   async function getTodayReports(date?: string): Promise<ApiResponse<{ date: string, reports: TodayReportBrief[] }>> {
@@ -618,6 +718,8 @@ export function useDailyReportsApi() {
 
   return {
     generateDailyReport,
+    getDailyReportGaps,
+    triggerGapBackfill,
     getTodayReports,
     getBoardDailyReports,
     getDailyReportDetail,

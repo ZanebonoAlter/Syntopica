@@ -24,7 +24,7 @@
 
 另：[DATA_LIFECYCLE.md](DATA_LIFECYCLE.md)（数据状态字段流转，独立于域文档）、[RESTORE.md](RESTORE.md)（灾备恢复流程：备份档恢复契约 + 可照做步骤 + 已知失败模式 + 实测耗时）、[RESTORE_DRILL.md](RESTORE_DRILL.md)（恢复演练留痕：演练时间/档来源/count 校验/迁移对账/耗时）。
 
-## 完整表清单（真库 86 张表 = **84 业务 + 1 残留废弃（`user_preferences`）+ 1 框架（`schema_migrations`）**；下方另列 7 张「真库已无、仅考古快照」的历史 / 已删表 —— 分组清单共 93 行，按域分组 = 归属速查表；2026-09-02 cross_board 两表补齐；2026-09-24 页边注三表补齐；2026-10 ai-provider-model-overhaul 三张两层表补齐、ai_providers/ai_route_providers 停写废弃；2026-10-29 board-health-triage-advice 描述修复任务/条目两表补齐；2026-11 add-event-story-heat 事件线/热度证据两表补齐；2026-11 normalize-event-subject-entities 实体主体身份层三表补齐；2026-11-19 docs-sync-audit-fixes 索引回填 16 张（主题标签 1 / 语义标签 1 / 日报 3 / 数据增强 2 / discovery 7 / 研究数据源 1 / 残留废弃 1）、把已 DROP 的 reference_roles / analysis_methods 移入废弃节，计数改真库实测口径）
+## 完整表清单（真库 87 张表 = **85 业务 + 1 残留废弃（`user_preferences`）+ 1 框架（`schema_migrations`）**；下方另列 7 张「真库已无、仅考古快照」的历史 / 已删表 —— 分组清单共 94 行，按域分组 = 归属速查表；2026-09-02 cross_board 两表补齐；2026-09-24 页边注三表补齐；2026-10 ai-provider-model-overhaul 三张两层表补齐、ai_providers/ai_route_providers 停写废弃；2026-10-29 board-health-triage-advice 描述修复任务/条目两表补齐；2026-11 add-event-story-heat 事件线/热度证据两表补齐；2026-11 normalize-event-subject-entities 实体主体身份层三表补齐；2026-11-19 docs-sync-audit-fixes 索引回填 16 张（主题标签 1 / 语义标签 1 / 日报 3 / 数据增强 2 / discovery 7 / 研究数据源 1 / 残留废弃 1）、把已 DROP 的 reference_roles / analysis_methods 移入废弃节，计数改真库实测口径；2026-11-25 add-daily-report-gap-backfill 缺档补填留档表 1 张补齐）
 
 #### 内容 → [`tables/content.md`](tables/content.md)（flow: `content-enrichment`）
 
@@ -104,6 +104,7 @@
 | ------ | ------ | ---------- |
 | `firecrawl_jobs` | Firecrawl 抓取任务 | `models.FirecrawlJob` |
 | `tag_jobs` | 标签任务 | `models.TagJob` |
+| `detection_jobs` | 疑似 AI 判定任务（与 `tag_jobs` 同构且完全独立；同文章至多一条未完成作业的部分唯一索引） | `models.DetectionJob` |
 
 #### 通知 → [`tables/job-queues.md`](tables/job-queues.md)（flow: `daily-report`）
 
@@ -129,6 +130,7 @@
 | `topic_lane_snapshots` | 泳道滚动态势快照（每活跃泳道一行，日报后 upsert 覆盖；纯派生缓存） | `topicgraph.TopicLaneSnapshot` |
 | `topic_anchor_overrides` | 首义改写留痕（append-only，每次人工重设一行；**刻意无 FK**） | `topicgraph.TopicAnchorOverride` |
 | `section_assignment_overrides` | 泳道归属变更留痕（append-only，`detach`/`attach` 各一行；**刻意无 FK**） | `topicgraph.SectionAssignmentOverride` |
+| `daily_report_backfill_runs` | 缺档补填运行留档（窗口、逐日明细 jsonb、四态终态、补出/失败/剩余计数；add-daily-report-gap-backfill） | `topicgraph.DailyReportBackfillRun` |
 
 #### 页边注 → [`tables/margin-notes.md`](tables/margin-notes.md)（flow: `daily-report`）
 

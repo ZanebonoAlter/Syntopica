@@ -35,6 +35,7 @@
  */
 import { computed, ref, watch } from 'vue'
 import AppButton from '~/components/ui/AppButton.vue'
+import { useConfirm } from '~/composables/useConfirm'
 import { useRadarPipelineStatus, type RadarStatusBoard } from '~/features/tags/composables/useRadarPipelineStatus'
 
 const props = defineProps<{
@@ -89,7 +90,25 @@ const {
   result,
   failureMessage,
   generate,
+  // 缺口（近 7 天）
+  gapsByDate,
+  missingDays,
+  totalMissing,
+  gapLoading,
+  gapError,
+  gapLoaded,
+  reloadGaps,
+  // 补填
+  backfillPhase,
+  backfillProgress,
+  backfillResult,
+  backfillError,
+  backfillDate,
+  backfillAll,
+  backfillBlocked,
 } = status
+
+const { confirm } = useConfirm()
 
 // ── 板块勾选清单（就地展开，不弹窗）──────────────────────────────────────
 const pickerOpen = ref(false)
@@ -194,6 +213,16 @@ const notGeneratedHint = computed(() => {
   return isBeforeSchedule.value
     ? `尚未到生成时刻（${scheduleTime.value}）`
     : `已过生成时刻（${scheduleTime.value}）：今日暂无可用素材或生成未完成`
+})
+
+/**
+ * 补填入口为何禁用（缺料说明）。
+ * Embedding 计数不可得时不能说「队列还没清空」（它可能是已清空、只是未知）——
+ * 两种原因分开说，否则用户看到灰按钮却读不到真实原因。
+ */
+const backfillBlockedHint = computed(() => {
+  if (!embeddingReady.value) return '队列状态未知：无法确认是否已清空，清空后才能补。'
+  return '队列还没清空：补出来的候选会不全，清空后才能补。'
 })
 
 const showQueueProgress = computed(() => pollReady.value && roundTotal.value > 0)
@@ -327,10 +356,100 @@ function toggleBoard(boardId: number): void {
 
 function confirmGenerate(): void {
   if (confirmDisabled.value) return
-  void generate(selected.value)
+  void submitGenerate()
+}
+
+/**
+ * 发起生成（今日已出时先走一次**危险样式**的二次确认）。
+ *
+ * 今日已出（todayReady）= 同日替换 = 破坏性动作：既有日报的章节与线索会被
+ * 重写，页边注与人工锚定可能错位（design D9）。先弹全局确认弹窗，取消则
+ * **不发任何请求**；首次生成（非 todayReady）不弹。
+ */
+async function submitGenerate(): Promise<void> {
+  if (todayReady.value) {
+    const ok = await confirm({
+      title: '重新生成今日日报？',
+      message: '既有日报的章节与线索会被重写，页边注与人工锚定可能错位。',
+      confirmText: '重新生成',
+      cancelText: '取消',
+      danger: true,
+    })
+    if (!ok) return
+  }
+  await generate(selected.value)
+}
+
+// ── 缺口折叠区（近 7 天）────────────────────────────────────────────────
+// 就地展开的折叠区（与板块勾选清单同款）：不弹窗、不跳页。默认折叠，
+// 行头带「N 天 / M 篇」；无缺口时行头呈「近 7 天无缺口」且不出按钮。
+const gapOpen = ref(false)
+
+/** 缺口日期的短格式（MM-DD）。 */
+function formatGapDate(date: string): string {
+  return date.length >= 10 ? date.slice(5, 10) : date
+}
+
+/**
+ * 补填进行中（受理中 / 运行中）：两个补填入口同时禁用，不许重复触发。
+ */
+const backfillBusy = computed(() => backfillPhase.value === 'submitting' || backfillPhase.value === 'running')
+
+/**
+ * 缺口行头文案。
+ *
+ * 读取中 / 读取失败优先（未知 ≠ 无缺口）；补填进行中转为进度（补齐中 n/m）。
+ */
+const gapHeadText = computed(() => {
+  if (backfillBusy.value) {
+    const { filled, total } = backfillProgress.value
+    return total > 0 ? `近 7 天缺口 补齐中 ${filled}/${total}` : '近 7 天缺口 补齐中…'
+  }
+  if (gapError.value) return '近 7 天缺口 读取失败'
+  if (gapLoading.value || !gapLoaded.value) return '近 7 天缺口 读取中'
+  if (totalMissing.value === 0) return '近 7 天无缺口'
+  return `近 7 天缺口 ${missingDays.value} 天 / ${totalMissing.value} 篇`
+})
+
+/** 补填进度行（带当前报告日）。 */
+const backfillProgressText = computed(() => {
+  const { filled, total, date } = backfillProgress.value
+  const dateText = date ? `${formatGapDate(date)} · ` : ''
+  return `补齐中 ${dateText}${filled}/${total}`
+})
+
+/** 补填终态文案（四态：完成 / 部分完成 / 额度用尽 / 失败）。 */
+const backfillResultText = computed(() => {
+  const r = backfillResult.value
+  if (!r) return ''
+  const head = r.status === 'success'
+    ? '补齐完成'
+    : r.status === 'partial'
+      ? '部分完成'
+      : r.status === 'budget_exhausted'
+        ? '额度用尽，已留档待续'
+        : '补齐失败'
+  return `${head} · 补出 ${r.filled} 篇 · 失败 ${r.failed} 篇 · 剩余 ${r.remaining} 篇`
+})
+
+function toggleGap(): void {
+  gapOpen.value = !gapOpen.value
+}
+
+function onBackfillDate(date: string): void {
+  void backfillDate(date)
+}
+
+function onBackfillAll(): void {
+  void backfillAll()
 }
 
 watch(phase, (next, prev) => {
+  if (next === 'done' && prev !== 'done') emit('generated')
+})
+
+// 补填终态：缺口清单变了 → 父层据此刷新雷达总览（缺口取数由 composable 自己重取）
+watch(backfillPhase, (next, prev) => {
   if (next === 'done' && prev !== 'done') emit('generated')
 })
 </script>
@@ -497,6 +616,75 @@ watch(phase, (next, prev) => {
           {{ todayReady ? '确认替换' : '确认生成' }}
         </AppButton>
         <button type="button" class="rs-toggle" data-testid="radar-status-cancel" @click="closePicker">取消</button>
+      </div>
+    </div>
+
+    <!-- 近 7 天缺口（add-daily-report-gap-backfill）：就地展开的折叠区（默认
+         折叠）——不弹窗、不跳页。取数失败只降级本区，不影响其余五项事实；
+         取数未完成时呈「读取中」，未知不得渲染成「无缺口」。 -->
+    <div class="rs-gap" data-testid="radar-gap">
+      <button
+        type="button"
+        class="rs-gap-head"
+        data-testid="radar-gap-head"
+        :aria-expanded="gapOpen"
+        @click="toggleGap"
+      >
+        <span class="rs-gap-title" data-testid="radar-gap-summary">{{ gapHeadText }}</span>
+        <span class="rs-gap-chevron" aria-hidden="true">{{ gapOpen ? '▴' : '▾' }}</span>
+      </button>
+
+      <div v-if="gapError" class="rs-gap-error" data-testid="radar-gap-error">
+        <span>读取失败</span>
+        <button type="button" class="rs-toggle" data-testid="radar-gap-retry" @click="reloadGaps">重试</button>
+      </div>
+
+      <p v-if="backfillBusy" class="rs-running" data-testid="radar-gap-progress">{{ backfillProgressText }}</p>
+      <p v-if="backfillPhase === 'done' && backfillResult" class="rs-result" data-testid="radar-gap-result">{{ backfillResultText }}</p>
+      <p v-if="backfillPhase === 'failed' && backfillError" class="rs-failed" data-testid="radar-gap-submit-error">
+        <span class="rs-dot" aria-hidden="true" />{{ backfillError }}
+      </p>
+
+      <div v-if="gapOpen" class="rs-gap-body" data-testid="radar-gap-body">
+        <ul v-if="gapsByDate.length" class="rs-gap-list" data-testid="radar-gap-list">
+          <li
+            v-for="day in gapsByDate"
+            :key="day.date"
+            class="rs-gap-row"
+            :data-testid="`radar-gap-day-${day.date}`"
+          >
+            <span class="rs-gap-date">{{ formatGapDate(day.date) }}</span>
+            <span class="rs-gap-count">{{ day.boards.length }} 个板块缺</span>
+            <AppButton
+              size="sm"
+              variant="ghost"
+              class="rs-gap-btn rs-gap-act"
+              :data-testid="`radar-gap-backfill-${day.date}`"
+              :disabled="backfillBusy || backfillBlocked"
+              @click="onBackfillDate(day.date)"
+            >
+              补这天
+            </AppButton>
+          </li>
+        </ul>
+        <p v-else class="rs-gap-empty" data-testid="radar-gap-empty">窗口内没有缺报板块</p>
+
+        <div v-if="gapsByDate.length" class="rs-gap-actions">
+          <AppButton
+            size="sm"
+            variant="secondary"
+            class="rs-gap-act"
+            data-testid="radar-gap-backfill-all"
+            :disabled="backfillBusy || backfillBlocked"
+            @click="onBackfillAll"
+          >
+            一次补齐 {{ totalMissing }} 篇
+          </AppButton>
+        </div>
+
+        <p v-if="backfillBlocked" class="rs-hint rs-gap-blocked" data-testid="radar-gap-queue-blocked">
+          {{ backfillBlockedHint }}
+        </p>
       </div>
     </div>
     </template>
@@ -835,5 +1023,131 @@ watch(phase, (next, prev) => {
     align-items: flex-start;
     gap: 0.1rem;
   }
+}
+
+/* 近 7 天缺口：就地展开的折叠区（与勾选清单同族的容器） */
+.rs-gap {
+  margin-top: 0.6rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.rs-gap-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  width: 100%;
+  padding: 0.2rem 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.7rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rs-gap-head:hover {
+  color: var(--color-accent);
+}
+
+.rs-gap-head:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.rs-gap-title {
+  min-width: 0;
+  font-family: var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
+
+.rs-gap-chevron {
+  margin-left: auto;
+  color: var(--color-text-muted);
+}
+
+.rs-gap-error {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0.3rem 0 0;
+  color: var(--color-error);
+  font-size: 0.68rem;
+}
+
+.rs-gap-body {
+  margin-top: 0.3rem;
+  /* 不画嵌套面：缺口区是卡片内的一组数据行，不是子卡片。
+     自带 background 会在双主题下与卡片的 accent 半透明底打架——浅色主题
+     一块暖白、深色主题一块纯黑，看着像外来模块。分隔靠行间的细线。 */
+}
+
+.rs-gap-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rs-gap-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.3rem 0;
+  border-top: 1px dashed var(--color-border-subtle);
+  font-size: 0.68rem;
+  line-height: 1.6;
+}
+
+.rs-gap-list > .rs-gap-row:first-child {
+  border-top: 0;
+}
+
+.rs-gap-date {
+  flex: 0 0 auto;
+  color: var(--color-text-primary);
+  font-family: var(--font-mono, monospace);
+}
+
+.rs-gap-count {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+}
+
+.rs-gap-btn {
+  margin-left: auto;
+}
+
+/* 禁用的行级 ghost 按钮：全局 .4 在这行小字上几乎看不见（有效对比度 ≈1.8:1），
+   上调到 .55 —— 仍明确是禁用态，但保留可读性。同一区域的「一次补齐」也走 .55，
+   否则相邻两个禁用按钮一个亮一个喑，看着像只有一个是禁用的。 */
+.rs-gap-act:disabled {
+  opacity: 0.55;
+}
+
+/* 缺料说明是「按钮为什么灰了」的唯一出口：不能沿用 .rs-hint 的 10.24px + muted
+   （≈3.0:1），提到 11.2px + secondary（≈5.99:1 / dark ≈7.16:1）。 */
+.rs-gap-blocked {
+  font-size: 0.7rem;
+  color: var(--color-text-secondary);
+}
+
+.rs-gap-empty {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+}
+
+.rs-gap-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.15rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border-subtle);
 }
 </style>

@@ -270,6 +270,7 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `daily_report_intra_bucket_enabled` | 泳道内主题分桶总开关（add-intra-lane-theme-bucketing）。默认 `true`——域型泳道的一条过宽 section 会被拆成 2-6 个主题方向；置 `false` 即回滚到「话题 × 天 = 单 section」现状（新列留空不影响读取）。见 `flow/daily-report.md` 业务约束 32 |
 | `daily_report_intra_bucket_min_threads` | 分桶触发阈值（线索数，OR 条件的左支）：当日 thread 数 ≥ 此值触发。默认 `6` |
 | `daily_report_intra_bucket_min_tags` | 分桶触发阈值（tag 数，OR 条件的右支）：聚类 tag 数 ≥ 此值触发。默认 `10`（叙事型泳道单条 ≤5 tags 永不触发，阈值同时是误伤保护） |
+| `daily_report_backfill_budget_minutes` | 日报**缺档补填**整轮预算（分钟，add-daily-report-gap-backfill）。默认 `60`；缺失/非数字/≤0 回退默认并记 warn。耗尽即停止启动新的生成（不打断在途的那一格）、已完成保留、剩余缺口落留档并记终态 `budget_exhausted`。见 `flow/daily-report.md` 业务约束 67 |
 | `tag_edge_retention_days` | 标签边（`article_topic_tags`）保留窗口天数，默认 `7`；缺失/非数字/≤0 回退默认并记 warn。一个键驱动三处同口径：① `aux_label_cleanup` 的边时间窗 GC（删 `created_at` 早于保留窗口下界日（本地日历天零点 − N 天）的边（仅归档文章）+ 收孤儿）；② 日报自动补档扫描窗口 `[today-N, today)`；③ `POST /api/daily-reports/generate` 与 `TriggerNowWithDate` 的重建守卫下界。见 `flow/daily-report.md` 业务约束 19/20 与 `flow/reading.md` 业务约束 6 |
 | `board_health_magnet_gap` | 版块体检**磁铁信号阈值**（board-health-triage-advice）：构成标签对其「`direction_mismatch` 失败挂载子集」与「全部挂载 tag」的贴合均值差 `all_mean − failed_mean` **≥** 此值才判磁铁嫌疑（磁铁失灵病）。默认 `0.08`；取值须在 0-100（非法值/非数字回退默认）。详见下节「版块体检阈值（`ai_settings`）」 |
 | `board_health_magnet_min_failed` | 版块体检**磁铁信号失败子集最小样本量**：本版块 `direction_mismatch=true` 的挂载 tag 数低于此值时，磁铁信号一律标 `insufficient`（**不硬凑**、不给嫌疑结论）。默认 `5`（必须 ≥ 1，否则回退默认）。详见下节「版块体检阈值（`ai_settings`）」 |
