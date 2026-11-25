@@ -71,7 +71,7 @@ const TOP_LIMIT = 3
       </div>
     </div>
 
-    <p class="rsb-caption" data-testid="rail-sources-scope">滚动 {{ windowDays }} 日 · 独立统计，不随时间视窗</p>
+    <p class="rsb-caption" data-testid="rail-sources-scope">独立于时间视窗</p>
 
     <div v-if="loading" class="rsb-state" data-testid="rail-sources-loading">来源统计加载中…</div>
     <div v-else-if="error" class="rsb-error" data-testid="rail-sources-error">

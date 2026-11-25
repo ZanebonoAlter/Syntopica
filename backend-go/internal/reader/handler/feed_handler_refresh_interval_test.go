@@ -108,3 +108,41 @@ func TestUpdateFeedCategoryPresence(t *testing.T) {
 	callUpdate(`{"category_id":null}`)
 	require.Nil(t, reload().CategoryID, "显式传 null 应置空分类")
 }
+
+// TestUpdateFeedAIDetectionEnabled 回归（add-ai-generated-article-detection 5.6 联调发现）：
+// 前端订阅源详情的「AI 生成检测」toggle 只发 ai_detection_enabled 这一个字段，
+// 后端 UpdateFeedRequest 若不含该字段，请求仍回 200 但开关不落库（界面刷新后弹回），
+// 判定链路的 feed 级闸门于是永远关着。这里断言双向都能写进库、不带该字段时不被改动。
+func TestUpdateFeedAIDetectionEnabled(t *testing.T) {
+	setupFeedHandlerRefreshTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	feed := models.Feed{Title: "掘金人工智能", URL: "https://juejin.cn/ai/feed"}
+	require.NoError(t, database.DB.Create(&feed).Error)
+	require.False(t, feed.AIDetectionEnabled, "默认必须关闭（design D4：逐源人工开启）")
+
+	callUpdate := func(body string) {
+		rec := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rec)
+		ctx.Params = gin.Params{{Key: "feed_id", Value: fmt.Sprintf("%d", feed.ID)}}
+		ctx.Request = httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/feeds/%d", feed.ID), bytes.NewBufferString(body))
+		UpdateFeed(ctx)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	reload := func() models.Feed {
+		var f models.Feed
+		require.NoError(t, database.DB.First(&f, feed.ID).Error)
+		return f
+	}
+
+	callUpdate(`{"ai_detection_enabled":true}`)
+	require.True(t, reload().AIDetectionEnabled, "开关必须真的落库（否则 feed 级闸门永久关闭）")
+
+	// 不带该字段的其它更新不得把开关改回默认
+	callUpdate(`{"color":"#333333"}`)
+	require.True(t, reload().AIDetectionEnabled, "未提供 ai_detection_enabled 时应保持 true")
+
+	callUpdate(`{"ai_detection_enabled":false}`)
+	require.False(t, reload().AIDetectionEnabled, "关闭开关必须落库")
+}

@@ -32,7 +32,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <aside class="drm-sidebar" aria-label="日报导航">
+  <aside class="drm-sidebar scroll-thin" aria-label="日报导航">
     <section class="drm-sidebar__section">
       <h2>本期目录</h2>
       <button type="button" @click="emit('scrollTo', 'report-lead')">头条</button>
@@ -117,7 +117,6 @@ const emit = defineEmits<{
   overflow-y: auto;
   padding-right: 1rem;
   color: var(--color-text-secondary);
-  scrollbar-width: thin;
 }
 
 .drm-sidebar__section {

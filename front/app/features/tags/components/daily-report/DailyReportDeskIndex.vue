@@ -44,7 +44,7 @@ const emit = defineEmits<{
 
 <template>
   <nav
-    class="ddi"
+    class="ddi scroll-thin"
     :class="{ 'is-compact': compact }"
     aria-label="日报分区索引"
     data-testid="desk-index"
@@ -131,7 +131,6 @@ const emit = defineEmits<{
   max-height: calc(100vh - 5rem);
   overflow-y: auto;
   padding: 0.25rem 0.15rem;
-  scrollbar-width: thin;
 }
 
 .ddi-date {

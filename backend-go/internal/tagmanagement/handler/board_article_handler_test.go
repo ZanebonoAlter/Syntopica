@@ -539,3 +539,50 @@ func TestBoardArticleDailyCounts_EmptyBoard(t *testing.T) {
 	require.NotNil(t, body.Data.Days)
 	require.Empty(t, body.Data.Days)
 }
+
+// TestBoardArticles_AIDetectionFields 覆盖 add-ai-generated-article-detection
+// task 4.3 / board-article-api spec：版块文章列表每行携带疑似 AI 判定状态
+// （未判定也带该字段，值为 unknown），且该字段不改变返回成员与排序。
+func TestBoardArticles_AIDetectionFields(t *testing.T) {
+	f := setupArchiveFixture(t)
+
+	rowIDs := func(rows []map[string]any) []uint {
+		ids := make([]uint, 0, len(rows))
+		for _, row := range rows {
+			ids = append(ids, uint(row["id"].(float64)))
+		}
+		return ids
+	}
+
+	baseline := f.get(t, archiveWindowQuery)
+	require.NotEmpty(t, baseline)
+	baselineIDs := rowIDs(baseline)
+	for _, row := range baseline {
+		require.Contains(t, row, "ai_detection_status", "未判定文章也必须带判定字段")
+		require.Equal(t, models.AIDetectionStatusUnknown, row["ai_detection_status"])
+	}
+
+	// 把其中一篇（第 5 行）改成疑似 AI 生成，列表成员与顺序必须不变。
+	targetID := baselineIDs[4]
+	require.NoError(t, f.db.Model(&models.Article{}).Where("id = ?", targetID).
+		Updates(map[string]any{
+			"ai_detection_status": models.AIDetectionStatusSuspect,
+			"ai_detection_score":  0.88,
+			"ai_detection_source": models.AIDetectionSourceLLM,
+		}).Error)
+
+	after := f.get(t, archiveWindowQuery)
+	require.Equal(t, baselineIDs, rowIDs(after), "判定字段不得改变成员与排序")
+	byID := make(map[uint]map[string]any, len(after))
+	for _, row := range after {
+		byID[uint(row["id"].(float64))] = row
+	}
+	require.Equal(t, models.AIDetectionStatusSuspect, byID[targetID]["ai_detection_status"])
+	require.Equal(t, 0.88, byID[targetID]["ai_detection_score"])
+	for _, id := range baselineIDs {
+		if id == targetID {
+			continue
+		}
+		require.Equal(t, models.AIDetectionStatusUnknown, byID[id]["ai_detection_status"])
+	}
+}

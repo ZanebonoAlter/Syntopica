@@ -137,6 +137,11 @@ export interface UseLaneComposeOptions {
   requestConfirm: (request: LaneComposeConfirmRequest) => Promise<boolean>
   /** 保存成功回调（宿主负责 emit saved / close）。 */
   onSaved?: (topic?: ManualTopicResult) => void | Promise<void>
+  /**
+   * 新建泳道时的辅助标签约束草稿（topic-lane-auxiliary-label-constraint）。
+   * 返回当前草稿行集；保存时随建话题一并提交（后端同事务写入）。
+   */
+  draftConstraints?: () => Array<{ term: string, mode: 'required' | 'preferred' }>
 }
 
 /**
@@ -811,7 +816,11 @@ export function useLaneCompose(opts: UseLaneComposeOptions) {
     saving.value = true
     error.value = null
     try {
-      const res = await createManualLane(opts.boardId.value, label, [...selectedIds.value])
+      // 无约束时保持 3 参数调用形态（与引入约束前逐字一致）；有约束才带第 4 个参数。
+      const draftConstraints = opts.draftConstraints?.() ?? []
+      const res = draftConstraints.length > 0
+        ? await createManualLane(opts.boardId.value, label, [...selectedIds.value], draftConstraints)
+        : await createManualLane(opts.boardId.value, label, [...selectedIds.value])
       if (!res.success) {
         error.value = res.error || '保存失败'
         return false

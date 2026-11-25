@@ -32,6 +32,10 @@
 | `firecrawl_error` | TEXT | — | Firecrawl 抓取错误信息 |
 | `firecrawl_content` | TEXT | — | Firecrawl 抓取的完整网页内容（Markdown） |
 | `firecrawl_crawled_at` | TIMESTAMP | — | Firecrawl 抓取时间 |
+| `ai_detection_status` | VARCHAR(20) | NOT NULL DEFAULT 'unknown'（迁移 `20261120_0001`） | 疑似 AI 判定状态：`unknown`（未判定，存量与判定失败都停在这里）/ `suspect`（疑似 AI 生成）/ `not_ai`（已确认非 AI）。空串读时归一为 `unknown`（`models.NormalizeAIDetectionStatus`）；**只有判定阈值达标才写 `suspect`**，人工标记来源另记 `ai_detection_source` |
+| `ai_detection_score` | DOUBLE PRECISION | NOT NULL DEFAULT 0 | 疑似 AI 置信分 0-1（未判定 0；人工标记写界值——标记 `1`、取消/确认非 AI `0`） |
+| `ai_detection_source` | VARCHAR(20) | NOT NULL DEFAULT '' | 判定来源：`llm`（自动判定）/ `manual`（人工标记）/ `''`（未判定）。人工结论优先：判定作业执行前会跳过已有 `manual` 结论的文章（显式重判除外） |
+| `ai_detection_at` | TIMESTAMPTZ | NULL | 判定时间（人工标记与自动判定都写） |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 
 **全文检索（tsvector 路径已彻底退场，2026-10-13）**：`search_vector` 列（tsvector）与触发器/旧 GIN 索引自迁移 `20260417_0002` 引入，但业务零引用且 `simple` 分词器对中文失效（实测漏 97%）——索引与触发器先于 2026-08-20 删除，列随迁移 `20261013_0002` DROP（add-article-search；列数据可由 title/description 重算，可再生；归档 cleanup 置 NULL 的行为已同步移除）。
@@ -70,6 +74,7 @@
 | `max_completion_retries` | INTEGER | DEFAULT 3 | AI 总结最大重试次数 |
 | `firecrawl_enabled` | BOOLEAN | DEFAULT false | 是否启用 Firecrawl 抓取 |
 | `tagging_enabled` | BOOLEAN | DEFAULT true | 是否启用自动打标签 |
+| `ai_detection_enabled` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261120_0001`） | 订阅源级「AI 生成检测」开关：只有 `true` 时该源文章才在内容就绪（全文抓取成功 / 抓取终态失败降级 / 未开抓取时入库）时入 `detection_jobs` 判定队列；与 `tagging_enabled` 互不联动，存量行默认为关 |
 
 > ⚠️ 旧文档曾列 `ai_summary_enabled`（DEFAULT true）：**代码无此字段**。实际是 `article_summary_enabled`（DEFAULT false），两者曾被混淆，请勿再引用 `ai_summary_enabled`。
 

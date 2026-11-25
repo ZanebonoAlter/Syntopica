@@ -56,6 +56,12 @@ type PersistentTopicConfig struct {
 	IntraBucketEnabled    bool // daily_report_intra_bucket_enabled: global kill switch (default on)
 	IntraBucketMinThreads int  // daily_report_intra_bucket_min_threads: OR-threshold on the day's thread count
 	IntraBucketMinTags    int  // daily_report_intra_bucket_min_tags: OR-threshold on the cluster's tag count
+	// Auxiliary-label constraint defaults (topic-lane-auxiliary-label-constraint
+	// design D4): the per-constraint margin / max_distance columns are nullable
+	// overrides — empty means "take these globals", so tuning the globals takes
+	// effect on every existing constraint (same 口径 as the lane thresholds).
+	ConstraintMarginDefault      float64 // persistent_topic_constraint_margin_default: relative-preference strictness
+	ConstraintMaxDistanceDefault float64 // persistent_topic_constraint_max_distance_default: absolute ceiling
 }
 
 // DefaultPersistentTopicConfig returns the seed defaults; used when ai_settings
@@ -97,6 +103,14 @@ func DefaultPersistentTopicConfig() PersistentTopicConfig {
 		IntraBucketEnabled:    true,
 		IntraBucketMinThreads: 6,
 		IntraBucketMinTags:    10,
+		// Auxiliary-label constraint defaults. margin=0.05 is the local-space
+		// calibration from design D4: it lets 64.4% of the double-sided positives
+		// through with 0% false admits on both one-sided negative sets, while
+		// margin=0.10 drops the pass rate to 25.2%. max_distance=0.55 drops tags
+		// too far from the anchor for relative preference to mean anything
+		// (measured p50 of pure-Israel tags to the Lebanon anchor: 0.593).
+		ConstraintMarginDefault:      0.05,
+		ConstraintMaxDistanceDefault: 0.55,
 	}
 }
 
@@ -182,6 +196,8 @@ func LoadPersistentTopicConfig(db *gorm.DB) PersistentTopicConfig {
 		"daily_report_intra_bucket_enabled",
 		"daily_report_intra_bucket_min_threads",
 		"daily_report_intra_bucket_min_tags",
+		"persistent_topic_constraint_margin_default",
+		"persistent_topic_constraint_max_distance_default",
 	}
 	var rows []models.AISettings
 	if err := db.Where("key IN ?", keys).Find(&rows).Error; err != nil {
@@ -278,6 +294,18 @@ func LoadPersistentTopicConfig(db *gorm.DB) PersistentTopicConfig {
 				cfg.IntraBucketMinTags = v
 			} else {
 				logging.Warnf("daily-report: invalid intra bucket min tags %q; using default %d", r.Value, cfg.IntraBucketMinTags)
+			}
+		case "persistent_topic_constraint_margin_default":
+			if v, err := strconv.ParseFloat(r.Value, 64); err == nil && v >= 0 && v <= 1 {
+				cfg.ConstraintMarginDefault = v
+			} else {
+				logging.Warnf("persistent-topic: invalid constraint margin default %q; using default %v", r.Value, cfg.ConstraintMarginDefault)
+			}
+		case "persistent_topic_constraint_max_distance_default":
+			if v, err := strconv.ParseFloat(r.Value, 64); err == nil && v >= 0 && v <= 1 {
+				cfg.ConstraintMaxDistanceDefault = v
+			} else {
+				logging.Warnf("persistent-topic: invalid constraint max distance default %q; using default %v", r.Value, cfg.ConstraintMaxDistanceDefault)
 			}
 		}
 	}

@@ -89,6 +89,8 @@ func RunAutoMigrate(db *gorm.DB) error {
 		// improve-discovery-recommendations: 候选可用性状态（design D7）
 		&models.FirecrawlJob{},
 		&models.TagJob{},
+		// add-ai-generated-article-detection：疑似 AI 生成判定作业队列（独立于打标队列）
+		&models.DetectionJob{},
 		// add-notification-center：通知信箱（白名单=日报终态，写入路径内 500 条上限淘汰）
 		&models.Notification{},
 	}

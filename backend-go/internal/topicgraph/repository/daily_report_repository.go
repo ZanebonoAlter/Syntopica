@@ -460,6 +460,10 @@ func (r *TopicGraphRepository) GetReportByID(id uint) (*BoardDailyReport, error)
 	// 「同一篇稿出现两次」。折叠只作用于响应投影，落库值仍是 tag_ids 对应文章
 	// 的并集（红线 45）。
 	report.Sections = r.foldSectionArticleCopies(report.Sections)
+	// 线索文章的判定字段投影（add-ai-generated-article-detection 4.6）：展开线索文章
+	// 时前端要呈现「疑似 AI 生成」标记。投影只读、只补字段，成员与顺序跟
+	// related_article_ids 一致（红线 45）。
+	r.attachThreadArticleProjections(report.Sections)
 	// Same contract for highlights: rows written before the array contract
 	// (2026-11-03 and earlier) hold a JSON null scalar or SQL NULL, which the
 	// frontend reads as "no content" and hides the whole "今日重点" block.
@@ -492,8 +496,69 @@ func (r *TopicGraphRepository) foldSectionArticleCopies(sections []DailyReportSe
 	return sections
 }
 
-// loadArticleLinksByID 批量取文章的 link（折叠键的来源）。
+// attachThreadArticleProjections 给每条线索挂上「文章标题 + 疑似 AI 判定字段」的
+// 读路径投影（add-ai-generated-article-detection 4.6）。
 //
+// 投影严格跟随 related_article_ids：顺序一致、不增删成员（daily-report 红线 45，
+// 「N 篇」计数仍是 related_article_ids 的长度）；库里查不到的越界 id 仍保留投影项
+// （标题空、判定 unknown），不静默丢掉成员。
+//
+// 一次批量查询；失败降级为不挂投影（详情接口照常返回）——判定标记是展示增强，
+// 无权让日报详情失败。
+func (r *TopicGraphRepository) attachThreadArticleProjections(sections []DailyReportSection) {
+	articleIDs := collectThreadArticleIDs(sections)
+	if len(articleIDs) == 0 {
+		return
+	}
+
+	type detectionRow struct {
+		ID                uint    `gorm:"column:id"`
+		Title             string  `gorm:"column:title"`
+		AIDetectionStatus string  `gorm:"column:ai_detection_status"`
+		AIDetectionScore  float64 `gorm:"column:ai_detection_score"`
+	}
+	var rows []detectionRow
+	if err := r.db.Model(&models.Article{}).
+		Select("id, title, ai_detection_status, ai_detection_score").
+		Where("id IN ?", articleIDs).
+		Find(&rows).Error; err != nil {
+		logging.Warnf("GetReportByID: load thread article detection fields failed: %v", err)
+		return
+	}
+	byID := make(map[uint]ThreadArticleRef, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = ThreadArticleRef{
+			ID:                row.ID,
+			Title:             row.Title,
+			AIDetectionStatus: models.NormalizeAIDetectionStatus(row.AIDetectionStatus),
+			AIDetectionScore:  row.AIDetectionScore,
+		}
+	}
+
+	for si := range sections {
+		for ti := range sections[si].Threads {
+			thread := &sections[si].Threads[ti]
+			ids, ok := decodeArticleIDArray(thread.RelatedArticleIDs)
+			if !ok || len(ids) == 0 {
+				continue
+			}
+			articles := make([]ThreadArticleRef, 0, len(ids))
+			for _, id := range ids {
+				if ref, found := byID[id]; found {
+					articles = append(articles, ref)
+					continue
+				}
+				articles = append(articles, ThreadArticleRef{
+					ID:                id,
+					AIDetectionStatus: models.AIDetectionStatusUnknown,
+				})
+			}
+			thread.Articles = articles
+		}
+	}
+}
+
+// loadArticleLinksByID 批量取文章的 link（折叠键的来源）。
 // 按 ID 反查豁免 archived 过滤（红线 10）：归档只是 feed 活跃窗口轮转，不是
 // 撤回——日报线索引用的文章必须永久可读。
 func loadArticleLinksByID(db *gorm.DB, articleIDs []uint) (map[uint]string, error) {

@@ -14,7 +14,13 @@ import (
 	"syntopica-backend/internal/topicgraph/repository"
 )
 
-func populateThreadArticles(threads []repository.Thread, tagArticleMap map[uint][]uint) {
+// populateThreadArticles 把标签对应的文章并集填入线索的 related_article_ids。
+//
+// 疑似 AI 文章只做**稳定分区**（design D8）：非疑似文章保持既有相对顺序在前，
+// 疑似文章稳定排至末尾。成员与条数不变——related_article_ids 必须仍是 tag_ids
+// 对应文章的并集，不被任何身份/去重逻辑改写（daily-report 红线 45），线索的
+// 「N 篇」计数也不受影响。
+func populateThreadArticles(threads []repository.Thread, tagArticleMap map[uint][]uint, suspectArticleIDs map[uint]bool) {
 	for i := range threads {
 		seen := make(map[uint]bool)
 		var articleIDs []uint
@@ -26,9 +32,30 @@ func populateThreadArticles(threads []repository.Thread, tagArticleMap map[uint]
 				}
 			}
 		}
-		threads[i].RelatedArticleIDs = articleIDs
+		threads[i].RelatedArticleIDs = stablePartitionSuspectLast(articleIDs, suspectArticleIDs)
 	}
 }
+
+// stablePartitionSuspectLast 把疑似 AI 文章稳定地挪到末尾：非疑似文章之间的既有
+// 相对顺序、疑似文章之间的相对顺序都保持不变，且不增删任何成员。
+func stablePartitionSuspectLast(articleIDs []uint, suspectArticleIDs map[uint]bool) []uint {
+	if len(articleIDs) < 2 || len(suspectArticleIDs) == 0 {
+		return articleIDs
+	}
+	ordered := make([]uint, 0, len(articleIDs))
+	for _, id := range articleIDs {
+		if !suspectArticleIDs[id] {
+			ordered = append(ordered, id)
+		}
+	}
+	for _, id := range articleIDs {
+		if suspectArticleIDs[id] {
+			ordered = append(ordered, id)
+		}
+	}
+	return ordered
+}
+
 func parsePgVector(s string) ([]float64, error) {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "[")

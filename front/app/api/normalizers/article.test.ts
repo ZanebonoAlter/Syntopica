@@ -44,4 +44,28 @@ describe('normalizeArticle', () => {
     expect(article.firecrawlContent).toBe('<p>抓取正文</p>')
     expect(article.excerpt).toBe('')
   })
+
+  it('判定字段映射：snake_case → camelCase，非枚举值/缺省收敛为未判定', () => {
+    const article = normalizeArticle(payload({
+      ai_detection_status: 'suspect',
+      ai_detection_score: 0.82,
+      ai_detection_source: 'manual',
+      ai_detection_at: '2026-11-20T08:00:00Z',
+    }))
+
+    expect(article.aiDetectionStatus).toBe('suspect')
+    expect(article.aiDetectionScore).toBe(0.82)
+    expect(article.aiDetectionSource).toBe('manual')
+    expect(article.aiDetectionAt).toBe('2026-11-20T08:00:00Z')
+
+    // 非法枚举值不得当判定态用（界面一律不显示标记）
+    expect(normalizeArticle(payload({ ai_detection_status: 'weird' })).aiDetectionStatus).toBeUndefined()
+    expect(normalizeArticle(payload({ ai_detection_source: 'robot' })).aiDetectionSource).toBeUndefined()
+
+    const missing = normalizeArticle(payload())
+    expect(missing.aiDetectionStatus).toBeUndefined()
+    expect(missing.aiDetectionScore).toBeUndefined()
+    expect(missing.aiDetectionSource).toBeUndefined()
+    expect(missing.aiDetectionAt).toBeUndefined()
+  })
 })

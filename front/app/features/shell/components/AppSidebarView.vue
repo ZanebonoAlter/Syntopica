@@ -155,7 +155,7 @@ const navigateTo = useNuxtApp().$router ? (path: string) => useNuxtApp().$router
   <aside class="app-sidebar" :style="sidebarCollapsed ? 'width: 48px' : `width: ${sidebarWidth}px`">
     <div v-if="!sidebarCollapsed" class="resize-handle" :class="{ active: isResizing }" @mousedown="startResizing" />
 
-    <div class="sidebar-content">
+    <div class="sidebar-content scroll-thin">
       <button class="sidebar-item" :class="{ active: !selectedCategory && !selectedFeed }" @click="handleAllArticlesClick">
         <Icon icon="mdi:inbox" width="20" height="20" />
         <span v-if="!sidebarCollapsed" class="flex-1 text-left font-medium">全部文章</span>

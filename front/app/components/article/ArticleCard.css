@@ -18,7 +18,10 @@
 }
 
 /* v5 封面槽：68×68 圆角；image_url 为空或加载失败 → feed 图标占位，行高不变 */
+/* v5 封面槽：68×68 圆角；image_url 为空或加载失败 → feed 图标占位，行高不变。
+   position: relative 是疑似 AI 角标的定位基准（修订 C）。 */
 .article-row .row-cover {
+  position: relative;
   flex: 0 0 68px;
   width: 68px;
   height: 68px;
@@ -55,6 +58,12 @@
 
 .article-row .row-main {
   flex: 1;
+  min-width: 0;
+}
+
+/* 标题行：h3 自身是两行 clamp 盒（overflow:hidden）。疑似 AI 角标已移到封面（修订 C），
+   既不在 clamp 盒里，也不参与标题行的宽度分配。 */
+.article-row .row-heading {
   min-width: 0;
 }
 
@@ -335,6 +344,30 @@
   border: 1px solid var(--color-border-medium);
   border-radius: 4px;
   color: var(--color-text-muted);
+}
+
+/* 疑似 AI 生成角标（add-ai-generated-article-detection，2026-11-25 修订 C）：
+   压在封面右上角——不进 .row-title 的 clamp 盒（R-5 会被整块裁掉），也不占 .row-meta 的
+   flex 宽度（R-13 后实测 meta 内容宽恒 165px：时间 49 + 状态图标 19 + 全称角标 77 + gap 24
+   = 169 → 角标被 overflow:hidden 裁掉 4px，来源名同时被压到 0 宽）。
+   短标「AI」+ --color-bg-elevated 实底：踩在缩略图上必须有实底才能读，全称走 title/aria-label。
+   中性色不占警示色与规则色语义（结论是「疑似」不是「出错」）。 */
+.article-row .suspect-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 4px;
+  background: var(--color-bg-elevated);
+  /* 踩在缩略图上：淡底 + 细投影把它从任何图片里分出来（否则浅色图会把白底兑掉） */
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16);
+  color: var(--color-text-secondary);
 }
 
 /* 归档行降饱和：仅封面图与标题/meta 文字色，不碰浮层（见上方注释） */

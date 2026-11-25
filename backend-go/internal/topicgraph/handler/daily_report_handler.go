@@ -1589,9 +1589,13 @@ func timeoutCtx(d time.Duration) (context.Context, context.CancelFunc) {
 }
 
 // createManualTopic handles POST /api/semantic-boards/:id/persistent-topics/manual.
-// Body: {"label": "...", "section_ids": [1,2,3]}
+// Body: {"label": "...", "section_ids": [1,2,3], "constraints": [{"term":"以色列","mode":"required"}]}
 // Creates a new persistent topic with source=manual from the selected sections'
 // mean embedding, then reassigns those sections to the new topic.
+//
+// `constraints` 可选（topic-lane-auxiliary-label-constraint）：提供时与建话题**同事务**
+// 写入（锚向量在开事务前算好）；任一约束非法或锚算不出 → 整个建话题拒绝，
+// SHALL NOT 留下「有泳道、无约束」的半成品。
 func createManualTopic(c *gin.Context) {
 	boardID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -1600,8 +1604,9 @@ func createManualTopic(c *gin.Context) {
 	}
 
 	var req struct {
-		Label      string `json:"label"`
-		SectionIDs []uint `json:"section_ids"`
+		Label       string                          `json:"label"`
+		SectionIDs  []uint                          `json:"section_ids"`
+		Constraints []service.LaneConstraintRequest `json:"constraints"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid body"})
@@ -1612,7 +1617,20 @@ func createManualTopic(c *gin.Context) {
 		return
 	}
 
-	topic, skipped, err := repository.Repo.CreateManualTopic(uint(boardID), req.Label, req.SectionIDs)
+	// 锚向量必须在开事务前算完（embedding 是网络调用，不能进 DB 事务）。
+	constraints, err := service.PrepareManualLaneConstraints(c.Request.Context(), req.Constraints)
+	if err != nil {
+		var badRequest *service.LaneConstraintValidationError
+		if errors.As(err, &badRequest) {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": badRequest.Error()})
+			return
+		}
+		logging.Errorf("prepare manual lane constraints: board=%d label=%q: %v", boardID, req.Label, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "failed to compute constraint anchors"})
+		return
+	}
+
+	topic, skipped, err := repository.Repo.CreateManualTopicWithConstraints(uint(boardID), req.Label, req.SectionIDs, constraints)
 	if err != nil {
 		logging.Errorf("create manual topic: board=%d label=%q: %v", boardID, req.Label, err)
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})

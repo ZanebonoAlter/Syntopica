@@ -85,7 +85,7 @@ watch(
       <span class="bns-strip-kicker">日期轴 · 与矩阵列头同源</span>
       <span v-if="stripHint" class="bns-strip-hint" data-testid="narrow-day-strip-hint">{{ stripHint }}</span>
     </div>
-    <div ref="stripTrack" class="bns-strip-track" data-testid="narrow-day-strip-track" aria-label="报日日期条">
+    <div ref="stripTrack" class="bns-strip-track scroll-thin" data-testid="narrow-day-strip-track" aria-label="报日日期条">
       <template v-for="date in axis" :key="date">
         <button
           v-if="hasReport(date)"
@@ -156,7 +156,6 @@ watch(
   gap: 0.25rem;
   overflow-x: auto;
   padding: 0.15rem 0 0.35rem;
-  scrollbar-width: thin;
   -webkit-overflow-scrolling: touch;
   min-width: 0;
 }

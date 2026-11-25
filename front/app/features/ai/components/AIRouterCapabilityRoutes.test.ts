@@ -237,9 +237,9 @@ describe('AIRouterCapabilityRoutes 行式泳道（U7，tasks 8.3）', () => {
     expect(cards[0]!.find('.swim-card__badge--override').exists()).toBe(false)
   })
 
-  it('泳道行头供血说明：八条能力均渲染非空说明小字；文案与真实供血一致', async () => {
+  it('泳道行头供血说明：九条能力均渲染非空说明小字；文案与真实供血一致', async () => {
     const wrapper = await mountRoutes()
-    for (const cap of ['summary', 'topic_tagging', 'digest_polish', 'embedding', 'open_notebook', 'feed_discovery', 'data_enrichment_news', 'data_enrichment_analysis']) {
+    for (const cap of ['summary', 'topic_tagging', 'digest_polish', 'embedding', 'open_notebook', 'feed_discovery', 'data_enrichment_news', 'data_enrichment_analysis', 'ai_detection']) {
       const desc = section(wrapper, cap).find('.swimlane__desc')
       expect(desc.exists(), `${cap} 缺供血说明行`).toBe(true)
       expect(desc.text().trim()).not.toBe('')
@@ -248,6 +248,11 @@ describe('AIRouterCapabilityRoutes 行式泳道（U7，tasks 8.3）', () => {
     expect(section(wrapper, 'data_enrichment_news').find('.swimlane__desc').text()).toContain('归档')
     expect(section(wrapper, 'data_enrichment_news').find('.swimlane__desc').text()).not.toContain('日报')
     expect(section(wrapper, 'digest_polish').find('.swimlane__desc').text()).toContain('14')
+    // ai_detection 指向文章级判定，不得暗示日报或标签提取
+    const detectionDesc = section(wrapper, 'ai_detection').find('.swimlane__desc').text()
+    expect(detectionDesc).toContain('疑似')
+    expect(detectionDesc).not.toContain('日报')
+    expect(detectionDesc).not.toContain('标签')
   })
 
   it('模型池横条：usable 模型按 vendor 分组渲染；停用模型不出现；行内计数正确', async () => {
@@ -295,7 +300,7 @@ describe('AIRouterCapabilityRoutes 行式泳道（U7，tasks 8.3）', () => {
     const menu = document.body.querySelector('.cap-picker')
     expect(menu).toBeTruthy()
     const items = [...menu!.querySelectorAll('.cap-picker__item')]
-    expect(items).toHaveLength(8)
+    expect(items).toHaveLength(9)
 
     // embedding 行对 llm 卡置灰（仅 embedding）
     const embItem = items.find(el => el.textContent?.includes('向量嵌入'))!
@@ -390,8 +395,8 @@ describe('AIRouterCapabilityRoutes 行式泳道（U7，tasks 8.3）', () => {
     await saveButton(wrapper).trigger('click')
     await flushAsync()
 
-    // 逐能力全量 PUT（含 fixture 中无路由的 5 行空链 → bindings:[]）
-    expect(ctx.routesCtx.saveRoute).toHaveBeenCalledTimes(8)
+    // 逐能力全量 PUT（含 fixture 中无路由的 6 行空链 → bindings:[]；ai_detection 亦在白名单内）
+    expect(ctx.routesCtx.saveRoute).toHaveBeenCalledTimes(9)
     expect(ctx.routesCtx.saveRoute).toHaveBeenCalledWith('digest_polish', { bindings: [] })
     expect(ctx.routesCtx.saveRoute).toHaveBeenCalledWith('summary', {
       bindings: [

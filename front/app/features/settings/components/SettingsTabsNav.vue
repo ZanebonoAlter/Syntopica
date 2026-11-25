@@ -16,7 +16,7 @@ const emit = defineEmits<{
 
 <template>
   <div class="settings-tabs-nav">
-    <div class="settings-tabs-nav__track" role="tablist">
+    <div class="settings-tabs-nav__track scroll-thin" role="tablist">
       <button
         v-for="tab in tabs"
         :key="tab.key"
@@ -49,7 +49,6 @@ const emit = defineEmits<{
   gap: 4px;
   overflow-x: auto;
   white-space: nowrap;
-  scrollbar-width: thin;
 }
 
 .settings-tabs-nav__tab {

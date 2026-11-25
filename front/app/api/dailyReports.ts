@@ -504,6 +504,47 @@ export interface DailyReportGaps {
   last_run?: DailyReportBackfillRunSummary
 }
 
+/**
+ * 话题的辅助标签约束（topic-lane-auxiliary-label-constraint）。
+ *
+ * 语义：`required` 约束全部被覆盖才允许该话题锚定内容；`preferred` 只作 L2 提示不拦截。
+ * **不返回锚向量**（后端只回元信息）。
+ * `margin` / `maxDistance` 为 `null` = 取 `ai_settings` 全局默认，前端不展示。
+ */
+export interface TopicLaneConstraint {
+  id: number
+  topicId: number
+  term: string
+  mode: 'required' | 'preferred'
+  margin: number | null
+  maxDistance: number | null
+  embeddingModel: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** PUT 的全量覆盖载荷（省略某条 = 删除该条）。 */
+export interface TopicLaneConstraintInput {
+  term: string
+  mode: 'required' | 'preferred'
+  margin?: number | null
+  maxDistance?: number | null
+}
+
+function normalizeLaneConstraint(payload: TopicLaneConstraint): TopicLaneConstraint {
+  return {
+    id: payload.id,
+    topicId: payload.topicId,
+    term: payload.term,
+    mode: payload.mode === 'preferred' ? 'preferred' : 'required',
+    margin: payload.margin ?? null,
+    maxDistance: payload.maxDistance ?? null,
+    embeddingModel: payload.embeddingModel ?? '',
+    createdAt: payload.createdAt ?? '',
+    updatedAt: payload.updatedAt ?? '',
+  }
+}
+
 /** 补填受理响应（POST /daily-reports/backfill-gaps）：受理即返回，异步执行。 */
 export interface DailyReportBackfillAccepted {
   job_id: string
@@ -682,6 +723,42 @@ export function useDailyReportsApi() {
   }
 
   /**
+   * 读取话题的辅助标签约束（只读；响应不包含锚向量）。
+   */
+  async function getTopicLaneConstraints(topicId: number): Promise<ApiResponse<{ constraints: TopicLaneConstraint[] }>> {
+    const res = await apiClient.get<{ constraints: TopicLaneConstraint[] }>(
+      `/daily-reports/topics/${topicId}/constraints`,
+    )
+    const rows = res.data?.constraints ?? []
+    return { ...res, data: { constraints: rows.map(normalizeLaneConstraint) } }
+  }
+
+  /**
+   * 全量覆盖话题的辅助标签约束（幂等）。
+   *
+   * 删除 = 在某次提交中省略该条；新增 = 提交一个此前不存在的 `term`——后端会计算锚向量，
+   * 计算失败时整体不落库（前端保留用户输入并允许重试）。
+   */
+  async function putTopicLaneConstraints(
+    topicId: number,
+    constraints: TopicLaneConstraintInput[],
+  ): Promise<ApiResponse<{ constraints: TopicLaneConstraint[] }>> {
+    const res = await apiClient.put<{ constraints: TopicLaneConstraint[] }>(
+      `/daily-reports/topics/${topicId}/constraints`,
+      {
+        constraints: constraints.map(row => ({
+          term: row.term,
+          mode: row.mode,
+          margin: row.margin ?? null,
+          max_distance: row.maxDistance ?? null,
+        })),
+      },
+    )
+    const rows = res.data?.constraints ?? []
+    return { ...res, data: { constraints: rows.map(normalizeLaneConstraint) } }
+  }
+
+  /**
    * 改归属（双向，lane-manual-correction-loop）：把某个 section 归到目标话题。
    *
    * `topicId = null` = **解除归属**（该内容不再归属任何泳道；内容仍在，以后仍可再参与候选），
@@ -736,6 +813,8 @@ export function useDailyReportsApi() {
     updateTopic,
     updateTopicAnchor,
     getTopicAnchor,
+    getTopicLaneConstraints,
+    putTopicLaneConstraints,
     setSectionAssignment,
     detachTopicDate,
     deleteTopic,

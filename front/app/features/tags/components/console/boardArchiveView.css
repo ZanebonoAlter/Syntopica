@@ -86,27 +86,42 @@
   color: var(--color-text-muted);
 }
 
-/* 工具行（v11）：三段分组 + 右端动作组，竖分隔条退役 */
-.ar-toolbar {
+.ar-list-head,
+.ar-toolbar,
+.ar-toolbar-leading,
+.ar-active-filters,
+.ar-deck-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.45rem 0.85rem;
-  margin: var(--space-2) 0 var(--space-2);
+  gap: 8px clamp(8px, 1vw, 16px);
 }
-.ar-group {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.4rem;
+.ar-list-head,
+.ar-toolbar {
+  justify-content: space-between;
 }
-.ar-toolbar-tail {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  margin-left: auto;
+.ar-list-head {
+  margin-top: clamp(14px, 1.2vw, 22px);
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
 }
-.ar-presets,
+.ar-list-head h2 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.ar-toolbar {
+  margin: 8px 0 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-medium);
+}
+.ar-active-filters {
+  margin-bottom: 12px;
+}
+.ar-deck-meta .ar-deck-note {
+  margin-right: auto;
+}
 .ar-filters {
   display: inline-flex;
   flex-wrap: wrap;
@@ -135,41 +150,17 @@
   color: var(--color-bg-base);
 }
 
-/* 日期起止（产品档 AppInput） */
-.ar-date-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  color: var(--color-text-muted);
-  font-size: 0.74rem;
+/* 时间导航块（archive-time-chart-range）：日期表单 + 主图 + 全历史导航条 */
+.ar-time-nav {
+  margin-top: 10px;
+  min-width: 0;
 }
-.ar-date-field :deep(.app-input) {
-  padding: 0.2rem 0.4rem;
-  font-family: var(--font-mono, monospace);
-  font-size: 0.74rem;
-  color-scheme: light dark;
+.ar-time-nav .orc-feedback:empty { margin: 0; min-height: 0; }
+.ar-time-error {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
 }
-
-/* 组内排序段控 */
-.ar-seg {
-  display: inline-flex;
-  border: 1px solid var(--color-border-medium);
-  border-radius: 6px;
-  overflow: hidden;
-}
-.ar-seg-btn {
-  border: 0;
-  background: transparent;
-  padding: 0.2rem 0.7rem;
-  color: var(--color-text-muted);
-  font-size: 0.74rem;
-  cursor: pointer;
-}
-.ar-seg-btn.is-active {
-  background: var(--color-accent);
-  color: var(--color-bg-base);
-}
-
 /* 筛选 / 匹配流程入口 */
 .ar-gear {
   display: inline-flex;
@@ -184,23 +175,20 @@
   cursor: pointer;
 }
 .ar-gear:hover,
-.ar-gear.is-open {
+.ar-gear[aria-expanded="true"] {
   color: var(--color-accent);
   border-color: var(--color-accent);
 }
-.ar-dot {
-  display: inline-block;
-  width: 0.4rem;
-  height: 0.4rem;
-  border-radius: 50%;
-  background: var(--color-accent);
-}
 
-/* 筛选覆盖面表单 */
 .ar-filter-form {
   display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px clamp(12px, 1.4vw, 24px);
+  padding: 10px clamp(10px, 1.2vw, 16px);
+  margin-bottom: 12px;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 6px;
 }
 .ar-select {
   display: flex;
@@ -473,6 +461,21 @@
   font-weight: 700;
 }
 
+/* 疑似 AI 生成标记（add-ai-generated-article-detection）：标签带末尾的静态中性标记。
+   与规则色标签体系分离——不注入 --color-match-*、不参与「入板」步号、不可点击；
+   仅 suspect 渲染，未判定与已确认非 AI 不占位。 */
+.ar-suspect-chip {
+  display: inline-flex;
+  align-items: baseline;
+  padding: 0.04rem 0.4rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
 /* 最强匹配列 */
 .ar-row-strongest {
   display: flex;
@@ -520,8 +523,17 @@
   .ar-deck-bar {
     width: 4.5rem;
   }
-  .ar-toolbar-tail {
-    margin-left: 0;
+  .ar-toolbar .ar-gear,
+  .ar-toolbar .ar-chip,
+  .ar-select select {
+    min-height: 2rem;
+  }
+  .ar-filter-form .ar-select {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+  .ar-filter-form select {
+    min-width: 0;
   }
   .ar-row {
     grid-template-columns: minmax(0, 1fr) 5rem;

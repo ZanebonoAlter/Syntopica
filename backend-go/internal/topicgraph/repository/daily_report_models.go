@@ -284,7 +284,12 @@ type DailyReportThread struct {
 	TagIDs            JSON    `gorm:"type:jsonb" json:"tag_ids"`
 	Confidence        float64 `gorm:"default:0" json:"confidence"`
 	RelatedArticleIDs JSON    `gorm:"type:jsonb" json:"related_article_ids,omitempty"`
-	Embedding         string  `gorm:"type:vector" json:"-"`
+	// Articles 是 related_article_ids 的读路径投影（add-ai-generated-article-
+	// detection 4.6）：带上每篇线索文章的标题与判定字段，供展开线索文章时直接
+	// 呈现「疑似 AI 生成」标记。只在详情接口装配、不落库；投影成员与顺序跟
+	// related_article_ids 完全一致，不增删成员（红线 45），条数即「N 篇」口径。
+	Articles  []ThreadArticleRef `gorm:"-" json:"articles,omitempty"`
+	Embedding string             `gorm:"type:vector" json:"-"`
 	// FitDistance is a pointer so that nil ("no signal" — embed failure or
 	// owning section without an embedding) is distinguishable from a real 0.0
 	// ("perfect fit" — thread title embedding identical to its section's).
@@ -327,6 +332,15 @@ type DailyReportThread struct {
 
 func (DailyReportThread) TableName() string {
 	return "daily_report_threads"
+}
+
+// ThreadArticleRef 是日报线索文章的读路径投影项（4.6）：只带列表行需要的
+// id / 标题 / 判定字段，不携带任何正文类内容。
+type ThreadArticleRef struct {
+	ID                uint    `json:"id"`
+	Title             string  `json:"title"`
+	AIDetectionStatus string  `json:"ai_detection_status"`
+	AIDetectionScore  float64 `json:"ai_detection_score"`
 }
 
 // Thread display-tier values (specs/daily-report-system 跨期重复降级；CHECK
@@ -411,6 +425,10 @@ type TagInput struct {
 	Source       string  `json:"source"`
 	MatchReason  string  `json:"match_reason"`
 	Score        float64 `json:"score"`
+	// AISuspectRatio 是该标签名下当天文章里判定为「疑似 AI 生成」的比例（0-1）。
+	// 只参与名额竞争截断排序的末位因子（design D9）：占比高者靠后，不改变候选
+	// 成员集合、标签去重与泳道分桶。
+	AISuspectRatio float64 `json:"ai_suspect_ratio,omitempty"`
 	// ArticleContext carries representative article titles + summaries for the LLM prompt so
 	// highlights/threads are grounded in actual event content, not just tag names. Populated in
 	// collectBoardTags from up to 3 representative articles per tag.
@@ -695,3 +713,53 @@ type TopicLaneSnapshot struct {
 }
 
 func (TopicLaneSnapshot) TableName() string { return "topic_lane_snapshots" }
+
+// ── 辅助标签约束（topic-lane-auxiliary-label-constraint）──────────────────────
+
+// Lane constraint modes (spec topic-lane-constraint「约束表的列约束与索引」：
+// mode SHALL 受 CHECK 约束为 required/preferred 二态，默认 required).
+const (
+	LaneConstraintModeRequired  = "required"
+	LaneConstraintModePreferred = "preferred"
+)
+
+// LaneConstraintTermMaxLen is the term length ceiling (spec「约束锚向量计算与
+// 向量空间标识」：短词 SHALL 受长度上限约束（100 字符）).
+const LaneConstraintTermMaxLen = 100
+
+// TopicLaneConstraint is one auxiliary-label constraint bound to a persistent
+// topic — the admission gate that stops a wide topic from being colonised by
+// one-sided content.
+//
+// 约束以**向量**承载（Term + TermEmbedding + EmbeddingModel），不存 tag id 集合：
+// 标签边按 tag_edge_retention_days（默认 7 天）回收、孤立标签随之清理，基于 tag
+// id 的约束会在 7 天后自行失效，向量则与 GC 无关（design D1）。
+//
+// Margin / MaxDistance 是**可空的覆写**：为空即取 ai_settings 的全局默认
+// （persistent_topic_constraint_margin_default / ..._max_distance_default），
+// 非空即该约束的显式覆写（design D4）。空值语义让改全局默认对存量约束生效。
+//
+// The table is created by explicit migration 20261124_0001 (建表不依赖 gorm
+// AutoMigrate), so this model is deliberately NOT registered for AutoMigrate —
+// the CHECK constraints, the (topic_id, term) unique index and the ON DELETE
+// CASCADE foreign key all live in the migration.
+type TopicLaneConstraint struct {
+	ID      uint   `gorm:"primarykey" json:"id"`
+	TopicID uint   `gorm:"not null;index:idx_board_persistent_topic_constraints_topic" json:"topic_id"`
+	Term    string `gorm:"size:100;not null" json:"term"`
+	// TermEmbedding is the anchor vector of Term. Never exposed through the API
+	// (spec「读取约束列表」：SHALL NOT 返回 term_embedding 原始向量).
+	TermEmbedding string `gorm:"type:vector" json:"-"`
+	// EmbeddingModel is the vector space of TermEmbedding. Judgement SKIPS tags
+	// whose model differs (design D7：跨空间 tag 既不判满足也不判违反).
+	EmbeddingModel string    `gorm:"size:100;not null" json:"embedding_model"`
+	Mode           string    `gorm:"size:16;not null;default:required" json:"mode"`
+	Margin         *float64  `gorm:"type:numeric" json:"margin"`
+	MaxDistance    *float64  `gorm:"type:numeric" json:"max_distance"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (TopicLaneConstraint) TableName() string {
+	return "board_persistent_topic_constraints"
+}

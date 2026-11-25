@@ -2,7 +2,7 @@
 /**
  * 观察矩阵（rework-workshop-into-radar-and-desk 矩阵阶段 G3，矩阵阶段批准版面）。
  *
- * 本组件 = 头部说明（口径说明/数据截止/查看所选日）+ 状态分层
+ * 本组件 = 头部（单条三态图例 / 跨档窗提示 / 日报截至 / 查看所选日）+ 状态分层
  * （loading 骨架 / 首次错误 / 刷新失败 stale / 无日报 / 有日报无泳道）+ 网格挂载
  * （`ObservationMatrixGrid`：行×日格、休眠折叠、日格三态；格值 = 当日线索合计，
  *  色深 = 该值在本行可见窗内的归一连续深浅（冗余强化通道，数值 + title/aria 仍承载全部信息），
@@ -38,7 +38,7 @@ const props = defineProps<{
   selectedLaneId: string | null
   selectedDate: string | null
   today: string
-  /** source 档天数（footnote「名单/排序/休眠按 N 日档」）。 */
+  /** source 档天数（可见轴跨出档窗时提示「历史仅补数据，泳道名单不变」）。 */
   sourceDays: number
   /** 数据锚点（YYYY-MM-DD）：档窗起点派生 + 早于今天时提示数据截止。 */
   anchorDate: string | null
@@ -104,12 +104,10 @@ const showError = computed(
   <section class="omx" data-testid="board-matrix">
     <div class="omx-head">
       <span class="omx-kicker">泳道 × 日期</span>
-      <span class="omx-hint" data-testid="matrix-legend">数字 = 当日线索合计（该泳道当天各主题桶的非综合稿线索数之和）· '—' 无分区 · '?' 未取到</span>
-      <span class="omx-note" data-testid="matrix-tier-note">
-        名单/排序/休眠按 {{ sourceDays }} 日档<span v-if="usesPoolHistory"> · 历史由 365 日池补充（不改名单）</span>
-      </span>
+      <span class="omx-hint" data-testid="matrix-legend">当日线索数（不含综合稿） · — 无分区 · ? 数据不可用</span>
+      <span v-if="usesPoolHistory" class="omx-note" data-testid="matrix-tier-note">历史仅补数据，泳道名单不变</span>
       <span v-if="dataAsOf && dataAsOf < today" class="omx-asof" data-testid="matrix-data-asof">
-        数据截止 {{ dataAsOf }}（之后没有新日报）
+        日报截至 {{ dataAsOf }}
       </span>
       <button
         v-if="selectedDate"
@@ -120,12 +118,6 @@ const showError = computed(
         @click="emit('gotoSelected')"
       >查看所选日 ↓</button>
     </div>
-
-    <!-- 常驻口径说明（fix-lane-metric-provenance）：数字 = 当日线索合计 / 综合稿不计入。
-         只读文本行，不是入口；复用 muted 小字样式，不做强调色、不可交互。 -->
-    <p class="omx-basis" data-testid="matrix-basis-note">
-      数字 = 当日线索合计（各主题桶非综合稿线索数之和；综合稿不计入，避免一条稿给多条泳道各灌热度）
-    </p>
 
     <!-- 刷新失败但保留旧数据：顶部提示条（状态矩阵 error 行） -->
     <div v-if="staleNotice && error" class="omx-stale" data-testid="matrix-stale-notice">
@@ -226,14 +218,6 @@ const showError = computed(
 .omx-hint.is-warn {
   color: var(--color-warning);
   opacity: 1;
-}
-
-/* 常驻口径说明行：muted 小字、不可交互（与图例同档，不用强调色）。 */
-.omx-basis {
-  margin: 0;
-  font-size: 0.7rem;
-  color: var(--color-text-muted);
-  opacity: 0.8;
 }
 
 .omx-note {

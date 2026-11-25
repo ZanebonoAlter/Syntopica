@@ -6,25 +6,44 @@
  * /articles/:id 不带来源名，不造）。展示总数始终 = articleIds.length——单项失败不改
  * 总数、不说「无文章」，失败项局部重试不阻塞其他条目；文章主点击 emit 给 G5 站内
  * 读原文（不加「先预览导语再点正文」中间层）。加载标题不标已读、不动 reading_behaviors。
+ *
+ * `showToggle=false`（key-event-day-focus-cards 日聚焦卡片）：调用方自带入口驱动
+ * 展开 → 本组件不渲染内部开关，列表随挂载展开、由调用方挂载/卸载开合（避免双开关）。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { LaneDayReadingStore } from '~/features/tags/composables/useLaneDayReading'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   reading: LaneDayReadingStore
   articleIds: string[]
   threadId: string
-}>()
+  /**
+   * 内部「相关文章 · N 篇」开关是否渲染（默认 `true` = 保留既有行为，既有消费方
+   * `LaneChronicleThread.vue` 零变化）。
+   *
+   * `false` = 调用方自带入口（key-event-day-focus-cards 的日聚焦卡片用「关联文章
+   * N 篇 ›」文字链）：本组件**不渲染内部开关**，列表在挂载期间恒展开，开合由调用方
+   * 挂载 / 卸载控制——避免双开关与两套文案（design D7）。
+   */
+  showToggle?: boolean
+}>(), { showToggle: true })
 
 const emit = defineEmits<{
   openArticle: [articleId: string]
 }>()
 
-const visible = ref(false)
+/** 列表是否展开：默认由内部开关控制；`showToggle=false` 时随挂载即展开。 */
+const visible = ref(props.showToggle === false)
 
 watch(() => props.threadId, () => {
-  visible.value = false
+  // 外部驱动模式（showToggle=false）不由 threadId 复位：开合权在调用方手里。
+  if (props.showToggle) visible.value = false
+})
+
+onMounted(() => {
+  // 外部驱动模式：列表随挂载展开 → 按需读文章元信息（同内部开关展开时的行为）。
+  if (visible.value) void props.reading.ensureRelatedArticles(props.articleIds)
 })
 
 /** 逐条目视图模型（同一局部变量侚 v-if 窄化，避免重复谓词调用）。 */
@@ -51,6 +70,7 @@ function shortDate(pubDate: string): string {
   <div v-if="articleIds.length === 0" class="lra-empty">相关文章列表为空</div>
   <div v-else class="lra" :data-testid="`lane-chronicle-related-${threadId}`">
     <button
+      v-if="showToggle"
       type="button" class="lra-toggle" :aria-expanded="visible"
       :data-testid="`lane-chronicle-related-toggle-${threadId}`" @click="toggle"
     >

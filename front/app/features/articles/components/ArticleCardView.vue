@@ -3,6 +3,7 @@ import { Icon } from '@iconify/vue'
 import type { Article, RssFeed, SearchHitReason } from '~/types'
 import FeedIcon from '~/components/feed/FeedIcon.vue'
 import { proxiedImageUrl } from '~/utils/imageProxy'
+import { AI_SUSPECT_LABEL, isAiSuspect } from '~/utils/aiDetection'
 import RowStatusPopover from './RowStatusPopover.vue'
 import {
   getArticlePipelineState,
@@ -55,6 +56,9 @@ watch(
 
 const pipelineState = computed(() => getArticlePipelineState(props.article))
 const stateMeta = computed(() => getPipelineStateMeta(pipelineState.value))
+// 疑似 AI 生成标记（add-ai-generated-article-detection）：仅 suspect 渲染，
+// 未判定 / 已确认非 AI 一律不渲染、不占位（行高与虚拟列表假设不变）
+const showSuspectBadge = computed(() => isAiSuspect(props.article.aiDetectionStatus))
 const popoverOpen = ref(false)
 const rootRef = ref<HTMLElement | null>(null)
 
@@ -141,9 +145,22 @@ function hitChipLabel(reason: SearchHitReason): string {
         @error="coverFailed = true"
       />
       <FeedIcon v-else :icon="feed?.icon" :feed-id="feed?.id" :color="feed?.color" :size="26" />
+      <!-- 疑似 AI 角标压封面右上角（2026-11-25 修订 C）：不进 .row-title 的两行 clamp 盒
+           （R-5 被整块裁掉），也不占 .row-meta 的 flex 宽度（R-13 后实测 meta 内容宽恒 165px，
+           时间 49 + 状态图标 19 + 全称角标 77 + gap 24 = 169 → 角标右侧被裁 4px、来源名被压到 0 宽）。
+           短标「AI」+ 实底保证可读与醒目，全称走 title / aria-label；未判定不渲染、行高由固定 100px 兜住 -->
+      <span
+        v-if="showSuspectBadge"
+        class="suspect-badge"
+        role="img"
+        :title="AI_SUSPECT_LABEL"
+        :aria-label="AI_SUSPECT_LABEL"
+      >AI</span>
     </div>
     <div class="row-main">
-      <h3 class="row-title">{{ article.title }}<span v-if="archived" class="archived-badge">已归档</span></h3>
+      <div class="row-heading">
+        <h3 class="row-title">{{ article.title }}<span v-if="archived" class="archived-badge">已归档</span></h3>
+      </div>
 
       <div class="row-meta">
         <span class="row-time">{{ $dayjs(article.pubDate).fromNow() }}</span>

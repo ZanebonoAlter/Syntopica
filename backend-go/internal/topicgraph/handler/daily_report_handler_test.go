@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,7 +66,7 @@ func TestFilterVisibleTopics_UsesHitCountNotConsecutive(t *testing.T) {
 }
 
 func TestBuildDailyReportProgressMessageMatchesFrontendContract(t *testing.T) {
-	msg := buildProgressMessage("job-1", "generating", 2849, "刚果（金）局势", 0, "0/1")
+	msg := buildProgressMessage("job-1", "generating", 2849, "刚果（金）局势", 0, "0/1", "2026-11-22", "generate")
 
 	require.Equal(t, "daily_report_progress", msg["type"])
 	require.Equal(t, "job-1", msg["job_id"])
@@ -75,6 +76,11 @@ func TestBuildDailyReportProgressMessageMatchesFrontendContract(t *testing.T) {
 	require.Equal(t, 0, msg["saved"])
 	require.Equal(t, "0/1", msg["progress"])
 	require.NotEmpty(t, msg["timestamp"])
+
+	// 附加字段（add-daily-report-gap-backfill D10）：既有字段一个不动，
+	// 新增 date（本次进度对应的报告日）与 run_scope（本次运行来源）。
+	require.Equal(t, "2026-11-22", msg["date"])
+	require.Equal(t, "generate", msg["run_scope"])
 }
 
 func TestBuildDailyReportDoneMessageMatchesFrontendContract(t *testing.T) {
@@ -655,7 +661,7 @@ type broadcastRecorder struct {
 func (r *broadcastRecorder) stub(t *testing.T) {
 	t.Helper()
 	prevProgress, prevDone := broadcastProgress, broadcastDone
-	broadcastProgress = func(jobID string, status string, boardID uint, boardName string, saved int, progress string) {
+	broadcastProgress = func(jobID string, status string, boardID uint, boardName string, saved int, progress string, date string, runScope string) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		r.progress = append(r.progress, progressRecord{jobID: jobID, status: status, boardID: boardID, progress: progress})
@@ -1327,4 +1333,145 @@ func TestManualGenerateCheckupPanicDoesNotBreakCompletion(t *testing.T) {
 	done := bcasts.doneFor(jobID)
 	require.Len(t, done, 1, "体检 panic 不得影响终态广播")
 	require.Equal(t, 1, done[0].totalSaved)
+}
+
+// ── 辅助标签约束 API（topic-lane-auxiliary-label-constraint tasks 5.1~5.3）──────
+//
+// 覆盖 tasks.md 第 12 组映射表落在本文件的四个 Scenario：
+//   读取约束列表 / 批量替换幂等 / 非法载荷不部分写入 / 话题不存在返回 404
+// 外加 tasks 5.3 的失败路径（锤向量计算失败 → 错误码且表内无新增行）。
+//
+// 关于 embedding：测试库没有配置 embedding 路由，所以 `airouter.Embed` 天然失败
+// ——这正好是 5.3 需要的失败路径。成功路径（替换）能跑通，是因为服务层对**短词
+// 未变**的约束复用已落库的锤向量、不重算（见 service.ReplaceTopicLaneConstraints）。
+
+func seedLaneConstraintRows(t *testing.T, db *gorm.DB, topicID uint, terms ...string) {
+	t.Helper()
+	for _, term := range terms {
+		require.NoError(t, db.Create(&repository.TopicLaneConstraint{
+			TopicID:        topicID,
+			Term:           term,
+			TermEmbedding:  repository.FloatsToPgVector([]float64{1, 0}),
+			EmbeddingModel: "qwen3-embedding",
+			Mode:           repository.LaneConstraintModeRequired,
+		}).Error)
+	}
+}
+
+// TestGetTopicLaneConstraints_ReturnsMetaWithoutVector covers Scenario
+// 「读取约束列表」.
+func TestGetTopicLaneConstraints_ReturnsMetaWithoutVector(t *testing.T) {
+	r, db := setupAnchorHandlerPGTest(t)
+	boardID := seedAnchorBoard(t, db, "constraint-read-board")
+	topic := seedAnchorTopicRow(t, db, boardID, "以黎冲突升级", repository.TopicStatusActive)
+	seedLaneConstraintRows(t, db, topic.ID, "以色列", "黎巴嫩")
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/daily-reports/topics/"+strconv.FormatUint(uint64(topic.ID), 10)+"/constraints", nil)
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Constraints []map[string]any `json:"constraints"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	require.Len(t, resp.Data.Constraints, 2)
+	for _, item := range resp.Data.Constraints {
+		assert.NotContains(t, item, "term_embedding", "SHALL NOT 返回原始向量")
+		assert.Contains(t, item, "term")
+		assert.Contains(t, item, "mode")
+		assert.Contains(t, item, "embedding_model")
+		assert.Contains(t, item, "created_at")
+		assert.Contains(t, item, "updated_at")
+	}
+	assert.Equal(t, "以色列", resp.Data.Constraints[0]["term"])
+	assert.Equal(t, "qwen3-embedding", resp.Data.Constraints[0]["embedding_model"])
+	assert.Contains(t, w.Body.String(), "qwen3-embedding")
+	assert.NotContains(t, w.Body.String(), "[1,0]", "响应体 SHALL NOT 含锤向量字面量")
+}
+
+// TestPutTopicLaneConstraints_ReplaceIsIdempotent covers Scenario
+// 「批量替换幂等」：省略即删除，重复提交结果相同。
+func TestPutTopicLaneConstraints_ReplaceIsIdempotent(t *testing.T) {
+	r, db := setupAnchorHandlerPGTest(t)
+	boardID := seedAnchorBoard(t, db, "constraint-put-board")
+	topic := seedAnchorTopicRow(t, db, boardID, "以黎冲突升级", repository.TopicStatusActive)
+	seedLaneConstraintRows(t, db, topic.ID, "以色列", "黎巴嫩")
+
+	body := `{"constraints":[{"term":"以色列","mode":"required"}]}`
+	url := "/api/daily-reports/topics/" + strconv.FormatUint(uint64(topic.ID), 10) + "/constraints"
+
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, url, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code, "submit #%d: %s", i+1, w.Body.String())
+	}
+
+	rows, err := repository.Repo.ListTopicLaneConstraints(topic.ID)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "以色列", rows[0].Term)
+	assert.Equal(t, "qwen3-embedding", rows[0].EmbeddingModel, "未变的短词复用既有锤")
+}
+
+// TestPutTopicLaneConstraints_InvalidPayloadWritesNothing covers Scenario
+// 「非法载荷不部分写入」.
+func TestPutTopicLaneConstraints_InvalidPayloadWritesNothing(t *testing.T) {
+	r, db := setupAnchorHandlerPGTest(t)
+	boardID := seedAnchorBoard(t, db, "constraint-invalid-board")
+	topic := seedAnchorTopicRow(t, db, boardID, "以黎冲突升级", repository.TopicStatusActive)
+	seedLaneConstraintRows(t, db, topic.ID, "以色列")
+
+	body := `{"constraints":[{"term":"黎巴嫩","mode":"required"},{"term":"真主党","mode":"optional"}]}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/daily-reports/topics/"+strconv.FormatUint(uint64(topic.ID), 10)+"/constraints", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+
+	rows, err := repository.Repo.ListTopicLaneConstraints(topic.ID)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "以色列", rows[0].Term, "集合保持提交前状态")
+}
+
+// TestTopicLaneConstraints_UnknownTopic404 covers Scenario「话题不存在返回 404」.
+func TestTopicLaneConstraints_UnknownTopic404(t *testing.T) {
+	r, _ := setupAnchorHandlerPGTest(t)
+	url := "/api/daily-reports/topics/99999/constraints"
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
+	assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, url, strings.NewReader(`{"constraints":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+}
+
+// TestPutTopicLaneConstraints_AnchorFailureWritesNothing covers tasks 5.3：锤
+// 向量计算失败时返回错误码且表内无新增行（测试库没有 embedding 路由 → 天然失败）。
+func TestPutTopicLaneConstraints_AnchorFailureWritesNothing(t *testing.T) {
+	r, db := setupAnchorHandlerPGTest(t)
+	boardID := seedAnchorBoard(t, db, "constraint-anchor-fail-board")
+	topic := seedAnchorTopicRow(t, db, boardID, "以黎冲突升级", repository.TopicStatusActive)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/daily-reports/topics/"+strconv.FormatUint(uint64(topic.ID), 10)+"/constraints",
+		strings.NewReader(`{"constraints":[{"term":"以色列","mode":"required"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	require.GreaterOrEqual(t, w.Code, 400, w.Body.String())
+
+	var count int64
+	require.NoError(t, db.Model(&repository.TopicLaneConstraint{}).Where("topic_id = ?", topic.ID).Count(&count).Error)
+	assert.Zero(t, count, "锤计算失败 SHALL NOT 落库")
 }

@@ -70,7 +70,9 @@ describe('FeedDetailEditor 词汇表与字段（unify-feed-summary-toggles）', 
     // 旧名不得再出现
     expect(text).not.toContain('内容补全')
     expect(text).not.toContain('刷新时自动补全')
-    expect(wrapper.findAll('.feed-detail__toggle-row')).toHaveLength(4)
+    // 四条处理管线开关 + AI 生成检测（add-ai-generated-article-detection）
+    expect(text).toContain('AI 生成检测')
+    expect(wrapper.findAll('.feed-detail__toggle-row')).toHaveLength(5)
   })
 
   it('FE-2: 切换「AI 总结」toggle → update-feed(article_summary_enabled)', async () => {
@@ -114,5 +116,24 @@ describe('FeedDetailEditor 词汇表与字段（unify-feed-summary-toggles）', 
     await saveBtn.trigger('click')
 
     expect(wrapper.emitted('update-feed')![0]).toEqual(['7', 'url', 'https://example.com/renamed.xml'])
+  })
+
+  it('FE-6: 「AI 生成检测」默认关闭、切换即时保存，且与「AI 打标签」互不联动', async () => {
+    const wrapper = mountEditor({ taggingEnabled: true })
+    const rows = wrapper.findAll('.feed-detail__toggle-row')
+    const taggingRow = rows.find(row => row.text().includes('AI 打标签'))!
+    const detectionRow = rows.find(row => row.text().includes('AI 生成检测'))!
+
+    // 默认关闭（feed 未带 aiDetectionEnabled 也归一为关，不假装已开启）
+    expect(detectionRow.find('.app-toggle').classes()).not.toContain('is-active')
+
+    // 就地切换即时保存：单字段 PATCH，不弹确认、不需额外保存按钮
+    await detectionRow.find('.app-toggle__track').trigger('click')
+    expect(wrapper.emitted('update-feed')![0]).toEqual(['7', 'ai_detection_enabled', true])
+    expect(wrapper.emitted('update-feed')).toHaveLength(1)
+
+    // 互不联动：只发检测一个字段，「AI 打标签」保持原态
+    expect(taggingRow.find('.app-toggle').classes()).toContain('is-active')
+    expect(wrapper.emitted('update-feed')!.some(args => args[1] === 'tagging_enabled')).toBe(false)
   })
 })

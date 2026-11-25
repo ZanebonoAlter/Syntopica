@@ -746,3 +746,64 @@ func TestManualTopic_HistoricalDefaultsToAuto(t *testing.T) {
 	assert.Equal(t, TopicSourceAuto, topic.Source,
 		"topic created without explicit source must default to 'auto'")
 }
+
+// TestManualTopic_CreateWithConstraints proves the auxiliary-label constraints of a
+// manual lane are written in the SAME transaction as the topic itself
+// (topic-lane-auxiliary-label-constraint D12).
+func TestManualTopic_CreateWithConstraints(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	Repo = repo
+
+	boardID := seedTestBoard(t, db)
+	d1 := NormalizeReportDate(time.Now().AddDate(0, 0, -2))
+	r1 := seedTestReport(t, db, boardID, d1)
+	s1 := seedTopicSection(t, db, r1, "c-s1", vecStr(1.0, 0.0, 0.0))
+
+	margin := 0.05
+	cons := []ManualTopicConstraint{
+		{Term: "以色列", Mode: LaneConstraintModeRequired, Anchor: vecStr(1.0, 0.0, 0.0), Model: "qwen3-embedding", Margin: &margin},
+		{Term: "黎巴嫩", Mode: LaneConstraintModeRequired, Anchor: vecStr(0.0, 1.0, 0.0), Model: "qwen3-embedding"},
+	}
+	topic, _, err := repo.CreateManualTopicWithConstraints(boardID, "以黎冲突", []uint{s1}, cons)
+	require.NoError(t, err)
+	require.NotNil(t, topic)
+
+	rows, err := repo.ListTopicLaneConstraints(topic.ID)
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "both constraints must be written with the topic")
+	terms := []string{rows[0].Term, rows[1].Term}
+	assert.ElementsMatch(t, []string{"以色列", "黎巴嫩"}, terms)
+	assert.Equal(t, "qwen3-embedding", rows[0].EmbeddingModel)
+}
+
+// TestManualTopic_ConstraintFailureRollsBackTopic proves a failing constraint
+// write does NOT leave a topic without its constraints (no half-created lane).
+func TestManualTopic_ConstraintFailureRollsBackTopic(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	Repo = repo
+
+	boardID := seedTestBoard(t, db)
+	d1 := NormalizeReportDate(time.Now().AddDate(0, 0, -2))
+	r1 := seedTestReport(t, db, boardID, d1)
+	s1 := seedTopicSection(t, db, r1, "rb-s1", vecStr(1.0, 0.0, 0.0))
+
+	var before int64
+	require.NoError(t, db.Model(&BoardPersistentTopic{}).
+		Where("semantic_board_id = ? AND source = ?", boardID, TopicSourceManual).
+		Count(&before).Error)
+
+	// Invalid mode violates the CHECK constraint → the whole transaction must roll back.
+	cons := []ManualTopicConstraint{{
+		Term: "以色列", Mode: "optional", Anchor: vecStr(1.0, 0.0, 0.0), Model: "qwen3-embedding",
+	}}
+	_, _, err := repo.CreateManualTopicWithConstraints(boardID, "坏约束", []uint{s1}, cons)
+	require.Error(t, err, "invalid constraint must fail the create")
+
+	var after int64
+	require.NoError(t, db.Model(&BoardPersistentTopic{}).
+		Where("semantic_board_id = ? AND source = ?", boardID, TopicSourceManual).
+		Count(&after).Error)
+	assert.Equal(t, before, after, "topic creation must roll back with the failed constraint")
+}

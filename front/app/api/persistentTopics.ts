@@ -414,10 +414,16 @@ export function usePersistentTopicsApi() {
     boardId: number | string,
     label: string,
     sectionIds: string[],
+    constraints: Array<{ term: string, mode: 'required' | 'preferred' }> = [],
   ): Promise<ApiResponse<ManualLaneResult>> {
+    const payload: Record<string, unknown> = { label, section_ids: sectionIds.map(id => Number(id)) }
+    // 空数组不发（与存量调用字节一致；后端也接受字段缺席）。
+    if (constraints.length > 0) {
+      payload.constraints = constraints.map(row => ({ term: row.term, mode: row.mode }))
+    }
     const res = await apiClient.post<ManualLanePayload>(
       `/semantic-boards/${boardId}/persistent-topics/manual`,
-      { label, section_ids: sectionIds.map(id => Number(id)) },
+      payload,
     )
     if (!res.success || !res.data) return { success: false, error: res.error || '保存失败', message: res.message }
     return mapApiResponse(res, normalizeManualLane(camelizeKeys<ManualLanePayload>(res.data)))

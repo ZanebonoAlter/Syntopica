@@ -41,7 +41,7 @@ const emit = defineEmits<{
 const {
   viewMode, iframeLoading, isFullscreen,
   selectedContentSource,
-  manualFirecrawlLoading, manualSummaryLoading, manualTaggingLoading,
+  manualFirecrawlLoading, manualSummaryLoading, manualTaggingLoading, manualDetectionLoading, manualRecheckLoading,
   manualActionError, taggingError,
   scrollProgress, scrollTop, contentContainer, fullscreenContentContainer,
   showBackTop,
@@ -52,7 +52,8 @@ const {
   detailLines, renderedStoredSummary,
   activeContentSource,
   onContentScroll, scrollToTop,
-  handleManualFirecrawl, handleManualSummary, handleManualTagging,
+  handleManualFirecrawl, handleManualSummary, handleManualTagging, handleManualAiDetection,
+  handleRecheckAiDetection,
   handleTagWatchToggle, openOriginal, toggleViewMode, toggleFullscreen,
   handleIframeLoad, handleIframeError,
   readingTime, trackEvent, uploadEvents, lastScrollDepth,
@@ -93,10 +94,14 @@ const statusMenuProps = computed<ArticleStatusMenuProps>(() => ({
   showManualFirecrawlAction: Boolean(feed.value?.firecrawlEnabled),
   showManualSummaryAction: Boolean(feed.value?.articleSummaryEnabled),
   showManualTaggingAction: Boolean(isAIEnabled.value),
+  // 人工标记/取消疑似 AI 不依赖 feed 开关与 AI capability（只是写一条人工结论），故常开
+  showManualDetectionAction: true,
   actionBusy: Boolean(actionBusy.value),
   manualFirecrawlLoading: Boolean(manualFirecrawlLoading.value),
   manualSummaryLoading: Boolean(manualSummaryLoading.value),
   manualTaggingLoading: Boolean(manualTaggingLoading.value),
+  manualDetectionLoading: Boolean(manualDetectionLoading.value),
+  manualRecheckLoading: Boolean(manualRecheckLoading.value),
   manualFirecrawlLabel: manualFirecrawlLabel.value,
   manualSummaryLabel: manualSummaryLabel.value,
   manualTaggingLabel: manualTaggingLabel.value,
@@ -152,7 +157,8 @@ const previewProps = computed(() => ({
       @toggle-fullscreen="toggleFullscreen" @navigate-prev="handleNavigatePrev"
       @navigate-next="handleNavigateNext" @open-original="openOriginal"
       @manual-firecrawl="handleManualFirecrawl" @manual-summary="handleManualSummary"
-      @manual-tagging="handleManualTagging" @set-content-source="setContentSource"
+      @manual-tagging="handleManualTagging" @manual-ai-detection="handleManualAiDetection" @recheck-ai-detection="handleRecheckAiDetection"
+      @set-content-source="setContentSource"
     />
 
     <div v-if="viewMode === 'preview'" class="reading-progress-bar">
@@ -188,7 +194,8 @@ const previewProps = computed(() => ({
         @toggle-fullscreen="toggleFullscreen" @navigate-prev="handleNavigatePrev"
         @navigate-next="handleNavigateNext" @open-original="openOriginal"
         @manual-firecrawl="handleManualFirecrawl" @manual-summary="handleManualSummary"
-        @manual-tagging="handleManualTagging" @set-content-source="setContentSource"
+        @manual-tagging="handleManualTagging" @manual-ai-detection="handleManualAiDetection" @recheck-ai-detection="handleRecheckAiDetection"
+        @set-content-source="setContentSource"
       />
 
       <div v-if="viewMode === 'preview'" class="reading-progress-bar">

@@ -14,6 +14,7 @@ import { useSemanticBoardsApi } from '~/api/semanticBoards'
 import { useArticlesApi } from '~/api/articles'
 import { useArticleFavoriteToggle } from '~/features/articles/composables/useArticleFavoriteToggle'
 import { useNotify } from '~/composables/useNotify'
+import type { ArticleOpenTarget, RelatedPreviewContext } from '~/utils/threadRelation'
 import type { Article } from '~/types'
 
 const props = defineProps<{
@@ -61,6 +62,8 @@ const boardTitle = ref('')
 const previewOpen = ref(false)
 const previewArticle = ref<ReturnType<typeof normalizeArticle> | null>(null)
 const loadingPreviewArticle = ref(false)
+/** 线索 chip 点击带来的相关度上下文（普通文章行为 null，弹窗不渲染该行）。 */
+const previewContext = ref<RelatedPreviewContext | null>(null)
 
 onMounted(() => {
   if (route.query.fallback !== 'invalid-date') return
@@ -106,25 +109,44 @@ function openLane(topicId: number): void {
 
 /** 线索文章点击直达站内阅读预览（daily-report-lead-direct-preview）：
  * 先开弹窗呈现加载态（header「正在准备文章预览...」），详情返回后填充；
- * 失败关弹窗 + 全局通知，不留空白弹窗（无抽屉中转层） */
-async function openLeadArticle(id: number): Promise<void> {
+ * 失败关弹窗 + 全局通知，不留空白弹窗（无抽屉中转层）。
+ *
+ * 入参兼容两种调用点（review R-1）：数字 = 普通文章行（无线索相关度上下文）；
+ * `{ articleId, score, level, periodDate }` = 线索 chip 点击，弹窗里多一行阅读上下文。 */
+async function openLeadArticle(target: ArticleOpenTarget): Promise<void> {
+  const { articleId, context } = resolveArticleTarget(target)
+  previewContext.value = context
   previewArticle.value = null
   previewOpen.value = true
   loadingPreviewArticle.value = true
   try {
-    const response = await articlesApi.getArticle(id)
+    const response = await articlesApi.getArticle(articleId)
     if (!response.success || !response.data) {
-      previewOpen.value = false
+      closePreview()
       notify.warn('文章加载失败，请稍后重试')
       return
     }
     previewArticle.value = normalizeArticle(response.data as unknown as ArticlePayload)
   } catch {
-    previewOpen.value = false
+    closePreview()
     notify.warn('文章加载失败，请稍后重试')
   } finally {
     loadingPreviewArticle.value = false
   }
+}
+
+/** openArticle 入参归一：数字 = 普通文章；对象 = 线索 chip（带相关度上下文）。 */
+function resolveArticleTarget(target: ArticleOpenTarget): { articleId: number, context: RelatedPreviewContext | null } {
+  if (typeof target === 'number') return { articleId: target, context: null }
+  return {
+    articleId: target.articleId,
+    context: { score: target.score, level: target.level, periodDate: target.periodDate },
+  }
+}
+
+function closePreview(): void {
+  previewOpen.value = false
+  previewContext.value = null
 }
 
 /** 预览弹窗收藏：乐观翻转 + 失败回滚（此前为空实现，点收藏毫无反应） */
@@ -174,7 +196,8 @@ function switchBoard(nextBoardId: number): void {
         :selected-preview-article="previewArticle"
         :preview-articles="[]"
         :loading-preview-article="loadingPreviewArticle"
-        @close="previewOpen = false"
+        :related-context="previewContext"
+        @close="closePreview"
         @favorite="handlePreviewFavorite"
         @article-update="handlePreviewArticleUpdate"
         @navigate="(a) => previewArticle = a"

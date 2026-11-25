@@ -1,5 +1,6 @@
 import { apiClient } from './client'
-import type { ApiResponse, BoardSourceBreakdown } from '~/types'
+import { normalizeArticleDetection } from './normalizers/article'
+import type { ApiResponse, ArticleDetection, BoardSourceBreakdown } from '~/types'
 
 export interface SemanticBoard {
   id: number
@@ -423,7 +424,7 @@ export interface MatchDetailResponse {
   pairs: MatchDetailPair[]
 }
 
-export interface BoardArticle {
+export interface BoardArticle extends ArticleDetection {
   id: number
   title: string
   url: string
@@ -438,6 +439,32 @@ export interface BoardArticle {
   /** 弱证据：无强匹配（无标签 / max_sim），后端统一判定。 */
   weak_evidence?: boolean
   [key: string]: unknown
+}
+
+/**
+ * 版块文章行的原始载荷：判定字段仍是 snake_case，由 API 模块映射为 camelCase
+ * （reading.md 红线 1：映射只发生在 API 模块）。
+ */
+interface BoardArticlePayload extends BoardArticle {
+  ai_detection_status?: string
+  ai_detection_score?: number
+  ai_detection_source?: string
+  ai_detection_at?: string
+}
+
+/**
+ * 版块文章行的判定字段归一（reading.md 红线 1：映射只在 API 模块发生）。
+ *
+ * 先剔除四个 snake_case 原键再挂 camelCase：不能用 `{...item, ...normalizeArticleDetection(item)}`
+ * ——那样同一语义会双键并存（snake_case 与 camelCase 同时在对象上），组件层可能误读（review R-9）。
+ */
+function normalizeBoardArticle(item: BoardArticlePayload): BoardArticle {
+  const rest = { ...item }
+  delete rest.ai_detection_status
+  delete rest.ai_detection_score
+  delete rest.ai_detection_source
+  delete rest.ai_detection_at
+  return { ...rest, ...normalizeArticleDetection(item) }
 }
 
 /**
@@ -576,7 +603,12 @@ export function useSemanticBoardsApi() {
 
   async function getBoardArticles(id: number, params?: Record<string, unknown>): Promise<ApiResponse<BoardArticle[]>> {
     const query = params ? apiClient.buildQueryParams(params) : ''
-    return apiClient.get(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
+    const response = await apiClient.get<BoardArticlePayload[]>(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
+    // 判定字段的 snake_case → camelCase 映射只在 API 模块发生（reading.md 红线 1）
+    return {
+      ...response,
+      data: (response.data ?? []).map(normalizeBoardArticle),
+    }
   }
 
   /**

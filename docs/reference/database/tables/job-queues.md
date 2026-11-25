@@ -48,8 +48,29 @@
 
 ---
 
----
+### 7.3 detection_jobs（疑似 AI 判定任务，add-ai-generated-article-detection）
 
+与 `tag_jobs` 同构但**完全独立**（不共表、不共用 worker）：一篇一作业、乐观锁 claim + 租约、重试上限；判定失败不影响打标与摘要。表由迁移 `20261120_0001` 幂等建出（`CREATE TABLE IF NOT EXISTS` + 各列单列索引）。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 主键 |
+| `article_id` | BIGINT | NOT NULL; index `idx_detection_jobs_article_id` | 关联文章 ID（GORM 声明 OnDelete:CASCADE） |
+| `status` | VARCHAR(20) | NOT NULL DEFAULT 'pending'; index `idx_detection_jobs_status` | 状态：`pending` / `leased` / `completed` / `failed` |
+| `priority` | INTEGER | NOT NULL DEFAULT 0 | 优先级（显式重判插到自动入队作业前） |
+| `attempt_count` | INTEGER | NOT NULL DEFAULT 0 | 已尝试次数 |
+| `max_attempts` | INTEGER | NOT NULL DEFAULT 5 | 重试上限（达上限置 `failed` 终止） |
+| `available_at` | TIMESTAMPTZ | NOT NULL DEFAULT now(); index `idx_detection_jobs_available_at` | 可领取时间 |
+| `leased_at` | TIMESTAMPTZ | NULL | 租约获取时间 |
+| `lease_expires_at` | TIMESTAMPTZ | NULL; index `idx_detection_jobs_lease_expires_at` | 租约过期时间（过期可被重新领取） |
+| `last_error` | TEXT | NOT NULL DEFAULT '' | 最近一次失败原因 |
+| `reason` | VARCHAR(50) | NOT NULL DEFAULT '' | 入队来源：`firecrawl_completed`（全文抓取成功）/ `firecrawl_failed`（抓取终态失败降级）/ `article_ingested`（未开抓取入库即判）/ `manual_recheck`（用户显式重判，兼具 force 语义：绕过「人工结论优先」的跳过） |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now(); index `idx_detection_jobs_created_at` | 创建时间 |
+| `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 更新时间 |
+
+> ⚠️ **部分唯一索引 `uq_detection_jobs_article_active`（迁移 `20261120_0003`，与 fix-feed-refresh-churn D4 同型）**：`(article_id) WHERE status IN ('pending','leased')` —— 同文章至多一条未完成作业；建索引前先删存量同文章重复未完成行（只保留最小 `id`）。入队 SQL 走 `ON CONFLICT DO NOTHING`，撞索引后按既有「原地更新」语义合并（`reason` 取新值、`priority` 只升不降），并发双插被收缩成零新行。`status` / `available_at` / `lease_expires_at` / `created_at` 各为单列索引（非复合）。
+
+---
 
 ## 域 ER 图
 
@@ -59,6 +80,7 @@
 erDiagram
     articles ||--o{ firecrawl_jobs : "article_id"
     articles ||--o{ tag_jobs : "article_id"
+    articles ||--o{ detection_jobs : "article_id"
 
     articles {
     }
@@ -71,6 +93,12 @@ erDiagram
         SERIAL id PK
         INTEGER article_id FK
         VARCHAR status
+    }
+    detection_jobs {
+        BIGSERIAL id PK
+        BIGINT article_id FK
+        VARCHAR status
+        VARCHAR reason
     }
 ```
 

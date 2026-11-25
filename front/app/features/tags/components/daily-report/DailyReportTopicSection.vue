@@ -18,6 +18,7 @@ import { contextCacheKey } from '~/features/tags/composables/useLaneTrendData'
 import type { LaneDynamicsLane, LaneDynamicsResponse } from '~/api/laneDynamics'
 import type { ContextRow } from '~/api/boardEnrichment'
 import { isThreadFitDemoted, threadFitLabel } from '~/utils/threadFit'
+import { AI_SUSPECT_LABEL, isAiSuspect } from '~/utils/aiDetection'
 import { useTopicKeyEvents } from '~/features/tags/composables/useTopicKeyEvents'
 import { useThreadRelatedEvents } from '~/features/tags/composables/useThreadRelatedEvents'
 import {
@@ -139,6 +140,27 @@ function articleEntry(articleId: number): RequestCacheEntry<ArticleTitle> {
   return props.articleEntries.get(articleId) ?? { status: 'idle' }
 }
 
+/** 展开列表的一条渲染项（判定标记与标题一次到位，不再单独取详情）。 */
+interface ThreadArticleRow {
+  id: number
+  title: string
+  suspect: boolean
+}
+
+/**
+ * 展开列表的渲染项（add-ai-generated-article-detection design D8 / review R-4）：
+ * 直接吃后端 `thread.articles` 投影——顺序就是 related_article_ids 的顺序（后端已在
+ * populateThreadArticles 把疑似文章稳定排至末尾），前端**不再二次重排**，也不逐篇请求
+ * 详情（N+1）。旧响应没有该字段（omitempty）时返回空数组，模板回退到标题缓存、不排序。
+ */
+function projectedArticleRows(thread: DailyReportThread): ThreadArticleRow[] {
+  return (thread.articles ?? []).map(article => ({
+    id: article.id,
+    title: article.title || `文章 #${article.id}`,
+    suspect: isAiSuspect(article.ai_detection_status),
+  }))
+}
+
 /** 按 topic_id 从板块 lanes 过滤出本泳道聚合数据（无顶层 map，数组线性查）。 */
 function laneForTopic(topicId: number): LaneDynamicsLane | null {
   return props.laneDynamicsEntry.data?.lanes.find(lane => lane.topic_id === topicId) ?? null
@@ -175,7 +197,8 @@ function toggleThread(prefix: string, thread: DailyReportThread) {
   if (next.has(key)) next.delete(key)
   else {
     next.add(key)
-    if (thread.related_article_ids?.length) emit('ensureArticles', thread.related_article_ids)
+    // 后端投影已带标题与判定字段（thread.articles）；只有旧响应缺投影时才按 id 回补标题
+    if (!thread.articles?.length && thread.related_article_ids?.length) emit('ensureArticles', thread.related_article_ids)
   }
   expandedThreads.value = next
 }
@@ -485,29 +508,56 @@ watch(() => props.focusSectionId, async (requestedId) => {
                     <p class="drm-thread__fit-probe">
                       贴合度<template v-if="typeof thread.fit_distance === 'number' && !Number.isNaN(thread.fit_distance)"> {{ thread.fit_distance.toFixed(2) }} ·</template> {{ threadFitLabel(thread.fit_distance) }}
                     </p>
-                    <template v-for="articleId in thread.related_article_ids" :key="articleId">
+                    <!-- 主路径：后端投影 thread.articles 已带标题 + 判定状态，顺序即后端排序结果
+                         （疑似稳定排末），前端不再逐篇取详情、也不二次重排（review R-4） -->
+                    <template v-if="projectedArticleRows(thread).length">
                       <button
-                        v-if="articleEntry(articleId).status === 'success'"
+                        v-for="article in projectedArticleRows(thread)"
+                        :key="article.id"
                         type="button"
                         class="drm-article"
-                        @click="emit('openArticle', articleId)"
+                        @click="emit('openArticle', article.id)"
                       >
                         <Icon icon="mdi:file-document-outline" width="14" />
-                        <span>{{ articleEntry(articleId).data?.title }}</span>
+                        <!-- 标记嵌在标题 span 内：.drm-article 是 3 列 grid，第 4 个直接子元素会挤窄标题列 -->
+                        <span>{{ article.title }}<span
+                          v-if="article.suspect"
+                          class="drm-article__suspect"
+                          :data-testid="`report-article-suspect-${article.id}`"
+                        >{{ AI_SUSPECT_LABEL }}</span></span>
                       </button>
-                      <button
-                        v-else-if="articleEntry(articleId).status === 'error'"
-                        type="button"
-                        class="drm-article drm-article--error"
-                        @click="emit('retryArticle', articleId)"
-                      >
-                        <Icon icon="mdi:refresh" width="14" />
-                        <span>{{ articleEntry(articleId).error || `文章 #${articleId} 加载失败` }}，点击重试</span>
-                      </button>
-                      <div v-else class="drm-article drm-article--loading" aria-live="polite">
-                        <Icon icon="mdi:loading" width="14" class="drm-spin" />
-                        <span>正在查阅文章 #{{ articleId }}</span>
-                      </div>
+                    </template>
+                    <!-- 旧响应回退：无 articles 投影 → 沿用标题缓存三态渲染（不排序，保持旧行为） -->
+                    <template v-else>
+                      <template v-for="articleId in thread.related_article_ids ?? []" :key="articleId">
+                        <button
+                          v-if="articleEntry(articleId).status === 'success'"
+                          type="button"
+                          class="drm-article"
+                          @click="emit('openArticle', articleId)"
+                        >
+                          <Icon icon="mdi:file-document-outline" width="14" />
+                          <!-- 标记嵌在标题 span 内：.drm-article 是 3 列 grid，第 4 个直接子元素会挤窄标题列 -->
+                          <span>{{ articleEntry(articleId).data?.title }}<span
+                            v-if="isAiSuspect(articleEntry(articleId).data?.aiDetectionStatus)"
+                            class="drm-article__suspect"
+                            :data-testid="`report-article-suspect-${articleId}`"
+                          >{{ AI_SUSPECT_LABEL }}</span></span>
+                        </button>
+                        <button
+                          v-else-if="articleEntry(articleId).status === 'error'"
+                          type="button"
+                          class="drm-article drm-article--error"
+                          @click="emit('retryArticle', articleId)"
+                        >
+                          <Icon icon="mdi:refresh" width="14" />
+                          <span>{{ articleEntry(articleId).error || `文章 #${articleId} 加载失败` }}，点击重试</span>
+                        </button>
+                        <div v-else class="drm-article drm-article--loading" aria-live="polite">
+                          <Icon icon="mdi:loading" width="14" class="drm-spin" />
+                          <span>正在查阅文章 #{{ articleId }}</span>
+                        </div>
+                      </template>
                     </template>
                   </div>
                 </article>
@@ -1053,6 +1103,20 @@ watch(() => props.focusSectionId, async (requestedId) => {
 
 button.drm-article {
   cursor: pointer;
+}
+
+/* 疑似 AI 生成标记（add-ai-generated-article-detection）：随既有线索 chip 的紧凑内联形态，
+   中性色、不占规则/警示色语义；仅 suspect 渲染，未判定不占位。 */
+.drm-article__suspect {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 3px;
+  color: var(--color-text-secondary);
+  font-size: 0.66rem;
+  line-height: 1.5;
+  white-space: nowrap;
 }
 
 button.drm-article:hover,

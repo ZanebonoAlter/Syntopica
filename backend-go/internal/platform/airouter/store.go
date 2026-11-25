@@ -17,12 +17,17 @@ import (
 type Capability string
 
 const (
-	CapabilitySummary            Capability = "summary"
-	CapabilityTopicTagging       Capability = "topic_tagging"
-	CapabilityDigestPolish       Capability = "digest_polish"
-	CapabilityOpenNotebook       Capability = "open_notebook"
-	CapabilityEmbedding          Capability = "embedding"
-	CapabilityFeedDiscovery      Capability = "feed_discovery"
+	CapabilitySummary       Capability = "summary"
+	CapabilityTopicTagging  Capability = "topic_tagging"
+	CapabilityDigestPolish  Capability = "digest_polish"
+	CapabilityOpenNotebook  Capability = "open_notebook"
+	CapabilityEmbedding     Capability = "embedding"
+	CapabilityFeedDiscovery Capability = "feed_discovery"
+	// CapabilityAIDetection 是第七类 capability（add-ai-generated-article-detection design D5）：
+	// 驱动文章级「AI 生成疑似度」判定。它必须独立成类——路由按 capability 解析
+	// （见 store_vendor.go LoadRouteWithModels），复用 topic_tagging 会让判定共用
+	// 打标的模型与并发配额，而判定要求绑小模型、不与打标抢位。
+	CapabilityAIDetection        Capability = "ai_detection"
 	DefaultRouteName             string     = "default"
 	ProviderTypeOpenAICompatible string     = "openai_compatible"
 	ProviderTypeOllama           string     = "ollama"

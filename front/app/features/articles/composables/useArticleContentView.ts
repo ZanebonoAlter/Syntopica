@@ -26,6 +26,7 @@ import {
 import { useFeedsStore } from '~/stores/feeds'
 import { useArticlesStore } from '~/stores/articles'
 import { useAI } from '~/composables/useAI'
+import { useNotify } from '~/composables/useNotify'
 
 marked.setOptions({ gfm: true, breaks: true })
 
@@ -41,6 +42,7 @@ export function useArticleContentView(props: {
 }) {
   const feedsStore = useFeedsStore()
   const { isAIEnabled } = useAI()
+  const notify = useNotify()
   const articlesApi = useArticlesApi()
   const watchedTagsApi = useWatchedTagsApi()
   const { crawlArticle } = useFirecrawlApi()
@@ -57,6 +59,7 @@ export function useArticleContentView(props: {
   const manualSummaryLoading = ref(false)
   const manualTaggingLoading = ref(false)
   const manualDetectionLoading = ref(false)
+  const manualRecheckLoading = ref(false)
   const manualActionError = ref<string | null>(null)
   const taggingError = ref<string | null>(null)
   const watchPendingIds = ref(new Set<number>())
@@ -316,6 +319,24 @@ export function useArticleContentView(props: {
     } finally { manualDetectionLoading.value = false }
   }
 
+  /**
+   * 显式重新判定（review R-6 / design D10）：人工标过之后唯一能回到「由机器判」的口子。
+   * 后端入队一条 manual_recheck 作业（绕过人工结论优先），异步生效 → 成功只落 toast
+   * 提示「稍后刷新查看」，不改本地判定字段；失败走菜单内联错误位。
+   */
+  async function handleRecheckAiDetection() {
+    if (!props.article || manualRecheckLoading.value) return
+    manualRecheckLoading.value = true
+    manualActionError.value = null
+    try {
+      const response = await articlesApi.recheckAIDetection(Number(props.article.id))
+      if (!response.success) throw new Error(response.error || '提交重新判定失败')
+      notify.success(response.message || '重新判定已提交，稍后刷新查看结果')
+    } catch (error) {
+      manualActionError.value = error instanceof Error ? error.message : '提交重新判定失败'
+    } finally { manualRecheckLoading.value = false }
+  }
+
   async function handleTagWatchToggle(payload: { id: number; slug: string }) {
     if (!props.article?.tags || watchPendingIds.value.has(payload.id)) return
     const tag = props.article.tags.find(t => t.id === payload.id)
@@ -377,6 +398,7 @@ export function useArticleContentView(props: {
     manualSummaryLoading.value = false
     manualTaggingLoading.value = false
     manualDetectionLoading.value = false
+    manualRecheckLoading.value = false
     lastScrollDepth = 0
     scrollProgress.value = 0
     scrollTop.value = 0
@@ -410,7 +432,7 @@ export function useArticleContentView(props: {
     // State
     viewMode, iframeLoading, isFullscreen, liveStatus,
     selectedContentSource, manualFirecrawlLoading,
-    manualSummaryLoading, manualTaggingLoading, manualDetectionLoading,
+    manualSummaryLoading, manualTaggingLoading, manualDetectionLoading, manualRecheckLoading,
     manualActionError, taggingError, watchPendingIds,
     scrollProgress, scrollTop, contentContainer, fullscreenContentContainer,
     showBackTop,
@@ -429,6 +451,7 @@ export function useArticleContentView(props: {
     // Event handlers
     onContentScroll, scrollToTop,
     handleManualFirecrawl, handleManualSummary, handleManualTagging, handleManualAiDetection,
+    handleRecheckAiDetection,
     handleTagWatchToggle, handleFavorite,
     openOriginal, toggleViewMode, toggleFullscreen,
     handleIframeLoad, handleIframeError,

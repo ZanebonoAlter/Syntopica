@@ -93,7 +93,7 @@ describe('BoardConsoleShell — 档 vs 自由观察范围', () => {
     const aCallsAfterFailure = getLaneDynamics.mock.calls.filter(([, days]) => days === 14).length
     const poolCallsAfterFailure = getLaneDynamics.mock.calls.filter(([, days]) => days === 365).length
     expect(wrapper.find('[data-testid="matrix-lane-10"]').classes()).toContain('is-selected')
-    expect(wrapper.find('[data-testid="matrix-tier-note"]').text()).toContain('14 日档')
+    expect(wrapper.find('[data-testid="matrix-tier-note"]').text()).toBe('历史仅补数据，泳道名单不变')
     expect(routeState.query.start).toBe('2026-06-15')
     expect(routeState.query.end).toBe('2026-10-23')
 
@@ -228,7 +228,10 @@ describe('BoardConsoleShell — 档 vs 自由观察范围', () => {
     await thirty!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('三十日新名单')
-    expect(wrapper.text()).not.toContain('主线 A')
+    // 断言范围限定在矩阵区（切 30 档后名单换成「三十日新名单」）：
+    // 右轨「当日其他话题」子块（add-other-topics-to-context-rail）也会渲染分区名「主线 A」，
+    // 那是右轨内容、与矩阵名单无关，故不拿整页文本断言。
+    expect(wrapper.find('[data-testid="board-matrix"]').text()).not.toContain('主线 A')
   })
 })
 

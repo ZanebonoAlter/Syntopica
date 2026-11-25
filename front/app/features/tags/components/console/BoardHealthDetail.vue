@@ -332,6 +332,9 @@ function fmtNum(v: number | null | undefined, digits = 2): string {
     <!-- 未收编候选全量（默认 top 5，可展开） -->
     <div v-if="mode === 'all' || mode === 'candidates'" class="bhd-section">
       <AppSectionHeader title="未收编候选" icon-name="mdi:tag-plus-outline" description="成员 tags 高频携带、但不在版块构成中的辅助标签" />
+      <p v-if="visibleCandidates.length > 0" class="bhd-cand-note" data-testid="board-health-candidates-note">
+        收编只挂到本版块构成；历史归属不自动回填。
+      </p>
       <div v-if="visibleCandidates.length === 0" class="bhd-cand-empty">暂无未收编候选</div>
       <div v-else class="bhd-cand-list" data-testid="board-health-candidates">
         <div
@@ -602,6 +605,13 @@ function fmtNum(v: number | null | undefined, digits = 2): string {
   white-space: nowrap;
   font-size: 0.72rem;
   color: var(--color-text-secondary);
+}
+
+.bhd-cand-note {
+  margin: 0;
+  font-size: 0.68rem;
+  line-height: 1.6;
+  color: var(--color-text-muted);
 }
 
 .bhd-cand-empty {

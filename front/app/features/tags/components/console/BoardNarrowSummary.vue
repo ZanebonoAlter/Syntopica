@@ -168,7 +168,6 @@ function toggleDormant(): void {
         <p class="bns-kicker">泳道摘要 · 窄屏</p>
         <h2 :title="boardLabel">{{ boardLabel }}</h2>
       </div>
-      <span class="bns-scope">名单/排序/休眠按 {{ sourceDays }} 日档</span>
     </header>
 
     <BoardNarrowDayStrip
@@ -290,14 +289,6 @@ function toggleDormant(): void {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.bns-scope {
-  flex: 0 0 auto;
-  color: var(--color-text-muted);
-  font-size: 0.62rem;
-  line-height: 1.5;
-  text-align: right;
 }
 
 .bns-skeleton {

@@ -21,13 +21,16 @@ type Feed struct {
 	RefreshError    string     `gorm:"type:text" json:"refresh_error"`
 	LastRefreshAt   *time.Time `json:"last_refresh_at"`
 
-	ArticleSummaryEnabled bool      `gorm:"default:false" json:"article_summary_enabled"`
-	CompletionOnRefresh   bool      `gorm:"default:false" json:"completion_on_refresh"`
-	MaxCompletionRetries  int       `gorm:"default:3" json:"max_completion_retries"`
-	FirecrawlEnabled      bool      `gorm:"default:false" json:"firecrawl_enabled"`
-	TaggingEnabled        bool      `gorm:"default:true" json:"tagging_enabled"`
-	Articles              []Article `gorm:"foreignKey:FeedID;constraint:OnDelete:CASCADE" json:"articles,omitempty"`
-	Category              *Category `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
+	ArticleSummaryEnabled bool `gorm:"default:false" json:"article_summary_enabled"`
+	CompletionOnRefresh   bool `gorm:"default:false" json:"completion_on_refresh"`
+	MaxCompletionRetries  int  `gorm:"default:3" json:"max_completion_retries"`
+	FirecrawlEnabled      bool `gorm:"default:false" json:"firecrawl_enabled"`
+	TaggingEnabled        bool `gorm:"default:true" json:"tagging_enabled"`
+	// AIDetectionEnabled 是订阅源级「AI 生成检测」开关（design D14）：默认关闭，
+	// 逐源人工开启——判定覆盖面由人决定，避免快讯类短文源大面积误标。
+	AIDetectionEnabled bool      `gorm:"column:ai_detection_enabled;default:false" json:"ai_detection_enabled"`
+	Articles           []Article `gorm:"foreignKey:FeedID;constraint:OnDelete:CASCADE" json:"articles,omitempty"`
+	Category           *Category `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
 }
 
 func (Feed) TableName() string {
@@ -62,6 +65,7 @@ func (f *Feed) ToDict(stats *FeedStats) map[string]interface{} {
 		"max_completion_retries":  f.MaxCompletionRetries,
 		"firecrawl_enabled":       f.FirecrawlEnabled,
 		"tagging_enabled":         f.TaggingEnabled,
+		"ai_detection_enabled":    f.AIDetectionEnabled,
 	}
 
 	if stats != nil {

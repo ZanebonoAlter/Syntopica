@@ -179,7 +179,7 @@ describe('ObservationMatrix — 矩阵派生（MX 组，线索口径）', () => 
     expect(wrapper.find('[data-testid="matrix-data-asof"]').exists()).toBe(false)
 
     const stale = mountMatrix({ anchorDate: '2026-10-20', dataAsOf: '2026-10-20' })
-    expect(stale.find('[data-testid="matrix-data-asof"]').text()).toContain('数据截止 2026-10-20')
+    expect(stale.find('[data-testid="matrix-data-asof"]').text()).toContain('日报截至 2026-10-20')
   })
 })
 
@@ -230,23 +230,23 @@ describe('ObservationMatrix — 名单稳定与三态', () => {
     expect(wrapper.emitted('selectDate')).toBeUndefined()
   })
 
-  it('footnote：常态标档基准；跨档窗补内容区段另标 365 池（不改名单）', () => {
+  it('历史提示条件出现：常态不写档位口径，仅跨出档窗标「历史仅补数据，泳道名单不变」', () => {
     const tier = mountMatrix()
-    expect(tier.find('[data-testid="matrix-tier-note"]').text()).toBe('名单/排序/休眠按 14 日档')
-    expect(tier.find('[data-testid="matrix-tier-note"]').text()).not.toContain('365 日池')
+    expect(tier.find('[data-testid="matrix-tier-note"]').exists()).toBe(false)
+    expect(tier.text()).not.toContain('日档')
 
     const pool = mountMatrix({ axis: buildDayAxis(TODAY, 30) })
-    expect(pool.find('[data-testid="matrix-tier-note"]').text()).toContain('历史由 365 日池补充（不改名单）')
+    const note = pool.find('[data-testid="matrix-tier-note"]')
+    expect(note.text()).toBe('历史仅补数据，泳道名单不变')
   })
 
-  it('图例可见：口径说明 = 「数字 = 当日线索合计」+ 断档/未知标记；色深是冗余通道不进图例', () => {
+  it('图例单条三态：当日线索数（不含综合稿）· — 无分区 · ? 数据不可用', () => {
     const wrapper = mountMatrix()
     const legend = wrapper.find('[data-testid="matrix-legend"]')
     expect(legend.exists()).toBe(true)
-    expect(legend.text()).toContain('数字 = 当日线索合计')
-    expect(legend.text()).toContain('无分区')
-    expect(legend.text()).toContain('未取到')
+    expect(legend.text()).toBe('当日线索数（不含综合稿） · — 无分区 · ? 数据不可用')
     expect(legend.text()).not.toContain('事件线')
+    expect(legend.text()).not.toContain('兜底')
     const header = wrapper.find('[data-testid="matrix-lane-10"]')
     expect(header.attributes('title')).toContain('11 条线索')
     expect(header.attributes('title')).toContain('4 个主题桶')
@@ -254,15 +254,12 @@ describe('ObservationMatrix — 名单稳定与三态', () => {
     expect(header.attributes('aria-label')).toBe(header.attributes('title'))
   })
 
-  it('常驻口径说明可见：数字 = 当日线索合计 / 综合稿不计入（与图例行分开）', () => {
+  it('重复口径说明段退役：矩阵区只剩一条图例，不再另写第二条说明行', () => {
     const wrapper = mountMatrix()
-    const basis = wrapper.find('[data-testid="matrix-basis-note"]')
-    expect(basis.exists()).toBe(true)
-    expect(basis.text()).toContain('数字 = 当日线索合计')
-    expect(basis.text()).toContain('非综合稿线索数之和')
-    expect(basis.text()).toContain('综合稿不计入')
-    // 常驻说明与图例是两行（不得互相吞掉）
-    expect(wrapper.find('[data-testid="matrix-legend"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="matrix-basis-note"]').exists()).toBe(false)
+    // 头部只剩 kicker 与图例两个 span（口径说明段已删）
+    expect(wrapper.findAll('.omx-head > span')).toHaveLength(2)
+    expect(wrapper.find('[data-testid="matrix-legend"]').text()).not.toContain('数字 =')
   })
 
   it('事件身份未回填 footnote 整体退役（D4）：无论旧 props 取值都不再渲染', () => {

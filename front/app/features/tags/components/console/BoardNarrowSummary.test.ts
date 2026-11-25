@@ -119,6 +119,13 @@ function htmlIndex(wrapper: ReturnType<typeof mountSummary>, testid: string): nu
 }
 
 describe('BoardNarrowSummary', () => {
+  it('窄屏头部不再常驻档位脚注（档由时间视窗控件呈现）', () => {
+    const wrapper = mountSummary()
+    expect(wrapper.find('.bns-scope').exists()).toBe(false)
+    expect(wrapper.find('.bns-head').text()).toBe('泳道摘要 · 窄屏中东')
+    expect(wrapper.text()).not.toContain('日档')
+  })
+
   it('渲染活跃泳道与 14 日迷你条；休眠泳道折叠可展开', async () => {
     const wrapper = mountSummary()
     expect(wrapper.text()).toContain('美伊博弈')

@@ -108,7 +108,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			}
 		}
 	}
-	clusters, err := ClusterTagsLane(ctx, tags, existingTopics, tagEmb, topicBriefs, topicCfg)
+	clusters, err := ClusterTagsLane(ctx, tags, existingTopics, tagEmb, topicBriefs, topicCfg, LoadLaneConstraintOption(existingTopics, tagIDs))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("cluster tags (lane): %w", err)
 	}
@@ -212,13 +212,18 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	// section — bucketing never blocks the report (spec 分桶失败不阻断流水线).
 	plans := resolveSectionPlans(ctx, clusters, threadsByCluster, sectionTitleByCluster, tags, topicLabelByID, topicCfg)
 
+	// 疑似 AI 文章的排序后置（design D8）：只影响线索文章在展开列表里的先后，不改
+	// related_article_ids 的成员与条数（红线 45）。先算一次候选文章里的疑似集合，
+	// 避免每篇文章一次查询；查询失败降级为空集（不重排、不阻断日报生成）。
+	suspectArticleIDs := loadSuspectArticleSet(uniqueUintIDs(threadCandidateArticleIDs(tagArticleMap)))
+
 	var sections []repository.DailyReportSection
 	for pi := range plans {
 		plan := &plans[pi]
 		cluster := clusters[plan.clusterIdx]
 		threads := plan.threads
 		// Populate related article IDs
-		populateThreadArticles(threads, tagArticleMap)
+		populateThreadArticles(threads, tagArticleMap, suspectArticleIDs)
 		plan.threads = threads
 		clusterTags := filterTagsByIDs(tags, plan.tagIDs)
 		clusterArticleCount := 0
@@ -710,8 +715,89 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 		}
 	}
 
+	// 疑似占比（design D9）：只给 filterTagsByQuality 的名额竞争截断当末位排序因子，
+	// 不参与「进日报」判定、不改变候选成员。查询失败时占比保持 0（= 不影响排序）。
+	applyAISuspectRatios(tags, articleIDSets)
+
 	return tags, articleIDSets, nil
 }
+
+// threadCandidateArticleIDs 把 tag→article 映射展平成候选文章 id 列表。
+func threadCandidateArticleIDs(tagArticleMap map[uint][]uint) []uint {
+	ids := make([]uint, 0, len(tagArticleMap))
+	for _, articleIDs := range tagArticleMap {
+		ids = append(ids, articleIDs...)
+	}
+	return ids
+}
+
+// applyAISuspectRatios 给每个候选标签算它名下当天文章的「疑似 AI 生成」比例
+// （按比例而非命中篇数：10 篇里 1 篇疑似 = 0.1，2 篇全疑似 = 1.0）。
+//
+// 判定字段只是软降权因子：查询失败只记 warn 并保持全 0（= 不影响排序），日报生成
+// 不因它中断。
+func applyAISuspectRatios(tags []repository.TagInput, articleIDSets [][]uint) {
+	if len(tags) == 0 || len(articleIDSets) == 0 {
+		return
+	}
+	var candidateIDs []uint
+	for _, ids := range articleIDSets {
+		candidateIDs = append(candidateIDs, ids...)
+	}
+	suspects := loadSuspectArticleSet(uniqueUintIDs(candidateIDs))
+	if suspects == nil {
+		return
+	}
+
+	for i := range tags {
+		if i >= len(articleIDSets) || len(articleIDSets[i]) == 0 {
+			continue
+		}
+		hits := 0
+		for _, id := range articleIDSets[i] {
+			if suspects[id] {
+				hits++
+			}
+		}
+		tags[i].AISuspectRatio = float64(hits) / float64(len(articleIDSets[i]))
+	}
+}
+
+// loadSuspectArticleSet 查给定文章集合里判定状态为「疑似 AI 生成」的 id 集合。
+// 数据库不可用或查询失败返回 nil——调用方据此保持原行为（不重排 / 占比全 0）：
+// 判定字段是软降权因子，无权让日报生成失败。
+func loadSuspectArticleSet(articleIDs []uint) map[uint]bool {
+	if len(articleIDs) == 0 || repository.Repo == nil || repository.Repo.DB() == nil {
+		return nil
+	}
+	var suspectIDs []uint
+	if err := repository.Repo.DB().Model(&models.Article{}).
+		Where("id IN ? AND ai_detection_status = ?", articleIDs, models.AIDetectionStatusSuspect).
+		Pluck("id", &suspectIDs).Error; err != nil {
+		logging.Warnf("[daily-report] load ai detection status failed (keep original order / zero ratios): %v", err)
+		return nil
+	}
+	suspects := make(map[uint]bool, len(suspectIDs))
+	for _, id := range suspectIDs {
+		suspects[id] = true
+	}
+	return suspects
+}
+
+// uniqueUintIDs 去重合并 id 列表（保持首次出现顺序）。
+func uniqueUintIDs(ids []uint) []uint {
+	seen := make(map[uint]bool, len(ids))
+	unique := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	return unique
+}
+
 func findPreviousReportBrief(boardID uint, date time.Time) *repository.BoardDailyReport {
 	var report repository.BoardDailyReport
 	// Order 必须显式按报告日倒序：GORM 的 First() 自带 `ORDER BY <主键> ASC`，
@@ -782,7 +868,12 @@ func filterTagsByQuality(tags []repository.TagInput) []repository.TagInput {
 			if ti != tj {
 				return ti < tj
 			}
-			return kept[i].Score > kept[j].Score
+			if kept[i].Score != kept[j].Score {
+				return kept[i].Score > kept[j].Score
+			}
+			// 末位因子（design D9）：同层级同分数时，疑似占比高的标签靠后，
+			// 名额不够时优先舍弃。占比按比例算，不按命中篇数。
+			return kept[i].AISuspectRatio < kept[j].AISuspectRatio
 		})
 		kept = kept[:30]
 	}

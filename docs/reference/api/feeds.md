@@ -78,11 +78,19 @@
 | `max_completion_retries` | int | 否 | 补全最大重试次数 |
 | `firecrawl_enabled` | bool | 否 | 启用 Firecrawl |
 
+> 新建时不接受 `ai_detection_enabled`（订阅源级「AI 生成检测」开关，默认 `false`）——建后用 `PUT /api/feeds/:feed_id` 开启。
+
 `201`：返回创建的订阅。`409`：URL 已存在。
 
 ### PUT /api/feeds/:feed_id
 
 只更新请求体中明确提供的字段。布尔字段需显式包含才生效。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `ai_detection_enabled` | bool | 「AI 生成检测」开关（add-ai-generated-article-detection，默认 `false`，逐源人工开启）。只有 `true` 时该源文章才会在三个内容就绪节点（全文抓取成功 / 抓取终态失败降级 / 未开抓取时入库）入 `detection_jobs` 判定队列；与 `tagging_enabled` 互不联动，关闭即不再产生新判定作业（存量判定结论保留） |
+
+`GET /api/feeds` 与详情响应也回该字段（`feed.ToDict()` 的 `ai_detection_enabled`）。
 
 传入非空 `icon` 时，`icon_source` 自动置为 `custom`（用户主权图标，后续 RefreshFeed 不会覆盖）。
 

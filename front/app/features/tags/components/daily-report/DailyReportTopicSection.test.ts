@@ -96,7 +96,7 @@ function mountSection(over: {
   zone?: QualityZone
   reportId?: number
   reportDate?: string
-  articleEntries?: Map<number, { status: 'success'; data: { title: string } }>
+  articleEntries?: Map<number, { status: 'success', data: { title: string, aiDetectionStatus?: 'unknown' | 'suspect' | 'not_ai' } }>
   laneDynamicsEntry?: RequestCacheEntry<LaneDynamicsResponse>
   contextEntries?: Map<string, RequestCacheEntry<ContextRow[]>>
   onEnsureLaneDynamics?: (retry?: boolean) => void
@@ -851,5 +851,72 @@ describe('DailyReportTopicSection — 聚簇定位锚点与高亮（D14）', () 
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('DailyReportTopicSection — 疑似 AI 生成标记与排序后置', () => {
+  /** 后端投影形态的线索文章（顺序 = related_article_ids 顺序，已由后端排疑似末）。 */
+  function projected(
+    ids: number[],
+    statuses: Record<number, 'suspect' | 'not_ai' | 'unknown'> = {},
+  ): NonNullable<DailyReportThread['articles']> {
+    return ids.map(id => ({
+      id,
+      title: `文章${id}`,
+      ai_detection_status: statuses[id] ?? 'unknown',
+      ai_detection_score: statuses[id] === 'suspect' ? 0.9 : 0.1,
+    }))
+  }
+
+  /** 一条线索 + 后端投影（标题与判定一次到位，前端不再逐篇请求）。 */
+  function expandWith(ids: number[], statuses: Record<number, 'suspect' | 'not_ai' | 'unknown'> = {}) {
+    const zone = activeZone([makeSection(100, [makeThread(1, {
+      related_article_ids: ids,
+      articles: projected(ids, statuses),
+    })])])
+    return mountSection({ zone })
+  }
+
+  /** 旧响应：无 articles 投影，只有标题缓存（回退路径）。 */
+  function expandLegacy(ids: number[], statuses: Record<number, 'suspect' | 'not_ai' | 'unknown'> = {}) {
+    const zone = activeZone([makeSection(100, [makeThread(1, { related_article_ids: ids })])])
+    const articleEntries = new Map(ids.map(id => [id, {
+      status: 'success' as const,
+      data: { title: `文章${id}`, aiDetectionStatus: statuses[id] ?? 'unknown' },
+    }]))
+    return mountSection({ zone, articleEntries })
+  }
+
+  it('疑似文章带标记；未判定与已确认非 AI 不渲染标记、不写占位文案', async () => {
+    const wrapper = expandWith([101, 102, 103], { 101: 'suspect', 102: 'not_ai', 103: 'unknown' })
+    await wrapper.find('.drm-thread__header').trigger('click')
+    expect(wrapper.find('[data-testid="report-article-suspect-101"]').text()).toBe('疑似 AI 生成')
+    expect(wrapper.find('[data-testid="report-article-suspect-102"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="report-article-suspect-103"]').exists()).toBe(false)
+    // 不占位、不写「未检测」类文案
+    expect(wrapper.find('.drm-articles').text()).not.toContain('未检测')
+  })
+
+  it('顺序跟随后端投影（已排疑似末），前端不再二次重排、不再逐篇取详情、成员与「N 篇」计数不变', async () => {
+    // 后端已给顺序：[101, 103, 105, 102(疑似), 104(疑似)]
+    const order = [101, 103, 105, 102, 104]
+    const wrapper = expandWith(order, { 102: 'suspect', 104: 'suspect' })
+    await wrapper.find('.drm-thread__header').trigger('click')
+    const rendered = wrapper.findAll('.drm-article').map(row => row.text().replace(/^文章(\d+).*/, '$1'))
+    expect(rendered).toEqual(['101', '103', '105', '102', '104'])
+    // 后端投影自带标题：不再发 ensureArticles（N+1 消失）
+    expect(wrapper.emitted('ensureArticles')).toBeUndefined()
+    // 集合是标签对应文章的并集，不因标记剔除任何文章；计数仍取 related_article_ids.length
+    expect(wrapper.findAll('.drm-article')).toHaveLength(5)
+    expect(wrapper.find('.drm-thread__count').text()).toContain('5 篇')
+  })
+
+  it('旧响应无 articles 投影：回退标题缓存渲染、不做前端重排（保持旧行为）', async () => {
+    const wrapper = expandLegacy([101, 102, 103], { 102: 'suspect' })
+    await wrapper.find('.drm-thread__header').trigger('click')
+    const rendered = wrapper.findAll('.drm-article').map(row => row.text().replace(/^文章(\d+).*/, '$1'))
+    expect(rendered).toEqual(['101', '102', '103'])
+    expect(wrapper.find('[data-testid="report-article-suspect-102"]').exists()).toBe(true)
+    expect(wrapper.emitted('ensureArticles')?.[0]).toEqual([[101, 102, 103]])
   })
 })

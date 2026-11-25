@@ -29,7 +29,7 @@ vi.mock('~/composables/useNotify', () => ({
 vi.mock('../ArticlePreviewModal.vue', () => ({
   default: {
     name: 'ArticlePreviewModal',
-    props: ['visible', 'selectedPreviewArticle', 'loadingPreviewArticle'],
+    props: ['visible', 'selectedPreviewArticle', 'loadingPreviewArticle', 'relatedContext'],
     emits: ['close', 'favorite', 'article-update', 'navigate'],
     template: '<div data-testid="article-preview-stub" />',
   },
@@ -44,7 +44,7 @@ const readerStub = {
 
 const previewStub = {
   name: 'ArticlePreviewModal',
-  props: ['visible', 'selectedPreviewArticle', 'loadingPreviewArticle'],
+  props: ['visible', 'selectedPreviewArticle', 'loadingPreviewArticle', 'relatedContext'],
   emits: ['close', 'favorite', 'article-update', 'navigate'],
   template: '<div data-testid="article-preview-stub" />',
 }
@@ -219,6 +219,41 @@ describe('DailyReportDeskShell — 线索文章直达站内阅读预览（daily-
 
     expect(wrapper.findComponent(previewStub).props('visible')).toBe(false)
     expect(notifyWarn).toHaveBeenCalledWith('文章加载失败，请稍后重试')
+  })
+
+  // ── review R-1：chip 点击带相关度上下文，弹窗内多一行阅读上下文 ──
+  it('数字入参（普通文章行）：relatedContext 为 null，弹窗不多渲染一行', async () => {
+    const wrapper = mountShell()
+    await flushPromises()
+
+    await openPreviewWith(wrapper)
+    expect(wrapper.findComponent(previewStub).props('relatedContext')).toBeNull()
+  })
+
+  it('对象入参（相关线索 chip）：上下文透传给预览弹窗，关闭后清空', async () => {
+    const wrapper = mountShell()
+    await flushPromises()
+
+    wrapper.findComponent(readerStub).vm.$emit('openArticle', {
+      articleId: 158497,
+      score: 0.89,
+      level: 'strong',
+      periodDate: '2026-11-02',
+    })
+    await flushPromises()
+
+    expect(getArticle).toHaveBeenCalledWith(158497)
+    expect(wrapper.findComponent(previewStub).props('visible')).toBe(true)
+    expect(wrapper.findComponent(previewStub).props('relatedContext')).toEqual({
+      score: 0.89,
+      level: 'strong',
+      periodDate: '2026-11-02',
+    })
+
+    wrapper.findComponent(previewStub).vm.$emit('close')
+    await flushPromises()
+    expect(wrapper.findComponent(previewStub).props('visible')).toBe(false)
+    expect(wrapper.findComponent(previewStub).props('relatedContext')).toBeNull()
   })
 })
 

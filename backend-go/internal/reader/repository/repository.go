@@ -318,6 +318,9 @@ var articleDependents = []articleDependent{
 	{"article_topic_tags", &models.ArticleTopicTag{}},
 	{"tag_jobs", &models.TagJob{}},
 	{"firecrawl_jobs", &models.FirecrawlJob{}},
+	// 判定作业与文章同命：文章被删除后作业已无意义，留下来只会白跑重试上限
+	// （add-ai-generated-article-detection）。
+	{"detection_jobs", &models.DetectionJob{}},
 }
 
 // existingArticleDependents keeps the entries this database actually has.
@@ -340,8 +343,8 @@ func existingArticleDependents(tx *gorm.DB) []articleDependent {
 }
 
 // deleteArticleDependents removes the per-article rows that must not outlive
-// their article: the tag edges, the queued tag jobs and the queued firecrawl
-// jobs. A long-lived database cascades them through foreign keys
+// their article: the tag edges, the queued tag jobs, the queued firecrawl jobs
+// and the queued AI-detection jobs. A long-lived database cascades them through foreign keys
 // (fk_article_topic_tags_article / fk_tag_jobs_article / fk_firecrawl_jobs_article),
 // but AutoMigrate does not create those constraints in a freshly built database
 // (DisableForeignKeyConstraintWhenMigrating), so they are removed explicitly and

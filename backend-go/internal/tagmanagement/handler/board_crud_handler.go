@@ -29,6 +29,16 @@ import (
 var semanticBoardLabelEmbedder service.AuxiliaryLabelEmbedder = service.DefaultAuxiliaryLabelEmbedder
 var semanticBoardUpgradeLLMFactory = service.NewDefaultSemanticBoardUpgradeLLM
 
+// invalidateMatchCache invalidates the semantic-board match cache (board
+// auxiliaries / composites / embeddings). The board embeddings cache has NO
+// TTL, so a board whose label/description changed keeps serving its old
+// vector until the cache is invalidated — the direction gate would then judge
+// against a stale embedding (board-match-cache 红线).
+//
+// It is a package-level var (same seam pattern as semanticBoardLabelEmbedder)
+// so tests can observe the invalidation without reaching into the cache.
+var invalidateMatchCache = service.InvalidateMatchCache
+
 // auxLabelServiceEmbedder allows tests to swap the embedder backing the
 // auxiliary-label service constructed in RegisterSemanticBoardRoutes
 // (nil → DefaultAuxiliaryLabelEmbedder). Same swap pattern as
@@ -287,7 +297,9 @@ func (h *semanticBoardHandler) updateSemanticBoard(c *gin.Context) {
 	if desc := strings.TrimSpace(req.Description); desc != board.Description {
 		board.Description = desc
 	}
-	if board.Label != boardOrigLabel || board.Description != boardOrigDesc {
+	// 版块向量由 label + description 重算：两者任一变化都意味着旧向量作废。
+	boardVectorChanged := board.Label != boardOrigLabel || board.Description != boardOrigDesc
+	if boardVectorChanged {
 		input := semanticBoardEmbeddingInput(board.Label, board.Description)
 		pgVector, _, err := semanticBoardLabelEmbedder(c.Request.Context(), input, service.AuxiliaryLabelEmbeddingModeStorage)
 		if err != nil {
@@ -326,6 +338,12 @@ func (h *semanticBoardHandler) updateSemanticBoard(c *gin.Context) {
 	if err := h.db.WithContext(c.Request.Context()).Save(&board).Error; err != nil {
 		respondError(c, http.StatusBadRequest, err)
 		return
+	}
+	if boardVectorChanged {
+		// 匹配输入缓存（board embeddings）无 TTL —— 改完版块名/描述必须失效，
+		// 否则方向校验继续用旧向量。不自动重跑匹配（topic_tag_board_labels
+		// 保持旧结果，回填是用户的显式动作）。
+		invalidateMatchCache()
 	}
 	respondOK(c, gin.H{"id": board.ID})
 }

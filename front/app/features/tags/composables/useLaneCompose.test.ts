@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
-import { useLaneCompose } from './useLaneCompose'
+import { LANE_REMOVAL_UNDO_MS, useLaneCompose } from './useLaneCompose'
 import type { ComposeCandidatesData } from '~/api/persistentTopics'
 
 /**
@@ -662,5 +662,99 @@ describe('useLaneCompose · 时间视窗控制与 365 可选池曲线（unify-la
       { date: '2026-10-01', value: 0 },
       { date: '2026-10-02', value: 0 },
     ])
+  })
+})
+
+describe('useLaneCompose · 移出可撤销（D8 / 3.5）', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('移出后 3 秒内可撤销：成员回到本次泳道', async () => {
+    const { compose } = await setup()
+    compose.setChainSelected('1984:1', true)
+    compose.toggleMember('2', false)
+    expect(compose.memberCount.value).toBe(2)
+    expect(compose.lastRemoval.value).toMatchObject({ id: '2', row: null, slot: null })
+    expect(compose.undoRemoval()).toBe(true)
+    expect(compose.memberCount.value).toBe(3)
+    expect(compose.selectedIds.value.has('2')).toBe(true)
+    expect(compose.lastRemoval.value).toBeNull()
+  })
+
+  it('超时后不可撤销（入口消失、undo 返回 false）', async () => {
+    vi.useFakeTimers()
+    const { compose } = await setup()
+    compose.setChainSelected('1984:1', true)
+    compose.toggleMember('2', false)
+    vi.advanceTimersByTime(LANE_REMOVAL_UNDO_MS + 1)
+    expect(compose.lastRemoval.value).toBeNull()
+    expect(compose.undoRemoval()).toBe(false)
+    expect(compose.memberCount.value).toBe(2)
+  })
+
+  it('新的移出覆盖上一笔；选入 / 整组 / 清空都清掉撤销入口', async () => {
+    const { compose } = await setup()
+    compose.setChainSelected('1984:1', true)
+    compose.toggleMember('1', false)
+    compose.toggleMember('2', false)
+    expect(compose.lastRemoval.value?.id).toBe('2')
+    expect(compose.undoRemoval()).toBe(true)
+    expect(compose.selectedIds.value.has('1')).toBe(false) // 上一笔已被覆盖，不跟着恢复
+    expect(compose.selectedIds.value.has('2')).toBe(true)
+
+    compose.toggleMember('3', false)
+    compose.toggleMember('4', true) // 其他成员变更（选入）→ 清空
+    expect(compose.lastRemoval.value).toBeNull()
+
+    compose.toggleMember('4', false)
+    compose.setChainSelected('1984:1', false) // 整组取消 → 清空
+    expect(compose.lastRemoval.value).toBeNull()
+
+    compose.setChainSelected('1984:1', true)
+    compose.toggleMember('1', false)
+    compose.clearSelection()
+    expect(compose.lastRemoval.value).toBeNull()
+  })
+
+  it('非成员的「取消勾选」不产撤销记录（不假装移出过）', async () => {
+    const { compose } = await setup()
+    compose.toggleMember('4', false)
+    expect(compose.lastRemoval.value).toBeNull()
+  })
+})
+
+describe('useLaneCompose · 阈值三档（D4 / 4.3）', () => {
+  it('默认 standard = 接口 matchThreshold（不改变既有默认推荐集）', async () => {
+    const { compose } = await setup()
+    expect(compose.thresholdTier.value).toBe('standard')
+    expect(compose.threshold.value).toBe(0.3)
+    compose.setChainSelected('1984:1', true)
+    expect(compose.recommendations.value.unassigned.map(r => r.section.id)).toContain('4')
+  })
+
+  it('切「仅高相关」只收紧散料批次，成员与候选链不动；「全部」放开', async () => {
+    // 散料较远：与成员质心 cos 距离 ≈0.23，标准档在阈内、紧档被门槛挡掉
+    const far = candidate('7', '2026-10-29', '散料较远', [0.7, 0.714])
+    apiMock.getComposeCandidates.mockResolvedValue({
+      success: true,
+      data: response({ sections: [...SECTIONS, far] }),
+    })
+    const { compose } = await setup()
+    compose.setChainSelected('1984:1', true)
+    const before = [...compose.selectedIds.value].sort()
+    expect(compose.recommendations.value.unassigned.map(r => r.section.id)).toContain('7')
+
+    compose.thresholdTier.value = 'tight'
+    expect(compose.threshold.value).toBeCloseTo(0.15, 12)
+    // 成员（已选）一字不动
+    expect([...compose.selectedIds.value].sort()).toEqual(before)
+    // 距离 ≈0.23 的散料在紧档被门槛挡掉
+    expect(compose.recommendations.value.unassigned.map(r => r.section.id)).not.toContain('7')
+
+    compose.thresholdTier.value = 'all'
+    expect(compose.threshold.value).toBe(1)
+    expect(compose.recommendations.value.unassigned.map(r => r.section.id)).toContain('7')
+    expect([...compose.selectedIds.value].sort()).toEqual(before)
   })
 })

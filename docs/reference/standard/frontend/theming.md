@@ -44,6 +44,9 @@ editorial / magazine（杂志感），**禁止回退到蓝紫色 SaaS 视觉**�
 | 开关 | `AppToggle` |
 | 输入框 | `AppInput` |
 | 区块标题 | `AppSectionHeader` |
+| 页面内部滚动区（`overflow: auto/scroll` 的栏、栏内列表、横向日期条、边注栏） | 全局类 `.scroll-thin`（`app/assets/css/main.css`） |
+
+**滚动条红线**（`unify-inner-scrollbar-style`，2026-11-18）：内部滚动区一律挂 `.scroll-thin`，禁止裸写 `scrollbar-width` 或硬编码颜色。两条机制必须记住——① 一旦声明 `scrollbar-width`/`scrollbar-color`，Chromium(≥121)/Firefox 就接管绘制并**忽略同元素的 `::-webkit-scrollbar`**（伪元素只能当老引擎兜底）；② `scrollbar-color` **继承**、`scrollbar-width` **不继承**，所以**每个滚动容器自己挂类**，指望父级带下去只会得到「颜色变了、宽度没变」。页面级 10px 杂志条（`main.css` 全局 `::-webkit-scrollbar` 段）不在此列。回归由 `app/assets/css/scrollbar-style.test.ts` 机械守住。
 
 页面布局模式与弹窗尺寸档的完整契约（批准基线、双视口验收、例外登记）→ [layout.md](layout.md)。
 

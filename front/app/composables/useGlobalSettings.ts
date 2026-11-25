@@ -51,7 +51,7 @@ export function useGlobalSettings() {
   // ---- Feed operations ----
   async function updateFeedSetting(
     feedId: string,
-    setting: 'refresh_interval' | 'max_articles' | 'tagging_enabled' | 'firecrawl_enabled' | 'completion_on_refresh' | 'article_summary_enabled' | 'max_completion_retries' | 'category_id' | 'url',
+    setting: 'refresh_interval' | 'max_articles' | 'tagging_enabled' | 'firecrawl_enabled' | 'completion_on_refresh' | 'article_summary_enabled' | 'ai_detection_enabled' | 'max_completion_retries' | 'category_id' | 'url',
     value: number | boolean | string | null
   ) {
     loading.value = true

@@ -29,6 +29,7 @@ import ObservationRangeControls from './ObservationRangeControls.vue'
 import ArchiveHistoryStrip from './ArchiveHistoryStrip.vue'
 import { useSemanticBoardsApi } from '~/api/semanticBoards'
 import type { BoardArticleTag } from '~/api/semanticBoards'
+import { AI_SUSPECT_LABEL, isAiSuspect } from '~/utils/aiDetection'
 import { matchReasonColor, stepNoOf, stepShortOf } from '~/utils/matchQuality'
 import { todayInShanghai } from '../../composables/useBoardConsole'
 import { useArchiveDailyCounts } from '../../composables/useArchiveDailyCounts'
@@ -356,6 +357,8 @@ interface RowView {
   strongest: StrongestView | null
   inReport: boolean
   weak: boolean
+  /** 疑似 AI 生成（add-ai-generated-article-detection）：仅 suspect 挂标记，未判定/非 AI 不占位。 */
+  suspect: boolean
 }
 
 interface GroupView {
@@ -451,6 +454,7 @@ const groupViews = computed<GroupView[]>(() => groupedArticles.value.map(group =
       strongest: strongestView(article),
       inReport: !!article.in_report,
       weak: isWeakArticle(article),
+      suspect: isAiSuspect(article.aiDetectionStatus),
     }
   })
   return {
@@ -797,6 +801,13 @@ const listCount = computed(() => {
                   <span class="ar-flow-no" :style="{ color: row.strongest.color }">{{ row.strongest.stepNo }}</span>
                   <span class="ar-flow-label">{{ row.strongest.stepShort }}</span>
                 </button>
+                <!-- 疑似 AI 生成：中性标记追加在标签带末尾，不占「入板」步号、不用规则色（spec: 归档视图文章行标注） -->
+                <span
+                  v-if="row.suspect"
+                  class="ar-suspect-chip"
+                  title="判定为疑似 AI 生成；可在文章详情的手动操作里纠正"
+                  :data-testid="`archive-suspect-chip-${row.id}`"
+                >{{ AI_SUSPECT_LABEL }}</span>
               </span>
             </div>
           </div>

@@ -91,6 +91,19 @@ func resetStaleStates() {
 	if tagJobResult.RowsAffected > 0 {
 		logging.Infof("Reset %d tag job(s) stuck in 'leased' state", tagJobResult.RowsAffected)
 	}
+
+	// 判定作业与 tag job 同款启动收敛：租约最长 10min，不重置的话崩溃重启后
+	// 残留作业要等租约自然过期才能重领（add-ai-generated-article-detection）。
+	detectionJobResult := database.DB.Model(&models.DetectionJob{}).
+		Where("status = ?", "leased").
+		Updates(map[string]interface{}{
+			"status":           "pending",
+			"leased_at":        nil,
+			"lease_expires_at": nil,
+		})
+	if detectionJobResult.RowsAffected > 0 {
+		logging.Infof("Reset %d detection job(s) stuck in 'leased' state", detectionJobResult.RowsAffected)
+	}
 }
 
 func StartRuntime() *Runtime {
@@ -135,6 +148,13 @@ func StartRuntime() *Runtime {
 	})
 
 	tagging.StartAllWorkers()
+
+	// 疑似 AI 判定 worker（add-ai-generated-article-detection task 3.2）：独立队列 +
+	// 独立 worker 循环，与标签打标互不影响。启动失败只记日志（作业表持久化，不丢
+	// 作业）；不阻塞应用启动。
+	if err := content.StartAIDetectionWorker(); err != nil {
+		logging.Warnf("Failed to start the AI detection worker: %v", err)
+	}
 
 	// 辅助标签描述修复链的后台执行器（board-health-triage-advice tasks 2.6）：
 	// worker 绑**应用生命周期** ctx（不是提交请求的 ctx——关页面不取消已确认
@@ -432,7 +452,11 @@ var (
 
 var (
 	// stopWorkersFn 是工作队列停止的注入缝（D4）：真身依赖 DB 单例，单测替换为记录型 fake 即可无 DB 运行。
-	stopWorkersFn = tagging.StopAllWorkers
+	// 两族 worker 相互独立，串行停下（打标/嵌入族 + 疑似 AI 判定 worker）。
+	stopWorkersFn = func() {
+		tagging.StopAllWorkers()
+		content.StopAIDetectionWorker()
+	}
 	// startRepairExecutorFn / stopRepairExecutorFn 是描述修复 worker 生命周期的注入缝：
 	// 真身走 tagmanagement 域门面（域根持有 service+executor 单例），单测替换为记录型 fake 即可无 DB 运行。
 	startRepairExecutorFn = tagging.StartDescriptionRepairExecutor

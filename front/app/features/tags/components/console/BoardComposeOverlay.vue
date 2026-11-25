@@ -22,6 +22,7 @@ import LaneComposeCandidates from '~/features/tags/components/compose/LaneCompos
 import LaneComposeCanvas from '~/features/tags/components/compose/LaneComposeCanvas.vue'
 import LaneComposeInspector from '~/features/tags/components/compose/LaneComposeInspector.vue'
 import LaneAnchorScope from '~/features/tags/components/console/LaneAnchorScope.vue'
+import LaneConstraintScope from '~/features/tags/components/console/LaneConstraintScope.vue'
 import LaneCorrectionCanvas from '~/features/tags/components/console/LaneCorrectionCanvas.vue'
 import LaneMemberList from '~/features/tags/components/console/LaneMemberList.vue'
 import LaneRecommendationList from '~/features/tags/components/console/LaneRecommendationList.vue'
@@ -120,7 +121,15 @@ const compose = useLaneCompose({
   boardId: computed(() => props.boardId),
   requestConfirm,
   onSaved: handleSaved,
+  draftConstraints: () => draftConstraints.value,
 })
+
+/**
+ * 新建模式的辅助标签约束草稿（由 LaneConstraintScope 的 draft 模式上报）。
+ * 保存时随建话题一并提交 → 后端在同一个事务里写 topic + 首义留痕 + 约束行。
+ * 无约束时不发该字段（与存量调用字节一致）。
+ */
+const draftConstraints = ref<Array<{ term: string, mode: 'required' | 'preferred' }>>([])
 
 // ── 阈值三档（画布工具条控件；与右栏「可补充的事件」共用同一状态） ────────
 const THRESHOLD_TIERS: { key: LaneThresholdTier, label: string }[] = [
@@ -452,7 +461,7 @@ onBeforeUnmount(() => {
           <aside
             class="bco__left"
             data-testid="lane-correction-left"
-            aria-label="本泳道成员、更早成员、已移出（本次）与首义范围"
+            aria-label="本泳道成员、更早成员、已移出（本次）、首义范围与辅助标签约束"
           >
             <LaneMemberList
               :members="correction.memberNodes.value"
@@ -482,6 +491,14 @@ onBeforeUnmount(() => {
               @toggle="id => correction.toggleAnchorNode(id)"
               @apply="correction.requestAnchorApply()"
               @retry="correction.reloadAnchor()"
+            />
+            <!--
+              辅助标签约束（topic-lane-auxiliary-label-constraint）：话题级持久设置，
+              逐条即时落库，默认折叠。紧跟「首义范围」——两者同为「人工改写话题定义面」。
+            -->
+            <LaneConstraintScope
+              v-if="props.topicId"
+              :topic-id="props.topicId"
             />
           </aside>
 
@@ -538,15 +555,26 @@ onBeforeUnmount(() => {
 
       <AppPageShell v-else mode="workspace" as="div" :gutter="0" class="bco__shell">
         <div class="bco__workbench">
-          <LaneComposeCandidates
-            :chains="compose.candidateChains.value"
-            :sections="compose.sections.value"
-            :selected-ids="compose.selectedIds.value"
-            :loading="compose.loading.value"
-            @toggle-chain="(key, checked) => compose.setChainSelected(key, checked)"
-            @toggle-member="(id, checked) => compose.toggleMember(id, checked)"
-            @cancel-chain="key => compose.cancelChain(key)"
-          />
+          <!--
+            新建模式左栏：候选链 + 辅助标签约束（草稿）。约束与建话题同事务提交
+            （后端建话题接口带 constraints 字段），所以这里只维护本地行集、不落库。
+          -->
+          <div class="bco__left-compose">
+            <LaneComposeCandidates
+              :chains="compose.candidateChains.value"
+              :sections="compose.sections.value"
+              :selected-ids="compose.selectedIds.value"
+              :loading="compose.loading.value"
+              @toggle-chain="(key, checked) => compose.setChainSelected(key, checked)"
+              @toggle-member="(id, checked) => compose.toggleMember(id, checked)"
+              @cancel-chain="key => compose.cancelChain(key)"
+            />
+            <LaneConstraintScope
+              draft
+              :topic-id="null"
+              @update:draft-constraints="rows => { draftConstraints = rows }"
+            />
+          </div>
 
           <LaneComposeCanvas
             class="bco__canvas"
@@ -821,8 +849,7 @@ onBeforeUnmount(() => {
 
 /* 修正模式：三栏（左 380 已选 / 中央自适应 / 右 300 待选；unify-lane-workbench D5） */
 .bco__workbench--correction {
-  grid-template-columns: 380px minmax(0, 1fr) 300px;
-}
+  grid-template-columns: 380px minmax(0, 1fr) 300px;}
 
 .bco__right-correction {
   min-height: 0;
@@ -862,6 +889,18 @@ onBeforeUnmount(() => {
   /* 左栏整体纵向可滚：三块堆叠总高超屏时仍能滚到第三块（A-10）。
      块内长清单各自内部滚动，操作按钮 sticky 于块内底部。 */
   overflow-y: auto;
+  border-right: 1px solid var(--color-border-medium);
+}
+
+/*
+  新建模式左栏：候选链（占满剩余高） + 辅助标签约束（内容高，默认折叠）。
+  用 grid 两行而非 flex，避免子组件自带滚动容器时高度预算算错。
+*/
+.bco__left-compose {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
   border-right: 1px solid var(--color-border-medium);
 }
 

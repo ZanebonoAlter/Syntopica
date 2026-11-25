@@ -454,6 +454,36 @@ describe('BoardArchiveView — 行渲染（四列 / 标签带 / 入板 chip）',
     expect(wrapper.find('[data-testid="archive-row-4"] .ar-tag.is-empty').attributes('title')).toContain('不会进入日报')
     expect(wrapper.find('[data-testid="archive-window"]').text()).toContain('无命中标签的文章不会进入日报')
   })
+
+  it('疑似 AI 生成标记追加在标签带末尾：不占入板步号、未判定不渲染', async () => {
+    apiMock.getBoardArticles.mockResolvedValue({
+      success: true,
+      data: [
+        article(7, { aiDetectionStatus: 'suspect' }),
+        article(8, { aiDetectionStatus: 'unknown' }),
+        article(9, { aiDetectionStatus: 'not_ai' }),
+      ],
+      pagination: { page: 1, per_page: 100, total: 3, pages: 1 },
+    })
+    const { wrapper } = mountView()
+    await flushPromises()
+    await submitDateRange(wrapper, '2026-10-18', '2026-10-23')
+
+    const row = wrapper.find('[data-testid="archive-row-7"]')
+    const chip = row.find('[data-testid="archive-suspect-chip-7"]')
+    expect(chip.exists()).toBe(true)
+    expect(chip.text()).toBe('疑似 AI 生成')
+    // 标签带末尾：入板 chip 仍在前（步号语义不被占用），疑似标记是行内最后一个 chip
+    expect(row.find('[data-testid="archive-flow-chip-7"]').text()).toContain('入板')
+    const bandItems = row.findAll('.ar-row-tags > *')
+    expect(bandItems.at(-1)?.attributes('data-testid')).toBe('archive-suspect-chip-7')
+    // 中性色：不注入标签规则色边框（规则色只表达匹配规则）
+    expect(chip.classes()).toContain('ar-suspect-chip')
+    expect(chip.attributes('style') ?? '').not.toContain('border-color')
+    // 未判定 / 已确认非 AI：不渲染标记、不占位
+    expect(wrapper.find('[data-testid="archive-row-8"]').find('.ar-suspect-chip').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="archive-row-9"]').find('.ar-suspect-chip').exists()).toBe(false)
+  })
 })
 
 describe('BoardArchiveView — 交互契约', () => {

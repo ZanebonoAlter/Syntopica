@@ -55,24 +55,6 @@
   padding: 0.5rem;
 }
 
-.sidebar-content::-webkit-scrollbar {
-  width: 0.375rem;
-}
-
-.sidebar-content::-webkit-scrollbar-track {
-  background: transparent;
-  border-radius: 4px;
-}
-
-.sidebar-content::-webkit-scrollbar-thumb {
-  background: var(--color-border-medium);
-  border-radius: 4px;
-}
-
-.sidebar-content::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-strong);
-}
-
 /* Sidebar Items - 侧边栏项目 */
 .sidebar-item {
   width: 100%;

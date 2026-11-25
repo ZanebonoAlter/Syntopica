@@ -32,6 +32,10 @@ var defaultConcurrency = map[Capability]int{
 	CapabilityEmbedding:    5,
 	// CapabilityFeedDiscovery: 推荐精排 LLM，低频突发（手动刷新/问答），与总结同档并发。
 	CapabilityFeedDiscovery: 2,
+	// CapabilityAIDetection: 疑似 AI 判定（add-ai-generated-article-detection design D5）。
+	// 独立配额——信号量按 capability 分桶，判定与打标互不挤占；判定池量级远小于
+	// 打标池（实测约 98 篇/天），2 并发足够且不与打标抢位。
+	CapabilityAIDetection: 2,
 }
 
 func truncateSnippet(s string) string {
@@ -410,6 +414,62 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (result *ChatResult,
 	finalErr := errors.Join(attemptErrors...)
 
 	return nil, finalErr
+}
+
+// LocalFailure 描述一次「本地判定失败」的细节：请求已构造但结论不可用
+// （路由缺失、无可用绑定、响应无法解析）。由 LogLocalFailure 落成审计行。
+type LocalFailure struct {
+	// Code 是错误码（route_not_found / no_providers / parse_error …）。
+	Code string
+	// Message 是人类可读原因，落 ai_call_logs.error_message。
+	Message string
+	// ResponseSnippet 是失败现场的可选载荷（如无法解析的模型原文）。
+	ResponseSnippet string
+	// RouteName / ProviderName / ModelName 在已有 ChatResult 时回填，便于按模型归因。
+	RouteName    string
+	ProviderName string
+	ModelName    string
+}
+
+// LogLocalFailure 写一条「本地判定失败」的审计行到 ai_call_logs。
+//
+// 为什么需要它：Router.Chat 在 LoadRouteWithModels 失败（路由缺失 / 无可用绑定）时
+// 早退，不写任何审计行——但「能力未绑定模型 → 判定失败并记入 AI 调用审计」是硬契约
+// （add-ai-generated-article-detection spec「判定失败的静默降级」）。同一出口也用于
+// 「HTTP 200 但响应不可解析」这类本地判定失败：此时 Router 已写过一行成功行
+// （provider 侧确实成功），本地判定失败需额外一行说明，否则审计里看不到失败原因。
+//
+// prompt / response_snippet 的截断上限与 Chat 路径同款（prompt 20000 runes 保头尾、
+// response_snippet 10000 runes），避免两套截断口径。
+func (r *Router) LogLocalFailure(ctx context.Context, req ChatRequest, failure LocalFailure) {
+	if r == nil || r.store == nil {
+		return
+	}
+	meta := make(map[string]any, len(req.Metadata)+1)
+	for k, v := range req.Metadata {
+		meta[k] = v
+	}
+	meta["local_failure"] = true
+
+	snippet := failure.ResponseSnippet
+	if snippet == "" {
+		snippet = failure.Message
+	}
+
+	r.store.LogCall(ctx, &models.AICallLog{
+		Operation:       req.Operation,
+		Capability:      string(req.Capability),
+		RouteName:       failure.RouteName,
+		ProviderName:    failure.ProviderName,
+		Model:           failure.ModelName,
+		Success:         false,
+		ErrorCode:       failure.Code,
+		ErrorMessage:    failure.Message,
+		Prompt:          formatMessages(req.Messages),
+		RequestMeta:     encodeMeta(meta),
+		ResponseSnippet: truncateSnippet(snippet),
+		SessionID:       req.SessionID,
+	})
 }
 
 // saveEmbeddingCache persists a successful embedding result. Best-effort:

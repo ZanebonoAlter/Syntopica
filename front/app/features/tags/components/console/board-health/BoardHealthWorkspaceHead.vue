@@ -6,7 +6,8 @@
  *  1. 顶部一行：本轮待核对数 + 当前项真实进展（**不做评分大卡**）；
  *  2. 非正常轮次的说明（旧快照 / 空清单 / 降级 / 读取失败 / 等待首轮）——**不猜诊断、不说全部健康**；
  *  3. 两行状态提示：stale（刷新失败保留上次快照）、分诊有丢弃项（数据不完整）；
- *  4. 折叠区「本轮体检依据」：**复用既有 `BoardHealthSignal`**（评分/评语/挂载统计/趋势，零额外请求）。
+ *  4. 一行快照口径：评分/评语取最新体检快照，不随观察日期回溯（右轨只留结论，口径归详情）；
+ *  5. 折叠区「本轮体检依据」：**复用既有 `BoardHealthSignal`**（评分/评语/挂载统计/趋势，零额外请求）。
  */
 import { Icon } from '@iconify/vue'
 import type { BoardHealthSnapshotDTO } from '~/api/semanticBoards'
@@ -73,6 +74,11 @@ const emit = defineEmits<{
     <!-- 分诊有丢弃项：一行说明数据不完整（不加信息卡） -->
     <p v-if="dropped > 0" class="bhw-hint" data-testid="bhw-dropped-hint">
       本轮分诊有 {{ dropped }} 条记录不可执行（已剔除），下面的清单不完整。
+    </p>
+
+    <!-- 体检快照口径（右轨不再重复，口径归详情）：最新一轮体检，不是所选日期的评分 -->
+    <p v-if="snapshot" class="bhw-hint" data-testid="bhw-latest-snapshot-hint">
+      评分与评语取最新体检快照，不随观察日期回溯为历史评分。
     </p>
 
     <details v-if="showBasis" class="bhw-basis" data-testid="bhw-basis">

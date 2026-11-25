@@ -528,22 +528,34 @@ select option {
   background: var(--color-bg-sunken);
 }
 
-/* Subtle scrollbar for content areas */
-.content-scroll::-webkit-scrollbar {
-  width: 6px;
+/* 内部滚动区统一细条（thin scrollbar for inner scroll regions）
+   事实：scrollbar-color 是**继承**属性，scrollbar-width **不继承**（CSS Scrollbars L1）；
+   且 Chromium(≥121) / Firefox 一旦声明这两个标准属性就接管绘制，并忽略该元素上的
+   ::-webkit-scrollbar 伪元素——两条通道必须同写、共用同一 token，否则 dark 主题会掉回
+   系统浅色原生条。标准通道没有 hover 语法，下面那条 :hover 只对老 Chromium 的伪元素兜底生效。
+   用法：加在**每个** overflow:auto/scroll 的内部容器上（宽度不会继承给子元素，颜色会）。
+   页面级 10px 杂志条（上面 ::-webkit-scrollbar 段）不在此列。 */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
 }
 
-.content-scroll::-webkit-scrollbar-track {
+.scroll-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scroll-thin::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.content-scroll::-webkit-scrollbar-thumb {
-  background: rgba(26, 26, 26, 0.15);
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
   border-radius: 3px;
 }
 
-.content-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(26, 26, 26, 0.25);
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
 }
 
 /* Background Animations - 背景动画 */

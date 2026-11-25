@@ -666,7 +666,7 @@ func TestListTopicRecentBriefs_TagLabelInjection(t *testing.T) {
 	reportID := seedTestReport(t, db, boardID, now.AddDate(0, 0, -1))
 	sectionID := seedTestSectionWithTopic(t, db, reportID, "开发者 Agent 平台化", topicID, tagA, tagB)
 
-	briefs, err := repo.ListTopicRecentBriefs(boardID, 7, 5)
+	briefs, err := repo.ListTopicRecentBriefs(boardID, now, 7, 5)
 	require.NoError(t, err)
 	require.Len(t, briefs, 1)
 	require.Contains(t, briefs, topicID)
@@ -699,7 +699,7 @@ func TestListTopicRecentBriefs_SevenDayWindow(t *testing.T) {
 	r2 := seedTestReport(t, db, boardID, now.AddDate(0, 0, -10))
 	_ = seedTestSectionWithTopic(t, db, r2, "以军空袭黎南部", topicID, tag2)
 
-	briefs, err := repo.ListTopicRecentBriefs(boardID, 7, 5)
+	briefs, err := repo.ListTopicRecentBriefs(boardID, now, 7, 5)
 	require.NoError(t, err)
 	require.Len(t, briefs, 1)
 
@@ -729,7 +729,7 @@ func TestListTopicRecentBriefs_PerTopicLimit(t *testing.T) {
 		sectionIDs = append(sectionIDs, s)
 	}
 
-	briefs, err := repo.ListTopicRecentBriefs(boardID, 7, 5)
+	briefs, err := repo.ListTopicRecentBriefs(boardID, now, 7, 5)
 	require.NoError(t, err)
 	require.Len(t, briefs, 1)
 
@@ -761,7 +761,7 @@ func TestListTopicRecentBriefs_PerSectionTagCap(t *testing.T) {
 	r := seedTestReport(t, db, boardID, now.AddDate(0, 0, -1))
 	seedTestSectionWithTopic(t, db, r, "many-tags", topicID, tagIDs...)
 
-	briefs, err := repo.ListTopicRecentBriefs(boardID, 7, 5)
+	briefs, err := repo.ListTopicRecentBriefs(boardID, now, 7, 5)
 	require.NoError(t, err)
 	require.Len(t, briefs[topicID], 1)
 	assert.Len(t, briefs[topicID][0].TagLabels, 5, "per-section tag cap = 5")
@@ -786,7 +786,7 @@ func TestListTopicRecentBriefs_MergedDisabledTagsFiltered(t *testing.T) {
 	// Array order: A, M — M filtered, A kept.
 	seedTestSectionWithTopic(t, db, r, "mixed", topicID, tagA, tagM)
 
-	briefs, err := repo.ListTopicRecentBriefs(boardID, 7, 5)
+	briefs, err := repo.ListTopicRecentBriefs(boardID, now, 7, 5)
 	require.NoError(t, err)
 	require.Len(t, briefs[topicID], 1)
 	assert.Equal(t, []string{"active-tag"}, briefs[topicID][0].TagLabels,
@@ -809,7 +809,7 @@ func TestListTopicRecentBriefs_CandidateIncluded(t *testing.T) {
 	reportID := seedTestReport(t, db, boardID, now.AddDate(0, 0, -1))
 	sectionID := seedTestSectionWithTopic(t, db, reportID, "candidate-section", candidateID, tagID)
 
-	briefs, err := repo.ListTopicRecentBriefs(boardID, 7, 5)
+	briefs, err := repo.ListTopicRecentBriefs(boardID, now, 7, 5)
 	require.NoError(t, err)
 	require.Len(t, briefs, 1, "candidate topic included in briefs")
 	require.Contains(t, briefs, candidateID)
@@ -839,7 +839,7 @@ func TestListTopicRecentBriefs_ExcludesTodaySections(t *testing.T) {
 	today := seedTestReport(t, db, boardID, now)
 	seedTestSectionWithTopic(t, db, today, "今日 section", topicID, todayTag)
 
-	briefs, err := repo.ListTopicRecentBriefs(boardID, 7, 5)
+	briefs, err := repo.ListTopicRecentBriefs(boardID, now, 7, 5)
 	require.NoError(t, err)
 	require.Contains(t, briefs, topicID)
 	require.Len(t, briefs[topicID], 1, "only yesterday's section is injected")
@@ -853,8 +853,9 @@ func TestListTopicRecentBriefs_NoTopicsNil(t *testing.T) {
 	repo := NewTopicGraphRepository(db)
 
 	boardID := seedTestBoard(t, db)
+	now := NormalizeReportDate(time.Now())
 
-	briefs, err := repo.ListTopicRecentBriefs(boardID, 7, 5)
+	briefs, err := repo.ListTopicRecentBriefs(boardID, now, 7, 5)
 	require.NoError(t, err)
 	assert.Nil(t, briefs)
 }
@@ -875,7 +876,7 @@ func TestListTopicRecentBriefs_MultipleTopics(t *testing.T) {
 	seedTestSectionWithTopic(t, db, r, "Section A", topicA, tagA)
 	seedTestSectionWithTopic(t, db, r, "Section B", topicB, tagB)
 
-	briefs, err := repo.ListTopicRecentBriefs(boardID, 7, 5)
+	briefs, err := repo.ListTopicRecentBriefs(boardID, now, 7, 5)
 	require.NoError(t, err)
 	assert.Len(t, briefs, 2)
 	assert.Contains(t, briefs, topicA)

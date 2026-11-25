@@ -84,10 +84,11 @@ describe('useAIRoutes', () => {
     expect(routeLabels.open_notebook).toBe('页边注问答')
   })
 
-  it('capabilityOrder 顺序稳定且五核心能力在前（渲染顺序契约）', () => {
+  it('capabilityOrder 顺序稳定且核心能力在前（渲染顺序契约）', () => {
     expect(capabilityOrder).toEqual([
       'summary', 'topic_tagging', 'digest_polish', 'embedding', 'open_notebook',
       'feed_discovery', 'data_enrichment_news', 'data_enrichment_analysis',
+      'ai_detection',
     ])
   })
 
@@ -112,5 +113,9 @@ describe('useAIRoutes', () => {
     expect(routeDescriptions.digest_polish).toContain('关键节点')
     // 版块体检评分（tagmanagement.board_health_checkup）走 topic_tagging 路由
     expect(routeDescriptions.topic_tagging).toContain('版块体检')
+    // ai_detection 只供血文章级判定：不能暗示日报生成或标签提取（spec Scenario: AI 生成判定能力有供血说明）
+    expect(routeDescriptions.ai_detection).toContain('疑似')
+    expect(routeDescriptions.ai_detection).not.toContain('日报')
+    expect(routeDescriptions.ai_detection).not.toContain('标签')
   })
 })

@@ -4,7 +4,8 @@
  *
  * 批准原型 range-controls 的表单行为产品化：YYYY-MM-DD 严格文本输入（G1
  * observationRange.validateObservationRange 四类文案，非法不静默纠正不提交）+ 应用按钮 +
- * 平移/缩放按钮（离散动作，每次点击即一次完成提交）。字段随上层 range 回流实时同步
+ * 平移/缩放按钮（离散动作，每次点击即一次完成提交）。日期格式只由空输入提示与校验承担
+ * （标签不再重写格式，≤ simplify-workshop-matrix-copy）；字段随上层 range 回流实时同步
  * （拖动过程中跟随显示，原型 paint 同构）；本组件不写 URL、不持业务名单。
  */
 import { ref, watch } from 'vue'
@@ -63,7 +64,7 @@ function zoomBy(factor: number): void {
 
 <template>
   <form class="orf" novalidate @submit.prevent="applyForm">
-    <label class="orf-field" for="orc-start">起始日 · YYYY-MM-DD</label>
+    <label class="orf-field" for="orc-start">起始日</label>
     <AppInput
       v-model="startText"
       input-id="orc-start"
@@ -72,7 +73,7 @@ function zoomBy(factor: number): void {
       class="orf-input"
     />
     <span class="orf-dash" aria-hidden="true">—</span>
-    <label class="orf-field" for="orc-end">截止日 · YYYY-MM-DD</label>
+    <label class="orf-field" for="orc-end">截止日</label>
     <AppInput
       v-model="endText"
       input-id="orc-end"

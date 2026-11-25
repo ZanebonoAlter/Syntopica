@@ -55,6 +55,8 @@ export interface RssFeed {
   maxCompletionRetries?: number
   firecrawlEnabled?: boolean
   taggingEnabled?: boolean
+  /** 订阅源级「AI 生成检测」开关（add-ai-generated-article-detection）：默认关闭，逐源人工开启 */
+  aiDetectionEnabled?: boolean
 }
 
 /**
@@ -149,4 +151,5 @@ export interface UpdateFeedData {
   max_completion_retries?: number
   firecrawl_enabled?: boolean
   tagging_enabled?: boolean
+  ai_detection_enabled?: boolean
 }

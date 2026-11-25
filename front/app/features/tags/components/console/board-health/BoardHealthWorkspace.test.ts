@@ -754,3 +754,23 @@ describe('闸门降级警示条（fix-board-health-magnet-signal）', () => {
     expect(noGuard.find('[data-testid="bhw-guard-notice"]').exists()).toBe(false)
   })
 })
+
+/**
+ * 体检详情承接「最新快照」口径（simplify-workshop-matrix-copy）：
+ * 右轨只留结论（评分/时间/评语首句），「最新快照、不随观察日期回溯」这句归详情。
+ */
+describe('体检快照口径归详情', () => {
+  it('有快照：详情头常驻一行最新快照口径（右轨不再重复）', async () => {
+    const wrapper = await mountWorkspace()
+    const hint = wrapper.find('[data-testid="bhw-latest-snapshot-hint"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('最新体检快照')
+    expect(hint.text()).toContain('不随观察日期回溯')
+  })
+
+  it('无快照：不写快照口径（等待首轮体检的状态块照旧）', async () => {
+    apiMocks.getBoardHealthCheckup.mockResolvedValue({ success: false, error: '体检接口挂了' })
+    const wrapper = await mountWorkspace()
+    expect(wrapper.find('[data-testid="bhw-latest-snapshot-hint"]').exists()).toBe(false)
+  })
+})

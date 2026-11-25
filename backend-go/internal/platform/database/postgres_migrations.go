@@ -2492,7 +2492,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration(), auxiliaryDescriptionRepairMigration(), embeddingModelColumnWidthMigration(), embeddingModelNotNullMigration(), storyHeatTablesMigration())
 	migrations = append(migrations, laneManualCorrectionPendingMigration(), laneManualCorrectionOverridesTableMigration(), laneManualCorrectionAssignmentTraceMigration(), laneManualCorrectionAssignmentOverridesTableMigration())
 	migrations = append(migrations, dailyReportBackfillRunsMigration())
-	return append(migrations, storySignalContentKeyMigration(), unifyVectorColumnDimensionMigration(), ensureTopicTagHalfvecIndexMigration(), tagJobUniqueMigration())
+	return append(migrations, storySignalContentKeyMigration(), unifyVectorColumnDimensionMigration(), ensureTopicTagHalfvecIndexMigration(), aiDetectionSchemaMigration(), tagJobUniqueMigration(), detectionJobUniqueMigration(), topicLaneConstraintMigration(), ensureSemanticLabelMergeHalfvecIndexMigration())
 }
 
 // intraLaneBucketColumnsMigration implements 20261024_0001
@@ -5111,6 +5111,250 @@ func ensureTopicTagHalfvecIndexMigration() Migration {
 				return nil
 			}
 			return ensureTopicTagIdentityHalfvecIndexForColumn(db, "20261117_0002")
+		},
+	}
+}
+
+// SemanticLabelMergeHalfvecIndexName 是辅助标签 L2 去重召回使用的 halfvec HNSW
+// 部分索引名（fix-aux-label-dedup-ann design D1）。只覆盖 active 且带 merge 向量的
+// auxiliary 行；float32 HNSW 有 2000 维硬上限（当前 2560 维建不了），halfvec 支持
+// 到 4000 维。
+const SemanticLabelMergeHalfvecIndexName = "idx_semantic_labels_merge_halfvec_hnsw"
+
+// SemanticLabelMergeHalfvecIndexPredicate 是该部分索引的 WHERE 谓词，也是 L2 召回
+// 查询的 WHERE 谓词——两者 MUST 逐字一致（spec：召回查询的 WHERE 谓词 SHALL 与
+// 部分索引谓词一致，否则规划器不走部分索引），所以只写这一份。
+const SemanticLabelMergeHalfvecIndexPredicate = "label_type = 'auxiliary' AND status = 'active' AND merge_embedding IS NOT NULL"
+
+// SemanticLabelMergeHalfvecIndexDDL 是 halfvec 部分索引的单一 DDL 事实源：迁移
+// 20261124_0002 与启动期守卫 EnsureSemanticLabelMergeHalfvecIndex 共用。dim 必须是
+// 运行时维度（halfvec 1..4000）；表达式内嵌维度，查询侧用同一表达式召回。
+func SemanticLabelMergeHalfvecIndexDDL(dim int) string {
+	// 参数是 int（非用户输入），无注入面；gosec 仍按格式化 SQL 报警。
+	return fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON semantic_labels USING hnsw ((merge_embedding::halfvec(%d)) halfvec_cosine_ops) WHERE %s`, SemanticLabelMergeHalfvecIndexName, dim, SemanticLabelMergeHalfvecIndexPredicate) //nolint:gosec // G201: dim 为已校验的整数，谓词是包内常量
+}
+
+// semanticLabelMergeColumnDimension 解析 semantic_labels.merge_embedding 的维度：
+// 列有限定（vector(N)）→ N；列无限定（裸 vector）→ 在部分索引谓词覆盖的行里
+// 采样（迁移跑在维度探测之前，拿不到运行时维度——对齐
+// ensureTopicTagIdentityHalfvecIndexForColumn 的「列无限定 → 存量采样」口径）。
+// 只采样谓词行：索引表达式只对谓词行求值，其它行（composite 等）的维度无关。
+//
+// 返回 (dim, mixed, err)：表空 / 谓词行无非空向量 → (0, false, nil)，调用方跳过；
+// 多种维度并存 → (众数维度, true, nil)，调用方不建带维度的索引。
+func semanticLabelMergeColumnDimension(db *gorm.DB) (dim int, mixed bool, err error) {
+	typeStr, err := VectorColumnType(db, "semantic_labels", "merge_embedding")
+	if err != nil {
+		return 0, false, err
+	}
+	if dim = vectorColumnDimension(typeStr); dim > 0 {
+		return dim, false, nil
+	}
+	if typeStr != "vector" {
+		return 0, false, nil
+	}
+	type dimRow struct {
+		Dim   int
+		Count int64
+	}
+	var rows []dimRow
+	// 表名/列名/谓词均为包内常量，无注入面。
+	stmt := fmt.Sprintf( //nolint:gosec // G201: 表名/列名/谓词来自包内常量
+		"SELECT vector_dims(merge_embedding) AS dim, count(*) FROM semantic_labels WHERE %s GROUP BY 1 ORDER BY 2 DESC",
+		SemanticLabelMergeHalfvecIndexPredicate)
+	if err := db.Raw(stmt).Scan(&rows).Error; err != nil {
+		return 0, false, err
+	}
+	if len(rows) == 0 {
+		return 0, false, nil
+	}
+	if len(rows) > 1 {
+		return rows[0].Dim, true, nil
+	}
+	return rows[0].Dim, false, nil
+}
+
+// semanticLabelMergeHalfvecIndexState 返回既有索引表达式内嵌的维度与有效性
+// （indisvalid）。索引不存在时返回 (0, true)。
+func semanticLabelMergeHalfvecIndexState(db *gorm.DB) (dim int, valid bool) {
+	var def string
+	var isValid bool
+	if err := db.Raw(`
+SELECT pg_get_indexdef(i.indexrelid), i.indisvalid
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+WHERE c.relname = ? AND i.indrelid = to_regclass('public.semantic_labels')`,
+		SemanticLabelMergeHalfvecIndexName).Row().Scan(&def, &isValid); err != nil {
+		return 0, true
+	}
+	return halfvecExpressionDimension(def), isValid
+}
+
+// SemanticLabelMergeHalfvecIndexState 返回既有索引表达式内嵌的维度与有效性
+// （indisvalid）。索引不存在时返回 (0, true)。
+func SemanticLabelMergeHalfvecIndexState(db *gorm.DB) (dim int, valid bool) {
+	return semanticLabelMergeHalfvecIndexState(db)
+}
+
+// SemanticLabelMergeHalfvecIndexDimension 返回既有索引表达式内嵌的维度；索引不存在
+// 或表达式不可解析时返回 0。
+func SemanticLabelMergeHalfvecIndexDimension(db *gorm.DB) int {
+	dim, _ := semanticLabelMergeHalfvecIndexState(db)
+	return dim
+}
+
+// ensureSemanticLabelMergeHalfvecIndexDDL 确保 halfvec 部分索引存在且表达式内嵌
+// 维度与 dim 一致（不存在 → 建；维度不符或 INVALID → 先 DROP 再建）。调用方负责
+// maintenance_work_mem / max_parallel_maintenance_workers（迁移在事务内 SET LOCAL，
+// 运行期在固定连接上会话级 SET）。
+func ensureSemanticLabelMergeHalfvecIndexDDL(db *gorm.DB, dim int) error {
+	exists, err := VectorIndexExists(db, SemanticLabelMergeHalfvecIndexName)
+	if err != nil {
+		return fmt.Errorf("probe semantic_labels merge halfvec index: %w", err)
+	}
+	if exists {
+		existingDim, valid := semanticLabelMergeHalfvecIndexState(db)
+		if !valid || existingDim != dim {
+			if err := db.Exec("DROP INDEX IF EXISTS " + SemanticLabelMergeHalfvecIndexName).Error; err != nil { //nolint:gosec // G201: 索引名是包内常量
+				return fmt.Errorf("drop semantic_labels merge halfvec index: %w", err)
+			}
+		}
+	}
+	if err := db.Exec(SemanticLabelMergeHalfvecIndexDDL(dim)).Error; err != nil {
+		return fmt.Errorf("create semantic_labels merge halfvec HNSW index (dim %d): %w", dim, err)
+	}
+	return nil
+}
+
+// SemanticLabelMergeDimensionCleanupSQL is the remediation for the embedding-model
+// switch window (review R-2): semantic_labels.merge_embedding is a dimensionless
+// vector, so rows written by the previous model keep their old dimension. The
+// recall query casts merge_embedding::halfvec(<dim>) itself, so those rows make
+// the whole L2 recall FAIL (and with it the whole attach batch) — not degrade to
+// a sequential scan. %d is the runtime dimension.
+const SemanticLabelMergeDimensionCleanupSQL = "UPDATE semantic_labels SET merge_embedding = NULL WHERE label_type='auxiliary' AND status='active' AND merge_embedding IS NOT NULL AND vector_dims(merge_embedding) <> %d;"
+
+// EnsureSemanticLabelMergeHalfvecIndex 是启动期维度守卫（design D2）：按运行时维度
+// 校验索引表达式内嵌维度——不存在 / 不符 / invalid 则重建。维度是运行时属性，换
+// embedding 模型后旧表达式索引会静默失效（查询退化回顺序扫描且不报错），所以
+// CREATE INDEX IF NOT EXISTS 命中旧维度索引时也要重建。
+//
+// 重建前先比对**存量向量维度**与运行时维度（review R-2）：换模型后新旧维度行可并存，
+// 此时召回会在旧维度行上报错（整批 attach 失败），不是“退化成顺序扫描”。因此维度
+// 不一致 / 多种维度并存时记 ERROR 并给出可执行清理 SQL + backfill 端点；随后**照旧
+// 尝试建索引**（存量清理后即可成功），建索引失败仍只返回 error 由调用方 WARN，不阻断启动。
+//
+// 构建期 GUC 设在固定连接上（会话级 SET + RESET 兜底）：运行期不在事务里，SET LOCAL
+// 无效；迁移路径（20261124_0002）走事务内的 SET LOCAL。dim 不在 halfvec 支持范围
+// （1..4000）时跳过并记日志（L2 召回回退精确扫描，结果仍正确）。调用方对 error
+// 只 WARN 不阻断启动。
+func EnsureSemanticLabelMergeHalfvecIndex(db *gorm.DB, dim int) error {
+	if dim <= 0 || dim > 4000 {
+		if dim > 0 {
+			// halfvec 不可用 → 召回走精确扫描；精确扫描同样要求存量维度与运行时
+			// 一致（旧维度行会让 <=> 直接报错），所以这条路径也要报。
+			warnSemanticLabelMergeDimensionMismatch(db, dim)
+		}
+		logging.Infof("Dimension %d outside pgvector halfvec HNSW range (1..4000); skipping semantic_labels merge halfvec index (aux-label L2 dedup recall falls back to exact scan)", dim)
+		return nil
+	}
+	existingDim, valid := semanticLabelMergeHalfvecIndexState(db)
+	if existingDim == dim && valid {
+		return nil // 已是正确表达式且有效：不动
+	}
+	if existingDim != 0 || !valid {
+		logging.Infof("Rebuilding semantic_labels merge halfvec HNSW index: embedded dimension %d (valid=%t) != runtime dimension %d", existingDim, valid, dim)
+	}
+	warnSemanticLabelMergeDimensionMismatch(db, dim)
+	// Pin one connection for the session-level build GUCs (Connection does not
+	// open a transaction, so plain CREATE INDEX is fine). Disable parallel
+	// maintenance: Docker's default 64MB /dev/shm makes HNSW parallel builds
+	// fail with SQLSTATE 53100 (seen in the production migration).
+	return db.Connection(func(tx *gorm.DB) error {
+		// Register RESET before the first SET: if the first SET itself fails,
+		// the pinned connection still returns to the pool clean.
+		defer func() {
+			_ = tx.Exec("RESET maintenance_work_mem").Error
+			_ = tx.Exec("RESET max_parallel_maintenance_workers").Error
+		}()
+		if err := tx.Exec("SET maintenance_work_mem = '256MB'").Error; err != nil {
+			return err
+		}
+		if err := tx.Exec("SET max_parallel_maintenance_workers = 0").Error; err != nil {
+			return err
+		}
+		return ensureSemanticLabelMergeHalfvecIndexDDL(tx, dim)
+	})
+}
+
+// warnSemanticLabelMergeDimensionMismatch 比对 semantic_labels.merge_embedding 的存量
+// 维度与运行时维度，不一致 / 多种维度并存时记 ERROR 并给出可执行处置（review R-2）。
+//
+// 存量维度为 0（表空 / 谓词行无非空向量）时无需处置：没有旧向量行会报错。
+func warnSemanticLabelMergeDimensionMismatch(db *gorm.DB, dim int) {
+	storedDim, mixed, err := semanticLabelMergeColumnDimension(db)
+	if err != nil {
+		logging.Warnf("Failed to read the stored dimension of semantic_labels.merge_embedding: %v "+
+			"(cannot check for stale-dimension rows before rebuilding the ANN index)", err)
+		return
+	}
+	if mixed {
+		logging.Errorf("semantic_labels.merge_embedding holds vectors of MULTIPLE dimensions "+
+			"(most common dimension %d, runtime dimension %d): the L2 recall cast merge_embedding::halfvec(%d) "+
+			"fails on the other dimensions, so auxiliary-label attach fails as a whole (it does NOT degrade to a sequential scan). "+
+			"Clear the stale rows first: %s then rebuild the vectors via POST /api/auxiliary-labels/backfill-embeddings",
+			storedDim, dim, dim, fmt.Sprintf(SemanticLabelMergeDimensionCleanupSQL, dim))
+		return
+	}
+	if storedDim > 0 && storedDim != dim {
+		logging.Errorf("semantic_labels.merge_embedding holds vectors of dimension %d but the runtime embedding dimension is %d: "+
+			"the L2 recall cast merge_embedding::halfvec(%d) fails on those rows, so auxiliary-label attach fails as a whole "+
+			"(it does NOT degrade to a sequential scan). Clear the stale rows first: %s "+
+			"then rebuild the vectors via POST /api/auxiliary-labels/backfill-embeddings",
+			storedDim, dim, dim, fmt.Sprintf(SemanticLabelMergeDimensionCleanupSQL, dim))
+	}
+}
+
+// ensureSemanticLabelMergeHalfvecIndexMigration implements 20261124_0002
+// (fix-aux-label-dedup-ann design D7)：建 semantic_labels.merge_embedding 的 halfvec
+// 部分 HNSW 索引，让辅助标签 L2 去重召回走 ANN 而不是进程内全量余弦。
+//
+// 维度来源：迁移跑在启动期维度探测之前，拿不到运行时维度——列无限定时从部分
+// 索引谓词覆盖的存量行采样（表空则跳过，等启动期守卫
+// EnsureSemanticLabelMergeHalfvecIndex 按运行时维度建）；IF NOT EXISTS 命中旧维度索引
+// 时同样由启动期守卫重建。不用 CONCURRENTLY（migration 在事务内执行，不允许）。
+//
+// 构建在事务内（默认 in-tx 路径）：SET LOCAL maintenance_work_mem 生效，失败整体
+// 回滚、版本不记录、下次启动重试。
+func ensureSemanticLabelMergeHalfvecIndexMigration() Migration {
+	return Migration{
+		Version:     "20261124_0002",
+		Description: "fix-aux-label-dedup-ann: halfvec partial HNSW index on semantic_labels.merge_embedding for auxiliary-label L2 dedup recall (dimension sampled from stored data when the column is dimensionless; skipped on an empty table or above halfvec's 4000-dim limit)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "semantic_labels") {
+				return nil
+			}
+			dim, mixed, err := semanticLabelMergeColumnDimension(db)
+			if err != nil {
+				return fmt.Errorf("read semantic_labels.merge_embedding dimension: %w", err)
+			}
+			if mixed {
+				logging.Warnf("Migration 20261124_0002: skip semantic_labels merge halfvec HNSW index (active auxiliary merge_embedding holds vectors of multiple dimensions; cross-dimension comparisons will error until the minority-dimension rows are cleaned), aux-label L2 dedup degraded")
+				return nil
+			}
+			if dim <= 0 || dim > 4000 {
+				logging.Infof("Migration 20261124_0002: skip semantic_labels merge halfvec HNSW index (dim %d; halfvec supports 1..4000, empty table has nothing to sample), aux-label L2 dedup recall falls back to exact scan", dim)
+				return nil
+			}
+			// 构建期维护内存与并行度：与 ensureTopicTagIdentityHalfvecIndexForColumn 同款
+			// （256MB 避免落盘；并行构建依赖 Docker 默认 64MB 的 /dev/shm，会报 53100）。
+			if err := db.Exec(`SET LOCAL maintenance_work_mem = '256MB'`).Error; err != nil {
+				return fmt.Errorf("set maintenance_work_mem for merge halfvec index build: %w", err)
+			}
+			if err := db.Exec(`SET LOCAL max_parallel_maintenance_workers = 0`).Error; err != nil {
+				return fmt.Errorf("disable parallel maintenance for merge halfvec index build: %w", err)
+			}
+			return ensureSemanticLabelMergeHalfvecIndexDDL(db, dim)
 		},
 	}
 }

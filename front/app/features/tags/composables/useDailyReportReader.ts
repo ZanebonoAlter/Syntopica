@@ -8,8 +8,9 @@ import type {
   DailyReportListItem,
   DailyReportSection,
 } from '~/api/dailyReports'
+import type { ArticleDetection } from '~/types'
 
-export interface ArticleTitle {
+export interface ArticleTitle extends ArticleDetection {
   id: number
   title: string
 }
@@ -54,7 +55,16 @@ export function useDailyReportReader(boardId: Ref<number>, options: UseDailyRepo
   const articleCache = createRequestCache<number, ArticleTitle>(async (articleId) => {
     const response = await getArticle(articleId)
     if (!response.success || !response.data) throw responseError(`文章 #${articleId} 加载失败`)
-    return { id: articleId, title: response.data.title || '(无标题)' }
+    // 判定四字段已由 API 模块（getArticle）归一为 camelCase，这里只消费、不再映射（R-3）
+    const { aiDetectionStatus, aiDetectionScore, aiDetectionSource, aiDetectionAt } = response.data
+    return {
+      id: articleId,
+      title: response.data.title || '(无标题)',
+      aiDetectionStatus,
+      aiDetectionScore,
+      aiDetectionSource,
+      aiDetectionAt,
+    }
   }, entries => { articleEntries.value = entries })
 
   const selectedReport = computed(() => {

@@ -562,7 +562,34 @@ func formatComposeDate(t *time.Time) *string {
 // input_summary = 实际参与聚合的 section id 列表），使该话题的首义来源可被
 // 读端点反解为「人工（建话题时选定的 N 个节点）」（design D6/D8）。历史手动
 // 建的泳道不回填（当时未留痕，事后推断即编造）。
+// ManualTopicConstraint is a pre-computed constraint row to create together with
+// a manual topic (topic-lane-auxiliary-label-constraint).
+//
+// Anchor / Model / Margin / MaxDistance are resolved **before** the transaction:
+// embedding is a network call and SHALL NOT run inside a DB transaction.
+//
+// 为什么要同事务：新建泳道时用户最清楚它的主体是什么（如以黎话题的以色列+黎巴嫩）。
+// 若先建话题再单独 PUT 约束，中间的第一次日报生成不受约束保护，新泳道可能当场被
+// 单侧内容殖民；而两次调用非原子，失败会留下「有泳道、无约束」的半成品。
+// 这与红线「手动建话题 SHALL 在建话题同一事务内追加首义留痕」同一条纪律。
+type ManualTopicConstraint struct {
+	Term        string
+	Mode        string
+	Anchor      string // pgvector literal
+	Model       string
+	Margin      *float64
+	MaxDistance *float64
+}
+
+// CreateManualTopic creates a manual (source=manual, status=active) topic from the
+// selected sections' mean embedding.
 func (r *TopicGraphRepository) CreateManualTopic(boardID uint, label string, sectionIDs []uint) (topic *BoardPersistentTopic, skipped []uint, err error) {
+	return r.CreateManualTopicWithConstraints(boardID, label, sectionIDs, nil)
+}
+
+// CreateManualTopicWithConstraints is CreateManualTopic plus optional auxiliary-label
+// constraints written in the SAME transaction.
+func (r *TopicGraphRepository) CreateManualTopicWithConstraints(boardID uint, label string, sectionIDs []uint, constraints []ManualTopicConstraint) (topic *BoardPersistentTopic, skipped []uint, err error) {
 	if len(sectionIDs) == 0 {
 		return nil, nil, fmt.Errorf("CreateManualTopic: no sections provided")
 	}
@@ -678,6 +705,22 @@ func (r *TopicGraphRepository) CreateManualTopic(boardID uint, label string, sec
 		}
 		if err := tx.Create(&override).Error; err != nil {
 			return fmt.Errorf("CreateManualTopic: append anchor override: %w", err)
+		}
+
+		// 辅助标签约束：与建话题同事务（失败 → 整个建话题回滚，不留「有泳道、无约束」）。
+		for _, c := range constraints {
+			row := TopicLaneConstraint{
+				TopicID:        created.ID,
+				Term:           c.Term,
+				TermEmbedding:  c.Anchor,
+				EmbeddingModel: c.Model,
+				Mode:           c.Mode,
+				Margin:         c.Margin,
+				MaxDistance:    c.MaxDistance,
+			}
+			if err := tx.Create(&row).Error; err != nil {
+				return fmt.Errorf("CreateManualTopic: create constraint %q: %w", c.Term, err)
+			}
 		}
 
 		// Rebuild relations — failure here MUST roll back the entire transaction.
