@@ -204,6 +204,24 @@ add-composite-labels 引入。纯关联表，复合主键，组件按 `position`
 | `idx_board_composition_auxiliary_label_id` | board_composition | `(auxiliary_label_id)` |
 | `idx_board_health_snapshots_board_checked` | board_health_snapshots | `(semantic_board_id, checked_at)` |
 
+### 语义标签 / 板块域索引（辅助标签 L2 去重向量索引，迁移 `20261124_0002`，fix-aux-label-dedup-ann）
+
+`idx_semantic_labels_merge_halfvec_hnsw` —— `semantic_labels.merge_embedding` 上的**部分 HNSW 索引**，表达式 `((merge_embedding::halfvec(N)) halfvec_cosine_ops)`，谓词 `WHERE label_type = 'auxiliary' AND status = 'active' AND merge_embedding IS NOT NULL`。
+
+- **用途**：辅助标签 L2 语义去重的候选召回。改造前是「进程内加载全部 active 辅助标签的 merge 向量（26,713 × 2560 ≈ 547MB）逐条算余弦」，单标签 ≈1.0s、10 分钟 TTL 重载 ≈9.6s；改造后走本索引召回 top-32，再用原列 `merge_embedding <=> $1::vector` 精确 float32 重排 → `1-dist ≥ auxiliary_label_dedupe_sim` 判阈值，RefCount 降序 / ID 升序选唯一目标。
+- **N = 运行时维度**（≤4000 才建，pgvector halfvec 上限）。列是无维度限定的 `vector`，所以 N 只能采样：迁移 `20261124_0002` 从**谓词覆盖的存量行**采样（`SELECT vector_dims(merge_embedding) ... GROUP BY`；表空则跳过，不猜维度；多维度并存则跳过——带维度的索引表达式会拒掉另一维度的写入）；启动期守卫 `auxlabel.EnsureVectorDimensionOnce → database.EnsureSemanticLabelMergeHalfvecIndex(db, dim)` 按运行时维度校核，不存在 / 内嵌维度不符 / INVALID 则 DROP 后重建。
+- **降级口径（诚实版）**：索引缺失 / 建索引失败时，召回**退化为顺序扫描**——维度一致时这只影响速度，结果仍正确。但**存量旧维度行未清理时不是“变慢”而是“报错”**：召回 SQL 里的 `merge_embedding::halfvec(N)` cast 遇旧维度行直接报 pgvector `SQLSTATE 22P02`（`expected N dimensions, not M`；距离算子则是 `42883 different vector dimensions`），**整批辅助标签 attach 失败**（含本应 L1 命中的标签）。所以换 embedding 模型后必须先清理旧维度行：
+  ```sql
+  UPDATE semantic_labels SET merge_embedding = NULL
+   WHERE label_type = 'auxiliary' AND status = 'active'
+     AND merge_embedding IS NOT NULL AND vector_dims(merge_embedding) <> <运行时维度>;
+  ```
+  再走既有 backfill 端点 `POST /api/auxiliary-labels/backfill-embeddings` 重建向量（只处理 NULL 行）。启动期守卫发现存量维度与运行时维度不一致 / 多种维度并存时记 **ERROR** 并附上这段 SQL（不是 WARN），随后仍会照旧尝试建索引（存量清干净后即可成功），建索引失败只 WARN 不阻断启动。服务侧对维度类召回错误另有专门包装（附清理 SQL 与 backfill 指引），不会以裸 SQL 错误冒出去。
+- **建索引的 GUC 约束**：`maintenance_work_mem=256MB`（64MB 默认会让 2.6 万行落盘）+ `max_parallel_maintenance_workers=0`（Docker 默认 64MB `/dev/shm` 上并行建 HNSW 会报 `SQLSTATE 53100`）。迁移在事务内用 `SET LOCAL`（因此**不能**用 `CREATE INDEX CONCURRENTLY`，建索引期间接受一次短暂 SHARE 锁）；运行期守卫在固定连接上用会话级 `SET` + `RESET` 兜底。
+- **查询侧硬约束**：召回 SQL 的 WHERE 必须与该部分索引谓词**逐字一致**，`halfvec(<dim>)` typmod 必须带维度（裸 `::halfvec` 不走索引）；`hnsw.ef_search` 必须 ≥ 本次候选上限（pgvector 默认 40：`LIMIT 32` 够用，兜底重查 `LIMIT 128` 必须同步提到 200）。
+- **列维度过渡**：`ensureSemanticLabelVectorColumnDim` 的 `ALTER COLUMN … TYPE` 分支执行前 MUST 先 `DROP INDEX IF EXISTS idx_semantic_labels_merge_halfvec_hnsw`（表达式索引依赖列，带着它 ALTER 会失败）。
+- **运维工具（不进 server 二进制）**：`backend-go/cmd/aux-label-dedup-parity/` 是新旧 L2 去重口径的一次性对账工具（`go run ./cmd/aux-label-dedup-parity --sample 200`）：冻结旧算法（进程内全量余弦）与现役 ANN 召回路径逐条比对，输出 `mismatch` 清单与「阈值内 ≥2 邻居」样本数。它住在 `cmd/` 下是被淘汰的旧算法不进服务二进制的关键（服务包只保留现役实现）——改服务侧召回口径时 MUST 同步该工具内的复刻，否则对账结论失真。连接串带 `options='-c default_transaction_read_only=on'`，对真库只读。
+
 ### 语义标签 / 板块域索引（描述修复链，迁移 `20261028_0001` + AutoMigrate）
 
 | 索引名 | 表 | 列 | 来源 |

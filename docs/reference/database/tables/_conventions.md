@@ -55,6 +55,8 @@
 | `idx_topic_tag_embeddings_tag_type_hash` | topic_tag_embeddings | UNIQUE `(topic_tag_id, embedding_type, text_hash)` | `20260514_0001` |
 
 > 注：`topic_tag_embeddings.embedding` 的 ANN 路径是迁移 `20261023_0001` / `20261117_0002` 的 halfvec identity 部分 HNSW `idx_topic_tag_embeddings_identity_halfvec_hnsw`（表达式内嵌 `halfvec(N)`，N = 运行时维度，≤4000；维度变了必须重建）。运行时 float32 HNSW `idx_topic_tag_embeddings_embedding` 只在**列带维度限定**且 dim ≤ 2000 时存在——裸 `vector` 列建不了 float32 索引（pgvector `column does not have dimensions`），且存活的 float32 索引会把列钉在旧维度上（迁移 `20261117_0001` 在统一列类型前先删它，运行期在裸列分支也清理遗留索引）。`daily_report_sections.embedding` / `board_persistent_topics.embedding` 同理。
+>
+> 注：`semantic_labels.merge_embedding` 的 ANN 路径同理——迁移 `20261124_0002` 建的 halfvec 部分 HNSW `idx_semantic_labels_merge_halfvec_hnsw`（谓词 `label_type='auxiliary' AND status='active' AND merge_embedding IS NOT NULL`，供辅助标签 L2 去重召回），详见 [semantic-labels.md](semantic-labels.md) 索引节。
 
 ### 唯一约束（表级）
 

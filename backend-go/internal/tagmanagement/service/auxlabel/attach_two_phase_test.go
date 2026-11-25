@@ -2,6 +2,7 @@ package auxlabel
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync"
 	"testing"
@@ -75,34 +76,116 @@ func TestAttachTwoPhaseBatchEmbedderExactlyTwoCalls(t *testing.T) {
 	require.Equal(t, int64(3), links)
 }
 
-// 主链路步2：阶段二事务闭包内零 embedder 调用——批量 embedder 的每次调用
-// 都必须发生在第一个 BEGIN 之前（探针机制：BEGIN 后的外部调用记为违规）。
+// 主链路步2：阶段一（L1 匹配 / L2 召回）与阶段二（纯写事务）都不得在事务开着时调用
+// embedder。判定方式（fix-aux-label-dedup-ann D6 后调整）：阶段一多了一个只读召回
+// 事务，旧探针「首个 BEGIN 之后一律算违规」的单调近似会把「召回事务关闭后的 storage
+// 批嵌入」误报成违规。改为在每次 embedder 调用时刻查 pg_stat_activity——有任何
+// idle in transaction 会话即违规（事务开着等外部调用正是 idle-in-transaction 病灶）。
+//
+// 探针条件用 state LIKE 'idle in transaction%'：回滚后的会话停在
+// 'idle in transaction (aborted)'，精确等值匹配会漏掉它。
 func TestAttachTwoPhaseNoEmbedderInsideTransaction(t *testing.T) {
 	db := setupAuxiliaryLabelTestDB(t)
 	tag := models.TopicTag{Label: "探针标签", Slug: "probe", Category: "event", Status: "active"}
 	require.NoError(t, db.Create(&tag).Error)
-	probeDB, probe := testutil.NewBeginProbeDB(t)
+
+	var mu sync.Mutex
+	var violations []string
+	// noteEmbedderCall 记录「此刻是否有事务未提交」（判定「embedder 在事务内」）。
+	noteEmbedderCall := func(name string) {
+		t.Helper()
+		var open int64
+		require.NoError(t, db.Raw(`SELECT count(*) FROM pg_stat_activity WHERE state LIKE 'idle in transaction%'`).Scan(&open).Error)
+		if open > 0 {
+			mu.Lock()
+			violations = append(violations, name)
+			mu.Unlock()
+		}
+	}
 
 	batch := func(ctx context.Context, inputs []string, mode AuxiliaryLabelEmbeddingMode) ([]string, [][]float64, error) {
-		probe.NoteExternal("batch-embedder")
+		noteEmbedderCall("batch-embedder")
 		return (&recordingBatchEmbedder{}).embed(ctx, inputs, mode)
 	}
-	service := NewAuxiliaryLabelService(probeDB, (&recordingAuxiliaryEmbedder{}).embed)
+	service := NewAuxiliaryLabelService(db, (&recordingAuxiliaryEmbedder{}).embed)
 	service.SetBatchEmbedder(batch)
 
 	require.NoError(t, service.AttachAuxiliaryLabels(context.Background(), tag.ID, []core.AuxiliaryLabel{
 		{Label: "事务外甲", Description: "先算向量"},
 		{Label: "事务外乙", Description: "再进事务"},
 	}))
-	require.True(t, probe.Began(), "attach must have opened (and closed) its phase-two transaction")
-	require.Empty(t, probe.Violations(), "no embedder call may happen after BEGIN (idle-in-transaction root cause)")
+	require.Empty(t, violations, "no embedder call may happen while a transaction is open (idle-in-transaction root cause)")
 
-	// 探针自检：BEGIN 之后的外部调用确实会被记录（防止探针失灵导致的假绿）。
-	require.NoError(t, probeDB.Transaction(func(tx *gorm.DB) error {
-		probe.NoteExternal("self-check-in-tx")
+	// 探针自检：事务开着时调用确实会被记录（防止探针失灵导致的假绿）。
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		noteEmbedderCall("self-check-in-tx")
 		return nil
 	}))
-	require.Contains(t, probe.Violations(), "self-check-in-tx")
+	require.Contains(t, violations, "self-check-in-tx")
+}
+
+// txBeginCounter 包裹 ConnPool，统计事务开启次数并区分只读 / 读写。
+//
+// GORM 的 db.Transaction() 直接走 ConnPool.BeginTx（不经过任何回调处理器），所以
+// 「某个阶段确实开过事务」只能用连接池层的探针钉住（review R-3）。
+type txBeginCounter struct {
+	gorm.ConnPool
+	mu        sync.Mutex
+	begins    int
+	readOnly  int
+	readWrite int
+}
+
+func (p *txBeginCounter) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	tx, err := p.ConnPool.(gorm.TxBeginner).BeginTx(ctx, opts)
+	if err == nil {
+		p.mu.Lock()
+		p.begins++
+		if opts != nil && opts.ReadOnly {
+			p.readOnly++
+		} else {
+			p.readWrite++
+		}
+		p.mu.Unlock()
+	}
+	return tx, err
+}
+
+func (p *txBeginCounter) counts() (begins, readOnly, readWrite int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.begins, p.readOnly, p.readWrite
+}
+
+// 主链路步2b：阶段二**确实开过事务**（review R-3 补回的断言）。
+//
+// attach 的事务拓扑固定为两个：阶段一的 L2 召回只读事务（ReadOnly: true） +
+// 阶段二的纯写事务。若阶段二不再开事务，GORM 会退化为「每条语句一个隐式事务」
+// （本仓未开 SkipDefaultTransaction），读写事务数会从 1 涨到语句数——所以
+// 断言「读写事务恰好 1 个」同时钉住了阶段二的原子性。
+func TestAttachTwoPhaseOpensRecallAndWriteTransactions(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	tag := models.TopicTag{Label: "事务拓扑", Slug: "tx-shape", Category: "event", Status: "active"}
+	require.NoError(t, db.Create(&tag).Error)
+
+	// 独立连接句柄：包裹它的连接池才能观测到 attach 自己开的事务。
+	probeDB := testutil.NewIsolatedDB(t)
+	counter := &txBeginCounter{ConnPool: probeDB.ConnPool}
+	probeDB.ConnPool = counter
+	probeDB.Statement.ConnPool = counter
+
+	service := NewAuxiliaryLabelService(probeDB, (&recordingAuxiliaryEmbedder{}).embed)
+	service.SetBatchEmbedder((&recordingBatchEmbedder{}).embed)
+
+	require.NoError(t, service.AttachAuxiliaryLabels(context.Background(), tag.ID, []core.AuxiliaryLabel{
+		{Label: "拓扑甲", Description: "走召回"},
+		{Label: "拓扑乙", Description: "走召回"},
+	}))
+
+	begins, readOnly, readWrite := counter.counts()
+	require.Equal(t, 2, begins, "phase one opens the read-only recall transaction, phase two opens the write transaction")
+	require.Equal(t, 1, readOnly, "the L2 recall must run in exactly one read-only transaction")
+	require.Equal(t, 1, readWrite, "phase two must wrap its writes in exactly one read-write transaction")
 }
 
 // 主链路步9：全 L1 命中的 attach（既有标签）→ 零 embedder 调用、零缓存重拉。

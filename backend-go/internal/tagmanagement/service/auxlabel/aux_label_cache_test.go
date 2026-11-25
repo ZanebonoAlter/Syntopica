@@ -12,47 +12,38 @@ import (
 	"syntopica-backend/internal/tagmanagement/service/core"
 )
 
-// --- fix-aux-label-idle-tx-cache design D2：缓存失效增量化 ---
+// --- fix-aux-label-dedup-ann design D4：merge 向量缓存已删除，缓存只剩 ---
+// --- active 标签轻量列表 + 它的三个 L1 精确匹配索引（同生命周期、同 TTL）。 ---
 
 // warmAuxCacheForTest 直接把包级缓存置为「热」状态（模拟一次全量加载的产物），
 // 避免测试依赖 L2 匹配路径的隐式加载时机。返回便于断言的时间戳快照。
-func warmAuxCacheForTest(t *testing.T, labels []models.SemanticLabel, embeddings map[uint][]float64) (labelsAt, embeddingsAt time.Time) {
+func warmAuxCacheForTest(t *testing.T, labels []models.SemanticLabel) time.Time {
 	t.Helper()
 	now := time.Now()
 	packageAuxLabelCache.mu.Lock()
-	packageAuxLabelCache.activeLabels = labels
-	packageAuxLabelCache.activeLabelsAt = now
-	packageAuxLabelCache.mergeEmbeddings = embeddings
-	packageAuxLabelCache.mergeEmbeddingsAt = now
+	packageAuxLabelCache.active = newAuxLabelIndex(labels)
+	packageAuxLabelCache.activeAt = now
 	packageAuxLabelCache.mu.Unlock()
-	return now, now
+	return now
 }
 
-// auxCacheMergeEmbeddingsLenForTest 在锁内读取当前 mergeEmbeddings 长度。
-// （hotfix 后 map 不再被原地写入，len 快照即稳定值；保留锁内读防未来回归。）
-func auxCacheMergeEmbeddingsLenForTest() int {
+// cacheSnapshotForTest 在锁内读取当前 active 列表快照与加载时间。
+func cacheSnapshotForTest() (labels []models.SemanticLabel, at time.Time) {
 	packageAuxLabelCache.mu.RLock()
 	defer packageAuxLabelCache.mu.RUnlock()
-	return len(packageAuxLabelCache.mergeEmbeddings)
+	if packageAuxLabelCache.active == nil {
+		return nil, packageAuxLabelCache.activeAt
+	}
+	return packageAuxLabelCache.active.labels, packageAuxLabelCache.activeAt
 }
 
-func cacheSnapshotForTest() (labels []models.SemanticLabel, labelsAt time.Time, embeddings map[uint][]float64, embeddingsAt time.Time) {
-	packageAuxLabelCache.mu.RLock()
-	defer packageAuxLabelCache.mu.RUnlock()
-	return packageAuxLabelCache.activeLabels, packageAuxLabelCache.activeLabelsAt,
-		packageAuxLabelCache.mergeEmbeddings, packageAuxLabelCache.mergeEmbeddingsAt
-}
-
-// 任务 1.1（hotfix 2026-10-07 后语义）：L3 新建后不全量重拉（mergeEmbeddingsAt
-// 不重置）、activeLabels 线性 append；mergeEmbeddings map **不原位写入**——
-// sqlMergeMatcher 持引用无锁读，原位写会触发 fatal error: concurrent map
-// read and map write（不可恢复，杀进程；2026-10-07 生产实测）。新向量由
-// 10min TTL 全量重拉带入。历史 invalidateOnCreate 全清同样不许回来。
+// 任务 3.1：L3 新建后不全量重拉（activeAt 不重置）、activeLabels 线性 append，
+// 且新行立即可被 L1 索引命中（旧实现靠缓存回灌 + 线性扫达到同一效果）。
 func TestAuxLabelCacheCreateIsIncremental(t *testing.T) {
 	db := setupAuxiliaryLabelTestDB(t)
 	seed := models.SemanticLabel{Label: "既有标签", Slug: "jiyou", LabelType: "auxiliary", Status: "active"}
 	require.NoError(t, db.Create(&seed).Error)
-	_, embeddingsAt := warmAuxCacheForTest(t, []models.SemanticLabel{{ID: seed.ID, Label: seed.Label, Slug: seed.Slug, LabelType: "auxiliary", Status: "active"}}, map[uint][]float64{seed.ID: {1, 0, 0}})
+	activeAt := warmAuxCacheForTest(t, []models.SemanticLabel{{ID: seed.ID, Label: seed.Label, Slug: seed.Slug, LabelType: "auxiliary", Status: "active"}})
 
 	embedder := &recordingAuxiliaryEmbedder{vectors: map[string][]float64{
 		"全新标签甲": {0, 1, 0},
@@ -61,33 +52,37 @@ func TestAuxLabelCacheCreateIsIncremental(t *testing.T) {
 	}}
 	service := NewAuxiliaryLabelService(db, embedder.embed)
 
-	// 连续 3 次 L3 新建：map 大小不变（不原位写）、时间戳全程不动、
-	// activeLabels 线性 +1。
-	labelsWarm, _, _, _ := cacheSnapshotForTest()
+	// 连续 3 次 L3 新建：加载时间戳全程不动、activeLabels 线性 +1。
+	labelsWarm, _ := cacheSnapshotForTest()
 	labelsLen := len(labelsWarm)
 	for _, name := range []string{"全新标签甲", "全新标签乙", "全新标签丙"} {
-		beforeLen := auxCacheMergeEmbeddingsLenForTest()
 		_, err := service.ResolveAuxiliaryLabel(context.Background(), name, "")
 		require.NoError(t, err)
-		labels, _, embeddings, at := cacheSnapshotForTest()
-		require.Len(t, embeddings, beforeLen, "map must NOT be mutated in place (lock-free readers would fatal); freshness is the TTL's job")
-		require.Equal(t, embeddingsAt, at, "mergeEmbeddingsAt must NOT be reset on create (no full re-pull)")
+		labels, at := cacheSnapshotForTest()
+		require.Equal(t, activeAt, at, "activeAt must NOT be reset on create (no full re-pull)")
 		labelsLen++
 		require.Len(t, labels, labelsLen, "activeLabels grows by exactly one per create (safe slice append)")
 	}
+
+	// 新增行已进 L1 索引：同 slug 的后续请求直接复用，不再调 embedder。
+	before := len(embedder.calls)
+	label, err := service.ResolveAuxiliaryLabel(context.Background(), "全新标签甲", "")
+	require.NoError(t, err)
+	require.Equal(t, "全新标签甲", label.Label)
+	require.Len(t, embedder.calls, before, "created row must be L1-matchable without a cache reload")
 }
 
-// 任务 1.1 补充：新建标签的轻量副本进入 activeLabels（列集合对齐——向量字段为 nil）。
+// 任务 3.1 补充：新建标签的轻量副本进入 activeLabels（列集合对齐——向量字段为 nil）。
 func TestAuxLabelCacheCreateAppendsLightweightCopy(t *testing.T) {
 	db := setupAuxiliaryLabelTestDB(t)
-	warmAuxCacheForTest(t, []models.SemanticLabel{}, map[uint][]float64{})
+	warmAuxCacheForTest(t, []models.SemanticLabel{})
 	embedder := &recordingAuxiliaryEmbedder{vectors: map[string][]float64{"轻量副本": {0, 1, 0}}}
 	service := NewAuxiliaryLabelService(db, embedder.embed)
 
 	created, err := service.ResolveAuxiliaryLabel(context.Background(), "轻量副本", "描述文本")
 	require.NoError(t, err)
 
-	labels, _, _, _ := cacheSnapshotForTest()
+	labels, _ := cacheSnapshotForTest()
 	require.Len(t, labels, 1)
 	require.Equal(t, created.ID, labels[0].ID)
 	require.Equal(t, "轻量副本", labels[0].Label)
@@ -96,7 +91,7 @@ func TestAuxLabelCacheCreateAppendsLightweightCopy(t *testing.T) {
 	require.Nil(t, labels[0].MergeEmbedding, "lightweight copy must not carry the merge vector")
 }
 
-// 任务 1.2：DisableAuxiliaryLabel 后条目删除、无全量重拉（mergeEmbeddingsAt 不变）。
+// 任务 3.1：DisableAuxiliaryLabel 后条目删除、无全量重拉（activeAt 不变）。
 func TestAuxLabelCacheDisableIsIncremental(t *testing.T) {
 	db := setupAuxiliaryLabelTestDB(t)
 	vec := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
@@ -104,24 +99,22 @@ func TestAuxLabelCacheDisableIsIncremental(t *testing.T) {
 	drop := models.SemanticLabel{Label: "禁用", Slug: "drop", LabelType: "auxiliary", Status: "active", MergeEmbedding: &vec}
 	require.NoError(t, db.Create(&keep).Error)
 	require.NoError(t, db.Create(&drop).Error)
-	warmAuxCacheForTest(t,
-		[]models.SemanticLabel{{ID: keep.ID, Label: keep.Label, Slug: keep.Slug}, {ID: drop.ID, Label: drop.Label, Slug: drop.Slug}},
-		map[uint][]float64{keep.ID: {1}, drop.ID: {2}})
-	_, embeddingsAt, _, _ := cacheSnapshotForTest()
+	activeAt := warmAuxCacheForTest(t, []models.SemanticLabel{
+		{ID: keep.ID, Label: keep.Label, Slug: keep.Slug},
+		{ID: drop.ID, Label: drop.Label, Slug: drop.Slug},
+	})
 
 	service := NewAuxiliaryLabelService(db, (&recordingAuxiliaryEmbedder{}).embed)
 	require.NoError(t, service.DisableAuxiliaryLabel(context.Background(), drop.ID))
 
-	labels, _, embeddings, at := cacheSnapshotForTest()
-	require.Contains(t, embeddings, drop.ID, "in-place delete is a fatal-race hazard for lock-free readers — stale entry must linger until TTL reload")
-	require.Contains(t, embeddings, keep.ID, "unrelated entries must survive")
-	require.Equal(t, embeddingsAt, at, "disable must not reset mergeEmbeddingsAt (no full re-pull)")
+	labels, at := cacheSnapshotForTest()
+	require.Equal(t, activeAt, at, "disable must not reset activeAt (no full re-pull)")
 	require.Len(t, labels, 1)
 	require.Equal(t, keep.ID, labels[0].ID, "disabled label must be filtered out of activeLabels")
 }
 
-// 任务 1.2：MergeAuxiliaryLabelAlias 的 source 禁用路径——source 向量删除、
-// target 以最终 aliases 刷新、mergeEmbeddingsAt 不变。
+// 任务 3.1：MergeAuxiliaryLabelAlias 的 source 禁用路径——source 掉出列表、
+// target 以最终 aliases 刷新并可被新别名 L1 命中、activeAt 不变。
 func TestAuxLabelCacheMergeAliasIsIncremental(t *testing.T) {
 	db := setupAuxiliaryLabelTestDB(t)
 	vec := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
@@ -129,33 +122,37 @@ func TestAuxLabelCacheMergeAliasIsIncremental(t *testing.T) {
 	source := models.SemanticLabel{Label: "源头", Slug: "source", LabelType: "auxiliary", Status: "active", MergeEmbedding: &vec, Aliases: []string{"源别名"}}
 	require.NoError(t, db.Create(&target).Error)
 	require.NoError(t, db.Create(&source).Error)
-	warmAuxCacheForTest(t,
-		[]models.SemanticLabel{{ID: target.ID, Label: target.Label, Slug: target.Slug}, {ID: source.ID, Label: source.Label, Slug: source.Slug}},
-		map[uint][]float64{target.ID: {1}, source.ID: {2}})
-	_, embeddingsAt, _, _ := cacheSnapshotForTest()
+	activeAt := warmAuxCacheForTest(t, []models.SemanticLabel{
+		{ID: target.ID, Label: target.Label, Slug: target.Slug, Aliases: []string{"旧别名"}},
+		{ID: source.ID, Label: source.Label, Slug: source.Slug, Aliases: []string{"源别名"}},
+	})
 
 	service := NewAuxiliaryLabelService(db, (&recordingAuxiliaryEmbedder{}).embed)
 	require.NoError(t, service.MergeAuxiliaryLabelAlias(context.Background(), source.ID, target.ID))
 
-	labels, _, embeddings, at := cacheSnapshotForTest()
-	require.Contains(t, embeddings, source.ID, "in-place delete is a fatal-race hazard for lock-free readers — stale entry must linger until TTL reload")
-	require.Contains(t, embeddings, target.ID)
-	require.Equal(t, embeddingsAt, at, "merge must not reset mergeEmbeddingsAt")
+	labels, at := cacheSnapshotForTest()
+	require.Equal(t, activeAt, at, "merge must not reset activeAt")
 	require.Len(t, labels, 1, "source filtered out, target retained")
 	require.Equal(t, target.ID, labels[0].ID)
 	require.Contains(t, labels[0].Aliases, "源头", "target cached copy must be refreshed with its final aliases")
+
+	// 合并进来的新别名已进 L1 索引（alias fold 口径）。
+	service.cache.mu.RLock()
+	idx := service.cache.active
+	service.cache.mu.RUnlock()
+	require.NotNil(t, idx)
+	row, hit := idx.match("", "源头", "")
+	require.True(t, hit, "merged alias must be L1-matchable from the refreshed index")
+	require.Equal(t, target.ID, row.ID)
 }
 
-// 任务 1.3：alias 变更路径只清 activeLabels，mergeEmbeddings 保留（现状回归）。
-func TestAuxLabelCacheAliasChangePreservesMergeEmbeddings(t *testing.T) {
+// 任务 3.1：alias 变更路径只清 active 列表（下次加载重拉）。
+func TestAuxLabelCacheAliasChangeInvalidatesActiveList(t *testing.T) {
 	db := setupAuxiliaryLabelTestDB(t)
 	existingVec := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
 	existing := models.SemanticLabel{Label: "高市早苗", Slug: "takaichi", LabelType: "auxiliary", Status: "active", MergeEmbedding: &existingVec}
 	require.NoError(t, db.Create(&existing).Error)
-	warmAuxCacheForTest(t,
-		[]models.SemanticLabel{{ID: existing.ID, Label: existing.Label, Slug: existing.Slug}},
-		map[uint][]float64{existing.ID: testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim)})
-	_, embeddingsAt, _, _ := cacheSnapshotForTest()
+	warmAuxCacheForTest(t, []models.SemanticLabel{{ID: existing.ID, Label: existing.Label, Slug: existing.Slug}})
 
 	// merge 向量与既有 cosine ~0.999 ≥ 0.95 → L2 命中走 alias 追加路径
 	embedder := &recordingAuxiliaryEmbedder{vectors: map[string][]float64{"高市早苗政府": {0.999, 0.001, 0}}}
@@ -164,40 +161,42 @@ func TestAuxLabelCacheAliasChangePreservesMergeEmbeddings(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, existing.ID, label.ID)
 
-	labels, _, embeddings, at := cacheSnapshotForTest()
+	labels, _ := cacheSnapshotForTest()
 	require.Contains(t, label.Aliases, "高市早苗政府")
-	require.Empty(t, labels, "alias change clears activeLabels (cheap list reload)")
-	require.Contains(t, embeddings, existing.ID, "alias change must preserve mergeEmbeddings")
-	require.Equal(t, embeddingsAt, at, "alias change must not reset mergeEmbeddingsAt")
+	require.Empty(t, labels, "alias change clears the active list (cheap list reload)")
+
+	// 列表已清 → 下次加载回源（新别名已入库，可被 L1 命中）。
+	active, err := service.loadActiveAuxiliaryLabels(context.Background())
+	require.NoError(t, err)
+	require.Len(t, active.labels, 1)
+	require.Contains(t, active.labels[0].Aliases, "高市早苗政府")
 }
 
-// 任务 1.4：TTL 过期兜底——9:59 仍命中缓存 / 10:01 过期重拉。
+// 任务 3.1：TTL 过期兜底——4:59 仍命中缓存 / 5:01 过期重拉。
 func TestAuxLabelCacheTTLExpiryReloads(t *testing.T) {
 	db := setupAuxiliaryLabelTestDB(t)
-	seedVec := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
-	seed := models.SemanticLabel{Label: "过期样本", Slug: "expiry", LabelType: "auxiliary", Status: "active", MergeEmbedding: &seedVec}
+	seed := models.SemanticLabel{Label: "过期样本", Slug: "expiry", LabelType: "auxiliary", Status: "active"}
 	require.NoError(t, db.Create(&seed).Error)
 
-	sentinel := map[uint][]float64{999: {1}}
-	warmAuxCacheForTest(t, nil, sentinel)
-
+	warmAuxCacheForTest(t, []models.SemanticLabel{{ID: 999, Label: "哨兵", Slug: "sentinel"}})
+	service := NewAuxiliaryLabelService(db, (&recordingAuxiliaryEmbedder{}).embed)
 	ctx := context.Background()
 
-	// 9:59 —— 未过期，命中缓存（哨兵仍在，未触库）。
+	// 4:59 —— 未过期，命中缓存（哨兵仍在，未触库）。
 	packageAuxLabelCache.mu.Lock()
-	packageAuxLabelCache.mergeEmbeddingsAt = time.Now().Add(-auxMergeEmbeddingsTTL + time.Second)
+	packageAuxLabelCache.activeAt = time.Now().Add(-auxActiveLabelsTTL + time.Second)
 	packageAuxLabelCache.mu.Unlock()
-	got, err := packageAuxLabelCacheGetOrLoad(ctx, db)
+	got, err := service.loadActiveAuxiliaryLabels(ctx)
 	require.NoError(t, err)
-	require.True(t, &got[999][0] == &sentinel[999][0], "9:59 boundary must hit the cached map (no reload)")
-	require.Len(t, got, 1)
+	require.Len(t, got.labels, 1)
+	require.Equal(t, uint(999), got.labels[0].ID, "4:59 boundary must hit the cached list (no reload)")
 
-	// 10:01 —— 过期，重拉（哨兵消失，种子行入库数据出现）。
+	// 5:01 —— 过期，重拉（哨兵消失，种子行入库数据出现）。
 	packageAuxLabelCache.mu.Lock()
-	packageAuxLabelCache.mergeEmbeddingsAt = time.Now().Add(-auxMergeEmbeddingsTTL - time.Second)
+	packageAuxLabelCache.activeAt = time.Now().Add(-auxActiveLabelsTTL - time.Second)
 	packageAuxLabelCache.mu.Unlock()
-	got, err = packageAuxLabelCacheGetOrLoad(ctx, db)
+	got, err = service.loadActiveAuxiliaryLabels(ctx)
 	require.NoError(t, err)
-	require.NotContains(t, got, 999, "10:01 boundary must reload from DB (sentinel gone)")
-	require.Contains(t, got, seed.ID)
+	require.Len(t, got.labels, 1)
+	require.Equal(t, seed.ID, got.labels[0].ID, "5:01 boundary must reload from DB")
 }
