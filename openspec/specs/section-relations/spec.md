@@ -1,3 +1,5 @@
+<!-- domain: daily-report, topic-graph -->
+
 ## Purpose
 
 管理 DailyReportSection 之间的多对多跨天关系，通过 `daily_report_section_relations` 关系表存储。支持同日 section 两阶段合并（embedding 确定性合并 + LLM 仲裁），以及跨日 section embedding 匹配写入关系。

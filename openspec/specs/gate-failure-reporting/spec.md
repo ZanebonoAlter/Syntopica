@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # gate-failure-reporting Specification
 
 ## Purpose

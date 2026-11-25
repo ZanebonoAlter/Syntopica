@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 ## Purpose
 
 组合标签（composite label）实体全生命周期：由多个中性辅助标签组合而成、具备指向性的语义单元（如「美国国债 × 收益率」→「美债收益率」），覆盖数据模型、embedding 生成、去重 canonical 化与治理操作。

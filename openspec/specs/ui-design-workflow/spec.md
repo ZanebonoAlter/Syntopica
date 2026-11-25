@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # ui-design-workflow Specification
 
 ## Purpose

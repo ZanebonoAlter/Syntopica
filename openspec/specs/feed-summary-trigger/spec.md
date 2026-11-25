@@ -1,3 +1,5 @@
+<!-- domain: ai-summary, discovery -->
+
 # feed-summary-trigger Specification
 
 ## Purpose

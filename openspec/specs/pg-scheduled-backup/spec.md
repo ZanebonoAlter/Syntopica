@@ -1,3 +1,5 @@
+<!-- domain: db, scheduler -->
+
 # pg-scheduled-backup Specification
 
 ## Purpose

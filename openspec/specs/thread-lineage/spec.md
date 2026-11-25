@@ -1,3 +1,5 @@
+<!-- domain: topic-graph -->
+
 # thread-lineage Specification
 
 ## Purpose

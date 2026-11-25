@@ -1,3 +1,5 @@
+<!-- domain: topic-graph -->
+
 # entity-subject-resolution Specification
 
 ## Purpose

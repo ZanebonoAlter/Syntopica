@@ -1,3 +1,5 @@
+<!-- domain: topic-graph, ui -->
+
 # detective-wall-interaction
 
 ## Purpose

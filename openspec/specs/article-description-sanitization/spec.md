@@ -1,3 +1,5 @@
+<!-- domain: content-enrichment -->
+
 # article-description-sanitization Specification
 
 ## Purpose

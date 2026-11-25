@@ -1,3 +1,5 @@
+<!-- domain: topic-graph, semantic-board -->
+
 # topic-key-event-markers Specification
 
 ## Purpose

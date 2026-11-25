@@ -1,3 +1,5 @@
+<!-- domain: content-enrichment, db -->
+
 # article-retention Specification
 
 ## Purpose

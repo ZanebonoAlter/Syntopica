@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, data-enrichment -->
+
 # board-level-analysis Specification
 
 ## Purpose

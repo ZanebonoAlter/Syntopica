@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 ## Purpose
 
 簇与已有板块的亲和度（BoardAffinity）元数据计算，为前端人工合并决策提供参考信息。不影响聚类结果。

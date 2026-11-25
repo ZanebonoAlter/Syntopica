@@ -1,3 +1,5 @@
+<!-- domain: daily-report, semantic-board -->
+
 # lane-trend-overview Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: content-enrichment -->
+
 # ai-generated-article-detection Specification
 
 ## Purpose

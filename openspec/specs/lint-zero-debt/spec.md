@@ -1,3 +1,5 @@
+<!-- domain: dev, harness -->
+
 # lint-zero-debt Specification
 
 ## Purpose

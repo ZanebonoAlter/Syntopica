@@ -1,3 +1,4 @@
+<!-- domain: semantic-board, api -->
 
 ## Purpose
 SemanticBoard 文章列表独立 API，支持按 feed、时间范围、辅助标签筛选，每篇文章返回 feed_name 和 filtered_tags。

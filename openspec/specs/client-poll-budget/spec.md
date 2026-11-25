@@ -1,3 +1,5 @@
+<!-- domain: api, ui -->
+
 # client-poll-budget Specification
 
 ## Purpose

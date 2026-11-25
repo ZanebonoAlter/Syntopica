@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, db -->
+
 # Tag Embedding Management
 
 ## Purpose

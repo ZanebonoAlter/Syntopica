@@ -1,3 +1,5 @@
+<!-- domain: data-enrichment, daily-report -->
+
 # web-search-provider Specification
 
 ## Purpose

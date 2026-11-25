@@ -1,3 +1,5 @@
+<!-- domain: discovery -->
+
 # Feed Icon Management
 
 ## Purpose

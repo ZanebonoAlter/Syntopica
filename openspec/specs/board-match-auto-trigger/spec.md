@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 ## Purpose
 
 Event tag embedding 完成后自动触发 board 匹配，确保标签完成 embedding 后立即进行板块归属判定，无需手动触发。

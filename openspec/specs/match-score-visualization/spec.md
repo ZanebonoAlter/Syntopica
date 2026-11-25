@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, ui -->
+
 ## Purpose
 
 匹配得分可视化功能，通过颜色编码和分数显示直观展示 tag-board 匹配质量和匹配方式。

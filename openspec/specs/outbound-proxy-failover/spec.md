@@ -1,3 +1,5 @@
+<!-- domain: content-enrichment, discovery -->
+
 # outbound-proxy-failover Specification
 
 ## Purpose

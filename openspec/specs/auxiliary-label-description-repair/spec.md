@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 # auxiliary-label-description-repair Specification
 
 ## Purpose

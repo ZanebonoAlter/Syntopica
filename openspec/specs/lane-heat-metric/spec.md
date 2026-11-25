@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 # lane-heat-metric Specification
 
 ## Purpose

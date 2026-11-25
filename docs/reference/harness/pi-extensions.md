@@ -1,7 +1,7 @@
 # pi harness 扩展机制（全景 + 注入 + 门禁）
 
 <!--
-doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json, .pi/harness.json, scripts/harness/harness-retro.sh, scripts/harness/constraint-digest.sh, scripts/harness/change-scope.sh, scripts/harness/change-abandon.sh
+doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json, .pi/harness.json, scripts/harness/harness-retro, scripts/harness/domain-history.sh, scripts/harness/constraint-digest.sh, scripts/harness/change-scope.sh, scripts/harness/change-abandon.sh
 -->
 
 > **权威源**：本文件是 pi harness 扩展**机制参考**的唯一权威——扩展全景表、约束注入/质量门禁的工作原理、事件账本入口。改 harness 相关代码或排查「为什么注入了/为什么被拦」先读这里。agent 日常行为红线（[回归]必修、测试范围、平台分流）在 AGENTS.md，流程编排在《开发执行规范》§0.6，两文互引不重复。事件考古查 skill `harness-facts`，改进复盘查 skill `harness-retro`。
@@ -35,6 +35,16 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 - **红线提取复用 constraint-injection 的同一实现**（`.pi/extensions/lib/constraint-redlines.ts` 的 `extractRedlines()`），MUST NOT 在脚本内重写第二份正则；**域清单唯一真相源 = `docs/reference/flow/*.md` basename**——`.pi/constraint-injection.json` 的 `keywordDocs` 是别名/子集（改造后仅用于路由清单的「本次会话提及」标注与域限定，**不再用作注入正文的入口**）、`docs/reference/constraints-index.md` 域表是面向模型的人读索引、`scripts/harness/doc-impact.sh menu` 的 8 项是**文档目录轴**（flow/api/database/…）不是业务域轴，三处禁止混用。
 
 **可观测（append-only）**：`subagent.dispatch` 事件追加两个字段——`constraintDigest`（`present`/`absent`：任务文本有无 `## 约束` 段）与 `constraintDomains`（`string[]`，从该段 `源 docs/reference/flow/<域>.md` 收域；段存在但收不到域名记 `present` + `[]`，不猜域、不阻断派发）。改造前的历史记录无这两个字段 → `harness-retro` 计「未知」并从带域比例分母剔除（**不回溯**记 `absent`，否则把历史数据算成遗漏），报告显式标注未知条数。
+
+## 按域反查历史契约（domain-history.sh，add-spec-domain-index）
+
+`scripts/harness/domain-history.sh <域>` 是**开工前**查历史契约的入口（与 constraint-digest 一样是脚本不是扩展）：
+
+- **数据来源**：`openspec/specs/*/spec.md` 头部 `<!-- domain: ... -->` → capability 的域归属；`changes/archive/*/specs/<cap>/spec.md` → 历史 change 碰过哪些 capability。**两跳推导，不回填历史 change**（实测 526 个历史 delta 中 488 个＝93% 可推导）。
+- **输出五段**：本域 main spec（行数 + 最近变更日期）／ 历史 change 时间线（带「含孤儿 delta」标记）／ flow 红线（直接复用 `constraint-digest.sh --brief --domains`）／ 历史 REMOVED（可能冲突）／ 历史 MODIFIED（可能必须沿用）。**后两段只罗列不断言**——冲突判定仍由人 / review 完成。
+- **退出码恒 0**：无命中、未知域都不打断自动化链路（未知域打印 15 词表）。
+- **自测**：`bash scripts/harness/domain-history.smoke.sh`（fixture 10 组 case，`DOMAIN_HISTORY_ROOT` 可覆盖仓库根）。
+- **用途**：改一个功能前回答「这个域以前定过什么、有没有设计冲突、哪些能力必须沿用」，是 §0.6 review 要点 1.5「旧能力去向表」的机械初稿来源。域 marker 的语法与词表见 [`standard/shared/doc-authoring.md`](../standard/shared/doc-authoring.md)「注册点速查」。
 
 ## 约束注入（constraint-injection，自动，管"知道"）
 

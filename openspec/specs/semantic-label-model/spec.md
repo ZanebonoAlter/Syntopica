@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, db -->
+
 ## Purpose
 
 semantic_labels 统一数据模型及关联表定义，用于存储辅助标签和 SemanticBoard。

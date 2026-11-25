@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # markdown-mermaid-render Specification
 
 ## Purpose

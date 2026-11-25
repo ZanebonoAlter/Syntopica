@@ -1,3 +1,5 @@
+<!-- domain: discovery, db -->
+
 # rss-article-dedup Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: ai-summary -->
+
 # ai-vendor-model Specification
 
 ## Purpose

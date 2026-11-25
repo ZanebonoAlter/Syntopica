@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # theme-system Specification
 
 ## Purpose

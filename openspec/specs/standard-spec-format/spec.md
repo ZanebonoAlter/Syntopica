@@ -1,3 +1,5 @@
+<!-- domain: dev -->
+
 # standard-spec-format Specification
 
 ## Purpose

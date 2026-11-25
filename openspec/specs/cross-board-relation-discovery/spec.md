@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, topic-graph -->
+
 # cross-board-relation-discovery Specification
 
 ## Purpose

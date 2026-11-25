@@ -1,3 +1,5 @@
+<!-- domain: daily-report, ui -->
+
 # notification-center Specification
 
 ## Purpose

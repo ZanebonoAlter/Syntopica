@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, scheduler -->
+
 # tag-queue-scheduling Specification
 
 ## Purpose

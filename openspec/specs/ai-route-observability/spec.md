@@ -1,3 +1,5 @@
+<!-- domain: ai-summary -->
+
 # ai-route-observability Specification
 
 ## Purpose

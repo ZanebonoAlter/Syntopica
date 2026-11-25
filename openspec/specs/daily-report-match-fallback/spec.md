@@ -1,3 +1,5 @@
+<!-- domain: daily-report, semantic-board -->
+
 ## Purpose
 
 日报收集时对有辅助标签但无板块归属记录的 event tag 执行现场补算，避免因自动匹配遗漏导致日报数据不完整。

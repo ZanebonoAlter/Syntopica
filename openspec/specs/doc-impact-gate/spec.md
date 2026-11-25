@@ -1,3 +1,5 @@
+<!-- domain: harness, dev -->
+
 # doc-impact-gate Specification
 
 ## Purpose

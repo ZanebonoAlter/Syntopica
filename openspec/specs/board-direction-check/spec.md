@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 ## Purpose
 
 方向性校验：对匹配结果（direct_hit 除外）计算 tag identity embedding 与 board embedding 的 cosine 相似度，低于阈值时标记 direction_mismatch=true。direct_hit 因精确重叠已足够可靠，跳过方向校验。

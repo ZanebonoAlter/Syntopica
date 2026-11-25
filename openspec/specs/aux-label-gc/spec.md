@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, scheduler -->
+
 ## Purpose
 
 辅助标签垃圾回收（GC）的能力定义，包括手动 GC API 和定时清理任务。

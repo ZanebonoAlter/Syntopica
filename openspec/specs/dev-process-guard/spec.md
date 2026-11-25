@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # dev-process-guard Specification
 
 ## Purpose

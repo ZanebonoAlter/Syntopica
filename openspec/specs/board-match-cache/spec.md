@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 ## Purpose
 
 Board matching 的内存缓存层，缓存版块辅助标签、embedding 和 AI 配置，减少重复 DB 查询和 parsePgVector 开销。

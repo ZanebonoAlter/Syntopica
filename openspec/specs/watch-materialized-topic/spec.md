@@ -1,3 +1,5 @@
+<!-- domain: daily-report, topic-graph, semantic-board -->
+
 ## Purpose
 
 关注标记（watch）从只读命中提示升级出两条"物化"轨：keyword_topic 把当天含关键字的文章聚合为固定名称话题 section，sentence_topic 用一句话向量检索当天相关辅助标签、聚合为可持续延续的持久话题 section。物化 section 与常规聚类 section 并排出现在日报中。

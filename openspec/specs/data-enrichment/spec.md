@@ -1,3 +1,5 @@
+<!-- domain: data-enrichment, semantic-board, topic-graph -->
+
 # Purpose
 
 数据增强（data enrichment）：持久话题的认知分析能力。以分层上下文为输入，经「解读员 → 探索/查询 agent → 分析员 → review judge」角色链产出分析结果，并支持报告追问。本 capability 由两个 change 合并建立：`data-enrichment-orchestration`（骨架：三表分离 / agent loop 三防御 / 可观测性 / 循环A 新闻汇总 / 板块配置）+ `causal-analysis-agent`（分析主线：话题形态判断 / 视角选择 / 分层见解 / 见解依据与确定性 / 报告追问）。

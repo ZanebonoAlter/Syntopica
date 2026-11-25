@@ -1,3 +1,5 @@
+<!-- domain: discovery, db -->
+
 # feed-delete-referential-integrity Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 ## Purpose
 
 辅助标签聚类升级为 SemanticBoard 的流程，包括候选收集、预聚类、LLM 建议、用户确认和冷启动。方向 × 来源四格矩阵（创建/扩充 × 单标签/组合标签），每轮 LLM 单一决策空间。

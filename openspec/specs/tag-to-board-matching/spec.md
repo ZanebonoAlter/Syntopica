@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 ## Purpose
 
 Tag 通过辅助标签匹配 SemanticBoard 的规则和参数，包括间接匹配三规则、多 board 归属和回填。

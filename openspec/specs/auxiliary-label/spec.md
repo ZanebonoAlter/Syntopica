@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 ## Purpose
 
 辅助标签（Auxiliary Label）的提取、入库、治理。辅助标签是 event/person tag 的语义锚点，也用于 keyword tag 直入辅助池。

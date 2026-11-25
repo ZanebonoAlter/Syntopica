@@ -1,3 +1,5 @@
+<!-- domain: reading -->
+
 # reading-article-pane Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 # workshop-radar Specification
 
 ## Purpose

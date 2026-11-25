@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, topic-graph -->
+
 # Tag Merge Suggestions
 
 ## Purpose

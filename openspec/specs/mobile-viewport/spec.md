@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # mobile-viewport Specification
 
 ## Purpose

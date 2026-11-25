@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, api -->
+
 ## Purpose
 
 匹配详情按需实时计算 API，用户点击 tag chip 时返回辅助标签逐对匹配明细和匹配公式，帮助用户理解"为什么这个事件标签被分到了这个板块"。

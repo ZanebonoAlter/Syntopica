@@ -1,3 +1,5 @@
+<!-- domain: harness, dev -->
+
 # review-trace-gate Specification
 
 ## Purpose

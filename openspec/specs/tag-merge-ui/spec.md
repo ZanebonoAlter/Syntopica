@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, ui -->
+
 # Tag Merge UI
 
 ## Purpose

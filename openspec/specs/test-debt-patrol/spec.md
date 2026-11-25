@@ -1,3 +1,5 @@
+<!-- domain: dev, harness -->
+
 # test-debt-patrol Specification
 
 ## Purpose

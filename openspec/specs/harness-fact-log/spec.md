@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # harness-fact-log Specification
 
 ## Purpose

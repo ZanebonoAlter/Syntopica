@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # ui-icon-localization Specification
 
 ## Purpose

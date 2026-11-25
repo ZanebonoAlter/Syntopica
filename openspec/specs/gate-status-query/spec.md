@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # gate-status-query Specification
 
 ## Purpose

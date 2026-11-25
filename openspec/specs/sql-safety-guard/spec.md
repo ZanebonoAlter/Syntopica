@@ -1,3 +1,5 @@
+<!-- domain: harness, db -->
+
 # sql-safety-guard Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: topic-graph -->
+
 # event-story Specification
 
 ## Purpose

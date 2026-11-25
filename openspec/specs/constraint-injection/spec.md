@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # constraint-injection Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: discovery -->
+
 # feed-candidate-catalog Specification
 
 ## Purpose

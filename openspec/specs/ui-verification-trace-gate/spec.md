@@ -1,3 +1,5 @@
+<!-- domain: harness, ui -->
+
 # ui-verification-trace-gate Specification
 
 ## Purpose

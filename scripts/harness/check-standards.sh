@@ -10,6 +10,7 @@
 #   H. model tag 守门（Top3 密集文件禁止 GORM tag 里的 not null，约束由显式迁移兜底）
 #   I. 主 spec 结构校验（openspec validate --specs 全量零失败，fix-legacy-spec-format 引入；
 #      存量格式债清零后作为真护栏：sync 写坏主 spec 会被归档门禁 ② block）
+#   J. spec 域声明检查（main spec 缺 <!-- domain: ... --> 时 WARN，不阻断归档；add-spec-domain-index）
 #
 # 用法： bash scripts/harness/check-standards.sh [--change <changeName>]
 # 退出码：0 全过；1 有失败或参数非法。
@@ -55,6 +56,7 @@ fi
 
 PASS=0
 FAIL=0
+WARN=0
 
 ok() {
 	echo "  [OK]   $1"
@@ -63,6 +65,10 @@ ok() {
 fail() {
 	echo "  [FAIL] $1"
 	FAIL=$((FAIL + 1))
+}
+warn() {
+	echo "  [WARN] $1"
+	WARN=$((WARN + 1))
 }
 
 check_file() { [ -f "$1" ] && ok "存在 $1" || fail "缺失 $1"; }
@@ -189,7 +195,9 @@ if [ -d "openspec/changes/archive" ]; then
 			continue
 		fi
 		# §12.2 豁免：tasks.md「文档」节声明「无 flow 影响」的 change 不触及任何业务 flow，免溯源校验
-		if [ -f "$d/tasks.md" ] && grep -q "无 flow 影响" "$d/tasks.md" 2>/dev/null; then
+		# 另认机器可读等价形式 `<!-- doc-impact: none(...) -->`（两者同义；只写字面「无 flow 影响」会把
+		# 已用 doc-impact marker 声明的纯工具链 change 误报为未溯源，2026-11-23-fix-editmap 即此类）
+		if [ -f "$d/tasks.md" ] && { grep -q "无 flow 影响" "$d/tasks.md" 2>/dev/null || grep -qE '<!--[[:space:]]*doc-impact:[[:space:]]*none' "$d/tasks.md" 2>/dev/null; }; then
 			ok "豁免溯源 $name（tasks.md 声明无 flow 影响）"
 			continue
 		fi
@@ -292,8 +300,85 @@ else
 	fi
 fi
 
+# ── J. spec 域声明（domain-history 可查性，warn 不阻断）──────
+# 契约：openspec/specs/spec-domain-index；marker 语法见 standard/shared/doc-authoring.md
+# 观察期策略：先只 WARN，累计两三周后按数据决定是否转 FAIL（同 ui-stage-scope-out 节奏）
+echo "== J. spec 域声明检查（warn，不阻断归档）=="
+# 15 个合法域名（与 scripts/harness/domain-history.sh 的 ALL_DOMAINS、spec 词表三处一致）
+DOMAIN_WORDS="semantic-board topic-graph daily-report content-enrichment data-enrichment ai-summary discovery reading scheduler research-data-sources harness ui dev api db"
+has_marker() {
+	sed -n '1,8{/<!--[[:space:]]*domain:/{p;q}}' "$1" 2>/dev/null | grep -q .
+}
+marker_value() {
+	sed -n '1,8{/<!--[[:space:]]*domain:/{s/.*domain:[[:space:]]*//;s/-->.*//;s/[[:space:]]*$//;p;q}}' "$1" 2>/dev/null
+}
+# 值校验（R-4）：返回第一个错误描述，合法时无输出
+marker_error() {
+	local raw="$1" n=0 d bad=""
+	[ -z "$raw" ] && { echo "空值（domain: 后无内容）"; return; }
+	local oldifs="$IFS"; IFS=','
+	for d in $raw; do
+		d="$(echo "$d" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+		[ -z "$d" ] && continue
+		n=$((n + 1))
+		case " $DOMAIN_WORDS " in *" $d "*) ;; *) bad="$bad $d" ;; esac
+	done
+	IFS="$oldifs"
+	if [ -n "$bad" ]; then
+		echo "词表外域名:$bad（合法值见 domain-history.sh --list）"
+	elif [ "$n" -eq 0 ]; then
+		echo "空值（只有逗号或空白）"
+	elif [ "$n" -gt 3 ]; then
+		echo "超过 3 个域（实际 $n 个）"
+	fi
+}
+if [ -n "$CHANGE_NAME" ]; then
+	checked_domains=0
+	missing_domains=0
+	for d in "openspec/changes/$CHANGE_NAME"/specs/*/; do
+		[ -d "$d" ] || continue
+		cap="${d%/}"; cap="${cap##*/}"
+		checked_domains=$((checked_domains + 1))
+		spec="openspec/specs/$cap/spec.md"
+		if [ ! -f "$spec" ]; then
+			warn "capability '$cap' 尚无 main spec（归档合并后请补 <!-- domain: ... -->）"
+			missing_domains=$((missing_domains + 1))
+		elif ! has_marker "$spec"; then
+			warn "capability '$cap' 的 main spec 缺 domain marker（domain-history 查不到本域历史）"
+			missing_domains=$((missing_domains + 1))
+		else
+			err="$(marker_error "$(marker_value "$spec")")"
+			if [ -n "$err" ]; then
+				warn "capability '$cap' 的 domain marker 非法：$err"
+				missing_domains=$((missing_domains + 1))
+			fi
+		fi
+	done
+	if [ "$checked_domains" -eq 0 ]; then
+		echo "  [INFO] 本 change 无 delta spec，跳过 J 段（不计分）"
+	elif [ "$missing_domains" -eq 0 ]; then
+		ok "本 change 触及的 $checked_domains 个 capability 均已正确声明 domain"
+	fi
+else
+	total_spec=0
+	missing_spec=0
+	bad_spec=0
+	for f in openspec/specs/*/spec.md; do
+		[ -r "$f" ] || continue
+		total_spec=$((total_spec + 1))
+		if ! has_marker "$f"; then
+			missing_spec=$((missing_spec + 1))
+		elif [ -n "$(marker_error "$(marker_value "$f")")" ]; then
+			bad_spec=$((bad_spec + 1))
+		fi
+	done
+	[ "$missing_spec" -eq 0 ] && [ "$bad_spec" -eq 0 ] && ok "全仓 $total_spec 个 main spec 的 domain marker 均合法"
+	[ "$missing_spec" -gt 0 ] && warn "全仓 $total_spec 个 main spec 中 $missing_spec 个缺 domain marker（domain-history 会漏查）"
+	[ "$bad_spec" -gt 0 ] && warn "全仓 $total_spec 个 main spec 中 $bad_spec 个 domain marker 非法（词表外/空值/超 3 域）"
+fi
+
 echo ""
 echo "=============================="
-echo "  通过 $PASS / 失败 $FAIL"
+echo "  通过 $PASS / 失败 $FAIL / 警告 $WARN"
 echo "=============================="
 [ "$FAIL" -eq 0 ] && exit 0 || exit 1

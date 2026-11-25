@@ -1,3 +1,5 @@
+<!-- domain: ai-summary -->
+
 # ai-thinking-levels Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: dev, content-enrichment -->
+
 # Purpose
 
 定义 Firecrawl 自部署的 docker-compose 编排方案，包括 Firecrawl API/Worker、Redis 和 Playwright 服务，并与核心 compose 网络共享。

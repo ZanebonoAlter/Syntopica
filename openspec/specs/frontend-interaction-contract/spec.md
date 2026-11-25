@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # frontend-interaction-contract Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: db, ai-summary -->
+
 # Embedding Dimension Contract
 
 ## Purpose

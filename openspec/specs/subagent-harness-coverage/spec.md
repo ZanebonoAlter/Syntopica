@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # subagent-harness-coverage Specification
 
 ## Purpose

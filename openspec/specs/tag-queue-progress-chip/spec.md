@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, ui -->
+
 # tag-queue-progress-chip Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 # board-health-checkup Specification
 
 ## Purpose

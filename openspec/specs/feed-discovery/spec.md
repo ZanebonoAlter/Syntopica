@@ -1,3 +1,5 @@
+<!-- domain: discovery -->
+
 # feed-discovery Specification
 
 ## Purpose

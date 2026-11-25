@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # settings-workspace Specification
 
 ## Purpose

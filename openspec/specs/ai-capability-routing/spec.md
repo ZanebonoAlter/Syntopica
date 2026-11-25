@@ -1,3 +1,5 @@
+<!-- domain: ai-summary -->
+
 ## Purpose
 
 AI 能力路由系统：为每个 AI capability（summary、digest_polish、topic_tagging、embedding 等）维护独立的路由配置、provider 绑定与并发配额，使各业务流程通过其绑定的 capability 加载路由与 provider，互不干扰。

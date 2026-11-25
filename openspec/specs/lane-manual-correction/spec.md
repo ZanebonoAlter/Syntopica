@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, topic-graph -->
+
 # lane-manual-correction Specification
 
 ## Purpose

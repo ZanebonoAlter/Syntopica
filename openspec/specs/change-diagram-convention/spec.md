@@ -1,3 +1,5 @@
+<!-- domain: dev -->
+
 # change-diagram-convention Specification
 
 ## Purpose

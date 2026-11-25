@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, ai-summary -->
+
 # Aggregate Tagging
 
 ## Purpose

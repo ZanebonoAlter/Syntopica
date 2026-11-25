@@ -1,3 +1,5 @@
+<!-- domain: api, reading -->
+
 # article-bulk-update Specification
 
 ## Purpose

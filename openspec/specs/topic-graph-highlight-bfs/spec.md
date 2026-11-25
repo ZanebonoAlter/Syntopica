@@ -1,3 +1,5 @@
+<!-- domain: topic-graph, ui -->
+
 ## Purpose
 
 共享的有界 BFS 高亮算法，供主题图（TopicGraphCanvas）和 Section 生命周期面板（SectionLifecyclePanel）在 hover/选中时计算高亮集合，避免在密集图上全图高亮。

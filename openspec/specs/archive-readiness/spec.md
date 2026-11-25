@@ -1,3 +1,5 @@
+<!-- domain: harness, dev -->
+
 # archive-readiness Specification
 
 ## Purpose

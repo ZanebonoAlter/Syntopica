@@ -1,3 +1,5 @@
+<!-- domain: topic-graph, semantic-board, daily-report -->
+
 ## Purpose
 
 PersistentTopic（持久叙事话题）：在 SemanticBoard（板块）和 DailyReportSection（当天聚类）之间引入持久叙事话题层。强制 section 1:N 归属、人工确认生命周期、关系叠加身份边，解决板块下话题因命名漂移而散乱、每日聚类随机的根因问题。

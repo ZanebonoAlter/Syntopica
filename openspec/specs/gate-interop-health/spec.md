@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # gate-interop-health Specification
 
 ## Purpose

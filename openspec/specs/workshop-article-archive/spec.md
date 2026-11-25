@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 # workshop-article-archive Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: ui, reading -->
+
 # article-preview-dialog Specification
 
 ## Purpose

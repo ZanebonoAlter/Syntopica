@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # unified-dialog Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: ai-summary, db -->
+
 # embedding-cache Specification
 
 ## Purpose

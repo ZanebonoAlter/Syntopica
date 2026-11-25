@@ -1,3 +1,5 @@
+<!-- domain: dev -->
+
 ## Purpose
 
 约束 AI 代理引导文档（根 AGENTS.md、子目录 AGENTS.md、CONTRIBUTING.md）的单一入口与精简形态：规范正文只存在 `docs/reference/`，引导文件只保留项目快照、行为规则与权威文档链接，避免多副本漂移。

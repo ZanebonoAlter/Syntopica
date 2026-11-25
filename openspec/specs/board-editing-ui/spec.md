@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, ui -->
+
 ## Purpose
 
 前端板块编辑功能和方向不符标签的展示控制。

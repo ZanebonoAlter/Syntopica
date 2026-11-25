@@ -30,6 +30,7 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 | --- | --- | --- | --- | --- |
 | `doc-impact-applies` | flow/standard 文档**头部 15 行内** | `doc-impact-applies: 路径前缀, ... \| section=节名`（裸行或 `<!-- -->` 包裹皆可；section 可选） | `flow/daily-report.md`：`doc-impact-applies: backend-go/internal/topicgraph/, ... \| section=业务约束与不变量`；`standard/backend/ai-logging.md`：块注释裸行 + `section=Requirements` | 超出 15 行=扫不到；路径不匹配编辑路径（前缀包含判定）=JIT 不命中；无任何报错。漏写 `section=` 则清单少节名（取数指引不精确）。**编辑路径命中只把文档列进阶段路由清单**（零正文；正文注入通道已随 stage 化退役） |
 | `constraint-domains` | change 的 **proposal.md 头部 ∪ stage.md 头部**（两处并集，只增不减） | `<!-- constraint-domains: 域名, ... -->`（域名=flow 文档 basename） | `<!-- constraint-domains: daily-report, topic-graph -->` | 域名≠flow basename=域声明红线层不注入（widget 显示「无域声明」）；纯工具链 change 可不写。每回合重解析，改 proposal/stage.md 即时生效 |
+| `<!-- domain: ... -->` | `openspec/specs/*/spec.md` **头部 8 行内**（首个 `#` 标题前） | `<!-- domain: 域名[, 域名] -->`，域名封闭 15 选：10 个业务域（= flow basename）+ 5 个工具域（harness / ui / dev / api / db），多域上限 3 个 | `openspec/specs/daily-report-system/spec.md`：`<!-- domain: daily-report, semantic-board -->`（契约源：spec-domain-index） | 缺 marker → 该 capability 不进任何域反查，其历史 delta 落第 6 段「孤儿 delta」；词表外/空值/超 3 域 → `check-standards.sh` J 段 WARN 并指明非法值（不阻断）；`domain-history.sh` 对词表外查询名拒绝并打印词表 |
 | `<!-- doc-impact: ... -->` | change 的 **tasks.md 文档节第一行** | `<!-- doc-impact: 域列表 -->`，域固定 8 选：flow / api / database / architecture / standard / configuration / deployment / none(附理由) | `<!-- doc-impact: standard -->` | 域不在 8 选项=verify 失败；「声明了未更新文档」→ verify FAIL 被 spec-gate ①拦；启发式疑似遗漏误报可加 `<!-- doc-impact-excuse: domain=理由 -->` 豁免（只豁免疑似遗漏，不豁免真没改） |
 | `<!-- ui-front-path-excuse: 理由 -->` | change 的 **ui-design.md** | `<!-- ui-front-path-excuse: 前端路径为他人 change 脏文件示例，与本 change 无关 -->`（存在即豁免，理由不解析；fix-doc-impact-misattribution 引入） | `archive/2026-09-08-coordinate-concurrent-changes/ui-design.md`：豁免 tasks 历史豁免声明中的 `front/app/api/dailyReports.ts` 他人脏文件路径 | ui-design-gate 的 ui-impact-mismatch block 照常（该注释放行 none 档纯工具链 change 的前端路径误报；不写注释无任何报错） |
 | human-feedback 条目格式 | change 的 **human-feedback.md**（可选制品；收到用户对产物的反馈时记入） | 标题行 `### FB-<N> <日期>【<类型>\|<归因>】<标题>` + 状态行 `- **状态**：<状态>`；类型二值 产品\|流程，归因五类封闭 frontend\|backend\|test-gap\|fact-check\|process（多因按根因优先归 fact-check），状态五值封闭 待处理\|处理中\|已消化\|已转挂\|已放弃（契约源：add-change-lifecycle-retro design D7；词表 `feedback.sh menu`） | `openspec/changes/ai-provider-model-overhaul/human-feedback.md`：10 条含归因标注与状态，verify 全处置 | 词表外归因/缺状态行 → `harness-retro --lifecycle` 第五段计「格式异常」单列、`feedback.sh verify` 状态不明视同未处置提醒（归档对账不阻断）；不进 events.db（文件随 change 归档永久保存） |
@@ -120,6 +121,7 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 | check-standards E | archive change 被 flow「变更溯源」表引用（2026-06-29 后） | 归档后 |
 | check-standards F | active change 的 doc-impact 声明对账（doc-impact.sh verify） | 归档前 |
 | check-standards G | 导航层（docs/README、docs/reference/*.md 一级、flow/README、architecture/map.md）相对 .md 链接死链 | 归档前 |
+| check-standards J | main spec 的 `<!-- domain: -->` 存在性 + 值合法性（15 词表 / 非空 / ≤3 域）——**只 WARN 不阻断**（观察期） | 归档前 |
 | spec-gate 文档与任务结构 | doc-impact、check-standards、tasks 尾三节和声明标记；不再对账 Scenario 映射。其余检查见开发执行规范 §11 | `openspec archive` 时 tool_call 拦截 |
 
 ## 维护提醒

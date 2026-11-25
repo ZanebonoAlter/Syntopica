@@ -1,3 +1,5 @@
+<!-- domain: discovery -->
+
 ## Purpose
 
 Refresh 操作并行化改造，包括后端 feed refresh 并发限流和前端页面加载两波并行。

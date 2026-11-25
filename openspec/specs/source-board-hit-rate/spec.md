@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, discovery -->
+
 # Source Board Hit Rate
 
 ## Purpose

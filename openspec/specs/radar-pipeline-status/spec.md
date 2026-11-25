@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, daily-report -->
+
 # radar-pipeline-status Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: db -->
+
 # disaster-recovery Specification
 
 ## Purpose

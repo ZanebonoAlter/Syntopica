@@ -1,3 +1,5 @@
+<!-- domain: topic-graph, semantic-board -->
+
 # related-events Specification
 
 ## Purpose

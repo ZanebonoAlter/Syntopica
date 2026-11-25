@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, topic-graph -->
+
 # workshop-lane-compose Specification
 
 ## Purpose

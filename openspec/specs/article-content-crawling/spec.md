@@ -1,3 +1,5 @@
+<!-- domain: content-enrichment -->
+
 # article-content-crawling Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # desktop-shell Specification
 
 ## Purpose

@@ -1,4 +1,6 @@
 
+<!-- domain: daily-report, semantic-board -->
+
 ## Purpose
 日报系统替代旧叙事系统，为每个 SemanticBoard 每日生成结构化日报，包含今日重点、板块动态和聚类叙事线索。
 

@@ -1,3 +1,5 @@
+<!-- domain: reading -->
+
 # reading-list-panel Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 # lane-correction-surface Specification
 
 ## Purpose

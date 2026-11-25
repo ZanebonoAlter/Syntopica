@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # user-onboarding
 
 ## Purpose

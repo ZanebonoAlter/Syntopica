@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # branding Specification
 
 ## Purpose

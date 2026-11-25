@@ -1,3 +1,5 @@
+<!-- domain: topic-graph -->
+
 ## Purpose
 
 Section 级别的生命周期管理：通过 `daily_report_section_relations` 关系表拓扑结构动态推导 section 的 status（emerging/continuing/split/merge）和 ended 标记，提供 timeline 和 lifecycle API，前端展示话题总览 DAG 时间线和 Section Lifecycle Panel。

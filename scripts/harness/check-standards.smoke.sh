@@ -74,7 +74,7 @@ printf '%s\n' \
 	'--raw-fixture: 0;' '--color-fixture: 0;' '[data-theme="editorial"] {}' '[data-theme="dark"] {}' \
 	>"$TMP/front/app/assets/css/main.css"
 printf '%s\n' 'theming.md code-style.md lint.md testing.md package-layout.md commit-pr.md' >"$TMP/AGENTS.md"
-for domain in admin dataenrichment reader tagmanagement topicgraph; do
+for domain in admin dataenrichment reader tagmanagement topicgraph discovery; do
 	mkdir -p "$TMP/backend-go/internal/$domain/handler"
 done
 for model in ai_models.go topic_graph.go semantic_label.go; do

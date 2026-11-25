@@ -1,3 +1,5 @@
+<!-- domain: daily-report -->
+
 # daily-report-margin-notes Specification
 
 ## Purpose

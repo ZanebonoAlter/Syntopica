@@ -1,3 +1,5 @@
+<!-- domain: topic-graph, daily-report -->
+
 # thread-related-events Specification
 
 ## Purpose

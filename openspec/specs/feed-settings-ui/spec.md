@@ -1,3 +1,5 @@
+<!-- domain: discovery, ui -->
+
 # Feed Settings UI
 
 ## Purpose
