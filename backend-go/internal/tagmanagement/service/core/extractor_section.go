@@ -28,20 +28,20 @@ const extractionMaxOutputTokens = 4096
 const sectionExtractionOperation = "tag_extraction_section"
 
 // buildSectionExtractionPrompt is the fused system prompt for aggregate-article
-// per-section extraction: one call yields event/person/keyword candidates for a
+// per-section extraction: one call yields event/keyword candidates for a
 // single column slice of the summary.
+//
+// person（人物）类不再要求提取（retire-person-extraction），与单篇 merged 路径一致：
+// 同一数组混两类会让模型注意力分散（2026-11-25 实测 event_person_tags 偶发
+// 返回 object 而整篇解析失败）。解析层与 schema 仍兼容偶发的 person 条目。
 func buildSectionExtractionPrompt() string {
-	return `你是一个专业的新闻分析助手，负责从聚合型文章（如科技周刊、排行榜合集）的一个栏目片中提取 event、person、keyword 三类标签。
+	return `你是一个专业的新闻分析助手，负责从聚合型文章（如科技周刊、排行榜合集）的一个栏目片中提取 event、keyword 两类标签。
 
 输入是文章的一个栏目片（含栏目标题），不是完整文章。只基于本片内容提取，不要推测片外内容。
 
 event（事件）：完整描述的新闻事件名词短语，必须具备语义完整性。
 - 正确示例："苹果WWDC 2024发布会"、"央行禁止比特币交易"
 - 错误示例："3月30"（裸日期）、"禁止交易"（无主体动作）、"门票涨价"（无归属状态）、"北京中关村"（裸地名）
-
-person（人物）：具体的个人姓名。
-- 正确示例："Sam Altman"、"李飞飞"
-- 错误示例："CEO"（泛称）、"发言人"（角色而非具体人）
 
 keyword（关键词）：专业术语、技术概念、产品名称、组织机构等具有持久辨识度的实体或术语。
 - 正确示例："Transformer架构"、"PostgreSQL"、"Kubernetes"
@@ -54,7 +54,7 @@ keyword（关键词）：专业术语、技术概念、产品名称、组织机�
 - 标签按优先级从高到低排序
 
 辅助标签要求：
-- event/person 标签必须输出 auxiliary_labels，数量 3-5 个，每项包含 label 和 description
+- event 标签必须输出 auxiliary_labels，数量 3-5 个，每项包含 label 和 description
 - auxiliary_labels 应是具体语义锚点（关键实体、人物、地点、动作、技术名词）
 - 不要输出泛词，如"事件"、"情况"、"技术"、"公司"
 - keyword 不输出 auxiliary_labels（keyword 用标签自身 label + description 直接进入辅助标签池）
@@ -62,7 +62,6 @@ keyword（关键词）：专业术语、技术概念、产品名称、组织机�
 description 要求：
 - event：中文1句话解释事件，不超过50字，不重复标签名
 - keyword：必填，中文1句话，不超过50字，解释标签指代什么
-- person：可留空
 
 输出格式正例：
 {"tags":[{"label":"某国央行上调基准利率","category":"event","aliases":["央行加息"],"description":"某国央行上调基准利率的政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"货币政策利率"},{"label":"利率上调","description":"提高利率的举措"}]},{"label":"Kubernetes","category":"keyword","aliases":["K8s"],"description":"开源容器编排系统"}]}`
@@ -85,9 +84,9 @@ func sectionExtractionSchema() *airouter.JSONSchema {
 					Type: "object",
 					Properties: map[string]airouter.SchemaProperty{
 						"label":       {Type: "string", Description: "标签名称"},
-						"category":    {Type: "string", Description: "event、person 或 keyword"},
+						"category":    {Type: "string", Description: "event 或 keyword"},
 						"aliases":     {Type: "array", Items: &airouter.SchemaProperty{Type: "string"}},
-						"description": {Type: "string", Description: "标签的简短中文描述；event 必填，keyword 必填，person 可留空"},
+						"description": {Type: "string", Description: "标签的简短中文描述；event 必填，keyword 必填"},
 						"auxiliary_labels": {
 							Type: "array",
 							Items: &airouter.SchemaProperty{
@@ -98,7 +97,7 @@ func sectionExtractionSchema() *airouter.JSONSchema {
 								},
 								Required: []string{"label", "description"},
 							},
-							Description: "event/person 必填 3-5 个带 description 的具体语义锚点；keyword 不输出",
+							Description: "event 必填 3-5 个带 description 的具体语义锚点；keyword 不输出",
 						},
 					},
 					Required: []string{"label", "category"},
@@ -131,7 +130,7 @@ func sectionExtractionSchemaShadow() *airouter.JSONSchema {
 func buildSectionExtractionPromptShadow() string {
 	return buildSectionExtractionPrompt() + `
 
-主体稳定短身份说明（仅影子模式，仅 event 标签额外输出 subject_desc，person/keyword 不输出）：
+主体稳定短身份说明（仅影子模式，仅 event 标签额外输出 subject_desc，keyword 不输出）：
 - 只描述主体自身的稳定身份：类别、国别、角色、所属组织等（如“美国第45任总统”、“美国芯片设计公司”）
 - 不得包含当次事件、动作、对象或时间（说明随事件漂移会退化成事件检索）
 - 不确定时留空，不要编造

@@ -150,12 +150,14 @@ func TestEnhancedExtraction_OffPromptAndSchemaUnchanged(t *testing.T) {
 	t.Cleanup(func() { SetEntitySubjectModeForTest("") })
 	require.False(t, EntitySubjectShadowEnabled())
 
-	// 冻结 golden：off 态 merged prompt 的首尾锚点与关键行（与上线前逐字一致
-	// 的回归守卫——任何人改 buildMergedExtractionPrompt 都会红）。其中
+	// 冻结 golden：off 态 merged prompt 的首尾锚点与关键行。基线以本次
+	// （retire-person-extraction 收敛 person 之后）为起点；任何人改
+	// buildMergedExtractionPrompt 都会红，措辞变更须同步本 golden。其中
 	// 「【事件指纹】…」与 subject_key 行由并发 change add-event-story-heat 引入，
 	// 措辞变更需同步本 golden（不是本 change 回归）。
 	prompt := buildMergedExtractionPrompt()
-	require.True(t, strings.HasPrefix(prompt, "你是新闻分析助手，一次性从新闻摘要提取 event/person 与 keyword 标签，同时输出两个数组。"))
+	require.True(t, strings.HasPrefix(prompt, "你是新闻分析助手，一次性从新闻摘要提取 event 与 keyword 标签，同时输出两个数组。"),
+		"retire-person-extraction 后 prompt 首句只提 event/keyword")
 	require.NotContains(t, prompt, "【事件指纹】", "指纹指令已摘除")
 	require.NotContains(t, prompt, "subject_key", "指纹字段指令已摘除")
 	require.True(t, strings.HasSuffix(prompt, `{"label":"技术","category":"keyword","description":"技术"}（标签与描述都过于泛化）`))
@@ -267,4 +269,30 @@ func TestBuildExtractionUserPromptFormatMatchesSchema(t *testing.T) {
 	require.NotContains(t, prompt, `{"tags": [标签列表]}`, "prompt 不得再指向已废弃的单数组写法")
 	require.Contains(t, prompt, "event_person_tags")
 	require.Contains(t, prompt, "keyword_tags")
+}
+
+// TestMergedExtractionPromptExcludesPerson 守护 retire-person-extraction：
+// 合并提取 prompt 不再要求模型提取 person 类别（辅助标签体系已覆盖人物叫法，
+// 双类别同一数组会挤压注意力导致 event_person_tags 结构错误）。字段名
+// event_person_tags 故意保留，因此断言只看「提取要求」措辞。
+func TestMergedExtractionPromptExcludesPerson(t *testing.T) {
+	prompt := buildMergedExtractionPrompt()
+
+	for _, banned := range []string{
+		"person（人物）",         // 类别定义行
+		"person 可留空",         // event 描述规则里的尾巴
+		"每个 event/person 标签", // 辅助标签要求
+		"event/person 数组只放",  // 共同规则串放约束
+	} {
+		require.NotContainsf(t, prompt, banned, "prompt 不得再包含人物提取要求：%q", banned)
+	}
+
+	// 保留项：event / keyword 规则与既有 JSON 字段名（契约不变）。
+	require.Contains(t, prompt, "event（事件）")
+	require.Contains(t, prompt, "keyword（关键词）")
+	require.Contains(t, prompt, "event_person_tags")
+
+	// 与措辞无关的强断言（review R-5）：剔除字段名后整篇 prompt 不得再出现
+	// "person"——新增任何 person 措辞（含示例词、说明句）都会红。
+	require.NotContains(t, strings.ReplaceAll(prompt, "event_person_tags", ""), "person")
 }

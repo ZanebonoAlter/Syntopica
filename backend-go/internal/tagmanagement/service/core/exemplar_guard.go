@@ -15,8 +15,6 @@ var mergedPromptExemplarLabels = []string{
 	"PostgreSQL", "Transformer架构",
 	// event 定义举例 / 输出格式正例
 	"央行禁止比特币交易", "某国央行上调基准利率",
-	// person 定义举例
-	"Sam Altman",
 	// 正例 JSON 的 auxiliary_labels
 	"央行", "基准利率", "利率上调",
 }
@@ -26,8 +24,6 @@ var mergedPromptExemplarLabels = []string{
 var sectionPromptExemplarLabels = []string{
 	// event 正确示例
 	"苹果WWDC 2024发布会", "央行禁止比特币交易",
-	// person 正确示例
-	"Sam Altman", "李飞飞",
 	// keyword 正确示例
 	"Transformer架构", "PostgreSQL", "Kubernetes",
 	// 输出格式正例 event + auxiliary_labels

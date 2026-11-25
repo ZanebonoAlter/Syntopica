@@ -214,8 +214,11 @@ func TestSectionExtractionPromptIncludesFusedRules(t *testing.T) {
 	prompt := buildSectionExtractionPrompt()
 
 	require.Contains(t, prompt, "event（事件）")
-	require.Contains(t, prompt, "person（人物）")
+	require.NotContains(t, prompt, "person（人物）", "retire-person-extraction：section prompt 不再要求提取人物")
 	require.Contains(t, prompt, "keyword（关键词）")
+	// 与措辞无关的强断言（review R-5）：section prompt 无任何字段名可豁免，
+	// 整篇不得出现 "person"。
+	require.NotContains(t, prompt, "person")
 	require.Contains(t, prompt, "栏目片")
 	require.Contains(t, prompt, "最多输出 4 个标签")
 	require.Contains(t, prompt, "auxiliary_labels")
@@ -322,8 +325,9 @@ func TestSectionExtraction_OffPromptAndSchemaUnchanged(t *testing.T) {
 
 	require.False(t, EntitySubjectShadowEnabled())
 
-	// 冻结 golden：off 态 prompt 的首尾锚点与关键行（与上线前逐字一致的
-	// 回归守卫——任何人改 buildSectionExtractionPrompt 都会红）。
+	// 冻结 golden：off 态 prompt 的首尾锚点与关键行。基线以本次（retire-person-extraction
+	// 收敛 person 之后）为起点；任何人改 buildSectionExtractionPrompt 都会红，
+	// 措辞变更须同步本 golden。
 	//
 	// ⚠️ 跨 change 耦合（review R-21）：下面两行锚点
 	// 「事件指纹（仅 event 标签输出，person/keyword 不输出这五项）」与
@@ -332,7 +336,7 @@ func TestSectionExtraction_OffPromptAndSchemaUnchanged(t *testing.T) {
 	// 这两行的措辞，本 golden 会红——那是跨 change 同步，不是本 change 回归；
 	// 改措辞时须同步更新本 golden（design Risks 已声明的已知代价）。
 	prompt := buildSectionExtractionPrompt()
-	require.True(t, strings.HasPrefix(prompt, "你是一个专业的新闻分析助手，负责从聚合型文章（如科技周刊、排行榜合集）的一个栏目片中提取 event、person、keyword 三类标签。"))
+	require.True(t, strings.HasPrefix(prompt, "你是一个专业的新闻分析助手，负责从聚合型文章（如科技周刊、排行榜合集）的一个栏目片中提取 event、keyword 两类标签。"))
 	require.NotContains(t, prompt, "事件指纹", "指纹指令已摘除")
 	require.NotContains(t, prompt, "subject_key", "指纹字段指令已摘除")
 	require.NotContains(t, prompt, "主体禁则", "主体禁则随指纹一并摘除")

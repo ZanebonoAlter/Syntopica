@@ -256,23 +256,28 @@ func (te *TagExtractor) resolveCandidate(ctx context.Context, candidate Extracte
 // Helper functions
 
 // buildMergedExtractionPrompt returns the single system prompt for the merged
-// extraction call: event/person rules (auxiliary label requirements) and
-// keyword rules (description requirements) share the common rule block. It
-// replaces the former two per-branch prompts; tests cap it at 1500 runes.
+// extraction call: event rules (auxiliary label requirements) and keyword rules
+// (description requirements) share the common rule block. It replaces the
+// former two per-branch prompts; tests cap it at 1500 runes.
+//
+// person（人物）类不再要求提取（retire-person-extraction）：辅助标签体系已覆盖
+// 人物叫法（存量 person 中 Top10 全部有同名 auxiliary），而双类别同一数组会把
+// 模型注意力拆散（2026-11-25 实测 article 184183 连续 3 次把 event_person_tags
+// 返回为 object 而整篇解析失败）。字段名 event_person_tags 故意保留——改名会
+// 牵动解析契约、fixture 与前端类型。
 func buildMergedExtractionPrompt() string {
-	return `你是新闻分析助手，一次性从新闻摘要提取 event/person 与 keyword 标签，同时输出两个数组。
+	return `你是新闻分析助手，一次性从新闻摘要提取 event 与 keyword 标签，同时输出两个数组。
 
-【event/person 数组】
+【event 数组】
 event（事件）：语义完整的事件名词短语，如"央行禁止比特币交易"；拒绝裸日期、无主体动作短语、裸地名、泛化活动名。
-person（人物）：具体个人姓名，如"Sam Altman"；拒绝泛称（"CEO"）与非姓名（"某公司创始人"）。
 
 辅助标签要求：
-- 每个 event/person 标签必须输出 auxiliary_labels，数量 3-5 个
+- 每个 event 标签必须输出 auxiliary_labels，数量 3-5 个
 - auxiliary_labels 是对象数组，每项含 label 和 description，如 {"label":"央行","description":"货币当局"}
 - 辅助标签须与事件核心直接相关，是具体语义锚点（实体、人物、地点、动作）；背景提及、移除后事件仍成立的实体不要输出
 - description 简短具体，不能为空，不能只重复 label；拒绝"事件"、"技术"、"发展"、"市场"等泛词
 - 反例：{"label":"技术","description":"技术"}、"决策机构"（字符串而非对象）
-- event description 中文1句话不超50字、不重复标签名；person 可留空
+- event description 中文1句话不超50字、不重复标签名
 
 【keyword 数组】
 keyword（关键词）：有持久辨识度的专业术语、技术概念、产品、组织机构，如"Transformer架构"、"PostgreSQL"；拒绝时间词（"2026"）、泛称（"公司"）、空泛词（"发展"）。
@@ -280,7 +285,7 @@ keyword（关键词）：有持久辨识度的专业术语、技术概念、产�
 description 要求：每个 keyword 必须输出 description，中文1句话不超50字、不重复标签名，如 "PostgreSQL" → "开源关系型数据库"。
 
 【共同规则】
-- event/person 数组只放 event/person，keyword 数组只放 keyword，不要串放
+- event 数组只放 event，keyword 数组只放 keyword，不要串放
 - 最多返回 3 个 keyword；宁缺毋滥，不需要每篇都凑数量
 - keyword 不输出 auxiliary_labels 字段，将用标签自身 label + description 直接进入辅助标签池
 - 拒绝日期/时间词、过于宽泛的通用词、未展开讨论的附带提及词
@@ -290,7 +295,7 @@ description 要求：每个 keyword 必须输出 description，中文1句话不�
 正例：
 {"event_person_tags":[{"label":"某国央行上调基准利率","category":"event","description":"某国央行上调基准利率的政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"货币政策利率"},{"label":"利率上调","description":"提高利率的举措"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库"}]}
 反例：
-- keyword 标签放进 event/person 数组（串放）
+- keyword 标签放进 event 数组（串放）
 - auxiliary_labels 写成字符串数组（必须是含 label/description 的对象数组）
 - {"label":"技术","category":"keyword","description":"技术"}（标签与描述都过于泛化）`
 }
@@ -641,9 +646,9 @@ func mergedTagExtractionSchema() *airouter.JSONSchema {
 					Type: "object",
 					Properties: map[string]airouter.SchemaProperty{
 						"label":       {Type: "string", Description: "标签名称"},
-						"category":    {Type: "string", Description: "event 或 person"},
+						"category":    {Type: "string", Description: "必须为 event"},
 						"aliases":     {Type: "array", Items: &airouter.SchemaProperty{Type: "string"}},
-						"description": {Type: "string", Description: "event 标签的简短描述；person 可留空"},
+						"description": {Type: "string", Description: "event 标签的简短描述"},
 						"auxiliary_labels": {
 							Type: "array",
 							Items: &airouter.SchemaProperty{
@@ -700,7 +705,7 @@ func mergedTagExtractionSchemaShadow() *airouter.JSONSchema {
 func buildMergedExtractionPromptShadow() string {
 	return buildMergedExtractionPrompt() + `
 
-【主体稳定短身份说明】仅影子模式、仅 event 标签额外输出 subject_desc，person/keyword 不输出：
+【主体稳定短身份说明】仅影子模式、仅 event 标签额外输出 subject_desc，keyword 不输出：
 - 只描述主体自身的稳定身份：类别、国别、角色、所属组织等（如"美国第45任总统"、"美国芯片设计公司"）
 - 不得包含当次事件、动作、对象或时间（说明随事件漂移会退化成事件检索）
 - 不确定时留空，不要编造`
