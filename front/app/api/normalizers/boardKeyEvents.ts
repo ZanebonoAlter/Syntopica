@@ -26,7 +26,7 @@ export interface RawBoardKeyEventMarker {
 /** 归一后的单条关键事件。 */
 export interface BoardKeyEventItem {
   id: string
-  /** 所属持久化话题（字符串 ID）；null = 无话题归属（构建索引时丢弃）。 */
+  /** 所属持久化话题（字符串 ID）；null = 无话题归属（不进话题索引，由视图「其他」兜底行承接）。 */
   topicId: string | null
   topicLabelSnapshot: string
   /** 来源日报日（date-only YYYY-MM-DD）。 */

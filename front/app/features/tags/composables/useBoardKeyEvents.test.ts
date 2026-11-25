@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
-import { buildKeyEventIndex, useBoardKeyEvents } from './useBoardKeyEvents'
+import { buildKeyEventIndex, groupUnassignedEvents, useBoardKeyEvents } from './useBoardKeyEvents'
 import type { BoardKeyEventItem } from '~/api/boardKeyEvents'
 
 const { apiMock } = vi.hoisted(() => ({
@@ -62,6 +62,43 @@ describe('buildKeyEventIndex — 事件索引派生（纯函数）', () => {
 
   it('空列表 → 空索引', () => {
     expect(buildKeyEventIndex([]).size).toBe(0)
+  })
+})
+
+describe('groupUnassignedEvents — 未归入行集合的事件（纯函数）', () => {
+  it('收集 topicId=null 的事件（话题删除后的历史注记）', () => {
+    const grouped = groupUnassignedEvents([
+      event('a', null, '2026-11-12'),
+      event('b', '7', '2026-11-12'),
+    ], new Set(['7']))
+    expect(grouped.get('2026-11-12')!.map(e => e.id)).toEqual(['a'])
+  })
+
+  it('收集不在行集合的话题事件（未关注 candidate / archived）', () => {
+    const grouped = groupUnassignedEvents([
+      event('a', '7', '2026-11-12'),
+      event('b', '999', '2026-11-12'),
+      event('c', '1000', '2026-11-13'),
+    ], new Set(['7']))
+    expect(grouped.get('2026-11-12')!.map(e => e.id)).toEqual(['b'])
+    expect(grouped.get('2026-11-13')!.map(e => e.id)).toEqual(['c'])
+  })
+
+  it('已归属事件全部排除；无未归属事件 → 空 Map', () => {
+    const grouped = groupUnassignedEvents([
+      event('a', '7', '2026-11-12'),
+      event('b', '8', '2026-11-13'),
+    ], new Set(['7', '8']))
+    expect(grouped.size).toBe(0)
+  })
+
+  it('同日多事件保持接口序', () => {
+    const grouped = groupUnassignedEvents([
+      event('3', '999', '2026-11-12'),
+      event('1', '999', '2026-11-12'),
+      event('2', null, '2026-11-12'),
+    ], new Set())
+    expect(grouped.get('2026-11-12')!.map(e => e.id)).toEqual(['3', '1', '2'])
   })
 })
 

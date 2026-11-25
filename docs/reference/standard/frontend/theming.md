@@ -17,6 +17,17 @@ editorial / magazine（杂志感），**禁止回退到蓝紫色 SaaS 视觉**�
 
 **硬约束：组件只引用 Layer 2 语义 token，不直接使用原始色值（`--raw-*`）。**
 
+### 事件语义色 `--color-event`
+
+| 主题 | 取值 | 用途 | 对 `--color-bg-elevated` | 对 `--color-bg-base` |
+|---|---|---|---|---|
+| editorial | `#8f5a17` | 关键事件圆点描边 / 引线 / 日聚焦卡片首行日期 | 5.08:1 | 5.39:1 |
+| dark | `#e0a75a` | 同上 | 8.17:1 | 9.19:1 |
+
+- **与 `--color-tag-event` 是两套口径**：后者是文章事件标签的既有取色（亮色 `rgba(196,136,60,.85)`，对 `elevated` 仅 2.46:1），**只用于标签底色/边框，不得拿它画 1.5px 细线或排小号文字**；本 token 专供细线与正文级小字，两者互不复用、也不得互相改值对齐。
+- **与强调色分工**：`--color-event` = 「事件」，`--color-accent` = 「当前选中」（亮色红 `#d94a4a` / 暗色橙红 `rgba(240,138,75,.85)`）。暗色下两者色相差仅约 11°，因此**选中态 MUST NOT 只靠颜色区分**——同时用整列淡底 + 轴头加粗 + 实心节点三重冗余。事件色 MUST NOT 用于表达选中（`key-event-day-focus-cards`）。
+- 取值以**产品真实底色**为口径（`--color-bg-elevated` = `--raw-stone-100` = `#f5f0e6`、`--color-bg-base` = `--raw-stone-50` = `#faf7f2`）；新增/替换取值时 MUST 按这两个底色复算 ≥4.5:1，MUST NOT 拿纯白或原型内部色值当基准。
+
 ## 主题切换
 
 - 通过根元素 `data-theme="editorial|dark"` 切换

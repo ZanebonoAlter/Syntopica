@@ -10,8 +10,8 @@
  *  - 晚到隔离：请求序号（seq）不匹配的响应不发布（切板块/切档后旧响应不得污染新状态）。
  *
  * 纯函数 `buildKeyEventIndex`（topicId → date → events）供视图按行/按日取事件，
- * 同日多事件保持接口序，无话题归属的事件丢弃（矩阵级行集合只含持久化话题，
- * 由行序 `buildObservationRows` 决定；未知 topicId 自然不命中任何行）。
+ * 同日多事件保持接口序；无话题归属 / 未命中行集合的事件**不进话题索引**（视图层
+ * `groupUnassignedEvents` 会把它们收进「其他」兜底行，MUST NOT 在索引层丢弃语义）。
  */
 import { computed, ref, watch, type Ref } from 'vue'
 import { useBoardKeyEventsApi } from '~/api/boardKeyEvents'
@@ -43,6 +43,27 @@ export function buildKeyEventIndex(events: readonly BoardKeyEventItem[]): BoardK
     else byDate.set(event.sourcePeriodDate, [event])
   }
   return index
+}
+
+/**
+ * 纯函数：未归入给定话题集合的事件 → 按来源日期分组（「其他」兜底行数据源）。
+ *
+ * 收录两类：`topicId == null`（话题已删除 / 历史无归属）与 `topicId` 不在
+ * `assignedTopicIds`（未关注 candidate、archived、窗口内无分区而未成行的话题）。
+ * 同日顺序按接口序（与 `buildKeyEventIndex` 同口径）；空结果返回空 Map。
+ */
+export function groupUnassignedEvents(
+  events: readonly BoardKeyEventItem[],
+  assignedTopicIds: ReadonlySet<string>,
+): Map<string, BoardKeyEventItem[]> {
+  const byDate = new Map<string, BoardKeyEventItem[]>()
+  for (const event of events) {
+    if (event.topicId != null && assignedTopicIds.has(event.topicId)) continue
+    const list = byDate.get(event.sourcePeriodDate)
+    if (list) list.push(event)
+    else byDate.set(event.sourcePeriodDate, [event])
+  }
+  return byDate
 }
 
 export interface UseBoardKeyEventsDeps {

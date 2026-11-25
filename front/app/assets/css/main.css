@@ -163,6 +163,7 @@ body {
   --color-tag-keyword:        rgba(74, 93, 138, 0.85);
   --color-tag-keyword-bg:     rgba(74, 93, 138, 0.12);
   --color-tag-keyword-border: rgba(74, 93, 138, 0.25);
+  --color-event: #8f5a17; /* 关键事件语义色：圆点描边 / 引线 / 卡片首行日期（与 --color-tag-event 的文章事件标签口径不同） */
 
   /* Match-quality tiers (direct_hit / hit_rate / max_sim / weighted / composite_hit).
      Shared by TagsPage chips, daily-report explore panel and section tier badge.
@@ -250,6 +251,7 @@ body {
   --color-tag-keyword:        rgba(99, 102, 241, 0.72);
   --color-tag-keyword-bg:     rgba(99, 102, 241, 0.18);
   --color-tag-keyword-border: rgba(99, 102, 241, 0.32);
+  --color-event: #e0a75a; /* 关键事件语义色：圆点描边 / 引线 / 卡片首行日期（与 --color-tag-event 的文章事件标签口径不同） */
 
   /* Match-quality tiers — brightened for the deep dark ground. */
   --color-match-direct-hit: #4ade80;
