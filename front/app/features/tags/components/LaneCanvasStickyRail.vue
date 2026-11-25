@@ -55,8 +55,11 @@ const props = withDefaults(defineProps<{
   bands?: number
   /** 整组反向位移（逻辑坐标 = `scrollLeft / zoom`）。 */
   offset?: number
+  /** 是否在列右缘画 1px 竖向分隔（让这列读作「钉住的标签栅」而不是一块色）。 */
+  divider?: boolean
 }>(), {
   tint: false,
+  divider: false,
   bands: STICKY_SHADOW_BANDS,
   offset: 0,
 })
@@ -87,6 +90,16 @@ const transform = computed(() => (props.overflowing ? `translate(${props.offset}
     />
     <!-- 列内图元：按内容坐标书写，横向位移由本组统一承担 -->
     <slot />
+    <!-- 右缘竖向分隔（1px）：与下方右缘渐隐阴影一起表达「这里是层界」 -->
+    <line
+      v-if="overflowing && divider"
+      class="lcc-canvas__label-divider"
+      data-role="row-label-divider"
+      :x1="width"
+      :x2="width"
+      :y1="y"
+      :y2="y + height"
+    />
     <template v-if="overflowing">
       <rect
         v-for="band in bands"
@@ -116,5 +129,11 @@ const transform = computed(() => (props.overflowing ? `translate(${props.offset}
 */
 .lcc-canvas__sticky-tint {
   fill: var(--color-bg-elevated);
+}
+
+/* 列右缘 1px 竖向分隔（层界表达；与阴影不重复，阴影是渐隐、它是硬线） */
+.lcc-canvas__label-divider {
+  stroke: var(--color-border-medium);
+  stroke-width: 1;
 }
 </style>

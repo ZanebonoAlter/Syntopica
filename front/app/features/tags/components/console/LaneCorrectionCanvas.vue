@@ -501,11 +501,21 @@ const allPoints = computed(() => {
 
 // ── 吸顶（横向钉标签列 / 纵向只钉日期轴） ───────────────────────────────
 /**
- * 吸顶标签列的覆盖高度：画布顶 → 第二个分区标签下缘（标签在 `zone2Line + 26`）。
+ * 吸顶标签列的**纵轴锚定**：覆盖区恒等于容器的可视高度，而不是内容坐标里的一段。
  *
- * 只盖到标签列真正有内容的地方：往下的只读参照区没有列内图元，不需要一块空底。
+ * 原因（2026-11-25 实机反馈）：底色如果按内容坐标从 0 盖到 `zone2Line + 30`，
+ * 纵向滚动后这块底会**跟着内容上移**，底部露出一截没底的空带、中间留一道硬接缝，
+ * 看上去像一个「错位的色块」而不是一列钉住的标签栏。
+ *
+ * 与日期轴吸顶带同一个算法，但**符号相反**：日期轴那组自带纵向 `translate(0, S)`，
+ * 两者抵消后需要 `y = -S`；标签列这组只做**横向**位移、没有纵向 translate，
+ * 所以直接取 `y = +S`（内容坐标里已经随滚动上移了 S，再回补 S 就落在视口顶）。
  */
-const stickyRailHeight = computed(() => zones.value.zone2Line + 30)
+const stickyRailAnchor = computed(() => {
+  const top = scrollTopLogical.value
+  const viewport = containerHeight.value > 0 ? containerHeight.value / (zoom.value || 1) : canvasHeight.value
+  return { y: top, height: viewport }
+})
 
 /**
  * 日期轴的纵向吸顶位移（逻辑坐标 = `scrollTop / zoom`）；不溢出时**不下发** transform。
@@ -1258,10 +1268,11 @@ const foldShown = computed(() => props.foldNodes.slice(0, LANE_FOLD_MAX))
         <LaneCanvasStickyRail
           :width="axisX0"
           :overflowing="overflowingX"
-          :y="0"
-          :height="stickyRailHeight"
+          :y="stickyRailAnchor.y"
+          :height="stickyRailAnchor.height"
           :offset="scrollLeftLogical"
           tint
+          divider
         >
           <text class="lcc-band-title" x="14" :y="BAND_Y + 2">本泳道话题带</text>
           <text class="lcc-band-sub" x="14" :y="BAND_Y + 18">{{ laneLabel }}</text>
