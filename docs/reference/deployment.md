@@ -375,9 +375,27 @@ command:
   - autovacuum_vacuum_cost_limit=2000          # 默认 200 追不上写入速度
   - -c
   - wal_compression=on                         # 高写入库 WAL 全页镜像压缩
+  - -c
+  - idle_in_transaction_session_timeout=60s    # 事务内慢调用硬护栏（fix-aux-label-idle-tx-cache）
+  - -c
+  - shared_buffers=512MB                       # 容纳 HNSW 索引（2026-11-25，见下）
 ```
 
 **为什么**：默认参数下高写入量表（otel_spans 日增 ~82 万行、embedding 缓存反复重写）的死元组回收严重滞后，实测 TOAST 膨胀 13 倍、库体积膨胀到 12GB；收紧触发阈值 + 提高 cost limit 后 vacuum 跟得上写入。
+
+#### shared_buffers 512MB（fix-aux-label-dedup-ann，2026-11-25）
+
+**默认 128MB 装不下向量索引**：`semantic_labels` 的 `idx_semantic_labels_merge_halfvec_hnsw` 建成后 212MB，`idx_topic_tag_embeddings_identity_halfvec_hnsw` 更大。索引装不进 shared_buffers 时每次 HNSW 图遍历都回落到磁盘——本机数据在 SD 卡（`/dev/mmcblk0p2`），实测 L2 召回冷读 **278ms**，而全命中 shared_buffers 时只有 **5ms**。
+
+512MB 可容纳 212MB 索引 + 热页（树莓派 8GB 内存，留足余量）。配合 `pg_prewarm` 预热索引，冷读基本消失：
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_prewarm;
+SELECT pg_prewarm('idx_semantic_labels_merge_halfvec_hnsw');      -- 27160 页
+SELECT pg_prewarm('idx_topic_tag_embeddings_identity_halfvec_hnsw'); -- 24236 页
+```
+
+**实测效果**（同向量重复 → 不同向量冷路径）：L2 召回 278ms → 18–58ms，热态稳定 5–9ms。容器重启后 shared_buffers 为空，`pg_prewarm` 调用需重跑（或启用 `pg_prewarm.autoprewarm=on` 自动恢复）。
 
 **生效方式**：参数变更需 recreate 容器（`docker compose -f docker-compose.pg.yml up -d`，数据在 `./data` bind mount 不丢）。验证：`docker exec syntopica-postgres psql -U postgres -d syntopica -c "SHOW autovacuum_vacuum_scale_factor;"` → `0.05`。
 

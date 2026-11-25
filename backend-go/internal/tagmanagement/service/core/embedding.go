@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
@@ -622,7 +623,29 @@ func (s *EmbeddingService) SaveEmbedding(embedding *tagmodels.TopicTagEmbedding)
 //     建它会报 "column does not have dimensions"，且存活的 float32 索引会把列
 //     钉在旧维度上。语义召回主路径走 halfvec 索引，float32 索引无查询在用。
 //   - dim > 4000：两个索引都建不了，语义路回退旧的全表精确扫描（行为不中断）。
+//
+// ensuredVectorDims memoizes ensureVectorDimension per dimension for the
+// process lifetime. SaveEmbedding calls it on **every** embedding write; with
+// the column already dimensionless (branch 1) the work is a no-op, but the
+// probe still costs 2-3 queries plus two Info log lines per call — measured
+// 146 calls in 10s during a tagging batch. A dimension that needs correcting
+// is corrected once; later writes in the same process can assume it holds.
+// Data safety does not depend on this cache: SaveEmbedding still validates the
+// vector against the row's Dimension before writing.
+var ensuredVectorDims sync.Map // dim int -> struct{}
+
 func ensureVectorDimension(dim int) error {
+	if _, cached := ensuredVectorDims.Load(dim); cached {
+		return nil
+	}
+	if err := ensureVectorDimensionUncached(dim); err != nil {
+		return err
+	}
+	ensuredVectorDims.Store(dim, struct{}{})
+	return nil
+}
+
+func ensureVectorDimensionUncached(dim int) error {
 	db := repository.Repo.DB()
 
 	typeStr, err := database.VectorColumnType(db, "topic_tag_embeddings", "embedding")
