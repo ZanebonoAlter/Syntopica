@@ -1,6 +1,6 @@
 ## Purpose
 
-
+辅助标签聚类升级为 SemanticBoard 的完整管线：候选收集 → 时间窗过滤 → 预聚类压缩 → LLM 单一决策空间判定（compose|skip）→ 用户确认执行。两个方向共用一套建议机制：**创建**新版块与**扩充**既有版块（扩充锁定单版块 + 相似/共现双路召回 + 版块画像二分类）。建议按 `suggestion_hash` 幂等，dismiss 后冷却期内不重生。本族只规定算法与业务判定；端点契约与前端面板见 `board-api`。
 
 ## ADDED Requirements
 

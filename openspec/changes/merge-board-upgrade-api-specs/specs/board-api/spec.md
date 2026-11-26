@@ -1,6 +1,6 @@
 ## Purpose
 
-
+版块域的对外接口契约，覆盖后端端点与前端交互两层：①版块 CRUD 与配置（description 变更必须刷新 embedding、匹配参数可调）；②版块文章列表（按 feed/时间/辅助标签筛选、分页排序、归档口径、AI 判定状态、按日计数）；③升级建议的接口面（查看候选、触发、DTO、逐项处理与重新生成、回填触发、rematch）；④前端编辑对话框（字段、direction_mismatch 默认隐藏、MatchDetailPanel 展示）。本族只规定「接口长什么样」；聚类与判定算法见 `board-upgrade`。
 
 ## ADDED Requirements
 

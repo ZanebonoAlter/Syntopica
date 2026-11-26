@@ -34,8 +34,8 @@
 
 ## Impact
 
-- **spec 数量**：156 → 152（退役 4 个 + 新建 1 个；`board-upgrade` 保留原名就地扩容）
-- **历史追溯**：指向 4 个被删 capability 的 archived delta 落 `domain-history.sh` 第 6 段
+- **spec 数量**：156 → 152（退役 **5** 个 + 新建 1 个；`board-upgrade` 保留原名就地扩容）
+- **历史追溯**：指向 5 个被删 capability 的 archived delta 落 `domain-history.sh` 第 6 段
 - **代码**：零改动
 - **用户可见行为**：无
 - **回退**：`git revert`

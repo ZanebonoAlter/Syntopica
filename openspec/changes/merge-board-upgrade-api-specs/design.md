@@ -31,6 +31,15 @@
 
 沿用已验证的两段式：business 在前（保持来源顺序）、impl 在后（标 `<!-- kind: impl -->`）。
 
+**判据**（与既往两族一致，成文备查）：
+
+| 类型 | 判据 | 本族实例 |
+|---|---|---|
+| business | 约束系统对外产出什么：数据正确性、用户可见行为、接口字段/参数/分页语义、阈值与默认值、业务不变量 | 升级建议幂等、候选时间窗语义、DTO 形状、direction_mismatch 默认隐藏 |
+| impl | 约束代码怎么组织/怎么写，或记录已完成施工 | `API type updates`（前端类型同步） |
+
+**注意**：business 条款点名的 SQL 表名 / Go 函数名（如 `Board rematch API` 里的 `MatchTopicTag`）是「在哪生效」的定位信息，不构成 impl 判据——判据看的是它约束的是**外部可观察结果**还是**内部写法**。
+
 **预判的 impl 候选**（review 重点看）：
 
 - `API type updates`（editing-ui）——前端类型同步，属施工
@@ -47,9 +56,47 @@
 
 成员并集：`semantic-board, api, ui`（3 个，正好在 J 段上限内）。
 
-保留全部三个：`board-api` 改接口字段时，前端（ui）与 API 契约（api）都要同步，这两个次域是「改这族必须读哪些」的真实来源，不是实现手段。这是本仓第一次把 `ui` 与 `api` 同时挂上，原因是这族确实横跨前后端边界。
+保留全部三个：`board-api` 改接口字段时，前端（ui）与 API 契约（api）都要同步，这两个次域是「改这族必须读哪些」的真实来源，不是实现手段。
 
-## D7 已知损失
+**更正（R-8）**：这并非本仓首次同时挂 `ui` + `api`——`client-poll-budget` 已是 `domain: api, ui`。同时要意识到代价：`ui` 与 `api` 是**工具域**，挂上去会让「改前端布局」时的反查结果里混进契约 spec，稀释工具域的纯度。本族仍选择挂，因为 `board-api` 确实横跨前后端；但后续族若无同样跨度，不应照抄。
+
+## D7 已知跨族重复（4 组，登记不修）
+
+本族按「管线 vs 接口」切，但升级建议这条链路在两侧都落了地（R-3 实测）：
+
+| 功能 | `board-upgrade` 落点 | `board-api` 落点 | 性质 |
+|---|---|---|---|
+| 触发/生成 | 辅助标签聚类升级触发、预聚类压缩候选、LLM 判断升级/跳过 | 升级建议 API（写了「执行聚类 + LLM 判断流程」） | **越界**：API spec 里写了算法流程 |
+| 确认执行 | 用户确认后执行升级建议、ConfirmSuggestion API 合并路径保持不变 | 升级建议 DTO 的 Scenario「确认执行」 | 重复 |
+| 回填 | 手动回填队列（all/unassigned/board 三模式 + 入队） | 回填触发 API（同一组模式 + 进度查询） | 同一功能两条 |
+| 面板 | 生成入口模式选择、前端渲染 compose 建议 | 升级建议面板支持逐项处理和重新生成 | 同一面板 3 条契约分两族 |
+
+**处置：保留现状 + 后续收口**。本 change 不改正文（会打破 32=32 守恒，且改契约属语义变更）。
+
+分工约定（自本 change 起生效）：**改接口字段/参数/分页只看 `board-api`；改聚类/判定/阈值只看 `board-upgrade`；两边都动时先看这条**。
+
+收口（把 `board-api` 里的生成侧描述降为指针、把 `board-upgrade` 的「手动回填队列」并入接口族）需另立 change——登记在 tasks 7.4。
+
+## D8 红线 6/7 的 spec 覆盖不足（登记）
+
+`docs/reference/flow/semantic-board.md` 红线 6（`suggestion_hash` 幂等、同 hash pending 则 skipped）与红线 7（dismiss 后 14 天冷却期内同 hash 不得重生），在 spec 里只有 `board-upgrade-expand` 的一条 Requirement 写了「`suggestion_hash` 幂等与 dismissed 冷却期复用现有机制」+ 1 个 Scenario。
+
+**不足**：①只覆盖 compose 场景，未覆盖 create_new / merge_into_existing；②没写 14 天默认值；③没写冷却起算点（`resolved_at`）；④「复用现有机制」指向的是当时被删的旧条款，读者无从查证。
+
+代码侧完整实现（`backend_go/.../board_upgrade_suggestion.go:34,67`），所以这是**文档欠债**不是实现缺失。补独立条款需另立 change。
+
+## D9 前端契约归族判据
+
+`board-editing-ui` 归 `board-api`，但 `upgrade-candidate-time-window` 的「前端时间窗口选择器」留在 `board-upgrade`——review 指出这不一致（R-7）。
+
+判据：**前端契约跟着「它配置的是谁」走，不跟「它在哪个页面」走**。
+
+- 时间窗口选择器配置的是**升级候选的收集范围**（算法参数），跟 `board-upgrade` ✓
+- 编辑对话框字段、`MatchDetailPanel` 展示配置的是**接口返回什么**，跟 `board-api` ✓
+
+这条判据与 D1 的「管线 vs 接口」同源：前端控件配置算法 → 归算法族；前端控件展示接口数据 → 归接口族。
+
+## D10 已知损失
 
 指向 4 个被删 capability 的 archived delta 落 `domain-history.sh` 第 6 段；只碰过它们的 change 会从反查消失（与既往两族同一损失模式，别名表仍待做）。
 
