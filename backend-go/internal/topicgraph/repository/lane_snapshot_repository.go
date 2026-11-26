@@ -327,6 +327,19 @@ type LaneDynamicsCandidate struct {
 	LaneHeat float64 `json:"lane_heat"`
 }
 
+// LaneDynamicsOtherDay is one report day's 「未入泳道」aggregate: how many
+// sections of that day belong to no lane of the board, and how many
+// non-composite clues (threads) those sections carry.
+//
+// 「未入泳道」= persistent_topic_id 为空、或指向的既不是本板块 active 话题、也不是
+// watch 关联话题（与前端「当日其他话题」组的 A 名单排除同口径）。综合稿（composite）
+// 不计线索数（与泳道格同量纲），但分区数照算。
+type LaneDynamicsOtherDay struct {
+	Date     string `json:"date"` // YYYY-MM-DD
+	Sections int    `json:"sections"`
+	Clues    int    `json:"clues"`
+}
+
 // LaneDynamicsResponse is the GET /semantic-boards/:id/lane-dynamics payload.
 // Empty states (tasks 2.2): no reports → HasReports=false + empty non-nil
 // lanes/candidates; reports but no active lanes → HasReports=true + empty lanes.
@@ -352,6 +365,11 @@ type LaneDynamicsResponse struct {
 	CluesDegraded bool                    `json:"clues_degraded"`
 	Lanes         []LaneDynamicsLane      `json:"lanes"`
 	Candidates    []LaneDynamicsCandidate `json:"candidates"`
+	// OtherTopics = 逐日「未入泳道」聚合：窗口内每个 completed 日报日一条（含真实
+	// 0 —— 有日报但当天没有未入泳道分区时出 0/0，不省略成缺失）。值 = 该日未入泳道
+	// 的分区数 + 这些分区的非综合稿线索数。只描述既有归属，MUST NOT 参与泳道行 /
+	// 候选 / 热度的任何计算。空数组非 null（与 lanes/candidates 同一空态契约）。
+	OtherTopics []LaneDynamicsOtherDay `json:"other_topics"`
 }
 
 // laneSectionRow mirrors the windowed anchored-section projection shared by
@@ -432,6 +450,97 @@ func (r *TopicGraphRepository) listLaneSectionThreads(sectionIDs []uint) (map[ui
 		out[th.SectionID] = entry
 	}
 	return out, nil
+}
+
+// listOtherTopicsWindow aggregates, per COMPLETED report day in [from, to],
+// the sections that belong to no lane of this board（「未入泳道」）and the
+// non-composite clue (thread) count those sections carry.
+//
+// 排除集 laneTopicIDs = 该板块 active 话题 ∪ watch 关联话题（调用方给全量：
+// 窗内没分区的 active 话题，其历史分区同样不算「其他话题」）。其余分区计入——
+// candidate / archived / 没有 persistent topic 都算（与前端「当日其他话题」组
+// 的 A 名单排除同口径）。
+//
+// 综合稿（composite）不计线索数（与泳道格同量纲），分区数照算。日期骨架 = 窗口
+// 内 completed 日报日：某日没有未入泳道分区时仍出一条 0/0（真实零，不是缺失）；
+// 未完成日报整天不参与（与泳道时间线同边界）。
+func (r *TopicGraphRepository) listOtherTopicsWindow(boardID uint, from, to time.Time, laneTopicIDs []uint) ([]LaneDynamicsOtherDay, error) {
+	// ① 日期骨架：窗口内 completed 日报日（升序，每天一条）。
+	var reportDays []struct {
+		PeriodDate time.Time
+	}
+	if err := r.db.Model(&BoardDailyReport{}).
+		Distinct().
+		Select("period_date").
+		Where("semantic_board_id = ? AND status = ? AND period_date >= ? AND period_date <= ?",
+			boardID, ReportStatusCompleted, from, to).
+		Order("period_date ASC").
+		Scan(&reportDays).Error; err != nil {
+		return nil, fmt.Errorf("lane dynamics: other topics report days: %w", err)
+	}
+	out := make([]LaneDynamicsOtherDay, 0, len(reportDays))
+	if len(reportDays) == 0 {
+		return out, nil
+	}
+
+	// ② 一次窗口聚合：未入泳道分区数 + 它们的非综合稿线索数。
+	type otherTopicsRow struct {
+		PeriodDate time.Time
+		Sections   int
+		Clues      int
+	}
+	q := r.db.Table("daily_report_sections AS s").
+		Select("r.period_date AS period_date, COUNT(DISTINCT s.id) AS sections, "+
+			"COALESCE(SUM(CASE WHEN t.id IS NOT NULL AND COALESCE(t.scope, '') <> ? THEN 1 ELSE 0 END), 0) AS clues",
+			ThreadScopeComposite).
+		Joins("JOIN board_daily_reports r ON r.id = s.report_id").
+		Joins("LEFT JOIN daily_report_threads t ON t.section_id = s.id").
+		Where("r.semantic_board_id = ? AND r.status = ? AND r.period_date >= ? AND r.period_date <= ?",
+			boardID, ReportStatusCompleted, from, to)
+	if len(laneTopicIDs) > 0 {
+		// 排除集非空才加 NOT IN（空集时 NOT IN 无可用语义）。
+		q = q.Where("(s.persistent_topic_id IS NULL OR s.persistent_topic_id NOT IN ?)", laneTopicIDs)
+	}
+	var rows []otherTopicsRow
+	if err := q.Group("r.period_date").Order("r.period_date ASC").Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("lane dynamics: other topics aggregate: %w", err)
+	}
+	aggByDate := make(map[string]otherTopicsRow, len(rows))
+	for _, row := range rows {
+		aggByDate[NormalizeReportDate(row.PeriodDate).Format("2006-01-02")] = row
+	}
+
+	// ③ 骨架补零：每个 completed 日报日恰好一条，聚合没命中的按真实 0 补。
+	for _, day := range reportDays {
+		key := NormalizeReportDate(day.PeriodDate).Format("2006-01-02")
+		row := aggByDate[key]
+		out = append(out, LaneDynamicsOtherDay{Date: key, Sections: row.Sections, Clues: row.Clues})
+	}
+	return out, nil
+}
+
+// otherTopicsExcludedTopicIDs returns the topic ids whose sections are NOT
+// 「未入泳道」: the board's active topics ∪ its watch-linked topics. The set is
+// NOT limited to the lanes that happen to have sections in the window — an
+// active topic without in-window sections still owns its historical sections
+// (those must not resurface as 「其他话题」).
+//
+// 只在**非归档**话题（level.topics）里取：lanes 也不会物化归档话题，若把
+// watch 指向的归档话题也排除，它的分区会既不在泳道、也不在「其他话题」——
+// 与前端 A 名单排除（只看实际返回的泳道）不一致。
+func otherTopicsExcludedTopicIDs(level *boardLevelData) []uint {
+	set := make(map[uint]bool, len(level.topics))
+	for _, topic := range level.topics {
+		if topic.Status == TopicStatusActive || level.watchLinked[topic.ID] {
+			set[topic.ID] = true
+		}
+	}
+	ids := make([]uint, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }
 
 // ── 板级数据加载器（雷达总览批量取数）────────────────────────────────────
@@ -617,6 +726,7 @@ func (r *TopicGraphRepository) computeBoardLaneDynamics(level *boardLevelData, b
 		HeatRuleVersion: LaneHeatRuleVersion,
 		Lanes:           []LaneDynamicsLane{},
 		Candidates:      []LaneDynamicsCandidate{},
+		OtherTopics:     []LaneDynamicsOtherDay{},
 	}
 	if level == nil || !level.hasAnchor {
 		// 无日报：空数组非 null（tasks 2.2）。
@@ -778,6 +888,15 @@ func (r *TopicGraphRepository) computeBoardLaneDynamics(level *boardLevelData, b
 		}
 		return resp.Lanes[i].TopicID < resp.Lanes[j].TopicID
 	})
+
+	// 「未入泳道」逐日聚合：窗口内每个 completed 日报日一条（含真实 0）。失败
+	// 向上抛（端点 500）——不静默补 0：那会把「算不出来」说成「当天没有其他
+	// 话题」（假 0）。
+	otherTopics, err := r.listOtherTopicsWindow(boardID, from, anchor, otherTopicsExcludedTopicIDs(level))
+	if err != nil {
+		return nil, err
+	}
+	resp.OtherTopics = otherTopics
 
 	// Candidate bar: visible-gate candidates (hit_count >= upgrade_threshold —
 	// FilterVisibleTopics 口径 restricted to status=candidate) with their

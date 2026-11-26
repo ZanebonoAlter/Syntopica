@@ -10,6 +10,10 @@
  * console-rails-live-signals：overview 响应里**本来就被丢弃**的版块行（逐日线索轴 /
  * 锚点日）在此提升为共享状态，供左轨条码读模型消费——**零新增请求**（同一次
  * `getOverview()` 调用；overview 失败不阻塞版块列表与矩阵，左轨退「全部未取到」形态）。
+ *
+ * lane-matrix-coverage-and-others-row：新增**板块话题清单**（`GET /semantic-boards/:id/topics`）——
+ * 矩阵底部「窗口内未进日报」覆盖组的数据源（活跃但当前窗口无分区的泳道）。失败时清空并
+ * 置 error（矩阵底部出一行提示 + 重试），**不拿旧板块的清单冒充**。
  */
 import { computed, onMounted, ref, watch, type Ref } from 'vue'
 import {
@@ -18,7 +22,7 @@ import {
   type SemanticBoard,
 } from '~/api/semanticBoards'
 import type { RadarBoard } from '~/api/normalizers/boardRadar'
-import { useDailyReportsApi } from '~/api/dailyReports'
+import { useDailyReportsApi, type BoardTopicListItem } from '~/api/dailyReports'
 import { useTopicWatchesApi, type TopicWatch } from '~/api/topicWatches'
 import { buildRailBoardRows, railAxisDates } from './railClueAxis'
 
@@ -51,6 +55,12 @@ export function useConsoleShellData(boardId: Ref<number>) {
   const watchesLoading = ref(false)
   const watchesError = ref<string | null>(null)
   let watchSeq = 0
+
+  /** 板块全部 persistent topic（覆盖组数据源；失败清空 + error，不留旧板块的清单）。 */
+  const boardTopics = ref<BoardTopicListItem[]>([])
+  const topicsLoading = ref(false)
+  const topicsError = ref<string | null>(null)
+  let topicsSeq = 0
 
   async function loadBoards(): Promise<void> {
     boardsLoading.value = true
@@ -175,13 +185,40 @@ export function useConsoleShellData(boardId: Ref<number>) {
     void loadBoards()
     void loadReportMeta()
     void loadWatches()
+    void loadBoardTopics()
   })
 
   watch(boardId, () => {
     resetReportMeta()
     void loadReportMeta()
     void loadWatches()
+    // 切板块：旧清单先清空（不拿上个板块的泳道冒充本板块），再取新的。
+    boardTopics.value = []
+    topicsError.value = null
+    void loadBoardTopics()
   })
+
+  /**
+   * 取板块全部 persistent topic（覆盖组数据源）。
+   *
+   * 请求序号防晚到（快速切板块时旧响应不覆写新板块）；失败 = 清空 + error
+   * （矩阵底部出提示行，不把失败渲染成「没有窗口外泳道」）。
+   */
+  async function loadBoardTopics(): Promise<void> {
+    const seq = ++topicsSeq
+    topicsLoading.value = true
+    topicsError.value = null
+    const res = await dailyApi.listBoardTopics(boardId.value)
+    if (seq !== topicsSeq) return
+    if (res.success && res.data) {
+      boardTopics.value = res.data.topics ?? []
+      topicsError.value = null
+    } else {
+      boardTopics.value = []
+      topicsError.value = res.error || '窗口外泳道清单加载失败'
+    }
+    topicsLoading.value = false
+  }
 
   const currentBoard = computed(() => boards.value.find(board => board.id === boardId.value) ?? null)
   const boardLabel = computed(() => currentBoard.value?.label ?? `版块 #${boardId.value}`)
@@ -217,5 +254,9 @@ export function useConsoleShellData(boardId: Ref<number>) {
     loadBoards,
     loadReportMeta,
     loadWatches,
+    boardTopics,
+    topicsLoading,
+    topicsError,
+    loadBoardTopics,
   }
 }

@@ -19,6 +19,11 @@
  *  - 报日列头可选（`reportDates` 三态见 ObservationMatrixGrid）→ 转发 `selectDayHeader`；
  *    组/阅读选择经 `selectOther` 转发；两个 toggle 事件各自独立（`toggleDormant`/`toggleOthers`）。
  *  - 组状态/行/计数全部由壳层用 G1 `buildOtherTopics` 派生后经 `otherTopics` 下发。
+ *
+ * `lane-matrix-coverage-and-others-row` 增量（仍纯受控，本组件不重算）：
+ *  - 透传覆盖组（`coverageLanes`/`coverageLoading`/`coverageError`）与「其他话题（未入泳道）」
+ *    整行（`otherTopicDays`/`otherTopicDaysAvailable`），并转发 `selectOthersDay`/`retryCoverage`。
+ *  - 透传就地重命名函数（`renameLane`）到行组件（缺省 = 无该入口）。
  */
 import { computed } from 'vue'
 import type { ObservedDayNode } from '~/features/tags/composables/useOtherTopicObservation'
@@ -26,6 +31,8 @@ import { Icon } from '@iconify/vue'
 import ObservationMatrixGrid from './ObservationMatrixGrid.vue'
 import { shiftDate } from './observationRange'
 import type { OtherTopicsView } from './dayOtherTopics'
+import type { WindowOtherTopicDay } from '~/api/normalizers/laneDynamicsWindow'
+import type { CoverageLaneRow } from './coverageLanes'
 import type { LaneDayResolver, ObservationLaneRow } from './observationLanes'
 
 const props = defineProps<{
@@ -61,6 +68,20 @@ const props = defineProps<{
   othersOpen?: boolean
   /** 当前阅读槽选中的其他分区（高亮用）。 */
   selectedOtherSectionId?: string | null
+  /** 「其他话题（未入泳道）」逐日读数（date → 未入泳道分区数与非综合稿线索数）。 */
+  otherTopicDays?: Record<string, WindowOtherTopicDay>
+  /** 后端是否下发 `other_topics`：false（旧后端）→ 整行不渲染。 */
+  otherTopicDaysAvailable?: boolean
+  /** 「其他话题」逐日读数的档窗起点（YYYY-MM-DD）；该日之前无读数 = 「未聚合」而非「无日报」。 */
+  otherTopicsSince?: string | null
+  /** 覆盖组行（窗口内未进日报的活跃泳道）。 */
+  coverageLanes?: CoverageLaneRow[]
+  /** 覆盖清单读取中（不渲染组）。 */
+  coverageLoading?: boolean
+  /** 覆盖清单读取失败（底部一行提示 + 重试）。 */
+  coverageError?: string | null
+  /** 就地重命名（缺省 = 无该入口）。 */
+  renameLane?: (topicId: string, label: string) => Promise<boolean>
 }>()
 
 const emit = defineEmits<{
@@ -75,6 +96,10 @@ const emit = defineEmits<{
   selectObservedDay: [node: ObservedDayNode]
   /** 其他组选行/选格（sectionId 是当日局部身份）。 */
   selectOther: [payload: { sectionId: string, date: string, topicId?: string | null }]
+  /** 点「其他话题（未入泳道）」有日报的格：切选中日 + 展开当日其他话题组。 */
+  selectOthersDay: [date: string]
+  /** 覆盖清单读取失败后的重试。 */
+  retryCoverage: []
   toggleDormant: []
   toggleOthers: []
   retry: []
@@ -173,6 +198,13 @@ const showError = computed(
         :other-topics="otherTopics ?? null"
         :others-open="othersOpen === true"
         :selected-other-section-id="selectedOtherSectionId ?? null"
+        :other-topic-days="otherTopicDays ?? {}"
+        :other-topic-days-available="otherTopicDaysAvailable === true"
+        :other-topics-since="otherTopicsSince ?? null"
+        :coverage-lanes="coverageLanes ?? []"
+        :coverage-loading="coverageLoading === true"
+        :coverage-error="coverageError ?? null"
+        :rename-lane="renameLane"
         @select-lane="id => emit('selectLane', id)"
         @edit-lane="id => emit('editLane', id)"
         @archive-lane="id => emit('archiveLane', id)"
@@ -180,6 +212,8 @@ const showError = computed(
         @select-day-header="date => emit('selectDayHeader', date)"
         @select-observed-day="node => emit('selectObservedDay', node)"
         @select-other="payload => emit('selectOther', payload)"
+        @select-others-day="date => emit('selectOthersDay', date)"
+        @retry-coverage="emit('retryCoverage')"
         @toggle-dormant="emit('toggleDormant')"
         @toggle-others="emit('toggleOthers')"
       />

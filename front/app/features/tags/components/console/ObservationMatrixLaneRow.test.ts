@@ -6,6 +6,11 @@ import type { MatrixCellView, ObservationLaneRow } from './observationLanes'
 // 图标组件在单测里走网络取图标（本地子集插件不在 vitest 管线内）→ 换成空壳，避免外网超时噪声
 vi.mock('@iconify/vue', () => ({ Icon: { name: 'Icon', template: '<span />' } }))
 
+const notifyWarn = vi.fn()
+vi.mock('~/composables/useNotify', () => ({
+  useNotify: () => ({ warn: notifyWarn, success: vi.fn(), error: vi.fn() }),
+}))
+
 /**
  * 矩阵行头「⋯」入口（lane-manual-correction-loop 6.3）：
  *  点「⋯」**不触发行选中 / 选中日变更**（阻止事件冒泡）；菜单项动作以 emit 上抛
@@ -30,7 +35,7 @@ const CELLS: MatrixCellView[] = [
 
 let wrapper: VueWrapper | null = null
 
-function mountRow() {
+function mountRow(overrides: Record<string, unknown> = {}) {
   wrapper = mount(ObservationMatrixLaneRow, {
     props: {
       row: ROW,
@@ -40,6 +45,7 @@ function mountRow() {
       selectedLaneId: null,
       selectedDate: null,
       dormant: false,
+      ...overrides,
     },
     attachTo: document.body,
   })
@@ -168,5 +174,117 @@ describe('ObservationMatrixLaneRow — 选中列淡底', () => {
     const w = mountCells([cellView('content'), cellView('content')], null)
     expect(w.find('[data-testid="matrix-cell-10-2026-10-22"]').classes()).not.toContain('is-col-selected')
     expect(w.find('[data-testid="matrix-cell-10-2026-10-23"]').classes()).not.toContain('is-col-selected')
+  })
+})
+
+/**
+ * 行头就地改名（`lane-matrix-coverage-and-others-row` 4.2 / spec「矩阵行头就地改名」）：
+ *  ⋯ 菜单第一项「重命名」→ 行内输入框（Enter 保存 / Esc·失焦取消 / 空名拒收）。
+ *  写入复用既有 `PATCH /daily-reports/topics/:id`（`renameLane` 注入）；失败保留编辑态。
+ */
+describe('ObservationMatrixLaneRow — 行头就地改名', () => {
+  const renameInput = (w: VueWrapper) => w.find('[data-testid="matrix-lane-rename-10"]')
+
+  /** 点开 ⋯ 菜单并选「重命名」（菜单 Teleport 到 body）。 */
+  async function openRename(): Promise<void> {
+    trigger().click()
+    await flushPromises()
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-10-rename"]') as HTMLButtonElement).click()
+    await flushPromises()
+  }
+
+  it('注入改名函数时菜单首项是「重命名」（重命名 / 编辑泳道 / 归档泳道）', async () => {
+    mountRow({ renameLane: vi.fn().mockResolvedValue(true) })
+    trigger().click()
+    await flushPromises()
+
+    const items = [...document.body.querySelectorAll('.row-menu-item')].map(el => el.textContent?.trim())
+    expect(items).toEqual(['重命名', '编辑泳道', '归档泳道'])
+  })
+
+  it('未注入改名函数时菜单不出现「重命名」（旧调用零改动）', async () => {
+    mountRow()
+    trigger().click()
+    await flushPromises()
+
+    const items = [...document.body.querySelectorAll('.row-menu-item')].map(el => el.textContent?.trim())
+    expect(items).toEqual(['编辑泳道', '归档泳道'])
+  })
+
+  it('点「重命名」→ 行内变输入框（值 = 当前名）且不触发行选中', async () => {
+    const w = mountRow({ renameLane: vi.fn().mockResolvedValue(true) })
+    await openRename()
+
+    const input = renameInput(w)
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe(ROW.label)
+    expect(w.emitted('selectLane')).toBeUndefined()
+  })
+
+  it('Enter 提交：调 renameLane(topicId, 新名)，成功 → 退出编辑', async () => {
+    const renameLane = vi.fn().mockResolvedValue(true)
+    const w = mountRow({ renameLane })
+    await openRename()
+
+    await renameInput(w).setValue('新名字')
+    await renameInput(w).trigger('keydown.enter')
+    await flushPromises()
+
+    expect(renameLane).toHaveBeenCalledWith('10', '新名字')
+    expect(renameInput(w).exists()).toBe(false)
+  })
+
+  it('改名失败（返回 false）→ 保留输入框，不伪装成功', async () => {
+    const renameLane = vi.fn().mockResolvedValue(false)
+    const w = mountRow({ renameLane })
+    await openRename()
+
+    await renameInput(w).setValue('新名字')
+    await renameInput(w).trigger('keydown.enter')
+    await flushPromises()
+
+    expect(renameLane).toHaveBeenCalledTimes(1)
+    expect(renameInput(w).exists()).toBe(true)
+  })
+
+  it('Esc 取消：恢复原名并退出编辑（不提交）', async () => {
+    const renameLane = vi.fn().mockResolvedValue(true)
+    const w = mountRow({ renameLane })
+    await openRename()
+
+    await renameInput(w).setValue('新名字')
+    await renameInput(w).trigger('keydown.esc')
+    await flushPromises()
+
+    expect(renameLane).not.toHaveBeenCalled()
+    expect(renameInput(w).exists()).toBe(false)
+    expect(w.find('[data-testid="matrix-lane-10"]').text()).toContain(ROW.label)
+  })
+
+  it('失焦取消：退出编辑（不提交）', async () => {
+    const renameLane = vi.fn().mockResolvedValue(true)
+    const w = mountRow({ renameLane })
+    await openRename()
+
+    await renameInput(w).setValue('新名字')
+    await renameInput(w).trigger('blur')
+    await flushPromises()
+
+    expect(renameLane).not.toHaveBeenCalled()
+    expect(renameInput(w).exists()).toBe(false)
+  })
+
+  it('空名/纯空白：提示「泳道名不能为空」并保持编辑态（不提交）', async () => {
+    const renameLane = vi.fn().mockResolvedValue(true)
+    const w = mountRow({ renameLane })
+    await openRename()
+
+    await renameInput(w).setValue('   ')
+    await renameInput(w).trigger('keydown.enter')
+    await flushPromises()
+
+    expect(renameLane).not.toHaveBeenCalled()
+    expect(renameInput(w).exists()).toBe(true)
+    expect(notifyWarn).toHaveBeenCalledWith('泳道名不能为空')
   })
 })

@@ -76,6 +76,43 @@
   white-space: nowrap;
 }
 
+/* 行头就地改名输入框（lane-matrix-coverage-and-others-row）：与名称按钮同一位置与字重，
+   提交/取消期间不改变行高（矩阵行密度不变）。 */
+.omx-lane-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 1.6rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background: var(--color-bg-base);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.omx-lane-rename-input:focus {
+  outline: none;
+}
+
+/* 覆盖组行的名字是静态标签（该泳道不在本窗名单，不可选中）。 */
+.omx-lane-name-static {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--color-text-secondary);
+}
+
+/* 长名字先省略（不挤占 ⋯ 入口）。 */
+.omx-lane-name-static .omx-lane-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .omx-lane-watch {
   color: var(--color-info);
   border-color: color-mix(in srgb, var(--color-info) 30%, var(--color-bg-base));

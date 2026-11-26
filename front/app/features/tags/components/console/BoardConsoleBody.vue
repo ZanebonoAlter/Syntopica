@@ -64,6 +64,10 @@ const emit = defineEmits<{
   toggleOthers: []
   /** 其他组选行/选格。 */
   selectOther: [payload: { sectionId: string, date: string, topicId?: string | null }]
+  /** 点「其他话题（未入泳道）」有日报的格：切选中日 + 展开当日其他话题组。 */
+  selectOthersDay: [date: string]
+  /** 覆盖清单（窗口外泳道）读取失败后的重试。 */
+  retryCoverage: []
   /** 右轨「当日其他话题」选行（同一落点，但右轨发起要先切回矩阵 / 追踪视图，design D14）。 */
   selectOtherFromRail: [payload: { sectionId: string, date: string, topicId?: string | null }]
   /** 观察带节点（原子切同一 selectedDate + 稳定目标）。 */
@@ -153,6 +157,8 @@ defineExpose({ getStageElement })
         @select-date="date => emit('selectDate', date)"
         @select-day-header="date => emit('selectDayHeader', date)"
         @select-other="payload => emit('selectOther', payload)"
+        @select-others-day="date => emit('selectOthersDay', date)"
+        @retry-coverage="emit('retryCoverage')"
         @select-observed-day="payload => emit('selectObservedDay', payload)"
         @toggle-dormant="emit('toggleDormant')"
         @toggle-others="emit('toggleOthers')"

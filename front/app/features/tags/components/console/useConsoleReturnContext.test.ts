@@ -37,7 +37,15 @@ function laneRow(topicId: string): ObservationLaneRow {
 }
 
 function emptyWindow(): LaneDynamicsWindowData {
-  return { windowDays: 14, hasReports: true, lanes: [], candidates: [], anchorDate: DATE }
+  return {
+    windowDays: 14,
+    hasReports: true,
+    lanes: [],
+    candidates: [],
+    anchorDate: DATE,
+    otherTopics: {},
+    otherTopicsAvailable: false,
+  }
 }
 
 function seed(payload: Record<string, unknown>): void {

@@ -22,6 +22,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useNotify } from '~/composables/useNotify'
 import { useIsNarrowViewport } from '~/composables/useMediaQuery'
 import { useBoardConsole } from '~/features/tags/composables/useBoardConsole'
+import { useDailyReportsApi } from '~/api/dailyReports'
 import type { BoardConsoleStageProps } from './consoleStageTypes'
 import { useConsoleShellData } from './useConsoleShellData'
 import { useConsoleReturnContext, type ReadingSettledState } from './useConsoleReturnContext'
@@ -30,6 +31,8 @@ import { useConsoleRefresh } from './useConsoleRefresh'
 import { useConsoleReadingWiring } from './useConsoleReadingWiring'
 import { useConsoleShellOverlays } from './useConsoleShellOverlays'
 import { buildConsoleStageProps } from './consoleStageBinding'
+import { buildCoverageLanes } from './coverageLanes'
+import { shiftDate } from './observationRange'
 import { mergeLaneDynamicsLanes } from './nowBrief'
 import { useConsoleShellActions } from './useConsoleShellActions'
 import BoardConsoleBody from './BoardConsoleBody.vue'
@@ -47,9 +50,10 @@ const props = defineProps<{
 
 const route = useRoute()
 const router = useRouter()
-const { warn: notifyWarn } = useNotify()
+const { warn: notifyWarn, success: notifySuccess, error: notifyError } = useNotify()
 const isNarrow = useIsNarrowViewport()
 const boardIdRef = toRef(props, 'boardId')
+const dailyApi = useDailyReportsApi()
 
 const {
   boards,
@@ -72,6 +76,10 @@ const {
   loadBoards,
   loadReportMeta,
   loadWatches,
+  boardTopics,
+  topicsLoading,
+  topicsError,
+  loadBoardTopics,
 } = useConsoleShellData(boardIdRef)
 
 // ── 控制台状态（G1 唯一状态源；reportAnchor 接独立日报元信息） ──────────────
@@ -231,16 +239,81 @@ const correctionLaneLabel = computed(() => (correctionTopicId.value ? laneLabelO
 /** 归档弹窗的泳道名。 */
 const archiveLaneLabel = computed(() => (archiveTopicId.value ? laneLabelOf(String(archiveTopicId.value)) : ''))
 
-/** 就地改名后刷新名单（泳道名来自 A 档名单，不刷新会显示旧名）。 */
+/** 就地改名后刷新名单（泳道名来自 A 档名单，不刷新会显示旧名）+ 覆盖组清单。 */
 async function handleLaneRenamed(): Promise<void> {
-  await load()
+  await Promise.all([load(), loadBoardTopics()])
 }
 
-/** 归档后关闭弹窗并刷新名单。 */
+/** 归档后关闭弹窗并刷新名单（覆盖组清单一并刷新：归档后该泳道不再是 active）。 */
 async function handleLaneArchived(): Promise<void> {
   closeLaneArchive()
-  await load()
+  await Promise.all([load(), loadBoardTopics()])
 }
+
+/**
+ * 新建泳道保存后：既有链（关弹层 + 刷名单 + 选中该泳道）不变，额外刷一次覆盖组清单
+ * （新建的泳道当前窗口没分区 → 会出现在「窗口内未进日报」组）。
+ */
+async function handleComposeSaved(topic?: Parameters<typeof overlays.handleComposeSaved>[0]): Promise<void> {
+  await overlays.handleComposeSaved(topic)
+  await loadBoardTopics()
+}
+
+/** 话题管理（合并/拆分/转正/归档）后：名单与覆盖组清单一并刷新（活跃集合变了）。 */
+async function handleTopicsChanged(): Promise<void> {
+  await Promise.all([load(), loadBoardTopics()])
+}
+
+/**
+ * 行头就地重命名（矩阵行头「⋯」→「重命名」）。
+ *
+ * 复用既有写入 `PATCH /daily-reports/topics/:id`（与修正工作面同一条路径）；成功刷 A 档名单
+ * 与覆盖组清单，失败如实报错并返回 false（调用方保留输入框，不伪装成功）。
+ */
+async function renameLane(topicId: string, label: string): Promise<boolean> {
+  const id = Number(topicId)
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    notifyError('泳道 ID 无效')
+    return false
+  }
+  const trimmed = label.trim()
+  if (!trimmed) {
+    notifyWarn('泳道名不能为空')
+    return false
+  }
+  const res = await dailyApi.updateTopic(id, { label: trimmed })
+  if (!res.success) {
+    notifyError(res.error || '泳道名更新失败')
+    return false
+  }
+  notifySuccess('泳道名已更新')
+  await Promise.all([load(), loadBoardTopics()])
+  return true
+}
+
+/** 覆盖组（窗口内未进日报的活跃泳道）：活跃话题 − A 档名单行。 */
+const coverageLanes = computed(() => buildCoverageLanes(allLanes.value, boardTopics.value))
+
+/**
+ * 「其他话题（未入泳道）」逐日读数（后端 `other_topics`）。
+ *
+ * 旧后端不下发该字段 → `otherTopicDaysAvailable` 为 false → 矩阵整行不渲染
+ * （不显示全「—」的空壳行）。
+ */
+const otherTopicDays = computed(() => sourceWindow.value?.otherTopics ?? {})
+const otherTopicDaysAvailable = computed(() => sourceWindow.value?.otherTopicsAvailable ?? false)
+
+/**
+ * 「其他话题（未入泳道）」逐日读数的**档窗起点**。
+ *
+ * 后端 `other_topics` 只聚合档窗 `[anchor-(days-1), anchor]`；观察范围拖到 365 池区段时，
+ * 那些日期没有 entry 是「本次聚合没算」而不是「没有日报」——行组件据此区分文案。
+ */
+const otherTopicsSince = computed(() => {
+  const anchor = sourceWindow.value?.anchorDate
+  if (!anchor) return null
+  return shiftDate(anchor, -(sourceDays.value - 1))
+})
 
 // ── 共享描述修复：摘除反馈（board-health-triage-advice seam C3 / tasks 3.4）──
 // 只有宿主**真实**摘除成功才回填；失败不谎称已摘除（工作面据此显示状态）。
@@ -351,6 +424,13 @@ const stageBinding = computed<BoardConsoleStageProps>(() => buildConsoleStagePro
   resolveLaneDay,
   compositionLabels: archiveLabels.value,
   archiveInitialDate: archiveInitialDate.value,
+  otherTopicDays: otherTopicDays.value,
+  otherTopicDaysAvailable: otherTopicDaysAvailable.value,
+  otherTopicsSince: otherTopicsSince.value,
+  coverageLanes: coverageLanes.value,
+  coverageLoading: topicsLoading.value,
+  coverageError: topicsError.value,
+  renameLane,
   reading: wiring.stageProps.value,
 }))
 
@@ -452,6 +532,8 @@ watch(boardIdRef, () => {
       @select-date="wiring.selectDateFromStage"
       @select-day-header="wiring.selectDayHeader"
       @select-other="handleSelectOther"
+      @select-others-day="wiring.selectOthersDayFromStage"
+      @retry-coverage="loadBoardTopics"
       @select-other-from-rail="handleSelectOtherFromRail"
       @toggle-others="wiring.toggleOthers"
       @select-observed-day="wiring.selectObservedDay"
@@ -515,7 +597,7 @@ watch(boardIdRef, () => {
       v-if="composeOpen"
       :board-id="boardId"
       :board-label="boardLabel"
-      @saved="overlays.handleComposeSaved"
+      @saved="handleComposeSaved"
       @close="composeOpen = false"
     />
 
@@ -551,7 +633,7 @@ watch(boardIdRef, () => {
     <TopicManageDialog
       v-model="topicManageOpen"
       :board-id="boardId"
-      @changed="load()"
+      @changed="handleTopicsChanged"
       @edit-lane="topicId => openLaneCorrection(String(topicId))"
     />
 

@@ -40,6 +40,8 @@ const getComposition = vi.fn()
 const removeFromComposition = vi.fn()
 const getBoardSourceBreakdown = vi.fn()
 const listWatches = vi.fn()
+const listBoardTopics = vi.fn()
+const updateTopic = vi.fn()
 const getLaneDynamics = vi.fn()
 const getBoardArticles = vi.fn()
 const getBoardSectionTimeline = vi.fn()
@@ -75,7 +77,13 @@ vi.mock('~/api/dailyReports', async (importOriginal) => {
   const original = await importOriginal<typeof import('~/api/dailyReports')>()
   return {
     ...original,
-    useDailyReportsApi: () => ({ getBoardDailyReports, getDailyReportDetail, getBoardSectionTimeline }),
+    useDailyReportsApi: () => ({
+      getBoardDailyReports,
+      getDailyReportDetail,
+      getBoardSectionTimeline,
+      listBoardTopics,
+      updateTopic,
+    }),
   }
 })
 vi.mock('~/composables/useNotify', () => ({
@@ -220,6 +228,8 @@ export function installShellTestHooks(): void {
     data: { total_articles: 0, source_count: 0, sources: [] },
   })
   listWatches.mockReset().mockResolvedValue({ success: true, data: [] })
+  listBoardTopics.mockReset().mockResolvedValue({ success: true, data: { topics: [] } })
+  updateTopic.mockReset().mockResolvedValue({ success: true, data: null })
   getBoardArticles.mockReset().mockResolvedValue({
     success: true,
     data: [],
@@ -248,6 +258,8 @@ export {
   removeFromComposition,
   getBoardSourceBreakdown,
   listWatches,
+  listBoardTopics,
+  updateTopic,
   getLaneDynamics,
   getBoardArticles,
   getBoardSectionTimeline,

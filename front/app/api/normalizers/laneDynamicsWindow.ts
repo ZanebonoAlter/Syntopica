@@ -98,6 +98,18 @@ export interface WindowCandidate {
   laneHeat: number | null
 }
 
+/**
+ * 归一后的「其他话题（未入泳道）」逐日读数（`lane-matrix-coverage-and-others-row`）。
+ *
+ * 口径与泳道日格同量纲：`clues` = 当日未入泳道分区的**非综合稿线索数**；
+ * `sections` = 当日未入泳道分区数（title/aria 用）。
+ */
+export interface WindowOtherTopicDay {
+  date: string
+  sections: number
+  clues: number
+}
+
 /** 归一后的 lane-dynamics 读模型（新数据面消费）。 */
 export interface LaneDynamicsWindowData {
   windowDays: number
@@ -112,6 +124,14 @@ export interface LaneDynamicsWindowData {
   anchorDate: string | null
   /** 热度口径版本（heat-v2-lane-clues-1d）；缺省空串。 */
   heatRuleVersion?: string
+  /**
+   * 「其他话题（未入泳道）」逐日读数（date → 当日未入泳道分区数与非综合稿线索数）。
+   * 空对象 = 该响应没有该字段（旧后端）；配合 `otherTopicsAvailable` 区分
+   * 「旧后端（无字段）」与「有字段但窗口内没有其他话题（空）」两种态。
+   */
+  otherTopics: Record<string, WindowOtherTopicDay>
+  /** 后端是否下发 `other_topics` 字段：false = 旧后端（矩阵整行不渲染）。 */
+  otherTopicsAvailable: boolean
 }
 
 function normalizeSection(section: LaneTimelineSection): WindowSection {
@@ -126,6 +146,29 @@ function normalizeSection(section: LaneTimelineSection): WindowSection {
     foldedCount,
     eventTitles: events,
   }
+}
+
+/**
+ * 「其他话题（未入泳道）」逐日条目归一（`lane-matrix-coverage-and-others-row`）。
+ *
+ * - 字段缺省（旧后端）→ available=false（前端整行不渲染，不显示全「—」空壳行）；
+ * - 空数组 → available=true + 空对象（「有字段但窗口内无其他话题」，与旧后端可区分）；
+ * - 数字不合法（非有限数 / 负数）→ **跳过该条**，不拿 0 冒充（不造数）。
+ */
+function normalizeOtherTopics(raw: LaneDynamicsResponse): {
+  days: Record<string, WindowOtherTopicDay>
+  available: boolean
+} {
+  const list = raw.other_topics
+  if (!Array.isArray(list)) return { days: {}, available: false }
+  const days: Record<string, WindowOtherTopicDay> = {}
+  for (const item of list) {
+    if (!item || typeof item.date !== 'string' || item.date.trim() === '') continue
+    if (!Number.isFinite(item.sections) || !Number.isFinite(item.clues)) continue
+    if (item.sections < 0 || item.clues < 0) continue
+    days[item.date] = { date: item.date, sections: item.sections, clues: item.clues }
+  }
+  return { days, available: true }
 }
 
 export function normalizeLaneDynamicsWindow(raw: LaneDynamicsResponse): LaneDynamicsWindowData {
@@ -152,6 +195,7 @@ export function normalizeLaneDynamicsWindow(raw: LaneDynamicsResponse): LaneDyna
       timeline,
     }
   })
+  const otherTopics = normalizeOtherTopics(raw)
   return {
     windowDays: raw.window_days,
     hasReports: raw.has_reports,
@@ -168,6 +212,8 @@ export function normalizeLaneDynamicsWindow(raw: LaneDynamicsResponse): LaneDyna
     // 后端锚点（最新 completed 日报日）优先；旧后端缺该字段时回退数据最新日。
     anchorDate: raw.anchor_date ?? latestDay,
     heatRuleVersion: raw.heat_rule_version ?? '',
+    otherTopics: otherTopics.days,
+    otherTopicsAvailable: otherTopics.available,
   }
 }
 

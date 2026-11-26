@@ -167,6 +167,51 @@ describe('normalizeLaneDynamicsWindow', () => {
   })
 })
 
+/**
+ * 「其他话题（未入泳道）」逐日读数的三态（`lane-matrix-coverage-and-others-row` 5.1）：
+ * 字段缺省（旧后端）/ 空数组（有字段但窗口内无其他话题）/ 有值。
+ */
+describe('normalizeLaneDynamicsWindow — other_topics 三态', () => {
+  it('字段缺省（旧后端）→ otherTopicsAvailable=false + 空对象（矩阵整行不渲染）', () => {
+    const data = normalizeLaneDynamicsWindow(makeRaw())
+    expect(data.otherTopicsAvailable).toBe(false)
+    expect(data.otherTopics).toEqual({})
+  })
+
+  it('空数组 → available=true + 空对象（与旧后端可区分）', () => {
+    const raw = makeRaw()
+    raw.other_topics = []
+    const data = normalizeLaneDynamicsWindow(raw)
+    expect(data.otherTopicsAvailable).toBe(true)
+    expect(data.otherTopics).toEqual({})
+  })
+
+  it('有值 → date 为键，值带分区数与非综合稿线索数（含真实 0）', () => {
+    const raw = makeRaw()
+    raw.other_topics = [
+      { date: '2026-10-22', sections: 3, clues: 7 },
+      { date: '2026-10-23', sections: 0, clues: 0 },
+    ]
+    const data = normalizeLaneDynamicsWindow(raw)
+    expect(data.otherTopicsAvailable).toBe(true)
+    expect(data.otherTopics['2026-10-22']).toEqual({ date: '2026-10-22', sections: 3, clues: 7 })
+    expect(data.otherTopics['2026-10-23']).toEqual({ date: '2026-10-23', sections: 0, clues: 0 })
+  })
+
+  it('数字不合法（非有限数 / 负数）→ 跳过该条，不拿 0 冒充', () => {
+    const raw = makeRaw()
+    raw.other_topics = [
+      { date: '2026-10-22', sections: 3, clues: Number.NaN },
+      { date: '2026-10-21', sections: -1, clues: 2 },
+      { date: '', sections: 1, clues: 1 },
+      { date: '2026-10-20', sections: 1, clues: 4 },
+    ]
+    const data = normalizeLaneDynamicsWindow(raw)
+    expect(data.otherTopicsAvailable).toBe(true)
+    expect(Object.keys(data.otherTopics)).toEqual(['2026-10-20'])
+  })
+})
+
 describe('dayCellMetrics — 当日线索合计', () => {
   const day = (
     sections: { threadCount?: number | null, compositeCount?: number | null }[],

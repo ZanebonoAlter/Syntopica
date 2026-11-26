@@ -1,8 +1,12 @@
 package repository
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -746,4 +750,179 @@ func TestLaneDynamicsDayClueCountAndCandidateHeat(t *testing.T) {
 	require.Len(t, resp.Candidates, 1)
 	assert.InDelta(t, 0.8, resp.Candidates[0].LaneHeat, 1e-9, "4 × 0.2 = 0.8")
 	assert.InDelta(t, 7.0, resp.Lanes[0].LaneHeat, 1e-9, "活跃泳道热度不变")
+}
+
+// ── 「未入泳道」逐日聚合（lane-matrix-coverage-and-others-row）──────────────
+//
+// other_topics 口径：窗口内每个 completed 日报日一条；值 = 该日未入泳道的分区数
+// 与这些分区的非综合稿线索数。排除集 = 板块 active 话题 ∪ watch 关联话题；
+// candidate / archived / 没有 persistent topic 的分区计入（与前端「当日其他
+// 话题」组的 A 名单排除同口径）。综合稿不计线索数；未完成日报整天不参与。
+
+// TestOtherTopicsDailyAggregate 覆盖 other_topics 的四条口径：
+//  1. 真实 0 值日：有 completed 日报但全部分区已归属 active → 仍出条目 0/0；
+//  2. 排除口径：active / watch 关联话题的分区不计入，candidate / archived /
+//     persistent_topic_id 为空的分区计入；
+//  3. 综合稿不计线索数（分区数照算）；
+//  4. 未完成日报整天不参与（连其分区一起不参与）；窗口外的 completed 日报同样不参与。
+func TestOtherTopicsDailyAggregate(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+
+	boardID := seedTestBoard(t, db)
+	now := time.Now()
+	anchorDay := NormalizeReportDate(now)
+	prevDay := anchorDay.AddDate(0, 0, -1)
+	unfinishedDay := anchorDay.AddDate(0, 0, -2)
+	firstWindowDay := anchorDay.AddDate(0, 0, -13) // 窗口首日（锚点前 13 天，闭区间）
+	outsideDay := anchorDay.AddDate(0, 0, -14)     // 窗口外（锚点前 14 天）
+
+	// 报告：锚点日 / 前一天（真实 0 值日）/ 未完成 / 窗口外（锚点前 14 天）。
+	reportAnchor := seedLaneReportWithStatus(t, db, boardID, anchorDay, ReportStatusCompleted)
+	reportPrev := seedLaneReportWithStatus(t, db, boardID, prevDay, ReportStatusCompleted)
+	reportUnfinished := seedLaneReportWithStatus(t, db, boardID, unfinishedDay, "generating")
+	reportFirst := seedLaneReportWithStatus(t, db, boardID, firstWindowDay, ReportStatusCompleted)
+	reportOutside := seedLaneReportWithStatus(t, db, boardID, outsideDay, ReportStatusCompleted)
+
+	// 话题：active（泳道）/ candidate / archived / watch 关联的 candidate。
+	activeTopic := seedLaneDynamicsTopic(t, db, boardID, "活跃泳道", TopicStatusActive, 9, anchorDay)
+	candidateTopic := seedLaneDynamicsTopic(t, db, boardID, "候选话题", TopicStatusCandidate, 2, anchorDay)
+	archivedTopic := seedLaneDynamicsTopic(t, db, boardID, "归档话题", TopicStatusArchived, 2, anchorDay)
+	watchedTopic := seedLaneDynamicsTopic(t, db, boardID, "追踪话题", TopicStatusCandidate, 1, anchorDay)
+	require.NoError(t, db.Create(&BoardTopicWatch{
+		SemanticBoardID:   boardID,
+		Label:             "追踪话题",
+		Type:              WatchTypeSentenceTopic,
+		Status:            WatchStatusActive,
+		PersistentTopicID: &watchedTopic.ID,
+	}).Error)
+
+	// 锚点日的分区：active（不计）/ candidate（计）/ archived（计）/ 无归属（计）/ watch 关联（不计）。
+	sActive := seedTestSection(t, db, reportAnchor, "活跃分区")
+	assignSection(t, db, sActive, activeTopic.ID)
+	seedLaneThread(t, db, reportAnchor, sActive, "活跃线索")
+
+	sCandidate := seedTestSection(t, db, reportAnchor, "候选分区")
+	assignSection(t, db, sCandidate, candidateTopic.ID)
+	seedLaneThread(t, db, reportAnchor, sCandidate, "候选线索")
+	seedLaneCompositeThread(t, db, reportAnchor, sCandidate) // 综合稿不计线索数
+
+	sArchived := seedTestSection(t, db, reportAnchor, "归档分区")
+	assignSection(t, db, sArchived, archivedTopic.ID)
+	seedLaneThread(t, db, reportAnchor, sArchived, "归档线索")
+
+	seedTestSection(t, db, reportAnchor, "无归属分区") // persistent_topic_id 为空
+
+	sWatched := seedTestSection(t, db, reportAnchor, "追踪分区")
+	assignSection(t, db, sWatched, watchedTopic.ID)
+	seedLaneThread(t, db, reportAnchor, sWatched, "追踪线索")
+
+	// 前一天：分区全归属 active → 真实 0 值日。
+	sPrev := seedTestSection(t, db, reportPrev, "昨日活跃分区")
+	assignSection(t, db, sPrev, activeTopic.ID)
+	seedLaneThread(t, db, reportPrev, sPrev, "昨日线索")
+
+	// 未完成日报的分区：不参与（分区数与线索数都不算）。
+	sUnfinished := seedTestSection(t, db, reportUnfinished, "未完成分区")
+	seedLaneThread(t, db, reportUnfinished, sUnfinished, "未完成线索")
+
+	// 窗口首日（锚点前 13 天）：在窗内 —— 与泳道时间线同一边界（闭区间 14 天）。
+	sFirst := seedTestSection(t, db, reportFirst, "窗口首日分区")
+	seedLaneThread(t, db, reportFirst, sFirst, "窗口首日线索")
+
+	// 窗口外的 completed 日报：不参与。
+	sOutside := seedTestSection(t, db, reportOutside, "窗口外分区")
+	seedLaneThread(t, db, reportOutside, sOutside, "窗口外线索")
+
+	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
+	require.NoError(t, err)
+	require.Len(t, resp.OtherTopics, 3, "窗口内三个 completed 日报日各一条（含窗口首日）")
+
+	// 窗口首日（锚点前 13 天）在窗内 —— 与泳道时间线同一边界。
+	assert.Equal(t, LaneDynamicsOtherDay{Date: dateStr(firstWindowDay), Sections: 1, Clues: 1}, resp.OtherTopics[0])
+
+	// 前一天：真实 0 值日（有日报、无未入泳道分区）——不得省略成缺失。
+	assert.Equal(t, LaneDynamicsOtherDay{Date: dateStr(prevDay), Sections: 0, Clues: 0}, resp.OtherTopics[1])
+
+	// 锚点日：candidate / archived / 无归属三个分区计入；active / watch 关联不计；
+	// 综合稿不计线索数（候选分区 1 普通 + 1 综合稿 → 只算 1 条线索）。
+	assert.Equal(t, LaneDynamicsOtherDay{Date: dateStr(anchorDay), Sections: 3, Clues: 2}, resp.OtherTopics[2])
+
+	// 未完成日报 / 窗口外日报都不出条目。
+	for _, day := range resp.OtherTopics {
+		assert.NotEqual(t, dateStr(unfinishedDay), day.Date, "未完成日报不参与")
+		assert.NotEqual(t, dateStr(outsideDay), day.Date, "窗口外日报不参与")
+	}
+
+	// 排除集为空（板块没有任何 active/watch 话题）→ 不加 NOT IN 条件，
+	// 全部分区都算「未入泳道」。
+	emptyBoard := seedTestBoardNamed(t, db, "other-topics-empty-board")
+	emptyReport := seedLaneReportWithStatus(t, db, emptyBoard, anchorDay, ReportStatusCompleted)
+	sEmpty := seedTestSection(t, db, emptyReport, "无泳道分区")
+	seedLaneThread(t, db, emptyReport, sEmpty, "无泳道线索")
+
+	emptyResp, err := repo.GetBoardLaneDynamics(emptyBoard, 14)
+	require.NoError(t, err)
+	require.Len(t, emptyResp.OtherTopics, 1)
+	assert.Equal(t, LaneDynamicsOtherDay{Date: dateStr(anchorDay), Sections: 1, Clues: 1}, emptyResp.OtherTopics[0])
+}
+
+// TestOtherTopicsNoAnchorEmptyArray：无锚点（无 completed 日报）→ other_topics
+// 是空数组而非 null（与 lanes/candidates 同一空态契约）。
+func TestOtherTopicsNoAnchorEmptyArray(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	boardID := seedTestBoard(t, db)
+	seedLaneDynamicsTopic(t, db, boardID, "无报话题", TopicStatusActive, 9, time.Now())
+
+	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
+	require.NoError(t, err)
+	assert.False(t, resp.HasReports)
+	require.NotNil(t, resp.OtherTopics)
+	assert.Empty(t, resp.OtherTopics)
+
+	data, err := json.Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"other_topics":[]`)
+}
+
+// failOnMarkerConnPool 只在 SQL 命中 marker 时失败——把某一条聚合查询的失败
+// 精确注入 repository 的取数路径（其余查询照常成功）。
+type failOnMarkerConnPool struct {
+	gorm.ConnPool
+	marker string
+}
+
+func (p *failOnMarkerConnPool) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	if strings.Contains(query, p.marker) {
+		return nil, errors.New("injected other-topics aggregation failure")
+	}
+	return p.ConnPool.QueryContext(ctx, query, args...)
+}
+
+// TestOtherTopicsAggregationFailurePropagates：other_topics 聚合失败必须向上
+// 返回错误（端点 500），不得静默补 0 —— 「算不出来」不是「当天没有其他话题」。
+func TestOtherTopicsAggregationFailurePropagates(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	boardID := seedTestBoard(t, db)
+	now := time.Now()
+	reportID := seedLaneReportWithStatus(t, db, boardID, NormalizeReportDate(now), ReportStatusCompleted)
+	topic := seedLaneDynamicsTopic(t, db, boardID, "活跃泳道", TopicStatusActive, 9, now)
+	s := seedTestSection(t, db, reportID, "活跃分区")
+	assignSection(t, db, s, topic.ID)
+
+	// 只让 other_topics 的窗口聚合查询失败（marker 是该聚合独有的 SELECT 片段）。
+	// Session(Context) 会克隆 Statement——包裹 ConnPool 不会污染共享句柄。
+	sess := db.Session(&gorm.Session{Context: context.Background()})
+	sess.Statement.ConnPool = &failOnMarkerConnPool{
+		ConnPool: sess.Statement.ConnPool,
+		marker:   "COUNT(DISTINCT s.id) AS sections",
+	}
+	repo.db = sess
+
+	resp, err := repo.GetBoardLaneDynamics(boardID, 14)
+	require.Error(t, err, "聚合失败必须向上返回错误，不得静默 0")
+	assert.ErrorContains(t, err, "injected other-topics aggregation failure")
+	assert.Nil(t, resp)
 }

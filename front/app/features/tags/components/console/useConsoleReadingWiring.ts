@@ -140,6 +140,17 @@ export function useConsoleReadingWiring(deps: ConsoleReadingWiringDeps) {
     selection.selectedDate.value = date
   }
 
+  /**
+   * 点「其他话题（未入泳道）」整行的有日报格：只做两件事——切选中日（与列头/日格共用同一
+   * `selectedDate`，不新增第二份选中态）+ 展开「当日其他话题」组。
+   * 不弹层、不发写请求。
+   */
+  function selectOthersDayFromStage(date: string): void {
+    other.clearOther()
+    selection.selectedDate.value = date
+    other.othersOpen.value = true
+  }
+
   // ── 受控重试/刷新编排 ────────────────────────────────────────────────────
   /** G3 阅读槽「重试/刷新」：force 索引 → force 当日详情 → 稳定 section 核对（store 自守上下文）。 */
   async function retryReport(payload: RetryReportPayload): Promise<RetryReportResult> {
@@ -220,6 +231,7 @@ export function useConsoleReadingWiring(deps: ConsoleReadingWiringDeps) {
     selectLaneFromStage,
     selectCellFromStage,
     selectDateFromStage,
+    selectOthersDayFromStage,
     retryReport,
     retryReportIndex,
     retryReportDay,

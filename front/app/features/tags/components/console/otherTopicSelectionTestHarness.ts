@@ -25,6 +25,8 @@ export function windowData(lanes: { topicId: string, days?: { date: string, sect
     hasReports: true,
     anchorDate: AXIS[AXIS.length - 1]!,
     candidates: [],
+    otherTopics: {},
+    otherTopicsAvailable: false,
     lanes: lanes.map(lane => ({
       topicId: lane.topicId,
       label: `泳道${lane.topicId}`,

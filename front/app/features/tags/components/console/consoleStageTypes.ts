@@ -8,10 +8,12 @@
 import type { ConsoleView } from '~/features/tags/composables/useBoardConsole'
 import type { LaneDayReadingStore, LaneReportDay } from '~/features/tags/composables/useLaneDayReading'
 import type { OtherTopicObservationStore } from '~/features/tags/composables/useOtherTopicObservation'
+import type { WindowOtherTopicDay } from '~/api/normalizers/laneDynamicsWindow'
 import type { OtherTopicsView } from './dayOtherTopics'
 import type { LaneTrendPoint } from './laneTrendSeries'
 import type { DateBounds, ObservationRange } from './observationRange'
 import type { LaneDayResolver, ObservationLaneRow } from './observationLanes'
+import type { CoverageLaneRow } from './coverageLanes'
 
 export interface BoardConsoleStageProps {
   boardId: number
@@ -60,6 +62,24 @@ export interface BoardConsoleStageProps {
   reading: LaneDayReadingStore
   /** 壳层共享其他话题观察依赖（G3 section-timeline 单份缓存）；与观察范围 `observation` 区分。 */
   otherObservation: OtherTopicObservationStore
+  // ── lane-matrix-coverage-and-others-row：覆盖组 / 其他话题整行 / 就地重命名 ──
+  /** 「其他话题（未入泳道）」逐日读数（date → 未入泳道分区数与非综合稿线索数）。 */
+  otherTopicDays: Record<string, WindowOtherTopicDay>
+  /** 后端是否下发 `other_topics`：false（旧后端）→ 矩阵整行不渲染。 */
+  otherTopicDaysAvailable: boolean
+  /**
+   * 「其他话题」逐日读数的**档窗起点**（YYYY-MM-DD）：后端只聚合 `[anchor-(days-1), anchor]`。
+   * 该日之前（观察范围拖到 365 池区段）没有读数是「未聚合」而不是「没有日报」。
+   */
+  otherTopicsSince?: string | null
+  /** 覆盖组行（窗口内未进日报的活跃泳道；壳层用既有 topics 清单派生）。 */
+  coverageLanes: CoverageLaneRow[]
+  /** 覆盖清单读取中（不渲染组，不占位）。 */
+  coverageLoading: boolean
+  /** 覆盖清单读取失败（矩阵底部一行提示 + 重试）。 */
+  coverageError: string | null
+  /** 行头就地重命名（复用既有 PATCH）；缺省 = 无该入口。 */
+  renameLane?: (topicId: string, label: string) => Promise<boolean>
 }
 
 /**

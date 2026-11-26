@@ -19,7 +19,10 @@ import {
   getBoardDailyReports,
   getDailyReportDetail,
   getBoardSectionTimeline,
+  listBoardTopics,
+  updateTopic,
   emptyResponse,
+  response,
   TODAY,
 } from './boardConsoleShellTestHarness'
 import {
@@ -505,5 +508,119 @@ describe('BoardConsoleShell 集成 — 受控重试与生成后刷新', () => {
     expect(wrapper.find('[data-testid="other-topic-reading"]').text()).toContain('前日线索')
     expect(wrapper.find('[data-testid="other-observe-nodes"]').exists()).toBe(false)
     wrapper.unmount()
+  })
+})
+
+/**
+ * `lane-matrix-coverage-and-others-row` 壳层接线（真实组件链）：
+ *  - 覆盖组：板块话题清单 → 「窗口内未进日报」组（名字 + 最近一次）；
+ *  - 行头就地改名：⋯ → 「重命名」→ 行内输入框 → Enter → 既有 PATCH；
+ *  - 「其他话题（未入泳道）」整行：点有日报的格 → 同一 selectedDate + 展开当日其他话题组。
+ */
+describe('BoardConsoleShell 集成 — 覆盖组 / 就地改名 / 其他话题整行', () => {
+  it('覆盖组：活跃但窗口内无分区的泳道进矩阵底部组（名字 + 最近一次）；窗口内泳道与候选不重复', async () => {
+    mature()
+    listBoardTopics.mockResolvedValue({
+      success: true,
+      data: {
+        topics: [
+          { id: 10, semantic_board_id: 1974, label: '主线 A', description: '', status: 'active', first_seen_date: '2026-10-01', last_seen_date: '2026-10-23', hit_count: 3, consecutive_hits: 1, section_count: 3, color: '#fff', can_activate: true },
+          { id: 99, semantic_board_id: 1974, label: '以色列内部选举', description: '', status: 'active', first_seen_date: '2026-10-27', last_seen_date: '2026-11-09', hit_count: 5, consecutive_hits: 1, section_count: 5, color: '#fff', can_activate: true },
+          { id: 98, semantic_board_id: 1974, label: '候选话题', description: '', status: 'candidate', first_seen_date: '2026-10-27', last_seen_date: '2026-11-09', hit_count: 1, consecutive_hits: 0, section_count: 0, color: '#fff', can_activate: true },
+        ],
+      },
+    })
+    const wrapper = await mountReady()
+
+    const summary = wrapper.find('[data-testid="coverage-group-summary"]')
+    expect(summary.exists()).toBe(true)
+    expect(summary.text()).toContain('窗口内未进日报')
+    expect(summary.text()).toContain('以色列内部选举')
+    expect(summary.text()).toContain('最近一次 11-09')
+    // 窗口内泳道与候选话题不进覆盖组（不重复、不混口径）
+    expect(summary.text()).not.toContain('主线 A')
+    expect(summary.text()).not.toContain('候选话题')
+  })
+
+  it('覆盖清单失败：矩阵底部一行提示 + 重试（既有行照常渲染）', async () => {
+    mature()
+    listBoardTopics.mockResolvedValue({ success: false, error: '接口挂了' })
+    const wrapper = await mountReady()
+
+    expect(wrapper.find('[data-testid="coverage-error-row"]').text()).toContain('窗口外泳道清单未取到')
+    expect(wrapper.find('[data-testid="matrix-lane-10"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="coverage-retry"]').trigger('click')
+    await flushPromises()
+    expect(listBoardTopics.mock.calls.length).toBeGreaterThan(1)
+  })
+
+  it('行头 ⋯「重命名」→ 行内输入框 → Enter 走既有 PATCH 并退出编辑', async () => {
+    mature()
+    const wrapper = await mountReady()
+
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-10"]') as HTMLButtonElement).click()
+    await flushPromises()
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-10-rename"]') as HTMLButtonElement).click()
+    await flushPromises()
+
+    const input = wrapper.find('[data-testid="matrix-lane-rename-10"]')
+    expect(input.exists()).toBe(true)
+    await input.setValue('改名后的泳道')
+    await input.trigger('keydown.enter')
+    await flushPromises()
+
+    expect(updateTopic).toHaveBeenCalledWith(10, { label: '改名后的泳道' })
+    expect(wrapper.find('[data-testid="matrix-lane-rename-10"]').exists()).toBe(false)
+  })
+
+  it('改名失败：输入框保留（不伪装成功）', async () => {
+    mature()
+    updateTopic.mockResolvedValue({ success: false, error: '改名被拒' })
+    const wrapper = await mountReady()
+
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-10"]') as HTMLButtonElement).click()
+    await flushPromises()
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-10-rename"]') as HTMLButtonElement).click()
+    await flushPromises()
+
+    const input = wrapper.find('[data-testid="matrix-lane-rename-10"]')
+    await input.setValue('改名后的泳道')
+    await input.trigger('keydown.enter')
+    await flushPromises()
+
+    expect(updateTopic).toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="matrix-lane-rename-10"]').exists()).toBe(true)
+  })
+
+  it('「其他话题（未入泳道）」整行：点有日报的格 → 切选中日 + 展开当日其他话题组', async () => {
+    mature()
+    getLaneDynamics.mockResolvedValue({
+      success: true,
+      data: {
+        ...response(),
+        other_topics: [{ date: TODAY, sections: 2, clues: 3 }],
+      },
+    })
+    const wrapper = await mountReady()
+
+    const row = wrapper.find('[data-testid="matrix-other-row"]')
+    expect(row.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="matrix-other-cell-2026-10-23"]').text()).toBe('3')
+
+    await wrapper.find('[data-testid="matrix-other-cell-2026-10-23"]').trigger('click')
+    await flushPromises()
+
+    // 同一份 selectedDate（矩阵/组/阅读槽共用）+ 「当日其他话题」组展开
+    expect(wrapper.findComponent(ObservationMatrix).props('selectedDate')).toBe(TODAY)
+    expect(wrapper.find('[data-testid="other-topics-toggle"] button').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('[data-testid="other-topic-row-1200"]').exists()).toBe(true)
+  })
+
+  it('旧后端无 other_topics → 整行不渲染（矩阵其余行为不变）', async () => {
+    mature()
+    const wrapper = await mountReady()
+
+    expect(wrapper.find('[data-testid="matrix-other-row"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="matrix-lane-10"]').exists()).toBe(true)
   })
 })

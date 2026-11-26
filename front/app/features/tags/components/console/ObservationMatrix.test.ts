@@ -362,4 +362,51 @@ describe('ObservationMatrix — 交互与状态', () => {
   })
 })
 
+// ── lane-matrix-coverage-and-others-row：覆盖组 / 其他话题整行（纯受控透传） ─────
+
+describe('ObservationMatrix — 覆盖组与「其他话题」整行', () => {
+  const coverage = [{ topicId: '20', label: '以色列内部选举', lastSeenDate: '2026-11-09' }]
+
+  it('覆盖组默认展开：组标题带数量 + 名字 + 最近一次日期，组内行在场', () => {
+    const wrapper = mountMatrix({ coverageLanes: coverage })
+    const summary = wrapper.find('[data-testid="coverage-group-summary"]')
+    expect(summary.exists()).toBe(true)
+    expect(summary.text()).toContain('窗口内未进日报')
+    expect(summary.text()).toContain('1')
+    expect(summary.text()).toContain('以色列内部选举')
+    expect(summary.text()).toContain('最近一次 11-09')
+    expect(wrapper.find('[data-testid="matrix-lane-20"]').exists()).toBe(true)
+  })
+
+  it('覆盖清单失败：底部一行提示 + 重试（既有行/格照常渲染）', async () => {
+    const wrapper = mountMatrix({ coverageLanes: [], coverageError: '接口挂了' })
+    expect(wrapper.find('[data-testid="coverage-error-row"]').text()).toContain('窗口外泳道清单未取到')
+    expect(wrapper.find('[data-testid="matrix-lane-10"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="coverage-retry"]').trigger('click')
+    expect(wrapper.emitted('retryCoverage')).toHaveLength(1)
+  })
+
+  it('覆盖清单为空 / 读取中 → 不渲染组（不造空组）', () => {
+    expect(mountMatrix({ coverageLanes: [] }).find('[data-testid="coverage-group-summary"]').exists()).toBe(false)
+    expect(mountMatrix({ coverageLanes: coverage, coverageLoading: true })
+      .find('[data-testid="coverage-group-summary"]').exists()).toBe(false)
+  })
+
+  it('「其他话题（未入泳道）」整行：点有日报的格 → emit selectOthersDay(date)', async () => {
+    const wrapper = mountMatrix({
+      otherTopicDays: { '2026-10-23': { date: '2026-10-23', sections: 3, clues: 7 } },
+      otherTopicDaysAvailable: true,
+    })
+    expect(wrapper.find('[data-testid="matrix-other-row"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="matrix-other-cell-2026-10-23"]').trigger('click')
+    expect(wrapper.emitted('selectOthersDay')![0]).toEqual(['2026-10-23'])
+  })
+
+  it('旧后端缺 other_topics → 整行不渲染（矩阵其余行为不变）', () => {
+    const wrapper = mountMatrix()
+    expect(wrapper.find('[data-testid="matrix-other-row"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="matrix-lane-10"]').exists()).toBe(true)
+  })
+})
+
 // ── 8C G2：日报日驱动的日期轴 + 当日其他话题组（S11/GRP，纯受控） ─────────────

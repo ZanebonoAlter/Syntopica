@@ -277,3 +277,156 @@ describe('ObservationMatrixGrid — 组顺序与旧事件保留', () => {
     expect(wrapper.emitted('selectOther')![0]).toEqual([{ sectionId: '701', date: '2026-10-23', topicId: null }])
   })
 })
+
+/**
+ * 「其他话题（未入泳道）」整行（`lane-matrix-coverage-and-others-row` 4.3）：
+ *  逐日格 = 当日未入泳道分区的非综合稿线索数；无日报日「—」不可点；旧后端缺字段整行隐藏。
+ */
+describe('ObservationMatrixGrid — 其他话题整行', () => {
+  const otherDays = {
+    '2026-10-21': { date: '2026-10-21', sections: 3, clues: 7 },
+    '2026-10-22': { date: '2026-10-22', sections: 0, clues: 0 },
+  }
+
+  it('DOM 顺序：活跃行 → 其他话题整行 → 当日其他话题组', () => {
+    const wrapper = mountGrid({
+      otherTopicDays: otherDays,
+      otherTopicDaysAvailable: true,
+      otherTopics: otherView(),
+      othersOpen: true,
+    })
+    const grid = wrapper.find('[data-testid="matrix-grid"]').element
+    const order = [...grid.querySelectorAll(
+      '[data-testid^="matrix-lane-"], [data-testid="matrix-other-row"], [data-testid="other-topics-toggle"]',
+    )].map(node => node.getAttribute('data-testid'))
+    expect(order).toEqual(['matrix-lane-10', 'matrix-lane-11', 'matrix-other-row', 'other-topics-toggle'])
+  })
+
+  it('有日报日显示线索数（0 合法、可点、title 带分区数）；无日报日「—」禁用', async () => {
+    const wrapper = mountGrid({ otherTopicDays: otherDays, otherTopicDaysAvailable: true })
+
+    const withClues = wrapper.find('[data-testid="matrix-other-cell-2026-10-21"]')
+    expect(withClues.text()).toBe('7')
+    expect(withClues.attributes('title')).toBe('2026-10-21 · 3 个分区 · 7 条线索')
+    expect(withClues.attributes('aria-label')).toBe('2026-10-21 · 3 个分区 · 7 条线索')
+    expect(withClues.attributes('disabled')).toBeUndefined()
+    await withClues.trigger('click')
+    expect(wrapper.emitted('selectOthersDay')![0]).toEqual(['2026-10-21'])
+
+    const zero = wrapper.find('[data-testid="matrix-other-cell-2026-10-22"]')
+    expect(zero.text()).toBe('0')
+    expect(zero.attributes('disabled')).toBeUndefined()
+
+    const noReport = wrapper.find('[data-testid="matrix-other-cell-2026-10-23"]')
+    expect(noReport.text()).toBe('—')
+    expect(noReport.attributes('disabled')).toBeDefined()
+    expect(noReport.attributes('aria-label')).toContain('无日报')
+  })
+
+  it('旧后端无 other_topics（未接线/字段缺省）→ 整行不渲染', () => {
+    expect(mountGrid().find('[data-testid="matrix-other-row"]').exists()).toBe(false)
+    expect(mountGrid({ otherTopicDays: otherDays }).find('[data-testid="matrix-other-row"]').exists()).toBe(false)
+    expect(mountGrid({ otherTopicDays: otherDays, otherTopicDaysAvailable: false })
+      .find('[data-testid="matrix-other-row"]').exists()).toBe(false)
+  })
+
+  it('available=true 但窗口内无任何读数（后端恒发空数组）→ 整行不渲染（不铺一整行「—」）', () => {
+    expect(mountGrid({ otherTopicDays: {}, otherTopicDaysAvailable: true })
+      .find('[data-testid="matrix-other-row"]').exists()).toBe(false)
+    expect(mountGrid({ otherTopicDays: otherDays, otherTopicDaysAvailable: true })
+      .find('[data-testid="matrix-other-row"]').exists()).toBe(true)
+  })
+
+  it('档窗外日期 title 写「档窗外，其他话题读数未取到」（不误说「无日报」）；档窗内无日报仍是「无日报」', () => {
+    const wrapper = mountGrid({
+      otherTopicDays: { '2026-10-22': { date: '2026-10-22', sections: 1, clues: 2 } },
+      otherTopicDaysAvailable: true,
+      otherTopicsSince: '2026-10-22',
+    })
+
+    const outside = wrapper.find('[data-testid="matrix-other-cell-2026-10-21"]')
+    expect(outside.text()).toBe('—')
+    expect(outside.attributes('disabled')).toBeDefined()
+    expect(outside.attributes('title')).toContain('档窗外')
+    expect(outside.attributes('title')).not.toContain('无日报')
+
+    const inside = wrapper.find('[data-testid="matrix-other-cell-2026-10-23"]')
+    expect(inside.attributes('title')).toContain('无日报')
+    expect(inside.attributes('title')).not.toContain('档窗外')
+  })
+
+  it('行头无泳道生命周期菜单（不是泳道）', () => {
+    const wrapper = mountGrid({ otherTopicDays: otherDays, otherTopicDaysAvailable: true })
+    expect(wrapper.find('[data-testid="matrix-other-row"]').text()).toContain('其他话题')
+    expect(wrapper.find('[data-testid="matrix-other-row"]').text()).toContain('未入泳道')
+    expect(wrapper.find('[data-testid="matrix-other-row"]').find('button').exists()).toBe(false)
+  })
+})
+
+/**
+ * 覆盖组「窗口内未进日报」（`lane-matrix-coverage-and-others-row` 4.1）：
+ *  活跃但当前窗口无分区的泳道进底部独立组，默认展开，组标题列出名字与最近一次；
+ *  清单失败只出一行提示 + 重试；成功且为空则整组不渲染。
+ */
+describe('ObservationMatrixGrid — 覆盖组（窗口内未进日报）', () => {
+  const coverage = [{ topicId: '20', label: '以色列内部选举', lastSeenDate: '2026-11-09' }]
+
+  it('默认展开：组 summary 带数量 + 名字 + 最近一次，组内行格全为「—」', () => {
+    const wrapper = mountGrid({ coverageLanes: coverage })
+    const summary = wrapper.find('[data-testid="coverage-group-summary"]')
+    expect(summary.exists()).toBe(true)
+    expect(summary.text()).toContain('窗口内未进日报')
+    expect(summary.text()).toContain('1')
+    expect(summary.text()).toContain('以色列内部选举')
+    expect(summary.text()).toContain('最近一次 11-09')
+    expect(wrapper.find('[data-testid="coverage-group-lanes"]').attributes('title')).toContain('以色列内部选举')
+
+    const row = wrapper.find('[data-testid="matrix-lane-20"]')
+    expect(row.exists()).toBe(true)
+    // 覆盖行名字是静态标签（不在本窗名单，不可选中）；行容器沿用休眠行弱化样式
+    expect(row.element.tagName).toBe('SPAN')
+    expect(row.element.parentElement!.className).toContain('is-dormant')
+    // 身份由组标题表达，行内不重复小标（不挤占窄标签列的名字）
+    expect(row.text()).toContain('以色列内部选举')
+    expect(row.text()).not.toContain('未进日报')
+    expect(row.attributes('title')).toContain('窗口内未进日报')
+    expect(wrapper.find('[data-testid="matrix-cell-20-2026-10-23"]').text()).toBe('—')
+  })
+
+  it('最近一次缺失 → 写「无记录」（不拿今天冒充）', () => {
+    const wrapper = mountGrid({ coverageLanes: [{ topicId: '21', label: '无记录线', lastSeenDate: null }] })
+    expect(wrapper.find('[data-testid="coverage-group-lanes"]').text()).toContain('无记录')
+  })
+
+  it('清单失败：只出一行提示 + 重试（不把失败渲染成「没有窗口外泳道」）', async () => {
+    const wrapper = mountGrid({ coverageLanes: [], coverageError: '接口挂了' })
+    expect(wrapper.find('[data-testid="coverage-group-summary"]').exists()).toBe(false)
+    const errorRow = wrapper.find('[data-testid="coverage-error-row"]')
+    expect(errorRow.exists()).toBe(true)
+    expect(errorRow.text()).toContain('窗口外泳道清单未取到')
+    await wrapper.find('[data-testid="coverage-retry"]').trigger('click')
+    expect(wrapper.emitted('retryCoverage')).toHaveLength(1)
+  })
+
+  it('读取中 / 成功且为空 → 不渲染组（不占位、不冒「0 条」）', () => {
+    expect(mountGrid({ coverageLanes: [], coverageLoading: true }).find('[data-testid="coverage-group-summary"]').exists()).toBe(false)
+    expect(mountGrid({ coverageLanes: [] }).find('[data-testid="coverage-group-summary"]').exists()).toBe(false)
+  })
+
+  it('覆盖行有泳道维护菜单（重命名/编辑/归档），且不提供行选中', () => {
+    const wrapper = mountGrid({ coverageLanes: coverage, renameLane: vi.fn().mockResolvedValue(true) })
+    const row = wrapper.find('[data-testid="matrix-lane-20"]')
+    expect(row.element.tagName).toBe('SPAN')
+    expect(row.find('button').exists()).toBe(false)
+    expect(document.body.querySelector('[data-testid="lane-menu-trigger-20"]')).toBeNull()
+  })
+})
+
+describe('ObservationMatrixGrid — 休眠折叠条列名字', () => {
+  it('折叠条显示泳道名（数量 + 名字），超长由 CSS 截断但 title/aria 保留全文', () => {
+    const wrapper = mountGrid({ dormantRows: [lane('12', '休眠线 C', true), lane('13', '休眠线 D', true)] })
+    const names = wrapper.find('[data-testid="dormant-names"]')
+    expect(names.text()).toBe('休眠线 C · 休眠线 D')
+    expect(names.attributes('title')).toBe('休眠线 C · 休眠线 D')
+  })
+})

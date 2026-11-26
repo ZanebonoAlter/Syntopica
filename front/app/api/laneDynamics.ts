@@ -87,6 +87,22 @@ export interface LaneDynamicsCandidate {
   lane_heat?: number
 }
 
+/**
+ * 「其他话题（未入泳道）」逐日读数（change `lane-matrix-coverage-and-others-row` §3.1）。
+ *
+ * 口径与矩阵泳道格一致：**非综合稿线索数**；`sections` = 该日未入泳道的分区数
+ * （`persistent_topic_id` 为空、或不属于本板块 active ∪ watch 关联话题集合）。
+ * 窗口内每份 completed 日报日一条，**含真实 0**（没有未入泳道分区也出条目）。
+ */
+export interface LaneDynamicsOtherDay {
+  /** YYYY-MM-DD（窗口内某份 completed 日报日）。 */
+  date: string
+  /** 该日未入泳道的分区数。 */
+  sections: number
+  /** 该日未入泳道分区的非综合稿线索数合计。 */
+  clues: number
+}
+
 /** GET /lane-dynamics 响应 data。 */
 export interface LaneDynamicsResponse {
   window_days: number
@@ -99,6 +115,11 @@ export interface LaneDynamicsResponse {
   anchor_date?: string
   lanes: LaneDynamicsLane[]
   candidates: LaneDynamicsCandidate[]
+  /**
+   * 「其他话题（未入泳道）」逐日读数（`lane-matrix-coverage-and-others-row`）。
+   * **缺省 = 旧后端**：前端整行不渲染（不显示全「—」的空壳行）。
+   */
+  other_topics?: LaneDynamicsOtherDay[]
   /** 热度口径版本（heat-v2-lane-clues-1d）；缺省 = 旧后端。 */
   heat_rule_version?: string
 }

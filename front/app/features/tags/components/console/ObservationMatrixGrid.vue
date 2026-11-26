@@ -17,15 +17,27 @@
  *    休眠 summary + 休眠行。两个 summary 都是纵向全宽、原生 button + `aria-expanded`、
  *    互不串联；休眠 0 行仍保留同级 summary（「本窗无」）且禁用展开，不造行。
  *  - 组行/组状态全由父经 `otherTopics`（G1 模型视图）注入，本组件不重算排除/计数/状态词。
+ *
+ * `lane-matrix-coverage-and-others-row` 增量（仍纯受控）：
+ *  - **「其他话题（未入泳道）」整行**：活跃行之后、当日其他话题组之前；逐日格 = 当日未入
+ *    泳道分区的非综合稿线索数（与泳道格同口径）。后端旧版本没有该字段时**整行不渲染**
+ *    （`otherTopicDaysAvailable` 为 false），不显示全「—」的空壳行。
+ *  - **覆盖组「窗口内未进日报」**：休眠组之后；活跃但当前窗口无分区的泳道（壳层用既有
+ *    topics 清单派生）默认展开，组标题列出泳道名与最近一次日期；清单读取失败只出一行
+ *    提示 + 重试（不冒「没有窗口外泳道」），成功且为空则整组不渲染。
+ *  - **行头就地重命名**：`renameLane` 逐层下传（缺省 = 无该入口，菜单不显示「重命名」）。
  */
 import { computed } from 'vue'
 import type { ObservedDayNode } from '~/features/tags/composables/useOtherTopicObservation'
 import { Icon } from '@iconify/vue'
 import { useNotify } from '~/composables/useNotify'
+import type { WindowOtherTopicDay } from '~/api/normalizers/laneDynamicsWindow'
 import DayOtherTopicsGroup from './DayOtherTopicsGroup.vue'
 import ObservationMatrixDayHeader from './ObservationMatrixDayHeader.vue'
 import ObservationMatrixLaneRow from './ObservationMatrixLaneRow.vue'
+import ObservationMatrixOtherRow from './ObservationMatrixOtherRow.vue'
 import { OTHER_TOPICS_INDEX_LOADING_TEXT, type OtherTopicsView } from './dayOtherTopics'
+import type { CoverageLaneRow } from './coverageLanes'
 import {
   clueRowMax,
   matrixCellView,
@@ -60,6 +72,26 @@ const props = defineProps<{
   othersOpen?: boolean
   /** 当前阅读槽选中的其他分区（高亮用）。 */
   selectedOtherSectionId?: string | null
+  /**
+   * 「其他话题（未入泳道）」逐日读数（date → 未入泳道分区数与非综合稿线索数）。
+   * 命名与组视图 `otherTopics` 区分开：那个是「当日」组视图，这个是**逐日**读数。
+   */
+  otherTopicDays?: Record<string, WindowOtherTopicDay>
+  /** 后端是否下发 `other_topics`：false（旧后端）→ 整行不渲染。 */
+  otherTopicDaysAvailable?: boolean
+  /**
+   * 「其他话题」逐日读数的**档窗起点**（YYYY-MM-DD）：后端只聚合 `[anchor-(days-1), anchor]`。
+   * 该日之前（观察范围拖到 365 池区段）没有读数是「未聚合」而不是「没有日报」。
+   */
+  otherTopicsSince?: string | null
+  /** 覆盖组行（窗口内未进日报的活跃泳道；壳层用既有 topics 清单派生）。 */
+  coverageLanes?: CoverageLaneRow[]
+  /** 覆盖清单读取中（不渲染组，不占位、不冒「无覆盖」）。 */
+  coverageLoading?: boolean
+  /** 覆盖清单读取失败（底部一行提示 + 重试）。 */
+  coverageError?: string | null
+  /** 就地重命名（缺省 = 无该入口，菜单不显示「重命名」）。 */
+  renameLane?: (topicId: string, label: string) => Promise<boolean>
 }>()
 
 const emit = defineEmits<{
@@ -77,6 +109,10 @@ const emit = defineEmits<{
   toggleOthers: []
   /** 其他组选行/选格同一事件（sectionId 是当日局部身份）。 */
   selectOther: [payload: { sectionId: string, date: string, topicId?: string | null }]
+  /** 点「其他话题（未入泳道）」有日报的格：切选中日 + 展开当日其他话题组。 */
+  selectOthersDay: [date: string]
+  /** 覆盖清单读取失败后的重试。 */
+  retryCoverage: []
 }>()
 
 const { warn: notifyWarn } = useNotify()
@@ -103,6 +139,55 @@ function project(row: ObservationLaneRow, dormant: boolean): RenderEntry {
 /** 正式行（活跃泳道）；休眠行排在两组 summary 之后单独渲染（组序见文件头）。 */
 const activeEntries = computed<RenderEntry[]>(() => props.activeRows.map(row => project(row, false)))
 const dormantEntries = computed<RenderEntry[]>(() => props.dormantRows.map(row => project(row, true)))
+
+/**
+ * 覆盖组行（窗口内未进日报的活跃泳道）。
+ *
+ * 这些泳道不在 A 档名单里，`resolveDay` 在档窗内解析为断档（gap）→ 格值自然为「—」、
+ * 不可点（该窗口确实无分区，不造 0）。
+ */
+const coverageEntries = computed<RenderEntry[]>(() => (props.coverageLanes ?? []).map(lane => project({
+  topicId: lane.topicId,
+  label: lane.label,
+  watchLinked: false,
+  sectionTotal: 0,
+  clueTotal: 0,
+  dormant: true,
+  snapshot: null,
+}, true)))
+
+/** 覆盖组摘要行文案：泳道名 + 最近一次（缺失写「无记录」）；超长由 CSS 截断（title/aria 保留全文）。 */
+const coverageSummaryText = computed(() => (props.coverageLanes ?? [])
+  .map(lane => `${lane.label} · 最近一次 ${lastSeenText(lane.lastSeenDate)}`)
+  .join(' · '))
+
+/**
+ * 「其他话题（未入泳道）」整行是否渲染。
+ *
+ * 两个条件缺一不可：① 后端确实下发了 `other_topics`（旧后端不渲染）；② 窗口内**确有**读数
+ * （无 completed 日报时后端恒发空数组，渲染一整行「—」只是噪声）。
+ */
+const showOtherTopicRow = computed(() =>
+  props.otherTopicDaysAvailable === true && Object.keys(props.otherTopicDays ?? {}).length > 0,
+)
+
+/** 覆盖组是否渲染：清单取到了且非空（读取中不渲染，失败只出提示行）。 */
+const showCoverageGroup = computed(() =>
+  props.coverageLoading !== true && !props.coverageError && (props.coverageLanes?.length ?? 0) > 0,
+)
+
+/** 覆盖组行的最近一次日期（供行 title 用）。 */
+function coverageLastSeenOf(topicId: string): string | null {
+  return (props.coverageLanes ?? []).find(lane => lane.topicId === topicId)?.lastSeenDate ?? null
+}
+
+/** 最近一次日期的展示形（YYYY-MM-DD → MM-DD；缺失 → 「无记录」）。 */
+function lastSeenText(date: string | null): string {
+  return date ? date.slice(5) : '无记录'
+}
+
+/** 休眠折叠条的泳道名（既有 spec：折叠条显示数量**与**泳道名）。 */
+const dormantNamesText = computed(() => props.dormantRows.map(row => row.label).join(' · '))
 
 const scrollable = computed(() => props.axis.length > 31)
 const gridStyle = computed(() => ({ '--matrix-cols': String(props.axis.length) }))
@@ -165,10 +250,23 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
           :selected-lane-id="selectedLaneId"
           :selected-date="selectedDate"
           :dormant="false"
+          :rename-lane="renameLane"
           @select-lane="emit('selectLane', $event)"
           @select-cell="onSelectCell"
           @edit-lane="emit('editLane', $event)"
           @archive-lane="emit('archiveLane', $event)"
+        />
+
+        <!-- 「其他话题（未入泳道）」整行：活跃行之后、当日其他话题组之前；
+             旧后端无 other_topics 字段时整行不渲染（不显示全「—」空壳行）。 -->
+        <ObservationMatrixOtherRow
+          v-if="showOtherTopicRow"
+          :axis="axis"
+          :selected-date="selectedDate"
+          :today="today"
+          :days="otherTopicDays ?? {}"
+          :since="otherTopicsSince ?? null"
+          @select-others-day="date => emit('selectOthersDay', date)"
         />
 
         <!-- 当日其他话题组（summary + 自身行；display:contents 参与本网格） -->
@@ -193,6 +291,13 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
           >
             <Icon :icon="expandedDormant ? 'mdi:chevron-down' : 'mdi:chevron-right'" width="14" />
             <span class="omx-group-title">休眠泳道<span class="omx-group-count"> · {{ dormantRows.length }}</span></span>
+            <span
+              v-if="dormantRows.length > 0"
+              class="omx-dormant-names"
+              :title="dormantNamesText"
+              :aria-label="dormantNamesText"
+              data-testid="dormant-names"
+            >{{ dormantNamesText }}</span>
             <span class="omx-group-note">
               <template v-if="dormantRows.length === 0">本窗无</template>
               <template v-else>{{ expandedDormant ? '收起' : '展开查看' }}（它们仍挂着追踪，只是这段时间没动）</template>
@@ -211,7 +316,45 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
             :selected-lane-id="selectedLaneId"
             :selected-date="selectedDate"
             :dormant="true"
+            :rename-lane="renameLane"
             @select-lane="emit('selectLane', $event)"
+            @select-cell="onSelectCell"
+            @edit-lane="emit('editLane', $event)"
+            @archive-lane="emit('archiveLane', $event)"
+          />
+        </template>
+
+        <!-- 覆盖组「窗口内未进日报」：休眠组之后，默认展开（无折叠态）；
+             读取失败只出一行提示 + 重试（不把失败渲染成「没有窗口外泳道」）。 -->
+        <div v-if="coverageError" class="omx-group-noterow" data-testid="coverage-error-row">
+          <span class="omx-group-notetext">窗口外泳道清单未取到</span>
+          <button type="button" class="omx-coverage-retry" data-testid="coverage-retry" @click="emit('retryCoverage')">重试</button>
+        </div>
+
+        <template v-else-if="showCoverageGroup">
+          <div class="omx-group-summary is-coverage" data-testid="coverage-group-summary">
+            <span class="omx-group-title">窗口内未进日报<span class="omx-group-count"> · {{ coverageLanes?.length ?? 0 }}</span></span>
+            <span
+              class="omx-coverage-list"
+              :title="coverageSummaryText"
+              :aria-label="coverageSummaryText"
+              data-testid="coverage-group-lanes"
+            >{{ coverageSummaryText }}</span>
+          </div>
+
+          <ObservationMatrixLaneRow
+            v-for="entry in coverageEntries"
+            :key="entry.row.topicId"
+            :row="entry.row"
+            :cells="entry.cells"
+            :axis="axis"
+            :today="today"
+            :selected-lane-id="selectedLaneId"
+            :selected-date="selectedDate"
+            :dormant="true"
+            :coverage="true"
+            :coverage-last-seen="coverageLastSeenOf(entry.row.topicId)"
+            :rename-lane="renameLane"
             @select-cell="onSelectCell"
             @edit-lane="emit('editLane', $event)"
             @archive-lane="emit('archiveLane', $event)"
@@ -304,6 +447,7 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
 
 .omx-group-title,
 .omx-grid :deep(.omx-group-title) {
+  flex: 0 0 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -349,5 +493,39 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
   border-bottom: 1px dotted var(--color-border-subtle);
   font-size: 0.72rem;
   color: var(--color-text-muted);
+}
+
+/* 覆盖组（窗口内未进日报）：组标题 + 泳道名清单（超长截断，title/aria 保留全文）。 */
+.omx-coverage-list {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+}
+
+/* 休眠折叠条里的泳道名（既有 spec：折叠条显示数量与泳道名）。 */
+.omx-dormant-names {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+}
+
+.omx-coverage-retry {
+  flex: 0 0 auto;
+  margin-left: 0.4rem;
+  padding: 0 0.3rem;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: none;
+  color: var(--color-accent);
+  font-size: 0.68rem;
+  cursor: pointer;
 }
 </style>

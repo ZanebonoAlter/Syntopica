@@ -35,6 +35,10 @@ const emit = defineEmits<{
   toggleOthers: []
   /** 其他组选行/选格（sectionId 是当日局部身份）。 */
   selectOther: [payload: { sectionId: string, date: string, topicId?: string | null }]
+  /** 点「其他话题（未入泳道）」有日报的格：切选中日 + 展开当日其他话题组。 */
+  selectOthersDay: [date: string]
+  /** 覆盖清单（窗口外泳道）读取失败后的重试。 */
+  retryCoverage: []
   /** 观察带真实记录日节点（原子切同一 selectedDate + 稳定目标）。 */
   selectObservedDay: [payload: { date: string, sectionId: string, reportId: string, topicId: string }]
   retry: []
@@ -238,6 +242,13 @@ function scrollToChronicle(): void {
         :other-topics="otherTopics"
         :others-open="othersOpen"
         :selected-other-section-id="selectedOtherSectionId"
+        :other-topic-days="otherTopicDays"
+        :other-topic-days-available="otherTopicDaysAvailable"
+        :other-topics-since="otherTopicsSince ?? null"
+        :coverage-lanes="coverageLanes"
+        :coverage-loading="coverageLoading"
+        :coverage-error="coverageError"
+        :rename-lane="renameLane"
         @select-lane="id => emit('selectLane', id)"
         @edit-lane="id => emit('editLane', id)"
         @archive-lane="id => emit('archiveLane', id)"
@@ -245,6 +256,8 @@ function scrollToChronicle(): void {
         @select-day-header="date => emit('selectDayHeader', date)"
         @select-observed-day="selectObservedDay"
         @select-other="payload => emit('selectOther', payload)"
+        @select-others-day="date => emit('selectOthersDay', date)"
+        @retry-coverage="emit('retryCoverage')"
         @toggle-dormant="emit('toggleDormant')"
         @toggle-others="emit('toggleOthers')"
         @retry="emit('retry')"

@@ -18,6 +18,8 @@ function makePayload(): LaneDynamicsWindowPayload {
       lanes: [],
       candidates: [],
       anchorDate: '2026-10-23',
+      otherTopics: {},
+      otherTopicsAvailable: false,
     },
     legacy: { window_days: 14, has_reports: true, lanes: [], candidates: [] },
   }

@@ -893,6 +893,10 @@ Response `data`：
       "clue_count": 2,
       "lane_heat": 1.0
     }
+  ],
+  "other_topics": [
+    { "date": "2026-09-08", "sections": 2, "clues": 5 },
+    { "date": "2026-09-09", "sections": 0, "clues": 0 }
   ]
 }
 ```
@@ -902,6 +906,7 @@ Response `data`：
 - `timeline[].clue_count`：当日线索合计（**已排除综合稿**）；矩阵日格/演进节点/曲线统一消费它；展示值 MUST NOT 用各桶 `thread_count` 合计替代（section 的 `thread_count` 未排除综合稿，只能作 aria 辅助/旧响应回退）。
 - `timeline[].sections[].events`：该 section 的 thread 标题，最多前 5 条；`folded_count` 为被截断数量（恒输出，0 也带）。`timeline` 按日期倒序（最新日在最前）。
 - `timeline[].sections[].composite_count`（fix-lane-metric-provenance）：该桶**综合稿**条数（thread 的 event 标签数 ≥ 2）。桶级线索数 = `thread_count − composite_count`（客户端唯一公式；两者缺任一 → 该桶线索数未知，显示 `?`）。客户端 SHALL NOT 把 `thread_count` 当线索数——它是含综合稿的 thread 总数。
+- `other_topics`（lane-matrix-coverage-and-others-row）：窗口内每个 **completed** 日报日一条（`date` 升序，含无未入泳道分区的真实 `0/0`），`sections` = 该日未入泳道分区数、`clues` = 这些分区的**非综合稿** thread 数之和。「未入泳道」= `persistent_topic_id` 为空、或不属于该板块当前**非归档**的 active / watch 关联话题集合（candidate、archived、当次未归属计入）；未完成日报整天不参与。该字段只读、不参与 `lanes` / `candidates` / `lane_heat` 计算；缺省（旧后端）时前端矩阵不渲染「其他话题（未入泳道）」整行。
 - `anchor_date`：窗口锚点日 = 该板块最新**已完成**日报的 `period_date`（YYYY-MM-DD）；无已完成日报时为空串。前端矩阵轴末日与泳道工作面窗口末日统一取它（compose-candidates 的 `window.latest_completed_date` 同值）。
 - `candidates`：达可见门槛（`FilterVisibleTopics`）的 candidate + 最新 section 标题 `recent_hint`；新增 `anchor_date`（该版块最新日报日）、`clue_count`（锚点日当天线索合计）、`lane_heat`（= clue_count × 候选权重，已含在版块 `attention` 内，前端勿重复相加）；只读提示，转正走话题管理入口。
 - `snapshot`：滚动 14 天态势（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）。`detail` 不再产出（存量历史长版仅随下个日报日结算覆盖自愈）。
