@@ -38,6 +38,24 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 
 **flow 节名红线**：flow 文档的注入按「业务约束与不变量」节名**硬编码抓取**——节名写成「业务红线」「约束」等别名，域声明注入静默取不到节（A 段五段式校验也会 FAIL）。
 
+## 族级 capability 与来源注释
+
+capability **按功能族划，不按 change 划**。每来一个 change 就新建一个 capability，会让同一套规矩碎成十几个文件（实测：标签体系曾碎成 23 个 spec / 2771 行，改一次要开 21 个文件）。
+
+| 场景 | 做法 |
+| --- | --- |
+| 新 change 改一个已存在的功能 | **MODIFY 现有族级 spec**，不新建 capability |
+| 功能确实自成一族（与现有族无改动连带关系） | 新建 capability，命名用功能名而非 change 名 |
+| 族内碎片已多（>1500 行 或 改一次要读 >3 个 spec） | 开一个合并 change，用 `scripts/harness/merge-spec-family.sh` 生成初稿 |
+| 合并时搬迁 Requirement | 每条标题下加 `<!-- from: <旧capability> (<归档日期> <归档change>) -->`；来源只认 `## ADDED Requirements` 的 change，查不到就只写 capability 名，**不编造** |
+| 合并时发现施工记录（包结构/命名/一次性迁移/纯测试要求） | 排到族 spec 末尾并加 `<!-- kind: impl -->`，**不删**——删契约要单独提 change |
+
+**族名与旧 capability 重名时就地扩容**（不搞改名新建）：旧 capability 保留，只把兄弟成员的 Requirement 以 `## ADDED Requirements` 追加进去；代价是它原有条目不重排，可接受。
+
+**族级 domain marker 按「改这族必须读哪些 flow 红线」取舍，不按「成员碰过哪些域」**：J 段上限 3 域装不下成员并集，选主业务域 + 会改变契约含义的次域（如 `tagging` 选 `semantic-board, ui`，因队列芯片是用户可见组件）。已知代价：被舍弃的次域查询不到该族。
+
+**归档必须声明 `retire_capabilities: true`**：capability 的 Requirement 被 REMOVED 清空后，openspec 默认「写入重建稿 → 校验」，空 spec 校验失败会整次中止；声明后归档直接删除 spec 文件并修剪空目录，**不会留空壳**（先例：`archive/2026-11-20-retire-story-adopt-event-metrics/.openspec.yaml`）。
+
 **三个注释各是干嘛的、为什么这么设计**：
 
 | 注释 | 干嘛的 | 为什么这么设计 |

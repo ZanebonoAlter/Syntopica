@@ -52,7 +52,7 @@
 | `hit_rate` | float | `in_board / articles`，`articles=0` 时为 0 |
 | `boards` | array | 命中板块分布 `[{board_id, label, articles}]`，空数组非 null |
 
-口径三条硬约束（唯一权威 `openspec/specs/source-board-hit-rate/spec.md`，唯一实现 `internal/tagmanagement/service/sourcestats/`）：
+口径三条硬约束（唯一权威 `openspec/specs/tag-matching/spec.md`，唯一实现 `internal/tagmanagement/service/sourcestats/`）：
 
 1. **按文章去重**：所有计数以文章为单位去重（`COUNT(DISTINCT id)`，布尔位用 `EXISTS` 不 JOIN），不因一篇文章多标签/多板块重复计数；
 2. **含已归档文章**：窗口内 `archived=true` 的文章计入，**不过滤归档位**（高频源超 `max_articles` 被归档的文章往往是命中主力，排除会得出相反结论）；
