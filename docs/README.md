@@ -71,7 +71,8 @@ Syntopica 全部文档入口。
 ## 问题与经验
 
 | 目录 | 说明 |
-|------|------|
+| ------|------|
+| [merge-records/](merge-records/) | develop → master 的合并记录（范围 / 契约变更 / 部署与回滚 / 遗留项） |
 | [experience/](experience/) | 踩坑复盘（ocr 弃用、编码安全、demo 教训等） |
 | [issues/](issues/) | 问题追踪（ollama 兼容、embedding、质量排序等） |
 
