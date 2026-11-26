@@ -40,7 +40,18 @@
 
 ## 链路设计
 
-### 后端：日报生成管线
+> 本节按**功能族**组织，与 `openspec/specs/daily-report-{system,interface,ops}` 一一对应。
+> 每族两层——**当前规则**（现在什么规矩，必读）与**决策记录**（规矩怎么来的、
+> 踩过什么坑；这类内容 spec 里没有）。
+> 重排自 change `restructure-flow-daily-report`（2026-11-26）。
+
+### 一、生成与匹配
+
+> spec: `daily-report-system`
+
+#### 当前规则
+
+##### 日报生成管线
 
 `GenerateDailyReport(ctx, boardID, date)` 是入口，分步管线（`daily_report_orchestrator.go`）：
 
@@ -75,9 +86,7 @@ flowchart TD
 >
 > **Step7.5 Watch 物化追加（watch-materialized-topic + watch-materialize-llm-adjudication）**：同日合并之后、落库之前，board 的 active 物化轨关注各产出一个追加 section——`keyword_topic` 扫描**报告 `period_date` 当天**全量未归档文章（标题+择优摘要层，零 AI、可捞 tag 体系漏网；**扫描窗口 = 报告期日，补档/重建与当天按时生成同口径，绝不用执行时刻**——fix-duplicate-article-heat），DNF 命中文章经 **LLM 文章级裁决**（意图重心+实质因果链，默认开启，`watch_materialize_llm_filter_enabled` 可关）过滤后聚合为板块（`lane_tier=watch_keyword`、无持久话题、无 embedding，标题=LLM 当日贴合标题、兜底固定名「关键字『X』相关话题」）；`sentence_topic` 用关注缓存的一句话向量在 board 辅助标签池（`board_composition` join `semantic_labels.embedding`）余弦检索 top-K（阈值/上限可配 `watch_sentence_retrieval_threshold`/`watch_sentence_retrieval_top_k`，默认 0.55/8），命中标签经 `topic_tag_semantic_labels` 解析为当天有文章的 event tag，文章并集经同一 LLM 裁决过滤后聚合成挂**专属持久话题**（`source=manual/status=active`，`lane_tier=watch_sentence`，`topic_match_confidence=manual`）的板块（标题=LLM 当日标题、兜底 watch 名）。两轨裁决均为每 watch 单次批量调用（候选上限 `watch_materialize_candidate_limit` 默认 40），thread `confidence` 承载裁决置信度，物化 section 持久化 `watch_id` 关联（读路径 transient 透出 `watch_label` 供徽标装饰，历史行按固定名/标题回退解析）。专属话题首次物化时创建（`Embedding=Centroid=检索句向量`，命中计数种 0 由同事务 lifecycle 推到 1），后续作为 lane 锚与普通 manual active 话题一视同仁。裁决失败（调用/解析）降级回退召回全量（Confidence 默认 1.0、标题走兜底链）不阻断；任一关注物化失败降级跳过（log warn），不阻断日报。当天无命中（或裁决全剔）不产空板块（sentence 话题记当日未命中，自然衰减）。
 
-> **Step5.5 泳道内主题分桶（intra-lane theme bucketing，add-intra-lane-theme-bucketing）**：域型泳道（把「话题当泳道用」的板块）会把当天全部线索塞进一条 section（实测板块 3030 一条 section 18 tags / 17 threads 平铺），根因是 section 的产生单位被写死成「话题 × 天」。分桶在**单个聚类内部**、thread 生成之后、section embedding 之前插入：**触发阈值**为 `threads ≥ daily_report_intra_bucket_min_threads`（默认 6）**或** `tags ≥ daily_report_intra_bucket_min_tags`（默认 10），总开关 `daily_report_intra_bucket_enabled` 默认开（叙事型泳道单条 ≤5 tags 永不触发）；**组数**由代码算 `k = clamp(round(线索数/2.5), 2, 6)`；**两阶段**（温度 0）——phase 1（operation `daily_report.bucket_theme_names`）只给 k 个方向名（≤12 字）+ 每组当日章节标题，组数多于 k 时确定性合并最小两组、少于 k 按实际组数；phase 2（operation `daily_report.bucket_assign`）方向名固定、只做逐条归属，禁止增删改名合并拆分；**确定性校验**（不信任模型自觉）——未覆盖线索并入最小 group、重复保留首处、单例组合并、空组丢弃、修复后仍 1 组则回退单 section；任一阶段失败只为 warn 并保持单 section（日报不失败）。**产出**：每条桶一条 section，共享来源聚类的 `cluster_index`，`bucket_index` 0..k-1、`bucket_title` 为方向名、`cluster_label` 为该桶当日章节标题（缺失时兜底链按**桶内**线索：首条 thread 标题 → 泳道 label，不借用其他桶内容）、`cluster_tag_ids` 为桶内 thread 的 tag 并集、embedding 用**该桶自己的 tag 集**计算；兄弟 section 继承 `lane_tier`/`persistent_topic_id`/`topic_match_confidence`，各自计算 `topic_match_distance`。同日合并按 `cluster_index` 相同即拒绝（防止被粘回一条），开关默认仍关。**重新分桶** `POST /api/daily-reports/:id/rebucket`：对 `(report_id, cluster_index)` 组重跑两阶段并整组替换 section 行，thread 只迁移 `section_id` 不删除（关键事件注记按 thread 重派生、watch 命中/页边注跟随重派生、关系双向重建），与 `SaveReport` 共用同键 `(board, date)` 事务级 advisory lock 串行化；报告非 `completed` 409、`watch_*` 物化组 400、未达阈值/拆不动 200 + `buckets=1` 且不写库。
-
-### 后端：Section↔话题 锚定机制（System 2）
+##### Section↔话题 锚定机制（System 2）
 
 `assignAndUpdateTopics → planTopicAssignments`（`daily_report_assignment.go`）对当天**每一条 section** 按**上游分桶结果**（`LaneTier` + `MatchedTopicID`）映射归属——归属在分桶阶段已定，此步只映射 confidence + distance（旧的双重确认 AND-gate 已移除）：
 
@@ -97,17 +106,17 @@ flowchart TD
 | **auto_new** | L3 新话题，或 L2 换/新（topic 不在候选集）→ 新开 candidate | 到最近邻的距离（一般 ≥0.30） | 空心 accent 点（新话题候选） |
 | **unmatched** | 无 embedding，无法分桶 | 0 / 缺省 | 空心灰点 |
 
-#### 关于 distance 的常见误解（重要）
+###### 关于 distance 的常见误解（重要）
 
 - **distance 不是平均值**，是单条 section 的客观值：它自己的标题向量 离 topic **质心** 多远。话题下 N 条 section 就有 N 个各自独立的 distance。
 - **distance 不是「当天相似度」**，是跨天的「这条 section 标题」和「topic 近期 section 质心」的语义距离（质心随窗口滚动更新）。
 - **「松锚定/稳锚定」是前端展示分桶**（双阈值 `0.05 / 0.15` 切 anchor_hit 的三段），不是后端语义；后端 lane 分桶认 `lane_l1_threshold`(0.18)/`lane_l2_threshold`(0.30) 两道线。
 
-#### 为什么「看着不像」却锚中了？
+###### 为什么「看着不像」却锚中了？
 
 `lane_l2_threshold=0.30` 是 L2/L3 分界（余弦距离 0.30 ≈ 相似度 0.70）。L1 直挂（<0.18）是高置信强匹配；L2∈[0.18,0.30] 不硬挂，交 LLM 在 top-K 候选上做「留/换/新」三选一——相比旧「LLM 全量自由聚类再事后匹配」，输入聚焦、万能包装/强行打包诱因大幅减少。仍可能「看着不像」的两个来源：① **吸尘器 topic**（质心过宽，`is_vacuum=true`）把沾边 tag 吸成最近邻（但新流程会把它降级 L2 交 LLM 裁决）；② L2 LLM 主观把语义沾边的 tag 归并到某 topic。收紧阈值/提高 embedding 区分度归 `embedding-content-mismatch` 待办 issue（领域 change），本可观测层只如实暴露结果。
 
-#### 粒度错位：跑题 thread 搭便车（真实案例）
+###### 粒度错位：跑题 thread 搭便车（真实案例）
 
 锚定判断的粒度是 **section（标题向量）**，但用户实际看的是 **thread（事件）**。两者粒度不一致，会产生「这条事件明显跑题却出现在该话题下」的观感：
 
@@ -128,7 +137,7 @@ Step6 section 标题 = "OpenAI 发布管控与治理动荡"
 - **上游治本**：提升 L2 LLM 裁决（`ClusterTagsLane`）的候选注入质量 + 吸尘器降级覆盖（过宽 topic 的 tag 不直挂），或给 thread 增加与 section 主题的校验，不让跑题 thread 进簇。
 - **下游可观测**：`topic-anchor-match-observability` 如实暴露 section 锚定距离；thread 粒度的贴合度由 `thread-fit-observability`（System 3）事后校验 thread 标题 embedding 与所属 section 标题 embedding 的余弦距离，离群（`fit_distance` > 0.28）软降级（灰显+折叠+离群标记，见「前端可视化」）。治理点是**事后校验 thread↔section 贴合度**，而非在 Step3 归簇后做紧凑性剔除——伞形话题的子事件 embedding 天然分散，紧凑性剔除会误杀合理子事件（见 `thread-fit-observability` design D1）。
 
-#### 可锚定话题选择器：聚类与归属共享同一集合
+###### 可锚定话题选择器：聚类与归属共享同一集合
 
 ClusterTagsLane 分桶（Step3）与归属判定**共享同一个可锚定 PersistentTopic 选择器**（`ListAnchorableTopicsByBoard`，返回 centroid + is_vacuum），保证两侧集合一致：
 
@@ -136,80 +145,7 @@ ClusterTagsLane 分桶（Step3）与归属判定**共享同一个可锚定 Persi
 2. candidate 需 `last_seen_date` 在 `persistent_topic_candidate_decay_window`（默认 7 天）内，按 `last_seen_date DESC, hit_count DESC, id ASC` 排序，最多保留 `persistent_topic_candidate_prompt_limit`（默认 20）条。
 3. 窗口外或被截断的 candidate 不出现在任何一侧，消除单边锚定的隐式 bug。
 
-### 后端：日报运维 backfill 端点
-
-除每日自动生成外，日报域提供三个手动回填端点（`topicgraph/handler/daily_report_handler.go:59-67`），用于修正历史数据 / 重建派生结果，均为 POST 异步触发：
-
-```text
-POST /api/daily-reports/backfill-embeddings   重建 section embedding（按 cluster_label）+ 重新匹配
-POST /api/daily-reports/backfill-relations    重建关系双轨（相似度 + 身份）连线
-POST /api/daily-reports/backfill-topics       重建持久话题
-```
-
-可按 board 限定（body 传 `board_id`）或全量回填，与自动生成一样走 topicgraph service、幂等重建。
-
-> **自动补档（offline-catchup）**：手动 backfill 之外，`DailyReportJob` 每晚生成完当天报告后会自动补齐保留窗口内的缺档日期（tag 队列空为前置、窗口内逐日只补缺、队列未清顺延次日；超窗日期拒绝重建，见业务约束 19/20）——停机错过的日期无需人工逐日重建。成功裁决后另有**版块体检尾步**（add-board-health-checkup：同步 RunCheckup 纯读统计+LLM 评分落快照，error/panic 不污染日报 job，链路见 [semantic-board.md](semantic-board.md) §版块体检）。
-
-### 后端：缺口与补填（gap backfill，add-daily-report-gap-backfill）
-
-日报域多了一对端点，把「看不见的空洞」搬到台面上：`GET /api/daily-reports/gaps`（只读缺口清单）+ `POST /api/daily-reports/backfill-gaps`（异步补填）。自动补档（上一节 offline-catchup）是**夜间无人值守**的那条路，它补的是「调度器自己知道的」缺档；缺口/补填是**用户看得见、点得到**的那条路。
-
-#### 缺口可见（严格谓词，只读）
-
-缺口 = 「该板块当天**有候选内容**、但没有 `(board, period_date)` 报告」的格子。判定谓词与日报生成 Step1（`service.collectBoardTags`）**逐条一致**：`topic_tags.status='active'` 且 `category='event'`、该板块挂载 `NOT direction_mismatch`、跨板排他 `NOT EXISTS`（别的板块有强 ≥ 本板块 `score + semantic_board_report_exclusive_gap` 的挂载时本板块不收）。
-
-**为什么不能用宽松口径**：现成的 `CollectBoardIDsForDate` 不看 `direction_mismatch`、也不看排他分差，会把「生成时必然被剔的板块」也算成缺口——补填反复跑空，每次烧一整条 LLM 流水线的钱。故缺口 SQL 复制严格谓词（`repository/daily_report_backfill.go` 的 `crossBoardExclusivePredicate` 与生成侧逐字一致），排他分差从同一个 `ai_settings` 键（`semantic_board_report_exclusive_gap`）读，两侧口径不会漂移。
-
-窗口 = `[今天 - min(days, tag_edge_retention_days), 今天 - 1]`（默认 7 天，**不含今天**——今天由当日生成与当日状态行负责）。`days` **只收窄不收宽**。已有报告的格子不算缺口。查询**纯读**：不写库、不触发生成。
-
-响应给窗口边界、**平铺**的缺口格子（每格 = 报告日 + 板块 id + 板块名称；按日分组由消费方自己做）、缺口总天数 / 总篇数，以及**最近一次补填运行摘要**（终态、已补篇数、结束时间；无运行记录时该字段缺省）——摘要与留档表同源（见下文留档）。
-
-#### 异步补填（只补空、旧到新、幂等、预算、闸门）
-
-补填是**服务端后台运行**，不是前端循环调 `POST /generate`：
-
-```
-POST /api/daily-reports/backfill-gaps
-  → 三条前置先判后跑：窗口守卫(400) → 双队列门槛(409) → 日报生成闸(409)
-  → 受理即返 {job_id, run_id, status:"processing"}，HTTP 不等补齐
-  → 后台 goroutine：扫缺口 → 建留档行(running) → 逐格补 → 收尾(终态) → 一条终态通知 + 一条 WS 终态
-```
-
-- **只补空**：已存在报告的格子一律跳过，绝不重建/覆盖（重建会删 section/thread，页边注与人工锚定全部错位；重建只由用户显式发起，见约束 1）。扫描与执行之间可能已有报告落地（并发生成 / 上一轮补齐），故**执行前再查一次**存在性（`ReportExistsForBoardDate`），绝不覆盖既有报告。
-- **旧到新**：按报告日升序处理（同日按 `board_id` 升序），保证 `prev_report_id` 链成立——补出的 11-20 报告的 `prev_report_id` 指向本次补出的 11-19 报告。
-- **幂等**：中断后重新触发只补仍缺的格子，已补出的不重建。
-- **预算**：整轮 **60 分钟**（`ai_settings.daily_report_backfill_budget_minutes`，缺省 60）。耗尽即**停止启动新的生成**（不打断在途的那一格），已完成保留，剩余缺口写进留档并记终态 `budget_exhausted`——顺延不丢，再次触发即续跑。后台 goroutine 另有 2 小时硬超时兜底（预算之外也别永远挂着）。
-- **双队列门槛**：补填前 `tag_jobs`（pending+leased）与 `embedding_queues`（pending+processing）**均**必须清空，否则拒绝（候选不全，补了也是空跑）；计数不可得按「未知」处理，**不当作已排空**。
-- **闸门**：与定时任务 / 手动生成**共用同一把日报生成闸**（约束 26），整轮持有、结束（含 panic 展开）时释放。闸内不可能有并发的日报生成在写同一格——这正是「只补空」的并发兜底。
-- **单格失败不阻断兄弟格**：失败只记 `failed` 不中断本轮其余格子。
-
-**三条前置的判定顺序固定**：窗口 → 双队列 → 闸门。窗口先判是为了让「超窗日期」这种确定性错误不占用闸；队列在闸之前是因为「队列没排空就补」是白烧钱的确定性浪费（闸是最贵的资源，留给真正能跑的请求）。三条前置的 `reason` 枚举见 [`api/daily-reports.md`](../api/daily-reports.md) §POST `/daily-reports/backfill-gaps`。
-
-**终态四态**：`success`（全补齐）/ `partial`（部分失败）/ `failed`（全部失败）/ `budget_exhausted`（预算耗尽，已完成的保留）。单格「生成成功但当日无内容」计入 `remaining`（该格仍无报告），不计入 `failed`。
-
-#### 留档与通知（每次运行一条，成功也发）
-
-- **留档**：每次运行持久化一条 `daily_report_backfill_runs` 行——窗口、逐日明细 jsonb（`[{date,filled,failed,remaining}]`，空写 `[]` 不写 `null`）、终态四态、开始/结束时间、补出篇数 / 失败格数 / 未完成缺口数。行在**第一个格子生成之前**建（`status='running'`），所以中途崩溃的运行也看得见；收尾按 `run_id` 原地 UPDATE（幂等，不新建行）。表结构见 [`database/tables/daily-report-watch.md`](../database/tables/daily-report-watch.md) §9.15。
-- **通知**：每次运行**恰好一条**终态通知，**成功也发**（`success` → success 类，`partial` / `failed` / `budget_exhausted` → error 类；文案含补出篇数 / 失败数 / 剩余缺口数 / 窗口范围）。零缺口不产生通知。补填终态与每日生成终态是**两次独立运行**，互不覆盖、互不抑制（通知白名单见 openspec capability `notification-center`；入口 `platform/notification.DailyReportBackfillTerminal`，API 契约见 [`api/tag-ops.md`](../api/tag-ops.md) 通知端点）。
-- **不触发体检（刻意取舍）**：手动补填结束后**不**调版块体检——一次补填可能跨多板，逐板体检会把 LLM 成本乘上一个数量级；体检由每日主轮的尾步（以及调度器补档后的那一轮）负责。补出来的日报仍是体检依据（下一次体检读得到），只是不在补填当刻重算。这条口径与「补出日报 → 体检跟上」的通用约定**并列存在**，不是遗漏（review R-5）。
-
-#### 口径边界（补档不等于当天重放）
-
-补出的历史日报与「那天按时生成」的日报**不完全等价**，差异点如实标注：
-
-- 补档用**当前**的 topic 质心（`board_persistent_topics.centroid` 此刻的值）与**当前**的 `topic_status_at_report` 快照状态（此刻的话题状态）——**不回溯历史**（回溯需要质心历史表，属另一 change）。故补出的历史报告的「话题锚定紧实度」与「话题归属状态」按补填时刻的口径算，与当天生成时的数值可能不同。
-- 已经修正的是**按日期取数**的那一维：注入聚类 prompt 的「话题近期内容上下文」（`ListTopicRecentBriefs`）窗口与同日排除改为相对**报告日**计算（原先用执行时刻 `time.Now()`，补历史日会把「未来」章节注入 prompt）。这与既有约束「补档产物与当天生成等价」对齐。
-- 预算 / 队列 / 闸门均为**当轮运行态**，不随历史日期回溯。
-
-### 后端：泳道态势结算（lane-snapshot，日报尾部异步）
-
-`GenerateAndSaveReport` 成功后（EvaluateWatchHits 之后）起 detached goroutine 逐板块结算（overview-lane-dynamics 起；slim-lane-snapshot-trend 起产物为**单版演进叙事态势句**，长短两版与 JSON 解析降级链已废）：为该板块活跃泳道（active，按 `last_seen_date` 降序 clamp 20，超出记日志）串行重算「滚动 14 天态势」——素材=该泳道近 14 个报告日（窗口锚定 `MAX(period_date)`，非 now()）的「日期｜节标题｜前3条 thread 标题」+ **量级信号段**（repository `ListDailyThreadCounts` 按日聚合的每日线索量与近7/上7合计，缺日明示「无报告」不计入趋势，零 AI 成本、不信模型数数），**单次** LLM 调用（operation=`daily_report.lane_snapshot`，maxTokens 500）产出 150-200 字纯文本单版态势句：按「阶段划分（带大致日期锚）→每阶段驱动/转折（事件仅作转折标记，不展开）→当前落点与局势判断→量级佐证」演进叙事组织，禁止逐日罗列、禁止预测未来走向、禁止编造清单与量级信号之外的数字（事件明细职责归 14 天档逐日事件展开）。解析=trim→空/纯空白按该泳道结算失败跳过（快照保旧值，下个日报日自愈）→200 rune 安全截断，无 JSON/降级分支。产物 upsert 进 `topic_lane_snapshots`（每泳道一行，`rolling_summary` + `rolling_detail`（固定写空串；存量历史长版随覆盖自愈、不回填）+ `as_of_date`=最新报告期）。松耦合红线：单泳道 60s timeout、panic/失败全吞只记日志、绝不影响日报主流程；同日重跑日报覆盖重建后再结算（幂等）。窗口口径与「板块内容」tab 泳道动态视图的时间线同窗（详见 `flow/semantic-board.md` §泳道动态）。消费方：板块内容卡片、console 泳道演进带（存量 `rolling_detail` 透出至该泳道下个日报日自愈，新结算后自然退化为 summary 全文）与日报阅读视图泳道展开体顶部「泳道趋势」区（14 天单版态势句/月/年三档，月/年复用 `GET /persistent-topics/:id/enrichment/contexts?granularity=month|year`，见 `flow/data-enrichment.md`）；趋势区只读 `rolling_summary`。
-
-### 后端：话题关键事件注记（key-event markers，add-topic-key-event-markers）
-
-`GenerateAndSaveReport` 尾部（`spawnLaneSnapshotSettlement` 之后）异步起推荐任务（每版块 `TryLock` 互斥、90s timeout、失败/panic 全吞不阻塞日报终态通知）：候选=当日 section 的 threads（≤40，按来源指纹 SHA-256(board|topic|上海日期|空白归一标题|排序去重 tag+article ID) 精确去重），prompt 三块素材（候选列表 / 泳道 14 天指纹 `ListLaneSnapshotMaterial` / 已处理历史 ≤20）clamp 12000 runes，单次 LLM 调用（operation=`daily_report.key_event_recommend`）产出候选子集+理由+证据，服务端校验（候选 ID 合法、理由非空、证据 ⊆ 线索文章）后**只写 `suggested` 行**（`SaveSuggestedMarkers`，幂等刷新未处理建议；`key_event_recommendation_runs` 记任务状态与 generation_token——重建换 token，迟到批次整批丢弃）。人工动作三端点（读写契约见 `api/daily-reports.md` §关键事件注记）：thread 寻址 PUT（确认/不采纳/手标，服务端反解来源快照，客户端不可伪造内容）、注记寻址 PATCH（取消/失效快照维护）、话题读端 GET（仅 confirmed 回看）。重建重跑时 `ReAttachKeyEventMarkers`（挂 `SaveReport` 事务内）按指纹重挂来源指针，失配即断开为独立失效快照（FK SET NULL 保确认行，不伪造 section/关系）。
-
-### 后端：事件线归属与跨期去重（story attribution & cross-period dedup，add-event-story-heat）
+##### 事件线归属与跨期去重
 
 > ⚠️ **本节描述的事件线链路已硬停写**（change `retire-story-adopt-event-metrics`，2026-11-11；review R-1 删开关）：日报链不再产生 `board_stories` / `story_signals` / `story_id`，跨期去重同步退役；下方文字保留为历史口径与回滚依据，现行「今日重点」候选源见红线 46-47（当天同事件聚簇）。
 
@@ -248,7 +184,7 @@ POST /api/daily-reports/backfill-gaps
 
 **存量回填与标定**：`cmd/backfill-stories`（`--board/--from/--to/--dry-run`）按版块 × 日期升序对 `story_id IS NULL` 的非 composite 事件执行归属判定，幂等可重跑（已有 story_id 跳过、版块级 advisory lock、`story_manual` 不覆盖）；失败事件保持 `story_id=NULL`，读取路径按「每个非综合稿事件记 1 条独立事件线、参与者按 feed 去重」保守降级并标注「事件身份未回填」。`cmd/calibrate-heat`（`--days/--board`）只读打印 lane_heat 分布样本供雷达阈值标定，不迁移不写库。
 
-### 后端：今日重点的选题与热度（story highlights，retire-story-adopt-event-metrics + widen-highlight-cluster-candidates）
+##### 今日重点的选题与热度（story highlights）
 
 > ⚠️ **历史口径备注**：本节曾描述「事件线热度候选 + 进展徽标」（`surface-story-heat-in-report-top`，已随 change `retire-story-adopt-event-metrics` 退役，`is_progress` 不再产生）；`widen-highlight-cluster-candidates`（2026-11-15）重写本节为现行聚簇口径，并放宽候选入口（见下）。
 
@@ -274,18 +210,28 @@ POST /api/daily-reports/backfill-gaps
 - **兼容**：旧报告 highlights 不回填、不重算（旧聚簇口径或标签回退产物原样返回，缺字段 `omitempty` 不以 0 冒充）；该日报被重建时按新口径重算重点（预期内行为）。重建窗口守卫（约束 20）不变。
 - **派生关系（消费方须知，2026-11-19 补）**：`FinalizeReportHighlights` 写库时同时写 `highlights` / `title` / `summary`，其中 **`title = highlights[0].Title`、`summary = highlights[0].Reason`**（`backend-go/internal/topicgraph/repository/report_story_highlights.go:78-81`）——**日报标题与摘要就是首条重点的标题与点评**。任何消费方 MUST NOT 把 `title` / `summary` 与 `highlights` 并排展示（会重复渲染同一条）。版块态势页右轨「当日日报」块据此只展示 `highlights`（2–3 条），不另列日报标题（见 `flow/semantic-board.md` §版块态势页左右轨）。
 
-### 编排 / 修正工作面的候选读取（unify-lane-workbench，365 窗口 + 轻量档）
+#### 决策记录
 
-泳道编排（新建）与泳道修正（编辑）两个工作面共用 `GET /api/semantic-boards/:id/persistent-topics/compose-candidates`（字段与错误码见 [api/semantic-boards.md](../api/semantic-boards.md) §持久话题手动编排）：
+**`日报生成管线`**
 
-- **窗口上限 365 天**（`repository.ComposeWindowMaxDays`，OQ-2 2026-11-16 用户裁决，此前 90）：`days` 超 365 钳位到 365；自选 `from`/`to` 超 365 天或 `from` 早于「最新 completed 日报 − 364 天」直接 400 报错，**不静默截断**；前端 `useLaneCompose.ts:validateCustomRange` 委托共享纯函数 `validateWorkbenchRange` 保持同一口径（366 拒 / 365 过）。
-- **曲线走轻量取数**（`omit_embeddings=1`）：曲线只需要 `period_date + persistent_topic_id + clue_count`，每条 section 向量实占 10,244 B。实测（版块 15220，`days=365`）`25,772,225 B / 1.45 s` → `553,570 B / 0.55 s`（压缩 46.8 倍）。两条曲线各自取数、不混用：
-  - **编辑曲线 = 本泳道逐日线索数**：走 `GET /semantic-boards/:id/lane-dynamics?days=365`，按目标 topicId 取该泳道 `clue_count`（板级总和不算）；
-  - **新增曲线 = 全部可选线索数**：`compose-candidates?days=365&omit_embeddings=1` 后在前端按 `period_date` 聚合非 active / 无归属 section 的 `section.clue_count`（含无归属节点、不扣草稿已选），未知传播见 `candidatePoolDayTotals`；**MUST NOT** 用 lane-dynamics 非 active 泳道之和冒充（会漏无归属节点）。
-- **线索数口径**：`clue_count` = 该 section 非综合稿（非 composite）thread 数，0 必返回（已知 0 ≠ 未知）；缺字段 / null / 非法数 → 前端未知，不补 0（红线 28 同口径）。
-- **更早成员入质心**：修正模式带 `all_members_topic_id` 时响应含 `early_members[]`（带 `embedding`），与窗口内成员一起撑起推荐质心；API 归一层必须透传该向量，否则窗口内成员为 0 时候选区全空。
+> **Step5.5 泳道内主题分桶（intra-lane theme bucketing，add-intra-lane-theme-bucketing）**：域型泳道（把「话题当泳道用」的板块）会把当天全部线索塞进一条 section（实测板块 3030 一条 section 18 tags / 17 threads 平铺），根因是 section 的产生单位被写死成「话题 × 天」。分桶在**单个聚类内部**、thread 生成之后、section embedding 之前插入：**触发阈值**为 `threads ≥ daily_report_intra_bucket_min_threads`（默认 6）**或** `tags ≥ daily_report_intra_bucket_min_tags`（默认 10），总开关 `daily_report_intra_bucket_enabled` 默认开（叙事型泳道单条 ≤5 tags 永不触发）；**组数**由代码算 `k = clamp(round(线索数/2.5), 2, 6)`；**两阶段**（温度 0）——phase 1（operation `daily_report.bucket_theme_names`）只给 k 个方向名（≤12 字）+ 每组当日章节标题，组数多于 k 时确定性合并最小两组、少于 k 按实际组数；phase 2（operation `daily_report.bucket_assign`）方向名固定、只做逐条归属，禁止增删改名合并拆分；**确定性校验**（不信任模型自觉）——未覆盖线索并入最小 group、重复保留首处、单例组合并、空组丢弃、修复后仍 1 组则回退单 section；任一阶段失败只为 warn 并保持单 section（日报不失败）。**产出**：每条桶一条 section，共享来源聚类的 `cluster_index`，`bucket_index` 0..k-1、`bucket_title` 为方向名、`cluster_label` 为该桶当日章节标题（缺失时兜底链按**桶内**线索：首条 thread 标题 → 泳道 label，不借用其他桶内容）、`cluster_tag_ids` 为桶内 thread 的 tag 并集、embedding 用**该桶自己的 tag 集**计算；兄弟 section 继承 `lane_tier`/`persistent_topic_id`/`topic_match_confidence`，各自计算 `topic_match_distance`。同日合并按 `cluster_index` 相同即拒绝（防止被粘回一条），开关默认仍关。**重新分桶** `POST /api/daily-reports/:id/rebucket`：对 `(report_id, cluster_index)` 组重跑两阶段并整组替换 section 行，thread 只迁移 `section_id` 不删除（关键事件注记按 thread 重派生、watch 命中/页边注跟随重派生、关系双向重建），与 `SaveReport` 共用同键 `(board, date)` 事务级 advisory lock 串行化；报告非 `completed` 409、`watch_*` 物化组 400、未达阈值/拆不动 200 + `buckets=1` 且不写库。
 
-### 前端：日报阅读台（rework-workshop-into-radar-and-desk）
+**`事件线归属与跨期去重`**
+
+> 来源 change：`add-event-story-heat`
+
+**`今日重点的选题与热度（story highlights）`**
+
+> 来源 change：`retire-story-adopt-event-metrics`、`widen-highlight-cluster-candidates`
+
+
+### 二、对外契约与阅读
+
+> spec: `daily-report-interface`
+
+#### 当前规则
+
+##### 日报阅读台
 
 日报阅读台是独立路由 `/tags/:boardId/:date`，不再依赖旧 `TagsPage` 的 tab/浮层（该宿主已随 rework-workshop-into-radar-and-desk 8.4 物理删除；旧入口 `?report=&annotation=` 在 L0 反查日期后 replace 到本路由）：
 
@@ -311,7 +257,7 @@ pages/tags/[boardId]/[date].vue
 
 **事件线深链定位（surface-story-events-in-radar）**：雷达右栏的事件线条目带落点报告日期，点击跳 `/tags/{boardId}/{reportDate}?story={storyId}`。阅读台壳 `DailyReportDeskShell.vue` 解析 `?story=`（非数字 / 0 / 负数的非法值忽略，不报错阻断阅读），详情就绪后按**本期正文 DOM 顺序**定位该事件线的第一条 thread（展开 → 滚动 → 聚焦 → 高亮 2s），复用刊头「今日重点」的同一定位路径。**本期正文没有该事件线时不滚动、不跳近似位置**，只提示「本期正文暂无对应事件」；翻页 / 切版块时该参数不被续传，不在别的报告重复定位。无正文落点的事件线不渲染为可点条目（由响应 `report_date` 为空表达）。雷达侧的事件线条目单位、事件线级升温与「今日新起」口径属雷达域，见 [`semantic-board.md`](semantic-board.md) 约束 29/30。
 
-### 前端：线索相关推荐（thread-relations，replace-lane-lifeline-with-topic-events）
+##### 线索相关推荐
 
 日报 active 话题卡片里，**每条当日线索下方**渲染一行「相关线索」chip（整宽一行，位于 `.drm-thread-row` 之后、文章列表之前）：
 
@@ -326,7 +272,7 @@ pages/tags/[boardId]/[date].vue
 
 > 为什么不用事件标签：实测「事件标签 id 交集」有候选的线索仅 **1.6%**（标签 id 不跨天复用 + 7 天孤儿清理硬删）；「事件标签向量」的 top-3 与 thread 向量 **零重叠**、候选池只有 19%。选型实测见 change `design.md` D3。
 
-### 前端：话题盯盘（topic-watch / watch-hits）
+##### 话题盯盘
 
 用户可在版块上创建用户声明的 watch（`board_topic_watches`，与持久话题独立）；命中写 `topic_watch_hits`。创建/管理唯一入口在 L1 版块态势页右轨「话题追踪」块（`console/BoardContextRail.vue` 的「管理 ↗」→ `topic-watch/WatchManagePanel.vue`，作用域仍只有 `boardId`）。旧版块工作台 `TagsPage.vue` 的 tab 栏「我在追踪 (N)」chip 与日报时间线的 tag 预告已随 rework-workshop-into-radar-and-desk 8.4 删除；日报**列表接口仍批量回填 `active_watch_summaries`**（去重、仅 active），但当前无 UI 消费方；日报详情不再有独立 WatchBar，而在「关心的话题」之前以「追踪关键字」「追踪话题」全宽分区提供可定位索引：
 
@@ -345,7 +291,7 @@ CRUD：POST/GET /api/semantic-boards/:id/topic-watches、PATCH/DELETE /api/topic
 
 **不变量**：watch 评估是**只读覆盖层**——失败被吞掉仅记日志，**不改**任何 section 的 `persistent_topic_id`、不动 topic 的 `consecutive_hits`（`daily_report_watch.go` 注释明示 SHALL NOT）。
 
-### 前端：Section 可视化与三套匹配血缘
+##### Section 可视化与三套匹配血缘
 
 日报 section 在阅读台渲染（`features/tags/components/daily-report/`，由 `DailyReportReader.vue` 组装；旧 `TagsPage.vue` 宿主已删）。System 1/2 在**卡片头部**并列两枚独立维度的点，System 3 在 **thread 行**做降级——三者展示面互补，分数文字一律进 hover/展开探究区（保沉浸阅读）：
 
@@ -358,6 +304,122 @@ CRUD：POST/GET /api/semantic-boards/:id/topic-watches、PATCH/DELETE /api/topic
 - **System 3（thread↔section，thread 行级降级）**：离群 thread（`fit_distance` > 阈值）行套 `drm-thread--demoted`（灰 token + 默认折叠 + `mdi:alert-circle-outline` 离群标记，无数字）；section 底部出提示行「另有 N 条可能跑题的线索」。thread 展开/探究行展示 `fit_distance.toFixed(2)` + `threadFitLabel` 中文标签（贴合 / 可能跑题 / 无贴合信号）。阈值标定：`utils/threadFit.ts` 单阈值 `THREAD_FIT_DEMOTE_THRESHOLD = 0.28`（2026-06-26 现网 86 thread 标定：候选 0.20 会误降级 35%，0.28 仅降级 8% 抓真跑题，见 `thread-fit-observability` design D3）。无 `fit_distance` 的历史 thread 按正常渲染（有信号才触发降级）。
 - **展示分层哲学**：正文极轻（仅形态/色彩/降级，无任何数字），分数文字只进 hover/展开探究区——保沉浸阅读。System 1/2 在 section 头部并列（tier 点 + 锚定点），System 3 在 thread 行降级，探究区分区（System 2 锚定行在上、System 1 per-tag 明细在下、System 3 thread 行内探究）。
 - 历史 section（缺 `quality_breakdown` 或锚定字段）/ 历史 thread（无 `fit_distance`）统一降级为正常展示，不报错。后端接口已 SELECT 锚定与贴合度字段，纯前端消费。
+
+#### 决策记录
+
+**`日报阅读台`**
+
+> 来源 change：`rework-workshop-into-radar-and-desk`
+
+**`线索相关推荐`**
+
+> 来源 change：`replace-lane-lifeline-with-topic-events`
+
+
+### 三、运维与补档
+
+> spec: `daily-report-ops`
+
+#### 当前规则
+
+##### 日报运维 backfill 端点
+
+除每日自动生成外，日报域提供三个手动回填端点（`topicgraph/handler/daily_report_handler.go:59-67`），用于修正历史数据 / 重建派生结果，均为 POST 异步触发：
+
+```text
+POST /api/daily-reports/backfill-embeddings   重建 section embedding（按 cluster_label）+ 重新匹配
+POST /api/daily-reports/backfill-relations    重建关系双轨（相似度 + 身份）连线
+POST /api/daily-reports/backfill-topics       重建持久话题
+```
+
+可按 board 限定（body 传 `board_id`）或全量回填，与自动生成一样走 topicgraph service、幂等重建。
+
+> **自动补档（offline-catchup）**：手动 backfill 之外，`DailyReportJob` 每晚生成完当天报告后会自动补齐保留窗口内的缺档日期（tag 队列空为前置、窗口内逐日只补缺、队列未清顺延次日；超窗日期拒绝重建，见业务约束 19/20）——停机错过的日期无需人工逐日重建。成功裁决后另有**版块体检尾步**（add-board-health-checkup：同步 RunCheckup 纯读统计+LLM 评分落快照，error/panic 不污染日报 job，链路见 [semantic-board.md](semantic-board.md) §版块体检）。
+
+##### 缺口与补填（gap backfill）
+
+日报域多了一对端点，把「看不见的空洞」搬到台面上：`GET /api/daily-reports/gaps`（只读缺口清单）+ `POST /api/daily-reports/backfill-gaps`（异步补填）。自动补档（上一节 offline-catchup）是**夜间无人值守**的那条路，它补的是「调度器自己知道的」缺档；缺口/补填是**用户看得见、点得到**的那条路。
+
+###### 缺口可见（严格谓词，只读）
+
+缺口 = 「该板块当天**有候选内容**、但没有 `(board, period_date)` 报告」的格子。判定谓词与日报生成 Step1（`service.collectBoardTags`）**逐条一致**：`topic_tags.status='active'` 且 `category='event'`、该板块挂载 `NOT direction_mismatch`、跨板排他 `NOT EXISTS`（别的板块有强 ≥ 本板块 `score + semantic_board_report_exclusive_gap` 的挂载时本板块不收）。
+
+**为什么不能用宽松口径**：现成的 `CollectBoardIDsForDate` 不看 `direction_mismatch`、也不看排他分差，会把「生成时必然被剔的板块」也算成缺口——补填反复跑空，每次烧一整条 LLM 流水线的钱。故缺口 SQL 复制严格谓词（`repository/daily_report_backfill.go` 的 `crossBoardExclusivePredicate` 与生成侧逐字一致），排他分差从同一个 `ai_settings` 键（`semantic_board_report_exclusive_gap`）读，两侧口径不会漂移。
+
+窗口 = `[今天 - min(days, tag_edge_retention_days), 今天 - 1]`（默认 7 天，**不含今天**——今天由当日生成与当日状态行负责）。`days` **只收窄不收宽**。已有报告的格子不算缺口。查询**纯读**：不写库、不触发生成。
+
+响应给窗口边界、**平铺**的缺口格子（每格 = 报告日 + 板块 id + 板块名称；按日分组由消费方自己做）、缺口总天数 / 总篇数，以及**最近一次补填运行摘要**（终态、已补篇数、结束时间；无运行记录时该字段缺省）——摘要与留档表同源（见下文留档）。
+
+###### 异步补填（只补空、旧到新、幂等、预算、闸门）
+
+补填是**服务端后台运行**，不是前端循环调 `POST /generate`：
+
+```
+POST /api/daily-reports/backfill-gaps
+  → 三条前置先判后跑：窗口守卫(400) → 双队列门槛(409) → 日报生成闸(409)
+  → 受理即返 {job_id, run_id, status:"processing"}，HTTP 不等补齐
+  → 后台 goroutine：扫缺口 → 建留档行(running) → 逐格补 → 收尾(终态) → 一条终态通知 + 一条 WS 终态
+```
+
+- **只补空**：已存在报告的格子一律跳过，绝不重建/覆盖（重建会删 section/thread，页边注与人工锚定全部错位；重建只由用户显式发起，见约束 1）。扫描与执行之间可能已有报告落地（并发生成 / 上一轮补齐），故**执行前再查一次**存在性（`ReportExistsForBoardDate`），绝不覆盖既有报告。
+- **旧到新**：按报告日升序处理（同日按 `board_id` 升序），保证 `prev_report_id` 链成立——补出的 11-20 报告的 `prev_report_id` 指向本次补出的 11-19 报告。
+- **幂等**：中断后重新触发只补仍缺的格子，已补出的不重建。
+- **预算**：整轮 **60 分钟**（`ai_settings.daily_report_backfill_budget_minutes`，缺省 60）。耗尽即**停止启动新的生成**（不打断在途的那一格），已完成保留，剩余缺口写进留档并记终态 `budget_exhausted`——顺延不丢，再次触发即续跑。后台 goroutine 另有 2 小时硬超时兜底（预算之外也别永远挂着）。
+- **双队列门槛**：补填前 `tag_jobs`（pending+leased）与 `embedding_queues`（pending+processing）**均**必须清空，否则拒绝（候选不全，补了也是空跑）；计数不可得按「未知」处理，**不当作已排空**。
+- **闸门**：与定时任务 / 手动生成**共用同一把日报生成闸**（约束 26），整轮持有、结束（含 panic 展开）时释放。闸内不可能有并发的日报生成在写同一格——这正是「只补空」的并发兜底。
+- **单格失败不阻断兄弟格**：失败只记 `failed` 不中断本轮其余格子。
+
+**三条前置的判定顺序固定**：窗口 → 双队列 → 闸门。窗口先判是为了让「超窗日期」这种确定性错误不占用闸；队列在闸之前是因为「队列没排空就补」是白烧钱的确定性浪费（闸是最贵的资源，留给真正能跑的请求）。三条前置的 `reason` 枚举见 [`api/daily-reports.md`](../api/daily-reports.md) §POST `/daily-reports/backfill-gaps`。
+
+**终态四态**：`success`（全补齐）/ `partial`（部分失败）/ `failed`（全部失败）/ `budget_exhausted`（预算耗尽，已完成的保留）。单格「生成成功但当日无内容」计入 `remaining`（该格仍无报告），不计入 `failed`。
+
+###### 留档与通知（每次运行一条，成功也发）
+
+- **留档**：每次运行持久化一条 `daily_report_backfill_runs` 行——窗口、逐日明细 jsonb（`[{date,filled,failed,remaining}]`，空写 `[]` 不写 `null`）、终态四态、开始/结束时间、补出篇数 / 失败格数 / 未完成缺口数。行在**第一个格子生成之前**建（`status='running'`），所以中途崩溃的运行也看得见；收尾按 `run_id` 原地 UPDATE（幂等，不新建行）。表结构见 [`database/tables/daily-report-watch.md`](../database/tables/daily-report-watch.md) §9.15。
+- **通知**：每次运行**恰好一条**终态通知，**成功也发**（`success` → success 类，`partial` / `failed` / `budget_exhausted` → error 类；文案含补出篇数 / 失败数 / 剩余缺口数 / 窗口范围）。零缺口不产生通知。补填终态与每日生成终态是**两次独立运行**，互不覆盖、互不抑制（通知白名单见 openspec capability `notification-center`；入口 `platform/notification.DailyReportBackfillTerminal`，API 契约见 [`api/tag-ops.md`](../api/tag-ops.md) 通知端点）。
+- **不触发体检（刻意取舍）**：手动补填结束后**不**调版块体检——一次补填可能跨多板，逐板体检会把 LLM 成本乘上一个数量级；体检由每日主轮的尾步（以及调度器补档后的那一轮）负责。补出来的日报仍是体检依据（下一次体检读得到），只是不在补填当刻重算。这条口径与「补出日报 → 体检跟上」的通用约定**并列存在**，不是遗漏（review R-5）。
+
+###### 口径边界（补档不等于当天重放）
+
+补出的历史日报与「那天按时生成」的日报**不完全等价**，差异点如实标注：
+
+- 补档用**当前**的 topic 质心（`board_persistent_topics.centroid` 此刻的值）与**当前**的 `topic_status_at_report` 快照状态（此刻的话题状态）——**不回溯历史**（回溯需要质心历史表，属另一 change）。故补出的历史报告的「话题锚定紧实度」与「话题归属状态」按补填时刻的口径算，与当天生成时的数值可能不同。
+- 已经修正的是**按日期取数**的那一维：注入聚类 prompt 的「话题近期内容上下文」（`ListTopicRecentBriefs`）窗口与同日排除改为相对**报告日**计算（原先用执行时刻 `time.Now()`，补历史日会把「未来」章节注入 prompt）。这与既有约束「补档产物与当天生成等价」对齐。
+- 预算 / 队列 / 闸门均为**当轮运行态**，不随历史日期回溯。
+
+##### 泳道态势结算（lane-snapshot）
+
+`GenerateAndSaveReport` 成功后（EvaluateWatchHits 之后）起 detached goroutine 逐板块结算（overview-lane-dynamics 起；slim-lane-snapshot-trend 起产物为**单版演进叙事态势句**，长短两版与 JSON 解析降级链已废）：为该板块活跃泳道（active，按 `last_seen_date` 降序 clamp 20，超出记日志）串行重算「滚动 14 天态势」——素材=该泳道近 14 个报告日（窗口锚定 `MAX(period_date)`，非 now()）的「日期｜节标题｜前3条 thread 标题」+ **量级信号段**（repository `ListDailyThreadCounts` 按日聚合的每日线索量与近7/上7合计，缺日明示「无报告」不计入趋势，零 AI 成本、不信模型数数），**单次** LLM 调用（operation=`daily_report.lane_snapshot`，maxTokens 500）产出 150-200 字纯文本单版态势句：按「阶段划分（带大致日期锚）→每阶段驱动/转折（事件仅作转折标记，不展开）→当前落点与局势判断→量级佐证」演进叙事组织，禁止逐日罗列、禁止预测未来走向、禁止编造清单与量级信号之外的数字（事件明细职责归 14 天档逐日事件展开）。解析=trim→空/纯空白按该泳道结算失败跳过（快照保旧值，下个日报日自愈）→200 rune 安全截断，无 JSON/降级分支。产物 upsert 进 `topic_lane_snapshots`（每泳道一行，`rolling_summary` + `rolling_detail`（固定写空串；存量历史长版随覆盖自愈、不回填）+ `as_of_date`=最新报告期）。松耦合红线：单泳道 60s timeout、panic/失败全吞只记日志、绝不影响日报主流程；同日重跑日报覆盖重建后再结算（幂等）。窗口口径与「板块内容」tab 泳道动态视图的时间线同窗（详见 `flow/semantic-board.md` §泳道动态）。消费方：板块内容卡片、console 泳道演进带（存量 `rolling_detail` 透出至该泳道下个日报日自愈，新结算后自然退化为 summary 全文）与日报阅读视图泳道展开体顶部「泳道趋势」区（14 天单版态势句/月/年三档，月/年复用 `GET /persistent-topics/:id/enrichment/contexts?granularity=month|year`，见 `flow/data-enrichment.md`）；趋势区只读 `rolling_summary`。
+
+##### 话题关键事件注记（key-event markers）
+
+`GenerateAndSaveReport` 尾部（`spawnLaneSnapshotSettlement` 之后）异步起推荐任务（每版块 `TryLock` 互斥、90s timeout、失败/panic 全吞不阻塞日报终态通知）：候选=当日 section 的 threads（≤40，按来源指纹 SHA-256(board|topic|上海日期|空白归一标题|排序去重 tag+article ID) 精确去重），prompt 三块素材（候选列表 / 泳道 14 天指纹 `ListLaneSnapshotMaterial` / 已处理历史 ≤20）clamp 12000 runes，单次 LLM 调用（operation=`daily_report.key_event_recommend`）产出候选子集+理由+证据，服务端校验（候选 ID 合法、理由非空、证据 ⊆ 线索文章）后**只写 `suggested` 行**（`SaveSuggestedMarkers`，幂等刷新未处理建议；`key_event_recommendation_runs` 记任务状态与 generation_token——重建换 token，迟到批次整批丢弃）。人工动作三端点（读写契约见 `api/daily-reports.md` §关键事件注记）：thread 寻址 PUT（确认/不采纳/手标，服务端反解来源快照，客户端不可伪造内容）、注记寻址 PATCH（取消/失效快照维护）、话题读端 GET（仅 confirmed 回看）。重建重跑时 `ReAttachKeyEventMarkers`（挂 `SaveReport` 事务内）按指纹重挂来源指针，失配即断开为独立失效快照（FK SET NULL 保确认行，不伪造 section/关系）。
+
+##### 编排 / 修正工作面的候选读取
+
+泳道编排（新建）与泳道修正（编辑）两个工作面共用 `GET /api/semantic-boards/:id/persistent-topics/compose-candidates`（字段与错误码见 [api/semantic-boards.md](../api/semantic-boards.md) §持久话题手动编排）：
+
+- **窗口上限 365 天**（`repository.ComposeWindowMaxDays`，OQ-2 2026-11-16 用户裁决，此前 90）：`days` 超 365 钳位到 365；自选 `from`/`to` 超 365 天或 `from` 早于「最新 completed 日报 − 364 天」直接 400 报错，**不静默截断**；前端 `useLaneCompose.ts:validateCustomRange` 委托共享纯函数 `validateWorkbenchRange` 保持同一口径（366 拒 / 365 过）。
+- **曲线走轻量取数**（`omit_embeddings=1`）：曲线只需要 `period_date + persistent_topic_id + clue_count`，每条 section 向量实占 10,244 B。实测（版块 15220，`days=365`）`25,772,225 B / 1.45 s` → `553,570 B / 0.55 s`（压缩 46.8 倍）。两条曲线各自取数、不混用：
+  - **编辑曲线 = 本泳道逐日线索数**：走 `GET /semantic-boards/:id/lane-dynamics?days=365`，按目标 topicId 取该泳道 `clue_count`（板级总和不算）；
+  - **新增曲线 = 全部可选线索数**：`compose-candidates?days=365&omit_embeddings=1` 后在前端按 `period_date` 聚合非 active / 无归属 section 的 `section.clue_count`（含无归属节点、不扣草稿已选），未知传播见 `candidatePoolDayTotals`；**MUST NOT** 用 lane-dynamics 非 active 泳道之和冒充（会漏无归属节点）。
+- **线索数口径**：`clue_count` = 该 section 非综合稿（非 composite）thread 数，0 必返回（已知 0 ≠ 未知）；缺字段 / null / 非法数 → 前端未知，不补 0（红线 28 同口径）。
+- **更早成员入质心**：修正模式带 `all_members_topic_id` 时响应含 `early_members[]`（带 `embedding`），与窗口内成员一起撑起推荐质心；API 归一层必须透传该向量，否则窗口内成员为 0 时候选区全空。
+
+#### 决策记录
+
+**`缺口与补填（gap backfill）`**
+
+> 来源 change：`add-daily-report-gap-backfill`
+
+**`话题关键事件注记（key-event markers）`**
+
+> 来源 change：`add-topic-key-event-markers`
+
+**`编排 / 修正工作面的候选读取`**
+
+> 来源 change：`unify-lane-workbench`
+
 
 ## 业务约束与不变量
 
